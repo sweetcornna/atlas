@@ -1,167 +1,117 @@
-# Open Claude Code (occ)
+# 阡陌 AgentNest（Qianmo AgentNest）
 
-[![GitHub Stars](https://img.shields.io/github/stars/sweetcornna/open-claude-code?style=flat-square&logo=github&color=yellow)](https://github.com/sweetcornna/open-claude-code/stargazers)
-[![GitHub Issues](https://img.shields.io/github/issues/sweetcornna/open-claude-code?style=flat-square&color=orange)](https://github.com/sweetcornna/open-claude-code/issues)
-[![Last Commit](https://img.shields.io/github/last-commit/sweetcornna/open-claude-code?style=flat-square&color=blue)](https://github.com/sweetcornna/open-claude-code/commits/main)
-[![Bun](https://img.shields.io/badge/runtime-Bun-black?style=flat-square&logo=bun)](https://bun.sh/)
+> 阡陌交通，鸡犬相闻。
 
-> An open-source terminal AI coding assistant that coexists with official Claude Code.
+**阡陌**是一个**云端常驻智能体交流网络**。智能体不再是一次性的对话进程，而是长期驻留在云端的个体：它拥有自己的地址、分层记忆与休眠/唤醒生命周期；当它需要别人时，沿着阡陌小径把消息递到另一个节点上的另一个智能体手里。田连阡陌，鸡犬相闻——这正是我们希望智能体之间形成的样子：各自安居，彼此可达。
 
-**English** · [简体中文](./README.zh.md) · [日本語](./README.ja.md)
+两条产品线：
 
-**open-claude-code** (`occ`) is a full restoration of Anthropic's [Claude Code](https://docs.anthropic.com/en/docs/claude-code), extended with Goal-driven execution, multi-agent orchestration, Artifacts and ACP support — and **fully isolated from official Claude Code**, so both can be installed on the same machine without interfering.
+| 产品线 | 内容 | 在网络中的角色 |
+|---|---|---|
+| ① 云端常驻编程智能体 | 沙箱驻留、项目记忆、休眠唤醒、随叫随到、模型中立 | **节点** |
+| ② 智能体通信协作网络 | 注册发现、按名寻址、加密消息、权限分级、限流防循环、跨节点资源协同 | 连接节点的**网络** |
 
-## Isolation from official Claude Code
+当前阶段：**M0 原型验证期（2026H2）**。范围与验收标准以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
 
-This is the main difference from other forks. Before isolation, the fork shared `~/.claude`, `~/.claude.json`, the cache tree — **and the same macOS keychain entry**, so signing in to either CLI overwrote the other's OAuth token. Now they are separate:
+---
 
-| | open-claude-code | Official Claude Code |
-| --- | --- | --- |
-| User config | `~/.occ/` | `~/.claude/` |
-| Global state | `~/.occ.json` | `~/.claude.json` |
-| Project assets | `.occ/` | `.claude/` |
-| Cache | `~/.cache/occ-nodejs/` | `~/.cache/claude-cli-nodejs/` |
-| Credentials (macOS) | `Open Claude Code-credentials-<hash>` | `Claude Code-credentials` |
-| Enterprise policy | `/etc/occ`, `win.open-claude-code.occ` | `/etc/claude-code`, `com.anthropic.claudecode` |
-| Env override | `OCC_CONFIG_DIR` | `CLAUDE_CONFIG_DIR` (still honoured) |
+## 基座说明
 
-**Deliberately shared:** the `CLAUDE.md` / `CLAUDE.local.md` / `AGENTS.md` memory filenames are unchanged, because they are a cross-tool convention and renaming them would lose context in every existing repository. Child processes still receive `CLAUDECODE=1` (many user hook scripts gate on it) plus `OCC=1`. IDE lockfiles are searched in both roots, since the marketplace extension is Anthropic's and writes to `~/.claude/ide`.
+本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录，锁定在提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`）。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。**pin 提交之后的全部提交即阡陌团队的工作**（`git diff 848ad8c2..HEAD`）。
 
-### Migrating from official Claude Code
+完整溯源与上游同步记录见 [`BASE.md`](BASE.md)；采用理由、能力盘点与风险见 [`docs/dev/base-adoption.md`](docs/dev/base-adoption.md)；许可与商标声明见 [`NOTICE`](NOTICE)。
 
-```sh
-occ migrate --dry-run          # show what would be copied
-occ migrate                    # do it (secrets stripped)
-occ migrate --with-credentials # bring your login across too
-```
-
-Both modes copy the **same things**: settings, skills, agents, commands, output-styles, workflows, plugins, rules and MCP server definitions. They differ only in whether secrets ride along. The first-run wizard offers the same three choices.
-
-- **Default (no credentials):** strips the OAuth token, the API key, the secret half of `settings.env`, MCP `env`/`headers`, and the `apiKeyHelper` / `awsAuthRefresh` / `awsCredentialExport` / `gcpAuthRefresh` / `otelHeadersHelper` hooks that resolve credentials by running a command. **Routing config is kept**: `*_BASE_URL`, `*_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_USE_*`, `*_AUTH_MODE` and certificate *paths* such as `CLAUDE_CODE_CLIENT_CERT` / `CLAUDE_CODE_CLIENT_KEY` (a path is not a secret, and the mTLS pair is useless split — only `..._PASSPHRASE` is stripped). Everything stripped is listed by name before anything is written.
-- **`--with-credentials`:** also copies the OAuth token, the legacy API key and the account keys in `~/.claude.json` (`primaryApiKey`, `oauthAccount`, `customApiKeyResponses`, `workspaceApiKey`), so occ works without a fresh `/login`. **Caveat:** the server rotates the OAuth refresh token and both CLIs now hold the same one, so whichever refreshes first invalidates the other — pick one for day-to-day use.
-- Changed your mind after the default run? `occ migrate --with-credentials` tops up the login *and* restores the `settings.json` secrets the first run stripped — filling only what is missing, never overwriting a value you have since changed on the occ side. The `.migrated` marker records which categories ran, so it will not lock you out.
-- `--skip-account-data` / `--no-account-data` are the pre-2.9 spellings and now mean the default mode.
-- Two places are copied verbatim and **named in the report** because nothing here can classify them: `settings.json`'s `pluginConfigs`, and the files inside `plugins/`. Fields a plugin declares `sensitive` live in secure storage, which this mode never touches — but that split is enforced by each plugin's own manifest, so the residue is yours to review.
-
-**Session history is never copied.** The credential copy is one-way and no-clobber: an existing occ login always wins, and the official keychain entry is never modified. `~/.claude` is read-only throughout: nothing is written, moved or deleted there.
-
-## Quick start (published package)
-
-```sh
-npm i -g @sweetcornna/open-claude-code
-
-occ           # run on Node.js
-occ-bun       # run on Bun
-occ update    # update to the latest version
-```
-
-> **The scope is required.** The unscoped `open-claude-code` name on npm is a squatted `0.0.0`
-> placeholder that is not this project: it has no `bin`, so `npm i -g open-claude-code` appears to
-> succeed (`added 1 package`) and leaves you with no `occ` command at all.
-
-> The pre-2.8 `ccb` / `ccb-bun` names have been removed — scripts still calling them must switch to `occ` / `occ-bun`.
-
-## Quick start (from source)
-
-### Requirements
-
-Use the latest Bun — older versions cause a lot of strange bugs.
-
-- [Bun](https://bun.sh/) >= 1.3.11
+基座本体可独立安装试用（注意：这是基座的发布物，阡陌本仓库不发 npm 包）：
 
 ```bash
-# Linux / macOS
-curl -fsSL https://bun.sh/install | bash
-
-# Windows (PowerShell)
-powershell -c "irm bun.sh/install.ps1 | iex"
-
-# Already installed
-bun upgrade
+npm install -g @sweetcornna/open-claude-code
 ```
 
-### Install and run
+---
 
-```bash
-cd /path/to/open-claude-code
-bun install
+## 目录导览
 
-bun run dev      # development mode
-bun run build    # build
+本仓库是 fork 布局：**基座目录结构原样保留在仓库根**，阡陌自己的东西挂在其中。
+
+```
+.
+├── BASE.md                  基座溯源记录（上游、pin、同步历史）—— 不随功能 PR 改动
+├── LICENSE                  MIT（沿用基座）
+├── NOTICE                   许可范围、基座溯源、Anthropic 商标声明
+├── CLAUDE.md                本仓库对 AI 代理的工程约定（先读它）
+├── BASE-CLAUDE.md           基座 CLAUDE.md 原文（导入时改名保留，架构与工程约定真源）
+│
+├── src/                     ← 基座：CLI 主体（入口、REPL、命令、服务、工具）
+├── packages/                ← 基座 + 阡陌
+│   ├── @ant/                  基座：Ink UI 框架、model-provider 等
+│   ├── builtin-tools/         基座：内建工具
+│   ├── tool-runtime/          基座：host facade 接口层
+│   ├── workflow-engine/       基座：确定性工作流引擎
+│   ├── …                      基座其余包
+│   └── @qianmo/*              阡陌：自有 workspace 包（协议 / 注册 / 传输 / 记忆 …）
+├── scripts/                 ← 基座：构建、门禁、基准脚本
+├── tests/                   ← 基座：集成测试
+├── vendor/                  ← 基座：预编译原生二进制（**不是**隔离目录，见 CLAUDE.md）
+│
+└── docs/
+    ├── zh/ en/ ja/            ← 基座：基座自身的三语功能与内部文档
+    ├── README.md              阡陌：申报材料索引
+    ├── dev/                   阡陌：立项文档（见下）
+    ├── assets/                阡陌：品牌与图表素材
+    └── *.docx / *.pdf         阡陌：计划书与申请书
 ```
 
-The build uses code splitting; output lands in `dist/` and runs under both Bun and Node.js.
+### 立项文档（`docs/dev/`）
 
-### First-time `/login`
+| 文档 | 用途 |
+|---|---|
+| [`charter.md`](docs/dev/charter.md) | **立项章程 v2.0** —— 定位、范围与非目标、验收标准 AC-1~AC-8、工程基座与法律边界、风险、分工。**M0 阶段的唯一范围依据** |
+| [`roadmap.md`](docs/dev/roadmap.md) | **路线图 v2.0** —— 排期基础假设、关键路径、S0~S9 任务包与完成判据、M1/M2 规划 |
+| [`base-adoption.md`](docs/dev/base-adoption.md) | **基座采用报告** —— 基座是什么、为什么改路线（含放弃洁净室的代价）、两条产品线各自的能力与缺口、上游同步策略、风险 |
 
-Run `/login` in the REPL and pick **Anthropic Compatible** to use any third-party compatible service — no Anthropic account required. OpenAI, Gemini and Grok have their own sections.
+### 申报材料（`docs/`）
 
-| Field | Description | Example |
-| --- | --- | --- |
-| Base URL | API endpoint | `https://api.example.com/v1` |
-| API Key | Auth key | `sk-xxx` |
-| Haiku Model | Fast model ID | `claude-haiku-4-5-20251001` |
-| Sonnet Model | Balanced model ID | `claude-sonnet-5` |
-| Opus Model | High-capability model ID | `claude-opus-5` |
-| Fable Model | Top-tier model ID | `claude-fable-5` |
+计划书、申请书与全部图表素材见 [`docs/README.md`](docs/README.md)。
 
-**Tab / Shift+Tab** moves between fields, **Enter** confirms; Enter on the last field saves.
+---
 
-## Features
+## 开发入门
 
-| Feature | Description | Docs |
-| --- | --- | --- |
-| **Goal-driven execution** | `/goal <objective>` drives the agent across turns until done, with a token budget, completion/blocked audit and `pause`/`resume`/`continue`/`clear` | [`src/commands/goal/`](./src/commands/goal/) |
-| **Ultracode multi-agent orchestration** | `/ultracode` plus the `Workflow` tool runs deterministic JS scripts (`agent`/`pipeline`/`parallel`/`phase`); `/workflows` gives a live panel, with journal replay and a concurrency cap | [docs](./docs/zh/features/workflow-scripts.md) |
-| **Artifacts** | The model uploads HTML/dashboards/reports to a public URL (7d/30d expiry). Cloudflare Worker + R2, self-hostable | [docs](./packages/cloud-artifacts/README.md) |
-| **ACP protocol** | Connect Zed, Cursor and other IDEs, with session resume, Skills and permission bridging | [docs](./docs/zh/features/acp-zed.md) |
-| **Remote Control** | `occ remote-control` hands the session to [Happy](https://github.com/slopus/happy) (phone / web / end-to-end encrypted) over occ's own ACP agent; the server is self-hostable | [docs](./docs/zh/features/remote-control-self-hosting.md) |
-| **Langfuse monitoring** | Inspect every agent loop in detail, export to a dataset in one click | [docs](./docs/zh/features/langfuse-monitoring.md) |
-| **Web search** | Built-in search via Bing / Brave | [docs](./docs/zh/features/web-browser-tool.md) |
-| **Poor mode** | Disables memory extraction and typing suggestions to cut concurrent requests | `/poor` |
-| **Channels** | MCP servers push external messages into the session (Feishu/Slack/Discord…) | [docs](./docs/zh/features/channels.md) |
-| **Custom providers** | OpenAI / Anthropic / Gemini / Grok compatible | [docs](./docs/zh/features/all-features-guide.md) |
-| Voice mode | Voice input, including Doubao (`/voice doubao`) | [docs](./docs/zh/features/voice-mode.md) |
-| Computer Use | Screenshots, keyboard and mouse control | [docs](./docs/zh/features/computer-use.md) |
-| Browser MCPs (user-configured) | Add any browser MCP through ordinary MCP configuration; names such as `chrome-devtools` and `mcp-chrome` are not reserved | [docs](./docs/en/extensibility/mcp-configuration.mdx) |
-| `/dream` | Automatic memory consolidation | [docs](./docs/zh/features/auto-dream.md) |
+沿用基座的命令与门禁，不另起一套。
 
-## Feature flags
-
-Enable with `FEATURE_<FLAG_NAME>=1`:
+**环境要求**：[Bun](https://bun.sh/) ≥ 1.3.11（版本偏低会遇到难以定位的问题，基座对此敏感）。
 
 ```bash
-FEATURE_FORK_SUBAGENT=1 bun run dev
+bun install          # 安装依赖，workspace 内部包自动链接
+
+bun run dev          # 开发模式启动
+bun run precheck     # typecheck + lint fix + test —— 任务完成后必须零错误通过
 ```
 
-The 33 flags on by default are in `DEFAULT_BUILD_FEATURES` in [`scripts/defines.ts`](./scripts/defines.ts); anything else needs the env var. Per-feature notes live in [`docs/zh/features/`](./docs/zh/features/).
-
-## Debugging in VS Code
-
-TUI (REPL) mode needs a real terminal, so use **attach mode**:
+其他常用：
 
 ```bash
-bun run dev:inspect     # prints ws://localhost:8888/xxxx
-```
-
-Set breakpoints under `src/`, then F5 → **"Attach to Bun (TUI debug)"**.
-
-## Development
-
-```bash
-bun run precheck      # typecheck + lint fix + test — must pass with zero errors
+bun test <path>            # 跑单个测试文件
 bun run typecheck
-bun run test
-bun run build:vite
+bun run check:cycles       # 循环依赖棘轮（双向严格：超预算与低于预算都 fail）
+bun run check:mock-hygiene # mock 卫生棘轮
 ```
 
-Architecture, the module map, the path/isolation invariants and the testing rules are in [`CLAUDE.md`](./CLAUDE.md) — **read it before touching any path-related code**.
+完整脚本清单见 `package.json`。
 
-## Acknowledgements
+**开工前必读**：
+1. 本仓库的 [`CLAUDE.md`](CLAUDE.md) —— 阡陌自己的约定，以及基座硬规则中与阡陌开发直接相关的部分。
+2. [`BASE-CLAUDE.md`](BASE-CLAUDE.md)（基座 CLAUDE.md 原文，导入时改名保留）—— 架构地图、路径与隔离不变式、测试与 mock 规范。**改任何路径相关代码前必须读它。**
+3. [`docs/dev/charter.md`](docs/dev/charter.md) §5 —— 工程基座与法律边界，强制条款。
 
-- [doubaoime-asr](https://github.com/starccy/doubaoime-asr) — Doubao ASR SDK, which gives Voice Mode a speech input path that needs no Anthropic OAuth
-- [free-search-mcp](https://github.com/sweetcornna/free-search-mcp) — local-first, no-API-key search MCP server. WebSearch's `free` source is a port of its keyless engine pool (DuckDuckGo / Mojeek / Bing), RRF fusion and SearXNG rescue pass
+**提交规范**：Conventional Commits + 中文描述（`feat:` / `fix:` / `docs:` / `chore:` / `refactor:`），沿用基座约定。全部走 PR + 至少一人评审，不直推主干。
 
-## License
+**本仓库不发 npm 包、不跑基座的 release 流程**（章程 N-14）。
 
-This project is for study and research purposes only. All rights to Claude Code belong to [Anthropic](https://www.anthropic.com/).
+---
+
+## 许可
+
+MIT License，沿用基座。详见 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)。
+
+"Claude"、"Claude Code" 与 "Anthropic" 是 Anthropic, PBC 的商标。本项目与 Anthropic 无关联、未获其背书。

@@ -1,0 +1,180 @@
+阡陌 AgentNest (Qianmo AgentNest)
+Copyright 2026 Qianmo AgentNest Team
+
+本文件说明本仓库的许可范围、基座溯源与商标注意事项。
+This file states the license scope, base provenance and trademark notices for
+this repository.
+
+（中文在前，English follows. 两部分内容等同。）
+
+================================================================================
+一、许可
+================================================================================
+
+本仓库整体以 **MIT License** 发布，沿用其基座 open-claude-code 的许可。完整
+许可正文见根目录 LICENSE 文件。
+
+覆盖范围包括：
+
+  * 由基座导入的全部代码（见下方"二、基座溯源"）；
+  * 阡陌团队在基座之上新增的全部代码，包括 `packages/` 下 `@qianmo/*` 命名空间
+    的 workspace 包，以及对基座运行时的改造；
+  * 阡陌团队撰写的文档（`docs/dev/` 等）。
+
+  说明：本仓库早期版本（历史提交 67f6081 及更早）曾采用 Apache License 2.0，
+  该决定已随基座路线变更而作废，见 docs/dev/charter.md v2.0 §5.5。
+
+================================================================================
+二、基座溯源
+================================================================================
+
+本仓库是 open-claude-code 的下游 fork。基座以零改动快照方式导入本仓库根目录。
+
+  上游项目    open-claude-code（CLI 名 occ）
+  npm 包名    @sweetcornna/open-claude-code
+  锁定提交    848ad8c2c8daca9f5aa2410da555553e07700f5d
+  对应版本    v2.38.3
+  上游许可    MIT License
+              Copyright (c) 2026 open-claude-code contributors
+
+完整的导入记录与后续上游同步记录见仓库根目录的 BASE.md。
+
+上游 open-claude-code 的 MIT 许可与版权声明**予以保留**，见根目录 LICENSE。
+本仓库对基座的修改不改变该许可的适用。
+
+**成果边界**：pin 提交 848ad8c2 之后的全部提交为阡陌团队的工作。
+`git diff 848ad8c2..HEAD` 即为本项目的工作面。
+
+================================================================================
+三、关于基座的性质（如实声明）
+================================================================================
+
+上游项目 open-claude-code 自述其为 Anthropic Claude Code 的"社区版"，以逆向
+复原（reverse-engineered restoration）的代码为基座，由社区维护和优化的衍生
+版本（见其 README）。
+
+其 MIT 许可是上游项目作者对其自身还原与原创工作的授权。本声明不就该授权与被
+还原表达之间的关系作出任何法律判断。
+
+================================================================================
+四、Anthropic 商标与品牌注意事项
+================================================================================
+
+"Claude"、"Claude Code" 与 "Anthropic" 是 Anthropic, PBC 的商标。
+
+  * 本项目与 Anthropic, PBC **无关联、未获其背书、未获其赞助**。
+  * 本项目不主张对上述商标的任何权利，亦不以 Anthropic 的名义或暗示与其存在
+    授权、合作或背书关系。
+
+**关于代码中保留的 Anthropic 相关标识**：基座出于协议兼容性，刻意保留了若干
+包含上述名称的字符串——它们承载协议而非品牌，改动会破坏功能。已知包括：
+
+  * 系统提示词中的 "You are Claude Code, Anthropic's official CLI for Claude"
+    前缀（提示缓存与行为调优按该文本命中）；
+  * "claude-code/<version>" User-Agent；
+  * OpenTelemetry service.name "claude-code"；
+  * CLAUDE.md / CLAUDE.local.md / AGENTS.md 记忆文件名（跨工具生态约定）；
+  * 子进程环境变量 CLAUDECODE=1（跨工具提示协议）。
+
+  这些标识的技术性保留**不构成**任何关联性主张。
+
+================================================================================
+五、第三方组件
+================================================================================
+
+本仓库包含基座及其依赖树引入的第三方组件，各自适用其原有许可。完整的依赖与
+许可清单（SBOM）随项目发布材料提供。
+
+
+================================================================================
+================================================================================
+ENGLISH
+================================================================================
+================================================================================
+
+1. LICENSE
+--------------------------------------------------------------------------------
+
+This repository as a whole is released under the **MIT License**, inherited from
+its base project, open-claude-code. See the LICENSE file for the full text.
+
+The MIT License covers:
+
+  * all code imported from the base project (see section 2 below);
+  * all code added by the Qianmo AgentNest Team on top of the base, including
+    workspace packages under the `@qianmo/*` namespace in `packages/`, and
+    modifications to the base runtime;
+  * documentation authored by the Qianmo AgentNest Team (`docs/dev/`, etc.).
+
+  Note: earlier revisions of this repository (commit 67f6081 and prior) used the
+  Apache License 2.0. That decision was superseded by the base-adoption change;
+  see docs/dev/charter.md v2.0 §5.5.
+
+2. BASE PROVENANCE
+--------------------------------------------------------------------------------
+
+This repository is a downstream fork of open-claude-code. The base was imported
+into the repository root as an unmodified snapshot.
+
+  Upstream project   open-claude-code (CLI name: occ)
+  npm package        @sweetcornna/open-claude-code
+  Pinned commit      848ad8c2c8daca9f5aa2410da555553e07700f5d
+  Corresponding tag  v2.38.3
+  Upstream license   MIT License
+                     Copyright (c) 2026 open-claude-code contributors
+
+The import record and any subsequent upstream synchronization records are kept
+in BASE.md at the repository root.
+
+The upstream MIT license and copyright notice are **retained**; see LICENSE.
+Modifications made in this repository do not alter the applicability of that
+license.
+
+**Work boundary**: every commit after the pinned commit 848ad8c2 is the work of
+the Qianmo AgentNest Team. `git diff 848ad8c2..HEAD` delimits it.
+
+3. NATURE OF THE BASE (STATED PLAINLY)
+--------------------------------------------------------------------------------
+
+The upstream project open-claude-code describes itself as a "community edition"
+of Anthropic's Claude Code — a community-maintained derivative built on a
+reverse-engineered restoration of that codebase (see its README).
+
+Its MIT license is a grant by the upstream project's authors covering their own
+restoration and original work. This notice makes no legal determination
+regarding the relationship between that grant and the expression that was
+restored.
+
+4. ANTHROPIC TRADEMARKS AND BRANDING
+--------------------------------------------------------------------------------
+
+"Claude", "Claude Code" and "Anthropic" are trademarks of Anthropic, PBC.
+
+  * This project is **not affiliated with, endorsed by, or sponsored by**
+    Anthropic, PBC.
+  * This project claims no rights in those trademarks and does not represent, or
+    imply, any license, partnership or endorsement relationship with Anthropic.
+
+**On Anthropic-related identifiers retained in the code**: for protocol
+compatibility, the base deliberately retains certain strings containing the
+names above. They are load-bearing protocol rather than branding, and changing
+them breaks functionality. Known cases:
+
+  * the system prompt preamble "You are Claude Code, Anthropic's official CLI
+    for Claude" (prompt caching and behaviour tuning key off that exact text);
+  * the "claude-code/<version>" User-Agent;
+  * the OpenTelemetry service.name "claude-code";
+  * the CLAUDE.md / CLAUDE.local.md / AGENTS.md memory filenames (a shared
+    cross-tool ecosystem convention);
+  * the CLAUDECODE=1 child-process environment variable (cross-tool hints
+    protocol).
+
+  Retaining these identifiers for technical reasons does **not** constitute any
+  claim of affiliation.
+
+5. THIRD-PARTY COMPONENTS
+--------------------------------------------------------------------------------
+
+This repository includes third-party components introduced by the base project
+and its dependency tree, each under its own license. A complete dependency and
+license inventory (SBOM) is provided with the project's release materials.
