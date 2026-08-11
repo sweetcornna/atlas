@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/bin/python build_docs.py)",
+      "Read(//Users/cornna/Downloads/**)",
+      "Bash(/private/tmp/claude-501/-Users-cornna-project-atlas/15e0f701-fe0f-4643-b7fc-096995496aec/scratchpad/venv/bin/python -)",
+      "Bash(grep -v '~\\\\$')"
+    ]
+  }
+}
