@@ -65,8 +65,8 @@ npm install -g @sweetcornna/open-claude-code
 
 | 文档 | 用途 |
 |---|---|
-| [`charter.md`](docs/dev/charter.md) | **立项章程 v2.0** —— 定位、范围与非目标、验收标准 AC-1~AC-8、工程基座与法律边界、风险、分工。**M0 阶段的唯一范围依据** |
-| [`roadmap.md`](docs/dev/roadmap.md) | **路线图 v2.0** —— 排期基础假设、关键路径、S0~S9 任务包与完成判据、M1/M2 规划 |
+| [`charter.md`](docs/dev/charter.md) | **立项章程** —— 定位、范围与非目标、验收标准 AC-1~AC-8、工程基座与法律边界、风险、分工。**M0 阶段的唯一范围依据** |
+| [`roadmap.md`](docs/dev/roadmap.md) | **路线图** —— 排期基础假设、关键路径、S0~S9 任务包与完成判据、M1/M2 规划 |
 | [`base-adoption.md`](docs/dev/base-adoption.md) | **基座采用报告** —— 基座是什么、为什么改路线（含放弃洁净室的代价）、两条产品线各自的能力与缺口、上游同步策略、风险 |
 
 ### 申报材料（`docs/`）

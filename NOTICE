@@ -22,7 +22,7 @@ this repository.
   * 阡陌团队撰写的文档（`docs/dev/` 等）。
 
   说明：本仓库早期版本（历史提交 67f6081 及更早）曾采用 Apache License 2.0，
-  该决定已随基座路线变更而作废，见 docs/dev/charter.md v2.0 §5.5。
+  该决定已随基座路线变更而作废，见 docs/dev/charter.md §5.5。
 
 ================================================================================
 二、基座溯源
@@ -108,7 +108,7 @@ The MIT License covers:
 
   Note: earlier revisions of this repository (commit 67f6081 and prior) used the
   Apache License 2.0. That decision was superseded by the base-adoption change;
-  see docs/dev/charter.md v2.0 §5.5.
+  see docs/dev/charter.md §5.5.
 
 2. BASE PROVENANCE
 --------------------------------------------------------------------------------
