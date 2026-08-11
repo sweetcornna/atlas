@@ -253,6 +253,17 @@
       "name": "modifiers-napi",
       "version": "1.0.0",
     },
+    "packages/protocol": {
+      "name": "@qianmo/protocol",
+      "version": "0.0.0",
+    },
+    "packages/registry": {
+      "name": "@qianmo/registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/tool-runtime": {
       "name": "@open-claude-code/tool-runtime",
       "version": "1.0.0",
@@ -886,6 +897,10 @@
     "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "https://registry.npmmirror.com/@protobufjs/pool/-/pool-1.1.0.tgz", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.0", "https://registry.npmmirror.com/@protobufjs/utf8/-/utf8-1.1.0.tgz", {}, "sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw=="],
+
+    "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
+
+    "@qianmo/registry": ["@qianmo/registry@workspace:packages/registry"],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.0-rc.15", "https://registry.npmmirror.com/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz", { "os": "android", "cpu": "arm64" }, "sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA=="],
 
