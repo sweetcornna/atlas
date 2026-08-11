@@ -1,0 +1,44 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["bun"],
+    "paths": {
+      "src/*": ["./src/*"],
+      "@open-claude-code/builtin-tools/*": ["./packages/builtin-tools/src/*"],
+      "@open-claude-code/builtin-tools": [
+        "./packages/builtin-tools/src/index.ts"
+      ],
+      "@open-claude-code/tool-runtime/*": ["./packages/tool-runtime/src/*"],
+      "@open-claude-code/tool-runtime": [
+        "./packages/tool-runtime/src/index.ts"
+      ],
+      "@open-claude-code/mcp-client/*": ["./packages/mcp-client/src/*"],
+      "@open-claude-code/mcp-client": ["./packages/mcp-client/src/index.ts"],
+      "@open-claude-code/agent-tools/*": ["./packages/agent-tools/src/*"],
+      "@open-claude-code/agent-tools": ["./packages/agent-tools/src/index.ts"],
+      "@open-claude-code/workflow-engine/*": [
+        "./packages/workflow-engine/src/*"
+      ],
+      "@open-claude-code/workflow-engine": [
+        "./packages/workflow-engine/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "packages/**/*.ts",
+    "packages/**/*.tsx"
+  ],
+  "exclude": ["node_modules"]
+}

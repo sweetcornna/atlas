@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/*", "feat/*"]
+  pull_request:
+    branches: [main, "feat/*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Dev checkouts have no vendored rg (bun skips lifecycle scripts, so
+      # postinstall never downloads it) — the runtime then falls back to the
+      # system binary, which dev machines have but a bare runner doesn't. The
+      # mcp serve round-trip executes the real Glob tool and needs it.
+      - name: Install ripgrep (system fallback for dev checkouts)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      - name: Lint and format check
+        run: bunx biome ci .
+
+      - name: Type check
+        run: bun run typecheck
+
+      # Two-sided ratchet: fails if cycles were added, and also if cycles were
+      # removed without committing the lower baseline. Kept out of `precheck`
+      # because a full run walks 2300+ modules and takes minutes.
+      - name: Check circular dependencies
+        timeout-minutes: 20
+        run: bun run check:cycles
+
+      # Same two-sided ratchet, but on tool prompt/constants leaves. Pure
+      # import scanning, so it also runs inside `precheck` (~0.3s).
+      - name: Check prompt purity
+        run: bun run check:prompt-purity
+
+      # Guards the failure mode behind all 55 red runs between v2.11.0 and
+      # v2.30.0: a mock.module surface (or an unreset override) leaks to every
+      # later file in the shard, and Bun's test-file order comes from the
+      # filesystem — so it only ever reproduced here, never locally. Also a
+      # ratchet, also inside precheck.
+      - name: Check mock hygiene
+        run: bun run check:mock-hygiene
+
+      # The loop lives in scripts/test-shards.sh so this workflow and
+      # publish-npm.yml cannot drift apart — see that file for why sharding is
+      # what fixed the 55 red runs, and why an unsharded `bun test` is not a
+      # stricter substitute.
+      - name: Test with Coverage (sharded per directory)
+        run: ./scripts/test-shards.sh --coverage
+
+      - name: Check coverage artifact
+        run: |
+          test -s coverage/lcov.info
+          grep -q '^SF:' coverage/lcov.info
+
+      # codecov 坏了，老是失败，先注释掉
+      # - name: Upload coverage to Codecov
+      #   if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      #   uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5, 2026-04-25
+      #   with:
+      #     fail_ci_if_error: true
+      #     files: ./coverage/lcov.info
+      #     disable_search: true
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Build
+        run: bun run build:vite
+
+      - name: Check bundle integrity
+        run: bun run check:bundle
+
+      # Now gating. `check:unused` is a ratchet over knip rather than raw knip:
+      # seven categories (unused files/deps/binaries, unlisted, unresolved …)
+      # were cleaned to zero and are held there, while the ~1900 unused
+      # exports/types are a two-sided budget. Raw output: `check:unused:raw`.
+      - name: Check unused exports
+        run: bun run check:unused
+
+  # Deliberately a separate job rather than a matrix leg of `ci`: it runs a
+  # different, much narrower set of steps. The full suite is slow and flaky on
+  # Windows, so we only run the suites that encode Windows-specific behaviour
+  # (path validation / sandbox escape, ripgrep binary resolution, mailbox and
+  # legacy-console handling) plus a type check.
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: bun run typecheck
+
+      # Paths are single-quoted: the default shell here is pwsh, and quoting
+      # keeps the '@' in packages/@ant/... from being read as a splat/array
+      # operator. These are literal file paths, not globs — no shell expansion
+      # is expected or relied upon.
+      - name: Test Windows-sensitive suites
+        run: >
+          bun test
+          'src/utils/permissions/__tests__/pathValidation.test.ts'
+          'src/utils/__tests__/ideIsolation.test.ts'
+          'src/utils/__tests__/ripgrepConfig.test.ts'
+          'src/utils/__tests__/teammateMailbox.test.ts'
+          'packages/@ant/ink/src/core/__tests__/legacyConsole.test.ts'
