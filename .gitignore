@@ -22,9 +22,6 @@ bun.lockb
 npm-debug.log*
 bun-debug.log*
 
-# personal local settings
-.claude/settings.local.json
-
 # OS / editor noise
 .DS_Store
 Thumbs.db
