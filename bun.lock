@@ -1,0 +1,39 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "qianmo-agentnest",
+      "devDependencies": {
+        "typescript": "^5.9.3",
+      },
+    },
+    "packages/protocol": {
+      "name": "@qianmo/protocol",
+      "version": "0.0.0",
+    },
+    "packages/registry": {
+      "name": "@qianmo/registry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
+    "packages/runtime-adapter": {
+      "name": "@qianmo/runtime-adapter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
+
+    "@qianmo/registry": ["@qianmo/registry@workspace:packages/registry"],
+
+    "@qianmo/runtime-adapter": ["@qianmo/runtime-adapter@workspace:packages/runtime-adapter"],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+  }
+}

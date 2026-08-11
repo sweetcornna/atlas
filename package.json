@@ -1,0 +1,21 @@
+{
+  "name": "qianmo-agentnest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p packages/protocol && tsc --noEmit -p packages/registry && tsc --noEmit -p packages/runtime-adapter",
+    "fetch-base": "bash scripts/fetch-base.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}
