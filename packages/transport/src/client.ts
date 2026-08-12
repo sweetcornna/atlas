@@ -241,6 +241,12 @@ export class TransportClient {
     this.socket = null
     if (socket !== null) {
       socket.removeAllListeners()
+      // Re-arm 'error' before touching the socket again. `removeAllListeners`
+      // takes the error handler with it, and on an EventEmitter an 'error' with
+      // no listener is rethrown — so tearing down a socket that is still
+      // mid-handshake (exactly the case terminate() exists for) turns a routine
+      // shutdown into an unhandled ErrorEvent that takes the process with it.
+      socket.on('error', () => {})
       socket.close(1000, 'client shutdown')
       // A socket closed mid-handshake never fires 'close'; terminate() is the
       // only way to be sure the handle is gone when this promise resolves.
@@ -357,6 +363,9 @@ export class TransportClient {
   ): void {
     if (this.socket !== socket) return
     socket.removeAllListeners()
+    // Same reason as in close(): a listener-less 'error' is rethrown, and this
+    // socket may still emit one while it finishes tearing down.
+    socket.on('error', () => {})
     this.socket = null
     this.stopKeepAlive()
     if (this.state === 'closed') return

@@ -139,6 +139,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/**
+ * Per-test budget for the socket round trips below.
+ *
+ * Bun's default is 5 s, and several cases here spend up to that on
+ * `waitForDrain` alone before they start waiting for a reply — so their own
+ * budgets summed past the harness's, and under a loaded full-suite run the
+ * slowest path tripped it intermittently. These are I/O tests against real
+ * sockets, not unit tests; the generous ceiling costs nothing on a passing run
+ * and removes a failure mode that had nothing to do with the behaviour asserted.
+ */
+const IO_TIMEOUT_MS = 30_000
+
 async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 5_000,
@@ -528,80 +540,84 @@ function reportTimings(label: string, node: ReceivingNode): void {
 // ---------------------------------------------------------------------------
 
 describe('AC-2 happy path: resolve → send → wake → forward → read → ack', () => {
-  test('a frozen target is woken, delivered to, read, and acks end to end', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'a frozen target is woken, delivered to, read, and acks end to end',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-      // The shape E2 measured: unpause returns long before the working set is
-      // warm, so the first probes after the wake say "not yet".
-      readyAfterProbes: 2,
-    })
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+        // The shape E2 measured: unpause returns long before the working set is
+        // warm, so the first probes after the wake say "not yet".
+        readyAfterProbes: 2,
+      })
 
-    // The node really is asleep before anything is sent.
-    expect(nodeB.stub.stateOf(nodeB.sandboxName)).toBe('frozen')
-    expect(registry.statusOf(target)).toBe(AgentStatus.Dormant)
+      // The node really is asleep before anything is sent.
+      expect(nodeB.stub.stateOf(nodeB.sandboxName)).toBe('frozen')
+      expect(registry.statusOf(target)).toBe(AgentStatus.Dormant)
 
-    // --- the sender resolves and dials ------------------------------------
-    const resolved = registry.resolve(target)
-    expect(resolved).not.toBeNull()
-    expect(resolved?.address).toBe(target)
-    // The node segment comes out of the resolved record through the protocol's
-    // own parser, not off a string the test kept — that is the seam this line
-    // is here to exercise.
-    const hostingNode = nodeOf(resolved?.address) ?? ''
-    expect(hostingNode).toBe('node-b')
+      // --- the sender resolves and dials ------------------------------------
+      const resolved = registry.resolve(target)
+      expect(resolved).not.toBeNull()
+      expect(resolved?.address).toBe(target)
+      // The node segment comes out of the resolved record through the protocol's
+      // own parser, not off a string the test kept — that is the seam this line
+      // is here to exercise.
+      const hostingNode = nodeOf(resolved?.address) ?? ''
+      expect(hostingNode).toBe('node-b')
 
-    const client = await sender.dial(socketFor(hostingNode))
+      const client = await sender.dial(socketFor(hostingNode))
 
-    // The agent is alive and polling its inbox, as one would be in a session.
-    startAgentReadLoop(AGENT, nodeB.team)
+      // The agent is alive and polling its inbox, as one would be in a session.
+      startAgentReadLoop(AGENT, nodeB.team)
 
-    const message = envelopeTo(target)
-    client.send(message)
-    await client.waitForDrain(5_000)
+      const message = envelopeTo(target)
+      client.send(message)
+      await client.waitForDrain(5_000)
 
-    // --- the ack comes back over the return hop ---------------------------
-    await waitUntil(() => sender.inbox.length > 0)
-    const acks = repliesOfType(sender.inbox, MessageType.Ack)
-    expect(repliesOfType(sender.inbox, MessageType.Error)).toHaveLength(0)
-    expect(acks).toHaveLength(1)
+      // --- the ack comes back over the return hop ---------------------------
+      await waitUntil(() => sender.inbox.length > 0)
+      const acks = repliesOfType(sender.inbox, MessageType.Ack)
+      expect(repliesOfType(sender.inbox, MessageType.Error)).toHaveLength(0)
+      expect(acks).toHaveLength(1)
 
-    const ack = acks[0]
-    expect(ack).toBeDefined()
-    if (ack === undefined) throw new Error('unreachable')
-    expect(ack.to).toBe(SENDER)
-    expect(ack.taskId).toBe(message.taskId)
-    expect(isAckPayload(ack.payload)).toBe(true)
-    const payload = ack.payload as {
-      ofMsgId: string
-      taskId: string
-      handler: string
-    }
-    expect(payload.ofMsgId).toBe(message.msgId)
-    expect(payload.handler).toBe(target)
+      const ack = acks[0]
+      expect(ack).toBeDefined()
+      if (ack === undefined) throw new Error('unreachable')
+      expect(ack.to).toBe(SENDER)
+      expect(ack.taskId).toBe(message.taskId)
+      expect(isAckPayload(ack.payload)).toBe(true)
+      const payload = ack.payload as {
+        ofMsgId: string
+        taskId: string
+        handler: string
+      }
+      expect(payload.ofMsgId).toBe(message.msgId)
+      expect(payload.handler).toBe(target)
 
-    // --- the wake really happened, and stayed inside the capability surface -
-    expect(nodeB.stub.hits.acquireSandbox).toBe(1)
-    expect(nodeB.stub.hits.destroySandbox).toBe(0)
-    expect(nodeB.stub.stateOf(nodeB.sandboxName)).toBe('active')
-    expect(nodeB.audit.count(ActivatorEventType.WakeStarted)).toBe(1)
-    expect(nodeB.audit.count(ActivatorEventType.RequestForwarded)).toBe(1)
-    expect(nodeB.audit.count(ActivatorEventType.RequestFailed)).toBe(0)
+      // --- the wake really happened, and stayed inside the capability surface -
+      expect(nodeB.stub.hits.acquireSandbox).toBe(1)
+      expect(nodeB.stub.hits.destroySandbox).toBe(0)
+      expect(nodeB.stub.stateOf(nodeB.sandboxName)).toBe('active')
+      expect(nodeB.audit.count(ActivatorEventType.WakeStarted)).toBe(1)
+      expect(nodeB.audit.count(ActivatorEventType.RequestForwarded)).toBe(1)
+      expect(nodeB.audit.count(ActivatorEventType.RequestFailed)).toBe(0)
 
-    // --- and the message really is in the target's mailbox -----------------
-    const inbox = await readMailbox(AGENT, nodeB.team)
-    expect(inbox).toHaveLength(1)
-    expect(inbox[0]?.from).toBe(SENDER)
-    expect(inbox[0]?.read).toBe(true)
-    expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['acked'])
+      // --- and the message really is in the target's mailbox -----------------
+      const inbox = await readMailbox(AGENT, nodeB.team)
+      expect(inbox).toHaveLength(1)
+      expect(inbox[0]?.from).toBe(SENDER)
+      expect(inbox[0]?.read).toBe(true)
+      expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['acked'])
 
-    reportTimings('happy path (frozen → active → forward)', nodeB)
-  })
+      reportTimings('happy path (frozen → active → forward)', nodeB)
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -623,43 +639,47 @@ describe('stage timings for the P3.1 / P4.1 baseline', () => {
    * No latency assertion (D-3) — a percentile gate on a shared runner measures
    * the runner. The only bound is the test timeout itself.
    */
-  test('ten round trips produce a four-stage distribution', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'ten round trips produce a four-stage distribution',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-      readyAfterProbes: 2,
-    })
-    const client = await sender.dial(socketFor('node-b'))
-    startAgentReadLoop(AGENT, nodeB.team)
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+        readyAfterProbes: 2,
+      })
+      const client = await sender.dial(socketFor('node-b'))
+      startAgentReadLoop(AGENT, nodeB.team)
 
-    const rounds = 10
-    for (let round = 0; round < rounds; round += 1) {
-      // Put the node back to sleep between round trips, so every one of them
-      // pays the wake path rather than finding the target already up.
-      nodeB.stub.setState(nodeB.sandboxName, 'frozen')
-      client.send(envelopeTo(target, { payload: { round } }))
-      await waitUntil(() => sender.inbox.length === round + 1)
-    }
+      const rounds = 10
+      for (let round = 0; round < rounds; round += 1) {
+        // Put the node back to sleep between round trips, so every one of them
+        // pays the wake path rather than finding the target already up.
+        nodeB.stub.setState(nodeB.sandboxName, 'frozen')
+        client.send(envelopeTo(target, { payload: { round } }))
+        await waitUntil(() => sender.inbox.length === round + 1)
+      }
 
-    const acks = repliesOfType(sender.inbox, MessageType.Ack)
-    expect(acks).toHaveLength(rounds)
-    expect(repliesOfType(sender.inbox, MessageType.Error)).toHaveLength(0)
-    expect(nodeB.stub.hits.acquireSandbox).toBe(rounds)
-    expect(nodeB.stub.hits.destroySandbox).toBe(0)
-    expect(nodeB.audit.count(ActivatorEventType.WakeStarted)).toBe(rounds)
+      const acks = repliesOfType(sender.inbox, MessageType.Ack)
+      expect(acks).toHaveLength(rounds)
+      expect(repliesOfType(sender.inbox, MessageType.Error)).toHaveLength(0)
+      expect(nodeB.stub.hits.acquireSandbox).toBe(rounds)
+      expect(nodeB.stub.hits.destroySandbox).toBe(0)
+      expect(nodeB.audit.count(ActivatorEventType.WakeStarted)).toBe(rounds)
 
-    const report = nodeB.timings.report()
-    expect(report.samples).toBe(rounds)
-    expect(report.forwarded).toBe(rounds)
-    expect(report.wakes).toBe(rounds)
+      const report = nodeB.timings.report()
+      expect(report.samples).toBe(rounds)
+      expect(report.forwarded).toBe(rounds)
+      expect(report.wakes).toBe(rounds)
 
-    reportTimings(`${rounds} round trips (wake path, stubbed daemon)`, nodeB)
-  })
+      reportTimings(`${rounds} round trips (wake path, stubbed daemon)`, nodeB)
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -667,81 +687,89 @@ describe('stage timings for the P3.1 / P4.1 baseline', () => {
 // ---------------------------------------------------------------------------
 
 describe('the ack belongs to the agent, not to the file write', () => {
-  test('no ack is emitted while the target never reads; an explicit expiry is', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'no ack is emitted while the target never reads; an explicit expiry is',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-    })
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+      })
 
-    const client = await sender.dial(socketFor('node-b'))
+      const client = await sender.dial(socketFor('node-b'))
 
-    // No agent read loop is started. This is the whole experiment: everything
-    // else is identical to the happy path, including the mailbox write, which
-    // is exactly the state a write-time ack cannot tell apart from delivery.
-    const message = envelopeTo(target, { deliverTtlMs: 700 })
-    client.send(message)
-    await client.waitForDrain(5_000)
+      // No agent read loop is started. This is the whole experiment: everything
+      // else is identical to the happy path, including the mailbox write, which
+      // is exactly the state a write-time ack cannot tell apart from delivery.
+      const message = envelopeTo(target, { deliverTtlMs: 700 })
+      client.send(message)
+      await client.waitForDrain(5_000)
 
-    // The write landed — so an implementation that acked here would ack.
-    await waitUntil(inboxHolds(AGENT, nodeB.team, 1))
-    const beforeRead = await readMailbox(AGENT, nodeB.team)
-    expect(beforeRead).toHaveLength(1)
-    expect(beforeRead[0]?.read).toBe(false)
+      // The write landed — so an implementation that acked here would ack.
+      await waitUntil(inboxHolds(AGENT, nodeB.team, 1))
+      const beforeRead = await readMailbox(AGENT, nodeB.team)
+      expect(beforeRead).toHaveLength(1)
+      expect(beforeRead[0]?.read).toBe(false)
 
-    // What comes back instead is an explicit expiry, once the delivery
-    // deadline passes with the entry still unread.
-    await waitUntil(() => sender.inbox.length > 0, 5_000)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
-    const errors = repliesOfType(sender.inbox, MessageType.Error)
-    expect(errors).toHaveLength(1)
-    expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
-      ProtocolErrorCode.E_TTL_EXPIRED,
-    )
-    expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['expired'])
+      // What comes back instead is an explicit expiry, once the delivery
+      // deadline passes with the entry still unread.
+      await waitUntil(() => sender.inbox.length > 0, 5_000)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
+      const errors = repliesOfType(sender.inbox, MessageType.Error)
+      expect(errors).toHaveLength(1)
+      expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
+        ProtocolErrorCode.E_TTL_EXPIRED,
+      )
+      expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['expired'])
 
-    // And the entry is still sitting there unread: nothing consumed it, the
-    // ack was withheld for the one reason it may be withheld.
-    const after = await readMailbox(AGENT, nodeB.team)
-    expect(after).toHaveLength(1)
-    expect(after[0]?.read).toBe(false)
+      // And the entry is still sitting there unread: nothing consumed it, the
+      // ack was withheld for the one reason it may be withheld.
+      const after = await readMailbox(AGENT, nodeB.team)
+      expect(after).toHaveLength(1)
+      expect(after[0]?.read).toBe(false)
 
-    // Belt and braces on "no ack": give the chain another beat and re-check.
-    await sleep(200)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
-  })
+      // Belt and braces on "no ack": give the chain another beat and re-check.
+      await sleep(200)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
+    },
+    IO_TIMEOUT_MS,
+  )
 
-  test('the same run acks as soon as an agent does read it', async () => {
-    // The control for the test above: same wiring, same envelope, one
-    // difference — somebody takes the message in.
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'the same run acks as soon as an agent does read it',
+    async () => {
+      // The control for the test above: same wiring, same envelope, one
+      // difference — somebody takes the message in.
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-    })
-    const client = await sender.dial(socketFor('node-b'))
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+      })
+      const client = await sender.dial(socketFor('node-b'))
 
-    const message = envelopeTo(target, { deliverTtlMs: 5_000 })
-    client.send(message)
+      const message = envelopeTo(target, { deliverTtlMs: 5_000 })
+      client.send(message)
 
-    // Let the write land and the observer see it unread at least once, then
-    // read it — so the flip, not the write, is what the ack follows.
-    await waitUntil(inboxHolds(AGENT, nodeB.team, 1))
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
-    await markMessagesAsRead(AGENT, nodeB.team)
+      // Let the write land and the observer see it unread at least once, then
+      // read it — so the flip, not the write, is what the ack follows.
+      await waitUntil(inboxHolds(AGENT, nodeB.team, 1))
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
+      await markMessagesAsRead(AGENT, nodeB.team)
 
-    await waitUntil(() => sender.inbox.length > 0)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
-    expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['acked'])
-  })
+      await waitUntil(() => sender.inbox.length > 0)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
+      expect(nodeB.settled.map(reply => reply.outcome)).toEqual(['acked'])
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -749,79 +777,87 @@ describe('the ack belongs to the agent, not to the file write', () => {
 // ---------------------------------------------------------------------------
 
 describe('dedup holds across the transport / activator / adapter boundary', () => {
-  test('the same envelope delivered three times is processed once', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'the same envelope delivered three times is processed once',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-    })
-    const client = await sender.dial(socketFor('node-b'))
-    startAgentReadLoop(AGENT, nodeB.team)
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+      })
+      const client = await sender.dial(socketFor('node-b'))
+      startAgentReadLoop(AGENT, nodeB.team)
 
-    const message = envelopeTo(target)
-    // Three transmissions of one envelope — what an at-least-once sender does
-    // when receipts are slow. Same `msgId` each time, by definition.
-    client.send(message)
-    client.send(message)
-    client.send(message)
-    await client.waitForDrain(5_000)
-    await waitUntil(() => sender.inbox.length > 0)
-    await sleep(150)
+      const message = envelopeTo(target)
+      // Three transmissions of one envelope — what an at-least-once sender does
+      // when receipts are slow. Same `msgId` each time, by definition.
+      client.send(message)
+      client.send(message)
+      client.send(message)
+      await client.waitForDrain(5_000)
+      await waitUntil(() => sender.inbox.length > 0)
+      await sleep(150)
 
-    // Level 1 (msgId) caught two of the three at the socket, so the layers
-    // above never saw them: one wake, one mailbox entry, one ack.
-    const duplicates = nodeB.server.events.byType(
-      TransportEventType.MessageDuplicate,
-    )
-    expect(duplicates.length).toBe(2)
-    expect(nodeB.audit.count(ActivatorEventType.RequestAccepted)).toBe(1)
-    expect(nodeB.stub.hits.acquireSandbox).toBe(1)
-    expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(1)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
-    expect(nodeB.settled).toHaveLength(1)
-  })
+      // Level 1 (msgId) caught two of the three at the socket, so the layers
+      // above never saw them: one wake, one mailbox entry, one ack.
+      const duplicates = nodeB.server.events.byType(
+        TransportEventType.MessageDuplicate,
+      )
+      expect(duplicates.length).toBe(2)
+      expect(nodeB.audit.count(ActivatorEventType.RequestAccepted)).toBe(1)
+      expect(nodeB.stub.hits.acquireSandbox).toBe(1)
+      expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(1)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
+      expect(nodeB.settled).toHaveLength(1)
+    },
+    IO_TIMEOUT_MS,
+  )
 
-  test('a sender that rebuilt the same work item is caught by the fingerprint', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'a sender that rebuilt the same work item is caught by the fingerprint',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-    })
-    const client = await sender.dial(socketFor('node-b'))
-    startAgentReadLoop(AGENT, nodeB.team)
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+      })
+      const client = await sender.dial(socketFor('node-b'))
+      startAgentReadLoop(AGENT, nodeB.team)
 
-    const taskId = 'task-fingerprint-e2e'
-    const payload = { ask: 'review the diff' }
-    const first = envelopeTo(target, { taskId, payload })
-    // A restarted sender rebuilds the work item: new transmission id, same
-    // (from, to, type, taskId, payload) — hence the same fingerprint.
-    const rebuilt = envelopeTo(target, { taskId, payload })
-    expect(rebuilt.msgId).not.toBe(first.msgId)
-    expect(rebuilt.fingerprint).toBe(first.fingerprint)
+      const taskId = 'task-fingerprint-e2e'
+      const payload = { ask: 'review the diff' }
+      const first = envelopeTo(target, { taskId, payload })
+      // A restarted sender rebuilds the work item: new transmission id, same
+      // (from, to, type, taskId, payload) — hence the same fingerprint.
+      const rebuilt = envelopeTo(target, { taskId, payload })
+      expect(rebuilt.msgId).not.toBe(first.msgId)
+      expect(rebuilt.fingerprint).toBe(first.fingerprint)
 
-    client.send(first)
-    await client.waitForDrain(5_000)
-    client.send(rebuilt)
-    await client.waitForDrain(5_000)
-    await waitUntil(() => sender.inbox.length > 0)
-    await sleep(150)
+      client.send(first)
+      await client.waitForDrain(5_000)
+      client.send(rebuilt)
+      await client.waitForDrain(5_000)
+      await waitUntil(() => sender.inbox.length > 0)
+      await sleep(150)
 
-    const duplicates = nodeB.server.events.byType(
-      TransportEventType.MessageDuplicate,
-    )
-    expect(duplicates).toHaveLength(1)
-    expect(duplicates[0]?.detail['level']).toBe('duplicate-fingerprint')
-    expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(1)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
-  })
+      const duplicates = nodeB.server.events.byType(
+        TransportEventType.MessageDuplicate,
+      )
+      expect(duplicates).toHaveLength(1)
+      expect(duplicates[0]?.detail['level']).toBe('duplicate-fingerprint')
+      expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(1)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(1)
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -829,94 +865,102 @@ describe('dedup holds across the transport / activator / adapter boundary', () =
 // ---------------------------------------------------------------------------
 
 describe('two nodes, one agent name, no cross-talk', () => {
-  test('each node receives only what is addressed to it', async () => {
-    const registry = new InMemoryRegistry()
-    const toB = 'qianmo://node-b/reviewer'
-    const toC = 'qianmo://node-c/reviewer'
-    announce(registry, toB, publishedEndpoint('node-b'))
-    announce(registry, toC, publishedEndpoint('node-c'))
-    expect(registry.size).toBe(2)
-    expect(registry.resolve(toB)?.endpoint).not.toBe(
-      registry.resolve(toC)?.endpoint,
-    )
+  test(
+    'each node receives only what is addressed to it',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const toB = 'qianmo://node-b/reviewer'
+      const toC = 'qianmo://node-c/reviewer'
+      announce(registry, toB, publishedEndpoint('node-b'))
+      announce(registry, toC, publishedEndpoint('node-c'))
+      expect(registry.size).toBe(2)
+      expect(registry.resolve(toB)?.endpoint).not.toBe(
+        registry.resolve(toC)?.endpoint,
+      )
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-    })
-    const nodeC = await startReceivingNode({
-      node: 'node-c',
-      replyTo: sender.socketPath,
-    })
-    startAgentReadLoop(AGENT, nodeB.team)
-    startAgentReadLoop(AGENT, nodeC.team)
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+      })
+      const nodeC = await startReceivingNode({
+        node: 'node-c',
+        replyTo: sender.socketPath,
+      })
+      startAgentReadLoop(AGENT, nodeB.team)
+      startAgentReadLoop(AGENT, nodeC.team)
 
-    const clientB = await sender.dial(socketFor('node-b'))
-    const clientC = await sender.dial(socketFor('node-c'))
+      const clientB = await sender.dial(socketFor('node-b'))
+      const clientC = await sender.dial(socketFor('node-c'))
 
-    const forB = envelopeTo(toB, { payload: { ask: 'for b' } })
-    const forC = envelopeTo(toC, { payload: { ask: 'for c' } })
-    clientB.send(forB)
-    clientC.send(forC)
-    await clientB.waitForDrain(5_000)
-    await clientC.waitForDrain(5_000)
-    await waitUntil(() => sender.inbox.length >= 2)
+      const forB = envelopeTo(toB, { payload: { ask: 'for b' } })
+      const forC = envelopeTo(toC, { payload: { ask: 'for c' } })
+      clientB.send(forB)
+      clientC.send(forC)
+      await clientB.waitForDrain(5_000)
+      await clientC.waitForDrain(5_000)
+      await waitUntil(() => sender.inbox.length >= 2)
 
-    // Each landed on its own node — the composite `<node>/<agent>` key on the
-    // registry side, the adapter's `to.node !== this.node` check on the other.
-    const inboxB = await readMailbox(AGENT, nodeB.team)
-    const inboxC = await readMailbox(AGENT, nodeC.team)
-    expect(inboxB).toHaveLength(1)
-    expect(inboxC).toHaveLength(1)
-    expect(inboxB[0]?.text).toContain('for b')
-    expect(inboxC[0]?.text).toContain('for c')
+      // Each landed on its own node — the composite `<node>/<agent>` key on the
+      // registry side, the adapter's `to.node !== this.node` check on the other.
+      const inboxB = await readMailbox(AGENT, nodeB.team)
+      const inboxC = await readMailbox(AGENT, nodeC.team)
+      expect(inboxB).toHaveLength(1)
+      expect(inboxC).toHaveLength(1)
+      expect(inboxB[0]?.text).toContain('for b')
+      expect(inboxC[0]?.text).toContain('for c')
 
-    // Two acks, each from the right handler, each answering the right msgId.
-    const acks = repliesOfType(sender.inbox, MessageType.Ack)
-    expect(acks).toHaveLength(2)
-    const byHandler = new Map(
-      acks.map(ack => {
-        const payload = ack.payload as { handler: string; ofMsgId: string }
-        return [payload.handler, payload.ofMsgId]
-      }),
-    )
-    expect(byHandler.get(toB)).toBe(forB.msgId)
-    expect(byHandler.get(toC)).toBe(forC.msgId)
-  })
+      // Two acks, each from the right handler, each answering the right msgId.
+      const acks = repliesOfType(sender.inbox, MessageType.Ack)
+      expect(acks).toHaveLength(2)
+      const byHandler = new Map(
+        acks.map(ack => {
+          const payload = ack.payload as { handler: string; ofMsgId: string }
+          return [payload.handler, payload.ofMsgId]
+        }),
+      )
+      expect(byHandler.get(toB)).toBe(forB.msgId)
+      expect(byHandler.get(toC)).toBe(forC.msgId)
+    },
+    IO_TIMEOUT_MS,
+  )
 
-  test('a misrouted envelope is refused by the node it lands on, not absorbed', async () => {
-    const registry = new InMemoryRegistry()
-    const toB = 'qianmo://node-b/reviewer'
-    announce(registry, toB, publishedEndpoint('node-b'))
+  test(
+    'a misrouted envelope is refused by the node it lands on, not absorbed',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const toB = 'qianmo://node-b/reviewer'
+      announce(registry, toB, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeC = await startReceivingNode({
-      node: 'node-c',
-      replyTo: sender.socketPath,
-    })
-    const clientC = await sender.dial(socketFor('node-c'))
+      const sender = startSender()
+      const nodeC = await startReceivingNode({
+        node: 'node-c',
+        replyTo: sender.socketPath,
+      })
+      const clientC = await sender.dial(socketFor('node-c'))
 
-    // Addressed to node-b, delivered down node-c's socket: the failure mode a
-    // stale registry entry or a routing bug produces.
-    clientC.send(envelopeTo(toB))
-    await clientC.waitForDrain(5_000)
-    await waitUntil(() => sender.inbox.length > 0)
+      // Addressed to node-b, delivered down node-c's socket: the failure mode a
+      // stale registry entry or a routing bug produces.
+      clientC.send(envelopeTo(toB))
+      await clientC.waitForDrain(5_000)
+      await waitUntil(() => sender.inbox.length > 0)
 
-    const errors = repliesOfType(sender.inbox, MessageType.Error)
-    expect(errors).toHaveLength(1)
-    // The adapter's `E_UNKNOWN_AGENT` reaches the sender wrapped in the
-    // activator's `E_UNDELIVERABLE`, with the original code in the reason —
-    // the request failed explicitly at exactly one layer.
-    expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
-      ProtocolErrorCode.E_UNDELIVERABLE,
-    )
-    const reason = (errors[0]?.payload as { reason: string }).reason
-    expect(reason).toContain(ProtocolErrorCode.E_UNKNOWN_AGENT)
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
-    expect(await readMailbox(AGENT, nodeC.team)).toHaveLength(0)
-    expect(nodeC.audit.count(ActivatorEventType.RequestFailed)).toBe(1)
-  })
+      const errors = repliesOfType(sender.inbox, MessageType.Error)
+      expect(errors).toHaveLength(1)
+      // The adapter's `E_UNKNOWN_AGENT` reaches the sender wrapped in the
+      // activator's `E_UNDELIVERABLE`, with the original code in the reason —
+      // the request failed explicitly at exactly one layer.
+      expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
+        ProtocolErrorCode.E_UNDELIVERABLE,
+      )
+      const reason = (errors[0]?.payload as { reason: string }).reason
+      expect(reason).toContain(ProtocolErrorCode.E_UNKNOWN_AGENT)
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
+      expect(await readMailbox(AGENT, nodeC.team)).toHaveLength(0)
+      expect(nodeC.audit.count(ActivatorEventType.RequestFailed)).toBe(1)
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -935,106 +979,109 @@ describe('a delivery that cannot happen says so', () => {
     expect(registry.resolve('not-an-address')).toBeNull()
   })
 
-  test('an unreachable node fails the dial and keeps the envelope queued', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
-    // Registered, but nothing is listening on its socket — a node that died
-    // without deregistering, which its lease has not yet caught up with.
-    expect(registry.resolve(target)).not.toBeNull()
+  test(
+    'an unreachable node fails the dial and keeps the envelope queued',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
+      // Registered, but nothing is listening on its socket — a node that died
+      // without deregistering, which its lease has not yet caught up with.
+      expect(registry.resolve(target)).not.toBeNull()
 
-    const client = new TransportClient({
-      endpoint: { unix: socketFor('node-b') },
-      node: SENDER_NODE,
-      psk: TEST_PSK,
-      keepAliveIntervalMs: 0,
-      backoff: { baseDelayMs: 20, maxDelayMs: 40, jitterRatio: 0 },
-    })
-    teardown.push(() => client.close())
+      const client = new TransportClient({
+        endpoint: { unix: socketFor('node-b') },
+        node: SENDER_NODE,
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+        backoff: { baseDelayMs: 20, maxDelayMs: 40, jitterRatio: 0 },
+      })
+      teardown.push(() => client.close())
 
-    await expect(client.connect(400)).rejects.toThrow(/did not become ready/)
+      await expect(client.connect(400)).rejects.toThrow(/did not become ready/)
 
-    // The envelope is not thrown away: `send` still accepts it and it stays in
-    // the outbox for the reconnect. Silence would be the failure this asserts
-    // against — an at-least-once sender must still be holding the message.
-    client.send(envelopeTo(target))
-    expect(client.pending).toBe(1)
-  })
+      // The envelope is not thrown away: `send` still accepts it and it stays in
+      // the outbox for the reconnect. Silence would be the failure this asserts
+      // against — an at-least-once sender must still be holding the message.
+      client.send(envelopeTo(target))
+      expect(client.pending).toBe(1)
+    },
+    IO_TIMEOUT_MS,
+  )
 
-  test('a target the daemon has never heard of fails explicitly and creates nothing', async () => {
-    const registry = new InMemoryRegistry()
-    const target = 'qianmo://node-b/reviewer'
-    announce(registry, target, publishedEndpoint('node-b'))
+  test(
+    'a target the daemon has never heard of fails explicitly and creates nothing',
+    async () => {
+      const registry = new InMemoryRegistry()
+      const target = 'qianmo://node-b/reviewer'
+      announce(registry, target, publishedEndpoint('node-b'))
 
-    const sender = startSender()
-    const nodeB = await startReceivingNode({
-      node: 'node-b',
-      replyTo: sender.socketPath,
-      // The daemon lists no sandbox by that name at all.
-      sandboxes: [],
-    })
-    const client = await sender.dial(socketFor('node-b'))
+      const sender = startSender()
+      const nodeB = await startReceivingNode({
+        node: 'node-b',
+        replyTo: sender.socketPath,
+        // The daemon lists no sandbox by that name at all.
+        sandboxes: [],
+      })
+      const client = await sender.dial(socketFor('node-b'))
 
-    client.send(envelopeTo(target))
-    await client.waitForDrain(5_000)
-    await waitUntil(() => sender.inbox.length > 0)
+      client.send(envelopeTo(target))
+      await client.waitForDrain(5_000)
+      await waitUntil(() => sender.inbox.length > 0)
 
-    const errors = repliesOfType(sender.inbox, MessageType.Error)
-    expect(errors).toHaveLength(1)
-    expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
-      ProtocolErrorCode.E_UNDELIVERABLE,
-    )
-    expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
+      const errors = repliesOfType(sender.inbox, MessageType.Error)
+      expect(errors).toHaveLength(1)
+      expect(errorCodeOf(errors[0] as QianmoMessage)).toBe(
+        ProtocolErrorCode.E_UNDELIVERABLE,
+      )
+      expect(repliesOfType(sender.inbox, MessageType.Ack)).toHaveLength(0)
 
-    // The crucial half: an unknown name is *not* acquired. `acquireSandbox`
-    // creates on an unknown name, so guessing here would stand up a second
-    // sandbox instead of reporting the fault.
-    expect(nodeB.stub.hits.acquireSandbox).toBe(0)
-    expect(nodeB.stub.hits.destroySandbox).toBe(0)
-    expect(nodeB.audit.count(ActivatorEventType.RequestFailed)).toBe(1)
-    expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(0)
+      // The crucial half: an unknown name is *not* acquired. `acquireSandbox`
+      // creates on an unknown name, so guessing here would stand up a second
+      // sandbox instead of reporting the fault.
+      expect(nodeB.stub.hits.acquireSandbox).toBe(0)
+      expect(nodeB.stub.hits.destroySandbox).toBe(0)
+      expect(nodeB.audit.count(ActivatorEventType.RequestFailed)).toBe(1)
+      expect(await readMailbox(AGENT, nodeB.team)).toHaveLength(0)
 
-    reportTimings('failure path (sandbox not found)', nodeB)
-  })
+      reportTimings('failure path (sandbox not found)', nodeB)
+    },
+    IO_TIMEOUT_MS,
+  )
 })
 
 // ---------------------------------------------------------------------------
 // 6. A seam this run found
 // ---------------------------------------------------------------------------
 
-describe('SEAM — the registry cannot publish a unix-socket endpoint', () => {
+describe('the registry publishes the endpoint the transport actually dials', () => {
   /**
-   * Found by building this file, reported rather than patched.
+   * This started life as a pinned seam: `dialUrl({unix})` emits
+   * `ws+unix://<path>:/`, and `isValidEndpoint` accepted only `qianmo://` or
+   * http(s)/ws(s) — so a single-machine node could not announce where it
+   * listens, and this file had to publish a placeholder `ws://` URL and derive
+   * the socket from the resolved address instead.
    *
-   * `@qianmo/transport` dials a socket as `ws+unix://<path>:/` (`client.ts`
-   * `dialUrl`), and `@qianmo/registry`'s `isValidEndpoint` accepts only a
-   * `qianmo://` address or an http(s)/ws(s) URL — with `ws:` admitted *by its
-   * own comment* "for local integration tests". The one endpoint form a local
-   * integration test actually needs is the one it rejects, so a single-machine
-   * node cannot announce where it listens.
-   *
-   * Consequence for this file: the address published above is the `ws://` URL a
-   * node would publish anyway, and the socket path is chosen from the node
-   * segment of the resolved address. That keeps resolution load-bearing for
-   * existence and for node selection, but the last mile is not registry-driven.
-   *
-   * Whose problem: `@qianmo/registry` (`isValidEndpoint`), or a decision that
-   * unix endpoints are simply never published — either is defensible, but at
-   * the moment neither is written down. Left to the owner.
+   * That workaround was the reason to fix it rather than write the limitation
+   * down: it left `endpoint` out of the dial path, so the resolve→dial seam
+   * this file exists to cover was not actually being covered. `isValidEndpoint`
+   * now accepts `ws+unix:` (see its comment for why that is the same rationale
+   * already admitted for `ws:`), and this case guards the round trip.
    */
-  test('the dial URL the transport builds is refused by the registry', () => {
+  test('a unix dial URL survives register → resolve unchanged', () => {
     const dial = dialUrl({ unix: '/tmp/qianmo-e2e/node-b.sock' })
     expect(dial).toBe('ws+unix:///tmp/qianmo-e2e/node-b.sock:/')
-    expect(isValidEndpoint(dial)).toBe(false)
+    expect(isValidEndpoint(dial)).toBe(true)
 
     const registry = new InMemoryRegistry()
     const result = registry.register('qianmo://node-b/reviewer', dial)
-    expect(result.ok).toBe(false)
-    expect(registry.resolve('qianmo://node-b/reviewer')).toBeNull()
+    expect(result.ok).toBe(true)
+    // The exact string the transport would dial comes back out.
+    expect(registry.resolve('qianmo://node-b/reviewer')?.endpoint).toBe(dial)
 
-    // For contrast, the two forms it does take.
-    expect(isValidEndpoint('wss://node-b.example/agent')).toBe(true)
-    expect(isValidEndpoint('qianmo://node-b/reviewer')).toBe(true)
+    // Still not a free-for-all: a bare path is not a dial URL.
+    expect(isValidEndpoint('/tmp/qianmo-e2e/node-b.sock')).toBe(false)
+    expect(isValidEndpoint('ftp://node-b.example/agent')).toBe(false)
   })
 })
 
