@@ -33,7 +33,14 @@ export function findLatestMessage<T extends { timestamp: string }>(
   for (const m of messages) {
     if (!predicate(m)) continue
     const t = Date.parse(m.timestamp)
-    if (t > maxTime) {
+    // `>=`, not `>`: timestamps are NOT unique. transcriptWriter stamps
+    // `timestamp: new Date().toISOString()` after the `...message` spread, so
+    // every entry written in one recordTranscript call shares a millisecond.
+    // With `>` the anchor stuck to the FIRST of a tied run and every later
+    // message fell off the rebuilt chain — silent tail loss on --resume, and a
+    // resident node resumes on every wake, so it accumulated. Ties now resolve
+    // to the last one iterated, which in an append-ordered log is the newest.
+    if (t >= maxTime) {
       maxTime = t
       latest = m
     }
