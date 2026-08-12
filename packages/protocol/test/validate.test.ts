@@ -173,14 +173,25 @@ describe('validateMessage — boundaries', () => {
     expect(codesOf(sample({ hops: atLimit }))).toEqual([])
   })
 
-  test('rejects a message that already visited this node (E_LOOP)', () => {
+  test('options.node still reports E_LOOP — debug hint, never used inbound', () => {
     const codes = codesOf(sample({ hops: ['tokyo-1', 'relay-3'] }), 'relay-3')
     expect(codes).toEqual([ProtocolErrorCode.E_LOOP])
   })
 
-  test('rejects duplicated hops even without a node hint', () => {
-    expect(codesOf(sample({ hops: ['relay-3', 'relay-3'] }))).toEqual([
-      ProtocolErrorCode.E_LOOP,
+  // D-2 negative self-test: the duplicate-hops assertion is gone. A relay that
+  // legitimately carries the same task twice, for two different handlers, is
+  // NOT a loop — that verdict belongs to `(handler address, taskId)` in P4.2.
+  test('does NOT reject duplicated hops without a node hint', () => {
+    expect(codesOf(sample({ hops: ['relay-3', 'relay-3'] }))).toEqual([])
+    expect(
+      codesOf(sample({ hops: ['tokyo-1', 'relay-3', 'tokyo-1'] }), 'osaka-2'),
+    ).toEqual([])
+  })
+
+  test('duplicated hops still trip the maxHops backstop', () => {
+    const hops = Array.from({ length: LIMITS.maxHops + 1 }, () => 'relay-3')
+    expect(codesOf(sample({ hops }))).toEqual([
+      ProtocolErrorCode.E_TOO_MANY_HOPS,
     ])
   })
 

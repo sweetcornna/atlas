@@ -102,18 +102,32 @@ export function createMessage<P>(
 
 /**
  * Append `node` to the hop list, returning a new envelope.
- * Throws {@link ProtocolError} when that would create a loop or overflow
- * `LIMITS.maxHops` — routers must reject such a message instead of forwarding.
+ *
+ * Wiring — protocol.md §6.3 pins the call sites to **exactly two**, and the
+ * router built in P4.2 must honour that:
+ *
+ * 1. **Initial seeding**: the sender calls `withHop(msg, selfNode)` after
+ *    {@link createMessage} and before handing the envelope to the transport,
+ *    so `hops[0]` is the originating node. Skipping this leaves the audit
+ *    chain headless and under-counts `maxHops` by one.
+ * 2. **Before forwarding**: a relay calls it before passing the envelope on.
+ *
+ * The **terminal node does not call it** — it forwards nothing, so appending
+ * itself would only inflate the hop count of the reply. One sentence: call it
+ * right before handing a message to the transport, first time or n-th time.
+ *
+ * `hops` is a `maxHops` backstop plus an audit trail; it is **not** the loop
+ * detector (D-2). Loop detection is keyed on `(handler address, taskId)` and
+ * lives in the routing layer, not in this package — a node may legitimately be
+ * traversed twice for two different handlers.
+ *
+ * Throws {@link ProtocolError} with `E_TOO_MANY_HOPS` when the append would
+ * overflow `LIMITS.maxHops` — routers must reject instead of forwarding.
  */
 export function withHop<P>(
   message: QianmoMessage<P>,
   node: string,
 ): QianmoMessage<P> {
-  if (message.hops.includes(node)) {
-    throw new ProtocolError([
-      issue(ProtocolErrorCode.E_LOOP, 'hops', `node already in hops: ${node}`),
-    ])
-  }
   if (message.hops.length + 1 > LIMITS.maxHops) {
     throw new ProtocolError([
       issue(

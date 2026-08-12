@@ -114,14 +114,32 @@ describe('withHop', () => {
     expect(withHop(hopped, 'osaka-2').hops).toEqual(['tokyo-1', 'osaka-2'])
   })
 
-  test('throws E_LOOP when the node is already present', () => {
-    const hopped = withHop(base, 'tokyo-1')
+  // D-2 negative self-test: node granularity used to reject this. A legitimate
+  // spiral — same relay traversed twice on the way to two different handlers —
+  // must now pass. Loop detection is `(handler address, taskId)` in the router.
+  test('does NOT reject a node revisited for a different handler', () => {
+    const spiral = withHop(
+      withHop(withHop(base, 'relay-1'), 'osaka-2'),
+      'relay-1',
+    )
+    expect(spiral.hops).toEqual(['relay-1', 'osaka-2', 'relay-1'])
+  })
+
+  test('a node repeated many times still only trips the maxHops backstop', () => {
+    let message = base
+    for (let i = 0; i < LIMITS.maxHops; i += 1) {
+      message = withHop(message, 'relay-1')
+    }
+    expect(message.hops).toHaveLength(LIMITS.maxHops)
+    expect(new Set(message.hops).size).toBe(1)
     try {
-      withHop(hopped, 'tokyo-1')
+      withHop(message, 'relay-1')
       throw new Error('expected withHop to throw')
     } catch (error) {
       expect(error).toBeInstanceOf(ProtocolError)
-      expect((error as ProtocolError).code).toBe(ProtocolErrorCode.E_LOOP)
+      expect((error as ProtocolError).code).toBe(
+        ProtocolErrorCode.E_TOO_MANY_HOPS,
+      )
     }
   })
 

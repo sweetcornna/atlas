@@ -22,6 +22,11 @@ export interface ValidateOptions {
   /**
    * Name of the node running the check. When set, a message whose `hops`
    * already contains this node is rejected with `E_LOOP`.
+   *
+   * **Debug / test use only — inbound validation must never pass it** (D-2,
+   * protocol.md §6.2). Node granularity kills legitimate spirals: the same
+   * node may be traversed twice for two different handlers. Real loop
+   * detection is keyed on `(handler address, taskId)` in the routing layer.
    */
   readonly node?: string
   /** Injected clock for TTL checks; defaults to `Date.now()`. */
@@ -185,11 +190,6 @@ export function validateMessage(
   const maxBytes = options.maxMessageBytes ?? LIMITS.maxMessageBytes
   const now = options.now ?? Date.now()
 
-  if (new Set(message.hops).size !== message.hops.length) {
-    issues.push(
-      issue(ProtocolErrorCode.E_LOOP, 'hops', 'duplicate node in hops'),
-    )
-  }
   if (options.node !== undefined && message.hops.includes(options.node)) {
     issues.push(
       issue(
