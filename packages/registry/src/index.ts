@@ -11,12 +11,16 @@
 export { ManualClock, systemClock, type Clock } from './clock.js'
 
 export {
+  AgentStatus,
   DEFAULT_TTL_MS,
   InMemoryRegistry,
   MAX_CAPABILITIES,
   RegistryErrorCode,
   isValidEndpoint,
+  isValidPublicKey,
   type AgentRecord,
+  type DeclaredStatus,
+  type RegisterInput,
   type RegisterResult,
   type RegistryOptions,
 } from './registry.js'
