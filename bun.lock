@@ -284,6 +284,13 @@
         "react": "^19.2.5",
       },
     },
+    "packages/transport": {
+      "name": "@qianmo/transport",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/url-handler-napi": {
       "name": "url-handler-napi",
       "version": "1.0.0",
@@ -913,6 +920,8 @@
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
 
     "@qianmo/registry": ["@qianmo/registry@workspace:packages/registry"],
+
+    "@qianmo/transport": ["@qianmo/transport@workspace:packages/transport"],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.0-rc.15", "https://registry.npmmirror.com/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz", { "os": "android", "cpu": "arm64" }, "sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA=="],
 

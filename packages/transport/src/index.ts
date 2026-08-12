@@ -1,0 +1,103 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
+/**
+ * `@qianmo/transport` — one hop of the Qianmo network.
+ *
+ * A long-lived WebSocket between two nodes, with the four properties P2.2
+ * asks for and nothing else:
+ *
+ * 1. **a listening half** (`server.ts`) — the piece the base does not have at
+ *    all: its 3,326 lines of transport are entirely client-side;
+ * 2. **a pre-shared-key handshake** (`handshake.ts`), explicitly not
+ *    production grade (charter N-3), with its limits written down where the
+ *    code is rather than only in a document;
+ * 3. **reconnect with backoff and a time-jump gate** (`backoff.ts`), because a
+ *    frozen node's clock keeps running and would otherwise wake to find its
+ *    whole retry budget spent (E4);
+ * 4. **at-least-once delivery** (`client.ts`) paired with **two-level
+ *    receiver-side dedup** (`dedup.ts`) — retransmission is the price of not
+ *    losing messages, and dedup is what makes that price payable.
+ *
+ * What is deliberately *not* here: routing, loop detection, rate limiting,
+ * TTL enforcement and the mailbox hand-off. Those are the router's and
+ * `@qianmo/adapter`'s, and this package stays a leaf that imports nothing from
+ * the base runtime.
+ */
+
+export {
+  DEFAULT_BACKOFF,
+  ReconnectSchedule,
+  backoffDelay,
+  type BackoffOptions,
+  type RandomSource,
+  type ReconnectDecision,
+} from './backoff.js'
+
+export {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_KEEPALIVE_INTERVAL_MS,
+  DEFAULT_MAX_QUEUED,
+  OutboxFullError,
+  TransportClient,
+  dialUrl,
+  type ClientTlsOptions,
+  type TransportClientOptions,
+  type TransportEndpoint,
+} from './client.js'
+
+export {
+  DEFAULT_MAX_ENTRIES,
+  DedupTable,
+  DedupVerdict,
+  type DedupOptions,
+} from './dedup.js'
+
+export {
+  DEFAULT_EVENT_CAPACITY,
+  EventRecorder,
+  TransportEventType,
+  type EventDetail,
+  type TransportEvent,
+  type TransportEventSink,
+} from './events.js'
+
+export {
+  FRAME_VERSION,
+  FrameType,
+  ReceiptStatus,
+  parseFrame,
+  serializeFrame,
+  type AuthFrame,
+  type ChallengeFrame,
+  type EnvelopeFrame,
+  type KeepAliveFrame,
+  type ReadyFrame,
+  type ReceiptFrame,
+  type TransportFrame,
+} from './frames.js'
+
+export {
+  CLOSE_PROTOCOL_ERROR,
+  CLOSE_UNAUTHORIZED,
+  HandshakeRejection,
+  PSK_ENV_VAR,
+  PSK_MIN_LENGTH,
+  WeakSecretError,
+  assertUsablePsk,
+  computeMac,
+  newNonce,
+  pskFromEnv,
+  verifyAuth,
+  type AuthAttempt,
+  type HandshakeResult,
+} from './handshake.js'
+
+export {
+  DEFAULT_IDLE_TIMEOUT_SEC,
+  startTransportServer,
+  type InboundContext,
+  type InboundHandler,
+  type TransportServerHandle,
+  type TransportServerOptions,
+} from './server.js'
