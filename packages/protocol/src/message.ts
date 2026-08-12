@@ -3,6 +3,7 @@
 
 import { parseAddress } from './address.js'
 import { ProtocolError, ProtocolErrorCode, issue } from './errors.js'
+import { computeFingerprint } from './fingerprint.js'
 import { LIMITS } from './limits.js'
 
 /** Envelope version currently spoken on the network. */
@@ -12,7 +13,12 @@ export const ENVELOPE_VERSION = 0
 export enum MessageType {
   /** Ask an agent to perform work. */
   TaskRequest = 'task.request',
-  /** Terminal answer to a `task.request`, correlated by `traceId`. */
+  /**
+   * A-class acknowledgement: the target agent has taken the message into its
+   * input. Payload is field-closed — see {@link AckPayload}.
+   */
+  Ack = 'ack',
+  /** Terminal answer to a `task.request`, correlated by `taskId` (C-1). */
   TaskResult = 'task.result',
   /** Liveness probe. */
   Ping = 'ping',
@@ -37,28 +43,100 @@ export function isMessageType(value: unknown): value is MessageType {
 }
 
 /**
+ * The only value `trust` ever takes: a cross-node message is never trusted.
+ * A closed set means the receiver has nothing to decide, only to label.
+ */
+export const TRUST_UNTRUSTED = 'untrusted'
+
+/**
+ * Provenance label (protocol.md §10.2).
+ *
+ * The receiving node fills this in from what it can verify itself; it never
+ * takes the envelope's own account of where it came from. A sender still has
+ * to emit the field — it seeds `node` / `agent` from its own `from` address,
+ * and the receiver overwrites all of it on the way in.
+ */
+export interface MessageOrigin {
+  /** Source node segment. */
+  readonly node: string
+  /** Source agent segment. */
+  readonly agent: string
+  /** `iss` of the capability token presented, when there was one. */
+  readonly capIss?: string
+  /** Epoch ms at which this node took the message in. */
+  readonly receivedAt?: number
+}
+
+/**
  * The v0 wire envelope. Immutable by contract: routing produces new envelopes
  * (see {@link withHop}) rather than mutating one in flight.
  */
 export interface QianmoMessage<P = unknown> {
   /** Envelope version. Always `0` for this release. */
   readonly v: 0
-  /** Unique id of this envelope. */
+  /**
+   * Unique id of *this transmission*. An at-least-once retransmission keeps
+   * the same value — it is the receiver's first-level dedup key (§7.2).
+   */
   readonly msgId: string
-  /** Correlates a request with its results across nodes. */
+  /**
+   * W3C `traceparent`: `00-<32 hex>-<16 hex>-<2 hex>` (§7.1). Only the
+   * trace-id segment is stable across hops. Audit correlation only — the
+   * request/reply correlation key is {@link QianmoMessage.taskId} (C-1).
+   */
   readonly traceId: string
+  /**
+   * Task identifier. Half of the loop-detection key (D-2), the correlation
+   * key between a request and its ack / result (C-1), and part of the
+   * content fingerprint.
+   */
+  readonly taskId: string
+  /** Conversation context spanning several tasks. Optional (A2A alignment). */
+  readonly contextId?: string
   /** Sender address, `qianmo://<node>/<agent>`. */
   readonly from: string
   /** Recipient address, `qianmo://<node>/<agent>`. */
   readonly to: string
   readonly type: MessageType
+  /**
+   * Business payload, discriminated by `type`. Cross-node content is always
+   * untrusted, and it must never restate an envelope field (no second `to`,
+   * no second deadline, no second trace) — routing and business must not have
+   * two sources of truth.
+   */
   readonly payload: P
   /** Epoch milliseconds when the sender created the envelope. */
   readonly createdAt: number
-  /** Lifetime in milliseconds, counted from `createdAt`. */
-  readonly ttlMs: number
-  /** Node names already traversed, oldest first. Used for loop detection. */
+  /**
+   * DELIVERY deadline in ms from `createdAt`, covering `created → acked`
+   * (§5.1). Expiry lands the message in `expired`.
+   */
+  readonly deliverTtlMs: number
+  /**
+   * TASK deadline in ms from `createdAt`, covering
+   * `created → completed / failed` (§5.1). Expiry lands the message in
+   * `timeout`.
+   */
+  readonly taskTtlMs: number
+  /**
+   * Node names already traversed, oldest first. A `maxHops` backstop and an
+   * audit trail — **not** the loop detector (§6.2).
+   */
   readonly hops: readonly string[]
+  /** Content fingerprint, the second-level dedup key (§7.2). */
+  readonly fingerprint: string
+  /** Provenance label, authoritative only once the receiver has written it. */
+  readonly origin: MessageOrigin
+  /** Trust marker. Always {@link TRUST_UNTRUSTED}. */
+  readonly trust: typeof TRUST_UNTRUSTED
+  /** Capability token (Ed25519, detached signature). Absent means read-only. */
+  readonly cap?: string
+  /**
+   * Hard spending ceiling. M0 pins it to `0` (charter N-1): the field exists
+   * so the "a hard cap can stop the message" mechanism is exercised, nothing
+   * more. A non-zero value is rejected outbound with `E_BUDGET_EXHAUSTED`.
+   */
+  readonly costLimit: number
 }
 
 /** Fields a caller supplies to {@link createMessage}; the rest are defaulted. */
@@ -69,51 +147,117 @@ export interface CreateMessageInput<P = unknown> {
   readonly payload: P
   readonly msgId?: string
   readonly traceId?: string
+  readonly taskId?: string
+  readonly contextId?: string
   readonly createdAt?: number
-  readonly ttlMs?: number
+  readonly deliverTtlMs?: number
+  readonly taskTtlMs?: number
   readonly hops?: readonly string[]
+  /** Override the computed fingerprint. Only re-senders should need this. */
+  readonly fingerprint?: string
+  readonly origin?: MessageOrigin
+  readonly cap?: string
+  readonly costLimit?: number
 }
 
-/** Fresh, collision-resistant identifier for envelopes and traces. */
+/** Fresh, collision-resistant identifier for envelopes and tasks. */
 export function newId(): string {
   return crypto.randomUUID()
 }
 
+function randomHex(bytes: number): string {
+  const buffer = new Uint8Array(bytes)
+  crypto.getRandomValues(buffer)
+  return Array.from(buffer, byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 /**
- * Build a well-formed envelope, filling in `msgId`, `traceId`, `createdAt`,
- * `ttlMs` and `hops` when the caller omits them.
+ * A fresh W3C `traceparent` (§7.1): `00-<32 hex>-<16 hex>-01`.
+ *
+ * Sampled (`01`) because C-6 wants every cross-node message reconstructable
+ * from the audit log. Per-hop `parent-id` regeneration is the routing layer's
+ * job; the trace-id segment is what stays constant end to end.
+ */
+export function newTraceparent(): string {
+  return `00-${randomHex(16)}-${randomHex(8)}-01`
+}
+
+function originOf(from: string): MessageOrigin {
+  const parsed = parseAddress(from)
+  // A malformed `from` is caught by validation; do not invent a provenance.
+  return parsed === null
+    ? { node: '', agent: '' }
+    : { node: parsed.node, agent: parsed.agent }
+}
+
+/**
+ * Build a well-formed envelope, defaulting every field the caller omits:
+ * ids, `traceId` as a fresh traceparent, both deadlines from `LIMITS`, an
+ * empty hop list, the computed fingerprint, an origin seeded from `from`,
+ * `trust` and a zero `costLimit`.
  */
 export function createMessage<P>(
   input: CreateMessageInput<P>,
 ): QianmoMessage<P> {
+  const taskId = input.taskId ?? newId()
   return {
     v: ENVELOPE_VERSION,
     msgId: input.msgId ?? newId(),
-    traceId: input.traceId ?? newId(),
+    traceId: input.traceId ?? newTraceparent(),
+    taskId,
+    ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
     from: input.from,
     to: input.to,
     type: input.type,
     payload: input.payload,
     createdAt: input.createdAt ?? Date.now(),
-    ttlMs: input.ttlMs ?? LIMITS.defaultTtlMs,
+    deliverTtlMs: input.deliverTtlMs ?? LIMITS.defaultTtlMs,
+    taskTtlMs: input.taskTtlMs ?? LIMITS.defaultTaskTtlMs,
     hops: Object.freeze([...(input.hops ?? [])]),
+    fingerprint:
+      input.fingerprint ??
+      computeFingerprint({
+        from: input.from,
+        to: input.to,
+        type: input.type,
+        taskId,
+        payload: input.payload,
+      }),
+    origin: input.origin ?? originOf(input.from),
+    trust: TRUST_UNTRUSTED,
+    ...(input.cap === undefined ? {} : { cap: input.cap }),
+    costLimit: input.costLimit ?? 0,
   }
 }
 
 /**
  * Append `node` to the hop list, returning a new envelope.
- * Throws {@link ProtocolError} when that would create a loop or overflow
- * `LIMITS.maxHops` — routers must reject such a message instead of forwarding.
+ *
+ * Wiring — protocol.md §6.3 pins the call sites to **exactly two**, and the
+ * router built in P4.2 must honour that:
+ *
+ * 1. **Initial seeding**: the sender calls `withHop(msg, selfNode)` after
+ *    {@link createMessage} and before handing the envelope to the transport,
+ *    so `hops[0]` is the originating node. Skipping this leaves the audit
+ *    chain headless and under-counts `maxHops` by one.
+ * 2. **Before forwarding**: a relay calls it before passing the envelope on.
+ *
+ * The **terminal node does not call it** — it forwards nothing, so appending
+ * itself would only inflate the hop count of the reply. One sentence: call it
+ * right before handing a message to the transport, first time or n-th time.
+ *
+ * `hops` is a `maxHops` backstop plus an audit trail; it is **not** the loop
+ * detector (D-2). Loop detection is keyed on `(handler address, taskId)` and
+ * lives in the routing layer, not in this package — a node may legitimately be
+ * traversed twice for two different handlers.
+ *
+ * Throws {@link ProtocolError} with `E_TOO_MANY_HOPS` when the append would
+ * overflow `LIMITS.maxHops` — routers must reject instead of forwarding.
  */
 export function withHop<P>(
   message: QianmoMessage<P>,
   node: string,
 ): QianmoMessage<P> {
-  if (message.hops.includes(node)) {
-    throw new ProtocolError([
-      issue(ProtocolErrorCode.E_LOOP, 'hops', `node already in hops: ${node}`),
-    ])
-  }
   if (message.hops.length + 1 > LIMITS.maxHops) {
     throw new ProtocolError([
       issue(
@@ -126,17 +270,50 @@ export function withHop<P>(
   return { ...message, hops: Object.freeze([...message.hops, node]) }
 }
 
-/** Epoch milliseconds at which the message stops being deliverable. */
-export function expiresAt(message: QianmoMessage): number {
-  return message.createdAt + message.ttlMs
+/**
+ * Epoch ms at which delivery gives up: `createdAt + deliverTtlMs` (§5.1).
+ *
+ * The end of this window is `acked` — the target agent having actually read
+ * the message — not "written into the mailbox". A message that made it to
+ * disk but was then evicted has *not* been delivered, and this deadline is
+ * what still catches it (§4.5).
+ */
+export function deliveryExpiresAt(message: QianmoMessage): number {
+  return message.createdAt + message.deliverTtlMs
 }
 
-/** True when the message's TTL has elapsed at `now`. */
-export function isExpired(
+/**
+ * True when the DELIVERY deadline has passed at `now` → terminal `expired`.
+ *
+ * Evaluated in three places, none skippable (rule T-1): before sending, on
+ * arrival before the mailbox write, and while watching for the read flag.
+ * The last two must first clear the time-jump gate (T-2) — a node that just
+ * thawed would otherwise judge every in-flight message dead at once.
+ */
+export function isDeliveryExpired(
   message: QianmoMessage,
   now: number = Date.now(),
 ): boolean {
-  return now > expiresAt(message)
+  return now > deliveryExpiresAt(message)
+}
+
+/** Epoch ms at which the task gives up: `createdAt + taskTtlMs` (§5.1). */
+export function taskExpiresAt(message: QianmoMessage): number {
+  return message.createdAt + message.taskTtlMs
+}
+
+/**
+ * True when the TASK deadline has passed at `now` → terminal `timeout`.
+ *
+ * This is the sender-side deadline for a terminal `task.result`; it is the
+ * one that may absorb the seconds of working-set warm-up an A-class ack
+ * deliberately excludes (§4.3).
+ */
+export function isTaskExpired(
+  message: QianmoMessage,
+  now: number = Date.now(),
+): boolean {
+  return now > taskExpiresAt(message)
 }
 
 /** Canonical JSON encoding used for size accounting and transport. */
@@ -151,7 +328,100 @@ export function messageBytes(message: QianmoMessage): number {
   return ENCODER.encode(serializeMessage(message)).length
 }
 
-/** Build the standard `error` reply for a rejected message. */
+/**
+ * Payload of an `ack`, and the whole of it (rule K-1, protocol.md §4.3).
+ *
+ * `ack` is A-class: it asserts that the target agent has taken the message
+ * into its input — the `read` flag flipped — and nothing else. Not that it
+ * understood it, rebuilt an old session, started work, or expects to finish.
+ * Those all belong to `task.result`.
+ *
+ * The four fields are exactly what an inbound adapter can fill **without
+ * touching any prior session state**: two copied off the acked envelope, the
+ * node's own address, and the local clock. The closure is the point — a
+ * queue depth, a status, an ETA would each force a read of the cold working
+ * set and quietly turn an A-class ack into a B-class one, which is the 9–10 s
+ * cost the whole design exists to keep off the ack path. So it is a closed
+ * interface, not a `Record<string, unknown>`, and {@link isAckPayload}
+ * rejects extra keys at runtime too.
+ */
+export interface AckPayload {
+  /** `msgId` of the envelope being acknowledged. */
+  readonly ofMsgId: string
+  /** `taskId` copied off that envelope — the correlation key (C-1). */
+  readonly taskId: string
+  /** Address of the acknowledging handler, `qianmo://<node>/<agent>`. */
+  readonly handler: string
+  /** Local epoch ms at which the read flag was observed. */
+  readonly ackAt: number
+}
+
+const ACK_PAYLOAD_KEYS: readonly string[] = [
+  'ofMsgId',
+  'taskId',
+  'handler',
+  'ackAt',
+]
+
+/** True when `value` is an {@link AckPayload} with no extra fields. */
+export function isAckPayload(value: unknown): value is AckPayload {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const keys = Object.keys(value)
+  if (keys.length !== ACK_PAYLOAD_KEYS.length) return false
+  if (!ACK_PAYLOAD_KEYS.every(key => keys.includes(key))) return false
+  const payload = value as Record<string, unknown>
+  return (
+    typeof payload['ofMsgId'] === 'string' &&
+    payload['ofMsgId'].length > 0 &&
+    typeof payload['taskId'] === 'string' &&
+    payload['taskId'].length > 0 &&
+    parseAddress(payload['handler']) !== null &&
+    typeof payload['ackAt'] === 'number' &&
+    Number.isFinite(payload['ackAt']) &&
+    payload['ackAt'] > 0
+  )
+}
+
+/**
+ * Build the A-class `ack` for a message `handler` has just been observed to
+ * read. Every field comes from the acked envelope, `handler` itself, or the
+ * clock — by construction, no prior session state is consulted.
+ */
+export function createAck(
+  original: QianmoMessage,
+  handler: string,
+  now: number = Date.now(),
+): QianmoMessage<AckPayload> {
+  return createMessage({
+    from: handler,
+    to: original.from,
+    type: MessageType.Ack,
+    traceId: original.traceId,
+    taskId: original.taskId,
+    ...(original.contextId === undefined
+      ? {}
+      : { contextId: original.contextId }),
+    createdAt: now,
+    payload: {
+      ofMsgId: original.msgId,
+      taskId: original.taskId,
+      handler,
+      ackAt: now,
+    },
+  })
+}
+
+/**
+ * Build the standard `error` reply for a rejected message.
+ *
+ * Carries the original `taskId` back verbatim: rule C-1 makes `taskId`, not
+ * `traceId`, the correlation key between a request and every reply to it.
+ * `traceId` is a W3C `traceparent` whose parent-id legitimately changes per
+ * hop, so correlating on it would conflate "same trace" with "same task".
+ * `traceId` still rides along, for audit stitching only.
+ */
 export function errorReply(
   original: QianmoMessage,
   code: ProtocolErrorCode,
@@ -163,6 +433,10 @@ export function errorReply(
     to: original.from,
     type: MessageType.Error,
     traceId: original.traceId,
+    taskId: original.taskId,
+    ...(original.contextId === undefined
+      ? {}
+      : { contextId: original.contextId }),
     createdAt: now,
     payload: { code, reason, ofMsgId: original.msgId },
   })

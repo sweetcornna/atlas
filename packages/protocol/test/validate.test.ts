@@ -16,6 +16,13 @@ import {
 
 const NOW = 1_700_000_000_000
 
+const ACK_PAYLOAD = {
+  ofMsgId: 'm-0',
+  taskId: 'task-1',
+  handler: 'qianmo://osaka-2/worker',
+  ackAt: NOW,
+}
+
 function sample(
   overrides: Partial<QianmoMessage> = {},
 ): Record<string, unknown> {
@@ -26,8 +33,10 @@ function sample(
     payload: { goal: 'summarise' },
     msgId: 'm-1',
     traceId: 't-1',
+    taskId: 'task-1',
     createdAt: NOW,
-    ttlMs: 10_000,
+    deliverTtlMs: 10_000,
+    taskTtlMs: 300_000,
   })
   return { ...base, ...overrides }
 }
@@ -62,7 +71,10 @@ describe('validateMessage — accepts', () => {
 
   test('every declared message type', () => {
     for (const type of Object.values(MessageType)) {
-      expect(codesOf(sample({ type }))).toEqual([])
+      // `ack` is the one type whose payload is constrained (K-1).
+      const payload =
+        type === MessageType.Ack ? ACK_PAYLOAD : { goal: 'summarise' }
+      expect(codesOf(sample({ type, payload }))).toEqual([])
     }
   })
 
@@ -111,19 +123,128 @@ describe('validateMessage — structure', () => {
     )
   })
 
+  test('keeps the ack payload field-closed (K-1)', () => {
+    const ack = { type: MessageType.Ack, payload: ACK_PAYLOAD }
+    expect(codesOf(sample(ack))).toEqual([])
+    // An extra field is exactly what would force a read of the cold heap.
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.Ack,
+          payload: { ...ACK_PAYLOAD, queueDepth: 3 },
+        }),
+      ),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    const { handler: _handler, ...missing } = ACK_PAYLOAD
+    expect(
+      codesOf(sample({ type: MessageType.Ack, payload: missing })),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(
+      codesOf(sample({ type: MessageType.Ack, payload: 'acked' })),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
   test('rejects a missing payload key', () => {
     const { payload: _payload, ...withoutPayload } = sample()
     expect(codesOf(withoutPayload)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
   })
 
-  test('rejects non-positive timestamps and ttl', () => {
+  test('rejects non-positive timestamps and deadlines', () => {
     expect(codesOf({ ...sample(), createdAt: 0 })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
     expect(codesOf({ ...sample(), createdAt: Number.NaN })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
-    expect(codesOf({ ...sample(), ttlMs: -1 })).toContain(
+    expect(codesOf({ ...sample(), deliverTtlMs: -1 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), taskTtlMs: -1 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+  })
+
+  test('requires both deadlines, not just one', () => {
+    const { deliverTtlMs: _d, ...noDelivery } = sample()
+    expect(codesOf(noDelivery)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    const { taskTtlMs: _t, ...noTask } = sample()
+    expect(codesOf(noTask)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('requires a taskId — it is the correlation and loop key', () => {
+    expect(codesOf({ ...sample(), taskId: '' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    const { taskId: _id, ...withoutTask } = sample()
+    expect(codesOf(withoutTask)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('accepts an absent contextId but not a malformed one', () => {
+    const { contextId: _ctx, ...withoutContext } = sample()
+    expect(codesOf(withoutContext)).toEqual([])
+    expect(codesOf({ ...sample(), contextId: 7 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), contextId: 'ctx-1' })).toEqual([])
+  })
+
+  test('requires a sha-256 fingerprint', () => {
+    expect(codesOf({ ...sample(), fingerprint: 'nope' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), fingerprint: 'A'.repeat(64) })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), fingerprint: 'a'.repeat(64) })).toEqual([])
+  })
+
+  test('requires a structurally sound origin', () => {
+    expect(codesOf({ ...sample(), origin: null })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), origin: { node: 'tokyo-1' } })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(
+      codesOf({ ...sample(), origin: { node: 'NOPE', agent: 'planner' } }),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(
+      codesOf({
+        ...sample(),
+        origin: {
+          node: 'tokyo-1',
+          agent: 'planner',
+          capIss: 'qianmo://tokyo-1/planner',
+          receivedAt: NOW,
+        },
+      }),
+    ).toEqual([])
+  })
+
+  test('rejects any trust marker other than "untrusted"', () => {
+    expect(codesOf({ ...sample(), trust: 'trusted' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    const { trust: _trust, ...withoutTrust } = sample()
+    expect(codesOf(withoutTrust)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('accepts an absent cap but not an empty one', () => {
+    const { cap: _cap, ...withoutCap } = sample()
+    expect(codesOf(withoutCap)).toEqual([])
+    expect(codesOf({ ...sample(), cap: '' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), cap: 'token' })).toEqual([])
+  })
+
+  test('rejects a missing or non-numeric costLimit', () => {
+    const { costLimit: _cost, ...withoutCost } = sample()
+    expect(codesOf(withoutCost)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(codesOf({ ...sample(), costLimit: '0' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), costLimit: -1 })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
   })
@@ -149,9 +270,23 @@ describe('validateMessage — structure', () => {
 })
 
 describe('validateMessage — boundaries', () => {
-  test('rejects an expired message with E_TTL_EXPIRED', () => {
+  test('rejects a message past its DELIVERY deadline', () => {
     const expired = sample({ createdAt: NOW - 10_001 })
     expect(codesOf(expired)).toEqual([ProtocolErrorCode.E_TTL_EXPIRED])
+  })
+
+  test('the task deadline is not an envelope-validity question', () => {
+    // `created → completed` is a sender-side timer (§8.2 row 21). A message
+    // whose task budget is thin but whose delivery window is open is valid.
+    const result = validateMessage(sample({ taskTtlMs: 1 }), { now: NOW })
+    expect(result.ok).toBe(true)
+  })
+
+  test('rejects a non-zero costLimit with E_BUDGET_EXHAUSTED', () => {
+    expect(codesOf(sample({ costLimit: 1 }))).toEqual([
+      ProtocolErrorCode.E_BUDGET_EXHAUSTED,
+    ])
+    expect(codesOf(sample({ costLimit: 0 }))).toEqual([])
   })
 
   test('rejects an oversized message with E_TOO_LARGE', () => {
@@ -173,14 +308,25 @@ describe('validateMessage — boundaries', () => {
     expect(codesOf(sample({ hops: atLimit }))).toEqual([])
   })
 
-  test('rejects a message that already visited this node (E_LOOP)', () => {
+  test('options.node still reports E_LOOP — debug hint, never used inbound', () => {
     const codes = codesOf(sample({ hops: ['tokyo-1', 'relay-3'] }), 'relay-3')
     expect(codes).toEqual([ProtocolErrorCode.E_LOOP])
   })
 
-  test('rejects duplicated hops even without a node hint', () => {
-    expect(codesOf(sample({ hops: ['relay-3', 'relay-3'] }))).toEqual([
-      ProtocolErrorCode.E_LOOP,
+  // D-2 negative self-test: the duplicate-hops assertion is gone. A relay that
+  // legitimately carries the same task twice, for two different handlers, is
+  // NOT a loop — that verdict belongs to `(handler address, taskId)` in P4.2.
+  test('does NOT reject duplicated hops without a node hint', () => {
+    expect(codesOf(sample({ hops: ['relay-3', 'relay-3'] }))).toEqual([])
+    expect(
+      codesOf(sample({ hops: ['tokyo-1', 'relay-3', 'tokyo-1'] }), 'osaka-2'),
+    ).toEqual([])
+  })
+
+  test('duplicated hops still trip the maxHops backstop', () => {
+    const hops = Array.from({ length: LIMITS.maxHops + 1 }, () => 'relay-3')
+    expect(codesOf(sample({ hops }))).toEqual([
+      ProtocolErrorCode.E_TOO_MANY_HOPS,
     ])
   })
 
