@@ -13,23 +13,33 @@
  * over a real socket, with real JSON and real HTTP status codes, instead of
  * being asserted against a hand-written double of our own code.
  *
+ * ## It does reproduce the *wire shape*, which was verified on the host
+ *
+ * `POST {endpoint}/{methodName}` with a bearer and a JSON parameter object;
+ * method names taken verbatim from the real API; sandboxes addressed by `name`;
+ * states drawn from `active` / `frozen` / `stopped`; `listSandboxes` answering
+ * `{ sandboxes: [ … ] }` and `acquireSandbox` answering
+ * `{ status, created, sandbox }`. That is deliberate: the first version of this
+ * package was written against an invented REST shape, and a stub that agrees
+ * with the invention is exactly the thing that lets an invention survive.
+ *
  * It is deliberately *more* permissive than the thing it stands in for. In
- * particular it **implements a destroy route**, records hits on it, and will
- * happily serve one to any client that asks. That is the control for DoD ③:
- * a test can prove the route is live and reachable, and then prove that our
- * component cannot reach it. A stub without a destroy route would make the
- * "cannot destroy" assertion vacuous.
+ * particular it **implements `destroySandbox`**, at the same endpoint and
+ * behind the same bearer as everything else — which is where the real one lives
+ * too — records hits on it, and will happily serve one to any client that asks.
+ * That is the control for DoD ③: a test can prove the route is live and
+ * reachable, and then prove that our component cannot reach it. A stub without
+ * a destroy route would make the "cannot destroy" assertion vacuous.
  */
 
 import type { SandboxState } from '../src/daemon.js'
 
-/** Requests the stub has served, by name. */
+/** Requests the stub has served, by real method name. */
 export interface StubHits {
-  touch: number
-  acquire: number
-  status: number
+  acquireSandbox: number
+  listSandboxes: number
   /** Must stay at zero for every request that went through our component. */
-  destroy: number
+  destroySandbox: number
   /** Requests rejected for a bad or missing bearer. */
   unauthorized: number
   /** Anything the stub does not route. */
@@ -39,10 +49,20 @@ export interface StubHits {
 export interface StubDaemonOptions {
   /** Bearer the stub demands. Fake, fixed, and obviously not a real secret. */
   readonly token?: string
-  /** Lifecycle state each sandbox starts in. */
+  /**
+   * Sandboxes that already exist when the stub starts.
+   *
+   * Explicit rather than lazily conjured, because the real API distinguishes
+   * "this name has a row" from "this name has none" and so does our client:
+   * `listSandboxes` cannot invent a row for a name nobody created, and
+   * `HttpSandboxDaemon.status` turns a missing row into a
+   * `SandboxNotFoundError`. Leaving this empty is how a test reaches that path.
+   */
+  readonly sandboxes?: readonly string[]
+  /** Lifecycle state the seeded sandboxes start in. */
   readonly initialState?: SandboxState
   /**
-   * How many probes after an `acquire` still report not-ready.
+   * How many probes after an `acquireSandbox` still report not-ready.
    *
    * Models the shape E2 measured — unpause returns long before the working set
    * is warm — without claiming any particular duration.
@@ -55,13 +75,13 @@ export interface StubDaemon {
   readonly url: string
   readonly port: number
   readonly hits: StubHits
-  /** Fail the next `n` touches with 503, then recover. */
-  failTouches(n: number): void
-  /** Current lifecycle state of a sandbox. */
-  stateOf(sandboxId: string): SandboxState
-  setState(sandboxId: string, state: SandboxState): void
-  /** True once the sandbox has been acquired and its probe budget is spent. */
-  isReady(sandboxId: string): boolean
+  /** Fail the next `n` acquires with 503, then recover. */
+  failAcquires(n: number): void
+  /** Current lifecycle state of a sandbox, or `undefined` if it has no row. */
+  stateOf(sandboxName: string): SandboxState | undefined
+  setState(sandboxName: string, state: SandboxState): void
+  /** True once the sandbox is active and its probe budget is spent. */
+  isReady(sandboxName: string): boolean
   stop(): Promise<void>
 }
 
@@ -81,18 +101,18 @@ export function startStubDaemon(options: StubDaemonOptions = {}): StubDaemon {
   const readyAfterProbes = options.readyAfterProbes ?? 0
 
   const hits: StubHits = {
-    touch: 0,
-    acquire: 0,
-    status: 0,
-    destroy: 0,
+    acquireSandbox: 0,
+    listSandboxes: 0,
+    destroySandbox: 0,
     unauthorized: 0,
     unknown: 0,
   }
   const states = new Map<string, SandboxState>()
+  for (const name of options.sandboxes ?? []) states.set(name, initialState)
   const probesLeft = new Map<string, number>()
-  let touchFailures = 0
+  let acquireFailures = 0
 
-  const stateOf = (id: string): SandboxState => states.get(id) ?? initialState
+  const stateOf = (name: string): SandboxState | undefined => states.get(name)
 
   const json = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), {
@@ -100,60 +120,80 @@ export function startStubDaemon(options: StubDaemonOptions = {}): StubDaemon {
       headers: { 'content-type': 'application/json' },
     })
 
+  /** One `listSandboxes` row, shaped like the ones observed on the host. */
+  const row = (name: string, state: SandboxState) => ({
+    id: `sbx-${name}`,
+    name,
+    state,
+    nodeId: 'stub-node',
+    endpoint: 'http://127.0.0.1:0',
+    policy: {
+      freezeAfterSeconds: 60,
+      stopAfterSeconds: 600,
+      archiveAfterSeconds: 86_400,
+    },
+    template: 'stub',
+    metadata: {},
+    createdAt: '2026-08-12T00:00:00.000Z',
+    lastActiveAt: '2026-08-12T00:00:00.000Z',
+  })
+
   const server = Bun.serve({
     port: 0,
     hostname: '127.0.0.1',
-    fetch(request: Request): Response {
+    async fetch(request: Request): Promise<Response> {
       if (request.headers.get('authorization') !== `Bearer ${token}`) {
         hits.unauthorized += 1
         return json({ error: 'unauthorized' }, 401)
       }
       const { pathname } = new URL(request.url)
-      const segments = pathname.split('/').filter(segment => segment !== '')
-      // /v1/sandboxes/<id>[/<verb>]
-      if (
-        segments[0] !== 'v1' ||
-        segments[1] !== 'sandboxes' ||
-        segments[2] === undefined
-      ) {
-        hits.unknown += 1
-        return json({ error: `unknown path: ${pathname}` }, 404)
+      // The whole API is `POST /{methodName}`: one segment, no prefix.
+      const method = pathname.replace(/^\/+/, '')
+      let params: Record<string, unknown> = {}
+      try {
+        params = (await request.json()) as Record<string, unknown>
+      } catch {
+        params = {}
       }
-      const id = decodeURIComponent(segments[2])
-      const verb = segments[3]
+      const name = typeof params.name === 'string' ? params.name : ''
 
-      if (verb === 'touch' && request.method === 'POST') {
-        hits.touch += 1
-        if (touchFailures > 0) {
-          touchFailures -= 1
+      if (method === 'acquireSandbox' && request.method === 'POST') {
+        hits.acquireSandbox += 1
+        if (acquireFailures > 0) {
+          acquireFailures -= 1
           return json({ error: 'daemon busy' }, 503)
         }
-        return json({ id, state: stateOf(id) })
+        // The real one is idempotent and creates on an unknown name; `created`
+        // is how it says which of the two happened.
+        const created = !states.has(name)
+        states.set(name, 'active')
+        probesLeft.set(name, readyAfterProbes)
+        return json({
+          status: 'ready',
+          created,
+          sandbox: row(name, 'active'),
+        })
       }
 
-      if (verb === 'acquire' && request.method === 'POST') {
-        hits.acquire += 1
-        states.set(id, 'running')
-        probesLeft.set(id, readyAfterProbes)
-        return json({ id, state: 'running' })
+      if (method === 'listSandboxes' && request.method === 'POST') {
+        hits.listSandboxes += 1
+        return json({
+          sandboxes: [...states].map(([id, state]) => row(id, state)),
+        })
       }
 
-      if (verb === undefined && request.method === 'GET') {
-        hits.status += 1
-        return json({ id, state: stateOf(id) })
-      }
-
-      // The destructive route. Live, functional, and never reached through
+      // The destructive route. Live, functional, served over the same bearer
+      // and the same endpoint as the two above, and never reached through
       // @qianmo/activator — that is the point of it being here.
-      if (verb === undefined && request.method === 'DELETE') {
-        hits.destroy += 1
-        states.set(id, 'stopped')
-        return json({ id, state: 'stopped', destroyed: true })
+      if (method === 'destroySandbox' && request.method === 'POST') {
+        hits.destroySandbox += 1
+        states.set(name, 'stopped')
+        return json({ destroyed: true, sandbox: row(name, 'stopped') })
       }
 
       hits.unknown += 1
       return json(
-        { error: `unknown route: ${request.method} ${pathname}` },
+        { error: `unknown method: ${request.method} ${pathname}` },
         404,
       )
     },
@@ -165,18 +205,18 @@ export function startStubDaemon(options: StubDaemonOptions = {}): StubDaemon {
     port: server.port as number,
     url: `http://127.0.0.1:${server.port}`,
     hits,
-    failTouches(n: number): void {
-      touchFailures = n
+    failAcquires(n: number): void {
+      acquireFailures = n
     },
     stateOf,
-    setState(id: string, state: SandboxState): void {
-      states.set(id, state)
+    setState(name: string, state: SandboxState): void {
+      states.set(name, state)
     },
-    isReady(id: string): boolean {
-      if (stateOf(id) !== 'running') return false
-      const left = probesLeft.get(id) ?? 0
+    isReady(name: string): boolean {
+      if (stateOf(name) !== 'active') return false
+      const left = probesLeft.get(name) ?? 0
       if (left > 0) {
-        probesLeft.set(id, left - 1)
+        probesLeft.set(name, left - 1)
         return false
       }
       return true

@@ -38,10 +38,10 @@ import {
 /** A daemon a test drives directly. Counts calls; has no destructive member. */
 class ScriptedDaemon implements SandboxDaemon {
   state: SandboxState
-  touches = 0
   acquires = 0
   statuses = 0
   acquireError: Error | null = null
+  statusError: Error | null = null
   /** Resolves the pending acquire, so a stampede can be observed mid-flight. */
   #release: (() => void) | null = null
 
@@ -49,12 +49,7 @@ class ScriptedDaemon implements SandboxDaemon {
     this.state = state
   }
 
-  async touch(_sandboxId: string): Promise<void> {
-    this.touches += 1
-    await Promise.resolve()
-  }
-
-  async acquire(sandboxId: string): Promise<SandboxStatus> {
+  async acquire(sandboxName: string): Promise<SandboxStatus> {
     this.acquires += 1
     if (this.#release !== null) {
       await new Promise<void>(resolve => {
@@ -67,14 +62,15 @@ class ScriptedDaemon implements SandboxDaemon {
     }
     await Promise.resolve()
     if (this.acquireError !== null) throw this.acquireError
-    this.state = 'running'
-    return { sandboxId, state: this.state }
+    this.state = 'active'
+    return { sandboxName, state: this.state }
   }
 
-  async status(sandboxId: string): Promise<SandboxStatus> {
+  async status(sandboxName: string): Promise<SandboxStatus> {
     this.statuses += 1
     await Promise.resolve()
-    return { sandboxId, state: this.state }
+    if (this.statusError !== null) throw this.statusError
+    return { sandboxName, state: this.state }
   }
 
   /** Make the next acquire hang until {@link release} is called. */
@@ -160,7 +156,7 @@ describe('the happy path', () => {
     })
     const envelope = makeMessage()
 
-    const outcome = await activator.handle({ envelope, sandboxId: SANDBOX })
+    const outcome = await activator.handle({ envelope, sandboxName: SANDBOX })
 
     expect(outcome.status).toBe('forwarded')
     expect(daemon.acquires).toBe(1)
@@ -178,15 +174,15 @@ describe('the happy path', () => {
     const envelope = makeMessage({
       payload: { do: 'review', nested: { n: 1 } },
     })
-    await activator.handle({ envelope, sandboxId: SANDBOX })
+    await activator.handle({ envelope, sandboxName: SANDBOX })
     expect(forwarder.forwarded[0]).toEqual(envelope)
   })
 
   test('a running target is not woken', async () => {
-    const { activator, daemon, audit } = rig({ state: 'running' })
+    const { activator, daemon, audit } = rig({ state: 'active' })
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('forwarded')
     expect(daemon.acquires).toBe(0)
@@ -195,8 +191,8 @@ describe('the happy path', () => {
 
   test('readiness is probed even when the target was already running', async () => {
     // "Unpaused" is not "ready" (E2), and neither is "the daemon says running".
-    const { activator, probe } = rig({ state: 'running' })
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    const { activator, probe } = rig({ state: 'active' })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     expect(probe.calls).toBeGreaterThanOrEqual(1)
   })
 
@@ -207,7 +203,7 @@ describe('the happy path', () => {
     })
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('forwarded')
     expect(probe.calls).toBe(5)
@@ -216,7 +212,7 @@ describe('the happy path', () => {
 
   test('nothing is left in flight afterwards', async () => {
     const { activator } = rig()
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     expect(activator.inFlight).toBe(0)
   })
 })
@@ -227,7 +223,7 @@ describe('one wake per sleeping target', () => {
     daemon.holdAcquire()
 
     const pending = Array.from({ length: 10 }, () =>
-      activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX }),
+      activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX }),
     )
     // Let every request reach the wake before any of them completes.
     await Promise.resolve()
@@ -243,10 +239,10 @@ describe('one wake per sleeping target', () => {
 
   test('a later request after the wake finished wakes again if it refroze', async () => {
     const { activator, daemon } = rig({ state: 'frozen' })
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     expect(daemon.acquires).toBe(1)
     daemon.state = 'frozen'
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     expect(daemon.acquires).toBe(2)
   })
 })
@@ -259,7 +255,7 @@ describe('no request ends in silence', () => {
       readyTimeoutMs: 0,
     })
     const envelope = makeMessage()
-    const outcome = await activator.handle({ envelope, sandboxId: SANDBOX })
+    const outcome = await activator.handle({ envelope, sandboxName: SANDBOX })
 
     expect(outcome.status).toBe('failed')
     expect(failures.replies).toHaveLength(1)
@@ -275,7 +271,7 @@ describe('no request ends in silence', () => {
     daemon.acquireError = new Error('sandbox quota exhausted')
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('failed')
     expect(failures.codes()).toEqual([ProtocolErrorCode.E_UNDELIVERABLE])
@@ -286,12 +282,12 @@ describe('no request ends in silence', () => {
 
   test('a forward that throws fails explicitly and settles the journal', async () => {
     const { activator, forwarder, failures, journal } = rig({
-      state: 'running',
+      state: 'active',
     })
     forwarder.failWith = new Error('peer closed the connection')
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('failed')
     expect(failures.replies).toHaveLength(1)
@@ -300,12 +296,12 @@ describe('no request ends in silence', () => {
 
   test('handle() never rejects, even when the failure sink is down too', async () => {
     // A rejection at this boundary is indistinguishable from a drop.
-    const { activator, forwarder, failures, audit } = rig({ state: 'running' })
+    const { activator, forwarder, failures, audit } = rig({ state: 'active' })
     forwarder.failWith = new Error('peer closed the connection')
     failures.throwOnFail = true
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('failed')
     expect(
@@ -329,7 +325,7 @@ describe('no request ends in silence', () => {
     const forwarder = new RecordingForwarder()
     const audit = new AuditLog()
     const activator = new Activator({
-      daemon: new ScriptedDaemon('running'),
+      daemon: new ScriptedDaemon('active'),
       readyProbe: new ScriptedProbe(),
       forward: forwarder,
       failures,
@@ -341,7 +337,7 @@ describe('no request ends in silence', () => {
 
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome).toMatchObject({
       status: 'refused',
@@ -368,7 +364,7 @@ describe('no request ends in silence', () => {
     const forwarder = new RecordingForwarder()
     const audit = new AuditLog()
     const activator = new Activator({
-      daemon: new ScriptedDaemon('running'),
+      daemon: new ScriptedDaemon('active'),
       readyProbe: new ScriptedProbe(),
       forward: forwarder,
       failures: new RecordingFailures(),
@@ -380,7 +376,7 @@ describe('no request ends in silence', () => {
 
     const outcome = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('forwarded')
     expect(forwarder.forwarded).toHaveLength(1)
@@ -395,7 +391,7 @@ describe('no request ends in silence', () => {
       createdAt: clock.now() - LIMITS.defaultTtlMs - 1,
       deliverTtlMs: LIMITS.defaultTtlMs,
     })
-    const outcome = await activator.handle({ envelope, sandboxId: SANDBOX })
+    const outcome = await activator.handle({ envelope, sandboxName: SANDBOX })
 
     expect(outcome).toMatchObject({
       status: 'refused',
@@ -414,15 +410,15 @@ describe('no request ends in silence', () => {
     })
     daemon.holdAcquire()
     const held = [
-      activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX }),
-      activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX }),
+      activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX }),
+      activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX }),
     ]
     await Promise.resolve()
     expect(activator.inFlight).toBe(2)
 
     const overflow = await activator.handle({
       envelope: makeMessage(),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(overflow).toMatchObject({
       status: 'refused',
@@ -463,7 +459,7 @@ describe('no request ends in silence', () => {
 
     const outcome = await activator.handle({
       envelope: makeMessage({ createdAt: clock.now(), deliverTtlMs: 5_000 }),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
 
     expect(outcome).toMatchObject({
@@ -520,7 +516,7 @@ describe('a thaw of the activator itself is not a timeout', () => {
 
     const outcome = await activator.handle({
       envelope: makeMessage({ createdAt: clock.now(), deliverTtlMs: 30_000 }),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
 
     expect(outcome.status).toBe('forwarded')
@@ -550,7 +546,7 @@ describe('replaying what a dead process left behind', () => {
     journal.append({
       kind: 'accepted',
       requestId: 'req-survivor',
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       acceptedAt: options.acceptedAt,
       envelope: makeMessage({
         msgId: 'msg-survivor',
@@ -633,7 +629,7 @@ describe('stage timings', () => {
 
     const outcome = await activator.handle({
       envelope: makeMessage({ createdAt: clock.now(), deliverTtlMs: 60_000 }),
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
     })
     expect(outcome.status).toBe('forwarded')
     if (outcome.status !== 'forwarded') return
@@ -660,7 +656,7 @@ describe('stage timings', () => {
       notReadyFor: Number.MAX_SAFE_INTEGER,
       readyTimeoutMs: 0,
     })
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     const report = activator.report()
     expect(report.samples).toBe(1)
     expect(report.failed).toBe(1)
@@ -668,8 +664,8 @@ describe('stage timings', () => {
   })
 
   test('an already-running target reports no wake stage', async () => {
-    const { activator } = rig({ state: 'running' })
-    await activator.handle({ envelope: makeMessage(), sandboxId: SANDBOX })
+    const { activator } = rig({ state: 'active' })
+    await activator.handle({ envelope: makeMessage(), sandboxName: SANDBOX })
     expect(activator.report().wakes).toBe(0)
     expect(activator.samples()[0]?.wakeStartedAt).toBeUndefined()
   })

@@ -6,10 +6,12 @@
  *
  * Parts one and two prove the surface is safe *today*. This file is the part
  * that keeps it safe: a scan of `src/` that goes red the moment somebody adds a
- * destructive route, or opens a second path to the network that bypasses the
- * allowlist. Same mechanism as P0.7's `daemon-bind-invariant.test.ts` — a
- * detector, applied to the real artefacts, with its red direction pinned by
- * fixtures so it can never be quietly satisfied by scanning nothing.
+ * destructive route, opens a second path to the network that bypasses the
+ * allowlist, or — since the real API is `POST /{methodName}` with the
+ * parameters in the body — finds a second way to decide what those parameters
+ * are. Same mechanism as P0.7's `daemon-bind-invariant.test.ts`: a detector,
+ * applied to the real artefacts, with its red direction pinned by fixtures so
+ * it can never be quietly satisfied by scanning nothing.
  *
  * The detector runs over source with comments stripped. Prose has to be able to
  * *discuss* destructive verbs — this file and `capability.ts` both do, at
@@ -82,16 +84,16 @@ describe('no destructive interface exists in packages/activator/src', () => {
   })
 
   test('red direction: a DELETE route is caught', () => {
-    const dirty =
-      "const route = { method: 'DELETE', path: (id: string) => '/v1/x/' + id }"
+    const dirty = "const route = { method: 'DELETE', path: '/evictSandbox' }"
     expect(scan('fixture.ts', dirty).map(f => f.kind)).toContain(
       'mutating-method',
     )
   })
 
   test('red direction: a destructive path literal is caught', () => {
-    const dirty =
-      'const route = { method: "POST", path: () => "/v1/sandboxes/x/destroy" }'
+    // The path is now a plain method name behind a slash, which is what the
+    // real API's `POST /{methodName}` shape produces.
+    const dirty = 'const route = { method: "POST", path: "/destroySandbox" }'
     expect(scan('fixture.ts', dirty).map(f => f.kind)).toContain(
       'destructive-path',
     )
@@ -99,9 +101,9 @@ describe('no destructive interface exists in packages/activator/src', () => {
 
   test('green direction: prose about destroy is not a finding', () => {
     const clean = [
-      '// This component must never call POST /v1/sandboxes/:id/destroy.',
-      '/* Nor DELETE /v1/sandboxes/:id. */',
-      "const route = { method: 'POST', path: () => '/v1/sandboxes/x/touch' }",
+      '// This component must never call POST /destroySandbox.',
+      '/* Nor /removeTemplate, nor /revokeApiKey. */',
+      "const route = { method: 'POST', path: '/acquireSandbox' }",
     ].join('\n')
     expect(scan('fixture.ts', clean)).toEqual([])
   })
@@ -130,6 +132,20 @@ describe('there is exactly one way out to the network', () => {
     expect(guards).toBeGreaterThanOrEqual(1)
     expect(fetchCalls).toBeLessThanOrEqual(2)
     expect(code).toMatch(/resolveRoute\([\s\S]{0,200}?new URL\(/)
+  })
+
+  test('the request body on the wire is the allowlist’s, not a caller’s', () => {
+    // Under `POST /{methodName}` the parameters carry as much authority as the
+    // path: `acquireSandbox` also accepts a `policy`, which could switch off
+    // the very freeze thresholds keepalive.ts refuses to let anyone disable.
+    // So the body has to come from the resolved route and from nowhere else.
+    const code = stripComments(readFileSync(join(SRC_DIR, 'daemon.ts'), 'utf8'))
+    // Every serialised request body in the file, and what each one serialises.
+    // Exactly one, and it is the resolved route's.
+    const serialised = [
+      ...code.matchAll(/body:\s*JSON\.stringify\(([^)]*)\)/g),
+    ].map(match => match[1])
+    expect(serialised).toEqual(['route.body'])
   })
 })
 

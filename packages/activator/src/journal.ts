@@ -46,7 +46,7 @@ export interface AcceptedRecord {
   readonly kind: 'accepted'
   /** Identity of this attempt, unique per acceptance. */
   readonly requestId: string
-  readonly sandboxId: string
+  readonly sandboxName: string
   readonly acceptedAt: number
   readonly envelope: QianmoMessage
 }

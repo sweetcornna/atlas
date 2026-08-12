@@ -24,7 +24,7 @@ const BASE = 1_000_000
 function timeline(): StageTimeline {
   return new StageTimeline({
     requestId: 'req-1',
-    sandboxId: 'sandbox-1',
+    sandboxName: 'sandbox-1',
     msgId: 'msg-1',
     taskId: 'task-1',
     acceptedAt: BASE,
@@ -84,7 +84,7 @@ describe('one timeline', () => {
 describe('the report', () => {
   const sample = (total: number, wake: number): StageTimings => ({
     requestId: `req-${total}`,
-    sandboxId: 'sandbox-1',
+    sandboxName: 'sandbox-1',
     msgId: `msg-${total}`,
     taskId: `task-${total}`,
     acceptedAt: BASE,

@@ -5,12 +5,15 @@
  * The keepalive face.
  *
  * **What these tests do not show.** Whether a heartbeat at this period actually
- * keeps a real sandbox out of the freezer is DoD ②, it needs a real sandbox,
- * and nothing in this file is evidence about it. What is tested here is our own
- * side: that the period is forced under the freeze threshold, that a failed
- * beat retries *sooner* rather than later, that a thaw is recognised instead of
- * being counted as failure, and that the configuration E3 showed to be a trap
- * is refused outright.
+ * keeps a real sandbox out of the freezer is DoD ②; it needs a real sandbox and
+ * nothing in this file is evidence about it. That measurement was made on the
+ * host on 2026-08-12 — control froze at t≈45 s against a 60 s threshold, the
+ * experiment stayed `active` for the full 120 s at a 20 s beat — and the
+ * numbers live in `keepalive.ts`, next to the code they justify. What is tested
+ * here is our own side: that the period is forced under the freeze threshold,
+ * that a failed beat retries *sooner* rather than later, that a thaw is
+ * recognised instead of being counted as failure, and that the configuration E3
+ * showed to be a trap is refused outright.
  *
  * The numbers 110 and 411 in the assertions below are E3's: a 100 %-CPU process
  * frozen 110 s after start, then 411 s with zero progress and no self-recovery.
@@ -18,7 +21,8 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { ActivatorEventType, AuditLog } from '../src/audit.js'
-import type { SandboxDaemon } from '../src/daemon.js'
+import { capabilitySurface } from '../src/capability.js'
+import type { SandboxStatus } from '../src/daemon.js'
 import { HttpSandboxDaemon } from '../src/daemon.js'
 import {
   DEFAULT_PERIOD_RATIO,
@@ -29,6 +33,7 @@ import {
   assertResidencyPolicy,
   keepalivePeriodMs,
   type KeepaliveDegraded,
+  type KeepalivePort,
 } from '../src/keepalive.js'
 import { ManualClock, ManualScheduler, SANDBOX } from './helpers.js'
 import { STUB_TOKEN, startStubDaemon } from './stub-daemon.js'
@@ -41,18 +46,30 @@ const HEALTHY_POLICY = {
   stopAfterSeconds: 600,
 }
 
-/** A `touch`-only daemon a test drives directly. No module is intercepted. */
-class ScriptedTouch implements Pick<SandboxDaemon, 'touch'> {
+/**
+ * An `acquire`-only daemon a test drives directly. No module is intercepted.
+ *
+ * `acquire`, not `touch`: the daemon has no `touch` method, and `acquire` is
+ * the one call measured to reset the idle clock. See `keepalive.ts` for what
+ * that costs in type-level safety.
+ */
+class ScriptedAcquire implements KeepalivePort {
   calls = 0
   failuresLeft = 0
+  /**
+   * What the call reports back. Whether the real daemon reports the sandbox as
+   * found or as left is not known, so no test here depends on the difference.
+   */
+  state: SandboxStatus['state'] = 'active'
 
-  async touch(_sandboxId: string): Promise<void> {
+  async acquire(sandboxName: string): Promise<SandboxStatus> {
     this.calls += 1
     await Promise.resolve()
     if (this.failuresLeft > 0) {
       this.failuresLeft -= 1
       throw new Error('daemon unreachable')
     }
+    return { sandboxName, state: this.state }
   }
 }
 
@@ -130,8 +147,8 @@ describe('the period is forced under the freeze threshold', () => {
     expect(
       () =>
         new KeepaliveLoop({
-          sandboxId: SANDBOX,
-          daemon: new ScriptedTouch(),
+          sandboxName: SANDBOX,
+          daemon: new ScriptedAcquire(),
           policy: HEALTHY_POLICY,
           audit,
           periodMs: 55_001,
@@ -141,8 +158,8 @@ describe('the period is forced under the freeze threshold', () => {
 
   test('a period a hair under half is accepted', () => {
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
-      daemon: new ScriptedTouch(),
+      sandboxName: SANDBOX,
+      daemon: new ScriptedAcquire(),
       policy: HEALTHY_POLICY,
       audit: new AuditLog(),
       periodMs: 55_000,
@@ -155,8 +172,8 @@ describe('the period is forced under the freeze threshold', () => {
     expect(
       () =>
         new KeepaliveLoop({
-          sandboxId: SANDBOX,
-          daemon: new ScriptedTouch(),
+          sandboxName: SANDBOX,
+          daemon: new ScriptedAcquire(),
           policy: { freezeAfterSeconds: null, stopAfterSeconds: 600 },
           audit: new AuditLog(),
         }),
@@ -166,13 +183,13 @@ describe('the period is forced under the freeze threshold', () => {
 
 describe('beating', () => {
   const build = (
-    daemon: Pick<SandboxDaemon, 'touch'>,
+    daemon: KeepalivePort,
     onDegraded?: (d: KeepaliveDegraded) => void,
   ) => {
     const clock = new ManualClock(1_000_000)
     const audit = new AuditLog()
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       daemon,
       policy: HEALTHY_POLICY,
       audit,
@@ -183,8 +200,8 @@ describe('beating', () => {
     return { clock, audit, loop }
   }
 
-  test('a healthy beat touches the daemon and comes back after one period', async () => {
-    const daemon = new ScriptedTouch()
+  test('a healthy beat acquires the sandbox and comes back after one period', async () => {
+    const daemon = new ScriptedAcquire()
     const { audit, loop } = build(daemon)
     const beat = await loop.beat()
     expect(beat.ok).toBe(true)
@@ -193,10 +210,25 @@ describe('beating', () => {
     expect(audit.count(ActivatorEventType.KeepaliveTick)).toBe(1)
   })
 
+  test('the state the daemon reported is recorded, not acted on', async () => {
+    // Recorded because a real run should be able to read it back; not acted on
+    // because whether acquireSandbox reports the sandbox as found or as left
+    // has not been checked against the real daemon.
+    const daemon = new ScriptedAcquire()
+    daemon.state = 'frozen'
+    const { audit, loop } = build(daemon)
+    const beat = await loop.beat()
+    expect(beat.ok).toBe(true)
+    expect(beat.nextDelayMs).toBe(loop.periodMs)
+    expect(
+      audit.of(ActivatorEventType.KeepaliveTick).at(-1)?.detail.state,
+    ).toBe('frozen')
+  })
+
   test('a failed beat retries sooner, not later', async () => {
     // The inverse of ordinary backoff, and the reason is the whole design: the
     // cost of waiting is a freeze nothing recovers from, not load on a peer.
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const { loop } = build(daemon)
     await loop.beat()
     daemon.failuresLeft = 3
@@ -207,7 +239,7 @@ describe('beating', () => {
   })
 
   test('the retry interval keeps shrinking as the freeze deadline nears', async () => {
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const { clock, loop } = build(daemon)
     await loop.beat()
     daemon.failuresLeft = 10
@@ -227,7 +259,7 @@ describe('beating', () => {
   })
 
   test('enough consecutive failures raise a degraded signal', async () => {
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const degraded: KeepaliveDegraded[] = []
     const { audit, loop } = build(daemon, detail => degraded.push(detail))
     await loop.beat()
@@ -243,8 +275,8 @@ describe('beating', () => {
   })
 
   test('a beat never rejects, however badly the daemon behaves', async () => {
-    const exploding: Pick<SandboxDaemon, 'touch'> = {
-      touch: () => Promise.reject(new Error('connection reset')),
+    const exploding: KeepalivePort = {
+      acquire: () => Promise.reject(new Error('connection reset')),
     }
     const { loop } = build(exploding)
     const beat = await loop.beat()
@@ -253,7 +285,7 @@ describe('beating', () => {
   })
 
   test('a success clears the failure streak', async () => {
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const { loop } = build(daemon)
     daemon.failuresLeft = 2
     await loop.beat()
@@ -267,11 +299,11 @@ describe('beating', () => {
 
 describe('a thaw is not a failure', () => {
   test('a gap past the threshold is audited as a time jump', async () => {
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const clock = new ManualClock(1_000_000)
     const audit = new AuditLog()
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       daemon,
       policy: HEALTHY_POLICY,
       audit,
@@ -294,11 +326,11 @@ describe('a thaw is not a failure', () => {
   })
 
   test('a thaw clears an in-progress failure streak instead of adding to it', async () => {
-    const daemon = new ScriptedTouch()
+    const daemon = new ScriptedAcquire()
     const clock = new ManualClock(1_000_000)
     const degraded: KeepaliveDegraded[] = []
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       daemon,
       policy: HEALTHY_POLICY,
       audit: new AuditLog(),
@@ -323,6 +355,30 @@ describe('a thaw is not a failure', () => {
   })
 })
 
+describe('the guarantee the missing touch verb took with it', () => {
+  test('the keepalive port can wake a sandbox, and no type says otherwise', () => {
+    // Pinned as a test rather than left in a comment, because this used to be a
+    // claim the compiler enforced: the face held `Pick<SandboxDaemon, 'touch'>`,
+    // so waking was unreachable from here. The daemon has no `touch`, the beat
+    // is `acquire`, and `acquire` wakes. A future reader must not be able to
+    // mistake the old promise for the current state of affairs.
+    const port: KeepalivePort = new ScriptedAcquire()
+    expect(typeof port.acquire).toBe('function')
+  })
+
+  test('what survived: nothing destructive is reachable from that port', () => {
+    // The property AC-6(c) actually rests on never depended on the narrowing.
+    // It is the allowlist, it is unchanged, and it is two entries long.
+    const port = new ScriptedAcquire() as unknown as Record<string, unknown>
+    expect(port.destroySandbox).toBeUndefined()
+    expect(port.execCommand).toBeUndefined()
+    expect([...capabilitySurface()].sort()).toEqual([
+      'acquireSandbox',
+      'listSandboxes',
+    ])
+  })
+})
+
 describe('the loop against a real local server', () => {
   const stubs: { stop: () => Promise<void> }[] = []
 
@@ -331,7 +387,10 @@ describe('the loop against a real local server', () => {
   })
 
   test('start() beats repeatedly over HTTP and stop() ends it', async () => {
-    const stub = startStubDaemon({ initialState: 'running' })
+    const stub = startStubDaemon({
+      initialState: 'active',
+      sandboxes: [SANDBOX],
+    })
     stubs.push(stub)
     const audit = new AuditLog()
     const daemon = new HttpSandboxDaemon({
@@ -342,7 +401,7 @@ describe('the loop against a real local server', () => {
     // A sandbox that freezes after 60 ms is not realistic; it is the smallest
     // configuration that exercises the real timer path in a test.
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       daemon,
       policy: { freezeAfterSeconds: 0.06, stopAfterSeconds: 600 },
       audit,
@@ -350,24 +409,35 @@ describe('the loop against a real local server', () => {
     })
     loop.start()
     const deadline = Date.now() + 2_000
-    while (stub.hits.touch < 4 && Date.now() < deadline) {
+    while (stub.hits.acquireSandbox < 4 && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 5))
     }
     loop.stop()
     expect(loop.running).toBe(false)
-    expect(stub.hits.touch).toBeGreaterThanOrEqual(4)
+    expect(stub.hits.acquireSandbox).toBeGreaterThanOrEqual(4)
     expect(stub.hits.unauthorized).toBe(0)
-    // The heartbeat's vocabulary really is one word.
-    expect(stub.hits.acquire).toBe(0)
-    expect(stub.hits.destroy).toBe(0)
+    // The heartbeat's vocabulary is still one word — but the word is now the
+    // wake verb, so "it cannot wake anything" is no longer among the things
+    // this assertion says. What it does still say is that nothing else on the
+    // 31-method API was touched, `destroySandbox` least of all.
+    expect(stub.hits.listSandboxes).toBe(0)
+    expect(stub.hits.destroySandbox).toBe(0)
+    expect(stub.hits.unknown).toBe(0)
 
-    const settled = stub.hits.touch
+    const settled = stub.hits.acquireSandbox
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(stub.hits.touch).toBe(settled)
+    expect(stub.hits.acquireSandbox).toBe(settled)
   })
 
-  test('an HTTP failure is a failed beat, not a crash, and the loop recovers', async () => {
-    const stub = startStubDaemon({ initialState: 'running' })
+  test('a beat thaws a sandbox that froze while the loop was down', async () => {
+    // The one thing the lost type narrowing bought back. Under the imagined
+    // `touch` API a loop that missed enough beats could only keep failing
+    // against a frozen sandbox; because the beat *is* the wake verb, the next
+    // successful beat brings it back.
+    const stub = startStubDaemon({
+      initialState: 'frozen',
+      sandboxes: [SANDBOX],
+    })
     stubs.push(stub)
     const audit = new AuditLog()
     const daemon = new HttpSandboxDaemon({
@@ -376,13 +446,39 @@ describe('the loop against a real local server', () => {
       audit,
     })
     const loop = new KeepaliveLoop({
-      sandboxId: SANDBOX,
+      sandboxName: SANDBOX,
       daemon,
       policy: { freezeAfterSeconds: 0.06, stopAfterSeconds: 600 },
       audit,
       periodMs: 5,
     })
-    stub.failTouches(2)
+    expect(stub.stateOf(SANDBOX)).toBe('frozen')
+    const beat = await loop.beat()
+    expect(beat.ok).toBe(true)
+    expect(stub.stateOf(SANDBOX)).toBe('active')
+    expect(stub.hits.destroySandbox).toBe(0)
+  })
+
+  test('an HTTP failure is a failed beat, not a crash, and the loop recovers', async () => {
+    const stub = startStubDaemon({
+      initialState: 'active',
+      sandboxes: [SANDBOX],
+    })
+    stubs.push(stub)
+    const audit = new AuditLog()
+    const daemon = new HttpSandboxDaemon({
+      baseUrl: stub.url,
+      token: () => STUB_TOKEN,
+      audit,
+    })
+    const loop = new KeepaliveLoop({
+      sandboxName: SANDBOX,
+      daemon,
+      policy: { freezeAfterSeconds: 0.06, stopAfterSeconds: 600 },
+      audit,
+      periodMs: 5,
+    })
+    stub.failAcquires(2)
     const first = await loop.beat()
     expect(first.ok).toBe(false)
     const second = await loop.beat()

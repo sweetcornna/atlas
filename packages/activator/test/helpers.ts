@@ -154,7 +154,7 @@ export class ScriptedProbe implements ReadyProbe {
     this.notReadyFor = notReadyFor
   }
 
-  async isReady(_sandboxId: string): Promise<boolean> {
+  async isReady(_sandboxName: string): Promise<boolean> {
     this.calls += 1
     await Promise.resolve()
     if (this.notReadyFor > 0) {

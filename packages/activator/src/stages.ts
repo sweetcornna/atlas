@@ -24,7 +24,7 @@ export type ActivationOutcomeKind = 'forwarded' | 'failed' | 'in-flight'
 /** One request's timeline, in epoch milliseconds. */
 export interface StageTimings {
   readonly requestId: string
-  readonly sandboxId: string
+  readonly sandboxName: string
   readonly msgId: string
   readonly taskId: string
   /** The request was caught and journalled. */
@@ -79,7 +79,7 @@ export function durationsOf(timings: StageTimings): StageDurations {
  */
 export class StageTimeline {
   readonly requestId: string
-  readonly sandboxId: string
+  readonly sandboxName: string
   readonly msgId: string
   readonly taskId: string
   readonly acceptedAt: number
@@ -91,13 +91,13 @@ export class StageTimeline {
 
   constructor(init: {
     requestId: string
-    sandboxId: string
+    sandboxName: string
     msgId: string
     taskId: string
     acceptedAt: number
   }) {
     this.requestId = init.requestId
-    this.sandboxId = init.sandboxId
+    this.sandboxName = init.sandboxName
     this.msgId = init.msgId
     this.taskId = init.taskId
     this.acceptedAt = init.acceptedAt
@@ -124,7 +124,7 @@ export class StageTimeline {
   snapshot(): StageTimings {
     return {
       requestId: this.requestId,
-      sandboxId: this.sandboxId,
+      sandboxName: this.sandboxName,
       msgId: this.msgId,
       taskId: this.taskId,
       acceptedAt: this.acceptedAt,

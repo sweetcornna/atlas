@@ -53,7 +53,7 @@ function accepted(requestId: string, acceptedAt = 1_000): AcceptedRecord {
   return {
     kind: 'accepted',
     requestId,
-    sandboxId: SANDBOX,
+    sandboxName: SANDBOX,
     acceptedAt,
     envelope: makeMessage({ msgId: `msg-${requestId}` }),
   }
