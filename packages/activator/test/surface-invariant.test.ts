@@ -19,10 +19,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC_DIR = join(import.meta.dir, '..', 'src')
+const REPO_ROOT = join(import.meta.dir, '..', '..', '..')
 
 function sourceFiles(): string[] {
   return readdirSync(SRC_DIR)
@@ -162,6 +163,39 @@ describe('nothing key-shaped is committed', () => {
 
   test('red direction: a pasted bearer is caught', () => {
     expect(SECRET.test('authorization: Bearer abcd1234efgh5678ijkl')).toBe(true)
+  })
+
+  /**
+   * The AC-2 acceptance script and its helpers are held to the same rule.
+   *
+   * They are the artefacts most likely to acquire a pasted secret — somebody
+   * gets tired of exporting five variables and "just for now" inlines the
+   * bearer. That bearer is the one with no privilege tiers, so a commit like
+   * that publishes the ability to destroy the sandbox to everyone with read
+   * access. The rule is the same one three tests up; only the file list is new.
+   */
+  const demoArtifacts = [
+    'demo/ac2-wake-forward.sh',
+    'demo/lib/ac2-activator.ts',
+    'demo/lib/ac2-env.ts',
+    'demo/lib/ac2-report.ts',
+    'demo/lib/ac2-send.ts',
+    'demo/lib/ac2-state.ts',
+    'demo/lib/ac2-target.ts',
+  ]
+
+  test('the AC-2 demo artefacts all exist to be scanned', () => {
+    // Same guard as the one at the top of this file: a rename must not turn
+    // this into a scan of nothing.
+    const missing = demoArtifacts.filter(
+      path => !existsSync(join(REPO_ROOT, path)),
+    )
+    expect(missing).toEqual([])
+  })
+
+  test.each(demoArtifacts)('%s contains no literal credential', path => {
+    const source = readFileSync(join(REPO_ROOT, path), 'utf8')
+    expect({ path, hit: SECRET.test(source) }).toEqual({ path, hit: false })
   })
 
   test('every source file carries the two-line copyright header', () => {
