@@ -52,9 +52,12 @@ function methodNotAllowed(allowed: readonly string[]): Response {
 
 function agentBody(entry: AgentRecord): Record<string, unknown> {
   return {
-    name: entry.name,
+    address: entry.address,
     endpoint: entry.endpoint,
     capabilities: entry.capabilities,
+    // Dropped from the JSON when absent — no key has been published yet.
+    publicKey: entry.publicKey,
+    status: entry.status,
     registeredAt: entry.registeredAt,
     lastHeartbeatAt: entry.lastHeartbeatAt,
     expiresAt: entry.expiresAt,
@@ -106,9 +109,13 @@ async function handleCollection(
   }
 
   const result: RegisterResult = registry.register(
-    body['name'],
+    body['address'],
     body['endpoint'],
-    body['capabilities'],
+    {
+      capabilities: body['capabilities'],
+      publicKey: body['publicKey'],
+      status: body['status'],
+    },
   )
   if (!result.ok) {
     return fail(statusFor(result.code), result.code, result.message)
@@ -119,18 +126,18 @@ async function handleCollection(
 function handleItem(
   request: Request,
   registry: InMemoryRegistry,
-  name: string,
+  address: string,
 ): Response {
   if (request.method === 'GET') {
-    const entry = registry.resolve(name)
+    const entry = registry.resolve(address)
     return entry === null
-      ? notFound(`no live agent named ${name}`)
+      ? notFound(`no live agent at ${address}`)
       : json(agentBody(entry))
   }
   if (request.method === 'DELETE') {
-    return registry.deregister(name)
+    return registry.deregister(address)
       ? new Response(null, { status: 204 })
-      : notFound(`no live agent named ${name}`)
+      : notFound(`no live agent at ${address}`)
   }
   return methodNotAllowed(['GET', 'DELETE'])
 }
@@ -138,12 +145,12 @@ function handleItem(
 function handleHeartbeat(
   request: Request,
   registry: InMemoryRegistry,
-  name: string,
+  address: string,
 ): Response {
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
-  const entry = registry.heartbeat(name)
+  const entry = registry.heartbeat(address)
   return entry === null
-    ? notFound(`no live agent named ${name}`)
+    ? notFound(`no live agent at ${address}`)
     : json(agentBody(entry))
 }
 
@@ -171,11 +178,14 @@ export function createRegistryHandler(
 
     if (segments.length === 2) return await handleCollection(request, registry)
 
-    const name = decodeURIComponent(segments[2] ?? '')
+    // The address rides in one path segment, percent-encoded by the client
+    // (`qianmo%3A%2F%2Fnode-b%2Freviewer`): `URL` leaves the escapes alone, so
+    // the split still yields 3 segments and the decode hands back the address.
+    const address = decodeURIComponent(segments[2] ?? '')
 
-    if (segments.length === 3) return handleItem(request, registry, name)
+    if (segments.length === 3) return handleItem(request, registry, address)
     if (segments.length === 4 && segments[3] === 'heartbeat') {
-      return handleHeartbeat(request, registry, name)
+      return handleHeartbeat(request, registry, address)
     }
     return notFound(`unknown path: ${pathname}`)
   }
