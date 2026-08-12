@@ -49,7 +49,11 @@ import {
   timerScheduler,
 } from './clock.js'
 import type { SandboxDaemon } from './daemon.js'
-import type { AcceptedRecord, RequestJournal } from './journal.js'
+import type {
+  AcceptedRecord,
+  RequestJournal,
+  TerminalRecord,
+} from './journal.js'
 import {
   StageTimeline,
   type StageTimings,
@@ -263,8 +267,20 @@ export class Activator {
       acceptedAt: now,
       envelope,
     }
-    // Rule 1. Durable before the caller is told anything.
-    this.#journal.append(record)
+    try {
+      // Rule 1. Durable before the caller is told anything.
+      this.#journal.append(record)
+    } catch (error) {
+      // A journal that cannot be written is exactly the case where accepting
+      // would be a lie: nothing would survive a crash. Refusing hands the
+      // request back to the sender, who still has it and will retry.
+      return await this.#refuse(
+        envelope,
+        ProtocolErrorCode.E_UNDELIVERABLE,
+        `activator could not journal the request: ${error instanceof Error ? error.message : String(error)}`,
+        now,
+      )
+    }
     this.#inFlight.add(requestId)
     this.#audit.record(ActivatorEventType.RequestAccepted, now, {
       requestId,
@@ -274,7 +290,7 @@ export class Activator {
     })
 
     try {
-      return await this.#drive(record)
+      return await this.#drive(record, now)
     } finally {
       this.#inFlight.delete(requestId)
     }
@@ -305,7 +321,13 @@ export class Activator {
       )
       this.#inFlight.add(record.requestId)
       try {
-        const outcome = await this.#drive(record)
+        // The wake budget restarts from now, not from the instant the dead
+        // process caught the request: a target that needs ten seconds to wake
+        // would otherwise be judged against a ceiling that expired while
+        // nothing was running, and every replay would fail on its first probe.
+        // The sender's delivery deadline is untouched — that one is absolute,
+        // and a replay that misses it deserves an explicit expiry, not a pass.
+        const outcome = await this.#drive(record, this.#clock.now())
         if (outcome.status === 'forwarded') forwarded += 1
         else failed += 1
       } finally {
@@ -332,6 +354,26 @@ export class Activator {
     return { status: 'refused', code, reason }
   }
 
+  /**
+   * Write a terminal record, tolerating a journal that has stopped working.
+   *
+   * The action has already happened by the time this runs, so a failure here
+   * costs at most a replay of something already delivered — which the receiver
+   * dedups — while throwing would turn a settled request into an exception at
+   * the caller's boundary, i.e. into something indistinguishable from a drop.
+   */
+  #settle(record: TerminalRecord): void {
+    try {
+      this.#journal.append(record)
+    } catch (error) {
+      this.#audit.record(ActivatorEventType.JournalTorn, record.at, {
+        requestId: record.requestId,
+        outcome: record.outcome,
+        writeFailed: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   /** Send the sender an explicit `error` envelope. Never throws. */
   async #tell(
     envelope: QianmoMessage,
@@ -354,7 +396,14 @@ export class Activator {
     }
   }
 
-  async #drive(record: AcceptedRecord): Promise<ActivationOutcome> {
+  /**
+   * @param ceilingFrom Instant the wake budget runs from — acceptance for a
+   * fresh request, startup for a replayed one.
+   */
+  async #drive(
+    record: AcceptedRecord,
+    ceilingFrom: number,
+  ): Promise<ActivationOutcome> {
     const { requestId, sandboxId, envelope } = record
     const timeline = new StageTimeline({
       requestId,
@@ -363,6 +412,21 @@ export class Activator {
       taskId: envelope.taskId,
       acceptedAt: record.acceptedAt,
     })
+
+    const before = this.#clock.now()
+    if (this.#gate.expired(deliveryExpiresAt(envelope), before)) {
+      // Checked before the wake, not after it: waking a sandbox costs a daemon
+      // call and, per E2, seconds of warm-up. Spending that on a message the
+      // sender has already given up on is pure waste. Reachable in practice on
+      // the replay path, where an outage may have outlasted the deadline.
+      return await this.#fail(
+        timeline,
+        envelope,
+        ProtocolErrorCode.E_TTL_EXPIRED,
+        'delivery deadline passed before the target could be woken',
+        before,
+      )
+    }
 
     try {
       const status = await this.#daemon.status(sandboxId)
@@ -380,6 +444,7 @@ export class Activator {
       const { readyAt, deliveryDeadline } = await this.#awaitReady(
         sandboxId,
         record,
+        ceilingFrom,
       )
       timeline.markReady(readyAt)
       this.#audit.record(ActivatorEventType.TargetReady, readyAt, {
@@ -405,7 +470,7 @@ export class Activator {
       await this.#forward.forward(envelope)
       const forwardedAt = this.#clock.now()
       timeline.markForwarded(forwardedAt)
-      this.#journal.append({
+      this.#settle({
         kind: 'terminal',
         requestId,
         at: forwardedAt,
@@ -484,8 +549,9 @@ export class Activator {
   async #awaitReady(
     sandboxId: string,
     record: AcceptedRecord,
+    ceilingFrom: number,
   ): Promise<{ readyAt: number; deliveryDeadline: number }> {
-    let ceiling = record.acceptedAt + this.#readyTimeoutMs
+    let ceiling = ceilingFrom + this.#readyTimeoutMs
     let deliveryDeadline = deliveryExpiresAt(record.envelope)
 
     for (;;) {
@@ -528,7 +594,7 @@ export class Activator {
     // Act, then record — same ordering as the success path, for the same
     // reason: a crash between the two costs a duplicate error, not a silence.
     await this.#tell(envelope, code, reason, now)
-    this.#journal.append({
+    this.#settle({
       kind: 'terminal',
       requestId: timeline.requestId,
       at: now,

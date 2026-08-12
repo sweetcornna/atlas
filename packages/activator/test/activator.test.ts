@@ -23,7 +23,7 @@ import type {
   SandboxStatus,
   SandboxState,
 } from '../src/daemon.js'
-import { MemoryRequestJournal } from '../src/journal.js'
+import { MemoryRequestJournal, type RequestJournal } from '../src/journal.js'
 import { TimingRecorder } from '../src/stages.js'
 import {
   ManualClock,
@@ -315,6 +315,78 @@ describe('no request ends in silence', () => {
     ).toBe(true)
   })
 
+  test('a journal that will not write means the request was never accepted', async () => {
+    // Accepting on an unwritable journal would be a lie: nothing would survive
+    // a crash. Refusing leaves the request with the sender, who still has it.
+    const broken: RequestJournal = {
+      append: () => {
+        throw new Error('no space left on device')
+      },
+      pending: () => [],
+      compact: () => undefined,
+    }
+    const failures = new RecordingFailures()
+    const forwarder = new RecordingForwarder()
+    const audit = new AuditLog()
+    const activator = new Activator({
+      daemon: new ScriptedDaemon('running'),
+      readyProbe: new ScriptedProbe(),
+      forward: forwarder,
+      failures,
+      journal: broken,
+      audit,
+      clock: new ManualClock(1_000_000),
+      scheduler: immediateScheduler,
+    })
+
+    const outcome = await activator.handle({
+      envelope: makeMessage(),
+      sandboxId: SANDBOX,
+    })
+    expect(outcome).toMatchObject({
+      status: 'refused',
+      code: ProtocolErrorCode.E_UNDELIVERABLE,
+    })
+    expect(failures.codes()).toEqual([ProtocolErrorCode.E_UNDELIVERABLE])
+    expect(forwarder.forwarded).toEqual([])
+    expect(audit.count(ActivatorEventType.RequestAccepted)).toBe(0)
+    expect(activator.inFlight).toBe(0)
+  })
+
+  test('a journal that breaks after the forward does not un-forward it', async () => {
+    // The action already happened; throwing here would turn a settled request
+    // into an exception at the caller's boundary, which reads as a drop.
+    let appends = 0
+    const flaky: RequestJournal = {
+      append: () => {
+        appends += 1
+        if (appends > 1) throw new Error('no space left on device')
+      },
+      pending: () => [],
+      compact: () => undefined,
+    }
+    const forwarder = new RecordingForwarder()
+    const audit = new AuditLog()
+    const activator = new Activator({
+      daemon: new ScriptedDaemon('running'),
+      readyProbe: new ScriptedProbe(),
+      forward: forwarder,
+      failures: new RecordingFailures(),
+      journal: flaky,
+      audit,
+      clock: new ManualClock(1_000_000),
+      scheduler: immediateScheduler,
+    })
+
+    const outcome = await activator.handle({
+      envelope: makeMessage(),
+      sandboxId: SANDBOX,
+    })
+    expect(outcome.status).toBe('forwarded')
+    expect(forwarder.forwarded).toHaveLength(1)
+    expect(audit.count(ActivatorEventType.JournalTorn)).toBe(1)
+  })
+
   test('an already-expired envelope is refused rather than taken in', async () => {
     // Rule T-1 step 2: writing a doomed message into the pipeline only consumes
     // budget that a live message needed.
@@ -458,6 +530,78 @@ describe('a thaw of the activator itself is not a timeout', () => {
     expect(jumps).toHaveLength(1)
     expect(jumps[0]?.detail.face).toBe('activator')
     expect(jumps[0]?.detail.gapMs).toBe(97_000)
+  })
+})
+
+describe('replaying what a dead process left behind', () => {
+  /** Build a rig whose journal already owes one request from `acceptedAt`. */
+  function seeded(options: {
+    acceptedAt: number
+    deliverTtlMs: number
+    now: number
+    state?: SandboxState
+    notReadyFor?: number
+  }) {
+    const clock = new ManualClock(options.now)
+    const daemon = new ScriptedDaemon(options.state ?? 'frozen')
+    const forwarder = new RecordingForwarder()
+    const failures = new RecordingFailures()
+    const journal = new MemoryRequestJournal()
+    journal.append({
+      kind: 'accepted',
+      requestId: 'req-survivor',
+      sandboxId: SANDBOX,
+      acceptedAt: options.acceptedAt,
+      envelope: makeMessage({
+        msgId: 'msg-survivor',
+        createdAt: options.acceptedAt,
+        deliverTtlMs: options.deliverTtlMs,
+      }),
+    })
+    const activator = new Activator({
+      daemon,
+      readyProbe: new ScriptedProbe(options.notReadyFor ?? 0),
+      forward: forwarder,
+      failures,
+      journal,
+      audit: new AuditLog(),
+      clock,
+      scheduler: immediateScheduler,
+      readyPollIntervalMs: 10,
+      readyTimeoutMs: 45_000,
+    })
+    return { activator, daemon, forwarder, failures, journal }
+  }
+
+  test('the wake budget restarts at startup, not at the old acceptance', async () => {
+    // Ten minutes of downtime must not mean the replay fails on its first
+    // probe against a ceiling that expired while nothing was running.
+    const { activator, forwarder } = seeded({
+      acceptedAt: 1_000_000,
+      deliverTtlMs: 3_600_000,
+      now: 1_600_000,
+      notReadyFor: 3,
+    })
+    const report = await activator.recover()
+    expect(report).toEqual({ replayed: 1, forwarded: 1, failed: 0 })
+    expect(forwarder.forwarded[0]?.msgId).toBe('msg-survivor')
+  })
+
+  test('a replay past the sender deadline fails explicitly and wakes nothing', async () => {
+    // The sender's deadline is absolute; missing it is an expiry, not a pass.
+    // And there is no point paying for a wake to deliver work nobody wants.
+    const { activator, daemon, failures, forwarder, journal } = seeded({
+      acceptedAt: 1_000_000,
+      deliverTtlMs: 30_000,
+      now: 1_600_000,
+    })
+    const report = await activator.recover()
+    expect(report).toEqual({ replayed: 1, forwarded: 0, failed: 1 })
+    expect(failures.codes()).toEqual([ProtocolErrorCode.E_TTL_EXPIRED])
+    expect(forwarder.forwarded).toEqual([])
+    expect(daemon.acquires).toBe(0)
+    expect(daemon.statuses).toBe(0)
+    expect(journal.pending()).toEqual([])
   })
 })
 
