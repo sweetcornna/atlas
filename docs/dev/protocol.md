@@ -1,0 +1,713 @@
+# 阡陌 AgentNest — 消息协议 v0.1
+
+| 项 | 内容 |
+|---|---|
+| 文档版本 | **v0.1** |
+| 生效日期 | 2026-08-12 |
+| 覆盖阶段 | M0 原型验证期（2026H2）· S1 任务包 P1.1 |
+| 撰写 | 喻永昌（项目负责人） |
+| 依据 | 范围与判据见 [`charter.md`](./charter.md) §3.3、§4；任务包与 DoD 见 [`roadmap.md`](./roadmap.md) P1.1；关系定性与基座事实见 [`protocol-asset-review.md`](./protocol-asset-review.md)；决议 D-1 ~ D-9 与实测 E1 ~ E6 见 [`selection-m0.md`](./selection-m0.md) |
+| 性质 | 见下方「本文性质」四条 |
+
+**变更记录**
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| v0.1 | 2026-08-12 | 初稿。落实 roadmap P1.1 全部交付物：信封结构、地址与注册键、生命周期状态机（五类边界逐条对应迁移路径）、错误码表、hop / trace / fingerprint 字段、与基座单机信箱机制的关系（上层封装）、安全（capability 签发与来源标注）。逐条落地 D-2 / D-3 / D-8 / D-9 与 P0.5 交出的七条必解问题，无「待定」 |
+
+**本文性质**
+
+1. 本文是**协议设计文档**，不是范围依据也不是排期依据。范围以 `charter.md` 为准，排期与 DoD 以 `roadmap.md` 为准。
+2. **协议级数值上限（消息体积、跳数、TTL 默认值、速率预算）以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处**（`packages/protocol/src/limits.ts:5-14`）。本文正文一律**引用字段名，不写数值**；唯一一处数值出现在 §11「现值速查」，且该表标明出处、随代码变化、**不得被复制到任何其他位置**。
+3. **本文对基座行为的每一条断言都给出 `文件:行号`。**标注「（本次核实）」者为 2026-08-12 撰写本文时在工作区实际读码/实跑所得；标注「（复核 §x）」者引用 `protocol-asset-review.md` 已核实的结论，不重复举证。凡未验证者一律在 §12 显式写「未查证」，不以推断充事实。
+4. 被引用的是**基座 open-claude-code 自己的代码**（MIT，项目负责人自有），不构成对 Anthropic 官方 Claude Code 的源码引用，章程 §5.6② 的纪律对象与强度不变。
+
+---
+
+## 1. 协议的定位与三条设计前提
+
+### 1.1 一句话定位
+
+> **阡陌协议管「跨节点怎么到」，基座信箱管「到了之后怎么进上下文」。**
+
+这是 P0.5 定下的「上层封装」（`protocol-asset-review.md` §6.1，章程 §5.5）。本文把该定性从一句话展开成可实现的字段、状态与断言。
+
+### 1.2 三条不重新论证的前提
+
+| # | 前提 | 出处 |
+|---|---|---|
+| 前提 1 | **关系是上层封装**：跨节点全程走阡陌协议层；最后一跳复用基座文件信箱（直调 `teammateMailbox.writeToMailbox`）；节点内同 team 消息原样走基座、不进阡陌层 | 复核 §6，章程 §5.5 |
+| 前提 2 | **协议自研 + 概念对齐 A2A，不采用 A2A 子集**。免费对齐三处：任务状态机名、`taskId` / `contextId` 分离、Agent Card 形状。A2A v1.0 规范中**不存在** hop / TTL / 环路检测 / 去重键字段 | D-9 |
+| 前提 3 | **判环粒度是「同一处理者地址 + 同一任务标识」**，`LIMITS.maxHops` 仅作兜底 | D-2，章程 §3.3 C-4、§4 AC-3 |
+
+**关于前提 2 的自我约束**：D-9 的免费对齐落在**概念**上，本文不引用任何未取证的 A2A 线上细节——`selection-m0.md` §6 明确记录「A2A JSON-RPC 线上方法名三处口径冲突，未取证，**勿写进代码**」。逐字段映射是 P6.4（章程 P-4，A2A 对齐评估报告）的活，本文只保证**不引入会让那次映射变难的结构**：任务标识与会话上下文分离、状态机是显式有限集、错误是稳定字符串码。
+
+### 1.3 v0.1 的适用边界
+
+- 只覆盖 `charter.md` §3.3 C-1 / C-4 / C-5 / C-6 与 AC-2 / AC-3 所需的最小面。
+- **不定义**资源协商四段式（S-2，P5.2 扩展本文）、不定义计费（N-1，只保留字段位）、不定义多租户（N-2）。
+- 线上版本号 `v` 在 M0 内保持 `0`。**理由是实测事实**：两包在仓库内零外部消费方、无任何已部署对端（复核 §5「当前接线状态」），因此 v0.1 对信封做的字段增删**不构成兼容性破坏**。P2.2 打通两台机器之后再改字段，必须升 `v` 并写迁移。
+
+---
+
+## 2. 地址与注册键
+
+### 2.1 地址格式
+
+```
+qianmo://<node>/<agent>
+```
+
+- 两段各 1–64 字符，字符集 `[a-z0-9_-]`，不得以 `-` / `_` 开头或结尾（`packages/protocol/src/address.ts:16`、`:10`）。
+- 解析：`parseAddress`（`address.ts:39-52`）；校验：`isValidAddress`（`address.ts:55-57`）；渲染：`formatAddress`（`address.ts:60-80`）。地址不做大小写归一化——字符集本就只允许小写，**大写字母直接判非法**，不存在两个大小写不同的地址指向同一实体的情况。
+- **地址是全局唯一标识，不是路径。**`agent` 段在 `node` 内唯一，`node` 段在网络内唯一。
+
+### 2.2 与基座文件名的兼容性（已核实，无需处理）
+
+基座把 agent 名当文件名前过 `sanitizePathComponent`，实现是 `input.replace(/[^a-zA-Z0-9_-]/g, '-')`（`src/utils/task/tasks.ts:311-313`）。阡陌地址段字符集 `[a-z0-9_-]` 是它的**真子集**，因此阡陌 agent 名作为收件箱文件名**不会被改写**，不存在两个阡陌 agent 映射到同一收件箱文件的风险（复核 §7⑧）。
+
+**但有一处复核未覆盖的例外，本次核实后补上**：`sanitizePathComponent` **不做** Windows 保留设备名规避，而 roster 目录用的 `sanitizeName` **做**（`src/utils/swarm/teamHelpers.ts:102-104` 调 `avoidReservedName`）。`avoidReservedName` 对 `con` / `prn` / `aux` / `nul` / `com1`–`com9` / `lpt1`–`lpt9` 这 22 个名字加 `_` 前缀（`src/utils/filesystem/reservedNames.ts:18-25, 34-42`）。后果有两条：
+
+1. 名为 `nul` 的 agent 在 Windows 上会得到一个指向空设备的收件箱文件（该文件的模块头注释 `reservedNames.ts:7-17` 把这条记为已知陷阱）；
+2. 名为 `con` 的 team，roster 目录是 `_con`、收件箱目录是 `con`，**目录分叉**（这是复核 §7⑦ 那处不一致在小写字符集下的残余形态）。
+
+**规则 A-1（v0.1 定死）**：阡陌的 `node` 段、`agent` 段与节点内 team 名，**一律不得使用上述 22 个保留设备名**。这是纯命名约束，零实现成本，从源头绕开两条陷阱。M0 部署在 Debian（D-4），第 1 条当前不触发，但该约束照样生效——理由与基座注释一致：名字会随配置被复制到别的机器上。
+
+### 2.3 team 名归一化（问题 ⑦ 的结论）
+
+基座对 team 名用了两个净化函数：roster 走 `sanitizeName`（`teamHelpers.ts:102-104`，非字母数字全变 `-`、**转小写**、再过 `avoidReservedName`），收件箱走 `sanitizePathComponent`（`tasks.ts:311-313`，**保留 `_` 与大小写**）。
+
+**规则 A-2（v0.1 定死）**：阡陌节点内使用的 team 名，在进入基座任何 API 之前先归一化为——
+
+```
+^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$   且不在 A-1 的 22 个保留名之列
+```
+
+即**地址段字符集去掉 `_`**。这样两个净化函数对它是**同一个恒等映射**，目录分叉不可能发生。**不改基座**（复核 §7⑦ 的处置，本文只补上 `avoidReservedName` 这一条并把字符集写成正则）。
+
+`_` 被排除的原因是精确的：`sanitizeName` 把 `_` 变 `-`，`sanitizePathComponent` 保留 `_`——`_` 是这两个函数唯一实际分叉的字符类。agent 段**不受此限**（agent 名只经 `sanitizePathComponent`，不经 `sanitizeName`），故仍可含 `_`。
+
+### 2.4 注册键（问题 ③ 的结论）
+
+**结论：注册中心改用复合键 `<node>/<agent>`，单张扁平表，不做每节点分区。**
+
+现状缺口：`InMemoryRegistry` 按**单段裸名**注册与解析（`packages/registry/src/registry.ts:115` 的 `isValidSegment(name)`、`:161-163` 的 `resolve(name)`、`:85` 的 `Map<string, AgentRecord>`），而 AC-2 要解析 `qianmo://node-b/reviewer`。两个节点各有一个 `reviewer` 时，第二次注册会被 `registry.ts:140-146` 判成 `E_CONFLICT`——**而那是错的语义**，它们本来就是两个不同的智能体。
+
+选复合键、不选每节点分区，四条理由：
+
+1. **解析路径最短**：AC-2 要的就是「给一个地址、拿一个端点」。复合键是一次 `Map.get`，分区方案要先选分区再查表，多一层且没有对应收益。
+2. **`E_CONFLICT` 的语义因此变正确**：同 `node` + 同 `agent` 但端点不同 = 真冲突（该保护的原意是「重启的 agent 不被别的进程悄悄顶替」，见 `registry.ts:105-108` 的注释）；不同 node 的同名 agent = 不同键，天然不冲突。
+3. **HTTP 层零改动**（本次核实）：路由按 `pathname.split('/')` 取第三段并 `decodeURIComponent`（`packages/registry/src/http.ts:160-176`）。实跑 `new URL("http://h/v0/agents/node-b%2Freviewer")` 得 `pathname = /v0/agents/node-b%2Freviewer`，`split('/')` 后仍是 **3 段**，解码后正是 `node-b/reviewer`。也就是说**客户端做百分号编码即可，`createRegistryHandler` 一行不用改**。
+4. **M0 规模不需要分区**：注册中心单点部署、不做高可用（章程 N-6），分区带来的只有 `list()` / `prune()` 的两级遍历。
+
+**规则 A-3**：`register` / `resolve` / `heartbeat` / `deregister` 的入参改为**完整 `qianmo://` 地址**，内部经 `assertAddress`（`address.ts:83-95`）解析后拼 `${node}/${agent}` 作键。**只保留一种规范形态**，不引入「裸名」「node/agent 二元组」「完整地址」三套并行写法。
+
+**顺带查出的一处真实缺口（本次核实）**：`isValidEndpoint` 只接受 `qianmo://` 地址或 `http:` / `https:` URL（`registry.ts:52-62`），而 M0 选定的传输是**单条 wss 长连接**（`selection-m0.md` §4）。**`wss://…` 现在会被判成非法端点。**列入 §10 后续动作。
+
+---
+
+## 3. 消息信封
+
+### 3.1 字段表
+
+v0.1 信封（现状信封定义在 `packages/protocol/src/message.ts:43-62`；下表带 **新增** / **变更** 标记者是本文相对现状的改动，落地见 §10）。
+
+| 字段 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `v` | `0` | 是 | 信封版本。M0 恒为 `0`（理由见 §1.3） |
+| `msgId` | `string`（UUIDv4） | 是 | **本次传输**的唯一标识。at-least-once 重发时**保持不变**——这是接收侧一级去重的键（§7.2） |
+| `traceId` | `string`（W3C `traceparent`） | 是 | **变更**：格式改为 W3C `traceparent`（D-9）。见 §7.1 |
+| `taskId` | `string` | 是 | **新增**。任务标识。判环键的一半（D-2）、请求与结果的相关键（§3.3）、去重指纹的组成部分 |
+| `contextId` | `string` | 否 | **新增**。跨任务的会话上下文标识（A2A 概念对齐三处之一）。同一 `contextId` 下可有多个 `taskId` |
+| `from` | `string`（地址） | 是 | 发送方**处理者地址**，完整 `qianmo://<node>/<agent>`。见 §3.2 |
+| `to` | `string`（地址） | 是 | 收件方处理者地址 |
+| `type` | `MessageType` | 是 | 见 §3.4 |
+| `payload` | `unknown` | 是 | 按 `type` 判别的载荷。**跨节点内容一律视为不可信**（§10.2） |
+| `createdAt` | `number` | 是 | 发送方构造信封时的 epoch 毫秒。两个时限字段都以它为起点 |
+| `deliverTtlMs` | `number` | 是 | **变更**（原 `ttlMs` 拆分之一）：**投递时限**。见 §5 |
+| `taskTtlMs` | `number` | 是 | **新增**（原 `ttlMs` 拆分之二）：**任务时限**。见 §5 |
+| `hops` | `readonly string[]` | 是 | 已经过的**节点**名，最旧在前。仅作 `maxHops` 兜底与审计链，**不再作为判环主机制**（§6.2） |
+| `fingerprint` | `string` | 是 | **新增**。内容指纹，二级去重键。定义见 §7.2 |
+| `origin` | `object` | 是 | **新增**。来源标注。见 §10.2 |
+| `trust` | `'untrusted'` | 是 | **新增**。信任标记。跨节点消息**恒为 `'untrusted'`**，无第二个取值。见 §10.2 |
+| `cap` | `string` | 否 | **新增**。capability 令牌（Ed25519 签名）。见 §10.1。缺省即「只读」等级 |
+| `costLimit` | `number` | 是 | **新增**。金额硬上限。**M0 恒为 0**（章程 N-1），只验证「硬上限能拦住」这个机制。完整语义留 P5.2 |
+
+**关于 `payload` 的一条硬约束**：`payload` 里**不得**重复承载任何信封字段的语义（不得再放一份 `to`、一份 deadline、一份 trace）。信封是路由与治理面，`payload` 是业务面，两者不得互相解释——否则 §6 的判环与 §5 的时限会出现两个真源。
+
+### 3.2 `from` 的形态（问题 ④ 上半的结论）
+
+**结论：`from` 在信封与基座信箱两侧都放完整 `qianmo://` 地址，不放裸名。**
+
+三条理由，其中第三条是安全性的：
+
+1. **不破坏基座任何断言**（复核 §7④ 已核实）：基座的消息去重指纹是 `[from, timestamp, text]` 的 JSON 字符串相等（`src/utils/agents/teammateMailbox.ts:84-90`），完整地址只是更长的字符串。
+2. **着色不构成约束**（本次核实，关闭复核 §8① 的一半）：`findTeammateColor` 在 appState 里按 `name` 逐个比对，未命中**返回 `undefined`**（`packages/builtin-tools/src/tools/SendMessageTool/SendMessageTool.ts:131-145`）。而且入站适配器直接调 `writeToMailbox`、根本不经过那段代码，`color` 是可选字段（`teammateMailbox.ts:51-58`），**不传即可**。
+3. **裸名会打开一条真实的越权路径**（本次核实，这是选完整地址的决定性理由）：基座**多处按 `from` 的字符串相等做身份判定**——
+   - `isLeaderIdentity` 判定「这条消息是不是 leader 发的」，实现就是 `sender === security.leadAgentId || sender === security.leadName`（`src/hooks/useInboxPoller.ts:145-153`），权限响应、plan 审批、关机审批三处都用它把关（`:324`、`:542`、`:648`）；
+   - 进程内 teammate 的取信优先级同样按 `m.from === TEAM_LEAD_NAME` 判定，**lead 消息会插队到全部 peer 消息之前**（`src/utils/swarm/inProcessRunner.ts:837`；`TEAM_LEAD_NAME = 'team-lead'`，`src/utils/swarm/constants.ts:3`）。
+
+   若 `from` 放裸名，一个远端节点只要把 `from` 写成 `team-lead`，就同时拿到了插队与「被当作 leader」两件事。放完整地址则**结构上不可能**：`qianmo://` 含 `:` 与 `/`，而这些身份标识都是裸名，字符串永不相等。
+
+**规则 E-1（安全不变式）**：入站适配器写进 `TeammateMessage.from` 的值，**必须**由适配器自己用 `formatAddress(parseAddress(envelope.from))` 重新渲染，**绝不允许**把信封里的原始字符串直接拷进去。校验失败即拒收（`E_BAD_ADDRESS`），不做任何"尽力修复"。
+
+**规则 E-2（配套不变式）**：阡陌节点内的 team lead 名固定为基座默认的 `TEAM_LEAD_NAME`（裸名，无 `:` / `/`），且 A-1 / A-2 保证任何阡陌 team / agent 名都不含 `:` / `/`。E-1 与 E-2 合起来才使「远端地址永不等于本地身份」成立——**只有 E-1 是不够的**，两条要一起进 CI 断言（§10）。
+
+### 3.3 请求与结果的相关键
+
+现状 `MessageType.TaskResult` 的注释写「由 `traceId` 相关」（`message.ts:15`），`errorReply` 也只复制 `traceId`（`message.ts:161-168`）。**采用 W3C `traceparent` 之后这条不再成立**——`traceparent` 的规范用法是每一跳换 `parent-id`（span），只有 trace-id 段跨跳不变；把它当相关键会把「同一 trace」与「同一任务」混为一谈。
+
+**规则 C-1**：`task.request` ↔ `ack` / `task.result` / `error` 的相关键是 **`taskId`**，不是 `traceId`。`traceId` 只用于审计串联（C-6）。所有回复类消息必须原样回带 `taskId`，`errorReply` 相应修改（§10）。
+
+### 3.4 消息类型
+
+| 类型 | 方向 | 说明 |
+|---|---|---|
+| `task.request` | 请求方 → 处理方 | 请求执行一件事。**唯一需要 ack 的类型之一** |
+| `ack` | 处理方 → 请求方 | **新增**。A 类 ack，语义严格受限，见 §4 |
+| `task.result` | 处理方 → 请求方 | 任务的终局回复（成功或失败），按 `taskId` 相关 |
+| `ping` / `pong` | 双向 | 存活探测。不产生 ack，不进任务状态机 |
+| `wake` | activator → 目标节点 | 唤醒休眠节点。**需要 ack**（AC-2 的唤醒链路要它） |
+| `error` | 任意 | 投递或处理失败，payload 携带 `ProtocolErrorCode`（`packages/protocol/src/errors.ts:5-26`） |
+
+现状枚举缺 `ack`（`message.ts:12-25`），列入 §10。
+
+**v0.1 明确不定义 `task.progress`。**「已开始执行 / 已加载上下文」这类中间语义一律由 `task.result` 承担——引入进度类型会立刻把 §4 的两类 ack 边界搅浑（进度事件必然触碰旧上下文，属 B 类），且 M0 无判据要求（N-12 的同类取舍）。
+
+---
+
+## 4. 两类 ack：v0.1 把 ack 定义成哪一类
+
+这是本任务包必须定死、且直接决定 AC-2 能否成立的一条。
+
+### 4.1 事实基础（实测，`selection-m0.md` §3 E2）
+
+沙箱从 frozen 唤醒后，代价**不均匀**：`unpause` 系统调用本身 46.6–55.5 ms；但 400 MiB 工作集换回全速另需 **9.0–10.2 秒**，三次一致；**期间 `echo` 仍在 ~130 ms 内返回——迟滞只落在触碰旧工作集的代码上**。按线性外推，1.5 GiB 量级会吃掉 30–40 秒（**该外推未实测，只测了 400 MiB 一个点位**）。
+
+一句话：**ack 触不触碰旧堆，成本差两个量级**。
+
+### 4.2 v0.1 的定义
+
+> **`ack` 一律是 A 类（冷路径 ack）。**它断言且只断言一件事：**目标智能体已经把这条消息取出并纳入自己的输入**（基座信箱中该消息的 `read` 标志已由 `false` 翻为 `true`）。
+>
+> 它**不断言**：目标智能体已经理解该消息、已经重建旧会话上下文、已经开始执行、或对能否完成有任何判断。这些语义一律属于 `task.result`。
+
+**协议级强制（规则 K-1）**：`ack` 的 payload **字段封闭**，只允许 `{ ofMsgId, taskId, handler, ackAt }` 四项，全部是入站适配器**在不读取任何既有会话状态的前提下**就能填出的值。
+
+- `ofMsgId` / `taskId` 来自被 ack 的信封本身；
+- `handler` 是本节点自己的地址；
+- `ackAt` 是本地时钟。
+
+**禁止**在 ack 中回带任务状态、队列深度、上下文摘要、预计耗时。这不是风格约定——**任何一个这样的字段都会强迫实现去读旧堆，把 A 类悄悄变成 B 类**，而那正是 T-1 对策④/⑤ 要防的事。字段封闭让「是 A 类」成为结构性保证，而不是实现者的自觉。
+
+### 4.3 B 类在哪里
+
+B 类（触碰旧工作集）语义**不消失，只是换了载体**：它由 `task.result` 承担。`task.result` 的时限是**任务时限**（§5），量级是分钟，付得起那 9–10 秒。AC-2 的判据本来就把两条线分开写（60 s ack / 5 min result，章程 §4 AC-2），协议照这条缝切开即可。
+
+### 4.4 60 s 预算怎么守
+
+ack 从发出到回到请求方，链路逐段如下（**数值一律指向出处，本表不新造数字**）：
+
+| # | 段 | 是否触碰旧工作集 | 代价与出处 |
+|---|---|---|---|
+| 1 | 请求方 → 目标节点 transport 往返的去程 | 否 | **未实测**，P2.2 测 |
+| 2 | activator 唤醒目标沙箱（`unpause`） | 否 | 46.6–55.5 ms 实测（`selection-m0.md` §3 E2） |
+| 3 | 入站适配器校验 + 写信箱（加锁 + 原子 rename） | 否 | **未实测**（写路径见 `teammateMailbox.ts:391-408`） |
+| 4 | 目标智能体轮询取走该消息、`read` 翻转 | **热路径**（见下） | 上界是基座轮询周期：进程内 500 ms（`inProcessRunner.ts:711`）、窗格 1000 ms（`src/hooks/useInboxPoller.ts:261`） |
+| 5 | 适配器观察到翻转并发出 ack | 否 | 观察器周期，实现常量，P2.x 定 |
+| 6 | 回程 transport | 否 | 同 1 |
+| — | **不含** 工作集回暖 | — | 9.0–10.2 秒（400 MiB 实测）**被排除在 ack 路径之外——这就是 A 类定义的全部意义** |
+
+第 4 段有一个**必须实测、目前只是有依据的推断**：轮询循环在解冻后属于「最近触碰过的热页」，因此不付全额回暖代价。依据是 E2 的「`echo` 仍在 ~130 ms 内返回，迟滞只落在触碰旧工作集的代码上」。**但 E2 测的是 `echo`，不是 occ 的轮询循环本身**——这条**未实测**，列入 §12，**P3.1 的基准报告必须专门测它**（roadmap P3.1 DoD 已要求先出耗时基准报告再定实现）。若实测证伪，A 类 ack 的成立方式要回到 T-1 对策④重新设计，而不是把 60 s 线放松。
+
+**测量口径（D-3）**：上表的延迟测量走**独立的非阻塞基准 job** 并留档；CI 阻塞位**只放超时兜底断言**（抓死锁与挂起，对抖动免疫）。不得把 P95 门禁放进阻塞 CI。
+
+### 4.5 ack 由谁发出（问题 ⑥ 的结论）
+
+> **`ack` 由目标节点的阡陌适配层在观察到「基座信箱中该消息的 `read` 翻转为 `true`」之后发出。绝不允许由入站适配器在写完文件的那一刻发出。**
+
+**为什么不能写完即回**（复核 §7⑥ 已定，此处补上精确的翻转点）：基座信箱的配额执行方式是**丢消息**，**未读消息也会被丢**——每次写入都先压缩（`teammateMailbox.ts:271-279`），按「未读协议消息 → 未读普通消息 → 已读消息」三档保留，超 `MAX_MAILBOX_RETAINED_BYTES` 就不再保留（`:198-248`），被挤掉的只记一条 `logError`（`:250-269`），**发送方拿不到任何反馈**。写完即回 ack 会让一次被驱逐的消息表现为「ack 到了、result 永远不来」——直接打掉 AC-2 的 10/10。
+
+**「真正读到」在基座里是哪一行**（本次核实，两条投递形态各一处）：
+
+| 形态 | 翻转点 | 之后发生什么 |
+|---|---|---|
+| 进程内 teammate | `inProcessRunner.ts:854-858` 调 `markMessageAsReadByIdentity` | 紧接着 `:859-865` 把 `msg.text` 作为新一轮 prompt 返回给智能体主循环 |
+| 附件投递（`-p` 模式等） | `src/utils/attachments/team.ts:192-197` 调 `markMessagesAsReadBySnapshot` | 该调用**在附件构造完成之后**（`:181-188` 的注释明写这是为了「任何一步失败都不丢消息」） |
+
+两处都满足同一个语义：**`read` 翻转 ⇔ 消息已进入目标智能体的输入**。这正是 A 类 ack 要断言的那件事，一字不多一字不少。
+
+**观察机制**：阡陌节点侧适配器持有它自己写入时用的 `[from, timestamp, text]` 三元组（即基座的消息身份，`teammateMailbox.ts:84-86`），据此在信箱里定位该条并读 `read` 标志。
+
+**这个机制顺带解决了驱逐问题**——三种观察结果对应三种终态，没有第四种：
+
+| 观察结果 | 状态迁移 | 回给发送方 |
+|---|---|---|
+| 该条存在且 `read === true` | `delivered → acked` | `ack` |
+| 该条**从信箱里消失**（被压缩驱逐） | `delivered → dropped` | `error(E_EVICTED)` |
+| 投递时限到期仍 `read === false` | `delivered → expired` | `error(E_TTL_EXPIRED)` |
+
+**写完即回 ack 做不到这个区分**——它把第二行伪装成第一行。这是「端到端 ack」相对「写入即 ack」的实质收益，不只是纪律问题。
+
+实现上优先用文件监视：信箱的每次写入都是**临时文件 + `rename` 原子替换**（`teammateMailbox.ts:166-169`），因此每次变更都会产生一个 rename 事件。**但 `fs.watch` 在 gVisor / 冻结-唤醒下的行为未验证**（§12），所以协议只规定语义、不规定机制：**允许轮询实现，观察周期不得大于基座对应形态的轮询周期**（否则平白多加一个基座周期的延迟）。
+
+---
+
+## 5. 两个时限字段（问题 ② 的结论）
+
+### 5.1 拆分
+
+现状 `ttlMs` 一个字段同时承担投递时限与任务时限（`message.ts:58-59`、`expiresAt` `:130-132`），这正是「默认存活时长与 AC-2 回执线自相矛盾」的根因。v0.1 拆成两个：
+
+| 字段 | 覆盖区间 | 到期后的终态 | 默认值 |
+|---|---|---|---|
+| `deliverTtlMs`（**投递时限**） | `createdAt` → **`acked`**（目标智能体真正读到） | `expired` | `LIMITS.defaultTtlMs`（语义不变、数值不动） |
+| `taskTtlMs`（**任务时限**） | `createdAt` → `completed` / `failed` | `timeout` | **`LIMITS.defaultTaskTtlMs`（需新增，见 §10）** |
+
+**投递时限的终点选在 `acked` 而不是「写进信箱」，是与 §4.5 同一个判断的两面**：写进信箱不算送到，那么「投递时限」自然要覆盖到真正送到为止。若把终点定在写入完成，被驱逐的消息会在「投递成功」的状态下永远停住，TTL 就管不住它了。
+
+### 5.2 为什么基座管不了这两条线
+
+基座信箱消息**不过期**，只按条数与字节数压缩（`teammateMailbox.ts:176-248`；复核 §4.5）。收件人读取延迟**没有上界**——500 ms / 1000 ms 的轮询周期只是下界，智能体正忙时下一次取件可以是任意久之后（`inProcessRunner.ts:703-890` 的取件只发生在空闲等待循环里）。因此：
+
+**规则 T-1**：TTL 判定由阡陌侧在**三处**自行执行，一处都不能省：
+
+1. **出站前**（发送方）：`isExpired` 为真则根本不发，直接 `expired`；
+2. **入站时**（目标节点适配器，落箱之前）：过期即拒收并回 `error(E_TTL_EXPIRED)`，**不写信箱**——把一条注定作废的消息写进去，只会白白消耗收件箱配额、挤掉别人的未读消息；
+3. **观察期间**（落箱之后、`read` 翻转之前）：适配器持续比对投递时限，到期则转 `expired` 并回执（§4.5 表第三行）。
+
+### 5.3 时间跳跃闸门（E4 的强制要求）
+
+E4 实测：冻结期间 `CLOCK_MONOTONIC` **照常前进**（34 s 与 97 s 两个量级上 `gap_mono` 与 `gap_wall` 差 < 10 ms），**换单调时钟躲不掉**；`setInterval` 不补跑，34.7 秒空档只产生 1 个 tick。`selection-m0.md` §3 结论② 由此写死：**唤醒瞬间，所有「距上次见到 X 多久」的判据会同时越阈值一起触发**，必须有显式的时间跳跃检测与宽限窗口，否则常驻 occ 每次醒来都会自我判死一次。
+
+**规则 T-2**：T-1 的第 2、3 处判定**必须先过时间跳跃闸门**——任一 tick 的 `gap > 2×period` 即判定本节点刚解冻，重置本节点持有的全部在途消息的截止时间基准（宽限窗口内不判超时），窗口结束后判定恢复正常生效。
+
+T-2 顺带解决了另一个问题：**唤醒代价不再吃掉投递预算**。休眠节点被唤醒这一段发生在目标节点侧，闸门把它从投递时限里排除，因此 `LIMITS.defaultTtlMs` 的现值**不需要为了容纳 9–10 秒的工作集回暖而改动**。
+
+### 5.4 发送方侧的对应规则
+
+节点 B 侧的闸门管不到节点 A 的等待。补一条：
+
+**规则 T-3**：发送方在注册中心解析到**目标处于休眠态**时（智能体状态标记，roadmap P2.1 交付物），**必须**显式把 `deliverTtlMs` 设为不低于章程 §4 AC-2 的 ack 回执线；未显式设置则拒绝发送（出站校验断言，`E_BAD_ENVELOPE`）。目标在线时用默认值。
+
+这条把「默认值与 AC-2 回执线」的矛盾**在语义上解决而不是靠改数值**：默认值服务的是在线投递（短），唤醒路径的时限由发送方按注册中心给出的状态显式声明。`createMessage` 本来就支持 per-message 覆盖（`message.ts:73, 98`），无需新机制。
+
+> **仍建议负责人考虑**把 `LIMITS.defaultTtlMs` 提到 AC-2 回执线之上，好让「忘了设」的默认行为也是安全的。但那要改 `LIMITS` 并回写章程 §3.3 C-4、升版本号，**本文不动数值**，列入 §10 后续动作供负责人决定。T-3 在数值不变的前提下已经闭合，不依赖该决定。
+
+---
+
+## 6. 防循环：hop、判环与审计（问题 ④ 下半的结论）
+
+### 6.1 判环主机制：处理者粒度
+
+**判环键 = `(处理者地址, taskId)`**，首次回访即切断（D-2、章程 §4 AC-3）。
+
+- 「处理者地址」是完整 `qianmo://<node>/<agent>`，不是节点名。
+- 每个节点为**在处理中的** `taskId` 维护一张已访问处理者集合；入站消息若其 `to` 已在该 `taskId` 的集合内 → 切断，转 `loop_detected`，产生 1 条审计事件（含完整消息链 `traceId`）。
+- 该表按**投递时限**过期（与去重表同一口径，§7.2），不无限增长。
+
+**为什么不是节点粒度**：节点粒度会误杀合法 spiral——同一节点因不同目标地址被再次经过是正常路由；SIP 做过同样设计，RFC 3261 附录 A 把它定性为**规范级 bug**（D-2）。
+
+### 6.2 `hops` 降为兜底 + 审计链
+
+`hops` 保留，但**只做两件事**：`LIMITS.maxHops` 兜底、以及给审计一条可读的路径链。它**不再**承担判环。
+
+由此产生三处必须改的现状代码（**否则节点粒度会从别的入口偷偷生效**）：
+
+| 现状 | 位置 | 问题 | v0.1 要求 |
+|---|---|---|---|
+| `withHop` 在 `hops.includes(node)` 时抛 `E_LOOP` | `message.ts:112-116` | 节点粒度判环，误杀合法 spiral | 去掉该分支，只保留 `maxHops` 越界抛错（`:117-125`） |
+| `validateMessage` 断言 `hops` 无重复节点 | `validate.ts:188-192` | 同上 | 去掉 |
+| `validateMessage` 的 `options.node` 命中 `hops` 即 `E_LOOP` | `validate.ts:193-201` | 同上 | 保留代码但**入站校验一律不传 `options.node`**；该选项降为调试/测试用 |
+
+### 6.3 `withHop` 接线点（DoD 明列）
+
+`withHop` 当前**零生产调用方**（复核 §5 实测）。v0.1 把它的调用点定死为**两处，且只有两处**：
+
+1. **起始播种**：发送方在 `createMessage` 之后、交给 transport 之前，调 `withHop(msg, selfNode)` 把自己写进 `hops[0]`。
+   —— 这修掉 D-2 点名的第二个缺陷「**起始节点不自我播种**」：不播种则 `hops` 缺了链条的第一环，审计链断头，且 `maxHops` 少算一跳。
+2. **转发时**：中转节点在把消息交给下一跳之前调 `withHop(msg, selfNode)`。
+
+**终点节点不调用 `withHop`**——它不再转发，追加自己只会让回复消息带上无意义的跳数。
+
+用一句话记住接线位置：**`withHop` 只在「即将把这条消息交给 transport」之前调用，无论是第一次交还是第 n 次交。**
+
+### 6.4 与两层限流的关系
+
+章程 §4 AC-3 要求两层限流**各自独立验证、不得混写**：
+
+| 层 | 归属 | 触发后 |
+|---|---|---|
+| **协议层**：接收节点对单发送方的入站预算 `LIMITS.ratePerMinute` | 本文（阡陌协议层） | `rate_limited` 终态 + `error(E_RATE_LIMITED)` |
+| **运行时层**：单发送方对单目标的令牌桶（AC-3 ① 的 60 s / 20 条） | 运行时层，**不在本文定义** | 由运行时返回明确错误码，不进本状态机 |
+
+**规则 L-1**：协议层的入站预算在**校验之后、写信箱之前**执行——被限流的消息**不写信箱**（同 T-1 第 2 条的理由：不消耗收件箱配额）。
+
+---
+
+## 7. trace 与 fingerprint
+
+### 7.1 `traceId`：W3C `traceparent`
+
+**格式**（D-9；MCP 规范 SEP-414 已采纳，生态互通是免费的）：
+
+```
+traceparent = <version>-<trace-id>-<parent-id>-<trace-flags>
+              00-<32 hex>-<16 hex>-<2 hex>
+```
+
+- **跨跳不变的是 `trace-id` 段**；每一跳按 `traceparent` 的规范用法生成新的 `parent-id`。
+- 审计查询（C-6）按 `trace-id` 段串联，`loop_detected` 事件必须携带完整链（AC-3 判据明列）。
+- **相关键不是它**，是 `taskId`（§3.3 规则 C-1）。
+
+**与基座零冲突**（本次核实）：在 `src/` 与 `packages/` 下检索 `traceparent`，**零命中**。基座没有 W3C trace context 的任何实现或约定，采用它是纯增量，不与任何既有字段打架。
+
+### 7.2 `fingerprint` 与去重
+
+传输是 at-least-once（章程 §3.3 C-3，AC 判据：重复投递同一消息 3 次、接收端只处理 1 次，roadmap P2.2 DoD）。去重分两级，**两级都以投递时限为表项 TTL**（roadmap P4.2 已明确：去重表 TTL 的对齐对象是拆分后的「投递时限」字段）：
+
+| 级 | 键 | 抓什么 |
+|---|---|---|
+| 一级 | `msgId` | **同一信封的重传**。transport 重发时 `msgId` 不变 |
+| 二级 | `fingerprint` | **语义重复**：发送方崩溃重启后为同一件事重新构造的信封（`msgId` 与 `createdAt` 都变了） |
+
+**`fingerprint` 定义**：
+
+```
+fingerprint = sha256_hex( JSON.stringify([from, to, type, taskId, payloadDigest]) )
+payloadDigest = sha256_hex( JSON.stringify(payload) )
+```
+
+三点设计说明：
+
+1. **用数组不用对象**，绕开 JSON 对象键序问题——这正是基座自己算消息身份的做法（`teammateMailbox.ts:84-86` 的 `jsonStringify([from, timestamp, text])`），不另发明。
+2. **排除 `msgId` / `createdAt` / `hops` / `traceId`**：它们逐次不同，进指纹会让二级去重永远命中不了。
+3. **诚实的局限**：`payloadDigest` 依赖 `JSON.stringify` 的键序，因此指纹只保证「**同一发送方实现**对同一逻辑消息重发」可识别，**不保证跨实现的规范化等价**。M0 两端都是我方代码、且不追求第三方互通（N-4），这个强度够用；若 M1 要跨实现，再上规范化 JSON。
+
+**与基座去重的关系**：基座信箱自己也有一份身份比较（`teammateMailbox.ts:84-90`），但它服务的是本地读写幂等，**与阡陌的去重是两件事、互不替代**。阡陌不读它、不改它。
+
+---
+
+## 8. 消息生命周期状态机
+
+### 8.1 状态
+
+**在途状态**
+
+| 状态 | 归属 | 含义 |
+|---|---|---|
+| `created` | 发送方 | 信封已构造并通过出站校验，尚未入队 |
+| `queued` | 发送方 | 已入发送队列；目标休眠时在此等待 activator 完成唤醒 |
+| `sent` | 发送方 | 已交给 transport 写出（at-least-once，可能重发，`msgId` 不变） |
+| `delivered` | 目标节点 | 入站适配器校验通过并已写入基座信箱。**仅表示本节点已持有，不表示已送达智能体**（§4.5） |
+| `acked` | 双方 | 目标智能体真正读到（`read` 翻转），A 类 ack 已回程 |
+
+**终态**（七个，穷举，无第八个）
+
+| 终态 | 触发 | 回给发送方 |
+|---|---|---|
+| `completed` | `task.result` 回到发送方 | —（它本身就是结果） |
+| `failed` | 处理方明确报失败，或校验/授权失败 | `task.result`(失败) 或 `error(<code>)` |
+| `dropped` | 消息被目标节点丢弃且不再重试（主要是信箱驱逐） | `error(E_EVICTED)` 等 |
+| `expired` | **投递时限**到期 | `error(E_TTL_EXPIRED)` |
+| `timeout` | **任务时限**到期仍无终局 | `error(E_TASK_TIMEOUT)` |
+| `loop_detected` | 处理者粒度判环命中（或 `maxHops` 兜底） | `error(E_LOOP)` / `error(E_TOO_MANY_HOPS)` + **审计事件** |
+| `rate_limited` | 协议层入站预算耗尽 | `error(E_RATE_LIMITED)` |
+
+### 8.2 迁移表
+
+| # | 起点 | 终点 | 触发 / 守卫 | 动作 |
+|---|---|---|---|---|
+| 1 | — | `created` | 出站校验通过（`validateMessage`，不传 `options.node`） | `withHop(self)` 起始播种（§6.3） |
+| 2 | — | `expired` | 出站校验时已过投递时限（T-1 第 1 处） | 本地记录，不发出 |
+| 3 | — | `failed` | 出站校验失败（地址/类型/体积/`costLimit`≠0/T-3 未显式设时限） | 本地失败 |
+| 4 | `created` | `queued` | 入发送队列 | 注册去重键与判环键 |
+| 5 | `queued` | `sent` | transport 写出成功 | 起投递时限计时 |
+| 6 | `queued` | `failed` | 注册中心解析不到目标 | `error(E_UNKNOWN_AGENT)` |
+| 7 | `queued` | `expired` | 队列中投递时限到期（含 activator 唤醒失败） | `error(E_TTL_EXPIRED)` |
+| 8 | `sent` | `sent` | transport 重连后重发（同 `msgId`） | 接收侧一级去重吸收 |
+| 9 | `sent` | `delivered` | 入站全部检查通过并 `writeToMailbox` 返回 | 起观察（§4.5） |
+| 10 | `sent` | `rate_limited` | 入站预算耗尽（L-1，**先于写信箱**） | `error(E_RATE_LIMITED)` |
+| 11 | `sent` | `loop_detected` | `(to, taskId)` 已访问，或 `hops.length > maxHops` | `error(E_LOOP)` / `(E_TOO_MANY_HOPS)` + 审计事件 |
+| 12 | `sent` | `expired` | 入站时已过投递时限（T-1 第 2 处，**先过 T-2 闸门**） | `error(E_TTL_EXPIRED)`，**不写信箱** |
+| 13 | `sent` | `failed` | capability 校验失败 / 权限不足 / 信封非法 | `error(E_CAP_*)` / `error(E_BAD_*)` |
+| 14 | `sent` | `failed` | 二级去重命中（语义重复） | 幂等：回带首次结果，不重复执行 |
+| 15 | `sent` | `dropped` | `writeToMailbox` 抛错（文本超限 / 信箱文件超限 / 取锁失败） | `error(E_UNDELIVERABLE)` |
+| 16 | `delivered` | `acked` | 观察到 `read` 翻转为 `true` | 发 `ack`（A 类，K-1 字段封闭） |
+| 17 | `delivered` | `dropped` | 该条从信箱消失（压缩驱逐） | `error(E_EVICTED)` |
+| 18 | `delivered` | `expired` | 投递时限到期仍未翻转（T-1 第 3 处，**先过 T-2 闸门**） | `error(E_TTL_EXPIRED)` |
+| 19 | `acked` | `completed` | `task.result`（成功）回到发送方 | 释放判环键与去重键 |
+| 20 | `acked` | `failed` | `task.result`（失败）回到发送方 | 同上 |
+| 21 | `acked` | `timeout` | 任务时限到期仍无 `task.result` | `error(E_TASK_TIMEOUT)` |
+| 22 | `acked` | `failed` | 处理方进程异常退出且重启后无该任务记录 | `error(E_TASK_TIMEOUT)`（由 21 兜底） |
+
+**不变式**
+
+- 终态**不可再迁移**；任何一条消息**恰好**落到一个终态。
+- **除第 16 行外，不存在通向 `acked` 的迁移**——这是「ack 端到端」的结构化表述。
+- 第 10 / 11 / 12 行**全部先于写信箱**：被拒的消息不消耗目标收件箱配额（否则限流反而帮攻击方挤掉别人的未读消息）。
+
+### 8.3 五类边界问题 × 迁移路径（DoD 硬要求：逐条对应，无「待定」）
+
+| 边界类 | 具体情形 | 迁移路径 | 判据/依据 |
+|---|---|---|---|
+| **① 触发时机** | 目标休眠，需 activator 唤醒 | 4 → 5 → **T-2 闸门** → 9 → 16 | AC-2；唤醒代价 E2；闸门 E4 |
+| | 唤醒失败 / activator 不可达 | 4 → 7（`expired`） | AC-2 |
+| | 目标在线但正忙（取件推迟） | 9 →（观察）→ 16，或超时走 18 | 取件只在空闲循环发生（`inProcessRunner.ts:703-890`） |
+| | 目标节点刚解冻，全部截止时间同时越阈 | **T-2 闸门重置基准**，宽限窗口内不走 12 / 18 | E4 实测：`CLOCK_MONOTONIC` 冻结期照常前进 |
+| | 目标在注册中心已过租约（离线） | 4 → 6（`failed`, `E_UNKNOWN_AGENT`） | 心跳租约 `registry.ts:8, 183-195` |
+| **② 超时** | 投递时限到期（三处判定） | 2 / 7 / 12 / 18 → `expired` | T-1 三处；基座信箱**不过期**（`teammateMailbox.ts:176-248`） |
+| | 任务时限到期 | 21 → `timeout` | §5.1 |
+| | ack 迟迟不来 | 由投递时限统一兜住（18），**不设第三条独立的 ack 计时线** | §5.1：投递时限终点就是 `acked` |
+| **③ 消息风暴** | 单发送方入站洪水 | 10 → `rate_limited`（协议层，`LIMITS.ratePerMinute`） | AC-3 ② |
+| | 单发送方对单目标高频 | 运行时层令牌桶，**不进本状态机**（L-1 表） | AC-3 ①，两层不得混写 |
+| | A→B→A 回环 | 11 → `loop_detected` + 审计事件 | AC-3；判环键 `(处理者地址, taskId)` |
+| | 跳数失控（判环表因故失效） | 11 → `loop_detected`（`maxHops` 兜底） | §6.2 |
+| | 收件箱被挤爆、未读被驱逐 | 17 → `dropped`(`E_EVICTED`) | 三档保留 `teammateMailbox.ts:198-269` |
+| | 单条消息过大 | 出站 3（`E_TOO_LARGE`）；接近 64 KiB 者按 §9.3 落盘改写，不进信箱 | 问题 ① 的结论 |
+| **④ 额度耗尽** | `costLimit` ≠ 0（M0 恒为 0） | 3 → `failed`(`E_BUDGET_EXHAUSTED`)，**出站即拦** | 章程 N-1：字段保留、恒为 0、只验证硬上限能拦住 |
+| | 协议层入站预算耗尽 | 10 → `rate_limited` | 同 ③ |
+| | 模型/云服务额度耗尽（业务侧） | 由处理方以 `task.result`(失败) 报出 → 20 | S-1 原因级诊断（不在本文范围） |
+| **⑤ 异常退出** | 发送方在 `sent` 后崩溃 | 接收侧照常 9 → 16 → 回程无人收；重启后按 `taskId` 认领结果；未认领者由 21 兜底 | at-least-once + 两级去重（§7.2） |
+| | 接收方在 `delivered` 后崩溃 | 消息**留在磁盘信箱**（重启后仍在），重启后取件 → 16（迟到 ack）；若已过投递时限 → 18 | 信箱是持久文件、不带 pid/session 作用域（复核 §4.7） |
+| | 崩溃瞬间的丢失窗口 | 发送方由 7 / 12 / 18 转 `expired` 后按 at-least-once 重投；两级去重保证幂等 | P1.2 的「丢失窗口语义」在此闭合（roadmap P1.2 交付物要求回写本文） |
+| | 目标进程被 `SIGKILL`，team 目录残留 | 不影响投递（信箱持久）；残留目录的回收**不依赖基座会话级清理** | 清理是尽力而为（复核 §4.7） |
+| | 重发导致重复执行 | 8 / 14：一级去重吸收重传，二级去重吸收语义重复并回带首次结果 | AC：重投 3 次只处理 1 次 |
+
+**无「待定」自检**：上表 22 行，每行都指向 §8.2 的具体迁移编号或一条明确的层归属（运行时层 / 业务侧 / 不依赖机制），无一行以「后续再定」结尾。
+
+---
+
+## 9. 与基座既有单机信箱机制的关系（roadmap 明列必须有本节）
+
+### 9.1 结论
+
+**上层封装**（P0.5 定性，章程 §5.5、复核 §6.1）。场景边界表见复核 §6.5，**本文不复制**（指针不复制铁律）。本节只写复核没写、而实现必须知道的那一层：**最后一跳到底怎么接线**。
+
+### 9.2 最后一跳的六条硬规则
+
+**规则 M-1：直调导出函数，不取道工具面。**
+
+入站适配器调用的是 `teammateMailbox.writeToMailbox(recipientName, message, teamName?)`（`src/utils/agents/teammateMailbox.ts:362-366`，`message` 类型是 `Omit<TeammateMessage, 'read'>`）。
+
+复核 §7⑤ 的表述是「`SendMessageTool` 硬拒任何含 `@` 的 `to`，`qianmo://` 地址过不了这道校验」。**本次核实后需要更正一处，且更正之后理由更强**：`to` 的输入 schema 只是 `z.string()`、无格式约束（`SendMessageTool.ts:69-73`），唯一的字符检查是 `input.to.includes('@')`（`:599-606`）——**`qianmo://node-b/reviewer` 不含 `@`，它能通过这道校验**。通过之后会一路走到 `handleMessage`（`:754-758`）→ `writeToMailbox(input.to, …)`（`:159-169`）→ `getInboxPath` → `sanitizePathComponent`（`teammateMailbox.ts:285-295`）。实跑该正则得到的文件名是：
+
+```
+qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核实）
+```
+
+也就是说，取道 `SendMessageTool` 的真实后果**不是被拒绝，而是被静默改写成本节点上一个谁也不会读的收件箱文件**——比被拒更难诊断。复核的结论（必须直调 `writeToMailbox`）不变且更硬。
+
+另外，`SendMessageTool` 还有一条**不落盘**的进程内旁路：`call` 先查 `appState.agentNameRegistry` / `toAgentId(input.to)`，命中就走 `queuePendingMessage` / `resumeAgentBackground`（`SendMessageTool.ts:673-752`）。**阡陌不接这条通道**（复核 §4.3 已记）。
+
+**规则 M-2：写进 `text` 的必须是阡陌包装对象，远端内容一律嵌在下层。**
+
+`text` 的顶层 JSON 形如：
+
+```
+{ "type": "qianmo.envelope", "envelope": <QianmoMessage>, "notice": <见 §9.4> }
+```
+
+`type` 取值固定为 `qianmo.envelope`（连同将来可能增加的阡陌包装类型），**且入站适配器必须断言它不落在基座保留的 10 个类型内**。基座保留类型（`teammateMailbox.ts:1410-1432`）：`permission_request` / `permission_response` / `sandbox_permission_request` / `sandbox_permission_response` / `shutdown_request` / `shutdown_approved` / `team_permission_update` / `mode_set_request` / `plan_approval_request` / `plan_approval_response`。
+
+**这条不是洁癖，它堵的是一条具体的越权路径**（本次核实）：基座的收件箱轮询**按 `text` 的顶层 `type` 做分派**（`useInboxPoller.ts:382-414`），各判别函数也只看顶层对象（如 `isPermissionResponse`，`teammateMailbox.ts:895-907`，只判 `parsed.type === 'permission_response'`）。若把远端提供的对象**直接**当作 `text` 顶层写进信箱，一个远端节点就能把 `permission_response` / `shutdown_request` 投进本地的基座控制通道。把远端内容嵌在 `envelope` 之下，这些判别函数**结构上永不命中**。
+
+> 补一句实事求是的：基座在这条链上**并非毫无防护**——权限响应还要过 `isMessageFromTeamLeader`（`useInboxPoller.ts:542-547`，实现是 `from` 与 leader 名/ID 的字符串相等，`:145-153`）。所以 M-2 与 §3.2 的规则 E-1 / E-2 是**同一个攻击面的两道锁**：E-1/E-2 让 `from` 永不等于本地 leader 身份，M-2 让顶层 `type` 永不命中分派。任何一道单独存在都够呛，两道一起才是结构性的。
+
+**规则 M-3：`from` 由适配器自己渲染。**见 §3.2 规则 E-1。
+
+**规则 M-4：包装对象带顶层 `type` 是有意为之——它同时买到两件事**（本次核实）：
+
+1. **最高保留档**：`shouldRetainUnreadAsProtocolMessage`（`teammateMailbox.ts:65-82`）的判定顺序是「基座保留类型 → 否则：JSON-like 且顶层有 `type` 字段即为真」。`qianmo.envelope` 不在保留类型内，但有顶层 `type`，因此**落进第二个分支、返回真**，从而进入压缩的**第一档**（未读协议消息，额度 `MAX_UNREAD_PROTOCOL_MAILBOX_MESSAGES`，高于普通未读的 `MAX_MAILBOX_MESSAGES`；两档的限额读取在 `:185-189`，两趟保留分别在 `:214-219` 与 `:221-232`）。抗驱逐能力最强。
+2. **正常投递给智能体**：附件路径过滤的是 `isStructuredProtocolMessage`（`src/utils/attachments/team.ts:96-98`），而它是**闭集白名单**、不含 `qianmo.envelope`，因此阡陌消息**不会**被过滤掉，会正常进入智能体上下文并被标记已读（`:192-197`）；轮询路径的九个判别全部落空，归入 `regularMessages`（`useInboxPoller.ts:411-413`）。
+
+也就是说，**同一个 `type` 字段让阡陌消息拿到「协议消息的保留优先级」+「普通消息的投递路径」**，且不触发基座任何一条协议分支。这是设计上的取巧，但每一步都有代码依据，不是碰运气。
+
+**规则 M-5：`text` 体积由测量决定，不由估算决定。**见 §9.3。
+
+**规则 M-6：只写、无回调。**阡陌 → 基座是单向调用导出函数；基座不反向调用阡陌任何东西（复核 §6.2 第 4 条）。这既是「不改基座核心」的保证，也是循环依赖棘轮（`bun run check:cycles`）上的安全边界。
+
+### 9.3 体积上限硬冲突（问题 ① 的结论）：**选 (a) 大 payload 落盘，`text` 只放引用**
+
+**冲突**：`LIMITS.maxMessageBytes` 是 256 KiB（`limits.ts:7`），基座信箱单条 `text` 上限 64 KiB（`teammateMailbox.ts:47`）。按封装方案信封要序列化进 `text`，于是一条协议上完全合法的 65 KiB ~ 256 KiB 消息会在最后一跳炸掉。
+
+**本次核实到一条复核未提、但直接决定选项的事实——这个 64 KiB 不是「写入侧拒收一条」，是「整个收件箱的读写不变式」**：
+
+- 校验函数 `assertMailboxMessageSize` 由 `toMailboxMessage` 调用（`teammateMailbox.ts:96-103`、`:105-128`）；
+- 而 `toMailboxMessage` 同时被**读路径** `parseMailboxMessages`（`:130-136`）与**写路径** `writeToMailbox`（`:401`）调用；
+- `writeToMailbox` 在取锁后会**先重读整个信箱**再追加（`:399` → `readMailboxForMutation` `:148-154` → `parseMailboxMessages`）。
+
+合起来的后果是：**只要信箱文件里存在一条超限的 `text`，此后对该信箱的每一次读、每一次写都会抛错**——`readMailbox` 对非 `ENOENT` 错误原样上抛（`:326-335`），进程内轮询会 catch 住继续轮询（`inProcessRunner.ts:868-873`），即该智能体**变成永久性的聋子却还活着**。这是一颗毒丸，不是一次拒收。
+
+三条出路的逐条论证：
+
+| 出路 | 判断 | 理由 |
+|---|---|---|
+| **(c) 改 `LIMITS.maxMessageBytes` 到 64 KiB** | **否决** | ① 让基座的一个实现细节反过来钉死跨节点线上协议的体积上限，层次颠倒——将来换传输/换最后一跳，这个数字没有任何理由继续存在；② 它要改 `LIMITS` 并连带回写章程 §3.3 C-4、升版本号，代价不小而收益只是「回避」；③ **它解决不了业务**：AC-7 要求跨节点跑真实建模任务并回传结果，一次代码评审的 diff + 日志越过 64 KiB 是常态，砍上限等于把这类任务判死 |
+| **(b) 分片重组** | **否决** | ① 要引入重组缓冲、分片超时、部分丢失三套新状态，把 §8 的状态机规模翻倍——正撞在 T-2「通信边界组合爆炸」上；② 与基座的驱逐策略**相性极差**：压缩驱逐是按条计的（`:198-248`），驱逐掉任意一个分片就等于整条消息静默损坏，而发送方拿不到反馈（复核 §4.5）——这恰好是问题 ⑥ 要根除的失效模式，分片会把它请回来；③ 分片数还会乘上 `MAX_MAILBOX_MESSAGES` 的条数配额，让风暴阈值下降 |
+| **(a) 大 payload 落盘、`text` 只放引用** | **采纳** | ① **零新增状态**：状态机一行不用改，落盘失败并入既有的 15（`E_UNDELIVERABLE`）、取不到并入 `E_PAYLOAD_UNAVAILABLE`；② **上限变成结构性的**：进信箱的对象永远是「信封壳 + 一个引用」，体积有界且与业务载荷无关，毒丸风险从「可能触发」降为「不可能触发」；③ 不动 `LIMITS`、不改章程、不改基座；④ 与将来的传输层解耦——同一个引用机制在 blob 走独立通道时照样成立 |
+
+**落地方式（v0.1 定死）**：
+
+1. 入站适配器构造好最终要写进 `text` 的包装对象后，**测量它的实际 UTF-8 字节数**（`messageBytes`，`message.ts:150-152`）；
+2. 若超过基座导出的常量 `MAX_MAILBOX_MESSAGE_TEXT_BYTES`（`teammateMailbox.ts:47`），则把 `payload` 写入本节点的 blob 暂存区，并把信封的 `payload` 替换为引用：
+   ```
+   { "$blob": { "id": <string>, "bytes": <number>, "sha256": <hex> } }
+   ```
+   然后**重新测量**改写后的包装对象；
+3. **阈值只有一处出处，且不是新数字**：它就是基座导出的那个常量，实现里 `import` 它、**绝不抄写数值**。协议侧的 `LIMITS.maxMessageBytes` 管的是**线上信封**上限，两者是不同层的两个上限，各自唯一，互不复制；
+4. **测量而不是估算**：包装、转义、UTF-8 展开都会改变字节数，只有测最终字符串才作数；
+5. blob 暂存区路径**必须从 `src/config/paths.ts` 派生**（`occConfigDir()`，基座硬规则 ②），生命周期与该 `taskId` 的**任务时限**一致，到期回收；
+6. 取不到 blob（已回收 / 校验和不符）时，处理方回 `task.result`(失败) 携带 `E_PAYLOAD_UNAVAILABLE`，**不静默降级**。
+
+**参考量级（非上限，勿引用为限值）**：一个空 payload 的 v0.1 信封序列化后约 280 字节（本次实测，含 `traceparent` 形态的 `traceId`），因此包装开销相对 64 KiB 可忽略——真正决定是否落盘的永远是业务 payload。
+
+### 9.4 来源标注在 `text` 里的落点
+
+`notice` 字段承载 §10.2 要求的来源标注与不可信标记，**它必须在 `envelope` 之外的顶层**，理由是：附件路径把 `text` **原样**作为文本交给智能体（`team.ts:135-147, 183-188`），标记放在深层嵌套里等于让模型自己去翻——而 T-7 的判定基准写死「**不以模型是否被说服验收**」，标记的价值在于让**工具层**能无歧义地取到它，位置必须固定且浅。
+
+---
+
+## 10. 安全
+
+### 10.1 capability：每节点 Ed25519 签发（D-8）
+
+**为什么不是纯 PSK**：PSK 是对称的，持钥的任何节点都能伪造**任意节点**签发的令牌，**包括伪造「用户已确认」凭证**，于是章程 §1.6 / §3.3 C-5 的「消息不能替用户授权」从**结构性保证**退化为**约定**（D-8）。
+
+**M0 形态**：
+
+| 项 | 定义 |
+|---|---|
+| 密钥 | 每节点一对 Ed25519。私钥不出节点；公钥随节点记录发布到注册中心（现 `AgentRecord` 无此字段，见 §12.1 第 7 项） |
+| 令牌 | 分离签名的紧凑 JSON：`{ iss, sub, aud, act, taskId, nbf, exp, nonce }` + `sig` |
+| `iss` | 签发节点（= 签名私钥的持有者） |
+| `sub` | 被授权的处理者地址 `qianmo://<node>/<agent>` |
+| `aud` | 目标节点。**跨节点重放到第三个节点会因 `aud` 不匹配而失败** |
+| `act` | 权限等级，三取一：`read` / `write-limited` / `user-confirmed`（章程 §3.3 C-5 的三级权限） |
+| `taskId` | 绑定到具体任务，**不签发通用令牌** |
+| `nbf` / `exp` | 生效与过期。`exp` 不得晚于该任务的任务时限 |
+| `nonce` | 防重放，与 §7.2 的去重表同一 TTL 口径 |
+| PSK | **只作接入门禁**（transport 握手，P2.2、章程 N-3），**不参与任何授权判定** |
+
+**规则 S-1（C-5 的结构性强制点）**：
+
+> `act === 'user-confirmed'` 的令牌，**只有目标节点自己的私钥签发的才被接受**。任何跨节点消息携带的 `user-confirmed` 令牌，若 `iss ≠ 本节点`，一律拒绝并回 `error(E_CAP_INSUFFICIENT)`。
+
+这条把「消息不能替用户授权」变成一条签名校验：用户确认这件事**只能**由本地授权链路产生、由本地私钥背书，**远端在密码学上没有能力构造它**。
+
+**规则 S-2**：入站检查顺序固定，**授权在写信箱之前**：
+
+```
+地址与信封结构 → 版本 → capability 签名/aud/exp/nonce → 权限等级
+  → 入站速率预算(L-1) → 判环(§6.1) → 投递时限(T-1第2处，先过T-2闸门)
+  → [落盘改写(§9.3)] → writeToMailbox
+```
+
+顺序不是随意排的：**任何在授权之前发生的副作用都是攻击面**，而写信箱是这条链上唯一有持久副作用的动作，必须排在最后。
+
+**规则 S-3**：跨节点消息**不得**提升本地智能体的权限等级。适配器不调用、也不得触发基座的权限审批链路（`permissionSync` 那一套）——它是节点内 leader ↔ teammate 的事，阡陌不接（复核 §6.5）。
+
+签发与校验的**实现**落在 P4.3（roadmap 已明列「定义在 P1.1，本包实现」）。
+
+### 10.2 来源标注与不可信标记（T-7）
+
+**判定基准（章程 §6.1 T-7 对策①，写死）**：**不以「模型是否被说服」验收。**验收落在结构性阻断上。
+
+**协议给的字段**：
+
+| 字段 | 内容 |
+|---|---|
+| `trust` | 恒为 `'untrusted'`，**无第二个取值**——跨节点消息不存在「可信」这一档。取值封闭意味着不需要判断，只需要标注 |
+| `origin` | `{ node, agent, capIss, receivedAt }`：源节点、源智能体、令牌签发者、本节点接收时刻。**全部由接收侧填写**，不采信信封里的自述 |
+| `notice` | 写进 `text` 顶层的人类/模型可读标注（§9.4），内容固定模板，不接受远端提供的任何文本 |
+
+**结构性阻断的四个落点**（验收就落在这四条上，都可脚本化）：
+
+1. **顶层 `type` 永不命中基座分派**（M-2）——远端不能把消息投进基座的控制通道；
+2. **`from` 永不等于本地身份**（E-1 + E-2）——远端不能冒充 leader；
+3. **`user-confirmed` 只认本地签发**（S-1）——远端不能伪造用户授权；
+4. **权限不可提升**（S-3）——远端消息不能让本地智能体获得它原本没有的能力。
+
+四条都不依赖模型的判断力，都能写成断言进 CI（AC-8 的用例来源）。
+
+**记忆写入侧**：跨节点消息若被沉淀进项目记忆，按不可信输入处理，沿用 T-3 的来源 ID + 时间戳机制，不另起一套（章程 §6.1 T-7 对策④）。本文不定义记忆 schema（R-2 的活）。
+
+---
+
+## 11. 错误码表
+
+现有 10 个码定义在 `packages/protocol/src/errors.ts:5-26`，v0.1 新增 7 个（落地见 §12）。
+
+| 码 | 现状 | 触发点 | 状态机 |
+|---|---|---|---|
+| `E_BAD_ENVELOPE` | 已有 | 结构缺字段 / 类型不符；T-3 未显式设投递时限 | 3 / 13 |
+| `E_BAD_VERSION` | 已有 | `v` 不被支持 | 13 |
+| `E_BAD_ADDRESS` | 已有 | `from` / `to` / `hops` 非法地址 | 3 / 13 |
+| `E_BAD_TYPE` | 已有 | `type` 不在枚举内 | 13 |
+| `E_TOO_LARGE` | 已有 | 序列化信封超 `LIMITS.maxMessageBytes` | 3 |
+| `E_TTL_EXPIRED` | 已有 | **投递时限**到期（三处判定） | 2 / 7 / 12 / 18 |
+| `E_TOO_MANY_HOPS` | 已有 | `hops` 超 `LIMITS.maxHops`（兜底） | 11 |
+| `E_LOOP` | 已有 | 判环命中 `(处理者地址, taskId)` | 11 |
+| `E_RATE_LIMITED` | 已有 | 入站预算超 `LIMITS.ratePerMinute` | 10 |
+| `E_UNKNOWN_AGENT` | 已有 | 注册中心解析不到（含 node 段未知） | 6 |
+| `E_TASK_TIMEOUT` | **新增** | **任务时限**到期无终局 | 21 / 22 |
+| `E_EVICTED` | **新增** | 目标信箱压缩驱逐（`teammateMailbox.ts:198-269`） | 17 |
+| `E_UNDELIVERABLE` | **新增** | 最后一跳写入失败（超限 / 文件超限 / 取锁失败） | 15 |
+| `E_PAYLOAD_UNAVAILABLE` | **新增** | blob 引用取不到或校验和不符（§9.3） | 20 |
+| `E_CAP_INVALID` | **新增** | capability 签名 / `aud` / `exp` / `nonce` 校验失败 | 13 |
+| `E_CAP_INSUFFICIENT` | **新增** | 权限等级不足；`user-confirmed` 非本节点签发（S-1） | 13 |
+| `E_BUDGET_EXHAUSTED` | **新增** | `costLimit` ≠ 0（M0 恒为 0，章程 N-1） | 3 |
+
+**为什么不复用 `E_UNKNOWN_AGENT` 表示 node 未知**：复合注册键（§2.4）下「node 未知」与「agent 未知」是同一次查表的同一种失败，多一个码只会让调用方多一个分支而拿不到更多信息。
+
+**现值速查**（**唯一出处是 `packages/protocol/src/limits.ts:5-14`；本表随代码变化，正文与其他文档不得复制这些数值**）：
+
+| 字段 | 现值 |
+|---|---|
+| `LIMITS.maxMessageBytes` | 256 KiB |
+| `LIMITS.maxHops` | 8 |
+| `LIMITS.defaultTtlMs` | 30 s |
+| `LIMITS.ratePerMinute` | 600 |
+| `LIMITS.defaultTaskTtlMs` | **尚不存在**，需新增（§12） |
+
+---
+
+## 12. 后续动作
+
+### 12.1 需要改代码（本任务包只写文档，以下均未落地）
+
+| # | 位置 | 动作 | 触发它的条款 |
+|---|---|---|---|
+| 1 | `packages/protocol/src/message.ts` | 信封：`ttlMs` 拆成 `deliverTtlMs` + `taskTtlMs`；新增 `taskId` / `contextId?` / `fingerprint` / `origin` / `trust` / `cap?` / `costLimit`；`createMessage` 同步 | §3.1、§5.1 |
+| 2 | 同上 | `MessageType` 增加 `ack` | §3.4 |
+| 3 | 同上 | `errorReply` 必须回带 `taskId`（现在只带 `traceId`，`:161-168`） | §3.3 C-1 |
+| 4 | 同上 | `withHop` 去掉 `hops.includes(node)` 的 `E_LOOP` 分支（`:112-116`），保留 `maxHops` 越界 | §6.2 |
+| 5 | `packages/protocol/src/validate.ts` | 去掉 `hops` 无重复的断言（`:188-192`）；`options.node` 的 `E_LOOP` 降为调试用，入站校验不传 | §6.2 |
+| 6 | `packages/protocol/src/errors.ts` | 新增 7 个错误码（§11） | §11 |
+| 7 | `packages/registry/src/registry.ts` | 键改 `<node>/<agent>` 复合键，入参改完整地址（`assertAddress`）；`isValidEndpoint` 增加 `wss:`（`:52-62`）；`AgentRecord` 增 `publicKey` 与状态标记 | §2.4、§10.1 |
+| 8 | 新包 `@qianmo/adapter`（单段命名，`packages/` 下 workspace 包） | 入站适配器 + `read` 翻转观察器 + blob 暂存区（路径经 `occConfigDir()` 派生） | §4.5、§9 |
+| 9 | 出站路由 | `withHop` 起始播种 + 转发前追加，**两处且只有两处** | §6.3 |
+| 10 | CI 断言（进 `bun run verify` 门禁） | ① 阡陌 team / agent / node 名不落在 22 个 Windows 保留设备名内；② team 名匹配 A-2 正则；③ 包装 `type` 不落在基座 10 个保留类型内；④ 节点内 lead 名不含 `:` / `/` | A-1 / A-2 / M-2 / E-2 |
+| 11 | `packages/protocol/src/limits.ts` | 新增 `defaultTaskTtlMs`——**属下方「需负责人回写章程」项，不得单独在包内加** | §5.1 |
+
+### 12.2 需要负责人回写章程（`LIMITS` 与判据是他人维护的真源，本文不动）
+
+| # | 事项 | 影响面 |
+|---|---|---|
+| A | **新增 `LIMITS.defaultTaskTtlMs`**，并回写章程 §3.3 C-4 的数值清单、升章程版本号。约束：该值须**不小于**章程 §4 AC-2 的任务结果时限 | 12.1 第 11 项被它阻塞 |
+| B | **`LIMITS.maxMessageBytes` 不改**——问题 ① 选了落盘方案，**章程 §3.3 C-4 的四个数值一个都不动**。此条列出是为了留痕：P0.5 提示过「若选 (c) 须回写章程」，我们没有选 (c) | 无 |
+| C | （建议，非阻塞）考虑把 `LIMITS.defaultTtlMs` 提到 AC-2 ack 回执线之上，让「忘了设」的默认行为也安全。规则 T-3 在不改它的前提下已闭合，故本条只是加固 | 若采纳，同样要回写 C-4 + 升版本号 |
+| D | （提请 P0.8 一并确认）**AC-2 的「ack」按本文 §4.2 的 A 类定义理解**——判据文本不变，只是把「ack 意味着什么」写实。若评审认为 AC-2 要的是 B 类语义，§4 与 §5 要重做 | 章程 §4 AC-2 判据文本**不需要改** |
+| E | （提请）章程 §3.3 C-1 可补一句指针指向本文，与 C-4 的 `ttlMs` 拆分条对齐 | 纯指针 |
+
+### 12.3 未查证 / 开放项（如实列出，不以推断充事实）
+
+1. **轮询循环解冻后是否属「热页」——A 类 ack 成立的关键假设，未实测。**依据只有 E2 的 `echo` ~130 ms，而 E2 测的不是 occ 的轮询循环。**P3.1 的基准报告必须专门测它**；若证伪，§4 要按 T-1 对策④ 重做，而不是放松 60 s 线。
+2. **`fs.watch` 在 gVisor / 冻结-唤醒下的行为未验证**，故 §4.5 只规定语义、允许轮询实现。
+3. **窗格（tmux / iTerm2 / Windows Terminal）形态下 `read` 翻转的确切时机未逐行核实**。本文只核实了进程内（`inProcessRunner.ts:854-858`）与附件（`team.ts:192-197`）两条路径。M0 若只用进程内形态则不受影响。
+4. **入站适配器尚未写过一行代码、未跑通一次端到端投递**（沿用复核 §8②）。本文全部接线基于静态读码，**不作为工时承诺**。
+5. **基座信箱在阡陌身份下的行为未实测**（复核 §8③）。
+6. **transport 往返延迟未实测**，§4.4 预算表第 1、6 段为空，P2.2 补。
+7. **`teamContext.inProcessMailboxes` 究竟是什么仍未查清**（复核 §8④）。若 M0 选进程内形态承载阡陌节点内智能体，需在 P2.x 查清它会不会构成第二条读取路径——那会影响 §4.5 的翻转观察是否唯一。
+8. **A2A 的线上细节一律未取证**（`selection-m0.md` §6），本文按 §1.2 只做概念对齐，逐字段映射留 P6.4。
+9. **`getTeammateMailboxAttachments` 有一道 `process.env.USER_TYPE !== 'ant'` 的提前返回**（`team.ts:43-45`）——附件路径在该环境变量不为 `ant` 时**整条不生效**。本文未查证阡陌节点态下该变量的取值与设置方式，也未查证进程内路径（§4.5 第一行）是否受同一开关影响。**若 M0 依赖附件路径投递，这是必须先查清的一条**；若只用进程内 teammate 形态则不触发。
