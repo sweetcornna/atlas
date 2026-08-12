@@ -67,10 +67,9 @@ jobs:
       - name: Check mock hygiene
         run: bun run check:mock-hygiene
 
-      # The loop lives in scripts/test-shards.sh so this workflow and
-      # publish-npm.yml cannot drift apart — see that file for why sharding is
-      # what fixed the 55 red runs, and why an unsharded `bun test` is not a
-      # stricter substitute.
+      # The loop lives in scripts/test-shards.sh — see that file for why
+      # sharding is what fixed the 55 red runs, and why an unsharded `bun test`
+      # is not a stricter substitute.
       - name: Test with Coverage (sharded per directory)
         run: ./scripts/test-shards.sh --coverage
 
