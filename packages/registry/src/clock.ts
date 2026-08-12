@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 /** Time source, injected so TTL behaviour is testable without waiting. */
 export interface Clock {
   now(): number

@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 /**
  * `@qianmo/protocol` — the wire contract of the Qianmo agent network.
  *

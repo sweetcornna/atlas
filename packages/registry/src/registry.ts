@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 import { isValidAddress, isValidSegment } from '@qianmo/protocol'
 import { systemClock, type Clock } from './clock.js'
 

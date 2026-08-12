@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from 'bun:test'
 import {
   LIMITS,

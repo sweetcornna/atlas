@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 /**
  * `@qianmo/registry` — where agents announce themselves and find each other.
  *

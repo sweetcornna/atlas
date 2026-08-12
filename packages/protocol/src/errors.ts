@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 /** Stable, wire-visible error codes for the Qianmo protocol. */
 export enum ProtocolErrorCode {
   /** The value is not a message-shaped object, or a required field is missing. */

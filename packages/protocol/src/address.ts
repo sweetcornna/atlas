@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 import { ProtocolError, ProtocolErrorCode, issue } from './errors.js'
 
 /** Scheme prefix of every Qianmo address. */
