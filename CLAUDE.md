@@ -112,9 +112,12 @@
 bun install                 # 安装依赖，workspace 内部包自动链接
 bun run dev                 # 开发模式
 bun test <path>             # 单个测试文件
-bun run precheck            # typecheck + lint fix + test —— 任务完成后必跑，零错误
+bun run precheck            # typecheck + lint fix + test —— 快速反馈；注意它会改文件、且不等于 CI（见下）
+bun run verify              # 近 CI 门禁的只读式全量检查 —— 推送/发 PR 前跑
 bun run check:cycles        # 循环依赖棘轮
 bun run check:mock-hygiene  # mock 卫生棘轮
 ```
+
+**`precheck` ≠ CI，别把「本地 precheck 过」当成「CI 会过」。**`precheck` 用会**改源文件**的 `check:fix`（`biome check --fix`），且**不含** `check:cycles`、`check:unused`、`check:bundle`。`verify` 补齐这个差集：把 `check:fix` 换成只读的 `biome ci .`（CI 用的正是它），并纳入三个缺席门禁。**代价是 `check:cycles` 走 2300+ 模块要几分钟、且含一次 `build:vite`——所以 `verify` 是推送前的重活，日常改代码仍用 `precheck` 快速反馈。**
 
 完整清单见 `package.json` scripts（其中发布类命令属于基座发布面，本仓库不用，见 §0）。
