@@ -6,8 +6,7 @@
 
 import {
   getProtectedConfigDirectories,
-  legacyClaudeConfigDir,
-  occConfigDir,
+  getProtectedUserConfigDirectories,
 } from 'src/config/paths.js'
 import type {
   FsReadRestrictionConfig,
@@ -273,9 +272,14 @@ export function convertToSandboxRuntimeConfig(
       join(home, '.npmrc'),
       join(home, '.docker', 'config.json'),
       join(home, '.gnupg'),
-      // occ + official Claude Code credential stores
-      join(occConfigDir(), '.credentials.json'),
-      join(legacyClaudeConfigDir(), '.credentials.json'),
+      // EVERY identity's credential store — this process's own config root
+      // plus `~/.occ`, `~/.qianmo` and the official CLI's `~/.claude`. A
+      // Qianmo node denying only its own would still let a sandboxed command
+      // read a co-installed occ's OAuth token, which is the same leak in the
+      // read direction that the protected-config union closes for writes.
+      ...getProtectedUserConfigDirectories().map(configDir =>
+        join(configDir, '.credentials.json'),
+      ),
     )
   }
 
