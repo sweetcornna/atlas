@@ -18,7 +18,7 @@ export enum MessageType {
    * input. Payload is field-closed — see {@link AckPayload}.
    */
   Ack = 'ack',
-  /** Terminal answer to a `task.request`, correlated by `traceId`. */
+  /** Terminal answer to a `task.request`, correlated by `taskId` (C-1). */
   TaskResult = 'task.result',
   /** Liveness probe. */
   Ping = 'ping',
@@ -413,7 +413,15 @@ export function createAck(
   })
 }
 
-/** Build the standard `error` reply for a rejected message. */
+/**
+ * Build the standard `error` reply for a rejected message.
+ *
+ * Carries the original `taskId` back verbatim: rule C-1 makes `taskId`, not
+ * `traceId`, the correlation key between a request and every reply to it.
+ * `traceId` is a W3C `traceparent` whose parent-id legitimately changes per
+ * hop, so correlating on it would conflate "same trace" with "same task".
+ * `traceId` still rides along, for audit stitching only.
+ */
 export function errorReply(
   original: QianmoMessage,
   code: ProtocolErrorCode,
@@ -425,6 +433,10 @@ export function errorReply(
     to: original.from,
     type: MessageType.Error,
     traceId: original.traceId,
+    taskId: original.taskId,
+    ...(original.contextId === undefined
+      ? {}
+      : { contextId: original.contextId }),
     createdAt: now,
     payload: { code, reason, ofMsgId: original.msgId },
   })

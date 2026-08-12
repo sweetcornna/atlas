@@ -487,14 +487,17 @@ describe('ack', () => {
 })
 
 describe('errorReply', () => {
+  const original = createMessage({
+    from: FROM,
+    to: TO,
+    type: MessageType.TaskRequest,
+    payload: {},
+    traceId: 'trace-9',
+    taskId: 'task-9',
+    contextId: 'ctx-9',
+  })
+
   test('addresses the reply back to the sender and keeps the trace', () => {
-    const original = createMessage({
-      from: FROM,
-      to: TO,
-      type: MessageType.TaskRequest,
-      payload: {},
-      traceId: 'trace-9',
-    })
     const reply = errorReply(
       original,
       ProtocolErrorCode.E_UNKNOWN_AGENT,
@@ -507,5 +510,32 @@ describe('errorReply', () => {
     expect(reply.traceId).toBe('trace-9')
     expect(reply.payload.code).toBe(ProtocolErrorCode.E_UNKNOWN_AGENT)
     expect(reply.payload.ofMsgId).toBe(original.msgId)
+  })
+
+  test('carries the taskId back — that, not traceId, is the correlation key', () => {
+    const reply = errorReply(
+      original,
+      ProtocolErrorCode.E_TTL_EXPIRED,
+      'too late',
+      5_000,
+    )
+    expect(reply.taskId).toBe('task-9')
+    expect(reply.contextId).toBe('ctx-9')
+    // A fresh taskId would leave the requester unable to match the failure to
+    // the request it belongs to — the bug this fixes.
+    expect(reply.taskId).not.toBe(reply.msgId)
+  })
+
+  test('a reply to a message without a contextId does not invent one', () => {
+    const bare = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.TaskRequest,
+      payload: {},
+      taskId: 'task-10',
+    })
+    const reply = errorReply(bare, ProtocolErrorCode.E_LOOP, 'looped', 5_000)
+    expect(reply.taskId).toBe('task-10')
+    expect('contextId' in reply).toBe(false)
   })
 })
