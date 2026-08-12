@@ -63,7 +63,9 @@
         "@opentelemetry/semantic-conventions": "^1.40.0",
         "@qianmo/activator": "workspace:*",
         "@qianmo/adapter": "workspace:*",
+        "@qianmo/memory": "workspace:*",
         "@qianmo/protocol": "workspace:*",
+        "@qianmo/recall": "workspace:*",
         "@qianmo/registry": "workspace:*",
         "@qianmo/transport": "workspace:*",
         "@sentry/node": "^10.49.0",
@@ -280,6 +282,13 @@
     "packages/protocol": {
       "name": "@qianmo/protocol",
       "version": "0.0.0",
+    },
+    "packages/recall": {
+      "name": "@qianmo/recall",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/memory": "workspace:*",
+      },
     },
     "packages/registry": {
       "name": "@qianmo/registry",
@@ -936,6 +945,8 @@
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
+
+    "@qianmo/recall": ["@qianmo/recall@workspace:packages/recall"],
 
     "@qianmo/registry": ["@qianmo/registry@workspace:packages/registry"],
 
