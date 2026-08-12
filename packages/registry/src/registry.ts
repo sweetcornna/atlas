@@ -10,9 +10,19 @@ import {
   type QianmoAddress,
 } from '@qianmo/protocol'
 import { systemClock, type Clock } from './clock.js'
+import type { RegistryStore } from './store.js'
 
 /** How long a registration survives without a heartbeat. */
 export const DEFAULT_TTL_MS = 90_000
+
+/**
+ * Schema version of the persisted table.
+ *
+ * A document carrying any other version is ignored wholesale rather than
+ * read optimistically: a future field the current code silently drops is a
+ * far worse failure than one round of re-registration.
+ */
+export const REGISTRY_SNAPSHOT_VERSION = 1
 
 /** Maximum capabilities advertised by a single agent. */
 export const MAX_CAPABILITIES = 64
@@ -113,6 +123,22 @@ export interface RegistryOptions {
   /** Entry lifetime in milliseconds. */
   readonly ttlMs?: number
   readonly clock?: Clock
+  /**
+   * Durable backing for the table, read once at construction and rewritten
+   * after every change. Omit for a purely in-process registry — persistence is
+   * opt-in so that constructing a registry never touches the user's config
+   * root by surprise.
+   */
+  readonly store?: RegistryStore
+  /**
+   * Called when {@link RegistryStore.write} throws.
+   *
+   * Persistence failures do not fail the operation that triggered them: the
+   * in-memory table stays authoritative for this process and every entry is
+   * re-announced within one TTL, so a full disk should cost durability, not
+   * availability. Without this hook that trade-off would be silent.
+   */
+  readonly onPersistError?: (error: unknown) => void
 }
 
 /**
@@ -179,22 +205,135 @@ function normaliseStatus(value: unknown): DeclaredStatus | null {
   return DECLARABLE.find(candidate => candidate === value) ?? null
 }
 
+/** `null` unless `value` is a real, finite number. */
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 /**
- * Process-local registration and discovery table.
+ * One agent as it appears in the persisted document.
+ *
+ * `expiresAt` is absent on purpose. It is a *derived* fact — `lastHeartbeatAt`
+ * plus the TTL in force — and writing it down would let a stored deadline
+ * outlive the configuration that produced it: restart with a shorter `ttlMs`
+ * and the old, longer lease would keep a silent agent listed as online. What is
+ * stored is only what was observed.
+ */
+interface PersistedAgent {
+  readonly address: string
+  readonly endpoint: string
+  readonly capabilities: readonly string[]
+  readonly publicKey?: string
+  readonly status: DeclaredStatus
+  readonly registeredAt: number
+  readonly lastHeartbeatAt: number
+}
+
+function toPersisted(entry: AgentRecord): PersistedAgent {
+  return {
+    address: entry.address,
+    endpoint: entry.endpoint,
+    capabilities: [...entry.capabilities],
+    publicKey: entry.publicKey,
+    status: entry.status,
+    registeredAt: entry.registeredAt,
+    lastHeartbeatAt: entry.lastHeartbeatAt,
+  }
+}
+
+/**
+ * Rebuild one entry from the persisted document, or `null` if it is unusable.
+ *
+ * Everything here arrives off disk, which is a trust boundary just like the
+ * HTTP surface: the file is editable by the account running the node, and may
+ * equally be a leftover from an older schema. So each field goes through
+ * the same validators {@link InMemoryRegistry.register} uses, and a record that
+ * fails any of them is dropped rather than repaired — a discovery table would
+ * rather forget an agent (it re-registers) than hand out a bad endpoint.
+ */
+function restoreEntry(
+  value: unknown,
+  ttlMs: number,
+): { readonly key: string; readonly entry: AgentRecord } | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return null
+  const raw = value as Record<string, unknown>
+
+  const parsed = parseAddress(raw['address'])
+  if (parsed === null) return null
+  const endpoint = raw['endpoint']
+  if (!isValidEndpoint(endpoint)) return null
+  const capabilities = normaliseCapabilities(raw['capabilities'])
+  if (capabilities === null) return null
+  const publicKey = raw['publicKey']
+  if (publicKey !== undefined && !isValidPublicKey(publicKey)) return null
+  const status = normaliseStatus(raw['status'])
+  if (status === null) return null
+  const lastHeartbeatAt = finiteNumber(raw['lastHeartbeatAt'])
+  if (lastHeartbeatAt === null) return null
+  const registeredAt = finiteNumber(raw['registeredAt']) ?? lastHeartbeatAt
+
+  return {
+    key: keyOf(parsed),
+    entry: {
+      address: formatAddress(parsed),
+      endpoint,
+      capabilities,
+      publicKey,
+      status,
+      registeredAt,
+      lastHeartbeatAt,
+      expiresAt: lastHeartbeatAt + ttlMs,
+    },
+  }
+}
+
+/** The `agents` array of a snapshot at the version we understand, else `null`. */
+function readSnapshot(document: unknown): readonly unknown[] | null {
+  if (
+    typeof document !== 'object' ||
+    document === null ||
+    Array.isArray(document)
+  )
+    return null
+  const raw = document as Record<string, unknown>
+  if (raw['version'] !== REGISTRY_SNAPSHOT_VERSION) return null
+  const agents = raw['agents']
+  return Array.isArray(agents) ? (agents as readonly unknown[]) : null
+}
+
+/**
+ * Registration and discovery table, served entirely from memory.
  *
  * Every entry point takes a full `qianmo://<node>/<agent>` address — there is
  * deliberately no second form (protocol.md §2.4 A-3). Entries expire `ttlMs`
  * after their last heartbeat; expiry is evaluated lazily on read, so no timer
  * is needed and tests can drive a `ManualClock`.
+ *
+ * Given a {@link RegistryOptions.store} the map is mirrored to durable storage
+ * after every change and read back at construction, so the table survives a
+ * restart of the registry process (roadmap P2.1 DoD). The map stays the serving
+ * path either way — the store is write-through, never on a lookup.
+ *
+ * **Leases are re-judged against the clock on restore, not trusted.** A
+ * registry that was down for an hour comes back with an hour-old file, and
+ * every agent in it has been unreachable for that hour; replaying those
+ * records as-is would mean answering lookups with addresses that stopped
+ * answering long ago.
  */
 export class InMemoryRegistry {
   readonly #entries = new Map<string, AgentRecord>()
   readonly #ttlMs: number
   readonly #clock: Clock
+  readonly #store: RegistryStore | null
+  readonly #onPersistError: ((error: unknown) => void) | undefined
 
   constructor(options: RegistryOptions = {}) {
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
     this.#clock = options.clock ?? systemClock
+    this.#store = options.store ?? null
+    this.#onPersistError = options.onPersistError
+    if (this.#store !== null) this.#restore(this.#store.read())
   }
 
   get ttlMs(): number {
@@ -291,6 +430,7 @@ export class InMemoryRegistry {
       expiresAt: now + this.#ttlMs,
     }
     this.#entries.set(key, entry)
+    this.#persist()
     return { ok: true, created: existing === null, entry }
   }
 
@@ -329,6 +469,7 @@ export class InMemoryRegistry {
     if (key === null) return false
     const existed = this.#live(key, this.#clock.now()) !== null
     this.#entries.delete(key)
+    if (existed) this.#persist()
     return existed
   }
 
@@ -346,6 +487,7 @@ export class InMemoryRegistry {
       expiresAt: now + this.#ttlMs,
     }
     this.#entries.set(key, entry)
+    this.#persist()
     return entry
   }
 
@@ -359,12 +501,14 @@ export class InMemoryRegistry {
         removed += 1
       }
     }
+    if (removed > 0) this.#persist()
     return removed
   }
 
-  /** Forget everything. Test helper. */
+  /** Forget everything, persisted copy included. Test helper. */
   clear(): void {
     this.#entries.clear()
+    this.#persist()
   }
 
   #live(key: string, now: number): AgentRecord | null {
@@ -375,5 +519,48 @@ export class InMemoryRegistry {
       return null
     }
     return entry
+  }
+
+  /**
+   * Seed the table from a persisted document.
+   *
+   * Expired leases are dropped here rather than left for the lazy check, so
+   * that a restored table never *starts* holding records nothing will ever ask
+   * about again.
+   */
+  #restore(document: unknown): void {
+    const agents = readSnapshot(document)
+    if (agents === null) return
+    const now = this.#clock.now()
+    for (const candidate of agents) {
+      const restored = restoreEntry(candidate, this.#ttlMs)
+      if (restored === null) continue
+      if (restored.entry.expiresAt < now) continue
+      this.#entries.set(restored.key, restored.entry)
+    }
+  }
+
+  /**
+   * Mirror the whole table to the store.
+   *
+   * Rewriting everything rather than appending a delta is what makes the store
+   * contract a single atomic file swap; at M0's scale (one node, tens of
+   * agents, a heartbeat every TTL) the table is a few kilobytes.
+   *
+   * Expired-but-not-yet-evicted rows ride along unchanged — {@link #restore}
+   * re-judges every lease against the clock, so the deadline never has to be
+   * accurate on disk, only recoverable.
+   */
+  #persist(): void {
+    const store = this.#store
+    if (store === null) return
+    try {
+      store.write({
+        version: REGISTRY_SNAPSHOT_VERSION,
+        agents: [...this.#entries.values()].map(toPersisted),
+      })
+    } catch (error) {
+      this.#onPersistError?.(error)
+    }
   }
 }

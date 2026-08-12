@@ -4,8 +4,9 @@
 /**
  * `@qianmo/registry` — where agents announce themselves and find each other.
  *
- * Ships an in-process table plus a thin HTTP v0 surface over `Bun.serve`;
- * no third-party dependencies.
+ * Ships an in-process table, an optional crash-safe file backing so the table
+ * survives a restart, and a thin HTTP v0 surface over `Bun.serve`; no
+ * third-party dependencies.
  */
 
 export { ManualClock, systemClock, type Clock } from './clock.js'
@@ -15,6 +16,7 @@ export {
   DEFAULT_TTL_MS,
   InMemoryRegistry,
   MAX_CAPABILITIES,
+  REGISTRY_SNAPSHOT_VERSION,
   RegistryErrorCode,
   isValidEndpoint,
   isValidPublicKey,
@@ -24,6 +26,12 @@ export {
   type RegisterResult,
   type RegistryOptions,
 } from './registry.js'
+
+export {
+  FileRegistryStore,
+  defaultRegistryStatePath,
+  type RegistryStore,
+} from './store.js'
 
 export {
   API_PREFIX,
