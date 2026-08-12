@@ -28,23 +28,35 @@ export {
   type ProtocolIssue,
 } from './errors.js'
 
+export {
+  computeFingerprint,
+  isFingerprint,
+  payloadDigest,
+  type FingerprintInput,
+} from './fingerprint.js'
+
 export { LIMITS, type Limits } from './limits.js'
 
 export {
   ENVELOPE_VERSION,
   MESSAGE_TYPES,
   MessageType,
+  TRUST_UNTRUSTED,
   createMessage,
+  deliveryExpiresAt,
   destinationNode,
   errorReply,
-  expiresAt,
-  isExpired,
+  isDeliveryExpired,
   isMessageType,
+  isTaskExpired,
   messageBytes,
   newId,
+  newTraceparent,
   serializeMessage,
+  taskExpiresAt,
   withHop,
   type CreateMessageInput,
+  type MessageOrigin,
   type QianmoMessage,
 } from './message.js'
 

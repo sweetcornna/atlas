@@ -8,13 +8,15 @@ import {
   issue,
   type ProtocolIssue,
 } from './errors.js'
+import { isFingerprint } from './fingerprint.js'
 import { LIMITS } from './limits.js'
 import {
+  deliveryExpiresAt,
   ENVELOPE_VERSION,
-  expiresAt,
   isMessageType,
   messageBytes,
   type QianmoMessage,
+  TRUST_UNTRUSTED,
 } from './message.js'
 
 /** Knobs for {@link validateMessage}; every field falls back to `LIMITS`. */
@@ -46,6 +48,56 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isPositiveFinite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function isAbsent(value: unknown): boolean {
+  return value === undefined
+}
+
+/** Structural check of the `origin` provenance label (§10.2). */
+function originIssues(value: unknown): readonly ProtocolIssue[] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return [
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'origin',
+        'origin must be an object',
+      ),
+    ]
+  }
+  const origin = value as Record<string, unknown>
+  const problems: ProtocolIssue[] = []
+  if (!isValidSegment(origin['node']) || !isValidSegment(origin['agent'])) {
+    problems.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'origin',
+        'origin.node and origin.agent must be valid segments',
+      ),
+    )
+  }
+  if (!isAbsent(origin['capIss']) && !isNonEmptyString(origin['capIss'])) {
+    problems.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'origin.capIss',
+        'origin.capIss must be a non-empty string when present',
+      ),
+    )
+  }
+  if (
+    !isAbsent(origin['receivedAt']) &&
+    !isPositiveFinite(origin['receivedAt'])
+  ) {
+    problems.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'origin.receivedAt',
+        'origin.receivedAt must be a positive epoch time when present',
+      ),
+    )
+  }
+  return problems
 }
 
 /**
@@ -104,6 +156,24 @@ export function validateMessage(
       ),
     )
   }
+  if (!isNonEmptyString(raw['taskId'])) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'taskId',
+        'taskId must be a non-empty string',
+      ),
+    )
+  }
+  if (!isAbsent(raw['contextId']) && !isNonEmptyString(raw['contextId'])) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'contextId',
+        'contextId must be a non-empty string when present',
+      ),
+    )
+  }
   if (!isValidAddress(raw['from'])) {
     issues.push(
       issue(
@@ -149,12 +219,62 @@ export function validateMessage(
       ),
     )
   }
-  if (!isPositiveFinite(raw['ttlMs'])) {
+  if (!isPositiveFinite(raw['deliverTtlMs'])) {
     issues.push(
       issue(
         ProtocolErrorCode.E_BAD_ENVELOPE,
-        'ttlMs',
-        'ttlMs must be a positive number',
+        'deliverTtlMs',
+        'deliverTtlMs must be a positive number',
+      ),
+    )
+  }
+  if (!isPositiveFinite(raw['taskTtlMs'])) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'taskTtlMs',
+        'taskTtlMs must be a positive number',
+      ),
+    )
+  }
+  if (!isFingerprint(raw['fingerprint'])) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'fingerprint',
+        'fingerprint must be a sha-256 hex digest',
+      ),
+    )
+  }
+  issues.push(...originIssues(raw['origin']))
+  if (raw['trust'] !== TRUST_UNTRUSTED) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'trust',
+        `trust must be "${TRUST_UNTRUSTED}"`,
+      ),
+    )
+  }
+  if (!isAbsent(raw['cap']) && !isNonEmptyString(raw['cap'])) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'cap',
+        'cap must be a non-empty token string when present',
+      ),
+    )
+  }
+  if (
+    typeof raw['costLimit'] !== 'number' ||
+    !Number.isFinite(raw['costLimit']) ||
+    raw['costLimit'] < 0
+  ) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'costLimit',
+        'costLimit must be a non-negative number',
       ),
     )
   }
@@ -220,12 +340,27 @@ export function validateMessage(
     )
   }
 
-  if (now > expiresAt(message)) {
+  // M0 pins every message to zero spend (charter N-1); a non-zero ceiling is
+  // stopped outbound, which is the whole mechanism the field exists to prove.
+  if (message.costLimit !== 0) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BUDGET_EXHAUSTED,
+        'costLimit',
+        `costLimit must be 0 in M0, got ${message.costLimit}`,
+      ),
+    )
+  }
+
+  // Only the DELIVERY deadline is an envelope-validity question. The task
+  // deadline is a sender-side timer over the whole task (§8.2 row 21), so it
+  // is exposed as `isTaskExpired` rather than judged here.
+  if (now > deliveryExpiresAt(message)) {
     issues.push(
       issue(
         ProtocolErrorCode.E_TTL_EXPIRED,
-        'ttlMs',
-        `message expired at ${expiresAt(message)}, now is ${now}`,
+        'deliverTtlMs',
+        `delivery expired at ${deliveryExpiresAt(message)}, now is ${now}`,
       ),
     )
   }

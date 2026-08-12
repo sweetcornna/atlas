@@ -26,28 +26,17 @@ const V0_1_CODES = [
 ] as const
 
 describe('ProtocolErrorCode', () => {
-  test('matches the §11 table exactly', () => {
-    expect(Object.values(ProtocolErrorCode).sort()).toEqual(
+  test('matches the §11 table exactly — all 17, no extras', () => {
+    expect((Object.values(ProtocolErrorCode) as string[]).sort()).toEqual(
       [...V0_1_CODES].sort(),
     )
+    expect(Object.values(ProtocolErrorCode)).toHaveLength(17)
   })
 
   test('every code is its own wire string', () => {
     for (const [key, value] of Object.entries(ProtocolErrorCode)) {
-      expect(value).toBe(key)
+      expect(String(value)).toBe(key)
     }
-  })
-
-  test('the seven v0.1 additions are present', () => {
-    expect(ProtocolErrorCode.E_TASK_TIMEOUT).toBe('E_TASK_TIMEOUT')
-    expect(ProtocolErrorCode.E_EVICTED).toBe('E_EVICTED')
-    expect(ProtocolErrorCode.E_UNDELIVERABLE).toBe('E_UNDELIVERABLE')
-    expect(ProtocolErrorCode.E_PAYLOAD_UNAVAILABLE).toBe(
-      'E_PAYLOAD_UNAVAILABLE',
-    )
-    expect(ProtocolErrorCode.E_CAP_INVALID).toBe('E_CAP_INVALID')
-    expect(ProtocolErrorCode.E_CAP_INSUFFICIENT).toBe('E_CAP_INSUFFICIENT')
-    expect(ProtocolErrorCode.E_BUDGET_EXHAUSTED).toBe('E_BUDGET_EXHAUSTED')
   })
 
   test('ProtocolError carries the first issue', () => {

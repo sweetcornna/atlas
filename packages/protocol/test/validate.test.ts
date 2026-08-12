@@ -26,8 +26,10 @@ function sample(
     payload: { goal: 'summarise' },
     msgId: 'm-1',
     traceId: 't-1',
+    taskId: 'task-1',
     createdAt: NOW,
-    ttlMs: 10_000,
+    deliverTtlMs: 10_000,
+    taskTtlMs: 300_000,
   })
   return { ...base, ...overrides }
 }
@@ -116,14 +118,102 @@ describe('validateMessage — structure', () => {
     expect(codesOf(withoutPayload)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
   })
 
-  test('rejects non-positive timestamps and ttl', () => {
+  test('rejects non-positive timestamps and deadlines', () => {
     expect(codesOf({ ...sample(), createdAt: 0 })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
     expect(codesOf({ ...sample(), createdAt: Number.NaN })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
-    expect(codesOf({ ...sample(), ttlMs: -1 })).toContain(
+    expect(codesOf({ ...sample(), deliverTtlMs: -1 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), taskTtlMs: -1 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+  })
+
+  test('requires both deadlines, not just one', () => {
+    const { deliverTtlMs: _d, ...noDelivery } = sample()
+    expect(codesOf(noDelivery)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    const { taskTtlMs: _t, ...noTask } = sample()
+    expect(codesOf(noTask)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('requires a taskId — it is the correlation and loop key', () => {
+    expect(codesOf({ ...sample(), taskId: '' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    const { taskId: _id, ...withoutTask } = sample()
+    expect(codesOf(withoutTask)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('accepts an absent contextId but not a malformed one', () => {
+    const { contextId: _ctx, ...withoutContext } = sample()
+    expect(codesOf(withoutContext)).toEqual([])
+    expect(codesOf({ ...sample(), contextId: 7 })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), contextId: 'ctx-1' })).toEqual([])
+  })
+
+  test('requires a sha-256 fingerprint', () => {
+    expect(codesOf({ ...sample(), fingerprint: 'nope' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), fingerprint: 'A'.repeat(64) })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), fingerprint: 'a'.repeat(64) })).toEqual([])
+  })
+
+  test('requires a structurally sound origin', () => {
+    expect(codesOf({ ...sample(), origin: null })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), origin: { node: 'tokyo-1' } })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(
+      codesOf({ ...sample(), origin: { node: 'NOPE', agent: 'planner' } }),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(
+      codesOf({
+        ...sample(),
+        origin: {
+          node: 'tokyo-1',
+          agent: 'planner',
+          capIss: 'qianmo://tokyo-1/planner',
+          receivedAt: NOW,
+        },
+      }),
+    ).toEqual([])
+  })
+
+  test('rejects any trust marker other than "untrusted"', () => {
+    expect(codesOf({ ...sample(), trust: 'trusted' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    const { trust: _trust, ...withoutTrust } = sample()
+    expect(codesOf(withoutTrust)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('accepts an absent cap but not an empty one', () => {
+    const { cap: _cap, ...withoutCap } = sample()
+    expect(codesOf(withoutCap)).toEqual([])
+    expect(codesOf({ ...sample(), cap: '' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), cap: 'token' })).toEqual([])
+  })
+
+  test('rejects a missing or non-numeric costLimit', () => {
+    const { costLimit: _cost, ...withoutCost } = sample()
+    expect(codesOf(withoutCost)).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(codesOf({ ...sample(), costLimit: '0' })).toContain(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
+    expect(codesOf({ ...sample(), costLimit: -1 })).toContain(
       ProtocolErrorCode.E_BAD_ENVELOPE,
     )
   })
@@ -149,9 +239,23 @@ describe('validateMessage — structure', () => {
 })
 
 describe('validateMessage — boundaries', () => {
-  test('rejects an expired message with E_TTL_EXPIRED', () => {
+  test('rejects a message past its DELIVERY deadline', () => {
     const expired = sample({ createdAt: NOW - 10_001 })
     expect(codesOf(expired)).toEqual([ProtocolErrorCode.E_TTL_EXPIRED])
+  })
+
+  test('the task deadline is not an envelope-validity question', () => {
+    // `created → completed` is a sender-side timer (§8.2 row 21). A message
+    // whose task budget is thin but whose delivery window is open is valid.
+    const result = validateMessage(sample({ taskTtlMs: 1 }), { now: NOW })
+    expect(result.ok).toBe(true)
+  })
+
+  test('rejects a non-zero costLimit with E_BUDGET_EXHAUSTED', () => {
+    expect(codesOf(sample({ costLimit: 1 }))).toEqual([
+      ProtocolErrorCode.E_BUDGET_EXHAUSTED,
+    ])
+    expect(codesOf(sample({ costLimit: 0 }))).toEqual([])
   })
 
   test('rejects an oversized message with E_TOO_LARGE', () => {

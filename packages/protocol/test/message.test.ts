@@ -9,15 +9,21 @@ import {
   MessageType,
   ProtocolError,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
+  computeFingerprint,
   createMessage,
+  deliveryExpiresAt,
   destinationNode,
   errorReply,
-  expiresAt,
-  isExpired,
+  isDeliveryExpired,
   isMessageType,
+  isTaskExpired,
   messageBytes,
   newId,
+  newTraceparent,
+  payloadDigest,
   serializeMessage,
+  taskExpiresAt,
   withHop,
 } from '../src/index.js'
 
@@ -45,7 +51,12 @@ describe('limits', () => {
     expect(LIMITS.maxMessageBytes).toBe(262144)
     expect(LIMITS.maxHops).toBe(8)
     expect(LIMITS.defaultTtlMs).toBeGreaterThan(0)
+    expect(LIMITS.defaultTaskTtlMs).toBeGreaterThan(0)
     expect(LIMITS.ratePerMinute).toBeGreaterThan(0)
+  })
+
+  test('the task deadline outlasts the delivery deadline', () => {
+    expect(LIMITS.defaultTaskTtlMs).toBeGreaterThan(LIMITS.defaultTtlMs)
   })
 })
 
@@ -60,9 +71,28 @@ describe('createMessage', () => {
     expect(message.v).toBe(ENVELOPE_VERSION)
     expect(message.msgId.length).toBeGreaterThan(0)
     expect(message.traceId.length).toBeGreaterThan(0)
-    expect(message.ttlMs).toBe(LIMITS.defaultTtlMs)
+    expect(message.taskId.length).toBeGreaterThan(0)
+    expect(message.deliverTtlMs).toBe(LIMITS.defaultTtlMs)
+    expect(message.taskTtlMs).toBe(LIMITS.defaultTaskTtlMs)
     expect(message.hops).toEqual([])
     expect(message.createdAt).toBeGreaterThan(0)
+    expect(message.trust).toBe(TRUST_UNTRUSTED)
+    expect(message.costLimit).toBe(0)
+    expect(message.origin).toEqual({ node: 'tokyo-1', agent: 'planner' })
+  })
+
+  test('omits the optional fields rather than writing undefined', () => {
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+    })
+    expect('contextId' in message).toBe(false)
+    expect('cap' in message).toBe(false)
+    expect(JSON.parse(serializeMessage(message))).not.toHaveProperty(
+      'contextId',
+    )
   })
 
   test('honours explicit fields', () => {
@@ -73,14 +103,53 @@ describe('createMessage', () => {
       payload: { goal: 'summarise' },
       msgId: 'm-1',
       traceId: 't-1',
+      taskId: 'task-1',
+      contextId: 'ctx-1',
       createdAt: 1_000,
-      ttlMs: 500,
+      deliverTtlMs: 500,
+      taskTtlMs: 60_000,
       hops: ['tokyo-1'],
+      cap: 'cap-token',
     })
     expect(message.msgId).toBe('m-1')
     expect(message.traceId).toBe('t-1')
+    expect(message.taskId).toBe('task-1')
+    expect(message.contextId).toBe('ctx-1')
+    expect(message.cap).toBe('cap-token')
     expect(message.hops).toEqual(['tokyo-1'])
-    expect(expiresAt(message)).toBe(1_500)
+    expect(deliveryExpiresAt(message)).toBe(1_500)
+    expect(taskExpiresAt(message)).toBe(61_000)
+  })
+
+  test('defaults traceId to a W3C traceparent', () => {
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+    })
+    expect(message.traceId).toMatch(
+      /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/,
+    )
+    expect(newTraceparent()).not.toBe(newTraceparent())
+  })
+
+  test('trust is a closed set — the caller cannot widen it', () => {
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+    })
+    // @ts-expect-error `trust` is not part of CreateMessageInput at all.
+    createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+      trust: 'trusted',
+    })
+    expect(message.trust).toBe('untrusted')
   })
 
   test('newId produces distinct identifiers', () => {
@@ -160,20 +229,36 @@ describe('withHop', () => {
   })
 })
 
-describe('ttl and size', () => {
+describe('the two deadlines', () => {
   const message = createMessage({
     from: FROM,
     to: TO,
-    type: MessageType.Ping,
+    type: MessageType.TaskRequest,
     payload: null,
     createdAt: 10_000,
-    ttlMs: 1_000,
+    deliverTtlMs: 1_000,
+    taskTtlMs: 5_000,
   })
 
-  test('isExpired follows the injected clock', () => {
-    expect(isExpired(message, 10_500)).toBe(false)
-    expect(isExpired(message, 11_000)).toBe(false)
-    expect(isExpired(message, 11_001)).toBe(true)
+  test('isDeliveryExpired follows the injected clock', () => {
+    expect(deliveryExpiresAt(message)).toBe(11_000)
+    expect(isDeliveryExpired(message, 10_500)).toBe(false)
+    expect(isDeliveryExpired(message, 11_000)).toBe(false)
+    expect(isDeliveryExpired(message, 11_001)).toBe(true)
+  })
+
+  test('isTaskExpired follows its own, longer clock', () => {
+    expect(taskExpiresAt(message)).toBe(15_000)
+    expect(isTaskExpired(message, 11_001)).toBe(false)
+    expect(isTaskExpired(message, 15_000)).toBe(false)
+    expect(isTaskExpired(message, 15_001)).toBe(true)
+  })
+
+  test('delivery can be long past due while the task is still alive', () => {
+    // The whole point of the split: `created → acked` blown does not mean
+    // `created → completed` is blown.
+    expect(isDeliveryExpired(message, 12_000)).toBe(true)
+    expect(isTaskExpired(message, 12_000)).toBe(false)
   })
 
   test('messageBytes measures the utf-8 serialization', () => {
@@ -188,6 +273,138 @@ describe('ttl and size', () => {
       createdAt: 10_000,
     })
     expect(messageBytes(wide)).toBeGreaterThan(JSON.stringify(wide).length - 6)
+  })
+})
+
+describe('fingerprint', () => {
+  function withOverrides(
+    overrides: Partial<{
+      to: string
+      taskId: string
+      payload: unknown
+      msgId: string
+      createdAt: number
+      hops: readonly string[]
+      traceId: string
+    }> = {},
+  ) {
+    return createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.TaskRequest,
+      payload: { goal: 'summarise' },
+      taskId: 'task-1',
+      msgId: 'm-1',
+      createdAt: 10_000,
+      traceId: 't-1',
+      ...overrides,
+    })
+  }
+
+  test('is a sha-256 hex digest of [from, to, type, taskId, payloadDigest]', () => {
+    const message = withOverrides()
+    expect(message.fingerprint).toMatch(/^[0-9a-f]{64}$/)
+    expect(message.fingerprint).toBe(
+      computeFingerprint({
+        from: FROM,
+        to: TO,
+        type: MessageType.TaskRequest,
+        taskId: 'task-1',
+        payload: { goal: 'summarise' },
+      }),
+    )
+  })
+
+  test('survives a rebuild of the same work — that is the second dedup level', () => {
+    const first = withOverrides()
+    const rebuilt = withOverrides({
+      msgId: 'm-2',
+      createdAt: 20_000,
+      hops: ['tokyo-1'],
+      traceId: 't-2',
+    })
+    expect(rebuilt.msgId).not.toBe(first.msgId)
+    expect(rebuilt.fingerprint).toBe(first.fingerprint)
+  })
+
+  test('changes with any of its five inputs', () => {
+    const base = withOverrides().fingerprint
+    expect(
+      withOverrides({ to: 'qianmo://osaka-2/other' }).fingerprint,
+    ).not.toBe(base)
+    expect(withOverrides({ taskId: 'task-2' }).fingerprint).not.toBe(base)
+    expect(
+      withOverrides({ payload: { goal: 'translate' } }).fingerprint,
+    ).not.toBe(base)
+    expect(
+      computeFingerprint({
+        from: FROM,
+        to: TO,
+        type: MessageType.TaskResult,
+        taskId: 'task-1',
+        payload: { goal: 'summarise' },
+      }),
+    ).not.toBe(base)
+  })
+
+  test('payloadDigest handles a payload JSON cannot encode', () => {
+    expect(payloadDigest(undefined)).toMatch(/^[0-9a-f]{64}$/)
+    expect(payloadDigest(null)).not.toBe(payloadDigest(undefined))
+  })
+
+  test('an explicit fingerprint wins, for re-senders', () => {
+    const forced = 'a'.repeat(64)
+    expect(withOverrides().fingerprint).not.toBe(forced)
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.TaskRequest,
+      payload: {},
+      fingerprint: forced,
+    })
+    expect(message.fingerprint).toBe(forced)
+  })
+})
+
+describe('origin', () => {
+  test('is seeded from the sender address', () => {
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+    })
+    expect(message.origin.node).toBe('tokyo-1')
+    expect(message.origin.agent).toBe('planner')
+    expect(message.origin.capIss).toBeUndefined()
+    expect(message.origin.receivedAt).toBeUndefined()
+  })
+
+  test('a receiver may overwrite it wholesale', () => {
+    const message = createMessage({
+      from: FROM,
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+      origin: {
+        node: 'tokyo-1',
+        agent: 'planner',
+        capIss: 'qianmo://tokyo-1/planner',
+        receivedAt: 42_000,
+      },
+    })
+    expect(message.origin.capIss).toBe('qianmo://tokyo-1/planner')
+    expect(message.origin.receivedAt).toBe(42_000)
+  })
+
+  test('a malformed sender address yields an origin that cannot validate', () => {
+    const message = createMessage({
+      from: 'not-an-address',
+      to: TO,
+      type: MessageType.Ping,
+      payload: null,
+    })
+    expect(message.origin).toEqual({ node: '', agent: '' })
   })
 })
 
