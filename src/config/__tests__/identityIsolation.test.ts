@@ -4,7 +4,7 @@
  * each other's config, credentials, cache or CLI name.
  *
  * Identity is fixed at module load (src/constants/identity.ts), so this suite
- * observes each identity in a FRESH subprocess (identityProbe.ts) launched with
+ * observes each identity in a FRESH subprocess (identityProbe.runner.ts) launched with
  * a different `OCC_IDENTITY` and a throwaway HOME. That is the only faithful
  * way to exercise the switch — importing paths.ts in-process would pin whatever
  * identity the test runner booted with.
@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-const PROBE = join(import.meta.dir, 'identityProbe.ts')
+const PROBE = join(import.meta.dir, 'identityProbe.runner.ts')
 
 type Report = {
   identity: string
