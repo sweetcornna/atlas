@@ -37,6 +37,14 @@ export enum TransportEventType {
   ReconnectGaveUp = 'reconnect_gave_up',
   /** A gap in the wall clock was read as a freeze; the budget was reset. */
   TimeJumpDetected = 'time_jump_detected',
+  /**
+   * A caller-supplied event sink threw and was contained.
+   *
+   * Recorded rather than rethrown: `record` runs inside the websocket
+   * `open`/`close` handlers, so letting it escape would kill the server over a
+   * fault in observability code.
+   */
+  SinkFailed = 'sink_failed',
 }
 
 /** Values a record may carry. Deliberately narrow — no objects, no payloads. */
@@ -74,7 +82,25 @@ export class EventRecorder {
     if (this.events.length > this.capacity) {
       this.events.splice(0, this.events.length - this.capacity)
     }
-    this.sink?.(event)
+    // The sink is caller-supplied, and `record` runs inside Bun's websocket
+    // `open`/`close` handlers — so a sink that throws does not merely lose one
+    // record, it propagates out of the handler and takes the server down. Found
+    // that way: a cross-machine probe passed `{record: fn}` where a function
+    // was expected, and the first connection killed the listener. Observability
+    // must never be able to do that, so the throw is contained and reported on
+    // the same channel everything else uses.
+    try {
+      this.sink?.(event)
+    } catch (error) {
+      this.events.push({
+        type: TransportEventType.SinkFailed,
+        at: event.at,
+        detail: {
+          reason: error instanceof Error ? error.name : 'unknown',
+          of: event.type,
+        },
+      })
+    }
   }
 
   /** Every retained record, oldest first. */
