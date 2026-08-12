@@ -38,6 +38,13 @@ describe('endpoint validation', () => {
     expect(isValidEndpoint('https://nest.example.com/a')).toBe(true)
   })
 
+  // `dialUrl({unix})` emits exactly this shape, and roadmap P2.2 fixes unix
+  // sockets as the transport for single-machine integration runs — so a node
+  // that cannot publish it cannot be resolved at all in that topology.
+  test('accepts the ws+unix url dialUrl emits for same-host topologies', () => {
+    expect(isValidEndpoint('ws+unix:///tmp/qianmo/node-b.sock:/')).toBe(true)
+  })
+
   // The node-to-node transport is a single wss long connection, so a node that
   // cannot register a wss endpoint cannot be dialled at all.
   test('accepts ws(s) urls — the transport nodes actually dial', () => {

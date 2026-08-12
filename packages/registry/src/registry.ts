@@ -148,6 +148,15 @@ export interface RegistryOptions {
  * connection (selection-m0 §4) — without it a node could not publish the
  * endpoint peers are meant to dial. `ws:` rides along for local integration
  * tests; production nodes register `wss:` (charter N-3 keeps TLS in M0).
+ *
+ * `ws+unix:` is the shape `@qianmo/transport`'s own `dialUrl({unix})` emits,
+ * and roadmap P2.2 fixes unix sockets as *the* transport for single-machine
+ * integration runs. Refusing it left the one endpoint form those runs need as
+ * the only one a node could not publish — which forced tests to register a
+ * placeholder URL and derive the socket elsewhere, i.e. to stop exercising the
+ * resolve→dial path they exist to cover. A unix endpoint is reachable only
+ * from the same host; that is a property of the deployment, and it fails loudly
+ * at dial time rather than silently, so it is not the validator's to police.
  */
 export function isValidEndpoint(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 512)
@@ -159,7 +168,8 @@ export function isValidEndpoint(value: unknown): value is string {
       url.protocol === 'http:' ||
       url.protocol === 'https:' ||
       url.protocol === 'ws:' ||
-      url.protocol === 'wss:'
+      url.protocol === 'wss:' ||
+      url.protocol === 'ws+unix:'
     )
   } catch {
     return false
