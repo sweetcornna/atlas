@@ -13,6 +13,11 @@ export const ENVELOPE_VERSION = 0
 export enum MessageType {
   /** Ask an agent to perform work. */
   TaskRequest = 'task.request',
+  /**
+   * A-class acknowledgement: the target agent has taken the message into its
+   * input. Payload is field-closed — see {@link AckPayload}.
+   */
+  Ack = 'ack',
   /** Terminal answer to a `task.request`, correlated by `traceId`. */
   TaskResult = 'task.result',
   /** Liveness probe. */
@@ -321,6 +326,91 @@ const ENCODER = new TextEncoder()
 /** Size of the serialized envelope in bytes (UTF-8). */
 export function messageBytes(message: QianmoMessage): number {
   return ENCODER.encode(serializeMessage(message)).length
+}
+
+/**
+ * Payload of an `ack`, and the whole of it (rule K-1, protocol.md §4.3).
+ *
+ * `ack` is A-class: it asserts that the target agent has taken the message
+ * into its input — the `read` flag flipped — and nothing else. Not that it
+ * understood it, rebuilt an old session, started work, or expects to finish.
+ * Those all belong to `task.result`.
+ *
+ * The four fields are exactly what an inbound adapter can fill **without
+ * touching any prior session state**: two copied off the acked envelope, the
+ * node's own address, and the local clock. The closure is the point — a
+ * queue depth, a status, an ETA would each force a read of the cold working
+ * set and quietly turn an A-class ack into a B-class one, which is the 9–10 s
+ * cost the whole design exists to keep off the ack path. So it is a closed
+ * interface, not a `Record<string, unknown>`, and {@link isAckPayload}
+ * rejects extra keys at runtime too.
+ */
+export interface AckPayload {
+  /** `msgId` of the envelope being acknowledged. */
+  readonly ofMsgId: string
+  /** `taskId` copied off that envelope — the correlation key (C-1). */
+  readonly taskId: string
+  /** Address of the acknowledging handler, `qianmo://<node>/<agent>`. */
+  readonly handler: string
+  /** Local epoch ms at which the read flag was observed. */
+  readonly ackAt: number
+}
+
+const ACK_PAYLOAD_KEYS: readonly string[] = [
+  'ofMsgId',
+  'taskId',
+  'handler',
+  'ackAt',
+]
+
+/** True when `value` is an {@link AckPayload} with no extra fields. */
+export function isAckPayload(value: unknown): value is AckPayload {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const keys = Object.keys(value)
+  if (keys.length !== ACK_PAYLOAD_KEYS.length) return false
+  if (!ACK_PAYLOAD_KEYS.every(key => keys.includes(key))) return false
+  const payload = value as Record<string, unknown>
+  return (
+    typeof payload['ofMsgId'] === 'string' &&
+    payload['ofMsgId'].length > 0 &&
+    typeof payload['taskId'] === 'string' &&
+    payload['taskId'].length > 0 &&
+    parseAddress(payload['handler']) !== null &&
+    typeof payload['ackAt'] === 'number' &&
+    Number.isFinite(payload['ackAt']) &&
+    payload['ackAt'] > 0
+  )
+}
+
+/**
+ * Build the A-class `ack` for a message `handler` has just been observed to
+ * read. Every field comes from the acked envelope, `handler` itself, or the
+ * clock — by construction, no prior session state is consulted.
+ */
+export function createAck(
+  original: QianmoMessage,
+  handler: string,
+  now: number = Date.now(),
+): QianmoMessage<AckPayload> {
+  return createMessage({
+    from: handler,
+    to: original.from,
+    type: MessageType.Ack,
+    traceId: original.traceId,
+    taskId: original.taskId,
+    ...(original.contextId === undefined
+      ? {}
+      : { contextId: original.contextId }),
+    createdAt: now,
+    payload: {
+      ofMsgId: original.msgId,
+      taskId: original.taskId,
+      handler,
+      ackAt: now,
+    },
+  })
 }
 
 /** Build the standard `error` reply for a rejected message. */

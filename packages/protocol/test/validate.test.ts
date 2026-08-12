@@ -16,6 +16,13 @@ import {
 
 const NOW = 1_700_000_000_000
 
+const ACK_PAYLOAD = {
+  ofMsgId: 'm-0',
+  taskId: 'task-1',
+  handler: 'qianmo://osaka-2/worker',
+  ackAt: NOW,
+}
+
 function sample(
   overrides: Partial<QianmoMessage> = {},
 ): Record<string, unknown> {
@@ -64,7 +71,10 @@ describe('validateMessage — accepts', () => {
 
   test('every declared message type', () => {
     for (const type of Object.values(MessageType)) {
-      expect(codesOf(sample({ type }))).toEqual([])
+      // `ack` is the one type whose payload is constrained (K-1).
+      const payload =
+        type === MessageType.Ack ? ACK_PAYLOAD : { goal: 'summarise' }
+      expect(codesOf(sample({ type, payload }))).toEqual([])
     }
   })
 
@@ -111,6 +121,27 @@ describe('validateMessage — structure', () => {
     expect(codesOf({ ...sample(), type: 'task.cancel' })).toContain(
       ProtocolErrorCode.E_BAD_TYPE,
     )
+  })
+
+  test('keeps the ack payload field-closed (K-1)', () => {
+    const ack = { type: MessageType.Ack, payload: ACK_PAYLOAD }
+    expect(codesOf(sample(ack))).toEqual([])
+    // An extra field is exactly what would force a read of the cold heap.
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.Ack,
+          payload: { ...ACK_PAYLOAD, queueDepth: 3 },
+        }),
+      ),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    const { handler: _handler, ...missing } = ACK_PAYLOAD
+    expect(
+      codesOf(sample({ type: MessageType.Ack, payload: missing })),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(
+      codesOf(sample({ type: MessageType.Ack, payload: 'acked' })),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
   })
 
   test('rejects a missing payload key', () => {

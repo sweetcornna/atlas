@@ -11,7 +11,9 @@ import {
   ProtocolErrorCode,
   TRUST_UNTRUSTED,
   computeFingerprint,
+  createAck,
   createMessage,
+  isAckPayload,
   deliveryExpiresAt,
   destinationNode,
   errorReply,
@@ -33,9 +35,17 @@ const TO = 'qianmo://osaka-2/worker'
 describe('message types', () => {
   test('covers exactly the v0 type set', () => {
     expect([...MESSAGE_TYPES].sort() as string[]).toEqual(
-      ['error', 'ping', 'pong', 'task.request', 'task.result', 'wake'].sort(),
+      [
+        'ack',
+        'error',
+        'ping',
+        'pong',
+        'task.request',
+        'task.result',
+        'wake',
+      ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(6)
+    expect(MESSAGE_TYPES).toHaveLength(7)
   })
 
   test('isMessageType accepts known types and rejects the rest', () => {
@@ -141,12 +151,12 @@ describe('createMessage', () => {
       type: MessageType.Ping,
       payload: null,
     })
-    // @ts-expect-error `trust` is not part of CreateMessageInput at all.
     createMessage({
       from: FROM,
       to: TO,
       type: MessageType.Ping,
       payload: null,
+      // @ts-expect-error `trust` is not part of CreateMessageInput at all.
       trust: 'trusted',
     })
     expect(message.trust).toBe('untrusted')
@@ -405,6 +415,74 @@ describe('origin', () => {
       payload: null,
     })
     expect(message.origin).toEqual({ node: '', agent: '' })
+  })
+})
+
+describe('ack', () => {
+  const request = createMessage({
+    from: FROM,
+    to: TO,
+    type: MessageType.TaskRequest,
+    payload: { goal: 'summarise' },
+    msgId: 'm-1',
+    taskId: 'task-1',
+    contextId: 'ctx-1',
+    traceId: 't-1',
+    createdAt: 1_000,
+  })
+
+  test('createAck answers the sender with the four closed fields', () => {
+    const ack = createAck(request, TO, 2_000)
+    expect(ack.type).toBe(MessageType.Ack)
+    expect(ack.from).toBe(TO)
+    expect(ack.to).toBe(FROM)
+    expect(ack.taskId).toBe('task-1')
+    expect(ack.contextId).toBe('ctx-1')
+    expect(ack.traceId).toBe('t-1')
+    expect(ack.payload).toEqual({
+      ofMsgId: 'm-1',
+      taskId: 'task-1',
+      handler: TO,
+      ackAt: 2_000,
+    })
+    expect(Object.keys(ack.payload).sort()).toEqual([
+      'ackAt',
+      'handler',
+      'ofMsgId',
+      'taskId',
+    ])
+  })
+
+  test('the payload type is closed — no room for a status or an ETA', () => {
+    const ack = createAck(request, TO, 2_000)
+    const widened: typeof ack.payload = {
+      ofMsgId: 'm-1',
+      taskId: 'task-1',
+      handler: TO,
+      ackAt: 2_000,
+      // @ts-expect-error K-1: anything beyond the four fields is not an AckPayload.
+      queueDepth: 3,
+    }
+    // The runtime guard says the same thing as the compiler.
+    expect(isAckPayload(widened)).toBe(false)
+  })
+
+  test('isAckPayload rejects extras, gaps and wrong types', () => {
+    const good = {
+      ofMsgId: 'm-1',
+      taskId: 'task-1',
+      handler: TO,
+      ackAt: 2_000,
+    }
+    expect(isAckPayload(good)).toBe(true)
+    expect(isAckPayload({ ...good, eta: 5 })).toBe(false)
+    expect(isAckPayload({ ...good, handler: 'worker' })).toBe(false)
+    expect(isAckPayload({ ...good, ackAt: '2000' })).toBe(false)
+    expect(isAckPayload({ ...good, ofMsgId: '' })).toBe(false)
+    const { taskId: _missing, ...gap } = good
+    expect(isAckPayload(gap)).toBe(false)
+    expect(isAckPayload(null)).toBe(false)
+    expect(isAckPayload([good])).toBe(false)
   })
 })
 

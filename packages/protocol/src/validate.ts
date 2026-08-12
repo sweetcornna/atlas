@@ -13,8 +13,10 @@ import { LIMITS } from './limits.js'
 import {
   deliveryExpiresAt,
   ENVELOPE_VERSION,
+  isAckPayload,
   isMessageType,
   messageBytes,
+  MessageType,
   type QianmoMessage,
   TRUST_UNTRUSTED,
 } from './message.js'
@@ -207,6 +209,17 @@ export function validateMessage(
         ProtocolErrorCode.E_BAD_ENVELOPE,
         'payload',
         'payload field is required',
+      ),
+    )
+  } else if (raw['type'] === MessageType.Ack && !isAckPayload(raw['payload'])) {
+    // Rule K-1: an ack payload is field-closed, extras included. Enforced here
+    // as well as in the type so a peer cannot smuggle in a field whose value
+    // only a warm working set could produce (§4.3).
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload',
+        'ack payload must be exactly { ofMsgId, taskId, handler, ackAt }',
       ),
     )
   }
