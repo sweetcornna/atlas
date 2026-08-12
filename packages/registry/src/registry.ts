@@ -48,14 +48,26 @@ export interface RegistryOptions {
   readonly clock?: Clock
 }
 
-/** True when `value` can be dialled: a Qianmo address or an http(s) URL. */
+/**
+ * True when `value` can be dialled: a Qianmo address, or an http(s)/ws(s) URL.
+ *
+ * `wss:` is here because the node-to-node transport is a single wss long
+ * connection (selection-m0 §4) — without it a node could not publish the
+ * endpoint peers are meant to dial. `ws:` rides along for local integration
+ * tests; production nodes register `wss:` (charter N-3 keeps TLS in M0).
+ */
 export function isValidEndpoint(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 512)
     return false
   if (isValidAddress(value)) return true
   try {
     const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:'
+    return (
+      url.protocol === 'http:' ||
+      url.protocol === 'https:' ||
+      url.protocol === 'ws:' ||
+      url.protocol === 'wss:'
+    )
   } catch {
     return false
   }

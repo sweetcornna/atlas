@@ -28,6 +28,13 @@ describe('endpoint validation', () => {
     expect(isValidEndpoint('https://nest.example.com/a')).toBe(true)
   })
 
+  // The node-to-node transport is a single wss long connection, so a node that
+  // cannot register a wss endpoint cannot be dialled at all.
+  test('accepts ws(s) urls — the transport nodes actually dial', () => {
+    expect(isValidEndpoint('wss://nest.example.com/agent')).toBe(true)
+    expect(isValidEndpoint('ws://127.0.0.1:8787/agent')).toBe(true)
+  })
+
   test('rejects anything else', () => {
     expect(isValidEndpoint('ftp://example.com')).toBe(false)
     expect(isValidEndpoint('tokyo-1/planner')).toBe(false)
