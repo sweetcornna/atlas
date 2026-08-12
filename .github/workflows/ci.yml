@@ -25,7 +25,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
         with:
-          bun-version: latest
+          # Read the pinned version from .tool-versions instead of `latest`, so
+          # CI cannot silently track an upstream Bun release and drift from the
+          # pin (threatens P8.1 "30-min fresh-machine reproduce"). setup-bun v2
+          # (0c5077e) supports bun-version-file with .tool-versions.
+          bun-version-file: .tool-versions
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -117,7 +121,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
         with:
-          bun-version: latest
+          # Read the pinned version from .tool-versions instead of `latest`, so
+          # CI cannot silently track an upstream Bun release and drift from the
+          # pin (threatens P8.1 "30-min fresh-machine reproduce"). setup-bun v2
+          # (0c5077e) supports bun-version-file with .tool-versions.
+          bun-version-file: .tool-versions
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
