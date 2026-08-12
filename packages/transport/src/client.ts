@@ -160,6 +160,21 @@ export class TransportClient {
   }
 
   /**
+   * True once this client will never carry another envelope.
+   *
+   * Three ways in: `close()`, a 4003 (the key is wrong), and the reconnect
+   * budget running out. All three are terminal, and none of them is visible
+   * through {@link isReady}, which cannot tell "down for a moment" from "down
+   * for good". A holder of a long-lived client needs that distinction —
+   * otherwise it keeps handing envelopes to a corpse, and `send` throwing is
+   * the first it hears of it. The activator's link pool reads this to decide
+   * when a link has to be replaced rather than waited on.
+   */
+  isClosed(): boolean {
+    return this.state === 'closed'
+  }
+
+  /**
    * Dial, and resolve when the handshake completes.
    *
    * Rejection is reserved for "this will never work" — a refused key closes

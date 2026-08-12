@@ -14,6 +14,9 @@
  * collaborator as a constructor argument, so there is nothing to intercept.
  */
 
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   MessageType,
   type ProtocolErrorCode,
@@ -163,6 +166,50 @@ export class ScriptedProbe implements ReadyProbe {
     }
     return true
   }
+}
+
+/**
+ * A fixed, obviously-fake pre-shared key, long enough to clear
+ * `PSK_MIN_LENGTH` and short of anything anyone could mistake for a real one.
+ */
+export const TEST_PSK = 'test-psk-not-a-real-secret-0000'
+
+/**
+ * A throwaway directory plus socket paths inside it.
+ *
+ * Unix sockets rather than TCP for the chain tests, by `@qianmo/transport`'s
+ * own rule: two servers can bind the same TCP port without either erroring, and
+ * Linux then splits arriving connections between them non-deterministically. A
+ * path in a private temp directory cannot collide with anything.
+ */
+export function makeSocketDir(): {
+  socket(name: string): string
+  cleanup(): void
+} {
+  const dir = mkdtempSync(join(tmpdir(), 'qianmo-activator-'))
+  return {
+    socket: (name: string) => join(dir, `${name}.sock`),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  }
+}
+
+/** Await `ms` of wall clock. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Poll `predicate` until it holds or `timeoutMs` runs out. */
+export async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await sleep(stepMs)
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`)
 }
 
 /** One well-formed envelope. */

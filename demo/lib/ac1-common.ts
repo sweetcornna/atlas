@@ -14,19 +14,9 @@ import {
   createUserMessage,
 } from '../../src/utils/messages/constructors.js'
 
-/** 取 `--name value` 形式的命令行参数。 */
-export function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`)
-  return i >= 0 ? process.argv[i + 1] : undefined
-}
-
-/** 取整数参数，缺省回落到 `fallback`。 */
-export function intArg(name: string, fallback: number): number {
-  const raw = arg(name)
-  if (raw === undefined) return fallback
-  const n = Number.parseInt(raw, 10)
-  return Number.isFinite(n) ? n : fallback
-}
+// 命令行与输出工具搬到了 `cli-args.ts`（AC-2 的脚本也要用，而它们不该为了读一个
+// `--flag` 把基座的消息构造函数一起加载进来）。这里原样转出，四个既有调用点不动。
+export { arg, emit, intArg } from './cli-args.js'
 
 /**
  * 造一段 user/assistant 交替的合成对话。
@@ -71,9 +61,4 @@ export function toolUseTurn(toolUseId: string): Message {
       },
     ],
   })
-}
-
-/** 统一的 JSON 输出，便于 shell 侧消费（不引 jq 依赖）。 */
-export function emit(payload: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify(payload)}\n`)
 }

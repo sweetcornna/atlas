@@ -32,6 +32,12 @@ export enum ActivatorEventType {
   WakeStarted = 'wake.started',
   /** Several requests joined one in-flight wake instead of stampeding it. */
   WakeCoalesced = 'wake.coalesced',
+  /** A readiness probe could not complete a handshake with the target. */
+  LinkProbeFailed = 'link.probe-failed',
+  /** A forwarding link to a target sandbox was established. */
+  LinkOpened = 'link.opened',
+  /** A forwarding link exhausted its reconnect budget and had to be replaced. */
+  LinkGaveUp = 'link.gave-up',
   /** The target answered a readiness probe. */
   TargetReady = 'target.ready',
   /** The envelope was handed to the forward target. */

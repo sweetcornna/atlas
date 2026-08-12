@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@qianmo/protocol": "workspace:*"
+    "@qianmo/protocol": "workspace:*",
+    "@qianmo/transport": "workspace:*"
   }
 }
