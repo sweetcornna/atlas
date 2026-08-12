@@ -4,7 +4,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FileMemoryStore } from '../src/index.js'
+import { FileMemoryStore, type MemoryStoreOptions } from '../src/index.js'
 
 /**
  * A clock the test drives by hand.
@@ -36,11 +36,17 @@ export function sequentialIds(): () => string {
   }
 }
 
+/** Store options a test may vary; root, clock and id factory stay fixed. */
+export type StoreOverrides = Pick<
+  MemoryStoreOptions,
+  'onEvent' | 'eventCapacity'
+>
+
 export type Sandbox = {
   readonly root: string
   readonly clock: ManualClock
   /** A second store over the same directory: proves reads come off disk. */
-  reopen(): FileMemoryStore
+  reopen(overrides?: StoreOverrides): FileMemoryStore
   store: FileMemoryStore
   dispose(): void
 }
@@ -58,8 +64,8 @@ export function createSandbox(
   const root = join(directory, 'memory')
   const clock = new ManualClock(startMs)
   const newId = sequentialIds()
-  const make = (): FileMemoryStore =>
-    new FileMemoryStore({ root, now: clock.now, newId })
+  const make = (overrides: StoreOverrides = {}): FileMemoryStore =>
+    new FileMemoryStore({ root, now: clock.now, newId, ...overrides })
   return {
     root,
     clock,

@@ -24,6 +24,12 @@ import {
   type MemoryRetirement,
   type MemoryWriteInput,
 } from './entry.js'
+import {
+  describeFailure,
+  MemoryEventRecorder,
+  MemoryEventType,
+  type MemoryEventSink,
+} from './events.js'
 import { parseEntry, serializeEntry } from './frontmatter.js'
 import { defaultMemoryRoot, entryPath, scopeDir } from './paths.js'
 
@@ -70,6 +76,14 @@ export type MemoryStoreOptions = {
   readonly root?: string
   readonly now?: () => Date
   readonly newId?: () => string
+  /**
+   * Additional destination for scan failures. Optional — the store's own
+   * {@link FileMemoryStore.events} recorder is always on, so leaving this unset
+   * loses nothing. A sink that throws is contained, never propagated into
+   * {@link FileMemoryStore.query}.
+   */
+  readonly onEvent?: MemoryEventSink
+  readonly eventCapacity?: number
 }
 
 function defaultNewId(): string {
@@ -103,12 +117,32 @@ function writeFileAtomic(path: string, contents: string): void {
   }
 }
 
-function listMarkdownFiles(dir: string): string[] {
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  )
+}
+
+/**
+ * @param onFailure Called when the directory exists but cannot be listed.
+ *   A layer directory that was never written to is not a failure — it is an
+ *   empty table. One that is there but unreadable is a table that silently
+ *   looks empty, so it goes on the record instead.
+ */
+function listMarkdownFiles(
+  dir: string,
+  onFailure?: (error: unknown) => void,
+): string[] {
   let names: string[]
   try {
     names = readdirSync(dir, { recursive: true, encoding: 'utf8' })
-  } catch {
-    // A layer directory that was never written to is not an error, it is empty.
+  } catch (error) {
+    if (!isMissing(error)) {
+      onFailure?.(error)
+    }
     return []
   }
   return names.filter(name => name.endsWith('.md')).map(name => join(dir, name))
@@ -220,10 +254,21 @@ export class FileMemoryStore {
   readonly #now: () => Date
   readonly #newId: () => string
 
+  /**
+   * Where a scan writes down what it could not read. Always present — see the
+   * header of `events.ts` for why partial results plus an explicit channel is
+   * the only acceptable shape here, and why {@link getEntry} does the opposite.
+   */
+  readonly events: MemoryEventRecorder
+
   constructor(options: MemoryStoreOptions = {}) {
     this.#root = options.root ?? defaultMemoryRoot()
     this.#now = options.now ?? (() => new Date())
     this.#newId = options.newId ?? defaultNewId
+    this.events = new MemoryEventRecorder(
+      options.eventCapacity,
+      options.onEvent,
+    )
   }
 
   get root(): string {
@@ -251,11 +296,26 @@ export class FileMemoryStore {
    * (D-6 — a cited id that resolves to nothing is a fabricated citation), and
    * it is the lookup an audit uses. Recall goes through {@link query}, which
    * does honour retirement.
+   *
+   * Unlike {@link query}, this **throws** when the named record is unreadable.
+   * The asymmetry is deliberate: a scan that hit one bad file still has a real
+   * answer for every other file, whereas a lookup that was asked for exactly
+   * this record has nothing true to return. `null` here would mean "no such
+   * memory", and a citation check reading that would call a genuine entry
+   * fabricated.
    */
   getEntry(id: string): MemoryEntry | null {
     return this.#locate(id)?.entry ?? null
   }
 
+  /**
+   * Deterministic recall over the layer tables.
+   *
+   * Returns every record it can read. Files it cannot read are skipped **and
+   * reported** on {@link events} — never silently dropped, and never allowed to
+   * fail the whole scan. One hand-edited file used to take recall down
+   * wholesale, which on the wake path is a resident node with no memory at all.
+   */
   query(query: MemoryQuery = {}): MemoryEntry[] {
     if (query.projectKey !== undefined) {
       assertKeySegment('query.projectKey', query.projectKey)
@@ -270,12 +330,20 @@ export class FileMemoryStore {
     const results: MemoryEntry[] = []
     const seen = new Set<string>()
     for (const dir of searchRoots(this.#root, query)) {
-      for (const file of listMarkdownFiles(dir)) {
+      for (const file of listMarkdownFiles(dir, error =>
+        this.#report(MemoryEventType.LayerUnreadable, dir, error),
+      )) {
         if (seen.has(file)) {
           continue
         }
         seen.add(file)
-        const entry = readEntryFile(file)
+        let entry: MemoryEntry
+        try {
+          entry = readEntryFile(file)
+        } catch (error) {
+          this.#report(MemoryEventType.EntryUnreadable, file, error)
+          continue
+        }
         if (query.includeRetired !== true && !isRecallable(entry, asOf)) {
           continue
         }
@@ -350,12 +418,24 @@ export class FileMemoryStore {
     return updated
   }
 
+  #report(type: MemoryEventType, path: string, error: unknown): void {
+    this.events.record({
+      type,
+      at: this.#now().getTime(),
+      detail: { path, ...describeFailure(error) },
+    })
+  }
+
   /**
    * Scans the three layer directories, never the root itself: only files under
    * `working/`, `project/` and `baseline/` are entries. A note a human drops
    * beside them is then just a note, not a parse failure — and the rule is the
    * same one {@link query} follows, so the two can never disagree about what
    * the store contains.
+   *
+   * Only the file whose name matches the id is ever parsed, so a corrupt
+   * *neighbour* cannot fail a lookup. A corrupt *target* throws, by design —
+   * see {@link getEntry}.
    */
   #locate(id: string): { entry: MemoryEntry; path: string } | null {
     assertKeySegment('id', id)
@@ -375,13 +455,14 @@ export class FileMemoryStore {
 }
 
 /**
- * Reads and parses one entry file, letting {@link MemoryParseError} escape.
+ * Reads and parses one entry file, letting the failure escape.
  *
- * Nothing here swallows a parse failure. Writes are atomic, so a file that does
- * not parse was not produced by this store — it was hand-edited, truncated by
- * something outside the contract, or corrupted. In a store whose job is to be
- * the audit trail, quietly skipping such a file would hide exactly the event an
- * audit exists to catch.
+ * Writes are atomic, so a file that does not parse was not produced by this
+ * store — it was hand-edited, truncated by something outside the contract, or
+ * corrupted. That is worth knowing about either way; what differs is who gets
+ * told. The two callers make that choice, not this function: {@link
+ * FileMemoryStore.query} catches and records, {@link FileMemoryStore.getEntry}
+ * lets it through.
  */
 function readEntryFile(path: string): MemoryEntry {
   return parseEntry(readFileSync(path, 'utf8'))

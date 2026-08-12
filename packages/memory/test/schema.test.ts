@@ -9,11 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  MemoryParseError,
-  MemoryValidationError,
-  type MemoryWriteInput,
-} from '../src/index.js'
+import { MemoryValidationError, type MemoryWriteInput } from '../src/index.js'
 import { createSandbox, type Sandbox } from './helpers.js'
 
 let sandbox: Sandbox
@@ -128,14 +124,8 @@ describe('what counts as an entry', () => {
     expect(store.getEntry(entry.id)?.id).toBe(entry.id)
   })
 
-  test('a corrupted entry file is surfaced, not silently skipped', () => {
-    sandbox.store.write(VALID)
-    writeFileSync(
-      join(sandbox.root, 'project', 'atlas', 'hand-edited.md'),
-      'oops',
-    )
-    expect(() => sandbox.reopen().query({})).toThrow(MemoryParseError)
-  })
+  // How a corrupt file under a layer directory behaves is its own subject —
+  // see `resilience.test.ts`.
 })
 
 describe('deterministic retrieval', () => {

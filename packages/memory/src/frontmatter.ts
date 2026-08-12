@@ -102,11 +102,16 @@ function splitDocument(text: string): { fields: Fields; body: string } {
   }
   const fields = new Map<string, unknown>()
   const head = text.slice(FENCE.length, closingAt)
-  for (const line of head.length === 0 ? [] : head.split('\n')) {
+  // Messages below name the key and the line number, never the value. They
+  // travel to the event channel (`events.ts`) and from there into whatever an
+  // operator is logging, so echoing the offending text would push memory
+  // content somewhere the memory root's 0600 permissions no longer cover.
+  const lines = head.length === 0 ? [] : head.split('\n')
+  for (const [index, line] of lines.entries()) {
     const colon = line.indexOf(': ')
     if (colon === -1) {
       throw new MemoryParseError(
-        `frontmatter line is not \`key: value\`: ${line}`,
+        `frontmatter line ${index + 1} is not \`key: value\``,
       )
     }
     const key = line.slice(0, colon)
@@ -115,7 +120,7 @@ function splitDocument(text: string): { fields: Fields; body: string } {
       fields.set(key, JSON.parse(raw) as unknown)
     } catch {
       throw new MemoryParseError(
-        `frontmatter value for \`${key}\` is not JSON: ${raw}`,
+        `frontmatter value for \`${key}\` (line ${index + 1}) is not JSON`,
       )
     }
   }

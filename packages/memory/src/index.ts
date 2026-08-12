@@ -39,6 +39,14 @@ export {
   type ProjectScope,
   type WorkingScope,
 } from './entry.js'
+export {
+  DEFAULT_EVENT_CAPACITY,
+  MemoryEventRecorder,
+  MemoryEventType,
+  type MemoryEvent,
+  type MemoryEventDetail,
+  type MemoryEventSink,
+} from './events.js'
 export { MemoryParseError, parseEntry, serializeEntry } from './frontmatter.js'
 export { BASE_MEMORY_TYPE_BY_LAYER } from './mapping.js'
 export { defaultMemoryRoot, QIANMO_MEMORY_DIRNAME, scopeDir } from './paths.js'
