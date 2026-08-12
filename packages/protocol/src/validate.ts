@@ -106,8 +106,12 @@ function originIssues(value: unknown): readonly ProtocolIssue[] {
  * Validate an untrusted value as a v0 envelope.
  *
  * Runs in two phases: structural checks first, then boundary checks (size,
- * TTL, hop count, loops) which only make sense on a well-formed envelope.
- * All failures of a phase are reported together.
+ * hop count, the M0 zero budget, the delivery deadline) which only make sense
+ * on a well-formed envelope. All failures of a phase are reported together.
+ *
+ * Note what is deliberately *not* here: loop detection. `(handler address,
+ * taskId)` is the loop key and it needs per-node state, so it belongs to the
+ * router (P4.2); `options.node` is a debug hint, never an inbound check.
  */
 export function validateMessage(
   input: unknown,
