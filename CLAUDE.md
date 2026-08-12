@@ -121,3 +121,11 @@ bun run check:mock-hygiene  # mock 卫生棘轮
 **`precheck` ≠ CI，别把「本地 precheck 过」当成「CI 会过」。**`precheck` 用会**改源文件**的 `check:fix`（`biome check --fix`），且**不含** `check:cycles`、`check:unused`、`check:bundle`。`verify` 补齐这个差集：把 `check:fix` 换成只读的 `biome ci .`（CI 用的正是它），并纳入三个缺席门禁。**代价是 `check:cycles` 走 2300+ 模块要几分钟、且含一次 `build:vite`——所以 `verify` 是推送前的重活，日常改代码仍用 `precheck` 快速反馈。**
 
 完整清单见 `package.json` scripts（其中发布类命令属于基座发布面，本仓库不用，见 §0）。
+
+### 3.1 在 git worktree 里跑 `check:unused` 会得到假阳性
+
+在 `.claude/worktrees/` 之类的**独立工作树**里跑 `bun run check:unused`，会报出约 **76 个「未使用文件」**外加 exports/types 大幅上涨——**那是假的**。同一套代码合回主检出后再跑就是绿的（已两次实测对照）。根因是 worktree 里 `bun install` 生成的 node_modules 布局与主检出不同，knip 据此解析出另一张依赖图。
+
+**已经骗过两个子代理**，其中一个还在 worktree 内部做了「对照实验」试图证明这是存量问题——**它的对照基线也在同一个 worktree 里**，于是得出了错误结论。
+
+**规矩**：`check:unused` 的结论**只在主检出上作数**。在 worktree 里跑出红色，先回主检出复核再下判断；要报「门禁坏了」也必须附主检出的输出。
