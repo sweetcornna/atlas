@@ -81,7 +81,19 @@
 
 **决议日期**：2026-08-12
 
-**状态**：负责人决议（技术决议，负责人可定），2026-08-12。
+**状态**：负责人决议（技术决议，负责人可定），2026-08-12。**①②③ 已于 2026-08-12 在实验/演示服务器上真机落地并验证，其中对 D-5 的具体手段做了一处实测纠正，见下。**
+
+**落地记录与手段纠正（2026-08-12，真机实测）**：
+
+- **②vhost 已 disabled**：两份 dormice vhost 加 `.disabled` 后缀，`nginx -t` 通过；`sites-available` 内已无 `.conf` 再引用 3676。原本它们未启用（`sites-enabled` 只有 kiln），改名不影响任何运行服务。
+- **①防火墙——D-5 原文「加到 `DOCKER-USER`」经实测纠正为「INPUT 链为主、`DOCKER-USER` 作纵深冗余」**。根因：容器访问宿主本机端口的流量走 **INPUT 链**，不走 `FORWARD`/`DOCKER-USER`。从 docker0 沙箱容器（`dormice-base` 镜像 + node）探测宿主 3676，用连接三态区分 `ECONNREFUSED`（端口无监听、内核回 RST）与 `TIMEOUT`（被 DROP 静默丢弃）：
+  - 加固前：**`3676 ECONNREFUSED`**（daemon 绑 `127.0.0.1`，容器够不到）
+  - 仅加 `DOCKER-USER` 规则：**`3676 ECONNREFUSED`（不变）——实证 D-5 原方案对此威胁无效**
+  - 加 INPUT 规则后（`-i docker0 --dport 3676 -j DROP`）：**`3676 TIMEOUT`——实证 INPUT 上那条才是生效项**
+  最终两层都加（INPUT 生效 + `DOCKER-USER` 纵深）；全程宿主 `80 REACHABLE` 不变，加固精准无误伤。
+- **持久化**：加固写成幂等脚本 `harden-dormice-host.sh`（装于 `/usr/local/sbin`）+ systemd unit `dormice-harden.service`（`PartOf=docker.service`，绑 docker 生命周期，因 docker 重启会 flush 并重建 `DOCKER-USER` 链）。实测：手动删两条规则后 `systemctl restart` 自动重加成功。
+- **③不变式**：`check-daemon-bind.sh` 断言 daemon 仅监听回环。两态实测均正确——对真实 daemon `127.0.0.1:3676` 绿灯退出 0；对临时 `0.0.0.0:39999` 监听红灯退出 1（报「违反不变式」）。**接入 CI 仍留 P0.7 正式做**：当前仓库无 daemon 集成代码、CI 也够不到部署环境，本脚本是服务器侧运行时自检与 P0.7 的入库草稿。
+- 三个脚本均不含主机名 / 公网地址 / 凭据，符合 P0.7 DoD；服务器 `/tmp` 的临时副本已清理。
 
 ### D-6 AC-4 的来源标注机制怎么选？（与 AC-5 冲突）
 
