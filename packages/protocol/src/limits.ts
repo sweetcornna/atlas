@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 /** Hard boundaries of the v0 protocol. Shared by every node on the network. */
 export const LIMITS = {
   /** Maximum size of one serialized envelope, in bytes (256 KiB). */

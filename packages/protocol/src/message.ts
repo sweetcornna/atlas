@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
 import { parseAddress } from './address.js'
 import { ProtocolError, ProtocolErrorCode, issue } from './errors.js'
 import { LIMITS } from './limits.js'
