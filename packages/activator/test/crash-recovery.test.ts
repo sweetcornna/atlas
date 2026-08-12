@@ -57,7 +57,10 @@ beforeEach(() => {
   writeFileSync(paths.failureLog, '')
   // The sandbox is already running: this test is about *our* crash, not about
   // waking anything.
-  stub = startStubDaemon({ initialState: 'running' })
+  stub = startStubDaemon({
+    initialState: 'active',
+    sandboxes: ['sandbox-crash'],
+  })
 })
 
 afterEach(async () => {
@@ -259,6 +262,6 @@ describe('a request caught before a SIGKILL is not lost', () => {
 
   test('the killed process never reached a destructive call either', () => {
     // A crash is not an excuse: the surface is the same on the way down.
-    expect(stub.hits.destroy).toBe(0)
+    expect(stub.hits.destroySandbox).toBe(0)
   })
 })

@@ -30,14 +30,62 @@
  * configuration outright, so the lesson survives the departure of everyone who
  * remembers it.
  *
+ * ## The beat is `acquireSandbox`, and there was never an alternative
+ *
+ * This file used to beat a `touch` verb. **The daemon has no `touch` method**;
+ * the whole API is 31 named RPCs and none of them is it. What the host run of
+ * 2026-08-12 established about the ones that exist:
+ *
+ *   - `acquireSandbox` **does** reset the idle clock. A sandbox's
+ *     `lastActiveAt` moved from `2026-08-12T13:17:51.529Z` to
+ *     `2026-08-12T13:17:57.613Z` across one call issued 6.1 s later — reset to
+ *     *now*, not merely preserved. It also thaws: `frozen` became `active`.
+ *   - `updatePolicy` and `updateMetadata` do **not**. The vendor documentation
+ *     is explicit — "a pure ledger write: nothing is woken, and the idle clock
+ *     is not refreshed". They were the obvious candidates for a
+ *     minimum-privilege beat and they simply do not work.
+ *   - `execCommand` does ("counts as activity for the whole run"), and running
+ *     an arbitrary command inside the sandbox every period to prove we are
+ *     awake is a far larger capability than the one being bought.
+ *
+ * So `acquireSandbox` is the beat. DoD ② was then measured against a real
+ * sandbox with `freezeAfterSeconds: 60`:
+ *
+ *   - **Control, no heartbeat** — `active` at t=0, `frozen` by t≈45 s, and
+ *     frozen thereafter.
+ *   - **Experiment, one `acquireSandbox` every 20 s** — `active` for the whole
+ *     120 s run, twice the freeze threshold, never once frozen.
+ *
+ * ## What that costs, stated plainly
+ *
+ * The previous version of this file claimed a real guarantee: the keepalive
+ * face held `Pick<SandboxDaemon, 'touch'>`, so it "cannot even wake a sandbox"
+ * — the type made a class of action unreachable from here. **That guarantee is
+ * gone, and nothing replaces it.** Keeping alive and waking up are one call on
+ * this daemon, so a component that can do the first can do the second. The
+ * narrowing below is now a statement of what the loop uses, not a boundary it
+ * cannot cross.
+ *
+ * What is *not* affected is the property AC-6(c) actually rests on. Reaching
+ * `acquireSandbox` does not bring `destroySandbox` any closer: the allowlist in
+ * `capability.ts` is what refuses that, it refuses it for every caller in this
+ * package equally, and it never depended on this narrowing. `acquireSandbox` is
+ * idempotent, non-destructive, and only ever moves a sandbox towards running.
+ *
+ * There is even a small gain to be honest about in the other direction: because
+ * the beat is the wake verb, a heartbeat that loses several beats and lets the
+ * sandbox freeze **thaws it on the next beat** instead of watching it stay
+ * frozen. Under the imagined `touch` API the loop could only have kept
+ * re-failing.
+ *
  * ## Why this is the same component as the activator
  *
  * Both faces live host-side and both act on the sandbox's behalf against the
  * daemon API. Sharing one component means sharing one capability surface — and
  * that surface has no destructive verb in it (`capability.ts`). Splitting them
  * would mean two places where a destructive verb could be added, and only one
- * of them would be the one anybody audits. Note the type of `daemon` below:
- * this face is narrowed to `touch` alone and cannot even wake a sandbox.
+ * of them would be the one anybody audits. That argument is now doing all of
+ * the work that the per-face type narrowing used to share.
  */
 
 import { ActivatorEventType, type AuditLog } from './audit.js'
@@ -151,9 +199,18 @@ export function keepalivePeriodMs(
   return Math.max(1, Math.floor(policy.freezeAfterSeconds * 1_000 * ratio))
 }
 
+/**
+ * The slice of the daemon port the heartbeat holds.
+ *
+ * One member, and it is the wake verb — see the module header for why there is
+ * no smaller honest choice, and for what the previous, narrower type claimed
+ * that this one cannot.
+ */
+export type KeepalivePort = Pick<SandboxDaemon, 'acquire'>
+
 /** Why the loop gave up on being healthy. */
 export interface KeepaliveDegraded {
-  readonly sandboxId: string
+  readonly sandboxName: string
   readonly consecutiveFailures: number
   /** Milliseconds since the last beat the daemon actually accepted. */
   readonly sinceLastSuccessMs: number
@@ -176,12 +233,16 @@ export interface KeepaliveBeat {
 
 /** Knobs of {@link KeepaliveLoop}. */
 export interface KeepaliveOptions {
-  readonly sandboxId: string
+  readonly sandboxName: string
   /**
-   * Narrowed to `touch` on purpose. The heartbeat cannot wake a sandbox, let
-   * alone anything worse — the type says so and the allowlist enforces it.
+   * Narrowed to {@link KeepalivePort}, which is `acquire` and nothing else.
+   *
+   * Read that as documentation, not as a guarantee: `acquire` *is* the wake
+   * verb, so unlike its predecessor this narrowing does not make waking
+   * unreachable from the heartbeat. Anything worse than waking remains
+   * unreachable, but that is the allowlist's doing, not this type's.
    */
-  readonly daemon: Pick<SandboxDaemon, 'touch'>
+  readonly daemon: KeepalivePort
   readonly policy: ResidencyPolicy
   readonly audit: AuditLog
   readonly clock?: Clock
@@ -202,8 +263,8 @@ export interface KeepaliveOptions {
  * would have used, so the retry policy is checkable without waiting for it.
  */
 export class KeepaliveLoop {
-  readonly #sandboxId: string
-  readonly #daemon: Pick<SandboxDaemon, 'touch'>
+  readonly #sandboxName: string
+  readonly #daemon: KeepalivePort
   readonly #audit: AuditLog
   readonly #clock: Clock
   readonly #scheduler: Scheduler
@@ -246,7 +307,7 @@ export class KeepaliveLoop {
     }
     this.#periodMs = period
 
-    this.#sandboxId = options.sandboxId
+    this.#sandboxName = options.sandboxName
     this.#daemon = options.daemon
     this.#audit = options.audit
     this.#clock = options.clock ?? systemClock
@@ -303,11 +364,17 @@ export class KeepaliveLoop {
   }
 
   /**
-   * One beat: observe the clock, touch the daemon, decide when to come back.
+   * One beat: observe the clock, acquire the sandbox, decide when to come back.
    *
    * Never rejects. A heartbeat that can throw is a heartbeat that stops beating
    * the first time the network hiccups, which is precisely the failure it
    * exists to prevent.
+   *
+   * The state the acquire comes back with is audited but never acted on, and
+   * deliberately so: whether `acquireSandbox` reports the sandbox as it was
+   * found or as it was left has **not** been checked against the real daemon.
+   * Recording it costs nothing and gives a real run something to read; branching
+   * on it would be building behaviour on an unverified reading.
    */
   async beat(): Promise<KeepaliveBeat> {
     const at = this.#clock.now()
@@ -319,7 +386,7 @@ export class KeepaliveLoop {
       // thawed us, but our own notion of "recently touched" is stale by exactly
       // the frozen interval, so it is rebased rather than believed.
       this.#audit.record(ActivatorEventType.TimeJumpDetected, at, {
-        sandboxId: this.#sandboxId,
+        sandboxName: this.#sandboxName,
         gapMs: observation.gapMs,
         thresholdMs: this.#gate.thresholdMs,
         face: 'keepalive',
@@ -334,12 +401,13 @@ export class KeepaliveLoop {
     }
 
     try {
-      await this.#daemon.touch(this.#sandboxId)
+      const status = await this.#daemon.acquire(this.#sandboxName)
       this.#consecutiveFailures = 0
       this.#lastSuccessAt = at
       this.#audit.record(ActivatorEventType.KeepaliveTick, at, {
-        sandboxId: this.#sandboxId,
+        sandboxName: this.#sandboxName,
         periodMs: this.#periodMs,
+        state: status.state,
       })
       return {
         ok: true,
@@ -353,7 +421,7 @@ export class KeepaliveLoop {
       this.#consecutiveFailures += 1
       const reason = error instanceof Error ? error.message : String(error)
       this.#audit.record(ActivatorEventType.KeepaliveTickFailed, at, {
-        sandboxId: this.#sandboxId,
+        sandboxName: this.#sandboxName,
         consecutiveFailures: this.#consecutiveFailures,
         reason,
       })
@@ -397,7 +465,7 @@ export class KeepaliveLoop {
 
   #degrade(at: number): void {
     const detail: KeepaliveDegraded = {
-      sandboxId: this.#sandboxId,
+      sandboxName: this.#sandboxName,
       consecutiveFailures: this.#consecutiveFailures,
       sinceLastSuccessMs:
         this.#lastSuccessAt === null ? -1 : at - this.#lastSuccessAt,
@@ -405,7 +473,7 @@ export class KeepaliveLoop {
       at,
     }
     this.#audit.record(ActivatorEventType.KeepaliveDegraded, at, {
-      sandboxId: detail.sandboxId,
+      sandboxName: detail.sandboxName,
       consecutiveFailures: detail.consecutiveFailures,
       sinceLastSuccessMs: detail.sinceLastSuccessMs,
     })

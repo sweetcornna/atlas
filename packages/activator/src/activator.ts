@@ -70,7 +70,7 @@ export interface ReadyProbe {
    * code that touches it ran at speed. Forwarding on "unpaused" alone hands the
    * envelope to a node that cannot yet act on it.
    */
-  isReady(sandboxId: string): Promise<boolean>
+  isReady(sandboxName: string): Promise<boolean>
 }
 
 /** Where a forwarded envelope goes — the last hop, or the next one. */
@@ -88,11 +88,16 @@ export interface FailureSink {
 export interface ActivationRequest {
   readonly envelope: QianmoMessage
   /**
-   * Which sandbox hosts the target. Resolved by the caller from the registry:
-   * this component deliberately does not do name lookup, so it depends on no
-   * registry and cannot be the reason one is unavailable.
+   * Which sandbox hosts the target — the daemon's `name` for it, not its `id`.
+   * The two are distinct fields on a sandbox row and only the name is
+   * addressable; see `daemon.ts` for why passing an id here would quietly
+   * create a second sandbox rather than fail.
+   *
+   * Resolved by the caller from the registry: this component deliberately does
+   * not do agent-name lookup, so it depends on no registry and cannot be the
+   * reason one is unavailable.
    */
-  readonly sandboxId: string
+  readonly sandboxName: string
 }
 
 /** How one call to {@link Activator.handle} ended. */
@@ -232,7 +237,7 @@ export class Activator {
    * and "never silently dropped" is the property being defended.
    */
   async handle(request: ActivationRequest): Promise<ActivationOutcome> {
-    const { envelope, sandboxId } = request
+    const { envelope, sandboxName } = request
     const now = this.#clock.now()
 
     // T-1 rule 2: an envelope already past its delivery deadline is refused
@@ -263,7 +268,7 @@ export class Activator {
     const record: AcceptedRecord = {
       kind: 'accepted',
       requestId,
-      sandboxId,
+      sandboxName,
       acceptedAt: now,
       envelope,
     }
@@ -284,7 +289,7 @@ export class Activator {
     this.#inFlight.add(requestId)
     this.#audit.record(ActivatorEventType.RequestAccepted, now, {
       requestId,
-      sandboxId,
+      sandboxName,
       msgId: envelope.msgId,
       taskId: envelope.taskId,
     })
@@ -314,7 +319,7 @@ export class Activator {
         this.#clock.now(),
         {
           requestId: record.requestId,
-          sandboxId: record.sandboxId,
+          sandboxName: record.sandboxName,
           msgId: record.envelope.msgId,
           acceptedAt: record.acceptedAt,
         },
@@ -404,10 +409,10 @@ export class Activator {
     record: AcceptedRecord,
     ceilingFrom: number,
   ): Promise<ActivationOutcome> {
-    const { requestId, sandboxId, envelope } = record
+    const { requestId, sandboxName, envelope } = record
     const timeline = new StageTimeline({
       requestId,
-      sandboxId,
+      sandboxName,
       msgId: envelope.msgId,
       taskId: envelope.taskId,
       acceptedAt: record.acceptedAt,
@@ -429,27 +434,33 @@ export class Activator {
     }
 
     try {
-      const status = await this.#daemon.status(sandboxId)
-      if (status.state !== 'running') {
+      const status = await this.#daemon.status(sandboxName)
+      // `active` is the daemon's word for running; `frozen` and `stopped` both
+      // need a wake, and so does `unknown` — acquiring is idempotent and only
+      // ever moves towards ready, so an unrecognised state is cheaper to wake
+      // than to guess at. A name the daemon does not list at all does not reach
+      // here: `status` throws, and the catch below fails the request
+      // explicitly rather than acquiring a name that would be *created*.
+      if (status.state !== 'active') {
         const at = this.#clock.now()
         timeline.markWakeStarted(at)
         this.#audit.record(ActivatorEventType.WakeStarted, at, {
           requestId,
-          sandboxId,
+          sandboxName,
           from: status.state,
         })
-        await this.#wake(sandboxId, requestId)
+        await this.#wake(sandboxName, requestId)
       }
 
       const { readyAt, deliveryDeadline } = await this.#awaitReady(
-        sandboxId,
+        sandboxName,
         record,
         ceilingFrom,
       )
       timeline.markReady(readyAt)
       this.#audit.record(ActivatorEventType.TargetReady, readyAt, {
         requestId,
-        sandboxId,
+        sandboxName,
         waitedMs: readyAt - record.acceptedAt,
       })
 
@@ -478,7 +489,7 @@ export class Activator {
       })
       this.#audit.record(ActivatorEventType.RequestForwarded, forwardedAt, {
         requestId,
-        sandboxId,
+        sandboxName,
         msgId: envelope.msgId,
         totalMs: forwardedAt - record.acceptedAt,
       })
@@ -505,24 +516,24 @@ export class Activator {
    * daemon whose credential has no rate story, an easy way to be the reason the
    * daemon stops answering.
    */
-  async #wake(sandboxId: string, requestId: string): Promise<void> {
-    const existing = this.#wakes.get(sandboxId)
+  async #wake(sandboxName: string, requestId: string): Promise<void> {
+    const existing = this.#wakes.get(sandboxName)
     if (existing !== undefined) {
       this.#audit.record(ActivatorEventType.WakeCoalesced, this.#clock.now(), {
         requestId,
-        sandboxId,
+        sandboxName,
       })
       await existing
       return
     }
     const wake = (async () => {
-      await this.#daemon.acquire(sandboxId)
+      await this.#daemon.acquire(sandboxName)
     })()
-    this.#wakes.set(sandboxId, wake)
+    this.#wakes.set(sandboxName, wake)
     try {
       await wake
     } finally {
-      this.#wakes.delete(sandboxId)
+      this.#wakes.delete(sandboxName)
     }
   }
 
@@ -547,7 +558,7 @@ export class Activator {
    * opens the grace window for all of them.
    */
   async #awaitReady(
-    sandboxId: string,
+    sandboxName: string,
     record: AcceptedRecord,
     ceilingFrom: number,
   ): Promise<{ readyAt: number; deliveryDeadline: number }> {
@@ -555,14 +566,14 @@ export class Activator {
     let deliveryDeadline = deliveryExpiresAt(record.envelope)
 
     for (;;) {
-      if (await this.#readyProbe.isReady(sandboxId)) {
+      if (await this.#readyProbe.isReady(sandboxName)) {
         return { readyAt: this.#clock.now(), deliveryDeadline }
       }
 
       const after = this.#clock.now()
       if (this.#gate.expired(Math.min(ceiling, deliveryDeadline), after)) {
         throw new Error(
-          `target ${sandboxId} did not become ready within ${after - record.acceptedAt}ms`,
+          `target ${sandboxName} did not become ready within ${after - record.acceptedAt}ms`,
         )
       }
 
@@ -574,7 +585,7 @@ export class Activator {
         deliveryDeadline = this.#gate.rebase(deliveryDeadline, observation)
         this.#audit.record(ActivatorEventType.TimeJumpDetected, afterSleep, {
           requestId: record.requestId,
-          sandboxId,
+          sandboxName,
           gapMs: observation.gapMs,
           thresholdMs: this.#gate.thresholdMs,
           face: 'activator',
@@ -603,7 +614,7 @@ export class Activator {
     })
     this.#audit.record(ActivatorEventType.RequestFailed, now, {
       requestId: timeline.requestId,
-      sandboxId: timeline.sandboxId,
+      sandboxName: timeline.sandboxName,
       msgId: envelope.msgId,
       code,
       reason,

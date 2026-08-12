@@ -74,8 +74,8 @@ const daemon = new HttpSandboxDaemon({
 
 /** Ready as soon as the daemon says the sandbox is running. */
 const readyProbe: ReadyProbe = {
-  isReady: async sandboxId =>
-    (await daemon.status(sandboxId)).state === 'running',
+  isReady: async sandboxName =>
+    (await daemon.status(sandboxName)).state === 'active',
 }
 
 /** Appends every forwarded id to a file, so the record outlives the process. */
@@ -139,7 +139,7 @@ if (mode === 'catch') {
   }
   const envelope = JSON.parse(envelopeJson) as QianmoMessage
   // Not awaited: the point is to be killed while this is still in flight.
-  void activator.handle({ envelope, sandboxId: 'sandbox-crash' })
+  void activator.handle({ envelope, sandboxName: 'sandbox-crash' })
   // Keep the process alive until the parent kills it.
   setInterval(() => undefined, 1_000)
 } else if (mode === 'recover') {

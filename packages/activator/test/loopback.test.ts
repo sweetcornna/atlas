@@ -27,7 +27,7 @@ import {
   DAEMON_TOKEN_ENV_VAR,
   HttpSandboxDaemon,
   assertLoopbackBaseUrl,
-  assertSandboxId,
+  assertSandboxName,
   tokenFromEnv,
 } from '../src/daemon.js'
 
@@ -90,9 +90,14 @@ describe('loopback only', () => {
   })
 })
 
-describe('sandbox ids', () => {
-  test.each(['sandbox-1', 'a', 'node_b.2', 'A1-_.'])('%p is usable', id => {
-    expect(assertSandboxId(id)).toBe(id)
+describe('sandbox names', () => {
+  // Under the real wire shape the name goes in the JSON body and never touches
+  // the URL — the path is `/` plus an allowlisted method name and nothing else.
+  // These are therefore no longer the check that keeps a crafted identifier
+  // from picking a route; they keep a name the daemon would reject from turning
+  // into a 4xx somewhere less informative.
+  test.each(['sandbox-1', 'a', 'node_b.2', 'A1-_.'])('%p is usable', name => {
+    expect(assertSandboxName(name)).toBe(name)
   })
 
   test.each([
@@ -104,13 +109,13 @@ describe('sandbox ids', () => {
     'a?b',
     'a#b',
     'a%2f',
-  ])('%p is refused', id => {
-    expect(() => assertSandboxId(id)).toThrow(/not a usable sandbox id/)
+  ])('%p is refused', name => {
+    expect(() => assertSandboxName(name)).toThrow(/not a usable sandbox name/)
   })
 
-  test('an id longer than the cap is refused', () => {
-    expect(() => assertSandboxId(`a${'b'.repeat(200)}`)).toThrow(
-      /not a usable sandbox id/,
+  test('a name longer than the cap is refused', () => {
+    expect(() => assertSandboxName(`a${'b'.repeat(200)}`)).toThrow(
+      /not a usable sandbox name/,
     )
   })
 })

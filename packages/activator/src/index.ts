@@ -20,33 +20,43 @@
  * silent one — {@link assertResidencyPolicy} refuses that configuration.
  *
  * **Why one package.** Both faces hold the same credential, and that credential
- * has no privilege tiers: the bearer that touches a sandbox is the bearer that
- * destroys it. One component means one capability surface (`capability.ts`) —
- * `touch`, `acquire`, `status`, and nothing else, unreachable rather than
- * merely unconfigured. AC-6(c) rests on that surface staying this small.
+ * has no privilege tiers: the bearer that wakes a sandbox is the bearer that
+ * destroys it, on the same endpoint, one path segment away. One component means
+ * one capability surface (`capability.ts`) — `acquireSandbox`, `listSandboxes`,
+ * and nothing else, unreachable rather than merely unconfigured. AC-6(c) rests
+ * on that surface staying this small.
+ *
+ * **The wire shape here was verified on the host on 2026-08-12**, after a first
+ * version of this package was written against an assumed REST API that turned
+ * out not to exist. What was corrected: the daemon is a `POST /{methodName}`
+ * RPC, there is no `touch` method, `acquireSandbox` is both the wake verb and
+ * the keep-alive verb, sandboxes are addressed by name, states are
+ * `active` / `frozen` / `stopped`, and a status read is `listSandboxes` plus a
+ * filter. `keepalive.ts` records what the missing `touch` cost us in type-level
+ * safety; the numbers behind each of these live next to the code that relies on
+ * them.
  *
  * **What the tests here do and do not show.** The daemon is an external system,
- * modelled as a port with a local stand-in (`test/stub-daemon.ts`). Every line
- * of scheduling, retry, allowlist, journal and recovery logic is exercised for
- * real against it, over a real socket; none of it is evidence about how the
- * real daemon behaves.
+ * modelled as a port with a local stand-in (`test/stub-daemon.ts`). The stub
+ * now speaks the daemon's real wire shape, but it is still a stand-in: every
+ * line of scheduling, retry, allowlist, journal and recovery logic is exercised
+ * for real against it, over a real socket, and none of it is evidence about how
+ * the real daemon behaves.
  *
- * Two of P2.5's four acceptance criteria therefore have **no coverage in this
- * package and are not claimed**:
+ * Of P2.5's four acceptance criteria:
  *
  * - **DoD ①** — ten consecutive catch/wake/forward round trips against a
  *   genuinely dormant node, with stage timings. Needs a real sandbox on the
- *   Linux host. The ports to fill in are {@link SandboxDaemon} (already
- *   implemented over HTTP by {@link HttpSandboxDaemon}), {@link ReadyProbe} and
- *   {@link ForwardTarget}; nothing in this package changes for the real run.
+ *   Linux host; **not covered here and not claimed**. The ports to fill in are
+ *   {@link SandboxDaemon} (implemented over the real RPC by
+ *   {@link HttpSandboxDaemon}), {@link ReadyProbe} and {@link ForwardTarget}.
  * - **DoD ②** — a busy in-sandbox process surviving several multiples of the
- *   freeze threshold with the heartbeat on, and being frozen with it off. The
- *   control half is the load-bearing half: "it did not break" without the
- *   negative case is not evidence.
- *
- * Covered here instead: **DoD ③** (`capability.test.ts`,
- * `destroy-unreachable.test.ts`, `surface-invariant.test.ts`) and **DoD ④**
- * (`crash-recovery.test.ts`, real child process, real SIGKILL).
+ *   freeze threshold with the heartbeat on, and being frozen with it off.
+ *   **Measured on the host** on 2026-08-12, both halves; the numbers are in
+ *   `keepalive.ts`. Nothing in this package re-proves it.
+ * - **DoD ③** (`capability.test.ts`, `destroy-unreachable.test.ts`,
+ *   `surface-invariant.test.ts`) and **DoD ④** (`crash-recovery.test.ts`, real
+ *   child process, real SIGKILL) are covered here.
  */
 
 export {
@@ -72,6 +82,7 @@ export {
 } from './audit.js'
 
 export {
+  ALLOWED_BODY_KEYS,
   ALLOWED_METHODS,
   CapabilityDeniedError,
   DAEMON_CAPABILITY_SURFACE,
@@ -82,6 +93,7 @@ export {
   resolveRoute,
   type DaemonRoute,
   type DenialReason,
+  type ResolvedRequest,
 } from './capability.js'
 
 export {
@@ -103,8 +115,9 @@ export {
   DEFAULT_DAEMON_TIMEOUT_MS,
   DaemonRequestError,
   HttpSandboxDaemon,
+  SandboxNotFoundError,
   assertLoopbackBaseUrl,
-  assertSandboxId,
+  assertSandboxName,
   tokenFromEnv,
   type DaemonResponse,
   type FetchLike,
@@ -136,6 +149,7 @@ export {
   type KeepaliveBeat,
   type KeepaliveDegraded,
   type KeepaliveOptions,
+  type KeepalivePort,
   type ResidencyPolicy,
 } from './keepalive.js'
 
