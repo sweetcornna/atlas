@@ -16,6 +16,23 @@ import { join } from 'path'
  * ships from a different publisher, so honouring another product's managed
  * preferences would be surprising and can reference infrastructure that does
  * not apply here. Administrators managing occ deploy to this domain instead.
+ *
+ * DELIBERATELY NOT identity-switched (see src/constants/identity.ts). A Qianmo
+ * node reads occ's domain rather than one of its own, on purpose:
+ *
+ *   - MDM policy is read-only administrator config, not per-identity state, so
+ *     reading it does not breach the "each identity keeps its own state" rule
+ *     that governs config dirs, caches and credentials.
+ *   - Switching would point the node at a domain nobody deploys to, silently
+ *     escaping whatever policy an administrator set for occ. A security default
+ *     must fail closed: inheriting the stricter policy beats inheriting none.
+ *   - The "different publisher" argument above does not apply here — a Qianmo
+ *     node is this same codebase in another mode, not a third-party product.
+ *
+ * If node-specific policy is ever needed (e.g. resident nodes warranting
+ * STRICTER rules than interactive occ), add a `byIdentity` variant here rather
+ * than a second hardcoded domain — and make the node's domain fall back to
+ * occ's when unset, so the escape hatch above stays closed.
  */
 export const MACOS_PREFERENCE_DOMAIN = 'win.open-claude-code.occ'
 
