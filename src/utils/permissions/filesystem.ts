@@ -9,6 +9,7 @@ import {
   occConfigPath,
   PROJECT_CONFIG_DIR_NAMES,
   PROJECT_DIR_NAME,
+  PROTECTED_GLOBAL_CONFIG_FILENAMES,
 } from 'src/config/paths.js'
 import { hasAutoMemPathOverride, isAutoMemPath } from 'src/memdir/paths.js'
 import { isAgentMemoryPath } from '@open-claude-code/builtin-tools/tools/AgentTool/agentMemory.js'
@@ -70,10 +71,12 @@ export const DANGEROUS_FILES = [
   '.profile',
   '.ripgreprc',
   '.mcp.json',
-  // occ's own global state file, plus the official CLI's — a user may well
-  // have both on disk, and neither should be auto-edited.
-  '.occ.json',
-  '.claude.json',
+  // EVERY identity's global state file — `.occ.json`, `.qianmo.json` and the
+  // official CLI's `.claude.json` — not just the running one's. A user may
+  // have all three on disk, and each holds another product's MCP servers,
+  // per-project state and OAuth account record: auto-editing any of them
+  // reconfigures a product that is not the one asking. Derived from paths.ts.
+  ...PROTECTED_GLOBAL_CONFIG_FILENAMES,
 ] as const
 
 /**
@@ -84,8 +87,14 @@ export const DANGEROUS_DIRECTORIES = [
   '.git',
   '.vscode',
   '.idea',
-  '.occ',
-  '.claude',
+  // EVERY identity's project-config root — `.occ`, `.qianmo` and the official
+  // CLI's `.claude` — derived from paths.ts. All three are executable config
+  // (settings, hooks, agents, commands), so a Qianmo node that protected only
+  // `.qianmo` would let auto-edit drop a hook into a co-installed occ.
+  //
+  // The worktree carve-out below deliberately stays on PROJECT_DIR_NAME (the
+  // ACTIVE identity) — see the comment there.
+  ...PROJECT_CONFIG_DIR_NAMES,
 ] as const
 
 /**
@@ -480,6 +489,10 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
       // git worktrees), not a user-created dangerous directory. Skip the .claude
       // segment when it's followed by 'worktrees'. Any nested .claude directories
       // within the worktree (not followed by 'worktrees') are still blocked.
+      //
+      // PROJECT_DIR_NAME, not the union: this waives protection, so it may only
+      // cover the worktree tree THIS process created. Another identity's
+      // `<proj>/.occ/worktrees/` is that product's state and stays blocked.
       if (dir === PROJECT_DIR_NAME) {
         const nextSegment = pathSegments[i + 1]
         if (

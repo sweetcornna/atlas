@@ -1,5 +1,19 @@
-import { WORKFLOW_RUNS_DIR } from '@open-claude-code/workflow-engine'
+import { PROJECT_DIR_NAME } from 'src/config/paths.js'
 import { registerBundledSkill } from '../bundledSkills.js'
+
+/**
+ * Where the Workflow tool actually writes run journals, as this process sees it.
+ *
+ * NOT `WORKFLOW_RUNS_DIR` from `@open-claude-code/workflow-engine`: that is the
+ * standalone-library default (a hardcoded `.occ/workflow-runs`), and the engine
+ * is published on its own, so it cannot import `src/config/paths.ts`. The host
+ * always overrides it — `src/workflow/wiring.ts` passes `OCC_WORKFLOW_RUNS_DIR`
+ * (= `join(PROJECT_DIR_NAME, 'workflow-runs')`, see `src/workflow/service.ts`).
+ * Quoting the engine's default here would tell the model to read `.occ/…` while
+ * a Qianmo node writes to `.qianmo/…`. Forward slash, not `join`: this is prompt
+ * text, and a Windows backslash would just be noise to the model.
+ */
+const WORKFLOW_RUNS_DIR = `${PROJECT_DIR_NAME}/workflow-runs`
 
 /**
  * /ultracode — multi-agent workflow orchestration playbook (knowledge-only prompt skill).
