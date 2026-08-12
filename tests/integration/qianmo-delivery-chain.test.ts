@@ -95,10 +95,12 @@ describe('registry → adapter: the AC-2 chain minus transport', () => {
     })
     const message = envelope(resolved?.address ?? '')
 
+    // No `maxWaitMs` knob exists — the observation deadline comes from the
+    // envelope's own delivery TTL. Passing one was silently ignored until
+    // `tests/` entered typecheck.
     const settled = deliverAndAck(adapter, message, {
       now: () => START,
       pollIntervalMs: 5,
-      maxWaitMs: 2_000,
     })
     // The agent picks the message up only after the write has landed — an ack
     // emitted at write time could not tell this apart from the eviction case.

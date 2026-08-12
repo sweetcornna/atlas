@@ -39,7 +39,18 @@
     "src/**/*.tsx",
     "packages/**/*.ts",
     "packages/**/*.tsx",
-    "demo/**/*.ts"
+    "demo/**/*.ts",
+    "tests/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // 基座既有的四个集成测试带着 28 个先于本仓库存在的类型错误。把 tests/ 纳入
+    // include 是为了让阡陌自己的测试受门禁保护（它当场抓到了一个被静默忽略的
+    // 无效选项）；这四个文件在修好之前先隔离，让欠账可见而不是让整棵树失去检查。
+    // 修它们属于基座维护面，不在阡陌工作范围内（CLAUDE.md §0）。
+    "tests/integration/cli-arguments.test.ts",
+    "tests/integration/tool-chain.test.ts",
+    "tests/integration/message-pipeline.test.ts",
+    "tests/integration/context-build.test.ts"
+  ]
 }
