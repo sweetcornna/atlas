@@ -128,4 +128,6 @@ bun run check:mock-hygiene  # mock 卫生棘轮
 
 **已经骗过两个子代理**，其中一个还在 worktree 内部做了「对照实验」试图证明这是存量问题——**它的对照基线也在同一个 worktree 里**，于是得出了错误结论。
 
-**规矩**：`check:unused` 的结论**只在主检出上作数**。在 worktree 里跑出红色，先回主检出复核再下判断；要报「门禁坏了」也必须附主检出的输出。
+**已做对照实验坐实**：从同一个 HEAD 做**干净 `git clone`**（不是 worktree）+ `bun install --frozen-lockfile` 后跑同一条命令 —— **绿的**（`files/dependencies/... all zero; exports=1253 at budget`）。所以这不是「新装环境的通病」，而是 **git worktree 特有**。
+
+**规矩**：`check:unused` 的结论**只在主检出（或干净 clone）上作数**。在 worktree 里跑出红色，先回主检出复核再下判断；要报「门禁坏了」也必须附主检出的输出。
