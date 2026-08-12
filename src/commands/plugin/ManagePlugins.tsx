@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
+import { PROJECT_DIR_NAME } from '../../config/paths.js';
 import { Byline } from '@anthropic/ink';
 import { MCPRemoteServerMenu } from '../../components/mcp/MCPRemoteServerMenu.js';
 import { MCPStdioServerMenu } from '../../components/mcp/MCPStdioServerMenu.js';
@@ -1651,7 +1652,7 @@ export function ManagePlugins({
         }
         clearAllCaches();
         setResult(
-          `✓ Disabled ${selectedPlugin.plugin.name} in .claude/settings.local.json. Run /reload-plugins to apply.`,
+          `✓ Disabled ${selectedPlugin.plugin.name} in ${PROJECT_DIR_NAME}/settings.local.json. Run /reload-plugins to apply.`,
         );
         if (onManageComplete) void onManageComplete();
         setParentViewState({ type: 'menu' });
@@ -1931,10 +1932,10 @@ export function ManagePlugins({
     return (
       <Box flexDirection="column">
         <Text bold color="warning">
-          {selectedPlugin.plugin.name} is enabled in .claude/settings.json (shared with your team)
+          {selectedPlugin.plugin.name} is enabled in {PROJECT_DIR_NAME}/settings.json (shared with your team)
         </Text>
         <Box marginTop={1} flexDirection="column">
-          <Text>Disable it just for you in .claude/settings.local.json?</Text>
+          <Text>Disable it just for you in {PROJECT_DIR_NAME}/settings.local.json?</Text>
           <Text dimColor>This has the same effect as uninstalling, without affecting other contributors.</Text>
         </Box>
         {processError && (

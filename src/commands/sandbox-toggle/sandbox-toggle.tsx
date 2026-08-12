@@ -1,5 +1,6 @@
 import { relative } from 'path';
 import React from 'react';
+import { PROJECT_DIR_NAME } from '../../config/paths.js';
 import { getCwdState } from '../../bootstrap/state.js';
 import { SandboxSettings } from '../../components/sandbox/SandboxSettings.js';
 import { color } from '@anthropic/ink';
@@ -86,9 +87,12 @@ export async function call(
 
       // Get the local settings path and make it relative to cwd
       const localSettingsPath = getSettingsFilePathForSource('localSettings');
+      // Fallback names the ACTIVE identity's project dir, not a hardcoded
+      // `.claude`: that was the official CLI's directory, so the message named
+      // a file this build never writes (and a Qianmo node writes `.qianmo/`).
       const relativePath = localSettingsPath
         ? relative(getCwdState(), localSettingsPath)
-        : '.claude/settings.local.json';
+        : `${PROJECT_DIR_NAME}/settings.local.json`;
 
       const message = color('success', themeName)(`Added "${cleanPattern}" to excluded commands in ${relativePath}`);
 
