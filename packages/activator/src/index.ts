@@ -46,10 +46,15 @@
  * Of P2.5's four acceptance criteria:
  *
  * - **DoD ①** — ten consecutive catch/wake/forward round trips against a
- *   genuinely dormant node, with stage timings. Needs a real sandbox on the
- *   Linux host; **not covered here and not claimed**. The ports to fill in are
- *   {@link SandboxDaemon} (implemented over the real RPC by
- *   {@link HttpSandboxDaemon}), {@link ReadyProbe} and {@link ForwardTarget}.
+ *   genuinely dormant node, with stage timings. All three ports now have an
+ *   implementation — {@link SandboxDaemon} over the real RPC
+ *   ({@link HttpSandboxDaemon}), and {@link ReadyProbe} / {@link ForwardTarget}
+ *   over one transport hop each ({@link TransportLinks}) — and
+ *   {@link startActivatorNode} wires them to an inbound listener, so the whole
+ *   chain runs end to end. `test/chain.test.ts` runs it over real sockets
+ *   against the stub supervisor. **The ten round trips against a genuinely
+ *   frozen sandbox are still not claimed here**: they need the Linux host, and
+ *   `demo/ac2-wake-forward.sh` is the script that performs them there.
  * - **DoD ②** — a busy in-sandbox process surviving several multiples of the
  *   freeze threshold with the heartbeat on, and being frozen with it off.
  *   **Measured on the host** on 2026-08-12, both halves; the numbers are in
@@ -152,6 +157,25 @@ export {
   type KeepalivePort,
   type ResidencyPolicy,
 } from './keepalive.js'
+
+export {
+  DEFAULT_FORWARD_TIMEOUT_MS,
+  DEFAULT_LINK_CONNECT_TIMEOUT_MS,
+  StaticTargetDirectory,
+  TransportLinks,
+  UnknownTargetError,
+  type TargetDirectory,
+  type TargetSite,
+  type TransportLinksOptions,
+} from './link.js'
+
+export {
+  DEFAULT_FAILURE_CAPACITY,
+  startActivatorNode,
+  type ActivatorListenOptions,
+  type ActivatorNodeHandle,
+  type ActivatorNodeOptions,
+} from './node.js'
 
 export {
   DEFAULT_TIMING_CAPACITY,
