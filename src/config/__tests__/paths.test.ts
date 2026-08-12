@@ -114,7 +114,12 @@ describe('project config directories', () => {
   test('uses .occ while retaining the official directory as read-only input', () => {
     expect(PROJECT_DIR_NAME).toBe('.occ')
     expect(LEGACY_PROJECT_DIR_NAME).toBe('.claude')
-    expect(PROJECT_CONFIG_DIR_NAMES).toEqual(['.occ', '.claude'])
+  })
+
+  test('protection covers every identity, not just the active one', () => {
+    // The union is the whole point: whichever identity is running, all three
+    // products' project-config roots stay protected. See paths.ts.
+    expect(PROJECT_CONFIG_DIR_NAMES).toEqual(['.occ', '.qianmo', '.claude'])
   })
 
   test('protects global and project config roots from sandboxed shell writes', () => {
@@ -123,10 +128,14 @@ describe('project config directories', () => {
 
     expect(getProtectedConfigDirectories(['/repo', '/worktree'])).toEqual([
       '/tmp/custom-occ-root',
+      join(homedir(), '.occ').normalize('NFC'),
+      join(homedir(), '.qianmo').normalize('NFC'),
       join(homedir(), '.claude').normalize('NFC'),
       resolve('/repo/.occ'),
+      resolve('/repo/.qianmo'),
       resolve('/repo/.claude'),
       resolve('/worktree/.occ'),
+      resolve('/worktree/.qianmo'),
       resolve('/worktree/.claude'),
     ])
   })
@@ -137,7 +146,10 @@ describe('project config directories', () => {
 
     expect(getProtectedConfigDirectories(['/repo'])).toEqual([
       '/repo/.occ',
+      join(homedir(), '.occ').normalize('NFC'),
+      join(homedir(), '.qianmo').normalize('NFC'),
       join(homedir(), '.claude').normalize('NFC'),
+      resolve('/repo/.qianmo'),
       resolve('/repo/.claude'),
     ])
   })
