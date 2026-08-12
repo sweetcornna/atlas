@@ -12,9 +12,9 @@
 # stricter version of this one. It has never been proven on a Linux runner, so
 # neither CI nor the publish gate uses it.
 #
-# Lives in a script rather than inline in the workflow because ci.yml and
-# publish-npm.yml both need identical semantics; two copies of the loop below
-# would drift, and the failure it protects against is invisible on macOS.
+# Lives in a script rather than inline in the workflow so the sharding loop has
+# a single home; a copy inlined in ci.yml would drift, and the failure it
+# protects against is invisible on macOS.
 #
 # Usage:
 #   scripts/test-shards.sh              # plain run
@@ -48,12 +48,23 @@ for d in src/* packages/* tests/integration scripts; do
   shard=$((shard + 1))
   echo "──── shard ${shard}: ${d}"
 
+  # Qianmo's own packages opt into --isolate (each test file gets a fresh
+  # global): it turns cross-file mock/env cleanliness into a structural
+  # guarantee instead of something the mock-hygiene ratchet has to police.
+  # Measured zero overhead on these (5 files). Base shards stay sharding-only —
+  # that mode is proven on Linux, and flipping 700 base files to --isolate off a
+  # single local run is unmeasured risk for no gain (and needless base drift).
+  isolate=""
+  if [ -f "$d/package.json" ] && grep -q '"name"[[:space:]]*:[[:space:]]*"@qianmo/' "$d/package.json"; then
+    isolate="--isolate"
+  fi
+
   if [ "$coverage" = "1" ]; then
-    bun test --coverage --coverage-reporter lcov \
+    bun test $isolate --coverage --coverage-reporter lcov \
       --coverage-dir "coverage/shard-${shard}" "$d" 2>&1 \
       | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
   else
-    bun test "$d" 2>&1 \
+    bun test $isolate "$d" 2>&1 \
       | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
   fi
 
