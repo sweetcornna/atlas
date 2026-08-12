@@ -191,6 +191,13 @@
         "openai": "^6.33.0",
       },
     },
+    "packages/adapter": {
+      "name": "@qianmo/adapter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/agent-tools": {
       "name": "@open-claude-code/agent-tools",
       "version": "1.0.0",
@@ -897,6 +904,8 @@
     "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "https://registry.npmmirror.com/@protobufjs/pool/-/pool-1.1.0.tgz", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.0", "https://registry.npmmirror.com/@protobufjs/utf8/-/utf8-1.1.0.tgz", {}, "sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw=="],
+
+    "@qianmo/adapter": ["@qianmo/adapter@workspace:packages/adapter"],
 
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
 
