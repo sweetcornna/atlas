@@ -367,6 +367,16 @@ describe('H7: circuit breaker', () => {
     const { llmObserverBackend } = await import('../llmObserverBackend.js')
     resetCircuitBreaker()
 
+    // timeoutMs must stay set: makeObs(3) is non-empty, so analyze reaches
+    // queryHaiku. Without a short timeout this drives the REAL backend at the
+    // default 10_000ms against a 5_000ms test budget — the moment an earlier
+    // file leaks credentials into process.env the call actually reaches the
+    // network and the test times out instead of failing fast. Same reasoning as
+    // the H7 cases above.
+    setSkillLearningConfigForTest({
+      llm: { failureThreshold: 3, circuitCooldownMs: 60_000, timeoutMs: 50 },
+    })
+
     // After reset, the backend is in clean state. Calling it with observations
     // returns an array (either LLM result or heuristic fallback).
     const result = await llmObserverBackend.analyze(makeObs(3))
