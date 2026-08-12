@@ -67,7 +67,7 @@
     "typecheck": "tsc --noEmit",
     "release": "bun run scripts/release.ts",
     "precheck": "bun run typecheck && bun run check:fix && bun run check:prompt-purity && bun run check:mock-hygiene && bun test",
-    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:cycles && bun test && bun run build:vite && bun run check:bundle && bun run check:unused"
+    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:cycles && ./scripts/test-shards.sh && bun run build:vite && bun run check:bundle && bun run check:unused"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.0",
