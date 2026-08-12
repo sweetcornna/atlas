@@ -91,18 +91,20 @@ qianmo://<node>/<agent>
 
 **结论：注册中心改用复合键 `<node>/<agent>`，单张扁平表，不做每节点分区。**
 
-现状缺口：`InMemoryRegistry` 按**单段裸名**注册与解析（`packages/registry/src/registry.ts:115` 的 `isValidSegment(name)`、`:161-163` 的 `resolve(name)`、`:85` 的 `Map<string, AgentRecord>`），而 AC-2 要解析 `qianmo://node-b/reviewer`。两个节点各有一个 `reviewer` 时，第二次注册会被 `registry.ts:140-146` 判成 `E_CONFLICT`——**而那是错的语义**，它们本来就是两个不同的智能体。
+现状缺口：`InMemoryRegistry` 按**单段裸名**注册与解析（`packages/registry/src/registry.ts` 的裸名校验与 `resolve(name)`、以及 `:191` 的 `Map<string, AgentRecord>`），而 AC-2 要解析 `qianmo://node-b/reviewer`。两个节点各有一个 `reviewer` 时，第二次注册会被 `registry.ts` 的 `E_CONFLICT` 分支（`:278`）判成冲突——**而那是错的语义**，它们本来就是两个不同的智能体。
 
 选复合键、不选每节点分区，四条理由：
 
 1. **解析路径最短**：AC-2 要的就是「给一个地址、拿一个端点」。复合键是一次 `Map.get`，分区方案要先选分区再查表，多一层且没有对应收益。
 2. **`E_CONFLICT` 的语义因此变正确**：同 `node` + 同 `agent` 但端点不同 = 真冲突（该保护的原意是「重启的 agent 不被别的进程悄悄顶替」，见 `registry.ts:105-108` 的注释）；不同 node 的同名 agent = 不同键，天然不冲突。
-3. **HTTP 层零改动**（本次核实）：路由按 `pathname.split('/')` 取第三段并 `decodeURIComponent`（`packages/registry/src/http.ts:160-176`）。实跑 `new URL("http://h/v0/agents/node-b%2Freviewer")` 得 `pathname = /v0/agents/node-b%2Freviewer`，`split('/')` 后仍是 **3 段**，解码后正是 `node-b/reviewer`。也就是说**客户端做百分号编码即可，`createRegistryHandler` 一行不用改**。
+3. **HTTP 路由零改动**（**v0.1 修订**：例子改用完整地址，与下方规则 A-3 统一——旧例子编码的是复合键 `node-b%2Freviewer`，与 A-3「入参收完整地址」自相矛盾，实现按 A-3 执行）：路由按 `pathname.split('/')` 取第三段并 `decodeURIComponent`（`packages/registry/src/http.ts:168, :184`）。实跑 `new URL("http://h/v0/agents/" + encodeURIComponent("qianmo://node-b/reviewer"))` 得 `pathname = /v0/agents/qianmo%3A%2F%2Fnode-b%2Freviewer`，`split('/')` 后仍是 **3 段**，解码还原为完整地址 `qianmo://node-b/reviewer`。也就是说**客户端做百分号编码即可，路由分派逻辑一行不用改**。
+
+   **注意「零改动」只覆盖路由分派**：`AgentRecord` 的身份字段由 `name` 改为 `address` 之后，响应体构造函数 `agentBody` 必然跟着改（已落地）。
 4. **M0 规模不需要分区**：注册中心单点部署、不做高可用（章程 N-6），分区带来的只有 `list()` / `prune()` 的两级遍历。
 
-**规则 A-3**：`register` / `resolve` / `heartbeat` / `deregister` 的入参改为**完整 `qianmo://` 地址**，内部经 `assertAddress`（`address.ts:83-95`）解析后拼 `${node}/${agent}` 作键。**只保留一种规范形态**，不引入「裸名」「node/agent 二元组」「完整地址」三套并行写法。
+**规则 A-3**：`register` / `resolve` / `heartbeat` / `deregister` 的入参改为**完整 `qianmo://` 地址**，内部经 `assertAddress`（`registry.ts:228` 处调用）解析后拼 `${node}/${agent}` 作键。**只保留一种规范形态**，不引入「裸名」「node/agent 二元组」「完整地址」三套并行写法。
 
-**顺带查出的一处真实缺口（本次核实）**：`isValidEndpoint` 只接受 `qianmo://` 地址或 `http:` / `https:` URL（`registry.ts:52-62`），而 M0 选定的传输是**单条 wss 长连接**（`selection-m0.md` §4）。**`wss://…` 现在会被判成非法端点。**列入 §10 后续动作。
+**顺带查出的一处真实缺口（本次核实）**：`isValidEndpoint` 只接受 `qianmo://` 地址或 `http:` / `https:` URL（`registry.ts:52-62`），而 M0 选定的传输是**单条 wss 长连接**（`selection-m0.md` §4）。**`wss://…` 当时会被判成非法端点。**（**v0.1 修订：已修复**——`isValidEndpoint` 现接受 `ws:` / `wss:`，`ftp:` 等仍拒；对照实测改前 `false`、改后 `true`。）
 
 ---
 
@@ -578,7 +580,7 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 
 | 项 | 定义 |
 |---|---|
-| 密钥 | 每节点一对 Ed25519。私钥不出节点；公钥随节点记录发布到注册中心（现 `AgentRecord` 无此字段，见 §12.1 第 7 项） |
+| 密钥 | 每节点一对 Ed25519。私钥不出节点；公钥随记录发布到注册中心（`AgentRecord.publicKey`，**已落地**）。**编码（v0.1 补定）：base64url 无填充，固定 43 字符**（`/^[A-Za-z0-9_-]{43}$/`，即 32 字节公钥；取 RFC 8037 OKP 的 `x` 参数形态，好让同一个字符串能直接放进下方那种紧凑 JSON 令牌）。**编码只此一种**，transport 与 P4.3 不得各写一套 |
 | 令牌 | 分离签名的紧凑 JSON：`{ iss, sub, aud, act, taskId, nbf, exp, nonce }` + `sig` |
 | `iss` | 签发节点（= 签名私钥的持有者） |
 | `sub` | 被授权的处理者地址 `qianmo://<node>/<agent>` |
@@ -588,6 +590,8 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `nbf` / `exp` | 生效与过期。`exp` 不得晚于该任务的任务时限 |
 | `nonce` | 防重放，与 §7.2 的去重表同一 TTL 口径 |
 | PSK | **只作接入门禁**（transport 握手，P2.2、章程 N-3），**不参与任何授权判定** |
+
+**已知缺口（v0.1 记录，处置留 P4.3）**：本节说的是「**每节点**一对密钥」，而 `AgentRecord` 是**每 agent** 一条记录，于是同一节点的两个 agent 可以登记**不同**的公钥，注册中心当前无从发现，将来会静默搞坏 capability 校验（`iss` 对应哪把公钥变得不唯一）。两条候选：给注册中心加每节点公钥索引（首个登记者先到先得，冲突回 `E_CONFLICT`），或另立节点记录与 agent 记录分离。**M0 未实现**——它属签发方落地时（P4.3）的策略选择，且在没有签发方之前不会被触发。
 
 **规则 S-1（C-5 的结构性强制点）**：
 
