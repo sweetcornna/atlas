@@ -52,7 +52,10 @@ interface EnvelopeOutboxOptions {
 export class EnvelopeOutbox {
   readonly #messages = new Map<string, QianmoMessage>()
   readonly #receiptWaiters = new Map<string, ReceiptWaiter>()
-  readonly #drainWaiters = new Set<() => void>()
+  readonly #drainWaiters = new Set<{
+    readonly resolve: () => void
+    readonly reject: (error: Error) => void
+  }>()
   readonly #maxQueued: number
   readonly #options: EnvelopeOutboxOptions
 
@@ -121,9 +124,15 @@ export class EnvelopeOutbox {
         this.#drainWaiters.delete(waiter)
         reject(new Error(`outbox did not drain within ${timeoutMs}ms`))
       }, timeoutMs)
-      const waiter = (): void => {
-        clearTimeout(timer)
-        resolve()
+      const waiter = {
+        resolve: (): void => {
+          clearTimeout(timer)
+          resolve()
+        },
+        reject: (error: Error): void => {
+          clearTimeout(timer)
+          reject(error)
+        },
       }
       this.#drainWaiters.add(waiter)
     })
@@ -152,7 +161,7 @@ export class EnvelopeOutbox {
     if (this.#messages.size === 0) {
       const waiters = [...this.#drainWaiters]
       this.#drainWaiters.clear()
-      for (const resolve of waiters) resolve()
+      for (const waiter of waiters) waiter.resolve()
     }
   }
 
@@ -162,6 +171,14 @@ export class EnvelopeOutbox {
       waiter.reject(error)
     }
     this.#receiptWaiters.clear()
+    // Drain waiters get the close reason, not silence: a caller blocked here
+    // when the channel died would otherwise wait out its own timeout and then
+    // be told "did not drain", which describes the symptom and hides the cause.
+    const draining = [...this.#drainWaiters]
     this.#drainWaiters.clear()
+    for (const waiter of draining) waiter.reject(error)
+    // Nothing here can ever be receipted now; keeping the envelopes would make
+    // `pending` report a queue that no longer exists.
+    this.#messages.clear()
   }
 }
