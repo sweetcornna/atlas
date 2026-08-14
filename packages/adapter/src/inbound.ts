@@ -141,10 +141,19 @@ export class InboundAdapter {
    * purpose: it is the only step with a persistent side effect, so anything
    * that ran after authorization would be an attack surface. Capability
    * verification, the inbound rate budget and loop detection are the routing
-   * layer's steps (P4.2 / P4.3) and slot in ahead of the write; this class
-   * owns the structural checks, the TTL check and the write itself.
+   * layer's steps (`@qianmo/router`, `@qianmo/capability`) and run ahead of
+   * this call; this class owns the structural checks, the TTL check and the
+   * write itself.
+   *
+   * `verified.capIss` is the one thing the routing layer hands back to be
+   * written into the provenance label — and it is passed in rather than read
+   * off the envelope precisely because §10.2 says provenance is what the
+   * *receiver* established, never what the message said about itself.
    */
-  async deliver(message: QianmoMessage): Promise<InboundResult> {
+  async deliver(
+    message: QianmoMessage,
+    verified: { readonly capIss?: string } = {},
+  ): Promise<InboundResult> {
     const receivedAt = this.now()
 
     // 1. Envelope structure, size, hop count and the DELIVERY deadline.
@@ -201,12 +210,14 @@ export class InboundAdapter {
 
     // 3. Provenance, written by the receiver — the envelope's own account of
     //    where it came from is never taken at face value (§10.2). `capIss` is
-    //    left unset: capability verification lands in P4.3, and inventing an
-    //    issuer here would be worse than admitting there is none.
+    //    present only when the routing layer *verified* a token and tells us
+    //    who signed it; an absent one stays absent, because "we could not tell"
+    //    and "nobody signed for this" must not look alike downstream.
     const origin: MessageOrigin = {
       node: from.node,
       agent: from.agent,
       receivedAt,
+      ...(verified.capIss === undefined ? {} : { capIss: verified.capIss }),
     }
     const labelled: QianmoMessage = { ...envelope, origin }
 

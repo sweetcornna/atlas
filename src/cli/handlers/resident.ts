@@ -11,8 +11,17 @@ import {
 } from '@qianmo/resident/activity'
 import type { ResidentTimingEvent } from '@qianmo/resident/timings'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
+import {
+  NodeCapabilities,
+  SIGNED_TASK_POLICY,
+  StaticPublicKeyDirectory,
+} from '@qianmo/capability'
 import { isValidSegment } from '@qianmo/protocol'
 import { pskFromEnv } from '@qianmo/transport'
+import {
+  loadOrCreateNodeKeys,
+  parseTrustedKey,
+} from '../../services/qianmo/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
 
 export const MAX_PENDING_TIMING_EVENTS = 1_024
@@ -81,6 +90,10 @@ interface ResidentCliConfig {
   readonly activityUrl?: string
   readonly activityReconnectFactor?: number
   readonly timings?: string
+  /** `<node>=<publicKey>` pairs this node will accept capabilities from. */
+  readonly trusted: readonly (readonly [string, string])[]
+  /** Require `write-limited` for work, rather than admitting unsigned tasks. */
+  readonly requireSignedTasks: boolean
 }
 
 export function parseResidentArgs(
@@ -95,6 +108,8 @@ export function parseResidentArgs(
   let activityUrl: string | undefined
   let activityReconnectFactor: number | undefined
   let timings: string | undefined
+  let requireSignedTasks = false
+  const trusted: Array<readonly [string, string]> = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
   for (let index = 0; index < args.length; index++) {
@@ -166,6 +181,12 @@ export function parseResidentArgs(
       }
       activityReconnectFactor = factor
       index = parsed.next
+    } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
+      const parsed = residentOptionValue(args, index, '--trust')
+      trusted.push(parseTrustedKey(parsed.value))
+      index = parsed.next
+    } else if (arg === '--require-signed-tasks') {
+      requireSignedTasks = true
     } else if (arg === '--timings' || arg?.startsWith('--timings=')) {
       const parsed = residentOptionValue(args, index, '--timings')
       if (!isAbsolute(parsed.value)) {
@@ -222,6 +243,8 @@ export function parseResidentArgs(
             DEFAULT_RESIDENT_ACTIVITY_TIME_JUMP_FACTOR,
         }),
     ...(timings === undefined ? {} : { timings }),
+    trusted,
+    requireSignedTasks,
   }
 }
 
@@ -265,11 +288,37 @@ export async function runResident(args: readonly string[]): Promise<void> {
     config.timings === undefined
       ? null
       : createResidentTimingWriter(config.timings, reportTimingError)
+  // The node's own identity, created on first run and never replaced (P4.3).
+  // Its public half is printed rather than published: M0 has no key
+  // distribution, so whoever registers this agent copies the key into the
+  // registry by hand, and a node that quietly learned keys from its peers
+  // would be a node any peer could impersonate.
+  const keys = loadOrCreateNodeKeys(config.node)
+  const directory = new StaticPublicKeyDirectory(config.trusted)
+  // Its own key is always trusted: rule S-1 accepts `user-confirmed` only when
+  // this node signed it, which means verifying its own signature.
+  directory.put(config.node, keys.publicKey)
+  const capability = new NodeCapabilities({
+    node: config.node,
+    directory,
+    keys,
+    ...(config.requireSignedTasks ? { policy: SIGNED_TASK_POLICY } : {}),
+  })
+  process.stdout.write(
+    `${JSON.stringify({
+      node: config.node,
+      publicKey: keys.publicKey,
+      requireSignedTasks: config.requireSignedTasks,
+      trusts: config.trusted.map(([node]) => node),
+    })}\n`,
+  )
+
   const resident = new QianmoResident({
     node: config.node,
     team: config.team,
     agents: config.agents,
     psk,
+    capability,
     listen: {
       ...(config.port === undefined ? {} : { port: config.port }),
       ...(config.hostname === undefined ? {} : { hostname: config.hostname }),

@@ -37,6 +37,12 @@ describe('resident CLI configuration', () => {
       agents: [{ agent: 'reviewer', cwd: '/workspace' }],
       port: 7321,
       hostname: '127.0.0.1',
+      // Capability defaults: trust nobody but itself, and admit unsigned work
+      // (P4.3 — `packages/capability/src/policy.ts` says why the M0 default is
+      // permissive about *requiring* a token while still verifying every one
+      // that is presented).
+      trusted: [],
+      requireSignedTasks: false,
     })
     expect(() => parseResidentArgs(BASE, 'occ')).toThrow('OCC_IDENTITY=qianmo')
   })
@@ -186,5 +192,31 @@ describe('resident CLI configuration', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('capability flags (P4.3)', () => {
+  const KEY = 'A'.repeat(43)
+
+  test('--trust takes <node>=<publicKey> and refuses anything else', () => {
+    const parsed = parseResidentArgs(
+      [...BASE, '--trust', `node-a=${KEY}`],
+      'qianmo',
+    )
+    expect(parsed.trusted).toEqual([['node-a', KEY]])
+    expect(() =>
+      parseResidentArgs([...BASE, '--trust', 'node-a'], 'qianmo'),
+    ).toThrow('<node>=<publicKey>')
+    expect(() =>
+      parseResidentArgs([...BASE, '--trust', 'node-a=short'], 'qianmo'),
+    ).toThrow('not a valid Ed25519 key')
+  })
+
+  test('--require-signed-tasks is off unless asked for', () => {
+    expect(parseResidentArgs(BASE, 'qianmo').requireSignedTasks).toBe(false)
+    expect(
+      parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo')
+        .requireSignedTasks,
+    ).toBe(true)
   })
 })

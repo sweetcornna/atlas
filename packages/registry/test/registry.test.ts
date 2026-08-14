@@ -459,3 +459,58 @@ describe('ttl expiry', () => {
     expect(registry.size).toBe(0)
   })
 })
+
+describe('one node, one key (protocol.md §10.1, closed in P4.3)', () => {
+  test('a second agent on the same node must publish the same key', () => {
+    const registry = new InMemoryRegistry({ clock, ttlMs: TTL })
+    expect(
+      registry.register(PLANNER, ENDPOINT, { publicKey: NODE_KEY }).ok,
+    ).toBe(true)
+
+    const conflicting = registry.register(
+      'qianmo://tokyo-1/reviewer',
+      'wss://tokyo-1.example.com/reviewer',
+      { publicKey: OTHER_KEY },
+    )
+    expect(conflicting.ok).toBe(false)
+    if (conflicting.ok) return
+    expect(conflicting.code).toBe(RegistryErrorCode.E_CONFLICT)
+
+    // The same key is fine — that is what "the key belongs to the node" means.
+    expect(
+      registry.register(
+        'qianmo://tokyo-1/reviewer',
+        'wss://tokyo-1.example.com/reviewer',
+        { publicKey: NODE_KEY },
+      ).ok,
+    ).toBe(true)
+  })
+
+  test('a different node is unaffected', () => {
+    const registry = new InMemoryRegistry({ clock, ttlMs: TTL })
+    registry.register(PLANNER, ENDPOINT, { publicKey: NODE_KEY })
+    expect(
+      registry.register(WORKER, OTHER_ENDPOINT, { publicKey: OTHER_KEY }).ok,
+    ).toBe(true)
+  })
+
+  test('an agent may republish its own record with its own key', () => {
+    const registry = new InMemoryRegistry({ clock, ttlMs: TTL })
+    registry.register(PLANNER, ENDPOINT, { publicKey: NODE_KEY })
+    expect(
+      registry.register(PLANNER, ENDPOINT, { publicKey: NODE_KEY }).ok,
+    ).toBe(true)
+  })
+
+  test('once every agent on the node has expired, a new key is accepted', () => {
+    // Key rotation is out of scope (N-3), but a node that lost its config and
+    // regenerated an identity must not be locked out forever by a lease that
+    // ran out long ago.
+    const registry = new InMemoryRegistry({ clock, ttlMs: TTL })
+    registry.register(PLANNER, ENDPOINT, { publicKey: NODE_KEY })
+    clock.advance(TTL + 1)
+    expect(
+      registry.register(PLANNER, ENDPOINT, { publicKey: OTHER_KEY }).ok,
+    ).toBe(true)
+  })
+})

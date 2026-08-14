@@ -35,6 +35,8 @@ export {
   type RouterAuditSink,
 } from './audit.js'
 
+export type { CapabilityDecision, CapabilityGate } from './capability.js'
+
 export {
   DEFAULT_LOOP_CAPACITY,
   LoopGuard,

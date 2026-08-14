@@ -36,7 +36,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
-import { NodeRouter } from '@qianmo/router'
+import { NodeRouter, type CapabilityGate } from '@qianmo/router'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
@@ -68,6 +68,12 @@ interface QianmoResidentOptions {
     readonly hostname?: string
     readonly unix?: string
   }
+  /**
+   * Authorization (P4.3). Absent means capabilities are neither required nor
+   * verifiable here — every message counts as `read`. Present means a presented
+   * token is fully checked, and rule S-1 refuses any remote `user-confirmed`.
+   */
+  readonly capability?: CapabilityGate
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
   readonly onTiming?: ResidentTimingSink
@@ -260,6 +266,9 @@ export class QianmoResident {
     this.#router = new NodeRouter({
       node: options.node,
       deadlineNow: this.#deadlineClock.nowFor,
+      ...(options.capability === undefined
+        ? {}
+        : { capability: options.capability }),
     })
     this.#supervisor = new ResidentSupervisor({
       start: async () => await this.#startAcp(),
@@ -281,11 +290,14 @@ export class QianmoResident {
     }
   }
 
-  async deliver(message: QianmoMessage): Promise<InboundDelivered> {
+  async deliver(
+    message: QianmoMessage,
+    verified: { readonly capIss?: string } = {},
+  ): Promise<InboundDelivered> {
     const runtime = this.#runtime
     if (runtime === null)
       throw new Error('resident ACP connection is not ready')
-    const result = await this.#adapter.deliver(message)
+    const result = await this.#adapter.deliver(message, verified)
     if (result.status === 'rejected') {
       throw new ResidentDeliveryError(result.code, result.reason)
     }
@@ -317,7 +329,10 @@ export class QianmoResident {
         ? this.#registerTask(message, context.channel)
         : undefined
     try {
-      await this.deliver(message)
+      await this.deliver(
+        message,
+        routed.issuer === undefined ? {} : { capIss: routed.issuer },
+      )
     } catch (error) {
       if (task !== undefined) {
         const code =

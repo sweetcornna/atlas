@@ -8,13 +8,22 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  CapabilityLevel,
   MessageType,
   ProtocolErrorCode,
   createMessage,
   isAckPayload,
   isTaskResultPayload,
+  newId,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import {
+  NodeCapabilities,
+  SIGNED_TASK_POLICY,
+  StaticPublicKeyDirectory,
+  generateNodeKeyPair,
+  issueCapability,
+} from '@qianmo/capability'
 import { TransportClient } from '@qianmo/transport'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
@@ -404,4 +413,109 @@ describe('resident product integration', () => {
     expect(activity).toEqual([true, false])
     await waitUntil(() => ready.length === 2)
   }, 15_000)
+})
+
+describe('authorization at the terminal node (P4.3)', () => {
+  test('an unsigned task is refused before the mailbox, a signed one carries its issuer', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-capability-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+
+    const peer = generateNodeKeyPair()
+    const own = generateNodeKeyPair()
+    const directory = new StaticPublicKeyDirectory([
+      ['node-a', peer.publicKey],
+      ['node-b', own.publicKey],
+    ])
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      capability: new NodeCapabilities({
+        node: 'node-b',
+        directory,
+        keys: own,
+        policy: SIGNED_TASK_POLICY,
+      }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    // 1. Unsigned work under a signing policy: refused ahead of the write, so
+    //    the recipient's inbox is untouched (rule L-1 + S-2).
+    const unsigned = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'unsigned' },
+    })
+    await expect(client.sendAndWait(unsigned, 5_000)).rejects.toThrow()
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(0)
+    const refusal = replies.at(-1)
+    expect(refusal?.type).toBe(MessageType.Error)
+    expect((refusal?.payload as { code: string }).code).toBe(
+      ProtocolErrorCode.E_CAP_INSUFFICIENT,
+    )
+
+    // 2. The same work, authorized by the peer's own key. The task id is
+    //    minted first because the token is bound to it: there are no
+    //    general-purpose capabilities.
+    const taskId = newId()
+    const bound = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'signed' },
+      taskId,
+      cap: issueCapability('node-a', peer, {
+        sub: 'qianmo://node-b/reviewer',
+        aud: 'node-b',
+        act: CapabilityLevel.WriteLimited,
+        taskId,
+        nbf: Date.now() - 1_000,
+        exp: Date.now() + 60_000,
+      }),
+    })
+    client.send(bound)
+    await client.waitForDrain()
+    await waitUntil(async () => (await readMailbox(AGENT, TEAM)).length === 1)
+
+    // The provenance the receiver wrote names who signed for it — and it is
+    // the receiver's own finding, not a field copied off the envelope.
+    const entry = (await readMailbox(AGENT, TEAM))[0]
+    const wrapper = JSON.parse(entry?.text ?? '{}') as {
+      envelope?: { origin?: { capIss?: string; node?: string } }
+    }
+    expect(wrapper.envelope?.origin?.capIss).toBe('node-a')
+    expect(wrapper.envelope?.origin?.node).toBe('node-a')
+
+    resident.stop()
+    await running
+  }, 20_000)
 })

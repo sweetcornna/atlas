@@ -63,6 +63,7 @@
         "@opentelemetry/semantic-conventions": "^1.40.0",
         "@qianmo/activator": "workspace:*",
         "@qianmo/adapter": "workspace:*",
+        "@qianmo/capability": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/protocol": "workspace:*",
         "@qianmo/recall": "workspace:*",
@@ -234,6 +235,14 @@
       "dependencies": {
         "@open-claude-code/tool-runtime": "workspace:*",
         "marked": "^17.0.6",
+      },
+    },
+    "packages/capability": {
+      "name": "@qianmo/capability",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+        "@qianmo/router": "workspace:*",
       },
     },
     "packages/cloud-artifacts": {
@@ -965,6 +974,8 @@
     "@qianmo/activator": ["@qianmo/activator@workspace:packages/activator"],
 
     "@qianmo/adapter": ["@qianmo/adapter@workspace:packages/adapter"],
+
+    "@qianmo/capability": ["@qianmo/capability@workspace:packages/capability"],
 
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 

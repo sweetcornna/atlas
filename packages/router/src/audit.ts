@@ -44,6 +44,16 @@ export enum RouterEventType {
    */
   RateLimited = 'rate_limited',
   /**
+   * A message was refused by the authorization gate (P4.3): a forged or
+   * mis-bound token, a `user-confirmed` claim from a remote issuer (rule S-1),
+   * or a level below what this node requires for that message.
+   *
+   * Separate from the two rate events because the question it answers is a
+   * different one — "who is allowed to ask" rather than "how often" — and
+   * because charter C-5's judgement is *refused **and** on the record*.
+   */
+  CapabilityDenied = 'capability_denied',
+  /**
    * The **runtime layer's** per-sender-per-target token bucket refused an
    * outbound send. Deliberately not a protocol state: protocol.md §6.4 puts
    * this layer outside the state machine, and an event type that reads like a

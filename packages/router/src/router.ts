@@ -22,13 +22,21 @@
  *
  * ## Ordering inside `inbound`
  *
- * Hop backstop, then loop, then the inbound budget. The loop check runs ahead
- * of the budget because a message that is a loop must be *reported as a loop*:
- * if a flood put the budget first, the one event AC-3 asks for would be
- * replaced by a rate rejection, and the operator would learn that a peer was
- * noisy but not that traffic was circling. The table is bounded, so the loop
- * check cannot itself become the amplifier that ordering usually guards
- * against.
+ * Authorization, then hop backstop, then loop, then the inbound budget.
+ *
+ * Authorization first is rule S-2: nothing an unauthorized message asks for
+ * should cost this node anything, down to a table entry.
+ *
+ * The last two are **inverted relative to S-2's listing**, which puts the rate
+ * budget ahead of loop detection. Recorded rather than silent, with the reason:
+ * a message that is a loop must be *reported as a loop*. Under a flood, a
+ * budget-first order would replace the one event AC-3 asks for with a rate
+ * rejection, and the operator would learn that a peer was noisy but not that
+ * traffic was circling. What budget-first buys is protection of the loop table
+ * from churn — and that is already bought, by the table's own capacity bound.
+ * S-2's own stated rationale is about side effects and the mailbox write being
+ * last, neither of which this ordering touches. protocol.md §10.1 carries the
+ * same note.
  *
  * ## The two clocks
  *
@@ -46,6 +54,7 @@
 
 import {
   advanceTraceparent,
+  CapabilityLevel,
   deliveryExpiresAt,
   isReplyType,
   ProtocolError,
@@ -53,6 +62,7 @@ import {
   withHop,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import type { CapabilityGate } from './capability.js'
 import {
   chainDetail,
   RouterAuditLog,
@@ -84,12 +94,29 @@ export type RouterVerdict<C extends RouterRejectionCode = RouterRejectionCode> =
 /**
  * What {@link NodeRouter.inbound} answers.
  *
- * Narrowed to `ProtocolErrorCode` on purpose: an inbound refusal is told to the
- * peer as an `error` envelope, and the runtime layer's code is not something a
- * peer may be told (§6.4). The narrowing makes that a type error rather than a
- * review comment.
+ * The failure branch is narrowed to `ProtocolErrorCode` on purpose: an inbound
+ * refusal is told to the peer as an `error` envelope, and the runtime layer's
+ * code is not something a peer may be told (§6.4). The narrowing makes that a
+ * type error rather than a review comment.
+ *
+ * The success branch carries the capability level the message presented — a
+ * **ceiling** on what it may cause here, never a grant (rule S-3). With no
+ * capability gate configured it is `read`, which is what an unauthenticated
+ * message carries by definition.
  */
-export type InboundVerdict = RouterVerdict<ProtocolErrorCode>
+export type InboundVerdict =
+  | {
+      readonly ok: true
+      readonly message: QianmoMessage
+      readonly level: CapabilityLevel
+      /** Issuing node of the presented token, when there was one. */
+      readonly issuer?: string
+    }
+  | {
+      readonly ok: false
+      readonly code: ProtocolErrorCode
+      readonly reason: string
+    }
 
 /** What {@link NodeRouter.outbound} answers — local, so both codes are legal. */
 export type OutboundVerdict = RouterVerdict
@@ -99,6 +126,12 @@ export interface NodeRouterOptions {
   readonly node: string
   readonly audit?: RouterAuditLog
   readonly auditSink?: RouterAuditSink
+  /**
+   * Authorization (P4.3). Absent means every message counts as `read` and the
+   * node has no opinion about levels — which is a node with no keys, not a node
+   * that skipped a check.
+   */
+  readonly capability?: CapabilityGate
   readonly loop?: LoopGuard
   readonly throttle?: RuntimeThrottle
   readonly budget?: InboundBudget
@@ -112,10 +145,11 @@ export interface NodeRouterOptions {
   readonly deadlineNow?: (createdAt: number) => number
 }
 
+/** The failure branch alone, so it fits both verdict shapes. */
 function reject<C extends RouterRejectionCode>(
   code: C,
   reason: string,
-): RouterVerdict<C> {
+): { readonly ok: false; readonly code: C; readonly reason: string } {
   return { ok: false, code, reason }
 }
 
@@ -126,6 +160,7 @@ export class NodeRouter {
   readonly loop: LoopGuard
   readonly throttle: RuntimeThrottle
   readonly budget: InboundBudget
+  readonly capability: CapabilityGate | undefined
   readonly #now: () => number
   readonly #deadlineNow: (createdAt: number) => number
 
@@ -136,6 +171,7 @@ export class NodeRouter {
     this.loop = options.loop ?? new LoopGuard()
     this.throttle = options.throttle ?? new RuntimeThrottle()
     this.budget = options.budget ?? new InboundBudget()
+    this.capability = options.capability
     this.#now = options.now ?? Date.now
     this.#deadlineNow = options.deadlineNow ?? (() => this.#now())
   }
@@ -209,10 +245,31 @@ export class NodeRouter {
    * `@qianmo/adapter`. Rule L-1: a refused message must not consume the
    * recipient's inbox quota, or rate limiting would help an attacker evict
    * somebody else's unread mail.
+   *
+   * Authorization is first, per rule S-2 — an unauthorized message must not be
+   * able to spend anything, not even a table entry. The order of the two
+   * remaining gates is inverted relative to S-2's listing, and deliberately:
+   * see the module header.
    */
   inbound(message: QianmoMessage): InboundVerdict {
     const now = this.#now()
     const gatedNow = this.#deadlineNow(message.createdAt)
+
+    let level = CapabilityLevel.Read
+    let issuer: string | undefined
+    if (this.capability !== undefined) {
+      const decision = this.capability.check(message, now)
+      if (!decision.ok) {
+        this.audit.record(RouterEventType.CapabilityDenied, now, {
+          ...chainDetail(message),
+          code: decision.code,
+          reason: decision.reason,
+        })
+        return reject(decision.code, decision.reason)
+      }
+      level = decision.level
+      issuer = decision.issuer
+    }
 
     const verdict = this.loop.admit(message, gatedNow)
     if (verdict === LoopVerdict.Revisited) {
@@ -244,7 +301,12 @@ export class NodeRouter {
       return reject(ProtocolErrorCode.E_RATE_LIMITED, reason)
     }
 
-    return { ok: true, message }
+    return {
+      ok: true,
+      message,
+      level,
+      ...(issuer === undefined ? {} : { issuer }),
+    }
   }
 
   /** Release a task's loop keys once it has reached a terminal state (§8.2). */

@@ -58,8 +58,10 @@ export async function deliverAndAck(
   adapter: InboundAdapter,
   message: QianmoMessage,
   observe: DeliveryObserveOptions = {},
+  /** What the routing layer verified about this message, if anything. */
+  verified: { readonly capIss?: string } = {},
 ): Promise<DeliveryReply> {
-  const result = await adapter.deliver(message)
+  const result = await adapter.deliver(message, verified)
   if (result.status === 'rejected') {
     return {
       outcome: 'rejected',

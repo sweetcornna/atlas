@@ -4,6 +4,7 @@
 import {
   ProtocolError,
   TimeJumpGate,
+  isNodePublicKey,
   assertAddress,
   formatAddress,
   isValidAddress,
@@ -53,15 +54,6 @@ const DECLARABLE: readonly DeclaredStatus[] = [
   AgentStatus.Online,
   AgentStatus.Dormant,
 ]
-
-/**
- * Ed25519 public key, base64url without padding: 32 raw bytes → 43 chars.
- *
- * protocol.md §10.1 fixes the algorithm but not the encoding; base64url is
- * chosen to match RFC 8037 (the OKP `x` parameter), so the same string can be
- * dropped into the compact-JSON capability tokens that section describes.
- */
-const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 /**
  * A live registration in the discovery table.
@@ -178,9 +170,16 @@ export function isValidEndpoint(value: unknown): value is string {
   }
 }
 
-/** True when `value` is a base64url-encoded Ed25519 public key. */
+/**
+ * True when `value` is a base64url-encoded Ed25519 public key.
+ *
+ * The encoding itself is defined once, in `@qianmo/protocol` (§10.1 says so in
+ * as many words): a registry that accepted a shape the verifier rejects would
+ * publish keys nobody can use, and the failure would surface as "signatures
+ * stopped verifying" rather than as "these two regexes disagree".
+ */
 export function isValidPublicKey(value: unknown): value is string {
-  return typeof value === 'string' && PUBLIC_KEY_PATTERN.test(value)
+  return isNodePublicKey(value)
 }
 
 /**
@@ -446,6 +445,24 @@ export class InMemoryRegistry {
         message: `${canonical} is already registered at ${existing.endpoint}`,
       }
     }
+    const nodeKey = this.#nodeKeyOf(parsed.node, key, now)
+    if (publicKey !== undefined && nodeKey !== null && nodeKey !== publicKey) {
+      // protocol.md §10.1 says the key belongs to the **node**, while a record
+      // belongs to an agent — so nothing but this check stops one node's agents
+      // publishing two different keys. Left unchecked it would not fail here at
+      // all: it would fail later, as signatures that verify for one agent and
+      // not for another, which is a far harder thing to read.
+      //
+      // First live registration wins, and "live" is the whole rule: the key is
+      // derived from the entries that still hold a lease, so once every agent
+      // on a node has gone silent a restarted node with a new identity file is
+      // free to publish again. No second table, nothing to keep in sync.
+      return {
+        ok: false,
+        code: RegistryErrorCode.E_CONFLICT,
+        message: `node ${parsed.node} already published a different public key`,
+      }
+    }
 
     const entry: AgentRecord = {
       address: canonical,
@@ -460,6 +477,23 @@ export class InMemoryRegistry {
     this.#entries.set(key, entry)
     this.#persist()
     return { ok: true, created: existing === null, entry }
+  }
+
+  /**
+   * The public key this node's other live agents have already published.
+   *
+   * `exclude` is the entry being re-registered: an agent republishing its own
+   * record must not collide with itself.
+   */
+  #nodeKeyOf(node: string, exclude: string, now: number): string | null {
+    for (const [key, entry] of this.#entries) {
+      if (key === exclude) continue
+      if (!key.startsWith(`${node}/`)) continue
+      if (entry.publicKey === undefined) continue
+      if (entry.expiresAt <= now) continue
+      return entry.publicKey
+    }
+    return null
   }
 
   /** Look up one agent by address; `null` when unknown, malformed or expired. */
