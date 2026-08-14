@@ -7,10 +7,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
 import { RouterEventType, type RouterAuditEvent } from '@qianmo/router'
+import { ActivatorEventType } from '@qianmo/activator'
+import { NegotiationEventType } from '@qianmo/negotiation'
+import { TunnelEventType } from '@qianmo/tunnel'
+import { BackupEventType } from '@qianmo/backup'
 import { parseQianmoAuditArgs } from '../qianmoAudit.js'
 import {
+  activatorTrailSink,
   auditTrailPath,
+  backupTrailSink,
+  negotiationTrailSink,
   routerTrailSink,
+  tunnelTrailSink,
 } from '../../../services/qianmo/auditTrail.js'
 
 let root: string
@@ -137,5 +145,119 @@ describe('the router sink', () => {
         detail: { code: 'E_RATE_LIMITED' },
       }),
     ).not.toThrow()
+  })
+})
+
+describe('the other four layers', () => {
+  test('each layer files under its own source, with its own event name', () => {
+    const path = join(root, 'trail.ndjson')
+    const trail = new AuditTrail(path)
+    activatorTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: ActivatorEventType.RequestForwarded,
+      at: 1,
+      detail: { sandboxName: 'sbx-1', msgId: 'm-1' },
+    })
+    negotiationTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: NegotiationEventType.Offered,
+      at: 2,
+      detail: { offerId: 'o-1', borrower: 'qianmo://node-a/planner' },
+    })
+    tunnelTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: TunnelEventType.Opened,
+      at: 3,
+      detail: { offerId: 'o-1', borrower: 'qianmo://node-a/planner' },
+    })
+    backupTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: BackupEventType.SnapshotCreated,
+      at: 4,
+      detail: { id: 's-1', workspace: '/workspace' },
+    })
+    trail.close()
+
+    const { records, intact } = readTrail(path)
+    expect(intact).toBe(true)
+    expect(records.map(record => record.source)).toEqual([
+      AuditSource.Activator,
+      AuditSource.Negotiation,
+      AuditSource.Tunnel,
+      AuditSource.Backup,
+    ])
+    expect(records.map(record => record.kind)).toEqual([
+      'request.forwarded',
+      'negotiation.offered',
+      'tunnel.opened',
+      'backup.snapshot-created',
+    ])
+    expect(records.every(record => record.outcome === 'ok')).toBe(true)
+  })
+
+  test('refusals and lapses are told apart', () => {
+    // A route that ran out of time was refused by nobody. Calling it a refusal
+    // sends the reader looking for a decision that was never made.
+    const path = join(root, 'trail.ndjson')
+    const trail = new AuditTrail(path)
+    const sink = activatorTrailSink(trail, 'node-b')
+    sink({
+      type: ActivatorEventType.RequestRefused,
+      at: 1,
+      detail: { code: 'E_UNKNOWN_AGENT' },
+    })
+    sink({
+      type: ActivatorEventType.TaskRouteExpired,
+      at: 2,
+      detail: { taskId: 't-1' },
+    })
+    backupTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: BackupEventType.MutationDenied,
+      at: 3,
+      detail: { method: 'DELETE' },
+    })
+    trail.close()
+    expect(readTrail(path).records.map(record => record.outcome)).toEqual([
+      'refused',
+      'dropped',
+      'refused',
+    ])
+  })
+
+  test('the peer is read from whatever each layer calls it', () => {
+    const path = join(root, 'trail.ndjson')
+    const trail = new AuditTrail(path)
+    negotiationTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: NegotiationEventType.Leased,
+      at: 1,
+      detail: { borrower: 'qianmo://node-a/planner' },
+    })
+    activatorTrailSink(
+      trail,
+      'node-b',
+    )({
+      type: ActivatorEventType.WakeStarted,
+      at: 2,
+      detail: { sandboxName: 'sbx-9' },
+    })
+    trail.close()
+    const records = readTrail(path).records
+    expect(records[0]?.peer).toBe('qianmo://node-a/planner')
+    // Not a guess: the activator's peer is the sandbox it is waking.
+    expect(records[1]?.peer).toBe('sbx-9')
   })
 })
