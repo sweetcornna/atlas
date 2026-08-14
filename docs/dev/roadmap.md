@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v2.20** |
-| 生效日期 | 2026-08-13 |
+| 文档版本 | **v2.21** |
+| 生效日期 | 2026-08-14 |
 | 依据 | [`charter.md`](./charter.md) v2.4（范围与验收标准以章程为准） |
 | 用途 | M0 部分是排期派活的直接依据；M1 及以后为方向性规划 |
 
@@ -51,6 +51,8 @@
 | **v2.19** | **2026-08-13** | **P4.1 回程链路落地（代码与自动化测试完成，本包仍未完成）**。① **协议**：`ack` payload 收缩为 `{ handler, ackAt }`、`error` payload 去掉原消息 ID——**相关标识只存在于信封**（规则 C-1），`protocol.md` 旧 K-1 要求的 `{ ofMsgId, taskId }` 复制随之取消；新增字段封闭的 `task.result` 联合（成功 `{ outcome, content, completedAt }` / 失败 `{ outcome, code, reason, completedAt }`，运行时逐支精确校验）与稳定码 `E_TASK_FAILED`（`protocol.md` §4.2/§4.6/§11 已同步）。② **传输**：抽出两端共享的 receipt 驱动 outbox 与统一入站处理器（校验 → 两级去重 → handler 抛错即 forget 并回 rejected receipt），握手加入受 HMAC 覆盖的稳定 `channelId`，**同一逻辑通道在物理断线重连后重绑并重放反向 outbox**；业务层只拿到受限 `TransportChannel`（含 `hold()`），不接触裸 socket。③ **activator**：新增有界 task route registry——请求登记 C1 source channel，C2 回来的 ack/result/error 按 `taskId` + 地址 + sandbox 校验后原样沿 C1 转发，ack 保留路由、终态释放；重复 `taskId` 不能串线。**没有第二条反向连接。**④ **resident**：网络任务改为逐条 ACP turn（本地普通消息仍批处理），durable read 翻转后发 ack，turn 终态（正文聚合成功 / 取消 / 异常 / 任务 TTL / ACP 子进程关闭）发封闭 result 并等 receipt。⑤ **门禁**：`packages/` + `src/services/qianmo` + `tests/integration` **2533 pass / 0 fail**（26 skip 为需真实 provider 凭据的 AC-4/AC-5 套件）；根 typecheck、biome、mock hygiene 全绿；cycles 437/2024 在预算；unused 棘轮回到 exports 1251 / types 638（两个新内部 options 接口收回不导出）。**⑥ 本条不构成 P4.1 完成，也不构成 AC-2 完成**：DoD 的「连续 10 次、ack P95 ≤ 60 s、result ≤ 5 min、10/10」按 D-3 跑在独立基准 job 上，**尚未真机执行**；当前证据全部来自本地自动化测试（含真 socket 两跳与真 ACP 子进程），不是 Dormice + gVisor 真机。 |
 
 | **v2.20** | **2026-08-13** | **P4.1 完成，AC-2 达成：跨节点任务消息端到端真机验收 10/10**。GCP + Dormice + gVisor（`runsc`）沙箱内跑本次新构建的常驻 occ/ACP + 文件信箱 + 固定 SSE 模型桩；宿主同时跑 activator（含 activity/keepalive）与 **`@qianmo/registry` 真注册中心**；发送方是一条**只拨出、不监听**的 `TransportClient`。每轮先确认沙箱 `state=frozen` 再投递，链路为「按名解析 → 传输投递 → activator 接住并唤醒 → 沙箱内常驻读入 → ack → 执行 → `task.result`」。**判据**（跑在评审九条修复之后的构建上，与合入 main 的代码一致）：成功率 **10/10**；ack p50 **2.490 s** / **P95 8.022 s**（上限 60 s）；result p50 3.471 s / **max 12.422 s**（上限 5 min）；按名解析 8–11 ms。**P95 等于 max 是因为十个样本的 p95 就落在最大值上**，而最大值是第 1 轮的冷链路建连（8.022 s / 12.422 s）；第 2 ~ 10 轮 ack 在 2.073 ~ 3.483 s。**独立核验（不采信宿主回执）**：进沙箱取常驻侧 timings，10 条 `msgId` 各有 `detected/admitted/read/first_content/turn_completed`，**每条 ack 都晚于 durable read**（§4.5）、**每条 result 都晚于 `turn_completed`**，`turn_failed` 0；沙箱内信箱累计 22 条全部已读、22 个唯一 `msgId`、类型全为 `task.request`；activator 审计 `link.opened=1`、`task-route.registered=10`、`task-reply.forwarded=20`（10 ack + 10 result）——**全程只有一条进沙箱的链路，回程没有第二条连接**。**一键复现**：`demo/p41-task-result.sh`（+ `demo/lib/p41-{registry,send,report,report-core}.ts`），报告不含正文（只留字符数与 sha256 前缀）与凭据。**口径按 D-3**：延迟测量跑在独立基准 job 并留档，未塞进 CI 阻塞位。原始记录、脱敏报告与 sha256 留在验收机用户私有目录（0700，文件 0600）。 |
+
+| **v2.21** | **2026-08-14** | **P4.2 完成，AC-3 达成：防循环与两层限流落地并有一键复现**。① **新包 `@qianmo/router`**——判环键锁死为 `(处理者地址, taskId)`，首次回访即切断，`LIMITS.maxHops` 只做兜底；两层限流是**两个类、两套键、两个上限出处、两类审计事件、两个拒绝码**（协议层 `E_RATE_LIMITED` 在码表内可告诉对端，运行时层 `E_RUNTIME_THROTTLED` **不入码表、永不上线**，且入站判决的返回类型窄化到 `ProtocolErrorCode`，把运行时码回给对端是**编译错误**而不是一条约定）。② **落地时发现并写死了一条本来会当场坏掉的规则**：回复类消息（`ack` / `task.result` / `error` / `pong`）不进判环表——它们按 C-1 带原任务 `taskId` 回请求方，形状与「回访」完全一致，用判环键判它们会在**第一条 ack** 上切断 AC-2 的回程。③ **两个附带缺陷一并处理**：起始节点自我播种（`hops[0]` 与判环键同时播），自动回复乒乓（每圈新 `taskId`，判环与跳数都看不见，**只有运行时令牌桶抓得住**，已有专门用例把这件事说明白而不是假装判环能管）。④ **去重表不重造**：`@qianmo/transport` 的 `DedupTable` 本就以投递时限为表项 TTL，与本包同一口径，再造一张只会让网络有两张表、一份契约。⑤ **协议包顺带补两处**：`isReplyType`（哪些类型是回答属线上契约）与 `advanceTraceparent`（§7.1 早就要求逐跳换 `parent-id`，此前无人实现——原样透传会让每一跳都自称起点的子节点，C-6 要问的「谁转发给谁」就此不可答）。⑥ **接线**：activator 入站处理器（在唤醒与 task route 注册**之前**——唤醒按 E2 是秒级成本，路由要占住一条通道到任务时限，被拒的消息不许花这两笔）、常驻节点 `#receive`（在写信箱与开 turn 之前，规则 L-1）、`residentWake` CLI 出站。⑦ **判据**：`demo/ac3-loop-rate.sh` 一键复现，**十条 check 全 true**——回环在两跳处被切（`maxHops=8`，证明不是兜底救的场）、发送方收到 `error(E_LOOP)`、`loop_detected` 恰 1 条且带 trace-id 段/跳链/判环键、合法 spiral 正常投递且零判环、运行时层第 21 条本地被拒且**没上线**、协议层按**真实 `LIMITS.ratePerMinute` 打满 600 条**后第 601 条回 `E_RATE_LIMITED`（发送方换了 31 个 agent 名字，用来证明这层按**节点**计而非按 agent 计）。⑧ **如实记三条边界**：反向用例在**判环层通过**，但同一 `taskId` 并发派给同一节点的两个 agent 仍会被 **P4.1 的回程路由**拒（key 只有 `taskId`，沙箱回来的 ack 也只带这一个键）——是相关性约束不是判环，码为 `E_BAD_ENVELOPE`，已有用例分别断言；运行时令牌桶在 M0 **没有长驻的生产调用方**（agent 面的发送工具不在 M0 范围内），它的生产接线只有一次性的 `residentWake` CLI 与复现脚本；`withHop` 的「转发追加」半边有实现有用例、**但 M0 没有第三方中转节点**，因此无生产调用方。 |
 
 ---
 
@@ -181,6 +183,7 @@ P0.1 基座导入与环境跑通
 
 | **P3.3** 记忆检索唤醒 v0 | ✅ 已完成 | 见 `packages/recall/` + `tests/integration/qianmo-memory-recall.test.ts` | `@qianmo/recall`：确定性检索（标签 + 关键词 + 时间衰减，无模型无向量）之上叠**小规模全量注入**（< 50 条 / < 20k 字符即全投），**候选集只按 scope 取、绝不按词过滤**——词过滤正是 D-6 实测到的 0 结果失败面。来源标注走**工具层强制引用**：`qianmo_memory_answer` 是纯 JSON Schema（零供应商名），回来的每个 `citations` 逐个 `getEntry` 解析，**解析不到即无法被引用**，伪造引用因此是查表不是祈祷；六种引用判定互不合并（其中 `unreadable` 与 `unknown` 分开，避免把损坏的真条目报成幻觉）。只投 live 条目、每次从盘上重建，废止后下一次召回即消失。store 的 `entry_unreadable` 事件通道被抬到 `RecallResult.events` + `degraded`，不在上层重新盖回静默。**DoD 三条真机全绿**：5 条决策 × 2 家 provider 命中 10/10 且标注 ID 与写入时间；3 条伪造决策 × 2 家引用数 0/6；工具声明在两家转换后逐字相同（切换供应商不改代码）。51 包内用例 + 19 集成用例，零 mock |
 | **P4.1** ⭐ 跨节点任务消息端到端 | ✅ 已完成 | 见 `packages/transport/src/{channel,outbox,receiver}.ts` + `packages/activator/src/routes.ts` + `src/services/qianmo/resident.ts` + `demo/p41-task-result.sh` | 回程走**同一条已认证长连接**：握手带受 HMAC 覆盖的稳定 `channelId`，两端共用 receipt 驱动 outbox 与统一入站处理器，物理断线重连后按同一 `channelId` 重绑并重放反向 outbox；activator 侧有界 task route registry 在 TTL 内持有源通道（`hold()`），C2 回复按 `taskId` + 地址 + sandbox 校验后原样沿 C1 转发，ack 保留路由、终态释放，重复 `taskId` 不能串线；resident 把网络任务改为逐条 ACP turn，durable read 翻转后发 ack、turn 终态发字段封闭的 `task.result`。协议侧 ack payload 收缩为 `{ handler, ackAt }`、相关标识只留信封，新增 `task.result` 联合与 `E_TASK_FAILED`（`protocol.md` §4.2/§4.6/§11）。**2026-08-13 真机验收 10/10**（Dormice + gVisor + 真注册中心，每轮先确认 frozen）：ack **P95 8.022 s**（p50 2.490 s，P95 即第 1 轮冷链路）、result **max 12.422 s**，判据 60 s / 5 min；独立核验证实每条 ack 都晚于沙箱内的 durable read、每条 result 都晚于 `turn_completed`，且 `link.opened=1`——回程没有第二条连接。详见 v2.20 变更记录 |
+| **P4.2** 防循环与限流 | ✅ 已完成 | 见 `packages/router/` + `demo/ac3-loop-rate.sh` + `tests/integration/qianmo-loop-and-rate.test.ts` | `@qianmo/router`：判环键 `(处理者地址, taskId)` 首次回访即切断（`LIMITS.maxHops` 仅兜底）、起始节点自我播种、回复类消息不进判环表；两层限流是两个类两套键两个上限出处两类审计事件两个拒绝码，运行时层的 `E_RUNTIME_THROTTLED` 不入协议码表且入站判决类型上够不到它。去重表沿用 `@qianmo/transport` 的 `DedupTable`（本就以投递时限过期），不另造第二张。协议包补 `isReplyType` 与 `advanceTraceparent`（§7.1 的逐跳 `parent-id` 此前无人实现）。接线：activator 入站（唤醒与路由注册之前）、常驻节点 `#receive`（写信箱之前，L-1）、`residentWake` 出站。**AC-3 十条判据全绿**（`demo/ac3-loop-rate.sh`，含真实 600 条入站预算 / 31 个发送 agent 的负向证据）；单元 38 + 集成 3 + 报告核心 8 用例，零 mock。**边界如实记**：运行时令牌桶在 M0 无长驻生产调用方，`withHop` 转发追加半边无生产调用方（M0 没有第三方中转节点） |
 
 **⚠️ P2.2 报警（v2.6 记录）**：roadmap v2.2 曾把 P2.2 从「从零造」**降级**为「实现一个 `Transport` + 自建服务端半边」，依据是基座有约 5,300 行在用传输代码。**实施时逐行核实，该依据不成立**：
 
@@ -503,7 +506,7 @@ P0.1 基座导入与环境跑通
 - **实施进展（v2.19，2026-08-13）· 代码完成、判据未验**：回程链路已落地——双向逻辑通道（`channelId` 受 HMAC 覆盖、断线重连重绑并重放反向 outbox）、activator 有界 task route registry（沿原请求路由回程，无第二条反向连接）、resident 在 durable read 后发 ack、在 ACP turn 终态发封闭 `task.result`。协议侧同步收缩 ack payload 并新增 `task.result` 联合与 `E_TASK_FAILED`（见 v2.19 变更记录与 `protocol.md` §4.6）。**剩余全部工作是判据本身**：按 D-3 在独立基准 job 上跑连续 10 次真机测量（ack P95 ≤ 60 s、result ≤ 5 min、10/10）并留档，以及一键复现脚本。**在那份报告出来之前，本包与 AC-2 都不得记为完成。**
 - **验收完成（v2.20，2026-08-13）**：上一条列的两件事都已交付——一键复现是 `demo/p41-task-result.sh`，真机 10/10 的基准报告见 v2.20 变更记录（ack P95 **4.440 s**、result max **5.885 s**）。**三点必须一并记住**：① 判据线是 60 s / 5 min，实测低一个数量级，但**样本是固定 SSE 模型桩**——它测的是链路，不是真实模型的思考时间，别拿这组数字当「任务耗时」的基准；② 报告里的 `checks` 有八条且不合并（轮数 / 成功率 / ack P95 / result max / 每轮 frozen / 回复字段封闭 / 无越界回复 / 按名解析），任何一条为 false 即整体 false——复跑时看 `pass` 之外还要看是哪条撑着它；③ **十个样本的 P95 就是最大值**，而最大值一直是第 1 轮（冷链路建连），所以这项判据实际上是在报「最慢的那一轮」——这对 60 s 的线绰绰有余，但别把它当成稳态分位数读。
 
-**P4.2 防循环与限流**
+**P4.2 防循环与限流**（状态：✅ 已完成，见「完成状态速查」）
 - owner：陈曦宇（backup：陈子轩）
 - 依赖：P1.1、P4.1
 - 交付物：
@@ -513,6 +516,12 @@ P0.1 基座导入与环境跑通
   - `loop_detected` 与 `rate_limited` 审计事件
 - DoD：构造 A→B→A 回环，**在首次回访同一处理者地址 + 同一任务标识时即被切断**并产生含完整 trace_id 的审计事件；**另有反向用例断言"同一节点因不同目标地址被再次经过"不被误判为环**（这是 D-2 改动的全部意义所在，没有这条用例等于没改）；运行时节流的第 21 条消息被拒并返回明确错误码；另有用例断言协议层入站预算独立生效 → **AC-3**
 - **说明（v2.2；v2.11 更新）**：章程 §4 的 AC-3 已按 D-2 修订，**D-2 已于 2026-08-12 经 P0.8 确认通过**（章程 v2.8）。处理者粒度即为现行判据，原「被否决则回到节点粒度」的分支**已关闭**；上述反向用例是硬要求，不再有降级选项
+- **实施记录（v2.21，2026-08-14）**：交付物逐条对上，另有三处交付时才看清的东西，写在这里而不是埋进代码注释：
+  - **回复类消息必须排除在判环之外**。`ack` / `task.result` / `error` / `pong` 按 C-1 带着原任务的 `taskId` 回到请求方，这与「同一处理者地址 + 同一任务标识再次出现」**是同一个形状**。照判据字面实现会在第一条 ack 上切断 AC-2 的回程——即 P4.1 刚验收的那条链。判据本身不必改（它说的是「回环」），但实现里这条线必须显式画出来，因此区分函数落在 `@qianmo/protocol`（`isReplyType`）而不是路由包里
+  - **去重表不新建**。交付物列的「消息指纹去重表（带 TTL）」`@qianmo/transport` 已有（`msgId` + `fingerprint` 两级，表项以**投递时限**过期，正是 v2.2 要求对齐的那个字段）。再造一张只会让网络有两张去重表、一份契约
+  - **接线时撞出一条已存在的限制，一并记在案**：反向用例（同一任务、同一节点、**不同处理者**）在**判环层是通过的**（不写 `loop_detected`），但在 activator 与常驻节点上仍会被**回程路由**拒掉——P4.1 的 task route 以 `taskId` 为唯一键，而从沙箱回来的 `ack` 也只带这一个键，两条并发路由分不开。**这是相关性约束，不是判环**，错误码也不同（`E_BAD_ENVELOPE`，非 `E_LOOP`），`packages/activator/test/chain.test.ts` 里有一条用例把这两件事分别断言。**后果**：M0 不支持「同一任务并发派给同一节点的多个 agent」。要支持得给回程路由加处理者维度，那是 P4.1 的改动，AC-3 不要求
+  - **两条边界如实记**：① 运行时令牌桶 M0 内**没有长驻的生产调用方**——agent 面的跨节点发送工具不在章程 §3 范围内，现有生产接线只有一次性的 `residentWake` CLI（每次进程新起，桶总是满的）与复现脚本；② `withHop` 的「转发前追加」半边有实现有用例，但 **M0 没有第三方中转节点**，同样无生产调用方。两条都不影响 AC-3 的判据成立（判据要的是机制存在且可验证），但谁要是据此宣称「限流已在生产链路上跑了一个月」，那是冒领
+- **一键复现**：`demo/ac3-loop-rate.sh`（+ `demo/lib/ac3-{loop-rate,report-core}.ts`）。四个场景各起一对全新节点走真 transport（unix socket，按 P2.2 测试口径不用 TCP），十条 check 逐条留痕、不合并。**不需要沙箱与 daemon**，只需一把 PSK
 
 **P4.3 权限分级与授权模型 v0**
 - owner：陈曦宇（backup：喻永昌）
