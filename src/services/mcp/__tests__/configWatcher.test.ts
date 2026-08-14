@@ -18,9 +18,20 @@ async function makeDir(): Promise<string> {
   return dir
 }
 
-/** watchFile polls on a 1s interval; allow two ticks plus the debounce. */
-function settle(): Promise<void> {
-  return new Promise(r => setTimeout(r, 2600))
+/** The negative assertion must observe two stat ticks plus the debounce. */
+function settleForNoChange(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 2600))
+}
+
+function changeSignal(): {
+  readonly fired: () => void
+  readonly observed: Promise<void>
+} {
+  let fired: () => void = () => {}
+  const observed = new Promise<void>(resolve => {
+    fired = resolve
+  })
+  return { fired, observed }
 }
 
 describe('startMcpConfigWatcher', () => {
@@ -29,13 +40,11 @@ describe('startMcpConfigWatcher', () => {
     const file = join(dir, '.mcp.json')
     await writeFile(file, '{"mcpServers":{}}')
 
-    let fired = 0
-    stops.push(startMcpConfigWatcher([file], () => void fired++))
+    const changed = changeSignal()
+    stops.push(startMcpConfigWatcher([file], changed.fired))
 
     await writeFile(file, '{"mcpServers":{"a":{"command":"x"}}}')
-    await settle()
-
-    expect(fired).toBeGreaterThan(0)
+    await changed.observed
   })
 
   test('fires when a watched file is deleted — the case that leaked processes', async () => {
@@ -43,13 +52,11 @@ describe('startMcpConfigWatcher', () => {
     const file = join(dir, '.mcp.json')
     await writeFile(file, '{"mcpServers":{"a":{"command":"x"}}}')
 
-    let fired = 0
-    stops.push(startMcpConfigWatcher([file], () => void fired++))
+    const changed = changeSignal()
+    stops.push(startMcpConfigWatcher([file], changed.fired))
 
     await unlink(file)
-    await settle()
-
-    expect(fired).toBeGreaterThan(0)
+    await changed.observed
   })
 
   test('fires when a watched file appears for the first time', async () => {
@@ -58,13 +65,11 @@ describe('startMcpConfigWatcher', () => {
     const dir = await makeDir()
     const file = join(dir, '.mcp.json')
 
-    let fired = 0
-    stops.push(startMcpConfigWatcher([file], () => void fired++))
+    const changed = changeSignal()
+    stops.push(startMcpConfigWatcher([file], changed.fired))
 
     await writeFile(file, '{"mcpServers":{}}')
-    await settle()
-
-    expect(fired).toBeGreaterThan(0)
+    await changed.observed
   })
 
   test('stop() silences the watcher', async () => {
@@ -78,7 +83,7 @@ describe('startMcpConfigWatcher', () => {
     stop() // idempotent
 
     await writeFile(file, '{"mcpServers":{"a":{"command":"x"}}}')
-    await settle()
+    await settleForNoChange()
 
     expect(fired).toBe(0)
   })
