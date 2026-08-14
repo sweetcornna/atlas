@@ -133,6 +133,7 @@
     "@qianmo/recall": "workspace:*",
     "@qianmo/registry": "workspace:*",
     "@qianmo/transport": "workspace:*",
+    "@qianmo/resident": "workspace:*",
     "@sentry/node": "^10.49.0",
     "@smithy/core": "^3.23.15",
     "@smithy/node-http-handler": "^4.5.3",
