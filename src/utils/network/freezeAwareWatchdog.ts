@@ -29,22 +29,27 @@ export class FreezeAwareWatchdog {
   readonly #options: FreezeAwareWatchdogOptions
   readonly #now: () => number
   readonly #cadenceMs: number
+  readonly #timeoutMs: number
   readonly #gate: TimeJumpGate
   #deadlineAt = 0
   #timer: { cancel(): void } | null = null
   #running = false
 
   constructor(options: FreezeAwareWatchdogOptions) {
-    if (!(options.timeoutMs > 0)) {
-      throw new RangeError(
-        `timeoutMs must be positive, got ${options.timeoutMs}`,
-      )
+    if (!Number.isFinite(options.timeoutMs)) {
+      throw new RangeError(`timeoutMs must be finite, got ${options.timeoutMs}`)
     }
+    // A non-positive timeout is a misconfiguration (`CLAUDE_STREAM_IDLE_TIMEOUT_MS=-1`
+    // survives `parseInt` untouched), and the thing it replaced — `setTimeout`
+    // with a negative delay — fired at once and produced the proper timeout
+    // error. Throwing from inside a stream reader instead would escape that
+    // classification and kill the request, so clamp rather than throw.
+    this.#timeoutMs = Math.max(1, options.timeoutMs)
     this.#options = options
     this.#now = options.now ?? Date.now
     this.#cadenceMs = Math.min(
       options.cadenceMs ?? DEFAULT_CADENCE_MS,
-      options.timeoutMs,
+      this.#timeoutMs,
     )
     this.#gate = new TimeJumpGate({ periodMs: this.#cadenceMs })
   }
@@ -52,7 +57,7 @@ export class FreezeAwareWatchdog {
   reset(): void {
     const now = this.#now()
     this.#gate.observe(now)
-    this.#deadlineAt = now + this.#options.timeoutMs
+    this.#deadlineAt = now + this.#timeoutMs
     this.#running = true
     this.#schedule()
   }

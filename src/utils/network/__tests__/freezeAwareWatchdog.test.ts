@@ -101,4 +101,36 @@ describe('freeze-aware watchdog', () => {
     scheduler.fire()
     expect(onTimeout).toHaveBeenCalledTimes(1)
   })
+
+  test('a misconfigured non-positive timeout fires, it does not throw', () => {
+    let now = 0
+    const scheduler = new ManualScheduler()
+    const onTimeout = mock(() => {})
+    // `CLAUDE_STREAM_IDLE_TIMEOUT_MS=-1` survives `parseInt` untouched. The
+    // `setTimeout` this replaced fired at once on a negative delay and produced
+    // the proper timeout error; throwing from inside a stream reader instead
+    // would escape that classification and kill the request.
+    const watchdog = new FreezeAwareWatchdog({
+      timeoutMs: -1,
+      now: () => now,
+      schedule: scheduler.schedule,
+      onTimeout,
+    })
+    watchdog.reset()
+
+    now = 1
+    scheduler.fire()
+
+    expect(onTimeout).toHaveBeenCalledTimes(1)
+  })
+
+  test('a timeout that is not a number at all is still refused', () => {
+    expect(
+      () =>
+        new FreezeAwareWatchdog({
+          timeoutMs: Number.NaN,
+          onTimeout: () => {},
+        }),
+    ).toThrow('must be finite')
+  })
 })
