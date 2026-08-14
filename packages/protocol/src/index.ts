@@ -68,5 +68,14 @@ export {
   firstErrorCode,
   validateMessage,
   type ValidateOptions,
+export {
+  DEFAULT_GRACE_MS,
+  DEFAULT_MIN_JUMP_GAP_MS,
+  DEFAULT_TIME_JUMP_FACTOR,
+  TimeJumpGate,
+  type TimeJumpGateOptions,
+  type TimeJumpObservation,
+} from './time-jump.js'
+
   type ValidationResult,
 } from './validate.js'
