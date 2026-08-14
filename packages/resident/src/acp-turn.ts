@@ -10,6 +10,23 @@ import type {
 } from './contracts.js'
 import type { ResidentTimingRecorder } from './timings.js'
 
+/**
+ * ACP stop reasons that are **not** a completed answer.
+ *
+ * Only `end_turn` means "the agent said what it had to say". The rest end the
+ * turn with a body that is empty or cut short, and reporting those as
+ * `outcome: 'completed'` would hand the requesting node a well-formed success
+ * envelope it has no way to tell apart from a real one. Anything unknown is
+ * left alone: a stop reason this build has never heard of is not evidence of
+ * failure, and inventing one would be worse than the silence.
+ */
+const FAILED_STOP_REASONS = new Map<string, string>([
+  ['cancelled', 'ACP turn was cancelled'],
+  ['refusal', 'ACP turn ended in a refusal'],
+  ['max_tokens', 'ACP turn hit the token ceiling before finishing'],
+  ['max_turn_requests', 'ACP turn hit the request ceiling before finishing'],
+])
+
 export const ACP_INPUT_ACCEPTED_METHOD = 'qianmo/input-accepted'
 export const ACP_INPUT_STATUS_METHOD = 'qianmo/input-status'
 export const ACP_SESSION_ACTIVITY_METHOD = 'qianmo/session-activity'
@@ -87,7 +104,8 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       })
       if (response.userMessageId === input.messageId) await accept()
       else if (admission !== null) await admission
-      if (response.stopReason === 'cancelled') {
+      const failure = FAILED_STOP_REASONS.get(response.stopReason ?? '')
+      if (failure !== undefined) {
         this.#timings?.record({
           stage: 'turn_failed',
           at: this.#now(),
@@ -97,12 +115,12 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
             ? {}
             : { networkMsgId: input.networkMsgId }),
           ...(input.agent === undefined ? {} : { agent: input.agent }),
-          error: 'cancelled',
+          error: response.stopReason ?? 'unknown',
         })
         return {
           outcome: 'failed',
           code: ProtocolErrorCode.E_TASK_FAILED,
-          reason: 'ACP turn was cancelled',
+          reason: failure,
         }
       }
       this.#timings?.record({

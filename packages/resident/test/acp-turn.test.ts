@@ -161,6 +161,42 @@ describe('ACP resident turn port', () => {
     })
   })
 
+  test('refusals and ceiling stops are failures too, not truncated successes', async () => {
+    for (const stopReason of ['refusal', 'max_tokens', 'max_turn_requests']) {
+      const connection = {
+        extMethod: mock(async () => ({ accepted: false })),
+        prompt: mock(async () => ({
+          userMessageId: INPUT.messageId,
+          stopReason,
+        })),
+      }
+      const port = new AcpResidentTurnPort(connection)
+
+      const result = await port.execute(INPUT, async () => {})
+
+      expect(result.outcome).toBe('failed')
+      if (result.outcome !== 'failed') throw new Error('unreachable')
+      expect(result.code).toBe(ProtocolErrorCode.E_TASK_FAILED)
+      expect(result.reason.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('an unfamiliar stop reason is not invented into a failure', async () => {
+    const connection = {
+      extMethod: mock(async () => ({ accepted: false })),
+      prompt: mock(async () => ({
+        userMessageId: INPUT.messageId,
+        stopReason: 'something_this_build_has_never_heard_of',
+      })),
+    }
+    const port = new AcpResidentTurnPort(connection)
+
+    await expect(port.execute(INPUT, async () => {})).resolves.toEqual({
+      outcome: 'completed',
+      content: '',
+    })
+  })
+
   test('unknown acceptance notifications cannot flip a mailbox entry', async () => {
     const connection = {
       extMethod: mock(async () => ({ accepted: false })),
