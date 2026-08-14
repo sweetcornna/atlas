@@ -31,7 +31,9 @@
       "entry": [
         "src/entrypoints/cli.tsx",
         "scripts/**/*.{ts,mjs,cjs}",
-        "src/**/*.runner.ts"
+        "src/**/*.runner.ts",
+        "demo/lib/ac6a-sandbox.ts",
+        "demo/lib/p31-copy-resident-timings.ts"
       ],
       "project": ["src/**/*.{ts,tsx}"],
       "ignore": ["src/types/**"]
