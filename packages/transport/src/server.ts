@@ -101,6 +101,11 @@ export interface TransportServerOptions {
    * keep-alive data frame well inside this window.
    */
   readonly idleTimeoutSec?: number
+  /**
+   * How long a disconnected logical channel is kept alive for its peer to come
+   * back to, when it still holds unreceipted envelopes. `0` reclaims at once.
+   */
+  readonly channelRetentionMs?: number
   readonly eventCapacity?: number
 }
 
@@ -126,6 +131,23 @@ export const DEFAULT_IDLE_TIMEOUT_SEC = 120
 /** Hard cap on reconnectable logical channels retained by one server. */
 export const DEFAULT_MAX_CHANNELS = 1_000
 
+/**
+ * How long a socket-less channel with unreceipted envelopes is retained.
+ *
+ * Without a ceiling, such a channel is retained *forever*: it survives
+ * {@link ServerTransportChannel.unbind} because its outbox is not empty, and
+ * the only thing that would empty it is a receipt from the peer that just went
+ * away. A server that answers refused requests on the inbound channel (the
+ * activator does) would then accumulate one dead channel per refusal until
+ * {@link DEFAULT_MAX_CHANNELS} is reached, after which **every** new handshake
+ * is closed with `CLOSE_CAPACITY` — a self-inflicted outage with no recovery
+ * short of a restart.
+ *
+ * Five minutes matches the protocol's default task deadline: past it, nothing
+ * that could still be waiting on those envelopes is alive to care.
+ */
+export const DEFAULT_CHANNEL_RETENTION_MS = 300_000
+
 /** How long {@link TransportServerHandle.stop} waits on Bun before moving on. */
 const STOP_GRACE_MS = 200
 const CLOSE_REPLACED = 4000
@@ -148,19 +170,23 @@ class ServerTransportChannel implements TransportChannel {
   readonly #outbox: EnvelopeOutbox
   readonly #remove: (channel: ServerTransportChannel) => void
   readonly #record: (type: TransportEventType, detail: EventDetail) => void
+  readonly #retentionMs: number
   #socket: ServerWebSocket<ConnectionState> | null = null
   #holds = 0
   #closed = false
+  #reclaim: ReturnType<typeof setTimeout> | null = null
 
   constructor(options: {
     readonly id: string
     readonly peerNode: string
     readonly maxQueued: number
+    readonly retentionMs: number
     readonly remove: (channel: ServerTransportChannel) => void
     readonly record: (type: TransportEventType, detail: EventDetail) => void
   }) {
     this.id = options.id
     this.peerNode = options.peerNode
+    this.#retentionMs = options.retentionMs
     this.#remove = options.remove
     this.#record = options.record
     this.#outbox = new EnvelopeOutbox({
@@ -247,6 +273,7 @@ class ServerTransportChannel implements TransportChannel {
   close(): void {
     if (this.#closed) return
     this.#closed = true
+    this.#cancelReclaim()
     const socket = this.#socket
     this.#socket = null
     socket?.close(1000, 'transport server shutdown')
@@ -273,11 +300,47 @@ class ServerTransportChannel implements TransportChannel {
   }
 
   #removeIfIdle(): void {
-    if (this.#socket !== null || this.#outbox.pending > 0 || this.#holds > 0) {
+    if (this.#socket !== null || this.#holds > 0) {
+      this.#cancelReclaim()
       return
     }
+    if (this.#outbox.pending > 0) {
+      this.#armReclaim()
+      return
+    }
+    this.#cancelReclaim()
     this.#closed = true
     this.#remove(this)
+  }
+
+  /**
+   * Put a socket-less channel on the clock.
+   *
+   * The envelopes it still holds are not dropped here — a peer that comes back
+   * inside the window rebinds and gets them replayed. What the clock prevents
+   * is the other case: a peer that never comes back, whose channel would
+   * otherwise sit in the table forever with no event left that could retire it.
+   */
+  #armReclaim(): void {
+    if (this.#reclaim !== null || this.#closed) return
+    this.#reclaim = setTimeout(() => {
+      this.#reclaim = null
+      if (this.#socket !== null || this.#holds > 0 || this.#closed) return
+      this.#record(TransportEventType.ChannelReclaimed, {
+        node: this.peerNode,
+        channelId: this.id,
+        pending: this.#outbox.pending,
+      })
+      this.close()
+      this.#remove(this)
+    }, this.#retentionMs)
+    this.#reclaim.unref?.()
+  }
+
+  #cancelReclaim(): void {
+    if (this.#reclaim === null) return
+    clearTimeout(this.#reclaim)
+    this.#reclaim = null
   }
 }
 
@@ -298,6 +361,8 @@ export function startTransportServer(
   const peerConnections = new Map<string, number>()
   const maxChannels = options.maxChannels ?? DEFAULT_MAX_CHANNELS
   const maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
+  const channelRetentionMs =
+    options.channelRetentionMs ?? DEFAULT_CHANNEL_RETENTION_MS
 
   function record(type: TransportEventType, detail: EventDetail): void {
     recorder.record({ type, at: now(), detail })
@@ -320,6 +385,7 @@ export function startTransportServer(
       id,
       peerNode,
       maxQueued,
+      retentionMs: channelRetentionMs,
       remove: removeChannel,
       record,
     })

@@ -107,6 +107,7 @@ export {
 } from './handshake.js'
 
 export {
+  DEFAULT_CHANNEL_RETENTION_MS,
   DEFAULT_IDLE_TIMEOUT_SEC,
   DEFAULT_MAX_CHANNELS,
   startTransportServer,

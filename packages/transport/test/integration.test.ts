@@ -9,6 +9,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
+  DEFAULT_CHANNEL_RETENTION_MS,
   DedupTable,
   TransportClient,
   TransportEventType,
@@ -539,5 +540,68 @@ describe('bidirectional authenticated channels', () => {
     expect(server.channels).toBe(1)
     expect(replies[0]?.payload).toMatchObject({ content: 'after reconnect' })
     releaseChannel?.()
+  })
+
+  test('a channel nobody comes back for is reclaimed, not retained forever', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+
+    let serverChannel: TransportChannel | undefined
+    let releaseChannel: (() => void) | undefined
+    const server = track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        // Compressed so the window is testable; the shipped value is asserted
+        // below, because that is the number an operator actually lives with.
+        channelRetentionMs: 40,
+        onMessage: (_message, context) => {
+          serverChannel = context.channel
+          releaseChannel ??= context.channel.hold()
+        },
+      }),
+    )
+
+    const client = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        peerNode: 'node-b',
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+      }),
+    )
+    await client.connect()
+    await client.sendAndWait(makeMessage({ taskId: 'task-abandoned' }))
+    expect(server.channels).toBe(1)
+
+    // The sender goes away for good, the way a client that got its refusal and
+    // hung up does. The hold keeps the channel while a reply is being produced.
+    await client.close()
+    await waitUntil(() => serverChannel?.isReady() === false)
+    serverChannel?.send(
+      createTaskResult(
+        makeMessage({ taskId: 'task-abandoned' }),
+        RECIPIENT,
+        { outcome: 'completed', content: 'nobody is listening' },
+        Date.now(),
+      ),
+    )
+    releaseChannel?.()
+
+    // Nothing can retire that envelope now: the only receipt that would is from
+    // the peer that left. Without a retention window the channel would sit in
+    // the table forever, and 1000 of them close the server to new handshakes.
+    expect(server.channels).toBe(1)
+    await waitUntil(() => server.channels === 0, 2_000)
+    expect(serverChannel?.isClosed()).toBe(true)
+    // Five minutes shipped: the protocol's task deadline, past which nothing
+    // that could still be waiting on those envelopes is alive to care.
+    expect(DEFAULT_CHANNEL_RETENTION_MS).toBe(300_000)
+    expect(
+      server.events
+        .all()
+        .some(event => event.type === TransportEventType.ChannelReclaimed),
+    ).toBe(true)
   })
 })
