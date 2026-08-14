@@ -107,6 +107,15 @@ export interface TransportClientOptions {
   readonly maxQueued?: number
   /** Handle envelopes sent back by the authenticated server channel. */
   readonly onMessage?: InboundHandler
+  /**
+   * Called every time the link becomes ready, reconnects included.
+   *
+   * The outbox replay covers envelopes that never got a receipt; it cannot
+   * cover state the peer inferred from an envelope it already receipted. A
+   * caller whose last message asserted something ("I am busy") needs this hook
+   * to say it again after the peer forgot.
+   */
+  readonly onReady?: () => void
   readonly dedup?: DedupTable
   /** Keep-alive period, ms. `0` disables it. */
   readonly keepAliveIntervalMs?: number
@@ -395,6 +404,16 @@ export class TransportClient implements TransportChannel {
     const waiters = this.readyWaiters
     this.readyWaiters = []
     for (const resolve of waiters) resolve()
+    try {
+      this.options.onReady?.()
+    } catch (error) {
+      // Contained for the same reason the event sink is: this runs inside the
+      // socket's message handler, and a caller fault must not take the link
+      // down with it.
+      this.record(TransportEventType.SinkFailed, {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   private recordReceipt(frame: ReceiptFrame, known: boolean): void {
