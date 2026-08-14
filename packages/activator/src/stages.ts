@@ -185,7 +185,7 @@ function percentile(sorted: readonly number[], fraction: number): number {
   return sorted[index] ?? 0
 }
 
-function statsOf(values: readonly number[]): StageStats {
+export function statsOf(values: readonly number[]): StageStats {
   if (values.length === 0) return EMPTY_STATS
   const sorted = [...values].sort((a, b) => a - b)
   return {

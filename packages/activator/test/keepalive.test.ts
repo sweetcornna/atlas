@@ -21,6 +21,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { ActivatorEventType, AuditLog } from '../src/audit.js'
+import { DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR } from '../src/activity.js'
 import { capabilitySurface } from '../src/capability.js'
 import type { SandboxStatus } from '../src/daemon.js'
 import { HttpSandboxDaemon } from '../src/daemon.js'
@@ -298,6 +299,35 @@ describe('beating', () => {
 })
 
 describe('a thaw is not a failure', () => {
+  test('the 34.7 s E4 gap distinguishes factor 2 from the A/B candidate', async () => {
+    const build = (
+      factor: number,
+    ): { loop: KeepaliveLoop; clock: ManualClock } => {
+      const clock = new ManualClock(1_000_000)
+      const loop = new KeepaliveLoop({
+        sandboxName: SANDBOX,
+        daemon: new ScriptedAcquire(),
+        policy: HEALTHY_POLICY,
+        audit: new AuditLog(),
+        clock,
+        scheduler: new ManualScheduler(),
+        periodMs: 20_000,
+        timeJumpFactor: factor,
+      })
+      return { loop, clock }
+    }
+
+    const baseline = build(2)
+    await baseline.loop.beat()
+    baseline.clock.advance(34_700)
+    expect((await baseline.loop.beat()).timeJumpDetected).toBe(false)
+
+    const candidate = build(DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR)
+    await candidate.loop.beat()
+    candidate.clock.advance(34_700)
+    expect((await candidate.loop.beat()).timeJumpDetected).toBe(true)
+  })
+
   test('a gap past the threshold is audited as a time jump', async () => {
     const daemon = new ScriptedAcquire()
     const clock = new ManualClock(1_000_000)

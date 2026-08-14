@@ -253,6 +253,7 @@ export interface KeepaliveOptions {
   readonly maxConsecutiveFailures?: number
   readonly onDegraded?: (detail: KeepaliveDegraded) => void
   readonly graceMs?: number
+  readonly timeJumpFactor?: number
 }
 
 /**
@@ -318,6 +319,9 @@ export class KeepaliveLoop {
     this.#gate = new TimeJumpGate({
       periodMs: period,
       ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
+      ...(options.timeJumpFactor === undefined
+        ? {}
+        : { factor: options.timeJumpFactor }),
     })
   }
 
