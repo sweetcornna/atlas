@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: MIT
+#
+# P4.2 / AC-3 一键复现：防循环与两层限流。
+#
+# 四个场景各起一对全新节点，跑在真 transport（unix socket）上：
+#   ① A→B→A 回环在首次回访同一处理者地址 + 同一任务标识时被切断，
+#      发送方收到 error(E_LOOP)，并留下 1 条带完整消息链的 loop_detected 审计事件；
+#   ② 反向用例：同一节点因不同目标地址被再次经过，正常投递、不判环；
+#   ③ 运行时层令牌桶：第 21 条被本地拒（E_RUNTIME_THROTTLED，不上线），换目标即放行；
+#   ④ 协议层入站预算：按 LIMITS.ratePerMinute 在接收节点拒（E_RATE_LIMITED），
+#      发送方换多个 agent 名字也不多拿配额（这一层按发送节点计）。
+#
+# 不需要沙箱、不需要 daemon，只需要一把 PSK（与其他 demo 同一注入口）。
+# 报告是一行 JSON，退出码即结论。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ -z "${QIANMO_TRANSPORT_PSK:-}" ]; then
+  printf 'ac3-loop-rate: missing required environment variable QIANMO_TRANSPORT_PSK\n' >&2
+  exit 2
+fi
+
+command -v bun >/dev/null 2>&1 || {
+  printf 'ac3-loop-rate: bun is not in PATH\n' >&2
+  exit 2
+}
+
+cd "$REPO_DIR"
+bun run demo/lib/ac3-loop-rate.ts
