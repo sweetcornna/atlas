@@ -42,10 +42,18 @@ afterAll(() => {
 // ── Module mocks (must precede any import of the module under test) ──
 
 const mockSetModel = mock(() => {})
-const mockSubmitMessage = mock(async function* (_input: string) {})
+const mockSubmitMessage = mock(async function* (
+  _input: string,
+  _options?: { uuid?: string },
+) {})
+const queryEngineConfigs: Array<Record<string, unknown>> = []
 
 mockModulePreservingExports('../../../QueryEngine.ts', {
   QueryEngine: class MockQueryEngine {
+    constructor(config: Record<string, unknown>) {
+      queryEngineConfigs.push(config)
+    }
+
     submitMessage = mockSubmitMessage
     interrupt = mock(() => {})
     resetAbortController = mock(() => {})
@@ -164,9 +172,11 @@ mockModulePreservingExports('../../../utils/session/conversationRecovery.ts', {
 
 const mockGetLastSessionLog = mock(async () => null)
 const mockSessionIdExists = mock(() => false)
+const mockDoesMessageExistInSession = mock(async () => false)
 mockModulePreservingExports('../../../utils/sessionStorage.ts', {
   getLastSessionLog: mockGetLastSessionLog,
   sessionIdExists: mockSessionIdExists,
+  doesMessageExistInSession: mockDoesMessageExistInSession,
 })
 
 const mockGetCommands = mock(async () => [
@@ -208,6 +218,7 @@ const { forwardSessionUpdates } = await import('../bridge.js')
 function makeConn() {
   return {
     sessionUpdate: mock(async () => {}),
+    extNotification: mock(async () => {}),
     requestPermission: mock(async () => ({
       outcome: { outcome: 'cancelled' },
     })),
@@ -244,7 +255,11 @@ describe('AcpAgent', () => {
     mockSetModel.mockClear()
     mockSwitchSession.mockClear()
     mockSubmitMessage.mockReset()
-    mockSubmitMessage.mockImplementation(async function* (_input: string) {})
+    mockSubmitMessage.mockImplementation(async function* (
+      _input: string,
+      _options?: { uuid?: string },
+    ) {})
+    queryEngineConfigs.length = 0
     mockGetMainLoopModel.mockClear()
     mockGetDefaultAppState.mockClear()
     mockGetSettings.mockReset()
@@ -255,6 +270,8 @@ describe('AcpAgent', () => {
     mockGetOriginalCwd.mockImplementation(() => '/current/working/dir')
     mockGetLastSessionLog.mockReset()
     mockGetLastSessionLog.mockImplementation(async () => null)
+    mockDoesMessageExistInSession.mockReset()
+    mockDoesMessageExistInSession.mockImplementation(async () => false)
     mockReplayHistoryMessages.mockClear()
     ;(forwardSessionUpdates as ReturnType<typeof mock>).mockReset()
     ;(forwardSessionUpdates as ReturnType<typeof mock>).mockImplementation(
@@ -689,6 +706,37 @@ describe('AcpAgent', () => {
       )
     })
 
+    test('resident client can query whether its deterministic input UUID is durable', async () => {
+      mockDoesMessageExistInSession.mockResolvedValueOnce(true)
+      const agent = new AcpAgent(makeConn())
+      await agent.initialize({
+        _meta: { qianmo: { resident: true } },
+      } as any)
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const messageId = '11111111-2222-4333-8444-555555555555'
+
+      await expect(
+        agent.extMethod('qianmo/input-status', { sessionId, messageId }),
+      ).resolves.toEqual({ accepted: true })
+      expect(mockDoesMessageExistInSession).toHaveBeenCalledWith(
+        sessionId,
+        messageId,
+      )
+    })
+
+    test('ordinary ACP clients cannot query Qianmo input status', async () => {
+      const agent = new AcpAgent(makeConn())
+      await agent.initialize({} as any)
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+
+      await expect(
+        agent.extMethod('qianmo/input-status', {
+          sessionId,
+          messageId: '11111111-2222-4333-8444-555555555555',
+        }),
+      ).rejects.toThrow()
+    })
+
     test('rejects unknown methods with methodNotFound-style error', async () => {
       const agent = new AcpAgent(makeConn())
       await expect(
@@ -826,6 +874,9 @@ describe('AcpAgent', () => {
         messageId: clientMessageId,
       } as any)
       expect((res as any).userMessageId).toBe(clientMessageId)
+      expect(mockSubmitMessage).toHaveBeenCalledWith('hello', {
+        uuid: clientMessageId,
+      })
     })
 
     test('omits userMessageId when client does not supply messageId', async () => {
@@ -843,6 +894,34 @@ describe('AcpAgent', () => {
         prompt: [{ type: 'text', text: 'hello' }],
       } as any)
       expect((res as any).userMessageId).toBeUndefined()
+    })
+
+    test('notifies a resident client only after QueryEngine accepts its input', async () => {
+      const conn = makeConn()
+      const agent = new AcpAgent(conn)
+      const { sessionId } = await agent.newSession({
+        cwd: '/tmp',
+        _meta: { qianmo: { resident: true } },
+      } as any)
+      const clientMessageId = '11111111-2222-3333-4444-555555555555'
+      const onInputAccepted = queryEngineConfigs.at(-1)
+        ?.onInputAccepted as (input: {
+        uuid: string | undefined
+      }) => Promise<void>
+
+      await onInputAccepted({ uuid: clientMessageId })
+
+      expect(conn.extNotification).toHaveBeenCalledWith(
+        'qianmo/input-accepted',
+        { sessionId, messageId: clientMessageId },
+      )
+    })
+
+    test('does not install the resident admission hook for ordinary ACP clients', async () => {
+      const agent = new AcpAgent(makeConn())
+      await agent.newSession({ cwd: '/tmp' } as any)
+
+      expect(queryEngineConfigs.at(-1)?.onInputAccepted).toBeUndefined()
     })
   })
 
@@ -1477,6 +1556,25 @@ describe('AcpAgent', () => {
       expect(mockSwitchSession).toHaveBeenCalledWith(
         requestedId,
         expect.any(String),
+      )
+    })
+
+    test('prompt restores the project directory captured for its session', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const session = agent.sessions.get(sessionId)
+      expect(session).toBeDefined()
+      session!.projectDir = '/stable/project/dir'
+      mockSwitchSession.mockClear()
+
+      await agent.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: 'hello' }],
+      } as any)
+
+      expect(mockSwitchSession).toHaveBeenCalledWith(
+        sessionId,
+        '/stable/project/dir',
       )
     })
 

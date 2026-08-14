@@ -78,6 +78,7 @@ import {
 import { resolveAppliedEffort } from '../../utils/model/effort.js'
 import type { ModelSettingsSlot } from '../../utils/model/modelTier.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/config/envUtils.js'
+import { FreezeAwareWatchdog } from '../../utils/network/freezeAwareWatchdog.js'
 import {
   getClaudeStreamIdleTimeoutMs,
   isClaudeStreamWatchdogEnabled,
@@ -2075,51 +2076,51 @@ async function* queryModel(
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null
-    let streamIdleWarningTimer: ReturnType<typeof setTimeout> | null = null
-    let streamIdleTimer: ReturnType<typeof setTimeout> | null = null
+    let streamIdleWarningTimer: FreezeAwareWatchdog | null = null
+    let streamIdleTimer: FreezeAwareWatchdog | null = null
     function clearStreamIdleTimers(): void {
-      if (streamIdleWarningTimer !== null) {
-        clearTimeout(streamIdleWarningTimer)
-        streamIdleWarningTimer = null
-      }
-      if (streamIdleTimer !== null) {
-        clearTimeout(streamIdleTimer)
-        streamIdleTimer = null
-      }
+      streamIdleWarningTimer?.stop()
+      streamIdleWarningTimer = null
+      streamIdleTimer?.stop()
+      streamIdleTimer = null
     }
     function resetStreamIdleTimer(): void {
       clearStreamIdleTimers()
       if (!streamWatchdogEnabled) {
         return
       }
-      streamIdleWarningTimer = setTimeout(
-        warnMs => {
+      streamIdleWarningTimer = new FreezeAwareWatchdog({
+        timeoutMs: STREAM_IDLE_WARNING_MS,
+        onTimeout: () => {
           logForDebugging(
-            `Streaming idle warning: no chunks received for ${warnMs / 1000}s`,
+            `Streaming idle warning: no chunks received for ${STREAM_IDLE_WARNING_MS / 1000}s`,
             { level: 'warn' },
           )
           logForDiagnosticsNoPII('warn', 'cli_streaming_idle_warning')
         },
-        STREAM_IDLE_WARNING_MS,
-        STREAM_IDLE_WARNING_MS,
-      )
-      streamIdleTimer = setTimeout(() => {
-        streamIdleAborted = true
-        streamWatchdogFiredAt = performance.now()
-        logForDebugging(
-          `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
-          { level: 'error' },
-        )
-        logForDiagnosticsNoPII('error', 'cli_streaming_idle_timeout')
-        logEvent('tengu_streaming_idle_timeout', {
-          model:
-            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          request_id: (streamRequestId ??
-            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          timeout_ms: STREAM_IDLE_TIMEOUT_MS,
-        })
-        releaseStreamResources()
-      }, STREAM_IDLE_TIMEOUT_MS)
+      })
+      streamIdleWarningTimer.reset()
+      streamIdleTimer = new FreezeAwareWatchdog({
+        timeoutMs: STREAM_IDLE_TIMEOUT_MS,
+        onTimeout: () => {
+          streamIdleAborted = true
+          streamWatchdogFiredAt = performance.now()
+          logForDebugging(
+            `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
+            { level: 'error' },
+          )
+          logForDiagnosticsNoPII('error', 'cli_streaming_idle_timeout')
+          logEvent('tengu_streaming_idle_timeout', {
+            model:
+              options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            request_id: (streamRequestId ??
+              'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+          })
+          releaseStreamResources()
+        },
+      })
+      streamIdleTimer.reset()
     }
     resetStreamIdleTimer()
 

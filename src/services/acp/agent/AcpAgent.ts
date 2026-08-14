@@ -53,7 +53,14 @@ import {
   resolveSessionFilePath,
   canonicalizePath,
 } from '../../../utils/session/sessionStoragePortable.js'
-import { getOriginalCwd } from '../../../bootstrap/state.js'
+import {
+  getOriginalCwd,
+  setOriginalCwd,
+  switchSession,
+} from '../../../bootstrap/state.js'
+import { validateUuid } from '../../../utils/collections/uuid.js'
+import { doesMessageExistInSession } from '../../../utils/sessionStorage.js'
+import type { SessionId } from '../../../types/ids.js'
 import type { AcpSession } from './sessionTypes.js'
 
 // ── Agent class ───────────────────────────────────────────────────
@@ -70,6 +77,7 @@ export class AcpAgent implements Agent {
   private conn: AgentSideConnection
   sessions = new Map<string, AcpSession>()
   private clientCapabilities?: ClientCapabilities
+  private qianmoResident = false
 
   constructor(conn: AgentSideConnection) {
     this.conn = conn
@@ -79,6 +87,11 @@ export class AcpAgent implements Agent {
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     this.clientCapabilities = params.clientCapabilities
+    const qianmoMeta = params._meta?.qianmo
+    this.qianmoResident =
+      typeof qianmoMeta === 'object' &&
+      qianmoMeta !== null &&
+      (qianmoMeta as Record<string, unknown>).resident === true
 
     return {
       protocolVersion: 1,
@@ -306,6 +319,25 @@ export class AcpAgent implements Agent {
       }
       return this.unstable_deleteSession({ sessionId })
     }
+    if (method === 'qianmo/input-status' && this.qianmoResident) {
+      const sessionId = validateUuid(params.sessionId)
+      const messageId = validateUuid(params.messageId)
+      if (sessionId === null || messageId === null) {
+        throw RequestError.invalidParams(
+          params,
+          'qianmo/input-status requires UUID sessionId and messageId',
+        )
+      }
+      const session = this.sessions.get(sessionId)
+      if (session === undefined) {
+        throw RequestError.resourceNotFound(sessionId)
+      }
+      switchSession(sessionId as SessionId, session.projectDir)
+      setOriginalCwd(session.cwd)
+      return {
+        accepted: await doesMessageExistInSession(sessionId, messageId),
+      }
+    }
     // Unknown method — surface as JSON-RPC methodNotFound so clients see a
     // standard error code (-32601) rather than a generic internal error.
     throw RequestError.methodNotFound(method)
@@ -431,6 +463,7 @@ export interface AcpAgent {
       forceNewId?: boolean
       sessionId?: string
       initialMessages?: Message[]
+      projectDir?: string | null
     },
   ): Promise<NewSessionResponse>
   getOrCreateSession(params: {

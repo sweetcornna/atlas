@@ -324,8 +324,8 @@ export class WebSocketTransport implements Transport {
     this.startKeepaliveInterval()
 
     // Register callback for session activity signals
-    registerSessionActivityCallback(() => {
-      void this.write({ type: 'keep_alive' })
+    registerSessionActivityCallback(active => {
+      if (active) void this.write({ type: 'keep_alive' })
     })
   }
 

@@ -15,6 +15,7 @@ import {
   getResponsesReasoningSummary,
   isResponsesReasoningSummaryDisabled,
 } from './reasoning.js'
+import { FreezeAwareWatchdog } from 'src/utils/network/freezeAwareWatchdog.js'
 import { getProxyFetchOptions } from 'src/utils/network/proxy.js'
 import { buildProviderResourceURL } from 'src/utils/network/providerUrl.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
@@ -538,7 +539,7 @@ async function* parseSSE(
     new Promise((resolve, reject) => {
       let settled = false
       const cleanup = () => {
-        clearTimeout(timer)
+        timer.stop()
         options.signal.removeEventListener('abort', onAbort)
       }
       const resolveOnce = (value: ReadResult) => {
@@ -559,15 +560,19 @@ async function* parseSSE(
             ? options.signal.reason
             : new DOMException('The operation was aborted', 'AbortError'),
         )
-      const timer = setTimeout(() => {
-        const error = new OpenAIRequestError(
-          `${options.label} stream idle timeout after ${options.idleTimeoutMs}ms`,
-          { retryable: !retryWindowClosed() },
-        )
-        rejectOnce(error)
-        options.abort(error)
-        void reader.cancel(error).catch(() => {})
-      }, options.idleTimeoutMs)
+      const timer = new FreezeAwareWatchdog({
+        timeoutMs: options.idleTimeoutMs,
+        onTimeout: () => {
+          const error = new OpenAIRequestError(
+            `${options.label} stream idle timeout after ${options.idleTimeoutMs}ms`,
+            { retryable: !retryWindowClosed() },
+          )
+          rejectOnce(error)
+          options.abort(error)
+          void reader.cancel(error).catch(() => {})
+        },
+      })
+      timer.reset()
       options.signal.addEventListener('abort', onAbort, { once: true })
       if (options.signal.aborted) {
         onAbort()

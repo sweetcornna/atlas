@@ -133,6 +133,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'resident') {
+    profileCheckpoint('cli_qianmo_resident_path');
+    const { runResident } = await import('../cli/handlers/resident.js');
+    await runResident(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'resident-wake') {
+    profileCheckpoint('cli_qianmo_resident_wake_path');
+    const { runResidentWake } = await import('../cli/handlers/residentWake.js');
+    await runResidentWake(args.slice(1));
+    return;
+  }
+
   // Fast-path for `--daemon-worker=<kind>` (internal — supervisor spawns this).
   // Must come before the daemon subcommand check: spawned per-worker, so
   // perf-sensitive. No enableConfigs(), no analytics sinks at this layer —

@@ -508,8 +508,8 @@ export class CCRClient {
     // sessionActivity's refcount-gated timer fires while an API call or tool
     // is in-flight; without a write the container lease can expire mid-wait.
     // v1 wires this in WebSocketTransport per-connection.
-    registerSessionActivityCallback(() => {
-      void this.writeEvent({ type: 'keep_alive' })
+    registerSessionActivityCallback(active => {
+      if (active) void this.writeEvent({ type: 'keep_alive' })
     })
 
     logForDebugging(`CCRClient: initialized, epoch=${this.workerEpoch}`)

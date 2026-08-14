@@ -348,6 +348,34 @@ describe('teammate mailbox retention', () => {
     expect(after.map(m => m.read)).toEqual([true, false])
   })
 
+  test('resident snapshot accounts for an externally read duplicate without marking a later one', async () => {
+    const duplicate = message('duplicate', false, new Date(13).toISOString())
+    await seedMailbox('worker', 'alpha', [duplicate])
+    const snapshot = await readUnreadMessages('worker', 'alpha')
+    const identity = JSON.stringify([
+      duplicate.from,
+      duplicate.timestamp,
+      duplicate.text,
+    ])
+
+    await seedMailbox('worker', 'alpha', [
+      { ...duplicate, read: true },
+      duplicate,
+    ])
+    const accounted = await markMessagesAsReadBySnapshot(
+      'worker',
+      'alpha',
+      snapshot,
+      { [identity]: 0 },
+    )
+
+    expect(accounted).toBe(1)
+    expect((await readRawMailbox('worker', 'alpha')).map(m => m.read)).toEqual([
+      true,
+      false,
+    ])
+  })
+
   test('markMessageAsReadByIndex also compacts through the compatibility path', async () => {
     const existing = Array.from(
       { length: MAX_MAILBOX_MESSAGES + 10 },

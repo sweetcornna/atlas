@@ -19,11 +19,7 @@ import { getEmptyToolPermissionContext } from '../../../Tool.js'
 import type { PermissionMode } from '../../../types/permissions.js'
 import { getCommands } from '../../../commands.js'
 import { getAgentDefinitionsWithOverrides } from '@open-claude-code/builtin-tools/tools/AgentTool/loadAgentsDir.js'
-import {
-  setOriginalCwd,
-  switchSession,
-  getSessionProjectDir,
-} from '../../../bootstrap/state.js'
+import { setOriginalCwd, switchSession } from '../../../bootstrap/state.js'
 import type { SessionId } from '../../../types/ids.js'
 import { enableConfigs } from '../../../utils/config/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../../utils/config/managedEnv.js'
@@ -66,19 +62,24 @@ async function createSession(
     forceNewId?: boolean
     sessionId?: string
     initialMessages?: Message[]
+    projectDir?: string | null
   } = {},
 ): Promise<NewSessionResponse> {
   enableConfigs()
 
   const sessionId = opts.sessionId ?? randomUUID()
   const cwd = params.cwd
+  const meta = params._meta as Record<string, unknown> | null | undefined
+  const qianmoMeta = meta?.qianmo
+  const isQianmoResident =
+    typeof qianmoMeta === 'object' &&
+    qianmoMeta !== null &&
+    (qianmoMeta as Record<string, unknown>).resident === true
 
-  // Align the global session state so that transcript persistence,
-  // analytics, and cost tracking use the ACP session ID.
-  // Preserve the projectDir set by getOrCreateSession so that
-  // getSessionProjectDir() continues to resolve correctly.
-  const currentProjectDir = getSessionProjectDir()
-  switchSession(sessionId as SessionId, currentProjectDir)
+  // Align the global session state so transcript persistence, analytics, and
+  // cost tracking use this ACP session's stable identity.
+  const projectDir = opts.projectDir ?? null
+  switchSession(sessionId as SessionId, projectDir)
 
   // Set CWD for the session
   setOriginalCwd(cwd)
@@ -107,7 +108,6 @@ async function createSession(
     const tools: Tools = getTools(permissionContext)
 
     // Parse permission mode from _meta (passed by the ACP client) or settings.
-    const meta = params._meta as Record<string, unknown> | null | undefined
     const hasMetaPermissionMode = hasOwnField(meta, 'permissionMode')
     const metaPermissionMode = hasMetaPermissionMode
       ? meta?.permissionMode
@@ -190,6 +190,17 @@ async function createSession(
       includePartialMessages: true,
       replayUserMessages: true,
       initialMessages: opts.initialMessages,
+      ...(isQianmoResident
+        ? {
+            onInputAccepted: async ({ uuid }: { uuid: string | undefined }) => {
+              if (uuid === undefined) return
+              await conn.extNotification('qianmo/input-accepted', {
+                sessionId,
+                messageId: uuid,
+              })
+            },
+          }
+        : {}),
     }
 
     const queryEngine = new QueryEngine(engineConfig)
@@ -261,6 +272,7 @@ async function createSession(
       cancelled: false,
       cancelGeneration: 0,
       cwd,
+      projectDir,
       modes,
       models,
       configOptions,

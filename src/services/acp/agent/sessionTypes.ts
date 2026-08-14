@@ -16,6 +16,7 @@ export type AcpSession = {
   cancelled: boolean
   cancelGeneration: number
   cwd: string
+  projectDir: string | null
   sessionFingerprint: string
   modes: SessionModeState
   models: SessionModelState
