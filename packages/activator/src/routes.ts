@@ -19,6 +19,9 @@ import {
 
 export const DEFAULT_TASK_ROUTE_CAPACITY = 1_000
 
+/** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 export class TaskRouteError extends Error {
   readonly code: ProtocolErrorCode
 
@@ -102,8 +105,7 @@ export class TaskRouteRegistry {
     }
 
     const releaseChannel = channel.hold()
-    const delayMs = Math.max(0, taskExpiresAt(request) - this.#clock.now())
-    const cancelExpiry = this.#scheduler.after(delayMs, () => {
+    const cancelExpiry = this.#scheduleExpiry(request, () => {
       const current = this.#routes.get(request.taskId)
       if (current?.request.msgId !== request.msgId) return
       this.#routes.delete(request.taskId)
@@ -135,6 +137,35 @@ export class TaskRouteRegistry {
         sandboxName,
       },
     )
+  }
+
+  /**
+   * Arm the task deadline, re-arming across the platform's timer ceiling.
+   *
+   * `taskTtlMs` is only required to be positive (`validate.ts`), so a peer can
+   * ask for a deadline past `setTimeout`'s 32-bit limit. A timer armed beyond
+   * it does not fire late — Node and Bun both **clamp it to 1 ms**, which would
+   * tear the return route down almost immediately and reject the very ack the
+   * longer deadline was asking to wait for. So the wait is split into legal
+   * chunks and only the real clock decides when the task is over.
+   */
+  #scheduleExpiry(request: QianmoMessage, expire: () => void): () => void {
+    let cancel: () => void = () => {}
+    const arm = (): void => {
+      const remaining = taskExpiresAt(request) - this.#clock.now()
+      cancel = this.#scheduler.after(
+        Math.min(Math.max(0, remaining), MAX_TIMER_DELAY_MS),
+        () => {
+          if (this.#clock.now() < taskExpiresAt(request)) {
+            arm()
+            return
+          }
+          expire()
+        },
+      )
+    }
+    arm()
+    return () => cancel()
   }
 
   forward(reply: QianmoMessage, sandboxName?: string): void {

@@ -219,6 +219,7 @@ export function makeMessage(
     deliverTtlMs: number
     msgId: string
     taskId: string
+    taskTtlMs: number
     payload: unknown
   }> = {},
 ): QianmoMessage {
@@ -235,5 +236,8 @@ export function makeMessage(
       : { deliverTtlMs: overrides.deliverTtlMs }),
     ...(overrides.msgId === undefined ? {} : { msgId: overrides.msgId }),
     ...(overrides.taskId === undefined ? {} : { taskId: overrides.taskId }),
+    ...(overrides.taskTtlMs === undefined
+      ? {}
+      : { taskTtlMs: overrides.taskTtlMs }),
   })
 }

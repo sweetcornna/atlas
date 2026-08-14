@@ -154,4 +154,31 @@ describe('TaskRouteRegistry', () => {
     expect(firstChannel.holds).toBe(0)
     expect(audit.count(ActivatorEventType.TaskRouteExpired)).toBe(1)
   })
+
+  test('a deadline past the timer ceiling waits, it does not fire at once', () => {
+    const { clock, scheduler, audit, routes } = setup()
+    const channel = new RecordingChannel('channel-a')
+    // `setTimeout` collapses anything past 2^31-1 ms to 1 ms, so an unclamped
+    // arm would tear this route down immediately — rejecting the very ack the
+    // long deadline was asking to wait for.
+    const request = makeMessage({
+      taskId: 'task-long',
+      createdAt: 10_000,
+      taskTtlMs: 5_000_000_000,
+    })
+    routes.register(request, 'sandbox-b', channel)
+    expect(scheduler.delays).toEqual([2_147_483_647])
+
+    clock.advance(2_147_483_647)
+    expect(scheduler.fireNext()).toBe(true)
+    expect(routes.size).toBe(1)
+    expect(channel.holds).toBe(1)
+    expect(audit.count(ActivatorEventType.TaskRouteExpired)).toBe(0)
+
+    clock.advance(request.taskTtlMs)
+    expect(scheduler.fireNext()).toBe(true)
+    expect(routes.size).toBe(0)
+    expect(channel.holds).toBe(0)
+    expect(audit.count(ActivatorEventType.TaskRouteExpired)).toBe(1)
+  })
 })

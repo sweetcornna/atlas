@@ -191,6 +191,9 @@ function childClosed(child: ChildProcess): Promise<void> {
 
 const TASK_REPLY_RECEIPT_TIMEOUT_MS = 5_000
 
+/** Largest delay `setTimeout` takes before silently collapsing it to 1 ms. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 interface ActiveResidentTask {
   readonly envelope: QianmoMessage
   readonly channel: TransportChannel
@@ -356,7 +359,10 @@ export class QianmoResident {
           }),
         )
       },
-      Math.max(0, remaining),
+      // Clamped, then re-armed by the check above: `setTimeout` collapses any
+      // delay past its 32-bit ceiling to 1 ms, which would turn a generous
+      // `taskTtlMs` into a ~1000/s re-arm loop instead of a long wait.
+      Math.min(Math.max(0, remaining), MAX_TIMER_DELAY_MS),
     )
     task.timeout.unref?.()
   }
