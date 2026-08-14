@@ -398,6 +398,31 @@ describe('ttl expiry', () => {
     expect(registry.resolve(PLANNER)).toBeNull()
   })
 
+  test('a thaw rebases leases and lets heartbeat recover', () => {
+    registry.observeClock(10_000)
+    registry.register(PLANNER, ENDPOINT)
+
+    clock.advance(97_000)
+    const observation = registry.observeClock(10_000)
+
+    expect(observation.jumped).toBe(true)
+    expect(registry.statusOf(PLANNER)).toBe(AgentStatus.Online)
+    expect(registry.heartbeat(PLANNER)).not.toBeNull()
+    clock.advance(15_000)
+    expect(registry.statusOf(PLANNER)).toBe(AgentStatus.Online)
+  })
+
+  test('ordinary elapsed time still expires after time-jump protection is enabled', () => {
+    registry.observeClock(10_000)
+    registry.register(PLANNER, ENDPOINT)
+    for (let elapsed = 0; elapsed <= TTL; elapsed += 10_000) {
+      clock.advance(10_000)
+      registry.observeClock(10_000)
+    }
+
+    expect(registry.resolve(PLANNER)).toBeNull()
+  })
+
   test('heartbeat on an expired or unknown agent returns null', () => {
     registry.register(PLANNER, ENDPOINT)
     clock.advance(TTL + 1)
