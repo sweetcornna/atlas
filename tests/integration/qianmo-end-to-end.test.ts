@@ -591,12 +591,10 @@ describe('AC-2 happy path: resolve → send → wake → forward → read → ac
       expect(ack.to).toBe(SENDER)
       expect(ack.taskId).toBe(message.taskId)
       expect(isAckPayload(ack.payload)).toBe(true)
-      const payload = ack.payload as {
-        ofMsgId: string
-        taskId: string
-        handler: string
-      }
-      expect(payload.ofMsgId).toBe(message.msgId)
+      const payload = ack.payload as { handler: string; ackAt: number }
+      // Rule K-1: correlation is the envelope's `taskId`, asserted above; the
+      // payload names the handler and the read instant, and nothing else.
+      expect(Object.keys(payload).sort()).toEqual(['ackAt', 'handler'])
       expect(payload.handler).toBe(target)
 
       // --- the wake really happened, and stayed inside the capability surface -
@@ -910,17 +908,18 @@ describe('two nodes, one agent name, no cross-talk', () => {
       expect(inboxB[0]?.text).toContain('for b')
       expect(inboxC[0]?.text).toContain('for c')
 
-      // Two acks, each from the right handler, each answering the right msgId.
+      // Two acks, each from the right handler, each carrying the right taskId —
+      // the correlation key is the envelope's, never a copy in the payload.
       const acks = repliesOfType(sender.inbox, MessageType.Ack)
       expect(acks).toHaveLength(2)
       const byHandler = new Map(
         acks.map(ack => {
-          const payload = ack.payload as { handler: string; ofMsgId: string }
-          return [payload.handler, payload.ofMsgId]
+          const payload = ack.payload as { handler: string }
+          return [payload.handler, ack.taskId]
         }),
       )
-      expect(byHandler.get(toB)).toBe(forB.msgId)
-      expect(byHandler.get(toC)).toBe(forC.msgId)
+      expect(byHandler.get(toB)).toBe(forB.taskId)
+      expect(byHandler.get(toC)).toBe(forC.taskId)
     },
     IO_TIMEOUT_MS,
   )
