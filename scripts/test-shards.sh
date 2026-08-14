@@ -37,7 +37,13 @@ fi
 shard=0
 failed=()
 
-for d in src/* packages/* tests/integration scripts; do
+# `tests/boundary` and `demo/lib` are listed explicitly for the same reason
+# every other entry is: this loop is the whole of what CI runs, and a test
+# directory that is not on it does not run there at all — while `bun test`
+# locally does run it. That combination produces "green locally, green in CI"
+# where the second green means nothing. P5.4 added the boundary suite; the demo
+# report cores had been outside CI since P4.1 and are folded in here.
+for d in src/* packages/* tests/integration tests/boundary demo/lib scripts; do
   [ -d "$d" ] || continue
   # Skip directories with no tests at all rather than letting `bun test` treat
   # "no files matched" as a failure.
