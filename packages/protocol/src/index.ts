@@ -44,11 +44,13 @@ export {
   TRUST_UNTRUSTED,
   createAck,
   createMessage,
+  createTaskResult,
   deliveryExpiresAt,
   destinationNode,
   errorReply,
   isAckPayload,
   isDeliveryExpired,
+  isTaskResultPayload,
   isMessageType,
   isTaskExpired,
   messageBytes,
@@ -59,15 +61,13 @@ export {
   withHop,
   type AckPayload,
   type CreateMessageInput,
+  type ErrorPayload,
   type MessageOrigin,
   type QianmoMessage,
+  type TaskResultInput,
+  type TaskResultPayload,
 } from './message.js'
 
-export {
-  assertValidMessage,
-  firstErrorCode,
-  validateMessage,
-  type ValidateOptions,
 export {
   DEFAULT_GRACE_MS,
   DEFAULT_MIN_JUMP_GAP_MS,
@@ -77,5 +77,10 @@ export {
   type TimeJumpObservation,
 } from './time-jump.js'
 
+export {
+  assertValidMessage,
+  firstErrorCode,
+  validateMessage,
+  type ValidateOptions,
   type ValidationResult,
 } from './validate.js'

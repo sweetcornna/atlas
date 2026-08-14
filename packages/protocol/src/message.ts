@@ -332,36 +332,18 @@ export function messageBytes(message: QianmoMessage): number {
  * Payload of an `ack`, and the whole of it (rule K-1, protocol.md §4.3).
  *
  * `ack` is A-class: it asserts that the target agent has taken the message
- * into its input — the `read` flag flipped — and nothing else. Not that it
- * understood it, rebuilt an old session, started work, or expects to finish.
- * Those all belong to `task.result`.
- *
- * The four fields are exactly what an inbound adapter can fill **without
- * touching any prior session state**: two copied off the acked envelope, the
- * node's own address, and the local clock. The closure is the point — a
- * queue depth, a status, an ETA would each force a read of the cold working
- * set and quietly turn an A-class ack into a B-class one, which is the 9–10 s
- * cost the whole design exists to keep off the ack path. So it is a closed
- * interface, not a `Record<string, unknown>`, and {@link isAckPayload}
- * rejects extra keys at runtime too.
+ * into its input — the `read` flag flipped — and nothing else. Correlation
+ * identifiers remain in the envelope, so the payload only names the handler
+ * and the instant at which it observed the read.
  */
 export interface AckPayload {
-  /** `msgId` of the envelope being acknowledged. */
-  readonly ofMsgId: string
-  /** `taskId` copied off that envelope — the correlation key (C-1). */
-  readonly taskId: string
   /** Address of the acknowledging handler, `qianmo://<node>/<agent>`. */
   readonly handler: string
   /** Local epoch ms at which the read flag was observed. */
   readonly ackAt: number
 }
 
-const ACK_PAYLOAD_KEYS: readonly string[] = [
-  'ofMsgId',
-  'taskId',
-  'handler',
-  'ackAt',
-]
+const ACK_PAYLOAD_KEYS: readonly string[] = ['handler', 'ackAt']
 
 /** True when `value` is an {@link AckPayload} with no extra fields. */
 export function isAckPayload(value: unknown): value is AckPayload {
@@ -373,10 +355,6 @@ export function isAckPayload(value: unknown): value is AckPayload {
   if (!ACK_PAYLOAD_KEYS.every(key => keys.includes(key))) return false
   const payload = value as Record<string, unknown>
   return (
-    typeof payload['ofMsgId'] === 'string' &&
-    payload['ofMsgId'].length > 0 &&
-    typeof payload['taskId'] === 'string' &&
-    payload['taskId'].length > 0 &&
     parseAddress(payload['handler']) !== null &&
     typeof payload['ackAt'] === 'number' &&
     Number.isFinite(payload['ackAt']) &&
@@ -384,11 +362,89 @@ export function isAckPayload(value: unknown): value is AckPayload {
   )
 }
 
-/**
- * Build the A-class `ack` for a message `handler` has just been observed to
- * read. Every field comes from the acked envelope, `handler` itself, or the
- * clock — by construction, no prior session state is consulted.
- */
+/** Terminal result of a `task.request`, field-closed in both branches. */
+export type TaskResultPayload =
+  | {
+      readonly outcome: 'completed'
+      readonly content: string
+      readonly completedAt: number
+    }
+  | {
+      readonly outcome: 'failed'
+      readonly code: ProtocolErrorCode
+      readonly reason: string
+      readonly completedAt: number
+    }
+
+/** Input accepted by {@link createTaskResult}; the factory supplies the clock. */
+export type TaskResultInput =
+  | { readonly outcome: 'completed'; readonly content: string }
+  | {
+      readonly outcome: 'failed'
+      readonly code: ProtocolErrorCode
+      readonly reason: string
+    }
+
+const TASK_RESULT_COMPLETED_KEYS: readonly string[] = [
+  'outcome',
+  'content',
+  'completedAt',
+]
+const TASK_RESULT_FAILED_KEYS: readonly string[] = [
+  'outcome',
+  'code',
+  'reason',
+  'completedAt',
+]
+const PROTOCOL_ERROR_CODES: ReadonlySet<string> = new Set<string>(
+  Object.values(ProtocolErrorCode),
+)
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value)
+  return (
+    keys.length === expected.length && expected.every(key => keys.includes(key))
+  )
+}
+
+/** True when `value` is a closed successful or failed task result. */
+export function isTaskResultPayload(
+  value: unknown,
+): value is TaskResultPayload {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const payload = value as Record<string, unknown>
+  const completedAt = payload['completedAt']
+  if (
+    typeof completedAt !== 'number' ||
+    !Number.isFinite(completedAt) ||
+    completedAt <= 0
+  ) {
+    return false
+  }
+  if (payload['outcome'] === 'completed') {
+    return (
+      hasExactKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
+      typeof payload['content'] === 'string'
+    )
+  }
+  if (payload['outcome'] === 'failed') {
+    return (
+      hasExactKeys(payload, TASK_RESULT_FAILED_KEYS) &&
+      typeof payload['code'] === 'string' &&
+      PROTOCOL_ERROR_CODES.has(payload['code']) &&
+      typeof payload['reason'] === 'string' &&
+      payload['reason'].length > 0
+    )
+  }
+  return false
+}
+
+/** Build the A-class `ack` after `handler` observes the input read. */
 export function createAck(
   original: QianmoMessage,
   handler: string,
@@ -404,30 +460,44 @@ export function createAck(
       ? {}
       : { contextId: original.contextId }),
     createdAt: now,
-    payload: {
-      ofMsgId: original.msgId,
-      taskId: original.taskId,
-      handler,
-      ackAt: now,
-    },
+    payload: { handler, ackAt: now },
   })
 }
 
-/**
- * Build the standard `error` reply for a rejected message.
- *
- * Carries the original `taskId` back verbatim: rule C-1 makes `taskId`, not
- * `traceId`, the correlation key between a request and every reply to it.
- * `traceId` is a W3C `traceparent` whose parent-id legitimately changes per
- * hop, so correlating on it would conflate "same trace" with "same task".
- * `traceId` still rides along, for audit stitching only.
- */
+/** Build the terminal `task.result` for an original request. */
+export function createTaskResult(
+  original: QianmoMessage,
+  handler: string,
+  result: TaskResultInput,
+  now: number = Date.now(),
+): QianmoMessage<TaskResultPayload> {
+  return createMessage({
+    from: handler,
+    to: original.from,
+    type: MessageType.TaskResult,
+    traceId: original.traceId,
+    taskId: original.taskId,
+    ...(original.contextId === undefined
+      ? {}
+      : { contextId: original.contextId }),
+    createdAt: now,
+    payload: { ...result, completedAt: now },
+  })
+}
+
+/** Payload of a protocol `error`; correlation stays in the envelope. */
+export interface ErrorPayload {
+  readonly code: ProtocolErrorCode
+  readonly reason: string
+}
+
+/** Build the standard `error` reply for a rejected message. */
 export function errorReply(
   original: QianmoMessage,
   code: ProtocolErrorCode,
   reason: string,
   now: number = Date.now(),
-): QianmoMessage<{ code: ProtocolErrorCode; reason: string; ofMsgId: string }> {
+): QianmoMessage<ErrorPayload> {
   return createMessage({
     from: original.to,
     to: original.from,
@@ -438,7 +508,7 @@ export function errorReply(
       ? {}
       : { contextId: original.contextId }),
     createdAt: now,
-    payload: { code, reason, ofMsgId: original.msgId },
+    payload: { code, reason },
   })
 }
 

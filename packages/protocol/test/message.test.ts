@@ -13,6 +13,7 @@ import {
   computeFingerprint,
   createAck,
   createMessage,
+  createTaskResult,
   isAckPayload,
   deliveryExpiresAt,
   destinationNode,
@@ -20,6 +21,7 @@ import {
   isDeliveryExpired,
   isMessageType,
   isTaskExpired,
+  isTaskResultPayload,
   messageBytes,
   newId,
   newTraceparent,
@@ -431,7 +433,7 @@ describe('ack', () => {
     createdAt: 1_000,
   })
 
-  test('createAck answers the sender with the four closed fields', () => {
+  test('createAck keeps correlation in the envelope only', () => {
     const ack = createAck(request, TO, 2_000)
     expect(ack.type).toBe(MessageType.Ack)
     expect(ack.from).toBe(TO)
@@ -439,50 +441,115 @@ describe('ack', () => {
     expect(ack.taskId).toBe('task-1')
     expect(ack.contextId).toBe('ctx-1')
     expect(ack.traceId).toBe('t-1')
-    expect(ack.payload).toEqual({
-      ofMsgId: 'm-1',
-      taskId: 'task-1',
-      handler: TO,
-      ackAt: 2_000,
-    })
-    expect(Object.keys(ack.payload).sort()).toEqual([
-      'ackAt',
-      'handler',
-      'ofMsgId',
-      'taskId',
-    ])
+    expect(ack.msgId).not.toBe(request.msgId)
+    expect(ack.payload).toEqual({ handler: TO, ackAt: 2_000 })
+    expect(Object.keys(ack.payload).sort()).toEqual(['ackAt', 'handler'])
   })
 
-  test('the payload type is closed — no room for a status or an ETA', () => {
+  test('the payload type is closed — no room for IDs, status or ETA', () => {
     const ack = createAck(request, TO, 2_000)
     const widened: typeof ack.payload = {
-      ofMsgId: 'm-1',
-      taskId: 'task-1',
       handler: TO,
       ackAt: 2_000,
-      // @ts-expect-error K-1: anything beyond the four fields is not an AckPayload.
-      queueDepth: 3,
+      // @ts-expect-error K-1: identifiers belong to the envelope.
+      taskId: 'task-1',
     }
-    // The runtime guard says the same thing as the compiler.
     expect(isAckPayload(widened)).toBe(false)
   })
 
   test('isAckPayload rejects extras, gaps and wrong types', () => {
-    const good = {
-      ofMsgId: 'm-1',
-      taskId: 'task-1',
-      handler: TO,
-      ackAt: 2_000,
-    }
+    const good = { handler: TO, ackAt: 2_000 }
     expect(isAckPayload(good)).toBe(true)
     expect(isAckPayload({ ...good, eta: 5 })).toBe(false)
     expect(isAckPayload({ ...good, handler: 'worker' })).toBe(false)
     expect(isAckPayload({ ...good, ackAt: '2000' })).toBe(false)
-    expect(isAckPayload({ ...good, ofMsgId: '' })).toBe(false)
-    const { taskId: _missing, ...gap } = good
+    const { handler: _missing, ...gap } = good
     expect(isAckPayload(gap)).toBe(false)
     expect(isAckPayload(null)).toBe(false)
     expect(isAckPayload([good])).toBe(false)
+  })
+})
+
+describe('task result', () => {
+  const request = createMessage({
+    from: FROM,
+    to: TO,
+    type: MessageType.TaskRequest,
+    payload: { goal: 'summarise' },
+    msgId: 'm-1',
+    taskId: 'task-1',
+    contextId: 'ctx-1',
+    traceId: 't-1',
+    createdAt: 1_000,
+  })
+
+  test('builds a completed result with IDs only in the envelope', () => {
+    const result = createTaskResult(
+      request,
+      TO,
+      { outcome: 'completed', content: 'done' },
+      3_000,
+    )
+    expect(result.type).toBe(MessageType.TaskResult)
+    expect(result.from).toBe(TO)
+    expect(result.to).toBe(FROM)
+    expect(result.taskId).toBe('task-1')
+    expect(result.contextId).toBe('ctx-1')
+    expect(result.traceId).toBe('t-1')
+    expect(result.msgId).not.toBe(request.msgId)
+    expect(result.payload).toEqual({
+      outcome: 'completed',
+      content: 'done',
+      completedAt: 3_000,
+    })
+    expect(isTaskResultPayload(result.payload)).toBe(true)
+  })
+
+  test('builds a failed result with a stable protocol code', () => {
+    const result = createTaskResult(
+      request,
+      TO,
+      {
+        outcome: 'failed',
+        code: ProtocolErrorCode.E_TASK_FAILED,
+        reason: 'model stopped',
+      },
+      3_000,
+    )
+    expect(result.payload).toEqual({
+      outcome: 'failed',
+      code: ProtocolErrorCode.E_TASK_FAILED,
+      reason: 'model stopped',
+      completedAt: 3_000,
+    })
+    expect(isTaskResultPayload(result.payload)).toBe(true)
+  })
+
+  test('rejects hybrid branches, unknown codes, extras and identifiers', () => {
+    expect(
+      isTaskResultPayload({
+        outcome: 'completed',
+        content: 'done',
+        completedAt: 3_000,
+        reason: 'not allowed',
+      }),
+    ).toBe(false)
+    expect(
+      isTaskResultPayload({
+        outcome: 'failed',
+        code: 'E_MADE_UP',
+        reason: 'nope',
+        completedAt: 3_000,
+      }),
+    ).toBe(false)
+    expect(
+      isTaskResultPayload({
+        outcome: 'completed',
+        content: 'done',
+        completedAt: 3_000,
+        taskId: 'task-1',
+      }),
+    ).toBe(false)
   })
 })
 
@@ -508,8 +575,11 @@ describe('errorReply', () => {
     expect(reply.from).toBe(TO)
     expect(reply.to).toBe(FROM)
     expect(reply.traceId).toBe('trace-9')
-    expect(reply.payload.code).toBe(ProtocolErrorCode.E_UNKNOWN_AGENT)
-    expect(reply.payload.ofMsgId).toBe(original.msgId)
+    expect(reply.payload).toEqual({
+      code: ProtocolErrorCode.E_UNKNOWN_AGENT,
+      reason: 'no such agent',
+    })
+    expect(reply.msgId).not.toBe(original.msgId)
   })
 
   test('carries the taskId back — that, not traceId, is the correlation key', () => {

@@ -17,10 +17,14 @@ import {
 const NOW = 1_700_000_000_000
 
 const ACK_PAYLOAD = {
-  ofMsgId: 'm-0',
-  taskId: 'task-1',
   handler: 'qianmo://osaka-2/worker',
   ackAt: NOW,
+}
+
+const TASK_RESULT_PAYLOAD = {
+  outcome: 'completed',
+  content: 'done',
+  completedAt: NOW,
 }
 
 function sample(
@@ -71,9 +75,12 @@ describe('validateMessage — accepts', () => {
 
   test('every declared message type', () => {
     for (const type of Object.values(MessageType)) {
-      // `ack` is the one type whose payload is constrained (K-1).
       const payload =
-        type === MessageType.Ack ? ACK_PAYLOAD : { goal: 'summarise' }
+        type === MessageType.Ack
+          ? ACK_PAYLOAD
+          : type === MessageType.TaskResult
+            ? TASK_RESULT_PAYLOAD
+            : { goal: 'summarise' }
       expect(codesOf(sample({ type, payload }))).toEqual([])
     }
   })
@@ -126,12 +133,11 @@ describe('validateMessage — structure', () => {
   test('keeps the ack payload field-closed (K-1)', () => {
     const ack = { type: MessageType.Ack, payload: ACK_PAYLOAD }
     expect(codesOf(sample(ack))).toEqual([])
-    // An extra field is exactly what would force a read of the cold heap.
     expect(
       codesOf(
         sample({
           type: MessageType.Ack,
-          payload: { ...ACK_PAYLOAD, queueDepth: 3 },
+          payload: { ...ACK_PAYLOAD, taskId: 'task-1' },
         }),
       ),
     ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
@@ -141,6 +147,51 @@ describe('validateMessage — structure', () => {
     ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
     expect(
       codesOf(sample({ type: MessageType.Ack, payload: 'acked' })),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+  })
+
+  test('keeps both task.result branches field-closed', () => {
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.TaskResult,
+          payload: TASK_RESULT_PAYLOAD,
+        }),
+      ),
+    ).toEqual([])
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.TaskResult,
+          payload: { ...TASK_RESULT_PAYLOAD, taskId: 'task-1' },
+        }),
+      ),
+    ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.TaskResult,
+          payload: {
+            outcome: 'failed',
+            code: ProtocolErrorCode.E_TASK_FAILED,
+            reason: 'model stopped',
+            completedAt: NOW,
+          },
+        }),
+      ),
+    ).toEqual([])
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.TaskResult,
+          payload: {
+            outcome: 'failed',
+            code: 'E_MADE_UP',
+            reason: 'model stopped',
+            completedAt: NOW,
+          },
+        }),
+      ),
     ).toContain(ProtocolErrorCode.E_BAD_ENVELOPE)
   })
 
