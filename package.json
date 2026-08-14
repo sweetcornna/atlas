@@ -129,6 +129,7 @@
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@qianmo/activator": "workspace:*",
     "@qianmo/adapter": "workspace:*",
+    "@qianmo/audit": "workspace:*",
     "@qianmo/backup": "workspace:*",
     "@qianmo/capability": "workspace:*",
     "@qianmo/diagnosis": "workspace:*",

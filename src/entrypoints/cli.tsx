@@ -140,6 +140,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'audit') {
+    profileCheckpoint('cli_qianmo_audit_path');
+    const { runQianmoAudit } = await import('../cli/handlers/qianmoAudit.js');
+    runQianmoAudit(args.slice(1));
+    return;
+  }
+
   if (args[0] === 'resident-wake') {
     profileCheckpoint('cli_qianmo_resident_wake_path');
     const { runResidentWake } = await import('../cli/handlers/residentWake.js');

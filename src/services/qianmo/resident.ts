@@ -37,7 +37,11 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
-import { NodeRouter, type CapabilityGate } from '@qianmo/router'
+import {
+  NodeRouter,
+  type CapabilityGate,
+  type RouterAuditSink,
+} from '@qianmo/router'
 import { BackupScheduler, type SnapshotWriter } from '@qianmo/backup'
 import { startTransportServer } from '@qianmo/transport'
 import type {
@@ -76,6 +80,12 @@ interface QianmoResidentOptions {
    * token is fully checked, and rule S-1 refuses any remote `user-confirmed`.
    */
   readonly capability?: CapabilityGate
+  /**
+   * Durable audit trail (P7.2). Absent means the routing layer's refusals live
+   * only in this process's ring — which is fine for a test and useless for the
+   * question asked three days later.
+   */
+  readonly auditSink?: RouterAuditSink
   /**
    * Workspace backups (P4.4). Absent means this node takes none — which is the
    * right default for a node whose workspace is disposable, and the wrong one
@@ -283,6 +293,9 @@ export class QianmoResident {
       ...(options.capability === undefined
         ? {}
         : { capability: options.capability }),
+      ...(options.auditSink === undefined
+        ? {}
+        : { auditSink: options.auditSink }),
     })
     const backup = options.backup
     if (backup !== undefined) {
