@@ -47,6 +47,7 @@ import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
   TransportChannel,
+  TransportEventSink,
   TransportServerHandle,
 } from '@qianmo/transport'
 import {
@@ -86,6 +87,12 @@ interface QianmoResidentOptions {
    * question asked three days later.
    */
   readonly auditSink?: RouterAuditSink
+  /**
+   * Durable sink for the transport's own message events. Without it the trail
+   * has the refusals but not the deliveries, and a chain reconstructed from it
+   * would show only the parts that went wrong.
+   */
+  readonly transportEvents?: TransportEventSink
   /**
    * Workspace backups (P4.4). Absent means this node takes none — which is the
    * right default for a node whose workspace is disposable, and the wrong one
@@ -668,6 +675,9 @@ export class QianmoResident {
       transport = startTransportServer({
         psk: this.#options.psk,
         deadlineNow: this.#deadlineClock.nowFor,
+        ...(this.#options.transportEvents === undefined
+          ? {}
+          : { events: this.#options.transportEvents }),
         onMessage: async (message, context) => {
           await this.#receive(message, context)
         },

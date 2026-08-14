@@ -13,6 +13,11 @@ import type { ResidentTimingEvent } from '@qianmo/resident/timings'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
 import { remoteSnapshotWriter } from '@qianmo/backup'
 import {
+  openAuditTrail,
+  routerTrailSink,
+  transportTrailSink,
+} from '../../services/qianmo/auditTrail.js'
+import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
   StaticPublicKeyDirectory,
@@ -364,12 +369,19 @@ export async function runResident(args: readonly string[]): Promise<void> {
             : { intervalMs: config.backupIntervalMs }),
         }
 
+  // The durable trail (P7.2). Opened here rather than inside the node because
+  // this is the layer that owns paths, and because a trail is per *process*:
+  // two residents on one machine each continue their own file.
+  const trail = openAuditTrail()
+
   const resident = new QianmoResident({
     node: config.node,
     team: config.team,
     agents: config.agents,
     psk,
     capability,
+    auditSink: routerTrailSink(trail, config.node),
+    transportEvents: transportTrailSink(trail, config.node),
     ...(backup === undefined ? {} : { backup }),
     listen: {
       ...(config.port === undefined ? {} : { port: config.port }),
@@ -406,6 +418,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   try {
     await resident.run()
   } finally {
+    trail.close()
     await timingWriter?.close()
     await activity?.close()
   }

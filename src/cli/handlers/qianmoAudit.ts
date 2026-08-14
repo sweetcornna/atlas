@@ -29,7 +29,8 @@ import {
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import { residentOptionValue } from './residentArgs.js'
 
-export interface QianmoAuditConfig {
+/** Parsed flags. Not exported: nothing outside this file needs the shape. */
+interface QianmoAuditConfig {
   readonly path: string
   readonly trace?: string
   readonly agent?: string
