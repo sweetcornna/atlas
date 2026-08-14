@@ -220,3 +220,37 @@ describe('capability flags (P4.3)', () => {
     ).toBe(true)
   })
 })
+
+describe('backup flags (P4.4)', () => {
+  test('--backup-url must be http(s), and the interval needs it', () => {
+    expect(
+      parseResidentArgs(
+        [...BASE, '--backup-url', 'http://127.0.0.1:7999'],
+        'qianmo',
+      ).backupUrl,
+    ).toBe('http://127.0.0.1:7999/')
+    expect(() =>
+      parseResidentArgs([...BASE, '--backup-url', 'ws://x'], 'qianmo'),
+    ).toThrow('must use http or https')
+    expect(() =>
+      parseResidentArgs([...BASE, '--backup-interval-ms', '60000'], 'qianmo'),
+    ).toThrow('requires --backup-url')
+  })
+
+  test('a sub-second snapshot interval is refused', () => {
+    // Archiving a workspace every 100 ms is not a backup policy, it is a way
+    // to keep the disk busy.
+    expect(() =>
+      parseResidentArgs(
+        [
+          ...BASE,
+          '--backup-url',
+          'http://127.0.0.1:1',
+          '--backup-interval-ms',
+          '100',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('>= 1000')
+  })
+})

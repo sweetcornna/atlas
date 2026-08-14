@@ -32,11 +32,13 @@ import {
   createAck,
   createTaskResult,
   errorReply,
+  parseAddress,
   taskExpiresAt,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
 import { NodeRouter, type CapabilityGate } from '@qianmo/router'
+import { BackupScheduler, type SnapshotWriter } from '@qianmo/backup'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
@@ -74,6 +76,16 @@ interface QianmoResidentOptions {
    * token is fully checked, and rule S-1 refuses any remote `user-confirmed`.
    */
   readonly capability?: CapabilityGate
+  /**
+   * Workspace backups (P4.4). Absent means this node takes none — which is the
+   * right default for a node whose workspace is disposable, and the wrong one
+   * for anything AC-6(b) cares about, so the wiring passes it whenever a backup
+   * service is configured.
+   */
+  readonly backup?: {
+    readonly writer: SnapshotWriter
+    readonly intervalMs?: number
+  }
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
   readonly onTiming?: ResidentTimingSink
@@ -239,6 +251,8 @@ export class QianmoResident {
   #transport: TransportServerHandle | null = null
   readonly #tasksByMessage = new Map<string, ActiveResidentTask>()
   readonly #tasksByTask = new Map<string, ActiveResidentTask>()
+  /** One scheduler per agent workspace; empty when backups are not configured. */
+  readonly #backups = new Map<string, BackupScheduler>()
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -270,6 +284,22 @@ export class QianmoResident {
         ? {}
         : { capability: options.capability }),
     })
+    const backup = options.backup
+    if (backup !== undefined) {
+      for (const agent of options.agents) {
+        this.#backups.set(
+          agent.agent,
+          new BackupScheduler({
+            workspace: agent.cwd,
+            writer: backup.writer,
+            ...(backup.intervalMs === undefined
+              ? {}
+              : { intervalMs: backup.intervalMs }),
+            onError: error => this.#options.onError?.(error),
+          }),
+        )
+      }
+    }
     this.#supervisor = new ResidentSupervisor({
       start: async () => await this.#startAcp(),
       onError: error => this.#options.onError?.(error),
@@ -282,9 +312,11 @@ export class QianmoResident {
 
   async run(): Promise<void> {
     this.#deadlineClock.start()
+    for (const backups of this.#backups.values()) backups.start()
     try {
       await this.#supervisor.run()
     } finally {
+      for (const backups of this.#backups.values()) backups.stop()
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
     }
@@ -374,7 +406,33 @@ export class QianmoResident {
     this.#tasksByMessage.set(envelope.msgId, task)
     this.#tasksByTask.set(envelope.taskId, task)
     this.#armTaskTimeout(task)
+    this.#snapshotBeforeTask(envelope)
     return task
+  }
+
+  /**
+   * Take the pre-task snapshot roadmap P4.4 asks for — **without awaiting it**.
+   *
+   * Awaiting would put a `tar` of an unbounded workspace in front of the ack,
+   * and AC-2's ack line is a budget this node has already been measured
+   * against. So the snapshot is started here and runs alongside the turn.
+   *
+   * Say plainly what that costs: the archive is taken *around* the start of the
+   * task rather than at a frozen instant before it, so a file the turn writes
+   * in its first second may or may not be in it. For AC-6(b) — "the workspace
+   * comes back after a deletion" — that is immaterial. For "restore to exactly
+   * the state this task began from" it is not, and a caller that needs the
+   * stronger promise should own the task lifecycle and await
+   * `BackupScheduler.beforeTask` itself, the way a scripted runner can.
+   */
+  #snapshotBeforeTask(envelope: QianmoMessage): void {
+    const agent = parseAddress(envelope.to)?.agent
+    if (agent === undefined) return
+    const backups = this.#backups.get(agent)
+    if (backups === undefined) return
+    void backups.beforeTask(envelope.taskId).catch(error => {
+      this.#options.onError?.(error)
+    })
   }
 
   #armTaskTimeout(task: ActiveResidentTask): void {

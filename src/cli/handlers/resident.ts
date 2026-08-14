@@ -11,6 +11,7 @@ import {
 } from '@qianmo/resident/activity'
 import type { ResidentTimingEvent } from '@qianmo/resident/timings'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
+import { remoteSnapshotWriter } from '@qianmo/backup'
 import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
@@ -94,6 +95,10 @@ interface ResidentCliConfig {
   readonly trusted: readonly (readonly [string, string])[]
   /** Require `write-limited` for work, rather than admitting unsigned tasks. */
   readonly requireSignedTasks: boolean
+  /** Base URL of the host-side backup service (P4.4). */
+  readonly backupUrl?: string
+  /** Gap between scheduled workspace snapshots. */
+  readonly backupIntervalMs?: number
 }
 
 export function parseResidentArgs(
@@ -109,6 +114,8 @@ export function parseResidentArgs(
   let activityReconnectFactor: number | undefined
   let timings: string | undefined
   let requireSignedTasks = false
+  let backupUrl: string | undefined
+  let backupIntervalMs: number | undefined
   const trusted: Array<readonly [string, string]> = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
@@ -187,6 +194,25 @@ export function parseResidentArgs(
       index = parsed.next
     } else if (arg === '--require-signed-tasks') {
       requireSignedTasks = true
+    } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
+      const parsed = residentOptionValue(args, index, '--backup-url')
+      const url = new URL(parsed.value)
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('--backup-url must use http or https')
+      }
+      backupUrl = url.toString()
+      index = parsed.next
+    } else if (
+      arg === '--backup-interval-ms' ||
+      arg?.startsWith('--backup-interval-ms=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--backup-interval-ms')
+      const interval = Number(parsed.value)
+      if (!Number.isInteger(interval) || interval < 1_000) {
+        throw new Error('--backup-interval-ms must be an integer >= 1000')
+      }
+      backupIntervalMs = interval
+      index = parsed.next
     } else if (arg === '--timings' || arg?.startsWith('--timings=')) {
       const parsed = residentOptionValue(args, index, '--timings')
       if (!isAbsolute(parsed.value)) {
@@ -227,6 +253,9 @@ export function parseResidentArgs(
   if (activityReconnectFactor !== undefined && activityUrl === undefined) {
     throw new Error('--activity-reconnect-factor requires --activity-url')
   }
+  if (backupIntervalMs !== undefined && backupUrl === undefined) {
+    throw new Error('--backup-interval-ms requires --backup-url')
+  }
   return {
     node,
     team,
@@ -245,6 +274,8 @@ export function parseResidentArgs(
     ...(timings === undefined ? {} : { timings }),
     trusted,
     requireSignedTasks,
+    ...(backupUrl === undefined ? {} : { backupUrl }),
+    ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
   }
 }
 
@@ -313,12 +344,33 @@ export async function runResident(args: readonly string[]): Promise<void> {
     })}\n`,
   )
 
+  // The write-only backup credential comes from the environment, never from a
+  // flag: a token on a command line is a token in every process listing on the
+  // machine. Same injection point discipline as the transport PSK.
+  const backupToken = process.env['QIANMO_BACKUP_WRITE_TOKEN']
+  if (config.backupUrl !== undefined && (backupToken ?? '') === '') {
+    throw new Error('--backup-url requires QIANMO_BACKUP_WRITE_TOKEN')
+  }
+  const backup =
+    config.backupUrl === undefined
+      ? undefined
+      : {
+          writer: remoteSnapshotWriter({
+            url: config.backupUrl,
+            token: backupToken as string,
+          }),
+          ...(config.backupIntervalMs === undefined
+            ? {}
+            : { intervalMs: config.backupIntervalMs }),
+        }
+
   const resident = new QianmoResident({
     node: config.node,
     team: config.team,
     agents: config.agents,
     psk,
     capability,
+    ...(backup === undefined ? {} : { backup }),
     listen: {
       ...(config.port === undefined ? {} : { port: config.port }),
       ...(config.hostname === undefined ? {} : { hostname: config.hostname }),
