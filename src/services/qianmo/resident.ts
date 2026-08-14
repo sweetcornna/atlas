@@ -36,6 +36,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
+import { NodeRouter } from '@qianmo/router'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
@@ -219,6 +220,7 @@ export class QianmoResident {
   readonly #mailbox = new BaseMailboxPort()
   readonly #deadlineClock = new ResidentDeadlineClock({ periodMs: 10_000 })
   readonly #adapter: InboundAdapter
+  readonly #router: NodeRouter
   readonly #sessions = new FileResidentSessionStore(
     occConfigPath('resident', 'sessions.json'),
   )
@@ -249,6 +251,14 @@ export class QianmoResident {
     this.#adapter = new InboundAdapter({
       node: options.node,
       team: options.team,
+      deadlineNow: this.#deadlineClock.nowFor,
+    })
+    // The routing gates run inside the sandbox too, not only on the host: a
+    // resident is directly dialable (that is how P3.1's wake demo reaches it),
+    // and a node whose only loop detection lives in front of it has none at all
+    // in the deployment that skips the activator.
+    this.#router = new NodeRouter({
+      node: options.node,
       deadlineNow: this.#deadlineClock.nowFor,
     })
     this.#supervisor = new ResidentSupervisor({
@@ -283,10 +293,25 @@ export class QianmoResident {
     return result
   }
 
+  /** The routing gates in force here, for tests and the AC-3 demo. */
+  get router(): NodeRouter {
+    return this.#router
+  }
+
   async #receive(
     message: QianmoMessage,
     context: InboundContext,
   ): Promise<void> {
+    // Ahead of everything with a side effect: no task route is registered, no
+    // mailbox line is written, no ACP turn is opened for a message the routing
+    // layer refuses (rule L-1 — a refused message must not eat the recipient's
+    // inbox quota).
+    const routed = this.#router.inbound(message)
+    if (!routed.ok) {
+      context.channel.send(errorReply(message, routed.code, routed.reason))
+      throw new ResidentDeliveryError(routed.code, routed.reason)
+    }
+
     const task =
       message.type === MessageType.TaskRequest
         ? this.#registerTask(message, context.channel)
@@ -423,6 +448,9 @@ export class QianmoResident {
     task.timeout = null
     this.#tasksByMessage.delete(task.envelope.msgId)
     this.#tasksByTask.delete(task.envelope.taskId)
+    // Terminal state reached: the loop keys for this task have nothing left to
+    // protect (protocol.md §8.2 rows 19–20).
+    this.#router.release(task.envelope.taskId)
     try {
       await task.channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
     } catch (error) {

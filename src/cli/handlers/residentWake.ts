@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { MessageType, assertAddress, createMessage } from '@qianmo/protocol'
+import { NodeRouter } from '@qianmo/router'
 import {
   TransportClient,
   pskFromEnv,
@@ -123,7 +124,7 @@ export async function executeResidentWake(
     await new Promise<void>(resolve => setTimeout(resolve, config.afterMs))
   }
 
-  const message = createMessage({
+  const draft = createMessage({
     from: config.from,
     to: config.to,
     type: MessageType.Wake,
@@ -133,9 +134,22 @@ export async function executeResidentWake(
     },
     deliverTtlMs: config.deliverTtlMs,
   })
+  // protocol.md §6.3 call site 1: the origin stamps itself into `hops[0]`
+  // before the envelope reaches a transport, so the audit chain has a head and
+  // the hop backstop counts from one rather than from zero.
+  //
+  // The runtime throttle this also consults is, in this process, always full:
+  // one CLI invocation sends one message and exits. That is not a reason to
+  // skip the gate — going through the same door as every other sender is what
+  // keeps the seeding rule from having a second, subtly different copy.
+  const from = assertAddress(config.from)
+  const routed = new NodeRouter({ node: from.node }).outbound(draft)
+  if (!routed.ok) throw new Error(`${routed.code}: ${routed.reason}`)
+  const message = routed.message
+
   const client = new TransportClient({
     endpoint: { url: config.url },
-    node: assertAddress(config.from).node,
+    node: from.node,
     psk,
     keepAliveIntervalMs: 0,
   })
