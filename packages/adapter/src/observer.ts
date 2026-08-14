@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { ProtocolErrorCode } from '@qianmo/protocol'
+import { ProtocolErrorCode, TimeJumpGate } from '@qianmo/protocol'
 import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'
 import { readMailbox } from 'src/utils/agents/teammateMailbox.js'
 
@@ -195,17 +195,13 @@ export async function observeReadFlip(
   const sleep = options.sleep ?? defaultSleep
 
   let deadline = options.deadlineAt
-  let lastTickAt = now()
+  const gate = new TimeJumpGate({ periodMs: period, minJumpGapMs: 0 })
+  gate.observe(now())
 
   for (;;) {
     const tickAt = now()
-    const gap = tickAt - lastTickAt
-    if (gap > 2 * period) {
-      // T-2: this node was almost certainly frozen. Exclude the gap from the
-      // delivery budget rather than judging every in-flight message dead.
-      deadline += gap
-    }
-    lastTickAt = tickAt
+    const observation = gate.observe(tickAt)
+    deadline = gate.rebase(deadline, observation)
 
     const messages = await readMailbox(options.agent, options.team)
     switch (classifyMailboxEntry(messages, options.identity)) {
@@ -229,7 +225,7 @@ export async function observeReadFlip(
         reason: 'observation aborted before the read flag flipped',
       }
     }
-    if (tickAt > deadline) {
+    if (gate.expired(deadline, tickAt)) {
       return {
         state: 'expired',
         code: ProtocolErrorCode.E_TTL_EXPIRED,
