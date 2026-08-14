@@ -63,6 +63,7 @@
         "@opentelemetry/semantic-conventions": "^1.40.0",
         "@qianmo/activator": "workspace:*",
         "@qianmo/adapter": "workspace:*",
+        "@qianmo/backup": "workspace:*",
         "@qianmo/capability": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/protocol": "workspace:*",
@@ -228,6 +229,10 @@
     "packages/audio-capture-napi": {
       "name": "audio-capture-napi",
       "version": "1.0.0",
+    },
+    "packages/backup": {
+      "name": "@qianmo/backup",
+      "version": "0.0.0",
     },
     "packages/builtin-tools": {
       "name": "@open-claude-code/builtin-tools",
@@ -974,6 +979,8 @@
     "@qianmo/activator": ["@qianmo/activator@workspace:packages/activator"],
 
     "@qianmo/adapter": ["@qianmo/adapter@workspace:packages/adapter"],
+
+    "@qianmo/backup": ["@qianmo/backup@workspace:packages/backup"],
 
     "@qianmo/capability": ["@qianmo/capability@workspace:packages/capability"],
 
