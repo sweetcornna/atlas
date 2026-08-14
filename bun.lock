@@ -65,6 +65,7 @@
         "@qianmo/adapter": "workspace:*",
         "@qianmo/backup": "workspace:*",
         "@qianmo/capability": "workspace:*",
+        "@qianmo/diagnosis": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/protocol": "workspace:*",
         "@qianmo/recall": "workspace:*",
@@ -268,6 +269,10 @@
         "@anthropic/ink": "workspace:*",
         "highlight.js": "latest",
       },
+    },
+    "packages/diagnosis": {
+      "name": "@qianmo/diagnosis",
+      "version": "0.0.0",
     },
     "packages/image-processor-napi": {
       "name": "image-processor-napi",
@@ -983,6 +988,8 @@
     "@qianmo/backup": ["@qianmo/backup@workspace:packages/backup"],
 
     "@qianmo/capability": ["@qianmo/capability@workspace:packages/capability"],
+
+    "@qianmo/diagnosis": ["@qianmo/diagnosis@workspace:packages/diagnosis"],
 
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 

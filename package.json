@@ -131,6 +131,7 @@
     "@qianmo/adapter": "workspace:*",
     "@qianmo/backup": "workspace:*",
     "@qianmo/capability": "workspace:*",
+    "@qianmo/diagnosis": "workspace:*",
     "@qianmo/memory": "workspace:*",
     "@qianmo/protocol": "workspace:*",
     "@qianmo/recall": "workspace:*",
