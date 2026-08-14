@@ -96,7 +96,12 @@ export function startSessionActivity(reason: SessionActivityReason): void {
   activeReasons.set(reason, (activeReasons.get(reason) ?? 0) + 1)
   if (refcount === 1) {
     oldestActivityStartedAt = Date.now()
-    activityCallback?.(true)
+    // Same gate as the heartbeat below: with the flag unset, remote transports
+    // must stay silent. The resident host sets it on the ACP child it spawns,
+    // which is the process whose busy/idle edges the sandbox keepalive reads.
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
+      activityCallback?.(true)
+    }
     if (activityCallback !== null && heartbeatTimer === null) {
       startHeartbeatTimer()
     }
@@ -133,7 +138,9 @@ export function stopSessionActivity(reason: SessionActivityReason): void {
       clearInterval(heartbeatTimer)
       heartbeatTimer = null
     }
-    activityCallback?.(false)
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
+      activityCallback?.(false)
+    }
     startIdleTimer()
   }
 }
