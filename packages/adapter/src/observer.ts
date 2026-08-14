@@ -195,7 +195,13 @@ export async function observeReadFlip(
   const sleep = options.sleep ?? defaultSleep
 
   let deadline = options.deadlineAt
-  const gate = new TimeJumpGate({ periodMs: period, minJumpGapMs: 0 })
+  // The floor stays at its default on purpose. At a 250 ms period, dropping it
+  // would put the freeze threshold at 500 ms, so one slow `readMailbox` or GC
+  // pause would count as a thaw — and a thaw does not merely rebase the
+  // deadline, it opens a 15 s window in which nothing can expire at all.
+  // Freezes worth detecting were 34 s and 97 s (E4); none of them need a
+  // threshold below the 2 s default.
+  const gate = new TimeJumpGate({ periodMs: period })
   gate.observe(now())
 
   for (;;) {
