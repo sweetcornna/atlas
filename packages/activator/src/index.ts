@@ -171,10 +171,18 @@ export {
   StaticTargetDirectory,
   TransportLinks,
   UnknownTargetError,
+  type LinkReplyHandler,
   type TargetDirectory,
   type TargetSite,
   type TransportLinksOptions,
 } from './link.js'
+
+export {
+  DEFAULT_TASK_ROUTE_CAPACITY,
+  TaskRouteError,
+  TaskRouteRegistry,
+  type TaskRouteRegistryOptions,
+} from './routes.js'
 
 export {
   DEFAULT_FAILURE_CAPACITY,
@@ -189,10 +197,10 @@ export {
   StageTimeline,
   TimingRecorder,
   durationsOf,
+  statsOf,
   type ActivationOutcomeKind,
   type StageDurations,
   type StageStats,
   type StageTimings,
   type TimingReport,
 } from './stages.js'
-  statsOf,

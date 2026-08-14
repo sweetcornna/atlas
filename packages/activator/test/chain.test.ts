@@ -28,10 +28,17 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import type { QianmoMessage } from '@qianmo/protocol'
+import {
+  MessageType,
+  createAck,
+  createTaskResult,
+  type QianmoMessage,
+} from '@qianmo/protocol'
 import {
   TransportClient,
   TransportEventType,
+  type InboundContext,
+  type InboundHandler,
   type TransportServerHandle,
   startTransportServer,
 } from '@qianmo/transport'
@@ -84,13 +91,16 @@ afterEach(async () => {
 function startTargetNode(
   path: string,
   received: QianmoMessage[],
-  onMessage?: (message: QianmoMessage) => Promise<void>,
+  onMessage?: (
+    message: QianmoMessage,
+    context: InboundContext,
+  ) => Promise<void>,
 ): TransportServerHandle {
   const server = startTransportServer({
     unix: path,
     psk: TEST_PSK,
-    onMessage: async (message: QianmoMessage): Promise<void> => {
-      await onMessage?.(message)
+    onMessage: async (message, context): Promise<void> => {
+      await onMessage?.(message, context)
       received.push(message)
     },
   })
@@ -105,7 +115,7 @@ interface Chain {
   readonly targetPath: string
   readonly received: QianmoMessage[]
   readonly outcomes: ActivationOutcome[]
-  sender(): TransportClient
+  sender(onMessage?: InboundHandler): TransportClient
 }
 
 /**
@@ -176,13 +186,14 @@ async function startChain(
     targetPath,
     received,
     outcomes,
-    sender(): TransportClient {
+    sender(onMessage?: InboundHandler): TransportClient {
       const client = new TransportClient({
         endpoint: { unix: inboundPath },
         node: 'node-a',
         psk: TEST_PSK,
         backoff: FAST_BACKOFF,
         keepAliveIntervalMs: 0,
+        ...(onMessage === undefined ? {} : { onMessage }),
       })
       clients.push(client)
       return client
@@ -229,6 +240,54 @@ describe('catch → wake → probe → forward, assembled', () => {
     expect(chain.stub.stateOf(SANDBOX)).toBe('active')
     // And the sender was told, by the receipt, that it got there.
     expect(verdictOf(sender, message.msgId)).toBe('accepted')
+  })
+
+  test('ack and result return over C2 then the original C1 channel', async () => {
+    const chain = await startChain()
+    const replies: QianmoMessage[] = []
+    const sender = chain.sender(message => {
+      replies.push(message)
+    })
+    await sender.connect(2_000)
+
+    let target: TransportServerHandle | undefined
+    const timer = setTimeout(() => {
+      target = startTargetNode(
+        chain.targetPath,
+        chain.received,
+        async (message, context) => {
+          context.channel.send(createAck(message, message.to, Date.now()))
+          context.channel.send(
+            createTaskResult(
+              message,
+              message.to,
+              { outcome: 'completed', content: 'task complete' },
+              Date.now(),
+            ),
+          )
+        },
+      )
+    }, 100)
+    cleanups.push(() => clearTimeout(timer))
+
+    const message = makeMessage({ taskId: 'task-return-route' })
+    await sender.sendAndWait(message, 20_000)
+    await waitUntil(() => replies.length === 2 && chain.node.routes.size === 0)
+
+    expect(replies.map(reply => reply.type)).toEqual([
+      MessageType.Ack,
+      MessageType.TaskResult,
+    ])
+    expect(replies.every(reply => reply.taskId === message.taskId)).toBe(true)
+    expect(replies[0]?.payload).not.toHaveProperty('taskId')
+    expect(replies[1]?.payload).toEqual({
+      outcome: 'completed',
+      content: 'task complete',
+      completedAt: expect.any(Number),
+    })
+    expect(target?.connections).toBe(1)
+    expect(chain.node.links.linkCount).toBe(1)
+    expect(chain.audit.count(ActivatorEventType.TaskReplyForwarded)).toBe(2)
   })
 
   test('every stage of the wake path is timed, in order', async () => {
@@ -401,11 +460,36 @@ describe('a forward is a delivery, not an enqueue', () => {
     const [outcome] = chain.outcomes
     expect(outcome?.status).toBe('failed')
     if (outcome?.status === 'failed') {
-      expect(outcome.reason).toContain('drain')
+      expect(outcome.reason).toContain('receipted')
       // The timeline still records where it got to: ready, then no forward.
       expect(outcome.timings.readyAt).toBeDefined()
       expect(outcome.timings.forwardedAt).toBeUndefined()
     }
+  })
+
+  test('a target rejection fails the request instead of being mistaken for drain', async () => {
+    const chain = await startChain({ forwardTimeoutMs: 2_000 })
+    startTargetNode(chain.targetPath, chain.received, async () => {
+      throw new Error('target refused delivery')
+    })
+
+    const sender = chain.sender()
+    await sender.connect(2_000)
+    const message = makeMessage()
+    sender.send(message)
+    await sender.waitForDrain(20_000)
+
+    expect(verdictOf(sender, message.msgId)).toBe('rejected:E_UNDELIVERABLE')
+    expect(chain.received).toHaveLength(0)
+    const [outcome] = chain.outcomes
+    expect(outcome?.status).toBe('failed')
+    if (outcome?.status === 'failed') {
+      expect(outcome.reason).toContain('rejected')
+      expect(outcome.timings.readyAt).toBeDefined()
+      expect(outcome.timings.forwardedAt).toBeUndefined()
+    }
+    expect(chain.node.report().forwarded).toBe(0)
+    expect(chain.node.report().failed).toBe(1)
   })
 
   test('a node that restarts is reconnected to, and the envelope replayed', async () => {

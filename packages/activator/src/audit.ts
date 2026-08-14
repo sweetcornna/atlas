@@ -44,6 +44,14 @@ export enum ActivatorEventType {
   RequestForwarded = 'request.forwarded',
   /** The request reached a terminal failure, and the sender was told. */
   RequestFailed = 'request.failed',
+  /** A task captured an authenticated source return channel. */
+  TaskRouteRegistered = 'task-route.registered',
+  /** A protocol ack/result/error was relayed to the source channel. */
+  TaskReplyForwarded = 'task-reply.forwarded',
+  /** A reply did not match the task's source/target/sandbox route. */
+  TaskReplyRejected = 'task-reply.rejected',
+  /** A task produced no terminal result before its task deadline. */
+  TaskRouteExpired = 'task-route.expired',
   /** A journal entry survived a crash and was replayed. */
   RecoveryReplayed = 'recovery.replayed',
   /** A journal line was truncated by a crash mid-write and could not be read. */

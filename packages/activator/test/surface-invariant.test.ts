@@ -182,9 +182,17 @@ describe('nothing key-shaped is committed', () => {
     'demo/lib/ac2-send.ts',
     'demo/lib/ac2-state.ts',
     'demo/lib/ac2-target.ts',
+    'demo/p31-resident-wake.sh',
+    'demo/lib/p31-copy-resident-timings.ts',
+    'demo/lib/p31-report-core.ts',
+    'demo/lib/p31-report.ts',
+    'demo/lib/p31-send.ts',
+    'demo/ac6a-sandbox.sh',
+    'demo/lib/ac6a-sandbox.ts',
+    'scripts/qianmo-programming-tasks.ts',
   ]
 
-  test('the AC-2 demo artefacts all exist to be scanned', () => {
+  test('the sandbox daemon demo artefacts all exist to be scanned', () => {
     // Same guard as the one at the top of this file: a rename must not turn
     // this into a scan of nothing.
     const missing = demoArtifacts.filter(
