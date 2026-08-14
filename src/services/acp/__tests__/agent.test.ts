@@ -715,13 +715,19 @@ describe('AcpAgent', () => {
       const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
       const messageId = '11111111-2222-4333-8444-555555555555'
 
+      mockSwitchSession.mockClear()
       await expect(
         agent.extMethod('qianmo/input-status', { sessionId, messageId }),
       ).resolves.toEqual({ accepted: true })
       expect(mockDoesMessageExistInSession).toHaveBeenCalledWith(
         sessionId,
         messageId,
+        undefined,
       )
+      // A read-only query must not repoint the process at another session:
+      // a prompt streaming for a different one would write its transcript
+      // entries into this session's file.
+      expect(mockSwitchSession).not.toHaveBeenCalled()
     })
 
     test('ordinary ACP clients cannot query Qianmo input status', async () => {

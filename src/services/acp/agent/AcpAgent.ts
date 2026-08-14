@@ -332,10 +332,16 @@ export class AcpAgent implements Agent {
       if (session === undefined) {
         throw RequestError.resourceNotFound(sessionId)
       }
-      switchSession(sessionId as SessionId, session.projectDir)
-      setOriginalCwd(session.cwd)
+      // Deliberately does **not** switch the process's current session: this
+      // is a read-only query, and the global pointer it would move is the one
+      // a concurrently streaming prompt uses to decide which transcript file
+      // its entries belong to. The project dir is passed explicitly instead.
       return {
-        accepted: await doesMessageExistInSession(sessionId, messageId),
+        accepted: await doesMessageExistInSession(
+          sessionId,
+          messageId,
+          session.projectDir ?? undefined,
+        ),
       }
     }
     // Unknown method — surface as JSON-RPC methodNotFound so clients see a

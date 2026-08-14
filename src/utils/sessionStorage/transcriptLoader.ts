@@ -726,7 +726,10 @@ export async function loadTranscriptFile(
 /**
  * Loads all messages, summaries, file history snapshots, and attribution snapshots from a specific session file.
  */
-export async function loadSessionFile(sessionId: UUID): Promise<{
+export async function loadSessionFile(
+  sessionId: UUID,
+  projectDir?: string,
+): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
   customTitles: Map<UUID, string>
@@ -739,7 +742,10 @@ export async function loadSessionFile(sessionId: UUID): Promise<{
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
 }> {
   const sessionFile = join(
-    getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
+    // An explicit project dir lets a caller read one session without first
+    // pointing the process's global session state at it — the alternative for
+    // a read-only query, and one that reroutes whatever else is streaming.
+    projectDir ?? getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
     `${sessionId}.jsonl`,
   )
   return loadTranscriptFile(sessionFile)
@@ -763,7 +769,10 @@ const sessionMessagesCache = new Map<UUID, Promise<Set<UUID>>>()
  * Exported so tests can verify cache eviction behavior directly; not
  * intended as a public API — prefer {@link doesMessageExistInSession}.
  */
-export async function getSessionMessages(sessionId: UUID): Promise<Set<UUID>> {
+export async function getSessionMessages(
+  sessionId: UUID,
+  projectDir?: string,
+): Promise<Set<UUID>> {
   const existing = sessionMessagesCache.get(sessionId)
   if (existing !== undefined) {
     return existing
@@ -776,7 +785,7 @@ export async function getSessionMessages(sessionId: UUID): Promise<Set<UUID>> {
     }
   }
   const promise = (async () => {
-    const { messages } = await loadSessionFile(sessionId)
+    const { messages } = await loadSessionFile(sessionId, projectDir)
     return new Set(messages.keys())
   })()
   sessionMessagesCache.set(sessionId, promise)
