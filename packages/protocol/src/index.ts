@@ -22,6 +22,22 @@ export {
 } from './address.js'
 
 export {
+  CAPABILITY_LEVELS,
+  CapabilityLevel,
+  PUBLIC_KEY_PATTERN,
+  SIGNATURE_PATTERN,
+  decodeClaims,
+  encodeClaims,
+  isCapabilityClaims,
+  isCapabilityLevel,
+  isNodePublicKey,
+  levelAtLeast,
+  parseCapabilityToken,
+  type CapabilityClaims,
+  type CapabilityParts,
+} from './capability.js'
+
+export {
   ProtocolError,
   ProtocolErrorCode,
   issue,
