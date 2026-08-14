@@ -3,11 +3,13 @@
 
 import {
   ProtocolError,
+  TimeJumpGate,
   assertAddress,
   formatAddress,
   isValidAddress,
   parseAddress,
   type QianmoAddress,
+  type TimeJumpObservation,
 } from '@qianmo/protocol'
 import { systemClock, type Clock } from './clock.js'
 import type { RegistryStore } from './store.js'
@@ -337,6 +339,7 @@ export class InMemoryRegistry {
   readonly #clock: Clock
   readonly #store: RegistryStore | null
   readonly #onPersistError: ((error: unknown) => void) | undefined
+  #timeJumpGate: TimeJumpGate | null = null
 
   constructor(options: RegistryOptions = {}) {
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
@@ -348,6 +351,21 @@ export class InMemoryRegistry {
 
   get ttlMs(): number {
     return this.#ttlMs
+  }
+
+  observeClock(periodMs: number): TimeJumpObservation {
+    this.#timeJumpGate ??= new TimeJumpGate({ periodMs })
+    const now = this.#clock.now()
+    const observation = this.#timeJumpGate.observe(now)
+    if (!observation.jumped) return observation
+    for (const [key, entry] of this.#entries) {
+      this.#entries.set(key, {
+        ...entry,
+        expiresAt: this.#timeJumpGate.rebase(entry.expiresAt, observation),
+      })
+    }
+    this.#persist()
+    return observation
   }
 
   /** Number of live entries, expired ones excluded. */
@@ -464,9 +482,10 @@ export class InMemoryRegistry {
   /** Every live agent, ordered by address. */
   list(): readonly AgentRecord[] {
     const now = this.#clock.now()
+    const inGrace = this.#timeJumpGate?.inGrace(now) === true
     const live: AgentRecord[] = []
     for (const entry of this.#entries.values()) {
-      if (entry.expiresAt >= now) live.push(entry)
+      if (inGrace || entry.expiresAt >= now) live.push(entry)
     }
     return live.sort((a, b) =>
       a.address < b.address ? -1 : a.address > b.address ? 1 : 0,
@@ -504,6 +523,7 @@ export class InMemoryRegistry {
   /** Drop expired entries eagerly; returns how many were removed. */
   prune(): number {
     const now = this.#clock.now()
+    if (this.#timeJumpGate?.inGrace(now) === true) return 0
     let removed = 0
     for (const [key, entry] of this.#entries) {
       if (entry.expiresAt < now) {
@@ -524,6 +544,7 @@ export class InMemoryRegistry {
   #live(key: string, now: number): AgentRecord | null {
     const entry = this.#entries.get(key)
     if (entry === undefined) return null
+    if (this.#timeJumpGate?.inGrace(now) === true) return entry
     if (entry.expiresAt < now) {
       this.#entries.delete(key)
       return null

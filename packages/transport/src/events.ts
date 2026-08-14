@@ -38,6 +38,11 @@ export enum TransportEventType {
   /** A gap in the wall clock was read as a freeze; the budget was reset. */
   TimeJumpDetected = 'time_jump_detected',
   /**
+   * A disconnected logical channel was reclaimed with envelopes still
+   * unreceipted, because nobody came back for them inside the retention window.
+   */
+  ChannelReclaimed = 'channel_reclaimed',
+  /**
    * A caller-supplied event sink threw and was contained.
    *
    * Recorded rather than rethrown: `record` runs inside the websocket

@@ -19,7 +19,7 @@ const SESSION_ACTIVITY_INTERVAL_MS = 30_000
 
 export type SessionActivityReason = 'api_call' | 'tool_exec'
 
-let activityCallback: (() => void) | null = null
+let activityCallback: ((active: boolean) => void) | null = null
 let refcount = 0
 const activeReasons = new Map<SessionActivityReason, number>()
 let oldestActivityStartedAt: number | null = null
@@ -34,7 +34,7 @@ function startHeartbeatTimer(): void {
       refcount,
     })
     if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
-      activityCallback?.()
+      activityCallback?.(true)
     }
   }, SESSION_ACTIVITY_INTERVAL_MS)
 }
@@ -57,7 +57,9 @@ function clearIdleTimer(): void {
   }
 }
 
-export function registerSessionActivityCallback(cb: () => void): void {
+export function registerSessionActivityCallback(
+  cb: (active: boolean) => void,
+): void {
   activityCallback = cb
   // Restart timer if work is already in progress (e.g. reconnect during streaming)
   if (refcount > 0 && heartbeatTimer === null) {
@@ -77,7 +79,7 @@ export function unregisterSessionActivityCallback(): void {
 
 export function sendSessionActivitySignal(): void {
   if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
-    activityCallback?.()
+    activityCallback?.(refcount > 0)
   }
 }
 
@@ -94,6 +96,12 @@ export function startSessionActivity(reason: SessionActivityReason): void {
   activeReasons.set(reason, (activeReasons.get(reason) ?? 0) + 1)
   if (refcount === 1) {
     oldestActivityStartedAt = Date.now()
+    // Same gate as the heartbeat below: with the flag unset, remote transports
+    // must stay silent. The resident host sets it on the ACP child it spawns,
+    // which is the process whose busy/idle edges the sandbox keepalive reads.
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
+      activityCallback?.(true)
+    }
     if (activityCallback !== null && heartbeatTimer === null) {
       startHeartbeatTimer()
     }
@@ -125,9 +133,14 @@ export function stopSessionActivity(reason: SessionActivityReason): void {
   const n = (activeReasons.get(reason) ?? 0) - 1
   if (n > 0) activeReasons.set(reason, n)
   else activeReasons.delete(reason)
-  if (refcount === 0 && heartbeatTimer !== null) {
-    clearInterval(heartbeatTimer)
-    heartbeatTimer = null
+  if (refcount === 0) {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE_SEND_KEEPALIVES)) {
+      activityCallback?.(false)
+    }
     startIdleTimer()
   }
 }

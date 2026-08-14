@@ -194,11 +194,12 @@ v0.1 信封（现状信封定义在 `packages/protocol/src/message.ts:43-62`；�
 >
 > 它**不断言**：目标智能体已经理解该消息、已经重建旧会话上下文、已经开始执行、或对能否完成有任何判断。这些语义一律属于 `task.result`。
 
-**协议级强制（规则 K-1）**：`ack` 的 payload **字段封闭**，只允许 `{ ofMsgId, taskId, handler, ackAt }` 四项，全部是入站适配器**在不读取任何既有会话状态的前提下**就能填出的值。
+**协议级强制（规则 K-1）**：`ack` 的 payload **字段封闭**，只允许 `{ handler, ackAt }` 两项，全部是入站适配器**在不读取任何既有会话状态的前提下**就能填出的值。
 
-- `ofMsgId` / `taskId` 来自被 ack 的信封本身；
 - `handler` 是本节点自己的地址；
 - `ackAt` 是本地时钟。
+
+**相关标识只存在于信封（P4.1 实施裁定，2026-08-13）**：原表述要求 payload 再抄一份 `{ ofMsgId, taskId }`，现取消——`taskId` 是唯一相关键（规则 C-1）且已在信封上，payload 复制一份只会制造第二个事实源，两处不一致时无人知道该信哪个。同一条裁定同样适用于 `error` 与 `task.result` 的 payload：**任何回复都不在 payload 里重复信封已有的 ID**。落地见 `packages/protocol/src/message.ts` 的 `AckPayload` / `isAckPayload`（`ACK_PAYLOAD_KEYS` 精确两项，多一个键即判非法）。
 
 **禁止**在 ack 中回带任务状态、队列深度、上下文摘要、预计耗时。这不是风格约定——**任何一个这样的字段都会强迫实现去读旧堆，把 A 类悄悄变成 B 类**，而那正是 T-1 对策④/⑤ 要防的事。字段封闭让「是 A 类」成为结构性保证，而不是实现者的自觉。
 
@@ -252,6 +253,22 @@ ack 从发出到回到请求方，链路逐段如下（**数值一律指向出�
 **写完即回 ack 做不到这个区分**——它把第二行伪装成第一行。这是「端到端 ack」相对「写入即 ack」的实质收益，不只是纪律问题。
 
 实现上优先用文件监视：信箱的每次写入都是**临时文件 + `rename` 原子替换**（`teammateMailbox.ts:166-169`），因此每次变更都会产生一个 rename 事件。**但 `fs.watch` 在 gVisor / 冻结-唤醒下的行为未验证**（§12），所以协议只规定语义、不规定机制：**允许轮询实现，观察周期不得大于基座对应形态的轮询周期**（否则平白多加一个基座周期的延迟）。
+
+### 4.6 `task.result` 的 payload（P4.1 落地契约）
+
+`task.result` 是任务的**唯一终态载体**（§4.3）。payload 是一个**封闭联合**，两支各自字段封闭，运行时逐支精确校验（多一个键、少一个键、两支字段混用，一律判非法）：
+
+| 分支 | 字段 | 含义 |
+|---|---|---|
+| 成功 | `{ outcome: 'completed', content, completedAt }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
+| 失败 | `{ outcome: 'failed', code, reason, completedAt }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+
+- **失败码只用两个**：执行以失败告终用 `E_TASK_FAILED`（含 ACP turn 抛错、被取消、ACP 子进程关闭时仍有在飞任务），任务时限到期用 `E_TASK_TIMEOUT`。
+- **`reason` 不承担原因分类**——原因级 `diagnosis`（能不能重试、该谁修）归 P5.1（S-1），本文范围内不引入，也不许用 `reason` 的字符串格式偷偷承担它。
+- **不夹带 ID**：`taskId` 在信封上（规则 C-1），payload 不重复一份，与 K-1 同款裁定（§4.2）。
+- `completedAt` 是处理方本地时钟。
+
+落地见 `packages/protocol/src/message.ts` 的 `TaskResultPayload` / `createTaskResult` / `isTaskResultPayload`；负向用例（混用字段、夹带 ID、未知错误码）在 `packages/protocol/test/message.test.ts`。
 
 ---
 
@@ -640,7 +657,7 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 
 ## 11. 错误码表
 
-现有 10 个码定义在 `packages/protocol/src/errors.ts:5-26`，v0.1 新增 7 个（落地见 §12）。
+现有 10 个码定义在 `packages/protocol/src/errors.ts:5-26`，v0.1 新增 7 个（落地见 §12）；**P4.1 落地时再增 1 个**（`E_TASK_FAILED`，见下表末行与 §4.6）。
 
 | 码 | 现状 | 触发点 | 状态机 |
 |---|---|---|---|
@@ -655,6 +672,7 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `E_RATE_LIMITED` | 已有 | 入站预算超 `LIMITS.ratePerMinute` | 10 |
 | `E_UNKNOWN_AGENT` | 已有 | 注册中心解析不到（含 node 段未知） | 6 |
 | `E_TASK_TIMEOUT` | **新增** | **任务时限**到期无终局 | 21 / 22 |
+| `E_TASK_FAILED` | **新增（P4.1）** | 处理方已接住任务，但执行以失败告终（ACP turn 抛错 / 被取消 / ACP 子进程关闭时仍有在飞任务） | 20 |
 | `E_EVICTED` | **新增** | 目标信箱压缩驱逐（`teammateMailbox.ts:198-269`） | 17 |
 | `E_UNDELIVERABLE` | **新增** | 最后一跳写入失败（超限 / 文件超限 / 取锁失败） | 15 |
 | `E_PAYLOAD_UNAVAILABLE` | **新增** | blob 引用取不到或校验和不符（§9.3） | 20 |

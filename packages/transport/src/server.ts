@@ -3,14 +3,13 @@
 
 import { unlinkSync } from 'node:fs'
 import type { Server, ServerWebSocket, TLSOptions, WebSocketHandler } from 'bun'
-import {
-  LIMITS,
-  ProtocolErrorCode,
-  firstErrorCode,
-  validateMessage,
-  type QianmoMessage,
-} from '@qianmo/protocol'
-import { DedupTable, DedupVerdict } from './dedup.js'
+import { LIMITS, type QianmoMessage } from '@qianmo/protocol'
+import type {
+  InboundContext,
+  InboundHandler,
+  TransportChannel,
+} from './channel.js'
+import { DedupTable } from './dedup.js'
 import {
   EventRecorder,
   TransportEventType,
@@ -18,6 +17,7 @@ import {
   type TransportEventSink,
 } from './events.js'
 import {
+  FRAME_VERSION,
   FrameType,
   ReceiptStatus,
   parseFrame,
@@ -33,6 +33,12 @@ import {
   newNonce,
   verifyAuth,
 } from './handshake.js'
+import {
+  DEFAULT_MAX_QUEUED,
+  EnvelopeOutbox,
+  type SuccessfulReceiptStatus,
+} from './outbox.js'
+import { receiveEnvelope } from './receiver.js'
 
 /**
  * The listening half of a Qianmo hop — the half the base does not have.
@@ -53,48 +59,23 @@ import {
  * agent actually read it belongs to `@qianmo/adapter`, one layer up.
  */
 
-/** Longest claimed id echoed back on a rejection. Bounds an abusive value. */
-const MAX_ECHOED_ID_LENGTH = 64
-
-/** The `msgId` an unvalidated value claims, if it plausibly claims one. */
-function claimedMsgId(raw: unknown): string {
-  if (typeof raw !== 'object' || raw === null || !('msgId' in raw)) return ''
-  const value: unknown = raw.msgId
-  return typeof value === 'string' ? value.slice(0, MAX_ECHOED_ID_LENGTH) : ''
-}
-
-/** Per-connection state. Mutable — the handshake flips `authed` in place. */
+/** Per-socket state. A logical channel may outlive several such sockets. */
 interface ConnectionState {
   readonly nonce: string
   readonly openedAt: number
   node: string | null
+  channel: ServerTransportChannel | null
   authed: boolean
 }
-
-/** What a delivered envelope brings with it beyond the envelope itself. */
-export interface InboundContext {
-  /** Node segment the peer authenticated as. Audit label, not authority. */
-  readonly peerNode: string
-  /** Local epoch ms at which this node took the envelope in. */
-  readonly receivedAt: number
-}
-
-/**
- * The node's own handler.
- *
- * Throwing is meaningful: the envelope is un-remembered and the sender is told
- * `E_UNDELIVERABLE`, so its at-least-once retry can still land. Swallowing an
- * error here instead would turn a transient local fault into silent loss.
- */
-export type InboundHandler = (
-  message: QianmoMessage,
-  context: InboundContext,
-) => void | Promise<void>
 
 export interface TransportServerOptions {
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
   readonly onMessage: InboundHandler
+  readonly onPeerDisconnect?: (
+    peerNode: string,
+    remainingPeerConnections: number,
+  ) => void
   /** Listen on a unix socket. Mutually exclusive with `port`. */
   readonly unix?: string
   /** Listen on TCP. `0` lets the OS choose. */
@@ -102,18 +83,29 @@ export interface TransportServerOptions {
   readonly hostname?: string
   /** TLS materials, passed straight to Bun. Meaningless with `unix`. */
   readonly tls?: TLSOptions
-  /** Injected clock. */
+  /** Injected wall clock for events, dedup and receipt metadata. */
   readonly now?: () => number
+  /** Rule T-2 clock used only for envelope deadline validation. */
+  readonly deadlineNow?: (createdAt: number) => number
   /** Extra sink for records, on top of the retained ring. */
   readonly events?: TransportEventSink
   /** Share one table across servers, or inject a clock into it. */
   readonly dedup?: DedupTable
+  /** Cap on unreceipted server-originated envelopes per logical channel. */
+  readonly maxQueued?: number
+  /** Cap on logical channels retained for reconnect and pending replies. */
+  readonly maxChannels?: number
   /**
    * Seconds of silence before Bun reaps a connection. Bun's own default is
    * 10 s, which a long-lived node link would trip constantly; clients send a
    * keep-alive data frame well inside this window.
    */
   readonly idleTimeoutSec?: number
+  /**
+   * How long a disconnected logical channel is kept alive for its peer to come
+   * back to, when it still holds unreceipted envelopes. `0` reclaims at once.
+   */
+  readonly channelRetentionMs?: number
   readonly eventCapacity?: number
 }
 
@@ -126,16 +118,40 @@ export interface TransportServerHandle {
   readonly url?: string
   readonly events: EventRecorder
   readonly dedup: DedupTable
-  /** Open connections, authenticated or not. */
+  /** Open physical connections, authenticated or not. */
   readonly connections: number
+  /** Logical channels retained across reconnects. */
+  readonly channels: number
   stop(): Promise<void>
 }
 
 /** Seconds. Comfortably above the client's keep-alive period. */
 export const DEFAULT_IDLE_TIMEOUT_SEC = 120
 
+/** Hard cap on reconnectable logical channels retained by one server. */
+export const DEFAULT_MAX_CHANNELS = 1_000
+
+/**
+ * How long a socket-less channel with unreceipted envelopes is retained.
+ *
+ * Without a ceiling, such a channel is retained *forever*: it survives
+ * {@link ServerTransportChannel.unbind} because its outbox is not empty, and
+ * the only thing that would empty it is a receipt from the peer that just went
+ * away. A server that answers refused requests on the inbound channel (the
+ * activator does) would then accumulate one dead channel per refusal until
+ * {@link DEFAULT_MAX_CHANNELS} is reached, after which **every** new handshake
+ * is closed with `CLOSE_CAPACITY` — a self-inflicted outage with no recovery
+ * short of a restart.
+ *
+ * Five minutes matches the protocol's default task deadline: past it, nothing
+ * that could still be waiting on those envelopes is alive to care.
+ */
+export const DEFAULT_CHANNEL_RETENTION_MS = 300_000
+
 /** How long {@link TransportServerHandle.stop} waits on Bun before moving on. */
 const STOP_GRACE_MS = 200
+const CLOSE_REPLACED = 4000
+const CLOSE_CAPACITY = 1013
 
 /**
  * Largest frame the socket will buffer: the protocol's own envelope ceiling
@@ -148,6 +164,186 @@ const STOP_GRACE_MS = 200
  */
 const MAX_FRAME_BYTES = LIMITS.maxMessageBytes + 4096
 
+class ServerTransportChannel implements TransportChannel {
+  readonly id: string
+  readonly peerNode: string
+  readonly #outbox: EnvelopeOutbox
+  readonly #remove: (channel: ServerTransportChannel) => void
+  readonly #record: (type: TransportEventType, detail: EventDetail) => void
+  readonly #retentionMs: number
+  #socket: ServerWebSocket<ConnectionState> | null = null
+  #holds = 0
+  #closed = false
+  #reclaim: ReturnType<typeof setTimeout> | null = null
+
+  constructor(options: {
+    readonly id: string
+    readonly peerNode: string
+    readonly maxQueued: number
+    readonly retentionMs: number
+    readonly remove: (channel: ServerTransportChannel) => void
+    readonly record: (type: TransportEventType, detail: EventDetail) => void
+  }) {
+    this.id = options.id
+    this.peerNode = options.peerNode
+    this.#retentionMs = options.retentionMs
+    this.#remove = options.remove
+    this.#record = options.record
+    this.#outbox = new EnvelopeOutbox({
+      maxQueued: options.maxQueued,
+      canWrite: () => this.isReady(),
+      isClosed: () => this.#closed,
+      write: message => {
+        const socket = this.#socket
+        if (socket === null) return
+        socket.send(
+          serializeFrame({
+            t: FrameType.Envelope,
+            v: FRAME_VERSION,
+            envelope: message,
+          }),
+        )
+      },
+      onReceipt: (frame, known) => this.#recordReceipt(frame, known),
+    })
+  }
+
+  get pending(): number {
+    return this.#outbox.pending
+  }
+
+  isReady(): boolean {
+    return this.#socket !== null && !this.#closed
+  }
+
+  isClosed(): boolean {
+    return this.#closed
+  }
+
+  send(message: QianmoMessage): void {
+    this.#outbox.send(message)
+  }
+
+  sendAndWait(
+    message: QianmoMessage,
+    timeoutMs = 5_000,
+  ): Promise<SuccessfulReceiptStatus> {
+    return this.#outbox.sendAndWait(message, timeoutMs)
+  }
+
+  waitForDrain(timeoutMs = 5_000): Promise<void> {
+    return this.#outbox.waitForDrain(timeoutMs)
+  }
+
+  hold(): () => void {
+    if (this.#closed) throw new Error('transport channel is closed')
+    this.#holds += 1
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.#holds -= 1
+      this.#removeIfIdle()
+    }
+  }
+
+  bind(socket: ServerWebSocket<ConnectionState>): void {
+    if (this.#closed) throw new Error('transport channel is closed')
+    const previous = this.#socket
+    this.#socket = socket
+    if (previous !== null && previous !== socket) {
+      previous.close(CLOSE_REPLACED, 'logical channel reconnected')
+    }
+  }
+
+  ready(): void {
+    this.#outbox.replay()
+  }
+
+  unbind(socket: ServerWebSocket<ConnectionState>): void {
+    if (this.#socket === socket) this.#socket = null
+    this.#removeIfIdle()
+  }
+
+  receive(frame: ReceiptFrame): void {
+    this.#outbox.receive(frame)
+    this.#removeIfIdle()
+  }
+
+  close(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#cancelReclaim()
+    const socket = this.#socket
+    this.#socket = null
+    socket?.close(1000, 'transport server shutdown')
+    this.#outbox.close(new Error('transport server closed before receipt'))
+  }
+
+  #recordReceipt(frame: ReceiptFrame, known: boolean): void {
+    if (frame.status === ReceiptStatus.Rejected) {
+      this.#record(TransportEventType.MessageRejected, {
+        node: this.peerNode,
+        msgId: frame.msgId,
+        code: frame.code ?? '',
+        reason: frame.reason ?? '',
+      })
+      return
+    }
+    if (!known) return
+    this.#record(
+      frame.status === ReceiptStatus.Duplicate
+        ? TransportEventType.MessageDuplicate
+        : TransportEventType.MessageAccepted,
+      { node: this.peerNode, msgId: frame.msgId },
+    )
+  }
+
+  #removeIfIdle(): void {
+    if (this.#socket !== null || this.#holds > 0) {
+      this.#cancelReclaim()
+      return
+    }
+    if (this.#outbox.pending > 0) {
+      this.#armReclaim()
+      return
+    }
+    this.#cancelReclaim()
+    this.#closed = true
+    this.#remove(this)
+  }
+
+  /**
+   * Put a socket-less channel on the clock.
+   *
+   * The envelopes it still holds are not dropped here — a peer that comes back
+   * inside the window rebinds and gets them replayed. What the clock prevents
+   * is the other case: a peer that never comes back, whose channel would
+   * otherwise sit in the table forever with no event left that could retire it.
+   */
+  #armReclaim(): void {
+    if (this.#reclaim !== null || this.#closed) return
+    this.#reclaim = setTimeout(() => {
+      this.#reclaim = null
+      if (this.#socket !== null || this.#holds > 0 || this.#closed) return
+      this.#record(TransportEventType.ChannelReclaimed, {
+        node: this.peerNode,
+        channelId: this.id,
+        pending: this.#outbox.pending,
+      })
+      this.close()
+      this.#remove(this)
+    }, this.#retentionMs)
+    this.#reclaim.unref?.()
+  }
+
+  #cancelReclaim(): void {
+    if (this.#reclaim === null) return
+    clearTimeout(this.#reclaim)
+    this.#reclaim = null
+  }
+}
+
 export function startTransportServer(
   options: TransportServerOptions,
 ): TransportServerHandle {
@@ -157,9 +353,16 @@ export function startTransportServer(
   }
 
   const now = options.now ?? (() => Date.now())
+  const deadlineNow = options.deadlineNow ?? (() => now())
   const recorder = new EventRecorder(options.eventCapacity, options.events)
   const dedup = options.dedup ?? new DedupTable({ now })
   const sockets = new Set<ServerWebSocket<ConnectionState>>()
+  const channels = new Map<string, ServerTransportChannel>()
+  const peerConnections = new Map<string, number>()
+  const maxChannels = options.maxChannels ?? DEFAULT_MAX_CHANNELS
+  const maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
+  const channelRetentionMs =
+    options.channelRetentionMs ?? DEFAULT_CHANNEL_RETENTION_MS
 
   function record(type: TransportEventType, detail: EventDetail): void {
     recorder.record({ type, at: now(), detail })
@@ -169,20 +372,25 @@ export function startTransportServer(
     ws.send(serializeFrame(frame))
   }
 
-  function receipt(
-    msgId: string,
-    status: ReceiptStatus,
-    code?: ProtocolErrorCode,
-    reason?: string,
-  ): ReceiptFrame {
-    return {
-      t: FrameType.Receipt,
-      v: 0,
-      msgId,
-      status,
-      ...(code === undefined ? {} : { code }),
-      ...(reason === undefined ? {} : { reason }),
-    }
+  function removeChannel(channel: ServerTransportChannel): void {
+    if (channels.get(channel.id) === channel) channels.delete(channel.id)
+  }
+
+  function createChannel(
+    id: string,
+    peerNode: string,
+  ): ServerTransportChannel | null {
+    if (channels.size >= maxChannels) return null
+    const channel = new ServerTransportChannel({
+      id,
+      peerNode,
+      maxQueued,
+      retentionMs: channelRetentionMs,
+      remove: removeChannel,
+      record,
+    })
+    channels.set(id, channel)
+    return channel
   }
 
   /**
@@ -206,85 +414,33 @@ export function startTransportServer(
     ws.close(closeCode, ws.data.authed ? 'protocol error' : 'unauthorized')
   }
 
-  async function handleEnvelope(
-    ws: ServerWebSocket<ConnectionState>,
-    raw: unknown,
-    peerNode: string,
-  ): Promise<void> {
-    const validation = validateMessage(raw)
-    if (!validation.ok) {
-      // Quote back the id the sender claimed, so it can retire the right
-      // outbox entry — bounded and never interpreted, because on this path it
-      // is by definition a value that failed validation.
-      const badId = claimedMsgId(raw)
-      const code =
-        firstErrorCode(validation) ?? ProtocolErrorCode.E_BAD_ENVELOPE
-      record(TransportEventType.MessageRejected, {
-        node: peerNode,
-        code,
-      })
-      send(ws, receipt(badId, ReceiptStatus.Rejected, code, 'invalid envelope'))
-      return
-    }
-
-    const message = validation.message
-    const verdict = dedup.admit(message)
-    if (verdict !== DedupVerdict.Fresh) {
-      record(TransportEventType.MessageDuplicate, {
-        node: peerNode,
-        msgId: message.msgId,
-        level: verdict,
-      })
-      send(ws, receipt(message.msgId, ReceiptStatus.Duplicate))
-      return
-    }
-
-    try {
-      await options.onMessage(message, { peerNode, receivedAt: now() })
-    } catch (error) {
-      // Un-remember it: the work did not happen, so the sender's retry has to
-      // be able to get through rather than be absorbed as a duplicate.
-      dedup.forget(message)
-      record(TransportEventType.MessageRejected, {
-        node: peerNode,
-        msgId: message.msgId,
-        code: ProtocolErrorCode.E_UNDELIVERABLE,
-        reason: error instanceof Error ? error.name : 'unknown',
-      })
-      send(
-        ws,
-        receipt(
-          message.msgId,
-          ReceiptStatus.Rejected,
-          ProtocolErrorCode.E_UNDELIVERABLE,
-          'handler failed',
-        ),
-      )
-      return
-    }
-
-    record(TransportEventType.MessageAccepted, {
-      node: peerNode,
-      msgId: message.msgId,
-    })
-    send(ws, receipt(message.msgId, ReceiptStatus.Accepted))
-  }
-
   const websocket: WebSocketHandler<ConnectionState> = {
     idleTimeout: options.idleTimeoutSec ?? DEFAULT_IDLE_TIMEOUT_SEC,
     maxPayloadLength: MAX_FRAME_BYTES,
     open(ws) {
       sockets.add(ws)
       record(TransportEventType.ConnectionOpened, {})
-      send(ws, { t: FrameType.Challenge, v: 0, nonce: ws.data.nonce })
+      send(ws, {
+        t: FrameType.Challenge,
+        v: FRAME_VERSION,
+        nonce: ws.data.nonce,
+      })
     },
     close(ws, code) {
       sockets.delete(ws)
+      ws.data.channel?.unbind(ws)
       record(TransportEventType.ConnectionClosed, {
         node: ws.data.node ?? '',
         code,
         durationMs: now() - ws.data.openedAt,
       })
+      if (ws.data.authed && ws.data.node !== null) {
+        const peerNode = ws.data.node
+        const remaining = Math.max(0, (peerConnections.get(peerNode) ?? 1) - 1)
+        if (remaining === 0) peerConnections.delete(peerNode)
+        else peerConnections.set(peerNode, remaining)
+        options.onPeerDisconnect?.(peerNode, remaining)
+      }
     },
     async message(ws, raw) {
       const frame = parseFrame(typeof raw === 'string' ? raw : raw.toString())
@@ -307,23 +463,68 @@ export function startTransportServer(
           refuse(ws, result.rejection, CLOSE_UNAUTHORIZED)
           return
         }
+        const existing = channels.get(result.channelId)
+        if (existing !== undefined && existing.peerNode !== result.node) {
+          ws.data.node = result.node
+          refuse(ws, HandshakeRejection.BadChannel, CLOSE_UNAUTHORIZED)
+          return
+        }
+        const channel = existing ?? createChannel(result.channelId, result.node)
+        if (channel === null) {
+          record(TransportEventType.AuthRejected, {
+            rejection: 'channel_capacity',
+            node: result.node,
+            closeCode: CLOSE_CAPACITY,
+          })
+          ws.close(CLOSE_CAPACITY, 'logical channel capacity reached')
+          return
+        }
+
         ws.data.authed = true
         ws.data.node = result.node
-        record(TransportEventType.AuthAccepted, { node: result.node })
-        send(ws, { t: FrameType.Ready, v: 0 })
+        ws.data.channel = channel
+        channel.bind(ws)
+        peerConnections.set(
+          result.node,
+          (peerConnections.get(result.node) ?? 0) + 1,
+        )
+        record(TransportEventType.AuthAccepted, {
+          node: result.node,
+          channelId: result.channelId,
+        })
+        send(ws, { t: FrameType.Ready, v: FRAME_VERSION })
+        channel.ready()
         return
       }
 
-      const peerNode = ws.data.node ?? ''
+      const channel = ws.data.channel
+      if (channel === null) {
+        refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_PROTOCOL_ERROR)
+        return
+      }
       switch (frame.t) {
         case FrameType.KeepAlive:
           return
-        case FrameType.Envelope:
-          await handleEnvelope(ws, frame.envelope, peerNode)
+        case FrameType.Envelope: {
+          const context: InboundContext = {
+            peerNode: channel.peerNode,
+            receivedAt: now(),
+            channel,
+          }
+          const reply = await receiveEnvelope(frame.envelope, context, {
+            onMessage: options.onMessage,
+            dedup,
+            recorder,
+            now,
+            deadlineNow,
+          })
+          send(ws, reply)
+          return
+        }
+        case FrameType.Receipt:
+          channel.receive(frame)
           return
         default:
-          // Challenge / auth / ready / receipt are server-to-client frames or
-          // a second handshake; either way the peer is not speaking v0.
           refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_PROTOCOL_ERROR)
       }
     },
@@ -337,6 +538,7 @@ export function startTransportServer(
       nonce: newNonce(),
       openedAt: now(),
       node: null,
+      channel: null,
       authed: false,
     }
     if (server.upgrade(request, { data })) return undefined
@@ -371,7 +573,12 @@ export function startTransportServer(
     get connections(): number {
       return sockets.size
     },
+    get channels(): number {
+      return channels.size
+    },
     stop: async (): Promise<void> => {
+      for (const channel of [...channels.values()]) channel.close()
+      channels.clear()
       // Bounded, not a plain await, because of a measured Bun behaviour: once
       // this server has closed a WebSocket itself — which is exactly what
       // refusing a handshake does — `server.stop()` never resolves, on unix

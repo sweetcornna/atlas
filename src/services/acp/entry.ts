@@ -4,6 +4,11 @@ import { Readable, Writable } from 'node:stream'
 import { AcpAgent } from './agent.js'
 import { enableConfigs } from '../../utils/config/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../utils/config/managedEnv.js'
+import {
+  registerSessionActivityCallback,
+  unregisterSessionActivityCallback,
+} from '../../utils/session/sessionActivity.js'
+import { getConnection, isQianmoResident } from './agent/internalAccessors.js'
 
 /**
  * Creates an ACP Stream from a pair of Node.js streams.
@@ -41,6 +46,15 @@ export async function runAcpAgent(): Promise<void> {
     return agent
   }, stream)
 
+  registerSessionActivityCallback(active => {
+    if (!isQianmoResident(agent)) return
+    void getConnection(agent)
+      .extNotification('qianmo/session-activity', { active })
+      .catch(error => {
+        console.error('[ACP] Failed to send Qianmo activity update:', error)
+      })
+  })
+
   // stdout is used for ACP messages — redirect console to stderr
   console.log = console.error
   console.info = console.error
@@ -48,6 +62,7 @@ export async function runAcpAgent(): Promise<void> {
   console.debug = console.error
 
   async function shutdown(): Promise<void> {
+    unregisterSessionActivityCallback()
     // Clean up all active sessions
     for (const [sessionId] of agent.sessions) {
       try {

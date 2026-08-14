@@ -458,8 +458,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
 export async function doesMessageExistInSession(
   sessionId: UUID,
   messageUuid: UUID,
+  projectDir?: string,
 ): Promise<boolean> {
-  const messageSet = await getSessionMessages(sessionId)
+  const messageSet = await getSessionMessages(sessionId, projectDir)
   return messageSet.has(messageUuid)
 }
 

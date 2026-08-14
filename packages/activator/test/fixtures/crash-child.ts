@@ -118,11 +118,8 @@ const activator = new Activator({
   forward,
   failures: {
     fail: async reply => {
-      const payload = reply.payload as { code?: string; ofMsgId?: string }
-      appendFileSync(
-        failureLog,
-        `${payload.ofMsgId ?? ''} ${payload.code ?? ''}\n`,
-      )
+      const payload = reply.payload as { code?: string }
+      appendFileSync(failureLog, `${reply.taskId} ${payload.code ?? ''}\n`)
       await Promise.resolve()
     },
   },

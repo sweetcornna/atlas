@@ -1,17 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import type {
-  AckPayload,
-  ProtocolErrorCode,
-  QianmoMessage,
-} from '@qianmo/protocol'
-import {
-  createAck,
-  deliveryExpiresAt,
-  errorReply,
-  formatAddress,
-} from '@qianmo/protocol'
+import type { AckPayload, ErrorPayload, QianmoMessage } from '@qianmo/protocol'
+import { createAck, errorReply, formatAddress } from '@qianmo/protocol'
 
 import type {
   InboundAdapter,
@@ -21,12 +12,7 @@ import type {
 import type { ObserveOptions } from './observer.js'
 import { observeReadFlip } from './observer.js'
 
-/** Payload shape `errorReply` produces. */
-export interface ErrorReplyPayload {
-  readonly code: ProtocolErrorCode
-  readonly reason: string
-  readonly ofMsgId: string
-}
+export type ErrorReplyPayload = ErrorPayload
 
 /**
  * The reply the last hop hands back to the transport, and the terminal state
@@ -87,7 +73,7 @@ export async function deliverAndAck(
     agent: result.recipient,
     team: result.team,
     identity: result.identity,
-    deadlineAt: deliveryExpiresAt(result.wrapper.envelope),
+    deadlineAt: result.deadlineAt,
   })
 
   switch (outcome.state) {

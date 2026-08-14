@@ -65,6 +65,12 @@
  */
 
 export {
+  DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR,
+  ResidentActivityController,
+  startResidentActivityServer,
+} from './activity.js'
+
+export {
   Activator,
   DEFAULT_MAX_IN_FLIGHT,
   DEFAULT_READY_POLL_INTERVAL_MS,
@@ -117,6 +123,7 @@ export {
 
 export {
   DAEMON_TOKEN_ENV_VAR,
+  DAEMON_URL_ENV_VAR,
   DEFAULT_DAEMON_TIMEOUT_MS,
   DaemonRequestError,
   HttpSandboxDaemon,
@@ -164,10 +171,18 @@ export {
   StaticTargetDirectory,
   TransportLinks,
   UnknownTargetError,
+  type LinkReplyHandler,
   type TargetDirectory,
   type TargetSite,
   type TransportLinksOptions,
 } from './link.js'
+
+export {
+  DEFAULT_TASK_ROUTE_CAPACITY,
+  TaskRouteError,
+  TaskRouteRegistry,
+  type TaskRouteRegistryOptions,
+} from './routes.js'
 
 export {
   DEFAULT_FAILURE_CAPACITY,
@@ -182,6 +197,7 @@ export {
   StageTimeline,
   TimingRecorder,
   durationsOf,
+  statsOf,
   type ActivationOutcomeKind,
   type StageDurations,
   type StageStats,

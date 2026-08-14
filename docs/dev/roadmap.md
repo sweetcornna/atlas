@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v2.16** |
-| 生效日期 | 2026-08-12 |
+| 文档版本 | **v2.20** |
+| 生效日期 | 2026-08-13 |
 | 依据 | [`charter.md`](./charter.md) v2.4（范围与验收标准以章程为准） |
 | 用途 | M0 部分是排期派活的直接依据；M1 及以后为方向性规划 |
 
@@ -44,12 +44,22 @@
 
 | **v2.16** | **2026-08-12** | **P2.5 DoD ① 真机验证通过（10/10），P2.5 转为已完成**。GCP + Dormice + gVisor 上连续 10 轮「休眠 → 唤醒 → ready → 转发」，每轮先确认沙箱 `state=frozen` 再投递；`total` p50 43 ms / p95 423 ms，判据 P95 ≤ 60 s，**低两个数量级**。主 agent 独立核验收件箱 10 行 / 10 个唯一 msgId，确认是真到达而非回执自称。**同时明确两条边界**（见下方「v2.16 决策」）：① 本次**不构成 AC-2 完成**，ack 语义未验；② 这批数字**不能当作 P3.1 的休眠唤醒基准**——被唤醒的是一个 94 KB 的测试节点，不是常驻 occ。**排期与其余任务包未动。** |
 
+| **v2.17** | **2026-08-13** | **P3.1 完成：常驻 occ/ACP 的 Dormice + gVisor 休眠唤醒真机验收通过**。专用 `runsc` 沙箱内跑真实 occ/ACP、文件信箱、transport 与固定 SSE 模型桩；baseline factor 2/2 与 candidate 1.1/1.5 各连续 10 轮，均先确认 `frozen` 再投递、10/10 responsive、P95 首内容分别 4.270 s / 4.361 s（上限 60 s），两组 JSONL 损坏行均为 0。时间跳跃反向判据同时通过：thaw 后新鲜消息 accepted，宽限后正常过期消息恢复 `E_TTL_EXPIRED`；manual 与 3 s timer 两条均从 frozen 出发并完成完整 turn。A/B 结论仅落到两个实测面：resident activity 重连默认 1.1、宿主 resident keepalive 默认 1.5；通用 transport/协议默认仍为 2。**本包完成的是 AC-2 后半「休眠 → 唤醒 → 可响应」；跨节点 ack/result 仍归 P4.1，不在此冒领。** |
+
+| **v2.18** | **2026-08-13** | **P3.2 完成：Atlas 团队仓库上的真实编程闭环 3/3 通过**。一键 runner 对同一 source commit 建三个独立 clone，均先 `bun install --frozen-lockfile`，提交受保护的红色回归 fixture，再由真实 headless 智能体完成「新增 address helper / 修 reconnect jitter 时序 bug / 收紧成功 receipt wire type」；三项 baseline 均非零，模型退出码、focused test 与包级 `tsc` 最终均为 0，生产改动文件与 allowlist 精确相等，受保护测试零改动。命令执行强制 fail-closed sandbox、禁 unsandboxed fallback，工具集只含 Read/Edit/Bash；真实 provider 凭据只在异步回环代理闭包，子进程仅持 dummy，证据扫描零命中。所有配置错误与任务失败统一输出 `qianmo.p32.task-result.v1` envelope，提供 task/phase/code/changedFiles/agent+test exit/artifacts，作为 P5.1 分类器输入；**原因级 `diagnosis` 仍归 P5.1，不在本包提前实现。** |
+
+| **v2.19** | **2026-08-13** | **P4.1 回程链路落地（代码与自动化测试完成，本包仍未完成）**。① **协议**：`ack` payload 收缩为 `{ handler, ackAt }`、`error` payload 去掉原消息 ID——**相关标识只存在于信封**（规则 C-1），`protocol.md` 旧 K-1 要求的 `{ ofMsgId, taskId }` 复制随之取消；新增字段封闭的 `task.result` 联合（成功 `{ outcome, content, completedAt }` / 失败 `{ outcome, code, reason, completedAt }`，运行时逐支精确校验）与稳定码 `E_TASK_FAILED`（`protocol.md` §4.2/§4.6/§11 已同步）。② **传输**：抽出两端共享的 receipt 驱动 outbox 与统一入站处理器（校验 → 两级去重 → handler 抛错即 forget 并回 rejected receipt），握手加入受 HMAC 覆盖的稳定 `channelId`，**同一逻辑通道在物理断线重连后重绑并重放反向 outbox**；业务层只拿到受限 `TransportChannel`（含 `hold()`），不接触裸 socket。③ **activator**：新增有界 task route registry——请求登记 C1 source channel，C2 回来的 ack/result/error 按 `taskId` + 地址 + sandbox 校验后原样沿 C1 转发，ack 保留路由、终态释放；重复 `taskId` 不能串线。**没有第二条反向连接。**④ **resident**：网络任务改为逐条 ACP turn（本地普通消息仍批处理），durable read 翻转后发 ack，turn 终态（正文聚合成功 / 取消 / 异常 / 任务 TTL / ACP 子进程关闭）发封闭 result 并等 receipt。⑤ **门禁**：`packages/` + `src/services/qianmo` + `tests/integration` **2533 pass / 0 fail**（26 skip 为需真实 provider 凭据的 AC-4/AC-5 套件）；根 typecheck、biome、mock hygiene 全绿；cycles 437/2024 在预算；unused 棘轮回到 exports 1251 / types 638（两个新内部 options 接口收回不导出）。**⑥ 本条不构成 P4.1 完成，也不构成 AC-2 完成**：DoD 的「连续 10 次、ack P95 ≤ 60 s、result ≤ 5 min、10/10」按 D-3 跑在独立基准 job 上，**尚未真机执行**；当前证据全部来自本地自动化测试（含真 socket 两跳与真 ACP 子进程），不是 Dormice + gVisor 真机。 |
+
+| **v2.20** | **2026-08-13** | **P4.1 完成，AC-2 达成：跨节点任务消息端到端真机验收 10/10**。GCP + Dormice + gVisor（`runsc`）沙箱内跑本次新构建的常驻 occ/ACP + 文件信箱 + 固定 SSE 模型桩；宿主同时跑 activator（含 activity/keepalive）与 **`@qianmo/registry` 真注册中心**；发送方是一条**只拨出、不监听**的 `TransportClient`。每轮先确认沙箱 `state=frozen` 再投递，链路为「按名解析 → 传输投递 → activator 接住并唤醒 → 沙箱内常驻读入 → ack → 执行 → `task.result`」。**判据**（跑在评审九条修复之后的构建上，与合入 main 的代码一致）：成功率 **10/10**；ack p50 **2.490 s** / **P95 8.022 s**（上限 60 s）；result p50 3.471 s / **max 12.422 s**（上限 5 min）；按名解析 8–11 ms。**P95 等于 max 是因为十个样本的 p95 就落在最大值上**，而最大值是第 1 轮的冷链路建连（8.022 s / 12.422 s）；第 2 ~ 10 轮 ack 在 2.073 ~ 3.483 s。**独立核验（不采信宿主回执）**：进沙箱取常驻侧 timings，10 条 `msgId` 各有 `detected/admitted/read/first_content/turn_completed`，**每条 ack 都晚于 durable read**（§4.5）、**每条 result 都晚于 `turn_completed`**，`turn_failed` 0；沙箱内信箱累计 22 条全部已读、22 个唯一 `msgId`、类型全为 `task.request`；activator 审计 `link.opened=1`、`task-route.registered=10`、`task-reply.forwarded=20`（10 ack + 10 result）——**全程只有一条进沙箱的链路，回程没有第二条连接**。**一键复现**：`demo/p41-task-result.sh`（+ `demo/lib/p41-{registry,send,report,report-core}.ts`），报告不含正文（只留字符数与 sha256 前缀）与凭据。**口径按 D-3**：延迟测量跑在独立基准 job 并留档，未塞进 CI 阻塞位。原始记录、脱敏报告与 sha256 留在验收机用户私有目录（0700，文件 0600）。 |
+
 ---
 
 ### v2.16 决策（真机验收后的边界澄清，实施方裁定）
 
 **① 10/10 通过的是 P2.5 DoD ①，不是 AC-2。**
 DoD ① 要的是「转发且不丢」，已达成。AC-2 判据要的是**60 s 内的 `ack` 回执**，而本次 demo 的目标节点**刻意没接 `@qianmo/adapter`**（`deliverAndAck`）。那条链要成立，沙箱内得跑真 occ + adapter。**归属 P4.1**（跨节点投递端到端），不在 P2.5 内补——P2.5 的职责边界是「接住、唤醒、转发」，把 ack 塞进来会让两个包的判据互相纠缠。
+
+> **已闭合（v2.20，2026-08-13）**：P4.1 在同一套 Dormice + gVisor 环境里跑通了这条链——沙箱内是真 occ/ACP 常驻节点，ack 与 `task.result` 都从发送方自己那条连接回来，10/10、ack P95 4.440 s。本条从此只作历史记录读。
 
 **② 这批耗时数字不能外推成 P3.1 的休眠唤醒基准。**
 被唤醒的是一个 **94 KB 单文件测试节点**，堆几乎是空的；而 P3.1 的 DoD 说的是**常驻 occ 节点**「休眠 → 唤醒 → 可响应」。E2 实测 400 MiB 工作集回暖就要 9–10 s，常驻 occ 的堆通常显著更大。**本次结果只证明「沙箱冻结/解冻这一层的开销可以忽略」（p50 37 ms），把唤醒总成本的锅甩给了工作集回暖那一层**——这恰恰是 P3.1 基准该测的东西，且**尚未测得**。谁要是拿 43 ms 去填 P3.1 的基准报告，那是把测试桩的数字冒领成常驻节点的数字。
@@ -159,14 +169,18 @@ P0.1 基座导入与环境跑通
 | **P0.7** 安全面加固 | ✅ 已完成 | `35ab634` | 服务器侧三件已真机落地并验证；运维脚本与绑定不变式断言入库（`scripts/ops/`） |
 | **P1.1** 消息协议 v0.1 | ✅ 已完成 | `682ffff`（文档）+ `5fd3853`（信封落地） | `protocol.md` 713 行，七条硬问题全部有结论；§12.1 的 1~6、9 已落成代码 |
 | **P1.2** 会话持久化核验 | ✅ **已完成** | `5508358` + `3e7a401` + 主 agent 真机补测 | AC-1 三条判据全部达标。**最后一条「不重放历史即可续答」已于 2026-08-12 用真实模型补测通过**：让模型在对话中推出一个只存在于上下文的代号（`QM-seven-bridges`，由 NOTES.md 规则 + build.config 值算出），多轮途中 `kill -9`，`--resume` 重启后明确要求「不要重新读文件」追问该代号 —— 答对，`session_id` 前后一致，端到端 5.2 s |
+| **P1.3** 沙箱执行环境 v0 | ✅ 已完成 | 见 `packages/sandbox/` + `demo/ac6a-sandbox.sh` | Dormice 新出生契约已切回 gVisor，并由真实 Docker inspect 与周期漂移守卫共同断言；一次性新沙箱内 `occ` / `qm` 可用。AC-6(a) 真机 5/5：白名单外写入被拒、超时强杀、CPU 节流、内存 OOM、持久审计均有内核或控制面证据；审计文件 0600、目录 0700、无命令 / 输出 / 凭据字段。验收沙箱与前置探针已精确删除，存量业务沙箱未动 |
 | **P1.4** 模型适配层核验（AC-5） | ✅ 已完成 | `s1/p1.4-provider-verification` 合并 + 主 agent 补测 | 一致性套件（多轮/工具调用/流式）对两条 provider 各跑一遍、零 mock 零回放；同一编程任务两家各跑通、任务自带测试各 5 pass；「仅改配置」以两次逐字相同的命令行证明。**主 agent 补齐 G-1**：网关同时提供 Anthropic 原生端点，occ 走原生路径（不做消息转换、不走流适配）同样完成该任务（5 pass），于是「≥2 个不同适配器」有了字面意义的证据。**保留 G-4**：两条路径仍指向同一网关，未验证不同厂商 HTTP 层差异 |
 | **P2.1** 注册中心与按名寻址 | ✅ 已完成 | `15c7eb8`（复合键）+ 持久化合并 | 复合键 `<node>/<agent>`、`publicKey`、状态标记；状态持久化（`occConfigPath` 派生、`wx`+`fsync`+`rename` 原子写、`expiresAt` 不落盘按当下 TTL 重算）。DoD「重启后可自动重新注册」已覆盖 |
 | **P2.2** 节点间传输通道 | ✅ 已完成（**附报警**） | 见 `packages/transport/` | `@qianmo/transport`：五类帧 + PSK 握手、指数退避重连（含时间跳跃闸门）、两级去重（msgId + fingerprint）。三条 DoD 实测通过。**⚠️ 触发 roadmap 报警条款，见下方「P2.2 报警」** |
 | **P2.5** activator + keepalive | ✅ **四条 DoD 全部真机验证** | 见 `packages/activator/` + `demo/ac2-wake-forward.sh` | 三层能力面守卫（类型 / 运行时白名单 / import 期形状断言），`destroy` 代码层面不可达；真 `kill -9` 崩溃恢复不静默丢弃；时间跳跃闸门。**DoD ③④ 本地真测；DoD ② 已由主 agent 在真机验证通过**（对照组：不打心跳 t≈45s 冻结并保持；实验组：20s 周期心跳全程 120s 始终 active）。**DoD ① 已于 2026-08-12 真机验证通过：10/10**（GCP + Dormice + gVisor，目标节点跑在真实沙箱内、每轮先确认 `state=frozen` 再投递）。分位数：`total` p50 **43 ms** / p95 **423 ms**，`acceptToWake` p50 3 ms、`wakeToReady` p50 37 ms、`readyToForward` p50 2 ms；`forwarded 10 / failed 0 / refused 0`。**判据是 P95 ≤ 60 s，实测低两个数量级。**首轮 423 ms 是唯一离群点（冷链路建连），其余九轮均在 39–49 ms。**主 agent 另做了独立核验，不采信回执**：进沙箱查目标节点收件箱，**10 行、10 个唯一 `msgId`**，首条为真实信封（`qianmo://node-a/planner` → `qianmo://node-b/reviewer`），msgId 与发送方日志逐一对应——即「消息真的到了对端」，而非「回执说已转发」。**本次不证 ack 语义**：demo 目标节点刻意未接 `@qianmo/adapter`，AC-2 判据里 60 s 内的 `ack` 回执要成立，需沙箱内跑真 occ + adapter（见下方 v2.16 决策）。**另：真机核实推翻了原 API 假设并已修正**——Dormice 是「方法名即路径段」的 RPC、**不存在 `touch` 方法**、状态取值为 `active`；保活改用实测会刷新 `lastActiveAt` 的 `acquireSandbox` |
+| **P3.1** 休眠与唤醒 | ✅ 已完成 | 见 `packages/resident/` + `src/services/qianmo/` + `demo/p31-resident-wake.sh` | 常驻 ACP + durable 文件信箱读者、deterministic admission、节点级 turn 串行、activity→宿主 keepalive、manual/timer wake、全链路 timing 与时间跳跃覆盖。2026-08-13 在专用 Dormice + gVisor (`runsc`) 沙箱真机验收：baseline 2/2 与 candidate 1.1/1.5 各 **10/10 responsive**，每轮先确认 frozen；accept→first content P95 **4.270 s / 4.361 s**，accept→read P95 **3.112 s / 3.192 s**，均远低于 60 s。thaw 后新鲜消息 accepted，宽限结束后过期消息恢复 `E_TTL_EXPIRED`；manual **1.928 s**、3 s timer **4.862 s**，均完成 `detected/admitted/read/first_content/turn_completed`。A/B 决定两个专用默认值为 **1.1 / 1.5**，通用默认不动。脱敏聚合报告与原始文件校验和留在服务器用户私有验收目录（0700，文件 0600）；未持久化 bearer、PSK、地址或模型请求。**边界：本包只完成 AC-2 后半；跨节点 ack/result 仍归 P4.1。** |
+| **P3.2** 编程智能体闭环核验 | ✅ 已完成 | `scripts/qianmo-programming-tasks.ts` + `bun run verify:p32` | 同一 Atlas source commit 上三个独立 clone 任务 3/3：新增 `agentOf` helper（地址测试 **11 pass**）、修 reconnect 最大 jitter 误判（backoff 测试 **9 pass**）、补 `SuccessfulReceiptFrame` 成功子类型（类型测试 **1 pass**）；三项包级 `tsc` 均通过。每项先提交红色 fixture 并证明 baseline 非零，再由真实 headless agent 修复；生产 diff 精确等于 allowlist，受保护 regression tests 零改动。执行时仅开放 Read/Edit/Bash，Bash 强制 fail-closed sandbox 且禁止 unsandboxed fallback；真实 provider key 从进程环境移除，仅存异步回环代理闭包，agent 只持 dummy。失败统一为 `qianmo.p32.task-result.v1`，已覆盖 unknown task / missing credential 契约测试；原因分类留给 P5.1。脱敏 report/patch/test logs 与 sha256 留在私有验收目录（0700/0600） |
 | **@qianmo/adapter** 入站适配器 | ✅ 已完成 | 见 `packages/adapter/` | protocol.md §12.1 第 8 项：入站适配器 + `read` 翻转观察器 + blob 暂存区。**AC-2 的最后一跳**；ack 端到端（写完即发被测试证伪）、blob 阈值从基座常量 import 且测最终字符串、M-2 注入面封堵。76 用例零 mock |
 | **P2.3** 分层记忆 schema | ✅ 已完成 | `3e6d407` | `@qianmo/memory`：三层即三张表（目录即主键），双时间轴（事件轴 `validAt`/`invalidAt` 与摄取轴 `createdAt`/`expiredAt`）由 `revoke`（撤下记录，任何 `asOf` 都不再召回）与 `invalidate`（事实失效但记录仍 live，问过去仍命中）**两个独立操作**驱动；沉淀归档先写目标再封存源。**与基座四类型的关系定性：上层封装 + 共用文件格式**——复用基座前言契约与路径派生（`getMemoryBaseDir()`，兼顾 `CLAUDE_CODE_REMOTE_MEMORY_DIR` 持久化挂载），但自持根目录，因为基座记忆目录处在一个**被提示词明确指示可删条目**的 agent 写权限之下（`src/memdir/memdir.ts:202`），装不下「只标记不删除、废止后可审计」这条不变式；互操作有测试对着基座真解析器断言。43 用例。**评审打回一处并已修**：单个手改过的文件原会让整次 `query` 抛错、连健康记录一起带走（主 agent 实测「3 条 → 全灭」），改为扫描取部分结果 + 显式事件通道，`getEntry` 定点查询维持抛错 |
 
 | **P3.3** 记忆检索唤醒 v0 | ✅ 已完成 | 见 `packages/recall/` + `tests/integration/qianmo-memory-recall.test.ts` | `@qianmo/recall`：确定性检索（标签 + 关键词 + 时间衰减，无模型无向量）之上叠**小规模全量注入**（< 50 条 / < 20k 字符即全投），**候选集只按 scope 取、绝不按词过滤**——词过滤正是 D-6 实测到的 0 结果失败面。来源标注走**工具层强制引用**：`qianmo_memory_answer` 是纯 JSON Schema（零供应商名），回来的每个 `citations` 逐个 `getEntry` 解析，**解析不到即无法被引用**，伪造引用因此是查表不是祈祷；六种引用判定互不合并（其中 `unreadable` 与 `unknown` 分开，避免把损坏的真条目报成幻觉）。只投 live 条目、每次从盘上重建，废止后下一次召回即消失。store 的 `entry_unreadable` 事件通道被抬到 `RecallResult.events` + `degraded`，不在上层重新盖回静默。**DoD 三条真机全绿**：5 条决策 × 2 家 provider 命中 10/10 且标注 ID 与写入时间；3 条伪造决策 × 2 家引用数 0/6；工具声明在两家转换后逐字相同（切换供应商不改代码）。51 包内用例 + 19 集成用例，零 mock |
+| **P4.1** ⭐ 跨节点任务消息端到端 | ✅ 已完成 | 见 `packages/transport/src/{channel,outbox,receiver}.ts` + `packages/activator/src/routes.ts` + `src/services/qianmo/resident.ts` + `demo/p41-task-result.sh` | 回程走**同一条已认证长连接**：握手带受 HMAC 覆盖的稳定 `channelId`，两端共用 receipt 驱动 outbox 与统一入站处理器，物理断线重连后按同一 `channelId` 重绑并重放反向 outbox；activator 侧有界 task route registry 在 TTL 内持有源通道（`hold()`），C2 回复按 `taskId` + 地址 + sandbox 校验后原样沿 C1 转发，ack 保留路由、终态释放，重复 `taskId` 不能串线；resident 把网络任务改为逐条 ACP turn，durable read 翻转后发 ack、turn 终态发字段封闭的 `task.result`。协议侧 ack payload 收缩为 `{ handler, ackAt }`、相关标识只留信封，新增 `task.result` 联合与 `E_TASK_FAILED`（`protocol.md` §4.2/§4.6/§11）。**2026-08-13 真机验收 10/10**（Dormice + gVisor + 真注册中心，每轮先确认 frozen）：ack **P95 8.022 s**（p50 2.490 s，P95 即第 1 轮冷链路）、result **max 12.422 s**，判据 60 s / 5 min；独立核验证实每条 ack 都晚于沙箱内的 durable read、每条 result 都晚于 `turn_completed`，且 `link.opened=1`——回程没有第二条连接。详见 v2.20 变更记录 |
 
 **⚠️ P2.2 报警（v2.6 记录）**：roadmap v2.2 曾把 P2.2 从「从零造」**降级**为「实现一个 `Transport` + 自建服务端半边」，依据是基座有约 5,300 行在用传输代码。**实施时逐行核实，该依据不成立**：
 
@@ -357,7 +371,7 @@ P0.1 基座导入与环境跑通
 - 交付物：AC-1 三条判据的实测结果（`session_id` 一致性 / 不重放历史即可续答 / 启动到可收消息 ≤ 10 s，**统一以 `--resume <id>` 为入口测量**）；`kill -9` 三种崩溃点（写事件中 / 快照中 / 工具执行中）的一致性实测与补齐；**丢失窗口内消息的语义定义**（回写 `protocol.md`）；`demo/ac1-restart.sh` 一键复现脚本；**常驻化缺口清单**（基座会话是交互进程内的，常驻节点需要什么额外状态，输出给 P3.1）
 - DoD：`demo/ac1-restart.sh` 可一键复现且三条判据全部达标；三种崩溃点各有用例；**"≤ 10 s"在会话历史积累后复测仍达标**（至少测两个历史规模点位，防止线性成本在验收后才暴露）；丢失窗口语义已回写 `protocol.md`；缺口清单交付 P3.1 → **AC-1**
 
-**P1.3 沙箱执行环境 v0**
+**P1.3 沙箱执行环境 v0**（状态：✅ 已完成，见「完成状态速查」）
 - owner：董宗岳（backup：陈曦宇）
 - 依赖：P0.1
 - 说明：基座有工具权限模型与 hooks 可作第一道，**容器化与路径白名单仍需自研**（章程 §4.1 为此留了一个提请评审）
@@ -432,7 +446,7 @@ P0.1 基座导入与环境跑通
 
 ### S3 · 2026-09-28 ~ 10-11 — 休眠唤醒 + 编程闭环（50% 产能，国庆）
 
-**P3.1 ⭐ 休眠与唤醒**
+**P3.1 ⭐ 休眠与唤醒**（状态：✅ 已完成，见「完成状态速查」）
 - owner：董宗岳（backup：陈子轩）
 - 依赖：P1.2、P1.3、P2.1、P2.2、**P2.5**（v2.2 新增：唤醒的发起方是 activator，本包是它的另一半）
 - 说明（**v2.2 重写**）：
@@ -460,7 +474,7 @@ P0.1 基座导入与环境跑通
 - **交付物追加（v2.15）· 时间跳跃闸门是「覆盖面」不是「造机制」**：闸门本身**已由 P2.5 交付**（`packages/activator/src/clock.ts` 的 `TimeJumpGate`，`packages/transport/src/backoff.ts` 另有同源一套），`protocol.md` §T-2 已写成协议强制项。本包剩下的是**接到还没接的地方**：`@qianmo/*` 侧 8 处未保护（危害最高的三处是 `transport/src/client.ts` 心跳超三周期即 `socket.terminate()`、`registry/src/registry.ts` 的 `#live()` 过期即**删除**而非软判离线、`adapter/src/inbound.ts` 的 T-1 检查未过闸门），基座侧约 20 处**在 ACP 进程内可达**的判据（最高危是 `src/services/api/claude.ts` 的 90 s 流空闲看门狗，**默认开**）。这是本包最大的单项工时来源
 - **阈值体检（v2.15，需在本包内解决）**：两处已知的数值撞车——`LIMITS.defaultTtlMs = 30_000` **小于** E4 实测的 34.7 s 冻结；`registry` 的 `DEFAULT_TTL_MS = 90_000` **小于** E4 实测的 97 s 冻结（后者更糟：过期走的是删除，`heartbeat()` 此后返回 `null`，**心跳无法自救、必须重新 register**）。另有两个 factor-2 检测盲区（`backoff.ts` 阈值 60 s、`keepalive.ts` 阈值 40 s，而 E4 冻结 34.7 s **检测不到**）
 
-**P3.2 🔍 编程智能体闭环核验**
+**P3.2 🔍 编程智能体闭环核验**（状态：✅ 已完成，见「完成状态速查」）
 - owner：陈子轩（backup：董宗岳）
 - 依赖：P1.3、P1.4
 - 说明：**性质从"实现"变为"核验"**。接任务 → 读代码 → 改文件 → 跑测试 → 报结果这条闭环是基座的核心能力，本包不重写它
@@ -478,7 +492,7 @@ P0.1 基座导入与环境跑通
 
 ### S4 · 2026-10-12 ~ 10-25 — 跨节点投递打通（M0 最关键的一期）
 
-**P4.1 ⭐ 跨节点任务消息端到端**
+**P4.1 ⭐ 跨节点任务消息端到端**（状态：✅ 已完成，见「完成状态速查」）
 - owner：陈曦宇 + 董宗岳（联合，喻永昌兜底）
 - 依赖：P2.1、P2.2、**P2.5**（v2.2 新增）、P3.1
 - 交付物：完整链路——节点 A 智能体发起 → 注册中心按名解析 → 传输通道加密投递 → **activator 接住并唤醒**节点 B 上休眠的智能体 → 返回 ack → 执行任务 → 返回 result
@@ -486,6 +500,8 @@ P0.1 基座导入与环境跑通
 - **测量口径（v2.2 新增，同步 D-3）**：**"连续 10 次测量"保留**，但明确它**跑在独立的基准 job 上、产出留档报告**（同机同 job 内测基线、报相对差值），**不作为 CI 的阻塞门禁**；**CI 阻塞位只放超时兜底**。理由：延迟类静态阈值在共享 runner 上的假阳性率高到会让门禁失去判别力，**一个天天变红的门禁等于没有门禁**。章程 §4 已按此修订，**D-3 已于 2026-08-12 经 P0.8 确认通过**（章程 v2.8），此口径即为现行判据
 - **v2.0 补注**：本包的前置链在 v2.0 中变长了（多了 P0.2 与 P2.2 的实际工作量），而日期未变。若 S2/S3 出现欠账，**本包是最先被挤压的**——按章程 §0.4 欠账阈值处理，不要靠 S4 加班吸收
 - **v2.2 补注**：前置链**又长了一环**（P2.5），日期仍未变。P2.2 的工作量虽已下调，但下调出来的余量**已经被 P2.5 吃掉且不止**——**不要把 P2.2 的降级理解为 S4 的宽裕**
+- **实施进展（v2.19，2026-08-13）· 代码完成、判据未验**：回程链路已落地——双向逻辑通道（`channelId` 受 HMAC 覆盖、断线重连重绑并重放反向 outbox）、activator 有界 task route registry（沿原请求路由回程，无第二条反向连接）、resident 在 durable read 后发 ack、在 ACP turn 终态发封闭 `task.result`。协议侧同步收缩 ack payload 并新增 `task.result` 联合与 `E_TASK_FAILED`（见 v2.19 变更记录与 `protocol.md` §4.6）。**剩余全部工作是判据本身**：按 D-3 在独立基准 job 上跑连续 10 次真机测量（ack P95 ≤ 60 s、result ≤ 5 min、10/10）并留档，以及一键复现脚本。**在那份报告出来之前，本包与 AC-2 都不得记为完成。**
+- **验收完成（v2.20，2026-08-13）**：上一条列的两件事都已交付——一键复现是 `demo/p41-task-result.sh`，真机 10/10 的基准报告见 v2.20 变更记录（ack P95 **4.440 s**、result max **5.885 s**）。**三点必须一并记住**：① 判据线是 60 s / 5 min，实测低一个数量级，但**样本是固定 SSE 模型桩**——它测的是链路，不是真实模型的思考时间，别拿这组数字当「任务耗时」的基准；② 报告里的 `checks` 有八条且不合并（轮数 / 成功率 / ack P95 / result max / 每轮 frozen / 回复字段封闭 / 无越界回复 / 按名解析），任何一条为 false 即整体 false——复跑时看 `pass` 之外还要看是哪条撑着它；③ **十个样本的 P95 就是最大值**，而最大值一直是第 1 轮（冷链路建连），所以这项判据实际上是在报「最慢的那一轮」——这对 60 s 的线绰绰有余，但别把它当成稳态分位数读。
 
 **P4.2 防循环与限流**
 - owner：陈曦宇（backup：陈子轩）

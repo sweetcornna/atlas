@@ -6,13 +6,23 @@
 // second declaration of a root dependency as dead weight. This package is
 // private and never published, so the root declaration is the whole contract.
 import WebSocket from 'ws'
-import { isValidSegment, type QianmoMessage } from '@qianmo/protocol'
+import {
+  TimeJumpGate,
+  isValidSegment,
+  type QianmoMessage,
+} from '@qianmo/protocol'
 import {
   DEFAULT_BACKOFF,
   ReconnectSchedule,
   type BackoffOptions,
   type RandomSource,
 } from './backoff.js'
+import type {
+  InboundContext,
+  InboundHandler,
+  TransportChannel,
+} from './channel.js'
+import { DedupTable } from './dedup.js'
 import {
   EventRecorder,
   TransportEventType,
@@ -20,6 +30,7 @@ import {
   type TransportEventSink,
 } from './events.js'
 import {
+  FRAME_VERSION,
   FrameType,
   ReceiptStatus,
   parseFrame,
@@ -27,7 +38,19 @@ import {
   type ReceiptFrame,
   type TransportFrame,
 } from './frames.js'
-import { assertUsablePsk, computeMac, newNonce } from './handshake.js'
+import {
+  assertUsablePsk,
+  computeMac,
+  isChannelId,
+  newChannelId,
+  newNonce,
+} from './handshake.js'
+import {
+  DEFAULT_MAX_QUEUED,
+  EnvelopeOutbox,
+  type SuccessfulReceiptStatus,
+} from './outbox.js'
+import { receiveEnvelope } from './receiver.js'
 
 /**
  * The dialling half of a Qianmo hop.
@@ -72,36 +95,42 @@ export interface TransportClientOptions {
   readonly endpoint: TransportEndpoint
   /** This node's segment, e.g. `node-a`. Sent in the handshake. */
   readonly node: string
+  /** Expected peer label for inbound audit context; not an authority. */
+  readonly peerNode?: string
+  /** Stable across reconnects of this client. Generated when omitted. */
+  readonly channelId?: string
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
   readonly tls?: ClientTlsOptions
   readonly backoff?: Partial<BackoffOptions>
   /** Cap on unreceipted envelopes before {@link TransportClient.send} refuses. */
   readonly maxQueued?: number
+  /** Handle envelopes sent back by the authenticated server channel. */
+  readonly onMessage?: InboundHandler
+  /**
+   * Called every time the link becomes ready, reconnects included.
+   *
+   * The outbox replay covers envelopes that never got a receipt; it cannot
+   * cover state the peer inferred from an envelope it already receipted. A
+   * caller whose last message asserted something ("I am busy") needs this hook
+   * to say it again after the peer forgot.
+   */
+  readonly onReady?: () => void
+  readonly dedup?: DedupTable
   /** Keep-alive period, ms. `0` disables it. */
   readonly keepAliveIntervalMs?: number
   readonly now?: () => number
+  readonly deadlineNow?: (createdAt: number) => number
   readonly random?: RandomSource
   readonly events?: TransportEventSink
   readonly eventCapacity?: number
 }
-
-/** Default outbox depth, matching the base's replay buffer. */
-export const DEFAULT_MAX_QUEUED = 1_000
 
 /** Default keep-alive period: well inside the server's idle timeout. */
 export const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000
 
 /** How long {@link TransportClient.connect} waits before reporting failure. */
 export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
-
-/** Raised by {@link TransportClient.send} when the outbox is full. */
-export class OutboxFullError extends Error {
-  constructor(depth: number) {
-    super(`transport outbox is full (${depth} unreceipted messages)`)
-    this.name = 'OutboxFullError'
-  }
-}
 
 type ClientState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed'
 
@@ -113,35 +142,55 @@ export function dialUrl(endpoint: TransportEndpoint): string {
   return endpoint.url
 }
 
-export class TransportClient {
+export class TransportClient implements TransportChannel {
   private socket: WebSocket | null = null
   private state: ClientState = 'idle'
-  private readonly outbox = new Map<string, QianmoMessage>()
   private readonly schedule: ReconnectSchedule
   private readonly recorder: EventRecorder
   private readonly now: () => number
-  private readonly maxQueued: number
+  private readonly deadlineNow: (createdAt: number) => number
   private readonly keepAliveIntervalMs: number
+  private readonly keepAliveGate: TimeJumpGate | null
+  private readonly inboundDedup: DedupTable
+  private readonly outbox: EnvelopeOutbox
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private lastInboundAt = 0
   private readyWaiters: Array<() => void> = []
-  private drainWaiters: Array<() => void> = []
+
+  readonly id: string
+  readonly peerNode: string | null
 
   constructor(private readonly options: TransportClientOptions) {
     assertUsablePsk(options.psk)
     if (!isValidSegment(options.node)) {
       throw new Error(`invalid node segment: ${options.node}`)
     }
+    if (options.peerNode !== undefined && !isValidSegment(options.peerNode)) {
+      throw new Error(`invalid peer node segment: ${options.peerNode}`)
+    }
+    this.id = options.channelId ?? newChannelId()
+    if (!isChannelId(this.id)) throw new Error(`invalid channel id: ${this.id}`)
+    this.peerNode = options.peerNode ?? null
     this.now = options.now ?? (() => Date.now())
-    this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
+    this.deadlineNow = options.deadlineNow ?? (() => this.now())
     this.keepAliveIntervalMs =
       options.keepAliveIntervalMs ?? DEFAULT_KEEPALIVE_INTERVAL_MS
-    this.schedule = new ReconnectSchedule(
-      { ...DEFAULT_BACKOFF, ...options.backoff },
-      options.random,
-    )
+    const backoff = { ...DEFAULT_BACKOFF, ...options.backoff }
+    this.keepAliveGate =
+      this.keepAliveIntervalMs > 0
+        ? new TimeJumpGate({ periodMs: this.keepAliveIntervalMs })
+        : null
+    this.schedule = new ReconnectSchedule(backoff, options.random)
     this.recorder = new EventRecorder(options.eventCapacity, options.events)
+    this.inboundDedup = options.dedup ?? new DedupTable({ now: this.now })
+    this.outbox = new EnvelopeOutbox({
+      maxQueued: options.maxQueued ?? DEFAULT_MAX_QUEUED,
+      canWrite: () => this.state === 'ready' && this.socket !== null,
+      isClosed: () => this.state === 'closed',
+      write: message => this.writeEnvelope(message),
+      onReceipt: (frame, known) => this.recordReceipt(frame, known),
+    })
   }
 
   /** Records this client kept. */
@@ -151,7 +200,7 @@ export class TransportClient {
 
   /** Envelopes handed over but not yet receipted. */
   get pending(): number {
-    return this.outbox.size
+    return this.outbox.pending
   }
 
   /** True once the handshake has completed on the current socket. */
@@ -172,6 +221,10 @@ export class TransportClient {
    */
   isClosed(): boolean {
     return this.state === 'closed'
+  }
+
+  hold(): () => void {
+    return () => {}
   }
 
   /**
@@ -222,30 +275,19 @@ export class TransportClient {
    * through {@link waitForDrain}.
    */
   send(message: QianmoMessage): void {
-    if (this.state === 'closed') {
-      throw new Error('transport client is closed')
-    }
-    if (!this.outbox.has(message.msgId) && this.outbox.size >= this.maxQueued) {
-      throw new OutboxFullError(this.outbox.size)
-    }
-    this.outbox.set(message.msgId, message)
-    if (this.state === 'ready') this.writeEnvelope(message)
+    this.outbox.send(message)
+  }
+
+  sendAndWait(
+    message: QianmoMessage,
+    timeoutMs = 5_000,
+  ): Promise<SuccessfulReceiptStatus> {
+    return this.outbox.sendAndWait(message, timeoutMs)
   }
 
   /** Resolve once every queued envelope has been receipted. */
   waitForDrain(timeoutMs = 5_000): Promise<void> {
-    if (this.outbox.size === 0) return Promise.resolve()
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.drainWaiters = this.drainWaiters.filter(w => w !== waiter)
-        reject(new Error(`outbox did not drain within ${timeoutMs}ms`))
-      }, timeoutMs)
-      const waiter = (): void => {
-        clearTimeout(timer)
-        resolve()
-      }
-      this.drainWaiters.push(waiter)
-    })
+    return this.outbox.waitForDrain(timeoutMs)
   }
 
   /** Stop for good: no reconnect, no timers, socket closed. */
@@ -268,7 +310,7 @@ export class TransportClient {
       socket.terminate()
     }
     this.readyWaiters = []
-    this.drainWaiters = []
+    this.outbox.close(new Error('transport client closed before receipt'))
     await Promise.resolve()
   }
 
@@ -288,7 +330,7 @@ export class TransportClient {
 
     socket.on('message', (data: WebSocket.RawData) => {
       this.lastInboundAt = this.now()
-      this.onFrame(socket, data.toString())
+      void this.onFrame(socket, data.toString())
     })
     socket.on('pong', () => {
       this.lastInboundAt = this.now()
@@ -302,7 +344,7 @@ export class TransportClient {
     })
   }
 
-  private onFrame(socket: WebSocket, raw: string): void {
+  private async onFrame(socket: WebSocket, raw: string): Promise<void> {
     const frame = parseFrame(raw)
     if (frame === null) return
     switch (frame.t) {
@@ -310,15 +352,17 @@ export class TransportClient {
         const clientNonce = newNonce()
         this.write(socket, {
           t: FrameType.Auth,
-          v: 0,
+          v: FRAME_VERSION,
           node: this.options.node,
           nonce: frame.nonce,
           clientNonce,
+          channelId: this.id,
           mac: computeMac(
             this.options.psk,
             frame.nonce,
             clientNonce,
             this.options.node,
+            this.id,
           ),
         })
         return
@@ -327,11 +371,25 @@ export class TransportClient {
         this.onReady()
         return
       case FrameType.Receipt:
-        this.onReceipt(frame)
+        this.outbox.receive(frame)
         return
+      case FrameType.Envelope: {
+        const context: InboundContext = {
+          peerNode: this.peerNode,
+          receivedAt: this.now(),
+          channel: this,
+        }
+        const reply = await receiveEnvelope(frame.envelope, context, {
+          onMessage: this.options.onMessage,
+          dedup: this.inboundDedup,
+          recorder: this.recorder,
+          now: this.now,
+          deadlineNow: this.deadlineNow,
+        })
+        this.write(socket, reply)
+        return
+      }
       default:
-        // Server never sends the others; ignore rather than tear down, so a
-        // newer peer speaking a superset does not knock this one offline.
         return
     }
   }
@@ -342,33 +400,38 @@ export class TransportClient {
     this.startKeepAlive()
     // Replay everything unreceipted, oldest first. Duplicates are the
     // receiver's problem by design — that is the whole at-least-once bargain.
-    for (const message of this.outbox.values()) this.writeEnvelope(message)
+    this.outbox.replay()
     const waiters = this.readyWaiters
     this.readyWaiters = []
     for (const resolve of waiters) resolve()
+    try {
+      this.options.onReady?.()
+    } catch (error) {
+      // Contained for the same reason the event sink is: this runs inside the
+      // socket's message handler, and a caller fault must not take the link
+      // down with it.
+      this.record(TransportEventType.SinkFailed, {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
-  private onReceipt(frame: ReceiptFrame): void {
-    const known = this.outbox.delete(frame.msgId)
+  private recordReceipt(frame: ReceiptFrame, known: boolean): void {
     if (frame.status === ReceiptStatus.Rejected) {
       this.record(TransportEventType.MessageRejected, {
         msgId: frame.msgId,
         code: frame.code ?? '',
         reason: frame.reason ?? '',
       })
-    } else if (known) {
-      this.record(
-        frame.status === ReceiptStatus.Duplicate
-          ? TransportEventType.MessageDuplicate
-          : TransportEventType.MessageAccepted,
-        { msgId: frame.msgId },
-      )
+      return
     }
-    if (this.outbox.size === 0) {
-      const waiters = this.drainWaiters
-      this.drainWaiters = []
-      for (const resolve of waiters) resolve()
-    }
+    if (!known) return
+    this.record(
+      frame.status === ReceiptStatus.Duplicate
+        ? TransportEventType.MessageDuplicate
+        : TransportEventType.MessageAccepted,
+      { msgId: frame.msgId },
+    )
   }
 
   private onClose(
@@ -436,23 +499,37 @@ export class TransportClient {
   private writeEnvelope(message: QianmoMessage): void {
     const socket = this.socket
     if (socket === null) return
-    this.write(socket, { t: FrameType.Envelope, v: 0, envelope: message })
+    this.write(socket, {
+      t: FrameType.Envelope,
+      v: FRAME_VERSION,
+      envelope: message,
+    })
   }
 
   private startKeepAlive(): void {
     this.stopKeepAlive()
     if (this.keepAliveIntervalMs <= 0) return
+    this.keepAliveGate?.observe(this.now())
     this.keepAliveTimer = setInterval(() => {
       const socket = this.socket
       if (socket === null || this.state !== 'ready') return
+      const now = this.now()
+      const observation = this.keepAliveGate?.observe(now)
+      if (observation?.jumped === true) {
+        this.lastInboundAt += observation.gapMs
+        this.record(TransportEventType.TimeJumpDetected, {
+          face: 'keepalive',
+          gapMs: observation.gapMs,
+        })
+      }
       // Silence for three periods means the link is gone in a way TCP has not
       // noticed yet (NAT drop, frozen peer). Tearing it down is cheap: the
       // outbox replays and the receiver dedups.
-      if (this.now() - this.lastInboundAt > this.keepAliveIntervalMs * 3) {
+      if (now - this.lastInboundAt > this.keepAliveIntervalMs * 3) {
         socket.terminate()
         return
       }
-      this.write(socket, { t: FrameType.KeepAlive, v: 0 })
+      this.write(socket, { t: FrameType.KeepAlive, v: FRAME_VERSION })
     }, this.keepAliveIntervalMs)
     this.keepAliveTimer.unref?.()
   }

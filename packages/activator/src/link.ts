@@ -69,6 +69,7 @@ import { type QianmoMessage, destinationNode } from '@qianmo/protocol'
 import {
   type BackoffOptions,
   type ClientTlsOptions,
+  type InboundContext,
   TransportClient,
   type TransportClientOptions,
   type TransportEndpoint,
@@ -109,6 +110,8 @@ export interface TargetSite {
 export interface TargetDirectory {
   /** Where the node in this sandbox listens, or `undefined` if unknown. */
   endpointOf(sandboxName: string): TransportEndpoint | undefined
+  /** Which node segment this sandbox hosts, or `undefined` if unknown. */
+  nodeOf(sandboxName: string): string | undefined
   /** Which sandbox hosts this node segment, or `undefined` if unknown. */
   sandboxOf(node: string): string | undefined
 }
@@ -165,6 +168,10 @@ export class StaticTargetDirectory implements TargetDirectory {
     return this.#bySandbox.get(sandboxName)?.endpoint
   }
 
+  nodeOf(sandboxName: string): string | undefined {
+    return this.#bySandbox.get(sandboxName)?.node
+  }
+
   sandboxOf(node: string): string | undefined {
     return this.#byNode.get(node)?.sandboxName
   }
@@ -180,6 +187,12 @@ export class StaticTargetDirectory implements TargetDirectory {
   }
 }
 
+export type LinkReplyHandler = (
+  message: QianmoMessage,
+  sandboxName: string,
+  context: InboundContext,
+) => void | Promise<void>
+
 /** Knobs of {@link TransportLinks}. */
 export interface TransportLinksOptions {
   /** This host's own node segment; it is what the handshake authenticates as. */
@@ -188,6 +201,8 @@ export interface TransportLinksOptions {
   readonly psk: string
   readonly directory: TargetDirectory
   readonly audit: AuditLog
+  /** Replies arriving from the resident over the long-lived sandbox link. */
+  readonly onReply?: LinkReplyHandler
   readonly clock?: Clock
   readonly tls?: ClientTlsOptions
   /**
@@ -275,7 +290,9 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
    */
   async isReady(sandboxName: string): Promise<boolean> {
     const endpoint = this.#endpointOf(sandboxName)
-    const probe = new TransportClient(this.#clientOptions(endpoint))
+    const probe = new TransportClient(
+      this.#clientOptions(endpoint, sandboxName, false),
+    )
     try {
       await probe.connect(this.#connectTimeoutMs)
     } catch (error) {
@@ -322,9 +339,7 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
       throw new UnknownTargetError('node', node, this.#knownNodes())
     }
     const link = await this.#link(sandboxName)
-    link.send(envelope)
-    // The receipt, not the enqueue. See the module header.
-    await link.waitForDrain(this.#forwardTimeoutMs)
+    await link.sendAndWait(envelope, this.#forwardTimeoutMs)
   }
 
   /** Close every link. Safe to call twice. */
@@ -376,12 +391,25 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
     return endpoint
   }
 
-  #clientOptions(endpoint: TransportEndpoint): TransportClientOptions {
-    const { node, psk, tls, keepAliveIntervalMs, backoff } = this.#options
+  #clientOptions(
+    endpoint: TransportEndpoint,
+    sandboxName: string,
+    receiveReplies: boolean,
+  ): TransportClientOptions {
+    const { node, psk, tls, keepAliveIntervalMs, backoff, onReply } =
+      this.#options
+    const peerNode = this.#directory.nodeOf(sandboxName)
     return {
       endpoint,
       node,
       psk,
+      ...(peerNode === undefined ? {} : { peerNode }),
+      ...(receiveReplies && onReply !== undefined
+        ? {
+            onMessage: (message, context) =>
+              onReply(message, sandboxName, context),
+          }
+        : {}),
       ...(tls === undefined ? {} : { tls }),
       ...(keepAliveIntervalMs === undefined ? {} : { keepAliveIntervalMs }),
       ...(backoff === undefined ? {} : { backoff }),
@@ -417,7 +445,9 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
 
     const endpoint = this.#endpointOf(sandboxName)
     const dial = (async (): Promise<TransportClient> => {
-      const client = new TransportClient(this.#clientOptions(endpoint))
+      const client = new TransportClient(
+        this.#clientOptions(endpoint, sandboxName, true),
+      )
       try {
         await client.connect(this.#connectTimeoutMs)
       } catch (error) {

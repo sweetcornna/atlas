@@ -104,6 +104,43 @@ describe('ReconnectSchedule', () => {
     })
   })
 
+  test('the 34.7 s E4 gap distinguishes factor 2 from the A/B candidate', () => {
+    const baseline = new ReconnectSchedule(DEFAULT_BACKOFF, noJitter)
+    baseline.next(0)
+    const baselineDecision = baseline.next(34_700)
+    expect(baselineDecision.action).toBe('retry')
+    if (baselineDecision.action === 'retry') {
+      expect(baselineDecision.timeJumpDetected).toBe(false)
+    }
+
+    const candidate = new ReconnectSchedule(
+      { ...DEFAULT_BACKOFF, timeJumpFactor: 1.1 },
+      noJitter,
+    )
+    candidate.next(0)
+    const candidateDecision = candidate.next(34_700)
+    expect(candidateDecision.action).toBe('retry')
+    if (candidateDecision.action === 'retry') {
+      expect(candidateDecision.timeJumpDetected).toBe(true)
+    }
+  })
+
+  test('maximum legal jitter is never mistaken for a freeze by the candidate', () => {
+    const maximumJitter = (): number => 1
+    const schedule = new ReconnectSchedule(
+      { ...DEFAULT_BACKOFF, timeJumpFactor: 1.1 },
+      maximumJitter,
+    )
+    let now = 0
+    for (let index = 0; index < 8; index++) {
+      const decision = schedule.next(now)
+      expect(decision.action).toBe('retry')
+      if (decision.action !== 'retry') break
+      expect(decision.timeJumpDetected).toBe(false)
+      now += decision.delayMs
+    }
+  })
+
   test('a gap inside the threshold is ordinary elapsed time, not a freeze', () => {
     const schedule = new ReconnectSchedule(DEFAULT_BACKOFF, noJitter)
     schedule.next(0)

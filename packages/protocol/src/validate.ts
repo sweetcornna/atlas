@@ -15,13 +15,14 @@ import {
   ENVELOPE_VERSION,
   isAckPayload,
   isMessageType,
+  isTaskResultPayload,
   messageBytes,
   MessageType,
   type QianmoMessage,
   TRUST_UNTRUSTED,
 } from './message.js'
 
-/** Knobs for {@link validateMessage}; every field falls back to `LIMITS`. */
+/** Knobs for {@link validateMessage}; numeric limits fall back to `LIMITS`. */
 export interface ValidateOptions {
   /**
    * Name of the node running the check. When set, a message whose `hops`
@@ -33,8 +34,8 @@ export interface ValidateOptions {
    * detection is keyed on `(handler address, taskId)` in the routing layer.
    */
   readonly node?: string
-  /** Injected clock for TTL checks; defaults to `Date.now()`. */
-  readonly now?: number
+  /** Arrival clock for TTL checks. Required by rule T-2. */
+  readonly now: number
   readonly maxMessageBytes?: number
   readonly maxHops?: number
 }
@@ -115,7 +116,7 @@ function originIssues(value: unknown): readonly ProtocolIssue[] {
  */
 export function validateMessage(
   input: unknown,
-  options: ValidateOptions = {},
+  options: ValidateOptions,
 ): ValidationResult {
   const issues: ProtocolIssue[] = []
 
@@ -216,14 +217,22 @@ export function validateMessage(
       ),
     )
   } else if (raw['type'] === MessageType.Ack && !isAckPayload(raw['payload'])) {
-    // Rule K-1: an ack payload is field-closed, extras included. Enforced here
-    // as well as in the type so a peer cannot smuggle in a field whose value
-    // only a warm working set could produce (§4.3).
     issues.push(
       issue(
         ProtocolErrorCode.E_BAD_ENVELOPE,
         'payload',
-        'ack payload must be exactly { ofMsgId, taskId, handler, ackAt }',
+        'ack payload must be exactly { handler, ackAt }',
+      ),
+    )
+  } else if (
+    raw['type'] === MessageType.TaskResult &&
+    !isTaskResultPayload(raw['payload'])
+  ) {
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload',
+        'task.result payload must be a closed completed or failed result',
       ),
     )
   }
@@ -325,7 +334,7 @@ export function validateMessage(
   // --- phase 2: boundaries ------------------------------------------------
   const maxHops = options.maxHops ?? LIMITS.maxHops
   const maxBytes = options.maxMessageBytes ?? LIMITS.maxMessageBytes
-  const now = options.now ?? Date.now()
+  const now = options.now
 
   if (options.node !== undefined && message.hops.includes(options.node)) {
     issues.push(
@@ -389,7 +398,7 @@ export function validateMessage(
 /** Validate or throw. Returns the narrowed envelope on success. */
 export function assertValidMessage(
   input: unknown,
-  options: ValidateOptions = {},
+  options: ValidateOptions,
 ): QianmoMessage {
   const result = validateMessage(input, options)
   if (!result.ok) throw new ProtocolError(result.issues)

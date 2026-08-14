@@ -155,6 +155,9 @@ export type QueryEngineConfig = {
   setSDKStatus?: (status: SDKStatus) => void
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
+  onInputAccepted?: (input: {
+    readonly uuid: string | undefined
+  }) => void | Promise<void>
 }
 
 /**
@@ -441,17 +444,22 @@ export class QueryEngine {
     // Transcript is still written (for post-hoc debugging); just not blocking.
     if (persistSession && messagesFromUserInput.length > 0) {
       const transcriptPromise = recordTranscript(messages)
-      if (isBareMode()) {
+      if (isBareMode() && this.config.onInputAccepted === undefined) {
         void transcriptPromise
       } else {
         await transcriptPromise
         if (
           isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
-          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK)
+          isEnvTruthy(process.env.CLAUDE_CODE_IS_COWORK) ||
+          this.config.onInputAccepted !== undefined
         ) {
           await flushSessionStorage()
         }
       }
+    }
+
+    if (messagesFromUserInput.length > 0) {
+      await this.config.onInputAccepted?.({ uuid: options?.uuid })
     }
 
     // Filter messages that should be acknowledged after transcript

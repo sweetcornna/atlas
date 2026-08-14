@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { ProtocolErrorCode } from '@qianmo/protocol'
+import { ProtocolErrorCode, TimeJumpGate } from '@qianmo/protocol'
 import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'
 import { readMailbox } from 'src/utils/agents/teammateMailbox.js'
 
@@ -195,17 +195,19 @@ export async function observeReadFlip(
   const sleep = options.sleep ?? defaultSleep
 
   let deadline = options.deadlineAt
-  let lastTickAt = now()
+  // The floor stays at its default on purpose. At a 250 ms period, dropping it
+  // would put the freeze threshold at 500 ms, so one slow `readMailbox` or GC
+  // pause would count as a thaw — and a thaw does not merely rebase the
+  // deadline, it opens a 15 s window in which nothing can expire at all.
+  // Freezes worth detecting were 34 s and 97 s (E4); none of them need a
+  // threshold below the 2 s default.
+  const gate = new TimeJumpGate({ periodMs: period })
+  gate.observe(now())
 
   for (;;) {
     const tickAt = now()
-    const gap = tickAt - lastTickAt
-    if (gap > 2 * period) {
-      // T-2: this node was almost certainly frozen. Exclude the gap from the
-      // delivery budget rather than judging every in-flight message dead.
-      deadline += gap
-    }
-    lastTickAt = tickAt
+    const observation = gate.observe(tickAt)
+    deadline = gate.rebase(deadline, observation)
 
     const messages = await readMailbox(options.agent, options.team)
     switch (classifyMailboxEntry(messages, options.identity)) {
@@ -229,7 +231,7 @@ export async function observeReadFlip(
         reason: 'observation aborted before the read flag flipped',
       }
     }
-    if (tickAt > deadline) {
+    if (gate.expired(deadline, tickAt)) {
       return {
         state: 'expired',
         code: ProtocolErrorCode.E_TTL_EXPIRED,

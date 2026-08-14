@@ -4,6 +4,7 @@
 import type { MessageOrigin, QianmoMessage } from '@qianmo/protocol'
 import {
   ProtocolErrorCode,
+  deliveryExpiresAt,
   firstErrorCode,
   formatAddress,
   parseAddress,
@@ -79,6 +80,8 @@ export interface InboundDelivered {
   readonly identity: MailboxEntryIdentity
   /** Exactly what was serialized into `text`. */
   readonly wrapper: QianmoWrapper
+  /** Delivery deadline after excluding local freeze overlap. */
+  readonly deadlineAt: number
   /** Present when the payload was spilled to the staging area (§9.3). */
   readonly blob?: BlobRef
 }
@@ -93,8 +96,10 @@ export interface InboundAdapterOptions {
   readonly team: string
   /** Staging area. Defaults to one rooted at `occConfigPath()`. */
   readonly blobs?: BlobStore
-  /** Injected clock. */
+  /** Injected wall clock for provenance and mailbox timestamps. */
   readonly now?: () => number
+  /** Rule T-2 clock used only for envelope deadline validation. */
+  readonly deadlineNow?: (createdAt: number) => number
   /**
    * Mailbox `text` ceiling. Defaults to the base's own exported constant —
    * production must never pass this, and must never copy the number (§9.3.3).
@@ -111,6 +116,7 @@ export class InboundAdapter {
   readonly team: string
   readonly blobs: BlobStore
   private readonly now: () => number
+  private readonly deadlineNow: (createdAt: number) => number
   private readonly maxTextBytes: number
 
   constructor(options: InboundAdapterOptions) {
@@ -123,6 +129,7 @@ export class InboundAdapter {
     this.team = assertTeamName(options.team)
     this.blobs = options.blobs ?? new BlobStore()
     this.now = options.now ?? Date.now
+    this.deadlineNow = options.deadlineNow ?? (() => this.now())
     this.maxTextBytes = options.maxTextBytes ?? MAX_MAILBOX_MESSAGE_TEXT_BYTES
     assertWrapperTypeIsNotReserved(QIANMO_WRAPPER_TYPE)
   }
@@ -152,7 +159,8 @@ export class InboundAdapter {
     //    `options.node` is deliberately *not* passed: node-granular loop
     //    detection kills legitimate spirals, and the real check is keyed on
     //    `(handler address, taskId)` in the routing layer (§6.2).
-    const validation = validateMessage(message, { now: receivedAt })
+    const deadlineNow = this.deadlineNow(message.createdAt)
+    const validation = validateMessage(message, { now: deadlineNow })
     if (!validation.ok) {
       return reject(
         firstErrorCode(validation) ?? ProtocolErrorCode.E_BAD_ENVELOPE,
@@ -264,6 +272,8 @@ export class InboundAdapter {
       team: this.team,
       identity,
       wrapper,
+      deadlineAt:
+        deliveryExpiresAt(wrapper.envelope) + receivedAt - deadlineNow,
       ...(blob === undefined ? {} : { blob }),
     }
   }

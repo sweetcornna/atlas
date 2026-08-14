@@ -67,6 +67,7 @@
         "@qianmo/protocol": "workspace:*",
         "@qianmo/recall": "workspace:*",
         "@qianmo/registry": "workspace:*",
+        "@qianmo/resident": "workspace:*",
         "@qianmo/transport": "workspace:*",
         "@sentry/node": "^10.49.0",
         "@smithy/core": "^3.23.15",
@@ -296,6 +297,18 @@
       "dependencies": {
         "@qianmo/protocol": "workspace:*",
       },
+    },
+    "packages/resident": {
+      "name": "@qianmo/resident",
+      "version": "0.0.0",
+      "dependencies": {
+        "@agentclientprotocol/sdk": "^0.19.0",
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
+    "packages/sandbox": {
+      "name": "@qianmo/sandbox",
+      "version": "0.0.0",
     },
     "packages/tool-runtime": {
       "name": "@open-claude-code/tool-runtime",
@@ -949,6 +962,10 @@
     "@qianmo/recall": ["@qianmo/recall@workspace:packages/recall"],
 
     "@qianmo/registry": ["@qianmo/registry@workspace:packages/registry"],
+
+    "@qianmo/resident": ["@qianmo/resident@workspace:packages/resident"],
+
+    "@qianmo/sandbox": ["@qianmo/sandbox@workspace:packages/sandbox"],
 
     "@qianmo/transport": ["@qianmo/transport@workspace:packages/transport"],
 

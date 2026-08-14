@@ -37,14 +37,18 @@ export {
 export {
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_KEEPALIVE_INTERVAL_MS,
-  DEFAULT_MAX_QUEUED,
-  OutboxFullError,
   TransportClient,
   dialUrl,
   type ClientTlsOptions,
   type TransportClientOptions,
   type TransportEndpoint,
 } from './client.js'
+
+export type {
+  InboundContext,
+  InboundHandler,
+  TransportChannel,
+} from './channel.js'
 
 export {
   DEFAULT_MAX_ENTRIES,
@@ -78,6 +82,13 @@ export {
 } from './frames.js'
 
 export {
+  DEFAULT_MAX_QUEUED,
+  OutboxFullError,
+  TransportReceiptError,
+  type SuccessfulReceiptStatus,
+} from './outbox.js'
+
+export {
   CLOSE_PROTOCOL_ERROR,
   CLOSE_UNAUTHORIZED,
   HandshakeRejection,
@@ -86,6 +97,8 @@ export {
   WeakSecretError,
   assertUsablePsk,
   computeMac,
+  isChannelId,
+  newChannelId,
   newNonce,
   pskFromEnv,
   verifyAuth,
@@ -94,10 +107,10 @@ export {
 } from './handshake.js'
 
 export {
+  DEFAULT_CHANNEL_RETENTION_MS,
   DEFAULT_IDLE_TIMEOUT_SEC,
+  DEFAULT_MAX_CHANNELS,
   startTransportServer,
-  type InboundContext,
-  type InboundHandler,
   type TransportServerHandle,
   type TransportServerOptions,
 } from './server.js'

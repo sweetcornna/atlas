@@ -119,6 +119,9 @@ export class SandboxNotFoundError extends Error {
   }
 }
 
+/** Environment variable the loopback daemon URL is injected through. */
+export const DAEMON_URL_ENV_VAR = 'QIANMO_SANDBOX_DAEMON_URL'
+
 /** Environment variable the bearer token is read from. Never a literal. */
 export const DAEMON_TOKEN_ENV_VAR = 'QIANMO_SANDBOX_DAEMON_TOKEN'
 

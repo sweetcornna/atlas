@@ -548,8 +548,9 @@ export async function markMessagesAsReadBySnapshot(
   agentName: string,
   teamName: string | undefined,
   snapshot: TeammateMessage[],
-): Promise<void> {
-  if (snapshot.length === 0) return
+  readBefore?: Readonly<Record<string, number>>,
+): Promise<number> {
+  if (snapshot.length === 0) return 0
 
   const remainingByIdentity = new Map<string, number>()
   for (const message of snapshot) {
@@ -560,7 +561,11 @@ export async function markMessagesAsReadBySnapshot(
       (remainingByIdentity.get(identity) ?? 0) + 1,
     )
   }
-  if (remainingByIdentity.size === 0) return
+  if (remainingByIdentity.size === 0) return 0
+  const expectedCount = [...remainingByIdentity.values()].reduce(
+    (total, count) => total + count,
+    0,
+  )
 
   const inboxPath = getInboxPath(agentName, teamName)
   const lockFilePath = `${inboxPath}.lock`
@@ -573,6 +578,24 @@ export async function markMessagesAsReadBySnapshot(
     })
 
     const messages = await readMailboxForMutation(agentName, teamName)
+    if (readBefore !== undefined) {
+      const readNow = new Map<string, number>()
+      for (const message of messages) {
+        if (!message.read) continue
+        const identity = mailboxMessageIdentity(message)
+        readNow.set(identity, (readNow.get(identity) ?? 0) + 1)
+      }
+      for (const [identity, snapshotCount] of remainingByIdentity) {
+        const missing = Math.max(
+          0,
+          (readBefore[identity] ?? 0) +
+            snapshotCount -
+            (readNow.get(identity) ?? 0),
+        )
+        if (missing === 0) remainingByIdentity.delete(identity)
+        else remainingByIdentity.set(identity, missing)
+      }
+    }
     let markedCount = 0
     for (let index = 0; index < messages.length; index++) {
       const message = messages[index]
@@ -597,9 +620,16 @@ export async function markMessagesAsReadBySnapshot(
         'markMessagesAsReadBySnapshot',
       )
     }
+    if (readBefore === undefined) return markedCount
+    const unresolved = [...remainingByIdentity.values()].reduce(
+      (total, count) => total + count,
+      0,
+    )
+    return expectedCount - unresolved
   } catch (error) {
     const code = getErrnoCode(error)
     if (code !== 'ENOENT') logError(error)
+    return 0
   } finally {
     if (release) {
       await release()

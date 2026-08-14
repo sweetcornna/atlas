@@ -19,8 +19,8 @@ import { ProtocolErrorCode } from '@qianmo/protocol'
  * package ever constructs a `MessageType.Ack`.
  */
 
-/** Version of the frame grammar. Bumped only when frames change shape. */
-export const FRAME_VERSION = 0
+/** Version of the frame grammar. v1 authenticates a stable logical channel id. */
+export const FRAME_VERSION = 1
 
 /** Discriminant of {@link TransportFrame}. */
 export enum FrameType {
@@ -30,9 +30,9 @@ export enum FrameType {
   Auth = 'auth',
   /** Server → client: the handshake passed, envelopes may flow. */
   Ready = 'ready',
-  /** Client → server: one protocol envelope. */
+  /** One protocol envelope, valid in either direction after authentication. */
   Envelope = 'envelope',
-  /** Server → client: what became of one envelope on this hop. */
+  /** What became of one envelope on this hop, returned in either direction. */
   Receipt = 'receipt',
   /**
    * Client → server: a data frame carrying nothing, sent to keep the socket
@@ -74,7 +74,9 @@ export interface AuthFrame {
   readonly nonce: string
   /** Dialer-chosen nonce, hex; keeps the MAC input fresh on both sides. */
   readonly clientNonce: string
-  /** `HMAC-SHA256` over the two nonces and the node name, hex. */
+  /** Stable logical connection id, retained across physical reconnects. */
+  readonly channelId: string
+  /** `HMAC-SHA256` over both nonces, node and channel id, hex. */
   readonly mac: string
 }
 
@@ -175,6 +177,7 @@ export function parseFrame(raw: string): TransportFrame | null {
       return isNonEmptyString(parsed['node']) &&
         isNonEmptyString(parsed['nonce']) &&
         isNonEmptyString(parsed['clientNonce']) &&
+        isNonEmptyString(parsed['channelId']) &&
         isNonEmptyString(parsed['mac'])
         ? {
             t: FrameType.Auth,
@@ -182,6 +185,7 @@ export function parseFrame(raw: string): TransportFrame | null {
             node: parsed['node'],
             nonce: parsed['nonce'],
             clientNonce: parsed['clientNonce'],
+            channelId: parsed['channelId'],
             mac: parsed['mac'],
           }
         : null

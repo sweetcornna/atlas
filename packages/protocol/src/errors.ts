@@ -25,6 +25,8 @@ export enum ProtocolErrorCode {
   E_UNKNOWN_AGENT = 'E_UNKNOWN_AGENT',
   /** The TASK deadline `createdAt + taskTtlMs` passed with no terminal result. */
   E_TASK_TIMEOUT = 'E_TASK_TIMEOUT',
+  /** The target accepted the task but its execution ended unsuccessfully. */
+  E_TASK_FAILED = 'E_TASK_FAILED',
   /** The target mailbox evicted the message while compacting. */
   E_EVICTED = 'E_EVICTED',
   /** The last hop could not write the message into the target mailbox. */

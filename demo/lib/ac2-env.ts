@@ -6,16 +6,13 @@
  * 缺哪个就报哪个的名字然后退出，绝不静默跳过：静默跳过的核验脚本会给出
  * 「没报错 = 通过」的错觉，而那正是判据要防的东西。
  *
- * 两个变量名不是本文件自己起的，取自会用到它们的包，避免同一个事实两处定义：
- *   - daemon bearer  ← `@qianmo/activator` 的 `DAEMON_TOKEN_ENV_VAR`
- *   - 传输层 PSK     ← `@qianmo/transport` 的 `PSK_ENV_VAR`
+ * 三个变量名不是本文件自己起的，取自会用到它们的包，避免同一个事实两处定义：
+ *   - daemon URL / bearer ← `@qianmo/activator`
+ *   - 传输层 PSK          ← `@qianmo/transport`
  */
 
-import { DAEMON_TOKEN_ENV_VAR } from '@qianmo/activator'
+import { DAEMON_TOKEN_ENV_VAR, DAEMON_URL_ENV_VAR } from '@qianmo/activator'
 import { PSK_ENV_VAR } from '@qianmo/transport'
-
-/** daemon 的回环基址，形如 `<scheme>://127.0.0.1:<port>`。 */
-export const DAEMON_URL_ENV_VAR = 'QIANMO_SANDBOX_DAEMON_URL'
 
 /** 目标沙箱在 daemon 里的 **name**（不是 id，见 `daemon.ts` 的说明）。 */
 export const SANDBOX_ENV_VAR = 'QIANMO_AC2_SANDBOX'

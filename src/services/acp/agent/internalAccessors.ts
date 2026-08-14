@@ -18,6 +18,7 @@ import type { AcpSession } from './sessionTypes.js'
 type AcpAgentInternals = {
   conn: AgentSideConnection
   clientCapabilities: ClientCapabilities | undefined
+  qianmoResident: boolean
 }
 
 export function getConnection(agent: AcpAgent): AgentSideConnection {
@@ -28,6 +29,10 @@ export function readClientCapabilities(
   agent: AcpAgent,
 ): ClientCapabilities | undefined {
   return (agent as unknown as AcpAgentInternals).clientCapabilities
+}
+
+export function isQianmoResident(agent: AcpAgent): boolean {
+  return (agent as unknown as AcpAgentInternals).qianmoResident
 }
 
 /**

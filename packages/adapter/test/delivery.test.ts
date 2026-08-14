@@ -184,7 +184,7 @@ describe('the ack is end-to-end, never write-time', () => {
 })
 
 describe('rule K-1: the ack payload is field-closed', () => {
-  test('exactly { ofMsgId, taskId, handler, ackAt }, nothing more', async () => {
+  test('exactly { handler, ackAt }, nothing more', async () => {
     const message = makeEnvelope({ createdAt: START })
     const { reply } = await run(message, async (tick, currentTeam) => {
       if (tick === 1) await flipRead(currentTeam)
@@ -193,17 +193,12 @@ describe('rule K-1: the ack payload is field-closed', () => {
     expect(reply.outcome).toBe('acked')
     const payload = reply.reply.payload
     expect(isAckPayload(payload)).toBe(true)
-    expect(Object.keys(payload as object).sort()).toEqual([
-      'ackAt',
-      'handler',
-      'ofMsgId',
-      'taskId',
-    ])
-    expect(payload).toMatchObject({
-      ofMsgId: message.msgId,
-      taskId: message.taskId,
-      handler: 'qianmo://node-b/reviewer',
-    })
+    expect(Object.keys(payload as object).sort()).toEqual(['ackAt', 'handler'])
+    expect(payload).toMatchObject({ handler: 'qianmo://node-b/reviewer' })
+    // Correlation lives in the envelope alone — the payload may not restate it.
+    expect(payload).not.toHaveProperty('ofMsgId')
+    expect(payload).not.toHaveProperty('taskId')
+    expect(reply.reply.taskId).toBe(message.taskId)
   })
 
   test('the ack is correlated by taskId and addressed back to the sender', async () => {

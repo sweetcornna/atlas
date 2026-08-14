@@ -54,6 +54,7 @@
  */
 
 import {
+  MessageType,
   ProtocolErrorCode,
   type QianmoMessage,
   destinationNode,
@@ -61,7 +62,10 @@ import {
 } from '@qianmo/protocol'
 import {
   type BackoffOptions,
+  type ClientTlsOptions,
+  type InboundContext,
   type TransportServerHandle,
+  type TransportServerOptions,
   startTransportServer,
 } from '@qianmo/transport'
 import {
@@ -82,6 +86,11 @@ import {
   type TargetDirectory,
   TransportLinks,
 } from './link.js'
+import {
+  DEFAULT_TASK_ROUTE_CAPACITY,
+  TaskRouteError,
+  TaskRouteRegistry,
+} from './routes.js'
 import type { StageTimings, TimingReport, TimingRecorder } from './stages.js'
 
 /** Where the inbound listener binds. */
@@ -91,6 +100,8 @@ export interface ActivatorListenOptions {
   readonly hostname?: string
   /** Unix socket path. Mutually exclusive with `port`. */
   readonly unix?: string
+  /** TLS materials for a public `wss://` listener. */
+  readonly tls?: TransportServerOptions['tls']
   /** Seconds of silence before a peer connection is reaped. */
   readonly idleTimeoutSec?: number
 }
@@ -123,6 +134,8 @@ export interface ActivatorNodeOptions {
   readonly readyPollIntervalMs?: number
   readonly connectTimeoutMs?: number
   readonly forwardTimeoutMs?: number
+  readonly linkTls?: ClientTlsOptions
+  readonly taskRouteCapacity?: number
   /** Reconnect schedule of the links into sandboxes. */
   readonly backoff?: Partial<BackoffOptions>
   /** Injected in tests so request ids are readable. */
@@ -143,6 +156,7 @@ export interface ActivatorNodeHandle {
   readonly activator: Activator
   readonly audit: AuditLog
   readonly links: TransportLinks
+  readonly routes: TaskRouteRegistry
   readonly journal: RequestJournal
   /** Dial URL for peers, when listening on TCP. */
   readonly url?: string
@@ -177,16 +191,26 @@ class ActivationRejected extends Error {
   }
 }
 
-/** Keeps the last N failure replies, so a demo run can print them. */
+/** Keeps the last N failure replies and relays them when a route exists. */
 class BoundedFailures implements FailureSink {
   readonly #replies: QianmoMessage[] = []
+  readonly #routes: TaskRouteRegistry
   readonly #capacity: number
 
-  constructor(capacity: number = DEFAULT_FAILURE_CAPACITY) {
+  constructor(
+    routes: TaskRouteRegistry,
+    capacity: number = DEFAULT_FAILURE_CAPACITY,
+  ) {
+    this.#routes = routes
     this.#capacity = capacity
   }
 
   fail(reply: QianmoMessage): void {
+    this.record(reply)
+    this.#routes.forward(reply)
+  }
+
+  record(reply: QianmoMessage): void {
     this.#replies.push(reply)
     if (this.#replies.length > this.#capacity) this.#replies.shift()
   }
@@ -210,13 +234,23 @@ export async function startActivatorNode(
   const audit = options.audit ?? new AuditLog()
   const clock = options.clock ?? systemClock
   const journal = options.journal ?? new FileRequestJournal(undefined, audit)
-  const failures = new BoundedFailures()
+  const routes = new TaskRouteRegistry({
+    audit,
+    clock,
+    ...(options.scheduler === undefined
+      ? {}
+      : { scheduler: options.scheduler }),
+    capacity: options.taskRouteCapacity ?? DEFAULT_TASK_ROUTE_CAPACITY,
+  })
+  const failures = new BoundedFailures(routes)
   const links = new TransportLinks({
     node: options.node,
     psk: options.psk,
     directory: options.directory,
     audit,
     clock,
+    onReply: (message, sandboxName) => routes.forward(message, sandboxName),
+    ...(options.linkTls === undefined ? {} : { tls: options.linkTls }),
     connectTimeoutMs:
       options.connectTimeoutMs ?? DEFAULT_LINK_CONNECT_TIMEOUT_MS,
     forwardTimeoutMs: options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS,
@@ -265,19 +299,18 @@ export async function startActivatorNode(
       ...(options.listen.unix === undefined
         ? {}
         : { unix: options.listen.unix }),
+      ...(options.listen.tls === undefined ? {} : { tls: options.listen.tls }),
       ...(options.listen.idleTimeoutSec === undefined
         ? {}
         : { idleTimeoutSec: options.listen.idleTimeoutSec }),
-      onMessage: async (message: QianmoMessage): Promise<void> => {
+      onMessage: async (
+        message: QianmoMessage,
+        context: InboundContext,
+      ): Promise<void> => {
         const node = destinationNode(message)
         const sandboxName =
           node === null ? undefined : options.directory.sandboxOf(node)
         if (sandboxName === undefined) {
-          // No journal entry: an envelope this host cannot place is not a
-          // request it ever took responsibility for, so the sender keeps it.
-          // It is still written down twice — once in the audit trail and once
-          // as the error envelope that names the code — because "rejected" is
-          // all the receipt can say (see the note on codes below).
           const at = clock.now()
           const reason = `no sandbox is mapped for node ${JSON.stringify(node ?? message.to)}`
           audit.record(ActivatorEventType.RequestRefused, at, {
@@ -286,14 +319,37 @@ export async function startActivatorNode(
             code: ProtocolErrorCode.E_UNKNOWN_AGENT,
             reason,
           })
-          failures.fail(
-            errorReply(message, ProtocolErrorCode.E_UNKNOWN_AGENT, reason, at),
+          const reply = errorReply(
+            message,
+            ProtocolErrorCode.E_UNKNOWN_AGENT,
+            reason,
+            at,
           )
+          failures.record(reply)
+          context.channel.send(reply)
           throw new ActivationRejected(
             ProtocolErrorCode.E_UNKNOWN_AGENT,
             reason,
           )
         }
+
+        if (message.type === MessageType.TaskRequest) {
+          try {
+            routes.register(message, sandboxName, context.channel)
+          } catch (error) {
+            const code =
+              error instanceof TaskRouteError
+                ? error.code
+                : ProtocolErrorCode.E_UNDELIVERABLE
+            const reason =
+              error instanceof Error ? error.message : String(error)
+            const reply = errorReply(message, code, reason, clock.now())
+            failures.record(reply)
+            context.channel.send(reply)
+            throw new ActivationRejected(code, reason)
+          }
+        }
+
         const outcome = await activator.handle({
           envelope: message,
           sandboxName,
@@ -305,8 +361,7 @@ export async function startActivatorNode(
       },
     })
   } catch (error) {
-    // The links and the journal are already live at this point; a listener that
-    // never bound must not leave them behind.
+    routes.close()
     await links.close()
     throw error
   }
@@ -315,6 +370,7 @@ export async function startActivatorNode(
     activator,
     audit,
     links,
+    routes,
     journal,
     ...(server.url === undefined ? {} : { url: server.url }),
     ...(server.port === undefined ? {} : { port: server.port }),
@@ -324,6 +380,7 @@ export async function startActivatorNode(
     report: () => activator.report(),
     samples: () => activator.samples(),
     stop: async (): Promise<void> => {
+      routes.close()
       await server.stop()
       await links.close()
     },

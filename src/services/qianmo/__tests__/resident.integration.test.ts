@@ -1,0 +1,407 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
+import { afterEach, describe, expect, test } from 'bun:test'
+import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  MessageType,
+  ProtocolErrorCode,
+  createMessage,
+  isAckPayload,
+  isTaskResultPayload,
+  type QianmoMessage,
+} from '@qianmo/protocol'
+import { TransportClient } from '@qianmo/transport'
+import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
+import type { ResidentTimingEvent } from '@qianmo/resident'
+import { QianmoResident } from '../resident.js'
+
+const PSK = 'resident-integration-not-a-real-secret'
+const TEAM = 'nest'
+const AGENT = 'reviewer'
+const ACP_FIXTURE = join(
+  import.meta.dir,
+  'fixtures',
+  'resident-acp-agent.runner.ts',
+)
+
+const children: ChildProcess[] = []
+const clients: TransportClient[] = []
+let root: string | undefined
+let previousConfigDir: string | undefined
+let activeResident: QianmoResident | undefined
+let activeRun: Promise<void> | undefined
+
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 8_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`)
+}
+
+function spawnFixture(env: NodeJS.ProcessEnv = process.env): ChildProcess {
+  const child = spawn(process.execPath, [ACP_FIXTURE], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env,
+  })
+  children.push(child)
+  return child
+}
+
+async function unreadCount(): Promise<number> {
+  const mailbox = await readMailbox(AGENT, TEAM)
+  return mailbox.filter(message => !message.read).length
+}
+
+afterEach(async () => {
+  activeResident?.stop()
+  await activeRun
+  activeResident = undefined
+  activeRun = undefined
+  for (const client of clients.splice(0)) await client.close()
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill('SIGKILL')
+  }
+  if (previousConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  }
+  if (root !== undefined) rmSync(root, { recursive: true, force: true })
+  root = undefined
+})
+
+describe('resident product integration', () => {
+  test('transport delivery survives ACP restart and resumes the same session', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-integration-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const workspace = join(root, 'workspace')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const timings: ResidentTimingEvent[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: workspace }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+      onTiming: event => timings.push(event),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const firstMessage = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 1 },
+    })
+    client.send(firstMessage)
+    await client.waitForDrain()
+    await waitUntil(async () => (await unreadCount()) === 0)
+    const sessionPath = join(root, 'config', 'resident', 'sessions.json')
+    const firstSession = readFileSync(sessionPath, 'utf8')
+
+    children[0]?.kill('SIGKILL')
+    await waitUntil(() => !client.isReady())
+    const secondMessage = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 2 },
+    })
+    client.send(secondMessage)
+    expect(client.pending).toBe(1)
+
+    await waitUntil(() => ready.length === 2)
+    await client.waitForDrain()
+    await waitUntil(async () => (await unreadCount()) === 0)
+    expect(readFileSync(sessionPath, 'utf8')).toBe(firstSession)
+    const mailbox = await readMailbox(AGENT, TEAM)
+    expect(mailbox).toHaveLength(2)
+    expect(mailbox.every(message => message.read)).toBe(true)
+    await waitUntil(
+      () =>
+        timings.filter(event => event.stage === 'turn_completed').length === 2,
+    )
+    for (const message of [firstMessage, secondMessage]) {
+      const events = timings.filter(
+        event => event.networkMsgId === message.msgId,
+      )
+      expect(new Set(events.map(event => event.stage))).toEqual(
+        new Set([
+          'detected',
+          'admitted',
+          'read',
+          'first_content',
+          'turn_completed',
+        ]),
+      )
+      const at = (stage: ResidentTimingEvent['stage']): number =>
+        events.find(event => event.stage === stage)?.at ?? -1
+      expect(at('detected')).toBeLessThanOrEqual(at('admitted'))
+      expect(at('admitted')).toBeLessThanOrEqual(at('first_content'))
+      expect(at('first_content')).toBeLessThanOrEqual(at('turn_completed'))
+      expect(at('detected')).toBeLessThanOrEqual(at('read'))
+      expect(at('read')).toBeLessThanOrEqual(at('turn_completed'))
+      expect(new Set(events.map(event => event.inputMessageId)).size).toBe(1)
+    }
+
+    // Both rounds are answered on the sender's own channel, across the
+    // restart that happened between them.
+    await waitUntil(
+      () => replies.filter(item => item.type === MessageType.Ack).length === 2,
+    )
+    expect(new Set(replies.map(item => item.taskId))).toEqual(
+      new Set([firstMessage.taskId, secondMessage.taskId]),
+    )
+
+    resident.stop()
+    await running
+    expect(errors.map(String)).toEqual([
+      'Error: resident ACP child exited code=null signal=SIGKILL',
+    ])
+  }, 15_000)
+
+  test('acks at the read flip and returns task.result over the same channel', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-result-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    // The dialling side of the hop: it never listens, so anything that arrives
+    // here arrived over the very connection the request went out on.
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'summarise' },
+    })
+    client.send(request)
+    await client.waitForDrain()
+    await waitUntil(() => replies.length >= 2)
+
+    const [ack, result] = replies
+    expect(ack?.type).toBe(MessageType.Ack)
+    expect(ack?.taskId).toBe(request.taskId)
+    expect(ack?.from).toBe('qianmo://node-b/reviewer')
+    expect(ack?.to).toBe('qianmo://node-a/planner')
+    expect(isAckPayload(ack?.payload)).toBe(true)
+    expect(Object.keys(ack?.payload as object).sort()).toEqual([
+      'ackAt',
+      'handler',
+    ])
+    // Rule K-1: the ack asserts the read flip and nothing else.
+    expect((await readMailbox(AGENT, TEAM)).every(item => item.read)).toBe(true)
+
+    expect(result?.type).toBe(MessageType.TaskResult)
+    expect(result?.taskId).toBe(request.taskId)
+    expect(isTaskResultPayload(result?.payload)).toBe(true)
+    expect(result?.payload).toMatchObject({
+      outcome: 'completed',
+      content: 'fixture response',
+    })
+    expect(replies).toHaveLength(2)
+    expect(errors).toEqual([])
+  }, 15_000)
+
+  test('an ACP crash while busy comes back as a failed task.result', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-failed-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'never finishes' },
+    })
+    client.send(request)
+    await client.waitForDrain()
+    // The turn is admitted and read — the sender has its ack — but the ACP
+    // child hangs before the turn ever terminates.
+    await waitUntil(() => replies.some(item => item.type === MessageType.Ack))
+
+    children[0]?.kill('SIGKILL')
+
+    await waitUntil(() =>
+      replies.some(item => item.type === MessageType.TaskResult),
+    )
+    const result = replies.find(item => item.type === MessageType.TaskResult)
+    expect(result?.taskId).toBe(request.taskId)
+    expect(isTaskResultPayload(result?.payload)).toBe(true)
+    expect(result?.payload).toMatchObject({
+      outcome: 'failed',
+      code: ProtocolErrorCode.E_TASK_FAILED,
+    })
+    // Two paths race to report the same thing — the ACP SDK rejecting the
+    // in-flight prompt, and the supervisor sweeping active tasks before it
+    // tears the transport down. Both are E_TASK_FAILED; telling the two
+    // apart is cause-level diagnosis, which belongs to P5.1.
+    expect(
+      (result?.payload as { reason: string }).reason.length,
+    ).toBeGreaterThan(0)
+  }, 15_000)
+
+  test('reports idle before restarting an ACP generation that crashes while busy', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-activity-crash-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const activity: boolean[] = []
+    const ready: string[] = []
+    let generation = 0
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: () => {
+        generation++
+        return spawnFixture(
+          generation === 1
+            ? { ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }
+            : process.env,
+        )
+      },
+      onActivity: active => {
+        activity.push(active)
+      },
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+    })
+    clients.push(client)
+    await client.connect()
+    await client.sendAndWait(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { crash: 'while-busy' },
+      }),
+    )
+    await waitUntil(() => activity.includes(true))
+
+    children[0]?.kill('SIGKILL')
+
+    await waitUntil(() => activity.at(-1) === false)
+    expect(activity).toEqual([true, false])
+    await waitUntil(() => ready.length === 2)
+  }, 15_000)
+})

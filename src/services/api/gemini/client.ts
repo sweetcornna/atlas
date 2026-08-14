@@ -2,6 +2,7 @@ import { parseSSEFrames } from 'src/cli/transports/SSETransport.js'
 import { getValidAntigravityAuth } from 'src/services/auth/antigravity/oauth.js'
 import { errorMessage } from 'src/utils/runtime/errors.js'
 import { isAntigravityAuthMode } from 'src/utils/model/antigravityModels.js'
+import { FreezeAwareWatchdog } from 'src/utils/network/freezeAwareWatchdog.js'
 import { getProxyFetchOptions } from 'src/utils/network/proxy.js'
 import { buildProviderResourceURL } from 'src/utils/network/providerUrl.js'
 import {
@@ -125,10 +126,11 @@ async function readGeminiChunk(
     'CLAUDE_STREAM_IDLE_TIMEOUT_MS',
   )
   const abort = waitForAbort(controller.signal)
-  const timeout = setTimeout(
-    () => controller.abort(timeoutError),
-    idleTimeoutMs,
-  )
+  const timeout = new FreezeAwareWatchdog({
+    timeoutMs: idleTimeoutMs,
+    onTimeout: () => controller.abort(timeoutError),
+  })
+  timeout.reset()
   try {
     return await Promise.race([reader.read(), abort.promise])
   } catch (error) {
@@ -146,7 +148,7 @@ async function readGeminiChunk(
     }
     throw error
   } finally {
-    clearTimeout(timeout)
+    timeout.stop()
     abort.cleanup()
   }
 }

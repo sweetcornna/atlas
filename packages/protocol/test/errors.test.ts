@@ -17,6 +17,7 @@ const V0_1_CODES = [
   'E_RATE_LIMITED',
   'E_UNKNOWN_AGENT',
   'E_TASK_TIMEOUT',
+  'E_TASK_FAILED',
   'E_EVICTED',
   'E_UNDELIVERABLE',
   'E_PAYLOAD_UNAVAILABLE',
@@ -26,11 +27,11 @@ const V0_1_CODES = [
 ] as const
 
 describe('ProtocolErrorCode', () => {
-  test('matches the §11 table exactly — all 17, no extras', () => {
+  test('matches the §11 table exactly — all 18, no extras', () => {
     expect((Object.values(ProtocolErrorCode) as string[]).sort()).toEqual(
       [...V0_1_CODES].sort(),
     )
-    expect(Object.values(ProtocolErrorCode)).toHaveLength(17)
+    expect(Object.values(ProtocolErrorCode)).toHaveLength(18)
   })
 
   test('every code is its own wire string', () => {

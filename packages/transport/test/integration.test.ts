@@ -5,13 +5,16 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   MessageType,
   createMessage,
+  createTaskResult,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
+  DEFAULT_CHANNEL_RETENTION_MS,
   DedupTable,
   TransportClient,
   TransportEventType,
   startTransportServer,
+  type TransportChannel,
   type TransportServerHandle,
 } from '../src/index.js'
 import {
@@ -144,6 +147,43 @@ describe('DoD 1 — an outage is survived and nothing is lost', () => {
       TransportEventType.ReconnectScheduled,
     )
     expect(reconnects.length).toBeGreaterThan(3)
+  })
+})
+
+describe('rule T-2 — thaw does not kill a healthy link', () => {
+  test('an E4-sized clock jump is rebased before the silence watchdog runs', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+    let now = 1_000
+    track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        now: () => now,
+        deadlineNow: () => now,
+        onMessage: () => {},
+      }),
+    )
+    const client = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        psk: TEST_PSK,
+        now: () => now,
+        keepAliveIntervalMs: 10,
+      }),
+    )
+    await client.connect()
+
+    now += 34_700
+    await sleep(30)
+
+    expect(client.isReady()).toBe(true)
+    expect(
+      client.events
+        .byType(TransportEventType.TimeJumpDetected)
+        .some(event => event.detail.face === 'keepalive'),
+    ).toBe(true)
   })
 })
 
@@ -351,8 +391,9 @@ describe('the receiving node refuses what is not a valid envelope', () => {
       ...makeMessage(),
       to: 'not-an-address',
     } as unknown as QianmoMessage
-    client.send(bogus)
+    const receipt = client.sendAndWait(bogus)
 
+    await expect(receipt).rejects.toThrow('transport message')
     await waitUntil(
       () => server.events.byType(TransportEventType.MessageRejected).length > 0,
     )
@@ -364,5 +405,203 @@ describe('the receiving node refuses what is not a valid envelope', () => {
         'code'
       ],
     ).toBe('E_BAD_ADDRESS')
+  })
+})
+
+describe('bidirectional authenticated channels', () => {
+  test('the server returns an envelope on the same physical socket', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+
+    const replies: QianmoMessage[] = []
+    let serverChannel: TransportChannel | undefined
+    const server = track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        onMessage: (message, context) => {
+          serverChannel = context.channel
+          context.channel.send(
+            createTaskResult(
+              message,
+              message.to,
+              { outcome: 'completed', content: 'review complete' },
+              Date.now(),
+            ),
+          )
+        },
+      }),
+    )
+
+    const client = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        peerNode: 'node-b',
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+        onMessage: message => {
+          replies.push(message)
+        },
+      }),
+    )
+    await client.connect()
+
+    const request = makeMessage({ taskId: 'task-bidirectional' })
+    await client.sendAndWait(request)
+    await waitUntil(() => replies.length === 1 && serverChannel?.pending === 0)
+
+    expect(server.connections).toBe(1)
+    expect(server.channels).toBe(1)
+    expect(serverChannel?.id).toBe(client.id)
+    expect(replies[0]).toMatchObject({
+      type: MessageType.TaskResult,
+      taskId: request.taskId,
+      from: request.to,
+      to: request.from,
+      payload: {
+        outcome: 'completed',
+        content: 'review complete',
+      },
+    })
+  })
+
+  test('a disconnected logical channel rebinds and replays its reverse outbox', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+
+    let disconnected = false
+    let releaseChannel: (() => void) | undefined
+    let serverChannel: TransportChannel | undefined
+    const replies: QianmoMessage[] = []
+    const server = track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        onPeerDisconnect: () => {
+          disconnected = true
+        },
+        onMessage: (_message, context) => {
+          serverChannel = context.channel
+          releaseChannel = context.channel.hold()
+        },
+      }),
+    )
+
+    const firstClient = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        peerNode: 'node-b',
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+      }),
+    )
+    const channelId = firstClient.id
+    await firstClient.connect()
+
+    const request = makeMessage({ taskId: 'task-reconnect-reply' })
+    await firstClient.sendAndWait(request)
+    await firstClient.close()
+    await waitUntil(() => disconnected)
+
+    const channel = serverChannel
+    if (channel === undefined)
+      throw new Error('server channel was not captured')
+    channel.send(
+      createTaskResult(
+        request,
+        request.to,
+        { outcome: 'completed', content: 'after reconnect' },
+        Date.now(),
+      ),
+    )
+    expect(channel.pending).toBe(1)
+
+    const secondClient = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        peerNode: 'node-b',
+        channelId,
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+        onMessage: message => {
+          replies.push(message)
+        },
+      }),
+    )
+    await secondClient.connect()
+    await waitUntil(() => replies.length === 1)
+    await channel.waitForDrain()
+
+    expect(secondClient.id).toBe(channelId)
+    expect(channel.id).toBe(channelId)
+    expect(server.channels).toBe(1)
+    expect(replies[0]?.payload).toMatchObject({ content: 'after reconnect' })
+    releaseChannel?.()
+  })
+
+  test('a channel nobody comes back for is reclaimed, not retained forever', async () => {
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+
+    let serverChannel: TransportChannel | undefined
+    let releaseChannel: (() => void) | undefined
+    const server = track(
+      startTransportServer({
+        unix: socket.path,
+        psk: TEST_PSK,
+        // Compressed so the window is testable; the shipped value is asserted
+        // below, because that is the number an operator actually lives with.
+        channelRetentionMs: 40,
+        onMessage: (_message, context) => {
+          serverChannel = context.channel
+          releaseChannel ??= context.channel.hold()
+        },
+      }),
+    )
+
+    const client = trackClient(
+      new TransportClient({
+        endpoint: { unix: socket.path },
+        node: 'node-a',
+        peerNode: 'node-b',
+        psk: TEST_PSK,
+        keepAliveIntervalMs: 0,
+      }),
+    )
+    await client.connect()
+    await client.sendAndWait(makeMessage({ taskId: 'task-abandoned' }))
+    expect(server.channels).toBe(1)
+
+    // The sender goes away for good, the way a client that got its refusal and
+    // hung up does. The hold keeps the channel while a reply is being produced.
+    await client.close()
+    await waitUntil(() => serverChannel?.isReady() === false)
+    serverChannel?.send(
+      createTaskResult(
+        makeMessage({ taskId: 'task-abandoned' }),
+        RECIPIENT,
+        { outcome: 'completed', content: 'nobody is listening' },
+        Date.now(),
+      ),
+    )
+    releaseChannel?.()
+
+    // Nothing can retire that envelope now: the only receipt that would is from
+    // the peer that left. Without a retention window the channel would sit in
+    // the table forever, and 1000 of them close the server to new handshakes.
+    expect(server.channels).toBe(1)
+    await waitUntil(() => server.channels === 0, 2_000)
+    expect(serverChannel?.isClosed()).toBe(true)
+    // Five minutes shipped: the protocol's task deadline, past which nothing
+    // that could still be waiting on those envelopes is alive to care.
+    expect(DEFAULT_CHANNEL_RETENTION_MS).toBe(300_000)
+    expect(
+      server.events
+        .all()
+        .some(event => event.type === TransportEventType.ChannelReclaimed),
+    ).toBe(true)
   })
 })

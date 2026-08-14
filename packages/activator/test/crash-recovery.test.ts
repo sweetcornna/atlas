@@ -132,7 +132,11 @@ async function crashMidForward(msgId: string): Promise<void> {
   // the next child killed *before* it accepted anything — which would make the
   // test pass by testing nothing.
   rmSync(paths.marker, { force: true })
-  const envelope = makeMessage({ msgId, deliverTtlMs: 600_000 })
+  const envelope = makeMessage({
+    msgId,
+    taskId: msgId,
+    deliverTtlMs: 600_000,
+  })
   const child = spawnChild('catch', JSON.stringify(envelope))
   await waitForFile(paths.marker)
   child.kill(9)

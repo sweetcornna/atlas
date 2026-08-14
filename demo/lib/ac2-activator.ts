@@ -16,13 +16,17 @@
  * 收到 SIGINT / SIGTERM 时停监听、关链接、正常退出。
  */
 
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { createWriteStream, writeFileSync, type WriteStream } from 'node:fs'
 import {
   AuditLog,
+  DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR,
   HttpSandboxDaemon,
+  KeepaliveLoop,
   MemoryRequestJournal,
+  ResidentActivityController,
   StaticTargetDirectory,
   startActivatorNode,
+  startResidentActivityServer,
 } from '@qianmo/activator'
 import { arg, intArg } from './cli-args.js'
 import {
@@ -41,11 +45,44 @@ if (readyFile === undefined || timingsFile === undefined) {
   throw new Error('用法：--ready <file> --timings <file> [--audit <file>]')
 }
 
+function jsonlStream(path: string | undefined): WriteStream | null {
+  return path === undefined ? null : createWriteStream(path, { flags: 'a' })
+}
+
+async function closeStream(stream: WriteStream | null): Promise<void> {
+  if (stream === null) return
+  await new Promise<void>((resolve, reject) => {
+    stream.once('error', reject)
+    stream.end(resolve)
+  })
+}
+
 const sandbox = sandboxName()
+const auditOutput = jsonlStream(auditFile)
+const timingOutput = jsonlStream(timingsFile)
 const audit = new AuditLog(4_096, event => {
-  if (auditFile === undefined) return
-  appendFileSync(auditFile, `${JSON.stringify(event)}\n`)
+  auditOutput?.write(`${JSON.stringify(event)}\n`)
 })
+const daemon = new HttpSandboxDaemon({
+  baseUrl: daemonUrl(),
+  token: daemonToken,
+  audit,
+})
+const activityPort = arg('activity-port')
+const freezeAfterSeconds = arg('freeze-after-seconds')
+const stopAfterSeconds = arg('stop-after-seconds')
+if (
+  [activityPort, freezeAfterSeconds, stopAfterSeconds].some(
+    value => value !== undefined,
+  ) &&
+  [activityPort, freezeAfterSeconds, stopAfterSeconds].some(
+    value => value === undefined,
+  )
+) {
+  throw new Error(
+    '--activity-port, --freeze-after-seconds and --stop-after-seconds must be provided together',
+  )
+}
 
 const node = await startActivatorNode({
   // 宿主自己的段名。它不是被唤醒的那个节点——两跳的两端不能同名，否则审计里
@@ -58,12 +95,7 @@ const node = await startActivatorNode({
     // --host 显式设成对外网卡地址（那是部署决定，不写进仓库）。
     hostname: arg('host') ?? '127.0.0.1',
   },
-  daemon: new HttpSandboxDaemon({
-    baseUrl: daemonUrl(),
-    // getter：bearer 每次调用现取，进程里不留副本、不落盘、不进日志。
-    token: daemonToken,
-    audit,
-  }),
+  daemon,
   directory: new StaticTargetDirectory([
     {
       node: targetNode(),
@@ -83,14 +115,54 @@ const node = await startActivatorNode({
   connectTimeoutMs: intArg('connect-timeout-ms', 2_000),
   forwardTimeoutMs: intArg('forward-timeout-ms', 15_000),
   onOutcome: outcome => {
-    appendFileSync(timingsFile, `${JSON.stringify(outcome)}\n`)
+    timingOutput?.write(`${JSON.stringify(outcome)}\n`)
   },
 })
+
+const keepaliveTimeJumpFactor = Number(
+  arg('keepalive-time-jump-factor') ??
+    DEFAULT_RESIDENT_KEEPALIVE_TIME_JUMP_FACTOR,
+)
+if (!(keepaliveTimeJumpFactor > 1)) {
+  await node.stop()
+  throw new Error('--keepalive-time-jump-factor must be greater than 1')
+}
+let activity: ReturnType<typeof startResidentActivityServer> | null = null
+try {
+  activity =
+    activityPort === undefined
+      ? null
+      : startResidentActivityServer({
+          node: targetNode(),
+          psk: psk(),
+          listen: {
+            port: intArg('activity-port', 0),
+            hostname: arg('activity-host') ?? '0.0.0.0',
+          },
+          controller: new ResidentActivityController(
+            new KeepaliveLoop({
+              sandboxName: sandbox,
+              daemon,
+              policy: {
+                freezeAfterSeconds: intArg('freeze-after-seconds', 0),
+                stopAfterSeconds: intArg('stop-after-seconds', 0),
+              },
+              audit,
+              timeJumpFactor: keepaliveTimeJumpFactor,
+            }),
+          ),
+        })
+} catch (error) {
+  await node.stop()
+  throw error
+}
 
 writeFileSync(
   readyFile,
   `${JSON.stringify({
     url: node.url ?? '',
+    activityPort: activity?.port ?? null,
+    keepaliveTimeJumpFactor: activity === null ? null : keepaliveTimeJumpFactor,
     sandbox,
     node: targetNode(),
     recovered: node.recovery,
@@ -107,7 +179,9 @@ const shutdown = async (signal: string): Promise<void> => {
   if (stopping) return
   stopping = true
   process.stdout.write(`收到 ${signal}，停止 activator\n`)
+  await activity?.stop()
   await node.stop()
+  await Promise.all([closeStream(auditOutput), closeStream(timingOutput)])
   process.exit(0)
 }
 process.on('SIGINT', () => void shutdown('SIGINT'))

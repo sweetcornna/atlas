@@ -14,10 +14,7 @@ import type {
   SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
 import type { SessionId } from '../../../types/ids.js'
-import {
-  switchSession,
-  getSessionProjectDir,
-} from '../../../bootstrap/state.js'
+import { switchSession } from '../../../bootstrap/state.js'
 import { forwardSessionUpdates } from '../bridge.js'
 import type { ToolUseCache } from '../bridge.js'
 import { promptToQueryInput } from '../promptConversion.js'
@@ -90,9 +87,11 @@ async function prompt(
     // Switch global session state so recordTranscript writes to the correct
     // session file. Without this, multi-session scenarios (or creating a new
     // session after another) write transcript data to the wrong file.
-    switchSession(params.sessionId as SessionId, getSessionProjectDir())
+    switchSession(params.sessionId as SessionId, session.projectDir)
 
-    const sdkMessages = session.queryEngine.submitMessage(promptInput)
+    const sdkMessages = session.queryEngine.submitMessage(promptInput, {
+      uuid: userMessageId,
+    })
 
     const { stopReason, usage } = await forwardSessionUpdates(
       params.sessionId,

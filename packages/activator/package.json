@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@qianmo/protocol": "workspace:*",
+    "@qianmo/resident": "workspace:*",
     "@qianmo/transport": "workspace:*"
   }
 }

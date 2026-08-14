@@ -61,10 +61,9 @@ async function getOrCreateSession(
         params.sessionId,
         params.cwd,
       )
-      switchSession(
-        params.sessionId as SessionId,
-        resolved ? dirname(resolved.filePath) : null,
-      )
+      const projectDir = resolved ? dirname(resolved.filePath) : null
+      existingSession.projectDir = projectDir
+      switchSession(params.sessionId as SessionId, projectDir)
       setOriginalCwd(params.cwd)
 
       if (shouldReplay) {
@@ -113,7 +112,7 @@ async function getOrCreateSession(
       mcpServers: params.mcpServers ?? [],
       _meta: params._meta,
     },
-    { sessionId: params.sessionId, initialMessages },
+    { sessionId: params.sessionId, initialMessages, projectDir },
   )
 
   // Replay history to client if loaded. session/resume skips this block.
