@@ -79,8 +79,18 @@ export function newNonce(): string {
   return randomBytes(16).toString('hex')
 }
 
+/** Stable logical connection id generated once per client instance. */
+export function newChannelId(): string {
+  return randomBytes(16).toString('hex')
+}
+
+/** True when a logical connection id has the generated wire shape. */
+export function isChannelId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/.test(value)
+}
+
 /**
- * `HMAC-SHA256(psk, [frameVersion, serverNonce, clientNonce, node])`, hex.
+ * `HMAC-SHA256(psk, [frameVersion, serverNonce, clientNonce, node, channelId])`, hex.
  *
  * The inputs go through `JSON.stringify` of an array rather than string
  * concatenation, so a node name containing a separator cannot be split across
@@ -91,9 +101,18 @@ export function computeMac(
   serverNonce: string,
   clientNonce: string,
   node: string,
+  channelId: string,
 ): string {
   return createHmac('sha256', psk)
-    .update(JSON.stringify([FRAME_VERSION, serverNonce, clientNonce, node]))
+    .update(
+      JSON.stringify([
+        FRAME_VERSION,
+        serverNonce,
+        clientNonce,
+        node,
+        channelId,
+      ]),
+    )
     .digest('hex')
 }
 
@@ -105,6 +124,8 @@ export enum HandshakeRejection {
   UnexpectedFrame = 'unexpected_frame',
   /** `node` is not a legal address segment. */
   BadNode = 'bad_node',
+  /** The logical channel id is malformed. */
+  BadChannel = 'bad_channel',
   /** The echoed nonce is not the one this connection issued. */
   NonceMismatch = 'nonce_mismatch',
   /** The MAC does not match — wrong key, or a forged frame. */
@@ -113,7 +134,7 @@ export enum HandshakeRejection {
 
 /** Outcome of {@link verifyAuth}. */
 export type HandshakeResult =
-  | { readonly ok: true; readonly node: string }
+  | { readonly ok: true; readonly node: string; readonly channelId: string }
   | { readonly ok: false; readonly rejection: HandshakeRejection }
 
 /** What {@link verifyAuth} needs out of an auth frame. */
@@ -121,6 +142,7 @@ export interface AuthAttempt {
   readonly node: string
   readonly nonce: string
   readonly clientNonce: string
+  readonly channelId: string
   readonly mac: string
 }
 
@@ -147,6 +169,9 @@ export function verifyAuth(
   if (!isValidSegment(attempt.node)) {
     return { ok: false, rejection: HandshakeRejection.BadNode }
   }
+  if (!isChannelId(attempt.channelId)) {
+    return { ok: false, rejection: HandshakeRejection.BadChannel }
+  }
   if (attempt.nonce !== serverNonce) {
     return { ok: false, rejection: HandshakeRejection.NonceMismatch }
   }
@@ -155,11 +180,12 @@ export function verifyAuth(
     serverNonce,
     attempt.clientNonce,
     attempt.node,
+    attempt.channelId,
   )
   if (!macEquals(expected, attempt.mac)) {
     return { ok: false, rejection: HandshakeRejection.BadMac }
   }
-  return { ok: true, node: attempt.node }
+  return { ok: true, node: attempt.node, channelId: attempt.channelId }
 }
 
 /**

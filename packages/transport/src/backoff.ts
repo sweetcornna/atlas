@@ -27,9 +27,9 @@ export interface BackoffOptions {
   /** Total time to keep retrying before declaring the peer gone. */
   readonly giveUpAfterMs: number
   /**
-   * A gap between attempts longer than `maxDelayMs × this` is read as "the
-   * process was frozen", not "time passed while we were failing", and resets
-   * the budget instead of consuming it.
+   * Lateness beyond the previously scheduled retry greater than
+   * `maxDelayMs × this` is read as "the process was frozen", not ordinary
+   * backoff, and resets the budget instead of consuming it.
    */
   readonly timeJumpFactor: number
 }
@@ -92,7 +92,7 @@ export type ReconnectDecision =
 export class ReconnectSchedule {
   private attempts = 0
   private startedAt: number | null = null
-  private lastAttemptAt: number | null = null
+  private expectedRetryAt: number | null = null
 
   constructor(
     private readonly options: BackoffOptions = DEFAULT_BACKOFF,
@@ -113,7 +113,7 @@ export class ReconnectSchedule {
   succeeded(): void {
     this.attempts = 0
     this.startedAt = null
-    this.lastAttemptAt = null
+    this.expectedRetryAt = null
   }
 
   /**
@@ -127,7 +127,10 @@ export class ReconnectSchedule {
   next(now: number): ReconnectDecision {
     let timeJumpDetected = false
     const threshold = this.options.maxDelayMs * this.options.timeJumpFactor
-    if (this.lastAttemptAt !== null && now - this.lastAttemptAt > threshold) {
+    if (
+      this.expectedRetryAt !== null &&
+      now - this.expectedRetryAt > threshold
+    ) {
       timeJumpDetected = true
       this.attempts = 0
       this.startedAt = now
@@ -139,12 +142,13 @@ export class ReconnectSchedule {
       return { action: 'give-up', elapsedMs: elapsed }
     }
 
-    this.lastAttemptAt = now
     this.attempts += 1
+    const delayMs = backoffDelay(this.attempts, this.options, this.random)
+    this.expectedRetryAt = now + delayMs
     return {
       action: 'retry',
       attempt: this.attempts,
-      delayMs: backoffDelay(this.attempts, this.options, this.random),
+      delayMs,
       timeJumpDetected,
     }
   }

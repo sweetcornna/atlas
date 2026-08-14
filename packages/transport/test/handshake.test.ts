@@ -15,13 +15,21 @@ import {
 } from '../src/index.js'
 import { TEST_PSK, WRONG_PSK } from './helpers.js'
 
-function attempt(psk: string, serverNonce: string, node = 'node-a') {
+const CHANNEL_ID = 'a'.repeat(32)
+
+function attempt(
+  psk: string,
+  serverNonce: string,
+  node = 'node-a',
+  channelId = CHANNEL_ID,
+) {
   const clientNonce = newNonce()
   return {
     node,
     nonce: serverNonce,
     clientNonce,
-    mac: computeMac(psk, serverNonce, clientNonce, node),
+    channelId,
+    mac: computeMac(psk, serverNonce, clientNonce, node, channelId),
   }
 }
 
@@ -43,6 +51,7 @@ describe('verifyAuth', () => {
     expect(verifyAuth(TEST_PSK, nonce, attempt(TEST_PSK, nonce))).toEqual({
       ok: true,
       node: 'node-a',
+      channelId: CHANNEL_ID,
     })
   })
 
@@ -71,6 +80,16 @@ describe('verifyAuth', () => {
     ).toEqual({ ok: false, rejection: HandshakeRejection.BadNode })
   })
 
+  test('rejects a malformed logical channel id', () => {
+    const nonce = newNonce()
+    expect(
+      verifyAuth(TEST_PSK, nonce, attempt(TEST_PSK, nonce, 'node-a', 'bad')),
+    ).toEqual({
+      ok: false,
+      rejection: HandshakeRejection.BadChannel,
+    })
+  })
+
   test('rejects a mac that is not hex, without throwing', () => {
     const nonce = newNonce()
     const forged = { ...attempt(TEST_PSK, nonce), mac: 'zzzz' }
@@ -80,10 +99,16 @@ describe('verifyAuth', () => {
     })
   })
 
-  test('the mac covers the node name, so the tuple cannot be re-labelled', () => {
+  test('the mac covers the node name and logical channel id', () => {
     const nonce = newNonce()
-    const forged = { ...attempt(TEST_PSK, nonce, 'node-a'), node: 'node-b' }
-    expect(verifyAuth(TEST_PSK, nonce, forged)).toEqual({
+    const valid = attempt(TEST_PSK, nonce, 'node-a')
+    expect(verifyAuth(TEST_PSK, nonce, { ...valid, node: 'node-b' })).toEqual({
+      ok: false,
+      rejection: HandshakeRejection.BadMac,
+    })
+    expect(
+      verifyAuth(TEST_PSK, nonce, { ...valid, channelId: 'b'.repeat(32) }),
+    ).toEqual({
       ok: false,
       rejection: HandshakeRejection.BadMac,
     })
