@@ -42,6 +42,11 @@ export enum ProtocolErrorCode {
   E_CAP_INSUFFICIENT = 'E_CAP_INSUFFICIENT',
   /** `costLimit` is non-zero — M0 caps every message at zero spend. */
   E_BUDGET_EXHAUSTED = 'E_BUDGET_EXHAUSTED',
+  /**
+   * A resource negotiation was refused: over the lender's ceiling, an offer
+   * that has expired, or an offer that is not on the table (§13).
+   */
+  E_RESOURCE_REFUSED = 'E_RESOURCE_REFUSED',
 }
 
 /** A single reason why a message was rejected. */

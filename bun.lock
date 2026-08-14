@@ -67,12 +67,14 @@
         "@qianmo/capability": "workspace:*",
         "@qianmo/diagnosis": "workspace:*",
         "@qianmo/memory": "workspace:*",
+        "@qianmo/negotiation": "workspace:*",
         "@qianmo/protocol": "workspace:*",
         "@qianmo/recall": "workspace:*",
         "@qianmo/registry": "workspace:*",
         "@qianmo/resident": "workspace:*",
         "@qianmo/router": "workspace:*",
         "@qianmo/transport": "workspace:*",
+        "@qianmo/tunnel": "workspace:*",
         "@sentry/node": "^10.49.0",
         "@smithy/core": "^3.23.15",
         "@smithy/node-http-handler": "^4.5.3",
@@ -302,6 +304,13 @@
       "name": "modifiers-napi",
       "version": "1.0.0",
     },
+    "packages/negotiation": {
+      "name": "@qianmo/negotiation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@qianmo/protocol",
       "version": "0.0.0",
@@ -355,6 +364,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@qianmo/protocol": "workspace:*",
+      },
+    },
+    "packages/tunnel": {
+      "name": "@qianmo/tunnel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+        "@qianmo/transport": "workspace:*",
       },
     },
     "packages/url-handler-napi": {
@@ -993,6 +1010,8 @@
 
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 
+    "@qianmo/negotiation": ["@qianmo/negotiation@workspace:packages/negotiation"],
+
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
 
     "@qianmo/recall": ["@qianmo/recall@workspace:packages/recall"],
@@ -1006,6 +1025,8 @@
     "@qianmo/sandbox": ["@qianmo/sandbox@workspace:packages/sandbox"],
 
     "@qianmo/transport": ["@qianmo/transport@workspace:packages/transport"],
+
+    "@qianmo/tunnel": ["@qianmo/tunnel@workspace:packages/tunnel"],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.0-rc.15", "https://registry.npmmirror.com/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz", { "os": "android", "cpu": "arm64" }, "sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA=="],
 

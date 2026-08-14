@@ -54,6 +54,23 @@ export {
 export { LIMITS, type Limits } from './limits.js'
 
 export {
+  RELEASE_REASONS,
+  clampNeed,
+  isResourceGrantPayload,
+  isResourceNeed,
+  isResourceOfferPayload,
+  isResourceReleasePayload,
+  isResourceRequestPayload,
+  needWithin,
+  type ReleaseReason,
+  type ResourceGrantPayload,
+  type ResourceNeed,
+  type ResourceOfferPayload,
+  type ResourceReleasePayload,
+  type ResourceRequestPayload,
+} from './negotiation.js'
+
+export {
   ENVELOPE_VERSION,
   MESSAGE_TYPES,
   MessageType,

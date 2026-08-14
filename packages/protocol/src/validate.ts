@@ -9,6 +9,12 @@ import {
   type ProtocolIssue,
 } from './errors.js'
 import { isFingerprint } from './fingerprint.js'
+import {
+  isResourceGrantPayload,
+  isResourceOfferPayload,
+  isResourceReleasePayload,
+  isResourceRequestPayload,
+} from './negotiation.js'
 import { LIMITS } from './limits.js'
 import {
   deliveryExpiresAt,
@@ -21,6 +27,30 @@ import {
   type QianmoMessage,
   TRUST_UNTRUSTED,
 } from './message.js'
+
+/** Payload checks for the negotiation message types (§13). */
+const NEGOTIATION_PAYLOADS: Partial<
+  Record<MessageType, { check: (value: unknown) => boolean; reason: string }>
+> = {
+  [MessageType.ResourceRequest]: {
+    check: isResourceRequestPayload,
+    reason: 'resource.request payload must be exactly { need, purpose }',
+  },
+  [MessageType.ResourceOffer]: {
+    check: isResourceOfferPayload,
+    reason:
+      'resource.offer payload must be exactly { offerId, granted, offerExpiresAt, capability? }',
+  },
+  [MessageType.ResourceGrant]: {
+    check: isResourceGrantPayload,
+    reason: 'resource.grant payload must be exactly { offerId, acceptedAt }',
+  },
+  [MessageType.ResourceRelease]: {
+    check: isResourceReleasePayload,
+    reason:
+      'resource.release payload must be exactly { offerId, reason, releasedAt }',
+  },
+}
 
 /** Knobs for {@link validateMessage}; numeric limits fall back to `LIMITS`. */
 export interface ValidateOptions {
@@ -235,6 +265,16 @@ export function validateMessage(
         'task.result payload must be a closed completed or failed result',
       ),
     )
+  } else {
+    // The four negotiation payloads are field-closed for the same reason the
+    // ack is: a lease is an authorization to spend somebody's machine, and a
+    // field this version does not understand is one nobody verified.
+    const negotiation = NEGOTIATION_PAYLOADS[raw['type'] as MessageType]
+    if (negotiation !== undefined && !negotiation.check(raw['payload'])) {
+      issues.push(
+        issue(ProtocolErrorCode.E_BAD_ENVELOPE, 'payload', negotiation.reason),
+      )
+    }
   }
   if (!isPositiveFinite(raw['createdAt'])) {
     issues.push(

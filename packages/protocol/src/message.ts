@@ -28,6 +28,14 @@ export enum MessageType {
   Wake = 'wake',
   /** Delivery or processing failure, payload carries a ProtocolErrorCode. */
   Error = 'error',
+  /** Ask a peer to lend capacity (P5.2, §13). */
+  ResourceRequest = 'resource.request',
+  /** Answer to a request: terms, and how long they stand. */
+  ResourceOffer = 'resource.offer',
+  /** Take an offer. */
+  ResourceGrant = 'resource.grant',
+  /** End a lease, from either side. */
+  ResourceRelease = 'resource.release',
 }
 
 /** All message types, in declaration order. */
@@ -58,7 +66,15 @@ export function isReplyType(type: MessageType): boolean {
     type === MessageType.Ack ||
     type === MessageType.TaskResult ||
     type === MessageType.Error ||
-    type === MessageType.Pong
+    type === MessageType.Pong ||
+    // A negotiation runs both ways over one task id by design (§13), so every
+    // message after the opening request answers the one before it. Treating
+    // them as requests would make the second leg of every negotiation look
+    // like a handler being revisited — which is exactly what the loop key
+    // describes.
+    type === MessageType.ResourceOffer ||
+    type === MessageType.ResourceGrant ||
+    type === MessageType.ResourceRelease
   )
 }
 

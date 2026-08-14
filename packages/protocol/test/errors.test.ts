@@ -24,14 +24,16 @@ const V0_1_CODES = [
   'E_CAP_INVALID',
   'E_CAP_INSUFFICIENT',
   'E_BUDGET_EXHAUSTED',
+  // §13, added by P5.2.
+  'E_RESOURCE_REFUSED',
 ] as const
 
 describe('ProtocolErrorCode', () => {
-  test('matches the §11 table exactly — all 18, no extras', () => {
+  test('matches the §11 table exactly — all 19, no extras', () => {
     expect((Object.values(ProtocolErrorCode) as string[]).sort()).toEqual(
       [...V0_1_CODES].sort(),
     )
-    expect(Object.values(ProtocolErrorCode)).toHaveLength(18)
+    expect(Object.values(ProtocolErrorCode)).toHaveLength(19)
   })
 
   test('every code is its own wire string', () => {

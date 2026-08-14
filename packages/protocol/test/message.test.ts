@@ -47,9 +47,16 @@ describe('message types', () => {
         'task.request',
         'task.result',
         'wake',
+        // §13, added by P5.2. The four negotiation messages are envelope types
+        // rather than a payload discriminator so that routing, dedup and the
+        // audit trail treat them like everything else on the wire.
+        'resource.request',
+        'resource.offer',
+        'resource.grant',
+        'resource.release',
       ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(7)
+    expect(MESSAGE_TYPES).toHaveLength(11)
   })
 
   test('isMessageType accepts known types and rejects the rest', () => {
@@ -175,6 +182,11 @@ describe('createMessage', () => {
       MessageType.TaskResult,
       MessageType.Pong,
       MessageType.Error,
+      // Everything after the opening `resource.request` answers the message
+      // before it (§13), so the loop key must not judge them either.
+      MessageType.ResourceOffer,
+      MessageType.ResourceGrant,
+      MessageType.ResourceRelease,
     ])
   })
 
