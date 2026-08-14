@@ -43,6 +43,26 @@ export function isMessageType(value: unknown): value is MessageType {
 }
 
 /**
+ * Message types that *answer* an earlier message under its `taskId`, rather
+ * than asking a handler to do something.
+ *
+ * The distinction is not cosmetic: it is what keeps loop detection (D-2) from
+ * eating the reply path. A reply is addressed back at the requester and
+ * carries the request's `taskId` by contract (C-1), so `(handler, taskId)`
+ * revisit — the loop key — is the *expected* shape of a correct `ack` and a
+ * correct `task.result`. Judging replies by that key would declare AC-2's
+ * return path a loop on its first message.
+ */
+export function isReplyType(type: MessageType): boolean {
+  return (
+    type === MessageType.Ack ||
+    type === MessageType.TaskResult ||
+    type === MessageType.Error ||
+    type === MessageType.Pong
+  )
+}
+
+/**
  * The only value `trust` ever takes: a cross-node message is never trusted.
  * A closed set means the receiver has nothing to decide, only to label.
  */
@@ -180,6 +200,28 @@ function randomHex(bytes: number): string {
  */
 export function newTraceparent(): string {
   return `00-${randomHex(16)}-${randomHex(8)}-01`
+}
+
+const TRACEPARENT_PATTERN = /^[\da-f]{2}-[\da-f]{32}-[\da-f]{16}-[\da-f]{2}$/
+
+/**
+ * Continue a trace at the next hop: same trace-id, fresh parent-id (§7.1).
+ *
+ * W3C `traceparent` names the *caller's* span in `parent-id`, so a relay that
+ * passes the header through unchanged tells every downstream span that its
+ * parent is the origin — the chain flattens and "who forwarded this to whom"
+ * stops being answerable, which is the one question C-6 asks of the field.
+ * Only the trace-id segment is meant to survive a hop, and it is what audit
+ * correlation keys on.
+ *
+ * A value that is not a well-formed traceparent is returned untouched: this
+ * function is not a validator, and inventing a header for a malformed one
+ * would hide the malformation from the check that does reject it.
+ */
+export function advanceTraceparent(traceparent: string): string {
+  if (!TRACEPARENT_PATTERN.test(traceparent)) return traceparent
+  const [version, traceId, , flags] = traceparent.split('-')
+  return `${version}-${traceId}-${randomHex(8)}-${flags}`
 }
 
 function originOf(from: string): MessageOrigin {

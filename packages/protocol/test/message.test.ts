@@ -10,6 +10,7 @@ import {
   ProtocolError,
   ProtocolErrorCode,
   TRUST_UNTRUSTED,
+  advanceTraceparent,
   computeFingerprint,
   createAck,
   createMessage,
@@ -20,6 +21,7 @@ import {
   errorReply,
   isDeliveryExpired,
   isMessageType,
+  isReplyType,
   isTaskExpired,
   isTaskResultPayload,
   messageBytes,
@@ -144,6 +146,36 @@ describe('createMessage', () => {
       /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/,
     )
     expect(newTraceparent()).not.toBe(newTraceparent())
+  })
+
+  test('advanceTraceparent keeps the trace-id and moves the parent-id', () => {
+    const origin = newTraceparent()
+    const next = advanceTraceparent(origin)
+    const [version, traceId, parentId, flags] = origin.split('-')
+    const [nextVersion, nextTraceId, nextParentId, nextFlags] = next.split('-')
+    expect(nextTraceId).toBe(traceId as string)
+    expect(nextVersion).toBe(version as string)
+    expect(nextFlags).toBe(flags as string)
+    expect(nextParentId).not.toBe(parentId as string)
+    expect(nextParentId).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  test('advanceTraceparent leaves a malformed header alone', () => {
+    // Not a validator: rewriting it would hide the malformation from the
+    // envelope check that does reject it.
+    expect(advanceTraceparent('not-a-traceparent')).toBe('not-a-traceparent')
+  })
+
+  test('isReplyType splits answers from work requests', () => {
+    // The line loop detection depends on: a reply legitimately returns to the
+    // requester under the request's own taskId (C-1), which is exactly the
+    // shape the loop key describes.
+    expect(MESSAGE_TYPES.filter(isReplyType)).toEqual([
+      MessageType.Ack,
+      MessageType.TaskResult,
+      MessageType.Pong,
+      MessageType.Error,
+    ])
   })
 
   test('trust is a closed set — the caller cannot widen it', () => {
