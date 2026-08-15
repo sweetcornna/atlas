@@ -4,6 +4,8 @@
     "@ant/*",
     "react-compiler-runtime",
     "undici",
+    "@modelcontextprotocol/server-filesystem",
+    "@modelcontextprotocol/server-memory",
     "@napi-rs/keyring",
     "auto-bind",
     "bidi-js",
