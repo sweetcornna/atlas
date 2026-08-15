@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  DEFAULT_RESIDENT_MEM_INTERVAL_MS,
   MAX_PENDING_TIMING_EVENTS,
   assertResidentRuntime,
+  createResidentMemWriter,
   createResidentTimingWriter,
   parseResidentArgs,
 } from '../resident.js'
@@ -134,6 +136,77 @@ describe('resident CLI configuration', () => {
         'qianmo',
       ),
     ).toMatchObject({ unix: '/tmp/qianmo-resident.sock' })
+  })
+
+  test('takes a memory sampling path and defaults its interval (P7.3)', () => {
+    expect(
+      parseResidentArgs([...BASE, '--mem-sample=/abs/mem.ndjson'], 'qianmo'),
+    ).toMatchObject({
+      memSample: '/abs/mem.ndjson',
+      memIntervalMs: DEFAULT_RESIDENT_MEM_INTERVAL_MS,
+    })
+    expect(
+      parseResidentArgs(
+        [
+          ...BASE,
+          '--mem-sample',
+          '/abs/mem.ndjson',
+          '--mem-interval-ms',
+          '5000',
+        ],
+        'qianmo',
+      ),
+    ).toMatchObject({ memSample: '/abs/mem.ndjson', memIntervalMs: 5_000 })
+  })
+
+  test('refuses memory sampling options that would silently lose evidence', () => {
+    // Same shape as `--timings`: a relative path would land somewhere that
+    // depends on the resident's cwd, which is not where the operator looked.
+    expect(() =>
+      parseResidentArgs([...BASE, '--mem-sample=relative.ndjson'], 'qianmo'),
+    ).toThrow('absolute path')
+    // An interval with no path samples into nowhere.
+    expect(() =>
+      parseResidentArgs([...BASE, '--mem-interval-ms=5000'], 'qianmo'),
+    ).toThrow('requires --mem-sample')
+    // Sub-second sampling of a 24 h run is a way to fill a disk, not a baseline.
+    expect(() =>
+      parseResidentArgs(
+        [...BASE, '--mem-sample=/abs/mem.ndjson', '--mem-interval-ms=500'],
+        'qianmo',
+      ),
+    ).toThrow('integer >= 1000')
+  })
+
+  test('bounds memory samples on the same queue and reports overflow once', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'resident-mem-overflow-'))
+    const path = join(directory, 'mem.ndjson')
+    const errors: unknown[] = []
+    const writer = createResidentMemWriter(path, error => errors.push(error))
+    try {
+      for (let at = 0; at < MAX_PENDING_TIMING_EVENTS + 10; at++) {
+        writer.write({
+          at,
+          rss: 1,
+          heapSize: 1,
+          heapCapacity: 1,
+          objectCount: 1,
+          uptime: 1,
+        })
+      }
+
+      await writer.close()
+
+      expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(
+        MAX_PENDING_TIMING_EVENTS,
+      )
+      // Its own message, so a reader of the log knows which writer overflowed.
+      expect(errors.map(String)).toEqual([
+        'Error: resident memory writer queue overflow',
+      ])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test('flushes timing evidence in order on close', async () => {
