@@ -50,6 +50,11 @@ import {
   type BackupAuditEvent,
   type BackupAuditSink,
 } from '@qianmo/backup'
+import {
+  CapacityEventType,
+  type CapacityAuditSink,
+  type CapacityEvent,
+} from '@qianmo/capacity'
 import { occConfigPath } from '../../config/paths.js'
 
 /** Default location of this node's trail, derived from the config root. */
@@ -252,6 +257,39 @@ export function tunnelTrailSink(
     safeAppend(
       trail,
       toRecord(event, AuditSource.Tunnel, node, outcome, ['borrower', 'from']),
+    )
+  }
+}
+
+/**
+ * The capacity planner's decisions.
+ *
+ * A suppressed trigger is `dropped`, not `refused` — same distinction the
+ * activator's expired routes get, and for the same reason: **no one refused
+ * it, it was simply held back by a rule** (the cooldown had not lapsed, or the
+ * calendar path had already bought capacity for that window). Filing it as a
+ * refusal would send a reader looking for a decision nobody made.
+ */
+const CAPACITY_DROPPED: ReadonlySet<CapacityEventType> = new Set([
+  CapacityEventType.Suppressed,
+])
+
+export function capacityTrailSink(
+  trail: AuditTrail,
+  node: string,
+): CapacityAuditSink {
+  return (event: CapacityEvent): void => {
+    safeAppend(
+      trail,
+      toRecord(
+        event,
+        AuditSource.Capacity,
+        node,
+        CAPACITY_DROPPED.has(event.type) ? 'dropped' : 'ok',
+        // The other end of a scale-up is whoever ends up lending the room.
+        // Empty until an executor that provisions exists (charter N-7).
+        ['lender'],
+      ),
     )
   }
 }

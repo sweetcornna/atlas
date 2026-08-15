@@ -134,6 +134,7 @@
     "@qianmo/audit": "workspace:*",
     "@qianmo/backup": "workspace:*",
     "@qianmo/capability": "workspace:*",
+    "@qianmo/capacity": "workspace:*",
     "@qianmo/diagnosis": "workspace:*",
     "@qianmo/memory": "workspace:*",
     "@qianmo/negotiation": "workspace:*",

@@ -11,11 +11,13 @@ import { ActivatorEventType } from '@qianmo/activator'
 import { NegotiationEventType } from '@qianmo/negotiation'
 import { TunnelEventType } from '@qianmo/tunnel'
 import { BackupEventType } from '@qianmo/backup'
+import { CapacityEventType } from '@qianmo/capacity'
 import { parseQianmoAuditArgs } from '../qianmoAudit.js'
 import {
   activatorTrailSink,
   auditTrailPath,
   backupTrailSink,
+  capacityTrailSink,
   negotiationTrailSink,
   routerTrailSink,
   tunnelTrailSink,
@@ -233,6 +235,38 @@ describe('the other four layers', () => {
       'dropped',
       'refused',
     ])
+  })
+
+  test('a capacity decision reaches the trail with its lead time intact', () => {
+    const path = join(root, 'trail.ndjson')
+    const trail = new AuditTrail(path)
+    const sink = capacityTrailSink(trail, 'node-b')
+    sink({
+      type: CapacityEventType.Predicted,
+      at: 1_800_000_000_000,
+      detail: { windowId: 'cumcm-2026', leadMs: 24_300_000, observed: 30 },
+    })
+    sink({
+      type: CapacityEventType.Suppressed,
+      at: 1_800_000_900_000,
+      detail: { reason: 'covered-by-calendar', leadMs: 0, observed: 90 },
+    })
+    trail.close()
+
+    const { records, intact } = readTrail(path)
+    expect(intact).toBe(true)
+    expect(records.map(record => record.source)).toEqual([
+      AuditSource.Capacity,
+      AuditSource.Capacity,
+    ])
+    expect(records.map(record => record.kind)).toEqual([
+      'capacity.scale-up-predicted',
+      'capacity.scale-up-suppressed',
+    ])
+    // `dropped`, not `refused`: nobody turned the second one down, a rule held
+    // it back. P6.2's DoD is answered by `leadMs` surviving the translation.
+    expect(records.map(record => record.outcome)).toEqual(['ok', 'dropped'])
+    expect(records[0]?.detail?.['leadMs']).toBe(24_300_000)
   })
 
   test('the peer is read from whatever each layer calls it', () => {

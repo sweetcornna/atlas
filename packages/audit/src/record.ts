@@ -41,6 +41,7 @@ export enum AuditSource {
   Backup = 'backup',
   Diagnosis = 'diagnosis',
   Registry = 'registry',
+  Capacity = 'capacity',
 }
 
 /** The chain value of the first record: sha-256 of the empty string is not it. */

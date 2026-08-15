@@ -68,6 +68,7 @@
         "@qianmo/audit": "workspace:*",
         "@qianmo/backup": "workspace:*",
         "@qianmo/capability": "workspace:*",
+        "@qianmo/capacity": "workspace:*",
         "@qianmo/diagnosis": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",
@@ -260,6 +261,10 @@
         "@qianmo/protocol": "workspace:*",
         "@qianmo/router": "workspace:*",
       },
+    },
+    "packages/capacity": {
+      "name": "@qianmo/capacity",
+      "version": "0.0.0",
     },
     "packages/cloud-artifacts": {
       "name": "cloud-artifacts",
@@ -1023,6 +1028,8 @@
     "@qianmo/backup": ["@qianmo/backup@workspace:packages/backup"],
 
     "@qianmo/capability": ["@qianmo/capability@workspace:packages/capability"],
+
+    "@qianmo/capacity": ["@qianmo/capacity@workspace:packages/capacity"],
 
     "@qianmo/diagnosis": ["@qianmo/diagnosis@workspace:packages/diagnosis"],
 
