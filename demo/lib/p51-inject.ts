@@ -131,7 +131,7 @@ async function readOomKillDelta(): Promise<{ oomKillDelta?: number }> {
 }
 
 /** OOM：真的把堆撑爆，让运行时自己喊出来。 */
-async function injectOom(runtime: string): Promise<InjectedSample> {
+export async function injectOom(runtime: string): Promise<InjectedSample> {
   const script =
     'const held = []; for (;;) { held.push(new Array(1e6).fill(Math.random())) }'
   const outcome = await run(
