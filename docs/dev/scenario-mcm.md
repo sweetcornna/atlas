@@ -301,9 +301,11 @@ make -C demo p61-accept
 
 | 轮次 | task ID | commit / 机器 | seed | startedAt / durationMs | 七项 checks | `pass` / `ac7Eligible` | audit intact / kind counts | 命令输出记录 | 执行人 / 备注 |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | `68071efe-0228-4a3b-a055-cbd8ee306cc8` | 本地工作树 / macOS | 6101 | 1786718963333 / 600357 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | `make -C demo p61-accept` 第 1 份 stdout | 主 agent；无人工补救 |
-| 2 | `e5ac2799-3d12-43de-96be-9b873046213a` | 本地工作树 / macOS | 6101 | 1786719563783 / 600445 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | 同一串行命令第 2 份 stdout | 主 agent；无人工补救 |
-| 3 | `17c2cf20-f5d0-4a64-838b-39be1c278b87` | 本地工作树 / macOS | 6101 | 1786720164332 / 600407 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | 同一串行命令第 3 份 stdout | 主 agent；无人工补救 |
+| 1 | `958fef1f-c6e3-4eb3-a1a9-3f38d0dde515` | `87c4609b` / macOS（Darwin 25.5.0 arm64） | 6101 | 1786804951648 / 600988 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | 归档包 `p61-accept-87c4609b-20260815-082113.tar.gz`（sha256 `2be9d926…3140`，含三轮 report/audit/results 与完整 stdout） | 主 agent；无人工补救 |
+| 2 | `722fb1ef-8c27-48fb-977e-39bacb8610e3` | 同上 | 6101 | 1786805552758 / 600236 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | 同一归档包 | 主 agent；无人工补救 |
+| 3 | `eddd4942-7cdd-4ed8-8b2c-1d6798cca199` | 同上 | 6101 | 1786806153127 / 600259 ms | 七项全绿 | true / true | intact / 必需 kind 齐全 | 同一归档包 | 主 agent；无人工补救 |
+
+> 首次 3/3（2026-08-14，见 roadmap v2.30）跑在**未提交的工作树**上且成功产物按当时默认被清理，无 SHA 可锚、无留档；上表为提交 `87c4609b` 上开 `QIANMO_P61_KEEP_ARTIFACTS` 的重跑，**以本表为正式验收记录**。归档包暂存本地私有验收目录，真机（workbench-host）副本待其 SSH 恢复后补传，补传前「已归档真机」不得勾选。
 
 **3/3 总判据**：三行都满足单轮 `pass === true`、`ac7Eligible === true`、`elapsedMs ≥ 600,000`、审计完整且无人工补救，汇总才可写 `3/3 PASS`。汇总不得用平均值掩盖单轮失败；任何一轮失败，结论就是未达 AC-7，需要修复后从第 1 轮重新连续执行。
 
