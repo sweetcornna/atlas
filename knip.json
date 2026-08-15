@@ -33,7 +33,10 @@
         "scripts/**/*.{ts,mjs,cjs}",
         "src/**/*.runner.ts",
         "demo/lib/ac6a-sandbox.ts",
-        "demo/lib/p31-copy-resident-timings.ts"
+        "demo/lib/p31-copy-resident-timings.ts",
+        "demo/lib/p61-scenario.ts",
+        "demo/lib/p61-seed.ts",
+        "demo/lib/p61-worker.ts"
       ],
       "project": ["src/**/*.{ts,tsx}"],
       "ignore": ["src/types/**"]
