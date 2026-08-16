@@ -112,8 +112,11 @@ git apply --3way --whitespace=nowarn upstream.patch
 
 ## 6. 演练纪律确认
 
-- 演练全程在一次性 clone 内进行，主检出未加 remote、未 fetch、未改动任何文件（事后由主 agent
-  独立复核：主检出 remote 仅 origin、工作树干净、无上游对象）
+- 演练全程在一次性工作副本内进行，主检出未加 remote、未改动任何文件（事后由主 agent
+  独立复核：主检出 remote 仅 origin、工作树干净）。**勘误（2026-08-15）**：原文「一次性 clone」「无上游对象」不准确——
+  工作副本是本仓库的 git worktree（`.occ/worktrees/p74-upstream-sync`），与主检出共享对象库，`fetch` 的上游 tag 对象因此
+  留在主检出 pack 中（约 1,800 个不可达提交，无 ref 指向，`git clone` 不带走）；这不影响任何演练结论，但意味着本机主检出上
+  `848ad8c2` 可解析，举证须以 `3380c88` 为基线或用干净 clone（见 `BASE.md` 演练记录与 roadmap v2.35⑥(b)）
 - 演练分支 `drill/p74-v2.46.0` 未提交、未推送到任何 remote
 - 基座 pin 保持冻结在 v2.38.3；`BASE.md` 的演练记录条目由负责人决定是否及如何追加
   （CLAUDE.md §2.4），草稿已随评审材料提交
