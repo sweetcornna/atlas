@@ -264,7 +264,7 @@ P8.1 产物复制进去，然后**只按上面六条命令敲**（另加一条 A
 | ③ `seed.sh` | **0 s** | 与 §4.3 同 |
 | ④ `up.sh` | **8 s** | 就绪探测里 node-a 首次拨号 **6513 ms**（开发机 3.45 s）—— 2 vCPU 上常驻进程起得慢，探测重试吸收掉了 |
 | ⑤ `smoke.sh --with-task` | **1 s** | 解析 13 ms / 拨号 6 ms / **ack 1161 ms**（开发机 59 ms、414 ms）；两条审计链 intact；`pass=true` |
-| ⑥ `ac3-loop-rate.sh` | **2 s** | 本次（`da98d86f`）**`pass=false`** —— 十条 check 里 `protocolBudgetAtLimit` 为 false（`accepted=601`，期望 600），连跑四次全红；同一 HEAD 在开发机上十条全 true。**是判据缺陷不是机器或限流器的问题，已修**（判据改为按突发用时算「顶」，见 §7.5），修后**在这台机器上的复跑待做** |
+| ⑥ `ac3-loop-rate.sh` | **2 s** | 本次（`da98d86f`）**`pass=false`** —— 十条 check 里 `protocolBudgetAtLimit` 为 false（`accepted=601`，期望 600），连跑四次全红；同一 HEAD 在开发机上十条全 true。**是判据缺陷不是机器或限流器的问题，已修**（判据改为按突发用时算「顶」，见 §7.5），修后**已在这台机器上复跑 4/4 绿**（同一 HEAD 的修订量具：`sent=603 / accepted=602 / burstElapsedMs 218–250 / refillAllowance=2`，第 603 条回 `E_RATE_LIMITED`，十条 check 全 true） |
 | ⑦ AC-7 冒烟 | **61 s** | `pass=true`，`resultDigest` 与 `expectedDigest` 一致，七条 check 全 true。**这台机器没有 make**，实际敲的是 `p61-smoke` 目标展开后的两条命令（`bun run demo/lib/p61-seed.ts --reset --seed 6101` + `cd demo && ./p61-e2e.sh --mode smoke --minutes 1 --chunks 4 --iterations 3`） |
 | ⑧ `down.sh` | **4 s** | 三个进程全停；`pgrep` 复核无残留 |
 | **合计（①~⑧）** | **100 s（1 min 40 s）** | 加上 ⓪ 的 6 s 与 bundle 传输 54 s，从「一台什么都没有的机器」到「跑完并停机」约 **2 min 40 s**。距 30 min 预算约 11 倍余量 |
@@ -392,7 +392,7 @@ Debian 机器上 `env` 里没有任何模型凭据、也没有任何 `~/.occ` / 
 在 git worktree 里跑 `bun run check:unused` 会得到约 76 个「未使用文件」的**假阳性**，根因与
 处置见 `CLAUDE.md` §3.1。本任务包新增的两个 TS runner 已加进 `knip.json` 的入口图。
 
-### 7.5 AC-3 一键复现在慢机器上判红（**§4.2 第 ⑥ 条；已修，真机复跑待做**）
+### 7.5 AC-3 一键复现在慢机器上判红（**§4.2 第 ⑥ 条；已修，慢机器复跑 4/4 绿**）
 
 **现象**（`da98d86f` 及更早）：§4.4 那台 2 vCPU 的 Debian 上，`demo/ac3-loop-rate.sh`
 **确定性判红**（连跑四次，`pass=false`），红的是十条 check 里的 `protocolBudgetAtLimit`：
@@ -425,7 +425,7 @@ Debian 机器上 `env` 里没有任何模型凭据、也没有任何 `~/.occ` / 
 回补量走，没有松动。反向：把接收方预算临时改成 5000/min，`sent=1200, accepted=1200`、无
 `refusedCode`、`protocolBudgetAtLimit=false`，红得对。用 `yes` 把全部核心压满只能把突发拖到
 66 ms，仍在一个回补间隔内，说明开发机上光靠 CPU 加压复现不了慢机器的红，所以才用插 sleep。
-**§4.4 那台 Debian 上的复跑待做**（本次未接触该机器）。
+**§4.4 那台 Debian 上的复跑已做（2026-08-15，主 agent）**：把修订后的 `demo/lib/ac3-*.ts` 与 `demo/ac3-loop-rate.sh` 复制到该机同一检出上连跑四次，全部 `pass=true`：`sent=603 / accepted=602 / burstElapsedMs` 218 / 245 / 247 / 250 ms / `refillAllowance=2`——桶在突发期间确实多回补了 2 个令牌，判据上界与之贴合；被拒那条码为 `E_RATE_LIMITED`。
 
 **仍然要记住的一条**：这条判据要求机器**每条消息快过一个回补间隔**（< 100 ms/条，比原先
 「601 条 100 ms 内发完」松 600 倍），且在 2 × `perMinute` 条内到顶。慢过这个的机器会以
