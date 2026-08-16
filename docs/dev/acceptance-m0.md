@@ -2,14 +2,15 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v0.1-draft** |
+| 文档版本 | **v0.2-draft** |
 | 生效日期 | 2026-08-15 |
 | 任务包 | [`roadmap.md`](./roadmap.md) **P8.2 全量验收走查**（owner：喻永昌主持，全体参与） |
 | 判据依据 | [`charter.md`](./charter.md) **v2.9 §4**（§4 判据自 v2.8 起未再改动；v2.9 只回写 §5.7）（判据原文在那里，本表不复制，只放指针与走查需要的阈值） |
 | 完成状态依据 | [`roadmap.md`](./roadmap.md) **「完成状态速查」表**（该表自称完成状态的唯一出处，本表以它为准） |
 | 用途 | 走查现场的操作与判定底稿：每条 AC 敲什么、镜头给什么、判什么、缺什么 |
-| 状态 | **待走查与录屏**。本表整理的是**已有证据**，AC-1 ~ AC-8 的逐条录屏与现场走查**尚未进行**，判定列写的是「按现有证据的预判」，不是走查结论 |
-| 编制口径 | 每个数字、SHA、路径、用例数都在仓库里核过，核法见 §6「核对记录」；核不到的一律写「未核到」 |
+| 状态 | **本机腿已走查（见 §8），真机腿与凭据腿待做**。不需要人的四项（AC-3 / AC-6(b)(c) / AC-7 / AC-8）已在本机实跑并留证；仍要人的只剩三件：真机两条（AC-2 / AC-6(a)）、凭据三条（一条命令）、双签评审 |
+| 走查驱动 | [`demo/walkthrough.sh`](../../demo/walkthrough.sh) —— 一键跑完本机腿并落 transcript / 报告 JSON / `summary.json`；用法与产物形态见 §8.1 |
+| 编制口径 | 每个数字、SHA、路径、用例数都在仓库里核过，核法见 §6「核对记录」；核不到的一律写「未核到」。**§8 里的数字全部来自 §8 那次实跑**，不是转述 |
 
 > **这份表不替代任何东西。**判据原文在章程 §4；完成状态在 roadmap 速查表；各包的实施细节与边界在 roadmap 变更记录里。本表只做一件事：把它们收敛成一张**能照着敲命令、照着判 PASS/FAIL** 的走查底稿。
 
@@ -21,6 +22,7 @@
 
 | 取值 | 含义 |
 |---|---|
+| **PASS-已走查（本机）** | **判据已在本次走查里当场跑过**（`demo/walkthrough.sh`，§8 有 transcript + 报告 JSON + sha256），不是转述历史证据 |
 | **PASS-证据齐** | 判据全部有实测证据，且走查现场能在本机原样复跑 |
 | **PASS-待复跑** | 判据全部有实测证据，但复跑需要额外条件（真机 / 凭据），现场能否重现取决于条件是否具备 |
 | **部分** | 判据的**某个子项**证据不完整或换环境后不成立 |
@@ -29,16 +31,18 @@
 
 | AC | 一句话判据（全文见 charter §4） | 当前判定 | 证据类型 | 一键命令 | 证据锚点 | 最后实测 |
 |---|---|---|---|---|---|---|
-| **AC-1** | `kill -9` 后 `--resume` 续答，`session_id` 一致，启动到可收消息 ≤ 10 s | **PASS-待复跑**（判据②需模型凭据，脚本内**恒 SKIP**） | 本机脚本 + 一次真调用补测 | `bash demo/ac1-restart.sh` | `5508358`＋`3e7a401`；`docs/dev/session-persistence-review.md`；判据②只有 roadmap v2.13 的叙述记录，**无留档报告** | 脚本部分：2026-08-12（review 文档）；判据②：2026-08-12 |
+| **AC-1** | `kill -9` 后 `--resume` 续答，`session_id` 一致，启动到可收消息 ≤ 10 s | **脚本部分 PASS-已走查（本机）**；**判据②仍待凭据**（脚本内恒 SKIP，本次如实记 `SKIPPED=1`） | 本机脚本 + 一次真调用补测 | `demo/walkthrough.sh --only ac1`（＝ `bash demo/ac1-restart.sh`） | `5508358`＋`3e7a401`；`docs/dev/session-persistence-review.md`；§8.3 本次实跑；判据②只有 roadmap v2.13 的叙述记录，**无留档报告** | 脚本部分：**2026-08-15 本次走查**；判据②：2026-08-12 |
 | **AC-2** | 跨节点唤醒休眠智能体，ack ≤ 60 s、result ≤ 5 min、10/10 | **PASS-待复跑**（需 Dormice + gVisor 真机） | 真机 | `bash demo/p41-task-result.sh` | roadmap v2.20 + 速查表 P4.1 行；`demo/lib/p41-report-core.ts` 八条 check | 2026-08-13（GCP + Dormice + gVisor） |
-| **AC-3** | 回环在首次回访同一 `(处理者地址, taskId)` 时切断；两层限流各自生效 | **PASS-证据齐** | 本机自动化（真 transport，unix socket） | `QIANMO_TRANSPORT_PSK=… bash demo/ac3-loop-rate.sh` | roadmap v2.21 + 速查表 P4.2 行；`demo/lib/ac3-report-core.ts` 十条 check | 2026-08-14 |
-| **AC-4** | 项目记忆跨会话命中 5/5、标注来源 ID 与写入时间、伪造决策零引用 | **PASS-待复跑**（需真实 provider 凭据 + 网络） | 真调用集成测试 | `bun test tests/integration/qianmo-memory-recall.test.ts` | 速查表 P3.3 行；`packages/recall/` 51 用例 + 集成 19 用例 | 未在文档中标注具体日期，**未核到**（见 §6.4） |
-| **AC-5** | 同一任务在 ≥ 2 个供应商适配器下跑通，仅改配置不改代码；一致性三项全绿 | **PASS-待复跑**（需凭据；G-4 定性限定仍在） | 真调用集成测试 + 端到端脚本 | `bun test tests/integration/provider-adapter-consistency.test.ts`；`bun run scripts/qianmo-provider-task.ts --provider …` | `docs/dev/p1.4-provider-verification.md` v0.1（§2/§3/§5）；速查表 P1.4 行 | 2026-08-12 |
-| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **部分**：(a) 真机 5/5 待复跑；(b)(c) 本机全绿、**真机挂载边界未测** | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `bash demo/ac6b-restore.sh` | (a) 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check | (a) 未在文档中标注具体日期，**未核到**；(b)(c) 2026-08-14 |
-| **AC-7** | ≥ 10 min 全程无人工干预的六环节连续演示，3/3 | **PASS-证据齐**（本机 3/3；真机副本待补传） | 本机（单进程逻辑双节点） | `make -C demo p61-accept`（`SEED=6101 MINUTES=10 CHUNKS=20`） | `87c4609b`；`docs/dev/scenario-mcm.md` §9 三行正式记录；归档包 sha256 `2be9d926…3140`（**私有验收目录，仓库内无副本**） | 2026-08-15 |
-| **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-证据齐** | 自动化 + CI | `bun test tests/boundary`；`QIANMO_TRANSPORT_PSK=… ./demo/chaos-inject.sh --minutes 60` | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库：2026-08-15 本次实跑；混沌 60 min：2026-08-14 |
+| **AC-3** | 回环在首次回访同一 `(处理者地址, taskId)` 时切断；两层限流各自生效 | **PASS-已走查（本机）** | 本机自动化（真 transport，unix socket） | `demo/walkthrough.sh --only ac3`（＝ `QIANMO_TRANSPORT_PSK=… bash demo/ac3-loop-rate.sh`） | roadmap v2.21 + 速查表 P4.2 行；`demo/lib/ac3-report-core.ts` 十条 check；**§8.3 本次实跑十条全 true** | **2026-08-15 本次走查**（前次 2026-08-14） |
+| **AC-4** | 项目记忆跨会话命中 5/5、标注来源 ID 与写入时间、伪造决策零引用 | **PASS-待复跑**（需真实 provider 凭据 + 网络）。**一条命令补齐**：`source <凭据文件> && demo/walkthrough.sh --only ac4` | 真调用集成测试 | `bun test tests/integration/qianmo-memory-recall.test.ts` | 速查表 P3.3 行；`packages/recall/` 51 用例 + 集成 19 用例 | 未在文档中标注具体日期，**未核到**（见 §6.4） |
+| **AC-5** | 同一任务在 ≥ 2 个供应商适配器下跑通，仅改配置不改代码；一致性三项全绿 | **PASS-待复跑**（需凭据；G-4 定性限定仍在）。**一条命令补齐**：`source <凭据文件> && demo/walkthrough.sh --only ac5,ac5e2e` | 真调用集成测试 + 端到端脚本 | `bun test tests/integration/provider-adapter-consistency.test.ts`；`bun run scripts/qianmo-provider-task.ts --provider …` | `docs/dev/p1.4-provider-verification.md` v0.1（§2/§3/§5）；速查表 P1.4 行 | 2026-08-12 |
+| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **(a) 待真机复跑；(b)(c) PASS-已走查（本机）**——本机腿全绿，**真机挂载边界仍未测**（§4.1 的定夺不因本次走查而改变） | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b` | (a) 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check；**§8.3 本次实跑十一条全 true** | (a) 未在文档中标注具体日期，**未核到**；(b)(c) **2026-08-15 本次走查**（前次 2026-08-14） |
+| **AC-7** | ≥ 10 min 全程无人工干预的六环节连续演示，3/3 | **PASS-已走查（本机）**（本次在 `856d0ff8` 上又跑通一次 3/3；真机副本仍待补传） | 本机（单进程逻辑双节点） | `demo/walkthrough.sh --with-ac7`（＝ `make -C demo p61-accept`，`SEED=6101 MINUTES=10 CHUNKS=20`） | `87c4609b`；`docs/dev/scenario-mcm.md` §9 三行正式记录（**仍是正式记录**）；归档包 sha256 `2be9d926…3140`（**私有验收目录，仓库内无副本**）；**§8.3 本次走查三轮**（digest 与 §9 逐字相同） | **2026-08-15 本次走查**（同日另有 §9 那次正式记录） |
+| **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-已走查（本机）**（边界库与 60 min 混沌均当场跑过；CI 五连绿仍锚在 `a8b06a9`，未在结项 HEAD 重取——§4.5） | 自动化 + CI | `demo/walkthrough.sh --with-chaos 60`（含 `bun test tests/boundary`） | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；**§8.3 本次 60 min 混沌五条 check 全 true、177 次注入、四类 `stalled` 全 0、`unmapped=0`**；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库与混沌 60 min：**2026-08-15 本次走查**（混沌前次 2026-08-14）；CI 五连绿：`a8b06a9` |
 
 **按 DoD 口径的当前汇总**：8 条中 **0 条未通过**；**0 条需要豁免**（判据本身都有达标实测）。真正卡在走查现场的是**能否复跑**，不是能否达标——详见 §4。
+
+> **v0.2 补充**：「能否复跑」这个风险在**本机腿上已经消解**——AC-3 / AC-6(b)(c) / AC-8 与 AC-1 脚本部分已于 2026-08-15 在 `b3cda44f` 上复跑通过，AC-7 在同日的 `856d0ff8` 上跑通 3/3（两者之间 AC-7 相关代码零改动，§8.3 有 `git diff` 依据），逐项 transcript 与报告 JSON 见 §8。剩下的复跑风险只在**真机腿**（AC-2 / AC-6(a)）与**凭据腿**（AC-1 判据② / AC-4 / AC-5）。
 
 ---
 
@@ -93,7 +97,7 @@
 **已知边界与未覆盖**
 
 - **脚本第 5 节恒 `SKIPPED`**：`demo/ac1-restart.sh` 里判据②那一段是无条件跳过的固定文案，脚本**刻意不读任何凭据、不发任何模型调用**。因此「脚本全绿」≠「AC-1 三条判据全过」。这是本条最容易在走查现场被误读的地方。
-- **`--resume` 时间戳并列丢尾部消息**：`session-persistence-review.md` §0 第 7 条把它记为「必须处置」的新缺口（实测每次丢 3 条）。修复提交 `3e7a401`（「修复 --resume 时间戳并列丢尾部消息」）已在，且被 roadmap 速查表 P1.2 行列为证据之一，但 **review 文档未回写**，脚本 4c 段的 `warn` 分支也仍在。走查前需确认脚本 4c 段现在报 `ok` 还是 `warn`——**本次未跑该脚本，未核到**。
+- **`--resume` 时间戳并列丢尾部消息**：`session-persistence-review.md` §0 第 7 条把它记为「必须处置」的新缺口（实测每次丢 3 条）。修复提交 `3e7a401`（「修复 --resume 时间戳并列丢尾部消息」）已在，且被 roadmap 速查表 P1.2 行列为证据之一，但 **review 文档未回写**，脚本 4c 段的 `warn` 分支也仍在。**v0.2 已核到（§8.4）**：本次实跑 4c 段两个规模点位（200 条 / 3000 条）都报 `ok`，全程 `WARN=0`——修复确已生效，`warn` 分支没被触发。**剩下的只是回写 `session-persistence-review.md` §0 第 7 条**（本表不改 review 文档）。
 - 恢复入口按 P1.2 的 v2.2 修正**钉死 `--resume <UUID>`**；review 文档另加一条限定：参数必须是 UUID，传自定义标题会把全量扫描带回来、且是跨 worktree 的，比 `--continue` 更贵。演示不要传标题。
 - 崩溃丢失窗口的语义已回写 `protocol.md`（P1.2 交付物之一），走查若被问到「丢的那一小段算什么」，答案在那里。
 
@@ -121,7 +125,7 @@
 | 待办 | owner |
 |---|---|
 | 判据②现场重做一次并留档（报告 + SHA 锚定），补上「无留档」这个缺口 | 主开发：喻永昌；方向辅助人：董宗岳（backup 陈子轩） |
-| 确认 `3e7a401` 之后脚本 4c 段是否已从 `warn` 转 `ok`；若已修复，回写 `session-persistence-review.md` §0 第 7 条 | 同上 |
+| ~~确认 `3e7a401` 之后脚本 4c 段是否已从 `warn` 转 `ok`~~ —— **已确认为 `ok`（§8.4，`WARN=0`）**；仍需回写 `session-persistence-review.md` §0 第 7 条 | 同上 |
 
 ---
 
@@ -230,6 +234,8 @@ QIANMO_TRANSPORT_PSK=… bash demo/ac3-loop-rate.sh
 | ② 合法 spiral（同节点、不同目标地址） | 正常投递，`loop_detected` **0 条** |
 | ③ 运行时层 | 第 21 条本地被拒（`E_RUNTIME_THROTTLED`）且**没上线**；换目标即放行 |
 | ④ 协议层 | 按**真实 `LIMITS.ratePerMinute`** 打满后下一条回 `E_RATE_LIMITED`；发送方换了 **31 个 agent 名字**仍不多拿配额（证明这层按**节点**计） |
+
+> **2026-08-15 本次走查复跑**（运行 ②，HEAD `b3cda44f`——**这是 AC-3 量具被 `9736ddca` 修订之后的版本**）：十条 check 全 `true`、`pass: true`，用时 1 s。`loop.hopCountAtCut=2` 仍小于同一份报告里给出的 `loop.maxHops`（**不是跳数兜底救的场**），`spiral.loopEvents=0`，`budget.senderAgents=31`；新的 `protocolBudgetAtLimit` 在本机上 `burstElapsedMs=23`、`refillAllowance=0`，即**退化回原先那条严格判据**（`accepted === LIMITS.ratePerMinute`）。逐行 transcript 与报告 JSON 见 §8.3 ~ §8.5。
 
 **机器判据 check 清单**（`demo/lib/ac3-report-core.ts`，十条不合并）
 
@@ -481,6 +487,8 @@ QIANMO_BACKUP_WRITE_TOKEN=… QIANMO_BACKUP_ARCHIVE_TOKEN=… bash demo/ac6b-res
 | 只写凭据的列表 / 读取 | **两次全 403** | — |
 | 快照 | 仍在 | — |
 
+> **2026-08-15 本次走查复跑**（运行 ②，HEAD `b3cda44f`）：十一条 check 全 `true`、`pass: true`。恢复耗时 **20 ms**（预算 10 min；运行 ① 是 18 ms），删除前 `git status --porcelain` **3 行**（`gitStatusWasNonTrivial` 成立），四次 DELETE/PUT/PATCH 全 **405**、两次列表/读取全 **403**、快照仍在。见 §8.3 ~ §8.5。**这次复跑同样没有触到沙箱挂载边界**——它本机测不到，§4.1 的定夺照旧。
+
 **机器判据 check 清单**（`demo/lib/ac6b-report-core.ts`，十一条不合并）
 
 `workspaceWasDeleted` · `restoreSucceeded` · `withinBudget` · `gitStatusIdentical` · **`gitStatusWasNonTrivial`** · `headIdentical` · `execBitPreserved` · `removalRefused` · `writerCannotRead` · `denialsAudited` · `snapshotSurvives`
@@ -544,6 +552,8 @@ QIANMO_TRANSPORT_PSK=… QIANMO_P61_KEEP_ARTIFACTS=1 \
 每轮 20/20 worker、600 + 1 条背景投递、结果 digest 三轮均为 `cdecda39b681…3bb266` 且与 expected 一致、`message_accepted=1210`、lender pending 0、审计链 intact、0 failure / 0 skipped。归档包 `p61-accept-87c4609b-20260815-082113.tar.gz`（sha256 `2be9d926…3140`），**暂存本地私有验收目录，仓库内无副本**。
 
 > **前一组数字（600,357 / 600,445 / 600,407 ms，spanMs 509,994 / 509,977 / 510,000）是 2026-08-14 的首次 3/3**，跑在**未提交的工作树**上、产物按当时默认被清理，**无 SHA 可锚、无留档**，已被上表取代。见 §5.2。
+
+> **2026-08-15 本次走查又跑了一遍 3/3**（运行 ①，HEAD `856d0ff8`，同一条 `make -C demo p61-accept`，`SEED=6101 MINUTES=10 CHUNKS=20`）：三轮 `durationMs` **600,533 / 600,259 / 601,168**，`spanMs` 509,987 / 509,987 / 509,997，七条 check 全绿、`pass` 与 `ac7Eligible` 三轮均 `true`，**结果 digest 三轮相同且与 expected 逐字相同（`cdecda39b681…3bb266`，与 §9 正式记录那次也相同）**。这是**第三组**数字，**不取代** `scenario-mcm.md` §9 的正式记录——正式记录仍以 §9 三行表为准，本次是「结项 HEAD 上能复跑」的证据。明细见 §8.3。
 
 **机器判据 check 清单**（`demo/lib/p61-report-core.ts`，七条 + 一个 `ac7Eligible` 闸门）
 
@@ -631,6 +641,10 @@ occ audit --verify                                             # ③ 审计链�
 | 恢复时间最大值 | kill-worker 103 ms / cut-network 513 ms / fill-disk 112 ms / clock-drift 103 ms | — | 同上 |
 | **CI 5 连绿** | 五个 run 均 `completed / success`，**全部在同一 SHA `a8b06a9aee1f6fa84ea2c57593cc6129476256a1`**：`31799841764` / `31800391530` / `31800890960` / `31801288270` / `31801769324` | 连续 5 次全绿 | 已用 `gh run view` **逐个核到** |
 
+> **2026-08-15 本次走查复跑**（运行 ②，HEAD `b3cda44f`）：**边界库 39 pass / 0 fail / 102 expect() / 6 files**（与上表逐字一致）；**60 min 混沌五条 check 全 `true`、`pass: true`**——seed `153528247`、**177 次注入**（kill-worker 36 / cut-network 43 / fill-disk 45 / clock-drift 53）、**四类 `stalled` 全 0**、`delivered=7380`、`uncaught=0`、**`unmapped=0`**（87 条被捕获失败全部是真 `ENOSPC` 且归到 `disk full`）、审计链 `intact`。各类恢复时间最大值：kill-worker 150 ms / cut-network 492 ms / fill-disk 112 ms / clock-drift 103 ms。见 §8.3 ~ §8.5。
+>
+> **本次走查没有重取 CI 五连绿**——它仍锚在 `a8b06a9`，是否需要在结项 HEAD 上重取由负责人裁定（§4.5）。
+
 **机器判据 check 清单**（`demo/lib/chaos-report-core.ts`，五条）
 
 `noUncaught` · `everyKindInjected` · **`systemKeptWorking`** · `everyFailureMapped` · `trailIntact`
@@ -648,7 +662,7 @@ occ audit --verify                                             # ③ 审计链�
 **已知边界与未覆盖**
 
 - **`docs/dev/boundary-day.md` 目前只有模板，没有一条填好的记录。**60 min 跑批的结果记在 roadmap v2.29，**没有回填到边界日记录表**。判据不要求边界日记录，但流程约束（每双周一次）**在文档上无执行痕迹**。
-- 混沌跑批**默认不保留证据目录**（失败时才保留，路径打在 stderr）——与 `p73-baseline.sh` 相反。走查若要留档需自行保存 stdout。
+- 混沌跑批**默认不保留证据目录**（失败时才保留，路径打在 stderr）——与 `p73-baseline.sh` 相反。走查若要留档需自行保存 stdout。**v0.2 起这件事由 `demo/walkthrough.sh` 兜住**：它把每一项的 stdout 另抄一份（`chaos.stdout.txt`）并抽出报告 JSON（`chaos-report.json`），跑批成功时也留档。
 - **CI 5 连绿锚定在 `a8b06a9`**，不是走查当天的 HEAD。判据字面只说「全部进 CI 且连续 5 次构建全绿」，未要求锚在结项 SHA 上。**是否需要在结项 HEAD 上重跑一次 5 连绿，需负责人定夺**（见 §4）。
 
 **录屏脚本**
@@ -726,7 +740,7 @@ P8.2 的 DoD：**8 条全部 PASS，或未通过项 ≤ 2 条且有双签豁免�
 
 ### 4.5 AC-8：CI 5 连绿的锚点
 
-- **事实**：五连绿全部在 `a8b06a9`，走查时 HEAD 已推进（当前分支 `s4/p4.2-loop-and-rate`，HEAD `6bada14c`）。
+- **事实**：五连绿全部在 `a8b06a9`，走查时 HEAD 已推进（分支 `s4/p4.2-loop-and-rate`；v0.1 编制时 HEAD `6bada14c`，**§8 本机腿走查时 HEAD 已到 `856d0ff8`**）。本次走查**没有**重取 CI 五连绿——那需要五次 CI 串行，且判据字面不要求锚在结项 SHA 上。
 - **需要表态**：判据只说「全部进 CI 且连续 5 次构建全绿」，未指定 SHA。是否要求在结项 HEAD 上重取一次？重取成本约 5 次 CI 串行时长。
 
 ### 4.6 不影响 AC 判定、但影响结项完整性的三项
@@ -891,45 +905,226 @@ AC-1 / AC-4 / AC-5 **没有 report-core**：AC-1 的判据是脚本内 `PASS`/`F
 | AC-1 实测所用机器 | `session-persistence-review.md` 未标注 |
 | ack P95 4.440 s / result max 5.885 s 的原始报告 | 仓库内未见对应报告，无法判断它出自哪次跑批 |
 | AC-2 / AC-7 / P3.1 / P3.2 的原始记录与归档包 | 按纪律留在验收机与本地**用户私有目录**（0700 / 0600），仓库内无副本，本表不记路径 |
-| `demo/ac1-restart.sh` 在 `3e7a401` 之后第 4c 段报 `ok` 还是 `warn` | 本次未运行该脚本（它会生成 1000 个会话文件并反复起进程，超出「只读核对」范围） |
+| ~~`demo/ac1-restart.sh` 在 `3e7a401` 之后第 4c 段报 `ok` 还是 `warn`~~ | **v0.2 已核到**：§8.4 实跑，两个规模点位均 `ok`、`WARN=0`（编制 v0.1 时未跑该脚本） |
 | 三份基准报告的原始 JSON | 同上，均在私有目录 |
 
 ---
 
-## 7. 走查日程模板
+## 7. 走查日程模板（v0.2 收缩版）
 
-**总时长估计：一个整天**（含 AC-7 的 3 × 10 min 与混沌跑批的等待窗口）。建议把 AC-7 与 60 min 混沌跑批**在开场就后台启动**，其余条目串行走，末尾回收结果。
+**v0.1 的一整天日程作废。**本机腿（AC-3 / AC-6(b)(c) / AC-7 / AC-8 + AC-1 脚本部分）已由 `demo/walkthrough.sh` 跑完并留证（分两轮跑的，原因见 §8.3），见 §8——**它们不再占走查现场的时间，现场只做放映与问答**。
 
-| 序 | AC | 预计耗时 | 需要谁在场 | 需要什么机器 | 前置检查 |
+**真人还剩三件事**，合计约半天：
+
+| 序 | 事 | 预计耗时 | 需要谁在场 | 需要什么 | 判据落点 |
 |---|---|---|---|---|---|
-| **0** | 开场：环境对表 | 15 min | 全体 | 走查机 + 真机 | `git rev-parse --short HEAD`、`bun --version`、真机 SSH 可达性、凭据是否在手 |
-| **0'** | **后台启动**：`p61-accept`（AC-7）与 `chaos-inject --minutes 60`（AC-8 正式档） | 启动 5 min | 主开发 | 走查机 + 另一台（两个跑批不要挤在同一台） | `QIANMO_TRANSPORT_PSK`；`QIANMO_P61_KEEP_ARTIFACTS=1` |
-| **1** | **AC-3** | 15 min | 主开发 + 陈曦宇 | 走查机（本机即可） | 只要 PSK。**开场第一条就跑它**——成本最低、十条 check 最直观，用来把「判据是机器判的」这件事立住 |
-| **2** | **AC-8**（确定性部分） | 20 min | 主开发 + 陈子轩 | 走查机 | 无。含 `bun test tests/boundary`、README 五类表、PR 模板、GitHub Actions 五个 run |
-| **3** | **AC-6(b)(c)** | 20 min | 主开发 + 董宗岳 | 走查机 | 两把 backup token。**必须念出「挂载边界未测」** |
-| **4** | **AC-1** | 40 min | 主开发 + 董宗岳 | 走查机 + 一份模型凭据 | 脚本约 5 ~ 10 min（1000 会话生成较慢）；判据②的现场演示另需 20 min |
-| **5** | **AC-5** | 30 min | 主开发 + 陈子轩 | 走查机 + 凭据（若有第二家直连凭据一并用上） | `OPENAI_API_KEY` / `OPENAI_BASE_URL`；原生路径另需 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` |
-| **6** | **AC-4** | 25 min | 主开发 + 董宗岳 | 走查机 + 凭据 | 同上。先跑无凭据档展示门禁 |
-| **7** | **午休 / 跑批继续** | — | — | — | — |
-| **8** | **AC-6(a)** | 25 min | 主开发 + 董宗岳 | **真机**（Dormice + gVisor + docker） | 三个环境变量；真机可达 |
-| **9** | **AC-2** | 40 min | 主开发 + 陈曦宇 + 董宗岳 | **真机**（同上，另需常驻 occ 已在目标沙箱内跑起、沙箱镜像带 bun） | 八个环境变量；十轮跑批约 5 min，独立核验另需 20 min |
-| **10** | **AC-7** 回收 | 30 min | 全体 | 走查机（回收 0' 的跑批） | 三份报告 + 归档包 sha256 |
-| **11** | **AC-8** 回收（60 min 混沌） | 15 min | 主开发 + 陈子轩 | 回收 0' 的跑批 | 五条 check + `occ audit --verify` |
-| **12** | **判定与豁免评审** | 45 min | **全体 + 负责人 + 安全 owner** | — | 逐条填本表判定列；§4 的五个候选逐条表态；若有豁免，当场形成**双签决议** |
+| **1** | **真机两条**：AC-2（`demo/p41-task-result.sh`）+ AC-6(a)（`demo/ac6a-sandbox.sh`） | 65 min | 主开发 + 陈曦宇 + 董宗岳 | **Dormice + gVisor 真机可达**；AC-2 八个环境变量、AC-6(a) 三个 | §2.2 / §2.6(a) 的 check 清单与独立核验点 |
+| **2** | **凭据三条**：AC-4 / AC-5 一条命令跑完；AC-1 判据②另做一次真调用现场 | 30 min（脚本）＋ 20 min（AC-1② 现场） | 主开发 + 董宗岳 / 陈子轩 | 一份 provider 凭据（仓库外文件），AC-5 若有第二家**直连**凭据一并用上（关 G-4） | §2.4 / §2.5 的用例断言；AC-1② 见 §2.1 录屏脚本第 5 步 |
+| **3** | **判定与豁免评审** | 45 min | **全体 + 负责人 + 安全 owner** | §8 的 `summary.json` + 真机与凭据两批结果 | §4 五个候选逐条表态；若有豁免，当场形成**双签决议** |
 
-**日程约束三条**
+**第 2 件的「一条命令」**（凭据只从仓库外的文件 `source` 进环境，`walkthrough.sh` 只探测变量存在与否，不打印值、不落盘）：
 
-1. **真机相关的两条（序 8、9）必须排在同一段**——真机一旦可达就把两条一次做完，避免二次窗口。真机不可达时，这两条改为「放映留档 + 说明受阻」，并**在序 12 单独表态**。
-2. **AC-7 与混沌 60 min 必须开场就启动**，否则日程装不下。
-3. **序 12 必须有负责人与安全 owner 双人在场**——豁免决议要双签（章程 §4），事后补签会让决议的时间点说不清。
+```bash
+source <凭据文件> && demo/walkthrough.sh --only ac4,ac5,ac5e2e
+```
 
-**走查现场必须产出的三样东西**
+它跑三项：AC-4 真调用集成测试、AC-5 一致性套件、AC-5 的「命令行逐字相同、只改配置文件」两跑（`p1.4-provider-verification.md` §3.2 那个形态）。产物与本机腿同形：transcript + `summary.json`。
+**AC-1 判据②进不了这条命令**——它要的是一次真实多轮任务现场（在对话里由文件规则算出代号、`kill -9`、`--resume` 后追问），脚本化就失去了意义。这是本表里**唯一真正需要真人操作键盘**的判据。
 
-- 本表的判定列被逐条填写（`PASS` / `部分` / `未通过`），且每条都有对应录屏文件名；
+**约束三条**（v0.1 的三条里，只有这些还成立）
+
+1. **真机两条必须排在同一段**——真机一旦可达就一次做完，避免二次窗口。真机不可达时改为「放映 08-13 / P1.3 留档 + 说明受阻」，并在第 3 件里单独表态（§4.2）。
+2. **第 3 件必须有负责人与安全 owner 双人在场**——豁免决议要双签（章程 §4），事后补签会让决议的时间点说不清。
+3. **本机腿若要在现场重跑**，直接 `demo/walkthrough.sh --skip-slow`（约 15 s 跑完 AC-3 / AC-6(b)(c) / AC-8），不要手工一条条敲——手敲会漏掉环境快照与 sha256。
+
+**走查现场必须产出的三样东西**（口径不变，只是第一样的形态换了）
+
+- 本表判定列逐条填写完毕，且每条都能指向证据：本机腿指向 §8 的 transcript sha256，真机腿与凭据腿指向当场产生的报告；
 - §4 五个候选的书面表态；
 - 若有豁免：根因 + M1 补做计划 + 负责人与该方向 owner 双签（**豁免上限 2 条**）。
 
 ---
+
+## 8. 走查记录（本机腿，2026-08-15）
+
+**这一节记的是「实际跑了什么、跑出了什么」，不是预判。**每个数字都出自本次实跑的 transcript 或报告 JSON，路径与 sha256 逐条列在 §8.5。
+
+### 8.1 驱动、产物形态、以及 transcript 替代了什么
+
+本机腿由 [`demo/walkthrough.sh`](../../demo/walkthrough.sh) 一次驱动跑完：
+
+```bash
+demo/walkthrough.sh --with-ac7 --with-chaos 60          # 本次用的就是这条
+demo/walkthrough.sh --skip-slow                         # 现场想快速复跑三项快项（约 15 s）
+source <凭据文件> && demo/walkthrough.sh --only ac4,ac5,ac5e2e   # 凭据腿补齐
+demo/walkthrough.sh --list                              # 看全部项目 id
+```
+
+它做四件事，缺一不可：
+
+| # | 做什么 | 为什么 |
+|---|---|---|
+| 1 | 每一项都跑在 `script -q` 下，落一份**完整终端 transcript** | 这是**录屏的机器可核对替代**：逐行、不可裁剪、带 sha256，且**能 grep**（录屏不能） |
+| 2 | 抓每个 demo 自己 emit 的**报告 JSON**（判据的机器形态）单独存盘 | 判定不看人念了什么，看 `checks` 里那几个布尔 |
+| 3 | 记录起止时间、退出码、`git rev-parse HEAD`、机器与运行时版本 | 「哪次构建、哪台机器、跑了多久」是证据的一部分 |
+| 4 | 写 `summary.json` 与 `SUMMARY.md`（每项 pass/fail/skip + 依据行 + transcript sha256） | 一份能直接进结项材料的汇总 |
+
+**transcript 替代什么、不替代什么**——这一条要在走查现场说清楚：
+
+- **替代**：v0.1 各节「录屏脚本」里要求的**录屏文件**这一交付形态。镜头要停的那几行，现在以文本形式逐行在 transcript 里，且有 sha256 锚定，任何人可离线复核。
+- **不替代**：① 真人在镜头前**念出的口头限定**（各 AC 的诚实边界，见各节「已知边界与未覆盖」）；② 真机（AC-2 / AC-6(a)）与凭据（AC-1 判据② / AC-4 / AC-5）这两类**本来就不在本机腿内**的东西；③ 答辩现场的问答。
+- **真人录屏仍可在答辩前补拍**（各节「录屏脚本」原样可用），但**判定不再依赖它**——判定依赖的是 transcript + 报告 JSON + sha256。
+
+**凭据与秘密的处置**（走查若被问到，答案在这里）：
+
+- 驱动**只探测** `OPENAI_API_KEY` / `OPENAI_BASE_URL` **是否存在**，不读值、不打印、不落盘；本次两者都不在，AC-4 / AC-5 如实记 `skip` 并打印补齐命令。
+- 子命令需要的 `QIANMO_TRANSPORT_PSK` / 两把 backup token 由驱动**每次现生成**（`/dev/urandom` 32 字节 → 64 hex）经环境变量注入，**不写进任何文件**，进程结束即弃。**不复用 `demo/env/`**（那是 P8.1 的演示拓扑，与验收走查是两件事）。
+- 产物目录 `0700`、文件 `0600`，落在**仓库外**的私有验收目录；仓库内只留本节的 sha256 与关键数字。
+
+### 8.2 环境快照
+
+| 项 | 值 |
+|---|---|
+| 日期 | **2026-08-15**（本机 PDT）；transcript 与产物目录名用的是 UTC，所以里面写的是 `2026-08-16T04:47…Z` / `…T05:58…Z` —— **同一天的同一段时间，不是两天** |
+| HEAD | 本机腿跑了**两次**：运行 ① 在 **`856d0ff8`**、运行 ② 在 **`b3cda44f`**。为什么是两次、哪一项取哪一次，见 §8.3 |
+| 工作树 | 两次都是 `dirty: true` —— 改动只有**文档**与**未跟踪的新文件**（`demo/walkthrough.sh` 本身、并行工作中的各包 README）。**被测代码没有未提交的改动**，走查现场可当场 `git status` 复核 |
+| 机器 | `Darwin CornnaMacBook-Pro.local 25.5.0 … arm64`，macOS 26.5.2（25F84） |
+| 运行时 | bun 1.3.13 / node v26.3.0 / GNU Make 3.81 |
+| 凭据 | `OPENAI_API_KEY` 不在、`OPENAI_BASE_URL` 不在（只探测存在与否） |
+| 真机 | 未接入。AC-2 / AC-6(a) 不在本次范围内 |
+
+> **两次的 HEAD 都不是 v0.1 的 `6bada14c`**：v0.1 编制于 `6bada14c`，其后主线继续推进（S8/S9 的一串提交，其中包括一次**对 AC-3 量具本身的修订**——见 §8.3）。**§8 的每个数字都标了它属于哪一次运行、哪个 SHA。**
+
+### 8.3 结果表：哪一项取哪一轮
+
+本机腿实际跑了**两轮**，都是同一条驱动、同一台机器、同一天。如实记下来：
+
+| 轮 | 产物目录（私有，仓库外） | 起 / 止（UTC） | HEAD | 跑了哪些项 | 结局 |
+|---|---|---|---|---|---|
+| **①** | `~/qianmo-acceptance/20260816T044739Z/` | 04:47:39Z / — | `856d0ff8` | `ac3` `ac6b` `ac8` `ac1` `ac7` `chaos` | 前五项全绿（`ac7` 用时 1802 s）；**混沌步跑到第 33 min 被外部 `SIGTERM` 打断**，见下方「① 的混沌为什么没有报告」 |
+| **②** | `~/qianmo-acceptance/20260816T055831Z/` | 05:58:31Z / 06:59:05Z（3634 s） | `b3cda44f` | `ac3` `ac6b` `ac8` `ac1` `chaos`（60 min） | **五项全 pass、0 fail、0 interrupted**，`summary.json` / `SUMMARY.md` 齐 |
+
+**判定逐项取哪一轮**（同一项两轮都跑过时取更靠后的 HEAD）：
+
+| # | 项 | AC | 取自 | HEAD | 判定 | 退出码 / 用时 | 关键数字 |
+|---|---|---|---|---|---|---|---|
+| 1 | `ac3` | **AC-3** | 轮 ② | `b3cda44f` | **PASS** | 0 / 1 s | **十条 check 全 `true`**；`hopCountAtCut=2 < maxHops`；`spiral.loopEvents=0`；`senderAgents=31`；`sent=601`、`accepted=LIMITS.ratePerMinute`、`burstElapsedMs=23`、`refillAllowance=0` |
+| 2 | `ac6b` | **AC-6(b)(c)** | 轮 ② | `b3cda44f` | **PASS** | 0 / < 1 s | **十一条 check 全 `true`**；`elapsedMs=20`（预算 600,000 ms）；`statusLines=3`（非平凡工作区）；`removalStatuses=[405,405,405,405]`；`listStatus=403`、`readStatus=403`；`snapshotSurvives=true` |
+| 3 | `ac8`（边界库） | **AC-8** | 轮 ② | `b3cda44f` | **PASS** | 0 / 2 s | **39 pass / 0 fail / 102 expect() / 6 files** |
+| 4 | `chaos`（60 min） | **AC-8** | 轮 ② | `b3cda44f` | **PASS** | 0 / 3623 s | **五条 check 全 `true`**；seed `153528247`；**177 次注入**（kill-worker 36 / cut-network 43 / fill-disk 45 / clock-drift 53），**四类 `stalled` 全 0**；`delivered=7380`；`uncaught=0`；**`unmapped=0`**（87 条被捕获失败全部是真 `ENOSPC` 且归到 `disk full`）；`trailIntact=true` |
+| 5 | `ac1`（脚本部分） | **AC-1** | 轮 ② | `b3cda44f` | **PASS**（判据②如实 SKIP） | 0 / 8 s | **`PASS=24  FAIL=0  WARN=0  SKIPPED=1`**；`[small] --resume` 冷启动 **0.451 s**、`[large]` **0.464 s**，两者 ≤ 10 s；4c 段两个规模点位均 `ok` |
+| 6 | `ac7` | **AC-7** | **轮 ①** | `856d0ff8` | **PASS（3/3）** | 0 / 1802 s | 三轮 `durationMs` **600,533 / 600,259 / 601,168**（均 ≥ 600,000），`spanMs` 509,987 / 509,987 / 509,997；**每轮七条 check 全 `true`、`pass` 与 `ac7Eligible` 均 `true`**；**20/20 worker 三轮皆满**（`chunks=20 completed=20 workerOks=20`）；**digest 三轮相同且与 expected 逐字相同**（`cdecda39b681…3bb266`）；`message_accepted` 1210 / 1210 / **1212**；背景投递 600+1 / 600+1 / **601+1**（拆隧道后仍在投递）；`lenderPending=0`、`redialFailed=true`、`trail.intact=true`、`failures=0`、`skipped=0` |
+| — | `ac4` / `ac5` / `ac5e2e` | AC-4 / AC-5 | — | — | **未跑** | — | 无凭据。驱动开场即打印「AC-4/AC-5 跳过：无凭据，`source <凭据文件> && demo/walkthrough.sh --only ac4,ac5,ac5e2e` 即可补齐」，两项**不进 `summary.json` 的 items**（没跑过的东西不该在结果表里占一行） |
+
+> **第 6 行为什么可以取轮 ①**：`git diff 856d0ff8..b3cda44f` 在 AC-7 的**全部相关路径**上一个文件都没动——`demo/lib/p61-{scenario,worker,seed,report-core}.ts`、`demo/p61-e2e.sh`、`demo/Makefile`、`demo/p61-data`，以及 `packages/{tunnel,negotiation,capacity,diagnosis,transport,protocol,audit}/src`。这条命令走查现场可当场复核；**不是「差不多就行」，是有依据的外推。**
+>
+> **第 1 行为什么必须取轮 ②**：两轮之间 **AC-3 的量具本身被改过**——`9736ddca fix(demo): AC-3 协议层预算判据按突发用时算「顶」，慢机器不再判红`（另有 `c7a02607` 已被 `7e83649a` 撤回）。十条 check 的**名字与条数没变**，变的是 `protocolBudgetAtLimit` 的内部算法与新增观测字段。轮 ② 跑的才是当前量具，且在本机上 `refillAllowance=0`，即**退化回原先那条最严的判据**。
+
+**① 的混沌为什么没有报告 —— 是被打断，不是没跑起来**
+
+这一条要写准，因为「没跑起来」和「跑了 33 分钟被杀」在结项材料里是两件完全不同的事：
+
+| 证据 | 说明 |
+|---|---|
+| `chaos.transcript.log`（198 B，4 行）末行是 `chaos: seed=151078669 minutes=60 interval=20s kinds=kill-worker,cut-network,fill-disk,clock-drift` | 这行由 `demo/lib/chaos-inject.ts` 在**初始化完成之后**打印（`disk.available` 已判定、四类都在列表里 —— 说明 macOS 那个 1 MiB 真卷已经建起来了），紧接着才进注入循环。**能打出这行就等于已经起来了。** |
+| 跑批期间 `ps` 实测到 `bash ./demo/chaos-inject.sh --minutes 60` 与 `bun run demo/lib/chaos-inject.ts --minutes 60` 两个活进程 | 起止时间与 05:17:52Z 的开场一致 |
+| 驱动日志在 05:51 出现 `Terminated: 15` | 外部 `SIGTERM`。触发源是**会话管理器对后台任务约一小时的上限**（轮 ① 从 04:47 起算，到 05:51 正好 64 min），不是脚本自身退出 |
+| `chaos.stdout.txt` = **0 字节** | 这正是「跑到一半被杀」的形状：`chaos-inject.ts` 全程只在**最后**用 `emit()` 打一行报告 JSON，中途不产出 stdout。**空 stdout 不代表没注入，只代表没跑到终点。** |
+| 轮 ② 用**同一条命令、同一份代码**跑满 60 min 并 `pass=true` | 直接排除「参数没传对 / PSK 没注入 / 磁盘卷建不起来」这类驱动缺陷 |
+
+**结论**：轮 ① 的混沌**跑了约 33 min 的 60 min**，被外部信号中止，**没有留下可判定的报告**，因此 §8.3 表里 AC-8 的混沌一栏取轮 ②。轮 ① 的这段 transcript 是**残篇，不得据此判 PASS 或 FAIL**。
+
+> **这件事已经回灌进驱动**：`walkthrough.sh` 现在装了 `INT`/`TERM` 处理器——被打断时把在跑那项记成 `interrupted`（记录里明写「残篇不得据此判 PASS 或 FAIL」）、照常写出 `summary.json` 与 `SUMMARY.md` 再退出，而不是让 `WORK` 连同已完成项的记录一起蒸发（轮 ① 就是这么丢掉 `summary.json` 的）。这条兜底**用一次真实的进程组 `TERM` 验证过**，`totals.interrupted` 从 0 变 1、`summary.json` 照常落盘。
+
+### 8.4 依据行摘录（走查时要念的那几个数）
+
+以下逐字取自 `summary.json` 的 `evidence` 字段（驱动从报告 JSON 与 transcript 里抠出来的，不是手抄）。
+
+**轮 ②（`b3cda44f`，`~/qianmo-acceptance/20260816T055831Z/summary.json`）**
+
+```
+ac3    pass=true
+       hopCountAtCut=2 maxHops=8
+       senderAgents=31
+ac6b   pass=true
+       elapsedMs=20 statusLines=3
+ac8     39 pass
+        0 fail
+       Ran 39 tests across 6 files. [1.85s]
+ac1    PASS=24  FAIL=0  WARN=0  SKIPPED=1
+       PASS: [small] --resume 冷启动到会话就绪 0.451s ≤ 10s
+       PASS: [large] --resume 冷启动到会话就绪 0.464s ≤ 10s
+       WARN 行数=0
+chaos  pass=true seed=153528247
+       delivered=7380
+       byKind={"kind":"kill-worker","count":36,"stalled":0},{"kind":"cut-network","count":43,"stalled":0},
+              {"kind":"fill-disk","count":45,"stalled":0},{"kind":"clock-drift","count":53,"stalled":0}
+       unmapped=0
+```
+
+**轮 ①（`856d0ff8`）的 AC-7 三轮**（逐字取自三份 `ac7-run-N.report.json`，按 `startedAt` 排序）
+
+```
+轮1 task=b8186d93 durationMs=600533 spanMs=509987 digest=cdecda39b681…  20/20 worker  msgAccepted=1210  bg=600+1  checks 7/7  pass=true ac7Eligible=true
+轮2 task=546bfc81 durationMs=600259 spanMs=509987 digest=cdecda39b681…  20/20 worker  msgAccepted=1210  bg=600+1  checks 7/7  pass=true ac7Eligible=true
+轮3 task=30455511 durationMs=601168 spanMs=509997 digest=cdecda39b681…  20/20 worker  msgAccepted=1212  bg=601+1  checks 7/7  pass=true ac7Eligible=true
+```
+
+几处值得在走查时点名：
+
+- **`WARN 行数=0`**：AC-1 脚本 4c 段的 `warn` 分支（`--resume` 时间戳并列丢尾部消息）**这次没被触发**，两个规模点位都报 `ok`——`3e7a401` 的修复确已生效（§2.1 与 §6.7 已据此回写）。
+- **`SKIPPED=1` 就是 AC-1 判据②**，脚本刻意不读凭据、不发模型调用。**「脚本全绿」≠「AC-1 三条判据全过」**，这句话在走查现场必须念出来。
+- **`unmapped=0`** 是混沌判据里最硬的一条：87 条被捕获的失败**全部**能对上已知边界（都是真 `ENOSPC` → `disk full`），对不上一条就判红。
+- **四类 `stalled` 全 0** 才是重心；「没崩」不是判据——**什么都不干的一小时同样没有未捕获异常**。
+- AC-7 第 3 轮的 `msgAccepted=1212`、背景投递 `601+1` 比前两轮各多 1~2 条，因为那一轮多跑了约 900 ms（`durationMs=601168`）。**如实记，不抹平。**
+
+### 8.5 产物清单与 sha256
+
+两个目录都在**仓库外**的私有验收目录（`0700` / 文件 `0600`），仓库内只留这张表。sha256 用 `shasum -a 256` 实算。
+
+**轮 ②：`~/qianmo-acceptance/20260816T055831Z/`**
+
+| 文件 | sha256 |
+|---|---|
+| `summary.json` | `a3afddb25cf13b99219892be99633c08b7730b5d2b097d579381250ab38d3a48` |
+| `SUMMARY.md` | `de374ca1ce213b2fbe1c23e76dd929112e745606be92ba64c63fda28cd9e510b` |
+| `ac3-report.json` | `5b85b9931ec1b0a7f195bce6feb9ffeeb322fc1d935eb7e6cf3d032998d1a205` |
+| `ac3.transcript.log` | `2fa317189da3ec6f2af7ba759e3bef0069ec45f7337137ae8b6ec640b4ac9140` |
+| `ac6b-report.json` | `d61a7e5d0d29b2e51fb8cc5c8b966f3837ec379830b601f7f438b8e8be48ff84` |
+| `ac6b.transcript.log` | `b361670e35e4bb519f918e4b0b41b3643071fff96e768b367dc05a9fce6380f5` |
+| `ac8.transcript.log` | `a7129f8d39634cba335ccbd5c052b40334718720a115b1e1a9b0883091df6b25` |
+| `ac1.transcript.log` | `f57fa816b770149a1fcef58674bbb37a40c8eb525ba57ef8340a10c41e41f93f` |
+| `chaos-report.json` | `76f7a59e2297f30f689895427d14582793aa4f7f85dfc2027585f895372fe095` |
+| `chaos.transcript.log` | `fbc74aafad94babd17265d7e4e165224df4c70b96c6e243e904a76886ec1af3f` |
+
+**轮 ①：`~/qianmo-acceptance/20260816T044739Z/`**（本表只取仍在用的 AC-7 证据，其余项已被轮 ② 取代）
+
+| 文件 | sha256 |
+|---|---|
+| `ac7.transcript.log` | `e8c31b402a45f8ee509a000f3fb3f8d9a88a66397f8ac7622413b0fd670260ff` |
+| `ac7-report.jsonl` | `6f949aaa8ea9e137acb53372bde51e93674f3291d49d3f2f3e369d39cb0e2665` |
+| `ac7-run-1.report.json`（task `b8186d93`） | `17cc8fd6ceccae8fac9711bb852534f91a2a993d77d6f3ec0e305771bd29eca0` |
+| `ac7-run-2.report.json`（task `546bfc81`） | `e00e96a9aa9c694fef2d83d9f49855deecac0b7ca029976e6607b3f44537ea82` |
+| `ac7-run-3.report.json`（task `30455511`） | `32fa52b2dfdb8cb68fb5c9b3721c3cd80d569ca14c912af1c87d83e23d46e9fa` |
+| `chaos.transcript.log`（**残篇，198 B**） | `2ec67779d76fb84d6f0d3cecf99ac38f235f98c7de4b552c05dbecfd337277ba` |
+
+> 两处如实说明：
+>
+> 1. **`ac7-report.jsonl` 里是 6 行不是 3 行**——驱动第一版按「行首 `{`」抓报告，把 `p61-seed` 每轮先打的那行数据集 JSON 也抓进来了。**已修**为按 `"checks":{` 特征抓（轮 ② 的 `chaos` 就只抓到 1 行）。这份 jsonl 保持原样归档，不回改。
+> 2. **`ac7-run-N.report.json` 的轮次号是事后按 `startedAt` 校正过的**——第一版按 `mkdtemp` 目录名的字典序排，把第 3 轮标成了 `run-1`。**已修**为按目录 mtime 从旧到新排。文件内容一字未动（sha256 与校正前一致），改的只是文件名。
+
+### 8.6 本次走查没有覆盖什么
+
+**别把「本机腿全绿」读成「AC 全过」。**本次没碰的，逐条列出：
+
+- **真机腿**：AC-2、AC-6(a) 全程未接入 Dormice / gVisor 真机，**一次都没跑**。判定沿用 §2.2 / §2.6(a) 的留档，处置见 §4.2。
+- **凭据腿**：AC-4、AC-5 未跑（无凭据）；**AC-1 判据②** 是脚本内恒 SKIP，本次同样未测。补齐路径见 §7 第 2 件。
+- **AC-6 的沙箱挂载边界**：本机两侧同进程，测的是凭据面与动词面，**挂载测不到**。§4.1 的定夺不因本次走查而改变。
+- **AC-7 的五条诚实边界一条未变**：脚本化本地授权、A/B 是同一 runner 内的逻辑节点、WebSocket+PSK 不冒称 TLS、隧道只 A→B、worker 与 runner 共用算法。
+- **CI 五连绿没有在结项 HEAD 上重取**（§4.5 仍待负责人裁定）。
+- **真人录屏未拍**。transcript 替代的是「录屏文件」这一形态，不替代口头限定与现场问答（§8.1）。
+
+**一条正面的旁证**：轮 ② 四份本机 transcript（`ac3` / `ac6b` / `ac1` / `ac8`）里 **64 位十六进制串出现 0 次**——驱动现生成的 PSK 与两把 backup token（各 64 hex）**没有落进任何 transcript**，与 §8.1 「不打印值、不落盘」的说法一致，可用 `grep -oE '[0-9a-f]{64}'` 当场复核。
 
 ## 附：本表与其他文档的关系
 
