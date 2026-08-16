@@ -1163,7 +1163,7 @@ transcript sha256：轮 ② `ac4 4aafbf55…` / `ac5 155732e9…` / `ac5e2e 1d4d
 
 关键 sha256：`session.jsonl` `419a15cf…`、`turn4.answer.txt` `227b8bda…`、`report.json` `9955d557…`、transcript `bd7260c7…`（完整清单在产物目录）。另有一份首轮现场（`20260816T150740Z/`，常量 `QM_LATCH_3F3040`，实质同样全过）——其 `report.json` 因脚本 heredoc 缺陷不是合法 JSON，**不要引用**，留作过程记录。
 
-**遗留**：现场脚本目前在会话 scratchpad（`ac1-crit2-scenario.sh` / `ac1-crit2-run.sh`），是否落成 `demo/ac1-restart.sh` 第 5 节由负责人定（落库时脚本本身不含凭据，与现有脚本同等卫生）。
+**脚本已落库（同日）**：`demo/ac1-criterion2.sh`（不含任何凭据，网关/模型可用 `AC1C2_BASE_URL` / `AC1C2_MODEL` 覆盖），并注册为 walkthrough 凭据腿 `ac1c2`——`source <凭据文件> && demo/walkthrough.sh --only ac1c2` 即可复跑；落库版已端到端复验一次（14/0，产物 `~/qianmo-acceptance/20260816T152554Z/`）。`demo/ac1-restart.sh` 第 5 节保持恒 SKIP 不动（它的「不读凭据」立场保留，指过来即可）。
 
 ## 附：本表与其他文档的关系
 

@@ -41,10 +41,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOL_VERSION='0.1.0'
 
 # 走查顺序：快项在前，慢项在后，最长的混沌跑批垫底。
-ALL_IDS='ac3 ac6b ac8 ac1 ac4 ac5 ac5e2e ac7 chaos'
+ALL_IDS='ac3 ac6b ac8 ac1 ac4 ac5 ac5e2e ac1c2 ac7 chaos'
 DEFAULT_IDS='ac3 ac6b ac8 ac1'
 SLOW_IDS='ac1 ac7 chaos'
-CRED_IDS='ac4 ac5 ac5e2e'
+CRED_IDS='ac4 ac5 ac5e2e ac1c2'
 
 OUT=''
 WITH_AC7=0
@@ -117,6 +117,7 @@ step_ac() {
     chaos) printf 'AC-8' ;;
     ac4) printf 'AC-4' ;;
     ac5 | ac5e2e) printf 'AC-5' ;;
+    ac1c2) printf 'AC-1' ;;
   esac
 }
 
@@ -131,6 +132,7 @@ step_label() {
     ac4) printf '项目记忆跨会话检索唤醒（真调用）' ;;
     ac5) printf '模型中立：适配器一致性三项 × 两条 provider' ;;
     ac5e2e) printf '模型中立：命令行逐字相同、只改配置文件的两跑' ;;
+    ac1c2) printf '判据②：不重放历史即可续答（真调用现场，kill -9 后 --resume 追问）' ;;
   esac
 }
 
@@ -145,6 +147,7 @@ step_command() {
     ac4) printf 'bun test tests/integration/qianmo-memory-recall.test.ts' ;;
     ac5) printf 'bun test tests/integration/provider-adapter-consistency.test.ts' ;;
     ac5e2e) printf 'bun run scripts/qianmo-provider-task.ts --provider qianmo-ac5 --providers-file <tmp>（配置 A / 配置 B 各一次）' ;;
+    ac1c2) printf 'bash demo/ac1-criterion2.sh' ;;
   esac
 }
 
@@ -166,6 +169,7 @@ step_body() {
       printf "cp tests/integration/fixtures/ac5-config-b.json '%s'\n" "$WORK/ac5-providers.json"
       printf "bun run scripts/qianmo-provider-task.ts --provider qianmo-ac5 --providers-file '%s'\n" "$WORK/ac5-providers.json"
       ;;
+    ac1c2) printf "AC1C2_OUT='%s' bash demo/ac1-criterion2.sh\n" "$OUT/ac1c2-artifacts" ;;
   esac
 }
 
@@ -402,6 +406,9 @@ collect_evidence() {
       ;;
     ac5e2e)
       grep -E '"passed":|退出码|5 pass' "$text" | tail -6 || true
+      ;;
+    ac1c2)
+      grep -E '^PASS=|"pass":|引用了' "$text" | tail -4 || true
       ;;
   esac
 }
