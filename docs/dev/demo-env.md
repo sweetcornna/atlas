@@ -3,7 +3,7 @@
 > **v0.1 · 2026-08-15 · 本地腿已实测，真机腿未验证**
 >
 > 一台全新机器按 §4 的 runbook 敲命令，就能起出「两个节点 + 一个注册中心」的完整本地
-> 演示拓扑。真机腿（Dormice + gVisor）的脚本在 `demo/env/remote/`，**未在真机验证**，
+> 演示拓扑。真机腿（Dormice + gVisor）的脚本在 `demo/env/remote/`，**已于 2026-08-16 在真机首验通过**（§7.1），
 > 原因见 §7.1。
 
 | 项 | 内容 |
@@ -12,7 +12,7 @@
 | DoD | 全新机器 **30 min 内**从零复现完整演示环境，由未参与部署的成员实测 |
 | 交付物 | `demo/env/`（bootstrap / seed / up / down / reset / smoke + `remote/`）、`demo/lib/p81-{registry,probe}.ts`、本文 |
 | 本地腿实测 | ✅ 干净 `git clone` 起跑到冒烟通过，见 §4.3 的计时表 |
-| 真机腿实测 | ❌ **未验证**（验收机 SSH 不可达），见 §7.1 |
+| 真机腿实测 | ✅ **2026-08-16 真机首验通过**（burn-vm-01 经 IAP 隧道；两处脚本缺陷当场修掉），见 §7.1 |
 | 状态真源 | 各任务包的完成状态一律以 `roadmap.md` 的「完成状态速查」为准，本文不复述 |
 
 ---
@@ -375,15 +375,31 @@ AC-6(b)(c)、AC-7、AC-8 连模型凭据都不需要），配上凭据再加 AC-
 
 ## §7 已知坑
 
-### 7.1 真机腿未验证（**本任务包最大的缺口**）
+### 7.1 真机腿已于 2026-08-16 首验通过（原「本任务包最大的缺口」已闭）
 
-`demo/env/remote/` 的两个脚本是从 demo 脚本头注、`required` 数组、`scripts/ops/` 与
-roadmap / `selection-m0.md` 的记载**反推**出来的，逐条能指到出处（见
-`demo/env/remote/README.md` 的对照表），但**一条都没在真机上跑过**——实施期间验收机
-`workbench-host` SSH 不可达（与 roadmap v2.31 记录的现象一致：TCP 通、无 banner），
-此前那台机器上的 `~/p41-ops/setup.sh` 也因此取不回来。
+原状态：两个脚本从仓库记载反推、一条没在真机跑过——验收机 `workbench-host` SSH 直连不可达。
+**2026-08-16 转机**：机器本身健康（串口日志佐证），坏的只是直连路径；经 **gcloud IAP 隧道**
+（本机 SSH 别名 `workbench-iap`）恢复访问后在 burn-vm-01 完成首验，「`~/p41-ops/setup.sh`
+取不回来」一说同时证伪（该文件在、已读取，本次 AC-2 现场准备即基于它）。
 
-**第一次在真机上用，请按「未验证脚本」对待**，并把实测结果回写进那份 README。
+首验结果（详情与逐条出处回写在 `demo/env/remote/README.md`）：
+
+- **`prepare-host.sh`**：修两处后 **PASS=10 / FAIL=0 / WARN=1 / exit=0**。两处缺陷都是首跑抓出：
+  `dor doctor` 须以 daemon 的身份 + EnvironmentFile 跑（普通用户空环境必卡 running-as-root，
+  同机同刻 11/1 vs 20/0）；守卫要 `sudo -n test -r`（0600 root:root 的文件拿调用者身份判可读
+  永远为假）。剩余 1 WARN 是已知遗留②（`workbench:0.7.10` 镜像缺失）。**新发现**：root 版
+  doctor 报「防火墙规则未持久化」——云元数据 DROP 规则只在内存里，重启静默丢失，待装
+  `dormice-metadata-firewall` unit；roadmap P0.1 遗留③（active 但 disabled）在该机已消。
+- **`prepare-sandbox.sh`**：真沙箱（gVisor，2 GB cgroup）内四节全通——`bun install` 36.68 s /
+  1737 包、build 在限内成功、常驻 ALIVE、宿主实拨 38622 得 `101 Switching Protocols`。
+  修一处：PSK 长度前置判（短 PSK 原本要白等 install+build 约 70 s 才被 `assertUsablePsk`
+  打死；最小长度从 `handshake.ts` 现读）。沙箱实测补记：无预装 bun（README 预判对）、
+  无 `ss`/`netstat`、node v24.18.0、外网可达。
+- **同步姿势（重要）**：往这台机器送代码**禁止**对仓库根裸 rsync——仓库根下有 `.claude/`
+  （约 21 GB worktrees）与 `.occ/`（约 6.4 GB，**内含凭据，同步出去即外泄**）。用
+  `tar`（排除 `.git` / `.claude` / `.occ` / `node_modules` / `dist`）+ `scp`（实测 73 MB / 传输 68 s）。
+  往沙箱送代码用 `docker cp` 或沙箱内 `git clone`——`dor sandbox push` 对 76 MB tarball
+  直接报 `Request body is too large`。
 
 ### 7.2 从源码直接跑常驻起不来 ACP 子进程
 

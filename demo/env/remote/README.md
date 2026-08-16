@@ -3,18 +3,21 @@
 
 # demo/env/remote —— 真机腿（Dormice + gVisor）
 
-> ⚠️ **本目录的两个脚本未在真机验证。**
+> ✅ **两个脚本已于 2026-08-16 在真机首验通过**（burn-vm-01 = 原 `workbench-host`，经
+> gcloud IAP 隧道访问——直连路径仍坏，机器本身健康；执行：主 agent 派子代理实跑、回收
+> 后复核）。原「反推未验证」状态下的两句前提已一并证伪：机器可达、`~/p41-ops/setup.sh`
+> 在且可读。
 >
-> 实施 P8.1 期间验收机 `workbench-host` SSH 不可达（此前 v2.31 已记录同一现象：TCP 通、
-> 无 banner），此前那台机器上的部署脚本 `~/p41-ops/setup.sh` 也因此取不回来。这里的
-> `prepare-host.sh` / `prepare-sandbox.sh` 是**从仓库里已有的东西反推**出来的：demo 脚本
-> 头注写明的前提、`required` 环境变量数组、`scripts/ops/` 的加固脚本，以及 roadmap /
-> `selection-m0.md` 里关于这台机器的记载。逐条都能指到出处（见下表），但**没有一条在真
-> 机上跑过**。
+> 首验数字：`prepare-host.sh` 修两处后 **PASS=10 / FAIL=0 / WARN=1 / exit=0**（缺陷与修法
+> 见脚本内注释与提交 `b6d464c2`：doctor 要以 daemon 身份 + EnvironmentFile 跑、守卫用
+> `sudo -n test -r`；剩余 WARN 为遗留②镜像缺失）；`prepare-sandbox.sh` 真沙箱内四节全通
+> （install 36.68 s、2 GB cgroup 内 build 成功、常驻 ALIVE、宿主拨 38622 得 101），修一处
+> PSK 长度前置判。**新发现**：root 版 doctor 报云元数据防火墙规则未持久化（重启即失），
+> 待装 `dormice-metadata-firewall` unit；`--apply` 加固本次只跑了 `--dry-run` 预览。
+> 沙箱实测：无预装 bun、无 `ss`/`netstat`、node v24.18.0、外网可达。
+> AC-6(a) 复跑用的 `qm-p13` 模板注册**保留在机器上**（便于复现，删除须负责人裁定）。
 >
-> 第一次在真机上用它们，请当作「未验证脚本」：先只跑检查（`prepare-host.sh` 不带
-> `--apply`），逐条核对输出，再决定是否落实加固。**跑通之后请把实测结果回写到本文件**，
-> 并在 roadmap 的 P8.1 条目里注明是谁、在哪台机器、什么时候验证的。
+> 反推时的逐条出处对照表（下表）保留作方法记录。
 
 ## 两个脚本
 

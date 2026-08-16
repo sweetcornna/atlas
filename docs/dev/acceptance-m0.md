@@ -32,11 +32,11 @@
 | AC | 一句话判据（全文见 charter §4） | 当前判定 | 证据类型 | 一键命令 | 证据锚点 | 最后实测 |
 |---|---|---|---|---|---|---|
 | **AC-1** | `kill -9` 后 `--resume` 续答，`session_id` 一致，启动到可收消息 ≤ 10 s | **PASS-已走查（本机；判据②已于 08-16 凭据现场留档，14 项全过）** | 本机脚本 + 一次真调用现场 | `demo/walkthrough.sh --only ac1`（＝ `bash demo/ac1-restart.sh`）；判据②现场见 §9.2 | `5508358`＋`3e7a401`；`docs/dev/session-persistence-review.md`；§8.3 本次实跑；**判据②留档**：`~/qianmo-acceptance/20260816T151742Z/ac1-criterion2/`（§9.2，`session.jsonl` sha256 `419a15cf…`） | 脚本部分：2026-08-15 走查；判据②：**2026-08-16 现场留档** |
-| **AC-2** | 跨节点唤醒休眠智能体，ack ≤ 60 s、result ≤ 5 min、10/10 | **PASS-待复跑**（需 Dormice + gVisor 真机） | 真机 | `bash demo/p41-task-result.sh` | roadmap v2.20 + 速查表 P4.1 行；`demo/lib/p41-report-core.ts` 八条 check | 2026-08-13（GCP + Dormice + gVisor） |
+| **AC-2** | 跨节点唤醒休眠智能体，ack ≤ 60 s、result ≤ 5 min、10/10 | **PASS-已走查（真机，2026-08-16 复跑）**：10/10，八条 check 全 true，每轮先确认 frozen；ack P95 5.589 s / result max 8.976 s（较 08-13 的 8.022 / 12.422 s 均降约三成）；独立核验取常驻侧证据三项全 true | 真机（burn-vm-01 经 IAP 隧道） | `bash demo/p41-task-result.sh` | **§9.3**（`~/qianmo-acceptance-remote/20260816T153435Z/ac2/`，`report.json` sha256 `9bf6a17d…`）；roadmap v2.20 + 速查表 P4.1 行；`demo/lib/p41-report-core.ts` 八条 check | **2026-08-16 真机复跑**（前次 2026-08-13） |
 | **AC-3** | 回环在首次回访同一 `(处理者地址, taskId)` 时切断；两层限流各自生效 | **PASS-已走查（本机）** | 本机自动化（真 transport，unix socket） | `demo/walkthrough.sh --only ac3`（＝ `QIANMO_TRANSPORT_PSK=… bash demo/ac3-loop-rate.sh`） | roadmap v2.21 + 速查表 P4.2 行；`demo/lib/ac3-report-core.ts` 十条 check；**§8.3 本次实跑十条全 true** | **2026-08-15 本次走查**（前次 2026-08-14） |
 | **AC-4** | 项目记忆跨会话命中 5/5、标注来源 ID 与写入时间、伪造决策零引用 | **PASS-已走查（本机凭据，deepseek 腿）**：命中 **5/5** 逐条带来源 ID、伪造决策零引用 **3/3**。qwen 腿因网关上游 502 未取（判据不要求双腿，见 §9.1） | 真调用集成测试 | `source <凭据文件> && demo/walkthrough.sh --only ac4` | §9.1（`~/qianmo-acceptance/20260816T150910Z/`）；速查表 P3.3 行；`packages/recall/` 51 用例 + 集成 19 用例 | **2026-08-16 凭据走查** |
 | **AC-5** | 同一任务在 ≥ 2 个供应商适配器下跑通，仅改配置不改代码；一致性三项全绿 | **deepseek 腿 PASS-已走查（本机凭据）**：一致性三项 3/3、`ac5e2e` run A 全绿（`occExitCode 0`、任务测试未被改动）。**run B（qwen3.8-max）被网关上游 502/503 阻断**——「只改配置的两跑」当前只有一半，**待网关 qwen 恢复后重跑 `--only ac5,ac5e2e` 补齐**；G-4 定性限定仍在 | 真调用集成测试 + 端到端脚本 | `source <凭据文件> && demo/walkthrough.sh --only ac5,ac5e2e` | §9.1；`docs/dev/p1.4-provider-verification.md` v0.1（§2/§3/§5）；速查表 P1.4 行 | **2026-08-16 凭据走查**（qwen 腿未取） |
-| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **(a) 待真机复跑；(b)(c) PASS-已走查（本机）**——本机腿全绿，**真机挂载边界仍未测**（§4.1 的定夺不因本次走查而改变） | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b` | (a) 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check；**§8.3 本次实跑十一条全 true** | (a) 未在文档中标注具体日期，**未核到**；(b)(c) **2026-08-15 本次走查**（前次 2026-08-14） |
+| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **(a) PASS-已走查（真机，2026-08-16 复跑）**：5/5，runsc 出生契约现场 + 五条审计事件齐全、审计文件 600/700；**(b)(c) PASS-已走查（本机）**——**真机挂载边界仍未测**（§4.1 的定夺不因本次而改变，已列下一轮真机任务） | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b` | (a) **§9.3**（`.../ac6a/`，末行 `passed:5,total:5`）+ 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check；**§8.3 本次实跑十一条全 true** | (a) **2026-08-16 真机复跑**；(b)(c) 2026-08-15 走查（前次 2026-08-14） |
 | **AC-7** | ≥ 10 min 全程无人工干预的六环节连续演示，3/3 | **PASS-已走查（本机）**（本次在 `856d0ff8` 上又跑通一次 3/3；真机副本仍待补传） | 本机（单进程逻辑双节点） | `demo/walkthrough.sh --with-ac7`（＝ `make -C demo p61-accept`，`SEED=6101 MINUTES=10 CHUNKS=20`） | `87c4609b`；`docs/dev/scenario-mcm.md` §9 三行正式记录（**仍是正式记录**）；归档包 sha256 `2be9d926…3140`（**私有验收目录，仓库内无副本**）；**§8.3 本次走查三轮**（digest 与 §9 逐字相同） | **2026-08-15 本次走查**（同日另有 §9 那次正式记录） |
 | **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-已走查（本机）**（边界库与 60 min 混沌均当场跑过；CI 五连绿已于 2026-08-16 在 `d162fe72` **重取一次、5/5 全绿**，早先的 `a8b06a9` 五连绿仍在——§4.5） | 自动化 + CI | `demo/walkthrough.sh --with-chaos 60`（含 `bun test tests/boundary`） | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；**§8.3 本次 60 min 混沌五条 check 全 true、177 次注入、四类 `stalled` 全 0、`unmapped=0`**；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库与混沌 60 min：**2026-08-15 本次走查**（混沌前次 2026-08-14）；CI 五连绿：`a8b06a9` |
 
@@ -1164,6 +1164,15 @@ transcript sha256：轮 ② `ac4 4aafbf55…` / `ac5 155732e9…` / `ac5e2e 1d4d
 关键 sha256：`session.jsonl` `419a15cf…`、`turn4.answer.txt` `227b8bda…`、`report.json` `9955d557…`、transcript `bd7260c7…`（完整清单在产物目录）。另有一份首轮现场（`20260816T150740Z/`，常量 `QM_LATCH_3F3040`，实质同样全过）——其 `report.json` 因脚本 heredoc 缺陷不是合法 JSON，**不要引用**，留作过程记录。
 
 **脚本已落库（同日）**：`demo/ac1-criterion2.sh`（不含任何凭据，网关/模型可用 `AC1C2_BASE_URL` / `AC1C2_MODEL` 覆盖），并注册为 walkthrough 凭据腿 `ac1c2`——`source <凭据文件> && demo/walkthrough.sh --only ac1c2` 即可复跑；落库版已端到端复验一次（14/0，产物 `~/qianmo-acceptance/20260816T152554Z/`）。`demo/ac1-restart.sh` 第 5 节保持恒 SKIP 不动（它的「不读凭据」立场保留，指过来即可）。
+
+### 9.3 真机腿走查（burn-vm-01 经 IAP 隧道，2026-08-16）
+
+> 执行方式同 §9：子代理在真机实跑，主 agent 回收后经 `workbench-iap` 二次登机复核（sha256、report 判定、产物权限）。机器：GCP burn-vm-01（原 `workbench-host`；SSH 直连自 08-14 起坏，机器本身健康，经 gcloud IAP 隧道访问）。代码：本仓库 HEAD `62a9439c`，**bun 按 runbook 钉 1.3.13**（装前 1.3.14），`bun.lock` 与本机逐字节一致。产物根：`~/qianmo-acceptance-remote/20260816T153435Z/`（0700/0600 复核过）。
+
+- **AC-2**：见 §1 行。十轮明细与上次并排、独立核验三项、六个文件的 sha256 全在产物目录；第 1 轮 5.6 s 冷唤醒、其余九轮 1.8–2.6 s 的形状与 08-13 一致。
+- **AC-6(a)**：见 §1 行。沙箱按账本已无 p13 存量，用尚存镜像 `qianmo-node:p13` 注册模板 `qm-p13` 新建一次性沙箱，跑完 destroy；**模板注册保留在机器上**（复现便利，删除待负责人裁定）。
+- **P8.1 remote 首验**：结果回写在 `demo/env/remote/README.md` 与 `demo-env.md` §7.1；两处脚本缺陷修在 `b6d464c2`。
+- **过程事故如实记**：往真机送代码时两条并发 `--delete` rsync 打坏过远端树（已用 tar + scp 重建；根因是仓库根下 21 GB `.claude/` 与 6.4 GB `.occ/` 不在排除清单、首条 rsync 超时被误判结束）——**`.occ/` 含凭据，绝不可同步出去**，同步姿势已写进 `demo-env.md` §7.1。此事故发生在产物产出之前，不影响任何验收数字。
 
 ## 附：本表与其他文档的关系
 
