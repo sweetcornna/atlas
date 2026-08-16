@@ -63,6 +63,7 @@
     "check:prompt-purity": "bun run scripts/check-prompt-purity.ts",
     "check:mock-hygiene": "bun run scripts/check-mock-hygiene.ts",
     "verify:p32": "bun run scripts/qianmo-programming-tasks.ts",
+    "sbom": "bun run scripts/sbom.ts",
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
