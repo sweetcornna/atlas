@@ -242,7 +242,7 @@
 | `src/utils/`（permissions / sandbox / session / sessionStorage / agents / settings） | 9 | 3 | P0.3 保护清单并集、P1.2 `--resume` 缺陷、P3.1 activity |
 | `src/commands/` + `src/skills/` | 3 | 0 | P0.3 硬编码路径文案 |
 | `src/entrypoints/` | 1 | 0 | 子命令注册 |
-| `src/QueryEngine.ts` | 1 | 0 | P3.1 看门狗替换 |
+| `src/QueryEngine.ts` | 1 | 0 | P3.1 输入受理回调 `onInputAccepted`（**勘误**：原写「看门狗替换」不成立，见 `base-modifications.md` §2.4） |
 | `src/__tests__/` | 0 | 1 | 入站受理用例 |
 | `src/services/mcp/`、`src/services/skillLearning/` 的测试 | 2 | 0 | 基座既有 flaky / 固定等待修复 |
 
@@ -265,9 +265,9 @@
 | `src/utils/settings/mdm/constants.ts` | `47878025` | 决定「MDM 策略域不随身份切换」并写明三条理由（只读策略非各身份状态 / 切换会静默逃逸管理员策略，安全默认须 fail closed / 阡陌节点是同一套代码的另一种模式） | ✅ |
 | `src/utils/permissions/filesystem.ts` | `6c6eef5b` | 实测缺口：阡陌态可自动改写 occ 的 `~/.occ`（内含凭据）。保护清单的语义**本就该是「全部身份的并集」**，而该清单的定义就在本文件 | ✅ |
 | `src/utils/sandbox/sandbox-adapter.ts` | `6c6eef5b` | 同一泄漏的读方向：credentials 拒读表改用 `getProtectedUserConfigDirectories()` | ✅ |
-| `src/QueryEngine.ts` | `4fe8cd1e` | 基座那条 90 s 流空闲看门狗**默认开着**，沙箱冻结一次就会把正常的流判成挂死；改为跨过时间跳跃后重新计时 | 🟡 |
-| `src/cli/transports/WebSocketTransport.ts` | `4fe8cd1e` | 同上（看门狗替换） | 🟡 |
-| `src/cli/transports/ccrClient.ts` | `4fe8cd1e` | 同上 | 🟡 |
+| `src/QueryEngine.ts` | `4fe8cd1e` | **勘误**：与看门狗无关——新增可选配置 `onInputAccepted`，在 transcript 落盘后 await 它（「输入已进上下文」这一刻只有 QueryEngine 知道，基座无对应 hook）；书面依据待补，见 `base-modifications.md` | ⚠️ |
+| `src/cli/transports/WebSocketTransport.ts` | `4fe8cd1e` | **勘误**：`registerSessionActivityCallback` 回调签名由 `() => void` 变为 `(active: boolean) => void` 的连带修改（+2/−2，加 `if (active)` 保持基座原语义）；书面依据待补 | ⚠️ |
+| `src/cli/transports/ccrClient.ts` | `4fe8cd1e` | 同上（连带修改） | ⚠️ |
 | `src/services/api/claude.ts` | `4fe8cd1e` | 同上 | 🟡 |
 | `src/services/api/gemini/client.ts` | `4fe8cd1e` | 同上 | 🟡 |
 | `src/services/api/openai/responsesAdapter.ts` | `4fe8cd1e` | 同上 | 🟡 |
@@ -289,7 +289,7 @@
 | `src/utils/__tests__/teammateMailbox.test.ts` | `4fe8cd1e` | 同上 | ⚠️ **待补** |
 | `src/services/mcp/__tests__/configWatcher.test.ts` | `a8b06a9a` | **提交正文为空**，只有标题「watcher 正向用例等待真实文件事件」，未说明改核心的理由 | ⚠️ **待补** |
 
-**统计：32 个被修改的基座 `src/` 文件中，✅ 11 个 / 🟡 17 个 / ⚠️ 待补 4 个。**
+**统计：32 个被修改的基座 `src/` 文件中，✅ 11 个 / 🟡 14 个 / ⚠️ 待补 7 个**（勘误：初稿为 17 / 4，其中三行「看门狗替换」归因经逐 diff 复核不成立，转为待补；逐文件理由与「依代码推断」的补全见 `docs/dev/base-modifications.md`，那里是 P9.3 改造点清单的真源，本表此后不再单独维护）。
 
 **本节是 roadmap P9.3「对基座的改造点清单」的原料，如实标注。**四条 ⚠️ 与十七条 🟡 都需要在 P9.3 汇总时由改动人补写「扩展点为何不够用」（章程 T-5 对策④要求写在 PR 描述里）。另：roadmap v2.33 / `upstream-sync-drill.md` §5 行动项 ③ 已建议把 `FreezeAwareWatchdog` 这类替换**抽成注入点**而不是在基座文件里就地替换——上表 6 条 🟡 的看门狗改动正是那条建议的对象，本次同步演练中唯一的代码语义冲突也出自这里。
 
