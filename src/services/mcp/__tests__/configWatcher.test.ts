@@ -21,13 +21,25 @@ async function makeDir(): Promise<string> {
 /**
  * Per-test budget for the three positive cases. They wait on real
  * watchFile events (1 s stat poll + 250 ms debounce ≈ 1.3 s on an idle
- * machine), but on a starved CI runner under coverage the poll ticks slip
- * and the run has been seen to cross 5 s (2026-08-15 / 08-16 runs). Bun
- * 1.3.13 ignores `[test] timeout` in bunfig.toml (verified: a 6 s test
- * fails at 5.03 s with it set to 10000; `--timeout` on the CLI is honored),
- * so the intended 10 s never applied — set it explicitly here.
+ * machine). Bun 1.3.13 ignores `[test] timeout` in bunfig.toml (verified:
+ * a 6 s test fails at 5.03 s with it set to 10000; `--timeout` on the CLI
+ * is honored), so the intended 10 s never applied — set it explicitly here.
  */
 const POSITIVE_CASE_TIMEOUT_MS = 15_000
+
+/**
+ * watchFile only reports *changes relative to its first stat*, and on Linux
+ * that first stat lands asynchronously after `watchFile()` returns. A
+ * mutation that races ahead of it becomes the baseline and is never
+ * reported — the file looks "always modified / always deleted / always
+ * present". That is exactly what made these cases flake on CI (2026-08-15
+ * run 31904161135, 08-16 runs 31939084748 / 31939787564) and fail 8/15 on
+ * a Debian 13 x86_64 box, while passing 15/15 there once the mutation
+ * waits one poll interval. Wait past one poll before touching the file.
+ */
+function settleWatcherBaseline(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 1500))
+}
 
 /** The negative assertion must observe two stat ticks plus the debounce. */
 function settleForNoChange(): Promise<void> {
@@ -55,6 +67,7 @@ describe('startMcpConfigWatcher', () => {
 
       const changed = changeSignal()
       stops.push(startMcpConfigWatcher([file], changed.fired))
+      await settleWatcherBaseline()
 
       await writeFile(file, '{"mcpServers":{"a":{"command":"x"}}}')
       await changed.observed
@@ -71,6 +84,7 @@ describe('startMcpConfigWatcher', () => {
 
       const changed = changeSignal()
       stops.push(startMcpConfigWatcher([file], changed.fired))
+      await settleWatcherBaseline()
 
       await unlink(file)
       await changed.observed
@@ -88,6 +102,7 @@ describe('startMcpConfigWatcher', () => {
 
       const changed = changeSignal()
       stops.push(startMcpConfigWatcher([file], changed.fired))
+      await settleWatcherBaseline()
 
       await writeFile(file, '{"mcpServers":{}}')
       await changed.observed
