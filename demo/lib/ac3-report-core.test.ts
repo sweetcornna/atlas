@@ -50,8 +50,6 @@ function observations(
       refusedCode: 'E_RATE_LIMITED',
       senderAgents: 31,
       noRuntimeEvent: true,
-      burstMs: 812,
-      clockFrozen: true,
       ...overrides.budget,
     },
   }
@@ -103,20 +101,6 @@ describe('AC-3 report', () => {
       observations({ runtime: { refusedStayedLocal: false } }),
     )
     expect(report.checks.runtimeThrottleStaysLocal).toBe(false)
-  })
-
-  test('the budget observation carries the burst instrumentation', () => {
-    // Shape only — neither field is a judgement. They exist so a report can say
-    // how slow the machine was and whether the receiver's raw clock was frozen,
-    // which is precisely what §7.5's four red runs could not be read off.
-    const report = buildAc3Report(observations())
-    expect(report.budget.burstMs).toBeGreaterThanOrEqual(0)
-    expect(Number.isFinite(report.budget.burstMs)).toBe(true)
-    expect(report.budget.clockFrozen).toBe(true)
-    // A slow burst on its own does not spoil the verdict any more.
-    expect(
-      buildAc3Report(observations({ budget: { burstMs: 30_000 } })).pass,
-    ).toBe(true)
   })
 
   test('a single sender agent cannot prove the budget counts nodes', () => {

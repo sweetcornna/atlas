@@ -79,17 +79,6 @@ export interface Ac3BudgetObservation {
   readonly senderAgents: number
   /** 协议层是否**没有**产生运行时层的 `runtime_throttled` 事件。 */
   readonly noRuntimeEvent: boolean
-  /**
-   * 601 条突发从第一条到最后一条的实际耗时（ms）。
-   *
-   * 纯观测，不进 check：入站预算是连续回补的桶（每 100 ms 一个令牌），突发耗时
-   * 超过 100 ms 就会多回补一个——这正是这份报告在慢机器上误判过的原因
-   * （`docs/dev/demo-env.md` §7.5）。量具已改成冻结接收方的原始时钟，所以这个
-   * 数多大都不再影响判据；留着它是为了让机器速度在报告里可见。
-   */
-  readonly burstMs: number
-  /** 接收方的原始时钟是否被冻住——上面那条判据成立的前提。 */
-  readonly clockFrozen: boolean
 }
 
 export interface Ac3Observations {

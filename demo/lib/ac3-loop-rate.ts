@@ -70,20 +70,9 @@ interface Node {
   readonly delivered: QianmoMessage[]
 }
 
-/**
- * 可注入的路由层时钟。只有场景 ④ 下半用得上，理由写在 `runInboundBudget()`
- * 的注释里；其余场景一律走默认（真实 `Date.now`）。
- */
-interface RouterClocks {
-  /** 原始时钟：两层令牌桶的回补按它算。 */
-  readonly now?: () => number
-  /** 期限时钟：判环表的过期与剪枝按它算。默认回落到 `now`。 */
-  readonly deadlineNow?: (createdAt: number) => number
-}
-
 /** 一个节点：transport server + 路由层闸门，处理器只记账不干活。 */
-function startNode(name: string, clocks: RouterClocks = {}): Node {
-  const router = new NodeRouter({ node: name, ...clocks })
+function startNode(name: string): Node {
+  const router = new NodeRouter({ node: name })
   const delivered: QianmoMessage[] = []
   const socket = join(root, `${name}-${(sockets += 1)}.sock`)
   const server = startTransportServer({
@@ -298,40 +287,9 @@ async function runRuntimeThrottle(): Promise<Ac3Observations['runtime']> {
   }
 }
 
-/**
- * 场景 ④ 下半：协议层入站预算（接收节点对单发送节点）。
- *
- * ## 为什么要给接收方冻一把原始时钟
- *
- * `InboundBudget` 是**连续回补**的令牌桶（`packages/router/src/rate.ts` 写明是
- * 刻意不用固定窗口）：容量 600 / 窗口 60 s，也就是**每 100 ms 回一个令牌**。
- * roadmap v2.34 把同一件事记成公式 `B·(1/T+1/60)` —— 一段突发能过多少条，随突
- * 发耗时 T 线性上抬，不是常数。
- *
- * 于是「连发 601 条、第 601 条必被拒」这条判据只有在**整段突发在 100 ms 内发
- * 完**时才成立，而这个前提量具从来没有保证过。开发机（macOS / arm64）跑得进
- * 100 ms，所以一直是绿的；`docs/dev/demo-env.md` §7.5 那台 2 vCPU 的 Debian 13
- * 跑不进，期间补回一个令牌，第 601 条被正常放行，连跑四次 `accepted=601` 全红。
- * **这是量具的隐含假设，不是被测代码的 bug**（N-12：被测代码不动）。
- *
- * 修法是把那条假设变成事实：给**接收节点 B 的路由器**注入一把**冻结的原始时
- * 钟**（起跑时取一次 `Date.now()`，之后恒返回该值），601 条突发于是全被判在同
- * 一瞬间，`elapsed` 恒为 0、一个令牌都不回补，`accepted === 600` 在任何速度的
- * 机器上确定成立。只冻这一个场景的接收方：其余三个场景照旧走真实时钟。
- *
- * ## 两把时钟在这里必须分开
- *
- * `NodeRouter` 的 `deadlineNow` 默认回落到 `now`（router.ts「The two clocks」），
- * 照抄默认会把**判环表的期限判断**一起冻住 —— 那把尺量的是投递期限，与限流无
- * 关，冻它只会让这里凭空多出一个与被测语义不符的前提。所以显式把 `deadlineNow`
- * 传成真实 `Date.now`：限流按冻结瞬间算，判环表继续按真实时间过期与剪枝。
- */
+/** 场景 ④ 下半：协议层入站预算（接收节点对单发送节点）。 */
 async function runInboundBudget(): Promise<Ac3Observations['budget']> {
-  const frozenAt = Date.now()
-  const nodeB = startNode(NODE_B, {
-    now: () => frozenAt,
-    deadlineNow: () => Date.now(),
-  })
+  const nodeB = startNode(NODE_B)
   const nodeA = new NodeRouter({ node: NODE_A })
   const replies: QianmoMessage[] = []
   const client = await dial(NODE_A, nodeB, replies)
@@ -342,7 +300,6 @@ async function runInboundBudget(): Promise<Ac3Observations['budget']> {
   const total = LIMITS.ratePerMinute + 1
   const agents = Math.ceil(total / perAgent)
   let refusedCode: string | undefined
-  const burstStartedAt = Date.now()
   for (let index = 0; index < total; index += 1) {
     const from = `qianmo://${NODE_A}/burst-${Math.floor(index / perAgent)}`
     const outcome = await send(
@@ -354,9 +311,6 @@ async function runInboundBudget(): Promise<Ac3Observations['budget']> {
       refusedCode = errorCodeOf(replies.at(-1)) ?? outcome.localCode
     }
   }
-  // 纯观测：>100 ms 正是这个场景过去会翻车的条件。冻钟之后它多大都不影响判据，
-  // 留着是为了让「这台机器慢到什么程度」在报告里看得见。
-  const burstMs = Date.now() - burstStartedAt
 
   return {
     perMinute: LIMITS.ratePerMinute,
@@ -365,8 +319,6 @@ async function runInboundBudget(): Promise<Ac3Observations['budget']> {
     senderAgents: agents,
     noRuntimeEvent:
       nodeB.router.audit.count(RouterEventType.RuntimeThrottled) === 0,
-    burstMs,
-    clockFrozen: true,
   }
 }
 
