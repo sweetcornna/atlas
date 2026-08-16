@@ -17,7 +17,9 @@
 
 ## 基座说明
 
-本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录，锁定在提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`）。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。**pin 提交之后的全部提交即阡陌团队的工作**（`git diff 848ad8c2..HEAD`）。
+本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录，锁定在提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`）。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。
+
+**成果边界**：基座导入于**本仓库提交 `3380c88`**，其后的全部提交即阡陌团队的工作——工作面 `git diff 3380c88..HEAD`、工作记录 `git log 3380c88..HEAD`、基座贡献边界 `git show --stat 3380c88`，另加导入前的立项提交 `67f6081`、`74f7a22`。本仓库经零改动快照导入、**不含上游 git 历史**，故举证基线是导入提交 `3380c88`，而不是上游 pin `848ad8c2`（那是上游仓库的 SHA，在本仓库不是有效 git 对象）；上游溯源以 [`BASE.md`](BASE.md) 的记录与上游仓库比对为准。
 
 完整溯源与上游同步记录见 [`BASE.md`](BASE.md)；采用理由、能力盘点与风险见 [`docs/dev/base-adoption.md`](docs/dev/base-adoption.md)；许可与商标声明见 [`NOTICE`](NOTICE)。
 
