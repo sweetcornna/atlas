@@ -264,7 +264,7 @@ P8.1 产物复制进去，然后**只按上面六条命令敲**（另加一条 A
 | ③ `seed.sh` | **0 s** | 与 §4.3 同 |
 | ④ `up.sh` | **8 s** | 就绪探测里 node-a 首次拨号 **6513 ms**（开发机 3.45 s）—— 2 vCPU 上常驻进程起得慢，探测重试吸收掉了 |
 | ⑤ `smoke.sh --with-task` | **1 s** | 解析 13 ms / 拨号 6 ms / **ack 1161 ms**（开发机 59 ms、414 ms）；两条审计链 intact；`pass=true` |
-| ⑥ `ac3-loop-rate.sh` | **2 s** | ❌ **`pass=false`** —— 十条 check 里 `protocolBudgetAtLimit` 为 false（`accepted=601`，期望 600）。**确定性复现**，连跑四次全红；同一 HEAD 在开发机上十条全 true。根因见 §7.5 |
+| ⑥ `ac3-loop-rate.sh` | **2 s** | 本次（`da98d86f`）**`pass=false`** —— 十条 check 里 `protocolBudgetAtLimit` 为 false（`accepted=601`，期望 600），连跑四次全红；同一 HEAD 在开发机上十条全 true。**是判据缺陷不是机器或限流器的问题，已修**（判据改为按突发用时算「顶」，见 §7.5），修后**在这台机器上的复跑待做** |
 | ⑦ AC-7 冒烟 | **61 s** | `pass=true`，`resultDigest` 与 `expectedDigest` 一致，七条 check 全 true。**这台机器没有 make**，实际敲的是 `p61-smoke` 目标展开后的两条命令（`bun run demo/lib/p61-seed.ts --reset --seed 6101` + `cd demo && ./p61-e2e.sh --mode smoke --minutes 1 --chunks 4 --iterations 3`） |
 | ⑧ `down.sh` | **4 s** | 三个进程全停；`pgrep` 复核无残留 |
 | **合计（①~⑧）** | **100 s（1 min 40 s）** | 加上 ⓪ 的 6 s 与 bundle 传输 54 s，从「一台什么都没有的机器」到「跑完并停机」约 **2 min 40 s**。距 30 min 预算约 11 倍余量 |
@@ -392,24 +392,44 @@ Debian 机器上 `env` 里没有任何模型凭据、也没有任何 `~/.occ` / 
 在 git worktree 里跑 `bun run check:unused` 会得到约 76 个「未使用文件」的**假阳性**，根因与
 处置见 `CLAUDE.md` §3.1。本任务包新增的两个 TS runner 已加进 `knip.json` 的入口图。
 
-### 7.5 AC-3 一键复现在慢机器上判红（**§4.2 第 ⑥ 条**）
+### 7.5 AC-3 一键复现在慢机器上判红（**§4.2 第 ⑥ 条；已修，真机复跑待做**）
 
-§4.4 那台 2 vCPU 的 Debian 上，`demo/ac3-loop-rate.sh` **确定性判红**（连跑四次，`pass=false`），
-红的是十条 check 里的 `protocolBudgetAtLimit`：`budget.accepted=601`，而判据要它等于
-`perMinute=600`。同一个 HEAD 在开发机（macOS / arm64）上十条全 true。
+**现象**（`da98d86f` 及更早）：§4.4 那台 2 vCPU 的 Debian 上，`demo/ac3-loop-rate.sh`
+**确定性判红**（连跑四次，`pass=false`），红的是十条 check 里的 `protocolBudgetAtLimit`：
+`budget.accepted=601`，而判据要它等于 `perMinute=600`。同一个 HEAD 在开发机（macOS / arm64）
+上十条全 true。
 
 **根因不在限流器，在判据的隐含假设。**`InboundBudget` 是**连续补充**的令牌桶
 （`packages/router/src/rate.ts`，容量 600 / 窗口 60 s，即**每 100 ms 回一个令牌**，注释里写明
-是刻意不用固定窗口的）。而 `runInboundBudget` 连发 `LIMITS.ratePerMinute + 1 = 601` 条，要第
-601 条被拒——这只有在**整个 601 条的突发在 100 ms 内发完**时才成立。开发机跑得进 100 ms，
-2 vCPU 的机器跑不进，于是期间补回一个令牌，第 601 条被正常放行。
+是刻意不用固定窗口的）。而旧的 `runInboundBudget` 连发 `LIMITS.ratePerMinute + 1 = 601` 条，
+要第 601 条被拒——这只有在**整个 601 条的突发在 100 ms 内发完**时才成立。开发机跑得进
+（实测整段突发 **23 ms**），2 vCPU 的机器跑不进，于是期间补回一个令牌，第 601 条被正常放行。
+`accepted` 的上限就是发出去的 601 条，再慢也不会涨到 602，所以这个红是「非黑即白」的。
 
-注意 `accepted` 的上限就是发出去的 601 条，**再慢也不会涨到 602**，所以这个红是「非黑即白」
-的：机器够快就绿，不够快就红，中间没有过渡。
+**修法（P4.2 面，`demo/lib/ac3-{loop-rate,report-core}.ts`）**：不冻结时钟、不放宽判据，
+而是让判据断言令牌桶**自己的契约**：
 
-**这是 AC-3 demo（P4.2 面）的缺陷，不是演示环境（P8.1）的缺陷**，本文只记录现象与根因，
-不在此修。修之前，**别把 AC-3 的一键复现放在慢机器上当验收证据**——它判红不代表环路切断
-或两层限流坏了，另外九条 check 本次全部为 true。
+- 发送方一条接一条发到**第一次被拒为止**（上限 2 × `perMinute`，到顶还没被拒就判红），并按
+  `Date.now()` 记下突发用时 `burstElapsedMs`——与桶读的是同一个时钟，且区间包住桶从建立到
+  拒绝的整段，所以据此算出的回补量是桶实际回补量的**上界**；
+- report-core 算 `refillIntervalMs = 60_000 / perMinute`、`refillAllowance =
+  floor(burstElapsedMs / refillIntervalMs)`，判据为：`refusedCode === E_RATE_LIMITED`
+  ∧ `accepted === sent − 1`（被拒之前一条不漏、被拒即停）∧ `perMinute ≤ accepted ≤ perMinute +
+  refillAllowance` ∧ `senderAgents > 1`。开发机上 `burstElapsedMs < 100`，`refillAllowance = 0`，
+  判据退化回原先的 `accepted === 600`，一个数都不差；慢机器上 `accepted` 会是 600 加上突发期间
+  真正补回的令牌数，报告里 `sent` / `burstElapsedMs` / `refillAllowance` 三个数摆在一起自洽。
+
+**验证**（开发机，人为放慢突发——在每条发送后临时插入 `Bun.sleep`，不入库）：1 ms/条 →
+`sent=609, accepted=608, burstElapsedMs=842, refillAllowance=8`、`pass=true`；5 ms/条 →
+`sent=637, accepted=636, burstElapsedMs=3663, refillAllowance=36`、`pass=true`——上界贴着实际
+回补量走，没有松动。反向：把接收方预算临时改成 5000/min，`sent=1200, accepted=1200`、无
+`refusedCode`、`protocolBudgetAtLimit=false`，红得对。用 `yes` 把全部核心压满只能把突发拖到
+66 ms，仍在一个回补间隔内，说明开发机上光靠 CPU 加压复现不了慢机器的红，所以才用插 sleep。
+**§4.4 那台 Debian 上的复跑待做**（本次未接触该机器）。
+
+**仍然要记住的一条**：这条判据要求机器**每条消息快过一个回补间隔**（< 100 ms/条，比原先
+「601 条 100 ms 内发完」松 600 倍），且在 2 × `perMinute` 条内到顶。慢过这个的机器会以
+`sent=1200`、无 `refusedCode` 判红——那时红的是机器，不是限流器，看 `burstElapsedMs` 就能分辨。
 
 ### 7.6 `.demo-env/` 永不入库
 
