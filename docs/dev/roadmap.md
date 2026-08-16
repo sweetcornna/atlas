@@ -852,7 +852,7 @@ P8.1/P8.2/P8.3/P8.4 ──> M0 结项
 | `docs/dev/positioning-m0.md` | 🟡 v0.1-draft 已入库、两次勘误、§3.1 数字重跑并单列机器生成物；**双签前不得外发**，定稿前须再重跑一次 §3.1 | P8.3 |
 | `docs/dev/sbom-m0.md` / `sbom-m0.json` | ✅ 由 `bun run sbom` 生成并入库（darwin-arm64 视角，平台包许可待各平台补） | P8.4 |
 | `docs/dev/license-chain-m0.md` | 🟡 v0.1-draft 已入库（NOTICE 差异已闭环）；E-8 归属举证与科技处咨询待人 | P8.4 |
-| `docs/dev/base-modifications.md` | 🟡 已入库（11 书面 / 14 依代码 / 7 待改动人确认） | P9.3 |
+| `docs/dev/base-modifications.md` | 🟡 已入库（12 书面 / 18 依代码 / 2 待裁定——08-16 考证后，见其 §6.1） | P9.3 |
 | `docs/dev/signoff-m0.md` | 🟡 v0.1-draft 已入库；签字待人 | P9.3 |
 | `docs/dev/retro-m0.md` | 🟡 v0.1-draft 已入库（含 M1 首两迭代任务包草案）；全员评审待做 | P9.2 |
 | ~~`docs/dev/base-analysis.md`~~ | **已废止**——研究的是旧基座（另一棵树），保留在历史提交 `67f6081`，不迁入 v2.0 文档集 | — |

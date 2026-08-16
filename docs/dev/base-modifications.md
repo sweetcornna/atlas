@@ -80,10 +80,10 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/utils/session/sessionActivity.ts` | `4fe8cd1e`（+`fdbbc2e3`） | +20/−7 | `fdbbc2e3` **明确**：新加的两处 `activityCallback` 没走 `CLAUDE_CODE_REMOTE_SEND_KEEPALIVES` 这道基座既有闸门，开关关着也往远端发包——**修的方向是回到基座既有扩展点** | ✅ 书面 |
-| `src/QueryEngine.ts` | `4fe8cd1e` | +10/−2 | 新增可选配置 `onInputAccepted`，并在 transcript 落盘后 await 它（bare 模式下也强制 flush）。**未找到书面依据，按代码推断**：「这条输入已经进了模型的上下文」这个事实只有 QueryEngine 在写 transcript 的那一刻知道，基座既没有对应的 hook 也没有事件通道；宿主要么拿到这个回调，要么只能靠时间猜（提交正文里那句「而不是靠时间猜」正是它要避免的） | ⚠️ 推断（待改动人确认） |
-| `src/cli/transports/WebSocketTransport.ts` | `4fe8cd1e` | +2/−2 | **未找到书面依据，按代码推断**：这是 `registerSessionActivityCallback` 回调签名从 `() => void` 变为 `(active: boolean) => void` 的**连带修改**。常驻宿主需要的是忙→闲的**边缘**（新增的 `activityCallback?.(false)` 分支），而基座这两个既有订阅者在旧签名下会把「闲」也当成一次 keep_alive；加 `if (active)` 守卫是为了让基座原语义**逐字不变** | ⚠️ 推断（待改动人确认） |
-| `src/cli/transports/ccrClient.ts` | `4fe8cd1e` | +2/−2 | 同上 | ⚠️ 推断（待改动人确认） |
+| `src/utils/session/sessionActivity.ts` | `4fe8cd1e`（+`fdbbc2e3`） | +20/−7 | `fdbbc2e3` **明确**：新加的两处 `activityCallback` 没走 `CLAUDE_CODE_REMOTE_SEND_KEEPALIVES` 这道基座既有闸门，开关关着也往远端发包——**修的方向是回到基座既有扩展点**。**核实补记（2026-08-16）**：另有一处此前未记录的行为差异——`stopSessionActivity` 的 `startIdleTimer()` 由基线「仅当心跳定时器在跑」放宽为「refcount 归零就调」，扩大了 `session_idle_30s` 诊断日志的触发面（诊断日志语义内，无发包），随 WebSocketTransport 行的两处差异一并待裁定 | ✅ 书面 |
+| `src/QueryEngine.ts` | `4fe8cd1e` | +10/−2 | 新增可选配置 `onInputAccepted`，并在 transcript 落盘后 await 它（bare 模式下也强制 flush）。**核实记录（2026-08-16，逐通道排查）**：基座全部 hook 事件中唯一与输入相关的 `UserPromptSubmit` 在 `processUserInput.ts` 内触发——早于消息入 `mutableMessages`（`QueryEngine.ts:424`）与 `recordTranscript`（`:446`），且该 hook 可否决输入，报的是「按了回车」而非「已入上下文」；`sessionActivity` 只有忙闲两态不带输入身份，`Stop` 类事件只报整轮终态；唯一携带该事实的 `SDKUserMessageReplay` 要等模型开始回复才 yield（`QueryEngine.ts:741`），且 ACP 桥接把 user 消息整类丢弃（`src/services/acp/bridge/forwarding.ts:311-315` 注释原文）。**更硬的一层**：本改动同时把挂了回调时的 transcript 写入由 fire-and-forget 改为 await + 强制 flush（`:447`/`:454-456`）——「已落盘」这个事实是它造出来的，任何外部通道都无法只靠观测得到 | 🟢 代码依据（2026-08-16 核实；改动动机仍待改动人过目） |
+| `src/cli/transports/WebSocketTransport.ts` | `4fe8cd1e` | +2/−2 | `registerSessionActivityCallback` 回调签名从 `() => void` 变 `(active: boolean) => void` 的**连带修改**；`if (active)` 保证**新增的闲边缘**（`activityCallback?.(false)`，消费者是 `src/services/acp/entry.ts` → `packages/resident` 的沙箱保活上报链）不被基座订阅者当成一次 keep_alive。**核实记录（2026-08-16）：原「逐字不变」的说法不成立，实际有两处 keep_alive 语义内的非逐字差异**：① 忙区间起点会**多发一帧**（新增的忙边缘 `sessionActivity.ts:103` 发 `true`，`if (active)` 拦不住；keep_alive 幂等，无害）；② `sendSessionActivitySignal()` 由无条件回调改为 `cb(refcount > 0)`（`:82`），refcount 为 0 时基座订阅者不再发帧——唯一生产触发面是 `compact.ts` 压缩心跳每 30 s 一次且恰无 API 流在飞的窗口；`sessionActivity.test.ts` 的 `manual signals report the current state` 用例把该行为钉死为**有意语义** | ⚠️ 两处差异是否有意，待改动人裁定（行为本身已核实钉死） |
+| `src/cli/transports/ccrClient.ts` | `4fe8cd1e` | +2/−2 | 同上（核实记录同 WebSocketTransport 行） | ⚠️ 同上 |
 
 > **勘误**：`positioning-m0.md` §3.3 把 `src/QueryEngine.ts`、`WebSocketTransport.ts`、`ccrClient.ts` 三行的理由写作「看门狗替换」。逐 diff 复核后不成立——三者与 `FreezeAwareWatchdog` 无关，分别是输入受理回调与会话活跃度签名的连带修改。看门狗替换只涉及 §2.2 的三个文件。
 
@@ -91,7 +91,7 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`） | +21/−0 | 三个子命令分派分支（`resident` / `audit` / `resident-wake`），各自 `await import(...)` 动态加载。**未找到书面依据，按代码推断**：基座**没有子命令注册表**——`main()` 里是一长串 `if (args[0] === '…')` 字面量分派（`migrate` / `daemon` / `autonomy` / `job` 等十余处都长这样），新增子命令除了在这里加分支之外没有第二个入口 | ⚠️ 推断（待改动人确认） |
+| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`） | +21/−0 | 三个子命令分派分支（`resident` / `audit` / `resident-wake`），各自 `await import(...)` 动态加载。**核实记录（2026-08-16）：原「基座没有子命令注册表」的说法不成立，须改写**——基座有 Commander 注册表（`src/cli/program/commands/index.tsx` 的 `registerSubcommands`，15 个模块），但它被刻意排除在 print 快速路径之外（`src/cli/program/run.tsx`：`-p`/`--print` 提前 return，之后才动态 import，注释自陈为省约 65 ms）；走它就要付 `main.tsx` 全量 bootstrap 与 root preAction。基座自己对 `migrate` / `autonomy` / `remote-control` 的做法正是**两处都写**（`cli.tsx:94` 注释原文 `Also registered in main.tsx so it appears in --help`），另有 `daemon` / `job` 等 4 组子命令只存在于字面量分支。阡陌只做了快速路径这一半，**代价：三个子命令不出现在 `occ --help` 里**——已单列 §6.1 待办。「挂成 daemon worker」也不可行：`DAEMON_WORKER_KINDS` 是空数组、`runDaemonWorker()` 无 dispatch、未知 kind 退出码 78 被永久 parking（`src/daemon/workerRegistry.ts:16,25-34`、`daemon/main.ts:397`），且 supervisor 只发 `--daemon-worker=<kind>` 加固定 env、没有 argv 通道接 `runResident` 的 14 个选项，还会把表里每个 kind 自动起一份 | 🟢 代码依据（2026-08-16 核实；「当时是否评估过 daemon 路线」待改动人一句话） |
 
 ### 2.6 会话与信箱（3 个修改；前两行 P1.2 缺陷修复，第三行 P3.1 常驻化）
 
@@ -99,7 +99,7 @@
 | --- | --- | --- | --- | --- |
 | `src/utils/sessionStorage/logAssembly.ts` | `fad809bc`（+`4b06f672`） | +10/−2 | **基座既有缺陷**：`findLatestMessage` 用严格 `>`，时间戳并列时锚点粘在第一条，`--resume` 静默丢尾部消息——正是 AC-1 / AC-2 最难现场诊断的失效方式。缺陷在基座代码里，修它没有「扩展点」这个选项 | ✅ 书面 |
 | `src/utils/sessionStorage/transcriptLoader.ts` | `4b06f672` | +13/−4 | `loadSessionFile` 原从全局状态推项目目录，导致一次**只读查询**必须改全局会话指针；改为允许显式传入项目目录（缺省行为不变） | ✅ 书面 |
-| `src/utils/agents/teammateMailbox.ts` | `4fe8cd1e` | +33/−3 | 常驻节点复用基座的**文件信箱**作为入站通道，必须能断言「我快照的这 N 条**恰好**被翻成已读」（`packages/resident/src/reader.ts` 的 `#markRead` 在 `marked !== snapshot.length` 时抛错）。原函数返回 `void`，且按 identity（`from`+`timestamp`+`text`）匹配——重复消息若在快照与翻转之间被**外部**读掉一条，原实现会去翻**后一条同内容**的消息，即把一条本节点从未处理的消息标成已读，而调用方无从察觉。改动两处：① 返回实际计数；② 收一份快照时刻的已读计数 `readBefore`，把外部已读的那条**记账**而不是另找一条来翻。**未找到书面依据，按代码推断**扩展点为何不够用：核对必须发生在**同一把文件锁内**（基座导出了函数，不导出锁），锁外重读正是这把锁存在要防的那个竞态 | ⚠️ 推断（待改动人确认） |
+| `src/utils/agents/teammateMailbox.ts` | `4fe8cd1e` | +33/−3 | 常驻节点复用基座的**文件信箱**作为入站通道，必须能断言「我快照的这 N 条**恰好**被翻成已读」（`packages/resident/src/reader.ts` 的 `#markRead` 在 `marked !== snapshot.length` 时抛错）。原函数返回 `void`，且按 identity（`from`+`timestamp`+`text`）匹配——重复消息若在快照与翻转之间被**外部**读掉一条，原实现会去翻**后一条同内容**的消息，即把一条本节点从未处理的消息标成已读，而调用方无从察觉。改动两处：① 返回实际计数；② 收一份快照时刻的已读计数 `readBefore`，把外部已读的那条**记账**而不是另找一条来翻。**核实记录（2026-08-16）：竞态真实存在，三个前提全在代码里**——快照是**锁外**取的（`packages/resident/src/reader.ts:98-120` 经无锁的 `readMailbox`），快照与翻转之间隔着整个 ACP turn（`reader.ts:136→240`），消息身份 `[from,timestamp,text]` 不含 id、同内容不可区分；窗口内入站适配器可持锁写进同内容新消息（`packages/adapter/src/inbound.ts:264`）、同 agent 其他进程可把快照那条翻成已读，旧实现会翻错且 `reader.ts:247` 的计数断言恰好仍绿（静默失效）。新参数与新返回值全部在 `teammateMailbox.ts:575-628` 一把锁内消费。**原括注「基座导出了函数，不导出锁」表述不准**：锁的各件其实都可拿到（`getInboxPath` 与 `lockfile.lock` 均导出、`packages/` 可 import `src/`），真正堵死「调用方自己包一层锁」的是 **`proper-lockfile` 不可重入**——持锁再调本函数会撞上内部第二次 `lock()`，10 次重试后抛错 | 🟢 代码依据（2026-08-16 核实；「当时是否即此判断」待改动人一句话） |
 
 ### 2.7 基座既有测试 / 门禁修复（4 个修改）
 
@@ -109,10 +109,10 @@
 | --- | --- | --- | --- | --- |
 | `src/services/skillLearning/__tests__/throttleAndCircuitBreaker.test.ts` | `e86d901b` | +10/−0 | 基座既有 flaky：用例缺 `timeoutMs`，前序文件泄漏凭据时会真连网并超时变红 | ✅ 书面 |
 | `src/utils/__tests__/claudemd.projectDirs.test.ts` | `6bada14c` | +6/−2 | 基座既有断言把 `readdir` 枚举顺序当成契约，CI 的 ext4 上会假红 | ✅ 书面 |
-| `src/services/mcp/__tests__/configWatcher.test.ts` | `a8b06a9a` | +24/−19 | **提交正文为空。按 diff 推断**：三条正向用例原本「固定睡 2600 ms 再断言 `fired > 0`」；`watchFile` 是 1 s 轮询 + debounce，负载高的 CI runner 上两个 tick 未必落在 2.6 s 内，正向用例因此偶发变红。改为**等待真实的文件事件**（回调 resolve 一个 Promise），把「够不够久」交给测试框架超时而不是猜一个墙钟预算。**负向**用例仍需固定等待（要证明「什么都没发生」只能等够两个 tick），故保留并改名 `settleForNoChange`。**代价须一并记**：正向用例从「偶发断言失败」变成「事件不来就挂到用例超时」 | ⚠️ 推断（待改动人确认） |
-| `src/utils/__tests__/teammateMailbox.test.ts` | `4fe8cd1e` | +28/−0 | 随 §2.6 的信箱改动新增一条用例，用例名直述该语义：`resident snapshot accounts for an externally read duplicate without marking a later one` | ⚠️ 推断（随 §2.6 同一条，待改动人确认） |
+| `src/services/mcp/__tests__/configWatcher.test.ts` | `a8b06a9a` + `0e9e7c3b` + `d162fe72` | +24/−19，后续 +约40 | `a8b06a9a` 提交正文为空，按 diff 推断：三条正向用例原本「固定睡 2600 ms 再断言 `fired > 0`」，改为**等待真实的文件事件**；负向用例保留固定等待并改名 `settleForNoChange`。**该推断已于 2026-08-16 被后续排障坐实并深化**（两个后续提交的正文即书面依据）：偶发的真根因不是「节拍慢」而是 **Linux 上 `fs.watchFile` 的首个 stat 异步落地、抢在它前面的写 / 删被当成基线永不上报**（Debian 13 x86_64 实测原用例 15 跑 8 败、先等过一个轮询周期则 15/15 绿），`d162fe72` 给三条正向用例加 `settleWatcherBaseline()`；`0e9e7c3b` 顺带坐实 **bunfig `[test] timeout` 在 Bun 1.3.13 下不生效**（全仓实际预算是默认 5 s），故显式给 15 s。「事件不来就挂到用例超时」的代价条已由显式预算钉住上界。生产代码始终未动 | ✅ 书面（后续提交） |
+| `src/utils/__tests__/teammateMailbox.test.ts` | `4fe8cd1e` | +28/−0 | 随 §2.6 的信箱改动新增一条用例，用例名直述该语义：`resident snapshot accounts for an externally read duplicate without marking a later one`。**核实（2026-08-16）**：用例（`:351-378`）先取含一条未读重复消息的快照，再模拟「快照那条被外部读走 + 又追加一条同内容」，断言带 `readBefore` 调用后返回 1 且盘上是 `[true, false]`——恰好钉住 §2.6 描述的竞态（旧实现会翻成 `[true, true]`） | 🟢 代码依据（随 §2.6 同一条） |
 
-**判定统计（32 个修改文件）：✅ 书面 11 / 🟢 代码依据 14 / ⚠️ 推断待确认 7。**
+**判定统计（32 个修改文件）：✅ 书面 12 / 🟢 代码依据 18 / ⚠️ 推断待确认 2**（原 11 / 14 / 7；2026-08-16 考证后 configWatcher 升 ✅，QueryEngine / cli.tsx / teammateMailbox 及其用例升 🟢，仅会话活跃度签名两行因存在两处待裁定的行为差异保留 ⚠️——见 §6.1）。
 七条 ⚠️ 分属**五件事**：`QueryEngine.onInputAccepted`、会话活跃度签名连带修改（2 个文件）、`cli.tsx` 子命令分派、信箱记账（2 个文件）、`configWatcher` 用例。
 
 ### 2.8 新增的 24 个文件
@@ -221,17 +221,17 @@
 
 ## 6. 待办与维护规矩
 
-### 6.1 待改动人确认的 7 行（分属 5 件事）
+### 6.1 待改动人确认的 7 行（分属 5 件事）——2026-08-16 考证后的状态
 
 章程 T-5 对策④ 要求「扩展点为何不够用」写在 PR 描述里。下列各行的这句话是 P9.3 **按代码推断**补出的，需要原改动人确认或改写：
 
 | # | 事项 | 涉及文件 | 请确认什么 |
 | --- | --- | --- | --- |
-| 1 | `QueryEngine.onInputAccepted` | `src/QueryEngine.ts` | 是否确实没有 hook / 事件能在基座外拿到「输入已入上下文」这一刻？ |
-| 2 | 会话活跃度签名连带修改 | `src/cli/transports/WebSocketTransport.ts`、`src/cli/transports/ccrClient.ts` | 加 `if (active)` 是否只为保持基座原语义逐字不变、没有别的意图？ |
-| 3 | 子命令分派 | `src/entrypoints/cli.tsx` | 基座确实没有子命令注册表可用？是否评估过复用 `daemon` 那条分派？ |
-| 4 | 信箱记账 | `src/utils/agents/teammateMailbox.ts`、`src/utils/__tests__/teammateMailbox.test.ts` | 「核对必须在同一把文件锁内、锁外重读即竞态」这个理由是否就是当时的判断？ |
-| 5 | `configWatcher` 用例 | `src/services/mcp/__tests__/configWatcher.test.ts` | 提交正文为空。改动动机是否为 CI 上的固定等待偶发失败？「事件不来就挂到用例超时」这一代价是否评估过？ |
+| 1 | `QueryEngine.onInputAccepted` | `src/QueryEngine.ts` | ~~是否确实没有 hook / 事件能拿到「输入已入上下文」这一刻？~~ **已核实：确实没有**（逐通道排查记录在 §2 对应行；且该事实是本改动**造出来**的，观测不到）。剩「改动动机」一句话过目 |
+| 2 | 会话活跃度签名连带修改 | `src/cli/transports/WebSocketTransport.ts`、`src/cli/transports/ccrClient.ts` | **核实推翻了「逐字不变」**：忙边缘多一帧、`sendSessionActivitySignal()` 在 refcount 0 时不再发帧（另有 idle 计时器触发面扩大一处，见 §2.4 首行）。三处差异均在 keep_alive / 诊断语义内且有测试钉死，**请裁定：有意为之（维持现状）还是漏看（需回改）**——这是 5 件事里唯一剩下的实质问题 |
+| 3 | 子命令分派 | `src/entrypoints/cli.tsx` | ~~基座确实没有注册表？daemon 分派可复用？~~ **已核实**：Commander 注册表存在但被排除在 print 快速路径外、基座自己就双写；daemon worker 路线四条硬伤坐实不可行（§2 对应行）。**新待办**：`resident` / `audit` / `resident-wake` 未注册进 Commander，因此不出现在 `occ --help`——要不要补第二半（付 `main.tsx` 全量 bootstrap 的代价），待定夺 |
+| 4 | 信箱记账 | `src/utils/agents/teammateMailbox.ts`、`src/utils/__tests__/teammateMailbox.test.ts` | ~~锁内核对的理由是否成立？~~ **已核实：竞态真实、锁内消费无一步在外、新用例恰好钉住它**；原括注「不导出锁」改为「`proper-lockfile` 不可重入」（§2 对应行）。剩「当时是否即此判断」一句话过目 |
+| 5 | ~~`configWatcher` 用例~~ | `src/services/mcp/__tests__/configWatcher.test.ts` | **已闭环（2026-08-16）**：动机被 CI run `31904161135` / `31939084748` / `31939787564` 的失败形态证实；真根因（首个 stat 之前的改动被当基线）考证与修法见 `0e9e7c3b` / `d162fe72` 的提交正文，代价由显式 15 s 预算钉住。该行判定已升为 ✅ 书面 |
 
 ### 6.2 ⚠️ 一处与章程措辞的不一致（本文不擅自处理）
 
