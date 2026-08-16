@@ -40,7 +40,9 @@
         "demo/lib/p61-seed.ts",
         "demo/lib/p61-worker.ts",
         "demo/lib/p73-sample.ts",
-        "demo/lib/p73-throughput.ts"
+        "demo/lib/p73-throughput.ts",
+        "demo/lib/p81-probe.ts",
+        "demo/lib/p81-registry.ts"
       ],
       "project": ["src/**/*.{ts,tsx}"],
       "ignore": ["src/types/**"]

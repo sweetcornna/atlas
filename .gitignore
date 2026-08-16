@@ -61,3 +61,7 @@ credentials.json
 .squash-tmp/
 .git.*-backup
 scripts/system-prompt-dump.txt
+
+# 阡陌演示环境（demo/env/）的运行态：密钥、节点配置根、日志、工作区。
+# 由 demo/env/seed.sh 生成，永不入库。
+.demo-env/
