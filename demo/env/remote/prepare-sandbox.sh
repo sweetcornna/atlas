@@ -52,6 +52,22 @@ die()  { printf 'FAIL : %s\n' "$*" >&2; exit 1; }
 
 [ -n "${QIANMO_TRANSPORT_PSK:-}" ] || die '缺 QIANMO_TRANSPORT_PSK（必须与宿主那把逐字相同）'
 
+# 长度也要在这里判：短 PSK 过得了上面的「非空」，却会在 §4 起常驻时被
+# `assertUsablePsk` 抛 WeakSecretError 打死——那已经是 `bun install` + `bun run build`
+# 之后的事了，真机实测（2026-08-16，burn-vm-01 沙箱内）白等约 70 s 才看到一段栈。
+# 前置检查存在的意义就是别让这种错拖到那么后面。
+# 数值不在本文件里另写一份：从 `assertUsablePsk` 的出处现读（CLAUDE.md §1.1⑧）。
+PSK_MIN="$(awk -F'[= ]+' '/^export const PSK_MIN_LENGTH/ { print $(NF); exit }' \
+  "$REPO_DIR/packages/transport/src/handshake.ts" 2>/dev/null || true)"
+case "$PSK_MIN" in
+  '' | *[!0-9]*) : ;;  # 读不出来就不判，不拿猜的数拦人
+  *)
+    if [ "${#QIANMO_TRANSPORT_PSK}" -lt "$PSK_MIN" ]; then
+      die "QIANMO_TRANSPORT_PSK 只有 ${#QIANMO_TRANSPORT_PSK} 个字符，至少要 $PSK_MIN（出处：packages/transport/src/handshake.ts 的 PSK_MIN_LENGTH）"
+    fi
+    ;;
+esac
+
 # 沙箱里的状态一律放沙箱本地目录，不去猜宿主挂了什么进来。
 SANDBOX_ROOT="${QIANMO_SANDBOX_DEMO_ROOT:-$HOME/.qianmo-demo-sandbox}"
 CONFIG_DIR="$SANDBOX_ROOT/config"

@@ -89,7 +89,32 @@ head1 '3. Dormice'
 if command -v dor >/dev/null 2>&1; then
   ok 'dor CLI 在 PATH 上'
   say '--- dor doctor ---'
-  if dor doctor; then ok 'dor doctor 通过'; else bad 'dor doctor 未通过'; fi
+  # doctor 判的是「这台机器能不能**跑** daemon」，它前几条（running as root、
+  # DORMICE_* 环境变量、以及依赖 base image 的四个探针）只在 daemon 自己的运行身份
+  # 与环境下才成立。用普通用户、空环境跑它必定卡在 `running as root` 上并连带跳过
+  # 那四个探针——那是**量具用错了**，不是宿主没就绪。
+  # 2026-08-16 真机实测（burn-vm-01）：同一台机器、同一时刻，普通用户跑是
+  # 11 passed / 1 failed，root + /etc/dormice/env 跑是 20 passed / 0 failed，
+  # 而其时 AC-2 十轮与 AC-6(a) 五条刚刚在这台机器上全绿。
+  # 所以：能 sudo 就按 daemon 的真实身份与环境跑，判据才作数；不能就降为 WARN。
+  # 可读性要**以 root 的身份**判：EnvironmentFile 通常是 0600 root:root
+  # （burn-vm-01 实测就是），拿当前普通用户去 `[ -r ... ]` 必然为假，
+  # 于是永远走不进这个分支。这行本身就是第一次真机跑批抓出来的。
+  if sudo -n test -r /etc/dormice/env 2>/dev/null; then
+    if sudo -n sh -c "set -a; . /etc/dormice/env; set +a; \
+      export DORMICE_ENDPOINT=\"\${DORMICE_ENDPOINT:-http://127.0.0.1:$DORMICE_DAEMON_PORT}\"; \
+      dor doctor"; then
+      ok 'dor doctor 通过（以 daemon 的身份与环境）'
+    else
+      bad 'dor doctor 未通过（以 daemon 的身份与环境）'
+    fi
+  elif dor doctor; then
+    ok 'dor doctor 通过'
+  else
+    warn 'dor doctor 未通过 —— 但本次是以普通用户、无 daemon 环境跑的，多半只是卡在
+       running as root / DORMICE_* 未设。要让这条判据作数，请用 sudo 并带上 daemon 的
+       EnvironmentFile 复跑：sudo sh -c ". /etc/dormice/env; dor doctor"'
+  fi
 else
   warn 'dor CLI 不在 PATH 上 —— 无法自检 Dormice 自身'
 fi
@@ -98,7 +123,8 @@ if command -v systemctl >/dev/null 2>&1; then
   enabled="$(systemctl is-enabled dormice 2>/dev/null || true)"
   say "dormice.service : active=${active:-未知} enabled=${enabled:-未知}"
   if [ "$active" = 'active' ]; then ok 'dormice 正在运行'; else bad 'dormice 未在运行'; fi
-  # roadmap P0.1 遗留③：这台机器上它一直是 active 但 disabled，重启不自起。
+  # roadmap P0.1 遗留③记的是「active 但 disabled，重启不自起」。
+  # 2026-08-16 真机实测（burn-vm-01）：已是 active + enabled，该遗留项在这台机器上已消。
   if [ "$enabled" = 'enabled' ]; then
     ok 'dormice 已设开机自起'
   else
