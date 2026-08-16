@@ -16,6 +16,23 @@
  *      **按发送节点计**，多开几个 agent 名字不会多拿配额。
  *
  * 每条 check 单独留痕、不合并——合并之后没人知道是哪条没过。
+ *
+ * ## 协议层预算的判据为什么带着墙钟
+ *
+ * `InboundBudget` 是**连续补充**的令牌桶（`packages/router/src/rate.ts`，容量
+ * `perMinute`、窗口 60 s，即每 `60_000 / perMinute` ms 回一个令牌，注释里写明
+ * 是刻意不用固定窗口的）。所以「到顶」不是一个常数：突发用了多久，桶就多回
+ * 了几个令牌。早先的判据写死 `accepted === perMinute`，隐含假设整个突发在一个
+ * 回补间隔（100 ms）内发完——开发机跑得进，2 vCPU 的机器跑不进，于是在慢机器
+ * 上**确定性判红**（`docs/dev/demo-env.md` §7.5）。
+ *
+ * 现在的判据直接断言令牌桶的契约本身：从第一条到被拒那条，桶最多放行
+ * `perMinute + floor(burstElapsedMs / refillIntervalMs)` 条、最少 `perMinute`
+ * 条；且被拒之前一条不漏、被拒即停。`burstElapsedMs` 由发送方按 `Date.now()`
+ * 计——与桶读的是同一个时钟，且这段区间**包住**桶从建立到拒绝的区间，所以算
+ * 出的回补量是桶实际回补量的**上界**，判据不会因为量得比桶宽而误放。判据没有
+ * 因此变松：开发机上 `burstElapsedMs < 100`，回补量为 0，判据退化回
+ * `accepted === perMinute`，一个数都不差。
  */
 
 /** 场景一 + 二：回环切断与审计事件。 */
@@ -71,14 +88,29 @@ export interface Ac3RuntimeObservation {
 /** 场景四下半：协议层入站预算。 */
 export interface Ac3BudgetObservation {
   readonly perMinute: number
-  /** 接收方实际收下的条数，期望等于 perMinute。 */
+  /** 一条接一条发、发到**第一次被拒为止**，一共发出的条数（含被拒那条）。 */
+  readonly sent: number
+  /** 接收方实际收下的条数，期望落在 `[perMinute, perMinute + 回补量]`。 */
   readonly accepted: number
+  /**
+   * 突发的墙钟用时（ms）：从第一条发出之前到被拒那条的回执返回之后，按
+   * `Date.now()` 计——与接收方令牌桶读的是同一个时钟。见模块头。
+   */
+  readonly burstElapsedMs: number
   /** 越界那条的错误码，期望 `E_RATE_LIMITED`。 */
   readonly refusedCode?: string
   /** 参与发送的 agent 名字个数——>1 才能证明「按节点计」。 */
   readonly senderAgents: number
   /** 协议层是否**没有**产生运行时层的 `runtime_throttled` 事件。 */
   readonly noRuntimeEvent: boolean
+}
+
+/** 场景四下半的观测，外加报告核心据此算出的两个判据输入。 */
+export interface Ac3BudgetJudged extends Ac3BudgetObservation {
+  /** 连续补充令牌桶回补一个令牌的间隔 = `60_000 / perMinute`。 */
+  readonly refillIntervalMs: number
+  /** 突发期间桶最多能补回的令牌数 = `floor(burstElapsedMs / refillIntervalMs)`。 */
+  readonly refillAllowance: number
 }
 
 export interface Ac3Observations {
@@ -89,6 +121,7 @@ export interface Ac3Observations {
 }
 
 export interface Ac3Report extends Ac3Observations {
+  readonly budget: Ac3BudgetJudged
   readonly checks: {
     readonly loopCutAtFirstRevisit: boolean
     readonly loopReportedToSender: boolean
@@ -104,8 +137,20 @@ export interface Ac3Report extends Ac3Observations {
   readonly pass: boolean
 }
 
+/** 「每分钟」里的那一分钟——`perMinute` 的单位，不是可调参数。 */
+const MINUTE_MS = 60_000
+
 export function buildAc3Report(observations: Ac3Observations): Ac3Report {
-  const { loop, spiral, runtime, budget } = observations
+  const { loop, spiral, runtime } = observations
+
+  const refillIntervalMs = MINUTE_MS / observations.budget.perMinute
+  const budget: Ac3BudgetJudged = {
+    ...observations.budget,
+    refillIntervalMs,
+    refillAllowance: Math.floor(
+      Math.max(0, observations.budget.burstElapsedMs) / refillIntervalMs,
+    ),
+  }
 
   const checks = {
     loopCutAtFirstRevisit:
@@ -130,8 +175,14 @@ export function buildAc3Report(observations: Ac3Observations): Ac3Report {
       runtime.otherTargetAllowed,
     runtimeThrottleStaysLocal: runtime.refusedStayedLocal,
     protocolBudgetAtLimit:
-      budget.accepted === budget.perMinute &&
+      // 到顶就拒：被拒的那条码是协议层的。
       budget.refusedCode === 'E_RATE_LIMITED' &&
+      // 被拒之前一条不漏、被拒即停——发出的条数恰好比收下的多一条。
+      budget.accepted === budget.sent - 1 &&
+      // 「顶」是令牌桶的契约：至少放行 perMinute 条（少了是限流器少放），
+      // 至多 perMinute + 突发期间连续补充回来的令牌数（多了是限流器多放）。
+      budget.accepted >= budget.perMinute &&
+      budget.accepted <= budget.perMinute + budget.refillAllowance &&
       // >1 个发送 agent：协议层按**节点**计，多开名字不多拿配额。
       budget.senderAgents > 1,
     layersDoNotOverlap: runtime.noProtocolEvent && budget.noRuntimeEvent,
@@ -139,6 +190,7 @@ export function buildAc3Report(observations: Ac3Observations): Ac3Report {
 
   return {
     ...observations,
+    budget,
     checks,
     pass: Object.values(checks).every(Boolean),
   }

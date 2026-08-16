@@ -46,7 +46,10 @@ function observations(
     },
     budget: {
       perMinute: 600,
+      sent: 601,
       accepted: 600,
+      // A fast machine: the whole burst inside one 100 ms refill interval.
+      burstElapsedMs: 40,
       refusedCode: 'E_RATE_LIMITED',
       senderAgents: 31,
       noRuntimeEvent: true,
@@ -106,6 +109,80 @@ describe('AC-3 report', () => {
   test('a single sender agent cannot prove the budget counts nodes', () => {
     const report = buildAc3Report(observations({ budget: { senderAgents: 1 } }))
     expect(report.checks.protocolBudgetAtLimit).toBe(false)
+  })
+
+  describe('the protocol budget ceiling follows the bucket’s clock', () => {
+    test('a fast burst allows no refill: exactly perMinute accepted', () => {
+      const report = buildAc3Report(observations())
+      expect(report.budget.refillIntervalMs).toBe(100)
+      expect(report.budget.refillAllowance).toBe(0)
+      expect(report.checks.protocolBudgetAtLimit).toBe(true)
+      // 601 accepted on a fast machine is one too many — the old exact check
+      // still holds when the burst fits inside one refill interval.
+      expect(
+        buildAc3Report(observations({ budget: { sent: 602, accepted: 601 } }))
+          .checks.protocolBudgetAtLimit,
+      ).toBe(false)
+    })
+
+    test('a slow burst may accept what the bucket refilled meanwhile', () => {
+      // 350 ms at one token per 100 ms: up to three extra tokens, no more.
+      const slow = { burstElapsedMs: 350 }
+      expect(
+        buildAc3Report(
+          observations({ budget: { ...slow, sent: 604, accepted: 603 } }),
+        ).budget.refillAllowance,
+      ).toBe(3)
+      for (const accepted of [600, 601, 602, 603]) {
+        expect(
+          buildAc3Report(
+            observations({ budget: { ...slow, sent: accepted + 1, accepted } }),
+          ).checks.protocolBudgetAtLimit,
+        ).toBe(true)
+      }
+      expect(
+        buildAc3Report(
+          observations({ budget: { ...slow, sent: 605, accepted: 604 } }),
+        ).checks.protocolBudgetAtLimit,
+      ).toBe(false)
+    })
+
+    test('a burst that was never refused fails, however slow the machine', () => {
+      const report = buildAc3Report(
+        observations({
+          budget: {
+            sent: 1200,
+            accepted: 1200,
+            burstElapsedMs: 5_000,
+            refusedCode: undefined,
+          },
+        }),
+      )
+      expect(report.checks.protocolBudgetAtLimit).toBe(false)
+    })
+
+    test('a refusal below perMinute is the limiter under-admitting', () => {
+      const report = buildAc3Report(
+        observations({ budget: { sent: 21, accepted: 20 } }),
+      )
+      expect(report.checks.protocolBudgetAtLimit).toBe(false)
+    })
+
+    test('a message lost before the refusal fails even at the right ceiling', () => {
+      // 602 sent, 600 delivered, one refusal: something before the ceiling
+      // was dropped without a refusal — not the ceiling doing its job.
+      const report = buildAc3Report(
+        observations({ budget: { sent: 602, accepted: 600 } }),
+      )
+      expect(report.checks.protocolBudgetAtLimit).toBe(false)
+    })
+
+    test('a refusal with the runtime code is the wrong layer', () => {
+      const report = buildAc3Report(
+        observations({ budget: { refusedCode: 'E_RUNTIME_THROTTLED' } }),
+      )
+      expect(report.checks.protocolBudgetAtLimit).toBe(false)
+    })
   })
 
   test('one layer firing the other layer’s event fails', () => {

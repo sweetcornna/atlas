@@ -14,6 +14,8 @@
  *   ③ 运行时层令牌桶 —— 第 21 条本地被拒，**不上线**；换个目标立刻放行；
  *   ④ 协议层入站预算 —— 按 `LIMITS.ratePerMinute` 在接收节点拒；发送方**换用
  *      多个 agent 名字**，用来证明这一层按**节点**计，多开名字不多拿配额。
+ *      一条接一条发到第一次被拒为止，并记下突发用时——桶是连续补充的，判据按
+ *      用时算「顶」，不假设机器快到能在一个回补间隔里发完整段突发。
  *
  * 判据由 `ac3-report-core.ts` 合成，退出码即结论。报告里不含 PSK、不含 socket
  * 路径以外的部署信息，正文只留计数与错误码。
@@ -287,6 +289,14 @@ async function runRuntimeThrottle(): Promise<Ac3Observations['runtime']> {
   }
 }
 
+/**
+ * 场景 ④ 下半的发送上限：发到两倍配额还没被拒就停手判红。走到这一步只有两种
+ * 可能——限流器坏了（比如按 agent 而不是按节点计），或者这台机器每条消息都慢过
+ * 一个回补间隔（≥ 100 ms/条，令牌回得比花得快，永远到不了顶）——两种情况都该
+ * 判红，报告里的 `sent` / `burstElapsedMs` 足够让人分辨是哪一种。
+ */
+const BUDGET_BURST_CAP = LIMITS.ratePerMinute * 2
+
 /** 场景 ④ 下半：协议层入站预算（接收节点对单发送节点）。 */
 async function runInboundBudget(): Promise<Ac3Observations['budget']> {
   const nodeB = startNode(NODE_B)
@@ -295,28 +305,39 @@ async function runInboundBudget(): Promise<Ac3Observations['budget']> {
   const client = await dial(NODE_A, nodeB, replies)
 
   // 发送方换着 agent 名字发：每个名字有自己的运行时桶，但接收节点的入站预算
-  // 是按**发送节点**记的，所以第 601 条照样被拒——这正是「多开名字不多拿配额」。
+  // 是按**发送节点**记的，所以到顶那条照样被拒——这正是「多开名字不多拿配额」。
+  //
+  // 一条接一条发到**第一次被拒为止**，而不是写死发 601 条：入站预算是连续补充
+  // 的令牌桶，突发用了多久桶就多回几个令牌，「顶」在慢机器上不是 600（demo-env.md
+  // §7.5）。判据由 report-core 按突发用时算上界；这里只如实记下用时——按
+  // `Date.now()` 计，与桶读的是同一个时钟，区间从第一条发出前到被拒回执返回后，
+  // 包住桶从建立到拒绝的整段，所以据此算出的回补量只会偏大不会偏小。
   const perAgent = RUNTIME_RATE.capacity
-  const total = LIMITS.ratePerMinute + 1
-  const agents = Math.ceil(total / perAgent)
+  let sent = 0
   let refusedCode: string | undefined
-  for (let index = 0; index < total; index += 1) {
-    const from = `qianmo://${NODE_A}/burst-${Math.floor(index / perAgent)}`
+  const startedAt = Date.now()
+  while (sent < BUDGET_BURST_CAP) {
+    const from = `qianmo://${NODE_A}/burst-${Math.floor(sent / perAgent)}`
     const outcome = await send(
       nodeA,
       client,
-      taskRequest({ from, to: REVIEWER, taskId: `budget-${index}` }),
+      taskRequest({ from, to: REVIEWER, taskId: `budget-${sent}` }),
     )
+    sent += 1
     if (outcome.receiptCode !== undefined || outcome.localCode !== undefined) {
       refusedCode = errorCodeOf(replies.at(-1)) ?? outcome.localCode
+      break
     }
   }
+  const burstElapsedMs = Date.now() - startedAt
 
   return {
     perMinute: LIMITS.ratePerMinute,
+    sent,
     accepted: nodeB.delivered.length,
+    burstElapsedMs,
     ...(refusedCode === undefined ? {} : { refusedCode }),
-    senderAgents: agents,
+    senderAgents: Math.ceil(sent / perAgent),
     noRuntimeEvent:
       nodeB.router.audit.count(RouterEventType.RuntimeThrottled) === 0,
   }
