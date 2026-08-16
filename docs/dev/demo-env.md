@@ -46,7 +46,9 @@
 | **Node** | 任意现代版本（本文实测 v26.3.0） | 不是给 `occ` 用的：`demo/lib/p61-worker.ts` 真的会 `spawn` 一个 node 子进程跑 AC-7 的分块计算；`demo/p61-e2e.sh` 因此把它列进了 `required` |
 | **git** | 任意 | 克隆仓库；`seed.sh` 还要用它给两个节点各建一个真 git 工作区（AC-6(b) 恢复演示的对象就是这个形状） |
 | **bash** | 4.x 或 macOS 自带的 3.2 均可 | `demo/env/*.sh` 只用两者都有的写法；未用 GNU 专有选项（`timeout` 在 macOS 上就不存在，脚本里因此一处没用） |
-| 磁盘 | **约 1.3 GB**：`node_modules` 938 MB + `dist` 102 MB + 源码 + 演示状态（0.3 MB） | 实测值（macOS / arm64，`du -sh`），见 §4.3 |
+| **make** | 任意 GNU make | **只有 AC-7 冒烟那条命令要它**（`make -C demo p61-smoke`）；§4.2 的六条命令一条都不用。Debian/Ubuntu 的 minimal 镜像**不带 make**，且没有 sudo 就装不上——绕法见 §4.4 |
+| 内存 | **最低 2 GB**（含 swap 更稳） | 实测峰值 **1563 MB**，全在 `bun run build`（vite）那一步；2 GB 的机器上最低可用只剩 409 MB、动了 43 MB swap——**过得去，但余量很薄**。1 GB 的机器按此推算会 OOM。数据见 §4.4 |
+| 磁盘 | **约 2.1 GB**（Linux x64 实测家目录总量）：`node_modules` 1.4 GB + `dist` 104 MB + node 运行时 204 MB + 源码与演示状态 | macOS / arm64 上小一截（`node_modules` 938 MB + `dist` 102 MB，合计约 1.3 GB）。**平台差几乎全在 `node_modules`**——两处实测分别见 §4.3 与 §4.4 |
 
 ### 2.2 Bun 版本为什么敏感（**这条别跳过**）
 
@@ -172,10 +174,27 @@ OCC_CONFIG_DIR=$PWD/.demo-env/nodes/node-b/config bun dist/cli-node.js audit --v
 
 ### 4.1 前提
 
-- 一台能上网的机器（首次 `bun install` 要下依赖）；
-- bun 已装且版本见 §2.1。没装：`curl -fsSL https://bun.sh/install | bash`，装完
-  `bun --version` 应为 `1.3.13`；
-- git、node 已装。
+一台能上网的机器（首次 `bun install` 要下依赖，`postinstall` 还要去 GitHub 下 ripgrep），
+外加 git、bun、node 三样。**后两样在全新的 Linux 机器上通常都没有，而 `bootstrap.sh` 的前置
+检查会因此直接失败**——所以这里给出装法，两条都装进家目录，**不需要 sudo**：
+
+```bash
+# bun —— 必须是 .tool-versions 的 pin（§2.1/§2.2）。不带 -s 装到的是 latest，那是另一回事。
+curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.13"
+export PATH="$HOME/.bun/bin:$PATH"   # 安装器只写 ~/.bashrc；当前 shell 要自己 export
+bun --version                        # 应为 1.3.13
+
+# node —— 不是给 occ 用的，是 demo/lib/p61-worker.ts 真的会 spawn 它（§2.1）。
+# 版本随意，取当前 LTS 即可；下面的文件名按 https://nodejs.org/dist/latest-v22.x/ 现况替换。
+mkdir -p "$HOME/.local/node"
+curl -fsSL https://nodejs.org/dist/latest-v22.x/node-v22.23.2-linux-x64.tar.xz \
+  | tar -xJ -C "$HOME/.local/node" --strip-components=1
+export PATH="$HOME/.local/node/bin:$PATH"
+node --version
+```
+
+git 一般自带；没有就按发行版的常规办法装。`make` **不在这一步的必需项里**——六条命令都不
+用它，只有 §4.3 表里作佐证的 AC-7 冒烟要，见 §2.1 与 §4.4。
 
 ### 4.2 六条命令
 
@@ -230,7 +249,47 @@ P8.1 产物复制进去，然后**只按上面六条命令敲**（另加一条 A
 >    的，那份时间要算在里面——这也是把 runbook 压到六条命令的原因。
 > 4. ⑦ 的 63 s 里有 60 s 是 AC-7 冒烟模式**规定的最短时长**（`--minutes 1`），不是机器慢。
 
-### 4.4 跑不动时先看哪
+### 4.4 全新机器实测（Debian 13 x86_64 / 2 vCPU / 冷缓存 / 公网）
+
+§4.3 那张表自己声明了四条测不到的东西（冷缓存、公网下载、小机器、装 bun 的时间）。这一节
+就是去测它们的：一台**从没装过本仓库依赖**的 Debian 13 VPS，2 vCPU、2 GB 内存（约 1.5 GB
+可用）+ 5 GB swap，无 bun、无 node、无 make、**无 sudo**，全部装进家目录。
+
+| 步骤 | 实测 | 说明 |
+| --- | --- | --- |
+| ⓪ 装 bun 1.3.13 | **2 s** | 官方安装器 `-s "bun-v1.3.13"`，落在 `~/.bun` |
+| ⓪ 装 node v22.23.2 | **4 s** | 官方 tarball 解到 `~/.local/node`。**runbook 原先只写了「node 已装」**，机器上没有，`bootstrap.sh` 前置检查当场 `FAIL : node 不在 PATH 上` —— 已补进 §4.1 |
+| ① `git clone` | **3 s** | 本次走的是 `git bundle` + `scp`（73 MB / 54 s），不是公网 clone；真从远端拉要按各自的网络另算 |
+| ② `bootstrap.sh` | **21 s** | 冷缓存：前置检查 0 s + `bun install --frozen-lockfile`（**1737 包 / 11.3 s**，含 `postinstall` 去 GitHub 下 ripgrep **2249 KB**）12 s + `bun run build` 8 s + 自检（85 pass）1 s。把 `~/.bun/install/cache`、`node_modules`、`dist` 全删掉复跑一次，**仍是 21 s** |
+| ③ `seed.sh` | **0 s** | 与 §4.3 同 |
+| ④ `up.sh` | **8 s** | 就绪探测里 node-a 首次拨号 **6513 ms**（开发机 3.45 s）—— 2 vCPU 上常驻进程起得慢，探测重试吸收掉了 |
+| ⑤ `smoke.sh --with-task` | **1 s** | 解析 13 ms / 拨号 6 ms / **ack 1161 ms**（开发机 59 ms、414 ms）；两条审计链 intact；`pass=true` |
+| ⑥ `ac3-loop-rate.sh` | **2 s** | ❌ **`pass=false`** —— 十条 check 里 `protocolBudgetAtLimit` 为 false（`accepted=601`，期望 600）。**确定性复现**，连跑四次全红；同一 HEAD 在开发机上十条全 true。根因见 §7.5 |
+| ⑦ AC-7 冒烟 | **61 s** | `pass=true`，`resultDigest` 与 `expectedDigest` 一致，七条 check 全 true。**这台机器没有 make**，实际敲的是 `p61-smoke` 目标展开后的两条命令（`bun run demo/lib/p61-seed.ts --reset --seed 6101` + `cd demo && ./p61-e2e.sh --mode smoke --minutes 1 --chunks 4 --iterations 3`） |
+| ⑧ `down.sh` | **4 s** | 三个进程全停；`pgrep` 复核无残留 |
+| **合计（①~⑧）** | **100 s（1 min 40 s）** | 加上 ⓪ 的 6 s 与 bundle 传输 54 s，从「一台什么都没有的机器」到「跑完并停机」约 **2 min 40 s**。距 30 min 预算约 11 倍余量 |
+
+**口径说明**（和 §4.3 一样，不写清楚就会被当成承诺）：
+
+1. **谁跑的**：一个**只照本文 §4 敲命令的代理**，不是团队成员。它不看脚本源码，只在 runbook
+   跑不通时才去读源码定位缺陷。所以这一轮能证明「runbook 照着敲能不能走通」，**但不能替代
+   DoD 要的「由未参与部署的成员实测」**——人读文档、判断报错、决定怎么绕的时间不在表里。
+2. **网络**：单流下行实测 nodejs.org **1.8 MB/s**、GitHub Releases **5.5 MB/s**；但 `bun install`
+   多连接并发，1737 个包冷装只用 11.3 s，聚合带宽远高于单流。§4.3 口径①担心的「5 MB/s 要 5 min
+   以上」在这台机器上没有发生，**换一台网络差的机器仍可能发生**。ripgrep 那一步走公网 GitHub，
+   **本次通了**——内网机器上它照样会卡住。
+3. **内存：过了，但余量薄。**全程峰值占用 **1563 MB**、最低可用 **409 MB**、swap 只动了 43 MB，
+   峰值全部落在 `bun run build`（vite）那 8 s 里。**没有触发 OOM，也没走 runbook 里的降级手段**
+   （`bootstrap.sh` 有 `--skip-build` / `--skip-selftest`，本次都没用上）。据此把 §2.1 的最低内存
+   写成 2 GB。
+4. **磁盘比 §4.3 大一截**：`node_modules` 在 Linux x64 上是 **1.4 GB**（macOS/arm64 是 938 MB），
+   包数也不同（1737 vs 1717）——平台相关的可选依赖不一样。家目录总占用 2.1 GB。
+5. **⑦ 的 61 s 里 60 s 仍是冒烟模式规定的最短时长**，不是机器慢；但 `compute.spanMs` 是 51 s，
+   已经吃掉那 60 s 的大半——更慢的机器上这一条有撑破 1 min 窗口的余地。
+6. **无模型凭据**：这台机器 `env` 里一个模型凭据都没有，也没有任何 `~/.occ` / `~/.claude` /
+   `~/.qianmo` 配置根。这正好把 §7.3 一直没实测的那一半测了，结论与原先的预期**相反**，见该节。
+
+### 4.5 跑不动时先看哪
 
 | 症状 | 多半是 | 怎么办 |
 | --- | --- | --- |
@@ -318,17 +377,41 @@ roadmap / `selection-m0.md` 的记载**反推**出来的，逐条能指到出处
 
 ### 7.3 `smoke.sh --with-task` 的结果字段只是观测
 
-`pass` 只看 **ack**。`task.result` 的 `outcome` 取决于跑脚本这台机器上有没有模型凭据：本机
-实测是 `completed`，而**本机环境里有凭据**（§2.5 脚注）；无凭据的机器上它应当是 `failed`，
-这一半**没有实测过**。无论哪种，它都不影响拓扑判定，所以在报告里是观测字段而不是判据。
+`pass` 只看 **ack**。`task.result` 的 `outcome` 是观测字段，不是判据——它不影响拓扑判定。
 要端到端的结果，跑真机腿或带凭据的 AC-7 链路。
+
+**v0.2 勘误：原先写的「无凭据的机器上它应当是 `failed`」是推测，而且推错了。**§4.4 那台
+Debian 机器上 `env` 里没有任何模型凭据、也没有任何 `~/.occ` / `~/.claude` / `~/.qianmo`
+配置根，`resultOutcome` **照样是 `completed`**（ack 1161 ms）。所以这个字段并不能用来判断
+「这台机器上有没有配模型」——它到底反映了什么还没查清（多半是这条链路上的 result 根本
+没走到真模型调用）。**在查清之前，不要拿它作任何结论**，包括不要拿它当「凭据配好了」的
+旁证。
 
 ### 7.4 `check:unused` 只在主检出作数
 
 在 git worktree 里跑 `bun run check:unused` 会得到约 76 个「未使用文件」的**假阳性**，根因与
 处置见 `CLAUDE.md` §3.1。本任务包新增的两个 TS runner 已加进 `knip.json` 的入口图。
 
-### 7.5 `.demo-env/` 永不入库
+### 7.5 AC-3 一键复现在慢机器上判红（**§4.2 第 ⑥ 条**）
+
+§4.4 那台 2 vCPU 的 Debian 上，`demo/ac3-loop-rate.sh` **确定性判红**（连跑四次，`pass=false`），
+红的是十条 check 里的 `protocolBudgetAtLimit`：`budget.accepted=601`，而判据要它等于
+`perMinute=600`。同一个 HEAD 在开发机（macOS / arm64）上十条全 true。
+
+**根因不在限流器，在判据的隐含假设。**`InboundBudget` 是**连续补充**的令牌桶
+（`packages/router/src/rate.ts`，容量 600 / 窗口 60 s，即**每 100 ms 回一个令牌**，注释里写明
+是刻意不用固定窗口的）。而 `runInboundBudget` 连发 `LIMITS.ratePerMinute + 1 = 601` 条，要第
+601 条被拒——这只有在**整个 601 条的突发在 100 ms 内发完**时才成立。开发机跑得进 100 ms，
+2 vCPU 的机器跑不进，于是期间补回一个令牌，第 601 条被正常放行。
+
+注意 `accepted` 的上限就是发出去的 601 条，**再慢也不会涨到 602**，所以这个红是「非黑即白」
+的：机器够快就绿，不够快就红，中间没有过渡。
+
+**这是 AC-3 demo（P4.2 面）的缺陷，不是演示环境（P8.1）的缺陷**，本文只记录现象与根因，
+不在此修。修之前，**别把 AC-3 的一键复现放在慢机器上当验收证据**——它判红不代表环路切断
+或两层限流坏了，另外九条 check 本次全部为 true。
+
+### 7.6 `.demo-env/` 永不入库
 
 已加进 `.gitignore`。里面有演示密钥（0600）与节点身份私钥——**任何时候看到它出现在
 `git status` 的待提交列表里，都是先修 `.gitignore` 而不是 `git add`。**
