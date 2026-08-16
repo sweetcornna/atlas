@@ -9,7 +9,7 @@ import {
   RuntimeThrottle,
   TokenBucket,
 } from '../src/index.js'
-import { ARCHIVIST, PLANNER, REVIEWER } from './helpers.js'
+import { ARCHIVIST, NODE_A, PLANNER, REVIEWER } from './helpers.js'
 
 const CLOCK = 1_000_000
 
@@ -86,6 +86,35 @@ describe('protocol layer — one receiving node, per sending node', () => {
     expect(budget.admit('qianmo://node-a/fifth', CLOCK)).toBe(false)
     // A different node is unaffected.
     expect(budget.admit('qianmo://node-b/reviewer', CLOCK)).toBe(true)
+  })
+
+  test('a burst that straddles 100 ms is handed one extra token', () => {
+    // 600 per 60 s is one token every 100 ms, and the refill is continuous — so
+    // how many messages a burst gets through depends on how long the burst
+    // takes, not just on the ceiling. roadmap v2.34 writes it as `B·(1/T+1/60)`.
+    //
+    // Nobody had pinned that down as a test, and the AC-3 harness walked into
+    // it: `demo/lib/ac3-loop-rate.ts` fired 601 messages on a real clock and
+    // expected the 601st to be refused, which only holds while the burst fits
+    // inside 100 ms. On a 2 vCPU box it does not (demo-env.md §7.5), one token
+    // came back, and the harness read a healthy limiter as a failure. The
+    // limiter is right; this test says what "right" means.
+    const refillMs = 60_000 / LIMITS.ratePerMinute
+    expect(refillMs).toBe(100)
+
+    const budget = new InboundBudget()
+    for (let index = 0; index < LIMITS.ratePerMinute; index += 1) {
+      expect(budget.admit(PLANNER, CLOCK)).toBe(true)
+    }
+    // Same instant: the ceiling holds.
+    expect(budget.admit(PLANNER, CLOCK)).toBe(false)
+    // One millisecond short of the refill is still short.
+    expect(budget.remaining(NODE_A, CLOCK + refillMs - 1)).toBeLessThan(1)
+    expect(budget.admit(PLANNER, CLOCK + refillMs - 1)).toBe(false)
+    // Across the line, exactly one more message gets in.
+    expect(budget.remaining(NODE_A, CLOCK + refillMs)).toBeCloseTo(1, 5)
+    expect(budget.admit(PLANNER, CLOCK + refillMs)).toBe(true)
+    expect(budget.admit(PLANNER, CLOCK + refillMs)).toBe(false)
   })
 
   test('an unparseable sender is charged rather than waved through', () => {
