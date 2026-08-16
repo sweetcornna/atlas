@@ -47,6 +47,7 @@
 | **git** | 任意 | 克隆仓库；`seed.sh` 还要用它给两个节点各建一个真 git 工作区（AC-6(b) 恢复演示的对象就是这个形状） |
 | **bash** | 4.x 或 macOS 自带的 3.2 均可 | `demo/env/*.sh` 只用两者都有的写法；未用 GNU 专有选项（`timeout` 在 macOS 上就不存在，脚本里因此一处没用） |
 | **make** | 任意 GNU make | **只有 AC-7 冒烟那条命令要它**（`make -C demo p61-smoke`）；§4.2 的六条命令一条都不用。Debian/Ubuntu 的 minimal 镜像**不带 make**，且没有 sudo 就装不上——绕法见 §4.4 |
+| **unzip** | 任意（或 `busybox unzip`） | **只有 bun 官方安装器要它**——`bun.sh/install` 会直接 `error: unzip is required to install bun` 退出，`~/.bun` 都不会生成。Debian/Ubuntu 的 minimal 镜像**不带 unzip**，无 sudo 装不上；这是第二台全新机器实测时**唯一的硬卡点**（§4.4）。无 sudo 的绕法在 §4.1 的装 bun 段前面：Debian 自带 `busybox`，两行垫片即可 |
 | 内存 | **最低 2 GB**（含 swap 更稳） | 实测峰值 **1563 MB**，全在 `bun run build`（vite）那一步；2 GB 的机器上最低可用只剩 409 MB、动了 43 MB swap——**过得去，但余量很薄**。1 GB 的机器按此推算会 OOM。数据见 §4.4 |
 | 磁盘 | **约 2.1 GB**（Linux x64 实测家目录总量）：`node_modules` 1.4 GB + `dist` 104 MB + node 运行时 204 MB + 源码与演示状态 | macOS / arm64 上小一截（`node_modules` 938 MB + `dist` 102 MB，合计约 1.3 GB）。**平台差几乎全在 `node_modules`**——两处实测分别见 §4.3 与 §4.4 |
 
@@ -179,6 +180,12 @@ OCC_CONFIG_DIR=$PWD/.demo-env/nodes/node-b/config bun dist/cli-node.js audit --v
 检查会因此直接失败**——所以这里给出装法，两条都装进家目录，**不需要 sudo**：
 
 ```bash
+# 0) 安装器要 unzip。没有 unzip 又没有 sudo 时（Debian/Ubuntu minimal 常见），用系统自带的 busybox 垫一个：
+if ! command -v unzip >/dev/null && command -v busybox >/dev/null; then
+  mkdir -p "$HOME/bin" && printf '#!/bin/sh\nexec busybox unzip "$@"\n' > "$HOME/bin/unzip" && chmod +x "$HOME/bin/unzip"
+  export PATH="$HOME/bin:$PATH"
+fi
+
 # bun —— 必须是 .tool-versions 的 pin（§2.1/§2.2）。不带 -s 装到的是 latest，那是另一回事。
 curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.13"
 export PATH="$HOME/.bun/bin:$PATH"   # 安装器只写 ~/.bashrc；当前 shell 要自己 export
@@ -289,6 +296,15 @@ P8.1 产物复制进去，然后**只按上面六条命令敲**（另加一条 A
 6. **无模型凭据**：这台机器 `env` 里一个模型凭据都没有，也没有任何 `~/.occ` / `~/.claude` /
    `~/.qianmo` 配置根。这正好把 §7.3 一直没实测的那一半测了，结论与原先的预期**相反**，见该节。
 
+**第二台全新机器复跑（按上表实测后修订的 runbook，只读文档不读源码）**：另一台 Debian 13 x86_64 /
+2 vCPU / 1973 MB（其上已有他人服务占约 700 MB）/ 无 sudo / 无 unzip。①~⑧ 净耗时 **105 s**（bootstrap 26 s：
+1737 包 14 s + build 11 s + 自检 86 pass；up 8 s，node-a 首拨 7121 ms；smoke ack **1299 ms**；AC-3 十条全 true；
+AC-7 冒烟 61 s `pass=true`；down 3 s 无残留），含操作者全部往返的墙钟 **8 min 19 s**。**唯一硬卡点**：§4.1 第一条
+命令因机器无 `unzip` 直接失败——已把 unzip 列进 §2.1、把 busybox 垫片写进 §4.1、故障表加一行（本次修订）；其余
+六条命令与无 make 绕法**一字未改全部跑通**，`bun.lock` 未被改写。内存峰值 used **1631 MB** / 最低可用 **341 MB** /
+swap 峰值 393 MB（比基线多 196 MB）——2 GB 机器上还跑着别的东西时会真的动几百 MB swap，§2.1 的「余量很薄」如是。
+补上 unzip 一条之后，本 runbook 可判为「未参与部署者可复现」；DoD 里「由**成员**实测」的形式要件仍待人。
+
 ### 4.5 跑不动时先看哪
 
 | 症状 | 多半是 | 怎么办 |
@@ -298,6 +314,7 @@ P8.1 产物复制进去，然后**只按上面六条命令敲**（另加一条 A
 | `smoke.sh` 的 probe `resolved:false` | 注册中心没起来或租约过期 | 看 `logs/registry.err`；租约 90 s、续租 20 s 一次 |
 | `smoke.sh` 的 task `acked:false` | 目标节点没收下 | 看目标节点的 `.err`；PSK 两边必须逐字相同 |
 | 审计链报断链 | 多半是两个节点共用了配置根 | 见 §3.1 第 3 条 |
+| `bun.sh/install` 报 `unzip is required to install bun` | 机器没有 unzip（minimal 镜像常见） | 有 sudo 就装 unzip；没有就用 §4.1 开头的 busybox 垫片，然后**原样重跑**同一条安装命令 |
 
 ---
 
