@@ -38,7 +38,7 @@
 | **AC-5** | 同一任务在 ≥ 2 个供应商适配器下跑通，仅改配置不改代码；一致性三项全绿 | **PASS-待复跑**（需凭据；G-4 定性限定仍在）。**一条命令补齐**：`source <凭据文件> && demo/walkthrough.sh --only ac5,ac5e2e` | 真调用集成测试 + 端到端脚本 | `bun test tests/integration/provider-adapter-consistency.test.ts`；`bun run scripts/qianmo-provider-task.ts --provider …` | `docs/dev/p1.4-provider-verification.md` v0.1（§2/§3/§5）；速查表 P1.4 行 | 2026-08-12 |
 | **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **(a) 待真机复跑；(b)(c) PASS-已走查（本机）**——本机腿全绿，**真机挂载边界仍未测**（§4.1 的定夺不因本次走查而改变） | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b` | (a) 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check；**§8.3 本次实跑十一条全 true** | (a) 未在文档中标注具体日期，**未核到**；(b)(c) **2026-08-15 本次走查**（前次 2026-08-14） |
 | **AC-7** | ≥ 10 min 全程无人工干预的六环节连续演示，3/3 | **PASS-已走查（本机）**（本次在 `856d0ff8` 上又跑通一次 3/3；真机副本仍待补传） | 本机（单进程逻辑双节点） | `demo/walkthrough.sh --with-ac7`（＝ `make -C demo p61-accept`，`SEED=6101 MINUTES=10 CHUNKS=20`） | `87c4609b`；`docs/dev/scenario-mcm.md` §9 三行正式记录（**仍是正式记录**）；归档包 sha256 `2be9d926…3140`（**私有验收目录，仓库内无副本**）；**§8.3 本次走查三轮**（digest 与 §9 逐字相同） | **2026-08-15 本次走查**（同日另有 §9 那次正式记录） |
-| **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-已走查（本机）**（边界库与 60 min 混沌均当场跑过；CI 五连绿仍锚在 `a8b06a9`，未在结项 HEAD 重取——§4.5） | 自动化 + CI | `demo/walkthrough.sh --with-chaos 60`（含 `bun test tests/boundary`） | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；**§8.3 本次 60 min 混沌五条 check 全 true、177 次注入、四类 `stalled` 全 0、`unmapped=0`**；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库与混沌 60 min：**2026-08-15 本次走查**（混沌前次 2026-08-14）；CI 五连绿：`a8b06a9` |
+| **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-已走查（本机）**（边界库与 60 min 混沌均当场跑过；CI 五连绿已于 2026-08-16 在 `d162fe72` **重取一次、5/5 全绿**，早先的 `a8b06a9` 五连绿仍在——§4.5） | 自动化 + CI | `demo/walkthrough.sh --with-chaos 60`（含 `bun test tests/boundary`） | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；**§8.3 本次 60 min 混沌五条 check 全 true、177 次注入、四类 `stalled` 全 0、`unmapped=0`**；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库与混沌 60 min：**2026-08-15 本次走查**（混沌前次 2026-08-14）；CI 五连绿：`a8b06a9` |
 
 **按 DoD 口径的当前汇总**：8 条中 **0 条未通过**；**0 条需要豁免**（判据本身都有达标实测）。真正卡在走查现场的是**能否复跑**，不是能否达标——详见 §4。
 
@@ -639,11 +639,11 @@ occ audit --verify                                             # ③ 审计链�
 | 60 min 混沌跑批 | seed `2145259399`；**177 次注入**（kill-worker 42 / cut-network 47 / fill-disk 45 / clock-drift 43）；**7,389 条成功投递** | — | 2026-08-14 |
 | 混沌结果 | 四类 `stalled` 全 0、**0 未捕获**、**0 unmapped**、审计链完好；87 条被捕获失败全部是实际 ENOSPC 且正确归到 disk full | — | 同上 |
 | 恢复时间最大值 | kill-worker 103 ms / cut-network 513 ms / fill-disk 112 ms / clock-drift 103 ms | — | 同上 |
-| **CI 5 连绿** | 五个 run 均 `completed / success`，**全部在同一 SHA `a8b06a9aee1f6fa84ea2c57593cc6129476256a1`**：`31799841764` / `31800391530` / `31800890960` / `31801288270` / `31801769324` | 连续 5 次全绿 | 已用 `gh run view` **逐个核到** |
+| **CI 5 连绿** | 五个 run 均 `completed / success`，**全部在同一 SHA `a8b06a9aee1f6fa84ea2c57593cc6129476256a1`**：`31799841764` / `31800391530` / `31800890960` / `31801288270` / `31801769324`。**2026-08-16 重取**：`d162fe721eadfb3b83e1189ae545c004d23c2344` 上串行 `workflow_dispatch` 五次，`31940540478` / `31940845668` / `31941139584` / `31941438394` / `31941752229` 均 `completed / success`（10:00Z–10:34Z） | 连续 5 次全绿 | 两组均已用 `gh run view` **逐个核到** |
 
 > **2026-08-15 本次走查复跑**（运行 ②，HEAD `b3cda44f`）：**边界库 39 pass / 0 fail / 102 expect() / 6 files**（与上表逐字一致）；**60 min 混沌五条 check 全 `true`、`pass: true`**——seed `153528247`、**177 次注入**（kill-worker 36 / cut-network 43 / fill-disk 45 / clock-drift 53）、**四类 `stalled` 全 0**、`delivered=7380`、`uncaught=0`、**`unmapped=0`**（87 条被捕获失败全部是真 `ENOSPC` 且归到 `disk full`）、审计链 `intact`。各类恢复时间最大值：kill-worker 150 ms / cut-network 492 ms / fill-disk 112 ms / clock-drift 103 ms。见 §8.3 ~ §8.5。
 >
-> **本次走查没有重取 CI 五连绿**——它仍锚在 `a8b06a9`，是否需要在结项 HEAD 上重取由负责人裁定（§4.5）。
+> **CI 五连绿已于 2026-08-16 在 `d162fe72` 重取一次（5/5）**——重取前两次 dispatch 各红一次，红的都是 MCP watcher 正向用例（Linux 上首个 stat 之前的改动被当基线，用例已修，见 §4.5）；`a8b06a9` 那组仍作为首次证据保留。
 
 **机器判据 check 清单**（`demo/lib/chaos-report-core.ts`，五条）
 
@@ -740,8 +740,8 @@ P8.2 的 DoD：**8 条全部 PASS，或未通过项 ≤ 2 条且有双签豁免�
 
 ### 4.5 AC-8：CI 5 连绿的锚点
 
-- **事实**：五连绿全部在 `a8b06a9`，走查时 HEAD 已推进（分支 `s4/p4.2-loop-and-rate`；v0.1 编制时 HEAD `6bada14c`，**§8 本机腿走查时 HEAD 已到 `856d0ff8`**）。本次走查**没有**重取 CI 五连绿——那需要五次 CI 串行，且判据字面不要求锚在结项 SHA 上。
-- **需要表态**：判据只说「全部进 CI 且连续 5 次构建全绿」，未指定 SHA。是否要求在结项 HEAD 上重取一次？重取成本约 5 次 CI 串行时长。
+- **事实**：首组五连绿全部在 `a8b06a9`，走查时 HEAD 已推进（分支 `s4/p4.2-loop-and-rate`；v0.1 编制时 HEAD `6bada14c`，**§8 本机腿走查时 HEAD 已到 `856d0ff8`**）。判据字面不要求锚在结项 SHA 上。
+- **2026-08-16 已重取一次（无需再表态）**：在 `d162fe72` 上串行 `workflow_dispatch` 五次全绿（run id 见 §2.8 数据表「CI 5 连绿」行）。**过程如实记**：重取前在 `74ff0154` 与 `0e9e7c3b` 各 dispatch 一次都红，红的都是 `src/services/mcp/__tests__/configWatcher.test.ts` 的正向用例（前者 5 s 超时，后者显式 15 s 仍超时）——不是节拍慢，是 **Linux 上 `fs.watchFile` 的首个 stat 异步落地、抢在它前面的写/删被当成基线永不上报**；在 Debian 13 x86_64 上原用例 15 跑 8 败、改文件前先等 1.5 s 则 15/15 绿。修在用例上（`d162fe72`：`settleWatcherBaseline()`；`0e9e7c3b`：显式预算，并坐实 bunfig `[test] timeout` 在 Bun 1.3.13 下不生效、全仓实际预算是默认 5 s），生产代码未动。结项 HEAD 若再推进，是否第三次重取由负责人按成本（约 35 min 串行）定。
 
 ### 4.6 不影响 AC 判定、但影响结项完整性的三项
 
