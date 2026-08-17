@@ -53,13 +53,15 @@
 
 ### 2.2 P3.1 常驻化改造 —— 冻结感知看门狗（3 个修改）
 
-三处都是把裸 `setTimeout` 换成 `FreezeAwareWatchdog`（新增文件，见 §2.8）。
+三处都是把裸 `setTimeout` 换成冻结感知的等价物（`FreezeAwareWatchdog`，新增文件，见 §2.8）。
+
+> **P10.3② 已整改（2026-08-17）**：原先是在基座文件里就地 `new FreezeAwareWatchdog({...})` + `reset()`，把整段回调体重排进对象字面量——那正是演练里唯一的代码语义冲突。现改为在 `freezeAwareWatchdog.ts` 里派生一对与全局 `setTimeout` / `clearTimeout` **同形**的注入点（`setFreezeAwareTimeout` / `clearFreezeAwareTimeout` + `FreezeAwareTimer` 句柄接口，含尾随实参透传），三个基座文件的控制流与变量名**回到上游原文**，只剩标识符替换。下表 +/− 为整改后的现状，括号内为整改前。行为逐字不变（超时值/错误语义/重置时机/冻结跨越语义逐项核对），三方合并实测：`responsesAdapter.ts` 对上游 v2.46.0 补丁的冲突 **1 → 0**。
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/services/api/claude.ts` | `4fe8cd1e` | +34/−33 | **改动理由是书面的**：基座那条 90 s 流空闲看门狗默认开着，沙箱冻结（`docker pause`）期间墙钟继续走，解冻后计时器立即到期，把一条正常的流判成挂死；修法是跨过时间跳跃后重新计时，不是简单加大阈值。**「扩展点为何不够用」是本次补出的**：超时是流读取函数体内的 `setTimeout` 字面量，基座在这三处没有任何可注入的计时器接口，唯一不改核心的替代是 fork 整条流读取路径 | 🟢 依据：`4fe8cd1e` 提交正文 + `src/utils/network/freezeAwareWatchdog.ts`；**注意**：`upstream-sync-drill.md` §5 行动项③ 已点名这一族「应抽成注入点而不是就地替换」，本次演练唯一的代码语义冲突也出自本族 |
-| `src/services/api/gemini/client.ts` | `4fe8cd1e` | +7/−5 | 同上 | 🟢 |
-| `src/services/api/openai/responsesAdapter.ts` | `4fe8cd1e` | +15/−10 | 同上。**这一处是演练中唯一的代码语义冲突文件** | 🟢 |
+| `src/services/api/claude.ts` | `4fe8cd1e` | +11/−6（整改前 +34/−33） | **改动理由是书面的**：基座那条 90 s 流空闲看门狗默认开着，沙箱冻结（`docker pause`）期间墙钟继续走，解冻后计时器立即到期，把一条正常的流判成挂死；修法是跨过时间跳跃后重新计时，不是简单加大阈值。**「扩展点为何不够用」是本次补出的**：超时是流读取函数体内的 `setTimeout` 字面量，基座在这三处没有任何可注入的计时器接口，唯一不改核心的替代是 fork 整条流读取路径。**P10.3② 后这条依然成立**——注入点消除的是「就地重写」，不是「必须改这三行」：基座仍然没有可注入的计时器接口，我方只是把替换收窄成一个与 `setTimeout` 同形的标识符 | 🟢 依据：`4fe8cd1e` 提交正文 + `src/utils/network/freezeAwareWatchdog.ts`；`upstream-sync-drill.md` §5 行动项③ 点名的「应抽成注入点而不是就地替换」**已于 P10.3② 落地** |
+| `src/services/api/gemini/client.ts` | `4fe8cd1e` | +6/−2（整改前 +7/−5） | 同上 | 🟢 |
+| `src/services/api/openai/responsesAdapter.ts` | `4fe8cd1e` | +6/−2（整改前 +15/−10） | 同上。**这一处曾是演练中唯一的代码语义冲突文件，P10.3② 后实测已可干净合并** | 🟢 |
 
 ### 2.3 P3.1 常驻化改造 —— ACP 扩展方法（8 个修改）
 
@@ -125,7 +127,7 @@
 | `src/config/__tests__/identityIsolation.test.ts` / `identityProbe.runner.ts` | 2 | +268 | P0.3 | 子进程探针验证三身份隔离与并集保护 |
 | `src/services/qianmo/`（全新目录：`resident.ts` 730 / `auditTrail.ts` 318 / `nodeIdentity.ts` 139 / `sandboxAudit.ts` 8 + 5 个测试/fixture） | 9 | +1,968 | P3.1(4) / P7.2(1) / P4.3(2) / P1.3(2) | 常驻节点接线、审计翻译层、节点密钥路径、沙箱审计路径。**翻译层在基座侧是刻意的**：`@qianmo/audit` 若认识各层就得依赖树里每个包，依赖方向会反过来（`auditTrail.ts` 顶部注释）。`nodeIdentity.ts` / `sandboxAudit.ts` 存在的唯一理由是**路径必须从 `src/config/paths.ts` 派生**，而 `@qianmo/*` 包刻意不持有路径约定 |
 | `src/cli/handlers/`（`resident.ts` 590 / `qianmoAudit.ts` 209 / `residentWake.ts` 172 / `residentArgs.ts` 18 + 3 个测试） | 7 | +1,728 | P3.1(5) / P7.2(2) | 三个阡陌子命令的实现，被 `cli.tsx` 动态 import |
-| `src/utils/network/freezeAwareWatchdog.ts` + 测试 | 2 | +233 | P3.1 | 时间跳跃感知的看门狗，内部用 `@qianmo/protocol` 的 `TimeJumpGate` |
+| `src/utils/network/freezeAwareWatchdog.ts` + 测试 | 2 | +324（P3.1 时 +233，P10.3② 加注入点 +91） | P3.1 / P10.3② | 时间跳跃感知的看门狗，内部用 `@qianmo/protocol` 的 `TimeJumpGate`；P10.3② 在其上加了与 `setTimeout` 同形的注入点对（见 §2.2 的整改注）——**增量落在阡陌自有文件里，正是为了把基座文件的残余 diff 压到最小** |
 | `src/utils/session/__tests__/sessionActivity.test.ts` | 1 | +78 | P3.1 | 忙闲边缘与 keepalive 闸门 |
 | `src/utils/sessionStorage/__tests__/logAssemblyTieBreak.test.ts` | 1 | +36 | P1.2 | `--resume` 锚点缺陷的红→绿用例 |
 | `src/__tests__/queryEngineInputAdmission.test.ts` | 1 | +101 | P3.1 | 输入受理回调 |
@@ -175,9 +177,9 @@
 
 | 演练 §5 第几条 | 指向本文的哪些行 |
 | --- | --- |
-| 2 · 改薄 `CLAUDE.md` / `README.md` | 不在本文范围（根目录文档，非 `src/`；见演练 §3.1 前两行） |
-| 3 · 把 `FreezeAwareWatchdog` 类替换抽成注入点 | **§2.2 全部三行** |
-| 4 · 拆分 `unused-budget.json` | **§5.3** 的 `scripts/unused-budget.json` |
+| 2 · 改薄 `CLAUDE.md` / `README.md` | 不在本文范围（根目录文档，非 `src/`；见演练 §3.1 前两行）。**P10.3① 已落地** |
+| 3 · 把 `FreezeAwareWatchdog` 类替换抽成注入点 | **§2.2 全部三行**。**P10.3② 已落地**（见 §2.2 的整改注） |
+| 4 · 拆分 `unused-budget.json` | **§5.3** 的 `scripts/unused-budget.json`。**P10.3③ 已落地**（`14f8ead9`：基线回到基座原数字 + 阡陌增量另存） |
 | 5 · 把 ACP 常驻会话逻辑收进 `@qianmo/resident` | **§2.3 全部八行**（尤其 `entry.ts` 的 +15/−0） |
 | 6 · 「先找上游现成的间接层」成文规则 | **§2.1 / §3.2**（正面样板） |
 
