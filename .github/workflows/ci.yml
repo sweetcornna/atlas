@@ -45,6 +45,13 @@ jobs:
         run: bunx biome ci .
 
       - name: Type check
+        # tsc on this tree peaks at ~2.7 GB RSS (measured 2026-08-17, and the
+        # number is identical one commit earlier — grown over batches, not a
+        # single regression). Node's default ~2 GB old-space cap OOM'd this
+        # step on both runners; the machines have RAM to spare, the default
+        # heap cap is the only bottleneck.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: bun run typecheck
 
       # Two-sided ratchet: fails if cycles were added, and also if cycles were
@@ -130,6 +137,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Type check
+        # Same ~2.7 GB tsc peak as the linux job; same default-heap OOM on the
+        # first run of this branch. See the linux Type check step.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: bun run typecheck
 
       # Paths are single-quoted: the default shell here is pwsh, and quoting
