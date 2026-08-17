@@ -8,7 +8,7 @@
 | 判据依据 | [`charter.md`](./charter.md) **v2.9 §4**（§4 判据自 v2.8 起未再改动；v2.9 只回写 §5.7）（判据原文在那里，本表不复制，只放指针与走查需要的阈值） |
 | 完成状态依据 | [`roadmap.md`](./roadmap.md) **「完成状态速查」表**（该表自称完成状态的唯一出处，本表以它为准） |
 | 用途 | 走查现场的操作与判定底稿：每条 AC 敲什么、镜头给什么、判什么、缺什么 |
-| 状态 | **本机腿已走查（见 §8），真机腿与凭据腿待做**。不需要人的四项（AC-3 / AC-6(b)(c) / AC-7 / AC-8）已在本机实跑并留证；仍要人的只剩三件：真机两条（AC-2 / AC-6(a)）、凭据三条（一条命令）、双签评审 |
+| 状态 | **本机腿（§8）、凭据腿（§9.1/§9.2/§9.4）、真机腿（§9.3/§9.5）均已走查**。八条 AC 全部 PASS-已走查（AC-5 以替代第二供应商收口，qwen 重跑降级为补充项）；剩余纯流程件：双签评审、P8.2 现场评议 |
 | 走查驱动 | [`demo/walkthrough.sh`](../../demo/walkthrough.sh) —— 一键跑完本机腿并落 transcript / 报告 JSON / `summary.json`；用法与产物形态见 §8.1 |
 | 编制口径 | 每个数字、SHA、路径、用例数都在仓库里核过，核法见 §6「核对记录」；核不到的一律写「未核到」。**§8 里的数字全部来自 §8 那次实跑**，不是转述 |
 
@@ -36,13 +36,13 @@
 | **AC-3** | 回环在首次回访同一 `(处理者地址, taskId)` 时切断；两层限流各自生效 | **PASS-已走查（本机）** | 本机自动化（真 transport，unix socket） | `demo/walkthrough.sh --only ac3`（＝ `QIANMO_TRANSPORT_PSK=… bash demo/ac3-loop-rate.sh`） | roadmap v2.21 + 速查表 P4.2 行；`demo/lib/ac3-report-core.ts` 十条 check；**§8.3 本次实跑十条全 true** | **2026-08-15 本次走查**（前次 2026-08-14） |
 | **AC-4** | 项目记忆跨会话命中 5/5、标注来源 ID 与写入时间、伪造决策零引用 | **PASS-已走查（本机凭据，deepseek 腿）**：命中 **5/5** 逐条带来源 ID、伪造决策零引用 **3/3**。qwen 腿因网关上游 502 未取（判据不要求双腿，见 §9.1） | 真调用集成测试 | `source <凭据文件> && demo/walkthrough.sh --only ac4` | §9.1（`~/qianmo-acceptance/20260816T150910Z/`）；速查表 P3.3 行；`packages/recall/` 51 用例 + 集成 19 用例 | **2026-08-16 凭据走查** |
 | **AC-5** | 同一任务在 ≥ 2 个供应商适配器下跑通，仅改配置不改代码；一致性三项全绿 | **PASS-已走查（判据字面满足，2026-08-17 以替代第二供应商收口）**：判据不点名 qwen——「命令行逐字相同、只改配置文件」两跑在 **deepseek-v4-pro（compat=deepseek）× kimi-k3（compat=strict-openai）**上双绿（配置差异恰 2 行），一致性三项在两条不同 compat 档上 **9 pass / 0 fail** 且**未改一行测试代码**（只临时换夹具数据 1 行、跑完 sha256 校验还原）；qwen 上游 502/503 同分钟对照留档为上游可用性证据。**qwen 锚定的原夹具重跑降级为补充项**（恢复监视在挂）；G-4 定性限定仍在 | 真调用集成测试 + 端到端脚本 | `source <凭据文件> && demo/walkthrough.sh --only ac5,ac5e2e`；替代腿见 §9.4 | **§9.4**（`~/qianmo-acceptance/20260817T010250Z/ac5-alt/`）；§9.1；`docs/dev/p1.4-provider-verification.md` v0.1 | **2026-08-17 替代腿收口**（08-16 deepseek 腿；qwen 补充项待网关） |
-| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **(a) PASS-已走查（真机，2026-08-16 复跑）**：5/5，runsc 出生契约现场 + 五条审计事件齐全、审计文件 600/700；**(b)(c) PASS-已走查（本机）**——**真机挂载边界仍未测**（§4.1 的定夺不因本次而改变，已列下一轮真机任务） | (a) 真机；(b)(c) 本机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b` | (a) **§9.3**（`.../ac6a/`，末行 `passed:5,total:5`）+ 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行，`demo/lib/ac6b-report-core.ts` 十一条 check；**§8.3 本次实跑十一条全 true** | (a) **2026-08-16 真机复跑**；(b)(c) 2026-08-15 走查（前次 2026-08-14） |
+| **AC-6** | (a) 越权写被拒留痕；(b) `rm -rf` 后 10 min 内完整恢复；(c) 删备份被拒 | **三子项全 PASS-已走查**：(a) 真机 5/5（2026-08-16 复跑），runsc 出生契约现场 + 五条审计事件齐全；(b)(c) 本机十一条 check 全 true + **真机挂载边界已测（2026-08-16，28/28 全 true）**——store 在沙箱唯一可写 bind 之外（沙箱内 ENOENT）、HTTP 面无删除动词（405×4 / 403×2 全审计）、`rm -rf` 后 **60 ms** 恢复且 git status / HEAD / exec 位逐一一致。**§4.1「最可能需要豁免的一条」就此闭合，AC-6 不再需要豁免** | (a) 真机；(b)(c) 本机 + 真机 | (a) `bash demo/ac6a-sandbox.sh`；(b)(c) `demo/walkthrough.sh --only ac6b`；挂载边界见 §9.5 | (a) **§9.3**（`.../ac6a/`，末行 `passed:5,total:5`）+ 速查表 P1.3 行；(b)(c) roadmap v2.23 + 速查表 P4.4 行、`demo/lib/ac6b-report-core.ts` 十一条 check、**§8.3 本次实跑十一条全 true**；**挂载边界 §9.5**（`~/qianmo-acceptance-remote/20260816T165237Z/ac6bc-mount/`，report sha256 `4207dc6a…`） | (a) **2026-08-16 真机复跑**；(b)(c) 2026-08-15 本机走查；**挂载边界 2026-08-16 真机首测** |
 | **AC-7** | ≥ 10 min 全程无人工干预的六环节连续演示，3/3 | **PASS-已走查（本机）**（本次在 `856d0ff8` 上又跑通一次 3/3；真机副本仍待补传） | 本机（单进程逻辑双节点） | `demo/walkthrough.sh --with-ac7`（＝ `make -C demo p61-accept`，`SEED=6101 MINUTES=10 CHUNKS=20`） | `87c4609b`；`docs/dev/scenario-mcm.md` §9 三行正式记录（**仍是正式记录**）；归档包 sha256 `2be9d926…3140`（**私有验收目录，仓库内无副本**）；**§8.3 本次走查三轮**（digest 与 §9 逐字相同） | **2026-08-15 本次走查**（同日另有 §9 那次正式记录） |
 | **AC-8** | 五类边界每类 ≥ 2 条、总数 ≥ 12、全部进 CI 且连续 5 次构建全绿 | **PASS-已走查（本机）**（边界库与 60 min 混沌均当场跑过；CI 五连绿已于 2026-08-16 在 `d162fe72` **重取一次、5/5 全绿**，早先的 `a8b06a9` 五连绿仍在——§4.5） | 自动化 + CI | `demo/walkthrough.sh --with-chaos 60`（含 `bun test tests/boundary`） | 速查表 P5.4/P7.1 行；**实数 39 条**（本次实跑 39 pass / 0 fail）；**§8.3 本次 60 min 混沌五条 check 全 true、177 次注入、四类 `stalled` 全 0、`unmapped=0`**；CI 5 连绿于 `a8b06a9`，五个 run id 均已核到 `success` | 边界库与混沌 60 min：**2026-08-15 本次走查**（混沌前次 2026-08-14）；CI 五连绿：`a8b06a9` |
 
 **按 DoD 口径的当前汇总**：8 条中 **0 条未通过**；**0 条需要豁免**（判据本身都有达标实测）。真正卡在走查现场的是**能否复跑**，不是能否达标——详见 §4。
 
-> **v0.2 补充**：「能否复跑」这个风险在**本机腿上已经消解**——AC-3 / AC-6(b)(c) / AC-8 与 AC-1 脚本部分已于 2026-08-15 在 `b3cda44f` 上复跑通过，AC-7 在同日的 `856d0ff8` 上跑通 3/3（两者之间 AC-7 相关代码零改动，§8.3 有 `git diff` 依据），逐项 transcript 与报告 JSON 见 §8。剩下的复跑风险只在**真机腿**（AC-2 / AC-6(a)）与**凭据腿**（AC-1 判据② / AC-4 / AC-5）。
+> **v0.2 补充**：「能否复跑」这个风险在**本机腿上已经消解**——AC-3 / AC-6(b)(c) / AC-8 与 AC-1 脚本部分已于 2026-08-15 在 `b3cda44f` 上复跑通过，AC-7 在同日的 `856d0ff8` 上跑通 3/3（两者之间 AC-7 相关代码零改动，§8.3 有 `git diff` 依据），逐项 transcript 与报告 JSON 见 §8。剩下的复跑风险只在**真机腿**（AC-2 / AC-6(a)）与**凭据腿**（AC-1 判据② / AC-4 / AC-5）——**这两条腿也已于 2026-08-16 ~ 08-17 全部实跑并留档（§9），复跑风险就此清零**（AC-5 的 qwen 原夹具重跑是补充项，不在风险面上）。
 
 ---
 
@@ -500,9 +500,9 @@ QIANMO_BACKUP_WRITE_TOKEN=… QIANMO_BACKUP_ARCHIVE_TOKEN=… bash demo/ac6b-res
 - **边界不是 chmod，是一个进程**：POSIX 上「删掉一个文件」的权限来自它**所在目录**的写位，与「创建一个文件」是同一个位；sticky bit 只收窄成「只能删自己的」，而那正是本例要防的。所以只写这件事由**进程边界**承担——store 在宿主侧，沙箱只能经一个**没有删除动词**的 socket 面够到它。
 - `@qianmo/backup` **全包没有任何删除路径**——不是带守卫的删除，是根本没有那个方法（三层守卫：类型 / 运行时 allowlist / import 期形状断言）。
 
-**已知边界与未覆盖**（这是 AC-6 判「部分」的原因）
+**已知边界与未覆盖**（历史上 AC-6 判「部分」的原因；第一条已于 2026-08-16 闭合）
 
-- **沙箱挂载边界本机测不到**：两侧同进程，测的是**凭据面与动词面，不是挂载**。真机部署仍需把 store 放在沙箱够不到的地方，并只把只写凭据（`QIANMO_BACKUP_WRITE_TOKEN`）注入沙箱。**这条真机验证尚未做。**
+- **沙箱挂载边界本机测不到**：两侧同进程，测的是**凭据面与动词面，不是挂载**。真机部署仍需把 store 放在沙箱够不到的地方，并只把只写凭据（`QIANMO_BACKUP_WRITE_TOKEN`）注入沙箱。**→ 已于 2026-08-16 在真机（burn-vm-01，runsc 沙箱）实测闭合，28/28 check 全 true，见 §9.5。**
 - **常驻节点里的任务前快照不等待**：等它就是把一次 `tar` 挡在 ack 前面，而 AC-2 的 ack 线是已经量过的预算。因此语义是「任务开始**前后**」而不是「任务开始的那一瞬」。要更强的保证得由掌握任务生命周期的调用方 `await beforeTask`——脚本化跑批可以，ACP turn 里不行。
 - **M0 不做保留策略与轮转**（N-12）。
 
@@ -512,13 +512,13 @@ QIANMO_BACKUP_WRITE_TOKEN=… QIANMO_BACKUP_ARCHIVE_TOKEN=… bash demo/ac6b-res
 2. **(b)(c) 段**（本机即可）：敲 `bash demo/ac6b-restore.sh` → 镜头**必须**给到脚本打印的删除前 `git status --porcelain`（≥ 3 行，非平凡）→ 给到 `rm -rf` 那一步 → 给到恢复后的 `git status --porcelain` 与 `HEAD`，与删除前**并排比对**；
 3. 镜头给报告 JSON 的十一条 `checks` 全 `true` 与 `elapsedMs`（20 ms 对 10 min 预算）；
 4. 镜头给四次 405 与两次 403 的原始响应码；
-5. **明确念出**：本机测的是凭据面与动词面，**沙箱挂载边界未测**——这是 AC-6 尚未收口的部分。
+5. **明确念出**：本机测的是凭据面与动词面；**沙箱挂载边界已于 2026-08-16 真机实测**（§9.5，28/28）——现场可加映 `report.json` 的 `layout.dockerMounts`（唯一可写 bind 是 workspace）与 `storeListEnoent` 等 ENOENT 探针。
 
 **待办与 owner**
 
 | 待办 | owner |
 |---|---|
-| **(b)(c) 真机部署形态的挂载边界验证**（store 在沙箱挂载之外、沙箱内只有只写凭据）——这是 AC-6 判「部分」的唯一原因 | 主开发：喻永昌；方向辅助人：董宗岳（backup 陈子轩） |
+| ~~**(b)(c) 真机部署形态的挂载边界验证**（store 在沙箱挂载之外、沙箱内只有只写凭据）~~ **已完成（2026-08-16，§9.5，28/28 全 true）** | 主开发：喻永昌；方向辅助人：董宗岳（backup 陈子轩） |
 | (a) 现场复跑并记录日期与 SHA | 主开发：喻永昌；方向辅助人：董宗岳（backup 陈曦宇） |
 | §4.1 AC-6(a) 提请评审问题的书面结论 | 负责人 |
 
@@ -708,14 +708,10 @@ P8.2 的 DoD：**8 条全部 PASS，或未通过项 ≤ 2 条且有双签豁免�
 
 按「最可能需要表态」排序。
 
-### 4.1 AC-6(b)(c)：沙箱挂载边界真机未验证 —— **最可能需要豁免的一条**
+### 4.1 AC-6(b)(c)：沙箱挂载边界真机未验证 —— **已于 2026-08-16 关闭（走了「补做」而非豁免）**
 
-- **事实**：十一条 check 本机全绿，但**两侧同进程**，测的是**凭据面与动词面，不是挂载**。roadmap v2.23 与 P4.4「真机剩余项」都如实记了这一点。
-- **为什么可能不能外推**：AC-6(c)「智能体尝试删除备份本身时被拒」在本机成立的机制是「socket 面上没有删除动词」；真机部署下还要再加一条「store 目录在沙箱挂载之外」。**后者本机测不出来**，而 AC-6 的判据说的是**三个子项全部通过**。
-- **两个可能的定性**（请负责人选一）：
-  - **(i) 判为 PASS**：判据字面只要求「尝试删除被拒」，本机已证明动词面够不到；挂载是部署事项，归 P8.1「演示环境固化」。
-  - **(ii) 判为部分未通过并豁免**：判据的实质是「智能体在物理上够不到备份」，本机证据不覆盖物理边界，M1 补做真机验证。
-- **补做成本**：低。P0.7 已有宿主加固脚本与绑定不变式断言（`scripts/ops/`），把 store 放到沙箱挂载外 + 只注入只写凭据即可，随 P8.1 一起做。
+- **原缺口**：十一条 check 本机全绿，但**两侧同进程**，测的是**凭据面与动词面，不是挂载**；AC-6(c) 在真机部署下还要再加一条「store 目录在沙箱挂载之外」，本机测不出来。原文给负责人的两个定性选项是「(i) 判 PASS、挂载归部署事项」与「(ii) 判部分未通过并豁免、M1 补做」。
+- **关闭方式**：**两个选项都没用——直接把真机验证做掉了**（原文「补做成本：低」的判断成立）。2026-08-16 在 burn-vm-01 的 runsc 沙箱（模板 `qm-p13`）里实测挂载边界 + 完整删库恢复链路，**28/28 check 全 true**：store（`/var/lib/qianmo/backups`）不在任何 docker/沙箱挂载之下、沙箱内全 ENOENT、HTTP 面无删除动词且拒绝全审计、`rm -rf` 后 60 ms 恢复且 git status / HEAD / exec 位一致。产物与逐条数字见 §9.5。**AC-6 三子项就此全部有真机/本机对应证据，不再需要豁免。**
 
 ### 4.2 AC-2 / AC-6(a)：真机不可达时的走查形态
 
@@ -1129,7 +1125,7 @@ chaos  pass=true seed=153528247
 
 **一条正面的旁证**：轮 ② 四份本机 transcript（`ac3` / `ac6b` / `ac1` / `ac8`）里 **64 位十六进制串出现 0 次**——驱动现生成的 PSK 与两把 backup token（各 64 hex）**没有落进任何 transcript**，与 §8.1 「不打印值、不落盘」的说法一致，可用 `grep -oE '[0-9a-f]{64}'` 当场复核。
 
-## 9. 走查记录（凭据腿，2026-08-16）
+## 9. 走查记录（凭据腿与真机腿，2026-08-16 ~ 08-17）
 
 > 与 §8 同一形态：一切判定以产物目录里的 transcript / report 为准，本节只放指针与要念的数字。执行方式：主 agent 派子代理实跑、回收后抽查复核（report.json 合法性、sha256、回答内容、产物目录密钥零泄漏均由主 agent 二次亲验）。凭据取自负责人本机 `~/.occ/provider-profiles.json` 的 `opencode` 档（api.cornna.xyz 聚合网关），全程只经环境变量传递。
 
@@ -1182,6 +1178,21 @@ transcript sha256：轮 ② `ac4 4aafbf55…` / `ac5 155732e9…` / `ac5e2e 1d4d
 - **两跑**（命令行逐字相同，只改 `--providers-file` 内容，差异恰 2 行：`defaultModel` + `compatRule`）：run A deepseek-v4-pro 与 run C kimi-k3 **均** `occExitCode 0`、任务测试 5 pass、`taskTestsUntouched true`；两跑产出的实现体一字不差；run A 四项哈希与 p1.4 §3.2 历史值逐字一致（脚本与夹具未漂移）。适配差异点有两处可指到行：`providerCompatMatrix.ts` 的两档 profile（run C 三条剥离分支全命中）与 `deepseekTuning` 模型名门（`contextWindow` 1,000,000 vs 200,000）。p1.4 §5 G-2（`applyCompatRule` 线上路径无调用者）仍成立，换供应商不改变该结论。
 - **一致性三项**：先在未改动仓库取 qwen 基线 **3 fail 全 503**（nginx 时间戳留档，与同分钟 deepseek/kimi 全绿对照——上游可用性铁证）；随后**只换夹具数据一行**（`qianmo-providers.json` 第二条 `defaultModel` → kimi-k3，id 与 compatRule 不动）得 **9 pass / 0 fail**，跑完 trap + sha256 校验还原（`git diff` 对该文件为空）。**测试代码零改动**；顺带坐实测试把第二腿的 id/变量名写死为 `qwen`（`provider-adapter-consistency.test.ts:513-515`）——日志打 `[qianmo-qwen]` 实跑 kimi 即证据。
 - **主 agent 决定（记录在案）**：仓库暂不动——qwen 恢复监视在挂，若在 p6 长跑回收（08-17 06:21Z 后）时仍未恢复，则执行子代理建议的**最小整条替换**四步（config-b 与 qianmo-providers 各 1 行换 kimi-k3、测试内 `qianmo-qwen` id 中性化重命名单独一个 refactor 提交、回写 p1.4 与本表）；**不新增第三份夹具**（三份近似文件养一份死的，违「指针不复制」）。
+
+### 9.5 AC-6(b)(c) 真机挂载边界 + 删库恢复（burn-vm-01，2026-08-16）—— 关闭 §4.1
+
+> 执行方式同 §9.3（子代理真机实跑，主 agent 经 `workbench-iap` 二次登机逐字段复核 report / 审计 / sha256）。驱动脚本 `ac6bc-driver.ts`（sha256 `38a6af41…`）随产物归档，schema `qianmo.ac6bc-mount-boundary.v1`。产物根：`~/qianmo-acceptance-remote/20260816T165237Z/ac6bc-mount/`（0700/0600，`SHA256SUMS.txt` 含全部 22 个文件；`report.json` sha256 `4207dc6a…`，`exit-code` = 0）。沙箱：模板 `qm-p13`、runtime **runsc**、只读根文件系统、容器 `94339c8b2a3a`。
+
+**28/28 check 全 true，`pass: true`**，分四组：
+
+| 组 | check（依 report 逐字） | 要念的数字 |
+| --- | --- | --- |
+| ① 挂载边界（AC-6(c) 的真机增量，本机测不到的那条） | `singleWritableBindIsWorkspace` `storeNotUnderAnyDockerMount` `storeNotUnderAnySandboxMount` `storeListEnoent/StatEnoent/ReadEnoent` `storeTouchDenied` `storeMkdirDenied` `storeFindDeleteFailed` `ownWorkspaceHostPathAbsent` `peerWorkspaceHostPathAbsent` `dormiceRootAbsent` `noSnapshotObjectVisible` | 沙箱唯一可写 bind 是 workspace（`/var/lib/dormice/mnt/<uuid>` → `/home/user`）；store `/var/lib/qianmo/backups` 不在任何 docker/沙箱挂载之下（`nonRootMountsCoveringStore: []`）；沙箱内 `ls/stat/cat` store 全 **ENOENT**（rc 2/1/1）——**路径在沙箱的命名空间里根本不存在** |
+| ② 动词面（与本机 §2.6 同构，这次隔着真沙箱） | `snapshotCreatedFromSandbox` `listDeniedFromSandbox` `readDeniedFromSandbox` `removalRefusedFromSandbox` `denialsAudited` | 备份服务只在 docker 网桥宿主端（`172.17.0.1`）：POST 快照 **201**、list **403**、read **403**、删除动词 **405×4**；审计 9 事件（`snapshot-created` ×1、`read-denied` ×2、`mutation-denied` ×4、`snapshot-read` + `workspace-restored`），`mutationDeniedEvents=4` / `readDeniedEvents=2` 与探针次数逐一对上 |
+| ③ 删库恢复（AC-6(b)） | `workspaceWasDeleted` `hostSeesDeletion` `restoreSucceeded` `withinBudget` `storeIntactAfterWipe` | 沙箱内 `rm -rf` 工作区、宿主侧确认删除可见；恢复 **60 ms**（预算 600,000 ms）；wipe 前后 store 两文件 sha256 逐字节不变（快照 11,781 B，`088a8ba7…`） |
+| ④ 恢复保真 + 出生契约 | `gitStatusIdentical` `gitStatusWasNonTrivial` `headIdentical` `execBitPreserved` `birthContractOk` | `git status --porcelain` 删除前后逐字相同且**非平凡**（≥3 行，五种状态齐备）；HEAD 与可执行位一致；runsc + 只读根现场核过 |
+
+**两条如实注**（report `notes` 原文的意思）：① `rm -rf` 对不存在的路径按 POSIX 退 0，所以 `rmRfStore` rc=0 **不是证据**——证据是 `storeIntactAfterWipe` 与那几条 ENOENT；② 沙箱经网桥够得到 HTTP 面，但那个面上没有删除动词——这正是 §2.6「边界不是 chmod，是一个进程」在真机形态下的样子。
 
 ## 附：本表与其他文档的关系
 
