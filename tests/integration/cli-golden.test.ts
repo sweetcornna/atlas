@@ -262,14 +262,18 @@ function normalizeVersions(text: string): string {
 
 const ROOT_COMMANDS = [
   'agents',
+  'audit',
   'auth',
   'autonomy',
+  'console',
   'doctor',
   'import',
   'mcp',
   'migrate',
   'plugin|plugins',
   'project',
+  'resident',
+  'resident-wake',
   'setup-token',
   'update',
 ]

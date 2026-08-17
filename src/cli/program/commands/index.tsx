@@ -22,6 +22,7 @@ import { registerMcpCommands } from './mcp.js';
 import { registerMigrateCommand } from './migrate.js';
 import { registerPluginCommands } from './plugin.js';
 import { registerProjectCommands } from './project.js';
+import { registerQianmoCommands } from './qianmo.js';
 import { registerRemoteControlCommand } from './remoteControl.js';
 import { registerSshCommand } from './ssh.js';
 import { registerUpdateCommand } from './update.js';
@@ -44,4 +45,5 @@ export function registerSubcommands(program: CommanderCommand): void {
   registerMaintenanceCommands(program);
   registerUpdateCommand(program);
   registerAntOnlyCommands(program);
+  registerQianmoCommands(program);
 }
