@@ -12,7 +12,7 @@
     "kind": "openai-compat",
     "baseUrl": "https://api.cornna.xyz/v1",
     "apiKeyEnv": "OPENAI_API_KEY",
-    "defaultModel": "qwen3.8-max",
+    "defaultModel": "kimi-k3",
     "compatRule": "strict-openai"
   }
 ]
