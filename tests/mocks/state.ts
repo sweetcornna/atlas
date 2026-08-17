@@ -50,6 +50,37 @@
  * `switchSession`) if the suite needs a specific value. Keep the pinned
  * default only when the suite genuinely just wants a stable session id.
  *
+ * ── NEVER override the cwd / projectRoot cluster ──
+ *
+ * `getCwdState`, `getOriginalCwd`, `getProjectRoot`, `setCwdState`,
+ * `setOriginalCwd`, `setProjectRoot`. Same no-teardown mechanic as above,
+ * worse blast radius: `getCwdState` is what `getCwd()` reads, so pinning it
+ * to a literal like '/mock/cwd' points EVERY later file in the shard at a
+ * path that does not exist — and no-op'ing the setters in the same breath
+ * means the victim cannot set it back either.
+ *
+ * Two suites (share-projectdir, launchAutofixPr) carried exactly that
+ * combination forward from the old hand-stubbed base until 2026-08-17. The
+ * damage was invisible in both of the ways we normally run tests — each file
+ * alone is green, and CI's per-directory shards (scripts/test-shards.sh) put
+ * the polluter and the victims in different processes — so it only showed up
+ * in a whole-repo `bun test`, deterministically:
+ *
+ *  - FileReadTool's token-cap pagination tests failed with
+ *    `EROFS: read-only file system, mkdir '/mock'`. services/vcr.ts roots its
+ *    fixture path at `getCwd()`, so a cache miss tried to RECORD into
+ *    '/mock/cwd/fixtures' and the mkdir escaped as a tool error. Only the two
+ *    cases whose content is small enough to reach countTokensWithAPI hit it;
+ *    the rest are rejected on bytes first, which is why 2 of 8 failed.
+ *  - /cd's tests gave up on the ambient session cwd altogether and now pass
+ *    every directory in explicitly (see commands/cd/validation.ts).
+ *
+ * The real container needs no help here — it resolves cwd from process.cwd()
+ * at module load, with no disk or network side effects. Leave these
+ * delegating. A suite that needs its own directory should call the REAL
+ * `setOriginalCwd`/`setCwdState` in `beforeEach` and `resetStateForTests()`
+ * in `afterEach`, which is repairable; a pinned getter is not.
+ *
  * Usage:
  *   import { stateMockWith } from '../../../tests/mocks/state.js'
  *   mock.module('src/bootstrap/state.ts', stateMockWith({
