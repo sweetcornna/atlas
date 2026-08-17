@@ -165,7 +165,10 @@ describe('size limits', () => {
       PluginArchiveError,
     )
     expect(existsSync(target)).toBe(false)
-  })
+  }, // runner under coverage (measured 2026-08-17), well past the built-in 5s // Deflating 320MB at level 9 is synchronous CPU work: ~7s on a 2-core CI
+  // budget — Bun 1.3.13 does not read bunfig's [test] timeout, so that 5s is
+  // the whole default. ~4x headroom over the worst observed run.
+  30_000)
 
   test('refuses bytes larger than the download cap outright', async () => {
     const oversized = new Uint8Array(PLUGIN_ARCHIVE_LIMITS.maxDownloadBytes + 1)
