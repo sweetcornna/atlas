@@ -268,6 +268,8 @@ export class QianmoResident {
   #transport: TransportServerHandle | null = null
   readonly #tasksByMessage = new Map<string, ActiveResidentTask>()
   readonly #tasksByTask = new Map<string, ActiveResidentTask>()
+  /** Replies sent but not yet receipted. See {@link #drainReplyReceipts}. */
+  readonly #settling = new Set<Promise<void>>()
   /** One scheduler per agent workspace; empty when backups are not configured. */
   readonly #backups = new Map<string, BackupScheduler>()
 
@@ -544,6 +546,30 @@ export class QianmoResident {
     // Terminal state reached: the loop keys for this task have nothing left to
     // protect (protocol.md §8.2 rows 19–20).
     this.#router.release(task.envelope.taskId)
+    // Registered before the first await, because the two deletions above have
+    // just made this task invisible to {@link #failActiveTasks}: it is in
+    // neither map any more, yet its reply is on the wire with no receipt back.
+    // This set is the only remaining record that the transport still owes us
+    // something.
+    const receipt = this.#awaitReceipt(task, reply)
+    // Tracked through a handle that cannot reject. The drain awaits these in
+    // bulk, and the only way `#awaitReceipt` rejects is a caller's `onError`
+    // sink throwing — which callers of *this* method still see, unchanged,
+    // through the await below.
+    const tracked = receipt.catch(() => {})
+    this.#settling.add(tracked)
+    try {
+      await receipt
+    } finally {
+      this.#settling.delete(tracked)
+    }
+  }
+
+  /** Send a terminal reply and wait for its receipt. Never rejects. */
+  async #awaitReceipt(
+    task: ActiveResidentTask,
+    reply: QianmoMessage,
+  ): Promise<void> {
     try {
       await task.channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
     } catch (error) {
@@ -568,6 +594,47 @@ export class QianmoResident {
     )
   }
 
+  /**
+   * Let replies already on the wire be receipted before the transport carrying
+   * them is torn down.
+   *
+   * {@link #failActiveTasks} settles everything still *active*, and awaits each
+   * receipt as it goes. What it cannot reach is a task that entered
+   * {@link #settleTask} a moment earlier: that one leaves both maps before its
+   * first await, so the sweep walks straight past it, and `transport.stop()`
+   * then closes its channel and rejects the outstanding wait with `transport
+   * server closed before receipt`. The reply itself went to the socket long
+   * before that — only the confirmation is lost — so what reached `onError` was
+   * a fault that had not happened, on a schedule set by how fast the peer
+   * answered. On a loaded runner that is a coin flip.
+   *
+   * Bounded by the same budget one receipt already gets: teardown will not wait
+   * longer for confirmations than a single confirmation is allowed to take. A
+   * peer that has gone away therefore costs at most that budget — which is what
+   * {@link #failActiveTasks} has always cost on the same path.
+   */
+  async #drainReplyReceipts(): Promise<void> {
+    if (this.#settling.size === 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+      timer.unref?.()
+    })
+    // Re-read rather than snapshotted: the listener is still up here, so an
+    // envelope arriving mid-drain can register and settle a task of its own.
+    // Every wait carries its own timeout and nothing new is admitted once the
+    // listener closes, so this terminates on its own; the deadline is the
+    // backstop that keeps a peer that keeps talking from extending it.
+    const drained = (async () => {
+      while (this.#settling.size > 0) await Promise.all([...this.#settling])
+    })()
+    try {
+      await Promise.race([drained, deadline])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
   stop(): void {
     this.#supervisor.stop()
   }
@@ -586,6 +653,10 @@ export class QianmoResident {
         poller?.stop()
         if (this.#poller === poller) this.#poller = null
         await this.#failActiveTasks('resident ACP connection closed')
+        // Both of these have to finish while the transport is still up: the
+        // sweep above needs a channel to send terminal replies on, and this one
+        // needs it to carry the receipts for replies sent before either ran.
+        await this.#drainReplyReceipts()
         if (this.#transport === transport) this.#transport = null
         try {
           await transport?.stop()

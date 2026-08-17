@@ -201,6 +201,18 @@ describe('resident product integration', () => {
 
     resident.stop()
     await running
+    // Exactly one error, and it is the SIGKILL this test asked for.
+    //
+    // The list is asserted whole on purpose, and it only holds still because
+    // teardown drains reply receipts first. Both rounds settle by writing a
+    // `task.result` and awaiting the sender's receipt, and both settles are in
+    // flight at a teardown: round 1's when the killed ACP child brings the
+    // generation down, round 2's when `stop()` below runs — `turn_completed` is
+    // recorded before `onTurnResult` even starts, so waiting on that timing
+    // above does not wait for the receipt. Tearing the transport down under
+    // either of them would reject the wait with `transport server closed before
+    // receipt` and add a second entry here. See `#drainReplyReceipts` in
+    // `resident.ts` for why that wait is now honoured instead.
     expect(errors.map(String)).toEqual([
       'Error: resident ACP child exited code=null signal=SIGKILL',
     ])
