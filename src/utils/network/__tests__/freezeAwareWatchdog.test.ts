@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, mock, test } from 'bun:test'
-import { FreezeAwareWatchdog } from '../freezeAwareWatchdog.js'
+import {
+  FreezeAwareWatchdog,
+  clearFreezeAwareTimeout,
+  setFreezeAwareTimeout,
+} from '../freezeAwareWatchdog.js'
 
 class ManualScheduler {
   callback: (() => void) | null = null
@@ -132,5 +136,39 @@ describe('freeze-aware watchdog', () => {
           onTimeout: () => {},
         }),
     ).toThrow('must be finite')
+  })
+})
+
+// The setTimeout-shaped pair the base files call (P10.3②). What is asserted
+// here is the drop-in contract, not the freeze semantics above: argument order,
+// trailing-args passthrough, one shot only, and a clear that also swallows null.
+describe('setTimeout-shaped injection point', () => {
+  test('passes the trailing arguments through and fires once', async () => {
+    const seen: number[] = []
+    setFreezeAwareTimeout(
+      warnMs => {
+        seen.push(warnMs)
+      },
+      1,
+      45_000,
+    )
+
+    await Bun.sleep(60)
+
+    expect(seen).toEqual([45_000])
+  })
+
+  test('clearing before the deadline cancels the callback', async () => {
+    const onTimeout = mock(() => {})
+    const timer = setFreezeAwareTimeout(onTimeout, 1)
+    clearFreezeAwareTimeout(timer)
+
+    await Bun.sleep(60)
+
+    expect(onTimeout).not.toHaveBeenCalled()
+  })
+
+  test('clearing a handle that was never set is a no-op', () => {
+    expect(() => clearFreezeAwareTimeout(null)).not.toThrow()
   })
 })

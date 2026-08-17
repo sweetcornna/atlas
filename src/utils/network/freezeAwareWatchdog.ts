@@ -25,7 +25,17 @@ function scheduleTimer(
   return { cancel: () => clearTimeout(timer) }
 }
 
-export class FreezeAwareWatchdog {
+/**
+ * Opaque handle returned by {@link setFreezeAwareTimeout}, standing in for the
+ * `ReturnType<typeof setTimeout>` the base files used to hold. Only `stop()` is
+ * exposed, so a base file never has to name the watchdog class.
+ */
+export interface FreezeAwareTimer {
+  /** Cancels the pending callback; the `clearTimeout` half of the pair. */
+  stop(): void
+}
+
+export class FreezeAwareWatchdog implements FreezeAwareTimer {
   readonly #options: FreezeAwareWatchdogOptions
   readonly #now: () => number
   readonly #cadenceMs: number
@@ -94,4 +104,47 @@ export class FreezeAwareWatchdog {
     }
     this.#schedule()
   }
+}
+
+/**
+ * `setTimeout`-shaped injection point for the stream idle watchdogs living in
+ * base files (`services/api/claude.ts`, `services/api/gemini/client.ts`,
+ * `services/api/openai/responsesAdapter.ts`).
+ *
+ * Why it exists (roadmap P10.3②): those three call sites originally read
+ * `const t = setTimeout(cb, ms)` / `clearTimeout(t)`. Replacing them in place
+ * with a `new FreezeAwareWatchdog({ timeoutMs, onTimeout })` object literal
+ * re-indented whole callback bodies and produced the only *semantic* code
+ * conflict of the v2.46.0 upstream-sync drill (see
+ * `docs/dev/upstream-sync-drill.md` §5③). Per the same drill's rule ⑥ —
+ * derive *underneath* the shape upstream already has — this pair keeps the
+ * argument order, the trailing-args passthrough and the handle-plus-clear
+ * idiom of the globals it stands in for, so each base file is left with a
+ * one-identifier change instead of a rewritten block.
+ *
+ * Behaviour is exactly `new FreezeAwareWatchdog(...)` + `reset()`: the callback
+ * fires once, `delayMs` after the last `reset`, measured across sandbox freezes
+ * via `TimeJumpGate` rather than off raw wall clock.
+ */
+export function setFreezeAwareTimeout<TArgs extends unknown[]>(
+  callback: (...args: TArgs) => void,
+  delayMs: number,
+  ...args: TArgs
+): FreezeAwareTimer {
+  const watchdog = new FreezeAwareWatchdog({
+    timeoutMs: delayMs,
+    onTimeout: () => callback(...args),
+  })
+  watchdog.reset()
+  return watchdog
+}
+
+/**
+ * `clearTimeout` half of {@link setFreezeAwareTimeout}. Nullable by design so a
+ * base file can keep its original `clearTimeout(maybeNullHandle)` shape.
+ */
+export function clearFreezeAwareTimeout(
+  timer: FreezeAwareTimer | null | undefined,
+): void {
+  timer?.stop()
 }
