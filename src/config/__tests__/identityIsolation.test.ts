@@ -25,6 +25,10 @@ type Report = {
   cacheNamespace: string
   xdgSubdir: string
   projectDirName: string
+  resolvedCacheDir: string
+  resolvedXdgDataDir: string
+  resolvedXdgCacheDir: string
+  resolvedXdgStateDir: string
 }
 
 type Protection = {
@@ -126,6 +130,34 @@ describe('three-way identity coexistence', () => {
     expect(qm.cacheNamespace).not.toBe(occ.cacheNamespace)
     expect(qm.xdgSubdir).not.toBe(occ.xdgSubdir)
     expect(qm.projectDirName).not.toBe(occ.projectDirName)
+  })
+
+  /**
+   * Namespace strings differing is necessary but not sufficient: what lands on
+   * disk is the RESOLVED tree (env-paths cache root, XDG data/cache/state
+   * roots). Assert those are prefix-disjoint between identities — neither may
+   * contain the other, or a recursive delete/copy of one product's cache would
+   * eat the other's — and that each stays inside the throwaway HOME (per-user
+   * isolation; env-paths and the XDG helpers both honour $HOME here).
+   */
+  test('resolved cache and XDG trees are prefix-disjoint and HOME-scoped', () => {
+    const occ = report('occ-default')
+    const qm = report('qianmo')
+    const trees: readonly (keyof Report)[] = [
+      'resolvedCacheDir',
+      'resolvedXdgDataDir',
+      'resolvedXdgCacheDir',
+      'resolvedXdgStateDir',
+    ]
+    for (const key of trees) {
+      const a = occ[key]
+      const b = qm[key]
+      expect(a.startsWith(home)).toBe(true)
+      expect(b.startsWith(home)).toBe(true)
+      expect(a).not.toBe(b)
+      expect(b.startsWith(`${a}/`)).toBe(false)
+      expect(a.startsWith(`${b}/`)).toBe(false)
+    }
   })
 })
 

@@ -19,10 +19,16 @@
  *                         dangerous-directory and dangerous-file lists
  */
 
+import envPaths from 'env-paths'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { BIN_NAME } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
+import {
+  getXDGCacheHome,
+  getXDGDataHome,
+  getXDGStateHome,
+} from '../../utils/filesystem/xdg.js'
 import {
   CACHE_NAMESPACE,
   getProtectedConfigDirectories,
@@ -45,6 +51,13 @@ if (command === 'report') {
       cacheNamespace: CACHE_NAMESPACE,
       xdgSubdir: XDG_SUBDIR,
       projectDirName: PROJECT_DIR_NAME,
+      // Resolved on-disk trees, not just namespace strings: the env-paths
+      // cache root (mirrors src/utils/filesystem/cachePaths.ts) and the three
+      // XDG roots the native installer writes under (mirrors installer.ts).
+      resolvedCacheDir: envPaths(CACHE_NAMESPACE).cache,
+      resolvedXdgDataDir: join(getXDGDataHome(), XDG_SUBDIR),
+      resolvedXdgCacheDir: join(getXDGCacheHome(), XDG_SUBDIR),
+      resolvedXdgStateDir: join(getXDGStateHome(), XDG_SUBDIR),
     }),
   )
 } else if (command === 'write-cred') {
