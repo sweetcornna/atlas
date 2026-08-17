@@ -208,7 +208,37 @@ afterAll(() => {
   reloadPinnedSearchCredentials()
 })
 
+/**
+ * The default `fetch` for this file: one that never reaches the network.
+ *
+ * `writeChatGPTFile` deliberately omits `last_refresh`, which makes the stored
+ * token stale, and a stale token sends `resolveChatGPTAuth` into an
+ * opportunistic `refreshTokens()` — a real POST to auth.openai.com carrying a
+ * 30s AbortSignal, from inside a test whose budget is 5s (Bun 1.3.13 ignores
+ * bunfig's [test] timeout, so the built-in 5s is the whole budget). The tests
+ * below passed only because that request *failed* and the opportunistic branch
+ * swallowed the error to keep serving the stored token — so their runtime was
+ * one live round-trip to OpenAI, measured here at 2.3s-4.9s. That is the flake:
+ * nothing about the property under test changed, the network just got slower
+ * than five seconds.
+ *
+ * Rejecting instead of returning a response keeps the same code path (the
+ * opportunistic catch) while making it instant and machine-independent, and
+ * gives any future test that genuinely needs `fetch` a legible failure rather
+ * than a silent live call.
+ */
+function offlineFetch(): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    throw new Error(
+      `Unexpected network call in searchOAuthCopies.test.ts: ${String(
+        input instanceof Request ? input.url : input,
+      )}. Stub globalThis.fetch in the test that needs it.`,
+    )
+  }) as unknown as typeof fetch
+}
+
 beforeEach(() => {
+  globalThis.fetch = offlineFetch()
   tempDir = mkdtempSync(join(tmpdir(), 'occ-search-oauth-'))
   process.env.OCC_CONFIG_DIR = tempDir
   occConfigDir.cache.clear?.()
