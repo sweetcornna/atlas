@@ -327,3 +327,39 @@ describe('backup flags (P4.4)', () => {
     ).toThrow('>= 1000')
   })
 })
+
+describe('empty option values', () => {
+  // `--port=` used to reach `Number('')`, which is 0 — a valid request for an
+  // ephemeral port. The node came up on a port the operator never chose and
+  // could not read off the command they typed. Every numeric flag here shares
+  // the shape, so the guard lives in residentOptionValue and these cases pin
+  // both spellings of the empty value.
+  test('--port= is refused rather than parsed as port 0', () => {
+    expect(() => parseResidentArgs([...BASE, '--port='], 'qianmo')).toThrow(
+      '--port requires a value',
+    )
+  })
+
+  test('an empty value after a space is refused too', () => {
+    expect(() => parseResidentArgs([...BASE, '--port', ''], 'qianmo')).toThrow(
+      '--port requires a value',
+    )
+  })
+
+  test('a real port still parses', () => {
+    const config = parseResidentArgs(
+      [...BASE, '--port=38620', '--hostname=127.0.0.1'],
+      'qianmo',
+    )
+    expect(config.port).toBe(38620)
+  })
+
+  test('--team= is refused (the guard is not numeric-only)', () => {
+    expect(() =>
+      parseResidentArgs(
+        ['--node', 'node-a', '--team=', '--agent', 'planner=/tmp/x'],
+        'qianmo',
+      ),
+    ).toThrow('--team requires a value')
+  })
+})
