@@ -62,6 +62,7 @@
     "check:cycles": "bun run scripts/check-cycles.ts",
     "check:prompt-purity": "bun run scripts/check-prompt-purity.ts",
     "check:mock-hygiene": "bun run scripts/check-mock-hygiene.ts",
+    "check:identity-paths": "bun run scripts/check-identity-paths.ts",
     "verify:p32": "bun run scripts/qianmo-programming-tasks.ts",
     "sbom": "bun run scripts/sbom.ts",
     "postinstall": "node scripts/postinstall.cjs",
