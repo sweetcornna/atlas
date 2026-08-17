@@ -34,7 +34,31 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const PROJECT_ROOT = join(import.meta.dir, '..')
-const BUDGET_FILE = join(PROJECT_ROOT, 'scripts', 'unused-budget.json')
+
+/**
+ * The budget is split in two so upstream syncs stop conflicting on it
+ * (P10.3 ③, born from the sync drill where this file was a guaranteed
+ * conflict every time):
+ *
+ *   unused-budget.json         the BASE baseline — upstream's own numbers,
+ *                              kept byte-identical to the pinned base so an
+ *                              upstream hunk applies cleanly. Never written
+ *                              by --update.
+ *   unused-budget.qianmo.json  the Qianmo DELTA on top of that baseline
+ *                              (negative = we deleted dead surface). The only
+ *                              file --update rewrites.
+ *
+ * Effective budget per category = baseline + delta. After a real upstream
+ * sync the baseline may move; the first `check:unused` run then trips the
+ * two-sided ratchet on purpose — re-measure and `--update` records the new
+ * delta deliberately instead of the merge absorbing it silently.
+ */
+const BASE_BUDGET_FILE = join(PROJECT_ROOT, 'scripts', 'unused-budget.json')
+const QIANMO_DELTA_FILE = join(
+  PROJECT_ROOT,
+  'scripts',
+  'unused-budget.qianmo.json',
+)
 
 /** How many offending entries to print when the ratchet trips. */
 const SAMPLE_SIZE = 12
@@ -122,12 +146,25 @@ function tally(issues: KnipFileReport[]): {
   return { counts, samples }
 }
 
-function readBudget(): Budget {
+function readJsonBudget(path: string): Budget {
   try {
-    return JSON.parse(readFileSync(BUDGET_FILE, 'utf8')) as Budget
+    return JSON.parse(readFileSync(path, 'utf8')) as Budget
   } catch {
     return {}
   }
+}
+
+/** Effective budget: base baseline + qianmo delta, per category. */
+function readBudget(): Budget {
+  const base = readJsonBudget(BASE_BUDGET_FILE)
+  const delta = readJsonBudget(QIANMO_DELTA_FILE)
+  const budget: Budget = {}
+  for (const category of BUDGET_CATEGORIES) {
+    const baseline = base[category]
+    if (baseline === undefined) continue
+    budget[category] = baseline + (delta[category] ?? 0)
+  }
+  return budget
 }
 
 function main(): void {
@@ -135,12 +172,15 @@ function main(): void {
   const { counts, samples } = tally(runKnip())
 
   if (update) {
-    const budget: Budget = {}
+    // Only the qianmo delta is ever rewritten; the base baseline stays
+    // byte-identical to upstream so syncs apply cleanly.
+    const base = readJsonBudget(BASE_BUDGET_FILE)
+    const delta: Budget = {}
     for (const category of BUDGET_CATEGORIES)
-      budget[category] = counts[category]
-    writeFileSync(BUDGET_FILE, `${JSON.stringify(budget, null, 2)}\n`)
+      delta[category] = counts[category] - (base[category] ?? 0)
+    writeFileSync(QIANMO_DELTA_FILE, `${JSON.stringify(delta, null, 2)}\n`)
     console.log(
-      `Updated scripts/unused-budget.json: ${BUDGET_CATEGORIES.map(c => `${c}=${counts[c]}`).join(', ')}`,
+      `Updated scripts/unused-budget.qianmo.json (delta over base): ${BUDGET_CATEGORIES.map(c => `${c}=${counts[c]} (Δ${(delta[c] ?? 0) >= 0 ? '+' : ''}${delta[c]})`).join(', ')}`,
     )
     return
   }
