@@ -69,6 +69,7 @@
         "@qianmo/backup": "workspace:*",
         "@qianmo/capability": "workspace:*",
         "@qianmo/capacity": "workspace:*",
+        "@qianmo/console": "workspace:*",
         "@qianmo/diagnosis": "workspace:*",
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",
@@ -283,6 +284,16 @@
       "dependencies": {
         "@anthropic/ink": "workspace:*",
         "highlight.js": "latest",
+      },
+    },
+    "packages/console": {
+      "name": "@qianmo/console",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/audit": "workspace:*",
+        "@qianmo/protocol": "workspace:*",
+        "@qianmo/registry": "workspace:*",
+        "@qianmo/router": "workspace:*",
       },
     },
     "packages/diagnosis": {
@@ -1030,6 +1041,8 @@
     "@qianmo/capability": ["@qianmo/capability@workspace:packages/capability"],
 
     "@qianmo/capacity": ["@qianmo/capacity@workspace:packages/capacity"],
+
+    "@qianmo/console": ["@qianmo/console@workspace:packages/console"],
 
     "@qianmo/diagnosis": ["@qianmo/diagnosis@workspace:packages/diagnosis"],
 
