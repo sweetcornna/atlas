@@ -36,24 +36,53 @@ import { join } from 'node:path'
 const PROJECT_ROOT = join(import.meta.dir, '..')
 
 /**
- * The budget is split in two so upstream syncs stop conflicting on it
+ * The budget is split in three so upstream syncs stop conflicting on it
  * (P10.3 ③, born from the sync drill where this file was a guaranteed
- * conflict every time):
+ * conflict every time; the third file was added by P10.2, the first real
+ * sync, for the reason spelled out below):
  *
- *   unused-budget.json         the BASE baseline — upstream's own numbers,
- *                              kept byte-identical to the pinned base so an
- *                              upstream hunk applies cleanly. Never written
- *                              by --update.
- *   unused-budget.qianmo.json  the Qianmo DELTA on top of that baseline
- *                              (negative = we deleted dead surface). The only
- *                              file --update rewrites.
+ *   unused-budget.json                the BASE baseline — upstream's own
+ *                                     numbers, kept byte-identical to the
+ *                                     pinned base so an upstream hunk applies
+ *                                     cleanly. Never written by --update.
+ *   unused-budget.upstream-drift.json how far upstream's committed baseline is
+ *                                     from what upstream's OWN tree actually
+ *                                     measures. Not our dead surface, and not
+ *                                     ours to delete. Re-measured by hand at
+ *                                     each sync (recipe below). Never written
+ *                                     by --update.
+ *   unused-budget.qianmo.json         the Qianmo DELTA on top of those two
+ *                                     (negative = we deleted dead surface, or
+ *                                     revived something upstream had orphaned).
+ *                                     The only file --update rewrites.
  *
- * Effective budget per category = baseline + delta. After a real upstream
- * sync the baseline may move; the first `check:unused` run then trips the
- * two-sided ratchet on purpose — re-measure and `--update` records the new
- * delta deliberately instead of the merge absorbing it silently.
+ * Effective budget per category = baseline + upstream drift + qianmo delta.
+ *
+ * Why the drift column exists: at the v2.38.3 → v2.46.0 sync, upstream's
+ * committed baseline said 1240/634/9 while upstream's own pristine tree —
+ * measured on this machine, same node_modules — measured 1247/665/10. Folding
+ * that +7/+31/+1 into the Qianmo column would have booked upstream's stale
+ * numbers as our dead code and quietly destroyed the meaning of the split.
+ * (Control: pristine v2.38.3 reproduces its committed 1255/638/9 exactly, so
+ * the environment is faithful and the gap is upstream's, not ours.)
+ *
+ * At each upstream sync, in this order:
+ *   1. the patch updates unused-budget.json to upstream's new numbers;
+ *   2. materialize the pristine upstream tree (`git archive <upstream-sha> |
+ *      tar -x -C <scratch>`, clone this repo's node_modules into it — do NOT
+ *      use a git worktree, see CLAUDE.md §3.1) and run `bunx knip-bun
+ *      --reporter json` there. drift = that measurement − unused-budget.json;
+ *      write it to unused-budget.upstream-drift.json by hand;
+ *   3. run `--update` to record what is genuinely ours.
+ * Skipping step 2 does not break the gate — it just misfiles upstream's
+ * staleness as ours.
  */
 const BASE_BUDGET_FILE = join(PROJECT_ROOT, 'scripts', 'unused-budget.json')
+const UPSTREAM_DRIFT_FILE = join(
+  PROJECT_ROOT,
+  'scripts',
+  'unused-budget.upstream-drift.json',
+)
 const QIANMO_DELTA_FILE = join(
   PROJECT_ROOT,
   'scripts',
@@ -154,15 +183,20 @@ function readJsonBudget(path: string): Budget {
   }
 }
 
-/** Effective budget: base baseline + qianmo delta, per category. */
+/**
+ * Effective budget per category: base baseline + upstream drift + qianmo
+ * delta. See the three-file comment at the top for what each column means.
+ */
 function readBudget(): Budget {
   const base = readJsonBudget(BASE_BUDGET_FILE)
+  const drift = readJsonBudget(UPSTREAM_DRIFT_FILE)
   const delta = readJsonBudget(QIANMO_DELTA_FILE)
   const budget: Budget = {}
   for (const category of BUDGET_CATEGORIES) {
     const baseline = base[category]
     if (baseline === undefined) continue
-    budget[category] = baseline + (delta[category] ?? 0)
+    budget[category] =
+      baseline + (drift[category] ?? 0) + (delta[category] ?? 0)
   }
   return budget
 }
@@ -173,14 +207,17 @@ function main(): void {
 
   if (update) {
     // Only the qianmo delta is ever rewritten; the base baseline stays
-    // byte-identical to upstream so syncs apply cleanly.
+    // byte-identical to upstream so syncs apply cleanly, and the upstream
+    // drift is a hand-measured fact about upstream's own tree.
     const base = readJsonBudget(BASE_BUDGET_FILE)
+    const drift = readJsonBudget(UPSTREAM_DRIFT_FILE)
     const delta: Budget = {}
     for (const category of BUDGET_CATEGORIES)
-      delta[category] = counts[category] - (base[category] ?? 0)
+      delta[category] =
+        counts[category] - (base[category] ?? 0) - (drift[category] ?? 0)
     writeFileSync(QIANMO_DELTA_FILE, `${JSON.stringify(delta, null, 2)}\n`)
     console.log(
-      `Updated scripts/unused-budget.qianmo.json (delta over base): ${BUDGET_CATEGORIES.map(c => `${c}=${counts[c]} (Δ${(delta[c] ?? 0) >= 0 ? '+' : ''}${delta[c]})`).join(', ')}`,
+      `Updated scripts/unused-budget.qianmo.json (delta over base+drift): ${BUDGET_CATEGORIES.map(c => `${c}=${counts[c]} (Δ${(delta[c] ?? 0) >= 0 ? '+' : ''}${delta[c]})`).join(', ')}`,
     )
     return
   }
