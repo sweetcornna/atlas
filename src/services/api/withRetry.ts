@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import type Anthropic from '@anthropic-ai/sdk'
 import {
   APIConnectionError,
@@ -6,11 +5,7 @@ import {
   APIUserAbortError,
 } from '@anthropic-ai/sdk'
 import type { QuerySource } from 'src/constants/querySource.js'
-import type {
-  AssistantMessage,
-  StreamEvent,
-  SystemAPIErrorMessage,
-} from 'src/types/message.js'
+import type { SystemAPIErrorMessage } from 'src/types/message.js'
 import { isAwsCredentialsProviderError } from 'src/utils/auth/aws.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
 import { logError } from 'src/utils/telemetry/log.js'
@@ -48,67 +43,21 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
-import {
-  classifyRetryableAPIError,
-  getAPIErrorSource,
-  isRetryEveryAPIErrorEnabled,
-  PERMANENT_RETRY_DELAY_MS,
-  PERMANENT_RETRY_MAX_RETRIES,
-} from './retryClassification.js'
+import { classifyRetryableAPIError } from './retryClassification.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
 
-/** Ten retries after the initial request (eleven total attempts). */
-const MAX_API_RETRIES = 10
-const DEFAULT_MAX_RETRIES = MAX_API_RETRIES
+/** Ten retries by default; the official CLI allows explicit values up to 15. */
+const DEFAULT_MAX_RETRIES = 10
+const WATCHDOG_DEFAULT_MAX_RETRIES = 300
+const MAX_API_RETRIES = 15
 const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
 export const BASE_DELAY_MS = 500
 
-// Foreground query sources where the user IS blocking on the result — these
-// retry on 529. Everything else (summaries, titles, suggestions, classifiers)
-// bails immediately: during a capacity cascade each retry is 3-10× gateway
-// amplification, and the user never sees those fail anyway. New sources
-// default to no-retry — add here only if the user is waiting on the result.
-const FOREGROUND_529_RETRY_SOURCES = new Set<QuerySource>([
-  'repl_main_thread',
-  'repl_main_thread:outputStyle:custom',
-  'repl_main_thread:outputStyle:Explanatory',
-  'repl_main_thread:outputStyle:Learning',
-  'sdk',
-  'agent:custom',
-  'agent:default',
-  'agent:builtin',
-  // Workflow sub-agents: the user is blocked on the Workflow tool result, same
-  // as Agent-tool subagents above. Without this, a 529 bails instantly, bubbles
-  // up as agent death, and the engine's single retry re-fires into the same
-  // congestion — one backed-off retry here is strictly less amplification.
-  'workflow',
-  'compact',
-  'hook_agent',
-  'hook_prompt',
-  'verification_agent',
-  'side_question',
-  // Security classifiers — must complete for auto-mode correctness.
-  // yoloClassifier.ts uses 'auto_mode' (not 'yolo_classifier' — that's
-  // type-only). bash_classifier is ant-only; feature-gate so the string
-  // tree-shakes out of external builds (excluded-strings.txt).
-  'auto_mode',
-  ...(feature('BASH_CLASSIFIER') ? (['bash_classifier'] as const) : []),
-])
-
-function shouldRetry529(querySource: QuerySource | undefined): boolean {
-  // undefined → retry (conservative for untagged call paths)
-  return (
-    querySource === undefined || FOREGROUND_529_RETRY_SOURCES.has(querySource)
-  )
-}
-
-// CLAUDE_CODE_UNATTENDED_RETRY: for unattended sessions (ant-only). Retries 429/529
-// with higher backoff and periodic keep-alive yields so the host environment
-// does not mark the session idle mid-wait. It shares the same ten-retry cap.
+// CLAUDE_CODE_RETRY_WATCHDOG matches the official unattended capacity mode:
+// 300 retries for 429/529, higher backoff, and periodic keep-alive yields.
 // TODO(ANT-344): the keep-alive via SystemAPIErrorMessage yields is a stopgap
 // until there's a dedicated keep-alive channel.
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
@@ -116,9 +65,7 @@ const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 30_000
 
 function isPersistentRetryEnabled(): boolean {
-  return feature('UNATTENDED_RETRY')
-    ? isEnvTruthy(process.env.CLAUDE_CODE_UNATTENDED_RETRY)
-    : false
+  return isEnvTruthy(process.env.CLAUDE_CODE_RETRY_WATCHDOG)
 }
 
 function isTransientCapacityError(error: unknown): boolean {
@@ -127,18 +74,61 @@ function isTransientCapacityError(error: unknown): boolean {
   )
 }
 
+const FOREGROUND_529_RETRY_SOURCES = new Set([
+  'repl_main_thread',
+  'repl_main_thread:outputStyle:custom',
+  'repl_main_thread:outputStyle:Proactive',
+  'repl_main_thread:outputStyle:Explanatory',
+  'repl_main_thread:outputStyle:Learning',
+  'sdk',
+  'agent:custom',
+  'agent:default',
+  'agent:builtin',
+  'compact',
+  'workflow',
+  'hook_agent',
+  'hook_prompt',
+  'side_question',
+  'web_search_tool',
+  'web_fetch_apply',
+  'repl_sampling',
+  'auto_mode',
+  'compact_fab_check',
+  'auto_mode_critique',
+  'auto_mode_setup_propose',
+  'chrome_mcp',
+])
+
+function shouldRetryForeground529(
+  querySource: QuerySource | undefined,
+): boolean {
+  return (
+    querySource === undefined ||
+    querySource.startsWith('agent:') ||
+    FOREGROUND_529_RETRY_SOURCES.has(querySource)
+  )
+}
+
+const STALE_CONNECTION_CODES = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'CONNECTIONCLOSED',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'ERR_SOCKET_CLOSED',
+  'STREAMSUSPENDED',
+  'UND_ERR_SOCKET',
+])
+
 function isStaleConnectionError(error: unknown): boolean {
-  // Bare transport failures (TypeError: fetch failed / Error: terminated) are
-  // never APIConnectionError but carry the same ECONNRESET/EPIPE cause, and
-  // they need the same keep-alive teardown before the retry reconnects.
   if (
     !(error instanceof APIConnectionError) &&
     !isTransientNetworkError(error)
   ) {
     return false
   }
-  const details = extractConnectionErrorDetails(error)
-  return details?.code === 'ECONNRESET' || details?.code === 'EPIPE'
+  const code = extractConnectionErrorDetails(error)?.code.toUpperCase()
+  return code !== undefined && STALE_CONNECTION_CODES.has(code)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,19 +177,10 @@ function retryVerdict(error: unknown): RetryVerdict {
   return classifyRetryableAPIError(error)
 }
 
-/** Retries this failure gets, on top of the initial request. */
-function attemptBudgetFor(verdict: RetryVerdict, maxRetries: number): number {
-  return verdict.persistence === 'permanent'
-    ? Math.min(maxRetries, PERMANENT_RETRY_MAX_RETRIES)
-    : maxRetries
-}
-
 /**
  * True when `error` deserves another attempt at all.
  *
- * No longer only transport blips: under the retry-everything policy this is
- * true for permanent classes too, and the caller is expected to consult
- * {@link attemptBudgetFor} for how many attempts that actually buys.
+ * Mirrors the official retry predicate after bridging provider error shapes.
  *
  * Exported for tests.
  */
@@ -252,6 +233,7 @@ interface RetryOptions {
   fastMode?: boolean
   signal?: AbortSignal
   querySource?: QuerySource
+  onError?: (error: unknown) => string | undefined | Promise<string | undefined>
   /**
    * Pre-seed the consecutive 529 counter. Used when this retry loop is a
    * non-streaming fallback after a streaming 529 — the streaming 529 should
@@ -281,6 +263,13 @@ export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
     public readonly fallbackModel: string,
+    public readonly reason:
+      | 'model_not_found'
+      | 'permission_denied'
+      | 'server_error'
+      | 'overloaded'
+      | 'last_resort' = 'overloaded',
+    public readonly originalError?: unknown,
   ) {
     super(`Model fallback triggered: ${originalModel} -> ${fallbackModel}`)
     this.name = 'FallbackTriggeredError'
@@ -306,6 +295,10 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  let oauthRecoveryAttempts = 0
+  let awsRecoveryAttempts = 0
+  let gcpRecoveryAttempts = 0
+  const appliedErrorTransforms = new Set<string>()
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
@@ -330,10 +323,15 @@ export async function* withRetry<T>(
       }
 
       // Get a fresh client on the first attempt or after a stale keep-alive
-      // socket. Authentication and permission failures are permanent for this
-      // request and never reach another attempt — their credential caches are
-      // dropped in the catch block instead, for the benefit of the next one.
+      // socket. Retryable credential failures drop their caches in the catch
+      // block so a rotated credential can recover within this request.
       const isStaleConnection = isStaleConnectionError(lastError)
+      const mustRebuildClient =
+        (lastError instanceof APIError && lastError.status === 401) ||
+        isOAuthTokenRevokedError(lastError) ||
+        isBedrockAuthError(lastError) ||
+        isVertexAuthError(lastError) ||
+        isStaleConnection
       if (
         isStaleConnection &&
         getFeatureValue_CACHED_MAY_BE_STALE(
@@ -347,7 +345,7 @@ export async function* withRetry<T>(
         disableKeepAlive()
       }
 
-      if (client === null || isStaleConnection) {
+      if (client === null || mustRebuildClient) {
         client = await getClient()
       }
 
@@ -359,9 +357,50 @@ export async function* withRetry<T>(
         { level: 'error' },
       )
 
-      // Before any retry decision: an auth failure ends this request either
-      // way, but the stale credential behind it must not survive into the next
-      // one. See recoverCredentialsForNextRequest.
+      const transform = await options.onError?.(error)
+      if (transform && !appliedErrorTransforms.has(transform)) {
+        appliedErrorTransforms.add(transform)
+        attempt--
+        continue
+      }
+
+      const fallbackReason = modelFallbackReason(error)
+      if (
+        fallbackReason &&
+        options.fallbackModel &&
+        options.fallbackModel !== options.model &&
+        // Only the capacity reason defers to the watchdog. Waiting out a 5xx
+        // is precisely what unattended mode exists for, but a 404/403 on the
+        // model id is a verdict, not a queue: no amount of waiting turns a
+        // retired or unentitled model into an available one, so an unattended
+        // run has to switch or it hard-fails on a stale `--model`.
+        (fallbackReason !== 'server_error' || !isPersistentRetryEnabled())
+      ) {
+        throw new FallbackTriggeredError(
+          options.model,
+          options.fallbackModel,
+          fallbackReason,
+          error,
+        )
+      }
+
+      const oauthFailure =
+        (error instanceof APIError && error.status === 401) ||
+        isOAuthTokenRevokedError(error)
+      const awsFailure = isBedrockAuthError(error)
+      const gcpFailure = isVertexAuthError(error)
+      if (oauthFailure && oauthRecoveryAttempts >= 2) {
+        throw new CannotRetryError(error, retryContext)
+      }
+      if (awsFailure && awsRecoveryAttempts >= 2) {
+        throw new CannotRetryError(error, retryContext)
+      }
+      if (gcpFailure && gcpRecoveryAttempts >= 2) {
+        throw new CannotRetryError(error, retryContext)
+      }
+      if (oauthFailure) oauthRecoveryAttempts++
+      if (awsFailure) awsRecoveryAttempts++
+      if (gcpFailure) gcpRecoveryAttempts++
       await recoverCredentialsForNextRequest(error)
 
       // Fast mode fallback: on 429/529, either wait and retry (short delays)
@@ -419,22 +458,19 @@ export async function* withRetry<T>(
         continue
       }
 
-      // Non-foreground sources bail immediately on 529 — no retry amplification
-      // during capacity cascades. User never sees these fail.
-      if (is529Error(error) && !shouldRetry529(options.querySource)) {
-        logEvent('tengu_api_529_background_dropped', {
-          query_source:
-            options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        })
+      if (
+        is529Error(error) &&
+        !isPersistentRetryEnabled() &&
+        !shouldRetryForeground529(options.querySource)
+      ) {
         throw new CannotRetryError(error, retryContext)
       }
 
       // Track consecutive 529 errors
       if (
         is529Error(error) &&
-        // If FALLBACK_FOR_ALL_PRIMARY_MODELS is not set, fall through only if the primary model is a non-custom Opus model.
-        // TODO: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when Claude Code was hardcoded on Opus.
         (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
+          options.fallbackModel !== undefined ||
           (!isClaudeAISubscriber() && isNonCustomOpusModel(options.model)))
       ) {
         consecutive529Errors++
@@ -453,18 +489,8 @@ export async function* withRetry<T>(
             throw new FallbackTriggeredError(
               options.model,
               options.fallbackModel,
-            )
-          }
-
-          if (
-            process.env.USER_TYPE === 'external' &&
-            !process.env.IS_SANDBOX &&
-            !isPersistentRetryEnabled()
-          ) {
-            logEvent('tengu_api_custom_529_overloaded_error', {})
-            throw new CannotRetryError(
-              new Error(REPEATED_529_ERROR_MESSAGE),
-              retryContext,
+              'overloaded',
+              error,
             )
           }
         }
@@ -475,15 +501,33 @@ export async function* withRetry<T>(
         isPersistentRetryEnabled() && isTransientCapacityError(error)
 
       // One verdict for every shape that reaches this catch — SDK errors, bare
-      // transport failures, provider-synthesised errors alike. A permanent
-      // class is still retried, on the small budget below rather than the
-      // ladder, so it surfaces about as fast as it used to.
+      // transport failures and provider-synthesised errors alike.
       const verdict = retryVerdict(error)
       if (!verdict.retryable) {
+        // Last resort: this model cannot serve the request and no retry will
+        // change that, but a fallback model might. Only reached for failures
+        // that are not about the account, the request body or the context —
+        // see lastResortFallbackModel.
+        const lastResortModel = lastResortFallbackModel(error, options)
+        if (lastResortModel) {
+          logEvent('tengu_api_fallback_last_resort', {
+            status: (error as APIError).status,
+            errorType: (error as APIError)
+              .type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            provider: getAPIProviderForStatsig(),
+            fastMode: retryContext.fastMode ?? false,
+          })
+          throw new FallbackTriggeredError(
+            options.model,
+            lastResortModel,
+            'last_resort',
+            error,
+          )
+        }
         throw new CannotRetryError(error, retryContext)
       }
-      const attemptBudget = attemptBudgetFor(verdict, maxRetries)
-      if (attempt > attemptBudget) {
+      const attemptBudget = maxRetries
+      if (!persistent && attempt > attemptBudget) {
         throw new CannotRetryError(error, retryContext)
       }
 
@@ -501,41 +545,48 @@ export async function* withRetry<T>(
             0,
             contextLimit - inputTokens - safetyBuffer,
           )
+          // Ensure we have enough tokens for thinking + at least 1 output token
+          const minRequired =
+            (retryContext.thinkingConfig.type === 'enabled'
+              ? retryContext.thinkingConfig.budgetTokens
+              : 0) + 1
           if (availableContext < FLOOR_OUTPUT_TOKENS) {
             logError(
               new Error(
                 `availableContext ${availableContext} is less than FLOOR_OUTPUT_TOKENS ${FLOOR_OUTPUT_TOKENS}`,
               ),
             )
-            throw error
-          }
-          // Ensure we have enough tokens for thinking + at least 1 output token
-          const minRequired =
-            (retryContext.thinkingConfig.type === 'enabled'
-              ? retryContext.thinkingConfig.budgetTokens
-              : 0) + 1
-          if (minRequired > availableContext) {
+          } else if (minRequired > availableContext) {
             logError(
               new Error(
                 `thinking minimum ${minRequired} exceeds available context ${availableContext}`,
               ),
             )
-            throw error
+          } else {
+            // availableContext is already above the output floor and is the
+            // largest value the retry can request without repeating the same
+            // context overflow.
+            const adjustedMaxTokens = availableContext
+            if (
+              retryContext.maxTokensOverride !== undefined &&
+              adjustedMaxTokens >= retryContext.maxTokensOverride
+            ) {
+              logError(
+                new Error('max_tokens overflow adjustment made no progress'),
+              )
+              throw new CannotRetryError(error, retryContext)
+            }
+            retryContext.maxTokensOverride = adjustedMaxTokens
+
+            logEvent('tengu_max_tokens_context_overflow_adjustment', {
+              inputTokens,
+              contextLimit,
+              adjustedMaxTokens,
+              attempt,
+            })
+
+            continue
           }
-          // availableContext is already above the output floor and is the
-          // largest value the retry can request without repeating the same
-          // context overflow.
-          const adjustedMaxTokens = availableContext
-          retryContext.maxTokensOverride = adjustedMaxTokens
-
-          logEvent('tengu_max_tokens_context_overflow_adjustment', {
-            inputTokens,
-            contextLimit,
-            adjustedMaxTokens,
-            attempt,
-          })
-
-          continue
         }
       }
 
@@ -571,12 +622,11 @@ export async function* withRetry<T>(
           ),
           PERSISTENT_RESET_CAP_MS,
         )
-      } else if (verdict.persistence === 'permanent') {
-        // No congestion to back off from, and nobody should wait 32s to be
-        // told their tool schema is malformed. See PERMANENT_RETRY_DELAY_MS.
-        delayMs = PERMANENT_RETRY_DELAY_MS
       } else {
-        delayMs = getBoundedRetryDelay(attempt, retryAfter)
+        delayMs = getRetryDelay(attempt, retryAfter)
+        if (delayMs > RETRY_AFTER_MAX_MS) {
+          throw new CannotRetryError(error, retryContext)
+        }
       }
 
       const reportedAttempt = persistent ? persistentAttempt : attempt
@@ -627,6 +677,9 @@ export async function* withRetry<T>(
         )
         await sleep(delayMs, options.signal, { abortError })
       }
+      if (persistent && attempt >= maxRetries) {
+        attempt = maxRetries - 1
+      }
     }
   }
 
@@ -649,20 +702,15 @@ export function getRetryDelay(
   retryAfterHeader?: string | null,
   maxDelayMs = 32000,
 ): number {
+  const baseDelay = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), maxDelayMs)
+  const backoff = Math.round(baseDelay + Math.random() * 0.25 * baseDelay)
   if (retryAfterHeader) {
-    const seconds = Number(retryAfterHeader)
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return seconds * 1000
-    }
-    const retryAt = Date.parse(retryAfterHeader)
-    if (Number.isFinite(retryAt)) {
-      return Math.max(0, retryAt - Date.now())
+    const seconds = Number.parseInt(retryAfterHeader, 10)
+    if (!Number.isNaN(seconds)) {
+      return Math.max(seconds * 1000, backoff)
     }
   }
-
-  const baseDelay = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), maxDelayMs)
-  const jitter = Math.random() * 0.25 * baseDelay
-  return baseDelay + jitter
+  return backoff
 }
 
 /**
@@ -674,19 +722,10 @@ export function getRetryDelay(
  * turn for two hours behind a countdown row the user cannot shorten. One minute
  * is the same bound `openai/retry.ts` applies to the identical header.
  *
- * The unattended (`CLAUDE_CODE_UNATTENDED_RETRY`) branch keeps its own, far
- * larger cap on purpose: nobody is watching that session, and waiting out a
- * window-based rate limit is exactly what it is for.
+ * The official retry-watchdog branch keeps its own larger cap because waiting
+ * out a window-based capacity limit is exactly what it is for.
  */
 const RETRY_AFTER_MAX_MS = 60_000
-
-/** {@link getRetryDelay} with the Retry-After escape hatch bounded. */
-function getBoundedRetryDelay(
-  attempt: number,
-  retryAfterHeader?: string | null,
-): number {
-  return Math.min(getRetryDelay(attempt, retryAfterHeader), RETRY_AFTER_MAX_MS)
-}
 
 function parseMaxTokensContextOverflowError(error: APIError):
   | {
@@ -735,6 +774,101 @@ function parseMaxTokensContextOverflowError(error: APIError):
   return { inputTokens, maxTokens, contextLimit }
 }
 
+function modelFallbackReason(
+  error: unknown,
+): 'model_not_found' | 'permission_denied' | 'server_error' | undefined {
+  if (!(error instanceof APIError)) return undefined
+  const message = error.message ?? ''
+  const isModelError = message.includes('model:') || /\bmodel\b/i.test(message)
+  if (
+    error.status === 404 &&
+    isModelError &&
+    (error.type === 'not_found_error' ||
+      message.includes('"type":"not_found_error"'))
+  ) {
+    return 'model_not_found'
+  }
+  if (
+    error.status === 403 &&
+    isModelError &&
+    (error.type === 'permission_error' ||
+      message.includes('"type":"permission_error"'))
+  ) {
+    return 'permission_denied'
+  }
+  if (
+    error.status !== undefined &&
+    error.status >= 500 &&
+    error.status < 600 &&
+    error.status !== 529
+  ) {
+    return 'server_error'
+  }
+  return undefined
+}
+
+/**
+ * Statuses that say the problem follows the account or the request, not the
+ * model — so swapping models cannot help and would only spend another request
+ * to learn the same thing.
+ *
+ * 404 is on the list even though a 404 naming a model already triggers the
+ * `model_not_found` fallback above: what is left here is the gateway-level 404
+ * that `queryModel` answers by retrying the same model without streaming.
+ * Handing that one to a fallback model would pre-empt a recovery that works.
+ */
+const LAST_RESORT_BLOCKING_STATUSES = new Set([401, 403, 404, 407, 413, 429])
+
+/**
+ * Wording for failures a different model would reproduce verbatim: the context
+ * no longer fits, the account cannot pay, the org is switched off.
+ *
+ * Deliberately narrower than `errors.ts`'s `isContextOverflowErrorText`, which
+ * also recognises third-party phrasings — importing it here closes an import
+ * cycle, and this ladder only ever sees the Anthropic wire anyway.
+ */
+const MODEL_INDEPENDENT_MESSAGE_PATTERN =
+  /prompt is too long|input length and `?max_tokens`? exceed context limit|credit balance is too low|organization has been disabled/i
+
+function isModelIndependentFailure(error: APIError): boolean {
+  if (
+    error.status !== undefined &&
+    LAST_RESORT_BLOCKING_STATUSES.has(error.status)
+  ) {
+    return true
+  }
+  if (error.type === 'billing_error') return true
+  if (isFastModeNotEnabledError(error)) return true
+  return MODEL_INDEPENDENT_MESSAGE_PATTERN.test(error.message ?? '')
+}
+
+/**
+ * The fallback model to switch to for an error the ladder has just refused.
+ *
+ * Without this, a configured fallback only ever engaged for the three shapes
+ * `modelFallbackReason` recognises plus repeated 529s; every other permanent
+ * failure ended the turn with the fallback list untouched. Returning a model
+ * here is what makes `--fallback-model` mean "try the next one" rather than
+ * "try the next one, but only for these four errors".
+ *
+ * Compatible with the ordered `fallbackModels` list: `options.fallbackModel`
+ * is already the single entry query.ts armed this attempt with, and the
+ * FallbackTriggeredError it receives advances `nextFallbackIndex`, so a
+ * fallback that fails the same way walks on to the one after it.
+ */
+function lastResortFallbackModel(
+  error: unknown,
+  options: RetryOptions,
+): string | undefined {
+  if (!(error instanceof APIError) || error.status === undefined) {
+    return undefined
+  }
+  if (!options.fallbackModel || options.fallbackModel === options.model) {
+    return undefined
+  }
+  return isModelIndependentFailure(error) ? undefined : options.fallbackModel
+}
+
 // TODO: Replace with a response header check once the API adds a dedicated
 // header for fast-mode rejection (e.g., x-fast-mode-rejected). String-matching
 // the error message is fragile and will break if the API wording changes.
@@ -766,12 +900,11 @@ export function is529Error(error: unknown): boolean {
 // ---------------------------------------------------------------------------
 // Credential recovery
 //
-// "Do not retry this request" and "do not refresh the credential" are two
-// different decisions, and only the first one is wanted here. `shouldRetry`
-// fails a 401/403 immediately — repeating a rejected credential ten times just
-// makes the user wait — but every credential source behind this client is
-// memoized for the process, so without the side effects below the NEXT request
-// is built from the same dead value:
+// "Retry this request" and "refresh the credential" are two different
+// decisions. The official policy retries 401 to refresh credentials, while
+// every credential source behind this client is memoized for the process. Without the
+// side effects below, every attempt and the next request would be built from the
+// same dead value:
 //
 //   - Claude.ai OAuth: another process (a second CLI, a browser login) rotates
 //     the token in the keychain. `getAnthropicClient` only ever calls the
@@ -866,14 +999,78 @@ async function recoverCredentialsForNextRequest(error: unknown): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Quota 429s versus throttle 429s
+//
+// Both arrive as `429`, and only the headers tell them apart. A throttle is a
+// "come back in a moment" that the ladder exists to outlast. A quota rejection
+// is the plan's window being spent: no amount of waiting inside this turn makes
+// it come back, and `src/services/api/errors.ts` already has the copy that says
+// so ("You've reached your usage limit · resets 3pm"). Retrying one only delays
+// that sentence by the whole ladder — up to ~10 minutes when the server also
+// sends `Retry-After: 60`, because getRetryDelay honours the header.
+//
+// The gate is subscriber-scoped on purpose: an API-key/PAYG seat has no unified
+// window, and an enterprise seat's limits are administered elsewhere, so for
+// those two a 429 is a throttle and stays retryable.
+// ---------------------------------------------------------------------------
+
 /**
- * The classifier's verdict for an `APIError`, plus the four decisions that
- * depend on things the error text cannot express.
+ * The `anthropic-ratelimit-unified-*` headers that only appear on a rejection
+ * bound to a subscription window. `-reset` is deliberately NOT in this list:
+ * it also rides along on plain throttles, and treating it as a quota marker
+ * would strand per-minute limits the ladder can wait out.
+ */
+const UNIFIED_QUOTA_HEADERS = [
+  'anthropic-ratelimit-unified-representative-claim',
+  'anthropic-ratelimit-unified-overage-status',
+  'anthropic-ratelimit-unified-overage-disabled-reason',
+] as const
+
+function header(error: APIError, name: string): string | null | undefined {
+  return error.headers?.get?.(name)
+}
+
+function isUnifiedQuotaRejection(error: APIError): boolean {
+  if (error.status !== 429) return false
+  if (!isClaudeAISubscriber() || isEnterpriseSubscriber()) return false
+  return UNIFIED_QUOTA_HEADERS.some(name => {
+    const value = header(error, name)
+    return value !== null && value !== undefined
+  })
+}
+
+/**
+ * A 429 that says the account has to buy extra usage before this request can
+ * succeed. Applies to every seat shape, not just subscriptions.
  *
- * Only two of them still refuse outright, and neither is about the error being
- * permanent — both say "another attempt provably cannot succeed", which is a
- * different claim from "this class rarely succeeds". Everything else either
- * upgrades to the full ladder or drops to the cheap lane.
+ * The two exempt `overage-disabled-reason` values are Anthropic's own
+ * "we could not check your credit state" answers, so those stay retryable.
+ */
+function isExtraUsageRequiredRejection(error: APIError): boolean {
+  if (error.status !== 429) return false
+  const body = error.error as
+    | { error?: { details?: { error_code?: unknown } } }
+    | undefined
+  const message = error.message?.toLowerCase() ?? ''
+  const creditsRequired =
+    body?.error?.details?.error_code === 'credits_required' ||
+    message.includes('usage credits are required') ||
+    message.includes('extra usage is required')
+  if (!creditsRequired) return false
+  const disabledReason = header(
+    error,
+    'anthropic-ratelimit-unified-overage-disabled-reason',
+  )
+  return (
+    disabledReason !== 'fetch_error' &&
+    disabledReason !== 'org_level_disabled_until'
+  )
+}
+
+/**
+ * The classifier's verdict for an `APIError`, plus the decisions that depend on
+ * things the error text cannot express.
  */
 function apiErrorVerdict(error: APIError): RetryVerdict {
   const classified = classifyRetryableAPIError(error)
@@ -884,11 +1081,11 @@ function apiErrorVerdict(error: APIError): RetryVerdict {
     return { ...classified, retryable: false, persistence: 'permanent' }
   }
 
-  // A deterministic 400 whose next attempt uses a corrected max_tokens — the
-  // one permanent status that answers differently without waiting for
-  // anything, so it earns the full ladder rather than the cheap lane.
-  if (parseMaxTokensContextOverflowError(error)) {
-    return transiently(classified)
+  // Ordered ahead of the watchdog override to match the official predicate:
+  // waiting out a window is what persistent capacity mode is for, but no
+  // window reopens on a balance that has to be topped up.
+  if (isExtraUsageRequiredRejection(error)) {
+    return { ...classified, retryable: false, persistence: 'permanent' }
   }
 
   // Persistent capacity mode intentionally overrides the server's long-lived
@@ -897,59 +1094,15 @@ function apiErrorVerdict(error: APIError): RetryVerdict {
     return transiently(classified)
   }
 
-  // A window-based 429 (the Max/Pro 5-hour limit) reopens hours from now, and
-  // every step of this ladder is clamped to RETRY_AFTER_MAX_MS. See
-  // canOutwaitRateLimit: this is arithmetic, not a judgement about the class.
-  if (error.status === 429 && !canOutwaitRateLimit(error)) {
+  // Placed after the classifier so it also overrules an `x-should-retry: true`
+  // header, which classifyRetryableAPIError honours before it ever looks at the
+  // status. The official predicate applies the same subscriber test to that
+  // directive and to the bare 429.
+  if (isUnifiedQuotaRejection(error)) {
     return { ...classified, retryable: false, persistence: 'permanent' }
   }
 
-  // `x-should-retry: false` is the server stating this exact request will fail
-  // again. It used to end the request outright; under the retry-everything
-  // policy it demotes to the cheap lane instead, so the server's opinion still
-  // costs one attempt rather than ten.
-  const shouldRetryHeader = error.headers?.get('x-should-retry')
-  if (shouldRetryHeader === 'false') {
-    const is5xxError = error.status !== undefined && error.status >= 500
-    if (!(process.env.USER_TYPE === 'ant' && is5xxError)) {
-      return {
-        category: classified.category,
-        retryable: classified.retryable && isRetryEveryAPIErrorEnabled(),
-        persistence: 'permanent',
-      }
-    }
-  }
-
   return classified
-}
-
-/**
- * Whether a 429 can plausibly clear inside this retry ladder.
- *
- * A 429 is retryable *in principle* — that is what `isRetryableAPIError` says,
- * and for a per-minute PAYG limit it is the right answer. Window-based
- * subscription limits (the Max/Pro 5-hour window) are the exception: they clear
- * hours from now, and every step of this ladder is clamped to
- * {@link RETRY_AFTER_MAX_MS}. Retrying one is therefore guaranteed to 429 again,
- * ten times over, and all it buys the user is ~10 minutes of countdown rows
- * before the `5-hour limit reached` message they were always going to get.
- *
- * Note the message itself is not produced here: bailing throws `CannotRetryError`,
- * `claude.ts` unwraps `.originalError`, and `errors.ts` renders the limit copy
- * from the same headers read below. This gate only decides *when*.
- *
- * `CLAUDE_CODE_UNATTENDED_RETRY` never reaches this function — `shouldRetry`
- * returns early for it — because waiting out a window is exactly its purpose.
- */
-function canOutwaitRateLimit(error: APIError): boolean {
-  // Prefer the reset timestamp; a window-based limit always advertises one.
-  const resetDelayMs = getRateLimitResetDelayMs(error) ?? getRetryAfterMs(error)
-  if (resetDelayMs !== null) return resetDelayMs <= RETRY_AFTER_MAX_MS
-
-  // No reset advertised. Subscription plans are windowed by nature, so their
-  // unlabelled 429s are assumed long; enterprise seats are typically PAYG and
-  // keep the ordinary short-limit behaviour.
-  return !isClaudeAISubscriber() || isEnterpriseSubscriber()
 }
 
 export function clampMaxRetries(
@@ -969,9 +1122,11 @@ export function getDefaultMaxRetries(): number {
 }
 
 function getMaxRetries(options: RetryOptions): number {
-  return options.maxRetries === undefined
-    ? getDefaultMaxRetries()
-    : clampMaxRetries(options.maxRetries)
+  if (options.maxRetries !== undefined)
+    return clampMaxRetries(options.maxRetries)
+  return isPersistentRetryEnabled()
+    ? WATCHDOG_DEFAULT_MAX_RETRIES
+    : getDefaultMaxRetries()
 }
 
 const DEFAULT_FAST_MODE_FALLBACK_HOLD_MS = 30 * 60 * 1000 // 30 minutes
@@ -997,284 +1152,4 @@ function getRateLimitResetDelayMs(error: APIError): number | null {
   const delayMs = resetUnixSec * 1000 - Date.now()
   if (delayMs <= 0) return null
   return Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
-}
-
-// ---------------------------------------------------------------------------
-// queryModel-level transient retry (covers what `withRetry` structurally can't)
-//
-// `withRetry` only wraps *stream creation* on the first-party path. Two gaps
-// remain, and they are the ones agents actually die on:
-//
-//   1. Third-party providers (OpenAI / Gemini / Grok) branch out of `queryModel`
-//      before `withRetry` is ever reached, and each has a single catch-all that
-//      turns any failure into an error message — zero retries.
-//   2. A stream that dies *mid-iteration* escapes the `withRetry` operation
-//      entirely; it lands in the non-streaming fallback, or dies outright when
-//      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK is set.
-//
-// `queryModel` never throws for either case — it yields an assistant message
-// with `isApiErrorMessage: true`. So the wrapper below re-runs the whole
-// generator, matching on that message rather than on a thrown error.
-// ---------------------------------------------------------------------------
-
-type QueryModelOutput = StreamEvent | AssistantMessage | SystemAPIErrorMessage
-
-/**
- * Marker set by `claude.ts` on error messages produced from a `CannotRetryError`
- * — i.e. the inner `withRetry` ladder already burned its ten attempts on this
- * failure. Without it the two layers compose into 10x10 attempts and roughly
- * half an hour of backoff for a genuinely-down network.
- *
- * A Symbol, not a string key: assistant messages get JSON-serialized into the
- * session transcript JSONL, and `JSON.stringify` skips symbol-keyed properties.
- * `Symbol.for` rather than `Symbol()` so the marker survives the module being
- * instantiated twice (Vite splits this bundle into 600+ chunks).
- */
-const TRANSIENT_RETRIES_EXHAUSTED = Symbol.for(
-  'occ.api.transientRetriesExhausted',
-)
-
-export function markTransientRetriesExhausted<T extends object>(message: T): T {
-  return Object.assign(message, { [TRANSIENT_RETRIES_EXHAUSTED]: true })
-}
-
-function hasExhaustedTransientRetries(message: unknown): boolean {
-  if (typeof message !== 'object' || message === null) return false
-  if (
-    (message as Record<symbol, unknown>)[TRANSIENT_RETRIES_EXHAUSTED] === true
-  ) {
-    return true
-  }
-  return (
-    hasExhaustedTransientRetries(getAPIErrorSource(message)) ||
-    hasExhaustedTransientRetries((message as { error?: unknown }).error)
-  )
-}
-
-function isApiErrorAssistantMessage(item: QueryModelOutput): boolean {
-  return (
-    item.type === 'assistant' &&
-    (item as AssistantMessage).isApiErrorMessage === true
-  )
-}
-
-function getMessageText(item: QueryModelOutput): string {
-  const content = (item as AssistantMessage).message?.content
-  if (typeof content === 'string') {
-    return content
-  }
-  if (!Array.isArray(content)) {
-    return ''
-  }
-  return content
-    .map(block => {
-      if (
-        typeof block === 'object' &&
-        block !== null &&
-        (block as { type?: string }).type === 'text'
-      ) {
-        return String((block as { text?: unknown }).text ?? '')
-      }
-      return ''
-    })
-    .join('\n')
-}
-
-function getRetrySourceError(item: QueryModelOutput): unknown | undefined {
-  const sourceError = getAPIErrorSource(item)
-  if (sourceError !== undefined) return sourceError
-  // Compatibility for in-memory callers created before source errors moved to
-  // symbol metadata. New provider messages never put Error objects here.
-  const legacyError = (item as AssistantMessage).error as unknown
-  return legacyError instanceof Error ? legacyError : undefined
-}
-
-/**
- * "Did the model already say something the caller acted on?" Once true the
- * wrapper stops retrying forever: re-running `queryModel` after a partial
- * stream re-emits the same `tool_use` block and the tool runs twice (inc-4258).
- *
- * The bar is *observable model output*, not "any bytes arrived". Protocol-only
- * events such as message_start do not commit an attempt, but text, tool JSON,
- * thinking, and signatures do: all are yielded outside the API layer, and
- * replaying after any of them risks duplicate output or tool execution.
- */
-function isModelContentOutput(item: QueryModelOutput): boolean {
-  if (item.type === 'assistant') {
-    return (item as AssistantMessage).isApiErrorMessage !== true
-  }
-  if (item.type !== 'stream_event') {
-    return false
-  }
-  const event = (
-    item as {
-      event?: {
-        type?: string
-        delta?: unknown
-        content_block?: { type?: string }
-      }
-    }
-  ).event
-  if (
-    event?.type === 'content_block_start' &&
-    (event.content_block?.type === 'tool_use' ||
-      event.content_block?.type === 'server_tool_use')
-  ) {
-    return true
-  }
-  if (event?.type === 'message_delta') {
-    return (
-      (event.delta as { stop_reason?: string } | undefined)?.stop_reason ===
-      'refusal'
-    )
-  }
-  if (event?.type !== 'content_block_delta') {
-    return false
-  }
-  const delta = (event.delta ?? {}) as Record<string, unknown>
-  return Boolean(
-    delta.text || delta.partial_json || delta.thinking || delta.signature,
-  )
-}
-
-interface TransientNetworkRetryOptions {
-  signal?: AbortSignal
-  /** Defaults to CLAUDE_CODE_MAX_RETRIES, else 10 — same source as withRetry. */
-  maxRetries?: number
-  model?: string
-  querySource?: QuerySource
-}
-
-/**
- * Re-runs `run()` when an attempt produced nothing but a transient-looking API
- * error message. Applies to every agent alike: main loop, Agent-tool subagents
- * and workflow agents all funnel through `queryModelWith{,out}Streaming`.
- *
- * Never retries once content has been emitted, once the signal is aborted, or
- * once the inner ladder has already given up (see
- * {@link markTransientRetriesExhausted}).
- */
-export async function* withTransientNetworkRetry(
-  run: () => AsyncGenerator<QueryModelOutput, void>,
-  options: TransientNetworkRetryOptions = {},
-): AsyncGenerator<QueryModelOutput, void> {
-  const maxRetries =
-    options.maxRetries === undefined
-      ? getDefaultMaxRetries()
-      : clampMaxRetries(options.maxRetries)
-  if (!(maxRetries > 0)) {
-    yield* run()
-    return
-  }
-
-  let hasEmittedContent = false
-
-  for (let attempt = 1; ; attempt++) {
-    /**
-     * `hasEmittedContent` comes first and is unconditional. No retry policy
-     * reaches past it: once a delta left this generator it is on the terminal,
-     * in an ACP `agent_message_chunk` and on `--include-partial-messages`
-     * stdout, and none of those has an update kind that takes it back.
-     */
-    const canRetry = (verdict: RetryVerdict): boolean =>
-      !hasEmittedContent &&
-      !options.signal?.aborted &&
-      verdict.retryable &&
-      attempt <= attemptBudgetFor(verdict, maxRetries)
-
-    let retryError: unknown
-    let retryLane: RetryVerdict | undefined
-    let heldErrorMessage: QueryModelOutput | undefined
-
-    try {
-      for await (const item of run()) {
-        if (isApiErrorAssistantMessage(item)) {
-          const text = getMessageText(item)
-          const sourceError = getRetrySourceError(item)
-          // The error OBJECT wins whenever there is one: it carries the
-          // producer's own verdict (`retryable`, a real status, an errno),
-          // whereas the text is a last resort for the producers that only ever
-          // yield prose. Or-ing the two let a message containing wording like
-          // "stream idle timeout" overrule an explicit `retryable: false` and
-          // replay a request the adapter had already ruled permanent.
-          const verdict =
-            sourceError !== undefined
-              ? retryVerdict(sourceError)
-              : retryVerdict(text)
-          if (canRetry(verdict) && !hasExhaustedTransientRetries(item)) {
-            // Current producers yield at most one error message per attempt,
-            // but if a second ever arrives the first must not vanish — emit it
-            // rather than letting the assignment below swallow it.
-            if (heldErrorMessage) {
-              yield heldErrorMessage
-            }
-            heldErrorMessage = item
-            retryError =
-              sourceError ?? new APIConnectionError({ message: text })
-            retryLane = verdict
-            continue
-          }
-          yield item
-          continue
-        }
-        if (isModelContentOutput(item)) {
-          hasEmittedContent = true
-        }
-        yield item
-      }
-    } catch (error) {
-      // queryModel normally converts failures to messages, but user aborts and
-      // FallbackTriggeredError still propagate — neither is retriable, and
-      // retryVerdict rejects both.
-      const verdict = retryVerdict(error)
-      if (!canRetry(verdict)) {
-        throw error
-      }
-      retryError = error
-      retryLane = verdict
-      heldErrorMessage = undefined
-    }
-
-    if (retryError === undefined) {
-      return
-    }
-
-    // Content that arrived after the held error (possible when the fallback
-    // path yields late) retroactively disqualifies the retry.
-    if (hasEmittedContent || options.signal?.aborted) {
-      if (heldErrorMessage) {
-        yield heldErrorMessage
-      }
-      return
-    }
-
-    const attemptBudget =
-      retryLane === undefined
-        ? maxRetries
-        : attemptBudgetFor(retryLane, maxRetries)
-    const delayMs =
-      retryLane?.persistence === 'permanent'
-        ? PERMANENT_RETRY_DELAY_MS
-        : getBoundedRetryDelay(attempt, getRetryAfter(retryError))
-    logForDebugging(
-      `API failure (attempt ${attempt}/${attemptBudget}, ${retryLane?.persistence ?? 'transient'}), retrying in ${delayMs}ms: ${errorMessage(retryError)}`,
-      { level: 'warn' },
-    )
-    logEvent('tengu_api_transient_network_retry', {
-      attempt,
-      delayMs,
-      maxRetries: attemptBudget,
-      provider: getAPIProviderForStatsig(),
-      query_source:
-        options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-    yield createSystemAPIErrorMessage(
-      toRetryDisplayError(retryError),
-      delayMs,
-      attempt,
-      attemptBudget,
-    )
-    // Throws APIUserAbortError on abort so the whole turn unwinds immediately.
-    await sleep(delayMs, options.signal, { abortError })
-  }
 }

@@ -41,6 +41,7 @@ import {
   getDeferredToolsDeltaAttachment,
   getMcpInstructionsDeltaAttachment,
   getOutputStyleAttachment,
+  getToolSearchUsageReminderAttachment,
 } from './deltas.js'
 import { getChangedFiles } from './changedFiles.js'
 import { getNestedMemoryAttachments } from './directories.js'
@@ -206,7 +207,16 @@ export async function getAttachments(
               : 'attachments_subagent',
             querySource,
           },
+          // Servers that are still connecting / need OAuth / failed have no
+          // tools in the pool, so without this the model reads their absence
+          // as "capability does not exist" and stops looking.
+          toolUseContext.options.mcpClients,
         ),
+      ),
+    ),
+    maybe('tool_search_usage_reminder', () =>
+      Promise.resolve(
+        getToolSearchUsageReminderAttachment(toolUseContext, messages),
       ),
     ),
     maybe('agent_listing_delta', () =>
@@ -278,7 +288,14 @@ export async function getAttachments(
               getCompactionReminderAttachment(
                 messages ?? [],
                 toolUseContext.options.mainLoopModel,
-                toolUseContext.options.modelSettingsSlot,
+                {
+                  settingsSlot: toolUseContext.options.modelSettingsSlot,
+                  sessionOverrides:
+                    toolUseContext.options.sessionModelSettingsOverrides,
+                  autoCompactWindow: toolUseContext.options.autoCompactWindow,
+                  autoCompactWindowOverride:
+                    toolUseContext.options.autoCompactWindowOverride,
+                },
               ),
             ),
           ),
@@ -315,7 +332,14 @@ export async function getAttachments(
             getTokenUsageAttachment(
               messages ?? [],
               toolUseContext.options.mainLoopModel,
-              toolUseContext.options.modelSettingsSlot,
+              {
+                settingsSlot: toolUseContext.options.modelSettingsSlot,
+                sessionOverrides:
+                  toolUseContext.options.sessionModelSettingsOverrides,
+                autoCompactWindow: toolUseContext.options.autoCompactWindow,
+                autoCompactWindowOverride:
+                  toolUseContext.options.autoCompactWindowOverride,
+              },
             ),
           ),
         ),

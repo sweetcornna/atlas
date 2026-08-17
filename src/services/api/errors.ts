@@ -15,6 +15,7 @@ import type {
 } from 'src/types/message.js'
 import {
   getAnthropicApiKeyWithSource,
+  getApiKeyHelperError,
   getClaudeAIOAuthTokens,
   getOauthAccountInfo,
   isClaudeAISubscriber,
@@ -61,18 +62,84 @@ export function startsWithApiErrorPrefix(text: string): boolean {
 }
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'Prompt is too long'
 
+/**
+ * Every provider's way of saying "this request does not fit in the context
+ * window". This is the single place that wording lives — both compaction
+ * fallbacks (the reactive compact retry and the blocking-limit preempt) key
+ * off it, so a provider whose phrasing is missing here silently loses BOTH
+ * safety nets and runs until the upstream rejects the turn outright.
+ *
+ * That is not hypothetical: occ only ever matched the Anthropic phrasing, so
+ * an OpenAI-compatible gateway answering `Your input exceeds the context
+ * window of this model` (code `context_length_exceeded`) matched nothing and
+ * grew unbounded to 371K tokens before the gateway itself refused.
+ *
+ * Matched against BOTH the rendered error text and the raw `errorDetails`
+ * payload, because third-party adapters render a `API Error [X]: … · code=…`
+ * summary and stash the structured provider body separately.
+ *
+ * Keep additions to phrasing that can *only* mean context overflow. A bare
+ * "too large" or "limit" also describes rate limits and media rejections,
+ * both of which have their own recovery paths that this must not steal.
+ */
+const CONTEXT_OVERFLOW_ERROR_PATTERN = new RegExp(
+  [
+    // Anthropic / Vertex / Bedrock
+    'prompt is too long',
+    'input is too long for requested model',
+    'input length and `?max_tokens`? exceed context limit',
+    // OpenAI + Azure + every OpenAI-compatible gateway (error `code`)
+    'context[ _]length[ _]exceeded',
+    // "This model's maximum context length is 128000 tokens"
+    'maximum (?:context|prompt|input) length',
+    // "Your input exceeds the context window of this model"
+    'exceed(?:s|ed)?[^.\\n]{0,40}context (?:window|length|limit)',
+    // "context window exceeded", "context limit exceeded"
+    'context (?:window|length|limit)[^.\\n]{0,40}exceed(?:s|ed)',
+    // Gemini: "The input token count (1052916) exceeds the maximum number of
+    // tokens allowed (1048576)"
+    '(?:input|prompt|message)[ _](?:token[ _])?count[^.\\n]{0,60}exceed(?:s|ed)',
+    // Grok / xAI and several local runtimes
+    'reduce the length of the (?:messages|prompt|input)',
+    'too many tokens',
+  ].join('|'),
+  'i',
+)
+
+/**
+ * Does this raw API error text mean "the conversation no longer fits"?
+ * Provider-agnostic; see {@link CONTEXT_OVERFLOW_ERROR_PATTERN}.
+ */
+export function isContextOverflowErrorText(raw: string): boolean {
+  return CONTEXT_OVERFLOW_ERROR_PATTERN.test(raw)
+}
+
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
   if (!msg.isApiErrorMessage) {
     return false
   }
   const content = msg.message!.content
-  if (!Array.isArray(content)) {
-    return false
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block.type !== 'text') {
+        continue
+      }
+      // Anthropic path, unchanged: getAssistantMessageFromError rewrites the
+      // content to exactly PROMPT_TOO_LONG_ERROR_MESSAGE, and the UI matches
+      // on that exact string.
+      if (block.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) {
+        return true
+      }
+      if (isContextOverflowErrorText(block.text)) {
+        return true
+      }
+    }
   }
-  return content.some(
-    block =>
-      block.type === 'text' &&
-      block.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE),
+  // Third-party adapters keep the provider's structured body here while the
+  // rendered content is a generic "API Error [X]: …" line.
+  return (
+    typeof msg.errorDetails === 'string' &&
+    isContextOverflowErrorText(msg.errorDetails)
   )
 }
 
@@ -86,13 +153,38 @@ export function parsePromptTooLongTokenCounts(rawMessage: string): {
   actualTokens: number | undefined
   limitTokens: number | undefined
 } {
-  const match = rawMessage.match(
+  const anthropic = rawMessage.match(
     /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i,
   )
-  return {
-    actualTokens: match ? parseInt(match[1]!, 10) : undefined,
-    limitTokens: match ? parseInt(match[2]!, 10) : undefined,
+  if (anthropic) {
+    return {
+      actualTokens: parseInt(anthropic[1]!, 10),
+      limitTokens: parseInt(anthropic[2]!, 10),
+    }
   }
+  // OpenAI-compatible: "This model's maximum context length is 128000 tokens.
+  // However, your messages resulted in 130000 tokens" — limit first.
+  const openai = rawMessage.match(
+    /maximum (?:context|prompt|input) length is\s*(\d+)\s*tokens?[^0-9]{0,80}?(\d+)\s*tokens?/i,
+  )
+  if (openai) {
+    return {
+      actualTokens: parseInt(openai[2]!, 10),
+      limitTokens: parseInt(openai[1]!, 10),
+    }
+  }
+  // Gemini: "The input token count (1052916) exceeds the maximum number of
+  // tokens allowed (1048576)" — actual first.
+  const gemini = rawMessage.match(
+    /(?:input|prompt|message)[ _](?:token[ _])?count\D{0,20}(\d+)\D{0,80}?exceed(?:s|ed)?\D{0,80}?(\d+)/i,
+  )
+  if (gemini) {
+    return {
+      actualTokens: parseInt(gemini[1]!, 10),
+      limitTokens: parseInt(gemini[2]!, 10),
+    }
+  }
+  return { actualTokens: undefined, limitTokens: undefined }
 }
 
 /**
@@ -159,11 +251,23 @@ export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH =
   'Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead'
 export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY =
   'Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable'
+export const API_KEY_AUTH_DISABLED_ENV_WITH_OAUTH_ERROR_MESSAGE =
+  'Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY to use your claude.ai account instead'
+export const API_KEY_AUTH_DISABLED_ENV_ERROR_MESSAGE =
+  'Your organization has disabled API key authentication · Unset ANTHROPIC_API_KEY and run /login to sign in with your claude.ai account'
+export const API_KEY_AUTH_DISABLED_HELPER_ERROR_MESSAGE =
+  'Your organization has disabled API key authentication · Unset the apiKeyHelper setting and run /login to sign in with your claude.ai account'
+export const API_KEY_AUTH_DISABLED_MANAGED_ERROR_MESSAGE =
+  'Your organization has disabled API key authentication · Run /login to sign in with your claude.ai account'
+export const API_KEY_HELPER_FAILED_ERROR_MESSAGE =
+  "Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script's error output"
+export const SERVER_TEMPORARILY_LIMITING_ERROR_MESSAGE =
+  'Server is temporarily limiting requests (not your usage limit)'
 export const TOKEN_REVOKED_ERROR_MESSAGE =
   'OAuth token revoked · Please run /login'
 export const CCR_AUTH_ERROR_MESSAGE =
   'Authentication error · This may be a temporary network issue, please try again'
-export const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
+const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
 export const CUSTOM_OFF_SWITCH_MESSAGE =
   'Opus is experiencing high load, please use /model to switch to Sonnet'
 export const API_TIMEOUT_ERROR_MESSAGE = 'Request timed out'
@@ -207,6 +311,68 @@ export function getOauthOrgNotAllowedErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? 'Your organization does not have access to Claude. Please login again or contact your administrator.'
     : OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE
+}
+
+type ApiKeyAuthErrorCopy = {
+  content: string
+  error: 'authentication_failed' | 'invalid_request'
+}
+
+export function getApiKeyAuthErrorCopy({
+  status,
+  message,
+  provider,
+  source,
+  hasStoredOAuth,
+  apiKeyHelperError,
+}: {
+  status: number | undefined
+  message: string
+  provider: string
+  source: 'ANTHROPIC_API_KEY' | 'apiKeyHelper' | '/login managed key' | 'none'
+  hasStoredOAuth: boolean
+  apiKeyHelperError: string | null
+}): ApiKeyAuthErrorCopy | undefined {
+  if (
+    (status === 401 || status === 403) &&
+    provider === 'firstParty' &&
+    source === 'apiKeyHelper' &&
+    apiKeyHelperError
+  ) {
+    return {
+      content: API_KEY_HELPER_FAILED_ERROR_MESSAGE,
+      error: 'invalid_request',
+    }
+  }
+
+  if (
+    status !== 403 ||
+    !message.toLowerCase().includes('api key authentication is disabled')
+  ) {
+    return undefined
+  }
+
+  if (source === 'ANTHROPIC_API_KEY' && process.env.ANTHROPIC_API_KEY) {
+    return {
+      content: hasStoredOAuth
+        ? API_KEY_AUTH_DISABLED_ENV_WITH_OAUTH_ERROR_MESSAGE
+        : API_KEY_AUTH_DISABLED_ENV_ERROR_MESSAGE,
+      error: 'invalid_request',
+    }
+  }
+  if (source === 'apiKeyHelper') {
+    return {
+      content: API_KEY_AUTH_DISABLED_HELPER_ERROR_MESSAGE,
+      error: 'invalid_request',
+    }
+  }
+  if (source === '/login managed key') {
+    return {
+      content: API_KEY_AUTH_DISABLED_MANAGED_ERROR_MESSAGE,
+      error: 'authentication_failed',
+    }
+  }
+  return undefined
 }
 
 /**
@@ -462,11 +628,10 @@ export function getAssistantMessageFromError(
     })
   }
 
-  if (
-    error instanceof APIError &&
-    error.status === 429 &&
-    shouldProcessRateLimits(isClaudeAISubscriber())
-  ) {
+  if (error instanceof APIError && error.status === 429) {
+    const shouldTreatAsSubscriberLimit = shouldProcessRateLimits(
+      isClaudeAISubscriber(),
+    )
     // Check if this is the new API with multiple rate limit headers
     const rateLimitType = error.headers?.get?.(
       'anthropic-ratelimit-unified-representative-claim',
@@ -477,7 +642,7 @@ export function getAssistantMessageFromError(
     ) as 'allowed' | 'allowed_warning' | 'rejected' | null
 
     // If we have the new headers, use the new message generation
-    if (rateLimitType || overageStatus) {
+    if (shouldTreatAsSubscriberLimit && (rateLimitType || overageStatus)) {
       // Build limits object from error headers to determine the appropriate message
       const limits: ClaudeAILimits = {
         status: 'rejected',
@@ -537,7 +702,10 @@ export function getAssistantMessageFromError(
     // No quota headers — this is NOT a quota limit. Surface what the API actually
     // said instead of a generic "Rate limit reached". Entitlement rejections
     // (e.g. 1M context without Extra Usage) and infra capacity 429s land here.
-    if (error.message.includes('Extra usage is required for long context')) {
+    if (
+      shouldTreatAsSubscriberLimit &&
+      error.message.includes('Extra usage is required for long context')
+    ) {
       const hint = getIsNonInteractiveSession()
         ? 'enable extra usage at claude.ai/settings/usage, or use --model to switch to standard context'
         : 'run /extra-usage to enable, or /model to switch to standard context'
@@ -551,8 +719,22 @@ export function getAssistantMessageFromError(
     const stripped = error.message.replace(/^429\s+/, '')
     const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
     const detail = innerMessage || stripped
+    if (
+      shouldTreatAsSubscriberLimit &&
+      error.headers?.get?.(
+        'anthropic-ratelimit-unified-overage-disabled-reason',
+      )
+    ) {
+      return createAssistantAPIErrorMessage({
+        content: detail,
+        error: 'rate_limit',
+      })
+    }
+    const rejectionLabel = shouldTreatAsSubscriberLimit
+      ? SERVER_TEMPORARILY_LIMITING_ERROR_MESSAGE
+      : 'Request rejected (429)'
     return createAssistantAPIErrorMessage({
-      content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
+      content: `${API_ERROR_MESSAGE_PREFIX}: ${rejectionLabel} · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
       error: 'rate_limit',
     })
   }
@@ -810,6 +992,26 @@ export function getAssistantMessageFromError(
     }
   }
 
+  if (error instanceof APIError) {
+    const { source } = getAnthropicApiKeyWithSource({
+      skipRetrievingKeyFromApiKeyHelper: true,
+    })
+    const authCopy = getApiKeyAuthErrorCopy({
+      status: error.status,
+      message: error.message,
+      provider: getAPIProvider(),
+      source,
+      hasStoredOAuth: getClaudeAIOAuthTokens()?.accessToken != null,
+      apiKeyHelperError: getApiKeyHelperError(),
+    })
+    if (authCopy) {
+      return createAssistantAPIErrorMessage({
+        content: authCopy.content,
+        error: authCopy.error,
+      })
+    }
+  }
+
   if (
     error instanceof Error &&
     error.message.toLowerCase().includes('x-api-key')
@@ -1008,13 +1210,11 @@ export function classifyAPIError(error: unknown): string {
     return 'server_overload'
   }
 
-  // Prompt/content size errors
-  if (
-    error instanceof Error &&
-    error.message
-      .toLowerCase()
-      .includes(PROMPT_TOO_LONG_ERROR_MESSAGE.toLowerCase())
-  ) {
+  // Prompt/content size errors. Uses the provider-agnostic predicate so a
+  // gateway's `context_length_exceeded` is reported as prompt_too_long rather
+  // than a shapeless client_error — otherwise the one failure mode that has a
+  // recovery path is invisible in the error breakdown.
+  if (error instanceof Error && isContextOverflowErrorText(error.message)) {
     return 'prompt_too_long'
   }
 

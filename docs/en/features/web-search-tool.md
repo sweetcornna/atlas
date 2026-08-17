@@ -137,8 +137,8 @@ The table order is the panel order and the merge priority for enhancement lanes.
 |---|---|---|
 | `anthropic` | Anthropic server-side `web_search_20250305` | **Pinned credential** > Claude OAuth or `ANTHROPIC_API_KEY` |
 | `deepseek` | DeepSeek server-side `web_search_20250305`, over `<base>/anthropic` | **Pinned credential** > a DeepSeek endpoint plus a key (`OPENAI_BASE_URL` pointing at api.deepseek.com) |
-| `gemini` | Gemini `generateContent` with `googleSearch` grounding | **Pinned credential** > Google (Antigravity) OAuth or `GEMINI_API_KEY` |
-| `codex` | Built-in `web_search` tool in the OpenAI Responses API | ChatGPT OAuth or `OPENAI_API_KEY` (**cannot be pinned**, see §4.1.1) |
+| `gemini` | Gemini `generateContent` with `googleSearch` grounding | **Pinned credential** > Google (Antigravity) OAuth > **copied login** (§4.1.3) > `GEMINI_API_KEY` |
+| `codex` | Built-in `web_search` tool in the OpenAI Responses API | **Pinned credential** > ChatGPT OAuth > **copied login** (§4.1.3) > `OPENAI_API_KEY` (both key routes require the `api.openai.com` endpoint) |
 | `brave` | Brave LLM Context API (an independent index) | `settings.braveApiKey`, or `BRAVE_SEARCH_API_KEY` / `BRAVE_API_KEY` |
 | `exa` | Exa neural search over its MCP endpoint | `settings.exaApiKey` |
 | `free` | Keyless multi-engine fetching (ported from sweetcornna/free-search-mcp) | None |
@@ -174,7 +174,7 @@ own credential file.
 | Path | `occConfigPath('search-credentials.json')` — i.e. `~/.occ/search-credentials.json`, moved by `OCC_CONFIG_DIR` |
 | Mode | `0600`, written atomically through `writePrivateFileAtomic` |
 | Shape | `{ version, sources: { <source>: { apiKey, baseURL?, pinnedAt } } }` — **per source**, not one blob |
-| Pinnable | `anthropic`, `deepseek`, `gemini` |
+| Pinnable | `anthropic`, `deepseek`, `gemini`, `codex` |
 
 **Resolution order: pinned credential → provider env.** A user who never pins keeps working exactly as before, byte
 for byte, with no migration step.
@@ -193,14 +193,16 @@ The rules that are not obvious:
 - **`CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE=0` still outranks a pin.** That switch names this endpoint specifically; a
   pin says *which credential*, never "override a capability the user switched off".
 - **A key is never rendered.** The panel appends `· pinned` to the connected badge — no value, prefix or length.
-- **Mirrored values are refused.** `ANTHROPIC_API_KEY` is not always an Anthropic key: the DeepSeek wire mirrors the
-  DeepSeek key onto it and an OpenCode session mirrors an hourly OAuth access token there. Detected through the
-  mirrors' own bookkeeping (`isDeepSeekMirroredApiKey` / `isOpencodeMirroredApiKey`), never by guessing at shape.
-- **`codex` cannot be pinned.** Its lane authenticates inside `createOpenAIResponsesStream`, which builds the request
-  from `OPENAI_API_KEY`/`OPENAI_BASE_URL` with no credential seam — a pin would light the row green for a key that
-  never leaves disk, which is the "connected source that can only return nothing" the registry exists to prevent.
-  Its ChatGPT login is already a 0600 file of occ's own. The read side is uniform across all four families, so
-  enabling it later is one line here plus a seam in the request layer.
+- **Mirrored values are refused.** A provider-shaped env var is not proof of that provider's key: the DeepSeek wire
+  mirrors the DeepSeek key onto `ANTHROPIC_API_KEY`, and an OpenCode session mirrors an hourly OAuth access token
+  onto `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` depending on its lane. Detected through the mirrors' own bookkeeping
+  (`isDeepSeekMirroredApiKey` / `isOpencodeMirroredApiKey` / `isOpencodeMirroredOpenAIApiKey`), never by guessing at
+  shape.
+- **A pinnable source is one whose request layer has a credential seam.** `PINNABLE_SEARCH_SOURCES` is that list and
+  `pinSearchCredential` refuses anything outside it (`UnpinnableSearchSourceError`) rather than storing a key that
+  never leaves disk — the "connected source that can only return nothing" the registry exists to prevent. All four
+  families qualify today; `codex` was the last, and only once `createOpenAIResponsesStream` grew the optional
+  `credential` parameter described below.
 
 A pin is genuinely sent, not merely displayed:
 
@@ -209,6 +211,119 @@ A pin is genuinely sent, not merely displayed:
 | `anthropic` | `AnthropicDirectSearchAdapter` switches to a standalone `fetch`: `x-api-key` at `<pinned endpoint>/v1/messages`. Not `getAnthropicClient()`, which is assembled from `ANTHROPIC_*` env — after a profile switch those keys can hold another provider's mirrored token and gateway |
 | `deepseek` | `resolveDeepSeekSearchEndpoint()` returns the pinned endpoint and key first |
 | `gemini` | `streamGeminiGenerateContent({ apiKey, baseURL })`; `usesAntigravityRoute()` stands down for an explicit key, the same rule it already applies to `accessToken` |
+| `codex` | `createOpenAIResponsesStream({ credential })` — an optional parameter the main loop never passes, so with it omitted the request is byte-for-byte what it was. `shouldUseChatGPTAuth()` stands down for an explicit key, the same rule as Gemini's |
+
+Three things are specific to `codex`:
+
+- **The credential is one object, not two parameters.** A key and the endpoint it authenticates against travel
+  together or not at all. Had the endpoint half fallen back to `OPENAI_BASE_URL`, a pinned OpenAI key on a session
+  since repointed at DeepSeek would have been posted to DeepSeek. A pin carrying no endpoint therefore means
+  OpenAI's own default, never "whatever the env says".
+- **The `api.openai.com` rule applies to the stored endpoint.** `hasCodexSearchCredentials()` answers the pin first
+  and checks *its* base URL, so a pin aimed at an OpenAI-compatible gateway leaves the row dark instead of lighting
+  a lane that accepts the request, runs a search, and reports no citations. `S` refuses to create such a pin in the
+  first place; the check covers a hand-edited file.
+- **The model is re-picked on the pinned route.** A pin decouples this lane's endpoint from the session's, so the
+  main-loop model may be one api.openai.com has never heard of (`deepseek-v4-flash` → HTTP 400, silenced by the
+  aggregator). Non-GPT ids are swapped for the cheap tier; an explicitly configured OpenAI model is kept.
+
+### 4.1.2 Automatic pinning (`services/search/autoPin.ts`)
+
+**Pinning is automatic; `S` is only the manual half.** Nothing was ever wrong with the mechanism above — the
+problem was that nothing prompts anyone to press the key. Web search degrading to the keyless scraping lane is
+silent by construction (the tool keeps answering, just worse), so the one moment a user would think to open this
+panel never arrives. A remedy that has to be discovered before the damage is not a remedy for the failure it was
+written for.
+
+**Four moments** (and no fifth): startup prefetch (`src/cli/program/prefetch.tsx`), the panel mounting, the panel's
+`R`, and a successful provider-wizard save. What they have in common is that the environment is known to hold what
+the lanes are authenticating with right then. Anything earlier (`init()`, `setup()`) runs before
+`applyConfigEnvironmentVariables()` and before the DeepSeek/OpenCode mirrors settle — which is how a mirrored
+secret gets read as its host key's own.
+
+- **It does not decide what a credential is.** The key half goes entirely through
+  `captureSearchCredentialFromEnvironment`, so every refusal listed in §4.1.1 (mirrored values, non-official
+  endpoints, sources with no credential seam) is inherited rather than re-derived more loosely. "Nothing pinnable
+  in the environment" is the outcome for most sessions, and it is a no-op, not an error.
+- **It does not write when nothing changed.** A pin whose key and endpoint already match is left alone, `pinnedAt`
+  included: this runs on every startup, and a file that churns its timestamp on each one has an mtime that says
+  nothing. The login copy compares raw bytes for the same reason.
+- **It never rejects.** All call sites are `void autoPinSearchCredentials()` or a bare `.then()`, with no `.catch`
+  anywhere downstream — "never rejects" is this module's contract. Note that anything thrown *before the first
+  await* of an `async` function still rejects its promise, so the try wraps the whole body including the settings
+  read.
+- **The opt-out is `settings.webSearchAutoPin.<source>: false`**, written only by the panel's `D`, storing explicit
+  "no" only — an absent entry follows the default (pin it). `S` is its undo, and deletes the key rather than
+  storing `true`. One switch covers both the key and the copied login, because it is a statement about a SOURCE;
+  splitting it would make `D`'s meaning depend on which credential the row happened to be showing.
+
+### 4.1.3 Copies of OAuth logins (`services/search/oauthCopies.ts`)
+
+**The problem.** `gemini` (Antigravity / Google OAuth) and `codex` (ChatGPT OAuth) can authenticate with no key at
+all: their credential is a 0600 authorization file of occ's own. `/provider use` cannot reach those files, but
+**`/logout` deletes them** (`removeChatGPTAuth()` / `removeAntigravityAuth()`), after which search degrades to the
+keyless lane just as silently — the same failure as §4.1.1, one credential type over. And the pin store can only
+hold a key: `captureCredential.ts` refuses an access token, because it expires within the hour and a copy of one
+would be a dead secret on disk within the hour.
+
+**The fix.** What is worth keeping is not the access token but **the file**, which carries the refresh token. So a
+pinned OAuth credential is a copy of the authorization file, with the identical schema, under a name the account
+plane does not know.
+
+| Item | Value |
+| --- | --- |
+| Path | `occConfigPath('search-oauth-chatgpt.json')` / `occConfigPath('search-oauth-antigravity.json')` |
+| Mode | `0600`, written atomically through `writePrivateFileAtomic` (never `copyFile`, which would carry the source's mode and skip the atomic rename) |
+| Shape | **Identical** to the file it came from, because it is a copy of it |
+| Marker | **The copy's existence is the marker.** `search-credentials.json`'s format is untouched, and there is no v2 |
+
+**The authentication chain per lane**, highest first:
+
+1. **A pinned key** (§4.1.1). An explicit key stands the OAuth route down entirely (`shouldUseChatGPTAuth` and
+   `usesAntigravityRoute` both give way to an explicit credential).
+2. **The login file.** While a login exists it is the freshest by construction — the provider plane refreshes it on
+   every request — so the copy must never outrank it.
+3. **The copy.** Reached once the login file is gone, which is exactly what `/logout` does and exactly what this
+   mechanism is for.
+4. **A key in the environment** (`OPENAI_API_KEY` / `GEMINI_API_KEY`).
+
+`codex` has a fifth rung, `~/.codex/auth.json` (the official Codex CLI's own file), placed **after the copy** and
+**read-only**. After, because the copy is a deliberate record of which account search uses, while that file is an
+incidental borrow from another tool that happens to be installed — letting it outrank the pin would put the
+panel's account display and the lane's request on different accounts. Read-only, because it belongs to another CLI
+(the isolation invariant), and because writing its refresh into occ's own login file — which is what the provider
+plane does — would put a logged-out account back on disk.
+
+Rules that are load-bearing rather than obvious:
+
+- **A refresh of the copy is written back to the copy, never to the login file.** Otherwise a single token refresh
+  from the search plane would resurrect the provider-plane login after `/logout`, and logout would not mean
+  logout. Implemented as "write back to the file it was read from": `chatgptAuth.ts` keeps two source tables
+  (`providerAuthSources` / `searchAuthSources`) carrying `persistTo`, and Antigravity's
+  `refreshAndPersist(tokens, fetchImpl, path)` is path-driven too (including the project-id backfill).
+- **The reverse holds as well: the provider entry points cannot see the copy.** `getValidChatGPTAuth()` and
+  `getValidAntigravityAuth()` read the login file only; search goes through `getValidChatGPTAuthForSearch()` and
+  `getValidAntigravitySearchAuth()`, selected by `createChatGPTResponsesStream({ authPlane: 'search' })` and
+  `streamGeminiGenerateContent({ antigravityAuthPlane: 'search' })`. If the provider plane could fall through to
+  the copy, `/logout` would log nothing out.
+- **Antigravity's refresh dedup key is (file, refresh token), not the refresh token alone.** Immediately after a
+  copy is made, both files hold the *same* refresh token while being two independent credentials with two
+  independent write targets; keyed on the token alone, one refresh would be handed the other's promise and only
+  one file would ever be updated. The identity check reads by path for the same reason.
+- **The credential probes count the copy.** `hasStoredChatGPTAuthSync`/`Async`, `getStoredChatGPTAccountId` and
+  `hasGeminiOAuthCredentialsSync` all include it — every one of their callers is on the search plane, and there a
+  copy is the credential the lane really will authenticate with. The account name is read in the lane's own
+  resolution order, so after `/logout` the panel still names the account the searches are running as instead of
+  going dark.
+- **The `· pinned` badge means the same thing for both credentials.** The user's question is "does this survive
+  `/logout`", and the answer should not depend on which kind happens to be answering it. `D` therefore removes
+  both: leaving the copy behind would clear the pin, redraw the row as still pinned, and keep serving searches
+  from the credential the user just removed.
+- **`anthropic` and `deepseek` have no login to copy.** A Claude subscription login is a system keychain record
+  (the first isolation invariant), and copying a keychain entry into a file is a downgrade of its storage, not a
+  pin. `SEARCH_OAUTH_FAMILIES` is therefore the two sources above.
+- **`/logout` names the copies too.** The survivors list reads both stores. The copied login is the one nobody
+  would expect to have survived, which is the reason to say so.
 
 ### 4.2 Aggregation rules (`adapters/aggregateAdapter.ts`)
 

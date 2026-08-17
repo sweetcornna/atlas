@@ -1,7 +1,9 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import addDir from './commands/add-dir/index.js'
+import autocompact from './commands/autocompact/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import btw from './commands/btw/index.js'
+import cd from './commands/cd/index.js'
 import issue from './commands/issue/index.js'
 import feedback from './commands/feedback/index.js'
 import clear from './commands/clear/index.js'
@@ -19,6 +21,7 @@ import doctor from './commands/doctor/index.js'
 import memory from './commands/memory/index.js'
 import help from './commands/help/index.js'
 import ide from './commands/ide/index.js'
+import importCommand from './commands/import/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
 import keybindings from './commands/keybindings/index.js'
@@ -46,6 +49,7 @@ import teleport from './commands/teleport/index.js'
 import agentsPlatform from './commands/agents-platform/index.js'
 import scheduleCommand from './commands/schedule/index.js'
 import memoryStoresCommand from './commands/memory-stores/index.js'
+import pauseMemory from './commands/pause-memory/index.js'
 import skillStoreCommand from './commands/skill-store/index.js'
 import vaultCommand from './commands/vault/index.js'
 import localVaultCommand from './commands/local-vault/index.js'
@@ -55,6 +59,7 @@ import terminalSetup from './commands/terminalSetup/index.js'
 import usage from './commands/usage/index.js'
 import theme from './commands/theme/index.js'
 import vim from './commands/vim/index.js'
+import wellbeing from './commands/wellbeing/index.js'
 import searchSetting from './commands/searchSetting/index.js'
 import webTools from './commands/web-tools/index.js'
 import { feature } from 'bun:bundle'
@@ -106,6 +111,14 @@ const daemonCmd =
   feature('DAEMON') || feature('BG_SESSIONS')
     ? require('./commands/daemon/index.js').default
     : null
+const backgroundCmd = feature('BG_SESSIONS')
+  ? require('./commands/background/index.js').default
+  : null
+const stopCmd = feature('BG_SESSIONS')
+  ? (
+      require('./commands/stop/index.js') as typeof import('./commands/stop/index.js')
+    ).default
+  : null
 const jobCmd = feature('TEMPLATES')
   ? require('./commands/job/index.js').default
   : null
@@ -134,6 +147,7 @@ import artifacts from './commands/artifacts/index.js'
 import agents from './commands/agents/index.js'
 import plugin from './commands/plugin/index.js'
 import reloadPlugins from './commands/reload-plugins/index.js'
+import reloadSkills from './commands/reload-skills/index.js'
 import rewind from './commands/rewind/index.js'
 import heapDump from './commands/heapdump/index.js'
 import version from './commands/version.js'
@@ -200,6 +214,7 @@ const usageReport: Command = {
   },
 }
 import debugToolCall from './commands/debug-tool-call/index.js'
+import skillDoctor from './commands/skill-doctor/index.js'
 import { getSettingSourceName } from './utils/settings/constants.js'
 import {
   type Command,
@@ -234,12 +249,14 @@ const COMMANDS = memoize((): Command[] => [
   vaultCommand,
   localVaultCommand,
   localMemoryCommand,
+  autocompact,
   autonomy,
   providerSettings,
   artifacts,
   agents,
   branch,
   btw,
+  cd,
   clear,
   color,
   compact,
@@ -258,12 +275,14 @@ const COMMANDS = memoize((): Command[] => [
   heapDump,
   help,
   ide,
+  importCommand,
   init,
   keybindings,
   lang,
   installSlackApp,
   mcp,
   memory,
+  pauseMemory,
   mobile,
   model,
   outputStyle,
@@ -272,6 +291,7 @@ const COMMANDS = memoize((): Command[] => [
   pr_comments,
   releaseNotes,
   reloadPlugins,
+  reloadSkills,
   rename,
   resume,
   session,
@@ -294,6 +314,7 @@ const COMMANDS = memoize((): Command[] => [
   usage,
   usageReport,
   vim,
+  wellbeing,
   searchSetting,
   webTools,
   ...(webCmd ? [webCmd] : []),
@@ -320,6 +341,8 @@ const COMMANDS = memoize((): Command[] => [
   ...(ultraplan ? [ultraplan] : []),
   ...(torch ? [torch] : []),
   ...(daemonCmd ? [daemonCmd] : []),
+  ...(backgroundCmd ? [backgroundCmd] : []),
+  ...(stopCmd ? [stopCmd] : []),
   ...(jobCmd ? [jobCmd] : []),
   summary,
   recap,
@@ -333,6 +356,7 @@ const COMMANDS = memoize((): Command[] => [
   initVerifiers,
   env,
   debugToolCall,
+  skillDoctor,
   perfIssue,
   breakCache,
   breakCacheNonInteractive,

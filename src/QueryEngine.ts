@@ -61,13 +61,16 @@ import {
 } from './utils/fileStateCache.js'
 import { headlessProfilerCheckpoint } from './utils/telemetry/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
+import { applyMessageDisplayHooks } from './utils/hooks/messageDisplay.js'
 import { getInMemoryErrors } from './utils/telemetry/log.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
+  getDefaultMainLoopModel,
   getMainLoopModel,
   getMainLoopModelSettingsSlot,
   parseUserSpecifiedModel,
 } from './utils/model/model.js'
+import { buildAvailabilityFallbackChain } from './utils/model/modelFallback.js'
 import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
 import {
   type ProcessUserInputContext,
@@ -141,7 +144,7 @@ export type QueryEngineConfig = {
   customSystemPrompt?: string
   appendSystemPrompt?: string
   userSpecifiedModel?: string
-  fallbackModel?: string
+  fallbackModel?: string[]
   thinkingConfig?: ThinkingConfig
   maxTurns?: number
   maxBudgetUsd?: number
@@ -268,6 +271,15 @@ export class QueryEngine {
     const initialMainLoopModel = userSpecifiedModel
       ? parseUserSpecifiedModel(userSpecifiedModel)
       : getMainLoopModel()
+    // Collapsed here too, not only in query(): the SDK surface reports the
+    // resolved chain, and a chain it advertises but can never use is a lie.
+    const resolvedFallbackModels = buildAvailabilityFallbackChain(
+      fallbackModel,
+    )?.map(model =>
+      parseUserSpecifiedModel(
+        model === 'default' ? getDefaultMainLoopModel() : model,
+      ),
+    )
 
     const initialThinkingConfig: ThinkingConfig = thinkingConfig
       ? thinkingConfig
@@ -347,6 +359,10 @@ export class QueryEngine {
         verbose,
         mainLoopModel: initialMainLoopModel,
         modelSettingsSlot: getMainLoopModelSettingsSlot(initialMainLoopModel),
+        sessionModelSettingsOverrides:
+          initialAppState.sessionModelSettingsOverrides,
+        autoCompactWindow: initialAppState.autoCompactWindow,
+        autoCompactWindowOverride: initialAppState.autoCompactWindowOverride,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
         mcpResources: {},
@@ -487,6 +503,7 @@ export class QueryEngine {
     }))
 
     const mainLoopModel = modelFromUserInput ?? initialMainLoopModel
+    const currentAppState = getAppState()
 
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
@@ -502,6 +519,10 @@ export class QueryEngine {
         verbose,
         mainLoopModel,
         modelSettingsSlot: getMainLoopModelSettingsSlot(mainLoopModel),
+        sessionModelSettingsOverrides:
+          currentAppState.sessionModelSettingsOverrides,
+        autoCompactWindow: currentAppState.autoCompactWindow,
+        autoCompactWindowOverride: currentAppState.autoCompactWindowOverride,
         thinkingConfig: initialThinkingConfig,
         mcpClients,
         mcpResources: {},
@@ -661,6 +682,8 @@ export class QueryEngine {
     // Track current message usage (reset on each message_start)
     let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
     let turnCount = 1
+    // Stable id for MessageDisplay hook payloads; rotates with each user turn.
+    let displayTurnId = randomUUID() as string
     let hasAcknowledgedInitialMessages = false
     // Track structured output from StructuredOutput tool calls
     let structuredOutputFromTool: unknown
@@ -683,7 +706,7 @@ export class QueryEngine {
       systemContext,
       canUseTool: wrappedCanUseTool,
       toolUseContext: processUserInputContext,
-      fallbackModel,
+      fallbackModels: resolvedFallbackModels,
       querySource: 'sdk',
       maxTurns,
       taskBudget,
@@ -758,6 +781,7 @@ export class QueryEngine {
 
       if (message.type === 'user') {
         turnCount++
+        displayTurnId = randomUUID()
       }
 
       switch (message.type) {
@@ -777,7 +801,15 @@ export class QueryEngine {
             lastStopReason = stopReason
           }
           this.mutableMessages.push(msg)
-          yield* normalizeMessage(msg)
+          // MessageDisplay is display-only: the message was already pushed to
+          // mutableMessages and recorded to the transcript above, so this
+          // rewrites only the copy that leaves the SDK.
+          yield* normalizeMessage(
+            await applyMessageDisplayHooks(msg, displayTurnId, {
+              getAppState: processUserInputContext.getAppState,
+              signal: processUserInputContext.abortController.signal,
+            }),
+          )
           break
         }
         case 'progress': {
@@ -1278,7 +1310,7 @@ export async function* ask({
   customSystemPrompt?: string
   appendSystemPrompt?: string
   userSpecifiedModel?: string
-  fallbackModel?: string
+  fallbackModel?: string | string[]
   jsonSchema?: Record<string, unknown>
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void
@@ -1306,7 +1338,8 @@ export async function* ask({
     customSystemPrompt,
     appendSystemPrompt,
     userSpecifiedModel,
-    fallbackModel,
+    fallbackModel:
+      typeof fallbackModel === 'string' ? [fallbackModel] : fallbackModel,
     thinkingConfig,
     maxTurns,
     maxBudgetUsd,

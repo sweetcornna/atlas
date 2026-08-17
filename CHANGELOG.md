@@ -4,6 +4,101 @@ open-claude-code(`occ`)的对外发布记录。
 
 格式由应用内「更新说明」的解析器约束（`parseChangelog`，见 `src/utils/update/releaseNotes.ts`）：版本标题必须是 `## <semver>` 或 `## <semver> - <日期>`，条目必须是顶层 `- ` 列表项。嵌套列表会被拍平成同级条目，所以不要用；第一个 `## ` 之前的内容会被整段跳过。新版本小节由 `bun run release <version>` 插入。
 
+## 2.46.0 - 2026-08-14
+
+- **非 Anthropic provider 不再收到用不上的 Anthropic 信息。** 此前无论会话跑在哪家模型上，系统提示都会告知 Claude 各档位的 model ID，以及桌面端、网页端这些 occ 并不具备的入口。在 OpenAI、Gemini、Grok、DeepSeek 等 provider 上那些 ID 解析成字面量后必然 404，模型却会把它们写进你的代码。现按会话实际服务的模型目录决定发不发。
+- **系统提示同步到官方最新版本。** 新增交付纪律、自我纠正与上下文管理三方面的规则：不再擅自缩小或放大你交代的范围，不再为不影响结论的措辞反复自我更正，长会话里也不会因为接近上下文上限就提前收尾。同时删掉了一批替模型做判断的说教式指令。
+- **并行子代理的进度行改为显示各自负责什么。** 之前每行滚动显示该子代理此刻在调用哪个工具，同时跑多个时分辨不出谁在做哪一块。现在显示派工时给出的目标；未显式给出时从任务描述中提取。
+- **修复反馈入口渲染成半句话。** 系统提示里的「To give feedback, users should 」与工作区信任告警里的「post in 」此前都缺了后半句——两个构建期常量沿用了上游的空值。现指向 occ 自己的 issue tracker。
+
+## 2.45.1 - 2026-08-14
+
+- **轮次上限截断不再静默。** `max_turns_reached` 此前被归入不渲染类型，而它是该表内唯一表示"harness 截断了轮次"的条目，其余均为面向模型的提醒——渲染为 null 使"已完成"与"被截断"在界面上无从区分。现显示停止原因与提高上限的方式。
+- **子 agent 触及轮次上限时向父 agent 标注。** 此前该信号被直接吞掉，父模型收到部分结果却无任何标记，无法区分子 agent 完成与被截断。现在结果尾部追加一条标注（追加而非替换，避免顶掉真实答案）。
+- 调查"会话中途停止"的结论：430 份真实会话中 harness 出口未出现一次（`max_turns_reached` 与 `preventedContinuation` 记录均为 0，交互式亦不传 `maxTurns`），未完成任务多源于模型自行结束回合而未回头收尾任务清单。因此未新增自动续跑机制——`/goal` 与 autonomy flows 已提供有界且可中断的方案。
+
+## 2.45.0 - 2026-08-14
+
+- **修复自动压缩自 v2.42.0 起整体失效。** 该版本将 REACTIVE_COMPACT 编入默认构建，使 `shouldAutoCompact` 中读取远端实验门的分支重新生效，而本地冻结的一方配置里该门为真，导致每轮提前返回。配套两道兜底同时失效：prompt-too-long 判定仅识别 Anthropic 措辞，认不出第三方端点的溢出提示；硬阻断预拦截被恒真的 reactive 开关短路。现改为跨 provider 的集中式溢出判定（覆盖 Anthropic、OpenAI 两条线、Gemini、Grok、DeepSeek、OpenCode、Bedrock、Vertex、Foundry），瞬时网络故障不再计入压缩熔断，熔断开闸时恢复预拦截。
+- **上下文窗口新增统一 clamp 与告警。** Anthropic 仅提供 200k 与带 beta 头的 1M 两档，此前将 `contextTokens` 配置为两者之间的值会被接受但不产生 `[1m]` 后缀，本地按配置值计算阈值而服务端仍按 200k 处理。Gemini 与 Grok 的窗口原按 200k 硬编码，实际为 1M–2M，导致在真实容量约 15% 处即开始压缩。`/model` 档位与 `/model-settings` 面板显示 `· capped to X by model`。
+- **一方遥测与远端实验配置改为显式 opt-in。** 此前默认向 api.anthropic.com 上报事件并拉取 GrowthBook 配置，且将 payload 全量写入 `~/.occ.json`（实测 491 条，`/logout` 不清理）。现由 `OCC_ENABLE_1P_TELEMETRY` 与 `OCC_ENABLE_GROWTHBOOK` 两个独立开关控制，默认关闭；远端 payload 不再落盘，存量缓存在下次启动清空。12 条会实际改变行为的门已钉为本地默认。
+- **修复第三方凭据外发。** DeepSeek 与 OpenCode 会将第三方密钥镜像进 `ANTHROPIC_API_KEY`，此前所有一方链路将其作为 `x-api-key` 发往 api.anthropic.com。影响最大的一条是 `/bug` 与会话分享：在第三方会话下会将完整对话、全部子 agent transcript 及原始 JSONL 一并上传，其中 frustration 问卷由连续两次 API 错误自动触发。推理路径不受影响。
+- **修复五条权限规则绕过。** 通配工具名在 deny/ask 中不走 glob 因而完全失效；allow 规则不检查符号链接解析后的路径；`dir/**` 未按 root 锚定；bash 规则自身不做空白归一，规则中多一个空格即整条失效；wildcard 新语法可被 `xargs` 绕过。自动放行闸门的大小写折叠同步收紧。
+- **artifact 工具改为本地优先。** 随包分发的公开 token 已被服务端拒绝，且代理将状态压平为 200 使失败不呈现为失败。默认改为写入本地并返回 `file://`，worker 与 rustypaste 经 `OCC_ARTIFACTS_BACKEND` 显式选择。Markdown 模板重写为响应式与明暗自适应，高亮器与 mermaid 自钉死版本的 CDN 加载并附 SRI，缺失时优雅降级。
+- **新增 `occ plugin eval`。** 以两个仅相差 `--plugin-dir` 的子进程构成消融对照，衡量插件的实际效果。判定以确定性断言为主且不消耗模型调用，LLM 判官为可选补充；成本、单次超时与总时长三重闸默认保守。同时新增 `occ plugin details`（分别给出常驻与调用时的 token 成本）与 `occ mcp login`/`logout`。
+- **修复 `CI=1` 或 `NODE_ENV=test` 下子命令永久挂起。** 凭据查询在该分支无凭据时抛出且未被捕获，拒绝逃出 Commander preAction 后进程空转且无任何输出，任何无 Anthropic 凭据的 CI 均无法运行子命令。
+- **对齐官方工具语义与 CLI 表面。** 子 agent 结果的信任方向、`run_in_background` 默认值与 `mode` 参数说明三处此前与官方相反；`--effort` 现接受 `xhigh`；`permission-mode: "manual"` 作为输入别名被接受（此前该值导致整份 settings 文件被跳过）。新增 `/explain-usage`、`/fewer-permission-prompts`、`/stop`、`/reload-skills` 与 `occ agents --json`。
+- **Read 超出 token 上限改为自动分页**，附截断说明并豁免重读去重；恢复中断轮次增加陈旧度闸（默认 1 小时，`0` 关闭）；`deferred_tools_delta` 携带 MCP 服务器的连接中、待授权与失败状态。
+- **API 层修正。** 订阅额度 429 不再视为可重试，限额提示由约十分钟后提前至首次拒绝时；`stop_reason` 与 `usage` 回写本轮每一条消息；不可重试错误与 watchdog 下的模型 404/403 恢复 fallback 逃生路径；可见输出中断不再合成正常完成。
+- **行为变更**：`run_in_background` 省略时由前台改为后台，需要同步结果请显式传 `false`；一方遥测与 GrowthBook 默认关闭；artifact 默认产出本地路径而非公开 URL；computer-use MCP 不再自动注册；超过 1 小时的中断轮次不再自动续跑（`CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=0` 关闭该闸）。
+
+## 2.44.0 - 2026-08-13
+
+- **Auto Compact 现在真正使用会话级窗口并贯通所有执行路径。** `CLAUDE_CODE_AUTO_COMPACT_WINDOW`、`--autocompact <auto|tokens>`、`/autocompact`、SDK `apply_flag_settings`、设置热更新、子 Agent 与后台 handoff 共享同一状态；显式 `auto` 会覆盖持久设置而回到模型默认。compact 触发窗口与模型真实 hard-block 上限分离，较小窗口只会更早摘要，不会提前报 `Prompt is too long`；`/context`、token usage、预警和 1M reminder 也使用相同口径。
+- **推理 API 改用单一的 Claude Code 2.1.228 重试内核。** 删除查询级整轮重放和第二套 exhausted 状态，避免 provider 内层重试叠成 10×10 或重复工具副作用；统一错误变换 token、退避、`Retry-After`、fallback、凭据恢复和 `max_tokens` 推进保护。401、AWS/GCP 凭据失败与 stale socket 会重建 client，而不只是清缓存后继续复用旧连接。
+- **修复 `UND_ERR_SOCKET: other side closed` 等流中断无法恢复。** OpenAI Responses、Chat、Gemini、Grok 与 Anthropic 流统一按“尚无输出 / 仅 thinking / 已有可见文本或工具调用”处理：首字节前使用正常重试预算，仅 thinking 最多恢复两次；可见输出后只安全结束部分响应，绝不重放已经展示的文本或工具调用。协议字段降级作为唯一变换不消耗网络重试次数。
+- **运行中排队消息会在正确的工具轮边界继续处理。** 普通 queued prompt 可折入当前 query chain；当达到 `maxTurns`、构造 attachment 失败或请求已 abort 时不再提前消费，而是完整留给 turn-end processor 自动开启下一轮。query 从 running 回到 idle 后会立即唤醒队列，无需等会话退出。
+- **网页与文件读取的安全边界收紧。** WebFetch 的显式 `deny > ask > allow` 规则现在先于内置预批准域名，支持 `domain:*`、`domain:*.example.com`，并规范化大小写、尾点及编码路径边界；FileRead 在任何文件系统访问前阻止 `/proc/<pid>|self/{environ,cmdline,auxv,maps,mem,stat}`，普通 procfs 元数据仍可读取。
+- **Headless 会话恢复更准确且可选择 fail-closed。** `--resume` 在 UUID、URL 与 JSONL 解析失败后可按标题精确搜索：唯一命中直接恢复，多命中列出 session ID 和修改时间要求消歧。新增隐藏的 `--resume-drops-turn <user-message-id>` 校验被截断 suffix 必须完整属于指定 user turn；queued command、compact summary、外部 user、系统注入和未知消息都会拒绝截断。
+- **文件建议索引不再被旧异步任务覆盖。** FileIndex 使用单调 generation 取消过期 build，只在当前 build 完整结束后提交 signature；Typeahead 使用请求序号判定 stale，修复 `A1 → B → A2` 时最早的 A1 结果覆盖最新 A2。
+
+## 2.43.0 - 2026-08-13
+
+- **Workflow 执行内核改为加固的隔离 VM。** 工作流脚本禁用动态导入、字符串代码生成与 WASM，移除进程、模块加载等逃逸面，冻结内建对象，并在宿主边界严格校验跨 realm 数据、循环引用、访问器和超大数组；计时器由运行实例统一持有和清理。原有 `agent`、`parallel`、`pipeline`、`phase` 与嵌套 workflow 语义保持兼容。
+- **Workflow 恢复改为链式检查点与最长前缀重放。** 普通 resume 不再因脚本末尾的展示或后处理改动而丢弃全部已完成调用；首个身份、输出或终态分歧之后才重跑后缀。OCC 的按范围/agent 选择性恢复继续保留，并在脚本身份变化时安全拒绝位置选择器。权限界面同步区分命名、内联、文件、状态与取消操作，持久运行列表读取真实的分目录状态。
+- **重新划清 `/model`、`/model-settings` 与 `/provider-settings` 的职责。** `/model` 只改变当前会话，并提供按 default、haiku、sonnet、opus、fable 分槽的临时 effort/context 调整；值只存在于该会话的 AppState，不写配置，也不会影响同时运行的其他会话。`/model-settings` 独占持久模型策略并明确提示全局 `/effort` 的遮蔽关系；`/provider-settings` 统一负责档案与 provider 生命周期，成功切换后会完整重载会话状态。
+- **跨 provider 模型选择不再隐式切换凭据。** `/model` 将保存档案中的模型放在独立分组，选中后先显示目标档案、模型和切换影响，确认后才整体替换 endpoint、凭据、wire protocol 与模型策略；脚本调用使用显式的 `/model profile <model-id[@profile]>`。聚合目录会过滤图片、音频、嵌入、实时和审核模型，普通 `/model <id>` 仍只作用于当前 provider。
+- **终端前端与长会话恢复能力增强。** Diff 详情支持可配置滚动和实时视口；通知支持 pinned、diff 暂存与统一失效；事件循环长阻塞会记录有界诊断并在睡眠唤醒后恢复终端模式；损坏会话恢复会保留合法 provider 元数据和附件，同时清除无效恢复产物。
+- **Agent 与构建边界进一步收紧。** Agent frontmatter 中的 MCP 服务器会拒绝保留名称和内部/IDE transport，日志不再暴露凭据载荷；bundle 完整性检查递归扫描嵌套 chunk，并检测缺失引用与运行时第三方依赖。
+- **WebSearch 默认执行超时从 60 秒延长到 3 分钟。** 较慢的多源搜索不再过早终止；`CLAUDE_CODE_WEB_SEARCH_TIMEOUT_MS` 仍可显式调整，设为 `0` 仍可关闭工具级墙钟限制。
+
+## 2.42.0 - 2026-08-12
+
+- **API 重试完全对齐 Claude Code 2.1.227，不再重试确定性失败。** 默认最多重试 10 次、显式配置上限 15 次；连接中断、408/409/429/529 与 5xx 按指数退避恢复，用户取消、证书/TLS 配置错误、计费、权限、无效请求及其他永久 4xx 立即返回。服务端 `Retry-After` 与本地退避取较大值，普通模式要求等待超过 60 秒时终止；官方 `CLAUDE_CODE_RETRY_WATCHDOG` 容量模式保留 300 次预算、5 分钟最大退避、6 小时 reset 等待上限与 30 秒 keep-alive。前台 529 会重试，标题生成、建议与配额探针等后台请求不会放大拥塞。
+- **修复 Responses API 报 `upstream_error / stream_read_error` 却没有重新请求。** 错误发生在输出交付之前时会真正重建请求；缓冲型内部读取可丢弃半截文本后恢复完整结果。正文、thinking 或工具调用一旦对终端、ACP 或结构化输出可见，重放窗口永久关闭，避免重复回答和重复执行工具。连续三次 529 的模型 fallback 不再受旧 Opus 限制，Sonnet 与自定义主模型同样可切换。
+- **修复 OpenAI 兼容模式保存凭据后无法调用模型。** 用户输入裸域名或带尾随斜杠的地址时，Chat Completions、Responses 与模型目录会一致地使用 `/v1`；显式填写 `/chat/completions` 或 `/responses` 仍保留根路由语义，地址规范化可重复执行而不会改变结果。客户端缓存同时纳入地址查询参数，切换同一路径上的不同连接配置不再复用旧客户端。
+- **兼容网关的流完成判定更稳健。** 部分网关会返回实际输出和终态 usage，却省略 `finish_reason` 与 `[DONE]`；现在仅在“已有输出”和“非零终态 usage”同时成立时接受该响应。空流、只有 usage、没有终态证据的半截输出仍按失败处理，不会把截断内容伪装成成功。
+- **默认启用 Reactive Compact，并支持有序模型 fallback。** API 因提示词过长拒绝请求时会摘要旧轮次并自动重试；`settings.fallbackModel` 与 `--fallback-model` 可配置按顺序尝试的模型列表，每个新用户回合仍从主模型开始。退役模型提示只在真正提供 Anthropic 模型的目录中出现，并给出已发布的具体替代模型，不再向第三方 provider 展示虚假的营销名称。
+- **搜索与文件工具的边界更准确。** Grep 单文件 count 保留路径，Glob/Grep 会区分“没有匹配”与无效输入，绝对 Glob 按真实搜索根做权限检查；Edit、Write 强制遵守 read-before-write 与 Read 拒绝，NotebookEdit 文案改用真实的 `cell_id` 语义，WebFetch 转换时移除脚本、样式与 iframe。Agent continuation 要求可扫读的 summary，AskUserQuestion 不再把 Other 自定义文本当成批准，Bash 的 sandbox override 与 timeout 也经过统一约束。
+- **自动模式与沙箱信任边界加固。** 外部 auto-mode 无论用户如何替换 soft-deny 规则，都保留 Claude Code 2.1.227 的完整 Data Exfiltration 硬下限；Anthropic 内置模板保持原样。仓库可控制的 project/local settings 不能关闭文件系统隔离，只有 policy、flag 与 user 设置可请求该放宽；managed filesystem 策略存在时，低信任来源不能覆盖它。
+- **`/diff` 在打开期间实时更新。** 工作树文件新增、修改和删除会触发 150ms 合并刷新；监听器避开 `.git` 与 occ 项目资产目录，并覆盖初始读取到 watcher ready 之间的盲区，关闭对话框时完整清理。主题设置同时进入隔离的 `settings.json`，旧 global 配置仍作为 fallback 并在成功保存后镜像；启动时所有宿主渲染路径使用同一 effective theme，`/config` 取消修改可恢复“原本没有 user theme”这一状态。
+- **键绑定、认证提示与终端通知同步收口。** 公共 schema/help 补齐 Scroll、FormField、MessageActions、EffortPanel 及全部默认 action，默认绑定从此都有契约测试。`apiKeyHelper` 失败、组织禁用 API key 和服务端临时限流会给出对应处置指引；iTerm2、Kitty 与 Ghostty 通知在组装 OSC 序列前移除 C0、DEL、C1 控制字符，普通 Unicode 保持不变。
+
+## 2.41.0 - 2026-08-12
+
+- **新增 `/background`（`/bg`）与后台会话动词族。** `/background` 把当前会话移交为后台进程继续运行并腾出终端：对话完整随行（以 fork 恢复，原会话记录不动），进行中的回合会在后台重新驱动，确认框会列出将被终止的后台任务——丢失永远可见而非静默发生。新增 `occ stop <id>`（优雅停止，会话仍可恢复）与 `occ rm <id>`（删除后台会话记录与日志；被占用、进程仍在、记录不可读等七类情形会拒绝并说明原因，宁可报错不硬删）。`occ kill` 保持既有的强停升级链。
+- **`occ agents` 在终端下变为全部会话的交互列表。** 跨项目列出活动与近期会话，按项目分组、当前项目置顶，行内区分运行中/启动中/已结束；后台会话可 attach、看日志、停止，已结束会话按 Enter 直接恢复。`occ agents --list` 保留原有的 agent 定义输出，管道与脚本调用不受影响。
+- **新增 `occ import`：从 Codex 与 Gemini CLI 导入配置。** 确定性扫描 MCP 服务器、指令文件、自定义命令与子代理——外部配置一律视为不可信数据，不由模型自由读取；预览与确认之间用内容摘要绑定，防止确认的与看到的不一致。凭据默认剥离并列出剥离项，导入永远跳过同名项而不覆盖。
+- **新增 `--safe-mode`：临时关闭全部自定义，用于排查坏配置。** hooks、插件、skills、自定义命令、statusline 与 CLAUDE.md 全部旁路，认证、模型、工具与权限保持正常。与 `--bare` 定位不同：后者还会收窄认证与工具面。
+- **新增 `occ project purge [path]`：清除单个项目的本地状态。** 删除该项目的会话记录与全局配置中的项目条目（信任、历史、项目级 MCP 记录），`--dry-run` 先看清单，`--all` 清全部项目；shell-snapshots 非项目级，不受影响。
+- **延迟工具列表不再每轮全量重发。** 延迟加载工具改为增量通告并随对话持久化，提示词缓存断点从此落在可复用的消息上，长会话的缓存命中率显著改善（`CLAUDE_CODE_DEFERRED_TOOLS_DELTA=0` 回退旧行为）。同批修复：ExecuteExtraTool 的内置示例与 CronCreate 实际参数不一致导致照抄必败；搜索不到工具时按 MCP 服务器状态分类说明（连接中/失败/需认证/已禁用）；相关服务器仍在连接时搜索会等待至多 5 秒；新增按服务器的 `alwaysLoad` 配置让指定 MCP 服务器的工具跳过延迟加载。
+- **skill 列表进入上下文预算管理，新增 `/skill-doctor`。** 新设置 `skillListingMaxDescChars`（单个描述上限）与 `skillListingBudgetFraction`（列表总预算占上下文比例）；超预算时按使用频率决定谁保留完整描述——常用 skill 优先，所有 skill 始终保留名字、始终可调用。`/skill-doctor` 报告每个已加载 skill 的上下文成本与本会话使用情况，标出从未使用且成本高的项。
+- **新增 `/cd`、`/autocompact`、`/pause-memory`、`/wellbeing` 四个会话命令。** `/cd` 移动会话工作目录（新目录未受信时先确认，信任按仓库粒度记忆）；`/autocompact` 查看与调整自动摘要的触发窗口（env `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 优先）；`/pause-memory` 暂停本会话的自动记忆；`/wellbeing`（`/breaks`）配置休息提醒与安静时段。`/extra-usage` 新增别名 `/usage-credits`。
+- **输入框支持 emoji 短码补全。** 输入 `:name:` 触发建议弹窗与内联替换，内置约 1200 个短码，零外部依赖；`emojiCompletionEnabled: false` 关闭。
+- **hook 事件新增 `MessageDisplay` 与 `UserPromptExpansion`。** 前者可改写终端上显示的内容——模型可见历史与会话记录不受影响；后者在 slash 命令或 MCP prompt 展开前触发，可追加上下文或阻止执行，matcher 按命令名匹配。
+- **慢 MCP 调用自动转后台。** 超过 120 秒未返回的 MCP 工具调用自动转为后台任务，完成时以通知送达（`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` 可调，0 关闭）。新增 `WaitForMcpServers`（等待服务器就绪）与 `RefreshMcpTools`（手动刷新工具列表）两个工具。
+- **两处防护加固。** 全局配置写入前重读磁盘，若磁盘副本在竞态中缺失内存持有的登录凭据则拒绝覆盖写，避免被并发写登出；workflow 脚本与参数中的隐藏控制字符（会在审批对话框中不可见的那类）在展示前即被拒绝。
+
+## 2.40.1 - 2026-08-12
+
+- **修复 `/provider-settings` 新增 provider 时看起来被添加两次。** 旧流程会先提议把当前会话自动保存为 `openai` 等家族名，随后又要求为真正要添加的 provider 命名，结果是一次操作留下两份档案。现在选择家族后直接要求命名，只保存新 provider 一次。聚合开关也会在档案尚无模型快照时立即刷新，不再要求另按 `R`；当前 provider 按完整配置识别而非依赖可能过期的活动指针，因此同一端点上的不同账号仍会作为可切换来源出现在 `/model`。
+- **所有用户可见的 provider API 错误现在最多重试十次。** 与 Claude Code 的运行时约定一致，一次请求最多是首次尝试加十次重试；网络、限流与服务端错误走退避，认证、权限和无效请求等确定性错误走固定短延迟，内层 SDK 重试保持关闭以免叠成 10×10。`UND_ERR_SOCKET` / `other side closed` 不再显示 `retryable=no`；若错误发生在任何输出送达之前会正常重试，若文本或工具调用已经对外可见则只标记为不可重放并停止，避免重复回答或重复执行工具。
+
+## 2.40.0 - 2026-08-11
+
+- **网页搜索凭据现在默认自动固定，无需再手动按 `S`。** 上一版本引入的固定机制解决了登出与切换 provider 后搜索静默降级的问题，但它必须先被发现才起作用——而降级恰恰是静默的，「该打开面板」的时刻不会自己到来。现在环境中持有可用密钥的搜索源会在启动、打开 `/search-setting`、按 `R` 重新探测、provider 向导保存后自动固定；密钥轮换后自动跟随，内容未变时不写盘（时间戳也不动）。自动路径完整沿用既有的全部拒绝规则：镜像自其他 provider 的凭据、指向非官方端点的 codex 密钥等一概不存。`D` 取消固定并记住该源不再自动固定，`S` 重新固定并恢复自动。
+- **Google 与 ChatGPT 登录的搜索凭据在登出后继续可用。** gemini（Antigravity/Google OAuth）与 codex（ChatGPT OAuth）两个搜索源可以完全不依赖密钥，凭据是 occ 自己的授权文件——而 `/logout` 会删除它，搜索随之静默降级，与密钥类凭据是同一个失败形态。固定这两源现在是把授权文件（含 refresh token）复制为搜索自有的 0600 副本：登出照常删除主登录、主循环确实退出账号；搜索经副本继续工作并自行刷新令牌，副本的刷新只写回副本，不会恢复已登出的账号。登出时会明确列出哪些搜索凭据被保留。`search-credentials.json` 的格式未变，无需迁移。
+
+## 2.39.0 - 2026-08-11
+
+- **修复切换 provider 后请求仍发往上一个端点，且只有登出才能恢复。** 标识会话类型的几个环境变量（如 OpenCode 的登录标记）此前在切换档案时可能被留下：清理规则要求变量的当前值仍等于旧配置中的值，这是为了保护你自己在 shell 中导出的设置，但这几个标记只由 occ 写入，且会在每次建立客户端时被读取。于是它们一旦残留，之后每个请求的地址都会被悄悄改写，而配置文件本身完全正常——表现为模型报「不支持」，换模型无效，只有 `/logout` 能收尾，因为登出是唯一无条件清除它们的路径。现在切换档案会直接回收这几个标记；其余变量的保护规则不变。
+- **修复模型不被支持时提示为凭据失效。** 部分网关会用 HTTP 401 包裹「该模型不受支持」的响应，occ 此前只看状态码，于是提示登录失效并引导重新配置 provider——而密钥恰恰是有效的，网关正是先通过了鉴权才能查到模型并这样回答。现在响应内容的类型优先于 HTTP 状态，这类错误会明确指向模型而非凭据。
+- **provider 档案现在记录各档位的思考强度与上下文上限。** 此前档案只保存端点与模型，切回一个档案会带回它的 provider 却留下上一个 provider 的档位设置——例如从上下文 1M、思考 max 的配置切到 GPT，那些数值会原样套用。现在这些设置随档案一同保存与恢复，并与端点在同一次写入中落盘。切换前保存的旧档案不含这些设置，激活时会将档位恢复为该 provider 的出厂默认值，而不是沿用上一个 provider 的；对这类档案执行一次 `/provider save <同名>` 即可记录当前设置。
+- **修复聚合列表重复列出当前 provider 的模型。** 判断依据此前是逐个模型名比对，而 `/model` 自身的列表会过滤掉图像、音频、实时等对话用不到的模型，档案中保存的却是接口返回的完整列表——于是恰好被过滤掉的那些会重新出现在列表末尾，并标注「选中会切换 provider」，而你本就在这个 provider 上。现在当前会话所属的档案不再贡献任何行。其他 provider 提供同名模型仍会列出并标注归属。
+- **网页搜索的 codex 源支持固定独立凭据。** 此前四个搜索源中只有它无法固定——该路径的认证在请求内部完成，没有凭据注入口，允许固定会让这一行显示为已连接却无法真正使用。现在请求层接受成对的密钥与地址，codex 与其余三个来源行为一致，登出与切换 provider 都不会影响它。地址与密钥必须成对传入，不会回退到会话当前的地址，避免固定的凭据被发往此后改指的端点。
+- **修复 Gemini 会话中部分工具导致整个请求被拒。** Gemini 要求工具参数的顶层描述一个对象，并且实测其接口拒绝任何与 `anyOf` 并列设置了其他字段的结构（该限制未见于官方文档）。Workflow 工具以及 MCP 服务器提供的联合类型参数此前都以这种形状发出。现在在发往 Gemini 的边界处按结构归一化，不按工具名特判——MCP 的 schema 不由 occ 编写，同样的形状随时可能再次出现。运行时校验仍以原始 schema 为准，Anthropic 与 OpenAI 两条线的请求字节不变。
+- **修复 `/search-setting` 中 codex 首次登录输入配对码失败。** 面板此前只提示「打开链接并输入配对码」，读起来是一个动作；而该页面在未登录时会先跳转到登录流程，输入配对码的表单要登录之后才出现——首次使用的用户会把配对码输入到登录页。现在分两步呈现、自动打开浏览器，配对码有独立的展示位置不会被其他提示覆盖（此前想找回它只能取消重来，而取消会作废该配对码），并说明短横线是配对码的一部分。
+
 ## 2.38.3 - 2026-08-11
 
 - **修复 OpenCode Console 登录后每次请求都返回「Invalid API key」。** Console 签发的令牌属于账号，其推理地址由账号接口下发，与 Zen、Go 是不同的端点；occ 此前把地址写死成产品常量，于是把令牌送到了一个只接受 API key 的地方。同一令牌实测：发往账号下发的地址返回正常结果，发往 Zen 返回 401。现在端点、组织标识与模型列表都从账号接口读取，并保存在账号信息旁而非令牌旁——令牌每小时刷新，跟着令牌保存会让地址在一小时后丢失。从旧版本升级的会话无需重新登录即可自愈。此外，「该模型对你的组织已禁用」此前被归类为认证失败并提示重新登录，而凭据本身完全正常；现在会指明模型名并引导到 `/model`。

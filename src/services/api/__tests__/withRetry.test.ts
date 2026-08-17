@@ -49,13 +49,12 @@ mock.module('src/utils/telemetry/log.ts', logMock)
 
 import {
   CannotRetryError,
+  FallbackTriggeredError,
   clampMaxRetries,
   getDefaultMaxRetries,
   isTransientNetworkError,
   isTransientNetworkErrorText,
-  markTransientRetriesExhausted,
   withRetry,
-  withTransientNetworkRetry,
 } from '../withRetry.js'
 import { createAssistantAPIErrorMessageFromError } from '../../../utils/messages.js'
 import {
@@ -64,11 +63,12 @@ import {
   classifyRetryableAPIError,
   describeAPIError,
   getAPIErrorSource,
+  isAPIErrorReplayable,
   NonRetryableError,
 } from '../retryClassification.js'
 
 describe('withRetry context overflow adjustment', () => {
-  test('does not retry when thinking alone exceeds the remaining context', async () => {
+  test('uses the full retry budget when thinking prevents an adjustment', async () => {
     const overflow = new APIError(
       400,
       {
@@ -83,20 +83,50 @@ describe('withRetry context overflow adjustment', () => {
     let calls = 0
     const generator = withRetry(
       async () => ({}) as unknown as Anthropic,
-      async (_client, _attempt, context) => {
+      async () => {
         calls++
-        if (calls === 1) throw overflow
-        return context.maxTokensOverride
+        throw overflow
       },
       {
-        maxRetries: 1,
+        maxRetries: 2,
         model: 'claude-sonnet',
         thinkingConfig: { type: 'enabled', budgetTokens: 5_000 },
       },
     )
 
-    await expect(generator.next()).rejects.toBe(overflow)
-    expect(calls).toBe(1)
+    await expect(async () => {
+      let step = await generator.next()
+      while (!step.done) step = await generator.next()
+    }).toThrow(CannotRetryError)
+    expect(calls).toBe(3)
+  })
+
+  test('stops when a repeated max_tokens adjustment makes no progress', async () => {
+    const overflow = new APIError(
+      400,
+      undefined,
+      'input length and `max_tokens` exceed context limit: 190000 + 20000 > 200000',
+      new Headers(),
+    )
+    let calls = 0
+    const generator = withRetry(
+      async () => ({}) as unknown as Anthropic,
+      async () => {
+        calls++
+        throw overflow
+      },
+      {
+        maxRetries: 10,
+        model: 'claude-sonnet',
+        thinkingConfig: { type: 'disabled' },
+      },
+    )
+
+    await expect(async () => {
+      let step = await generator.next()
+      while (!step.done) step = await generator.next()
+    }).toThrow(CannotRetryError)
+    expect(calls).toBe(2)
   })
 
   test('caps a retry max_tokens value at the remaining context', async () => {
@@ -147,70 +177,14 @@ function codedError(code: string, message = code): Error {
   return Object.assign(new Error(message), { code })
 }
 
-type StreamItem = { type: string; [key: string]: unknown }
-
-function apiErrorMessage(text: string): StreamItem {
-  return {
-    type: 'assistant',
-    isApiErrorMessage: true,
-    message: { role: 'assistant', content: [{ type: 'text', text }] },
-  }
-}
-
-function textDelta(text: string): StreamItem {
-  return {
-    type: 'stream_event',
-    event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
-  }
-}
-
-function assistantMessage(text: string): StreamItem {
-  return {
-    type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'text', text }] },
-  }
-}
-
-async function collect(
-  generator: AsyncGenerator<StreamItem, void>,
-): Promise<StreamItem[]> {
-  const out: StreamItem[] = []
-  for await (const item of generator) {
-    out.push(item)
-  }
-  return out
-}
-
 /**
  * Which retry budget a failure lands in.
  *
- * Since every class is retryable, `retryable` alone no longer distinguishes an
- * overloaded gateway from a malformed tool schema — the lane does, and it is
- * what the attempt budget and the backoff are keyed on.
+ * Official retryable failures use the transient lane; permanent means the
+ * request stops without entering the retry ladder.
  */
 function laneOf(error: unknown): 'transient' | 'permanent' {
   return classifyRetryableAPIError(error).persistence
-}
-
-/**
- * Runs `body` with the retry-everything policy pinned to `value`.
- *
- * Restored in `finally`: this variable is read by every classification in the
- * process, so leaking it would silently re-decide later files in the shard.
- */
-async function withRetryPolicy<T>(
-  value: string | undefined,
-  body: () => Promise<T>,
-): Promise<T> {
-  const previous = process.env.CLAUDE_CODE_RETRY_ALL_ERRORS
-  if (value === undefined) delete process.env.CLAUDE_CODE_RETRY_ALL_ERRORS
-  else process.env.CLAUDE_CODE_RETRY_ALL_ERRORS = value
-  try {
-    return await body()
-  } finally {
-    if (previous === undefined) delete process.env.CLAUDE_CODE_RETRY_ALL_ERRORS
-    else process.env.CLAUDE_CODE_RETRY_ALL_ERRORS = previous
-  }
 }
 
 /** Every attempt `withRetry` makes for `error`, and how long it took. */
@@ -253,7 +227,7 @@ describe('isTransientNetworkError', () => {
     )
     expect(
       isTransientNetworkError(new Error('unclassified provider failure')),
-    ).toBe(true)
+    ).toBe(false)
   })
 
   test('matches errno codes carried on the error itself', () => {
@@ -293,8 +267,8 @@ describe('isTransientNetworkError', () => {
     expect(isTransientNetworkError(error)).toBe(true)
   })
 
-  test('puts transient statuses on the ladder and permanent 4xx on the cheap lane', () => {
-    for (const status of [408, 409, 425, 429, 500, 501, 503, 529]) {
+  test('retries official transient statuses and rejects permanent 4xx', () => {
+    for (const status of [408, 409, 429, 500, 501, 503, 529]) {
       // A short retry-after keeps the 429 out of the window gate, which is a
       // separate decision with its own describe block below.
       const error = new APIError(
@@ -306,18 +280,21 @@ describe('isTransientNetworkError', () => {
       expect(isTransientNetworkError(error)).toBe(true)
       expect(laneOf(error)).toBe('transient')
     }
-    for (const status of [400, 401, 403, 404, 422]) {
+    for (const status of [400, 403, 404, 422, 425]) {
       const error = new APIError(
         status,
         undefined,
         `status ${status}: Upstream request failed`,
         new Headers(),
       )
-      // Retried now — the repo owner's policy is that every API error gets
-      // another attempt — but on the cheap lane, not the ten-step ladder.
-      expect(isTransientNetworkError(error)).toBe(true)
+      expect(isTransientNetworkError(error)).toBe(false)
       expect(laneOf(error)).toBe('permanent')
     }
+    expect(
+      isTransientNetworkError(
+        new APIError(401, undefined, 'unauthorized', new Headers()),
+      ),
+    ).toBe(true)
   })
 
   test('never retries user aborts', () => {
@@ -346,22 +323,18 @@ describe('isTransientNetworkError', () => {
     expect(isTransientNetworkError('')).toBe(false)
   })
 
-  test('deterministic failures take the cheap lane rather than the ladder', () => {
+  test('deterministic failures do not enter the ladder', () => {
     for (const error of [
       new Error('Prompt is too long'),
       codedError('CERT_HAS_EXPIRED'),
       new APIError(400, undefined, 'invalid_request_error', new Headers()),
     ]) {
-      expect(isTransientNetworkError(error)).toBe(true)
+      expect(isTransientNetworkError(error)).toBe(false)
       expect(laneOf(error)).toBe('permanent')
     }
   })
 
   test('a TLS handshake failure stays off the ladder', () => {
-    // Must still fail in about a second so getSSLErrorHint's
-    // NODE_EXTRA_CA_CERTS advice is actionable, rather than arriving after a
-    // ~3 minute backoff ladder. The cheap lane is what keeps that true now
-    // that nothing fails outright.
     for (const error of [
       codedError('EPROTO', 'write EPROTO ssl/tls alert handshake failure'),
       codedError('ERR_SSL_PACKET_LENGTH_TOO_LONG'),
@@ -393,19 +366,23 @@ describe('isTransientNetworkError', () => {
 })
 
 describe('structured API error classification', () => {
-  test('classifies HTTP statuses and lanes them by how permanent they are', () => {
-    for (const status of [408, 409, 425, 429, 529, 500, 503]) {
+  test('classifies official retryable and permanent HTTP statuses', () => {
+    for (const status of [408, 409, 429, 529, 500, 503]) {
       expect(classifyRetryableAPIError({ status })).toMatchObject({
         retryable: true,
         persistence: 'transient',
       })
     }
-    for (const status of [400, 401, 402, 403, 404, 413, 422]) {
+    for (const status of [400, 402, 403, 404, 413, 422, 425]) {
       expect(classifyRetryableAPIError({ status })).toMatchObject({
-        retryable: true,
+        retryable: false,
         persistence: 'permanent',
       })
     }
+    expect(classifyRetryableAPIError({ status: 401 })).toMatchObject({
+      retryable: true,
+      persistence: 'transient',
+    })
     expect(categorizeRetryableAPIError({ status: 401 })).toBe(
       'authentication_failed',
     )
@@ -430,6 +407,27 @@ describe('structured API error classification', () => {
     ).toBe('invalid_request')
     // A real 403 with nothing to say is still an auth failure.
     expect(categorizeRetryableAPIError({ status: 403 })).toBe(
+      'authentication_failed',
+    )
+  })
+
+  test('an unserved model is an invalid request even when it arrives as a 401', () => {
+    // Measured against opencode.ai/zen/go/v1, which answers an id it does not
+    // serve with this exact shape. Relays that pass an upstream body through
+    // verbatim reproduce it under their own domain, so the user sees "your
+    // credentials failed" for a key that had just authenticated well enough for
+    // the gateway to look the model up and answer about it.
+    expect(
+      categorizeRetryableAPIError({
+        status: 401,
+        error: {
+          type: 'ModelError',
+          message: 'Model gpt-5.6-sol is not supported',
+        },
+      }),
+    ).toBe('invalid_request')
+    // A 401 that says nothing about a model is still an auth failure.
+    expect(categorizeRetryableAPIError({ status: 401 })).toBe(
       'authentication_failed',
     )
   })
@@ -460,12 +458,12 @@ describe('structured API error classification', () => {
     )
     expect(classifyRetryableAPIError({ code: 'INVALID_ARGUMENT' })).toEqual({
       category: 'invalid_request',
-      retryable: true,
+      retryable: false,
       persistence: 'permanent',
     })
     expect(classifyRetryableAPIError({ code: 'ValidationException' })).toEqual({
       category: 'invalid_request',
-      retryable: true,
+      retryable: false,
       persistence: 'permanent',
     })
     for (const code of [
@@ -478,7 +476,7 @@ describe('structured API error classification', () => {
     ]) {
       expect(classifyRetryableAPIError({ code })).toEqual({
         category: 'authentication_failed',
-        retryable: true,
+        retryable: false,
         persistence: 'permanent',
       })
     }
@@ -512,8 +510,8 @@ describe('structured API error classification', () => {
       }),
     ).toEqual({
       category: 'server_error',
-      retryable: false,
-      persistence: 'permanent',
+      retryable: true,
+      persistence: 'transient',
     })
     expect(
       classifyRetryableAPIError({
@@ -523,7 +521,7 @@ describe('structured API error classification', () => {
       }),
     ).toEqual({
       category: 'invalid_request',
-      retryable: true,
+      retryable: false,
       persistence: 'permanent',
     })
     for (const value of [
@@ -541,7 +539,7 @@ describe('structured API error classification', () => {
     ]) {
       expect(classifyRetryableAPIError(value)).toEqual({
         category: 'invalid_request',
-        retryable: true,
+        retryable: false,
         persistence: 'permanent',
       })
     }
@@ -554,31 +552,22 @@ describe('structured API error classification', () => {
       classifyRetryableAPIError(new Error('unclassified failure')),
     ).toEqual({
       category: 'server_error',
-      retryable: true,
-      persistence: 'transient',
+      retryable: false,
+      persistence: 'permanent',
     })
   })
 
-  test('an explicit retryable:false is never overridden by the policy', () => {
-    // This field is the delivered-content barrier: the stream adapters set it
-    // when an attempt's output has already reached the terminal, ACP and
-    // `--include-partial-messages` stdout, none of which can un-say a chunk.
-    // occ's own NonRetryableError uses the same field for a local precondition
-    // where no request was ever put on the wire.
-    //
-    // Asserted through the plain message as well as the marked error: the
-    // structural `retryable: false` is the veto, and the message patterns are
-    // the backstop for when the object is re-wrapped or rebuilt from text.
+  test('permanent local preconditions never enter the API retry policy', () => {
+    // Local preconditions use this field when no API request happened. Stream
+    // replay safety is represented separately by `replayable`.
     const chatgpt =
       'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.'
     const antigravity =
       'Antigravity project discovery returned no project. Open Antigravity once with this Google account, then retry.'
 
-    // Rebuilt from prose alone: no producer verdict survives, so the policy
-    // applies and the failure gets its one cheap attempt.
     expect(classifyRetryableAPIError(new Error(chatgpt))).toEqual({
       category: 'authentication_failed',
-      retryable: true,
+      retryable: false,
       persistence: 'permanent',
     })
     expect(
@@ -593,7 +582,7 @@ describe('structured API error classification', () => {
 
     expect(classifyRetryableAPIError(new Error(antigravity))).toEqual({
       category: 'invalid_request',
-      retryable: true,
+      retryable: false,
       persistence: 'permanent',
     })
     expect(
@@ -622,10 +611,36 @@ describe('structured API error classification', () => {
     })
   })
 
+  test('a committed UND_ERR_SOCKET stays retryable but is not replayable', () => {
+    const socket = Object.assign(new Error('other side closed'), {
+      code: 'UND_ERR_SOCKET',
+    })
+    const committed = Object.assign(
+      new Error('other side closed', { cause: socket }),
+      {
+        name: 'OpenAIRequestError',
+        retryable: true,
+        replayable: false,
+      },
+    )
+
+    expect(classifyRetryableAPIError(committed)).toEqual({
+      category: 'server_error',
+      retryable: true,
+      persistence: 'transient',
+    })
+    expect(isAPIErrorReplayable(committed)).toBe(false)
+    expect(
+      describeAPIError(committed, { provider: 'OpenAI' }).content,
+    ).toContain(
+      'code=UND_ERR_SOCKET · name=OpenAIRequestError · category=server_error · retryable=yes · replayable=no',
+    )
+  })
+
   test('the reported category does not depend on the retry verdict', () => {
-    // The upstream-gateway failure from the real bug report, in both the shape
-    // that reaches the transient tail and the shape a closed retry window pins
-    // permanent. It used to report category=server_error in the first and
+    // The upstream-gateway failure from the real bug report, in both the plain
+    // shape and the shape a closed retry window marks non-replayable. It used to
+    // report category=server_error in the first and
     // category=unknown in the second, which made one failure look like two and
     // sent a diagnosis down the wrong path.
     const payload = {
@@ -635,13 +650,15 @@ describe('structured API error classification', () => {
     }
     const pinned = Object.assign(new Error('stream_read_error'), {
       name: 'OpenAIRequestError',
-      retryable: false,
+      retryable: true,
+      replayable: false,
       cause: payload,
     })
 
     expect(categorizeRetryableAPIError(payload)).toBe('server_error')
     expect(categorizeRetryableAPIError(pinned)).toBe('server_error')
-    expect(classifyRetryableAPIError(pinned).retryable).toBe(false)
+    expect(classifyRetryableAPIError(pinned).retryable).toBe(true)
+    expect(isAPIErrorReplayable(pinned)).toBe(false)
 
     // Same invariant for a failure with no signal at all: whichever verdict it
     // ends up with, the reported category is the same one.
@@ -658,10 +675,8 @@ describe('structured API error classification', () => {
     // "then retry" in the Antigravity copy is advice for the user, and a
     // gateway saying it is unavailable must still climb the ladder.
     for (const message of [
-      'service unavailable, please retry',
       'upstream request failed — try again later',
       'no healthy upstream',
-      'the model is temporarily unavailable, retry shortly',
     ]) {
       expect(classifyRetryableAPIError(new Error(message)).retryable).toBe(true)
     }
@@ -770,7 +785,6 @@ describe('isTransientNetworkErrorText', () => {
       'API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}',
       'API Error: 503 Service Unavailable',
       'API Error: 501 Not Implemented',
-      'API Error: Gemini API request failed (425 Too Early): retry later',
       'API Error: Connection error.',
       'API Error: no healthy upstream',
     ]) {
@@ -835,14 +849,12 @@ describe('isTransientNetworkErrorText', () => {
     for (const text of [
       'Prompt is too long',
       'API Error: 400 {"type":"invalid_request_error"}',
-      'API Error: 401 {"type":"authentication_error"}',
       'API Error: 403 {"type":"permission_error"}',
       'API Error: 404 {"type":"not_found_error"}',
       'API Error: 413 {"type":"request_too_large"}',
       'API Error: The model has reached its context window limit.',
       'API Error (claude-opus-4-6): 400 {"type":"invalid_request_error"}',
       'Please run /login · API Error: 401 {"type":"authentication_error"}',
-      'input length and `max_tokens` exceed context limit: 195000 + 20000 > 200000',
     ]) {
       expect(laneOf(text)).toBe('permanent')
     }
@@ -914,29 +926,13 @@ describe('withRetry with bare (non-APIError) transport failures', () => {
     expect(calls).toBe(2)
   })
 
-  test('gives permanent API statuses exactly one cheap retry', async () => {
-    // The policy: every API error is retried. The budget: a class that almost
-    // never answers differently gets one attempt at 250ms, not ten attempts
-    // over ~3 minutes. A 400 for a malformed tool schema has to keep surfacing
-    // in about the time a hard failure used to.
-    for (const status of [400, 401, 403, 404, 422]) {
-      const { calls, elapsedMs } = await runLadder(
+  test('rejects permanent API statuses without retry', async () => {
+    for (const status of [400, 403, 404, 422]) {
+      const { calls } = await runLadder(
         new APIError(status, undefined, `status ${status}`, new Headers()),
       )
-      expect(calls).toBe(2)
-      expect(elapsedMs).toBeLessThan(2_000)
+      expect(calls).toBe(1)
     }
-  }, 20_000)
-
-  test('CLAUDE_CODE_RETRY_ALL_ERRORS=0 restores the old fast failure', async () => {
-    await withRetryPolicy('0', async () => {
-      for (const status of [400, 401, 403, 404, 422]) {
-        const { calls } = await runLadder(
-          new APIError(status, undefined, `status ${status}`, new Headers()),
-        )
-        expect(calls).toBe(1)
-      }
-    })
   })
 
   test('a transient status still gets the full ladder', async () => {
@@ -953,7 +949,7 @@ describe('withRetry with bare (non-APIError) transport failures', () => {
     expect(calls).toBe(5)
   }, 20_000)
 
-  test('routes an unclassified API-boundary error into the retry ladder', async () => {
+  test('rejects an unclassified API-boundary error', async () => {
     let calls = 0
     const generator = withRetry(
       async () => ({}) as unknown as Anthropic,
@@ -968,12 +964,8 @@ describe('withRetry with bare (non-APIError) transport failures', () => {
       },
     )
 
-    expect(await generator.next()).toMatchObject({
-      done: false,
-      value: { retryAttempt: 1 },
-    })
+    await expect(generator.next()).rejects.toBeInstanceOf(CannotRetryError)
     expect(calls).toBe(1)
-    await generator.return(undefined as never)
   })
 })
 
@@ -1057,6 +1049,65 @@ describe('credential recovery after an auth failure', () => {
     await failOnce(new APIError(403, undefined, 'forbidden', new Headers()))
     expect(authCalls).toEqual([])
   })
+
+  test('rebuilds the client after a 401 credential refresh', async () => {
+    authCalls.length = 0
+    let clients = 0
+    let calls = 0
+    const generator = withRetry(
+      async () => {
+        clients++
+        return { clientNumber: clients } as unknown as Anthropic
+      },
+      async client => {
+        calls++
+        if (calls === 1) {
+          throw new APIError(401, undefined, 'unauthorized', new Headers())
+        }
+        return (client as unknown as { clientNumber: number }).clientNumber
+      },
+      {
+        maxRetries: 2,
+        model: 'claude-sonnet',
+        thinkingConfig: { type: 'disabled' },
+      },
+    )
+
+    let step = await generator.next()
+    while (!step.done) step = await generator.next()
+    expect(step.value).toBe(2)
+    expect(clients).toBe(2)
+  }, 15_000)
+
+  test('rebuilds the client after UND_ERR_SOCKET', async () => {
+    let clients = 0
+    let calls = 0
+    const generator = withRetry(
+      async () => {
+        clients++
+        return { clientNumber: clients } as unknown as Anthropic
+      },
+      async client => {
+        calls++
+        if (calls === 1) {
+          throw Object.assign(new Error('other side closed'), {
+            code: 'UND_ERR_SOCKET',
+          })
+        }
+        return (client as unknown as { clientNumber: number }).clientNumber
+      },
+      {
+        maxRetries: 2,
+        model: 'claude-sonnet',
+        thinkingConfig: { type: 'disabled' },
+      },
+    )
+
+    let step = await generator.next()
+    while (!step.done) step = await generator.next()
+    expect(step.value).toBe(2)
+    expect(clients).toBe(2)
+  }, 15_000)
 
   test('a transport blip is not treated as a credential problem', async () => {
     authCalls.length = 0
@@ -1153,11 +1204,10 @@ describe('Retry-After bounds', () => {
     expect(await firstRetryDelayMs('45')).toBe(45_000)
   })
 
-  test('caps an absurd Retry-After instead of parking the turn for hours', async () => {
-    // Nothing validates this header. A gateway answering `Retry-After: 7200`
-    // used to be taken at face value: two hours behind a countdown row the
-    // user cannot shorten, on a retry ladder meant to outlast a blip.
-    expect(await firstRetryDelayMs('7200')).toBe(60_000)
+  test('rejects an absurd Retry-After instead of parking the turn', async () => {
+    await expect(firstRetryDelayMs('7200')).rejects.toBeInstanceOf(
+      CannotRetryError,
+    )
   })
 
   test('the exponential ladder is unaffected by the cap', async () => {
@@ -1181,23 +1231,18 @@ describe('Retry-After bounds', () => {
   })
 })
 
-describe('429 rate limits that outlast the retry ladder', () => {
+describe('429 retry coverage', () => {
   /**
    * The ladder's first decision. A granted retry yields its countdown notice
    * before sleeping; a refusal throws CannotRetryError out of the same call.
    */
-  async function decisionFor(
-    headers: Record<string, string>,
+  async function decisionForError(
+    error: APIError,
   ): Promise<'retried' | 'refused'> {
     const generator = withRetry(
       async () => ({}) as unknown as Anthropic,
       async () => {
-        throw new APIError(
-          429,
-          undefined,
-          'rate limit exceeded',
-          new Headers(headers),
-        )
+        throw error
       },
       {
         maxRetries: 3,
@@ -1214,6 +1259,13 @@ describe('429 rate limits that outlast the retry ladder', () => {
     }
   }
 
+  const decisionFor = (
+    headers: Record<string, string>,
+  ): Promise<'retried' | 'refused'> =>
+    decisionForError(
+      new APIError(429, undefined, 'rate limit exceeded', new Headers(headers)),
+    )
+
   const inSeconds = (offsetMs: number): string =>
     String(Math.floor((Date.now() + offsetMs) / 1000))
 
@@ -1222,17 +1274,12 @@ describe('429 rate limits that outlast the retry ladder', () => {
     subscription.enterprise = false
   })
 
-  test('refuses a 429 whose advertised reset is hours away', async () => {
-    // The Max/Pro 5-hour window. Every step of this ladder is clamped to 60s,
-    // so ten retries cannot outlast it — they only delay the "5-hour limit
-    // reached" message by ~10 minutes. That message still arrives, from
-    // errors.ts by way of CannotRetryError.originalError; this only makes it
-    // immediate.
+  test('retries a 429 whose advertised reset is hours away', async () => {
     expect(
       await decisionFor({
         'anthropic-ratelimit-unified-reset': inSeconds(5 * 60 * 60 * 1000),
       }),
-    ).toBe('refused')
+    ).toBe('retried')
   })
 
   test('still retries a 429 whose window reopens inside the ladder', async () => {
@@ -1244,16 +1291,15 @@ describe('429 rate limits that outlast the retry ladder', () => {
     ).toBe('retried')
   })
 
-  test('reads a long Retry-After the same way as a reset timestamp', async () => {
+  test('rejects excessive and honors short Retry-After values', async () => {
     expect(await decisionFor({ 'retry-after': '7200' })).toBe('refused')
     expect(await decisionFor({ 'retry-after': '30' })).toBe('retried')
   })
 
-  test('refuses an unlabelled 429 for a subscription plan', async () => {
-    // Windowed by nature: without a reset header, assume the window is long.
+  test('retries an unlabelled 429 for a subscription plan', async () => {
     subscription.claudeAI = true
     subscription.enterprise = false
-    expect(await decisionFor({})).toBe('refused')
+    expect(await decisionFor({})).toBe('retried')
   })
 
   test('retries an unlabelled 429 for PAYG and enterprise seats', async () => {
@@ -1264,9 +1310,305 @@ describe('429 rate limits that outlast the retry ladder', () => {
     subscription.enterprise = true
     expect(await decisionFor({})).toBe('retried')
   })
+
+  // The whole ladder in front of a spent subscription window buys the user
+  // nothing: the window does not reopen inside a turn, and the copy that
+  // explains it (errors.ts, "You've reached your usage limit") only renders
+  // once the ladder gives up — up to ~10 minutes later with Retry-After: 60.
+  for (const header of [
+    'anthropic-ratelimit-unified-representative-claim',
+    'anthropic-ratelimit-unified-overage-status',
+    'anthropic-ratelimit-unified-overage-disabled-reason',
+  ]) {
+    test(`refuses a subscription 429 labelled by ${header}`, async () => {
+      expect(await decisionFor({ [header]: 'rejected' })).toBe('refused')
+    })
+  }
+
+  test('a quota 429 outranks x-should-retry: true', async () => {
+    expect(
+      await decisionFor({
+        'x-should-retry': 'true',
+        'anthropic-ratelimit-unified-overage-status': 'rejected',
+      }),
+    ).toBe('refused')
+  })
+
+  test('quota headers do not stop PAYG or enterprise seats retrying', async () => {
+    const quota = { 'anthropic-ratelimit-unified-overage-status': 'rejected' }
+    subscription.claudeAI = false
+    expect(await decisionFor(quota)).toBe('retried')
+
+    subscription.claudeAI = true
+    subscription.enterprise = true
+    expect(await decisionFor(quota)).toBe('retried')
+  })
+
+  test('refuses a credits_required 429 on every seat shape', async () => {
+    const creditsRequired = () =>
+      new APIError(
+        429,
+        { error: { details: { error_code: 'credits_required' } } },
+        'Extra usage is required to continue',
+        new Headers(),
+      )
+    expect(await decisionForError(creditsRequired())).toBe('refused')
+
+    subscription.claudeAI = false
+    expect(await decisionForError(creditsRequired())).toBe('refused')
+  })
+
+  // "We could not read your credit state" is not "you are out of credit", so
+  // the credits_required veto stands down and the seat's own 429 rule decides.
+  test('a failed credit check falls through to the seat rule', async () => {
+    const creditCheckFailed = (reason: string) =>
+      new APIError(
+        429,
+        { error: { details: { error_code: 'credits_required' } } },
+        'Usage credits are required',
+        new Headers({
+          'anthropic-ratelimit-unified-overage-disabled-reason': reason,
+        }),
+      )
+    for (const reason of ['fetch_error', 'org_level_disabled_until']) {
+      subscription.claudeAI = false
+      expect(await decisionForError(creditCheckFailed(reason))).toBe('retried')
+
+      // A subscription seat still stops, but on the unified-header rule.
+      subscription.claudeAI = true
+      expect(await decisionForError(creditCheckFailed(reason))).toBe('refused')
+    }
+  })
 })
 
-describe('529 background amplification', () => {
+describe('configured model fallback', () => {
+  for (const [label, error, reason] of [
+    [
+      'model 404',
+      new APIError(
+        404,
+        undefined,
+        '{"type":"not_found_error","message":"model: unavailable"}',
+        new Headers(),
+      ),
+      'model_not_found',
+    ],
+    [
+      'model permission 403',
+      new APIError(
+        403,
+        undefined,
+        '{"type":"permission_error","message":"model: denied"}',
+        new Headers(),
+      ),
+      'permission_denied',
+    ],
+    [
+      'server 503',
+      new APIError(503, undefined, 'backend unavailable', new Headers()),
+      'server_error',
+    ],
+  ] as const) {
+    test(`falls back immediately for ${label}`, async () => {
+      let calls = 0
+      const generator = withRetry(
+        async () => ({}) as unknown as Anthropic,
+        async () => {
+          calls++
+          throw error
+        },
+        {
+          maxRetries: 10,
+          model: 'claude-sonnet',
+          fallbackModel: 'claude-haiku',
+          thinkingConfig: { type: 'disabled' },
+        },
+      )
+
+      let caught: unknown
+      try {
+        await generator.next()
+      } catch (error) {
+        caught = error
+      }
+      expect(calls).toBe(1)
+      expect(caught).toMatchObject({
+        originalModel: 'claude-sonnet',
+        fallbackModel: 'claude-haiku',
+        reason,
+        originalError: error,
+      })
+    })
+  }
+
+  /** Run one attempt and hand back whatever left the ladder. */
+  async function outcomeFor(
+    error: unknown,
+    options: { fallbackModel?: string } = { fallbackModel: 'claude-haiku' },
+  ): Promise<unknown> {
+    const generator = withRetry(
+      async () => ({}) as unknown as Anthropic,
+      async () => {
+        throw error
+      },
+      {
+        maxRetries: 0,
+        model: 'claude-sonnet',
+        thinkingConfig: { type: 'disabled' },
+        ...options,
+      },
+    )
+    try {
+      await generator.next()
+      return undefined
+    } catch (caught) {
+      return caught
+    }
+  }
+
+  // Before this, a configured fallback only engaged for the three shapes
+  // modelFallbackReason recognises plus repeated 529s. Every other permanent
+  // failure ended the turn with the fallback list untouched.
+  test('switches models as a last resort for an otherwise fatal failure', async () => {
+    const error = new APIError(
+      400,
+      undefined,
+      'unsupported parameter: output_config',
+      new Headers(),
+    )
+    expect(await outcomeFor(error)).toMatchObject({
+      originalModel: 'claude-sonnet',
+      fallbackModel: 'claude-haiku',
+      reason: 'last_resort',
+      originalError: error,
+    })
+  })
+
+  test('needs a fallback model to have one to switch to', async () => {
+    expect(
+      await outcomeFor(
+        new APIError(400, undefined, 'unsupported parameter', new Headers()),
+        {},
+      ),
+    ).toBeInstanceOf(CannotRetryError)
+  })
+
+  // A different model reproduces all of these verbatim, so spending a request
+  // to find that out is pure latency.
+  for (const [label, error] of [
+    ['auth 401', new APIError(401, undefined, 'unauthorized', new Headers())],
+    [
+      'proxy auth 407',
+      new APIError(407, undefined, 'proxy auth', new Headers()),
+    ],
+    ['payload 413', new APIError(413, undefined, 'too large', new Headers())],
+    [
+      'context overflow',
+      new APIError(400, undefined, 'prompt is too long', new Headers()),
+    ],
+    [
+      'exhausted credit',
+      new APIError(
+        400,
+        undefined,
+        'Your credit balance is too low',
+        new Headers(),
+      ),
+    ],
+    [
+      'disabled org',
+      new APIError(
+        403,
+        undefined,
+        'This organization has been disabled',
+        new Headers(),
+      ),
+    ],
+  ] as const) {
+    test(`does not burn a fallback on ${label}`, async () => {
+      expect(await outcomeFor(error)).toBeInstanceOf(CannotRetryError)
+    })
+  }
+
+  describe('under the retry watchdog', () => {
+    beforeEach(() => {
+      process.env.CLAUDE_CODE_RETRY_WATCHDOG = '1'
+    })
+    afterEach(() => {
+      delete process.env.CLAUDE_CODE_RETRY_WATCHDOG
+    })
+
+    // Waiting out a 5xx is what unattended mode is for; waiting out a retired
+    // model id is not — that one never resolves, so the run must switch.
+    for (const [label, error, reason] of [
+      [
+        'model 404',
+        new APIError(
+          404,
+          undefined,
+          '{"type":"not_found_error","message":"model: unavailable"}',
+          new Headers(),
+        ),
+        'model_not_found',
+      ],
+      [
+        'model permission 403',
+        new APIError(
+          403,
+          undefined,
+          '{"type":"permission_error","message":"model: denied"}',
+          new Headers(),
+        ),
+        'permission_denied',
+      ],
+    ] as const) {
+      test(`still falls back for ${label}`, async () => {
+        expect(await outcomeFor(error)).toMatchObject({
+          fallbackModel: 'claude-haiku',
+          reason,
+        })
+      })
+    }
+
+    test('keeps waiting out a 5xx instead of switching', async () => {
+      const generator = withRetry(
+        async () => ({}) as unknown as Anthropic,
+        async () => {
+          throw new APIError(503, undefined, 'backend down', new Headers())
+        },
+        {
+          maxRetries: 1,
+          model: 'claude-sonnet',
+          fallbackModel: 'claude-haiku',
+          thinkingConfig: { type: 'disabled' },
+        },
+      )
+      const step = await generator.next()
+      await generator.return(undefined as never)
+      // A retry notice, not a FallbackTriggeredError.
+      expect(step.done).toBe(false)
+    })
+  })
+
+  test('does not treat an endpoint 404 as a model fallback', async () => {
+    const generator = withRetry(
+      async () => ({}) as unknown as Anthropic,
+      async () => {
+        throw new APIError(404, undefined, 'route not found', new Headers())
+      },
+      {
+        maxRetries: 0,
+        model: 'claude-sonnet',
+        fallbackModel: 'claude-haiku',
+        thinkingConfig: { type: 'disabled' },
+      },
+    )
+
+    await expect(generator.next()).rejects.toBeInstanceOf(CannotRetryError)
+  })
+})
+
+describe('529 retry coverage', () => {
   /** The ladder's first decision for a 529 raised under `querySource`. */
   async function decisionFor(
     querySource?: string,
@@ -1292,9 +1634,7 @@ describe('529 background amplification', () => {
     }
   }
 
-  test('drops a 529 raised by a source nobody is waiting on', async () => {
-    // During a capacity cascade every retry is 3-10x gateway amplification,
-    // and the user never sees a title/summary/suggestion fail.
+  test('drops a 529 for auxiliary background sources', async () => {
     for (const source of ['title_generation', 'suggestions', 'quota_probe']) {
       expect(await decisionFor(source)).toBe('refused')
     }
@@ -1315,584 +1655,79 @@ describe('529 background amplification', () => {
   test('retries an untagged 529, conservatively', async () => {
     expect(await decisionFor()).toBe('retried')
   })
+
+  test('uses the configured retry budget when no fallback model is configured', async () => {
+    const error = new APIError(
+      529,
+      undefined,
+      'overloaded',
+      new Headers({ 'retry-after': '0' }),
+    )
+    const { calls } = await runLadder(error, 2)
+    expect(calls).toBe(3)
+  })
+
+  test('falls back from Sonnet after three consecutive 529 responses', async () => {
+    let calls = 0
+    const generator = withRetry(
+      async () => ({}) as unknown as Anthropic,
+      async () => {
+        calls++
+        throw new APIError(
+          529,
+          undefined,
+          'overloaded',
+          new Headers({ 'retry-after': '0' }),
+        )
+      },
+      {
+        maxRetries: 4,
+        model: 'claude-sonnet',
+        fallbackModel: 'claude-haiku',
+        thinkingConfig: { type: 'disabled' },
+      },
+    )
+
+    await expect(async () => {
+      let step = await generator.next()
+      while (!step.done) step = await generator.next()
+    }).toThrow(FallbackTriggeredError)
+    expect(calls).toBe(3)
+  })
 })
 
-describe('withTransientNetworkRetry', () => {
-  test('defaults to ten retries after the initial attempt and clamps overrides', () => {
-    const previous = process.env.CLAUDE_CODE_MAX_RETRIES
-    try {
-      delete process.env.CLAUDE_CODE_MAX_RETRIES
-      expect(getDefaultMaxRetries()).toBe(10)
-      process.env.CLAUDE_CODE_MAX_RETRIES = '999'
-      expect(getDefaultMaxRetries()).toBe(10)
-      expect(clampMaxRetries(999)).toBe(10)
-      process.env.CLAUDE_CODE_MAX_RETRIES = 'not-a-number'
-      expect(getDefaultMaxRetries()).toBe(10)
-    } finally {
-      if (previous === undefined) {
-        delete process.env.CLAUDE_CODE_MAX_RETRIES
-      } else {
-        process.env.CLAUDE_CODE_MAX_RETRIES = previous
-      }
-    }
-  })
-
-  test('re-runs the query when an attempt only produced a transient error', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          if (attempts === 1) {
-            yield apiErrorMessage('API Error: fetch failed')
-            return
-          }
-          yield textDelta('hi')
-          yield assistantMessage('hi')
-        },
-        { maxRetries: 2 },
+/** Official Claude Code retry policy and provider-shape bridges. */
+describe('official retry policy', () => {
+  test('retries 401 for credential refresh but rejects other auth failures', async () => {
+    expect(
+      classifyRetryableAPIError(
+        new APIError(401, undefined, 'unauthorized', new Headers()),
       ),
-    )
-
-    expect(attempts).toBe(2)
-    // The swallowed error must not reach the caller; only the retry notice does.
-    expect(items.filter(i => i.isApiErrorMessage)).toHaveLength(0)
-    expect(items.filter(i => i.type === 'system')).toHaveLength(1)
-    expect(items.at(-1)).toMatchObject({ type: 'assistant' })
-  }, 15_000)
-
-  test('never retries once content has been emitted (inc-4258 double tool exec)', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield textDelta('partial answer')
-          yield apiErrorMessage('API Error: terminated')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(2)
-    expect(items[1]).toMatchObject({ isApiErrorMessage: true })
-  })
-
-  test('passes the error through once the ladder is exhausted', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield apiErrorMessage('API Error: fetch failed')
-        },
-        { maxRetries: 2 },
-      ),
-    )
-
-    expect(attempts).toBe(3) // 1 initial + 2 retries
-    expect(items.filter(i => i.type === 'system')).toHaveLength(2)
-    expect(items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-  }, 15_000)
-
-  test('stops immediately when the signal is already aborted', async () => {
-    const controller = new AbortController()
-    controller.abort()
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield apiErrorMessage('API Error: fetch failed')
-        },
-        { maxRetries: 10, signal: controller.signal },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({ isApiErrorMessage: true })
-  })
-
-  test('does not stack a second ladder on an already-exhausted error', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield markTransientRetriesExhausted(
-            apiErrorMessage('API Error: fetch failed'),
-          )
-        },
-        { maxRetries: 10 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-  })
-
-  test('does not multiply a provider ladder exhausted on the source error', async () => {
-    const exhausted = Object.assign(new Error('fetch failed'), {
+    ).toMatchObject({
+      category: 'authentication_failed',
       retryable: true,
-      [Symbol.for('occ.api.transientRetriesExhausted')]: true,
+      persistence: 'transient',
     })
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield attachAPIErrorSource(
-            {
-              ...apiErrorMessage('API Error: fetch failed'),
-              error: 'server_error',
-            },
-            exhausted,
-          )
-        },
-        { maxRetries: 10 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-  })
-
-  test('an explicit retryable:false outranks transient-looking prose', async () => {
-    // The adapter already classified this failure as permanent. Or-ing the two
-    // signals let the wording of the message — 'stream idle timeout' is on the
-    // transient list — overrule that verdict and replay a request the producer
-    // had ruled out, up to ten times.
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield {
-            ...apiErrorMessage('API Error: stream idle timeout'),
-            error: Object.assign(new Error('stream idle timeout'), {
-              name: 'OpenAIRequestError',
-              retryable: false,
-            }),
-          }
-        },
-        { maxRetries: 5 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-  })
-
-  test('an error object saying retryable:true is still retried', async () => {
-    let attempts = 0
-    await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          if (attempts === 1) {
-            // Text alone says nothing here — the object is what carries the
-            // verdict, and it must keep winning in this direction too.
-            yield {
-              ...apiErrorMessage('API Error: gateway said no'),
-              error: Object.assign(new Error('gateway said no'), {
-                name: 'OpenAIRequestError',
-                retryable: true,
-              }),
-            }
-            return
-          }
-          yield assistantMessage('recovered')
-        },
-        { maxRetries: 2 },
-      ),
-    )
-
-    expect(attempts).toBe(2)
-  }, 15_000)
-
-  test('gives a deterministic API error one cheap retry, then surfaces it', async () => {
-    const startedAt = Date.now()
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield apiErrorMessage(
-            'API Error: 400 {"type":"invalid_request_error"}',
-          )
-        },
-        { maxRetries: 10 },
-      ),
-    )
-
-    expect(attempts).toBe(2)
-    expect(Date.now() - startedAt).toBeLessThan(2_000)
-    expect(items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-  }, 15_000)
-
-  test('CLAUDE_CODE_RETRY_ALL_ERRORS=0 keeps a deterministic error at one attempt', async () => {
-    await withRetryPolicy('0', async () => {
-      let attempts = 0
-      const items = await collect(
-        withTransientNetworkRetry(
-          async function* () {
-            attempts++
-            yield apiErrorMessage(
-              'API Error: 400 {"type":"invalid_request_error"}',
-            )
-          },
-          { maxRetries: 10 },
-        ),
-      )
-      expect(attempts).toBe(1)
-      expect(items).toHaveLength(1)
-    })
-  })
-
-  test('retries the stream deaths seen with the non-streaming fallback disabled', async () => {
-    // CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1 rethrows these out of the
-    // stream loop, so claude.ts converts them to `API Error: <text>` with no
-    // CannotRetryError and therefore no exhausted marker — this wrapper is the
-    // only ladder they ever get.
-    for (const text of [
-      'API Error: Stream idle timeout - no chunks received',
-      'API Error: Stream ended without receiving any events',
-    ]) {
-      let attempts = 0
-      const items = await collect(
-        withTransientNetworkRetry(
-          async function* () {
-            attempts++
-            if (attempts === 1) {
-              yield apiErrorMessage(text)
-              return
-            }
-            yield assistantMessage('recovered')
-          },
-          { maxRetries: 2 },
-        ),
-      )
-      expect(attempts).toBe(2)
-      expect(items.filter(i => i.isApiErrorMessage)).toHaveLength(0)
-      expect(items.at(-1)).toMatchObject({ type: 'assistant' })
-    }
-  }, 15_000)
-
-  test('the exhausted marker never reaches the transcript JSONL', () => {
-    const message = markTransientRetriesExhausted(
-      apiErrorMessage('API Error: fetch failed'),
-    )
-    // Symbol-keyed, so session persistence round-trips cleanly.
-    expect(JSON.stringify(message)).not.toContain('transientRetriesExhausted')
-    expect(Object.keys(message)).not.toContain('transientRetriesExhausted')
-    // ...and the wrapper still reads it.
-    expect(Object.getOwnPropertySymbols(message).map(String)).toContain(
-      'Symbol(occ.api.transientRetriesExhausted)',
-    )
-  })
-
-  test('emits an earlier held error rather than dropping it on overwrite', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          if (attempts === 1) {
-            yield apiErrorMessage('API Error: fetch failed')
-            yield apiErrorMessage('API Error: terminated')
-            return
-          }
-          yield assistantMessage('recovered')
-        },
-        { maxRetries: 2 },
-      ),
-    )
-
-    expect(attempts).toBe(2)
-    // The first error is surfaced (not swallowed); the second is the one held
-    // back and replaced by the successful retry.
-    const errors = items.filter(i => i.isApiErrorMessage)
-    expect(errors).toHaveLength(1)
-    expect(items.at(-1)).toMatchObject({ type: 'assistant' })
-  }, 15_000)
-
-  test('retries a thrown transient error but rethrows a user abort', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          if (attempts === 1) {
-            throw new TypeError('fetch failed')
-          }
-          yield assistantMessage('recovered')
-        },
-        { maxRetries: 2 },
-      ),
-    )
-    expect(attempts).toBe(2)
-    expect(items.at(-1)).toMatchObject({ type: 'assistant' })
-
-    await expect(
-      collect(
-        withTransientNetworkRetry(
-          // biome-ignore lint/correctness/useYield: models a query that dies before its first yield
-          async function* () {
-            throw new APIUserAbortError()
-          },
-          { maxRetries: 2 },
-        ),
-      ),
-    ).rejects.toBeInstanceOf(APIUserAbortError)
-  }, 15_000)
-
-  test('is a passthrough when retries are disabled', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield apiErrorMessage('API Error: fetch failed')
-        },
-        { maxRetries: 0 },
-      ),
-    )
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-  })
-})
-
-/** Once any model payload is yielded outside the API layer, replay is unsafe. */
-describe('withTransientNetworkRetry commitment boundary', () => {
-  function thinkingDelta(thinking: string): StreamItem {
-    return {
-      type: 'stream_event',
-      event: {
-        type: 'content_block_delta',
-        delta: { type: 'thinking_delta', thinking },
-      },
-    }
-  }
-
-  function signatureDelta(signature: string): StreamItem {
-    return {
-      type: 'stream_event',
-      event: {
-        type: 'content_block_delta',
-        delta: { type: 'signature_delta', signature },
-      },
-    }
-  }
-
-  for (const [label, partial] of [
-    ['thinking', thinkingDelta('reasoning...')],
-    ['signature', signatureDelta('sig')],
-  ] as Array<[string, StreamItem]>) {
-    test(`does not replay after ${label} output was yielded`, async () => {
-      let attempts = 0
-      const items = await collect(
-        withTransientNetworkRetry(
-          async function* () {
-            attempts++
-            yield partial
-            yield apiErrorMessage('API Error: terminated')
-          },
-          { maxRetries: 2 },
-        ),
-      )
-
-      expect(attempts).toBe(1)
-      expect(items).toHaveLength(2)
-      expect(items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-    })
-  }
-
-  for (const blockType of ['tool_use', 'server_tool_use']) {
-    test(`does not replay after a ${blockType} identity was yielded`, async () => {
-      let attempts = 0
-      const items = await collect(
-        withTransientNetworkRetry(
-          async function* () {
-            attempts++
-            yield {
-              type: 'stream_event',
-              event: {
-                type: 'content_block_start',
-                content_block: {
-                  type: blockType,
-                  id: 'toolu_1',
-                  name: 'Bash',
-                  input: {},
-                },
-              },
-            } as StreamItem
-            yield apiErrorMessage('API Error: terminated')
-          },
-          { maxRetries: 5 },
-        ),
-      )
-
-      expect(attempts).toBe(1)
-      expect(items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-    })
-  }
-
-  test('still refuses to retry after tool arguments started (inc-4258)', async () => {
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield {
-            type: 'stream_event',
-            event: {
-              type: 'content_block_delta',
-              delta: { type: 'input_json_delta', partial_json: '{"a":1}' },
-            },
-          } as StreamItem
-          yield apiErrorMessage('API Error: terminated')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-    expect(items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-  })
-
-  test('does not replay after a refusal terminal event', async () => {
-    let attempts = 0
-    await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield {
-            type: 'stream_event',
-            event: {
-              type: 'message_delta',
-              delta: { stop_reason: 'refusal', stop_sequence: null },
-              usage: { output_tokens: 0 },
-            },
-          } as StreamItem
-          yield apiErrorMessage('API Error: terminated')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-
-    expect(attempts).toBe(1)
-  })
-
-  test('still refuses to retry after text reached the user', async () => {
-    let attempts = 0
-    await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield textDelta('visible answer')
-          yield apiErrorMessage('API Error: terminated')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-    expect(attempts).toBe(1)
-  })
-
-  test('thinking then text then death does not retry', async () => {
-    // Text after thinking still pins the turn — the ordering must not matter.
-    let attempts = 0
-    await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield thinkingDelta('reasoning')
-          yield textDelta('visible')
-          yield apiErrorMessage('API Error: terminated')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-    expect(attempts).toBe(1)
-  })
-
-  test('a user abort is never retried', async () => {
-    // Retrying a cancellation would resurrect a turn the user killed.
-    let attempts = 0
-    const items = await collect(
-      withTransientNetworkRetry(
-        async function* () {
-          attempts++
-          yield apiErrorMessage('API Error: Request was aborted.')
-        },
-        { maxRetries: 5 },
-      ),
-    )
-    expect(attempts).toBe(1)
-    expect(items).toHaveLength(1)
-  })
-
-  test('delivered content is never replayed for a class the policy now retries', async () => {
-    // Asserted as a pair, because either half alone is satisfiable by the
-    // wrong implementation: a build that never retries a 401 passes the first,
-    // and a build without the barrier passes the second.
-    const run = async (emitText: boolean) => {
-      let attempts = 0
-      const items = await collect(
-        withTransientNetworkRetry(
-          async function* () {
-            attempts++
-            if (emitText) yield textDelta('half an answer')
-            yield apiErrorMessage(
-              'API Error: 401 {"type":"authentication_error"}',
-            )
-          },
-          { maxRetries: 10 },
-        ),
-      )
-      return { attempts, items }
-    }
-
-    // Nothing delivered: the policy applies and the failure is retried.
-    expect((await run(false)).attempts).toBe(2)
-
-    // A delta already went to the terminal, to an ACP `agent_message_chunk`
-    // and to `--include-partial-messages` stdout — none of which has an update
-    // kind that takes a chunk back. The barrier sits above the policy.
-    const delivered = await run(true)
-    expect(delivered.attempts).toBe(1)
-    expect(delivered.items).toHaveLength(2)
-    expect(delivered.items.at(-1)).toMatchObject({ isApiErrorMessage: true })
-  }, 15_000)
-})
-
-/**
- * The repo owner's policy: every API error is retried. What varies is how much
- * that is worth — see the `persistence` lane on the classification.
- */
-describe('retry-everything policy', () => {
-  test('an authentication failure is retried instead of failing on sight', async () => {
     for (const error of [
-      new APIError(401, undefined, 'unauthorized', new Headers()),
       new APIError(403, undefined, 'forbidden', new Headers()),
       new Error('authentication failed'),
       codedError('NotAuthorizedException', 'rejected'),
     ]) {
       expect(classifyRetryableAPIError(error)).toMatchObject({
         category: 'authentication_failed',
-        retryable: true,
+        retryable: false,
         persistence: 'permanent',
       })
     }
 
     const { calls } = await runLadder(
       new APIError(401, undefined, 'unauthorized', new Headers()),
+      1,
     )
     expect(calls).toBe(2)
-  })
+  }, 15_000)
 
-  test('billing, permission and invalid-request failures are retried too', () => {
+  test('does not retry billing, permission, or invalid requests', () => {
     for (const [error, category] of [
       [
         new APIError(402, undefined, 'payment required', new Headers()),
@@ -1912,40 +1747,26 @@ describe('retry-everything policy', () => {
     ] as Array<[unknown, string]>) {
       expect(classifyRetryableAPIError(error)).toMatchObject({
         category,
-        retryable: true,
+        retryable: false,
         persistence: 'permanent',
       })
     }
   })
 
-  test('the unclassified fall-through still climbs the whole ladder', () => {
+  test('does not retry an unclassified fall-through', () => {
     expect(classifyRetryableAPIError(new Error('provider exploded'))).toEqual({
       category: 'server_error',
-      retryable: true,
-      persistence: 'transient',
+      retryable: false,
+      persistence: 'permanent',
     })
   })
 
-  test('x-should-retry:false costs one attempt instead of ending the request', async () => {
-    // The server's own "this exact request will fail again" used to be a hard
-    // bail. It is now the cheap lane: its opinion is worth one attempt.
+  test('x-should-retry:false vetoes retry', async () => {
     const header = new Headers({ 'x-should-retry': 'false' })
     const { calls } = await runLadder(
       new APIError(503, undefined, 'service unavailable', header),
     )
-    expect(calls).toBe(2)
-
-    await withRetryPolicy('0', async () => {
-      const off = await runLadder(
-        new APIError(
-          503,
-          undefined,
-          'service unavailable',
-          new Headers(header),
-        ),
-      )
-      expect(off.calls).toBe(1)
-    })
+    expect(calls).toBe(1)
   })
 
   test('a cancellation is never retried, whatever else the error says', async () => {

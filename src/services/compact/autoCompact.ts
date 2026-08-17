@@ -5,7 +5,10 @@ import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config/config.js'
-import type { ModelSettingsSlot } from '../../utils/model/modelTier.js'
+import type {
+  ModelSettingsSlot,
+  SessionModelSettingsOverrides,
+} from '../../utils/model/modelTier.js'
 import { getContextWindowForModel } from '../../utils/session/context.js'
 import { logForDebugging } from '../../utils/telemetry/debug.js'
 import { isEnvTruthy } from '../../utils/config/envUtils.js'
@@ -15,6 +18,7 @@ import { logError } from '../../utils/telemetry/log.js'
 import { tokenCountWithEstimation } from '../../utils/session/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
+import { isRetryableAPIError } from '../api/retryClassification.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
@@ -23,6 +27,10 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
+import {
+  type AutoCompactWindowContext,
+  resolveActiveAutoCompactWindow,
+} from './autoCompactWindow.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 
@@ -31,29 +39,44 @@ import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
 // Returns the context window size minus the max output tokens for the model
-export function getEffectiveContextWindowSize(
-  model: string,
-  settingsSlot?: ModelSettingsSlot,
-): number {
-  const reservedTokensForSummary = Math.min(
+export type AutoCompactContext = AutoCompactWindowContext & {
+  settingsSlot?: ModelSettingsSlot
+  sessionOverrides?: SessionModelSettingsOverrides
+}
+
+function getReservedOutputTokens(model: string): number {
+  return Math.min(
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  let contextWindow = getContextWindowForModel(
+}
+
+export function getModelEffectiveContextWindowSize(
+  model: string,
+  context: AutoCompactContext = {},
+): number {
+  return (
+    getContextWindowForModel(
+      model,
+      getSdkBetas(),
+      context.settingsSlot,
+      context.sessionOverrides,
+    ) - getReservedOutputTokens(model)
+  )
+}
+
+export function getEffectiveContextWindowSize(
+  model: string,
+  context: AutoCompactContext = {},
+): number {
+  const modelContextWindow = getContextWindowForModel(
     model,
     getSdkBetas(),
-    settingsSlot,
+    context.settingsSlot,
+    context.sessionOverrides,
   )
-
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  if (autoCompactWindow) {
-    const parsed = parseInt(autoCompactWindow, 10)
-    if (!isNaN(parsed) && parsed > 0) {
-      contextWindow = Math.min(contextWindow, parsed)
-    }
-  }
-
-  return contextWindow - reservedTokensForSummary
+  const { window } = resolveActiveAutoCompactWindow(modelContextWindow, context)
+  return window - getReservedOutputTokens(model)
 }
 
 export type AutoCompactTrackingState = {
@@ -82,13 +105,7 @@ const TOOL_RESULT_GROWTH_ESTIMATE = 15_000
  * headroom because a single turn can produce proportionally more tokens
  * (longer model outputs + larger tool results).
  */
-export function getAutocompactBufferTokens(
-  model: string,
-  settingsSlot?: ModelSettingsSlot,
-): number {
-  const effectiveWindow = getEffectiveContextWindowSize(model, settingsSlot)
-  if (effectiveWindow >= 800_000) return 50_000
-  if (effectiveWindow >= 400_000) return 30_000
+export function getAutocompactBufferTokens(): number {
   return AUTOCOMPACT_BUFFER_TOKENS
 }
 
@@ -109,17 +126,32 @@ export function estimateMaxTurnGrowth(model: string): number {
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
+/**
+ * Has the breaker latched open, i.e. will `autoCompactIfNeeded` decline every
+ * further attempt this turn?
+ *
+ * The query loop skips its blocking-limit preempt on the promise that
+ * automatic compaction will keep the context in bounds. Once the breaker is
+ * open that promise is void, so the preempt has to come back — otherwise the
+ * turn keeps sending ever-larger prompts with nothing left to catch them.
+ */
+export function isAutoCompactCircuitOpen(
+  tracking: AutoCompactTrackingState | undefined,
+): boolean {
+  return (
+    tracking?.consecutiveFailures !== undefined &&
+    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+  )
+}
+
 export function getAutoCompactThreshold(
   model: string,
-  settingsSlot?: ModelSettingsSlot,
+  context: AutoCompactContext = {},
 ): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(
-    model,
-    settingsSlot,
-  )
+  const effectiveContextWindow = getEffectiveContextWindowSize(model, context)
 
   const autocompactThreshold =
-    effectiveContextWindow - getAutocompactBufferTokens(model, settingsSlot)
+    effectiveContextWindow - getAutocompactBufferTokens()
 
   // Override for easier testing of autocompact
   const envPercent = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
@@ -136,10 +168,20 @@ export function getAutoCompactThreshold(
   return autocompactThreshold
 }
 
+export function getBlockingLimit(
+  model: string,
+  context: AutoCompactContext = {},
+): number {
+  return (
+    getModelEffectiveContextWindowSize(model, context) -
+    MANUAL_COMPACT_BUFFER_TOKENS
+  )
+}
+
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
-  settingsSlot?: ModelSettingsSlot,
+  context: AutoCompactContext = {},
 ): {
   percentLeft: number
   isAboveWarningThreshold: boolean
@@ -147,10 +189,10 @@ export function calculateTokenWarningState(
   isAboveAutoCompactThreshold: boolean
   isAtBlockingLimit: boolean
 } {
-  const autoCompactThreshold = getAutoCompactThreshold(model, settingsSlot)
+  const autoCompactThreshold = getAutoCompactThreshold(model, context)
   const threshold = isAutoCompactEnabled()
     ? autoCompactThreshold
-    : getEffectiveContextWindowSize(model, settingsSlot)
+    : getModelEffectiveContextWindowSize(model, context)
 
   const percentLeft = Math.max(
     0,
@@ -166,9 +208,7 @@ export function calculateTokenWarningState(
   const isAboveAutoCompactThreshold =
     isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
 
-  const actualContextWindow = getEffectiveContextWindowSize(model, settingsSlot)
-  const defaultBlockingLimit =
-    actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
+  const defaultBlockingLimit = getBlockingLimit(model, context)
 
   // Allow override for testing
   const blockingLimitOverride = process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE
@@ -208,7 +248,7 @@ export async function shouldAutoCompact(
   messages: Message[],
   model: string,
   querySource?: QuerySource,
-  settingsSlot?: ModelSettingsSlot,
+  context: AutoCompactContext = {},
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -232,8 +272,8 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages)
-  const threshold = getAutoCompactThreshold(model, settingsSlot)
-  const effectiveWindow = getEffectiveContextWindowSize(model, settingsSlot)
+  const threshold = getAutoCompactThreshold(model, context)
+  const effectiveWindow = getEffectiveContextWindowSize(model, context)
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}`,
@@ -242,7 +282,7 @@ export async function shouldAutoCompact(
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
     model,
-    settingsSlot,
+    context,
   )
 
   return isAboveAutoCompactThreshold
@@ -266,20 +306,22 @@ export async function autoCompactIfNeeded(
   // Circuit breaker: stop retrying after N consecutive failures.
   // Without this, sessions where context is irrecoverably over the limit
   // hammer the API with doomed compaction attempts on every turn.
-  if (
-    tracking?.consecutiveFailures !== undefined &&
-    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
-  ) {
+  if (isAutoCompactCircuitOpen(tracking)) {
     return { wasCompacted: false }
   }
 
   const model = toolUseContext.options.mainLoopModel
-  const settingsSlot = toolUseContext.options.modelSettingsSlot
+  const context: AutoCompactContext = {
+    settingsSlot: toolUseContext.options.modelSettingsSlot,
+    sessionOverrides: toolUseContext.options.sessionModelSettingsOverrides,
+    autoCompactWindow: toolUseContext.options.autoCompactWindow,
+    autoCompactWindowOverride: toolUseContext.options.autoCompactWindowOverride,
+  }
   const shouldCompact = await shouldAutoCompact(
     messages,
     model,
     querySource,
-    settingsSlot,
+    context,
   )
 
   if (!shouldCompact) {
@@ -290,7 +332,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model, settingsSlot),
+    autoCompactThreshold: getAutoCompactThreshold(model, context),
     querySource,
   }
 
@@ -342,8 +384,25 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: 0,
     }
   } catch (error) {
-    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+    const isUserAbort = hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
+    if (!isUserAbort) {
       logError(error)
+    }
+    // The breaker is for one thing: a context that is irrecoverably over the
+    // limit, so every future attempt is doomed and hammers the API. A dropped
+    // socket, a 5xx, a stream timeout, or the user pressing esc says nothing
+    // about that — and counting them is a one-way door, because the ONLY
+    // reset is a successful compaction and an open breaker returns before it
+    // can ever attempt one. Three flaky seconds would then disable automatic
+    // compaction for the rest of the turn.
+    //
+    // Reporting no failure count (rather than the unchanged one) leaves the
+    // caller's tracking untouched — see recordCompactionFailure in query.ts.
+    if (isUserAbort || isRetryableAPIError(error)) {
+      logForDebugging(
+        `autocompact: compaction failed transiently (${isUserAbort ? 'user abort' : 'retryable API error'}) — not counting toward the circuit breaker`,
+      )
+      return { wasCompacted: false }
     }
     // Increment consecutive failure count for circuit breaker.
     // The caller threads this through autoCompactTracking so the

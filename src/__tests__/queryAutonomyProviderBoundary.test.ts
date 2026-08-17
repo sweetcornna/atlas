@@ -7,6 +7,7 @@ import {
   setProjectRoot,
 } from '../bootstrap/state'
 import { query } from '../query'
+import { FallbackTriggeredError } from '../services/api/withRetry'
 import { getEmptyToolPermissionContext } from '../Tool'
 import type { AssistantMessage } from '../types/message'
 import { asSystemPrompt } from '../utils/session/systemPromptType'
@@ -147,6 +148,82 @@ function createToolUseContext(): any {
 }
 
 describe('query autonomy/provider boundary', () => {
+  test('resolves and consumes fallback aliases in configured order', async () => {
+    const previousDisableAttachments =
+      process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+    try {
+      const toolUseContext = createToolUseContext()
+      const seenModels: string[] = []
+      const seenFallbacks: Array<string | undefined> = []
+      const deps = {
+        uuid: () => 'fallback-query-chain-id',
+        microcompact: async (messages: unknown[]) => ({ messages }),
+        autocompact: async () => ({
+          compactionResult: undefined,
+          consecutiveFailures: 0,
+        }),
+        callModel: async function* (params: {
+          options: { model: string; fallbackModel?: string }
+        }) {
+          seenModels.push(params.options.model)
+          seenFallbacks.push(params.options.fallbackModel)
+          if (seenModels.length <= 2) {
+            throw new FallbackTriggeredError(
+              params.options.model,
+              params.options.fallbackModel!,
+            )
+          }
+          yield createAssistantAPIErrorMessage({
+            content: 'fallback request completed',
+            apiError: 'api_error',
+          })
+        },
+      }
+
+      const generator = query({
+        messages: [createUserMessage({ content: 'fallback alias test' })],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async (_tool, input) => ({
+          behavior: 'allow',
+          updatedInput: input,
+        }),
+        toolUseContext,
+        fallbackModels: ['haiku', 'sonnet'],
+        querySource: 'sdk',
+        deps: deps as never,
+      })
+
+      let next = await generator.next()
+      while (!next.done) next = await generator.next()
+
+      const [firstFallback, secondFallback] = seenFallbacks
+      expect(firstFallback).toBeString()
+      expect(secondFallback).toBeString()
+      expect(firstFallback).not.toBe('haiku')
+      expect(secondFallback).not.toBe('sonnet')
+      expect(firstFallback).not.toBe(secondFallback)
+      if (!firstFallback || !secondFallback) {
+        throw new Error('fallback aliases were not resolved')
+      }
+      expect(seenModels).toEqual([
+        'claude-sonnet-4-5-20250929',
+        firstFallback,
+        secondFallback,
+      ])
+      expect(seenFallbacks).toEqual([firstFallback, secondFallback, undefined])
+      expect(toolUseContext.options.mainLoopModel).toBe(secondFallback)
+    } finally {
+      if (previousDisableAttachments === undefined) {
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      } else {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = previousDisableAttachments
+      }
+    }
+  })
+
   test('an empty provider stream is a visible model error, not completion', async () => {
     const previousDisableAttachments =
       process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
@@ -301,6 +378,148 @@ describe('query autonomy/provider boundary', () => {
         process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = previousDisableAttachments
       }
     }
+  })
+
+  test('folds queued user input into the active query after a tool round', async () => {
+    const previousDisableAttachments =
+      process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    try {
+      let callCount = 0
+      const deps = {
+        uuid: () => 'queued-input-query-chain-id',
+        microcompact: async (messages: unknown[]) => ({ messages }),
+        autocompact: async () => ({
+          compactionResult: undefined,
+          consecutiveFailures: 0,
+        }),
+        callModel: async function* () {
+          callCount++
+          if (callCount === 1) {
+            yield createToolUseAssistantMessage()
+            return
+          }
+          yield createAssistantAPIErrorMessage({
+            content: 'queued input handled',
+            apiError: 'api_error',
+          })
+        },
+      }
+
+      const generator = query({
+        messages: [createUserMessage({ content: 'first prompt' })],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async (_tool, input) => ({
+          behavior: 'allow',
+          updatedInput: input,
+        }),
+        toolUseContext: createToolUseContext(),
+        querySource: 'repl_main_thread',
+        maxTurns: 3,
+        deps: deps as never,
+      })
+
+      const emitted: any[] = []
+      let queued = false
+      let next = await generator.next()
+      while (!next.done) {
+        const message = next.value as any
+        emitted.push(message)
+        if (
+          !queued &&
+          message.type === 'assistant' &&
+          message.message.content.some(
+            (block: { type: string }) => block.type === 'tool_use',
+          )
+        ) {
+          enqueue({ value: 'steer the active turn', mode: 'prompt' })
+          queued = true
+        }
+        next = await generator.next()
+      }
+
+      expect(queued).toBe(true)
+      expect(
+        emitted.some(
+          message =>
+            message.type === 'attachment' &&
+            message.attachment.type === 'queued_command' &&
+            message.attachment.prompt === 'steer the active turn',
+        ),
+      ).toBe(true)
+      expect(callCount).toBe(2)
+      expect(getCommandsByMaxPriority('later')).toHaveLength(0)
+    } finally {
+      if (previousDisableAttachments === undefined) {
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      } else {
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = previousDisableAttachments
+      }
+    }
+  })
+
+  test('leaves queued user input for the next turn when maxTurns stops the active query', async () => {
+    let callCount = 0
+    const deps = {
+      uuid: () => 'max-turn-queued-input-query-chain-id',
+      microcompact: async (messages: unknown[]) => ({ messages }),
+      autocompact: async () => ({
+        compactionResult: undefined,
+        consecutiveFailures: 0,
+      }),
+      callModel: async function* () {
+        callCount++
+        yield createToolUseAssistantMessage()
+      },
+    }
+
+    const generator = query({
+      messages: [createUserMessage({ content: 'first prompt' })],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async (_tool, input) => ({
+        behavior: 'allow',
+        updatedInput: input,
+      }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread',
+      maxTurns: 1,
+      deps: deps as never,
+    })
+
+    let queued = false
+    let sawQueuedAttachment = false
+    let next = await generator.next()
+    while (!next.done) {
+      const message = next.value as any
+      if (
+        !queued &&
+        message.type === 'assistant' &&
+        message.message.content.some(
+          (block: { type: string }) => block.type === 'tool_use',
+        )
+      ) {
+        enqueue({ value: 'run after max turns', mode: 'prompt' })
+        queued = true
+      }
+      if (
+        message.type === 'attachment' &&
+        message.attachment.type === 'queued_command'
+      ) {
+        sawQueuedAttachment = true
+      }
+      next = await generator.next()
+    }
+
+    expect(queued).toBe(true)
+    expect(sawQueuedAttachment).toBe(false)
+    expect(callCount).toBe(1)
+    expect(getCommandsByMaxPriority('later')).toMatchObject([
+      { value: 'run after max turns', mode: 'prompt' },
+    ])
   })
 
   test('generator return cancels a consumed autonomy run instead of leaving it running', async () => {

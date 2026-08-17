@@ -6,6 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkgPath = resolve(__dirname, '..', 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
 
+/** occ's own issue tracker. Kept in sync with PRODUCT_URL in src/constants/product.ts. */
+const ISSUES_URL = 'https://github.com/sweetcornna/open-claude-code/issues'
+
 /**
  * Shared MACRO define map used by both dev.ts (runtime -d flags)
  * and build.ts (Bun.build define option).
@@ -19,8 +22,14 @@ export function getMacroDefines(): Record<string, string> {
   return {
     'MACRO.VERSION': JSON.stringify(pkg.version),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
-    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(''),
-    'MACRO.ISSUES_EXPLAINER': JSON.stringify(''),
+    // Both of these are interpolated into user-facing sentences that read as
+    // truncated when empty — the system prompt's "To give feedback, users
+    // should ${ISSUES_EXPLAINER}" and auth.ts's "post in ${FEEDBACK_CHANNEL}".
+    // They inherited Anthropic's empty defaults; occ has its own tracker.
+    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(`${ISSUES_URL}`),
+    'MACRO.ISSUES_EXPLAINER': JSON.stringify(
+      `report the issue at ${ISSUES_URL}`,
+    ),
     'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(''),
     'MACRO.PACKAGE_URL': JSON.stringify(pkg.name),
     'MACRO.VERSION_CHANGELOG': JSON.stringify(''),
@@ -41,7 +50,6 @@ export const DEFAULT_BUILD_FEATURES = [
   'AGENT_TRIGGERS_REMOTE', // sessionIngress 模块级 Map 累积（非 GB 级主因）
   'CHICAGO_MCP', // Chicago MCP 集成（内部代号）
   'VOICE_MODE', // Push-to-Talk 语音输入模式
-  'SHOT_STATS', // 单次请求统计信息收集
   'PROMPT_CACHE_BREAK_DETECTION', // 检测 prompt cache 是否被打破（有 10 条上限，可控）
   'TOKEN_BUDGET', // Token 预算管理与控制
   // P0: local features
@@ -100,6 +108,9 @@ export const DEFAULT_BUILD_FEATURES = [
   // Persistent thread goal command — auto-continuation, JSONL persistence,
   // strict completion/blocked audit. See src/services/goal.
   'GOAL',
+  // Recover automatically when the API rejects an oversized prompt by
+  // summarizing older turns and retrying with the compacted history.
+  'REACTIVE_COMPACT',
 ] as const
 
 /**

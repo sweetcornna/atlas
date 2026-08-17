@@ -366,6 +366,7 @@ describe('H7: circuit breaker', () => {
   test('resetCircuitBreaker resets state to closed', async () => {
     const { llmObserverBackend } = await import('../llmObserverBackend.js')
     resetCircuitBreaker()
+    setSkillLearningConfigForTest({ llm: { timeoutMs: 50 } })
 
     // timeoutMs must stay set: makeObs(3) is non-empty, so analyze reaches
     // queryHaiku. Without a short timeout this drives the REAL backend at the

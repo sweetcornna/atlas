@@ -6,7 +6,10 @@ import {
   type AnthropicUsage,
   type OpenAIReasoningItem,
 } from '@ant/model-provider'
-import { getValidChatGPTAuth } from './chatgptAuth.js'
+import {
+  getValidChatGPTAuth,
+  getValidChatGPTAuthForSearch,
+} from './chatgptAuth.js'
 import type {
   ResponsesReasoningEffort,
   ResponsesReasoningSummary,
@@ -27,6 +30,11 @@ import {
   isRetryableAPIError,
   NonRetryableError,
 } from '../retryClassification.js'
+import {
+  canAutoDisableOpenAIPromptCacheKey,
+  isPromptCacheKeyRejection,
+  markPromptCacheKeyRejected,
+} from './openaiShared.js'
 import {
   createOpenAIResponseError,
   OpenAIRequestError,
@@ -385,6 +393,8 @@ function raiseCommitment(
  * to the terminal, to ACP `agent_message_chunk` notifications and to
  * `--include-partial-messages` stdout. Those three are append-only: there is
  * no protocol for un-saying a chunk, so replaying after text double-renders.
+ * This is recorded as `replayable: false`, separately from whether the socket
+ * or API error itself is retryable.
  *
  * This predicate is deliberately the *same* one that moves the handoff barrier
  * in `fetchResponsesStream`'s `attempt`. Keeping them in lockstep is what makes
@@ -443,7 +453,8 @@ function streamEventError(
   // in prose. See parseRetryAfterFromErrorPayload.
   const retryAfterMs = parseRetryAfterFromErrorPayload(error)
   return new OpenAIRequestError(`${label} stream failed: ${message}`, {
-    retryable: !retryWindowClosed && isRetryableAPIError(error),
+    retryable: isRetryableAPIError(error),
+    ...(retryWindowClosed ? { replayable: false } : {}),
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     ...(typeof error.type === 'string' ? { type: error.type } : {}),
     ...(scalar(error.code) !== undefined ? { code: scalar(error.code) } : {}),
@@ -500,7 +511,11 @@ async function* parseSSE(
     } catch (cause) {
       throw new OpenAIRequestError(
         `${options.label} stream returned invalid SSE JSON`,
-        { retryable: !retryWindowClosed(), cause },
+        {
+          retryable: true,
+          ...(retryWindowClosed() ? { replayable: false } : {}),
+          cause,
+        },
       )
     }
     if (!parsed || typeof parsed !== 'object') return undefined
@@ -566,7 +581,10 @@ async function* parseSSE(
       const timer = setFreezeAwareTimeout(() => {
         const error = new OpenAIRequestError(
           `${options.label} stream idle timeout after ${options.idleTimeoutMs}ms`,
-          { retryable: !retryWindowClosed() },
+          {
+            retryable: true,
+            ...(retryWindowClosed() ? { replayable: false } : {}),
+          },
         )
         rejectOnce(error)
         options.abort(error)
@@ -594,7 +612,7 @@ async function* parseSSE(
             cause instanceof Error
               ? cause.message
               : `${options.label} stream failed`,
-            { retryable: false, cause },
+            { retryable: true, replayable: false, cause },
           )
         }
         throw cause
@@ -636,7 +654,10 @@ async function* parseSSE(
     if (!hasTerminalEvent) {
       throw new OpenAIRequestError(
         `${options.label} stream ended before a terminal event`,
-        { retryable: !retryWindowClosed() },
+        {
+          retryable: true,
+          ...(retryWindowClosed() ? { replayable: false } : {}),
+        },
       )
     }
   } finally {
@@ -1173,6 +1194,13 @@ function withoutReasoningSummary(request: ResponsesRequest): ResponsesRequest {
   return { ...request, reasoning }
 }
 
+/** Strip `prompt_cache_key`, leaving the rest of the request untouched. */
+function withoutPromptCacheKey(request: ResponsesRequest): ResponsesRequest {
+  if (!request.prompt_cache_key) return request
+  const { prompt_cache_key: _dropped, ...rest } = request
+  return rest
+}
+
 async function fetchResponsesStream(params: {
   url: string
   headers: Record<string, string>
@@ -1182,6 +1210,8 @@ async function fetchResponsesStream(params: {
   maxRetries?: number
   /** Human-readable route name for error messages. */
   label: string
+  /** Whether a compatible endpoint may reject the optional cache field. */
+  allowPromptCacheKeyFallback?: boolean
   /** See {@link closesRetryWindow}. */
   discardsPartialOutput?: boolean
 }): Promise<AsyncIterable<Record<string, unknown>>> {
@@ -1190,8 +1220,8 @@ async function fetchResponsesStream(params: {
   const idleTimeoutMs =
     Number.parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS ?? '', 10) ||
     90_000
-  // Read at attempt time, not captured once: the summary-rejection path below
-  // reassigns it and re-runs the ladder with a smaller body.
+  // Read at attempt time, not captured once: optional-field degradation
+  // replaces it before the same retry ladder advances to its next attempt.
   let request = params.request
 
   const attempt = async () => {
@@ -1249,35 +1279,36 @@ async function fetchResponsesStream(params: {
     }
   }
 
-  const runLadder = () =>
-    retryOpenAIRequest(attempt, {
-      signal: params.signal,
-      ...(params.maxRetries !== undefined
-        ? { maxRetries: params.maxRetries }
-        : {}),
-    })
-
-  let prepared: Awaited<ReturnType<typeof runLadder>>
-  try {
-    prepared = await runLadder()
-  } catch (error) {
-    // A 400 is not retryable, so the ladder above has already given up. If the
-    // endpoint objected to `reasoning.summary` in particular, drop it and try
-    // once more: losing the thinking display beats losing the turn.
-    if (
-      !request.reasoning?.summary ||
-      !isReasoningSummaryRejection(error) ||
-      params.signal.aborted
-    ) {
-      throw error
-    }
-    reasoningSummaryRejected = true
-    logForDebugging(
-      `[OpenAI] ${params.label} rejected reasoning.summary; retrying without it and suppressing it for the rest of the session. Set OPENAI_REASONING_SUMMARY=off to skip this probe.`,
-    )
-    request = withoutReasoningSummary(request)
-    prepared = await runLadder()
-  }
+  const prepared = await retryOpenAIRequest(attempt, {
+    signal: params.signal,
+    ...(params.maxRetries !== undefined
+      ? { maxRetries: params.maxRetries }
+      : {}),
+    onError: error => {
+      if (params.signal.aborted) return undefined
+      if (request.reasoning?.summary && isReasoningSummaryRejection(error)) {
+        reasoningSummaryRejected = true
+        logForDebugging(
+          `[OpenAI] ${params.label} rejected reasoning.summary; retrying without it and suppressing it for the rest of the session. Set OPENAI_REASONING_SUMMARY=off to skip this probe.`,
+        )
+        request = withoutReasoningSummary(request)
+        return 'retry:reasoning-summary'
+      }
+      if (
+        params.allowPromptCacheKeyFallback &&
+        request.prompt_cache_key &&
+        isPromptCacheKeyRejection(error)
+      ) {
+        markPromptCacheKeyRejected('responses')
+        logForDebugging(
+          `[OpenAI] ${params.label} rejected prompt_cache_key; retrying without it and suppressing it for compatible Responses endpoints for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.`,
+        )
+        request = withoutPromptCacheKey(request)
+        return 'retry:prompt-cache-key'
+      }
+      return undefined
+    },
+  })
 
   return {
     async *[Symbol.asyncIterator]() {
@@ -1304,8 +1335,22 @@ export async function createChatGPTResponsesStream(params: {
   maxRetries?: number
   /** See {@link closesRetryWindow}. */
   discardsPartialOutput?: boolean
+  /**
+   * Which set of credential files this call may authenticate from.
+   *
+   * `'provider'` (the default, and what the main loop passes by omission) is
+   * occ's login file or the Codex CLI's. `'search'` adds the login web search
+   * pinned for itself, which is the only one that outlives a `/logout` — and
+   * refreshes it back into the copy rather than into the login file, so a
+   * search cannot resurrect the account the user just signed out of. See
+   * chatgptAuth.ts's two source lists.
+   */
+  authPlane?: 'provider' | 'search'
 }): Promise<AsyncIterable<Record<string, unknown>>> {
-  const auth = await getValidChatGPTAuth()
+  const auth =
+    params.authPlane === 'search'
+      ? await getValidChatGPTAuthForSearch()
+      : await getValidChatGPTAuth()
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.accessToken}`,
     'Content-Type': 'application/json',
@@ -1349,10 +1394,35 @@ export function resolveResponsesEndpoint(baseURL: string | undefined): string {
 }
 
 /**
+ * A caller-supplied credential for the generic `/responses` route.
+ *
+ * ONE OBJECT, NOT TWO PARAMETERS. A key and the endpoint it authenticates
+ * against travel together or not at all: an injected key that inherited
+ * `OPENAI_BASE_URL` would post the caller's OpenAI secret to whatever
+ * third-party gateway the session happens to be configured for, which is worse
+ * than the failure the injection exists to fix. `baseURL` left out therefore
+ * means OpenAI's own default, never "whatever the env says".
+ *
+ * The only user today is WebSearch's `codex` source with a credential pinned
+ * through /search-setting — that lane has to keep working after a `/logout` or
+ * a `/provider use`, both of which delete OPENAI_API_KEY/OPENAI_BASE_URL.
+ */
+type ResponsesCredential = {
+  apiKey: string
+  /** Endpoint for `apiKey`. Absent means `https://api.openai.com/v1`. */
+  baseURL?: string
+}
+
+/**
  * Generic Responses API route: any endpoint speaking the standard
  * `/responses` protocol with API-key auth (official OpenAI or compatible
  * providers). Selected via `OPENAI_WIRE_API=responses`. No ChatGPT-specific
  * headers are sent on this route.
+ *
+ * `credential` is optional and the main loop never passes it: with it absent
+ * every byte of the request — URL, headers, body — is what it was before the
+ * parameter existed (`responsesAdapter.test.ts` pins that against a recorded
+ * baseline, rather than asserting it in prose).
  */
 export async function createOpenAIResponsesStream(params: {
   request: ResponsesRequest
@@ -1361,15 +1431,20 @@ export async function createOpenAIResponsesStream(params: {
   maxRetries?: number
   /** See {@link closesRetryWindow}. */
   discardsPartialOutput?: boolean
+  /** See {@link ResponsesCredential}. Omitted ⇒ the OPENAI_* environment. */
+  credential?: ResponsesCredential
 }): Promise<AsyncIterable<Record<string, unknown>>> {
-  const apiKey = process.env.OPENAI_API_KEY
+  const apiKey = params.credential?.apiKey ?? process.env.OPENAI_API_KEY
   if (!apiKey) {
     throw new Error(
       'OPENAI_API_KEY is required when OPENAI_WIRE_API=responses is set without ChatGPT auth',
     )
   }
+  const baseURL = params.credential
+    ? params.credential.baseURL
+    : process.env.OPENAI_BASE_URL
   return fetchResponsesStream({
-    url: resolveResponsesEndpoint(process.env.OPENAI_BASE_URL),
+    url: resolveResponsesEndpoint(baseURL),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
@@ -1380,6 +1455,7 @@ export async function createOpenAIResponsesStream(params: {
     fetchOverride: params.fetchOverride,
     maxRetries: params.maxRetries,
     label: 'Responses API',
+    allowPromptCacheKeyFallback: canAutoDisableOpenAIPromptCacheKey(baseURL),
     discardsPartialOutput: params.discardsPartialOutput,
   })
 }

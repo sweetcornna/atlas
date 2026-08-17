@@ -19,7 +19,6 @@ import {
   aggregatedOptionValue,
   buildAggregatedModelOptions,
   describeAggregatedModel,
-  offeredModelIds,
   parseAggregatedOptionValue,
   sessionOwnedProfiles,
 } from '../aggregatedOptions.js'
@@ -215,19 +214,16 @@ describe('buildAggregatedModelOptions', () => {
     ).toEqual(['B-2', 'C-3', 'a-1'])
   })
 
-  test('the session’s own provider does not re-offer a model the picker has', () => {
+  test('the session’s own provider contributes no rows at all', () => {
     const models = [
       model({ id: 'gpt-5.4', profile: 'official' }),
       model({ id: 'o5', profile: 'official' }),
       model({ id: 'glm-5', profile: 'relay' }),
     ]
     const options = buildAggregatedModelOptions(models, {
-      // Resolved ids, not the picker's raw values: a tier row's value is the
-      // alias `opus`, and comparing that against a catalog id never matches.
-      existingModelIds: new Set(['gpt-5.4']),
       sessionProfiles: new Set(['official']),
     })
-    expect(options.map(o => o.label)).toEqual(['o5', 'glm-5'])
+    expect(options.map(o => o.label)).toEqual(['glm-5'])
   })
 
   test('another profile serving a listed id is still offered', () => {
@@ -236,10 +232,7 @@ describe('buildAggregatedModelOptions', () => {
     // the same model on another account is a legitimate thing to want.
     const options = buildAggregatedModelOptions(
       [model({ id: 'gpt-5.4', profile: 'relay', ambiguous: true })],
-      {
-        existingModelIds: new Set(['gpt-5.4']),
-        sessionProfiles: new Set(['official']),
-      },
+      { sessionProfiles: new Set(['official']) },
     )
     expect(options).toHaveLength(1)
     expect(parseAggregatedOptionValue(options[0]!.value)?.id).toBe('gpt-5.4')
@@ -247,15 +240,19 @@ describe('buildAggregatedModelOptions', () => {
     expect(options[0]!.label).toBe('gpt-5.4 (relay)')
   })
 
-  test('a model the picker does not already offer survives its own provider', () => {
+  test('an id the picker filtered out does not come back under its own provider', () => {
+    // The residue this closed: the picker drops the image/audio/realtime ids a
+    // chat session cannot use, while the profile snapshot is the raw /models
+    // answer — so exactly those came back at the bottom, tagged with the name
+    // of the provider already in use.
     const options = buildAggregatedModelOptions(
-      [model({ id: 'gpt-5.4', profile: 'official' })],
-      {
-        existingModelIds: new Set(['o5']),
-        sessionProfiles: new Set(['official']),
-      },
+      [
+        model({ id: 'gpt-image-2', profile: 'official' }),
+        model({ id: 'gpt-4o-audio-preview', profile: 'official' }),
+      ],
+      { sessionProfiles: new Set(['official']) },
     )
-    expect(options).toHaveLength(1)
+    expect(options).toEqual([])
   })
 
   test('a duplicated row from a hand-edited registry is dropped', () => {
@@ -274,10 +271,7 @@ describe('sessionOwnedProfiles', () => {
     },
   })
 
-  test('a /login session with no active pointer still finds its provider', () => {
-    // The regression: `file.active` is written by activateProfile() and by
-    // nothing else, so a session configured through /login had no pointer at
-    // all and every model of the provider in use came back a second time.
+  test('a /login session with no active pointer still finds its exact profile', () => {
     const file = registry(relay)
     expect(file.active).toBeUndefined()
     expect(
@@ -285,18 +279,34 @@ describe('sessionOwnedProfiles', () => {
         modelType: 'openai',
         env: {
           OPENAI_BASE_URL: 'https://relay.example/v1',
-          // A different key on the same endpoint is the same PROVIDER.
-          OPENAI_API_KEY: 'sk-live',
+          OPENAI_API_KEY: 'sk-saved',
         },
       }),
     ).toEqual(new Set(['gpt']))
   })
 
-  test('a trailing slash is the same endpoint', () => {
+  test('another credential on the same endpoint remains a switch target', () => {
     expect(
       sessionOwnedProfiles(registry(relay), {
         modelType: 'openai',
-        env: { OPENAI_BASE_URL: 'https://relay.example/v1/' },
+        env: {
+          OPENAI_BASE_URL: 'https://relay.example/v1',
+          OPENAI_API_KEY: 'sk-live',
+        },
+      }),
+    ).toEqual(new Set())
+  })
+
+  test('unrelated provider env does not hide the current profile match', () => {
+    expect(
+      sessionOwnedProfiles(registry(relay), {
+        modelType: 'openai',
+        env: {
+          OPENAI_BASE_URL: 'https://relay.example/v1',
+          OPENAI_API_KEY: 'sk-saved',
+          ANTHROPIC_API_KEY: 'parent-shell-key',
+          GEMINI_API_KEY: 'runtime-mirror',
+        },
       }),
     ).toEqual(new Set(['gpt']))
   })
@@ -320,53 +330,34 @@ describe('sessionOwnedProfiles', () => {
   })
 
   test('no modelType means the Anthropic default', () => {
-    // Plain OAuth: nothing is set anywhere, and the profile that restores that
-    // is an anthropic one with no endpoint of its own.
     const file = registry(profile({ name: 'claude', modelType: 'anthropic' }))
     expect(sessionOwnedProfiles(file, { env: {} })).toEqual(new Set(['claude']))
   })
 
-  test('the active pointer is honoured on top, as it was before', () => {
+  test('a stale active pointer does not hide a profile from aggregation', () => {
     const file = { ...registry(relay), active: 'gpt' }
     expect(
       sessionOwnedProfiles(file, { modelType: 'gemini', env: {} }),
-    ).toEqual(new Set(['gpt']))
+    ).toEqual(new Set())
   })
 
   test('a garbage entry degrades instead of throwing', () => {
     const file: ProviderProfilesFile = {
       version: 1,
-      profiles: { nulled: null as unknown as ProviderProfile },
+      profiles: {
+        nulled: null as unknown as ProviderProfile,
+        unknown: {
+          ...profile({ name: 'unknown', modelType: 'anthropic' }),
+          modelType: 'future-provider',
+        } as unknown as ProviderProfile,
+      },
     }
-    expect(sessionOwnedProfiles(file, { env: {} })).toEqual(new Set())
-  })
-})
-
-describe('offeredModelIds', () => {
-  test('resolves aliases, which is the comparison that was missing', () => {
-    // The picker's own rows carry `opus` / `sonnet[1m]`; the aggregated rows
-    // carry concrete ids. Comparing them raw meant the guard never fired.
-    const resolve = (value: string): string | undefined =>
-      value === 'opus' ? 'gpt-5.6-sol' : value
-    expect(offeredModelIds(['opus', 'glm-5'], resolve)).toEqual(
-      new Set(['gpt-5.6-sol', 'glm-5']),
-    )
-  })
-
-  test('a resolver that throws costs one row, not the list', () => {
-    // Gemini's resolver throws without configuration, and the no-preference
-    // row reaches the subscription chain — neither may take the picker down.
-    const resolve = (value: string): string | undefined => {
-      if (value === '__NO_PREFERENCE__') throw new Error('not configured')
-      return value
-    }
-    expect(offeredModelIds(['__NO_PREFERENCE__', 'o5'], resolve)).toEqual(
-      new Set(['o5']),
-    )
-  })
-
-  test('an unresolvable row contributes nothing', () => {
-    expect(offeredModelIds(['x'], () => undefined)).toEqual(new Set())
+    expect(
+      sessionOwnedProfiles(file, {
+        modelType: 'future-provider',
+        env: {},
+      }),
+    ).toEqual(new Set())
   })
 })
 

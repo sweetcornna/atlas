@@ -27,11 +27,8 @@ import {
   parseModelSelector,
   type AggregatedModel,
 } from 'src/services/providerProfiles/aggregate.js'
-import {
-  PROFILE_ENV_KEYS,
-  type ProfileModelType,
-} from 'src/services/providerProfiles/envKeys.js'
 import type { ProviderProfilesFile } from 'src/services/providerProfiles/profiles.js'
+import { PROFILE_ENV_KEYS } from 'src/services/providerProfiles/envKeys.js'
 
 /**
  * Marks an option value as an aggregated selector rather than a model id.
@@ -87,25 +84,18 @@ export function parseAggregatedOptionValue(
 }
 
 /**
- * Which saved profiles describe the provider this session is ALREADY talking
- * to.
+ * Which saved profiles exactly describe the provider configuration in force.
  *
- * Not `file.active`, or not only it. That pointer is written by
- * `activateProfile()` and by nothing else, so a session configured through
- * `/login` — or through the setup wizard, or by exported keys — has none at
- * all, and the de-duplication below was silently skipped for exactly those
- * users: every model of the provider they were using came back a second time
- * under its profile's name.
+ * `file.active` is only a record of the last profile switch. `/login`, the add
+ * wizard and hand-edited settings can all replace the live configuration
+ * without updating it, so trusting that pointer hides a stale profile from the
+ * aggregated picker. Comparing only endpoints is also too broad: two profiles
+ * on the same service with different credentials are distinct switch targets.
  *
- * The identity that does not depend on a pointer is the configuration itself: a
- * profile whose family matches `settings.modelType` and whose endpoint matches
- * the live one IS the provider in use, whether or not anything recorded that.
- * Only the endpoint is compared, not the credentials — two profiles on the same
- * endpoint with different keys are the same PROVIDER, and offering the session
- * its own models again is the thing being fixed.
- *
- * `file.active` is still honoured on top, so a session that did switch through
- * a profile keeps behaving exactly as before.
+ * Match the selected family's managed shape instead. Values from other families
+ * may belong to the parent shell or a runtime wire mirror and are deliberately
+ * preserved across activation; they do not make this profile a different
+ * account. Every other profile remains visible and selectable.
  */
 export function sessionOwnedProfiles(
   file: ProviderProfilesFile,
@@ -117,72 +107,22 @@ export function sessionOwnedProfiles(
   },
 ): Set<string> {
   const owned = new Set<string>()
-  if (file.active !== undefined) owned.add(file.active)
   const family = session.modelType ?? 'anthropic'
   for (const [name, profile] of Object.entries(file.profiles ?? {})) {
     if (!profile || typeof profile !== 'object') continue
     if (profile.modelType !== family) continue
-    const keys = endpointKeysFor(family)
-    const sameEndpoint = keys.every(
-      key =>
-        normalizeEndpoint(profile.env?.[key]) ===
-        normalizeEndpoint(session.env[key]),
+    const managedKeys = PROFILE_ENV_KEYS[profile.modelType]
+    if (!managedKeys) continue
+    const profileEnv = profile.env ?? {}
+    const sameConfiguration = managedKeys.every(
+      key => (profileEnv[key] ?? '') === (session.env[key] ?? ''),
     )
-    if (sameEndpoint) owned.add(name)
+    if (sameConfiguration) owned.add(name)
   }
   return owned
 }
 
-function endpointKeysFor(family: string): readonly string[] {
-  // Indexed loosely: the registry file is user-editable and a hand-written
-  // modelType must degrade to "no endpoint keys", not throw.
-  const keys: readonly string[] =
-    PROFILE_ENV_KEYS[family as ProfileModelType] ?? []
-  return keys.filter(key => key.endsWith('_BASE_URL'))
-}
-
-/** Unset and "the default spelled out with a trailing slash" are one endpoint. */
-function normalizeEndpoint(value: string | undefined): string {
-  return (value ?? '').trim().replace(/\/+$/, '')
-}
-
-/**
- * The concrete models the picker's own rows already offer.
- *
- * Built by RESOLVING each option value, because the two sides are otherwise
- * not the same kind of thing: a tier row's value is an alias (`opus`,
- * `sonnet[1m]`) while every aggregated row carries a concrete id, so comparing
- * them raw meant the guard could essentially never fire for tier rows — which
- * is how a session on a saved profile still saw its own models listed again.
- *
- * The resolver is injected, and every call is guarded: resolution reaches the
- * model-provider chain, which throws for providers that require configuration
- * (Gemini's does) and for the "no preference" row on a session with no
- * credentials. A row occ cannot resolve simply does not participate in
- * de-duplication; it must never take the picker down.
- */
-export function offeredModelIds(
-  values: readonly string[],
-  resolve: (value: string) => string | undefined,
-): Set<string> {
-  const ids = new Set<string>()
-  for (const value of values) {
-    try {
-      const id = resolve(value)
-      if (id) ids.add(id)
-    } catch {
-      // Unresolvable row: not a duplicate of anything we can name.
-    }
-  }
-  return ids
-}
-
 type BuildAggregatedOptionsParams = {
-  /**
-   * Concrete model ids the picker already offers, resolved from its own rows
-   * — see offeredModelIds. Raw option values do not answer this.
-   */
-  existingModelIds?: ReadonlySet<string>
   /** Registry keys of the profiles that ARE the provider in use right now. */
   sessionProfiles?: ReadonlySet<string>
 }
@@ -190,12 +130,25 @@ type BuildAggregatedOptionsParams = {
 /**
  * Aggregated rows, in the order `buildAggregatedModels` produced them.
  *
- * A row is dropped when both halves of "pure duplicate" hold: it comes from a
- * profile that describes the provider the session is already using, AND the
- * picker already offers that model. Rows from every OTHER provider stay even
- * when the id matches — the same model on another account or relay is a
- * legitimate thing to want, which is what `ambiguous` and the `id (profile)`
- * tag exist for.
+ * A profile that describes the provider the session is already using
+ * contributes NOTHING, whatever its individual ids are. Every aggregated row
+ * means "selecting this switches provider", and there is no such thing as
+ * switching to the provider you are on — so the row is at best noise and at
+ * worst a lie about what selecting it does.
+ *
+ * This used to also require that the picker already offered the same id, which
+ * left a residue nobody could explain: the picker's own catalog rows are
+ * filtered (it drops the image, audio and realtime ids a chat session cannot
+ * use) while a profile's `models` is the raw `/v1/models` answer, so precisely
+ * the ids the picker had deliberately removed came back at the bottom of the
+ * list, tagged with the name of the provider already in use. On one real
+ * registry that was 5 rows of `gpt-image-*` / `gpt-4o-audio-preview` /
+ * `gpt-4o-realtime-preview`. Dropping the id check and keeping only the
+ * ownership one fixes it: ownership is the half that carries the meaning.
+ *
+ * Rows from every OTHER provider stay even when the id matches — the same
+ * model on another account or relay is a legitimate thing to want, which is
+ * what `ambiguous` and the `id (profile)` tag exist for.
  *
  * An unambiguous id renders as just the id — that is all the user needs to
  * pick it. An ambiguous one is tagged with its owning profile, because the id
@@ -205,12 +158,11 @@ export function buildAggregatedModelOptions(
   models: readonly AggregatedModel[],
   params: BuildAggregatedOptionsParams = {},
 ): AggregatedOption[] {
-  const existing = params.existingModelIds ?? new Set<string>()
   const sessionProfiles = params.sessionProfiles ?? new Set<string>()
   const options: AggregatedOption[] = []
   const seen = new Set<string>()
   for (const model of models) {
-    if (sessionProfiles.has(model.profile) && existing.has(model.id)) continue
+    if (sessionProfiles.has(model.profile)) continue
     const value = aggregatedOptionValue(model.selector)
     // buildAggregatedModels already emits one row per (id, profile), so this
     // only fires on a hand-edited registry; skipping beats a duplicate key.

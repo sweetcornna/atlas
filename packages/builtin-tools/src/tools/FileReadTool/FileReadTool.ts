@@ -83,6 +83,7 @@ import { readFileInRange } from 'src/utils/filesystem/readFileInRange.js'
 import { semanticNumber } from 'src/utils/collections/semanticNumber.js'
 import { jsonStringify } from '@open-claude-code/tool-runtime/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/constants.js'
+import { GREP_TOOL_NAME } from '../GrepTool/constants.js'
 import {
   DESCRIPTION,
   FILE_READ_TOOL_NAME,
@@ -90,9 +91,11 @@ import {
   LINE_FORMAT_INSTRUCTION,
   OFFSET_INSTRUCTION_DEFAULT,
   OFFSET_INSTRUCTION_TARGETED,
+  TRUNCATED_PARTIAL_VIEW_PREFIX,
 } from './constants.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import { renderPromptTemplate } from './prompt.js'
+import { setReadTruncationNotice } from './truncationNotice.js'
 import {
   getToolUseSummary,
   renderToolResultMessage,
@@ -123,17 +126,38 @@ const BLOCKED_DEVICE_PATHS = new Set([
   '/dev/fd/2',
 ])
 
-function isBlockedDevicePath(filePath: string): boolean {
-  if (BLOCKED_DEVICE_PATHS.has(filePath)) return true
-  // /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
+const BLOCKED_PROC_FILES = new Set([
+  'environ',
+  'cmdline',
+  'auxv',
+  'maps',
+  'mem',
+  'stat',
+])
+
+function blockedSpecialFileReason(filePath: string): string | undefined {
+  if (BLOCKED_DEVICE_PATHS.has(filePath)) {
+    return 'this device file would block or produce infinite output'
+  }
+  const normalized = filePath.replaceAll('\\', '/')
+  if (!normalized.startsWith('/proc/')) return undefined
   if (
-    filePath.startsWith('/proc/') &&
-    (filePath.endsWith('/fd/0') ||
-      filePath.endsWith('/fd/1') ||
-      filePath.endsWith('/fd/2'))
-  )
-    return true
-  return false
+    normalized.endsWith('/fd/0') ||
+    normalized.endsWith('/fd/1') ||
+    normalized.endsWith('/fd/2')
+  ) {
+    return 'this device file would block or produce infinite output'
+  }
+  const segments = normalized.split('/').filter(Boolean)
+  if (
+    segments[0] === 'proc' &&
+    segments.length === 3 &&
+    (segments[1] === 'self' || /^\d+$/.test(segments[1] ?? '')) &&
+    BLOCKED_PROC_FILES.has(segments[2] ?? '')
+  ) {
+    return 'this procfs file may expose process secrets or memory'
+  }
+  return undefined
 }
 
 // Narrow no-break space (U+202F) used by some macOS versions in screenshot filenames
@@ -274,6 +298,12 @@ const outputSchema = lazySchema(() => {
           .describe('Number of lines in the returned content'),
         startLine: z.number().describe('The starting line number'),
         totalLines: z.number().describe('Total number of lines in the file'),
+        truncatedByTokenCap: z
+          .boolean()
+          .optional()
+          .describe(
+            'True when a whole-file read was auto-paginated because it exceeded the token cap (the content is a partial first page). A programmatic signal for internal consumers; survives output reconstruction (unlike the render-time banner).',
+          ),
       }),
     }),
     z.object({
@@ -467,6 +497,15 @@ export const FileReadTool = buildTool({
       }
     }
 
+    const blockedReason = blockedSpecialFileReason(fullFilePath)
+    if (blockedReason) {
+      return {
+        result: false,
+        message: `Cannot read '${file_path}': ${blockedReason}.`,
+        errorCode: 9,
+      }
+    }
+
     // SECURITY: UNC path check (no I/O) — defer filesystem operations
     // until after user grants permission to prevent NTLM credential leaks
     const isUncPath =
@@ -504,16 +543,6 @@ export const FileReadTool = buildTool({
         result: false,
         message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
         errorCode: 4,
-      }
-    }
-
-    // Block specific device files that would hang (infinite output or blocking input).
-    // This is a path-based check with no I/O — safe special files like /dev/null are allowed.
-    if (isBlockedDevicePath(fullFilePath)) {
-      return {
-        result: false,
-        message: `Cannot read '${file_path}': this device file would block or produce infinite output.`,
-        errorCode: 9,
       }
     }
 
@@ -760,6 +789,87 @@ function memoryFileFreshnessPrefix(data: object): string {
   const mtimeMs = memoryFileMtimes.get(data)
   if (mtimeMs === undefined) return ''
   return memoryFreshnessNote(mtimeMs)
+}
+
+function countNewlines(text: string): number {
+  let count = 0
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) {
+    count++
+  }
+  return count
+}
+
+type OversizedReadPage = {
+  content: string
+  numLines: number
+  banner: string
+}
+
+/**
+ * Converge on a first page that fits under `maxTokens`, for a whole-file read
+ * whose content blew the cap.
+ *
+ * Why iterate instead of computing once: the only token signal available here
+ * is `tokenCount` for the WHOLE content, so the chars-per-token ratio is
+ * measured on this specific file (CJK, minified JS and ASCII source differ by
+ * several times) and the first guess is deliberately conservative (x0.85).
+ * Six x0.7 shrinks bound the loop — no re-tokenization happens, so a wrong
+ * guess costs nothing but a slice.
+ *
+ * The char-slice fallback exists for files that are one enormous line
+ * (bundles, minified assets, single-line JSON): line-based paging cannot make
+ * those smaller, and returning an empty page would be worse than an
+ * unaligned excerpt.
+ */
+function paginateOversizedRead(
+  content: string,
+  totalLines: number,
+  maxTokens: number,
+  tokenCount: number,
+  displayPath: string,
+): OversizedReadPage {
+  const lines = content.split('\n')
+  // Floor at 0.5 so a pathological ratio can never let the estimator hand back
+  // a slice larger than the input it is trying to shrink.
+  const charsPerToken = Math.max(0.5, content.length / Math.max(1, tokenCount))
+  const estimateTokens = (text: string): number => text.length / charsPerToken
+
+  let keptLines = Math.max(
+    1,
+    Math.min(
+      lines.length,
+      Math.floor(((lines.length * maxTokens) / Math.max(1, tokenCount)) * 0.85),
+    ),
+  )
+  let page = lines.slice(0, keptLines).join('\n')
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (estimateTokens(page) <= maxTokens || keptLines <= 1) break
+    keptLines = Math.max(1, Math.floor(keptLines * 0.7))
+    page = lines.slice(0, keptLines).join('\n')
+  }
+
+  let slicedByChars = false
+  if (estimateTokens(page) > maxTokens || page.trim() === '') {
+    let chars = Math.max(1, Math.floor(maxTokens * charsPerToken * 0.85))
+    for (let attempt = 0; attempt < 6; attempt++) {
+      page = content.slice(0, chars)
+      if (estimateTokens(page) <= maxTokens) break
+      chars = Math.max(1, Math.floor(chars * 0.7))
+    }
+    // Never end on a lone high surrogate: it would render as U+FFFD and
+    // corrupt the last character the model sees.
+    const lastCode = page.charCodeAt(page.length - 1)
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff) page = page.slice(0, -1)
+    slicedByChars = true
+  }
+
+  const numLines = slicedByChars ? countNewlines(page) + 1 : keptLines
+  const banner =
+    !slicedByChars && numLines < totalLines
+      ? `${TRUNCATED_PARTIAL_VIEW_PREFIX}${displayPath}: showing lines 1-${numLines} of ${totalLines} total (${tokenCount} tokens, cap ${maxTokens}). Call ${FILE_READ_TOOL_NAME} with offset=${numLines + 1} limit=${numLines} for the next page, or ${GREP_TOOL_NAME} to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]`
+      : `${TRUNCATED_PARTIAL_VIEW_PREFIX}${displayPath}: showing the first ${page.length} of ${content.length} characters (${tokenCount} tokens, cap ${maxTokens}); this file has very long lines and cannot be paginated by line. Use ${GREP_TOOL_NAME} to find a specific section, or ${FILE_READ_TOOL_NAME} with offset/limit to page through it. Do NOT answer from this excerpt alone if the answer may be elsewhere in the file.]`
+
+  return { content: page, numLines, banner }
 }
 
 async function validateContentTokens(
@@ -1047,50 +1157,96 @@ async function callInner(
       context.abortController.signal,
     )
 
-  await validateContentTokens(content, ext, maxTokens)
+  // A whole-file read that blows the TOKEN cap is auto-paginated rather than
+  // thrown: converge on a first page that fits, hand it back, and tell the
+  // model in the same turn how to request page 2. Throwing here instead makes
+  // the model guess an offset/limit it has no information for, and it
+  // routinely guesses wrong or gives up.
+  //
+  // Ranged reads (explicit offset/limit) and `pages` still throw — the model
+  // chose that range, so the error is actionable, and a ~100-byte error
+  // tool-result is far cheaper than a capped page. NOTE this is a different
+  // axis from the #21841 revert documented in limits.ts, which is about the
+  // BYTE cap on explicit-limit reads; that path is untouched.
+  const isWholeFileRead =
+    offset <= 1 && limit === undefined && pages === undefined
+  let pageContent = content
+  let pageLineCount = lineCount
+  let pageLimit = limit
+  let truncationBanner: string | undefined
+  try {
+    await validateContentTokens(content, ext, maxTokens)
+  } catch (error) {
+    if (!(error instanceof MaxFileReadTokenExceededError) || !isWholeFileRead) {
+      throw error
+    }
+    const page = paginateOversizedRead(
+      content,
+      totalLines,
+      maxTokens,
+      error.tokenCount,
+      fullFilePath,
+    )
+    pageContent = page.content
+    pageLineCount = page.numLines
+    pageLimit = page.numLines
+    truncationBanner = page.banner
+  }
 
   readFileState.set(fullFilePath, {
-    content,
+    content: pageContent,
     timestamp: Math.floor(mtimeMs),
     offset,
-    limit,
+    limit: pageLimit,
+    // The model has only seen page 1. `isPartialView` both exempts the next
+    // Read of this file from the FILE_UNCHANGED_STUB dedup (which would
+    // otherwise hide page 2 behind "file unchanged") and forces Edit/Write to
+    // do a real Read first.
+    ...(truncationBanner !== undefined && { isPartialView: true }),
   })
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
   // Snapshot before iterating — a listener that unsubscribes mid-callback
   // would splice the live array and skip the next listener.
   for (const listener of fileReadListeners.slice()) {
-    listener(resolvedFilePath, content)
+    listener(resolvedFilePath, pageContent)
   }
 
   const data = {
     type: 'text' as const,
     file: {
       filePath: file_path,
-      content,
-      numLines: lineCount,
-      startLine: offset,
+      content: pageContent,
+      numLines: pageLineCount,
+      startLine: truncationBanner !== undefined ? Math.max(1, offset) : offset,
       totalLines,
+      ...(truncationBanner !== undefined && { truncatedByTokenCap: true }),
     },
   }
   if (isAutoMemFile(fullFilePath)) {
     memoryFileMtimes.set(data, mtimeMs)
+  }
+  if (truncationBanner !== undefined) {
+    setReadTruncationNotice(data, truncationBanner)
   }
 
   logFileOperation({
     operation: 'read',
     tool: 'FileReadTool',
     filePath: fullFilePath,
-    content,
+    content: pageContent,
   })
 
   const sessionFileType = detectSessionFileType(fullFilePath)
   const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
   logEvent('tengu_session_file_read', {
     totalLines,
-    readLines: lineCount,
+    readLines: pageLineCount,
     totalBytes,
-    readBytes,
+    readBytes:
+      truncationBanner !== undefined
+        ? Buffer.byteLength(pageContent, 'utf8')
+        : readBytes,
     offset,
     ...(limit !== undefined && { limit }),
     ...(analyticsExt !== undefined && { ext: analyticsExt }),

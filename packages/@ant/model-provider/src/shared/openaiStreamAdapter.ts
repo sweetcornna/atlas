@@ -83,6 +83,8 @@ export async function* adaptOpenAIStreamToAnthropic(
   // Deferred finish state
   let pendingFinishReason: string | null = null
   let pendingHasToolCalls = false
+  let sawOutput = false
+  let sawTerminalUsageChunk = false
 
   for await (const chunk of stream) {
     const choice = chunk.choices?.[0]
@@ -90,6 +92,16 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Extract usage from any chunk that carries it.
     if (chunk.usage) {
+      // Some OpenAI-compatible gateways close a successful stream with an
+      // include_usage chunk but omit both finish_reason and [DONE]. The usage
+      // chunk is terminal evidence only after actual output has been seen; an
+      // empty or abruptly truncated stream must remain retryable.
+      if (
+        (chunk.usage.completion_tokens ?? 0) > 0 &&
+        chunk.choices.length === 0
+      ) {
+        sawTerminalUsageChunk = true
+      }
       rawInputTokens = chunk.usage.prompt_tokens ?? rawInputTokens
       outputTokens = chunk.usage.completion_tokens ?? outputTokens
 
@@ -147,22 +159,8 @@ export async function* adaptOpenAIStreamToAnthropic(
     // empty thinking block must round-trip back to the API in subsequent
     // requests, otherwise DeepSeek rejects with 400.
     const reasoningContent = (delta as any).reasoning_content
-    // An empty string arriving *while text is already flowing* carries no
-    // information, and acting on it is expensive: the branch below closes the
-    // open text block and opens a fresh empty thinking block, so a provider
-    // that pairs `reasoning_content: ""` with every text chunk shreds one
-    // answer into hundreds of alternating blocks. Measured through an
-    // OpenAI-compatible gateway: qwen3.8-max produced 251 blocks for a
-    // two-point answer (126 thinking, 125 of them empty), against 2 for
-    // deepseek-v4-pro. Those blocks are persisted and replayed on every
-    // subsequent request, so the cost is paid again each turn.
-    //
-    // The DeepSeek contract above is untouched: it is about `""` arriving
-    // *before* any text, when the model answers directly. That case still
-    // opens its empty thinking block and still round-trips.
-    const emptyReasoningMidText =
-      reasoningContent === '' && textBlockOpen && !thinkingBlockOpen
-    if (reasoningContent != null && !emptyReasoningMidText) {
+    if (reasoningContent != null) {
+      sawOutput = true
       if (!thinkingBlockOpen) {
         // Close an open text block first, mirroring what the text and
         // tool_call handlers below already do for each other.
@@ -213,6 +211,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Handle text content
     if (delta.content != null && delta.content !== '') {
+      sawOutput = true
       if (!textBlockOpen) {
         // Close thinking block if still open
         if (thinkingBlockOpen) {
@@ -250,6 +249,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Handle tool calls
     if (delta.tool_calls) {
+      sawOutput = true
       for (const tc of delta.tool_calls) {
         const tcIndex = tc.index
 
@@ -352,7 +352,15 @@ export async function* adaptOpenAIStreamToAnthropic(
   }
 
   if (pendingFinishReason === null) {
-    throw new IncompleteOpenAIStreamError()
+    if (sawOutput && sawTerminalUsageChunk) {
+      // Compatibility fallback for gateways that terminate with usage instead of
+      // finish_reason. Text/reasoning answers are ordinary stops; tool output is
+      // still forced to tool_use by pendingHasToolCalls below.
+      pendingFinishReason = 'stop'
+      pendingHasToolCalls = toolBlocks.size > 0
+    } else {
+      throw new IncompleteOpenAIStreamError()
+    }
   }
 
   // Safety: close any remaining open blocks

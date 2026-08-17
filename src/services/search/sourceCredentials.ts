@@ -108,7 +108,13 @@ export function hasDeepSeekSearchCredentials(): boolean {
   return resolveDeepSeekSearchEndpoint() !== undefined
 }
 
-/** A pinned key, Google OAuth (Antigravity), or a Gemini API key. */
+/**
+ * A pinned key, Google OAuth (Antigravity), or a Gemini API key.
+ *
+ * The OAuth probe counts web search's own copy of the Google login as well as
+ * the login itself — the copy is a credential this lane really does
+ * authenticate with, and it is the one that is still there after a `/logout`.
+ */
 export function hasGeminiSearchCredentials(): boolean {
   if (readPinnedSearchCredential('gemini')) return true
   return hasGeminiOAuthCredentialsSync() || Boolean(process.env.GEMINI_API_KEY)
@@ -145,17 +151,24 @@ export function hasGeminiSearchCredentials(): boolean {
  * so the login counted here is the login the search uses. Loosening either side
  * alone re-opens the silent-empty-results hole above.
  *
- * No pinned-credential branch, unlike the other three sources — this is the one
- * source `/search-setting` refuses to pin (PINNABLE_SEARCH_SOURCES). Its lane
- * authenticates inside `createOpenAIResponsesStream`, which builds the request
- * from `OPENAI_API_KEY`/`OPENAI_BASE_URL` with no credential seam, so a pin
- * would light this row green for a key that never leaves the disk. Its ChatGPT
- * login is already a 0600 file rather than an env var, which is what gives this
- * source a credential that survives a provider switch at all.
+ * A PIN IS ANSWERED FIRST, AND THE BASE-URL RULE APPLIES TO IT UNCHANGED.
+ * `resolvePinnedCodexSearchCredential()` outranks both routes in the lane, so
+ * the pin is what this predicate has to be about — reporting a ChatGPT account
+ * for a request that will carry a pinned key is the mislabelling the `gemini`
+ * row already had to fix. And the rule above is about the ENDPOINT, not about
+ * where the key came from: a pin aimed at an OpenAI-compatible gateway is the
+ * same lane that runs a search and reports no citations, so it is answered
+ * `false` here rather than lighting a row that can only return nothing. The
+ * capture path refuses to create one; this covers a hand-edited file.
  */
 export function hasCodexSearchCredentials(): boolean {
+  const pinned = readPinnedSearchCredential('codex')
+  if (pinned) return isOfficialOpenAIBaseURL(pinned.baseURL)
   // A ChatGPT/Codex login authenticates against OpenAI's own backend by
-  // construction, whatever OPENAI_BASE_URL happens to say.
+  // construction, whatever OPENAI_BASE_URL happens to say. Web search's own
+  // copy of that login counts here too: it is the credential the lane falls
+  // back to once `/logout` has deleted the original, and the backend it reaches
+  // is the same one.
   if (hasStoredChatGPTAuthSync()) return true
   return (
     Boolean(process.env.OPENAI_API_KEY) &&

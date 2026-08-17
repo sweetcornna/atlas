@@ -1,10 +1,10 @@
-import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const API_ERROR_SOURCE = Symbol.for('occ.api.sourceError')
 
-const RETRYABLE_HTTP_STATUSES = new Set([408, 409, 425, 429, 529])
+const RETRYABLE_HTTP_STATUSES = new Set([401, 408, 409, 429, 529])
 const RETRYABLE_NETWORK_CODES = new Set([
   'ECONNRESET',
   'ECONNREFUSED',
@@ -18,19 +18,35 @@ const RETRYABLE_NETWORK_CODES = new Set([
   'EHOSTDOWN',
   'ENETUNREACH',
   'ENETDOWN',
-  'ENETRESET',
-  'EADDRNOTAVAIL',
-  'ERR_STREAM_PREMATURE_CLOSE',
-  'ERR_SOCKET_CONNECTION_TIMEOUT',
-  'ERR_NETWORK',
-  'ERR_NETWORK_CHANGED',
+  'ERR_SOCKET_CLOSED',
+  'CONNECTIONCLOSED',
+  'STREAMSUSPENDED',
+])
+const NON_RETRYABLE_CONNECTION_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_SIGNATURE_FAILURE',
+  'CERT_NOT_YET_VALID',
+  'CERT_HAS_EXPIRED',
+  'CERT_REVOKED',
+  'CERT_REJECTED',
+  'CERT_UNTRUSTED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_CHAIN_TOO_LONG',
+  'PATH_LENGTH_EXCEEDED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'HOSTNAME_MISMATCH',
+  'BEDROCKUNEXPECTEDCONTENTTYPE',
 ])
 const ABORT_ERROR_PATTERN =
   /(request was aborted|operation was aborted|aborterror|user abort)/i
 const DETERMINISTIC_TLS_PATTERN =
   /(certificate|self[ -]signed|unable to verify|ssl routines|ssl\/tls alert|tls alert|handshake failure|wrong version number)/i
-const TRANSIENT_ERROR_MESSAGE_PATTERN =
-  /fetch failed|terminated|socket hang ?up|body timeout error|headers timeout error|premature close|network error|network changed|connection (?:error|closed|reset|refused|timeout)|other side closed|client network socket disconnected|sse stream disconnected|failed to reconnect sse stream|request timed out|read timeout|timeout error|stream idle timeout|without receiving any events|upstream request failed|upstream connect error|no healthy upstream|bad gateway|service unavailable|gateway time-?out|internal server error|temporarily unavailable|overloaded_error|server_error|try again later|econnreset|econnrefused|epipe|etimedout|enotfound|eai_again|ehostunreach|enetunreach|enetdown|ehostdown|eaddrnotavail|und_err_/i
+const OVERLOADED_ERROR_PATTERN = /"type"\s*:\s*"overloaded_error"/i
+const MAX_TOKENS_OVERFLOW_PATTERN =
+  /input length and `max_tokens` exceed context limit/i
 /**
  * Wording that can only describe a permanently-broken request or local setup.
  *
@@ -46,81 +62,17 @@ const PERMANENT_ERROR_MESSAGE_PATTERN =
 const ADAPTER_HTTP_STATUS_PATTERN = /request failed \((\d{3})[\s):]/
 const SDK_HTTP_STATUS_PATTERN = /^(?:API Error(?: \([^)]*\))?:\s*)?(\d{3})\s/
 
-/**
- * How much another attempt is worth.
- *
- * `transient` earns the full ladder — ten retries with exponential backoff.
- * `permanent` is the set that almost never answers differently: authentication,
- * permission, invalid request, billing, a deterministic TLS failure, and the
- * unclassifiable tail of a 4xx. occ retries those too (see
- * {@link isRetryEveryAPIErrorEnabled}), but on {@link PERMANENT_RETRY_MAX_RETRIES}
- * attempts of {@link PERMANENT_RETRY_DELAY_MS} rather than the ladder, so a bad
- * tool schema still surfaces in about the time a hard failure used to.
- */
+/** Classification lane retained for diagnostics and provider-shape precedence. */
 type RetryPersistence = 'transient' | 'permanent'
 
 export type RetryableAPIErrorClassification = {
   category: SDKAssistantMessageError
   retryable: boolean
-  /**
-   * Which retry budget this failure belongs in. `retryable: false` always
-   * implies `permanent`; the reverse does not hold — under the default policy a
-   * permanent class is retried, just cheaply.
-   */
+  /** Retained for diagnostics; only retryable failures enter a delay lane. */
   persistence: RetryPersistence
 }
 
-/**
- * Single documented switch for the retry-everything policy.
- *
- * On by default: every classified API failure gets at least one more attempt,
- * including the classes that used to fail immediately — `authentication_failed`,
- * `invalid_request`, `billing_error`, permission, and the unclassified
- * fall-through. Set `CLAUDE_CODE_RETRY_ALL_ERRORS` to `0`, `false`, `off` or
- * `no` to restore the previous fast-fail behaviour, where only transient
- * failures were retried at all.
- *
- * Two things this switch deliberately does not reach, because neither is an API
- * failure:
- *
- *  - **User cancellation** (`APIUserAbortError`, an `AbortError`, an aborted
- *    signal). Retrying a cancellation defeats Esc.
- *  - **An explicit `retryable: false` from the producer.** That field is how the
- *    stream adapters say "this attempt's output already reached the terminal,
- *    ACP and `--include-partial-messages` stdout; there is no protocol for
- *    un-saying it". See `closesRetryWindow` in `openai/responsesAdapter.ts`.
- *    It is also what occ's own {@link NonRetryableError} sets for a local
- *    precondition no request was ever made for.
- */
-export function isRetryEveryAPIErrorEnabled(): boolean {
-  const raw = process.env.CLAUDE_CODE_RETRY_ALL_ERRORS?.trim().toLowerCase()
-  return !(raw === '0' || raw === 'false' || raw === 'off' || raw === 'no')
-}
-
-/**
- * Retries granted to a `permanent` failure, on top of the initial request.
- *
- * One, not the ladder's ten. These classes answer the same way the second time
- * in nearly every case; the single extra attempt exists for the few that do not
- * — a credential rotated between the request and its 401 (`withRetry` drops the
- * stale credential cache *before* it decides, so attempt two is built from a
- * fresh one), or a gateway that briefly rejects a body it goes on to accept. A
- * second retry would double the cost of the common case to buy almost nothing.
- */
-export const PERMANENT_RETRY_MAX_RETRIES = 1
-
-/**
- * Backoff between the two attempts above. Fixed rather than exponential: there
- * is no congestion to back off from, and the whole point of this lane is that a
- * 400 for a malformed tool schema still surfaces in well under a second. The
- * transient ladder's *first* step alone is 500ms and its last is 32s.
- */
-export const PERMANENT_RETRY_DELAY_MS = 250
-
-/**
- * Build a verdict from the one thing the error actually tells us — its class —
- * and let the policy decide whether `permanent` still earns an attempt.
- */
+/** Build a retryable verdict for an official transient class. */
 function classify(
   category: SDKAssistantMessageError,
   persistence: RetryPersistence,
@@ -128,7 +80,7 @@ function classify(
   return {
     category,
     persistence,
-    retryable: persistence === 'transient' || isRetryEveryAPIErrorEnabled(),
+    retryable: true,
   }
 }
 
@@ -146,8 +98,8 @@ function neverRetry(
  * that reached a provider and produced a payload we could not name is a
  * server-side failure and must be reported as one **regardless of the retry
  * verdict**. Reporting the same upstream failure as `unknown` when it was
- * pinned permanent and `server_error` when it was transient made one bug look
- * like two.
+ * non-retryable and `server_error` when transient would make one bug look like
+ * two.
  */
 function apiBoundaryCategory(
   category: SDKAssistantMessageError,
@@ -160,13 +112,8 @@ function apiBoundaryCategory(
  * "you are not logged in", "this account has no project". No request was ever
  * put on the wire, so there is nothing transient to outlast.
  *
- * The `retryable: false` field is what earns that: it is the classifier's
- * highest-precedence signal below abort/TLS (see
- * {@link classifyRetryableAPIError}), the same one `responsesAdapter.ts` uses to
- * pin a committed stream failure as permanent. Without it these land in the
- * default-retry tail — a plain `new Error('… Run /login …')` matches no
- * transient pattern and no permanent keyword, so the ladder spends eleven
- * attempts and ~2 minutes re-reading the same empty credentials file.
+ * The concrete class preserves the declared category even if the error is
+ * wrapped before it reaches diagnostics.
  *
  * `category` is explicit rather than inferred, so the SDK error surface does not
  * hinge on the prose ever matching a regex.
@@ -263,12 +210,9 @@ function httpStatusCategory(status: number): SDKAssistantMessageError {
 }
 
 function classifyHttpStatus(status: number): RetryableAPIErrorClassification {
-  return classify(
-    httpStatusCategory(status),
-    RETRYABLE_HTTP_STATUSES.has(status) || (status >= 500 && status < 600)
-      ? 'transient'
-      : 'permanent',
-  )
+  return RETRYABLE_HTTP_STATUSES.has(status) || (status >= 500 && status < 600)
+    ? classify(httpStatusCategory(status), 'transient')
+    : neverRetry(httpStatusCategory(status))
 }
 
 function numericHttpStatus(
@@ -338,8 +282,19 @@ function signalCategory(
   // that is working. OpenCode's `managed_inference_model_disabled` is the case
   // this was added for; the signal is read before the status, so the body's own
   // word wins over the HTTP class.
+  //
+  // MODELERROR is the same defect one gateway family further out. OpenCode's
+  // Zen/Go gateway answers an id it does not serve with
+  // `401 {"type":"error","error":{"type":"ModelError","message":"Model <id> is
+  // not supported"}}` — measured against the live endpoint — and relays that
+  // pass an upstream's body through verbatim reproduce it under their own
+  // domain. 401 made it `authentication_failed`, so occ told the user their
+  // credentials had failed for a key that had just authenticated well enough
+  // for the gateway to look the model up and answer about it. `ModelError`
+  // survives normalization with no separator, which is why the MODEL_DISABLED
+  // alternative above does not already cover it.
   if (
-    /(?:INVALID|VALIDATION|BAD_REQUEST|NOT_FOUND|FAILED_PRECONDITION|OUT_OF_RANGE|CONTEXT_LENGTH|TOO_LARGE|UNSUPPORTED|UNIMPLEMENTED|MODEL_DISABLED)/.test(
+    /(?:INVALID|VALIDATION|BAD_REQUEST|NOT_FOUND|FAILED_PRECONDITION|OUT_OF_RANGE|CONTEXT_LENGTH|TOO_LARGE|UNSUPPORTED|UNIMPLEMENTED|MODEL_DISABLED|MODEL_?ERROR)/.test(
       normalized,
     )
   ) {
@@ -363,9 +318,8 @@ function structuredSignalClassification(
           : typeof value === 'string'
             ? signalCategory(value)
             : undefined
-      // Filtered on the lane, not on `retryable`: under the retry-everything
-      // policy a permanent class is retryable, so reading the boolean here
-      // would silently stop giving permanent signals their precedence.
+      // Filtered on the lane so permanent provider signals keep precedence over
+      // an outer transport-looking wrapper or HTTP status.
       if (
         classification &&
         (!permanentOnly || classification.persistence === 'permanent')
@@ -388,6 +342,43 @@ function statusFromMessage(message: string): number | undefined {
   return undefined
 }
 
+function retryDirectiveFromRecords(
+  records: Record<string, unknown>[],
+): boolean | undefined {
+  for (const record of records) {
+    const headers = record.headers
+    if (headers instanceof Headers) {
+      const value = headers.get('x-should-retry')
+      if (value === 'true') return true
+      if (value === 'false') return false
+      continue
+    }
+    const headerRecord = asErrorRecord(headers)
+    const value =
+      headerRecord?.['x-should-retry'] ?? headerRecord?.['X-Should-Retry']
+    if (value === 'true') return true
+    if (value === 'false') return false
+  }
+  return undefined
+}
+
+function httpStatusFromRecordsOrMessages(
+  records: Record<string, unknown>[],
+  messages: string[],
+): number | undefined {
+  for (const record of records) {
+    for (const key of ['status', 'statusCode', 'httpStatus']) {
+      const status = numericHttpStatus(record[key], true)
+      if (status !== undefined) return status
+    }
+  }
+  for (const message of messages) {
+    const status = statusFromMessage(message)
+    if (status !== undefined) return status
+  }
+  return undefined
+}
+
 function permanentMessageCategory(
   message: string,
 ): SDKAssistantMessageError | undefined {
@@ -405,6 +396,12 @@ function permanentMessageCategory(
   return 'invalid_request'
 }
 
+function permanentStructuredCategory(
+  records: Record<string, unknown>[],
+): SDKAssistantMessageError | undefined {
+  return structuredSignalClassification(records, true)?.category
+}
+
 function knownErrorCategory(
   records: Record<string, unknown>[],
   messages: string[],
@@ -415,12 +412,13 @@ function knownErrorCategory(
   const permanentSignal = structuredSignalClassification(records, true)
   if (permanentSignal) return permanentSignal.category
 
+  const structuredSignal = structuredSignalClassification(records, false)
+  if (structuredSignal) return structuredSignal.category
+
   for (const record of records) {
     const status = numericHttpStatus(record.status, true)
     if (status !== undefined) return httpStatusCategory(status)
   }
-  const structuredSignal = structuredSignalClassification(records, false)
-  if (structuredSignal) return structuredSignal.category
 
   for (const message of messages) {
     const status = statusFromMessage(message)
@@ -437,15 +435,13 @@ function knownErrorCategory(
  * Classify SDK errors, hand-written fetch errors, and SSE error envelopes.
  *
  * Precedence is part of the contract: abort > deterministic TLS > an explicit
- * retryable:false > permanent type/code/name > HTTP status > other structured
- * signals > retryable:true > message.
+ * local {@link NonRetryableError} > permanent type/code/name > HTTP status > other
+ * structured signals > retryable:true > message.
  *
- * What that precedence now decides is mostly the *lane*, not whether to retry:
- * every class the classifier can name is retryable under the default policy
- * (see {@link isRetryEveryAPIErrorEnabled}), with permanent classes routed to
- * the small budget in {@link PERMANENT_RETRY_MAX_RETRIES}. The two exceptions
- * are the first two rungs — a user cancellation, and a producer that declared
- * `retryable: false` because its output already went downstream.
+ * The result mirrors the official CLI predicate: retryable transport failures,
+ * 408/409/429/5xx, 401 credential refresh, explicit x-should-retry, and the
+ * max_tokens adjustment case. Provider-specific type/code names only bridge
+ * equivalent error shapes into that policy.
  */
 export function classifyRetryableAPIError(
   error: unknown,
@@ -455,90 +451,88 @@ export function classifyRetryableAPIError(
     error === undefined ||
     (typeof error === 'string' && !error.trim())
   ) {
-    // Not an API failure — there is nothing here to attempt again.
     return neverRetry('unknown')
   }
 
   const records = collectErrorRecords(error)
   const messages = errorMessages(error, records)
-  const knownCategory = knownErrorCategory(records, messages)
+  const category = apiBoundaryCategory(knownErrorCategory(records, messages))
+  const permanentCategory = permanentStructuredCategory(records)
+  const explicitStatus = httpStatusFromRecordsOrMessages(records, messages)
 
   if (
     error instanceof APIUserAbortError ||
     records.some(record => record.name === 'AbortError') ||
     messages.some(message => ABORT_ERROR_PATTERN.test(message))
   ) {
-    // The user pressed Esc. Never retried, under any policy — see
-    // isRetryEveryAPIErrorEnabled.
     return neverRetry('unknown')
+  }
+  if (records.some(record => record instanceof NonRetryableError)) {
+    return neverRetry(category)
   }
 
   const connectionDetails = extractConnectionErrorDetails(error)
+  const connectionCode = connectionDetails?.code.toUpperCase()
   if (
     connectionDetails?.isSSLError ||
-    connectionDetails?.code.startsWith('ERR_SSL_') ||
-    (connectionDetails?.code === 'EPROTO' &&
-      /ssl|tls|handshake/i.test(connectionDetails.message)) ||
-    records.some(record =>
-      typeof record.code === 'string'
-        ? record.code.startsWith('ERR_SSL_') ||
-          record.code === 'ERR_TLS_CERT_ALTNAME_INVALID'
-        : false,
-    ) ||
+    (connectionCode !== undefined &&
+      NON_RETRYABLE_CONNECTION_CODES.has(connectionCode)) ||
+    connectionCode?.startsWith('ERR_SSL_') ||
+    (connectionCode === 'EPROTO' &&
+      /ssl|tls|handshake/i.test(connectionDetails?.message ?? '')) ||
     messages.some(message => DETERMINISTIC_TLS_PATTERN.test(message))
   ) {
-    // A bad certificate or a protocol mismatch answers the same way every
-    // time, and `getSSLErrorHint`'s NODE_EXTRA_CA_CERTS advice is only useful
-    // if it arrives quickly — hence the cheap lane rather than the ladder.
-    // Reported as whatever the error itself said, usually `unknown`: a
-    // handshake that never completed produced no provider payload to name.
-    return classify(knownCategory, 'permanent')
+    return neverRetry(category)
   }
-
-  // The producer's own verdict, and the only "do not retry" this file honours
-  // besides a cancellation. It is how a stream adapter reports that the
-  // attempt's output already reached the terminal / ACP / partial-message
-  // stdout, where nothing can be un-said. Overriding it replays the user's
-  // output. See closesRetryWindow in openai/responsesAdapter.ts.
-  if (records.some(record => record.retryable === false)) {
-    return neverRetry(apiBoundaryCategory(knownCategory))
-  }
-
-  const permanentSignal = structuredSignalClassification(records, true)
-  if (permanentSignal) return permanentSignal
-
-  for (const record of records) {
-    const status = numericHttpStatus(record.status, true)
-    if (status !== undefined) return classifyHttpStatus(status)
-  }
-
-  const structuredSignal = structuredSignalClassification(records, false)
-  if (structuredSignal) return structuredSignal
-
-  if (records.some(record => record.retryable === true)) {
-    return classify(apiBoundaryCategory(knownCategory), 'transient')
-  }
-
-  for (const message of messages) {
-    const status = statusFromMessage(message)
-    if (status !== undefined) return classifyHttpStatus(status)
-  }
-  for (const message of messages) {
-    const permanent = permanentMessageCategory(message)
-    if (permanent) return classify(permanent, 'permanent')
-  }
-  if (
-    knownCategory === 'authentication_failed' ||
-    knownCategory === 'billing_error' ||
-    knownCategory === 'invalid_request'
-  ) {
-    return classify(knownCategory, 'permanent')
-  }
-  if (messages.some(message => TRANSIENT_ERROR_MESSAGE_PATTERN.test(message))) {
+  if (error instanceof APIConnectionError) {
     return classify('server_error', 'transient')
   }
 
-  return classify(apiBoundaryCategory(knownCategory), 'transient')
+  const retryDirective = retryDirectiveFromRecords(records)
+  if (retryDirective !== undefined) {
+    return retryDirective
+      ? classify(category, 'transient')
+      : neverRetry(category)
+  }
+
+  if (permanentCategory !== undefined) {
+    return neverRetry(permanentCategory)
+  }
+
+  if (explicitStatus !== undefined) {
+    const maxTokensOverflow = messages.some(message =>
+      MAX_TOKENS_OVERFLOW_PATTERN.test(message),
+    )
+    return RETRYABLE_HTTP_STATUSES.has(explicitStatus) ||
+      explicitStatus >= 500 ||
+      maxTokensOverflow
+      ? classify(category, 'transient')
+      : neverRetry(category)
+  }
+
+  const structured = structuredSignalClassification(records, false)
+  if (structured?.persistence === 'transient') {
+    return classify(structured.category, 'transient')
+  }
+
+  if (
+    messages.some(
+      message =>
+        OVERLOADED_ERROR_PATTERN.test(message) ||
+        MAX_TOKENS_OVERFLOW_PATTERN.test(message) ||
+        /fetch failed|terminated|socket hang ?up|body timeout error|headers timeout error|connection (?:error|closed|reset)|other side closed|premature close|stream idle timeout|without receiving any events|upstream request failed|no healthy upstream/i.test(
+          message,
+        ),
+    )
+  ) {
+    return classify(category, 'transient')
+  }
+
+  if (records.some(record => record.retryable === true)) {
+    return classify(category, 'transient')
+  }
+
+  return neverRetry(category)
 }
 
 export type APIErrorDiagnostics = {
@@ -552,6 +546,7 @@ export type APIErrorDiagnostics = {
   message?: string
   category: SDKAssistantMessageError
   retryable: boolean
+  replayable: boolean
 }
 
 export type APIErrorDiagnosticContext = {
@@ -683,6 +678,7 @@ export function getAPIErrorDiagnostics(
   const records = collectErrorRecords(error)
   const messages = errorMessages(error, records)
   const classification = classifyRetryableAPIError(error)
+  const replayable = isAPIErrorReplayable(error)
   const status = firstScalar(records, ['status', 'statusCode', 'httpStatus'])
   const code = firstScalar(records, ['code'])
   const type = firstScalar(records, ['type'])
@@ -711,6 +707,7 @@ export function getAPIErrorDiagnostics(
     ...(message ? { message } : {}),
     category: classification.category,
     retryable: classification.retryable,
+    replayable,
   }
 }
 
@@ -722,6 +719,7 @@ export function describeAPIError(
   errorDetails: string
   category: SDKAssistantMessageError
   retryable: boolean
+  replayable: boolean
 } {
   const details = getAPIErrorDiagnostics(error, context)
   const label = details.provider
@@ -736,6 +734,7 @@ export function describeAPIError(
     details.name ? `name=${details.name}` : undefined,
     `category=${details.category}`,
     `retryable=${details.retryable ? 'yes' : 'no'}`,
+    details.replayable ? undefined : 'replayable=no',
   ].filter((value): value is string => value !== undefined)
   const content = `${label}: ${details.message ?? 'Request failed'} · ${metadata.join(' · ')}`
 
@@ -744,11 +743,17 @@ export function describeAPIError(
     errorDetails: JSON.stringify(details),
     category: details.category,
     retryable: details.retryable,
+    replayable: details.replayable,
   }
 }
 
 export function isRetryableAPIError(error: unknown): boolean {
   return classifyRetryableAPIError(error).retryable
+}
+
+/** Whether repeating the current request can preserve exactly-once output. */
+export function isAPIErrorReplayable(error: unknown): boolean {
+  return !collectErrorRecords(error).some(record => record.replayable === false)
 }
 
 export function categorizeRetryableAPIError(
