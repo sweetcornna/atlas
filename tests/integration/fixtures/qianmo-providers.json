@@ -8,7 +8,7 @@
     "compatRule": "deepseek"
   },
   {
-    "id": "qianmo-qwen",
+    "id": "qianmo-alt",
     "kind": "openai-compat",
     "baseUrl": "https://api.cornna.xyz/v1",
     "apiKeyEnv": "OPENAI_API_KEY",
