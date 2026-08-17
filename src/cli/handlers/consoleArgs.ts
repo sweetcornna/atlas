@@ -15,6 +15,7 @@
  */
 
 import { isAbsolute, resolve } from 'node:path'
+import { occConfigPath } from '../../config/paths.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import { residentOptionValue } from './residentArgs.js'
@@ -37,6 +38,30 @@ export const DEFAULT_CONSOLE_REGISTRY_URL = 'http://127.0.0.1:38610'
 /** 页头标签的长度上限，纯粹为了别把页头撑爆。 */
 export const MAX_CONSOLE_LABEL_LENGTH = 120
 
+/**
+ * 控制台在网络上的默认地址。
+ *
+ * 它**不是**一个注册进注册中心的节点：控制台只拨出去，没人拨它（理由见
+ * `consoleChat.ts` 的模块注释）。这个地址的用处是让对面的常驻节点知道「这条
+ * task.request 是谁发的」——`InboundAdapter` 会把它重新渲染进 provenance，并且
+ * 写成收件箱里那条消息的 `from`。
+ *
+ * 两段都必须是合法的地址段（小写字母数字加 `-` `_`），由 `assertAddress` 在
+ * `createConsoleChatPort` 里把关，不在这里抄一份规则。
+ */
+export const DEFAULT_CONSOLE_CHAT_FROM = 'qianmo://console/operator'
+
+/**
+ * 会话落盘的默认位置。
+ *
+ * 从 `occConfigPath()` 派生，和审计链、常驻会话表同一条规矩（CLAUDE.md §1.1②）：
+ * 这里绝不出现拼好的家目录路径，`OCC_CONFIG_DIR` 因此对它同样有效——演示拓扑给
+ * 每个进程一个配置根，控制台的转录也就跟着分家。
+ */
+export function consoleChatStorePath(): string {
+  return occConfigPath('qianmo', 'console', 'chat.ndjson')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -51,6 +76,18 @@ export interface ConsoleCliConfig {
   readonly label: string
   readonly viewToken?: string
   readonly adminToken?: string
+  /**
+   * 允许聊天拨号的入站端点。**给了才启用聊天面**，且还要有 PSK。
+   *
+   * 可以给多次，一次一个端点——名字从注册中心来（发现），能不能拨从这里来
+   * （授权）。注册中心自己没有鉴权，所以两者必须分开，理由写在
+   * `consoleChat.ts` 的模块注释里。
+   */
+  readonly chatUrls: readonly string[]
+  /** 控制台自己在网络上的地址。 */
+  readonly chatFrom: string
+  /** 会话落盘的绝对路径。 */
+  readonly chatStorePath: string
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -80,6 +117,9 @@ export function parseConsoleArgs(
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
+  const chatUrls: string[] = []
+  let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
+  let chatStorePath = consoleChatStorePath()
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -137,6 +177,30 @@ export function parseConsoleArgs(
       const parsed = residentOptionValue(args, index, '--admin-token')
       adminToken = nonEmpty(parsed.value, '--admin-token')
       index = parsed.next
+    } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
+      const parsed = residentOptionValue(args, index, '--chat-url')
+      const url = new URL(parsed.value)
+      if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+        throw new Error('--chat-url must use ws or wss')
+      }
+      // Repeatable, and deduplicated here rather than at the far end: giving
+      // the same endpoint twice is a copy-paste, not a request for two links.
+      const normalized = url.toString()
+      if (!chatUrls.includes(normalized)) chatUrls.push(normalized)
+      index = parsed.next
+    } else if (arg === '--chat-from' || arg?.startsWith('--chat-from=')) {
+      const parsed = residentOptionValue(args, index, '--chat-from')
+      // Shape is checked by `assertAddress` where the address is used; here it
+      // only has to be non-empty, so there is one copy of the address rules.
+      chatFrom = nonEmpty(parsed.value, '--chat-from')
+      index = parsed.next
+    } else if (arg === '--chat-store' || arg?.startsWith('--chat-store=')) {
+      const parsed = residentOptionValue(args, index, '--chat-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--chat-store must be an absolute path')
+      }
+      chatStorePath = resolve(parsed.value)
+      index = parsed.next
     } else {
       throw new Error(`unknown console option ${String(arg)}`)
     }
@@ -158,6 +222,9 @@ export function parseConsoleArgs(
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
     ...(adminToken === undefined ? {} : { adminToken }),
+    chatUrls,
+    chatFrom,
+    chatStorePath,
   }
 }
 

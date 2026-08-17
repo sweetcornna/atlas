@@ -28,6 +28,32 @@
  * | POST | `/v0/wake` | admin | `WakeOutcome`, or 501 without a wake port |
  * | GET | `/fragments/{roster,audit,limits}` | view | `text/html` fragment |
  * | GET | `/fragments/chain/<enc traceId>` | view | `text/html` fragment |
+ * | GET | `/chat?session=<id>` | **admin** | `text/html`, the chat page |
+ * | GET | `/v0/chat/targets` | **admin** | `{ targets }` |
+ * | GET | `/v0/chat/sessions` | **admin** | `{ sessions }` |
+ * | POST | `/v0/chat/sessions` | **admin** | the opened `ChatSession` |
+ * | GET | `/v0/chat/sessions/<enc id>` | **admin** | `ChatTranscript` |
+ * | POST | `/v0/chat/sessions/<enc id>/messages` | **admin** | the operator `ChatTurn` |
+ * | GET | `/v0/chat/stream` | **admin** | `text/event-stream` |
+ * | GET | `/fragments/chat/sessions?active=<id>` | **admin** | `text/html` fragment |
+ * | GET | `/fragments/chat/thread/<enc id>` | **admin** | `text/html` fragment |
+ *
+ * ## Chat is admin-only, all of it
+ *
+ * Every row above with `chat` in it needs the admin token, **including the
+ * read-only ones**. Two reasons, and either alone would be enough: sending
+ * spends the far node's model budget, and a transcript is the one thing on this
+ * console that contains free-form content rather than ids and counts — §7.2
+ * says the rest of the page never touches a payload, and this page is the
+ * exception. A view token therefore does not merely fail to send; it cannot see
+ * that the conversation exists. The ledger page hides the nav link for the same
+ * reason it hides it when there is no chat channel at all.
+ *
+ * When `deps.chat` is absent, `/chat` answers **404** (there is no such page on
+ * this instance) while `/v0/chat/*` answers **501** (the route exists in this
+ * version; this console has no channel behind it). A browser gets the honest
+ * answer and a script gets the diagnosable one. Both are still behind the admin
+ * check, so an anonymous caller cannot probe which consoles have chat wired.
  *
  * The last row is an addition to the agreed table, not a redesign of it: the
  * view layer exports `renderChain` and the trace cells it renders carry
@@ -73,6 +99,9 @@ import { CONSOLE_CSS } from './assets/css.js'
 import { roleOf, type ConsoleRole, type ConsoleTokens } from './auth.js'
 import type {
   AuditFilter,
+  ChatPort,
+  ChatTarget,
+  ChatUpdate,
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
@@ -82,6 +111,12 @@ import type {
 import { renderRoster } from './view/agents.js'
 import { renderAudit, renderChain } from './view/audit.js'
 import { failureBar } from './view/bits.js'
+import {
+  MAX_CHAT_TEXT_LENGTH,
+  renderChatSessions,
+  renderChatThread,
+} from './view/chat.js'
+import { renderChatPage } from './view/chatPage.js'
 import { renderLimits } from './view/limits.js'
 import { renderPage } from './view/page.js'
 
@@ -457,8 +492,106 @@ async function auditFragment(
   return renderAudit(valueOf(result), failureOf(result), filter)
 }
 
+/**
+ * The roster the chat views annotate themselves with.
+ *
+ * A failed lookup is `null`, not an empty list: "the registry says this agent
+ * is gone" and "nobody could ask the registry" are different facts and the view
+ * renders them differently (`view/chat.ts`, `targetState`).
+ */
+async function chatTargets(
+  chat: ChatPort,
+): Promise<readonly ChatTarget[] | null> {
+  const result = await chat.targets()
+  return result.ok ? result.value : null
+}
+
+async function chatSessionsFragment(
+  chat: ChatPort,
+  activeId: string | null,
+  now: number,
+): Promise<string> {
+  const [sessions, targets] = await Promise.all([
+    chat.sessions(),
+    chatTargets(chat),
+  ])
+  return renderChatSessions({
+    sessions: sessions.ok ? sessions.value : [],
+    targets: targets ?? [],
+    failure: failureOf(sessions),
+    activeId,
+    now,
+  })
+}
+
+/** The thread fragment plus the one bit the page around it needs. */
+interface ChatThreadRender {
+  readonly html: string
+  /** True when a session really opened — what enables the composer. */
+  readonly open: boolean
+}
+
+async function chatThreadFragment(
+  chat: ChatPort,
+  sessionId: string | null,
+  now: number,
+): Promise<ChatThreadRender> {
+  if (sessionId === null || sessionId === '') {
+    return {
+      html: renderChatThread({
+        transcript: null,
+        failure: null,
+        target: null,
+        now,
+      }),
+      open: false,
+    }
+  }
+  const [transcript, targets] = await Promise.all([
+    chat.transcript(sessionId),
+    chatTargets(chat),
+  ])
+  const address = transcript.ok ? transcript.value.session.target : ''
+  return {
+    html: renderChatThread({
+      transcript: valueOf(transcript),
+      failure: failureOf(transcript),
+      target: targets?.find(target => target.address === address) ?? null,
+      registryDown: targets === null,
+      now,
+    }),
+    // The composer is enabled by a transcript that actually loaded, not by the
+    // query string naming one: a stale `?session=` out of a bookmark must not
+    // put a live send button under a failure strip.
+    open: transcript.ok,
+  }
+}
+
+async function handleChatPage(
+  deps: ConsoleDeps,
+  chat: ChatPort,
+  url: URL,
+  now: number,
+): Promise<Response> {
+  const sessionId = textParam(url.searchParams, 'session') ?? null
+  const [sessions, thread] = await Promise.all([
+    chatSessionsFragment(chat, sessionId, now),
+    chatThreadFragment(chat, sessionId, now),
+  ])
+  return html(
+    renderChatPage({
+      label: deps.label ?? DEFAULT_LABEL,
+      now,
+      sessions,
+      thread: thread.html,
+      composerEnabled: thread.open,
+    }),
+  )
+}
+
 async function handleIndex(
   deps: ConsoleDeps,
+  role: ConsoleRole,
   url: URL,
   now: number,
 ): Promise<Response> {
@@ -479,6 +612,12 @@ async function handleIndex(
       // The form is rendered disabled with a reason rather than hidden: an
       // operator who cannot find the wake button assumes the console is broken.
       wakeEnabled: deps.wake !== undefined,
+      // Gated on role, not merely on whether a channel is wired: the module
+      // note above ("Chat is admin-only, all of it") says a view token must
+      // not even learn that a conversation exists. A link that is present but
+      // 403s on click leaks exactly that, so the nav item is hidden from
+      // anyone who is not admin, channel or no channel.
+      chatEnabled: deps.chat !== undefined && role === 'admin',
       auditFilter: filter,
     }),
   )
@@ -599,6 +738,184 @@ async function handleChain(
     : failureResponse(result.failure)
 }
 
+// --- chat ----------------------------------------------------------------
+
+/**
+ * How often the stream writes a comment line when nothing has happened.
+ *
+ * Not decoration. An `EventSource` over an idle connection is indistinguishable
+ * from a dead one until something is written, and every layer between the
+ * browser and this process — a reverse proxy, a laptop's NAT table, an SSH
+ * tunnel — will eventually reclaim a socket that has said nothing. 15 s is well
+ * inside the shortest of those, and a comment line costs 14 bytes.
+ */
+export const CHAT_STREAM_HEARTBEAT_MS = 15_000
+
+/** What the browser is told to wait before redialling a dropped stream. */
+const CHAT_STREAM_RETRY_MS = 3_000
+
+const EVENT_STREAM_HEADERS = {
+  'content-type': 'text/event-stream; charset=utf-8',
+  'cache-control': 'no-store',
+  connection: 'keep-alive',
+  // Turns off response buffering in the proxies that honour it. Without it a
+  // buffering proxy holds every event until the stream closes, which looks
+  // exactly like a console that never answers.
+  'x-accel-buffering': 'no',
+  'x-content-type-options': 'nosniff',
+} as const
+
+function chatUnsupported(): Response {
+  return fail(
+    501,
+    'unsupported',
+    '该控制台没有配置聊天通道；请在启动 occ console 时给 --chat-url 与传输层 PSK 后重试。',
+  )
+}
+
+/**
+ * The live stream, as Server-Sent Events.
+ *
+ * Every event is a bare `{sessionId, revision}` and the page answers it by
+ * refetching a server-rendered fragment. Pushing the message *content* down
+ * this pipe would be one line shorter and would open a second path by which a
+ * remote agent's output reaches the DOM — the whole point of `view/chat.ts`
+ * escaping on the way out is that there is only one such path.
+ *
+ * Teardown is the part worth reading: `subscribe` returns an unsubscribe
+ * function, the heartbeat is an interval, and both have to be released whether
+ * the browser navigated away (`cancel`) or the enqueue threw because the
+ * controller is already closed. A leaked subscription on a long-lived console
+ * is a listener list that only grows.
+ */
+function chatStream(chat: ChatPort): Response {
+  const encoder = new TextEncoder()
+  let unsubscribe: (() => void) | null = null
+  let heartbeat: ReturnType<typeof setInterval> | null = null
+
+  const release = (): void => {
+    unsubscribe?.()
+    unsubscribe = null
+    if (heartbeat !== null) clearInterval(heartbeat)
+    heartbeat = null
+  }
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const push = (text: string): void => {
+        try {
+          controller.enqueue(encoder.encode(text))
+        } catch {
+          // The peer is gone and the controller is closed. Nothing to report
+          // and nothing to retry — just stop paying for it.
+          release()
+        }
+      }
+      // A comment first: it completes the response headers immediately, so the
+      // browser fires `open` rather than sitting in `CONNECTING` until the
+      // first real event, which may be minutes away.
+      push(`retry: ${CHAT_STREAM_RETRY_MS}\n: open\n\n`)
+      unsubscribe = chat.subscribe((update: ChatUpdate) => {
+        push(`event: chat\ndata: ${JSON.stringify(update)}\n\n`)
+      })
+      heartbeat = setInterval(
+        () => push(': keep-alive\n\n'),
+        CHAT_STREAM_HEARTBEAT_MS,
+      )
+      heartbeat.unref?.()
+    },
+    cancel() {
+      release()
+    },
+  })
+
+  return new Response(body, { status: 200, headers: EVENT_STREAM_HEADERS })
+}
+
+function parseChatText(body: Record<string, unknown>): Parsed<string> {
+  const text = requiredString(body, 'text')
+  if (!text.ok) return text
+  if (text.value.length > MAX_CHAT_TEXT_LENGTH) {
+    return {
+      ok: false,
+      message: `消息最长 ${MAX_CHAT_TEXT_LENGTH} 个字符，这条有 ${text.value.length} 个`,
+    }
+  }
+  return text
+}
+
+async function handleChatSessions(
+  request: Request,
+  chat: ChatPort,
+): Promise<Response> {
+  if (request.method === 'GET') {
+    const result = await chat.sessions()
+    return result.ok
+      ? json({ sessions: result.value })
+      : failureResponse(result.failure)
+  }
+  if (request.method === 'POST') {
+    const body = await readJsonObject(request)
+    if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+    const target = requiredString(body, 'target')
+    if (!target.ok) return fail(400, 'invalid', target.message)
+    const result = await chat.open(target.value)
+    return result.ok ? json(result.value) : failureResponse(result.failure)
+  }
+  return methodNotAllowed(['GET', 'POST'])
+}
+
+async function dispatchChatApi(
+  request: Request,
+  deps: ConsoleDeps,
+  role: ConsoleRole,
+  url: URL,
+  segments: readonly string[],
+): Promise<Response> {
+  // Admin before existence: an anonymous caller must not learn which consoles
+  // have a chat channel wired by comparing 401 against 501.
+  const denied = guard(role, 'admin')
+  if (denied !== null) return denied
+  const chat = deps.chat
+  if (chat === undefined) return chatUnsupported()
+
+  const name = segments[2]
+
+  if (name === 'targets' && segments.length === 3) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    const result = await chat.targets()
+    return result.ok
+      ? json({ targets: result.value })
+      : failureResponse(result.failure)
+  }
+
+  if (name === 'stream' && segments.length === 3) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return chatStream(chat)
+  }
+
+  if (name === 'sessions') {
+    if (segments.length === 3) return await handleChatSessions(request, chat)
+    const sessionId = decodeURIComponent(segments[3] ?? '')
+    if (segments.length === 4) {
+      if (request.method !== 'GET') return methodNotAllowed(['GET'])
+      const result = await chat.transcript(sessionId)
+      return result.ok ? json(result.value) : failureResponse(result.failure)
+    }
+    if (segments.length === 5 && segments[4] === 'messages') {
+      if (request.method !== 'POST') return methodNotAllowed(['POST'])
+      const body = await readJsonObject(request)
+      if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+      const text = parseChatText(body)
+      if (!text.ok) return fail(400, 'invalid', text.message)
+      const result = await chat.send({ sessionId, text: text.value })
+      return result.ok ? json(result.value) : failureResponse(result.failure)
+    }
+  }
+
+  return notFound(`unknown path: ${url.pathname}`)
+}
+
 // --- dispatch ------------------------------------------------------------
 
 async function dispatchApi(
@@ -625,6 +942,10 @@ async function dispatchApi(
 
   if (head === 'wake' && segments.length === 2) {
     return await handleWake(request, deps, role)
+  }
+
+  if (head === 'chat' && segments.length >= 3) {
+    return await dispatchChatApi(request, deps, role, url, segments)
   }
 
   if (head === 'audit') {
@@ -682,6 +1003,26 @@ async function dispatchFragment(
 ): Promise<Response> {
   const name = segments[1] ?? ''
   const isChain = name === 'chain' && segments.length === 3
+
+  // The two chat fragments take the admin path in full — see the module note
+  // on why the chat face has no read-only tier.
+  if (name === 'chat') {
+    const deniedAdmin = guard(role, 'admin')
+    if (deniedAdmin !== null) return deniedAdmin
+    const chat = deps.chat
+    if (chat === undefined) return chatUnsupported()
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    if (segments[2] === 'sessions' && segments.length === 3) {
+      const active = textParam(url.searchParams, 'active') ?? null
+      return html(await chatSessionsFragment(chat, active, now))
+    }
+    if (segments[2] === 'thread' && segments.length === 4) {
+      const sessionId = decodeURIComponent(segments[3] ?? '')
+      return html((await chatThreadFragment(chat, sessionId, now)).html)
+    }
+    return notFound(`unknown path: ${url.pathname}`)
+  }
+
   if (
     !isChain &&
     (segments.length !== 2 ||
@@ -731,7 +1072,18 @@ async function route(
     const denied = guard(role, 'view')
     if (denied !== null) return denied
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleIndex(deps, url, now())
+    return await handleIndex(deps, role, url, now())
+  }
+
+  if (segments[0] === 'chat' && segments.length === 1) {
+    const denied = guard(role, 'admin')
+    if (denied !== null) return denied
+    const chat = deps.chat
+    // 404 rather than 501: this is a page, and on this instance there is no
+    // such page. A script asking `/v0/chat/*` gets the 501 instead.
+    if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return await handleChatPage(deps, chat, url, now())
   }
 
   if (segments[0] === 'v0') {
@@ -803,6 +1155,18 @@ export function startConsoleServer(
   const server = Bun.serve({
     port,
     hostname,
+    // Derived from the heartbeat rather than picked, and that is the whole
+    // point: `Bun.serve` defaults to a 10 s idle timeout and closes any
+    // connection that has said nothing for that long. A 15 s heartbeat under a
+    // 10 s timeout means the chat stream is killed every ten seconds — measured
+    // on Bun 1.3.13, the browser reports `ERR_INCOMPLETE_CHUNKED_ENCODING` and
+    // redials, so the page keeps working and nothing looks broken except a
+    // console full of errors and a reconnect storm. Writing the relationship
+    // down as arithmetic is what stops the two numbers drifting apart again.
+    idleTimeout: Math.min(
+      255,
+      Math.ceil((CHAT_STREAM_HEARTBEAT_MS / 1_000) * 2),
+    ),
     fetch: createConsoleHandler(deps, options.tokens),
   })
 

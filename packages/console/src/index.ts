@@ -15,6 +15,15 @@ export type {
   AuditFilter,
   AuditPage,
   AuditPort,
+  ChatAuthor,
+  ChatPort,
+  ChatSendInput,
+  ChatSession,
+  ChatTarget,
+  ChatTranscript,
+  ChatTurn,
+  ChatTurnState,
+  ChatUpdate,
   ConsoleAgent,
   ConsoleDeps,
   ConsoleFailure,
@@ -42,6 +51,7 @@ export {
 
 export {
   API_PREFIX,
+  CHAT_STREAM_HEARTBEAT_MS,
   MAX_AUDIT_LIMIT,
   createConsoleHandler,
   parseAuditFilter,
@@ -53,6 +63,14 @@ export {
 export { renderPage, type PageModel } from './view/page.js'
 export { renderRoster } from './view/agents.js'
 export { renderAudit } from './view/audit.js'
+export {
+  MAX_CHAT_TEXT_LENGTH,
+  renderChatSessions,
+  renderChatThread,
+  type ChatSessionsModel,
+  type ChatThreadModel,
+} from './view/chat.js'
+export { renderChatPage, type ChatPageModel } from './view/chatPage.js'
 export { renderLimits } from './view/limits.js'
 export { CONSOLE_CSS } from './assets/css.js'
 export { CONSOLE_CLIENT_JS } from './assets/client.js'

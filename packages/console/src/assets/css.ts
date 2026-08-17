@@ -499,6 +499,132 @@ td.actions .btn + .btn { margin-left: 4px; }
 .chain-meta .k { min-width: 32px; }
 .chain-foot { margin: 12px 0 0; font-size: 11px; color: var(--muted-foreground); }
 
+/* ---- /chat: the same shell, a conversation instead of a ledger ----
+   Three regions and one rule each. The rail scrolls on its own inside the
+   sidebar. The transcript scrolls on its own inside the content pane. The
+   composer never scrolls and is never replaced — it holds half-typed text, and
+   a stream event that swapped it would eat the question being written. */
+.chat-content { display: flex; flex-direction: column; overflow: hidden; }
+.thread-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.thread { max-width: 768px; margin: 0 auto; padding: 32px 24px 8px; }
+.thread-empty { padding-top: 64px; }
+.thread-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding-bottom: 14px; margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+.thread-title { margin: 0; font-size: 15px; font-weight: 600; }
+.thread-addr { font-size: 11px; color: var(--muted-foreground); }
+.thread-head .spacer { flex: 1 1 auto; }
+.thread-count { font-size: 12px; color: var(--muted-foreground); }
+
+/* A turn is a hairline rule with text beside it — the ledger grammar the
+   roster and the trail already use. Operator turns carry the rule in
+   --primary, agent turns in --border, and that is the entire distinction:
+   no fill, no alignment flip, no avatar. */
+.turn { margin: 0 0 28px; padding-left: 16px; border-left: 2px solid var(--border); }
+.turn:last-child { margin-bottom: 0; }
+.turn-operator { border-left-color: var(--primary); }
+.turn-failed { border-left-color: var(--destructive); }
+.turn-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.turn-who {
+  font-size: 12px; font-weight: 500; letter-spacing: .04em;
+  color: var(--muted-foreground);
+}
+.turn-when { font-size: 11px; color: var(--muted-foreground); }
+/* The body is the one large block of text on this page, and body copy that
+   cannot be selected cannot be quoted into a ticket. */
+.turn-body { user-select: text; }
+.turn-p { margin: 0 0 10px; white-space: pre-wrap; }
+.turn-p:last-child { margin-bottom: 0; }
+.turn-empty { margin: 0; color: var(--muted-foreground); }
+.turn-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* A pill is an event with a tone; a chip is a value. Sharing the shape would
+   make "已读 1.2s" and "plan" look like the same kind of thing. */
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: transparent;
+  font-size: 11px; color: var(--muted-foreground); white-space: nowrap;
+}
+.pill-ok {
+  color: var(--primary);
+  border-color: color-mix(in oklch, var(--primary) 35%, transparent);
+}
+.pill-warn {
+  color: var(--warning);
+  border-color: color-mix(in oklch, var(--warning) 35%, transparent);
+}
+.pill-bad {
+  color: var(--destructive);
+  border-color: color-mix(in oklch, var(--destructive) 35%, transparent);
+}
+.pill-id { user-select: text; }
+
+.composer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 14px 24px 18px; }
+.composer-bar {
+  max-width: 768px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; background: var(--card);
+  border: 1px solid var(--input); border-radius: var(--radius);
+  transition: border-color 120ms linear;
+}
+.composer:focus-within .composer-bar { border-color: var(--ring); }
+.composer-bar textarea {
+  border: 0; background: transparent; padding: 2px 0; resize: none;
+  /* The ledger forms give every textarea a 56px floor so a two-line note has
+     room. This one is auto-sized by the client from its own content, so that
+     floor would open a blank half-inch above the caret on an empty composer. */
+  min-height: 0;
+  max-height: 220px; font-size: 14px; line-height: 1.55;
+}
+.composer-bar textarea:focus-visible { outline: none; }
+.composer-foot { display: flex; align-items: center; gap: 8px; }
+.composer-foot .spacer { flex: 1 1 auto; }
+.composer-chips {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 11px; color: var(--muted-foreground);
+}
+.composer-chips .chip {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px;
+}
+.send {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 999px;
+  border: 1px solid var(--primary); background: var(--primary);
+  color: var(--primary-foreground); font-size: 15px; line-height: 1;
+  cursor: pointer; font-family: var(--ui);
+}
+.send:hover { background: color-mix(in oklch, var(--primary) 88%, black); }
+.composer .status, .composer .note { max-width: 768px; margin: 8px auto 0; }
+.composer .note { margin: 0 auto 8px; }
+
+/* The session rail, inside the sidebar. */
+.chat-rail-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px; }
+.chat-new { display: flex; gap: 6px; padding-bottom: 12px; }
+.chat-new select { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 4px 8px; }
+.chat-new .btn { font-size: 12px; padding: 4px 10px; }
+.chat-none { margin: 8px 0; font-size: 12px; color: var(--muted-foreground); }
+.chat-group { margin-bottom: 16px; }
+.chat-group-name {
+  margin: 0; font-size: 12px; font-weight: 500; color: var(--sidebar-foreground);
+}
+.chat-group-node { margin: 0 0 6px; font-size: 11px; color: var(--muted-foreground); }
+.chat-item {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  cursor: pointer; padding: 6px 8px; border-radius: var(--radius-md);
+  color: var(--sidebar-foreground); font: inherit; font-family: var(--ui);
+  transition: background-color 120ms linear;
+}
+.chat-item:hover { background: var(--sidebar-accent); }
+.chat-item-active { background: var(--sidebar-accent); }
+.chat-item-line {
+  display: block; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-item-meta { display: block; font-size: 11px; color: var(--muted-foreground); }
+/* A link that leaves the page, kept visually apart from the jump list. */
+.nav-route { margin-top: 6px; border-top: 1px solid var(--sidebar-border); padding-top: 10px; }
+
 @media (max-width: 900px) {
   html, body { height: auto; overflow: visible; }
   .shell { flex-direction: column; height: auto; }
@@ -522,6 +648,17 @@ td.actions .btn + .btn { margin-left: 4px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two-col { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   main { padding: 24px 16px 64px; gap: 40px; }
+  /* The chat page gives up its two independent scroll areas here and becomes
+     one ordinary scrolling document, with the composer stuck to the bottom of
+     the viewport — a 320px-tall transcript pane on a phone is not a
+     conversation, it is a keyhole. */
+  .chat-content { overflow: visible; }
+  .thread-mount { overflow: visible; }
+  .chat-rail-mount {
+    width: 100%; order: 3; max-height: 45vh; padding: 0;
+  }
+  .thread { padding: 20px 16px 8px; }
+  .composer { position: sticky; bottom: 0; background: var(--background); padding: 10px 16px 14px; }
 }
 @media (max-width: 560px) {
   .stat-grid { grid-template-columns: minmax(0, 1fr); }

@@ -115,6 +115,21 @@ export const CONSOLE_CLIENT_JS = `
   function paintToken() {
     var has = readToken() !== '';
     say(byId('token-state'), has ? '令牌已存' : '无令牌', has ? 'ok' : 'muted');
+    paintCrossPageLink();
+  }
+
+  // The chat page is a second document, so reaching it is a top-level
+  // navigation - and a navigation carries no Authorization header while this
+  // console keeps its credential out of cookies on purpose (auth.ts). So the
+  // link gets the token in its query string, the same position the CLI banner
+  // uses and the same one the destination scrubs out of the address bar on
+  // arrival. Left alone when there is no token: a link to a 401 is still a
+  // better answer than a link that pretends to be authenticated.
+  function paintCrossPageLink() {
+    var link = byId('to-chat');
+    if (!link) return;
+    var token = readToken();
+    link.setAttribute('href', token ? '/chat?token=' + encodeURIComponent(token) : '/chat');
   }
 
   // A token handed over in the URL is stored and then wiped from the address

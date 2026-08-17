@@ -25,11 +25,13 @@ import {
 import { RUNTIME_RATE } from '@qianmo/router'
 import { auditTrailPath } from '../../../services/qianmo/auditTrail.js'
 import {
+  DEFAULT_CONSOLE_CHAT_FROM,
   DEFAULT_CONSOLE_HOSTNAME,
   DEFAULT_CONSOLE_PORT,
   DEFAULT_CONSOLE_REGISTRY_URL,
   MAX_CONSOLE_LABEL_LENGTH,
   assertConsoleRuntime,
+  consoleChatStorePath,
   parseConsoleArgs,
 } from '../consoleArgs.js'
 import {
@@ -47,7 +49,19 @@ describe('occ console argument parsing', () => {
       registryUrl: DEFAULT_CONSOLE_REGISTRY_URL,
       auditPath: auditTrailPath(),
       label: `${DEFAULT_CONSOLE_HOSTNAME}:${DEFAULT_CONSOLE_PORT}`,
+      // 聊天面默认关着：没有 --chat-url 就没有可拨的端点，`/chat` 整页不存在。
+      chatUrls: [],
+      chatFrom: DEFAULT_CONSOLE_CHAT_FROM,
+      chatStorePath: consoleChatStorePath(),
     })
+  })
+
+  test('derives the transcript path from the config root, never from $HOME', () => {
+    // CLAUDE.md §1.1②：身份相关路径只能从 `paths.ts` 派生，否则 OCC_CONFIG_DIR
+    // 对它无效——演示拓扑给每个进程一个配置根，转录也必须跟着分家。
+    const path = consoleChatStorePath()
+    expect(path.endsWith('/qianmo/console/chat.ndjson')).toBe(true)
+    expect(parseConsoleArgs([], 'qianmo').chatStorePath).toBe(path)
   })
 
   test('keeps 38613 clear of the three ports demo-env.md §2.4 assigns', () => {
@@ -75,6 +89,14 @@ describe('occ console argument parsing', () => {
         'view-token-long-enough',
         '--admin-token',
         'admin-token-long-enough',
+        '--chat-url',
+        'ws://10.0.0.3:38611',
+        '--chat-url',
+        'ws://10.0.0.4:38612',
+        '--chat-from',
+        'qianmo://ops/alice',
+        '--chat-store',
+        '/tmp/qianmo/chat.ndjson',
       ],
       'qianmo',
     )
@@ -88,6 +110,10 @@ describe('occ console argument parsing', () => {
         '--label=node-a 控制台',
         '--view-token=view-token-long-enough',
         '--admin-token=admin-token-long-enough',
+        '--chat-url=ws://10.0.0.3:38611',
+        '--chat-url=ws://10.0.0.4:38612',
+        '--chat-from=qianmo://ops/alice',
+        '--chat-store=/tmp/qianmo/chat.ndjson',
       ],
       'qianmo',
     )
@@ -102,7 +128,36 @@ describe('occ console argument parsing', () => {
       label: 'node-a 控制台',
       viewToken: 'view-token-long-enough',
       adminToken: 'admin-token-long-enough',
+      chatUrls: ['ws://10.0.0.3:38611/', 'ws://10.0.0.4:38612/'],
+      chatFrom: 'qianmo://ops/alice',
+      chatStorePath: '/tmp/qianmo/chat.ndjson',
     })
+  })
+
+  test('takes --chat-url more than once and folds a repeat', () => {
+    // 同一个端点给两次是复制粘贴，不是「建两条链路」。
+    expect(
+      parseConsoleArgs(
+        [
+          '--chat-url=ws://127.0.0.1:38611',
+          '--chat-url=ws://127.0.0.1:38611/',
+          '--chat-url=ws://127.0.0.1:38612',
+        ],
+        'qianmo',
+      ).chatUrls,
+    ).toEqual(['ws://127.0.0.1:38611/', 'ws://127.0.0.1:38612/'])
+  })
+
+  test('rejects a chat endpoint that is not ws or wss', () => {
+    expect(() =>
+      parseConsoleArgs(['--chat-url=http://127.0.0.1:38611'], 'qianmo'),
+    ).toThrow('--chat-url must use ws or wss')
+    expect(() =>
+      parseConsoleArgs(['--chat-store=relative/chat.ndjson'], 'qianmo'),
+    ).toThrow('--chat-store must be an absolute path')
+    expect(() => parseConsoleArgs(['--chat-from=  '], 'qianmo')).toThrow(
+      '--chat-from must not be empty',
+    )
   })
 
   test('strips the trailing slash so /v0/agents never doubles up', () => {

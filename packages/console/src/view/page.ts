@@ -93,6 +93,16 @@ export interface PageModel {
   readonly limits: string
   readonly wakeEnabled: boolean
   readonly auditFilter: AuditFilter
+  /**
+   * Whether `/chat` exists on this instance.
+   *
+   * Optional, and absent means no: a console started without a chat channel
+   * has no chat page to link to, and a nav item that 404s is worse than no
+   * nav item. Unlike the wake form, this one is hidden rather than disabled —
+   * the wake form is a block inside a page somebody is already looking at,
+   * while this is a door to a page that would have nothing on it.
+   */
+  readonly chatEnabled?: boolean
 }
 
 /**
@@ -103,10 +113,13 @@ export interface PageModel {
  * origin other than this one can contribute anything, and `connect-src 'self'`
  * keeps the token from being sent anywhere else.
  */
-const CSP = [
+export const CSP = [
   "default-src 'none'",
   "style-src 'unsafe-inline'",
   "script-src 'unsafe-inline'",
+  // `connect-src` also covers `EventSource`: the chat page's stream is a
+  // same-origin `GET /v0/chat/stream`, and without this directive the browser
+  // would refuse to open it while reporting nothing useful.
   "connect-src 'self'",
   "form-action 'self'",
   "base-uri 'none'",
@@ -282,12 +295,21 @@ const NAV_ITEMS: readonly (readonly [string, string])[] = [
   ['#wake-section', '唤醒'],
 ]
 
-function sidebarNav(): string {
-  const items = NAV_ITEMS.map(
+function sidebarNav(chatEnabled: boolean): string {
+  // The chat link is a route, not an anchor, so it goes last and keeps its own
+  // separator class — mixing "jump to a section of this page" and "leave this
+  // page" in one undifferentiated list makes the back button a surprise.
+  const anchors = NAV_ITEMS.map(
     ([href, label]) =>
       `<a class="nav-item" href="${attr(href)}">${escapeHtml(label)}</a>`,
   ).join('')
-  return `<nav class="sidebar-nav" aria-label="章节">${items}</nav>`
+  // The client rewrites this href to carry the token before it can be clicked:
+  // a top-level navigation sends no `Authorization` header, and this console
+  // deliberately keeps its credential out of cookies (`auth.ts`).
+  const chat = chatEnabled
+    ? `<a class="nav-item nav-route" id="to-chat" href="/chat">对话</a>`
+    : ''
+  return `<nav class="sidebar-nav" aria-label="章节">${anchors}${chat}</nav>`
 }
 
 /**
@@ -304,7 +326,7 @@ function sidebar(model: PageModel, iso: string): string {
     `<div class="sidebar-header">` +
     `<a class="wordmark" href="#overview">阡陌</a>` +
     `</div>` +
-    sidebarNav() +
+    sidebarNav(model.chatEnabled === true) +
     `<div class="sidebar-footer">` +
     `<span class="sidebar-inst">${escapeHtml(model.label)}</span>` +
     `<time class="sidebar-clock" id="clock" datetime="${attr(iso)}">` +
