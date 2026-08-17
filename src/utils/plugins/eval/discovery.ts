@@ -19,6 +19,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { basename, join, resolve } from 'path'
+import { PROJECT_CONFIG_DIR_NAMES } from 'src/config/paths.js'
 import { parseYaml } from '../../text/yaml.js'
 import { EvalCaseSchema, partitionRequestedTools } from './caseSchema.js'
 import type { LoadedCase } from './types.js'
@@ -32,8 +33,11 @@ export const EVALS_DIR_NAME = 'evals'
 const SKIP_DIRS = new Set([
   'node_modules',
   '.git',
-  '.occ',
-  '.claude',
+  // Every identity's project-config root (`.occ`, `.qianmo`, `.claude`),
+  // derived from paths.ts rather than spelled out — CLAUDE.md §1.1②. Adding
+  // `.qianmo` to the upstream pair changes nothing observable: findCaseDirs
+  // already skips every dot-entry below, so these names are belt-and-braces.
+  ...PROJECT_CONFIG_DIR_NAMES,
   'results',
 ])
 
