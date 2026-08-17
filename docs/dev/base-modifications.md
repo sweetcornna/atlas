@@ -10,6 +10,7 @@
 | --- | --- |
 | 基线 | `3380c88`（基座零改动快照导入提交）。**举证一律用它，不用上游 pin `848ad8c2`**——理由与三条答辩纪律见 `positioning-m0.md` §3.4 |
 | 本文实跑口径 | `git diff 3380c88..da98d86f`（2026-08-15）。`src/` 的三个数与 `positioning-m0.md` §3.3 逐字一致，说明该文成稿后 `src/` 未再变动 |
+| **口径变更（P10.2，2026-08-17）** | **首次真实上游同步后，「我方对基座改了什么」不能再用 `git diff 3380c88 -- <file>` 量** —— 那条现在同时包含上游 v2.38.3→v2.46.0 的改动。改用 **`git diff base-snapshot/v2.46.0 -- <file>`**（当前基座树的零改动快照标签，见 `BASE.md`），它给出的正是「我方相对当前基座还剩什么」。下文各表的 +/− 数已按新口径复核：**逐字未变**——因为我方那几处改动原样落在上游新代码之上（P10.2 的两份合并审计逐条核过）。**基线 `3380c88` 仍是成果边界的历史起点，只是不再是改造点的度量基线** |
 | `src/` 规模 | **56 文件 / +5,152 / −154**，其中**修改 32 / 新增 24** |
 | 判定图例 | **✅ 书面** = 提交信息或代码注释直接回答了「扩展点为何不够用」<br>**🟢 代码依据** = 依据在代码 / 注释 / 测试里可查，本句由 P9.3 据此补出<br>**⚠️ 推断** = 未找到书面依据，按代码推断，**待改动人确认** |
 
@@ -109,7 +110,7 @@
 
 | 文件 | 首改提交 | +/− | 理由 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/services/skillLearning/__tests__/throttleAndCircuitBreaker.test.ts` | `e86d901b` | +10/−0 | 基座既有 flaky：用例缺 `timeoutMs`，前序文件泄漏凭据时会真连网并超时变红 | ✅ 书面 |
+| ~~`src/services/skillLearning/__tests__/throttleAndCircuitBreaker.test.ts`~~ | `e86d901b` | **+0/−0（已撤回）** | 基座既有 flaky：用例缺 `timeoutMs`，前序文件泄漏凭据时会真连网并超时变红。**上游 v2.46.0 自己修了同一处**（同一位置加 `setSkillLearningConfigForTest({ llm: { timeoutMs: 50 } })`），有效配置与我方逐字相同，故 P10.2 撤回我方 10 行、该文件回到与上游逐字节一致（提交 `6406af76`）。**这是同步该收的红利：携带增量减少** | ✅ 书面 |
 | `src/utils/__tests__/claudemd.projectDirs.test.ts` | `6bada14c` | +6/−2 | 基座既有断言把 `readdir` 枚举顺序当成契约，CI 的 ext4 上会假红 | ✅ 书面 |
 | `src/services/mcp/__tests__/configWatcher.test.ts` | `a8b06a9a` + `0e9e7c3b` + `d162fe72` | +24/−19，后续 +约40 | `a8b06a9a` 提交正文为空，按 diff 推断：三条正向用例原本「固定睡 2600 ms 再断言 `fired > 0`」，改为**等待真实的文件事件**；负向用例保留固定等待并改名 `settleForNoChange`。**该推断已于 2026-08-16 被后续排障坐实并深化**（两个后续提交的正文即书面依据）：偶发的真根因不是「节拍慢」而是 **Linux 上 `fs.watchFile` 的首个 stat 异步落地、抢在它前面的写 / 删被当成基线永不上报**（Debian 13 x86_64 实测原用例 15 跑 8 败、先等过一个轮询周期则 15/15 绿），`d162fe72` 给三条正向用例加 `settleWatcherBaseline()`；`0e9e7c3b` 顺带坐实 **bunfig `[test] timeout` 在 Bun 1.3.13 下不生效**（全仓实际预算是默认 5 s），故显式给 15 s。「事件不来就挂到用例超时」的代价条已由显式预算钉住上界。生产代码始终未动 | ✅ 书面（后续提交） |
 | `src/utils/__tests__/teammateMailbox.test.ts` | `4fe8cd1e` | +28/−0 | 随 §2.6 的信箱改动新增一条用例，用例名直述该语义：`resident snapshot accounts for an externally read duplicate without marking a later one`。**核实（2026-08-16）**：用例（`:351-378`）先取含一条未读重复消息的快照，再模拟「快照那条被外部读走 + 又追加一条同内容」，断言带 `readBefore` 调用后返回 1 且盘上是 `[true, false]`——恰好钉住 §2.6 描述的竞态（旧实现会翻成 `[true, true]`） | 🟢 代码依据（随 §2.6 同一条） |
