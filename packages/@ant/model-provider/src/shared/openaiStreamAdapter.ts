@@ -98,7 +98,12 @@ export async function* adaptOpenAIStreamToAnthropic(
       // empty or abruptly truncated stream must remain retryable.
       if (
         (chunk.usage.completion_tokens ?? 0) > 0 &&
-        chunk.choices.length === 0
+        // `choices` is typed as required, but the reader above already guards
+        // it with `chunk.choices?.[0]` — some gateways send the terminal usage
+        // chunk with the field omitted entirely rather than as an empty array.
+        // Reading `.length` off it there would throw; a missing field means the
+        // same thing an empty array does here, so treat it that way.
+        (chunk.choices?.length ?? 0) === 0
       ) {
         sawTerminalUsageChunk = true
       }
