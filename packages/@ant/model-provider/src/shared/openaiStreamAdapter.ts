@@ -159,7 +159,28 @@ export async function* adaptOpenAIStreamToAnthropic(
     // empty thinking block must round-trip back to the API in subsequent
     // requests, otherwise DeepSeek rejects with 400.
     const reasoningContent = (delta as any).reasoning_content
-    if (reasoningContent != null) {
+    // An empty string arriving *while text is already flowing* carries no
+    // information, and acting on it is expensive: the branch below closes the
+    // open text block and opens a fresh empty thinking block, so a provider
+    // that pairs `reasoning_content: ""` with every text chunk shreds one
+    // answer into hundreds of alternating blocks. Measured through an
+    // OpenAI-compatible gateway: qwen3.8-max produced 251 blocks for a
+    // two-point answer (126 thinking, 125 of them empty), against 2 for
+    // deepseek-v4-pro. Those blocks are persisted and replayed on every
+    // subsequent request, so the cost is paid again each turn.
+    //
+    // The DeepSeek contract above is untouched: it is about `""` arriving
+    // *before* any text, when the model answers directly. That case still
+    // opens its empty thinking block and still round-trips.
+    const emptyReasoningMidText =
+      reasoningContent === '' && textBlockOpen && !thinkingBlockOpen
+    if (reasoningContent != null && !emptyReasoningMidText) {
+      // Upstream v2.46.0 added this flag: it is what lets a gateway that
+      // terminates with a usage chunk instead of `finish_reason` be treated as
+      // an ordinary stop rather than an incomplete stream. Setting it inside
+      // the guarded branch is safe — the branch is only skipped when text is
+      // already flowing, and the text handler below sets `sawOutput` before it
+      // ever opens a text block, so `textBlockOpen` already implies it.
       sawOutput = true
       if (!thinkingBlockOpen) {
         // Close an open text block first, mirroring what the text and
