@@ -154,6 +154,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'console') {
+    profileCheckpoint('cli_qianmo_console_path');
+    const { runConsole } = await import('../cli/handlers/console.js');
+    await runConsole(args.slice(1));
+    return;
+  }
+
   // Fast-path for `--daemon-worker=<kind>` (internal — supervisor spawns this).
   // Must come before the daemon subcommand check: spawned per-worker, so
   // perf-sensitive. No enableConfigs(), no analytics sinks at this layer —
