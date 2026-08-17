@@ -25,11 +25,11 @@
   而这个面板要解决的问题不值那个价钱。
 - **单进程**：`occ console` 起的就是它自己，不需要注册中心或节点跟它在同一台机器
   上，也不要求它们活着——注册中心挂了，页面照常打开，只是名册那一栏显示不可达。
-- **不是网关**：它**不转发**任何东西给注册中心之外的地方，唤醒的目标地址钉死在
-  启动参数上（§4.4）。
+- **不是网关**：它**不转发**任何东西给注册中心之外的地方，出向目标都钉死在启动
+  参数上：唤醒（§4.4）与对话（§6.3）。
 
 架构上它是一个叶子包 + 一层 host 适配：包里只有路由、鉴权、渲染，**它不知道注册
-中心在哪、审计链是哪个文件、PSK 是什么**；这些由 `occ console` 这个 handler 以四个
+中心在哪、审计链是哪个文件、PSK 是什么**；这些由 `occ console` 这个 handler 以五个
 端口的形式注进去（`packages/console/src/deps.ts` 是那份契约）。方向和 tool-runtime
 的六个 facade 一致：包声明接口，host 实现。好处很直接——包能用纯对象做单测，而
 「注册中心挂了会怎样」这种事在测试里是一行假端口，不是一个要起停的服务。
@@ -106,6 +106,9 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--registry <url>` | `http://127.0.0.1:38610` | 注册中心 HTTP v0 基址，`http`/`https`。尾斜杠会被去掉 |
 | `--audit <绝对路径>` | `auditTrailPath()` | 审计链文件。**必须是绝对路径**——控制台是长驻进程，相对路径的含义会随谁在哪个目录起它而变 |
 | `--wake-url <ws://…>` | 无 | 唤醒目标（节点的入站 WebSocket）。**给了才启用唤醒面**，且还要有 PSK（§4.4） |
+| `--chat-url <ws://…>` | 无 | 允许对话拨号的入站端点，**可以给多次**，一次一个。**给了才启用对话面**，且还要有 PSK（§6.7）。同一个端点给两遍会被去重——那是复制粘贴，不是要两条链路 |
+| `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
+| `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--label <text>` | `hostname:port` | 页头标签，≤120 字符。两个控制台开在两个标签页时，靠它区分 |
 | `--view-token <token>` | 环回时自动生成 | 只读凭据 |
 | `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒）凭据 |
@@ -156,7 +159,7 @@ token 可以走两个位置（`presentedTokenOf`）：
 一个只在没人看日志时才生效的漏洞，和一个立刻报错的启动失败——只有后者是可以接受的。
 
 **另外**：这条规则不等于「给了 token 就可以挂公网」。控制台没有 TLS、没有速率限制、
-没有账号体系（§6.3），要跨机器访问请用 SSH 端口转发：
+没有账号体系（§8.1），要跨机器访问请用 SSH 端口转发：
 
 ```bash
 ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:38613
@@ -193,6 +196,23 @@ ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:
 HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟的请求。真要排长定时器，用
 `occ resident-wake --after-ms`，那是个能自己活着的进程。
 
+### 4.5 对话面全部要 admin，只读路由也要
+
+`/chat` 与 `/v0/chat/*`、`/fragments/chat/*` 的**每一条**都要 admin token，**包括只读
+的那几条**（`packages/console/src/http.ts` 模块注释）。两条理由，任何一条单独都够：
+
+1. **发消息花的是对面节点的模型预算。**只读凭据不该能替别人花这笔钱。
+2. **转录是这个控制台上唯一有自由文本的面。**其余每一栏都是 id 与计数（§7.2），
+   而这一页是那条规则的例外。
+
+所以 view token 不是「能看不能发」，而是**连一条会话存在都看不见**：角色判定在读端口
+之前，它拿到的是 403，端口一次都没被问到。
+
+主页侧栏那个「对话」入口要**同时**满足两个条件才渲染：有通道，**并且**当前凭据是
+admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6.7）。对只读
+凭据来说，一台接了聊天通道的控制台和一台没接的，主页看起来一样——和 API 侧「admin
+判定先于存在性判定」是同一条防线（本节开头）。
+
 ---
 
 ## §5 路由表
@@ -204,7 +224,7 @@ HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟
 | GET | `/` | view | 整页 |
 | GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量 |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
-| GET | `/v0/limits` | view | 协议与运行时上限（§6.1） |
+| GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
 | GET | `/v0/agents` | view | 名册 |
 | POST | `/v0/agents` | **admin** | 注册 |
 | DELETE | `/v0/agents/<地址>` | **admin** | 注销 |
@@ -214,6 +234,18 @@ HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟
 | POST | `/v0/wake` | **admin** | 唤醒 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
+| GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
+| GET | `/v0/chat/targets` | **admin** | 能聊的对象，含可不可拨（§6.3） |
+| GET | `/v0/chat/sessions` | **admin** | 会话列表 |
+| POST | `/v0/chat/sessions` | **admin** | 开一条会话 |
+| GET | `/v0/chat/sessions/<会话 id>` | **admin** | 转录 |
+| POST | `/v0/chat/sessions/<会话 id>/messages` | **admin** | 发一句话，返回**操作者那一轮**（§6.4） |
+| GET | `/v0/chat/stream` | **admin** | SSE，事件只有 `{sessionId, revision}`（§6.6） |
+| GET | `/fragments/chat/sessions?active=<会话 id>` | **admin** | HTML 片段 |
+| GET | `/fragments/chat/thread/<会话 id>` | **admin** | HTML 片段 |
+
+对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
+两种缺席答案（404 与 501）见 §6.7。
 
 **地址与 traceId 都在单个 path segment 里百分号编码**：
 `qianmo://node-b/reviewer` → `qianmo%3A%2F%2Fnode-b%2Freviewer`。这和注册中心
@@ -226,9 +258,224 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 ---
 
-## §6 它读什么，不读什么
+## §6 对话面
 
-### 6.1 读
+`/chat` 是控制台的**第二个页面**：操作者在浏览器里跟一个常驻 agent 说话，回复顺着
+控制台自己拨出去的那条已认证 WebSocket 回来。整个面只对 admin 开放（§4.5），且要两个
+启动条件同时成立才存在（§6.7）。
+
+### 6.1 三块：会话轨道、转录、composer
+
+**为什么是第二个页面，不是主页的第六个区块。**主页是一列 `[rail][pane]` 行、整篇当
+一个文档滚；对话是相反的形状——两栏各自滚、composer 钉在其中一栏的底部、视口整体
+永远不滚。把它塞进主页，代价是主页交出自己的滚动模型（`view/chatPage.ts` 模块注释）。
+所以 `/chat` 是自己的一份文档：壳共用（同一套 CSS token、同一条转义纪律），身子不共用。
+
+**转录是账本的一列，不是一摞气泡**（`view/chat.ts` 模块注释）。每一轮左边一条发丝线，
+线上方一个小的作者标签，正文在旁边——和名册、审计链同一套视觉语法，也是一篇混着代码
+与地址的转录仍然读得下去的原因。操作者那一轮的线是 `--primary`，agent 的是 `--border`，
+区别到此为止：没有填充色块、没有左右对齐翻转、没有头像。会话标题取的是目标地址的
+`agent` 段，页面不另发明一个显示名、也不留第二份副本——在注册中心改了名字，页面跟着改。
+
+**正文按空行切成 `<p>`，每一块都过 `escapeHtml`**：没有 markdown、没有代码围栏识别、
+没有自动链接。那三样每一样都是「对面模型的输出变成本页 markup」的一条路。剩下的排版
+只有 CSS 的 `white-space: pre-wrap`（`turnText`）。
+
+**composer** 在没有会话打开时渲染成禁用并写明「先选一条会话，再发消息」，控件留着不撤。
+这和唤醒面的取舍相反（§4.4 那边直接不给提交按钮），因为两种缺席不是一回事：没有 PSK 是
+**配置**状态，点一万次也不会变；「还没打开会话」是**临时**状态，旁边点一下就好
+（`view/chatPage.ts` 的 `composer`）。启用与否看的是**转录真的读出来了**，不是查询串里
+写了个 session——书签里的旧 id 不该在一条失败横幅底下放一个能按的发送钮
+（`http.ts` 的 `chatThreadFragment`）。`Enter` 发送、`Shift+Enter` 换行；单条消息上限
+8000 字符（`MAX_CHAT_TEXT_LENGTH`），composer 的 `maxlength` 与服务端那个 400 用的是
+同一个常量。
+
+### 6.2 回程走的是既有那条链路，不是新发明的一条
+
+「浏览器发一句话，agent 回一句话」需要一条**回程**，而仓库里已经有一条：
+`task.request` → `ack` → `task.result`，**三者都在发起方自己那条已认证连接上**
+（P4.1 / AC-2）。agent 那一轮的正文就是 `task.result` 的 `completed` 分支带的 `content`
+（`src/cli/handlers/consoleChat.ts` 模块注释）。
+
+所以控制台是一个**纯拨号方**：不起监听端口、不注册进注册中心、不持有节点身份私钥。
+
+另一条路——把控制台做成一个可寻址的对等体：起 `@qianmo/transport` 的 server、给它一份
+PSK 与身份、把 `qianmo://<console>/<operator>` 注册进注册中心——被否掉了，三个理由，
+每一个单独都够：
+
+1. **协议里没有「agent 主动对操作者说话」这种消息。**走那条路就得教常驻侧在跑完一轮
+   之后**再**发一条新消息，那是改 `packages/resident` / `src/services/qianmo/resident.ts`
+   的既有语义。
+2. **P4.1 的判据明确把「回程另开一条连接」排除在外。**再造一条等于给同一件事开第二个
+   出处，而那个出处不受 AC-2 的用例守着。
+3. **它要多一个监听端口、多一份 PSK 服务端面、多一条注册中心写入。**每一样都是真实的
+   攻击面，换来的只是同一段文本。
+
+**代价说清楚：这条路只能回答被问到的问题。**agent 想在没人问的时候主动说一句（「我跑完
+那个后台任务了」），当前形状承载不了——那要等协议真的长出一个「通知」消息类型。
+
+### 6.3 名字从注册中心来，能不能拨从启动参数来
+
+注册中心自己没有任何鉴权（§8.2），所以「注册中心说这个 agent 的端点在那儿」不是
+「控制台就该往那儿发一条带 PSK 握手的消息」的理由。**发现与授权分开**：能聊的对象从
+注册中心列（`ChatPort.targets`），允许拨的端点钉死在 `--chat-url` 上。这和唤醒面把目标
+钉死在 `--wake-url` 上是同一条纪律，只是这里允许多个。
+
+不在名单里的目标**照样列出来**，只是标成不可拨——下拉里带「（不可拨号）」且不可选，
+转录头上显示「端点不在允许名单」。藏起来只会让人以为控制台坏了（`deps.ts` 的
+`ChatTarget.dialable`）。真发过去时的拒绝话里直接写了怎么办：重启控制台并补一个
+`--chat-url`（`consoleChat.ts` 的 `endpointFor`）。
+
+端点在比较之前一律归一（`normalizeChatEndpoint`）：`ws://h:p` 与 `ws://h:p/` 是同一个
+端点；不是 `ws`/`wss` 的一概不认。
+
+页面上「不在名册」与「名册不可达」是**两个不同的答案**，不合并成一个灰点：前者是注册
+中心答了而这个地址不在里面（有人把它注销了，下一次发送会失败），后者是根本没人问到，
+页面对目标的状态一无所知（发送很可能照样成功）。合并它们，就是操作者去重启一个从来
+没有掉线的节点的那条路（`view/chat.ts` 的 `targetState`）。
+
+### 6.4 一条投递状态链，不是一个灰勾
+
+一轮的处置是**一条链**：`pending`（交给传输层了）→ `delivered`（有回执了）→ `read`
+（对方 ack 了，消息真的进了它的输入）→ `done`（拿到终态回复）。`failed` 是任何一步的
+出口；agent 那一轮只会是 `done` 或 `failed`（`deps.ts` 的 `ChatTurnState`）。
+
+页面把回执、已读、回复渲染成**三个独立的事实**——`已投递 · 回执 accepted · 42ms`、
+`已读 · 1.2s`、`用时 12s`——而不是一个灰勾。它们是三个不同的网络事件：一条消息可以有
+回执而从没被读，也可以被读而从没有回答；把它们收成一个记号的聊天窗，是那种说不出坏在
+哪半边的聊天窗（`view/chat.ts` 模块注释与 `turnMarks`）。
+
+**状态只升不降。**回程那四个事件（回执、ack、终态、本地超时）**不保证按顺序到**：本机
+回环上 `task.result` 完全可能先于 `sendAndWait` 的回执落地。`STATE_RANK` 给它们排一个秩，
+比在每个回调里各写一遍「除非已经是……」短得多，也少一处会漂移的判断。
+
+**关联只认信封的 `taskId`**（protocol C-1），不认 payload 字段，也不认发送者地址。没人
+在等的那个 taskId 的回复被静默丢掉：它要么是去重表放过的一条重复，要么是回给一轮在重启
+前就已经了结的消息。
+
+四个期限：
+
+| 常量 | 默认 | 是什么 |
+| --- | --- | --- |
+| `DEFAULT_CHAT_TASK_TTL_MS` | 5 分钟 | 一轮的任务期限。比唤醒面那 60 s（§4.4）宽得多，因为这里等的是一个**真的模型轮次**（跑工具、读文件、可能还要等别的模型）。这个数与 P4.1 判据给 result 的上限同源（`demo/p41-task-result.sh` 的 `RESULT_LIMIT_MS`），不另立一个 |
+| `DEFAULT_CHAT_DELIVER_TTL_MS` | 30 s | 投递期限：这一跳把信送到就算数，与那一轮跑多久无关 |
+| `DEFAULT_CHAT_SEND_TIMEOUT_MS` | 20 s | 等回执的预算。回执是「传输层收下了」，不是「agent 答完了」 |
+| `DEFAULT_CHAT_CONNECT_TIMEOUT_MS` | 15 s | 建链路的预算 |
+
+**本地兜底计时器**：常驻侧自己会在任务期限到点时发一条 `failed` 的 `task.result`
+（`resident.ts` 的 `#armTaskTimeout`），所以正常情况下轮不到它。它存在是为了那条消息
+**回不来**的情况——链路断了、对面进程没了——否则页面会永远停在「已读」，而那是所有
+状态里最像「还在想」的一个。触发时间是 `taskTtlMs + min(15 s, taskTtlMs)`：宽限期比任务
+期限本身还长是没有意义的，夹这一下也让用例能用一个很短的 TTL 把这条路径跑完。触发后
+操作者那一轮标成 `failed · E_TASK_TIMEOUT`，并追加一条 agent 轮说明这一轮没在期限内回复。
+
+### 6.5 落盘：一个 append-only 的 NDJSON
+
+会话与转录写在一个 NDJSON 文件里，一行一条记录，启动时整篇 replay。默认位置
+`occConfigPath('qianmo','console','chat.ndjson')`，用 `--chat-store` 改（§3）。形状和仓库
+里另外两份持久日志（审计链、常驻的准入台账）一致，理由也一致：一次写坏损失的是最后
+一行而不是整个文件，写到一半崩掉也不会留下一份改了一半的转录
+（`src/cli/handlers/consoleChatStore.ts` 模块注释）。
+
+两种记录，第二种会**重复**：
+
+- `session` 只写一次（id、目标地址、node、agent、创建时间）；
+- `turn` 每次变化都**整条重新写一遍**——发出、拿到回执、被读、被回答各写一条——replay
+  时每个 id 只保留最后一条（last-write-wins；`Map.set` 落在已有键上保留原插入位置，所以
+  「最后一条生效」与「首见顺序」同时成立）。
+
+**为什么不是 patch log**：patch log 要一个 merge 函数，merge 函数要和写入方保持一致，而
+四态本来就会乱序到达（§6.4）。四份小对象比一条没人回头复看的 merge 规则便宜。撑得住是
+因为写入方是一个**在打字的人**——这句写出来是为了下一个读者别把它推广到别处；压缩是
+非目标。
+
+replay 的三条容错是同一个取向——**一条坏行的代价是那一行，不是那份转录**：
+
+- 文件不存在 = 空快照，不是错误（从没聊过的控制台是正常的首次状态）；
+- 解不出来、或字段不成形的行跳过（`toTurn` 返回 `null` 而不是抛）；
+- 会话记录丢了的 turn 被丢掉而不是变成孤儿：它没有地方渲染，留着只会让轮数和转录对不上
+  （`consoleChat.ts` 的 replay 段）。
+
+目录 0700、文件 0600。**路径不在落盘模块里拼**：它从 `consoleArgs.ts` 来、派生自
+`occConfigPath()`，和仓库里每一条带身份的路径同一条规矩（CLAUDE.md §1.1②）——
+`OCC_CONFIG_DIR` 因此对它同样有效，演示拓扑里每个配置根一份转录。
+
+写盘失败不会把发送带下去：那一轮仍在屏幕上、仍在线上，丢掉的只是它的持久性，原因由
+`onError` 写到 stderr（`consoleChat.ts` 的 `persist`、`console.ts` 的 `wireChat`）。
+
+### 6.6 实时性：一条 SSE，事件不带内容
+
+`GET /v0/chat/stream` 是一条 Server-Sent Events 流。**每个事件只有
+`{sessionId, revision}`**，页面拿到之后回头去取服务端渲染好的片段。把消息正文顺着这条
+管子推下去只会少写一行，却会给远端 agent 的输出开**第二条**进 DOM 的路，而
+`view/chat.ts` 在出口转义的全部意义就是这样的路只有一条（`http.ts` 的 `chatStream`、
+`deps.ts` 的 `ChatUpdate`）。`revision` 单调递增，客户端据此判断自己有没有漏掉一次。
+
+**心跳 15 s，而 `Bun.serve` 的 `idleTimeout` 是从它算出来的**：
+`min(255, ceil(15 s × 2))`。这不是凑数——`Bun.serve` 默认 10 s 空闲就断，15 s 心跳配 10 s
+超时等于这条流每十秒被杀一次。Bun 1.3.13 上实测的表现是浏览器报
+`ERR_INCOMPLETE_CHUNKED_ENCODING` 然后重拨，于是**页面照常工作**，坏掉的只有一屏错误和
+一场重连风暴。把两个数的关系写成算术，是它们不再各自漂移的办法（`http.ts` 的
+`startConsoleServer`）。心跳本身也不是装饰：空闲的 `EventSource` 和死掉的连接在浏览器看来
+一模一样，而中间每一层——反向代理、笔记本的 NAT 表、SSH 隧道——都会回收长时间不说话的
+socket。
+
+流一开先写一行 `retry: 3000` 和一行注释，让浏览器立刻触发 `open`，而不是卡在
+`CONNECTING` 等第一个真事件（那可能是几分钟以后）。退订函数与心跳 interval 两个都必须
+放掉，无论是浏览器走了（`cancel`）还是 enqueue 因为控制器已关而抛——长驻控制台上漏掉的
+订阅是一张只增不减的监听器表。
+
+**拿不到 SSE 就降级成轮询**：没有 `EventSource`、代理在缓冲、服务端把流掐了，页面就每
+2 s 取同样那两个片段，并在侧栏写明现在是轮询（`assets/chatClient.ts`）。这不是一个没人
+测的降级模式——浏览器旧一点它就是唯一的路，`?stream=off` 正是为此提供的强制开关。页面
+在后台时轮询不发请求，切回前台立刻刷一次；别的会话有动静只刷会话轨道、不动当前转录，
+因为那条会话的预览和它的「3 分钟前」才是叫人去看一眼的东西。
+
+### 6.7 两个条件才有这个页面，缺一个就是不存在
+
+对话面要**两个条件同时成立**（`src/cli/handlers/console.ts` 的 `wireChat`）：
+
+1. 至少给了一个 `--chat-url`；
+2. 环境变量里有一把可用的传输层 PSK。
+
+**PSK 只从环境变量取，没有对应的命令行选项**，与唤醒面同一条纪律（§4.4）。
+
+缺任何一个，`ConsoleDeps.chat` 就留空，而后果与唤醒面**不同**：不是渲染一个禁用的表单，
+而是**整个 `/chat` 页面不存在**，主页侧栏也不给入口。取舍不同是因为两者不是一种东西——
+唤醒是主页上的**一块**，藏起来会让人以为面板坏了；对话是**另一个页面**，一个打开就说
+「这里什么都没有」的页面不如不给入口（`deps.ts` 的 `ChatPort`、`view/page.ts` 的
+`chatEnabled`）。
+
+没有通道时两个答案是分开的：`/chat` 答 **404**（这个实例上没有这个页面），`/v0/chat/*`
+答 **501**（这条路由在这个版本里有，只是这台控制台后面没有通道）。浏览器拿到诚实的答案，
+脚本拿到能诊断的答案。**两者都在 admin 判定之后**——先判角色再判存在性，否则匿名调用者
+能靠比较 401 与 501 探出哪台控制台接了对话面（`http.ts` 的 `dispatchChatApi` 与 `route`）。
+
+`--chat-from` 写坏了落在同一处：地址规则住在 `assertAddress`，参数解析不抄第二份，抛出来
+的原因被 `wireChat` 接住，控制台照常起来，只是没有对话面。stdout 的 `chat` 那一行说明是
+启用了还是哪一种没启用；启用时另打一行 `chat-store`（§2.1 的那几行）。
+
+### 6.8 跨页链接把 token 放在查询串里
+
+顶层导航带不了 `Authorization` 头，而这个控制台**刻意**不把凭据放进 cookie（§4.1），
+于是两个方向的侧栏链接都由客户端在渲染之后把 token 补进 href 的查询串（`assets/client.ts`
+与 `assets/chatClient.ts` 里的 `paintCrossPageLink`）——和 CLI banner 打印的那条 `?token=`
+是同一个位置、同一份暴露面。服务端渲染出去的是不带 token 的那一版；没有 token 时链接也
+原样留着，一个指向 401 的链接仍然好过一个假装已认证的链接。
+
+到站后页面第一件事就是把 token 从地址栏洗掉（读进 localStorage 后 `history.replaceState`
+重写 URL）。**正因为洗掉了，切换会话不能是一次导航**：`/chat?session=…` 的顶层导航既没有
+头也没有 cookie，会当场 401。所以首屏之后的一切都走 `fetch`——`replaceState` 改地址栏，
+两个片段各换各的（`assets/chatClient.ts` 的 `openSession`）。
+
+同一条约束的另一个出口是流：`EventSource` 也带不了头，所以 `/v0/chat/stream` 的 token 同样
+走查询串——`auth.ts` 接受第二个位置，正是为了这一类调用（§4.1）。
+
+---
+
+## §7 它读什么，不读什么
+
+### 7.1 读
 
 | 端口 | 读什么 | 挂了会怎样 |
 | --- | --- | --- |
@@ -241,7 +488,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 一个数：章程 AC-3 要求两者独立验证且不得混为一谈（`packages/router/src/rate.ts` 的
 模块注释解释了为什么运行时那条不放进 `LIMITS`）。
 
-### 6.2 不读
+### 7.2 不读
 
 - **不碰任何私钥。**节点身份的私钥半边在节点自己的配置根里，控制台没有读它的路径。
   名册里出现的 `publicKey` 是注册中心本来就公开的那一半，没发布时字段直接缺席。
@@ -254,11 +501,11 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 ---
 
-## §7 已知边界
+## §8 已知边界
 
 按「会咬人的程度」排。
 
-### 7.1 没有账号体系
+### 8.1 没有账号体系
 
 两个共享 token 就是全部的身份概念。**谁拿到 admin token，谁就是同一个人**——面板上
 没有「是谁注销了这个 agent」，审计链上也不会因为动作来自控制台而多出一个操作者字段。
@@ -269,7 +516,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 **推论**：token 要当密码管——别提交进仓库、别写进共享的 shell profile、换人就换 token
 （重启控制台即可，token 不落盘）。
 
-### 7.2 注册中心本身没有任何鉴权
+### 8.2 注册中心本身没有任何鉴权
 
 `packages/registry/src/http.ts` 里**没有一行 token 检查**：能连上注册中心端口的人，
 就能注册、注销、心跳任何地址。
@@ -281,7 +528,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 控制台反倒是那个可以（在给了 token 之后）稍微放开一点的东西；注册中心不是。给注册
 中心加鉴权属于 M1「权限模型上线」，不在本包。
 
-### 7.3 审计链「外部改动无法阻止」
+### 8.3 审计链「外部改动无法阻止」
 
 审计链的三句承诺要分清（`packages/audit/src/index.ts` 的模块注释写得很小心）：
 
@@ -297,7 +544,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 重写并重算哈希后仍能被发现」。在它落地之前，控制台上的「完好」只代表「没有人**不
 小心**改坏它」。
 
-### 7.4 其他
+### 8.4 其他
 
 | 边界 | 说明 |
 | --- | --- |
@@ -309,15 +556,19 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 ---
 
-## §8 相关文件
+## §9 相关文件
 
 | 文件 | 是什么 |
 | --- | --- |
-| `packages/console/src/deps.ts` | **四个端口的契约**。改端口形状从这里开始 |
+| `packages/console/src/deps.ts` | **五个端口的契约**。改端口形状从这里开始 |
 | `packages/console/src/auth.ts` | token 策略（生成 / 校验 / 角色判定）的唯一出处 |
 | `packages/console/src/http.ts` | 路由、鉴权门、JSON 与 HTML 片段 |
 | `packages/console/src/view/` | 服务端渲染 |
+| `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
+| `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数），**不 import 控制台包** |
-| `src/cli/handlers/consolePorts.ts` | 四个端口的生产实现 |
+| `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒四个端口的生产实现 |
+| `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
+| `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
 | `docs/dev/demo-env.md` §2.4 | 端口分配表。改默认端口前先看它 |
