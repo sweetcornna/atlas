@@ -1,4 +1,8 @@
-import { legacyClaudeConfigDir, occConfigPath } from 'src/config/paths.js'
+import {
+  LEGACY_CONFIG_DIR_BASENAME,
+  legacyClaudeConfigDir,
+  occConfigPath,
+} from 'src/config/paths.js'
 import type { Client } from '@modelcontextprotocol/client'
 import { execa } from 'execa'
 import capitalize from 'lodash-es/capitalize.js'
@@ -479,7 +483,7 @@ export async function getIdeLockfilesPaths(): Promise<string[]> {
   if (windowsHome) {
     const converter = new WindowsToWSLConverter(process.env.WSL_DISTRO_NAME)
     const wslPath = converter.toLocalPath(windowsHome)
-    paths.push(resolve(wslPath, '.claude', 'ide'))
+    paths.push(resolve(wslPath, LEGACY_CONFIG_DIR_BASENAME, 'ide'))
   }
 
   // Construct the path based on the standard Windows WSL locations
@@ -504,7 +508,7 @@ export async function getIdeLockfilesPaths(): Promise<string[]> {
       ) {
         continue // Skip system directories
       }
-      paths.push(join(usersDir, user.name, '.claude', 'ide'))
+      paths.push(join(usersDir, user.name, LEGACY_CONFIG_DIR_BASENAME, 'ide'))
     }
   } catch (error: unknown) {
     if (isFsInaccessible(error)) {

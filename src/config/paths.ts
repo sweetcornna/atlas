@@ -117,6 +117,13 @@ export const XDG_SUBDIR = byIdentity({ occ: 'occ', qianmo: 'qianmo' })
 /** The official Claude Code config root basename. Read-only, for migration. */
 export const LEGACY_CONFIG_DIR_BASENAME = '.claude'
 
+/**
+ * The official Claude Code global state file name (`.claude.json`). Read-only:
+ * consulted by the first-run migration, never written. Derived from the same
+ * literal as the directory basename so the two cannot drift.
+ */
+export const LEGACY_GLOBAL_CONFIG_FILENAME = `${LEGACY_CONFIG_DIR_BASENAME}.json`
+
 function configDirKey(): string {
   // Memo key must cover both vars, or a test that swaps one would read a
   // stale value cached under the other.
