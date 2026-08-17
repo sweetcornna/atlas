@@ -144,31 +144,40 @@ describe('size limits', () => {
     ).rejects.toThrow(/too many entries/)
   })
 
-  test('refuses a zip bomb', async () => {
-    // Small on the wire (well under the download cap), 320MB on disk — past
-    // the 128MB uncompressed cap. Two guards can catch this: fflate's
-    // compression-ratio check inside unzipFile, and this module's total-bytes
-    // cap. Which one fires depends on the archive's ratio, so assert the
-    // property that matters — the bomb is refused and nothing is written.
-    const target = join(scratch(), 'out')
-    const bomb = zipSync(
-      Object.fromEntries(
-        Array.from({ length: 40 }, (_, i) => [
-          `big${i}.bin`,
-          new Uint8Array(8 * 1024 * 1024),
-        ]),
-      ),
-      { level: 9 },
-    )
-    expect(bomb.byteLength).toBeLessThan(PLUGIN_ARCHIVE_LIMITS.maxDownloadBytes)
-    await expect(extractPluginArchive(bomb, target)).rejects.toThrow(
-      PluginArchiveError,
-    )
-    expect(existsSync(target)).toBe(false)
-  }, // runner under coverage (measured 2026-08-17), well past the built-in 5s // Deflating 320MB at level 9 is synchronous CPU work: ~7s on a 2-core CI
+  // Deflating 320MB at level 9 is synchronous CPU work: ~7s on a 2-core CI
+  // runner under coverage (measured 2026-08-17), well past the built-in 5s
   // budget — Bun 1.3.13 does not read bunfig's [test] timeout, so that 5s is
   // the whole default. ~4x headroom over the worst observed run.
-  30_000)
+  const ZIP_BOMB_TIMEOUT_MS = 30_000
+
+  test(
+    'refuses a zip bomb',
+    async () => {
+      // Small on the wire (well under the download cap), 320MB on disk — past
+      // the 128MB uncompressed cap. Two guards can catch this: fflate's
+      // compression-ratio check inside unzipFile, and this module's total-bytes
+      // cap. Which one fires depends on the archive's ratio, so assert the
+      // property that matters — the bomb is refused and nothing is written.
+      const target = join(scratch(), 'out')
+      const bomb = zipSync(
+        Object.fromEntries(
+          Array.from({ length: 40 }, (_, i) => [
+            `big${i}.bin`,
+            new Uint8Array(8 * 1024 * 1024),
+          ]),
+        ),
+        { level: 9 },
+      )
+      expect(bomb.byteLength).toBeLessThan(
+        PLUGIN_ARCHIVE_LIMITS.maxDownloadBytes,
+      )
+      await expect(extractPluginArchive(bomb, target)).rejects.toThrow(
+        PluginArchiveError,
+      )
+      expect(existsSync(target)).toBe(false)
+    },
+    ZIP_BOMB_TIMEOUT_MS,
+  )
 
   test('refuses bytes larger than the download cap outright', async () => {
     const oversized = new Uint8Array(PLUGIN_ARCHIVE_LIMITS.maxDownloadBytes + 1)
