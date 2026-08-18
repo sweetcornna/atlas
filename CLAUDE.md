@@ -122,7 +122,7 @@ bun run check:mock-hygiene  # mock 卫生棘轮
 
 完整清单见 `package.json` scripts（其中发布类命令属于基座发布面，本仓库不用，见 §0）。
 
-### 3.1 在 git worktree 里跑 `check:unused` 会得到假阳性
+### 3.1 在 git worktree 里跑 `check:unused` / `typecheck` 会得到假阳性
 
 在 `.claude/worktrees/` 之类的**独立工作树**里跑 `bun run check:unused`，会报出约 **76 个「未使用文件」**外加 exports/types 大幅上涨——**那是假的**。同一套代码合回主检出后再跑就是绿的（已两次实测对照）。根因是 worktree 里 `bun install` 生成的 node_modules 布局与主检出不同，knip 据此解析出另一张依赖图。
 
@@ -130,4 +130,8 @@ bun run check:mock-hygiene  # mock 卫生棘轮
 
 **已做对照实验坐实**：从同一个 HEAD 做**干净 `git clone`**（不是 worktree）+ `bun install --frozen-lockfile` 后跑同一条命令 —— **绿的**（`files/dependencies/... all zero; exports=1253 at budget`）。所以这不是「新装环境的通病」，而是 **git worktree 特有**。
 
-**规矩**：`check:unused` 的结论**只在主检出（或干净 clone）上作数**。在 worktree 里跑出红色，先回主检出复核再下判断；要报「门禁坏了」也必须附主检出的输出。
+`bun run typecheck`（`tsc --noEmit`）同属这一失真类别：在 worktree 里报 **205 个错误**，主检出上同命令**干净（exit 0）**；worktree clean（无未提交改动）时依然 205，与本地改动无关（此前 `git stash` 前后对照也是 205/205）。根因与 `check:unused` 同类：worktree 里 `bun install` 的 node_modules 布局把模块解析引向主检出，两个检出的同一份代码进了同一个 tsc program。
+
+错误画像：205 条里 203 条位于 `../../../src/...`——也就是主检出的源文件被拉进了 worktree 的 tsc program；另有 45 条消息里同时出现两个检出的绝对路径，形如「ClickEvent(worktree 路径) 不能赋给 ClickEvent(/Users/cornna/project/atlas/... 路径)」的同名类型双份不相容；7 条幻影 Cannot find module（如 nanoid）。错误码以 TS2345/TS2339/TS2322 赋值与属性类为主。
+
+**规矩**：`check:unused` 与 `typecheck` 的结论**只在主检出（或干净 clone）上作数**。在 worktree 里跑出红色，先回主检出复核再下判断；要报「门禁坏了」也必须附主检出的输出。**worktree 里 `bun run precheck` 的 typecheck 步骤必挂**——绕法是在 worktree 里改跑分项（`check:fix`、`bun test`、`check:mock-hygiene`），typecheck 本身的结论回主检出（或干净 clone）取。
