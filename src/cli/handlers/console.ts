@@ -29,7 +29,9 @@ import {
 import { pskFromEnv } from '@qianmo/transport'
 import { createConsoleChatPort, type ConsoleChatHub } from './consoleChat.js'
 import {
+  CONSOLE_HELP_TEXT,
   assertConsoleRuntime,
+  isConsoleHelpRequest,
   parseConsoleArgs,
   type ConsoleCliConfig,
 } from './consoleArgs.js'
@@ -39,6 +41,7 @@ import {
   createRegistryPort,
   createWakePort,
 } from './consolePorts.js'
+import { resolveConsoleTokenSource } from './consoleTokenSources.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -156,8 +159,37 @@ function field(name: string, value: string): string {
 }
 
 export async function runConsole(args: readonly string[]): Promise<void> {
+  // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
+  // 恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人，让他先撞一条错误再去查文档
+  // 是把唯一的自助入口挡在门外。
+  if (isConsoleHelpRequest(args)) {
+    process.stdout.write(CONSOLE_HELP_TEXT)
+    return
+  }
   assertConsoleRuntime()
   const config = parseConsoleArgs(args)
+
+  // 凭据在**接线之前**就要定下来。放在后面的代价很具体：`wireChat` 会真的向
+  // `--chat-url` 拨出去，于是一个权限过宽的 token 文件会在「拒绝启动」之前先把
+  // 链路建起来、把会话文件写出去。起不来的那一次就该什么都没做过。
+  //
+  // 每枚 token 从三个入口里挑一个（文件 > 环境变量 > 命令行，取舍写在
+  // `consoleTokenSources.ts` 的模块注释里）。这一步会读磁盘，所以它不在
+  // `parseConsoleArgs` 里——那个函数是纯的。
+  const viewSource = resolveConsoleTokenSource('view', config)
+  const adminSource = resolveConsoleTokenSource('admin', config)
+
+  // 「什么时候允许没有密码地跑一个控制台」只有一个答案，住在
+  // `packages/console/src/auth.ts`。这里只负责把参数递过去，以及提供一个真随机
+  // 的 `generate`——非环回缺 token 时它会抛，那正是我们要的：起不来比悄悄起来
+  // 好，`--hostname 0.0.0.0` 正是控制台被挂上公网的那条路。
+  const tokens = resolveTokens({
+    ...(viewSource === undefined ? {} : { view: viewSource.value }),
+    ...(adminSource === undefined ? {} : { admin: adminSource.value }),
+    hostname: config.hostname,
+    generate: newConsoleToken,
+  })
+
   const wake = wireWake(config)
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
@@ -173,17 +205,6 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
   }
 
-  // 「什么时候允许没有密码地跑一个控制台」只有一个答案，住在
-  // `packages/console/src/auth.ts`。这里只负责把参数递过去，以及提供一个真随机
-  // 的 `generate`——非环回缺 token 时它会抛，那正是我们要的：起不来比悄悄起来
-  // 好，`--hostname 0.0.0.0` 正是控制台被挂上公网的那条路。
-  const tokens = resolveTokens({
-    ...(config.viewToken === undefined ? {} : { view: config.viewToken }),
-    ...(config.adminToken === undefined ? {} : { admin: config.adminToken }),
-    hostname: config.hostname,
-    generate: newConsoleToken,
-  })
-
   const handle = startConsoleServer(deps, config.port, {
     hostname: config.hostname,
     tokens,
@@ -191,9 +212,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
-  // 终端记录和 CI 日志里只是白白多一份泄露面。
-  const viewGenerated = config.viewToken === undefined
-  const adminGenerated = config.adminToken === undefined
+  // 终端记录和 CI 日志里只是白白多一份泄露面。**出处**则总是打——三个入口里
+  // 高优先级的那个静默盖掉低的，是事后没人查得清的那类配置事故，而「这一枚
+  // 来自命令行」同时就是「它此刻躺在 ps 里」的告警。
+  const viewGenerated = viewSource === undefined
 
   let banner = field('console', origin)
   banner += field(
@@ -202,8 +224,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       ? `${origin}/?token=${tokens.view}`
       : `${origin}/?token=<your view token>`,
   )
-  if (viewGenerated) banner += field('view-token', tokens.view)
-  if (adminGenerated) banner += field('admin-token', tokens.admin)
+  banner += field(
+    'view-token',
+    viewSource === undefined ? tokens.view : `from ${viewSource.detail}`,
+  )
+  banner += field(
+    'admin-token',
+    adminSource === undefined ? tokens.admin : `from ${adminSource.detail}`,
+  )
   banner += field('registry', config.registryUrl)
   banner += field('audit-trail', config.auditPath)
   banner += field('wake', wake.status)

@@ -15,9 +15,15 @@
  */
 
 import { isAbsolute, resolve } from 'node:path'
+import { PSK_ENV_VAR } from '@qianmo/transport'
 import { occConfigPath } from '../../config/paths.js'
+import { BIN_NAME } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import {
+  ADMIN_TOKEN_ENV_VAR,
+  VIEW_TOKEN_ENV_VAR,
+} from './consoleTokenSources.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /**
@@ -74,8 +80,20 @@ export interface ConsoleCliConfig {
   readonly wakeUrl?: string
   /** 页头标签，默认 `hostname:port`。 */
   readonly label: string
+  /**
+   * 只读凭据，**来自命令行的那一份**。
+   *
+   * 命令行是三个入口里最弱的一个：它会出现在这台机器每一份进程列表里
+   * （Linux 的 `/proc/<pid>/cmdline` 默认全局可读）。优先级与另两个入口的取舍
+   * 写在 `consoleTokenSources.ts` 的模块注释里，这里只是解析结果。
+   */
   readonly viewToken?: string
+  /** 读写凭据，来自命令行；暴露面同 {@link viewToken}。 */
   readonly adminToken?: string
+  /** `--view-token-file` 给的绝对路径；值由 `consoleTokenSources.ts` 读。 */
+  readonly viewTokenFile?: string
+  /** `--admin-token-file` 给的绝对路径。 */
+  readonly adminTokenFile?: string
   /**
    * 允许聊天拨号的入站端点。**给了才启用聊天面**，且还要有 PSK。
    *
@@ -117,6 +135,8 @@ export function parseConsoleArgs(
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
+  let viewTokenFile: string | undefined
+  let adminTokenFile: string | undefined
   const chatUrls: string[] = []
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
@@ -169,6 +189,29 @@ export function parseConsoleArgs(
       }
       label = text
       index = parsed.next
+    } else if (
+      // 必须排在 `--view-token` 前面读一遍才不会让人怀疑：`--view-token-file`
+      // 既不等于 `--view-token`、也不以 `--view-token=` 开头，所以两条分支实际
+      // 互不相交，顺序只是为了读代码的人不用自己验一遍这件事。
+      arg === '--view-token-file' ||
+      arg?.startsWith('--view-token-file=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--view-token-file')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--view-token-file must be an absolute path')
+      }
+      viewTokenFile = resolve(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--admin-token-file' ||
+      arg?.startsWith('--admin-token-file=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--admin-token-file')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--admin-token-file must be an absolute path')
+      }
+      adminTokenFile = resolve(parsed.value)
+      index = parsed.next
     } else if (arg === '--view-token' || arg?.startsWith('--view-token=')) {
       const parsed = residentOptionValue(args, index, '--view-token')
       viewToken = nonEmpty(parsed.value, '--view-token')
@@ -202,7 +245,12 @@ export function parseConsoleArgs(
       chatStorePath = resolve(parsed.value)
       index = parsed.next
     } else {
-      throw new Error(`unknown console option ${String(arg)}`)
+      // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
+      // 他没有任何地方可以去查那张表。
+      throw new Error(
+        `unknown console option ${String(arg)}` +
+          ` (run \`${BIN_NAME} console --help\` for the list)`,
+      )
     }
   }
 
@@ -222,11 +270,105 @@ export function parseConsoleArgs(
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
     ...(adminToken === undefined ? {} : { adminToken }),
+    ...(viewTokenFile === undefined ? {} : { viewTokenFile }),
+    ...(adminTokenFile === undefined ? {} : { adminTokenFile }),
     chatUrls,
     chatFrom,
     chatStorePath,
   }
 }
+
+/**
+ * `--help` / `-h` 出现在任何位置都算请求帮助。
+ *
+ * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
+ * `occ console --port 39000 --help` 必须答帮助，而不是先解析出一个配置再抛。
+ * 判定用**全等**，所以 `--label=--help` 这种把它当值的写法不会被当成请求。
+ *
+ * 为什么不像 `occ migrate` 那样落回 commander：`console` 的子命令注册
+ * （`cli/program/commands/qianmo.tsx`）**刻意不复制选项表**，落回去只会打印一行
+ * 描述加一个空的选项列表。选项的唯一出处是本文件的解析器，帮助文本因此也在
+ * 这里——两份会漂移的选项表比一份不好看的要糟得多。
+ */
+export function isConsoleHelpRequest(args: readonly string[]): boolean {
+  return args.some(arg => arg === '--help' || arg === '-h')
+}
+
+/**
+ * `occ console --help` 打印的全文。
+ *
+ * 对照 `docs/dev/console.md` §3 的选项表——那份文档是给开发者读的，这份是内测
+ * 用户手上**唯一**的自助入口，所以凡是不看文档就会配错的事（绝对路径、两个
+ * 「给了才启用」的面、三个 token 入口的优先级与那条进程列表的暴露）都必须在
+ * 这里说全。
+ */
+export const CONSOLE_HELP_TEXT = `Usage: ${BIN_NAME} console [options]
+
+Serve the Qianmo web console. Requires OCC_IDENTITY=qianmo and the Bun runtime.
+Full documentation: docs/dev/console.md
+
+Options (each accepts both --name value and --name=value):
+
+  --port <0-65535>         Port to listen on. Default ${DEFAULT_CONSOLE_PORT};
+                           0 lets the kernel pick and the real port is printed
+                           on the "console" line.
+  --hostname <host>        Address to bind. Default ${DEFAULT_CONSOLE_HOSTNAME}.
+                           A non-loopback bind refuses to start unless both
+                           tokens are supplied.
+  --registry <url>         Registry HTTP v0 base URL, http or https.
+                           Default ${DEFAULT_CONSOLE_REGISTRY_URL}.
+  --audit <abs path>       Audit trail file, absolute path.
+                           Default <config root>/qianmo/audit/trail.ndjson.
+  --wake-url <ws url>      Wake target, a node's inbound WebSocket. The wake
+                           face turns on only when this is given AND
+                           ${PSK_ENV_VAR} holds a usable key.
+  --chat-url <ws url>      Endpoint the chat face may dial. Repeatable, one per
+                           flag, duplicates folded. The chat face turns on only
+                           when at least one is given AND ${PSK_ENV_VAR}
+                           holds a usable key.
+  --chat-from <address>    Address the console speaks as.
+                           Default ${DEFAULT_CONSOLE_CHAT_FROM}.
+  --chat-store <abs path>  Where sessions and transcripts land, absolute path.
+                           Default <config root>/qianmo/console/chat.ndjson.
+  --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
+                           Default <hostname>:<port>.
+  -h, --help               Print this and exit.
+
+Credentials:
+
+  Two tokens, at least 16 characters each, and they must differ. On a loopback
+  bind either one is generated when nothing supplies it, and generated tokens
+  are printed at startup. On any other bind both must be supplied or the
+  console refuses to start.
+
+  Each token has three entrances. The highest one that is present wins:
+
+  1. --view-token-file <abs path> / --admin-token-file <abs path>
+       Read the token out of a file; a trailing newline is stripped. The file
+       must not be readable by group or other (chmod 600) or the console
+       refuses to start. This is the only entrance a file mode can protect,
+       which is why it wins.
+  2. $${VIEW_TOKEN_ENV_VAR} / $${ADMIN_TOKEN_ENV_VAR}
+       Read out of the environment, the same shape as $${PSK_ENV_VAR}.
+  3. --view-token <token> / --admin-token <token>
+       WARNING: the value shows up in this machine's process list
+       (ps -eo args, /proc/<pid>/cmdline), which every local account can read.
+       Kept so existing scripts keep working; prefer one of the two entrances
+       above. The startup banner says so when a token arrives this way.
+
+Environment:
+
+  OCC_IDENTITY             Must be "qianmo". The console is part of the Qianmo
+                           node identity, it does not run under plain occ.
+  ${PSK_ENV_VAR}     Transport pre-shared key for the wake and chat
+                           faces. Environment only, never a command-line
+                           option, for the reason under entrance 3.
+  ${VIEW_TOKEN_ENV_VAR}
+  ${ADMIN_TOKEN_ENV_VAR}
+                           The view and admin tokens, entrance 2 above.
+  OCC_CONFIG_DIR           Config root the default audit trail and transcript
+                           paths are derived from.
+`
 
 /** 控制台跑在 `Bun.serve` 上，和常驻模式同一条运行时断言。 */
 export function assertConsoleRuntime(

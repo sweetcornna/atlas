@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail } from '@qianmo/audit'
@@ -25,6 +25,7 @@ import {
 import { RUNTIME_RATE } from '@qianmo/router'
 import { auditTrailPath } from '../../../services/qianmo/auditTrail.js'
 import {
+  CONSOLE_HELP_TEXT,
   DEFAULT_CONSOLE_CHAT_FROM,
   DEFAULT_CONSOLE_HOSTNAME,
   DEFAULT_CONSOLE_PORT,
@@ -32,8 +33,13 @@ import {
   MAX_CONSOLE_LABEL_LENGTH,
   assertConsoleRuntime,
   consoleChatStorePath,
+  isConsoleHelpRequest,
   parseConsoleArgs,
 } from '../consoleArgs.js'
+import {
+  ADMIN_TOKEN_ENV_VAR,
+  VIEW_TOKEN_ENV_VAR,
+} from '../consoleTokenSources.js'
 import {
   DEFAULT_AUDIT_LIMIT,
   consoleLimits,
@@ -223,6 +229,10 @@ describe('occ console argument parsing', () => {
     expect(() => parseConsoleArgs(['--registy=x'], 'qianmo')).toThrow(
       'unknown console option --registy=x',
     )
+    // 走到这一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
+    expect(() => parseConsoleArgs(['--registy=x'], 'qianmo')).toThrow(
+      'console --help',
+    )
     expect(() => parseConsoleArgs(['--port'], 'qianmo')).toThrow(
       '--port requires a value',
     )
@@ -231,6 +241,116 @@ describe('occ console argument parsing', () => {
   test('refuses to run off Bun', () => {
     expect(() => assertConsoleRuntime(false)).toThrow('Bun runtime')
     expect(() => assertConsoleRuntime(true)).not.toThrow()
+  })
+
+  test('takes the two token files in both forms and keeps them absolute', () => {
+    // 值本身由 `consoleTokenSources.ts` 读（那一步碰磁盘，所以不在纯解析里）；
+    // 这里只钉住路径进得来、且和 `--audit` 同一条绝对路径规矩。
+    const split = parseConsoleArgs(
+      [
+        '--view-token-file',
+        '/run/qianmo/view.token',
+        '--admin-token-file',
+        '/run/qianmo/admin.token',
+      ],
+      'qianmo',
+    )
+    expect(split).toEqual(
+      parseConsoleArgs(
+        [
+          '--view-token-file=/run/qianmo/view.token',
+          '--admin-token-file=/run/qianmo/admin.token',
+        ],
+        'qianmo',
+      ),
+    )
+    expect(split.viewTokenFile).toBe('/run/qianmo/view.token')
+    expect(split.adminTokenFile).toBe('/run/qianmo/admin.token')
+    // 命令行那一支没给就不该被凭空造出来。
+    expect(split.viewToken).toBeUndefined()
+    expect(split.adminToken).toBeUndefined()
+
+    for (const flag of ['--view-token-file', '--admin-token-file']) {
+      expect(() =>
+        parseConsoleArgs([`${flag}=relative/token`], 'qianmo'),
+      ).toThrow(`${flag} must be an absolute path`)
+      expect(() => parseConsoleArgs([flag], 'qianmo')).toThrow(
+        `${flag} requires a value`,
+      )
+    }
+  })
+
+  test('does not let --view-token-file fall into the --view-token branch', () => {
+    // 两条分支的前缀长得几乎一样（`--view-token` / `--view-token-file`），一次
+    // 顺序或写法上的疏忽就会让文件路径被当成 token 本身收下——那是把「明文不进
+    // 命令行」这件事整个反过来。
+    const config = parseConsoleArgs(
+      ['--view-token-file=/run/qianmo/view.token'],
+      'qianmo',
+    )
+    expect(config.viewToken).toBeUndefined()
+    expect(config.viewTokenFile).toBe('/run/qianmo/view.token')
+    expect(
+      parseConsoleArgs(['--admin-token-file=/run/qianmo/a.token'], 'qianmo')
+        .adminToken,
+    ).toBeUndefined()
+  })
+})
+
+describe('occ console --help', () => {
+  test('answers --help and -h wherever they appear on the line', () => {
+    // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
+    expect(isConsoleHelpRequest(['--help'])).toBe(true)
+    expect(isConsoleHelpRequest(['-h'])).toBe(true)
+    expect(isConsoleHelpRequest(['--port', '39000', '--help'])).toBe(true)
+    expect(isConsoleHelpRequest([])).toBe(false)
+    expect(isConsoleHelpRequest(['--port=39000'])).toBe(false)
+    // 当成某个选项的值写进去的不算——那是一个值，不是一次请求。
+    expect(isConsoleHelpRequest(['--label=--help'])).toBe(false)
+  })
+
+  test('documents every option the parser actually dispatches on', () => {
+    // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
+    // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
+    const source = readFileSync(
+      new URL('../consoleArgs.ts', import.meta.url),
+      'utf8',
+    )
+    const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
+      match => match[1] as string,
+    )
+    // 分派链的形状变了（比如改成表驱动）也要在这里被发现，否则这条测试会安静
+    // 地变成一个零断言的空转。
+    expect(dispatched.length).toBeGreaterThanOrEqual(13)
+    for (const option of new Set(dispatched)) {
+      expect(CONSOLE_HELP_TEXT).toContain(option)
+    }
+  })
+
+  test('spells out the three token entrances and which one wins', () => {
+    expect(CONSOLE_HELP_TEXT).toContain('--view-token-file')
+    expect(CONSOLE_HELP_TEXT).toContain('--admin-token-file')
+    expect(CONSOLE_HELP_TEXT).toContain(VIEW_TOKEN_ENV_VAR)
+    expect(CONSOLE_HELP_TEXT).toContain(ADMIN_TOKEN_ENV_VAR)
+    // 命令行入口留着，但必须在这里带着它的代价一起出现。
+    expect(CONSOLE_HELP_TEXT).toContain('process list')
+    expect(CONSOLE_HELP_TEXT).toContain('/proc/<pid>/cmdline')
+    expect(CONSOLE_HELP_TEXT).toContain('chmod 600')
+    // 优先级是定案，不是建议：文件 1、环境变量 2、命令行 3。
+    expect(CONSOLE_HELP_TEXT.indexOf('1. --view-token-file')).toBeLessThan(
+      CONSOLE_HELP_TEXT.indexOf(`2. $${VIEW_TOKEN_ENV_VAR}`),
+    )
+    expect(CONSOLE_HELP_TEXT.indexOf(`2. $${VIEW_TOKEN_ENV_VAR}`)).toBeLessThan(
+      CONSOLE_HELP_TEXT.indexOf('3. --view-token <token>'),
+    )
+  })
+
+  test('names the identity the console refuses to run without', () => {
+    // 问「这个命令怎么用」的人恰恰是还没配好身份的那个人。
+    expect(CONSOLE_HELP_TEXT).toContain('OCC_IDENTITY')
+    expect(CONSOLE_HELP_TEXT).toContain('qianmo')
+    expect(CONSOLE_HELP_TEXT).toContain('docs/dev/console.md')
+    expect(CONSOLE_HELP_TEXT.endsWith('\n')).toBe(true)
   })
 })
 
