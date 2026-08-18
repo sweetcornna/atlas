@@ -25,21 +25,48 @@
  * getIsNonInteractiveSession (false regardless of the container's
  * isInteractive default).
  *
- * Usage:
- *   import { stateMockWith } from '../../../tests/mocks/state.js'
- *   mock.module('src/bootstrap/state.ts', stateMockWith({
- *     getSessionId: () => 'my-suite-session',
- *   }))
+ * Delegation alone is not enough. Those two pins — plus whatever the suite
+ * overrode — outlive the file that installed them, because mock.module is
+ * process-global and last-write-wins with no built-in undo: a later file that
+ * expects the container's own sessionId silently reads 'mock-session-id'. So
+ * `setupStateMock` is the preferred form; it can move between two baselines:
  *
- * `stateMock` (no overrides) is kept for existing consumers.
+ *   active   pinned keys + this suite's overrides on top of the delegating
+ *            surface, so every other export still reaches the real module.
+ *   reset    no overrides at all, pins included — indistinguishable from a
+ *            process that never mocked state.
+ *
+ * Usage (preferred — install at load or in `beforeAll`, restore in `afterAll`):
+ *   import { setupStateMock } from '../../../tests/mocks/state.js'
+ *   const stateMock = setupStateMock({
+ *     getSessionId: () => 'my-suite-session',
+ *   })
+ *   afterAll(() => stateMock.reset())
+ *
+ * Legacy form, still used by six unmigrated callers: `stateMockWith` /
+ * `stateMock` hand a factory straight to `mock.module` and have no way back to
+ * the delegating baseline. Migrate to `setupStateMock`; do not add new callers.
+ *   mock.module('src/bootstrap/state.ts', stateMockWith({ … }))
+ *
+ * Both forms register under the 'src/bootstrap/state.ts' specifier (never
+ * '.js') so all writers hit the same registry entry deliberately.
  */
 
 import * as realState from 'src/bootstrap/state.js'
+import {
+  makeSharedModuleMock,
+  type ModuleOverrides,
+} from './sharedModuleMock.js'
 
-const pinnedBase: Record<string, unknown> = {
+export type StateOverrides = ModuleOverrides<typeof realState>
+
+const pinnedOverrides: StateOverrides = {
   getSessionId: () => 'mock-session-id',
   getIsNonInteractiveSession: () => false,
 }
+
+/** The same two pins, through the untyped lens `stateMockWith`'s loop needs. */
+const pinnedBase: Record<string, unknown> = pinnedOverrides
 
 /**
  * Complete-surface factory with per-file overrides. Every real export not
@@ -75,3 +102,28 @@ export function stateMockWith(
 }
 
 export const stateMock = stateMockWith()
+
+const shared = makeSharedModuleMock('src/bootstrap/state.ts', realState)
+
+/**
+ * Preferred entry point. Unlike tests/mocks/auth.ts — whose real module is
+ * side-effectful when called, so its active surface must be complete-fake —
+ * state's active surface only needs the pins plus the caller's overrides:
+ * sharedModuleMock already delegates every untouched export to the real
+ * implementation, which is exactly this module's semantics. `set` replaces the
+ * whole override map (the pins are re-applied underneath it) and `reset` drops
+ * back to a fully delegating surface.
+ */
+export function setupStateMock(
+  overrides: StateOverrides = {},
+): ReturnType<typeof shared.setup> {
+  const withPins = (next: StateOverrides): StateOverrides => ({
+    ...pinnedOverrides,
+    ...next,
+  })
+  const handle = shared.setup(withPins(overrides))
+  return {
+    set: next => handle.set(withPins(next)),
+    reset: handle.reset,
+  }
+}
