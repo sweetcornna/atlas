@@ -121,20 +121,22 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 
 ### 镜像为什么只能是 `ssh cat`
 
-H 那把 key 在各节点的 `authorized_keys` 里带**强制命令**
-（`restrict,port-forwarding,permitopen=...,command="/usr/bin/cat -- <链>"`）。强制命令会忽略
-客户端发来的命令，于是 `rsync` 协商不到远端的 `--sender`，必然挂在握手上。这不是退化 ——
-它正是这把 key 被收紧的证据：它连自己那条审计链之外的任何东西都读不到。链文件只有 KB
-量级，全量 `cat` 无代价。`mirror-pull.sh` 里那个 `MIRROR_METHOD=rsync` 分支留着不是为了扩展
-性，是为了让「有人把 rsync 写回去」当场报错并说明理由。
+**理由是设计面的，真源在 [`beta-env.md`](../../../docs/dev/beta-env.md) §4.3，本文不复制**：
+一句话是 H 那把 key 在各节点的 `authorized_keys` 里带**强制命令**，`rsync` 协商不到远端的
+`--sender`，必然挂在握手上。
+
+操作上要知道的只有两件：链文件只有 KB 量级，全量 `cat` 无代价；`mirror-pull.sh` 里那个
+`MIRROR_METHOD=rsync` 分支留着不是为了扩展性，是为了让「有人把 rsync 写回去」当场报错并说明
+理由，而不是挂在握手上等超时。
 
 ### 隧道口上的 TCP 探测是**假绿**
 
-`ssh -L` 的本地口由 **ssh 客户端自己** LISTEN。节点侧那个端口没人监听（或被 `permitopen`
-挡住）时，ssh 照样 `accept`，然后立刻把连接关掉。于是「TCP 连得上」只证明 ssh 进程活着，
-与节点死活完全无关 —— 单元 `active`、端口通、拨号全超时，三个绿灯一个真相。
+**现象与三条判据的对照表在 [`beta-env.md`](../../../docs/dev/beta-env.md) §9.8，本文不复制**：
+一句话是 `ssh -L` 的本地口由 **ssh 客户端自己** LISTEN，节点侧那个端口没人监听（或被
+`permitopen` 挡住）时它照样 `accept` 再立刻关掉 —— 单元 `active`、端口通、拨号全超时，
+三个绿灯一个真相。
 
-处置是两条，都在 `common.sh` 里：
+落到这套脚本上的处置是两条，都在 `common.sh` 里：
 
 - `beta_endpoint_live <host> <port>` 是**唯一**算数的就绪判据：它发一条普通 GET 并真读一行
   应答，节点的 WebSocket 服务会回 `HTTP/1.1 426 Upgrade Required` —— 那一行只有节点进程能
@@ -201,14 +203,12 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 
 `<root>/console.conf`（0600）存四个值：`AUDIT_NODE` / `AUDIT_PATH` / `LABEL` / `WAKE_NODE`。
 
-它存在的理由是一次真实事故：这四个值此前**只走环境变量**。控制台一重起（改标签、跟随
-升级、机器重启）就静默丢失 —— `--audit` 退回「审计节点在 H 上的权威路径」，而那个节点跑在
-另一台机器上，H 上根本没有那个文件；**控制台对不存在的 `--audit` 不报错，页面就是一张空
-审计视图**，页头标签也丢掉了「镜像」标注，看的人会以为那是实时的权威链。
+**它存在的理由（一次真实事故：这四个值此前只走环境变量，控制台一重起就静默丢成空审计视图
+而不报错）写在 [`beta-env.md`](../../../docs/dev/beta-env.md) §4.3，本文不复制。**
 
-优先级是 **环境变量 > `console.conf` > 派生默认**，而且胜出的那个**会被回写** —— 于是「临时
-设一次」自动变成「以后都记得」。派生默认本身也修好了：审计节点的链靠镜像拉过来时，路径
-指镜像、标签带「（镜像 · 滞后 ≤ N min，权威副本在节点本机）」。
+操作上要记住的是行为：优先级 **环境变量 > `console.conf` > 派生默认**，而且胜出的那个**会被
+回写** —— 于是「临时设一次」自动变成「以后都记得」。派生默认认得镜像：审计节点的链靠镜像拉
+过来时，路径指镜像、标签带「（镜像 · 滞后 ≤ N min，权威副本在节点本机）」。
 
 手改这个文件立刻生效（下一次 `beta-up.sh` 起控制台时）。**注意控制台是幂等启动的**：已经
 在跑的那一份不会被重起，所以改完要让它生效得 `beta-down.sh console && beta-up.sh --role host`。
