@@ -85,6 +85,12 @@
 
 **必须改基座核心文件时，PR 描述里注明"为什么扩展点不够用"。**（章程 T-5 对策④）
 
+**已记录的发布面例外：`qm`。**本文件下半部分（基座原文）「发布」一节写着「bin 名（`occ`/`occ-bun`/`open-claude-code`）与包名无关，不要动」。阡陌**经负责人决定新增第四个** bin：`qm` → `dist/cli-qianmo.js`。**不要"顺手统一"把它删掉。**三件事必须一起理解：
+
+- 它**不是** `occ` 的改名，是另一张产品面（阡陌节点）。身份**写死在生成的入口文件里**（`process.env.OCC_IDENTITY ??= NODE_IDENTITY_MODE`，见 `scripts/entrypoints.ts`），不是靠"进程被怎么调起来"推断——调用名这条信号在三条路径上都会丢（Bun 会 realpath 掉软链入口、Windows 的 `.cmd` shim 传的是 `.js` 路径、bundled 子进程那一格是 CLI 参数）。**曾经有过一版靠 argv 播种身份的实现，已被撤掉；不要再接回去**（理由写在 `src/constants/brand.ts` 的 `invokedBinName()` 注释里）。
+- 那个入口是 **bun shebang**，因为 `console` / `resident` 两个子命令强制要 Bun。代价是 `qm --version` 这类纯 node 能跑的子命令也一并绑上了 Bun。
+- 身份名只许在 `src/constants/identity.ts` 的 roster 里拼写一次（`NODE_IDENTITY_MODE`）。build 脚本与 `resident.ts` 都从那里取，**不要写 `'qianmo'` 字面量**。
+
 ### 2.4 `BASE.md` 不可随手改
 
 根目录 `BASE.md` 是基座溯源的唯一真源（上游、pin、导入日期、零改动声明、同步记录）。

@@ -5,7 +5,7 @@
  * 1. Patch globalThis.Bun destructuring in third-party deps for Node.js compat
  * 2. Copy native addon files
  * 3. Bundle the runtime-farm bootstrap and generate the dual entry points
- *    (cli-bun.js, cli-node.js) that enter it
+ *    (cli-bun.js, cli-node.js, cli-qianmo.js) that enter it
  */
 import { readdir, readFile, writeFile, cp } from 'node:fs/promises'
 import { join } from 'node:path'

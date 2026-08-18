@@ -28,7 +28,8 @@
   "bin": {
     "occ": "dist/cli-node.js",
     "occ-bun": "dist/cli-bun.js",
-    "open-claude-code": "dist/cli-node.js"
+    "open-claude-code": "dist/cli-node.js",
+    "qm": "dist/cli-qianmo.js"
   },
   "workspaces": [
     "packages/*",

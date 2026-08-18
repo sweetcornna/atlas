@@ -56,6 +56,10 @@ import {
   markMessagesAsReadBySnapshot,
   readMailbox,
 } from '../../utils/agents/teammateMailbox.js'
+import {
+  IDENTITY_ENV_VAR,
+  NODE_IDENTITY_MODE,
+} from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
 
@@ -188,7 +192,7 @@ function defaultSpawnAcp(): ChildProcess {
   const launch = buildCliLaunch(['--acp'], {
     env: {
       ...process.env,
-      OCC_IDENTITY: 'qianmo',
+      [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
       CLAUDE_CODE_REMOTE_SEND_KEEPALIVES: '1',
     },
   })

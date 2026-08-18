@@ -90,11 +90,11 @@ await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
 console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 
 // Step 5: Bundle the runtime-farm bootstrap and generate the cli-bun /
-// cli-node entry points that enter it. Shared with scripts/post-build.ts so
-// the two builders cannot emit different entrypoints — see
-// scripts/entrypoints.ts.
+// cli-node / cli-qianmo entry points that enter it. Shared with
+// scripts/post-build.ts so the two builders cannot emit different
+// entrypoints — see scripts/entrypoints.ts.
 const version = await writeEntrypoints(outdir)
 
 console.log(
-  `Generated ${join(outdir, 'cli-bun.js')} (shebang: bun) and ${join(outdir, 'cli-node.js')} (shebang: node) for v${version}`,
+  `Generated ${join(outdir, 'cli-bun.js')} (shebang: bun), ${join(outdir, 'cli-node.js')} (shebang: node) and ${join(outdir, 'cli-qianmo.js')} (shebang: bun, identity-pinned) for v${version}`,
 )
