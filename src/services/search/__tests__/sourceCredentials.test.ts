@@ -28,7 +28,7 @@ const chatGPTAuthMock = makeSharedModuleMock(
   'src/services/api/openai/chatgptAuth.js',
   realChatGPTAuth,
 ).setup()
-makeSharedModuleMock(
+const geminiOAuthMock = makeSharedModuleMock(
   'src/services/api/gemini/oauthToken.js',
   realGeminiOAuth,
 ).setup({ hasGeminiOAuthCredentialsSync: () => false })
@@ -84,6 +84,7 @@ afterEach(() => {
 // process.
 afterAll(() => {
   chatGPTAuthMock.reset()
+  geminiOAuthMock.reset()
   if (savedConfigDir === undefined) delete process.env.OCC_CONFIG_DIR
   else process.env.OCC_CONFIG_DIR = savedConfigDir
   occConfigDir.cache.clear?.()
