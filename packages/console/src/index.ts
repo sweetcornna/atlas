@@ -37,17 +37,36 @@ export type {
 } from './deps.js'
 
 export {
+  CONSOLE_HEADER,
+  CONSOLE_HEADER_VALUE,
+  LOGIN_PATH,
   MIN_TOKEN_LENGTH,
+  SESSION_COOKIE,
+  SESSION_MAX_AGE_SECONDS,
   TOKEN_QUERY_PARAM,
   bearerOf,
+  clearedSessionCookieHeader,
+  cookieOf,
+  credentialOf,
+  isCrossOriginRequest,
   isLoopbackHostname,
+  isSecureRequest,
+  presentedCredentialOf,
   presentedTokenOf,
   resolveTokens,
   roleOf,
+  roleOfToken,
+  safeRedirect,
+  sessionCookieHeader,
+  type ConsoleCredential,
   type ConsoleRole,
   type ConsoleTokens,
+  type CredentialSource,
   type ResolveTokensInput,
+  type SessionCookieOptions,
 } from './auth.js'
+
+export { LoginThrottle } from './throttle.js'
 
 export {
   API_PREFIX,
@@ -56,11 +75,13 @@ export {
   createConsoleHandler,
   parseAuditFilter,
   startConsoleServer,
+  type ClientAddressSource,
   type ConsoleServerHandle,
   type ConsoleServerOptions,
 } from './http.js'
 
-export { renderPage, type PageModel } from './view/page.js'
+export { BRAND, CSP, renderPage, type PageModel } from './view/page.js'
+export { renderLoginPage, type LoginPageModel } from './view/login.js'
 export { renderRoster } from './view/agents.js'
 export { renderAudit } from './view/audit.js'
 export {

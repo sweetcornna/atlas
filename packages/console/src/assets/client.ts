@@ -16,6 +16,7 @@
  *    including every error string, reaches the page through `textContent`.
  * 3. **Carry the token in an `Authorization` header.** Never in a query string,
  *    never rendered into the document.
+ * 4. **Send the console header on every request.** See below.
  *
  * The dividing line worth stating out loud: **nothing derived from the URL, a
  * form field, or a JSON response body is ever concatenated into HTML.** The
@@ -56,7 +57,22 @@
  * client that only reads the fragment leaves anybody who followed that link
  * unauthenticated from the first poll onward. Either way it is stored and
  * scrubbed out of the address bar immediately.
+ *
+ * There is now a third way in that this script never sees: the login page sets
+ * an `HttpOnly` cookie, which the browser attaches by itself and no script can
+ * read. That is why every request below carries `CONSOLE_HEADER` whether or not
+ * there is a token in `localStorage` — the server requires it of any cookie-
+ * authenticated request that is not a plain document read, and a header a
+ * cross-origin page cannot set is what makes an ambient credential safe
+ * (`auth.ts`). Requests already carrying a `Bearer` pay one header for nothing,
+ * which is cheaper than a rule with an exception in it.
+ *
+ * The token box stays, and so does `localStorage`: a `Bearer` still overrides
+ * the cookie, which is what makes "look at this console as the other role for a
+ * minute" possible without logging out.
  */
+
+import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
 
 export const CONSOLE_CLIENT_JS = `
 (function () {
@@ -112,19 +128,25 @@ export const CONSOLE_CLIENT_JS = `
     paintToken();
   }
 
+  // Says nothing when there is no local token, because there may still be a
+  // cookie session and this script cannot see it (HttpOnly). The sidebar's
+  // role chip is the server-rendered answer to "who am I"; this line only ever
+  // reports the localStorage copy.
   function paintToken() {
     var has = readToken() !== '';
-    say(byId('token-state'), has ? '令牌已存' : '无令牌', has ? 'ok' : 'muted');
+    say(byId('token-state'), has ? '令牌已存' : '', has ? 'ok' : 'muted');
     paintCrossPageLink();
   }
 
   // The chat page is a second document, so reaching it is a top-level
-  // navigation - and a navigation carries no Authorization header while this
-  // console keeps its credential out of cookies on purpose (auth.ts). So the
-  // link gets the token in its query string, the same position the CLI banner
-  // uses and the same one the destination scrubs out of the address bar on
-  // arrival. Left alone when there is no token: a link to a 401 is still a
-  // better answer than a link that pretends to be authenticated.
+  // navigation - and a navigation carries no Authorization header. So the link
+  // gets the token in its query string, the same position the CLI banner uses
+  // and the same one the destination scrubs out of the address bar on arrival.
+  // Left alone when there is no token, which is now the ordinary case rather
+  // than a broken one: a cookie session has nothing to sign the link with and
+  // needs nothing, because the browser attaches the cookie to the navigation
+  // (auth.ts). The unsigned link is therefore either authenticated by cookie or
+  // an honest trip to the login page.
   function paintCrossPageLink() {
     var link = byId('to-chat');
     if (!link) return;
@@ -160,10 +182,15 @@ export const CONSOLE_CLIENT_JS = `
     } catch (e) { window.location.hash = ''; }
   }
 
+  // The console header rides on everything, token or no token: with a cookie
+  // session it is what the server requires (a cross-origin page cannot set it
+  // without a preflight this server never answers), and with a Bearer it is one
+  // ignored header. A conditional here would be a rule with an exception.
   function authHeaders(extra) {
     var headers = extra || {};
     var token = readToken();
     if (token) headers['Authorization'] = 'Bearer ' + token;
+    headers['${CONSOLE_HEADER}'] = '${CONSOLE_HEADER_VALUE}';
     return headers;
   }
 
@@ -411,6 +438,11 @@ export const CONSOLE_CLIENT_JS = `
   document.addEventListener('submit', function (event) {
     var form = event.target;
     if (!form || !form.id) return;
+    // Not prevented: the native POST is what clears the cookie, and it works
+    // with this script disabled. All that is added is dropping the
+    // localStorage copy - leaving it behind would mean the next visit sends a
+    // Bearer for a token the operator just walked away from.
+    if (form.id === 'logout-form') { writeToken(''); return; }
     if (form.id === 'register-form') { event.preventDefault(); onRegister(form); return; }
     if (form.id === 'wake-form') { event.preventDefault(); onWake(form); return; }
     if (form.id === 'audit-filter') {

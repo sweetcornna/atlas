@@ -408,6 +408,7 @@ describe('chat page document', () => {
     const html = renderChatPage({
       label: '测试台',
       now: NOW,
+      role: 'admin',
       sessions: renderChatSessions({
         sessions: [SESSION],
         targets: TARGETS,
@@ -437,6 +438,7 @@ describe('chat page document', () => {
     const html = renderChatPage({
       label: '测试台',
       now: NOW,
+      role: 'admin',
       sessions: '',
       thread: '',
       composerEnabled: false,
@@ -453,6 +455,7 @@ describe('chat page document', () => {
     const html = renderChatPage({
       label: '测试台',
       now: NOW,
+      role: 'admin',
       sessions: '',
       thread: '',
       composerEnabled: false,

@@ -21,24 +21,76 @@
  *
  * ## Where the token rides
  *
- * Two places, both checked by {@link presentedTokenOf}:
+ * Three places, checked in this order by {@link presentedCredentialOf}, first
+ * one that resolves to a role wins:
  *
  * - `Authorization: Bearer <token>` — what the page's `fetch()` calls and any
  *   `curl` use.
  * - `?token=<token>` on the query string — what a **browser navigation** uses,
  *   because a URL typed or clicked into an address bar cannot carry a header.
  *   That is the whole reason the CLI prints a URL with the token in it.
- *
- * Deliberately **not** a cookie. A cookie would be attached by the browser to
- * cross-origin `POST`s from any page the operator happens to have open, which
- * turns every admin route into a CSRF target on a loopback port that any local
- * page can reach. Requiring a token that a foreign origin cannot read *is* the
- * CSRF defence here, and it only works while the credential is not ambient.
+ * - the {@link SESSION_COOKIE} cookie — what a browser has after `POST /login`,
+ *   so that opening the console means typing a token into a field rather than
+ *   hand-splicing one into a URL.
  *
  * A token in a URL is a real (smaller) exposure — shell history, the address
  * bar, a `Referer` header. The HTTP layer answers the last one with
  * `referrer-policy: no-referrer`; the first two are accepted, because the
  * alternative is a console nobody can open.
+ *
+ * ## The cookie, and what it costs
+ *
+ * This file used to say the cookie was refused on purpose, and the reason it
+ * gave was right: a cookie is **ambient**, attached by the browser to requests
+ * the operator's page did not make, which is what turns a write route into a
+ * CSRF target. Handing the credential to a field on a login page does not make
+ * that argument wrong — it makes it a bill that has to be paid, in three
+ * instalments. All three are here rather than spread over the route table,
+ * because a CSRF defence assembled from pieces in four files is a CSRF defence
+ * nobody can audit.
+ *
+ * **① The cookie is `HttpOnly`, `SameSite=Strict`, `Path=/`, host-only.** No
+ * `Domain`, so a sibling host cannot claim it, and no script can read it — a
+ * strict improvement on the `localStorage` copy the page already keeps, which
+ * any injected script could lift.
+ *
+ * **② `Secure` only when the request really arrived over TLS.** See
+ * {@link isSecureRequest}. Setting it unconditionally would be the safer-looking
+ * choice and the wrong one: the console is also reached at
+ * `http://127.0.0.1:<port>` through an SSH tunnel, and a `Secure` cookie is
+ * simply never sent back there, so the login page would accept the token and
+ * then bounce the operator straight back to itself.
+ *
+ * **③ `SameSite=Strict` is not enough, because it ignores the port.** Same-site
+ * is scheme + registrable domain; `http://127.0.0.1:9999` — any other local web
+ * app, on a machine where this console binds loopback precisely because loopback
+ * is trusted — is same-site with this console and its cookie will ride along. So
+ * every route that is not a plain document read additionally requires the
+ * {@link CONSOLE_HEADER} request header when the credential came from the
+ * cookie, and this server answers **no** CORS preflight and sends no
+ * `Access-Control-Allow-*` header of any kind. A foreign page can therefore
+ * neither set that header (custom headers force a preflight) nor survive the
+ * preflight (there is no answer to it). The `Bearer` and `?token=` positions are
+ * exempt because they are not ambient: a page that can supply either of them
+ * already knows the token, and CSRF is an attack by somebody who does not.
+ *
+ * **Documents are the deliberate exception.** A top-level navigation — the
+ * address bar, a bookmark, a link — cannot carry a custom header, so `GET /`,
+ * `GET /chat` and `GET /login` accept the cookie alone. That is safe for a
+ * reason worth stating rather than assuming: a foreign site can make the
+ * browser *navigate* here, but the same-origin policy stops it reading a byte
+ * of what comes back, and rendering a page changes nothing on this console or
+ * on the network behind it. The moment such a page wants to *do* something it
+ * needs one of the JSON routes, and those are back under rule ③.
+ *
+ * `GET /v0/chat/stream` gets the same exception for the same structural reason
+ * (`EventSource` cannot send headers either) plus one guard of its own: a
+ * cookie-only stream request is refused when `Sec-Fetch-Site` says the caller is
+ * another origin. That header is set by the browser and cannot be forged by
+ * page script, and `same-site` is exactly the value the port-blind rule above
+ * would otherwise wave through. It is a belt over braces, never the braces:
+ * browsers that do not send it fall back to the rules above, which is why the
+ * custom header is what actually fails closed.
  */
 
 import { timingSafeEqual } from 'node:crypto'
@@ -54,8 +106,54 @@ export const MIN_TOKEN_LENGTH = 16
 /** Query parameter a browser navigation may carry the token in. */
 export const TOKEN_QUERY_PARAM = 'token'
 
+/**
+ * Name of the session cookie `POST /login` sets.
+ *
+ * Host-only and unprefixed on purpose: `__Host-` would be the stricter spelling
+ * but it mandates `Secure`, and this console must keep working over plain HTTP
+ * on loopback (see the module note, instalment ②).
+ */
+export const SESSION_COOKIE = 'qianmo_console'
+
+/**
+ * The header a cookie-authenticated request must also carry on every route
+ * that is not a plain document read. Presence is the whole check — the value
+ * carries nothing, because a value would imply it was worth guessing.
+ */
+export const CONSOLE_HEADER = 'x-qianmo-console'
+
+/** What this console's own client sends. Any non-empty value passes. */
+export const CONSOLE_HEADER_VALUE = '1'
+
+/**
+ * How long a login lasts.
+ *
+ * Twelve hours rather than a week: the cookie carries the console token itself,
+ * so its lifetime is the window in which a stolen cookie jar is worth stealing,
+ * and an operator console is a thing people open during a shift.
+ */
+export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60
+
 /** What the presented credential entitles the caller to. */
 export type ConsoleRole = 'view' | 'admin' | 'none'
+
+/** Which of the three positions the token arrived in. */
+export type CredentialSource = 'bearer' | 'query' | 'cookie' | 'none'
+
+/** A resolved credential, with the facts the CSRF rules need. */
+export interface ConsoleCredential {
+  readonly role: ConsoleRole
+  /** Where the accepted token came from. `none` when nothing matched. */
+  readonly source: CredentialSource
+  /** True when {@link CONSOLE_HEADER} rode along. */
+  readonly header: boolean
+  /**
+   * True only when the browser positively said this request came from another
+   * origin (`Sec-Fetch-Site`). Absent header reads as false — see the module
+   * note on why this is a belt and not the braces.
+   */
+  readonly crossOrigin: boolean
+}
 
 /** The two credentials one console instance is started with. */
 export interface ConsoleTokens {
@@ -84,36 +182,255 @@ export function bearerOf(request: Request): string {
   return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
 }
 
-/**
- * The token this request presents, from the header first and the query string
- * second. See the module note for why both are accepted.
- */
-export function presentedTokenOf(request: Request): string {
-  const bearer = bearerOf(request)
-  if (bearer.length > 0) return bearer
+/** The value of one cookie, or `''`. Never throws on a malformed header. */
+export function cookieOf(request: Request, name: string): string {
+  const raw = request.headers.get('cookie')
+  if (raw === null) return ''
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() !== name) continue
+    const value = part.slice(eq + 1).trim()
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      // A cookie the browser did not get from us. Compared raw; it will not
+      // match, and refusing to parse the whole header would be worse.
+      return value
+    }
+  }
+  return ''
+}
+
+/** One position's contents, in the order {@link presentedCredentialOf} tries. */
+function positionsOf(request: Request): readonly {
+  readonly source: Exclude<CredentialSource, 'none'>
+  readonly token: string
+}[] {
+  let query = ''
   try {
-    return new URL(request.url).searchParams.get(TOKEN_QUERY_PARAM) ?? ''
+    query = new URL(request.url).searchParams.get(TOKEN_QUERY_PARAM) ?? ''
   } catch {
     // A request whose URL will not parse has no query string to read.
-    return ''
+    query = ''
   }
+  return [
+    { source: 'bearer', token: bearerOf(request) },
+    { source: 'query', token: query },
+    { source: 'cookie', token: cookieOf(request, SESSION_COOKIE) },
+  ]
 }
 
 /**
- * Resolve the caller's role.
+ * The token this request presents, and which position it came from.
+ *
+ * The first *non-empty* position wins, header before query before cookie. This
+ * answers "what did the caller send", which is all it can answer without the
+ * expected pair; "which credential is in force" is {@link credentialOf}, and
+ * the two differ when more than one position is filled in.
+ */
+export function presentedCredentialOf(request: Request): {
+  readonly token: string
+  readonly source: CredentialSource
+} {
+  for (const position of positionsOf(request)) {
+    if (position.token.length > 0) return position
+  }
+  return { token: '', source: 'none' }
+}
+
+/** The token this request presents. See {@link presentedCredentialOf}. */
+export function presentedTokenOf(request: Request): string {
+  return presentedCredentialOf(request).token
+}
+
+/**
+ * Resolve a bare token to a role.
  *
  * Both comparisons always run — no short-circuit — so the answer costs the
  * same whichever token was presented. The admin token also satisfies every
  * view-only route: one operator with one credential is the common case, and
  * making them hold two would guarantee they hold one.
  */
-export function roleOf(request: Request, tokens: ConsoleTokens): ConsoleRole {
-  const presented = presentedTokenOf(request)
-  const isAdmin = tokenMatches(presented, tokens.admin)
-  const isView = tokenMatches(presented, tokens.view)
+export function roleOfToken(token: string, tokens: ConsoleTokens): ConsoleRole {
+  const isAdmin = tokenMatches(token, tokens.admin)
+  const isView = tokenMatches(token, tokens.view)
   if (isAdmin) return 'admin'
   if (isView) return 'view'
   return 'none'
+}
+
+/**
+ * True when the browser said this request came from somewhere else.
+ *
+ * `Sec-Fetch-Site` is a forbidden header name, so page script cannot set or
+ * forge it; `none` is a user-initiated navigation (address bar, bookmark) and
+ * counts as ours. An absent header — an old browser, or a non-browser client —
+ * reads as same-origin, because failing closed here would refuse `curl` and
+ * every proxy that strips unknown headers.
+ */
+export function isCrossOriginRequest(request: Request): boolean {
+  const site = request.headers.get('sec-fetch-site')
+  if (site === null) return false
+  return site !== 'same-origin' && site !== 'none'
+}
+
+/**
+ * Resolve the caller's credential: role, position, and the two facts the CSRF
+ * rules in `http.ts` need.
+ *
+ * The positions are tried in order and the first one that *matches* wins, not
+ * merely the first one present — a browser that still has a cookie can follow a
+ * link whose `?token=` has since been rotated, and treating that as anonymous
+ * would log an operator out for holding a stale bookmark. What is never allowed
+ * is the reverse promotion: a wrong token cannot borrow the role of a right one
+ * that was not presented, because every position is compared against the same
+ * two strings.
+ */
+export function credentialOf(
+  request: Request,
+  tokens: ConsoleTokens,
+): ConsoleCredential {
+  const header = request.headers.get(CONSOLE_HEADER) !== null
+  const crossOrigin = isCrossOriginRequest(request)
+  for (const position of positionsOf(request)) {
+    if (position.token.length === 0) continue
+    const role = roleOfToken(position.token, tokens)
+    if (role !== 'none') {
+      return { role, source: position.source, header, crossOrigin }
+    }
+  }
+  return { role: 'none', source: 'none', header, crossOrigin }
+}
+
+/** Resolve the caller's role. See {@link credentialOf} for the whole answer. */
+export function roleOf(request: Request, tokens: ConsoleTokens): ConsoleRole {
+  return credentialOf(request, tokens).role
+}
+
+// --- the session cookie --------------------------------------------------
+
+/** Where the login page lives. Named here because {@link safeRedirect} refuses it. */
+export const LOGIN_PATH = '/login'
+
+/**
+ * True when the request reached this process over TLS.
+ *
+ * `X-Forwarded-Proto` wins when present because it describes the leg that
+ * matters — the browser-facing one — and behind a reverse proxy the socket this
+ * process sees is plain HTTP no matter what the operator's URL bar says. The
+ * header is client-controlled on a console reached directly, but the only thing
+ * a caller achieves by lying is a stricter or a looser cookie **on its own
+ * request**; it cannot touch anybody else's. Every reverse proxy worth using
+ * sets this header itself rather than passing one through.
+ */
+export function isSecureRequest(request: Request): boolean {
+  const forwarded = request.headers.get('x-forwarded-proto')
+  if (forwarded !== null) {
+    const first = forwarded.split(',')[0]?.trim().toLowerCase() ?? ''
+    if (first.length > 0) return first === 'https'
+  }
+  try {
+    return new URL(request.url).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** What {@link sessionCookieHeader} needs to decide. */
+export interface SessionCookieOptions {
+  /** Add `Secure`. Pass {@link isSecureRequest}, never a constant. */
+  readonly secure: boolean
+  /** Lifetime. Defaults to {@link SESSION_MAX_AGE_SECONDS}. */
+  readonly maxAgeSeconds?: number
+}
+
+function serialiseSessionCookie(
+  value: string,
+  maxAgeSeconds: number,
+  secure: boolean,
+): string {
+  return (
+    `${SESSION_COOKIE}=${encodeURIComponent(value)}` +
+    // No `Domain`: host-only, so a sibling name on the same registrable domain
+    // cannot claim it. The three that follow are the instalments the module
+    // note names — script cannot read it, cross-site requests do not carry it,
+    // and it is scoped to the whole console rather than to one path.
+    '; Path=/' +
+    '; HttpOnly' +
+    '; SameSite=Strict' +
+    `; Max-Age=${maxAgeSeconds}` +
+    (secure ? '; Secure' : '')
+  )
+}
+
+/** The `Set-Cookie` value that logs a browser in. */
+export function sessionCookieHeader(
+  token: string,
+  options: SessionCookieOptions,
+): string {
+  return serialiseSessionCookie(
+    token,
+    options.maxAgeSeconds ?? SESSION_MAX_AGE_SECONDS,
+    options.secure,
+  )
+}
+
+/**
+ * The `Set-Cookie` value that logs a browser out.
+ *
+ * Same attributes as the one it replaces, minus the value and the lifetime: a
+ * browser only overwrites a cookie when name, path and domain all match, so a
+ * clear that drops `Path=/` leaves the original in place and logs nobody out.
+ */
+export function clearedSessionCookieHeader(
+  options: SessionCookieOptions,
+): string {
+  return serialiseSessionCookie('', 0, options.secure)
+}
+
+/**
+ * True when the string carries a C0 control character or DEL.
+ *
+ * A scan rather than a regular expression: the regex spelling of this needs
+ * literal control characters in the source, which is a thing the linter refuses
+ * for good reasons and a thing a future editor would silently mangle.
+ */
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i)
+    if (code < 0x20 || code === 0x7f) return true
+  }
+  return false
+}
+
+/**
+ * The path a login may send a browser to, or `/` when the request is not one.
+ *
+ * Everything about this function is a refusal. Only a site-relative path is
+ * allowed: no scheme, no host, no protocol-relative `//evil.example`, no
+ * backslash (browsers normalise `\` to `/`, so `/\evil.example` is a host), no
+ * control character (a smuggled newline is a second response header). Anything
+ * that parses to an origin other than the placeholder is discarded rather than
+ * repaired, and `/login` itself is discarded too — a redirect back to the login
+ * page is a loop the operator has no way out of.
+ */
+export function safeRedirect(raw: string | null | undefined): string {
+  if (raw === undefined || raw === null) return '/'
+  const value = raw.trim()
+  if (!value.startsWith('/')) return '/'
+  if (value.startsWith('//')) return '/'
+  if (value.includes('\\')) return '/'
+  if (hasControlCharacter(value)) return '/'
+  const placeholder = 'http://console.invalid'
+  try {
+    const probe = new URL(value, placeholder)
+    if (probe.origin !== placeholder) return '/'
+    if (probe.pathname === LOGIN_PATH) return '/'
+    return `${probe.pathname}${probe.search}`
+  } catch {
+    return '/'
+  }
 }
 
 /** True for the addresses only this machine can reach. */

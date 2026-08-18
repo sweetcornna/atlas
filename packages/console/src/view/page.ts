@@ -77,14 +77,23 @@
 
 import { CONSOLE_CLIENT_JS } from '../assets/client.js'
 import { CONSOLE_CSS } from '../assets/css.js'
-import { rail, type Tone } from './bits.js'
+import { identityControl, rail, type Tone } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatDateTime, formatDuration } from './format.js'
+import type { ConsoleRole } from '../auth.js'
 import type { AuditFilter } from '../deps.js'
 
 export interface PageModel {
   readonly label: string
   readonly now: number
+  /**
+   * Which credential this render is for.
+   *
+   * Required rather than optional: the sidebar states it, and a page that
+   * silently forgot to would leave an operator guessing why a button they
+   * remember is not there (`bits.ts`, {@link identityControl}).
+   */
+  readonly role: ConsoleRole
   /** Output of `renderRoster`. */
   readonly roster: string
   /** Output of `renderAudit`. */
@@ -136,8 +145,13 @@ const REFRESH_CHOICES: readonly (readonly [string, string])[] = [
 
 const DEFAULT_REFRESH = '5000'
 
-/** The product mark. The instance name sits beside it, never merged into it. */
-const BRAND = '阡陌 console'
+/**
+ * The product mark. The instance name sits beside it, never merged into it.
+ *
+ * Exported because all three documents put it in their `<title>` and one string
+ * spelled three times is three strings.
+ */
+export const BRAND = '阡陌 console'
 
 /**
  * The filter, as the query string the poller replays.
@@ -303,9 +317,10 @@ function sidebarNav(chatEnabled: boolean): string {
     ([href, label]) =>
       `<a class="nav-item" href="${attr(href)}">${escapeHtml(label)}</a>`,
   ).join('')
-  // The client rewrites this href to carry the token before it can be clicked:
-  // a top-level navigation sends no `Authorization` header, and this console
-  // deliberately keeps its credential out of cookies (`auth.ts`).
+  // The client rewrites this href to carry the token before it can be clicked,
+  // when there is one in `localStorage`: a top-level navigation sends no
+  // `Authorization` header. A cookie session does not need the rewrite — the
+  // browser attaches the cookie to the navigation itself (`auth.ts`).
   const chat = chatEnabled
     ? `<a class="nav-item nav-route" id="to-chat" href="/chat">对话</a>`
     : ''
@@ -331,6 +346,7 @@ function sidebar(model: PageModel, iso: string): string {
     `<span class="sidebar-inst">${escapeHtml(model.label)}</span>` +
     `<time class="sidebar-clock" id="clock" datetime="${attr(iso)}">` +
     `${escapeHtml(formatDateTime(model.now))}</time>` +
+    identityControl(model.role) +
     refreshControl() +
     tokenControl() +
     `</div>` +

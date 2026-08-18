@@ -625,6 +625,43 @@ td.actions .btn + .btn { margin-left: 4px; }
 /* A link that leaves the page, kept visually apart from the jump list. */
 .nav-route { margin-top: 6px; border-top: 1px solid var(--sidebar-border); padding-top: 10px; }
 
+/* ---- who am I, and the way out ---- */
+.identity { justify-content: space-between; }
+.identity form { margin: 0; }
+
+/* ---- /login: one centred card, and nothing behind it ----
+   The reference console pairs this card with a shader-painted brand panel on
+   md+ screens. That half is deliberately not here: this page is one string of
+   hand-written CSS with no build step, and no decorative fill has earned a
+   second pipeline. What is kept is the skeleton — a card, centred, at a width
+   where a single field does not look lost. */
+.login-shell {
+  /* Both, and both are load-bearing: height:100% centres inside the locked
+     viewport the desktop shell sets up, and min-height:100vh keeps the card
+     centred under the narrow breakpoint below, where body height goes auto. */
+  height: 100%; min-height: 100vh; overflow-y: auto;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%; max-width: 24rem;
+  /* margin:auto rather than relying on the parent's centring alone: a card
+     taller than the viewport is clipped at the top under align-items:center
+     and the clipped part cannot be scrolled to. */
+  margin: auto;
+  display: flex; flex-direction: column; gap: 20px;
+  padding: 28px; border-radius: var(--radius);
+  background: var(--card); color: var(--card-foreground);
+  border: 1px solid var(--border);
+}
+.login-head { display: flex; flex-direction: column; gap: 4px; }
+.login-mark { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .01em; }
+.login-inst { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+.login-card .bar { margin: 0; }
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+.login-form .field { flex: 1 1 auto; }
+.login-submit { width: 100%; }
+
 @media (max-width: 900px) {
   html, body { height: auto; overflow: visible; }
   .shell { flex-direction: column; height: auto; }

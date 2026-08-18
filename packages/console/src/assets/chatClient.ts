@@ -9,7 +9,9 @@
  *    the way out (`view/chat.ts`).
  * 2. `POST` JSON. Every response string — including every error — reaches the
  *    page through `textContent`.
- * 3. Carry the token in an `Authorization` header.
+ * 3. Carry the token in an `Authorization` header, and the console header on
+ *    every request — with a cookie session that header is what the server
+ *    requires, and a cross-origin page cannot set it (`auth.ts`, `client.ts`).
  *
  * ## Switching sessions is a swap, not a navigation
  *
@@ -37,6 +39,8 @@
  * degraded mode nobody tests: it is the only path when the browser is old, and
  * `?stream=off` forces it for exactly that reason.
  */
+
+import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
 
 export const CONSOLE_CHAT_JS = `
 (function () {
@@ -93,9 +97,12 @@ export const CONSOLE_CHAT_JS = `
     paintToken();
   }
 
+  // Empty rather than 无令牌 when localStorage is bare: a cookie session is
+  // invisible to this script (HttpOnly), and the sidebar's role chip is the
+  // server-rendered answer to who this is.
   function paintToken() {
     var has = readToken() !== '';
-    say(byId('token-state'), has ? '令牌已存' : '无令牌', has ? 'ok' : 'muted');
+    say(byId('token-state'), has ? '令牌已存' : '', has ? 'ok' : 'muted');
     paintCrossPageLink();
   }
 
@@ -129,10 +136,13 @@ export const CONSOLE_CHAT_JS = `
     } catch (e) { window.location.hash = ''; }
   }
 
+  // Always both, token or no token: the header is what a cookie session needs
+  // and is ignored on a Bearer one. See client.ts.
   function authHeaders(extra) {
     var headers = extra || {};
     var token = readToken();
     if (token) headers['Authorization'] = 'Bearer ' + token;
+    headers['${CONSOLE_HEADER}'] = '${CONSOLE_HEADER_VALUE}';
     return headers;
   }
 
@@ -247,11 +257,13 @@ export const CONSOLE_CHAT_JS = `
   }
 
   // Switching conversations swaps the two fragments and rewrites the address
-  // bar. It deliberately does NOT navigate: a top-level navigation to
-  // /chat?session=... carries no Authorization header and no cookie, so it
+  // bar. It deliberately does NOT navigate: on a Bearer session a top-level
+  // navigation to /chat?session=... carries no Authorization header, so it
   // would 401 the moment the token was scrubbed out of the URL - which is the
-  // first thing this page does on arrival. Everything after the first load
-  // therefore has to happen through fetch.
+  // first thing this page does on arrival. A cookie session would survive the
+  // navigation, but a swap that works for one credential and reloads the whole
+  // document for the other is two behaviours to keep true; everything after the
+  // first load goes through fetch.
   function openSession(id) {
     if (!id || id === active) return;
     active = id;
@@ -392,7 +404,10 @@ export const CONSOLE_CHAT_JS = `
 
   document.addEventListener('submit', function (event) {
     var form = event.target;
-    if (form && form.id === 'composer') { event.preventDefault(); send(); }
+    if (form && form.id === 'composer') { event.preventDefault(); send(); return; }
+    // Native POST, deliberately not prevented - see client.ts. Only the
+    // localStorage copy is dropped here; the cookie is the server's to clear.
+    if (form && form.id === 'logout-form') writeToken('');
   });
 
   document.addEventListener('keydown', function (event) {

@@ -15,6 +15,9 @@
  * | Method | Path | Role | Returns |
  * | --- | --- | --- | --- |
  * | GET | `/` | view | `text/html`, the whole page |
+ * | GET | `/login` | public | `text/html`, the token field |
+ * | POST | `/login` | public | 303 + `Set-Cookie`, or the field again |
+ * | POST | `/logout` | public | 303 + a cleared cookie |
  * | GET | `/assets/app.css` | public | `text/css` |
  * | GET | `/assets/app.js` | public | `text/javascript` |
  * | GET | `/v0/health` | public | `{ status: 'ok' }` |
@@ -92,11 +95,58 @@
  * caller should not learn which verbs a route accepts. Unknown paths answer
  * 404 without consulting the credential at all — there is no role that would
  * make them exist. Neither 401 nor 403 ever echoes the token it received.
+ *
+ * ## Three protection classes, because a cookie is ambient
+ *
+ * Since `POST /login` may hand the browser a cookie, every route has to say
+ * what an ambient credential is allowed to do on it. `auth.ts` holds the
+ * argument; this file holds the assignment, and there are exactly three values:
+ *
+ * - **`document`** — `GET /` and `GET /chat`. A cookie alone is enough: a
+ *   top-level navigation cannot carry a custom header, and a foreign page that
+ *   forces one still cannot read the response or change anything by causing it.
+ * - **`stream`** — `GET /v0/chat/stream`, which is an `EventSource` and equally
+ *   header-less. A cookie alone is enough *unless* `Sec-Fetch-Site` says the
+ *   caller is another origin, which is the one case `SameSite` misses because
+ *   it ignores the port.
+ * - **`guarded`** — everything else that needs a credential: every write, every
+ *   JSON read, every HTML fragment. A cookie must be accompanied by the
+ *   {@link CONSOLE_HEADER} header, which a cross-origin caller cannot set
+ *   without a preflight this server never answers.
+ *
+ * The `Bearer` and `?token=` positions are unaffected in all three: they are
+ * not ambient, so they are not a CSRF vector.
+ *
+ * ## Unauthenticated: a redirect for a browser, a 401 for everything else
+ *
+ * A `GET` whose `Accept` asks for `text/html` is a person in a browser, and
+ * sending them a JSON 401 they cannot act on is how a console gets a reputation
+ * for being broken — they get a 303 to `/login` with a validated `redirect`
+ * back. Everything else keeps the 401 JSON exactly as before, because a `curl`
+ * or a poller that gets HTML and a 200 instead of a 401 has been lied to. The
+ * one refinement is 403: an operator holding a view token who navigates to an
+ * admin page is shown the login card **in place**, with the reason, rather than
+ * being bounced to `/login` — they are already authenticated, so a page that
+ * redirected them would redirect them straight back.
  */
 
 import { CONSOLE_CLIENT_JS } from './assets/client.js'
 import { CONSOLE_CSS } from './assets/css.js'
-import { roleOf, type ConsoleRole, type ConsoleTokens } from './auth.js'
+import {
+  CONSOLE_HEADER,
+  LOGIN_PATH,
+  SESSION_MAX_AGE_SECONDS,
+  TOKEN_QUERY_PARAM,
+  clearedSessionCookieHeader,
+  credentialOf,
+  isCrossOriginRequest,
+  isSecureRequest,
+  roleOfToken,
+  safeRedirect,
+  sessionCookieHeader,
+  type ConsoleCredential,
+  type ConsoleTokens,
+} from './auth.js'
 import type {
   AuditFilter,
   ChatPort,
@@ -118,7 +168,9 @@ import {
 } from './view/chat.js'
 import { renderChatPage } from './view/chatPage.js'
 import { renderLimits } from './view/limits.js'
+import { renderLoginPage } from './view/login.js'
 import { renderPage } from './view/page.js'
+import { LoginThrottle } from './throttle.js'
 
 /** Prefix of every JSON route in this API version. */
 export const API_PREFIX = '/v0'
@@ -243,28 +295,303 @@ function failureOf<T>(result: ConsoleResult<T>): ConsoleFailure | null {
 }
 
 /**
- * Enforce the role a route needs.
+ * What an ambient (cookie) credential is allowed to do on a route. The module
+ * note above defines the three; `auth.ts` argues for them.
+ */
+type Protection = 'document' | 'stream' | 'guarded'
+
+/** What a JSON caller is told when a view token reached an admin route. */
+const ADMIN_REQUIRED = '该操作需要 admin token，当前凭据只有只读权限。'
+
+/**
+ * The same fact for the login card, in the page's own register.
+ *
+ * Deliberately not the string above: everything the console renders keeps to
+ * one clause and no full stop (`view/page.ts`, and the copy gates in
+ * `test/view.test.ts`), while an error *body* is read by a developer and may
+ * spend a sentence saying what to do.
+ */
+const ADMIN_REQUIRED_LINE = '该页面需要 admin 令牌'
+
+/** What a failed login is told. Never which half of the pair was close. */
+const LOGIN_REFUSED = '令牌无效'
+
+/**
+ * Enforce the role a route needs, and what the credential's *position* is
+ * allowed to reach.
  *
  * 401 when nothing valid was presented, 403 when a view token reached an admin
- * route. Neither body repeats the token — a credential that shows up in a
- * response ends up in a log, a screenshot or a bug report.
+ * route or when a cookie reached a route it may not carry alone. Neither body
+ * repeats the token — a credential that shows up in a response ends up in a
+ * log, a screenshot or a bug report.
+ *
+ * Role comes first and position second on purpose: a caller with no valid
+ * credential must get the same 401 whether or not it also happened to send the
+ * console header, or the header becomes a probe for "is this a real cookie".
  */
-function guard(role: ConsoleRole, need: 'view' | 'admin'): Response | null {
-  if (role === 'none') {
+function guard(
+  credential: ConsoleCredential,
+  need: 'view' | 'admin',
+  protection: Protection,
+): Response | null {
+  if (credential.role === 'none') {
     return fail(
       401,
       'unauthorized',
-      '需要控制台 token：带 `Authorization: Bearer <token>` 头，或在 URL 上加 `?token=<token>`。',
+      '需要控制台 token：带 `Authorization: Bearer <token>` 头，或在 URL 上加 `?token=<token>`，或在登录页填一次。',
     )
   }
-  if (need === 'admin' && role !== 'admin') {
-    return fail(
-      403,
-      'forbidden',
-      '该操作需要 admin token，当前凭据只有只读权限。',
-    )
+  if (credential.source === 'cookie') {
+    if (protection === 'guarded' && !credential.header) {
+      return fail(
+        403,
+        'forbidden',
+        `cookie 凭据的请求必须同时带 ${CONSOLE_HEADER} 请求头；` +
+          '这条规则挡的是跨源页面借浏览器自动附带的 cookie 发出的请求。',
+      )
+    }
+    if (protection === 'stream' && credential.crossOrigin) {
+      return fail(
+        403,
+        'forbidden',
+        'cookie 凭据只能从本控制台自己的页面打开这条流。',
+      )
+    }
+  }
+  if (need === 'admin' && credential.role !== 'admin') {
+    return fail(403, 'forbidden', ADMIN_REQUIRED)
   }
   return null
+}
+
+// --- the login door ------------------------------------------------------
+
+/**
+ * Biggest login body this will read.
+ *
+ * The form has two short fields. Anything larger is not a login attempt, and
+ * refusing it by `Content-Length` costs nothing while reading it costs whatever
+ * the sender decided.
+ */
+const MAX_LOGIN_BODY_BYTES = 4096
+
+/** A redirect that carries no body. `303` so a POST becomes a GET. */
+function seeOther(
+  location: string,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location,
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      ...headers,
+    },
+  })
+}
+
+/**
+ * True when this request is a person navigating rather than a script calling.
+ *
+ * `Accept` is the whole judgement, and it is only consulted for a `GET`: a
+ * `POST` that happens to accept HTML is still a caller that asked for an
+ * action, and answering it with a redirect to a login form would turn a refused
+ * write into a 303 the caller reports as success.
+ */
+function wantsHtml(request: Request): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false
+  return (request.headers.get('accept') ?? '').includes('text/html')
+}
+
+/**
+ * Where to send a browser that has no credential, with the way back.
+ *
+ * The `token` parameter is stripped out of the return path before it is
+ * encoded. It is there because a stale bookmark carried it, it did not work,
+ * and preserving it would put a dead credential into the `Location` header, the
+ * browser's history and every access log between here and there.
+ */
+function loginRedirect(url: URL): Response {
+  const back = new URL(url.toString())
+  back.searchParams.delete(TOKEN_QUERY_PARAM)
+  const target = `${back.pathname}${back.search}`
+  const query = target === '/' ? '' : `?redirect=${encodeURIComponent(target)}`
+  return seeOther(`${LOGIN_PATH}${query}`)
+}
+
+/** The login document, at whatever status the reason calls for. */
+function loginPage(
+  deps: ConsoleDeps,
+  options: {
+    readonly redirect: string
+    readonly status?: number
+    readonly error?: string
+    readonly headers?: Record<string, string>
+  },
+): Response {
+  const body = renderLoginPage({
+    label: deps.label ?? DEFAULT_LABEL,
+    redirect: options.redirect,
+    ...(options.error === undefined ? {} : { error: options.error }),
+  })
+  return new Response(body, {
+    status: options.status ?? 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      ...DOCUMENT_HEADERS,
+      ...(options.headers ?? {}),
+    },
+  })
+}
+
+/**
+ * Turn a refusal into the form the caller can act on.
+ *
+ * A script keeps the JSON it would have got before this page existed. A browser
+ * gets the door: `/login` when it has nothing, and the card in place when it
+ * has a view token and asked for an admin page — bouncing *that* caller to
+ * `/login` would only bounce them back, because they are already logged in.
+ */
+function documentDenial(
+  request: Request,
+  denied: Response,
+  deps: ConsoleDeps,
+  url: URL,
+): Response {
+  if (!wantsHtml(request)) return denied
+  if (denied.status === 401) return loginRedirect(url)
+  if (denied.status === 403) {
+    const back = new URL(url.toString())
+    back.searchParams.delete(TOKEN_QUERY_PARAM)
+    return loginPage(deps, {
+      redirect: safeRedirect(`${back.pathname}${back.search}`),
+      status: 403,
+      error: ADMIN_REQUIRED_LINE,
+    })
+  }
+  return denied
+}
+
+/** The login form's body, or `null` when this is not one. */
+async function readLoginForm(
+  request: Request,
+): Promise<URLSearchParams | null> {
+  const declared = Number(request.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > MAX_LOGIN_BODY_BYTES) return null
+  const type = request.headers.get('content-type') ?? ''
+  if (!type.includes('application/x-www-form-urlencoded')) return null
+  try {
+    const text = await request.text()
+    if (text.length > MAX_LOGIN_BODY_BYTES) return null
+    return new URLSearchParams(text)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `GET /login` renders the field; `POST /login` checks it and sets the cookie.
+ *
+ * Public, because a door that needs a key is not a door. Three things are worth
+ * reading:
+ *
+ * **The throttle runs before the comparison**, so a blocked caller learns
+ * nothing about the token they just sent — including whether it was right.
+ *
+ * **`Sec-Fetch-Site` refuses a cross-origin POST.** Login CSRF is not the worst
+ * bug in the world here (an attacker who can force a login already knows a
+ * token, and knowing one is the whole game), but the check is free and it also
+ * removes this endpoint as a guessing oracle that a foreign page could drive
+ * through a victim's browser.
+ *
+ * **Success answers 303, never 200 with a page.** The cookie is brand new and
+ * the browser has to make a fresh request for the destination to be rendered
+ * with it; answering the POST with the console itself would render the page for
+ * a caller that, from the server's point of view, was not carrying the cookie
+ * yet.
+ */
+async function handleLogin(
+  request: Request,
+  deps: ConsoleDeps,
+  tokens: ConsoleTokens,
+  credential: ConsoleCredential,
+  throttle: LoginThrottle,
+  url: URL,
+  clientKey: string,
+  now: number,
+): Promise<Response> {
+  const asked = safeRedirect(url.searchParams.get('redirect'))
+
+  if (request.method === 'GET') {
+    // Already carrying a credential: there is nothing to fill in. The console
+    // itself is the honest answer, not a form that would refuse to appear.
+    if (credential.role !== 'none') return seeOther(asked)
+    return loginPage(deps, { redirect: asked })
+  }
+  if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
+
+  if (isCrossOriginRequest(request)) {
+    return fail(403, 'forbidden', '登录只接受来自本控制台自己页面的提交。')
+  }
+
+  const form = await readLoginForm(request)
+  if (form === null) {
+    return fail(400, 'invalid', '请求体必须是登录表单')
+  }
+  const target = safeRedirect(form.get('redirect'))
+
+  const wait = throttle.retryAfterSeconds(clientKey, now)
+  if (wait > 0) {
+    return loginPage(deps, {
+      redirect: target,
+      status: 429,
+      error: `尝试过多 · 请等 ${wait} 秒`,
+      headers: { 'retry-after': String(wait) },
+    })
+  }
+
+  const presented = (form.get('token') ?? '').trim()
+  const role = roleOfToken(presented, tokens)
+  if (role === 'none') {
+    throttle.recordFailure(clientKey, now)
+    // The status is honest and the wording is not specific: "no such token" and
+    // "wrong token" are the same answer, and neither repeats what was typed.
+    return loginPage(deps, {
+      redirect: target,
+      status: 401,
+      error: LOGIN_REFUSED,
+    })
+  }
+
+  throttle.clear(clientKey)
+  return seeOther(target, {
+    'set-cookie': sessionCookieHeader(presented, {
+      secure: isSecureRequest(request),
+      maxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+    }),
+  })
+}
+
+/**
+ * `POST /logout` — drop the cookie and go back to the door.
+ *
+ * Needs no credential: the only thing it changes is the caller's own browser
+ * state, and demanding a valid token to *stop* using one would strand anybody
+ * whose token was rotated while they had a tab open. The `Sec-Fetch-Site` check
+ * is here anyway, because the nuisance version of this (a same-site page on
+ * another port logging an operator out on a loop) costs three lines to remove.
+ */
+function handleLogout(request: Request): Response {
+  if (request.method !== 'POST') return methodNotAllowed(['POST'])
+  if (isCrossOriginRequest(request)) {
+    return fail(403, 'forbidden', '退出只接受来自本控制台自己页面的提交。')
+  }
+  return seeOther(LOGIN_PATH, {
+    'set-cookie': clearedSessionCookieHeader({
+      secure: isSecureRequest(request),
+    }),
+  })
 }
 
 // --- query parsing -------------------------------------------------------
@@ -570,6 +897,7 @@ async function chatThreadFragment(
 async function handleChatPage(
   deps: ConsoleDeps,
   chat: ChatPort,
+  credential: ConsoleCredential,
   url: URL,
   now: number,
 ): Promise<Response> {
@@ -585,13 +913,14 @@ async function handleChatPage(
       sessions,
       thread: thread.html,
       composerEnabled: thread.open,
+      role: credential.role,
     }),
   )
 }
 
 async function handleIndex(
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   url: URL,
   now: number,
 ): Promise<Response> {
@@ -617,8 +946,11 @@ async function handleIndex(
       // not even learn that a conversation exists. A link that is present but
       // 403s on click leaks exactly that, so the nav item is hidden from
       // anyone who is not admin, channel or no channel.
-      chatEnabled: deps.chat !== undefined && role === 'admin',
+      chatEnabled: deps.chat !== undefined && credential.role === 'admin',
       auditFilter: filter,
+      // The sidebar states which of the two credentials this is, and offers the
+      // way out of a cookie the page cannot read (`bits.ts`).
+      role: credential.role,
     }),
   )
 }
@@ -628,10 +960,10 @@ async function handleIndex(
 async function handleAgentsCollection(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
 ): Promise<Response> {
   if (request.method === 'GET') {
-    const denied = guard(role, 'view')
+    const denied = guard(credential, 'view', 'guarded')
     if (denied !== null) return denied
     const result = await deps.registry.list()
     return result.ok
@@ -639,7 +971,7 @@ async function handleAgentsCollection(
       : failureResponse(result.failure)
   }
   if (request.method === 'POST') {
-    const denied = guard(role, 'admin')
+    const denied = guard(credential, 'admin', 'guarded')
     if (denied !== null) return denied
     const body = await readJsonObject(request)
     if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
@@ -650,7 +982,7 @@ async function handleAgentsCollection(
     // whether this address was new, so claiming "created" would be a guess.
     return result.ok ? json(result.value) : failureResponse(result.failure)
   }
-  const denied = guard(role, 'view')
+  const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   return methodNotAllowed(['GET', 'POST'])
 }
@@ -658,10 +990,10 @@ async function handleAgentsCollection(
 async function handleAgentItem(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   address: string,
 ): Promise<Response> {
-  const denied = guard(role, 'admin')
+  const denied = guard(credential, 'admin', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'DELETE') return methodNotAllowed(['DELETE'])
   const result = await deps.registry.deregister(address)
@@ -673,10 +1005,10 @@ async function handleAgentItem(
 async function handleHeartbeat(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   address: string,
 ): Promise<Response> {
-  const denied = guard(role, 'admin')
+  const denied = guard(credential, 'admin', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
   const result = await deps.registry.heartbeat(address)
@@ -686,9 +1018,9 @@ async function handleHeartbeat(
 async function handleWake(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
 ): Promise<Response> {
-  const denied = guard(role, 'admin')
+  const denied = guard(credential, 'admin', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
   const wake = deps.wake
@@ -711,10 +1043,10 @@ async function handleWake(
 async function handleAudit(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   url: URL,
 ): Promise<Response> {
-  const denied = guard(role, 'view')
+  const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   const result = await deps.audit.read(parseAuditFilter(url))
@@ -724,10 +1056,10 @@ async function handleAudit(
 async function handleChain(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   traceId: string,
 ): Promise<Response> {
-  const denied = guard(role, 'view')
+  const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   const result = await deps.audit.chain(traceId)
@@ -868,18 +1200,23 @@ async function handleChatSessions(
 async function dispatchChatApi(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   url: URL,
   segments: readonly string[],
 ): Promise<Response> {
+  const name = segments[2]
+  // The stream is the one route here an `EventSource` opens, and an
+  // `EventSource` cannot send the console header any more than a navigation
+  // can — so it is classed `stream` rather than `guarded` and leans on
+  // `Sec-Fetch-Site` instead. See the module note.
+  const protection: Protection =
+    name === 'stream' && segments.length === 3 ? 'stream' : 'guarded'
   // Admin before existence: an anonymous caller must not learn which consoles
   // have a chat channel wired by comparing 401 against 501.
-  const denied = guard(role, 'admin')
+  const denied = guard(credential, 'admin', protection)
   if (denied !== null) return denied
   const chat = deps.chat
   if (chat === undefined) return chatUnsupported()
-
-  const name = segments[2]
 
   if (name === 'targets' && segments.length === 3) {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
@@ -921,7 +1258,7 @@ async function dispatchChatApi(
 async function dispatchApi(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   url: URL,
   segments: readonly string[],
 ): Promise<Response> {
@@ -934,28 +1271,28 @@ async function dispatchApi(
   }
 
   if (head === 'limits' && segments.length === 2) {
-    const denied = guard(role, 'view')
+    const denied = guard(credential, 'view', 'guarded')
     if (denied !== null) return denied
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return json(deps.limits)
   }
 
   if (head === 'wake' && segments.length === 2) {
-    return await handleWake(request, deps, role)
+    return await handleWake(request, deps, credential)
   }
 
   if (head === 'chat' && segments.length >= 3) {
-    return await dispatchChatApi(request, deps, role, url, segments)
+    return await dispatchChatApi(request, deps, credential, url, segments)
   }
 
   if (head === 'audit') {
     if (segments.length === 2)
-      return await handleAudit(request, deps, role, url)
+      return await handleAudit(request, deps, credential, url)
     if (segments.length === 4 && segments[2] === 'chain') {
       return await handleChain(
         request,
         deps,
-        role,
+        credential,
         decodeURIComponent(segments[3] ?? ''),
       )
     }
@@ -964,14 +1301,14 @@ async function dispatchApi(
 
   if (head === 'agents') {
     if (segments.length === 2) {
-      return await handleAgentsCollection(request, deps, role)
+      return await handleAgentsCollection(request, deps, credential)
     }
     const address = decodeURIComponent(segments[2] ?? '')
     if (segments.length === 3) {
-      return await handleAgentItem(request, deps, role, address)
+      return await handleAgentItem(request, deps, credential, address)
     }
     if (segments.length === 4 && segments[3] === 'heartbeat') {
-      return await handleHeartbeat(request, deps, role, address)
+      return await handleHeartbeat(request, deps, credential, address)
     }
     return notFound(`unknown path: ${url.pathname}`)
   }
@@ -996,7 +1333,7 @@ async function chainFragment(
 async function dispatchFragment(
   request: Request,
   deps: ConsoleDeps,
-  role: ConsoleRole,
+  credential: ConsoleCredential,
   url: URL,
   segments: readonly string[],
   now: number,
@@ -1007,7 +1344,7 @@ async function dispatchFragment(
   // The two chat fragments take the admin path in full — see the module note
   // on why the chat face has no read-only tier.
   if (name === 'chat') {
-    const deniedAdmin = guard(role, 'admin')
+    const deniedAdmin = guard(credential, 'admin', 'guarded')
     if (deniedAdmin !== null) return deniedAdmin
     const chat = deps.chat
     if (chat === undefined) return chatUnsupported()
@@ -1030,7 +1367,7 @@ async function dispatchFragment(
   ) {
     return notFound(`unknown path: ${url.pathname}`)
   }
-  const denied = guard(role, 'view')
+  const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   if (isChain) {
@@ -1049,6 +1386,8 @@ async function route(
   request: Request,
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
+  throttle: LoginThrottle,
+  clientKey: string,
   now: () => number,
 ): Promise<Response> {
   const url = new URL(request.url)
@@ -1066,51 +1405,121 @@ async function route(
       : asset(CONSOLE_CLIENT_JS, 'text/javascript; charset=utf-8')
   }
 
-  const role = roleOf(request, tokens)
+  const credential = credentialOf(request, tokens)
+
+  // The door, and the way back out of it. Both public: a login page that needs
+  // a credential is a login page nobody can reach, and a logout that needs one
+  // strands whoever's token was rotated while their tab was open.
+  if (segments[0] === 'login' && segments.length === 1) {
+    return await handleLogin(
+      request,
+      deps,
+      tokens,
+      credential,
+      throttle,
+      url,
+      clientKey,
+      now(),
+    )
+  }
+
+  if (segments[0] === 'logout' && segments.length === 1) {
+    return handleLogout(request)
+  }
 
   if (segments.length === 0) {
-    const denied = guard(role, 'view')
-    if (denied !== null) return denied
+    const denied = guard(credential, 'view', 'document')
+    if (denied !== null) return documentDenial(request, denied, deps, url)
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleIndex(deps, role, url, now())
+    return await handleIndex(deps, credential, url, now())
   }
 
   if (segments[0] === 'chat' && segments.length === 1) {
-    const denied = guard(role, 'admin')
-    if (denied !== null) return denied
+    const denied = guard(credential, 'admin', 'document')
+    if (denied !== null) return documentDenial(request, denied, deps, url)
     const chat = deps.chat
     // 404 rather than 501: this is a page, and on this instance there is no
     // such page. A script asking `/v0/chat/*` gets the 501 instead.
     if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleChatPage(deps, chat, url, now())
+    return await handleChatPage(deps, chat, credential, url, now())
   }
 
   if (segments[0] === 'v0') {
-    return await dispatchApi(request, deps, role, url, segments)
+    return await dispatchApi(request, deps, credential, url, segments)
   }
 
   if (segments[0] === 'fragments' && segments.length >= 2) {
-    return await dispatchFragment(request, deps, role, url, segments, now())
+    return await dispatchFragment(
+      request,
+      deps,
+      credential,
+      url,
+      segments,
+      now(),
+    )
   }
 
   return notFound(`unknown path: ${url.pathname}`)
 }
 
 /**
+ * Just enough of `Bun.Server` to key the login throttle.
+ *
+ * Declared here rather than imported so this package keeps compiling — and
+ * testing — without a Bun type in the signature: `Bun.serve` hands its `fetch`
+ * a server that satisfies this structurally, and a test hands it nothing.
+ */
+export interface ClientAddressSource {
+  requestIP(request: Request): { readonly address: string } | null
+}
+
+/**
+ * Who the login throttle counts against.
+ *
+ * The peer address of the socket, and deliberately **not** `X-Forwarded-For`:
+ * on a directly-reached console that header is written by the caller, so
+ * trusting it would hand every attacker a fresh bucket per attempt. Behind a
+ * reverse proxy every caller therefore shares one key — see `throttle.ts` on
+ * why that is accepted. An address this layer cannot see falls back to a single
+ * shared bucket rather than to no throttling at all.
+ */
+function clientKeyOf(request: Request, source?: ClientAddressSource): string {
+  const address = source?.requestIP(request)?.address ?? ''
+  return address === '' ? 'unknown' : address
+}
+
+/**
  * Build the console's request handler.
  *
  * Exposed separately from {@link startConsoleServer} so every route can be
- * driven with a plain `Request` — no port, no teardown, no timing.
+ * driven with a plain `Request` — no port, no teardown, no timing. The second
+ * parameter is what `Bun.serve` passes its `fetch`; it is optional so a test
+ * can keep calling `handle(request)` with one argument.
+ *
+ * The login throttle is created here, once per console instance rather than
+ * once per module: two consoles in one process (which is what the test suite
+ * is) must not be able to lock each other out.
  */
 export function createConsoleHandler(
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
-): (request: Request) => Promise<Response> {
+): (request: Request, source?: ClientAddressSource) => Promise<Response> {
   const now = deps.now ?? Date.now
-  return async (request: Request): Promise<Response> => {
+  const throttle = new LoginThrottle()
+  return async (
+    request: Request,
+    source?: ClientAddressSource,
+  ): Promise<Response> => {
     try {
-      return await route(request, deps, tokens, now)
+      return await route(
+        request,
+        deps,
+        tokens,
+        throttle,
+        clientKeyOf(request, source),
+        now,
+      )
     } catch (error) {
       // Only reachable when a port breaks its contract and throws. The message
       // is included because the ports are ours and a silent 500 on a

@@ -895,6 +895,7 @@ describe('renderPage', () => {
     return renderPage({
       label: 'node-a 本机',
       now: NOW,
+      role: 'admin',
       roster: renderRoster([agent()], null, NOW, TTL),
       audit: renderAudit(page(), null, NO_FILTER),
       limits: renderLimits(LIMITS),
@@ -1270,6 +1271,7 @@ describe('copy discipline', () => {
   const rendered = renderPage({
     label: 'node-a',
     now: NOW,
+    role: 'admin',
     roster: renderRoster([agent()], null, NOW, TTL),
     audit: renderAudit(
       page({ intact: false, issueCount: 2, total: 9 }),
@@ -1374,6 +1376,7 @@ describe('copy discipline', () => {
     const disabled = renderPage({
       label: 'node-a',
       now: NOW,
+      role: 'admin',
       roster: renderRoster([], null, NOW, TTL),
       audit: renderAudit(page(), null, NO_FILTER),
       limits: renderLimits(LIMITS),

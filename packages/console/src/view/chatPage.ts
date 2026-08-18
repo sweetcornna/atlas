@@ -27,14 +27,18 @@
 
 import { CONSOLE_CHAT_JS } from '../assets/chatClient.js'
 import { CONSOLE_CSS } from '../assets/css.js'
+import { identityControl } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatDateTime } from './format.js'
 import { MAX_CHAT_TEXT_LENGTH } from './chat.js'
-import { CSP } from './page.js'
+import { BRAND, CSP } from './page.js'
+import type { ConsoleRole } from '../auth.js'
 
 export interface ChatPageModel {
   readonly label: string
   readonly now: number
+  /** Which credential this render is for. Always `admin` in practice (§4.5). */
+  readonly role: ConsoleRole
   /** Output of `renderChatSessions`. */
   readonly sessions: string
   /** Output of `renderChatThread`. */
@@ -42,8 +46,6 @@ export interface ChatPageModel {
   /** False when no session is open, which disables the composer. */
   readonly composerEnabled: boolean
 }
-
-const BRAND = '阡陌 console'
 
 /** The one disabled-state sentence this page is allowed. */
 const COMPOSER_DISABLED_REASON = '先选一条会话，再发消息'
@@ -123,15 +125,18 @@ export function renderChatPage(model: ChatPageModel): string {
     `<div class="sidebar-header"><a class="wordmark" href="/">阡陌</a></div>` +
     `<div class="chat-rail-mount">${model.sessions}</div>` +
     `<div class="sidebar-footer">` +
-    // The client rewrites this href to carry the token: a top-level navigation
-    // cannot send an `Authorization` header, and the credential lives in
-    // localStorage rather than in a cookie (`auth.ts`). Same trick, and the same
-    // accepted exposure, as the `?token=` URL the CLI banner prints.
+    // The client rewrites this href to carry the token when it has one in
+    // `localStorage`: a top-level navigation cannot send an `Authorization`
+    // header. Same trick, and the same accepted exposure, as the `?token=` URL
+    // the CLI banner prints. A cookie session needs none of it — the browser
+    // attaches the cookie to the navigation by itself, which is exactly why
+    // documents accept a cookie alone (`auth.ts`).
     `<a class="nav-item nav-route" id="to-console" href="/">控制台</a>` +
     `<span class="sidebar-inst">${escapeHtml(model.label)}</span>` +
     `<time class="sidebar-clock" id="clock" datetime="${attr(iso)}">` +
     `${escapeHtml(formatDateTime(model.now))}</time>` +
     `<span class="group"><span id="stream-state"></span></span>` +
+    identityControl(model.role) +
     tokenControl() +
     `</div></aside>`
 

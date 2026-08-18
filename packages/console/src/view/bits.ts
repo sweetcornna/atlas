@@ -27,6 +27,7 @@
  */
 
 import { attr, escapeHtml } from './escape.js'
+import type { ConsoleRole } from '../auth.js'
 import type { ConsoleFailure } from '../deps.js'
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'muted'
@@ -160,4 +161,37 @@ export function rail(
 /** The `·` between two numbers on a rail line. Quiet enough to be a comma. */
 export function railSep(): string {
   return '<span class="sep">·</span>'
+}
+
+/**
+ * Which of the two credentials this page is being read with, and the way out.
+ *
+ * Both halves earn their pixels. The admin token is a strict superset of the
+ * view token (`auth.ts`), so an operator holding one has no way to tell from
+ * the page which one it is — until something is missing and the page looks
+ * broken rather than restricted. And a console whose credential lives in a
+ * cookie needs a door out of it: before the login page existed, "use a
+ * different token" meant editing a URL; with an `HttpOnly` cookie it would
+ * otherwise mean opening the browser's cookie settings.
+ *
+ * The logout control is a native form rather than a button the script wires up,
+ * so it keeps working on the same terms as the login page it leads back to.
+ * `none` renders nothing: a page reached without a credential is not a page
+ * this function is ever asked about.
+ */
+const ROLE_TEXT: Readonly<Record<ConsoleRole, string>> = {
+  admin: '管理',
+  view: '只读',
+  none: '',
+}
+
+export function identityControl(role: ConsoleRole): string {
+  if (role === 'none') return ''
+  return (
+    `<div class="group identity">` +
+    `<span class="chip" id="role">${escapeHtml(ROLE_TEXT[role])}</span>` +
+    `<form id="logout-form" method="post" action="/logout">` +
+    `<button type="submit" class="btn">退出</button></form>` +
+    `</div>`
+  )
 }
