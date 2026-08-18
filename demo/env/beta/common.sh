@@ -39,6 +39,17 @@
 # ④ **地址表落 $QIANMO_BETA_ROOT/peers.conf，不进仓库。**beta-env.md 文首那条「本文不写机器名 /
 #    IP / SSH 别名 / 域名 / 任何一把真实密钥」对脚本同样成立：注册中心要 `--register
 #    <地址>=<端点>`，而端点里有 IP。表放在根目录下（0600），仓库里只有一份带占位符的模板。
+#
+# ── 链路：直连是默认，SSH 隧道是兜底 ─────────────────────────────────────────
+# 节点入站端口对 H 开放时，peers.conf 里的端点就是节点机的真实地址，什么都不用搭。
+# 现场不是这样：三台节点的入站端口被云厂商安全组挡着（实测 22/80/443 通，入站端口与
+# 另外十个候选端口全不通）。于是 peers.conf 允许给某个节点加一条 **node 坐标行**，
+# beta-up.sh 看到它就建一条 `ssh -L` 到该节点回环的 systemd --user 隧道，并把该节点的
+# 审计链按 5 min 单向只读拉成镜像。**有坐标行才走隧道，没有就保持直连**——隧道是
+# 「没有直连时的兜底」，不是默认形态（node-provisioning.md §0 第 12 条的控制面 / 数据面分工）。
+#
+# 单元文件、定时器与拉取脚本一律**从仓库 demo/env/beta/ops/ 派生**，装好的那几份是
+# 生成物：手改会在下一次 beta-up.sh 时被覆盖。真源在仓库，不在 H 上。
 
 # shellcheck shell=bash
 # shellcheck disable=SC2034
@@ -82,12 +93,19 @@ BETA_TEAM="${QIANMO_BETA_TEAM:-atlas}"
 
 # 控制台的两个单目标面。两者都钉死单值（`--audit` 见 §4.3、`--wake-url` 见 §8.2），
 # 一期都指向同一个节点；把这条限制抬掉是落地包②，不是本包。
-BETA_AUDIT_NODE="${QIANMO_BETA_AUDIT_NODE:-beta-1}"
-BETA_WAKE_NODE="${QIANMO_BETA_WAKE_NODE:-$BETA_AUDIT_NODE}"
-
+#
+# ── 这四个值现在**不在这里定默认**，理由是一次真实事故 ──────────────────────
+# 它们此前只走环境变量：控制台一重起（改 label、跟随升级、机器重启）就静默丢失，
+# `--audit` 退回到「审计节点在 H 上的权威路径」——而节点跑在另一台机器上，H 上根本
+# 没有那个文件，于是**页面变成空审计视图而不报错**，页头标签也丢了「镜像」标注。
+# 现在它们持久化在 <内测根>/console.conf（0600），beta_resolve_console_conf 每次从那里
+# 读；环境变量仍然优先，且**会被回写**，所以「临时设一次」自动变成「以后都记得」。
+# 这里只捕获环境变量的原值，空 = 没给，默认由 beta_resolve_console_conf 派生。
+BETA_AUDIT_NODE="${QIANMO_BETA_AUDIT_NODE:-}"
+BETA_WAKE_NODE="${QIANMO_BETA_WAKE_NODE:-}"
 # 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）；
 # 平时就写「审计视图是哪一条链」——不写等于让人以为那是全网的链（§4.3 最后一句）。
-BETA_LABEL="${QIANMO_BETA_LABEL:-阡陌内测 · 审计视图：$BETA_AUDIT_NODE}"
+BETA_LABEL="${QIANMO_BETA_LABEL:-}"
 
 # 备份快照间隔：内测期从默认 15 min 调到 60 min（§5 的定案，算过账的：15 min 间隔
 # 是 3.8 GB/天，H 上既放不下也没人看）。代价是一次删库最多丢 60 min 的工作。
@@ -105,8 +123,26 @@ BETA_PEER_SECRET_DIR="$BETA_SECRET_DIR/peers"
 BETA_WORKSPACE_DIR="$BETA_ROOT/workspaces"
 BETA_NODES_DIR="$BETA_ROOT/nodes"
 BETA_MIRROR_DIR="$BETA_ROOT/mirror"
+# 链路的生成物：每节点一份 0600 的连通定义 + 三个从仓库派生的 systemd 单元 + 拉取脚本。
+BETA_OPS_DIR="$BETA_ROOT/ops"
 BETA_MARKER="$BETA_ROOT/.qianmo-beta-env"
 BETA_MARKER_MAGIC='qianmo-beta-env/v1'
+
+# 控制台的持久化选项（审计节点 / 审计路径 / 页头标签 / 唤醒目标）。见上面那段事故说明。
+BETA_CONSOLE_CONF="$BETA_ROOT/console.conf"
+
+# ── 链路参数 ─────────────────────────────────────────────────────────────────
+# 仓库里那份模板在哪。**真源是它，不是 H 上装好的那几份。**
+BETA_OPS_SRC_DIR="$QIANMO_BETA_ENV_DIR/ops"
+# systemd --user 的单元目录。用 XDG 变量而不是写死 ~/.config：那个变量本来就是它的定义。
+BETA_SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+# 隧道与镜像共用的那把 key。**私钥永不离开 H**，这里只存路径，不存内容。
+# 它在各节点的 authorized_keys 里带强制命令（restrict + permitopen + command="cat -- <链>"），
+# 所以它既拨不了别的端口，也读不了别的文件——镜像因此只能走 `ssh cat`（见 ops/mirror-pull.sh）。
+BETA_SSH_KEY="${QIANMO_BETA_SSH_KEY:-$HOME/.ssh/id_ed25519_qianmo}"
+# 审计镜像的拉取间隔（分钟）。它同时决定页头标签里那句「滞后 ≤ N min」，
+# 所以两处都从这一个变量派生，不各写一份。
+BETA_MIRROR_INTERVAL_MIN="${QIANMO_BETA_MIRROR_INTERVAL_MIN:-5}"
 
 # 地址表（见文件头第④条）。0600，不进仓库。
 BETA_PEERS_FILE="${QIANMO_BETA_PEERS_FILE:-$BETA_ROOT/peers.conf}"
@@ -138,11 +174,11 @@ BETA_CONFIG_CONSOLE="$BETA_NODES_DIR/console/config"
 beta_node_trail()   { printf '%s/%s/config/qianmo/audit/trail.ndjson' "$BETA_NODES_DIR" "$1"; }
 beta_mirror_trail() { printf '%s/%s/trail.ndjson' "$BETA_MIRROR_DIR" "$1"; }
 
-# 控制台 `--audit` 指哪。默认指审计节点的**权威**路径（H 上有该节点配置根时成立，
-# 例如 beta-1 的沙箱配置根挂到了 H 的文件系统里）；指镜像就把这个变量设成
-# `$(beta_mirror_trail <node>)`。控制台只读本机文件、且 --audit 是单值（§4.3 的现状
-# 限制），把它抬掉是落地包②。
-BETA_AUDIT_PATH="${QIANMO_BETA_AUDIT_PATH:-$BETA_NODES_DIR/$BETA_AUDIT_NODE/config/qianmo/audit/trail.ndjson}"
+# 控制台 `--audit` 指哪。**默认值不在这里定**（见上面 BETA_AUDIT_NODE 那段）：
+# 它由 beta_resolve_console_conf 按「这个节点的链是不是镜像来的」派生，并落进
+# console.conf。指死某个路径仍然可以，设 QIANMO_BETA_AUDIT_PATH 即可，且会被回写。
+# 控制台只读本机文件、且 --audit 是单值（§4.3 的现状限制），把它抬掉是落地包②。
+BETA_AUDIT_PATH="${QIANMO_BETA_AUDIT_PATH:-}"
 
 # occ 的构建产物。与演示环境同一条：`bun run build` 产出，`demo/env/bootstrap.sh` 造。
 BETA_OCC="$REPO_DIR/dist/cli-node.js"
@@ -260,6 +296,9 @@ beta_seed_root() {
     "$BETA_WORKSPACE_DIR" "$BETA_NODES_DIR" "$BETA_MIRROR_DIR"
   mkdir -p "$BETA_SECRET_DIR" "$BETA_PEER_SECRET_DIR"
   chmod 700 "$BETA_SECRET_DIR" "$BETA_PEER_SECRET_DIR"
+  # ops/ 里是每节点的连通定义（含 SSH 用户与机器地址），与 secrets/ 同级别对待。
+  mkdir -p "$BETA_OPS_DIR"
+  chmod 700 "$BETA_OPS_DIR"
 
   if [ ! -f "$BETA_MARKER" ]; then
     {
@@ -280,23 +319,51 @@ beta_seed_root() {
   return 0
 }
 
-# 地址表模板。**只有占位符**——真实机器名 / IP / 域名按 beta-env.md 文首的纪律
-# 只存运维单页，不进仓库，也不由脚本猜。
+# 地址表模板。**只有占位符**——真实机器名 / IP / 域名 / SSH 用户按 beta-env.md 文首的
+# 纪律只存运维单页，不进仓库，也不由脚本猜。
 beta_write_peers_template() {
   {
-    printf '# 阡陌内测地址表 —— 注册中心的 --register 与冒烟的 --expect 都读它。\n'
+    printf '# 阡陌内测地址表 —— 注册中心的 --register、冒烟的 --expect、以及隧道与\n'
+    printf '# 审计镜像的连通定义，全部读它。\n'
     printf '#\n'
-    printf '# 一行一条：<地址> <入站端点>，用空白分隔；# 开头是整行注释。\n'
-    printf '# 地址形如 qianmo://<node>/<agent>，端点形如 ws://<节点机地址>:%s。\n' "$BETA_NODE_PORT"
+    printf '# 两种行，都用空白分隔字段；# 开头是整行注释。\n'
+    printf '#\n'
+    printf '# ① 地址行（老格式，一直没变）：<地址> <入站端点>\n'
+    printf '#      地址形如 qianmo://<node>/<agent>，端点形如 ws://<节点机地址>:%s。\n' "$BETA_NODE_PORT"
+    printf '#\n'
+    printf '# ② node 坐标行（**可选**）：node <节点名> <键>=<值>...\n'
+    printf '#      给了它，H 就为该节点建一条 systemd --user 的 SSH 隧道（本地回环 →\n'
+    printf '#      节点回环的入站端口），并按 %s min 单向只读拉一次它的审计链镜像。\n' "$BETA_MIRROR_INTERVAL_MIN"
+    printf '#      **不给就保持直连**——隧道是「直连不通时的兜底」，不是默认形态。\n'
+    printf '#\n'
+    printf '#      键：user=      SSH 用户（必填）\n'
+    printf '#          host=      节点机地址（必填）\n'
+    printf '#          port=      SSH 端口（默认 22）\n'
+    printf '#          local-port=H 这一侧的回环口（必填，四个节点必须各不相同）\n'
+    printf '#          remote-port=节点侧的入站端口（默认 %s）\n' "$BETA_NODE_PORT"
+    printf '#          trail=     节点上审计链的绝对路径；给了才做镜像\n'
+    printf '#          key=       这条链路用的私钥（默认 QIANMO_BETA_SSH_KEY）\n'
+    printf '#      值里不能有空白（本行按空白分词）。\n'
+    printf '#\n'
+    printf '#      有坐标行的节点，它的每一条地址行端点**必须**正好是\n'
+    printf '#      ws://127.0.0.1:<local-port> —— 脚本会带行号拦下不一致。那个不一致\n'
+    printf '#      正是「名册上在线、拨不通」（§9.1）最常见的来源：链路搭在一个口上，\n'
+    printf '#      应用拨的是另一个口。\n'
     printf '#\n'
     printf '# 为什么长期地址必须写在这里、而不是在控制台页面上点「注册」：\n'
     printf '# 租约 TTL 90 s，InMemoryRegistry 在 restore 时按当前时钟重判租约、过期即丢，\n'
     printf '# 所以注册中心停机超过 90 s，落盘的 agents.json 就等于空文件——重启后回来的\n'
     printf '# 只有 --register 里那批（beta-env.md §2.4 的硬规矩）。\n'
     printf '#\n'
-    printf '# 机器名 / IP / 域名不进仓库（beta-env.md 文首）：本文件 0600，只在 H 上。\n'
+    printf '# 机器名 / IP / 域名 / SSH 用户不进仓库（beta-env.md 文首）：本文件 0600，只在 H 上。\n'
     printf '#\n'
+    printf '# ── 直连的写法 ──────────────────────────────────────────────────────\n'
     printf '# qianmo://<node>/<agent>  ws://<node-host>:%s\n' "$BETA_NODE_PORT"
+    printf '#\n'
+    printf '# ── 走隧道的写法 ────────────────────────────────────────────────────\n'
+    printf '# （一条坐标行必须写在一行里，**不支持反斜杠续行**）\n'
+    printf '# node <node> user=<ssh-user> host=<node-host> port=22 local-port=<H 侧回环口> remote-port=%s trail=<节点上审计链的绝对路径>\n' "$BETA_NODE_PORT"
+    printf '# qianmo://<node>/<agent>  ws://127.0.0.1:<H 侧回环口>\n'
   } >"$BETA_PEERS_FILE"
   chmod 600 "$BETA_PEERS_FILE"
 }
@@ -309,12 +376,144 @@ BETA_PEER_COUNT=0
 BETA_PEER_ADDR=()
 BETA_PEER_EP=()
 BETA_PEER_NODE=()
+BETA_PEER_LINE=()
+
+# 第二组平行数组：node 坐标行（链路那一半）。没有坐标行的节点在这里没有条目，
+# 于是「有没有隧道」这个问题在全套脚本里只有一个判据：beta_ssh_index 找不找得到。
+BETA_SSH_COUNT=0
+BETA_SSH_NODE=()
+BETA_SSH_USER=()
+BETA_SSH_HOST=()
+BETA_SSH_PORT=()
+BETA_SSH_LOCAL=()
+BETA_SSH_REMOTE=()
+BETA_SSH_TRAIL=()
+BETA_SSH_KEYFILE=()
+# 所有隧道在 H 侧的回环口，前后各一个空格，用字符串包含判断（bash 3.2 没有关联数组）。
+# beta_tcp_open 拿它当黑名单——见那个函数的头注。
+BETA_TUNNEL_PORTS=' '
+
+# 节点名会变成 systemd 实例名（qianmo-tunnel@<name>.service）与文件名
+# （ops/tunnel-<name>.env）。这两个都是**会被当成命令的一部分**的位置，所以字符集在
+# 解析时就卡死，而不是等到 systemctl 报一个看不懂的错。
+beta_assert_node_name() {
+  local name="$1" where="$2"
+  [ -n "$name" ] || beta_die "$where：节点名为空"
+  case "$name" in
+    *[!A-Za-z0-9._-]*) beta_die "$where：节点名 $name 含 A-Za-z0-9._- 之外的字符，拒绝" ;;
+    -*|.*) beta_die "$where：节点名 $name 不能以 - 或 . 开头" ;;
+  esac
+  return 0
+}
+
+beta_assert_port() {
+  local value="$1" what="$2" where="$3"
+  case "$value" in
+    ''|*[!0-9]*) beta_die "$where：$what 不是数字：$value" ;;
+  esac
+  if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+    beta_die "$where：$what 超出 1–65535：$value"
+  fi
+  return 0
+}
+
+# beta_ssh_index <node> —— 打印该节点在 SSH 坐标数组里的下标；没有坐标行就返回 1。
+beta_ssh_index() {
+  local want="$1" i=0
+  while [ "$i" -lt "$BETA_SSH_COUNT" ]; do
+    if [ "${BETA_SSH_NODE[$i]}" = "$want" ]; then
+      printf '%s\n' "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# 解析一条 `node <名字> <键>=<值>...`。
+beta_parse_node_line() {
+  local lineno="$1" name="$2" rest="$3"
+  local where="$BETA_PEERS_FILE 第 $lineno 行"
+  beta_assert_node_name "$name" "$where"
+  if beta_ssh_index "$name" >/dev/null; then
+    # 两条同名坐标 = 隧道按后一条搭、镜像按前一条拉（或反过来，取决于谁先被用到）。
+    # 那种拓扑的症状是「链路是通的，但镜像永远拉的是另一台机器」，没人会往这里查。
+    beta_die "$where：节点 $name 已经有一条 node 坐标行了，不允许两条"
+  fi
+  local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
+  local trail='' keyfile="$BETA_SSH_KEY" kv key value
+  # 按空白分词：所以值里不能有空格。这条限制写在模板注释里，且真实取值（用户名、
+  # 主机、端口、绝对路径）本来就不该有空格。
+  for kv in $rest; do
+    case "$kv" in
+      *=*) ;;
+      *) beta_die "$where：$kv 不是 <键>=<值>" ;;
+    esac
+    key="${kv%%=*}"
+    value="${kv#*=}"
+    case "$key" in
+      user) user="$value" ;;
+      host) host="$value" ;;
+      port) port="$value" ;;
+      local-port) local_port="$value" ;;
+      remote-port) remote_port="$value" ;;
+      trail) trail="$value" ;;
+      key) keyfile="$value" ;;
+      *) beta_die "$where：未知键 $key（只认 user/host/port/local-port/remote-port/trail/key）" ;;
+    esac
+  done
+  [ -n "$user" ] || beta_die "$where：缺 user="
+  [ -n "$host" ] || beta_die "$where：缺 host="
+  [ -n "$local_port" ] || beta_die "$where：缺 local-port=（H 这一侧的回环口）"
+  # user 与 host 会被拼成 `user@host` 交给 ssh。把 @ 挡在这里，是为了让「user=a@b」
+  # 这种写法当场报错，而不是变成一个连得上、但连的是别人的机器的隧道。
+  case "$user" in *@*|*/*) beta_die "$where：user 里不能有 @ 或 /：$user" ;; esac
+  case "$host" in *@*|*/*) beta_die "$where：host 里不能有 @ 或 /：$host" ;; esac
+  beta_assert_port "$port" 'port' "$where"
+  beta_assert_port "$local_port" 'local-port' "$where"
+  beta_assert_port "$remote_port" 'remote-port' "$where"
+  case "$BETA_TUNNEL_PORTS" in
+    *" $local_port "*) beta_die "$where：local-port=$local_port 已经被另一个节点占了" ;;
+  esac
+  if [ -n "$trail" ]; then
+    case "$trail" in
+      /*) ;;
+      *) beta_die "$where：trail 必须是节点上的绝对路径：$trail" ;;
+    esac
+    case "$trail" in *..*) beta_die "$where：trail 里有 ..，拒绝：$trail" ;; esac
+  fi
+  case "$keyfile" in
+    /*) ;;
+    *) beta_die "$where：key 必须是 H 上的绝对路径：$keyfile" ;;
+  esac
+  BETA_SSH_NODE[BETA_SSH_COUNT]="$name"
+  BETA_SSH_USER[BETA_SSH_COUNT]="$user"
+  BETA_SSH_HOST[BETA_SSH_COUNT]="$host"
+  BETA_SSH_PORT[BETA_SSH_COUNT]="$port"
+  BETA_SSH_LOCAL[BETA_SSH_COUNT]="$local_port"
+  BETA_SSH_REMOTE[BETA_SSH_COUNT]="$remote_port"
+  BETA_SSH_TRAIL[BETA_SSH_COUNT]="$trail"
+  BETA_SSH_KEYFILE[BETA_SSH_COUNT]="$keyfile"
+  BETA_SSH_COUNT=$((BETA_SSH_COUNT + 1))
+  BETA_TUNNEL_PORTS="$BETA_TUNNEL_PORTS$local_port "
+}
 
 beta_load_peers() {
   BETA_PEER_COUNT=0
   BETA_PEER_ADDR=()
   BETA_PEER_EP=()
   BETA_PEER_NODE=()
+  BETA_PEER_LINE=()
+  BETA_SSH_COUNT=0
+  BETA_SSH_NODE=()
+  BETA_SSH_USER=()
+  BETA_SSH_HOST=()
+  BETA_SSH_PORT=()
+  BETA_SSH_LOCAL=()
+  BETA_SSH_REMOTE=()
+  BETA_SSH_TRAIL=()
+  BETA_SSH_KEYFILE=()
+  BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
   # 变量名避开 `tail`：bash 的 local 是动态作用域，一个叫 tail 的变量读起来像是在
   # 覆盖那个命令（实际不会），而这个文件里真的有地方在用 tail 命令。
@@ -323,9 +522,15 @@ beta_load_peers() {
   while read -r addr ep rest || [ -n "$addr" ]; do
     lineno=$((lineno + 1))
     case "$addr" in '' | \#*) continue ;; esac
+    # 新的第二种行。放在地址判定**之前**：老格式的第一字段必然以 qianmo:// 开头，
+    # 所以 `node` 这个关键字不会和任何一条合法的老行撞上——向后兼容就落在这一点上。
+    if [ "$addr" = 'node' ]; then
+      beta_parse_node_line "$lineno" "$ep" "$rest"
+      continue
+    fi
     case "$addr" in
       qianmo://*/*) ;;
-      *) beta_die "$BETA_PEERS_FILE 第 $lineno 行不是 qianmo://<node>/<agent>：$addr" ;;
+      *) beta_die "$BETA_PEERS_FILE 第 $lineno 行既不是 qianmo://<node>/<agent> 地址行，也不是 node 坐标行：$addr" ;;
     esac
     [ -n "$ep" ] || beta_die "$BETA_PEERS_FILE 第 $lineno 行缺入站端点：$addr"
     case "$ep" in
@@ -335,11 +540,37 @@ beta_load_peers() {
     suffix="${addr#qianmo://}"
     node="${suffix%%/*}"
     [ -n "$node" ] || beta_die "$BETA_PEERS_FILE 第 $lineno 行解析不出节点名：$addr"
+    beta_assert_node_name "$node" "$BETA_PEERS_FILE 第 $lineno 行"
     BETA_PEER_ADDR[BETA_PEER_COUNT]="$addr"
     BETA_PEER_EP[BETA_PEER_COUNT]="$ep"
     BETA_PEER_NODE[BETA_PEER_COUNT]="$node"
+    BETA_PEER_LINE[BETA_PEER_COUNT]="$lineno"
     BETA_PEER_COUNT=$((BETA_PEER_COUNT + 1))
   done <"$BETA_PEERS_FILE"
+  beta_assert_peers_match_tunnels
+  return 0
+}
+
+# 走隧道的节点，它的地址行端点必须正好是 ws://127.0.0.1:<local-port>。
+#
+# 这一条是全表读完之后再查的，不是边读边查——坐标行允许写在地址行后面。
+#
+# 为什么值得当场 die：链路搭在 38631 而应用拨 38625，两边各自都「正常」，症状是
+# 名册上四个节点全在线、拨号全超时（beta-env.md §9.1）。这类不一致以前只能靠人记得
+# 「改一处必须改另一处」，现在由这里代劳。
+beta_assert_peers_match_tunnels() {
+  local i=0 index want
+  while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
+    if index="$(beta_ssh_index "${BETA_PEER_NODE[$i]}")"; then
+      want="ws://127.0.0.1:${BETA_SSH_LOCAL[$index]}"
+      if [ "${BETA_PEER_EP[$i]}" != "$want" ]; then
+        beta_die "$BETA_PEERS_FILE 第 ${BETA_PEER_LINE[$i]} 行：${BETA_PEER_ADDR[$i]} 的端点是 ${BETA_PEER_EP[$i]}，
+但节点 ${BETA_PEER_NODE[$i]} 有一条 node 坐标行（local-port=${BETA_SSH_LOCAL[$index]}），端点必须是 $want。
+两边不一致的后果是「名册上在线、拨号全超时」—— 链路搭在一个口上，应用拨的是另一个口。"
+      fi
+    fi
+    i=$((i + 1))
+  done
   return 0
 }
 
@@ -514,13 +745,66 @@ beta_http_status() {
 
 # beta_tcp_open <host> <port> —— 端口收不收 TCP 连接。
 #
-# 只用于**本机回环**的就绪判断：/dev/tcp 没有超时，对远端可能挂住。
+# 只用于**本机回环、且本机真的在 listen** 的就绪判断：/dev/tcp 没有超时，对远端可能挂住。
 # 它只证明「在监听」，**证不了 PSK 对不对**——那要真握手，而握手只有从 H 拨过来
 # 才算数（beta-smoke.sh 的 host 腿做的正是那件事）。
+#
+# ── 它在隧道口上**恒为真**，所以那里被硬拦下 ────────────────────────────────
+# `ssh -L 127.0.0.1:<local>:127.0.0.1:<remote>` 的本地口是 **ssh 客户端自己**在 LISTEN。
+# 节点侧那个端口没人监听（或被 permitopen 挡住）时，ssh 照样 accept，然后立刻把这条
+# 连接关掉。于是「连得上」这件事只证明 ssh 进程活着，与节点死活完全无关。
+# 实测（H 上，一条指向节点某个无人监听端口的隧道）：
+#     旧判据 beta_tcp_open → TCP_OPEN=YES（假绿）
+#     新判据 beta_endpoint_live → 读到 EOF，红
+# 所以这里对隧道口直接 die：把一条恒真的判据留在那儿，比没有判据更糟。
 beta_tcp_open() {
   local host="$1" port="$2"
+  case "$BETA_TUNNEL_PORTS" in
+    *" $port "*)
+      beta_die "beta_tcp_open 被用在隧道口 ${host}:${port} 上 —— 那是一条**恒为真**的判据（见本函数头注）。
+隧道口的就绪只有 beta_endpoint_live 说了算：它真读一次对端的应答字节。"
+      ;;
+  esac
   (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null || return 1
   return 0
+}
+
+# beta_endpoint_live <host> <port> [超时秒] —— 对端**真的回了字节**吗。
+#
+# 判据是「收到一行以 HTTP/ 开头的应答」。节点入站是一个 WebSocket 服务，对一条普通
+# GET 会回 `HTTP/1.1 426 Upgrade Required`——那一行必须由节点进程产生，中间任何一段
+# 只转发不应答的链路都伪造不出来。它同时替 TCP 探测答了那个真正的问题：
+# **对面那个进程还在不在**。
+#
+# 三种结果都判红，且都是对的：连不上（ECONNREFUSED）、连上后立刻 EOF（隧道通、节点
+# 那一侧没人监听 = 上面说的假绿形状）、超时没有任何字节（对端挂死）。
+#
+# 它仍然**证不了 PSK 对不对**——那要一次真握手（beta-smoke.sh 的 p81-probe）。
+# 这里只回答就绪，不回答鉴权。
+#
+# 放在子 shell 里跑：fd 3 不会漏回调用方，`read -t` 超时也不会踩到 set -e。
+beta_endpoint_live() {
+  local host="$1" port="$2" wait_s="${3:-5}"
+  (
+    exec 3<>"/dev/tcp/$host/$port" || exit 1
+    printf 'GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$host" >&3 || exit 1
+    line=''
+    IFS= read -r -t "$wait_s" line <&3 || true
+    case "$line" in
+      HTTP/*) exit 0 ;;
+    esac
+    exit 1
+  ) 2>/dev/null
+}
+
+# beta_http_body <url> —— 打印响应体；拿不到就打空串。curl 缺席时走 bun（同 beta_http_status）。
+beta_http_body() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -s --max-time 5 "$url" 2>/dev/null || true
+  else
+    bun -e 'const r = await fetch(process.argv[1], { signal: AbortSignal.timeout(5000) }); process.stdout.write(await r.text())' "$url" 2>/dev/null || true
+  fi
 }
 
 # ── occ 产物 ────────────────────────────────────────────────────────────────
@@ -528,4 +812,295 @@ beta_tcp_open() {
 # 没有构建产物就明确报错，不去猜。造它的是 demo/env/bootstrap.sh（内测沿用同一条）。
 beta_require_occ() {
   [ -f "$BETA_OCC" ] || beta_die "缺 $BETA_OCC —— 先跑 demo/env/bootstrap.sh"
+}
+
+# ── 链路：systemd --user 的隧道与镜像单元 ───────────────────────────────────
+#
+# 全部生成物都是**从仓库 demo/env/beta/ops/ 派生**的，装好的那几份是副本。
+# 这一节只提供 helper，真正的编排在 beta-up.sh 的 provision_links。
+
+# 本次运行改写了几个文件。> 0 才 daemon-reload —— 无脑 reload 不致命，但它会让
+# 「这次到底动没动东西」这个问题在输出里消失，而那正是幂等性唯一的量具。
+BETA_SYNC_CHANGED=0
+# 改写了单元文件、而该单元此刻正在跑的那些实例。它们的**运行中定义仍是旧的**，
+# systemd 不会因为文件变了就重启（这正是我们要的：隧道不能说断就断），
+# 但它也不会在任何地方留下痕迹，所以必须由脚本自己在末尾说出来。
+BETA_UNITS_STALE=''
+
+beta_require_systemd_user() {
+  command -v systemctl >/dev/null 2>&1 \
+    || beta_die "peers.conf 里有 node 坐标行，但这台机器上没有 systemctl —— 隧道与镜像都靠 systemd --user。
+要么去掉那些坐标行改回直连（那需要节点入站端口对 H 放行），要么换一台有 systemd 的宿主。
+**不要**让脚本静默跳过隧道：那会得到一个「名册上在线、拨号全超时」的拓扑（beta-env.md §9.1）。"
+  systemctl --user show-environment >/dev/null 2>&1 \
+    || beta_die "systemctl --user 用不了（没有用户级 D-Bus 会话）。
+常见原因是没开 linger：loginctl enable-linger <用户名> 要 root 跑一次，
+否则最后一个登录会话退出时，全部隧道会跟着一起消失。"
+  return 0
+}
+
+# beta_unit_path <绝对路径> —— 渲染成 systemd 单元里该写的形式。
+#
+# 家目录下的路径渲染成 %h/…：那是 systemd 自己的写法，而且让同一份单元在任何账号下
+# 都成立。家目录之外原样输出（QIANMO_BETA_ROOT 被挪到别处时）。
+beta_unit_path() {
+  local abs="$1"
+  case "$abs" in
+    "$HOME"/*) printf '%%h/%s' "${abs#"$HOME"/}" ;;
+    *) printf '%s' "$abs" ;;
+  esac
+}
+
+# beta_write_if_changed <内容文件> <目标> <权限> <说明>
+#
+# **只在内容真的不同时才写**。这不是省一次 write：`systemctl --user daemon-reload`
+# 与「这次动了什么」的输出都挂在 BETA_SYNC_CHANGED 上，而幂等性验收看的正是那行输出。
+#
+# 内容走**文件参数**而不是 stdin：`产生内容 | beta_write_if_changed …` 会把函数体扔进
+# 子 shell，于是 BETA_SYNC_CHANGED 的自增当场丢掉——脚本会报「什么都没改」然后不
+# daemon-reload。这是管道 + 计数器最经典的一个坑，别改回去。
+beta_write_if_changed() {
+  local src="$1" dst="$2" mode="$3" what="$4" tmp existed=0
+  if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+    beta_ok "$what 已是仓库派生的内容，不动"
+    return 0
+  fi
+  if [ -f "$dst" ]; then existed=1; fi
+  # 先落 tmp、改好权限再 mv：0600 的文件不能有「已经写完但还是默认权限」的那一瞬间。
+  tmp="$dst.tmp.$$"
+  cp "$src" "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dst"
+  BETA_SYNC_CHANGED=$((BETA_SYNC_CHANGED + 1))
+  if [ "$existed" = '1' ]; then
+    beta_warn "$what 与仓库那份不一致，已按仓库重写：$dst"
+  else
+    beta_ok "$what 已生成：$dst"
+  fi
+  return 0
+}
+
+# 单元文件只允许落在 systemd --user 目录里，且文件名必须是本包认识的那三个之一。
+# 这是三重守卫在「不在内测根里的那几个路径」上的对应物：guard_root 管不到
+# ~/.config/systemd/user，所以这里逐个复核。
+beta_assert_unit_file() {
+  local path="$1" base
+  case "$path" in
+    "$BETA_SYSTEMD_USER_DIR"/*) ;;
+    *) beta_die "拒绝处理 $BETA_SYSTEMD_USER_DIR 之外的单元文件：$path" ;;
+  esac
+  case "$path" in *..*) beta_die "单元文件路径里有 ..，拒绝：$path" ;; esac
+  base="${path##*/}"
+  case "$base" in
+    'qianmo-tunnel@.service'|'qianmo-mirror@.service'|'qianmo-mirror@.timer') ;;
+    *) beta_die "拒绝处理不属于本包的单元文件：$base" ;;
+  esac
+  return 0
+}
+
+# beta_unit_instance <前缀> <节点名> <后缀> —— 拼一个实例单元名，并复核节点名。
+# 实例名会原样进 systemctl 的命令行，所以拼之前再验一次字符集（解析时已经验过一遍，
+# 这里是「守卫写在动作旁边」的那一遍）。
+beta_unit_instance() {
+  local prefix="$1" node="$2" suffix="$3"
+  beta_assert_node_name "$node" '单元实例名'
+  printf '%s@%s%s' "$prefix" "$node" "$suffix"
+}
+
+# ── 控制台的持久化选项（console.conf）─────────────────────────────────────────
+#
+# 为什么要有这个文件：审计路径与页头标签此前只走环境变量。控制台一重起就静默丢失，
+# `--audit` 退回「审计节点在 H 上的权威路径」——节点跑在另一台机器上，H 上根本没有那个
+# 文件，于是**页面变成空审计视图而不报错**；页头标签也丢了「镜像」标注，看的人会以为
+# 那是实时的权威链。审计节点与唤醒目标是同一类东西，一并落进来。
+#
+# 格式：`KEY=值`，值取到行尾（标签里有空格、`·` 和中括号），# 开头是注释。
+# **用手写解析而不是 source**：source 一个配置文件等于执行它，而这个文件将来会被运维
+# 手改。
+
+# beta_conf_get <文件> <键> —— 打印值；没有该键就打空串。
+beta_conf_get() {
+  local file="$1" key="$2" line
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key="*) printf '%s' "${line#"$key"=}"; return 0 ;;
+    esac
+  done <"$file"
+  return 0
+}
+
+# 审计节点的链是镜像来的吗（= 它有 node 坐标行且给了 trail=）。
+beta_node_is_mirrored() {
+  local node="$1" index
+  index="$(beta_ssh_index "$node")" || return 1
+  [ -n "${BETA_SSH_TRAIL[$index]}" ] || return 1
+  return 0
+}
+
+# beta_resolve_console_conf —— 定下 BETA_AUDIT_NODE / BETA_AUDIT_PATH / BETA_LABEL /
+# BETA_WAKE_NODE 并回写 console.conf。**必须在 beta_load_peers 之后调**（派生要用坐标行）。
+#
+# 优先级：环境变量 > console.conf > 派生默认；胜出的那个一律回写，于是「临时设一次」
+# 自动变成「以后都记得」，这正是此前丢失的那半条。
+beta_resolve_console_conf() {
+  local from_file
+  if [ -z "$BETA_AUDIT_NODE" ]; then
+    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" AUDIT_NODE)"
+    if [ -n "$from_file" ]; then
+      BETA_AUDIT_NODE="$from_file"
+    else
+      # 地址表里的第一个节点。比一个写死的 beta-1 好：那个名字在真实拓扑里通常不存在，
+      # 于是 --audit 指向一个不存在的文件，页面空白而没有任何报错。
+      BETA_AUDIT_NODE="$(beta_peer_nodes | head -1)"
+    fi
+  fi
+  [ -n "$BETA_AUDIT_NODE" ] || beta_die '定不下审计节点：peers.conf 里一个节点都没有'
+  beta_assert_node_name "$BETA_AUDIT_NODE" '审计节点'
+
+  if [ -z "$BETA_WAKE_NODE" ]; then
+    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" WAKE_NODE)"
+    BETA_WAKE_NODE="${from_file:-$BETA_AUDIT_NODE}"
+  fi
+  beta_assert_node_name "$BETA_WAKE_NODE" '唤醒目标'
+
+  if [ -z "$BETA_AUDIT_PATH" ]; then
+    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" AUDIT_PATH)"
+    if [ -n "$from_file" ]; then
+      BETA_AUDIT_PATH="$from_file"
+    elif beta_node_is_mirrored "$BETA_AUDIT_NODE"; then
+      # 该节点跑在别的机器上、链靠镜像拉过来 —— 权威路径在 H 上不存在，指它必然空白。
+      BETA_AUDIT_PATH="$(beta_mirror_trail "$BETA_AUDIT_NODE")"
+    else
+      BETA_AUDIT_PATH="$(beta_node_trail "$BETA_AUDIT_NODE")"
+    fi
+  fi
+  case "$BETA_AUDIT_PATH" in
+    /*) ;;
+    *) beta_die "审计链路径必须是绝对路径：$BETA_AUDIT_PATH" ;;
+  esac
+
+  if [ -z "$BETA_LABEL" ]; then
+    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" LABEL)"
+    if [ -n "$from_file" ]; then
+      BETA_LABEL="$from_file"
+    elif beta_node_is_mirrored "$BETA_AUDIT_NODE"; then
+      # 「这是镜像、滞后多久、权威在哪」必须写在页头：镜像与实时链在页面上长得一模一样。
+      BETA_LABEL="阡陌内测环境 · 审计视图：$BETA_AUDIT_NODE（镜像 · 滞后 ≤ $BETA_MIRROR_INTERVAL_MIN min，权威副本在节点本机）"
+    else
+      BETA_LABEL="阡陌内测环境 · 审计视图：$BETA_AUDIT_NODE"
+    fi
+  fi
+
+  {
+    printf '# 阡陌内测 · 控制台的持久化选项。由 demo/env/beta/beta-up.sh 读写。\n'
+    printf '#\n'
+    printf '# 它存在的理由：这四个值此前只走环境变量，控制台一重起就静默丢失 ——\n'
+    printf '# --audit 退回一个 H 上并不存在的权威路径，页面变成**空审计视图而不报错**，\n'
+    printf '# 页头标签也丢掉「镜像」标注。环境变量仍然优先，且会被回写到这里。\n'
+    printf '#\n'
+    printf '# 一行一个 KEY=值，值取到行尾。手改这里立刻生效（下次 beta-up.sh 起控制台时）。\n'
+    printf 'AUDIT_NODE=%s\n' "$BETA_AUDIT_NODE"
+    printf 'AUDIT_PATH=%s\n' "$BETA_AUDIT_PATH"
+    printf 'LABEL=%s\n' "$BETA_LABEL"
+    printf 'WAKE_NODE=%s\n' "$BETA_WAKE_NODE"
+  } >"$BETA_CONSOLE_CONF.tmp.$$"
+  chmod 600 "$BETA_CONSOLE_CONF.tmp.$$"
+  mv -f "$BETA_CONSOLE_CONF.tmp.$$" "$BETA_CONSOLE_CONF"
+  return 0
+}
+
+# ── 注册中心落盘表与 peers.conf 的一致性 ────────────────────────────────────
+#
+# **这是一个必须由脚本代劳的检查，不是一条运维纪律。**病根在 demo/lib/p81-registry.ts
+# 的 announce()：
+#     if (registry.heartbeat(address) !== null) continue
+# 注册中心重启时会从落盘表 restore；租约 90 s 内的条目原样回来（带着**旧端点**），
+# 于是 heartbeat 成功、`continue`，那条 --register 被整条跳过。此后每 20 s 的续租又把
+# 租约续上，旧端点就永远留在表里。症状是「改了 peers.conf、smoke 全红，而 peers.conf
+# 明明是对的」——没有任何一行日志会提到落盘表。
+#
+# 落盘表挪开就够了吗：**注册中心没在跑时够**。已经在跑的那一份，表在内存里，
+# 必须重起它才能生效——那一步会明说，因为它是本脚本唯一一个会重起的组件。
+
+# beta_state_pairs <落盘表> —— 打印 `<地址> <端点>`，一行一条。
+#
+# 依赖的形状：FileRegistryStore 写的是 `JSON.stringify(doc, null, 2)`
+# （packages/registry/src/store.ts），所以每个字段独占一行。这不是在猜别人的格式，
+# 是在读我们自己的序列化器。
+beta_state_pairs() {
+  awk '
+    /"address"[[:space:]]*:/ {
+      line = $0
+      sub(/^.*"address"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      address = line
+      next
+    }
+    /"endpoint"[[:space:]]*:/ {
+      if (address == "") next
+      line = $0
+      sub(/^.*"endpoint"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      print address " " line
+      address = ""
+    }
+  ' "$1"
+}
+
+# beta_urlencode_address <地址> —— 只处理 : 和 /（地址的字符集在解析时已经卡死）。
+beta_urlencode_address() {
+  printf '%s' "$1" | sed -e 's|:|%3A|g' -e 's|/|%2F|g'
+}
+
+# beta_live_endpoint <地址> —— 问在跑的注册中心：这个地址现在解析到哪。
+# 拿不到（404 / 注册中心没起）就打空串。单条 agent 的响应里 endpoint 只出现一次。
+beta_live_endpoint() {
+  local body
+  body="$(beta_http_body "$BETA_REGISTRY_URL/v0/agents/$(beta_urlencode_address "$1")")"
+  case "$body" in
+    *'"endpoint":"'*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$body" | sed -e 's/.*"endpoint":"//' -e 's/".*//'
+}
+
+# beta_provisioned_nodes —— 本机 ops/ 下真的铺过链路的节点名，一行一个。
+#
+# 停机与重置**从这里**取节点，不从 peers.conf 取：那两个动作要处理的是「已经铺出去的
+# 东西」，而 peers.conf 随时可能已经被改过。一个刚被从地址表里删掉的节点，它的隧道还
+# 在跑——照 peers.conf 停机会把它漏下，而漏下的隧道会一直占着那个回环口。
+beta_provisioned_nodes() {
+  local file base
+  # glob 没匹配到时 bash 会把模式原样留下，所以逐个 `[ -f ]` 复核。
+  for file in "$BETA_OPS_DIR"/tunnel-*.env; do
+    [ -f "$file" ] || continue
+    base="${file##*/}"
+    base="${base#tunnel-}"
+    printf '%s\n' "${base%.env}"
+  done
+}
+
+# beta_stop_link <node> —— 停掉并取消自启该节点的隧道与镜像 timer。
+#
+# 顺序是**先镜像后隧道**：镜像那条是主动往外拨的，先让它别再发起新连接。
+# 幂等：本来就没在跑 / 本来就没自启的，一个字都不打。
+beta_stop_link() {
+  local node="$1" unit
+  beta_assert_node_name "$node" '链路实例名'
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  for unit in \
+    "$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')" \
+    "$(beta_unit_instance 'qianmo-tunnel' "$node" '.service')"; do
+    if [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" = 'active' ]; then
+      systemctl --user stop "$unit" >/dev/null 2>&1 || true
+      beta_say "已停止 $unit"
+    fi
+    if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = 'enabled' ]; then
+      systemctl --user disable "$unit" >/dev/null 2>&1 || true
+      beta_say "已取消开机自启 $unit"
+    fi
+  done
+  return 0
 }

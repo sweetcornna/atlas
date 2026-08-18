@@ -8,6 +8,9 @@
 #   demo/env/beta/beta-smoke.sh --role node   # 节点机上跑：只证本机那一半
 #
 # ── H 腿的四条判据，逐条对应 beta-env.md §10 包① 的 DoD ① ────────────────────
+# （另有一节 ⓪ 链路，只在 peers.conf 里有 node 坐标行时才有内容——它不属于 DoD①，
+#   是隧道形态引进来的新失败面：隧道断了，上面四条会以「拨不通」的形式一起红，
+#   而那时候人会去查节点，其实节点好好的。⓪ 先答「H 到节点这一段通不通」。）
 #   ① 注册中心 /v0/health 200；
 #   ② 地址表里每一条**按名解析 + 真拨通**（解析只查表会把「表里有一条陈旧记录」
 #      当成拓扑就绪，所以必须真握手一次）；
@@ -129,11 +132,63 @@ verify_node_trail_on_host() {
   fi
 }
 
+# ⓪ 链路：H 到节点这一段。只对有 node 坐标行的节点有内容。
+#
+# 两条判据，缺一不可：
+#   · 隧道单元 active —— 只证明 ssh 进程活着；
+#   · **对端真的回了字节**（beta_endpoint_live）—— 这一条才证明另一头是节点。
+#
+# 为什么不能只看第一条，也不能用 TCP 探测代替第二条：`ssh -L` 的本地口由 ssh 自己
+# LISTEN，节点侧那个端口没人监听时它照样 accept 然后立刻关。于是单元 active、TCP
+# 连得上、而拨号全超时 —— 三个绿灯一个真相。common.sh 的 beta_tcp_open 对隧道口直接
+# die，就是为了不让这条假绿再被写出来。
+check_links() {
+  if [ "$BETA_SSH_COUNT" -eq 0 ]; then
+    return 0
+  fi
+  beta_head "⓪ 链路（$BETA_SSH_COUNT 条 SSH 隧道）"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    fail_item "peers.conf 里有 node 坐标行，但这台机器上没有 systemctl —— 隧道不可能在跑"
+    return 0
+  fi
+  local i=0 node port unit state trail
+  while [ "$i" -lt "$BETA_SSH_COUNT" ]; do
+    node="${BETA_SSH_NODE[$i]}"
+    port="${BETA_SSH_LOCAL[$i]}"
+    unit="$(beta_unit_instance 'qianmo-tunnel' "$node" '.service')"
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    if [ "$state" != 'active' ]; then
+      fail_item "$node 的隧道单元不是 active（$unit 现在是 ${state:-未知}）"
+    elif beta_endpoint_live 127.0.0.1 "$port"; then
+      beta_ok "$node 隧道通到底（127.0.0.1:$port 回出了节点的应答）"
+    else
+      fail_item "$node 的隧道单元 active，但 127.0.0.1:$port 回不出任何应答 ——
+  ssh 进程活着、TCP 也连得上（那是假绿），节点侧那个端口没人在听。
+  journalctl --user -u $unit -n 50"
+    fi
+    trail="${BETA_SSH_TRAIL[$i]}"
+    if [ -n "$trail" ]; then
+      unit="$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')"
+      state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+      if [ "$state" = 'active' ]; then
+        beta_ok "$node 审计镜像 timer 在跑（$unit）"
+      else
+        # 镜像停了不影响拨号，但会让下面第④步验的那条链**悄悄变旧**——而一条滞后
+        # 三天的链和一条实时链在 `--verify` 眼里一模一样，都是 intact。
+        fail_item "$node 的审计镜像 timer 不是 active（$unit 现在是 ${state:-未知}）—— 它的链会停在上一次拉取的时刻，而 --verify 照样报 intact"
+      fi
+    fi
+    i=$((i + 1))
+  done
+}
+
 run_host() {
   beta_load_peers
   if [ "$BETA_PEER_COUNT" -eq 0 ]; then
     beta_die "$BETA_PEERS_FILE 里一条地址都没有 —— 先按里面的注释填表"
   fi
+
+  check_links
 
   beta_head '① 注册中心'
   local status

@@ -8,6 +8,7 @@
 #   demo/env/beta/beta-reset.sh --purge-logs     # 再清 logs/
 #   demo/env/beta/beta-reset.sh --purge-state    # 再清 state/（**会带走 timings**，见下）
 #   demo/env/beta/beta-reset.sh --archive-config # 把配置根改名归档（§6 L2 的第②步）
+#   demo/env/beta/beta-reset.sh --purge-links    # 再删链路的生成物（ops/ 与三个单元文件）
 #
 # ── 它敢动东西的全部依据（三重守卫，与 demo/env/reset.sh 同形）────────────────
 # 动作**只发生在 QIANMO_BETA_ROOT 下面**，而且必须同时满足三条，缺一条就退出：
@@ -40,13 +41,15 @@ set -euo pipefail
 PURGE_LOGS=0
 PURGE_STATE=0
 ARCHIVE_CONFIG=0
+PURGE_LINKS=0
 for option in "$@"; do
   case "$option" in
     --purge-logs) PURGE_LOGS=1 ;;
     --purge-state) PURGE_STATE=1 ;;
     --archive-config) ARCHIVE_CONFIG=1 ;;
+    --purge-links) PURGE_LINKS=1 ;;
     -h|--help)
-      beta_say '用法：beta-reset.sh [--purge-logs] [--purge-state] [--archive-config]'
+      beta_say '用法：beta-reset.sh [--purge-logs] [--purge-state] [--archive-config] [--purge-links]'
       beta_say '默认只停机 + 清 run/。理由见本文件头。'
       exit 0
       ;;
@@ -121,6 +124,31 @@ if [ "$ARCHIVE_CONFIG" = '1' ]; then
   fi
 else
   beta_say "保留全部配置根（含审计链与节点身份；要归档用 --archive-config）"
+fi
+
+if [ "$PURGE_LINKS" = '1' ]; then
+  beta_head '· 清除链路生成物'
+  # ①停机那一步（beta-down.sh）已经把隧道与 timer 停掉并取消自启了，这里只删文件。
+  # 全都是**生成物**：ops/ 由 peers.conf 的 node 坐标行派生，三个单元文件由仓库
+  # demo/env/beta/ops/ 派生，下一次 beta-up.sh --role host 会原样重新铺出来。
+  # **不动 mirror/**：那里面是已经拉回来的审计链副本，「只能挪走、不能撤销」同样适用。
+  purge "$BETA_OPS_DIR"
+  for unit_file in 'qianmo-tunnel@.service' 'qianmo-mirror@.service' 'qianmo-mirror@.timer'; do
+    UNIT_PATH="$BETA_SYSTEMD_USER_DIR/$unit_file"
+    # ~/.config 不在内测根里，guard_root 管不到它 —— 逐个复核走另一套（见 common.sh）。
+    beta_assert_unit_file "$UNIT_PATH"
+    if [ -f "$UNIT_PATH" ]; then
+      rm -f "$UNIT_PATH"
+      beta_say "已清除 $UNIT_PATH"
+    fi
+  done
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    beta_say 'systemd --user 已 daemon-reload'
+  fi
+  beta_say "mirror/ 一条没动（$BETA_MIRROR_DIR）—— 那是已经拉回来的审计链副本"
+else
+  beta_say "保留链路生成物（$BETA_OPS_DIR 与 systemd --user 的三个单元；要删用 --purge-links）"
 fi
 
 beta_head '③ 重铺目录骨架'
