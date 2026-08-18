@@ -8,7 +8,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { authMock } from '../../../../../../tests/mocks/auth'
+import { setupAuthMock } from '../../../../../../tests/mocks/auth'
 import { setupAxiosMock } from '../../../../../../tests/mocks/axios'
 import { setupOauthClientMock } from '../../../../../../tests/mocks/oauthClient.js'
 import { setupRemoteTriggerAuditMock } from '../../../../../../tests/mocks/remoteTriggerAudit.js'
@@ -30,7 +30,8 @@ afterAll(() => {
   axiosHandle.useStubs = false
 })
 
-mock.module('src/utils/auth/auth.js', authMock)
+const authMock = setupAuthMock()
+afterAll(() => authMock.reset())
 
 const oauthClientMock = setupOauthClientMock({
   getOrganizationUUID: async () => 'org',

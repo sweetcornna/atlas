@@ -11,7 +11,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { stateMockWith } from '../../../tests/mocks/state.js'
+import { setupStateMock } from '../../../tests/mocks/state.js'
 import { setupTeammateMock } from '../../../tests/mocks/teammate.js'
 import { setupTeammateContextMock } from '../../../tests/mocks/teammateContext.js'
 
@@ -26,19 +26,20 @@ mock.module('bun:bundle', () => ({
 }))
 
 let mockedSessionId = 'test-session-123'
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSessionId: () => mockedSessionId,
-    regenerateSessionId: () => {
-      mockedSessionId = `test-session-${Date.now()}`
-    },
-    switchSession: (sessionId: string) => {
-      mockedSessionId = sessionId
-    },
-    getIsNonInteractiveSession: () => false,
-  }),
-)
+const stateMock = setupStateMock({
+  getSessionId: () => mockedSessionId,
+  // The real regenerateSessionId RETURNS the new SessionId; returning it here
+  // keeps the stub in contract (no caller in this suite reads it).
+  regenerateSessionId: () => {
+    mockedSessionId = `test-session-${Date.now()}`
+    return mockedSessionId
+  },
+  switchSession: (sessionId: string) => {
+    mockedSessionId = sessionId
+  },
+  getIsNonInteractiveSession: () => false,
+})
+afterAll(() => stateMock.reset())
 // Complete-surface shared mocks. These were hand-written partial mocks (3 and
 // 1 exports); `mock.module` is process-global and last-write-wins, so they both
 // erased the rest of each module for every later file AND pinned

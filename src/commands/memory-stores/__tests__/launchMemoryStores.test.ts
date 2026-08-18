@@ -20,7 +20,7 @@ import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
 import { setupAnalyticsMock } from '../../../../tests/mocks/analytics.js'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { setupTeleportApiMock } from '../../../../tests/mocks/teleportApi.js'
 import { setupConstantsOauthMock } from '../../../../tests/mocks/constantsOauth.js'
 import { setupOauthClientMock } from '../../../../tests/mocks/oauthClient.js'
@@ -37,12 +37,10 @@ const realAnalytics = await import('src/services/analytics/index.js')
 const logEventMock = mock(() => {})
 // ── Auth / OAuth mocks ──────────────────────────────────────────────────────
 const realAuth = await import('src/utils/auth/auth.js')
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-ms' }),
-  }),
-)
+const authMock = setupAuthMock({
+  getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-ms' }),
+})
+afterAll(() => authMock.reset())
 
 const oauthClientMock = setupOauthClientMock({
   getOrganizationUUID: async () => 'org-uuid-ms',
