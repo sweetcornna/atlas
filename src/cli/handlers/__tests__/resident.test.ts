@@ -5,9 +5,11 @@ import { join } from 'node:path'
 import {
   DEFAULT_RESIDENT_MEM_INTERVAL_MS,
   MAX_PENDING_TIMING_EVENTS,
+  RESIDENT_HELP_TEXT,
   assertResidentRuntime,
   createResidentMemWriter,
   createResidentTimingWriter,
+  isResidentHelpRequest,
   parseResidentArgs,
 } from '../resident.js'
 
@@ -361,5 +363,75 @@ describe('empty option values', () => {
         'qianmo',
       ),
     ).toThrow('--team requires a value')
+  })
+})
+
+describe('resident --help', () => {
+  test('answers --help and -h wherever they appear on the line', () => {
+    // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
+    expect(isResidentHelpRequest(['--help'])).toBe(true)
+    expect(isResidentHelpRequest(['-h'])).toBe(true)
+    expect(isResidentHelpRequest([...BASE, '--help'])).toBe(true)
+    expect(isResidentHelpRequest(BASE)).toBe(false)
+    expect(isResidentHelpRequest([])).toBe(false)
+    // 当成某个选项的值写进去的不算——那是一个值，不是一次请求。
+    expect(isResidentHelpRequest(['--team=--help'])).toBe(false)
+  })
+
+  test('documents every option the parser actually dispatches on', () => {
+    // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
+    // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
+    const source = readFileSync(
+      new URL('../resident.ts', import.meta.url),
+      'utf8',
+    )
+    const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
+      match => match[1] as string,
+    )
+    // 分派链的形状变了（比如改成表驱动）也要在这里被发现，否则这条测试会安静
+    // 地变成一个零断言的空转。15 个解析选项加 `--help` 自己那一次全等比较。
+    expect(dispatched.length).toBeGreaterThanOrEqual(16)
+    for (const option of new Set(dispatched)) {
+      expect(RESIDENT_HELP_TEXT).toContain(option)
+    }
+  })
+
+  test('spells out the three constraints the parser enforces after the loop', () => {
+    // 这三条不是「选项存在与否」，而是「怎么组合才起得来」，撞上去只会拿到一条
+    // 单句错误；帮助是唯一能一次说全的地方。
+    expect(RESIDENT_HELP_TEXT).toContain('exactly one of --port and --unix')
+    expect(RESIDENT_HELP_TEXT).toContain('only valid with --port')
+    expect(RESIDENT_HELP_TEXT).toContain('Every path above must be absolute')
+    expect(RESIDENT_HELP_TEXT).toContain('Requires --backup-url')
+    expect(RESIDENT_HELP_TEXT).toContain('Requires --activity-url')
+    expect(RESIDENT_HELP_TEXT).toContain('Requires --mem-sample')
+  })
+
+  test('names the identity and the two credentials it refuses to run without', () => {
+    // 问「这个命令怎么用」的人恰恰是还没配好身份与密钥的那个人。
+    expect(RESIDENT_HELP_TEXT).toContain('OCC_IDENTITY')
+    expect(RESIDENT_HELP_TEXT).toContain('qianmo')
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_TRANSPORT_PSK')
+    // 两枚密钥都只走环境变量，而帮助必须把「为什么不给命令行选项」一起说。
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_BACKUP_WRITE_TOKEN')
+    expect(RESIDENT_HELP_TEXT).toContain('process listing')
+    expect(RESIDENT_HELP_TEXT.endsWith('\n')).toBe(true)
+  })
+
+  test('quotes the defaults instead of copying the numbers', () => {
+    // 默认值的出处是各自的常量；帮助里出现的必须是插值的结果。
+    expect(RESIDENT_HELP_TEXT).toContain(
+      `Default ${DEFAULT_RESIDENT_MEM_INTERVAL_MS}`,
+    )
+  })
+
+  test('the unknown-option error points at the help', () => {
+    // 走到那一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
+    expect(() => parseResidentArgs([...BASE, '--noed=x'], 'qianmo')).toThrow(
+      'unknown resident option --noed=x',
+    )
+    expect(() => parseResidentArgs([...BASE, '--noed=x'], 'qianmo')).toThrow(
+      'resident --help',
+    )
   })
 })

@@ -3,6 +3,7 @@
 
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
+import { BIN_NAME } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { QianmoResident } from '../../services/qianmo/resident.js'
 import {
@@ -11,7 +12,10 @@ import {
 } from '@qianmo/resident/activity'
 import type { ResidentTimingEvent } from '@qianmo/resident/timings'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
-import { remoteSnapshotWriter } from '@qianmo/backup'
+import {
+  DEFAULT_SNAPSHOT_INTERVAL_MS,
+  remoteSnapshotWriter,
+} from '@qianmo/backup'
 import {
   openAuditTrail,
   routerTrailSink,
@@ -23,7 +27,7 @@ import {
   StaticPublicKeyDirectory,
 } from '@qianmo/capability'
 import { isValidSegment } from '@qianmo/protocol'
-import { pskFromEnv } from '@qianmo/transport'
+import { PSK_ENV_VAR, pskFromEnv } from '@qianmo/transport'
 import {
   loadOrCreateNodeKeys,
   parseTrustedKey,
@@ -31,6 +35,15 @@ import {
 import { residentOptionValue } from './residentArgs.js'
 
 export const MAX_PENDING_TIMING_EVENTS = 1_024
+
+/**
+ * The write-only backup credential's only entrance.
+ *
+ * Hoisted rather than inlined at its one use site because the help text names
+ * it too, and an environment variable whose name is spelled twice is an
+ * environment variable that can be spelled two ways.
+ */
+const BACKUP_TOKEN_ENV_VAR = 'QIANMO_BACKUP_WRITE_TOKEN'
 
 interface ResidentNdjsonWriter<T> {
   write(record: T): void
@@ -341,7 +354,12 @@ export function parseResidentArgs(
       memIntervalMs = interval
       index = parsed.next
     } else {
-      throw new Error(`unknown resident option ${String(arg)}`)
+      // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
+      // 他没有任何地方可以去查那张表。
+      throw new Error(
+        `unknown resident option ${String(arg)}` +
+          ` (run \`${BIN_NAME} resident --help\` for the list)`,
+      )
     }
   }
 
@@ -416,7 +434,133 @@ export function assertResidentRuntime(
   }
 }
 
+/**
+ * `--help` / `-h` 出现在任何位置都算请求帮助。
+ *
+ * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
+ * `qm resident --port 7321 --help` 必须答帮助，而不是先解析出一个配置再抛。
+ * 判定用**全等**，所以 `--team=--help` 这种把它当值的写法不会被当成请求。
+ *
+ * 为什么不落回 commander：`resident` 的子命令注册
+ * （`cli/program/commands/qianmo.tsx`）**刻意不复制选项表**（那个文件的顶部注释
+ * 写着这条），落回去只会打印一行描述加一个空的选项列表。选项的唯一出处是本文件
+ * 的解析器，帮助文本因此也在这里——两份会漂移的选项表比一份不好看的要糟得多。
+ */
+export function isResidentHelpRequest(args: readonly string[]): boolean {
+  return args.some(arg => arg === '--help' || arg === '-h')
+}
+
+/**
+ * `occ resident --help` 打印的全文。
+ *
+ * 常驻节点没有一份对应的选项表文档（`console.md` §3 只管控制台），所以这里是
+ * 内测用户手上**唯一**的自助入口：凡是不看源码就会配错的事——三组互斥/依赖关系
+ * （`--port` 与 `--unix`、`--hostname` 只跟 `--port`、三个 `*-ms` 各自依赖谁）、
+ * 路径必须绝对、以及两枚密钥只走环境变量——都必须在这里说全。
+ *
+ * 默认值一律插值，不抄数字：它们的出处是各自的常量（CLAUDE.md §1.1⑧）。
+ */
+export const RESIDENT_HELP_TEXT = `Usage: ${BIN_NAME} resident [options]
+
+Run a Qianmo resident agent node: an inbound-only endpoint that accepts wake
+and task messages over the transport and runs them in its agents' workspaces.
+Requires OCC_IDENTITY=qianmo, the Bun runtime, and a transport key in
+$${PSK_ENV_VAR}.
+
+Options (each accepts both --name value and --name=value):
+
+Identity and workspaces, all required:
+
+  --node <segment>         This node's name, one address segment; it becomes
+                           the <node> half of qianmo://<node>/<agent>.
+                           Reserved device names are refused.
+  --team <name>            The team this node belongs to.
+  --agent <name>=<abs cwd>
+                           An agent this node serves and the absolute working
+                           directory it runs in. Repeatable, one agent per
+                           flag; at least one is required and two agents may
+                           not share a name.
+
+Listener, exactly one of --port and --unix:
+
+  --port <0-65535>         Listen on TCP. Requires --hostname; 0 lets the
+                           kernel pick the port.
+  --unix <abs path>        Listen on a Unix socket instead of TCP.
+  --hostname <host>        Address to bind, only valid with --port. Never
+                           guessed: which interface a node answers on has to
+                           be an explicit choice.
+
+Authorization:
+
+  --trust <node>=<publicKey>
+                           Accept capability tokens issued by <node>.
+                           Repeatable, one peer per flag. There is no
+                           trust-on-first-use, so an issuer never named here
+                           is refused. This node's own key is always trusted,
+                           and its public half is the first line this command
+                           prints.
+  --require-signed-tasks   Refuse task requests that present no capability
+                           token. The default admits them, because M0 has no
+                           key distribution, while still verifying in full
+                           every token that is presented.
+
+Backup:
+
+  --backup-url <url>       Base URL of the host-side backup service, http or
+                           https. Also requires $${BACKUP_TOKEN_ENV_VAR}.
+  --backup-interval-ms <ms>
+                           Gap between scheduled workspace snapshots, an
+                           integer >= 1000. Requires --backup-url.
+                           Default ${DEFAULT_SNAPSHOT_INTERVAL_MS}.
+
+Activity reporting:
+
+  --activity-url <ws url>  Report this node's idle and active spells to a
+                           watcher over ws or wss.
+  --activity-reconnect-factor <number>
+                           Reconnect backoff growth factor, greater than 1.
+                           Requires --activity-url.
+                           Default ${DEFAULT_RESIDENT_ACTIVITY_TIME_JUMP_FACTOR}.
+
+Measurement:
+
+  --timings <abs path>     Append per-message timings to an NDJSON file.
+  --mem-sample <abs path>  Append heap and RSS samples to an NDJSON file.
+  --mem-interval-ms <ms>   Sampling gap, an integer >= 1000.
+                           Requires --mem-sample.
+                           Default ${DEFAULT_RESIDENT_MEM_INTERVAL_MS}.
+
+  -h, --help               Print this and exit.
+
+Every path above must be absolute. A resident node outlives the shell that
+started it, so a relative path means something different to whoever restarts
+it from another directory.
+
+Environment:
+
+  OCC_IDENTITY             Must be "qianmo". A resident node is part of the
+                           Qianmo node identity, it does not run under plain
+                           occ.
+  ${PSK_ENV_VAR}     Transport pre-shared key, required. Environment
+                           only, never a command-line option: a key on a
+                           command line is a key in every process listing on
+                           this machine.
+  ${BACKUP_TOKEN_ENV_VAR}
+                           Write-only backup credential, required whenever
+                           --backup-url is given. Environment only, for the
+                           same reason.
+  OCC_CONFIG_DIR           Config root the node identity, the audit trail and
+                           the session table are derived from.
+`
+
 export async function runResident(args: readonly string[]): Promise<void> {
+  // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
+  // 恰恰是还没把 `OCC_IDENTITY=qianmo` 和 PSK 配对的那个人，让他先撞一条错误
+  // 再去查源码是把唯一的自助入口挡在门外。
+  if (isResidentHelpRequest(args)) {
+    process.stdout.write(RESIDENT_HELP_TEXT)
+    return
+  }
   assertResidentRuntime()
   const config = parseResidentArgs(args)
   const psk = pskFromEnv()
@@ -515,9 +659,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // The write-only backup credential comes from the environment, never from a
   // flag: a token on a command line is a token in every process listing on the
   // machine. Same injection point discipline as the transport PSK.
-  const backupToken = process.env['QIANMO_BACKUP_WRITE_TOKEN']
+  const backupToken = process.env[BACKUP_TOKEN_ENV_VAR]
   if (config.backupUrl !== undefined && (backupToken ?? '') === '') {
-    throw new Error('--backup-url requires QIANMO_BACKUP_WRITE_TOKEN')
+    throw new Error(`--backup-url requires ${BACKUP_TOKEN_ENV_VAR}`)
   }
   const backup =
     config.backupUrl === undefined

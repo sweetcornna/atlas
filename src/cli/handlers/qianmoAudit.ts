@@ -26,8 +26,17 @@ import {
   reconstructChain,
   type AuditRecord,
 } from '@qianmo/audit'
+import { BIN_NAME } from '../../constants/brand.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import { residentOptionValue } from './residentArgs.js'
+
+/**
+ * Records printed when `--limit` is not given, counted from the tail.
+ *
+ * Hoisted out of the parser so the help text can quote it instead of carrying
+ * a second copy of the number.
+ */
+const DEFAULT_AUDIT_LIMIT = 200
 
 /** Parsed flags. Not exported: nothing outside this file needs the shape. */
 interface QianmoAuditConfig {
@@ -52,6 +61,72 @@ function parseInstant(raw: string, flag: string): number {
   return parsed
 }
 
+/**
+ * `--help` / `-h` 出现在任何位置都算请求帮助。
+ *
+ * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
+ * `occ audit --verify --help` 必须答帮助，而不是先解析出一个查询再抛。判定用
+ * **全等**，所以 `--trace=--help` 这种把它当值的写法不会被当成请求。
+ *
+ * 为什么不落回 commander：`audit` 的子命令注册
+ * （`cli/program/commands/qianmo.tsx`）**刻意不复制选项表**（那个文件的顶部注释
+ * 写着这条），落回去只会打印一行描述加一个空的选项列表。选项的唯一出处是本文件
+ * 的解析器，帮助文本因此也在这里。
+ */
+export function isQianmoAuditHelpRequest(args: readonly string[]): boolean {
+  return args.some(arg => arg === '--help' || arg === '-h')
+}
+
+/**
+ * `occ audit --help` 打印的全文。
+ *
+ * 这条命令没有一份对应的选项表文档，所以这里是唯一的自助入口。两件不看源码就
+ * 会踩的事必须写在这里：**至少要给一个查询条件**（否则报错而不是打印整条链），
+ * 以及 `--verify` 在链断时**退出码 1**——那正是它能进 cron 的原因。
+ */
+export const QIANMO_AUDIT_HELP_TEXT = `Usage: ${BIN_NAME} audit [options]
+
+Query this node's audit trail: what happened to one task, what an agent has
+been up to, and whether the chain is still intact. Message payloads are never
+printed -- the trail does not carry them, and this command adds nothing.
+
+At least one of --trace / --agent / --task / --from / --to is required, or
+--verify on its own. Printing the whole trail by default would be the least
+useful thing this command could do with a file that only grows.
+
+Options (each accepts both --name value and --name=value):
+
+  --trace <trace id>       Reconstruct one task's chain from a traceparent or
+                           a bare trace-id segment, refused records included.
+  --agent <address>        Records for one qianmo://<node>/<agent>.
+  --task <task id>         Records for one task.
+  --from <time>            Lower time bound, an ISO timestamp or epoch
+                           milliseconds; both turn up in tickets.
+  --to <time>              Upper time bound, same two forms.
+  --limit <n>              Keep at most this many records, counted from the
+                           tail. A positive integer, default ${DEFAULT_AUDIT_LIMIT}; it does not
+                           apply to --trace or --verify.
+  --json                   Print JSON instead of one line per record.
+  --verify                 Report the chain's integrity and exit 1 when it is
+                           broken, so the check can live in a cron job. Valid
+                           on its own.
+  --path <file>            Trail file to read.
+                           Default <config root>/qianmo/audit/trail.ndjson.
+  -h, --help               Print this and exit.
+
+Integrity is reported even when it was not asked for: a warning goes to stderr
+whenever the trail has issues. Reading a chain out of a file somebody has
+edited, and not saying so, is the one failure this command must not have.
+
+Environment:
+
+  OCC_CONFIG_DIR           Config root the default trail path is derived from.
+  OCC_IDENTITY             Selects which identity owns that config root, so it
+                           also selects which trail the default path names.
+                           Unlike the other Qianmo commands this one does not
+                           require "qianmo".
+`
+
 export function parseQianmoAuditArgs(
   args: readonly string[],
 ): QianmoAuditConfig {
@@ -63,7 +138,7 @@ export function parseQianmoAuditArgs(
   let to: number | undefined
   let json = false
   let verify = false
-  let limit = 200
+  let limit = DEFAULT_AUDIT_LIMIT
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -104,7 +179,12 @@ export function parseQianmoAuditArgs(
     } else if (arg === '--verify') {
       verify = true
     } else {
-      throw new Error(`unknown audit option ${String(arg)}`)
+      // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
+      // 他没有任何地方可以去查那张表。
+      throw new Error(
+        `unknown audit option ${String(arg)}` +
+          ` (run \`${BIN_NAME} audit --help\` for the list)`,
+      )
     }
   }
 
@@ -149,6 +229,12 @@ function formatRecord(record: AuditRecord): string {
 }
 
 export function runQianmoAudit(args: readonly string[]): void {
+  // 帮助排在最前面，在任何解析与磁盘读取之前：问「这个命令怎么用」的人恰恰是
+  // 还不知道要给哪个查询条件的那个人，而不给条件正是这个解析器会抛的第一件事。
+  if (isQianmoAuditHelpRequest(args)) {
+    process.stdout.write(QIANMO_AUDIT_HELP_TEXT)
+    return
+  }
   const config = parseQianmoAuditArgs(args)
   const { records, issues, intact } = readTrail(config.path)
 

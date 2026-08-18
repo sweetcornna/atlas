@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import type { QianmoMessage } from '@qianmo/protocol'
 import { ReceiptStatus, startTransportServer } from '@qianmo/transport'
 import {
+  RESIDENT_WAKE_HELP_TEXT,
   executeResidentWake,
+  isResidentWakeHelpRequest,
   parseResidentWakeArgs,
   type ResidentWakeConfig,
 } from '../residentWake.js'
@@ -109,5 +112,79 @@ describe('resident wake CLI configuration', () => {
     } finally {
       await server.stop()
     }
+  })
+})
+
+describe('resident wake --help', () => {
+  test('answers --help and -h wherever they appear on the line', () => {
+    // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
+    expect(isResidentWakeHelpRequest(['--help'])).toBe(true)
+    expect(isResidentWakeHelpRequest(['-h'])).toBe(true)
+    expect(isResidentWakeHelpRequest([...BASE, '--help'])).toBe(true)
+    expect(isResidentWakeHelpRequest(BASE)).toBe(false)
+    expect(isResidentWakeHelpRequest([])).toBe(false)
+    // 当成某个选项的值写进去的不算——那是一个值，不是一次请求。
+    expect(isResidentWakeHelpRequest(['--prompt=--help'])).toBe(false)
+  })
+
+  test('documents every option the parser actually dispatches on', () => {
+    // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
+    // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
+    const source = readFileSync(
+      new URL('../residentWake.ts', import.meta.url),
+      'utf8',
+    )
+    const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
+      match => match[1] as string,
+    )
+    // 分派链的形状变了（比如改成表驱动）也要在这里被发现，否则这条测试会安静
+    // 地变成一个零断言的空转。7 个解析选项加 `--help` 自己那一次全等比较。
+    expect(dispatched.length).toBeGreaterThanOrEqual(8)
+    for (const option of new Set(dispatched)) {
+      expect(RESIDENT_WAKE_HELP_TEXT).toContain(option)
+    }
+  })
+
+  test('lists all four required options in one place', () => {
+    // 缺项的报错是一条一条来的（先 --url，再 --from…），靠反复撞错误把四个凑
+    // 出来是四次往返；帮助必须一次说全。
+    const required = RESIDENT_WAKE_HELP_TEXT.slice(
+      RESIDENT_WAKE_HELP_TEXT.indexOf('Required'),
+      RESIDENT_WAKE_HELP_TEXT.indexOf('Optional:'),
+    )
+    for (const flag of ['--url', '--from', '--to', '--prompt']) {
+      expect(required).toContain(flag)
+    }
+  })
+
+  test('quotes the defaults and the connect cap instead of copying numbers', () => {
+    const { timeoutMs, deliverTtlMs, afterMs } = parseResidentWakeArgs(
+      BASE,
+      'qianmo',
+    )
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${timeoutMs}`)
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${deliverTtlMs}`)
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain(`Default ${afterMs}`)
+    // 连接那一步与 --timeout-ms 是两个预算，帮助里不能只说一个。
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain('capped')
+  })
+
+  test('names the identity and the key it refuses to run without', () => {
+    // 问「这个命令怎么用」的人恰恰是还没配好身份与 PSK 的那个人。
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain('OCC_IDENTITY')
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain('qianmo')
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain('QIANMO_TRANSPORT_PSK')
+    expect(RESIDENT_WAKE_HELP_TEXT).toContain('process listing')
+    expect(RESIDENT_WAKE_HELP_TEXT.endsWith('\n')).toBe(true)
+  })
+
+  test('the unknown-option error points at the help', () => {
+    // 走到那一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
+    expect(() =>
+      parseResidentWakeArgs([...BASE, '--promt=x'], 'qianmo'),
+    ).toThrow('unknown resident wake option --promt=x')
+    expect(() =>
+      parseResidentWakeArgs([...BASE, '--promt=x'], 'qianmo'),
+    ).toThrow('resident-wake --help')
   })
 })

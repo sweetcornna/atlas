@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
@@ -12,7 +12,11 @@ import { NegotiationEventType } from '@qianmo/negotiation'
 import { TunnelEventType } from '@qianmo/tunnel'
 import { BackupEventType } from '@qianmo/backup'
 import { CapacityEventType } from '@qianmo/capacity'
-import { parseQianmoAuditArgs } from '../qianmoAudit.js'
+import {
+  QIANMO_AUDIT_HELP_TEXT,
+  isQianmoAuditHelpRequest,
+  parseQianmoAuditArgs,
+} from '../qianmoAudit.js'
 import {
   activatorTrailSink,
   auditTrailPath,
@@ -293,5 +297,67 @@ describe('the other four layers', () => {
     expect(records[0]?.peer).toBe('qianmo://node-a/planner')
     // Not a guess: the activator's peer is the sandbox it is waking.
     expect(records[1]?.peer).toBe('sbx-9')
+  })
+})
+
+describe('audit --help', () => {
+  test('answers --help and -h wherever they appear on the line', () => {
+    // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
+    expect(isQianmoAuditHelpRequest(['--help'])).toBe(true)
+    expect(isQianmoAuditHelpRequest(['-h'])).toBe(true)
+    expect(isQianmoAuditHelpRequest(['--verify', '--help'])).toBe(true)
+    expect(isQianmoAuditHelpRequest(['--verify'])).toBe(false)
+    expect(isQianmoAuditHelpRequest([])).toBe(false)
+    // 当成某个选项的值写进去的不算——那是一个值，不是一次请求。
+    expect(isQianmoAuditHelpRequest(['--trace=--help'])).toBe(false)
+  })
+
+  test('documents every option the parser actually dispatches on', () => {
+    // 反漂移：选项名的唯一出处是解析器的分派链，帮助文本是它的投影。新增一个
+    // 选项却忘了写进帮助，这条会红——而不是等到内测用户问「还有别的参数吗」。
+    const source = readFileSync(
+      new URL('../qianmoAudit.ts', import.meta.url),
+      'utf8',
+    )
+    const dispatched = [...source.matchAll(/arg === '(--[a-z-]+)'/g)].map(
+      match => match[1] as string,
+    )
+    // 分派链的形状变了（比如改成表驱动）也要在这里被发现，否则这条测试会安静
+    // 地变成一个零断言的空转。9 个解析选项加 `--help` 自己那一次全等比较。
+    expect(dispatched.length).toBeGreaterThanOrEqual(10)
+    for (const option of new Set(dispatched)) {
+      expect(QIANMO_AUDIT_HELP_TEXT).toContain(option)
+    }
+  })
+
+  test('says a query needs a criterion, which is the first thing people hit', () => {
+    // 不给条件是这个解析器抛的第一件事（`at least one of`），所以帮助必须在
+    // 选项表**之前**就把那五个加 --verify 说清楚。
+    const preamble = QIANMO_AUDIT_HELP_TEXT.slice(
+      0,
+      QIANMO_AUDIT_HELP_TEXT.indexOf('Options ('),
+    )
+    for (const flag of ['--trace', '--agent', '--task', '--from', '--to']) {
+      expect(preamble).toContain(flag)
+    }
+    expect(preamble).toContain('--verify')
+  })
+
+  test('says --verify exits 1 on a broken chain and that payloads are never printed', () => {
+    // 退出码是这条命令能进 cron 的全部理由；不打 payload 是它的安全承诺。
+    expect(QIANMO_AUDIT_HELP_TEXT).toContain('exit 1')
+    expect(QIANMO_AUDIT_HELP_TEXT).toContain('payloads are never')
+    expect(QIANMO_AUDIT_HELP_TEXT).toContain(
+      '<config root>/qianmo/audit/trail.ndjson',
+    )
+    expect(QIANMO_AUDIT_HELP_TEXT.endsWith('\n')).toBe(true)
+  })
+
+  test('the unknown-option error points at the help', () => {
+    // 走到那一支的人多半是拼错了选项名，所以顺手指一下那张表在哪。
+    expect(() => parseQianmoAuditArgs(['--verfiy'])).toThrow(
+      'unknown audit option --verfiy',
+    )
+    expect(() => parseQianmoAuditArgs(['--verfiy'])).toThrow('audit --help')
   })
 })
