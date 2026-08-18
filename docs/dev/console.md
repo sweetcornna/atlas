@@ -15,6 +15,7 @@
 | 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
 | 依赖 | `@qianmo/audit`（只读）、`@qianmo/protocol`、`@qianmo/registry`、`@qianmo/router`；运行时 Bun（`Bun.serve`） |
 | 身份 | **`OCC_IDENTITY=qianmo`**，与 `occ resident` / `occ audit` / `occ resident-wake` 同一条前置校验 |
+| 命令 | 两种写法都对：`OCC_IDENTITY=qianmo … console`，或 **`qm console …`**（`qm` 的入口文件自己把身份钉成 `qianmo`）。`qm` 要求 PATH 上有 Bun，取舍见 §2.1 |
 
 ---
 
@@ -43,9 +44,33 @@
 
 ### 2.1 最短路径
 
+开发树里：
+
 ```bash
 OCC_IDENTITY=qianmo bun run dev console
 ```
+
+装过包的机器上，**`qm console` 是等价且更短的写法**，身份不用再手写：
+
+```bash
+qm console
+```
+
+`qm` 是 `package.json` 的 `bin` 里第四个名字（原有 `occ` / `occ-bun` / `open-claude-code`
+一个没动），指向 `scripts/entrypoints.ts` 生成的 `dist/cli-qianmo.js`；那个文件头一行就是
+`process.env.OCC_IDENTITY ??= "qianmo"`。**`??=` 而不是 `=`**，所以 `OCC_IDENTITY=occ qm
+console` 仍然按 occ 跑、并照旧被那条前置校验拦下——入口给的是默认值，不是覆盖。
+身份**写在文件内容里、不从调用名推断**，理由在 `src/constants/brand.ts` 的
+`invokedBinName()` 注释里，本文不复制。**老写法一条都不作废，两种都对。**
+
+**代价是 `qm` 要求 PATH 上有 Bun**：它的 shebang 是 `#!/usr/bin/env bun`
+（`scripts/entrypoints.ts` 的 `identityPinnedEntrypointSource`），因为 console 与 resident
+都强制 Bun。对 console 来说这不是 `qm` 新引入的限制——`occ` 指向的是 node shebang 的
+`dist/cli-node.js`，在 Node 下 `runConsole` 第一步的 `assertConsoleRuntime()` 就会抛
+`console mode requires the Bun runtime`（`src/cli/handlers/consoleArgs.ts`），**已安装的
+名字里能起 console 的本来就只有 `occ-bun` 和 `qm`**。但这不等于「所以无所谓」：shebang
+管的是整个入口，`qm --version` 这类本来纯 Node 就能跑的快路径
+（`src/entrypoints/cli.tsx` 的 `--version` 分支）也一并绑上了 Bun。
 
 不带任何参数就能起：默认绑 `127.0.0.1:38613`，注册中心默认指
 `http://127.0.0.1:38610`，审计链默认指本机 `qianmo` 身份的那一条
@@ -133,7 +158,15 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
 | `--view-token <token>` | 环回时自动生成 | 只读凭据。**三个入口里优先级最低，且它会出现在这台机器每一份进程列表里**（见下） |
 | `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒）凭据，暴露面同上 |
-| `-h`, `--help` | — | 打印选项表并退出。**排在身份校验与运行时断言之前**——问「这个命令怎么用」的人，恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人 |
+| `-h`, `--help` | — | 打印选项表并退出。**排在身份校验与运行时断言之前**——问「这个命令怎么用」的人，恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人。Usage 那一行回显的是**你敲的名字**，见下 |
+
+`Usage:` 那一行、以及未知选项报错末尾那句「run … console --help 看列表」，命令名都取自
+`src/constants/brand.ts` 的 `invokedBinName()`，它**只用于显示**：白名单里只有 `bin` 真
+装出来的四个名字，别的一律回落到 `BIN_NAME`（`BIN_NAME` 本身一个字节没改，它答的仍是
+「我是哪个身份」）。**一处已知不准，已决定不修**：
+`OCC_IDENTITY=occ qm console --help` 打的是 `Usage: occ console`——Bun 会把 `argv[1]`
+解析成 `dist/cli-qianmo.js`，显示层拿不到 `qm` 这个字，于是回落到身份自己的名字。那是
+一个把环境变量与命令名故意拧反的调用，修它要新开一条只为显示服务的 env 通道，不值。
 
 两个 token 都至少 16 字符且必须互不相同，这条对自动生成的也一样校验
 （`packages/console/src/auth.ts` 的 `resolveTokens`）。
@@ -715,6 +748,7 @@ socket。
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
 | `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
+| `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒四个端口的生产实现 |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |

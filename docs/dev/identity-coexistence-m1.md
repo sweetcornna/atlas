@@ -5,21 +5,30 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.0** |
-| 日期 | 2026-08-17 |
+| 文档版本 | **v1.1** |
+| 日期 | 2026-08-17（v1.0）／2026-08-18（v1.1） |
+| v1.1 改了什么 | 只回写 `qm` 由「名义上的 CLI 名」变成**真的可安装的 `bin`** 这一件事：§1 的观察方式补第二条、§2 表与其下新增一段、复现命令补一条。**验收结论、§3 扫描记录、§4 真机枚举、§5 对账一字未动** |
 | 任务包 | retro-m0.md §7.2 **P10.1 身份隔离三者共存正式验收**（M1 首迭代；依赖 P0.3，已闭） |
 | 三方 | ① 官方 Claude Code（`.claude`）② occ 默认身份（`.occ`）③ 阡陌节点态（`OCC_IDENTITY=qianmo` → `.qianmo`） |
 | 结论 | **通过**：四类资产（配置根 / 凭据 / 缓存 / 项目资产）三方两两不相交；全仓生产代码**零绕过** `paths.ts`（2648 文件机器扫描，本包顺手修掉最后 3 处）；真机上官方与 occ **已长期实际共存**且互不越界 |
-| 复现 | `bun test src/config/__tests__/identityIsolation.test.ts`（9 用例）＋ `bun run check:identity-paths`（棘轮）＋ §4 的真机枚举命令 |
+| 复现 | `bun test src/config/__tests__/identityIsolation.test.ts`（9 用例）＋ `bun test src/constants/__tests__/invokedBinName.test.ts`（6 用例，v1.1 新增，见 §1）＋ `bun run check:identity-paths`（棘轮）＋ §4 的真机枚举命令 |
 
 ## 1. 验收对象与方法
 
 隔离机制本身是 P0.3 交付的（`src/config/paths.ts` 单点派生 + `src/constants/identity.ts`
 的 `byIdentity`/`acrossIdentities` 双答案设计）。本包做的是**正式验收**，不是重做：
 
-1. **子进程探针实测**（`identityProbe.runner.ts`）：身份在模块加载期钉死，唯一诚实的观察
-   方式是带不同 `OCC_IDENTITY` 与一次性 HOME 的新进程。9 条用例覆盖命名空间解析、
-   写保护并集、凭据互不可见、**解析后落盘树前缀不相交**（本包新增）。
+1. **子进程探针实测**（`identityProbe.runner.ts`）：身份在模块加载期钉死，所以诚实的观察
+   只能来自**新进程**——起法有两种：带不同 `OCC_IDENTITY` 与一次性 HOME 起一个，或者走
+   `qm` 入口（它在自己的文件里把 `OCC_IDENTITY` 默认成 `qianmo`，见 §2）。**这不是两个
+   身份判定点**：判定始终只有 `src/constants/identity.ts` 里 `IDENTITY_MODE` 那一处读
+   `OCC_IDENTITY`，`qm` 只是那个 env 的另一个**写入方**，而且是 `??=` 的默认值写入——
+   调用方显式给的值仍然胜出。9 条用例覆盖命名空间解析、写保护并集、凭据互不可见、
+   **解析后落盘树前缀不相交**（本包新增）。
+   **v1.1 补记**：同一个探针另被 `src/constants/__tests__/invokedBinName.test.ts` 的 6 条
+   用例驱动（它用**真实文件**而不是软链做 shim——Bun 会在填 `argv[1]` 之前解析软链），
+   钉的是「显示名 ≠ 身份」：叫 `qm` 的 shim 在没有 `OCC_IDENTITY` 时配置根仍解析到
+   `.occ`。
 2. **零绕过机器扫描**（`scripts/check-identity-paths.ts`，本包新增，`bun run
    check:identity-paths`）：扫 `src/` 与各包 `src/` 全部生产文件，注释剥离后禁三类
    字面量。零容忍、无预算文件——正确数字就是零。
@@ -34,7 +43,16 @@
 | env-paths 缓存根（macOS） | `~/Library/Caches/claude-cli-nodejs` | `~/Library/Caches/occ-nodejs` | `~/Library/Caches/qianmo-nodejs` |
 | XDG data / cache / state | （官方自管） | `~/.local/share/occ` 等三处 | `~/.local/share/qianmo` 等三处 |
 | 项目资产目录（settings / hooks / agents） | `<proj>/.claude` | `<proj>/.occ` | `<proj>/.qianmo` |
-| CLI 名 | `claude` | `occ` | `qm` |
+| CLI 名（`package.json` 的 `bin`） | `claude` | `occ`（另有 `occ-bun` / `open-claude-code` 两个同物别名） | **`qm`** → `dist/cli-qianmo.js` |
+
+**`qm` 自 2026-08-18 起是真的装得出来的名字**，不再只是「这个身份对外该叫什么」的一格
+登记：`bin` 第四项 `qm` 指向 `scripts/entrypoints.ts` 生成的 `dist/cli-qianmo.js`，该文件头
+一行就是 `process.env.OCC_IDENTITY ??= "qianmo"`，随后才**动态** import 运行时农场——静态
+import 会被 ESM 提升并先于模块体的语句求值，农场会赶在赋值之前按 occ 的配置根初始化。
+`??=` 而非 `=`，所以 `OCC_IDENTITY=occ qm …` 仍然是 occ。**身份仍然只从 env 判定**（§1）；
+另有一个 `invokedBinName()`（`src/constants/brand.ts`）回答「用户敲的是哪个名字」，**只用于
+帮助文本**，`BIN_NAME` 一个字节没动。它与 `BIN_NAME` 何时不一致、以及一处已决定不修的显示
+不准，见 [`console.md`](./console.md) §3；`qm` 是 bun shebang 这件事的代价见同文 §2.1。
 
 **两两不相交在两个层面被钉住**：命名空间字符串逐项不同（用例「every isolation-bearing
 value differs」），且**解析后的落盘树互不为前缀**（用例「resolved cache and XDG trees
