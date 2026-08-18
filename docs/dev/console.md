@@ -1,6 +1,8 @@
 # 阡陌控制面板（`occ console`）
 
-> **v0.1 · 2026-08-17 · 本地回环已跑通**
+> **v0.2 · 2026-08-17 · 已在内测环境上经反代对外**（v0.1 的那句「本地回环已跑通」不再是
+> 全部：登录页与会话 cookie、token 的三个入口、登录失败退避限流都是为「它现在真的被 50 个
+> 人打开」这件事补的——部署形态见 [`beta-env.md`](./beta-env.md)）
 >
 > 一条命令起一个网页，把「注册中心里有哪些智能体」「审计链上发生过什么」「协议
 > 上限是多少」摆在一页上，并允许注册、注销、心跳、唤醒四个动作。**面向的是内测
@@ -10,7 +12,7 @@
 | --- | --- |
 | 范围依据 | roadmap **M1「注册发现产品化」**：内容「最小 Web 控制台（智能体列表、状态、消息链查看）、账号体系、智能体生命周期管理」，出口判据「**内测用户无需接触 CLI 即可完成注册与查看**」。本包只做这一行里的**最小 Web 控制台**那一段 |
 | 明确不在本包内 | **账号体系**（章程 N-2：M0/本包不做账号与租户隔离，M1 另排）、权限模型（M1「权限模型上线」是另一行） |
-| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
+| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
 | 依赖 | `@qianmo/audit`（只读）、`@qianmo/protocol`、`@qianmo/registry`、`@qianmo/router`；运行时 Bun（`Bun.serve`） |
 | 身份 | **`OCC_IDENTITY=qianmo`**，与 `occ resident` / `occ audit` / `occ resident-wake` 同一条前置校验 |
 
@@ -18,7 +20,8 @@
 
 ## §1 它是什么
 
-一个**单进程、单页面、零构建**的运维面板。
+一个**单进程、零构建**的运维面板，服务端渲染出三份文档：主页 `/`（名册 / 审计 / 上限）、
+对话页 `/chat`（§6）、登录页 `/login`（§4.1）。
 
 - **零构建**：没有前端工具链。HTML 在服务端拼字符串，CSS 与 JS 是两个常量
   （`packages/console/src/assets/`）。加一个 npm 依赖就是给内测环境加一条供应链，
@@ -58,11 +61,20 @@ admin-token  9pR7…
 registry     http://127.0.0.1:38610
 audit-trail  /Users/you/.qianmo/qianmo/audit/trail.ndjson
 wake         disabled (no --wake-url)
+chat         disabled (no --chat-url)
 label        127.0.0.1:38613
 ```
 
-`open` 那一行是可以直接点开的——token 就在查询串里。**只有自动生成的 token 才会
-被打印**；显式提供的那两个不回显（§4.2）。
+`open` 那一行是可以直接点开的——token 就在查询串里。
+
+**`view-token` / `admin-token` 两行总是打，但打的东西不是一回事**：自动生成的打
+**值**（除了这一行没有第二个地方拿得到它），显式提供的打**出处**——
+`from --view-token-file /…`、`from $QIANMO_CONSOLE_VIEW_TOKEN`、
+`from --view-token (visible in the process list)`。**显式提供的值永不回显**：它已经在
+操作者手里，再打进终端记录和 CI 日志只是白白多一份泄露面。**出处则非打不可**：三个
+入口里高优先级的那个会静默盖掉低的（§3 的优先级表），而「这一枚来自命令行」同时就是
+「它此刻正躺在 `ps -eo args` 里」的告警。显式提供时 `open` 那一行相应变成
+`…/?token=<your view token>`（`src/cli/handlers/console.ts` 的 banner 段）。
 
 ### 2.2 和演示环境联调
 
@@ -85,13 +97,20 @@ OCC_IDENTITY=qianmo bun run dev console \
 要看节点 B 的那条，用 `--audit` 指过去（路径在 `demo/env/common.sh` 里），或者起
 第二个控制台换个端口。
 
-### 2.3 起不来的三种常见原因
+### 2.3 起不来的五种常见原因
 
 | 现象 | 原因 |
 | --- | --- |
 | `console requires OCC_IDENTITY=qianmo` | 忘了设身份变量。控制台属于阡陌节点态，不在 occ 默认身份下跑 |
 | `控制台绑定在非环回地址 … 必须显式提供 view token` | 用了 `--hostname 0.0.0.0`（或任何非回环地址）却没给两个 token。这是**故意**的，理由见 §4.2 |
+| `--view-token-file … is readable beyond its owner (mode 0644)` | token 文件的 group / other 权限位不为零。`chmod 600` 即可。**这是拒绝启动而不是告警**：一个对 0644 闭眼的「安全入口」只是把明文从 `ps` 挪到了 `ls -l`，那样它就不配排在优先级第一（§3） |
+| `--admin-token-file … cannot be read` / `… is empty` | 路径写错、读不到、或文件是空的。**空文件按配错处理，不按「没给」处理**——按「没给」处理的后果是在回环上悄悄换成一枚自动生成的 token，而那恰好是运维以为自己把 token 钉死了的那一刻 |
 | `EADDRINUSE` | 38613 被占。换 `--port`，或者先看看是不是已经起了一个 |
+
+第一条来自 `consoleArgs.ts` 的 `parseConsoleArgs`，第二条来自
+`packages/console/src/auth.ts` 的 `resolveTokens`，中间那两条来自
+`src/cli/handlers/consoleTokenSources.ts`。**凭据在接线之前就定下来**，所以起不来的
+那一次不会先把聊天链路拨出去、把会话文件写出来（`console.ts` 的 `runConsole`）。
 
 ---
 
@@ -110,11 +129,33 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--label <text>` | `hostname:port` | 页头标签，≤120 字符。两个控制台开在两个标签页时，靠它区分 |
-| `--view-token <token>` | 环回时自动生成 | 只读凭据 |
-| `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒）凭据 |
+| `--view-token-file <绝对路径>` | 无 | 从文件读只读凭据。**必须是绝对路径**；**权限必须 0600 或更严**（group/other 任一位不为零就拒绝启动），尾部换行会被去掉 |
+| `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
+| `--view-token <token>` | 环回时自动生成 | 只读凭据。**三个入口里优先级最低，且它会出现在这台机器每一份进程列表里**（见下） |
+| `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒）凭据，暴露面同上 |
+| `-h`, `--help` | — | 打印选项表并退出。**排在身份校验与运行时断言之前**——问「这个命令怎么用」的人，恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人 |
 
 两个 token 都至少 16 字符且必须互不相同，这条对自动生成的也一样校验
 （`packages/console/src/auth.ts` 的 `resolveTokens`）。
+
+### 3.1 每枚 token 三个入口，优先级：文件 > 环境变量 > 命令行
+
+| 优先级 | 入口 | view / admin |
+| --- | --- | --- |
+| 1（最高） | 文件 | `--view-token-file` / `--admin-token-file` |
+| 2 | 环境变量 | `QIANMO_CONSOLE_VIEW_TOKEN` / `QIANMO_CONSOLE_ADMIN_TOKEN` |
+| 3（最低） | 命令行 | `--view-token` / `--admin-token` |
+
+排序的依据是**「这一份密钥能被什么保护」**，不是「哪个写起来更显式」：文件是三者里
+唯一能被文件系统权限保护的一个——它不进任何进程的 `argv`，也不进子进程继承的
+`environ`；环境变量在 Linux 上是 `/proc/<pid>/environ`，只有属主可读，挡得住同机的其他
+账号；命令行是 `/proc/<pid>/cmdline`，**默认全局可读**，所以它排最后，留着只是为了不
+打断既有脚本。逐条论证在 `src/cli/handlers/consoleTokenSources.ts` 的模块注释里，本文
+不复制。
+
+高优先级的入口静默盖掉低优先级的，是那种事后没人查得清的配置事故，所以**启动横幅
+总是把每一枚的出处打出来**（§2.1）。「哪一枚满足多长、两枚必须不同、非环回必须显式给」
+不在这里——那是 `resolveTokens` 的三条策略（§4.2），这一层只回答「这一枚从哪儿来」。
 
 ---
 
@@ -129,15 +170,41 @@ OCC_IDENTITY=qianmo bun run dev console \
 
 比对是**定长时间**的（`timingSafeEqual`）。
 
-token 可以走两个位置（`presentedTokenOf`）：
+token 可以走**三个位置**，按这个顺序逐个试：
 
-- `Authorization: Bearer <token>` —— 页面自己的 `fetch` 和 `curl` 用这个；
-- `?token=<token>` —— **浏览器导航**用这个，因为地址栏里敲进去的 URL 没法带 header。
-  CLI 打印那条带 token 的 URL，就是为了这个。
+1. `Authorization: Bearer <token>` —— 页面自己的 `fetch` 和 `curl` 用这个；
+2. `?token=<token>` —— **浏览器导航**用这个，因为地址栏里敲进去的 URL 没法带 header。
+   CLI 打印那条带 token 的 URL，就是为了这个；
+3. `qianmo_console` **cookie** —— `POST /login` 之后浏览器自己带上的那一份。有了它，
+   打开控制台是「在一个框里填一次 token」，不是「手工往 URL 上拼一段」。
 
-**故意不用 cookie**：cookie 是浏览器自动附带的，那会让任何一个本地页面都能对这个
-回环端口发出带凭据的跨源 `POST`，每个 admin 路由都变成 CSRF 靶子。「凭据不是环境
-自带的」本身就是这里的 CSRF 防线。
+**「逐个试直到命中」而不是「第一个有值的赢」**：判定是 `credentialOf`（`auth.ts`），
+它跳过解析不出角色的位置继续往下走。一个还留着 cookie 的浏览器完全可能去点一条
+`?token=` 已经轮换过的旧链接，把那种请求判成匿名，等于因为一份过期书签就把人踢下线。
+反向的提升永远不成立——每个位置都拿同样那两个字符串比。（另有一个只答「调用者送来了
+什么」的 `presentedCredentialOf`，它取第一个**非空**的位置；两者在多个位置同时有值时会
+给出不同答案，**路由用的是 `credentialOf`**。）
+
+**cookie 那一份的代价与它的三笔分期偿还，真源是 `packages/console/src/auth.ts` 的模块
+注释**——那里逐条论证了「一个 ambient 凭据凭什么可以安全」，本文不复制，只记结论：
+
+- cookie 是 `HttpOnly` / `SameSite=Strict` / `Path=/` / host-only（无 `Domain`，同域的
+  兄弟主机认领不走），**`Secure` 只在请求真的走了 TLS 时才加**。无条件加看起来更安全，
+  实际是错的：控制台也会经 SSH 隧道以 `http://127.0.0.1:<port>` 打开，而 `Secure` cookie
+  在那里根本不会被送回来，登录页于是收下 token 又把人原地弹回自己。
+- **`SameSite` 不看端口**——同站是「协议 + 可注册域」，所以同机上任何一个
+  `http://127.0.0.1:9999` 与本控制台同站，它发出的请求会自动带上这枚 cookie。因此
+  **凡不是纯文档读取的路由，cookie 凭据必须额外带 `X-Qianmo-Console` 请求头**（§5.1），
+  而**本服务不回任何 CORS 头、也不答 preflight**：跨源页面既设不了这个自定义头（它会
+  强制预检），也过不了那个没人回答的预检。
+- `Bearer` 与 `?token=` 两个位置豁免这条，因为它们**不是环境自带的**：能拿出其中任何
+  一个的页面已经知道 token，而 CSRF 是不知道 token 的人干的事。
+
+侧栏因此多了两样东西（`view/bits.ts` 的 `identityControl`）：一枚写着「管理 / 只读」的
+角色标——admin 是 view 的严格超集，不写出来的话「少一个按钮」看起来像页面坏了而不是
+权限不够；以及一个 `退出`，它是一个**原生 `POST /logout` 表单**而不是脚本接管的按钮，
+因为它要和它通向的那张登录页在同样的条件下工作（`view/login.ts`：登录页是包里唯一
+一个没有 `<script>` 的页面）。
 
 ### 4.2 为什么非环回必须显式给 token
 
@@ -158,8 +225,9 @@ token 可以走两个位置（`presentedTokenOf`）：
 
 一个只在没人看日志时才生效的漏洞，和一个立刻报错的启动失败——只有后者是可以接受的。
 
-**另外**：这条规则不等于「给了 token 就可以挂公网」。控制台没有 TLS、没有速率限制、
-没有账号体系（§8.1），要跨机器访问请用 SSH 端口转发：
+**另外**：这条规则不等于「给了 token 就可以挂公网」。控制台没有 TLS、没有账号体系
+（§8.1），限流**只有登录路由那一处**、其余 HTTP 面照旧不限（§8.4）。要跨机器访问请用
+SSH 端口转发：
 
 ```bash
 ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:38613
@@ -167,12 +235,25 @@ ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:
 
 ### 4.3 哪些路由不要凭据
 
-只有三条，都是**公开的**：
+只有五条路径，都是**公开的**：
 
 - `GET /v0/health` —— 存活探针。一个要凭据的探针是一个没人接的探针。
-- `GET /assets/app.css`、`GET /assets/app.js` —— 两个静态常量，不含任何数据。
+- `GET /assets/app.css`、`GET /assets/app.js` —— 两个静态常量，不含任何数据。浏览器
+  不会给它在页面里发现的 `<link>` / `<script>` 附上控制台的凭据，门起来只会得到一张
+  没有样式的页。
+- `GET /login`、`POST /login` —— 门。**一扇要钥匙的门不是门。**两个方法都在凭据检查
+  之前分派；防线在别处：`POST` 拒绝跨源提交（`Sec-Fetch-Site`），并且**限流跑在比对
+  之前**，所以被挡住的调用者连「刚才那一枚对不对」都问不出来（§8.4）。
+- `POST /logout` —— 出口。它唯一改变的是调用者自己浏览器里的状态；**要求一枚有效
+  token 才准「停止使用 token」**，会把那些开着标签页、而 token 已经被轮换掉的人卡死在
+  里面。同样带 `Sec-Fetch-Site` 检查，因为「同站另一个端口上的页面把运维循环登出」
+  这种恶作剧只值三行代码就能去掉。
 
-其余全部要 view 或 admin。
+其余全部要 view 或 admin。**未认证的浏览器不会拿到一份它无法处置的 JSON 401**：
+`Accept: text/html` 的 `GET` 会被 303 到 `/login` 并带上校验过的回程；而拿着 view token
+去撞 admin 页面的人**原地**看到那张登录卡片（他已经登录了，弹去 `/login` 只会被弹回来）。
+`curl` 与轮询器仍旧拿 401 JSON——给它们 HTML 加 200 就是在撒谎（`http.ts` 的
+`documentDenial`）。
 
 ### 4.4 唤醒面为什么可能是灰的
 
@@ -187,6 +268,11 @@ ssh -L 38613:127.0.0.1:38613 <host>     # 然后在本地浏览器开 127.0.0.1:
 **PSK 只从环境变量取，没有对应的命令行选项。**命令行上的密钥就是这台机器每一份
 进程列表里的密钥，和 `occ resident --backup-url` 要求 `QIANMO_BACKUP_WRITE_TOKEN`
 走环境变量是同一条纪律。
+
+**两枚控制台 token 现在同样遵守这条纪律**（§3.1 的优先级表）。此前它不是这样的：这条
+纪律只写在本文里，而实现只给了 `--view-token` / `--admin-token` 两个命令行入口——也就是
+说文档在讲一条实现正在违反的规矩。文件与环境变量两个入口就是来补这个缺口的，命令行那
+条留着只是为了兼容，且启动横幅会把「这一枚来自命令行」明写出来。
 
 **唤醒目标钉死在 `--wake-url` 上。**页面传来的 `url` 只被允许等于它（或留空）；不等
 就拒绝。否则这个端口等于「任何拿到 admin token 的人都能让本机往任意 ws 地址发一条
@@ -222,6 +308,9 @@ admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/` | view | 整页 |
+| GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
+| POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
+| POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
 | GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量 |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
@@ -255,6 +344,27 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 `/v0/audit` 的查询参数：`source`、`outcome`、`traceId`、`taskId`、`agent`、`from`、
 `to`（ISO 时间或 epoch 毫秒）、`limit`。全部是 AND；`limit` 取的是**尾部** N 条，和
 `occ audit --limit` 同一语义。
+
+### 5.1 三个保护等级：一枚 cookie 能单独打开哪些路由
+
+自从 `POST /login` 会给浏览器发 cookie，每条路由都得回答一个新问题：**一份「环境自带」
+的凭据在它上面能干什么**。论证在 `auth.ts`（§4.1），这里是分派表——只有三个值
+（`http.ts` 的 `Protection`）：
+
+| 等级 | 哪些路由 | cookie 单独够不够 |
+| --- | --- | --- |
+| `document` | `GET /`、`GET /chat` | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
+| `stream` | `GET /v0/chat/stream` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource` 同样带不了头，所以它只能拿这个等级 |
+| `guarded` | **其余每一条要凭据的**：所有写、所有 JSON 读、所有 HTML 片段 | **不够**，必须同时带 `X-Qianmo-Console`。跨源调用者设不了它，因为那会触发一次本服务从不回答的预检 |
+
+**`/v0/chat/stream` 是唯一一条非文档、却接受纯 cookie 的路由**，所以它单独配了那个
+`Sec-Fetch-Site` 检查——`SameSite` 漏掉的恰恰是「同站但不同端口」，而这个头由浏览器写、
+页面脚本伪造不了。**但它是 belt，不是 braces**：不发这个头的浏览器会退回上面那套规则，
+真正 fail-closed 的仍然是那个自定义头（`auth.ts` 的 `isCrossOriginRequest`、`http.ts` 的
+`guard`）。
+
+角色判定**排在位置判定之前**：没有有效凭据的调用者一律拿 401，无论他有没有顺手带上那个
+控制台头——否则那个头就成了一个「这是不是一枚真 cookie」的探针。
 
 ---
 
@@ -455,21 +565,27 @@ socket。
 的原因被 `wireChat` 接住，控制台照常起来，只是没有对话面。stdout 的 `chat` 那一行说明是
 启用了还是哪一种没启用；启用时另打一行 `chat-store`（§2.1 的那几行）。
 
-### 6.8 跨页链接把 token 放在查询串里
+### 6.8 Bearer 会话的跨页链接把 token 放在查询串里
 
-顶层导航带不了 `Authorization` 头，而这个控制台**刻意**不把凭据放进 cookie（§4.1），
-于是两个方向的侧栏链接都由客户端在渲染之后把 token 补进 href 的查询串（`assets/client.ts`
-与 `assets/chatClient.ts` 里的 `paintCrossPageLink`）——和 CLI banner 打印的那条 `?token=`
-是同一个位置、同一份暴露面。服务端渲染出去的是不带 token 的那一版；没有 token 时链接也
-原样留着，一个指向 401 的链接仍然好过一个假装已认证的链接。
+顶层导航带不了 `Authorization` 头，所以两个方向的侧栏链接都由客户端在渲染之后把 token
+补进 href 的查询串（`assets/client.ts` 与 `assets/chatClient.ts` 里的
+`paintCrossPageLink`）——和 CLI banner 打印的那条 `?token=` 是同一个位置、同一份暴露面。
+服务端渲染出去的是不带 token 的那一版。
 
-到站后页面第一件事就是把 token 从地址栏洗掉（读进 localStorage 后 `history.replaceState`
-重写 URL）。**正因为洗掉了，切换会话不能是一次导航**：`/chat?session=…` 的顶层导航既没有
-头也没有 cookie，会当场 401。所以首屏之后的一切都走 `fetch`——`replaceState` 改地址栏，
-两个片段各换各的（`assets/chatClient.ts` 的 `openSession`）。
+**这件事现在只对 Bearer 会话成立。**cookie 会话的 `localStorage` 里什么都没有，也不需要
+有：浏览器会自己把 cookie 附到那次导航上（`document` 等级，§5.1）。所以**没有 token 时
+链接原样留着，如今是常态而不是坏掉**——它要么被 cookie 认证，要么诚实地把人送到登录页。
+
+到站后页面第一件事仍是把 token 从地址栏洗掉（读进 localStorage 后 `history.replaceState`
+重写 URL）。**切换会话仍然不是一次导航，但理由变了**：cookie 会话下 `/chat?session=…` 的
+顶层导航是活得下来的——浏览器会带上 cookie。留着 `fetch` 交换，是因为**两种凭据只应该有
+一种行为**：一种凭据下换两个片段、另一种凭据下整篇重载文档，那是两条都要维持为真的路径
+（`assets/chatClient.ts` 的 `openSession` 注释）。Bearer 会话那边的老理由也还在：token 一
+洗掉，导航就当场 401。
 
 同一条约束的另一个出口是流：`EventSource` 也带不了头，所以 `/v0/chat/stream` 的 token 同样
-走查询串——`auth.ts` 接受第二个位置，正是为了这一类调用（§4.1）。
+走查询串，或者干脆靠 cookie——`auth.ts` 接受后两个位置，正是为了这一类调用（§4.1），而
+它单独付的代价写在 §5.1。
 
 ---
 
@@ -514,7 +630,19 @@ socket。
 账号与授权链是 M1「注册发现产品化」与「权限模型上线」两行各自的事。
 
 **推论**：token 要当密码管——别提交进仓库、别写进共享的 shell profile、换人就换 token
-（重启控制台即可，token 不落盘）。
+（重启控制台即可，控制台自己不落盘任何 token；用 `--*-token-file` 时那份文件是运维自己
+的，不是控制台写的）。
+
+**登录页给 token 加了第三个落脚点：浏览器的 cookie jar，12 小时**（`SESSION_MAX_AGE_SECONDS`）。
+另外两个是操作者手里的那份和页面的 `localStorage`。三个都要一起想：
+
+- **cookie 里装的就是 token 本身。**这里**刻意没有做**「服务端签发一个 session id、另存一张
+  表」那一套——理由与代价在 `auth.ts` 的模块注释里，本文不复制。
+- **所以没有服务端吊销。**一枚外泄的 cookie 一直有效**到 token 本身改变为止**（也就是重启
+  控制台换 token），12 小时的 `Max-Age` 只是让它自己过期，不是让你能撤销它。
+- **`退出` 只清浏览器那一份**：`POST /logout` 发一枚清空的 cookie、客户端顺手扔掉
+  `localStorage` 里那份副本。它是「这台机器上的这个人不再持有凭据」，不是「这枚凭据作废」。
+  两者的差别在丢了笔记本的那天才会显现，而那天要做的是换 token。
 
 ### 8.2 注册中心本身没有任何鉴权
 
@@ -549,10 +677,28 @@ socket。
 | 边界 | 说明 |
 | --- | --- |
 | 没有 TLS | 只在回环上安全。跨机器用 SSH 端口转发（§4.2） |
-| 没有速率限制 | 面板自身的 HTTP 面不限流。回环 + token 是当前的全部防线 |
+| 限流只有登录路由一处 | 见下。面板其余 HTTP 面（名册、审计、片段、对话、SSE）仍然不限流，回环 + token 是它们的全部防线 |
 | 审计链全量读进内存 | `readTrail` 一次性读整个文件。链很长时首屏会慢；页面侧有尾部条数上限兜着，但这不是分页 |
 | 一次只看一条审计链 | 每个节点一条链，跨节点还原要么在同一台机器上换 `--audit`，要么起多个控制台 |
 | 名册即注册中心的视图 | 注册中心是内存表（可选文件落盘），控制台不缓存也不补齐。它显示不出来的东西，注册中心里就没有 |
+
+**登录路由那一处限流长这样**（`packages/console/src/throttle.ts`）：前 5 次失败免罚
+（打错字不是攻击），之后每多失一次，封锁时长翻一倍——第 6 次失败罚 1 s、第 7 次 2 s、
+第 8 次 4 s……**上限 300 s**（从第 15 次失败起就是这个封顶值），计数器**闲置 1 小时即
+遗忘**，一次成功登录直接清零。它守的不是「32 字符随机串会不会被猜中」，而是登录**表单**
+新造出来的那件事：在它存在之前，猜测意味着写一个脚本去驱动 JSON API；一个答 200 或 401
+的文本框，是任何找到这个端口的人都能从浏览器标签页里驱动的猜测预言机。计数器只在内存里
+——控制台本来就没有活过重启的状态，重启就诚实地忘掉。
+
+**它在单层反向代理后面会退化成一个全局桶**，这件事要写清楚：计数的键是 socket 的对端
+地址，**绝不是 `X-Forwarded-For`**——直连时那个头由客户端自己写，信它等于让一个攻击者
+每次尝试都换一个新桶，这个文件就没有存在的意义了。代价是反代后面所有人共享
+`127.0.0.1` 一个桶：**好处**是任意 IP 的攻击者都被同一条曲线限住（被猜的是**控制台**，
+不是某个调用者）；**坏处**是一个连错密码的合法运维会把其他人一起挡住，最坏 5 分钟。
+真要修得先有 `--trusted-proxy` 之类的显式信任声明 + 受控解析 `X-Forwarded-For`——**在
+那之前，「反代上加一条 `limit_req` 就行了」不是替代品**：那条规则是 per-location 的，而
+本控制台的实时面（SSE 流、轮询）恰恰是这种规则通常要跳过的那些，何况它住在一个本仓库
+不拥有、也无法测试的配置文件里。
 
 ---
 
@@ -561,14 +707,18 @@ socket。
 | 文件 | 是什么 |
 | --- | --- |
 | `packages/console/src/deps.ts` | **五个端口的契约**。改端口形状从这里开始 |
-| `packages/console/src/auth.ts` | token 策略（生成 / 校验 / 角色判定）的唯一出处 |
-| `packages/console/src/http.ts` | 路由、鉴权门、JSON 与 HTML 片段 |
+| `packages/console/src/auth.ts` | token 策略（生成 / 校验 / 角色判定 / 三个位置）与 **cookie 那套论证**的唯一出处（§4.1） |
+| `packages/console/src/throttle.ts` | 登录失败退避：免罚次数、翻倍、上限、遗忘窗口，以及「为什么反代的 `limit_req` 顶不了它」（§8.4） |
+| `packages/console/src/view/login.ts` | `/login` 那张卡片。包里唯一没有 `<script>` 的页面，理由在模块注释 |
+| `packages/console/src/http.ts` | 路由、鉴权门、三个保护等级的分派（§5.1）、JSON 与 HTML 片段 |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
 | `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
-| `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数），**不 import 控制台包** |
+| `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
+| `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒四个端口的生产实现 |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
 | `docs/dev/demo-env.md` §2.4 | 端口分配表。改默认端口前先看它 |
+| `docs/dev/node-provisioning.md` | **节点装机与接网设计**：控制台上填 SSH 凭证把一台机器变成节点。它给控制台加的是第三枚 `provision` token（与 view / admin **互不包含**）与五类钉死的动作，本文的鉴权模型是它的地基 |
