@@ -20,25 +20,26 @@ mock.module('bun:bundle', () => ({ feature: () => false }))
 
 // auth via the shared complete-surface mock (missing exports get safe
 // defaults); registered under the canonical '.js' specifier so all writers
-// hit the same registry entry — see tests/mocks/auth.ts.
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+// hit the same registry entry — see tests/mocks/auth.ts. setupAuthMock keeps
+// a handle so the fake credential surface can be torn down in afterAll below,
+// instead of leaking to every later file in the shard.
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { makeSharedModuleMock } from '../../../../tests/mocks/sharedModuleMock.js'
 import * as realClaudeAiLimits from 'src/services/claudeAiLimits.js'
 import * as realCostTracker from 'src/cost-tracker.js'
 import * as realConfig from 'src/utils/config/config.js'
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    isClaudeAISubscriber: () => false,
-    getOAuthAccount: () => null,
-  }),
-)
+const authMock = setupAuthMock({
+  isClaudeAISubscriber: () => false,
+})
 
 // The three mocks below go through the shared complete-surface pattern
 // (overrides listed, every other export delegates to the real module).
 // Hand-rolled partial surfaces here used to poison later files in the same
 // process: on Linux ordering, local-memory tests died on cost-tracker's
 // missing addToTotalLinesChanged. See tests/mocks/sharedModuleMock.ts.
+// Each setup() handle is bound so its override can be reset in afterAll —
+// otherwise it stays installed for every later file in the shard, since
+// mock.module is process-global.
 const sharedMock = makeSharedModuleMock(
   'src/services/claudeAiLimits.js',
   realClaudeAiLimits,
@@ -48,11 +49,17 @@ const sharedMock = makeSharedModuleMock(
   } as typeof realClaudeAiLimits.currentLimits,
 })
 
-makeSharedModuleMock('src/cost-tracker.js', realCostTracker).setup({
+const costTrackerMock = makeSharedModuleMock(
+  'src/cost-tracker.js',
+  realCostTracker,
+).setup({
   formatTotalCost: () => 'Total cost: $0.0012',
 })
 
-makeSharedModuleMock('src/utils/config/config.js', realConfig).setup({
+const configMock = makeSharedModuleMock(
+  'src/utils/config/config.js',
+  realConfig,
+).setup({
   getCurrentProjectConfig: () =>
     ({}) as ReturnType<typeof realConfig.getCurrentProjectConfig>,
   saveCurrentProjectConfig: () => {},
@@ -146,5 +153,8 @@ describe('usage command — stats index is no longer standalone', () => {
 // them into beforeAll. Without this they stay installed for every later file
 // in the shard — mock.module is process-global.
 afterAll(() => {
+  authMock.reset()
+  costTrackerMock.reset()
+  configMock.reset()
   sharedMock.reset()
 })

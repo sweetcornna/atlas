@@ -1,15 +1,13 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 
 // auth via the shared complete-surface mock; subscription off so the branch
 // under test (ChatGPT OAuth vs API billing) is reachable.
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    isClaudeAISubscriber: () => false,
-    getSubscriptionName: () => 'Claude Pro',
-  }),
-)
+const authMock = setupAuthMock({
+  isClaudeAISubscriber: () => false,
+  getSubscriptionName: () => 'Claude Pro',
+})
+afterAll(() => authMock.reset())
 
 // MACRO is a build-time define; provide it for bare test runtime (same pattern
 // as mcp.test.ts).

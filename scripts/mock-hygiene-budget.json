@@ -1,1 +1,25 @@
-{}
+{
+  "packages/builtin-tools/src/tools/RemoteTriggerTool/__tests__/RemoteTriggerTool.test.ts": [
+    0, 0, 0, 1
+  ],
+  "src/commands/agents-platform/__tests__/launchAgentsPlatform.test.ts": [
+    0, 0, 0, 1
+  ],
+  "src/commands/autofix-pr/__tests__/launchAutofixPr.test.ts": [0, 0, 0, 1],
+  "src/commands/login/__tests__/getAuthStatus.test.ts": [0, 0, 0, 14],
+  "src/commands/memory-stores/__tests__/launchMemoryStores.test.ts": [
+    0, 0, 0, 1
+  ],
+  "src/commands/review/__tests__/ultrareviewCommand.test.tsx": [0, 0, 0, 1],
+  "src/commands/schedule/__tests__/api.test.ts": [0, 0, 0, 1],
+  "src/commands/schedule/__tests__/launchSchedule.test.ts": [0, 0, 0, 1],
+  "src/commands/share/__tests__/share-projectdir.test.ts": [0, 0, 0, 1],
+  "src/commands/skill-store/__tests__/launchSkillStore.test.ts": [0, 0, 0, 1],
+  "src/commands/vault/__tests__/launchVault.test.ts": [0, 0, 0, 1],
+  "src/services/search/__tests__/sourceCredentials.test.ts": [0, 1, 0, 0],
+  "src/tasks/LocalAgentTask/__tests__/LocalAgentTask.test.ts": [0, 0, 0, 1],
+  "src/utils/__tests__/effort.test.ts": [0, 1, 0, 1],
+  "src/utils/__tests__/tasks.test.ts": [0, 0, 0, 1],
+  "src/utils/task/__tests__/agentScopedTasks.test.ts": [0, 0, 0, 1],
+  "src/utils/task/__tests__/agentTagToolIntegration.test.ts": [0, 0, 0, 1]
+}

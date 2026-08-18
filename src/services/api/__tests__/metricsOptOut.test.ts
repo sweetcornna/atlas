@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import type { AccountInfo, GlobalConfig } from '../../../utils/config/config.js'
 import * as realConfig from '../../../utils/config/config.js'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
@@ -22,15 +22,12 @@ type StoredMetricsCache = {
 let account: AccountInfo
 let storedCache: StoredMetricsCache | undefined
 
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    isClaudeAISubscriber: () => true,
-    hasProfileScope: () => true,
-    getOauthAccountInfo: () => account,
-    getAnthropicApiKeyWithSource: () => ({ key: null, source: 'none' }),
-  }),
-)
+const authMock = setupAuthMock({
+  isClaudeAISubscriber: () => true,
+  hasProfileScope: () => true,
+  getOauthAccountInfo: () => account,
+  getAnthropicApiKeyWithSource: () => ({ key: null, source: 'none' }),
+})
 mock.module('src/utils/telemetry/debug.ts', debugMock)
 mock.module('src/utils/telemetry/log.ts', logMock)
 
@@ -54,7 +51,7 @@ const axiosMock = setupAxiosMock()
 afterAll(() => {
   axiosMock.useStubs = false
   configMock.reset()
-  mock.module('src/utils/auth/auth.js', authMockWith())
+  authMock.reset()
 })
 
 import {

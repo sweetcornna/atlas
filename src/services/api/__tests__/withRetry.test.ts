@@ -1,11 +1,19 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
 import type Anthropic from '@anthropic-ai/sdk'
 import {
   APIConnectionError,
   APIError,
   APIUserAbortError,
 } from '@anthropic-ai/sdk'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 
@@ -24,26 +32,24 @@ const authCalls: string[] = []
 const subscription = { claudeAI: true, enterprise: false }
 
 mock.module('bun:bundle', () => ({ feature: () => false }))
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    isClaudeAISubscriber: () => subscription.claudeAI,
-    isEnterpriseSubscriber: () => subscription.enterprise,
-    clearApiKeyHelperCache: () => {
-      authCalls.push('clearApiKeyHelperCache')
-    },
-    clearAwsCredentialsCache: () => {
-      authCalls.push('clearAwsCredentialsCache')
-    },
-    clearGcpCredentialsCache: () => {
-      authCalls.push('clearGcpCredentialsCache')
-    },
-    handleOAuth401Error: async (failedAccessToken: string) => {
-      authCalls.push(`handleOAuth401Error:${failedAccessToken}`)
-      return true
-    },
-  }),
-)
+const authMock = setupAuthMock({
+  isClaudeAISubscriber: () => subscription.claudeAI,
+  isEnterpriseSubscriber: () => subscription.enterprise,
+  clearApiKeyHelperCache: () => {
+    authCalls.push('clearApiKeyHelperCache')
+  },
+  clearAwsCredentialsCache: () => {
+    authCalls.push('clearAwsCredentialsCache')
+  },
+  clearGcpCredentialsCache: () => {
+    authCalls.push('clearGcpCredentialsCache')
+  },
+  handleOAuth401Error: async (failedAccessToken: string) => {
+    authCalls.push(`handleOAuth401Error:${failedAccessToken}`)
+    return true
+  },
+})
+afterAll(() => authMock.reset())
 mock.module('src/utils/telemetry/debug.ts', debugMock)
 mock.module('src/utils/telemetry/log.ts', logMock)
 
