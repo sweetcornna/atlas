@@ -9,7 +9,7 @@ import {
   pskFromEnv,
   type SuccessfulReceiptStatus,
 } from '@qianmo/transport'
-import { BIN_NAME } from '../../constants/brand.js'
+import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { residentOptionValue } from './residentArgs.js'
 
@@ -79,7 +79,7 @@ export function isResidentWakeHelpRequest(args: readonly string[]): boolean {
  * 都不能省，而它们的报错是一条一条来的（`--url` 缺了先报 `--url`），所以帮助里
  * 要把四个一次列全，免得人靠反复撞错误把它们凑出来。
  */
-export const RESIDENT_WAKE_HELP_TEXT = `Usage: ${BIN_NAME} resident-wake [options]
+export const RESIDENT_WAKE_HELP_TEXT = `Usage: ${invokedBinName()} resident-wake [options]
 
 Send one wake message to an agent on another node and print the receipt as
 JSON. One invocation sends one message and exits. Requires OCC_IDENTITY=qianmo
@@ -183,7 +183,7 @@ export function parseResidentWakeArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown resident wake option ${String(arg)}` +
-          ` (run \`${BIN_NAME} resident-wake --help\` for the list)`,
+          ` (run \`${invokedBinName()} resident-wake --help\` for the list)`,
       )
     }
   }

@@ -17,7 +17,7 @@
 import { isAbsolute, resolve } from 'node:path'
 import { PSK_ENV_VAR } from '@qianmo/transport'
 import { occConfigPath } from '../../config/paths.js'
-import { BIN_NAME } from '../../constants/brand.js'
+import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import {
@@ -249,7 +249,7 @@ export function parseConsoleArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown console option ${String(arg)}` +
-          ` (run \`${BIN_NAME} console --help\` for the list)`,
+          ` (run \`${invokedBinName()} console --help\` for the list)`,
       )
     }
   }
@@ -302,7 +302,7 @@ export function isConsoleHelpRequest(args: readonly string[]): boolean {
  * 「给了才启用」的面、三个 token 入口的优先级与那条进程列表的暴露）都必须在
  * 这里说全。
  */
-export const CONSOLE_HELP_TEXT = `Usage: ${BIN_NAME} console [options]
+export const CONSOLE_HELP_TEXT = `Usage: ${invokedBinName()} console [options]
 
 Serve the Qianmo web console. Requires OCC_IDENTITY=qianmo and the Bun runtime.
 Full documentation: docs/dev/console.md

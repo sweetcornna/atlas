@@ -26,7 +26,7 @@ import {
   reconstructChain,
   type AuditRecord,
 } from '@qianmo/audit'
-import { BIN_NAME } from '../../constants/brand.js'
+import { invokedBinName } from '../../constants/brand.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import { residentOptionValue } from './residentArgs.js'
 
@@ -84,7 +84,7 @@ export function isQianmoAuditHelpRequest(args: readonly string[]): boolean {
  * 会踩的事必须写在这里：**至少要给一个查询条件**（否则报错而不是打印整条链），
  * 以及 `--verify` 在链断时**退出码 1**——那正是它能进 cron 的原因。
  */
-export const QIANMO_AUDIT_HELP_TEXT = `Usage: ${BIN_NAME} audit [options]
+export const QIANMO_AUDIT_HELP_TEXT = `Usage: ${invokedBinName()} audit [options]
 
 Query this node's audit trail: what happened to one task, what an agent has
 been up to, and whether the chain is still intact. Message payloads are never
@@ -183,7 +183,7 @@ export function parseQianmoAuditArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown audit option ${String(arg)}` +
-          ` (run \`${BIN_NAME} audit --help\` for the list)`,
+          ` (run \`${invokedBinName()} audit --help\` for the list)`,
       )
     }
   }

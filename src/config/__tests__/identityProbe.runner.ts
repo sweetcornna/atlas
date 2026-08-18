@@ -1,5 +1,6 @@
 /**
- * Out-of-process identity probe for identityIsolation.test.ts.
+ * Out-of-process identity probe for identityIsolation.test.ts and
+ * src/constants/__tests__/invokedBinName.test.ts.
  *
  * Identity is fixed at module load (see src/constants/identity.ts), so the only
  * honest way to observe a NON-default identity is a fresh process with a
@@ -7,6 +8,11 @@
  * real derivation modules and reports/acts on whatever identity it booted with.
  * Relative imports (not the `src/*` alias) so it runs identically under
  * `bun run <path>` regardless of tsconfig-path handling.
+ *
+ * `invokedBinName()` is not identity — it is the DISPLAY name, read from
+ * `process.argv[1]` — and it cannot be varied by env at all, so
+ * invokedBinName.test.ts drives this same script through generated shim files
+ * whose names are the installed bin names. Which is why `report` carries it.
  *
  * Subcommands (argv[2]):
  *   report              → print the resolved identity surface as JSON
@@ -22,7 +28,7 @@
 import envPaths from 'env-paths'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { BIN_NAME } from '../../constants/brand.js'
+import { BIN_NAME, invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
 import {
   getXDGCacheHome,
@@ -46,6 +52,10 @@ if (command === 'report') {
     JSON.stringify({
       identity: IDENTITY_MODE,
       binName: BIN_NAME,
+      // Display-only, and deliberately separate from `binName`: this is what
+      // the user typed, that is what the process IS. They disagree whenever
+      // OCC_IDENTITY and the command name do.
+      invokedBinName: invokedBinName(),
       configDir: occConfigDir(),
       globalFile: occGlobalConfigFile(),
       cacheNamespace: CACHE_NAMESPACE,

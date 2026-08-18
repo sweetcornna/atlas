@@ -3,7 +3,7 @@
 
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
-import { BIN_NAME } from '../../constants/brand.js'
+import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { QianmoResident } from '../../services/qianmo/resident.js'
 import {
@@ -358,7 +358,7 @@ export function parseResidentArgs(
       // 他没有任何地方可以去查那张表。
       throw new Error(
         `unknown resident option ${String(arg)}` +
-          ` (run \`${BIN_NAME} resident --help\` for the list)`,
+          ` (run \`${invokedBinName()} resident --help\` for the list)`,
       )
     }
   }
@@ -460,7 +460,7 @@ export function isResidentHelpRequest(args: readonly string[]): boolean {
  *
  * 默认值一律插值，不抄数字：它们的出处是各自的常量（CLAUDE.md §1.1⑧）。
  */
-export const RESIDENT_HELP_TEXT = `Usage: ${BIN_NAME} resident [options]
+export const RESIDENT_HELP_TEXT = `Usage: ${invokedBinName()} resident [options]
 
 Run a Qianmo resident agent node: an inbound-only endpoint that accepts wake
 and task messages over the transport and runs them in its agents' workspaces.
