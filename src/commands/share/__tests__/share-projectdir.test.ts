@@ -16,7 +16,8 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { stateMockWith } from '../../../../tests/mocks/state.js'
+import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
@@ -90,68 +91,70 @@ mock.module('bun:bundle', () => ({
 let _mockProjectDir: string | null = null
 // Faithful pair, not noop/null: this mock leaks process-globally into later
 // test files (postCompactCleanup asserts clear/retain through these).
-let _mockLastAPIRequest: unknown = null
+type LastAPIRequestParams = Omit<BetaMessageStreamParams, 'messages'> | null
+let _mockLastAPIRequest: LastAPIRequestParams = null
 
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSessionId: () => 'test-session-pd',
-    getSessionProjectDir: () => _mockProjectDir,
-    getOriginalCwd: () => '/mock/cwd',
-    getProjectRoot: () => '/mock/project',
-    getIsNonInteractiveSession: () => false,
-    regenerateSessionId: () => {},
-    getParentSessionId: () => undefined,
-    switchSession: () => {},
-    onSessionSwitch: () => () => {},
-    setOriginalCwd: () => {},
-    setProjectRoot: () => {},
-    getRemoteServerUrl: () => undefined,
-    setRemoteServerUrl: () => {},
-    addToTotalDurationState: () => {},
-    resetTotalDurationStateAndCost_FOR_TESTS_ONLY: () => {},
-    addToTotalCostState: () => {},
-    getTotalCostUSD: () => 0,
-    getTotalAPIDuration: () => 0,
-    getTotalDuration: () => 0,
-    getTotalAPIDurationWithoutRetries: () => 0,
-    getTotalToolDuration: () => 0,
-    addToToolDuration: () => {},
-    getTurnHookDurationMs: () => 0,
-    addToTurnHookDuration: () => {},
-    resetTurnHookDuration: () => {},
-    getTurnHookCount: () => 0,
-    getTurnToolDurationMs: () => 0,
-    resetTurnToolDuration: () => {},
-    getTurnToolCount: () => 0,
-    getTurnClassifierDurationMs: () => 0,
-    addToTurnClassifierDuration: () => {},
-    resetTurnClassifierDuration: () => {},
-    getTurnClassifierCount: () => 0,
-    getStatsStore: () => ({}),
-    setStatsStore: () => {},
-    updateLastInteractionTime: () => {},
-    flushInteractionTime: () => {},
-    addToTotalLinesChanged: () => {},
-    getTotalLinesAdded: () => 0,
-    getTotalLinesRemoved: () => 0,
-    getTotalInputTokens: () => 0,
-    getTotalOutputTokens: () => 0,
-    getTotalCacheReadInputTokens: () => 0,
-    getTotalCacheCreationInputTokens: () => 0,
-    getTotalWebSearchRequests: () => 0,
-    getTurnOutputTokens: () => 0,
-    getCurrentTurnTokenBudget: () => null,
-    setLastAPIRequest: (params: unknown) => {
-      _mockLastAPIRequest = params
-    },
-    getLastAPIRequest: () => _mockLastAPIRequest,
-    getSdkAgentProgressSummariesEnabled: () => false,
-    addSlowOperation: () => {},
-    getCwdState: () => '/mock/cwd',
-    setCwdState: () => {},
-  }),
-)
+const stateMock = setupStateMock({
+  getSessionId: () => 'test-session-pd',
+  getSessionProjectDir: () => _mockProjectDir,
+  getOriginalCwd: () => '/mock/cwd',
+  getProjectRoot: () => '/mock/project',
+  getIsNonInteractiveSession: () => false,
+  // The real regenerateSessionId RETURNS the new SessionId; no test in this
+  // file reads the return value, so returning the fixed mock session id keeps
+  // the stub in contract without needing mutable session-id tracking.
+  regenerateSessionId: () => 'test-session-pd',
+  getParentSessionId: () => undefined,
+  switchSession: () => {},
+  onSessionSwitch: () => () => {},
+  setOriginalCwd: () => {},
+  setProjectRoot: () => {},
+  getRemoteServerUrl: () => undefined,
+  setRemoteServerUrl: () => {},
+  addToTotalDurationState: () => {},
+  resetTotalDurationStateAndCost_FOR_TESTS_ONLY: () => {},
+  addToTotalCostState: () => {},
+  getTotalCostUSD: () => 0,
+  getTotalAPIDuration: () => 0,
+  getTotalDuration: () => 0,
+  getTotalAPIDurationWithoutRetries: () => 0,
+  getTotalToolDuration: () => 0,
+  addToToolDuration: () => {},
+  getTurnHookDurationMs: () => 0,
+  addToTurnHookDuration: () => {},
+  resetTurnHookDuration: () => {},
+  getTurnHookCount: () => 0,
+  getTurnToolDurationMs: () => 0,
+  resetTurnToolDuration: () => {},
+  getTurnToolCount: () => 0,
+  getTurnClassifierDurationMs: () => 0,
+  addToTurnClassifierDuration: () => {},
+  resetTurnClassifierDuration: () => {},
+  getTurnClassifierCount: () => 0,
+  getStatsStore: () => ({}),
+  setStatsStore: () => {},
+  updateLastInteractionTime: () => {},
+  flushInteractionTime: () => {},
+  addToTotalLinesChanged: () => {},
+  getTotalLinesAdded: () => 0,
+  getTotalLinesRemoved: () => 0,
+  getTotalInputTokens: () => 0,
+  getTotalOutputTokens: () => 0,
+  getTotalCacheReadInputTokens: () => 0,
+  getTotalCacheCreationInputTokens: () => 0,
+  getTotalWebSearchRequests: () => 0,
+  getTurnOutputTokens: () => 0,
+  getCurrentTurnTokenBudget: () => null,
+  setLastAPIRequest: (params: LastAPIRequestParams) => {
+    _mockLastAPIRequest = params
+  },
+  getLastAPIRequest: () => _mockLastAPIRequest,
+  getSdkAgentProgressSummariesEnabled: () => false,
+  addSlowOperation: () => {},
+  getCwdState: () => '/mock/cwd',
+  setCwdState: () => {},
+})
+afterAll(() => stateMock.reset())
 
 // ── State ──
 let tmpDir: string

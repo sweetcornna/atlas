@@ -7,7 +7,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { stateMockWith } from '../../../../tests/mocks/state.js'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 import { setupAnalyticsMock } from '../../../../tests/mocks/analytics.js'
 import { setupCleanupRegistryMock } from '../../../../tests/mocks/cleanupRegistry.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
@@ -84,16 +84,14 @@ afterAll(() => {
 const speculationMock = setupSpeculationMock({ abortSpeculation: noop })
 afterAll(() => speculationMock.reset())
 
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSdkAgentProgressSummariesEnabled: () => false,
-    getSessionId: () => 'test-session-001',
-    getProjectRoot: () => '/test/project',
-    getIsNonInteractiveSession: () => false,
-    addSlowOperation: noop,
-  }),
-)
+const stateMock = setupStateMock({
+  getSdkAgentProgressSummariesEnabled: () => false,
+  getSessionId: () => 'test-session-001',
+  getProjectRoot: () => '/test/project',
+  getIsNonInteractiveSession: () => false,
+  addSlowOperation: noop,
+})
+afterAll(() => stateMock.reset())
 
 // Complete-surface, like the four above. The hand-written partial version of
 // this one erased `runCleanupFunctions` for every file loaded afterwards.

@@ -17,7 +17,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { setupCronMock } from '../../../../tests/mocks/cron.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
@@ -60,12 +60,10 @@ const cronMock = setupCronMock({
 // ── Auth / OAuth mocks ──────────────────────────────────────────────────────
 // auth.js via the shared complete-surface mock (missing exports get safe
 // defaults) — see tests/mocks/auth.ts.
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-schedule' }),
-  }),
-)
+const authMock = setupAuthMock({
+  getClaudeAIOAuthTokens: () => ({ accessToken: 'test-token-schedule' }),
+})
+afterAll(() => authMock.reset())
 const oauthClientMock = setupOauthClientMock({
   getOrganizationUUID: async () => 'org-uuid-schedule',
 })

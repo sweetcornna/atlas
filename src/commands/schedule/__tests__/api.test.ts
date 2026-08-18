@@ -18,7 +18,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { authMockWith } from '../../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../../tests/mocks/auth.js'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js'
@@ -36,12 +36,10 @@ const mockOrgUUID = 'org-uuid-triggers'
 
 // auth.js via the shared complete-surface mock (missing exports get safe
 // defaults) — see tests/mocks/auth.ts.
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    getClaudeAIOAuthTokens: () => ({ accessToken: mockAccessToken }),
-  }),
-)
+const authMock = setupAuthMock({
+  getClaudeAIOAuthTokens: () => ({ accessToken: mockAccessToken }),
+})
+afterAll(() => authMock.reset())
 const oauthClientMock = setupOauthClientMock({
   getOrganizationUUID: async () => mockOrgUUID,
 })

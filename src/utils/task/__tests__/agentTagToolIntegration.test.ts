@@ -16,18 +16,16 @@ import { debugMock } from '../../../../tests/mocks/debug.js'
 import { setupEnvUtilsMock } from '../../../../tests/mocks/envUtils.js'
 import { logMock } from '../../../../tests/mocks/log.js'
 import { makeSharedModuleMock } from '../../../../tests/mocks/sharedModuleMock.js'
-import { stateMockWith } from '../../../../tests/mocks/state.js'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 
 mock.module('src/utils/telemetry/debug.ts', debugMock)
 mock.module('src/utils/telemetry/log.ts', logMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSessionId: () => 'session-tag-integration',
-    getIsNonInteractiveSession: () => false,
-  }),
-)
+const stateMock = setupStateMock({
+  getSessionId: () => 'session-tag-integration',
+  getIsNonInteractiveSession: () => false,
+})
+afterAll(() => stateMock.reset())
 
 // Complete-surface wrap of the hooks barrel: only the TaskCreated generator is
 // stubbed (it would otherwise read hook settings and spawn processes). A

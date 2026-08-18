@@ -8,7 +8,7 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { authMockWith } from '../../../tests/mocks/auth.js'
+import { setupAuthMock } from '../../../tests/mocks/auth.js'
 import { setupGrowthbookMock } from '../../../tests/mocks/growthbook.js'
 import { setupSettingsMock } from '../../../tests/mocks/settings.js'
 import * as realThinking from 'src/utils/model/thinking.js'
@@ -17,9 +17,11 @@ import { makeSharedModuleMock } from '../../../tests/mocks/sharedModuleMock.js'
 // thinking.js goes through the shared complete-surface pattern: only
 // isUltrathinkEnabled is overridden; every other export delegates to the real
 // module so later files in the process never see a partial surface.
-makeSharedModuleMock('src/utils/model/thinking.js', realThinking).setup({
-  isUltrathinkEnabled: () => false,
-})
+const thinkingMock = makeSharedModuleMock(
+  'src/utils/model/thinking.js',
+  realThinking,
+).setup({ isUltrathinkEnabled: () => false })
+afterAll(() => thinkingMock.reset())
 // settings.js likewise goes through the shared complete-surface mock, scoped
 // to this suite — a bare `{ getInitialSettings }` surface would leave every
 // other settings export undefined for later files in the shard.
@@ -28,14 +30,12 @@ beforeAll(() => settingsMock.set({ getInitialSettings: () => ({}) }))
 afterAll(() => settingsMock.reset())
 // auth.js via the shared complete-surface mock (missing exports get safe
 // defaults) — see tests/mocks/auth.ts.
-mock.module(
-  'src/utils/auth/auth.js',
-  authMockWith({
-    isProSubscriber: () => false,
-    isMaxSubscriber: () => false,
-    isTeamSubscriber: () => false,
-  }),
-)
+const authMock = setupAuthMock({
+  isProSubscriber: () => false,
+  isMaxSubscriber: () => false,
+  isTeamSubscriber: () => false,
+})
+afterAll(() => authMock.reset())
 // growthbook goes through the shared complete-surface mock (missing exports
 // delegate to the real module) — see tests/mocks/growthbook.ts.
 const growthbookMock = setupGrowthbookMock({

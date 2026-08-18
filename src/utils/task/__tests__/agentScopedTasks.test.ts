@@ -13,16 +13,14 @@ import { join } from 'path'
 import { debugMock } from '../../../../tests/mocks/debug.js'
 import { setupEnvUtilsMock } from '../../../../tests/mocks/envUtils.js'
 import { logMock } from '../../../../tests/mocks/log.js'
-import { stateMockWith } from '../../../../tests/mocks/state.js'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 
 mock.module('src/utils/telemetry/debug.ts', debugMock)
 mock.module('src/utils/telemetry/log.ts', logMock)
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSessionId: () => 'session-abc',
-  }),
-)
+const stateMock = setupStateMock({
+  getSessionId: () => 'session-abc',
+})
+afterAll(() => stateMock.reset())
 
 // Imported after mocks. The teammate helpers are the REAL implementations —
 // they are the thing under test (the tag must disappear in team contexts), so
