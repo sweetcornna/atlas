@@ -1,5 +1,8 @@
 import { queryHaiku } from '../api/claude.js'
 import { asSystemPrompt } from '../../utils/session/systemPromptType.js'
+import { errorMessage } from '../../utils/runtime/errors.js'
+import { logForDebugging } from '../../utils/telemetry/debug.js'
+import { logError } from '../../utils/telemetry/log.js'
 import { getSkillLearningConfig } from './config.js'
 import type { InstinctCandidate } from './instinctParser.js'
 import type { StoredSkillObservation } from './observationStore.js'
@@ -108,9 +111,19 @@ async function analyseWithHaiku(
     // Success: reset failure counter.
     consecutiveFailures = 0
     responseText = extractResponseText(response.message?.content)
-  } catch {
+  } catch (error) {
     // Haiku failure (timeout / rate limit / bad response) — increment failure
     // counter and potentially open the circuit breaker.
+    //
+    // Log before the fallback so infrastructure-level breakage (read-only FS
+    // in a VCR recording run, a missing API fixture in CI) is distinguishable
+    // from a genuinely unavailable API instead of silently degrading to the
+    // heuristic backend with zero observability. The fallback itself is
+    // unchanged: this never throws and never alters the failure accounting.
+    logForDebugging(
+      `skill-learning: llm observer queryHaiku failed: ${errorMessage(error)}`,
+    )
+    logError(error)
     consecutiveFailures++
     if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
       circuitOpenUntil =
@@ -124,6 +137,12 @@ async function analyseWithHaiku(
     // Empty / malformed LLM output — count as a failure so the circuit
     // breaker opens if Haiku is systematically returning garbage (e.g. the
     // model version drifted and no longer emits the expected JSON).
+    //
+    // Debug-only: there is no error object here, and the response text may
+    // contain session content, so only a length summary is recorded.
+    logForDebugging(
+      `skill-learning: llm observer output yielded no candidates (responseLength=${responseText.length})`,
+    )
     consecutiveFailures++
     if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
       circuitOpenUntil =
