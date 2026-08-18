@@ -43,13 +43,13 @@ export const VIEW_TOKEN_ENV_VAR = 'QIANMO_CONSOLE_VIEW_TOKEN'
 export const ADMIN_TOKEN_ENV_VAR = 'QIANMO_CONSOLE_ADMIN_TOKEN'
 
 /** 两枚 token 的角色名，同时也是选项名与错误文案里的那一段。 */
-export type ConsoleTokenRole = 'view' | 'admin'
+type ConsoleTokenRole = 'view' | 'admin'
 
 /** 一枚 token 实际来自哪个入口。 */
-export type ConsoleTokenOrigin = 'file' | 'env' | 'flag'
+type ConsoleTokenOrigin = 'file' | 'env' | 'flag'
 
 /** 解析出来的一枚 token，连同它的出处。 */
-export interface ConsoleTokenSource {
+interface ConsoleTokenSource {
   readonly value: string
   readonly origin: ConsoleTokenOrigin
   /**
@@ -151,7 +151,7 @@ function fromEnv(
  * 再加一条回边，而 `check:cycles` 连 type-only 的边也数。字段名由编译器对齐——
  * `ConsoleCliConfig` 改了名字，`resolveConsoleTokenSource` 的调用点就红。
  */
-export interface ConsoleTokenConfig {
+interface ConsoleTokenConfig {
   /** 命令行给的只读凭据。 */
   readonly viewToken?: string
   /** 命令行给的读写凭据。 */
