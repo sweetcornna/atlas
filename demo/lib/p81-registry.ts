@@ -23,18 +23,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import {
-  AgentStatus,
   FileRegistryStore,
   InMemoryRegistry,
   startRegistryServer,
 } from '@qianmo/registry'
 import { arg, intArg } from './cli-args.js'
-
-/** 一条登记：地址 → 该节点的入站端点。 */
-interface Registration {
-  readonly address: string
-  readonly endpoint: string
-}
+import {
+  announceRegistrations,
+  type Registration,
+} from './p81-announce-core.js'
 
 /**
  * 收集重复出现的 `--register <address>=<endpoint>`。
@@ -92,16 +89,13 @@ const server = startRegistryServer(intArg('port', 0), {
 })
 
 const announce = (): void => {
-  for (const { address, endpoint } of registrations) {
-    // 先续租；条目已过期时 heartbeat 返回 null，再整条重登记。
-    if (registry.heartbeat(address) !== null) continue
-    const result = registry.register(address, endpoint, {
-      capabilities: ['task.request'],
-      status: AgentStatus.Online,
-    })
-    if (!result.ok) {
-      throw new Error(`注册失败：${address} ${result.code} ${result.message}`)
-    }
+  for (const outcome of announceRegistrations(registry, registrations)) {
+    // 端点搬家必须出声：命令行说的和名册答的曾经不一致过整整一轮部署，
+    // 而那次没有任何一行输出（见 p81-announce-core.ts 的头注）。
+    if (outcome.kind !== 'moved') continue
+    process.stderr.write(
+      `registry 端点已更新：${outcome.address} ${outcome.from} → ${outcome.to}\n`,
+    )
   }
 }
 
