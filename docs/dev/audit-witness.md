@@ -6,7 +6,7 @@
 | 撰写日期 | 2026-08-17 |
 | 覆盖阶段 | M1 · 第 2 迭代（暂编 S11）任务包 **P11.4「审计的机外见证（选型 + 最小验证）」** |
 | 撰写 | （待署名） |
-| 依据 | 任务包与 DoD 见 [`retro-m0.md`](./retro-m0.md) §7.3 P11.4 行；缺口的原始记录见 [`roadmap.md`](./roadmap.md) v2.28 ③ 与 P7.2 实施记录；三句承诺的权威表述在 `packages/audit/src/trail.ts` 模块注释与 `packages/audit/src/index.ts`；把缺口钉死的用例是 `packages/audit/test/trail.test.ts` 的 `claim 3`；控制台侧的下游影响见 [`console.md`](./console.md) §7.3；部署机况见 [`baseline-m0.md`](./baseline-m0.md) §8 栏 B 与 [`demo-env.md`](./demo-env.md) §2.1 与 §4.4；密钥与 PKI 的界线见 [`charter.md`](./charter.md) N-3 与 §3.3 C-5 |
+| 依据 | 任务包与 DoD 见 [`retro-m0.md`](./retro-m0.md) §7.3 P11.4 行；缺口的原始记录见 [`roadmap.md`](./roadmap.md) v2.28 ③ 与 P7.2 实施记录；三句承诺的权威表述在 `packages/audit/src/trail.ts` 模块注释与 `packages/audit/src/index.ts`；把缺口钉死的用例是 `packages/audit/test/trail.test.ts` 的 `claim 3`；控制台侧的下游影响见 [`console.md`](./console.md) §8.3；部署机况见 [`baseline-m0.md`](./baseline-m0.md) §8 栏 B 与 [`demo-env.md`](./demo-env.md) §2.1 与 §4.4；密钥与 PKI 的界线见 [`charter.md`](./charter.md) N-3 与 §3.3 C-5 |
 | 性质 | 见下方「本文性质」 |
 
 **变更记录**
@@ -46,7 +46,7 @@
 
 ### 0.2 缺口的下游影响面
 
-控制台（`docs/dev/console.md`，v0.1 / 2026-08-17）把 `intact` 与 `issueCount` 直接摆在审计页的表头（`packages/console/src/view/audit.ts` 的 `intact ? '完整' : '断裂 N'`）。也就是说，**面向内测用户的那个「完整」标签，此刻只代表「没有人不小心改坏它」**——`console.md` §7.3 已经原样写了这句话。本包落地后，这个标签要从两态变三态，接缝见 §6。
+控制台（`docs/dev/console.md`，v0.1 / 2026-08-17）把 `intact` 与 `issueCount` 直接摆在审计页的表头（`packages/console/src/view/audit.ts` 的 `intact ? '完整' : '断裂 N'`）。也就是说，**面向内测用户的那个「完整」标签，此刻只代表「没有人不小心改坏它」**——`console.md` §8.3 已经原样写了这句话。本包落地后，这个标签要从两态变三态，接缝见 §6。
 
 ---
 
@@ -241,7 +241,7 @@
 | **控制台审计页** | 每次渲染 | 同上，由 host 侧端口注入 | 表头的第三态（§6） |
 | **答辩 / 验收** | 需要出示时 | 同上 | 一条可复跑命令 + 输出留档，与 M0 各次真机验收同一口径 |
 
-控制台那一条的开销值得单独说一句：审计页本来就把整条链读进内存（`console.md` §7.4 已登记这条边界），锚点验证多出来的只有 **N 个锚点的摘要比对**，N 是锚点数不是记录数，且比对的是**已经算好的** `digestOf`。**这不构成新的性能问题。**
+控制台那一条的开销值得单独说一句：审计页本来就把整条链读进内存（`console.md` §8.4 已登记这条边界），锚点验证多出来的只有 **N 个锚点的摘要比对**，N 是锚点数不是记录数，且比对的是**已经算好的** `digestOf`。**这不构成新的性能问题。**
 
 ---
 
@@ -370,8 +370,8 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 | `src/cli/handlers/consolePorts.ts` | 四个端口的生产实现 | 见证判定在这里读锚点并计算。**包里不知道锚点存在哪**，与它不知道审计链是哪个文件同一条理由 |
 | `src/cli/handlers/consoleArgs.ts` | 纯函数解析，含 `--audit <绝对路径>` | 加 `--anchors <绝对路径\|URL>`，绝对路径的要求与 `--audit` 同一条理由（长驻进程，相对路径含义会漂） |
 | `packages/console/src/view/audit.ts` | 表头 `intact ? '完整' : '断裂 N'` | **必须变成三态，不能折进现有两态**。「链内完整但锚点不符」恰恰是最该显眼的那一种——它是本包存在的全部理由 |
-| 同上 | — | **没配锚点时不许显示「完整」，要显示「未见证」。**否则 `console.md` §7.3 记的那个坑会原样复制到新字段上：一个看起来像保证、实际只代表「没人不小心改坏它」的标签 |
-| `docs/dev/console.md` §7.3 | 记着这条缺口「已登记为 P11.4」 | 落地后改写该节：从「缺口」改为「已补 + 残余窗口是一个锚定周期」 |
+| 同上 | — | **没配锚点时不许显示「完整」，要显示「未见证」。**否则 `console.md` §8.3 记的那个坑会原样复制到新字段上：一个看起来像保证、实际只代表「没人不小心改坏它」的标签 |
+| `docs/dev/console.md` §8.3 | 记着这条缺口「已登记为 P11.4」 | 落地后改写该节：从「缺口」改为「已补 + 残余窗口是一个锚定周期」 |
 
 三种状态的语义，落地时按这个表钉：
 
@@ -416,8 +416,8 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 | --- | --- |
 | 目标 | 让「锚点不符」这个信号在两个人会真的去看的地方冒出来 |
 | 依赖 | 包 A |
-| 交付物 | ① `occ audit` 加 `--witness <绝对路径\|URL>`，与 `--verify` 合流，退出码语义扩展为「链内断裂**或**锚点不符 → 1」；② 控制台按 §6 的表接线（`deps.ts` 契约 → `consolePorts.ts` 实现 → `consoleArgs.ts` 参数 → `view/audit.ts` 三态 + 未见证灰态）；③ 回写 `console.md` §7.3 与 `packages/audit` 的模块注释/README——三句承诺的第 3 句从「无法阻止」改为「无法阻止但一定被检测到（锚定窗口内除外）」 |
-| DoD | 控制台在被重写的链上显示「锚点不符」而**不是**「完整」；未配锚点时显示「未见证」而不是「完整」；`occ audit --verify --witness` 在同一份文件上退出码为 1；`console.md` §7.3 与本文 §7 表述一致，无第二份真源 |
+| 交付物 | ① `occ audit` 加 `--witness <绝对路径\|URL>`，与 `--verify` 合流，退出码语义扩展为「链内断裂**或**锚点不符 → 1」；② 控制台按 §6 的表接线（`deps.ts` 契约 → `consolePorts.ts` 实现 → `consoleArgs.ts` 参数 → `view/audit.ts` 三态 + 未见证灰态）；③ 回写 `console.md` §8.3 与 `packages/audit` 的模块注释/README——三句承诺的第 3 句从「无法阻止」改为「无法阻止但一定被检测到（锚定窗口内除外）」 |
+| DoD | 控制台在被重写的链上显示「锚点不符」而**不是**「完整」；未配锚点时显示「未见证」而不是「完整」；`occ audit --verify --witness` 在同一份文件上退出码为 1；`console.md` §8.3 与本文 §7 表述一致，无第二份真源 |
 | 估算 | **6–12 人时** |
 | 估算依据 | 四个接缝点都已定位到具体文件与具体行（§6），控制台的端口注入模式现成；文档回写是三处指针不是三份副本 |
 
@@ -436,5 +436,5 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 | `packages/backup/src/service.ts` · `store.ts` | 「只增不删的存储面」在本仓库的既有解法，§4.1 直接照抄 |
 | `packages/console/src/deps.ts` · `view/audit.ts` | 控制台接缝的两个落点（契约 / 表头） |
 | `src/services/qianmo/auditTrail.ts` | `auditTrailPath()` 与各层 sink 的接线层，锚定动作的挂载点在它附近 |
-| `docs/dev/console.md` §7.3 | 缺口在内测用户可见面上的表述，落地后要回写 |
+| `docs/dev/console.md` §8.3 | 缺口在内测用户可见面上的表述，落地后要回写 |
 | `docs/dev/baseline-m0.md` §7 B-3 · §8 | 逐条 fsync 的 IOPS 结论（§4.2 频率论证）、无 sudo 机况 |
