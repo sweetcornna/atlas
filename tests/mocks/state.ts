@@ -43,9 +43,11 @@
  *   })
  *   afterAll(() => stateMock.reset())
  *
- * Legacy form, still used by six unmigrated callers: `stateMockWith` /
- * `stateMock` hand a factory straight to `mock.module` and have no way back to
- * the delegating baseline. Migrate to `setupStateMock`; do not add new callers.
+ * Migration to `setupStateMock` is complete for test files. `stateMockWith`
+ * stays exported for its one remaining legitimate caller,
+ * `promptEngineeringAudit.runner.ts` — an independent process, not a test
+ * file, so it sits outside the mock-hygiene ratchet and has no leak surface
+ * to guard against. Do not add new callers; new tests use `setupStateMock`.
  *   mock.module('src/bootstrap/state.ts', stateMockWith({ … }))
  *
  * Both forms register under the 'src/bootstrap/state.ts' specifier (never
@@ -100,8 +102,6 @@ export function stateMockWith(
     return surface
   }
 }
-
-export const stateMock = stateMockWith()
 
 const shared = makeSharedModuleMock('src/bootstrap/state.ts', realState)
 

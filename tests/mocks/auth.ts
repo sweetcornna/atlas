@@ -31,13 +31,15 @@
  *   })
  *   afterAll(() => authMock.reset())
  *
- * Legacy form, still used by eight unmigrated files: `authMockWith` / `authMock`
- * hand a factory straight to `mock.module` and have no way back to the
- * delegating baseline. Migrate to `setupAuthMock`; do not add new callers.
- *   mock.module('src/utils/auth/auth.js', authMockWith({ … }))
+ * Migration to `setupAuthMock` is complete: every test file now installs
+ * through it. The old factory form, `authMockWith`, survives only as a
+ * module-private helper — `setupAuthMock`'s `completeFakeSurface` still
+ * builds the fake surface through it — and is no longer exported. New code
+ * should always use `setupAuthMock`; nothing outside this file should reach
+ * for `authMockWith` again.
  *
- * Both forms register under the 'src/utils/auth/auth.js' specifier (never
- * '.ts') so all writers hit the same registry entry deliberately.
+ * `setupAuthMock` registers under the 'src/utils/auth/auth.js' specifier
+ * (never '.ts') so every writer hits the same registry entry deliberately.
  */
 
 import * as realAuth from 'src/utils/auth/auth.js'
@@ -86,7 +88,7 @@ function baseAuthMock() {
  * the hand-tuned base are auto-filled (functions -> () => undefined, values
  * copied), so a caller can never install a partial surface by accident.
  */
-export function authMockWith(
+function authMockWith(
   overrides: Record<string, unknown> = {},
 ): () => Record<string, unknown> {
   return () => {
@@ -100,8 +102,6 @@ export function authMockWith(
     return { ...full, ...overrides }
   }
 }
-
-export const authMock = authMockWith()
 
 const shared = makeSharedModuleMock('src/utils/auth/auth.js', realAuth)
 
