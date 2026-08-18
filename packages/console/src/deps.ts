@@ -87,6 +87,19 @@ export interface AuditFilter {
   readonly agent?: string
   readonly from?: number
   readonly to?: number
+  /**
+   * A relative time window (`1h` / `24h` / `7d`), as the filter form's
+   * segmented control submits it.
+   *
+   * **Not a port concern**: `parseAuditFilter` resolves it into `from` before
+   * any port ever sees the filter, and every {@link AuditPort} keeps reading
+   * `from`/`to` alone. It survives on the shape for two consumers on the view
+   * side — the segment has to know which of its four options is checked, and
+   * the poller has to replay the *window* rather than the instant it happened
+   * to resolve to five seconds ago. An explicit `from`/`to` out of the advanced
+   * panel wins, which is what the 自定义 option means.
+   */
+  readonly window?: string
   /** Tail size. The port clamps it; the view never asks for the whole file. */
   readonly limit?: number
 }
@@ -298,4 +311,19 @@ export interface ConsoleDeps {
   readonly now?: () => number
   /** Shown in the page header so two consoles are never confused. */
   readonly label?: string
+  /**
+   * The wake receipt endpoint this console is pinned to, for display only.
+   *
+   * The wake form used to carry a `回调` text box that could only ever hold
+   * this one value — `createWakePort` refuses anything else (`consolePorts.ts`)
+   * — so the field was a box that existed to be left empty. It is now a read-
+   * only line of small print, and this is where the line gets its value.
+   * Absent renders no line rather than an empty one.
+   */
+  readonly wakeUrl?: string
+  /**
+   * The address this console speaks as, prefilled into the wake form's
+   * `发起方`. Absent leaves the field editable and empty.
+   */
+  readonly identity?: string
 }

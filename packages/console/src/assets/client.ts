@@ -90,9 +90,15 @@ export const CONSOLE_CLIENT_JS = `
   var TOKEN_KEY = 'qianmo.console.token';
   var memoryToken = '';
   var refreshTimer = null;
-  var clockTimer = null;
+  // What the open confirm dialog will do when its confirm button is pressed.
+  var pending = null;
 
   function byId(id) { return document.getElementById(id); }
+
+  function setText(id, value) {
+    var el = byId(id);
+    if (el) el.textContent = value;
+  }
 
   function message(err) {
     return err && err.message ? String(err.message) : String(err);
@@ -107,9 +113,29 @@ export const CONSOLE_CLIENT_JS = `
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
 
   function stamp(d) {
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' +
-      pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' +
-      pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' +
+      pad(d.getSeconds());
+  }
+
+  /* ---------------- confirm dialogs ---------------- */
+
+  // Two irreversible actions, two dialogs, both rendered by the server and
+  // filled in here with textContent. They live outside the polled roster
+  // fragment on purpose: a dialog inside it would be replaced out from under
+  // whoever is reading it, five seconds after it opened.
+  function closeDialogs() {
+    pending = null;
+    var boxes = document.querySelectorAll('.dialog-backdrop');
+    for (var i = 0; i < boxes.length; i++) boxes[i].hidden = true;
+  }
+
+  function openDialog(id, run) {
+    var box = byId(id);
+    if (!box) { run(); return; }
+    pending = run;
+    box.hidden = false;
+    var confirm = box.querySelector('.dialog-actions .btn-primary, .dialog-actions .btn-danger');
+    if (confirm) confirm.focus();
   }
 
   /* ---------------- token ---------------- */
@@ -265,8 +291,10 @@ export const CONSOLE_CLIENT_JS = `
     if (!mount) return Promise.resolve();
     var query = mount.getAttribute('data-query') || '';
     return loadHtml(ROUTES.audit + (query ? '?' + query : '')).then(function (html) {
-      // The rail digits change with every poll and the results below them do
-      // too; the filter form between them must not, so only those two swap.
+      // The header digits change with every poll and the results below them
+      // do too; the filter form between them must not, so only those two swap.
+      // The audit-rail id is what the header region has always been called and
+      // stays that way — it is a selector, not a description.
       if (swapRegions(html, ['audit-rail', 'audit-results']) === 0) {
         mount.innerHTML = html;
       }
@@ -306,13 +334,13 @@ export const CONSOLE_CLIENT_JS = `
     return el && typeof el.value === 'string' ? el.value.trim() : '';
   }
 
-  function splitList(value) {
-    var parts = String(value || '').replace(/，/g, ',').split(',');
+  // Capabilities are four checkboxes sharing one name, so the value is every
+  // ticked box rather than one string to split. The server still accepts the
+  // comma-separated form an older client would have sent.
+  function checkedValues(form, name) {
     var out = [];
-    for (var i = 0; i < parts.length; i++) {
-      var piece = parts[i].trim();
-      if (piece) out.push(piece);
-    }
+    var nodes = form.querySelectorAll('input[name="' + name + '"]:checked');
+    for (var i = 0; i < nodes.length; i++) out.push(nodes[i].value);
     return out;
   }
 
@@ -327,7 +355,7 @@ export const CONSOLE_CLIENT_JS = `
     var body = {
       address: address,
       endpoint: endpoint,
-      capabilities: splitList(fieldValue(form, 'capabilities')),
+      capabilities: checkedValues(form, 'capabilities'),
       status: fieldValue(form, 'status') || 'online'
     };
     var key = fieldValue(form, 'publicKey');
@@ -342,20 +370,31 @@ export const CONSOLE_CLIENT_JS = `
     });
   }
 
+  // The 回调 field is gone from the form: the console can only ever wake the
+  // one URL it was started with, so url is left out of the body entirely and
+  // the server falls back to the pinned one.
   function onWake(form) {
     var status = byId('wake-status');
     var body = {
       from: fieldValue(form, 'from'),
       to: fieldValue(form, 'to'),
-      prompt: fieldValue(form, 'prompt'),
-      url: fieldValue(form, 'url')
+      prompt: fieldValue(form, 'prompt')
     };
     var after = fieldValue(form, 'afterMs');
     if (after) body.afterMs = Number(after);
     if (!body.from || !body.to || !body.prompt) {
-      say(status, '发起方、目标与提示词必填', 'bad');
+      say(status, '发起方 目标与提示词必填', 'bad');
       return;
     }
+    setText('confirm-wake-to', body.to);
+    setText('confirm-wake-from', body.from);
+    setText('confirm-wake-after', (body.afterMs || 0) + ' ms');
+    setText('confirm-wake-prompt', body.prompt);
+    openDialog('confirm-wake', function () { doWake(body); });
+  }
+
+  function doWake(body) {
+    var status = byId('wake-status');
     say(status, '唤醒中…', 'muted');
     sendJson('POST', ROUTES.wake, body).then(function (data) {
       var receipt = data && data.receipt ? String(data.receipt) : '';
@@ -381,16 +420,20 @@ export const CONSOLE_CLIENT_JS = `
       return;
     }
     if (action === 'deregister') {
-      var ok = window.confirm('注销 ' + address + ' ?');
-      if (!ok) return;
-      say(status, '注销 ' + address + '…', 'muted');
-      sendJson('DELETE', ROUTES.agents + '/' + encodeURIComponent(address))
-        .then(function () {
-          say(status, '已注销 ' + address, 'ok');
-          return refreshRoster();
-        })
-        .catch(function (err) { say(status, '注销失败 · ' + message(err), 'bad'); });
+      setText('confirm-deregister-addr', address);
+      openDialog('confirm-deregister', function () { doDeregister(address); });
     }
+  }
+
+  function doDeregister(address) {
+    var status = byId('register-status');
+    say(status, '注销 ' + address + '…', 'muted');
+    sendJson('DELETE', ROUTES.agents + '/' + encodeURIComponent(address))
+      .then(function () {
+        say(status, '已注销 ' + address, 'ok');
+        return refreshRoster();
+      })
+      .catch(function (err) { say(status, '注销失败 · ' + message(err), 'bad'); });
   }
 
   function openChain(trace) {
@@ -432,6 +475,24 @@ export const CONSOLE_CLIENT_JS = `
     } else if (action === 'token-clear') {
       event.preventDefault();
       writeToken('');
+    } else if (action === 'confirm-cancel') {
+      event.preventDefault();
+      closeDialogs();
+    } else if (action === 'confirm-deregister' || action === 'confirm-wake') {
+      event.preventDefault();
+      var run = pending;
+      closeDialogs();
+      if (run) run();
+    }
+  });
+
+  // Escape closes an open dialog. A confirmation nobody can back out of with
+  // the key every dialog on the machine uses is a confirmation people click
+  // through to make it go away.
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && pending) {
+      event.preventDefault();
+      closeDialogs();
     }
   });
 
@@ -466,10 +527,6 @@ export const CONSOLE_CLIENT_JS = `
     var picker = byId('refresh-interval');
     if (toggle) toggle.addEventListener('change', schedule);
     if (picker) picker.addEventListener('change', schedule);
-    var clock = byId('clock');
-    if (clock) {
-      clockTimer = setInterval(function () { clock.textContent = stamp(new Date()); }, 1000);
-    }
     schedule();
   }
 

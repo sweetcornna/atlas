@@ -13,23 +13,31 @@
  *    never greyed down, and the chain states both counts first.
  * 2. **A broken hash chain is a headline.** `AuditPage.intact === false` means
  *    the trail may have been edited underneath us. It is stated twice, in two
- *    registers: `断裂 2` in `--dead` on the rail, where the eye lands before
+ *    registers: `断裂 2` on the section header, where the eye lands before
  *    anything else, and a one-line strip at the top of the results.
  *
- * The way (2) is expressed changed once: it used to be a full-bleed dark red
- * banner pinned above the whole page. A banner that wide is a banner that gets
- * dismissed as chrome, it pushed the actual page down by a row, and it made the
- * loudest thing on screen a colour rather than a number. Two red characters in
- * the ledger rail are quieter and harder to stop seeing.
+ * ## Two filters stay out, five fold away
+ *
+ * The filter bar used to be eight controls in a row, seven of which are empty
+ * on every screenshot anybody has ever taken of this page. What is left in the
+ * open is the pair an operator actually reaches for — the outcome and the time
+ * window, both as segmented radio groups — and the rest lives behind a native
+ * `<details>`.
+ *
+ * **The time window is a server-side concept for a reason.** The form is a
+ * plain `method="get"` and has to keep working with script disabled, and a
+ * radio cannot compute `now - 24h`. So the segment submits `window=24h` and
+ * `parseAuditFilter` turns it into a `from`; an explicit `from`/`to` pair out
+ * of the advanced panel wins over it, which is what the 自定义 segment means.
  *
  * ## The chain is a path, not a second table
  *
  * `renderChain` draws hops left to right — `node ──kind──● node` — because the
  * one question that brings somebody to a reconstructed chain is *where did it
  * stop*, and a stack of table rows answers that with reading rather than with
- * looking. The outcome is the mark at the end of each segment: a filled dot for
- * 通过, a hollow square for 拒绝, a dashed segment for 丢弃. Flex boxes and
- * hairlines; no SVG, no icon font, no pictograph.
+ * looking. The outcome is the mark at the end of each segment: a filled disc
+ * for 通过, a hollow ring for 拒绝, a dashed segment for 丢弃. Flex boxes and
+ * hairlines; no icon font, no pictograph.
  *
  * ## Why the filter form is outside `#audit-results`
  *
@@ -42,13 +50,15 @@ import { AuditSource, traceIdSegment } from '@qianmo/audit'
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
 import {
   absent,
+  chevron,
   chip,
   failureBar,
   hint,
-  rail,
+  icon,
   railSep,
   scroll,
-  state,
+  sectionHead,
+  tag,
   toned,
   type Tone,
 } from './bits.js'
@@ -58,6 +68,10 @@ import type { AuditFilter, AuditPage, ConsoleFailure } from '../deps.js'
 
 /** How many characters of an id are enough to tell two of them apart. */
 const ID_PREFIX = 8
+
+/** Default and ceiling for the tail size, stated in the label beside the box. */
+const LIMIT_DEFAULT = 200
+const LIMIT_MAX = 500
 
 const OUTCOME_LABEL: Readonly<Record<string, string | undefined>> = {
   ok: '通过',
@@ -70,6 +84,18 @@ const OUTCOME_TONE: Readonly<Record<string, Tone | undefined>> = {
   refused: 'bad',
   dropped: 'warn',
 }
+
+/**
+ * The three windows the segmented control offers, widest last.
+ *
+ * The order is load-bearing twice over: the segment renders in it, and the
+ * empty state's 把时间放宽一档 button steps one place along it.
+ */
+export const AUDIT_WINDOWS: readonly (readonly [string, string, number])[] = [
+  ['1h', '最近 1h', 3_600_000],
+  ['24h', '最近 24h', 86_400_000],
+  ['7d', '最近 7d', 604_800_000],
+]
 
 /** Chinese name for each of the 12 layers; unknown values print raw. */
 const SOURCE_LABEL: Readonly<Record<string, string | undefined>> = {
@@ -96,7 +122,7 @@ function outcomeText(outcome: string): string {
 }
 
 function outcomeCell(outcome: string): string {
-  return state(OUTCOME_TONE[outcome] ?? 'muted', outcomeText(outcome))
+  return tag(outcomeText(outcome), OUTCOME_TONE[outcome] ?? 'muted')
 }
 
 function shortId(value: string): string {
@@ -150,10 +176,10 @@ function recordRow(record: AuditRecord): string {
   return (
     `<tr data-outcome="${attr(record.outcome)}">` +
     `<td class="when mono">${escapeHtml(formatDateTime(record.at))}</td>` +
-    `<td>${escapeHtml(sourceText(record.source))}</td>` +
+    `<td class="src">${escapeHtml(sourceText(record.source))}</td>` +
     `<td class="kind"><span class="mono">${escapeHtml(record.kind)}</span>` +
     `${detailLine(record.detail)}</td>` +
-    `<td>${outcomeCell(record.outcome)}</td>` +
+    `<td class="result">${outcomeCell(record.outcome)}</td>` +
     `<td>${traceCell(record.traceId)}</td>` +
     `<td class="parties">${partiesCell(record)}</td>` +
     `<td class="mono">${
@@ -171,7 +197,7 @@ function recordTable(records: readonly AuditRecord[]): string {
   ).join('')
   const body = records.map(recordRow).join('')
   return scroll(
-    `<table class="grid audit"><caption class="sr-only">审计记录</caption>` +
+    `<table class="trail"><caption class="sr-only">审计记录</caption>` +
       `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
   )
 }
@@ -181,26 +207,66 @@ function option(value: string, label: string, selected: string | undefined) {
   return `<option value="${attr(value)}"${mark}>${escapeHtml(label)}</option>`
 }
 
+/** A `<select>` in its chevron wrapper — the chevron is markup, not `url()`. */
+function select(
+  name: string,
+  label: string,
+  options: string,
+  id: string,
+): string {
+  return (
+    `<div class="field"><label for="${attr(id)}">${escapeHtml(label)}</label>` +
+    `<span class="sel"><select class="input" id="${attr(id)}" ` +
+    `name="${attr(name)}">${options}</select>${chevron()}</span></div>`
+  )
+}
+
 function textField(
   name: string,
   label: string,
   value: string | undefined,
   placeholder: string,
+  id: string,
 ): string {
   return (
-    `<label class="field"><span>${escapeHtml(label)}</span>` +
-    `<input type="text" name="${attr(name)}" value="${attr(value ?? '')}" ` +
-    `placeholder="${attr(placeholder)}" autocomplete="off" ` +
-    `spellcheck="false"></label>`
+    `<div class="field"><label for="${attr(id)}">${escapeHtml(label)}</label>` +
+    `<input class="input" type="text" id="${attr(id)}" name="${attr(name)}" ` +
+    `value="${attr(value ?? '')}" placeholder="${attr(placeholder)}" ` +
+    `autocomplete="off" spellcheck="false"></div>`
   )
 }
 
-function timeField(name: string, label: string, at: number | undefined) {
+function timeField(
+  name: string,
+  label: string,
+  at: number | undefined,
+  id: string,
+) {
   const value = at === undefined ? '' : toDatetimeLocal(at)
   return (
-    `<label class="field"><span>${escapeHtml(label)}</span>` +
-    `<input type="datetime-local" name="${attr(name)}" ` +
-    `value="${attr(value)}"></label>`
+    `<div class="field"><label for="${attr(id)}">${escapeHtml(label)}</label>` +
+    `<input class="input" type="datetime-local" id="${attr(id)}" ` +
+    `name="${attr(name)}" value="${attr(value)}"></div>`
+  )
+}
+
+/** One segmented radio group. Native radios, so the GET form still works. */
+function segment(
+  name: string,
+  choices: readonly (readonly [string, string])[],
+  current: string,
+): string {
+  return (
+    `<div class="seg">` +
+    choices
+      .map(
+        ([value, label]) =>
+          `<label class="seg-opt"><input type="radio" name="${attr(name)}" ` +
+          `value="${attr(value)}"${value === current ? ' checked' : ''}>` +
+          `${escapeHtml(label)}</label>`,
+      )
+      .join('') +
+    `</div>`
   )
 }
 
@@ -209,35 +275,90 @@ function timeField(name: string, label: string, at: number | undefined) {
  * disabled and so the resulting URL is shareable — "here is the query that
  * shows the incident" is the most useful thing an operator can paste into a
  * ticket.
+ *
+ * `agents` is the roster snapshot, when the caller has one: the node filter is
+ * then a picker of addresses that exist rather than a box to retype one into.
+ * The standalone fragment route has no roster to hand and falls back to the
+ * text box, which is why the poller deliberately never replaces this form.
  */
-function filterForm(filter: AuditFilter): string {
+function filterForm(
+  filter: AuditFilter,
+  agentOptions: string | undefined,
+): string {
   const sources = Object.values(AuditSource)
     .map(value => option(value, sourceText(value), filter.source))
     .join('')
-  const outcomes = (['ok', 'refused', 'dropped'] as const)
-    .map(value => option(value, OUTCOME_LABEL[value] ?? value, filter.outcome))
-    .join('')
+
+  const outcomes: readonly (readonly [string, string])[] = [
+    ['', '全部'],
+    ['ok', '通过'],
+    ['refused', '拒绝'],
+    ['dropped', '丢弃'],
+  ]
+  const windows: readonly (readonly [string, string])[] = [
+    ...AUDIT_WINDOWS.map(([value, label]) => [value, label] as const),
+    ['', '自定义'],
+  ]
+
+  const nodeField =
+    agentOptions === undefined || agentOptions === ''
+      ? textField(
+          'agent',
+          '智能体',
+          filter.agent,
+          'qianmo://node/agent',
+          'f-agent',
+        )
+      : select(
+          'agent',
+          '智能体 · 取自名册',
+          option('', '全部', filter.agent === undefined ? '' : filter.agent) +
+            agentOptions,
+          'f-agent',
+        )
+
+  const advanced =
+    select(
+      'source',
+      '来源 · 12 个可选',
+      option('', '全部', filter.source === undefined ? '' : filter.source) +
+        sources,
+      'f-source',
+    ) +
+    nodeField +
+    `<div class="field"><label for="f-limit">条数 · 默认 ${LIMIT_DEFAULT} · 上限 ${LIMIT_MAX}</label>` +
+    `<input class="input" type="number" id="f-limit" name="limit" min="1" ` +
+    `max="${LIMIT_MAX}" value="${attr(
+      String(filter.limit ?? LIMIT_DEFAULT),
+    )}"></div>` +
+    textField(
+      'traceId',
+      'traceId',
+      filter.traceId,
+      'traceparent 或 trace 段',
+      'f-trace',
+    ) +
+    textField('taskId', 'taskId', filter.taskId, 'task id', 'f-task') +
+    timeField('from', '起 · 自定义时间用', filter.from, 'f-from') +
+    timeField('to', '止 · 自定义时间用', filter.to, 'f-to') +
+    `<div class="field"><span>&nbsp;</span>` +
+    `<a class="btn btn-secondary" href="?">清空全部筛选</a></div>`
 
   return (
-    `<form id="audit-filter" class="filters" method="get">` +
-    `<label class="field"><span>来源</span><select name="source">` +
-    `${option('', '全部', filter.source === undefined ? '' : filter.source)}` +
-    `${sources}</select></label>` +
-    `<label class="field"><span>结果</span><select name="outcome">` +
-    `${option('', '全部', filter.outcome === undefined ? '' : filter.outcome)}` +
-    `${outcomes}</select></label>` +
-    textField('traceId', 'trace', filter.traceId, 'traceparent 或 trace 段') +
-    textField('taskId', 'task', filter.taskId, 'task id') +
-    textField('agent', '节点', filter.agent, 'qianmo://node/agent') +
-    timeField('from', '起', filter.from) +
-    timeField('to', '止', filter.to) +
-    `<label class="field field-narrow"><span>条数</span>` +
-    `<input type="number" name="limit" min="1" max="1000" ` +
-    `value="${attr(filter.limit === undefined ? '' : String(filter.limit))}" ` +
-    `placeholder="100"></label>` +
-    `<div class="field field-actions">` +
-    `<button type="submit" class="btn btn-primary">筛选</button>` +
-    `<a class="btn" href="?">清空</a></div>` +
+    `<form id="audit-filter" method="get">` +
+    `<div class="rowx" style="gap:var(--space-6);align-items:flex-end">` +
+    `<div class="field"><span>结果</span>` +
+    segment('outcome', outcomes, filter.outcome ?? '') +
+    `</div>` +
+    `<div class="field"><span>时间</span>` +
+    segment('window', windows, filter.window ?? '') +
+    `</div>` +
+    `<button type="submit" class="btn btn-primary" style="margin-left:auto">` +
+    icon('refresh-cw', { small: true }) +
+    `刷新</button>` +
+    `</div>` +
+    `<details class="adv"><summary>${chevron()}高级筛选 · 来源 智能体 trace task 条数</summary>` +
+    `<div class="adv-body">${advanced}</div></details>` +
     `</form>`
   )
 }
@@ -250,11 +371,16 @@ function activeChips(filter: AuditFilter): string {
   }
   push('source', filter.source)
   push('outcome', filter.outcome)
+  push('window', filter.window)
   push('trace', filter.traceId)
   push('task', filter.taskId)
   push('node', filter.agent)
-  if (filter.from !== undefined) push('from', formatDateTime(filter.from))
-  if (filter.to !== undefined) push('to', formatDateTime(filter.to))
+  if (filter.window === undefined && filter.from !== undefined) {
+    push('from', formatDateTime(filter.from))
+  }
+  if (filter.window === undefined && filter.to !== undefined) {
+    push('to', formatDateTime(filter.to))
+  }
   if (chips.length === 0) return ''
   return `<p class="chips">${chips.join('')}</p>`
 }
@@ -264,12 +390,10 @@ const INTEGRITY_LEAD = '审计链断裂'
 /**
  * The second statement of a broken chain: one line, at the top of the results.
  *
- * The first statement is `断裂 N` on the rail. This one exists because the rail
- * digit is two characters and a number, and an operator who has never seen it
- * before needs the noun spelled out once. It is a strip, not a banner: the fact
- * and the count, nothing about what a hash chain is. That belongs in the docs —
- * on screen it made the strip long enough to scan past, which defeats the only
- * thing it is for.
+ * The first statement is `断裂 N` on the section header. This one exists
+ * because that digit is two characters and a number, and an operator who has
+ * never seen it before needs the noun spelled out once. It is a strip, not a
+ * banner: the fact and the count, nothing about what a hash chain is.
  */
 function integrityAlert(page: AuditPage | null): string {
   if (page === null || page.intact) return ''
@@ -281,43 +405,94 @@ function integrityAlert(page: AuditPage | null): string {
   )
 }
 
+/**
+ * The empty state: what is true, and the two things worth doing about it.
+ *
+ * Not `无匹配记录`. An operator looking at a blank trail is either at the start
+ * of a network's life — nothing has been sent yet — or one segment too narrow,
+ * and both of those have a next action. The legend under the buttons repeats
+ * the filter that produced the emptiness, because the commonest cause of an
+ * empty trail is a filter somebody forgot they set.
+ */
+function emptyState(filter: AuditFilter): string {
+  const current = filter.window ?? ''
+  const index = AUDIT_WINDOWS.findIndex(([value]) => value === current)
+  const wider = index >= 0 ? AUDIT_WINDOWS[index + 1] : undefined
+  const widen =
+    wider === undefined
+      ? ''
+      : `<a class="btn btn-ghost" href="?window=${attr(wider[0])}">把时间放宽一档</a>`
+
+  const windowLabel =
+    AUDIT_WINDOWS.find(([value]) => value === current)?.[1] ?? '自定义'
+  const outcomeLabel =
+    filter.outcome === undefined || filter.outcome === ''
+      ? '全部'
+      : outcomeText(filter.outcome)
+
+  return (
+    `<div class="empty">` +
+    `<div class="stack" style="gap:var(--space-4)">` +
+    `<h4 class="empty-title">这条链还没有记录</h4>` +
+    `<p class="empty-note">网络已经连通 · 只是还没有业务消息流过 · ` +
+    `唤醒一个智能体就会在这里看到第一条投递轨迹</p>` +
+    `<div class="rowx">` +
+    `<a class="btn btn-primary" href="#wake-section">` +
+    icon('zap', { small: true }) +
+    `去唤醒一个智能体</a>${widen}</div>` +
+    `<div class="legend">` +
+    `<span>当前筛选 · 结果 ${escapeHtml(outcomeLabel)}</span>` +
+    `<span>时间 · ${escapeHtml(windowLabel)}</span>` +
+    `<span class="mono">limit ${escapeHtml(
+      String(filter.limit ?? LIMIT_DEFAULT),
+    )}</span></div>` +
+    `</div>` +
+    `<svg class="empty-art" width="220" height="220" viewBox="0 0 200 200" ` +
+    `fill="none" aria-hidden="true">` +
+    `<circle cx="104" cy="96" r="74" fill="var(--color-accent-2-200)"/>` +
+    `<circle cx="52" cy="142" r="30" fill="var(--color-accent-200)"/>` +
+    `<circle cx="152" cy="44" r="18" fill="var(--color-accent-300)"/>` +
+    `<circle cx="104" cy="96" r="44" fill="var(--color-bg)"/>` +
+    `<g stroke="var(--color-accent-2-700)" stroke-width="5.5" ` +
+    `stroke-linecap="round" stroke-linejoin="round" fill="none">` +
+    `<path d="M84 96h10l6-14 8 28 6-14h10"/></g></svg>` +
+    `</div>`
+  )
+}
+
 const TRAIL_HEADING_ID = 'h-trail'
 
 /**
- * The rail line: how much trail there is, how much of it is on screen, and
+ * The header line: how much trail there is, how much of it is on screen, and
  * whether the hash chain still verifies.
  *
  * `显示 N` appears only when a filter is actually hiding something. Printing
- * `512 · 显示 512` every time trains the eye to skip the line that is
- * supposed to be carrying `断裂 2`.
+ * `512 · 显示 512` every time trains the eye to skip the line that is supposed
+ * to be carrying `断裂 2`.
  */
-function trailRail(page: AuditPage | null): string {
-  const mount = 'audit-rail'
-  if (page === null) {
-    return rail('消息链', { id: TRAIL_HEADING_ID, mount })
-  }
+function trailHead(page: AuditPage | null): string {
+  const common = { id: 'audit-rail', headingId: TRAIL_HEADING_ID }
+  if (page === null) return sectionHead('Trail', '消息链', common)
 
   const parts = [`<span class="total">${escapeHtml(String(page.total))}</span>`]
   const shown = page.records.length
   if (shown !== page.total) parts.push(`显示 ${shown}`)
   const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
   parts.push(page.intact ? toned('ok', '完整') : toned('bad', `断裂 ${issues}`))
-  return rail('消息链', {
-    id: TRAIL_HEADING_ID,
-    mount,
-    digits: parts.join(railSep()),
-    // Echoed for the overview 消息链 stat card in page.ts — see the note on
-    // `stats` in bits.ts for why the page reads these off the markup rather
-    // than re-deriving them from a second copy of `page`.
+  return sectionHead('Trail', '消息链', {
+    ...common,
+    tail: `<div class="rowx note">${parts.join(railSep())}</div>`,
+    // Echoed for the overview 消息链 stat card in page.ts.
     stats: { total: page.total, issues, intact: page.intact },
   })
 }
 
-/** Render the audit fragment: the rail cell, then the pane with form + results. */
+/** Render the audit fragment: the header, then the form and the results. */
 export function renderAudit(
   page: AuditPage | null,
   failure: ConsoleFailure | null,
   filter: AuditFilter,
+  agentOptions?: string,
 ): string {
   const results: string[] = []
   if (failure !== null) results.push(failureBar(failure, '审计日志'))
@@ -329,17 +504,18 @@ export function renderAudit(
     results.push(activeChips(filter))
     results.push(
       page.records.length === 0
-        ? hint('无匹配记录')
+        ? emptyState(filter)
         : recordTable(page.records),
     )
   }
 
   return (
-    trailRail(page) +
+    trailHead(page) +
     `<div class="pane">` +
-    filterForm(filter) +
+    `<div class="card elev-sm">` +
+    filterForm(filter, agentOptions) +
     `<div id="audit-results">${results.join('')}</div>` +
-    `</div>`
+    `</div></div>`
   )
 }
 
@@ -402,8 +578,9 @@ function chainHead(title: string): string {
     `<h3 class="chain-title">消息链</h3>` +
     title +
     `<span class="spacer"></span>` +
-    `<button type="button" class="btn" data-action="chain-close">关闭` +
-    `</button></div>`
+    `<button type="button" class="btn btn-ghost" data-action="chain-close">` +
+    icon('x', { small: true }) +
+    `关闭</button></div>`
   )
 }
 

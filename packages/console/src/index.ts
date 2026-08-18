@@ -82,7 +82,11 @@ export {
 
 export { BRAND, CSP, renderPage, type PageModel } from './view/page.js'
 export { renderLoginPage, type LoginPageModel } from './view/login.js'
-export { renderRoster } from './view/agents.js'
+export {
+  agentFilterOptions,
+  renderRoster,
+  wakeTargetOptions,
+} from './view/agents.js'
 export { renderAudit } from './view/audit.js'
 export {
   MAX_CHAT_TEXT_LENGTH,

@@ -137,6 +137,21 @@ function expectInert(html: string): void {
 }
 
 /**
+ * The document with its favicon link removed.
+ *
+ * The `<link rel="icon">` in the head is the one element on these pages that is
+ * not markup the view layer wrote from data — it is a self-contained `data:`
+ * URI, no host, no request. The "loads nothing" assertions are about *hosts*,
+ * so they run against the document with that one line lifted out rather than
+ * being weakened to allow a `<link>` anywhere.
+ */
+function withoutFavicon(markup: string): string {
+  const stripped = markup.replace(/<link rel="icon"[^>]*>\n?/, '')
+  expect(stripped).not.toBe(markup)
+  return stripped
+}
+
+/**
  * The declarations of one CSS rule, by the selector that opens it.
  *
  * Design decisions that a redesign is supposed to keep — the rail is a real
@@ -318,7 +333,7 @@ describe('renderRoster', () => {
     expect(html).not.toContain('。')
   })
 
-  test('every branch emits the rail, so the row never loses its heading', () => {
+  test('every branch emits the header, so the section never loses its heading', () => {
     const failure: ConsoleFailure = { code: 'unreachable', message: '超时' }
     for (const html of [
       renderRoster(null, null, NOW, TTL),
@@ -326,12 +341,13 @@ describe('renderRoster', () => {
       renderRoster([], null, NOW, TTL),
       renderRoster([agent()], null, NOW, TTL),
     ]) {
-      expect(html).toContain('<h2 class="rail-name" id="h-nodes">节点</h2>')
+      expect(html).toContain('class="sec-head"')
+      expect(html).toContain('<h2 id="h-nodes">名册</h2>')
       expect(html).toContain('<div class="pane">')
     }
   })
 
-  test('the rail carries the counts the deleted prose used to explain', () => {
+  test('the header carries the counts the deleted prose used to explain', () => {
     const html = renderRoster(
       [agent(), agent({ address: 'a://2' })],
       null,
@@ -367,12 +383,12 @@ describe('renderRoster', () => {
     expect(html).toContain('连接注册中心被拒绝')
   })
 
-  test('a failure over stale data keeps the table and says the data is old', () => {
+  test('a failure over stale data keeps the roster and says the data is old', () => {
     const failure: ConsoleFailure = { code: 'unreachable', message: '超时' }
     const html = renderRoster([agent()], failure, NOW, TTL)
     expect(html).toContain('bar-bad')
     expect(html).toContain('最后一次成功读取')
-    expect(html).toContain('<table')
+    expect(html).toContain('<details class="row"')
   })
 
   test('a failure message is escaped like everything else', () => {
@@ -416,6 +432,44 @@ describe('renderRoster', () => {
     expect(html).toContain('未发布')
   })
 
+  test('one card per node, one disclosure row per agent', () => {
+    // Grouping is what replaced an eight-column table with a fixed width
+    // budget: the node appears once in a card header instead of once a row.
+    const html = renderRoster(
+      [
+        agent({ address: 'qianmo://node-a/one' }),
+        agent({ address: 'qianmo://node-a/two' }),
+        agent({ address: 'qianmo://node-b/one' }),
+      ],
+      null,
+      NOW,
+      TTL,
+    )
+    expect(html.match(/class="card elev-sm grp"/g)).toHaveLength(2)
+    expect(html.match(/<details class="row"/g)).toHaveLength(3)
+    // The agent segment of every address is a pill — the signature element.
+    expect(html).toContain('qianmo://node-a/<b>one</b>')
+    expect(html).toContain('<span class="grp-name">node-a</span>')
+    // Native disclosure, so a row opens with the script disabled.
+    expect(html).toContain('<summary>')
+    expect(html).not.toContain('<table')
+  })
+
+  test('the expanded panel holds what the row no longer has room for', () => {
+    const html = renderRoster([agent({ publicKey: 'k' })], null, NOW, TTL)
+    const panel = html.slice(html.indexOf('<div class="row-panel">'))
+    for (const key of ['能力', '端点', '公钥', '上次心跳']) {
+      expect(panel).toContain(key)
+    }
+    // 注销 is demoted into the panel behind a ghost button; nothing on a
+    // resting row can fire it.
+    expect(panel).toContain('data-action="deregister"')
+    expect(panel).toContain('btn-ghost btn-danger')
+    const summary = html.slice(0, html.indexOf('</summary>'))
+    expect(summary).not.toContain('deregister')
+    expect(summary).toContain('data-action="heartbeat"')
+  })
+
   test('the three health states each get their own tone', () => {
     const html = renderRoster(
       [
@@ -439,8 +493,7 @@ describe('renderRoster', () => {
     expect(html).toContain('dot-ok')
     expect(html).toContain('dot-warn')
     expect(html).toContain('dot-bad')
-    expect(html).not.toContain('pill')
-    // …and the rail states the same three counts as digits.
+    // …and the header states the same three counts as digits.
     expect(html).toContain('<span class="total">3</span>')
     expect(html).toContain('<span class="tone-ok">在线 1</span>')
     expect(html).toContain('<span class="tone-warn">滞后 1</span>')
@@ -474,18 +527,20 @@ describe('renderRoster', () => {
 describe('lease bar', () => {
   function barOf(over: Partial<ConsoleAgent>): string {
     const html = renderRoster([agent(over)], null, NOW, TTL)
-    const start = html.indexOf('<td class="lease"')
+    const start = html.indexOf('<span class="lease"')
     expect(start).toBeGreaterThan(-1)
-    return html.slice(start, html.indexOf('</td>', start))
+    return html.slice(start, html.indexOf('</summary>', start))
   }
 
-  test('a fresh heartbeat is a short ink bar and the time it has left', () => {
-    // 10s of a 300s lease.
+  test('a fresh heartbeat is a nearly full sage bar and the time it has left', () => {
+    // 10s of a 300s lease: 97% of the lease is still there. The fill is the
+    // *remaining* share — a 3% bar beside the words 剩余 4m50s is two facts
+    // that look like they disagree.
     const cell = barOf({})
-    expect(cell).toContain('<span class="lease-fill" style="width:3%">')
+    expect(cell).toContain('<span class="lease-fill" style="width:97%">')
     expect(cell).not.toContain('lease-stale')
     expect(cell).not.toContain('lease-dead')
-    expect(cell).toContain('>4m50s<')
+    expect(cell).toContain('>剩余 4m50s<')
   })
 
   test('past the halfway mark the bar turns amber', () => {
@@ -495,7 +550,7 @@ describe('lease bar', () => {
     })
     expect(cell).toContain('lease-fill lease-stale')
     expect(cell).toContain('style="width:50%"')
-    expect(cell).toContain('>2m30s<')
+    expect(cell).toContain('>剩余 2m30s<')
   })
 
   test('an expired lease is locked at full width, never past it', () => {
@@ -506,10 +561,14 @@ describe('lease bar', () => {
       expiresAt: NOW - TTL * 2,
     })
     expect(cell).toContain('lease-fill lease-dead')
-    expect(cell).toContain('style="width:100%"')
-    expect(cell).toContain('>0s<')
+    // Drained, not overfull: a node 3x past its TTL has nothing left, and the
+    // empty track is the same shape every other empty lease has.
+    expect(cell).toContain('style="width:0%"')
+    // The word, not a zero countdown: 0s next to a full bar reads as a lease
+    // that is about to lapse rather than one that already has.
+    expect(cell).toContain('>租约已过期<')
     expect(cell).not.toContain('>-')
-    expect(cell).not.toContain('width:300%')
+    expect(cell).not.toContain('width:-200%')
   })
 
   test('the bar and the status word can never disagree', () => {
@@ -528,7 +587,7 @@ describe('lease bar', () => {
   test('no scale to draw against means no bar at all', () => {
     const html = renderRoster([agent()], null, NOW, 0)
     expect(html).not.toContain('lease-fill')
-    expect(html).toContain('<td class="lease"><span class="absent">')
+    expect(html).toContain('<span class="lease"><span class="absent">')
   })
 
   test('the compact duration lines up digit for digit', () => {
@@ -614,7 +673,53 @@ describe('renderAudit', () => {
     expectInert(html)
     expect(html).toContain('value="50"')
     expect(html).toContain(`value="${AuditSource.Transport}" selected`)
-    expect(html).toContain('value="refused" selected')
+    // 结果 is a segmented radio group now, not a <select>: the value is the
+    // same string on the wire, the control is one click instead of two.
+    expect(html).toContain('value="refused" checked')
+    expect(html).toContain('<div class="seg">')
+  })
+
+  test('two filters stay out and the other five fold away', () => {
+    const html = renderAudit(page(), null, NO_FILTER)
+    // The pair an operator actually reaches for.
+    expect(html).toContain('name="outcome"')
+    expect(html).toContain('name="window"')
+    // …and a native disclosure holding the rest, so it opens with no script.
+    expect(html).toContain('<details class="adv">')
+    for (const name of ['source', 'agent', 'traceId', 'taskId', 'limit']) {
+      const at = html.indexOf(`name="${name}"`)
+      expect(at).toBeGreaterThan(html.indexOf('<details class="adv">'))
+    }
+    // The label states the default and the ceiling rather than leaving an
+    // empty box to guess at, and the ceiling is the one the server enforces.
+    expect(html).toContain('条数 · 默认 200 · 上限 500')
+    expect(html).toContain('max="500"')
+  })
+
+  test('the time window is submitted as a name, not as an instant', () => {
+    // A radio cannot compute now - 24h, and this form has to work with script
+    // disabled — so the segment submits `window=24h` and the server resolves
+    // it. `1h`/`24h`/`7d`/自定义, and 自定义 is the empty value.
+    const html = renderAudit(page(), null, { window: '24h' })
+    expect(html).toContain('name="window" value="24h" checked')
+    expect(html).toContain('name="window" value="1h"')
+    expect(html).toContain('name="window" value="7d"')
+    expect(html).toContain('name="window" value=""')
+  })
+
+  test('a node picker replaces the retype-the-address box when there is a roster', () => {
+    const withRoster = renderAudit(
+      page(),
+      null,
+      NO_FILTER,
+      '<option value="qianmo://node-a/one">qianmo://node-a/one</option>',
+    )
+    expect(withRoster).toContain('<select class="input" id="f-agent"')
+    expect(withRoster).toContain('qianmo://node-a/one')
+
+    // …and falls back honestly when the caller had no roster to hand.
+    const alone = renderAudit(page(), null, NO_FILTER)
+    expect(alone).toContain('<input class="input" type="text" id="f-agent"')
   })
 
   test('the filter form lives outside the polled region', () => {
@@ -683,12 +788,31 @@ describe('renderAudit', () => {
     expect(html).toContain('>4bf92f35…<')
   })
 
-  test('an empty result set explains what to change', () => {
+  test('an empty result set names the next action, not the absence', () => {
     const html = renderAudit(page({ records: [], total: 40 }), null, NO_FILTER)
-    expect(html).toContain('无匹配记录')
+    expect(html).toContain('这条链还没有记录')
+    expect(html).toContain('去唤醒一个智能体')
+    expect(html).toContain('href="#wake-section"')
     expect(html).not.toContain('<table')
     expect(html).toContain('<span class="total">40</span>')
     expect(html).toContain('显示 0')
+    // The legend repeats the filter that produced the emptiness: the
+    // commonest cause of an empty trail is a filter somebody forgot.
+    expect(html).toContain('当前筛选 · 结果 全部')
+  })
+
+  test('an empty result under a narrow window offers the next one out', () => {
+    const html = renderAudit(page({ records: [], total: 9 }), null, {
+      window: '1h',
+    })
+    expect(html).toContain('把时间放宽一档')
+    expect(html).toContain('href="?window=24h"')
+
+    // Nothing to widen to at the far end, so no button that does nothing.
+    const widest = renderAudit(page({ records: [], total: 9 }), null, {
+      window: '7d',
+    })
+    expect(widest).not.toContain('把时间放宽一档')
   })
 
   test('a failure renders a bar and does not throw', () => {
@@ -916,7 +1040,7 @@ describe('renderPage', () => {
   })
 
   test('loads nothing from anywhere — no scheme appears in the document', () => {
-    const html = build()
+    const html = withoutFavicon(build())
     expect(html).not.toContain('http://')
     expect(html).not.toContain('https://')
     expect(html).not.toContain('//cdn')
@@ -926,12 +1050,27 @@ describe('renderPage', () => {
     expect(html).not.toContain('url(')
   })
 
+  test('the one link is a self-contained data URI, not a host', () => {
+    // The favicon is the single loosening of the policy this page allows.
+    // `data:` is not an origin: nothing is fetched, and no third party can put
+    // anything there — which is why the assertion above still holds for
+    // everything else in the document.
+    const html = build()
+    expect(html).toContain('<link rel="icon" href="data:image/svg+xml,')
+    // Percent-encoded, so even the SVG namespace is not a live scheme in the
+    // document text.
+    expect(html).not.toContain('http://')
+  })
+
   test('states the same rule in a CSP the browser enforces', () => {
     const html = build()
     expect(html).toContain('Content-Security-Policy')
     expect(html).toContain('default-src &#39;none&#39;')
     expect(html).toContain('connect-src &#39;self&#39;')
-    expect(html).toContain('img-src &#39;none&#39;')
+    // The favicon needs exactly this and nothing else. Every *host* directive
+    // is still 'none'.
+    expect(html).toContain('img-src data:')
+    expect(html).toContain('font-src &#39;none&#39;')
   })
 
   test('inlines exactly one stylesheet and one script', () => {
@@ -957,64 +1096,93 @@ describe('renderPage', () => {
     expect(html).not.toContain('integrity-alert')
   })
 
-  test('every row of the page is [rail][pane]', () => {
+  test('every section is a stacked header over its own body', () => {
     const html = build()
-    const body = html.slice(html.indexOf('<main>'))
-    // Five rails: 节点, 注册, 消息链, 限额, 唤醒 — plus the empty one the
-    // chain panel hangs off.
-    for (const name of ['节点', '注册', '消息链', '限额', '唤醒']) {
-      expect(body).toContain(`class="rail-name"`)
+    const body = html.slice(html.indexOf('<main'))
+    // The 140px noun rail is gone; each section names itself in a header
+    // instead, with a Latin kicker over the Chinese noun.
+    expect(body).not.toContain('class="rail"')
+    expect(body).not.toContain('class="rail-name"')
+    expect(body).not.toContain('class="pane"><div class="rail"')
+    for (const name of ['总览', '名册', '注册', '消息链', '限额', '唤醒']) {
       expect(body).toContain(name)
     }
-    expect(body.match(/class="row"/g)?.length).toBe(6)
-    expect(body).toContain('<div class="pane">')
+    for (const kicker of [
+      'Overview',
+      'Roster',
+      'Register',
+      'Trail',
+      'Limits',
+      'Wake',
+    ]) {
+      expect(body).toContain(`<div class="kicker">${kicker}</div>`)
+    }
+    expect(body.match(/class="sec-head"/g)?.length).toBe(6)
   })
 
-  test('the sidebar carries the brand, the label, a clock and the controls', () => {
+  test('the sidebar carries the brand, the label and the controls — and no clock', () => {
     const html = build()
     expect(html).toContain('阡陌 console')
-    expect(html).toContain('class="wordmark"')
+    expect(html).toContain('class="brand-en"')
+    expect(html).toContain('class="brand-cn"')
     expect(html).toContain('node-a 本机')
-    expect(html).toContain('id="clock"')
     expect(html).toContain('id="auto-refresh"')
     expect(html).toContain('id="refresh-interval"')
     expect(html).toContain('value="5000" selected')
     expect(html).toContain('id="token"')
+    // The clock restated the operating system's own menu bar once a second.
+    // Element and interval went together — an element-only deletion leaves a
+    // timer writing into a node that is not there.
+    expect(html).not.toContain('id="clock"')
+    const script = html.slice(html.indexOf('<script>'))
+    expect(script).not.toContain("byId('clock')")
   })
 
-  test('the shell is a fixed sidebar plus an independently scrolling content pane', () => {
+  test('the shell is a sand panel and a content column, with three nav items', () => {
     const html = build()
     expect(html).toContain('class="shell"')
-    expect(html).toContain('class="sidebar"')
-    expect(html).toContain('class="content"')
-    // The sidebar no longer holds a top bar — it is gone entirely.
+    expect(html).toContain('class="side"')
+    expect(html).toContain('class="main"')
     expect(html).not.toContain('class="topbar"')
-    for (const [href, label] of [
-      ['#overview', '总览'],
-      ['#nodes-section', '节点'],
-      ['#trail-section', '消息链'],
-      ['#limits-section', '限额'],
-      ['#wake-section', '唤醒'],
-    ] as const) {
-      expect(html).toContain(`<a class="nav-item" href="${href}">${label}</a>`)
-    }
+    // Three places, not five anchors: the ledger, the conversation, the
+    // ceilings. 总览/注册/唤醒 were jumps to things within a screen of each
+    // other or of the thing they act on.
+    expect(html).toContain('href="#nodes-section" aria-current="page"')
+    expect(html).toContain('href="#limits-section"')
+    expect(html.match(/class="nav-item"/g)).toHaveLength(2)
+    expect(html).toContain('账本<span class="cnt">1 节点</span>')
+    const withChat = build({ chatEnabled: true })
+    expect(withChat.match(/class="nav-item"/g)).toHaveLength(3)
+    expect(withChat).toContain('id="to-chat"')
+  })
+
+  test('the token box is folded away rather than parked beside the logout', () => {
+    const html = build()
+    // Still one click from "look at this console as the other role"; no longer
+    // a password field whose everyday function is to be ignored.
+    expect(html).toContain('<details class="adv">')
+    const summary = html.indexOf('换令牌')
+    expect(summary).toBeGreaterThan(-1)
+    expect(html.indexOf('id="token"')).toBeGreaterThan(summary)
+    expect(html).toContain('data-action="token-save"')
+    expect(html).toContain('data-action="token-clear"')
   })
 
   test('an overview section leads with four stat cards, summarising numbers the ledger already shows', () => {
     const html = build()
     expect(html).toContain('id="overview"')
-    expect(html).toContain('class="stat-grid"')
-    expect(html.match(/class="stat-card"/g)).toHaveLength(4)
-    // The node count on the card is the same total the roster rail carries.
-    expect(html).toContain('<p class="stat-label">节点</p>')
-    expect(html).toContain('<p class="stat-value">1</p>')
+    expect(html).toContain('class="cards g4"')
+    expect(html.match(/class="card elev-sm stat"/g)).toHaveLength(4)
+    // The agent count on the card is the same total the roster header carries.
+    expect(html).toContain('<div class="card-kicker">智能体</div>')
+    expect(html).toContain('<div class="stat-num">1</div>')
     expect(html).toContain('在线 1')
-    // An intact trail reads 完整, not a false-precision 断裂 0.
-    expect(html).toContain('<p class="stat-label">消息链</p>')
-    expect(html).toContain('<p class="stat-hint">完整</p>')
+    // An intact trail reads 链完整, not a false-precision 断裂 0.
+    expect(html).toContain('<div class="card-kicker">消息链</div>')
+    expect(html).toContain('<span class="tag tag-accent-2">链完整</span>')
   })
 
-  test('a broken chain colours the overview hint destructive, matching the rail', () => {
+  test('a broken chain marks the overview card, matching the section header', () => {
     const html = build({
       audit: renderAudit(
         page({ intact: false, issueCount: 4 }),
@@ -1022,7 +1190,7 @@ describe('renderPage', () => {
         NO_FILTER,
       ),
     })
-    expect(html).toContain('<p class="stat-hint tone-bad">断裂 4</p>')
+    expect(html).toContain('<span class="tag tag-accent">断裂 4</span>')
   })
 
   test('the label is escaped like any other value', () => {
@@ -1127,116 +1295,134 @@ describe('assets', () => {
   })
 
   /**
-   * The design no longer confines colour to a single brand hex in the focus
-   * ring: the focus ring itself now follows `--ring` (`--primary` on the
-   * primary action), and `--primary` is deliberately spent on links and the
-   * primary button too — the one exception to "colour states a fact" this
-   * redesign keeps. What the check verifies is that the exception is the
-   * *token*, not a hardcoded hex: no `#D77757` survives anywhere, and the
-   * focus/primary machinery all resolves through `var(--ring)`/`var(--primary)`.
+   * Colour is spent on two things that are not facts — the primary action and
+   * the focus ring — and on nothing else. What this checks is that the
+   * exception is a *token*: no brand hex is hardcoded anywhere, and the focus
+   * machinery resolves through `var(--color-accent)`.
    */
   test('focus rings and the primary action are driven by tokens, not a hardcoded hex', () => {
     expect(CONSOLE_CSS).not.toContain('#D77757')
-    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--ring);')
-    expect(CONSOLE_CSS).toContain('.btn-primary:focus-visible')
-    expect(CONSOLE_CSS).toContain('outline-color: var(--primary);')
-  })
-
-  test('the primary action fills with --primary; the destructive one is an outline, never the default', () => {
+    expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-accent);')
     const primary = ruleOf('.btn-primary')
-    expect(primary).toContain('background: var(--primary)')
-    expect(primary).not.toContain('--destructive')
-
-    // The plain button (心跳, 清空, 关闭, 保存/清除令牌…) never carries either
-    // accent token — only the two deliberate exceptions do.
-    const base = ruleOf('.btn')
-    expect(base).not.toContain('--primary')
-    expect(base).not.toContain('--destructive')
-
-    // 注销 is the one dangerous action, and it is now a destructive outline
-    // confirmed with a dialog — the colour marks the risk, the dialog stops
-    // the slip.
-    const destructive = ruleOf('.btn-destructive')
-    expect(destructive).toContain('var(--destructive)')
-    expect(destructive).not.toContain('background: var(--destructive)')
-
-    const deregisterRow = renderRoster([agent()], null, NOW, TTL)
-    expect(deregisterRow).toContain('class="btn btn-destructive"')
+    expect(primary).toContain('background: var(--color-accent)')
   })
 
-  test('no shadow, no gradient, no decorative fill', () => {
-    expect(CONSOLE_CSS).not.toContain('box-shadow')
+  test('the danger action is terracotta, never a pure red, and never a resting state', () => {
+    // The one irreversible action. It is the confirm button of a dialog or a
+    // ghost link inside an expanded row — the plain button carries no accent
+    // token at all.
+    const danger = ruleOf('.btn-danger')
+    expect(danger).toContain('var(--color-accent-700)')
+    // There is no separate destructive hue left to reach for — the whole
+    // palette is the two accents plus neutral.
+    expect(CONSOLE_CSS).not.toContain('--destructive')
+    expect(CONSOLE_CSS).not.toContain('--warning')
+
+    const base = ruleOf('.btn')
+    expect(base).toContain('background: transparent')
+    expect(base).not.toContain('--color-accent-700')
+
+    const row = renderRoster([agent()], null, NOW, TTL)
+    expect(row).toContain('class="btn btn-ghost btn-danger"')
+  })
+
+  test('every shadow is one of the three elevation tokens', () => {
+    // Organic's elevation is a token set, and the dark scheme redefines all
+    // three as a hairline plus ambient darkness. A literal offset/blur here is
+    // a shadow that would be invisible on the dark ground.
+    for (const shadow of CONSOLE_CSS.match(/box-shadow:[^;}]*/g) ?? []) {
+      expect(shadow).toMatch(/box-shadow: var\(--shadow-(sm|md|lg)\)/)
+    }
     expect(CONSOLE_CSS).not.toContain('text-shadow')
     expect(CONSOLE_CSS).not.toContain('gradient')
   })
 
-  test('sans is the display face; mono is earned by addresses, ids, hashes and code', () => {
+  test('the type stack is the system one — the CSP forbids fetching a face', () => {
     const body = ruleOf('body')
-    expect(body).toContain('var(--ui)')
-    expect(body).not.toContain('var(--mono)')
+    expect(body).toContain('var(--font-body)')
+    expect(body).not.toContain('var(--font-mono)')
     expect(body).toContain('font-variant-numeric: tabular-nums')
-    // Inter first, then the platform sans stack — never fetched, only named.
+    // Neither of Organic's display faces carries CJK, so the interface was
+    // already on the system stack; headings buy their hierarchy back with
+    // weight and size instead.
     expect(CONSOLE_CSS).toContain(
-      '--ui: Inter, -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;',
+      '--font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;',
     )
+    expect(CONSOLE_CSS).toContain('--font-heading: var(--font-body);')
+    expect(CONSOLE_CSS).toContain('--font-heading-weight: 600;')
     // Mono is confined to the elements the view layer tags for exactly this
     // reason: addresses, endpoints, key fingerprints, ids, protocol codes.
-    const mono = ruleOf('.mono, code')
-    expect(mono).toContain('var(--mono)')
+    expect(ruleOf('.mono, code')).toContain('var(--font-mono)')
   })
 
-  test('a section label is a small muted sans label, not a headline', () => {
-    const label = ruleOf('.rail-name, .section-label')
-    expect(label).not.toContain('var(--mono)')
-    expect(label).toContain('font-size: 12px')
-    expect(label).toContain('color: var(--muted-foreground)')
-    expect(label).not.toContain('bold')
-    expect(label).not.toContain('rem')
+  test('body copy is 14px and no 11px-or-smaller size is load-bearing', () => {
+    // The previous sheet ran 11–13px and the roster was unreadable at arm's
+    // length. Everything that carries a value is now 12.5px or more; 10–11px
+    // survives only on uppercase kickers and micro-labels.
+    expect(ruleOf('body')).toContain('font-size: 14px')
+    expect(ruleOf('.input')).toContain('font-size: 14px')
+    expect(ruleOf('.btn')).toContain('font-size: 14px')
+    expect(ruleOf('.trail')).toContain('font-size: 13.5px')
   })
 
-  test('the ledger rail is a real column that collapses on a narrow screen', () => {
-    expect(ruleOf('.row')).toContain(
-      'grid-template-columns: var(--rail) minmax(0, 1fr)',
+  test('a section kicker is a small uppercase accent label, not a headline', () => {
+    const kicker = ruleOf('.kicker')
+    expect(kicker).toContain('font-size: 10px')
+    expect(kicker).toContain('text-transform: uppercase')
+    expect(kicker).toContain('color: var(--color-accent)')
+  })
+
+  test('the shell is two columns that collapse, and wide content scrolls in its own box', () => {
+    expect(ruleOf('.shell')).toContain(
+      'grid-template-columns: 264px minmax(0, 1fr)',
     )
-    const narrow = CONSOLE_CSS.slice(CONSOLE_CSS.indexOf('max-width: 900px'))
+    // No --rail: the noun column it sized is gone.
+    expect(CONSOLE_CSS).not.toContain('--rail')
+    const narrow = CONSOLE_CSS.slice(CONSOLE_CSS.indexOf('max-width: 1000px'))
     expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)')
-    // Wide tables scroll inside their own box; the page body never does.
     expect(ruleOf('.scroll')).toContain('overflow-x: auto')
   })
 
-  test('the only motion is a colour change under 120ms', () => {
+  test('the lease fill is display:block, or its width is ignored outright', () => {
+    // The track is blockified by its flex parent; the fill is not. Without
+    // this the bar renders as an empty pill on every row.
+    expect(ruleOf('.lease-fill')).toContain('display: block')
+  })
+
+  test('the only motion is a transition of at most 200ms', () => {
     for (const transition of CONSOLE_CSS.match(/transition:[^;}]*/g) ?? []) {
       if (transition.includes('none')) continue
-      expect(transition).toContain('120ms')
+      const durations = transition.match(/(\d+)ms/g) ?? []
+      expect(durations.length).toBeGreaterThan(0)
+      for (const duration of durations) {
+        expect(Number(duration.replace('ms', ''))).toBeLessThanOrEqual(200)
+      }
     }
     expect(CONSOLE_CSS).toContain('@media (prefers-reduced-motion: reduce)')
     expect(CONSOLE_CSS).not.toContain('@keyframes')
   })
 
-  test('the stylesheet carries the shadcn token set, defined in both schemes', () => {
-    const tokens = [
-      '--background',
-      '--foreground',
-      '--card',
-      '--card-foreground',
-      '--primary',
-      '--primary-foreground',
-      '--secondary',
-      '--secondary-foreground',
-      '--muted',
-      '--muted-foreground',
-      '--destructive',
-      '--warning',
-      '--border',
-      '--input',
-      '--ring',
-      '--sidebar',
-      '--sidebar-foreground',
-      '--sidebar-border',
-    ]
+  test('the palette is the Organic ramp set, and dark is a flip of the same names', () => {
     const dark = CONSOLE_CSS.slice(
       CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
     )
+    const tokens = [
+      '--color-bg',
+      '--color-surface',
+      '--color-text',
+      '--color-accent',
+      '--color-accent-2',
+      '--color-divider',
+      '--color-scrim',
+      '--shadow-sm',
+      '--shadow-md',
+      '--shadow-lg',
+    ]
+    for (const step of [100, 200, 300, 400, 500, 600, 700, 800, 900]) {
+      tokens.push(`--color-neutral-${step}`)
+      tokens.push(`--color-accent-${step}`)
+      tokens.push(`--color-accent-2-${step}`)
+    }
     for (const token of tokens) {
       // Defined in the light block…
       expect(CONSOLE_CSS).toContain(`${token}:`)
@@ -1244,17 +1430,30 @@ describe('assets', () => {
       // that only happens to look right in one scheme.
       expect(dark).toContain(`${token}:`)
     }
-    // Values copied verbatim from the shadcn reference palette.
-    expect(CONSOLE_CSS).toContain('--primary: oklch(0.488 0.243 264.376);')
-    expect(dark).toContain('--primary: oklch(0.424 0.199 265.638);')
-    expect(CONSOLE_CSS).toContain('--radius: 0.625rem;')
-    // Dark is designed rather than inverted: the border is 10% white, not a
-    // darkened grey, and the card surface is a step lighter than the page
-    // background rather than matching it.
-    expect(dark).toContain('--border: oklch(1 0 0 / 10%);')
-    expect(dark).toContain('--card: oklch(0.205 0 0);')
-    expect(dark).toContain('--background: oklch(0.145 0 0);')
+    expect(CONSOLE_CSS).toContain('--color-bg: #f5ead8;')
+    expect(CONSOLE_CSS).toContain('--color-accent: #c67139;')
+    // The ramps reverse their semantic direction, which is what lets every
+    // component class ("background 100, text 800") stay byte-identical.
+    expect(dark).toContain('--color-bg: #201e1d;')
+    expect(dark).toContain('--color-neutral-100: #2a2723;')
+    expect(dark).toContain('--color-neutral-900: #ece6da;')
+    // …and the accent is lifted a step so it stays legible on the dark ground.
+    // The previous sheet's dark --primary was oklch(0.424 …) on an
+    // oklch(0.145 …) page, which is the defect this replaces.
+    expect(dark).toContain('--color-accent: #f6a06b;')
     expect(CONSOLE_CSS).toContain('color-scheme: light dark;')
+  })
+
+  test('the scrim is its own token, because the ramp flip cannot express it', () => {
+    // .dialog-backdrop used to borrow --color-neutral-900, which after the
+    // flip is the *lightest* step — a backdrop that washes the screen with
+    // light instead of dimming it.
+    const dark = CONSOLE_CSS.slice(
+      CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
+    )
+    expect(ruleOf('.dialog-backdrop')).toContain('var(--color-scrim)')
+    expect(CONSOLE_CSS).toContain('--color-scrim: #2e2b25;')
+    expect(dark).toContain('--color-scrim: #050403;')
   })
 })
 
@@ -1304,7 +1503,7 @@ describe('copy discipline', () => {
 
   test('section headings are bare nouns', () => {
     const text = visibleText(rendered)
-    for (const heading of ['节点', '消息链', '限额', '唤醒']) {
+    for (const heading of ['名册', '消息链', '限额', '唤醒']) {
       expect(text).toContain(heading)
     }
   })
@@ -1366,10 +1565,11 @@ describe('copy discipline', () => {
   })
 
   test('no off-origin reference of any kind', () => {
-    expect(rendered).not.toContain('http://')
-    expect(rendered).not.toContain('https://')
-    expect(rendered).not.toContain('<link')
-    expect(rendered).not.toContain('<iframe')
+    const html = withoutFavicon(rendered)
+    expect(html).not.toContain('http://')
+    expect(html).not.toContain('https://')
+    expect(html).not.toContain('<link')
+    expect(html).not.toContain('<iframe')
   })
 
   test('the disabled wake face keeps its one allowed line', () => {

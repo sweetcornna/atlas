@@ -6,7 +6,7 @@
  *
  * ## Why it is a second page rather than a sixth section
  *
- * The ledger page is a column of `[rail][pane]` rows that scrolls as one
+ * The ledger page is a stack of sections that scrolls as one
  * document. A conversation is the opposite shape: two panes that scroll
  * independently, a composer pinned to the bottom of one of them, and a
  * viewport that never scrolls as a whole. Bolting that onto the ledger would
@@ -14,15 +14,22 @@
  * out of the same tokens (`assets/css.ts`) and the same escape discipline
  * (`escape.ts`) — the shell is shared, the body is not.
  *
- * ## The transcript is a ledger column, not a stack of bubbles
+ * ## The transcript is one column, not two facing ones
  *
- * Every turn is a hairline rule down the left with a small author label above
- * it and the text beside it — the same visual grammar the roster and the trail
- * already use, and the reason a transcript full of code and addresses stays
- * readable. Operator turns carry the rule in `--primary`; agent turns carry it
- * in `--border`. That is the whole distinction: no fill, no alignment flip, no
- * avatar. A conversation with one agent does not need to be told apart by
- * colour blocks; it needs to be read top to bottom.
+ * Every turn starts at the same left edge: a round avatar in a 34px track, the
+ * author and the time above, the text in a soft-cornered block beside it. The
+ * two authors are told apart by the block's tint — accent for the operator,
+ * surface for the agent — and never by which side of the pane they sit on.
+ *
+ * The alignment flip is the part deliberately not taken. A transcript here is
+ * full of addresses, ids and code, and a right-aligned half turns every one of
+ * those into a ragged left edge to hunt for. Both facts about a turn — who said
+ * it, where it starts — are worth one signal each, and the flip spends the more
+ * expensive one on the fact the tint already carries.
+ *
+ * (An earlier revision of this page used a hairline rule and no fill at all.
+ * The tint and the avatar arrived with the Organic design system; the single
+ * left edge is the part that survived unchanged, and is the part that matters.)
  *
  * What sits under an operator turn is the part a bubble UI has nowhere to put:
  * the delivery pills. `已投递 · 回执 accepted · 42ms`, then `已读 1.2s` when
@@ -46,7 +53,16 @@ import type {
   ChatTurn,
   ConsoleFailure,
 } from '../deps.js'
-import { chip, failureBar, hint, state, type Tone } from './bits.js'
+import {
+  address,
+  chevron,
+  failureBar,
+  hint,
+  icon,
+  state,
+  tag,
+  type Tone,
+} from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatClock, formatRelative, formatShortDuration } from './format.js'
 
@@ -71,15 +87,12 @@ function truncate(text: string, limit: number): string {
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`
 }
 
-/**
- * One pill under a turn.
- *
- * Deliberately not {@link chip}: a chip is an outlined label for a value (a
- * capability, a filter), and these are events with a tone. Sharing the shape
- * would make `已读 1.2s` and `plan` look like the same kind of thing.
- */
-function pill(text: string, tone: Tone = 'muted'): string {
-  return `<span class="pill pill-${tone}">${escapeHtml(text)}</span>`
+/** A value pill: a task id, a trace segment. Monospaced, never toned. */
+function idTag(label: string, value: string, shown: string): string {
+  return (
+    `<span class="tag tag-neutral mono" title="${attr(value)}">` +
+    `${escapeHtml(label)} ${escapeHtml(shown)}</span>`
+  )
 }
 
 /**
@@ -102,7 +115,45 @@ function shortTrace(traceId: string): string {
 }
 
 /**
- * The pills under one turn, in the order the events happened.
+ * The delivery chain under an operator turn.
+ *
+ * Three separate network events, drawn as three tags with a connecting segment
+ * between them — the segment fills once the step it leads to has happened. A
+ * message can be receipted and never read, or read and never answered, and a
+ * chat window that collapses those into one grey tick is a chat window that
+ * cannot tell you which half is broken (`console.md` §6.4). The chain shape is
+ * what makes "it stopped here" a thing you see rather than a thing you read.
+ */
+function deliveryChain(turn: ChatTurn): string {
+  const receipted = turn.receipt !== undefined
+  const read = turn.readMs !== undefined
+  const receiptMs =
+    turn.receiptMs === undefined ? '' : ` · ${formatLatency(turn.receiptMs)}`
+  const steps: readonly (readonly [string, boolean])[] = [
+    ['已发出', true],
+    [
+      turn.state === 'pending' && !receipted
+        ? '待投递'
+        : `已投递 · 回执 ${turn.receipt ?? '—'}${receiptMs}`,
+      receipted,
+    ],
+    [read ? `已读 · ${formatLatency(turn.readMs ?? 0)}` : '已读', read],
+  ]
+  const cells = steps.map(([text, done], index) => {
+    const mark = done
+      ? `<span class="tag tag-accent-2">${icon('check', {
+          small: true,
+        })}${escapeHtml(text)}</span>`
+      : `<span class="tag tag-neutral">${escapeHtml(text)}</span>`
+    const link =
+      index === 0 ? '' : `<span class="lnk${done ? ' done' : ''}"></span>`
+    return link + mark
+  })
+  return `<span class="chain">${cells.join('')}</span>`
+}
+
+/**
+ * The marks under one turn, in the order the events happened.
  *
  * Every one of them is a fact the transport or the agent reported; none of
  * them is derived from another. `已投递` without `已读` is the interesting
@@ -111,36 +162,20 @@ function shortTrace(traceId: string): string {
 function turnMarks(turn: ChatTurn): string {
   const marks: string[] = []
   if (turn.author === 'operator') {
-    if (turn.state === 'pending') marks.push(pill('待投递'))
-    if (turn.receipt !== undefined) {
-      const ms =
-        turn.receiptMs === undefined
-          ? ''
-          : ` · ${formatLatency(turn.receiptMs)}`
-      marks.push(pill(`已投递 · 回执 ${turn.receipt}${ms}`, 'ok'))
-    }
-    if (turn.readMs !== undefined) {
-      marks.push(pill(`已读 · ${formatLatency(turn.readMs)}`, 'ok'))
-    }
+    marks.push(deliveryChain(turn))
   } else if (turn.elapsedMs !== undefined) {
-    marks.push(pill(`用时 ${formatLatency(turn.elapsedMs)}`))
+    marks.push(tag(`用时 ${formatLatency(turn.elapsedMs)}`))
   }
   if (turn.state === 'failed') {
     marks.push(
-      pill(turn.code === undefined ? '失败' : `失败 · ${turn.code}`, 'bad'),
+      tag(turn.code === undefined ? '失败' : `失败 · ${turn.code}`, 'bad'),
     )
   }
   if (turn.taskId !== undefined) {
-    marks.push(
-      `<span class="pill pill-id mono" title="${attr(turn.taskId)}">` +
-        `task ${escapeHtml(turn.taskId.slice(0, 8))}</span>`,
-    )
+    marks.push(idTag('task', turn.taskId, turn.taskId.slice(0, 8)))
   }
   if (turn.traceId !== undefined) {
-    marks.push(
-      `<span class="pill pill-id mono" title="${attr(turn.traceId)}">` +
-        `链 ${escapeHtml(shortTrace(turn.traceId))}</span>`,
-    )
+    marks.push(idTag('链', turn.traceId, shortTrace(turn.traceId)))
   }
   return marks.length === 0
     ? ''
@@ -172,17 +207,41 @@ const AUTHOR_CLASS: Readonly<Record<ChatTurn['author'], string>> = {
   agent: 'turn-agent',
 }
 
+/**
+ * The two characters inside a turn's avatar.
+ *
+ * The operator is 你; an agent is two characters taken from the name the
+ * address already gave it. Nothing here invents an initial or a colour per
+ * agent — one conversation has exactly two participants, and the avatar is a
+ * position marker rather than an identity.
+ *
+ * A name ending in a digit keeps that digit: `beta-1` reads as `b1`, not `be`,
+ * because the digit is the part that tells two agents on one node apart and the
+ * letters before it are the part they share.
+ */
+function avatarText(who: string): string {
+  if (who.length <= 2) return who
+  const tail = who.slice(-1)
+  if (tail >= '0' && tail <= '9') return who.slice(0, 1) + tail
+  return who.slice(0, 2)
+}
+
 function renderTurn(turn: ChatTurn, agent: string): string {
   const who = turn.author === 'operator' ? '你' : agent
   const failed = turn.state === 'failed' ? ' turn-failed' : ''
   return (
     `<article class="turn ${AUTHOR_CLASS[turn.author]}${failed}">` +
+    `<span class="turn-av" aria-hidden="true">${escapeHtml(
+      avatarText(who),
+    )}</span>` +
+    `<div class="turn-body">` +
     `<header class="turn-head">` +
     `<span class="turn-who">${escapeHtml(who)}</span>` +
     `<time class="turn-when">${escapeHtml(formatClock(turn.at))}</time>` +
     `</header>` +
-    `<div class="turn-body">${turnText(turn.text)}${turnMarks(turn)}</div>` +
-    `</article>`
+    `<div class="bubble">${turnText(turn.text)}</div>` +
+    turnMarks(turn) +
+    `</div></article>`
   )
 }
 
@@ -206,6 +265,31 @@ function targetState(
   if (target.status === 'online') return { tone: 'ok', text: '在线' }
   return { tone: 'warn', text: target.status }
 }
+
+/**
+ * The nothing-open state.
+ *
+ * It keeps the sentence the previous version had — it is the string an
+ * operator's eye lands on before anything else — and adds the two things that
+ * turn a status into a next action: where the list of agents is, and a blob to
+ * stop a 700px-tall empty pane reading as a broken page.
+ */
+const NOTHING_OPEN =
+  `<div class="empty">` +
+  `<div class="stack" style="gap:var(--space-4)">` +
+  `<h4 class="empty-title">选择一个智能体开始对话</h4>` +
+  `<p class="empty-note">还没有打开会话 · 在左边选一个智能体开始 · ` +
+  `或者开一条新会话把任务交给别的节点</p>` +
+  `</div>` +
+  `<svg class="empty-art" width="200" height="200" viewBox="0 0 200 200" ` +
+  `fill="none" aria-hidden="true">` +
+  `<circle cx="108" cy="92" r="70" fill="var(--color-accent-200)"/>` +
+  `<circle cx="54" cy="140" r="28" fill="var(--color-accent-2-200)"/>` +
+  `<circle cx="150" cy="150" r="16" fill="var(--color-accent-2-300)"/>` +
+  `<g stroke="var(--color-accent-800)" stroke-width="5.5" ` +
+  `stroke-linecap="round" stroke-linejoin="round" fill="var(--color-bg)">` +
+  `<path d="M78 68h44a10 10 0 0 1 10 10v26a10 10 0 0 1-10 10H96l-18 14V78a10 10 0 0 1 10-10z"/>` +
+  `</g></svg></div>`
 
 export interface ChatThreadModel {
   readonly transcript: ChatTranscript | null
@@ -238,7 +322,7 @@ export function renderChatThread(model: ChatThreadModel): string {
     return (
       `<div class="thread thread-empty" id="${CHAT_THREAD_MOUNT}" ` +
       `data-target="" data-state="选一条会话" data-tone="muted">` +
-      hint('还没有打开会话 · 在左边选一个智能体开始') +
+      NOTHING_OPEN +
       `</div>`
     )
   }
@@ -255,14 +339,14 @@ export function renderChatThread(model: ChatThreadModel): string {
     `data-target="${attr(session.target)}" ` +
     `data-state="${attr(status.text)}" data-tone="${attr(status.tone)}" ` +
     `data-session="${attr(session.id)}">` +
-    `<header class="thread-head">` +
-    `<h1 class="thread-title">${escapeHtml(session.agent)}</h1>` +
-    `<span class="thread-addr mono">${escapeHtml(session.target)}</span>` +
-    `<span class="spacer"></span>` +
+    `<header class="chat-head">` +
+    `<h1 class="chat-name">${escapeHtml(session.agent)}</h1>` +
+    address(session.target) +
+    `<div class="chat-tail">` +
     state(status.tone, status.text) +
-    `<span class="thread-count">${escapeHtml(String(session.turnCount))} 轮</span>` +
-    `</header>` +
-    `<div class="turns">${body}</div>` +
+    tag(`${session.turnCount} 轮`) +
+    `</div></header>` +
+    `<div class="transcript">${body}</div>` +
     `</div>`
   )
 }
@@ -361,9 +445,12 @@ export function renderChatSessions(model: ChatSessionsModel): string {
       ? `<p class="chat-none">注册中心里没有可聊的智能体</p>`
       : `<div class="chat-new">` +
         `<label class="sr-only" for="chat-target">目标</label>` +
-        `<select id="chat-target">${options}</select>` +
-        `<button type="button" class="btn btn-primary" data-action="chat-new">` +
-        `新会话</button></div>`
+        `<span class="sel"><select class="input" id="chat-target">` +
+        `${options}</select>${chevron()}</span>` +
+        `<button type="button" class="btn btn-primary btn-block" ` +
+        `data-action="chat-new">` +
+        icon('plus', { small: true }) +
+        `开一条新会话</button></div>`
 
   const body =
     model.failure !== null
@@ -374,7 +461,9 @@ export function renderChatSessions(model: ChatSessionsModel): string {
             .map(
               group =>
                 `<div class="chat-group">` +
-                `<p class="chat-group-name">${escapeHtml(group.agent)}</p>` +
+                `<p class="chat-group-name">` +
+                state(groupTone(model.targets, group.target), group.agent) +
+                `</p>` +
                 `<p class="chat-group-node mono">${escapeHtml(group.node)}</p>` +
                 group.sessions
                   .map(session =>
@@ -393,4 +482,10 @@ export function renderChatSessions(model: ChatSessionsModel): string {
     `<div class="chat-rail" id="${CHAT_SESSIONS_MOUNT}">${picker}` +
     `<div class="chat-groups">${body}</div></div>`
   )
+}
+
+/** The dot beside a group name, from the same verdict the thread header uses. */
+function groupTone(targets: readonly ChatTarget[], value: string): Tone {
+  const found = targets.find(target => target.address === value)
+  return targetState(found ?? null, false).tone
 }

@@ -583,11 +583,42 @@ describe('wake', () => {
   })
 
   test('a malformed wake never reaches the port', async () => {
+    // `url` used to be the field this case left out. It is optional now — the
+    // form stopped asking for it because the port pins the receipt endpoint —
+    // so the missing-field case moved to `prompt`, which is still required.
+    const { handle, wake } = setup()
+    const response = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: { from: 'a', to: 'b' },
+      }),
+    )
+    expect(response.status).toBe(400)
+    expect(wake.sent).toHaveLength(0)
+  })
+
+  test('a wake with no url reaches the port, which uses the pinned one', async () => {
+    // The 回调 box is gone from the form: `createWakePort` only ever accepts
+    // the URL the console was started with, so an absent field means "that
+    // one" rather than a bad request.
     const { handle, wake } = setup()
     const response = await handle(
       req('POST', '/v0/wake', {
         token: ADMIN,
         body: { from: 'a', to: 'b', prompt: 'c' },
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(wake.sent).toHaveLength(1)
+    expect(wake.sent[0]?.url).toBe('')
+  })
+
+  test('a url of the wrong type is still refused', async () => {
+    const { handle, wake } = setup()
+    const response = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: { from: 'a', to: 'b', prompt: 'c', url: 7 },
       }),
     )
     expect(response.status).toBe(400)
@@ -786,8 +817,10 @@ describe('routing edges', () => {
 })
 
 describe('parseAuditFilter', () => {
+  const NOW = 1_760_000_000_000
+
   function filterOf(query: string): AuditFilter {
-    return parseAuditFilter(new URL(`${BASE}/v0/audit${query}`))
+    return parseAuditFilter(new URL(`${BASE}/v0/audit${query}`), NOW)
   }
 
   test('an empty query string is an empty filter', () => {
@@ -853,6 +886,42 @@ describe('parseAuditFilter', () => {
 
   test('an out-of-range epoch reads as absent', () => {
     expect(filterOf('?from=99999999999999999999').from).toBeUndefined()
+  })
+
+  test.each([
+    ['1h', 3_600_000],
+    ['24h', 86_400_000],
+    ['7d', 604_800_000],
+  ])('window=%s resolves to a from, server-side', (name, span) => {
+    // The trail filter is a plain GET form that has to work with script
+    // disabled, and a radio cannot compute now - 24h. So the segment submits
+    // a name and this resolves it.
+    expect(filterOf(`?window=${name}`)).toEqual({
+      window: name,
+      from: NOW - span,
+    })
+  })
+
+  test('an unknown window is ignored rather than refused', () => {
+    // It arrives from a URL somebody may have edited by hand; a 400 on a
+    // filter is a filter nobody finishes typing.
+    expect(filterOf('?window=fortnight')).toEqual({})
+    expect(filterOf('?window=')).toEqual({})
+  })
+
+  test('an explicit instant wins over a window — that is what 自定义 means', () => {
+    expect(filterOf('?window=24h&from=1000')).toEqual({ from: 1_000 })
+    expect(filterOf('?window=24h&to=2000')).toEqual({ to: 2_000 })
+  })
+
+  test('the window survives the round trip the poller replays', async () => {
+    // The page echoes `window=24h` back into `data-query`, not the instant it
+    // resolved to: "the last 24 hours" has to keep meaning that on the next
+    // poll rather than freezing at page load.
+    const { handle } = setup()
+    const html = await (await handle(get('/?window=24h', ADMIN))).text()
+    expect(html).toContain('data-query="window=24h"')
+    expect(html).toContain('name="window" value="24h" checked')
   })
 })
 

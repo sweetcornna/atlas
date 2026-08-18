@@ -201,6 +201,20 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     audit: createAuditPort({ path: config.auditPath }),
     limits: consoleLimits(),
     label: config.label,
+    // Display only. The wake form used to carry a 回调 text box that could hold
+    // exactly one value — `createWakePort` pins it — so the field is gone and
+    // the page states the pinned URL as read-only small print instead. Passed
+    // only when the wake face is actually wired: printing a receipt endpoint
+    // beside a disabled form would be stating a fact about a thing that cannot
+    // happen.
+    ...(wake.port === undefined || config.wakeUrl === undefined
+      ? {}
+      : { wakeUrl: config.wakeUrl }),
+    // Prefills the wake form's 发起方. The chat face already speaks as this
+    // address (§6.3), and a console that introduces itself as one thing when
+    // chatting and another when waking is a console whose audit trail has two
+    // identities in it.
+    identity: config.chatFrom,
     ...(wake.port === undefined ? {} : { wake: wake.port }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
   }

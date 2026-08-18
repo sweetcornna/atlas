@@ -152,14 +152,19 @@ import type {
   ChatPort,
   ChatTarget,
   ChatUpdate,
+  ConsoleAgent,
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
   RegisterAgentInput,
   WakeInput,
 } from './deps.js'
-import { renderRoster } from './view/agents.js'
-import { renderAudit, renderChain } from './view/audit.js'
+import {
+  agentFilterOptions,
+  renderRoster,
+  wakeTargetOptions,
+} from './view/agents.js'
+import { AUDIT_WINDOWS, renderAudit, renderChain } from './view/audit.js'
 import { failureBar } from './view/bits.js'
 import {
   MAX_CHAT_TEXT_LENGTH,
@@ -640,12 +645,34 @@ function parseLimit(raw: string | null): number | undefined {
 }
 
 /**
+ * The relative windows the trail filter's segmented control can submit.
+ *
+ * Resolved here rather than in the browser because the filter form is a plain
+ * `method="get"` that has to keep working with script disabled, and a radio
+ * button cannot compute `now - 24h`. Anything else in the parameter is ignored
+ * rather than refused — it arrives from a URL somebody may have edited by hand,
+ * and a 400 on a filter is a filter nobody finishes typing.
+ *
+ * Derived from the view's own table rather than restated: the segmented control
+ * and this parser have to agree on both the spelling and the span, and two
+ * hand-kept lists agree only until one of them is edited.
+ */
+const AUDIT_WINDOW_MS: ReadonlyMap<string, number> = new Map(
+  AUDIT_WINDOWS.map(([value, , span]) => [value, span]),
+)
+
+/**
  * Read the audit filter out of a query string.
  *
  * Exported and pure so the clamping rules can be tested without a request:
- * they are the part of this file most likely to be quietly wrong.
+ * they are the part of this file most likely to be quietly wrong. `now` is a
+ * parameter for the same reason every other clock in this package is: a window
+ * of "the last hour" has to be reproducible in a test.
  */
-export function parseAuditFilter(url: URL): AuditFilter {
+export function parseAuditFilter(
+  url: URL,
+  now: number = Date.now(),
+): AuditFilter {
   const params = url.searchParams
   const filter: {
     source?: string
@@ -655,6 +682,7 @@ export function parseAuditFilter(url: URL): AuditFilter {
     agent?: string
     from?: number
     to?: number
+    window?: string
     limit?: number
   } = {}
 
@@ -673,6 +701,22 @@ export function parseAuditFilter(url: URL): AuditFilter {
   if (from !== undefined) filter.from = from
   const to = parseTimestamp(params.get('to'))
   if (to !== undefined) filter.to = to
+
+  // An explicit instant wins over a relative window: the advanced panel's
+  // from/to pair *is* what the 自定义 segment means, and a window that quietly
+  // overrode a hand-typed timestamp would make the two controls fight.
+  const windowKey = textParam(params, 'window')
+  const span =
+    windowKey === undefined ? undefined : AUDIT_WINDOW_MS.get(windowKey)
+  if (
+    span !== undefined &&
+    windowKey !== undefined &&
+    from === undefined &&
+    to === undefined
+  ) {
+    filter.window = windowKey
+    filter.from = now - span
+  }
 
   const limit = parseLimit(params.get('limit'))
   if (limit !== undefined) filter.limit = limit
@@ -771,7 +815,13 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
   if (!to.ok) return to
   const prompt = requiredString(body, 'prompt')
   if (!prompt.ok) return prompt
-  const url = requiredString(body, 'url')
+  // Optional, and empty means "the one this console was started with".
+  // `createWakePort` pins the receipt URL and refuses any other value
+  // (`consolePorts.ts`), so the field could only ever hold one string — the
+  // form stopped asking for it, and a body without it is not malformed. Still
+  // type-checked when present: a caller that sends a number is confused about
+  // something and should hear about it.
+  const url = optionalString(body, 'url')
   if (!url.ok) return url
 
   const rawAfter = body['afterMs']
@@ -793,7 +843,7 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
       from: from.value,
       to: to.value,
       prompt: prompt.value,
-      url: url.value,
+      url: url.value ?? '',
       ...(afterMs === undefined ? {} : { afterMs }),
     },
   }
@@ -801,22 +851,41 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
 
 // --- HTML routes ---------------------------------------------------------
 
-async function rosterFragment(deps: ConsoleDeps, now: number): Promise<string> {
+/** The roster fragment, plus the list it was rendered from. */
+interface RosterRender {
+  readonly html: string
+  /**
+   * The agents themselves, so the page around the fragment can build its two
+   * address pickers (the wake target and the trail's node filter) from the
+   * *same* read rather than asking the registry a second time.
+   */
+  readonly agents: readonly ConsoleAgent[] | null
+}
+
+async function rosterFragment(
+  deps: ConsoleDeps,
+  now: number,
+): Promise<RosterRender> {
   const result = await deps.registry.list()
-  return renderRoster(
-    valueOf(result),
-    failureOf(result),
-    now,
-    deps.limits.registryTtlMs,
-  )
+  const agents = valueOf(result)
+  return {
+    html: renderRoster(
+      agents,
+      failureOf(result),
+      now,
+      deps.limits.registryTtlMs,
+    ),
+    agents,
+  }
 }
 
 async function auditFragment(
   deps: ConsoleDeps,
   filter: AuditFilter,
+  agentOptions?: string,
 ): Promise<string> {
   const result = await deps.audit.read(filter)
-  return renderAudit(valueOf(result), failureOf(result), filter)
+  return renderAudit(valueOf(result), failureOf(result), filter, agentOptions)
 }
 
 /**
@@ -924,19 +993,36 @@ async function handleIndex(
   url: URL,
   now: number,
 ): Promise<Response> {
-  const filter = parseAuditFilter(url)
+  const filter = parseAuditFilter(url, now)
   // Both panels are independent reads; a slow registry should not serialise
-  // in front of the trail.
-  const [roster, audit] = await Promise.all([
+  // in front of the trail. The trail's *markup* does depend on the roster —
+  // its node filter offers the addresses that exist rather than a box to
+  // retype one into — so the two reads still overlap and only the render
+  // waits.
+  const [roster, trail] = await Promise.all([
     rosterFragment(deps, now),
-    auditFragment(deps, filter),
+    deps.audit.read(filter),
   ])
+  const targetOptions = wakeTargetOptions(
+    roster.agents,
+    now,
+    deps.limits.registryTtlMs,
+  )
+  const audit = renderAudit(
+    valueOf(trail),
+    failureOf(trail),
+    filter,
+    agentFilterOptions(roster.agents, filter.agent),
+  )
   return html(
     renderPage({
       label: deps.label ?? DEFAULT_LABEL,
       now,
-      roster,
+      roster: roster.html,
       audit,
+      targetOptions,
+      ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
+      ...(deps.identity === undefined ? {} : { identity: deps.identity }),
       limits: renderLimits(deps.limits),
       // The form is rendered disabled with a reason rather than hidden: an
       // operator who cannot find the wake button assumes the console is broken.
@@ -1045,11 +1131,12 @@ async function handleAudit(
   deps: ConsoleDeps,
   credential: ConsoleCredential,
   url: URL,
+  now: number,
 ): Promise<Response> {
   const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
-  const result = await deps.audit.read(parseAuditFilter(url))
+  const result = await deps.audit.read(parseAuditFilter(url, now))
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
@@ -1261,6 +1348,7 @@ async function dispatchApi(
   credential: ConsoleCredential,
   url: URL,
   segments: readonly string[],
+  now: number,
 ): Promise<Response> {
   const head = segments[1]
 
@@ -1287,7 +1375,7 @@ async function dispatchApi(
 
   if (head === 'audit') {
     if (segments.length === 2)
-      return await handleAudit(request, deps, credential, url)
+      return await handleAudit(request, deps, credential, url, now)
     if (segments.length === 4 && segments[2] === 'chain') {
       return await handleChain(
         request,
@@ -1375,9 +1463,9 @@ async function dispatchFragment(
       await chainFragment(deps, decodeURIComponent(segments[2] ?? '')),
     )
   }
-  if (name === 'roster') return html(await rosterFragment(deps, now))
+  if (name === 'roster') return html((await rosterFragment(deps, now)).html)
   if (name === 'audit') {
-    return html(await auditFragment(deps, parseAuditFilter(url)))
+    return html(await auditFragment(deps, parseAuditFilter(url, now)))
   }
   return html(renderLimits(deps.limits))
 }
@@ -1446,7 +1534,7 @@ async function route(
   }
 
   if (segments[0] === 'v0') {
-    return await dispatchApi(request, deps, credential, url, segments)
+    return await dispatchApi(request, deps, credential, url, segments, now())
   }
 
   if (segments[0] === 'fragments' && segments.length >= 2) {

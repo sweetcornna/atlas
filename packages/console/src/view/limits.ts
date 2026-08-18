@@ -39,7 +39,7 @@ function definitionList(entries: readonly Entry[]): string {
   const rows = entries
     .map(
       entry =>
-        `<div class="dl-row"><dt>${escapeHtml(entry.key)}</dt>` +
+        `<div class="lim-row"><dt>${escapeHtml(entry.key)}</dt>` +
         `<dd class="num">${escapeHtml(entry.value)}</dd></div>`,
     )
     .join('')
@@ -80,7 +80,7 @@ export function renderLimits(limits: LimitsSnapshot): string {
     `<div class="limits-frag" data-rate="${attr(
       String(limits.protocol.ratePerMinute),
     )}" data-ttl-ms="${attr(String(limits.registryTtlMs))}">` +
-    `<div class="two-col">` +
+    `<div class="limits">` +
     `<section class="col" id="limits-protocol">` +
     `<h3 class="col-name">协议</h3>` +
     `<p class="col-src"><code class="mono">@qianmo/protocol</code> LIMITS</p>` +

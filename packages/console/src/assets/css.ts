@@ -15,143 +15,190 @@
  * That is also a security property. The page loads **nothing** from anywhere —
  * no CDN, no web font, no remote image — so there is no third party that can
  * change what an operator sees, and the CSP in the document head can be tight
- * enough to say so. Inter is reached for by *name* in `--ui` below, never
- * `@import`ed or linked; if the machine does not have it, the stack falls
- * through to the system sans face and nothing was fetched either way.
+ * enough to say so.
  *
  * ## Where the token set comes from
  *
- * The palette is oklch, copied verbatim from the shadcn reference this
- * redesign follows: neutral greys, a blue `--primary`
- * (`oklch(0.488 0.243 264.376)`, `oklch(0.424 0.199 265.638)` in dark), a
- * `--radius` of `0.625rem` with `--radius-sm`/`--radius-md` derived from it,
- * and a dark scheme that is designed rather than inverted — its border is
- * `oklch(1 0 0 / 10%)` (10% white), not a darkened grey, and its card surface
- * (`oklch(0.205 0 0)`) sits one step lighter than the page background
- * (`oklch(0.145 0 0)`) rather than matching it. `--warning` (amber) is the one
- * addition beyond the reference: shadcn's base palette ships no success/warning
- * pair, and this page needs a middle tone between `--primary` and
- * `--destructive` for the "past halfway, not yet expired" state. It follows the
- * same Tailwind amber-600/amber-400 convention the reference's own usage-meter
- * component uses for its severity steps.
+ * The palette is the **Organic** design system: a cream ground (`#f5ead8`), a
+ * sand surface (`#ebddc5`), warm charcoal ink, terracotta as the accent and
+ * sage as the second accent, each with a nine-step ramp generated on one shared
+ * lightness scale. Radii are large (8 / 16 / 28px, and small controls go full
+ * pill), spacing is a six-step scale, and elevation is two soft ink-tinted
+ * shadows plus one for the dialog.
  *
- * `--accent`/`--accent-foreground`/`--popover`/`--popover-foreground` are
- * carried across for palette fidelity even though nothing on this page reaches
- * for them yet — there is no menu or popover here, only tables, forms and
- * cards.
+ * Three consequences of adopting it wholesale are worth stating, because each
+ * replaced a rule the previous (shadcn-derived) sheet held:
  *
- * ## The three rules this file is holding to
+ * **① Cards are a surface, not a bordered box.** `--color-surface` sits a step
+ * off `--color-bg`, so a card is legible without a hairline around it. What is
+ * still bordered is the *input well* — Organic gives `.input` the same surface
+ * colour as `.card`, and on a data-entry page an input that matches the card it
+ * sits on disappears. So `.card .input` drops back to `--color-bg`.
  *
- * **① Colour states a fact; it never marks an action, with one exception.**
- * Every coloured pixel that is not a control is asserting something about the
- * network — 在线 / 滞后 / 过期, 通过 / 拒绝 / 丢弃, the lease meter, a broken
- * chain. `--primary` is reused for the one thing that is *not* a fact: links
- * and primary buttons, because a page with no accent colour at all reads as
- * unfinished rather than as disciplined. The focus ring follows the same
- * token — `--ring` normally, `--primary` on the primary action — rather than a
- * hardcoded brand hex, so a screenshot of this page never doubles as a brand
- * mark.
+ * **② The dark scheme is a token flip, not a second sheet.** Every component
+ * class below is written once. The dark block redefines the same custom
+ * properties with the ramps' semantic direction reversed — light: 100 is a pale
+ * fill and 900 is dark text; dark: 100 is a dark fill and 900 is pale text — so
+ * `.tag-accent` ("background 100, text 800") keeps working byte for byte. There
+ * is exactly one thing that flip cannot express, and it is why `--color-scrim`
+ * exists: the dialog backdrop used to borrow `--color-neutral-900`, which after
+ * the flip is the *lightest* step and would wash the screen with light instead
+ * of dimming it.
  *
- * **② Sans is the display face; monospace is earned.** The CLI-ledger version
- * of this page ran entirely in monospace, on the theory that an operator who
- * reads `qianmo://node-a/planner` all day wants that face everywhere. This
- * version narrows that to where it is actually load-bearing: addresses,
- * endpoints, key fingerprints, trace/task/msg ids, protocol codes and package
- * names — the `.mono`/`code` elements the view layer already tags for exactly
- * this reason (see `escape.ts`'s note on why nothing is interpolated without
- * going through it). Everything else — labels, headings, hints, form fields,
- * button text — is Inter first, falling back to the platform sans stack.
+ * **③ Colour still states a fact; shape carries it too.** The four roster
+ * states are four different *shapes* — filled disc, hollow terracotta ring,
+ * neutral bar, hollow neutral ring — so the roster is readable without colour
+ * vision. `--color-accent` is additionally spent on the primary action and on
+ * the focus ring, which is the one deliberate exception, unchanged from the
+ * previous sheet.
  *
- * **③ A left ledger rail, inside a left sidebar shell.** Below the overview,
- * every row is still `[rail][pane]`: the rail holds the section noun and one
- * dense line of digits, the pane holds the table or the form — unchanged from
- * the CLI-ledger version, because a redesign of the *skin* is not a reason to
- * re-litigate a layout decision that was already right. What is new is the
- * shell around it: a fixed 15rem sidebar carries the wordmark, the section
- * anchors and the instance/clock/token controls that used to live in a top
- * bar, and the shell locks the viewport height so only the sidebar and the
- * content pane scroll — never the page as a whole.
+ * ## Fonts, and why there is no `@font-face`
  *
- * No shadow, no gradient, no icon, no decorative fill. The one graphic element
- * is the lease meter — a rounded track with a coloured fill, the same shape a
- * usage meter takes in the reference design — and it earns its place because it
- * carries a ratio that cannot be read anywhere else on the page.
+ * Organic's own reference sheet opens with an `@import` of two Google fonts.
+ * That line cannot come across: the console's CSP is `default-src 'none'` with
+ * `font-src 'none'`, and a render-blocking request to a third party is exactly
+ * what the inline-everything rule exists to prevent. The interface language is
+ * Chinese, so the loss is smaller than it sounds — neither display face carries
+ * CJK glyphs, which means the wordmark and nearly all body copy were already
+ * falling through to the system stack. What changes is the Latin: headings buy
+ * their hierarchy back with weight, size and letter-spacing instead of a display
+ * face (`--font-heading-weight: 600`, the one deliberate deviation from
+ * Organic's own `400`).
+ *
+ * ## No `url()`, anywhere
+ *
+ * Every icon on the page is an inline `<svg>` emitted by the view layer, and
+ * that includes the `<select>` chevrons, which are absolutely positioned inside
+ * a `.sel` wrapper rather than painted as a background image. `bun test` pins
+ * this: a `url(` in here is either a remote fetch the CSP will refuse or a data
+ * URI, and both are ways for the sheet to stop being one self-contained string.
  */
 
 export const CONSOLE_CSS = `
 :root {
   color-scheme: light dark;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.488 0.243 264.376);
-  --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --warning: oklch(0.666 0.179 58.318);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --radius: 0.625rem;
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-  --rail: 140px;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ui: Inter, -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+
+  --color-bg: #f5ead8;
+  --color-surface: #ebddc5;
+  --color-text: #201e1d;
+  --color-accent: #c67139;
+  --color-accent-2: #7a8a5e;
+  --color-divider: color-mix(in srgb, #201e1d 16%, transparent);
+
+  --color-neutral-100: #f9f4ed;
+  --color-neutral-200: #eee7db;
+  --color-neutral-300: #dcd3c4;
+  --color-neutral-400: #c0b6a5;
+  --color-neutral-500: #a19786;
+  --color-neutral-600: #82796a;
+  --color-neutral-700: #645c50;
+  --color-neutral-800: #474238;
+  --color-neutral-900: #2e2b25;
+
+  --color-accent-100: #fff2eb;
+  --color-accent-200: #ffe1d0;
+  --color-accent-300: #ffc6a5;
+  --color-accent-400: #f6a06b;
+  --color-accent-500: #d67f48;
+  --color-accent-600: #b2622d;
+  --color-accent-700: #8c491a;
+  --color-accent-800: #643312;
+  --color-accent-900: #402310;
+
+  --color-accent-2-100: #f0fae1;
+  --color-accent-2-200: #e1eecc;
+  --color-accent-2-300: #ccdbb2;
+  --color-accent-2-400: #aebf92;
+  --color-accent-2-500: #8fa073;
+  --color-accent-2-600: #728157;
+  --color-accent-2-700: #56633f;
+  --color-accent-2-800: #3d472b;
+  --color-accent-2-900: #272e1b;
+
+  /* Dialog scrim. Not a ramp step: the ramps flip direction in dark, and a
+     backdrop that flips with them stops being a backdrop. */
+  --color-scrim: #2e2b25;
+
+  --color-muted: color-mix(in srgb, var(--color-text) 55%, transparent);
+  --color-quiet: color-mix(in srgb, var(--color-text) 70%, transparent);
+
+  --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-heading: var(--font-body);
+  --font-heading-weight: 600;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --space-1: 4.4px;
+  --space-2: 8.8px;
+  --space-3: 13.2px;
+  --space-4: 17.6px;
+  --space-6: 26.4px;
+  --space-8: 35.2px;
+
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2e2b25 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2e2b25 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2e2b25 22%, transparent);
 }
+
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.424 0.199 265.638);
-    --primary-foreground: oklch(0.97 0.014 254.604);
-    --secondary: oklch(0.274 0.006 286.033);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --warning: oklch(0.828 0.189 84.429);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --color-bg: #201e1d;
+    --color-surface: #2e2b25;
+    --color-text: #f5ead8;
+    --color-accent: #f6a06b;
+    --color-accent-2: #aebf92;
+    --color-divider: color-mix(in srgb, #f5ead8 18%, transparent);
+
+    --color-neutral-100: #2a2723;
+    --color-neutral-200: #383430;
+    --color-neutral-300: #4a453d;
+    --color-neutral-400: #625c51;
+    --color-neutral-500: #7d7568;
+    --color-neutral-600: #9a9184;
+    --color-neutral-700: #b8b0a2;
+    --color-neutral-800: #d5cec1;
+    --color-neutral-900: #ece6da;
+
+    --color-accent-100: #3a2113;
+    --color-accent-200: #5b3115;
+    --color-accent-300: #8c491a;
+    --color-accent-400: #b2622d;
+    --color-accent-500: #d67f48;
+    --color-accent-600: #ffb888;
+    --color-accent-700: #ffcfae;
+    --color-accent-800: #ffe4d2;
+    --color-accent-900: #fff2eb;
+
+    --color-accent-2-100: #1e2415;
+    --color-accent-2-200: #2e3a1f;
+    --color-accent-2-300: #46562e;
+    --color-accent-2-400: #63783f;
+    --color-accent-2-500: #8fa073;
+    --color-accent-2-600: #b8cc95;
+    --color-accent-2-700: #d2e2b4;
+    --color-accent-2-800: #e6f0d2;
+    --color-accent-2-900: #f3f9e6;
+
+    --color-scrim: #050403;
+
+    --shadow-sm: 0 0 0 1px color-mix(in srgb, #f5ead8 10%, transparent);
+    --shadow-md: 0 0 0 1px color-mix(in srgb, #f5ead8 11%, transparent), 0 3px 12px color-mix(in srgb, #050403 45%, transparent);
+    --shadow-lg: 0 0 0 1px color-mix(in srgb, #f5ead8 13%, transparent), 0 16px 40px color-mix(in srgb, #050403 55%, transparent);
   }
 }
 
-* { box-sizing: border-box; }
+/* ---- base ---- */
+*, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; height: 100%; }
 body {
   margin: 0;
-  height: 100%;
-  overflow: hidden;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--ui);
+  min-height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.55;
   font-variant-numeric: tabular-nums;
@@ -159,548 +206,683 @@ body {
   -webkit-font-smoothing: antialiased;
   /* The page defaults to unselectable, matching the reference product's
      desktop-app feel — but code/pre/kbd/input/textarea/.mono stay selectable.
-     The reference only exempts literal <code> elements; this page widens that
-     to the .mono class too, because most of its copyable values (addresses,
-     trace ids) are tagged that way rather than wrapped in <code>. */
+     Most copyable values here (addresses, trace ids) carry .mono rather than
+     being wrapped in <code>, so the exemption covers the class too. */
   user-select: none;
 }
-code, pre, kbd, samp, input, textarea, .mono { user-select: text; }
+code, pre, kbd, samp, input, textarea, select, .mono, .addr, .bubble { user-select: text; }
+h1, h2, h3, h4 {
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  line-height: 1.15;
+  letter-spacing: -0.012em;
+  margin: 0;
+}
+h1 { font-size: 28px; }
+h2 { font-size: 24px; }
+h3 { font-size: 21px; }
+h4 { font-size: 17px; }
+p { margin: 0; }
+a { color: var(--color-accent); text-underline-offset: 3px; }
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
-.absent { color: var(--muted-foreground); }
-.mono, code { font-family: var(--mono); }
+.mono, code { font-family: var(--font-mono); }
+.absent { color: var(--color-muted); }
+.note { font-size: 12.5px; color: var(--color-muted); }
+.kicker {
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-accent);
+}
+.flabel {
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+}
+.stack { display: flex; flex-direction: column; gap: var(--space-3); }
+.rowx { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.divider { height: 1px; background: var(--color-divider); border-radius: 999px; }
+.spacer { flex: 1 1 auto; }
+.i { width: 18px; height: 18px; flex: none; }
+.i-sm { width: 14px; height: 14px; flex: none; }
+svg { display: block; }
 
-/* ---- focus: the token ring, not a hardcoded brand hex ---- */
+/* ---- focus: the accent ring, never a hardcoded brand hex ---- */
+:focus { outline: none; }
 a:focus-visible, button:focus-visible, input:focus-visible,
-select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
-  outline: 2px solid var(--ring);
+select:focus-visible, textarea:focus-visible, summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
-.btn-primary:focus-visible {
-  outline-color: var(--primary);
-}
 
-/* ---- shell: fixed sidebar, independently scrolling content ---- */
-.shell { display: flex; height: 100%; }
-.sidebar {
-  width: 15rem; flex: 0 0 15rem; height: 100%; overflow-y: auto;
-  display: flex; flex-direction: column;
-  background: var(--sidebar); color: var(--sidebar-foreground);
-  border-right: 1px solid var(--sidebar-border);
+/* ---- shell: a sand panel on the left, the ledger on the right ---- */
+.shell {
+  display: grid; grid-template-columns: 264px minmax(0, 1fr);
+  gap: var(--space-4); padding: var(--space-4);
+  width: min(1320px, 100%); margin-inline: auto;
+  align-items: stretch; min-height: 100vh;
 }
-.sidebar-header { padding: 20px 16px 8px; }
-.wordmark {
-  font-size: 18px; font-weight: 600; letter-spacing: .01em;
-  color: var(--sidebar-foreground); text-decoration: none;
+.side {
+  background: var(--color-surface);
+  border-radius: calc(var(--radius-lg) * 1.15);
+  padding: var(--space-4);
+  display: flex; flex-direction: column; gap: var(--space-6);
+  min-width: 0;
+  /* Sticky and exactly one viewport tall. Stretching it to the document — the
+     way the design mock shows it — works at the mock's height and leaves the
+     nav two screens above the operator on a real ledger. Fixing the height to
+     the viewport keeps the left column a full panel at every scroll position
+     and keeps the nav where it can be reached. */
+  position: sticky; top: var(--space-4);
+  height: calc(100vh - var(--space-8));
+  overflow-y: auto;
 }
-.sidebar-nav {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 8px 12px; flex: 1 1 auto;
-}
-.nav-item {
-  display: block; padding: 8px 12px; border-radius: var(--radius-md);
-  font-size: 13px; color: var(--sidebar-foreground); text-decoration: none;
-  transition: background-color 120ms linear, color 120ms linear;
-}
-.nav-item:hover, .nav-item:focus-visible {
-  background: var(--sidebar-accent); color: var(--sidebar-accent-foreground);
-}
-.sidebar-footer {
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 12px 16px 20px; border-top: 1px solid var(--sidebar-border);
-}
-.sidebar-inst {
-  font-size: 12px; color: var(--sidebar-foreground);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.sidebar-clock { font-size: 12px; color: var(--muted-foreground); }
-.sidebar-footer .group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.sidebar-footer label { color: var(--muted-foreground); font-size: 12px; }
-.sidebar-footer input, .sidebar-footer select, .sidebar-footer .btn {
-  font-size: 12px; padding: 3px 8px;
-}
-.sidebar-footer #token { width: 100%; }
-#refresh-state, #token-state {
-  color: var(--muted-foreground); font-size: 11px; min-width: 64px;
-}
-.content { flex: 1 1 auto; min-width: 0; height: 100%; overflow-y: auto; }
-
-/* ---- the ledger: [rail][pane], repeated ---- */
-main {
-  max-width: 1120px; margin: 0 auto; padding: 40px 24px 96px;
-  display: flex; flex-direction: column; gap: 56px;
-}
-.block { display: flex; flex-direction: column; gap: 24px; }
-.row {
-  display: grid; grid-template-columns: var(--rail) minmax(0, 1fr);
-  gap: 24px; align-items: start;
-}
-.rail { display: flex; flex-direction: column; gap: 4px; padding-top: 1px; }
-/* A label, not a headline: the data is the thing worth looking at, so the
-   noun that names it stays small and quiet. */
-.rail-name, .section-label {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: .04em;
-  color: var(--muted-foreground);
-}
-/* The dense line the deleted prose used to occupy. */
-.rail-num {
-  margin: 0; font-size: 12px; color: var(--muted-foreground);
-  display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline;
-}
-.rail-num .sep { color: var(--border); }
-.rail-num .total { color: var(--foreground); }
-.rail-num .ttl { color: var(--muted-foreground); }
-.pane { min-width: 0; }
-
-/* ---- overview: four stat cards above the ledger ---- */
-.overview { gap: 12px; }
-.stat-grid {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px;
-}
-.stat-card {
-  min-width: 0; display: flex; flex-direction: column; gap: 8px;
-  background: var(--card); color: var(--card-foreground);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 20px 24px;
-}
-.stat-label {
-  margin: 0; font-size: 12px; color: var(--muted-foreground);
-}
-.stat-value {
-  margin: 0; font-size: clamp(26px, 2.4vw, 32px); font-weight: 600;
-  line-height: 1.2; font-variant-numeric: tabular-nums;
-}
-.stat-hint { margin: 0; font-size: 13px; color: var(--muted-foreground); }
-
-/* ---- tone: the only place a colour states a network fact ---- */
-.tone-ok { color: var(--primary); }
-.tone-warn { color: var(--warning); }
-.tone-bad { color: var(--destructive); }
-.state {
-  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
-  max-width: 100%; overflow: hidden;
-}
-.dot {
-  width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto;
-  background: var(--muted-foreground);
-}
-.dot-ok { background: var(--primary); }
-.dot-warn { background: var(--warning); }
-.dot-bad { background: var(--destructive); }
-
-/* ---- alerts: a fact and a number, in a low-tint box ---- */
-.bar {
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px;
-  margin: 0 0 16px; padding: 10px 14px; border-radius: var(--radius-md);
-  border: 1px solid var(--border); font-size: 13px;
-}
-.bar-bad {
-  color: var(--destructive);
-  background: color-mix(in oklch, var(--destructive) 10%, transparent);
-  border-color: color-mix(in oklch, var(--destructive) 30%, transparent);
-}
-.bar-warn {
-  color: var(--warning);
-  background: color-mix(in oklch, var(--warning) 12%, transparent);
-  border-color: color-mix(in oklch, var(--warning) 35%, transparent);
-}
-.bar-muted { color: var(--muted-foreground); }
-.bar-code { color: var(--muted-foreground); font-size: 11px; }
-.bar .n { font-variant-numeric: tabular-nums; }
-.hint { margin: 0; padding: 16px 0; color: var(--muted-foreground); font-size: 13px; }
-.note { margin: 0 0 16px; color: var(--muted-foreground); font-size: 13px; }
-.jump { color: var(--primary); text-underline-offset: 3px; }
-.chip {
-  display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: var(--secondary);
-  color: var(--secondary-foreground);
-  font-size: 11px; white-space: nowrap;
-}
-.tags, .chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-
-/* ---- tables: a card surface, muted headers, hairline rows ---- */
-.scroll {
-  overflow-x: auto; background: var(--card);
-  border: 1px solid var(--border); border-radius: var(--radius);
-}
-table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
-table.grid th, table.grid td {
-  padding: 10px 12px; text-align: left; vertical-align: top;
-  border-bottom: 1px solid var(--border);
-}
-/* Not sticky. A sticky header inside a page that scrolls as one document ends
-   up floating over the first row at every scroll position that is not the top,
-   and the rail already says how many rows there are. */
-table.grid thead th {
-  background: var(--card);
-  padding-top: 10px; font-weight: 500; letter-spacing: .02em;
-  font-size: 12px; color: var(--muted-foreground); white-space: nowrap;
-}
-table.grid tbody tr:last-child td { border-bottom: 0; }
-table.grid tbody tr:hover { background: var(--muted); }
-td.when, td.num, td.lease { text-align: right; white-space: nowrap; }
-td.parties, td.actions { white-space: nowrap; }
-th:last-child, td.actions { text-align: right; }
-/* Fixed layout with declared widths. Under the auto layout the content sets
-   the widths, and one long endpoint from an untrusted peer is enough to squeeze
-   a neighbouring column to one character per line — unreadable, and a thing any
-   peer can do to this page on purpose. */
-.grid.roster { table-layout: fixed; }
-.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Tags wrap onto their own lines and any single over-long tag clips inside the
-   cell. Without the overflow rule one hostile capability string spills across
-   the status and lease columns and covers them. */
-.grid.roster td.caps { white-space: normal; overflow: hidden; }
-.grid.roster td.caps .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.grid.audit td.kind { overflow-wrap: break-word; }
-.detail { margin-top: 4px; font-size: 11px; color: var(--muted-foreground); }
-.detail .dv { color: var(--foreground); }
-.arrow { color: var(--muted-foreground); padding: 0 4px; }
-.fp { color: var(--muted-foreground); }
-
-/* ---- the lease meter: the one graphic on the page ----
-   A rounded track (--muted) with a rounded fill, the same shape the reference
-   design's usage meter takes. Primary while the lease is in its first half,
-   amber past the halfway mark, destructive and locked full once it has
-   lapsed — it replaces a heartbeat column and an expiry column that were two
-   spellings of the same fact; the absolute heartbeat clock stays beside it
-   because a ratio cannot be put in a ticket. */
-.lease { width: 100%; }
-.lease-bar {
-  display: block; width: 100%; height: 6px; border-radius: 999px;
-  background: var(--muted); overflow: hidden;
-}
-.lease-fill { display: block; height: 6px; border-radius: 999px; background: var(--primary); }
-.lease-stale { background: var(--warning); }
-.lease-dead { background: var(--destructive); }
-.lease-left { display: block; margin-top: 4px; font-size: 11px; color: var(--muted-foreground); }
-.lease-dead + .lease-left, .lease-left.gone { color: var(--destructive); }
-
-/* ---- forms: shadcn-shaped inputs and buttons ---- */
-.filters, .form { display: flex; flex-wrap: wrap; gap: 16px; margin: 0; }
-.req { font-style: normal; color: var(--muted-foreground); margin-left: 2px; }
-.field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 176px; }
-.field > span {
-  font-size: 12px; font-weight: 500; letter-spacing: .01em; color: var(--muted-foreground);
-}
-.field-narrow { flex: 0 0 104px; }
-.field-wide { flex: 1 1 100%; }
-.field-actions { flex: 0 0 auto; flex-direction: row; align-items: flex-end; gap: 8px; }
-input, select, textarea {
-  font: inherit; font-family: var(--ui); font-size: 13px;
-  color: var(--foreground); background: var(--background);
-  border: 1px solid var(--input); border-radius: var(--radius-md); padding: 6px 10px;
+.main {
+  display: flex; flex-direction: column; gap: calc(var(--space-8) * 1.2);
+  padding: var(--space-2) var(--space-2) var(--space-8);
   min-width: 0;
 }
-textarea { resize: vertical; min-height: 56px; }
+
+/* ---- brand ---- */
+.brand { display: flex; flex-direction: column; gap: 1px; }
+.brand-en {
+  font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--color-accent-700); font-weight: 600;
+}
+.brand-cn {
+  font-family: var(--font-heading); font-size: 29px; font-weight: 700;
+  line-height: 1.1; letter-spacing: .02em;
+  color: var(--color-text); text-decoration: none;
+}
+a.brand-cn:hover { color: var(--color-accent-700); }
+
+/* ---- nav ---- */
+.nav-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.nav-item {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 9px var(--space-3); border-radius: 999px;
+  font-size: 14px; color: var(--color-text); text-decoration: none;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.nav-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.nav-item[aria-current="page"] { background: var(--color-accent); color: var(--color-bg); }
+.nav-item .cnt { margin-left: auto; font-size: 11px; opacity: .75; }
+
+/* ---- sidebar foot ---- */
+.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-3); }
+/* Two short lines that wrap, not one line that ellipses: at 430px the instance
+   label used to run off the panel and take the controls with it. */
+.inst { font-size: 11.5px; line-height: 1.45; color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+.inst b {
+  display: block; font-weight: 700; font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 84%, transparent);
+  overflow-wrap: anywhere;
+}
+.fblock {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-2); font-size: 13px; flex-wrap: wrap;
+}
+.fblock form { margin: 0; }
+
+/* ---- the refresh switch: a pure-CSS pill ---- */
+.sw { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; font-size: 13px; }
+.sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+.sw .trk {
+  width: 36px; height: 20px; border-radius: 999px; flex: none; position: relative;
+  background: var(--color-neutral-400); transition: background-color 150ms ease;
+}
+.sw .trk::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--color-bg); transition: transform 150ms ease;
+}
+.sw input:checked + .trk { background: var(--color-accent-2-600); }
+.sw input:checked + .trk::after { transform: translateX(16px); }
+.sw input:focus-visible + .trk { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#refresh-state, #token-state, #stream-state { font-size: 11px; color: var(--color-muted); }
+
+/* ---- sections ---- */
+.sec { display: flex; flex-direction: column; gap: var(--space-4); scroll-margin-top: var(--space-4); }
+.sec-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--space-4); flex-wrap: wrap;
+}
+.sec-head h2, .sec-head h3 { margin: 0; }
+.cards { display: grid; gap: var(--space-3); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* ---- cards ---- */
+.card {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-3); background: var(--color-surface);
+  border-radius: calc(var(--radius-lg) * 1.15);
+  min-width: 0;
+}
+.card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); }
+.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.elev-sm { box-shadow: var(--shadow-sm); }
+.elev-md { box-shadow: var(--shadow-md); }
+.elev-lg { box-shadow: var(--shadow-lg); }
+
+.stat { gap: var(--space-2); padding: var(--space-4) var(--space-4) var(--space-3); }
+.stat-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+.stat-num {
+  font-family: var(--font-heading); font-weight: 700;
+  font-size: 34px; line-height: 1.05; letter-spacing: -.02em;
+}
+.stat-num .u { font-size: 16px; margin-left: 4px; opacity: .72; }
+.blob {
+  width: 38px; height: 38px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: var(--color-accent-100); color: var(--color-accent-700);
+}
+.blob-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.blob-n { background: var(--color-neutral-200); color: var(--color-neutral-700); }
+
+/* ---- tags ---- */
+.tag, .chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; letter-spacing: .02em; padding: 3px 10px;
+  border-radius: 999px; white-space: nowrap;
+  background: var(--color-neutral-100); color: var(--color-neutral-800);
+}
+.tag-accent { background: var(--color-accent-100); color: var(--color-accent-800); }
+.tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
+.chips, .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
+.chips .chip, .tags .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- tone: colour states a fact ---- */
+.tone-ok { color: var(--color-accent-2-800); }
+.tone-warn { color: var(--color-accent-800); }
+.tone-bad { color: var(--color-accent-800); }
+.tone-muted { color: var(--color-muted); }
+.total { color: var(--color-text); font-weight: 600; }
+.ttl { color: var(--color-muted); }
+.sep { color: var(--color-neutral-500); }
+
+/* ---- status: four states, four shapes ---- */
+.state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; max-width: 100%; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--color-neutral-500); }
+.state:has(.dot-ok) { color: var(--color-accent-2-800); }
+.dot-ok { background: var(--color-accent-2-600); }
+.state:has(.dot-warn) { color: var(--color-accent-800); }
+.dot-warn { background: transparent; border: 3px solid var(--color-accent-600); }
+.state:has(.dot-bad) { color: var(--color-neutral-700); }
+.dot-bad { background: transparent; border: 2px solid var(--color-neutral-500); }
+.state:has(.dot-muted) { color: var(--color-neutral-700); }
+.dot-muted { width: 13px; height: 4px; border-radius: 999px; background: var(--color-neutral-600); }
+
+/* ---- the address, with its agent segment as a pill ---- */
+.addr {
+  font-family: var(--font-mono); font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; max-width: 100%;
+}
+.addr b {
+  font-weight: 700; color: var(--color-accent-800);
+  background: var(--color-accent-100); border-radius: 999px; padding: 1px 8px;
+}
+
+/* ---- the lease meter ---- */
+.lease { display: flex; align-items: center; gap: var(--space-2); }
+.lease-trk {
+  width: 88px; height: 8px; border-radius: 999px; flex: none;
+  background: var(--color-neutral-300); overflow: hidden;
+}
+/* display:block is load-bearing: the track is blockified by its flex parent,
+   the fill is not, and without this the width is ignored outright. */
+.lease-fill { display: block; height: 100%; border-radius: 999px; background: var(--color-accent-2-500); }
+.lease-stale { background: var(--color-accent-500); }
+.lease-dead { background: var(--color-neutral-400); }
+.lease-left { font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; color: var(--color-muted); }
+.lease-left.gone { color: var(--color-accent-800); }
+
+/* ---- roster: one card per node, one disclosure row per agent ---- */
+.grp { gap: var(--space-2); padding: var(--space-3) var(--space-4); }
+.grp-head {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--color-divider);
+}
+.grp-name { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 18px; }
+.grp-tail { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.row > summary {
+  list-style: none; cursor: pointer;
+  display: grid; grid-template-columns: minmax(0, 1fr) 116px 186px 82px 26px;
+  align-items: center; gap: var(--space-3);
+  padding: 9px var(--space-2); border-radius: 999px;
+  transition: background-color 150ms ease;
+}
+.row > summary::-webkit-details-marker { display: none; }
+.row > summary::marker { content: ""; }
+.row > summary:hover, .row[open] > summary { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.chev { color: var(--color-accent-700); transition: transform 150ms ease; }
+details[open] > summary .chev { transform: rotate(180deg); }
+.row-panel {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4); padding: var(--space-4);
+  margin: var(--space-1) var(--space-2) var(--space-2);
+  background: var(--color-neutral-100); border-radius: var(--radius-lg);
+}
+.kv { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.kv .k { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--color-muted); }
+.kv .v { font-size: 13px; overflow-wrap: anywhere; }
+.row-acts {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-2);
+  flex-wrap: wrap; padding-top: var(--space-2); border-top: 1px solid var(--color-divider);
+}
+
+/* ---- disclosure: the advanced half of three forms ---- */
+.adv { margin-top: var(--space-1); }
+.adv > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--color-accent-700);
+  padding: 5px 13px; border-radius: 999px;
+  transition: background-color 150ms ease;
+}
+.adv > summary::-webkit-details-marker { display: none; }
+.adv > summary::marker { content: ""; }
+.adv > summary:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.adv-body {
+  margin-top: var(--space-3); padding: var(--space-4);
+  background: var(--color-neutral-100); border-radius: var(--radius-lg);
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* ---- forms ---- */
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field > label, .field > span {
+  display: block; font-size: 12px; color: var(--color-quiet);
+}
+.field-wide { grid-column: 1 / -1; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+/* The wake form's two columns are not equal: the target picker has a known
+   width and the prompt should take everything left over. A class rather than an
+   inline style because an inline style outranks the collapse rule below, and a
+   prompt box that stays in a 40px column at 430px is a prompt box nobody can
+   type in. */
+.wake-grid { grid-template-columns: minmax(0, 320px) minmax(0, 1fr); }
 fieldset { border: 0; margin: 0; padding: 0; }
 fieldset[disabled] { opacity: .55; }
-.btn {
-  font: inherit; font-family: var(--ui); font-size: 13px; font-weight: 500; cursor: pointer;
-  padding: 6px 14px; border-radius: var(--radius-md); border: 1px solid var(--border);
-  background: var(--background); color: var(--foreground);
-  text-decoration: none; display: inline-block; line-height: 1.4;
-  transition: border-color 120ms linear, background-color 120ms linear, color 120ms linear;
-}
-.btn:hover { background: var(--muted); }
-/* The primary action is filled with --primary; colour on this page otherwise
-   states a fact, and a primary action is the one deliberate exception. */
-.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
-.btn-primary:hover { background: color-mix(in oklch, var(--primary) 88%, black); }
-/* The one dangerous action (注销) is a destructive outline, confirmed with a
-   dialog before it fires — the colour marks the risk, the dialog stops the
-   slip. */
-.btn-destructive { background: transparent; border-color: var(--destructive); color: var(--destructive); }
-.btn-destructive:hover { background: color-mix(in oklch, var(--destructive) 10%, transparent); }
-.btn[disabled], .btn:disabled { opacity: .5; cursor: not-allowed; }
-td.actions .btn { padding: 2px 8px; font-size: 11px; }
-td.actions .btn + .btn { margin-left: 4px; }
-.linkish {
-  font: inherit; font-family: var(--ui); font-size: 13px;
-  background: none; border: 0; padding: 0; cursor: pointer;
-  color: var(--primary); text-decoration: underline; text-underline-offset: 3px;
-  transition: opacity 120ms linear;
-}
-.linkish:hover { opacity: .8; }
-.status { margin: 16px 0 0; font-size: 12px; min-height: 1.25em; color: var(--muted-foreground); }
-.status[data-tone='ok'] { color: var(--primary); }
-.status[data-tone='bad'] { color: var(--destructive); }
+.req { font-style: normal; color: var(--color-accent-700); margin-left: 2px; }
 
-/* ---- limits: two columns that never become one ---- */
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
-.col-name {
-  margin: 0 0 4px; font-size: 12px; font-weight: 500;
-  letter-spacing: .04em; color: var(--muted-foreground);
+.input {
+  width: 100%; min-height: 36px; padding: 6px 14px;
+  font: inherit; font-family: var(--font-body); font-size: 14px;
+  color: var(--color-text); caret-color: var(--color-accent);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider); border-radius: 999px;
+  min-width: 0;
 }
-.col-src { margin: 0 0 8px; font-size: 11px; color: var(--muted-foreground); }
+/* Organic gives inputs the card's own surface colour. On a data-entry page an
+   input well that matches the card it sits on is an input well nobody sees. */
+.card .input, .adv-body .input, .composer .input { background: var(--color-bg); }
+.input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.input:focus-visible { border-color: var(--color-accent); outline-offset: 0; }
+.input[readonly] { color: var(--color-muted); }
+textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-height: 1.55; resize: vertical; min-height: 76px; }
+
+.sel { position: relative; display: block; }
+.sel > select { appearance: none; -webkit-appearance: none; padding-right: 36px; }
+.sel > .chev { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+
+.hintline {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  min-width: 0;
+}
+.hintline .mono { overflow: hidden; text-overflow: ellipsis; }
+
+.chk {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 13.5px; padding: 5px 13px; border-radius: 999px; position: relative;
+  border: 1px solid var(--color-divider);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.chk input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chk .bx {
+  width: 15px; height: 15px; border-radius: var(--radius-sm); flex: none;
+  display: grid; place-items: center; color: transparent;
+  border: 1.5px solid var(--color-divider);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.chk:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.chk:has(input:checked) { background: var(--color-accent-2-100); border-color: var(--color-accent-2-400); }
+.chk:has(input:checked) .bx { background: var(--color-accent-2-600); border-color: var(--color-accent-2-600); color: var(--color-bg); }
+.chk:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.seg {
+  display: inline-flex; overflow: hidden; flex-wrap: wrap;
+  border: 1px solid var(--color-divider); border-radius: 999px;
+}
+.seg-opt {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; font-size: 13px; cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
+.seg-opt:has(input:checked) { background: var(--color-accent); color: var(--color-bg); }
+.seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+/* ---- buttons ---- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; text-decoration: none;
+  font: inherit; font-family: var(--font-body); font-size: 14px; line-height: 1.2;
+  color: var(--color-text); background: transparent;
+  border: 1px solid transparent; padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border-radius: 999px;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--color-accent); color: var(--color-bg); }
+.btn-primary:hover { background: var(--color-accent-600); }
+.btn-primary:active { background: var(--color-accent-700); }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
+.btn-ghost { color: var(--color-accent-700); padding-inline: var(--space-3); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+/* The one irreversible action. Terracotta's deep step, not a pure red, and
+   never the resting state of anything — it is only ever the confirm button of
+   a dialog, or a ghost link inside an expanded row. */
+.btn-danger { background: var(--color-accent-700); color: var(--color-bg); border-color: transparent; }
+.btn-danger:hover { background: var(--color-accent-800); }
+.btn-ghost.btn-danger { background: transparent; color: var(--color-accent-700); }
+.btn-ghost.btn-danger:hover { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.btn-small { font-size: 12.5px; padding: 5px 12px; }
+.btn-block { width: 100%; }
+.btn-icon { width: 38px; height: 38px; padding: 0; flex: none; }
+.linkish {
+  font: inherit; font-family: var(--font-mono); font-size: 12px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--color-accent-700); text-decoration: underline; text-underline-offset: 3px;
+  transition: opacity 150ms ease;
+}
+.linkish:hover { opacity: .75; }
+
+/* ---- strips: a fact and a number ---- */
+.bar {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px;
+  margin: 0; padding: 10px var(--space-4); border-radius: var(--radius-lg);
+  font-size: 13px; background: var(--color-neutral-100); color: var(--color-neutral-800);
+}
+.bar-bad { background: var(--color-accent-100); color: var(--color-accent-800); }
+.bar-warn { background: var(--color-accent-100); color: var(--color-accent-800); }
+.bar-muted { background: var(--color-neutral-100); color: var(--color-neutral-700); }
+.bar-code { font-family: var(--font-mono); font-size: 11px; opacity: .75; }
+.bar .n { font-variant-numeric: tabular-nums; }
+.hint { font-size: 13.5px; color: var(--color-muted); padding: var(--space-3) var(--space-2); }
+.status { font-size: 12px; min-height: 1.25em; color: var(--color-muted); }
+.status[data-tone='ok'] { color: var(--color-accent-2-800); }
+.status[data-tone='bad'] { color: var(--color-accent-800); }
+.jump { color: var(--color-accent-700); }
+
+/* ---- the trail table ---- */
+.scroll { overflow-x: auto; }
+.trail { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.trail th {
+  text-align: left; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  padding: var(--space-2); border-bottom: 1px solid var(--color-divider);
+  font-weight: 400; white-space: nowrap;
+}
+.trail td {
+  padding: var(--space-2); vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+.trail tbody tr:last-child td { border-bottom: 0; }
+.trail tbody tr:hover { background: color-mix(in srgb, var(--color-text) 4%, transparent); }
+.trail td.when { white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
+.trail td.src, .trail td.result { white-space: nowrap; }
+/* break-word, not anywhere: wake_dispatch split as wake_dispat / ch reads as
+   two events. A long kind widens the column instead. */
+.trail td.kind { overflow-wrap: break-word; }
+.detail { margin-top: 4px; font-size: 11px; color: var(--color-muted); }
+.detail .dv { color: var(--color-text); }
+.arrow { color: var(--color-muted); padding: 0 4px; }
+.fp { color: var(--color-muted); }
+
+/* ---- limits ---- */
+.limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); }
+.col-name { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); margin: 0; }
+.col-src { font-size: 12.5px; color: var(--color-muted); margin: 0 0 var(--space-3); font-family: var(--font-mono); }
 .dl { margin: 0; }
-.dl-row {
-  display: flex; justify-content: space-between; align-items: baseline;
-  gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--border);
+.lim-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--space-3); padding: 8px 0; font-size: 13.5px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
 }
-.dl-row:last-child { border-bottom: 0; }
-.dl dt { color: var(--muted-foreground); font-size: 12px; }
-.dl dd { margin: 0; text-align: right; font-size: 12px; }
+.lim-row:last-child { border-bottom: 0; }
+.lim-row dt { color: var(--color-quiet); }
+.lim-row dd { margin: 0; font-family: var(--font-mono); font-size: 13px; }
 .strip {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
-  margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--border);
-  font-size: 12px;
+  margin-top: var(--space-4); padding-top: var(--space-3);
+  border-top: 1px solid var(--color-divider); font-size: 13px;
 }
-.strip .k { color: var(--muted-foreground); font-size: 11px; }
+.strip .k { color: var(--color-muted); font-size: 11px; }
+.strip .num { font-family: var(--font-mono); }
 
-/* ---- the chain, as a path rather than a second table ----
-   node ──kind──● node ──kind──▫ : hops laid out with flex and hairlines, the
-   outcome carried by the mark at the end of each segment. 通过 is primary,
-   拒绝 is destructive, 丢弃 is muted-foreground — quieter than a warning,
-   because a dropped hop is an absence rather than a fault. */
-.chain {
-  margin-top: 8px; padding: 16px;
-  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+/* ---- the reconstructed chain, as a path rather than a second table ---- */
+.chain-panel {
+  padding: var(--space-4) var(--space-6);
+  background: var(--color-surface); border-radius: calc(var(--radius-lg) * 1.15);
+  box-shadow: var(--shadow-sm);
 }
-.chain[hidden] { display: none; }
-.chain-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.chain-title {
-  margin: 0; font-size: 12px; font-weight: 500;
-  letter-spacing: .04em; color: var(--muted-foreground);
-}
-.chain-head .spacer { flex: 1 1 auto; }
-.chain-count { font-size: 12px; color: var(--muted-foreground); display: flex; gap: 8px; }
+.chain-panel[hidden] { display: none; }
+.chain-head { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; }
+.chain-title { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); margin: 0; }
+.chain-count { font-size: 12px; color: var(--color-muted); display: flex; gap: 8px; }
 .hops {
-  list-style: none; margin: 16px 0 0; padding: 0;
-  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 0;
+  list-style: none; margin: var(--space-4) 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-1) 0;
 }
 .hop { display: flex; align-items: center; gap: 8px; }
 .hop-node {
-  font-size: 12px; color: var(--foreground); padding: 2px 6px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); white-space: nowrap;
+  font-size: 12px; padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  background: var(--color-neutral-100); color: var(--color-neutral-800);
   max-width: 176px; overflow: hidden; text-overflow: ellipsis;
 }
 .hop-link { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-.hop-kind { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
-.hop-line { display: block; width: 56px; border-top: 1px solid var(--border); }
-.hop[data-outcome='dropped'] .hop-line { border-top-style: dashed; border-top-color: var(--muted-foreground); }
-.hop[data-outcome='refused'] .hop-line { border-top-color: var(--destructive); }
+.hop-kind { font-size: 11px; color: var(--color-muted); white-space: nowrap; }
+.hop-line { display: block; width: 56px; border-top: 2px solid var(--color-accent-2-400); border-radius: 999px; }
+.hop[data-outcome='dropped'] .hop-line { border-top-style: dashed; border-top-color: var(--color-neutral-400); }
+.hop[data-outcome='refused'] .hop-line { border-top-color: var(--color-accent-500); }
 .hop-mark { display: block; flex: 0 0 auto; }
-.mark-ok { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); }
-.mark-refused { width: 7px; height: 7px; border: 1px solid var(--destructive); }
-.mark-dropped { width: 12px; height: 0; border-top: 1px dashed var(--muted-foreground); }
-.mark-muted { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
-.hop-code { font-size: 11px; color: var(--destructive); white-space: nowrap; }
-.hop[data-outcome='dropped'] .hop-code { color: var(--muted-foreground); }
-.chain-meta {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px;
-  margin: 12px 0 0; font-size: 11px; color: var(--muted-foreground);
-}
+.mark-ok { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-2-600); }
+.mark-refused { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--color-accent-600); }
+.mark-dropped { width: 12px; height: 0; border-top: 2px dashed var(--color-neutral-500); }
+.mark-muted { width: 8px; height: 8px; border-radius: 50%; background: var(--color-neutral-500); }
+.hop-code { font-size: 11px; color: var(--color-accent-800); white-space: nowrap; }
+.hop[data-outcome='dropped'] .hop-code { color: var(--color-muted); }
+.chain-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; margin-top: var(--space-3); font-size: 11px; color: var(--color-muted); }
 .chain-meta .k { min-width: 32px; }
-.chain-foot { margin: 12px 0 0; font-size: 11px; color: var(--muted-foreground); }
+.chain-foot { margin-top: var(--space-3); font-size: 11px; color: var(--color-muted); }
 
-/* ---- /chat: the same shell, a conversation instead of a ledger ----
-   Three regions and one rule each. The rail scrolls on its own inside the
-   sidebar. The transcript scrolls on its own inside the content pane. The
-   composer never scrolls and is never replaced — it holds half-typed text, and
-   a stream event that swapped it would eat the question being written. */
-.chat-content { display: flex; flex-direction: column; overflow: hidden; }
+/* ---- empty states: copy on the left, a blob in the right-hand air ---- */
+.empty {
+  display: grid; grid-template-columns: minmax(0, 1fr) 240px;
+  align-items: center; gap: var(--space-6);
+  padding: calc(var(--space-8) * 1.1) var(--space-6) calc(var(--space-8) * 1.1) var(--space-4);
+}
+.empty-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 24px; line-height: 1.15; margin: 0; }
+.empty-note { font-size: 14px; color: color-mix(in srgb, var(--color-text) 62%, transparent); max-width: 46ch; margin: 0; }
+.empty-art { justify-self: end; }
+.legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12.5px; color: var(--color-muted); }
+
+/* ---- the confirm dialog ---- */
+.dialog-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; place-items: center; padding: var(--space-4);
+  background: color-mix(in srgb, var(--color-scrim) 55%, transparent);
+}
+.dialog-backdrop[hidden] { display: none; }
+.dialog {
+  width: min(460px, 100%); display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-6); border-radius: calc(var(--radius-lg) * 1.15);
+  background: var(--color-surface); box-shadow: var(--shadow-lg);
+  max-height: 90vh; overflow-y: auto;
+}
+.dlg-top { display: flex; align-items: center; gap: var(--space-3); }
+.dlg-icon {
+  width: 44px; height: 44px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: var(--color-accent-200); color: var(--color-accent-800);
+}
+.dlg-icon-2 { background: var(--color-accent-2-200); color: var(--color-accent-2-800); }
+.dialog-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 20px; }
+.dialog-body { font-size: 14px; display: flex; flex-direction: column; gap: var(--space-3); }
+.recap {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-neutral-100); border-radius: var(--radius-lg); font-size: 13px;
+}
+.recap-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.recap-row .k { font-size: 11px; color: var(--color-muted); flex: none; }
+.quote {
+  font-size: 13px; line-height: 1.5; margin: 0;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  max-height: 4.5em; overflow: hidden; white-space: pre-wrap;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* ---- /chat ---- */
+.chat-main { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; padding: var(--space-2); }
+.chat-head {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+}
+.chat-name { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 22px; }
+.chat-tail { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); }
 .thread-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.thread { max-width: 768px; margin: 0 auto; padding: 32px 24px 8px; }
-.thread-empty { padding-top: 64px; }
-.thread-head {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  padding-bottom: 14px; margin-bottom: 28px;
-  border-bottom: 1px solid var(--border);
-}
-.thread-title { margin: 0; font-size: 15px; font-weight: 600; }
-.thread-addr { font-size: 11px; color: var(--muted-foreground); }
-.thread-head .spacer { flex: 1 1 auto; }
-.thread-count { font-size: 12px; color: var(--muted-foreground); }
+.thread { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-4) var(--space-3); }
+.chat-none { font-size: 13px; color: var(--color-muted); padding: var(--space-2); }
 
-/* A turn is a hairline rule with text beside it — the ledger grammar the
-   roster and the trail already use. Operator turns carry the rule in
-   --primary, agent turns in --border, and that is the entire distinction:
-   no fill, no alignment flip, no avatar. */
-.turn { margin: 0 0 28px; padding-left: 16px; border-left: 2px solid var(--border); }
-.turn:last-child { margin-bottom: 0; }
-.turn-operator { border-left-color: var(--primary); }
-.turn-failed { border-left-color: var(--destructive); }
-.turn-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-.turn-who {
-  font-size: 12px; font-weight: 500; letter-spacing: .04em;
-  color: var(--muted-foreground);
-}
-.turn-when { font-size: 11px; color: var(--muted-foreground); }
-/* The body is the one large block of text on this page, and body copy that
-   cannot be selected cannot be quoted into a ticket. */
-.turn-body { user-select: text; }
-.turn-p { margin: 0 0 10px; white-space: pre-wrap; }
-.turn-p:last-child { margin-bottom: 0; }
-.turn-empty { margin: 0; color: var(--muted-foreground); }
-.turn-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-
-/* A pill is an event with a tone; a chip is a value. Sharing the shape would
-   make "已读 1.2s" and "plan" look like the same kind of thing. */
-.pill {
-  display: inline-block; padding: 1px 8px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: transparent;
-  font-size: 11px; color: var(--muted-foreground); white-space: nowrap;
-}
-.pill-ok {
-  color: var(--primary);
-  border-color: color-mix(in oklch, var(--primary) 35%, transparent);
-}
-.pill-warn {
-  color: var(--warning);
-  border-color: color-mix(in oklch, var(--warning) 35%, transparent);
-}
-.pill-bad {
-  color: var(--destructive);
-  border-color: color-mix(in oklch, var(--destructive) 35%, transparent);
-}
-.pill-id { user-select: text; }
-
-.composer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 14px 24px 18px; }
-.composer-bar {
-  max-width: 768px; margin: 0 auto;
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 12px; background: var(--card);
-  border: 1px solid var(--input); border-radius: var(--radius);
-  transition: border-color 120ms linear;
-}
-.composer:focus-within .composer-bar { border-color: var(--ring); }
-.composer-bar textarea {
-  border: 0; background: transparent; padding: 2px 0; resize: none;
-  /* The ledger forms give every textarea a 56px floor so a two-line note has
-     room. This one is auto-sized by the client from its own content, so that
-     floor would open a blank half-inch above the caret on an empty composer. */
-  min-height: 0;
-  max-height: 220px; font-size: 14px; line-height: 1.55;
-}
-.composer-bar textarea:focus-visible { outline: none; }
-.composer-foot { display: flex; align-items: center; gap: 8px; }
-.composer-foot .spacer { flex: 1 1 auto; }
-.composer-chips {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
-  font-size: 11px; color: var(--muted-foreground);
-}
-.composer-chips .chip {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px;
-}
-.send {
-  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 999px;
-  border: 1px solid var(--primary); background: var(--primary);
-  color: var(--primary-foreground); font-size: 15px; line-height: 1;
-  cursor: pointer; font-family: var(--ui);
-}
-.send:hover { background: color-mix(in oklch, var(--primary) 88%, black); }
-.composer .status, .composer .note { max-width: 768px; margin: 8px auto 0; }
-.composer .note { margin: 0 auto 8px; }
-
-/* The session rail, inside the sidebar. */
-.chat-rail-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px; }
-.chat-new { display: flex; gap: 6px; padding-bottom: 12px; }
-.chat-new select { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 4px 8px; }
-.chat-new .btn { font-size: 12px; padding: 4px 10px; }
-.chat-none { margin: 8px 0; font-size: 12px; color: var(--muted-foreground); }
-.chat-group { margin-bottom: 16px; }
-.chat-group-name {
-  margin: 0; font-size: 12px; font-weight: 500; color: var(--sidebar-foreground);
-}
-.chat-group-node { margin: 0 0 6px; font-size: 11px; color: var(--muted-foreground); }
+/* The session rail. It is the one part of the panel allowed to scroll: pinning
+   the identity block to the bottom matters more than seeing every session, and
+   without this the whole panel scrolls and 退出 leaves the screen. */
+.chat-rail-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.chat-new { display: flex; flex-direction: column; gap: var(--space-2); }
+.chat-groups { display: flex; flex-direction: column; gap: var(--space-4); }
+.chat-group { display: flex; flex-direction: column; gap: var(--space-1); }
+.chat-group-name { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 0 var(--space-2); }
+.chat-group-node { font-size: 11px; padding: 0 var(--space-2); color: var(--color-muted); margin: 0; }
 .chat-item {
   display: block; width: 100%; text-align: left; border: 0; background: none;
-  cursor: pointer; padding: 6px 8px; border-radius: var(--radius-md);
-  color: var(--sidebar-foreground); font: inherit; font-family: var(--ui);
-  transition: background-color 120ms linear;
+  cursor: pointer; padding: 9px var(--space-3); border-radius: var(--radius-lg);
+  color: inherit; font: inherit; font-family: var(--font-body);
+  transition: background-color 150ms ease;
 }
-.chat-item:hover { background: var(--sidebar-accent); }
-.chat-item-active { background: var(--sidebar-accent); }
+.chat-item:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+.chat-item-active { background: var(--color-accent-100); outline: 1px solid var(--color-accent-300); outline-offset: -1px; }
 .chat-item-line {
-  display: block; font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; line-height: 1.35; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.chat-item-meta { display: block; font-size: 11px; color: var(--muted-foreground); }
-/* A link that leaves the page, kept visually apart from the jump list. */
-.nav-route { margin-top: 6px; border-top: 1px solid var(--sidebar-border); padding-top: 10px; }
+.chat-item-meta { display: block; font-size: 11px; margin-top: 3px; color: color-mix(in srgb, var(--color-text) 52%, transparent); }
 
-/* ---- who am I, and the way out ---- */
-.identity { justify-content: space-between; }
-.identity form { margin: 0; }
+/* A turn: a round avatar in a 34px track, then the head, bubble and marks. */
+.turn { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: var(--space-3); max-width: 800px; }
+.turn-av {
+  width: 34px; height: 34px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  background: var(--color-accent-2-200); color: var(--color-accent-2-800);
+}
+.turn-operator .turn-av { background: var(--color-accent-200); color: var(--color-accent-800); }
+.turn-head { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
+.turn-who { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 14px; }
+.turn-when { font-size: 11.5px; font-family: var(--font-mono); color: color-mix(in srgb, var(--color-text) 48%, transparent); }
+.bubble {
+  background: var(--color-surface); border-radius: calc(var(--radius-lg) * 1.15);
+  padding: var(--space-3) var(--space-4); font-size: 14.5px; line-height: 1.6;
+}
+.turn-operator .bubble { background: var(--color-accent-100); }
+.turn-failed .bubble { background: var(--color-accent-100); outline: 1px solid var(--color-accent-300); outline-offset: -1px; }
+.turn-p { margin: 0; white-space: pre-wrap; }
+.turn-p + .turn-p { margin-top: var(--space-2); }
+.turn-empty { margin: 0; color: var(--color-muted); }
+.turn-marks { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
-/* ---- /login: one centred card, and nothing behind it ----
-   The reference console pairs this card with a shader-painted brand panel on
-   md+ screens. That half is deliberately not here: this page is one string of
-   hand-written CSS with no build step, and no decorative fill has earned a
-   second pipeline. What is kept is the skeleton — a card, centred, at a width
-   where a single field does not look lost. */
-.login-shell {
-  /* Both, and both are load-bearing: height:100% centres inside the locked
-     viewport the desktop shell sets up, and min-height:100vh keeps the card
-     centred under the narrow breakpoint below, where body height goes auto. */
-  height: 100%; min-height: 100vh; overflow-y: auto;
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-}
-.login-card {
-  width: 100%; max-width: 24rem;
-  /* margin:auto rather than relying on the parent's centring alone: a card
-     taller than the viewport is clipped at the top under align-items:center
-     and the clipped part cannot be scrolled to. */
-  margin: auto;
-  display: flex; flex-direction: column; gap: 20px;
-  padding: 28px; border-radius: var(--radius);
-  background: var(--card); color: var(--card-foreground);
-  border: 1px solid var(--border);
-}
-.login-head { display: flex; flex-direction: column; gap: 4px; }
-.login-mark { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .01em; }
-.login-inst { margin: 0; font-size: 12px; color: var(--muted-foreground); }
-.login-card .bar { margin: 0; }
-.login-form { display: flex; flex-direction: column; gap: 16px; }
-.login-form .field { flex: 1 1 auto; }
-.login-submit { width: 100%; }
+/* The delivery chain: three facts and the links between them. */
+.chain { display: inline-flex; align-items: center; gap: 0; }
+.chain .lnk { width: 14px; height: 3px; border-radius: 999px; background: var(--color-neutral-300); flex: none; }
+.chain .lnk.done { background: var(--color-accent-2-400); }
 
-@media (max-width: 900px) {
-  html, body { height: auto; overflow: visible; }
-  .shell { flex-direction: column; height: auto; }
-  .sidebar {
-    width: 100%; flex: 0 0 auto; height: auto; overflow: visible;
-    flex-direction: row; flex-wrap: wrap; align-items: center;
-    border-right: 0; border-bottom: 1px solid var(--sidebar-border);
-    padding: 8px 12px; gap: 8px 16px;
-    position: sticky; top: 0; z-index: 20;
-  }
-  .sidebar-header { padding: 4px 0; }
-  .sidebar-nav { flex-direction: row; flex-wrap: wrap; padding: 0; gap: 2px; }
-  .sidebar-footer {
-    flex-direction: row; align-items: center; flex-wrap: wrap;
-    margin-left: auto; padding: 4px 0; border-top: 0;
-  }
-  .sidebar-footer #token { width: 128px; }
-  .content { height: auto; overflow: visible; }
-  .row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .rail { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 8px; }
-  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .two-col { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-  main { padding: 24px 16px 64px; gap: 40px; }
-  /* The chat page gives up its two independent scroll areas here and becomes
-     one ordinary scrolling document, with the composer stuck to the bottom of
-     the viewport — a 320px-tall transcript pane on a phone is not a
-     conversation, it is a keyhole. */
-  .chat-content { overflow: visible; }
-  .thread-mount { overflow: visible; }
-  .chat-rail-mount {
-    width: 100%; order: 3; max-height: 45vh; padding: 0;
-  }
-  .thread { padding: 20px 16px 8px; }
-  .composer { position: sticky; bottom: 0; background: var(--background); padding: 10px 16px 14px; }
+/* The composer never scrolls and is never replaced — it holds half-typed text. */
+.composer {
+  flex: 0 0 auto;
+  background: var(--color-surface); border-radius: calc(var(--radius-lg) * 1.15);
+  padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
+  box-shadow: var(--shadow-sm);
 }
-@media (max-width: 560px) {
-  .stat-grid { grid-template-columns: minmax(0, 1fr); }
+.composer:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.composer textarea {
+  background: transparent; border: 0; padding: 0; width: 100%;
+  min-height: 54px; max-height: 220px;
+  font: inherit; font-family: var(--font-body); font-size: 14.5px; line-height: 1.6;
+  resize: none; color: var(--color-text); caret-color: var(--color-accent);
+}
+.composer textarea:focus-visible { outline: none; }
+.composer-foot { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.composer-foot .sel { display: inline-block; }
+.composer-foot .sel > select { width: auto; min-width: 230px; max-width: 100%; }
+.send { margin-left: auto; }
+
+/* ---- /login: one panel, and two blobs in the air behind it ---- */
+.stage {
+  position: relative; overflow: hidden; min-height: 100vh;
+  display: grid; place-items: center; padding: var(--space-8);
+}
+.deco-a { position: absolute; left: -120px; top: -90px; pointer-events: none; }
+.deco-b { position: absolute; right: -140px; bottom: -120px; pointer-events: none; }
+.panel {
+  position: relative; width: min(460px, 100%); margin: auto;
+  padding: var(--space-8); border-radius: calc(var(--radius-lg) * 1.4);
+  display: flex; flex-direction: column; gap: var(--space-4);
+}
+.panel .brand-cn { font-size: 40px; line-height: 1.05; }
+.panel .brand-en { font-size: 12px; }
+.tokline {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-neutral-100); border-radius: var(--radius-lg);
+}
+.tokrow { display: flex; align-items: center; gap: var(--space-2); font-size: 12.5px; color: var(--color-quiet); }
+.tokrow .tag { flex: none; }
+.foot { font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+
+/* ---- narrow ---- */
+@media (max-width: 1000px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; height: auto; }
+  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .row > summary { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
+  .row-panel, .form-grid, .limits, .adv-body { grid-template-columns: minmax(0, 1fr); }
+  .empty { grid-template-columns: minmax(0, 1fr); }
+  .empty-art { justify-self: start; }
+}
+@media (max-width: 620px) {
+  .shell { padding: var(--space-2); gap: var(--space-2); }
+  .main, .chat-main { padding: var(--space-1); }
+  .g4 { grid-template-columns: minmax(0, 1fr); }
+  .turn { grid-template-columns: minmax(0, 1fr); }
+  .turn-av { display: none; }
+  .empty { padding: var(--space-6) var(--space-2); }
+  .stage { padding: var(--space-4); }
+  .panel { padding: var(--space-6); }
 }
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
 `

@@ -56,7 +56,6 @@ export const CONSOLE_CHAT_JS = `
   var POLL_MS = 2000;
   var memoryToken = '';
   var pollTimer = null;
-  var clockTimer = null;
   var source = null;
   var active = '';
   var busy = false;
@@ -71,14 +70,6 @@ export const CONSOLE_CHAT_JS = `
     if (!el) return;
     el.textContent = value;
     el.setAttribute('data-tone', tone || 'muted');
-  }
-
-  function pad(n) { return n < 10 ? '0' + n : '' + n; }
-
-  function stamp(d) {
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' +
-      pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' +
-      pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
   /* ---------------- token ---------------- */
@@ -441,10 +432,6 @@ export const CONSOLE_CHAT_JS = `
     if (mount) mount.scrollTop = mount.scrollHeight;
     var box = byId('chat-text');
     if (box && !box.disabled) box.focus();
-    var clock = byId('clock');
-    if (clock) {
-      clockTimer = setInterval(function () { clock.textContent = stamp(new Date()); }, 1000);
-    }
     startStream();
   }
 

@@ -2,61 +2,69 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The node table: who is on the network, and which of them is answering.
+ * The roster: who is on the network, and which of them is answering.
  *
  * This is the read half of M1's exit test — *内测用户无需接触 CLI 即可完成注册与
  * 查看*. The write half is the register form in `page.ts`; the two are one
  * feature, which is why the empty state here does not just say "none". An
  * empty registry is the state a first-time user is *guaranteed* to be in, and
- * a blank table there fails the exit test at the only moment it is being taken.
+ * a blank list there fails the exit test at the only moment it is being taken.
  *
- * ## The fragment owns its rail
+ * ## One card per node, one disclosure row per agent
  *
- * `renderRoster` emits both cells of its row: the rail (`节点`, then
- * `4 · 在线 2 · 滞后 1`) and the pane (the table). The counts have to be
- * computed from the same array the rows come from, and they have to be replaced
- * by the same five-second poll that replaces the rows — a rail rendered by
- * `page.ts` would either go stale or need a second mount point. Every branch
- * below emits the rail, including the failure and empty branches; the page's
- * `aria-labelledby` points at the heading inside it.
+ * The roster used to be an eight-column table with `table-layout: fixed` and
+ * every value clipped to an ellipsis, because the widest legitimate value in
+ * some columns is longer than the column that has to hold it. Grouping by node
+ * removes the column-budget problem rather than tuning it: the node appears
+ * once in a card header instead of once per row, the row keeps four things
+ * (address, status, lease, heartbeat), and everything else — capabilities,
+ * endpoint, key fingerprint, the exact heartbeat clock and the deregister
+ * button — moves into a native `<details>` panel that opens under the row.
  *
- * ## The lease bar
+ * `<details>`, not a script: the panel opens with JavaScript disabled, and the
+ * five-second poller that replaces this whole fragment cannot leave a
+ * half-opened row behind because the browser re-parses the markup fresh.
  *
- * The last two time columns used to be `心跳` (a clock, plus how long ago) and
- * `到期` (a countdown). Between them they printed the same fact three times.
- * They are now one 3px bar — heartbeat age over lease TTL — plus the absolute
- * clock, which is the only part a person can put in a ticket. The bar is the
- * one graphic element on the page and it earns that by carrying a *ratio*: no
- * column of numbers lets you see at a glance which node is closest to falling
- * off the roster.
+ * ## The address is the signature element
  *
- * ## Every cell is hostile input
+ * `qianmo://node-a/reviewer` renders with its *agent* segment as a terracotta
+ * pill. That is the one piece of the string an operator is actually scanning
+ * for, and it is the reason the node grouping reads as grouping rather than as
+ * repetition. {@link splitAddress} is deliberately forgiving: an address that
+ * does not parse is shown whole, in the group named by the whole string, rather
+ * than dropped.
+ *
+ * ## Every value is hostile input
  *
  * `address`, `endpoint`, `capabilities` and `status` are whatever the peer that
  * registered chose to send. `status` in particular is typed `string`, not the
  * registry's enum, so a peer can put a tag in it. Nothing is interpolated
  * without `escapeHtml`/`attr` — see `escape.ts` for why there is no exception
- * list.
+ * list. Long values are contained by CSS (`overflow-wrap`, ellipsis inside a
+ * fixed-width `.addr`) rather than by a column budget, so one hostile
+ * capability string can no longer squeeze a neighbour to one character a line.
  *
- * ## Why the table has a colgroup and clips
+ * ## The rail is gone; the numbers are not
  *
- * `table-layout: fixed` with declared widths, values clipped to an ellipsis and
- * the full text in `title`. The auto layout hands column widths to the content,
- * and one endpoint from an untrusted peer is enough to reduce a neighbouring
- * column to one character per line — which is both unreadable and a thing any
- * peer can do to this page on purpose.
+ * The 140px noun column every row used to open with has been replaced by a
+ * stacked section header. The counts it carried (`4 · 在线 2 · 滞后 1`) are now
+ * the header's right-hand side, and the same numbers still ride out as `data-*`
+ * on the header element so `page.ts` can build the overview cards without a
+ * second pass over the roster (see `sectionHead` in `bits.ts`).
  */
 
 import {
   absent,
+  address as addressLine,
   bar,
+  chevron,
   chip,
   failureBar,
-  hint,
-  rail,
-  railSep,
-  scroll,
+  icon,
+  sectionHead,
+  splitAddress,
   state,
+  tag,
   toned,
   type Tone,
 } from './bits.js'
@@ -85,8 +93,13 @@ const DECLARED: Readonly<Record<string, string | undefined>> = {
   dormant: '休眠',
 }
 
+export const NODES_HEADING_ID = 'h-nodes'
+
+/** The id the overview cards read their numbers off. */
+const ROSTER_HEAD_ID = 'roster-head'
+
 /**
- * One column for two facts.
+ * One word for two facts.
  *
  * The word is the declared status while the lease holds, and the *health* verb
  * once it stops — because "dormant" and "expired" are answers to different
@@ -100,8 +113,7 @@ function statusCell(agent: ConsoleAgent, health: AgentHealth): string {
   if (declared !== undefined) return state(HEALTH_TONE[health], declared)
   // The registry declares two statuses; anything else is a string a peer chose,
   // and `status` is typed `string` precisely so it can be one. Escaping makes
-  // it inert but not *short* — an unbounded word here spills across the lease
-  // column and hides it. Two characters and a tooltip.
+  // it inert but not *short* — an unbounded word here spills across the row.
   const raw = agent.status === '' ? '未声明' : agent.status
   const shown = raw.length <= 4 ? raw : `${raw.slice(0, 4)}…`
   return `<span title="${attr(raw)}">${state(HEALTH_TONE[health], shown)}</span>`
@@ -110,47 +122,50 @@ function statusCell(agent: ConsoleAgent, health: AgentHealth): string {
 function capabilityCell(capabilities: readonly string[] | undefined): string {
   const tags = capabilities ?? []
   if (tags.length === 0) return absent()
-  return `<span class="tags">${tags.map(tag => chip(tag)).join('')}</span>`
+  return `<span class="tags">${tags.map(value => chip(value)).join('')}</span>`
 }
 
 /**
  * A fingerprint, never key material.
  *
- * "It is the public half" is true and beside the point: the column exists so
- * two nodes can be told apart at a glance, and eight hex characters do that.
+ * "It is the public half" is true and beside the point: the field exists so two
+ * nodes can be told apart at a glance, and eight hex characters do that.
  * Printing the key would make every screenshot of this page a lookup table.
  */
 function keyCell(publicKey: string | undefined): string {
   if (publicKey === undefined || publicKey === '') {
     return `<span class="absent">未发布</span>`
   }
-  const fingerprint = publicKeyFingerprint(publicKey)
-  return `<code class="mono fp">${escapeHtml(fingerprint)}</code>`
+  return `<code class="mono fp">${escapeHtml(
+    publicKeyFingerprint(publicKey),
+  )}</code>`
 }
 
-/**
- * The absolute clock, with the relative gap in the tooltip.
- *
- * One value on screen: the bar next to it already says how long ago that was,
- * and printing "8 秒前" under every clock is the duplication the bar replaced.
- */
-function heartbeatCell(at: number, now: number): string {
-  if (!Number.isFinite(at) || at <= 0) {
-    return `<td class="when">${absent()}</td>`
-  }
+/** The absolute clock, plus how long ago that was. */
+function heartbeatValue(at: number, now: number): string {
+  if (!Number.isFinite(at) || at <= 0) return absent()
   return (
-    `<td class="when" title="${attr(formatRelative(at, now))}">` +
-    `${escapeHtml(formatClock(at))}</td>`
+    `<span class="mono">${escapeHtml(formatClock(at))}</span> ` +
+    `<span class="absent">${escapeHtml(formatRelative(at, now))}</span>`
   )
 }
 
 /**
- * The signature element: how much of the lease is gone, as 3px of width.
+ * The signature graphic: how much of the lease is *left*, as a pill track.
  *
- * Ink under half, `--stale` past the halfway mark, `--dead` and locked to the
- * full width once the lease has lapsed — the same three verdicts the status dot
- * gives, because {@link leaseView} takes the health rather than recomputing it.
- * `title` carries the absolute expiry, which is the column this replaced.
+ * Sage while the lease is in its first half, terracotta past the halfway mark,
+ * and empty once it has lapsed — the same three verdicts the status dot gives,
+ * because {@link leaseView} takes the health rather than recomputing it. The
+ * bar carries a *ratio*, which is the one fact no other value on the row
+ * expresses: an absolute clock says when a node last spoke, only the ratio says
+ * how close that is to being too long ago.
+ *
+ * **The fill is the remaining share, not the elapsed one.** `leaseView` reports
+ * elapsed, which is the natural thing to compute and the wrong thing to draw
+ * next to the words `剩余 1m24s`: a nearly-empty bar beside "1m24s left" makes
+ * the reader stop and work out which of the two is lying. Draining left to
+ * right also means every unhealthy row is the *short* bar, so the roster's
+ * problems are the gaps rather than the marks.
  */
 function leaseCell(
   agent: ConsoleAgent,
@@ -159,71 +174,74 @@ function leaseCell(
   health: AgentHealth,
 ): string {
   const view = leaseView(agent, now, ttlMs, health)
-  if (view === null) return `<td class="lease">${absent()}</td>`
+  if (view === null) return `<span class="lease">${absent()}</span>`
 
-  const width = Math.round(view.ratio * 100)
+  const width = 100 - Math.round(view.ratio * 100)
   const fill = view.tone === 'ink' ? '' : ` lease-${view.tone}`
   const expiry =
     Number.isFinite(agent.expiresAt) && agent.expiresAt > 0
       ? ` title="到期 ${attr(formatClock(agent.expiresAt))}"`
       : ''
-  const left = view.tone === 'dead' ? ' gone' : ''
+  const dead = view.tone === 'dead'
+  const left = dead ? ' gone' : ''
+  const text = dead
+    ? '租约已过期'
+    : `剩余 ${formatShortDuration(view.remainingMs)}`
   return (
-    `<td class="lease"${expiry}>` +
-    `<span class="lease-bar" data-ratio="${attr(String(width))}">` +
+    `<span class="lease"${expiry}>` +
+    `<span class="lease-trk" data-ratio="${attr(String(width))}">` +
     `<span class="lease-fill${fill}" style="width:${width}%"></span></span>` +
-    `<span class="lease-left${left}">` +
-    `${escapeHtml(formatShortDuration(view.remainingMs))}</span></td>`
+    `<span class="lease-left${left}">${escapeHtml(text)}</span></span>`
   )
 }
 
-/** A clipped cell that keeps the whole value reachable through `title`. */
-function clipped(cls: string, value: string): string {
-  return `<td class="${cls}" title="${attr(value)}">${escapeHtml(value)}</td>`
+/** The note under an expanded row: what the state means for the next action. */
+function rowNote(health: AgentHealth): string {
+  if (health === 'expired') {
+    return '租约已过期 · 重新注册或续一次心跳才能再被唤醒'
+  }
+  if (health === 'stale') {
+    return '租约过半 · 再无心跳就会被自动摘牌'
+  }
+  return '注销后该地址立即从名册摘除 · 需要重新注册才能再被唤醒'
 }
 
-function row(agent: ConsoleAgent, now: number, ttlMs: number): string {
+function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
   const health = agentHealth(agent, now, ttlMs)
   const address = attr(agent.address)
+  const beatable = health !== 'expired'
+  const kv = (key: string, value: string) =>
+    `<div class="kv"><span class="k">${escapeHtml(key)}</span>` +
+    `<span class="v">${value}</span></div>`
+
   return (
-    `<tr data-address="${address}" data-health="${attr(health)}">` +
-    clipped('mono clip addr', agent.address) +
-    clipped('mono clip', agent.endpoint) +
-    `<td class="caps">${capabilityCell(agent.capabilities)}</td>` +
-    `<td>${statusCell(agent, health)}</td>` +
+    `<details class="row" data-address="${address}" data-health="${attr(
+      health,
+    )}">` +
+    `<summary>` +
+    addressLine(agent.address) +
+    statusCell(agent, health) +
     leaseCell(agent, now, ttlMs, health) +
-    heartbeatCell(agent.lastHeartbeatAt, now) +
-    `<td class="clip">${keyCell(agent.publicKey)}</td>` +
-    `<td class="actions">` +
-    `<button type="button" class="btn" data-action="heartbeat" ` +
-    `data-address="${address}">心跳</button>` +
-    `<button type="button" class="btn btn-destructive" data-action="deregister" ` +
-    `data-address="${address}">注销</button>` +
-    `</td></tr>`
+    `<button type="button" class="btn btn-secondary btn-small" ` +
+    `data-action="heartbeat" data-address="${address}"${
+      beatable ? '' : ' disabled'
+    }>心跳</button>` +
+    chevron() +
+    `</summary>` +
+    `<div class="row-panel">` +
+    kv('能力', capabilityCell(agent.capabilities)) +
+    kv('端点', `<span class="mono">${escapeHtml(agent.endpoint)}</span>`) +
+    kv('公钥', keyCell(agent.publicKey)) +
+    kv('上次心跳', heartbeatValue(agent.lastHeartbeatAt, now)) +
+    `<div class="row-acts">` +
+    `<button type="button" class="btn btn-ghost btn-danger" ` +
+    `data-action="deregister" data-address="${address}">` +
+    icon('power', { small: true }) +
+    `注销</button>` +
+    `<span class="note">${escapeHtml(rowNote(health))}</span>` +
+    `</div></div></details>`
   )
 }
-
-/**
- * Header text and the fixed width each column gets. Sums to 100.
- *
- * The budget is set here rather than left to the content because the content
- * belongs to other people: with an auto layout a single long capability tag
- * pushes the action buttons off the right edge, which any peer on the network
- * can arrange on purpose. Widths are chosen so the widest *legitimate* value in
- * each column fits — an eight-hex fingerprint, two buttons, a `4m50s`
- * lease — and everything longer clips to an ellipsis with the full text in
- * `title`.
- */
-const COLUMNS: readonly (readonly [string, string])[] = [
-  ['地址', '18%'],
-  ['端点', '14%'],
-  ['能力', '13%'],
-  ['状态', '8%'],
-  ['租约', '14%'],
-  ['心跳', '9%'],
-  ['公钥', '9%'],
-  ['操作', '15%'],
-]
 
 interface HealthTally {
   readonly live: number
@@ -231,7 +249,7 @@ interface HealthTally {
   readonly expired: number
 }
 
-function tally(
+function tallyOf(
   agents: readonly ConsoleAgent[],
   now: number,
   ttl: number,
@@ -239,8 +257,8 @@ function tally(
   let live = 0
   let stale = 0
   let expired = 0
-  for (const agent of agents) {
-    const health = agentHealth(agent, now, ttl)
+  for (const one of agents) {
+    const health = agentHealth(one, now, ttl)
     if (health === 'live') live += 1
     else if (health === 'stale') stale += 1
     else expired += 1
@@ -248,19 +266,71 @@ function tally(
   return { live, stale, expired }
 }
 
+/** Agents under one node, in the order the registry listed them. */
+interface NodeGroup {
+  readonly node: string
+  readonly agents: readonly ConsoleAgent[]
+}
+
 /**
- * The rail line: the count, then only the states that actually occurred.
+ * Group by node, preserving first-seen order.
+ *
+ * Not sorted alphabetically: the registry's order is the order the nodes joined
+ * and it is stable between polls, while an alphabetical sort makes a rename
+ * jump a card across the page under the cursor.
+ */
+function groupByNode(agents: readonly ConsoleAgent[]): readonly NodeGroup[] {
+  const buckets = new Map<string, ConsoleAgent[]>()
+  for (const one of agents) {
+    const { node } = splitAddress(one.address)
+    const bucket = buckets.get(node)
+    if (bucket === undefined) buckets.set(node, [one])
+    else bucket.push(one)
+  }
+  return [...buckets].map(([node, list]) => ({ node, agents: list }))
+}
+
+/** The badge on a group header: how many of this node's agents need attention. */
+function groupBadge(counts: HealthTally): string {
+  if (counts.stale === 0 && counts.expired === 0) {
+    return tag(`${counts.live} 个在线`, 'ok')
+  }
+  if (counts.live === 0) return tag('整节点不可拨', 'muted')
+  return tag(`${counts.stale + counts.expired} 个需注意`, 'warn')
+}
+
+function nodeCard(group: NodeGroup, now: number, ttlMs: number): string {
+  const counts = tallyOf(group.agents, now, ttlMs)
+  const first = group.agents[0]
+  const endpoint =
+    first === undefined
+      ? ''
+      : `<span class="note mono">${escapeHtml(first.endpoint)}</span>`
+  const name = splitAddress(group.node).node.replace(
+    /^[a-z][a-z0-9+.-]*:\/\//i,
+    '',
+  )
+  return (
+    `<div class="card elev-sm grp">` +
+    `<div class="grp-head">` +
+    `<span class="grp-name">${escapeHtml(name === '' ? group.node : name)}</span>` +
+    `<span class="addr">${escapeHtml(group.node)}</span>` +
+    `<div class="grp-tail">${endpoint}${groupBadge(counts)}</div>` +
+    `</div>` +
+    group.agents.map(one => agentRow(one, now, ttlMs)).join('') +
+    `</div>`
+  )
+}
+
+/**
+ * The header line: the count, then only the states that actually occurred.
  *
  * `滞后 0` and `过期 0` are printed by dashboards that want to look complete;
  * here they would spend the line's whole width saying nothing, and — worse —
  * make an amber or red word a permanent fixture, so that the day one of them is
  * real nothing about the line has changed.
- *
- * Takes the already-computed tally rather than the agent array so the one
- * pass over the roster that {@link renderRoster} makes can also be echoed
- * onto the rail's `data-*` stats for the overview cards in `page.ts`.
  */
-function railDigits(total: number, counts: HealthTally, ttlMs: number): string {
+function headTail(total: number, counts: HealthTally, ttlMs: number): string {
   const parts = [
     `<span class="total">${total}</span>`,
     toned('ok', `在线 ${counts.live}`),
@@ -272,24 +342,27 @@ function railDigits(total: number, counts: HealthTally, ttlMs: number): string {
       `<span class="ttl">租约 ${escapeHtml(formatDuration(ttlMs))}</span>`,
     )
   }
-  return parts.join(railSep())
+  return `<div class="rowx note">${parts.join('<span class="sep">·</span>')}</div>`
 }
 
-const NODES_HEADING_ID = 'h-nodes'
-
-function nodesRail(
-  digits: string,
+function rosterHead(
+  tail: string,
   stats?: Readonly<Record<string, string | number | boolean>>,
 ): string {
-  return rail('节点', { id: NODES_HEADING_ID, digits, stats })
+  return sectionHead('Roster', '名册', {
+    id: ROSTER_HEAD_ID,
+    headingId: NODES_HEADING_ID,
+    tail,
+    ...(stats === undefined ? {} : { stats }),
+  })
 }
 
 /**
- * Render the node fragment: the rail cell and the pane cell of the node row.
+ * Render the roster fragment: the section header and the node cards.
  *
  * `failure` and `agents` are independent: a refresh that fails after a
  * successful first load passes both, and the right answer is to show the strip
- * *and* keep the last known table. A table blanked by a transient registry
+ * *and* keep the last known list. A roster blanked by a transient registry
  * hiccup reads as "everyone left".
  */
 export function renderRoster(
@@ -298,59 +371,105 @@ export function renderRoster(
   now: number,
   ttlMs: number,
 ): string {
-  const pane: string[] = []
+  const body: string[] = []
   if (failure !== null) {
-    pane.push(failureBar(failure, '注册中心'))
+    body.push(failureBar(failure, '注册中心'))
     if (agents !== null && agents.length > 0) {
-      pane.push(bar('muted', '以下为最后一次成功读取'))
+      body.push(bar('muted', '以下为最后一次成功读取'))
     }
   }
 
   if (agents === null) {
-    if (failure === null) pane.push(hint('未取得注册数据'))
-    return nodesRail('') + `<div class="pane">${pane.join('')}</div>`
+    if (failure === null) body.push(`<p class="hint">未取得注册数据</p>`)
+    return rosterHead('') + `<div class="pane">${body.join('')}</div>`
   }
 
   if (agents.length === 0) {
-    // The empty state is one of the two places on this page allowed a line of
-    // its own, and it spends it on the next action rather than on the news.
-    pane.push(
+    // The empty state spends its one line on the next action rather than on
+    // the news.
+    body.push(
       `<p class="hint">还没有节点 · ` +
         `<a class="jump" href="#register">在下面注册第一个</a></p>`,
     )
     return (
-      nodesRail(`<span class="total">0</span>`, {
+      rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
         total: 0,
         online: 0,
         stale: 0,
         expired: 0,
-      }) + `<div class="pane">${pane.join('')}</div>`
+      }) + `<div class="pane">${body.join('')}</div>`
     )
   }
 
-  const cols = COLUMNS.map(
-    ([, width]) => `<col style="width:${attr(width)}">`,
-  ).join('')
-  const head = COLUMNS.map(
-    ([label]) => `<th scope="col">${escapeHtml(label)}</th>`,
-  ).join('')
-  const body = agents.map(agent => row(agent, now, ttlMs)).join('')
-
-  pane.push(
-    scroll(
-      `<table class="grid roster"><caption class="sr-only">节点</caption>` +
-        `<colgroup>${cols}</colgroup>` +
-        `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
-    ),
+  body.push(
+    `<div class="stack">` +
+      groupByNode(agents)
+        .map(group => nodeCard(group, now, ttlMs))
+        .join('') +
+      `</div>`,
   )
 
-  const counts = tally(agents, now, ttlMs)
+  const counts = tallyOf(agents, now, ttlMs)
   return (
-    nodesRail(railDigits(agents.length, counts, ttlMs), {
+    rosterHead(headTail(agents.length, counts, ttlMs), {
       total: agents.length,
       online: counts.live,
       stale: counts.stale,
       expired: counts.expired,
-    }) + `<div class="pane">${pane.join('')}</div>`
+    }) + `<div class="pane">${body.join('')}</div>`
   )
+}
+
+/**
+ * Every roster address, as the wake form's target options.
+ *
+ * The wake form used to be a text box the operator retyped an address into.
+ * The addresses are already on the page one section up; a picker built from
+ * them cannot be mistyped, and the status suffix means the operator can see
+ * they are waking something that is not answering *before* they send.
+ */
+export function wakeTargetOptions(
+  agents: readonly ConsoleAgent[] | null,
+  now: number,
+  ttlMs: number,
+  selected?: string,
+): string {
+  if (agents === null || agents.length === 0) return ''
+  const word: Readonly<Record<AgentHealth, string>> = {
+    live: '在线',
+    stale: '滞后',
+    expired: '过期',
+  }
+  return agents
+    .map(one => {
+      const health = agentHealth(one, now, ttlMs)
+      const mark = one.address === selected ? ' selected' : ''
+      return (
+        `<option value="${attr(one.address)}"${mark}>` +
+        `${escapeHtml(one.address)} · ${escapeHtml(word[health])}</option>`
+      )
+    })
+    .join('')
+}
+
+/**
+ * The same addresses, without the state suffix, for the trail's node filter.
+ *
+ * A filter is asking "show me lines about this address", and whether that agent
+ * is answering right now has nothing to do with whether it appears in the
+ * trail — a dead node is exactly the one somebody filters for.
+ */
+export function agentFilterOptions(
+  agents: readonly ConsoleAgent[] | null,
+  selected?: string,
+): string {
+  if (agents === null || agents.length === 0) return ''
+  return agents
+    .map(
+      one =>
+        `<option value="${attr(one.address)}"${
+          one.address === selected ? ' selected' : ''
+        }>${escapeHtml(one.address)}</option>`,
+    )
+    .join('')
 }

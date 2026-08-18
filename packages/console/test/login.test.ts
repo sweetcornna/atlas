@@ -976,11 +976,26 @@ describe('the login document', () => {
   }
 
   test('loads nothing from anywhere', () => {
-    expect(html).not.toContain('<link')
-    expect(html).not.toContain('<iframe')
-    expect(html).not.toContain('src=')
-    expect(html).not.toContain('http://')
-    expect(html).not.toContain('https://')
+    // The favicon link is lifted out first: it is a self-contained `data:`
+    // URI, not a host, and the property this asserts is about hosts. Taking
+    // the line out keeps the check as tight as it was for everything else.
+    const stripped = html.replace(/<link rel="icon"[^>]*>\n?/, '')
+    expect(stripped).not.toBe(html)
+    expect(stripped).not.toContain('<link')
+    expect(stripped).not.toContain('<iframe')
+    expect(stripped).not.toContain('src=')
+    expect(stripped).not.toContain('http://')
+    expect(stripped).not.toContain('https://')
+  })
+
+  test('states what the two tokens can do, because one field takes both', () => {
+    // There is no account system to tell them apart in advance (§8.1), so an
+    // operator pasting the view token and then finding no wake button
+    // concludes the console is broken. Two lines here beat that round trip.
+    expect(html).toContain('>view</span>')
+    expect(html).toContain('只读参观 · 看名册与消息链 · 不能唤醒与注销')
+    expect(html).toContain('>admin</span>')
+    expect(html).toContain('可操作 · 注册 唤醒 注销 全部开放')
   })
 
   test('carries the same strict policy as the other two documents', () => {

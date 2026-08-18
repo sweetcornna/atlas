@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The `/login` document: one field, one button, nothing else.
+ * The `/login` document: one field, one button, and what the two tokens do.
  *
  * ## Why it is a third document rather than a panel on the first
  *
@@ -23,12 +23,16 @@
  *
  * ## The shape
  *
- * A single centred card, which is the skeleton of the reference console's login
- * page with its brand half removed: that half is a shader gradient, and this
- * package renders CSS from a string with no build step and no third-party
- * component. What survives is the part that was load-bearing — the card, the
- * wordmark above the field, the instance name under it, and one line of red
- * when the last attempt did not work.
+ * A panel floating on the cream ground, with two soft blobs behind it. The
+ * blobs are inline `<svg>` circles filled from the palette's own tokens, which
+ * is the only way this page gets a decorative element at all: there is no build
+ * step, no image route, and the CSP allows no host to supply one.
+ *
+ * The two-role legend under the button is new and is the one thing on this page
+ * that is not chrome. Both tokens land on the same field, the console has no
+ * account system to tell them apart in advance (`console.md` §8.1), and an
+ * operator pasting the view token and then finding no wake button assumes the
+ * console is broken. Two lines here cost less than that support round trip.
  *
  * ## What the error line may say
  *
@@ -39,9 +43,9 @@
  * into a 401: a credential in a response ends up in a log or a screenshot.
  */
 
-import { CONSOLE_CSS } from '../assets/css.js'
+import { icon } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { BRAND, CSP } from './page.js'
+import { BRAND, documentHead } from './page.js'
 
 export interface LoginPageModel {
   /** The instance label, so two consoles in two tabs are told apart. */
@@ -62,45 +66,55 @@ export interface LoginPageModel {
 const FIELD_LABEL = '令牌'
 const SUBMIT_LABEL = '进入'
 
+/** The two decorative blobs. Circles from the palette, no image, no gradient. */
+const DECOR =
+  `<svg class="deco-a" width="420" height="420" viewBox="0 0 200 200" ` +
+  `fill="none" aria-hidden="true">` +
+  `<circle cx="80" cy="70" r="76" fill="var(--color-accent-200)"/>` +
+  `<circle cx="140" cy="128" r="40" fill="var(--color-accent-2-200)"/></svg>` +
+  `<svg class="deco-b" width="460" height="460" viewBox="0 0 200 200" ` +
+  `fill="none" aria-hidden="true">` +
+  `<circle cx="120" cy="120" r="80" fill="var(--color-accent-2-200)"/>` +
+  `<circle cx="58" cy="62" r="34" fill="var(--color-accent-300)"/></svg>`
+
 /** The whole `/login` document. Self-contained: nothing is fetched. */
 export function renderLoginPage(model: LoginPageModel): string {
   const title = `${BRAND} · 登录 · ${model.label}`
   const error =
     model.error === undefined || model.error === ''
       ? ''
-      : `<p class="bar bar-bad" role="alert">${escapeHtml(model.error)}</p>`
-
-  const form =
-    `<form class="login-form" method="post" action="/login">` +
-    `<input type="hidden" name="redirect" value="${attr(model.redirect)}">` +
-    `<label class="field"><span>${escapeHtml(FIELD_LABEL)}</span>` +
-    // `current-password` rather than `off`: the alternative to a password
-    // manager holding a 32-character random string is a text file holding it.
-    `<input type="password" name="token" autocomplete="current-password" ` +
-    `spellcheck="false" autofocus required></label>` +
-    `<button type="submit" class="btn btn-primary login-submit">` +
-    `${escapeHtml(SUBMIT_LABEL)}</button>` +
-    `</form>`
+      : `<p class="bar bar-bad" role="alert">${icon('alert-triangle', {
+          small: true,
+        })}${escapeHtml(model.error)}</p>`
 
   return (
-    `<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n` +
-    `<meta charset="utf-8">\n` +
-    `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
-    `<meta name="color-scheme" content="light dark">\n` +
-    `<meta name="referrer" content="no-referrer">\n` +
-    `<meta http-equiv="Content-Security-Policy" content="${attr(CSP)}">\n` +
-    `<title>${escapeHtml(title)}</title>\n` +
-    `<style>${CONSOLE_CSS}</style>\n` +
-    `</head>\n<body>\n` +
-    `<div class="login-shell">\n` +
-    `<section class="login-card">` +
-    `<div class="login-head">` +
-    `<p class="login-mark">阡陌</p>` +
-    `<p class="login-inst">${escapeHtml(model.label)}</p>` +
+    documentHead(title) +
+    `<body>\n<div class="stage">\n` +
+    DECOR +
+    `<form class="card elev-lg panel" method="post" action="/login">` +
+    `<input type="hidden" name="redirect" value="${attr(model.redirect)}">` +
+    `<div class="brand">` +
+    `<div class="brand-en">AgentNest</div>` +
+    `<div class="brand-cn">阡陌</div>` +
     `</div>` +
+    `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     error +
-    form +
-    `</section>\n</div>\n` +
-    `</body>\n</html>\n`
+    `<div class="field"><label for="token">${escapeHtml(FIELD_LABEL)}</label>` +
+    // `current-password` rather than `off`: the alternative to a password
+    // manager holding a 32-character random string is a text file holding it.
+    `<input class="input" type="password" id="token" name="token" ` +
+    `autocomplete="current-password" spellcheck="false" ` +
+    `placeholder="粘贴访问令牌" autofocus required></div>` +
+    `<button type="submit" class="btn btn-primary btn-block">` +
+    icon('log-out', { small: true }) +
+    `${escapeHtml(SUBMIT_LABEL)}</button>` +
+    `<div class="tokline">` +
+    `<div class="tokrow"><span class="tag tag-neutral mono">view</span>` +
+    `只读参观 · 看名册与消息链 · 不能唤醒与注销</div>` +
+    `<div class="tokrow"><span class="tag tag-accent mono">admin</span>` +
+    `可操作 · 注册 唤醒 注销 全部开放</div>` +
+    `</div>` +
+    `<p class="foot">令牌由环境负责人发放 · 存在浏览器本地 · 退出即清除</p>` +
+    `</form>\n</div>\n</body>\n</html>\n`
   )
 }
