@@ -32,7 +32,7 @@
 |---|---|---|---|---|
 | **传输机密性** | TLS（`wss://`），Bun 直通 | 服务端证书，来自部署方 | 部署方自理 | 演示环境实际跑 `ws://` 与 unix socket（`demo-env.md` §2.4），TLS 只在类型上存在：`client.ts:86-92` 的 `ClientTlsOptions`、`server.ts:84-85` 的 `TLSOptions` 都只是透传 |
 | **连接身份** | PSK challenge/auth/ready 握手 | **全网一把对称 PSK** | 手工：`demo/env/seed.sh` ② 生成一个 0600 文件，两个节点共读 | `handshake.ts:14-24` 自己写明：任何持钥者可冒充任何节点，`node` 字段是审计标签不是权威（`frames.ts:71` 同一句）；无轮换、无过期、无吊销 |
-| **消息授权** | capability 令牌，每节点 Ed25519 签发 | 每节点一对 Ed25519（`nodeIdentity.ts`，0600 / `wx` 独占 / 永不覆盖） | **没有分发**：节点把公钥打印到 stdout（`resident.ts:506-513`），人肉拷进对端的 `--trust <node>=<publicKey>` | `AgentRecord.publicKey` 字段与校验都在（`registry.ts:76`、`:181-183`、`http.ts:59` / `:116`），**但没有任何东西去发布它**——`demo/lib/p81-registry.ts` 的 `--register` 只收 `<address>=<endpoint>` |
+| **消息授权** | capability 令牌，每节点 Ed25519 签发 | 每节点一对 Ed25519（`nodeIdentity.ts`，0600 / `wx` 独占 / 永不覆盖） | **没有分发**：节点把公钥打印到 stdout（`resident.ts:650-657`），人肉拷进对端的 `--trust <node>=<publicKey>` | `AgentRecord.publicKey` 字段与校验都在（`registry.ts:76`、`:181-183`、`http.ts:59` / `:116`），**但没有任何东西去发布它**——`demo/lib/p81-registry.ts` 的 `--register` 只收 `<address>=<endpoint>` |
 
 ### 1.2 一句话诊断
 
