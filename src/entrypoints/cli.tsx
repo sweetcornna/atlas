@@ -4,7 +4,7 @@
 // Without this, JSC's C++ Vector grows without bound in long-running sessions.
 import '../utils/runtime/performanceShim.js';
 import { feature } from 'bun:bundle';
-import { BIN_NAME } from '../constants/brand.js';
+import { BIN_NAME, DISPLAY_NAME } from '../constants/brand.js';
 import { isEnvTruthy } from '../utils/config/envUtils.js';
 
 // Runtime fallback for MACRO.* when not injected by build/dev defines.
@@ -79,8 +79,14 @@ async function main(): Promise<void> {
 
   // Fast-path for --version/-v: zero module loading needed
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
-    // MACRO.VERSION is inlined at build time
-    console.log(`${MACRO.VERSION} (Open Claude Code)`);
+    // MACRO.VERSION is inlined at build time. DISPLAY_NAME is identity-scoped
+    // and was a hardcoded 'Open Claude Code' here until 2026-08-18, so a Qianmo
+    // node announced itself as occ while the very same invocation wrote to
+    // `.qianmo` — and `--version` is exactly what an operator runs to find out
+    // which product they are talking to. Commander's own version string
+    // (cli/program/run.tsx) always used DISPLAY_NAME; this fast path is a
+    // second printer of the same fact and had drifted.
+    console.log(`${MACRO.VERSION} (${DISPLAY_NAME})`);
     return;
   }
 
