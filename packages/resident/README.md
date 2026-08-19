@@ -7,7 +7,7 @@
 
 | 项 | 指针 |
 | --- | --- |
-| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入；队列治理与回执解耦 **P13.3**、多会话隔离 **P13.4**、可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）**P13.5** |
+| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入；队列治理与回执解耦 **P13.3**、多会话隔离 **P13.4**、可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）**P13.5**、主动通知出站 **P13.6** |
 | 章程条目 | charter **§3.2 R-3**（休眠与唤醒，基座起点：部分，v2.7 定案） |
 | 协议真源 | `protocol.md` §4.5（ack 由谁发出）、§4.5.1（回执与 ack 分层）、§5.3（时间跳跃闸门 T-2）、§4.6（`task.result` 契约与 `redelivered`）、§11.3（规则 N-1 降级）、§14.8.1（`wake` 不产生 ack 的定夺） |
 | 完成状态 | roadmap「完成状态速查」P3.1 行 |
@@ -39,6 +39,7 @@ flowchart TD
   estop["estop.ts · ResidentEstop<br/>单次 stat，存在即急停<br/>空/损坏仍算 engaged"]
   lifecycle["lifecycle.ts · ResidentLifecycleSentinel<br/>phase=running 留在盘上 ⇒ 上一条命被杀"]
   inactivity["inactivity.ts · ResidentInactivityWatchdog<br/>turn 静默即早失败，reason 说明原因"]
+  notify["notify.ts · ResidentNotifier<br/>出站 notify：滑动窗 + 台账 + 按序排空<br/>只走对端已开的通道，一次都不拨号"]
 
   acp["ACP 子进程（occ --acp）"]
   host["宿主：@qianmo/activator 的 ResidentActivityController"]
@@ -71,6 +72,7 @@ flowchart TD
   reader -->|"recordRecovery / abandon"| ledger
   turnport --> inactivity
   inactivity -.->|"session/cancel"| client
+  notify -->|"复用 P13.5 台账"| delivery
 ```
 
 四个可靠性件套模块（`delivery-ledger` / `estop` / `lifecycle` / `inactivity`，P13.5）在包内**没有任何互相依赖**，也不参与准入循环的判定——它们各自被宿主接线一次，见 §3.3。
@@ -105,6 +107,12 @@ flowchart TD
 - **`ResidentLifecycleSentinel` / `ResidentPriorLife` / `ResidentLifecycleRecord` / `ResidentLifecyclePhase` / `ResidentLifecycleOptions` / `RESIDENT_LIFECYCLE_HEARTBEAT_MS`** —— 终止取证哨兵。
 - **`ResidentInactivityWatchdog` / `ResidentInactivityError` / `ResidentInactivityOptions` / `ResidentInactivityTurn` / `DEFAULT_RESIDENT_INACTIVITY_MS`** —— 不活动早失败看门狗。
 - **`MAX_ADMISSION_RECOVERIES`** —— 重启熔断的上限，配套 `AdmissionLedger.recordRecovery` / `abandon` 与记录类型 `RecoveringAdmissionRecord` / `AbandonedAdmissionRecord`。
+
+主动通知出站（P13.6）：
+
+- **`ResidentNotifier` / `ResidentNotifierOptions` / `NotifyChannel` / `NotifyOutcome`** —— 出站 `notify` 的全部：滑动窗预算、台账、按序排空。`NotifyChannel` 是 `TransportChannel` 的结构化子集，本模块**不 import `@qianmo/transport`**（`test/no-dial.test.ts` 钉住这一条）。
+- **`ResidentNotifyEventType` / `ResidentNotifyEvent` / `ResidentNotifyAuditSink` / `NOTIFY_EVENT_SCHEMA_VERSION`** —— 审计事件与它的 schema 版本戳（hermes B9）。
+- **`AcpResidentTurnPort.activeTurn(sessionId)`** —— 某会话正在跑的 turn，供宿主把一次 `qianmo_notify` 归到出钱的那个任务上。
 
 协议级数值一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处，本包不复制。
 
@@ -179,6 +187,24 @@ flowchart TD
 - **熔断只数 `detected` 记录，不数 `admitted` 的。**B3 要断的环是「重放一个能把节点搞崩的 prompt」，而 `admitted` 记录只剩一次 read 翻转，那条路上已经没有 prompt 了。
 - **「3 次重启」与「3 次交接」是同一个数。**计数器数的是**恢复交接**，而一次重启在记录把节点带走时恰好产生一次交接；一条只是让 turn 失败、没能把节点带走的记录，会在原地把三次用完——同一个判决来得更早，同样正确。
 
+### 3.4 主动通知出站的不变式（P13.6）
+
+设计出处：`docs/dev/resident-botization.md` §2（notify 协议面）、§4.1⑤（产出默认静默）、§3.E row E4。
+
+| # | 不变式 | 改坏了会怎样 | 钉住它的测试 |
+| --- | --- | --- | --- |
+| 27 | **notify 的出站预算是 `NotifyBudget` 滑动窗，不是 `router.outbound()`**（那条会先撞 `RuntimeThrottle` 的 20/min 对偶桶） | 走 `outbound()` ⇒ 协议写着 60/min 而实现最多给到 20/min，一个永远花不完的数字；换成令牌桶 ⇒ 安静一小时后一分钟内放行 2× 上限，正是「把人淹掉」那个失败 | `test/notify.test.ts`「an hour of quiet does not release a batch of two windows」「a shut window stops the drain rather than stepping over it」；`packages/router/test/rate.test.ts` 四条 |
+| 28 | **每次重投都取全新 `taskId`**（与 `task.result` 的重投相反） | `notify` 不是 reply 类型，`LoopGuard` 会记 `(to, taskId)`；沿用上一次的 taskId ⇒ 两分钟内的重投被判 `E_LOOP`，被环检测切掉而不是被投递逻辑处理 | `test/notify.test.ts`「a second attempt is marked redelivered and takes a fresh taskId」 |
+| 29 | **中枢缺席时落台账、回来后按序排空且不重复**；排空只由对端入站接触触发（H-2 与不变式 #17 同一条） | 不落 ⇒ 值守作业的发现随通道断开无痕消失；乱序 ⇒ 同一作业的两条通知在人眼前颠倒；为排空拨号 ⇒ H-2 作废 | `test/notify.test.ts`「the backlog drains in the order it was made, and only once」「a backlog survives the process that made it」「nothing goes to a peer that has not come back」；`test/no-dial.test.ts` 四条 |
+| 30 | **注入给 ACP 会话的工具面只有 `qianmo_notify` 一个，且节点侧根本不存在排程 API**（E4 是结构成立，不是配置成立） | 无人值守的轮次能给自己排更多无人值守的轮次——这条一旦破，节点的产出速率不再有任何上界 | `src/services/qianmo/__tests__/notifyTool.test.ts`「is exactly one tool, and it is qianmo_notify」「carries no scheduling capability, by name or by description」（含诱饵正向对照） |
+| 31 | **对端没声明 `notify` 就一条都不发，且不改写成别的类型** | 静默降级成 `task.request` ⇒ 在对端开一个它没要求的 turn，把「能力缺失」偷换成「行为变化」（hermes F3） | `test/notify.test.ts` 两条；`src/services/qianmo/__tests__/resident.integration.test.ts`「a hub that never declared notify is told nothing at all」 |
+
+三处容易误读：
+
+- **`redelivered` 在 notify 上不做 N-1 降级，在 `task.result` 上做**（对比不变式 #18）。不是疏漏：`isNotifyPayload` 用白名单校验，`redelivered` 从 `notify` 诞生那天起就在白名单里，所以「认得类型但不认得该字段」的对端不存在；而 `task.result` 用精确键数校验，多一个键就是整条拒收。
+- **谁被通知不由 agent 决定。**工具只交四个字段；收件人、`contextId` 与通道全由宿主从「正在跑的那个 turn 背后的任务」推导（`AcpResidentTurnPort.activeTurn`）。一个能自己填收件人的 agent，就是一个能拿节点凭据给任意对端发消息的 agent。
+- **没有网络任务在跑时一律拒绝，不猜。**本地队友信件起的 turn 没有对端，此时挑「最近那个中枢」会把一个 agent 的发现发给一个从没问过的控制台。
+
 ## 4. 与基座的关系
 
 - **定性：部分**（charter §3.2 R-3，v2.7 定案；P0.2 复核完成）。roadmap P3.1 的 v2.15 勘误把理由改写过一次，结论未变：
@@ -201,9 +227,9 @@ flowchart TD
 bun test packages/resident
 ```
 
-实测：**130 pass / 0 fail，19 个测试文件**（`acp-turn` / `deadline-clock` / `delivery-ledger` / `estop` / `inactivity` / `ledger` / `lifecycle` / `multi-session` / `poller` / `queue-governance` / `reader` / `restart-breaker` / `session-gc` / `session-key` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`（13 条）。
+实测：**153 pass / 0 fail，21 个测试文件**（`acp-turn` / `deadline-clock` / `delivery-ledger` / `estop` / `inactivity` / `ledger` / `lifecycle` / `multi-session` / `no-dial` / `notify` / `poller` / `queue-governance` / `reader` / `restart-breaker` / `session-gc` / `session-key` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`（15 条）。
 
-`session-key.test.ts` 会扫全仓源码（`src/**` 与 `packages/*/src|test/**`，跳过 `node_modules` 与 `packages/@ant`），约 3700 个文件、几百毫秒。
+`session-key.test.ts` 会扫全仓源码（`src/**` 与 `packages/*/src|test/**`，跳过 `node_modules` 与 `packages/@ant`），约 3700 个文件、几百毫秒。`no-dial.test.ts` 只扫本包 `src/**` 加宿主两个文件，毫秒级。
 
 ## 7. P9.3 双人签字
 

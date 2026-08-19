@@ -764,4 +764,93 @@ socket。
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
 | `docs/dev/demo-env.md` §2.4 | 端口分配表。改默认端口前先看它 |
+| `src/cli/handlers/watch.ts` | `qm watch` 的全部：作业文件解析、拨号与握住连接、fire 与 notify 的审计写入（§10） |
+| `packages/scheduler/README.md` | 调度器包本身：一次性预约、CAS、补跑塌缩、失败退避（§10） |
 | `docs/dev/node-provisioning.md` | **节点装机与接网设计**：控制台上填 SSH 凭证把一台机器变成节点。它给控制台加的是第三枚 `provision` token（与 view / admin **互不包含**）与五类钉死的动作，本文的鉴权模型是它的地基 |
+
+---
+
+## §10 值守作业（`qm watch`）
+
+**这不是控制台的一个页面，是另一个进程。**P13.6 把定时反转到了中枢侧：作业的
+时间表全部住在中枢，节点侧一行调度状态都没有（`docs/dev/resident-botization.md`
+§4.1）。跑它的入口是 `qm watch`，与 `qm console` 各起各的——控制台的作业页与通知页
+本批次**没有做**，见下面的「已知边界」。
+
+### §10.1 怎么起一个真实值守作业
+
+三步，第三步之后这个进程就不该再退了。
+
+**① 写一个作业文件**（JSON 数组，一项一个作业）：
+
+```json
+[
+  {
+    "id": "disk-watch",
+    "title": "每十分钟看一次 beta-1 的磁盘",
+    "target": "qianmo://beta-1/reviewer",
+    "url": "ws://127.0.0.1:38611",
+    "prompt": "检查 / 与 /var 的使用率。任一超过 90% 就调用 qianmo_notify（kind=watch、severity=warn、dedupKey 用挂载点）告诉运维；否则什么都不用做，正常结束即可。",
+    "schedule": { "everyMs": 600000 },
+    "taskTtlMs": 900000,
+    "notifyPolicy": "agent-initiated"
+  }
+]
+```
+
+- `target` 是节点上的 agent 地址，`url` 是那台节点的**入站** ws（中枢拨过去）。两个字段
+  分工不同：调度器只认 `target`，`url` 由 `qm watch` 自己读——调度包里没有传输层，这条
+  边界是刻意的。
+- `schedule.everyMs` 是周期；要固定相位（比如每天 09:00）就再给一个 `anchorMs`。**不写
+  `anchorMs` 的作业在第一次规划时就会跑一次**，那一次是用来给网格定相的（理由写在
+  `packages/scheduler/src/reserve.ts`）。
+- `taskTtlMs` **必填、且故意不吃协议默认的 5 分钟**：值守作业跑二十分钟是常态，而
+  「任务能跑多久」只允许由发送方声明，不允许节点自己偷偷续命（hermes B10）。
+- **prompt 里要明说「没事就什么都别做」。**产出默认静默是设计的一半——turn 的结果照常
+  回 `task.result` 进审计链，但**只有 agent 显式调 `qianmo_notify` 才会有人被打扰**。
+
+**② 把 PSK 放进环境**（与目标节点共享的那把；命令行上不接受，那等于写进 `ps` 输出）：
+
+```bash
+export QIANMO_TRANSPORT_PSK=...  # 变量名的唯一出处是 @qianmo/transport 的 PSK_ENV_VAR
+export OCC_IDENTITY=qianmo       # qm 入口已经写死，手工跑 occ 时要显式给
+```
+
+**③ 起它**：
+
+```bash
+qm watch --jobs ./jobs.json --from qianmo://hub/console
+# 冒烟：只把此刻到点的作业跑一遍就退
+qm watch --jobs ./jobs.json --from qianmo://hub/console --once
+```
+
+`--from` 是中枢自己的地址：它既是审计链的链头，也是每条通知回寄的地址。状态默认落在
+`<config>/qianmo/scheduler`（`--state-dir` 可改），里面两样东西——`state.json` 记每个作业
+上次跑到哪，`claims/` 每个 `(jobId, fireAtMs)` 一个空文件。**两个 `qm watch` 指向同一个
+目录是被支持的用法**：抢同一格的时候，赢家由 `O_EXCL` 在内核里决出，输的那个把这一格
+记成 `preempted` 走人（roadmap F7）。
+
+### §10.2 怎么确认它在跑
+
+| 想知道 | 看哪儿 |
+| --- | --- |
+| 中枢有没有按时发 | 审计链里 `source=scheduler`、`kind=watch_fire`（`qm audit`，或控制台审计页按来源筛 `scheduler`） |
+| 通知有没有真到人眼前 | 同一条链上 `kind=watch_notify_received`；节点那侧对应 `source=resident` 的 `notify_sent` / `notify_delivered` |
+| 有没有通知被压着没发出去 | 节点侧 `notify_held`（原因 `no_channel` 或 `budget`）与 `notify_abandoned` |
+| 节点这条命是不是被杀过 | `<config>/resident/lifecycle.json`（P13.5 的终止取证哨兵） |
+| 停手 | `touch <config>/qianmo/scheduler/ESTOP`。**只挡新的 fire，在途一律不杀**——节点欠着别人一条 `task.result`，杀掉是把「慢答案」变成「丢答案」。删掉文件即恢复，没有需要重启的东西 |
+
+七天连续运行的判据配套（`resident-botization.md` §4.1 末段）：lifecycle 哨兵七天内没有
+`phase=running` 的孤儿记录；`watch_fire` 的条数与作业周期对得上；节点侧 notify 台账里没有
+超过一个 TTL 窗口还挂着的条目。
+
+### §10.3 已知边界
+
+- **控制台没有作业页与通知页。**本批次的通知出口是 `qm watch` 的 stdout 加审计链；
+  `packages/console` 一行没动。要在面板上看，先按 §9 的端口形状加 `SchedulerPort` /
+  `NotifyPort`。
+- **`notifyPolicy` 只被记录与透传，没有任何一处读它做判断。**它是留给「always / silent」
+  那两档策略的位置，本批次三档行为一致——打不打扰人完全由 agent 自己决定。
+- **中枢是定时的单点。**这是 A7 的刻意背离（节点侧 ticker 会让节点永不空闲、永不冻结，
+  直接抵消 R-3 的休眠形态），代价就是中枢不在的时候没人发起。补偿是「缺席可见」：
+  `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的，接到面板上是遗留项。
