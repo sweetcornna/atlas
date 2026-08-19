@@ -100,4 +100,9 @@ export {
   type ResidentTimingSink,
   type ResidentTimingStage,
 } from './timings.js'
-export { NodeTurnGate } from './turn-gate.js'
+export {
+  NodeTurnExpiredError,
+  NodeTurnGate,
+  NodeTurnQueueFullError,
+  type NodeTurnRequest,
+} from './turn-gate.js'

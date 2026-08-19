@@ -52,6 +52,30 @@ export interface ResidentMailboxReaderOptions {
   readonly correlationId?: (
     messages: readonly ResidentMailboxMessage[],
   ) => string | undefined
+  /**
+   * When the task behind one mailbox entry stops being worth a turn, on the
+   * wall clock (`Date.now`) — **not** on this reader's injected `now`, which
+   * stamps ledger records and is free to be fictional. Deadlines travel to the
+   * node-wide gate, so they all have to be on one clock. `undefined` for an
+   * entry with no task deadline — local teammate mail, most of it.
+   *
+   * Injected rather than parsed here for the same reason `correlationId` is:
+   * this package knows nothing about envelopes, and the entry that carries one
+   * is the host's business.
+   *
+   * Used twice, and the first use is the one that recovers real work:
+   *
+   * 1. **Eligibility.** An entry whose deadline has passed is not detected at
+   *    all. That is where a node actually burns turns on dead tasks today —
+   *    the queue that matters is the mailbox, and a message can sit unread in
+   *    it through many turns before its own comes up. Dropping it from
+   *    eligibility (rather than skipping the batch) also keeps it from
+   *    blocking everything behind it forever.
+   * 2. **The gate.** The batch's earliest deadline rides along so a turn that
+   *    expires *while queued* is dropped at the head of the queue instead of
+   *    being run.
+   */
+  readonly deadlineOf?: (message: ResidentMailboxMessage) => number | undefined
   readonly timings?: ResidentTimingRecorder
   readonly gate?: NodeTurnGate
   readonly now?: () => number
@@ -120,8 +144,16 @@ export class ResidentMailboxReader {
       this.#options.agent,
       this.#options.team,
     )
+    // `Date.now()`, deliberately, and not this reader's injected clock: the
+    // same deadline is handed to the node-wide gate below, and a gate shared
+    // by every reader cannot adopt one reader's notion of the time. One clock
+    // for deadlines, the injected one for the stamps that go in the ledger.
+    const now = Date.now()
     const eligible = mailbox.filter(
-      message => !message.read && (this.#options.accepts?.(message) ?? true),
+      message =>
+        !message.read &&
+        (this.#options.accepts?.(message) ?? true) &&
+        now < (this.#options.deadlineOf?.(message) ?? Number.POSITIVE_INFINITY),
     )
     const snapshot = this.#options.selectSnapshot?.(eligible) ?? eligible
     if (snapshot.length === 0) return { detected: 0, recovered, read }
@@ -131,6 +163,7 @@ export class ResidentMailboxReader {
       throw new Error('resident mailbox formatter returned an empty prompt')
     }
     const networkMsgId = this.#options.correlationId?.(snapshot)
+    const batchDeadlineAt = this.#earliestDeadline(snapshot)
     const sessionId = await this.#options.resolveSession(snapshot)
     let released = false
     const release = (): void => {
@@ -165,7 +198,12 @@ export class ResidentMailboxReader {
       })
       const marked = await this.#submit(
         { ...record, phase: 'detected' },
-        release,
+        {
+          onSettled: release,
+          ...(batchDeadlineAt === undefined
+            ? {}
+            : { deadlineAt: batchDeadlineAt }),
+        },
       )
       return {
         detected: snapshot.length,
@@ -190,25 +228,52 @@ export class ResidentMailboxReader {
     }
   }
 
+  /** Earliest task deadline in the batch, or `undefined` when none has one. */
+  #earliestDeadline(
+    messages: readonly ResidentMailboxMessage[],
+  ): number | undefined {
+    const deadlineOf = this.#options.deadlineOf
+    if (deadlineOf === undefined) return undefined
+    let earliest: number | undefined
+    for (const message of messages) {
+      const at = deadlineOf(message)
+      if (at === undefined) continue
+      earliest = earliest === undefined ? at : Math.min(earliest, at)
+    }
+    return earliest
+  }
+
   async #recover(pending: PendingAdmission): Promise<number> {
     if (pending.phase === 'admitted') {
       return await this.#markRead(pending)
     }
 
-    const accepted = await this.#gate.run(() =>
-      this.#options.turn.isAccepted(this.#turnInput(pending)),
+    const accepted = await this.#gate.run(
+      () => this.#options.turn.isAccepted(this.#turnInput(pending)),
+      { sessionId: pending.sessionId },
     )
     if (accepted) {
       const admittedAt = this.#markAdmitted(pending)
       return await this.#markRead({ ...pending, phase: 'admitted', admittedAt })
     }
 
+    // No deadline on the recovery path, and this is the reason: the ledger
+    // already holds a `detected` record for this batch, and the ledger has no
+    // way to retire one other than reaching `read` (an `abandoned` state is
+    // P13.5's). Dropping the turn here would leave that record pending
+    // forever, and every poll from then on would re-recover it, drop it again
+    // and report the failure — a 500 ms error loop in place of one wasted
+    // turn. Expiry is honoured where it costs nothing instead: eligibility,
+    // above, before anything is written down.
     return await this.#submit(pending)
   }
 
   async #submit(
     pending: PendingAdmission,
-    onSettled?: () => void,
+    options: {
+      readonly deadlineAt?: number
+      readonly onSettled?: () => void
+    } = {},
   ): Promise<number> {
     const input = this.#turnInput(pending)
     let resolveAdmission!: (marked: number) => void
@@ -226,36 +291,58 @@ export class ResidentMailboxReader {
         reject(error)
       }
     })
+    this.#options.timings?.record({
+      stage: 'queued',
+      at: (this.#options.now ?? Date.now)(),
+      sessionId: pending.sessionId,
+      inputMessageId: pending.messageId,
+      ...(pending.networkMsgId === undefined
+        ? {}
+        : { networkMsgId: pending.networkMsgId }),
+      agent: pending.agent,
+      // Read before the hand-off, plus this turn — its position in the queue.
+      // Asking afterwards would report zero for the very turn being recorded,
+      // because the gate may have started it synchronously.
+      queueDepth: this.#gate.queued + 1,
+    })
     void this.#gate
-      .run(async () => {
-        const result = await this.#options.turn.execute(input, async () => {
-          try {
-            const admittedAt = this.#markAdmitted(pending)
-            resolveAdmission(
-              await this.#markRead({
-                ...pending,
-                phase: 'admitted',
-                admittedAt,
-              }),
+      .run(
+        async () => {
+          const result = await this.#options.turn.execute(input, async () => {
+            try {
+              const admittedAt = this.#markAdmitted(pending)
+              resolveAdmission(
+                await this.#markRead({
+                  ...pending,
+                  phase: 'admitted',
+                  admittedAt,
+                }),
+              )
+            } catch (error) {
+              rejectAdmission(error)
+              throw error
+            }
+          })
+          if (!settled) {
+            throw new Error(
+              `resident ACP turn ${pending.messageId} completed before input admission`,
             )
-          } catch (error) {
-            rejectAdmission(error)
-            throw error
           }
-        })
-        if (!settled) {
-          throw new Error(
-            `resident ACP turn ${pending.messageId} completed before input admission`,
-          )
-        }
-        await this.#options.onTurnResult?.(input, result)
-      })
+          await this.#options.onTurnResult?.(input, result)
+        },
+        {
+          sessionId: pending.sessionId,
+          ...(options.deadlineAt === undefined
+            ? {}
+            : { deadlineAt: options.deadlineAt }),
+        },
+      )
       .catch(async error => {
         rejectAdmission(error)
         await this.#options.onTurnError?.(error, input)
       })
       .finally(() => {
-        onSettled?.()
+        options.onSettled?.()
       })
     return await admission
   }

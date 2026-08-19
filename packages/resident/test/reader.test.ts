@@ -18,6 +18,7 @@ import {
   ResidentMailboxReader,
   type ResidentMailboxReaderOptions,
 } from '../src/reader.js'
+import { NodeTurnGate, type NodeTurnRequest } from '../src/turn-gate.js'
 
 const SESSION_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 const MESSAGE_ID = '11111111-2222-4333-8444-555555555555'
@@ -132,6 +133,25 @@ class MemoryTurn implements ResidentTurnPort {
     this.accepted = true
     await onAccepted()
     return { outcome: 'completed', content: 'done' }
+  }
+}
+
+/**
+ * The real gate, with a note of what it was asked for.
+ *
+ * A subclass rather than a stand-in: the wiring under test is what the reader
+ * *says* to the gate, and everything the gate then does has to keep happening
+ * for the rest of the assertions in the test to mean anything.
+ */
+class RecordingGate extends NodeTurnGate {
+  readonly requests: NodeTurnRequest[] = []
+
+  override run<T>(
+    work: () => Promise<T>,
+    request: NodeTurnRequest = {},
+  ): Promise<T> {
+    this.requests.push(request)
+    return super.run(work, request)
   }
 }
 
@@ -343,6 +363,81 @@ describe('resident mailbox admission', () => {
     // The message left out of the snapshot is still unread, still waiting.
     expect(mailbox.messages[0]?.read).toBe(true)
     expect(mailbox.messages[1]?.read).toBe(false)
+  })
+
+  test('an entry past its task deadline is never detected, nor blocks the next', async () => {
+    const dead = message({ text: 'task the sender already gave up on' })
+    const live = message({
+      text: 'task still worth a turn',
+      timestamp: '2026-08-12T00:01:00.000Z',
+    })
+    const mailbox = new MemoryMailbox([dead, live])
+    const turn = new MemoryTurn()
+
+    const result = await reader(mailbox, turn, {
+      deadlineOf: item =>
+        item.text === dead.text ? Date.now() - 1 : Date.now() + 60_000,
+    }).poll()
+
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(turn.executeCalls).toHaveLength(1)
+    expect(turn.executeCalls[0]?.prompt).toContain('still worth a turn')
+    // Dropped from eligibility rather than skipped as a batch: skipping would
+    // leave it at the head of the queue forever, blocking everything behind it.
+    expect(mailbox.messages[0]?.read).toBe(false)
+    expect(mailbox.messages[1]?.read).toBe(true)
+  })
+
+  test('hands the gate the earliest deadline in the batch, and the session', async () => {
+    const first = message({ text: 'due later' })
+    const second = message({
+      text: 'due sooner',
+      timestamp: '2026-08-12T00:01:00.000Z',
+    })
+    const mailbox = new MemoryMailbox([first, second])
+    const gate = new RecordingGate()
+    const later = Date.now() + 90_000
+    const sooner = Date.now() + 30_000
+
+    await reader(mailbox, new MemoryTurn(), {
+      gate,
+      deadlineOf: item => (item.text === 'due later' ? later : sooner),
+    }).poll()
+
+    // The earliest deadline in the batch is the one the batch has to meet.
+    expect(gate.requests).toEqual([
+      { sessionId: SESSION_ID, deadlineAt: sooner },
+    ])
+  })
+
+  test('the recovery path submits without a deadline', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    ledger.append({
+      kind: 'detected',
+      messageId: MESSAGE_ID,
+      sessionId: SESSION_ID,
+      detectedAt: 1,
+      agent: AGENT,
+      team: TEAM,
+      readBefore: {},
+      snapshot: [message()],
+      prompt: 'durable prompt',
+    })
+    const gate = new RecordingGate()
+
+    await reader(mailbox, new MemoryTurn(), {
+      gate,
+      deadlineOf: () => Date.now() - 1,
+    }).poll()
+
+    // Both the status probe and the resubmit go in bare. A `detected` record
+    // is a promise this node already wrote down, and the ledger has no way to
+    // retire one except by reaching `read` — dropping the turn would strand it
+    // and every later poll would rediscover, redrop and re-report it.
+    expect(gate.requests).toEqual([
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+    ])
   })
 
   test('the read callback fires after the flip, the terminal one after the turn', async () => {

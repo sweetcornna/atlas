@@ -65,6 +65,10 @@ export class ResidentNodeRuntime {
     readonly contextId?: (
       messages: readonly ResidentMailboxMessage[],
     ) => string | undefined
+    /** See {@link ResidentMailboxReaderOptions.deadlineOf}. */
+    readonly deadlineOf?: (
+      message: ResidentMailboxMessage,
+    ) => number | undefined
     /** Session source shared by every agent. See {@link ResidentAgentBinding}. */
     readonly sessions?: ResidentSessionResolver
     readonly timings?: ResidentTimingRecorder
@@ -133,6 +137,9 @@ export class ResidentNodeRuntime {
           ...(options.correlationId === undefined
             ? {}
             : { correlationId: options.correlationId }),
+          ...(options.deadlineOf === undefined
+            ? {}
+            : { deadlineOf: options.deadlineOf }),
           ...(options.timings === undefined
             ? {}
             : { timings: options.timings }),
@@ -145,7 +152,27 @@ export class ResidentNodeRuntime {
     }
   }
 
+  /**
+   * The synchronous half of {@link deliver}: can this node take the message at
+   * all?
+   *
+   * Split out so a host can ask **before** it writes anything down. Once the
+   * transport receipt stopped waiting for the turn (design §4.2(b)), the
+   * address check was the one thing on that path that had to stay in front of
+   * the mailbox write — otherwise a message addressed to an agent this node
+   * does not host would land on disk first and be rejected afterwards, which
+   * is exactly the "a refused message eats the inbox quota" shape rule L-1
+   * forbids.
+   */
+  assertDeliverable(message: QianmoMessage): void {
+    this.#readerFor(message)
+  }
+
   async deliver(message: QianmoMessage): Promise<void> {
+    await this.#readerFor(message).poll()
+  }
+
+  #readerFor(message: QianmoMessage): ResidentMailboxReader {
     const address = parseAddress(message.to)
     if (address === null || address.node !== this.#node) {
       throw new Error(`message is not addressed to resident node ${this.#node}`)
@@ -154,7 +181,7 @@ export class ResidentNodeRuntime {
     if (reader === undefined) {
       throw new Error(`resident agent ${address.agent} is not configured`)
     }
-    await reader.poll()
+    return reader
   }
 
   async pollAll(): Promise<void> {

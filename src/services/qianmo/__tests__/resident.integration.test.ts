@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   CapabilityLevel,
+  LIMITS,
   MessageType,
   ProtocolErrorCode,
   createMessage,
@@ -24,7 +25,7 @@ import {
   generateNodeKeyPair,
   issueCapability,
 } from '@qianmo/capability'
-import { TransportClient } from '@qianmo/transport'
+import { ReceiptStatus, TransportClient } from '@qianmo/transport'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { QianmoResident } from '../resident.js'
@@ -32,6 +33,8 @@ import { QianmoResident } from '../resident.js'
 const PSK = 'resident-integration-not-a-real-secret'
 const TEAM = 'nest'
 const AGENT = 'reviewer'
+/** Same budget `resident.ts` gives one receipt — and the sender's default. */
+const RECEIPT_BUDGET_MS = 5_000
 const ACP_FIXTURE = join(
   import.meta.dir,
   'fixtures',
@@ -174,6 +177,7 @@ describe('resident product integration', () => {
       expect(new Set(events.map(event => event.stage))).toEqual(
         new Set([
           'detected',
+          'queued',
           'admitted',
           'read',
           'first_content',
@@ -182,6 +186,11 @@ describe('resident product integration', () => {
       )
       const at = (stage: ResidentTimingEvent['stage']): number =>
         events.find(event => event.stage === stage)?.at ?? -1
+      expect(at('detected')).toBeLessThanOrEqual(at('queued'))
+      expect(at('queued')).toBeLessThanOrEqual(at('admitted'))
+      // Depth is observation, not a decision: one agent submits one turn at a
+      // time, so the only honest number here is "this one".
+      expect(events.find(event => event.stage === 'queued')?.queueDepth).toBe(1)
       expect(at('detected')).toBeLessThanOrEqual(at('admitted'))
       expect(at('admitted')).toBeLessThanOrEqual(at('first_content'))
       expect(at('first_content')).toBeLessThanOrEqual(at('turn_completed'))
@@ -293,6 +302,81 @@ describe('resident product integration', () => {
     expect(errors).toEqual([])
   }, 15_000)
 
+  test('a second request is receipted inside the budget while a turn holds the gate', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-receipt-decoupling-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // The first turn is admitted and then never ends, so the node turn gate
+      // is held for the rest of the test.
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const first = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'holds the gate' },
+    })
+    await client.sendAndWait(first, RECEIPT_BUDGET_MS)
+    await waitUntil(() => replies.some(item => item.type === MessageType.Ack))
+
+    // The whole of H-3: queueing behind a running turn must not be paid for
+    // out of the sender's transport receipt budget.
+    const second = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 'queued behind it' },
+    })
+    const startedAt = Date.now()
+    await expect(client.sendAndWait(second, RECEIPT_BUDGET_MS)).resolves.toBe(
+      ReceiptStatus.Accepted,
+    )
+    expect(Date.now() - startedAt).toBeLessThan(RECEIPT_BUDGET_MS)
+
+    // And the receipt says exactly what it is allowed to say: the envelope is
+    // durable. It is not an ack — that one still waits for the read flip, which
+    // cannot happen while the first turn holds the gate.
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(2)
+    expect(
+      replies.filter(
+        item => item.type === MessageType.Ack && item.taskId === second.taskId,
+      ),
+    ).toHaveLength(0)
+  }, 20_000)
+
   test('an ACP crash while busy comes back as a failed task.result', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-failed-'))
     previousConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -338,8 +422,12 @@ describe('resident product integration', () => {
       type: MessageType.TaskRequest,
       payload: { ask: 'never finishes' },
     })
-    client.send(request)
-    await client.waitForDrain()
+    // The receipt says "kept", and that is all it ever says now. Everything
+    // that goes wrong after this point has to reach the sender through the
+    // task channel instead — which is the assertion at the end of this test.
+    await expect(client.sendAndWait(request, RECEIPT_BUDGET_MS)).resolves.toBe(
+      ReceiptStatus.Accepted,
+    )
     // The turn is admitted and read — the sender has its ack — but the ACP
     // child hangs before the turn ever terminates.
     await waitUntil(() => replies.some(item => item.type === MessageType.Ack))
@@ -364,6 +452,110 @@ describe('resident product integration', () => {
       (result?.payload as { reason: string }).reason.length,
     ).toBeGreaterThan(0)
   }, 15_000)
+
+  test('a full turn queue refuses before the mailbox write, downgrading for old peers', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-queue-full-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      // Slow, because the admission loop's own polls are refused too once the
+      // queue is full and there is nothing to learn from that noise.
+      pollIntervalMs: 10_000,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    // Filled from the inside: one agent submits one turn at a time, so no
+    // amount of inbound traffic will ever fill a 32-deep queue by itself.
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const occupied = Array.from({ length: LIMITS.maxQueuedTurns + 1 }, () =>
+      resident.gate.run(async () => await held),
+    )
+    expect(resident.gate.saturated).toBe(true)
+
+    // A peer that declared a post-legacy type gets the precise code…
+    const modern: QianmoMessage[] = []
+    const modernClient = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      supportedTypes: [MessageType.Notify],
+      onMessage: message => {
+        modern.push(message)
+      },
+    })
+    clients.push(modernClient)
+    await modernClient.connect()
+    await expect(
+      modernClient.sendAndWait(
+        createMessage({
+          from: 'qianmo://node-a/planner',
+          to: 'qianmo://node-b/reviewer',
+          type: MessageType.TaskRequest,
+          payload: { ask: 'while full' },
+        }),
+        RECEIPT_BUDGET_MS,
+      ),
+    ).rejects.toThrow()
+    expect(modern.at(-1)?.type).toBe(MessageType.Error)
+    expect((modern.at(-1)?.payload as { code: string }).code).toBe(
+      ProtocolErrorCode.E_BUSY,
+    )
+
+    // …and one that declared nothing gets the nearest legacy stand-in, because
+    // a code it cannot parse would make it refuse the whole reply (rule N-1).
+    const legacy: QianmoMessage[] = []
+    const legacyClient = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-c',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        legacy.push(message)
+      },
+    })
+    clients.push(legacyClient)
+    await legacyClient.connect()
+    await expect(
+      legacyClient.sendAndWait(
+        createMessage({
+          from: 'qianmo://node-c/planner',
+          to: 'qianmo://node-b/reviewer',
+          type: MessageType.TaskRequest,
+          payload: { ask: 'while full, older peer' },
+        }),
+        RECEIPT_BUDGET_MS,
+      ),
+    ).rejects.toThrow()
+    expect((legacy.at(-1)?.payload as { code: string }).code).toBe(
+      ProtocolErrorCode.E_RATE_LIMITED,
+    )
+
+    // Rule L-1, the whole reason the check sits where it does: a refusal does
+    // not spend the recipient's inbox quota.
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(0)
+
+    release()
+    await Promise.all(occupied)
+  }, 20_000)
 
   test('reports idle before restarting an ACP generation that crashes while busy', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-activity-crash-'))

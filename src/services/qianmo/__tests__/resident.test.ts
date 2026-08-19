@@ -40,7 +40,32 @@ describe('Qianmo resident host boundary', () => {
     expect(source).toContain('networkEnvelope(messages[0])?.contextId')
     // 会话不再是「每 agent 一条」写死在 binding 上，而是由 manager 按
     // (agent, contextId) 现解析——runtime 收的是 resolver 不是 sessionId。
-    expect(source).toContain('contextId: networkContextId,\n        sessions,')
+    // 两条分开钉：中间可以插别的选项，「不再写死 sessionId」才是要点。
+    expect(source).toContain('contextId: networkContextId,')
+    expect(source).toContain('\n        sessions,\n')
     expect(source).toContain('pendingSessionIds(')
+  })
+
+  test('receipts the durable write and does not await the turn behind it', () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', 'resident.ts'),
+      'utf8',
+    )
+
+    // 钉源码而不是钉行为的理由同上；这里钉的是**顺序**，而顺序正是 H-3 的全部内容。
+    // 行为侧另有集成用例（占门时第二条 5 s 内 Accepted），这条防的是把 await 加回去。
+    const assertAt = source.indexOf('runtime.assertDeliverable(message)')
+    const writeAt = source.indexOf('await this.#adapter.deliver(message')
+    const turnAt = source.indexOf('this.#startTurn(runtime, message)')
+    expect(assertAt).toBeGreaterThan(-1)
+    expect(assertAt).toBeLessThan(writeAt)
+    expect(writeAt).toBeLessThan(turnAt)
+    // 轮询不带 await：回执欠的是「已落盘」，不是「已排上队」。
+    expect(source).toContain('void runtime.deliver(message).catch(')
+    expect(source).not.toContain('await runtime.deliver(')
+    // 协议 ack 的发出点一行未动：仍然只挂在 onRead 上。
+    expect(source).toContain(
+      'onRead: (input, readAt) => this.#ackTask(input, readAt)',
+    )
   })
 })

@@ -4,6 +4,14 @@
 export type ResidentTimingStage =
   | 'acp_ready'
   | 'detected'
+  /**
+   * The turn was handed to the node turn gate.
+   *
+   * There is deliberately no `dequeued` to pair with it: `admitted` already
+   * marks the moment execution began, and a second stage naming the same
+   * instant would only invite the two to drift.
+   */
+  | 'queued'
   | 'admitted'
   | 'read'
   | 'first_content'
@@ -18,6 +26,15 @@ export interface ResidentTimingEvent {
   readonly networkMsgId?: string
   readonly agent?: string
   readonly activityReconnectFactor?: number
+  /**
+   * The position this turn took in the queue when it was handed over — `1`
+   * means it went straight to the front. Recorded with `queued`, absent
+   * everywhere else.
+   *
+   * Observation only: nothing reads it back to decide anything, which is the
+   * point (hermes B8 — instrumenting the queue must not change how it behaves).
+   */
+  readonly queueDepth?: number
   readonly error?: string
 }
 

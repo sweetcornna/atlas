@@ -8,6 +8,7 @@ import {
   createResidentAcpStream,
   FileAdmissionLedger,
   FileResidentSessionStore,
+  NodeTurnExpiredError,
   NodeTurnGate,
   pendingSessionIds,
   ResidentAcpConnection,
@@ -32,6 +33,7 @@ import {
   ProtocolErrorCode,
   createAck,
   createTaskResult,
+  errorCodeForPeer,
   errorReply,
   parseAddress,
   taskExpiresAt,
@@ -370,6 +372,37 @@ export class QianmoResident {
     }
   }
 
+  /**
+   * Take one inbound envelope as far as **durable**, and no further.
+   *
+   * The turn is started but not awaited, and that is the whole of H-3. The
+   * caller of this method is on the transport's receipt path, and a receipt is
+   * a link-layer statement — "I have this envelope and will not lose it". It
+   * was previously withheld until the ACP turn had actually been admitted,
+   * which meant that queueing behind a running turn was paid for out of the
+   * sender's 5 s receipt budget: a busy node looked, to every peer, exactly
+   * like an unreachable one.
+   *
+   * Three things this deliberately does **not** change (design §4.2(b)):
+   *
+   * - **The protocol `ack` is untouched.** It is still sent from `#ackTask`,
+   *   off `onRead`, strictly after the mailbox read flip has been committed.
+   *   AC-2's "ack is later than the durable read" line is about that message,
+   *   not about the receipt below it.
+   * - **The receipt still only leaves after a persistent write.** The mailbox
+   *   write is the last step of `InboundAdapter.deliver` and the only one with
+   *   a persistent side effect, so "receipted" continues to mean "on disk",
+   *   never "seen".
+   * - **Eviction still reads the same way.** A message the base mailbox later
+   *   evicts leaves the sender with a receipt and no ack, and it gives up at
+   *   `deliverTtlMs` — one of the three outcomes protocol.md §4.5 already
+   *   lists, not a fourth.
+   *
+   * What it does cost, stated plainly: a receipt no longer promises the work
+   * was *queued*, only that it was *kept*. A deep queue will accept a run of
+   * messages and then answer them with `E_TASK_TIMEOUT` minutes later. That is
+   * strictly better than today's silence, but it is a different promise.
+   */
   async deliver(
     message: QianmoMessage,
     verified: { readonly capIss?: string } = {},
@@ -377,17 +410,65 @@ export class QianmoResident {
     const runtime = this.#runtime
     if (runtime === null)
       throw new Error('resident ACP connection is not ready')
+    // Ahead of the write, and synchronous: the poll below no longer reports
+    // "this node hosts no such agent" back in time to stop the write.
+    try {
+      runtime.assertDeliverable(message)
+    } catch (error) {
+      throw new ResidentDeliveryError(
+        ProtocolErrorCode.E_UNKNOWN_AGENT,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
     const result = await this.#adapter.deliver(message, verified)
     if (result.status === 'rejected') {
       throw new ResidentDeliveryError(result.code, result.reason)
     }
-    await runtime.deliver(message)
+    this.#startTurn(runtime, message)
     return result
+  }
+
+  /**
+   * Kick the admission loop without waiting for it.
+   *
+   * Failures raised past this point used to become a rejected transport
+   * receipt. They now take the better channel they always had: a terminal
+   * `task.result{failed}`, which carries a `ProtocolErrorCode` where a receipt
+   * carried a truncated reason string. Anything with no task behind it — local
+   * teammate mail — has nowhere to report to and goes to `onError`.
+   */
+  #startTurn(runtime: ResidentNodeRuntime, message: QianmoMessage): void {
+    void runtime.deliver(message).catch(async error => {
+      const task = this.#tasksByMessage.get(message.msgId)
+      if (task === undefined || task.settled) {
+        this.#options.onError?.(error)
+        return
+      }
+      await this.#settleTask(
+        task,
+        createTaskResult(task.envelope, task.envelope.to, {
+          outcome: 'failed',
+          code: this.#failureCodeFor(error, task),
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    })
   }
 
   /** The routing gates in force here, for tests and the AC-3 demo. */
   get router(): NodeRouter {
     return this.#router
+  }
+
+  /**
+   * The node turn gate, for tests that need to observe or occupy it.
+   *
+   * Saturating it is the only way to reach the `E_BUSY` refusal below from
+   * outside: the admission loop submits at most one turn per agent at a time,
+   * so no amount of traffic will fill a 32-deep queue through the front door.
+   */
+  get gate(): NodeTurnGate {
+    return this.#gate
   }
 
   async #receive(
@@ -402,6 +483,27 @@ export class QianmoResident {
     if (!routed.ok) {
       context.channel.send(errorReply(message, routed.code, routed.reason))
       throw new ResidentDeliveryError(routed.code, routed.reason)
+    }
+
+    // Queue governance, in the same place and for the same reason: a node
+    // whose turn queue is full says so *before* it writes, so the refusal does
+    // not cost the recipient an inbox slot.
+    //
+    // The check is a question to the gate rather than a refusal thrown back
+    // out of it. Once the receipt stopped waiting for the poll, a rejection
+    // raised inside the gate could no longer reach this method at all — and
+    // the design asks for both "refuse before the write" and "`#receive` sees
+    // it", which only a look-before-you-write satisfies. The gate keeps its
+    // own bound as well; that one is the hard invariant, this one is what the
+    // sender hears about.
+    if (this.#gate.saturated) {
+      const reason = `resident turn queue is full, ${this.#gate.queued} turns waiting`
+      const code = errorCodeForPeer(
+        ProtocolErrorCode.E_BUSY,
+        context.channel.peerSupportedTypes,
+      )
+      context.channel.send(errorReply(message, code, reason))
+      throw new ResidentDeliveryError(code, reason)
     }
 
     const task =
@@ -553,10 +655,34 @@ export class QianmoResident {
       task,
       createTaskResult(task.envelope, task.envelope.to, {
         outcome: 'failed',
-        code: ProtocolErrorCode.E_TASK_FAILED,
+        code: this.#failureCodeFor(error, task),
         reason,
       }),
     )
+  }
+
+  /**
+   * Which code a turn's failure deserves — and which one this peer can read.
+   *
+   * A turn the gate dropped at the head of the queue did not fail; it ran out
+   * of the deadline the sender itself set, so it is `E_TASK_TIMEOUT` and not
+   * `E_TASK_FAILED`. Everything else, a full queue included, is the general
+   * failure code: `protocol.md` §4.6 closes `task.result{failed}` to exactly
+   * those two codes, and widening that contract is not this change's business
+   * — the refusal a sender acts on (`E_BUSY`) is delivered as an `error`
+   * reply from `#receive`, before any task exists.
+   *
+   * The result still goes through rule N-1 (`errorCodeForPeer`) even though
+   * both codes are legacy today: the rule is "call it wherever a code is put
+   * on the wire", and the point of that is that the next code added does not
+   * have to remember to.
+   */
+  #failureCodeFor(error: unknown, task: ActiveResidentTask): ProtocolErrorCode {
+    const code =
+      error instanceof NodeTurnExpiredError
+        ? ProtocolErrorCode.E_TASK_TIMEOUT
+        : ProtocolErrorCode.E_TASK_FAILED
+    return errorCodeForPeer(code, task.channel.peerSupportedTypes)
   }
 
   async #settleTask(
@@ -761,6 +887,7 @@ export class QianmoResident {
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,
         contextId: networkContextId,
+        deadlineOf: message => this.#taskDeadlineOf(message),
         sessions,
         timings: this.#timings,
         gate: this.#gate,
@@ -821,6 +948,35 @@ export class QianmoResident {
       await stop()
       throw error
     }
+  }
+
+  /**
+   * When the task behind one mailbox entry stops being worth a turn, in this
+   * process's clock.
+   *
+   * Two halves, both load-bearing:
+   *
+   * - The deadline comes off the envelope the adapter already embedded in the
+   *   entry — the same place `networkMessageId` and `networkContextId` read
+   *   from — so nothing new travels for it.
+   * - It is **shifted onto the local clock** before it leaves, exactly the way
+   *   `InboundAdapter` reports its own `deadlineAt`. The freeze-aware clock
+   *   subtracts time the node spent paused, so comparing a raw envelope
+   *   deadline against `Date.now()` would declare every in-flight task dead in
+   *   the same millisecond a suspended node came back (protocol.md §5.3).
+   */
+  #taskDeadlineOf(message: ResidentMailboxMessage): number | undefined {
+    const envelope = networkEnvelope(message)
+    if (envelope === undefined) return undefined
+    const createdAt = envelope.createdAt
+    if (typeof createdAt !== 'number' || typeof envelope.taskTtlMs !== 'number')
+      return undefined
+    // The wrapper holds a serialized envelope, so this is a re-typing of what
+    // it already is rather than a claim about it — and the two fields
+    // `taskExpiresAt` reads have just been checked. Going through the protocol
+    // helper keeps the deadline formula spelled once.
+    const expiresAt = taskExpiresAt(envelope as unknown as QianmoMessage)
+    return expiresAt + Date.now() - this.#deadlineClock.nowFor(createdAt)
   }
 
   #ledger(agent: string): FileAdmissionLedger {
