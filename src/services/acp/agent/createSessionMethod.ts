@@ -41,6 +41,11 @@ import {
 } from './permissionMode.js'
 import { buildConfigOptions } from './configOptions.js'
 import { readClientCapabilities } from './internalAccessors.js'
+import { residentToolSurface } from '../../qianmo/notifyTool.js'
+import {
+  ACP_NOTIFY_METHOD,
+  parseNotifyVerdict,
+} from '../../qianmo/notifyWire.js'
 
 /**
  * Resolve the effective `permissions.defaultMode` setting by walking the
@@ -105,7 +110,7 @@ async function createSession(
   try {
     // Build tools with a permissive permission context.
     const permissionContext = getEmptyToolPermissionContext()
-    const tools: Tools = getTools(permissionContext)
+    const baseTools: Tools = getTools(permissionContext)
 
     // Parse permission mode from _meta (passed by the ACP client) or settings.
     const hasMetaPermissionMode = hasOwnField(meta, 'permissionMode')
@@ -146,8 +151,32 @@ async function createSession(
           .isBypassPermissionsModeAvailable ?? false,
     )
 
-    // Parse MCP servers from ACP params
-    // MCP server config is handled separately in the tools system
+    // Qianmo resident sessions, and only those, are handed one extra tool:
+    // `qianmo_notify`. Everything else about the tool set is unchanged, and a
+    // non-resident ACP session takes the identical `baseTools` array it always
+    // did — the gate is the `_meta.qianmo.resident` flag the resident host
+    // already sets on `session/new`.
+    //
+    // Why the tool is injected here rather than declared as an MCP server the
+    // way the design sketched: `params.mcpServers` reaches only
+    // `computeSessionFingerprint` below, and `mcpClients` is handed to the
+    // query engine as `[]` unconditionally, so an MCP server declared on
+    // `session/new` has never produced a tool in this build. See
+    // `src/services/qianmo/notifyTool.ts` for the rest of that argument.
+    const tools: Tools = isQianmoResident
+      ? [
+          ...baseTools,
+          ...residentToolSurface({
+            sessionId,
+            announce: async request =>
+              parseNotifyVerdict(
+                await conn.extMethod(ACP_NOTIFY_METHOD, {
+                  ...request,
+                }),
+              ),
+          }),
+        ]
+      : baseTools
 
     // bypassPermissions is exposed to ACP clients whenever the process itself allows it
     // (non-root or sandbox). The previous additional opt-in gate made the mode invisible
