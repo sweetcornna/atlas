@@ -85,11 +85,11 @@ resolve = 本次 fire 成功（失败计数清零），throw = 失败（退避�
 
 ## 5. 边界与已知未做
 
-- **本包只到「派发」为止。**`notify` 端到端（agent 工具 → 中枢 → 审计链）、MCP 工具面只含 `qianmo_notify` 的结构性断言（E4）、出站滑动窗口限流、节点零拨号的全仓扫描断言，都属 P13.6 的**宿主接线**那一半，不在本包。
+- **本包只到「派发」为止。**`notify` 端到端（agent 工具 → 中枢 → 审计链）、MCP 工具面只含 `qianmo_notify` 的结构性断言（E4）、出站滑动窗口限流、节点零拨号的扫描断言，都属 P13.6 的**宿主接线**那一半，已在同批次落地但不在本包：见 `packages/resident/src/notify.ts` 与 README §3.4、`src/services/qianmo/notifyTool.ts`、`src/cli/handlers/watch.ts`。
 - **`notifyPolicy` 本包不解读**，只做校验与透传。
 - **没有优先级轴**，作业之间按注册顺序遍历。与 `NodeTurnGate` 同一个理由（README of `@qianmo/resident` §3.2）：值守作业与人工请求谁更急是产品判断，M1 没有判据要求它。
 - **一个真实值守作业连续跑 ≥ 24 h 的留档**属 P13.6 DoD，产物不在包内。
-- 本包尚未被根 `package.json` 依赖，因此 `bun install` 不会在 `node_modules/@qianmo/` 下建软链——宿主接线那一笔加上 `"@qianmo/scheduler": "workspace:*"` 之后即可。包内测试与 typecheck 不受影响（它们只需要 `@qianmo/protocol`）。
+- **控制台没有作业页与通知页。**本批次的作业出口是 `qm watch`（`docs/dev/console.md` §10）加审计链的 `source=scheduler`；`packages/console` 一行没动，`SchedulerPort` / `NotifyPort` 是遗留项。
 
 ## 6. 怎么跑测试
 
