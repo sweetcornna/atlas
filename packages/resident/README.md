@@ -28,8 +28,10 @@ flowchart TD
 
   turnport["acp-turn.ts · AcpResidentTurnPort<br/>isAccepted / execute<br/>qianmo/input-status · input-accepted · session-activity"]
   client["acp-client.ts · ResidentAcpConnection<br/>ClientSideConnection + ndJsonStream"]
-  sessions["sessions.ts · ResidentSessionManager<br/>首次 newSession，重启后 resumeSession"]
-  store["session-store.ts · FileResidentSessionStore<br/>原子落盘、损坏即 fail closed"]
+  sessions["sessions.ts · ResidentSessionManager<br/>start 只开 DEFAULT_CONTEXT，其余懒建<br/>sessionFor 取租约、release 还租约"]
+  key["session-key.ts · sessionKeyOf<br/>(agent, contextId) 唯一构造点"]
+  gc["session-gc.ts · selectEvictableSessions<br/>LRU + 空闲 TTL，三类永不驱逐"]
+  store["session-store.ts · FileResidentSessionStore<br/>原子落盘、损坏即 fail closed<br/>读旧格式、越上限即抛不截断"]
   supervisor["supervisor.ts · ResidentSupervisor<br/>指数退避重启 · 快速连挂即 parking"]
   activity["activity.ts · ResidentActivityReporter<br/>busy/idle 经 transport 报给宿主 keepalive"]
 
@@ -50,6 +52,11 @@ flowchart TD
   turnport --> client
   client --> sessions
   sessions --> store
+  sessions --> key
+  sessions --> gc
+  store --> key
+  gc --> key
+  runtime -->|"resolveSession(agent, contextId)"| sessions
   supervisor --> client
   client <--> acp
   activity --> host
@@ -70,7 +77,9 @@ flowchart TD
 - **`ResidentMailboxPort` / `ResidentTurnPort` / `ResidentTurnInput` / `ResidentTurnResult` / `ResidentMailboxMessage`** —— 两个端口，让整包不依赖任何具体信箱或 ACP 实现。
 - **`AcpResidentTurnPort` / `AcpPromptConnection` / `ACP_INPUT_ACCEPTED_METHOD` / `ACP_INPUT_STATUS_METHOD` / `ACP_SESSION_ACTIVITY_METHOD`** —— `ResidentTurnPort` 的 ACP 实现与三个扩展方法名。
 - **`ResidentAcpConnection` / `createResidentAcpStream` / `ResidentAcpClientOptions` / `ResidentActivitySink`** —— ACP 客户端侧连接。
-- **`ResidentSessionManager` / `ResidentAgentSession` / `ResidentSessionConnection`**、**`FileResidentSessionStore` / `MemoryResidentSessionStore` / `ResidentSessionStore`** —— 会话映射与其落盘。
+- **`ResidentSessionManager` / `ResidentSessionResolver` / `ResidentAgentSession` / `ResidentSessionConnection` / `ResidentSessionManagerOptions` / `pendingSessionIds`**、**`FileResidentSessionStore` / `MemoryResidentSessionStore` / `ResidentSessionStore` / `ResidentSessionRecord` / `ResidentSessionStoreOptions` / `MAX_STORED_RESIDENT_SESSIONS`** —— `(agent, contextId) → sessionId` 的映射、落盘与租约。
+- **`sessionKeyOf` / `agentOfSessionKey` / `contextOfSessionKey` / `isSessionKey` / `DEFAULT_CONTEXT` / `SESSION_KEY_SEPARATOR`** —— 会话键的**唯一**构造与解析点。
+- **`selectEvictableSessions` / `assertGcPolicy` / `DEFAULT_RESIDENT_SESSION_GC_POLICY` / `ResidentSessionGcPolicy` / `ResidentSessionGcInput`** —— 会话 GC 的纯选择器与它的显式常量。
 - **`ResidentSupervisor` / `ResidentChildConnection` / `ResidentSupervisorOptions`** —— ACP 子进程监督。
 - **`ResidentDeadlineClock`** —— 解冻感知的截止时钟，导出 `nowFor(createdAt)`。
 - **`ResidentTimingRecorder` / `ResidentTimingStage` / `ResidentTimingEvent` / `ResidentTimingSink` / `DEFAULT_RESIDENT_TIMING_CAPACITY`** —— 全链路埋点（P4.1 的独立核验取的就是它）。
@@ -90,6 +99,23 @@ flowchart TD
 | 5 | **定时器从完成处重排、不补跑漏掉的 tick；截止时间按冻结重叠段扣除** | 冻结期间定时器不补跑（E4），补跑会在解冻瞬间打出一串堆积调用；不扣冻结段则所有「距上次多久」的判据会在同一毫秒一起越阈 | `test/poller.test.ts`「reschedules after each completed poll instead of replaying missed ticks」；`test/deadline-clock.test.ts`「the first deadline query after thaw observes the freeze」「excludes only the overlapping parts of multiple freezes」 |
 
 另有两条有专门用例、容易被「优化」掉的性质：**一个 turn 的正文不能漏进下一个**（`test/acp-turn.test.ts`），**未知的受理通知不能翻转任何信箱条目**（同上）。
+
+### 3.1 多会话隔离与会话 GC 的不变式（P13.4）
+
+设计出处：`docs/dev/resident-botization.md` §4.3（hermes C1 / C5 / C6，关 G-5 / G-6，缓解 G-9）。
+
+| # | 不变式 | 改坏了会怎样 | 钉住它的测试 |
+| --- | --- | --- | --- |
+| 6 | **`sessionKeyOf(agent, contextId)` 是全仓唯一的键构造点**（解析同理，`agentOfSessionKey` / `contextOfSessionKey`） | 第二处拼法不会报错，它只是把一个请求者的 turn 悄悄送进另一个请求者的历史——这正是本模块存在的理由 | `test/session-key.test.ts`「sessionKeyOf is the only place in the repository that builds the key」（含正向对照：先证明扫描规则确实认得那三种手拼形状，再断言全仓零命中） |
+| 7 | **无 `contextId` 一律回退 `DEFAULT_CONTEXT`**，且此时行为与多会话之前逐字一致 | 不回退＝所有不带 contextId 的远端请求者塌缩成一条上下文，也就是改造前的状态 | `test/sessions.test.ts`「no contextId lands in the default context, exactly as before」；`test/multi-session.test.ts` 里 `m4` 那条 |
+| 8 | **三类永不驱逐**：① 有在途 turn 的（`sessionFor` 取的租约，`release` 还）② 每 agent 最近 N 条（前缀缓存最值钱）③ **账本还有 pending 记录的**（第③条是阡陌特有、最容易漏） | ③ 被漏掉＝把一条已经承诺过要 durable 处理的消息连同它的会话一起丢掉 | `test/sessions.test.ts` 三条负向用例各一；`test/session-gc.test.ts` 的 LRU / TTL / 每 agent 计数 |
+| 9 | **`session-store` 到上限先驱逐后写，绝不静默截断**：策略层（manager）先 GC 腾位，存储层越限直接抛 | 静默丢一条映射＝一条活着的 ACP 会话从此没有任何东西指向它，而且没有任何地方会报出来（G-6） | `test/session-store.test.ts`「refuses to grow past the ceiling instead of dropping an entry to fit」；`test/sessions.test.ts`「evicts to make room before writing a new context, never truncating」 |
+| 10 | **旧格式 `sessions.json`（`{agent: sessionId}`）必须读得动**，并抬到 `sessionKeyOf(agent, DEFAULT_CONTEXT)` | 拒读＝升级当场丢掉全部会话，这比 fail-closed 想防的那个失败更糟 | `test/session-store.test.ts`「reads the legacy one-session-per-agent file and lifts it onto the default context」 |
+
+两条容易误读的地方：
+
+- **驱逐 = 从映射表删除 + 不再 resume，不删 ACP 侧会话数据**——那是基座的东西，且 `--resume` 还要用。
+- **GC 的三个数值全是显式常量**（`DEFAULT_RESIDENT_SESSION_GC_POLICY`），**不做任何 `auto` 推导**（hermes C6：`memory_high_mb: auto` 在 1.9 GB 机上算出 1278 MB，而四台节点里三台是无 sudo 小 VPS）。`lastUsedAt` 的写盘按 60 s 合并，因为它唯一的消费者是一把以小时计的 LRU，每轮 fsync 一次是纯写放大。
 
 ## 4. 与基座的关系
 
@@ -113,7 +139,9 @@ flowchart TD
 bun test packages/resident
 ```
 
-实测：**47 pass / 0 fail，10 个测试文件**（`acp-turn` / `deadline-clock` / `ledger` / `poller` / `reader` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`。
+实测：**75 pass / 0 fail，13 个测试文件**（`acp-turn` / `deadline-clock` / `ledger` / `multi-session` / `poller` / `reader` / `session-gc` / `session-key` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`。
+
+`session-key.test.ts` 会扫全仓源码（`src/**` 与 `packages/*/src|test/**`，跳过 `node_modules` 与 `packages/@ant`），约 3700 个文件、几百毫秒。
 
 ## 7. P9.3 双人签字
 
