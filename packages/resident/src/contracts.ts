@@ -12,6 +12,19 @@ export interface ResidentMailboxMessage {
   readonly summary?: string
 }
 
+/**
+ * Which requester a prompt is being assembled for (design §4.4).
+ *
+ * The two halves stay apart. `sessionKeyOf` is the only place in the repository
+ * allowed to join them into a key (§4.3 invariant 7), and a scope that carried
+ * the joined form would be a second such place by the back door.
+ */
+export interface ResidentPromptScope {
+  readonly agent: string
+  /** Absent means the requester sent none; it falls back to `DEFAULT_CONTEXT`. */
+  readonly contextId: string | undefined
+}
+
 export interface DetectedAdmissionRecord {
   readonly kind: 'detected'
   readonly messageId: string

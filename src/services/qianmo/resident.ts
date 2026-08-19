@@ -17,6 +17,7 @@ import {
   ResidentDeadlineClock,
   ResidentEstop,
   ResidentLifecycleSentinel,
+  ResidentMemorySidecar,
   ResidentNodeRuntime,
   ResidentNotifier,
   ResidentPoller,
@@ -32,6 +33,7 @@ import type {
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentPriorLife,
+  ResidentPromptScope,
   ResidentTurnInput,
   ResidentTurnResult,
 } from '@qianmo/resident'
@@ -52,6 +54,7 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
+import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
   NodeRouter,
   type CapabilityGate,
@@ -149,6 +152,17 @@ interface QianmoResidentOptions {
    * watch job produces, and it is not a refusal.
    */
   readonly notifyAudit?: ResidentNotifyAuditSink
+  /**
+   * Where this node's memory store lives (design §4.4). Defaults to
+   * {@link defaultMemoryRoot}, which is derived from the identity config root.
+   *
+   * An option rather than a constant only so a test can point at a temporary
+   * directory. It is **not** a discovery path: the value is required to be
+   * absolute (see `assertNodeOwnedMemoryRoot`), because a relative root would
+   * resolve against the agent's working tree and let a `memory/` directory
+   * committed to a repository stand in for this node's memory (hermes F9).
+   */
+  readonly memoryRoot?: string
   readonly onError?: (error: unknown) => void
   readonly onReady?: (address: {
     readonly port?: number
@@ -420,6 +434,8 @@ export class QianmoResident {
   readonly #settling = new Set<Promise<void>>()
   /** One scheduler per agent workspace; empty when backups are not configured. */
   readonly #backups = new Map<string, BackupScheduler>()
+  /** Memory recall for the user-message sidecar (design §4.4). */
+  readonly #memory: ResidentMemorySidecar
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -431,6 +447,12 @@ export class QianmoResident {
       ...(options.notifyAudit === undefined
         ? {}
         : { audit: options.notifyAudit }),
+    })
+    this.#memory = new ResidentMemorySidecar({
+      store: new FileMemoryStore({
+        root: options.memoryRoot ?? defaultMemoryRoot(),
+      }),
+      onError: error => this.#options.onError?.(error),
     })
     this.#lifecycle = new ResidentLifecycleSentinel({
       path: occConfigPath('resident', 'lifecycle.json'),
@@ -756,6 +778,33 @@ export class QianmoResident {
    * stronger promise should own the task lifecycle and await
    * `BackupScheduler.beforeTask` itself, the way a scripted runner can.
    */
+  /**
+   * Assemble the user message one turn runs on.
+   *
+   * Two parts, in this order and only this order: the base's own rendering of
+   * the mailbox batch, then the memory sidecar (design §4.4). The memory block
+   * sits **after** the turn's content and inside the same user message — never
+   * in the system prompt, which would rebuild the cached prefix on every wake
+   * and buy nothing for it.
+   *
+   * This function runs **once per turn**. The reader writes its return value
+   * into the admission ledger and every later step of the turn — including a
+   * replay after a crash — reads that stored string back. That is what makes
+   * the memory block a frozen snapshot rather than a live read, and it is the
+   * property `packages/resident/src/memory-sidecar.ts` explains at length.
+   */
+  #assemblePrompt(
+    messages: readonly ResidentMailboxMessage[],
+    scope: ResidentPromptScope,
+  ): string {
+    const base = formatTeammateMessages([...messages])
+    // The batch text doubles as the ranking question. It never filters —
+    // a watch job that words things differently from the entry it needs still
+    // sees that entry, which is the point of full injection.
+    const memory = this.#memory.render(scope, base)
+    return memory.length === 0 ? base : `${base}\n\n${memory}`
+  }
+
   #snapshotBeforeTask(envelope: QianmoMessage): void {
     const agent = parseAddress(envelope.to)?.agent
     if (agent === undefined) return
@@ -1327,7 +1376,8 @@ export class QianmoResident {
         team: this.#options.team,
         mailbox: this.#mailbox,
         turn: this.#turn,
-        formatPrompt: messages => formatTeammateMessages([...messages]),
+        formatPrompt: (messages, scope) =>
+          this.#assemblePrompt(messages, scope),
         accepts: message => !isStructuredProtocolMessage(message.text),
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,

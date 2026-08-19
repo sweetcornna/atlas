@@ -7,6 +7,7 @@ import type {
   AdmissionLedger,
   ResidentMailboxMessage,
   ResidentMailboxPort,
+  ResidentPromptScope,
   ResidentTurnInput,
   ResidentTurnPort,
   ResidentTurnResult,
@@ -36,6 +37,7 @@ export class ResidentNodeRuntime {
   readonly #turn: ResidentTurnPort
   readonly #formatPrompt: (
     messages: readonly ResidentMailboxMessage[],
+    scope: ResidentPromptScope,
   ) => string
   readonly #gate: NodeTurnGate
   readonly #readers = new Map<string, ResidentMailboxReader>()
@@ -45,8 +47,20 @@ export class ResidentNodeRuntime {
     readonly team: string
     readonly mailbox: ResidentMailboxPort
     readonly turn: ResidentTurnPort
+    /**
+     * Assemble the turn's user message.
+     *
+     * Takes the scope as well as the batch because the memory sidecar (§4.4)
+     * is partitioned by `(agent, contextId)` and neither half is recoverable
+     * from the messages alone — the agent is a property of which reader this
+     * is, and the context is read out of the envelope by `contextId` below.
+     * Handing both in here keeps the derivation in one place instead of
+     * inviting the host to re-derive the context a second, subtly different
+     * way.
+     */
     readonly formatPrompt: (
       messages: readonly ResidentMailboxMessage[],
+      scope: ResidentPromptScope,
     ) => string
     readonly accepts?: (message: ResidentMailboxMessage) => boolean
     readonly selectSnapshot?: (
@@ -137,7 +151,11 @@ export class ResidentNodeRuntime {
           mailbox: this.#mailbox,
           turn: this.#turn,
           ledger: binding.ledger,
-          formatPrompt: this.#formatPrompt,
+          formatPrompt: messages =>
+            this.#formatPrompt(messages, {
+              agent: binding.agent,
+              contextId: options.contextId?.(messages),
+            }),
           ...(options.accepts === undefined
             ? {}
             : { accepts: options.accepts }),

@@ -34,6 +34,7 @@ export type {
   RecoveringAdmissionRecord,
   ResidentMailboxMessage,
   ResidentMailboxPort,
+  ResidentPromptScope,
   ResidentTurnInput,
   ResidentTurnPort,
   ResidentTurnResult,
@@ -146,3 +147,10 @@ export {
   type ResidentNotifyAuditSink,
   type ResidentNotifyEvent,
 } from './notify.js'
+export {
+  INJECTION_BUDGET,
+  ResidentMemorySidecar,
+  assertNodeOwnedMemoryRoot,
+  residentRecallScope,
+  type ResidentMemorySidecarOptions,
+} from './memory-sidecar.js'
