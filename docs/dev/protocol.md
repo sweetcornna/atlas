@@ -293,19 +293,27 @@ ack 从发出到回到请求方，链路逐段如下（**数值一律指向出�
 
 ### 4.6 `task.result` 的 payload（P4.1 落地契约）
 
-`task.result` 是任务的**唯一终态载体**（§4.3）。payload 是一个**封闭联合**，两支各自字段封闭，运行时逐支精确校验（多一个键、少一个键、两支字段混用，一律判非法）：
+`task.result` 是任务的**唯一终态载体**（§4.3）。payload 是一个**封闭联合**，两支各自必填字段封闭，运行时逐支精确校验（少一个必填键、两支字段混用、夹带任何未列出的键，一律判非法）：
 
 | 分支 | 字段 | 含义 |
 |---|---|---|
-| 成功 | `{ outcome: 'completed', content, completedAt }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
-| 失败 | `{ outcome: 'failed', code, reason, completedAt }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+| 成功 | `{ outcome: 'completed', content, completedAt, redelivered? }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
+| 失败 | `{ outcome: 'failed', code, reason, completedAt, redelivered? }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+
+**`redelivered` 是唯一的可选字段（P13.5 新增），它把校验形状从「精确键数」改成「必填子集 + 白名单」。**这条改动有三处必须一起记住，否则会被「顺手统一」掉：
+
+- **只接受 `true`，不接受 `false`**——与 `notify` 的同名字段同一条理由（§14.3）：`false` 与「不存在」是同一个事实，一个事实两种编码 = 同一条结果有两个 `fingerprint`。
+- **白名单只有这一个键**，未列出的键仍然判非法。放宽的是「有没有可选字段」，不是「payload 变开放」——对端仍然塞不进业务字段。
+- **发送侧按规则 N-1 降级**（§11.3）：只有**声明了后 legacy 类型**的对端才会收到这个字段。这是把 N-1 的纪律从「错误码」推广到「字段」，理由与 §11.3 那个陷阱逐字相同——比该字段更旧的节点用**精确键数**校验 `task.result`，收到它不会退化成「看不懂这个标记但收下结果」，而是**整条拒收**。降级后对端照样拿到答案，也照样有 `taskId` 判重（规则 C-1）。
+
+**为什么再投必须是新信封**：台账驱动的再投走「新 `msgId` + 新 `createdAt` + 同 `taskId`」，不是重传原信封——重启走完之后原信封的 `deliverTtlMs` 早已过期，原样重发只会换回一个 `E_TTL_EXPIRED`（同 §14.4③）。因此两级去重都不会静默吸收它，这正是本字段存在的意义：**重复是可见的，不是无声的。**
 
 - **失败码只用两个**：执行以失败告终用 `E_TASK_FAILED`（含 ACP turn 抛错、被取消、ACP 子进程关闭时仍有在飞任务），任务时限到期用 `E_TASK_TIMEOUT`。
 - **`reason` 不承担原因分类**——原因级 `diagnosis`（能不能重试、该谁修）归 P5.1（S-1），本文范围内不引入，也不许用 `reason` 的字符串格式偷偷承担它。
 - **不夹带 ID**：`taskId` 在信封上（规则 C-1），payload 不重复一份，与 K-1 同款裁定（§4.2）。
 - `completedAt` 是处理方本地时钟。
 
-落地见 `packages/protocol/src/message.ts` 的 `TaskResultPayload` / `createTaskResult` / `isTaskResultPayload`；负向用例（混用字段、夹带 ID、未知错误码）在 `packages/protocol/test/message.test.ts`。
+落地见 `packages/protocol/src/message.ts` 的 `TaskResultPayload` / `createTaskResult` / `isTaskResultPayload`；负向用例（混用字段、夹带 ID、未知错误码、`redelivered: false`、`redelivered` 之外的额外键）在 `packages/protocol/test/message.test.ts`。台账与再投的落地在 `packages/resident/src/delivery-ledger.ts` 与 `src/services/qianmo/resident.ts` 的 `#redeliverOwed`。
 
 ---
 
@@ -935,10 +943,11 @@ interface NotifyPayload {
 }
 ```
 
-**校验规则：白名单 + 必填子集，不是精确键数**——这是与 `ack`（K-1）和 `task.result` 的一处**刻意分歧**，必须写在这里，否则将来会有人「顺手统一」回精确键数，而那会让每一条带可选字段的 `notify` 被判非法。
+**校验规则：白名单 + 必填子集，不是精确键数**——这是与 `ack`（K-1）的一处**刻意分歧**，必须写在这里，否则将来会有人「顺手统一」回精确键数，而那会让每一条带可选字段的 `notify` 被判非法。
 
-- 精确键数（`hasExactKeys`）对**没有可选字段**的 payload 是对的：它表达「本版本看不懂的字段就是没人校验过的字段」。
+- 精确键数（`hasExactKeys`）对**没有可选字段**的 payload 是对的：它表达「本版本看不懂的字段就是没人校验过的字段」。`ack` 至今仍是这一类。
 - `NotifyPayload` 有四个可选字段，精确键数**表达不了**它。而精确键数额外附带的那个性质——「两端版本必须一致」——对本类型是负资产：§14.6 能力发现的全部意义就是让新发送方与旧接收方仍能共存。
+- **`task.result` 原本与 `ack` 同列，P13.5 给它加了 `redelivered` 之后改成了同一种形状**（§4.6）——一个可选字段也已经是精确键数表达不了的了。它的白名单只有一项，与这里的四项不同，但规则是同一条。
 - 白名单保住了真正要保的那条性质：**白名单之外的键仍然是拒收**，远端照样夹带不进业务字段。
 
 两处易错的细节，都已写进实现：

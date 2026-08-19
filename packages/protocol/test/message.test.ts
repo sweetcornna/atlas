@@ -609,6 +609,75 @@ describe('task result', () => {
       }),
     ).toBe(false)
   })
+
+  describe('the redelivery marker (P13.5)', () => {
+    test('is accepted on both branches, and is optional', () => {
+      expect(
+        isTaskResultPayload({
+          outcome: 'completed',
+          content: 'done',
+          completedAt: 3_000,
+          redelivered: true,
+        }),
+      ).toBe(true)
+      expect(
+        isTaskResultPayload({
+          outcome: 'failed',
+          code: ProtocolErrorCode.E_TASK_FAILED,
+          reason: 'model stopped',
+          completedAt: 3_000,
+          redelivered: true,
+        }),
+      ).toBe(true)
+    })
+
+    test('is true or absent, never false', () => {
+      // `false` and "absent" are the same fact, and one fact with two
+      // encodings fingerprints as two different messages — which defeats the
+      // honesty the marker exists for. Same rule `notify` already follows.
+      for (const value of [false, 1, 'true', null]) {
+        expect(
+          isTaskResultPayload({
+            outcome: 'completed',
+            content: 'done',
+            completedAt: 3_000,
+            redelivered: value,
+          }),
+        ).toBe(false)
+      }
+    })
+
+    test('is the only extra key the payload will take', () => {
+      // Widening by one field must not turn a closed payload into an open
+      // one: a peer still cannot smuggle business fields into a terminal
+      // result.
+      expect(
+        isTaskResultPayload({
+          outcome: 'completed',
+          content: 'done',
+          completedAt: 3_000,
+          redelivered: true,
+          attempt: 2,
+        }),
+      ).toBe(false)
+    })
+
+    test('carries through the factory when asked for', () => {
+      const result = createTaskResult(
+        request,
+        TO,
+        { outcome: 'completed', content: 'done', redelivered: true },
+        3_000,
+      )
+      expect(result.payload).toEqual({
+        outcome: 'completed',
+        content: 'done',
+        completedAt: 3_000,
+        redelivered: true,
+      })
+      expect(isTaskResultPayload(result.payload)).toBe(true)
+    })
+  })
 })
 
 describe('errorReply', () => {

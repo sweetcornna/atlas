@@ -472,27 +472,54 @@ export function isAckPayload(value: unknown): value is AckPayload {
   )
 }
 
-/** Terminal result of a `task.request`, field-closed in both branches. */
+/**
+ * Marker carried by a reply the sender's delivery ledger is re-sending.
+ *
+ * `true` or absent, never `false`, for the reason spelled out on
+ * {@link NotifyPayload.redelivered}: two encodings of one fact are two
+ * fingerprints for one message, which defeats the honesty the flag exists for.
+ *
+ * A redelivery is a **new envelope** — new `msgId`, new `createdAt`, same
+ * `taskId` — because retransmitting the original after its `deliverTtlMs` has
+ * passed earns an `E_TTL_EXPIRED` and nothing else (protocol.md §14.4③). So
+ * neither level of the receiver's dedup absorbs it silently, which is the
+ * point: the duplicate is visible, and `taskId` is what the receiver suppresses
+ * it by.
+ */
+type Redelivered = true
+
+/**
+ * Terminal result of a `task.request`.
+ *
+ * Closed apart from {@link Redelivered}, which is optional in both branches.
+ */
 export type TaskResultPayload =
   | {
       readonly outcome: 'completed'
       readonly content: string
       readonly completedAt: number
+      readonly redelivered?: Redelivered
     }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
       readonly completedAt: number
+      readonly redelivered?: Redelivered
     }
 
 /** Input accepted by {@link createTaskResult}; the factory supplies the clock. */
 export type TaskResultInput =
-  | { readonly outcome: 'completed'; readonly content: string }
+  | {
+      readonly outcome: 'completed'
+      readonly content: string
+      readonly redelivered?: Redelivered
+    }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
+      readonly redelivered?: Redelivered
     }
 
 const TASK_RESULT_COMPLETED_KEYS: readonly string[] = [
@@ -506,6 +533,16 @@ const TASK_RESULT_FAILED_KEYS: readonly string[] = [
   'reason',
   'completedAt',
 ]
+/**
+ * The only key a `task.result` may carry beyond its branch's required set.
+ *
+ * Kept as a one-element whitelist rather than folded into the two arrays above
+ * so the shape stays readable as what it is: a closed payload with a single
+ * documented exception, not a payload that has started accepting extras.
+ */
+const TASK_RESULT_OPTIONAL_KEYS: ReadonlySet<string> = new Set<string>([
+  'redelivered',
+])
 const PROTOCOL_ERROR_CODES: ReadonlySet<string> = new Set<string>(
   Object.values(ProtocolErrorCode),
 )
@@ -520,7 +557,28 @@ function hasExactKeys(
   )
 }
 
-/** True when `value` is a closed successful or failed task result. */
+/**
+ * Every key present is either required by the branch or the one permitted
+ * optional, and every required key is present.
+ *
+ * This is the exact-count check the two branches used to get, widened by
+ * exactly one field. The property that mattered — a peer cannot smuggle
+ * business fields into a terminal result — is unchanged, because an unlisted
+ * key is still a rejection.
+ */
+function hasTaskResultKeys(
+  payload: Record<string, unknown>,
+  required: readonly string[],
+): boolean {
+  const keys = Object.keys(payload)
+  return (
+    keys.every(
+      key => required.includes(key) || TASK_RESULT_OPTIONAL_KEYS.has(key),
+    ) && required.every(key => keys.includes(key))
+  )
+}
+
+/** True when `value` is a well-formed successful or failed task result. */
 export function isTaskResultPayload(
   value: unknown,
 ): value is TaskResultPayload {
@@ -536,15 +594,17 @@ export function isTaskResultPayload(
   ) {
     return false
   }
+  // Only `true`. See {@link Redelivered}.
+  if ('redelivered' in payload && payload['redelivered'] !== true) return false
   if (payload['outcome'] === 'completed') {
     return (
-      hasExactKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
+      hasTaskResultKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
       typeof payload['content'] === 'string'
     )
   }
   if (payload['outcome'] === 'failed') {
     return (
-      hasExactKeys(payload, TASK_RESULT_FAILED_KEYS) &&
+      hasTaskResultKeys(payload, TASK_RESULT_FAILED_KEYS) &&
       typeof payload['code'] === 'string' &&
       PROTOCOL_ERROR_CODES.has(payload['code']) &&
       typeof payload['reason'] === 'string' &&
@@ -694,16 +754,20 @@ const NOTIFY_SEVERITY_SET: ReadonlySet<string> = new Set<string>(
 /**
  * True when `value` is a well-formed {@link NotifyPayload}.
  *
- * ## Why this one is a whitelist where `ack` and `task.result` count keys
+ * ## Why this one is a whitelist where `ack` counts keys
  *
- * `isAckPayload` and `isTaskResultPayload` demand an *exact* key set, which is
- * the right shape for a payload that has no optional fields: it says "a field
- * this version does not understand is a field nobody verified". `notify` has
- * four optional fields, so an exact count cannot express it — and the property
- * exact counting buys beyond a whitelist is "both ends must be the same
- * version", which for this type is a liability rather than an asset: the whole
- * point of §14.6's capability discovery is that a newer sender and an older
- * receiver stay interoperable.
+ * `isAckPayload` demands an *exact* key set, which is the right shape for a
+ * payload that has no optional fields: it says "a field this version does not
+ * understand is a field nobody verified". `notify` has four optional fields, so
+ * an exact count cannot express it — and the property exact counting buys
+ * beyond a whitelist is "both ends must be the same version", which for this
+ * type is a liability rather than an asset: the whole point of §14.6's
+ * capability discovery is that a newer sender and an older receiver stay
+ * interoperable.
+ *
+ * `isTaskResultPayload` sat with `ack` until P13.5 gave it {@link Redelivered},
+ * and it now uses the same required-plus-whitelist shape for the same reason —
+ * one optional field is still one more than an exact count can express.
  *
  * A whitelist keeps the property that actually matters — a remote peer cannot
  * smuggle business fields in — because an unlisted key is still a rejection.
