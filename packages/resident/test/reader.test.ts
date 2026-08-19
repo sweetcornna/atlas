@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -151,7 +151,7 @@ function reader(
   return new ResidentMailboxReader({
     agent: AGENT,
     team: TEAM,
-    sessionId: SESSION_ID,
+    resolveSession: () => SESSION_ID,
     mailbox,
     turn,
     ledger,
@@ -417,6 +417,80 @@ describe('resident mailbox admission', () => {
     expect(errors).toEqual([failure])
     expect(results).toEqual([])
     expect(mailbox.messages[0]?.read).toBe(true)
+  })
+
+  test('the resolved session is what the ledger records, so recovery resumes into it', async () => {
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+    const mailbox = new MemoryMailbox([message()])
+    const turn = new MemoryTurn()
+    const seen: (readonly ResidentMailboxMessage[])[] = []
+
+    await reader(mailbox, turn, {
+      resolveSession: snapshot => {
+        seen.push(snapshot)
+        return other
+      },
+    }).poll()
+
+    expect(seen).toEqual([[message()]])
+    expect(turn.executeCalls[0]?.sessionId).toBe(other)
+    // Crash recovery reads this field verbatim off the ledger, so the resolved
+    // value has to be what was durably written — not something a restart would
+    // have to resolve a second time (and possibly differently).
+    const detected = readFileSync(join(directory, 'admission.ndjson'), 'utf8')
+      .split('\n')
+      .filter(line => line !== '')
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(entry => entry.kind === 'detected')
+    expect(detected?.sessionId).toBe(other)
+  })
+
+  test('the session release fires once, after the turn settles rather than at admission', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    let releaseTurn!: () => void
+    const turnFinished = new Promise<void>(resolve => {
+      releaseTurn = resolve
+    })
+    const turn: ResidentTurnPort = {
+      isAccepted: async () => false,
+      execute: async (_input, onAccepted) => {
+        await onAccepted()
+        await turnFinished
+        return { outcome: 'completed', content: 'done' }
+      },
+    }
+    const released: string[] = []
+    const mailboxReader = reader(mailbox, turn, {
+      onSessionRelease: sessionId => {
+        released.push(sessionId)
+      },
+    })
+
+    await mailboxReader.poll()
+
+    expect(released).toEqual([])
+    releaseTurn()
+    await turnSettled(mailboxReader)
+    expect(released).toEqual([SESSION_ID])
+  })
+
+  test('a turn that dies before admission still releases its session', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    const turn = new MemoryTurn()
+    turn.onExecute = () => {
+      throw new Error('ACP exited')
+    }
+    const released: string[] = []
+
+    await expect(
+      reader(mailbox, turn, {
+        onSessionRelease: sessionId => {
+          released.push(sessionId)
+        },
+      }).poll(),
+    ).rejects.toThrow('ACP exited')
+
+    expect(released).toEqual([SESSION_ID])
   })
 
   test('does not write a terminal read record when the snapshot vanished', async () => {

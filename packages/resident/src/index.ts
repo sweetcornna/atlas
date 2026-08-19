@@ -48,14 +48,35 @@ export {
   type ResidentAgentBinding,
 } from './runtime.js'
 export {
+  assertGcPolicy,
+  DEFAULT_RESIDENT_SESSION_GC_POLICY,
+  selectEvictableSessions,
+  type ResidentSessionGcInput,
+  type ResidentSessionGcPolicy,
+} from './session-gc.js'
+export {
+  agentOfSessionKey,
+  contextOfSessionKey,
+  DEFAULT_CONTEXT,
+  isSessionKey,
+  SESSION_KEY_SEPARATOR,
+  sessionKeyOf,
+} from './session-key.js'
+export {
   FileResidentSessionStore,
+  MAX_STORED_RESIDENT_SESSIONS,
   MemoryResidentSessionStore,
+  type ResidentSessionRecord,
   type ResidentSessionStore,
+  type ResidentSessionStoreOptions,
 } from './session-store.js'
 export {
+  pendingSessionIds,
   ResidentSessionManager,
   type ResidentAgentSession,
   type ResidentSessionConnection,
+  type ResidentSessionManagerOptions,
+  type ResidentSessionResolver,
 } from './sessions.js'
 export {
   DEFAULT_RESIDENT_POLL_INTERVAL_MS,

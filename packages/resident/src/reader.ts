@@ -19,7 +19,28 @@ import type { ResidentTimingRecorder } from './timings.js'
 export interface ResidentMailboxReaderOptions {
   readonly agent: string
   readonly team: string
-  readonly sessionId: string
+  /**
+   * Which ACP session this batch belongs to.
+   *
+   * A function rather than a fixed id because the answer depends on the batch:
+   * a snapshot carrying a remote `contextId` belongs to that requester's
+   * session, not to the agent's single one (design §4.3). The resolved value is
+   * still written verbatim into `DetectedAdmissionRecord.sessionId`, so crash
+   * recovery does not have to resolve anything a second time.
+   */
+  readonly resolveSession: (
+    messages: readonly ResidentMailboxMessage[],
+  ) => string | Promise<string>
+  /**
+   * Called once the turn started for a resolved session has settled, however
+   * it settled. Pairs with {@link resolveSession} so a session source can hold
+   * a session exempt from garbage collection while its turn is running.
+   *
+   * Recovered pending records deliberately do not go through this pair: they
+   * carry their session id from the ledger, and the ledger's own pending set
+   * is what keeps those sessions exempt.
+   */
+  readonly onSessionRelease?: (sessionId: string) => void
   readonly mailbox: ResidentMailboxPort
   readonly turn: ResidentTurnPort
   readonly ledger: AdmissionLedger
@@ -110,34 +131,50 @@ export class ResidentMailboxReader {
       throw new Error('resident mailbox formatter returned an empty prompt')
     }
     const networkMsgId = this.#options.correlationId?.(snapshot)
-    const record: DetectedAdmissionRecord = {
-      kind: 'detected',
-      messageId: (this.#options.newMessageId ?? randomUUID)(),
-      sessionId: this.#options.sessionId,
-      detectedAt: (this.#options.now ?? Date.now)(),
-      agent: this.#options.agent,
-      team: this.#options.team,
-      readBefore: Object.fromEntries(readCountsByIdentity(mailbox)),
-      snapshot,
-      prompt,
-      ...(networkMsgId === undefined ? {} : { networkMsgId }),
+    const sessionId = await this.#options.resolveSession(snapshot)
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.#options.onSessionRelease?.(sessionId)
     }
-    this.#options.ledger.append(record)
-    this.#options.timings?.record({
-      stage: 'detected',
-      at: record.detectedAt,
-      sessionId: record.sessionId,
-      inputMessageId: record.messageId,
-      ...(record.networkMsgId === undefined
-        ? {}
-        : { networkMsgId: record.networkMsgId }),
-      agent: record.agent,
-    })
-    const marked = await this.#submit({ ...record, phase: 'detected' })
-    return {
-      detected: snapshot.length,
-      recovered,
-      read: read + marked,
+
+    try {
+      const record: DetectedAdmissionRecord = {
+        kind: 'detected',
+        messageId: (this.#options.newMessageId ?? randomUUID)(),
+        sessionId,
+        detectedAt: (this.#options.now ?? Date.now)(),
+        agent: this.#options.agent,
+        team: this.#options.team,
+        readBefore: Object.fromEntries(readCountsByIdentity(mailbox)),
+        snapshot,
+        prompt,
+        ...(networkMsgId === undefined ? {} : { networkMsgId }),
+      }
+      this.#options.ledger.append(record)
+      this.#options.timings?.record({
+        stage: 'detected',
+        at: record.detectedAt,
+        sessionId: record.sessionId,
+        inputMessageId: record.messageId,
+        ...(record.networkMsgId === undefined
+          ? {}
+          : { networkMsgId: record.networkMsgId }),
+        agent: record.agent,
+      })
+      const marked = await this.#submit(
+        { ...record, phase: 'detected' },
+        release,
+      )
+      return {
+        detected: snapshot.length,
+        recovered,
+        read: read + marked,
+      }
+    } catch (error) {
+      release()
+      throw error
     }
   }
 
@@ -169,7 +206,10 @@ export class ResidentMailboxReader {
     return await this.#submit(pending)
   }
 
-  async #submit(pending: PendingAdmission): Promise<number> {
+  async #submit(
+    pending: PendingAdmission,
+    onSettled?: () => void,
+  ): Promise<number> {
     const input = this.#turnInput(pending)
     let resolveAdmission!: (marked: number) => void
     let rejectAdmission!: (error: unknown) => void
@@ -213,6 +253,9 @@ export class ResidentMailboxReader {
       .catch(async error => {
         rejectAdmission(error)
         await this.#options.onTurnError?.(error, input)
+      })
+      .finally(() => {
+        onSettled?.()
       })
     return await admission
   }

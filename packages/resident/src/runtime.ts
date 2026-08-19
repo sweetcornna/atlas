@@ -13,11 +13,19 @@ import type {
 } from './contracts.js'
 import { NodeTurnGate } from './turn-gate.js'
 import { ResidentMailboxReader } from './reader.js'
+import type { ResidentSessionResolver } from './sessions.js'
 import type { ResidentTimingRecorder } from './timings.js'
 
 export interface ResidentAgentBinding {
   readonly agent: string
-  readonly sessionId: string
+  /**
+   * A single fixed session for this agent — the pre-multi-session shape, kept
+   * for hosts (and tests) that have exactly one context. Mutually exclusive
+   * with the node-level `sessions` resolver: exactly one of the two must be
+   * present, because "which session does this batch belong to" has to have one
+   * answer, not a fallback chain.
+   */
+  readonly sessionId?: string
   readonly ledger: AdmissionLedger
 }
 
@@ -47,6 +55,18 @@ export class ResidentNodeRuntime {
     readonly correlationId?: (
       messages: readonly ResidentMailboxMessage[],
     ) => string | undefined
+    /**
+     * The requester's context for this batch, in the same shape as
+     * `correlationId` and read from the same place — the envelope the adapter
+     * already embedded in the mailbox entry. Absent, every batch resolves to
+     * `DEFAULT_CONTEXT`, which is byte for byte the behaviour that predates
+     * multi-session isolation.
+     */
+    readonly contextId?: (
+      messages: readonly ResidentMailboxMessage[],
+    ) => string | undefined
+    /** Session source shared by every agent. See {@link ResidentAgentBinding}. */
+    readonly sessions?: ResidentSessionResolver
     readonly timings?: ResidentTimingRecorder
     readonly gate?: NodeTurnGate
     readonly agents: readonly ResidentAgentBinding[]
@@ -69,16 +89,37 @@ export class ResidentNodeRuntime {
     this.#turn = options.turn
     this.#formatPrompt = options.formatPrompt
     this.#gate = options.gate ?? new NodeTurnGate()
+    const sessions = options.sessions
     for (const binding of options.agents) {
       if (this.#readers.has(binding.agent)) {
         throw new Error(`duplicate resident agent ${binding.agent}`)
+      }
+      const staticSessionId = binding.sessionId
+      if ((sessions === undefined) === (staticSessionId === undefined)) {
+        throw new Error(
+          `resident agent ${binding.agent} needs exactly one session source`,
+        )
       }
       this.#readers.set(
         binding.agent,
         new ResidentMailboxReader({
           agent: binding.agent,
           team: this.#team,
-          sessionId: binding.sessionId,
+          resolveSession:
+            sessions === undefined
+              ? () => staticSessionId as string
+              : messages =>
+                  sessions.sessionFor(
+                    binding.agent,
+                    options.contextId?.(messages),
+                  ),
+          ...(sessions === undefined
+            ? {}
+            : {
+                onSessionRelease: (sessionId: string) => {
+                  sessions.release(sessionId)
+                },
+              }),
           mailbox: this.#mailbox,
           turn: this.#turn,
           ledger: binding.ledger,
