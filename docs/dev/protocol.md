@@ -801,7 +801,10 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `LIMITS.maxHops` | 8 |
 | `LIMITS.defaultTtlMs` | 30 s |
 | `LIMITS.ratePerMinute` | 600 |
-| `LIMITS.defaultTaskTtlMs` | **尚不存在**，需新增（§12） |
+| `LIMITS.defaultTaskTtlMs` | 5 min（P1.1 已落地，见 §5） |
+| `LIMITS.defaultNotifyTtlMs` | 2 min（P13.2，见 §14.3） |
+| `LIMITS.notifyRatePerMinute` | 60（P13.2，见 §14.5） |
+| `LIMITS.maxQueuedTurns` | 32（P13.2，见 §4.5.1） |
 
 ---
 

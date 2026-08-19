@@ -566,6 +566,8 @@ formatPrompt(snapshot) =
 
 **`qianmo_notify` 工具的接入形态**：`newSession` 现在传 `mcpServers: []`（`acp-client.ts:99`）。改为传一个由常驻宿主自己起的 loopback MCP server。**这是走扩展点而不是改核心**——基座的 `createSessionMethod` 本来就接 `params.mcpServers`（`createSessionMethod.ts:289`）。
 
+> **勘误（P13.6 实作时坐实，2026-08-19）**：上句前提不成立——`createSessionMethod` 的 `params.mcpServers` 只进 `computeSessionFingerprint`（`createSessionMethod.ts:289`），交给查询引擎的是写死的 `mcpClients: []`（同文件 :181），该参数从未产出过工具；且真接 MCP 客户端栈会把工具名变成 `mcp__<server>__…`，与 §E8 的 `qianmo_` 前缀规则冲突。实作改为 `isQianmoResident` 门控下的直接 Tool 注入（一处受控核心改动，非常驻会话工具表逐字不变，有结构断言护着）。E4 的结构性结论不受影响。
+
 > **实现选项待 P13.6 首日定**：loopback HTTP MCP（一个进程、多会话共用）vs stdio 子进程（每会话一个进程）。默认取前者，理由是后者会让每个 context 多一个进程，而 §4.3 刚把会话数从 8 放开到「每 agent 若干」。
 
 ---

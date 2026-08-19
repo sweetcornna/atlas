@@ -883,13 +883,13 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 | 文档 | 状态 | 产出任务包 |
 |---|---|---|
-| `docs/dev/charter.md` | ✅ v2.10 | — |
-| `docs/dev/roadmap.md` | ✅ v2.39 | — |
+| `docs/dev/charter.md` | ✅ v2.15 | — |
+| `docs/dev/roadmap.md` | ✅ v2.54 | — |
 | `docs/dev/selection-m0.md` | ✅ v1.0 | 产出：2026-08 五路调研 + 六个前置实验（**实测数据与决议记录的唯一真源**） |
 | `docs/dev/base-adoption.md` | ✅ 初稿，待 P0.2 定稿（含 `selection-m0.md` §2 的修正复核） | P0.2 |
 | `BASE.md`（仓库根） | ✅ 随基座导入建立 | 由负责人维护，见章程 §5.6 |
-| `docs/dev/protocol.md` | ✅ 已产出（含 P5.2 的 §13 协商扩展；§14 主动通知为 P13.2 占位，未落地） | P1.1（v0.1）、P5.2（协商扩展）、P13.2（notify，占位） |
-| `docs/dev/resident-botization.md` | 🟡 v0.1-draft 已入库（评审通过前不生效） | P13.1 |
+| `docs/dev/protocol.md` | ✅ 已产出（含 P5.2 的 §13 协商扩展；§14 主动通知已由 P13.2 落地，P13.3/13.5/13.7 补 §4.5.1、§14.8.1、§10.2） | P1.1（v0.1）、P5.2（协商扩展）、P13.2（notify） |
+| `docs/dev/resident-botization.md` | 🟡 v0.1-draft 已入库（评审通过前不生效）；S12 P13.1–P13.7 已按其实作，分支 s12/* 线性叠放待合并 | P13.1 |
 | `docs/dev/boundary-day.md` | ✅ 模板已入库 | P7.1（双周边界日的执行记录） |
 | `tests/boundary/README.md` | ✅ 已入库 | P5.4（五类边界的对应关系与规矩）、P7.1（v2 与混沌的分工） |
 | `docs/dev/scenario-mcm.md` | 🟡 草案已产出；赛中真实痛点与全员评审待补，P2.4 未完成 | P2.4 |
