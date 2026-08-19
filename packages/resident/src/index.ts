@@ -136,3 +136,13 @@ export {
   NodeTurnQueueFullError,
   type NodeTurnRequest,
 } from './turn-gate.js'
+export {
+  NOTIFY_EVENT_SCHEMA_VERSION,
+  ResidentNotifier,
+  ResidentNotifyEventType,
+  type NotifyChannel,
+  type NotifyOutcome,
+  type ResidentNotifierOptions,
+  type ResidentNotifyAuditSink,
+  type ResidentNotifyEvent,
+} from './notify.js'

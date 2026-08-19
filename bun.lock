@@ -291,9 +291,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@qianmo/audit": "workspace:*",
-        "@qianmo/protocol": "workspace:*",
-        "@qianmo/registry": "workspace:*",
-        "@qianmo/router": "workspace:*",
       },
     },
     "packages/diagnosis": {
@@ -359,6 +356,7 @@
       "dependencies": {
         "@agentclientprotocol/sdk": "^0.19.0",
         "@qianmo/protocol": "workspace:*",
+        "@qianmo/router": "workspace:*",
         "@qianmo/transport": "workspace:*",
       },
     },
@@ -372,6 +370,13 @@
     "packages/sandbox": {
       "name": "@qianmo/sandbox",
       "version": "0.0.0",
+    },
+    "packages/scheduler": {
+      "name": "@qianmo/scheduler",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/protocol": "workspace:*",
+      },
     },
     "packages/tool-runtime": {
       "name": "@open-claude-code/tool-runtime",
@@ -1061,6 +1066,8 @@
     "@qianmo/router": ["@qianmo/router@workspace:packages/router"],
 
     "@qianmo/sandbox": ["@qianmo/sandbox@workspace:packages/sandbox"],
+
+    "@qianmo/scheduler": ["@qianmo/scheduler@workspace:packages/scheduler"],
 
     "@qianmo/transport": ["@qianmo/transport@workspace:packages/transport"],
 

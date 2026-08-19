@@ -109,6 +109,24 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
     return this.#inactivity?.timeoutMs ?? 0
   }
 
+  /**
+   * The turn running in `sessionId` right now, or `undefined`.
+   *
+   * The one consumer is outbound `notify`: an agent asking to announce
+   * something has to be attributed to the task that is paying for its turn, or
+   * the host has no address to send to and no `contextId` to group by. Asking
+   * *per session* rather than "whatever is running" matters even though the
+   * node gate is currently global — invariant #15 says a correctness claim
+   * must not lean on the gate's granularity, and this is one of those claims.
+   *
+   * Read-only by construction: the entry disappears in `execute`'s `finally`,
+   * so a notification arriving after its turn ended finds nothing and is
+   * refused rather than charged to whichever task happens to be next.
+   */
+  activeTurn(sessionId: string): ResidentTurnInput | undefined {
+    return this.#active.get(sessionId)?.input
+  }
+
   replaceConnection(connection: AcpPromptConnection): void {
     this.#connection = connection
   }
