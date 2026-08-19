@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { parseAddress } from './address.js'
-import { ProtocolError, ProtocolErrorCode, issue } from './errors.js'
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  downgradeErrorCode,
+  isLegacyErrorCode,
+  issue,
+} from './errors.js'
 import { computeFingerprint } from './fingerprint.js'
 import { LIMITS } from './limits.js'
 
@@ -36,11 +42,49 @@ export enum MessageType {
   ResourceGrant = 'resource.grant',
   /** End a lease, from either side. */
   ResourceRelease = 'resource.release',
+  /**
+   * Node-originated announcement: the handling node telling a peer it already
+   * has a channel with that something happened (protocol.md §14).
+   *
+   * The only type an agent raises on its own initiative. It is not a reply, it
+   * opens no turn on the receiver, it carries a **fresh** `taskId` every time,
+   * and it asks for no protocol `ack` — see {@link createNotify} for why each
+   * of those is load-bearing rather than incidental.
+   */
+  Notify = 'notify',
 }
 
 /** All message types, in declaration order. */
 export const MESSAGE_TYPES: readonly MessageType[] = Object.freeze(
   Object.values(MessageType),
+)
+
+/**
+ * The types every v0 node has always spoken — the floor of capability
+ * discovery (protocol.md §14.6).
+ *
+ * A peer that declares nothing is assumed to speak exactly these, so a type
+ * added after this list must be declared before it is used. Written out rather
+ * than derived from the enum for the same reason `LEGACY_ERROR_CODES` is: a
+ * derived floor would rise on its own every time the enum grows, and a floor
+ * that moves is not a floor.
+ */
+export const LEGACY_MESSAGE_TYPES: readonly MessageType[] = Object.freeze([
+  MessageType.TaskRequest,
+  MessageType.Ack,
+  MessageType.TaskResult,
+  MessageType.Ping,
+  MessageType.Pong,
+  MessageType.Wake,
+  MessageType.Error,
+  MessageType.ResourceRequest,
+  MessageType.ResourceOffer,
+  MessageType.ResourceGrant,
+  MessageType.ResourceRelease,
+])
+
+const LEGACY_MESSAGE_TYPE_SET: ReadonlySet<string> = new Set<string>(
+  LEGACY_MESSAGE_TYPES,
 )
 
 const MESSAGE_TYPE_SET: ReadonlySet<string> = new Set<string>(MESSAGE_TYPES)
@@ -60,6 +104,14 @@ export function isMessageType(value: unknown): value is MessageType {
  * revisit — the loop key — is the *expected* shape of a correct `ack` and a
  * correct `task.result`. Judging replies by that key would declare AC-2's
  * return path a loop on its first message.
+ *
+ * **`notify` is deliberately absent**, and the reason is positive rather than
+ * "it happens not to be an answer". The exemption exists for types that are
+ * *forced* to reuse somebody else's `taskId`; `notify` reuses none (every one
+ * carries a fresh id — {@link createNotify}), so it never takes the shape the
+ * exemption was written for. Granting it the exemption anyway would open a hole
+ * in the loop net that any message can walk through by calling itself a
+ * notification.
  */
 export function isReplyType(type: MessageType): boolean {
   return (
@@ -420,27 +472,54 @@ export function isAckPayload(value: unknown): value is AckPayload {
   )
 }
 
-/** Terminal result of a `task.request`, field-closed in both branches. */
+/**
+ * Marker carried by a reply the sender's delivery ledger is re-sending.
+ *
+ * `true` or absent, never `false`, for the reason spelled out on
+ * {@link NotifyPayload.redelivered}: two encodings of one fact are two
+ * fingerprints for one message, which defeats the honesty the flag exists for.
+ *
+ * A redelivery is a **new envelope** — new `msgId`, new `createdAt`, same
+ * `taskId` — because retransmitting the original after its `deliverTtlMs` has
+ * passed earns an `E_TTL_EXPIRED` and nothing else (protocol.md §14.4③). So
+ * neither level of the receiver's dedup absorbs it silently, which is the
+ * point: the duplicate is visible, and `taskId` is what the receiver suppresses
+ * it by.
+ */
+type Redelivered = true
+
+/**
+ * Terminal result of a `task.request`.
+ *
+ * Closed apart from {@link Redelivered}, which is optional in both branches.
+ */
 export type TaskResultPayload =
   | {
       readonly outcome: 'completed'
       readonly content: string
       readonly completedAt: number
+      readonly redelivered?: Redelivered
     }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
       readonly completedAt: number
+      readonly redelivered?: Redelivered
     }
 
 /** Input accepted by {@link createTaskResult}; the factory supplies the clock. */
 export type TaskResultInput =
-  | { readonly outcome: 'completed'; readonly content: string }
+  | {
+      readonly outcome: 'completed'
+      readonly content: string
+      readonly redelivered?: Redelivered
+    }
   | {
       readonly outcome: 'failed'
       readonly code: ProtocolErrorCode
       readonly reason: string
+      readonly redelivered?: Redelivered
     }
 
 const TASK_RESULT_COMPLETED_KEYS: readonly string[] = [
@@ -454,6 +533,16 @@ const TASK_RESULT_FAILED_KEYS: readonly string[] = [
   'reason',
   'completedAt',
 ]
+/**
+ * The only key a `task.result` may carry beyond its branch's required set.
+ *
+ * Kept as a one-element whitelist rather than folded into the two arrays above
+ * so the shape stays readable as what it is: a closed payload with a single
+ * documented exception, not a payload that has started accepting extras.
+ */
+const TASK_RESULT_OPTIONAL_KEYS: ReadonlySet<string> = new Set<string>([
+  'redelivered',
+])
 const PROTOCOL_ERROR_CODES: ReadonlySet<string> = new Set<string>(
   Object.values(ProtocolErrorCode),
 )
@@ -468,7 +557,28 @@ function hasExactKeys(
   )
 }
 
-/** True when `value` is a closed successful or failed task result. */
+/**
+ * Every key present is either required by the branch or the one permitted
+ * optional, and every required key is present.
+ *
+ * This is the exact-count check the two branches used to get, widened by
+ * exactly one field. The property that mattered — a peer cannot smuggle
+ * business fields into a terminal result — is unchanged, because an unlisted
+ * key is still a rejection.
+ */
+function hasTaskResultKeys(
+  payload: Record<string, unknown>,
+  required: readonly string[],
+): boolean {
+  const keys = Object.keys(payload)
+  return (
+    keys.every(
+      key => required.includes(key) || TASK_RESULT_OPTIONAL_KEYS.has(key),
+    ) && required.every(key => keys.includes(key))
+  )
+}
+
+/** True when `value` is a well-formed successful or failed task result. */
 export function isTaskResultPayload(
   value: unknown,
 ): value is TaskResultPayload {
@@ -484,15 +594,17 @@ export function isTaskResultPayload(
   ) {
     return false
   }
+  // Only `true`. See {@link Redelivered}.
+  if ('redelivered' in payload && payload['redelivered'] !== true) return false
   if (payload['outcome'] === 'completed') {
     return (
-      hasExactKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
+      hasTaskResultKeys(payload, TASK_RESULT_COMPLETED_KEYS) &&
       typeof payload['content'] === 'string'
     )
   }
   if (payload['outcome'] === 'failed') {
     return (
-      hasExactKeys(payload, TASK_RESULT_FAILED_KEYS) &&
+      hasTaskResultKeys(payload, TASK_RESULT_FAILED_KEYS) &&
       typeof payload['code'] === 'string' &&
       PROTOCOL_ERROR_CODES.has(payload['code']) &&
       typeof payload['reason'] === 'string' &&
@@ -573,4 +685,266 @@ export function errorReply(
 /** Node name embedded in `to`, or `null` when the address is malformed. */
 export function destinationNode(message: QianmoMessage): string | null {
   return parseAddress(message.to)?.node ?? null
+}
+
+/** Where a `notify` came from. `watch` = a watch job; `task` = out-of-band
+ * commentary on an existing task; `health` = the node talking about itself. */
+export const NOTIFY_KINDS = ['watch', 'task', 'health'] as const
+
+/** How loud a `notify` is. Ordering is informational, not a filter. */
+export const NOTIFY_SEVERITIES = ['info', 'warn', 'error'] as const
+
+/** Payload of a `notify` (protocol.md §14.2). Field-controlled, not field-closed. */
+export interface NotifyPayload {
+  readonly kind: (typeof NOTIFY_KINDS)[number]
+  readonly severity: (typeof NOTIFY_SEVERITIES)[number]
+  /**
+   * One line, for a human.
+   *
+   * There is no separate ceiling on its length: charter §3.3 C-4 pins the
+   * protocol's numbers at eight and this does not deserve a ninth, so the bound
+   * is the one every payload already has, `LIMITS.maxMessageBytes`. Anything
+   * long belongs in `detail`, and anything longer than that belongs on disk
+   * behind a reference (§9.3).
+   */
+  readonly summary: string
+  /** Local epoch ms at which the thing was *observed*, not sent. */
+  readonly observedAt: number
+  readonly detail?: string
+  /**
+   * Sender-side idempotency key. **The receiver does not consume it** (§14.4):
+   * suppression by this key is the sending ledger's job, because the receiver
+   * would need unbounded new per-context state to do the same work twice.
+   */
+  readonly dedupKey?: string
+  /**
+   * Set when the sender's ledger is re-sending a fact it already tried to
+   * deliver. Honest at-least-once: a repeat is visible, never silent.
+   *
+   * `true` or absent, never `false` — two spellings of one fact would be two
+   * different fingerprints for one notification.
+   */
+  readonly redelivered?: true
+  /** Which task or watch job caused this. Audit correlation, **not** a
+   * correlation key — rule C-1 keeps that role for `taskId` alone. */
+  readonly causeTaskId?: string
+}
+
+const NOTIFY_REQUIRED_KEYS: readonly string[] = [
+  'kind',
+  'severity',
+  'summary',
+  'observedAt',
+]
+const NOTIFY_OPTIONAL_KEYS: readonly string[] = [
+  'detail',
+  'dedupKey',
+  'redelivered',
+  'causeTaskId',
+]
+const NOTIFY_ALLOWED_KEYS: ReadonlySet<string> = new Set<string>([
+  ...NOTIFY_REQUIRED_KEYS,
+  ...NOTIFY_OPTIONAL_KEYS,
+])
+const NOTIFY_KIND_SET: ReadonlySet<string> = new Set<string>(NOTIFY_KINDS)
+const NOTIFY_SEVERITY_SET: ReadonlySet<string> = new Set<string>(
+  NOTIFY_SEVERITIES,
+)
+
+/**
+ * True when `value` is a well-formed {@link NotifyPayload}.
+ *
+ * ## Why this one is a whitelist where `ack` counts keys
+ *
+ * `isAckPayload` demands an *exact* key set, which is the right shape for a
+ * payload that has no optional fields: it says "a field this version does not
+ * understand is a field nobody verified". `notify` has four optional fields, so
+ * an exact count cannot express it — and the property exact counting buys
+ * beyond a whitelist is "both ends must be the same version", which for this
+ * type is a liability rather than an asset: the whole point of §14.6's
+ * capability discovery is that a newer sender and an older receiver stay
+ * interoperable.
+ *
+ * `isTaskResultPayload` sat with `ack` until P13.5 gave it {@link Redelivered},
+ * and it now uses the same required-plus-whitelist shape for the same reason —
+ * one optional field is still one more than an exact count can express.
+ *
+ * A whitelist keeps the property that actually matters — a remote peer cannot
+ * smuggle business fields in — because an unlisted key is still a rejection.
+ * **Do not "unify" this back to `hasExactKeys`**: every `notify` carrying an
+ * optional field would start being refused as malformed.
+ */
+export function isNotifyPayload(value: unknown): value is NotifyPayload {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const payload = value as Record<string, unknown>
+  const keys = Object.keys(payload)
+  if (!keys.every(key => NOTIFY_ALLOWED_KEYS.has(key))) return false
+  if (!NOTIFY_REQUIRED_KEYS.every(key => keys.includes(key))) return false
+
+  if (!NOTIFY_KIND_SET.has(payload['kind'] as string)) return false
+  if (!NOTIFY_SEVERITY_SET.has(payload['severity'] as string)) return false
+  if (
+    typeof payload['summary'] !== 'string' ||
+    payload['summary'].length === 0
+  ) {
+    return false
+  }
+  const observedAt = payload['observedAt']
+  if (
+    typeof observedAt !== 'number' ||
+    !Number.isFinite(observedAt) ||
+    observedAt <= 0
+  ) {
+    return false
+  }
+  if ('detail' in payload && typeof payload['detail'] !== 'string') return false
+  if (
+    'dedupKey' in payload &&
+    (typeof payload['dedupKey'] !== 'string' ||
+      payload['dedupKey'].length === 0)
+  ) {
+    return false
+  }
+  // Only `true`. See the field's own comment: `false` is the same fact as
+  // absent, and one fact with two encodings fingerprints as two messages.
+  if ('redelivered' in payload && payload['redelivered'] !== true) return false
+  if (
+    'causeTaskId' in payload &&
+    (typeof payload['causeTaskId'] !== 'string' ||
+      payload['causeTaskId'].length === 0)
+  ) {
+    return false
+  }
+  return true
+}
+
+/** What {@link createNotify} needs. Note the absence of a `taskId`. */
+export interface CreateNotifyInput {
+  /** Announcing handler, `qianmo://<node>/<agent>`. */
+  readonly from: string
+  /** Peer to announce to — one this node already has a channel with. */
+  readonly to: string
+  /**
+   * The grouping key, and the reason this is **required** rather than optional
+   * (§14.3): with a fresh `taskId` on every notification, `contextId` is the
+   * only thing that says two of them belong to one watch job. A notification
+   * without it cannot be grouped by anything downstream, so an omission would
+   * only ever be an oversight.
+   */
+  readonly contextId: string
+  readonly payload: NotifyPayload
+  /** Defaults to `LIMITS.defaultNotifyTtlMs`. */
+  readonly deliverTtlMs?: number
+  readonly createdAt?: number
+  readonly msgId?: string
+  readonly traceId?: string
+  readonly cap?: string
+}
+
+/**
+ * Build a `notify`.
+ *
+ * Three properties are fixed here rather than left to callers, because each one
+ * is a bug that only shows up on the *second* message:
+ *
+ * 1. **A fresh `taskId`, always.** The tempting alternative — reuse the task or
+ *    job id that caused the notification — puts every notification of one job on
+ *    the same `(handler, taskId)` loop key. The first is fresh and lands; the
+ *    second is `E_LOOP` and is cut. There is no parameter to pass one in, so
+ *    the mistake cannot be made from outside this function.
+ * 2. **`taskTtlMs === deliverTtlMs`.** `notify` never enters the task state
+ *    machine, but the envelope field is mandatory. Leaving it at the 5-minute
+ *    default would leave a notification whose delivery window has already closed
+ *    looking alive for another four and a half minutes to anything reading the
+ *    state machine.
+ * 3. **No `ack` is requested.** Not expressible in the envelope, and that is the
+ *    point: A-class `ack` is defined (§4.3) as "the target agent took this into
+ *    its input", and the hub is not an agent and has no mailbox to read from.
+ *    Delivery evidence for `notify` is the transport receipt plus the sender's
+ *    ledger; see protocol.md §14.5.
+ */
+export function createNotify(
+  input: CreateNotifyInput,
+): QianmoMessage<NotifyPayload> {
+  const deliverTtlMs = input.deliverTtlMs ?? LIMITS.defaultNotifyTtlMs
+  return createMessage<NotifyPayload>({
+    from: input.from,
+    to: input.to,
+    type: MessageType.Notify,
+    contextId: input.contextId,
+    payload: input.payload,
+    // Deliberately not forwarded from the caller: see (1) above.
+    taskId: newId(),
+    deliverTtlMs,
+    taskTtlMs: deliverTtlMs,
+    ...(input.createdAt === undefined ? {} : { createdAt: input.createdAt }),
+    ...(input.msgId === undefined ? {} : { msgId: input.msgId }),
+    ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+    ...(input.cap === undefined ? {} : { cap: input.cap }),
+  })
+}
+
+/**
+ * Resolve what a peer said it speaks: an absent or empty declaration means the
+ * legacy floor, never "nothing" (protocol.md §14.6).
+ *
+ * Empty counts as absent on purpose — a peer that sends `supportedTypes: []`
+ * has almost certainly built the list from a source that came up empty, and
+ * reading that as "speaks no message type at all" would take a working link and
+ * silence it.
+ */
+export function resolvePeerTypes(
+  declared: readonly string[] | undefined,
+): readonly string[] {
+  return declared === undefined || declared.length === 0
+    ? LEGACY_MESSAGE_TYPES
+    : declared
+}
+
+/** True when the peer's declaration covers `type`. */
+export function peerSupportsType(
+  declared: readonly string[] | undefined,
+  type: MessageType,
+): boolean {
+  return resolvePeerTypes(declared).includes(type)
+}
+
+/**
+ * True when the peer's declaration proves it is newer than the legacy floor.
+ *
+ * v1 of the frame grammar has exactly **one** capability signal, and it names
+ * message types. So this is the proxy rule N-1 has to use: a peer that declares
+ * a type outside {@link LEGACY_MESSAGE_TYPES} is running a build from after the
+ * floor, and therefore knows the error codes that shipped with it.
+ *
+ * The proxy holds as long as post-legacy codes ship alongside post-legacy
+ * types, which is true of `E_BUSY` and `notify`. A future code that ships
+ * *without* a new type would need a capability channel of its own —
+ * protocol.md §12.3 records that as unfinished rather than pretending this
+ * covers it.
+ */
+export function peerIsPostLegacy(
+  declared: readonly string[] | undefined,
+): boolean {
+  if (declared === undefined) return false
+  return declared.some(type => !LEGACY_MESSAGE_TYPE_SET.has(type))
+}
+
+/**
+ * Rule N-1 applied: the code to actually put on the wire towards this peer.
+ *
+ * Call it at every point that puts a `ProtocolErrorCode` into a message aimed
+ * at a peer — `task.result{failed}`, `error`, a rejected receipt. Sending a
+ * post-legacy code to a peer that cannot parse it does not degrade to "an
+ * outcome it cannot name"; it degrades to the message not arriving at all — the
+ * `LEGACY_ERROR_CODES` doc comment in `errors.ts` traces that path.
+ */
+export function errorCodeForPeer(
+  code: ProtocolErrorCode,
+  declared: readonly string[] | undefined,
+): ProtocolErrorCode {
+  if (isLegacyErrorCode(code)) return code
+  return peerIsPostLegacy(declared) ? code : downgradeErrorCode(code)
 }

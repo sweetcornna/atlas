@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -18,6 +18,7 @@ import {
   ResidentMailboxReader,
   type ResidentMailboxReaderOptions,
 } from '../src/reader.js'
+import { NodeTurnGate, type NodeTurnRequest } from '../src/turn-gate.js'
 
 const SESSION_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 const MESSAGE_ID = '11111111-2222-4333-8444-555555555555'
@@ -135,6 +136,25 @@ class MemoryTurn implements ResidentTurnPort {
   }
 }
 
+/**
+ * The real gate, with a note of what it was asked for.
+ *
+ * A subclass rather than a stand-in: the wiring under test is what the reader
+ * *says* to the gate, and everything the gate then does has to keep happening
+ * for the rest of the assertions in the test to mean anything.
+ */
+class RecordingGate extends NodeTurnGate {
+  readonly requests: NodeTurnRequest[] = []
+
+  override run<T>(
+    work: () => Promise<T>,
+    request: NodeTurnRequest = {},
+  ): Promise<T> {
+    this.requests.push(request)
+    return super.run(work, request)
+  }
+}
+
 /** Wait out the turn the poll left running, and the callbacks behind it. */
 async function turnSettled(
   mailboxReader: ResidentMailboxReader,
@@ -151,7 +171,7 @@ function reader(
   return new ResidentMailboxReader({
     agent: AGENT,
     team: TEAM,
-    sessionId: SESSION_ID,
+    resolveSession: () => SESSION_ID,
     mailbox,
     turn,
     ledger,
@@ -177,7 +197,7 @@ describe('resident mailbox admission', () => {
     const result = await reader(mailbox, turn).poll()
 
     expect(pendingBeforeExecute).toBe(true)
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(mailbox.messages[0]?.read).toBe(true)
     expect(ledger.query().pending).toEqual([])
   })
@@ -191,7 +211,7 @@ describe('resident mailbox admission', () => {
       accepts: item => item.text !== structured.text,
     }).poll()
 
-    expect(result).toEqual({ detected: 0, recovered: 0, read: 0 })
+    expect(result).toEqual({ detected: 0, recovered: 0, read: 0, abandoned: 0 })
     expect(turn.executeCalls).toHaveLength(0)
     expect(mailbox.messages[0]?.read).toBe(false)
     expect(ledger.query().pending).toEqual([])
@@ -229,7 +249,7 @@ describe('resident mailbox admission', () => {
 
     const result = await mailboxReader.poll()
 
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(mailboxReader.gate.active).toBe(true)
     finishTurn()
     while (mailboxReader.gate.active) await Promise.resolve()
@@ -334,7 +354,7 @@ describe('resident mailbox admission', () => {
         messages.length === 1 ? 'net-msg-1' : undefined,
     }).poll()
 
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(turn.executeCalls).toHaveLength(1)
     expect(turn.executeCalls[0]?.networkMsgId).toBe('net-msg-1')
     expect(turn.executeCalls[0]?.prompt).toBe(
@@ -343,6 +363,81 @@ describe('resident mailbox admission', () => {
     // The message left out of the snapshot is still unread, still waiting.
     expect(mailbox.messages[0]?.read).toBe(true)
     expect(mailbox.messages[1]?.read).toBe(false)
+  })
+
+  test('an entry past its task deadline is never detected, nor blocks the next', async () => {
+    const dead = message({ text: 'task the sender already gave up on' })
+    const live = message({
+      text: 'task still worth a turn',
+      timestamp: '2026-08-12T00:01:00.000Z',
+    })
+    const mailbox = new MemoryMailbox([dead, live])
+    const turn = new MemoryTurn()
+
+    const result = await reader(mailbox, turn, {
+      deadlineOf: item =>
+        item.text === dead.text ? Date.now() - 1 : Date.now() + 60_000,
+    }).poll()
+
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
+    expect(turn.executeCalls).toHaveLength(1)
+    expect(turn.executeCalls[0]?.prompt).toContain('still worth a turn')
+    // Dropped from eligibility rather than skipped as a batch: skipping would
+    // leave it at the head of the queue forever, blocking everything behind it.
+    expect(mailbox.messages[0]?.read).toBe(false)
+    expect(mailbox.messages[1]?.read).toBe(true)
+  })
+
+  test('hands the gate the earliest deadline in the batch, and the session', async () => {
+    const first = message({ text: 'due later' })
+    const second = message({
+      text: 'due sooner',
+      timestamp: '2026-08-12T00:01:00.000Z',
+    })
+    const mailbox = new MemoryMailbox([first, second])
+    const gate = new RecordingGate()
+    const later = Date.now() + 90_000
+    const sooner = Date.now() + 30_000
+
+    await reader(mailbox, new MemoryTurn(), {
+      gate,
+      deadlineOf: item => (item.text === 'due later' ? later : sooner),
+    }).poll()
+
+    // The earliest deadline in the batch is the one the batch has to meet.
+    expect(gate.requests).toEqual([
+      { sessionId: SESSION_ID, deadlineAt: sooner },
+    ])
+  })
+
+  test('the recovery path submits without a deadline', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    ledger.append({
+      kind: 'detected',
+      messageId: MESSAGE_ID,
+      sessionId: SESSION_ID,
+      detectedAt: 1,
+      agent: AGENT,
+      team: TEAM,
+      readBefore: {},
+      snapshot: [message()],
+      prompt: 'durable prompt',
+    })
+    const gate = new RecordingGate()
+
+    await reader(mailbox, new MemoryTurn(), {
+      gate,
+      deadlineOf: () => Date.now() - 1,
+    }).poll()
+
+    // Both the status probe and the resubmit go in bare. A `detected` record
+    // is a promise this node already wrote down, and the ledger has no way to
+    // retire one except by reaching `read` — dropping the turn would strand it
+    // and every later poll would rediscover, redrop and re-report it.
+    expect(gate.requests).toEqual([
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+    ])
   })
 
   test('the read callback fires after the flip, the terminal one after the turn', async () => {
@@ -412,11 +507,86 @@ describe('resident mailbox admission', () => {
       detected: 1,
       recovered: 0,
       read: 1,
+      abandoned: 0,
     })
     await turnSettled(mailboxReader)
     expect(errors).toEqual([failure])
     expect(results).toEqual([])
     expect(mailbox.messages[0]?.read).toBe(true)
+  })
+
+  test('the resolved session is what the ledger records, so recovery resumes into it', async () => {
+    const other = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
+    const mailbox = new MemoryMailbox([message()])
+    const turn = new MemoryTurn()
+    const seen: (readonly ResidentMailboxMessage[])[] = []
+
+    await reader(mailbox, turn, {
+      resolveSession: snapshot => {
+        seen.push(snapshot)
+        return other
+      },
+    }).poll()
+
+    expect(seen).toEqual([[message()]])
+    expect(turn.executeCalls[0]?.sessionId).toBe(other)
+    // Crash recovery reads this field verbatim off the ledger, so the resolved
+    // value has to be what was durably written — not something a restart would
+    // have to resolve a second time (and possibly differently).
+    const detected = readFileSync(join(directory, 'admission.ndjson'), 'utf8')
+      .split('\n')
+      .filter(line => line !== '')
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(entry => entry.kind === 'detected')
+    expect(detected?.sessionId).toBe(other)
+  })
+
+  test('the session release fires once, after the turn settles rather than at admission', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    let releaseTurn!: () => void
+    const turnFinished = new Promise<void>(resolve => {
+      releaseTurn = resolve
+    })
+    const turn: ResidentTurnPort = {
+      isAccepted: async () => false,
+      execute: async (_input, onAccepted) => {
+        await onAccepted()
+        await turnFinished
+        return { outcome: 'completed', content: 'done' }
+      },
+    }
+    const released: string[] = []
+    const mailboxReader = reader(mailbox, turn, {
+      onSessionRelease: sessionId => {
+        released.push(sessionId)
+      },
+    })
+
+    await mailboxReader.poll()
+
+    expect(released).toEqual([])
+    releaseTurn()
+    await turnSettled(mailboxReader)
+    expect(released).toEqual([SESSION_ID])
+  })
+
+  test('a turn that dies before admission still releases its session', async () => {
+    const mailbox = new MemoryMailbox([message()])
+    const turn = new MemoryTurn()
+    turn.onExecute = () => {
+      throw new Error('ACP exited')
+    }
+    const released: string[] = []
+
+    await expect(
+      reader(mailbox, turn, {
+        onSessionRelease: sessionId => {
+          released.push(sessionId)
+        },
+      }).poll(),
+    ).rejects.toThrow('ACP exited')
+
+    expect(released).toEqual([SESSION_ID])
   })
 
   test('does not write a terminal read record when the snapshot vanished', async () => {

@@ -55,6 +55,11 @@ import {
   type CapacityAuditSink,
   type CapacityEvent,
 } from '@qianmo/capacity'
+import {
+  ResidentNotifyEventType,
+  type ResidentNotifyAuditSink,
+  type ResidentNotifyEvent,
+} from '@qianmo/resident'
 import { occConfigPath } from '../../config/paths.js'
 
 /** Default location of this node's trail, derived from the config root. */
@@ -312,6 +317,56 @@ export function backupTrailSink(
         node,
         refusals.has(event.type) ? 'refused' : 'ok',
         ['workspace'],
+      ),
+    )
+  }
+}
+
+/**
+ * Outbound `notify` (P13.6), the only layer whose **successes** are the point.
+ *
+ * Every other sink here files a refusal or a delivery of somebody else's
+ * traffic. This one files the evidence a watch job exists to produce: that at
+ * 03:14 this node told a person something, and that the console receipted it.
+ * A trail without those lines cannot answer "did anyone actually get told",
+ * which is the only question asked of an unattended run after the fact.
+ *
+ * Three outcomes, and the middle one is why `outcome` is three-valued:
+ * `refused` is a peer saying no (it does not implement the type), while a
+ * notification merely *held* — no channel, or the sliding window shut — is
+ * `dropped`, because nobody refused it and nothing is wrong. Filing a hold as
+ * a refusal would send a reader looking for a decision that was never made.
+ *
+ * The `schemaVersion` the notifier stamps rides through in `detail` untouched
+ * (hermes B9): three days from now, a record missing a field has to be
+ * separable from a record that was edited, and the hash chain alone cannot
+ * tell those apart.
+ */
+const NOTIFY_OUTCOMES: Readonly<
+  Record<ResidentNotifyEventType, 'ok' | 'refused' | 'dropped'>
+> = {
+  [ResidentNotifyEventType.Sent]: 'ok',
+  [ResidentNotifyEventType.Delivered]: 'ok',
+  [ResidentNotifyEventType.Held]: 'dropped',
+  [ResidentNotifyEventType.Suppressed]: 'dropped',
+  [ResidentNotifyEventType.Unsupported]: 'refused',
+  [ResidentNotifyEventType.Abandoned]: 'dropped',
+}
+
+export function residentNotifyTrailSink(
+  trail: AuditTrail,
+  node: string,
+): ResidentNotifyAuditSink {
+  return (event: ResidentNotifyEvent): void => {
+    safeAppend(
+      trail,
+      toRecord(
+        event,
+        AuditSource.Resident,
+        node,
+        NOTIFY_OUTCOMES[event.type] ?? 'ok',
+        // The other end of a notification is whoever the node is telling.
+        ['peer'],
       ),
     )
   }

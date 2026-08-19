@@ -29,6 +29,25 @@ export interface ResidentAcpClientOptions {
   readonly onSessionUpdate?: (
     params: SessionNotification,
   ) => void | Promise<void>
+  /**
+   * Handle an ACP ext **request** from the agent, agent → host.
+   *
+   * The three `qianmo/*` hooks above are one-way; this one carries an answer
+   * back, which is what `qianmo_notify` needs — the model's next move depends
+   * on whether the notification actually left. Kept as one open-ended hook
+   * rather than a second named callback because the method name is a base
+   * concern (`src/services/qianmo/notifyWire.ts`) and this package has no
+   * business learning it: a package that names the host's methods is a package
+   * that has to be edited every time the host grows one.
+   *
+   * Returning `undefined` means "not mine" and produces a method-not-found on
+   * the wire, which is the honest answer for a method this host does not
+   * implement.
+   */
+  readonly onExtMethod?: (
+    method: string,
+    params: Record<string, unknown>,
+  ) => Promise<Record<string, unknown> | undefined>
 }
 
 class ResidentClient implements Client {
@@ -37,11 +56,29 @@ class ResidentClient implements Client {
   readonly #onSessionUpdate:
     | ((params: SessionNotification) => void | Promise<void>)
     | undefined
+  readonly #onExtMethod:
+    | ((
+        method: string,
+        params: Record<string, unknown>,
+      ) => Promise<Record<string, unknown> | undefined>)
+    | undefined
 
   constructor(options: ResidentAcpClientOptions) {
     this.#onInputAccepted = options.onInputAccepted
     this.#onActivity = options.onActivity
     this.#onSessionUpdate = options.onSessionUpdate
+    this.#onExtMethod = options.onExtMethod
+  }
+
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const answer = await this.#onExtMethod?.(method, params)
+    if (answer === undefined) {
+      throw new Error(`resident host does not implement ${method}`)
+    }
+    return answer
   }
 
   async requestPermission(
@@ -119,6 +156,19 @@ export class ResidentAcpConnection
         qianmo: { resident: true, agent: input.agent },
       },
     })
+  }
+
+  /**
+   * ACP `session/cancel`. Used by the inactivity watchdog and nothing else.
+   *
+   * A notification, so it returns as soon as it is written: the agent ends the
+   * turn on its own schedule and the outstanding `prompt` settles with
+   * `stopReason: 'cancelled'`. The watchdog does not wait for that — it has
+   * already failed the turn — which is why {@link AcpPromptConnection.cancel}
+   * is best effort by contract.
+   */
+  async cancel(params: { sessionId: string }): Promise<void> {
+    await this.#connection.cancel({ sessionId: params.sessionId })
   }
 
   async extMethod(

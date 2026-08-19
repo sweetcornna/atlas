@@ -57,7 +57,7 @@ describe('durable admission ledger', () => {
   test('advances detected to admitted to read without going backwards', () => {
     ledger.append(detected())
     expect(ledger.query().pending).toEqual([
-      { ...detected(), phase: 'detected' },
+      { ...detected(), attempts: 0, phase: 'detected' },
     ])
 
     ledger.append({ kind: 'admitted', messageId: MESSAGE_ID, at: 2 })
@@ -110,6 +110,7 @@ describe('durable admission ledger', () => {
     })
     expect(ledger.query().pending[0]).toEqual({
       ...detected(),
+      attempts: 0,
       phase: 'admitted',
       admittedAt: 2,
     })

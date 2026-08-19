@@ -3,7 +3,12 @@
 
 import { unlinkSync } from 'node:fs'
 import type { Server, ServerWebSocket, TLSOptions, WebSocketHandler } from 'bun'
-import { LIMITS, type QianmoMessage } from '@qianmo/protocol'
+import {
+  LIMITS,
+  peerSupportsType,
+  type MessageType,
+  type QianmoMessage,
+} from '@qianmo/protocol'
 import type {
   InboundContext,
   InboundHandler,
@@ -72,6 +77,16 @@ export interface TransportServerOptions {
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
   readonly onMessage: InboundHandler
+  /**
+   * Message types this endpoint implements, declared to every dialer in the
+   * ready frame. Omit to declare nothing, which a dialer reads as the legacy
+   * floor.
+   *
+   * Supplied by the host for the same reason the client's is: this package
+   * moves envelopes and never reads their `type`, so it has no way to know
+   * which ones the node above it actually handles.
+   */
+  readonly supportedTypes?: readonly string[]
   readonly onPeerDisconnect?: (
     peerNode: string,
     remainingPeerConnections: number,
@@ -175,6 +190,7 @@ class ServerTransportChannel implements TransportChannel {
   #holds = 0
   #closed = false
   #reclaim: ReturnType<typeof setTimeout> | null = null
+  #peerTypes: readonly string[] | undefined
 
   constructor(options: {
     readonly id: string
@@ -212,6 +228,15 @@ class ServerTransportChannel implements TransportChannel {
     return this.#outbox.pending
   }
 
+  /** What the dialer declared on the auth frame of the current connection. */
+  get peerSupportedTypes(): readonly string[] | undefined {
+    return this.#peerTypes
+  }
+
+  supports(type: MessageType): boolean {
+    return peerSupportsType(this.#peerTypes, type)
+  }
+
   isReady(): boolean {
     return this.#socket !== null && !this.#closed
   }
@@ -247,8 +272,15 @@ class ServerTransportChannel implements TransportChannel {
     }
   }
 
-  bind(socket: ServerWebSocket<ConnectionState>): void {
+  bind(
+    socket: ServerWebSocket<ConnectionState>,
+    supportedTypes?: readonly string[],
+  ): void {
     if (this.#closed) throw new Error('transport channel is closed')
+    // Replaced, not merged: the declaration belongs to the handshake that just
+    // happened. A peer that reconnected on an older build declares less, and
+    // carrying the old union forward would keep sending it types it dropped.
+    this.#peerTypes = supportedTypes
     const previous = this.#socket
     this.#socket = socket
     if (previous !== null && previous !== socket) {
@@ -483,7 +515,7 @@ export function startTransportServer(
         ws.data.authed = true
         ws.data.node = result.node
         ws.data.channel = channel
-        channel.bind(ws)
+        channel.bind(ws, frame.supportedTypes)
         peerConnections.set(
           result.node,
           (peerConnections.get(result.node) ?? 0) + 1,
@@ -492,7 +524,13 @@ export function startTransportServer(
           node: result.node,
           channelId: result.channelId,
         })
-        send(ws, { t: FrameType.Ready, v: FRAME_VERSION })
+        send(ws, {
+          t: FrameType.Ready,
+          v: FRAME_VERSION,
+          ...(options.supportedTypes === undefined
+            ? {}
+            : { supportedTypes: options.supportedTypes }),
+        })
         channel.ready()
         return
       }

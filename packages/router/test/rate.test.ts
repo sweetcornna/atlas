@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import { LIMITS } from '@qianmo/protocol'
 import {
   InboundBudget,
+  NotifyBudget,
   RUNTIME_RATE,
   RuntimeThrottle,
   TokenBucket,
@@ -141,6 +142,109 @@ describe('the two layers are independent', () => {
     // puts the runtime layer outside that document. Both statements can only
     // stay true if this value is absent from `LIMITS`.
     expect(Object.values(LIMITS)).not.toContain(RUNTIME_RATE.capacity)
+  })
+})
+
+describe('outbound notify budget — a promise, not an allowance', () => {
+  test('the 61st notification in a minute is refused', () => {
+    const budget = new NotifyBudget()
+    for (let index = 0; index < LIMITS.notifyRatePerMinute; index += 1) {
+      expect(budget.admit(CLOCK + index)).toBe(true)
+    }
+    expect(budget.admit(CLOCK + LIMITS.notifyRatePerMinute)).toBe(false)
+    expect(LIMITS.notifyRatePerMinute).toBe(60)
+  })
+
+  test('a bucket would let a second batch through mid-window; this does not', () => {
+    // The measurable difference between the two mechanisms, and the reason the
+    // choice is not cosmetic. Same ceiling, same window, same clock: drain at
+    // t=0, ask again halfway through.
+    const bucket = new TokenBucket(LIMITS.notifyRatePerMinute, 60_000, CLOCK)
+    const budget = new NotifyBudget()
+    for (let index = 0; index < LIMITS.notifyRatePerMinute; index += 1) {
+      bucket.tryConsume(CLOCK)
+      budget.admit(CLOCK)
+    }
+
+    // Half a minute on, the bucket has refilled half its capacity and hands out
+    // thirty more — sixty and then thirty inside one minute, i.e. ninety.
+    expect(bucket.tryConsume(CLOCK + 30_000)).toBe(true)
+    // The window still holds all sixty, so it says no. Sixty a minute means
+    // sixty a minute.
+    expect(budget.admit(CLOCK + 30_000)).toBe(false)
+  })
+
+  test('slots come back one at a time, as each admission ages out', () => {
+    // Staggered rather than all at one instant, because that is the shape a
+    // real sender has and it is what shows the window releasing individually
+    // instead of in a batch.
+    const budget = new NotifyBudget()
+    for (let index = 0; index < LIMITS.notifyRatePerMinute; index += 1) {
+      expect(budget.admit(CLOCK + index)).toBe(true)
+    }
+    expect(budget.remaining(CLOCK + 59)).toBe(0)
+
+    // A millisecond before the oldest turns 60 s old, still nothing.
+    expect(budget.admit(CLOCK + 59_999)).toBe(false)
+    // The window is half-open — `(now - 60s, now]` — so at exactly 60 s the
+    // first admission leaves it, and exactly one slot opens with it.
+    expect(budget.admit(CLOCK + 60_000)).toBe(true)
+    expect(budget.admit(CLOCK + 60_000)).toBe(false)
+    // The second admission was a millisecond behind the first, and so is its
+    // slot. No batch, ever.
+    expect(budget.admit(CLOCK + 60_001)).toBe(true)
+    expect(budget.admit(CLOCK + 60_001)).toBe(false)
+  })
+
+  test('a quiet hour restores the ceiling and not a token more', () => {
+    const budget = new NotifyBudget()
+    for (let index = 0; index < LIMITS.notifyRatePerMinute; index += 1) {
+      budget.admit(CLOCK)
+    }
+    const later = CLOCK + 3_600_000
+    expect(budget.remaining(later)).toBe(LIMITS.notifyRatePerMinute)
+    for (let index = 0; index < LIMITS.notifyRatePerMinute; index += 1) {
+      expect(budget.admit(later)).toBe(true)
+    }
+    // The silence bought a full window, never a doubled one.
+    expect(budget.admit(later)).toBe(false)
+  })
+
+  test('retryAfterMs names the instant a slot opens', () => {
+    const budget = new NotifyBudget({ perMinute: 2, windowMs: 1_000 })
+    expect(budget.retryAfterMs(CLOCK)).toBe(0)
+    budget.admit(CLOCK)
+    budget.admit(CLOCK + 400)
+    expect(budget.admit(CLOCK + 500)).toBe(false)
+    // The oldest admission ages out 1000 ms after it happened.
+    expect(budget.retryAfterMs(CLOCK + 500)).toBe(500)
+    expect(budget.admit(CLOCK + 1_001)).toBe(true)
+  })
+
+  test('a clock that goes backwards does not open the window', () => {
+    const budget = new NotifyBudget({ perMinute: 1, windowMs: 1_000 })
+    expect(budget.admit(CLOCK)).toBe(true)
+    expect(budget.admit(CLOCK - 10_000)).toBe(false)
+  })
+
+  test('the ceiling comes from LIMITS, and the window is not keyed', () => {
+    // Unlike the other two limiters this one answers "is this node bothering a
+    // person too much", which is one question per node, not one per peer.
+    expect(new NotifyBudget().remaining(CLOCK)).toBe(LIMITS.notifyRatePerMinute)
+    expect(new NotifyBudget().windowMs).toBe(60_000)
+  })
+
+  test('a non-positive ceiling or window is refused', () => {
+    expect(() => new NotifyBudget({ perMinute: 0 })).toThrow(RangeError)
+    expect(() => new NotifyBudget({ windowMs: 0 })).toThrow(RangeError)
+  })
+
+  test('the notify ceiling is a protocol number, unlike the runtime one', () => {
+    // It is a promise every node on the network makes, so it belongs in LIMITS
+    // — the opposite conclusion from `RUNTIME_RATE`, and for the opposite
+    // reason (that one is a local knob protocol.md §6.4 keeps out of scope).
+    expect(Object.values(LIMITS)).toContain(LIMITS.notifyRatePerMinute)
+    expect(new NotifyBudget().remaining(CLOCK)).toBe(LIMITS.notifyRatePerMinute)
   })
 })
 

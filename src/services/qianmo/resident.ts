@@ -6,12 +6,20 @@ import { Readable, Writable } from 'node:stream'
 import {
   AcpResidentTurnPort,
   createResidentAcpStream,
+  DEFAULT_RESIDENT_INACTIVITY_MS,
   FileAdmissionLedger,
+  FileDeliveryLedger,
   FileResidentSessionStore,
+  NodeTurnExpiredError,
   NodeTurnGate,
+  pendingSessionIds,
   ResidentAcpConnection,
   ResidentDeadlineClock,
+  ResidentEstop,
+  ResidentLifecycleSentinel,
+  ResidentMemorySidecar,
   ResidentNodeRuntime,
+  ResidentNotifier,
   ResidentPoller,
   ResidentSessionManager,
   ResidentSupervisor,
@@ -19,9 +27,13 @@ import {
   type ResidentTimingSink,
 } from '@qianmo/resident'
 import type {
+  DeliveryLedgerEntry,
   ResidentChildConnection,
+  ResidentNotifyAuditSink,
   ResidentMailboxMessage,
   ResidentMailboxPort,
+  ResidentPriorLife,
+  ResidentPromptScope,
   ResidentTurnInput,
   ResidentTurnResult,
 } from '@qianmo/resident'
@@ -30,13 +42,19 @@ import {
   MessageType,
   ProtocolErrorCode,
   createAck,
+  createMessage,
   createTaskResult,
+  errorCodeForPeer,
   errorReply,
+  isNotifyPayload,
+  isTaskResultPayload,
   parseAddress,
+  peerIsPostLegacy,
   taskExpiresAt,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
+import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
   NodeRouter,
   type CapabilityGate,
@@ -62,6 +80,8 @@ import {
 } from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
+import { assembleResidentPrompt } from './residentPrompt.js'
+import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
   readonly agent: string
@@ -109,7 +129,41 @@ interface QianmoResidentOptions {
   }
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
+  /**
+   * Silence budget for one ACP turn (design §3.B10). Defaults to
+   * {@link DEFAULT_RESIDENT_INACTIVITY_MS}; `0` turns the watchdog off.
+   */
+  readonly inactivityMs?: number
+  /**
+   * How the previous life of this node ended (design §3.B2).
+   *
+   * A separate channel from `onError` because it is **evidence, not a fault**:
+   * a node that was killed last time is not a node that is failing now, and
+   * routing it through the error sink would make every restart after a `kill
+   * -9` look like a new problem. Nothing branches on it (B8).
+   */
+  readonly onPriorLife?: (prior: ResidentPriorLife) => void
   readonly onTiming?: ResidentTimingSink
+  /**
+   * Where outbound `notify` events go (design §4.1 ⑤, hermes B9).
+   *
+   * Separate from `auditSink`, which is the router's: the router only records
+   * refusals, while this path has to record the successes too — "the operator
+   * was told, at 03:14, and the console receipted it" is the whole evidence a
+   * watch job produces, and it is not a refusal.
+   */
+  readonly notifyAudit?: ResidentNotifyAuditSink
+  /**
+   * Where this node's memory store lives (design §4.4). Defaults to
+   * {@link defaultMemoryRoot}, which is derived from the identity config root.
+   *
+   * An option rather than a constant only so a test can point at a temporary
+   * directory. It is **not** a discovery path: the value is required to be
+   * absolute (see `assertNodeOwnedMemoryRoot`), because a relative root would
+   * resolve against the agent's working tree and let a `memory/` directory
+   * committed to a repository stand in for this node's memory (hermes F9).
+   */
+  readonly memoryRoot?: string
   readonly onError?: (error: unknown) => void
   readonly onReady?: (address: {
     readonly port?: number
@@ -188,6 +242,27 @@ function networkMessageId(
   return typeof msgId === 'string' && msgId.length > 0 ? msgId : undefined
 }
 
+/**
+ * Which requester's context this batch belongs to (design §4.3).
+ *
+ * Nothing new travels for this: `@qianmo/adapter` already serializes the whole
+ * envelope into the base mailbox entry, and `networkEnvelope` above already
+ * reads it back for `msgId`. So the protocol, the adapter and the base runtime
+ * are all untouched — the field was in the payload the entire time.
+ *
+ * `selectResidentSnapshot` guarantees a network entry is a batch of one, so a
+ * batch can never straddle two contexts and there is nothing to split here.
+ */
+function networkContextId(
+  messages: readonly ResidentMailboxMessage[],
+): string | undefined {
+  if (messages.length !== 1) return undefined
+  const contextId = networkEnvelope(messages[0])?.contextId
+  return typeof contextId === 'string' && contextId.length > 0
+    ? contextId
+    : undefined
+}
+
 function defaultSpawnAcp(): ChildProcess {
   const launch = buildCliLaunch(['--acp'], {
     env: {
@@ -243,6 +318,57 @@ interface ActiveResidentTask {
   settled: boolean
 }
 
+/**
+ * Re-mint a stored `task.result` for one more trip, marked as a repeat.
+ *
+ * New `msgId` and new `createdAt`, same `taskId` and `traceId`: the original
+ * envelope's delivery deadline is long gone by the time a restart gets here, so
+ * retransmitting it verbatim would earn an `E_TTL_EXPIRED` and nothing else
+ * (protocol.md §14.4③). The peer suppresses the duplicate by `taskId`, which
+ * is the correlation key it already has (rule C-1).
+ *
+ * The `redelivered` flag goes on **only for a peer that declared a post-legacy
+ * type** — rule N-1's discipline applied to a field rather than to a code. A
+ * peer older than that flag validates `task.result` by an exact key set, so
+ * sending it would not degrade to "an unfamiliar marker"; it would degrade to
+ * the whole reply being refused as malformed, which is the one outcome a
+ * redelivery must not produce. Such a peer still gets the answer, and still has
+ * `taskId` to notice it twice by.
+ *
+ * `undefined` when the stored bytes are not a `task.result` this node can
+ * rebuild — a hand-edited or truncated ledger line. The caller abandons it
+ * rather than guessing.
+ */
+function redeliveryEnvelope(
+  entry: DeliveryLedgerEntry,
+  channel: TransportChannel,
+): QianmoMessage | undefined {
+  const stored = entry.envelope as unknown as QianmoMessage
+  if (
+    typeof stored.from !== 'string' ||
+    typeof stored.to !== 'string' ||
+    typeof stored.traceId !== 'string' ||
+    typeof stored.taskId !== 'string' ||
+    !isTaskResultPayload(stored.payload)
+  ) {
+    return undefined
+  }
+  const payload = peerIsPostLegacy(channel.peerSupportedTypes)
+    ? { ...stored.payload, redelivered: true as const }
+    : stored.payload
+  return createMessage({
+    from: stored.from,
+    to: stored.to,
+    type: MessageType.TaskResult,
+    traceId: stored.traceId,
+    taskId: stored.taskId,
+    ...(typeof stored.contextId === 'string' && stored.contextId.length > 0
+      ? { contextId: stored.contextId }
+      : {}),
+    payload,
+  })
+}
+
 class ResidentDeliveryError extends Error {
   readonly code: ProtocolErrorCode
 
@@ -264,6 +390,39 @@ export class QianmoResident {
     occConfigPath('resident', 'sessions.json'),
   )
   readonly #ledgers = new Map<string, FileAdmissionLedger>()
+  /**
+   * Replies this node still owes a peer (design §3.B1).
+   *
+   * One file for the node rather than one per agent, unlike the admission
+   * ledgers above: an obligation belongs to the peer it is owed to, and the
+   * sweep that discharges it runs when *that peer* makes contact — which agent
+   * produced the answer is not a key anything looks it up by.
+   */
+  readonly #deliveries = new FileDeliveryLedger(
+    occConfigPath('resident', 'deliveries.ndjson'),
+    { onError: error => this.#options.onError?.(error) },
+  )
+  /**
+   * Notifications this node owes the hub (design §2.4③, §4.1⑤).
+   *
+   * A second file rather than a second mechanism — see
+   * `packages/resident/src/notify.ts` for why the ledger is shared and the
+   * file is not.
+   */
+  readonly #notifies = new FileDeliveryLedger(
+    occConfigPath('resident', 'notifies.ndjson'),
+    { onError: error => this.#options.onError?.(error) },
+  )
+  readonly #notifier: ResidentNotifier
+  /** Redeliveries on the wire right now, so a second sweep does not double up. */
+  readonly #redelivering = new Set<string>()
+  /** Emergency stop (design §3.B6). Existence of the file is the whole test. */
+  readonly #estop = new ResidentEstop({
+    path: occConfigPath('resident', 'ESTOP'),
+    onError: error => this.#options.onError?.(error),
+  })
+  /** Termination-cause forensics (design §3.B2). */
+  readonly #lifecycle: ResidentLifecycleSentinel
   readonly #timings: ResidentTimingRecorder
   #poller: ResidentPoller | null = null
   readonly #turn: AcpResidentTurnPort
@@ -276,10 +435,31 @@ export class QianmoResident {
   readonly #settling = new Set<Promise<void>>()
   /** One scheduler per agent workspace; empty when backups are not configured. */
   readonly #backups = new Map<string, BackupScheduler>()
+  /** Memory recall for the user-message sidecar (design §4.4). */
+  readonly #memory: ResidentMemorySidecar
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
     this.#timings = new ResidentTimingRecorder(options.onTiming)
+    this.#notifier = new ResidentNotifier({
+      node: options.node,
+      ledger: this.#notifies,
+      onError: error => this.#options.onError?.(error),
+      ...(options.notifyAudit === undefined
+        ? {}
+        : { audit: options.notifyAudit }),
+    })
+    this.#memory = new ResidentMemorySidecar({
+      store: new FileMemoryStore({
+        root: options.memoryRoot ?? defaultMemoryRoot(),
+      }),
+      onError: error => this.#options.onError?.(error),
+    })
+    this.#lifecycle = new ResidentLifecycleSentinel({
+      path: occConfigPath('resident', 'lifecycle.json'),
+      node: options.node,
+      onError: error => this.#options.onError?.(error),
+    })
     this.#turn = new AcpResidentTurnPort(
       {
         extMethod: async () => {
@@ -289,7 +469,14 @@ export class QianmoResident {
           throw new Error('resident ACP connection is not ready')
         },
       },
-      { timings: this.#timings },
+      {
+        timings: this.#timings,
+        // Turned on here and nowhere else: the port defaults it off so unit
+        // tests do not grow a timer they never asked for.
+        inactivity: {
+          timeoutMs: options.inactivityMs ?? DEFAULT_RESIDENT_INACTIVITY_MS,
+        },
+      },
     )
     this.#adapter = new InboundAdapter({
       node: options.node,
@@ -337,6 +524,18 @@ export class QianmoResident {
   }
 
   async run(): Promise<void> {
+    // Read before anything else writes: the sentinel's verdict is about the
+    // process that came before this one, and stamping first would erase it.
+    this.#options.onPriorLife?.(this.#lifecycle.start())
+    // Loaded now so an obligation left over from that previous life is counted
+    // — and its damaged lines reported — before the first peer arrives.
+    // Nothing is *sent* here: a redelivery leaves on contact from the peer,
+    // never on a connection this node opens (invariant H-2). See
+    // `#redeliverOwed`.
+    this.#deliveries.outstanding()
+    // Same reason, same discipline: notifications owed from a previous life
+    // are counted now and leave only when the hub comes back to us.
+    this.#notifies.outstanding()
     this.#deadlineClock.start()
     for (const backups of this.#backups.values()) backups.start()
     try {
@@ -345,9 +544,43 @@ export class QianmoResident {
       for (const backups of this.#backups.values()) backups.stop()
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
+      this.#deliveries.close()
+      this.#notifies.close()
+      this.#lifecycle.stop()
     }
   }
 
+  /**
+   * Take one inbound envelope as far as **durable**, and no further.
+   *
+   * The turn is started but not awaited, and that is the whole of H-3. The
+   * caller of this method is on the transport's receipt path, and a receipt is
+   * a link-layer statement — "I have this envelope and will not lose it". It
+   * was previously withheld until the ACP turn had actually been admitted,
+   * which meant that queueing behind a running turn was paid for out of the
+   * sender's 5 s receipt budget: a busy node looked, to every peer, exactly
+   * like an unreachable one.
+   *
+   * Three things this deliberately does **not** change (design §4.2(b)):
+   *
+   * - **The protocol `ack` is untouched.** It is still sent from `#ackTask`,
+   *   off `onRead`, strictly after the mailbox read flip has been committed.
+   *   AC-2's "ack is later than the durable read" line is about that message,
+   *   not about the receipt below it.
+   * - **The receipt still only leaves after a persistent write.** The mailbox
+   *   write is the last step of `InboundAdapter.deliver` and the only one with
+   *   a persistent side effect, so "receipted" continues to mean "on disk",
+   *   never "seen".
+   * - **Eviction still reads the same way.** A message the base mailbox later
+   *   evicts leaves the sender with a receipt and no ack, and it gives up at
+   *   `deliverTtlMs` — one of the three outcomes protocol.md §4.5 already
+   *   lists, not a fourth.
+   *
+   * What it does cost, stated plainly: a receipt no longer promises the work
+   * was *queued*, only that it was *kept*. A deep queue will accept a run of
+   * messages and then answer them with `E_TASK_TIMEOUT` minutes later. That is
+   * strictly better than today's silence, but it is a different promise.
+   */
   async deliver(
     message: QianmoMessage,
     verified: { readonly capIss?: string } = {},
@@ -355,17 +588,65 @@ export class QianmoResident {
     const runtime = this.#runtime
     if (runtime === null)
       throw new Error('resident ACP connection is not ready')
+    // Ahead of the write, and synchronous: the poll below no longer reports
+    // "this node hosts no such agent" back in time to stop the write.
+    try {
+      runtime.assertDeliverable(message)
+    } catch (error) {
+      throw new ResidentDeliveryError(
+        ProtocolErrorCode.E_UNKNOWN_AGENT,
+        error instanceof Error ? error.message : String(error),
+      )
+    }
     const result = await this.#adapter.deliver(message, verified)
     if (result.status === 'rejected') {
       throw new ResidentDeliveryError(result.code, result.reason)
     }
-    await runtime.deliver(message)
+    this.#startTurn(runtime, message)
     return result
+  }
+
+  /**
+   * Kick the admission loop without waiting for it.
+   *
+   * Failures raised past this point used to become a rejected transport
+   * receipt. They now take the better channel they always had: a terminal
+   * `task.result{failed}`, which carries a `ProtocolErrorCode` where a receipt
+   * carried a truncated reason string. Anything with no task behind it — local
+   * teammate mail — has nowhere to report to and goes to `onError`.
+   */
+  #startTurn(runtime: ResidentNodeRuntime, message: QianmoMessage): void {
+    void runtime.deliver(message).catch(async error => {
+      const task = this.#tasksByMessage.get(message.msgId)
+      if (task === undefined || task.settled) {
+        this.#options.onError?.(error)
+        return
+      }
+      await this.#settleTask(
+        task,
+        createTaskResult(task.envelope, task.envelope.to, {
+          outcome: 'failed',
+          code: this.#failureCodeFor(error, task),
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    })
   }
 
   /** The routing gates in force here, for tests and the AC-3 demo. */
   get router(): NodeRouter {
     return this.#router
+  }
+
+  /**
+   * The node turn gate, for tests that need to observe or occupy it.
+   *
+   * Saturating it is the only way to reach the `E_BUSY` refusal below from
+   * outside: the admission loop submits at most one turn per agent at a time,
+   * so no amount of traffic will fill a 32-deep queue through the front door.
+   */
+  get gate(): NodeTurnGate {
+    return this.#gate
   }
 
   async #receive(
@@ -380,6 +661,53 @@ export class QianmoResident {
     if (!routed.ok) {
       context.channel.send(errorReply(message, routed.code, routed.reason))
       throw new ResidentDeliveryError(routed.code, routed.reason)
+    }
+
+    // Contact from this peer is the only moment a redelivery can leave, so it
+    // is taken here — before the refusals below, which are about *this*
+    // message and say nothing about the answers already owed for earlier ones.
+    // Fire and forget: an obligation from a previous life must not delay the
+    // envelope that just arrived.
+    const peerNode = parseAddress(message.from)?.node
+    this.#redeliverOwed(context.channel, peerNode)
+    // The other half of the same rule (H-2). A notification produced while the
+    // hub was away has been sitting in its ledger; this contact is the only
+    // moment it is allowed to leave, and it leaves in the order it was made.
+    if (peerNode !== undefined) this.#notifier.drain(context.channel, peerNode)
+
+    // Emergency stop, ahead of the mailbox write for the same rule L-1 reason
+    // as the queue check below: a refusal must not spend the recipient's inbox
+    // quota. Pause-new-work only — nothing in flight is touched, because a turn
+    // that has been admitted has a `task.result` owed to someone.
+    if (this.#estop.engaged()) {
+      const reason = 'resident is halted by its ESTOP sentinel'
+      const code = errorCodeForPeer(
+        ProtocolErrorCode.E_BUSY,
+        context.channel.peerSupportedTypes,
+      )
+      context.channel.send(errorReply(message, code, reason))
+      throw new ResidentDeliveryError(code, reason)
+    }
+
+    // Queue governance, in the same place and for the same reason: a node
+    // whose turn queue is full says so *before* it writes, so the refusal does
+    // not cost the recipient an inbox slot.
+    //
+    // The check is a question to the gate rather than a refusal thrown back
+    // out of it. Once the receipt stopped waiting for the poll, a rejection
+    // raised inside the gate could no longer reach this method at all — and
+    // the design asks for both "refuse before the write" and "`#receive` sees
+    // it", which only a look-before-you-write satisfies. The gate keeps its
+    // own bound as well; that one is the hard invariant, this one is what the
+    // sender hears about.
+    if (this.#gate.saturated) {
+      const reason = `resident turn queue is full, ${this.#gate.queued} turns waiting`
+      const code = errorCodeForPeer(
+        ProtocolErrorCode.E_BUSY,
+        context.channel.peerSupportedTypes,
+      )
+      context.channel.send(errorReply(message, code, reason))
+      throw new ResidentDeliveryError(code, reason)
     }
 
     const task =
@@ -434,6 +762,29 @@ export class QianmoResident {
     this.#armTaskTimeout(task)
     this.#snapshotBeforeTask(envelope)
     return task
+  }
+
+  /**
+   * Assemble the user message one turn runs on.
+   *
+   * The work itself lives in `residentPrompt.ts`; this is the seam that gives
+   * it the memory sidecar. It runs **once per turn** — the reader writes the
+   * result into the admission ledger and every later step, including a replay
+   * after a crash, reads that stored string back. That is what makes the memory
+   * block a frozen snapshot rather than a live read.
+   */
+  #assemblePrompt(
+    messages: readonly ResidentMailboxMessage[],
+    scope: ResidentPromptScope,
+  ): string {
+    return assembleResidentPrompt({
+      messages,
+      // The batch text doubles as the ranking question. It never filters — a
+      // watch job that words things differently from the entry it needs still
+      // sees that entry, which is the point of full injection.
+      renderMemory: base => this.#memory.render(scope, base),
+      onFinding: error => this.#options.onError?.(error),
+    })
   }
 
   /**
@@ -520,6 +871,39 @@ export class QianmoResident {
     )
   }
 
+  /**
+   * Settle the task behind a record the restart breaker just retired.
+   *
+   * Usually there is no task to settle: three restarts have gone by, so the
+   * channel that asked is long gone and the request is somebody else's timeout
+   * by now. That is not a reason to skip the call — the intra-process case
+   * (a record that burns its attempts without taking the node down) does have a
+   * live task, and it deserves a real answer rather than a wait until
+   * `taskTtlMs`.
+   */
+  async #abandonTask(
+    input: ResidentTurnInput,
+    attempts: number,
+    reason: string,
+  ): Promise<void> {
+    const task = this.#taskFor(input)
+    if (task === undefined || task.settled) {
+      this.#options.onError?.(new Error(reason))
+      return
+    }
+    await this.#settleTask(
+      task,
+      createTaskResult(task.envelope, task.envelope.to, {
+        outcome: 'failed',
+        code: errorCodeForPeer(
+          ProtocolErrorCode.E_TASK_FAILED,
+          task.channel.peerSupportedTypes,
+        ),
+        reason: `${reason} (${attempts} attempts)`,
+      }),
+    )
+  }
+
   async #failTask(error: unknown, input: ResidentTurnInput): Promise<void> {
     const task = this.#taskFor(input)
     if (task === undefined || task.settled) {
@@ -531,10 +915,34 @@ export class QianmoResident {
       task,
       createTaskResult(task.envelope, task.envelope.to, {
         outcome: 'failed',
-        code: ProtocolErrorCode.E_TASK_FAILED,
+        code: this.#failureCodeFor(error, task),
         reason,
       }),
     )
+  }
+
+  /**
+   * Which code a turn's failure deserves — and which one this peer can read.
+   *
+   * A turn the gate dropped at the head of the queue did not fail; it ran out
+   * of the deadline the sender itself set, so it is `E_TASK_TIMEOUT` and not
+   * `E_TASK_FAILED`. Everything else, a full queue included, is the general
+   * failure code: `protocol.md` §4.6 closes `task.result{failed}` to exactly
+   * those two codes, and widening that contract is not this change's business
+   * — the refusal a sender acts on (`E_BUSY`) is delivered as an `error`
+   * reply from `#receive`, before any task exists.
+   *
+   * The result still goes through rule N-1 (`errorCodeForPeer`) even though
+   * both codes are legacy today: the rule is "call it wherever a code is put
+   * on the wire", and the point of that is that the next code added does not
+   * have to remember to.
+   */
+  #failureCodeFor(error: unknown, task: ActiveResidentTask): ProtocolErrorCode {
+    const code =
+      error instanceof NodeTurnExpiredError
+        ? ProtocolErrorCode.E_TASK_TIMEOUT
+        : ProtocolErrorCode.E_TASK_FAILED
+    return errorCodeForPeer(code, task.channel.peerSupportedTypes)
   }
 
   async #settleTask(
@@ -555,7 +963,11 @@ export class QianmoResident {
     // neither map any more, yet its reply is on the wire with no receipt back.
     // This set is the only remaining record that the transport still owes us
     // something.
-    const receipt = this.#awaitReceipt(task, reply)
+    // Written down *before* it goes on the wire. The whole failure this ledger
+    // closes is "the reply left and its receipt never came back", and an entry
+    // opened after the send would be missing for exactly the crash window that
+    // matters.
+    const receipt = this.#awaitReceipt(task, reply, this.#openDelivery(reply))
     // Tracked through a handle that cannot reject. The drain awaits these in
     // bulk, and the only way `#awaitReceipt` rejects is a caller's `onError`
     // sink throwing — which callers of *this* method still see, unchanged,
@@ -573,14 +985,232 @@ export class QianmoResident {
   async #awaitReceipt(
     task: ActiveResidentTask,
     reply: QianmoMessage,
+    deliveryId: string | undefined,
   ): Promise<void> {
     try {
       await task.channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+      this.#settleDelivery(deliveryId, 'delivered')
     } catch (error) {
+      // Deliberately **not** retired. An unreceipted reply stays `attempting`
+      // in the ledger, which is the entire deliverable: before this, the only
+      // trace of a lost answer was this `onError` call, and the peer waited
+      // forever for something nobody remembered owing it.
       this.#options.onError?.(error)
     } finally {
       task.releaseChannel()
     }
+  }
+
+  /**
+   * Open a delivery obligation for a terminal reply and claim its first
+   * attempt.
+   *
+   * Returns `undefined` when there is nothing to track — an address this node
+   * cannot parse, or a ledger write that failed. Both degrade to exactly the
+   * behaviour that predates this ledger, which is what fail-open means here.
+   */
+  #openDelivery(reply: QianmoMessage): string | undefined {
+    const peerNode = parseAddress(reply.to)?.node
+    if (peerNode === undefined) return undefined
+    try {
+      const deliveryId = this.#deliveries.open({
+        taskId: reply.taskId,
+        peerNode,
+        envelope: reply as unknown as Record<string, unknown>,
+      })
+      if (deliveryId === undefined) return undefined
+      this.#deliveries.attempt(deliveryId)
+      return deliveryId
+    } catch (error) {
+      this.#options.onError?.(error)
+      return undefined
+    }
+  }
+
+  #settleDelivery(
+    deliveryId: string | undefined,
+    outcome: 'delivered' | 'failed',
+  ): void {
+    if (deliveryId === undefined) return
+    try {
+      this.#deliveries.settle(deliveryId, outcome)
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  /**
+   * Hand a peer whatever this node still owes it (design §3.B1).
+   *
+   * Driven by contact **from** the peer, and that is not a convenience: rule
+   * H-2 says a node never dials, so the moment a peer's channel exists is the
+   * only moment an owed reply can leave. A peer that never comes back keeps its
+   * entry until the attempt ceiling retires it.
+   *
+   * Each redelivery is a fresh envelope carrying the same `taskId` — never a
+   * retransmission of the original, which would be refused as `E_TTL_EXPIRED`
+   * long before a restart finished (protocol.md §14.4③).
+   */
+  #redeliverOwed(
+    channel: TransportChannel,
+    peerNode: string | undefined,
+  ): void {
+    if (peerNode === undefined) return
+    let owed: readonly DeliveryLedgerEntry[]
+    try {
+      owed = this.#deliveries.outstanding(peerNode)
+    } catch (error) {
+      this.#options.onError?.(error)
+      return
+    }
+    for (const entry of owed) {
+      if (this.#redelivering.has(entry.deliveryId)) continue
+      let attempt = 0
+      try {
+        attempt = this.#deliveries.attempt(entry.deliveryId)
+      } catch (error) {
+        this.#options.onError?.(error)
+        continue
+      }
+      // `0` means the ledger just abandoned it at the ceiling, or it was gone
+      // already. Either way there is nothing left to send.
+      if (attempt === 0) continue
+      const reply = redeliveryEnvelope(entry, channel)
+      if (reply === undefined) {
+        this.#abandonDelivery(
+          entry.deliveryId,
+          'stored reply is not a task.result this node can re-mint',
+        )
+        continue
+      }
+      this.#sendRedelivery(entry.deliveryId, channel, reply)
+    }
+  }
+
+  /**
+   * Answer `qianmo/notify` from the ACP child (design §4.1⑤, §2 end to end).
+   *
+   * The agent supplies **what** to say and nothing else. Who hears it is
+   * derived here, from the task whose turn is running: the announcer is the
+   * agent that was addressed, the recipient is whoever sent the work, and the
+   * grouping key is that message's `contextId` — which for a watch job is the
+   * job id (§4.1③), so every notification from one job groups under it without
+   * the agent ever being told the id.
+   *
+   * A request with no running network task behind it is **refused, not
+   * guessed**. That case is real — a turn started by local teammate mail has
+   * no peer at all — and picking "the most recent hub" for it would send one
+   * agent's finding to a console that never asked for it.
+   */
+  async #announce(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const sessionId = params['sessionId']
+    if (typeof sessionId !== 'string') {
+      return this.#notifyRefusal('the notify request named no session')
+    }
+    const turn = this.#turn.activeTurn(sessionId)
+    const networkMsgId = turn?.networkMsgId
+    if (networkMsgId === undefined) {
+      return this.#notifyRefusal(
+        'no network task is running in this session, so there is nobody to notify',
+      )
+    }
+    const task = this.#tasksByMessage.get(networkMsgId)
+    if (task === undefined || task.settled) {
+      return this.#notifyRefusal(
+        'the task behind this turn has already been answered',
+      )
+    }
+    const peerNode = parseAddress(task.envelope.from)?.node
+    if (peerNode === undefined) {
+      return this.#notifyRefusal('the requesting peer has no parseable address')
+    }
+    const payload = {
+      kind: params['kind'],
+      severity: params['severity'],
+      summary: params['summary'],
+      observedAt: Date.now(),
+      ...(typeof params['detail'] === 'string'
+        ? { detail: params['detail'] }
+        : {}),
+      ...(typeof params['dedupKey'] === 'string'
+        ? { dedupKey: params['dedupKey'] }
+        : {}),
+      // Correlation only, never a correlation key (rule C-1) — the notify
+      // carries its own fresh `taskId`, and this says which work produced it.
+      causeTaskId: task.envelope.taskId,
+    }
+    // Validated by the protocol's own predicate rather than by a check written
+    // here: `kind` and `severity` are closed sets that live in
+    // `@qianmo/protocol`, and a second spelling of them in the host is a second
+    // thing to forget to update.
+    if (!isNotifyPayload(payload)) {
+      return this.#notifyRefusal(
+        'the notification is missing a field or names an unknown kind or severity',
+      )
+    }
+    const contextId =
+      typeof task.envelope.contextId === 'string' &&
+      task.envelope.contextId.length > 0
+        ? task.envelope.contextId
+        : task.envelope.taskId
+    const outcome = await this.#notifier.announce({
+      from: task.envelope.to,
+      to: task.envelope.from,
+      peerNode,
+      contextId,
+      payload,
+      channel: task.channel,
+    })
+    const verdict: QianmoNotifyVerdict =
+      outcome.status === 'rejected'
+        ? { status: 'rejected', detail: outcome.reason }
+        : outcome.status === 'queued' && outcome.retryAfterMs !== undefined
+          ? { status: 'queued', retryAfterMs: outcome.retryAfterMs }
+          : { status: outcome.status }
+    return { ...verdict }
+  }
+
+  #notifyRefusal(detail: string): Record<string, unknown> {
+    return { status: 'rejected', detail }
+  }
+
+  #abandonDelivery(deliveryId: string, reason: string): void {
+    try {
+      this.#deliveries.abandon(deliveryId, reason)
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  #sendRedelivery(
+    deliveryId: string,
+    channel: TransportChannel,
+    reply: QianmoMessage,
+  ): void {
+    this.#redelivering.add(deliveryId)
+    const release = channel.hold()
+    const sent = (async () => {
+      try {
+        await channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+        this.#settleDelivery(deliveryId, 'delivered')
+      } catch (error) {
+        // Left outstanding again — the attempt was spent, and the ceiling is
+        // what stops this rather than any judgement made here.
+        this.#options.onError?.(error)
+      } finally {
+        this.#redelivering.delete(deliveryId)
+        release()
+      }
+    })()
+    // Tracked with the settle receipts so teardown drains it too: a redelivery
+    // in flight is exactly as much "on the wire with no receipt yet" as a first
+    // delivery is.
+    this.#settling.add(sent)
+    void sent.finally(() => {
+      this.#settling.delete(sent)
+    })
   }
 
   async #failActiveTasks(reason: string): Promise<void> {
@@ -618,7 +1248,6 @@ export class QianmoResident {
    * {@link #failActiveTasks} has always cost on the same path.
    */
   async #drainReplyReceipts(): Promise<void> {
-    if (this.#settling.size === 0) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<void>(resolve => {
       timer = setTimeout(resolve, TASK_REPLY_RECEIPT_TIMEOUT_MS)
@@ -629,8 +1258,14 @@ export class QianmoResident {
     // Every wait carries its own timeout and nothing new is admitted once the
     // listener closes, so this terminates on its own; the deadline is the
     // backstop that keeps a peer that keeps talking from extending it.
+    //
+    // Notifications are drained in the same breath: one on the wire is in
+    // exactly the position a reply is — sent, unreceipted — and leaving it out
+    // would put the fault this method exists to stop back on the other path.
+    // Its own settle never rejects, so it needs no guard of its own.
     const drained = (async () => {
       while (this.#settling.size > 0) await Promise.all([...this.#settling])
+      await this.#notifier.settle()
     })()
     try {
       await Promise.race([drained, deadline])
@@ -698,6 +1333,10 @@ export class QianmoResident {
         onSessionUpdate: params => {
           this.#turn.handleSessionUpdate(params)
         },
+        onExtMethod: async (method, params) =>
+          method === ACP_NOTIFY_METHOD
+            ? await this.#announce(params)
+            : undefined,
       })
       this.#turn.replaceConnection(connection)
 
@@ -705,6 +1344,14 @@ export class QianmoResident {
         connection,
         store: this.#sessions,
         agents: this.#options.agents,
+        // GC exemption ③: a session the admission ledger still has a pending
+        // record for is holding a message this node already promised to
+        // handle. Materialize every agent's ledger, not just the ones already
+        // opened, or the exemption silently covers a subset.
+        pendingSessionIds: () =>
+          pendingSessionIds(
+            this.#options.agents.map(agent => this.#ledger(agent.agent)),
+          ),
       })
       await sessions.start()
       for (const agent of this.#options.agents) {
@@ -726,18 +1373,25 @@ export class QianmoResident {
         team: this.#options.team,
         mailbox: this.#mailbox,
         turn: this.#turn,
-        formatPrompt: messages => formatTeammateMessages([...messages]),
+        formatPrompt: (messages, scope) =>
+          this.#assemblePrompt(messages, scope),
         accepts: message => !isStructuredProtocolMessage(message.text),
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,
+        contextId: networkContextId,
+        deadlineOf: message => this.#taskDeadlineOf(message),
+        sessions,
         timings: this.#timings,
         gate: this.#gate,
         agents: this.#options.agents.map(agent => ({
           agent: agent.agent,
-          sessionId: sessions.sessionOf(agent.agent),
           ledger: this.#ledger(agent.agent),
         })),
         onRead: (input, readAt) => this.#ackTask(input, readAt),
+        onAbandoned: async (input, attempts, reason) => {
+          await this.#abandonTask(input, attempts, reason)
+        },
+        onBreakerError: error => this.#options.onError?.(error),
         onTurnResult: async (input, result) => {
           await this.#completeTask(input, result)
         },
@@ -770,8 +1424,16 @@ export class QianmoResident {
 
       poller = new ResidentPoller({
         poll: async () => {
+          // Cheap on all but one call in sixty; see the constant's comment for
+          // why the cadence is not configurable.
+          this.#lifecycle.heartbeat()
           await runtime?.pollAll()
         },
+        // The admission loop is the only thing that turns an unread mailbox
+        // entry into a turn, so skipping it here is what makes "no new work"
+        // true at the source — including for mail that arrived before the
+        // brake was pulled. Nothing running is touched.
+        paused: () => this.#estop.engaged(),
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),
@@ -790,6 +1452,35 @@ export class QianmoResident {
       await stop()
       throw error
     }
+  }
+
+  /**
+   * When the task behind one mailbox entry stops being worth a turn, in this
+   * process's clock.
+   *
+   * Two halves, both load-bearing:
+   *
+   * - The deadline comes off the envelope the adapter already embedded in the
+   *   entry — the same place `networkMessageId` and `networkContextId` read
+   *   from — so nothing new travels for it.
+   * - It is **shifted onto the local clock** before it leaves, exactly the way
+   *   `InboundAdapter` reports its own `deadlineAt`. The freeze-aware clock
+   *   subtracts time the node spent paused, so comparing a raw envelope
+   *   deadline against `Date.now()` would declare every in-flight task dead in
+   *   the same millisecond a suspended node came back (protocol.md §5.3).
+   */
+  #taskDeadlineOf(message: ResidentMailboxMessage): number | undefined {
+    const envelope = networkEnvelope(message)
+    if (envelope === undefined) return undefined
+    const createdAt = envelope.createdAt
+    if (typeof createdAt !== 'number' || typeof envelope.taskTtlMs !== 'number')
+      return undefined
+    // The wrapper holds a serialized envelope, so this is a re-typing of what
+    // it already is rather than a claim about it — and the two fields
+    // `taskExpiresAt` reads have just been checked. Going through the protocol
+    // helper keeps the deadline formula spelled once.
+    const expiresAt = taskExpiresAt(envelope as unknown as QianmoMessage)
+    return expiresAt + Date.now() - this.#deadlineClock.nowFor(createdAt)
   }
 
   #ledger(agent: string): FileAdmissionLedger {

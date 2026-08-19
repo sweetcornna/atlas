@@ -169,13 +169,24 @@ v0.1 信封（现状信封定义在 `packages/protocol/src/message.ts:43-62`；�
 | `ack` | 处理方 → 请求方 | **新增**。A 类 ack，语义严格受限，见 §4 |
 | `task.result` | 处理方 → 请求方 | 任务的终局回复（成功或失败），按 `taskId` 相关 |
 | `ping` / `pong` | 双向 | 存活探测。不产生 ack，不进任务状态机 |
-| `wake` | activator → 目标节点 | 唤醒休眠节点。**需要 ack**（AC-2 的唤醒链路要它） |
+| `wake` | activator → 目标节点 | 唤醒休眠节点。**不产生协议 ack**，投递保证到「传输回执」为止（P13.5 定夺，理由见 §14.8） |
 | `error` | 任意 | 投递或处理失败，payload 携带 `ProtocolErrorCode`（`packages/protocol/src/errors.ts:5-26`） |
 | `resource.request` / `resource.offer` / `resource.grant` / `resource.release` | 借方 ↔ 贷方 | **P5.2 新增**：资源协商四段式，定义见 **§13**。本表只列名，不复制语义 |
+| `notify` | 处理方 → 已建立通道的对端 | **P13.2 新增**：节点主动发起的通知。不产生 ack、不进任务状态机、**每条自带全新 `taskId`**，定义见 **§14**。本表只列名，不复制语义 |
 
 现状枚举缺 `ack`（`message.ts:12-25`），列入 §10。
 
 **v0.1 明确不定义 `task.progress`。**「已开始执行 / 已加载上下文」这类中间语义一律由 `task.result` 承担——引入进度类型会立刻把 §4 的两类 ack 边界搅浑（进度事件必然触碰旧上下文，属 B 类），且 M0 无判据要求（N-12 的同类取舍）。
+
+**`notify` 不是 `task.progress` 的复活。**两者容易被当成同一件事，但上一段否决 `task.progress` 的理由**没有一条**落在 `notify` 上：
+
+| 否决 `task.progress` 的理由 | `notify` 的情况 |
+|---|---|
+| 进度事件必然触碰旧会话上下文 ⇒ 属 B 类 ack，会搅浑 §4 的边界 | `notify` **不产生任何 ack**（§14.5），因此没有可搅浑的边界 |
+| 它是某个在途任务的中间态 ⇒ 复用该任务的 `taskId`、进任务状态机 | `notify` **不复用任何既有 `taskId`**（§14.3），**不进任务状态机**（§8） |
+| M0 无判据要求 | M1「第二产品线验证」的值守场景以它为载体（roadmap S12 / P13.6） |
+
+一句话：`task.progress` 是「某个任务进行到哪了」，`notify` 是「有件事要告诉你」——后者根本不指向某个在途任务，`causeTaskId` 只是审计线索而非相关键。
 
 ---
 
@@ -255,21 +266,54 @@ ack 从发出到回到请求方，链路逐段如下（**数值一律指向出�
 
 实现上优先用文件监视：信箱的每次写入都是**临时文件 + `rename` 原子替换**（`teammateMailbox.ts:166-169`），因此每次变更都会产生一个 rename 事件。**但 `fs.watch` 在 gVisor / 冻结-唤醒下的行为未验证**（§12），所以协议只规定语义、不规定机制：**允许轮询实现，观察周期不得大于基座对应形态的轮询周期**（否则平白多加一个基座周期的延迟）。
 
+#### 4.5.1 传输回执 ≠ 协议 ack（P13.3，两层不许合并）
+
+本节到此为止说的全是**协议 `ack`**。它下面还有一层，两者容易被当成一件事，实现上也确实曾经被绑在一起：
+
+| | 传输回执 `ReceiptFrame` | 协议 `ack` |
+|---|---|---|
+| 层次 | 链路层，`@qianmo/transport` 的帧 | 应用层，一条 `QianmoMessage` |
+| 承诺 | **「这条信封我收下了，不会丢」** | **「这条消息已经进了目标智能体的输入」** |
+| 发出点 | 入站适配器写完基座信箱之后（`InboundAdapter.deliver` 返回） | 观察到 `read` 翻转之后（本节全文） |
+| 预算 | 发送方 `sendAndWait` 的 5 s | AC-2 的 60 s ack 线 |
+| 到不了的表现 | `Rejected` 回执 / 超时 | `error(E_EVICTED)` / `error(E_TTL_EXPIRED)`（上表三行） |
+
+**P13.3 之前它们是绑在一起的**：常驻宿主的 `#receive` 一路 await 到 ACP turn 被受理才返回，回执才发得出去。于是**排队 = 回执迟迟不回 = 发送方 5 s 超时**——一个正在忙的节点，在每个对端眼里等同于失联的节点（H-3）。解耦后回执只等到信箱写入为止，轮询照旧由 500 ms 定时器拉起。
+
+**与本节 AC-2 结论的相容性**（四条，缺一不可）：
+
+1. **动的不是同一个东西。**协议 ack 的发出点一行未动，仍严格晚于 `markRead` 成功翻转。
+2. **回执提早到的那个点仍是持久点。**基座信箱写入是这条路径上唯一有持久副作用的一步、且被刻意排在最后，所以「回执已发」仍然意味着「已落盘」，不是「我看到了」。
+3. **驱逐的区分不受影响。**上表三行一行不改：被驱逐的消息表现为「**回执**到了、**ack** 永远不来」，然后在 `deliverTtlMs` 上判 `expired`——本节反对的是让 **ack** 写完即回，而这里写完即回的是回执。没有第四种观察结果。
+4. **失败上报的通道更宽而不是更窄。**信箱写入之后发生的失败（账本完整性、turn 失败）不再能进回执，但它们本来就有更好的通道：`task.result{failed}` 带 `ProtocolErrorCode`，而回执只带一个截断的 reason 串。
+
+**代价必须如实写**：发送方 5 s 内拿到的回执，**只保证「已落盘」，不保证「已排上队」**。一个队列很深的节点会连续回 `Accepted`，然后在几分钟后回一批 `E_TASK_TIMEOUT`。这不是退步（此前是既拿不到回执也拿不到结果），但它是**行为变化**：任何依据「拿到回执 ⇒ 对方已经开始做」来估算的调用方都要改。
+
+**一处必须保持同步的检查**：「这条消息是发给本节点的、且该 agent 已配置」在信箱写入**之前**同步判定（`ResidentNodeRuntime.assertDeliverable`），`E_UNKNOWN_AGENT` 照旧——否则一条投给未配置 agent 的消息会先落盘再被拒，正是 rule L-1 禁止的形状。同一处还有队列上界的拒绝（`E_BUSY`，§11 的降级规则适用）。
+
 ### 4.6 `task.result` 的 payload（P4.1 落地契约）
 
-`task.result` 是任务的**唯一终态载体**（§4.3）。payload 是一个**封闭联合**，两支各自字段封闭，运行时逐支精确校验（多一个键、少一个键、两支字段混用，一律判非法）：
+`task.result` 是任务的**唯一终态载体**（§4.3）。payload 是一个**封闭联合**，两支各自必填字段封闭，运行时逐支精确校验（少一个必填键、两支字段混用、夹带任何未列出的键，一律判非法）：
 
 | 分支 | 字段 | 含义 |
 |---|---|---|
-| 成功 | `{ outcome: 'completed', content, completedAt }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
-| 失败 | `{ outcome: 'failed', code, reason, completedAt }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+| 成功 | `{ outcome: 'completed', content, completedAt, redelivered? }` | `content` 是处理方本轮 ACP turn 聚合出的正文字符串（`agent_message_chunk` 的 text 顺序拼接），不是日志、不是事件流 |
+| 失败 | `{ outcome: 'failed', code, reason, completedAt, redelivered? }` | `code` 取自 `ProtocolErrorCode`（§11）且逐个校验，未知码判非法；`reason` 是人读摘要 |
+
+**`redelivered` 是唯一的可选字段（P13.5 新增），它把校验形状从「精确键数」改成「必填子集 + 白名单」。**这条改动有三处必须一起记住，否则会被「顺手统一」掉：
+
+- **只接受 `true`，不接受 `false`**——与 `notify` 的同名字段同一条理由（§14.3）：`false` 与「不存在」是同一个事实，一个事实两种编码 = 同一条结果有两个 `fingerprint`。
+- **白名单只有这一个键**，未列出的键仍然判非法。放宽的是「有没有可选字段」，不是「payload 变开放」——对端仍然塞不进业务字段。
+- **发送侧按规则 N-1 降级**（§11.3）：只有**声明了后 legacy 类型**的对端才会收到这个字段。这是把 N-1 的纪律从「错误码」推广到「字段」，理由与 §11.3 那个陷阱逐字相同——比该字段更旧的节点用**精确键数**校验 `task.result`，收到它不会退化成「看不懂这个标记但收下结果」，而是**整条拒收**。降级后对端照样拿到答案，也照样有 `taskId` 判重（规则 C-1）。
+
+**为什么再投必须是新信封**：台账驱动的再投走「新 `msgId` + 新 `createdAt` + 同 `taskId`」，不是重传原信封——重启走完之后原信封的 `deliverTtlMs` 早已过期，原样重发只会换回一个 `E_TTL_EXPIRED`（同 §14.4③）。因此两级去重都不会静默吸收它，这正是本字段存在的意义：**重复是可见的，不是无声的。**
 
 - **失败码只用两个**：执行以失败告终用 `E_TASK_FAILED`（含 ACP turn 抛错、被取消、ACP 子进程关闭时仍有在飞任务），任务时限到期用 `E_TASK_TIMEOUT`。
 - **`reason` 不承担原因分类**——原因级 `diagnosis`（能不能重试、该谁修）归 P5.1（S-1），本文范围内不引入，也不许用 `reason` 的字符串格式偷偷承担它。
 - **不夹带 ID**：`taskId` 在信封上（规则 C-1），payload 不重复一份，与 K-1 同款裁定（§4.2）。
 - `completedAt` 是处理方本地时钟。
 
-落地见 `packages/protocol/src/message.ts` 的 `TaskResultPayload` / `createTaskResult` / `isTaskResultPayload`；负向用例（混用字段、夹带 ID、未知错误码）在 `packages/protocol/test/message.test.ts`。
+落地见 `packages/protocol/src/message.ts` 的 `TaskResultPayload` / `createTaskResult` / `isTaskResultPayload`；负向用例（混用字段、夹带 ID、未知错误码、`redelivered: false`、`redelivered` 之外的额外键）在 `packages/protocol/test/message.test.ts`。台账与再投的落地在 `packages/resident/src/delivery-ledger.ts` 与 `src/services/qianmo/resident.ts` 的 `#redeliverOwed`。
 
 ---
 
@@ -329,6 +373,17 @@ T-2 顺带解决了另一个问题：**唤醒代价不再吃掉投递预算**。
 > **落地（P4.2）**：`@qianmo/router` 的 `LoopGuard`，接线在 `@qianmo/activator` 的入站处理器与常驻节点的 `#receive` 两处（都在唤醒/写信箱之前）。落地时有一条本节没写、但不写就会当场坏掉的规则：**回复类消息（`ack` / `task.result` / `error` / `pong`）不进判环表**。它们按 C-1 带着原任务的 `taskId` 回到请求方，形状与「回访」完全一致，用判环键去判它们会在第一条 ack 上就切断 AC-2 的回程。区分函数是 `@qianmo/protocol` 的 `isReplyType`——放在协议包是因为「哪些类型是回答」属于线上契约，不属于这张表。
 
 **为什么不是节点粒度**：节点粒度会误杀合法 spiral——同一节点因不同目标地址被再次经过是正常路由；SIP 做过同样设计，RFC 3261 附录 A 把它定性为**规范级 bug**（D-2）。
+
+**规则 D-3（P13.2 新增）**：**非回复类的新消息类型必须自带 fresh `taskId`**，不得复用引发它的那个任务的 `taskId`。
+
+理由与「回复类不进判环表」是同一枚硬币的两面。回复类之所以要豁免，是因为它们**被 C-1 强制**复用请求的 `taskId`，形状与回访重合；一个非回复类的新类型没有这条强制，于是有两条路可走：
+
+- **复用引发它的 `taskId`** ——必坏。同一处理者地址 + 同一 `taskId` 的第二条消息会在判环表上命中，被判 `E_LOOP` 切断。**这个坑的形状是：第一条永远是绿的**，只有第二条起才出问题，所以「发一条通了」不构成任何证据。
+- **每条自带 fresh `taskId`，归组另用 `contextId`** ——正确。判环键因此永远 fresh，而「这几条属于同一件事」由 `contextId` 承担（`contextId` 的定义本就是「跨任务的会话上下文」，§3.1）。
+
+`notify` 是本规则的首个适用对象，也是它的实现样板：`createNotify()` **根本不提供 `taskId` 参数**（`packages/protocol/src/message.ts`），把「不许复用」从一条纪律变成结构上做不到的事。**新增非回复类类型时照此办理**——留一个 `taskId` 参数并在文档里叮嘱不要用它，等于把一个只在第二条消息上发作的 bug 留在接口上。
+
+**同样重要的是不要走另一条歧路**：给新类型发 `isReplyType` 豁免。豁免的对象是「被迫复用他人 `taskId`」的类型；一个自带 fresh id 的类型既不需要它，也不该拿——拿了等于在判环网上开一个「任何消息自称通知即可穿过」的洞。
 
 ### 6.2 `hops` 降为兜底 + 审计链
 
@@ -419,6 +474,15 @@ payloadDigest = sha256_hex( JSON.stringify(payload) )
 ---
 
 ## 8. 消息生命周期状态机
+
+**本章的状态机是任务状态机**，适用于 `task.request` 及其回复链。与 `ping` / `pong` 一样，**`notify` 不进这张表**：它不开 turn、不要求 ack、不产生终局结果，因此 `acked` / `completed` / `timeout` 这几个状态对它没有对象。它自己的三态见 §14.5：
+
+```
+created ──> sent ──> delivered      （传输回执 Accepted / Duplicate）
+                └──> expired        （投递时限到期，或回执 Rejected）
+```
+
+**注意 `delivered` 在这里的含义与 8.1 表格里的不同**，这是刻意的、也是唯一的例外：任务链上的 `delivered` 意为「已写进目标信箱」（还没送到 agent 眼前，§4.5），而 `notify` 的对端是中枢——没有信箱、没有 `read` 标志位——所以它的 `delivered` 就是传输回执所断言的那件事，到此为止，不再有下一级。**不要为了「对齐」而给 `notify` 补一个 `acked` 状态**，理由见 §14.5。
 
 ### 8.1 状态
 
@@ -671,6 +735,13 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 
 四条都不依赖模型的判断力，都能写成断言进 CI（AC-8 的用例来源）。
 
+> **落地补记（P13.7）**：上面四条是**结构性阻断**，它们回答「远端能不能命中本地的控制通道 / 冒充 leader / 伪造用户授权 / 提权」。P13.7 在同一条判定基准下补了**内容侧**的两件，判据一字未改：
+>
+> - **分隔符中和**（hermes E7）：基座渲染器把远端 `text` / `from` / `summary` 原样插进 `<teammate-message>` 标签且零转义，于是 `text` 里一条 `</teammate-message>` 就能提前关块，其后的内容读起来像宿主自己的框架。中和函数在 `@qianmo/adapter/sanitize`，与 `notice`（§9.4）互补：`notice` 说「这段是不可信的」，中和保证这段**不能改变它所在的结构**。
+> - **对组装后完整 prompt 的扫描**（hermes E5）：扫描对象是 `formatPrompt` 的**产物**而不是入参。理由与本节同源——逐字段校验答的是「这个字符串干净吗」，而一个 `from` 可以逐字段完全干净（一个带引号的普通串）却在渲染器把它插进 `teammate_id="…"` 的那一刻给标签多长出一个属性。扫描只数结构（块计数、属性名），不做「像不像注入」的判断。
+>
+> 落点与不变式清单见 `packages/resident/README.md` §3.5（不变式 39 / 40）。
+
 **记忆写入侧**：跨节点消息若被沉淀进项目记忆，按不可信输入处理，沿用 T-3 的来源 ID + 时间戳机制，不另起一套（章程 §6.1 T-7 对策④）。本文不定义记忆 schema（R-2 的活）。
 
 ---
@@ -700,6 +771,23 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `E_CAP_INSUFFICIENT` | **新增** | 权限等级不足；`user-confirmed` 非本节点签发（S-1） | 13 |
 | `E_BUDGET_EXHAUSTED` | **新增** | `costLimit` ≠ 0（M0 恒为 0，章程 N-1） | 3 |
 | `E_RESOURCE_REFUSED` | **新增（P5.2）** | 资源协商被拒：超出贷方上限（且该贷方不还价）、报价已过期、报价不存在或不属于该对端、本地授权未通过 | 不进任务状态机，见 §13 |
+| `E_BUSY` | **新增（P13.2）·非基线码** | 节点不接新活：turn 队列已满 `LIMITS.maxQueuedTurns`，或运维已启急停。**发送前必须过规则 N-1** | 10 的同位（拒绝发生在写信箱之前，不吃收件箱配额） |
+
+### 11.1 规则 N-1：新增错误码不是自由加法
+
+**上表以 `E_RESOURCE_REFUSED` 那一行为界分成两段**：**含它在内、位于它之前的 19 个**是**基线码集**（每个 v0 节点都认），`E_BUSY` 起是**基线之后新增的码**。这条界线不是编目癖好，它对应一个真实且不明显的兼容陷阱。
+
+**陷阱**：`isTaskResultPayload` 校验 `code` 是否在**本地**码集内（`packages/protocol/src/message.ts`）。因此一个比某个码更旧的节点，收到携带该码的 `task.result{failed}` 时，**不会**退化成「看不懂这个失败原因但收下这条结果」——它判定整个 payload 非法，**整条消息拒收**。结果是那条已经算出来的失败结果根本没到，发送方一直等到任务时限。**「新码在旧节点上会被忽略」这个直觉在这里是反的。**
+
+> **规则 N-1**：**基线之后新增的 `ProtocolErrorCode`，只允许发给已在能力发现（§14.6）里证明自己是新版本的对端**；对其余对端一律降级为语义最近的基线码。降级表随码定义，与码同一处维护。
+>
+> 已定的降级：**`E_BUSY` → `E_RATE_LIMITED`**。两者在发送方视角的处置完全一致（等一会儿再来），损失的只是 `reason` 里的诊断细节，不是结论。
+
+落地形态（`packages/protocol/src/errors.ts` 与 `message.ts`）：`LEGACY_ERROR_CODES` 是逐条写出的基线集（**不由枚举推导**——推导出来的基线会随每次新增自己往上爬，而它存在的全部意义就是不动），`downgradeErrorCode()` 给出降级目标，`errorCodeForPeer(code, declared)` 是调用点该用的那一个：**凡是要把 `ProtocolErrorCode` 放进发给对端的消息里（`task.result{failed}`、`error`、被拒回执），都过它。**
+
+**推论：不要因为「多一种情形」就多加一个码。**每多一个码就多一份上面这套兼容负担 + 一条降级映射 + 一处得记得调用 `errorCodeForPeer` 的地方。`E_BUSY` 覆盖「队列满」与「已急停」两种情形而不是拆成两个码，就是这条推论的应用——两者对发送方是同一个处置，差异写进 `reason` 就够了。
+
+**能力发现只有一条信道，这是本规则当前的局限。**§14.6 的 `supportedTypes` 声明的是**消息类型**，而这里要判的是**错误码**。现在成立是因为 `E_BUSY` 与 `notify` 同一批发布，于是「声明了基线之外的类型」可以当作「知道基线之外的码」的代理。**将来若有一个新码不随新类型一起发布，这个代理就失效了**，届时必须给能力发现补一条独立的码集信道，而不是继续假装 `supportedTypes` 覆盖得了它。已登记进 §12.3。
 
 **为什么不复用 `E_UNKNOWN_AGENT` 表示 node 未知**：复合注册键（§2.4）下「node 未知」与「agent 未知」是同一次查表的同一种失败，多一个码只会让调用方多一个分支而拿不到更多信息。
 
@@ -713,7 +801,10 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 | `LIMITS.maxHops` | 8 |
 | `LIMITS.defaultTtlMs` | 30 s |
 | `LIMITS.ratePerMinute` | 600 |
-| `LIMITS.defaultTaskTtlMs` | **尚不存在**，需新增（§12） |
+| `LIMITS.defaultTaskTtlMs` | 5 min（P1.1 已落地，见 §5） |
+| `LIMITS.defaultNotifyTtlMs` | 2 min（P13.2，见 §14.3） |
+| `LIMITS.notifyRatePerMinute` | 60（P13.2，见 §14.5） |
+| `LIMITS.maxQueuedTurns` | 32（P13.2，见 §4.5.1） |
 
 ---
 
@@ -757,6 +848,10 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 7. **`teamContext.inProcessMailboxes` 究竟是什么仍未查清**（复核 §8④）。若 M0 选进程内形态承载阡陌节点内智能体，需在 P2.x 查清它会不会构成第二条读取路径——那会影响 §4.5 的翻转观察是否唯一。
 8. **A2A 的线上细节一律未取证**（`selection-m0.md` §6），本文按 §1.2 只做概念对齐，逐字段映射留 P6.4。
 9. **`getTeammateMailboxAttachments` 有一道 `process.env.USER_TYPE !== 'ant'` 的提前返回**（`team.ts:43-45`）——附件路径在该环境变量不为 `ant` 时**整条不生效**。本文未查证阡陌节点态下该变量的取值与设置方式，也未查证进程内路径（§4.5 第一行）是否受同一开关影响。**若 M0 依赖附件路径投递，这是必须先查清的一条**；若只用进程内 teammate 形态则不触发。
+10. **`supportedTypes`（§14.6）与 mTLS 线要给 `AuthFrame` 加的 `sig` 同在 `frames.ts` 的 v1 之内，两者的合并顺序未验证。**两条线都只能在 v1 里加可选字段（`FRAME_VERSION` 是严格相等比较，见 §14.6），因此必然改同一个文件的同一片区域。**排期不得并行**；后落的一方 rebase 而不是 merge。`docs/dev/key-distribution.md` 的 P12.3 是另一半。
+11. **规则 N-1 的能力判定目前借道 `supportedTypes`，未被独立验证过。**§11.1 末段说明了这个代理为什么现在成立（`E_BUSY` 与 `notify` 同批发布）以及它什么时候会失效（新码不随新类型发布时）。**在失效之前不要给它加第二个用途**；真到那天要补的是一条独立的码集声明信道，不是把这条继续拉长。
+12. **投递台账在 P13.5 落地了一半：`task.result` 那一半。**发送侧台账（四态 + 尝试上限 + 重启后再投 + `redelivered` 标记）已经存在，落点是 `packages/resident/src/delivery-ledger.ts`，接线在 `src/services/qianmo/resident.ts` 的 `#settleTask` / `#redeliverOwed`。**但它只挂在 `task.result` 上**——`notify` 的台账、按 `dedupKey` 的去重抑制与再投**仍不存在**（P13.6）。因此 §14.4③ 与 §14.5 描述的 `notify` 投递保证**目前只成立到「传输回执」为止**。**读本节做接线判断时以此为准。**
+    - 已落地那一半有一条形状约束值得先知道：**再投由对端的入站接触触发，本节点一次都不拨号**（不变式 H-2）。所以「重启后再投」的时刻是对端回来说第一句话的时刻，不是节点启动的时刻；一个再也不回来的对端，它的台账条目会一直留到尝试上限被 `abandoned` 收走。
 
 ---
 
@@ -818,4 +913,169 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 - 隧道宿主按**字节相等**核对自己铸出去的那一串。再验一次签名是同一件事绕远一步：只有本节点能造出这个字符串（规则 S-1），而它正是我们在报价里递出去的那一串。
 
 **PSK 是门，令牌是租约**：持有 PSK 只能连上，连上之后没有本租约的令牌一条消息也过不去。M0 不为隧道另造加密层（章程 N-3 未变），「按需」的全部内容是：协商之前没有监听，租约结束之后也没有监听。
+
+---
+
+## 14. 主动通知（`notify`）
+
+**P13.2 落地。**协议里唯一一个由 agent 侧主动发起、而不是回答谁的消息类型。设计依据 `docs/dev/resident-botization.md` §2；本节是协议承诺本身，两者不一致时以本节与代码为准。
+
+### 14.1 它是什么、方向、以及为什么必须是新类型
+
+**方向**：处理方节点 → **已经和它建立了通道的对端**。M1 内实际只有中枢一个消费者。
+
+**不做的方向**：节点 → 节点。那需要节点主动拨号，撞常驻线的「节点纯入站」不变式（`resident-botization.md` H-2）。本类型之所以能不碰它，是因为传输通道本来就是**双向**的（`packages/transport/src/channel.ts` 的 `InboundHandler` 文档逐字：*either endpoint of a **bidirectional** channel*），`notify` 走的是对端拨进来那条通道的**反方向**——**节点一次都不用拨号**。另一个节点不会拨进来，所以节点→节点这条路在本设计里没有载体，明确不做。
+
+**为什么不能借现有类型**（三条都试过，都不成立）：
+
+| 想借 | 为什么不行 |
+|---|---|
+| `task.result` | 它是终局回复，按 `taskId` 与某个请求相关，且 `isReplyType` 为真（不进判环）。用它发主动消息 = 凭空造一个没有请求的回复；判环表对它没有保护，`isTaskResultPayload` 又是字段封闭的两分支，塞不进通知语义 |
+| `task.request` | 语义是「请你干活」，会在对端开一个 turn。中枢收到不该开 turn |
+| `wake` | 语义是「把休眠节点叫起来」，方向是 activator → 节点，反过来用是语义污染 |
+
+`MessageType` 是封闭枚举，`validateMessage` 用 `isMessageType` 拒掉枚举外的 `type`（`E_BAD_TYPE`），所以也没有「先发了再说」这条路。**结论：只能新增类型，且下面六件事必须一次定死。**
+
+### 14.2 payload
+
+```ts
+NOTIFY_KINDS      = ['watch', 'task', 'health']
+NOTIFY_SEVERITIES = ['info', 'warn', 'error']
+
+interface NotifyPayload {
+  kind: 'watch' | 'task' | 'health'   // 必填。watch=值守发现 / task=既有任务的带外播报 / health=节点自述
+  severity: 'info' | 'warn' | 'error' // 必填
+  summary: string                     // 必填。一行人读摘要，非空
+  observedAt: number                  // 必填。**观察发生**的本地 epoch ms，不是发送时刻
+  detail?: string                     // 详情。超长走 §9.3 的落盘 + 引用，不改 maxMessageBytes
+  dedupKey?: string                   // 发送方幂等键。**接收方不消费它**，见 14.4③
+  redelivered?: true                  // 台账重投标记。只能是 true 或不存在，不许为 false
+  causeTaskId?: string                // 由哪个任务/值守作业引发。审计线索，**不是相关键**（不违反 C-1）
+}
+```
+
+**校验规则：白名单 + 必填子集，不是精确键数**——这是与 `ack`（K-1）的一处**刻意分歧**，必须写在这里，否则将来会有人「顺手统一」回精确键数，而那会让每一条带可选字段的 `notify` 被判非法。
+
+- 精确键数（`hasExactKeys`）对**没有可选字段**的 payload 是对的：它表达「本版本看不懂的字段就是没人校验过的字段」。`ack` 至今仍是这一类。
+- `NotifyPayload` 有四个可选字段，精确键数**表达不了**它。而精确键数额外附带的那个性质——「两端版本必须一致」——对本类型是负资产：§14.6 能力发现的全部意义就是让新发送方与旧接收方仍能共存。
+- **`task.result` 原本与 `ack` 同列，P13.5 给它加了 `redelivered` 之后改成了同一种形状**（§4.6）——一个可选字段也已经是精确键数表达不了的了。它的白名单只有一项，与这里的四项不同，但规则是同一条。
+- 白名单保住了真正要保的那条性质：**白名单之外的键仍然是拒收**，远端照样夹带不进业务字段。
+
+两处易错的细节，都已写进实现：
+
+- **`redelivered` 只接受 `true`**。`false` 与「不存在」是同一个事实，一个事实两种编码 = 同一条通知有两个 `fingerprint`，正好击穿它自己要维护的那份诚实。
+- **`summary` 没有独立长度上限**。它的上限就是每条消息都有的 `LIMITS.maxMessageBytes`。不另设一个数，是因为章程 §3.3 C-4 把协议级数值钉死为 8 项，加第 9 项要走章程修订——而这一条不值得。长内容进 `detail`，更长的按 §9.3 落盘。
+
+### 14.3 每条自带全新 `taskId`，用 `contextId` 归组
+
+这是本节最容易做错的一格，且做错了**只在第二条消息上才暴露**。
+
+- ❌ **复用引发它的任务的 `taskId`**：同一个值守作业的第二条通知会在接收方判环表上命中 `(中枢地址, 同一 taskId)`，被判 `E_LOOP` 切断。第一条永远是绿的。
+- ✅ **全新 `taskId` + `contextId` 归组**：判环键因此永远 fresh；「这几条属于同一件事」由 `contextId` 承担（一个值守作业 = 一个 `contextId`）；`causeTaskId` 放 payload 里供审计串联，**不做相关键**。
+
+**`isReplyType(notify) === false`，且理由是正面的**——不是「反正它不是回复」。`isReplyType` 存在是因为回复类被 C-1 强制复用请求的 `taskId`，形状与回访重合；`notify` 不复用任何 `taskId`，既不需要豁免也不该拿——拿了等于在判环网上开一个「任何消息自称通知即可穿过」的洞。**所以 `notify` 是进判环表的**，和 `task.request` 一样占一格。
+
+一般化规则见 §6.1 的 **D-3**。实现上，`createNotify()` **不提供 `taskId` 参数**，把这条从纪律变成结构上做不到的事。
+
+### 14.4 TTL 与去重
+
+**① 投递时限**默认 `LIMITS.defaultNotifyTtlMs`。
+
+**② 任务时限 = 投递时限。**`notify` 不进任务状态机，但 `taskTtlMs` 是信封必填字段。留成 `defaultTaskTtlMs` 会让一条投递已过期的通知在状态机口径上「还活着」几分钟，是纯误导，所以 `createNotify()` 把两者设成相等。
+
+**③ 去重只在发送方，接收方零改动。**
+
+- 接收方两级去重（`msgId` + `fingerprint`，§7.2）**一行不改**。真正的重传（at-least-once 重发同一信封）沿用同一个 `msgId`，仍被现有去重表挡住。
+- 「同一个事实被发了两次」这类**应用层**重复，由**发送方**的投递台账按 `dedupKey` 在窗口内抑制。
+- 台账驱动的**再投**（不是重传）用新信封（新 `msgId`、新 `createdAt`、同 `dedupKey`），并且**必须置 `redelivered: true`**——诚实的 at-least-once：重投可见，绝不静默重复。
+- 过期后**不重传原信封**（会被 `E_TTL_EXPIRED` 拒），走同一条「新信封 + 同 `dedupKey` + `redelivered`」的路。
+- **为什么不让接收方按 `dedupKey` 抑制**：那要求接收方为每个 `contextId` 持有一段时间窗内的键集合，是**无界的新接收方状态**；而发送方本来就得有台账（否则通道断开时通知会无痕消失）。一个机制解决两个问题，不新增第二处状态。
+
+> 台账本身是 P13.5 / P13.6 的交付物，P13.2 只定协议面。当前实际的投递保证见 §12.3 第 12 条。
+
+### 14.5 回执：有传输回执，没有协议 ack
+
+**传输回执**：走既有 `ReceiptFrame`（Accepted / Duplicate / Rejected），无改动。
+
+**协议 ack：不要求，而且不该有。**理由不是「省事」，是**范畴错误**——§4.2 把 A 类 ack 的语义钉死为「目标 agent 已把消息取进自己的输入（信箱 `read` 标志翻转）」。而 `notify` 的对端是中枢：**它不是 agent、没有信箱、没有 `read` 标志位**。硬要给它一个 ack，只能造出第二种含义的 ack，而 §4 与 AC-2 的整条论证都建立在 ack 只有一种含义上。
+
+因此 **`notify` 的投递保证 = 传输回执 + 发送方台账**，状态只有三个（§8 已列）：
+
+```
+created ──> sent ──> delivered   （回执 Accepted / Duplicate）
+                └──> expired     （投递时限到期，或回执 Rejected）
+```
+
+**不要为了对齐而给它补 `acked`。**
+
+### 14.6 能力发现：`supportedTypes`
+
+**广播实现了什么，而不是版本号。**缺省或为空 ⇒ 假定对端只会**基线 11 种**（`LEGACY_MESSAGE_TYPES`）；**基线之外的类型只在被显式广播时才使用**。
+
+**落点是传输握手，不是注册中心**，两个理由：
+
+- 注册中心的 `AgentRecord.capabilities` 是**会过期的登记**，且当前部署形态下常驻节点根本不连注册中心（由中枢代心跳）。用一份可能陈旧的登记去决定发不发一条会被拒的消息，是把两件事搞混。
+- 握手是**每条连接一次、当场权威**的，而且这条连接就是消息要走的那条。
+
+**两个方向都要带，这是本节最容易漏的一处**：
+
+| 帧 | 方向 | 谁需要它 |
+|---|---|---|
+| `AuthFrame.supportedTypes?` | 拨号方 → 监听方 | **`notify` 的发送方是监听方**（节点监听、中枢拨号、节点发通知），所以监听方必须从这里知道拨号方认不认 `notify` |
+| `ReadyFrame.supportedTypes?` | 监听方 → 拨号方 | 拨号方将来要反向发时用 |
+
+只加 `ReadyFrame` 一个方向，恰好把 `notify` 实际走的那个方向漏掉。
+
+**为什么只能在 v1 之内加可选字段**：`parseFrame` 是 `if (parsed['v'] !== FRAME_VERSION) return null`——**版本不等的帧直接被丢弃**。所以「升 `FRAME_VERSION` 让两代共存」这条路走不通，升上去只会让两代**都不能**通话。迁移只能靠可选字段，旧解析器忽略它即可。**`FRAME_VERSION` 保持为 1。**
+
+**`AuthFrame.supportedTypes` 刻意不进 MAC**，两条理由都硬：
+
+1. MAC 输入是固定的五元组，已部署的每个节点都按它算；而 `FRAME_VERSION` 又不能升。把新字段纳入 MAC = 全网握手失败，一个「加性扩展」变成不兼容改动。
+2. 这个字段**不能授予任何东西**。篡改它只会让发送方**少发**几种类型，或者发一个当场被回执拒掉的类型。两者都不是链路上攻击者靠丢帧拿不到的能力。
+
+**旧节点怎么办（逐种情形）**：
+
+| 情形 | 行为 |
+|---|---|
+| 对端 `supportedTypes` 缺省 / 为空 | 视为基线 11 种，**不发 `notify`**；发送方台账记 `unsupported`，控制台显示「该节点不支持主动通知（协议版本较旧）」 |
+| 对端声明了 `notify` | 正常发 |
+| 我方是旧节点、收到 `notify` | `validateMessage` 返回 `E_BAD_TYPE` → 回一个 Rejected 回执。这是**确定性死亡**，发送方应记住它、不无限重试（**任一次成功即清标**） |
+| 我方是新节点、对端是旧中枢 | 同上，退化为「没有主动通知」，其余功能不受影响 |
+| 帧里的 `supportedTypes` 格式非法 | **丢弃该字段**（视为缺省），不丢弃整个帧——可选加性字段的契约就是「看不懂就当没有」，降级而不是断连 |
+
+**明确不做静默降级**：不把发不出去的 `notify` 改写成 `task.request` 投给对端。那会在对端开一个它没要求的 turn，是把「能力缺失」偷换成「行为变化」。
+
+### 14.7 限流：滑动窗口，不是令牌桶
+
+`notify` 走**独立**的出站预算 `LIMITS.notifyRatePerMinute`，**不与 `LIMITS.ratePerMinute`（入站 600/min）共用，也不与运行时层令牌桶（§6.4）共用**。
+
+**为什么是滑动窗口**：令牌桶是**突发预算**，滑动窗口是**对房里那个人的承诺**。差别不在第一批——空窗口和满桶都会一次放行上限那么多——而在一批**之后**：容量 C、每分钟回填 C 的桶，可以在**一分钟之内**放出接近 2C（先花掉满桶，再花掉这一分钟回填的），也就是把「每分钟 60 条」变成某人晚上的 120 条；滑动窗口对**任何**一个窗口都只放 C。
+
+**为什么不按对端分键**：另外两个限流器分键（按发送方、按目标）是因为它们回答「这个**对端**是不是过分了」。这一个回答「这个**节点**是不是在打扰人」，而一个找到了两种吵法的节点并没有因此挣到两份预算。**一个节点一个窗口。**
+
+实现是 `@qianmo/router` 的 `NotifyBudget`（半开窗口 `(now - 60s, now]`）。**不要把它并进 `KeyedBuckets`**——AC-3「两层限流不得混写」的纪律正是为这种手痒写的。
+
+### 14.8 与 `wake` / `task.request` 的分工（不许合并）
+
+| | `wake` | `task.request` | `notify` |
+|---|---|---|---|
+| 方向 | activator / 中枢 → 节点 | 请求方 → 处理方 | **处理方 → 已连接对端** |
+| 语义 | 把节点叫起来 | 请你干活 | 我有事要告诉你 |
+| 开 turn？ | 会（经信箱） | 会 | **不会** |
+| 进任务状态机？ | 是 | 是 | **否**（与 `ping`/`pong` 同类） |
+| 进判环表 | 进 | 进 | **进**（§14.3） |
+| 需要协议 ack？ | **不需要**（P13.5 定夺，见下） | 需要 | **不需要** |
+
+#### 14.8.1 `wake` 的 ack：文档实现差的定夺（P13.5）
+
+原 §3.4 写 `wake`「**需要 ack**（AC-2 的唤醒链路要它）」，而常驻实现里 `#registerTask` 只对 `task.request` 触发，所以 `wake` 在常驻侧不产生任何协议回复。P13.5 在补 T11 盲区③（wake 常驻侧端到端）时按判据定夺：**改文档，不改实现。**四条依据，逐条可核：
+
+1. **AC-2 的 ack 线本来就不挂在 `wake` 上。**章程 §4 AC-2 的判据原文是「投递**任务消息**……对端被唤醒并在 60 s 内返回 ack 回执」——被 ack 的是那条 `task.request`，`wake` 只是把节点叫起来。所以原括注「AC-2 的唤醒链路要它」是把两条消息记成了一条；AC-2 的 ack 路径完整实现且有用例，一行都不受本条影响。
+2. **唯一的生产发送方结构上收不到 ack。**`src/cli/handlers/residentWake.ts` 的 `executeResidentWake` 等的是 `client.sendAndWait(...)` 的**传输回执**，返回 `{ msgId, taskId, receipt }` 后在 `finally` 里立刻 `client.close()`；它构造 `TransportClient` 时**没有传 `onMessage`**。也就是说：即便节点发了 ack，那条 ack 既没有接收端，也没有还开着的通道可到。
+3. **A 类 ack 的语义对 `wake` 是空的。**§4.2 把 A 类 ack 定义为「输入已进入模型输入」，它的载体是任务——ack 按 `taskId` 与一条请求相关（规则 C-1）。`wake` 的 `taskId` 后面没有任何人在等结果，为它注册一条任务只会凭空造出一个永远不会 `completed` 的任务状态机条目，并让 §8.2 的第 21 行（任务时限到期）在它身上误触发。
+4. **回执已经承担了 `wake` 需要的那句话。**发送方要知道的是「节点醒了并且收下了」，而回执的语义正是「已落盘」（§4.5.1）。`wake` 确实会经信箱开一个 turn，read 翻转也确实发生——但没有人在等它的回音。
+
+> 用例：`src/services/qianmo/__tests__/resident.integration.test.ts` 的 `wake, end to end on the resident side (T11 blind spot ③)` 两条。第二条是对照式的——同一个节点、同一条通道、同一个一直在监听的对端，`task.request` 拿到 ack 与 `task.result`，`wake` 一条回复都没有——所以「没收到 ack」是关于节点的事实，而不是关于一条已经关掉的 socket 的事实。
+>
+> **若将来要给 `wake` 加 ack，先改的是发送方**：`executeResidentWake` 得先有 `onMessage`、先不在回执处关闭连接、并且先想清楚那条 `taskId` 的任务状态机怎么退休。在那之前，改实现只会制造一条发不出去也没人收的消息。
 

@@ -47,10 +47,12 @@ export {
 export {
   DEFAULT_MAX_RATE_KEYS,
   InboundBudget,
+  NotifyBudget,
   RUNTIME_RATE,
   RuntimeThrottle,
   TokenBucket,
   type InboundBudgetOptions,
+  type NotifyBudgetOptions,
   type RuntimeThrottleOptions,
 } from './rate.js'
 

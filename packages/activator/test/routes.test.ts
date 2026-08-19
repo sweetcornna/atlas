@@ -8,6 +8,7 @@ import {
   createAck,
   createMessage,
   createTaskResult,
+  peerSupportsType,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
@@ -24,6 +25,8 @@ class RecordingChannel implements TransportChannel {
   readonly peerNode = 'node-a'
   readonly sent: QianmoMessage[] = []
   holds = 0
+  /** Undeclared, i.e. the legacy floor — what these routes have always spoken. */
+  readonly peerSupportedTypes = undefined
 
   constructor(id: string) {
     this.id = id
@@ -31,6 +34,10 @@ class RecordingChannel implements TransportChannel {
 
   get pending(): number {
     return 0
+  }
+
+  supports(type: MessageType): boolean {
+    return peerSupportsType(this.peerSupportedTypes, type)
   }
 
   isReady(): boolean {

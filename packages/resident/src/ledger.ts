@@ -32,6 +32,27 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const COMPACT_AFTER_READS = 128
 
+/**
+ * Recovery hand-offs one `detected` record survives before it is abandoned
+ * (design §3.B3, hermes B3).
+ *
+ * The gap this closes: `ResidentMailboxReader` replays every pending `detected`
+ * record on the next poll, and **nothing counted them**. If the record is what
+ * crashed the node, replaying it crashes the node again — an unbounded crash
+ * loop with no counter anywhere to stop it. The supervisor's own
+ * `maxRapidFailures` does not help: it parks the *node*, which is the outcome
+ * this breaker exists to avoid.
+ *
+ * Three, and what that buys, precisely: the record is retried on hand-offs 1
+ * and 2, and the hand-off that would be the third retires it instead. So after
+ * three restarts the record is gone and the node is serving new messages —
+ * which is the shape roadmap P13.5 asks for. A restart produces exactly one
+ * hand-off when the record kills the node during it; a record that merely fails
+ * its turn without taking the node down burns its three in place, which is the
+ * same verdict reached sooner and is equally correct.
+ */
+export const MAX_ADMISSION_RECOVERIES = 3
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -112,12 +133,8 @@ function isDetected(
   )
 }
 
-function isTransition(
-  value: Record<string, unknown>,
-): value is Record<string, unknown> & AdmissionRecord {
+function isMessageStamp(value: Record<string, unknown>): boolean {
   return (
-    exactKeys(value, ['kind', 'messageId', 'at']) &&
-    (value.kind === 'admitted' || value.kind === 'read') &&
     typeof value.messageId === 'string' &&
     UUID_PATTERN.test(value.messageId) &&
     typeof value.at === 'number' &&
@@ -126,11 +143,52 @@ function isTransition(
   )
 }
 
+function isTransition(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & AdmissionRecord {
+  return (
+    exactKeys(value, ['kind', 'messageId', 'at']) &&
+    (value.kind === 'admitted' || value.kind === 'read') &&
+    isMessageStamp(value)
+  )
+}
+
+function isRecovering(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & AdmissionRecord {
+  return (
+    exactKeys(value, ['kind', 'messageId', 'at', 'attempt']) &&
+    value.kind === 'recovering' &&
+    isMessageStamp(value) &&
+    typeof value.attempt === 'number' &&
+    Number.isInteger(value.attempt) &&
+    value.attempt >= 1
+  )
+}
+
+function isAbandoned(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & AdmissionRecord {
+  return (
+    exactKeys(value, ['kind', 'messageId', 'at', 'attempts', 'reason']) &&
+    value.kind === 'abandoned' &&
+    isMessageStamp(value) &&
+    typeof value.attempts === 'number' &&
+    Number.isInteger(value.attempts) &&
+    value.attempts >= 0 &&
+    typeof value.reason === 'string' &&
+    value.reason.length > 0
+  )
+}
+
 function isAdmissionRecord(value: unknown): value is AdmissionRecord {
   const candidate = record(value)
   return (
     candidate !== undefined &&
-    (isDetected(candidate) || isTransition(candidate))
+    (isDetected(candidate) ||
+      isTransition(candidate) ||
+      isRecovering(candidate) ||
+      isAbandoned(candidate))
   )
 }
 
@@ -176,7 +234,11 @@ export class FileAdmissionLedger implements AdmissionLedger {
   #apply(value: AdmissionRecord): void {
     if (value.kind === 'detected') {
       if (!this.#pending.has(value.messageId)) {
-        this.#pending.set(value.messageId, { ...value, phase: 'detected' })
+        this.#pending.set(value.messageId, {
+          ...value,
+          attempts: 0,
+          phase: 'detected',
+        })
       }
       return
     }
@@ -193,6 +255,20 @@ export class FileAdmissionLedger implements AdmissionLedger {
       return
     }
 
+    if (value.kind === 'recovering') {
+      const pending = this.#pending.get(value.messageId)
+      if (pending === undefined) return
+      // `max`, not `+1`: compaction writes one `recovering` record carrying the
+      // highest attempt, so replaying the file has to be idempotent.
+      this.#pending.set(value.messageId, {
+        ...pending,
+        attempts: Math.max(pending.attempts, value.attempt),
+      })
+      return
+    }
+
+    // `read` and `abandoned` are the only two retirements. See
+    // `AbandonedAdmissionRecord`.
     this.#pending.delete(value.messageId)
   }
 
@@ -252,6 +328,31 @@ export class FileAdmissionLedger implements AdmissionLedger {
     if (value.kind === 'read') this.#readsSinceCompaction++
   }
 
+  recordRecovery(messageId: string, at: number): number {
+    this.#load()
+    const pending = this.#pending.get(messageId)
+    if (pending === undefined) return 0
+    const attempt = pending.attempts + 1
+    this.append({ kind: 'recovering', messageId, at, attempt })
+    return attempt
+  }
+
+  abandon(messageId: string, at: number, reason: string): void {
+    this.#load()
+    const pending = this.#pending.get(messageId)
+    if (pending === undefined) return
+    this.append({
+      kind: 'abandoned',
+      messageId,
+      at,
+      attempts: pending.attempts,
+      reason,
+    })
+    // Retiring a record is what compaction is for; count it the same way a
+    // `read` is counted so an abandoning node still trims its file.
+    this.#readsSinceCompaction++
+  }
+
   #result(): AdmissionQueryResult {
     return {
       pending: [...this.#pending.values()].sort(
@@ -293,19 +394,38 @@ export class FileAdmissionLedger implements AdmissionLedger {
       try {
         const body = result.pending
           .flatMap(pending => {
+            // `attempts` is derived state, not a field of the `detected`
+            // record — leaving it in would make the rewritten line fail the
+            // exact-key check on the next load, which is to say compaction
+            // would corrupt the very file it just tidied.
+            const lines: string[] = []
             if (pending.phase === 'detected') {
-              const { phase, ...detected } = pending
-              return [`${JSON.stringify(detected)}\n`]
+              const { phase, attempts, ...detected } = pending
+              lines.push(`${JSON.stringify(detected)}\n`)
+            } else {
+              const { phase, attempts, admittedAt, ...detected } = pending
+              lines.push(
+                `${JSON.stringify(detected)}\n`,
+                `${JSON.stringify({
+                  kind: 'admitted',
+                  messageId: detected.messageId,
+                  at: admittedAt,
+                })}\n`,
+              )
             }
-            const { phase, admittedAt, ...detected } = pending
-            return [
-              `${JSON.stringify(detected)}\n`,
-              `${JSON.stringify({
-                kind: 'admitted',
-                messageId: detected.messageId,
-                at: admittedAt,
-              })}\n`,
-            ]
+            // One record for the whole history: the breaker only ever reads the
+            // total, and `#apply` takes the maximum so replay stays idempotent.
+            if (pending.attempts > 0) {
+              lines.push(
+                `${JSON.stringify({
+                  kind: 'recovering',
+                  messageId: pending.messageId,
+                  at: pending.detectedAt,
+                  attempt: pending.attempts,
+                })}\n`,
+              )
+            }
+            return lines
           })
           .join('')
         writeFileSync(fd, body)

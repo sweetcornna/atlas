@@ -8,6 +8,10 @@ import type {
   ResidentTurnPort,
   ResidentTurnResult,
 } from './contracts.js'
+import {
+  ResidentInactivityWatchdog,
+  type ResidentInactivityOptions,
+} from './inactivity.js'
 import type { ResidentTimingRecorder } from './timings.js'
 
 /**
@@ -32,6 +36,15 @@ export const ACP_INPUT_STATUS_METHOD = 'qianmo/input-status'
 export const ACP_SESSION_ACTIVITY_METHOD = 'qianmo/session-activity'
 
 export interface AcpPromptConnection {
+  /**
+   * Ask the agent to end the turn running in `sessionId` (ACP `session/cancel`).
+   *
+   * Optional because the only caller is the inactivity watchdog, and a
+   * connection that cannot cancel still serves every other path — the watchdog
+   * degrades to "fail the turn, let the old prompt wind down on its own",
+   * which is what every other mid-flight failure already does.
+   */
+  cancel?(params: { readonly sessionId: string }): Promise<void>
   extMethod(
     method: string,
     params: Record<string, unknown>,
@@ -59,17 +72,59 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
   >()
   readonly #timings: ResidentTimingRecorder | undefined
   readonly #now: () => number
+  readonly #inactivity: ResidentInactivityWatchdog | undefined
 
   constructor(
     connection: AcpPromptConnection,
     options: {
       readonly timings?: ResidentTimingRecorder
       readonly now?: () => number
+      /**
+       * Turn on the inactivity watchdog (design §3.B10). **Off when absent**,
+       * on purpose: this port is constructed by a dozen unit tests that have no
+       * business growing a timer, and the production host passes it explicitly.
+       */
+      readonly inactivity?: ResidentInactivityOptions
     } = {},
   ) {
     this.#connection = connection
     this.#timings = options.timings
     this.#now = options.now ?? Date.now
+    this.#inactivity =
+      options.inactivity === undefined
+        ? undefined
+        : new ResidentInactivityWatchdog({
+            ...options.inactivity,
+            // Wired here rather than by the caller because "how to stop an ACP
+            // turn" is knowledge this port has and the watchdog deliberately
+            // does not.
+            onExpired: turn => {
+              void this.#connection.cancel?.({ sessionId: turn.sessionId })
+            },
+          })
+  }
+
+  /** The inactivity budget in force, or `0` when the watchdog is off. */
+  get inactivityMs(): number {
+    return this.#inactivity?.timeoutMs ?? 0
+  }
+
+  /**
+   * The turn running in `sessionId` right now, or `undefined`.
+   *
+   * The one consumer is outbound `notify`: an agent asking to announce
+   * something has to be attributed to the task that is paying for its turn, or
+   * the host has no address to send to and no `contextId` to group by. Asking
+   * *per session* rather than "whatever is running" matters even though the
+   * node gate is currently global — invariant #15 says a correctness claim
+   * must not lean on the gate's granularity, and this is one of those claims.
+   *
+   * Read-only by construction: the entry disappears in `execute`'s `finally`,
+   * so a notification arriving after its turn ended finds nothing and is
+   * refused rather than charged to whichever task happens to be next.
+   */
+  activeTurn(sessionId: string): ResidentTurnInput | undefined {
+    return this.#active.get(sessionId)?.input
   }
 
   replaceConnection(connection: AcpPromptConnection): void {
@@ -97,11 +152,23 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
     const active = { input, content: [], firstContent: false }
     this.#active.set(input.sessionId, active)
     try {
-      const response = await this.#connection.prompt({
-        sessionId: input.sessionId,
-        messageId: input.messageId,
-        prompt: [{ type: 'text', text: input.prompt }],
-      })
+      const ask = async () =>
+        await this.#connection.prompt({
+          sessionId: input.sessionId,
+          messageId: input.messageId,
+          prompt: [{ type: 'text', text: input.prompt }],
+        })
+      // Guarded, not raced by hand: a rejection from the watchdog travels the
+      // same path an ACP transport error already does, so it reaches the
+      // sender as a `task.result{failed}` carrying the watchdog's reason
+      // rather than a bare timeout.
+      const response =
+        this.#inactivity === undefined
+          ? await ask()
+          : await this.#inactivity.guard(
+              { sessionId: input.sessionId, messageId: input.messageId },
+              ask,
+            )
       if (response.userMessageId === input.messageId) await accept()
       else if (admission !== null) await admission
       const failure = FAILED_STOP_REASONS.get(response.stopReason ?? '')
@@ -156,6 +223,11 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
   }
 
   handleSessionUpdate(params: SessionNotification): void {
+    // Every update counts as a sign of life, including ones for a session this
+    // port is not currently running a turn for (a no-op on the watchdog) and
+    // including `agent_thought_chunk` — a model thinking out loud is exactly
+    // the long-running turn B10 must not kill.
+    this.#inactivity?.touch(params.sessionId)
     const active = this.#active.get(params.sessionId)
     if (active === undefined) return
     const kind = params.update.sessionUpdate
@@ -182,6 +254,13 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
   }
 
   async handleInputAccepted(params: Record<string, unknown>): Promise<void> {
+    // Admission is itself a sign of life, and it is the step most likely to be
+    // slow on a loaded agent. Touching an unarmed session is a no-op, so an
+    // unrecognized notification still flips nothing — the invariant that
+    // `#accepted` below enforces is untouched.
+    if (typeof params.sessionId === 'string') {
+      this.#inactivity?.touch(params.sessionId)
+    }
     const messageId = params.messageId
     if (typeof messageId !== 'string') return
     await this.#accepted.get(messageId)?.()

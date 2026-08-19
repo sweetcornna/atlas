@@ -4,7 +4,9 @@
 import { describe, expect, test } from 'bun:test'
 import {
   LIMITS,
+  MessageType,
   createAck,
+  createNotify,
   createTaskResult,
   deliveryExpiresAt,
 } from '@qianmo/protocol'
@@ -121,6 +123,86 @@ describe('replies are never judged by the loop key', () => {
     const ack = createAck(request, REVIEWER, CLOCK)
     guard.admit(ack, CLOCK)
     expect(guard.size).toBe(0)
+  })
+})
+
+describe('notify passes the guard without an exemption — §14.3', () => {
+  test('a run of notifications from one watch job all read as fresh', () => {
+    // The load-bearing case, and it is the *second and third* messages that
+    // carry it: a notify that reused its causing task's id would be Fresh once
+    // and Revisited thereafter, so a test that sends one notification proves
+    // nothing at all. Three, sharing a context, is the smallest honest run.
+    const guard = new LoopGuard()
+    const job = 'watch-disk-usage'
+    const verdicts = [0, 1, 2].map(index => {
+      const message = createNotify({
+        from: REVIEWER,
+        to: PLANNER,
+        contextId: job,
+        payload: {
+          kind: 'watch',
+          severity: 'warn',
+          summary: `disk usage crossed ${80 + index}%`,
+          observedAt: CLOCK + index,
+        },
+        createdAt: CLOCK + index,
+      })
+      expect(message.contextId).toBe(job)
+      return guard.admit(message, CLOCK + index)
+    })
+    expect(verdicts).toEqual([
+      LoopVerdict.Fresh,
+      LoopVerdict.Fresh,
+      LoopVerdict.Fresh,
+    ])
+  })
+
+  test('and the guard would in fact have cut them, had the taskId been reused', () => {
+    // The negative control the test above needs to mean anything: same handler,
+    // same context, same everything — except a shared taskId. This is what
+    // `createNotify` refusing to accept one prevents, stated as an outcome.
+    const guard = new LoopGuard()
+    const shared = 'the-causing-task'
+    const verdicts = [0, 1, 2].map(index =>
+      guard.admit(
+        makeMessage({
+          from: REVIEWER,
+          to: PLANNER,
+          type: MessageType.Notify,
+          taskId: shared,
+          createdAt: CLOCK + index,
+        }),
+        CLOCK + index,
+      ),
+    )
+    expect(verdicts).toEqual([
+      LoopVerdict.Fresh,
+      LoopVerdict.Revisited,
+      LoopVerdict.Revisited,
+    ])
+  })
+
+  test('notify is recorded, unlike a reply', () => {
+    // It is not exempt, so it occupies the table like any request does. That is
+    // the price of not opening a hole any message could walk through by
+    // calling itself a notification.
+    const guard = new LoopGuard()
+    guard.admit(
+      createNotify({
+        from: REVIEWER,
+        to: PLANNER,
+        contextId: 'watch-disk-usage',
+        payload: {
+          kind: 'health',
+          severity: 'info',
+          summary: 'node is up',
+          observedAt: CLOCK,
+        },
+        createdAt: CLOCK,
+      }),
+      CLOCK,
+    )
+    expect(guard.size).toBe(1)
   })
 })
 

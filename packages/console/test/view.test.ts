@@ -652,12 +652,12 @@ describe('renderAudit', () => {
     expect(filtered).toContain('显示 1')
   })
 
-  test('the filter form offers all twelve sources plus 全部', () => {
+  test('the filter form offers all thirteen sources plus 全部', () => {
     const html = renderAudit(page(), null, NO_FILTER)
     for (const source of Object.values(AuditSource)) {
       expect(html).toContain(`value="${source}"`)
     }
-    expect(Object.values(AuditSource)).toHaveLength(12)
+    expect(Object.values(AuditSource)).toHaveLength(13)
     expect(html).toContain('全部')
   })
 

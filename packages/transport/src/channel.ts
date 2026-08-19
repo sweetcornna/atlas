@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import type { QianmoMessage } from '@qianmo/protocol'
+import type { MessageType, QianmoMessage } from '@qianmo/protocol'
 import type { SuccessfulReceiptStatus } from './outbox.js'
 
 /** Send side of one authenticated logical transport channel. */
@@ -12,6 +12,29 @@ export interface TransportChannel {
   readonly peerNode: string | null
   /** Envelopes retained until their transport receipt arrives. */
   readonly pending: number
+  /**
+   * Exactly what the peer declared in the handshake, or `undefined` when it
+   * declared nothing — the raw form, so a caller can tell "said nothing" from
+   * "said the floor". `errorCodeForPeer` needs that distinction; most callers
+   * want {@link TransportChannel.supports} instead.
+   *
+   * Replaced — not merged — at every handshake, because a peer that comes back
+   * on an older build declares less and a union would keep sending it types it
+   * no longer handles. Between handshakes it holds the last answer, which is
+   * what a caller deciding whether to queue an envelope for a peer that is
+   * momentarily down has to go on.
+   */
+  readonly peerSupportedTypes: readonly string[] | undefined
+  /**
+   * True when the peer said it implements `type`.
+   *
+   * An undeclared peer is assumed to speak the legacy floor and nothing else,
+   * so this is `false` for anything added after it. That is the whole discipline
+   * of capability discovery: **a new type is used only when it was asked for.**
+   * The alternative — send it and see — costs a round trip and a rejected
+   * receipt on every message to every older peer.
+   */
+  supports(type: MessageType): boolean
   isReady(): boolean
   isClosed(): boolean
   send(message: QianmoMessage): void
