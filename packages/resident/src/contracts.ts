@@ -37,13 +37,53 @@ export interface ReadAdmissionRecord {
   readonly at: number
 }
 
+/**
+ * One recovery hand-off of a `detected` record that outlived the life that
+ * wrote it (design §3.B3, hermes B3).
+ *
+ * Written **before** the record is acted on, which is the only ordering that
+ * survives the failure being counted: a stamp written afterwards is a stamp a
+ * crash never writes, and the loop this breaker exists to break is exactly the
+ * one where the record takes the node down before it can finish.
+ */
+export interface RecoveringAdmissionRecord {
+  readonly kind: 'recovering'
+  readonly messageId: string
+  readonly at: number
+  /** 1-based, and the value carried across compaction. */
+  readonly attempt: number
+}
+
+/**
+ * A `detected` record retired without ever being read.
+ *
+ * The **only** retirement other than `read`, and it exists so that the ledger's
+ * "a promise is kept until it is fulfilled" property has a bounded exception
+ * rather than an unbounded crash loop. It is the terminal state of the restart
+ * breaker and of nothing else.
+ */
+export interface AbandonedAdmissionRecord {
+  readonly kind: 'abandoned'
+  readonly messageId: string
+  readonly at: number
+  readonly attempts: number
+  readonly reason: string
+}
+
 export type AdmissionRecord =
   | DetectedAdmissionRecord
   | AdmittedAdmissionRecord
   | ReadAdmissionRecord
+  | RecoveringAdmissionRecord
+  | AbandonedAdmissionRecord
 
-export type PendingAdmission = DetectedAdmissionRecord &
-  (
+export type PendingAdmission = DetectedAdmissionRecord & {
+  /**
+   * Recovery hand-offs this record has already survived. `0` for one detected
+   * in this very poll.
+   */
+  readonly attempts: number
+} & (
     | { readonly phase: 'detected' }
     | { readonly phase: 'admitted'; readonly admittedAt: number }
   )
@@ -61,6 +101,14 @@ export interface AdmissionQueryResult {
 export interface AdmissionLedger {
   append(record: AdmissionRecord): void
   query(): AdmissionQueryResult
+  /**
+   * Durably count one recovery hand-off of `messageId`, returning the new
+   * total. Callers use the total to decide whether to retry or
+   * {@link AdmissionLedger.abandon}.
+   */
+  recordRecovery(messageId: string, at: number): number
+  /** Retire a pending record without a read. See the record type's comment. */
+  abandon(messageId: string, at: number, reason: string): void
   compact(): void
   close(): void
 }

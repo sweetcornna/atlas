@@ -121,6 +121,19 @@ export class ResidentAcpConnection
     })
   }
 
+  /**
+   * ACP `session/cancel`. Used by the inactivity watchdog and nothing else.
+   *
+   * A notification, so it returns as soon as it is written: the agent ends the
+   * turn on its own schedule and the outstanding `prompt` settles with
+   * `stopReason: 'cancelled'`. The watchdog does not wait for that — it has
+   * already failed the turn — which is why {@link AcpPromptConnection.cancel}
+   * is best effort by contract.
+   */
+  async cancel(params: { sessionId: string }): Promise<void> {
+    await this.#connection.cancel({ sessionId: params.sessionId })
+  }
+
   async extMethod(
     method: string,
     params: Record<string, unknown>,

@@ -22,6 +22,7 @@ export {
   type ResidentActivitySink,
 } from './acp-client.js'
 export type {
+  AbandonedAdmissionRecord,
   AdmissionIntegrityIssue,
   AdmissionLedger,
   AdmissionQueryResult,
@@ -30,6 +31,7 @@ export type {
   DetectedAdmissionRecord,
   PendingAdmission,
   ReadAdmissionRecord,
+  RecoveringAdmissionRecord,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentTurnInput,
@@ -37,7 +39,35 @@ export type {
   ResidentTurnResult,
 } from './contracts.js'
 export { ResidentDeadlineClock } from './deadline-clock.js'
-export { FileAdmissionLedger } from './ledger.js'
+export {
+  FileDeliveryLedger,
+  MAX_DELIVERY_ATTEMPTS,
+  type DeliveryIntegrityIssue,
+  type DeliveryLedger,
+  type DeliveryLedgerEntry,
+  type DeliveryPhase,
+} from './delivery-ledger.js'
+export {
+  ResidentEstop,
+  type ResidentEstopOptions,
+  type ResidentEstopStatus,
+} from './estop.js'
+export {
+  DEFAULT_RESIDENT_INACTIVITY_MS,
+  ResidentInactivityError,
+  ResidentInactivityWatchdog,
+  type ResidentInactivityOptions,
+  type ResidentInactivityTurn,
+} from './inactivity.js'
+export { FileAdmissionLedger, MAX_ADMISSION_RECOVERIES } from './ledger.js'
+export {
+  RESIDENT_LIFECYCLE_HEARTBEAT_MS,
+  ResidentLifecycleSentinel,
+  type ResidentLifecycleOptions,
+  type ResidentLifecyclePhase,
+  type ResidentLifecycleRecord,
+  type ResidentPriorLife,
+} from './lifecycle.js'
 export {
   messageCountsByIdentity,
   readCountsByIdentity,

@@ -12,6 +12,7 @@ import type {
   ResidentTurnPort,
   ResidentTurnResult,
 } from './contracts.js'
+import { MAX_ADMISSION_RECOVERIES } from './ledger.js'
 import { readCountsByIdentity } from './mailbox-identity.js'
 import { NodeTurnGate } from './turn-gate.js'
 import type { ResidentTimingRecorder } from './timings.js'
@@ -78,6 +79,31 @@ export interface ResidentMailboxReaderOptions {
   readonly deadlineOf?: (message: ResidentMailboxMessage) => number | undefined
   readonly timings?: ResidentTimingRecorder
   readonly gate?: NodeTurnGate
+  /**
+   * Recovery hand-offs one `detected` record gets before it is abandoned
+   * (design §3.B3). Defaults to {@link MAX_ADMISSION_RECOVERIES}.
+   */
+  readonly maxRecoveries?: number
+  /**
+   * A `detected` record was retired without ever being read, because it hit
+   * {@link ResidentMailboxReaderOptions.maxRecoveries}.
+   *
+   * The host settles the task behind it as failed; there is nothing else that
+   * could, because the record's whole problem is that no turn survives it.
+   */
+  readonly onAbandoned?: (
+    input: ResidentTurnInput,
+    attempts: number,
+    reason: string,
+  ) => void | Promise<void>
+  /**
+   * Where the breaker's own bookkeeping failures are reported.
+   *
+   * They are never rethrown: roadmap P13.5 puts the reliability kit on the
+   * fail-open side, so a ledger that cannot record an attempt degrades to the
+   * unbounded retry it replaced rather than to a node that stops serving.
+   */
+  readonly onBreakerError?: (error: unknown) => void
   readonly now?: () => number
   readonly newMessageId?: () => string
   readonly onRead?: (
@@ -98,6 +124,8 @@ export interface ResidentPollResult {
   readonly detected: number
   readonly recovered: number
   readonly read: number
+  /** Records retired by the restart breaker in this poll (design §3.B3). */
+  readonly abandoned: number
 }
 
 export class ResidentMailboxReader {
@@ -130,14 +158,24 @@ export class ResidentMailboxReader {
 
     let recovered = 0
     let read = 0
+    let abandoned = 0
     for (const pending of queried.pending) {
+      if (await this.#abandonIfPoison(pending)) {
+        abandoned += 1
+        continue
+      }
       const recoveredCount = await this.#recover(pending)
       recovered += 1
       read += recoveredCount
     }
 
+    // Still "there was pending work this poll" even when all of it was
+    // abandoned: the mailbox read below is skipped either way, and the next
+    // tick — 500 ms later — finds a ledger with room in it. Detecting fresh
+    // work in the same poll that just retired a poison record would put the
+    // new batch behind the same turn the old one was failing in.
     if (queried.pending.length > 0) {
-      return { detected: 0, recovered, read }
+      return { detected: 0, recovered, read, abandoned }
     }
 
     const mailbox = await this.#options.mailbox.readAll(
@@ -156,7 +194,8 @@ export class ResidentMailboxReader {
         now < (this.#options.deadlineOf?.(message) ?? Number.POSITIVE_INFINITY),
     )
     const snapshot = this.#options.selectSnapshot?.(eligible) ?? eligible
-    if (snapshot.length === 0) return { detected: 0, recovered, read }
+    if (snapshot.length === 0)
+      return { detected: 0, recovered, read, abandoned }
 
     const prompt = this.#options.formatPrompt(snapshot)
     if (prompt.length === 0) {
@@ -197,7 +236,7 @@ export class ResidentMailboxReader {
         agent: record.agent,
       })
       const marked = await this.#submit(
-        { ...record, phase: 'detected' },
+        { ...record, attempts: 0, phase: 'detected' },
         {
           onSettled: release,
           ...(batchDeadlineAt === undefined
@@ -209,6 +248,7 @@ export class ResidentMailboxReader {
         detected: snapshot.length,
         recovered,
         read: read + marked,
+        abandoned,
       }
     } catch (error) {
       release()
@@ -241,6 +281,44 @@ export class ResidentMailboxReader {
       earliest = earliest === undefined ? at : Math.min(earliest, at)
     }
     return earliest
+  }
+
+  /**
+   * The restart-storm breaker (design §3.B3): stamp this hand-off, and retire
+   * the record once it has had all the chances it gets.
+   *
+   * Returns `true` when the record was abandoned and must not be acted on.
+   *
+   * Only `detected` records are counted. An `admitted` one has already been
+   * through a prompt and needs nothing but its read flip, so it is not the
+   * shape B3 is about — the loop being broken is "replay a prompt that kills
+   * the node", and there is no prompt left on that path.
+   */
+  async #abandonIfPoison(pending: PendingAdmission): Promise<boolean> {
+    if (pending.phase === 'admitted') return false
+    const limit = this.#options.maxRecoveries ?? MAX_ADMISSION_RECOVERIES
+    const at = (this.#options.now ?? Date.now)()
+    let attempt: number
+    try {
+      attempt = this.#options.ledger.recordRecovery(pending.messageId, at)
+    } catch (error) {
+      // Fail-open. A breaker that cannot write its own counter degrades to the
+      // unbounded retry that predates it, which is worse than this batch and
+      // better than a node that refuses to serve.
+      this.#options.onBreakerError?.(error)
+      return false
+    }
+    if (attempt < limit) return false
+
+    const reason = `resident admission record ${pending.messageId} abandoned after ${attempt} recovery attempts; it did not survive a turn`
+    try {
+      this.#options.ledger.abandon(pending.messageId, at, reason)
+    } catch (error) {
+      this.#options.onBreakerError?.(error)
+      return false
+    }
+    await this.#options.onAbandoned?.(this.#turnInput(pending), attempt, reason)
+    return true
   }
 
   async #recover(pending: PendingAdmission): Promise<number> {

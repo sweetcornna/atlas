@@ -4,7 +4,13 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -27,6 +33,7 @@ import {
 } from '@qianmo/capability'
 import { ReceiptStatus, TransportClient } from '@qianmo/transport'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
+import { executeResidentWake } from '../../../cli/handlers/residentWake.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { QianmoResident } from '../resident.js'
 
@@ -722,4 +729,602 @@ describe('authorization at the terminal node (P4.3)', () => {
     resident.stop()
     await running
   }, 20_000)
+})
+
+describe('the reliability kit (P13.5)', () => {
+  /** Kinds of every record in the delivery ledger, oldest first. */
+  function deliveryRecords(): { kind: string; taskId?: string }[] {
+    const path = join(root ?? '', 'config', 'resident', 'deliveries.ndjson')
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(line => line !== '')
+      .map(line => JSON.parse(line) as { kind: string; taskId?: string })
+  }
+
+  test('an unreceipted task.result is redelivered after a restart, marked as a repeat', async () => {
+    // The traceless loss, end to end. Before this batch, a reply whose receipt
+    // never came back reached `onError` and then existed nowhere: the peer
+    // waited forever for something no part of this node remembered owing it.
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-redelivery-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+
+    // ---- first life --------------------------------------------------
+    const firstReady: string[] = []
+    const firstErrors: unknown[] = []
+    const first = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // The turn is admitted — so the peer gets its ack — and then never ends.
+      // That is what makes the loss deterministic: the reply is not produced
+      // until teardown, by which time the peer is already gone.
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      onReady: address => {
+        if (address.unix !== undefined) firstReady.push(address.unix)
+      },
+      onError: error => firstErrors.push(error),
+    })
+    const firstRun = first.run()
+    activeResident = first
+    activeRun = firstRun
+    await waitUntil(() => firstReady.length === 1)
+
+    const seen: QianmoMessage[] = []
+    const doomed = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      supportedTypes: [MessageType.Notify],
+      onMessage: message => {
+        seen.push(message)
+      },
+    })
+    await doomed.connect()
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'answer me, then lose the receipt' },
+    })
+    doomed.send(request)
+    await waitUntil(() =>
+      seen.some(
+        item => item.type === MessageType.Ack && item.taskId === request.taskId,
+      ),
+    )
+    // The peer vanishes while its turn is still running.
+    await doomed.close()
+
+    // Teardown fails the in-flight task, which is where the reply is produced
+    // — written to the ledger first, then sent to a peer that is not there.
+    first.stop()
+    await firstRun
+    activeResident = undefined
+    activeRun = undefined
+
+    const owed = deliveryRecords()
+    // The obligation is written down *before* the reply goes on the wire, so
+    // it exists even for a crash between the two.
+    expect(owed.some(item => item.kind === 'pending')).toBe(true)
+    expect(owed.some(item => item.kind === 'attempting')).toBe(true)
+    // Not retired: that is the whole point.
+    expect(owed.some(item => item.kind === 'delivered')).toBe(false)
+    expect(firstErrors.length).toBeGreaterThan(0)
+
+    // ---- second life -------------------------------------------------
+    const secondReady: string[] = []
+    const second = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) secondReady.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const secondRun = second.run()
+    activeResident = second
+    activeRun = secondRun
+    await waitUntil(() => secondReady.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const returning = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      supportedTypes: [MessageType.Notify],
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(returning)
+    await returning.connect()
+    // Contact from the peer is the trigger, and it has to be: rule H-2 says a
+    // node never dials, so the moment this peer's channel exists is the only
+    // moment an owed reply can leave.
+    returning.send(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { ask: 'the new one' },
+      }),
+    )
+
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === request.taskId,
+      ),
+    )
+    const redelivered = replies.find(
+      item =>
+        item.type === MessageType.TaskResult && item.taskId === request.taskId,
+    )
+    // A **new envelope** carrying the same correlation key, never a
+    // retransmission: the original's `deliverTtlMs` expired long before the
+    // restart finished, so re-sending it verbatim would earn an
+    // `E_TTL_EXPIRED` and nothing else (protocol.md §14.4③).
+    expect(redelivered?.msgId).not.toBe(request.msgId)
+    expect(isTaskResultPayload(redelivered?.payload)).toBe(true)
+    // The marker the peer deduplicates by. Honest at-least-once: a repeat is
+    // visible, never silent.
+    expect(redelivered?.payload).toMatchObject({
+      outcome: 'failed',
+      redelivered: true,
+    })
+
+    // And it retires once it is finally receipted, so a third life is quiet.
+    await waitUntil(() =>
+      deliveryRecords().some(item => item.kind === 'delivered'),
+    )
+  }, 45_000)
+
+  test('a peer too old for the marker still gets its answer, without the field', async () => {
+    // Rule N-1's discipline applied to a field rather than to a code. A peer
+    // that predates `redelivered` validates `task.result` by an exact key set,
+    // so sending it the flag would not degrade to "an unfamiliar marker" — it
+    // would degrade to the whole reply being refused as malformed, which is
+    // the one outcome a redelivery must not produce.
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-redelivery-legacy-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+
+    const firstReady: string[] = []
+    const firstErrors: unknown[] = []
+    const first = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // The turn is admitted — so the peer gets its ack — and then never ends.
+      // That is what makes the loss deterministic: the reply is not produced
+      // until teardown, by which time the peer is already gone.
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      onReady: address => {
+        if (address.unix !== undefined) firstReady.push(address.unix)
+      },
+      onError: error => firstErrors.push(error),
+    })
+    const firstRun = first.run()
+    activeResident = first
+    activeRun = firstRun
+    await waitUntil(() => firstReady.length === 1)
+
+    // Declares nothing, which reads as the legacy floor.
+    const seen: QianmoMessage[] = []
+    const doomed = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        seen.push(message)
+      },
+    })
+    await doomed.connect()
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'older peer' },
+    })
+    doomed.send(request)
+    await waitUntil(() =>
+      seen.some(
+        item => item.type === MessageType.Ack && item.taskId === request.taskId,
+      ),
+    )
+    await doomed.close()
+    first.stop()
+    await firstRun
+    expect(deliveryRecords().some(item => item.kind === 'delivered')).toBe(
+      false,
+    )
+    expect(firstErrors.length).toBeGreaterThan(0)
+
+    const secondReady: string[] = []
+    const second = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) secondReady.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const secondRun = second.run()
+    activeResident = second
+    activeRun = secondRun
+    await waitUntil(() => secondReady.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const returning = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(returning)
+    await returning.connect()
+    returning.send(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { ask: 'the new one' },
+      }),
+    )
+
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === request.taskId,
+      ),
+    )
+    const redelivered = replies.find(
+      item =>
+        item.type === MessageType.TaskResult && item.taskId === request.taskId,
+    )
+    // The answer still arrives, and it still validates on an older build…
+    expect(isTaskResultPayload(redelivered?.payload)).toBe(true)
+    // …because the marker was withheld. The peer still has `taskId` to notice
+    // the duplicate by, which is the correlation key it already had (C-1).
+    expect(redelivered?.payload).not.toHaveProperty('redelivered')
+  }, 45_000)
+
+  test('ESTOP refuses new work with E_BUSY, never touches a running turn, and an empty file counts', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-estop-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // The first turn is admitted and then never ends, so there is a real
+      // in-flight turn for the brake to fail to kill.
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      supportedTypes: [MessageType.Notify],
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const inFlight = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'runs across the stop' },
+    })
+    client.send(inFlight)
+    await waitUntil(() => replies.some(item => item.type === MessageType.Ack))
+
+    // `touch ESTOP` — the most obvious way a human pulls the brake, and the
+    // one an implementation that parsed contents would read as "carry on".
+    const sentinel = join(root, 'config', 'resident', 'ESTOP')
+    writeFileSync(sentinel, '')
+
+    const refused = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'arrives after the stop' },
+    })
+    await expect(
+      client.sendAndWait(refused, RECEIPT_BUDGET_MS),
+    ).rejects.toThrow()
+    const refusal = replies.at(-1)
+    expect(refusal?.type).toBe(MessageType.Error)
+    expect((refusal?.payload as { code: string }).code).toBe(
+      ProtocolErrorCode.E_BUSY,
+    )
+
+    // Rule L-1: the refusal is ahead of the mailbox write, so it does not
+    // spend the recipient's inbox quota. Only the first request is on disk.
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(1)
+
+    // Pause-new-work, not abort-running-work. The turn admitted before the
+    // brake is still alive — nothing failed it, and its ack still stands.
+    expect(
+      replies.filter(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === inFlight.taskId,
+      ),
+    ).toHaveLength(0)
+    expect(
+      replies.some(
+        item =>
+          item.type === MessageType.Ack && item.taskId === inFlight.taskId,
+      ),
+    ).toBe(true)
+  }, 25_000)
+
+  test('a turn whose ACP side goes silent fails early, and says it was inactivity', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-inactivity-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // Admits the turn, sends one chunk, then never speaks again.
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_HOLD_BUSY: '1' }),
+      inactivityMs: 400,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      // Five minutes of task budget: without the watchdog this sender waits
+      // all of it and then learns nothing.
+      payload: { ask: 'goes quiet' },
+    })
+    client.send(request)
+
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === request.taskId,
+      ),
+    )
+    const result = replies.find(item => item.type === MessageType.TaskResult)
+    expect(result?.payload).toMatchObject({
+      outcome: 'failed',
+      code: ProtocolErrorCode.E_TASK_FAILED,
+    })
+    const reason = (result?.payload as { reason: string }).reason
+    // Not a bare timeout: the sender has to be able to tell inactivity apart
+    // from a refusal or a crash, and to know that the retry which would help
+    // is one carrying a longer `taskTtlMs` — a decision only it may make.
+    expect(reason).toContain('inactivity')
+    expect(reason).toContain('taskTtlMs')
+  }, 25_000)
+})
+
+/**
+ * T11 blind spot ③, and the determination it was opened to make.
+ *
+ * `protocol.md` §3.4 says `wake` **needs an ack**; the resident produces none,
+ * because `#registerTask` fires only for `task.request`. P13.5 was handed the
+ * job of deciding which half is wrong. These tests are the evidence, and the
+ * answer is that the **document** is: see the assertions below and the note
+ * rewritten in `protocol.md` §3.4 / §14.8.
+ */
+describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
+  test('the production sender is answered by a transport receipt, and the wake still opens a turn', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const ready: { url?: string }[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      // TCP rather than a unix socket: `executeResidentWake` takes a ws URL,
+      // and running the real sender is the point of this test.
+      listen: { port: 0, hostname: '127.0.0.1' },
+      spawnAcp: spawnFixture,
+      onReady: address => ready.push(address),
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+    const url = ready[0]?.url
+    expect(url).toBeDefined()
+
+    const result = await executeResidentWake(
+      {
+        url: url as string,
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        prompt: 'wake up and look at the queue',
+        afterMs: 0,
+        timeoutMs: 10_000,
+        deliverTtlMs: 90_000,
+      },
+      PSK,
+    )
+
+    // What the only production wake sender actually waits for — and it closes
+    // its client the moment this lands, so an ack sent afterwards would have
+    // nowhere to arrive. It also passes no `onMessage` sink, so it could not
+    // read one if it did.
+    expect(result.receipt).toBe(ReceiptStatus.Accepted)
+    expect(result.taskId.length).toBeGreaterThan(0)
+
+    // The wake does everything §14.8 says it does: it lands in the mailbox and
+    // opens a turn, which is what "wake the node" means here.
+    await waitUntil(async () => (await readMailbox(AGENT, TEAM)).length === 1)
+    await waitUntil(async () =>
+      (await readMailbox(AGENT, TEAM)).every(item => item.read),
+    )
+  }, 25_000)
+
+  test('a wake produces no protocol ack, while a task.request on the same channel does', async () => {
+    // The determination, stated as a comparison so it cannot be read as "the
+    // ack machinery was broken that day": the same node, the same channel, the
+    // same connected listener — one type is acked and the other is not.
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-ack-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    // Unlike the production sender, this peer stays connected and listens —
+    // so "no ack arrived" is a fact about the node rather than about a socket
+    // that had already gone away.
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const wake = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.Wake,
+      payload: { trigger: 'manual', prompt: 'wake up' },
+    })
+    await expect(client.sendAndWait(wake, RECEIPT_BUDGET_MS)).resolves.toBe(
+      ReceiptStatus.Accepted,
+    )
+    // The wake's own turn runs to completion — the read flip happens, which is
+    // exactly the event an A-class ack would assert.
+    await waitUntil(async () => {
+      const mailbox = await readMailbox(AGENT, TEAM)
+      return mailbox.length === 1 && mailbox.every(item => item.read)
+    })
+
+    // The control: a `task.request` behind it, on this same channel.
+    const task = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'and now some work' },
+    })
+    client.send(task)
+    await waitUntil(() =>
+      replies.some(
+        item => item.type === MessageType.Ack && item.taskId === task.taskId,
+      ),
+    )
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult && item.taskId === task.taskId,
+      ),
+    )
+
+    // Nothing at all came back for the wake — no ack, and no `task.result`
+    // either, because no task was ever registered for it.
+    expect(replies.filter(item => item.taskId === wake.taskId)).toEqual([])
+  }, 25_000)
 })

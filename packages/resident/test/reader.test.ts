@@ -197,7 +197,7 @@ describe('resident mailbox admission', () => {
     const result = await reader(mailbox, turn).poll()
 
     expect(pendingBeforeExecute).toBe(true)
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(mailbox.messages[0]?.read).toBe(true)
     expect(ledger.query().pending).toEqual([])
   })
@@ -211,7 +211,7 @@ describe('resident mailbox admission', () => {
       accepts: item => item.text !== structured.text,
     }).poll()
 
-    expect(result).toEqual({ detected: 0, recovered: 0, read: 0 })
+    expect(result).toEqual({ detected: 0, recovered: 0, read: 0, abandoned: 0 })
     expect(turn.executeCalls).toHaveLength(0)
     expect(mailbox.messages[0]?.read).toBe(false)
     expect(ledger.query().pending).toEqual([])
@@ -249,7 +249,7 @@ describe('resident mailbox admission', () => {
 
     const result = await mailboxReader.poll()
 
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(mailboxReader.gate.active).toBe(true)
     finishTurn()
     while (mailboxReader.gate.active) await Promise.resolve()
@@ -354,7 +354,7 @@ describe('resident mailbox admission', () => {
         messages.length === 1 ? 'net-msg-1' : undefined,
     }).poll()
 
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(turn.executeCalls).toHaveLength(1)
     expect(turn.executeCalls[0]?.networkMsgId).toBe('net-msg-1')
     expect(turn.executeCalls[0]?.prompt).toBe(
@@ -379,7 +379,7 @@ describe('resident mailbox admission', () => {
         item.text === dead.text ? Date.now() - 1 : Date.now() + 60_000,
     }).poll()
 
-    expect(result).toEqual({ detected: 1, recovered: 0, read: 1 })
+    expect(result).toEqual({ detected: 1, recovered: 0, read: 1, abandoned: 0 })
     expect(turn.executeCalls).toHaveLength(1)
     expect(turn.executeCalls[0]?.prompt).toContain('still worth a turn')
     // Dropped from eligibility rather than skipped as a batch: skipping would
@@ -507,6 +507,7 @@ describe('resident mailbox admission', () => {
       detected: 1,
       recovered: 0,
       read: 1,
+      abandoned: 0,
     })
     await turnSettled(mailboxReader)
     expect(errors).toEqual([failure])

@@ -6,13 +6,17 @@ import { Readable, Writable } from 'node:stream'
 import {
   AcpResidentTurnPort,
   createResidentAcpStream,
+  DEFAULT_RESIDENT_INACTIVITY_MS,
   FileAdmissionLedger,
+  FileDeliveryLedger,
   FileResidentSessionStore,
   NodeTurnExpiredError,
   NodeTurnGate,
   pendingSessionIds,
   ResidentAcpConnection,
   ResidentDeadlineClock,
+  ResidentEstop,
+  ResidentLifecycleSentinel,
   ResidentNodeRuntime,
   ResidentPoller,
   ResidentSessionManager,
@@ -21,9 +25,11 @@ import {
   type ResidentTimingSink,
 } from '@qianmo/resident'
 import type {
+  DeliveryLedgerEntry,
   ResidentChildConnection,
   ResidentMailboxMessage,
   ResidentMailboxPort,
+  ResidentPriorLife,
   ResidentTurnInput,
   ResidentTurnResult,
 } from '@qianmo/resident'
@@ -32,10 +38,13 @@ import {
   MessageType,
   ProtocolErrorCode,
   createAck,
+  createMessage,
   createTaskResult,
   errorCodeForPeer,
   errorReply,
+  isTaskResultPayload,
   parseAddress,
+  peerIsPostLegacy,
   taskExpiresAt,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -112,6 +121,20 @@ interface QianmoResidentOptions {
   }
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
+  /**
+   * Silence budget for one ACP turn (design §3.B10). Defaults to
+   * {@link DEFAULT_RESIDENT_INACTIVITY_MS}; `0` turns the watchdog off.
+   */
+  readonly inactivityMs?: number
+  /**
+   * How the previous life of this node ended (design §3.B2).
+   *
+   * A separate channel from `onError` because it is **evidence, not a fault**:
+   * a node that was killed last time is not a node that is failing now, and
+   * routing it through the error sink would make every restart after a `kill
+   * -9` look like a new problem. Nothing branches on it (B8).
+   */
+  readonly onPriorLife?: (prior: ResidentPriorLife) => void
   readonly onTiming?: ResidentTimingSink
   readonly onError?: (error: unknown) => void
   readonly onReady?: (address: {
@@ -267,6 +290,57 @@ interface ActiveResidentTask {
   settled: boolean
 }
 
+/**
+ * Re-mint a stored `task.result` for one more trip, marked as a repeat.
+ *
+ * New `msgId` and new `createdAt`, same `taskId` and `traceId`: the original
+ * envelope's delivery deadline is long gone by the time a restart gets here, so
+ * retransmitting it verbatim would earn an `E_TTL_EXPIRED` and nothing else
+ * (protocol.md §14.4③). The peer suppresses the duplicate by `taskId`, which
+ * is the correlation key it already has (rule C-1).
+ *
+ * The `redelivered` flag goes on **only for a peer that declared a post-legacy
+ * type** — rule N-1's discipline applied to a field rather than to a code. A
+ * peer older than that flag validates `task.result` by an exact key set, so
+ * sending it would not degrade to "an unfamiliar marker"; it would degrade to
+ * the whole reply being refused as malformed, which is the one outcome a
+ * redelivery must not produce. Such a peer still gets the answer, and still has
+ * `taskId` to notice it twice by.
+ *
+ * `undefined` when the stored bytes are not a `task.result` this node can
+ * rebuild — a hand-edited or truncated ledger line. The caller abandons it
+ * rather than guessing.
+ */
+function redeliveryEnvelope(
+  entry: DeliveryLedgerEntry,
+  channel: TransportChannel,
+): QianmoMessage | undefined {
+  const stored = entry.envelope as unknown as QianmoMessage
+  if (
+    typeof stored.from !== 'string' ||
+    typeof stored.to !== 'string' ||
+    typeof stored.traceId !== 'string' ||
+    typeof stored.taskId !== 'string' ||
+    !isTaskResultPayload(stored.payload)
+  ) {
+    return undefined
+  }
+  const payload = peerIsPostLegacy(channel.peerSupportedTypes)
+    ? { ...stored.payload, redelivered: true as const }
+    : stored.payload
+  return createMessage({
+    from: stored.from,
+    to: stored.to,
+    type: MessageType.TaskResult,
+    traceId: stored.traceId,
+    taskId: stored.taskId,
+    ...(typeof stored.contextId === 'string' && stored.contextId.length > 0
+      ? { contextId: stored.contextId }
+      : {}),
+    payload,
+  })
+}
+
 class ResidentDeliveryError extends Error {
   readonly code: ProtocolErrorCode
 
@@ -288,6 +362,27 @@ export class QianmoResident {
     occConfigPath('resident', 'sessions.json'),
   )
   readonly #ledgers = new Map<string, FileAdmissionLedger>()
+  /**
+   * Replies this node still owes a peer (design §3.B1).
+   *
+   * One file for the node rather than one per agent, unlike the admission
+   * ledgers above: an obligation belongs to the peer it is owed to, and the
+   * sweep that discharges it runs when *that peer* makes contact — which agent
+   * produced the answer is not a key anything looks it up by.
+   */
+  readonly #deliveries = new FileDeliveryLedger(
+    occConfigPath('resident', 'deliveries.ndjson'),
+    { onError: error => this.#options.onError?.(error) },
+  )
+  /** Redeliveries on the wire right now, so a second sweep does not double up. */
+  readonly #redelivering = new Set<string>()
+  /** Emergency stop (design §3.B6). Existence of the file is the whole test. */
+  readonly #estop = new ResidentEstop({
+    path: occConfigPath('resident', 'ESTOP'),
+    onError: error => this.#options.onError?.(error),
+  })
+  /** Termination-cause forensics (design §3.B2). */
+  readonly #lifecycle: ResidentLifecycleSentinel
   readonly #timings: ResidentTimingRecorder
   #poller: ResidentPoller | null = null
   readonly #turn: AcpResidentTurnPort
@@ -304,6 +399,11 @@ export class QianmoResident {
   constructor(options: QianmoResidentOptions) {
     this.#options = options
     this.#timings = new ResidentTimingRecorder(options.onTiming)
+    this.#lifecycle = new ResidentLifecycleSentinel({
+      path: occConfigPath('resident', 'lifecycle.json'),
+      node: options.node,
+      onError: error => this.#options.onError?.(error),
+    })
     this.#turn = new AcpResidentTurnPort(
       {
         extMethod: async () => {
@@ -313,7 +413,14 @@ export class QianmoResident {
           throw new Error('resident ACP connection is not ready')
         },
       },
-      { timings: this.#timings },
+      {
+        timings: this.#timings,
+        // Turned on here and nowhere else: the port defaults it off so unit
+        // tests do not grow a timer they never asked for.
+        inactivity: {
+          timeoutMs: options.inactivityMs ?? DEFAULT_RESIDENT_INACTIVITY_MS,
+        },
+      },
     )
     this.#adapter = new InboundAdapter({
       node: options.node,
@@ -361,6 +468,15 @@ export class QianmoResident {
   }
 
   async run(): Promise<void> {
+    // Read before anything else writes: the sentinel's verdict is about the
+    // process that came before this one, and stamping first would erase it.
+    this.#options.onPriorLife?.(this.#lifecycle.start())
+    // Loaded now so an obligation left over from that previous life is counted
+    // — and its damaged lines reported — before the first peer arrives.
+    // Nothing is *sent* here: a redelivery leaves on contact from the peer,
+    // never on a connection this node opens (invariant H-2). See
+    // `#redeliverOwed`.
+    this.#deliveries.outstanding()
     this.#deadlineClock.start()
     for (const backups of this.#backups.values()) backups.start()
     try {
@@ -369,6 +485,8 @@ export class QianmoResident {
       for (const backups of this.#backups.values()) backups.stop()
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
+      this.#deliveries.close()
+      this.#lifecycle.stop()
     }
   }
 
@@ -483,6 +601,27 @@ export class QianmoResident {
     if (!routed.ok) {
       context.channel.send(errorReply(message, routed.code, routed.reason))
       throw new ResidentDeliveryError(routed.code, routed.reason)
+    }
+
+    // Contact from this peer is the only moment a redelivery can leave, so it
+    // is taken here — before the refusals below, which are about *this*
+    // message and say nothing about the answers already owed for earlier ones.
+    // Fire and forget: an obligation from a previous life must not delay the
+    // envelope that just arrived.
+    this.#redeliverOwed(context.channel, parseAddress(message.from)?.node)
+
+    // Emergency stop, ahead of the mailbox write for the same rule L-1 reason
+    // as the queue check below: a refusal must not spend the recipient's inbox
+    // quota. Pause-new-work only — nothing in flight is touched, because a turn
+    // that has been admitted has a `task.result` owed to someone.
+    if (this.#estop.engaged()) {
+      const reason = 'resident is halted by its ESTOP sentinel'
+      const code = errorCodeForPeer(
+        ProtocolErrorCode.E_BUSY,
+        context.channel.peerSupportedTypes,
+      )
+      context.channel.send(errorReply(message, code, reason))
+      throw new ResidentDeliveryError(code, reason)
     }
 
     // Queue governance, in the same place and for the same reason: a node
@@ -644,6 +783,39 @@ export class QianmoResident {
     )
   }
 
+  /**
+   * Settle the task behind a record the restart breaker just retired.
+   *
+   * Usually there is no task to settle: three restarts have gone by, so the
+   * channel that asked is long gone and the request is somebody else's timeout
+   * by now. That is not a reason to skip the call — the intra-process case
+   * (a record that burns its attempts without taking the node down) does have a
+   * live task, and it deserves a real answer rather than a wait until
+   * `taskTtlMs`.
+   */
+  async #abandonTask(
+    input: ResidentTurnInput,
+    attempts: number,
+    reason: string,
+  ): Promise<void> {
+    const task = this.#taskFor(input)
+    if (task === undefined || task.settled) {
+      this.#options.onError?.(new Error(reason))
+      return
+    }
+    await this.#settleTask(
+      task,
+      createTaskResult(task.envelope, task.envelope.to, {
+        outcome: 'failed',
+        code: errorCodeForPeer(
+          ProtocolErrorCode.E_TASK_FAILED,
+          task.channel.peerSupportedTypes,
+        ),
+        reason: `${reason} (${attempts} attempts)`,
+      }),
+    )
+  }
+
   async #failTask(error: unknown, input: ResidentTurnInput): Promise<void> {
     const task = this.#taskFor(input)
     if (task === undefined || task.settled) {
@@ -703,7 +875,11 @@ export class QianmoResident {
     // neither map any more, yet its reply is on the wire with no receipt back.
     // This set is the only remaining record that the transport still owes us
     // something.
-    const receipt = this.#awaitReceipt(task, reply)
+    // Written down *before* it goes on the wire. The whole failure this ledger
+    // closes is "the reply left and its receipt never came back", and an entry
+    // opened after the send would be missing for exactly the crash window that
+    // matters.
+    const receipt = this.#awaitReceipt(task, reply, this.#openDelivery(reply))
     // Tracked through a handle that cannot reject. The drain awaits these in
     // bulk, and the only way `#awaitReceipt` rejects is a caller's `onError`
     // sink throwing — which callers of *this* method still see, unchanged,
@@ -721,14 +897,143 @@ export class QianmoResident {
   async #awaitReceipt(
     task: ActiveResidentTask,
     reply: QianmoMessage,
+    deliveryId: string | undefined,
   ): Promise<void> {
     try {
       await task.channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+      this.#settleDelivery(deliveryId, 'delivered')
     } catch (error) {
+      // Deliberately **not** retired. An unreceipted reply stays `attempting`
+      // in the ledger, which is the entire deliverable: before this, the only
+      // trace of a lost answer was this `onError` call, and the peer waited
+      // forever for something nobody remembered owing it.
       this.#options.onError?.(error)
     } finally {
       task.releaseChannel()
     }
+  }
+
+  /**
+   * Open a delivery obligation for a terminal reply and claim its first
+   * attempt.
+   *
+   * Returns `undefined` when there is nothing to track — an address this node
+   * cannot parse, or a ledger write that failed. Both degrade to exactly the
+   * behaviour that predates this ledger, which is what fail-open means here.
+   */
+  #openDelivery(reply: QianmoMessage): string | undefined {
+    const peerNode = parseAddress(reply.to)?.node
+    if (peerNode === undefined) return undefined
+    try {
+      const deliveryId = this.#deliveries.open({
+        taskId: reply.taskId,
+        peerNode,
+        envelope: reply as unknown as Record<string, unknown>,
+      })
+      if (deliveryId === undefined) return undefined
+      this.#deliveries.attempt(deliveryId)
+      return deliveryId
+    } catch (error) {
+      this.#options.onError?.(error)
+      return undefined
+    }
+  }
+
+  #settleDelivery(
+    deliveryId: string | undefined,
+    outcome: 'delivered' | 'failed',
+  ): void {
+    if (deliveryId === undefined) return
+    try {
+      this.#deliveries.settle(deliveryId, outcome)
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  /**
+   * Hand a peer whatever this node still owes it (design §3.B1).
+   *
+   * Driven by contact **from** the peer, and that is not a convenience: rule
+   * H-2 says a node never dials, so the moment a peer's channel exists is the
+   * only moment an owed reply can leave. A peer that never comes back keeps its
+   * entry until the attempt ceiling retires it.
+   *
+   * Each redelivery is a fresh envelope carrying the same `taskId` — never a
+   * retransmission of the original, which would be refused as `E_TTL_EXPIRED`
+   * long before a restart finished (protocol.md §14.4③).
+   */
+  #redeliverOwed(
+    channel: TransportChannel,
+    peerNode: string | undefined,
+  ): void {
+    if (peerNode === undefined) return
+    let owed: readonly DeliveryLedgerEntry[]
+    try {
+      owed = this.#deliveries.outstanding(peerNode)
+    } catch (error) {
+      this.#options.onError?.(error)
+      return
+    }
+    for (const entry of owed) {
+      if (this.#redelivering.has(entry.deliveryId)) continue
+      let attempt = 0
+      try {
+        attempt = this.#deliveries.attempt(entry.deliveryId)
+      } catch (error) {
+        this.#options.onError?.(error)
+        continue
+      }
+      // `0` means the ledger just abandoned it at the ceiling, or it was gone
+      // already. Either way there is nothing left to send.
+      if (attempt === 0) continue
+      const reply = redeliveryEnvelope(entry, channel)
+      if (reply === undefined) {
+        this.#abandonDelivery(
+          entry.deliveryId,
+          'stored reply is not a task.result this node can re-mint',
+        )
+        continue
+      }
+      this.#sendRedelivery(entry.deliveryId, channel, reply)
+    }
+  }
+
+  #abandonDelivery(deliveryId: string, reason: string): void {
+    try {
+      this.#deliveries.abandon(deliveryId, reason)
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  #sendRedelivery(
+    deliveryId: string,
+    channel: TransportChannel,
+    reply: QianmoMessage,
+  ): void {
+    this.#redelivering.add(deliveryId)
+    const release = channel.hold()
+    const sent = (async () => {
+      try {
+        await channel.sendAndWait(reply, TASK_REPLY_RECEIPT_TIMEOUT_MS)
+        this.#settleDelivery(deliveryId, 'delivered')
+      } catch (error) {
+        // Left outstanding again — the attempt was spent, and the ceiling is
+        // what stops this rather than any judgement made here.
+        this.#options.onError?.(error)
+      } finally {
+        this.#redelivering.delete(deliveryId)
+        release()
+      }
+    })()
+    // Tracked with the settle receipts so teardown drains it too: a redelivery
+    // in flight is exactly as much "on the wire with no receipt yet" as a first
+    // delivery is.
+    this.#settling.add(sent)
+    void sent.finally(() => {
+      this.#settling.delete(sent)
+    })
   }
 
   async #failActiveTasks(reason: string): Promise<void> {
@@ -896,6 +1201,10 @@ export class QianmoResident {
           ledger: this.#ledger(agent.agent),
         })),
         onRead: (input, readAt) => this.#ackTask(input, readAt),
+        onAbandoned: async (input, attempts, reason) => {
+          await this.#abandonTask(input, attempts, reason)
+        },
+        onBreakerError: error => this.#options.onError?.(error),
         onTurnResult: async (input, result) => {
           await this.#completeTask(input, result)
         },
@@ -928,8 +1237,16 @@ export class QianmoResident {
 
       poller = new ResidentPoller({
         poll: async () => {
+          // Cheap on all but one call in sixty; see the constant's comment for
+          // why the cadence is not configurable.
+          this.#lifecycle.heartbeat()
           await runtime?.pollAll()
         },
+        // The admission loop is the only thing that turns an unread mailbox
+        // entry into a turn, so skipping it here is what makes "no new work"
+        // true at the source — including for mail that arrived before the
+        // brake was pulled. Nothing running is touched.
+        paused: () => this.#estop.engaged(),
         ...(this.#options.pollIntervalMs === undefined
           ? {}
           : { intervalMs: this.#options.pollIntervalMs }),

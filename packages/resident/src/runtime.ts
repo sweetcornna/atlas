@@ -86,6 +86,16 @@ export class ResidentNodeRuntime {
       error: unknown,
       input: ResidentTurnInput,
     ) => void | Promise<void>
+    /** See {@link ResidentMailboxReaderOptions.maxRecoveries}. */
+    readonly maxRecoveries?: number
+    /** See {@link ResidentMailboxReaderOptions.onAbandoned}. */
+    readonly onAbandoned?: (
+      input: ResidentTurnInput,
+      attempts: number,
+      reason: string,
+    ) => void | Promise<void>
+    /** See {@link ResidentMailboxReaderOptions.onBreakerError}. */
+    readonly onBreakerError?: (error: unknown) => void
   }) {
     this.#node = options.node
     this.#team = options.team
@@ -144,9 +154,14 @@ export class ResidentNodeRuntime {
             ? {}
             : { timings: options.timings }),
           gate: this.#gate,
+          ...(options.maxRecoveries === undefined
+            ? {}
+            : { maxRecoveries: options.maxRecoveries }),
           onRead: options.onRead,
           onTurnResult: options.onTurnResult,
           onTurnError: options.onTurnError,
+          onAbandoned: options.onAbandoned,
+          onBreakerError: options.onBreakerError,
         }),
       )
     }
