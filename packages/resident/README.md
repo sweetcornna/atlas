@@ -7,7 +7,7 @@
 
 | 项 | 指针 |
 | --- | --- |
-| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入；队列治理与回执解耦 **P13.3**、多会话隔离 **P13.4**、可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）**P13.5**、主动通知出站 **P13.6** |
+| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入；队列治理与回执解耦 **P13.3**、多会话隔离 **P13.4**、可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）**P13.5**、主动通知出站 **P13.6**、记忆接线与无人值守安全收窄 **P13.7** |
 | 章程条目 | charter **§3.2 R-3**（休眠与唤醒，基座起点：部分，v2.7 定案） |
 | 协议真源 | `protocol.md` §4.5（ack 由谁发出）、§4.5.1（回执与 ack 分层）、§5.3（时间跳跃闸门 T-2）、§4.6（`task.result` 契约与 `redelivered`）、§11.3（规则 N-1 降级）、§14.8.1（`wake` 不产生 ack 的定夺） |
 | 完成状态 | roadmap「完成状态速查」P3.1 行 |
@@ -114,6 +114,13 @@ flowchart TD
 - **`ResidentNotifyEventType` / `ResidentNotifyEvent` / `ResidentNotifyAuditSink` / `NOTIFY_EVENT_SCHEMA_VERSION`** —— 审计事件与它的 schema 版本戳（hermes B9）。
 - **`AcpResidentTurnPort.activeTurn(sessionId)`** —— 某会话正在跑的 turn，供宿主把一次 `qianmo_notify` 归到出钱的那个任务上。
 
+记忆接线与安全收窄（P13.7）：
+
+- **`ResidentMemorySidecar` / `ResidentMemorySidecarOptions` / `residentRecallScope` / `assertNodeOwnedMemoryRoot` / `INJECTION_BUDGET`** —— 用户消息 sidecar 的记忆注入：按 `(agent, contextId)` 取 working 层、渲染成块、失败 fail-open。`ResidentPromptScope`（`contracts.ts`）是那对键的载体，**两半永不在这里拼成一个字符串**（拼法只许在 `sessionKeyOf`，不变式 #7）。
+- **`ResidentHardline` / `HARDLINE_TARGETS` / `HardlineDenial` / `ResidentHardlineOptions`** —— 常驻专属的预批准天花板：冻结字面量、路径与命令两面同表、`stateRoots` 只增不减。
+- **`scanAssembledPrompt` / `PromptScanExpectation` / `PromptInjectionFinding`** —— 对**组装后**完整 prompt 的结构扫描（块计数 + 属性名），不作任何「像不像注入」的判断。
+- 中和函数在 `@qianmo/adapter/sanitize`（`sanitizeRemoteText` / `sanitizeRemoteAttribute` / `hasUnneutralizedDelimiter`），不在本包：分隔符词汇属于包装格式，归 adapter。
+
 协议级数值一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处，本包不复制。
 
 ## 3. 最容易被改坏的六条不变式
@@ -204,6 +211,28 @@ flowchart TD
 - **`redelivered` 在 notify 上不做 N-1 降级，在 `task.result` 上做**（对比不变式 #18）。不是疏漏：`isNotifyPayload` 用白名单校验，`redelivered` 从 `notify` 诞生那天起就在白名单里，所以「认得类型但不认得该字段」的对端不存在；而 `task.result` 用精确键数校验，多一个键就是整条拒收。
 - **谁被通知不由 agent 决定。**工具只交四个字段；收件人、`contextId` 与通道全由宿主从「正在跑的那个 turn 背后的任务」推导（`AcpResidentTurnPort.activeTurn`）。一个能自己填收件人的 agent，就是一个能拿节点凭据给任意对端发消息的 agent。
 - **没有网络任务在跑时一律拒绝，不猜。**本地队友信件起的 turn 没有对端，此时挑「最近那个中枢」会把一个 agent 的发现发给一个从没问过的控制台。
+
+### 3.5 记忆接线与无人值守安全的不变式（P13.7）
+
+设计出处：`docs/dev/resident-botization.md` §4.4（hermes D3 / D5 / F9）与 §4.5（hermes E2 / E3 / E5 / E7）。
+
+| # | 不变式 | 改坏了会怎样 | 钉住它的测试 |
+| --- | --- | --- | --- |
+| 32 | **记忆注入在用户消息里，永不进 system prompt** | 进 system prompt ＝ 每轮重建前缀、每次唤醒作废全部缓存；在 7 天连跑的值守场景里这是纯亏损，且它不会报错，只会变慢变贵 | `test/memory-sidecar.test.ts`「nothing on the resident path routes memory into a system prompt」（扫描 `buildRecallSystemPrompt` 等四种形状，含诱饵正向对照与「render 不是 system prompt」负向对照）；`src/services/qianmo/__tests__/residentPrompt.test.ts`「the sidecar is appended after the batch, inside the same user message」 |
+| 33 | **一轮只 recall 一次，产物随 `detected` 记录落盘**；turn 内后续步骤与崩溃后重放读的都是那一份 | 改成实时读 ＝ 同一个 turn 的两步看见两份证据，答案不可复现、不可审计，且可能引用一条它决策时并不在眼前的记录——而 AC-4 要的正是「答案带得出它用了什么」 | `test/memory-sidecar.test.ts`「a memory written mid-turn does not change the prompt the turn is running on」（turn 执行中途写入；断言在跑的 prompt 与账本里那份都不含它，并用「重新 render 能看到」排除假绿） |
+| 34 | **作用域是 `(agent, contextId)` 且只取 working 层**；context 半边取自 `sessionKeyOf` 自己的归一化 | 收 project / baseline 层进来 ＝ 一个请求者的记忆露给下一个，正是这条分区要防的；自己再归一化一次 ＝ 记忆分区与会话分区迟早漂开，且漂开时没有任何东西会红 | `test/memory-sidecar.test.ts` 四条（context 之间、agent 之间、缺 contextId、共享层不进注入） |
+| 35 | **contextId → 目录名的映射全域且单射**：合法段走 `v-` 前缀、其余走 `d-` + sha256，两支靠**前缀**区分而不是靠形状 | 靠形状区分 ＝ 对端把别人的摘要原样打进来就落进别人的目录；不单射 ＝ 两个 context 共用一个目录，也就是跨请求者串台 | `test/memory-sidecar.test.ts`「a hostile contextId is digested, and stays injective」 |
+| 36 | **记忆根必须绝对路径**（hermes F9） | 相对根按 `process.cwd()` 解析，而常驻 turn 的 cwd 就是 agent 所在的仓库——一个提交进仓库的 `memory/` 目录当场变成本节点的记忆 | `test/memory-sidecar.test.ts`「a relative root is refused…」「the sidecar refuses to be built on a store that is not node-owned」「a memory directory planted in the working tree is not recalled」 |
+| 37 | **hardline 表求值在 allow 之前，且不从会话配置读取** | 从配置读 ＝ 表的第一项就是 `settings.json`，等于问它保护的文件要不要保护它；排在 allow 之后 ＝ 一条 allow 规则或一个答 allow 的 PreToolUse hook 就能放行表上的任何东西 | `src/services/qianmo/__tests__/residentGuard.test.ts`「a pre-approved write to a protected target is refused anyway」「the allow is never even consulted for a protected target」；`test/guard.test.ts`「neither the table nor its wiring reads configuration」（含诱饵与「点名不等于读取」负向对照）、「the table is frozen」 |
+| 38 | **file 与 shell 两面同表封堵**，且只封一面会被用例抓住 | 只封 file ＝ unpaired theater，`Bash` 能 cat / tee / sed -i / rm 掉每一个目标 | `test/guard.test.ts` 逐目标两面各一条 + 「a shell-only spelling is caught, which a file-side-only guard could not be」（裸相对路径，file 面根本不经手）；`residentGuard.test.ts`「the shell surface is refused for the same target as the file surface」 |
+| 39 | **注入扫描的对象是组装后的完整 prompt，不是入参** | 逐字段校验答的是「这个字符串干净吗」，而注入是**组装动作本身**造出来的：`from` 只是一个带引号的普通字符串，直到渲染器把它插进 `teammate_id="…"` 那一刻才多出一个属性 | `test/guard.test.ts`「inputs that are clean field by field still assemble into an injection」；`residentPrompt.test.ts` 同名一条（含「中和之后同样的入参组装得干净」的对照） |
+| 40 | **远端 `text` / `from` / `summary` 的分隔符在渲染前中和**；命中扫描时**内容 fail-closed、可用性 fail-open** | 不中和 ＝ 一条 `</teammate-message>` 就提前关块，其后的内容读起来像宿主自己的框架；命中后让节点停摆 ＝ 正是攻击者要的结果 | `residentPrompt.test.ts` 四条（伪标签 / 伪记忆块 / 围栏 / CDATA）+「a scan finding withholds the remote content but keeps the node answering」「the withheld stand-in never quotes what triggered it」 |
+
+三处容易误读：
+
+- **`&` 故意不转义。**转义它会让映射严格单射（更整齐），也会把对端发来的每个 `&&` 改坏——而 `&` 变不出 `<` 或 `>`，重建不出任何分隔符。这是排版与可用性的取舍，不是漏掉的一项。
+- **hardline 的落点是包裹工具的 `checkPermissions`，不是改 `permissions.ts`。**本构建里能答 allow 的只有两条漏斗，且两条都经过 `checkPermissions`（`hasPermissionsToUseToolInner` 的 1c/1d 在 bypass 模式 2a 与整工具 allow 规则 2b 之上；hook 已答 allow 的那条仍跑 `checkRuleBasedPermissions`）。包一层同时压过两条，而不必在每次上游同步里重解一个热路径核心文件。
+- **词法匹配挡不住刻意混淆，这是预批准的天花板不是沙箱。**写进 `guard.ts` 的模块注释里，免得将来有人把它当成越权防护的全部。
 
 ## 4. 与基座的关系
 
