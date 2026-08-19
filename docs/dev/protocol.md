@@ -169,7 +169,7 @@ v0.1 信封（现状信封定义在 `packages/protocol/src/message.ts:43-62`；�
 | `ack` | 处理方 → 请求方 | **新增**。A 类 ack，语义严格受限，见 §4 |
 | `task.result` | 处理方 → 请求方 | 任务的终局回复（成功或失败），按 `taskId` 相关 |
 | `ping` / `pong` | 双向 | 存活探测。不产生 ack，不进任务状态机 |
-| `wake` | activator → 目标节点 | 唤醒休眠节点。**需要 ack**（AC-2 的唤醒链路要它） |
+| `wake` | activator → 目标节点 | 唤醒休眠节点。**不产生协议 ack**，投递保证到「传输回执」为止（P13.5 定夺，理由见 §14.8） |
 | `error` | 任意 | 投递或处理失败，payload 携带 `ProtocolErrorCode`（`packages/protocol/src/errors.ts:5-26`） |
 | `resource.request` / `resource.offer` / `resource.grant` / `resource.release` | 借方 ↔ 贷方 | **P5.2 新增**：资源协商四段式，定义见 **§13**。本表只列名，不复制语义 |
 | `notify` | 处理方 → 已建立通道的对端 | **P13.2 新增**：节点主动发起的通知。不产生 ack、不进任务状态机、**每条自带全新 `taskId`**，定义见 **§14**。本表只列名，不复制语义 |
@@ -840,7 +840,8 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 9. **`getTeammateMailboxAttachments` 有一道 `process.env.USER_TYPE !== 'ant'` 的提前返回**（`team.ts:43-45`）——附件路径在该环境变量不为 `ant` 时**整条不生效**。本文未查证阡陌节点态下该变量的取值与设置方式，也未查证进程内路径（§4.5 第一行）是否受同一开关影响。**若 M0 依赖附件路径投递，这是必须先查清的一条**；若只用进程内 teammate 形态则不触发。
 10. **`supportedTypes`（§14.6）与 mTLS 线要给 `AuthFrame` 加的 `sig` 同在 `frames.ts` 的 v1 之内，两者的合并顺序未验证。**两条线都只能在 v1 里加可选字段（`FRAME_VERSION` 是严格相等比较，见 §14.6），因此必然改同一个文件的同一片区域。**排期不得并行**；后落的一方 rebase 而不是 merge。`docs/dev/key-distribution.md` 的 P12.3 是另一半。
 11. **规则 N-1 的能力判定目前借道 `supportedTypes`，未被独立验证过。**§11.1 末段说明了这个代理为什么现在成立（`E_BUSY` 与 `notify` 同批发布）以及它什么时候会失效（新码不随新类型发布时）。**在失效之前不要给它加第二个用途**；真到那天要补的是一条独立的码集声明信道，不是把这条继续拉长。
-12. **P13.2 只落地了 `notify` 的协议面与能力发现，发送侧的台账、去重抑制与再投尚不存在**（P13.5 / P13.6）。因此 §14.4③ 与 §14.5 描述的投递保证**目前只成立到「传输回执」为止**——「台账」那半边是设计承诺而非已落地行为。**读本节做接线判断时以此为准。**
+12. **投递台账在 P13.5 落地了一半：`task.result` 那一半。**发送侧台账（四态 + 尝试上限 + 重启后再投 + `redelivered` 标记）已经存在，落点是 `packages/resident/src/delivery-ledger.ts`，接线在 `src/services/qianmo/resident.ts` 的 `#settleTask` / `#redeliverOwed`。**但它只挂在 `task.result` 上**——`notify` 的台账、按 `dedupKey` 的去重抑制与再投**仍不存在**（P13.6）。因此 §14.4③ 与 §14.5 描述的 `notify` 投递保证**目前只成立到「传输回执」为止**。**读本节做接线判断时以此为准。**
+    - 已落地那一半有一条形状约束值得先知道：**再投由对端的入站接触触发，本节点一次都不拨号**（不变式 H-2）。所以「重启后再投」的时刻是对端回来说第一句话的时刻，不是节点启动的时刻；一个再也不回来的对端，它的台账条目会一直留到尝试上限被 `abandoned` 收走。
 
 ---
 
@@ -1053,7 +1054,18 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 | 开 turn？ | 会（经信箱） | 会 | **不会** |
 | 进任务状态机？ | 是 | 是 | **否**（与 `ping`/`pong` 同类） |
 | 进判环表 | 进 | 进 | **进**（§14.3） |
-| 需要协议 ack？ | 文档说需要（见下） | 需要 | **不需要** |
+| 需要协议 ack？ | **不需要**（P13.5 定夺，见下） | 需要 | **不需要** |
 
-> **顺带记一条既有的文档实现差**（不属本节的改动）：上文 §3.4 写 `wake` **需要 ack**，而常驻实现里 `#registerTask` 只对 `task.request` 触发，所以 `wake` 在常驻侧不产生协议 ack。要么改文档要么改实现——**留给 P13.5**（补 wake 端到端用例时一并定夺并回写），本节不替它下结论。
+#### 14.8.1 `wake` 的 ack：文档实现差的定夺（P13.5）
+
+原 §3.4 写 `wake`「**需要 ack**（AC-2 的唤醒链路要它）」，而常驻实现里 `#registerTask` 只对 `task.request` 触发，所以 `wake` 在常驻侧不产生任何协议回复。P13.5 在补 T11 盲区③（wake 常驻侧端到端）时按判据定夺：**改文档，不改实现。**四条依据，逐条可核：
+
+1. **AC-2 的 ack 线本来就不挂在 `wake` 上。**章程 §4 AC-2 的判据原文是「投递**任务消息**……对端被唤醒并在 60 s 内返回 ack 回执」——被 ack 的是那条 `task.request`，`wake` 只是把节点叫起来。所以原括注「AC-2 的唤醒链路要它」是把两条消息记成了一条；AC-2 的 ack 路径完整实现且有用例，一行都不受本条影响。
+2. **唯一的生产发送方结构上收不到 ack。**`src/cli/handlers/residentWake.ts` 的 `executeResidentWake` 等的是 `client.sendAndWait(...)` 的**传输回执**，返回 `{ msgId, taskId, receipt }` 后在 `finally` 里立刻 `client.close()`；它构造 `TransportClient` 时**没有传 `onMessage`**。也就是说：即便节点发了 ack，那条 ack 既没有接收端，也没有还开着的通道可到。
+3. **A 类 ack 的语义对 `wake` 是空的。**§4.2 把 A 类 ack 定义为「输入已进入模型输入」，它的载体是任务——ack 按 `taskId` 与一条请求相关（规则 C-1）。`wake` 的 `taskId` 后面没有任何人在等结果，为它注册一条任务只会凭空造出一个永远不会 `completed` 的任务状态机条目，并让 §8.2 的第 21 行（任务时限到期）在它身上误触发。
+4. **回执已经承担了 `wake` 需要的那句话。**发送方要知道的是「节点醒了并且收下了」，而回执的语义正是「已落盘」（§4.5.1）。`wake` 确实会经信箱开一个 turn，read 翻转也确实发生——但没有人在等它的回音。
+
+> 用例：`src/services/qianmo/__tests__/resident.integration.test.ts` 的 `wake, end to end on the resident side (T11 blind spot ③)` 两条。第二条是对照式的——同一个节点、同一条通道、同一个一直在监听的对端，`task.request` 拿到 ack 与 `task.result`，`wake` 一条回复都没有——所以「没收到 ack」是关于节点的事实，而不是关于一条已经关掉的 socket 的事实。
+>
+> **若将来要给 `wake` 加 ack，先改的是发送方**：`executeResidentWake` 得先有 `onMessage`、先不在回执处关闭连接、并且先想清楚那条 `taskId` 的任务状态机怎么退休。在那之前，改实现只会制造一条发不出去也没人收的消息。
 

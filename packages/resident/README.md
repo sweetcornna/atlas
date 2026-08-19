@@ -7,9 +7,9 @@
 
 | 项 | 指针 |
 | --- | --- |
-| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入 |
+| 任务包 | roadmap **P3.1**（休眠与唤醒）；网络任务改为逐条 ACP turn、durable read 后发 ack 由 **P4.1** 补入；队列治理与回执解耦 **P13.3**、多会话隔离 **P13.4**、可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）**P13.5** |
 | 章程条目 | charter **§3.2 R-3**（休眠与唤醒，基座起点：部分，v2.7 定案） |
-| 协议真源 | `protocol.md` §4.5（ack 由谁发出）、§5.3（时间跳跃闸门 T-2）、§4.6（`task.result` 契约） |
+| 协议真源 | `protocol.md` §4.5（ack 由谁发出）、§4.5.1（回执与 ack 分层）、§5.3（时间跳跃闸门 T-2）、§4.6（`task.result` 契约与 `redelivered`）、§11.3（规则 N-1 降级）、§14.8.1（`wake` 不产生 ack 的定夺） |
 | 完成状态 | roadmap「完成状态速查」P3.1 行 |
 
 ## 1. 模块架构图
@@ -34,6 +34,11 @@ flowchart TD
   store["session-store.ts · FileResidentSessionStore<br/>原子落盘、损坏即 fail closed<br/>读旧格式、越上限即抛不截断"]
   supervisor["supervisor.ts · ResidentSupervisor<br/>指数退避重启 · 快速连挂即 parking"]
   activity["activity.ts · ResidentActivityReporter<br/>busy/idle 经 transport 报给宿主 keepalive"]
+
+  delivery["delivery-ledger.ts · FileDeliveryLedger<br/>回执不来的 task.result 四态台账<br/>pending→attempting→delivered/failed，上限即 abandoned"]
+  estop["estop.ts · ResidentEstop<br/>单次 stat，存在即急停<br/>空/损坏仍算 engaged"]
+  lifecycle["lifecycle.ts · ResidentLifecycleSentinel<br/>phase=running 留在盘上 ⇒ 上一条命被杀"]
+  inactivity["inactivity.ts · ResidentInactivityWatchdog<br/>turn 静默即早失败，reason 说明原因"]
 
   acp["ACP 子进程（occ --acp）"]
   host["宿主：@qianmo/activator 的 ResidentActivityController"]
@@ -61,7 +66,14 @@ flowchart TD
   client <--> acp
   activity --> host
   deadline -.->|"nowFor"| reader
+
+  poller -->|"poll 前查"| estop
+  reader -->|"recordRecovery / abandon"| ledger
+  turnport --> inactivity
+  inactivity -.->|"session/cancel"| client
 ```
+
+四个可靠性件套模块（`delivery-ledger` / `estop` / `lifecycle` / `inactivity`，P13.5）在包内**没有任何互相依赖**，也不参与准入循环的判定——它们各自被宿主接线一次，见 §3.3。
 
 `deadline-clock.ts` 的 `nowFor` 同时被上层（`src/services/qianmo/resident.ts`、`@qianmo/router` 的 `deadlineNow`）用作「过闸门的时钟」，因此一个刚解冻的节点不会把所有在飞投递一起判死。
 
@@ -85,6 +97,14 @@ flowchart TD
 - **`ResidentTimingRecorder` / `ResidentTimingStage` / `ResidentTimingEvent` / `ResidentTimingSink` / `DEFAULT_RESIDENT_TIMING_CAPACITY`** —— 全链路埋点（P4.1 的独立核验取的就是它）。`queued` 阶段带 `queueDepth`（该 turn 交接时排到的位次，1 = 直接进门），**只观察不参与任何判定**（hermes B8）。
 - **`ResidentActivityReporter` / `RESIDENT_ACTIVITY_AGENT` / `isResidentActivityMessage` / `isResidentActivityPayload` / `ResidentActivityPayload`** —— 忙闲上报。
 - **`residentMailboxIdentity` / `readCountsByIdentity` / `messageCountsByIdentity`** —— 基座信箱条目的身份三元组与计数（基座不给消息 id）。
+
+可靠性件套（P13.5），四件互不依赖：
+
+- **`FileDeliveryLedger` / `DeliveryLedger` / `DeliveryLedgerEntry` / `DeliveryPhase` / `DeliveryIntegrityIssue` / `MAX_DELIVERY_ATTEMPTS`** —— 回执不来的终态回复的投递台账。
+- **`ResidentEstop` / `ResidentEstopOptions` / `ResidentEstopStatus`** —— 急停哨兵，一次 `stat`。
+- **`ResidentLifecycleSentinel` / `ResidentPriorLife` / `ResidentLifecycleRecord` / `ResidentLifecyclePhase` / `ResidentLifecycleOptions` / `RESIDENT_LIFECYCLE_HEARTBEAT_MS`** —— 终止取证哨兵。
+- **`ResidentInactivityWatchdog` / `ResidentInactivityError` / `ResidentInactivityOptions` / `ResidentInactivityTurn` / `DEFAULT_RESIDENT_INACTIVITY_MS`** —— 不活动早失败看门狗。
+- **`MAX_ADMISSION_RECOVERIES`** —— 重启熔断的上限，配套 `AdmissionLedger.recordRecovery` / `abandon` 与记录类型 `RecoveringAdmissionRecord` / `AbandonedAdmissionRecord`。
 
 协议级数值一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处，本包不复制。
 
@@ -135,6 +155,30 @@ flowchart TD
 - **`#receive` 问的是 `gate.saturated`，不是接住门抛出来的拒绝**。回执解耦之后，门内抛出的异常已经不可能回到 `#receive`；而「写之前拒绝」与「`#receive` 看得见」这两条要同时成立，只有先问后写这一种写法。门自己的上界仍在，那条是硬不变式，`saturated` 只是发送方听得到的那半。
 - **没有优先级轴，FIFO**。值守作业与人工请求谁更急是产品判断，M1 没有判据要求它，加了就得维护一张会长歪的表。
 
+### 3.3 可靠性件套的不变式（P13.5）
+
+设计出处：`docs/dev/resident-botization.md` §3.B（hermes B1 / B2 / B3 / B6 / B10）。四件互不依赖，**共用一条总纪律**：件套自身的读写失败一律 **fail-open**——它们存在是为了让节点少丢东西，绝不能反过来成为节点停摆的原因。
+
+| # | 不变式 | 改坏了会怎样 | 钉住它的测试 |
+| --- | --- | --- | --- |
+| 16 | **回执不来的 `task.result` 留在台账里，重启后再投且带 `redelivered` 标记**；再投是**新信封**（新 `msgId`、新 `createdAt`、同 `taskId`），不是重传 | 不留＝这条答案**无痕消失**，对端永远等一个没人记得欠它的东西（状态报告点名的唯一无痕丢失产物）；重传原信封＝重启走完后 `deliverTtlMs` 早已过期，只换回一个 `E_TTL_EXPIRED` | `test/delivery-ledger.test.ts` 第一条；`src/services/qianmo/__tests__/resident.integration.test.ts`「an unreceipted task.result is redelivered after a restart, marked as a repeat」 |
+| 17 | **再投只由对端的入站接触触发，节点一次都不拨号**（H-2） | 为再投开一条出站连接＝H-2 这条不变式就此作废，而它是整个值守形态的地基 | 同上集成用例（第二段先连上、发一条，owed 的回复才回去） |
+| 18 | **`redelivered` 按规则 N-1 降级**：只发给声明了后 legacy 类型的对端 | 比该字段旧的节点用**精确键数**校验 `task.result`，多一个键＝**整条拒收**，那条已经算出来的答案根本到不了（protocol.md §11.3 的陷阱逐字复现） | 集成用例「a peer too old for the marker still gets its answer, without the field」；`packages/protocol/test/message.test.ts`「the redelivery marker」四条 |
+| 19 | **同一条毒 `detected` 记录连续 3 次重启后 `abandoned`，而节点照常服务新消息** | 今天这是**无限崩溃循环**：`#recover` 无条件重放 pending 记录，若正是它把节点搞崩，没有任何计数器拦得住。supervisor 的 `maxRapidFailures` 不顶用——它 park 的是**节点**，正是本熔断要避免的结局 | `test/restart-breaker.test.ts`「a poison record is abandoned after three restarts, and the node keeps serving」（末段断言的是**新消息仍被服务**，那才是熔断保护的东西） |
+| 20 | **重启计数必须挺过压实**（`recovering` 记录带 attempt，`#apply` 取 max） | 压实丢掉计数＝上限每次重写都归零，毒记录被永远重放——熔断被一次「顺手整理」原地取消 | `test/restart-breaker.test.ts`「the count is durable, so it survives compaction and a reopen」；`test/delivery-ledger.test.ts`「compaction keeps the attempt count」 |
+| 21 | **ESTOP 存在即急停：一次 `stat`，空文件与损坏文件同样算 engaged**；拒绝发生在**信箱写入之前**（→ `E_BUSY`，按 N-1 降级）；**在途从不杀** | 读内容再判＝`touch ESTOP`（人拉闸最自然的动作）会被读成「没写理由，继续跑」；先写再拒＝refused 吃掉收件人的信箱配额（rule L-1）；杀在途＝把一个慢答案变成丢答案 | `test/estop.test.ts` 七条（含空文件、损坏文件、「内容说 off 也照样 engaged」）；集成用例「ESTOP refuses new work with E_BUSY, never touches a running turn, and an empty file counts」 |
+| 22 | **ESTOP 不在重启时自清**，而 drain 类标记（尚未落地）必须盖实例 epoch | 两者反过来就是 hermes NS-570：一个孤儿标记让实例拒服 52 分钟。暂停**就该**跨重启有效，「排空本实例」**就该**被重启抹掉 | `estop.ts` 类注释把两者的差别写死；`test/estop.test.ts`「it re-reads on every call」 |
+| 23 | **`phase=running` 留在盘上 ⇒ 上一条命是被杀的**；读**必须**先于写 | 先写后读＝把要取证的证据当场抹掉；不区分「没文件 / 解析不了」与「被杀」＝唯一的信号被污染，此后没人再信它 | `test/lifecycle.test.ts`「a life that never stamped `stopped` is read as killed」「the read happens before the stamp, or the evidence is erased」「a torn file is unknown, never killed」 |
+| 24 | **心跳节奏是代码常量且 ≥ 30 s，没有任何配置能把它变成高频写者**（B8） | 观察类写盘一旦可配，就会有人把它调到秒级，然后与账本的 fsync 抢 IO——而账本那笔才是消息可靠性真正依赖的 | `test/lifecycle.test.ts`「re-stamps no more often than the code constant allows」「the cadence is a code constant of at least 30 s (B8)」 |
+| 25 | **不活动看门狗只让 turn **更早**失败，绝不延长任何期限**，且 `reason` 说明是不活动 | 反方向＝节点偷偷续了发送方设的 `taskTtlMs`，从此每个发送方的超时估计都是假的；只报裸超时＝发送方分不出「静默」与「拒答/崩溃」，也就不知道「带更长 `taskTtlMs` 重试」才是该做的事 | `test/inactivity.test.ts` 九条；集成用例「a turn whose ACP side goes silent fails early, and says it was inactivity」 |
+| 26 | **件套四件读写失败一律 fail-open**（台账 / 哨兵 / 熔断记录 / ESTOP） | 可靠性件套自己把节点弄停，是它能造成的最坏结果——比它要防的每一种丢失都糟 | `test/estop.test.ts`「a stat that fails for any other reason fails open」；`test/lifecycle.test.ts`「an unwritable path fails open」；`test/delivery-ledger.test.ts`「an unreadable file fails open」「damage is stepped over」；`test/restart-breaker.test.ts`「a ledger that cannot record the attempt fails open」；`test/poller.test.ts`「a predicate that throws fails open」 |
+
+三处最容易误读：
+
+- **投递台账与准入账本对损坏的态度相反，这是刻意的。**准入账本查到 integrity issue 直接抛（不变式 #4）——一条撕裂的准入记录意味着一条已承诺要读的消息可能丢了。投递台账则**记下、报告、跨过去**——一条撕裂的投递记录最多让一条回复多发一次或不发，比「节点拒绝服务」轻。roadmap P13.5 把件套整体放在 fail-open 那一侧。
+- **熔断只数 `detected` 记录，不数 `admitted` 的。**B3 要断的环是「重放一个能把节点搞崩的 prompt」，而 `admitted` 记录只剩一次 read 翻转，那条路上已经没有 prompt 了。
+- **「3 次重启」与「3 次交接」是同一个数。**计数器数的是**恢复交接**，而一次重启在记录把节点带走时恰好产生一次交接；一条只是让 turn 失败、没能把节点带走的记录，会在原地把三次用完——同一个判决来得更早，同样正确。
+
 ## 4. 与基座的关系
 
 - **定性：部分**（charter §3.2 R-3，v2.7 定案；P0.2 复核完成）。roadmap P3.1 的 v2.15 勘误把理由改写过一次，结论未变：
@@ -157,7 +201,7 @@ flowchart TD
 bun test packages/resident
 ```
 
-实测：**83 pass / 0 fail，14 个测试文件**（`acp-turn` / `deadline-clock` / `ledger` / `multi-session` / `poller` / `queue-governance` / `reader` / `session-gc` / `session-key` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`。
+实测：**130 pass / 0 fail，19 个测试文件**（`acp-turn` / `deadline-clock` / `delivery-ledger` / `estop` / `inactivity` / `ledger` / `lifecycle` / `multi-session` / `poller` / `queue-governance` / `reader` / `restart-breaker` / `session-gc` / `session-key` / `session-store` / `sessions` / `supervisor` / `timings` / `turn-gate`），零 mock；宿主侧接线的集成用例另在 `src/services/qianmo/__tests__/resident.integration.test.ts`（13 条）。
 
 `session-key.test.ts` 会扫全仓源码（`src/**` 与 `packages/*/src|test/**`，跳过 `node_modules` 与 `packages/@ant`），约 3700 个文件、几百毫秒。
 
