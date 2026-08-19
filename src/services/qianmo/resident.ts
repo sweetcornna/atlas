@@ -80,6 +80,7 @@ import {
 } from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
+import { assembleResidentPrompt } from './residentPrompt.js'
 import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
@@ -764,6 +765,29 @@ export class QianmoResident {
   }
 
   /**
+   * Assemble the user message one turn runs on.
+   *
+   * The work itself lives in `residentPrompt.ts`; this is the seam that gives
+   * it the memory sidecar. It runs **once per turn** — the reader writes the
+   * result into the admission ledger and every later step, including a replay
+   * after a crash, reads that stored string back. That is what makes the memory
+   * block a frozen snapshot rather than a live read.
+   */
+  #assemblePrompt(
+    messages: readonly ResidentMailboxMessage[],
+    scope: ResidentPromptScope,
+  ): string {
+    return assembleResidentPrompt({
+      messages,
+      // The batch text doubles as the ranking question. It never filters — a
+      // watch job that words things differently from the entry it needs still
+      // sees that entry, which is the point of full injection.
+      renderMemory: base => this.#memory.render(scope, base),
+      onFinding: error => this.#options.onError?.(error),
+    })
+  }
+
+  /**
    * Take the pre-task snapshot roadmap P4.4 asks for — **without awaiting it**.
    *
    * Awaiting would put a `tar` of an unbounded workspace in front of the ack,
@@ -778,33 +802,6 @@ export class QianmoResident {
    * stronger promise should own the task lifecycle and await
    * `BackupScheduler.beforeTask` itself, the way a scripted runner can.
    */
-  /**
-   * Assemble the user message one turn runs on.
-   *
-   * Two parts, in this order and only this order: the base's own rendering of
-   * the mailbox batch, then the memory sidecar (design §4.4). The memory block
-   * sits **after** the turn's content and inside the same user message — never
-   * in the system prompt, which would rebuild the cached prefix on every wake
-   * and buy nothing for it.
-   *
-   * This function runs **once per turn**. The reader writes its return value
-   * into the admission ledger and every later step of the turn — including a
-   * replay after a crash — reads that stored string back. That is what makes
-   * the memory block a frozen snapshot rather than a live read, and it is the
-   * property `packages/resident/src/memory-sidecar.ts` explains at length.
-   */
-  #assemblePrompt(
-    messages: readonly ResidentMailboxMessage[],
-    scope: ResidentPromptScope,
-  ): string {
-    const base = formatTeammateMessages([...messages])
-    // The batch text doubles as the ranking question. It never filters —
-    // a watch job that words things differently from the entry it needs still
-    // sees that entry, which is the point of full injection.
-    const memory = this.#memory.render(scope, base)
-    return memory.length === 0 ? base : `${base}\n\n${memory}`
-  }
-
   #snapshotBeforeTask(envelope: QianmoMessage): void {
     const agent = parseAddress(envelope.to)?.agent
     if (agent === undefined) return

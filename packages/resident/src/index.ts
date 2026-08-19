@@ -154,3 +154,13 @@ export {
   residentRecallScope,
   type ResidentMemorySidecarOptions,
 } from './memory-sidecar.js'
+export {
+  HARDLINE_TARGETS,
+  ResidentHardline,
+  scanAssembledPrompt,
+  type HardlineDenial,
+  type HardlineTarget,
+  type PromptInjectionFinding,
+  type PromptScanExpectation,
+  type ResidentHardlineOptions,
+} from './guard.js'

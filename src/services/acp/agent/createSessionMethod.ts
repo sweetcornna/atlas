@@ -42,6 +42,7 @@ import {
 import { buildConfigOptions } from './configOptions.js'
 import { readClientCapabilities } from './internalAccessors.js'
 import { residentToolSurface } from '../../qianmo/notifyTool.js'
+import { withResidentHardline } from '../../qianmo/residentGuard.js'
 import {
   ACP_NOTIFY_METHOD,
   parseNotifyVerdict,
@@ -163,8 +164,14 @@ async function createSession(
     // query engine as `[]` unconditionally, so an MCP server declared on
     // `session/new` has never produced a tool in this build. See
     // `src/services/qianmo/notifyTool.ts` for the rest of that argument.
+    //
+    // The same sessions, and only those, get the hardline ceiling applied to
+    // every tool they are handed (design §4.5, hermes E2/E3). It goes on here
+    // rather than in `permissions.ts` because wrapping `checkPermissions` puts
+    // it ahead of every path that can answer `allow` — see
+    // `src/services/qianmo/residentGuard.ts` for that argument in full.
     const tools: Tools = isQianmoResident
-      ? [
+      ? withResidentHardline([
           ...baseTools,
           ...residentToolSurface({
             sessionId,
@@ -175,7 +182,7 @@ async function createSession(
                 }),
               ),
           }),
-        ]
+        ])
       : baseTools
 
     // bypassPermissions is exposed to ACP clients whenever the process itself allows it
