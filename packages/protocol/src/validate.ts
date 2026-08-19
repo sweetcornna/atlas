@@ -21,6 +21,7 @@ import {
   ENVELOPE_VERSION,
   isAckPayload,
   isMessageType,
+  isNotifyPayload,
   isTaskResultPayload,
   messageBytes,
   MessageType,
@@ -263,6 +264,20 @@ export function validateMessage(
         ProtocolErrorCode.E_BAD_ENVELOPE,
         'payload',
         'task.result payload must be a closed completed or failed result',
+      ),
+    )
+  } else if (
+    raw['type'] === MessageType.Notify &&
+    !isNotifyPayload(raw['payload'])
+  ) {
+    // Controlled by a whitelist rather than an exact key count — the reasoning
+    // is on `isNotifyPayload`, and it is the one difference between this branch
+    // and the two above it.
+    issues.push(
+      issue(
+        ProtocolErrorCode.E_BAD_ENVELOPE,
+        'payload',
+        'notify payload must carry { kind, severity, summary, observedAt } and no unknown fields',
       ),
     )
   } else {

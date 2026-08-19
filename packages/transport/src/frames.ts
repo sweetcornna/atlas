@@ -19,7 +19,15 @@ import { ProtocolErrorCode } from '@qianmo/protocol'
  * package ever constructs a `MessageType.Ack`.
  */
 
-/** Version of the frame grammar. v1 authenticates a stable logical channel id. */
+/**
+ * Version of the frame grammar. v1 authenticates a stable logical channel id.
+ *
+ * **This number cannot be used to stage a migration.** {@link parseFrame}
+ * compares it for strict equality and drops anything else, so raising it does
+ * not produce two generations that can talk — it produces two that cannot. Every
+ * extension therefore has to land *inside* v1 as an optional field that an older
+ * parser ignores, which is how `supportedTypes` arrives below.
+ */
 export const FRAME_VERSION = 1
 
 /** Discriminant of {@link TransportFrame}. */
@@ -78,11 +86,39 @@ export interface AuthFrame {
   readonly channelId: string
   /** `HMAC-SHA256` over both nonces, node and channel id, hex. */
   readonly mac: string
+  /**
+   * Message types the *dialer* implements. Absent or empty ⇒ the legacy floor.
+   *
+   * Carried here as well as on {@link ReadyFrame} because capability discovery
+   * has to answer for whoever is about to send, and the two directions have
+   * different senders: the listener is the one that raises `notify`, so the
+   * listener is the one that needs the dialer's list. A ready frame alone would
+   * only ever tell the dialer about the listener.
+   *
+   * **Outside the MAC, deliberately.** Two reasons, both hard: the MAC input is
+   * fixed at five fields on every deployed peer and {@link FRAME_VERSION}
+   * cannot stage a change to it, so covering this field would turn an additive
+   * extension into a fleet-wide handshake failure; and the field cannot grant
+   * anything — tampering with it makes a sender send *fewer* types, or send one
+   * that comes straight back as a rejected receipt. Neither is a capability an
+   * on-path attacker did not already have by dropping frames.
+   */
+  readonly supportedTypes?: readonly string[]
 }
 
 export interface ReadyFrame {
   readonly t: FrameType.Ready
   readonly v: typeof FRAME_VERSION
+  /**
+   * Message types the *listener* implements. Absent or empty ⇒ the legacy
+   * floor, never "none" — see `resolvePeerTypes` in `@qianmo/protocol`.
+   *
+   * Capability discovery lives on the handshake rather than in the registry
+   * because the registry holds a registration that expires and that a listening
+   * node does not even refresh (it never dials out). A handshake is decided
+   * once per connection, on the spot, over the very link the message will take.
+   */
+  readonly supportedTypes?: readonly string[]
 }
 
 export interface EnvelopeFrame {
@@ -142,6 +178,32 @@ function isErrorCode(value: unknown): value is ProtocolErrorCode {
   return typeof value === 'string' && ERROR_CODES.has(value)
 }
 
+/**
+ * A capability declaration: a list of non-empty type names, or nothing.
+ *
+ * Members stay `string` rather than `MessageType`: the list is what the *peer*
+ * implements, and a peer newer than this build will name types this build has
+ * never heard of. Narrowing here would quietly drop exactly those.
+ */
+function isTypeList(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString)
+}
+
+/**
+ * Read an optional capability declaration, dropping a malformed one.
+ *
+ * Dropping rather than rejecting the frame, for the same reason a malformed
+ * `code` on a receipt is dropped: this is an additive optional field, and the
+ * contract for one is that a reader which cannot make sense of it behaves like
+ * a reader that never knew about it. A dropped list reads as the legacy floor —
+ * fewer types offered, never more.
+ */
+function readSupportedTypes(
+  value: unknown,
+): { supportedTypes: readonly string[] } | Record<string, never> {
+  return isTypeList(value) ? { supportedTypes: Object.freeze([...value]) } : {}
+}
+
 function isReceiptStatus(value: unknown): value is ReceiptStatus {
   return (
     value === ReceiptStatus.Accepted ||
@@ -187,10 +249,15 @@ export function parseFrame(raw: string): TransportFrame | null {
             clientNonce: parsed['clientNonce'],
             channelId: parsed['channelId'],
             mac: parsed['mac'],
+            ...readSupportedTypes(parsed['supportedTypes']),
           }
         : null
     case FrameType.Ready:
-      return { t: FrameType.Ready, v: FRAME_VERSION }
+      return {
+        t: FrameType.Ready,
+        v: FRAME_VERSION,
+        ...readSupportedTypes(parsed['supportedTypes']),
+      }
     case FrameType.KeepAlive:
       return { t: FrameType.KeepAlive, v: FRAME_VERSION }
     case FrameType.Envelope:

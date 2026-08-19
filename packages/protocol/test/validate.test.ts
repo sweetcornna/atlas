@@ -95,6 +95,12 @@ describe('validateMessage — accepts', () => {
         reason: 'completed',
         releasedAt: NOW,
       },
+      [MessageType.Notify]: {
+        kind: 'watch',
+        severity: 'info',
+        summary: 'disk usage crossed 80%',
+        observedAt: NOW,
+      },
     }
     for (const type of Object.values(MessageType)) {
       const payload = CLOSED_PAYLOADS[type] ?? { goal: 'summarise' }

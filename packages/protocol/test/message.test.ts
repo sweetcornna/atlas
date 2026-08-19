@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   ENVELOPE_VERSION,
+  LEGACY_MESSAGE_TYPES,
   LIMITS,
   MESSAGE_TYPES,
   MessageType,
@@ -54,9 +55,22 @@ describe('message types', () => {
         'resource.offer',
         'resource.grant',
         'resource.release',
+        // §14, added by P13.2. The only type an agent raises unprompted.
+        'notify',
       ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(11)
+    expect(MESSAGE_TYPES).toHaveLength(12)
+  })
+
+  test('the legacy floor is the eleven types that predate notify', () => {
+    // Capability discovery reads an absent declaration as "this peer speaks the
+    // floor". A floor that grew with the enum would say every peer speaks every
+    // type, which is the assumption discovery exists to stop making.
+    expect(LEGACY_MESSAGE_TYPES).toHaveLength(11)
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.Notify)
+    expect([...LEGACY_MESSAGE_TYPES].sort()).toEqual(
+      MESSAGE_TYPES.filter(type => type !== MessageType.Notify).sort(),
+    )
   })
 
   test('isMessageType accepts known types and rejects the rest', () => {

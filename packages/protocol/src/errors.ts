@@ -47,6 +47,93 @@ export enum ProtocolErrorCode {
    * that has expired, or an offer that is not on the table (§13).
    */
   E_RESOURCE_REFUSED = 'E_RESOURCE_REFUSED',
+  /**
+   * The node is not taking new work: its turn queue is at
+   * `LIMITS.maxQueuedTurns`, or an operator has engaged the emergency stop.
+   *
+   * **Post-legacy — subject to rule N-1** (see {@link LEGACY_ERROR_CODES}).
+   * One code with two reasons rather than two codes, because every additional
+   * code carries the compatibility weight described below and because a sender
+   * does the same thing about both: come back later.
+   */
+  E_BUSY = 'E_BUSY',
+}
+
+/**
+ * The codes every v0 node has always understood — the floor of the code table.
+ *
+ * ## Rule N-1: a new error code is not a free addition
+ *
+ * `isTaskResultPayload` checks membership in the *local* code set, so a peer
+ * built before a code existed does not read a `task.result{failed}` carrying it
+ * as "an outcome I cannot name". It reads the whole payload as malformed and
+ * **refuses the message** — the result does not arrive at all, and the sender
+ * waits out its task deadline for an answer that was already computed.
+ *
+ * Hence the rule, written down in protocol.md §11: a post-legacy code may only
+ * be put on the wire towards a peer that has declared it speaks the release the
+ * code shipped in (§2.7 capability discovery). Towards every other peer it is
+ * downgraded to the nearest legacy code — {@link downgradeErrorCode}.
+ *
+ * This list is written out rather than derived from the enum: deriving it would
+ * quietly move the floor every time a code is added, which is the one thing it
+ * exists to hold still.
+ */
+export const LEGACY_ERROR_CODES: readonly ProtocolErrorCode[] = Object.freeze([
+  ProtocolErrorCode.E_BAD_ENVELOPE,
+  ProtocolErrorCode.E_BAD_VERSION,
+  ProtocolErrorCode.E_BAD_ADDRESS,
+  ProtocolErrorCode.E_BAD_TYPE,
+  ProtocolErrorCode.E_TOO_LARGE,
+  ProtocolErrorCode.E_TTL_EXPIRED,
+  ProtocolErrorCode.E_TOO_MANY_HOPS,
+  ProtocolErrorCode.E_LOOP,
+  ProtocolErrorCode.E_RATE_LIMITED,
+  ProtocolErrorCode.E_UNKNOWN_AGENT,
+  ProtocolErrorCode.E_TASK_TIMEOUT,
+  ProtocolErrorCode.E_TASK_FAILED,
+  ProtocolErrorCode.E_EVICTED,
+  ProtocolErrorCode.E_UNDELIVERABLE,
+  ProtocolErrorCode.E_PAYLOAD_UNAVAILABLE,
+  ProtocolErrorCode.E_CAP_INVALID,
+  ProtocolErrorCode.E_CAP_INSUFFICIENT,
+  ProtocolErrorCode.E_BUDGET_EXHAUSTED,
+  ProtocolErrorCode.E_RESOURCE_REFUSED,
+])
+
+const LEGACY_ERROR_CODE_SET: ReadonlySet<string> = new Set<string>(
+  LEGACY_ERROR_CODES,
+)
+
+/** True when `code` is one every peer, however old, can already parse. */
+export function isLegacyErrorCode(code: ProtocolErrorCode): boolean {
+  return LEGACY_ERROR_CODE_SET.has(code)
+}
+
+/**
+ * Nearest legacy code for each post-legacy one (rule N-1).
+ *
+ * `E_BUSY` → `E_RATE_LIMITED`: both say "this node will not take it right now,
+ * try later", which is the whole of what the sender acts on. The loss is
+ * diagnostic detail in the `reason` string, not a change of outcome.
+ */
+const CODE_DOWNGRADES: Readonly<
+  Partial<Record<ProtocolErrorCode, ProtocolErrorCode>>
+> = Object.freeze({
+  [ProtocolErrorCode.E_BUSY]: ProtocolErrorCode.E_RATE_LIMITED,
+})
+
+/**
+ * The legacy code that stands in for `code`, or `code` itself when it is
+ * already legacy.
+ *
+ * Every post-legacy code must have an entry in {@link CODE_DOWNGRADES}; one
+ * that does not is returned unchanged, which is the loud failure (a peer
+ * refusing the message) rather than a silent one.
+ */
+export function downgradeErrorCode(code: ProtocolErrorCode): ProtocolErrorCode {
+  if (isLegacyErrorCode(code)) return code
+  return CODE_DOWNGRADES[code] ?? code
 }
 
 /** A single reason why a message was rejected. */

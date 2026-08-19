@@ -9,6 +9,8 @@ import WebSocket from 'ws'
 import {
   TimeJumpGate,
   isValidSegment,
+  peerSupportsType,
+  type MessageType,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
@@ -95,6 +97,16 @@ export interface TransportClientOptions {
   readonly endpoint: TransportEndpoint
   /** This node's segment, e.g. `node-a`. Sent in the handshake. */
   readonly node: string
+  /**
+   * Message types this endpoint implements, declared to the peer in the auth
+   * frame. Omit to declare nothing, which the peer reads as the legacy floor.
+   *
+   * The transport cannot work this out for itself — it moves envelopes and
+   * never inspects their `type` — so the host supplies it. Omitting it is the
+   * safe default and the honest one: a host that has not wired up handling for
+   * a post-floor type must not advertise it.
+   */
+  readonly supportedTypes?: readonly string[]
   /** Expected peer label for inbound audit context; not an authority. */
   readonly peerNode?: string
   /** Stable across reconnects of this client. Generated when omitted. */
@@ -157,6 +169,7 @@ export class TransportClient implements TransportChannel {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private lastInboundAt = 0
   private readyWaiters: Array<() => void> = []
+  private declaredPeerTypes: readonly string[] | undefined
 
   readonly id: string
   readonly peerNode: string | null
@@ -201,6 +214,15 @@ export class TransportClient implements TransportChannel {
   /** Envelopes handed over but not yet receipted. */
   get pending(): number {
     return this.outbox.pending
+  }
+
+  /** What the server declared on the current connection's ready frame. */
+  get peerSupportedTypes(): readonly string[] | undefined {
+    return this.declaredPeerTypes
+  }
+
+  supports(type: MessageType): boolean {
+    return peerSupportsType(this.declaredPeerTypes, type)
   }
 
   /** True once the handshake has completed on the current socket. */
@@ -364,10 +386,18 @@ export class TransportClient implements TransportChannel {
             this.options.node,
             this.id,
           ),
+          // Outside the MAC by design — see `AuthFrame.supportedTypes`.
+          ...(this.options.supportedTypes === undefined
+            ? {}
+            : { supportedTypes: this.options.supportedTypes }),
         })
         return
       }
       case FrameType.Ready:
+        // Replaced, not merged: a peer that came back on an older build
+        // declares less, and remembering what it used to offer would keep this
+        // client sending types the peer no longer handles.
+        this.declaredPeerTypes = frame.supportedTypes
         this.onReady()
         return
       case FrameType.Receipt:
