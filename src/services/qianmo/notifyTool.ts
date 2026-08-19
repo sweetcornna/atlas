@@ -52,7 +52,7 @@ export const QIANMO_NOTIFY_TOOL_NAME = 'qianmo_notify'
  * Injected rather than imported so the tool has no idea an ACP connection
  * exists — which is what lets it be exercised without one.
  */
-export interface QianmoNotifyBridge {
+interface QianmoNotifyBridge {
   readonly sessionId: string
   announce(request: QianmoNotifyRequest): Promise<QianmoNotifyVerdict>
 }
@@ -127,7 +127,7 @@ const outputSchema = z.object({
 })
 type OutputSchema = typeof outputSchema
 
-export type QianmoNotifyOutput = z.infer<OutputSchema>
+type QianmoNotifyOutput = z.infer<OutputSchema>
 
 /** Text the model reads back. Each status says what it means for the turn. */
 function verdictText(verdict: QianmoNotifyVerdict): string {
@@ -157,9 +157,7 @@ function verdictText(verdict: QianmoNotifyVerdict): string {
  * have to guess, which on a node that serves several agents is a guess that is
  * wrong exactly when two of them are busy.
  */
-export function createQianmoNotifyTool(
-  bridge: QianmoNotifyBridge,
-): Tools[number] {
+function createQianmoNotifyTool(bridge: QianmoNotifyBridge): Tools[number] {
   return buildTool({
     name: QIANMO_NOTIFY_TOOL_NAME,
     // Always in the model's tool list. A resident turn may be the only chance

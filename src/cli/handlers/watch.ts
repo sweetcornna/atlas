@@ -79,7 +79,7 @@ const DISPATCH_RECEIPT_TIMEOUT_MS = 5_000
 /** 连接一次的上限，与 `resident-wake` 同源。 */
 const CONNECT_TIMEOUT_MS = 30_000
 
-export interface WatchConfig {
+interface WatchConfig {
   readonly jobsPath: string
   readonly from: string
   readonly stateDir: string
