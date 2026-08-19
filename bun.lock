@@ -79,6 +79,7 @@
         "@qianmo/resident": "workspace:*",
         "@qianmo/router": "workspace:*",
         "@qianmo/sandbox": "workspace:*",
+        "@qianmo/scheduler": "workspace:*",
         "@qianmo/transport": "workspace:*",
         "@qianmo/tunnel": "workspace:*",
         "@sentry/node": "^10.49.0",
