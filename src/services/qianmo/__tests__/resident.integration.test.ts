@@ -16,14 +16,18 @@ import { join } from 'node:path'
 import {
   CapabilityLevel,
   LIMITS,
+  MESSAGE_TYPES,
   MessageType,
   ProtocolErrorCode,
   createMessage,
   isAckPayload,
+  isNotifyPayload,
   isTaskResultPayload,
   newId,
+  type NotifyPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import { AuditSource, readTrail } from '@qianmo/audit'
 import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
@@ -36,6 +40,7 @@ import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
 import { executeResidentWake } from '../../../cli/handlers/residentWake.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { QianmoResident } from '../resident.js'
+import { openAuditTrail, residentNotifyTrailSink } from '../auditTrail.js'
 
 const PSK = 'resident-integration-not-a-real-secret'
 const TEAM = 'nest'
@@ -1326,5 +1331,199 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // Nothing at all came back for the wake — no ack, and no `task.result`
     // either, because no task was ever registered for it.
     expect(replies.filter(item => item.taskId === wake.taskId)).toEqual([])
+  }, 25_000)
+
+  test('an agent notification reaches the hub on the inbound channel and lands on the audit chain', async () => {
+    // The end-to-end DoD: agent tool → resident host → hub → audit trail. The
+    // fixture stands in for `qianmo_notify` (it makes the same
+    // `qianmo/notify` ext request the real tool makes); everything after that
+    // is production code.
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-notify-e2e-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const trailPath = join(root, 'trail.ndjson')
+    const trail = openAuditTrail(trailPath)
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      notifyAudit: residentNotifyTrailSink(trail, 'node-b'),
+      spawnAcp: () =>
+        spawnFixture({
+          ...process.env,
+          QIANMO_FIXTURE_NOTIFY: 'disk on node-b is at 91%',
+        }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const hub = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      // The hub says it speaks `notify`. Without the declaration the node is
+      // required to stay silent (§2.7), which is the next test.
+      supportedTypes: [...MESSAGE_TYPES],
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(hub)
+    await hub.connect()
+
+    // `contextId` is the watch job's id (design §4.1③). The notification has
+    // to come back under it without the agent ever being told what it is.
+    const request = createMessage({
+      from: 'qianmo://node-a/console',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      contextId: 'job-disk-watch',
+      payload: { ask: 'check the disks' },
+    })
+    hub.send(request)
+    await waitUntil(() =>
+      replies.some(item => item.type === MessageType.Notify),
+    )
+
+    const notify = replies.find(item => item.type === MessageType.Notify)
+    expect(notify?.from).toBe('qianmo://node-b/reviewer')
+    expect(notify?.to).toBe('qianmo://node-a/console')
+    expect(notify?.contextId).toBe('job-disk-watch')
+    // §2.4②: a fresh taskId, never the causing task's — reusing it is what
+    // gets the *second* notification of a job cut as `E_LOOP`.
+    expect(notify?.taskId).not.toBe(request.taskId)
+    expect(notify?.hops).toEqual(['node-b'])
+    expect(isNotifyPayload(notify?.payload)).toBe(true)
+    const payload = notify?.payload as NotifyPayload
+    expect(payload.summary).toBe('disk on node-b is at 91%')
+    expect(payload.kind).toBe('watch')
+    expect(payload.severity).toBe('warn')
+    // Correlation, not a correlation key (rule C-1).
+    expect(payload.causeTaskId).toBe(request.taskId)
+    expect(payload.redelivered).toBeUndefined()
+
+    // The verdict travelled back into the turn: the agent knows it landed.
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === request.taskId,
+      ),
+    )
+    const result = replies.find(
+      item =>
+        item.type === MessageType.TaskResult && item.taskId === request.taskId,
+    )
+    expect(String((result?.payload as { content?: string }).content)).toContain(
+      'notify=sent',
+    )
+
+    // And the trail carries it, chain intact.
+    await waitUntil(
+      () =>
+        readTrail(trailPath).records.some(
+          record => record.kind === 'notify_delivered',
+        ),
+      10_000,
+    )
+    const read = readTrail(trailPath)
+    expect(read.intact).toBe(true)
+    const sent = read.records.find(record => record.kind === 'notify_sent')
+    const delivered = read.records.find(
+      record => record.kind === 'notify_delivered',
+    )
+    expect(sent?.source).toBe(AuditSource.Resident)
+    expect(sent?.outcome).toBe('ok')
+    expect(sent?.node).toBe('node-b')
+    expect(sent?.taskId).toBe(notify?.taskId)
+    expect(delivered?.taskId).toBe(notify?.taskId)
+    // hermes B9: a line without a version stamp cannot be told apart, three
+    // days later, from a line that was edited.
+    expect(sent?.detail?.schemaVersion).toBe(1)
+    expect(errors).toEqual([])
+  }, 25_000)
+
+  test('a hub that never declared notify is told nothing at all (§2.7)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-notify-legacy-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: () =>
+        spawnFixture({
+          ...process.env,
+          QIANMO_FIXTURE_NOTIFY: 'nobody will hear this',
+        }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    // Declares nothing, which reads as the legacy floor.
+    const hub = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(hub)
+    await hub.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/console',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'check the disks' },
+    })
+    hub.send(request)
+    await waitUntil(() =>
+      replies.some(
+        item =>
+          item.type === MessageType.TaskResult &&
+          item.taskId === request.taskId,
+      ),
+    )
+
+    // Not downgraded into a `task.request`, not sent and refused — simply not
+    // sent. Rewriting an unsupported type into one the peer does understand
+    // would open a turn it never asked for (§2.8, hermes F3).
+    expect(replies.some(item => item.type === MessageType.Notify)).toBe(false)
+    const result = replies.find(item => item.type === MessageType.TaskResult)
+    // The agent is told, so it can put the finding in its answer instead.
+    expect(String((result?.payload as { content?: string }).content)).toContain(
+      'notify=unsupported',
+    )
+    expect(errors).toEqual([])
   }, 25_000)
 })

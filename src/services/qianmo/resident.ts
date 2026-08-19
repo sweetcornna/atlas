@@ -18,6 +18,7 @@ import {
   ResidentEstop,
   ResidentLifecycleSentinel,
   ResidentNodeRuntime,
+  ResidentNotifier,
   ResidentPoller,
   ResidentSessionManager,
   ResidentSupervisor,
@@ -27,6 +28,7 @@ import {
 import type {
   DeliveryLedgerEntry,
   ResidentChildConnection,
+  ResidentNotifyAuditSink,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentPriorLife,
@@ -42,6 +44,7 @@ import {
   createTaskResult,
   errorCodeForPeer,
   errorReply,
+  isNotifyPayload,
   isTaskResultPayload,
   parseAddress,
   peerIsPostLegacy,
@@ -74,6 +77,7 @@ import {
 } from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
+import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
   readonly agent: string
@@ -136,6 +140,15 @@ interface QianmoResidentOptions {
    */
   readonly onPriorLife?: (prior: ResidentPriorLife) => void
   readonly onTiming?: ResidentTimingSink
+  /**
+   * Where outbound `notify` events go (design §4.1 ⑤, hermes B9).
+   *
+   * Separate from `auditSink`, which is the router's: the router only records
+   * refusals, while this path has to record the successes too — "the operator
+   * was told, at 03:14, and the console receipted it" is the whole evidence a
+   * watch job produces, and it is not a refusal.
+   */
+  readonly notifyAudit?: ResidentNotifyAuditSink
   readonly onError?: (error: unknown) => void
   readonly onReady?: (address: {
     readonly port?: number
@@ -374,6 +387,18 @@ export class QianmoResident {
     occConfigPath('resident', 'deliveries.ndjson'),
     { onError: error => this.#options.onError?.(error) },
   )
+  /**
+   * Notifications this node owes the hub (design §2.4③, §4.1⑤).
+   *
+   * A second file rather than a second mechanism — see
+   * `packages/resident/src/notify.ts` for why the ledger is shared and the
+   * file is not.
+   */
+  readonly #notifies = new FileDeliveryLedger(
+    occConfigPath('resident', 'notifies.ndjson'),
+    { onError: error => this.#options.onError?.(error) },
+  )
+  readonly #notifier: ResidentNotifier
   /** Redeliveries on the wire right now, so a second sweep does not double up. */
   readonly #redelivering = new Set<string>()
   /** Emergency stop (design §3.B6). Existence of the file is the whole test. */
@@ -399,6 +424,14 @@ export class QianmoResident {
   constructor(options: QianmoResidentOptions) {
     this.#options = options
     this.#timings = new ResidentTimingRecorder(options.onTiming)
+    this.#notifier = new ResidentNotifier({
+      node: options.node,
+      ledger: this.#notifies,
+      onError: error => this.#options.onError?.(error),
+      ...(options.notifyAudit === undefined
+        ? {}
+        : { audit: options.notifyAudit }),
+    })
     this.#lifecycle = new ResidentLifecycleSentinel({
       path: occConfigPath('resident', 'lifecycle.json'),
       node: options.node,
@@ -477,6 +510,9 @@ export class QianmoResident {
     // never on a connection this node opens (invariant H-2). See
     // `#redeliverOwed`.
     this.#deliveries.outstanding()
+    // Same reason, same discipline: notifications owed from a previous life
+    // are counted now and leave only when the hub comes back to us.
+    this.#notifies.outstanding()
     this.#deadlineClock.start()
     for (const backups of this.#backups.values()) backups.start()
     try {
@@ -486,6 +522,7 @@ export class QianmoResident {
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
       this.#deliveries.close()
+      this.#notifies.close()
       this.#lifecycle.stop()
     }
   }
@@ -608,7 +645,12 @@ export class QianmoResident {
     // message and say nothing about the answers already owed for earlier ones.
     // Fire and forget: an obligation from a previous life must not delay the
     // envelope that just arrived.
-    this.#redeliverOwed(context.channel, parseAddress(message.from)?.node)
+    const peerNode = parseAddress(message.from)?.node
+    this.#redeliverOwed(context.channel, peerNode)
+    // The other half of the same rule (H-2). A notification produced while the
+    // hub was away has been sitting in its ledger; this contact is the only
+    // moment it is allowed to leave, and it leaves in the order it was made.
+    if (peerNode !== undefined) this.#notifier.drain(context.channel, peerNode)
 
     // Emergency stop, ahead of the mailbox write for the same rule L-1 reason
     // as the queue check below: a refusal must not spend the recipient's inbox
@@ -999,6 +1041,95 @@ export class QianmoResident {
     }
   }
 
+  /**
+   * Answer `qianmo/notify` from the ACP child (design §4.1⑤, §2 end to end).
+   *
+   * The agent supplies **what** to say and nothing else. Who hears it is
+   * derived here, from the task whose turn is running: the announcer is the
+   * agent that was addressed, the recipient is whoever sent the work, and the
+   * grouping key is that message's `contextId` — which for a watch job is the
+   * job id (§4.1③), so every notification from one job groups under it without
+   * the agent ever being told the id.
+   *
+   * A request with no running network task behind it is **refused, not
+   * guessed**. That case is real — a turn started by local teammate mail has
+   * no peer at all — and picking "the most recent hub" for it would send one
+   * agent's finding to a console that never asked for it.
+   */
+  async #announce(
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const sessionId = params['sessionId']
+    if (typeof sessionId !== 'string') {
+      return this.#notifyRefusal('the notify request named no session')
+    }
+    const turn = this.#turn.activeTurn(sessionId)
+    const networkMsgId = turn?.networkMsgId
+    if (networkMsgId === undefined) {
+      return this.#notifyRefusal(
+        'no network task is running in this session, so there is nobody to notify',
+      )
+    }
+    const task = this.#tasksByMessage.get(networkMsgId)
+    if (task === undefined || task.settled) {
+      return this.#notifyRefusal(
+        'the task behind this turn has already been answered',
+      )
+    }
+    const peerNode = parseAddress(task.envelope.from)?.node
+    if (peerNode === undefined) {
+      return this.#notifyRefusal('the requesting peer has no parseable address')
+    }
+    const payload = {
+      kind: params['kind'],
+      severity: params['severity'],
+      summary: params['summary'],
+      observedAt: Date.now(),
+      ...(typeof params['detail'] === 'string'
+        ? { detail: params['detail'] }
+        : {}),
+      ...(typeof params['dedupKey'] === 'string'
+        ? { dedupKey: params['dedupKey'] }
+        : {}),
+      // Correlation only, never a correlation key (rule C-1) — the notify
+      // carries its own fresh `taskId`, and this says which work produced it.
+      causeTaskId: task.envelope.taskId,
+    }
+    // Validated by the protocol's own predicate rather than by a check written
+    // here: `kind` and `severity` are closed sets that live in
+    // `@qianmo/protocol`, and a second spelling of them in the host is a second
+    // thing to forget to update.
+    if (!isNotifyPayload(payload)) {
+      return this.#notifyRefusal(
+        'the notification is missing a field or names an unknown kind or severity',
+      )
+    }
+    const contextId =
+      typeof task.envelope.contextId === 'string' &&
+      task.envelope.contextId.length > 0
+        ? task.envelope.contextId
+        : task.envelope.taskId
+    const outcome = await this.#notifier.announce({
+      from: task.envelope.to,
+      to: task.envelope.from,
+      peerNode,
+      contextId,
+      payload,
+      channel: task.channel,
+    })
+    const verdict: QianmoNotifyVerdict =
+      outcome.status === 'rejected'
+        ? { status: 'rejected', detail: outcome.reason }
+        : outcome.status === 'queued' && outcome.retryAfterMs !== undefined
+          ? { status: 'queued', retryAfterMs: outcome.retryAfterMs }
+          : { status: outcome.status }
+    return { ...verdict }
+  }
+
+  #notifyRefusal(detail: string): Record<string, unknown> {
+    return { status: 'rejected', detail }
+  }
+
   #abandonDelivery(deliveryId: string, reason: string): void {
     try {
       this.#deliveries.abandon(deliveryId, reason)
@@ -1071,7 +1202,6 @@ export class QianmoResident {
    * {@link #failActiveTasks} has always cost on the same path.
    */
   async #drainReplyReceipts(): Promise<void> {
-    if (this.#settling.size === 0) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<void>(resolve => {
       timer = setTimeout(resolve, TASK_REPLY_RECEIPT_TIMEOUT_MS)
@@ -1082,8 +1212,14 @@ export class QianmoResident {
     // Every wait carries its own timeout and nothing new is admitted once the
     // listener closes, so this terminates on its own; the deadline is the
     // backstop that keeps a peer that keeps talking from extending it.
+    //
+    // Notifications are drained in the same breath: one on the wire is in
+    // exactly the position a reply is — sent, unreceipted — and leaving it out
+    // would put the fault this method exists to stop back on the other path.
+    // Its own settle never rejects, so it needs no guard of its own.
     const drained = (async () => {
       while (this.#settling.size > 0) await Promise.all([...this.#settling])
+      await this.#notifier.settle()
     })()
     try {
       await Promise.race([drained, deadline])
@@ -1151,6 +1287,10 @@ export class QianmoResident {
         onSessionUpdate: params => {
           this.#turn.handleSessionUpdate(params)
         },
+        onExtMethod: async (method, params) =>
+          method === ACP_NOTIFY_METHOD
+            ? await this.#announce(params)
+            : undefined,
       })
       this.#turn.replaceConnection(connection)
 

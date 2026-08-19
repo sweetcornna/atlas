@@ -62,6 +62,32 @@ const agent: Agent = {
         content: { type: 'text', text: 'fixture response' },
       },
     })
+    // Stands in for the `qianmo_notify` tool call. The real tool is built by
+    // `src/services/qianmo/notifyTool.ts` and does exactly this — one
+    // `qianmo/notify` ext request, mid-turn, and it reports the verdict back
+    // to the model. Doing it from the fixture is what lets the integration
+    // test exercise the host half without booting a real model.
+    const announcement = process.env.QIANMO_FIXTURE_NOTIFY
+    if (announcement !== undefined && announcement !== '') {
+      const verdict = await connection.extMethod('qianmo/notify', {
+        sessionId: params.sessionId,
+        kind: 'watch',
+        severity: 'warn',
+        summary: announcement,
+        detail: 'observed by the fixture',
+        ...(process.env.QIANMO_FIXTURE_NOTIFY_DEDUP === undefined
+          ? {}
+          : { dedupKey: process.env.QIANMO_FIXTURE_NOTIFY_DEDUP }),
+      })
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId,
+          content: { type: 'text', text: ` notify=${String(verdict.status)}` },
+        },
+      })
+    }
     if (process.env.QIANMO_FIXTURE_HOLD_BUSY === '1') {
       await new Promise<void>(() => {})
     }

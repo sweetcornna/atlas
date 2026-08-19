@@ -18,6 +18,7 @@ import {
 } from '@qianmo/backup'
 import {
   openAuditTrail,
+  residentNotifyTrailSink,
   routerTrailSink,
   transportTrailSink,
 } from '../../services/qianmo/auditTrail.js'
@@ -689,6 +690,10 @@ export async function runResident(args: readonly string[]): Promise<void> {
     capability,
     auditSink: routerTrailSink(trail, config.node),
     transportEvents: transportTrailSink(trail, config.node),
+    // The one sink whose successes matter (P13.6): a watch job's whole output
+    // is "the operator was told, and the console receipted it", and no other
+    // layer records that.
+    notifyAudit: residentNotifyTrailSink(trail, config.node),
     ...(backup === undefined ? {} : { backup }),
     listen: {
       ...(config.port === undefined ? {} : { port: config.port }),
