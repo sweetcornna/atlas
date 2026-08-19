@@ -9,6 +9,7 @@ import {
   FileAdmissionLedger,
   FileResidentSessionStore,
   NodeTurnGate,
+  pendingSessionIds,
   ResidentAcpConnection,
   ResidentDeadlineClock,
   ResidentNodeRuntime,
@@ -186,6 +187,27 @@ function networkMessageId(
   if (messages.length !== 1) return undefined
   const msgId = networkEnvelope(messages[0])?.msgId
   return typeof msgId === 'string' && msgId.length > 0 ? msgId : undefined
+}
+
+/**
+ * Which requester's context this batch belongs to (design §4.3).
+ *
+ * Nothing new travels for this: `@qianmo/adapter` already serializes the whole
+ * envelope into the base mailbox entry, and `networkEnvelope` above already
+ * reads it back for `msgId`. So the protocol, the adapter and the base runtime
+ * are all untouched — the field was in the payload the entire time.
+ *
+ * `selectResidentSnapshot` guarantees a network entry is a batch of one, so a
+ * batch can never straddle two contexts and there is nothing to split here.
+ */
+function networkContextId(
+  messages: readonly ResidentMailboxMessage[],
+): string | undefined {
+  if (messages.length !== 1) return undefined
+  const contextId = networkEnvelope(messages[0])?.contextId
+  return typeof contextId === 'string' && contextId.length > 0
+    ? contextId
+    : undefined
 }
 
 function defaultSpawnAcp(): ChildProcess {
@@ -705,6 +727,14 @@ export class QianmoResident {
         connection,
         store: this.#sessions,
         agents: this.#options.agents,
+        // GC exemption ③: a session the admission ledger still has a pending
+        // record for is holding a message this node already promised to
+        // handle. Materialize every agent's ledger, not just the ones already
+        // opened, or the exemption silently covers a subset.
+        pendingSessionIds: () =>
+          pendingSessionIds(
+            this.#options.agents.map(agent => this.#ledger(agent.agent)),
+          ),
       })
       await sessions.start()
       for (const agent of this.#options.agents) {
@@ -730,11 +760,12 @@ export class QianmoResident {
         accepts: message => !isStructuredProtocolMessage(message.text),
         selectSnapshot: selectResidentSnapshot,
         correlationId: networkMessageId,
+        contextId: networkContextId,
+        sessions,
         timings: this.#timings,
         gate: this.#gate,
         agents: this.#options.agents.map(agent => ({
           agent: agent.agent,
-          sessionId: sessions.sessionOf(agent.agent),
           ledger: this.#ledger(agent.agent),
         })),
         onRead: (input, readAt) => this.#ackTask(input, readAt),
