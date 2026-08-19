@@ -42,6 +42,18 @@ export enum AuditSource {
   Diagnosis = 'diagnosis',
   Registry = 'registry',
   Capacity = 'capacity',
+  /**
+   * The hub's watch-job scheduler (P13.6).
+   *
+   * A source of its own rather than folded into `Resident`, because the two
+   * sit on opposite ends of the same watch job: this one records *deciding* to
+   * fire (and refusing to, when a slot was already claimed or ESTOP was
+   * pulled), while `Resident` records what the node did about it. Reading a
+   * seven-day run means separating "the hub never asked" from "the node never
+   * answered", and one shared source name makes that the one distinction the
+   * trail cannot express.
+   */
+  Scheduler = 'scheduler',
 }
 
 /** The chain value of the first record: sha-256 of the empty string is not it. */

@@ -38,4 +38,12 @@ export function registerQianmoCommands(program: CommanderCommand): void {
       const { runConsole } = await import('src/cli/handlers/console.js');
       await runConsole(process.argv.slice(3));
     });
+
+  program
+    .command('watch')
+    .description('Run the hub-side watch-job scheduler')
+    .action(async () => {
+      const { runWatch } = await import('src/cli/handlers/watch.js');
+      await runWatch(process.argv.slice(3));
+    });
 }

@@ -276,6 +276,7 @@ const ROOT_COMMANDS = [
   'resident-wake',
   'setup-token',
   'update',
+  'watch',
 ]
 
 const ROOT_OPTIONS = [
