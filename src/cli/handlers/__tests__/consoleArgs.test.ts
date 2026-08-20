@@ -15,7 +15,14 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AuditSource, AuditTrail } from '@qianmo/audit'
+import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
+import { generateNodeKeyPair } from '@qianmo/capability'
+import {
+  AuditWitnessScheduler,
+  FileWitnessAnchorStore,
+  remoteWitnessAnchorWriter,
+  startWitnessService,
+} from '@qianmo/witness'
 import { LIMITS } from '@qianmo/protocol'
 import {
   DEFAULT_TTL_MS,
@@ -87,6 +94,8 @@ describe('occ console argument parsing', () => {
         'http://10.0.0.2:38610',
         '--audit',
         '/tmp/qianmo/trail.ndjson',
+        '--anchors',
+        '/tmp/qianmo/witness',
         '--wake-url',
         'ws://10.0.0.3:38611',
         '--label',
@@ -112,6 +121,7 @@ describe('occ console argument parsing', () => {
         '--hostname=0.0.0.0',
         '--registry=http://10.0.0.2:38610',
         '--audit=/tmp/qianmo/trail.ndjson',
+        '--anchors=/tmp/qianmo/witness',
         '--wake-url=ws://10.0.0.3:38611',
         '--label=node-a 控制台',
         '--view-token=view-token-long-enough',
@@ -130,6 +140,7 @@ describe('occ console argument parsing', () => {
       hostname: '0.0.0.0',
       registryUrl: 'http://10.0.0.2:38610',
       auditPath: '/tmp/qianmo/trail.ndjson',
+      anchors: { kind: 'path', value: '/tmp/qianmo/witness' },
       wakeUrl: 'ws://10.0.0.3:38611/',
       label: 'node-a 控制台',
       viewToken: 'view-token-long-enough',
@@ -208,6 +219,20 @@ describe('occ console argument parsing', () => {
     expect(() =>
       parseConsoleArgs(['--audit=relative/trail.ndjson'], 'qianmo'),
     ).toThrow('--audit must be an absolute path')
+  })
+
+  test('accepts only an absolute anchor directory or HTTP(S) endpoint', () => {
+    expect(
+      parseConsoleArgs(['--anchors=/tmp/qianmo/witness'], 'qianmo'),
+    ).toMatchObject({ anchors: { kind: 'path', value: '/tmp/qianmo/witness' } })
+    expect(
+      parseConsoleArgs(['--anchors=https://witness.example/v0'], 'qianmo'),
+    ).toMatchObject({
+      anchors: { kind: 'url', value: 'https://witness.example/v0' },
+    })
+    expect(() =>
+      parseConsoleArgs(['--anchors=relative/witness'], 'qianmo'),
+    ).toThrow('absolute path or http(s) URL')
   })
 
   test('rejects blank and oversized labels and blank tokens', () => {
@@ -507,6 +532,104 @@ describe('console audit port', () => {
     if (!page.ok) throw new Error('unreachable')
     expect(page.value.intact).toBe(false)
     expect(page.value.issueCount).toBeGreaterThan(0)
+  })
+
+  test('detects a self-consistent rewritten chain through the real witness endpoint', async () => {
+    const path = join(directory, 'witness-rewritten.ndjson')
+    const node = 'node-witness'
+    const keys = generateNodeKeyPair()
+    const trail = new AuditTrail(path)
+    for (let index = 0; index < 4; index++) {
+      trail.append({
+        at: Date.now() + index,
+        source: AuditSource.Resident,
+        kind: `event-${index + 1}`,
+        outcome: index === 1 ? 'refused' : 'ok',
+        node,
+      })
+    }
+    trail.close()
+
+    const service = startWitnessService({
+      store: new FileWitnessAnchorStore({
+        root: join(directory, 'witness-endpoint'),
+      }),
+      writeToken: 'console-witness-write-token',
+      readToken: 'console-witness-read-token',
+    })
+    try {
+      const scheduler = new AuditWitnessScheduler({
+        node,
+        trailPath: path,
+        keys,
+        writer: remoteWitnessAnchorWriter({
+          url: service.url as string,
+          token: 'console-witness-write-token',
+        }),
+      })
+      await scheduler.tick()
+
+      const rewritten = join(directory, 'witness-rewritten-next.ndjson')
+      const attacked = new AuditTrail(rewritten)
+      for (const record of readTrail(path).records.filter(
+        record => record.outcome !== 'refused',
+      )) {
+        const { seq: _seq, prev: _prev, ...input } = record
+        attacked.append(input)
+      }
+      attacked.close()
+      writeFileSync(path, readFileSync(rewritten, 'utf8'))
+      expect(readTrail(path).intact).toBe(true)
+
+      const page = await createAuditPort({
+        path,
+        witness: { kind: 'url', value: service.url as string },
+        witnessReadToken: 'console-witness-read-token',
+        publicKeyOf: async requestedNode =>
+          requestedNode === node
+            ? { ok: true, value: keys.publicKey }
+            : {
+                ok: false,
+                failure: { code: 'not_found', message: '节点不在名册' },
+              },
+      }).read({})
+      expect(page).toMatchObject({
+        ok: true,
+        value: {
+          intact: true,
+          witness: { tampered: true, stale: false },
+        },
+      })
+    } finally {
+      await service.stop()
+    }
+  })
+
+  test('returns a typed failure when a configured witness endpoint is unreachable', async () => {
+    const path = join(directory, 'witness-unreachable.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: 'node-witness',
+    })
+    trail.close()
+    const keys = generateNodeKeyPair()
+
+    const result = await createAuditPort({
+      path,
+      witness: { kind: 'url', value: 'http://127.0.0.1:1/' },
+      witnessReadToken: 'console-witness-read-token',
+      publicKeyOf: async () => ({ ok: true, value: keys.publicKey }),
+    }).read({})
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: 'unreachable' },
+    })
+    if (result.ok) throw new Error('expected witness endpoint failure')
+    expect(result.failure.message).toStartWith('见证端点不可达')
   })
 
   test('defaults the tail to the same 200 as occ audit', () => {

@@ -14,9 +14,9 @@
  * `trail.ts` is careful about what "cannot be changed" means here: the writer
  * genuinely cannot modify (append-only fd, no method that seeks or deletes),
  * an outside edit is genuinely detectable (hash chain), and an outside edit is
- * **not prevented** — that needs a WORM mount or a witness off the machine, and
- * M0 has neither. Saying which of the three you have is the whole value of the
- * mechanism.
+ * **not prevented but is detected with an off-host witness, except inside its
+ * anchoring window**. This package supplies the local half; the boundary and
+ * deployment conditions live in `docs/dev/audit-witness.md` §7.
  */
 
 export {

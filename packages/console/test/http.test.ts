@@ -308,6 +308,14 @@ describe('the page', () => {
     audit.readResult = failResult('unreachable', '审计文件读不到')
     expect((await handle(get('/', VIEW))).status).toBe(200)
   })
+
+  test('keeps the page open when the witness endpoint is unreachable', async () => {
+    const { handle, audit } = setup()
+    audit.readResult = failResult('unreachable', '见证端点不可达：连接被拒绝')
+    const response = await handle(get('/', VIEW))
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('审计日志不可达 · 见证端点不可达')
+  })
 })
 
 describe('fragments', () => {

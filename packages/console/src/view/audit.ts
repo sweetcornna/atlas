@@ -11,10 +11,10 @@
  *    outcome, because a chain showing only what worked answers "what
  *    happened?" with "the parts that happened". So `refused` and `dropped` are
  *    never greyed down, and the chain states both counts first.
- * 2. **A broken hash chain is a headline.** `AuditPage.intact === false` means
- *    the trail may have been edited underneath us. It is stated twice, in two
- *    registers: `断裂 2` on the section header, where the eye lands before
- *    anything else, and a one-line strip at the top of the results.
+ * 2. **Integrity is a headline.** A broken hash chain and a mismatching
+ *    off-host anchor are distinct findings, both stated on the section header
+ *    and in one-line result strips. An unconfigured or stale witness never
+ *    inherits the green state from an intact local chain.
  *
  * ## Two filters stay out, five fold away
  *
@@ -386,6 +386,7 @@ function activeChips(filter: AuditFilter): string {
 }
 
 const INTEGRITY_LEAD = '审计链断裂'
+const WITNESS_MISMATCH_LEAD = '锚点不符'
 
 /**
  * The second statement of a broken chain: one line, at the top of the results.
@@ -396,13 +397,36 @@ const INTEGRITY_LEAD = '审计链断裂'
  * banner: the fact and the count, nothing about what a hash chain is.
  */
 function integrityAlert(page: AuditPage | null): string {
-  if (page === null || page.intact) return ''
-  const count = Number.isFinite(page.issueCount) ? page.issueCount : 0
-  return (
-    `<p class="bar bar-bad" id="audit-integrity" role="alert">` +
-    `<span>${escapeHtml(INTEGRITY_LEAD)} · ` +
-    `<span class="n">${escapeHtml(String(count))}</span> 处</span></p>`
-  )
+  if (page === null) return ''
+  if (!page.intact) {
+    const count = Number.isFinite(page.issueCount) ? page.issueCount : 0
+    return (
+      `<p class="bar bar-bad" id="audit-integrity" role="alert">` +
+      `<span>${escapeHtml(INTEGRITY_LEAD)} · ` +
+      `<span class="n">${escapeHtml(String(count))}</span> 处</span></p>`
+    )
+  }
+  if (page.witness?.tampered === true) {
+    return (
+      `<p class="bar bar-critical" id="audit-integrity" role="alert">` +
+      `<span>${escapeHtml(WITNESS_MISMATCH_LEAD)}</span></p>`
+    )
+  }
+  return ''
+}
+
+function integrityStatus(page: AuditPage): string {
+  if (!page.intact) {
+    const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
+    return toned('bad', `断裂 ${issues}`)
+  }
+  if (page.witness?.tampered === true) {
+    return toned('critical', WITNESS_MISMATCH_LEAD)
+  }
+  if (page.witness === undefined || page.witness.stale) {
+    return toned('muted', '未见证')
+  }
+  return toned('ok', '完整')
 }
 
 /**
@@ -478,12 +502,24 @@ function trailHead(page: AuditPage | null): string {
   const shown = page.records.length
   if (shown !== page.total) parts.push(`显示 ${shown}`)
   const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
-  parts.push(page.intact ? toned('ok', '完整') : toned('bad', `断裂 ${issues}`))
+  parts.push(integrityStatus(page))
   return sectionHead('Trail', '消息链', {
     ...common,
     tail: `<div class="rowx note">${parts.join(railSep())}</div>`,
     // Echoed for the overview 消息链 stat card in page.ts.
-    stats: { total: page.total, issues, intact: page.intact },
+    stats: {
+      total: page.total,
+      issues,
+      intact: page.intact,
+      witness:
+        page.witness === undefined
+          ? 'unwitnessed'
+          : page.witness.tampered
+            ? 'tampered'
+            : page.witness.stale
+              ? 'stale'
+              : 'verified',
+    },
   })
 }
 
