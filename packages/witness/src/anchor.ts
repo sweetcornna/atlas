@@ -32,6 +32,22 @@ export interface WitnessAnchor {
 /** Anchor fields before the signature is attached. */
 export type UnsignedWitnessAnchor = Omit<WitnessAnchor, 'signature'>
 
+/**
+ * Witness-host metadata for one accepted anchor.
+ *
+ * `receivedAt` is deliberately outside {@link WitnessAnchor}: the node signs
+ * only its statement, while the witness host vouches only that it accepted
+ * that statement at this local time. Freshness must use this field rather than
+ * the node-controlled `anchor.at`.
+ */
+export interface WitnessAnchorReceipt {
+  readonly anchor: WitnessAnchor
+  readonly receivedAt: number
+}
+
+/** A legacy bare anchor or an anchor accompanied by trusted host receipt time. */
+export type WitnessEvidence = WitnessAnchor | WitnessAnchorReceipt
+
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
 function isPositiveInteger(value: unknown): value is number {
@@ -83,6 +99,42 @@ export function isWitnessAnchor(value: unknown): value is WitnessAnchor {
     typeof candidate['signature'] === 'string' &&
     SIGNATURE_PATTERN.test(candidate['signature'])
   )
+}
+
+/** True when the evidence includes a valid witness-host reception time. */
+export function isWitnessAnchorReceipt(
+  value: unknown,
+): value is WitnessAnchorReceipt {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const receipt = value as Record<string, unknown>
+  return (
+    isWitnessAnchor(receipt['anchor']) &&
+    typeof receipt['receivedAt'] === 'number' &&
+    Number.isSafeInteger(receipt['receivedAt']) &&
+    receipt['receivedAt'] >= 0
+  )
+}
+
+/** True for either persisted receipt evidence or a compatibility bare anchor. */
+export function isWitnessEvidence(value: unknown): value is WitnessEvidence {
+  return isWitnessAnchor(value) || isWitnessAnchorReceipt(value)
+}
+
+/** The signed node statement carried by either evidence representation. */
+export function witnessAnchorOf(evidence: WitnessEvidence): WitnessAnchor {
+  return isWitnessAnchor(evidence) ? evidence : evidence.anchor
+}
+
+/**
+ * The witness-host reception time, or null for an old/local bare anchor.
+ *
+ * Callers may still compare a bare anchor to a trail, but may not use its
+ * node-declared time to extend the freshness window.
+ */
+export function witnessReceivedAtOf(evidence: WitnessEvidence): number | null {
+  return isWitnessAnchorReceipt(evidence) ? evidence.receivedAt : null
 }
 
 function isUnsignedWitnessAnchor(

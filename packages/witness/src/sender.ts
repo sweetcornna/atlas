@@ -34,9 +34,9 @@ export interface AuditWitnessSchedulerOptions {
 /**
  * A period gate intended to be called from the resident's existing poll timer.
  *
- * It intentionally creates no timer of its own. The poller awaits every call,
- * so an anchor read/post cannot overlap the next call; this class additionally
- * coalesces direct concurrent callers. Every failure is fail-open, following
+ * It intentionally creates no timer of its own. The resident triggers it from
+ * its poll loop without awaiting remote I/O, so this class coalesces direct
+ * concurrent callers and prevents overlapping anchor attempts. Every failure is fail-open, following
  * the existing backup scheduler and audit sink: report it, retain the node,
  * and try again after the next period.
  */

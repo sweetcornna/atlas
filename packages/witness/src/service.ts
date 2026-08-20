@@ -12,8 +12,8 @@
 
 import { timingSafeEqual } from 'node:crypto'
 import { isValidSegment } from '@qianmo/protocol'
-import type { WitnessAnchor } from './anchor.js'
-import { isWitnessAnchor } from './anchor.js'
+import type { WitnessAnchor, WitnessEvidence } from './anchor.js'
+import { isWitnessAnchor, isWitnessAnchorReceipt } from './anchor.js'
 import type { WitnessAnchorWriter } from './sender.js'
 import { FileWitnessAnchorStore, WitnessAnchorExistsError } from './store.js'
 
@@ -124,6 +124,26 @@ function bearerOf(request: Request): string {
   return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
 }
 
+/**
+ * Keep the node-signed wire statement field-closed at the trust boundary.
+ *
+ * `isWitnessAnchor` intentionally accepts a JSON object with additive fields
+ * for reader compatibility. The endpoint must not persist those additions:
+ * in particular a sender must not smuggle a lookalike `receivedAt` beside its
+ * signed `at` field.
+ */
+function acceptedAnchor(anchor: WitnessAnchor): WitnessAnchor {
+  return {
+    v: anchor.v,
+    node: anchor.node,
+    seq: anchor.seq,
+    head: anchor.head,
+    count: anchor.count,
+    at: anchor.at,
+    signature: anchor.signature,
+  }
+}
+
 export interface WitnessServiceOptions {
   readonly store: FileWitnessAnchorStore
   /** Held by nodes. It can add an anchor but cannot inspect or remove history. */
@@ -133,6 +153,8 @@ export interface WitnessServiceOptions {
   readonly port?: number
   readonly hostname?: string
   readonly unix?: string
+  /** Host clock injected only for deterministic receipt tests. */
+  readonly now?: () => number
 }
 
 export interface WitnessServiceHandle {
@@ -183,9 +205,16 @@ export function startWitnessService(
       }
       if (!isWitnessAnchor(anchor))
         return json({ error: 'invalid_anchor' }, 400)
+      const receipt = {
+        anchor: acceptedAnchor(anchor),
+        receivedAt: (options.now ?? Date.now)(),
+      }
+      if (!isWitnessAnchorReceipt(receipt)) {
+        return json({ error: 'invalid_witness_clock' }, 500)
+      }
       try {
-        await options.store.create(anchor)
-        return json(anchor, 201)
+        await options.store.create(receipt)
+        return json(receipt, 201)
       } catch (error) {
         if (error instanceof WitnessAnchorExistsError) {
           return json({ error: 'anchor_exists' }, 409)
@@ -233,11 +262,64 @@ function json(value: unknown, status: number): Response {
   })
 }
 
+/**
+ * Operational I/O bound for every remote witness request.
+ *
+ * This is not a protocol budget: it bounds a best-effort second location so a
+ * half-open endpoint cannot stall admission, audit verification, or the
+ * console forever. Ten seconds leaves room for an off-host TLS round trip
+ * without turning an unavailable witness into a long interactive hang.
+ */
+export const DEFAULT_WITNESS_REMOTE_TIMEOUT_MS = 10_000
+
+/** The diagnostic failure returned when a remote witness phase exceeds its bound. */
+export class WitnessRemoteTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`witness remote request timed out after ${timeoutMs} ms`)
+    this.name = 'WitnessRemoteTimeoutError'
+  }
+}
+
+function assertRemoteTimeout(timeoutMs: number): void {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error('witness remote timeout must be a positive integer')
+  }
+}
+
+/**
+ * Bound every phase of one remote operation, even for a test/custom fetch
+ * implementation that ignores AbortSignal. The detached catch observes a
+ * late rejection after the race has already timed out.
+ */
+async function withinWitnessRemoteTimeout<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  assertRemoteTimeout(timeoutMs)
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const work = Promise.resolve().then(() => operation(controller.signal))
+  void work.catch(() => {})
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new WitnessRemoteTimeoutError(timeoutMs))
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([work, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 export interface RemoteWitnessAnchorWriterOptions {
   readonly url?: string
   readonly unix?: string
   readonly token: string
   readonly fetchImpl?: typeof fetch
+  /** Defaults to {@link DEFAULT_WITNESS_REMOTE_TIMEOUT_MS}. */
+  readonly timeoutMs?: number
 }
 
 /** The node-side writer has one method and one destination path. */
@@ -246,22 +328,26 @@ export function remoteWitnessAnchorWriter(
 ): WitnessAnchorWriter {
   const base = options.url ?? 'http://localhost'
   const call = options.fetchImpl ?? fetch
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WITNESS_REMOTE_TIMEOUT_MS
   return {
     async append(anchor: WitnessAnchor): Promise<void> {
-      const response = await call(new URL('/v0/anchor', base), {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${options.token}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify(anchor),
-        ...(options.unix === undefined ? {} : { unix: options.unix }),
-      } as RequestInit)
-      if (!response.ok) {
-        throw new Error(
-          `witness service refused the anchor: ${response.status}`,
-        )
-      }
+      await withinWitnessRemoteTimeout(timeoutMs, async signal => {
+        const response = await call(new URL('/v0/anchor', base), {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${options.token}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(anchor),
+          signal,
+          ...(options.unix === undefined ? {} : { unix: options.unix }),
+        } as RequestInit)
+        if (!response.ok) {
+          throw new Error(
+            `witness service refused the anchor: ${response.status}`,
+          )
+        }
+      })
     },
   }
 }
@@ -271,32 +357,38 @@ export interface RemoteWitnessAnchorReaderOptions {
   readonly unix?: string
   readonly token: string
   readonly fetchImpl?: typeof fetch
+  /** Defaults to {@link DEFAULT_WITNESS_REMOTE_TIMEOUT_MS}. */
+  readonly timeoutMs?: number
 }
 
 /** Read anchors for a verifier without granting it an append operation. */
 export function remoteWitnessAnchorReader(
   options: RemoteWitnessAnchorReaderOptions,
-): { list(node: string): Promise<readonly WitnessAnchor[]> } {
+): { list(node: string): Promise<readonly WitnessEvidence[]> } {
   const base = options.url ?? 'http://localhost'
   const call = options.fetchImpl ?? fetch
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WITNESS_REMOTE_TIMEOUT_MS
   return {
-    async list(node: string): Promise<readonly WitnessAnchor[]> {
-      const url = new URL('/v0/anchor', base)
-      url.searchParams.set('node', node)
-      const response = await call(url, {
-        headers: { authorization: `Bearer ${options.token}` },
-        ...(options.unix === undefined ? {} : { unix: options.unix }),
-      } as RequestInit)
-      if (!response.ok) {
-        throw new Error(
-          `witness service refused the anchor read: ${response.status}`,
-        )
-      }
-      const parsed: unknown = await response.json()
-      if (!Array.isArray(parsed) || !parsed.every(isWitnessAnchor)) {
-        throw new Error('witness service returned invalid anchors')
-      }
-      return parsed
+    async list(node: string): Promise<readonly WitnessEvidence[]> {
+      return await withinWitnessRemoteTimeout(timeoutMs, async signal => {
+        const url = new URL('/v0/anchor', base)
+        url.searchParams.set('node', node)
+        const response = await call(url, {
+          headers: { authorization: `Bearer ${options.token}` },
+          signal,
+          ...(options.unix === undefined ? {} : { unix: options.unix }),
+        } as RequestInit)
+        if (!response.ok) {
+          throw new Error(
+            `witness service refused the anchor read: ${response.status}`,
+          )
+        }
+        const parsed: unknown = await response.json()
+        if (!Array.isArray(parsed) || !parsed.every(isWitnessAnchorReceipt)) {
+          throw new Error('witness service returned invalid anchor receipts')
+        }
+        return parsed
+      })
     },
   }
 }

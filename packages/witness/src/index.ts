@@ -7,10 +7,16 @@ export {
   WITNESS_ANCHOR_VERSION,
   canonicalizeWitnessAnchor,
   isWitnessAnchor,
+  isWitnessAnchorReceipt,
+  isWitnessEvidence,
   signWitnessAnchor,
   verifyWitnessAnchor,
+  witnessAnchorOf,
+  witnessReceivedAtOf,
   type UnsignedWitnessAnchor,
   type WitnessAnchor,
+  type WitnessAnchorReceipt,
+  type WitnessEvidence,
 } from './anchor.js'
 
 export {
@@ -28,9 +34,11 @@ export {
 
 export {
   ALLOWED_METHODS,
+  DEFAULT_WITNESS_REMOTE_TIMEOUT_MS,
   DESTRUCTIVE_WORDS,
   WITNESS_SURFACE,
   WitnessOp,
+  WitnessRemoteTimeoutError,
   assertWitnessSurfaceIsSafe,
   remoteWitnessAnchorReader,
   remoteWitnessAnchorWriter,

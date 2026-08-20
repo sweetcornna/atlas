@@ -6,7 +6,13 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isValidSegment } from '@qianmo/protocol'
-import { isWitnessAnchor, type WitnessAnchor } from './anchor.js'
+import {
+  isWitnessAnchor,
+  isWitnessAnchorReceipt,
+  witnessAnchorOf,
+  type WitnessAnchorReceipt,
+  type WitnessEvidence,
+} from './anchor.js'
 
 function anchorDirectory(root: string, node: string): string {
   return join(root, node)
@@ -30,7 +36,7 @@ export interface FileWitnessAnchorStoreOptions {
 }
 
 /**
- * Stores exactly one anchor for each `(node, seq)`, created with `wx`.
+ * Stores exactly one receipt for each `(node, seq)`, created with `wx`.
  *
  * There is intentionally no update or removal method. Retention, when it is
  * needed, is an operator-run action outside the inbound witness surface.
@@ -45,16 +51,17 @@ export class FileWitnessAnchorStore {
     this.root = options.root
   }
 
-  async create(anchor: WitnessAnchor): Promise<void> {
-    if (!isWitnessAnchor(anchor)) {
-      throw new Error('refusing an invalid witness anchor')
+  async create(receipt: WitnessAnchorReceipt): Promise<void> {
+    if (!isWitnessAnchorReceipt(receipt)) {
+      throw new Error('refusing an invalid witness anchor receipt')
     }
+    const anchor = receipt.anchor
     const directory = anchorDirectory(this.root, anchor.node)
     await mkdir(directory, { recursive: true, mode: 0o700 })
     try {
       await writeFile(
         anchorPath(this.root, anchor.node, anchor.seq),
-        `${JSON.stringify(anchor)}\n`,
+        `${JSON.stringify(receipt)}\n`,
         { encoding: 'utf8', flag: 'wx', mode: 0o600 },
       )
     } catch (error) {
@@ -65,7 +72,7 @@ export class FileWitnessAnchorStore {
     }
   }
 
-  async list(node: string): Promise<readonly WitnessAnchor[]> {
+  async list(node: string): Promise<readonly WitnessEvidence[]> {
     if (!isValidSegment(node)) return []
     let names: string[]
     try {
@@ -73,20 +80,28 @@ export class FileWitnessAnchorStore {
     } catch {
       return []
     }
-    const anchors: WitnessAnchor[] = []
+    const evidence: WitnessEvidence[] = []
     for (const name of names.sort((a, b) => Number(a) - Number(b))) {
       if (!name.endsWith('.json')) continue
       try {
         const parsed: unknown = JSON.parse(
           await readFile(join(anchorDirectory(this.root, node), name), 'utf8'),
         )
-        if (isWitnessAnchor(parsed) && parsed.node === node) {
-          anchors.push(parsed)
+        if (isWitnessAnchorReceipt(parsed) && parsed.anchor.node === node) {
+          evidence.push(parsed)
+        } else if (isWitnessAnchor(parsed) && parsed.node === node) {
+          // Pre-receipt files remain useful for signature and prefix checks,
+          // but callers treat them as stale because they lack host time.
+          evidence.push(parsed)
         }
       } catch {
         // One torn or hand-edited object must not hide older evidence.
       }
     }
-    return anchors.sort((a, b) => a.seq - b.seq || a.at - b.at)
+    return evidence.sort((a, b) => {
+      const left = witnessAnchorOf(a)
+      const right = witnessAnchorOf(b)
+      return left.seq - right.seq || left.at - right.at
+    })
   }
 }

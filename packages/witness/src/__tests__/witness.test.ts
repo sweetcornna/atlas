@@ -21,11 +21,13 @@ import {
   canonicalizeWitnessAnchor,
   checkWitnessStaleness,
   formatWitnessVerification,
+  remoteWitnessAnchorReader,
   remoteWitnessAnchorWriter,
   signWitnessAnchor,
   startWitnessService,
   verifyAuditWitness,
   verifyWitnessAnchor,
+  witnessAnchorOf,
   type WitnessRoute,
 } from '../index.js'
 
@@ -75,6 +77,27 @@ function rewriteTrail(
     rewritten.append(input)
   }
   rewritten.close()
+}
+
+function signedAnchor(keys: ReturnType<typeof generateNodeKeyPair>) {
+  return signWitnessAnchor(
+    {
+      v: 1,
+      node: NODE,
+      seq: 1,
+      head: 'c'.repeat(64),
+      count: 1,
+      at: 1,
+    },
+    keys,
+  )
+}
+
+function hangingFetch(onAbort: () => void): typeof fetch {
+  return ((_input, init) => {
+    init?.signal?.addEventListener('abort', onAbort, { once: true })
+    return new Promise<Response>(() => {})
+  }) as typeof fetch
 }
 
 describe('the signed anchor format', () => {
@@ -151,6 +174,7 @@ describe('the append-only witness endpoint', () => {
       store,
       writeToken: WRITE_TOKEN,
       readToken: READ_TOKEN,
+      now: () => 1_234,
     })
     services.push(service)
     const base = service.url as string
@@ -172,9 +196,12 @@ describe('the append-only witness endpoint', () => {
         authorization: `Bearer ${WRITE_TOKEN}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify(anchor),
+      // The sender is allowed to declare only `anchor.at`; a similarly named
+      // field in its body must not become the witness receipt time.
+      body: JSON.stringify({ ...anchor, receivedAt: Number.MAX_SAFE_INTEGER }),
     })
     expect(create.status).toBe(201)
+    expect(await create.json()).toEqual({ anchor, receivedAt: 1_234 })
     const overwrite = await fetch(`${base}/v0/anchor`, {
       method: 'POST',
       headers: {
@@ -194,7 +221,59 @@ describe('the append-only witness endpoint', () => {
       headers: { authorization: `Bearer ${WRITE_TOKEN}` },
     })
     expect(nonWhitelisted.status).toBe(405)
-    expect(await store.list(NODE)).toEqual([anchor])
+    expect(await store.list(NODE)).toEqual([{ anchor, receivedAt: 1_234 }])
+  })
+
+  test('bounds writer and reader requests even when fetch ignores abort', async () => {
+    const anchor = signedAnchor(generateNodeKeyPair())
+    let writerAborted = false
+    const writer = remoteWitnessAnchorWriter({
+      url: 'http://witness.test',
+      token: WRITE_TOKEN,
+      timeoutMs: 10,
+      fetchImpl: hangingFetch(() => {
+        writerAborted = true
+      }),
+    })
+    await expect(writer.append(anchor)).rejects.toThrow('timed out after 10 ms')
+    expect(writerAborted).toBe(true)
+
+    let readerAborted = false
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: READ_TOKEN,
+      timeoutMs: 10,
+      fetchImpl: hangingFetch(() => {
+        readerAborted = true
+      }),
+    })
+    await expect(reader.list(NODE)).rejects.toThrow('timed out after 10 ms')
+    expect(readerAborted).toBe(true)
+  })
+
+  test('bounds a hanging remote reader body under the same request deadline', async () => {
+    let aborted = false
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: READ_TOKEN,
+      timeoutMs: 10,
+      fetchImpl: ((_input, init) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborted = true
+          },
+          { once: true },
+        )
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => new Promise<unknown>(() => {}),
+        } as unknown as Response)
+      }) as typeof fetch,
+    })
+    await expect(reader.list(NODE)).rejects.toThrow('timed out after 10 ms')
+    expect(aborted).toBe(true)
   })
 })
 
@@ -205,8 +284,10 @@ describe('§5 witness variants', () => {
   let store: FileWitnessAnchorStore
   let base: string
   let keys: ReturnType<typeof generateNodeKeyPair>
+  let witnessNow: number
 
   async function publish(at: number, targetPath = path): Promise<void> {
+    witnessNow = at
     const scheduler = new AuditWitnessScheduler({
       node: NODE,
       trailPath: targetPath,
@@ -220,11 +301,13 @@ describe('§5 witness variants', () => {
   beforeEach(async () => {
     directory = temporaryDirectory()
     path = join(directory, 'node-a', 'trail.ndjson')
+    witnessNow = 0
     store = new FileWitnessAnchorStore({ root: join(directory, 'witness') })
     const service = startWitnessService({
       store,
       writeToken: WRITE_TOKEN,
       readToken: READ_TOKEN,
+      now: () => witnessNow,
     })
     services.push(service)
     base = service.url as string
@@ -314,7 +397,7 @@ describe('§5 witness variants', () => {
     )
     await publish(3_000, attacked)
     const anchors = await store.list(NODE)
-    expect(anchors.map(anchor => anchor.seq)).toContain(11)
+    expect(anchors.map(witnessAnchorOf).map(anchor => anchor.seq)).toContain(11)
     const result = verifyAuditWitness({
       trailPath: attacked,
       anchors,
@@ -355,6 +438,66 @@ describe('§5 witness variants', () => {
     })
     expect(witnessSide.stale).toBe(true)
     expect(witnessSide.ageMs).toBe(120_001)
+  })
+
+  test('uses witness receipt time instead of a future node-declared anchor time', () => {
+    const futureAnchor = signWitnessAnchor(
+      {
+        v: 1,
+        node: NODE,
+        seq: 1,
+        head: 'f'.repeat(64),
+        count: 1,
+        at: Number.MAX_SAFE_INTEGER,
+      },
+      keys,
+    )
+    const result = checkWitnessStaleness({
+      anchors: [{ anchor: futureAnchor, receivedAt: 1_000 }],
+      publicKey: keys.publicKey,
+      now: () => 121_001,
+      staleAfterMs: 120_000,
+    })
+    expect(result).toMatchObject({ stale: true, ageMs: 120_001 })
+  })
+
+  test('does not let bare or bad-signature evidence extend freshness', () => {
+    const anchor = signWitnessAnchor(
+      {
+        v: 1,
+        node: NODE,
+        seq: 1,
+        head: 'e'.repeat(64),
+        count: 1,
+        at: Number.MAX_SAFE_INTEGER,
+      },
+      keys,
+    )
+    const badSignature = `${
+      anchor.signature.startsWith('A') ? 'B' : 'A'
+    }${anchor.signature.slice(1)}`
+    const bare = checkWitnessStaleness({
+      anchors: [anchor],
+      publicKey: keys.publicKey,
+      now: () => 121_001,
+      staleAfterMs: 120_000,
+    })
+    expect(bare).toMatchObject({ stale: true, ageMs: null })
+
+    const withBadReceipt = checkWitnessStaleness({
+      anchors: [
+        { anchor, receivedAt: 1_000 },
+        { anchor: { ...anchor, signature: badSignature }, receivedAt: 121_001 },
+      ],
+      publicKey: keys.publicKey,
+      now: () => 121_001,
+      staleAfterMs: 120_000,
+    })
+    expect(withBadReceipt).toMatchObject({ stale: true, ageMs: 120_001 })
+    expect(withBadReceipt.issues).toContainEqual({
+      kind: 'bad_signature',
+      seq: 1,
+    })
   })
 
   test('a sender failure is fail-open and the next period still attempts an anchor', async () => {

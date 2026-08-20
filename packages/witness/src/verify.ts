@@ -4,8 +4,12 @@
 /** Verify a local audit trail against anchors held by the second location. */
 
 import { digestOf, readTrail } from '@qianmo/audit'
-import type { WitnessAnchor } from './anchor.js'
-import { verifyWitnessAnchor } from './anchor.js'
+import type { WitnessAnchor, WitnessEvidence } from './anchor.js'
+import {
+  verifyWitnessAnchor,
+  witnessAnchorOf,
+  witnessReceivedAtOf,
+} from './anchor.js'
 import { DEFAULT_WITNESS_ANCHOR_INTERVAL_MS } from './sender.js'
 
 /** Design §4.3: after two periods without evidence, raise an alert. */
@@ -43,7 +47,8 @@ export interface WitnessVerification {
 
 export interface VerifyWitnessOptions {
   readonly trailPath: string
-  readonly anchors: readonly WitnessAnchor[]
+  /** Bare anchors remain comparable, but only receipts count as fresh. */
+  readonly anchors: readonly WitnessEvidence[]
   readonly publicKey: string
   readonly now?: () => number
   readonly staleAfterMs?: number
@@ -53,7 +58,7 @@ export interface WitnessStaleness {
   readonly stale: boolean
   readonly ageMs: number | null
   readonly thresholdMs: number
-  /** Signatures that passed and therefore count as evidence of freshness. */
+  /** Signatures that passed and therefore count as prefix evidence. */
   readonly validAnchors: readonly WitnessAnchor[]
   readonly issues: readonly Extract<
     WitnessVerificationIssue,
@@ -62,7 +67,7 @@ export interface WitnessStaleness {
 }
 
 export interface CheckWitnessStalenessOptions {
-  readonly anchors: readonly WitnessAnchor[]
+  readonly anchors: readonly WitnessEvidence[]
   readonly publicKey: string
   readonly now?: () => number
   readonly staleAfterMs?: number
@@ -86,21 +91,23 @@ export function checkWitnessStaleness(
     >
   > = []
   const validAnchors: WitnessAnchor[] = []
-  for (const anchor of options.anchors) {
+  let latestReceivedAt: number | null = null
+  for (const evidence of options.anchors) {
+    const anchor = witnessAnchorOf(evidence)
     if (!verifyWitnessAnchor(anchor, options.publicKey)) {
       issues.push({ kind: 'bad_signature', seq: anchor.seq })
       continue
     }
     validAnchors.push(anchor)
+    const receivedAt = witnessReceivedAtOf(evidence)
+    if (receivedAt !== null) {
+      latestReceivedAt = Math.max(latestReceivedAt ?? receivedAt, receivedAt)
+    }
   }
-  const latestAnchorAt = validAnchors.reduce<number | null>(
-    (latest, anchor) => Math.max(latest ?? anchor.at, anchor.at),
-    null,
-  )
   const ageMs =
-    latestAnchorAt === null
+    latestReceivedAt === null
       ? null
-      : Math.max(0, (options.now ?? Date.now)() - latestAnchorAt)
+      : Math.max(0, (options.now ?? Date.now)() - latestReceivedAt)
   const stale = ageMs === null || ageMs > staleAfterMs
   if (stale) {
     issues.push({ kind: 'stale', ageMs, thresholdMs: staleAfterMs })
