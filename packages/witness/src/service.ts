@@ -11,12 +11,14 @@
  */
 
 import { timingSafeEqual } from 'node:crypto'
+import type { PublicKeyDirectory } from '@qianmo/capability'
 import { isValidSegment } from '@qianmo/protocol'
 import type { WitnessAnchor, WitnessEvidence } from './anchor.js'
 import {
   isWitnessAnchor,
   isWitnessAnchorReceipt,
   isWitnessEvidence,
+  verifyWitnessAnchor,
 } from './anchor.js'
 import type { WitnessAnchorWriter } from './sender.js'
 import { FileWitnessAnchorStore, WitnessAnchorExistsError } from './store.js'
@@ -150,6 +152,8 @@ function acceptedAnchor(anchor: WitnessAnchor): WitnessAnchor {
 
 export interface WitnessServiceOptions {
   readonly store: FileWitnessAnchorStore
+  /** Trusted node keys established independently of the inbound anchor. */
+  readonly publicKeys: PublicKeyDirectory
   /** Held by nodes. It can add an anchor but cannot inspect or remove history. */
   readonly writeToken: string
   /** Held by the verifier host. It can inspect anchors but cannot add one. */
@@ -209,6 +213,14 @@ export function startWitnessService(
       }
       if (!isWitnessAnchor(anchor))
         return json({ error: 'invalid_anchor' }, 400)
+      try {
+        const publicKey = options.publicKeys.publicKeyOf(anchor.node)
+        if (publicKey === null || !verifyWitnessAnchor(anchor, publicKey)) {
+          return json({ error: 'anchor_untrusted' }, 403)
+        }
+      } catch {
+        return json({ error: 'anchor_untrusted' }, 403)
+      }
       const receipt = {
         anchor: acceptedAnchor(anchor),
         receivedAt: (options.now ?? Date.now)(),
@@ -298,22 +310,42 @@ function assertRemoteTimeout(timeoutMs: number): void {
 async function withinWitnessRemoteTimeout<T>(
   timeoutMs: number,
   operation: (signal: AbortSignal) => Promise<T>,
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   assertRemoteTimeout(timeoutMs)
+  if (externalSignal?.aborted === true) {
+    throw externalSignal.reason
+  }
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
-  const work = Promise.resolve().then(() => operation(controller.signal))
+  let onExternalAbort: (() => void) | undefined
+  const work = Promise.resolve().then(() => {
+    if (controller.signal.aborted) throw controller.signal.reason
+    return operation(controller.signal)
+  })
   void work.catch(() => {})
-  const timeout = new Promise<never>((_resolve, reject) => {
+  const boundary = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      controller.abort()
-      reject(new WitnessRemoteTimeoutError(timeoutMs))
+      const error = new WitnessRemoteTimeoutError(timeoutMs)
+      controller.abort(error)
+      reject(error)
     }, timeoutMs)
+    if (externalSignal !== undefined) {
+      onExternalAbort = () => {
+        const reason: unknown = externalSignal.reason
+        controller.abort(reason)
+        reject(reason)
+      }
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true })
+    }
   })
   try {
-    return await Promise.race([work, timeout])
+    return await Promise.race([work, boundary])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (externalSignal !== undefined && onExternalAbort !== undefined) {
+      externalSignal.removeEventListener('abort', onExternalAbort)
+    }
   }
 }
 
@@ -334,24 +366,28 @@ export function remoteWitnessAnchorWriter(
   const call = options.fetchImpl ?? fetch
   const timeoutMs = options.timeoutMs ?? DEFAULT_WITNESS_REMOTE_TIMEOUT_MS
   return {
-    async append(anchor: WitnessAnchor): Promise<void> {
-      await withinWitnessRemoteTimeout(timeoutMs, async signal => {
-        const response = await call(new URL('/v0/anchor', base), {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${options.token}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(anchor),
-          signal,
-          ...(options.unix === undefined ? {} : { unix: options.unix }),
-        } as RequestInit)
-        if (!response.ok) {
-          throw new Error(
-            `witness service refused the anchor: ${response.status}`,
-          )
-        }
-      })
+    async append(anchor: WitnessAnchor, externalSignal): Promise<void> {
+      await withinWitnessRemoteTimeout(
+        timeoutMs,
+        async signal => {
+          const response = await call(new URL('/v0/anchor', base), {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${options.token}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(anchor),
+            signal,
+            ...(options.unix === undefined ? {} : { unix: options.unix }),
+          } as RequestInit)
+          if (!response.ok) {
+            throw new Error(
+              `witness service refused the anchor: ${response.status}`,
+            )
+          }
+        },
+        externalSignal,
+      )
     },
   }
 }

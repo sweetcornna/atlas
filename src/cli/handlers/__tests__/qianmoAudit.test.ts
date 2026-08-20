@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
 import { RouterEventType, type RouterAuditEvent } from '@qianmo/router'
 import { ActivatorEventType } from '@qianmo/activator'
 import { NegotiationEventType } from '@qianmo/negotiation'
@@ -144,12 +145,15 @@ describe('audit --verify witness verdict', () => {
 
     // This is deliberately the real append-only endpoint, not a fetch stub:
     // the CLI must prove it can compare against evidence outside the trail.
+    const keys = loadOrCreateNodeKeys(WITNESS_NODE)
     const service = startWitnessService({
       store: new FileWitnessAnchorStore({ root: join(root, 'witness') }),
+      publicKeys: new StaticPublicKeyDirectory([
+        [WITNESS_NODE, keys.publicKey],
+      ]),
       writeToken: WITNESS_WRITE_TOKEN,
       readToken: WITNESS_READ_TOKEN,
     })
-    const keys = loadOrCreateNodeKeys(WITNESS_NODE)
     const scheduler = new AuditWitnessScheduler({
       node: WITNESS_NODE,
       trailPath: path,

@@ -16,7 +16,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
-import { generateNodeKeyPair } from '@qianmo/capability'
+import {
+  StaticPublicKeyDirectory,
+  generateNodeKeyPair,
+} from '@qianmo/capability'
 import {
   AuditWitnessScheduler,
   FileWitnessAnchorStore,
@@ -555,6 +558,7 @@ describe('console audit port', () => {
       store: new FileWitnessAnchorStore({
         root: join(directory, 'witness-endpoint'),
       }),
+      publicKeys: new StaticPublicKeyDirectory([[node, keys.publicKey]]),
       writeToken: 'console-witness-write-token',
       readToken: 'console-witness-read-token',
     })

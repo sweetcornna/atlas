@@ -462,6 +462,8 @@ export class QianmoResident {
   readonly #backups = new Map<string, BackupScheduler>()
   /** Memory recall for the user-message sidecar (design §4.4). */
   readonly #memory: ResidentMemorySidecar
+  #stopping = false
+  #witnessClosed = false
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -566,6 +568,10 @@ export class QianmoResident {
     try {
       await this.#supervisor.run()
     } finally {
+      this.#stopping = true
+      this.#poller?.stop()
+      this.#poller = null
+      this.#closeWitness()
       for (const backups of this.#backups.values()) backups.stop()
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
@@ -1300,7 +1306,26 @@ export class QianmoResident {
   }
 
   stop(): void {
+    if (this.#stopping) return
+    this.#stopping = true
+    this.#poller?.stop()
+    this.#poller = null
+    this.#closeWitness()
     this.#supervisor.stop()
+  }
+
+  #closeWitness(): void {
+    if (this.#witnessClosed) return
+    this.#witnessClosed = true
+    try {
+      this.#options.witness?.close()
+    } catch (error) {
+      try {
+        this.#options.onError?.(error)
+      } catch {
+        // Teardown must continue even when an injected close hook is invalid.
+      }
+    }
   }
 
   /**
@@ -1312,9 +1337,10 @@ export class QianmoResident {
    */
   #triggerWitnessTick(): void {
     const witness = this.#options.witness
-    if (witness === undefined) return
+    if (witness === undefined || this.#stopping) return
     try {
       void witness.tick().catch(error => {
+        if (this.#stopping) return
         try {
           this.#options.onError?.(error)
         } catch {

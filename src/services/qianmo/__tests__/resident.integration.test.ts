@@ -27,7 +27,7 @@ import {
   type NotifyPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { AuditSource, readTrail } from '@qianmo/audit'
+import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
 import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
@@ -36,7 +36,10 @@ import {
   issueCapability,
 } from '@qianmo/capability'
 import { ReceiptStatus, TransportClient } from '@qianmo/transport'
-import type { AuditWitnessScheduler } from '@qianmo/witness'
+import {
+  AuditWitnessScheduler,
+  remoteWitnessAnchorWriter,
+} from '@qianmo/witness'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
 import { executeResidentWake } from '../../../cli/handlers/residentWake.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
@@ -258,6 +261,7 @@ describe('resident product integration', () => {
         }
         return new Promise(() => {})
       },
+      close: (): void => {},
     } as unknown as AuditWitnessScheduler
     const resident = new QianmoResident({
       node: 'node-b',
@@ -302,6 +306,79 @@ describe('resident product integration', () => {
     await waitUntil(() =>
       errors.some(error => String(error).includes('rejected')),
     )
+  }, 10_000)
+
+  test('stop aborts in-flight witness IO and settles even when fetch ignores the signal', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-witness-stop-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const trailPath = join(root, 'audit.ndjson')
+    const trail = new AuditTrail(trailPath)
+    trail.append({
+      at: 1,
+      source: AuditSource.Resident,
+      kind: 'resident_started',
+      outcome: 'ok',
+      node: 'node-b',
+    })
+    trail.close()
+    const errors: unknown[] = []
+    let fetches = 0
+    let aborted = false
+    const witness = new AuditWitnessScheduler({
+      node: 'node-b',
+      trailPath,
+      keys: generateNodeKeyPair(),
+      writer: remoteWitnessAnchorWriter({
+        url: 'http://witness.test',
+        token: 'resident-witness-write-token',
+        timeoutMs: 60_000,
+        fetchImpl: ((_input, init) => {
+          fetches += 1
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+            },
+            { once: true },
+          )
+          return new Promise<Response>(() => {})
+        }) as typeof fetch,
+      }),
+      now: () => 10_000,
+      onError: error => errors.push(error),
+    })
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      witness,
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => fetches === 1)
+
+    resident.stop()
+    await expect(
+      Promise.race([
+        running.then(() => 'settled'),
+        Bun.sleep(1_000).then(() => 'timed-out'),
+      ]),
+    ).resolves.toBe('settled')
+    expect(aborted).toBe(true)
+    expect(errors).toEqual([])
+
+    await witness.tick()
+    expect(fetches).toBe(1)
+    activeResident = undefined
+    activeRun = undefined
   }, 10_000)
 
   test('acks at the read flip and returns task.result over the same channel', async () => {

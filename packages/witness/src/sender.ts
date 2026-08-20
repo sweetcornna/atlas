@@ -16,7 +16,7 @@ export const DEFAULT_WITNESS_ANCHOR_INTERVAL_MS = 60_000
 
 /** The deliberately narrow sender-side capability. It can only add an anchor. */
 export interface WitnessAnchorWriter {
-  append(anchor: WitnessAnchor): Promise<void>
+  append(anchor: WitnessAnchor, signal?: AbortSignal): Promise<void>
 }
 
 export interface AuditWitnessSchedulerOptions {
@@ -46,6 +46,9 @@ export class AuditWitnessScheduler {
   readonly #now: () => number
   #lastAttemptAt: number | null = null
   #inFlight: Promise<void> | null = null
+  #controller: AbortController | null = null
+  #closed = false
+  readonly #closeReason = new Error('witness scheduler closed')
 
   constructor(options: AuditWitnessSchedulerOptions) {
     if (options.trailPath.trim() === '') {
@@ -61,6 +64,7 @@ export class AuditWitnessScheduler {
 
   /** Run an anchoring attempt when one full period has elapsed. */
   async tick(): Promise<void> {
+    if (this.#closed) return
     if (this.#inFlight !== null) return await this.#inFlight
     const at = this.#now()
     if (
@@ -70,16 +74,26 @@ export class AuditWitnessScheduler {
       return
     }
     this.#lastAttemptAt = at
-    const attempt = this.#anchor(at)
+    const controller = new AbortController()
+    this.#controller = controller
+    const attempt = this.#anchor(at, controller.signal)
     this.#inFlight = attempt
     try {
       await attempt
     } finally {
-      this.#inFlight = null
+      if (this.#controller === controller) this.#controller = null
+      if (this.#inFlight === attempt) this.#inFlight = null
     }
   }
 
-  async #anchor(at: number): Promise<void> {
+  /** Permanently disable new attempts and cancel the current one, if any. */
+  close(): void {
+    if (this.#closed) return
+    this.#closed = true
+    this.#controller?.abort(this.#closeReason)
+  }
+
+  async #anchor(at: number, signal: AbortSignal): Promise<void> {
     try {
       const trail = readTrail(this.#options.trailPath)
       if (!trail.intact) {
@@ -89,7 +103,7 @@ export class AuditWitnessScheduler {
       }
       const head = trail.records.at(-1)
       if (head === undefined) return
-      await this.#options.writer.append(
+      const append = this.#options.writer.append(
         signWitnessAnchor(
           {
             v: WITNESS_ANCHOR_VERSION,
@@ -101,8 +115,24 @@ export class AuditWitnessScheduler {
           },
           this.#options.keys,
         ),
+        signal,
       )
+      void append.catch(() => {})
+      if (signal.aborted) throw signal.reason
+      let onAbort: (() => void) | undefined
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(signal.reason)
+        signal.addEventListener('abort', onAbort, { once: true })
+      })
+      try {
+        await Promise.race([append, cancelled])
+      } finally {
+        if (onAbort !== undefined) {
+          signal.removeEventListener('abort', onAbort)
+        }
+      }
     } catch (error) {
+      if (this.#closed && signal.aborted) return
       try {
         this.#options.onError?.(error)
       } catch {

@@ -11,7 +11,10 @@ import {
   readTrail,
   type AuditRecord,
 } from '@qianmo/audit'
-import { generateNodeKeyPair } from '@qianmo/capability'
+import {
+  StaticPublicKeyDirectory,
+  generateNodeKeyPair,
+} from '@qianmo/capability'
 import {
   DESTRUCTIVE_WORDS,
   AuditWitnessScheduler,
@@ -170,15 +173,16 @@ describe('the append-only witness endpoint', () => {
   test('refuses overwrite, deletion, and non-whitelisted methods over a real Bun server', async () => {
     const directory = temporaryDirectory()
     const store = new FileWitnessAnchorStore({ root: join(directory, 'store') })
+    const keys = generateNodeKeyPair()
     const service = startWitnessService({
       store,
+      publicKeys: new StaticPublicKeyDirectory([[NODE, keys.publicKey]]),
       writeToken: WRITE_TOKEN,
       readToken: READ_TOKEN,
       now: () => 1_234,
     })
     services.push(service)
     const base = service.url as string
-    const keys = generateNodeKeyPair()
     const anchor = signWitnessAnchor(
       {
         v: 1,
@@ -224,6 +228,61 @@ describe('the append-only witness endpoint', () => {
     expect(await store.list(NODE)).toEqual([{ anchor, receivedAt: 1_234 }])
   })
 
+  test('rejects untrusted signatures before receipt or persistence without consuming the sequence', async () => {
+    const directory = temporaryDirectory()
+    const store = new FileWitnessAnchorStore({ root: join(directory, 'store') })
+    const keys = generateNodeKeyPair()
+    const impostor = generateNodeKeyPair()
+    let clockReads = 0
+    const service = startWitnessService({
+      store,
+      publicKeys: new StaticPublicKeyDirectory([[NODE, keys.publicKey]]),
+      writeToken: WRITE_TOKEN,
+      readToken: READ_TOKEN,
+      now: () => {
+        clockReads += 1
+        return 1_234
+      },
+    })
+    services.push(service)
+    const base = service.url as string
+    const anchor = signedAnchor(keys)
+    const wrongKey = signedAnchor(impostor)
+    const unknownNode = signWitnessAnchor(
+      { ...anchor, node: 'node-unknown' },
+      impostor,
+    )
+    const forged = [{ ...anchor, head: 'd'.repeat(64) }, wrongKey, unknownNode]
+
+    for (const candidate of forged) {
+      const response = await fetch(`${base}/v0/anchor`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${WRITE_TOKEN}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(candidate),
+      })
+      expect(response.status).toBe(403)
+      expect(await response.json()).toEqual({ error: 'anchor_untrusted' })
+    }
+    expect(clockReads).toBe(0)
+    expect(await store.list(NODE)).toEqual([])
+    expect(await store.list('node-unknown')).toEqual([])
+
+    const legitimate = await fetch(`${base}/v0/anchor`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${WRITE_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(anchor),
+    })
+    expect(legitimate.status).toBe(201)
+    expect(await legitimate.json()).toEqual({ anchor, receivedAt: 1_234 })
+    expect(clockReads).toBe(1)
+  })
+
   test('bounds writer and reader requests even when fetch ignores abort', async () => {
     const anchor = signedAnchor(generateNodeKeyPair())
     let writerAborted = false
@@ -249,6 +308,25 @@ describe('the append-only witness endpoint', () => {
     })
     await expect(reader.list(NODE)).rejects.toThrow('timed out after 10 ms')
     expect(readerAborted).toBe(true)
+  })
+
+  test('does not start remote IO when cancellation wins before fetch begins', async () => {
+    const anchor = signedAnchor(generateNodeKeyPair())
+    let fetches = 0
+    const writer = remoteWitnessAnchorWriter({
+      url: 'http://witness.test',
+      token: WRITE_TOKEN,
+      fetchImpl: (() => {
+        fetches += 1
+        return Promise.resolve(new Response(null, { status: 201 }))
+      }) as typeof fetch,
+    })
+    const controller = new AbortController()
+    const pending = writer.append(anchor, controller.signal)
+    controller.abort()
+
+    await expect(pending).rejects.toHaveProperty('name', 'AbortError')
+    expect(fetches).toBe(0)
   })
 
   test('bounds a hanging remote reader body under the same request deadline', async () => {
@@ -318,15 +396,16 @@ describe('§5 witness variants', () => {
     path = join(directory, 'node-a', 'trail.ndjson')
     witnessNow = 0
     store = new FileWitnessAnchorStore({ root: join(directory, 'witness') })
+    keys = generateNodeKeyPair()
     const service = startWitnessService({
       store,
+      publicKeys: new StaticPublicKeyDirectory([[NODE, keys.publicKey]]),
       writeToken: WRITE_TOKEN,
       readToken: READ_TOKEN,
       now: () => witnessNow,
     })
     services.push(service)
     base = service.url as string
-    keys = generateNodeKeyPair()
 
     appendStory(path, 5)
     await publish(1_000)
@@ -562,5 +641,70 @@ describe('§5 witness variants', () => {
     release?.()
     await Promise.all([first, second])
     expect(appends).toBe(1)
+  })
+
+  test('close aborts and settles an in-flight append, then permanently disables ticks', async () => {
+    let appends = 0
+    let aborted = false
+    let errors = 0
+    const scheduler = new AuditWitnessScheduler({
+      node: NODE,
+      trailPath: path,
+      keys,
+      writer: {
+        append: async (_anchor, signal) => {
+          appends += 1
+          signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true
+            },
+            { once: true },
+          )
+          await new Promise<void>(() => {})
+        },
+      },
+      now: () => 10_000,
+      onError: () => {
+        errors += 1
+      },
+    })
+    const pending = scheduler.tick()
+    expect(appends).toBe(1)
+
+    scheduler.close()
+    scheduler.close()
+    await expect(
+      Promise.race([
+        pending.then(() => 'settled'),
+        Bun.sleep(100).then(() => 'timed-out'),
+      ]),
+    ).resolves.toBe('settled')
+    expect(aborted).toBe(true)
+    expect(errors).toBe(0)
+
+    await expect(scheduler.tick()).resolves.toBeUndefined()
+    expect(appends).toBe(1)
+  })
+
+  test('continues reporting ordinary remote timeouts before shutdown', async () => {
+    const errors: unknown[] = []
+    const scheduler = new AuditWitnessScheduler({
+      node: NODE,
+      trailPath: path,
+      keys,
+      writer: remoteWitnessAnchorWriter({
+        url: 'http://witness.test',
+        token: WRITE_TOKEN,
+        timeoutMs: 10,
+        fetchImpl: hangingFetch(() => {}),
+      }),
+      now: () => 10_000,
+      onError: error => errors.push(error),
+    })
+
+    await scheduler.tick()
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain('timed out after 10 ms')
   })
 })
