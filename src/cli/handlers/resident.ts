@@ -304,10 +304,6 @@ export interface ResidentCliConfig {
   readonly witnessUrl?: string
   /** Gap between witness anchors; defaults to the §4.2 60 s design value. */
   readonly witnessIntervalMs?: number
-  /** Base URL of the host-side append-only witness endpoint (P11.4). */
-  readonly witnessUrl?: string
-  /** Gap between witness anchors; defaults to the §4.2 60 s design value. */
-  readonly witnessIntervalMs?: number
 }
 
 export function parseResidentArgs(
