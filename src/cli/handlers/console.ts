@@ -19,6 +19,8 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { invokedBinName } from '../../constants/brand.js'
 import {
   resolveTokens,
   startConsoleServer,
@@ -38,6 +40,7 @@ import {
 import {
   consoleLimits,
   createAuditPort,
+  createCertificatePort,
   createRegistryPort,
   createWakePort,
 } from './consolePorts.js'
@@ -195,6 +198,19 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // the same question, and two ports would be two answers that can disagree.
   const registry = createRegistryPort({ baseUrl: config.registryUrl })
   const chat = wireChat(config, registry)
+  // The certificate column, or nothing at all (§10.1). Read at startup rather
+  // than per request: the CA root is the one file this console needs and a
+  // missing one is a configuration error the operator should hear about now,
+  // not as an empty column later. It is public material — §10.3's rule that no
+  // private key of any kind is reachable from this process holds structurally,
+  // because there is no option here that could point at one.
+  const certificates =
+    config.trustCa === undefined
+      ? undefined
+      : createCertificatePort({
+          baseUrl: config.registryUrl,
+          caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+        })
 
   const deps: ConsoleDeps = {
     registry,
@@ -217,6 +233,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     identity: config.chatFrom,
     ...(wake.port === undefined ? {} : { wake: wake.port }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    ...(certificates === undefined ? {} : { certificates }),
+    // Spelled once, in the identity roster — never as a literal here
+    // (CLAUDE.md §2.3).
+    binName: invokedBinName(),
   }
 
   const handle = startConsoleServer(deps, config.port, {

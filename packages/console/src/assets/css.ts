@@ -451,6 +451,23 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 }
 .grp-name { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 18px; }
 .grp-tail { margin-left: auto; display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+/* ---- certificate line, under the node header (key-distribution.md §10.1) ---- */
+.grp-cert {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-2) 0;
+}
+.cert { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.ct-w { font-weight: 600; }
+.ct-left { font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; color: var(--color-muted); }
+/* The copyable "qm ca issue" line (§10.2: the command, never the button). It
+   wraps rather than scrolls — an operator selects it with the mouse, and a
+   horizontally scrolled command is one that gets copied half. */
+.cmd {
+  font-size: 11.5px; color: var(--color-muted);
+  overflow-wrap: anywhere; user-select: all;
+  padding: 2px 6px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
 .row > summary {
   list-style: none; cursor: pointer;
   display: grid; grid-template-columns: minmax(0, 1fr) 116px 186px 82px 26px;

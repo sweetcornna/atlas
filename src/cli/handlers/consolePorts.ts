@@ -35,7 +35,11 @@ import {
 import type {
   AuditFilter,
   AuditPort,
+  CertificatePort,
+  CertificateSnapshot,
+  CertificateStatus,
   ConsoleAgent,
+  ConsoleCertificate,
   ConsoleFailure,
   ConsoleResult,
   LimitsSnapshot,
@@ -44,6 +48,8 @@ import type {
   WakeInput,
   WakePort,
 } from '@qianmo/console'
+import { X509Certificate, type KeyObject } from 'node:crypto'
+import { verifyRevocationList } from '../../services/qianmo/ca/revocationList.js'
 import { LIMITS, assertAddress } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
@@ -408,6 +414,178 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       return {
         ok: true,
         value: reconstructChain(loaded.value.records, traceId),
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CertificatePort —— 证书栏（key-distribution.md §10.1）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「快到期」的门限。
+ *
+ * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。这里只产出**一个**
+ * `expiring` 状态，颜色由视图按 tone 表决定——两处各写一遍门限，就是两处可以
+ * 各自漂移的门限。
+ */
+const CERTIFICATE_EXPIRING_MS = 21 * 24 * 60 * 60 * 1000
+
+interface CertificatePortOptions {
+  /** 注册中心 HTTP v0 基址，不带尾斜杠。 */
+  readonly baseUrl: string
+  /** CA 根证书 PEM——**公开材料**，控制台读它是为了做 F-2 那一次校验。 */
+  readonly caCertificatePem: string
+  readonly fetch?: ConsoleFetch
+  readonly timeoutMs?: number
+  readonly now?: () => number
+}
+
+/** 从一条 agent 记录里读出节点段；读不出来就没有这条。 */
+function nodeSegmentOf(value: unknown): string | null {
+  if (!isRecord(value)) return null
+  const address = value['address']
+  if (typeof address !== 'string') return null
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)\//i.exec(address)
+  return match?.[1] ?? null
+}
+
+/**
+ * 判定一张证书的处置——§10.1 的六个取值。
+ *
+ * **顺序是有讲究的**：先问「有没有」，再问「是不是本 CA 签的」，最后才问时间与
+ * 吊销。倒过来问会让一张伪造证书按它自己写的 `notAfter` 显示成「有效」——而
+ * 「注册中心零鉴权，谁都能往里塞一张」正是 §5.2 T-B 的原话。
+ */
+function certificateStatusOf(
+  pem: unknown,
+  caPublicKey: KeyObject,
+  revoked: ReadonlySet<string>,
+  now: number,
+): { status: CertificateStatus; fingerprint256?: string; notAfter?: number } {
+  if (typeof pem !== 'string' || pem.length === 0) return { status: 'absent' }
+  let certificate: X509Certificate
+  try {
+    certificate = new X509Certificate(pem)
+  } catch {
+    // 解析不出来的东西不是「过期」也不是「未发布」，它是别人塞进来的。
+    return { status: 'bad-signature' }
+  }
+  const fingerprint256 = certificate.fingerprint256
+  const notAfter = Date.parse(certificate.validTo)
+  if (!certificate.verify(caPublicKey)) {
+    return { status: 'bad-signature', fingerprint256, notAfter }
+  }
+  if (revoked.has(fingerprint256)) {
+    return { status: 'revoked', fingerprint256, notAfter }
+  }
+  if (!Number.isFinite(notAfter) || now >= notAfter) {
+    return { status: 'expired', fingerprint256, notAfter }
+  }
+  if (notAfter - now < CERTIFICATE_EXPIRING_MS) {
+    return { status: 'expiring', fingerprint256, notAfter }
+  }
+  return { status: 'valid', fingerprint256, notAfter }
+}
+
+/**
+ * 证书栏的数据源：注册中心的 agents 表 + 吊销清单，本地 CA 根做校验。
+ *
+ * **控制台在这里只读、只校验、不签发**（§10.2/§10.3）。它拿到的三样东西——
+ * agents 表、RL、CA 根证书——全是公开材料；任何私钥都没有路径能到这个进程里来。
+ *
+ * RL 的签名**由这里验**（`verifyRevocationList`），理由与节点侧同一条：注册中心
+ * 零鉴权，一份没验签的 RL 等于任何人都能在页面上宣布任意节点被吊销。验不过就当
+ * 没有——`revocationList: null` 与「从没发布过」在页面上是同一行，因为对运维来说
+ * 下一步动作也是同一个。
+ */
+export function createCertificatePort(
+  options: CertificatePortOptions,
+): CertificatePort {
+  const baseUrl = options.baseUrl.replace(/\/+$/, '')
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REGISTRY_TIMEOUT_MS
+  const now = options.now ?? Date.now
+  const doFetch: ConsoleFetch =
+    options.fetch ?? ((input, init) => fetch(input, init))
+  const caCertificate = new X509Certificate(options.caCertificatePem)
+  const caJwk = caCertificate.publicKey.export({ format: 'jwk' })
+  const caPublicKey = caJwk.x
+
+  async function get(path: string): Promise<unknown> {
+    const response = await doFetch(`${baseUrl}${path}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok) return undefined
+    try {
+      return await response.json()
+    } catch {
+      return undefined
+    }
+  }
+
+  return {
+    async read(): Promise<ConsoleResult<CertificateSnapshot>> {
+      let agentsBody: unknown
+      let rlBody: unknown
+      try {
+        ;[agentsBody, rlBody] = await Promise.all([
+          get('/v0/agents'),
+          get('/v0/revocation-list'),
+        ])
+      } catch (error) {
+        return fail(
+          'unreachable',
+          `注册中心不可达 ${baseUrl}：${messageOf(error)}`,
+        )
+      }
+      const agents = isRecord(agentsBody) ? agentsBody['agents'] : undefined
+      if (!Array.isArray(agents)) {
+        return fail('invalid', '注册中心返回的不是 agents 列表')
+      }
+
+      const verified =
+        rlBody === undefined || typeof caPublicKey !== 'string'
+          ? null
+          : verifyRevocationList(caPublicKey, rlBody)
+      const revoked = new Set(
+        (verified?.revoked ?? []).map(entry => entry.fingerprint256),
+      )
+
+      const at = now()
+      const certificates: ConsoleCertificate[] = []
+      const seen = new Set<string>()
+      for (const raw of agents) {
+        const node = nodeSegmentOf(raw)
+        // 一个节点一张证书，而名册里一个节点可以有多个 agent —— 先到的那条
+        // 胜出，因为它们本来就该是同一张（注册中心对不一致的记录整条丢弃，
+        // §5.2）。
+        if (node === null || seen.has(node)) continue
+        seen.add(node)
+        certificates.push({
+          node,
+          ...certificateStatusOf(
+            isRecord(raw) ? raw['certificate'] : undefined,
+            caCertificate.publicKey,
+            revoked,
+            at,
+          ),
+        })
+      }
+
+      return {
+        ok: true,
+        value: {
+          certificates,
+          revocationList:
+            verified === null
+              ? null
+              : {
+                  issuedAt: verified.issuedAt,
+                  nextUpdate: verified.nextUpdate,
+                  revokedCount: verified.revoked.length,
+                },
+        },
       }
     },
   }

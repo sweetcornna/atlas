@@ -78,6 +78,15 @@ export interface ConsoleCliConfig {
   readonly auditPath: string
   /** 给了才启用唤醒面；`ws://` 或 `wss://`。 */
   readonly wakeUrl?: string
+  /**
+   * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
+   *
+   * 是根证书而不是证书目录：控制台要做的那一次判定是 F-2——「这张证书是不是本
+   * CA 签的」——它只需要根证书里的公钥，一件**公开材料**。§10.3 那条硬规矩
+   * （控制台进程不得读任何私钥）在这里是结构性的，不是靠自觉：这个参数只能指向
+   * 一份公开材料，CA 私钥连一个可以出现的位置都没有。
+   */
+  readonly trustCa?: string
   /** 页头标签，默认 `hostname:port`。 */
   readonly label: string
   /**
@@ -132,6 +141,7 @@ export function parseConsoleArgs(
   let registryUrl = DEFAULT_CONSOLE_REGISTRY_URL
   let auditPath = auditTrailPath()
   let wakeUrl: string | undefined
+  let trustCa: string | undefined
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
@@ -170,6 +180,13 @@ export function parseConsoleArgs(
         throw new Error('--audit must be an absolute path')
       }
       auditPath = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--trust-ca' || arg?.startsWith('--trust-ca=')) {
+      const parsed = residentOptionValue(args, index, '--trust-ca')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--trust-ca must be an absolute path')
+      }
+      trustCa = resolve(parsed.value)
       index = parsed.next
     } else if (arg === '--wake-url' || arg?.startsWith('--wake-url=')) {
       const parsed = residentOptionValue(args, index, '--wake-url')
@@ -267,6 +284,7 @@ export function parseConsoleArgs(
     registryUrl,
     auditPath,
     ...(wakeUrl === undefined ? {} : { wakeUrl }),
+    ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
     ...(adminToken === undefined ? {} : { adminToken }),
@@ -319,6 +337,13 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_REGISTRY_URL}.
   --audit <abs path>       Audit trail file, absolute path.
                            Default <config root>/qianmo/audit/trail.ndjson.
+  --trust-ca <abs path>    PEM root certificate of the offline CA. The
+                           certificate column turns on only when this is
+                           given: without a root there is nothing to check a
+                           published certificate against, and a column of
+                           unknowns makes "no certificates yet" and "every
+                           certificate is broken" look the same. Read only —
+                           this console verifies, never signs.
   --wake-url <ws url>      Wake target, a node's inbound WebSocket. The wake
                            face turns on only when this is given AND
                            ${PSK_ENV_VAR} holds a usable key.

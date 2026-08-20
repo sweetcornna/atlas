@@ -697,3 +697,26 @@ describe('console registry port', () => {
     }
   })
 })
+
+/**
+ * §10.1 的证书栏，在参数面上的那一半。
+ *
+ * 「给了才有」是一个刻意的取舍而不是省事：没有 CA 根就没有 F-2 那一次判定，
+ * 一栏全是「未知」会让「这个部署还没上证书」和「证书全坏了」长得一样。
+ */
+describe('console --trust-ca (证书栏)', () => {
+  test('不给就没有，给了必须是绝对路径', () => {
+    expect(parseConsoleArgs([], 'qianmo').trustCa).toBeUndefined()
+    expect(
+      parseConsoleArgs(['--trust-ca', '/etc/qianmo/ca.pem'], 'qianmo').trustCa,
+    ).toBe('/etc/qianmo/ca.pem')
+    expect(() => parseConsoleArgs(['--trust-ca', 'ca.pem'], 'qianmo')).toThrow(
+      'absolute path',
+    )
+  })
+
+  test('帮助里说清它是只读的公开材料', () => {
+    expect(CONSOLE_HELP_TEXT).toContain('--trust-ca')
+    expect(CONSOLE_HELP_TEXT).toContain('verifies, never signs')
+  })
+})

@@ -191,6 +191,18 @@ export const MAX_AUDIT_LIMIT = 500
 /** Header shown when the operator did not name this console. */
 const DEFAULT_LABEL = '阡陌控制台'
 
+/**
+ * The CLI name §10.2's copyable `ca issue` line is written under, when the
+ * host did not say.
+ *
+ * A fallback rather than a source: the name has exactly one spelling
+ * (`src/constants/identity.ts`), the host reads it from there, and this
+ * package is a leaf that cannot. Reached only by a caller that wired a
+ * certificate port and no name, which is a wiring mistake rather than a
+ * configuration — so the fallback is the right string rather than a blank.
+ */
+const DEFAULT_BIN_NAME = 'qm'
+
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -866,7 +878,14 @@ async function rosterFragment(
   deps: ConsoleDeps,
   now: number,
 ): Promise<RosterRender> {
-  const result = await deps.registry.list()
+  // Two independent reads, overlapped: the certificate face lives behind the
+  // same zero-auth registry the roster does (§5.2), and serialising them would
+  // double the page's worst case for no gain. A certificate port that fails is
+  // a strip on the page, never a 500 — same rule as every other port here.
+  const [result, certificates] = await Promise.all([
+    deps.registry.list(),
+    deps.certificates?.read(),
+  ])
   const agents = valueOf(result)
   return {
     html: renderRoster(
@@ -874,6 +893,13 @@ async function rosterFragment(
       failureOf(result),
       now,
       deps.limits.registryTtlMs,
+      certificates === undefined
+        ? undefined
+        : {
+            snapshot: valueOf(certificates),
+            failure: failureOf(certificates),
+            binName: deps.binName ?? DEFAULT_BIN_NAME,
+          },
     ),
     agents,
   }

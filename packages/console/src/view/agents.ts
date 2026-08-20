@@ -68,6 +68,13 @@ import {
   toned,
   type Tone,
 } from './bits.js'
+import {
+  certificateIndex,
+  certificateLine,
+  certificateTally,
+  renderRevocationBar,
+  reissueCommand,
+} from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
 import {
   agentHealth,
@@ -79,7 +86,32 @@ import {
   publicKeyFingerprint,
   type AgentHealth,
 } from './format.js'
-import type { ConsoleAgent, ConsoleFailure } from '../deps.js'
+import type {
+  CertificateSnapshot,
+  ConsoleAgent,
+  ConsoleCertificate,
+  ConsoleFailure,
+} from '../deps.js'
+
+/**
+ * The certificate half of the roster (key-distribution.md §10.1), or absent.
+ *
+ * Absent removes the column rather than filling it with "unknown" — see
+ * `CertificatePort`'s note on why a column of unknowns is worse than no
+ * column: it makes "this deployment has no certificates yet" and "every
+ * certificate is broken" render identically.
+ */
+export interface RosterCertificates {
+  readonly snapshot: CertificateSnapshot | null
+  readonly failure: ConsoleFailure | null
+  /**
+   * The CLI name §10.2's copyable `ca issue` line is written under. Supplied
+   * by the host: this package is a leaf and has no way to learn how it was
+   * invoked, and a hard-coded `qm` here would be a second spelling of a name
+   * that already has exactly one (`src/constants/identity.ts`).
+   */
+  readonly binName: string
+}
 
 const HEALTH_TONE: Readonly<Record<AgentHealth, Tone>> = {
   live: 'ok',
@@ -299,17 +331,38 @@ function groupBadge(counts: HealthTally): string {
   return tag(`${counts.stale + counts.expired} 个需注意`, 'warn')
 }
 
-function nodeCard(group: NodeGroup, now: number, ttlMs: number): string {
+/**
+ * The bare node segment out of a group key.
+ *
+ * `groupByNode` keys on what `splitAddress` returns, which keeps the scheme
+ * (`qianmo://node-a`); the certificate table is keyed on the segment alone
+ * (`node-a`), because that is what a certificate's SAN binds. One place strips
+ * the scheme, because two places doing it is two regexes that can drift.
+ */
+function bareNode(groupKey: string): string {
+  return groupKey.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+}
+
+function nodeCard(
+  group: NodeGroup,
+  now: number,
+  ttlMs: number,
+  certificate: ConsoleCertificate | undefined,
+  binName: string,
+): string {
   const counts = tallyOf(group.agents, now, ttlMs)
   const first = group.agents[0]
   const endpoint =
     first === undefined
       ? ''
       : `<span class="note mono">${escapeHtml(first.endpoint)}</span>`
-  const name = splitAddress(group.node).node.replace(
-    /^[a-z][a-z0-9+.-]*:\/\//i,
-    '',
-  )
+  const name = bareNode(splitAddress(group.node).node)
+  // Under the header, not inside `grp-tail`: a certificate is a fact about the
+  // *node*, and the tail already carries the endpoint and the health badge —
+  // three unrelated things on one line is how this card was before the roster
+  // stopped being a table.
+  const certificate_ = certificateLine(certificate, now)
+  const reissue = reissueCommand(certificate, binName)
   return (
     `<div class="card elev-sm grp">` +
     `<div class="grp-head">` +
@@ -317,6 +370,9 @@ function nodeCard(group: NodeGroup, now: number, ttlMs: number): string {
     `<span class="addr">${escapeHtml(group.node)}</span>` +
     `<div class="grp-tail">${endpoint}${groupBadge(counts)}</div>` +
     `</div>` +
+    (certificate_ === ''
+      ? ''
+      : `<div class="grp-cert">${certificate_}${reissue}</div>`) +
     group.agents.map(one => agentRow(one, now, ttlMs)).join('') +
     `</div>`
   )
@@ -330,7 +386,12 @@ function nodeCard(group: NodeGroup, now: number, ttlMs: number): string {
  * make an amber or red word a permanent fixture, so that the day one of them is
  * real nothing about the line has changed.
  */
-function headTail(total: number, counts: HealthTally, ttlMs: number): string {
+function headTail(
+  total: number,
+  counts: HealthTally,
+  ttlMs: number,
+  certificates: readonly ConsoleCertificate[] | null,
+): string {
   const parts = [
     `<span class="total">${total}</span>`,
     toned('ok', `在线 ${counts.live}`),
@@ -342,6 +403,8 @@ function headTail(total: number, counts: HealthTally, ttlMs: number): string {
       `<span class="ttl">租约 ${escapeHtml(formatDuration(ttlMs))}</span>`,
     )
   }
+  const certificateCount = certificateTally(certificates)
+  if (certificateCount !== '') parts.push(certificateCount)
   return `<div class="rowx note">${parts.join('<span class="sep">·</span>')}</div>`
 }
 
@@ -370,6 +433,7 @@ export function renderRoster(
   failure: ConsoleFailure | null,
   now: number,
   ttlMs: number,
+  certificates?: RosterCertificates,
 ): string {
   const body: string[] = []
   if (failure !== null) {
@@ -378,6 +442,22 @@ export function renderRoster(
       body.push(bar('muted', '以下为最后一次成功读取'))
     }
   }
+  // §10.1 calls this the most important row on the page, and §6.4 is why: a
+  // stale list fails the whole network closed to `--trust` with nothing else
+  // on screen to say so. It goes above the cards, not inside one, because it
+  // is a fact about every node at once.
+  if (certificates !== undefined) {
+    body.push(
+      renderRevocationBar(
+        certificates.snapshot?.revocationList ?? null,
+        certificates.failure,
+        now,
+      ),
+    )
+  }
+  const certificateList = certificates?.snapshot?.certificates ?? null
+  const byNode = certificateIndex(certificateList)
+  const binName = certificates?.binName ?? ''
 
   if (agents === null) {
     if (failure === null) body.push(`<p class="hint">未取得注册数据</p>`)
@@ -404,14 +484,22 @@ export function renderRoster(
   body.push(
     `<div class="stack">` +
       groupByNode(agents)
-        .map(group => nodeCard(group, now, ttlMs))
+        .map(group =>
+          nodeCard(
+            group,
+            now,
+            ttlMs,
+            byNode.get(bareNode(group.node)),
+            binName,
+          ),
+        )
         .join('') +
       `</div>`,
   )
 
   const counts = tallyOf(agents, now, ttlMs)
   return (
-    rosterHead(headTail(agents.length, counts, ttlMs), {
+    rosterHead(headTail(agents.length, counts, ttlMs, certificateList), {
       total: agents.length,
       online: counts.live,
       stale: counts.stale,
