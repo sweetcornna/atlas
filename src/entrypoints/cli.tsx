@@ -149,7 +149,7 @@ async function main(): Promise<void> {
   if (args[0] === 'audit') {
     profileCheckpoint('cli_qianmo_audit_path');
     const { runQianmoAudit } = await import('../cli/handlers/qianmoAudit.js');
-    runQianmoAudit(args.slice(1));
+    await runQianmoAudit(args.slice(1));
     return;
   }
 

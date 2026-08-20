@@ -201,7 +201,7 @@ describe('audit --verify witness verdict', () => {
       } else {
         process.env.QIANMO_WITNESS_READ_TOKEN = previousReadToken
       }
-      process.exitCode = previousExitCode
+      process.exitCode = previousExitCode ?? 0
       await service.stop()
     }
   })
