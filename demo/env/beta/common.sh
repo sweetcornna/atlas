@@ -118,6 +118,12 @@ BETA_BACKUP_URL="${QIANMO_BETA_BACKUP_URL:-}"
 BETA_RUN_DIR="$BETA_ROOT/run"
 BETA_LOG_DIR="$BETA_ROOT/logs"
 BETA_STATE_DIR="$BETA_ROOT/state"
+# 下面三项是宿主侧保留工具唯一可操作的数据面。它们从内测根派生，不接受任意路径参数：
+# backup store 在 H 上、沙箱挂载之外；registry-agents.json 是 beta-up 实际交给 p81 registry
+# 的落盘表；snapshots/ 是升级前注册表副本的固定位置（beta-env.md §5 / §6 L1）。
+BETA_BACKUP_STORE="$BETA_ROOT/backups"
+BETA_REGISTRY_STATE="$BETA_STATE_DIR/registry-agents.json"
+BETA_REGISTRY_SNAPSHOT_DIR="$BETA_STATE_DIR/snapshots"
 BETA_SECRET_DIR="$BETA_ROOT/secrets"
 BETA_PEER_SECRET_DIR="$BETA_SECRET_DIR/peers"
 BETA_WORKSPACE_DIR="$BETA_ROOT/workspaces"
@@ -292,7 +298,7 @@ beta_seed_root() {
   beta_guard_root "$BETA_ROOT"
   mkdir -p "$BETA_ROOT"
   chmod 700 "$BETA_ROOT"
-  mkdir -p "$BETA_RUN_DIR" "$BETA_LOG_DIR" "$BETA_STATE_DIR" \
+  mkdir -p "$BETA_RUN_DIR" "$BETA_LOG_DIR" "$BETA_STATE_DIR" "$BETA_BACKUP_STORE" \
     "$BETA_WORKSPACE_DIR" "$BETA_NODES_DIR" "$BETA_MIRROR_DIR"
   mkdir -p "$BETA_SECRET_DIR" "$BETA_PEER_SECRET_DIR"
   chmod 700 "$BETA_SECRET_DIR" "$BETA_PEER_SECRET_DIR"

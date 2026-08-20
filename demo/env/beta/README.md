@@ -41,6 +41,37 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路的生成物一起删，
 下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
 
+## 宿主侧保留与轮转
+
+**只在宿主 H 上由操作员运行**，不放进节点、常驻进程或 `@qianmo/backup` 的入站面。先看计划，
+确认候选数和剩余数，再显式申请变更：
+
+```bash
+# 默认 dry-run；零写入，不建目录、不压缩、不复制、不删除
+./demo/env/beta/beta-retain.sh
+
+# 只有这一条才实际处理宿主侧固定路径
+./demo/env/beta/beta-retain.sh --apply
+
+# 升级窗口开始前：先原子复制 beta-up 当前使用的注册表落盘，再轮转到最近四份
+./demo/env/beta/beta-retain.sh --apply --snapshot-registry
+```
+
+路径全由 `common.sh` 从 `QIANMO_BETA_ROOT` 派生：备份 store 是 `<root>/backups/`，当前
+注册表落盘是 `<root>/state/registry-agents.json`，升级快照是 `<root>/state/snapshots/`。工具没有
+任意目录参数；根目录与 marker 先过公共层守卫，Bun helper 又逐项拒绝非规范路径、根外路径、
+符号链接（含父目录）和非普通文件。失败会给出类别/对象并以非零退出，不把部分结果报成成功。
+
+自然日和自然周一律按 **UTC**：72 小时边界包含恰好等于边界的快照；其外但在最近 14 个 UTC
+自然日内，每日保留 `createdAt` 最新的一份，时间相同按快照 id 词典序取大者。已完成日志压成
+`<name>.YYYY-MM-DD.gz`，活着的 pid 对应 `.out` / `.err` 不碰；工具不产生 `.gz.gz`，也不会覆盖
+已有 gzip 目标。审计只在周日封存权威源链到 `archive/trail-<ISO-week>.ndjson`，临时文件 fsync 后
+原子发布，原链、镜像链和台账都不删不改；台账仅在超过 10 MiB 时告警。完整策略和保留数字以
+[`beta-env.md`](../../../docs/dev/beta-env.md) §5 为准。
+
+本仓库仅有临时树回归覆盖，**尚未形成真机一次运行记录，也尚未有两周归档体积复核**；这两项仍按
+`beta-env.md` §10 包③的 DoD 留待宿主环境采集。
+
 ### 首次装机的完整顺序
 
 前四步与演示环境一字不差（beta-env.md §1 第 4 条：每台机器走同一条 runbook）。
@@ -294,9 +325,9 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 它的链仍然只在节点本机，H 上看不到。
 `beta-smoke.sh` 照旧只**读**镜像来验链：`mirror/<node>/trail.ndjson` 在就验它，不在就报缺。
 
-**④ 不做保留与轮转。**§5 的全部数字（备份 72 h + 14 天日留存、日志 14 天、审计链周封存、
-注册表快照 4 份、准入台账体积告警）是**落地包③**。`beta-reset.sh` 的 `--purge-logs`
-是「重来一次」的动作，不是轮转，别拿它当保留策略用。
+**④ 不把保留与轮转塞进 reset 或入站服务。**§5 的数字由宿主侧
+[`beta-retain.sh`](./beta-retain.sh) 独立处理；`beta-reset.sh` 的 `--purge-logs` 仍然是「重来一次」
+的动作，不是轮转，别拿它当保留策略用。
 
 **⑤ 不换 PSK。**演示环境的 `reset.sh --rotate-secrets` 在这里**故意没有对应参数**。
 PSK 是每节点一把、由 H 生成后分发；在节点机上本地重新生成一把，得到的是一个 H 永远拨不通

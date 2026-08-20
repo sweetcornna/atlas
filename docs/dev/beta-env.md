@@ -383,6 +383,7 @@ $QIANMO_BETA_ROOT/                 # 默认 $HOME/qianmo-beta（无 sudo，不�
 │   └── peers/<node>.psk           # 0600，**只有 H 上有全部四把**（§8.3）
 ├── nodes/<node>/config/           # 该机那个节点的 OCC_CONFIG_DIR
 ├── workspaces/<node>/<agent>/     # 每个 agent 一个真 git 工作区
+├── backups/                        # H 的宿主侧备份 store（沙箱挂载之外）
 ├── mirror/<node>/trail.ndjson     # 审计链的只读镜像（只有 H 上有，见 §4.3）
 ├── ops/                           # 0700，链路的生成物（只有 H 上有，见 §2.6）
 ├── state/                         # timings、注册表快照、配置根快照
@@ -486,12 +487,28 @@ $QIANMO_BETA_ROOT/                 # 默认 $HOME/qianmo-beta（无 sudo，不�
 | **审计链** `<配置根>/qianmo/audit/trail.ndjson` | 每节点本机（权威） | 涨，但慢——记录不含 payload，只有 id / code / 计数 | **内测全程不清** | 无人清 | 每周日**封存但不删**：`cp` 成 `archive/trail-<ISO周>.ndjson` 并把当周末尾记录的 `seq` 与 hash 记进运维单页；原文件继续 append。**任何形式的截断都是自己制造一次链断** |
 | 审计链**镜像** | H `mirror/<node>/` | 同上 | 跟随源 | 宿主侧工具 | 单向只读拉取后**整份原子替换**（`ssh cat` + `mv -f`，v1.2 起，见 §4.3；**不是 rsync**）。镜像随时可重建，**不备份镜像** |
 | **准入台账** `<配置根>/resident/<agent>/admission.ndjson` | 每节点本机 | **自带压实**：128 次 read 记录触发一次重写，只留 pending 项（`packages/resident/src/ledger.ts`） | **不设外部保留策略** | 无人清 | **禁止外部裁剪。**外部改动会被判成 integrity issue，而 `#compactLoaded` 一见 issue 就抛——自压实从此**永久停摆**，文件反而变成真的无限涨。改为**体积告警**：单文件 > 10 MB 即视为「压实坏了」，处置是查 integrity，不是删文件 |
-| **备份 store**（`<id>.tar.gz` + `<id>.json`） | H，沙箱挂载之外 | **涨得最快** | **全量 72 h + 日留存 14 天**（每天 00:00 那份） | 宿主侧工具（落地包 ③） | 按 meta 里的时间戳删，`--dry-run` 先跑 |
-| **注册表快照** `<配置根>/registry/agents.json` | H | 不涨（覆盖写，rename 原子） | 无需策略 | — | 每次升级窗口前另存 `state/snapshots/registry-<ISO>.json`，**保留最近 4 份**（= 4 个窗口，够回退一个月） |
+| **备份 store**（`<id>.tar.gz` + `<id>.json`） | H `<root>/backups/`，沙箱挂载之外 | **涨得最快** | **全量 72 h + 日留存 14 天**（每天 00:00 那份） | 宿主侧工具（落地包 ③） | 按 meta 里的时间戳删，`--dry-run` 先跑 |
+| **注册表快照** beta 环境的当前落盘表 `<root>/state/registry-agents.json` | H | 不涨（覆盖写，rename 原子） | 无需策略 | — | 每次升级窗口前另存 `state/snapshots/registry-<ISO>.json`，**保留最近 4 份**（= 4 个窗口，够回退一个月） |
 | **常驻会话表** `<配置根>/resident/sessions.json` | 每节点本机 | 随 agent 数涨，不随时间涨 | 无需策略 | — | 随配置根快照走（§6 L2） |
 | **进程日志** `logs/*.out` `*.err` | 每机 | 涨 | **14 天** | 宿主侧工具 | 按天切 + gzip，`.out` 与 `.err` 同策略 |
 | **timings** `state/<node>-timings.jsonl` | 每机 | 涨（每 turn 几行） | **内测全程保留** | — | 它是 P7.3 基线与容量判断的**唯一输入**，删了这一列数据只能重来一次内测 |
 | **密钥** `secrets/*` | 每机 | 不涨 | 随轮换 | — | 轮换时旧值**立即删，不留历史**。留着只增加泄漏面：回滚一把 PSK 等于回滚一次全网踢线，那不是回滚，是又一次事故 |
+
+**P11.3 后半落地的路径与时间语义**：宿主操作员通过 `demo/env/beta/beta-retain.sh` 运行，默认
+`--dry-run`，只有 `--apply` 才会变更；升级窗口前另加 `--snapshot-registry` 才会创建一份注册表
+快照。全部目标由 `demo/env/beta/common.sh` 的 `BETA_BACKUP_STORE` / `BETA_REGISTRY_STATE` /
+`BETA_REGISTRY_SNAPSHOT_DIR` 等固定派生值给出，不接收任意路径参数。这里的注册表源特指
+`beta-up.sh` 传给 p81 registry 的 `--state` 文件；`<配置根>/registry/agents.json` 是
+`@qianmo/registry` 的通用默认，不是 beta 脚本正在轮转的那份落盘表。
+
+时间一律按 UTC：72 h 边界以内（含边界）全留，之后但在最近 14 个 UTC 自然日内每日保留
+`meta.createdAt` 最新的一份，时间并列按快照 id 词典序取大者，其余成为轮转候选。完成日志命名为
+`<name>.YYYY-MM-DD.gz`，当前 pid 对应的 `.out` / `.err` 不压缩、不删除；过期 gzip 才删除。审计仅在
+周日按 ISO 周复制权威源链，先临时文件 + fsync 后原子发布，源链、镜像链都不删不截断；已有同名但
+不同内容的封存一律失败而不覆盖。准入台账仅在单文件大于 10 MiB 时告警，绝不改变字节。
+
+本次有隔离临时树回归，但**§10 包③的真机一次运行记录和两周后体积复核尚未采集**，不得以本段
+替代那两项现场证据。
 
 **一条要改默认值的定案：内测期把备份快照间隔从默认 15 min 调到 60 min**（`occ resident --backup-interval-ms 3600000`；默认见 `DEFAULT_SNAPSHOT_INTERVAL_MS`）。
 
@@ -963,6 +980,7 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 |---|---|
 | 目标 | 把 §5 的数字实现出来。与 retro §7.3 **P11.3 的后半**（保留策略与轮转）合并，不重复排 |
 | **DoD** | ① 按 §5 的表实现：备份 store 的 72 h + 14 天日留存、日志 14 天、审计链周封存、注册表快照 4 份轮转、准入台账**体积告警**（> 10 MB）；② **全部在宿主侧独立工具里，入站路径上不新增任何删除方法**——`assertBackupSurfaceIsSafe` 继续为真，作为门禁断言；③ 每个动作都有 `--dry-run`，且默认就是 dry-run（真删要显式加参数）；④ 在真机上实跑一次并留档（删了多少、剩多少、耗时）；⑤ 两周后按真实归档体积复核 §5 的估算并回写本文 |
+| 落地状态（P11.3 后半） | `demo/env/beta/beta-retain.sh` 已覆盖 DoD①~③的可复跑本地实现与回归；**DoD④ 真机一次运行记录、DoD⑤ 两周体积复核仍未采集**，不得标为完成 |
 | 估算 | **8–16 人时** |
 
 ### 包 ④（**按需**）：按人发 token

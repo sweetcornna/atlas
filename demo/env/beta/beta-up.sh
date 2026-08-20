@@ -115,7 +115,7 @@ run_host() {
     --ready "$ready"
     --port "$BETA_REGISTRY_PORT"
     --host "$BETA_HOST_BIND"
-    --state "$BETA_STATE_DIR/registry-agents.json"
+    --state "$BETA_REGISTRY_STATE"
   )
   i=0
   while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
@@ -480,7 +480,7 @@ wait_tunnel_live() {
 # 这件事以前只能靠人记得，现在由脚本自己查、自己挪开。
 # ─────────────────────────────────────────────────────────────────────────────
 assert_registry_matches_peers() {
-  local state="$BETA_STATE_DIR/registry-agents.json"
+  local state="$BETA_REGISTRY_STATE"
   local disk_bad=0 live_bad=0 i addr want got backup
 
   if [ -f "$state" ]; then
