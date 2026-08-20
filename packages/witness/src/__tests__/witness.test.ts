@@ -319,7 +319,7 @@ describe('the append-only witness endpoint', () => {
       fetchImpl: (() => {
         fetches += 1
         return Promise.resolve(new Response(null, { status: 201 }))
-      }) as typeof fetch,
+      }) as unknown as typeof fetch,
     })
     const controller = new AbortController()
     const pending = writer.append(anchor, controller.signal)
