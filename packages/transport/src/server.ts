@@ -36,7 +36,9 @@ import {
   HandshakeRejection,
   assertUsablePsk,
   newNonce,
-  verifyAuth,
+  signReady,
+  verifyAuthAttempt,
+  type ListenerIdentity,
 } from './handshake.js'
 import {
   DEFAULT_MAX_QUEUED,
@@ -54,10 +56,12 @@ import { receiveEnvelope } from './receiver.js'
  * this file is it.
  *
  * Responsibilities, in the order a byte meets them: accept, challenge, verify
- * the pre-shared key, validate the envelope, dedup it, hand it to the node,
- * and answer with a receipt. Anything before the handshake completes is
- * answered with a close code, never with an error body — an unauthenticated
- * peer learns nothing from us.
+ * the dialer's proof — an Ed25519 signature where one is offered and this node
+ * has the material to check it, the pre-shared key otherwise (`handshake.ts`)
+ * — validate the envelope, dedup it, hand it to the node, and answer with a
+ * receipt. Anything before the handshake completes is answered with a close
+ * code, never with an error body — an unauthenticated peer learns nothing from
+ * us, including *which* of the ways to fail it found.
  *
  * A receipt is **not** the protocol's `ack` (see `frames.ts`): it means this
  * node has taken the envelope in, and the acknowledgement that the target
@@ -76,6 +80,17 @@ interface ConnectionState {
 export interface TransportServerOptions {
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
+  /**
+   * This node's Ed25519 identity, its peer directory, and its own node
+   * segment — everything needed to check a signed auth frame and to sign the
+   * ready frame back (key-distribution.md §7.1 / §7.1.1).
+   *
+   * Omitted ⇒ this listener behaves exactly as it did before signatures
+   * existed: it checks the MAC and reads no `sig`. That is the honest default
+   * for §8.2 phase ①, and it is what lets a node that has been given keys and
+   * one that has not still talk to each other.
+   */
+  readonly signing?: ListenerIdentity
   readonly onMessage: InboundHandler
   /**
    * Message types this endpoint implements, declared to every dialer in the
@@ -486,7 +501,12 @@ export function startTransportServer(
           refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_UNAUTHORIZED)
           return
         }
-        const result = verifyAuth(options.psk, ws.data.nonce, frame)
+        const result = verifyAuthAttempt(
+          options.psk,
+          options.signing,
+          ws.data.nonce,
+          frame,
+        )
         if (!result.ok) {
           // Record the claimed name so an operator can tell a misconfigured
           // peer from a scan. It is a claim, not an identity — the handshake
@@ -530,6 +550,19 @@ export function startTransportServer(
           ...(options.supportedTypes === undefined
             ? {}
             : { supportedTypes: options.supportedTypes }),
+          // Signed whenever this node *can* sign, not only when the dialer
+          // did: the two directions are independent claims, and a dialer that
+          // wants to check who it reached must not have to prove itself by
+          // signature first to be allowed to.
+          ...(options.signing === undefined
+            ? {}
+            : signReady(
+                options.signing,
+                ws.data.nonce,
+                frame.clientNonce,
+                result.node,
+                result.channelId,
+              )),
         })
         channel.ready()
         return

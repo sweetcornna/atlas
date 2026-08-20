@@ -13,6 +13,7 @@ import {
   type MessageType,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import { signBytes } from '@qianmo/capability'
 import {
   DEFAULT_BACKOFF,
   ReconnectSchedule,
@@ -41,11 +42,17 @@ import {
   type TransportFrame,
 } from './frames.js'
 import {
+  CLOSE_PROTOCOL_ERROR,
+  ReadyRejection,
   assertUsablePsk,
+  authSigningInput,
   computeMac,
   isChannelId,
   newChannelId,
   newNonce,
+  verifyReady,
+  type HandshakeIdentity,
+  type HandshakeTuple,
 } from './handshake.js'
 import {
   DEFAULT_MAX_QUEUED,
@@ -107,12 +114,38 @@ export interface TransportClientOptions {
    * a post-floor type must not advertise it.
    */
   readonly supportedTypes?: readonly string[]
-  /** Expected peer label for inbound audit context; not an authority. */
+  /**
+   * The node this client set out to reach.
+   *
+   * Two jobs, and the second one arrived with {@link TransportClientOptions.signing}:
+   * it labels inbound audit context, and — when signing is on — it is *the*
+   * name the listener's ready signature is checked under. That second use is
+   * why it stops being "not an authority" the moment a key is involved: the
+   * whole of §11 T-B′'s second defence is looking the key up under the node
+   * the dialer *meant* to reach rather than the one the endpoint answered
+   * with, so a tampered `AgentRecord.endpoint` fails instead of redirecting.
+   *
+   * Required alongside `signing`, for that reason.
+   */
   readonly peerNode?: string
   /** Stable across reconnects of this client. Generated when omitted. */
   readonly channelId?: string
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
+  /**
+   * This node's Ed25519 identity and its peer directory (§7.1 / §7.1.1).
+   *
+   * Given it, this client signs its auth frame *in addition to* the MAC — both
+   * proofs travel, and the listener takes whichever it is equipped to check.
+   * Sending both is what makes one end of a link upgradeable without the
+   * other: `sig` costs a listener that never heard of it exactly nothing,
+   * since `parseFrame` hands back a frame it can already answer.
+   *
+   * It also makes this client *check* the listener's half. Requires
+   * {@link TransportClientOptions.peerNode} — there is nothing to check a
+   * signature against without knowing which node was meant.
+   */
+  readonly signing?: HandshakeIdentity
   readonly tls?: ClientTlsOptions
   readonly backoff?: Partial<BackoffOptions>
   /** Cap on unreceipted envelopes before {@link TransportClient.send} refuses. */
@@ -170,6 +203,16 @@ export class TransportClient implements TransportChannel {
   private lastInboundAt = 0
   private readyWaiters: Array<() => void> = []
   private declaredPeerTypes: readonly string[] | undefined
+  /**
+   * The tuple this client signed on the current socket, kept until the ready
+   * frame arrives so the listener's counter-signature can be checked against
+   * the same nonces. Per socket, and dropped with it — a nonce pair reused
+   * across sockets would be exactly the replay the challenge exists to stop.
+   */
+  private pendingHandshake: {
+    readonly socket: WebSocket
+    readonly tuple: HandshakeTuple
+  } | null = null
 
   readonly id: string
   readonly peerNode: string | null
@@ -181,6 +224,13 @@ export class TransportClient implements TransportChannel {
     }
     if (options.peerNode !== undefined && !isValidSegment(options.peerNode)) {
       throw new Error(`invalid peer node segment: ${options.peerNode}`)
+    }
+    if (options.signing !== undefined && options.peerNode === undefined) {
+      // Refused at construction rather than skipped at handshake time: a
+      // client that signed its own half and silently accepted anybody's
+      // answer would look like it had the §7.1.1 guarantee while having only
+      // half of it, and the missing half is the half that stops a redirect.
+      throw new Error('signing requires peerNode: there is nothing to verify')
     }
     this.id = options.channelId ?? newChannelId()
     if (!isChannelId(this.id)) throw new Error(`invalid channel id: ${this.id}`)
@@ -318,6 +368,7 @@ export class TransportClient implements TransportChannel {
     this.clearTimers()
     const socket = this.socket
     this.socket = null
+    this.pendingHandshake = null
     if (socket !== null) {
       socket.removeAllListeners()
       // Re-arm 'error' before touching the socket again. `removeAllListeners`
@@ -372,6 +423,14 @@ export class TransportClient implements TransportChannel {
     switch (frame.t) {
       case FrameType.Challenge: {
         const clientNonce = newNonce()
+        const tuple: HandshakeTuple = {
+          serverNonce: frame.nonce,
+          clientNonce,
+          node: this.options.node,
+          channelId: this.id,
+        }
+        this.pendingHandshake = { socket, tuple }
+        const signing = this.options.signing
         this.write(socket, {
           t: FrameType.Auth,
           v: FRAME_VERSION,
@@ -390,16 +449,33 @@ export class TransportClient implements TransportChannel {
           ...(this.options.supportedTypes === undefined
             ? {}
             : { supportedTypes: this.options.supportedTypes }),
+          // Both proofs travel together during §8.2's phases ① and ②. The
+          // listener picks; this side does not get to assume which.
+          ...(signing === undefined
+            ? {}
+            : {
+                sig: signBytes(
+                  signing.keys,
+                  authSigningInput(
+                    frame.nonce,
+                    clientNonce,
+                    this.options.node,
+                    this.id,
+                  ),
+                ),
+              }),
         })
         return
       }
-      case FrameType.Ready:
+      case FrameType.Ready: {
+        if (!this.acceptReady(socket, frame)) return
         // Replaced, not merged: a peer that came back on an older build
         // declares less, and remembering what it used to offer would keep this
         // client sending types the peer no longer handles.
         this.declaredPeerTypes = frame.supportedTypes
         this.onReady()
         return
+      }
       case FrameType.Receipt:
         this.outbox.receive(frame)
         return
@@ -422,6 +498,45 @@ export class TransportClient implements TransportChannel {
       default:
         return
     }
+  }
+
+  /**
+   * Check the listener's half of the handshake before believing the link
+   * (§7.1.1). `true` means carry on.
+   *
+   * A refusal is **not** treated the way a 4003 is. 4003 means "your key is
+   * wrong", which retrying cannot fix; this means "the thing that answered is
+   * not who I dialled", which a retry very well might — the endpoint record
+   * may be mid-update, or the peer may be a build that has yet to be given its
+   * keys. So it closes with a protocol error and falls back into the existing
+   * `ReconnectSchedule`, exactly as §7.1.1 asks, and the backoff budget is what
+   * eventually reports a peer that never becomes the right one.
+   */
+  private acceptReady(
+    socket: WebSocket,
+    frame: { readonly node?: string; readonly sig?: string },
+  ): boolean {
+    const signing = this.options.signing
+    const peerNode = this.options.peerNode
+    if (signing === undefined || peerNode === undefined) return true
+    const pending = this.pendingHandshake
+    // No remembered tuple means this ready did not answer a challenge this
+    // socket issued — there is nothing to check it against, and accepting it
+    // would be accepting an unsolicited frame as proof.
+    const verdict =
+      pending !== null && pending.socket === socket
+        ? verifyReady(peerNode, signing, pending.tuple, frame)
+        : ({ ok: false, rejection: ReadyRejection.BadSignature } as const)
+    if (verdict.ok) return true
+    this.record(TransportEventType.AuthRejected, {
+      face: 'ready',
+      rejection: verdict.rejection,
+      peerNode,
+    })
+    this.pendingHandshake = null
+    socket.close(CLOSE_PROTOCOL_ERROR, 'ready signature rejected')
+    socket.terminate()
+    return false
   }
 
   private onReady(): void {
@@ -475,6 +590,9 @@ export class TransportClient implements TransportChannel {
     // socket may still emit one while it finishes tearing down.
     socket.on('error', () => {})
     this.socket = null
+    // The nonce pair belonged to that socket. Carrying it to the next one
+    // would let a ready frame be checked against a challenge it never answered.
+    if (this.pendingHandshake?.socket === socket) this.pendingHandshake = null
     this.stopKeepAlive()
     if (this.state === 'closed') return
 
