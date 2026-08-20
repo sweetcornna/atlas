@@ -3,10 +3,22 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  CapabilityLevel,
+  createMessage,
+  MessageType,
+  ProtocolErrorCode,
+} from '@qianmo/protocol'
+import {
+  generateNodeKeyPair,
+  StaticPublicKeyDirectory,
+  type ShadowRefusal,
+} from '@qianmo/capability'
+import {
   DEFAULT_RESIDENT_MEM_INTERVAL_MS,
   MAX_PENDING_TIMING_EVENTS,
   RESIDENT_HELP_TEXT,
   assertResidentRuntime,
+  createResidentCapabilities,
   createResidentMemWriter,
   createResidentTimingWriter,
   isResidentHelpRequest,
@@ -318,6 +330,54 @@ describe('capability flags (P4.3)', () => {
         'qianmo',
       ),
     ).toThrow('not both')
+  })
+
+  test('policy switches configure the resident capability gate itself', () => {
+    const task = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { ask: 'review the diff' },
+      taskId: 'task-1',
+      createdAt: Date.now(),
+    })
+    const shadowRefusals: ShadowRefusal[] = []
+    const observing = createResidentCapabilities(
+      parseResidentArgs(
+        [...BASE, '--open-policy', '--audit-signed-tasks'],
+        'qianmo',
+      ),
+      new StaticPublicKeyDirectory(),
+      generateNodeKeyPair(),
+      refusal => shadowRefusals.push(refusal),
+    )
+
+    expect(observing.check(task, Date.now())).toEqual({
+      ok: true,
+      level: CapabilityLevel.Read,
+    })
+    expect(shadowRefusals).toHaveLength(1)
+    expect(shadowRefusals[0]?.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
+
+    const enforcingRefusals: ShadowRefusal[] = []
+    for (const config of [
+      parseResidentArgs(BASE, 'qianmo'),
+      parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo'),
+    ]) {
+      const enforcing = createResidentCapabilities(
+        config,
+        new StaticPublicKeyDirectory(),
+        generateNodeKeyPair(),
+        refusal => enforcingRefusals.push(refusal),
+      )
+      const verdict = enforcing.check(task, Date.now())
+
+      expect(verdict.ok).toBe(false)
+      if (!verdict.ok) {
+        expect(verdict.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
+      }
+    }
+    expect(enforcingRefusals).toEqual([])
   })
 })
 

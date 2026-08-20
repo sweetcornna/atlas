@@ -28,10 +28,12 @@ import {
 } from '../../services/qianmo/auditTrail.js'
 import {
   NodeCapabilities,
+  OPEN_POLICY,
   SIGNED_TASK_POLICY,
   StaticPublicKeyDirectory,
   type NodeKeyPair,
   type PublicKeyDirectory,
+  type ShadowRefusalSink,
 } from '@qianmo/capability'
 import type { TLSOptions } from 'bun'
 import { isValidSegment } from '@qianmo/protocol'
@@ -815,6 +817,35 @@ export function buildPublicKeyDirectory(
 }
 
 /**
+ * Build the resident's real capability gate from its parsed policy switches.
+ *
+ * `NodeCapabilities` intentionally defaults to the enforcing policy. The
+ * resident must therefore always pass its selected policy, including the
+ * explicit `--open-policy` escape hatch.
+ */
+export function createResidentCapabilities(
+  config: ResidentCliConfig,
+  directory: PublicKeyDirectory,
+  keys: NodeKeyPair,
+  onShadowRefusal?: ShadowRefusalSink,
+): NodeCapabilities {
+  return new NodeCapabilities({
+    node: config.node,
+    directory,
+    keys,
+    policy: config.requireSignedTasks ? SIGNED_TASK_POLICY : OPEN_POLICY,
+    // §9.2 phase ①. Both halves or neither — the gate refuses the
+    // half-configuration too, and this is the only place that supplies them.
+    ...(config.auditSignedTasks && onShadowRefusal !== undefined
+      ? {
+          shadowPolicy: SIGNED_TASK_POLICY,
+          onShadowRefusal,
+        }
+      : {}),
+  })
+}
+
+/**
  * `--cert`/`--key` startup self-check (K-2, one of the DoD's four negative
  * cases), run before this node opens a listener.
  *
@@ -1063,20 +1094,12 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // Its own key is always trusted: rule S-1 accepts `user-confirmed` only when
   // this node signed it, which means verifying its own signature.
   directory.put(config.node, keys.publicKey)
-  const capability = new NodeCapabilities({
-    node: config.node,
+  const capability = createResidentCapabilities(
+    config,
     directory,
     keys,
-    ...(config.requireSignedTasks ? { policy: SIGNED_TASK_POLICY } : {}),
-    // §9.2 phase ①. Both halves or neither — the gate refuses the
-    // half-configuration too, and this is the only place that supplies them.
-    ...(config.auditSignedTasks
-      ? {
-          shadowPolicy: SIGNED_TASK_POLICY,
-          onShadowRefusal: capabilityShadowTrailSink(trail, config.node),
-        }
-      : {}),
-  })
+    capabilityShadowTrailSink(trail, config.node),
+  )
   const listenerTls = buildListenerTls(config)
   const handshakeSigning = buildHandshakeSigning(config, keys, directory)
   process.stdout.write(

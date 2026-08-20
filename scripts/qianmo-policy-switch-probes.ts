@@ -698,8 +698,11 @@ async function probeS4(args: Args): Promise<CriterionReport> {
       title,
       verdict: 'not-collected',
       reason:
-        '未采集：机制已就地跑通（见 detail.mechanism），但 §9.1 要的是在部署节点上' +
-        '由人执行一次并从审计链取证，需要 --s4-report',
+        mechanism === undefined
+          ? '未采集：本机没有 OpenSSL，无法就地运行吊销机制；§9.1 要的是在部署节点上' +
+            '由人执行一次并从审计链取证，需要 --s4-report'
+          : '未采集：机制已就地跑通（见 detail.mechanism），但 §9.1 要的是在部署节点上' +
+            '由人执行一次并从审计链取证，需要 --s4-report',
       ...(mechanism === undefined ? {} : { detail: { mechanism } }),
     }
   }

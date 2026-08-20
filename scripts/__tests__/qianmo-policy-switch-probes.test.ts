@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 const PROBE = join(REPO_ROOT, 'scripts/qianmo-policy-switch-probes.ts')
@@ -31,13 +31,16 @@ interface Report {
 
 const directories: string[] = []
 
-function runProbe(args: readonly string[]): {
+function runProbe(
+  args: readonly string[],
+  env?: Record<string, string | undefined>,
+): {
   readonly exitCode: number
   readonly report: Report
 } {
   const result = Bun.spawnSync(
     [process.execPath, 'run', PROBE, '--nodes', '2', ...args],
-    { cwd: REPO_ROOT, stdout: 'pipe', stderr: 'pipe' },
+    { cwd: REPO_ROOT, env, stdout: 'pipe', stderr: 'pipe' },
   )
   return {
     exitCode: result.exitCode,
@@ -78,9 +81,7 @@ describe('P12.4 policy switch deployment contract', () => {
   })
 
   test('beta smoke sends a task request for phase-one observation', () => {
-    expect(readFileSync(BETA_SMOKE, 'utf8')).toContain(
-      '      --task "$addr" \\\n',
-    )
+    expect(readFileSync(BETA_SMOKE, 'utf8')).toMatch(/--task\s+"\$addr"/)
   })
 
   test('missing S-3 evidence remains not-collected and fails the process', () => {
@@ -115,5 +116,57 @@ describe('P12.4 policy switch deployment contract', () => {
     expect(s3.verdict).toBe('fail')
     expect(s3.reason).toContain('demo/env/beta/beta-smoke.sh')
     expect(s3.detail?.['missing']).toEqual(['demo/env/beta/beta-smoke.sh'])
+  })
+
+  test('wrong policy evidence fails S-3 even when all scripts passed', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'qianmo-s3-evidence-'))
+    directories.push(directory)
+    const evidence = join(directory, 's3.json')
+    writeFileSync(
+      evidence,
+      JSON.stringify({
+        policy: 'OPEN_POLICY',
+        results: S3_SCRIPTS.map(script => ({ script, ok: true })),
+      }),
+    )
+
+    const result = runProbe(['--s3-results', evidence])
+    const s3 = criterion(result.report, 'S-3')
+
+    expect(result.exitCode).toBe(1)
+    expect(s3.verdict).toBe('fail')
+    expect(s3.reason).toContain('SIGNED_TASK_POLICY')
+  })
+
+  test('complete SIGNED_TASK_POLICY evidence passes S-3 but not the full probe', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'qianmo-s3-evidence-'))
+    directories.push(directory)
+    const evidence = join(directory, 's3.json')
+    writeFileSync(
+      evidence,
+      JSON.stringify({
+        policy: 'SIGNED_TASK_POLICY',
+        results: S3_SCRIPTS.map(script => ({ script, ok: true })),
+      }),
+    )
+
+    const result = runProbe(['--s3-results', evidence])
+
+    expect(result.exitCode).toBe(1)
+    expect(criterion(result.report, 'S-3').verdict).toBe('pass')
+    expect(criterion(result.report, 'S-1').verdict).toBe('not-collected')
+  })
+
+  test('does not claim the revocation mechanism ran without OpenSSL', () => {
+    const result = runProbe([], {
+      ...process.env,
+      PATH: dirname(process.execPath),
+    })
+    const s4 = criterion(result.report, 'S-4')
+
+    expect(result.exitCode).toBe(1)
+    expect(s4.verdict).toBe('not-collected')
+    expect(s4.reason).not.toContain('已就地跑通')
+    expect(s4.detail?.['mechanism']).toBeUndefined()
   })
 })
