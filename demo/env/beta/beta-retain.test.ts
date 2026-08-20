@@ -60,6 +60,35 @@ function run(value: string, args: readonly string[] = [], now = NOW): Result {
   }
 }
 
+async function runTogether(
+  value: string,
+  args: readonly string[] = [],
+  now = NOW,
+): Promise<readonly Result[]> {
+  const children = [0, 1].map(() =>
+    Bun.spawn(['bash', RETAIN, ...args], {
+      cwd: REPOSITORY_ROOT,
+      env: {
+        ...process.env,
+        QIANMO_BETA_ROOT: value,
+        QIANMO_BETA_RETAIN_NOW_EPOCH_MS: String(now),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }),
+  )
+  return Promise.all(
+    children.map(async child => {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
+      return { exitCode, stdout, stderr }
+    }),
+  )
+}
+
 function snapshot(
   value: string,
   id: string,
@@ -205,6 +234,60 @@ describe('beta-retain host retention tool', () => {
     ])
   })
 
+  test('concurrent applies publish equivalent logs, audit seals, and registry snapshots once', async () => {
+    const value = root()
+    const source = audit(value, 'beta-1', '{"seq":1}\n')
+    const registry = join(value, 'state', 'registry-agents.json')
+    writeFileSync(registry, '{"version":1}\n')
+    log(value, 'console.err', DAY)
+
+    const results = await runTogether(value, ['--apply', '--snapshot-registry'])
+
+    expect(results.map(result => result.exitCode)).toEqual([0, 0])
+    expect(readFileSync(source, 'utf8')).toBe('{"seq":1}\n')
+    expect(readdirSync(join(dirname(source), 'archive'))).toEqual([
+      'trail-2026-W34.ndjson',
+    ])
+    expect(readdirSync(join(value, 'logs'))).toEqual([
+      'console.err.2026-08-22.gz',
+    ])
+    expect(readdirSync(join(value, 'state', 'snapshots'))).toEqual([
+      'registry-20260823T120000Z.json',
+    ])
+    expect(treeState(value).some(state => state.includes('.tmp-'))).toBe(false)
+  })
+
+  test('treats an equivalent gzip publication as idempotent and leaves a divergent one untouched', () => {
+    const equivalent = root()
+    const source = log(equivalent, 'console.err', DAY)
+    const destination = `${source}.2026-08-22.gz`
+
+    expect(run(equivalent, ['--apply']).exitCode).toBe(0)
+    log(equivalent, 'console.err', DAY)
+    expect(run(equivalent, ['--apply']).exitCode).toBe(0)
+    expect(existsSync(source)).toBe(false)
+    expect(readdirSync(join(equivalent, 'logs'))).toEqual([
+      'console.err.2026-08-22.gz',
+    ])
+    expect(treeState(equivalent).some(state => state.includes('.tmp-'))).toBe(
+      false,
+    )
+
+    const divergent = root()
+    const divergentSource = log(divergent, 'console.err', DAY)
+    const divergentDestination = `${divergentSource}.2026-08-22.gz`
+    writeFileSync(divergentDestination, 'not this log')
+    const sourceBefore = readFileSync(divergentSource, 'utf8')
+    const destinationBefore = readFileSync(divergentDestination, 'utf8')
+
+    expect(run(divergent, ['--apply']).exitCode).not.toBe(0)
+    expect(readFileSync(divergentSource, 'utf8')).toBe(sourceBefore)
+    expect(readFileSync(divergentDestination, 'utf8')).toBe(destinationBefore)
+    expect(treeState(divergent).some(state => state.includes('.tmp-'))).toBe(
+      false,
+    )
+  })
+
   test('archives each audit source atomically without changing or deleting that source', () => {
     const value = root()
     const source = audit(value, 'beta-1', '{"seq":1}\n')
@@ -229,10 +312,14 @@ describe('beta-retain host retention tool', () => {
     const destination = join(archive, 'trail-2026-W34.ndjson')
     writeFileSync(destination, '{"seq":0}\n')
 
+    const sourceBefore = readFileSync(source, 'utf8')
+    const destinationBefore = readFileSync(destination, 'utf8')
+
     expect(run(value, ['--apply']).exitCode).not.toBe(0)
-    expect(readFileSync(source, 'utf8')).toBe('{"seq":1}\n')
-    expect(readFileSync(destination, 'utf8')).toBe('{"seq":0}\n')
+    expect(readFileSync(source, 'utf8')).toBe(sourceBefore)
+    expect(readFileSync(destination, 'utf8')).toBe(destinationBefore)
     expect(readdirSync(archive).sort()).toEqual(['trail-2026-W34.ndjson'])
+    expect(treeState(value).some(state => state.includes('.tmp-'))).toBe(false)
   })
 
   test('uses ISO weeks across a year boundary and only seals on Sunday', () => {
@@ -276,6 +363,56 @@ describe('beta-retain host retention tool', () => {
         name.endsWith('.json'),
       ),
     ).toHaveLength(4)
+    expect(run(value, ['--apply', '--snapshot-registry']).exitCode).toBe(0)
+    expect(treeState(value).some(state => state.includes('.tmp-'))).toBe(false)
+  })
+
+  test('does not overwrite a divergent registry snapshot or leave a temporary artifact', () => {
+    const value = root()
+    const source = join(value, 'state', 'registry-agents.json')
+    const destination = join(
+      value,
+      'state',
+      'snapshots',
+      'registry-20260823T120000Z.json',
+    )
+    writeFileSync(source, '{"version":1}\n')
+    writeFileSync(destination, '{"version":0}\n')
+    const sourceBefore = readFileSync(source, 'utf8')
+    const destinationBefore = readFileSync(destination, 'utf8')
+
+    expect(run(value, ['--apply', '--snapshot-registry']).exitCode).not.toBe(0)
+    expect(readFileSync(source, 'utf8')).toBe(sourceBefore)
+    expect(readFileSync(destination, 'utf8')).toBe(destinationBefore)
+    expect(treeState(value).some(state => state.includes('.tmp-'))).toBe(false)
+  })
+
+  test('fails closed when a racing directory creator leaves an unsafe archive path', () => {
+    const symlinkRoot = root()
+    const symlinkSource = audit(symlinkRoot, 'beta-1', '{"seq":1}\n')
+    const outside = mkdtempSync(join(tmpdir(), 'qianmo-beta-retain-outside-'))
+    roots.push(outside)
+    const symlinkArchive = join(dirname(symlinkSource), 'archive')
+    symlinkSync(outside, symlinkArchive)
+
+    expect(run(symlinkRoot, ['--apply']).exitCode).not.toBe(0)
+    expect(readFileSync(symlinkSource, 'utf8')).toBe('{"seq":1}\n')
+    expect(readdirSync(outside)).toEqual([])
+    expect(treeState(symlinkRoot).some(state => state.includes('.tmp-'))).toBe(
+      false,
+    )
+
+    const fileRoot = root()
+    const fileSource = audit(fileRoot, 'beta-1', '{"seq":1}\n')
+    const fileArchive = join(dirname(fileSource), 'archive')
+    writeFileSync(fileArchive, 'not a directory')
+
+    expect(run(fileRoot, ['--apply']).exitCode).not.toBe(0)
+    expect(readFileSync(fileSource, 'utf8')).toBe('{"seq":1}\n')
+    expect(readFileSync(fileArchive, 'utf8')).toBe('not a directory')
+    expect(treeState(fileRoot).some(state => state.includes('.tmp-'))).toBe(
+      false,
+    )
   })
 
   test('only warns for an oversized admission ledger without changing either side of the threshold', () => {

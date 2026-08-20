@@ -233,6 +233,15 @@ function assertExistingRegularFile(
   return stat
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === code
+  )
+}
+
 function ensureSafeDirectory(
   paths: Pick<Paths, 'root' | 'rootReal'>,
   target: string,
@@ -242,12 +251,14 @@ function ensureSafeDirectory(
   let cursor = paths.root
   for (const part of relation.split('/')) {
     cursor = join(cursor, part)
-    if (!existsSync(cursor)) {
+    try {
       mkdirSync(cursor, { mode: 0o700 })
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST')) throw error
     }
-    const stat = assertExistingPath(paths, cursor, '待创建目录')
-    if (!stat.isDirectory())
-      die(`待创建目录的父路径不是目录：${JSON.stringify(cursor)}`)
+    // EEXIST can be an operator racing us or an attacker replacing this path.
+    // Re-run the full lstat/realpath guard instead of assuming it is our directory.
+    assertExistingDirectory(paths, cursor, '待创建目录')
   }
 }
 
@@ -314,21 +325,71 @@ function bytesEqual(left: string, right: string): boolean {
   return a.byteLength === b.byteLength && a.equals(b)
 }
 
-function atomicCopy(paths: Paths, source: string, destination: string): void {
-  assertExistingRegularFile(paths, source, '审计链源文件')
+function publishedFilesAreEquivalent(
+  paths: Paths,
+  expected: string,
+  actual: string,
+  label: string,
+  preserveMtime = false,
+): boolean {
+  const expectedStat = assertExistingRegularFile(
+    paths,
+    expected,
+    `${label}待发布文件`,
+  )
+  const actualStat = assertExistingRegularFile(paths, actual, `${label}目标`)
+  return (
+    bytesEqual(expected, actual) &&
+    (!preserveMtime || expectedStat.mtimeMs === actualStat.mtimeMs)
+  )
+}
+
+function linkOrVerifyPublication(
+  paths: Paths,
+  temporary: string,
+  destination: string,
+  label: string,
+  preserveMtime = false,
+): void {
+  try {
+    linkSync(temporary, destination)
+  } catch (error) {
+    if (!hasErrorCode(error, 'EEXIST')) throw error
+    if (
+      !publishedFilesAreEquivalent(
+        paths,
+        temporary,
+        destination,
+        label,
+        preserveMtime,
+      )
+    ) {
+      die(
+        `${label}目标已存在且内容或保留元数据不同：${JSON.stringify(destination)}`,
+      )
+    }
+  }
+}
+
+function atomicCopy(
+  paths: Paths,
+  source: string,
+  destination: string,
+  label: string,
+): void {
+  assertExistingRegularFile(paths, source, `${label}源文件`)
   if (existsSync(destination)) {
-    assertExistingRegularFile(paths, destination, '审计链封存目标')
-    if (!bytesEqual(source, destination)) {
-      die(`审计链封存目标已存在且内容不同：${JSON.stringify(destination)}`)
+    if (!publishedFilesAreEquivalent(paths, source, destination, label)) {
+      die(`${label}目标已存在且内容不同：${JSON.stringify(destination)}`)
     }
     return
   }
   ensureSafeDirectory(paths, dirname(destination))
-  assertDerivedPath(paths, destination, '审计链封存目标')
+  assertDerivedPath(paths, destination, `${label}目标`)
   const temporary = `${destination}.tmp-${process.pid}`
-  assertDerivedPath(paths, temporary, '审计链封存临时文件')
+  assertDerivedPath(paths, temporary, `${label}临时文件`)
   if (existsSync(temporary))
-    die(`审计链封存临时文件已存在：${JSON.stringify(temporary)}`)
+    die(`${label}临时文件已存在：${JSON.stringify(temporary)}`)
   try {
     copyFileSync(source, temporary, constants.COPYFILE_EXCL)
     const descriptor = openSync(temporary, 'r')
@@ -337,14 +398,13 @@ function atomicCopy(paths: Paths, source: string, destination: string): void {
     } finally {
       closeSync(descriptor)
     }
-    // link(2) creates the final name atomically and fails on EEXIST. rename(2)
-    // would overwrite a concurrently-created archive, which is not acceptable
-    // for an audit seal or an upgrade snapshot.
-    linkSync(temporary, destination)
+    // link(2) creates the final name atomically. A racing publisher is only
+    // equivalent when it sealed the exact same bytes; rename() would overwrite.
+    linkOrVerifyPublication(paths, temporary, destination, label)
     unlinkSync(temporary)
   } catch (error) {
     if (existsSync(temporary)) {
-      assertExistingRegularFile(paths, temporary, '审计链封存临时文件')
+      assertExistingRegularFile(paths, temporary, `${label}临时文件`)
       unlinkSync(temporary)
     }
     throw error
@@ -449,14 +509,13 @@ function activeLogNames(paths: Paths): ReadonlySet<string> {
 
 function gzipLog(paths: Paths, source: string, destination: string): void {
   const stat = assertExistingRegularFile(paths, source, '日志源文件')
-  if (existsSync(destination)) {
-    die(`日志 gzip 目标已存在，拒绝覆盖：${JSON.stringify(destination)}`)
-  }
+  const sourceBytes = readFileSync(source)
   const temporary = `${destination}.tmp-${process.pid}`
+  assertDerivedPath(paths, temporary, '日志 gzip 临时文件')
   if (existsSync(temporary))
     die(`日志 gzip 临时文件已存在：${JSON.stringify(temporary)}`)
   try {
-    writeFileSync(temporary, gzipSync(readFileSync(source)), {
+    writeFileSync(temporary, gzipSync(sourceBytes), {
       flag: 'wx',
       mode: stat.mode & 0o777,
     })
@@ -467,9 +526,18 @@ function gzipLog(paths: Paths, source: string, destination: string): void {
     } finally {
       closeSync(descriptor)
     }
-    linkSync(temporary, destination)
+    linkOrVerifyPublication(paths, temporary, destination, '日志 gzip', true)
     unlinkSync(temporary)
-    removeRegularFile(paths, source, '日志源文件')
+    try {
+      assertExistingRegularFile(paths, source, '日志源文件')
+      if (!readFileSync(source).equals(sourceBytes)) {
+        die(`日志源文件在压缩期间被改写：${JSON.stringify(source)}`)
+      }
+      unlinkSync(source)
+    } catch (error) {
+      // A concurrent equivalent publisher may already have consumed the source.
+      if (existsSync(source)) throw error
+    }
   } catch (error) {
     if (existsSync(temporary)) {
       assertExistingRegularFile(paths, temporary, '日志 gzip 临时文件')
@@ -513,9 +581,6 @@ function planLogs(paths: Paths, now: number): Plan {
     }
     const destination = `${path}.${utcDay(stat.mtimeMs)}.gz`
     assertDerivedPath(paths, destination, '日志 gzip 目标')
-    if (existsSync(destination)) {
-      die(`日志 gzip 目标已存在，拒绝覆盖：${JSON.stringify(destination)}`)
-    }
     operations.push({ execute: () => gzipLog(paths, path, destination) })
     remaining += 1
   }
@@ -554,7 +619,9 @@ function planAudits(paths: Paths, now: number): Plan {
       remaining += 1
       continue
     }
-    operations.push({ execute: () => atomicCopy(paths, source, destination) })
+    operations.push({
+      execute: () => atomicCopy(paths, source, destination, '审计链封存'),
+    })
     remaining += 1
   }
   return { name: '审计链', operations, remaining, warnings: [] }
@@ -599,7 +666,7 @@ function planRegistry(
       operations.push({
         execute: () => {
           ensureSafeDirectory(paths, paths.registrySnapshots)
-          atomicCopy(paths, paths.registryState, destination)
+          atomicCopy(paths, paths.registryState, destination, '注册表快照')
         },
       })
     }
