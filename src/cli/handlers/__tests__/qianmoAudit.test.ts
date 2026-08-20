@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
@@ -13,9 +13,16 @@ import { TunnelEventType } from '@qianmo/tunnel'
 import { BackupEventType } from '@qianmo/backup'
 import { CapacityEventType } from '@qianmo/capacity'
 import {
+  AuditWitnessScheduler,
+  FileWitnessAnchorStore,
+  remoteWitnessAnchorWriter,
+  startWitnessService,
+} from '@qianmo/witness'
+import {
   QIANMO_AUDIT_HELP_TEXT,
   isQianmoAuditHelpRequest,
   parseQianmoAuditArgs,
+  runQianmoAudit,
 } from '../qianmoAudit.js'
 import {
   activatorTrailSink,
@@ -26,9 +33,29 @@ import {
   routerTrailSink,
   tunnelTrailSink,
 } from '../../../services/qianmo/auditTrail.js'
+import { loadOrCreateNodeKeys } from '../../../services/qianmo/nodeIdentity.js'
 
 let root: string
 let previousConfigDir: string | undefined
+const WITNESS_NODE = 'node-a'
+const WITNESS_WRITE_TOKEN = 'witness-write-token-for-cli-test'
+const WITNESS_READ_TOKEN = 'witness-read-token-for-cli-test'
+
+async function captureStdout(run: () => Promise<void>): Promise<string> {
+  const original = process.stdout.write
+  let captured = ''
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    captured +=
+      typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+    return true
+  }) as unknown as typeof process.stdout.write
+  try {
+    await run()
+  } finally {
+    process.stdout.write = original
+  }
+  return captured
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-audit-cli-'))
@@ -62,6 +89,18 @@ describe('audit CLI arguments', () => {
     expect(parseQianmoAuditArgs(['--verify']).verify).toBe(true)
   })
 
+  test('--witness is an absolute path or HTTP(S) URL and requires --verify', () => {
+    expect(
+      parseQianmoAuditArgs(['--verify', '--witness=/tmp/qianmo-witness']),
+    ).toMatchObject({ witness: { kind: 'path', value: '/tmp/qianmo-witness' } })
+    expect(() =>
+      parseQianmoAuditArgs(['--verify', '--witness=relative/witness']),
+    ).toThrow('absolute path or http(s) URL')
+    expect(() =>
+      parseQianmoAuditArgs(['--witness=/tmp/qianmo-witness']),
+    ).toThrow('--witness requires --verify')
+  })
+
   test('timestamps accept both ISO and epoch milliseconds', () => {
     const iso = parseQianmoAuditArgs(['--from', '2026-08-14T00:00:00.000Z'])
     expect(iso.from).toBe(Date.parse('2026-08-14T00:00:00.000Z'))
@@ -84,6 +123,87 @@ describe('audit CLI arguments', () => {
     expect(() => parseQianmoAuditArgs(['--verify', '--limit', '0'])).toThrow(
       'positive integer',
     )
+  })
+})
+
+describe('audit --verify witness verdict', () => {
+  test('keeps a rewritten chain at exit 0 without a witness and exits 1 with it', async () => {
+    const path = join(root, 'rewritten.ndjson')
+    const trail = new AuditTrail(path)
+    for (let index = 0; index < 4; index++) {
+      trail.append({
+        at: Date.now() + index,
+        source: AuditSource.Resident,
+        kind: `event-${index + 1}`,
+        outcome: index === 1 ? 'refused' : 'ok',
+        node: WITNESS_NODE,
+      })
+    }
+    trail.close()
+
+    // This is deliberately the real append-only endpoint, not a fetch stub:
+    // the CLI must prove it can compare against evidence outside the trail.
+    const service = startWitnessService({
+      store: new FileWitnessAnchorStore({ root: join(root, 'witness') }),
+      writeToken: WITNESS_WRITE_TOKEN,
+      readToken: WITNESS_READ_TOKEN,
+    })
+    const keys = loadOrCreateNodeKeys(WITNESS_NODE)
+    const scheduler = new AuditWitnessScheduler({
+      node: WITNESS_NODE,
+      trailPath: path,
+      keys,
+      writer: remoteWitnessAnchorWriter({
+        url: service.url as string,
+        token: WITNESS_WRITE_TOKEN,
+      }),
+    })
+
+    const previousReadToken = process.env.QIANMO_WITNESS_READ_TOKEN
+    const previousExitCode = process.exitCode
+    try {
+      await scheduler.tick()
+      const rewritten = join(root, 'rewritten-self-consistent.ndjson')
+      const attacked = new AuditTrail(rewritten)
+      for (const record of readTrail(path).records.filter(
+        record => record.outcome !== 'refused',
+      )) {
+        const { seq: _seq, prev: _prev, ...input } = record
+        attacked.append(input)
+      }
+      attacked.close()
+      writeFileSync(path, readFileSync(rewritten, 'utf8'))
+      expect(readTrail(path).intact).toBe(true)
+
+      const local = await captureStdout(() =>
+        runQianmoAudit(['--verify', '--path', path]),
+      )
+      expect(process.exitCode).toBe(0)
+      expect(JSON.parse(local)).not.toHaveProperty('witness')
+
+      process.env.QIANMO_WITNESS_READ_TOKEN = WITNESS_READ_TOKEN
+      const witnessed = await captureStdout(() =>
+        runQianmoAudit([
+          '--verify',
+          '--path',
+          path,
+          '--witness',
+          service.url as string,
+        ]),
+      )
+      expect(process.exitCode).toBe(1)
+      expect(JSON.parse(witnessed)).toMatchObject({
+        witness: { tampered: true },
+      })
+    } finally {
+      if (previousReadToken === undefined) {
+        delete process.env.QIANMO_WITNESS_READ_TOKEN
+      } else {
+        process.env.QIANMO_WITNESS_READ_TOKEN = previousReadToken
+      }
+      process.exitCode = previousExitCode
+      await service.stop()
+    }
   })
 })
 

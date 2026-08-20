@@ -540,8 +540,8 @@ const OVERVIEW_HEADING_ID = 'h-overview'
 
 /**
  * The four cards above the ledger: how many agents, how much trail (and
- * whether it still verifies), how long a lease lasts, and the protocol rate
- * ceiling. Every number here already exists on the page one scroll down —
+ * whether its local and off-host checks agree), how long a lease lasts, and
+ * the protocol rate ceiling. Every number here already exists on the page one scroll down —
  * this section is a summary, not a second source, which is why it reads its
  * numbers off the rendered fragments rather than being handed raw data.
  */
@@ -550,6 +550,8 @@ function overviewSection(model: PageModel): string {
   const nodesOnline = fragmentStat(model.roster, 'online')
   const trailTotal = fragmentStat(model.audit, 'total')
   const trailIssues = fragmentStat(model.audit, 'issues')
+  const trailIntact = fragmentStat(model.audit, 'intact')
+  const witness = fragmentStat(model.audit, 'witness')
   const ttlMs = fragmentStat(model.limits, 'ttl-ms')
   const rate = fragmentStat(model.limits, 'rate')
   const issues = trailIssues === null ? 0 : Number(trailIssues)
@@ -568,11 +570,15 @@ function overviewSection(model: PageModel): string {
       kicker: '消息链',
       value: trailTotal ?? '—',
       hint:
-        issues > 0
+        trailIntact === 'false' || issues > 0
           ? `<span class="tag tag-accent">断裂 ${escapeHtml(
               String(issues),
             )}</span>`
-          : `<span class="tag tag-accent-2">链完整</span>`,
+          : witness === 'tampered'
+            ? `<span class="tag tag-critical">锚点不符</span>`
+            : witness === 'verified'
+              ? `<span class="tag tag-accent-2">链完整</span>`
+              : `<span class="tag tag-neutral">未见证</span>`,
       glyph: 'activity',
       blob: 'blob-2',
     }),

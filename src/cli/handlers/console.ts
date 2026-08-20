@@ -28,6 +28,7 @@ import {
   type RegistryPort,
   type WakePort,
 } from '@qianmo/console'
+import { isNodePublicKey } from '@qianmo/protocol'
 import { pskFromEnv } from '@qianmo/transport'
 import { createConsoleChatPort, type ConsoleChatHub } from './consoleChat.js'
 import {
@@ -155,6 +156,52 @@ function wireChat(
   }
 }
 
+/** Resolve a node key from the published registry record, never from anchors. */
+function witnessPublicKeyOf(registry: RegistryPort) {
+  return async (node: string) => {
+    const listed = await registry.list()
+    if (!listed.ok) return listed
+    const prefix = `qianmo://${node}/`
+    const agents = listed.value.filter(agent =>
+      agent.address.startsWith(prefix),
+    )
+    const keys = new Set(
+      agents.flatMap(agent =>
+        agent.publicKey === undefined ? [] : [agent.publicKey],
+      ),
+    )
+    if (keys.size === 0) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'not_found' as const,
+          message: `名册没有节点 ${node} 的公钥`,
+        },
+      }
+    }
+    if (keys.size !== 1) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'invalid' as const,
+          message: `名册中的节点 ${node} 公钥不一致`,
+        },
+      }
+    }
+    const publicKey = keys.values().next().value
+    if (publicKey === undefined || !isNodePublicKey(publicKey)) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'invalid' as const,
+          message: `名册中的节点 ${node} 公钥无效`,
+        },
+      }
+    }
+    return { ok: true as const, value: publicKey }
+  }
+}
+
 const FIELD_WIDTH = 13
 
 function field(name: string, value: string): string {
@@ -214,7 +261,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const deps: ConsoleDeps = {
     registry,
-    audit: createAuditPort({ path: config.auditPath }),
+    audit: createAuditPort({
+      path: config.auditPath,
+      ...(config.anchors === undefined ? {} : { witness: config.anchors }),
+      ...(config.anchors === undefined
+        ? {}
+        : { publicKeyOf: witnessPublicKeyOf(registry) }),
+    }),
     limits: consoleLimits(),
     label: config.label,
     // Display only. The wake form used to carry a 回调 text box that could hold
@@ -268,6 +321,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   banner += field('registry', config.registryUrl)
   banner += field('audit-trail', config.auditPath)
+  if (config.anchors !== undefined) {
+    banner += field('anchors', config.anchors.value)
+  }
   banner += field('wake', wake.status)
   banner += field('chat', chat.status)
   if (chat.hub !== undefined) {

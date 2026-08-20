@@ -76,6 +76,15 @@ export interface AuditPage {
   readonly issueCount: number
   /** Total records in the trail before filtering, for "showing N of M". */
   readonly total: number
+  /**
+   * Off-host witness verdict, absent only when this console has no anchor
+   * source configured. A stale witness is distinct from a chain mismatch: it
+   * means there is no current evidence, not that a rewrite was found.
+   */
+  readonly witness?: {
+    readonly tampered: boolean
+    readonly stale: boolean
+  }
 }
 
 /** Filter accepted by the audit view; every field is optional and ANDed. */

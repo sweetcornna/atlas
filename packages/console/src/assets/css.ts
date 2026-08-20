@@ -115,6 +115,8 @@ export const CONSOLE_CSS = `
   --color-accent-2-800: #3d472b;
   --color-accent-2-900: #272e1b;
 
+  --color-critical: #7e1d3f;
+
   /* Dialog scrim. Not a ramp step: the ramps flip direction in dark, and a
      backdrop that flips with them stops being a backdrop. */
   --color-scrim: #2e2b25;
@@ -181,6 +183,8 @@ export const CONSOLE_CSS = `
     --color-accent-2-700: #d2e2b4;
     --color-accent-2-800: #e6f0d2;
     --color-accent-2-900: #f3f9e6;
+
+    --color-critical: #ff9db9;
 
     --color-scrim: #050403;
 
@@ -391,6 +395,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 }
 .tag-accent { background: var(--color-accent-100); color: var(--color-accent-800); }
 .tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
+.tag-critical { background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical); }
 .tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
 .chips, .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
 .chips .chip, .tags .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -399,6 +404,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .tone-ok { color: var(--color-accent-2-800); }
 .tone-warn { color: var(--color-accent-800); }
 .tone-bad { color: var(--color-accent-800); }
+.tone-critical { color: var(--color-critical); font-weight: 700; }
 .tone-muted { color: var(--color-muted); }
 .total { color: var(--color-text); font-weight: 600; }
 .ttl { color: var(--color-muted); }
@@ -413,6 +419,8 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .dot-warn { background: transparent; border: 3px solid var(--color-accent-600); }
 .state:has(.dot-bad) { color: var(--color-neutral-700); }
 .dot-bad { background: transparent; border: 2px solid var(--color-neutral-500); }
+.state:has(.dot-critical) { color: var(--color-critical); }
+.dot-critical { background: var(--color-critical); }
 .state:has(.dot-muted) { color: var(--color-neutral-700); }
 .dot-muted { width: 13px; height: 4px; border-radius: 999px; background: var(--color-neutral-600); }
 
@@ -635,6 +643,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 }
 .bar-bad { background: var(--color-accent-100); color: var(--color-accent-800); }
 .bar-warn { background: var(--color-accent-100); color: var(--color-accent-800); }
+.bar-critical { background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical); }
 .bar-muted { background: var(--color-neutral-100); color: var(--color-neutral-700); }
 .bar-code { font-family: var(--font-mono); font-size: 11px; opacity: .75; }
 .bar .n { font-variant-numeric: tabular-nums; }

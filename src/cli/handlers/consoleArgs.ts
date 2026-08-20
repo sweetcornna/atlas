@@ -21,6 +21,11 @@ import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import {
+  parseAuditWitnessSource,
+  WITNESS_READ_TOKEN_ENV_VAR,
+  type AuditWitnessSource,
+} from '../../services/qianmo/auditWitness.js'
+import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
 } from './consoleTokenSources.js'
@@ -76,6 +81,8 @@ export interface ConsoleCliConfig {
   readonly registryUrl: string
   /** 审计链文件的绝对路径。 */
   readonly auditPath: string
+  /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
+  readonly anchors?: AuditWitnessSource
   /** 给了才启用唤醒面；`ws://` 或 `wss://`。 */
   readonly wakeUrl?: string
   /**
@@ -140,6 +147,7 @@ export function parseConsoleArgs(
   let hostname = DEFAULT_CONSOLE_HOSTNAME
   let registryUrl = DEFAULT_CONSOLE_REGISTRY_URL
   let auditPath = auditTrailPath()
+  let anchors: AuditWitnessSource | undefined
   let wakeUrl: string | undefined
   let trustCa: string | undefined
   let label: string | undefined
@@ -187,6 +195,10 @@ export function parseConsoleArgs(
         throw new Error('--trust-ca must be an absolute path')
       }
       trustCa = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--anchors' || arg?.startsWith('--anchors=')) {
+      const parsed = residentOptionValue(args, index, '--anchors')
+      anchors = parseAuditWitnessSource(parsed.value, '--anchors')
       index = parsed.next
     } else if (arg === '--wake-url' || arg?.startsWith('--wake-url=')) {
       const parsed = residentOptionValue(args, index, '--wake-url')
@@ -283,6 +295,7 @@ export function parseConsoleArgs(
     hostname,
     registryUrl,
     auditPath,
+    ...(anchors === undefined ? {} : { anchors }),
     ...(wakeUrl === undefined ? {} : { wakeUrl }),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
@@ -344,6 +357,8 @@ Options (each accepts both --name value and --name=value):
                            unknowns makes "no certificates yet" and "every
                            certificate is broken" look the same. Read only —
                            this console verifies, never signs.
+  --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
+                           endpoint. Without this, the trail is 未见证.
   --wake-url <ws url>      Wake target, a node's inbound WebSocket. The wake
                            face turns on only when this is given AND
                            ${PSK_ENV_VAR} holds a usable key.
@@ -391,6 +406,8 @@ Environment:
   ${VIEW_TOKEN_ENV_VAR}
   ${ADMIN_TOKEN_ENV_VAR}
                            The view and admin tokens, entrance 2 above.
+  ${WITNESS_READ_TOKEN_ENV_VAR}
+                           Read-only token for a remote --anchors endpoint.
   OCC_CONFIG_DIR           Config root the default audit trail and transcript
                            paths are derived from.
 `

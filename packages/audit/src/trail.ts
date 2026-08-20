@@ -18,12 +18,11 @@
  *    hash of the previous one, so changing, removing or reordering any line
  *    breaks the chain from that point on and {@link readTrail} reports the
  *    first break by sequence number.
- * 3. **An outside edit is prevented** — **not** enforced, and this file will not
- *    claim it. An operator with write access to the file can rewrite it and
- *    recompute the chain; stopping that needs an append-only filesystem
- *    attribute, a WORM mount, or a witness outside the machine, none of which
- *    M0 has. Charter N-3's honesty about the crypto applies here too: say what
- *    the mechanism buys, not what it sounds like.
+ * 3. **An outside edit is prevented** — **not** enforced. An operator with
+ *    write access can still rewrite the file and recompute the chain, but an
+ *    off-host witness detects that rewrite once the affected prefix is
+ *    anchored. The exception is the anchoring window; its boundary and
+ *    deployment conditions live in `docs/dev/audit-witness.md` §7.
  *
  * Same file discipline as `@qianmo/sandbox`'s audit — 0700 directory, 0600
  * file, `fsync` per record — because a trail that loses its last lines in a

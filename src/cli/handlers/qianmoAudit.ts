@@ -26,8 +26,17 @@ import {
   reconstructChain,
   type AuditRecord,
 } from '@qianmo/audit'
+import { verifyAuditWitness } from '@qianmo/witness'
 import { invokedBinName } from '../../constants/brand.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import {
+  parseAuditWitnessSource,
+  readAuditWitnessAnchors,
+  WITNESS_READ_TOKEN_ENV_VAR,
+  witnessNodeOf,
+  type AuditWitnessSource,
+} from '../../services/qianmo/auditWitness.js'
+import { readNodePublicKey } from '../../services/qianmo/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /**
@@ -48,6 +57,7 @@ interface QianmoAuditConfig {
   readonly to?: number
   readonly json: boolean
   readonly verify: boolean
+  readonly witness?: AuditWitnessSource
   readonly limit: number
 }
 
@@ -82,7 +92,7 @@ export function isQianmoAuditHelpRequest(args: readonly string[]): boolean {
  *
  * 这条命令没有一份对应的选项表文档，所以这里是唯一的自助入口。两件不看源码就
  * 会踩的事必须写在这里：**至少要给一个查询条件**（否则报错而不是打印整条链），
- * 以及 `--verify` 在链断时**退出码 1**——那正是它能进 cron 的原因。
+ * 以及 `--verify` 在链断或锚点不符时**退出码 1**——那正是它能进 cron 的原因。
  */
 export const QIANMO_AUDIT_HELP_TEXT = `Usage: ${invokedBinName()} audit [options]
 
@@ -108,8 +118,10 @@ Options (each accepts both --name value and --name=value):
                            apply to --trace or --verify.
   --json                   Print JSON instead of one line per record.
   --verify                 Report the chain's integrity and exit 1 when it is
-                           broken, so the check can live in a cron job. Valid
-                           on its own.
+                           broken or its witness disagrees, so the check can
+                           live in a cron job. Valid on its own.
+  --witness <path|url>     Witness anchor directory (absolute) or HTTP(S)
+                           endpoint. Requires --verify.
   --path <file>            Trail file to read.
                            Default <config root>/qianmo/audit/trail.ndjson.
   -h, --help               Print this and exit.
@@ -125,6 +137,8 @@ Environment:
                            also selects which trail the default path names.
                            Unlike the other Qianmo commands this one does not
                            require "qianmo".
+  ${WITNESS_READ_TOKEN_ENV_VAR}
+                           Read-only token for a remote --witness endpoint.
 `
 
 export function parseQianmoAuditArgs(
@@ -138,6 +152,7 @@ export function parseQianmoAuditArgs(
   let to: number | undefined
   let json = false
   let verify = false
+  let witness: AuditWitnessSource | undefined
   let limit = DEFAULT_AUDIT_LIMIT
 
   for (let index = 0; index < args.length; index++) {
@@ -178,6 +193,10 @@ export function parseQianmoAuditArgs(
       json = true
     } else if (arg === '--verify') {
       verify = true
+    } else if (arg === '--witness' || arg?.startsWith('--witness=')) {
+      const parsed = residentOptionValue(args, index, '--witness')
+      witness = parseAuditWitnessSource(parsed.value, '--witness')
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -188,6 +207,9 @@ export function parseQianmoAuditArgs(
     }
   }
 
+  if (witness !== undefined && !verify) {
+    throw new Error('--witness requires --verify')
+  }
   if (
     !verify &&
     trace === undefined &&
@@ -202,7 +224,6 @@ export function parseQianmoAuditArgs(
       'audit needs at least one of --trace / --agent / --task / --from / --to, or --verify',
     )
   }
-
   return {
     path,
     ...(trace === undefined ? {} : { trace }),
@@ -212,6 +233,7 @@ export function parseQianmoAuditArgs(
     ...(to === undefined ? {} : { to }),
     json,
     verify,
+    ...(witness === undefined ? {} : { witness }),
     limit,
   }
 }
@@ -228,7 +250,7 @@ function formatRecord(record: AuditRecord): string {
   )
 }
 
-export function runQianmoAudit(args: readonly string[]): void {
+export async function runQianmoAudit(args: readonly string[]): Promise<void> {
   // 帮助排在最前面，在任何解析与磁盘读取之前：问「这个命令怎么用」的人恰恰是
   // 还不知道要给哪个查询条件的那个人，而不给条件正是这个解析器会抛的第一件事。
   if (isQianmoAuditHelpRequest(args)) {
@@ -239,16 +261,21 @@ export function runQianmoAudit(args: readonly string[]): void {
   const { records, issues, intact } = readTrail(config.path)
 
   if (config.verify) {
+    const witness =
+      config.witness === undefined
+        ? undefined
+        : await verifyConfiguredWitness(config.path, records, config.witness)
     const summary = {
       path: config.path,
       records: records.length,
       intact,
       issues,
+      ...(witness === undefined ? {} : { witness }),
     }
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`)
     // A broken chain is a finding, and a command that reported it with exit 0
     // would be a command nobody could put in a cron job.
-    process.exitCode = intact ? 0 : 1
+    process.exitCode = intact && witness?.tampered !== true ? 0 : 1
     return
   }
 
@@ -292,4 +319,29 @@ export function runQianmoAudit(args: readonly string[]): void {
     return
   }
   process.stdout.write(`${matched.map(formatRecord).join('\n')}\n`)
+}
+
+/** Verify only with an identity already established outside the anchor source. */
+async function verifyConfiguredWitness(
+  trailPath: string,
+  records: readonly AuditRecord[],
+  source: AuditWitnessSource,
+) {
+  const node = witnessNodeOf(records)
+  if (node === null) {
+    throw new Error(
+      'cannot verify an empty audit trail without a node identity',
+    )
+  }
+  const publicKey = readNodePublicKey(node)
+  if (publicKey === null) {
+    throw new Error(
+      `no established public key for node ${node}; verify from that node's config root`,
+    )
+  }
+  return verifyAuditWitness({
+    trailPath,
+    anchors: await readAuditWitnessAnchors(source, node),
+    publicKey,
+  })
 }

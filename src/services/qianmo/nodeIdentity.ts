@@ -148,6 +148,22 @@ export function loadOrCreateNodeKeys(node: string): NodeKeyPair {
 }
 
 /**
+ * Read a node's already-established public key without ever creating or
+ * replacing an identity. Verification must not turn a missing identity into a
+ * new trust root.
+ */
+export function readNodePublicKey(node: string): string | null {
+  try {
+    return (
+      parseStored(readFileSync(nodeIdentityPath(node), 'utf8'), node)
+        ?.publicKey ?? null
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
  * Parse `--trust node=publicKey` pairs into directory entries.
  *
  * Explicit and repeatable, with no trust-on-first-use anywhere behind it:

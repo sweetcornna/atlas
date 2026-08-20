@@ -20,7 +20,7 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     .description('Inspect the Qianmo audit trail')
     .action(async () => {
       const { runQianmoAudit } = await import('src/cli/handlers/qianmoAudit.js');
-      runQianmoAudit(process.argv.slice(3));
+      await runQianmoAudit(process.argv.slice(3));
     });
 
   program

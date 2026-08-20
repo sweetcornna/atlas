@@ -32,7 +32,7 @@ import { attr, escapeHtml } from './escape.js'
 import type { ConsoleRole } from '../auth.js'
 import type { ConsoleFailure } from '../deps.js'
 
-export type Tone = 'ok' | 'warn' | 'bad' | 'muted'
+export type Tone = 'ok' | 'warn' | 'bad' | 'critical' | 'muted'
 
 /** The Lucide shapes this console draws with. Paths, not a font, not a sprite. */
 const ICON_PATHS: Readonly<Record<string, string>> = {

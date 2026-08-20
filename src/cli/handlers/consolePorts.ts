@@ -32,6 +32,7 @@ import {
   type TrailQuery,
   type TrailReadResult,
 } from '@qianmo/audit'
+import { verifyAuditWitness } from '@qianmo/witness'
 import type {
   AuditFilter,
   AuditPort,
@@ -53,6 +54,11 @@ import { verifyRevocationList } from '../../services/qianmo/ca/revocationList.js
 import { LIMITS, assertAddress } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
+import {
+  readAuditWitnessAnchors,
+  witnessNodeOf,
+  type AuditWitnessSource,
+} from '../../services/qianmo/auditWitness.js'
 import { executeResidentWake } from './residentWake.js'
 
 function fail<T>(
@@ -307,6 +313,12 @@ const AUDIT_OUTCOMES: ReadonlySet<string> = new Set([
 interface AuditPortOptions {
   /** 审计链文件的绝对路径。 */
   readonly path: string
+  /** Absent until the console is given `--anchors`. */
+  readonly witness?: AuditWitnessSource
+  /** The registry owns published public keys; this port never learns one. */
+  readonly publicKeyOf?: (node: string) => Promise<ConsoleResult<string>>
+  /** Optional only for direct callers; production reads the environment. */
+  readonly witnessReadToken?: string
 }
 
 function clampLimit(raw: number | undefined): number {
@@ -366,6 +378,41 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       if (!loaded.ok) return loaded
       const { records, issues, intact } = loaded.value
 
+      let witness:
+        | { readonly tampered: boolean; readonly stale: boolean }
+        | undefined
+      if (options.witness !== undefined) {
+        try {
+          const node = witnessNodeOf(records)
+          if (node === null) {
+            // A new trail cannot have an anchor yet. Keep the configured-but-
+            // empty case visibly distinct from the green integrity state.
+            witness = { tampered: false, stale: true }
+          } else if (options.publicKeyOf === undefined) {
+            return fail('invalid', '见证验证没有节点公钥来源')
+          } else {
+            const publicKey = await options.publicKeyOf(node)
+            if (!publicKey.ok) return publicKey
+            const anchors = await readAuditWitnessAnchors(
+              options.witness,
+              node,
+              options.witnessReadToken,
+            )
+            const verification = verifyAuditWitness({
+              trailPath: options.path,
+              anchors,
+              publicKey: publicKey.value,
+            })
+            witness = {
+              tampered: verification.tampered,
+              stale: verification.stale,
+            }
+          }
+        } catch (error) {
+          return fail('unreachable', `见证端点不可达：${messageOf(error)}`)
+        }
+      }
+
       const query: TrailQuery = {
         ...(source === undefined || source === ''
           ? {}
@@ -399,6 +446,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
           issueCount: issues.length,
           // 过滤前的总数，页面据此说「共 M 条中的 N 条」。
           total: records.length,
+          ...(witness === undefined ? {} : { witness }),
         },
       }
     },

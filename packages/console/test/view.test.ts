@@ -83,6 +83,7 @@ function page(over: Partial<AuditPage> = {}): AuditPage {
     intact: true,
     issueCount: 0,
     total: 1,
+    witness: { tampered: false, stale: false },
     ...over,
   }
 }
@@ -642,6 +643,24 @@ describe('renderAudit', () => {
     expect(html).toContain('<span class="tone-ok">完整</span>')
   })
 
+  test('an intact trail without configured anchors is explicitly unwitnessed', () => {
+    const html = renderAudit(page({ witness: undefined }), null, NO_FILTER)
+    expect(html).toContain('<span class="tone-muted">未见证</span>')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+    expect(html).not.toContain('audit-integrity')
+  })
+
+  test('a self-consistent chain with a mismatching anchor is never shown complete', () => {
+    const html = renderAudit(
+      page({ witness: { tampered: true, stale: false } }),
+      null,
+      NO_FILTER,
+    )
+    expect(html).toContain('<span class="tone-critical">锚点不符</span>')
+    expect(html).toContain('class="bar bar-critical"')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+  })
+
   test('the rail states the trail size and only names what is hidden', () => {
     const unfiltered = renderAudit(page(), null, NO_FILTER)
     expect(unfiltered).toContain('<span class="total">1</span>')
@@ -1191,6 +1210,14 @@ describe('renderPage', () => {
       ),
     })
     expect(html).toContain('<span class="tag tag-accent">断裂 4</span>')
+  })
+
+  test('the overview repeats the unwitnessed state instead of inferring complete', () => {
+    const html = build({
+      audit: renderAudit(page({ witness: undefined }), null, NO_FILTER),
+    })
+    expect(html).toContain('<span class="tag tag-neutral">未见证</span>')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
   })
 
   test('the label is escaped like any other value', () => {

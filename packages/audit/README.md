@@ -80,7 +80,7 @@ flowchart TB
 
 | # | 不变式 | 改坏会怎样 | 哪个测试钉住 |
 | --- | --- | --- | --- |
-| 1 | **「不可改」是三句话，只认前两句**：① **写入方改不了**（`O_APPEND \| O_NOFOLLOW` + 类里没有任何 seek / truncate / delete 方法）；② **外部改动可检测**（哈希链，报出第一处断点的 `seq`）；③ **外部改动无法阻止**——有文件写权限的人可以整篇重写并重算哈希 | 把第三句也说出去，就是把「可检测」当成「不可篡改」卖；挡住它需要 append-only 挂载或机外见证，M0 两样都没有。**第三句在测试里有一条专门的用例**，免得有人读完套件以为文件是不可变的 | `test/trail.test.ts`：`claim 1 — the writer has no method that modifies` / `claim 1 — records are only ever appended, never replaced` / `claim 2 — editing a line breaks the chain, and the break is located` / `claim 2 — deleting a line is caught too` / **`claim 3 — a full rewrite that recomputes the chain is NOT detected`** |
+| 1 | **「不可改」是三句话**：① **写入方改不了**（`O_APPEND \| O_NOFOLLOW` + 类里没有任何 seek / truncate / delete 方法）；② **外部改动可检测**（哈希链，报出第一处断点的 `seq`）；③ **外部改动无法阻止，但一定被检测到（锚定窗口内除外）** | 第三句不是「不可篡改」：机外见证让已锚定前缀的整篇重写可检测，窗口内仍是已知边界。完整边界只见 [`audit-witness.md`](../../docs/dev/audit-witness.md) §7；本表不复制。 | `test/trail.test.ts`：`claim 1 — the writer has no method that modifies` / `claim 1 — records are only ever appended, never replaced` / `claim 2 — editing a line breaks the chain, and the break is located` / `claim 2 — deleting a line is caught too` / **`claim 3 — a full rewrite that recomputes the chain is NOT detected`**；`packages/witness/src/__tests__/witness.test.ts`：变体 A / D1 |
 | 2 | **重启续链**：新进程从盘上最后一条接着写 `seq` 与 `prev` | 每次重启都留下一个「长得跟篡改一模一样」的断点，而一个天天喊狼来了的完整性检查没人会读 | `test/trail.test.ts`：`a restart continues the chain instead of starting a new one` / `a crash mid-write is a torn tail, not tampering` |
 | 3 | **还原链按 `seq` 排序，不按时间戳；且从不按 `outcome` 过滤** | 两个节点的钟不一致，按时间排会把 ack 排到它回应的消息前面；只显示成功的链，等于用「能跑通的那部分」回答「发生了什么」 | `test/trail.test.ts`：`ordered by seq, not by timestamp` / `includes the dropped and the refused, not just what worked` / `outcome filters exist but the chain reconstruction never uses them` |
 | 4 | **按 trace-id 段匹配，不是整条 traceparent** | parent-id 每跳都变（这是设计），拿整条 header 去匹配只会返回链上的**一跳**，而且看起来像成功了 | `test/trail.test.ts`：`matches on the trace-id segment, not the whole traceparent` |
@@ -100,7 +100,7 @@ flowchart TB
 
 | 事项 | 一行摘要 | 指针 |
 | --- | --- | --- |
-| 无法阻止有写权限者整篇重写 | 需要 append-only 挂载或机外见证，M0 两样都没有；这是上表第 1 条的第三句 | `src/trail.ts` 顶部注释「3.」 |
+| 无法阻止有写权限者整篇重写 | 无法阻止，但已锚定前缀的改写一定被检测到；锚定窗口内除外。边界只见 [`audit-witness.md`](../../docs/dev/audit-witness.md) §7 | `src/trail.ts` 顶部注释「3.」 |
 | 不带消息体 | 记录只有 id / 错误码 / 计数；`formatChain` 也不加——support 工程师把链粘进工单前不该先做一次脱敏 | `src/cli/handlers/qianmoAudit.ts` 顶部「What it never prints」 |
 | `occ audit` 不带条件不给查 | 这份文件永远增长，默认全量打印是它能做的最没用的事 | `src/cli/handlers/qianmoAudit.ts` 参数校验 |
 | 无轮转、无归档、无外部日志系统对接 | M0 只有一份不断增长的本地文件 | roadmap P7.2 交付物 |
