@@ -15,9 +15,14 @@
 import {
   MessageType,
   createMessage,
+  parseAddress,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { TransportClient, type TransportEndpoint } from '@qianmo/transport'
+import {
+  TransportClient,
+  type HandshakeIdentity,
+  type TransportEndpoint,
+} from '@qianmo/transport'
 import { TunnelAuditLog, TunnelEventType } from './contracts.js'
 
 export interface TunnelClientOptions {
@@ -29,6 +34,23 @@ export interface TunnelClientOptions {
   readonly lender: string
   /** The token the lender minted for this lease, presented on every message. */
   readonly capability?: string
+  /**
+   * Sign this borrower's half of the tunnel handshake and check the lender's
+   * half back (key-distribution.md §7.1 / §7.1.1).
+   *
+   * The peer this checks against is the **lender's node segment**, taken from
+   * {@link TunnelClientOptions.lender} rather than from the endpoint: the
+   * endpoint is what a negotiated offer said to dial, and §11 T-B′ is exactly
+   * the case where that string was tampered with. Looking the key up under
+   * the node the borrower was *lent* capacity by is what makes a redirected
+   * offer unable to answer.
+   *
+   * Optional because a tunnel is short-lived and its authorization already
+   * rides on {@link TunnelClientOptions.capability} — a lease token the
+   * lender minted and verifies per message. Signing adds the connection-level
+   * half of that; it does not replace it.
+   */
+  readonly signing?: HandshakeIdentity
   readonly audit: TunnelAuditLog
   readonly now?: () => number
 }
@@ -51,11 +73,19 @@ export class TunnelClient {
   }
 
   async connect(timeoutMs = 5_000): Promise<void> {
+    // The lender is an address (`qianmo://<node>/<agent>`); the handshake
+    // names nodes. An unparseable lender leaves both fields off rather than
+    // guessing — `TransportClient` refuses `signing` without `peerNode`, and
+    // a guess here would be a guess about whose signature to accept.
+    const lenderNode = parseAddress(this.#options.lender)?.node
+    const signing = this.#options.signing
     const client = new TransportClient({
       endpoint: this.#options.endpoint,
       node: this.#options.node,
       psk: this.#options.psk,
       keepAliveIntervalMs: 0,
+      ...(lenderNode === undefined ? {} : { peerNode: lenderNode }),
+      ...(signing === undefined || lenderNode === undefined ? {} : { signing }),
       // See the module header: a tunnel does not come back.
       backoff: { giveUpAfterMs: 0 },
     })

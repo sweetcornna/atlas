@@ -69,6 +69,7 @@ import { type QianmoMessage, destinationNode } from '@qianmo/protocol'
 import {
   type BackoffOptions,
   type ClientTlsOptions,
+  type HandshakeIdentity,
   type InboundContext,
   TransportClient,
   type TransportClientOptions,
@@ -205,6 +206,23 @@ export interface TransportLinksOptions {
   readonly onReply?: LinkReplyHandler
   readonly clock?: Clock
   readonly tls?: ClientTlsOptions
+  /**
+   * Sign this host's half of every outbound handshake, and check the node's
+   * half back (key-distribution.md §7.1 / §7.1.1).
+   *
+   * Applied **only to a target the directory can name** — `nodeOf` has to
+   * answer before there is anything to check a listener's signature against,
+   * and `TransportClient` refuses the pair at construction rather than
+   * signing into the void. A directory entry with no node segment therefore
+   * dials on the pre-shared key exactly as before, which is also §8.2 phase
+   * ①'s coexistence rule seen from the dialling side.
+   *
+   * The dialling side is the half that matters here: §11 T-B′'s second
+   * defence is a *dialer* checking that the endpoint it reached can sign as
+   * the node it meant to reach. A listener-only deployment has the guarantee
+   * for inbound traffic and nothing at all for its own forwards.
+   */
+  readonly signing?: HandshakeIdentity
   /**
    * Ceiling on one probe dial. Short on purpose: a probe that has not completed
    * a handshake in this long has told us what we asked — not yet — and the
@@ -396,7 +414,7 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
     sandboxName: string,
     receiveReplies: boolean,
   ): TransportClientOptions {
-    const { node, psk, tls, keepAliveIntervalMs, backoff, onReply } =
+    const { node, psk, tls, signing, keepAliveIntervalMs, backoff, onReply } =
       this.#options
     const peerNode = this.#directory.nodeOf(sandboxName)
     return {
@@ -404,6 +422,10 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
       node,
       psk,
       ...(peerNode === undefined ? {} : { peerNode }),
+      // Both or neither: `signing` without `peerNode` is refused by the
+      // client's constructor, and refusing it here instead would turn a
+      // directory gap into a crash on a forward rather than a PSK dial.
+      ...(signing === undefined || peerNode === undefined ? {} : { signing }),
       ...(receiveReplies && onReply !== undefined
         ? {
             onMessage: (message, context) =>

@@ -26,6 +26,30 @@ export function isResidentActivityPayload(
   return Object.keys(record).length === 1 && typeof record.active === 'boolean'
 }
 
+/**
+ * The node's idle/active telemetry link to the host that keeps its sandbox
+ * from being frozen.
+ *
+ * ## Why this dial is **not** signed (key-distribution.md §7.1.1)
+ *
+ * Every other outbound `TransportClient` in this tree gained a `signing`
+ * identity in P12.4. This one deliberately did not, and the reason is that
+ * there is no second node to check a signature against:
+ * `startResidentActivityServer` (`@qianmo/activator`) is a per-node listener
+ * on the **host** side, and it authenticates by requiring that the dialer,
+ * the sender address and the destination address all be this very node
+ * (`context.peerNode !== options.node` is a refusal there). It has no
+ * Ed25519 identity of its own — to counter-sign a ready frame under this
+ * node's segment it would have to hold this node's *private* key, which is
+ * precisely the thing `nodeIdentity.ts` exists to keep on one machine.
+ *
+ * §7.1.1's guarantee is a statement about two distinct node identities; here
+ * there is one, so the mutual half cannot be constructed rather than merely
+ * being unimplemented. `TransportClient` says the same thing from its side by
+ * refusing `signing` without a `peerNode`, and there is no honest `peerNode`
+ * to give it. The link is loopback or a unix socket in every deployed shape,
+ * and its whole payload is one boolean.
+ */
 export class ResidentActivityReporter {
   readonly #client: TransportClient
   readonly #node: string
