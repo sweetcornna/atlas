@@ -91,7 +91,12 @@ export type CertificateDirectoryAuditSink = (
   event: CertificateDirectoryAuditEvent,
 ) => void
 
-export interface CertificateDirectoryOptions {
+/**
+ * Constructor options. Not exported for the same reason
+ * `NodeCertificateRequest` is not: every caller builds the object literal
+ * inline at `new CertificateDirectory({...})` and never names the type.
+ */
+interface CertificateDirectoryOptions {
   /** PEM root certificate — the one thing distributed out of band (§5.1). */
   readonly caCertificatePem: string
   /** `<node>=<publicKey>` pairs from `--trust`; always wins over the CA cache. */

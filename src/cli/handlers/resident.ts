@@ -19,6 +19,7 @@ import {
   remoteSnapshotWriter,
 } from '@qianmo/backup'
 import {
+  certificateDirectoryTrailSink,
   openAuditTrail,
   residentNotifyTrailSink,
   routerTrailSink,
@@ -42,6 +43,7 @@ import {
 import {
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
+  type CertificateDirectoryAuditSink,
 } from '../../services/qianmo/certificateDirectory.js'
 import {
   loadOrCreateNodeKeys,
@@ -734,10 +736,16 @@ interface MutablePublicKeyDirectory extends PublicKeyDirectory {
  * `CertificateDirectory`; `--trust` entries are handed to either one the same
  * way and, per §8.2 phase ①, always win on conflict with a CA-derived key —
  * `CertificateDirectory` enforces that itself, so there is nothing extra to
- * do here for that half of the coexistence rule.
+ * do here for that *precedence* half of the coexistence rule.
+ *
+ * The other half is the sink: §8.2 says the conflict is recorded, "不是静默
+ * 覆盖". `onAudit` is where that lands, and it is optional here only because
+ * the two static callers that build a directory to inspect it (tests) have no
+ * trail to write to — the running node always passes one.
  */
 export function buildPublicKeyDirectory(
   config: ResidentCliConfig,
+  onAudit?: CertificateDirectoryAuditSink,
 ): MutablePublicKeyDirectory {
   if (config.trustCa === undefined) {
     return new StaticPublicKeyDirectory(config.trusted)
@@ -748,6 +756,7 @@ export function buildPublicKeyDirectory(
     ...(config.registryUrl === undefined
       ? {}
       : { registryUrl: config.registryUrl }),
+    ...(onAudit === undefined ? {} : { onAudit }),
   })
 }
 
@@ -973,7 +982,19 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // would be a node any peer could impersonate.
   const keys = loadOrCreateNodeKeys(config.node)
   assertOwnCertificateAndKey(config, keys.publicKey)
-  const directory = buildPublicKeyDirectory(config)
+  // The durable trail (P7.2). Opened here rather than inside the node because
+  // this is the layer that owns paths, and because a trail is per *process*:
+  // two residents on one machine each continue their own file.
+  //
+  // Ahead of the directory rather than beside the node, because the very first
+  // refresh below can already produce a §8.2 conflict record, and a trail
+  // opened after it would lose exactly the line that explains why this node
+  // resolves a peer's key differently from the registry.
+  const trail = openAuditTrail()
+  const directory = buildPublicKeyDirectory(
+    config,
+    certificateDirectoryTrailSink(trail, config.node),
+  )
   if (directory instanceof CertificateDirectory) {
     // Awaited, once, before anything listens: `publicKeyOf` is synchronous by
     // contract, so a directory that has not converged yet answers `null` — and
@@ -1031,11 +1052,6 @@ export async function runResident(args: readonly string[]): Promise<void> {
             ? {}
             : { intervalMs: config.backupIntervalMs }),
         }
-
-  // The durable trail (P7.2). Opened here rather than inside the node because
-  // this is the layer that owns paths, and because a trail is per *process*:
-  // two residents on one machine each continue their own file.
-  const trail = openAuditTrail()
 
   const resident = new QianmoResident({
     node: config.node,

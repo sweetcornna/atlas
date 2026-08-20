@@ -22,9 +22,11 @@
 
 import { invokedBinName } from '../../constants/brand.js'
 import {
+  CERT_REQUEST_OPENSSL_BIN_ENV_VAR,
   generateNodeCertificateRequest,
   CertRequestOpensslError,
 } from '../../services/qianmo/certRequest.js'
+import { nodeTlsCertificatePath } from '../../services/qianmo/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /** `--help` anywhere means help, matching `ca`/`audit` (whole-token). */
@@ -64,7 +66,7 @@ request:
 
 Environment:
 
-  QIANMO_CERT_OPENSSL_BIN   openssl executable, when the one on PATH is not
+  ${CERT_REQUEST_OPENSSL_BIN_ENV_VAR}   openssl executable, when the one on PATH is not
                             OpenSSL (macOS ships LibreSSL under that name).
   OCC_CONFIG_DIR            Config root the node identity and the written
                             CSR/key are derived from.
@@ -126,7 +128,15 @@ function runRequest(args: readonly string[]): void {
       `--pop ${result.popSignature} --nodekey ${result.publicKey} ${hostFlags}\n\n` +
       'The CSR file travels however is convenient (it is not secret); the ' +
       '--pop value above is the proof of possession this command computed ' +
-      'and must travel with it unmodified (§4.3).\n',
+      'and must travel with it unmodified (§4.3).\n\n' +
+      // Where the answer goes, named rather than described: §6.1's row 2
+      // ends with "交付给该节点", and the operator carrying that file back is
+      // the person reading this. The path is derived, never typed twice —
+      // `--cert` accepts any path, but this is the one the identity
+      // directory expects, next to the key and the CSR above.
+      'Copy the certificate the CA hands back to:\n\n' +
+      `  ${nodeTlsCertificatePath(config.node)}\n\n` +
+      `and start the node with --cert <that path> --key ${result.keyPath}.\n`,
   )
 }
 

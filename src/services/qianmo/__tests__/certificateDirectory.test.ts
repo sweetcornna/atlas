@@ -423,3 +423,61 @@ describe('CertificateDirectory — four negative cases (DoD #5)', () => {
     },
   )
 })
+
+/**
+ * §8.2 phase ①'s second half. The precedence half ("显式 `--trust` 覆盖 CA
+ * 派生条目") already has coverage above; what is asserted here is that the
+ * override is **on the record** — the design refuses both a silent overwrite
+ * and a startup failure, which leaves exactly one option, and an option
+ * nobody wired is an option that does not exist.
+ */
+describe('CertificateDirectory — the --trust override is audited (§8.2)', () => {
+  itNeedsOpenssl(
+    'a --trust entry that disagrees with the CA-derived key records one event',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      const operatorKey = generateNodeKeyPair().publicKey
+      const events: { node: string; reason: string }[] = []
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [['node-a', operatorKey]],
+        onAudit: event => events.push({ ...event }),
+      })
+      await directory.refresh()
+
+      // Precedence: the operator's entry wins, and the node keeps running.
+      expect(directory.publicKeyOf('node-a')).toBe(operatorKey)
+      expect(directory.publicKeyOf('node-a')).not.toBe(a.keys.publicKey)
+      // Record: exactly one, naming the node and pointing at the rule.
+      expect(events).toHaveLength(1)
+      expect(events[0]?.node).toBe('node-a')
+      expect(events[0]?.reason).toContain('§8.2')
+    },
+  )
+
+  itNeedsOpenssl(
+    'agreement is not a conflict: the same key from both sides is silent',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      const events: unknown[] = []
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        // §8.2 phase ② calls this one "多余的" — redundant, not conflicting.
+        trusted: [['node-a', a.keys.publicKey]],
+        onAudit: event => events.push(event),
+      })
+      await directory.refresh()
+
+      expect(directory.publicKeyOf('node-a')).toBe(a.keys.publicKey)
+      expect(events).toHaveLength(0)
+    },
+  )
+})

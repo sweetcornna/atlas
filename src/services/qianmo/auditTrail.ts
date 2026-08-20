@@ -60,6 +60,10 @@ import {
   type ResidentNotifyAuditSink,
   type ResidentNotifyEvent,
 } from '@qianmo/resident'
+import type {
+  CertificateDirectoryAuditEvent,
+  CertificateDirectoryAuditSink,
+} from './certificateDirectory.js'
 import { occConfigPath } from '../../config/paths.js'
 
 /** Default location of this node's trail, derived from the config root. */
@@ -369,5 +373,41 @@ export function residentNotifyTrailSink(
         ['peer'],
       ),
     )
+  }
+}
+
+/**
+ * The `--trust` / CA-derived key conflict, on the record (§8.2 phase ①).
+ *
+ * §8.2's coexistence rule has two halves and the second one is the reason
+ * this sink exists: an explicit `--trust` entry wins over a CA-derived key
+ * for the same node, **and it is audited** — "不是静默覆盖，也不是启动失败".
+ * Starting up would turn a routine certificate rotation into an outage;
+ * saying nothing would leave the one state where two authorities disagree
+ * about a node's key looking exactly like the state where they agree.
+ *
+ * `outcome` is `dropped` rather than `refused`: nothing was refused — the
+ * node kept working, and what happened to the CA-derived key is that it was
+ * discarded in favour of the operator's own entry. `refused` would send a
+ * reader looking for a rejected message that does not exist.
+ *
+ * Filed under {@link AuditSource.Capability} because the directory this
+ * concerns is the one the capability gate reads: the conflict's whole
+ * consequence is which key a peer's tokens get verified against.
+ */
+export function certificateDirectoryTrailSink(
+  trail: AuditTrail,
+  node: string,
+): CertificateDirectoryAuditSink {
+  return (event: CertificateDirectoryAuditEvent): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'certificate_directory_conflict',
+      outcome: 'dropped',
+      node,
+      peer: event.node,
+      detail: { reason: event.reason },
+    })
   }
 }

@@ -99,8 +99,15 @@ function runOpenssl(
   return result.stdout ?? ''
 }
 
-/** What `generateNodeCertificateRequest` produced, ready for handoff to the CA. */
-export interface NodeCertificateRequest {
+/**
+ * What `generateNodeCertificateRequest` produced, ready for handoff to the CA.
+ *
+ * Deliberately not exported: it is this module's return shape, and every
+ * consumer reaches it through the function rather than by name. Exporting a
+ * type nobody imports is the dead surface `check:unused` ratchets on, and the
+ * same reasoning `ca/` applies to its own option interfaces.
+ */
+interface NodeCertificateRequest {
   /** Where the EC private key was written. Never handed to anyone. */
   readonly keyPath: string
   /** Where the CSR was written, for the operator to attach to `qm ca issue`. */
