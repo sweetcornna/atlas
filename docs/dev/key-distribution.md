@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.1**（2026-08-20：P12.1~P12.4 机制实现已收口；K-5 仍 1/5，K-11/K-12 未完成） |
+| 文档版本 | **v1.1**（2026-08-17：K-10 评审通过；K-13 按 §8.3 三条退役信号量执行；K-14 接受 T-E 单点及 90 天 / 30 天。2026-08-20：P12.1~P12.4 机制实现已收口；K-5 仍 1/5，K-11/K-12 未完成） |
 | 日期 | 2026-08-20 |
 | 覆盖任务包 | `retro-m0.md` §7.3 **P11.2 生产级加密与密钥分发的设计（只设计，不实现）** |
 | 依据指针 | `packages/capability/src/policy.ts:16-34`（`OPEN_POLICY` 的收敛条件原文）、`packages/transport/src/handshake.ts:8-28`（PSK 握手的自陈缺陷）、`src/services/qianmo/nodeIdentity.ts:121-139`（反 TOFU 立场）、`docs/dev/protocol.md` §10.1、`docs/dev/a2a-gap.md` G-27、章程 §2.2 N-3 与 §3.3 C-5、`docs/dev/console.md` §4 / §7.2 / §8.2、`docs/dev/demo-env.md` §2.4 / §2.5 |
