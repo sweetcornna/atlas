@@ -1,6 +1,8 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
+import { createPrivateKey } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { invokedBinName } from '../../constants/brand.js'
@@ -26,9 +28,14 @@ import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
   StaticPublicKeyDirectory,
+  type PublicKeyDirectory,
 } from '@qianmo/capability'
 import { isValidSegment } from '@qianmo/protocol'
 import { PSK_ENV_VAR, pskFromEnv } from '@qianmo/transport'
+import {
+  CertificateDirectory,
+  assertOwnCertificateMatchesIdentity,
+} from '../../services/qianmo/certificateDirectory.js'
 import {
   loadOrCreateNodeKeys,
   parseTrustedKey,
@@ -191,7 +198,7 @@ async function loadHeapStats(): Promise<() => HeapStatsSnapshot> {
 /** `--mem-sample` 的默认采样间隔：与 P7.3 的 24 h 长跑节拍一致。 */
 export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
 
-interface ResidentCliConfig {
+export interface ResidentCliConfig {
   readonly node: string
   readonly team: string
   readonly agents: readonly { agent: string; cwd: string }[]
@@ -207,6 +214,17 @@ interface ResidentCliConfig {
   readonly memIntervalMs?: number
   /** `<node>=<publicKey>` pairs this node will accept capabilities from. */
   readonly trusted: readonly (readonly [string, string])[]
+  /**
+   * Path to the CA root certificate (key-distribution.md §8.1's `--trust-ca`,
+   * §8.2 phase ①). When given, peer keys are resolved through a
+   * `CertificateDirectory` instead of only `StaticPublicKeyDirectory`;
+   * `--trust` entries continue to work and take priority on conflict.
+   */
+  readonly trustCa?: string
+  /** Path to this node's own certificate (§4.1's `<node>.tls.crt`). */
+  readonly cert?: string
+  /** Path to this node's own TLS private key (§4.1's `<node>.tls.key`). */
+  readonly key?: string
   /** Require `write-limited` for work, rather than admitting unsigned tasks. */
   readonly requireSignedTasks: boolean
   /** Base URL of the host-side backup service (P4.4). */
@@ -232,6 +250,9 @@ export function parseResidentArgs(
   let requireSignedTasks = false
   let backupUrl: string | undefined
   let backupIntervalMs: number | undefined
+  let trustCa: string | undefined
+  let cert: string | undefined
+  let key: string | undefined
   const trusted: Array<readonly [string, string]> = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
@@ -307,6 +328,27 @@ export function parseResidentArgs(
     } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
       const parsed = residentOptionValue(args, index, '--trust')
       trusted.push(parseTrustedKey(parsed.value))
+      index = parsed.next
+    } else if (arg === '--trust-ca' || arg?.startsWith('--trust-ca=')) {
+      const parsed = residentOptionValue(args, index, '--trust-ca')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--trust-ca must be an absolute path')
+      }
+      trustCa = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--cert' || arg?.startsWith('--cert=')) {
+      const parsed = residentOptionValue(args, index, '--cert')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--cert must be an absolute path')
+      }
+      cert = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--key' || arg?.startsWith('--key=')) {
+      const parsed = residentOptionValue(args, index, '--key')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--key must be an absolute path')
+      }
+      key = resolve(parsed.value)
       index = parsed.next
     } else if (arg === '--require-signed-tasks') {
       requireSignedTasks = true
@@ -398,6 +440,16 @@ export function parseResidentArgs(
   if (memIntervalMs !== undefined && memSample === undefined) {
     throw new Error('--mem-interval-ms requires --mem-sample')
   }
+  // A certificate names a public key; a key backs one. Either alone is
+  // almost certainly a copy-paste mistake, not a deliberate configuration —
+  // same reasoning as pairing `--activity-reconnect-factor` with
+  // `--activity-url`.
+  if (cert !== undefined && key === undefined) {
+    throw new Error('--cert requires --key')
+  }
+  if (key !== undefined && cert === undefined) {
+    throw new Error('--key requires --cert')
+  }
   return {
     node,
     team,
@@ -421,6 +473,9 @@ export function parseResidentArgs(
           memIntervalMs: memIntervalMs ?? DEFAULT_RESIDENT_MEM_INTERVAL_MS,
         }),
     trusted,
+    ...(trustCa === undefined ? {} : { trustCa }),
+    ...(cert === undefined ? {} : { cert }),
+    ...(key === undefined ? {} : { key }),
     requireSignedTasks,
     ...(backupUrl === undefined ? {} : { backupUrl }),
     ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
@@ -499,7 +554,26 @@ Authorization:
                            trust-on-first-use, so an issuer never named here
                            is refused. This node's own key is always trusted,
                            and its public half is the first line this command
-                           prints.
+                           prints. Still works with --trust-ca given (§8.2
+                           phase ①) and always wins on conflict.
+  --trust-ca <abs path>    PEM root certificate of the offline CA
+                           (key-distribution.md §5.1, produced by
+                           \`${invokedBinName()} ca init\`). Peer keys are then
+                           resolved through a certificate directory instead
+                           of only --trust: a certificate not signed by this
+                           root, expired, or on the revocation list is
+                           refused for that peer. An RL that has never been
+                           fetched or has gone stale degrades to exactly the
+                           --trust entries above, not to full-open or a dead
+                           node (§6.4).
+  --cert <abs path>        This node's own certificate. Checked at startup
+                           against this node's own identity key — a
+                           certificate naming a different node or a
+                           different key is refused before the node ever
+                           opens a listener (K-2). Requires --key.
+  --key <abs path>         This node's own TLS private key
+                           (\`${invokedBinName()} cert request\` writes one).
+                           Requires --cert.
   --require-signed-tasks   Refuse task requests that present no capability
                            token. The default admits them, because M0 has no
                            key distribution, while still verifying in full
@@ -553,6 +627,75 @@ Environment:
   OCC_CONFIG_DIR           Config root the node identity, the audit trail and
                            the session table are derived from.
 `
+
+/**
+ * Both directory implementations this command can build are mutable in the
+ * same way `--trust`'s "this node's own key is always trusted" line needs
+ * (`directory.put(config.node, keys.publicKey)` below) — a small local
+ * interface rather than importing `StaticPublicKeyDirectory`'s and
+ * `CertificateDirectory`'s concrete types side by side at every call site.
+ */
+interface MutablePublicKeyDirectory extends PublicKeyDirectory {
+  put(node: string, publicKey: string): void
+}
+
+/**
+ * `--trust-ca` replaces `StaticPublicKeyDirectory` with a
+ * `CertificateDirectory`; `--trust` entries are handed to either one the same
+ * way and, per §8.2 phase ①, always win on conflict with a CA-derived key —
+ * `CertificateDirectory` enforces that itself, so there is nothing extra to
+ * do here for that half of the coexistence rule.
+ */
+export function buildPublicKeyDirectory(
+  config: ResidentCliConfig,
+): MutablePublicKeyDirectory {
+  if (config.trustCa === undefined) {
+    return new StaticPublicKeyDirectory(config.trusted)
+  }
+  return new CertificateDirectory({
+    caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+    trusted: config.trusted,
+  })
+}
+
+/**
+ * `--cert`/`--key` startup self-check (K-2, one of the DoD's four negative
+ * cases). Neither flag is consumed for TLS yet — that is P12.3's mTLS
+ * wiring — but validating them now means a node with a mismatched or
+ * unusable certificate refuses to start instead of coming up looking healthy
+ * and failing mysteriously the day P12.3 lands.
+ */
+export function assertOwnCertificateAndKey(
+  config: ResidentCliConfig,
+  ownPublicKey: string,
+): void {
+  if (config.cert !== undefined) {
+    assertOwnCertificateMatchesIdentity(
+      readFileSync(config.cert, 'utf8'),
+      config.node,
+      ownPublicKey,
+    )
+  }
+  if (config.key !== undefined) {
+    let keyType: string | undefined
+    try {
+      keyType = createPrivateKey(
+        readFileSync(config.key, 'utf8'),
+      ).asymmetricKeyType
+    } catch (error) {
+      throw new Error(
+        `--key does not parse as a private key: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (keyType !== 'ec') {
+      // F-5: Bun refuses an Ed25519 TLS leaf outright, so the node's own key
+      // must be EC — same constraint `qm ca issue` enforces on the CSR.
+      throw new Error(
+        `--key must be an EC private key (F-5); this one is ${String(keyType)}`,
+      )
+    }
+  }
+}
 
 export async function runResident(args: readonly string[]): Promise<void> {
   // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
@@ -638,7 +781,8 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // registry by hand, and a node that quietly learned keys from its peers
   // would be a node any peer could impersonate.
   const keys = loadOrCreateNodeKeys(config.node)
-  const directory = new StaticPublicKeyDirectory(config.trusted)
+  assertOwnCertificateAndKey(config, keys.publicKey)
+  const directory = buildPublicKeyDirectory(config)
   // Its own key is always trusted: rule S-1 accepts `user-confirmed` only when
   // this node signed it, which means verifying its own signature.
   directory.put(config.node, keys.publicKey)
