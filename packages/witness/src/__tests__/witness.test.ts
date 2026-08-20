@@ -523,4 +523,29 @@ describe('§5 witness variants', () => {
     await expect(scheduler.tick()).resolves.toBeUndefined()
     expect(failures).toBe(2)
   })
+
+  test('coalesces concurrent ticks into one in-flight anchor attempt', async () => {
+    let release: (() => void) | undefined
+    let appends = 0
+    const scheduler = new AuditWitnessScheduler({
+      node: NODE,
+      trailPath: path,
+      keys,
+      writer: {
+        append: async () => {
+          appends += 1
+          await new Promise<void>(resolve => {
+            release = resolve
+          })
+        },
+      },
+      now: () => 10_000,
+    })
+    const first = scheduler.tick()
+    const second = scheduler.tick()
+    expect(appends).toBe(1)
+    release?.()
+    await Promise.all([first, second])
+    expect(appends).toBe(1)
+  })
 })
