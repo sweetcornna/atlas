@@ -265,6 +265,7 @@ const ROOT_COMMANDS = [
   'audit',
   'auth',
   'autonomy',
+  'ca',
   'console',
   'doctor',
   'import',

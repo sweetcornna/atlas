@@ -40,6 +40,14 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     });
 
   program
+    .command('ca')
+    .description('Run the offline Qianmo certificate authority')
+    .action(async () => {
+      const { runQianmoCa } = await import('src/cli/handlers/ca.js');
+      runQianmoCa(process.argv.slice(3));
+    });
+
+  program
     .command('watch')
     .description('Run the hub-side watch-job scheduler')
     .action(async () => {

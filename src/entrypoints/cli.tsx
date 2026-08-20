@@ -167,6 +167,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'ca') {
+    profileCheckpoint('cli_qianmo_ca_path');
+    const { runQianmoCa } = await import('../cli/handlers/ca.js');
+    runQianmoCa(args.slice(1));
+    return;
+  }
+
   if (args[0] === 'watch') {
     profileCheckpoint('cli_qianmo_watch_path');
     const { runWatch } = await import('../cli/handlers/watch.js');
