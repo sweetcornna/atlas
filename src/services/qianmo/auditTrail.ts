@@ -21,6 +21,7 @@
  */
 
 import { AuditSource, AuditTrail, type AuditInput } from '@qianmo/audit'
+import type { ShadowRefusal, ShadowRefusalSink } from '@qianmo/capability'
 import {
   RouterEventType,
   type RouterAuditEvent,
@@ -408,6 +409,51 @@ export function certificateDirectoryTrailSink(
       node,
       peer: event.node,
       detail: { reason: event.reason },
+    })
+  }
+}
+
+/**
+ * `--audit-signed-tasks`: what the enforcing policy **would** have refused
+ * (key-distribution.md §9.2 phase ①).
+ *
+ * `outcome` is `ok`, and that is not a compromise — the message went ahead.
+ * The phase's entire contract is that no message's fate changes, so a line
+ * that said `refused` would be a false statement about what this node did,
+ * and it would put the count into the same bucket an operator uses to find
+ * real refusals.
+ *
+ * The code the switch *would* have answered with rides in `detail` rather
+ * than in the record's own `code` field, for the same reason: `code` means
+ * "this message was answered with this error", and this one was not answered
+ * with anything.
+ *
+ * `kind` is what makes the phase countable — seven days of
+ * `capability_shadow_refusal` at zero is §9.2's exit criterion, and it is one
+ * `grep` on a file that already exists.
+ */
+export function capabilityShadowTrailSink(
+  trail: AuditTrail,
+  node: string,
+): ShadowRefusalSink {
+  return (refusal: ShadowRefusal): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'capability_shadow_refusal',
+      outcome: 'ok',
+      node,
+      peer: refusal.from,
+      traceId: refusal.traceId,
+      taskId: refusal.taskId,
+      msgId: refusal.msgId,
+      detail: {
+        type: refusal.type,
+        required: refusal.required,
+        presented: refusal.presented,
+        wouldRefuseWith: refusal.code,
+        reason: refusal.reason,
+      },
     })
   }
 }

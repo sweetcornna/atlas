@@ -29,6 +29,8 @@
 export {
   NodeCapabilities,
   type NodeCapabilitiesOptions,
+  type ShadowRefusal,
+  type ShadowRefusalSink,
 } from './gate.js'
 
 export {

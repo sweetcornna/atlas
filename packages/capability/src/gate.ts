@@ -28,6 +28,35 @@ import {
   type PublicKeyDirectory,
 } from './token.js'
 
+/**
+ * One message that the node **let through** and a stricter policy would not
+ * have — key-distribution.md §9.2 phase ①'s whole output.
+ *
+ * Every field is what the refusal would have said, not a summary of it: the
+ * value of running in observation mode is that "how many would this cost" is
+ * a number somebody can read every day, and a number nobody can trace back to
+ * a sender and a message type is a number nobody acts on.
+ */
+export interface ShadowRefusal {
+  /** The message type, as it travelled. */
+  readonly type: string
+  readonly from: string
+  readonly traceId: string
+  readonly taskId: string
+  readonly msgId: string
+  /** What the shadow policy asked for. */
+  readonly required: CapabilityLevel
+  /** What the message actually carried — usually `read`. */
+  readonly presented: CapabilityLevel
+  /** The error the enforcing policy would have answered with. */
+  readonly code: ProtocolErrorCode
+  /** Word for word what the real refusal's `reason` would have been. */
+  readonly reason: string
+}
+
+/** Where {@link ShadowRefusal}s go. Synchronous; see the class note on why. */
+export type ShadowRefusalSink = (refusal: ShadowRefusal) => void
+
 export interface NodeCapabilitiesOptions {
   /** This node's segment: the only `aud` it will accept, and its `iss`. */
   readonly node: string
@@ -37,6 +66,25 @@ export interface NodeCapabilitiesOptions {
   readonly nonces?: NonceStore
   /** Needed only to issue; verification never touches a private key. */
   readonly keys?: NodeKeyPair
+  /**
+   * Observation mode: a second policy evaluated **alongside** the real one,
+   * purely so that switching to it can be costed before it is switched to
+   * (§9.2 phase ①).
+   *
+   * The contract is one sentence and it is the whole feature: **no message's
+   * fate changes**. What this produces is a record, on the messages the real
+   * policy admitted and this one would not have. When the two policies agree
+   * — including the case where they are the same policy — it produces
+   * nothing at all, which is what makes the flag safe to leave on.
+   *
+   * Deliberately *not* the same switch as {@link NodeCapabilitiesOptions.policy}:
+   * "record what would happen" and "make it happen" are two decisions, and a
+   * single knob that does both cannot be used for the first without doing the
+   * second — which is the entire reason the phase exists.
+   */
+  readonly shadowPolicy?: CapabilityPolicy
+  /** Required for {@link NodeCapabilitiesOptions.shadowPolicy} to be observable. */
+  readonly onShadowRefusal?: ShadowRefusalSink
 }
 
 /** Verifies presented capabilities and applies the node's level policy. */
@@ -46,6 +94,8 @@ export class NodeCapabilities implements CapabilityGate {
   readonly nonces: NonceStore
   readonly #directory: PublicKeyDirectory
   readonly #keys: NodeKeyPair | undefined
+  readonly #shadowPolicy: CapabilityPolicy | undefined
+  readonly #onShadowRefusal: ShadowRefusalSink | undefined
 
   constructor(options: NodeCapabilitiesOptions) {
     this.node = options.node
@@ -53,6 +103,14 @@ export class NodeCapabilities implements CapabilityGate {
     this.nonces = options.nonces ?? new NonceStore()
     this.#directory = options.directory
     this.#keys = options.keys
+    // Both or neither: a shadow policy with nowhere to report is work done to
+    // produce nothing, and a sink with no policy can never fire. Refusing the
+    // half-configuration here means the flag either observes or is absent,
+    // with no third state that looks configured.
+    this.#shadowPolicy =
+      options.onShadowRefusal === undefined ? undefined : options.shadowPolicy
+    this.#onShadowRefusal =
+      options.shadowPolicy === undefined ? undefined : options.onShadowRefusal
   }
 
   /**
@@ -105,18 +163,70 @@ export class NodeCapabilities implements CapabilityGate {
     issuer: string | undefined,
   ): CapabilityDecision {
     if (satisfies(this.policy, message, level)) {
+      this.#observe(message, level)
       return {
         ok: true,
         level,
         ...(issuer === undefined ? {} : { issuer }),
       }
     }
-    const required = this.policy.requiredLevel(message)
-    const sender = parseAddress(message.from)
     return {
       ok: false,
       code: ProtocolErrorCode.E_CAP_INSUFFICIENT,
-      reason: `${message.type} from ${sender === null ? 'an unparseable sender' : sender.node} needs ${required}, presented ${level}`,
+      reason: insufficientReason(message, this.policy, level),
     }
   }
+
+  /**
+   * §9.2 phase ①, in one place and after the verdict is already decided.
+   *
+   * Placed on the *admitted* branch on purpose. A message the real policy
+   * already refused is not something the switch would change — it is refused
+   * either way, and the router has recorded it — so counting it here would
+   * inflate the one number the phase exists to produce.
+   *
+   * A throwing sink is not allowed to change the verdict: it is swallowed,
+   * because the alternative is an observation mode that can refuse traffic,
+   * which is the exact property this mode is defined by not having.
+   */
+  #observe(message: QianmoMessage, level: CapabilityLevel): void {
+    const shadow = this.#shadowPolicy
+    const sink = this.#onShadowRefusal
+    if (shadow === undefined || sink === undefined) return
+    if (satisfies(shadow, message, level)) return
+    try {
+      sink({
+        type: message.type,
+        from: message.from,
+        traceId: message.traceId,
+        taskId: message.taskId,
+        msgId: message.msgId,
+        required: shadow.requiredLevel(message),
+        presented: level,
+        code: ProtocolErrorCode.E_CAP_INSUFFICIENT,
+        reason: insufficientReason(message, shadow, level),
+      })
+    } catch {
+      // Nothing to do with it here, and nowhere honest to put it: this method
+      // has no verdict to fail.
+    }
+  }
+}
+
+/**
+ * The sentence a refusal carries, built once.
+ *
+ * Shared between the real refusal and the shadow record deliberately: the
+ * whole claim observation mode makes is "this is what you would have seen",
+ * and two independently worded versions of it stop being that the first time
+ * one of them is edited.
+ */
+function insufficientReason(
+  message: QianmoMessage,
+  policy: CapabilityPolicy,
+  level: CapabilityLevel,
+): string {
+  const required = policy.requiredLevel(message)
+  const sender = parseAddress(message.from)
+  return `${message.type} from ${sender === null ? 'an unparseable sender' : sender.node} needs ${required}, presented ${level}`
 }

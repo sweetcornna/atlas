@@ -47,6 +47,9 @@ describe('resident CLI configuration', () => {
       // that is presented).
       trusted: [],
       requireSignedTasks: false,
+      // Observation mode is off unless asked for, and it is a *second*
+      // switch rather than a mode of the first (§9.2 phase ①).
+      auditSignedTasks: false,
     })
     expect(() => parseResidentArgs(BASE, 'occ')).toThrow('OCC_IDENTITY=qianmo')
   })
@@ -367,6 +370,31 @@ describe('empty option values', () => {
 })
 
 describe('resident --help', () => {
+  test('observation mode is a second switch, not a mode of the first (§9.2 ①)', () => {
+    // 「拿指令进来」和「把数据发出去」是两件事，这条也一样：能不能用它把切换的
+    // 代价量出来，取决于它**不是**强制开关的一档。
+    const observing = parseResidentArgs(
+      [...BASE, '--audit-signed-tasks'],
+      'qianmo',
+    )
+    expect(observing.auditSignedTasks).toBe(true)
+    expect(observing.requireSignedTasks).toBe(false)
+
+    const enforcing = parseResidentArgs(
+      [...BASE, '--require-signed-tasks'],
+      'qianmo',
+    )
+    expect(enforcing.requireSignedTasks).toBe(true)
+    expect(enforcing.auditSignedTasks).toBe(false)
+
+    const both = parseResidentArgs(
+      [...BASE, '--require-signed-tasks', '--audit-signed-tasks'],
+      'qianmo',
+    )
+    expect(both.requireSignedTasks).toBe(true)
+    expect(both.auditSignedTasks).toBe(true)
+  })
+
   test('answers --help and -h wherever they appear on the line', () => {
     // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
     expect(isResidentHelpRequest(['--help'])).toBe(true)

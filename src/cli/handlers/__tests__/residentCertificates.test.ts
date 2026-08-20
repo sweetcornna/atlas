@@ -133,6 +133,7 @@ describe('buildPublicKeyDirectory', () => {
       agents: [],
       trusted: [['node-b', peer]],
       requireSignedTasks: false,
+      auditSignedTasks: false,
     })
     expect(directory).toBeInstanceOf(StaticPublicKeyDirectory)
     expect(directory.publicKeyOf('node-b')).toBe(peer)
@@ -151,6 +152,7 @@ describe('buildPublicKeyDirectory', () => {
         agents: [],
         trusted: [['node-b', peer]],
         requireSignedTasks: false,
+        auditSignedTasks: false,
         trustCa: caCertPath,
       })
       expect(directory).toBeInstanceOf(CertificateDirectory)
@@ -211,6 +213,7 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
           cert: certificatePath,
           key: ecKeyPath,
         },
@@ -229,6 +232,7 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
           cert: certificatePath,
           key: ecKeyPath,
         },
@@ -251,6 +255,7 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
           cert: certificatePath,
           key: ed25519KeyPath,
         },
@@ -270,6 +275,7 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
           cert: certificatePath,
           key: junkKeyPath,
         },
@@ -287,6 +293,7 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
         },
         generateNodeKeyPair().publicKey,
       ),
@@ -369,6 +376,7 @@ describe('buildHandshakeSigning', () => {
     agents: [],
     trusted: [],
     requireSignedTasks: false,
+    auditSignedTasks: false,
   } as const
 
   test('absent without the flag', () => {
@@ -462,6 +470,7 @@ describe('P12.3 node-side wiring', () => {
         agents: [],
         trusted: [],
         requireSignedTasks: false,
+        auditSignedTasks: false,
         cert: certificatePath,
         key: ecKeyPath,
         trustCa: caCertPath(otherCa),
@@ -487,6 +496,7 @@ describe('P12.3 node-side wiring', () => {
       agents: [],
       trusted: [],
       requireSignedTasks: false,
+      auditSignedTasks: false,
       port: 7321,
       hostname: '127.0.0.1',
       cert: certificatePath,
@@ -538,6 +548,7 @@ describe('P12.3 node-side wiring', () => {
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
         },
         message => warnings.push(message),
       ),
@@ -608,6 +619,7 @@ describe('P12.3 node-side wiring', () => {
           agents: [],
           trusted: [],
           requireSignedTasks: false,
+          auditSignedTasks: false,
           trustCa: caCertPath(caDir),
           registryUrl: `http://127.0.0.1:${registry.port}`,
         })
@@ -632,6 +644,7 @@ describe('P12.3 node-side wiring', () => {
         agents: [],
         trusted: [['node-b', generateNodeKeyPair().publicKey]],
         requireSignedTasks: false,
+        auditSignedTasks: false,
         trustCa: caCertPath(caDir),
       }) as CertificateDirectory
       // Refreshing is a no-op that re-applies the explicit entries: the same

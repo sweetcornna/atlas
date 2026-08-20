@@ -19,6 +19,7 @@ import {
   remoteSnapshotWriter,
 } from '@qianmo/backup'
 import {
+  capabilityShadowTrailSink,
   certificateDirectoryTrailSink,
   openAuditTrail,
   residentNotifyTrailSink,
@@ -269,6 +270,16 @@ export interface ResidentCliConfig {
   readonly requireSignedHandshake?: boolean
   /** Require `write-limited` for work, rather than admitting unsigned tasks. */
   readonly requireSignedTasks: boolean
+  /**
+   * Observation mode (§9.2 phase ①): record what the enforcing policy would
+   * have refused, and refuse nothing.
+   *
+   * A separate switch from {@link ResidentCliConfig.requireSignedTasks} on
+   * purpose, and the separation is the feature — "拿指令进来" and "把数据发出去"
+   * are two decisions here too. One knob doing both could not be used to cost
+   * the switch without also making it.
+   */
+  readonly auditSignedTasks: boolean
   /** Base URL of the host-side backup service (P4.4). */
   readonly backupUrl?: string
   /** Gap between scheduled workspace snapshots. */
@@ -290,6 +301,7 @@ export function parseResidentArgs(
   let memSample: string | undefined
   let memIntervalMs: number | undefined
   let requireSignedTasks = false
+  let auditSignedTasks = false
   let backupUrl: string | undefined
   let backupIntervalMs: number | undefined
   let trustCa: string | undefined
@@ -409,6 +421,8 @@ export function parseResidentArgs(
       requireSignedHandshake = true
     } else if (arg === '--require-signed-tasks') {
       requireSignedTasks = true
+    } else if (arg === '--audit-signed-tasks') {
+      auditSignedTasks = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
       const parsed = residentOptionValue(args, index, '--backup-url')
       const url = new URL(parsed.value)
@@ -543,6 +557,7 @@ export function parseResidentArgs(
     ...(signHandshake || requireSignedHandshake ? { signHandshake: true } : {}),
     ...(requireSignedHandshake ? { requireSignedHandshake: true } : {}),
     requireSignedTasks,
+    auditSignedTasks,
     ...(backupUrl === undefined ? {} : { backupUrl }),
     ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
   }
@@ -669,6 +684,14 @@ Authorization:
                            token. The default admits them, because M0 has no
                            key distribution, while still verifying in full
                            every token that is presented.
+  --audit-signed-tasks     Observation mode: record every message that
+                           --require-signed-tasks would have refused, and
+                           refuse nothing. Nothing about what this node
+                           accepts changes; what appears is one audit line
+                           per message, so "what would enforcing cost" is a
+                           number before it is an outage. A no-op when
+                           --require-signed-tasks is already in force, since
+                           the two policies then agree on everything.
 
 Backup:
 
@@ -1014,6 +1037,14 @@ export async function runResident(args: readonly string[]): Promise<void> {
     directory,
     keys,
     ...(config.requireSignedTasks ? { policy: SIGNED_TASK_POLICY } : {}),
+    // §9.2 phase ①. Both halves or neither — the gate refuses the
+    // half-configuration too, and this is the only place that supplies them.
+    ...(config.auditSignedTasks
+      ? {
+          shadowPolicy: SIGNED_TASK_POLICY,
+          onShadowRefusal: capabilityShadowTrailSink(trail, config.node),
+        }
+      : {}),
   })
   const listenerTls = buildListenerTls(config)
   const handshakeSigning = buildHandshakeSigning(config, keys, directory)
@@ -1022,6 +1053,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
       node: config.node,
       publicKey: keys.publicKey,
       requireSignedTasks: config.requireSignedTasks,
+      auditSignedTasks: config.auditSignedTasks,
       trusts: config.trusted.map(([node]) => node),
       // Which of the three layers this node actually has up (§7.3). Reported
       // as three fields rather than one "secure: true", for the reason §7.3
