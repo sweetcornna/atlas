@@ -1,0 +1,119 @@
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+const REPO_ROOT = resolve(import.meta.dir, '..', '..')
+const PROBE = join(REPO_ROOT, 'scripts/qianmo-policy-switch-probes.ts')
+const BETA_SMOKE = join(REPO_ROOT, 'demo/env/beta/beta-smoke.sh')
+const S3_SCRIPTS = [
+  'demo/env/smoke.sh',
+  'demo/ac3-loop-rate.sh',
+  'make -C demo p61-smoke',
+  'demo/env/beta/beta-smoke.sh',
+] as const
+const RESIDENT_LAUNCHERS = [
+  'demo/env/up.sh',
+  'demo/env/remote/prepare-sandbox.sh',
+  'demo/env/beta/beta-up.sh',
+] as const
+
+interface Criterion {
+  readonly id: string
+  readonly verdict: string
+  readonly reason: string
+  readonly detail?: Record<string, unknown>
+}
+
+interface Report {
+  readonly criteria: readonly Criterion[]
+}
+
+const directories: string[] = []
+
+function runProbe(args: readonly string[]): {
+  readonly exitCode: number
+  readonly report: Report
+} {
+  const result = Bun.spawnSync(
+    [process.execPath, 'run', PROBE, '--nodes', '2', ...args],
+    { cwd: REPO_ROOT, stdout: 'pipe', stderr: 'pipe' },
+  )
+  return {
+    exitCode: result.exitCode,
+    report: JSON.parse(result.stdout.toString()) as Report,
+  }
+}
+
+function criterion(report: Report, id: string): Criterion {
+  const found = report.criteria.find(one => one.id === id)
+  if (found === undefined) throw new Error(`missing criterion ${id}`)
+  return found
+}
+
+function optionLines(path: string): readonly string[] {
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(line => !line.trimStart().startsWith('#'))
+}
+
+afterEach(() => {
+  for (const directory of directories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+describe('P12.4 policy switch deployment contract', () => {
+  test('every real resident launcher keeps the phase-one flags paired once', () => {
+    for (const launcher of RESIDENT_LAUNCHERS) {
+      const lines = optionLines(join(REPO_ROOT, launcher))
+      for (const flag of ['--open-policy', '--audit-signed-tasks']) {
+        expect(
+          lines.filter(line =>
+            new RegExp(`^\\s*${flag}(?:\\s|\\\\|$)`).test(line),
+          ).length,
+        ).toBe(1)
+      }
+    }
+    expect(readFileSync(BETA_SMOKE, 'utf8')).toContain(
+      '      --task "$addr" \\\n',
+    )
+  })
+
+  test('missing S-3 evidence remains not-collected and fails the process', () => {
+    const result = runProbe([])
+    const s3 = criterion(result.report, 'S-3')
+
+    expect(result.exitCode).toBe(1)
+    for (const id of ['S-1', 'S-2', 'S-3', 'S-4']) {
+      const current = criterion(result.report, id)
+      expect(current.verdict).toBe('not-collected')
+      expect(current.reason).toContain('§9.2 阶段 ①')
+      expect(current.reason).toContain('--open-policy + --audit-signed-tasks')
+    }
+    expect(s3.reason).toContain('观察窗口结束后')
+    expect(s3.detail?.['requiredScripts']).toEqual(S3_SCRIPTS)
+    expect(criterion(result.report, 'S-5').verdict).toBe('pass')
+  })
+
+  test('SIGNED_TASK_POLICY evidence without beta-smoke fails S-3', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'qianmo-s3-evidence-'))
+    directories.push(directory)
+    const evidence = join(directory, 's3.json')
+    writeFileSync(
+      evidence,
+      JSON.stringify({
+        policy: 'SIGNED_TASK_POLICY',
+        results: S3_SCRIPTS.slice(0, -1).map(script => ({ script, ok: true })),
+      }),
+    )
+
+    const result = runProbe(['--s3-results', evidence])
+    const s3 = criterion(result.report, 'S-3')
+
+    expect(result.exitCode).toBe(1)
+    expect(s3.verdict).toBe('fail')
+    expect(s3.reason).toContain('demo/env/beta/beta-smoke.sh')
+    expect(s3.detail?.['missing']).toEqual(['demo/env/beta/beta-smoke.sh'])
+  })
+})

@@ -575,12 +575,18 @@ run_node() {
 
   beta_head "② 常驻节点 $BETA_NODE"
   local args
+  # P12.4 的真实内测舰队仍处在 §9.2 阶段 ①：这两个参数成对出现，不是永久遗留。
+  # 代码默认已经是 SIGNED_TASK_POLICY，但 S-1~S-4 证据与「连续 7 天若强制会被拒的
+  # 消息计数为 0」的观察窗口满足前，舰队保持 §9.3 的 --open-policy 逃生策略，并用
+  # --audit-signed-tasks 审计每一条若强制会被拒的消息。
   args=(
     bun "$BETA_OCC" resident
     --node "$BETA_NODE"
     --team "$BETA_TEAM"
     --port "$BETA_NODE_PORT"
     --hostname "$BETA_NODE_BIND"
+    --open-policy
+    --audit-signed-tasks
     --timings "$BETA_STATE_DIR/$BETA_NODE-timings.jsonl"
   )
   for agent in $BETA_AGENTS; do
