@@ -17,6 +17,11 @@ import {
   remoteSnapshotWriter,
 } from '@qianmo/backup'
 import {
+  DEFAULT_WITNESS_ANCHOR_INTERVAL_MS,
+  AuditWitnessScheduler,
+  remoteWitnessAnchorWriter,
+} from '@qianmo/witness'
+import {
   openAuditTrail,
   residentNotifyTrailSink,
   routerTrailSink,
@@ -45,6 +50,9 @@ export const MAX_PENDING_TIMING_EVENTS = 1_024
  * environment variable that can be spelled two ways.
  */
 const BACKUP_TOKEN_ENV_VAR = 'QIANMO_BACKUP_WRITE_TOKEN'
+
+/** The node-side credential can append anchors but cannot rewrite history. */
+const WITNESS_TOKEN_ENV_VAR = 'QIANMO_WITNESS_WRITE_TOKEN'
 
 interface ResidentNdjsonWriter<T> {
   write(record: T): void
@@ -213,6 +221,10 @@ interface ResidentCliConfig {
   readonly backupUrl?: string
   /** Gap between scheduled workspace snapshots. */
   readonly backupIntervalMs?: number
+  /** Base URL of the host-side append-only witness endpoint (P11.4). */
+  readonly witnessUrl?: string
+  /** Gap between witness anchors; defaults to the §4.2 60 s design value. */
+  readonly witnessIntervalMs?: number
 }
 
 export function parseResidentArgs(
@@ -232,6 +244,8 @@ export function parseResidentArgs(
   let requireSignedTasks = false
   let backupUrl: string | undefined
   let backupIntervalMs: number | undefined
+  let witnessUrl: string | undefined
+  let witnessIntervalMs: number | undefined
   const trusted: Array<readonly [string, string]> = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
@@ -329,6 +343,25 @@ export function parseResidentArgs(
       }
       backupIntervalMs = interval
       index = parsed.next
+    } else if (arg === '--witness-url' || arg?.startsWith('--witness-url=')) {
+      const parsed = residentOptionValue(args, index, '--witness-url')
+      const url = new URL(parsed.value)
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('--witness-url must use http or https')
+      }
+      witnessUrl = url.toString()
+      index = parsed.next
+    } else if (
+      arg === '--witness-interval-ms' ||
+      arg?.startsWith('--witness-interval-ms=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--witness-interval-ms')
+      const interval = Number(parsed.value)
+      if (!Number.isInteger(interval) || interval < 1_000) {
+        throw new Error('--witness-interval-ms must be an integer >= 1000')
+      }
+      witnessIntervalMs = interval
+      index = parsed.next
     } else if (arg === '--timings' || arg?.startsWith('--timings=')) {
       const parsed = residentOptionValue(args, index, '--timings')
       if (!isAbsolute(parsed.value)) {
@@ -395,6 +428,9 @@ export function parseResidentArgs(
   if (backupIntervalMs !== undefined && backupUrl === undefined) {
     throw new Error('--backup-interval-ms requires --backup-url')
   }
+  if (witnessIntervalMs !== undefined && witnessUrl === undefined) {
+    throw new Error('--witness-interval-ms requires --witness-url')
+  }
   if (memIntervalMs !== undefined && memSample === undefined) {
     throw new Error('--mem-interval-ms requires --mem-sample')
   }
@@ -424,6 +460,8 @@ export function parseResidentArgs(
     requireSignedTasks,
     ...(backupUrl === undefined ? {} : { backupUrl }),
     ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
+    ...(witnessUrl === undefined ? {} : { witnessUrl }),
+    ...(witnessIntervalMs === undefined ? {} : { witnessIntervalMs }),
   }
 }
 
@@ -514,6 +552,15 @@ Backup:
                            integer >= 1000. Requires --backup-url.
                            Default ${DEFAULT_SNAPSHOT_INTERVAL_MS}.
 
+Audit witness:
+
+  --witness-url <url>      Base URL of the append-only witness endpoint, http
+                           or https. Also requires $${WITNESS_TOKEN_ENV_VAR}.
+  --witness-interval-ms <ms>
+                           Gap between signed audit anchors, an integer >=
+                           1000. Requires --witness-url. Default
+                           ${DEFAULT_WITNESS_ANCHOR_INTERVAL_MS}.
+
 Activity reporting:
 
   --activity-url <ws url>  Report this node's idle and active spells to a
@@ -550,6 +597,11 @@ Environment:
                            Write-only backup credential, required whenever
                            --backup-url is given. Environment only, for the
                            same reason.
+  ${WITNESS_TOKEN_ENV_VAR}
+                           Write-only witness credential, required whenever
+                           --witness-url is given. Environment only: it may
+                           add evidence but must never appear in a process
+                           listing.
   OCC_CONFIG_DIR           Config root the node identity, the audit trail and
                            the session table are derived from.
 `
@@ -677,10 +729,33 @@ export async function runResident(args: readonly string[]): Promise<void> {
             : { intervalMs: config.backupIntervalMs }),
         }
 
+  const witnessToken = process.env[WITNESS_TOKEN_ENV_VAR]
+  if (config.witnessUrl !== undefined && (witnessToken ?? '') === '') {
+    throw new Error(`--witness-url requires ${WITNESS_TOKEN_ENV_VAR}`)
+  }
+
   // The durable trail (P7.2). Opened here rather than inside the node because
   // this is the layer that owns paths, and because a trail is per *process*:
   // two residents on one machine each continue their own file.
   const trail = openAuditTrail()
+  const witness =
+    config.witnessUrl === undefined
+      ? undefined
+      : new AuditWitnessScheduler({
+          node: config.node,
+          trailPath: trail.path,
+          keys,
+          writer: remoteWitnessAnchorWriter({
+            url: config.witnessUrl,
+            token: witnessToken as string,
+          }),
+          ...(config.witnessIntervalMs === undefined
+            ? {}
+            : { intervalMs: config.witnessIntervalMs }),
+          onError: error => {
+            console.error('[resident witness]', error)
+          },
+        })
 
   const resident = new QianmoResident({
     node: config.node,
@@ -695,6 +770,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
     // layer records that.
     notifyAudit: residentNotifyTrailSink(trail, config.node),
     ...(backup === undefined ? {} : { backup }),
+    ...(witness === undefined ? {} : { witness }),
     listen: {
       ...(config.port === undefined ? {} : { port: config.port }),
       ...(config.hostname === undefined ? {} : { hostname: config.hostname }),
