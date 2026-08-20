@@ -12,6 +12,7 @@ import {
   generateNodeKeyPair,
   StaticPublicKeyDirectory,
   type ShadowRefusal,
+  type ShadowRefusalSink,
 } from '@qianmo/capability'
 import {
   DEFAULT_RESIDENT_MEM_INTERVAL_MS,
@@ -290,6 +291,14 @@ describe('resident CLI configuration', () => {
 
 describe('capability flags (P4.3)', () => {
   const KEY = 'A'.repeat(43)
+  const unsignedTask = createMessage({
+    from: 'qianmo://node-a/planner',
+    to: 'qianmo://node-b/reviewer',
+    type: MessageType.TaskRequest,
+    payload: { ask: 'review the diff' },
+    taskId: 'task-1',
+    createdAt: Date.now(),
+  })
 
   test('--trust takes <node>=<publicKey> and refuses anything else', () => {
     const parsed = parseResidentArgs(
@@ -332,15 +341,7 @@ describe('capability flags (P4.3)', () => {
     ).toThrow('not both')
   })
 
-  test('policy switches configure the resident capability gate itself', () => {
-    const task = createMessage({
-      from: 'qianmo://node-a/planner',
-      to: 'qianmo://node-b/reviewer',
-      type: MessageType.TaskRequest,
-      payload: { ask: 'review the diff' },
-      taskId: 'task-1',
-      createdAt: Date.now(),
-    })
+  test('open audit mode admits unsigned tasks and records one shadow refusal', () => {
     const shadowRefusals: ShadowRefusal[] = []
     const observing = createResidentCapabilities(
       parseResidentArgs(
@@ -352,13 +353,29 @@ describe('capability flags (P4.3)', () => {
       refusal => shadowRefusals.push(refusal),
     )
 
-    expect(observing.check(task, Date.now())).toEqual({
+    expect(observing.check(unsignedTask, Date.now())).toEqual({
       ok: true,
       level: CapabilityLevel.Read,
     })
     expect(shadowRefusals).toHaveLength(1)
     expect(shadowRefusals[0]?.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
+  })
 
+  test('open audit mode fails fast when its shadow refusal sink is missing', () => {
+    expect(() =>
+      createResidentCapabilities(
+        parseResidentArgs(
+          [...BASE, '--open-policy', '--audit-signed-tasks'],
+          'qianmo',
+        ),
+        new StaticPublicKeyDirectory(),
+        generateNodeKeyPair(),
+        undefined as unknown as ShadowRefusalSink,
+      ),
+    ).toThrow('--audit-signed-tasks requires a shadow refusal sink')
+  })
+
+  test('default and explicit signed policy refuse without shadow records', () => {
     const enforcingRefusals: ShadowRefusal[] = []
     for (const config of [
       parseResidentArgs(BASE, 'qianmo'),
@@ -370,7 +387,7 @@ describe('capability flags (P4.3)', () => {
         generateNodeKeyPair(),
         refusal => enforcingRefusals.push(refusal),
       )
-      const verdict = enforcing.check(task, Date.now())
+      const verdict = enforcing.check(unsignedTask, Date.now())
 
       expect(verdict.ok).toBe(false)
       if (!verdict.ok) {
@@ -378,6 +395,22 @@ describe('capability flags (P4.3)', () => {
       }
     }
     expect(enforcingRefusals).toEqual([])
+  })
+
+  test('open policy without audit ignores a supplied shadow refusal sink', () => {
+    const shadowRefusals: ShadowRefusal[] = []
+    const open = createResidentCapabilities(
+      parseResidentArgs([...BASE, '--open-policy'], 'qianmo'),
+      new StaticPublicKeyDirectory(),
+      generateNodeKeyPair(),
+      refusal => shadowRefusals.push(refusal),
+    )
+
+    expect(open.check(unsignedTask, Date.now())).toEqual({
+      ok: true,
+      level: CapabilityLevel.Read,
+    })
+    expect(shadowRefusals).toEqual([])
   })
 })
 

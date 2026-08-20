@@ -827,16 +827,20 @@ export function createResidentCapabilities(
   config: ResidentCliConfig,
   directory: PublicKeyDirectory,
   keys: NodeKeyPair,
-  onShadowRefusal?: ShadowRefusalSink,
+  onShadowRefusal: ShadowRefusalSink,
 ): NodeCapabilities {
+  if (config.auditSignedTasks && onShadowRefusal === undefined) {
+    throw new Error('--audit-signed-tasks requires a shadow refusal sink')
+  }
+
   return new NodeCapabilities({
     node: config.node,
     directory,
     keys,
     policy: config.requireSignedTasks ? SIGNED_TASK_POLICY : OPEN_POLICY,
-    // §9.2 phase ①. Both halves or neither — the gate refuses the
-    // half-configuration too, and this is the only place that supplies them.
-    ...(config.auditSignedTasks && onShadowRefusal !== undefined
+    // §9.2 phase ①. Both halves or neither — this factory refuses the
+    // half-configuration, and it is the only place that supplies them.
+    ...(config.auditSignedTasks
       ? {
           shadowPolicy: SIGNED_TASK_POLICY,
           onShadowRefusal,
