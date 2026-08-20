@@ -448,6 +448,43 @@ describe('backup flags (P4.4)', () => {
   })
 })
 
+describe('audit witness flags (P11.4)', () => {
+  test('--witness-url must be http(s), and the interval needs it', () => {
+    const parsed = parseResidentArgs(
+      [
+        ...BASE,
+        '--witness-url=http://127.0.0.1:7998',
+        '--witness-interval-ms',
+        '60000',
+      ],
+      'qianmo',
+    )
+    expect(parsed.witnessUrl).toBe('http://127.0.0.1:7998/')
+    expect(parsed.witnessIntervalMs).toBe(60_000)
+    expect(() =>
+      parseResidentArgs([...BASE, '--witness-url', 'ws://x'], 'qianmo'),
+    ).toThrow('must use http or https')
+    expect(() =>
+      parseResidentArgs([...BASE, '--witness-interval-ms', '60000'], 'qianmo'),
+    ).toThrow('requires --witness-url')
+  })
+
+  test('a sub-second witness interval is refused', () => {
+    expect(() =>
+      parseResidentArgs(
+        [
+          ...BASE,
+          '--witness-url',
+          'http://127.0.0.1:1',
+          '--witness-interval-ms',
+          '100',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('>= 1000')
+  })
+})
+
 describe('empty option values', () => {
   // `--port=` used to reach `Number('')`, which is 0 — a valid request for an
   // ephemeral port. The node came up on a port the operator never chose and
@@ -548,17 +585,19 @@ describe('resident --help', () => {
     expect(RESIDENT_HELP_TEXT).toContain('only valid with --port')
     expect(RESIDENT_HELP_TEXT).toContain('Every path above must be absolute')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --backup-url')
+    expect(RESIDENT_HELP_TEXT).toContain('Requires --witness-url')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --activity-url')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --mem-sample')
   })
 
-  test('names the identity and the two credentials it refuses to run without', () => {
+  test('names the identity and the write credentials it refuses to run without', () => {
     // 问「这个命令怎么用」的人恰恰是还没配好身份与密钥的那个人。
     expect(RESIDENT_HELP_TEXT).toContain('OCC_IDENTITY')
     expect(RESIDENT_HELP_TEXT).toContain('qianmo')
     expect(RESIDENT_HELP_TEXT).toContain('QIANMO_TRANSPORT_PSK')
-    // 两枚密钥都只走环境变量，而帮助必须把「为什么不给命令行选项」一起说。
+    // 写凭据都只走环境变量，而帮助必须把「为什么不给命令行选项」一起说。
     expect(RESIDENT_HELP_TEXT).toContain('QIANMO_BACKUP_WRITE_TOKEN')
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_WITNESS_WRITE_TOKEN')
     expect(RESIDENT_HELP_TEXT).toContain('process listing')
     expect(RESIDENT_HELP_TEXT.endsWith('\n')).toBe(true)
   })

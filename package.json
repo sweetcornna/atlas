@@ -153,6 +153,7 @@
     "@qianmo/scheduler": "workspace:*",
     "@qianmo/transport": "workspace:*",
     "@qianmo/tunnel": "workspace:*",
+    "@qianmo/witness": "workspace:*",
     "@sentry/node": "^10.49.0",
     "@smithy/core": "^3.23.15",
     "@smithy/node-http-handler": "^4.5.3",

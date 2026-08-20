@@ -61,6 +61,7 @@ import {
   type RouterAuditSink,
 } from '@qianmo/router'
 import { BackupScheduler, type SnapshotWriter } from '@qianmo/backup'
+import type { AuditWitnessScheduler } from '@qianmo/witness'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
@@ -146,6 +147,11 @@ interface QianmoResidentOptions {
     readonly writer: SnapshotWriter
     readonly intervalMs?: number
   }
+  /**
+   * Off-host audit witness (P11.4). It is called by the existing resident
+   * poller; the scheduler itself gates the documented 60 s anchor period.
+   */
+  readonly witness?: AuditWitnessScheduler
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
   /**
@@ -1453,6 +1459,10 @@ export class QianmoResident {
           // Cheap on all but one call in sixty; see the constant's comment for
           // why the cadence is not configurable.
           this.#lifecycle.heartbeat()
+          // The witness handles its own 60 s period and every failure
+          // fail-opens internally. Keeping it on this existing timer avoids a
+          // second resident timer while preserving the audit write hot path.
+          await this.#options.witness?.tick()
           await runtime?.pollAll()
         },
         // The admission loop is the only thing that turns an unread mailbox
