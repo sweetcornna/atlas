@@ -75,6 +75,9 @@ describe('P12.4 policy switch deployment contract', () => {
         ).toBe(1)
       }
     }
+  })
+
+  test('beta smoke sends a task request for phase-one observation', () => {
     expect(readFileSync(BETA_SMOKE, 'utf8')).toContain(
       '      --task "$addr" \\\n',
     )
@@ -85,13 +88,10 @@ describe('P12.4 policy switch deployment contract', () => {
     const s3 = criterion(result.report, 'S-3')
 
     expect(result.exitCode).toBe(1)
-    for (const id of ['S-1', 'S-2', 'S-3', 'S-4']) {
-      const current = criterion(result.report, id)
-      expect(current.verdict).toBe('not-collected')
-      expect(current.reason).toContain('§9.2 阶段 ①')
-      expect(current.reason).toContain('--open-policy + --audit-signed-tasks')
-    }
-    expect(s3.reason).toContain('观察窗口结束后')
+    expect(s3.verdict).toBe('not-collected')
+    expect(s3.reason).toContain('§9.2 阶段 ①')
+    expect(s3.reason).toContain('--open-policy + --audit-signed-tasks')
+    expect(s3.reason).toContain('7 天观察窗口')
     expect(s3.detail?.['requiredScripts']).toEqual(S3_SCRIPTS)
     expect(criterion(result.report, 'S-5').verdict).toBe('pass')
   })

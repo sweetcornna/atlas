@@ -80,15 +80,6 @@ const MAX_SAMPLE_GAP_MS = 90 * 60 * 1000
 
 type Verdict = 'pass' | 'fail' | 'not-collected'
 
-const FLEET_PHASE_ONE_CONTEXT =
-  '真实内测舰队当前按 §9.2 阶段 ① 运行，已显式配置 ' +
-  '--open-policy + --audit-signed-tasks；S-3 待观察窗口结束后，补齐 beta-smoke.sh 等发送方的 ' +
-  'capability 并在 SIGNED_TASK_POLICY 下重跑。'
-
-function fleetPhaseOneReason(reason: string): string {
-  return `${reason}。${FLEET_PHASE_ONE_CONTEXT}`
-}
-
 interface CriterionReport {
   readonly id: string
   readonly title: string
@@ -261,9 +252,8 @@ async function probeS1(args: Args, now: number): Promise<CriterionReport> {
       id: 'S-1',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
+      reason:
         '未采集：需要 --registry 与 --trust-ca 才能对一张真实的注册表做 CA 校验',
-      ),
     }
   }
 
@@ -283,9 +273,7 @@ async function probeS1(args: Args, now: number): Promise<CriterionReport> {
       id: 'S-1',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
-        `未采集：注册中心读不到（${error instanceof Error ? error.message : String(error)}）`,
-      ),
+      reason: `未采集：注册中心读不到（${error instanceof Error ? error.message : String(error)}）`,
     }
   }
   if (!Array.isArray(agents)) {
@@ -414,9 +402,7 @@ async function probeS1(args: Args, now: number): Promise<CriterionReport> {
       id: 'S-1',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
-        `本次抽样全绿，但连续性未达 ${String(REQUIRED_CONTINUITY_DAYS)} 天（已积累 ${String(continuity.spanDays)} 天 / ${String(continuity.samples)} 次抽样）`,
-      ),
+      reason: `本次抽样全绿，但连续性未达 ${String(REQUIRED_CONTINUITY_DAYS)} 天（已积累 ${String(continuity.spanDays)} 天 / ${String(continuity.samples)} 次抽样）`,
       detail,
     }
   }
@@ -453,9 +439,7 @@ function probeS2(args: Args): CriterionReport {
       id: 'S-2',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
-        '未采集：本机没有可用的 openssl，量具的自检模式跑不了',
-      ),
+      reason: '未采集：本机没有可用的 openssl，量具的自检模式跑不了',
     }
   }
   const script = join(import.meta.dir, 'qianmo-nxn-resolution-matrix.ts')
@@ -490,10 +474,9 @@ function probeS2(args: Args): CriterionReport {
     id: 'S-2',
     title,
     verdict: 'not-collected',
-    reason: fleetPhaseOneReason(
+    reason:
       '未采集：自检模式证明的是解析引擎，不是舰队。要 pass 需要真实的每节点快照' +
-        '（qianmo:nxn-matrix --snapshot <node>=<path> --ground-truth <path>）连续 14 天',
-    ),
+      '（qianmo:nxn-matrix --snapshot <node>=<path> --ground-truth <path>）连续 14 天',
     detail: { selfTest: matrix },
   }
 }
@@ -530,10 +513,11 @@ function probeS3(args: Args): CriterionReport {
       id: 'S-3',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
-        '未采集：需要 --s3-results。已知阻塞项——真实内测的 beta-smoke.sh 会发不带 capability 的 ' +
-          'task.request；强制策略下会被 E_CAP_INSUFFICIENT 拒，这不是脚本坏了而是 S-3 尚未成立',
-      ),
+      reason:
+        '未采集：需要 --s3-results。真实内测舰队当前按 §9.2 阶段 ① 以 --open-policy + ' +
+        '--audit-signed-tasks 运行；beta-smoke.sh 会发不带 capability 的 task.request，强制策略下' +
+        '会被 E_CAP_INSUFFICIENT 拒。S-1~S-4 与 7 天观察窗口满足后，补齐发送方 capability 并在 ' +
+        'SIGNED_TASK_POLICY 下重跑这四条脚本；现在不把阶段①结果冒充为 S-3',
       detail: { requiredScripts: S3_SCRIPTS },
     }
   }
@@ -713,11 +697,9 @@ async function probeS4(args: Args): Promise<CriterionReport> {
       id: 'S-4',
       title,
       verdict: 'not-collected',
-      reason: fleetPhaseOneReason(
-        mechanism === undefined
-          ? '未采集：本机没有可用的 openssl，无法就地跑吊销机制；§9.1 仍需要在部署节点上由人执行一次并从审计链取证，需要 --s4-report'
-          : '未采集：机制已就地跑通（见 detail.mechanism），但 §9.1 要的是在部署节点上由人执行一次并从审计链取证，需要 --s4-report',
-      ),
+      reason:
+        '未采集：机制已就地跑通（见 detail.mechanism），但 §9.1 要的是在部署节点上' +
+        '由人执行一次并从审计链取证，需要 --s4-report',
       ...(mechanism === undefined ? {} : { detail: { mechanism } }),
     }
   }

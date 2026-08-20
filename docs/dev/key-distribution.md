@@ -448,7 +448,7 @@ L0 TLS 准入（连接建立前，Bun 内部）
 
 **S-1 与 S-2 是两件事，不要合并**：S-1 说"证书发出来了"，S-2 说"每个人都真的读到了"。M0 的教训里有四次是「判据写对了但喂给判据的观测是假的」（`retro-m0.md` §2.1）——只测 S-1 就是典型的假绿：注册中心里躺着一份完美的证书表，而某个节点因为 CA 文件路径写错，一把也没装进目录。
 
-> **【P12.4 运行态 · 唯一出处】** 代码与编译期默认已经切到 `SIGNED_TASK_POLICY`，但这不等于真实部署舰队已经强制执行。当前真实内测舰队显式以 `--open-policy` + `--audit-signed-tasks` 运行在 §9.2 阶段 ①：在 S-1~S-4 尚未采集、且「若强制会被拒」消息计数尚未完成连续 7 天为 0 的观察窗口前，保持开放并审计全部这类消息。前置条件与窗口满足后，才以强制策略重跑上表四条 S-3 量具；任何其他段落引用此运行态时只指向本注，避免复制漂移。
+> **【P12.4 运行态】** 代码与编译期默认已经切到 `SIGNED_TASK_POLICY`，但这不等于真实部署舰队已经强制执行。当前真实内测舰队显式以 `--open-policy` + `--audit-signed-tasks` 运行在 §9.2 阶段 ①：在 S-1~S-4 尚未采集、且「若强制会被拒」消息计数尚未完成连续 7 天为 0 的观察窗口前，保持开放并审计全部这类消息。前置条件与窗口满足后，才以强制策略重跑上表四条 S-3 量具；§12.1 的 K-5 以此为舰队层结论，不把代码默认误写成舰队已强制签名任务。
 
 ### 9.2 三段式切换
 
@@ -562,6 +562,8 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 > 状态用三个值，与探针脚本 `scripts/qianmo-policy-switch-probes.ts` 同一套词汇：**已落地**（本仓库有可复跑的机器证据）／**机制已落地·舰队未采集**（代码与用例成立，但 §12 要的那半需要真机／多节点／连续天数）／**待评审**。**「机制成立」与「舰队被观察过」是两个命题，不合并**——把后者记成前者正是 `retro-m0.md` §2.1 数过四次的那种假绿。
 >
 > 落地提交序列（`7e42af6f..`）：P12.1 `00fbff39` / `27ee43e7` / `1fcdad4a`；P12.2 `2e8330ae` / `f3bea6c5`；P12.3 `b32440e5` / `17572058` / `5ba56482` / `004d5352` / `ccc6bd2d`；P12.4 `b4909b0b` / `f5b8dd00` / `fc805894` / `e6770137` / `7fa8bd1c` / `ee1f59a8` / `4521fb1f`。
+>
+> **舰队层结论。** 见 §9.1 的 P12.4 运行态：舰队级前置条件尚未成立，因此 K-5 未达成；不得据此声称舰队已强制签名任务。
 
 | # | 判据 | 状态 | 证据 |
 |---|---|---|---|
@@ -569,7 +571,7 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 | **K-2** | 每个在册节点持有 CA 签发的有效证书，SAN 双 URI 齐全且 `nodekey` 与 identity 文件里的公钥一致 | **机制已落地·舰队未采集** | 节点侧自检 `assertOwnCertificateMatchesIdentity`（`src/services/qianmo/certificateDirectory.ts`）+ `assertOwnCertificateAndKey`（`src/cli/handlers/resident.ts`），**在开监听之前**跑；四条负向用例见 `src/cli/handlers/__tests__/residentCertificates.test.ts`「assertOwnCertificateAndKey (K-2, one of the four negative cases)」。舰队侧「每个在册节点」由 **S-1 探针**度量，今天报「未采集」 |
 | **K-3** | L0 mTLS 在两台真机之间跑通：带证书的连得上、不带的被 TLS 层拒（复现 F-7） | **机制已落地·真机未采集** | `packages/transport/test/mtls.test.ts`（真 openssl、真 CA、真 `wss://`）：带证书连得上 / 不带的在 TLS 层被关 / **另一个 CA 签的也连得上**——最后那条是把 §2 2026-08-17 补录的限制钉成会变红的断言。**两台真机那一次尚未做**；`004d5352` + `ccc6bd2d` 是接线 |
 | **K-4** | L1 握手签名替换 PSK，**且双向**；两台节点均不再读 `QIANMO_TRANSPORT_PSK`；`frames.ts` 的 `node` 注释从"审计标签"改为"权威" | **机制已落地·PSK 退役未发生** | 双向签名 `packages/transport/src/handshake.ts`（`authSigningInput` / `readySigningInput`，六元组与五元组不可互换）+ `5ba56482`；四格互通矩阵 `packages/transport/test/signed-handshake.test.ts`；出向侧 `f5b8dd00` + `packages/activator/test/link-signing.test.ts`。`frames.ts:75-90` 的注释**已改**，且改成了条件式的——「有 `sig` 就是权威，只有 `mac` 就是标签」，因为迁移期两种形态同时在线。**「不再读 PSK」尚未发生**：`required: true`（`--require-signed-handshake`）是那个开关，全网打开是 §8.2 阶段 ③ 的事 |
-| **K-5** | §9.1 的 **S-1 ~ S-5 五条全绿** | **未达成（1/5）** | 探针 `scripts/qianmo-policy-switch-probes.ts`（`ee1f59a8`），`bun run qianmo:policy-probes`。本机实跑：**S-5 pass**；S-1／S-2／S-3／S-4 **not-collected**，failed=0，exit 1。S-3 的四条必需量具（含 `beta-smoke.sh`）与「代码默认已切、舰队仍在阶段 ①」的唯一状态说明见 **§9.1 的 P12.4 运行态注**；四条「未采集」的具体缺口逐条写在报告的 `reason` 里，不在这里复述 |
+| **K-5** | §9.1 的 **S-1 ~ S-5 五条全绿** | **未达成（1/5）** | 探针 `scripts/qianmo-policy-switch-probes.ts`（`ee1f59a8`），`bun run qianmo:policy-probes`。本机实跑：**S-5 pass**；S-1／S-2／S-3／S-4 **not-collected**，failed=0，exit 1。S-3 的四条必需量具（含 `beta-smoke.sh`）与舰队级前置条件说明见 **§9.1 的 P12.4 运行态注**；四条「未采集」的具体缺口逐条写在报告的 `reason` 里，不在这里复述 |
 | **K-6** | RL 全链路验证过一次真实吊销（= S-4），并验证过 RL 过期时的 fail-closed 行为 | **机制已落地·真机演练未做** | fail-closed 三态用例 `src/services/qianmo/__tests__/certificateDirectory.test.ts`「fail-closed to --trust (§6.4)」（从没发布过 / 过期 / 恢复）；吊销通路由 S-4 探针**就地真跑**（离线 CA → 真注册中心 → 真证书 → 目录解析得到 → 发布签名 RL → 下次 refresh 解析不到），本机 `mechanism.ok = true`。§9.1 要的「在部署节点上由人执行一次并从审计链取证」**未做** |
 | **K-7** | 证书轮换演练过一次，且演练期间**没有断开任何正在进行的任务**（§6.3） | **机制已落地·演练未做** | §6.3 第 4 条的重读能力 `fc805894`：`ClientTlsSource` 每次拨号解析一次，用例 `packages/transport/test/tls-reload.test.ts` 用**轮换 CA 根 + 服务端叶证书**证明重读的客户端回得来、攥着旧根的对照组回不来（观测点为什么落在服务端那一侧，见该文件头：F-8 + §2 补录）。§6.3 第 2/5 条的取舍见本文 §6.3 勘误注。**一次真实的季度轮换演练未做** |
 | **K-8** | 控制台证书栏上线（= S-5） | **已落地** | `packages/console/src/view/certificates.ts` + `deps.ts` 的 `CertificatePort` + host 侧 `createCertificatePort`（`src/cli/handlers/consolePorts.ts`），开关是 `occ console --trust-ca`（`7fa8bd1c`）。用例 `packages/console/test/certificates.test.ts`（含**新文案过既有用词门禁**）与 `src/cli/handlers/__tests__/certificatePort.test.ts`（真 CA 真证书，含「完全在有效期内的伪造证书必须判 `bad-signature`」这条判定顺序断言）。§10.3 那条硬规矩在类型上是结构性的：`ConsoleCertificate` 没有任何字段能承载私钥 |
