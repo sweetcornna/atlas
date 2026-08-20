@@ -312,7 +312,7 @@ const AUDIT_OUTCOMES: ReadonlySet<string> = new Set([
 
 type AuditWitnessReader = (node: string) => Promise<readonly WitnessEvidence[]>
 
-export interface AuditPortOptions {
+interface AuditPortOptions {
   /** 审计链文件的绝对路径。 */
   readonly path: string
   /** Absent until the console is given `--anchors`. */
