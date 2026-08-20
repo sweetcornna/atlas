@@ -64,10 +64,12 @@ import { BackupScheduler, type SnapshotWriter } from '@qianmo/backup'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
+  ListenerIdentity,
   TransportChannel,
   TransportEventSink,
   TransportServerHandle,
 } from '@qianmo/transport'
+import type { TLSOptions } from 'bun'
 import {
   formatTeammateMessages,
   isStructuredProtocolMessage,
@@ -99,6 +101,23 @@ interface QianmoResidentOptions {
     readonly hostname?: string
     readonly unix?: string
   }
+  /**
+   * L0 admission materials for the listener (key-distribution.md §7.1).
+   *
+   * Built by the wiring layer through `mutualTlsServerOptions`, which is what
+   * keeps `ca`, `requestCert` and `rejectUnauthorized` from being applied one
+   * at a time (F-10). Absent means plaintext, which is the right answer for a
+   * unix socket and a deliberate one everywhere else.
+   */
+  readonly tls?: TLSOptions
+  /** `notAfter` of the certificate in {@link tls}, epoch ms (§6.3). */
+  readonly certificateNotAfter?: number
+  /**
+   * L1 signing material (§7.1 / §7.1.1). Absent means this node checks the
+   * pre-shared key and signs nothing back — the pre-P12.3 behaviour, and the
+   * default until an operator says otherwise.
+   */
+  readonly handshakeSigning?: ListenerIdentity
   /**
    * Authorization (P4.3). Absent means capabilities are neither required nor
    * verifiable here — every message counts as `read`. Present means a presented
@@ -1419,6 +1438,13 @@ export class QianmoResident {
         ...(this.#options.listen.unix === undefined
           ? {}
           : { unix: this.#options.listen.unix }),
+        ...(this.#options.tls === undefined ? {} : { tls: this.#options.tls }),
+        ...(this.#options.certificateNotAfter === undefined
+          ? {}
+          : { certificateNotAfter: this.#options.certificateNotAfter }),
+        ...(this.#options.handshakeSigning === undefined
+          ? {}
+          : { signing: this.#options.handshakeSigning }),
       })
       this.#transport = transport
 

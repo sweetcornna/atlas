@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { createPrivateKey } from 'node:crypto'
+import { X509Certificate, createPrivateKey } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
@@ -28,10 +28,17 @@ import {
   NodeCapabilities,
   SIGNED_TASK_POLICY,
   StaticPublicKeyDirectory,
+  type NodeKeyPair,
   type PublicKeyDirectory,
 } from '@qianmo/capability'
+import type { TLSOptions } from 'bun'
 import { isValidSegment } from '@qianmo/protocol'
-import { PSK_ENV_VAR, pskFromEnv } from '@qianmo/transport'
+import {
+  PSK_ENV_VAR,
+  mutualTlsServerOptions,
+  pskFromEnv,
+  type ListenerIdentity,
+} from '@qianmo/transport'
 import {
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
@@ -197,6 +204,16 @@ async function loadHeapStats(): Promise<() => HeapStatsSnapshot> {
 
 /** `--mem-sample` 的默认采样间隔：与 P7.3 的 24 h 长跑节拍一致。 */
 export const DEFAULT_RESIDENT_MEM_INTERVAL_MS = 60_000
+/**
+ * How often the certificate directory re-reads the registry.
+ *
+ * One hour is §6.4's own number for the revocation list, and the same poll
+ * carries the certificates, so there is one clock rather than two. It bounds
+ * the window in which a revoked node is still accepted — the design accepts
+ * that hour explicitly (§11 T-C) in exchange for not asking anyone to do a
+ * weekly chore.
+ */
+export const DEFAULT_REGISTRY_POLL_INTERVAL_MS = 3_600_000
 
 export interface ResidentCliConfig {
   readonly node: string
@@ -225,6 +242,29 @@ export interface ResidentCliConfig {
   readonly cert?: string
   /** Path to this node's own TLS private key (§4.1's `<node>.tls.key`). */
   readonly key?: string
+  /**
+   * Base URL of the registry's HTTP v0 API, polled for peer certificates and
+   * the revocation list (§5.1 / §6.4). Requires `--trust-ca`: without a CA
+   * root there is nothing to check a published certificate against, and a
+   * directory that polls but believes nothing is a network call pretending to
+   * be a feature.
+   */
+  readonly registryUrl?: string
+  /**
+   * Sign this node's half of every handshake and check a peer's when it signs
+   * one (§7.1 / §7.1.1, §8.2 phase ①).
+   *
+   * Off by default, and that default is the whole of "this package only makes
+   * it possible to turn on": with it off the node behaves exactly as it did
+   * before, pre-shared key and all.
+   */
+  readonly signHandshake?: boolean
+  /**
+   * Refuse a peer that does not sign (§8.2 phase ③). Implies
+   * {@link ResidentCliConfig.signHandshake} — this is the switch that retires
+   * the pre-shared key on this node, and there is no other.
+   */
+  readonly requireSignedHandshake?: boolean
   /** Require `write-limited` for work, rather than admitting unsigned tasks. */
   readonly requireSignedTasks: boolean
   /** Base URL of the host-side backup service (P4.4). */
@@ -253,6 +293,9 @@ export function parseResidentArgs(
   let trustCa: string | undefined
   let cert: string | undefined
   let key: string | undefined
+  let registryUrl: string | undefined
+  let signHandshake = false
+  let requireSignedHandshake = false
   const trusted: Array<readonly [string, string]> = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
@@ -350,6 +393,18 @@ export function parseResidentArgs(
       }
       key = resolve(parsed.value)
       index = parsed.next
+    } else if (arg === '--registry-url' || arg?.startsWith('--registry-url=')) {
+      const parsed = residentOptionValue(args, index, '--registry-url')
+      const url = new URL(parsed.value)
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('--registry-url must use http or https')
+      }
+      registryUrl = url.toString()
+      index = parsed.next
+    } else if (arg === '--sign-handshake') {
+      signHandshake = true
+    } else if (arg === '--require-signed-handshake') {
+      requireSignedHandshake = true
     } else if (arg === '--require-signed-tasks') {
       requireSignedTasks = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
@@ -450,6 +505,9 @@ export function parseResidentArgs(
   if (key !== undefined && cert === undefined) {
     throw new Error('--key requires --cert')
   }
+  if (registryUrl !== undefined && trustCa === undefined) {
+    throw new Error('--registry-url requires --trust-ca')
+  }
   return {
     node,
     team,
@@ -476,6 +534,12 @@ export function parseResidentArgs(
     ...(trustCa === undefined ? {} : { trustCa }),
     ...(cert === undefined ? {} : { cert }),
     ...(key === undefined ? {} : { key }),
+    ...(registryUrl === undefined ? {} : { registryUrl }),
+    // `--require-signed-handshake` implies the other: refusing unsigned peers
+    // while sending an unsigned frame yourself is a configuration nobody means
+    // to write, and it would fail only against the peers that had upgraded.
+    ...(signHandshake || requireSignedHandshake ? { signHandshake: true } : {}),
+    ...(requireSignedHandshake ? { requireSignedHandshake: true } : {}),
     requireSignedTasks,
     ...(backupUrl === undefined ? {} : { backupUrl }),
     ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
@@ -574,6 +638,31 @@ Authorization:
   --key <abs path>         This node's own TLS private key
                            (\`${invokedBinName()} cert request\` writes one).
                            Requires --cert.
+                           With --cert, --key and --trust-ca all present and
+                           a TCP listener, mTLS is switched on: the three TLS
+                           settings that only work together are applied
+                           together (F-10). Missing any of the three, this
+                           listener serves plaintext ws:// and says so on
+                           stderr rather than looking configured.
+  --registry-url <url>     Base URL of the registry's HTTP v0 API, polled
+                           every ${DEFAULT_REGISTRY_POLL_INTERVAL_MS / 60_000} minutes for peer certificates and the
+                           revocation list. Requires --trust-ca: without a
+                           root there is nothing to check a published
+                           certificate against. Without this flag the
+                           certificate directory has no network source and
+                           answers from --trust alone.
+  --sign-handshake         Sign this node's half of every handshake with its
+                           Ed25519 identity, and check a peer's when it signs
+                           one (§7.1.1: both directions, so a redirected
+                           endpoint cannot answer for the node it redirected).
+                           Peers that do not sign still connect on the
+                           pre-shared key — that coexistence is what lets a
+                           fleet be upgraded one node at a time.
+  --require-signed-handshake
+                           Refuse peers that do not sign. Implies
+                           --sign-handshake. This is the switch that retires
+                           the pre-shared key on this node, and there is no
+                           other; turn it on only once every peer signs.
   --require-signed-tasks   Refuse task requests that present no capability
                            token. The default admits them, because M0 has no
                            key distribution, while still verifying in full
@@ -616,10 +705,11 @@ Environment:
   OCC_IDENTITY             Must be "qianmo". A resident node is part of the
                            Qianmo node identity, it does not run under plain
                            occ.
-  ${PSK_ENV_VAR}     Transport pre-shared key, required. Environment
-                           only, never a command-line option: a key on a
-                           command line is a key in every process listing on
-                           this machine.
+  ${PSK_ENV_VAR}     Transport pre-shared key, required — still, even
+                           with --require-signed-handshake, because this node
+                           also dials out. Environment only, never a
+                           command-line option: a key on a command line is a
+                           key in every process listing on this machine.
   ${BACKUP_TOKEN_ENV_VAR}
                            Write-only backup credential, required whenever
                            --backup-url is given. Environment only, for the
@@ -655,26 +745,52 @@ export function buildPublicKeyDirectory(
   return new CertificateDirectory({
     caCertificatePem: readFileSync(config.trustCa, 'utf8'),
     trusted: config.trusted,
+    ...(config.registryUrl === undefined
+      ? {}
+      : { registryUrl: config.registryUrl }),
   })
 }
 
 /**
  * `--cert`/`--key` startup self-check (K-2, one of the DoD's four negative
- * cases). Neither flag is consumed for TLS yet — that is P12.3's mTLS
- * wiring — but validating them now means a node with a mismatched or
- * unusable certificate refuses to start instead of coming up looking healthy
- * and failing mysteriously the day P12.3 lands.
+ * cases), run before this node opens a listener.
+ *
+ * Three separate questions, and each of them fails in a way that would
+ * otherwise surface as somebody else's outage days later: does the
+ * certificate name this node's own identity key, was it signed by the CA this
+ * node trusts, and is the key an EC one Bun will actually accept.
  */
 export function assertOwnCertificateAndKey(
   config: ResidentCliConfig,
   ownPublicKey: string,
 ): void {
   if (config.cert !== undefined) {
+    const certificatePem = readFileSync(config.cert, 'utf8')
     assertOwnCertificateMatchesIdentity(
-      readFileSync(config.cert, 'utf8'),
+      certificatePem,
       config.node,
       ownPublicKey,
     )
+    if (config.trustCa !== undefined) {
+      // The check `CertificateDirectory` performs on every *peer* (F-2),
+      // turned on this node's own file. A certificate from a CA this node
+      // does not trust is not a subtle misconfiguration — the node would
+      // present it happily and every peer would refuse it — but without this
+      // it survives until the first handshake, which is the worst place to
+      // find out.
+      const caCertificate = new X509Certificate(
+        readFileSync(config.trustCa, 'utf8'),
+      )
+      if (
+        !new X509Certificate(certificatePem).verify(caCertificate.publicKey)
+      ) {
+        throw new Error(
+          '--cert was not signed by the CA in --trust-ca ' +
+            '(key-distribution.md F-2); check that the two files belong to ' +
+            'the same CA generation',
+        )
+      }
+    }
   }
   if (config.key !== undefined) {
     let keyType: string | undefined
@@ -694,6 +810,81 @@ export function assertOwnCertificateAndKey(
         `--key must be an EC private key (F-5); this one is ${String(keyType)}`,
       )
     }
+  }
+}
+
+/**
+ * L0 materials for this node's listener, or `null` with a printed reason.
+ *
+ * All three files or none: `mutualTlsServerOptions` is what makes
+ * `requestCert`/`rejectUnauthorized` inseparable from `ca` (F-10), and this
+ * function is what makes the *files* inseparable from each other. The reason
+ * is printed rather than swallowed because the failure it prevents is a node
+ * that came up looking configured and is serving plaintext — the operator has
+ * to be told which file is missing, on the machine where it is missing.
+ */
+export function buildListenerTls(
+  config: ResidentCliConfig,
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): { readonly tls: TLSOptions; readonly certificateNotAfter: number } | null {
+  if (config.cert === undefined || config.key === undefined) return null
+  if (config.unix !== undefined) {
+    // Not an error: a unix-socket node has legitimate uses for a certificate
+    // (it is how the registry publishes its Ed25519 key), and the file
+    // permissions on the socket are the boundary TLS would have been.
+    warn(
+      '[resident] --cert/--key are not used for TLS on a unix socket; the ' +
+        'certificate is still checked against this node identity',
+    )
+    return null
+  }
+  if (config.trustCa === undefined) {
+    warn(
+      '[resident] --cert/--key given without --trust-ca: mTLS is NOT enabled ' +
+        '(the CA root is one of the three settings that only work together, ' +
+        'key-distribution.md F-10). This listener is serving plaintext ws://',
+    )
+    return null
+  }
+  const certificatePem = readFileSync(config.cert, 'utf8')
+  return {
+    tls: mutualTlsServerOptions({
+      cert: certificatePem,
+      key: readFileSync(config.key, 'utf8'),
+      ca: readFileSync(config.trustCa, 'utf8'),
+    }),
+    // Read off the certificate rather than configured separately: two places
+    // to say when a certificate expires is two places that can disagree, and
+    // the one that would be wrong is the one nobody looks at (§6.3).
+    certificateNotAfter: Date.parse(
+      new X509Certificate(certificatePem).validTo,
+    ),
+  }
+}
+
+/**
+ * L1 material for this node's listener (§7.1 / §7.1.1), or `undefined` when
+ * `--sign-handshake` was not given.
+ *
+ * The directory is the one the capability gate already reads — deliberately
+ * the same object, not a second copy. A node that would accept a token from a
+ * peer but not that peer's handshake (or the reverse) has two answers to one
+ * question, and the failure shows up as "some peers work and some do not"
+ * with nothing in either log naming the difference.
+ */
+export function buildHandshakeSigning(
+  config: ResidentCliConfig,
+  keys: NodeKeyPair,
+  directory: PublicKeyDirectory,
+): ListenerIdentity | undefined {
+  if (config.signHandshake !== true) return undefined
+  return {
+    node: config.node,
+    keys,
+    directory,
+    ...(config.requireSignedHandshake === true ? { required: true } : {}),
   }
 }
 
@@ -783,6 +974,17 @@ export async function runResident(args: readonly string[]): Promise<void> {
   const keys = loadOrCreateNodeKeys(config.node)
   assertOwnCertificateAndKey(config, keys.publicKey)
   const directory = buildPublicKeyDirectory(config)
+  if (directory instanceof CertificateDirectory) {
+    // Awaited, once, before anything listens: `publicKeyOf` is synchronous by
+    // contract, so a directory that has not converged yet answers `null` — and
+    // for the first peer to dial in that is indistinguishable from "no such
+    // node". The call is bounded by the directory's own timeout and never
+    // throws, so an unreachable registry costs a few seconds of startup and
+    // degrades to the `--trust` entries (§6.4), which is the designed
+    // fail-closed state rather than a failure to start.
+    await directory.refresh()
+    directory.startPolling(DEFAULT_REGISTRY_POLL_INTERVAL_MS)
+  }
   // Its own key is always trusted: rule S-1 accepts `user-confirmed` only when
   // this node signed it, which means verifying its own signature.
   directory.put(config.node, keys.publicKey)
@@ -792,12 +994,21 @@ export async function runResident(args: readonly string[]): Promise<void> {
     keys,
     ...(config.requireSignedTasks ? { policy: SIGNED_TASK_POLICY } : {}),
   })
+  const listenerTls = buildListenerTls(config)
+  const handshakeSigning = buildHandshakeSigning(config, keys, directory)
   process.stdout.write(
     `${JSON.stringify({
       node: config.node,
       publicKey: keys.publicKey,
       requireSignedTasks: config.requireSignedTasks,
       trusts: config.trusted.map(([node]) => node),
+      // Which of the three layers this node actually has up (§7.3). Reported
+      // as three fields rather than one "secure: true", for the reason §7.3
+      // gives: collapsed into one, "TLS is on but nothing is signed" and
+      // "everything is signed over plaintext" read identically afterwards.
+      mtls: listenerTls !== null,
+      signedHandshake: config.signHandshake === true,
+      requireSignedHandshake: config.requireSignedHandshake === true,
     })}\n`,
   )
 
@@ -844,6 +1055,13 @@ export async function runResident(args: readonly string[]): Promise<void> {
       ...(config.hostname === undefined ? {} : { hostname: config.hostname }),
       ...(config.unix === undefined ? {} : { unix: config.unix }),
     },
+    ...(listenerTls === null
+      ? {}
+      : {
+          tls: listenerTls.tls,
+          certificateNotAfter: listenerTls.certificateNotAfter,
+        }),
+    ...(handshakeSigning === undefined ? {} : { handshakeSigning }),
     onActivity: async active => {
       try {
         await activity?.report(active)
@@ -874,6 +1092,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   try {
     await resident.run()
   } finally {
+    if (directory instanceof CertificateDirectory) directory.stopPolling()
     if (memTimer !== null) clearInterval(memTimer)
     trail.close()
     await timingWriter?.close()
