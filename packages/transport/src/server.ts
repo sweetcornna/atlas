@@ -91,6 +91,20 @@ export interface TransportServerOptions {
    * one that has not still talk to each other.
    */
   readonly signing?: ListenerIdentity
+  /**
+   * `notAfter` of the certificate this listener presents, epoch ms (§6.3).
+   *
+   * A TLS session is fixed at handshake time, so an expired — or revoked —
+   * certificate would otherwise keep serving every connection made before it
+   * lapsed, for as long as that connection happens to live. Given this, the
+   * listener closes those connections itself at the instant it lapses, with
+   * {@link CLOSE_UNAUTHORIZED}, and refuses new ones. It does **not** exit:
+   * §6.3's last rule is that "the operator forgot to re-issue" must not be
+   * amplified into "the service is gone", and a process that is still up is
+   * still answering `--help`, still holding its socket path, and still one
+   * `systemctl restart` away from healthy.
+   */
+  readonly certificateNotAfter?: number
   readonly onMessage: InboundHandler
   /**
    * Message types this endpoint implements, declared to every dialer in the
@@ -182,6 +196,9 @@ export const DEFAULT_CHANNEL_RETENTION_MS = 300_000
 const STOP_GRACE_MS = 200
 const CLOSE_REPLACED = 4000
 const CLOSE_CAPACITY = 1013
+
+/** Largest delay `setTimeout` honours; anything past it fires immediately. */
+const MAX_TIMER_MS = 2_147_483_647
 
 /**
  * Largest frame the socket will buffer: the protocol's own envelope ceiling
@@ -410,6 +427,8 @@ export function startTransportServer(
   const maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
   const channelRetentionMs =
     options.channelRetentionMs ?? DEFAULT_CHANNEL_RETENTION_MS
+  let certificateExpired = false
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
 
   function record(type: TransportEventType, detail: EventDetail): void {
     recorder.record({ type, at: now(), detail })
@@ -461,6 +480,52 @@ export function startTransportServer(
     ws.close(closeCode, ws.data.authed ? 'protocol error' : 'unauthorized')
   }
 
+  /**
+   * The certificate this listener presents has lapsed (§6.3, rule 2).
+   *
+   * Everything built on it goes at once — waiting for each peer to notice is
+   * how a revoked certificate keeps serving for as long as a connection
+   * happens to live. New dials still get a challenge and are refused at their
+   * auth frame (see the `message` handler for why not sooner); the process
+   * stays up (§6.3, rule 5), so re-issuing and restarting is the whole
+   * recovery.
+   */
+  function expireCertificate(): void {
+    if (certificateExpired) return
+    certificateExpired = true
+    record(TransportEventType.AuthRejected, {
+      rejection: 'certificate_expired',
+      closeCode: CLOSE_UNAUTHORIZED,
+      connections: sockets.size,
+    })
+    for (const socket of [...sockets]) {
+      socket.close(CLOSE_UNAUTHORIZED, 'certificate expired')
+    }
+  }
+
+  /**
+   * Arm the expiry clock, in hops no longer than a 32-bit timer.
+   *
+   * A node certificate lives 90 days (§6.2) = 7.8e9 ms, which is 3.6× past the
+   * `setTimeout` ceiling — and the failure mode of overshooting it is not a
+   * late timer but an **immediate** one, so a naive single `setTimeout` would
+   * close every connection the instant the node started. Re-arming against the
+   * wall clock also means a machine that slept through the expiry acts on
+   * waking rather than sleeping through its own deadline.
+   */
+  function armCertificateExpiry(notAfter: number): void {
+    const remaining = notAfter - now()
+    if (remaining <= 0) {
+      expireCertificate()
+      return
+    }
+    expiryTimer = setTimeout(
+      () => armCertificateExpiry(notAfter),
+      Math.min(remaining, MAX_TIMER_MS),
+    )
+    expiryTimer.unref?.()
+  }
+
   const websocket: WebSocketHandler<ConnectionState> = {
     idleTimeout: options.idleTimeoutSec ?? DEFAULT_IDLE_TIMEOUT_SEC,
     maxPayloadLength: MAX_FRAME_BYTES,
@@ -499,6 +564,23 @@ export function startTransportServer(
       if (!ws.data.authed) {
         if (frame.t !== FrameType.Auth) {
           refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_UNAUTHORIZED)
+          return
+        }
+        if (certificateExpired) {
+          // Refused here rather than in `open`, for one measured reason: a
+          // socket closed inside the open handler delivers no close *code* to
+          // the dialer (it sees an abnormal closure and retries until its
+          // budget runs out), and 4003 is the entire point — it is what tells
+          // a peer this door will not open and stops the reconnect storm.
+          //
+          // The dialer learns nothing else: same code, same reason string a
+          // wrong key gets. The claimed name is recorded on our side only.
+          record(TransportEventType.AuthRejected, {
+            rejection: 'certificate_expired',
+            node: frame.node,
+            closeCode: CLOSE_UNAUTHORIZED,
+          })
+          ws.close(CLOSE_UNAUTHORIZED, 'unauthorized')
           return
         }
         const result = verifyAuthAttempt(
@@ -631,6 +713,10 @@ export function startTransportServer(
           websocket,
         })
 
+  if (options.certificateNotAfter !== undefined) {
+    armCertificateExpiry(options.certificateNotAfter)
+  }
+
   const scheme = options.tls === undefined ? 'ws' : 'wss'
   return {
     ...(options.unix === undefined
@@ -648,6 +734,8 @@ export function startTransportServer(
       return channels.size
     },
     stop: async (): Promise<void> => {
+      if (expiryTimer !== null) clearTimeout(expiryTimer)
+      expiryTimer = null
       for (const channel of [...channels.values()]) channel.close()
       channels.clear()
       // Bounded, not a plain await, because of a measured Bun behaviour: once
