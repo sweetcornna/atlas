@@ -85,7 +85,7 @@ flowchart TD
 
 照 roadmap「完成状态速查」P4.3 行与 `protocol.md` §10.1 的**四条边界**，只给指针 + 摘要：
 
-- **M0 默认策略 `OPEN_POLICY` 允许未签名的 `task.request`**。**这不是「校验可选」**——任何**已出示**的令牌都全程校验，伪造的拒、远端 `user-confirmed` 按 S-1 拒、任何消息都不能提升等级。可选的只是「**是否强制出示**」，而它必须可选：M0 没有密钥分发（`AgentRecord.publicKey` 有字段有校验，但还没有东西去发布它），`--trust <node>=<publicKey>` 是手工配的。强制版 `SIGNED_TASK_POLICY`（`--require-signed-tasks`）已在包内与常驻集成用例里跑通，M1 上 mTLS 后切默认。**这条必须原样转述，不得简化成「P4.3 打开了跨节点鉴权」。**
+- **默认策略是 `SIGNED_TASK_POLICY`**（自 **P12.4**；此前是 `OPEN_POLICY`）：未签名的 `task.request` / `wake` 被拒。**「校验可选」从来不是这条的内容**——任何**已出示**的令牌都全程校验，伪造的拒、远端 `user-confirmed` 按 S-1 拒、任何消息都不能提升等级；可选的只是「**是否强制出示**」。它当初必须可选，是因为 M0 没有密钥分发（`AgentRecord.publicKey` 有字段有校验，但还没有东西去发布它），`--trust <node>=<publicKey>` 是手工配的 O(N²)；P12.1~P12.3 把分发建起来之后那个理由消失，默认随之翻面（`docs/dev/key-distribution.md` §9.2 ②）。逃生开关 `--open-policy`，**回滚零代价且是结构性的**：两个方向都不改变任何一条已签名消息的命运（§9.3）。**这条必须原样转述，不得简化成「阡陌打开了跨节点鉴权」，也不得简化成「默认就安全了」——L0/L1/L2 是三层，这里只是 L2。**
 - **回复类消息不需要授权**：`ack` / `task.result` 是本节点自己请求的回音，`SIGNED_TASK_POLICY` 只抬高 `task.request` 与 `wake` 两类。
 - **校验点在终点节点，不在 activator**：令牌的 `aud` 是目标节点，而 activator 跑在宿主上、节点段与沙箱内的常驻节点不同；把闸门放在 activator 会让每一条合法令牌都因 `aud` 不匹配被拒。宿主那一跳仍有判环与限流。
 - **一处顺序偏离记录在案**：S-2 表把入站预算排在判环之前，实现是**判环在前**，理由与 `packages/router/src/router.ts` 的模块注释、`protocol.md` §10.1 同文。

@@ -20,7 +20,11 @@ import {
 import type { CapabilityDecision, CapabilityGate } from '@qianmo/router'
 import type { NodeKeyPair } from './keys.js'
 import { NonceStore } from './nonce.js'
-import { OPEN_POLICY, satisfies, type CapabilityPolicy } from './policy.js'
+import {
+  SIGNED_TASK_POLICY,
+  satisfies,
+  type CapabilityPolicy,
+} from './policy.js'
 import {
   issueCapability,
   verifyCapability,
@@ -61,7 +65,7 @@ export interface NodeCapabilitiesOptions {
   /** This node's segment: the only `aud` it will accept, and its `iss`. */
   readonly node: string
   readonly directory: PublicKeyDirectory
-  /** Defaults to {@link OPEN_POLICY} — see `policy.ts` on why. */
+  /** Defaults to {@link SIGNED_TASK_POLICY} — see `policy.ts` on why. */
   readonly policy?: CapabilityPolicy
   readonly nonces?: NonceStore
   /** Needed only to issue; verification never touches a private key. */
@@ -99,7 +103,7 @@ export class NodeCapabilities implements CapabilityGate {
 
   constructor(options: NodeCapabilitiesOptions) {
     this.node = options.node
-    this.policy = options.policy ?? OPEN_POLICY
+    this.policy = options.policy ?? SIGNED_TASK_POLICY
     this.nonces = options.nonces ?? new NonceStore()
     this.#directory = options.directory
     this.#keys = options.keys

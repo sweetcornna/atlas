@@ -268,7 +268,13 @@ export interface ResidentCliConfig {
    * the pre-shared key on this node, and there is no other.
    */
   readonly requireSignedHandshake?: boolean
-  /** Require `write-limited` for work, rather than admitting unsigned tasks. */
+  /**
+   * Require `write-limited` for work, rather than admitting unsigned tasks.
+   *
+   * **Default `true` since P12.4** (key-distribution.md §9.2 ②).
+   * `--open-policy` is the escape hatch that sets it back to `false`;
+   * `--require-signed-tasks` still works and now merely restates the default.
+   */
   readonly requireSignedTasks: boolean
   /**
    * Observation mode (§9.2 phase ①): record what the enforcing policy would
@@ -300,7 +306,12 @@ export function parseResidentArgs(
   let timings: string | undefined
   let memSample: string | undefined
   let memIntervalMs: number | undefined
-  let requireSignedTasks = false
+  // The switch, in one place. `--require-signed-tasks` and `--open-policy`
+  // both write here; giving both is refused below rather than resolved, since
+  // an invocation that asks for opposite policies has no honest winner.
+  let requireSignedTasks = true
+  let openPolicy = false
+  let enforceRequested = false
   let auditSignedTasks = false
   let backupUrl: string | undefined
   let backupIntervalMs: number | undefined
@@ -420,7 +431,11 @@ export function parseResidentArgs(
     } else if (arg === '--require-signed-handshake') {
       requireSignedHandshake = true
     } else if (arg === '--require-signed-tasks') {
+      enforceRequested = true
       requireSignedTasks = true
+    } else if (arg === '--open-policy') {
+      openPolicy = true
+      requireSignedTasks = false
     } else if (arg === '--audit-signed-tasks') {
       auditSignedTasks = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
@@ -523,6 +538,14 @@ export function parseResidentArgs(
   }
   if (registryUrl !== undefined && trustCa === undefined) {
     throw new Error('--registry-url requires --trust-ca')
+  }
+  if (openPolicy && enforceRequested) {
+    // Not resolved by precedence: whichever way it were resolved, half the
+    // people who wrote this line would get the opposite of what they meant,
+    // and the one they get wrong is a security posture.
+    throw new Error(
+      'resident takes either --open-policy or --require-signed-tasks, not both',
+    )
   }
   return {
     node,
@@ -681,9 +704,17 @@ Authorization:
                            the pre-shared key on this node, and there is no
                            other; turn it on only once every peer signs.
   --require-signed-tasks   Refuse task requests that present no capability
-                           token. The default admits them, because M0 has no
-                           key distribution, while still verifying in full
-                           every token that is presented.
+                           token. This is the default; the flag restates it
+                           and is kept because existing command lines carry
+                           it.
+  --open-policy            Admit task requests that present no capability
+                           token — the escape hatch out of the default
+                           (key-distribution.md §9.3). Rolling back costs
+                           nothing beyond the posture: a token that IS
+                           presented is verified in full either way, so no
+                           signed message changes its fate in either
+                           direction. Cannot be combined with
+                           --require-signed-tasks.
   --audit-signed-tasks     Observation mode: record every message that
                            --require-signed-tasks would have refused, and
                            refuse nothing. Nothing about what this node

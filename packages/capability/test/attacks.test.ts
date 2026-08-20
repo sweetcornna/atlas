@@ -35,7 +35,7 @@ import {
   parseCapabilityToken,
 } from '@qianmo/protocol'
 import { NodeRouter, RouterEventType } from '@qianmo/router'
-import { SIGNED_TASK_POLICY } from '../src/index.js'
+import { OPEN_POLICY, SIGNED_TASK_POLICY } from '../src/index.js'
 import {
   NODE_A,
   NODE_B,
@@ -175,10 +175,15 @@ describe('family 2 — instructions carried in the content', () => {
     // The complement, and the reason the family matters: content is not what
     // decides. Under a policy that asks only for `read`, the injected text is
     // delivered — and the level it arrives with is `read` all the same.
+    //
+    // `OPEN_POLICY` is named rather than left to the gate's default: the
+    // default became `SIGNED_TASK_POLICY` in P12.4, and this test's subject
+    // is a read-level policy, which its own title has always said. Nothing
+    // asserted here changed.
     const router = new NodeRouter({
       node: NODE_B,
       now: () => NOW,
-      capability: gateFor(NODE_B, { trusts: [attacker] }),
+      capability: gateFor(NODE_B, { trusts: [attacker], policy: OPEN_POLICY }),
     })
     const verdict = router.inbound(
       taskMessage({ payload: { text: injections[0] } }),

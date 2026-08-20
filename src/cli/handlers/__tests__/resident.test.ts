@@ -46,7 +46,10 @@ describe('resident CLI configuration', () => {
       // permissive about *requiring* a token while still verifying every one
       // that is presented).
       trusted: [],
-      requireSignedTasks: false,
+      // The default since P12.4 (key-distribution.md §9.2 ②). It used to be
+      // `false`, and the comment here used to explain why — that reason
+      // (M0 had no key distribution) is what P12.1~P12.3 removed.
+      requireSignedTasks: true,
       // Observation mode is off unless asked for, and it is a *second*
       // switch rather than a mode of the first (§9.2 phase ①).
       auditSignedTasks: false,
@@ -290,12 +293,31 @@ describe('capability flags (P4.3)', () => {
     ).toThrow('not a valid Ed25519 key')
   })
 
-  test('--require-signed-tasks is off unless asked for', () => {
-    expect(parseResidentArgs(BASE, 'qianmo').requireSignedTasks).toBe(false)
+  test('signed tasks are required by default; --open-policy is the way out', () => {
+    // 这条原本钉的是**旧默认**（P4.3 时 `OPEN_POLICY`，因为当时没有密钥分发）。
+    // P12.1~P12.3 把分发建起来之后，`policy.ts` 的收敛条件成立，默认于 P12.4
+    // 翻面（key-distribution.md §9.2 ②）。断言的两半都还在，只是方向对调，
+    // 外加逃生开关那一半。
+    expect(parseResidentArgs(BASE, 'qianmo').requireSignedTasks).toBe(true)
     expect(
       parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo')
         .requireSignedTasks,
     ).toBe(true)
+    expect(
+      parseResidentArgs([...BASE, '--open-policy'], 'qianmo')
+        .requireSignedTasks,
+    ).toBe(false)
+  })
+
+  test('the two directions of the switch cannot be asked for at once', () => {
+    // 不按优先级裁决：无论怎么裁，写下这一行的人里有一半会拿到相反的结果，
+    // 而拿错的那一半错在安全姿态上。
+    expect(() =>
+      parseResidentArgs(
+        [...BASE, '--open-policy', '--require-signed-tasks'],
+        'qianmo',
+      ),
+    ).toThrow('not both')
   })
 })
 
@@ -373,8 +395,10 @@ describe('resident --help', () => {
   test('observation mode is a second switch, not a mode of the first (§9.2 ①)', () => {
     // 「拿指令进来」和「把数据发出去」是两件事，这条也一样：能不能用它把切换的
     // 代价量出来，取决于它**不是**强制开关的一档。
+    // 观察模式与逃生开关一起给才是 §9.2 阶段 ① 的形态：策略退回开放，同时把
+    // 「切回去会拒掉多少条」记下来。
     const observing = parseResidentArgs(
-      [...BASE, '--audit-signed-tasks'],
+      [...BASE, '--open-policy', '--audit-signed-tasks'],
       'qianmo',
     )
     expect(observing.auditSignedTasks).toBe(true)

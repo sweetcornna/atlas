@@ -13,25 +13,40 @@
  * asserts that as a scan rather than as a promise, because "we did not call
  * that API" is exactly the sort of claim that quietly stops being true.
  *
- * ## Why unsigned traffic is admitted by the default policy
+ * ## The default is {@link SIGNED_TASK_POLICY} (P12.4, key-distribution.md §9.2 ②)
  *
- * An unsigned message is `read`, and {@link OPEN_POLICY} — what the M0 wiring
- * uses — requires no more than that. This is a deliberate, bounded choice, not
- * an oversight:
+ * Work has to be authorized. A `task.request` or a `wake` arriving with no
+ * capability token is refused, and the refusal is `E_CAP_INSUFFICIENT` on the
+ * level rather than on the absence — the two questions stay apart (`gate.ts`).
  *
- * - the mechanism is *not* optional: any token that **is** presented is fully
- *   verified, a forged one is refused, `user-confirmed` from a remote issuer is
- *   refused by S-1 whatever it is signed with, and no message can raise a
- *   level;
- * - what is optional in M0 is *requiring* a token, and it has to be, because
- *   M0 has no key distribution: `AgentRecord.publicKey` exists and is
- *   validated, but nothing publishes it yet. Demanding signatures before there
- *   is a way to learn keys would not make the network safer, it would make it
- *   silent — and AC-2's accepted evidence runs on unsigned envelopes.
+ * **The reason this is only now the default is worth keeping**, because it is
+ * the whole argument for the machinery that made the switch possible. Until
+ * P12.1–P12.3 there was no key distribution: `AgentRecord.publicKey` existed
+ * and was validated, but nothing published it, and `--trust <node>=<publicKey>`
+ * was an O(N²) hand-copy. Demanding signatures before there is a way to learn
+ * keys does not make a network safer, it makes it silent — `policy.ts` said
+ * exactly that, and {@link OPEN_POLICY} existed for exactly that. The CA, the
+ * certificate directory and the registry's `certificate` field are what
+ * removed the reason, so the default followed.
  *
- * {@link SIGNED_TASK_POLICY} is the enforcing counterpart, exercised by this
- * package's suite and by the AC-3/P4.3 demo, and it is what M1 switches the
- * default to once mTLS brings key distribution with it (charter N-3).
+ * What did **not** change is the part that was never optional: any token that
+ * is presented has always been fully verified, a forged one refused, and a
+ * remote `user-confirmed` refused by S-1 whatever it is signed with. Only
+ * *requiring* one was ever in question.
+ *
+ * ## {@link OPEN_POLICY} is now the escape hatch, and it stays one
+ *
+ * `--open-policy` on a resident node, and the rollback it performs is free in
+ * a way that is structural rather than lucky: `OPEN_POLICY` does not *skip*
+ * verification, it only stops *requiring* a token. So a message that carries a
+ * valid token is admitted identically under both policies, and a forged one is
+ * refused identically under both. **Neither direction of the switch changes
+ * the fate of a signed message** — the only thing that moves is whether an
+ * unsigned `task.request` is refused, which is the entire point of switching
+ * and the entire cost of rolling back (§9.3).
+ *
+ * That is why the hatch survives into §9.2 phase ③ rather than being removed
+ * with the switch: a rollback that costs nothing is worth keeping available.
  */
 
 import {
@@ -58,8 +73,9 @@ export function capabilityPolicy(
 }
 
 /**
- * Everything may arrive unsigned. The M0 default — see the module header for
- * why, and for what remains enforced under it.
+ * Everything may arrive unsigned. The M0 default, and now the `--open-policy`
+ * escape hatch — see the module header for what remains enforced under it,
+ * which is everything except the requirement to present a token at all.
  */
 export const OPEN_POLICY: CapabilityPolicy = capabilityPolicy({})
 
@@ -67,6 +83,9 @@ export const OPEN_POLICY: CapabilityPolicy = capabilityPolicy({})
  * Work has to be authorized: a `task.request` or a `wake` opens a turn that can
  * change the workspace, so both need `write-limited`. Replies stay at `read` —
  * an answer to a task this node itself asked for authorizes nothing.
+ *
+ * **The default since P12.4.** See the module header for why it was not, and
+ * for what rolling back to {@link OPEN_POLICY} does and does not cost.
  */
 export const SIGNED_TASK_POLICY: CapabilityPolicy = capabilityPolicy({
   [MessageType.TaskRequest]: CapabilityLevel.WriteLimited,

@@ -224,7 +224,7 @@
 | 信封字段 `cap`，形态 `<claims>.<sig>`，claims `{iss, sub, aud, act, taskId, nbf, exp, nonce}`，Ed25519 分离签名（`protocol/src/capability.ts`） | **无对应**——凭据在传输层的 header / metadata，形态由 `securitySchemes` 决定 | A2A §7 首段：「Identity information is handled at the protocol layer, **not within A2A semantics**」。这是**方向相反的两个设计**，见 G-16 |
 | `act` 三级：`read` / `write-limited` / `user-confirmed`（`CapabilityLevel`） | **无对应**（最近的是 OAuth scopes，但那是部署决定，不是协议枚举） | |
 | 规则 S-1：`user-confirmed` 令牌只认本节点私钥签发，`iss ≠ 本节点`一律 `E_CAP_INSUFFICIENT` | 思想同向、机制相反的 `TASK_STATE_AUTH_REQUIRED`：「我需要授权，请客户端去弄」 | 我方是「你说你有授权我不信，除非是我自己签的」。两者都在防 confused deputy，但 A2A 靠流程 + MUST NOT，我方靠密码学 |
-| `OPEN_POLICY`（M0 默认，允许未签名 `task.request`）/ `SIGNED_TASK_POLICY` | A2A §7.4：服务端 **MUST** authenticate every incoming request | 以 A2A 口径衡量，我方 M0 默认配置是不合规的服务端。见 G-20 |
+| `SIGNED_TASK_POLICY`（**P12.4 起的默认**，未签名 `task.request` 被拒）/ `OPEN_POLICY`（`--open-policy` 逃生开关） | A2A §7.4：服务端 **MUST** authenticate every incoming request | M0 的默认配置以 A2A 口径衡量是不合规的服务端；P12.4 切默认之后这条对齐（见 G-27），逃生开关打开时仍不合规 |
 | 规则 M-2（包装对象顶层 `type` 不得命中基座 10 个保留类型）、E-1/E-2（`from` 永不等于本地身份）、S-3（权限不可提升）、`notice` 固定模板 | **无对应**（A2A §13 有安全考量正文，无结构性字段） | 这四条是我方与基座耦合面上的结构性阻断（`protocol.md` §10.2），A2A 侧既无该耦合也无该字段 |
 
 ### 3.9 大 payload
@@ -301,13 +301,13 @@
 | G-24 | **无 `tenant` / 无多租户路由** | 入向：不受影响（`tenant` 是可选的）。出向：若所选 `AgentInterface` 带 `tenant`，客户端 **MUST** 在每个请求里原样回填（§8.3.2） | **不适用** | 章程 N-2 明列多租户为非目标。出向那半只是网关的一行透传，不构成设计差距 |
 | G-25 | **`costLimit` 在 A2A 无对应** | 无影响 | **不适用** | 章程 N-1：M0 恒为 0，只验证硬上限能拦住。计费语义整体是 M0 非目标 |
 | G-26 | **版本协商位置不同**：我方 `v` 在信封内且恒为 0；A2A 用服务参数 `A2A-Version`，只认 Major.Minor，空值按 `0.3` 解释 | 无影响——网关发 `A2A-Version: 1.0` 即可，不涉及我方信封 | **不适用** | 我方 `v` 恒为 0 且零外部对端（`protocol.md` §1.3），两个版本号管的是两件事，不必统一 |
-| G-27 | **M0 默认策略允许未签名的 `task.request`**（`OPEN_POLICY`）；A2A §7.4 要求服务端 **MUST** authenticate every incoming request | 入向：以 A2A 口径衡量，我方节点是不合规的服务端 | **M1 收敛** | `capability/src/policy.ts` 的模块注释已经写好了收敛条件与时点——M1 上 mTLS 带来密钥分发之后默认切 `SIGNED_TASK_POLICY`。本文不新增结论，只确认它同时也是一条 A2A 对齐项。**注意可选的只是「是否强制出示」**：任何已出示的令牌 M0 也全程校验 |
+| G-27 | ~~**M0 默认策略允许未签名的 `task.request`**（`OPEN_POLICY`）~~；A2A §7.4 要求服务端 **MUST** authenticate every incoming request | 入向：以 A2A 口径衡量，我方节点是不合规的服务端 | **已收敛（P12.4，2026-08-20）** | `capability/src/policy.ts` 的模块注释当初写下的收敛条件——「有了拿钥匙的途径」——由 P12.1~P12.3 满足，默认于 P12.4 切成 `SIGNED_TASK_POLICY`（`key-distribution.md` §9.2 ②）。**逃生开关 `--open-policy` 仍在**，打开时这条重新不合规，这是明写的取舍而不是遗漏（§9.3：回滚零代价）。**注意可选的一直只是「是否强制出示」**：任何已出示的令牌 M0 也全程校验 |
 
 **标注分布**（合计 **27** 条）：
 
 | 标注 | 条数 | 编号 |
 |---|---|---|
-| **M1 收敛** | **11** | G-1、G-2、G-6、G-8、G-9、G-14、G-15、G-17、G-18、G-23、G-27 |
+| **M1 收敛** | **11** | G-1、G-2、G-6、G-8、G-9、G-14、G-15、G-17、G-18、G-23、~~G-27~~（**已收敛，P12.4**） |
 | **长期保留差异** | **13** | G-3、G-4、G-5、G-7、G-10、G-11、G-12、G-13、G-16、G-19、G-20、G-21、G-22 |
 | **不适用** | **3** | G-24、G-25、G-26 |
 
@@ -325,7 +325,7 @@
 | **新增一个双向网关包** | G-2、G-8、G-9 全部；G-5 / G-7 / G-10 的边界侧对策 | 出向：把 `task.request` 译成 `SendMessage`，维护 `我方 taskId ↔ 对端 taskId` 映射表，出网关记一跳并写 `LoopGuard`。入向：按连接身份合成 `from` 与 `origin`，拒绝客户端提供的 taskId 并自生成。**这是本节最大的一块，也是最需要先裁定的一块——见 §6 判断点 ①** |
 | **`@qianmo/protocol`** | G-14（取消）、G-23（内容分片）；G-6 的扩展 URI 定义 | `MessageType` 加 `task.cancel`（`isReplyType` 不变）；`TaskResultPayload` 的成功分支由 `content: string` 扩成分片列表并带 `media_type`；为 TTL 定义一个我方自有的 `AgentExtension` URI 与 params 形状。**前两项动线上契约，必须升 `v` 并写迁移**（`protocol.md` §1.3 的条件已不再满足——M1 会有已部署对端） |
 | **`@qianmo/router`** | G-18 | inbound 判决在「未知 agent」与「权限不足」两支上回同一个码；审计侧仍分开记 |
-| **`@qianmo/capability`** | G-27 | `OPEN_POLICY` 切 `SIGNED_TASK_POLICY`。`policy.ts` 的模块注释已经写好了收敛条件与时点（M1 上 mTLS 带来密钥分发之后切默认）。本文只是确认它同时也是一条 A2A 对齐项，不新增结论 |
+| **`@qianmo/capability`** | G-27 | ~~`OPEN_POLICY` 切 `SIGNED_TASK_POLICY`~~ —— **已于 P12.4 落地**（`gate.ts` 的默认、`--open-policy` 逃生开关）。此行保留为已完成项的指针 |
 | **`@qianmo/audit`** | 全部 M1 收敛项的连带动作 | `AuditSource` 增加一个成员，网关的出向调用与入向回调都必须写进 trail——否则一条跨 A2A 的链在我方日志里会**断头**，而 C-6 要问的正是这个 |
 | **状态机（`protocol.md` §8）** | G-15、G-17 | 唯一动骨架的一项：要引入一个「非终态的等待」，七个终态穷举的表述随之要改。**建议与 §6 判断点 ③ 一并裁定，不要拆开做** |
 
