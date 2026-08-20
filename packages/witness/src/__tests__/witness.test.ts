@@ -275,6 +275,21 @@ describe('the append-only witness endpoint', () => {
     await expect(reader.list(NODE)).rejects.toThrow('timed out after 10 ms')
     expect(aborted).toBe(true)
   })
+
+  test('reads a legacy bare anchor so verification can conservatively mark it stale', async () => {
+    const anchor = signedAnchor(generateNodeKeyPair())
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: READ_TOKEN,
+      fetchImpl: (() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve([anchor]),
+        } as unknown as Response)) as unknown as typeof fetch,
+    })
+    await expect(reader.list(NODE)).resolves.toEqual([anchor])
+  })
 })
 
 describe('§5 witness variants', () => {

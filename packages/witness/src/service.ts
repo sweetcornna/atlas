@@ -13,7 +13,11 @@
 import { timingSafeEqual } from 'node:crypto'
 import { isValidSegment } from '@qianmo/protocol'
 import type { WitnessAnchor, WitnessEvidence } from './anchor.js'
-import { isWitnessAnchor, isWitnessAnchorReceipt } from './anchor.js'
+import {
+  isWitnessAnchor,
+  isWitnessAnchorReceipt,
+  isWitnessEvidence,
+} from './anchor.js'
 import type { WitnessAnchorWriter } from './sender.js'
 import { FileWitnessAnchorStore, WitnessAnchorExistsError } from './store.js'
 
@@ -384,8 +388,8 @@ export function remoteWitnessAnchorReader(
           )
         }
         const parsed: unknown = await response.json()
-        if (!Array.isArray(parsed) || !parsed.every(isWitnessAnchorReceipt)) {
-          throw new Error('witness service returned invalid anchor receipts')
+        if (!Array.isArray(parsed) || !parsed.every(isWitnessEvidence)) {
+          throw new Error('witness service returned invalid anchor evidence')
         }
         return parsed
       })
