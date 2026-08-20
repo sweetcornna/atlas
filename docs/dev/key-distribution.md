@@ -5,8 +5,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.0**（2026-08-17 负责人评审通过：K-10 达成；K-13 按 §8.3 原文执行——三条退役信号量同时满足才进入阶段③；K-14 接受 T-E 单点与 90 天 / 30 天两个数字） |
-| 日期 | 2026-08-17 |
+| 文档版本 | **v1.1**（2026-08-20：P12.1~P12.4 机制实现已收口；K-5 仍 1/5，K-11/K-12 未完成） |
+| 日期 | 2026-08-20 |
 | 覆盖任务包 | `retro-m0.md` §7.3 **P11.2 生产级加密与密钥分发的设计（只设计，不实现）** |
 | 依据指针 | `packages/capability/src/policy.ts:16-34`（`OPEN_POLICY` 的收敛条件原文）、`packages/transport/src/handshake.ts:8-28`（PSK 握手的自陈缺陷）、`src/services/qianmo/nodeIdentity.ts:121-139`（反 TOFU 立场）、`docs/dev/protocol.md` §10.1、`docs/dev/a2a-gap.md` G-27、章程 §2.2 N-3 与 §3.3 C-5、`docs/dev/console.md` §4 / §7.2 / §8.2、`docs/dev/demo-env.md` §2.4 / §2.5 |
 | 实测环境 | 本开发机 Darwin arm64、Bun **1.3.13**（`.tool-versions` 同版）、OpenSSL 3.6.3。十项探针见 §2，复现命令见附 A |
@@ -561,7 +561,7 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 >
 > 状态用三个值，与探针脚本 `scripts/qianmo-policy-switch-probes.ts` 同一套词汇：**已落地**（本仓库有可复跑的机器证据）／**机制已落地·舰队未采集**（代码与用例成立，但 §12 要的那半需要真机／多节点／连续天数）／**待评审**。**「机制成立」与「舰队被观察过」是两个命题，不合并**——把后者记成前者正是 `retro-m0.md` §2.1 数过四次的那种假绿。
 >
-> 落地提交序列（`7e42af6f..`）：P12.1 `00fbff39` / `27ee43e7` / `1fcdad4a`；P12.2 `2e8330ae` / `f3bea6c5`；P12.3 `b32440e5` / `17572058` / `5ba56482` / `004d5352` / `ccc6bd2d`；P12.4 `b4909b0b` / `f5b8dd00` / `fc805894` / `e6770137` / `7fa8bd1c` / `ee1f59a8` / `4521fb1f`。
+> 落地提交序列（`7e42af6f..`）：P12.1 `00fbff39` / `27ee43e7` / `1fcdad4a`；P12.2 `2e8330ae` / `f3bea6c5`；P12.3 `b32440e5` / `17572058` / `5ba56482` / `004d5352` / `ccc6bd2d`；P12.4 `b4909b0b` / `f5b8dd00` / `fc805894` / `e6770137` / `7fa8bd1c` / `ee1f59a8` / `4521fb1f` / `8affaab6` / `92ba7e82` / `2ca362f3` / `74bc2d4b` / `f35d3272`。
 >
 > **舰队层结论。** 见 §9.1 的 P12.4 运行态：舰队级前置条件尚未成立，因此 K-5 未达成；不得据此声称舰队已强制签名任务。
 
@@ -575,7 +575,7 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 | **K-6** | RL 全链路验证过一次真实吊销（= S-4），并验证过 RL 过期时的 fail-closed 行为 | **机制已落地·真机演练未做** | fail-closed 三态用例 `src/services/qianmo/__tests__/certificateDirectory.test.ts`「fail-closed to --trust (§6.4)」（从没发布过 / 过期 / 恢复）；吊销通路由 S-4 探针**就地真跑**（离线 CA → 真注册中心 → 真证书 → 目录解析得到 → 发布签名 RL → 下次 refresh 解析不到），本机 `mechanism.ok = true`。§9.1 要的「在部署节点上由人执行一次并从审计链取证」**未做** |
 | **K-7** | 证书轮换演练过一次，且演练期间**没有断开任何正在进行的任务**（§6.3） | **机制已落地·演练未做** | §6.3 第 4 条的重读能力 `fc805894`：`ClientTlsSource` 每次拨号解析一次，用例 `packages/transport/test/tls-reload.test.ts` 用**轮换 CA 根 + 服务端叶证书**证明重读的客户端回得来、攥着旧根的对照组回不来（观测点为什么落在服务端那一侧，见该文件头：F-8 + §2 补录）。§6.3 第 2/5 条的取舍见本文 §6.3 勘误注。**一次真实的季度轮换演练未做** |
 | **K-8** | 控制台证书栏上线（= S-5） | **已落地** | `packages/console/src/view/certificates.ts` + `deps.ts` 的 `CertificatePort` + host 侧 `createCertificatePort`（`src/cli/handlers/consolePorts.ts`），开关是 `occ console --trust-ca`（`7fa8bd1c`）。用例 `packages/console/test/certificates.test.ts`（含**新文案过既有用词门禁**）与 `src/cli/handlers/__tests__/certificatePort.test.ts`（真 CA 真证书，含「完全在有效期内的伪造证书必须判 `bad-signature`」这条判定顺序断言）。§10.3 那条硬规矩在类型上是结构性的：`ConsoleCertificate` 没有任何字段能承载私钥 |
-| **K-9** | `bun run precheck` 与 `bun run verify` 全绿；新增包/改动进 CI 与循环依赖、mock 卫生棘轮 | **已落地（precheck 侧）** | 全量 `bun test` 12356 pass / 0 fail / 1000 文件；`bun run check:cycles` 2054 at budget；`bun run check:unused` exports=1243 types=665 at budget（P12.1/P12.2 遗留的死面由 `b4909b0b` 清掉）；`check:mock-hygiene` 零容忍仍为零——本包**新增的用例一处 `mock.module` 都没有**（`packages/resident` 零 mock 的纪律同样保持）。`bun run verify` 的 codex 存量红点与本包无关，见仓库既有记录 |
+| **K-9** | `bun run precheck` 与 `bun run verify` 全绿；新增包/改动进 CI 与循环依赖、mock 卫生棘轮 | **已落地（precheck 侧）** | 本轮 `bun run precheck` 的 typecheck、Biome、prompt-purity 与 mock-hygiene 均通过；全量测试完成但执行端未保留可复核的汇总数字，本文不伪造新计数。`bun run check:cycles`：runtime **443 cycles / 2735 modules**，total **2054 cycles / 2899 modules**，均 at budget；`bun run check:unused`：files / dependencies / devDependencies / optionalPeerDependencies / unlisted / unresolved / binaries 均为零，exports=**1243**、types=**665**、duplicates=**10**，均 at budget（P12.1/P12.2 遗留的死面由 `b4909b0b` 清掉）。`check:mock-hygiene` 零容忍仍为零——本包**新增的用例一处 `mock.module` 都没有**（`packages/resident` 零 mock 的纪律同样保持）。`bun run verify` 的 codex 存量红点与本包无关，见仓库既有记录 |
 
 ### 12.2 流程判据
 

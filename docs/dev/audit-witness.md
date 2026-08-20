@@ -2,9 +2,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 文档版本 | **v1.0**（2026-08-17 负责人评审通过，定案「定期锚定摘要」生效；失陷域前提——九台 VPS 是否共用 SSH 私钥——的实地核查纳入多机常驻测试批次） |
-| 撰写日期 | 2026-08-17 |
-| 覆盖阶段 | M1 · 第 2 迭代（暂编 S11）任务包 **P11.4「审计的机外见证（选型 + 最小验证）」** |
+| 文档版本 | **v1.1**（2026-08-20：包 A/B 已集成；两台无 sudo VPS 的真机 DoD 与失陷域前提仍未采集） |
+| 撰写日期 | 2026-08-20 |
+| 覆盖阶段 | M1 · 第 2 迭代（暂编 S11）任务包 **P11.4「审计的机外见证（选型 + 最小验证）」**及其实现状态 |
 | 撰写 | （待署名） |
 | 依据 | 任务包与 DoD 见 [`retro-m0.md`](./retro-m0.md) §7.3 P11.4 行；缺口的原始记录见 [`roadmap.md`](./roadmap.md) v2.28 ③ 与 P7.2 实施记录；三句承诺的权威表述在 `packages/audit/src/trail.ts` 模块注释与 `packages/audit/src/index.ts`；把缺口钉死的用例是 `packages/audit/test/trail.test.ts` 的 `claim 3`；控制台侧的下游影响见 [`console.md`](./console.md) §8.3；部署机况见 [`baseline-m0.md`](./baseline-m0.md) §8 栏 B 与 [`demo-env.md`](./demo-env.md) §2.1 与 §4.4；密钥与 PKI 的界线见 [`charter.md`](./charter.md) N-3 与 §3.3 C-5 |
 | 性质 | 见下方「本文性质」 |
@@ -14,11 +14,12 @@
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v0.1-draft | 2026-08-17 | 初稿。三个选项逐条给机制/成本/失效模式/运维负担，定案「定期锚定摘要」，回答锚定类方案的四个硬问题，跑通最小验证（14 项检查全绿），给两个落地任务包草案 |
+| v1.1 | 2026-08-20 | 包 A/B 已实现并集成；§8 改记实现与真机状态，§9 改为唯一的代码/测试证据指针。两台无 sudo VPS 的 DoD 不以单元测试替代，仍待采集。 |
 
 **本文性质**
 
-1. **本文是选型报告，评审通过后按 §8 的落地任务包实施。**在评审通过之前，§3 的定案与 §4 的参数都不构成决定。
-2. **本文不改任何生产代码。**P11.4 的实现动作全部在 §8 的任务包里；本文只产出一份 `docs/dev/audit-witness.md` 与一个**不入库**的验证脚本（§5）。
+1. **本文是选型报告，也是 P11.4 的实现状态真源。**定案仍取 §3；包 A/B 的实现与未完成的真机 DoD 只在 §8 判读。
+2. **选型阶段不改生产代码；包 A/B 现已实现。**实现与回归用例只以 §9 的代码/测试指针为证，不把单元测试写成两台无 sudo VPS 的验收。
 3. **凡本文写「基座 / 现有实现是什么样」，一律取自代码，不取自文档印象。**出处见 §9。
 4. **本文不承诺任何「不可篡改」。**它要补的是 P7.2 三句承诺里的第三句，而补法是**把不可检测变成可检测**，不是把不可能变成可能——§7 逐条写明补完之后仍然做不到什么。
 
@@ -360,20 +361,20 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 
 ---
 
-## §6 控制台的接缝（只写接缝，不实现）
+## §6 控制台的接缝（已实现）
 
-「锚点不符」这个新信号将来从哪冒出来，逐点写清；**本包不写这些代码**。
+「锚点不符」已沿以下接缝进入 CLI 与控制台；精确代码和回归用例只列在 §9。
 
-| 位置 | 现状 | 接缝 |
+| 位置 | 原定接缝 | 实现状态 |
 | --- | --- | --- |
-| `packages/console/src/deps.ts` | `AuditPage` 有 `intact` / `issueCount` / `total`；`AuditPort` 有 `read` / `chain` | `AuditPage` 加一个**可选**字段承载见证判定（未配置锚点时缺席）。端口形状变更从这个文件开始——它是那份契约 |
-| `src/cli/handlers/consolePorts.ts` | 四个端口的生产实现 | 见证判定在这里读锚点并计算。**包里不知道锚点存在哪**，与它不知道审计链是哪个文件同一条理由 |
-| `src/cli/handlers/consoleArgs.ts` | 纯函数解析，含 `--audit <绝对路径>` | 加 `--anchors <绝对路径\|URL>`，绝对路径的要求与 `--audit` 同一条理由（长驻进程，相对路径含义会漂） |
-| `packages/console/src/view/audit.ts` | 表头 `intact ? '完整' : '断裂 N'` | **必须变成三态，不能折进现有两态**。「链内完整但锚点不符」恰恰是最该显眼的那一种——它是本包存在的全部理由 |
-| 同上 | — | **没配锚点时不许显示「完整」，要显示「未见证」。**否则 `console.md` §8.3 记的那个坑会原样复制到新字段上：一个看起来像保证、实际只代表「没人不小心改坏它」的标签 |
-| `docs/dev/console.md` §8.3 | 记着这条缺口「已登记为 P11.4」 | 落地后改写该节：从「缺口」改为「已补 + 残余窗口是一个锚定周期」 |
+| `packages/console/src/deps.ts` | `AuditPage` 加可选见证判定，端口契约从此处开始 | 已接入 |
+| `src/cli/handlers/consolePorts.ts` | host 读取锚点并计算，包内不知存储位置 | 已接入 |
+| `src/cli/handlers/consoleArgs.ts` | `--anchors <绝对路径\|URL>` | 已接入 |
+| `packages/console/src/view/audit.ts` | 三态，锚点不符不可折进链内完整 | 已接入 |
+| 同上 | 未配锚点显示「未见证」 | 已接入 |
+| `docs/dev/console.md` §8.3 | 内测可见面改记残余窗口 | 已回写 |
 
-三种状态的语义，落地时按这个表钉：
+三种状态的语义按这个表实现：
 
 | 状态 | 含义 | 何时出现 |
 | --- | --- | --- |
@@ -397,31 +398,29 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 
 ---
 
-## §8 落地任务包草案（评审通过后排期）
+## §8 落地状态
 
-### 包 A · 锚定发送方 + 见证端点（最小实现）
+### 包 A · 锚定发送方 + 见证端点（最小实现）✅ 已实现
 
 | 项 | 内容 |
 | --- | --- |
-| 目标 | 让 9 台无 sudo VPS 上的每个常驻节点都在定期锚定，锚点落在一个只增不删的第二位置 |
-| 依赖 | P11.1（内测宿主与拓扑定下来才知道端点挂哪）；本报告评审通过 |
-| 交付物 | ① 锚点形状与签名（定序 JSON + `@qianmo/capability` 的 `signBytes`，**不新增密钥体系**）；② 节点侧定期锚定动作（挂已有定时器，`T` 默认 60 s，可配）；③ 见证端点（照抄 `@qianmo/backup` 的三层只增不删：`ALLOWED_METHODS`、`assertBackupSurfaceIsSafe` 同款词表断言、同 `(node, seq)` 已存在则拒绝）；④ 陈旧检查与告警；⑤ 回归用例——**把本报告 §5 的变体 A / B / C / D1 / E 逐条搬成包内测试**（尤其是 C：它钉的是「本方案做不到什么」，与 `audit` 包里 `claim 3` 同一性质，缺了它读套件的人会以为窗口不存在） |
-| DoD | 在**两台不同的**无 sudo VPS 上各起一个节点，锚点进同一个见证端点；人为整篇重写其中一台的审计链并重算哈希，验证判为被改写；见证端点对覆盖/删除请求一律拒绝（用例覆盖）；`precheck` 零错 |
+| 目标 | 让无 sudo VPS 上的常驻节点定期锚定，锚点落在只增不删的第二位置 |
+| 实现 | 已实现；代码与回归用例指针见 §9 |
+| 真机 DoD | **未采集**：两台不同无 sudo VPS 各起节点、共同端点接收锚点、重写其中一条链的现场证据仍缺。包内用例覆盖覆盖/删除拒绝与 §5 变体，但不替代这次真机验收。 |
 | 估算 | **12–20 人时** |
 | 估算依据 | 锚点形状与签名是既有 `signBytes` 的直接调用；见证端点是 `packages/backup/src/service.ts` 的同构复制（那份三层结构与词表断言可直接照搬）；主要成本在两台真机的部署与联调，以及五条回归用例 |
 
-### 包 B · 验证接缝：`occ audit --witness` + 控制台第三态
+### 包 B · 验证接缝：`occ audit --witness` + 控制台第三态 ✅ 已实现
 
 | 项 | 内容 |
 | --- | --- |
-| 目标 | 让「锚点不符」这个信号在两个人会真的去看的地方冒出来 |
-| 依赖 | 包 A |
-| 交付物 | ① `occ audit` 加 `--witness <绝对路径\|URL>`，与 `--verify` 合流，退出码语义扩展为「链内断裂**或**锚点不符 → 1」；② 控制台按 §6 的表接线（`deps.ts` 契约 → `consolePorts.ts` 实现 → `consoleArgs.ts` 参数 → `view/audit.ts` 三态 + 未见证灰态）；③ 回写 `console.md` §8.3 与 `packages/audit` 的模块注释/README——三句承诺的第 3 句从「无法阻止」改为「无法阻止但一定被检测到（锚定窗口内除外）」 |
-| DoD | 控制台在被重写的链上显示「锚点不符」而**不是**「完整」；未配锚点时显示「未见证」而不是「完整」；`occ audit --verify --witness` 在同一份文件上退出码为 1；`console.md` §8.3 与本文 §7 表述一致，无第二份真源 |
+| 目标 | 让「锚点不符」出现在 CLI 与控制台的判读面 |
+| 实现 | 已实现；代码与回归用例指针见 §9 |
+| 验收 | 包内回归用例覆盖重写链的 CLI 非零退出、控制台「锚点不符」与「未见证」；这证明实现，不替代包 A 的两台 VPS 真机 DoD。 |
 | 估算 | **6–12 人时** |
 | 估算依据 | 四个接缝点都已定位到具体文件与具体行（§6），控制台的端口注入模式现成；文档回写是三处指针不是三份副本 |
 
-**两个包合计 18–32 人时**，落在 `retro-m0.md` §7.3 给 P11.4 的 **10–20 人时**估算之上。差额的来源要说清楚：原估算的依据是「判据现成，成本在选型与部署」，而选型（本报告）已经完成、不再计入；超出的部分是**包 B**——原估算没有把控制台接线计进去，因为 P11.4 立项时控制台还不存在（`console.md` 与本报告同日）。**若排期紧张，包 A 可单独交付并达成 P11.4 的 DoD**，包 B 作为控制台侧的后续。
+**两个包合计 18–32 人时**的原估算不变。实现已完成；P11.4 是否可按完整 DoD 关闭，只取包 A 的两台无 sudo VPS 证据，当前不得因本地回归通过而宣称已关闭。
 
 ---
 
@@ -434,7 +433,12 @@ P11.4 审计机外见证 —— 最小验证（定期锚定摘要）
 | `packages/audit/test/trail.test.ts` | `claim 3` —— 把本报告要补的缺口钉死的那条用例 |
 | `packages/capability/src/keys.ts` | `signBytes` / `verifyBytes`，节点 Ed25519 密钥对的编码约定 |
 | `packages/backup/src/service.ts` · `store.ts` | 「只增不删的存储面」在本仓库的既有解法，§4.1 直接照抄 |
-| `packages/console/src/deps.ts` · `view/audit.ts` | 控制台接缝的两个落点（契约 / 表头） |
-| `src/services/qianmo/auditTrail.ts` | `auditTrailPath()` 与各层 sink 的接线层，锚定动作的挂载点在它附近 |
-| `docs/dev/console.md` §8.3 | 缺口在内测用户可见面上的表述，落地后要回写 |
+| `packages/witness/src/{anchor,service,store,sender,verify}.ts` | 包 A：锚点、append-only 端点、发送与验证实现 |
+| `packages/witness/src/__tests__/witness.test.ts` | 包 A：§5 变体 A/B/C/D1/E、追加面和 fail-open 回归 |
+| `src/cli/handlers/resident.ts` · `src/services/qianmo/resident.ts` | 包 A：`--witness-url`、调度器与常驻轮询接线 |
+| `src/services/qianmo/auditWitness.ts` · `src/cli/handlers/qianmoAudit.ts` | 包 B：`occ audit --verify --witness` 的来源解析与退出语义 |
+| `src/cli/handlers/{consoleArgs,consolePorts}.ts` · `packages/console/src/{deps.ts,view/audit.ts}` | 包 B：`--anchors`、host 端口、控制台三态 |
+| `src/cli/handlers/__tests__/{resident,qianmoAudit,consoleArgs}.test.ts` · `packages/console/test/{http,view}.test.ts` | 包 A/B 的 CLI 与控制台回归 |
+| `src/entrypoints/cli.tsx` | audit fast path 等待 `runQianmoAudit(...)` 完成 |
+| `docs/dev/console.md` §8.3 | 内测用户可见面的残余窗口表述 |
 | `docs/dev/baseline-m0.md` §7 B-3 · §8 | 逐条 fsync 的 IOPS 结论（§4.2 频率论证）、无 sudo 机况 |
