@@ -65,6 +65,7 @@
     "check:mock-hygiene": "bun run scripts/check-mock-hygiene.ts",
     "check:identity-paths": "bun run scripts/check-identity-paths.ts",
     "verify:p32": "bun run scripts/qianmo-programming-tasks.ts",
+    "qianmo:nxn-matrix": "bun run scripts/qianmo-nxn-resolution-matrix.ts",
     "sbom": "bun run scripts/sbom.ts",
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
