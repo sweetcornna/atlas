@@ -73,9 +73,6 @@ const BACKUP_TOKEN_ENV_VAR = 'QIANMO_BACKUP_WRITE_TOKEN'
 /** The node-side credential can append anchors but cannot rewrite history. */
 const WITNESS_TOKEN_ENV_VAR = 'QIANMO_WITNESS_WRITE_TOKEN'
 
-/** The node-side credential can append anchors but cannot rewrite history. */
-const WITNESS_TOKEN_ENV_VAR = 'QIANMO_WITNESS_WRITE_TOKEN'
-
 interface ResidentNdjsonWriter<T> {
   write(record: T): void
   close(): Promise<void>

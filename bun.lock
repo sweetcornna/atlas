@@ -396,6 +396,7 @@
       "name": "@qianmo/transport",
       "version": "0.0.0",
       "dependencies": {
+        "@qianmo/capability": "workspace:*",
         "@qianmo/protocol": "workspace:*",
       },
     },
