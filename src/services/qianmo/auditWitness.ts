@@ -14,7 +14,7 @@ import { isAbsolute, resolve } from 'node:path'
 import {
   FileWitnessAnchorStore,
   remoteWitnessAnchorReader,
-  type WitnessAnchor,
+  type WitnessEvidence,
 } from '@qianmo/witness'
 import type { AuditRecord } from '@qianmo/audit'
 
@@ -64,7 +64,7 @@ export async function readAuditWitnessAnchors(
   source: AuditWitnessSource,
   node: string,
   readToken = process.env[WITNESS_READ_TOKEN_ENV_VAR],
-): Promise<readonly WitnessAnchor[]> {
+): Promise<readonly WitnessEvidence[]> {
   if (source.kind === 'path') {
     return await new FileWitnessAnchorStore({ root: source.value }).list(node)
   }

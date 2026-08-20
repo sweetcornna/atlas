@@ -20,6 +20,7 @@ import { generateNodeKeyPair } from '@qianmo/capability'
 import {
   AuditWitnessScheduler,
   FileWitnessAnchorStore,
+  remoteWitnessAnchorReader,
   remoteWitnessAnchorWriter,
   startWitnessService,
 } from '@qianmo/witness'
@@ -630,6 +631,50 @@ describe('console audit port', () => {
     })
     if (result.ok) throw new Error('expected witness endpoint failure')
     expect(result.failure.message).toStartWith('见证端点不可达')
+  })
+
+  test('returns the existing unavailable result when its remote witness reader times out', async () => {
+    const path = join(directory, 'witness-timeout.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: 'node-witness-timeout',
+    })
+    trail.close()
+    const keys = generateNodeKeyPair()
+    let aborted = false
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: 'console-witness-read-token',
+      timeoutMs: 10,
+      fetchImpl: ((_input, init) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborted = true
+          },
+          { once: true },
+        )
+        return new Promise<Response>(() => {})
+      }) as typeof fetch,
+    })
+
+    const result = await createAuditPort({
+      path,
+      witness: { kind: 'url', value: 'http://witness.test/' },
+      publicKeyOf: async () => ({ ok: true, value: keys.publicKey }),
+      witnessReader: reader.list,
+    }).read({})
+    expect(aborted).toBe(true)
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: 'unreachable' },
+    })
+    if (result.ok) throw new Error('expected witness timeout failure')
+    expect(result.failure.message).toContain('timed out after 10 ms')
   })
 
   test('defaults the tail to the same 200 as occ audit', () => {

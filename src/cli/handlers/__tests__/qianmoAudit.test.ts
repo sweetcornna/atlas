@@ -15,6 +15,7 @@ import { CapacityEventType } from '@qianmo/capacity'
 import {
   AuditWitnessScheduler,
   FileWitnessAnchorStore,
+  remoteWitnessAnchorReader,
   remoteWitnessAnchorWriter,
   startWitnessService,
 } from '@qianmo/witness'
@@ -204,6 +205,43 @@ describe('audit --verify witness verdict', () => {
       process.exitCode = previousExitCode ?? 0
       await service.stop()
     }
+  })
+
+  test('propagates a remote witness reader deadline instead of waiting forever', async () => {
+    const path = join(root, 'witness-timeout.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: WITNESS_NODE,
+    })
+    trail.close()
+    loadOrCreateNodeKeys(WITNESS_NODE)
+    let aborted = false
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: WITNESS_READ_TOKEN,
+      timeoutMs: 10,
+      fetchImpl: ((_input, init) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborted = true
+          },
+          { once: true },
+        )
+        return new Promise<Response>(() => {})
+      }) as typeof fetch,
+    })
+    await expect(
+      runQianmoAudit(
+        ['--verify', '--path', path, '--witness', 'http://witness.test/'],
+        { readWitnessAnchors: async () => await reader.list(WITNESS_NODE) },
+      ),
+    ).rejects.toThrow('timed out after 10 ms')
+    expect(aborted).toBe(true)
   })
 })
 

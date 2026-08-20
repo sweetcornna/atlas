@@ -26,7 +26,7 @@ import {
   reconstructChain,
   type AuditRecord,
 } from '@qianmo/audit'
-import { verifyAuditWitness } from '@qianmo/witness'
+import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
 import { invokedBinName } from '../../constants/brand.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import {
@@ -59,6 +59,14 @@ interface QianmoAuditConfig {
   readonly verify: boolean
   readonly witness?: AuditWitnessSource
   readonly limit: number
+}
+
+/** Injected only by handler tests; production uses the host source loader. */
+interface QianmoAuditRuntimeOptions {
+  readonly readWitnessAnchors?: (
+    source: AuditWitnessSource,
+    node: string,
+  ) => Promise<readonly WitnessEvidence[]>
 }
 
 /** Accepts an ISO timestamp or raw epoch ms — both turn up in tickets. */
@@ -250,7 +258,10 @@ function formatRecord(record: AuditRecord): string {
   )
 }
 
-export async function runQianmoAudit(args: readonly string[]): Promise<void> {
+export async function runQianmoAudit(
+  args: readonly string[],
+  runtime: QianmoAuditRuntimeOptions = {},
+): Promise<void> {
   // 帮助排在最前面，在任何解析与磁盘读取之前：问「这个命令怎么用」的人恰恰是
   // 还不知道要给哪个查询条件的那个人，而不给条件正是这个解析器会抛的第一件事。
   if (isQianmoAuditHelpRequest(args)) {
@@ -264,7 +275,12 @@ export async function runQianmoAudit(args: readonly string[]): Promise<void> {
     const witness =
       config.witness === undefined
         ? undefined
-        : await verifyConfiguredWitness(config.path, records, config.witness)
+        : await verifyConfiguredWitness(
+            config.path,
+            records,
+            config.witness,
+            runtime.readWitnessAnchors,
+          )
     const summary = {
       path: config.path,
       records: records.length,
@@ -326,6 +342,7 @@ async function verifyConfiguredWitness(
   trailPath: string,
   records: readonly AuditRecord[],
   source: AuditWitnessSource,
+  readAnchors = readAuditWitnessAnchors,
 ) {
   const node = witnessNodeOf(records)
   if (node === null) {
@@ -341,7 +358,7 @@ async function verifyConfiguredWitness(
   }
   return verifyAuditWitness({
     trailPath,
-    anchors: await readAuditWitnessAnchors(source, node),
+    anchors: await readAnchors(source, node),
     publicKey,
   })
 }

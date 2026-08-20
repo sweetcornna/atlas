@@ -32,7 +32,7 @@ import {
   type TrailQuery,
   type TrailReadResult,
 } from '@qianmo/audit'
-import { verifyAuditWitness } from '@qianmo/witness'
+import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
 import type {
   AuditFilter,
   AuditPort,
@@ -310,7 +310,9 @@ const AUDIT_OUTCOMES: ReadonlySet<string> = new Set([
   'dropped',
 ])
 
-interface AuditPortOptions {
+type AuditWitnessReader = (node: string) => Promise<readonly WitnessEvidence[]>
+
+export interface AuditPortOptions {
   /** 审计链文件的绝对路径。 */
   readonly path: string
   /** Absent until the console is given `--anchors`. */
@@ -319,6 +321,8 @@ interface AuditPortOptions {
   readonly publicKeyOf?: (node: string) => Promise<ConsoleResult<string>>
   /** Optional only for direct callers; production reads the environment. */
   readonly witnessReadToken?: string
+  /** Direct callers may provide the reader; production uses the parsed source. */
+  readonly witnessReader?: AuditWitnessReader
 }
 
 function clampLimit(raw: number | undefined): number {
@@ -393,11 +397,15 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
           } else {
             const publicKey = await options.publicKeyOf(node)
             if (!publicKey.ok) return publicKey
-            const anchors = await readAuditWitnessAnchors(
-              options.witness,
-              node,
-              options.witnessReadToken,
-            )
+            const anchors = await (
+              options.witnessReader ??
+              (requestedNode =>
+                readAuditWitnessAnchors(
+                  options.witness as AuditWitnessSource,
+                  requestedNode,
+                  options.witnessReadToken,
+                ))
+            )(node)
             const verification = verifyAuditWitness({
               trailPath: options.path,
               anchors,

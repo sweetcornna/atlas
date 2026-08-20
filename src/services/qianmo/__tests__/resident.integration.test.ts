@@ -36,6 +36,7 @@ import {
   issueCapability,
 } from '@qianmo/capability'
 import { ReceiptStatus, TransportClient } from '@qianmo/transport'
+import type { AuditWitnessScheduler } from '@qianmo/witness'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
 import { executeResidentWake } from '../../../cli/handlers/residentWake.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
@@ -238,6 +239,70 @@ describe('resident product integration', () => {
       'Error: resident ACP child exited code=null signal=SIGKILL',
     ])
   }, 15_000)
+
+  test('a never-settling witness tick does not block mailbox admission', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-witness-poll-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    let ticks = 0
+    let failuresRemaining = 0
+    const witness = {
+      tick: (): Promise<void> => {
+        ticks += 1
+        if (failuresRemaining > 0) {
+          failuresRemaining -= 1
+          return Promise.reject(new Error('witness tick rejected'))
+        }
+        return new Promise(() => {})
+      },
+    } as unknown as AuditWitnessScheduler
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      witness,
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+    await waitUntil(() => ticks > 0)
+
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+    })
+    clients.push(client)
+    await client.connect()
+    client.send(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { round: 'witness-pending' },
+      }),
+    )
+    await client.waitForDrain()
+    await waitUntil(async () => (await unreadCount()) === 0)
+    failuresRemaining = 1
+    await waitUntil(() =>
+      errors.some(error => String(error).includes('rejected')),
+    )
+  }, 10_000)
 
   test('acks at the read flip and returns task.result over the same channel', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-task-result-'))

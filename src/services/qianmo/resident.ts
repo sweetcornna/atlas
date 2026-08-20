@@ -1303,6 +1303,33 @@ export class QianmoResident {
     this.#supervisor.stop()
   }
 
+  /**
+   * Witness I/O is best-effort evidence collection, never an admission gate.
+   *
+   * The scheduler coalesces its own in-flight attempt. Detaching it here lets
+   * the existing mailbox poll continue when an endpoint is half-open; a custom
+   * scheduler rejection is still observable through the resident error sink.
+   */
+  #triggerWitnessTick(): void {
+    const witness = this.#options.witness
+    if (witness === undefined) return
+    try {
+      void witness.tick().catch(error => {
+        try {
+          this.#options.onError?.(error)
+        } catch {
+          // An observer must not turn witness outage into a resident outage.
+        }
+      })
+    } catch (error) {
+      try {
+        this.#options.onError?.(error)
+      } catch {
+        // The same fail-open rule covers an invalid injected scheduler.
+      }
+    }
+  }
+
   async #startAcp(): Promise<ResidentChildConnection> {
     const child = (this.#options.spawnAcp ?? defaultSpawnAcp)()
     const closed = childClosed(child)
@@ -1459,10 +1486,10 @@ export class QianmoResident {
           // Cheap on all but one call in sixty; see the constant's comment for
           // why the cadence is not configurable.
           this.#lifecycle.heartbeat()
-          // The witness handles its own 60 s period and every failure
-          // fail-opens internally. Keeping it on this existing timer avoids a
-          // second resident timer while preserving the audit write hot path.
-          await this.#options.witness?.tick()
+          // The witness handles its own 60 s period. Starting it on this
+          // existing timer avoids another resident timer, but it must never
+          // hold up mailbox admission while its second location is half-open.
+          this.#triggerWitnessTick()
           await runtime?.pollAll()
         },
         // The admission loop is the only thing that turns an unread mailbox
