@@ -51,6 +51,35 @@ export function nodeIdentityPath(node: string): string {
   return occConfigPath('qianmo', 'identity', `${node}.json`)
 }
 
+/**
+ * Where `qm cert request` writes the node's TLS material (key-distribution.md
+ * §4.1's table): same directory as the Ed25519 identity file, `.tls.key` /
+ * `.tls.crt` / `.tls.csr` siblings rather than a second directory. The three
+ * pieces are not one lifecycle — the key and CSR are generated together and
+ * never re-read once the CSR is handed to the CA, while the certificate
+ * arrives later, out of band, once `qm ca issue` has run — but they are all
+ * "this node's TLS identity", and putting them beside `<node>.json` is what
+ * keeps that legible on disk rather than scattered across two trees.
+ */
+export function nodeTlsKeyPath(node: string): string {
+  return occConfigPath('qianmo', 'identity', `${node}.tls.key`)
+}
+
+/** Where `qm cert request` writes the CSR it generated, for handoff to the CA. */
+export function nodeTlsCsrPath(node: string): string {
+  return occConfigPath('qianmo', 'identity', `${node}.tls.csr`)
+}
+
+/**
+ * Where a resident node's own issued certificate lives once the operator has
+ * copied it back from the CA (§6.1's "certificate ... 交付给该节点"). Not
+ * written by `qm cert request` — that command only gets as far as the CSR;
+ * this path is where `--cert` points by convention when nothing else is given.
+ */
+export function nodeTlsCertificatePath(node: string): string {
+  return occConfigPath('qianmo', 'identity', `${node}.tls.crt`)
+}
+
 function parseStored(raw: string, node: string): NodeKeyPair | null {
   let parsed: unknown
   try {

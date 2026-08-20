@@ -48,6 +48,14 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     });
 
   program
+    .command('cert')
+    .description("Build this node's own certificate request")
+    .action(async () => {
+      const { runQianmoCert } = await import('src/cli/handlers/cert.js');
+      runQianmoCert(process.argv.slice(3));
+    });
+
+  program
     .command('watch')
     .description('Run the hub-side watch-job scheduler')
     .action(async () => {
