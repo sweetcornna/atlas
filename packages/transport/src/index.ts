@@ -43,6 +43,7 @@ export {
   TransportClient,
   dialUrl,
   type ClientTlsOptions,
+  type ClientTlsSource,
   type TransportClientOptions,
   type TransportEndpoint,
 } from './client.js'

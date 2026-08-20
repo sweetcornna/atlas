@@ -100,6 +100,34 @@ export interface ClientTlsOptions {
   readonly rejectUnauthorized?: boolean
 }
 
+/**
+ * TLS materials, or a way to go and get them again
+ * (key-distribution.md §6.3 rule 4).
+ *
+ * A node certificate lasts 90 days and a reconnect loop can outlive one
+ * rotation twice over. §6.3 spells out the failure: a live TLS session is
+ * fixed at handshake time and replacing the file on disk does not touch it,
+ * which is fine — but a *client object* holding the PEM string it was
+ * constructed with will keep re-presenting the expired certificate on every
+ * reconnect "to death", long after the operator swapped the file and
+ * concluded the rotation was done.
+ *
+ * So the materials may be a function, and it is called **once per dial** —
+ * including every reconnect. A fixed object is still accepted and still
+ * correct for the case it fits (a CA root, a lab, a test); what a function
+ * buys is that "the file changed" and "the next dial uses it" are the same
+ * event, with no restart and no cache to invalidate.
+ *
+ * The function must not throw for a transient read failure — see
+ * {@link TransportClientOptions.tls} for what happens if it does.
+ */
+export type ClientTlsSource = ClientTlsOptions | (() => ClientTlsOptions)
+
+/** Resolve a {@link ClientTlsSource}. Called once per dial, never cached. */
+function resolveTls(source: ClientTlsSource): ClientTlsOptions {
+  return typeof source === 'function' ? source() : source
+}
+
 export interface TransportClientOptions {
   readonly endpoint: TransportEndpoint
   /** This node's segment, e.g. `node-a`. Sent in the handshake. */
@@ -146,7 +174,18 @@ export interface TransportClientOptions {
    * signature against without knowing which node was meant.
    */
   readonly signing?: HandshakeIdentity
-  readonly tls?: ClientTlsOptions
+  /**
+   * TLS materials, or a factory re-read on every dial (§6.3 rule 4).
+   *
+   * A factory that throws is treated as "this dial cannot be made", not as a
+   * fatal error: the throw is recorded as a connection failure and the
+   * reconnect schedule takes over, so a certificate file that is momentarily
+   * absent mid-rotation costs one backoff step rather than the link. It is
+   * *not* silently downgraded to a plaintext dial — a client that quietly
+   * stopped presenting a certificate would look connected while having lost
+   * the whole of L0.
+   */
+  readonly tls?: ClientTlsSource
   readonly backoff?: Partial<BackoffOptions>
   /** Cap on unreceipted envelopes before {@link TransportClient.send} refuses. */
   readonly maxQueued?: number
@@ -395,9 +434,22 @@ export class TransportClient implements TransportChannel {
     if (this.state === 'closed') return
     this.state = this.state === 'idle' ? 'connecting' : this.state
     const url = dialUrl(this.options.endpoint)
-    const socket = new WebSocket(url, {
-      ...(this.options.tls === undefined ? {} : toTlsOptions(this.options.tls)),
-    })
+    // Resolved here rather than in the constructor: this line is what makes a
+    // rotated certificate reach the wire on the next reconnect (§6.3 rule 4).
+    let tls: Record<string, unknown> | undefined
+    try {
+      tls =
+        this.options.tls === undefined
+          ? undefined
+          : toTlsOptions(resolveTls(this.options.tls))
+    } catch (error) {
+      // A file that is not there *right now* is a reason to try again in a
+      // moment, not a reason to dial without it. `failDial` routes this
+      // through the same backoff a refused connection takes.
+      this.failDial(error, onFatal)
+      return
+    }
+    const socket = new WebSocket(url, { ...(tls ?? {}) })
     this.socket = socket
     this.lastInboundAt = this.now()
 
@@ -579,6 +631,21 @@ export class TransportClient implements TransportChannel {
     )
   }
 
+  /**
+   * A dial that could not even be attempted, put on the reconnect schedule.
+   *
+   * Shares `onClose`'s tail deliberately: "the TLS materials were unreadable
+   * for a moment" and "the peer was not answering for a moment" have the same
+   * right answer — back off and try again — and giving them two code paths is
+   * how one of them ends up with no give-up bound.
+   */
+  private failDial(error: unknown, onFatal?: (error: Error) => void): void {
+    this.record(TransportEventType.ConnectionClosed, {
+      reason: error instanceof Error ? error.message : String(error),
+    })
+    this.scheduleReconnect(onFatal)
+  }
+
   private onClose(
     socket: WebSocket,
     code: number,
@@ -611,6 +678,11 @@ export class TransportClient implements TransportChannel {
       return
     }
 
+    this.scheduleReconnect(onFatal)
+  }
+
+  private scheduleReconnect(onFatal?: (error: Error) => void): void {
+    if (this.state === 'closed') return
     this.state = 'reconnecting'
     const decision = this.schedule.next(this.now())
     if (decision.action === 'give-up') {
