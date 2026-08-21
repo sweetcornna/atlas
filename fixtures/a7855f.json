@@ -1,0 +1,6 @@
+{
+  "input": [
+    "Observations (chronological, newest last):\n#1 | event=user_message | text=\"test message\"\n#2 | event=user_message | text=\"test message\"\n#3 | event=user_message | text=\"test message\"\n#4 | event=user_message | text=\"test message\"\n#5 | event=user_message | text=\"test message\"\n\nExtract up to 3 atomic instincts. JSON array only."
+  ],
+  "output": []
+}

@@ -28,6 +28,7 @@ export type {
   ChatTurnState,
   ChatUpdate,
   ConsoleAgent,
+  ConsoleAuditSource,
   ConsoleCertificate,
   ConsoleDeps,
   ConsoleFailure,
@@ -39,6 +40,7 @@ export type {
   WakeInput,
   WakeOutcome,
   WakePort,
+  WakeTarget,
 } from './deps.js'
 
 export {
@@ -99,7 +101,11 @@ export {
   reissueCommand,
   renderRevocationBar,
 } from './view/certificates.js'
-export { renderAudit } from './view/audit.js'
+export {
+  renderAudit,
+  renderAuditSources,
+  type AuditSourceRender,
+} from './view/audit.js'
 export {
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,

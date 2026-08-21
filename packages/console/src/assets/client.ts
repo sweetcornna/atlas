@@ -380,6 +380,8 @@ export const CONSOLE_CLIENT_JS = `
       to: fieldValue(form, 'to'),
       prompt: fieldValue(form, 'prompt')
     };
+    var node = fieldValue(form, 'node');
+    if (node) body.node = node;
     var after = fieldValue(form, 'afterMs');
     if (after) body.afterMs = Number(after);
     if (!body.from || !body.to || !body.prompt) {
@@ -436,10 +438,12 @@ export const CONSOLE_CLIENT_JS = `
       .catch(function (err) { say(status, '注销失败 · ' + message(err), 'bad'); });
   }
 
-  function openChain(trace) {
+  function openChain(trace, node) {
     var panel = byId('chain');
     if (!panel || !trace) return;
-    loadHtml(ROUTES.chain + encodeURIComponent(trace)).then(function (html) {
+    var path = ROUTES.chain + encodeURIComponent(trace);
+    if (node) path += '?node=' + encodeURIComponent(node);
+    loadHtml(path).then(function (html) {
       panel.innerHTML = html;
       panel.hidden = false;
       panel.scrollIntoView({ block: 'nearest' });
@@ -463,7 +467,10 @@ export const CONSOLE_CLIENT_JS = `
       onAgentAction(action, el.getAttribute('data-address') || '');
     } else if (action === 'chain') {
       event.preventDefault();
-      openChain(el.getAttribute('data-trace') || '');
+      openChain(
+        el.getAttribute('data-trace') || '',
+        el.getAttribute('data-audit-node') || ''
+      );
     } else if (action === 'chain-close') {
       event.preventDefault();
       var panel = byId('chain');

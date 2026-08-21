@@ -6,5 +6,10 @@
       "Bash(/private/tmp/claude-501/-Users-cornna-project-atlas/15e0f701-fe0f-4643-b7fc-096995496aec/scratchpad/venv/bin/python -)",
       "Bash(grep -v '~\\\\$')"
     ]
-  }
+  },
+  "skillOverrides": {
+    "interview": "off",
+    "dev-standards": "off"
+  },
+  "outputStyle": "default"
 }

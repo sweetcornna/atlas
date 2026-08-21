@@ -9,6 +9,7 @@ import type {
   AuditPage,
   AuditPort,
   ConsoleAgent,
+  ConsoleAuditSource,
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
@@ -18,6 +19,7 @@ import type {
   WakeInput,
   WakeOutcome,
   WakePort,
+  WakeTarget,
 } from '../src/deps.js'
 import {
   MAX_AUDIT_LIMIT,
@@ -196,6 +198,24 @@ function setup(options: { readonly withWake?: boolean } = {}): Harness {
   }
 }
 
+function setupMulti(
+  audits: readonly ConsoleAuditSource[],
+  wakeTargets?: readonly WakeTarget[],
+): Harness {
+  const harness = setup({ withWake: false })
+  const deps: ConsoleDeps = {
+    ...harness.deps,
+    audit: audits[0]?.audit ?? harness.audit,
+    audits,
+    ...(wakeTargets === undefined ? {} : { wakeTargets }),
+  }
+  return {
+    ...harness,
+    deps,
+    handle: createConsoleHandler(deps, TOKENS),
+  }
+}
+
 const BASE = 'http://console.test'
 
 function req(
@@ -315,6 +335,54 @@ describe('the page', () => {
     const response = await handle(get('/', VIEW))
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('审计日志不可达 · 见证端点不可达')
+  })
+
+  test('renders every audit source independently with explicit mirror status', async () => {
+    const intact = new FakeAudit()
+    const broken = new FakeAudit()
+    broken.readResult = okResult({ ...PAGE, intact: false, issueCount: 2 })
+    const { handle } = setupMulti([
+      { node: 'beta-1', audit: intact, kind: 'authoritative' },
+      {
+        node: 'beta-2',
+        audit: broken,
+        kind: 'mirror',
+        maxLagMinutes: 5,
+      },
+    ])
+
+    const response = await handle(get('/', VIEW))
+    const markup = await response.text()
+    expect(response.status).toBe(200)
+    expect(markup).toContain('data-audit-node="beta-1"')
+    expect(markup).toContain('data-audit-node="beta-2"')
+    expect(markup).toContain('权威链')
+    expect(markup).toContain('镜像 · 滞后 ≤ 5 分钟')
+    expect(markup).toContain('断裂 2')
+    expect(intact.filters).toHaveLength(1)
+    expect(broken.filters).toHaveLength(1)
+  })
+
+  test('keeps a missing audit source empty without failing the other sources', async () => {
+    const healthy = new FakeAudit()
+    const missing = new FakeAudit()
+    missing.readResult = okResult({
+      records: [],
+      intact: true,
+      issueCount: 0,
+      total: 0,
+    })
+    const { handle } = setupMulti([
+      { node: 'beta-1', audit: healthy, kind: 'authoritative' },
+      { node: 'beta-2', audit: missing, kind: 'authoritative' },
+    ])
+
+    const markup = await (await handle(get('/fragments/audit', VIEW))).text()
+    expect(markup).toContain('data-audit-node="beta-1"')
+    expect(markup).toContain('data-audit-node="beta-2"')
+    expect(markup).toContain('这条链还没有记录')
+    expect(healthy.filters).toHaveLength(1)
+    expect(missing.filters).toHaveLength(1)
   })
 })
 
@@ -541,6 +609,46 @@ describe('audit', () => {
     audit.readResult = failResult('unreachable', '审计文件读不到')
     expect((await handle(get('/v0/audit', VIEW))).status).toBe(503)
   })
+
+  test('multi-source JSON returns the configured collection and node reads stay scoped', async () => {
+    const first = new FakeAudit()
+    const second = new FakeAudit()
+    second.readResult = okResult({ ...PAGE, total: 7 })
+    const { handle } = setupMulti([
+      { node: 'beta-1', audit: first, kind: 'authoritative' },
+      { node: 'beta-2', audit: second, kind: 'mirror', maxLagMinutes: 5 },
+    ])
+
+    const all = await handle(get('/v0/audit?limit=3', VIEW))
+    expect(all.status).toBe(200)
+    const allBody = await body(all)
+    expect((allBody['audits'] as readonly unknown[]).length).toBe(2)
+    expect(first.filters[0]).toEqual({ limit: 3 })
+    expect(second.filters[0]).toEqual({ limit: 3 })
+
+    const one = await handle(get('/v0/audit?node=beta-2', VIEW))
+    expect(one.status).toBe(200)
+    expect((await body(one))['total']).toBe(7)
+    expect((await handle(get('/v0/audit?node=unknown', VIEW))).status).toBe(404)
+  })
+
+  test('multi-source trace details require and honour the selected node', async () => {
+    const first = new FakeAudit()
+    const second = new FakeAudit()
+    first.chainResult = okResult({ ...CHAIN, traceId: 'first' })
+    second.chainResult = okResult({ ...CHAIN, traceId: 'second' })
+    const { handle } = setupMulti([
+      { node: 'beta-1', audit: first, kind: 'authoritative' },
+      { node: 'beta-2', audit: second, kind: 'authoritative' },
+    ])
+
+    const scoped = await handle(get('/v0/audit/chain/shared?node=beta-2', VIEW))
+    expect(scoped.status).toBe(200)
+    expect(second.traces).toEqual(['shared'])
+    expect(first.traces).toEqual([])
+    expect((await body(scoped))['chain']).toMatchObject({ traceId: 'second' })
+    expect((await handle(get('/v0/audit/chain/shared', VIEW))).status).toBe(400)
+  })
 })
 
 describe('limits', () => {
@@ -588,6 +696,110 @@ describe('wake', () => {
     const error = await errorOf(response)
     expect(error['code']).toBe('unsupported')
     expect(String(error['message'])).toContain('PSK')
+  })
+
+  test('selects only a configured named wake target and discards a client URL', async () => {
+    const nodeOne = new FakeWake()
+    const { handle } = setupMulti(
+      [{ node: 'beta-1', audit: new FakeAudit(), kind: 'authoritative' }],
+      [
+        {
+          node: 'beta-1',
+          url: 'ws://127.0.0.1:38631/',
+          wake: nodeOne,
+        },
+        {
+          node: 'beta-2',
+          url: 'ws://127.0.0.1:38632/',
+          unavailableReason: 'missing per-node PSK',
+        },
+      ],
+    )
+    const response = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: {
+          node: 'beta-1',
+          from: 'qianmo://console/operator',
+          to: 'qianmo://beta-1/reviewer',
+          prompt: 'wake',
+          url: 'ws://attacker.invalid:1/',
+        },
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(nodeOne.sent[0]?.url).toBe('ws://127.0.0.1:38631/')
+  })
+
+  test('locally degrades one missing named PSK without opening another target', async () => {
+    const nodeOne = new FakeWake()
+    const { handle } = setupMulti(
+      [{ node: 'beta-1', audit: new FakeAudit(), kind: 'authoritative' }],
+      [
+        {
+          node: 'beta-1',
+          url: 'ws://127.0.0.1:38631/',
+          wake: nodeOne,
+        },
+        {
+          node: 'beta-2',
+          url: 'ws://127.0.0.1:38632/',
+          unavailableReason: 'missing per-node PSK',
+        },
+      ],
+    )
+    const unavailable = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: {
+          node: 'beta-2',
+          from: 'qianmo://console/operator',
+          to: 'qianmo://beta-2/reviewer',
+          prompt: 'wake',
+        },
+      }),
+    )
+    expect(unavailable.status).toBe(501)
+    expect(nodeOne.sent).toHaveLength(0)
+  })
+
+  test('rejects unknown and mismatched named wake targets before dialing', async () => {
+    const nodeOne = new FakeWake()
+    const { handle } = setupMulti(
+      [{ node: 'beta-1', audit: new FakeAudit(), kind: 'authoritative' }],
+      [
+        {
+          node: 'beta-1',
+          url: 'ws://127.0.0.1:38631/',
+          wake: nodeOne,
+        },
+      ],
+    )
+    const unknown = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: {
+          node: 'attacker',
+          from: 'qianmo://console/operator',
+          to: 'qianmo://attacker/reviewer',
+          prompt: 'wake',
+        },
+      }),
+    )
+    expect(unknown.status).toBe(403)
+    const mismatch = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: {
+          node: 'beta-1',
+          from: 'qianmo://console/operator',
+          to: 'qianmo://beta-2/reviewer',
+          prompt: 'wake',
+        },
+      }),
+    )
+    expect(mismatch.status).toBe(403)
+    expect(nodeOne.sent).toHaveLength(0)
   })
 
   test('a malformed wake never reaches the port', async () => {
