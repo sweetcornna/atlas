@@ -60,14 +60,46 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 路径全由 `common.sh` 从 `QIANMO_BETA_ROOT` 派生：备份 store 是 `<root>/backups/`，当前
 注册表落盘是 `<root>/state/registry-agents.json`，升级快照是 `<root>/state/snapshots/`。工具没有
 任意目录参数；根目录与 marker 先过公共层守卫，Bun helper 又逐项拒绝非规范路径、根外路径、
-符号链接（含父目录）和非普通文件。失败会给出类别/对象并以非零退出，不把部分结果报成成功。
+符号链接（含父目录）和非普通文件。内测根的 mode 必须严格为 0700；marker、文件和每级后代目录
+必须与根同 owner，后代目录可保留正常 umask 产生的 0775。捕获后的每级父目录会按精确的
+mode/dev/ino/owner 身份在操作前复验，`chmod` 或替换都会失败关闭；dev/ino 用 bigint 比较，避免大
+inode 精度丢失。失败会给出类别/对象并以非零退出，不把部分结果报成成功。所有对象和各类 planner
+先完成只读预检并汇总错误；任一错误都会阻止本轮全部数据操作。
 
 自然日和自然周一律按 **UTC**：72 小时边界包含恰好等于边界的快照；其外但在最近 14 个 UTC
 自然日内，每日保留 `createdAt` 最新的一份，时间相同按快照 id 词典序取大者。已完成日志压成
-`<name>.YYYY-MM-DD.gz`，活着的 pid 对应 `.out` / `.err` 不碰；工具不产生 `.gz.gz`，也不会覆盖
-已有 gzip 目标。审计只在周日封存权威源链到 `archive/trail-<ISO-week>.ndjson`，临时文件 fsync 后
-原子发布，原链、镜像链和台账都不删不改；台账仅在超过 10 MiB 时告警。完整策略和保留数字以
+`<name>.YYYY-MM-DD.gz`；活着的 pid 对应 raw `.out` / `.err` 不轮转，但仍会验证已有同名 gzip peer，
+不能借 active 状态跳过冲突检查。工具不产生 `.gz.gz`，也不会覆盖已有 gzip 目标。raw 日志即使已经
+超过 14 天，也先在本轮生成并验证 gzip、再删 raw；新 gzip 到下一轮才按 14 天策略淘汰。若同名
+raw 与已有 gzip 解压内容或保留时间不同，双方都保留并非零退出，由操作员处置冲突。`--apply` 的
+全量扫描与执行由 `<root>/run/.retain-apply-lock` 串行化；并发的等价运行会在前一份完成后重新扫描并
+幂等结算。审计只在周日封存权威源链到
+`archive/trail-<ISO-week>.ndjson`，临时文件 fsync 后原子发布，原链、镜像链和台账都不删不改；
+台账仅在超过 10 MiB 时告警。完整策略和保留数字以
 [`beta-env.md`](../../../docs/dev/beta-env.md) §5 为准。
+
+备份归档与元数据成对删除。删除任一方前，元数据 staging 必须依次完成 payload fd fsync、临时目录
+fsync（提交 payload 目录项）和 `run` 目录 fsync（提交临时目录项），每一步都绑定并前后复验已捕获的
+同 owner、非符号链接目录身份。公开 pathname 绝不直接传给 `unlink`：工具先在同一父目录创建并
+fsync 私有 `.retain-delete-*` quarantine，再用 macOS `renamex_np(RENAME_EXCL)` 或 Linux
+`renameat2(RENAME_NOREPLACE)` 原子、无覆盖地隔离 pathname；平台不支持时失败关闭，绝不退回覆盖式
+rename。隔离 inode 与计划身份一致、quarantine 和原父目录均 fsync 且原 pathname 确认缺失后，才在
+私有 quarantine pathname 上 unlink。两个对象都完成后还要 fsync 已绑定的 `backups` 目录，并在同一
+父目录身份下复验两个公开 pathname 都缺失，才算删除已提交并允许清 staging。任何较早故障都不能把
+archive 的 settled/missing 误报成提交。
+
+若 syscall 边界隔离到的 inode 不是计划对象，工具绝不 unlink 它；回滚只允许 no-clobber 恢复，原
+pathname 已占用时保留 quarantine 对象并报告人工位置。这个协议保证公开 pathname 上的并发 replacement
+不会被删除或覆盖。对有权改写 quarantine namespace 的本地对手（典型是同一 UID；父目录若另行授权
+writer 也包括在内），身份复验与最终 private unlink 之间仍存在无法由 pathname API 消除的最窄竞态；
+残余只位于 quarantine 的物理清理，不扩展成对公开 pathname replacement 的 unlink 保证。
+
+删除未提交时，工具先稳定复验原 metadata 的计划身份与字节；它仍安全时才回收 staging，否则只以
+no-clobber hard link 恢复原路径，校验两链接身份与字节、fsync `backups` 后再复验。恢复的 durable
+commit 与 staging cleanup 是两个阶段：cleanup 按 payload unlink、临时目录 fsync、临时目录 rmdir、
+`run` 目录 fsync 的顺序执行。若 blocker、父目录/文件替换或任一步故障，工具不覆盖或删除并发对象，
+并按磁盘事实报告 payload 与临时目录是否仍存在；payload 尚在时位置为
+`<root>/run/.retain-*/payload`，恢复已提交但 cleanup 不完整时也不会谎称 payload 仍在。
 
 本仓库仅有临时树回归覆盖，**尚未形成真机一次运行记录，也尚未有两周归档体积复核**；这两项仍按
 `beta-env.md` §10 包③的 DoD 留待宿主环境采集。
@@ -129,7 +161,8 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 
 向后兼容靠一点：老格式的第一字段必然以 `qianmo://` 开头，所以 `node` 这个关键字不可能和
 任何一条合法的老行撞上。**坏行照旧带行号被拒**，未知键、缺必填键、端口非数字、`trail` 非
-绝对路径、节点名含 `A-Za-z0-9._-` 之外的字符（它会进 `systemctl` 命令行）也都带行号拒。
+绝对路径、节点名不符合协议段（1–64 个小写字母、数字、`_`、`-`，且首尾为字母或数字；它会进
+`systemctl` 命令行）也都带行号拒。
 
 还有一条**跨行**的校验：有坐标行的节点，它的每一条地址行端点必须正好是
 `ws://127.0.0.1:<local-port>`，否则带两边的值 die。那个不一致正是「名册上在线、拨不通」
@@ -202,12 +235,9 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 | `QIANMO_BETA_NODE` | `beta-1` | 节点名。**四台机器上必须各不相同**；没给 `--node` 时脚本会 WARN |
 | `QIANMO_BETA_AGENTS` | `planner reviewer` | 该节点的 agent（每节点 2 个，按用途分不按人分，§2.2）。也可用重复的 `--agent` 给 |
 | `QIANMO_BETA_TEAM` | `atlas` | `occ resident --team` |
-| `QIANMO_BETA_AUDIT_NODE` | console.conf > 地址表里第一个节点 | 控制台 `--audit` 指哪条链。一期是单值（§4.3 的现状限制，落地包②抬掉） |
-| `QIANMO_BETA_AUDIT_PATH` | console.conf > 由审计节点派生 | 直接指定链文件。**默认会自动区分权威与镜像**：该节点有 `trail=` 坐标（= 链靠镜像拉过来）时派生成 `<root>/mirror/<node>/trail.ndjson`，否则是 `<root>/nodes/<node>/config/...` |
-| `QIANMO_BETA_WAKE_NODE` | console.conf > 同 `AUDIT_NODE` | 控制台唤醒目标。一期只能有一个：`--wake-url` 钉死单值，而 PSK 是每进程一把（§8.2） |
-| `QIANMO_BETA_LABEL` | console.conf > 由审计节点派生（镜像时带「滞后 ≤ N min」） | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4） |
+| `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4） |
 | `QIANMO_BETA_SSH_KEY` | `$HOME/.ssh/id_ed25519_qianmo` | 隧道与镜像共用的私钥（H 上的路径）。单条坐标行可用 `key=` 覆盖 |
-| `QIANMO_BETA_MIRROR_INTERVAL_MIN` | `5` | 审计镜像拉取间隔。**它同时决定页头标签里那句「滞后 ≤ N min」**，两处从同一个变量派生 |
+| `QIANMO_BETA_MIRROR_INTERVAL_MIN` | `5` | 审计镜像拉取间隔。它同时决定每个镜像审计卡上的「滞后 ≤ N 分钟」标注 |
 | `QIANMO_BETA_BACKUP_URL` | 无 | 节点写快照的 https 地址（§2.7）。**不设就不开备份面**；给了就必须有写 token |
 | `QIANMO_BETA_BACKUP_INTERVAL_MS` | `3600000` | §5 的定案（从默认 15 min 调到 60 min，算过账：15 min 是 3.8 GB/天） |
 | `QIANMO_BETA_READY_TIMEOUT_S` | `90` | 就绪探测预算。2 vCPU 机器上首次拨号实测 6.5–7.1 s，重试会吸收掉 |
@@ -230,17 +260,18 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 | `peers.conf` | 地址表 + `node` 坐标行（含机器地址与 SSH 用户） |
 | `ops/tunnel-<node>.env` | 由坐标行派生的连通定义。**手改会被覆盖，要改就改 `peers.conf`** |
 
-### `console.conf` —— 审计路径与页头标签的持久化
+### `console.conf` —— 页头标签的持久化
 
-`<root>/console.conf`（0600）存四个值：`AUDIT_NODE` / `AUDIT_PATH` / `LABEL` / `WAKE_NODE`。
+`<root>/console.conf`（0600）只存 `LABEL`。
 
-**它存在的理由（一次真实事故：这四个值此前只走环境变量，控制台一重起就静默丢成空审计视图
-而不报错）写在 [`beta-env.md`](../../../docs/dev/beta-env.md) §4.3，本文不复制。**
+节点名册只有 `peers.conf` 一份：`beta-up.sh --role host` 按其中每个当前节点各生成一条
+命名 `--audit` 和一条命名 `--wake-url`。权威或镜像路径、镜像滞后以及节点 PSK 都由这份
+名册和对应的 `secrets/peers/<node>.psk` 派生；`console.conf` 绝不追加或保留一个目标。
+删掉 peer 后再起控制台，那个节点不会从旧配置复活。
 
-操作上要记住的是行为：优先级 **环境变量 > `console.conf` > 派生默认**，而且胜出的那个**会被
-回写** —— 于是「临时设一次」自动变成「以后都记得」。派生默认认得镜像：审计节点的链靠镜像拉
-过来时，路径指镜像、标签带「（镜像 · 滞后 ≤ N min，权威副本在节点本机）」。
 
+操作上，`QIANMO_BETA_LABEL` 的优先级是 **环境变量 > `console.conf` > 派生默认**，胜出的
+标签会被回写。改完这一个展示项后，要先停掉正在运行的 console，再重新运行 H 腿才会生效。
 手改这个文件立刻生效（下一次 `beta-up.sh` 起控制台时）。**注意控制台是幂等启动的**：已经
 在跑的那一份不会被重起，所以改完要让它生效得 `beta-down.sh console && beta-up.sh --role host`。
 
@@ -298,7 +329,7 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 | --- | --- | --- |
 | 改端点前必须挪开注册中心落盘表 | `beta-up.sh` 的 `assert_registry_matches_peers` | 拿一个 scratch 根：起一次（端点 A）→ 停 → 改 `peers.conf` 成端点 B → **照旧**手起一份注册中心，查 `/v0/agents/<地址>` 仍是 A（病根复现）→ 交给 `beta-up.sh`，它会挪开落盘表并给出 B |
 | 隧道口的 TCP 探测是假绿 | `common.sh` 的 `beta_endpoint_live` + `beta_tcp_open` 的守卫 | 见上面「隧道口上的 TCP 探测是**假绿**」那段的三行命令 |
-| 审计路径与页头标签必须持久化 | `common.sh` 的 `beta_resolve_console_conf` | 删掉 `console.conf` 再跑一次 `beta-up.sh --role host`，比对它派生出的两个值与 `/proc/<console pid>/cmdline` 里的 `--audit` / `--label` |
+| 节点名册只认 `peers.conf`，页头标签可持久化 | `common.sh` 的 `beta_resolve_console_conf` 与 H 腿的循环 | 在 `console.conf` 手写旧的 `AUDIT_NODE` / `AUDIT_PATH` / `WAKE_NODE`，删掉一个 peer 后起 H 腿；生成的 `console.conf` 只留 `LABEL`，进程参数只含当前 peers |
 
 ## 这个脚本不做什么
 
