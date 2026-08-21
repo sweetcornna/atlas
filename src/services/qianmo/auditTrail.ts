@@ -64,6 +64,8 @@ import {
 import type {
   CertificateDirectoryAuditEvent,
   CertificateDirectoryAuditSink,
+  CertificateDirectoryErrorEvent,
+  CertificateDirectoryErrorSink,
 } from './certificateDirectory.js'
 import { occConfigPath } from '../../config/paths.js'
 
@@ -409,6 +411,23 @@ export function certificateDirectoryTrailSink(
       node,
       peer: event.node,
       detail: { reason: event.reason },
+    })
+  }
+}
+
+/** Contained directory observer/RL failures, without credential material. */
+export function certificateDirectoryErrorTrailSink(
+  trail: AuditTrail,
+  node: string,
+): CertificateDirectoryErrorSink {
+  return (event: CertificateDirectoryErrorEvent): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'certificate_directory_error',
+      outcome: 'refused',
+      node,
+      detail: { phase: event.phase, reason: event.reason },
     })
   }
 }

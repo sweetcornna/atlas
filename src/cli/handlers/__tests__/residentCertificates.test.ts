@@ -222,6 +222,33 @@ describe('assertOwnCertificateAndKey (K-2, one of the four negative cases)', () 
     ).not.toThrow()
   })
 
+  itNeedsOpenssl(
+    'a valid EC key from another pair is refused before listen',
+    () => {
+      const otherEcKeyPath = join(root, 'node-a.other.tls.key')
+      writeFileSync(
+        otherEcKeyPath,
+        runOpenssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout']),
+        { mode: 0o600 },
+      )
+      expect(() =>
+        assertOwnCertificateAndKey(
+          {
+            node: 'node-a',
+            team: 'atlas',
+            agents: [],
+            trusted: [],
+            requireSignedTasks: false,
+            auditSignedTasks: false,
+            cert: certificatePath,
+            key: otherEcKeyPath,
+          },
+          nodeKeys.publicKey,
+        ),
+      ).toThrow(/do not form a matching public\/private key pair/)
+    },
+  )
+
   itNeedsOpenssl("--cert naming a different node's identity is refused", () => {
     const impostorKey = generateNodeKeyPair().publicKey
     expect(() =>
@@ -401,13 +428,15 @@ describe('buildHandshakeSigning', () => {
     expect(signing?.directory).toBe(directory)
     expect(signing?.required).toBeUndefined()
 
-    expect(
-      buildHandshakeSigning(
-        { ...config, signHandshake: true, requireSignedHandshake: true },
-        keys,
-        directory,
-      )?.required,
-    ).toBe(true)
+    const strictSigned = buildHandshakeSigning(
+      { ...config, signHandshake: true, requireSignedHandshake: true },
+      keys,
+      directory,
+    )
+    expect(strictSigned?.required).toBe(true)
+    // Signature-required and credential-required are distinct rollout axes.
+    // A non-CA deployment must not be forced to invent a certificate selector.
+    expect(strictSigned?.credentialProofRequired).toBeUndefined()
   })
 })
 
@@ -555,6 +584,35 @@ describe('P12.3 node-side wiring', () => {
     ).toBeNull()
     expect(warnings).toEqual([])
   })
+
+  itNeedsOpenssl(
+    'strict CA handshake carries this node certificate fingerprint',
+    () => {
+      const config = {
+        node: 'node-a',
+        team: 'atlas',
+        agents: [],
+        trusted: [],
+        requireSignedTasks: false,
+        auditSignedTasks: false,
+        signHandshake: true,
+        requireSignedHandshake: true,
+        cert: certificatePath,
+        key: ecKeyPath,
+        trustCa: caCertPath(caDir),
+      } as const
+      const directory = buildPublicKeyDirectory(config)
+      const signing = buildHandshakeSigning(config, nodeKeys, directory)
+      const fingerprint = new X509Certificate(certificatePem).fingerprint256
+      expect(signing?.credential).toEqual({
+        selector: fingerprint,
+        source: 'certificate',
+        id: fingerprint,
+      })
+      expect(signing?.required).toBe(true)
+      expect(signing?.credentialProofRequired).toBe(true)
+    },
+  )
 
   itNeedsOpenssl(
     'handover A: --registry-url reaches publicKeyOf, through a real registry',

@@ -26,8 +26,15 @@ describe('frame round trip', () => {
         clientNonce: 'ef01',
         channelId: 'a'.repeat(32),
         mac: '00ff',
+        credential: 'fingerprint-f1',
+        credentialProof: 'proof-f1',
       },
-      { t: FrameType.Ready, v: FRAME_VERSION },
+      {
+        t: FrameType.Ready,
+        v: FRAME_VERSION,
+        credential: 'fingerprint-listener',
+        credentialProof: 'proof-listener',
+      },
       { t: FrameType.KeepAlive, v: FRAME_VERSION },
       { t: FrameType.Envelope, v: FRAME_VERSION, envelope: message },
       {
@@ -87,8 +94,8 @@ describe('parseFrame refuses what is not a frame', () => {
   test('an unparseable signature field is dropped, not fatal', () => {
     // Same additive-field contract `supportedTypes` has: a reader that cannot
     // make sense of an optional field behaves like one that never knew about
-    // it. For `sig` that means falling back to the MAC — the safe direction,
-    // and one an attacker gains nothing from forcing (see `AuthFrame.sig`).
+    // it. For `sig` that means opportunistic fallback to the MAC; a deployment
+    // that pins this peer rejects the resulting unsigned attempt.
     const parsed = parseFrame(
       '{"t":"auth","v":1,"node":"node-a","nonce":"n","clientNonce":"c",' +
         `"channelId":"${'a'.repeat(32)}","mac":"deadbeef","sig":17}`,

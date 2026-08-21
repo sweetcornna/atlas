@@ -169,4 +169,26 @@ describe('P12.4 policy switch deployment contract', () => {
     expect(s4.reason).not.toContain('已就地跑通')
     expect(s4.detail?.['mechanism']).toBeUndefined()
   })
+
+  test('S-4 keeps an authenticated connection through a temporary empty directory', () => {
+    const result = runProbe([])
+    const mechanism = criterion(result.report, 'S-4').detail?.['mechanism']
+
+    // This machine-level drill is intentionally optional in environments
+    // without OpenSSL. Where it can run, the same real signed connection must
+    // survive an untrusted empty agents snapshot, then still receive 4003
+    // immediately once a fresh signed RL revokes its certificate.
+    if (mechanism === undefined) return
+    expect(mechanism).toMatchObject({
+      temporaryAbsencePermanentlyInvalidated: [],
+      connectionsAfterTemporaryAbsence: 1,
+      clientClosedAfterTemporaryAbsence: false,
+      directoryRestored: true,
+      connectionsAfterRevocation: 0,
+      channelsAfterRevocation: 0,
+      closedWithUnauthorized: true,
+      reconnectRejected: true,
+      ok: true,
+    })
+  })
 })

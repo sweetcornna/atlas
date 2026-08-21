@@ -76,10 +76,27 @@ interface AgentBody {
   readonly certificate?: unknown
 }
 
-/** A certificate that passed every check except revocation. */
+/** A certificate whose binding and CA signature have been verified. */
 interface CachedCertificate {
   readonly publicKey: string
   readonly fingerprint256: string
+  /** Epoch milliseconds, copied out so cache entries can be rechecked offline. */
+  readonly notBefore: number
+  /** Epoch milliseconds, copied out so cache entries can be rechecked offline. */
+  readonly notAfter: number
+}
+
+interface CertificateFact extends CachedCertificate {
+  readonly node: string
+}
+
+export const CERTIFICATE_CREDENTIAL_SOURCE = 'certificate'
+export const EXPLICIT_CREDENTIAL_SOURCE = 'explicit'
+
+export interface CertificateCredentialInvalidation {
+  readonly node: string
+  readonly source: typeof CERTIFICATE_CREDENTIAL_SOURCE
+  readonly id: string
 }
 
 export interface CertificateDirectoryAuditEvent {
@@ -89,6 +106,47 @@ export interface CertificateDirectoryAuditEvent {
 
 export type CertificateDirectoryAuditSink = (
   event: CertificateDirectoryAuditEvent,
+) => void
+
+/** A contained failure in polling or in a refresh observer. */
+export interface CertificateDirectoryErrorEvent {
+  readonly phase:
+    | 'audit_sink'
+    | 'polling_refresh'
+    | 'refresh_sink'
+    | 'revocation_list'
+  readonly reason: string
+}
+
+export type CertificateDirectoryErrorSink = (
+  event: CertificateDirectoryErrorEvent,
+) => void
+
+/** The distinct effects a refresh can have on a connection holder. */
+export interface CertificateDirectoryRefresh {
+  /**
+   * Nodes absent from this refresh's effective directory. An untrusted
+   * registry may omit a live lease or publish a malformed row, neither of
+   * which is authorization to terminate a connection that was authenticated
+   * earlier. Consumers may use this for observation, never a 4003 close.
+   */
+  readonly directoryRemoved: readonly string[]
+  /**
+   * Nodes whose last verified certificate is certainly unusable: a fresh,
+   * CA-signed RL names its fingerprint, or its `notAfter` has elapsed. These
+   * are the only removals that revoke already authenticated connections.
+   *
+   * The list remains present until a refresh sink accepts it, so a transient
+   * observer failure cannot silently lose a security close.
+   */
+  readonly permanentlyInvalidated: readonly string[]
+  /** Exact certificate credentials that a transport may close safely. */
+  readonly permanentlyInvalidatedCredentials: readonly CertificateCredentialInvalidation[]
+}
+
+/** Receives the result of every completed refresh, including polling refreshes. */
+export type CertificateDirectoryRefreshSink = (
+  result: CertificateDirectoryRefresh,
 ) => void
 
 /**
@@ -119,6 +177,8 @@ interface CertificateDirectoryOptions {
    * option for a conflict this sharp).
    */
   readonly onAudit?: CertificateDirectoryAuditSink
+  /** Receives contained observer/polling failures without changing refresh state. */
+  readonly onError?: CertificateDirectoryErrorSink
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000
@@ -144,13 +204,31 @@ export class CertificateDirectory implements PublicKeyDirectory {
   readonly #timeoutMs: number
   readonly #now: () => number
   readonly #onAudit: CertificateDirectoryAuditSink | undefined
+  readonly #onError: CertificateDirectoryErrorSink | undefined
 
   readonly #explicit = new Map<string, string>()
+  /** The latest complete `/v0/agents` snapshot, used for future admission. */
   #caCache = new Map<string, CachedCertificate>()
+  /**
+   * Last CA-verified facts, retained after a registry lease disappears.
+   *
+   * The registry is a discovery courier, not a revocation authority. Keeping
+   * these facts lets a later signed RL (or the certificate clock) terminate a
+   * connection that was admitted before a temporary directory omission.
+   */
+  #certificateFacts = new Map<string, CertificateFact>()
   #revocationList: RevocationList | null = null
   #effective = new Map<string, string>()
-  #refreshing: Promise<void> | null = null
+  /** Fingerprint → exact credential awaiting one successful sink delivery. */
+  #pendingPermanentInvalidations = new Map<
+    string,
+    CertificateCredentialInvalidation
+  >()
+  /** Evidence already delivered, keyed by fingerprint rather than node name. */
+  #deliveredPermanentInvalidations = new Set<string>()
+  #refreshing: Promise<CertificateDirectoryRefresh> | null = null
   #pollTimer: ReturnType<typeof setInterval> | null = null
+  #onRefresh: CertificateDirectoryRefreshSink | undefined
 
   constructor(options: CertificateDirectoryOptions) {
     this.#caCertificate = new X509Certificate(options.caCertificatePem)
@@ -160,6 +238,7 @@ export class CertificateDirectory implements PublicKeyDirectory {
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.#now = options.now ?? (() => Date.now())
     this.#onAudit = options.onAudit
+    this.#onError = options.onError
     for (const [node, key] of options.trusted ?? [])
       this.#explicit.set(node, key)
     this.#rebuildEffective()
@@ -196,11 +275,53 @@ export class CertificateDirectory implements PublicKeyDirectory {
     return new Map(this.#effective)
   }
 
+  /**
+   * Resolve the exact credential named by a signed transport handshake.
+   *
+   * An explicit entry is local operator authority and therefore wins even
+   * when the peer also carries a certificate selector. Otherwise a selector
+   * must name a retained, currently valid certificate for this node. The
+   * method is intentionally synchronous, like {@link publicKeyOf}.
+   */
+  handshakeCredentialOf(
+    node: string,
+    selector: string | undefined,
+  ): {
+    readonly publicKey: string
+    readonly source: string
+    readonly id: string
+  } | null {
+    const explicit = this.#explicit.get(node)
+    if (explicit !== undefined) {
+      return {
+        publicKey: explicit,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: node,
+      }
+    }
+    if (selector === undefined || !this.#rlFresh()) return null
+    const fact = this.#certificateFacts.get(selector)
+    if (fact === undefined || fact.node !== node) return null
+    const now = this.#now()
+    if (now < fact.notBefore || now >= fact.notAfter) return null
+    if (this.#revokedFingerprints().has(selector)) return null
+    return {
+      publicKey: fact.publicKey,
+      source: CERTIFICATE_CREDENTIAL_SOURCE,
+      id: selector,
+    }
+  }
+
   /** Start polling the registry on its own timer. No-op with no `registryUrl`. */
   startPolling(intervalMs: number): void {
     if (this.#registryUrl === undefined || this.#pollTimer !== null) return
     this.#pollTimer = setInterval(() => {
-      void this.refresh()
+      // A timer has no caller to observe a rejection. Network calls normally
+      // fail closed inside `#getJson`, but retain this boundary for injected
+      // clocks/fetches and future refresh work.
+      void this.refresh().catch(error => {
+        this.#reportError('polling_refresh', error)
+      })
     }, intervalMs)
     this.#pollTimer.unref?.()
   }
@@ -211,30 +332,43 @@ export class CertificateDirectory implements PublicKeyDirectory {
   }
 
   /**
+   * Install the one runtime consumer of refresh invalidations.
+   *
+   * The listener is deliberately registered after construction: a resident
+   * resolves the initial directory before it creates its transport, then hands
+   * future polling results to that transport. Replacing it is safe because
+   * this class owns only the directory, never the connection holder.
+   */
+  setRefreshSink(sink: CertificateDirectoryRefreshSink | undefined): void {
+    this.#onRefresh = sink
+  }
+
+  /**
    * Fetch the registry's agents and revocation list, verify what can be
    * verified, and rebuild the map {@link publicKeyOf} reads. Safe to call
    * concurrently — overlapping calls share one in-flight fetch rather than
    * racing two.
    */
-  async refresh(): Promise<void> {
+  async refresh(): Promise<CertificateDirectoryRefresh> {
     if (this.#refreshing !== null) return this.#refreshing
-    const run = this.#doRefresh().finally(() => {
-      this.#refreshing = null
-    })
+    const run = this.#doRefresh()
+      .then(result => this.#notifyRefresh(result))
+      .finally(() => {
+        this.#refreshing = null
+      })
     this.#refreshing = run
     return run
   }
 
-  async #doRefresh(): Promise<void> {
+  async #doRefresh(): Promise<CertificateDirectoryRefresh> {
     const registryUrl = this.#registryUrl
     if (registryUrl === undefined) {
-      this.#rebuildEffective()
-      return
+      return this.#rebuildEffective()
     }
 
     await this.#refreshRevocationList(registryUrl)
     await this.#refreshCertificates(registryUrl)
-    this.#rebuildEffective()
+    return this.#rebuildEffective()
   }
 
   async #getJson(registryUrl: string, path: string): Promise<unknown> {
@@ -263,7 +397,46 @@ export class CertificateDirectory implements PublicKeyDirectory {
     const body = await this.#getJson(registryUrl, '/v0/revocation-list')
     if (body === undefined) return
     const verified = verifyRevocationList(this.#caPublicKey, body)
-    if (verified !== null) this.#revocationList = verified
+    if (verified !== null) this.#acceptRevocationList(verified)
+  }
+
+  #acceptRevocationList(candidate: RevocationList): void {
+    const current = this.#revocationList
+    if (current === null) {
+      this.#revocationList = candidate
+      return
+    }
+    if (candidate.issuedAt < current.issuedAt) {
+      this.#reportError(
+        'revocation_list',
+        new Error('refusing a signed revocation-list rollback'),
+      )
+      return
+    }
+    if (candidate.issuedAt === current.issuedAt) {
+      if (JSON.stringify(candidate) !== JSON.stringify(current)) {
+        this.#reportError(
+          'revocation_list',
+          new Error('refusing conflicting revocation lists with one issuedAt'),
+        )
+      }
+      return
+    }
+    const candidateFingerprints = new Set(
+      candidate.revoked.map(entry => entry.fingerprint256),
+    )
+    if (
+      current.revoked.some(
+        entry => !candidateFingerprints.has(entry.fingerprint256),
+      )
+    ) {
+      this.#reportError(
+        'revocation_list',
+        new Error('refusing a revocation list that removes prior entries'),
+      )
+      return
+    }
+    this.#revocationList = candidate
   }
 
   async #refreshCertificates(registryUrl: string): Promise<void> {
@@ -276,11 +449,16 @@ export class CertificateDirectory implements PublicKeyDirectory {
     const agents = (body as Record<string, unknown>)['agents']
     if (!Array.isArray(agents)) return
 
-    const revoked = this.#revokedFingerprints()
     const fresh = new Map<string, CachedCertificate>()
     for (const raw of agents) {
-      const evaluated = this.#evaluate(raw, revoked)
-      if (evaluated !== null) fresh.set(evaluated.node, evaluated.certificate)
+      const evaluated = this.#evaluate(raw)
+      if (evaluated !== null) {
+        fresh.set(evaluated.node, evaluated.certificate)
+        this.#certificateFacts.set(evaluated.certificate.fingerprint256, {
+          node: evaluated.node,
+          ...evaluated.certificate,
+        })
+      }
     }
     this.#caCache = fresh
   }
@@ -305,7 +483,6 @@ export class CertificateDirectory implements PublicKeyDirectory {
    */
   #evaluate(
     raw: unknown,
-    revoked: ReadonlySet<string>,
   ): { readonly node: string; readonly certificate: CachedCertificate } | null {
     if (typeof raw !== 'object' || raw === null) return null
     const record = raw as AgentBody
@@ -332,17 +509,17 @@ export class CertificateDirectory implements PublicKeyDirectory {
     // but the CA's public key.
     if (!certificate.verify(this.#caCertificate.publicKey)) return null
 
-    const now = this.#now()
-    if (now < Date.parse(certificate.validFrom)) return null
-    if (now >= Date.parse(certificate.validTo)) return null
-
-    if (revoked.has(certificate.fingerprint256)) return null
+    const notBefore = Date.parse(certificate.validFrom)
+    const notAfter = Date.parse(certificate.validTo)
+    if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) return null
 
     return {
       node: binding.node,
       certificate: {
         publicKey: binding.publicKey,
         fingerprint256: certificate.fingerprint256,
+        notBefore,
+        notAfter,
       },
     }
   }
@@ -353,28 +530,111 @@ export class CertificateDirectory implements PublicKeyDirectory {
    * rule (§6.4) and the explicit-overrides-CA rule (§8.2) are each written
    * exactly once.
    */
-  #rebuildEffective(): void {
+  #rebuildEffective(): CertificateDirectoryRefresh {
+    const previous = this.#effective
+    let next: Map<string, string>
     if (!this.#rlFresh()) {
       // Fail-closed: the CA-derived cache is not trustworthy right now
       // (stale or never-fetched RL), so it is not consulted at all — only
       // the explicit entries an operator typed remain.
-      this.#effective = new Map(this.#explicit)
-      return
-    }
-    const merged = new Map<string, string>()
-    for (const [node, entry] of this.#caCache) merged.set(node, entry.publicKey)
-    for (const [node, key] of this.#explicit) {
-      const derived = merged.get(node)
-      if (derived !== undefined && derived !== key) {
-        this.#onAudit?.({
-          node,
-          reason:
-            '--trust overrides a different CA-derived key for the same node (§8.2)',
-        })
+      next = new Map(this.#explicit)
+    } else {
+      const revoked = this.#revokedFingerprints()
+      const now = this.#now()
+      next = new Map<string, string>()
+      for (const [node, entry] of this.#caCache) {
+        // `agents` can be unavailable while a newer RL is available. The
+        // cache is therefore only a source of certificate bytes, never an
+        // assertion that those bytes remain valid or unrevoked.
+        if (
+          now >= entry.notBefore &&
+          now < entry.notAfter &&
+          !revoked.has(entry.fingerprint256)
+        ) {
+          next.set(node, entry.publicKey)
+        }
       }
-      merged.set(node, key)
+      for (const [node, key] of this.#explicit) {
+        const derived = next.get(node)
+        if (derived !== undefined && derived !== key) {
+          this.#audit({
+            node,
+            reason:
+              '--trust overrides a different CA-derived key for the same node (§8.2)',
+          })
+        }
+        next.set(node, key)
+      }
     }
-    this.#effective = merged
+    this.#effective = next
+    const now = this.#now()
+    const revoked = this.#revokedFingerprints()
+    for (const [fingerprint, entry] of this.#certificateFacts) {
+      if (
+        now >= entry.notAfter ||
+        (this.#rlFresh() && revoked.has(entry.fingerprint256))
+      ) {
+        if (!this.#deliveredPermanentInvalidations.has(fingerprint)) {
+          this.#pendingPermanentInvalidations.set(fingerprint, {
+            node: entry.node,
+            source: CERTIFICATE_CREDENTIAL_SOURCE,
+            id: fingerprint,
+          })
+        }
+      }
+    }
+    const permanentCredentials = [
+      ...this.#pendingPermanentInvalidations.values(),
+    ]
+    return {
+      directoryRemoved: [...previous.keys()].filter(node => !next.has(node)),
+      permanentlyInvalidated: [
+        ...new Set(permanentCredentials.map(entry => entry.node)),
+      ],
+      permanentlyInvalidatedCredentials: permanentCredentials,
+    }
+  }
+
+  /** Notify one connection holder without allowing it to poison refresh state. */
+  #notifyRefresh(
+    result: CertificateDirectoryRefresh,
+  ): CertificateDirectoryRefresh {
+    const sink = this.#onRefresh
+    if (sink === undefined) return result
+    try {
+      sink(result)
+      for (const credential of result.permanentlyInvalidatedCredentials) {
+        this.#pendingPermanentInvalidations.delete(credential.id)
+        this.#deliveredPermanentInvalidations.add(credential.id)
+      }
+    } catch (error) {
+      // Do not reject an otherwise successful refresh. Pending permanent
+      // events deliberately survive, so the next poll retries this delivery.
+      this.#reportError('refresh_sink', error)
+    }
+    return result
+  }
+
+  #audit(event: CertificateDirectoryAuditEvent): void {
+    try {
+      this.#onAudit?.(event)
+    } catch (error) {
+      this.#reportError('audit_sink', error)
+    }
+  }
+
+  #reportError(
+    phase: CertificateDirectoryErrorEvent['phase'],
+    error: unknown,
+  ): void {
+    try {
+      this.#onError?.({
+        phase,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    } catch {
+      // A diagnostic sink is never allowed to make a polling timer reject.
+    }
   }
 }
 

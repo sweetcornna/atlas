@@ -27,8 +27,9 @@
  * is the scan; the allowlist there names this file.
  */
 
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { NODE_IDENTITY_MODE } from '../../../constants/identity.js'
 import { getProtectedUserConfigDirectories } from '../../../config/paths.js'
 
@@ -75,11 +76,102 @@ export const CA_PRIVATE_FILE_MODE = 0o600
 /** File mode for public material: certificates, the signed RL, the serial. */
 export const CA_PUBLIC_FILE_MODE = 0o644
 
+/** Comparison key for the host filesystem's path identity rules. */
+export function pathComparisonKey(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === 'win32' ? path.toLocaleLowerCase('en-US') : path
+}
+
 /** True when `candidate` is `root` itself or sits underneath it. */
-function isInside(candidate: string, root: string): boolean {
+export function isPathInside(
+  candidate: string,
+  root: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   // Compared with a separator appended, because `~/.qianmo-ca` starts with
   // `~/.qianmo` as a raw string while being a different directory entirely.
-  return candidate === root || candidate.startsWith(`${root}${sep}`)
+  const candidateKey = pathComparisonKey(candidate, platform)
+  const rootKey = pathComparisonKey(root, platform)
+  const separator = platform === 'win32' ? '\\' : sep
+  return (
+    candidateKey === rootKey ||
+    candidateKey.startsWith(`${rootKey}${separator}`)
+  )
+}
+
+/**
+ * Canonicalize through the closest existing ancestor, then restore missing
+ * components. This catches both a symlinked leaf and a symlink hidden higher
+ * in a not-yet-created CA path. Failure to resolve an existing ancestor is a
+ * refusal: guessing at a physical boundary would turn a permission error into
+ * a path-guard bypass.
+ *
+ * This is a check-time canonicalization, not a promise that another process
+ * cannot replace a path after it returns. The offline CA command performs it
+ * immediately before its writes and makes no stronger TOCTOU claim.
+ */
+function physicalPath(path: string): string {
+  let existing = resolve(path)
+  const missing: string[] = []
+  while (!existsSync(existing)) {
+    const parent = dirname(existing)
+    if (parent === existing) break
+    missing.unshift(basename(existing))
+    existing = parent
+  }
+  const physicalExisting = realpathSync.native(existing)
+  return missing.reduce(
+    (current, segment) => join(current, segment),
+    physicalExisting,
+  )
+}
+
+/** Find a checkout around `start`, rather than assuming it is the current cwd. */
+function repositoryRoot(start: string): string | undefined {
+  let current = physicalPath(start)
+  while (true) {
+    // `.git` is a directory in a main checkout and a file in a worktree; the
+    // existence check intentionally covers both forms. `package.json` keeps a
+    // random parent repository from becoming this command's protected root.
+    if (
+      existsSync(join(current, '.git')) &&
+      existsSync(join(current, 'package.json'))
+    )
+      return physicalPath(current)
+    const parent = dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+}
+
+/**
+ * Roots that must never contain an offline CA key besides product config.
+ *
+ * A configured demo or CI checkout is operationally reachable by the process
+ * running this command, so it has the same secret-exposure boundary as the
+ * source checkout. Environment values are treated as paths only when nonempty
+ * — CI providers commonly export empty placeholders.
+ */
+function protectedOperationalDirectories(candidate: string): string[] {
+  const configured = [
+    repositoryRoot(process.cwd()),
+    // CA commands may be invoked from another directory. Detect the checkout
+    // around the requested destination too, or `cd /tmp && qm ca init
+    // --ca-dir <repo>/.ca` would bypass the source-tree boundary.
+    repositoryRoot(candidate),
+    process.env['QIANMO_DEMO_ROOT'],
+    process.env['DEMO_ROOT'],
+    process.env['GITHUB_WORKSPACE'],
+    process.env['CI_PROJECT_DIR'],
+    process.env['BUILDKITE_BUILD_CHECKOUT_PATH'],
+    process.env['WORKSPACE'],
+    process.env['BUILD_WORKSPACE_DIRECTORY'],
+  ]
+  return configured
+    .filter((root): root is string => root !== undefined && root.length > 0)
+    .map(root => physicalPath(root))
 }
 
 /**
@@ -97,12 +189,22 @@ export function caDirectory(explicit?: string): string {
       ? join(homedir(), CA_DIR_BASENAME)
       : configured,
   )
+  const physicalDirectory = physicalPath(directory)
   for (const protectedRoot of getProtectedUserConfigDirectories()) {
-    if (isInside(directory, resolve(protectedRoot))) {
+    if (isPathInside(physicalDirectory, physicalPath(protectedRoot))) {
       throw new Error(
         `refusing a CA directory inside a config root: ${directory} is under ` +
           `${protectedRoot}. The CA private key must not live in any ` +
           `identity's config root (key-distribution.md §3.3).`,
+      )
+    }
+  }
+  for (const protectedRoot of protectedOperationalDirectories(directory)) {
+    if (isPathInside(physicalDirectory, protectedRoot)) {
+      throw new Error(
+        `refusing a CA directory inside a repository, demo, or CI workspace: ` +
+          `${directory} is under ${protectedRoot}. The CA private key must ` +
+          `stay outside paths this process can publish or clean.`,
       )
     }
   }

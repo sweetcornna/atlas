@@ -59,6 +59,12 @@ import { renderRoster, type ConsoleCertificate } from '@qianmo/console'
 import { parseNodeCertificateBinding } from '@qianmo/protocol'
 import { InMemoryRegistry, startRegistryServer } from '@qianmo/registry'
 import {
+  CLOSE_UNAUTHORIZED,
+  TransportClient,
+  TransportEventType,
+  startTransportServer,
+} from '@qianmo/transport'
+import {
   initCa,
   issueCertificate,
   refreshRevocationList,
@@ -584,43 +590,62 @@ function probeS3(args: Args): CriterionReport {
 async function revocationDrill(): Promise<Record<string, unknown>> {
   const root = mkdtempSync(join(tmpdir(), 'qianmo-s4-drill-'))
   const caDir = join(root, 'ca')
-  let server: Awaited<ReturnType<typeof startRegistryServer>> | undefined
+  let registryServer:
+    | Awaited<ReturnType<typeof startRegistryServer>>
+    | undefined
+  let transport: ReturnType<typeof startTransportServer> | undefined
+  const clients: TransportClient[] = []
   try {
     initCa({ directory: caDir })
     const caCertificatePem = readFileSync(join(caDir, 'ca.crt'), 'utf8')
     const registry = new InMemoryRegistry()
-    server = startRegistryServer(0, { registry })
+    registryServer = startRegistryServer(0, { registry })
 
-    const node = 'node-drill'
-    const keys = generateNodeKeyPair()
-    const keyPath = join(root, 'leaf.key')
-    writeFileSync(
-      keyPath,
-      runOpenssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout']),
-      { mode: 0o600 },
-    )
-    const csrPem = runOpenssl([
-      'req',
-      '-new',
-      '-key',
-      keyPath,
-      '-subj',
-      `/CN=${node}`,
-    ])
-    const issued = issueCertificate({
-      directory: caDir,
-      node,
-      publicKey: keys.publicKey,
-      csrPem,
-      popSignature: signBytes(keys, popMessage(node, csrPem)),
-      hosts: [`${node}.example.com`],
-    })
-    const registered = registry.register(
-      `qianmo://${node}/agent`,
-      `wss://${node}.example.com/agent`,
-      { publicKey: keys.publicKey, certificate: issued.certificatePem },
-    )
-    if (!registered.ok) throw new Error(`drill setup: ${registered.message}`)
+    const announce = (
+      node: string,
+      keys: ReturnType<typeof generateNodeKeyPair>,
+      certificate: string,
+    ) => {
+      const registered = registry.register(
+        `qianmo://${node}/agent`,
+        `wss://${node}.example.com/agent`,
+        { publicKey: keys.publicKey, certificate },
+      )
+      if (!registered.ok) throw new Error(`drill setup: ${registered.message}`)
+    }
+
+    const issueNode = (node: string) => {
+      const keys = generateNodeKeyPair()
+      const keyPath = join(root, `${node}.tls.key`)
+      writeFileSync(
+        keyPath,
+        runOpenssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout']),
+        { mode: 0o600 },
+      )
+      const csrPem = runOpenssl([
+        'req',
+        '-new',
+        '-key',
+        keyPath,
+        '-subj',
+        `/CN=${node}`,
+      ])
+      const issued = issueCertificate({
+        directory: caDir,
+        node,
+        publicKey: keys.publicKey,
+        csrPem,
+        popSignature: signBytes(keys, popMessage(node, csrPem)),
+        hosts: [`${node}.example.com`],
+      })
+      announce(node, keys, issued.certificatePem)
+      return { keys, issued }
+    }
+
+    const dialerNode = 'node-drill'
+    const listenerNode = 'node-drill-listener'
+    const dialer = issueNode(dialerNode)
+    const listener = issueNode(listenerNode)
 
     const publish = async (
       revoke: readonly { node: string; fingerprint256: string }[],
@@ -631,11 +656,14 @@ async function revocationDrill(): Promise<Record<string, unknown>> {
         now: Date.now(),
         validMs: 30 * DAY_MS,
       })
-      const response = await fetch(`${server?.url ?? ''}/v0/revocation-list`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: readFileSync(rl.path, 'utf8'),
-      })
+      const response = await fetch(
+        `${registryServer?.url ?? ''}/v0/revocation-list`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: readFileSync(rl.path, 'utf8'),
+        },
+      )
       if (response.status !== 200) {
         throw new Error(
           `drill setup: publishing RL failed ${String(response.status)}`,
@@ -645,24 +673,152 @@ async function revocationDrill(): Promise<Record<string, unknown>> {
 
     const directory = new CertificateDirectory({
       caCertificatePem,
-      registryUrl: server.url,
+      registryUrl: registryServer.url,
     })
     await publish([])
     await directory.refresh()
-    const beforeRevocation = directory.publicKeyOf(node)
 
-    await publish([{ node, fingerprint256: issued.fingerprint256 }])
+    const socketPath = join(root, 'transport.sock')
+    directory.setRefreshSink(({ permanentlyInvalidatedCredentials }) => {
+      transport?.closePeerCredentials(permanentlyInvalidatedCredentials)
+    })
+    transport = startTransportServer({
+      unix: socketPath,
+      psk: 's4-probe-psk-not-a-production-secret',
+      onMessage: () => {},
+      signing: {
+        node: listenerNode,
+        keys: listener.keys,
+        directory,
+        required: true,
+        credentialProofRequired: true,
+        credential: {
+          selector: listener.issued.fingerprint256,
+          source: 'certificate',
+          id: listener.issued.fingerprint256,
+        },
+      },
+    })
+    const client = new TransportClient({
+      endpoint: { unix: socketPath },
+      node: dialerNode,
+      peerNode: listenerNode,
+      psk: 's4-probe-psk-not-a-production-secret',
+      keepAliveIntervalMs: 0,
+      backoff: { baseDelayMs: 10, maxDelayMs: 20, giveUpAfterMs: 100 },
+      signing: {
+        keys: dialer.keys,
+        directory,
+        required: true,
+        credentialProofRequired: true,
+        credential: {
+          selector: dialer.issued.fingerprint256,
+          source: 'certificate',
+          id: dialer.issued.fingerprint256,
+        },
+      },
+    })
+    clients.push(client)
+    await client.connect(5_000)
+    const beforeRevocation = directory.publicKeyOf(dialerNode)
+    const connectionsBeforeRevocation = transport.connections
+
+    // The registry is a zero-auth discovery courier. A brief empty snapshot
+    // may make *future* handshakes unavailable, but is neither a revocation
+    // statement nor grounds to permanently close a connection authenticated
+    // before the omission.
+    registry.clear()
+    const temporaryAbsence = await directory.refresh()
+    const connectionsAfterTemporaryAbsence = transport.connections
+    const clientClosedAfterTemporaryAbsence = client.isClosed()
+    announce(dialerNode, dialer.keys, dialer.issued.certificatePem)
+    announce(listenerNode, listener.keys, listener.issued.certificatePem)
     await directory.refresh()
-    const afterRevocation = directory.publicKeyOf(node)
+    const directoryRestored =
+      directory.publicKeyOf(dialerNode) === dialer.keys.publicKey &&
+      directory.publicKeyOf(listenerNode) === listener.keys.publicKey
+
+    await publish([
+      { node: dialerNode, fingerprint256: dialer.issued.fingerprint256 },
+    ])
+    await directory.refresh()
+
+    const deadline = Date.now() + 3_000
+    while (
+      (transport.connections !== 0 || !client.isClosed()) &&
+      Date.now() < deadline
+    ) {
+      await new Promise<void>(resolve => setTimeout(resolve, 10))
+    }
+    const connectionsAfterRevocation = transport.connections
+    const channelsAfterRevocation = transport.channels
+    const closeCodes = client.events
+      .byType(TransportEventType.ConnectionClosed)
+      .map(event => event.detail['code'])
+    const closedWithUnauthorized = closeCodes.includes(CLOSE_UNAUTHORIZED)
+
+    const returning = new TransportClient({
+      endpoint: { unix: socketPath },
+      node: dialerNode,
+      peerNode: listenerNode,
+      psk: 's4-probe-psk-not-a-production-secret',
+      keepAliveIntervalMs: 0,
+      backoff: { baseDelayMs: 10, maxDelayMs: 20, giveUpAfterMs: 100 },
+      signing: {
+        keys: dialer.keys,
+        directory,
+        required: true,
+        credentialProofRequired: true,
+        credential: {
+          selector: dialer.issued.fingerprint256,
+          source: 'certificate',
+          id: dialer.issued.fingerprint256,
+        },
+      },
+    })
+    clients.push(returning)
+    let reconnectRejected = false
+    try {
+      await returning.connect(5_000)
+    } catch (error) {
+      reconnectRejected = /4003/.test(
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+    const afterRevocation = directory.publicKeyOf(dialerNode)
 
     return {
-      resolvedBeforeRevocation: beforeRevocation === keys.publicKey,
+      resolvedBeforeRevocation: beforeRevocation === dialer.keys.publicKey,
       resolvedAfterRevocation: afterRevocation !== null,
-      fingerprint256: issued.fingerprint256,
-      ok: beforeRevocation === keys.publicKey && afterRevocation === null,
+      fingerprint256: dialer.issued.fingerprint256,
+      connectionsBeforeRevocation,
+      missingInvalidated: temporaryAbsence.directoryRemoved,
+      temporaryAbsencePermanentlyInvalidated:
+        temporaryAbsence.permanentlyInvalidated,
+      connectionsAfterTemporaryAbsence,
+      clientClosedAfterTemporaryAbsence,
+      directoryRestored,
+      connectionsAfterRevocation,
+      channelsAfterRevocation,
+      closedWithUnauthorized,
+      reconnectRejected,
+      ok:
+        beforeRevocation === dialer.keys.publicKey &&
+        afterRevocation === null &&
+        connectionsBeforeRevocation === 1 &&
+        temporaryAbsence.permanentlyInvalidated.length === 0 &&
+        connectionsAfterTemporaryAbsence === 1 &&
+        !clientClosedAfterTemporaryAbsence &&
+        directoryRestored &&
+        connectionsAfterRevocation === 0 &&
+        channelsAfterRevocation === 0 &&
+        closedWithUnauthorized &&
+        reconnectRejected,
     }
   } finally {
-    await server?.stop()
+    for (const client of clients) await client.close()
+    await transport?.stop()
+    await registryServer?.stop()
     rmSync(root, { recursive: true, force: true })
   }
 }

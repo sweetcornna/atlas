@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { X509Certificate, createPrivateKey } from 'node:crypto'
+import { X509Certificate, createPrivateKey, createPublicKey } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
@@ -26,6 +26,7 @@ import {
 import {
   capabilityShadowTrailSink,
   certificateDirectoryTrailSink,
+  certificateDirectoryErrorTrailSink,
   openAuditTrail,
   residentNotifyTrailSink,
   routerTrailSink,
@@ -49,9 +50,11 @@ import {
   type ListenerIdentity,
 } from '@qianmo/transport'
 import {
+  CERTIFICATE_CREDENTIAL_SOURCE,
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
   type CertificateDirectoryAuditSink,
+  type CertificateDirectoryErrorSink,
 } from '../../services/qianmo/certificateDirectory.js'
 import {
   loadOrCreateNodeKeys,
@@ -854,6 +857,7 @@ interface MutablePublicKeyDirectory extends PublicKeyDirectory {
 export function buildPublicKeyDirectory(
   config: ResidentCliConfig,
   onAudit?: CertificateDirectoryAuditSink,
+  onError?: CertificateDirectoryErrorSink,
 ): MutablePublicKeyDirectory {
   if (config.trustCa === undefined) {
     return new StaticPublicKeyDirectory(config.trusted)
@@ -865,6 +869,7 @@ export function buildPublicKeyDirectory(
       ? {}
       : { registryUrl: config.registryUrl }),
     ...(onAudit === undefined ? {} : { onAudit }),
+    ...(onError === undefined ? {} : { onError }),
   })
 }
 
@@ -914,6 +919,7 @@ export function assertOwnCertificateAndKey(
   config: ResidentCliConfig,
   ownPublicKey: string,
 ): void {
+  let certificate: X509Certificate | undefined
   if (config.cert !== undefined) {
     const certificatePem = readFileSync(config.cert, 'utf8')
     assertOwnCertificateMatchesIdentity(
@@ -921,6 +927,7 @@ export function assertOwnCertificateAndKey(
       config.node,
       ownPublicKey,
     )
+    certificate = new X509Certificate(certificatePem)
     if (config.trustCa !== undefined) {
       // The check `CertificateDirectory` performs on every *peer* (F-2),
       // turned on this node's own file. A certificate from a CA this node
@@ -931,9 +938,7 @@ export function assertOwnCertificateAndKey(
       const caCertificate = new X509Certificate(
         readFileSync(config.trustCa, 'utf8'),
       )
-      if (
-        !new X509Certificate(certificatePem).verify(caCertificate.publicKey)
-      ) {
+      if (!certificate.verify(caCertificate.publicKey)) {
         throw new Error(
           '--cert was not signed by the CA in --trust-ca ' +
             '(key-distribution.md F-2); check that the two files belong to ' +
@@ -943,22 +948,36 @@ export function assertOwnCertificateAndKey(
     }
   }
   if (config.key !== undefined) {
-    let keyType: string | undefined
+    let privateKey: ReturnType<typeof createPrivateKey>
     try {
-      keyType = createPrivateKey(
-        readFileSync(config.key, 'utf8'),
-      ).asymmetricKeyType
+      privateKey = createPrivateKey(readFileSync(config.key, 'utf8'))
     } catch (error) {
       throw new Error(
         `--key does not parse as a private key: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
-    if (keyType !== 'ec') {
+    if (privateKey.asymmetricKeyType !== 'ec') {
       // F-5: Bun refuses an Ed25519 TLS leaf outright, so the node's own key
       // must be EC — same constraint `qm ca issue` enforces on the CSR.
       throw new Error(
-        `--key must be an EC private key (F-5); this one is ${String(keyType)}`,
+        `--key must be an EC private key (F-5); this one is ${String(privateKey.asymmetricKeyType)}`,
       )
+    }
+    if (certificate !== undefined) {
+      const privateSpki = createPublicKey(privateKey).export({
+        type: 'spki',
+        format: 'der',
+      })
+      const certificateSpki = certificate.publicKey.export({
+        type: 'spki',
+        format: 'der',
+      })
+      if (!Buffer.from(privateSpki).equals(Buffer.from(certificateSpki))) {
+        throw new Error(
+          '--cert and --key do not form a matching public/private key pair; ' +
+            'refusing to open a listener with a certificate another key cannot prove',
+        )
+      }
     }
   }
 }
@@ -1030,11 +1049,28 @@ export function buildHandshakeSigning(
   directory: PublicKeyDirectory,
 ): ListenerIdentity | undefined {
   if (config.signHandshake !== true) return undefined
+  const credential =
+    directory instanceof CertificateDirectory && config.cert !== undefined
+      ? (() => {
+          const id = new X509Certificate(readFileSync(config.cert, 'utf8'))
+            .fingerprint256
+          return {
+            selector: id,
+            source: CERTIFICATE_CREDENTIAL_SOURCE,
+            id,
+          }
+        })()
+      : undefined
   return {
     node: config.node,
     keys,
     directory,
+    ...(credential === undefined ? {} : { credential }),
     ...(config.requireSignedHandshake === true ? { required: true } : {}),
+    ...(config.requireSignedHandshake === true &&
+    directory instanceof CertificateDirectory
+      ? { credentialProofRequired: true }
+      : {}),
   }
 }
 
@@ -1135,6 +1171,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   const directory = buildPublicKeyDirectory(
     config,
     certificateDirectoryTrailSink(trail, config.node),
+    certificateDirectoryErrorTrailSink(trail, config.node),
   )
   if (directory instanceof CertificateDirectory) {
     // Awaited, once, before anything listens: `publicKeyOf` is synchronous by
@@ -1269,13 +1306,26 @@ export async function runResident(args: readonly string[]): Promise<void> {
     },
   })
 
+  if (directory instanceof CertificateDirectory) {
+    directory.setRefreshSink(({ permanentlyInvalidatedCredentials }) => {
+      // The initial refresh ran before a listener existed. Every later poll
+      // must revoke both future handshakes (the directory) and already
+      // authenticated inbound links (the resident transport) in one event.
+      // A missing registry lease is only discovery churn, never a 4003 cause.
+      resident.closePeerCredentials(permanentlyInvalidatedCredentials)
+    })
+  }
+
   const stop = (): void => resident.stop()
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
   try {
     await resident.run()
   } finally {
-    if (directory instanceof CertificateDirectory) directory.stopPolling()
+    if (directory instanceof CertificateDirectory) {
+      directory.setRefreshSink(undefined)
+      directory.stopPolling()
+    }
     if (memTimer !== null) clearInterval(memTimer)
     trail.close()
     await timingWriter?.close()

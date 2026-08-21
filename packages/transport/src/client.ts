@@ -45,12 +45,15 @@ import {
   CLOSE_PROTOCOL_ERROR,
   ReadyRejection,
   assertUsablePsk,
+  authCredentialProofInput,
   authSigningInput,
   computeMac,
   isChannelId,
   newChannelId,
   newNonce,
   verifyReady,
+  type HandshakeAuthentication,
+  type AuthenticatedCredential,
   type HandshakeIdentity,
   type HandshakeTuple,
 } from './handshake.js'
@@ -242,6 +245,10 @@ export class TransportClient implements TransportChannel {
   private lastInboundAt = 0
   private readyWaiters: Array<() => void> = []
   private declaredPeerTypes: readonly string[] | undefined
+  /** Proof that admitted the current socket; `null` while disconnected. */
+  private peerAuthentication: HandshakeAuthentication | null = null
+  /** Credential metadata proven by the peer's signed ready frame. */
+  private peerCredential: AuthenticatedCredential | null = null
   /**
    * The tuple this client signed on the current socket, kept until the ready
    * frame arrives so the listener's counter-signature can be checked against
@@ -308,6 +315,16 @@ export class TransportClient implements TransportChannel {
   /** What the server declared on the current connection's ready frame. */
   get peerSupportedTypes(): readonly string[] | undefined {
     return this.declaredPeerTypes
+  }
+
+  /** The authentication actually adopted by the current connection. */
+  get authenticatedBy(): HandshakeAuthentication | null {
+    return this.peerAuthentication
+  }
+
+  /** Opaque credential metadata proven for the current peer. */
+  get authenticatedCredential(): AuthenticatedCredential | null {
+    return this.peerCredential
   }
 
   supports(type: MessageType): boolean {
@@ -405,6 +422,8 @@ export class TransportClient implements TransportChannel {
   async close(): Promise<void> {
     this.state = 'closed'
     this.clearTimers()
+    this.peerAuthentication = null
+    this.peerCredential = null
     const socket = this.socket
     this.socket = null
     this.pendingHandshake = null
@@ -506,6 +525,23 @@ export class TransportClient implements TransportChannel {
           ...(signing === undefined
             ? {}
             : {
+                ...(signing.credential === undefined
+                  ? {}
+                  : {
+                      credential: signing.credential.selector,
+                      credentialProof: signBytes(
+                        signing.keys,
+                        authCredentialProofInput(
+                          frame.nonce,
+                          clientNonce,
+                          this.options.node,
+                          this.id,
+                          signing.credential.selector,
+                          signing.credential.source,
+                          signing.credential.id,
+                        ),
+                      ),
+                    }),
                 sig: signBytes(
                   signing.keys,
                   authSigningInput(
@@ -520,11 +556,24 @@ export class TransportClient implements TransportChannel {
         return
       }
       case FrameType.Ready: {
-        if (!this.acceptReady(socket, frame)) return
+        const accepted = this.acceptReady(socket, frame)
+        if (accepted === null) return
         // Replaced, not merged: a peer that came back on an older build
         // declares less, and remembering what it used to offer would keep this
         // client sending types the peer no longer handles.
         this.declaredPeerTypes = frame.supportedTypes
+        this.peerAuthentication = accepted.authentication
+        this.peerCredential = accepted.credential ?? null
+        this.record(TransportEventType.AuthAccepted, {
+          node: this.peerNode ?? '',
+          authentication: accepted.authentication,
+          ...(accepted.credential === undefined
+            ? {}
+            : {
+                credentialSource: accepted.credential.source,
+                credentialId: accepted.credential.id,
+              }),
+        })
         this.onReady()
         return
       }
@@ -554,7 +603,7 @@ export class TransportClient implements TransportChannel {
 
   /**
    * Check the listener's half of the handshake before believing the link
-   * (§7.1.1). `true` means carry on.
+   * (§7.1.1). The returned value is the actual proof that admitted the peer.
    *
    * A refusal is **not** treated the way a 4003 is. 4003 means "your key is
    * wrong", which retrying cannot fix; this means "the thing that answered is
@@ -566,11 +615,21 @@ export class TransportClient implements TransportChannel {
    */
   private acceptReady(
     socket: WebSocket,
-    frame: { readonly node?: string; readonly sig?: string },
-  ): boolean {
+    frame: {
+      readonly node?: string
+      readonly sig?: string
+      readonly credential?: string
+      readonly credentialProof?: string
+    },
+  ): {
+    readonly authentication: HandshakeAuthentication
+    readonly credential?: AuthenticatedCredential
+  } | null {
     const signing = this.options.signing
     const peerNode = this.options.peerNode
-    if (signing === undefined || peerNode === undefined) return true
+    if (signing === undefined || peerNode === undefined) {
+      return { authentication: 'psk' }
+    }
     const pending = this.pendingHandshake
     // No remembered tuple means this ready did not answer a challenge this
     // socket issued — there is nothing to check it against, and accepting it
@@ -579,7 +638,7 @@ export class TransportClient implements TransportChannel {
       pending !== null && pending.socket === socket
         ? verifyReady(peerNode, signing, pending.tuple, frame)
         : ({ ok: false, rejection: ReadyRejection.BadSignature } as const)
-    if (verdict.ok) return true
+    if (verdict.ok) return verdict
     this.record(TransportEventType.AuthRejected, {
       face: 'ready',
       rejection: verdict.rejection,
@@ -588,7 +647,7 @@ export class TransportClient implements TransportChannel {
     this.pendingHandshake = null
     socket.close(CLOSE_PROTOCOL_ERROR, 'ready signature rejected')
     socket.terminate()
-    return false
+    return null
   }
 
   private onReady(): void {
@@ -657,6 +716,8 @@ export class TransportClient implements TransportChannel {
     // socket may still emit one while it finishes tearing down.
     socket.on('error', () => {})
     this.socket = null
+    this.peerAuthentication = null
+    this.peerCredential = null
     // The nonce pair belonged to that socket. Carrying it to the next one
     // would let a ready frame be checked against a challenge it never answered.
     if (this.pendingHandshake?.socket === socket) this.pendingHandshake = null

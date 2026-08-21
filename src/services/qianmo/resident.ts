@@ -1314,6 +1314,27 @@ export class QianmoResident {
     this.#supervisor.stop()
   }
 
+  /**
+   * Remove peer connections that the shared certificate directory just
+   * invalidated. The resident owns the inbound transport handle, while the
+   * CLI owns directory polling; keeping this hand-off explicit means neither
+   * layer silently assumes the other will terminate already-authenticated
+   * links.
+   */
+  closePeers(peerNodes: Iterable<string>): void {
+    this.#transport?.closePeers(peerNodes)
+  }
+
+  closePeerCredentials(
+    credentials: Iterable<{
+      readonly node: string
+      readonly source: string
+      readonly id: string
+    }>,
+  ): void {
+    this.#transport?.closePeerCredentials(credentials)
+  }
+
   #closeWitness(): void {
     if (this.#witnessClosed) return
     this.#witnessClosed = true

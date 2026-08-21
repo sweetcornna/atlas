@@ -35,14 +35,23 @@ import {
   type RegistryServerHandle,
 } from '@qianmo/registry'
 import {
+  TransportClient,
+  startTransportServer,
+  type TransportServerHandle,
+} from '@qianmo/transport'
+import {
   initCa,
   issueCertificate,
   refreshRevocationList,
   type CaInitResult,
 } from '../ca/operations.js'
+import { caKeyPairFromPem } from '../ca/caKeys.js'
 import { opensslVersion, runOpenssl } from '../ca/openssl.js'
 import { popMessage } from '../ca/pop.js'
+import { signRevocationList } from '../ca/revocationList.js'
 import {
+  CERTIFICATE_CREDENTIAL_SOURCE,
+  EXPLICIT_CREDENTIAL_SOURCE,
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
 } from '../certificateDirectory.js'
@@ -69,8 +78,8 @@ function issueNode(
   node: string,
   hosts: readonly string[],
   root: string,
+  keys: NodeKeyPair = generateNodeKeyPair(),
 ): IssuedNode {
-  const keys = generateNodeKeyPair()
   const tlsKeyPath = join(root, `${node}.tls.key`)
   writeFileSync(
     tlsKeyPath,
@@ -99,6 +108,30 @@ function issueNode(
     certificatePem: issued.certificatePem,
     fingerprint256: issued.fingerprint256,
   }
+}
+
+async function publishExactRl(options: {
+  readonly issuedAt: number
+  readonly revoked?: readonly { node: string; fingerprint256: string }[]
+}): Promise<void> {
+  const caKeys = caKeyPairFromPem(readFileSync(join(caDir, 'ca.key'), 'utf8'))
+  const signed = signRevocationList(caKeys, {
+    version: 1,
+    issuedAt: options.issuedAt,
+    nextUpdate: options.issuedAt + 30 * 24 * 60 * 60 * 1000,
+    revoked: (options.revoked ?? []).map(entry => ({
+      ...entry,
+      reason: 'review fixture',
+      at: options.issuedAt,
+    })),
+  })
+  const put = await fetch(`${server.url}/v0/revocation-list`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(signed),
+  })
+  if (put.status !== 200)
+    throw new Error(`setup: publishing exact RL failed ${put.status}`)
 }
 
 let root: string
@@ -306,6 +339,584 @@ describe('CertificateDirectory — fail-closed to --trust (§6.4)', () => {
       await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
       await directory.refresh()
       expect(directory.publicKeyOf('node-a')).toBe(a.keys.publicKey)
+    },
+  )
+})
+
+describe('CertificateDirectory — cached certificates are revalidated', () => {
+  itNeedsOpenssl(
+    'a fresh RL revokes a cached peer even when the agents endpoint is down',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      let agentsAvailable = true
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        fetch: async (input, init) =>
+          new URL(input).pathname === '/v0/agents' && !agentsAvailable
+            ? new Response(null, { status: 503 })
+            : await fetch(input, init),
+      })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
+
+      await publishRl({
+        now: Date.now(),
+        validMs: 30 * 24 * 60 * 60 * 1000,
+        revoke: [{ node: a.node, fingerprint256: a.fingerprint256 }],
+      })
+      agentsAvailable = false
+      const refreshed = await directory.refresh()
+
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+      expect(refreshed.directoryRemoved).toEqual([a.node])
+      expect(refreshed.permanentlyInvalidated).toEqual([a.node])
+    },
+  )
+
+  itNeedsOpenssl(
+    'an expired cached certificate is dropped even when the agents endpoint is down',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      // OpenSSL serializes validity timestamps to seconds. Establish this
+      // deterministic clock after issuance so a test that happens to start in
+      // the last millisecond of a second cannot ask for a certificate before
+      // its own `notBefore`.
+      const t0 = Date.now()
+      await publishRl({ now: t0, validMs: 200 * 24 * 60 * 60 * 1000 })
+
+      let now = t0
+      let agentsAvailable = true
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        now: () => now,
+        fetch: async (input, init) =>
+          new URL(input).pathname === '/v0/agents' && !agentsAvailable
+            ? new Response(null, { status: 503 })
+            : await fetch(input, init),
+      })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
+
+      now = t0 + 91 * 24 * 60 * 60 * 1000
+      agentsAvailable = false
+      const refreshed = await directory.refresh()
+
+      expect(directory.revocationListFresh).toBe(true)
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+      expect(refreshed.directoryRemoved).toEqual([a.node])
+      expect(refreshed.permanentlyInvalidated).toEqual([a.node])
+    },
+  )
+})
+
+describe('CertificateDirectory — directory churn is not revocation', () => {
+  itNeedsOpenssl(
+    'an empty agents response removes discovery only and recovers on the next snapshot',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+      })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
+
+      registry.clear()
+      const absent = await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+      expect(absent.directoryRemoved).toEqual([a.node])
+      expect(absent.permanentlyInvalidated).toEqual([])
+
+      await registerIssued(a, 'node-a.example.com')
+      const restored = await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
+      expect(restored.directoryRemoved).toEqual([])
+      expect(restored.permanentlyInvalidated).toEqual([])
+    },
+  )
+})
+
+describe('CertificateDirectory — refresh observers are contained', () => {
+  itNeedsOpenssl(
+    'retries a permanent close after a throwing sink without unhandled rejections',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      const errors: string[] = []
+      const seenPermanent: string[][] = []
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const directory = new CertificateDirectory({
+          caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+          registryUrl: server.url,
+          onError: event => errors.push(event.phase),
+        })
+        await directory.refresh()
+
+        directory.setRefreshSink(result => {
+          if (result.permanentlyInvalidated.length === 0) return
+          seenPermanent.push([...result.permanentlyInvalidated])
+          throw new Error('observer is temporarily unavailable')
+        })
+
+        await publishRl({
+          now: Date.now(),
+          validMs: 30 * 24 * 60 * 60 * 1000,
+          revoke: [{ node: a.node, fingerprint256: a.fingerprint256 }],
+        })
+        const first = await directory.refresh()
+        expect(first.permanentlyInvalidated).toEqual([a.node])
+        expect(directory.publicKeyOf(a.node)).toBeNull()
+
+        directory.startPolling(5)
+        await Bun.sleep(80)
+        directory.stopPolling()
+        await Bun.sleep(10)
+
+        expect(
+          errors.filter(phase => phase === 'refresh_sink').length,
+        ).toBeGreaterThan(2)
+        expect(seenPermanent.length).toBeGreaterThan(2)
+        expect(seenPermanent.every(nodes => nodes[0] === a.node)).toBe(true)
+        expect(unhandled).toEqual([])
+        expect(directory.publicKeyOf(a.node)).toBeNull()
+
+        const delivered: string[][] = []
+        directory.setRefreshSink(result => {
+          delivered.push([...result.permanentlyInvalidated])
+        })
+        await directory.refresh()
+        expect(delivered).toEqual([[a.node]])
+        expect((await directory.refresh()).permanentlyInvalidated).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    },
+  )
+
+  itNeedsOpenssl(
+    'delivers a second permanent invalidation when one node receives a new certificate',
+    async () => {
+      const first = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(first, 'node-a.example.com')
+      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+
+      const deliveries: string[][] = []
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+      })
+      directory.setRefreshSink(result => {
+        if (result.permanentlyInvalidated.length > 0) {
+          deliveries.push([...result.permanentlyInvalidated])
+        }
+      })
+      await directory.refresh()
+
+      await publishRl({
+        now: Date.now(),
+        validMs: 30 * 24 * 60 * 60 * 1000,
+        revoke: [{ node: first.node, fingerprint256: first.fingerprint256 }],
+      })
+      expect((await directory.refresh()).permanentlyInvalidated).toEqual([
+        first.node,
+      ])
+
+      // A renewed certificate is new revocation evidence even when the node
+      // segment stays stable. Replacing a node-level delivered marker would
+      // make the next line silently fail open for existing connections.
+      const replacement = issueNode(
+        caDir,
+        'node-a',
+        ['node-a.example.com'],
+        root,
+      )
+      registry.clear()
+      await registerIssued(replacement, 'node-a.example.com')
+      await directory.refresh()
+      expect(directory.publicKeyOf(replacement.node)).toBe(
+        replacement.keys.publicKey,
+      )
+
+      await publishRl({
+        now: Date.now(),
+        validMs: 30 * 24 * 60 * 60 * 1000,
+        revoke: [
+          {
+            node: replacement.node,
+            fingerprint256: replacement.fingerprint256,
+          },
+        ],
+      })
+      expect((await directory.refresh()).permanentlyInvalidated).toEqual([
+        replacement.node,
+      ])
+      expect(deliveries).toEqual([[first.node], [replacement.node]])
+    },
+  )
+})
+
+describe('CertificateDirectory — credential history and RL monotonicity', () => {
+  itNeedsOpenssl(
+    'rejects rollback, same-time forks, and removal from an accepted RL',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      const t0 = Date.now()
+      const errors: string[] = []
+      await publishExactRl({ issuedAt: t0 })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        onError: event => errors.push(`${event.phase}:${event.reason}`),
+      })
+      directory.setRefreshSink(() => {})
+      await directory.refresh()
+
+      await publishExactRl({
+        issuedAt: t0 + 1,
+        revoked: [{ node: a.node, fingerprint256: a.fingerprint256 }],
+      })
+      expect(
+        (await directory.refresh()).permanentlyInvalidatedCredentials,
+      ).toEqual([{ node: a.node, source: 'certificate', id: a.fingerprint256 }])
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+
+      // A still-fresh signed pre-revocation snapshot is a replay, not an
+      // instruction to resurrect the credential.
+      await publishExactRl({ issuedAt: t0 })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+
+      await publishExactRl({ issuedAt: t0 + 1 })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+
+      await publishExactRl({ issuedAt: t0 + 2 })
+      await directory.refresh()
+      expect(directory.publicKeyOf(a.node)).toBeNull()
+      expect(errors.some(error => error.includes('rollback'))).toBe(true)
+      expect(errors.some(error => error.includes('conflicting'))).toBe(true)
+      expect(errors.some(error => error.includes('removes prior'))).toBe(true)
+    },
+  )
+
+  itNeedsOpenssl(
+    'retains two fingerprints for one node and invalidates each exactly',
+    async () => {
+      const identity = generateNodeKeyPair()
+      const first = issueNode(
+        caDir,
+        'node-a',
+        ['node-a.example.com'],
+        root,
+        identity,
+      )
+      await registerIssued(first, 'node-a.example.com')
+      const t0 = Date.now()
+      await publishExactRl({ issuedAt: t0 })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+      })
+      await directory.refresh()
+
+      const replacement = issueNode(
+        caDir,
+        'node-a',
+        ['node-a.example.com'],
+        root,
+        identity,
+      )
+      registry.clear()
+      await registerIssued(replacement, 'node-a.example.com')
+      await directory.refresh()
+
+      await publishExactRl({
+        issuedAt: t0 + 1,
+        revoked: [{ node: first.node, fingerprint256: first.fingerprint256 }],
+      })
+      const firstRevocation = await directory.refresh()
+      expect(firstRevocation.permanentlyInvalidatedCredentials).toEqual([
+        { node: first.node, source: 'certificate', id: first.fingerprint256 },
+      ])
+      expect(
+        directory.handshakeCredentialOf(first.node, first.fingerprint256),
+      ).toBeNull()
+      expect(
+        directory.handshakeCredentialOf(
+          replacement.node,
+          replacement.fingerprint256,
+        )?.publicKey,
+      ).toBe(identity.publicKey)
+      expect(directory.publicKeyOf(replacement.node)).toBe(identity.publicKey)
+
+      await publishExactRl({
+        issuedAt: t0 + 2,
+        revoked: [
+          { node: first.node, fingerprint256: first.fingerprint256 },
+          {
+            node: replacement.node,
+            fingerprint256: replacement.fingerprint256,
+          },
+        ],
+      })
+      const both = await directory.refresh()
+      expect(both.permanentlyInvalidatedCredentials).toEqual([
+        { node: first.node, source: 'certificate', id: first.fingerprint256 },
+        {
+          node: replacement.node,
+          source: 'certificate',
+          id: replacement.fingerprint256,
+        },
+      ])
+    },
+  )
+
+  itNeedsOpenssl(
+    'keeps an explicit override distinguishable from a revoked CA credential',
+    async () => {
+      const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(a, 'node-a.example.com')
+      const t0 = Date.now()
+      await publishExactRl({ issuedAt: t0 })
+      const explicit = generateNodeKeyPair()
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [[a.node, explicit.publicKey]],
+      })
+      await directory.refresh()
+      await publishExactRl({
+        issuedAt: t0 + 1,
+        revoked: [{ node: a.node, fingerprint256: a.fingerprint256 }],
+      })
+      const result = await directory.refresh()
+      expect(result.permanentlyInvalidatedCredentials).toEqual([
+        { node: a.node, source: 'certificate', id: a.fingerprint256 },
+      ])
+      expect(directory.handshakeCredentialOf(a.node, undefined)).toEqual({
+        publicKey: explicit.publicKey,
+        source: 'explicit',
+        id: a.node,
+      })
+      expect(directory.publicKeyOf(a.node)).toBe(explicit.publicKey)
+    },
+  )
+
+  itNeedsOpenssl(
+    'closes an F1 socket after same-identity F2 rotation without closing F2',
+    async () => {
+      const identity = generateNodeKeyPair()
+      const listener = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
+      const first = issueNode(
+        caDir,
+        'node-a',
+        ['node-a.example.com'],
+        root,
+        identity,
+      )
+      await registerIssued(first, 'node-a.example.com')
+      await registerIssued(listener, 'node-b.example.com')
+      const t0 = Date.now()
+      await publishExactRl({ issuedAt: t0 })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+      })
+      await directory.refresh()
+
+      let transport: TransportServerHandle | undefined
+      const clients: TransportClient[] = []
+      try {
+        const socketPath = join(root, `rotation-${crypto.randomUUID()}.sock`)
+        directory.setRefreshSink(({ permanentlyInvalidatedCredentials }) => {
+          transport?.closePeerCredentials(permanentlyInvalidatedCredentials)
+        })
+        transport = startTransportServer({
+          unix: socketPath,
+          psk: 'certificate-rotation-review-psk',
+          onMessage: () => {},
+          signing: {
+            node: listener.node,
+            keys: listener.keys,
+            directory,
+            required: true,
+            credentialProofRequired: true,
+            credential: {
+              selector: listener.fingerprint256,
+              source: CERTIFICATE_CREDENTIAL_SOURCE,
+              id: listener.fingerprint256,
+            },
+          },
+        })
+        const connect = async (
+          credential: string,
+        ): Promise<TransportClient> => {
+          const client = new TransportClient({
+            endpoint: { unix: socketPath },
+            node: first.node,
+            peerNode: listener.node,
+            psk: 'certificate-rotation-review-psk',
+            keepAliveIntervalMs: 0,
+            signing: {
+              keys: identity,
+              directory,
+              required: true,
+              credentialProofRequired: true,
+              credential: {
+                selector: credential,
+                source: CERTIFICATE_CREDENTIAL_SOURCE,
+                id: credential,
+              },
+            },
+          })
+          clients.push(client)
+          await client.connect(5_000)
+          return client
+        }
+        const f1 = await connect(first.fingerprint256)
+
+        const replacement = issueNode(
+          caDir,
+          first.node,
+          ['node-a.example.com'],
+          root,
+          identity,
+        )
+        registry.clear()
+        await registerIssued(replacement, 'node-a.example.com')
+        await registerIssued(listener, 'node-b.example.com')
+        await directory.refresh()
+        const f2 = await connect(replacement.fingerprint256)
+
+        await publishExactRl({
+          issuedAt: t0 + 1,
+          revoked: [{ node: first.node, fingerprint256: first.fingerprint256 }],
+        })
+        await directory.refresh()
+        const deadline = Date.now() + 2_000
+        while (!f1.isClosed() && Date.now() < deadline) await Bun.sleep(10)
+        expect(f1.isClosed()).toBe(true)
+        expect(f2.isReady()).toBe(true)
+        expect(transport.connections).toBe(1)
+        expect(transport.channels).toBe(1)
+
+        const returning = new TransportClient({
+          endpoint: { unix: socketPath },
+          node: first.node,
+          peerNode: listener.node,
+          psk: 'certificate-rotation-review-psk',
+          keepAliveIntervalMs: 0,
+          signing: {
+            keys: identity,
+            directory,
+            required: true,
+            credentialProofRequired: true,
+            credential: {
+              selector: first.fingerprint256,
+              source: CERTIFICATE_CREDENTIAL_SOURCE,
+              id: first.fingerprint256,
+            },
+          },
+        })
+        clients.push(returning)
+        await expect(returning.connect(5_000)).rejects.toThrow(/4003/)
+        expect(f2.isReady()).toBe(true)
+      } finally {
+        for (const client of clients) await client.close()
+        await transport?.stop()
+      }
+    },
+  )
+
+  itNeedsOpenssl(
+    'does not close a real explicit-trust socket when the CA credential is revoked',
+    async () => {
+      const caPeer = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      const explicit = generateNodeKeyPair()
+      const listener = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
+      await registerIssued(caPeer, 'node-a.example.com')
+      await registerIssued(listener, 'node-b.example.com')
+      const t0 = Date.now()
+      await publishExactRl({ issuedAt: t0 })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [[caPeer.node, explicit.publicKey]],
+      })
+      await directory.refresh()
+      let transport: TransportServerHandle | undefined
+      let client: TransportClient | undefined
+      try {
+        const socketPath = join(root, `explicit-${crypto.randomUUID()}.sock`)
+        directory.setRefreshSink(({ permanentlyInvalidatedCredentials }) => {
+          transport?.closePeerCredentials(permanentlyInvalidatedCredentials)
+        })
+        transport = startTransportServer({
+          unix: socketPath,
+          psk: 'explicit-override-review-psk',
+          onMessage: () => {},
+          signing: {
+            node: listener.node,
+            keys: listener.keys,
+            directory,
+            required: true,
+            credentialProofRequired: true,
+            credential: {
+              selector: listener.fingerprint256,
+              source: CERTIFICATE_CREDENTIAL_SOURCE,
+              id: listener.fingerprint256,
+            },
+          },
+        })
+        client = new TransportClient({
+          endpoint: { unix: socketPath },
+          node: caPeer.node,
+          peerNode: listener.node,
+          psk: 'explicit-override-review-psk',
+          keepAliveIntervalMs: 0,
+          signing: {
+            keys: explicit,
+            directory,
+            required: true,
+            credentialProofRequired: true,
+            credential: {
+              selector: caPeer.node,
+              source: EXPLICIT_CREDENTIAL_SOURCE,
+              id: caPeer.node,
+            },
+          },
+        })
+        await client.connect(5_000)
+        await publishExactRl({
+          issuedAt: t0 + 1,
+          revoked: [
+            { node: caPeer.node, fingerprint256: caPeer.fingerprint256 },
+          ],
+        })
+        await directory.refresh()
+        await Bun.sleep(50)
+        expect(client.isReady()).toBe(true)
+        expect(client.isClosed()).toBe(false)
+        expect(transport.connections).toBe(1)
+      } finally {
+        await client?.close()
+        await transport?.stop()
+      }
     },
   )
 })

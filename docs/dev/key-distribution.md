@@ -143,7 +143,7 @@
 **托管形态（写死）**：
 
 - CA 私钥存在**负责人机器上的离线目录**，`0700` 目录 / `0600` 文件，创建时给 mode 而不是事后 chmod、`wx` 独占创建——与 `nodeIdentity.ts:24-27` 同一条纪律，理由也同一条（私钥世界可读的窗口也是窗口）。
-- **CA 私钥不得出现在**：任何节点的配置根（`~/.qianmo` 及派生）、`DEMO_ROOT`、仓库、CI secret、控制台进程可达的任何路径（§10.3）。
+- **CA 私钥不得出现在**：任何节点的配置根（`~/.qianmo` 及派生）、仓库工作树、已配置的 `DEMO_ROOT`、已知 CI 工作区或 CI secret。`caDirectory()` 对前四类路径有运行时拒绝；它**不能**从路径本身证明「任何控制台进程可达路径」，所以那条仍是部署边界与 §10.3 的进程权限约束，不能夸成已由本地守卫穷尽验证。
 - 根有效期 **10 年**，但**每 3 年主动换根**，新旧根信任期重叠 90 天（= 一个证书周期），换根是一次带外动作（§5.1）。10 年是防"忘了换根导致全网停摆"的兜底，不是计划寿命。
 
 **CA 私钥丢失（非泄露）**的失效模式与泄露不同，要分开写：现有证书继续有效直到到期，但签不出新证书、也签不出 RL；届时全网退回 (b) 形态——`--trust` 还在，运维用它撑到新根铺开。**这是保留 `--trust` 到明确退役信号量之前的第二个理由**（第一个是迁移期，§8）。
@@ -328,6 +328,8 @@ DoD 要求在 TOFU 与带外分发之间定案。**定案：带外分发。TOFU 
 
 选 fail-closed 到 `--trust` 而不是全断，是因为**全断会让"攻击者掐掉 RL 分发"变成一键全网停机**，而那比"暂时退回 M0 的手工信任"糟得多。**这也是 `--trust` 不能在 §8 阶段 3 之前删掉的第三个理由。**
 
+**RL 接收状态也是 append-only。**节点拒绝 `issuedAt` 倒退、拒绝同一 `issuedAt` 的不同内容，也拒绝后续列表移除任何已经接受的 `fingerprint256`；完全相同的列表可幂等重放。否则零鉴权 registry 可以先重放仍新鲜的旧 clear RL 让已吊销证书重新准入，再切回新版 RL，而一个只记“这个 fingerprint 曾经通知过”的节点会漏掉第二次活连接关闭。官方 `qm ca refresh-rl` 的 `revoked.json` 本来就是累加状态，这条把签发端已有的事实提升成接收端可执行的不变式。
+
 ### 6.5 密钥泄露 ≠ 轮换：节点 Ed25519 身份密钥**不轮换**
 
 `nodeIdentity.ts:16-22` 已经把理由写死：**节点的密钥就是它的身份**，悄悄换一把等于这个节点悄悄变成另一个节点，会让它签发过的每一张 capability 与每一份已发布的公钥副本一起失效。文件因此是 `wx` 独占创建、永不覆盖，损坏是报错而不是重新生成。
@@ -352,10 +354,20 @@ DoD 问的是「传输身份 vs 消息授权」两层。**实测之后是三层*
 | 层 | 答什么问题 | 机制 | 权威来源 | 失败表现 |
 |---|---|---|---|---|
 | **L0 · TLS 准入** | 这条 TCP 连接**要不要接**（对端是不是网内成员） | mTLS：`requestCert` + `ca` + `rejectUnauthorized` **三件套**（F-7 实测有效；**F-10：`ca` 单给不给 `requestCert` 会让谁都连不上**） | CA 根证书 | TLS 层关闭，应用层看不到任何东西 |
-| **L1 · 节点身份** | 这条连接背后**是哪个 `node`**（`from` 能不能被信） | 握手帧，**Ed25519 签名**替换 HMAC，**双向**（§7.1.1） | 双方各自的 Ed25519 公钥（从证书读，CA 背书） | close 4003，`HandshakeRejection.BadMac` 的继任者 |
+| **L1 · 节点身份** | 这条连接背后**是哪个 `node`**（`from` 能不能被信） | 握手帧，已钉住 peer／严格阶段的**双向 Ed25519 签名**（§7.1.1） | 双方各自的 Ed25519 公钥（从证书读，CA 背书） | close 4003，`HandshakeRejection.BadMac` 的继任者 |
 | **L2 · 消息授权** | **这一条消息**被授权做什么 | capability 令牌（现状，`gate.ts:67-83`） | 签发者的 Ed25519 公钥 + 策略 | `E_CAP_INVALID` / `E_CAP_INSUFFICIENT` |
 
 **L1 的握手签名（写死）**：签名对象是 `qianmo-handshake-v1\n` + 现有 `computeMac` 那个 JSON 数组的**同一份字节**（`handshake.ts:99-117`：`[FRAME_VERSION, serverNonce, clientNonce, node, channelId]` 的 `JSON.stringify`）。保留数组 + `JSON.stringify` 而不是字符串拼接，理由与原注释同一条：含分隔符的节点名不能被拆成两个字段去伪造另一个元组。域分离前缀是强制的（§4.4）。
+
+**混版本事实（不可美化）**：v1 内的 `sig`/`ready.node` 都是可选字段；中间人可删除它们而不重算既有 MAC。因此 optional 模式只是 **opportunistic authentication**：连接仍可能以 PSK 成功，运行时必须记录实际采用 `psk`、legacy `signature` 还是 `credential_signature`，而且不得把前者写成 L1 身份成立，也不得把中间那档写成证书级精确身份。
+
+**迁移判据与钉住方式**：先让一对节点的双向 `AuthAccepted` 记录连续显示 `authentication=signature` 或 `credential_signature`，再将该 peer 放入 `HandshakeIdentity.requiredPeers`；此后任一方向缺 legacy 签名（包括字段被剥离）均拒绝。CA 精确 credential 的推广另看 `credential_signature`，并用下一段的独立策略钉住。`--require-signed-handshake` 是全局部署阶段入口，且只有所有 peer 都已被逐一验证、钉住或切到该严格阶段后，才可宣称 PSK 已退出。旧节点仍可在未钉住的 peer 上互通；若只走 PSK，那条连接不是签名身份。
+
+**证书级吊销的 v1 双证明扩展**：既有 `sig` 的字节**严格保持 P12.3 不变**：Auth 仍签五元组，Ready 仍签六元组，绝不把扩展字段塞进去。因此新 signer 发出的 `sig` 仍能被旧 verifier 接受。`AuthFrame` / `ReadyFrame` 另带一对可选字段：opaque `credential` selector 与 `credentialProof`。第二证明使用独立的 `qianmo-handshake-credential-proof-v1` 域，覆盖方向（Auth/Ready 不可互换）、完整 legacy tuple、selector，以及目录实际解析出的 `source/id`；selector 与 proof 必须同时出现，缺一、替换或伪造任一个都拒绝，optional 也不会静默忽略半截扩展。transport 不解释 selector，`CertificateDirectory` 才把它解析为具体 `fingerprint256`，并把实际采用的 `source/id` 留在认证结果里。
+
+运行时把三种结果分开记录：`psk`、只保证节点公钥的 legacy `signature`、带精确 credential 的 `credential_signature`。同 node 正常换发的 F1/F2 可以同时有活连接，RL 吊 F1 时只关 F1；显式 `--trust` 认证的连接不会被同 node 的 CA 事件误关。旧 signed peer 缺 selector/proof 时，optional 新节点可按 legacy `signature` 接受，但**没有证书级精确吊销保证**，因此不得附会出 credential id，也不得用一次按 node 的 RL 事件把它关掉。
+
+两个部署策略刻意分开：`required` / `requiredPeers` 只要求 legacy 双向签名、负责退出 PSK；`credentialProofRequired` / `credentialProofRequiredPeers` 才要求精确 credential 证明。普通 signed、非 CA 部署不因开启前者而被误要求证书 selector；CA 目录下的 `--require-signed-handshake` 同时推导两者，缺 selector/proof 的旧 peer 会被拒。optional 模式若只剥 `credential`+`credentialProof`，会降为 legacy `signature`；若连 `sig` 一起剥，则仍可降为 PSK。前者只能靠 credential-required 策略关闭，后者由 `requiredPeers` / 全局严格签名策略关闭——这是 v1 additive 迁移的 opportunistic 边界，不得改写成抗降级。
 
 **L1 换完之后，`frames.ts:71` 那句注释要改**：`node` 从「审计标签，MAC 才是证明」变成「**权威**，签名证明的正是它」。这是本设计在传输层的全部收益——`handshake.ts:16-18` 那条「任何持钥者可冒充任何节点」的自陈缺陷就此关闭。
 
@@ -567,10 +579,10 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 
 | # | 判据 | 状态 | 证据 |
 |---|---|---|---|
-| **K-1** | CA 建成；根证书 `fingerprint256` 进 runbook；CA 私钥不在任何节点配置根、不在仓库、不在 CI（一条扫描断言） | **机制已落地·runbook 待负责人** | `qm ca init/issue/refresh-rl`：`src/cli/handlers/ca.ts` + `src/services/qianmo/ca/operations.ts`（`00fbff39`）；CA 路径**刻意不从 `paths.ts` 派生**并写明理由：`src/services/qianmo/ca/paths.ts`；扫描断言 `src/services/qianmo/ca/__tests__/caScan.test.ts`（节点侧代码出现 CA 目录字面量即失败）；用例 `ca/__tests__/ca.test.ts` / `paths.test.ts`。**根证书指纹写进 runbook 是一次人的动作，本仓库不记录它**（§3.3：CA 私钥与其托管形态不进仓库） |
+| **K-1** | CA 建成；根证书 `fingerprint256` 进 runbook；CA 私钥不在任何节点配置根、不在仓库、不在已知 CI／演示工作区（一条扫描断言 + 路径守卫） | **机制已落地·runbook 待负责人** | `qm ca init/issue/refresh-rl`：`src/cli/handlers/ca.ts` + `src/services/qianmo/ca/operations.ts`（`00fbff39`）；CA 路径**刻意不从 `paths.ts` 派生**并写明理由：`src/services/qianmo/ca/paths.ts`；扫描断言 `src/services/qianmo/ca/__tests__/caScan.test.ts`（节点侧代码出现 CA 目录字面量即失败），运行时守卫与正反用例见 `ca/paths.ts` / `paths.test.ts`。守卫不证明抽象的「所有控制台可达路径」；那条由 §3.3 的离线部署规则和 §10.3 进程权限另行约束。**根证书指纹写进 runbook 是一次人的动作，本仓库不记录它**（§3.3：CA 私钥与其托管形态不进仓库） |
 | **K-2** | 每个在册节点持有 CA 签发的有效证书，SAN 双 URI 齐全且 `nodekey` 与 identity 文件里的公钥一致 | **机制已落地·舰队未采集** | 节点侧自检 `assertOwnCertificateMatchesIdentity`（`src/services/qianmo/certificateDirectory.ts`）+ `assertOwnCertificateAndKey`（`src/cli/handlers/resident.ts`），**在开监听之前**跑；四条负向用例见 `src/cli/handlers/__tests__/residentCertificates.test.ts`「assertOwnCertificateAndKey (K-2, one of the four negative cases)」。舰队侧「每个在册节点」由 **S-1 探针**度量，今天报「未采集」 |
 | **K-3** | L0 mTLS 在两台真机之间跑通：带证书的连得上、不带的被 TLS 层拒（复现 F-7） | **机制已落地·真机未采集** | `packages/transport/test/mtls.test.ts`（真 openssl、真 CA、真 `wss://`）：带证书连得上 / 不带的在 TLS 层被关 / **另一个 CA 签的也连得上**——最后那条是把 §2 2026-08-17 补录的限制钉成会变红的断言。**两台真机那一次尚未做**；`004d5352` + `ccc6bd2d` 是接线 |
-| **K-4** | L1 握手签名替换 PSK，**且双向**；两台节点均不再读 `QIANMO_TRANSPORT_PSK`；`frames.ts` 的 `node` 注释从"审计标签"改为"权威" | **机制已落地·PSK 退役未发生** | 双向签名 `packages/transport/src/handshake.ts`（`authSigningInput` / `readySigningInput`，六元组与五元组不可互换）+ `5ba56482`；四格互通矩阵 `packages/transport/test/signed-handshake.test.ts`；出向侧 `f5b8dd00` + `packages/activator/test/link-signing.test.ts`。`frames.ts:75-90` 的注释**已改**，且改成了条件式的——「有 `sig` 就是权威，只有 `mac` 就是标签」，因为迁移期两种形态同时在线。**「不再读 PSK」尚未发生**：`required: true`（`--require-signed-handshake`）是那个开关，全网打开是 §8.2 阶段 ③ 的事 |
+| **K-4** | L1 握手签名替换 PSK，**且双向**；两台节点均不再读 `QIANMO_TRANSPORT_PSK`；`frames.ts` 的 `node` 注释从"审计标签"改为"权威" | **机制已落地·PSK 退役未发生** | 双向签名 `packages/transport/src/handshake.ts`（`authSigningInput` / `readySigningInput`，六元组与五元组不可互换）+ `5ba56482`；四格互通矩阵与双向剥离／钉住用例见 `packages/transport/test/{signed-handshake,handshake-signing}.test.ts`；出向侧 `f5b8dd00` + `packages/activator/test/link-signing.test.ts`。optional 连接按实际证明记为 `psk` / legacy `signature` / `credential_signature`；经 `requiredPeers` 钉住或 `required: true` 后，缺 legacy 签名被拒，CA 精确证明另由 credential-required 策略控制。**「不再读 PSK」尚未发生**：`--require-signed-handshake` 是全网严格阶段开关 |
 | **K-5** | §9.1 的 **S-1 ~ S-5 五条全绿** | **未达成（1/5）** | 探针 `scripts/qianmo-policy-switch-probes.ts`（`ee1f59a8`），`bun run qianmo:policy-probes`。本机实跑：**S-5 pass**；S-1／S-2／S-3／S-4 **not-collected**，failed=0，exit 1。S-3 的四条必需量具（含 `beta-smoke.sh`）与舰队级前置条件说明见 **§9.1 的 P12.4 运行态注**；四条「未采集」的具体缺口逐条写在报告的 `reason` 里，不在这里复述 |
 | **K-6** | RL 全链路验证过一次真实吊销（= S-4），并验证过 RL 过期时的 fail-closed 行为 | **机制已落地·真机演练未做** | fail-closed 三态用例 `src/services/qianmo/__tests__/certificateDirectory.test.ts`「fail-closed to --trust (§6.4)」（从没发布过 / 过期 / 恢复）；吊销通路由 S-4 探针**就地真跑**（离线 CA → 真注册中心 → 真证书 → 目录解析得到 → 发布签名 RL → 下次 refresh 解析不到），本机 `mechanism.ok = true`。§9.1 要的「在部署节点上由人执行一次并从审计链取证」**未做** |
 | **K-7** | 证书轮换演练过一次，且演练期间**没有断开任何正在进行的任务**（§6.3） | **机制已落地·演练未做** | §6.3 第 4 条的重读能力 `fc805894`：`ClientTlsSource` 每次拨号解析一次，用例 `packages/transport/test/tls-reload.test.ts` 用**轮换 CA 根 + 服务端叶证书**证明重读的客户端回得来、攥着旧根的对照组回不来（观测点为什么落在服务端那一侧，见该文件头：F-8 + §2 补录）。§6.3 第 2/5 条的取舍见本文 §6.3 勘误注。**一次真实的季度轮换演练未做** |

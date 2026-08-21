@@ -38,6 +38,7 @@ import {
   newNonce,
   signReady,
   verifyAuthAttempt,
+  type AuthenticatedCredential,
   type ListenerIdentity,
 } from './handshake.js'
 import {
@@ -75,6 +76,12 @@ interface ConnectionState {
   node: string | null
   channel: ServerTransportChannel | null
   authed: boolean
+  credential: AuthenticatedCredential | null
+}
+
+/** One exact authenticated credential to terminate. */
+export interface PeerCredentialTarget extends AuthenticatedCredential {
+  readonly node: string
 }
 
 export interface TransportServerOptions {
@@ -166,6 +173,17 @@ export interface TransportServerHandle {
   readonly connections: number
   /** Logical channels retained across reconnects. */
   readonly channels: number
+  /**
+   * Refuse every physical connection and retained logical channel belonging to
+   * peers that no longer pass the caller's directory check.
+   *
+   * The method is deliberately keyed by the authenticated handshake identity,
+   * never a caller-supplied endpoint or channel id. It is idempotent, so a
+   * repeated RL entry and a racing socket close cannot leave a channel behind.
+   */
+  closePeers(peerNodes: Iterable<string>): void
+  /** Close only links authenticated by these exact opaque credentials. */
+  closePeerCredentials(credentials: Iterable<PeerCredentialTarget>): void
   stop(): Promise<void>
 }
 
@@ -223,6 +241,7 @@ class ServerTransportChannel implements TransportChannel {
   #closed = false
   #reclaim: ReturnType<typeof setTimeout> | null = null
   #peerTypes: readonly string[] | undefined
+  #credential: AuthenticatedCredential | null
 
   constructor(options: {
     readonly id: string
@@ -231,12 +250,14 @@ class ServerTransportChannel implements TransportChannel {
     readonly retentionMs: number
     readonly remove: (channel: ServerTransportChannel) => void
     readonly record: (type: TransportEventType, detail: EventDetail) => void
+    readonly credential: AuthenticatedCredential | undefined
   }) {
     this.id = options.id
     this.peerNode = options.peerNode
     this.#retentionMs = options.retentionMs
     this.#remove = options.remove
     this.#record = options.record
+    this.#credential = options.credential ?? null
     this.#outbox = new EnvelopeOutbox({
       maxQueued: options.maxQueued,
       canWrite: () => this.isReady(),
@@ -263,6 +284,10 @@ class ServerTransportChannel implements TransportChannel {
   /** What the dialer declared on the auth frame of the current connection. */
   get peerSupportedTypes(): readonly string[] | undefined {
     return this.#peerTypes
+  }
+
+  get peerCredential(): AuthenticatedCredential | null {
+    return this.#credential
   }
 
   supports(type: MessageType): boolean {
@@ -307,12 +332,14 @@ class ServerTransportChannel implements TransportChannel {
   bind(
     socket: ServerWebSocket<ConnectionState>,
     supportedTypes?: readonly string[],
+    credential?: AuthenticatedCredential,
   ): void {
     if (this.#closed) throw new Error('transport channel is closed')
     // Replaced, not merged: the declaration belongs to the handshake that just
     // happened. A peer that reconnected on an older build declares less, and
     // carrying the old union forward would keep sending it types it dropped.
     this.#peerTypes = supportedTypes
+    this.#credential = credential ?? null
     const previous = this.#socket
     this.#socket = socket
     if (previous !== null && previous !== socket) {
@@ -334,13 +361,13 @@ class ServerTransportChannel implements TransportChannel {
     this.#removeIfIdle()
   }
 
-  close(): void {
+  close(closeCode = 1000, reason = 'transport server shutdown'): void {
     if (this.#closed) return
     this.#closed = true
     this.#cancelReclaim()
     const socket = this.#socket
     this.#socket = null
-    socket?.close(1000, 'transport server shutdown')
+    socket?.close(closeCode, reason)
     this.#outbox.close(new Error('transport server closed before receipt'))
   }
 
@@ -445,6 +472,7 @@ export function startTransportServer(
   function createChannel(
     id: string,
     peerNode: string,
+    credential?: AuthenticatedCredential,
   ): ServerTransportChannel | null {
     if (channels.size >= maxChannels) return null
     const channel = new ServerTransportChannel({
@@ -454,9 +482,71 @@ export function startTransportServer(
       retentionMs: channelRetentionMs,
       remove: removeChannel,
       record,
+      credential,
     })
     channels.set(id, channel)
     return channel
+  }
+
+  /**
+   * Cut all state that was admitted as one of `peerNodes`.
+   *
+   * A channel can outlive its socket while it carries unreceipted replies, so
+   * closing only the current socket would retain an authenticated route to a
+   * revoked peer. Conversely, a reconnect race can leave an old socket in
+   * Bun's close queue after its channel was rebound, so both collections are
+   * independently swept. Every close uses 4003: clients already treat it as a
+   * permanent authorization refusal and therefore do not spin on a revoked
+   * credential.
+   */
+  function closePeers(peerNodes: Iterable<string>): void {
+    const revoked = new Set(peerNodes)
+    if (revoked.size === 0) return
+
+    for (const channel of [...channels.values()]) {
+      if (!revoked.has(channel.peerNode)) continue
+      channel.close(CLOSE_UNAUTHORIZED, 'peer authorization revoked')
+      removeChannel(channel)
+    }
+    for (const socket of [...sockets]) {
+      const peerNode = socket.data.node
+      if (!socket.data.authed || peerNode === null || !revoked.has(peerNode))
+        continue
+      socket.close(CLOSE_UNAUTHORIZED, 'peer authorization revoked')
+    }
+  }
+
+  function closePeerCredentials(
+    credentials: Iterable<PeerCredentialTarget>,
+  ): void {
+    const revoked = new Set(
+      [...credentials].map(target =>
+        JSON.stringify([target.node, target.source, target.id]),
+      ),
+    )
+    if (revoked.size === 0) return
+    const matches = (
+      node: string,
+      credential: AuthenticatedCredential | null,
+    ): boolean =>
+      credential !== null &&
+      revoked.has(JSON.stringify([node, credential.source, credential.id]))
+
+    for (const channel of [...channels.values()]) {
+      if (!matches(channel.peerNode, channel.peerCredential)) continue
+      channel.close(CLOSE_UNAUTHORIZED, 'peer credential revoked')
+      removeChannel(channel)
+    }
+    for (const socket of [...sockets]) {
+      const peerNode = socket.data.node
+      if (
+        !socket.data.authed ||
+        peerNode === null ||
+        !matches(peerNode, socket.data.credential)
+      )
+        continue
+      socket.close(CLOSE_UNAUTHORIZED, 'peer credential revoked')
+    }
   }
 
   /**
@@ -603,7 +693,9 @@ export function startTransportServer(
           refuse(ws, HandshakeRejection.BadChannel, CLOSE_UNAUTHORIZED)
           return
         }
-        const channel = existing ?? createChannel(result.channelId, result.node)
+        const channel =
+          existing ??
+          createChannel(result.channelId, result.node, result.credential)
         if (channel === null) {
           record(TransportEventType.AuthRejected, {
             rejection: 'channel_capacity',
@@ -616,8 +708,9 @@ export function startTransportServer(
 
         ws.data.authed = true
         ws.data.node = result.node
+        ws.data.credential = result.credential ?? null
         ws.data.channel = channel
-        channel.bind(ws, frame.supportedTypes)
+        channel.bind(ws, frame.supportedTypes, result.credential)
         peerConnections.set(
           result.node,
           (peerConnections.get(result.node) ?? 0) + 1,
@@ -625,6 +718,13 @@ export function startTransportServer(
         record(TransportEventType.AuthAccepted, {
           node: result.node,
           channelId: result.channelId,
+          authentication: result.authentication,
+          ...(result.credential === undefined
+            ? {}
+            : {
+                credentialSource: result.credential.source,
+                credentialId: result.credential.id,
+              }),
         })
         send(ws, {
           t: FrameType.Ready,
@@ -693,6 +793,7 @@ export function startTransportServer(
       node: null,
       channel: null,
       authed: false,
+      credential: null,
     }
     if (server.upgrade(request, { data })) return undefined
     return new Response('expected a websocket upgrade', { status: 426 })
@@ -733,6 +834,8 @@ export function startTransportServer(
     get channels(): number {
       return channels.size
     },
+    closePeers,
+    closePeerCredentials,
     stop: async (): Promise<void> => {
       if (expiryTimer !== null) clearTimeout(expiryTimer)
       expiryTimer = null

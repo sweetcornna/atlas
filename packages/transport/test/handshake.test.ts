@@ -52,6 +52,7 @@ describe('verifyAuth', () => {
       ok: true,
       node: 'node-a',
       channelId: CHANNEL_ID,
+      authentication: 'psk',
     })
   })
 

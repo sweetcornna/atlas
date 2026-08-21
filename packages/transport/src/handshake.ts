@@ -165,15 +165,59 @@ export enum HandshakeRejection {
    * for opposite fixes.
    */
   SignatureRequired = 'signature_required',
+  /** A credential proof was required, or only half of the extension arrived. */
+  CredentialRequired = 'credential_required',
   /** No published key for the node the dialer claims to be. */
   UnknownSigner = 'unknown_signer',
   /** A signature was offered and it does not verify. */
   BadSignature = 'bad_signature',
+  /** The credential proof does not bind the resolved credential to the tuple. */
+  BadCredentialProof = 'bad_credential_proof',
+}
+
+/** The proof that actually admitted this connection. */
+export type HandshakeAuthentication =
+  | 'psk'
+  | 'signature'
+  | 'credential_signature'
+
+/** Opaque metadata identifying the credential that a directory verified. */
+export interface AuthenticatedCredential {
+  readonly source: string
+  readonly id: string
+}
+
+/** This node's claim about the exact credential backing its signature. */
+export interface HandshakeCredentialClaim extends AuthenticatedCredential {
+  readonly selector: string
+}
+
+/** A directory result: verification key plus auditable credential metadata. */
+export interface ResolvedHandshakeCredential extends AuthenticatedCredential {
+  readonly publicKey: string
+}
+
+/**
+ * Optional extension implemented by directories that can distinguish more
+ * than one credential for the same node. The transport treats `selector`,
+ * `source`, and `id` as opaque values.
+ */
+export interface HandshakeCredentialDirectory extends PublicKeyDirectory {
+  handshakeCredentialOf(
+    node: string,
+    selector: string | undefined,
+  ): ResolvedHandshakeCredential | null
 }
 
 /** Outcome of {@link verifyAuth}. */
 export type HandshakeResult =
-  | { readonly ok: true; readonly node: string; readonly channelId: string }
+  | {
+      readonly ok: true
+      readonly node: string
+      readonly channelId: string
+      readonly authentication: HandshakeAuthentication
+      readonly credential?: AuthenticatedCredential
+    }
   | { readonly ok: false; readonly rejection: HandshakeRejection }
 
 /** What {@link verifyAuth} needs out of an auth frame. */
@@ -185,6 +229,10 @@ export interface AuthAttempt {
   readonly mac: string
   /** Present when the dialer signed; see {@link verifyAuthAttempt}. */
   readonly sig?: string
+  /** Opaque selector paired with {@link AuthAttempt.credentialProof}. */
+  readonly credential?: string
+  /** Independent proof binding {@link AuthAttempt.credential} to the signer. */
+  readonly credentialProof?: string
 }
 
 /** Constant-time hex comparison; unequal lengths are unequal, not a throw. */
@@ -226,7 +274,12 @@ export function verifyAuth(
   if (!macEquals(expected, attempt.mac)) {
     return { ok: false, rejection: HandshakeRejection.BadMac }
   }
-  return { ok: true, node: attempt.node, channelId: attempt.channelId }
+  return {
+    ok: true,
+    node: attempt.node,
+    channelId: attempt.channelId,
+    authentication: 'psk',
+  }
 }
 
 /**
@@ -239,6 +292,10 @@ export function verifyAuth(
  * strings happened to line up.
  */
 export const HANDSHAKE_SIGNATURE_DOMAIN = 'qianmo-handshake-v1'
+
+/** Domain used only for the optional exact-credential proof. */
+export const HANDSHAKE_CREDENTIAL_PROOF_DOMAIN =
+  'qianmo-handshake-credential-proof-v1'
 
 function handshakeMessage(fields: readonly (string | number)[]): string {
   return `${HANDSHAKE_SIGNATURE_DOMAIN}\n${JSON.stringify(fields)}`
@@ -297,6 +354,61 @@ export function readySigningInput(
   ])
 }
 
+function credentialProofMessage(
+  direction: 'auth' | 'ready',
+  legacyTuple: readonly (string | number)[],
+  selector: string,
+  source: string,
+  id: string,
+): string {
+  return `${HANDSHAKE_CREDENTIAL_PROOF_DOMAIN}\n${JSON.stringify([
+    direction,
+    ...legacyTuple,
+    selector,
+    source,
+    id,
+  ])}`
+}
+
+/** Exact-credential proof for the dialer direction. */
+export function authCredentialProofInput(
+  serverNonce: string,
+  clientNonce: string,
+  node: string,
+  channelId: string,
+  selector: string,
+  source: string,
+  id: string,
+): string {
+  return credentialProofMessage(
+    'auth',
+    [FRAME_VERSION, serverNonce, clientNonce, node, channelId],
+    selector,
+    source,
+    id,
+  )
+}
+
+/** Exact-credential proof for the listener direction. */
+export function readyCredentialProofInput(
+  serverNonce: string,
+  clientNonce: string,
+  node: string,
+  channelId: string,
+  listenerNode: string,
+  selector: string,
+  source: string,
+  id: string,
+): string {
+  return credentialProofMessage(
+    'ready',
+    [FRAME_VERSION, serverNonce, clientNonce, node, channelId, listenerNode],
+    selector,
+    source,
+    id,
+  )
+}
+
 /**
  * Ed25519 material and the peer directory one side of a handshake needs.
  *
@@ -311,14 +423,30 @@ export interface HandshakeIdentity {
   /** This node's own key pair. Only the public half ever leaves the process. */
   readonly keys: NodeKeyPair
   readonly directory: PublicKeyDirectory
+  /** Exact credential this node can prove, including the wire selector. */
+  readonly credential?: HandshakeCredentialClaim
   /**
    * Refuse a peer that offers no signature (§8.2 phase ③).
    *
    * Left off during phases ① and ②, which is what makes a signing node and a
    * pre-shared-key node interoperate. Turning it on is the whole of "PSK is
-   * retired here" — there is no other switch.
+   * retired here". This does not require an exact credential proof; that is a
+   * separate deployment stage controlled by {@link credentialProofRequired}.
    */
   readonly required?: boolean
+  /**
+   * Nodes that have completed their upgrade and must never fall back to PSK.
+   *
+   * This is the per-peer form of {@link required}: it permits a staged rollout
+   * without inventing a second global bypass. The same policy is applied to a
+   * dialer's `ready` verification and a listener's `auth` verification, so a
+   * stripped signature is rejected in both directions for every pinned peer.
+   */
+  readonly requiredPeers?: ReadonlySet<string>
+  /** Require the independent exact-credential proof from every signed peer. */
+  readonly credentialProofRequired?: boolean
+  /** Per-peer form of {@link credentialProofRequired}. */
+  readonly credentialProofRequiredPeers?: ReadonlySet<string>
 }
 
 /** A listener additionally announces the node its own signature is made under. */
@@ -345,7 +473,8 @@ export interface ListenerIdentity extends HandshakeIdentity {
  *   would be the worst of the three outcomes;
  * - `signing` and a `sig` on the frame ⇒ the signature, and the MAC is not
  *   consulted at all;
- * - `signing` without a `sig` ⇒ the MAC, unless `required`, which refuses.
+ * - `signing` without a `sig` ⇒ the MAC, unless the global deployment stage
+ *   or this particular peer requires a signature, which refuses.
  */
 export function verifyAuthAttempt(
   psk: string,
@@ -363,8 +492,24 @@ export function verifyAuthAttempt(
     return { ok: false, rejection: HandshakeRejection.NonceMismatch }
   }
   if (signing !== undefined && attempt.sig !== undefined) {
-    const publicKey = signing.directory.publicKeyOf(attempt.node)
-    if (publicKey === null) {
+    const hasCredential = attempt.credential !== undefined
+    const hasCredentialProof = attempt.credentialProof !== undefined
+    if (hasCredential !== hasCredentialProof) {
+      return {
+        ok: false,
+        rejection: HandshakeRejection.CredentialRequired,
+      }
+    }
+    if (!hasCredential && credentialProofRequiredFor(signing, attempt.node)) {
+      return {
+        ok: false,
+        rejection: HandshakeRejection.CredentialRequired,
+      }
+    }
+    const resolved = hasCredential
+      ? resolveHandshakeCredential(signing, attempt.node, attempt.credential)
+      : resolveLegacySigningKey(signing, attempt.node)
+    if (resolved === null) {
       return { ok: false, rejection: HandshakeRejection.UnknownSigner }
     }
     const signed = authSigningInput(
@@ -373,13 +518,57 @@ export function verifyAuthAttempt(
       attempt.node,
       attempt.channelId,
     )
-    if (!verifyBytes(publicKey, signed, attempt.sig)) {
+    if (!verifyBytes(resolved.publicKey, signed, attempt.sig)) {
       return { ok: false, rejection: HandshakeRejection.BadSignature }
     }
-    return { ok: true, node: attempt.node, channelId: attempt.channelId }
+    if (
+      hasCredential &&
+      attempt.credential !== undefined &&
+      attempt.credentialProof !== undefined &&
+      resolved.credential !== undefined &&
+      !verifyBytes(
+        resolved.publicKey,
+        authCredentialProofInput(
+          serverNonce,
+          attempt.clientNonce,
+          attempt.node,
+          attempt.channelId,
+          attempt.credential,
+          resolved.credential.source,
+          resolved.credential.id,
+        ),
+        attempt.credentialProof,
+      )
+    ) {
+      return {
+        ok: false,
+        rejection: HandshakeRejection.BadCredentialProof,
+      }
+    }
+    return {
+      ok: true,
+      node: attempt.node,
+      channelId: attempt.channelId,
+      authentication:
+        resolved.credential === undefined
+          ? 'signature'
+          : 'credential_signature',
+      ...(resolved.credential === undefined
+        ? {}
+        : { credential: resolved.credential }),
+    }
   }
-  if (signing?.required === true) {
+  if (
+    signing !== undefined &&
+    (attempt.credential !== undefined || attempt.credentialProof !== undefined)
+  ) {
+    return { ok: false, rejection: HandshakeRejection.BadSignature }
+  }
+  if (signatureRequiredFor(signing, attempt.node)) {
     return { ok: false, rejection: HandshakeRejection.SignatureRequired }
+  }
+  if (credentialProofRequiredFor(signing, attempt.node)) {
+    return { ok: false, rejection: HandshakeRejection.CredentialRequired }
   }
   return verifyAuth(psk, serverNonce, attempt)
 }
@@ -391,7 +580,13 @@ export function signReady(
   clientNonce: string,
   node: string,
   channelId: string,
-): { readonly node: string; readonly sig: string } {
+): {
+  readonly node: string
+  readonly sig: string
+  readonly credential?: string
+  readonly credentialProof?: string
+} {
+  const credential = signing.credential
   return {
     node: signing.node,
     sig: signBytes(
@@ -404,6 +599,24 @@ export function signReady(
         signing.node,
       ),
     ),
+    ...(credential === undefined
+      ? {}
+      : {
+          credential: credential.selector,
+          credentialProof: signBytes(
+            signing.keys,
+            readyCredentialProofInput(
+              serverNonce,
+              clientNonce,
+              node,
+              channelId,
+              signing.node,
+              credential.selector,
+              credential.source,
+              credential.id,
+            ),
+          ),
+        }),
   }
 }
 
@@ -411,17 +624,46 @@ export function signReady(
 export enum ReadyRejection {
   /** The listener did not sign, and this dialer requires it (§8.2 phase ③). */
   Unsigned = 'ready_unsigned',
+  /** A credential proof was required, or only half of the extension arrived. */
+  CredentialRequired = 'ready_credential_required',
   /** Signed, but by a node other than the one this dialer set out to reach. */
   WrongNode = 'ready_wrong_node',
   /** No published key for that node — nothing to check the signature against. */
   UnknownSigner = 'ready_unknown_signer',
   /** A signature was offered and it does not verify. */
   BadSignature = 'ready_bad_signature',
+  /** The exact-credential proof does not verify. */
+  BadCredentialProof = 'ready_bad_credential_proof',
 }
 
 export type ReadyResult =
-  | { readonly ok: true }
+  | {
+      readonly ok: true
+      readonly authentication: HandshakeAuthentication
+      readonly credential?: AuthenticatedCredential
+    }
   | { readonly ok: false; readonly rejection: ReadyRejection }
+
+/** Whether this deployment stage pins `peerNode` to a signed handshake. */
+export function signatureRequiredFor(
+  signing: HandshakeIdentity | undefined,
+  peerNode: string,
+): boolean {
+  return (
+    signing?.required === true || signing?.requiredPeers?.has(peerNode) === true
+  )
+}
+
+/** Whether policy requires an exact credential proof for `peerNode`. */
+export function credentialProofRequiredFor(
+  signing: HandshakeIdentity | undefined,
+  peerNode: string,
+): boolean {
+  return (
+    signing?.credentialProofRequired === true ||
+    signing?.credentialProofRequiredPeers?.has(peerNode) === true
+  )
+}
 
 /** The tuple both halves of the handshake signed, as the dialer remembers it. */
 export interface HandshakeTuple {
@@ -441,26 +683,49 @@ export interface HandshakeTuple {
  * a different name than the dialer asked for is refused before any signature
  * is even checked — the name is the claim being tested.
  *
- * An unsigned ready is accepted unless `required`, which is the coexistence
- * rule again: during §8.2 phase ① the peer on the other end may be a build
- * that has never heard of this field.
+ * An unsigned ready is opportunistically authenticated only: it is accepted
+ * during the coexistence phase, but it has fallen back to PSK and must be
+ * recorded as such. Pinning the peer (or enabling the strict deployment
+ * stage) refuses that fallback, including when an on-path actor stripped the
+ * optional fields.
  */
 export function verifyReady(
   peerNode: string,
   signing: HandshakeIdentity,
   tuple: HandshakeTuple,
-  frame: { readonly node?: string; readonly sig?: string },
+  frame: {
+    readonly node?: string
+    readonly sig?: string
+    readonly credential?: string
+    readonly credentialProof?: string
+  },
 ): ReadyResult {
   if (frame.sig === undefined || frame.node === undefined) {
-    return signing.required === true
+    if (frame.credential !== undefined || frame.credentialProof !== undefined) {
+      return { ok: false, rejection: ReadyRejection.BadSignature }
+    }
+    if (credentialProofRequiredFor(signing, peerNode)) {
+      return { ok: false, rejection: ReadyRejection.CredentialRequired }
+    }
+    return signatureRequiredFor(signing, peerNode)
       ? { ok: false, rejection: ReadyRejection.Unsigned }
-      : { ok: true }
+      : { ok: true, authentication: 'psk' }
   }
   if (frame.node !== peerNode) {
     return { ok: false, rejection: ReadyRejection.WrongNode }
   }
-  const publicKey = signing.directory.publicKeyOf(peerNode)
-  if (publicKey === null) {
+  const hasCredential = frame.credential !== undefined
+  const hasCredentialProof = frame.credentialProof !== undefined
+  if (hasCredential !== hasCredentialProof) {
+    return { ok: false, rejection: ReadyRejection.CredentialRequired }
+  }
+  if (!hasCredential && credentialProofRequiredFor(signing, peerNode)) {
+    return { ok: false, rejection: ReadyRejection.CredentialRequired }
+  }
+  const resolved = hasCredential
+    ? resolveHandshakeCredential(signing, peerNode, frame.credential)
+    : resolveLegacySigningKey(signing, peerNode)
+  if (resolved === null) {
     return { ok: false, rejection: ReadyRejection.UnknownSigner }
   }
   const signed = readySigningInput(
@@ -470,9 +735,77 @@ export function verifyReady(
     tuple.channelId,
     frame.node,
   )
-  return verifyBytes(publicKey, signed, frame.sig)
-    ? { ok: true }
-    : { ok: false, rejection: ReadyRejection.BadSignature }
+  if (!verifyBytes(resolved.publicKey, signed, frame.sig)) {
+    return { ok: false, rejection: ReadyRejection.BadSignature }
+  }
+  if (
+    hasCredential &&
+    frame.credential !== undefined &&
+    frame.credentialProof !== undefined &&
+    resolved.credential !== undefined &&
+    !verifyBytes(
+      resolved.publicKey,
+      readyCredentialProofInput(
+        tuple.serverNonce,
+        tuple.clientNonce,
+        tuple.node,
+        tuple.channelId,
+        frame.node,
+        frame.credential,
+        resolved.credential.source,
+        resolved.credential.id,
+      ),
+      frame.credentialProof,
+    )
+  ) {
+    return { ok: false, rejection: ReadyRejection.BadCredentialProof }
+  }
+  return {
+    ok: true,
+    authentication:
+      resolved.credential === undefined ? 'signature' : 'credential_signature',
+    ...(resolved.credential === undefined
+      ? {}
+      : { credential: resolved.credential }),
+  }
+}
+
+function hasCredentialDirectory(
+  directory: PublicKeyDirectory,
+): directory is HandshakeCredentialDirectory {
+  return (
+    'handshakeCredentialOf' in directory &&
+    typeof directory.handshakeCredentialOf === 'function'
+  )
+}
+
+interface ResolvedSigningKey {
+  readonly publicKey: string
+  readonly credential?: AuthenticatedCredential
+}
+
+function resolveHandshakeCredential(
+  signing: HandshakeIdentity,
+  node: string,
+  selector: string | undefined,
+): ResolvedSigningKey | null {
+  if (!hasCredentialDirectory(signing.directory) || selector === undefined)
+    return null
+  const resolved = signing.directory.handshakeCredentialOf(node, selector)
+  return resolved === null
+    ? null
+    : {
+        publicKey: resolved.publicKey,
+        credential: { source: resolved.source, id: resolved.id },
+      }
+}
+
+function resolveLegacySigningKey(
+  signing: HandshakeIdentity,
+  node: string,
+): ResolvedSigningKey | null {
+  const publicKey = signing.directory.publicKeyOf(node)
+  return publicKey === null ? null : { publicKey }
 }
 
 /**
