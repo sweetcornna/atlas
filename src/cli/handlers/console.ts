@@ -71,14 +71,14 @@ function httpOrigin(hostname: string, port: number): string {
 }
 
 /** 唤醒面的接线结果：端口本身，外加一句给人看的原因。 */
-export interface ConsoleWakeWiring {
+interface ConsoleWakeWiring {
   readonly legacy?: { readonly port: WakePort; readonly url: string }
   readonly targets?: readonly WakeTarget[]
   readonly status: string
 }
 
 /** Narrow production seam for proving named target PSK selection. */
-export interface ConsoleWakeDependencies {
+interface ConsoleWakeDependencies {
   readonly pskFromEnv: (variable?: string) => string
   readonly createWakePort: (options: {
     readonly url: string
