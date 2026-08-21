@@ -93,7 +93,7 @@ interface CertificateFact extends CachedCertificate {
 export const CERTIFICATE_CREDENTIAL_SOURCE = 'certificate'
 export const EXPLICIT_CREDENTIAL_SOURCE = 'explicit'
 
-export interface CertificateCredentialInvalidation {
+interface CertificateCredentialInvalidation {
   readonly node: string
   readonly source: typeof CERTIFICATE_CREDENTIAL_SOURCE
   readonly id: string
@@ -123,7 +123,7 @@ export type CertificateDirectoryErrorSink = (
 ) => void
 
 /** The distinct effects a refresh can have on a connection holder. */
-export interface CertificateDirectoryRefresh {
+interface CertificateDirectoryRefresh {
   /**
    * Nodes absent from this refresh's effective directory. An untrusted
    * registry may omit a live lease or publish a malformed row, neither of
@@ -145,7 +145,7 @@ export interface CertificateDirectoryRefresh {
 }
 
 /** Receives the result of every completed refresh, including polling refreshes. */
-export type CertificateDirectoryRefreshSink = (
+type CertificateDirectoryRefreshSink = (
   result: CertificateDirectoryRefresh,
 ) => void
 
