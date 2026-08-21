@@ -149,7 +149,7 @@ async function main(): Promise<void> {
   if (args[0] === 'audit') {
     profileCheckpoint('cli_qianmo_audit_path');
     const { runQianmoAudit } = await import('../cli/handlers/qianmoAudit.js');
-    runQianmoAudit(args.slice(1));
+    await runQianmoAudit(args.slice(1));
     return;
   }
 
@@ -164,6 +164,20 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_qianmo_console_path');
     const { runConsole } = await import('../cli/handlers/console.js');
     await runConsole(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'ca') {
+    profileCheckpoint('cli_qianmo_ca_path');
+    const { runQianmoCa } = await import('../cli/handlers/ca.js');
+    runQianmoCa(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'cert') {
+    profileCheckpoint('cli_qianmo_cert_path');
+    const { runQianmoCert } = await import('../cli/handlers/cert.js');
+    runQianmoCert(args.slice(1));
     return;
   }
 

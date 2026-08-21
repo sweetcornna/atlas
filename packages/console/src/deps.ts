@@ -76,6 +76,15 @@ export interface AuditPage {
   readonly issueCount: number
   /** Total records in the trail before filtering, for "showing N of M". */
   readonly total: number
+  /**
+   * Off-host witness verdict, absent only when this console has no anchor
+   * source configured. A stale witness is distinct from a chain mismatch: it
+   * means there is no current evidence, not that a rewrite was found.
+   */
+  readonly witness?: {
+    readonly tampered: boolean
+    readonly stale: boolean
+  }
 }
 
 /** Filter accepted by the audit view; every field is optional and ANDed. */
@@ -109,8 +118,21 @@ export interface AuditPort {
   chain(traceId: string): Promise<ConsoleResult<MessageChain | null>>
 }
 
+/** One independently read audit source, supplied by the host CLI. */
+export interface ConsoleAuditSource {
+  /** Stable CLI node name, never inferred from the path. */
+  readonly node: string
+  readonly audit: AuditPort
+  /** Explicit deployment metadata; mirror status is never path-derived. */
+  readonly kind: 'authoritative' | 'mirror'
+  /** Required when kind is mirror; measured timer interval in minutes. */
+  readonly maxLagMinutes?: number
+}
+
 /** A wake request as the page can express it. */
 export interface WakeInput {
+  /** Named wake allowlist selector. Required only for multi-target consoles. */
+  readonly node?: string
   readonly from: string
   readonly to: string
   readonly prompt: string
@@ -131,6 +153,16 @@ export interface WakeOutcome {
  */
 export interface WakePort {
   send(input: WakeInput): Promise<ConsoleResult<WakeOutcome>>
+}
+
+/** A fixed, named outbound wake target and its independently wired port. */
+export interface WakeTarget {
+  readonly node: string
+  readonly url: string
+  /** Missing only when that node's own PSK was absent or unusable. */
+  readonly wake?: WakePort
+  /** Operator-facing local-degradation reason; never contains a PSK. */
+  readonly unavailableReason?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +308,78 @@ export interface ChatPort {
   subscribe(listener: (update: ChatUpdate) => void): () => void
 }
 
+// ---------------------------------------------------------------------------
+// CertificatePort —— 证书栏（key-distribution.md §10.1，P12.4）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个节点证书的处置。§10.1 的六个取值，一个不多一个不少。
+ *
+ * **六个是有意的，不能折成「好/坏」两档**：`absent`（还没发布）与
+ * `bad-signature`（发布了但不是本 CA 签的）指向完全相反的下一步动作——前者
+ * 是「这个节点还没走过签发流程」，后者是「有人往零鉴权的注册中心里塞了东西」
+ * （§5.2 T-B）。同理 `expired` 与 `revoked`：一个是运维忘了续签，一个是这把
+ * 钥匙被主动作废了。
+ */
+export type CertificateStatus =
+  | 'valid'
+  | 'expiring'
+  | 'expired'
+  | 'revoked'
+  | 'absent'
+  | 'bad-signature'
+
+/**
+ * 一个节点的证书，**全是公开材料**。
+ *
+ * 没有任何私钥字段，也不可能有：§10.3 那条硬规矩说控制台进程不得读 CA 私钥、
+ * 节点身份私钥、节点 TLS 私钥，本接口是那条规矩在类型上的形状。指纹是核对用的
+ * 同一种量具（运维核对 CA 根时用的就是 `fingerprint256`），所以它可以整串给出
+ * 而不像公钥那样只给哈希前缀。
+ */
+export interface ConsoleCertificate {
+  /** 节点段，不是地址——一个节点一张证书，与它有几个 agent 无关。 */
+  readonly node: string
+  readonly status: CertificateStatus
+  /** 证书指纹；`absent` 时没有。 */
+  readonly fingerprint256?: string
+  /** `notAfter`，epoch 毫秒。 */
+  readonly notAfter?: number
+}
+
+/**
+ * 吊销清单的抬头。**不含 `revoked` 明细**：页面要回答的是「RL 什么时候过期」，
+ * 而逐条吊销记录属于运维手上的那份 runbook，不属于一个零鉴权网络里人人能开的
+ * 页面。
+ */
+export interface ConsoleRevocationList {
+  readonly issuedAt: number
+  readonly nextUpdate: number
+  readonly revokedCount: number
+}
+
+export interface CertificateSnapshot {
+  readonly certificates: readonly ConsoleCertificate[]
+  /**
+   * `null` = 一份都没发布过。
+   *
+   * 与「发布过但过期了」**必须分开**：§6.4 的两行给它们的是同一个 fail-closed
+   * 行为但完全不同的成因，而页面是运维唯一能看出是哪一种的地方。
+   */
+  readonly revocationList: ConsoleRevocationList | null
+}
+
+/**
+ * 可选：没有配 CA 根就整条证书栏不出现（不是显示一排「未知」）。
+ *
+ * 与唤醒面的取舍不同：唤醒是主页上的一块功能，藏起来会让人以为面板坏了；证书栏
+ * 是一列**事实**，一列全是「未知」的事实不是降级，是噪声——而且它会让「这个部署
+ * 还没上证书」和「证书全坏了」在页面上长得一样。
+ */
+export interface CertificatePort {
+  read(): Promise<ConsoleResult<CertificateSnapshot>>
+}
+
 /** Protocol/runtime ceilings, read from the packages that own them. */
 export interface LimitsSnapshot {
   /** `@qianmo/protocol` LIMITS — the single source for protocol ceilings. */
@@ -302,11 +406,26 @@ export interface LimitsSnapshot {
 /** Everything a console instance needs. `wake` and `chat` are optional. */
 export interface ConsoleDeps {
   readonly registry: RegistryPort
+  /**
+   * Legacy single-audit facade. New hosts provide {@link audits}; retaining
+   * this keeps direct package consumers on the old one-source contract.
+   */
   readonly audit: AuditPort
+  /** Ordered audit sources. Absent means one authoritative `default` source. */
+  readonly audits?: readonly ConsoleAuditSource[]
   readonly limits: LimitsSnapshot
   readonly wake?: WakePort
+  /** Named wake allowlist. Absent preserves the legacy single WakePort path. */
+  readonly wakeTargets?: readonly WakeTarget[]
   /** Absent removes the chat page and every `/v0/chat/*` route (§4.5). */
   readonly chat?: ChatPort
+  /** Absent removes the certificate column entirely (§10.1). */
+  readonly certificates?: CertificatePort
+  /**
+   * The CLI name the certificate column writes its copyable `qm ca issue`
+   * line under. Read from the host's identity roster, never spelled here.
+   */
+  readonly binName?: string
   /** Injected for deterministic tests; defaults to `Date.now` at the edges. */
   readonly now?: () => number
   /** Shown in the page header so two consoles are never confused. */

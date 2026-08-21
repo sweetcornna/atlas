@@ -11,10 +11,10 @@
  *    outcome, because a chain showing only what worked answers "what
  *    happened?" with "the parts that happened". So `refused` and `dropped` are
  *    never greyed down, and the chain states both counts first.
- * 2. **A broken hash chain is a headline.** `AuditPage.intact === false` means
- *    the trail may have been edited underneath us. It is stated twice, in two
- *    registers: `断裂 2` on the section header, where the eye lands before
- *    anything else, and a one-line strip at the top of the results.
+ * 2. **Integrity is a headline.** A broken hash chain and a mismatching
+ *    off-host anchor are distinct findings, both stated on the section header
+ *    and in one-line result strips. An unconfigured or stale witness never
+ *    inherits the green state from an intact local chain.
  *
  * ## Two filters stay out, five fold away
  *
@@ -149,12 +149,14 @@ function detailLine(
 }
 
 /** Clickable. Full segment in `data-trace`, eight characters on screen. */
-function traceCell(traceId: string | undefined): string {
+function traceCell(traceId: string | undefined, auditNode?: string): string {
   const segment = traceIdSegment(traceId)
   if (segment === null || segment === '') return absent()
+  const node =
+    auditNode === undefined ? '' : ` data-audit-node="${attr(auditNode)}"`
   return (
     `<button type="button" class="linkish" data-action="chain" ` +
-    `data-trace="${attr(segment)}" title="${attr(segment)}">` +
+    `data-trace="${attr(segment)}"${node} title="${attr(segment)}">` +
     `${escapeHtml(shortId(segment))}</button>`
   )
 }
@@ -172,7 +174,7 @@ function partiesCell(record: AuditRecord): string {
   )
 }
 
-function recordRow(record: AuditRecord): string {
+function recordRow(record: AuditRecord, auditNode?: string): string {
   return (
     `<tr data-outcome="${attr(record.outcome)}">` +
     `<td class="when mono">${escapeHtml(formatDateTime(record.at))}</td>` +
@@ -180,7 +182,7 @@ function recordRow(record: AuditRecord): string {
     `<td class="kind"><span class="mono">${escapeHtml(record.kind)}</span>` +
     `${detailLine(record.detail)}</td>` +
     `<td class="result">${outcomeCell(record.outcome)}</td>` +
-    `<td>${traceCell(record.traceId)}</td>` +
+    `<td>${traceCell(record.traceId, auditNode)}</td>` +
     `<td class="parties">${partiesCell(record)}</td>` +
     `<td class="mono">${
       record.code === undefined ? absent() : escapeHtml(record.code)
@@ -191,11 +193,14 @@ function recordRow(record: AuditRecord): string {
 
 const RECORD_HEADERS = ['时间', '来源', 'kind', '结果', 'trace', '节点', 'code']
 
-function recordTable(records: readonly AuditRecord[]): string {
+function recordTable(
+  records: readonly AuditRecord[],
+  auditNode?: string,
+): string {
   const head = RECORD_HEADERS.map(
     h => `<th scope="col">${escapeHtml(h)}</th>`,
   ).join('')
-  const body = records.map(recordRow).join('')
+  const body = records.map(record => recordRow(record, auditNode)).join('')
   return scroll(
     `<table class="trail"><caption class="sr-only">审计记录</caption>` +
       `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
@@ -386,6 +391,7 @@ function activeChips(filter: AuditFilter): string {
 }
 
 const INTEGRITY_LEAD = '审计链断裂'
+const WITNESS_MISMATCH_LEAD = '锚点不符'
 
 /**
  * The second statement of a broken chain: one line, at the top of the results.
@@ -395,14 +401,40 @@ const INTEGRITY_LEAD = '审计链断裂'
  * never seen it before needs the noun spelled out once. It is a strip, not a
  * banner: the fact and the count, nothing about what a hash chain is.
  */
-function integrityAlert(page: AuditPage | null): string {
-  if (page === null || page.intact) return ''
-  const count = Number.isFinite(page.issueCount) ? page.issueCount : 0
-  return (
-    `<p class="bar bar-bad" id="audit-integrity" role="alert">` +
-    `<span>${escapeHtml(INTEGRITY_LEAD)} · ` +
-    `<span class="n">${escapeHtml(String(count))}</span> 处</span></p>`
-  )
+function integrityAlert(
+  page: AuditPage | null,
+  id = 'audit-integrity',
+): string {
+  if (page === null) return ''
+  if (!page.intact) {
+    const count = Number.isFinite(page.issueCount) ? page.issueCount : 0
+    return (
+      `<p class="bar bar-bad" id="${attr(id)}" role="alert">` +
+      `<span>${escapeHtml(INTEGRITY_LEAD)} · ` +
+      `<span class="n">${escapeHtml(String(count))}</span> 处</span></p>`
+    )
+  }
+  if (page.witness?.tampered === true) {
+    return (
+      `<p class="bar bar-critical" id="${attr(id)}" role="alert">` +
+      `<span>${escapeHtml(WITNESS_MISMATCH_LEAD)}</span></p>`
+    )
+  }
+  return ''
+}
+
+function integrityStatus(page: AuditPage): string {
+  if (!page.intact) {
+    const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
+    return toned('bad', `断裂 ${issues}`)
+  }
+  if (page.witness?.tampered === true) {
+    return toned('critical', WITNESS_MISMATCH_LEAD)
+  }
+  if (page.witness === undefined || page.witness.stale) {
+    return toned('muted', '未见证')
+  }
+  return toned('ok', '完整')
 }
 
 /**
@@ -478,12 +510,24 @@ function trailHead(page: AuditPage | null): string {
   const shown = page.records.length
   if (shown !== page.total) parts.push(`显示 ${shown}`)
   const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
-  parts.push(page.intact ? toned('ok', '完整') : toned('bad', `断裂 ${issues}`))
+  parts.push(integrityStatus(page))
   return sectionHead('Trail', '消息链', {
     ...common,
     tail: `<div class="rowx note">${parts.join(railSep())}</div>`,
     // Echoed for the overview 消息链 stat card in page.ts.
-    stats: { total: page.total, issues, intact: page.intact },
+    stats: {
+      total: page.total,
+      issues,
+      intact: page.intact,
+      witness:
+        page.witness === undefined
+          ? 'unwitnessed'
+          : page.witness.tampered
+            ? 'tampered'
+            : page.witness.stale
+              ? 'stale'
+              : 'verified',
+    },
   })
 }
 
@@ -516,6 +560,168 @@ export function renderAudit(
     filterForm(filter, agentOptions) +
     `<div id="audit-results">${results.join('')}</div>` +
     `</div></div>`
+  )
+}
+
+/** One independently rendered source in the multi-chain console view. */
+export interface AuditSourceRender {
+  readonly node: string
+  readonly kind: 'authoritative' | 'mirror'
+  readonly maxLagMinutes?: number
+  readonly page: AuditPage | null
+  readonly failure: ConsoleFailure | null
+}
+
+type AggregateAuditState =
+  | 'verified'
+  | 'unavailable'
+  | 'broken'
+  | 'tampered'
+  | 'stale'
+  | 'unwitnessed'
+
+function aggregateAuditState(
+  sources: readonly AuditSourceRender[],
+): AggregateAuditState {
+  if (sources.length === 0) return 'unavailable'
+  const pages: AuditPage[] = []
+  for (const source of sources) {
+    if (source.page === null || source.failure !== null) return 'unavailable'
+    pages.push(source.page)
+  }
+  if (pages.some(page => !page.intact)) return 'broken'
+  if (pages.some(page => page.witness?.tampered === true)) {
+    return 'tampered'
+  }
+  if (pages.some(page => page.witness?.stale === true)) {
+    return 'stale'
+  }
+  if (pages.some(page => page.witness === undefined)) {
+    return 'unwitnessed'
+  }
+  return 'verified'
+}
+
+function aggregateAuditLabel(
+  state: AggregateAuditState,
+  issues: number,
+): string {
+  switch (state) {
+    case 'verified':
+      return toned('ok', '完整')
+    case 'broken':
+      return toned('bad', '断裂 ' + String(issues))
+    case 'tampered':
+      return toned('critical', WITNESS_MISMATCH_LEAD)
+    case 'unavailable':
+      return toned('muted', '部分未读取')
+    case 'stale':
+    case 'unwitnessed':
+      return toned('muted', '未见证')
+  }
+}
+
+function sourceMode(source: AuditSourceRender): string {
+  if (source.kind === 'authoritative') return toned('ok', '权威链')
+  return toned(
+    'warn',
+    '镜像 · 滞后 ≤ ' + String(source.maxLagMinutes ?? 0) + ' 分钟',
+  )
+}
+
+function sourceBody(source: AuditSourceRender, filter: AuditFilter): string {
+  const page = source.page
+  const results: string[] = []
+  if (source.failure !== null)
+    results.push(failureBar(source.failure, '审计日志'))
+  if (page === null) {
+    if (source.failure === null) results.push(hint('未读取审计日志'))
+  } else {
+    results.push(integrityAlert(page, 'audit-integrity-' + source.node))
+    results.push(
+      page.records.length === 0
+        ? emptyState(filter)
+        : recordTable(page.records, source.node),
+    )
+  }
+
+  const pageStatus =
+    page === null ? toned('muted', '未读取') : integrityStatus(page)
+  const counts =
+    page === null
+      ? ''
+      : '<span class="note">' +
+        escapeHtml(String(page.total)) +
+        ' 条 · 问题 ' +
+        escapeHtml(String(page.issueCount)) +
+        '</span>'
+  return (
+    '<article class="card elev-sm audit-source" data-audit-node="' +
+    attr(source.node) +
+    '">' +
+    '<div class="rowx audit-source-head"><h3 class="mono">' +
+    escapeHtml(source.node) +
+    '</h3><span class="spacer"></span>' +
+    sourceMode(source) +
+    pageStatus +
+    '</div><div class="audit-source-meta">' +
+    counts +
+    '</div>' +
+    results.join('') +
+    '</article>'
+  )
+}
+
+/**
+ * All configured audit sources on one page. Each source is read and rendered
+ * independently by the HTTP layer; this function only keeps their DOM scope
+ * separate while preserving the one shared filter form and poller anchors.
+ */
+export function renderAuditSources(
+  sources: readonly AuditSourceRender[],
+  filter: AuditFilter,
+  agentOptions?: string,
+): string {
+  const readable = sources.filter(
+    (source): source is AuditSourceRender & { readonly page: AuditPage } =>
+      source.page !== null,
+  )
+  const total = readable.reduce((sum, source) => sum + source.page.total, 0)
+  const issues = readable.reduce(
+    (sum, source) => sum + source.page.issueCount,
+    0,
+  )
+  const state = aggregateAuditState(sources)
+  const tail =
+    '<div class="rowx note"><span class="total">' +
+    escapeHtml(String(total)) +
+    '</span>' +
+    railSep() +
+    escapeHtml(String(sources.length)) +
+    ' 条链' +
+    railSep() +
+    aggregateAuditLabel(state, issues) +
+    '</div>'
+  const head = sectionHead('Trail', '消息链', {
+    id: 'audit-rail',
+    headingId: TRAIL_HEADING_ID,
+    tail,
+    // Only a fully readable set with verified witnesses can claim integrity.
+    stats: {
+      total,
+      issues,
+      intact: state === 'verified',
+      witness: state === 'verified' ? 'verified' : state,
+      'audit-state': state,
+    },
+  })
+  return (
+    head +
+    '<div class="pane"><div class="card elev-sm">' +
+    filterForm(filter, agentOptions) +
+    '</div><div id="audit-results" class="stack" style="gap:var(--space-3)">' +
+    sources.map(source => sourceBody(source, filter)).join('') +
+    '</div></div>'
   )
 }
 

@@ -203,13 +203,17 @@ describe('CodexSearchAdapter with a pinned credential', () => {
 
   test('with nothing pinned the lane is the environment’s, unchanged', async () => {
     process.env.OPENAI_API_KEY = 'sk-session'
-    process.env.OPENAI_BASE_URL = 'https://api.openai.test/v1'
+    // A stored ChatGPT login deliberately wins for a non-OpenAI endpoint: it
+    // prevents the account plane's API key from being sent to a third party.
+    // Use the official endpoint here so this test only states the API-key
+    // branch it is meant to cover, regardless of a developer's login state.
+    process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
     const fetchOverride = stubFetch()
 
     await new CodexSearchAdapter({ fetchOverride }).search('q', {})
 
     expect(fetchOverride.calls[0]?.url).toBe(
-      'https://api.openai.test/v1/responses',
+      'https://api.openai.com/v1/responses',
     )
     expect(fetchOverride.calls[0]?.headers.Authorization).toBe(
       'Bearer sk-session',

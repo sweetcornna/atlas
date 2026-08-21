@@ -15,6 +15,9 @@ export type {
   AuditFilter,
   AuditPage,
   AuditPort,
+  CertificatePort,
+  CertificateSnapshot,
+  CertificateStatus,
   ChatAuthor,
   ChatPort,
   ChatSendInput,
@@ -25,15 +28,19 @@ export type {
   ChatTurnState,
   ChatUpdate,
   ConsoleAgent,
+  ConsoleAuditSource,
+  ConsoleCertificate,
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
+  ConsoleRevocationList,
   LimitsSnapshot,
   RegisterAgentInput,
   RegistryPort,
   WakeInput,
   WakeOutcome,
   WakePort,
+  WakeTarget,
 } from './deps.js'
 
 export {
@@ -86,8 +93,19 @@ export {
   agentFilterOptions,
   renderRoster,
   wakeTargetOptions,
+  type RosterCertificates,
 } from './view/agents.js'
-export { renderAudit } from './view/audit.js'
+export {
+  certificateLine,
+  certificateTally,
+  reissueCommand,
+  renderRevocationBar,
+} from './view/certificates.js'
+export {
+  renderAudit,
+  renderAuditSources,
+  type AuditSourceRender,
+} from './view/audit.js'
 export {
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,

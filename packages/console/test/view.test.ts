@@ -29,7 +29,11 @@ import { AuditSource, type AuditRecord, type MessageChain } from '@qianmo/audit'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
 import { renderRoster } from '../src/view/agents.js'
-import { renderAudit, renderChain } from '../src/view/audit.js'
+import {
+  renderAudit,
+  renderAuditSources,
+  renderChain,
+} from '../src/view/audit.js'
 import { attr, escapeHtml } from '../src/view/escape.js'
 import {
   agentHealth,
@@ -83,6 +87,7 @@ function page(over: Partial<AuditPage> = {}): AuditPage {
     intact: true,
     issueCount: 0,
     total: 1,
+    witness: { tampered: false, stale: false },
     ...over,
   }
 }
@@ -642,6 +647,24 @@ describe('renderAudit', () => {
     expect(html).toContain('<span class="tone-ok">完整</span>')
   })
 
+  test('an intact trail without configured anchors is explicitly unwitnessed', () => {
+    const html = renderAudit(page({ witness: undefined }), null, NO_FILTER)
+    expect(html).toContain('<span class="tone-muted">未见证</span>')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+    expect(html).not.toContain('audit-integrity')
+  })
+
+  test('a self-consistent chain with a mismatching anchor is never shown complete', () => {
+    const html = renderAudit(
+      page({ witness: { tampered: true, stale: false } }),
+      null,
+      NO_FILTER,
+    )
+    expect(html).toContain('<span class="tone-critical">锚点不符</span>')
+    expect(html).toContain('class="bar bar-critical"')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+  })
+
   test('the rail states the trail size and only names what is hidden', () => {
     const unfiltered = renderAudit(page(), null, NO_FILTER)
     expect(unfiltered).toContain('<span class="total">1</span>')
@@ -829,6 +852,113 @@ describe('renderAudit', () => {
     const html = renderAudit(null, null, NO_FILTER)
     expect(html).toContain('未读取审计日志')
     expect(html).not.toContain('bar-bad')
+  })
+})
+
+describe('renderAuditSources', () => {
+  test('keeps node DOM scope, integrity, and explicit mirror labels separate', () => {
+    const html = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page({ records: [record({ traceId: 'shared' })] }),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'mirror',
+          maxLagMinutes: 5,
+          page: page({
+            records: [record({ traceId: 'shared' })],
+            intact: false,
+            issueCount: 1,
+          }),
+          failure: null,
+        },
+      ],
+      NO_FILTER,
+    )
+    expect(html).toContain('data-audit-node="beta-1"')
+    expect(html).toContain('data-audit-node="beta-2"')
+    expect(html).toContain('权威链')
+    expect(html).toContain('镜像 · 滞后 ≤ 5 分钟')
+    expect(html).toContain('id="audit-integrity-beta-2"')
+    expect(html).toContain('data-trace="shared" data-audit-node="beta-1"')
+    expect(html).toContain('data-trace="shared" data-audit-node="beta-2"')
+  })
+
+  test('shows a missing source as its own empty state', () => {
+    const html = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page(),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'mirror',
+          maxLagMinutes: 5,
+          page: page({ records: [], total: 0 }),
+          failure: null,
+        },
+      ],
+      NO_FILTER,
+    )
+    expect(html).toContain('data-audit-node="beta-2"')
+    expect(html).toContain('这条链还没有记录')
+  })
+
+  test('keeps a readable source intact when another source cannot be read', () => {
+    const html = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page(),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'authoritative',
+          page: null,
+          failure: { code: 'unreachable', message: '读取失败' },
+        },
+      ],
+      NO_FILTER,
+    )
+    expect(html).toContain('data-audit-state="unavailable"')
+    expect(html).toContain('<span class="tone-muted">部分未读取</span>')
+    expect(html).toContain('data-audit-node="beta-1"')
+    expect(html).toContain('<span class="tone-ok">完整</span>')
+    expect(html).toContain('data-audit-node="beta-2"')
+    expect(html).toContain('读取失败')
+  })
+
+  test('keeps the witness mismatch scoped to its source while the aggregate stays critical', () => {
+    const html = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page(),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'authoritative',
+          page: page({ witness: { tampered: true, stale: false } }),
+          failure: null,
+        },
+      ],
+      NO_FILTER,
+    )
+    expect(html).toContain('data-audit-state="tampered"')
+    expect(html).toContain('<span class="tone-critical">锚点不符</span>')
+    expect(html).toContain('id="audit-integrity-beta-2"')
+    expect(html).toContain('<span class="tone-ok">完整</span>')
   })
 })
 
@@ -1193,6 +1323,62 @@ describe('renderPage', () => {
     expect(html).toContain('<span class="tag tag-accent">断裂 4</span>')
   })
 
+  test('the overview repeats the unwitnessed state instead of inferring complete', () => {
+    const html = build({
+      audit: renderAudit(page({ witness: undefined }), null, NO_FILTER),
+    })
+    expect(html).toContain('<span class="tag tag-neutral">未见证</span>')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+  })
+
+  test('the overview never treats a partial multi-source read as complete', () => {
+    const html = build({
+      audit: renderAuditSources(
+        [
+          {
+            node: 'beta-1',
+            kind: 'authoritative',
+            page: page(),
+            failure: null,
+          },
+          {
+            node: 'beta-2',
+            kind: 'authoritative',
+            page: null,
+            failure: { code: 'unreachable', message: '读取失败' },
+          },
+        ],
+        NO_FILTER,
+      ),
+    })
+    expect(html).toContain('<span class="tag tag-neutral">部分未读取</span>')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+  })
+
+  test('the overview never treats a witness mismatch as complete', () => {
+    const html = build({
+      audit: renderAuditSources(
+        [
+          {
+            node: 'beta-1',
+            kind: 'authoritative',
+            page: page(),
+            failure: null,
+          },
+          {
+            node: 'beta-2',
+            kind: 'authoritative',
+            page: page({ witness: { tampered: true, stale: false } }),
+            failure: null,
+          },
+        ],
+        NO_FILTER,
+      ),
+    })
+    expect(html).toContain('<span class="tag tag-critical">锚点不符</span>')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+  })
+
   test('the label is escaped like any other value', () => {
     const html = build({ label: ATTACKS.handler })
     expect(html).not.toContain('" onload="')
@@ -1223,6 +1409,41 @@ describe('renderPage', () => {
     expect(html).toContain('id="wake-form"')
     expect(html).toContain('>唤醒</button>')
     expect(html).not.toContain('QIANMO_TRANSPORT_PSK')
+  })
+
+  test('a named wake selector keeps an unavailable node visible but disabled', () => {
+    const html = build({
+      wakeEnabled: true,
+      wakeTargets: [
+        {
+          node: 'beta-1',
+          url: 'ws://beta-1.example.test',
+          wake: {
+            async send() {
+              return {
+                ok: false,
+                failure: {
+                  code: 'unreachable',
+                  message: 'not reached in a view test',
+                },
+              }
+            },
+          },
+        },
+        {
+          node: 'beta-2',
+          url: 'ws://beta-2.example.test',
+          unavailableReason: 'PSK unavailable',
+        },
+      ],
+    })
+    expect(html).toContain('id="wake-node" name="node"')
+    expect(html).toContain('value="beta-1"')
+    expect(html).toContain('beta-1 · 已配置')
+    expect(html).not.toContain('value="beta-1" disabled')
+    expect(html).toContain('value="beta-2" disabled')
+    expect(html).toContain('beta-2 · PSK 不可用')
+    expect(html).toContain('id="wake-form"')
   })
 
   test('the poller replays the current filter, escaped, as a query string', () => {

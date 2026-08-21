@@ -20,7 +20,7 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     .description('Inspect the Qianmo audit trail')
     .action(async () => {
       const { runQianmoAudit } = await import('src/cli/handlers/qianmoAudit.js');
-      runQianmoAudit(process.argv.slice(3));
+      await runQianmoAudit(process.argv.slice(3));
     });
 
   program
@@ -37,6 +37,22 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     .action(async () => {
       const { runConsole } = await import('src/cli/handlers/console.js');
       await runConsole(process.argv.slice(3));
+    });
+
+  program
+    .command('ca')
+    .description('Run the offline Qianmo certificate authority')
+    .action(async () => {
+      const { runQianmoCa } = await import('src/cli/handlers/ca.js');
+      runQianmoCa(process.argv.slice(3));
+    });
+
+  program
+    .command('cert')
+    .description("Build this node's own certificate request")
+    .action(async () => {
+      const { runQianmoCert } = await import('src/cli/handlers/cert.js');
+      runQianmoCert(process.argv.slice(3));
     });
 
   program

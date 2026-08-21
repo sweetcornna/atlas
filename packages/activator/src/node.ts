@@ -74,6 +74,7 @@ import { NodeRouter } from '@qianmo/router'
 import {
   type BackoffOptions,
   type ClientTlsOptions,
+  type HandshakeIdentity,
   type InboundContext,
   type TransportServerHandle,
   type TransportServerOptions,
@@ -154,6 +155,18 @@ export interface ActivatorNodeOptions {
   readonly connectTimeoutMs?: number
   readonly forwardTimeoutMs?: number
   readonly linkTls?: ClientTlsOptions
+  /**
+   * Ed25519 identity and peer directory for the links **out** of this host
+   * (key-distribution.md §7.1.1). Forwarded to {@link TransportLinks}; see
+   * `TransportLinksOptions.signing` for why it only applies to targets the
+   * directory can name.
+   *
+   * Separate from whatever the listener half of this node is configured with,
+   * and deliberately so: a host may be dialling into sandboxes that have
+   * already adopted signatures while its own listener still serves peers that
+   * have not, and §8.2's phases are per-direction for exactly that reason.
+   */
+  readonly linkSigning?: HandshakeIdentity
   readonly taskRouteCapacity?: number
   /** Reconnect schedule of the links into sandboxes. */
   readonly backoff?: Partial<BackoffOptions>
@@ -289,6 +302,9 @@ export async function startActivatorNode(
       if (message.type !== MessageType.Ack) router.release(message.taskId)
     },
     ...(options.linkTls === undefined ? {} : { tls: options.linkTls }),
+    ...(options.linkSigning === undefined
+      ? {}
+      : { signing: options.linkSigning }),
     connectTimeoutMs:
       options.connectTimeoutMs ?? DEFAULT_LINK_CONNECT_TIMEOUT_MS,
     forwardTimeoutMs: options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS,

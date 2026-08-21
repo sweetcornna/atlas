@@ -36,7 +36,10 @@ import {
   HandshakeRejection,
   assertUsablePsk,
   newNonce,
-  verifyAuth,
+  signReady,
+  verifyAuthAttempt,
+  type AuthenticatedCredential,
+  type ListenerIdentity,
 } from './handshake.js'
 import {
   DEFAULT_MAX_QUEUED,
@@ -54,10 +57,12 @@ import { receiveEnvelope } from './receiver.js'
  * this file is it.
  *
  * Responsibilities, in the order a byte meets them: accept, challenge, verify
- * the pre-shared key, validate the envelope, dedup it, hand it to the node,
- * and answer with a receipt. Anything before the handshake completes is
- * answered with a close code, never with an error body — an unauthenticated
- * peer learns nothing from us.
+ * the dialer's proof — an Ed25519 signature where one is offered and this node
+ * has the material to check it, the pre-shared key otherwise (`handshake.ts`)
+ * — validate the envelope, dedup it, hand it to the node, and answer with a
+ * receipt. Anything before the handshake completes is answered with a close
+ * code, never with an error body — an unauthenticated peer learns nothing from
+ * us, including *which* of the ways to fail it found.
  *
  * A receipt is **not** the protocol's `ack` (see `frames.ts`): it means this
  * node has taken the envelope in, and the acknowledgement that the target
@@ -71,11 +76,42 @@ interface ConnectionState {
   node: string | null
   channel: ServerTransportChannel | null
   authed: boolean
+  credential: AuthenticatedCredential | null
+}
+
+/** One exact authenticated credential to terminate. */
+export interface PeerCredentialTarget extends AuthenticatedCredential {
+  readonly node: string
 }
 
 export interface TransportServerOptions {
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
+  /**
+   * This node's Ed25519 identity, its peer directory, and its own node
+   * segment — everything needed to check a signed auth frame and to sign the
+   * ready frame back (key-distribution.md §7.1 / §7.1.1).
+   *
+   * Omitted ⇒ this listener behaves exactly as it did before signatures
+   * existed: it checks the MAC and reads no `sig`. That is the honest default
+   * for §8.2 phase ①, and it is what lets a node that has been given keys and
+   * one that has not still talk to each other.
+   */
+  readonly signing?: ListenerIdentity
+  /**
+   * `notAfter` of the certificate this listener presents, epoch ms (§6.3).
+   *
+   * A TLS session is fixed at handshake time, so an expired — or revoked —
+   * certificate would otherwise keep serving every connection made before it
+   * lapsed, for as long as that connection happens to live. Given this, the
+   * listener closes those connections itself at the instant it lapses, with
+   * {@link CLOSE_UNAUTHORIZED}, and refuses new ones. It does **not** exit:
+   * §6.3's last rule is that "the operator forgot to re-issue" must not be
+   * amplified into "the service is gone", and a process that is still up is
+   * still answering `--help`, still holding its socket path, and still one
+   * `systemctl restart` away from healthy.
+   */
+  readonly certificateNotAfter?: number
   readonly onMessage: InboundHandler
   /**
    * Message types this endpoint implements, declared to every dialer in the
@@ -137,6 +173,17 @@ export interface TransportServerHandle {
   readonly connections: number
   /** Logical channels retained across reconnects. */
   readonly channels: number
+  /**
+   * Refuse every physical connection and retained logical channel belonging to
+   * peers that no longer pass the caller's directory check.
+   *
+   * The method is deliberately keyed by the authenticated handshake identity,
+   * never a caller-supplied endpoint or channel id. It is idempotent, so a
+   * repeated RL entry and a racing socket close cannot leave a channel behind.
+   */
+  closePeers(peerNodes: Iterable<string>): void
+  /** Close only links authenticated by these exact opaque credentials. */
+  closePeerCredentials(credentials: Iterable<PeerCredentialTarget>): void
   stop(): Promise<void>
 }
 
@@ -168,6 +215,9 @@ const STOP_GRACE_MS = 200
 const CLOSE_REPLACED = 4000
 const CLOSE_CAPACITY = 1013
 
+/** Largest delay `setTimeout` honours; anything past it fires immediately. */
+const MAX_TIMER_MS = 2_147_483_647
+
 /**
  * Largest frame the socket will buffer: the protocol's own envelope ceiling
  * plus room for the frame wrapper.
@@ -191,6 +241,7 @@ class ServerTransportChannel implements TransportChannel {
   #closed = false
   #reclaim: ReturnType<typeof setTimeout> | null = null
   #peerTypes: readonly string[] | undefined
+  #credential: AuthenticatedCredential | null
 
   constructor(options: {
     readonly id: string
@@ -199,12 +250,14 @@ class ServerTransportChannel implements TransportChannel {
     readonly retentionMs: number
     readonly remove: (channel: ServerTransportChannel) => void
     readonly record: (type: TransportEventType, detail: EventDetail) => void
+    readonly credential: AuthenticatedCredential | undefined
   }) {
     this.id = options.id
     this.peerNode = options.peerNode
     this.#retentionMs = options.retentionMs
     this.#remove = options.remove
     this.#record = options.record
+    this.#credential = options.credential ?? null
     this.#outbox = new EnvelopeOutbox({
       maxQueued: options.maxQueued,
       canWrite: () => this.isReady(),
@@ -231,6 +284,10 @@ class ServerTransportChannel implements TransportChannel {
   /** What the dialer declared on the auth frame of the current connection. */
   get peerSupportedTypes(): readonly string[] | undefined {
     return this.#peerTypes
+  }
+
+  get peerCredential(): AuthenticatedCredential | null {
+    return this.#credential
   }
 
   supports(type: MessageType): boolean {
@@ -275,12 +332,14 @@ class ServerTransportChannel implements TransportChannel {
   bind(
     socket: ServerWebSocket<ConnectionState>,
     supportedTypes?: readonly string[],
+    credential?: AuthenticatedCredential,
   ): void {
     if (this.#closed) throw new Error('transport channel is closed')
     // Replaced, not merged: the declaration belongs to the handshake that just
     // happened. A peer that reconnected on an older build declares less, and
     // carrying the old union forward would keep sending it types it dropped.
     this.#peerTypes = supportedTypes
+    this.#credential = credential ?? null
     const previous = this.#socket
     this.#socket = socket
     if (previous !== null && previous !== socket) {
@@ -302,13 +361,13 @@ class ServerTransportChannel implements TransportChannel {
     this.#removeIfIdle()
   }
 
-  close(): void {
+  close(closeCode = 1000, reason = 'transport server shutdown'): void {
     if (this.#closed) return
     this.#closed = true
     this.#cancelReclaim()
     const socket = this.#socket
     this.#socket = null
-    socket?.close(1000, 'transport server shutdown')
+    socket?.close(closeCode, reason)
     this.#outbox.close(new Error('transport server closed before receipt'))
   }
 
@@ -395,6 +454,8 @@ export function startTransportServer(
   const maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
   const channelRetentionMs =
     options.channelRetentionMs ?? DEFAULT_CHANNEL_RETENTION_MS
+  let certificateExpired = false
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
 
   function record(type: TransportEventType, detail: EventDetail): void {
     recorder.record({ type, at: now(), detail })
@@ -411,6 +472,7 @@ export function startTransportServer(
   function createChannel(
     id: string,
     peerNode: string,
+    credential?: AuthenticatedCredential,
   ): ServerTransportChannel | null {
     if (channels.size >= maxChannels) return null
     const channel = new ServerTransportChannel({
@@ -420,9 +482,71 @@ export function startTransportServer(
       retentionMs: channelRetentionMs,
       remove: removeChannel,
       record,
+      credential,
     })
     channels.set(id, channel)
     return channel
+  }
+
+  /**
+   * Cut all state that was admitted as one of `peerNodes`.
+   *
+   * A channel can outlive its socket while it carries unreceipted replies, so
+   * closing only the current socket would retain an authenticated route to a
+   * revoked peer. Conversely, a reconnect race can leave an old socket in
+   * Bun's close queue after its channel was rebound, so both collections are
+   * independently swept. Every close uses 4003: clients already treat it as a
+   * permanent authorization refusal and therefore do not spin on a revoked
+   * credential.
+   */
+  function closePeers(peerNodes: Iterable<string>): void {
+    const revoked = new Set(peerNodes)
+    if (revoked.size === 0) return
+
+    for (const channel of [...channels.values()]) {
+      if (!revoked.has(channel.peerNode)) continue
+      channel.close(CLOSE_UNAUTHORIZED, 'peer authorization revoked')
+      removeChannel(channel)
+    }
+    for (const socket of [...sockets]) {
+      const peerNode = socket.data.node
+      if (!socket.data.authed || peerNode === null || !revoked.has(peerNode))
+        continue
+      socket.close(CLOSE_UNAUTHORIZED, 'peer authorization revoked')
+    }
+  }
+
+  function closePeerCredentials(
+    credentials: Iterable<PeerCredentialTarget>,
+  ): void {
+    const revoked = new Set(
+      [...credentials].map(target =>
+        JSON.stringify([target.node, target.source, target.id]),
+      ),
+    )
+    if (revoked.size === 0) return
+    const matches = (
+      node: string,
+      credential: AuthenticatedCredential | null,
+    ): boolean =>
+      credential !== null &&
+      revoked.has(JSON.stringify([node, credential.source, credential.id]))
+
+    for (const channel of [...channels.values()]) {
+      if (!matches(channel.peerNode, channel.peerCredential)) continue
+      channel.close(CLOSE_UNAUTHORIZED, 'peer credential revoked')
+      removeChannel(channel)
+    }
+    for (const socket of [...sockets]) {
+      const peerNode = socket.data.node
+      if (
+        !socket.data.authed ||
+        peerNode === null ||
+        !matches(peerNode, socket.data.credential)
+      )
+        continue
+      socket.close(CLOSE_UNAUTHORIZED, 'peer credential revoked')
+    }
   }
 
   /**
@@ -444,6 +568,52 @@ export function startTransportServer(
       { rejection, node: ws.data.node ?? '', closeCode },
     )
     ws.close(closeCode, ws.data.authed ? 'protocol error' : 'unauthorized')
+  }
+
+  /**
+   * The certificate this listener presents has lapsed (§6.3, rule 2).
+   *
+   * Everything built on it goes at once — waiting for each peer to notice is
+   * how a revoked certificate keeps serving for as long as a connection
+   * happens to live. New dials still get a challenge and are refused at their
+   * auth frame (see the `message` handler for why not sooner); the process
+   * stays up (§6.3, rule 5), so re-issuing and restarting is the whole
+   * recovery.
+   */
+  function expireCertificate(): void {
+    if (certificateExpired) return
+    certificateExpired = true
+    record(TransportEventType.AuthRejected, {
+      rejection: 'certificate_expired',
+      closeCode: CLOSE_UNAUTHORIZED,
+      connections: sockets.size,
+    })
+    for (const socket of [...sockets]) {
+      socket.close(CLOSE_UNAUTHORIZED, 'certificate expired')
+    }
+  }
+
+  /**
+   * Arm the expiry clock, in hops no longer than a 32-bit timer.
+   *
+   * A node certificate lives 90 days (§6.2) = 7.8e9 ms, which is 3.6× past the
+   * `setTimeout` ceiling — and the failure mode of overshooting it is not a
+   * late timer but an **immediate** one, so a naive single `setTimeout` would
+   * close every connection the instant the node started. Re-arming against the
+   * wall clock also means a machine that slept through the expiry acts on
+   * waking rather than sleeping through its own deadline.
+   */
+  function armCertificateExpiry(notAfter: number): void {
+    const remaining = notAfter - now()
+    if (remaining <= 0) {
+      expireCertificate()
+      return
+    }
+    expiryTimer = setTimeout(
+      () => armCertificateExpiry(notAfter),
+      Math.min(remaining, MAX_TIMER_MS),
+    )
+    expiryTimer.unref?.()
   }
 
   const websocket: WebSocketHandler<ConnectionState> = {
@@ -486,7 +656,29 @@ export function startTransportServer(
           refuse(ws, HandshakeRejection.UnexpectedFrame, CLOSE_UNAUTHORIZED)
           return
         }
-        const result = verifyAuth(options.psk, ws.data.nonce, frame)
+        if (certificateExpired) {
+          // Refused here rather than in `open`, for one measured reason: a
+          // socket closed inside the open handler delivers no close *code* to
+          // the dialer (it sees an abnormal closure and retries until its
+          // budget runs out), and 4003 is the entire point — it is what tells
+          // a peer this door will not open and stops the reconnect storm.
+          //
+          // The dialer learns nothing else: same code, same reason string a
+          // wrong key gets. The claimed name is recorded on our side only.
+          record(TransportEventType.AuthRejected, {
+            rejection: 'certificate_expired',
+            node: frame.node,
+            closeCode: CLOSE_UNAUTHORIZED,
+          })
+          ws.close(CLOSE_UNAUTHORIZED, 'unauthorized')
+          return
+        }
+        const result = verifyAuthAttempt(
+          options.psk,
+          options.signing,
+          ws.data.nonce,
+          frame,
+        )
         if (!result.ok) {
           // Record the claimed name so an operator can tell a misconfigured
           // peer from a scan. It is a claim, not an identity — the handshake
@@ -501,7 +693,9 @@ export function startTransportServer(
           refuse(ws, HandshakeRejection.BadChannel, CLOSE_UNAUTHORIZED)
           return
         }
-        const channel = existing ?? createChannel(result.channelId, result.node)
+        const channel =
+          existing ??
+          createChannel(result.channelId, result.node, result.credential)
         if (channel === null) {
           record(TransportEventType.AuthRejected, {
             rejection: 'channel_capacity',
@@ -514,8 +708,9 @@ export function startTransportServer(
 
         ws.data.authed = true
         ws.data.node = result.node
+        ws.data.credential = result.credential ?? null
         ws.data.channel = channel
-        channel.bind(ws, frame.supportedTypes)
+        channel.bind(ws, frame.supportedTypes, result.credential)
         peerConnections.set(
           result.node,
           (peerConnections.get(result.node) ?? 0) + 1,
@@ -523,6 +718,13 @@ export function startTransportServer(
         record(TransportEventType.AuthAccepted, {
           node: result.node,
           channelId: result.channelId,
+          authentication: result.authentication,
+          ...(result.credential === undefined
+            ? {}
+            : {
+                credentialSource: result.credential.source,
+                credentialId: result.credential.id,
+              }),
         })
         send(ws, {
           t: FrameType.Ready,
@@ -530,6 +732,19 @@ export function startTransportServer(
           ...(options.supportedTypes === undefined
             ? {}
             : { supportedTypes: options.supportedTypes }),
+          // Signed whenever this node *can* sign, not only when the dialer
+          // did: the two directions are independent claims, and a dialer that
+          // wants to check who it reached must not have to prove itself by
+          // signature first to be allowed to.
+          ...(options.signing === undefined
+            ? {}
+            : signReady(
+                options.signing,
+                ws.data.nonce,
+                frame.clientNonce,
+                result.node,
+                result.channelId,
+              )),
         })
         channel.ready()
         return
@@ -578,6 +793,7 @@ export function startTransportServer(
       node: null,
       channel: null,
       authed: false,
+      credential: null,
     }
     if (server.upgrade(request, { data })) return undefined
     return new Response('expected a websocket upgrade', { status: 426 })
@@ -598,6 +814,10 @@ export function startTransportServer(
           websocket,
         })
 
+  if (options.certificateNotAfter !== undefined) {
+    armCertificateExpiry(options.certificateNotAfter)
+  }
+
   const scheme = options.tls === undefined ? 'ws' : 'wss'
   return {
     ...(options.unix === undefined
@@ -614,7 +834,11 @@ export function startTransportServer(
     get channels(): number {
       return channels.size
     },
+    closePeers,
+    closePeerCredentials,
     stop: async (): Promise<void> => {
+      if (expiryTimer !== null) clearTimeout(expiryTimer)
+      expiryTimer = null
       for (const channel of [...channels.values()]) channel.close()
       channels.clear()
       // Bounded, not a plain await, because of a measured Bun behaviour: once

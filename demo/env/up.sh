@@ -95,8 +95,18 @@ start_resident() {
     --agent "${agent}=${DEMO_WORKSPACE_DIR}/${node}" \
     --port "$port" \
     --hostname "$DEMO_HOST" \
+    --open-policy \
+    --audit-signed-tasks \
     --timings "$DEMO_STATE_DIR/${node}-timings.jsonl"
 }
+# `--open-policy` 是显式的逃生开关，不是遗留写法（key-distribution.md §9.3）：
+# P12.4 把默认切成了 SIGNED_TASK_POLICY，而**这套演示拓扑里没有任何一处签发
+# capability 令牌**（demo/lib 里一处都没有），所以强制策略下 ac2 / ac3 / p41 的
+# task.request 会被 E_CAP_INSUFFICIENT 全部拒掉。那正是 §9.1 的 S-3 目前不成立的
+# 原因，也是探针脚本对 S-3 如实报「未采集」时写出的那条已知阻塞项。
+#
+# `--audit-signed-tasks` 与它成对：策略退回开放，同时把「切回去会拒掉多少条」
+# 逐条记进审计链（§9.2 阶段 ①）——演示环境因此正好是那个计数最该被看的地方。
 start_resident "$DEMO_NODE_A" "$DEMO_NODE_A" "$DEMO_AGENT_A" "$DEMO_PORT_A" "$DEMO_CONFIG_A"
 start_resident "$DEMO_NODE_B" "$DEMO_NODE_B" "$DEMO_AGENT_B" "$DEMO_PORT_B" "$DEMO_CONFIG_B"
 

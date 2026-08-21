@@ -3,10 +3,23 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  CapabilityLevel,
+  createMessage,
+  MessageType,
+  ProtocolErrorCode,
+} from '@qianmo/protocol'
+import {
+  generateNodeKeyPair,
+  StaticPublicKeyDirectory,
+  type ShadowRefusal,
+  type ShadowRefusalSink,
+} from '@qianmo/capability'
+import {
   DEFAULT_RESIDENT_MEM_INTERVAL_MS,
   MAX_PENDING_TIMING_EVENTS,
   RESIDENT_HELP_TEXT,
   assertResidentRuntime,
+  createResidentCapabilities,
   createResidentMemWriter,
   createResidentTimingWriter,
   isResidentHelpRequest,
@@ -46,7 +59,13 @@ describe('resident CLI configuration', () => {
       // permissive about *requiring* a token while still verifying every one
       // that is presented).
       trusted: [],
-      requireSignedTasks: false,
+      // The default since P12.4 (key-distribution.md §9.2 ②). It used to be
+      // `false`, and the comment here used to explain why — that reason
+      // (M0 had no key distribution) is what P12.1~P12.3 removed.
+      requireSignedTasks: true,
+      // Observation mode is off unless asked for, and it is a *second*
+      // switch rather than a mode of the first (§9.2 phase ①).
+      auditSignedTasks: false,
     })
     expect(() => parseResidentArgs(BASE, 'occ')).toThrow('OCC_IDENTITY=qianmo')
   })
@@ -272,6 +291,14 @@ describe('resident CLI configuration', () => {
 
 describe('capability flags (P4.3)', () => {
   const KEY = 'A'.repeat(43)
+  const unsignedTask = createMessage({
+    from: 'qianmo://node-a/planner',
+    to: 'qianmo://node-b/reviewer',
+    type: MessageType.TaskRequest,
+    payload: { ask: 'review the diff' },
+    taskId: 'task-1',
+    createdAt: Date.now(),
+  })
 
   test('--trust takes <node>=<publicKey> and refuses anything else', () => {
     const parsed = parseResidentArgs(
@@ -287,12 +314,103 @@ describe('capability flags (P4.3)', () => {
     ).toThrow('not a valid Ed25519 key')
   })
 
-  test('--require-signed-tasks is off unless asked for', () => {
-    expect(parseResidentArgs(BASE, 'qianmo').requireSignedTasks).toBe(false)
+  test('signed tasks are required by default; --open-policy is the way out', () => {
+    // 这条原本钉的是**旧默认**（P4.3 时 `OPEN_POLICY`，因为当时没有密钥分发）。
+    // P12.1~P12.3 把分发建起来之后，`policy.ts` 的收敛条件成立，默认于 P12.4
+    // 翻面（key-distribution.md §9.2 ②）。断言的两半都还在，只是方向对调，
+    // 外加逃生开关那一半。
+    expect(parseResidentArgs(BASE, 'qianmo').requireSignedTasks).toBe(true)
     expect(
       parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo')
         .requireSignedTasks,
     ).toBe(true)
+    expect(
+      parseResidentArgs([...BASE, '--open-policy'], 'qianmo')
+        .requireSignedTasks,
+    ).toBe(false)
+  })
+
+  test('the two directions of the switch cannot be asked for at once', () => {
+    // 不按优先级裁决：无论怎么裁，写下这一行的人里有一半会拿到相反的结果，
+    // 而拿错的那一半错在安全姿态上。
+    expect(() =>
+      parseResidentArgs(
+        [...BASE, '--open-policy', '--require-signed-tasks'],
+        'qianmo',
+      ),
+    ).toThrow('not both')
+  })
+
+  test('open audit mode admits unsigned tasks and records one shadow refusal', () => {
+    const shadowRefusals: ShadowRefusal[] = []
+    const observing = createResidentCapabilities(
+      parseResidentArgs(
+        [...BASE, '--open-policy', '--audit-signed-tasks'],
+        'qianmo',
+      ),
+      new StaticPublicKeyDirectory(),
+      generateNodeKeyPair(),
+      refusal => shadowRefusals.push(refusal),
+    )
+
+    expect(observing.check(unsignedTask, Date.now())).toEqual({
+      ok: true,
+      level: CapabilityLevel.Read,
+    })
+    expect(shadowRefusals).toHaveLength(1)
+    expect(shadowRefusals[0]?.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
+  })
+
+  test('open audit mode fails fast when its shadow refusal sink is missing', () => {
+    expect(() =>
+      createResidentCapabilities(
+        parseResidentArgs(
+          [...BASE, '--open-policy', '--audit-signed-tasks'],
+          'qianmo',
+        ),
+        new StaticPublicKeyDirectory(),
+        generateNodeKeyPair(),
+        undefined as unknown as ShadowRefusalSink,
+      ),
+    ).toThrow('--audit-signed-tasks requires a shadow refusal sink')
+  })
+
+  test('default and explicit signed policy refuse without shadow records', () => {
+    const enforcingRefusals: ShadowRefusal[] = []
+    for (const config of [
+      parseResidentArgs(BASE, 'qianmo'),
+      parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo'),
+    ]) {
+      const enforcing = createResidentCapabilities(
+        config,
+        new StaticPublicKeyDirectory(),
+        generateNodeKeyPair(),
+        refusal => enforcingRefusals.push(refusal),
+      )
+      const verdict = enforcing.check(unsignedTask, Date.now())
+
+      expect(verdict.ok).toBe(false)
+      if (!verdict.ok) {
+        expect(verdict.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
+      }
+    }
+    expect(enforcingRefusals).toEqual([])
+  })
+
+  test('open policy without audit ignores a supplied shadow refusal sink', () => {
+    const shadowRefusals: ShadowRefusal[] = []
+    const open = createResidentCapabilities(
+      parseResidentArgs([...BASE, '--open-policy'], 'qianmo'),
+      new StaticPublicKeyDirectory(),
+      generateNodeKeyPair(),
+      refusal => shadowRefusals.push(refusal),
+    )
+
+    expect(open.check(unsignedTask, Date.now())).toEqual({
+      ok: true,
+      level: CapabilityLevel.Read,
+    })
+    expect(shadowRefusals).toEqual([])
   })
 })
 
@@ -322,6 +440,43 @@ describe('backup flags (P4.4)', () => {
           '--backup-url',
           'http://127.0.0.1:1',
           '--backup-interval-ms',
+          '100',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('>= 1000')
+  })
+})
+
+describe('audit witness flags (P11.4)', () => {
+  test('--witness-url must be http(s), and the interval needs it', () => {
+    const parsed = parseResidentArgs(
+      [
+        ...BASE,
+        '--witness-url=http://127.0.0.1:7998',
+        '--witness-interval-ms',
+        '60000',
+      ],
+      'qianmo',
+    )
+    expect(parsed.witnessUrl).toBe('http://127.0.0.1:7998/')
+    expect(parsed.witnessIntervalMs).toBe(60_000)
+    expect(() =>
+      parseResidentArgs([...BASE, '--witness-url', 'ws://x'], 'qianmo'),
+    ).toThrow('must use http or https')
+    expect(() =>
+      parseResidentArgs([...BASE, '--witness-interval-ms', '60000'], 'qianmo'),
+    ).toThrow('requires --witness-url')
+  })
+
+  test('a sub-second witness interval is refused', () => {
+    expect(() =>
+      parseResidentArgs(
+        [
+          ...BASE,
+          '--witness-url',
+          'http://127.0.0.1:1',
+          '--witness-interval-ms',
           '100',
         ],
         'qianmo',
@@ -367,6 +522,33 @@ describe('empty option values', () => {
 })
 
 describe('resident --help', () => {
+  test('observation mode is a second switch, not a mode of the first (§9.2 ①)', () => {
+    // 「拿指令进来」和「把数据发出去」是两件事，这条也一样：能不能用它把切换的
+    // 代价量出来，取决于它**不是**强制开关的一档。
+    // 观察模式与逃生开关一起给才是 §9.2 阶段 ① 的形态：策略退回开放，同时把
+    // 「切回去会拒掉多少条」记下来。
+    const observing = parseResidentArgs(
+      [...BASE, '--open-policy', '--audit-signed-tasks'],
+      'qianmo',
+    )
+    expect(observing.auditSignedTasks).toBe(true)
+    expect(observing.requireSignedTasks).toBe(false)
+
+    const enforcing = parseResidentArgs(
+      [...BASE, '--require-signed-tasks'],
+      'qianmo',
+    )
+    expect(enforcing.requireSignedTasks).toBe(true)
+    expect(enforcing.auditSignedTasks).toBe(false)
+
+    const both = parseResidentArgs(
+      [...BASE, '--require-signed-tasks', '--audit-signed-tasks'],
+      'qianmo',
+    )
+    expect(both.requireSignedTasks).toBe(true)
+    expect(both.auditSignedTasks).toBe(true)
+  })
+
   test('answers --help and -h wherever they appear on the line', () => {
     // 「敲到一半发现忘了选项名」是人真会做的事，所以位置不限。
     expect(isResidentHelpRequest(['--help'])).toBe(true)
@@ -403,17 +585,19 @@ describe('resident --help', () => {
     expect(RESIDENT_HELP_TEXT).toContain('only valid with --port')
     expect(RESIDENT_HELP_TEXT).toContain('Every path above must be absolute')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --backup-url')
+    expect(RESIDENT_HELP_TEXT).toContain('Requires --witness-url')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --activity-url')
     expect(RESIDENT_HELP_TEXT).toContain('Requires --mem-sample')
   })
 
-  test('names the identity and the two credentials it refuses to run without', () => {
+  test('names the identity and the write credentials it refuses to run without', () => {
     // 问「这个命令怎么用」的人恰恰是还没配好身份与密钥的那个人。
     expect(RESIDENT_HELP_TEXT).toContain('OCC_IDENTITY')
     expect(RESIDENT_HELP_TEXT).toContain('qianmo')
     expect(RESIDENT_HELP_TEXT).toContain('QIANMO_TRANSPORT_PSK')
-    // 两枚密钥都只走环境变量，而帮助必须把「为什么不给命令行选项」一起说。
+    // 写凭据都只走环境变量，而帮助必须把「为什么不给命令行选项」一起说。
     expect(RESIDENT_HELP_TEXT).toContain('QIANMO_BACKUP_WRITE_TOKEN')
+    expect(RESIDENT_HELP_TEXT).toContain('QIANMO_WITNESS_WRITE_TOKEN')
     expect(RESIDENT_HELP_TEXT).toContain('process listing')
     expect(RESIDENT_HELP_TEXT.endsWith('\n')).toBe(true)
   })

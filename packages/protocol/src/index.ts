@@ -38,6 +38,13 @@ export {
 } from './capability.js'
 
 export {
+  NODE_KEY_URI_SCHEME,
+  formatNodeSanEntries,
+  parseNodeCertificateBinding,
+  type NodeCertificateBinding,
+} from './node-certificate.js'
+
+export {
   LEGACY_ERROR_CODES,
   ProtocolError,
   ProtocolErrorCode,

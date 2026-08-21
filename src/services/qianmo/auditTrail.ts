@@ -21,6 +21,7 @@
  */
 
 import { AuditSource, AuditTrail, type AuditInput } from '@qianmo/audit'
+import type { ShadowRefusal, ShadowRefusalSink } from '@qianmo/capability'
 import {
   RouterEventType,
   type RouterAuditEvent,
@@ -60,6 +61,12 @@ import {
   type ResidentNotifyAuditSink,
   type ResidentNotifyEvent,
 } from '@qianmo/resident'
+import type {
+  CertificateDirectoryAuditEvent,
+  CertificateDirectoryAuditSink,
+  CertificateDirectoryErrorEvent,
+  CertificateDirectoryErrorSink,
+} from './certificateDirectory.js'
 import { occConfigPath } from '../../config/paths.js'
 
 /** Default location of this node's trail, derived from the config root. */
@@ -369,5 +376,103 @@ export function residentNotifyTrailSink(
         ['peer'],
       ),
     )
+  }
+}
+
+/**
+ * The `--trust` / CA-derived key conflict, on the record (§8.2 phase ①).
+ *
+ * §8.2's coexistence rule has two halves and the second one is the reason
+ * this sink exists: an explicit `--trust` entry wins over a CA-derived key
+ * for the same node, **and it is audited** — "不是静默覆盖，也不是启动失败".
+ * Starting up would turn a routine certificate rotation into an outage;
+ * saying nothing would leave the one state where two authorities disagree
+ * about a node's key looking exactly like the state where they agree.
+ *
+ * `outcome` is `dropped` rather than `refused`: nothing was refused — the
+ * node kept working, and what happened to the CA-derived key is that it was
+ * discarded in favour of the operator's own entry. `refused` would send a
+ * reader looking for a rejected message that does not exist.
+ *
+ * Filed under {@link AuditSource.Capability} because the directory this
+ * concerns is the one the capability gate reads: the conflict's whole
+ * consequence is which key a peer's tokens get verified against.
+ */
+export function certificateDirectoryTrailSink(
+  trail: AuditTrail,
+  node: string,
+): CertificateDirectoryAuditSink {
+  return (event: CertificateDirectoryAuditEvent): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'certificate_directory_conflict',
+      outcome: 'dropped',
+      node,
+      peer: event.node,
+      detail: { reason: event.reason },
+    })
+  }
+}
+
+/** Contained directory observer/RL failures, without credential material. */
+export function certificateDirectoryErrorTrailSink(
+  trail: AuditTrail,
+  node: string,
+): CertificateDirectoryErrorSink {
+  return (event: CertificateDirectoryErrorEvent): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'certificate_directory_error',
+      outcome: 'refused',
+      node,
+      detail: { phase: event.phase, reason: event.reason },
+    })
+  }
+}
+
+/**
+ * `--audit-signed-tasks`: what the enforcing policy **would** have refused
+ * (key-distribution.md §9.2 phase ①).
+ *
+ * `outcome` is `ok`, and that is not a compromise — the message went ahead.
+ * The phase's entire contract is that no message's fate changes, so a line
+ * that said `refused` would be a false statement about what this node did,
+ * and it would put the count into the same bucket an operator uses to find
+ * real refusals.
+ *
+ * The code the switch *would* have answered with rides in `detail` rather
+ * than in the record's own `code` field, for the same reason: `code` means
+ * "this message was answered with this error", and this one was not answered
+ * with anything.
+ *
+ * `kind` is what makes the phase countable — seven days of
+ * `capability_shadow_refusal` at zero is §9.2's exit criterion, and it is one
+ * `grep` on a file that already exists.
+ */
+export function capabilityShadowTrailSink(
+  trail: AuditTrail,
+  node: string,
+): ShadowRefusalSink {
+  return (refusal: ShadowRefusal): void => {
+    safeAppend(trail, {
+      at: Date.now(),
+      source: AuditSource.Capability,
+      kind: 'capability_shadow_refusal',
+      outcome: 'ok',
+      node,
+      peer: refusal.from,
+      traceId: refusal.traceId,
+      taskId: refusal.taskId,
+      msgId: refusal.msgId,
+      detail: {
+        type: refusal.type,
+        required: refusal.required,
+        presented: refusal.presented,
+        wouldRefuseWith: refusal.code,
+        reason: refusal.reason,
+      },
+    })
   }
 }

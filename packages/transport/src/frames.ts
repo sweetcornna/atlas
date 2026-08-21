@@ -76,7 +76,19 @@ export interface ChallengeFrame {
 export interface AuthFrame {
   readonly t: FrameType.Auth
   readonly v: typeof FRAME_VERSION
-  /** Node segment the dialer claims to be. Audit only — the MAC is the proof. */
+  /**
+   * Node segment the dialer claims to be.
+   *
+   * **Whether this is authority or a label depends on {@link AuthFrame.sig}.**
+   * With `sig` present and verified, it is *the* authority: the signature is
+   * over this very name under the dialer's own Ed25519 key, so no other node
+   * can produce it (key-distribution.md §7.1). With only {@link AuthFrame.mac},
+   * it is an audit label and nothing more — one symmetric secret is shared by
+   * every node, so any holder can write any name here (`handshake.ts:16-18`).
+   *
+   * Both forms exist at once during the migration, and they are told apart by
+   * the presence of `sig`, never by anything the claimant says about itself.
+   */
   readonly node: string
   /** Echo of {@link ChallengeFrame.nonce}. */
   readonly nonce: string
@@ -104,11 +116,66 @@ export interface AuthFrame {
    * on-path attacker did not already have by dropping frames.
    */
   readonly supportedTypes?: readonly string[]
+  /**
+   * Opaque selector for the credential that backs {@link AuthFrame.sig}.
+   *
+   * The transport never interprets this value. A credential-aware directory
+   * may use it to distinguish two valid credentials for the same node. When
+   * It is deliberately outside the legacy `sig`; {@link AuthFrame.credentialProof}
+   * binds it without changing the v1 signature bytes old verifiers expect.
+   */
+  readonly credential?: string
+  /** Independent proof binding `credential` to the legacy signed tuple. */
+  readonly credentialProof?: string
+  /**
+   * Ed25519 signature by the dialer over the *same* tuple {@link AuthFrame.mac}
+   * covers, base64url, domain-separated by `qianmo-handshake-v1`
+   * (key-distribution.md §7.1). Present ⇒ {@link AuthFrame.node} is authority.
+   *
+   * **Optional because a migration cannot use {@link FRAME_VERSION}.** A
+   * listener that has not been given signing material ignores this field and
+   * checks the MAC, which is exactly what lets a signing node and a
+   * pre-shared-key node interoperate (§8.2 phase ①). It is additive in the
+   * strict sense: a build that never heard of it behaves as it always did.
+   *
+   * **It is opportunistic authentication, not downgrade resistance.** An
+   * on-path actor can remove this field without changing the valid MAC, which
+   * makes an optional listener fall back to PSK. Runtime records which proof
+   * actually admitted the link; deployments pin upgraded peers (or enable
+   * `required`) before treating signed identity as a guarantee. Either strict
+   * policy refuses the stripped unsigned form outright.
+   */
+  readonly sig?: string
 }
 
 export interface ReadyFrame {
   readonly t: FrameType.Ready
   readonly v: typeof FRAME_VERSION
+  /**
+   * The listener's own node segment, alongside {@link ReadyFrame.sig}.
+   *
+   * The handshake became two-sided here (§7.1.1): under a pre-shared key,
+   * "the peer could verify me" also proved the peer held the secret, and that
+   * free guarantee disappears the moment the proof is asymmetric. So the
+   * listener answers with a signature of its own, and this is the name that
+   * signature is checked against — the dialer looks the key up under the node
+   * it *meant* to reach, so a redirected endpoint fails here rather than
+   * succeeding quietly.
+   *
+   * Meaningless without `sig`, and never authority on its own.
+   */
+  readonly node?: string
+  /**
+   * The listener's Ed25519 signature over the handshake tuple plus its own
+   * node segment, base64url (§7.1.1). Optional for the same migration reason
+   * as {@link AuthFrame.sig}; until the dialer pins this peer, its absence is
+   * a PSK-authenticated fallback rather than proof of listener identity.
+   */
+  readonly sig?: string
+  /** Opaque selector paired with {@link ReadyFrame.credentialProof}. */
+  readonly credential?: string
+  /** Independent proof binding `credential` to the listener and legacy tuple. */
+  readonly credentialProof?: string
   /**
    * Message types the *listener* implements. Absent or empty ⇒ the legacy
    * floor, never "none" — see `resolvePeerTypes` in `@qianmo/protocol`.
@@ -204,6 +271,26 @@ function readSupportedTypes(
   return isTypeList(value) ? { supportedTypes: Object.freeze([...value]) } : {}
 }
 
+/**
+ * Read an optional string field, dropping a malformed one.
+ *
+ * Same additive-field contract as {@link readSupportedTypes}: a reader that
+ * cannot make sense of the value behaves like a reader that never knew about
+ * it. Verification still enforces extension pairs: if only `credential` or
+ * only `credentialProof` survives parsing, the handshake is rejected rather
+ * than silently treated as legacy. If both are absent, optional policy may
+ * accept the unchanged legacy signature; that migration boundary is recorded
+ * explicitly in `key-distribution.md` §7.1.
+ */
+function readOptionalString<K extends string>(
+  key: K,
+  value: unknown,
+): { [P in K]: string } | Record<string, never> {
+  return isNonEmptyString(value)
+    ? ({ [key]: value } as { [P in K]: string })
+    : {}
+}
+
 function isReceiptStatus(value: unknown): value is ReceiptStatus {
   return (
     value === ReceiptStatus.Accepted ||
@@ -250,6 +337,9 @@ export function parseFrame(raw: string): TransportFrame | null {
             channelId: parsed['channelId'],
             mac: parsed['mac'],
             ...readSupportedTypes(parsed['supportedTypes']),
+            ...readOptionalString('credential', parsed['credential']),
+            ...readOptionalString('credentialProof', parsed['credentialProof']),
+            ...readOptionalString('sig', parsed['sig']),
           }
         : null
     case FrameType.Ready:
@@ -257,6 +347,10 @@ export function parseFrame(raw: string): TransportFrame | null {
         t: FrameType.Ready,
         v: FRAME_VERSION,
         ...readSupportedTypes(parsed['supportedTypes']),
+        ...readOptionalString('node', parsed['node']),
+        ...readOptionalString('credential', parsed['credential']),
+        ...readOptionalString('credentialProof', parsed['credentialProof']),
+        ...readOptionalString('sig', parsed['sig']),
       }
     case FrameType.KeepAlive:
       return { t: FrameType.KeepAlive, v: FRAME_VERSION }

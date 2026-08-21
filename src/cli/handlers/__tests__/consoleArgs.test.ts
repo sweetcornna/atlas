@@ -15,8 +15,19 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AuditSource, AuditTrail } from '@qianmo/audit'
-import { LIMITS } from '@qianmo/protocol'
+import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
+import {
+  StaticPublicKeyDirectory,
+  generateNodeKeyPair,
+} from '@qianmo/capability'
+import {
+  AuditWitnessScheduler,
+  FileWitnessAnchorStore,
+  remoteWitnessAnchorReader,
+  remoteWitnessAnchorWriter,
+  startWitnessService,
+} from '@qianmo/witness'
+import { LIMITS, MAX_SEGMENT_LENGTH } from '@qianmo/protocol'
 import {
   DEFAULT_TTL_MS,
   startRegistryServer,
@@ -31,10 +42,12 @@ import {
   DEFAULT_CONSOLE_PORT,
   DEFAULT_CONSOLE_REGISTRY_URL,
   MAX_CONSOLE_LABEL_LENGTH,
+  DEFAULT_CONSOLE_NODE,
   assertConsoleRuntime,
   consoleChatStorePath,
   isConsoleHelpRequest,
   parseConsoleArgs,
+  wakePskEnvVarForNode,
 } from '../consoleArgs.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
@@ -53,7 +66,9 @@ describe('occ console argument parsing', () => {
       port: DEFAULT_CONSOLE_PORT,
       hostname: DEFAULT_CONSOLE_HOSTNAME,
       registryUrl: DEFAULT_CONSOLE_REGISTRY_URL,
-      auditPath: auditTrailPath(),
+      auditTargets: [{ node: DEFAULT_CONSOLE_NODE, path: auditTrailPath() }],
+      auditMirrors: [],
+      wakeTargets: [],
       label: `${DEFAULT_CONSOLE_HOSTNAME}:${DEFAULT_CONSOLE_PORT}`,
       // 聊天面默认关着：没有 --chat-url 就没有可拨的端点，`/chat` 整页不存在。
       chatUrls: [],
@@ -87,6 +102,8 @@ describe('occ console argument parsing', () => {
         'http://10.0.0.2:38610',
         '--audit',
         '/tmp/qianmo/trail.ndjson',
+        '--anchors',
+        '/tmp/qianmo/witness',
         '--wake-url',
         'ws://10.0.0.3:38611',
         '--label',
@@ -112,6 +129,7 @@ describe('occ console argument parsing', () => {
         '--hostname=0.0.0.0',
         '--registry=http://10.0.0.2:38610',
         '--audit=/tmp/qianmo/trail.ndjson',
+        '--anchors=/tmp/qianmo/witness',
         '--wake-url=ws://10.0.0.3:38611',
         '--label=node-a 控制台',
         '--view-token=view-token-long-enough',
@@ -129,8 +147,18 @@ describe('occ console argument parsing', () => {
       port: 39_000,
       hostname: '0.0.0.0',
       registryUrl: 'http://10.0.0.2:38610',
-      auditPath: '/tmp/qianmo/trail.ndjson',
-      wakeUrl: 'ws://10.0.0.3:38611/',
+      auditTargets: [
+        { node: DEFAULT_CONSOLE_NODE, path: '/tmp/qianmo/trail.ndjson' },
+      ],
+      auditMirrors: [],
+      anchors: { kind: 'path', value: '/tmp/qianmo/witness' },
+      wakeTargets: [
+        {
+          node: DEFAULT_CONSOLE_NODE,
+          url: 'ws://10.0.0.3:38611/',
+          legacy: true,
+        },
+      ],
       label: 'node-a 控制台',
       viewToken: 'view-token-long-enough',
       adminToken: 'admin-token-long-enough',
@@ -208,6 +236,176 @@ describe('occ console argument parsing', () => {
     expect(() =>
       parseConsoleArgs(['--audit=relative/trail.ndjson'], 'qianmo'),
     ).toThrow('--audit must be an absolute path')
+  })
+
+  test('accepts independent named audit sources and explicit mirror metadata', () => {
+    expect(
+      parseConsoleArgs(
+        [
+          '--audit=beta-1=/var/lib/qianmo/beta-1/trail.ndjson',
+          '--audit=beta_2=/var/lib/qianmo/beta-2/trail.ndjson',
+          '--audit-mirror=beta_2=5',
+        ],
+        'qianmo',
+      ),
+    ).toMatchObject({
+      auditTargets: [
+        { node: 'beta-1', path: '/var/lib/qianmo/beta-1/trail.ndjson' },
+        { node: 'beta_2', path: '/var/lib/qianmo/beta-2/trail.ndjson' },
+      ],
+      auditMirrors: [{ node: 'beta_2', maxLagMinutes: 5 }],
+    })
+  })
+
+  test('splits named audit paths once while preserving legacy paths with =', () => {
+    expect(
+      parseConsoleArgs(['--audit=/tmp/a=b'], 'qianmo').auditTargets,
+    ).toEqual([{ node: DEFAULT_CONSOLE_NODE, path: '/tmp/a=b' }])
+    expect(
+      parseConsoleArgs(['--audit=beta-1=/tmp/a=b'], 'qianmo').auditTargets,
+    ).toEqual([{ node: 'beta-1', path: '/tmp/a=b' }])
+  })
+
+  test('rejects ambiguous or malformed named audit inputs', () => {
+    for (const args of [
+      ['--audit==/tmp/trail.ndjson'],
+      ['--audit=beta-1='],
+      ['--audit=beta-1=relative/trail.ndjson'],
+      ['--audit=beta-1=/tmp/a', '--audit=beta-1=/tmp/b'],
+      ['--audit=/tmp/a', '--audit=beta-2=/tmp/b'],
+      ['--audit-mirror=beta-2=5'],
+      ['--audit=beta-2=/tmp/a', '--audit-mirror=beta-2=0'],
+    ]) {
+      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow('--audit')
+    }
+  })
+
+  test('rejects duplicate resolved audit paths across distinct nodes', () => {
+    for (const args of [
+      ['--audit=beta-1=/tmp/trail', '--audit=beta-2=/tmp/trail'],
+      ['--audit=beta-1=/tmp/a/../trail', '--audit=beta-2=/tmp/trail'],
+    ]) {
+      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow(
+        '--audit repeats path',
+      )
+    }
+  })
+
+  test('keeps legacy wake URL while accepting named wake allowlists', () => {
+    expect(
+      parseConsoleArgs(['--wake-url=ws://127.0.0.1:38611'], 'qianmo')
+        .wakeTargets,
+    ).toEqual([
+      {
+        node: DEFAULT_CONSOLE_NODE,
+        url: 'ws://127.0.0.1:38611/',
+        legacy: true,
+      },
+    ])
+    expect(
+      parseConsoleArgs(
+        [
+          '--wake-url=beta-1=ws://127.0.0.1:38611',
+          '--wake-url=beta_1=ws://127.0.0.1:38612',
+        ],
+        'qianmo',
+      ).wakeTargets,
+    ).toEqual([
+      { node: 'beta-1', url: 'ws://127.0.0.1:38611/', legacy: false },
+      { node: 'beta_1', url: 'ws://127.0.0.1:38612/', legacy: false },
+    ])
+  })
+
+  test('splits named wake URLs once while preserving legacy URLs with =', () => {
+    expect(
+      parseConsoleArgs(['--wake-url=ws://host/path?token=a=b'], 'qianmo')
+        .wakeTargets,
+    ).toEqual([
+      {
+        node: DEFAULT_CONSOLE_NODE,
+        url: 'ws://host/path?token=a=b',
+        legacy: true,
+      },
+    ])
+    expect(
+      parseConsoleArgs(['--wake-url=beta-1=ws://host/path?token=a=b'], 'qianmo')
+        .wakeTargets,
+    ).toEqual([
+      {
+        node: 'beta-1',
+        url: 'ws://host/path?token=a=b',
+        legacy: false,
+      },
+    ])
+  })
+
+  test('rejects duplicate, mixed, and malformed named wake URLs', () => {
+    for (const args of [
+      [
+        '--wake-url=beta-1=ws://127.0.0.1:38611',
+        '--wake-url=beta-1=ws://127.0.0.1:38612',
+      ],
+      [
+        '--wake-url=ws://127.0.0.1:38611',
+        '--wake-url=beta-2=ws://127.0.0.1:38612',
+      ],
+      ['--wake-url==ws://127.0.0.1:38611'],
+      ['--wake-url=beta-2='],
+      ['--wake-url=beta-2=http://127.0.0.1:38611'],
+    ]) {
+      expect(() => parseConsoleArgs(args, 'qianmo')).toThrow('--wake-url')
+    }
+  })
+
+  test('derives a one-to-one portable PSK variable for each wake node', () => {
+    expect(wakePskEnvVarForNode('beta-1')).toBe(
+      'QIANMO_TRANSPORT_PSK_NODE_626574612D31',
+    )
+    expect(wakePskEnvVarForNode('node-a')).toBe(
+      'QIANMO_TRANSPORT_PSK_NODE_6E6F64652D61',
+    )
+    expect(wakePskEnvVarForNode('node-b')).toBe(
+      'QIANMO_TRANSPORT_PSK_NODE_6E6F64652D62',
+    )
+    expect(
+      new Set(['beta-1', 'beta_1', 'beta1', 'b-1'].map(wakePskEnvVarForNode))
+        .size,
+    ).toBe(4)
+  })
+
+  test('uses the protocol grammar for every named console node', () => {
+    const valid = 'a' + 'b'.repeat(MAX_SEGMENT_LENGTH - 2) + '9'
+    expect(valid).toHaveLength(MAX_SEGMENT_LENGTH)
+    expect(
+      parseConsoleArgs([`--audit=${valid}=/tmp/trail`], 'qianmo').auditTargets,
+    ).toEqual([{ node: valid, path: '/tmp/trail' }])
+
+    for (const node of [
+      'Beta-1',
+      'beta.1',
+      'a' + 'b'.repeat(MAX_SEGMENT_LENGTH),
+    ]) {
+      expect(() =>
+        parseConsoleArgs([`--audit=${node}=/tmp/trail`], 'qianmo'),
+      ).toThrow('protocol segment')
+      expect(() =>
+        parseConsoleArgs([`--wake-url=${node}=ws://127.0.0.1:38611`], 'qianmo'),
+      ).toThrow('protocol segment')
+    }
+  })
+
+  test('accepts only an absolute anchor directory or HTTP(S) endpoint', () => {
+    expect(
+      parseConsoleArgs(['--anchors=/tmp/qianmo/witness'], 'qianmo'),
+    ).toMatchObject({ anchors: { kind: 'path', value: '/tmp/qianmo/witness' } })
+    expect(
+      parseConsoleArgs(['--anchors=https://witness.example/v0'], 'qianmo'),
+    ).toMatchObject({
+      anchors: { kind: 'url', value: 'https://witness.example/v0' },
+    })
+    expect(() =>
+      parseConsoleArgs(['--anchors=relative/witness'], 'qianmo'),
+    ).toThrow('absolute path or http(s) URL')
   })
 
   test('rejects blank and oversized labels and blank tokens', () => {
@@ -509,6 +707,149 @@ describe('console audit port', () => {
     expect(page.value.issueCount).toBeGreaterThan(0)
   })
 
+  test('detects a self-consistent rewritten chain through the real witness endpoint', async () => {
+    const path = join(directory, 'witness-rewritten.ndjson')
+    const node = 'node-witness'
+    const keys = generateNodeKeyPair()
+    const trail = new AuditTrail(path)
+    for (let index = 0; index < 4; index++) {
+      trail.append({
+        at: Date.now() + index,
+        source: AuditSource.Resident,
+        kind: `event-${index + 1}`,
+        outcome: index === 1 ? 'refused' : 'ok',
+        node,
+      })
+    }
+    trail.close()
+
+    const service = startWitnessService({
+      store: new FileWitnessAnchorStore({
+        root: join(directory, 'witness-endpoint'),
+      }),
+      publicKeys: new StaticPublicKeyDirectory([[node, keys.publicKey]]),
+      writeToken: 'console-witness-write-token',
+      readToken: 'console-witness-read-token',
+    })
+    try {
+      const scheduler = new AuditWitnessScheduler({
+        node,
+        trailPath: path,
+        keys,
+        writer: remoteWitnessAnchorWriter({
+          url: service.url as string,
+          token: 'console-witness-write-token',
+        }),
+      })
+      await scheduler.tick()
+
+      const rewritten = join(directory, 'witness-rewritten-next.ndjson')
+      const attacked = new AuditTrail(rewritten)
+      for (const record of readTrail(path).records.filter(
+        record => record.outcome !== 'refused',
+      )) {
+        const { seq: _seq, prev: _prev, ...input } = record
+        attacked.append(input)
+      }
+      attacked.close()
+      writeFileSync(path, readFileSync(rewritten, 'utf8'))
+      expect(readTrail(path).intact).toBe(true)
+
+      const page = await createAuditPort({
+        path,
+        witness: { kind: 'url', value: service.url as string },
+        witnessReadToken: 'console-witness-read-token',
+        publicKeyOf: async requestedNode =>
+          requestedNode === node
+            ? { ok: true, value: keys.publicKey }
+            : {
+                ok: false,
+                failure: { code: 'not_found', message: '节点不在名册' },
+              },
+      }).read({})
+      expect(page).toMatchObject({
+        ok: true,
+        value: {
+          intact: true,
+          witness: { tampered: true, stale: false },
+        },
+      })
+    } finally {
+      await service.stop()
+    }
+  })
+
+  test('returns a typed failure when a configured witness endpoint is unreachable', async () => {
+    const path = join(directory, 'witness-unreachable.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: 'node-witness',
+    })
+    trail.close()
+    const keys = generateNodeKeyPair()
+
+    const result = await createAuditPort({
+      path,
+      witness: { kind: 'url', value: 'http://127.0.0.1:1/' },
+      witnessReadToken: 'console-witness-read-token',
+      publicKeyOf: async () => ({ ok: true, value: keys.publicKey }),
+    }).read({})
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: 'unreachable' },
+    })
+    if (result.ok) throw new Error('expected witness endpoint failure')
+    expect(result.failure.message).toStartWith('见证端点不可达')
+  })
+
+  test('returns the existing unavailable result when its remote witness reader times out', async () => {
+    const path = join(directory, 'witness-timeout.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: 'node-witness-timeout',
+    })
+    trail.close()
+    const keys = generateNodeKeyPair()
+    let aborted = false
+    const reader = remoteWitnessAnchorReader({
+      url: 'http://witness.test',
+      token: 'console-witness-read-token',
+      timeoutMs: 10,
+      fetchImpl: ((_input, init) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborted = true
+          },
+          { once: true },
+        )
+        return new Promise<Response>(() => {})
+      }) as typeof fetch,
+    })
+
+    const result = await createAuditPort({
+      path,
+      witness: { kind: 'url', value: 'http://witness.test/' },
+      publicKeyOf: async () => ({ ok: true, value: keys.publicKey }),
+      witnessReader: reader.list,
+    }).read({})
+    expect(aborted).toBe(true)
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { code: 'unreachable' },
+    })
+    if (result.ok) throw new Error('expected witness timeout failure')
+    expect(result.failure.message).toContain('timed out after 10 ms')
+  })
+
   test('defaults the tail to the same 200 as occ audit', () => {
     expect(DEFAULT_AUDIT_LIMIT).toBe(200)
   })
@@ -695,5 +1036,28 @@ describe('console registry port', () => {
     } finally {
       await partial.stop(true)
     }
+  })
+})
+
+/**
+ * §10.1 的证书栏，在参数面上的那一半。
+ *
+ * 「给了才有」是一个刻意的取舍而不是省事：没有 CA 根就没有 F-2 那一次判定，
+ * 一栏全是「未知」会让「这个部署还没上证书」和「证书全坏了」长得一样。
+ */
+describe('console --trust-ca (证书栏)', () => {
+  test('不给就没有，给了必须是绝对路径', () => {
+    expect(parseConsoleArgs([], 'qianmo').trustCa).toBeUndefined()
+    expect(
+      parseConsoleArgs(['--trust-ca', '/etc/qianmo/ca.pem'], 'qianmo').trustCa,
+    ).toBe('/etc/qianmo/ca.pem')
+    expect(() => parseConsoleArgs(['--trust-ca', 'ca.pem'], 'qianmo')).toThrow(
+      'absolute path',
+    )
+  })
+
+  test('帮助里说清它是只读的公开材料', () => {
+    expect(CONSOLE_HELP_TEXT).toContain('--trust-ca')
+    expect(CONSOLE_HELP_TEXT).toContain('verifies, never signs')
   })
 })

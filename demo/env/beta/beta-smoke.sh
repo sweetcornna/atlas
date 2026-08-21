@@ -14,6 +14,8 @@
 #   ① 注册中心 /v0/health 200；
 #   ② 地址表里每一条**按名解析 + 真拨通**（解析只查表会把「表里有一条陈旧记录」
 #      当成拓扑就绪，所以必须真握手一次）；
+#      随后发一条不带 capability 的 `task.request` 并等 ack：这是 §9.2 阶段 ① 的
+#      观察样本，`--audit-signed-tasks` 据此记下强制策略会拒的数量；
 #   ③ 控制台 /v0/health 200；
 #   ④ 每个节点的审计链各自 `intact`。
 #
@@ -217,9 +219,10 @@ run_host() {
       bun run "$REPO_DIR/demo/lib/p81-probe.ts" \
       --registry "$BETA_REGISTRY_URL" \
       --expect "$addr" \
+      --task "$addr" \
       --from-node "$SMOKE_FROM_NODE" \
       --from-agent "$SMOKE_FROM_AGENT" >"$out" 2>&1; then
-      beta_ok "$addr 解析 + 拨通"
+      beta_ok "$addr 解析 + 拨通 + task.request 收到 ack"
       ok_addr=$((ok_addr + 1))
       local ep="${BETA_PEER_EP[$i]}"
       case "$ok_eps" in
@@ -229,7 +232,7 @@ run_host() {
     else
       # 把那一行 JSON 原样打出来：resolved / dialed / error 三个字段就是分诊表
       # （resolved:false = 注册中心那边的事；dialed:false = 节点或 PSK 那边的事）。
-      fail_item "$addr 解析或拨号失败 —— $(tail -1 "$out" 2>/dev/null || true)"
+      fail_item "$addr 解析、拨号或 task.request 失败 —— $(tail -1 "$out" 2>/dev/null || true)"
     fi
     i=$((i + 1))
   done

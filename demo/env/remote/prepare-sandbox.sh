@@ -102,12 +102,19 @@ say "工作区 : $WORKSPACE"
 
 head1 '4. 启动常驻节点'
 TIMINGS="$STATE_DIR/resident-timings.jsonl"
+# `--open-policy` 与 demo/env/up.sh 同一条理由（key-distribution.md §9.3）：
+# 默认自 P12.4 起是 SIGNED_TASK_POLICY，而演示链路的发送方不出示 capability
+# 令牌。要在这条沙箱腿上验强制策略，去掉这一行并让发送方带令牌，两件事一起做。
+# `--audit-signed-tasks` 与逃生开关成对，维持 §9.2 阶段 ① 的开放运行态时，仍把
+# 每条若强制策略会拒绝的消息写入审计，供观察窗口取数。
 set -- resident \
   --node "$NODE" \
   --team "${QIANMO_DEMO_TEAM:-atlas}" \
   --agent "${AGENT}=${WORKSPACE}" \
   --port "$PORT" \
   --hostname "${QIANMO_REMOTE_BIND:-0.0.0.0}" \
+  --open-policy \
+  --audit-signed-tasks \
   --timings "$TIMINGS"
 # activity 上报是「沙箱内有活干 → 宿主别让我冻上」这条链路的沙箱半边（P3.1）。
 # 没给就不接，节点照样能跑，只是不会自己保活。

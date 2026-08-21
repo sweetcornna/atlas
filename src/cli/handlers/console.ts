@@ -19,13 +19,18 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { invokedBinName } from '../../constants/brand.js'
 import {
   resolveTokens,
   startConsoleServer,
+  type ConsoleAuditSource,
   type ConsoleDeps,
   type RegistryPort,
+  type WakeTarget,
   type WakePort,
 } from '@qianmo/console'
+import { isNodePublicKey } from '@qianmo/protocol'
 import { pskFromEnv } from '@qianmo/transport'
 import { createConsoleChatPort, type ConsoleChatHub } from './consoleChat.js'
 import {
@@ -33,11 +38,13 @@ import {
   assertConsoleRuntime,
   isConsoleHelpRequest,
   parseConsoleArgs,
+  wakePskEnvVarForNode,
   type ConsoleCliConfig,
 } from './consoleArgs.js'
 import {
   consoleLimits,
   createAuditPort,
+  createCertificatePort,
   createRegistryPort,
   createWakePort,
 } from './consolePorts.js'
@@ -64,9 +71,19 @@ function httpOrigin(hostname: string, port: number): string {
 }
 
 /** 唤醒面的接线结果：端口本身，外加一句给人看的原因。 */
-interface WakeWiring {
-  readonly port?: WakePort
+interface ConsoleWakeWiring {
+  readonly legacy?: { readonly port: WakePort; readonly url: string }
+  readonly targets?: readonly WakeTarget[]
   readonly status: string
+}
+
+/** Narrow production seam for proving named target PSK selection. */
+interface ConsoleWakeDependencies {
+  readonly pskFromEnv: (variable?: string) => string
+  readonly createWakePort: (options: {
+    readonly url: string
+    readonly psk: string
+  }) => WakePort
 }
 
 /**
@@ -77,20 +94,60 @@ interface WakeWiring {
  * 永远报错的按钮诚实。PSK 只从环境变量取，不给命令行选项——命令行上的密钥就是
  * 这台机器每一份进程列表里的密钥，和 `--backup-url` 那条同一个理由。
  */
-function wireWake(config: ConsoleCliConfig): WakeWiring {
-  if (config.wakeUrl === undefined) {
+export function wireConsoleWake(
+  config: Pick<ConsoleCliConfig, 'wakeTargets'>,
+  dependencies: ConsoleWakeDependencies = { pskFromEnv, createWakePort },
+): ConsoleWakeWiring {
+  if (config.wakeTargets.length === 0) {
     return { status: 'disabled (no --wake-url)' }
   }
-  let psk: string
-  try {
-    psk = pskFromEnv()
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return { status: `disabled (${reason})` }
+
+  const targets: WakeTarget[] = config.wakeTargets.map(target => {
+    const variable = target.legacy
+      ? undefined
+      : wakePskEnvVarForNode(target.node)
+    try {
+      const psk =
+        variable === undefined
+          ? dependencies.pskFromEnv()
+          : dependencies.pskFromEnv(variable)
+      return {
+        node: target.node,
+        url: target.url,
+        wake: dependencies.createWakePort({ url: target.url, psk }),
+      }
+    } catch {
+      return {
+        node: target.node,
+        url: target.url,
+        // `error.message` belongs to a secret boundary. Keep it out of the
+        // startup banner and page even when a custom transport reports a key.
+        unavailableReason: 'PSK unavailable',
+      }
+    }
+  })
+
+  const enabled = targets.filter(target => target.wake !== undefined)
+  const status = targets
+    .map(target =>
+      target.wake === undefined
+        ? `${target.node} disabled (${target.unavailableReason})`
+        : `${target.node} -> ${target.url}`,
+    )
+    .join(', ')
+
+  const legacy = config.wakeTargets[0]
+  if (legacy?.legacy && targets[0]?.wake !== undefined) {
+    return {
+      legacy: { port: targets[0].wake, url: legacy.url },
+      status: `enabled -> ${legacy.url}`,
+    }
   }
+
   return {
-    port: createWakePort({ url: config.wakeUrl, psk }),
-    status: `enabled -> ${config.wakeUrl}`,
+    ...(targets.length === 0 ? {} : { targets }),
+    status:
+      enabled.length === 0 ? `disabled (${status})` : `enabled -> ${status}`,
   }
 }
 
@@ -152,6 +209,52 @@ function wireChat(
   }
 }
 
+/** Resolve a node key from the published registry record, never from anchors. */
+function witnessPublicKeyOf(registry: RegistryPort) {
+  return async (node: string) => {
+    const listed = await registry.list()
+    if (!listed.ok) return listed
+    const prefix = `qianmo://${node}/`
+    const agents = listed.value.filter(agent =>
+      agent.address.startsWith(prefix),
+    )
+    const keys = new Set(
+      agents.flatMap(agent =>
+        agent.publicKey === undefined ? [] : [agent.publicKey],
+      ),
+    )
+    if (keys.size === 0) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'not_found' as const,
+          message: `名册没有节点 ${node} 的公钥`,
+        },
+      }
+    }
+    if (keys.size !== 1) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'invalid' as const,
+          message: `名册中的节点 ${node} 公钥不一致`,
+        },
+      }
+    }
+    const publicKey = keys.values().next().value
+    if (publicKey === undefined || !isNodePublicKey(publicKey)) {
+      return {
+        ok: false as const,
+        failure: {
+          code: 'invalid' as const,
+          message: `名册中的节点 ${node} 公钥无效`,
+        },
+      }
+    }
+    return { ok: true as const, value: publicKey }
+  }
+}
+
 const FIELD_WIDTH = 13
 
 function field(name: string, value: string): string {
@@ -190,15 +293,53 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
-  const wake = wireWake(config)
+  const wake = wireConsoleWake(config)
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
   const registry = createRegistryPort({ baseUrl: config.registryUrl })
   const chat = wireChat(config, registry)
+  // The certificate column, or nothing at all (§10.1). Read at startup rather
+  // than per request: the CA root is the one file this console needs and a
+  // missing one is a configuration error the operator should hear about now,
+  // not as an empty column later. It is public material — §10.3's rule that no
+  // private key of any kind is reachable from this process holds structurally,
+  // because there is no option here that could point at one.
+  const certificates =
+    config.trustCa === undefined
+      ? undefined
+      : createCertificatePort({
+          baseUrl: config.registryUrl,
+          caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+        })
+
+  const audits: ConsoleAuditSource[] = config.auditTargets.map(target => {
+    const mirror = config.auditMirrors.find(
+      candidate => candidate.node === target.node,
+    )
+    return {
+      node: target.node,
+      audit: createAuditPort({
+        path: target.path,
+        ...(config.anchors === undefined ? {} : { witness: config.anchors }),
+        ...(config.anchors === undefined
+          ? {}
+          : { publicKeyOf: witnessPublicKeyOf(registry) }),
+      }),
+      kind: mirror === undefined ? 'authoritative' : 'mirror',
+      ...(mirror === undefined ? {} : { maxLagMinutes: mirror.maxLagMinutes }),
+    }
+  })
+  const firstAudit = audits[0]
+  if (firstAudit === undefined) {
+    throw new Error('console requires at least one audit source')
+  }
 
   const deps: ConsoleDeps = {
     registry,
-    audit: createAuditPort({ path: config.auditPath }),
+    // `audit` remains the legacy facade for direct package callers. The page
+    // and HTTP routes consume `audits`, so every configured source is isolated.
+    audit: firstAudit.audit,
+    audits,
     limits: consoleLimits(),
     label: config.label,
     // Display only. The wake form used to carry a 回调 text box that could hold
@@ -207,16 +348,19 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // only when the wake face is actually wired: printing a receipt endpoint
     // beside a disabled form would be stating a fact about a thing that cannot
     // happen.
-    ...(wake.port === undefined || config.wakeUrl === undefined
-      ? {}
-      : { wakeUrl: config.wakeUrl }),
+    ...(wake.legacy === undefined ? {} : { wakeUrl: wake.legacy.url }),
     // Prefills the wake form's 发起方. The chat face already speaks as this
     // address (§6.3), and a console that introduces itself as one thing when
     // chatting and another when waking is a console whose audit trail has two
     // identities in it.
     identity: config.chatFrom,
-    ...(wake.port === undefined ? {} : { wake: wake.port }),
+    ...(wake.legacy === undefined ? {} : { wake: wake.legacy.port }),
+    ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
+    ...(certificates === undefined ? {} : { certificates }),
+    // Spelled once, in the identity roster — never as a literal here
+    // (CLAUDE.md §2.3).
+    binName: invokedBinName(),
   }
 
   const handle = startConsoleServer(deps, config.port, {
@@ -247,7 +391,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     adminSource === undefined ? tokens.admin : `from ${adminSource.detail}`,
   )
   banner += field('registry', config.registryUrl)
-  banner += field('audit-trail', config.auditPath)
+  banner += field(
+    'audit-trails',
+    config.auditTargets
+      .map(target => `${target.node}=${target.path}`)
+      .join(', '),
+  )
+  if (config.anchors !== undefined) {
+    banner += field('anchors', config.anchors.value)
+  }
   banner += field('wake', wake.status)
   banner += field('chat', chat.status)
   if (chat.hub !== undefined) {

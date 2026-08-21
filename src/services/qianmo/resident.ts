@@ -61,13 +61,16 @@ import {
   type RouterAuditSink,
 } from '@qianmo/router'
 import { BackupScheduler, type SnapshotWriter } from '@qianmo/backup'
+import type { AuditWitnessScheduler } from '@qianmo/witness'
 import { startTransportServer } from '@qianmo/transport'
 import type {
   InboundContext,
+  ListenerIdentity,
   TransportChannel,
   TransportEventSink,
   TransportServerHandle,
 } from '@qianmo/transport'
+import type { TLSOptions } from 'bun'
 import {
   formatTeammateMessages,
   isStructuredProtocolMessage,
@@ -100,6 +103,23 @@ interface QianmoResidentOptions {
     readonly unix?: string
   }
   /**
+   * L0 admission materials for the listener (key-distribution.md §7.1).
+   *
+   * Built by the wiring layer through `mutualTlsServerOptions`, which is what
+   * keeps `ca`, `requestCert` and `rejectUnauthorized` from being applied one
+   * at a time (F-10). Absent means plaintext, which is the right answer for a
+   * unix socket and a deliberate one everywhere else.
+   */
+  readonly tls?: TLSOptions
+  /** `notAfter` of the certificate in {@link tls}, epoch ms (§6.3). */
+  readonly certificateNotAfter?: number
+  /**
+   * L1 signing material (§7.1 / §7.1.1). Absent means this node checks the
+   * pre-shared key and signs nothing back — the pre-P12.3 behaviour, and the
+   * default until an operator says otherwise.
+   */
+  readonly handshakeSigning?: ListenerIdentity
+  /**
    * Authorization (P4.3). Absent means capabilities are neither required nor
    * verifiable here — every message counts as `read`. Present means a presented
    * token is fully checked, and rule S-1 refuses any remote `user-confirmed`.
@@ -127,6 +147,11 @@ interface QianmoResidentOptions {
     readonly writer: SnapshotWriter
     readonly intervalMs?: number
   }
+  /**
+   * Off-host audit witness (P11.4). It is called by the existing resident
+   * poller; the scheduler itself gates the documented 60 s anchor period.
+   */
+  readonly witness?: AuditWitnessScheduler
   readonly onActivity?: (active: boolean) => void | Promise<void>
   readonly activityReconnectFactor?: number
   /**
@@ -437,6 +462,8 @@ export class QianmoResident {
   readonly #backups = new Map<string, BackupScheduler>()
   /** Memory recall for the user-message sidecar (design §4.4). */
   readonly #memory: ResidentMemorySidecar
+  #stopping = false
+  #witnessClosed = false
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -541,6 +568,10 @@ export class QianmoResident {
     try {
       await this.#supervisor.run()
     } finally {
+      this.#stopping = true
+      this.#poller?.stop()
+      this.#poller = null
+      this.#closeWitness()
       for (const backups of this.#backups.values()) backups.stop()
       this.#deadlineClock.stop()
       for (const ledger of this.#ledgers.values()) ledger.close()
@@ -1275,7 +1306,75 @@ export class QianmoResident {
   }
 
   stop(): void {
+    if (this.#stopping) return
+    this.#stopping = true
+    this.#poller?.stop()
+    this.#poller = null
+    this.#closeWitness()
     this.#supervisor.stop()
+  }
+
+  /**
+   * Remove peer connections that the shared certificate directory just
+   * invalidated. The resident owns the inbound transport handle, while the
+   * CLI owns directory polling; keeping this hand-off explicit means neither
+   * layer silently assumes the other will terminate already-authenticated
+   * links.
+   */
+  closePeers(peerNodes: Iterable<string>): void {
+    this.#transport?.closePeers(peerNodes)
+  }
+
+  closePeerCredentials(
+    credentials: Iterable<{
+      readonly node: string
+      readonly source: string
+      readonly id: string
+    }>,
+  ): void {
+    this.#transport?.closePeerCredentials(credentials)
+  }
+
+  #closeWitness(): void {
+    if (this.#witnessClosed) return
+    this.#witnessClosed = true
+    try {
+      this.#options.witness?.close()
+    } catch (error) {
+      try {
+        this.#options.onError?.(error)
+      } catch {
+        // Teardown must continue even when an injected close hook is invalid.
+      }
+    }
+  }
+
+  /**
+   * Witness I/O is best-effort evidence collection, never an admission gate.
+   *
+   * The scheduler coalesces its own in-flight attempt. Detaching it here lets
+   * the existing mailbox poll continue when an endpoint is half-open; a custom
+   * scheduler rejection is still observable through the resident error sink.
+   */
+  #triggerWitnessTick(): void {
+    const witness = this.#options.witness
+    if (witness === undefined || this.#stopping) return
+    try {
+      void witness.tick().catch(error => {
+        if (this.#stopping) return
+        try {
+          this.#options.onError?.(error)
+        } catch {
+          // An observer must not turn witness outage into a resident outage.
+        }
+      })
+    } catch (error) {
+      try {
+        this.#options.onError?.(error)
+      } catch {
+        // The same fail-open rule covers an invalid injected scheduler.
+      }
+    }
   }
 
   async #startAcp(): Promise<ResidentChildConnection> {
@@ -1419,6 +1518,13 @@ export class QianmoResident {
         ...(this.#options.listen.unix === undefined
           ? {}
           : { unix: this.#options.listen.unix }),
+        ...(this.#options.tls === undefined ? {} : { tls: this.#options.tls }),
+        ...(this.#options.certificateNotAfter === undefined
+          ? {}
+          : { certificateNotAfter: this.#options.certificateNotAfter }),
+        ...(this.#options.handshakeSigning === undefined
+          ? {}
+          : { signing: this.#options.handshakeSigning }),
       })
       this.#transport = transport
 
@@ -1427,6 +1533,10 @@ export class QianmoResident {
           // Cheap on all but one call in sixty; see the constant's comment for
           // why the cadence is not configurable.
           this.#lifecycle.heartbeat()
+          // The witness handles its own 60 s period. Starting it on this
+          // existing timer avoids another resident timer, but it must never
+          // hold up mailbox admission while its second location is half-open.
+          this.#triggerWitnessTick()
           await runtime?.pollAll()
         },
         // The admission loop is the only thing that turns an unread mailbox

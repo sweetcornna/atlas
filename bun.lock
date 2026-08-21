@@ -82,6 +82,7 @@
         "@qianmo/scheduler": "workspace:*",
         "@qianmo/transport": "workspace:*",
         "@qianmo/tunnel": "workspace:*",
+        "@qianmo/witness": "workspace:*",
         "@sentry/node": "^10.49.0",
         "@smithy/core": "^3.23.15",
         "@smithy/node-http-handler": "^4.5.3",
@@ -395,6 +396,7 @@
       "name": "@qianmo/transport",
       "version": "0.0.0",
       "dependencies": {
+        "@qianmo/capability": "workspace:*",
         "@qianmo/protocol": "workspace:*",
       },
     },
@@ -409,6 +411,15 @@
     "packages/url-handler-napi": {
       "name": "url-handler-napi",
       "version": "1.0.0",
+    },
+    "packages/witness": {
+      "name": "@qianmo/witness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@qianmo/audit": "workspace:*",
+        "@qianmo/capability": "workspace:*",
+        "@qianmo/protocol": "workspace:*",
+      },
     },
     "packages/workflow-engine": {
       "name": "@open-claude-code/workflow-engine",
@@ -1075,6 +1086,8 @@
     "@qianmo/transport": ["@qianmo/transport@workspace:packages/transport"],
 
     "@qianmo/tunnel": ["@qianmo/tunnel@workspace:packages/tunnel"],
+
+    "@qianmo/witness": ["@qianmo/witness@workspace:packages/witness"],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.0-rc.15", "https://registry.npmmirror.com/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.0-rc.15.tgz", { "os": "android", "cpu": "arm64" }, "sha512-YYe6aWruPZDtHNpwu7+qAHEMbQ/yRl6atqb/AhznLTnD3UY99Q1jE7ihLSahNWkF4EqRPVC4SiR4O0UkLK02tA=="],
 

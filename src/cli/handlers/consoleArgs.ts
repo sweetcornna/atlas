@@ -15,11 +15,17 @@
  */
 
 import { isAbsolute, resolve } from 'node:path'
+import { isValidSegment, MAX_SEGMENT_LENGTH } from '@qianmo/protocol'
 import { PSK_ENV_VAR } from '@qianmo/transport'
 import { occConfigPath } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import {
+  parseAuditWitnessSource,
+  WITNESS_READ_TOKEN_ENV_VAR,
+  type AuditWitnessSource,
+} from '../../services/qianmo/auditWitness.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
@@ -43,6 +49,69 @@ export const DEFAULT_CONSOLE_REGISTRY_URL = 'http://127.0.0.1:38610'
 
 /** 页头标签的长度上限，纯粹为了别把页头撑爆。 */
 export const MAX_CONSOLE_LABEL_LENGTH = 120
+
+/** Legacy single-value flags are represented by this stable source name. */
+export const DEFAULT_CONSOLE_NODE = 'default'
+
+export interface ConsoleAuditTarget {
+  readonly node: string
+  readonly path: string
+}
+
+export interface ConsoleAuditMirror {
+  readonly node: string
+  readonly maxLagMinutes: number
+}
+
+export interface ConsoleWakeTarget {
+  readonly node: string
+  readonly url: string
+  /** Only the old single URL is allowed to use QIANMO_TRANSPORT_PSK. */
+  readonly legacy: boolean
+}
+
+/**
+ * PSK variable for a named wake target. UTF-8 hex is one-to-one and legal in
+ * POSIX, Windows, and Bun environment names, unlike replacing '-' with '_'.
+ */
+export function wakePskEnvVarForNode(node: string): string {
+  assertConsoleNodeName(node, '--wake-url')
+  return `QIANMO_TRANSPORT_PSK_NODE_${Buffer.from(node, 'utf8')
+    .toString('hex')
+    .toUpperCase()}`
+}
+
+function assertConsoleNodeName(node: string, flag: string): void {
+  if (!isValidSegment(node)) {
+    throw new Error(
+      `${flag} node must be a lowercase protocol segment (letters, digits, - or _, 1-${MAX_SEGMENT_LENGTH} characters, starting and ending with a letter or digit)`,
+    )
+  }
+}
+
+function parseNamedValue(
+  raw: string,
+  flag: string,
+): { readonly node: string; readonly value: string } {
+  const equals = raw.indexOf('=')
+  if (equals <= 0) {
+    throw new Error(`${flag} must be <node>=<value>`)
+  }
+  const node = raw.slice(0, equals)
+  const value = raw.slice(equals + 1)
+  assertConsoleNodeName(node, flag)
+  if (value.trim() === '') throw new Error(`${flag} value must not be empty`)
+  return { node, value }
+}
+
+/** A complete URL is always the legacy form; its protocol is checked by caller. */
+function legacyWakeUrl(raw: string): URL | undefined {
+  try {
+    return new URL(raw)
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * 控制台在网络上的默认地址。
@@ -74,10 +143,23 @@ export interface ConsoleCliConfig {
   readonly hostname: string
   /** 注册中心 HTTP v0 基址，**不带**尾斜杠。 */
   readonly registryUrl: string
-  /** 审计链文件的绝对路径。 */
-  readonly auditPath: string
-  /** 给了才启用唤醒面；`ws://` 或 `wss://`。 */
-  readonly wakeUrl?: string
+  /** Ordered, independently rendered audit sources. */
+  readonly auditTargets: readonly ConsoleAuditTarget[]
+  /** Explicit mirror metadata; paths never imply mirror status. */
+  readonly auditMirrors: readonly ConsoleAuditMirror[]
+  /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
+  readonly anchors?: AuditWitnessSource
+  /** Explicit allowlist of wake endpoints. */
+  readonly wakeTargets: readonly ConsoleWakeTarget[]
+  /**
+   * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
+   *
+   * 是根证书而不是证书目录：控制台要做的那一次判定是 F-2——「这张证书是不是本
+   * CA 签的」——它只需要根证书里的公钥，一件**公开材料**。§10.3 那条硬规矩
+   * （控制台进程不得读任何私钥）在这里是结构性的，不是靠自觉：这个参数只能指向
+   * 一份公开材料，CA 私钥连一个可以出现的位置都没有。
+   */
+  readonly trustCa?: string
   /** 页头标签，默认 `hostname:port`。 */
   readonly label: string
   /**
@@ -130,8 +212,13 @@ export function parseConsoleArgs(
   let port = DEFAULT_CONSOLE_PORT
   let hostname = DEFAULT_CONSOLE_HOSTNAME
   let registryUrl = DEFAULT_CONSOLE_REGISTRY_URL
-  let auditPath = auditTrailPath()
-  let wakeUrl: string | undefined
+  const auditTargets: ConsoleAuditTarget[] = []
+  const auditMirrors: ConsoleAuditMirror[] = []
+  let legacyAudit = false
+  let anchors: AuditWitnessSource | undefined
+  const wakeTargets: ConsoleWakeTarget[] = []
+  let legacyWake = false
+  let trustCa: string | undefined
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
@@ -164,20 +251,97 @@ export function parseConsoleArgs(
       index = parsed.next
     } else if (arg === '--audit' || arg?.startsWith('--audit=')) {
       const parsed = residentOptionValue(args, index, '--audit')
-      // 绝对路径，和 `--timings` / `--mem-sample` 同一条规矩：控制台是长驻
-      // 进程，一个相对路径的含义会随着谁在哪个目录起它而变。
+      // A path is complete before it is a named value: `--audit /tmp/a=b`
+      // predates repeatable sources and remains a valid legacy invocation.
       if (!isAbsolute(parsed.value)) {
-        throw new Error('--audit must be an absolute path')
+        if (!parsed.value.includes('=')) {
+          throw new Error('--audit must be an absolute path')
+        }
+        if (legacyAudit) {
+          throw new Error('--audit cannot mix legacy paths with named values')
+        }
+        const named = parseNamedValue(parsed.value, '--audit')
+        if (!isAbsolute(named.value)) {
+          throw new Error('--audit path must be an absolute path')
+        }
+        if (auditTargets.some(target => target.node === named.node)) {
+          throw new Error(`--audit repeats node ${named.node}`)
+        }
+        const path = resolve(named.value)
+        if (auditTargets.some(target => target.path === path)) {
+          throw new Error(`--audit repeats path ${path}`)
+        }
+        auditTargets.push({ node: named.node, path })
+      } else {
+        // An old unlabelled value is still accepted, but only alone: mixing it
+        // with named values leaves two competing ways to name the same view.
+        if (legacyAudit || auditTargets.length > 0) {
+          throw new Error('--audit cannot mix legacy paths with named values')
+        }
+        if (!isAbsolute(parsed.value)) {
+          throw new Error('--audit must be an absolute path')
+        }
+        legacyAudit = true
+        auditTargets.push({
+          node: DEFAULT_CONSOLE_NODE,
+          path: resolve(parsed.value),
+        })
       }
-      auditPath = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--audit-mirror' || arg?.startsWith('--audit-mirror=')) {
+      const parsed = residentOptionValue(args, index, '--audit-mirror')
+      const named = parseNamedValue(parsed.value, '--audit-mirror')
+      const maxLagMinutes = Number(named.value)
+      if (!Number.isInteger(maxLagMinutes) || maxLagMinutes <= 0) {
+        throw new Error(
+          '--audit-mirror lag must be a positive integer of minutes',
+        )
+      }
+      if (auditMirrors.some(mirror => mirror.node === named.node)) {
+        throw new Error(`--audit-mirror repeats node ${named.node}`)
+      }
+      auditMirrors.push({ node: named.node, maxLagMinutes })
+      index = parsed.next
+    } else if (arg === '--trust-ca' || arg?.startsWith('--trust-ca=')) {
+      const parsed = residentOptionValue(args, index, '--trust-ca')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--trust-ca must be an absolute path')
+      }
+      trustCa = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--anchors' || arg?.startsWith('--anchors=')) {
+      const parsed = residentOptionValue(args, index, '--anchors')
+      anchors = parseAuditWitnessSource(parsed.value, '--anchors')
       index = parsed.next
     } else if (arg === '--wake-url' || arg?.startsWith('--wake-url=')) {
       const parsed = residentOptionValue(args, index, '--wake-url')
-      const url = new URL(parsed.value)
+      // A complete URL is legacy even when its query contains `=`. Only
+      // remaining values can be interpreted as `<node>=<url>`.
+      const legacyUrl = legacyWakeUrl(parsed.value)
+      const named =
+        legacyUrl === undefined
+          ? parseNamedValue(parsed.value, '--wake-url')
+          : undefined
+      if (legacyUrl !== undefined && (legacyWake || wakeTargets.length > 0)) {
+        throw new Error('--wake-url cannot mix legacy URLs with named values')
+      }
+      if (named !== undefined && legacyWake) {
+        throw new Error('--wake-url cannot mix legacy URLs with named values')
+      }
+      const url = legacyUrl ?? new URL(named?.value ?? parsed.value)
       if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
         throw new Error('--wake-url must use ws or wss')
       }
-      wakeUrl = url.toString()
+      const node = named?.node ?? DEFAULT_CONSOLE_NODE
+      if (wakeTargets.some(target => target.node === node)) {
+        throw new Error(`--wake-url repeats node ${node}`)
+      }
+      legacyWake ||= legacyUrl !== undefined
+      wakeTargets.push({
+        node,
+        url: url.toString(),
+        legacy: named === undefined,
+      })
       index = parsed.next
     } else if (arg === '--label' || arg?.startsWith('--label=')) {
       const parsed = residentOptionValue(args, index, '--label')
@@ -258,6 +422,15 @@ export function parseConsoleArgs(
     throw new Error('console requires OCC_IDENTITY=qianmo')
   }
 
+  if (auditTargets.length === 0) {
+    auditTargets.push({ node: DEFAULT_CONSOLE_NODE, path: auditTrailPath() })
+  }
+  for (const mirror of auditMirrors) {
+    if (!auditTargets.some(target => target.node === mirror.node)) {
+      throw new Error(`--audit-mirror names unknown audit node ${mirror.node}`)
+    }
+  }
+
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
   // 同一条规则开了第二个可以漂移的出处。
@@ -265,8 +438,11 @@ export function parseConsoleArgs(
     port,
     hostname,
     registryUrl,
-    auditPath,
-    ...(wakeUrl === undefined ? {} : { wakeUrl }),
+    auditTargets,
+    auditMirrors,
+    ...(anchors === undefined ? {} : { anchors }),
+    wakeTargets,
+    ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
     ...(adminToken === undefined ? {} : { adminToken }),
@@ -317,11 +493,30 @@ Options (each accepts both --name value and --name=value):
                            tokens are supplied.
   --registry <url>         Registry HTTP v0 base URL, http or https.
                            Default ${DEFAULT_CONSOLE_REGISTRY_URL}.
-  --audit <abs path>       Audit trail file, absolute path.
+  --audit <node>=<path>    Audit trail source. Repeatable; node names use
+                           lowercase letters, digits, - and _, are 1-64
+                           characters, and paths are absolute.
+                           A legacy single <abs path> remains accepted only on
+                           its own and is shown as node "${DEFAULT_CONSOLE_NODE}".
                            Default <config root>/qianmo/audit/trail.ndjson.
-  --wake-url <ws url>      Wake target, a node's inbound WebSocket. The wake
-                           face turns on only when this is given AND
-                           ${PSK_ENV_VAR} holds a usable key.
+  --audit-mirror <node>=<minutes>
+                           Mark one named audit source as a mirror with an
+                           explicit maximum lag. Repeatable; paths never imply
+                           mirror status. Example: beta-2=5.
+  --trust-ca <abs path>    PEM root certificate of the offline CA. The
+                           certificate column turns on only when this is
+                           given: without a root there is nothing to check a
+                           published certificate against, and a column of
+                           unknowns makes "no certificates yet" and "every
+                           certificate is broken" look the same. Read only —
+                           this console verifies, never signs.
+  --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
+                           endpoint. Without this, the trail is 未见证.
+  --wake-url <node>=<ws url>
+                           Wake target allowlist. Repeatable; each named node
+                           reads only its derived PSK environment variable.
+                           A legacy single <ws url> remains accepted only on
+                           its own and uses ${PSK_ENV_VAR}.
   --chat-url <ws url>      Endpoint the chat face may dial. Repeatable, one per
                            flag, duplicates folded. The chat face turns on only
                            when at least one is given AND ${PSK_ENV_VAR}
@@ -360,12 +555,19 @@ Environment:
 
   OCC_IDENTITY             Must be "qianmo". The console is part of the Qianmo
                            node identity, it does not run under plain occ.
-  ${PSK_ENV_VAR}     Transport pre-shared key for the wake and chat
-                           faces. Environment only, never a command-line
-                           option, for the reason under entrance 3.
+  ${PSK_ENV_VAR}     Legacy single-target wake and chat PSK. Environment only,
+                           never a command-line option, for the reason under
+                           entrance 3.
+  QIANMO_TRANSPORT_PSK_NODE_<UTF-8 HEX>
+                           Per-node wake PSK for named --wake-url values. The
+                           node bytes are uppercase UTF-8 hex, so beta-1 is
+                           QIANMO_TRANSPORT_PSK_NODE_626574612D31. This is
+                           one-to-one: beta-1 and beta_1 never collide.
   ${VIEW_TOKEN_ENV_VAR}
   ${ADMIN_TOKEN_ENV_VAR}
                            The view and admin tokens, entrance 2 above.
+  ${WITNESS_READ_TOKEN_ENV_VAR}
+                           Read-only token for a remote --anchors endpoint.
   OCC_CONFIG_DIR           Config root the default audit trail and transcript
                            paths are derived from.
 `

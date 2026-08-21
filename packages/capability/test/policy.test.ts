@@ -81,7 +81,13 @@ describe('policies', () => {
 
 describe('the gate’s two questions stay apart', () => {
   test('no token under an open policy is admitted at read', () => {
-    const decision = gateFor(NODE_B).check(taskMessage(), Date.now())
+    // Named rather than defaulted: since P12.4 the gate's default is
+    // `SIGNED_TASK_POLICY`, and the subject of this test is the open one —
+    // which is what its title said before the switch too.
+    const decision = gateFor(NODE_B, { policy: OPEN_POLICY }).check(
+      taskMessage(),
+      Date.now(),
+    )
     expect(decision.ok).toBe(true)
     if (!decision.ok) return
     expect(decision.level).toBe(CapabilityLevel.Read)
