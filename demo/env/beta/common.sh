@@ -91,20 +91,10 @@ BETA_NODE="${QIANMO_BETA_NODE:-beta-1}"
 BETA_AGENTS="${QIANMO_BETA_AGENTS:-planner reviewer}"
 BETA_TEAM="${QIANMO_BETA_TEAM:-atlas}"
 
-# 控制台的两个单目标面。两者都钉死单值（`--audit` 见 §4.3、`--wake-url` 见 §8.2），
-# 一期都指向同一个节点；把这条限制抬掉是落地包②，不是本包。
-#
-# ── 这四个值现在**不在这里定默认**，理由是一次真实事故 ──────────────────────
-# 它们此前只走环境变量：控制台一重起（改 label、跟随升级、机器重启）就静默丢失，
-# `--audit` 退回到「审计节点在 H 上的权威路径」——而节点跑在另一台机器上，H 上根本
-# 没有那个文件，于是**页面变成空审计视图而不报错**，页头标签也丢了「镜像」标注。
-# 现在它们持久化在 <内测根>/console.conf（0600），beta_resolve_console_conf 每次从那里
-# 读；环境变量仍然优先，且**会被回写**，所以「临时设一次」自动变成「以后都记得」。
-# 这里只捕获环境变量的原值，空 = 没给，默认由 beta_resolve_console_conf 派生。
-BETA_AUDIT_NODE="${QIANMO_BETA_AUDIT_NODE:-}"
-BETA_WAKE_NODE="${QIANMO_BETA_WAKE_NODE:-}"
-# 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）；
-# 平时就写「审计视图是哪一条链」——不写等于让人以为那是全网的链（§4.3 最后一句）。
+# 页头标签是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）。
+# 它持久化在 <内测根>/console.conf（0600）；环境变量仍然优先，且会被回写。
+# 节点、审计路径和唤醒目标不在 console.conf，也没有环境变量覆盖：它们只能从
+# peers.conf 的当前名册派生，删掉一个 peer 因而不可能留下隐蔽的控制台目标。
 BETA_LABEL="${QIANMO_BETA_LABEL:-}"
 
 # 备份快照间隔：内测期从默认 15 min 调到 60 min（§5 的定案，算过账的：15 min 间隔
@@ -134,7 +124,7 @@ BETA_OPS_DIR="$BETA_ROOT/ops"
 BETA_MARKER="$BETA_ROOT/.qianmo-beta-env"
 BETA_MARKER_MAGIC='qianmo-beta-env/v1'
 
-# 控制台的持久化选项（审计节点 / 审计路径 / 页头标签 / 唤醒目标）。见上面那段事故说明。
+# 控制台持久化配置只保存页头标签；当前节点与路径由 peers.conf 派生。
 BETA_CONSOLE_CONF="$BETA_ROOT/console.conf"
 
 # ── 链路参数 ─────────────────────────────────────────────────────────────────
@@ -146,8 +136,8 @@ BETA_SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # 它在各节点的 authorized_keys 里带强制命令（restrict + permitopen + command="cat -- <链>"），
 # 所以它既拨不了别的端口，也读不了别的文件——镜像因此只能走 `ssh cat`（见 ops/mirror-pull.sh）。
 BETA_SSH_KEY="${QIANMO_BETA_SSH_KEY:-$HOME/.ssh/id_ed25519_qianmo}"
-# 审计镜像的拉取间隔（分钟）。它同时决定页头标签里那句「滞后 ≤ N min」，
-# 所以两处都从这一个变量派生，不各写一份。
+# 审计镜像的拉取间隔（分钟）。H 腿把它作为命名审计源的显式元数据传给控制台，
+# 每个镜像源卡片都会显示「滞后 ≤ N min」。
 BETA_MIRROR_INTERVAL_MIN="${QIANMO_BETA_MIRROR_INTERVAL_MIN:-5}"
 
 # 地址表（见文件头第④条）。0600，不进仓库。
@@ -175,16 +165,9 @@ BETA_CONFIG_CONSOLE="$BETA_NODES_DIR/console/config"
 #
 # 权威副本永远是**节点本机**配置根里那一份；H 上 mirror/ 下那几份是单向只读镜像，
 # 不是权威副本（beta-env.md §4.3 第三条）。哈希链在镜像上照样能验（验的是内容），
-# 所以「链断了」在镜像上一样看得见——但「镜像滞后 N 分钟」在页面上看不出来，这正是
-# 一期不把三条镜像链放进控制台页面的原因。
+# 控制台对每个命名来源传入显式镜像元数据，并在对应来源卡片显示其允许滞后。
 beta_node_trail()   { printf '%s/%s/config/qianmo/audit/trail.ndjson' "$BETA_NODES_DIR" "$1"; }
 beta_mirror_trail() { printf '%s/%s/trail.ndjson' "$BETA_MIRROR_DIR" "$1"; }
-
-# 控制台 `--audit` 指哪。**默认值不在这里定**（见上面 BETA_AUDIT_NODE 那段）：
-# 它由 beta_resolve_console_conf 按「这个节点的链是不是镜像来的」派生，并落进
-# console.conf。指死某个路径仍然可以，设 QIANMO_BETA_AUDIT_PATH 即可，且会被回写。
-# 控制台只读本机文件、且 --audit 是单值（§4.3 的现状限制），把它抬掉是落地包②。
-BETA_AUDIT_PATH="${QIANMO_BETA_AUDIT_PATH:-}"
 
 # occ 的构建产物。与演示环境同一条：`bun run build` 产出，`demo/env/bootstrap.sh` 造。
 BETA_OCC="$REPO_DIR/dist/cli-node.js"
@@ -400,14 +383,15 @@ BETA_SSH_KEYFILE=()
 BETA_TUNNEL_PORTS=' '
 
 # 节点名会变成 systemd 实例名（qianmo-tunnel@<name>.service）与文件名
-# （ops/tunnel-<name>.env）。这两个都是**会被当成命令的一部分**的位置，所以字符集在
-# 解析时就卡死，而不是等到 systemctl 报一个看不懂的错。
+# （ops/tunnel-<name>.env）。这里必须与 packages/protocol/src/address.ts 的
+# isValidSegment / MAX_SEGMENT_LENGTH 一致；协议才是语法真源。
 beta_assert_node_name() {
   local name="$1" where="$2"
   [ -n "$name" ] || beta_die "$where：节点名为空"
+  [ "${#name}" -le 64 ] || beta_die "$where：节点名 $name 超过协议上限 64 字符，拒绝"
   case "$name" in
-    *[!A-Za-z0-9._-]*) beta_die "$where：节点名 $name 含 A-Za-z0-9._- 之外的字符，拒绝" ;;
-    -*|.*) beta_die "$where：节点名 $name 不能以 - 或 . 开头" ;;
+    *[!a-z0-9_-]*) beta_die "$where：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+    [!a-z0-9]*|*[!a-z0-9]) beta_die "$where：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
@@ -642,6 +626,27 @@ beta_load_psk() {
 
 # H 上那份运维副本：secrets/peers/<node>.psk（**全部四把**，§8.3 的表）。
 beta_peer_psk_file() { printf '%s/%s.psk' "$BETA_PEER_SECRET_DIR" "$1"; }
+
+# The named console wake contract is a byte-for-byte UTF-8 hex encoding. This
+# keeps every legal protocol node segment distinct on every platform.
+beta_wake_psk_env() {
+  local node="$1"
+  printf 'QIANMO_TRANSPORT_PSK_NODE_'
+  printf '%s' "$node" | LC_ALL=C od -An -tx1 | tr -d ' \n' | tr '[:lower:]' '[:upper:]'
+}
+
+# Export only the PSK currently assigned to this named wake target. Clearing
+# first is essential: a parent shell may still carry a prior deployment's key.
+beta_export_peer_wake_psk() {
+  local node="$1" psk_file psk_env psk
+  psk_file="$(beta_peer_psk_file "$node")"
+  psk_env="$(beta_wake_psk_env "$node")"
+  unset "$psk_env"
+  [ -s "$psk_file" ] || return 1
+  psk="$(cat "$psk_file")"
+  [ -n "$psk" ] || return 1
+  export "$psk_env=$psk"
+}
 
 # beta_random_hex <字节数> —— 生成一串随机 hex。
 #
@@ -915,10 +920,9 @@ beta_unit_instance() {
 
 # ── 控制台的持久化选项（console.conf）─────────────────────────────────────────
 #
-# 为什么要有这个文件：审计路径与页头标签此前只走环境变量。控制台一重起就静默丢失，
-# `--audit` 退回「审计节点在 H 上的权威路径」——节点跑在另一台机器上，H 上根本没有那个
-# 文件，于是**页面变成空审计视图而不报错**；页头标签也丢了「镜像」标注，看的人会以为
-# 那是实时的权威链。审计节点与唤醒目标是同一类东西，一并落进来。
+# 为什么要有这个文件：页头标签此前只走环境变量。控制台一重起就静默丢失，看的人无法
+# 区分同一台 H 上的不同部署。节点名册、审计路径与唤醒目标不是展示偏好，不能在这里留
+# 一份副本：它们只从 peers.conf 的当前内容派生。
 #
 # 格式：`KEY=值`，值取到行尾（标签里有空格、`·` 和中括号），# 开头是注释。
 # **用手写解析而不是 source**：source 一个配置文件等于执行它，而这个文件将来会被运维
@@ -944,72 +948,28 @@ beta_node_is_mirrored() {
   return 0
 }
 
-# beta_resolve_console_conf —— 定下 BETA_AUDIT_NODE / BETA_AUDIT_PATH / BETA_LABEL /
-# BETA_WAKE_NODE 并回写 console.conf。**必须在 beta_load_peers 之后调**（派生要用坐标行）。
-#
-# 优先级：环境变量 > console.conf > 派生默认；胜出的那个一律回写，于是「临时设一次」
-# 自动变成「以后都记得」，这正是此前丢失的那半条。
+# beta_resolve_console_conf —— 定下 BETA_LABEL 并回写 console.conf。
+# 它必须在 beta_load_peers 之后调用，以确保一份历史 console.conf 不会重新成为节点
+# 名册的来源。优先级：环境变量 > console.conf > 派生默认。
 beta_resolve_console_conf() {
   local from_file
-  if [ -z "$BETA_AUDIT_NODE" ]; then
-    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" AUDIT_NODE)"
-    if [ -n "$from_file" ]; then
-      BETA_AUDIT_NODE="$from_file"
-    else
-      # 地址表里的第一个节点。比一个写死的 beta-1 好：那个名字在真实拓扑里通常不存在，
-      # 于是 --audit 指向一个不存在的文件，页面空白而没有任何报错。
-      BETA_AUDIT_NODE="$(beta_peer_nodes | head -1)"
-    fi
-  fi
-  [ -n "$BETA_AUDIT_NODE" ] || beta_die '定不下审计节点：peers.conf 里一个节点都没有'
-  beta_assert_node_name "$BETA_AUDIT_NODE" '审计节点'
-
-  if [ -z "$BETA_WAKE_NODE" ]; then
-    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" WAKE_NODE)"
-    BETA_WAKE_NODE="${from_file:-$BETA_AUDIT_NODE}"
-  fi
-  beta_assert_node_name "$BETA_WAKE_NODE" '唤醒目标'
-
-  if [ -z "$BETA_AUDIT_PATH" ]; then
-    from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" AUDIT_PATH)"
-    if [ -n "$from_file" ]; then
-      BETA_AUDIT_PATH="$from_file"
-    elif beta_node_is_mirrored "$BETA_AUDIT_NODE"; then
-      # 该节点跑在别的机器上、链靠镜像拉过来 —— 权威路径在 H 上不存在，指它必然空白。
-      BETA_AUDIT_PATH="$(beta_mirror_trail "$BETA_AUDIT_NODE")"
-    else
-      BETA_AUDIT_PATH="$(beta_node_trail "$BETA_AUDIT_NODE")"
-    fi
-  fi
-  case "$BETA_AUDIT_PATH" in
-    /*) ;;
-    *) beta_die "审计链路径必须是绝对路径：$BETA_AUDIT_PATH" ;;
-  esac
-
   if [ -z "$BETA_LABEL" ]; then
     from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" LABEL)"
     if [ -n "$from_file" ]; then
       BETA_LABEL="$from_file"
-    elif beta_node_is_mirrored "$BETA_AUDIT_NODE"; then
-      # 「这是镜像、滞后多久、权威在哪」必须写在页头：镜像与实时链在页面上长得一模一样。
-      BETA_LABEL="阡陌内测环境 · 审计视图：$BETA_AUDIT_NODE（镜像 · 滞后 ≤ $BETA_MIRROR_INTERVAL_MIN min，权威副本在节点本机）"
     else
-      BETA_LABEL="阡陌内测环境 · 审计视图：$BETA_AUDIT_NODE"
+      BETA_LABEL='阡陌内测环境 · 多节点审计视图'
     fi
   fi
 
   {
     printf '# 阡陌内测 · 控制台的持久化选项。由 demo/env/beta/beta-up.sh 读写。\n'
     printf '#\n'
-    printf '# 它存在的理由：这四个值此前只走环境变量，控制台一重起就静默丢失 ——\n'
-    printf '# --audit 退回一个 H 上并不存在的权威路径，页面变成**空审计视图而不报错**，\n'
-    printf '# 页头标签也丢掉「镜像」标注。环境变量仍然优先，且会被回写到这里。\n'
+    printf '# 这里只持久化页面标签。环境变量仍然优先，且会被回写到这里。\n'
+    printf '# 节点、审计链路径和唤醒目标只从 peers.conf 派生，绝不在这里保留副本。\n'
     printf '#\n'
     printf '# 一行一个 KEY=值，值取到行尾。手改这里立刻生效（下次 beta-up.sh 起控制台时）。\n'
-    printf 'AUDIT_NODE=%s\n' "$BETA_AUDIT_NODE"
-    printf 'AUDIT_PATH=%s\n' "$BETA_AUDIT_PATH"
     printf 'LABEL=%s\n' "$BETA_LABEL"
-    printf 'WAKE_NODE=%s\n' "$BETA_WAKE_NODE"
   } >"$BETA_CONSOLE_CONF.tmp.$$"
   chmod 600 "$BETA_CONSOLE_CONF.tmp.$$"
   mv -f "$BETA_CONSOLE_CONF.tmp.$$" "$BETA_CONSOLE_CONF"

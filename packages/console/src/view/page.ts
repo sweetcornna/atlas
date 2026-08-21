@@ -81,7 +81,7 @@ import { chevron, icon, identityControl, sectionHead } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatDuration } from './format.js'
 import type { ConsoleRole } from '../auth.js'
-import type { AuditFilter } from '../deps.js'
+import type { AuditFilter, WakeTarget } from '../deps.js'
 
 export interface PageModel {
   readonly label: string
@@ -110,6 +110,8 @@ export interface PageModel {
   readonly targetOptions?: string
   /** Where a wake receipt goes. Rendered as read-only small print. */
   readonly wakeUrl?: string
+  /** Fixed named wake endpoints; the browser can select but never supply one. */
+  readonly wakeTargets?: readonly WakeTarget[]
   /** The address this console speaks as, prefilled into 发起方. */
   readonly identity?: string
   /**
@@ -344,11 +346,37 @@ function wakeReceipt(url: string | undefined): string {
   )
 }
 
+function wakeNodeTargets(targets: readonly WakeTarget[] | undefined): string {
+  if (targets === undefined || targets.length === 0) return ''
+  const options = targets
+    .map(target => {
+      const suffix = target.wake === undefined ? ' · PSK 不可用' : ' · 已配置'
+      return (
+        '<option value="' +
+        attr(target.node) +
+        '"' +
+        (target.wake === undefined ? ' disabled' : '') +
+        '>' +
+        escapeHtml(target.node + suffix) +
+        '</option>'
+      )
+    })
+    .join('')
+  return (
+    '<div class="field"><label for="wake-node">唤醒节点</label>' +
+    '<span class="sel"><select class="input" id="wake-node" name="node">' +
+    options +
+    '</select>' +
+    chevron() +
+    '</span></div>'
+  )
+}
+
 function wakeBody(model: PageModel): string {
   const identity = model.identity ?? ''
   const fields =
     `<div class="form-grid wake-grid">` +
-    `<div>${wakeTarget(model.targetOptions)}${wakeReceipt(model.wakeUrl)}</div>` +
+    `<div>${wakeNodeTargets(model.wakeTargets)}${wakeTarget(model.targetOptions)}${wakeReceipt(model.wakeUrl)}</div>` +
     `<div class="field"><label for="wake-prompt">提示词<i class="req">*</i></label>` +
     `<textarea class="input" id="wake-prompt" name="prompt" rows="4" ` +
     `placeholder="告诉这个智能体要做什么 · 例如 把 packages/console 的 CSS token 按用途分组并回报数量"` +
@@ -552,6 +580,7 @@ function overviewSection(model: PageModel): string {
   const trailIssues = fragmentStat(model.audit, 'issues')
   const trailIntact = fragmentStat(model.audit, 'intact')
   const witness = fragmentStat(model.audit, 'witness')
+  const auditState = fragmentStat(model.audit, 'audit-state')
   const ttlMs = fragmentStat(model.limits, 'ttl-ms')
   const rate = fragmentStat(model.limits, 'rate')
   const issues = trailIssues === null ? 0 : Number(trailIssues)
@@ -570,15 +599,27 @@ function overviewSection(model: PageModel): string {
       kicker: '消息链',
       value: trailTotal ?? '—',
       hint:
-        trailIntact === 'false' || issues > 0
-          ? `<span class="tag tag-accent">断裂 ${escapeHtml(
-              String(issues),
-            )}</span>`
-          : witness === 'tampered'
+        auditState === 'unavailable'
+          ? `<span class="tag tag-neutral">部分未读取</span>`
+          : auditState === 'tampered'
             ? `<span class="tag tag-critical">锚点不符</span>`
-            : witness === 'verified'
-              ? `<span class="tag tag-accent-2">链完整</span>`
-              : `<span class="tag tag-neutral">未见证</span>`,
+            : auditState === 'stale' || auditState === 'unwitnessed'
+              ? `<span class="tag tag-neutral">未见证</span>`
+              : auditState === 'broken'
+                ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                    String(issues),
+                  )}</span>`
+                : auditState === 'verified'
+                  ? `<span class="tag tag-accent-2">链完整</span>`
+                  : trailIntact === 'false' || issues > 0
+                    ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                        String(issues),
+                      )}</span>`
+                    : witness === 'tampered'
+                      ? `<span class="tag tag-critical">锚点不符</span>`
+                      : witness === 'verified'
+                        ? `<span class="tag tag-accent-2">链完整</span>`
+                        : `<span class="tag tag-neutral">未见证</span>`,
       glyph: 'activity',
       blob: 'blob-2',
     }),

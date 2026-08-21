@@ -99,8 +99,8 @@ run_host() {
 （beta-env.md §2.4 的硬规矩）。控制台页面上点的那个「注册」活不过一次 90 s 以上的重启。"
   fi
 
-  # 审计路径 / 页头标签 / 审计节点 / 唤醒目标：从 console.conf 读，环境变量优先且回写。
-  # 必须在 beta_load_peers 之后 —— 「这个节点的链是不是镜像来的」要看坐标行。
+  # console.conf 只保存页头标签；节点、审计路径和唤醒目标只认 peers.conf。
+  # 必须在 beta_load_peers 之后，避免历史 console.conf 重新成为一份节点名册。
   beta_resolve_console_conf
 
   beta_head '① 链路（SSH 隧道与审计镜像）'
@@ -159,7 +159,6 @@ run_host() {
     --port "$BETA_CONSOLE_PORT"
     --hostname "$BETA_HOST_BIND"
     --registry "$BETA_REGISTRY_URL"
-    --audit "$BETA_AUDIT_PATH"
     --label "$BETA_LABEL"
     # 传**文件路径**而不是 token 值：命令行上的密钥就是这台机器每一份进程列表里的
     # 密钥（`ps -eo args` / `/proc/<pid>/cmdline` 每个本地账号都读得到）。这条纪律
@@ -170,35 +169,31 @@ run_host() {
     --view-token-file "$BETA_VIEW_TOKEN_FILE"
     --admin-token-file "$BETA_ADMIN_TOKEN_FILE"
   )
-  if [ ! -f "$BETA_AUDIT_PATH" ]; then
-    beta_warn "审计链文件还不存在：$BETA_AUDIT_PATH
-（$BETA_AUDIT_NODE 还没写过第一条记录，或它的配置根不在这台机器上。
-  控制台对一个不存在的 --audit **不报错，只显示空审计视图**——所以这条 WARN 是唯一的信号。
-  该节点跑在别的机器上时，链要靠镜像拉过来：给它一条带 trail= 的 node 坐标行，
-  或者直接把 AUDIT_PATH 改成 $(beta_mirror_trail "$BETA_AUDIT_NODE")（改 $BETA_CONSOLE_CONF）。
-  镜像**不是权威副本**，页面上也看不出滞后多久，所以页头标签必须标注——beta-env.md §4.3）"
-  fi
-
-  # 唤醒面要两个条件同时成立：给了 --wake-url，且环境里有那个目标的 PSK（§8.2）。
-  # 一期唤醒目标只能有一个：--wake-url 钉死单值，而 QIANMO_TRANSPORT_PSK 是每进程一把，
-  # 两个限制正好重合。其余三个节点的唤醒走 H 上的 `occ resident-wake`。
-  local wake_url wake_psk
-  wake_url="$(beta_peer_endpoint "$BETA_WAKE_NODE" 2>/dev/null || true)"
-  wake_psk="$(beta_peer_psk_file "$BETA_WAKE_NODE")"
-  if [ -n "$wake_url" ] && [ -s "$wake_psk" ]; then
-    console_args+=(--wake-url "$wake_url")
-    QIANMO_TRANSPORT_PSK="$(cat "$wake_psk")"
-    export QIANMO_TRANSPORT_PSK
-    beta_ok "唤醒目标：$BETA_WAKE_NODE → $wake_url"
-  else
-    if [ -z "$wake_url" ]; then
-      beta_warn "唤醒面不启用 —— 地址表里没有 $BETA_WAKE_NODE 的条目（$BETA_PEERS_FILE）"
+  # peers.conf is the one node roster. Every distinct node gets exactly one
+  # audit source and one wake URL; console.conf never adds a target of its own.
+  local node audit_path wake_url psk_file
+  for node in $(beta_peer_nodes); do
+    if beta_node_is_mirrored "$node"; then
+      audit_path="$(beta_mirror_trail "$node")"
+      console_args+=(--audit "$node=$audit_path")
+      console_args+=(--audit-mirror "$node=$BETA_MIRROR_INTERVAL_MIN")
     else
-      beta_warn "唤醒面不启用 —— 缺 $BETA_WAKE_NODE 的 PSK：$wake_psk
-（H 上存全部四把是因为唤醒与投递都从 H 发起；节点机上只存它自己那一把，§8.3）"
+      audit_path="$(beta_node_trail "$node")"
+      console_args+=(--audit "$node=$audit_path")
     fi
-    beta_say '控制台照常起，页面上没有唤醒按钮。'
-  fi
+    if [ ! -f "$audit_path" ]; then
+      beta_warn "审计链文件还不存在：$node → $audit_path（该节点单独显示为空链）"
+    fi
+
+    wake_url="$(beta_peer_endpoint "$node")"
+    console_args+=(--wake-url "$node=$wake_url")
+    psk_file="$(beta_peer_psk_file "$node")"
+    if beta_export_peer_wake_psk "$node"; then
+      beta_ok "唤醒目标：$node → $wake_url"
+    else
+      beta_warn "唤醒目标局部降级：$node 缺 PSK：$psk_file"
+    fi
+  done
   beta_start_process "$BETA_CONSOLE_PROC" "$BETA_CONFIG_CONSOLE" "${console_args[@]}"
 
   i=0
@@ -228,9 +223,9 @@ run_host() {
   beta_head "H 腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
   beta_say "注册中心 : $BETA_REGISTRY_URL（$BETA_PEER_COUNT 条登记，永不出回环）"
   beta_say "控制台   : $BETA_CONSOLE_URL（由反代以 TLS 暴露；两枚 token 在 $BETA_SECRET_DIR）"
-  beta_say "审计视图 : $BETA_AUDIT_PATH"
+  beta_say "审计视图 : $(beta_peer_nodes | tr '\n' ' ')（逐节点独立）"
   beta_say "页头标签 : $BETA_LABEL"
-  beta_say "上面两行 : 持久化在 $BETA_CONSOLE_CONF —— 控制台重起不再丢"
+  beta_say "页头标签 : 持久化在 $BETA_CONSOLE_CONF；节点清单只认 $BETA_PEERS_FILE"
   if [ "$BETA_SSH_COUNT" -gt 0 ]; then
     beta_say "链路     : $BETA_SSH_COUNT 条 SSH 隧道 + 审计镜像（systemd --user，见 $BETA_OPS_DIR）"
   else

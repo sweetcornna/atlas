@@ -118,8 +118,21 @@ export interface AuditPort {
   chain(traceId: string): Promise<ConsoleResult<MessageChain | null>>
 }
 
+/** One independently read audit source, supplied by the host CLI. */
+export interface ConsoleAuditSource {
+  /** Stable CLI node name, never inferred from the path. */
+  readonly node: string
+  readonly audit: AuditPort
+  /** Explicit deployment metadata; mirror status is never path-derived. */
+  readonly kind: 'authoritative' | 'mirror'
+  /** Required when kind is mirror; measured timer interval in minutes. */
+  readonly maxLagMinutes?: number
+}
+
 /** A wake request as the page can express it. */
 export interface WakeInput {
+  /** Named wake allowlist selector. Required only for multi-target consoles. */
+  readonly node?: string
   readonly from: string
   readonly to: string
   readonly prompt: string
@@ -140,6 +153,16 @@ export interface WakeOutcome {
  */
 export interface WakePort {
   send(input: WakeInput): Promise<ConsoleResult<WakeOutcome>>
+}
+
+/** A fixed, named outbound wake target and its independently wired port. */
+export interface WakeTarget {
+  readonly node: string
+  readonly url: string
+  /** Missing only when that node's own PSK was absent or unusable. */
+  readonly wake?: WakePort
+  /** Operator-facing local-degradation reason; never contains a PSK. */
+  readonly unavailableReason?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -383,9 +406,17 @@ export interface LimitsSnapshot {
 /** Everything a console instance needs. `wake` and `chat` are optional. */
 export interface ConsoleDeps {
   readonly registry: RegistryPort
+  /**
+   * Legacy single-audit facade. New hosts provide {@link audits}; retaining
+   * this keeps direct package consumers on the old one-source contract.
+   */
   readonly audit: AuditPort
+  /** Ordered audit sources. Absent means one authoritative `default` source. */
+  readonly audits?: readonly ConsoleAuditSource[]
   readonly limits: LimitsSnapshot
   readonly wake?: WakePort
+  /** Named wake allowlist. Absent preserves the legacy single WakePort path. */
+  readonly wakeTargets?: readonly WakeTarget[]
   /** Absent removes the chat page and every `/v0/chat/*` route (§4.5). */
   readonly chat?: ChatPort
   /** Absent removes the certificate column entirely (§10.1). */

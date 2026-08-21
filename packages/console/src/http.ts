@@ -153,6 +153,7 @@ import type {
   ChatTarget,
   ChatUpdate,
   ConsoleAgent,
+  ConsoleAuditSource,
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
@@ -164,7 +165,12 @@ import {
   renderRoster,
   wakeTargetOptions,
 } from './view/agents.js'
-import { AUDIT_WINDOWS, renderAudit, renderChain } from './view/audit.js'
+import {
+  AUDIT_WINDOWS,
+  renderAudit,
+  renderAuditSources,
+  renderChain,
+} from './view/audit.js'
 import { failureBar } from './view/bits.js'
 import {
   MAX_CHAT_TEXT_LENGTH,
@@ -202,6 +208,7 @@ const DEFAULT_LABEL = '阡陌控制台'
  * configuration — so the fallback is the right string rather than a blank.
  */
 const DEFAULT_BIN_NAME = 'qm'
+const DEFAULT_AUDIT_SOURCE_NODE = 'default'
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -827,6 +834,8 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
   if (!to.ok) return to
   const prompt = requiredString(body, 'prompt')
   if (!prompt.ok) return prompt
+  const node = optionalString(body, 'node')
+  if (!node.ok) return node
   // Optional, and empty means "the one this console was started with".
   // `createWakePort` pins the receipt URL and refuses any other value
   // (`consolePorts.ts`), so the field could only ever hold one string — the
@@ -852,6 +861,7 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
   return {
     ok: true,
     value: {
+      ...(node.value === undefined ? {} : { node: node.value }),
       from: from.value,
       to: to.value,
       prompt: prompt.value,
@@ -859,6 +869,46 @@ function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
       ...(afterMs === undefined ? {} : { afterMs }),
     },
   }
+}
+
+function auditSources(deps: ConsoleDeps): readonly ConsoleAuditSource[] {
+  return (
+    deps.audits ?? [
+      {
+        node: DEFAULT_AUDIT_SOURCE_NODE,
+        audit: deps.audit,
+        kind: 'authoritative',
+      },
+    ]
+  )
+}
+
+function auditSourceOf(
+  deps: ConsoleDeps,
+  node: string | undefined,
+): ConsoleAuditSource | undefined {
+  const sources = auditSources(deps)
+  if (node === undefined || node === '') {
+    return sources.length === 1 ? sources[0] : undefined
+  }
+  return sources.find(source => source.node === node)
+}
+
+async function readAuditSources(deps: ConsoleDeps, filter: AuditFilter) {
+  return await Promise.all(
+    auditSources(deps).map(async source => {
+      const result = await source.audit.read(filter)
+      return {
+        node: source.node,
+        kind: source.kind,
+        ...(source.maxLagMinutes === undefined
+          ? {}
+          : { maxLagMinutes: source.maxLagMinutes }),
+        page: valueOf(result),
+        failure: failureOf(result),
+      }
+    }),
+  )
 }
 
 // --- HTML routes ---------------------------------------------------------
@@ -910,8 +960,16 @@ async function auditFragment(
   filter: AuditFilter,
   agentOptions?: string,
 ): Promise<string> {
-  const result = await deps.audit.read(filter)
-  return renderAudit(valueOf(result), failureOf(result), filter, agentOptions)
+  const sources = auditSources(deps)
+  if (sources.length === 1 && deps.audits === undefined) {
+    const result = await deps.audit.read(filter)
+    return renderAudit(valueOf(result), failureOf(result), filter, agentOptions)
+  }
+  return renderAuditSources(
+    await readAuditSources(deps, filter),
+    filter,
+    agentOptions,
+  )
 }
 
 /**
@@ -1025,21 +1083,28 @@ async function handleIndex(
   // its node filter offers the addresses that exist rather than a box to
   // retype one into — so the two reads still overlap and only the render
   // waits.
-  const [roster, trail] = await Promise.all([
+  const [roster, trails] = await Promise.all([
     rosterFragment(deps, now),
-    deps.audit.read(filter),
+    readAuditSources(deps, filter),
   ])
   const targetOptions = wakeTargetOptions(
     roster.agents,
     now,
     deps.limits.registryTtlMs,
   )
-  const audit = renderAudit(
-    valueOf(trail),
-    failureOf(trail),
-    filter,
-    agentFilterOptions(roster.agents, filter.agent),
-  )
+  const audit =
+    auditSources(deps).length === 1 && deps.audits === undefined
+      ? renderAudit(
+          trails[0]?.page ?? null,
+          trails[0]?.failure ?? null,
+          filter,
+          agentFilterOptions(roster.agents, filter.agent),
+        )
+      : renderAuditSources(
+          trails,
+          filter,
+          agentFilterOptions(roster.agents, filter.agent),
+        )
   return html(
     renderPage({
       label: deps.label ?? DEFAULT_LABEL,
@@ -1048,11 +1113,16 @@ async function handleIndex(
       audit,
       targetOptions,
       ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
+      ...(deps.wakeTargets === undefined
+        ? {}
+        : { wakeTargets: deps.wakeTargets }),
       ...(deps.identity === undefined ? {} : { identity: deps.identity }),
       limits: renderLimits(deps.limits),
       // The form is rendered disabled with a reason rather than hidden: an
       // operator who cannot find the wake button assumes the console is broken.
-      wakeEnabled: deps.wake !== undefined,
+      wakeEnabled:
+        deps.wake !== undefined ||
+        deps.wakeTargets?.some(target => target.wake !== undefined) === true,
       // Gated on role, not merely on whether a channel is wired: the module
       // note above ("Chat is admin-only, all of it") says a view token must
       // not even learn that a conversation exists. A link that is present but
@@ -1136,7 +1206,7 @@ async function handleWake(
   if (denied !== null) return denied
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
   const wake = deps.wake
-  if (wake === undefined) {
+  if (wake === undefined && deps.wakeTargets === undefined) {
     return fail(
       501,
       'unsupported',
@@ -1148,6 +1218,38 @@ async function handleWake(
   if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
   const input = parseWakeInput(body)
   if (!input.ok) return fail(400, 'invalid', input.message)
+  const configuredTargets = deps.wakeTargets
+  if (configuredTargets !== undefined) {
+    if (input.value.node === undefined || input.value.node.trim() === '') {
+      return fail(400, 'invalid', '多目标唤醒必须给出 node')
+    }
+    const target = configuredTargets.find(
+      candidate => candidate.node === input.value.node,
+    )
+    if (target === undefined) {
+      return fail(403, 'rejected', '唤醒节点不在启动时配置的白名单中')
+    }
+    if (!input.value.to.startsWith('qianmo://' + target.node + '/')) {
+      return fail(403, 'rejected', '唤醒地址与所选节点不匹配')
+    }
+    if (target.wake === undefined) {
+      return fail(
+        501,
+        'unsupported',
+        '节点 ' + target.node + ' 没有可用的唤醒 PSK',
+      )
+    }
+    // The URL is selected only from the startup allowlist. A client-supplied
+    // URL is intentionally discarded before it reaches the pinned wake port.
+    const result = await target.wake.send({
+      ...input.value,
+      url: target.url,
+    })
+    return result.ok ? json(result.value) : failureResponse(result.failure)
+  }
+  if (wake === undefined) {
+    return fail(501, 'unsupported', '该控制台没有配置唤醒通道')
+  }
   const result = await wake.send(input.value)
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
@@ -1162,8 +1264,17 @@ async function handleAudit(
   const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
-  const result = await deps.audit.read(parseAuditFilter(url, now))
-  return result.ok ? json(result.value) : failureResponse(result.failure)
+  const requestedNode = textParam(url.searchParams, 'node')
+  const source = auditSourceOf(deps, requestedNode)
+  if (source !== undefined) {
+    const result = await source.audit.read(parseAuditFilter(url, now))
+    return result.ok ? json(result.value) : failureResponse(result.failure)
+  }
+  if (requestedNode !== undefined) {
+    return fail(404, 'not_found', '未配置该审计节点')
+  }
+  const sources = await readAuditSources(deps, parseAuditFilter(url, now))
+  return json({ audits: sources })
 }
 
 async function handleChain(
@@ -1171,11 +1282,20 @@ async function handleChain(
   deps: ConsoleDeps,
   credential: ConsoleCredential,
   traceId: string,
+  node: string | undefined,
 ): Promise<Response> {
   const denied = guard(credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
-  const result = await deps.audit.chain(traceId)
+  const source = auditSourceOf(deps, node)
+  if (source === undefined) {
+    return fail(
+      node === undefined ? 400 : 404,
+      node === undefined ? 'invalid' : 'not_found',
+      node === undefined ? '多链审计详情必须给出 node' : '未配置该审计节点',
+    )
+  }
+  const result = await source.audit.chain(traceId)
   // A trace with no records is `{ chain: null }` and a 200: "that trace is not
   // in this trail" is an answer, not a failure of the lookup.
   return result.ok
@@ -1408,6 +1528,7 @@ async function dispatchApi(
         deps,
         credential,
         decodeURIComponent(segments[3] ?? ''),
+        textParam(url.searchParams, 'node'),
       )
     }
     return notFound(`unknown path: ${url.pathname}`)
@@ -1433,8 +1554,20 @@ async function dispatchApi(
 async function chainFragment(
   deps: ConsoleDeps,
   traceId: string,
+  node: string | undefined,
 ): Promise<string> {
-  const result = await deps.audit.chain(traceId)
+  const source = auditSourceOf(deps, node)
+  if (source === undefined) {
+    return failureBar(
+      {
+        code: node === undefined ? 'invalid' : 'not_found',
+        message:
+          node === undefined ? '多链审计详情必须给出 node' : '未配置该审计节点',
+      },
+      '读取消息链失败',
+    )
+  }
+  const result = await source.audit.chain(traceId)
   // `renderChain` takes no failure argument — a chain either reconstructs or
   // it does not — so an unreadable trail borrows the same red strip the other
   // two fragments show. Answering this route with JSON instead would hand the
@@ -1486,7 +1619,11 @@ async function dispatchFragment(
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   if (isChain) {
     return html(
-      await chainFragment(deps, decodeURIComponent(segments[2] ?? '')),
+      await chainFragment(
+        deps,
+        decodeURIComponent(segments[2] ?? ''),
+        textParam(url.searchParams, 'node'),
+      ),
     )
   }
   if (name === 'roster') return html((await rosterFragment(deps, now)).html)
