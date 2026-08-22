@@ -330,6 +330,10 @@ DoD 要求在 TOFU 与带外分发之间定案。**定案：带外分发。TOFU 
 
 **RL 接收状态也是 append-only。**节点拒绝 `issuedAt` 倒退、拒绝同一 `issuedAt` 的不同内容，也拒绝后续列表移除任何已经接受的 `fingerprint256`；完全相同的列表可幂等重放。否则零鉴权 registry 可以先重放仍新鲜的旧 clear RL 让已吊销证书重新准入，再切回新版 RL，而一个只记“这个 fingerprint 曾经通知过”的节点会漏掉第二次活连接关闭。官方 `qm ca refresh-rl` 的 `revoked.json` 本来就是累加状态，这条把签发端已有的事实提升成接收端可执行的不变式。
 
+**RL 的作用范围有一条硬边界，运维必须知道：一张证书被吊销、而同一把公钥仍钉在某节点的 `--trust` 里时，吊销对那条链路完全无效。**新连接照常接纳（显式条目不过任何 CA 侧检查——没有 RL 命中判定，也没有 `notBefore`/`notAfter` 判定），已有的活连接也关不掉：那条连接的 effective credential 是 `explicit/<node>`，而 RL 事件发出的目标是 `{node, certificate, <fingerprint256>}`，两者永不匹配。**这是刻意的**，与 §8.2「显式压过发现」是同一条立场：CA 不是 `--trust` 的上级，运维手钉的那把钥匙不该被 CA 撤掉。本文此前只从「不要误关」这个方向写过它（§7.1：显式 `--trust` 认证的连接不会被同 node 的 CA 事件误关），而那是同一件事的另一面——只写前者会让人以为吊销总是有效的。
+
+**由此推出的运维要求，本文此前一直缺**：**要停用一个节点，必须在发 RL 的同时移除它在各节点上的 `--trust` 条目，只发 RL 不够。**§6.5 的四步处置默认该节点不在任何人的 `--trust` 里；只要还在，第 2 步那句「全网 ≤ 1 小时内拒绝它」对钉住它的那些节点就不成立，且失效是静默的——被钉住的节点不会报任何错，它只是照常接。
+
 ### 6.5 密钥泄露 ≠ 轮换：节点 Ed25519 身份密钥**不轮换**
 
 `nodeIdentity.ts:16-22` 已经把理由写死：**节点的密钥就是它的身份**，悄悄换一把等于这个节点悄悄变成另一个节点，会让它签发过的每一张 capability 与每一份已发布的公钥副本一起失效。文件因此是 `wx` 独占创建、永不覆盖，损坏是报错而不是重新生成。
@@ -363,9 +367,19 @@ DoD 问的是「传输身份 vs 消息授权」两层。**实测之后是三层*
 
 **迁移判据与钉住方式**：先让一对节点的双向 `AuthAccepted` 记录连续显示 `authentication=signature` 或 `credential_signature`，再将该 peer 放入 `HandshakeIdentity.requiredPeers`；此后任一方向缺 legacy 签名（包括字段被剥离）均拒绝。CA 精确 credential 的推广另看 `credential_signature`，并用下一段的独立策略钉住。`--require-signed-handshake` 是全局部署阶段入口，且只有所有 peer 都已被逐一验证、钉住或切到该严格阶段后，才可宣称 PSK 已退出。旧节点仍可在未钉住的 peer 上互通；若只走 PSK，那条连接不是签名身份。
 
-**证书级吊销的 v1 双证明扩展**：既有 `sig` 的字节**严格保持 P12.3 不变**：Auth 仍签五元组，Ready 仍签六元组，绝不把扩展字段塞进去。因此新 signer 发出的 `sig` 仍能被旧 verifier 接受。`AuthFrame` / `ReadyFrame` 另带一对可选字段：opaque `credential` selector 与 `credentialProof`。第二证明使用独立的 `qianmo-handshake-credential-proof-v1` 域，覆盖方向（Auth/Ready 不可互换）、完整 legacy tuple、selector，以及目录实际解析出的 `source/id`；selector 与 proof 必须同时出现，缺一、替换或伪造任一个都拒绝，optional 也不会静默忽略半截扩展。transport 不解释 selector，`CertificateDirectory` 才把它解析为具体 `fingerprint256`，并把实际采用的 `source/id` 留在认证结果里。
+**证书级吊销的 v1 双证明扩展**：既有 `sig` 的字节**严格保持 P12.3 不变**：Auth 仍签五元组，Ready 仍签六元组，绝不把扩展字段塞进去。因此新 signer 发出的 `sig` 仍能被旧 verifier 接受。`AuthFrame` / `ReadyFrame` 另带一对可选字段：opaque `credential` selector 与 `credentialProof`。第二证明使用独立的 `qianmo-handshake-credential-proof-v1` 域，覆盖方向（Auth/Ready 不可互换）、完整 legacy tuple、selector，以及目录解析出的 proof claim `source/id`；selector 与 proof 必须同时出现，缺一、替换或伪造任一个都拒绝，optional 也不会静默忽略半截扩展。transport 不解释 selector，`CertificateDirectory` 才把 proof claim 与本地 effective credential 分层：通常二者相同；若同 node 有显式 `--trust`，proof 仍按 selector 指的 `certificate/fingerprint256` 校验，连接则绑定为 effective `explicit/node`。
+
+**这一支对 selector 做的是「矛盾查验」，不是「准入查验」，两者差一个字但意思相反。**查的是本地留存的事实与声称冲突——该 fingerprint 绑的是另一个 node，或绑的公钥不是那把显式钥——冲突才拒；**没有**留存事实则接受。后者不是漏网，正是 §6.4 定的降级语义：注册中心不可达时重启的常驻节点，本进程从没拉到过任何 `/v0/agents` 行，此时拒掉一个明明就在 `--trust` 名单上的对端，是把「fail-closed 到 `--trust`」做成 fail-shut。**并且这几条查验从来不是安全边界**：持有那把显式私钥的对端只要把 selector 写成 node 段、按 `('explicit', node)` 签第二证明，就完全绕开事实查验并拿到**逐字节相同**的 effective credential `explicit/node`——两条路径要的是同一把私钥的同一种签名，安全性等价。准入靠的是那把私钥，事实查验的全部价值是把一个够尖锐的配置错误暴露出来。把它读成「凡 `explicit/*` 的连接背后都验过 CA 事实」是错的。
 
 运行时把三种结果分开记录：`psk`、只保证节点公钥的 legacy `signature`、带精确 credential 的 `credential_signature`。同 node 正常换发的 F1/F2 可以同时有活连接，RL 吊 F1 时只关 F1；显式 `--trust` 认证的连接不会被同 node 的 CA 事件误关。旧 signed peer 缺 selector/proof 时，optional 新节点可按 legacy `signature` 接受，但**没有证书级精确吊销保证**，因此不得附会出 credential id，也不得用一次按 node 的 RL 事件把它关掉。
+
+server 的可重连逻辑 channel 在首次认证后冻结一个四元组：`{peerNode, authentication 档位, effective credential source/id, 签名公钥}`（PSK 档后两项为 null）。后续 socket 只有完全相同的认证身份才可 bind；四项任一变化，都在发 Ready 和 replay retained outbox **之前**被拒。这个绑定不能随 `bind()` 覆盖，否则同 node 的 F2、另一把 key 或从 signature 降到 PSK 都可能继承 F1 尚未收到 receipt 的 payload。
+
+**这条拒绝不发 4003，发新增的 `CLOSE_CHANNEL_CONFLICT = 4004`，拒因也是专用的 `channel_identity_mismatch`**（`bad_channel` 继续只表示 channelId 字段本身格式非法；两者的修法相反，混用等于运维在审计里分不出该改配置还是该改代码）。理由是 4003 在本包里**按契约是永久的**——拨号方收到就进终态、不再重连——而这条拒绝最真实的触发路径是**监听方目录在运行中变化**（新增或移除一条 `--trust`、registry refresh 引入了显式条目）：effective credential 变了，而拨号方一个字节都没改，给它 4003 等于让一个健康节点永久下线。收到 4004 的拨号方**换一个新 channelId 重连**，上限 `MAX_CHANNEL_ROTATIONS`（3 次），超过才进终态；调用方**显式传入**的 channelId 不轮换、直接终态（从外面指定一个 id 的唯一理由就是要接回那一条通道，静默搬家答的是另一个问题；目前全仓没有生产调用方传它）。
+
+**旧的保留 channel 原封不动留着按 retention 时钟过期，不移交给新身份**——移交正是这里在拒的那件事。也刻意不采用「丢弃旧 channel 再为新身份重建」：那会让任何能以同 node 通过 L1 的弱身份（例如只持 PSK 的那一档）按需摧毁一条签名通道尚未送达的回复。于是**同一个 channelId 上的换发是一次有账可查的丢失**：监听方为旧通道排队、还没送到这个拨号方的 envelope 留在那里直到过期；拨号方自己尚未收到 receipt 的 envelope 不丢（outbox 照常 replay 到新 channel，与任何一次重连无异）。两侧各留一条痕——监听侧的 `AuthRejected` 带 `channelId` 与该通道当时的 `pending` 条数，拨号侧记一条新事件 `ChannelRotated`（被放弃的 id、新 id、第几次轮换）。**要把这两个数对上必须同时看两侧日志**：单看一侧只能看到「有条通道被别人占着」或「我换了个 id」，看不见丢了什么。
+
+**这与上面那句「同 node 正常换发的 F1/F2 可以同时有活连接」不矛盾**，但两句必须一起读，否则会以为轮换无痛：那句说的是**不同 channel** 上的两条连接，仍然成立；这一节说的是**同一个 channelId** 上换发，那一条必被拒，代价就是上面那次丢失。**泄露也如实记**：一个已通过 L1 的对端由此得知「自己报的那个 channel id 被另一份身份占着」。channelId 是 128 bit CSPRNG、不出两端、且就是拨号方自己生成的，泄露的内容恰是它恢复所需的那一句，判为可接受。**本包其它所有拒绝仍统一 4003 + `'unauthorized'`**，不给任何可区分的码。
 
 两个部署策略刻意分开：`required` / `requiredPeers` 只要求 legacy 双向签名、负责退出 PSK；`credentialProofRequired` / `credentialProofRequiredPeers` 才要求精确 credential 证明。普通 signed、非 CA 部署不因开启前者而被误要求证书 selector；CA 目录下的 `--require-signed-handshake` 同时推导两者，缺 selector/proof 的旧 peer 会被拒。optional 模式若只剥 `credential`+`credentialProof`，会降为 legacy `signature`；若连 `sig` 一起剥，则仍可降为 PSK。前者只能靠 credential-required 策略关闭，后者由 `requiredPeers` / 全局严格签名策略关闭——这是 v1 additive 迁移的 opportunistic 边界，不得改写成抗降级。
 
@@ -443,6 +457,8 @@ L0 TLS 准入（连接建立前，Bun 内部）
 - [ ] §6.4 的 fail-closed 路径**没有**在这 14 天里被触发过（触发过说明 RL 分发链路还不稳，此时删掉 `--trust` 等于删掉最后的兜底）。
 
 三条里第三条最容易被忽略：`--trust` 在本设计里**不只是迁移期的遗留**，它同时是 CA 私钥丢失（§3.3）与 RL 过期（§6.4）两条降级路径的落点。**阶段 ③ 之后这两条降级路径消失**，所以它是一个真正的取舍，不是纯粹的清理。评审需要对这一条单独表态。
+
+**反方向的代价一并表态**：`--trust` 留着的成本不只是那份人肉分发，还有 §6.4 末尾那条硬边界——它钉住的那把公钥，CA 的 RL 吊不掉，停用一个节点因此是「发 RL + 逐台删条目」两个动作。这条对阶段 ① / ② 一直成立，而它恰好是阶段 ③ 会消掉的一项收益。
 
 ---
 
