@@ -31,6 +31,7 @@ import {
   type TransportFrame,
 } from './frames.js'
 import {
+  CLOSE_CHANNEL_CONFLICT,
   CLOSE_PROTOCOL_ERROR,
   CLOSE_UNAUTHORIZED,
   HandshakeRejection,
@@ -39,6 +40,7 @@ import {
   signReady,
   verifyAuthAttempt,
   type AuthenticatedCredential,
+  type HandshakeAuthentication,
   type ListenerIdentity,
 } from './handshake.js'
 import {
@@ -241,7 +243,9 @@ class ServerTransportChannel implements TransportChannel {
   #closed = false
   #reclaim: ReturnType<typeof setTimeout> | null = null
   #peerTypes: readonly string[] | undefined
-  #credential: AuthenticatedCredential | null
+  readonly #authentication: HandshakeAuthentication
+  readonly #credential: AuthenticatedCredential | null
+  readonly #signingPublicKey: string | null
 
   constructor(options: {
     readonly id: string
@@ -250,14 +254,18 @@ class ServerTransportChannel implements TransportChannel {
     readonly retentionMs: number
     readonly remove: (channel: ServerTransportChannel) => void
     readonly record: (type: TransportEventType, detail: EventDetail) => void
+    readonly authentication: HandshakeAuthentication
     readonly credential: AuthenticatedCredential | undefined
+    readonly signingPublicKey: string | undefined
   }) {
     this.id = options.id
     this.peerNode = options.peerNode
     this.#retentionMs = options.retentionMs
     this.#remove = options.remove
     this.#record = options.record
+    this.#authentication = options.authentication
     this.#credential = options.credential ?? null
+    this.#signingPublicKey = options.signingPublicKey ?? null
     this.#outbox = new EnvelopeOutbox({
       maxQueued: options.maxQueued,
       canWrite: () => this.isReady(),
@@ -288,6 +296,25 @@ class ServerTransportChannel implements TransportChannel {
 
   get peerCredential(): AuthenticatedCredential | null {
     return this.#credential
+  }
+
+  matchesAuthentication(options: {
+    readonly peerNode: string
+    readonly authentication: HandshakeAuthentication
+    readonly credential: AuthenticatedCredential | undefined
+    readonly signingPublicKey: string | undefined
+  }): boolean {
+    const credential = options.credential ?? null
+    return (
+      this.peerNode === options.peerNode &&
+      this.#authentication === options.authentication &&
+      this.#signingPublicKey === (options.signingPublicKey ?? null) &&
+      ((this.#credential === null && credential === null) ||
+        (this.#credential !== null &&
+          credential !== null &&
+          this.#credential.source === credential.source &&
+          this.#credential.id === credential.id))
+    )
   }
 
   supports(type: MessageType): boolean {
@@ -332,14 +359,12 @@ class ServerTransportChannel implements TransportChannel {
   bind(
     socket: ServerWebSocket<ConnectionState>,
     supportedTypes?: readonly string[],
-    credential?: AuthenticatedCredential,
   ): void {
     if (this.#closed) throw new Error('transport channel is closed')
     // Replaced, not merged: the declaration belongs to the handshake that just
     // happened. A peer that reconnected on an older build declares less, and
     // carrying the old union forward would keep sending it types it dropped.
     this.#peerTypes = supportedTypes
-    this.#credential = credential ?? null
     const previous = this.#socket
     this.#socket = socket
     if (previous !== null && previous !== socket) {
@@ -472,7 +497,9 @@ export function startTransportServer(
   function createChannel(
     id: string,
     peerNode: string,
+    authentication: HandshakeAuthentication,
     credential?: AuthenticatedCredential,
+    signingPublicKey?: string,
   ): ServerTransportChannel | null {
     if (channels.size >= maxChannels) return null
     const channel = new ServerTransportChannel({
@@ -482,7 +509,9 @@ export function startTransportServer(
       retentionMs: channelRetentionMs,
       remove: removeChannel,
       record,
+      authentication,
       credential,
+      signingPublicKey,
     })
     channels.set(id, channel)
     return channel
@@ -688,14 +717,45 @@ export function startTransportServer(
           return
         }
         const existing = channels.get(result.channelId)
-        if (existing !== undefined && existing.peerNode !== result.node) {
+        if (
+          existing !== undefined &&
+          !existing.matchesAuthentication({
+            peerNode: result.node,
+            authentication: result.authentication,
+            credential: result.credential,
+            signingPublicKey: result.signingPublicKey,
+          })
+        ) {
+          // Not `refuse`, on both counts. The rejection is its own string
+          // (`bad_channel` means a malformed field, which this is not), and it
+          // carries two fields no other rejection does: the channel id — the
+          // only thing an operator needs to find the conflicting channel — and
+          // how many envelopes that channel is still holding, so "the old
+          // outbox had N in it when its owner was locked out" is on the record
+          // rather than inferred. The retained channel itself is left
+          // untouched: handing it over is precisely what is being refused, and
+          // *discarding* it would let any weaker identity that can pass L1 for
+          // this node destroy a signed peer's undelivered replies on demand.
           ws.data.node = result.node
-          refuse(ws, HandshakeRejection.BadChannel, CLOSE_UNAUTHORIZED)
+          record(TransportEventType.AuthRejected, {
+            rejection: HandshakeRejection.ChannelIdentityMismatch,
+            node: result.node,
+            channelId: result.channelId,
+            pending: existing.pending,
+            closeCode: CLOSE_CHANNEL_CONFLICT,
+          })
+          ws.close(CLOSE_CHANNEL_CONFLICT, 'logical channel identity conflict')
           return
         }
         const channel =
           existing ??
-          createChannel(result.channelId, result.node, result.credential)
+          createChannel(
+            result.channelId,
+            result.node,
+            result.authentication,
+            result.credential,
+            result.signingPublicKey,
+          )
         if (channel === null) {
           record(TransportEventType.AuthRejected, {
             rejection: 'channel_capacity',
@@ -710,7 +770,7 @@ export function startTransportServer(
         ws.data.node = result.node
         ws.data.credential = result.credential ?? null
         ws.data.channel = channel
-        channel.bind(ws, frame.supportedTypes, result.credential)
+        channel.bind(ws, frame.supportedTypes)
         peerConnections.set(
           result.node,
           (peerConnections.get(result.node) ?? 0) + 1,

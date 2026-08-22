@@ -43,6 +43,18 @@ export enum TransportEventType {
    */
   ChannelReclaimed = 'channel_reclaimed',
   /**
+   * A dialer abandoned its channel id because the listener holds a channel of
+   * that id under a different identity, and dialled again under a fresh one.
+   *
+   * This is a **loss** record, not a progress one: whatever the listener had
+   * queued on the old channel for the old identity stays there until its
+   * retention clock runs out, and is never delivered to this client. The
+   * dialer's own unreceipted envelopes are not lost — they replay on the new
+   * channel — but a reply that was already in flight the other way is. A
+   * rotation that left no trace would make that loss unattributable.
+   */
+  ChannelRotated = 'channel_rotated',
+  /**
    * A caller-supplied event sink threw and was contained.
    *
    * Recorded rather than rethrown: `record` runs inside the websocket

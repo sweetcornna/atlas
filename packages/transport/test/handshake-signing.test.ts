@@ -228,6 +228,7 @@ describe('credential-bound signatures', () => {
       channelId: CHANNEL_ID,
       authentication: 'credential_signature',
       credential: { source: 'certificate', id: credential },
+      signingPublicKey: dialerKeys.publicKey,
     })
     // A pre-extension verifier checks the actual sig from the new frame over
     // the base tuple. Unknown extension fields are irrelevant to that check.
@@ -284,6 +285,82 @@ describe('credential-bound signatures', () => {
             credential,
             'certificate',
             credential,
+          ),
+        ),
+      }),
+    ).toEqual({
+      ok: false,
+      rejection: HandshakeRejection.BadCredentialProof,
+    })
+  })
+
+  test('verifies the peer claim but returns the local effective credential', () => {
+    const nonce = newNonce()
+    const clientNonce = newNonce()
+    const selector = 'dialer-certificate-f1'
+    const overrideDirectory: HandshakeCredentialDirectory = {
+      publicKeyOf: node => (node === 'node-a' ? dialerKeys.publicKey : null),
+      handshakeCredentialOf(node, claimedSelector) {
+        if (node !== 'node-a' || claimedSelector !== selector) return null
+        return {
+          publicKey: dialerKeys.publicKey,
+          source: 'explicit',
+          id: 'node-a',
+          proofCredential: { source: 'certificate', id: selector },
+        }
+      },
+    }
+    const identity: HandshakeIdentity = {
+      keys: listenerKeys,
+      credentialProofRequired: true,
+      directory: overrideDirectory,
+    }
+    const attempt: AuthAttempt = {
+      node: 'node-a',
+      nonce,
+      clientNonce,
+      channelId: CHANNEL_ID,
+      mac: computeMac(TEST_PSK, nonce, clientNonce, 'node-a', CHANNEL_ID),
+      sig: signBytes(
+        dialerKeys,
+        authSigningInput(nonce, clientNonce, 'node-a', CHANNEL_ID),
+      ),
+      credential: selector,
+      credentialProof: signBytes(
+        dialerKeys,
+        authCredentialProofInput(
+          nonce,
+          clientNonce,
+          'node-a',
+          CHANNEL_ID,
+          selector,
+          'certificate',
+          selector,
+        ),
+      ),
+    }
+
+    expect(verifyAuthAttempt(TEST_PSK, identity, nonce, attempt)).toEqual({
+      ok: true,
+      node: 'node-a',
+      channelId: CHANNEL_ID,
+      authentication: 'credential_signature',
+      credential: { source: 'explicit', id: 'node-a' },
+      signingPublicKey: dialerKeys.publicKey,
+    })
+    expect(
+      verifyAuthAttempt(TEST_PSK, identity, nonce, {
+        ...attempt,
+        credentialProof: signBytes(
+          dialerKeys,
+          authCredentialProofInput(
+            nonce,
+            clientNonce,
+            'node-a',
+            CHANNEL_ID,
+            selector,
+            'explicit',
+            'node-a',
           ),
         ),
       }),
@@ -426,6 +503,7 @@ describe('verifyAuthAttempt — which proof is taken', () => {
       node: 'node-a',
       channelId: CHANNEL_ID,
       authentication: 'signature',
+      signingPublicKey: dialerKeys.publicKey,
     })
   })
 

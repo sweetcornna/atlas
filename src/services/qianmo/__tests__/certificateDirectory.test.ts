@@ -36,6 +36,7 @@ import {
 } from '@qianmo/registry'
 import {
   TransportClient,
+  TransportEventType,
   startTransportServer,
   type TransportServerHandle,
 } from '@qianmo/transport'
@@ -55,6 +56,7 @@ import {
   CertificateDirectory,
   assertOwnCertificateMatchesIdentity,
 } from '../certificateDirectory.js'
+import { buildHandshakeSigning } from '../../../cli/handlers/resident.js'
 
 const OPENSSL = opensslVersion()
 const itNeedsOpenssl = OPENSSL === null ? test.skip : test
@@ -917,6 +919,361 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
         await client?.close()
         await transport?.stop()
       }
+    },
+  )
+})
+
+describe('CertificateDirectory — proof claim versus effective credential', () => {
+  itNeedsOpenssl(
+    'accepts a certificate claim for the same explicit key and keeps the link explicit across revocation',
+    async () => {
+      const dialer = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      const listener = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
+      await registerIssued(dialer, 'node-a.example.com')
+      await registerIssued(listener, 'node-b.example.com')
+      const t0 = Date.now()
+      await publishExactRl({ issuedAt: t0 })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [
+          [dialer.node, dialer.keys.publicKey],
+          [listener.node, listener.keys.publicKey],
+        ],
+      })
+      await directory.refresh()
+
+      expect(
+        directory.handshakeCredentialOf(dialer.node, dialer.fingerprint256),
+      ).toEqual({
+        publicKey: dialer.keys.publicKey,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: dialer.node,
+        proofCredential: {
+          source: CERTIFICATE_CREDENTIAL_SOURCE,
+          id: dialer.fingerprint256,
+        },
+      })
+      // Previously asserted `toBeNull()`. That was wrong, and the way it was
+      // wrong is §6.4's: an unknown selector is *missing data*, not a
+      // contradiction, and the explicit branch degrades to `--trust` rather
+      // than refusing. A resident restarted while the registry is down knows
+      // no fingerprints at all, so refusing here would have made every
+      // certificate-bearing peer on the `--trust` list unreachable for as
+      // long as the registry stayed down. Contradiction is still refused —
+      // see the two `claim.node` / `claim.publicKey` cases below.
+      expect(
+        directory.handshakeCredentialOf(dialer.node, 'unknown-fingerprint'),
+      ).toEqual({
+        publicKey: dialer.keys.publicKey,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: dialer.node,
+        proofCredential: {
+          source: CERTIFICATE_CREDENTIAL_SOURCE,
+          id: 'unknown-fingerprint',
+        },
+      })
+      // ③ in the method comment: a selector equal to the node name is the
+      // peer claiming `explicit/<node>` itself, so no proof identity is
+      // reported. This assertion, plus its twin in the "no facts at all"
+      // test below, is the only guard on that branch's unstated premise —
+      // that node segments and `fingerprint256` values cannot collide.
+      expect(directory.handshakeCredentialOf(dialer.node, dialer.node)).toEqual(
+        {
+          publicKey: dialer.keys.publicKey,
+          source: EXPLICIT_CREDENTIAL_SOURCE,
+          id: dialer.node,
+        },
+      )
+      // A retained fact that binds this fingerprint to a *different* node is
+      // a contradiction, and contradictions are refused. Only the
+      // "publicKey disagrees" half of that rule had coverage before.
+      expect(
+        directory.handshakeCredentialOf(listener.node, dialer.fingerprint256),
+      ).toBeNull()
+
+      const dialerCertificatePath = join(root, 'node-a.claim.crt')
+      const listenerCertificatePath = join(root, 'node-b.claim.crt')
+      writeFileSync(dialerCertificatePath, dialer.certificatePem)
+      writeFileSync(listenerCertificatePath, listener.certificatePem)
+      const signingConfig = (node: string, cert: string) => ({
+        node,
+        team: 'atlas',
+        agents: [],
+        trusted: [],
+        requireSignedTasks: true,
+        auditSignedTasks: false,
+        signHandshake: true,
+        requireSignedHandshake: true,
+        cert,
+      })
+      const dialerSigning = buildHandshakeSigning(
+        signingConfig(dialer.node, dialerCertificatePath),
+        dialer.keys,
+        directory,
+      )
+      const listenerSigning = buildHandshakeSigning(
+        signingConfig(listener.node, listenerCertificatePath),
+        listener.keys,
+        directory,
+      )
+      if (dialerSigning === undefined || listenerSigning === undefined) {
+        throw new Error('setup: strict signing material was not built')
+      }
+
+      let transport: TransportServerHandle | undefined
+      let client: TransportClient | undefined
+      try {
+        const socketPath = join(
+          root,
+          `explicit-claim-${crypto.randomUUID()}.sock`,
+        )
+        directory.setRefreshSink(({ permanentlyInvalidatedCredentials }) => {
+          transport?.closePeerCredentials(permanentlyInvalidatedCredentials)
+        })
+        transport = startTransportServer({
+          unix: socketPath,
+          psk: 'proof-claim-explicit-review-psk',
+          onMessage: () => {},
+          signing: listenerSigning,
+        })
+        client = new TransportClient({
+          endpoint: { unix: socketPath },
+          node: dialer.node,
+          peerNode: listener.node,
+          psk: 'proof-claim-explicit-review-psk',
+          keepAliveIntervalMs: 0,
+          signing: dialerSigning,
+        })
+        await client.connect(5_000)
+
+        expect(client.authenticatedCredential).toEqual({
+          source: EXPLICIT_CREDENTIAL_SOURCE,
+          id: listener.node,
+        })
+        expect(
+          transport.events.byType(TransportEventType.AuthAccepted)[0]?.detail,
+        ).toMatchObject({
+          authentication: 'credential_signature',
+          credentialSource: EXPLICIT_CREDENTIAL_SOURCE,
+          credentialId: dialer.node,
+        })
+
+        await publishExactRl({
+          issuedAt: t0 + 1,
+          revoked: [
+            { node: dialer.node, fingerprint256: dialer.fingerprint256 },
+          ],
+        })
+        await directory.refresh()
+        await Bun.sleep(50)
+        expect(client.isReady()).toBe(true)
+        expect(client.isClosed()).toBe(false)
+        expect(transport.connections).toBe(1)
+        expect(transport.channels).toBe(1)
+
+        // And the decision for the *next* connection, which the assertions
+        // above cannot see. A revoked fingerprint is still an acceptable
+        // proof selector under an explicit entry, and the resulting link is
+        // still owned by `explicit/<node>` — ① and ② in the method comment.
+        // This is deliberate: `--trust` is local operator authority, and the
+        // way to withdraw it is to delete the entry, not to have the CA
+        // publish an RL. Pinned here so the semantics stop being something
+        // nobody has explicitly agreed to.
+        expect(
+          directory.handshakeCredentialOf(dialer.node, dialer.fingerprint256),
+        ).toEqual({
+          publicKey: dialer.keys.publicKey,
+          source: EXPLICIT_CREDENTIAL_SOURCE,
+          id: dialer.node,
+          proofCredential: {
+            source: CERTIFICATE_CREDENTIAL_SOURCE,
+            id: dialer.fingerprint256,
+          },
+        })
+      } finally {
+        await client?.close()
+        await transport?.stop()
+        directory.setRefreshSink(undefined)
+      }
+    },
+  )
+
+  itNeedsOpenssl(
+    'rejects a certificate claim when the explicit override names another key',
+    async () => {
+      const dialer = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      const listener = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
+      await registerIssued(dialer, 'node-a.example.com')
+      await registerIssued(listener, 'node-b.example.com')
+      await publishExactRl({ issuedAt: Date.now() })
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [
+          [dialer.node, generateNodeKeyPair().publicKey],
+          [listener.node, listener.keys.publicKey],
+        ],
+      })
+      await directory.refresh()
+      expect(
+        directory.handshakeCredentialOf(dialer.node, dialer.fingerprint256),
+      ).toBeNull()
+
+      const dialerCertificatePath = join(root, 'node-a.conflict.crt')
+      const listenerCertificatePath = join(root, 'node-b.conflict.crt')
+      writeFileSync(dialerCertificatePath, dialer.certificatePem)
+      writeFileSync(listenerCertificatePath, listener.certificatePem)
+      const baseConfig = {
+        team: 'atlas',
+        agents: [],
+        trusted: [],
+        requireSignedTasks: true,
+        auditSignedTasks: false,
+        signHandshake: true,
+        requireSignedHandshake: true,
+      } as const
+      const dialerSigning = buildHandshakeSigning(
+        { ...baseConfig, node: dialer.node, cert: dialerCertificatePath },
+        dialer.keys,
+        directory,
+      )
+      const listenerSigning = buildHandshakeSigning(
+        { ...baseConfig, node: listener.node, cert: listenerCertificatePath },
+        listener.keys,
+        directory,
+      )
+      if (dialerSigning === undefined || listenerSigning === undefined) {
+        throw new Error('setup: strict signing material was not built')
+      }
+
+      let transport: TransportServerHandle | undefined
+      let client: TransportClient | undefined
+      try {
+        transport = startTransportServer({
+          port: 0,
+          psk: 'proof-claim-conflict-review-psk',
+          onMessage: () => {},
+          signing: listenerSigning,
+        })
+        client = new TransportClient({
+          endpoint: { url: transport.url ?? '' },
+          node: dialer.node,
+          peerNode: listener.node,
+          psk: 'proof-claim-conflict-review-psk',
+          keepAliveIntervalMs: 0,
+          signing: dialerSigning,
+        })
+        await expect(client.connect(5_000)).rejects.toThrow(/4003/)
+      } finally {
+        await client?.close()
+        await transport?.stop()
+      }
+    },
+  )
+
+  itNeedsOpenssl(
+    'a cold start against an unreachable registry still admits a --trust peer carrying a certificate selector (§6.4)',
+    async () => {
+      const peer = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
+      await registerIssued(peer, 'node-a.example.com')
+      // Registered, but this directory points at a closed port: the exact
+      // window where a resident restarts while the registry is down. Not one
+      // `/v0/agents` row and not one RL has ever been seen, so
+      // `#certificateFacts` is empty rather than merely missing an entry.
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: 'http://127.0.0.1:1',
+        timeoutMs: 500,
+        trusted: [[peer.node, peer.keys.publicKey]],
+      })
+      await directory.refresh()
+
+      expect(directory.revocationListFresh).toBe(false)
+      expect(directory.publicKeyOf(peer.node)).toBe(peer.keys.publicKey)
+      // §6.4 degrades to the `--trust` set, and the handshake path has to
+      // degrade with it. Refusing here would mean a peer that is right there
+      // on the operator's list is unreachable for as long as the registry
+      // stays down — fail-shut, not fail-closed.
+      expect(
+        directory.handshakeCredentialOf(peer.node, peer.fingerprint256),
+      ).toEqual({
+        publicKey: peer.keys.publicKey,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: peer.node,
+        proofCredential: {
+          source: CERTIFICATE_CREDENTIAL_SOURCE,
+          id: peer.fingerprint256,
+        },
+      })
+      // ③ once more, now with the fact map genuinely empty: the peer that
+      // claims the explicit credential by name gets no proof identity back.
+      expect(directory.handshakeCredentialOf(peer.node, peer.node)).toEqual({
+        publicKey: peer.keys.publicKey,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: peer.node,
+      })
+      // The asymmetry is not "nothing is checked": a node with no explicit
+      // entry has nothing to fall back to and is still refused.
+      expect(
+        directory.handshakeCredentialOf('node-stranger', peer.fingerprint256),
+      ).toBeNull()
+    },
+  )
+
+  itNeedsOpenssl(
+    'a never-fetched revocation list refuses a CA-only claim but not an explicit one',
+    async () => {
+      const trustedPeer = issueNode(
+        caDir,
+        'node-a',
+        ['node-a.example.com'],
+        root,
+      )
+      const caOnlyPeer = issueNode(
+        caDir,
+        'node-b',
+        ['node-b.example.com'],
+        root,
+      )
+      await registerIssued(trustedPeer, 'node-a.example.com')
+      await registerIssued(caOnlyPeer, 'node-b.example.com')
+      // Agents are served normally; deliberately no publishRl(), so the CA
+      // facts are complete while the RL has never been fresh.
+      const directory = new CertificateDirectory({
+        caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+        registryUrl: server.url,
+        trusted: [[trustedPeer.node, trustedPeer.keys.publicKey]],
+      })
+      await directory.refresh()
+
+      expect(directory.revocationListFresh).toBe(false)
+      // The deliberate asymmetry, stated once. An explicit entry is local
+      // operator authority and is served without consulting the RL at all
+      // (① in the method comment); a CA-derived credential has nothing to
+      // fall back on, so a stale RL takes it out — same rule as
+      // `publicKeyOf`, same §6.4 sentence.
+      expect(
+        directory.handshakeCredentialOf(
+          trustedPeer.node,
+          trustedPeer.fingerprint256,
+        ),
+      ).toEqual({
+        publicKey: trustedPeer.keys.publicKey,
+        source: EXPLICIT_CREDENTIAL_SOURCE,
+        id: trustedPeer.node,
+        proofCredential: {
+          source: CERTIFICATE_CREDENTIAL_SOURCE,
+          id: trustedPeer.fingerprint256,
+        },
+      })
+      expect(
+        directory.handshakeCredentialOf(
+          caOnlyPeer.node,
+          caOnlyPeer.fingerprint256,
+        ),
+      ).toBeNull()
+      expect(directory.publicKeyOf(caOnlyPeer.node)).toBeNull()
     },
   )
 })

@@ -148,6 +148,22 @@ export enum HandshakeRejection {
   BadNode = 'bad_node',
   /** The logical channel id is malformed. */
   BadChannel = 'bad_channel',
+  /**
+   * The channel id is well-formed, but a channel already carries it under a
+   * *different* proven identity.
+   *
+   * Deliberately **not** {@link HandshakeRejection.BadChannel}: the two call
+   * for opposite fixes, and a rejection string that cannot separate them is a
+   * rejection string that tells an operator nothing (see the note on
+   * {@link HandshakeRejection.SignatureRequired} for why these strings exist).
+   * `bad_channel` means the dialer sent nonsense in the field; this one means
+   * the dialer is fine and its channel id collided with a retained channel
+   * owned by another credential — typically its own, one rotation ago.
+   *
+   * It is also the one rejection that does **not** close with
+   * {@link CLOSE_UNAUTHORIZED}: see {@link CLOSE_CHANNEL_CONFLICT}.
+   */
+  ChannelIdentityMismatch = 'channel_identity_mismatch',
   /** The echoed nonce is not the one this connection issued. */
   NonceMismatch = 'nonce_mismatch',
   /** The MAC does not match — wrong key, or a forged frame. */
@@ -181,7 +197,7 @@ export type HandshakeAuthentication =
   | 'signature'
   | 'credential_signature'
 
-/** Opaque metadata identifying the credential that a directory verified. */
+/** Opaque metadata identifying the effective credential adopted locally. */
 export interface AuthenticatedCredential {
   readonly source: string
   readonly id: string
@@ -192,9 +208,23 @@ export interface HandshakeCredentialClaim extends AuthenticatedCredential {
   readonly selector: string
 }
 
-/** A directory result: verification key plus auditable credential metadata. */
+/**
+ * A directory result: verification key plus effective credential metadata.
+ * The inherited `source/id` own admitted state and revocation decisions.
+ */
 export interface ResolvedHandshakeCredential extends AuthenticatedCredential {
   readonly publicKey: string
+  /**
+   * Credential metadata covered by the peer's proof when it differs from the
+   * credential this verifier will adopt locally.
+   *
+   * For example, a peer can claim a CA certificate fingerprint while an
+   * explicit trust entry for the same key wins locally. The proof still has
+   * to bind the certificate claim, but the admitted connection must be owned
+   * by the effective explicit credential. Omit when both identities are the
+   * same (the backwards-compatible directory shape).
+   */
+  readonly proofCredential?: AuthenticatedCredential
 }
 
 /**
@@ -217,6 +247,8 @@ export type HandshakeResult =
       readonly channelId: string
       readonly authentication: HandshakeAuthentication
       readonly credential?: AuthenticatedCredential
+      /** Exact Ed25519 key that verified a signed attempt; absent for PSK. */
+      readonly signingPublicKey?: string
     }
   | { readonly ok: false; readonly rejection: HandshakeRejection }
 
@@ -521,28 +553,42 @@ export function verifyAuthAttempt(
     if (!verifyBytes(resolved.publicKey, signed, attempt.sig)) {
       return { ok: false, rejection: HandshakeRejection.BadSignature }
     }
-    if (
-      hasCredential &&
-      attempt.credential !== undefined &&
-      attempt.credentialProof !== undefined &&
-      resolved.credential !== undefined &&
-      !verifyBytes(
-        resolved.publicKey,
-        authCredentialProofInput(
-          serverNonce,
-          attempt.clientNonce,
-          attempt.node,
-          attempt.channelId,
-          attempt.credential,
-          resolved.credential.source,
-          resolved.credential.id,
-        ),
-        attempt.credentialProof,
-      )
-    ) {
-      return {
-        ok: false,
-        rejection: HandshakeRejection.BadCredentialProof,
+    if (hasCredential) {
+      // Fail **closed**. Every field below is present on today's only producer
+      // of a credential-bearing `ResolvedSigningKey`, so none of these guards
+      // can fire — which is exactly why they are written as a rejection rather
+      // than as extra conjuncts on the `!verifyBytes(...)` test. In that shape
+      // a directory that one day stops filling `proofCredential` does not
+      // fail: it *skips the proof check* and admits the peer as
+      // `credential_signature`, which is the one outcome this whole extension
+      // exists to prevent. "I cannot tell what these bytes should have
+      // covered" has to read as "they do not cover it".
+      const selector = attempt.credential
+      const offeredProof = attempt.credentialProof
+      const proofCredential = resolved.proofCredential
+      if (
+        selector === undefined ||
+        offeredProof === undefined ||
+        resolved.credential === undefined ||
+        proofCredential === undefined ||
+        !verifyBytes(
+          resolved.publicKey,
+          authCredentialProofInput(
+            serverNonce,
+            attempt.clientNonce,
+            attempt.node,
+            attempt.channelId,
+            selector,
+            proofCredential.source,
+            proofCredential.id,
+          ),
+          offeredProof,
+        )
+      ) {
+        return {
+          ok: false,
+          rejection: HandshakeRejection.BadCredentialProof,
+        }
       }
     }
     return {
@@ -553,6 +599,7 @@ export function verifyAuthAttempt(
         resolved.credential === undefined
           ? 'signature'
           : 'credential_signature',
+      signingPublicKey: resolved.publicKey,
       ...(resolved.credential === undefined
         ? {}
         : { credential: resolved.credential }),
@@ -738,27 +785,34 @@ export function verifyReady(
   if (!verifyBytes(resolved.publicKey, signed, frame.sig)) {
     return { ok: false, rejection: ReadyRejection.BadSignature }
   }
-  if (
-    hasCredential &&
-    frame.credential !== undefined &&
-    frame.credentialProof !== undefined &&
-    resolved.credential !== undefined &&
-    !verifyBytes(
-      resolved.publicKey,
-      readyCredentialProofInput(
-        tuple.serverNonce,
-        tuple.clientNonce,
-        tuple.node,
-        tuple.channelId,
-        frame.node,
-        frame.credential,
-        resolved.credential.source,
-        resolved.credential.id,
-      ),
-      frame.credentialProof,
-    )
-  ) {
-    return { ok: false, rejection: ReadyRejection.BadCredentialProof }
+  if (hasCredential) {
+    // Fail closed, for the reason spelled out in `verifyAuthAttempt` — this is
+    // the dialer's half of the same check and must not diverge from it.
+    const selector = frame.credential
+    const offeredProof = frame.credentialProof
+    const proofCredential = resolved.proofCredential
+    if (
+      selector === undefined ||
+      offeredProof === undefined ||
+      resolved.credential === undefined ||
+      proofCredential === undefined ||
+      !verifyBytes(
+        resolved.publicKey,
+        readyCredentialProofInput(
+          tuple.serverNonce,
+          tuple.clientNonce,
+          tuple.node,
+          tuple.channelId,
+          frame.node,
+          selector,
+          proofCredential.source,
+          proofCredential.id,
+        ),
+        offeredProof,
+      )
+    ) {
+      return { ok: false, rejection: ReadyRejection.BadCredentialProof }
+    }
   }
   return {
     ok: true,
@@ -779,10 +833,28 @@ function hasCredentialDirectory(
   )
 }
 
-interface ResolvedSigningKey {
-  readonly publicKey: string
-  readonly credential?: AuthenticatedCredential
-}
+/**
+ * What a directory lookup came back with, in the two shapes it may take.
+ *
+ * A union rather than one interface with two optional fields, and that is the
+ * whole point: "a credential to adopt, but nothing said what the peer's proof
+ * should cover" is the fail-open state, and here it does not typecheck. The
+ * runtime guards in `verifyAuthAttempt`/`verifyReady` stay as well — this
+ * package is consumed from JavaScript too, and a type cannot refuse a value at
+ * runtime — but a future producer that forgets `proofCredential` now fails to
+ * compile instead of silently admitting peers as `credential_signature`.
+ */
+type ResolvedSigningKey =
+  | {
+      readonly publicKey: string
+      readonly credential?: undefined
+      readonly proofCredential?: undefined
+    }
+  | {
+      readonly publicKey: string
+      readonly credential: AuthenticatedCredential
+      readonly proofCredential: AuthenticatedCredential
+    }
 
 function resolveHandshakeCredential(
   signing: HandshakeIdentity,
@@ -792,12 +864,13 @@ function resolveHandshakeCredential(
   if (!hasCredentialDirectory(signing.directory) || selector === undefined)
     return null
   const resolved = signing.directory.handshakeCredentialOf(node, selector)
-  return resolved === null
-    ? null
-    : {
-        publicKey: resolved.publicKey,
-        credential: { source: resolved.source, id: resolved.id },
-      }
+  if (resolved === null) return null
+  const credential = { source: resolved.source, id: resolved.id }
+  return {
+    publicKey: resolved.publicKey,
+    credential,
+    proofCredential: resolved.proofCredential ?? credential,
+  }
 }
 
 function resolveLegacySigningKey(
@@ -817,6 +890,32 @@ function resolveLegacySigningKey(
  * Reusing the number keeps both halves of a mixed deployment agreeing on that.
  */
 export const CLOSE_UNAUTHORIZED = 4003
+
+/**
+ * WebSocket close code for "that channel id belongs to another identity".
+ *
+ * The single deliberate exception to the rule above it, and it exists because
+ * {@link CLOSE_UNAUTHORIZED} is *permanent* by contract — a dialer that gets
+ * 4003 stops for good, which is right for "your key is wrong" and catastrophic
+ * for "your key is fine, your channel id is taken". A node whose certificate
+ * was legitimately re-issued, or whose entry in the listener's directory
+ * gained an explicit trust row while it was mid-task, hits the second case
+ * with nothing wrong on its side; on 4003 it would take itself out of service
+ * permanently without a single byte having changed on the wire.
+ *
+ * So this code says "retry under a different channel id", and the dialer does
+ * exactly that (`client.ts`, bounded). The old channel is left alone to expire
+ * on its retention clock — it is **not** handed to the new identity, which is
+ * the whole security property this rejection is enforcing.
+ *
+ * What it costs: a peer that has already cleared L1 can learn that some
+ * channel id it named is held by another identity. A channel id is 128 bits of
+ * CSPRNG output ({@link newChannelId}), never leaves the two endpoints, and the
+ * dialer supplied this one itself — so the leak is "your own id collided",
+ * which is what it needs to know to recover. Judged acceptable; nothing else
+ * in this file gets a distinguishable code.
+ */
+export const CLOSE_CHANNEL_CONFLICT = 4004
 
 /** WebSocket close code for a frame that is not part of this grammar. */
 export const CLOSE_PROTOCOL_ERROR = 1002

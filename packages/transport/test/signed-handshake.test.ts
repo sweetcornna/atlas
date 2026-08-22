@@ -680,9 +680,11 @@ describe('credential-scoped invalidation', () => {
     await waitUntil(() => server.connections === 3)
     expect(server.channels).toBe(4)
 
-    server.closePeerCredentials([
+    const revokedF1 = [
       { node: DIALER, source: 'certificate', id: 'fingerprint-f1' },
-    ])
+    ] as const
+    server.closePeerCredentials(revokedF1)
+    server.closePeerCredentials(revokedF1)
     await waitUntil(() => f1.isClosed() && server.connections === 2)
     expect(f2.isReady()).toBe(true)
     expect(explicit.isReady()).toBe(true)
