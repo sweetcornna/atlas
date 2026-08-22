@@ -69,3 +69,10 @@ scripts/system-prompt-dump.txt
 # 阡陌演示环境（demo/env/）的运行态：密钥、节点配置根、日志、工作区。
 # 由 demo/env/seed.sh 生成，永不入库。
 .demo-env/
+
+# VCR 卡带（src/services/vcr.ts）的默认落点：CLAUDE_CODE_TEST_FIXTURES_ROOT
+# 未显式设置时即为 cwd，本地跑 `bun test` 往往就落在仓库根的 fixtures/ 下，
+# 产生未预期的真实录制。锚定到根目录（/fixtures/），不影响 tests/mocks/fixtures、
+# tests/integration/fixtures 等各处手工维护的同名目录。确实需要入库的卡带用
+# `git add -f` 显式带入 —— 现有的 fixtures/token-count-*.json 就是这样进库的。
+/fixtures/

@@ -1,4 +1,6 @@
 import { queryHaiku } from '../api/claude.js'
+import { classifyRetryableAPIError } from '../api/retryClassification.js'
+import { isUserAbort } from '../api/userAbort.js'
 import { asSystemPrompt } from '../../utils/session/systemPromptType.js'
 import { getSkillLearningConfig } from './config.js'
 import type { InstinctCandidate } from './instinctParser.js'
@@ -28,13 +30,17 @@ import {
  * - Caps input to the tail of the observation buffer so the prompt stays
  *   small and predictable, and runs under a 10-second abort signal so a
  *   slow Haiku round-trip never blocks the REPL turn end.
- * - On ANY failure (abort, parse error, empty output) returns `[]` —
- *   the backend is opt-in via `SKILL_LEARNING_OBSERVER_BACKEND=llm` and
- *   must never destabilise skill-learning when the API is unavailable.
+ * - Expected observer unavailability (timeout, authentication, transient API
+ *   failure, or no result) falls back to the heuristic backend. Configuration,
+ *   VCR, and filesystem failures propagate to the post-sampling hook, whose
+ *   existing error contract records them without failing the REPL turn.
  */
 
 const MAX_OBSERVATIONS_PER_CALL = 30
 const MAX_CANDIDATES_PER_CALL = 3
+const NO_ASSISTANT_MESSAGE_ERROR = 'No assistant message found'
+
+type LlmObserverQuery = typeof queryHaiku
 
 // --- Circuit breaker state ---
 let consecutiveFailures = 0
@@ -65,19 +71,44 @@ Rules:
 - Never include secrets, tokens, full file contents, or personally-identifying data.
 - Scope "global" only when the pattern is obviously project-agnostic (generic testing, git hygiene); default to "project".`
 
-export const llmObserverBackend: ObserverBackend = {
-  name: 'llm',
-  analyze(
-    observations: StoredSkillObservation[],
-    ctx?: ObserverBackendContext,
-  ): Promise<InstinctCandidate[]> {
-    return analyseWithHaiku(observations, ctx)
-  },
+export const llmObserverBackend = createLlmObserverBackend()
+
+/** @internal Returns an isolated backend so tests can never invoke VCR. */
+export function createLlmObserverBackendForTest(
+  query: LlmObserverQuery,
+): ObserverBackend {
+  return createLlmObserverBackend(query)
+}
+
+function createLlmObserverBackend(query?: LlmObserverQuery): ObserverBackend {
+  return {
+    name: 'llm',
+    analyze(
+      observations: StoredSkillObservation[],
+      ctx?: ObserverBackendContext,
+    ): Promise<InstinctCandidate[]> {
+      // Tests must opt in to a fake query. Letting a test reach queryHaiku makes
+      // a VCR cache miss capable of recording a real request whenever a
+      // developer has credentials or VCR_RECORD in their environment.
+      //
+      // Residual risk: relies on `NODE_ENV === 'test'`; bun only *defaults*
+      // it to `'test'` under `bun test` when unset (bun 1.3.13 verified:
+      // `NODE_ENV=production bun test` keeps `production`, not overwritten).
+      // A shell that already exports `NODE_ENV=production` silently defeats
+      // this guard, letting `bun test` reach the real `queryHaiku` / VCR path.
+      // No more reliable "in bun test" signal exists — `Bun.jest` is identical
+      // under `bun run` and `bun test`; `process.env` has no bun-test-only key.
+      const queryForCall =
+        query ?? (process.env.NODE_ENV === 'test' ? undefined : queryHaiku)
+      return analyseWithHaiku(observations, ctx, queryForCall)
+    },
+  }
 }
 
 async function analyseWithHaiku(
   observations: StoredSkillObservation[],
   ctx?: ObserverBackendContext,
+  query?: LlmObserverQuery,
 ): Promise<InstinctCandidate[]> {
   if (observations.length === 0) return []
 
@@ -89,10 +120,13 @@ async function analyseWithHaiku(
   const capped = observations.slice(-MAX_OBSERVATIONS_PER_CALL)
   const userPrompt = buildUserPrompt(capped)
   const signal = makeTimeoutSignal(getSkillLearningConfig().llm.timeoutMs)
+  // Test execution is intentionally offline even when credentials, a VCR
+  // record flag, or a writable fixture root leak in from the host environment.
+  if (!query) return runHeuristicFallback(observations, ctx)
 
   let responseText: string
   try {
-    const response = await queryHaiku({
+    const response = await query({
       systemPrompt: asSystemPrompt([LLM_OBSERVER_SYSTEM_PROMPT]),
       userPrompt,
       signal,
@@ -108,14 +142,9 @@ async function analyseWithHaiku(
     // Success: reset failure counter.
     consecutiveFailures = 0
     responseText = extractResponseText(response.message?.content)
-  } catch {
-    // Haiku failure (timeout / rate limit / bad response) — increment failure
-    // counter and potentially open the circuit breaker.
-    consecutiveFailures++
-    if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
-      circuitOpenUntil =
-        Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
-    }
+  } catch (error) {
+    if (!isExpectedObserverUnavailable(error, signal)) throw error
+    recordObserverFailure()
     return runHeuristicFallback(observations, ctx)
   }
 
@@ -124,11 +153,7 @@ async function analyseWithHaiku(
     // Empty / malformed LLM output — count as a failure so the circuit
     // breaker opens if Haiku is systematically returning garbage (e.g. the
     // model version drifted and no longer emits the expected JSON).
-    consecutiveFailures++
-    if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
-      circuitOpenUntil =
-        Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
-    }
+    recordObserverFailure()
     return runHeuristicFallback(observations, ctx)
   }
   return parsed
@@ -138,12 +163,34 @@ async function runHeuristicFallback(
   observations: StoredSkillObservation[],
   ctx?: ObserverBackendContext,
 ): Promise<InstinctCandidate[]> {
-  try {
-    const { heuristicObserverBackend } = await import('./sessionObserver.js')
-    const result = heuristicObserverBackend.analyze(observations, ctx)
-    return Array.isArray(result) ? result : await result
-  } catch {
-    return []
+  const { heuristicObserverBackend } = await import('./sessionObserver.js')
+  const result = heuristicObserverBackend.analyze(observations, ctx)
+  return Array.isArray(result) ? result : await result
+}
+
+function isExpectedObserverUnavailable(
+  error: unknown,
+  signal: AbortSignal,
+): boolean {
+  if (isUserAbort(error, signal)) return true
+  // queryModelWithoutStreaming uses this exact sentinel when an API failure
+  // produced no assistant response. It is an observer "no result", not a
+  // configuration or VCR failure.
+  if (error instanceof Error && error.message === NO_ASSISTANT_MESSAGE_ERROR) {
+    return true
+  }
+  const classification = classifyRetryableAPIError(error)
+  return (
+    classification.retryable ||
+    classification.category === 'authentication_failed'
+  )
+}
+
+function recordObserverFailure(): void {
+  consecutiveFailures++
+  if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
+    circuitOpenUntil =
+      Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
   }
 }
 
