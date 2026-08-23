@@ -474,6 +474,193 @@ describe('credential-bound signatures', () => {
   })
 })
 
+/**
+ * Whether a credential-bearing frame is judged as one — and the whole of this
+ * block is the difference between the two questions that decision could be
+ * asking. "Can this verifier read credentials at all" is safe to answer with
+ * a downgrade; "did this particular credential resolve" is not, and the tests
+ * below are here so the second one cannot be substituted for the first by a
+ * later edit that looks like a simplification.
+ */
+describe('credential claims against a verifier that has no view on them', () => {
+  const nonce = 'phase-one-server-nonce'
+  const clientNonce = 'phase-one-client-nonce'
+  const selector = 'dialer-f1'
+  const tuple = {
+    serverNonce: nonce,
+    clientNonce,
+    node: 'node-a',
+    channelId: CHANNEL_ID,
+  }
+
+  /** What a CA-loaded dialer puts on the wire: legacy `sig` *and* the pair. */
+  const credentialAttempt: AuthAttempt = {
+    node: 'node-a',
+    nonce,
+    clientNonce,
+    channelId: CHANNEL_ID,
+    mac: computeMac(TEST_PSK, nonce, clientNonce, 'node-a', CHANNEL_ID),
+    sig: signBytes(
+      dialerKeys,
+      authSigningInput(nonce, clientNonce, 'node-a', CHANNEL_ID),
+    ),
+    credential: selector,
+    credentialProof: signBytes(
+      dialerKeys,
+      authCredentialProofInput(
+        nonce,
+        clientNonce,
+        'node-a',
+        CHANNEL_ID,
+        selector,
+        'certificate',
+        selector,
+      ),
+    ),
+  }
+
+  /** The listener's half of the same frame shape. */
+  const credentialReady = signReady(
+    {
+      node: 'node-b',
+      keys: listenerKeys,
+      directory: directory(),
+      credential: {
+        selector: 'listener-f1',
+        source: 'certificate',
+        id: 'listener-f1',
+      },
+    },
+    tuple.serverNonce,
+    tuple.clientNonce,
+    tuple.node,
+    tuple.channelId,
+  )
+
+  /**
+   * A verifier that *does* understand credentials and refuses this one —
+   * a revoked certificate, or a selector it has never heard of — while the
+   * bare key stays reachable through `publicKeyOf`, because an explicit
+   * `--trust` row still pins it. That combination is not hypothetical: §6.4
+   * records it as a hard edge of revocation, and it is exactly the state in
+   * which a fallback would become a bypass.
+   */
+  const revoking: HandshakeCredentialDirectory = {
+    publicKeyOf(node) {
+      return directory().publicKeyOf(node)
+    },
+    handshakeCredentialOf() {
+      return null
+    },
+  }
+
+  test('a `--trust`-only listener reads it as the signed frame it also is', () => {
+    // §8.2 phase ① is defined as the two loading mechanisms coexisting. This
+    // listener holds no view on credentials at all, and it is holding the key
+    // that checks `sig` — so the frame carries, for it, precisely what a
+    // legacy signed frame carries. Refusing it would mean the first node to
+    // gain a certificate loses every peer that has not gained one yet.
+    expect(
+      verifyAuthAttempt(
+        TEST_PSK,
+        { keys: listenerKeys, directory: directory() },
+        nonce,
+        credentialAttempt,
+      ),
+    ).toEqual({
+      ok: true,
+      node: 'node-a',
+      channelId: CHANNEL_ID,
+      // Recorded as `signature`, never `credential_signature`: nothing here
+      // checked a credential, so nothing may claim one (§7.1's three-way
+      // recording rule).
+      authentication: 'signature',
+      signingPublicKey: dialerKeys.publicKey,
+    })
+  })
+
+  test('a listener that does understand them refuses one it cannot resolve', () => {
+    // Same frame, same key, opposite verdict — and this is the pair that has
+    // to stay a pair. Falling back here would hand a revoked certificate
+    // holder a way back in: offer a credential that does not resolve, and be
+    // re-admitted on the bare key that is still pinned. "Send garbage" must
+    // not be a downgrade primitive.
+    expect(
+      verifyAuthAttempt(
+        TEST_PSK,
+        { keys: listenerKeys, directory: revoking },
+        nonce,
+        credentialAttempt,
+      ),
+    ).toEqual({ ok: false, rejection: HandshakeRejection.UnknownSigner })
+  })
+
+  test('`credentialProofRequired` vetoes the fallback, globally and per peer', () => {
+    // Policy that evaporates when the directory turns out to be the wrong
+    // shape is not policy. A verifier that demands the exact proof and cannot
+    // check one refuses; it does not quietly accept a weaker thing.
+    for (const policy of [
+      { credentialProofRequired: true },
+      { credentialProofRequiredPeers: new Set(['node-a']) },
+    ]) {
+      expect(
+        verifyAuthAttempt(
+          TEST_PSK,
+          { keys: listenerKeys, directory: directory(), ...policy },
+          nonce,
+          credentialAttempt,
+        ),
+      ).toEqual({ ok: false, rejection: HandshakeRejection.UnknownSigner })
+    }
+    // A pin on some *other* peer leaves this one on the coexistence path.
+    expect(
+      verifyAuthAttempt(
+        TEST_PSK,
+        {
+          keys: listenerKeys,
+          directory: directory(),
+          credentialProofRequiredPeers: new Set(['node-z']),
+        },
+        nonce,
+        credentialAttempt,
+      ),
+    ).toMatchObject({ ok: true, authentication: 'signature' })
+  })
+
+  test('the dialer half of the decision is the same three answers', () => {
+    // `verifyReady` must not diverge from `verifyAuthAttempt` here: a fleet
+    // upgraded one node at a time meets both directions of this case.
+    expect(
+      verifyReady(
+        'node-b',
+        { keys: dialerKeys, directory: directory() },
+        tuple,
+        credentialReady,
+      ),
+    ).toEqual({ ok: true, authentication: 'signature' })
+    expect(
+      verifyReady(
+        'node-b',
+        { keys: dialerKeys, directory: revoking },
+        tuple,
+        credentialReady,
+      ),
+    ).toEqual({ ok: false, rejection: ReadyRejection.UnknownSigner })
+    expect(
+      verifyReady(
+        'node-b',
+        {
+          keys: dialerKeys,
+          directory: directory(),
+          credentialProofRequired: true,
+        },
+        tuple,
+        credentialReady,
+      ),
+    ).toEqual({ ok: false, rejection: ReadyRejection.UnknownSigner })
+  })
+})
+
 describe('verifyAuthAttempt — which proof is taken', () => {
   test('no signing material: the MAC decides, and `sig` is not read', () => {
     const nonce = newNonce()
