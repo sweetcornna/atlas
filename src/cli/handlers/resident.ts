@@ -299,6 +299,19 @@ export interface ResidentCliConfig {
    * the switch without also making it.
    */
   readonly auditSignedTasks: boolean
+  /**
+   * Present only when the task policy was *chosen* on the command line, by
+   * either `--require-signed-tasks` or `--open-policy`.
+   *
+   * Absent means {@link ResidentCliConfig.requireSignedTasks} came from the
+   * default, and the default has moved once already (P12.4 flipped it from
+   * `false` to `true`). A command line that names neither switch therefore
+   * describes a *security posture that changes with the build date* — which
+   * is what {@link warnUnselectedTaskPolicy} exists to say out loud, once,
+   * on stderr. It is deliberately not a third value of the policy itself:
+   * the gate has two states, and only the provenance is a third question.
+   */
+  readonly taskPolicySelected?: boolean
   /** Base URL of the host-side backup service (P4.4). */
   readonly backupUrl?: string
   /** Gap between scheduled workspace snapshots. */
@@ -622,6 +635,9 @@ export function parseResidentArgs(
     ...(requireSignedHandshake ? { requireSignedHandshake: true } : {}),
     requireSignedTasks,
     auditSignedTasks,
+    // Provenance, not policy: only set when one of the two switches was
+    // actually typed. See the field's doc comment.
+    ...(enforceRequested || openPolicy ? { taskPolicySelected: true } : {}),
     ...(backupUrl === undefined ? {} : { backupUrl }),
     ...(backupIntervalMs === undefined ? {} : { backupIntervalMs }),
     ...(witnessUrl === undefined ? {} : { witnessUrl }),
@@ -749,7 +765,11 @@ Authorization:
   --require-signed-tasks   Refuse task requests that present no capability
                            token. This is the default; the flag restates it
                            and is kept because existing command lines carry
-                           it.
+                           it. Naming neither this nor --open-policy is
+                           allowed but warned about once on stderr: the
+                           default has moved before, so a command line that
+                           states no policy has a security posture that
+                           changes with the build date.
   --open-policy            Admit task requests that present no capability
                            token — the escape hatch out of the default
                            (key-distribution.md §9.3). Rolling back costs
@@ -904,6 +924,60 @@ export function createResidentCapabilities(
         }
       : {}),
   })
+}
+
+/**
+ * Say, once at startup, that nobody chose this node's task policy.
+ *
+ * The startup banner already carries `requireSignedTasks` as a boolean, and
+ * that turned out not to be enough: on the beta fleet the banner line sat in
+ * `<node>.out` for four days without being read, while the four nodes were in
+ * open policy purely because they were running a build from before P12.4
+ * flipped the default. Their argv named neither switch, so the next routine
+ * deploy would have silently started refusing every task request — and the
+ * failure would have surfaced at first real use, looking like a broken
+ * feature rather than a changed posture.
+ *
+ * Two things this deliberately is not:
+ *
+ * - **Not a warning about the enforcing policy itself.** Enforcing is the
+ *   right default. What is worth a line on stderr is that the choice was
+ *   made by a default whose value has already moved once.
+ * - **Not printed when either switch was given.** A command line that says
+ *   `--open-policy` (the beta fleet's `beta-up.sh`) or `--require-signed-tasks`
+ *   has made the choice; warning there is the noise that gets warnings
+ *   ignored.
+ *
+ * stderr rather than stdout on purpose: the banner owns stdout, and on these
+ * nodes `<node>.err` is normally zero bytes, so anything in it stands out.
+ */
+export function warnUnselectedTaskPolicy(
+  config: ResidentCliConfig,
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): void {
+  if (config.taskPolicySelected === true) return
+  const selected = config.requireSignedTasks
+    ? '--require-signed-tasks (task requests and wakes must present a capability token)'
+    : '--open-policy (unsigned task requests and wakes are admitted)'
+  warn(
+    `[resident] no task policy was given on the command line; this node took the built-in default: ${selected}. ` +
+      'That default has moved before (P12.4 flipped it), so a command line naming neither switch ' +
+      'lets a routine redeploy change this node security posture. ' +
+      'Pass --open-policy or --require-signed-tasks to state the choice.',
+  )
+  if (
+    config.requireSignedTasks &&
+    config.trusted.length === 0 &&
+    config.trustCa === undefined
+  ) {
+    warn(
+      '[resident] and no peer is trusted yet (no --trust, no --trust-ca): under the enforcing default ' +
+        'every inbound task.request and wake from a peer is refused — unsigned for lack of a token, ' +
+        'signed for an unknown issuer (there is no trust-on-first-use).',
+    )
+  }
 }
 
 /**
@@ -1211,6 +1285,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
       requireSignedHandshake: config.requireSignedHandshake === true,
     })}\n`,
   )
+  // After the banner, so the two are read in the order they matter: what this
+  // node is, then the one thing about it nobody chose.
+  warnUnselectedTaskPolicy(config)
 
   // The write-only backup credential comes from the environment, never from a
   // flag: a token on a command line is a token in every process listing on the

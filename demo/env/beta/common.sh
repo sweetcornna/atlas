@@ -385,21 +385,35 @@ BETA_TUNNEL_PORTS=' '
 # 节点名会变成 systemd 实例名（qianmo-tunnel@<name>.service）与文件名
 # （ops/tunnel-<name>.env）。这里必须与 packages/protocol/src/address.ts 的
 # isValidSegment / MAX_SEGMENT_LENGTH 一致；协议才是语法真源。
+#
+# ── 为什么把字符逐个列出来，而不写 `[a-z0-9]` ─────────────────────────────────
+# glob 的 `a-z` 是**范围**，范围端点按当前 locale 的排序规则（collation）解释。
+# 在 en_US.UTF-8 这类按排序规则比较的 locale 下，`a-z` 展开成 aAbBcC…zZ，大写字母
+# 落在范围内 —— 实测（macOS bash 3.2.57 + en_US.UTF-8）`Beta-1` 同时躲过下面两条
+# 模式而被放行，而协议侧的 `SEGMENT_PATTERN` 是按码点比较的、拒绝大写。于是同一个
+# 名字 shell 侧开通得出来、协议侧不认。
+# 显式枚举没有范围端点，因此与 locale 无关：在哪台机器上、`LC_ALL` 是什么，结论都
+# 一样。钉 `LC_ALL=C` 也能修，但那把正确性挂在「有没有人后来把这行删掉/覆盖掉」上。
 beta_assert_node_name() {
   local name="$1" where="$2"
   [ -n "$name" ] || beta_die "$where：节点名为空"
   [ "${#name}" -le 64 ] || beta_die "$where：节点名 $name 超过协议上限 64 字符，拒绝"
   case "$name" in
-    *[!a-z0-9_-]*) beta_die "$where：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
-    [!a-z0-9]*|*[!a-z0-9]) beta_die "$where：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
+    *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
+      beta_die "$where：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+    [!abcdefghijklmnopqrstuvwxyz0123456789]*|*[!abcdefghijklmnopqrstuvwxyz0123456789])
+      beta_die "$where：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
 
+# 同样不用 `[0-9]` 范围：数字在实测过的 locale 下没被穿透（见 beta_assert_node_name
+# 头注的实测），但那是「这个 locale 恰好没事」而不是「不可能有事」。枚举一次就把这个
+# 自由度彻底去掉，代价为零。
 beta_assert_port() {
   local value="$1" what="$2" where="$3"
   case "$value" in
-    ''|*[!0-9]*) beta_die "$where：$what 不是数字：$value" ;;
+    ''|*[!0123456789]*) beta_die "$where：$what 不是数字：$value" ;;
   esac
   if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
     beta_die "$where：$what 超出 1–65535：$value"

@@ -24,6 +24,7 @@ import {
   createResidentTimingWriter,
   isResidentHelpRequest,
   parseResidentArgs,
+  warnUnselectedTaskPolicy,
 } from '../resident.js'
 
 const BASE = [
@@ -328,6 +329,88 @@ describe('capability flags (P4.3)', () => {
       parseResidentArgs([...BASE, '--open-policy'], 'qianmo')
         .requireSignedTasks,
     ).toBe(false)
+  })
+
+  test('the policy provenance is recorded separately from the policy', () => {
+    // 姿态与「谁选的姿态」是两个问题：默认值翻过一次（P12.4），所以「命令行上
+    // 一个开关都没有」本身是要说出来的事实，而不是与 requireSignedTasks 同义。
+    expect(parseResidentArgs(BASE, 'qianmo').taskPolicySelected).toBeUndefined()
+    expect(
+      parseResidentArgs([...BASE, '--open-policy'], 'qianmo')
+        .taskPolicySelected,
+    ).toBe(true)
+    expect(
+      parseResidentArgs([...BASE, '--require-signed-tasks'], 'qianmo')
+        .taskPolicySelected,
+    ).toBe(true)
+  })
+
+  test('an unselected task policy is announced once, on stderr', () => {
+    const warnings: string[] = []
+    warnUnselectedTaskPolicy(parseResidentArgs(BASE, 'qianmo'), message => {
+      warnings.push(message)
+    })
+
+    expect(warnings).toHaveLength(2)
+    expect(warnings[0]).toContain('no task policy was given')
+    expect(warnings[0]).toContain('--require-signed-tasks')
+    // 后果那一句才是这条告警有用的部分：默认强制 + 谁都不信任 = 每一条对端
+    // task.request / wake 都会被拒。
+    expect(warnings[1]).toContain('no peer is trusted yet')
+  })
+
+  test('the consequence line is dropped once there is something to trust', () => {
+    const warnings: string[] = []
+    warnUnselectedTaskPolicy(
+      parseResidentArgs(
+        [...BASE, '--trust', `node-a=${generateNodeKeyPair().publicKey}`],
+        'qianmo',
+      ),
+      message => {
+        warnings.push(message)
+      },
+    )
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('no task policy was given')
+  })
+
+  test('the announcement names whichever default is in force', () => {
+    // 今天解析器不可能产生「没选 + 开放策略」这一格（默认是强制的），但默认值
+    // 已经翻过一次；这条钉住的是「告警说的是当时那个默认」，而不是抄死一句
+    // 「本节点要求签名」。
+    const warnings: string[] = []
+    warnUnselectedTaskPolicy(
+      {
+        ...parseResidentArgs(BASE, 'qianmo'),
+        requireSignedTasks: false,
+      },
+      message => {
+        warnings.push(message)
+      },
+    )
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('--open-policy')
+    expect(warnings[0]).toContain(
+      'unsigned task requests and wakes are admitted',
+    )
+  })
+
+  test('an explicitly selected task policy says nothing at all', () => {
+    // 显式配置过的情况一个字都不能出：对已经选过的人刷屏，正是让告警被忽略的
+    // 那种噪音，而这条告警的全部价值在于它极少出现。
+    for (const argv of [
+      [...BASE, '--open-policy'],
+      [...BASE, '--require-signed-tasks'],
+      [...BASE, '--open-policy', '--audit-signed-tasks'],
+    ]) {
+      const warnings: string[] = []
+      warnUnselectedTaskPolicy(parseResidentArgs(argv, 'qianmo'), message => {
+        warnings.push(message)
+      })
+      expect(warnings).toEqual([])
+    }
   })
 
   test('the two directions of the switch cannot be asked for at once', () => {
