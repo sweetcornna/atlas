@@ -48,6 +48,10 @@ import {
   createRegistryPort,
   createWakePort,
 } from './consolePorts.js'
+import {
+  loadConsoleWakeIdentity,
+  type ConsoleWakeIdentity,
+} from './consoleWakeIdentity.js'
 import { resolveConsoleTokenSource } from './consoleTokenSources.js'
 
 /**
@@ -75,6 +79,8 @@ interface ConsoleWakeWiring {
   readonly legacy?: { readonly port: WakePort; readonly url: string }
   readonly targets?: readonly WakeTarget[]
   readonly status: string
+  /** 只有 `--wake-sign` 打开时才有；横幅要把公钥打出来。 */
+  readonly identity?: ConsoleWakeIdentity
 }
 
 /** Narrow production seam for proving named target PSK selection. */
@@ -83,7 +89,13 @@ interface ConsoleWakeDependencies {
   readonly createWakePort: (options: {
     readonly url: string
     readonly psk: string
+    readonly capability?: ConsoleWakeIdentity['issue']
   }) => WakePort
+  /**
+   * 可注入，只为让接线用例不去碰真实配置根——**默认实现会在磁盘上创建一把私钥**，
+   * 而那正是它只在 `--wake-sign` 打开时才被调用的原因。
+   */
+  readonly loadIdentity?: (chatFrom: string) => ConsoleWakeIdentity
 }
 
 /**
@@ -95,12 +107,19 @@ interface ConsoleWakeDependencies {
  * 这台机器每一份进程列表里的密钥，和 `--backup-url` 那条同一个理由。
  */
 export function wireConsoleWake(
-  config: Pick<ConsoleCliConfig, 'wakeTargets'>,
+  config: Pick<ConsoleCliConfig, 'wakeTargets' | 'signWakes' | 'chatFrom'>,
   dependencies: ConsoleWakeDependencies = { pskFromEnv, createWakePort },
 ): ConsoleWakeWiring {
   if (config.wakeTargets.length === 0) {
     return { status: 'disabled (no --wake-url)' }
   }
+
+  // 身份只在真要签名时读出来（首次运行会创建）。一个从不签名的控制台不该在配置根
+  // 里留下一把没人用的私钥，`--print-wake-identity` 才是「我只想看看公钥」那条路。
+  const identity =
+    config.signWakes === true
+      ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
+      : undefined
 
   const targets: WakeTarget[] = config.wakeTargets.map(target => {
     const variable = target.legacy
@@ -114,7 +133,11 @@ export function wireConsoleWake(
       return {
         node: target.node,
         url: target.url,
-        wake: dependencies.createWakePort({ url: target.url, psk }),
+        wake: dependencies.createWakePort({
+          url: target.url,
+          psk,
+          ...(identity === undefined ? {} : { capability: identity.issue }),
+        }),
       }
     } catch {
       return {
@@ -141,6 +164,7 @@ export function wireConsoleWake(
     return {
       legacy: { port: targets[0].wake, url: legacy.url },
       status: `enabled -> ${legacy.url}`,
+      ...(identity === undefined ? {} : { identity }),
     }
   }
 
@@ -148,6 +172,7 @@ export function wireConsoleWake(
     ...(targets.length === 0 ? {} : { targets }),
     status:
       enabled.length === 0 ? `disabled (${status})` : `enabled -> ${status}`,
+    ...(identity === undefined ? {} : { identity }),
   }
 }
 
@@ -271,6 +296,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   }
   assertConsoleRuntime()
   const config = parseConsoleArgs(args)
+
+  // 在 token 解析**之前**：这条路径不起服务器、不拨端点、不读任何凭据，它唯一的
+  // 作用是回答「该往每个节点的 --trust 里粘什么」。让它先于凭据一步，是为了在
+  // 一台还没配好 token 的机器上也答得出来——那正是分发公钥的那一刻的状态。
+  if (config.printWakeIdentity === true) {
+    const identity = loadConsoleWakeIdentity(config.chatFrom)
+    process.stdout.write(`${identity.node}=${identity.publicKey}\n`)
+    return
+  }
 
   // 凭据在**接线之前**就要定下来。放在后面的代价很具体：`wireChat` 会真的向
   // `--chat-url` 拨出去，于是一个权限过宽的 token 文件会在「拒绝启动」之前先把
@@ -401,6 +435,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     banner += field('anchors', config.anchors.value)
   }
   banner += field('wake', wake.status)
+  if (wake.identity !== undefined) {
+    // 打的就是 `--trust` 后面那一整段，一字不差：运维要做的事是复制粘贴，不是
+    // 照着两个字段自己拼一个 `<node>=<publicKey>` 出来。公开材料，可以进终端记录。
+    banner += field(
+      'wake-signing',
+      `${wake.identity.node}=${wake.identity.publicKey}`,
+    )
+  }
   banner += field('chat', chat.status)
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)

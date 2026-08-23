@@ -59,7 +59,10 @@ import {
   witnessNodeOf,
   type AuditWitnessSource,
 } from '../../services/qianmo/auditWitness.js'
-import { executeResidentWake } from './residentWake.js'
+import {
+  executeResidentWake,
+  type WakeCapabilityIssuer,
+} from './residentWake.js'
 
 function fail<T>(
   code: ConsoleFailure['code'],
@@ -690,6 +693,16 @@ interface WakePortOptions {
   readonly url: string
   /** 传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
   readonly psk: string
+  /**
+   * 控制台的唤醒签发器（`consoleWakeIdentity.ts`）。**给了才签**。
+   *
+   * 默认不签是刻意的，不是省事：一枚对面解析不出签发方公钥的令牌，在
+   * `OPEN_POLICY` 和 `SIGNED_TASK_POLICY` 下**同样**被拒成 `E_CAP_INVALID`
+   * （`packages/capability/src/token.ts` 的 `publicKeyOf(...) === null` 分支）。
+   * 所以「默认签」会立刻打断今天所有还没分发过控制台公钥的部署，而这正是
+   * issue #14 要求这条能力是**增量**而不是切换的原因。先分发信任，再打开签名。
+   */
+  readonly capability?: WakeCapabilityIssuer
   readonly timeoutMs?: number
   readonly deliverTtlMs?: number
 }
@@ -767,6 +780,9 @@ export function createWakePort(options: WakePortOptions): WakePort {
             afterMs,
             timeoutMs,
             deliverTtlMs,
+            ...(options.capability === undefined
+              ? {}
+              : { issueCapability: options.capability }),
           },
           options.psk,
         )

@@ -152,6 +152,24 @@ export interface ConsoleCliConfig {
   /** Explicit allowlist of wake endpoints. */
   readonly wakeTargets: readonly ConsoleWakeTarget[]
   /**
+   * 唤醒是否带 capability token（issue #14）。**给了 `--wake-sign` 才签**。
+   *
+   * 缺省不签，因为「带一枚对面不认识的令牌」在两种策略下都是拒绝，不是降级
+   * （`consolePorts.ts` 的 `WakePortOptions.capability` 注释写了那条分支）。
+   * 于是滚动顺序只有一个方向：先在每个目标节点上
+   * `--trust <console node>=<publicKey>`，再回来打开这个开关。公钥用
+   * `--print-wake-identity` 取，它打出来的就是 `--trust` 后面那段。
+   */
+  readonly signWakes?: boolean
+  /**
+   * 只把控制台的唤醒签名身份（`<node>=<publicKey>`）打到 stdout 就退出。
+   *
+   * 独立于 `--wake-sign` 是为了让分发顺序**能够**先走信任那一步：要在节点上信任
+   * 一把公钥，得先能读到它；而读到它的唯一别的办法是先打开签名，那时唤醒已经在
+   * 对未信任的节点上失败了。这条子路径不起服务器、不读 token、不拨任何端点。
+   */
+  readonly printWakeIdentity?: boolean
+  /**
    * CA 根证书的绝对路径。**给了才有证书栏**（key-distribution.md §10.1）。
    *
    * 是根证书而不是证书目录：控制台要做的那一次判定是 F-2——「这张证书是不是本
@@ -218,6 +236,8 @@ export function parseConsoleArgs(
   let anchors: AuditWitnessSource | undefined
   const wakeTargets: ConsoleWakeTarget[] = []
   let legacyWake = false
+  let signWakes = false
+  let printWakeIdentity = false
   let trustCa: string | undefined
   let label: string | undefined
   let viewToken: string | undefined
@@ -343,6 +363,10 @@ export function parseConsoleArgs(
         legacy: named === undefined,
       })
       index = parsed.next
+    } else if (arg === '--wake-sign') {
+      signWakes = true
+    } else if (arg === '--print-wake-identity') {
+      printWakeIdentity = true
     } else if (arg === '--label' || arg?.startsWith('--label=')) {
       const parsed = residentOptionValue(args, index, '--label')
       const text = nonEmpty(parsed.value, '--label')
@@ -442,6 +466,8 @@ export function parseConsoleArgs(
     auditMirrors,
     ...(anchors === undefined ? {} : { anchors }),
     wakeTargets,
+    ...(signWakes ? { signWakes } : {}),
+    ...(printWakeIdentity ? { printWakeIdentity } : {}),
     ...(trustCa === undefined ? {} : { trustCa }),
     label: label ?? `${hostname}:${port}`,
     ...(viewToken === undefined ? {} : { viewToken }),
@@ -517,6 +543,19 @@ Options (each accepts both --name value and --name=value):
                            reads only its derived PSK environment variable.
                            A legacy single <ws url> remains accepted only on
                            its own and uses ${PSK_ENV_VAR}.
+  --wake-sign              Present a capability token with every wake. Off by
+                           default, and the order matters: a token whose issuer
+                           the far node cannot resolve is refused under BOTH
+                           policies, so every target must carry
+                           --trust <node>=<publicKey> for this console before
+                           this flag goes on. Turning it on is what keeps the
+                           wake face working once a node stops running
+                           --open-policy.
+  --print-wake-identity    Print this console's wake signing identity as
+                           <node>=<publicKey> and exit, creating the key pair
+                           on first run. The output is exactly the argument a
+                           resident node takes after --trust. Starts no server
+                           and reads no token.
   --chat-url <ws url>      Endpoint the chat face may dial. Repeatable, one per
                            flag, duplicates folded. The chat face turns on only
                            when at least one is given AND ${PSK_ENV_VAR}

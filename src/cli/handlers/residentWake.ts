@@ -1,7 +1,12 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { MessageType, assertAddress, createMessage } from '@qianmo/protocol'
+import {
+  MessageType,
+  assertAddress,
+  createMessage,
+  newId,
+} from '@qianmo/protocol'
 import { NodeRouter } from '@qianmo/router'
 import {
   PSK_ENV_VAR,
@@ -33,6 +38,32 @@ const DEFAULT_WAKE_DELIVER_TTL_MS = 90_000
  */
 const CONNECT_TIMEOUT_CAP_MS = 30_000
 
+/**
+ * Everything a capability token for this wake has to be bound to.
+ *
+ * The four fields are not a convenience bundle — they are exactly the checks
+ * `verifyCapability` runs against the message it arrived with, so a caller that
+ * can fill this in can mint a token that will actually verify, and a caller that
+ * cannot has no business minting one.
+ *
+ * `sub` is the **whole address**, not its agent segment: the verifying node
+ * passes `handler: message.to` (`packages/capability/src/gate.ts`), so anything
+ * shorter is refused as a subject mismatch.
+ */
+export interface WakeCapabilityBinding {
+  /** Node that will verify — the token's `aud`, and the `to` address's node. */
+  readonly aud: string
+  /** Handler this wake is addressed to — the token's `sub`, verbatim `to`. */
+  readonly sub: string
+  /** The one task this token authorizes. */
+  readonly taskId: string
+  /** The envelope's `createdAt`, so token and envelope read one clock once. */
+  readonly createdAt: number
+}
+
+/** Mints the token a wake presents. Throwing refuses the wake. */
+export type WakeCapabilityIssuer = (binding: WakeCapabilityBinding) => string
+
 export interface ResidentWakeConfig {
   readonly url: string
   readonly from: string
@@ -41,6 +72,21 @@ export interface ResidentWakeConfig {
   readonly afterMs: number
   readonly timeoutMs: number
   readonly deliverTtlMs: number
+  /**
+   * How this sender signs the wake, when it signs at all.
+   *
+   * Absent means the envelope carries no `cap` field, which is the shape every
+   * wake had before P12.4 and the shape a node with `--open-policy` still
+   * accepts. It is deliberately **not** defaulted to some ambient identity:
+   * presenting a token the receiving node cannot resolve is refused
+   * (`E_CAP_INVALID`) under *either* policy, so "sign by default" would break
+   * exactly the deployments that have not distributed a key yet.
+   *
+   * The hook exists rather than a key pair because the binding is only knowable
+   * here: `taskId` is minted in {@link executeResidentWake}, and the token has
+   * to carry that same value or it is refused as bound to another task.
+   */
+  readonly issueCapability?: WakeCapabilityIssuer
 }
 
 function integer(
@@ -213,6 +259,23 @@ export async function executeResidentWake(
     await new Promise<void>(resolve => setTimeout(resolve, config.afterMs))
   }
 
+  // `taskId` and `createdAt` are minted here rather than left to
+  // `createMessage`'s defaults, and that hoist is the whole reason this
+  // function can sign at all: a capability token is bound to one `taskId`
+  // (`verifyCapability` refuses any other), so the value has to exist before
+  // the envelope that carries the token is built. Reading the clock once and
+  // handing the same number to both keeps the token's window measured from the
+  // envelope it rides in, not from a second reading a few statements later.
+  const to = assertAddress(config.to, 'to')
+  const taskId = newId()
+  const createdAt = Date.now()
+  const cap = config.issueCapability?.({
+    aud: to.node,
+    sub: config.to,
+    taskId,
+    createdAt,
+  })
+
   const draft = createMessage({
     from: config.from,
     to: config.to,
@@ -221,7 +284,10 @@ export async function executeResidentWake(
       trigger: config.afterMs > 0 ? 'timer' : 'manual',
       prompt: config.prompt,
     },
+    taskId,
+    createdAt,
     deliverTtlMs: config.deliverTtlMs,
+    ...(cap === undefined ? {} : { cap }),
   })
   // protocol.md §6.3 call site 1: the origin stamps itself into `hops[0]`
   // before the envelope reaches a transport, so the audit chain has a head and
