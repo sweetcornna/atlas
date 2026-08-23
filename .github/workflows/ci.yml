@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: [main, "feature/*", "feat/*"]
+  # No branch filter on purpose: every PR runs CI, whatever its base.
+  # The filter here used to be [main, "feat/*"] while the real flow was
+  # codex/* and s4/* into an integration branch, so PRs #2-#4 reported no
+  # checks at all and a false-green test rode along unnoticed. Enumerating
+  # base branches has to be redone every time the integration branch changes
+  # -- it has already been missed once. "Every PR" cannot go stale.
+  # `push` keeps its filter so a branch push and its PR do not both run.
   pull_request:
-    branches: [main, "feat/*"]
   workflow_dispatch:
 
 permissions:
