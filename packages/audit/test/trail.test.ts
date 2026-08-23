@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   appendFileSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -408,6 +409,32 @@ describe('what "cannot be changed" means here', () => {
       records: [],
       issues: [],
       intact: true,
+      // No file, and a reader must be able to tell that from an empty one:
+      // "this node has written nothing yet" and "the trail never reached me"
+      // are the same zero records and completely different situations.
+      present: false,
     })
+  })
+
+  test('a trail that exists and holds nothing is present and empty', () => {
+    const path = trailPath()
+    new AuditTrail(path).ensure()
+    expect(readTrail(path)).toEqual({
+      records: [],
+      issues: [],
+      intact: true,
+      present: true,
+    })
+  })
+
+  test('ensure creates the file before any record is appended', () => {
+    const path = trailPath()
+    const trail = new AuditTrail(path)
+    expect(existsSync(path)).toBe(false)
+    trail.ensure()
+    expect(existsSync(path)).toBe(true)
+    expect(statSync(path).size).toBe(0)
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+    trail.close()
   })
 })

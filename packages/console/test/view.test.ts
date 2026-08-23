@@ -82,13 +82,22 @@ function record(over: Partial<AuditRecord> = {}): AuditRecord {
 }
 
 function page(over: Partial<AuditPage> = {}): AuditPage {
-  return {
+  const merged = {
     records: [record()],
     intact: true,
     issueCount: 0,
     total: 1,
     witness: { tampered: false, stale: false },
     ...over,
+  }
+  // `chain` is derived from the rest unless a case states it, so a fixture
+  // cannot accidentally claim a broken chain that is also `intact`.
+  // `total` and not `records.length`: the chain state is a fact about the
+  // whole file, and a filter that matched nothing does not make a 40-record
+  // trail an empty one.
+  return {
+    chain: !merged.intact ? 'broken' : merged.total === 0 ? 'empty' : 'intact',
+    ...merged,
   }
 }
 
@@ -824,6 +833,50 @@ describe('renderAudit', () => {
     expect(html).toContain('当前筛选 · 结果 全部')
   })
 
+  test('a chain that exists and is empty is intact, and says so', () => {
+    // A node that has done no protocol work yet. Normal, and a page that
+    // reported it as a finding would be noise, not monitoring.
+    const html = renderAudit(
+      page({ records: [], total: 0, chain: 'empty' }),
+      null,
+      NO_FILTER,
+    )
+    expect(html).toContain('这条链还没有记录')
+    expect(html).toContain('<span class="tone-ok">完整</span>')
+    expect(html).not.toContain('未建立')
+    expect(html).not.toContain('audit-integrity')
+  })
+
+  test('a chain that is not there is never reported as complete', () => {
+    const html = renderAudit(
+      page({ records: [], total: 0, chain: 'absent', intact: false }),
+      null,
+      NO_FILTER,
+    )
+    // The state, on the rail…
+    expect(html).toContain('<span class="tone-warn">未建立</span>')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+    // …spelled out once in the results…
+    expect(html).toContain('审计链未建立')
+    expect(html).toContain('这个来源还没有链文件')
+    // …and never mistaken for a broken chain: nothing was found wrong, there
+    // was nothing to look at.
+    expect(html).not.toContain('审计链断裂')
+    expect(html).not.toContain('断裂 0')
+    // No invitation either: nothing this page offers makes a file appear.
+    expect(html).not.toContain('去唤醒一个智能体')
+    expect(html).not.toContain('这条链还没有记录')
+  })
+
+  test('the overview card reads absent off the rail, not off intact', () => {
+    const html = renderAudit(
+      page({ records: [], total: 0, chain: 'absent', intact: false }),
+      null,
+      NO_FILTER,
+    )
+    expect(html).toContain('data-audit-state="absent"')
+  })
+
   test('an empty result under a narrow window offers the next one out', () => {
     const html = renderAudit(page({ records: [], total: 9 }), null, {
       window: '1h',
@@ -1323,6 +1376,20 @@ describe('renderPage', () => {
     expect(html).toContain('<span class="tag tag-accent">断裂 4</span>')
   })
 
+  test('the overview never reads a missing chain as a complete one', () => {
+    const html = build({
+      audit: renderAudit(
+        page({ records: [], total: 0, chain: 'absent', intact: false }),
+        null,
+        NO_FILTER,
+      ),
+    })
+    expect(html).toContain('<span class="tag tag-accent">未建立</span>')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+    // And not as a broken one either: no finding was made.
+    expect(html).not.toContain('断裂 0')
+  })
+
   test('the overview repeats the unwitnessed state instead of inferring complete', () => {
     const html = build({
       audit: renderAudit(page({ witness: undefined }), null, NO_FILTER),
@@ -1783,6 +1850,23 @@ describe('copy discipline', () => {
 
   test('no emoji and no pictographs', () => {
     expect(visibleText(rendered)).not.toMatch(/\p{Extended_Pictographic}/u)
+  })
+
+  test('the missing-chain state keeps the same restraint', () => {
+    // A state added later is exactly where the rules stop being kept, so it
+    // is held to all three of them rather than eyeballed once.
+    const text = visibleText(
+      renderAudit(
+        page({ records: [], total: 0, chain: 'absent', intact: false }),
+        null,
+        NO_FILTER,
+      ),
+    )
+    expect(text).toContain('审计链未建立')
+    expect(text).not.toContain('。')
+    expect(text).not.toContain('，')
+    expect(text).not.toContain('、')
+    expect(text).not.toMatch(/\p{Extended_Pictographic}/u)
   })
 
   test('no off-origin reference of any kind', () => {

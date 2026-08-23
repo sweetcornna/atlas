@@ -67,10 +67,40 @@ export interface RegistryPort {
   heartbeat(address: string): Promise<ConsoleResult<ConsoleAgent>>
 }
 
+/**
+ * Where a trail stands, in the four states that call for four different next
+ * actions.
+ *
+ * `intact` alone could not carry this. Three of these read `records: []` on
+ * the wire and the console used to render all three as the green 完整:
+ *
+ * - `intact` — records are there and the hash chain holds end to end;
+ * - `empty` — the chain file is there and holds no records. A node that has
+ *   done no protocol work yet, which is a **normal** state and must not be
+ *   reported as a finding;
+ * - `absent` — there is no chain file. The node never wrote one, or the copy
+ *   that was meant to arrive never did. Not a finding about integrity, but
+ *   emphatically not health either: it is the state in which the audit
+ *   surface would stay silent through anything;
+ * - `broken` — records are there and the chain does not verify.
+ */
+export type AuditChainState = 'intact' | 'empty' | 'absent' | 'broken'
+
 /** What a trail read yields, integrity verdict included. */
 export interface AuditPage {
   readonly records: readonly AuditRecord[]
-  /** False when the hash chain is broken — surfaced, never swallowed. */
+  /**
+   * Where the chain stands. The field `intact` cannot answer on its own —
+   * see {@link AuditChainState}.
+   */
+  readonly chain: AuditChainState
+  /**
+   * True only when there is a chain and nothing is wrong with it, so `empty`
+   * qualifies and `absent` does not. Retained beside {@link AuditPage.chain}
+   * because "is anything wrong" is still the one question most callers ask,
+   * and because a caller that never learned about the four states must not
+   * keep reading a missing file as a healthy one.
+   */
   readonly intact: boolean
   /** How many issues the reader found, whatever their kind. */
   readonly issueCount: number

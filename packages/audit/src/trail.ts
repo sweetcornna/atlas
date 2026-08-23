@@ -64,6 +64,18 @@ export interface TrailReadResult {
   readonly issues: readonly TrailIntegrityIssue[]
   /** True when every line parsed and the hash chain holds end to end. */
   readonly intact: boolean
+  /**
+   * Whether there was a file to read at all.
+   *
+   * Separated from `intact` because the two answers a caller most needs to
+   * keep apart otherwise look identical: a trail that exists and holds no
+   * records yet (a node that has done no protocol work — normal) reads
+   * `records: []`, and so does a trail whose file is not there (the node never
+   * wrote one, or the copy that was meant to arrive never did — not normal).
+   * `intact` cannot carry that distinction: an absent file has no chain, so
+   * both `true` and `false` are false statements about it.
+   */
+  readonly present: boolean
 }
 
 /** Append-only writer. No update, no delete, no seek — by construction. */
@@ -109,6 +121,20 @@ export class AuditTrail {
       chmodSync(this.path, FILE_MODE)
     }
     return this.#fd
+  }
+
+  /**
+   * Create the file now, empty, rather than on the first record.
+   *
+   * Without this a node that has done no protocol work has **no trail file**,
+   * and "this node has nothing to report" is then indistinguishable from "the
+   * trail never reached me" — which is the state an operator has to be able to
+   * see, because it is the one where the audit surface is broken rather than
+   * quiet. Opt-in rather than done in the constructor: a reader that only
+   * wants to resume a chain should not leave a file behind.
+   */
+  ensure(): void {
+    this.#handle()
   }
 
   /** Append one record. Returns exactly what was written. */
@@ -168,7 +194,11 @@ export function readTrail(path: string): TrailReadResult {
     raw = readFileSync(path, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { records: [], issues: [], intact: true }
+      // No file, so no chain, so no verdict on one. `intact` stays `true` for
+      // the callers that only ever asked "did the check find something wrong",
+      // and `present: false` is how a caller learns there was nothing to
+      // check — see {@link TrailReadResult.present}.
+      return { records: [], issues: [], intact: true, present: false }
     }
     throw error
   }
@@ -208,5 +238,5 @@ export function readTrail(path: string): TrailReadResult {
     expectedSeq = record.seq + 1
   }
 
-  return { records, issues, intact: issues.length === 0 }
+  return { records, issues, intact: issues.length === 0, present: true }
 }

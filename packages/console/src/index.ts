@@ -12,6 +12,7 @@
  */
 
 export type {
+  AuditChainState,
   AuditFilter,
   AuditPage,
   AuditPort,

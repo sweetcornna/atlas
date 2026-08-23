@@ -75,9 +75,19 @@ export function auditTrailPath(): string {
   return occConfigPath('qianmo', 'audit', 'trail.ndjson')
 }
 
-/** Open (or resume) the node's trail. */
+/**
+ * Open (or resume) the node's trail, materialising the file at once.
+ *
+ * The file is created here rather than on the first record so that a node
+ * which has done no protocol work still has an **empty** chain rather than no
+ * chain: "nothing has happened here yet" and "the trail never reached me" are
+ * different states, and a reader that sees neither file nor records cannot
+ * tell them apart (issue #9).
+ */
 export function openAuditTrail(path: string = auditTrailPath()): AuditTrail {
-  return new AuditTrail(path)
+  const trail = new AuditTrail(path)
+  trail.ensure()
+  return trail
 }
 
 /** One layer's event, as every one of them happens to be shaped. */
