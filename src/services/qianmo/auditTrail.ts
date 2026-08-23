@@ -28,6 +28,7 @@ import {
   type RouterAuditSink,
 } from '@qianmo/router'
 import {
+  HandshakeRejection,
   TransportEventType,
   type TransportEvent,
   type TransportEventSink,
@@ -180,17 +181,206 @@ const TRANSPORT_OUTCOMES: Partial<
   [TransportEventType.MessageDuplicate]: 'dropped',
 }
 
-/** Turn transport events into trail records. Only the message-level ones. */
+/**
+ * The handshake refusals that earn a line on the trail, and what it costs an
+ * outsider to provoke one.
+ *
+ * Handshake events as a class stay in the transport's own ring — the trail is
+ * for the life of a *message*, and a file that also carried every keep-alive
+ * would bury the lines somebody is looking for. But that ring is process
+ * memory, so the one handshake outcome an operator is ever asked to explain
+ * afterwards — *somebody turned up holding a credential and was refused* — was
+ * the one outcome no persisted surface recorded.
+ *
+ * Which refusals qualify is a **write-amplification** decision before it is an
+ * observability one. Every record here is an `fsync`, on a path an unrefused
+ * stranger can reach; a whitelist that admitted a refusal any scanner can
+ * produce would hand that stranger a free way to fill the node's disk. So the
+ * refusals split into two tiers by what the sender must already possess:
+ *
+ * - **`credentialed`** — unreachable without credentials that have *already
+ *   verified*. {@link HandshakeRejection.ChannelIdentityMismatch} is only
+ *   raised after `verifyAuthAttempt` returned `ok`, i.e. by a peer holding a
+ *   working PSK or a directory-listed signing key, and only when its channel
+ *   id collides with a retained channel under another identity;
+ *   {@link HandshakeRejection.BadCredentialProof} is only reached after the
+ *   handshake signature itself verified, i.e. by a holder of that node's
+ *   private key. Neither is producible by an unauthenticated dialer at any
+ *   price.
+ * - **`unproven`** — security-relevant *and* cheap.
+ *   {@link HandshakeRejection.UnknownSigner},
+ *   {@link HandshakeRejection.BadSignature} and
+ *   {@link HandshakeRejection.CredentialRequired} all sit **before** any proof
+ *   is checked: a stranger who echoes the challenge nonce reaches every one of
+ *   them with arbitrary bytes. They are worth recording — "the directory has
+ *   no key for you" and "your signature is wrong" are how a rotation gone
+ *   wrong is told apart from a probe — but they may never be recorded
+ *   one-for-one, so this tier is metered (see {@link HandshakeAuditMeter}).
+ *
+ * Everything else stays out, and the exclusions are the load-bearing half:
+ * `malformed_frame`, `unexpected_frame`, `bad_node`, `bad_channel`,
+ * `nonce_mismatch` and `signature_required` are pure grammar or pure policy —
+ * they say nothing about who called; `bad_mac` is the wrong-PSK scanner, one
+ * line per garbage frame and no information beyond "somebody dialled";
+ * `certificate_expired` and `channel_capacity` are this node's own state,
+ * which every connection would restate. Version negotiation is not on the
+ * list either, for the same reason grammar is not.
+ *
+ * The dialer's own `ready_*` refusals (the listener failed to prove itself)
+ * stay out too: they are a different question — *did I reach who I meant to* —
+ * and they are provoked by whatever endpoint the zero-auth registry names, so
+ * admitting them would need its own budget rather than a share of this one.
+ */
+const HANDSHAKE_AUDITED: Readonly<
+  Record<string, 'credentialed' | 'unproven' | undefined>
+> = {
+  [HandshakeRejection.ChannelIdentityMismatch]: 'credentialed',
+  [HandshakeRejection.BadCredentialProof]: 'credentialed',
+  [HandshakeRejection.UnknownSigner]: 'unproven',
+  [HandshakeRejection.BadSignature]: 'unproven',
+  [HandshakeRejection.CredentialRequired]: 'unproven',
+}
+
+/** How long one distinct refusal holds its slot before it may write again. */
+const HANDSHAKE_AUDIT_WINDOW_MS = 60_000
+
+/**
+ * Slots per window, per tier. Two meters rather than one shared budget: a
+ * stranger flooding `unknown_signer` must not be able to crowd out the
+ * identity-conflict line, which is the record this whole path exists for.
+ */
+const HANDSHAKE_AUDIT_CAPACITY: Readonly<
+  Record<'credentialed' | 'unproven', number>
+> = { credentialed: 8, unproven: 4 }
+
+interface MeterSlot {
+  windowStart: number
+  suppressed: number
+}
+
+/**
+ * A hard ceiling on handshake-refusal records, with nothing counted twice and
+ * nothing counted away.
+ *
+ * One slot per distinct refusal — the rejection, the claimed node and the
+ * channel id together — so two genuinely different peers failing in the same
+ * minute still get a line each, while one peer failing four hundred times gets
+ * one line and a number. A slot lives {@link HANDSHAKE_AUDIT_WINDOW_MS}; at
+ * most `capacity` slots exist at once, and a refusal that finds every slot
+ * taken is counted rather than written. So the worst case an attacker can buy
+ * is `capacity` records per window, whatever rate it dials at.
+ *
+ * The suppressed tallies are never dropped: they ride out on the `suppressed`
+ * field of the next record this meter does write. The one thing that costs is
+ * that a burst which stops has its final tally sitting in memory until the
+ * next refusal of that tier — the *fact* is on the record either way, only the
+ * last count waits. Flushing it on a timer was the alternative and it is
+ * worse: a timer inside an event sink outlives the socket that armed it.
+ */
+class HandshakeAuditMeter {
+  readonly #slots = new Map<string, MeterSlot>()
+  #carried = 0
+
+  constructor(
+    private readonly capacity: number,
+    private readonly windowMs: number = HANDSHAKE_AUDIT_WINDOW_MS,
+  ) {}
+
+  /**
+   * `null` to suppress, otherwise how many earlier refusals this record is
+   * also speaking for (`0` when it speaks only for itself).
+   */
+  admit(key: string, now: number): number | null {
+    for (const [name, slot] of this.#slots) {
+      if (now - slot.windowStart < this.windowMs) continue
+      this.#carried += slot.suppressed
+      this.#slots.delete(name)
+    }
+    const slot = this.#slots.get(key)
+    if (slot !== undefined) {
+      slot.suppressed += 1
+      return null
+    }
+    if (this.#slots.size >= this.capacity) {
+      this.#carried += 1
+      return null
+    }
+    this.#slots.set(key, { windowStart: now, suppressed: 0 })
+    const carried = this.#carried
+    this.#carried = 0
+    return carried
+  }
+}
+
+/**
+ * File a handshake refusal, or decide it is not one of the audited kinds.
+ *
+ * The record is the same shape a `message_rejected` line has — same `source`,
+ * the layer's own event name as `kind`, `refused` as the outcome, the claimed
+ * peer in `peer` — with the rejection string as `code`, because that is the
+ * field an operator greps and the close code (4003/4004) is deliberately too
+ * coarse to tell these apart. `channelId` and `pending` ride through in
+ * `detail` untouched: *which channel was reached for* and *how many undelivered
+ * envelopes it was holding at that moment* are the whole of the attribution,
+ * and they exist on no other surface once the process restarts.
+ */
+function appendHandshakeRefusal(
+  trail: AuditTrail,
+  node: string,
+  event: TransportEvent,
+  meters: Readonly<Record<'credentialed' | 'unproven', HandshakeAuditMeter>>,
+): void {
+  if (event.type !== TransportEventType.AuthRejected) return
+  const rejection = stringOf(event.detail, 'rejection')
+  if (rejection === undefined) return
+  const tier = HANDSHAKE_AUDITED[rejection]
+  if (tier === undefined) return
+  const peer = stringOf(event.detail, 'node') ?? ''
+  const channelId = stringOf(event.detail, 'channelId') ?? ''
+  const suppressed = meters[tier].admit(
+    `${rejection} ${peer} ${channelId}`,
+    event.at,
+  )
+  if (suppressed === null) return
+  const base = toRecord(
+    { type: event.type, at: event.at, detail: event.detail },
+    AuditSource.Transport,
+    node,
+    'refused',
+    ['node'],
+  )
+  safeAppend(trail, {
+    ...base,
+    code: rejection,
+    detail: suppressed === 0 ? event.detail : { ...event.detail, suppressed },
+  })
+}
+
+/**
+ * Turn transport events into trail records: every message-level one, and the
+ * handshake refusals {@link HANDSHAKE_AUDITED} admits.
+ */
 export function transportTrailSink(
   trail: AuditTrail,
   node: string,
 ): TransportEventSink {
+  // Per sink, not per module: two listeners in one process are two nodes'
+  // worth of refusals, and one shared budget would let a flood at either of
+  // them silence the other.
+  const meters = {
+    credentialed: new HandshakeAuditMeter(
+      HANDSHAKE_AUDIT_CAPACITY.credentialed,
+    ),
+    unproven: new HandshakeAuditMeter(HANDSHAKE_AUDIT_CAPACITY.unproven),
+  }
   return (event: TransportEvent): void => {
     const outcome = TRANSPORT_OUTCOMES[event.type]
-    // Handshakes, keep-alives and reconnects stay in the transport's own ring:
-    // the trail is for the life of a *message*, and a file that also carried
-    // every keep-alive would bury the lines somebody is looking for.
-    if (outcome === undefined) return
+    // Keep-alives, reconnects and accepted handshakes stay in the transport's
+    // own ring; the refused handshakes that name a credential do not.
+    if (outcome === undefined) {
+      appendHandshakeRefusal(trail, node, event, meters)
+      return
+    }
     safeAppend(
       trail,
       toRecord(
