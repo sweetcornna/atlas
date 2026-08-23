@@ -40,6 +40,7 @@ export {
 export {
   DEFAULT_CONNECT_TIMEOUT_MS,
   DEFAULT_KEEPALIVE_INTERVAL_MS,
+  MAX_CHANNEL_ROTATIONS,
   TransportClient,
   dialUrl,
   type ClientTlsOptions,
@@ -93,6 +94,7 @@ export {
 } from './outbox.js'
 
 export {
+  CLOSE_CHANNEL_CONFLICT,
   CLOSE_PROTOCOL_ERROR,
   CLOSE_UNAUTHORIZED,
   HANDSHAKE_CREDENTIAL_PROOF_DOMAIN,

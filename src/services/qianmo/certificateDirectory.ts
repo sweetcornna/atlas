@@ -34,6 +34,10 @@
  * refresh so this degrade and its recovery are both silent and immediate —
  * there is no "stuck open" state to notice and clear by hand.
  *
+ * {@link CertificateDirectory.handshakeCredentialOf} degrades the same way
+ * and for the same reason, which is less obvious there because a certificate
+ * *selector* survives the degrade too — see that method's own comment.
+ *
  * ## What is verified here, and what is not
  *
  * A certificate must, in order: parse as a §4.2 binding, name the node it
@@ -61,6 +65,16 @@ import {
   type NodeCertificateBinding,
 } from '@qianmo/protocol'
 import type { PublicKeyDirectory } from '@qianmo/capability'
+// Type-only, and deliberately so: the transport reaches this class through a
+// runtime `'handshakeCredentialOf' in directory` probe, which means a field
+// name drifting on either side of {@link ResolvedHandshakeCredential} would
+// otherwise compile clean and then silently downgrade every credential
+// handshake to a 4003. Naming the transport's own type here is what makes
+// that drift a type error instead.
+import type {
+  HandshakeCredentialDirectory,
+  ResolvedHandshakeCredential,
+} from '@qianmo/transport'
 import {
   verifyRevocationList,
   type RevocationList,
@@ -196,7 +210,9 @@ function caPublicKeyOf(certificate: X509Certificate): string {
 /**
  * `CertificateDirectory` — see the module header for the contract this keeps.
  */
-export class CertificateDirectory implements PublicKeyDirectory {
+export class CertificateDirectory
+  implements PublicKeyDirectory, HandshakeCredentialDirectory
+{
   readonly #caCertificate: X509Certificate
   readonly #caPublicKey: string
   readonly #registryUrl: string | undefined
@@ -279,20 +295,78 @@ export class CertificateDirectory implements PublicKeyDirectory {
    * Resolve the exact credential named by a signed transport handshake.
    *
    * An explicit entry is local operator authority and therefore wins even
-   * when the peer also carries a certificate selector. Otherwise a selector
-   * must name a retained, currently valid certificate for this node. The
-   * method is intentionally synchronous, like {@link publicKeyOf}.
+   * when the peer also carries a certificate selector. Three properties of
+   * that branch are load-bearing, and each one — quietly changed — turns into
+   * a legitimate peer being closed with 4003.
+   *
+   * ① **The explicit key is served without a single CA-side check.** No RL
+   *    freshness test, no `notBefore`/`notAfter` test, no revocation lookup.
+   *    An operator who typed `--trust` already trusts that key
+   *    unconditionally, and the way to withdraw it is to delete the entry,
+   *    not to have the CA publish an RL.
+   *
+   * ② It follows that **a revoked or an expired fingerprint is still a valid
+   *    proof selector.** The selector only says which bytes the peer's second
+   *    proof was signed over (`certificate/<fingerprint>`); it takes no part
+   *    in admission. The connection's effective credential stays
+   *    `explicit/<node>`, so `closePeerCredentials([{node, 'certificate',
+   *    F}])` will not close it. That is deliberate — it is the other half
+   *    of ①, not an oversight.
+   *
+   * ③ `selector === node` means "the peer is claiming the explicit
+   *    credential". This signature carries no `source` argument, so that
+   *    equivalence rests entirely on the two key spaces being disjoint:
+   *    `#explicit` is keyed by node segments (`@qianmo/protocol`'s
+   *    `SEGMENT_PATTERN`, `/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/`), while
+   *    `#certificateFacts` is keyed by `fingerprint256` — upper-case hex with
+   *    colons, `BC:3C:86:...`. Neither a colon nor an upper-case letter is a
+   *    legal segment character, so no string can be both. Read this again
+   *    before widening either key space.
+   *
+   * The one check a certificate selector does get is **contradiction, not
+   * absence**. A retained fact binding this fingerprint to another node, or
+   * to a key other than the explicit one, is refused — a conflict that sharp
+   * is a configuration error worth surfacing. *No* retained fact is
+   * **accepted**, because that is §6.4's degrade: a resident restarted while
+   * the registry is unreachable has never pulled a `/v0/agents` row for
+   * anyone, and refusing a peer that is right there on the `--trust` list
+   * would turn "fail-closed 到 `--trust`" into fail-shut. Nor was the lookup
+   * ever a security boundary — a peer holding the explicit private key can
+   * take branch ③ instead and obtain a byte-identical effective credential;
+   * both paths demand a signature from that same key.
+   *
+   * With no explicit entry the pure CA path applies, and it is strict in
+   * every way the explicit branch is not: the selector must name a retained,
+   * currently valid, unrevoked certificate for this node, and the RL must be
+   * fresh. The method is intentionally synchronous, like {@link publicKeyOf}.
    */
   handshakeCredentialOf(
     node: string,
     selector: string | undefined,
-  ): {
-    readonly publicKey: string
-    readonly source: string
-    readonly id: string
-  } | null {
+  ): ResolvedHandshakeCredential | null {
     const explicit = this.#explicit.get(node)
     if (explicit !== undefined) {
+      // ③: a selector equal to the node name is the peer claiming
+      // `explicit/<node>` itself — exactly what the tail of this branch
+      // already returns, with no separate proof identity to report.
+      if (selector !== undefined && selector !== node) {
+        const claim = this.#certificateFacts.get(selector)
+        if (
+          claim !== undefined &&
+          (claim.node !== node || claim.publicKey !== explicit)
+        ) {
+          return null
+        }
+        return {
+          publicKey: explicit,
+          source: EXPLICIT_CREDENTIAL_SOURCE,
+          id: node,
+          proofCredential: {
+            source: CERTIFICATE_CREDENTIAL_SOURCE,
+            id: selector,
+          },
+        }
+      }
       return {
         publicKey: explicit,
         source: EXPLICIT_CREDENTIAL_SOURCE,
