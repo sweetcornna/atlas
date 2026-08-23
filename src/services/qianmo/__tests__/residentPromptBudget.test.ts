@@ -18,10 +18,14 @@
  * later with a full memory directory.
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { LIMITS } from '@qianmo/protocol'
 import { INJECTION_BUDGET } from '@qianmo/recall'
-import { getAutoCompactThreshold } from '../../compact/autoCompact.js'
+import {
+  estimateMaxTurnGrowth,
+  getAutoCompactThreshold,
+  getEffectiveContextWindowSize,
+} from '../../compact/autoCompact.js'
 import { zodToJsonSchema } from '../../../utils/text/zodToJsonSchema.js'
 import { MAX_MAILBOX_MESSAGE_TEXT_BYTES } from '../../../utils/agents/teammateMailbox.js'
 import { getEmptyToolPermissionContext } from '@open-claude-code/tool-runtime/Tool.js'
@@ -39,6 +43,31 @@ import { residentToolSurface } from '../notifyTool.js'
 const CHARS_PER_TOKEN = 1
 
 const MODEL = 'claude-sonnet-4-6'
+
+/**
+ * Pin the context window for the whole file.
+ *
+ * The base resolves a model's window through `~/.occ/settings.json`, so
+ * unpinned this file measures against whatever `modelSettings.sonnet.
+ * contextTokens` the developer happens to have set — 1M on a machine that
+ * raised it, 200k on a fresh checkout. That is a 5.8x difference in the
+ * budget being asserted, and it is how this file passed for its whole life
+ * while failing under `HOME=$(mktemp -d)`. The env override short-circuits
+ * at the top of the resolution chain, which is the only thing that outranks
+ * settings; 200k is the real Sonnet window a resident node runs on.
+ */
+let savedMaxContextTokens: string | undefined
+
+beforeAll(() => {
+  savedMaxContextTokens = process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '200000'
+})
+
+afterAll(() => {
+  if (savedMaxContextTokens === undefined)
+    delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  else process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = savedMaxContextTokens
+})
 
 /**
  * What the tool surface costs the prompt: the name, the JSON schema the model
@@ -75,7 +104,9 @@ async function toolSurfaceChars(): Promise<number> {
 describe('resident prompt budget — the injection does not cause auto-compact', () => {
   test('one wake, at every ceiling at once, leaves most of the window unused', async () => {
     const threshold = getAutoCompactThreshold(MODEL)
-    expect(threshold).toBeGreaterThan(100_000)
+    // Exact, not a `> 100_000` band: a fuzzy bound would let the pin above
+    // lapse without anything going red, which is the original bug.
+    expect(threshold).toBe(167_000)
 
     // The three things P13.7 adds to or keeps on a watch turn.
     const injection = INJECTION_BUDGET.maxChars
@@ -86,12 +117,25 @@ describe('resident prompt budget — the injection does not cause auto-compact',
       (injection + batch + tools) / CHARS_PER_TOKEN,
     )
 
-    // Headroom, not merely "under": a turn that fits with nothing to spare is
-    // a turn that compacts the moment the model answers at any length. A
-    // quarter of the window is the line — beyond that the injection would be
-    // the dominant term in a watch session's context growth, which is the
-    // failure this DoD names.
-    expect(worstCaseTokens).toBeLessThan(threshold / 4)
+    // The line the runtime actually compares against. `src/query.ts` runs a
+    // predictive compaction before the API call and fires when the prompt
+    // exceeds `getEffectiveContextWindowSize(model) - estimateMaxTurnGrowth(
+    // model)` — 145_000 here, 13% tighter than the 167_000 threshold the DoD
+    // names, so clearing it means the turn survives the stricter of the two
+    // gates rather than only the one the DoD spells out.
+    //
+    // It replaces a `threshold / 4` bound invented in this file: no DoD text
+    // asks for a fraction, and that one was unreachable by construction —
+    // `batch + tools` is 66_736 on its own against a 41_750 bound, so it failed
+    // even with the injection at zero characters. The only way to satisfy it
+    // was to shrink MAX_MAILBOX_MESSAGE_TEXT_BYTES, the axis of the blob
+    // offload design, which is exactly where a future edit should not be aimed.
+    //
+    // Both numbers are only stable because the window is pinned at the top of
+    // the file; unpinned, this compared against the developer's settings.json.
+    expect(worstCaseTokens).toBeLessThan(
+      getEffectiveContextWindowSize(MODEL) - estimateMaxTurnGrowth(MODEL),
+    )
   })
 
   test('the injection is bounded by a constant, not by how much the node remembers', () => {
