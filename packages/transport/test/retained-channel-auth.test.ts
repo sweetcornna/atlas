@@ -75,6 +75,20 @@ const IMPOSTOR = 'node-c'
 const F1 = 'fingerprint-f1'
 const F2 = 'fingerprint-f2'
 const K2 = 'fingerprint-key-2'
+/**
+ * A selector that resolves to the *same* key and the *same* id as {@link F1},
+ * under a different `source`.
+ *
+ * Today's `CertificateDirectory` cannot produce this pair — its two sources
+ * carry disjoint id namespaces (node segments vs. colon-separated
+ * `fingerprint256`), so `id` equality already implies `source` equality there.
+ * `HandshakeCredentialDirectory` is a published interface, though, and that
+ * disjointness is a convention of one implementation rather than anything the
+ * types enforce. The moment it stops holding — a third source on
+ * `CertificateDirectory`, or somebody else's directory — `source` stops being
+ * redundant and becomes the only separator left.
+ */
+const CROSS_SOURCE = 'explicit-selector-for-f1'
 
 const listenerKeys = generateNodeKeyPair()
 const firstKeys = generateNodeKeyPair()
@@ -124,6 +138,15 @@ function exact(
     kind: 'credential_signature',
     keys,
     credential: { selector, source: 'certificate', id: selector },
+  }
+}
+
+/** {@link CROSS_SOURCE} on the wire: `explicit/F1`, proved by the same key. */
+function crossSource(): RawAuthentication {
+  return {
+    kind: 'credential_signature',
+    keys: firstKeys,
+    credential: { selector: CROSS_SOURCE, source: 'explicit', id: F1 },
   }
 }
 
@@ -286,6 +309,14 @@ function credentialDirectory(
           publicKey: secondKeys.publicKey,
           source: 'certificate',
           id: selector,
+        }
+      }
+      // Same key, same id, other source — see {@link CROSS_SOURCE}.
+      if (selector === CROSS_SOURCE) {
+        return {
+          publicKey: firstKeys.publicKey,
+          source: 'explicit',
+          id: F1,
         }
       }
       return null
@@ -545,6 +576,58 @@ describe('retained channel authentication binding', () => {
     expect(changedKey.outcome).toBe('closed')
     expect(changedKey.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
     expect(hasEnvelope(changedKey)).toBe(false)
+  })
+
+  test('the same key and the same id under another source are two identities', async () => {
+    // The frozen tuple's credential leg compares `source` *and* `id`, and this
+    // is the case that separates them. Every other credential in this suite is
+    // `certificate`, so a mutation deleting the `source ===` conjunct used to
+    // survive the whole file: not an equivalent mutation, a coverage hole.
+    // See {@link CROSS_SOURCE} for why the shape is worth pinning even though
+    // today's directory implementation cannot emit it.
+    const server = serverFor(credentialDirectory(() => firstKeys.publicKey))
+    const url = server.url ?? ''
+    const retained = '9'.repeat(32)
+
+    const owner = await rawHandshake(url, retained, exact(F1))
+    expect(owner.outcome).toBe('ready')
+    sendRequest(owner, 'seed-retained-outbox')
+    await waitUntil(() => hasEnvelope(owner))
+    owner.socket.close(1000)
+    await owner.closed
+    await waitUntil(() => server.connections === 0 && server.channels === 1)
+
+    // First on a channel of its own, so the two admissions can be read side by
+    // side: same node, same tier, same key, same id — one leg apart.
+    const fresh = await rawHandshake(url, 'a'.repeat(32), crossSource())
+    expect(fresh.outcome).toBe('ready')
+    const accepted = server.events
+      .byType(TransportEventType.AuthAccepted)
+      .map(event => event.detail)
+    expect(accepted).toHaveLength(2)
+    expect(accepted[0]).toMatchObject({
+      node: DIALER,
+      authentication: 'credential_signature',
+      credentialSource: 'certificate',
+      credentialId: F1,
+    })
+    expect(accepted[1]).toMatchObject({
+      node: DIALER,
+      authentication: 'credential_signature',
+      credentialSource: 'explicit',
+      credentialId: F1,
+    })
+
+    // And therefore it may not inherit the retained channel. The handshake
+    // itself succeeds — the refusal is the identity freeze, not the proof.
+    const conflicting = await rawHandshake(url, retained, crossSource())
+    expect(conflicting.outcome).toBe('closed')
+    expect(conflicting.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
+    expect(hasEnvelope(conflicting)).toBe(false)
+    expect(
+      rejectionsOf(server, HandshakeRejection.ChannelIdentityMismatch),
+    ).toHaveLength(1)
+    expect(fresh.socket.readyState).toBe(WebSocket.OPEN)
   })
 })
 
