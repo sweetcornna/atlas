@@ -591,7 +591,12 @@ export class TransportClient implements TransportChannel {
             ? {}
             : { supportedTypes: this.options.supportedTypes }),
           // Both proofs travel together during §8.2's phases ① and ②. The
-          // listener picks; this side does not get to assume which.
+          // listener picks — and picking the legacy one is a real outcome
+          // rather than a refusal: a `--trust`-only peer holds no view on
+          // credentials and reads this frame as the plainly signed frame it
+          // also is (`readsCredentialClaims` in `handshake.ts`). Which one it
+          // took never comes back on the wire, so this side does not get to
+          // assume; it sends both and lets the far end decide.
           ...(signing === undefined
             ? {}
             : {

@@ -448,6 +448,15 @@ L0 TLS 准入（连接建立前，Bun 内部）
 
 **「显式压过发现」这条轴，与注册中心的「先登记者胜」（`registry.ts:449-465`）不是同一条轴，不要混。**前者是本地运维意图 vs 远端发现；后者是两个远端声明之间的仲裁。两条规则可以并存，因为它们裁的不是同一个冲突。
 
+**阶段 ① 的互通是双向的，没有迁移顺序约束。**上面这张表说的是「同一台节点上两种装载方式怎么合并」，而阶段 ① 同时还意味着**两台节点各用一种**：一台已上 `--trust-ca` + `--cert`，另一台只有 `--trust`。这一格必须能通，否则「共存」是空话——先上 CA 的那一台会单方面失去与所有未上 CA 的 peer 的连通性，而 4003 在 `packages/transport` 里按契约是**永久**拒绝。因此两个方向各定一条（`handshake.ts` 的 `readsCredentialClaims`，`verifyAuthAttempt` / `verifyReady` 共用）：
+
+- **对端发了 credential、本端没有 credential 目录** → 按 legacy `signature` 判定。理由是「本端对 credential 这条腿根本没有任何意见」：它既不能采信也不能吊销，那一对可选字段对它携带的信息量恰好等于一个 legacy 签名帧，而检查那个签名的公钥就在它手里的 `--trust` 里。**记录仍是 `signature`，绝不是 `credential_signature`**——没查过 credential 的连接不许声称查过（§7.1 三分记录规则）。反方向（对端没发 credential、本端有目录）本来就成立，见 §7.1「旧 signed peer 缺 selector/proof 时……」那一段。
+- **本端有 credential 目录、但这个 credential 解析不出来**（未知 selector / 已吊销） → **拒**，`unknown_signer`。这一格回落就是**吊销绕过**：一个证书被吊销的持有者，只要它的裸公钥还钉在某处 `--trust` 里（§6.4 末尾那条硬边界正是这个状态），就能靠「发一个解析不出的 credential 触发回落」重新连上——「发垃圾」不许成为降级原语。
+
+两格的差别是**「本端能不能对 credential 形成意见」**，不是**「这一次查没查到」**。两句话差一个字、后果相反，所以两格都有用例钉住（`packages/transport/test/handshake-signing.test.ts` 的 `credential claims against a verifier that has no view on them`，端到端一格在 `signed-handshake.test.ts`）。`credentialProofRequired` / `credentialProofRequiredPeers` 在第一格之上仍然一票否决：要求精确证明却查不了证明的一端，拒绝，不降级。
+
+**这不新增降级面。**v1 里中间人本来就能剥掉 `credential` / `credentialProof` 而不动 `sig`（§7.1「混版本事实」），对一个没有 credential 目录的验证方，剥完的帧今天就已经落在 legacy 路径上。回落让**诚实**的帧得到与被剥掉的帧相同的判定，变的只是诚实节点不必先被攻击一次才能连上。
+
 ### 8.3 退役信号量（写死，可测）
 
 进入阶段 ③ 需要**同时**满足：

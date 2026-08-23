@@ -507,6 +507,10 @@ export interface ListenerIdentity extends HandshakeIdentity {
  *   consulted at all;
  * - `signing` without a `sig` ⇒ the MAC, unless the global deployment stage
  *   or this particular peer requires a signature, which refuses.
+ *
+ * Whether the *credential* extension on that frame is taken up is a second,
+ * independent decision, and it is the listener's as well — see
+ * {@link readsCredentialClaims}.
  */
 export function verifyAuthAttempt(
   psk: string,
@@ -538,7 +542,9 @@ export function verifyAuthAttempt(
         rejection: HandshakeRejection.CredentialRequired,
       }
     }
-    const resolved = hasCredential
+    const takesCredential =
+      hasCredential && readsCredentialClaims(signing, attempt.node)
+    const resolved = takesCredential
       ? resolveHandshakeCredential(signing, attempt.node, attempt.credential)
       : resolveLegacySigningKey(signing, attempt.node)
     if (resolved === null) {
@@ -553,7 +559,7 @@ export function verifyAuthAttempt(
     if (!verifyBytes(resolved.publicKey, signed, attempt.sig)) {
       return { ok: false, rejection: HandshakeRejection.BadSignature }
     }
-    if (hasCredential) {
+    if (takesCredential) {
       // Fail **closed**. Every field below is present on today's only producer
       // of a credential-bearing `ResolvedSigningKey`, so none of these guards
       // can fire — which is exactly why they are written as a rejection rather
@@ -769,7 +775,9 @@ export function verifyReady(
   if (!hasCredential && credentialProofRequiredFor(signing, peerNode)) {
     return { ok: false, rejection: ReadyRejection.CredentialRequired }
   }
-  const resolved = hasCredential
+  const takesCredential =
+    hasCredential && readsCredentialClaims(signing, peerNode)
+  const resolved = takesCredential
     ? resolveHandshakeCredential(signing, peerNode, frame.credential)
     : resolveLegacySigningKey(signing, peerNode)
   if (resolved === null) {
@@ -785,7 +793,7 @@ export function verifyReady(
   if (!verifyBytes(resolved.publicKey, signed, frame.sig)) {
     return { ok: false, rejection: ReadyRejection.BadSignature }
   }
-  if (hasCredential) {
+  if (takesCredential) {
     // Fail closed, for the reason spelled out in `verifyAuthAttempt` — this is
     // the dialer's half of the same check and must not diverge from it.
     const selector = frame.credential
@@ -830,6 +838,56 @@ function hasCredentialDirectory(
   return (
     'handshakeCredentialOf' in directory &&
     typeof directory.handshakeCredentialOf === 'function'
+  )
+}
+
+/**
+ * Whether this verifier takes up a credential the peer offered, or judges the
+ * frame as the plainly signed one it also is.
+ *
+ * The question asked here is **"can this verifier form an opinion about
+ * credentials at all"**, deliberately *not* "did this particular credential
+ * resolve". Those are one keystroke apart and opposite in consequence, so the
+ * two answers are worth spelling out:
+ *
+ * - **No credential directory** (a `--trust`-only listener, §8.2 phase ①). It
+ *   holds no view on credentials whatsoever — it cannot admit one, revoke one,
+ *   or tell them apart — so a credential-bearing frame carries, for this
+ *   verifier, exactly the information a legacy signed frame carries: an
+ *   Ed25519 signature over the five-element tuple, checkable against the key
+ *   it was handed by hand. Reading it that way is what makes phase ① mean what
+ *   §8.2 says it means. The alternative — the behaviour this replaces — is
+ *   that the first node to gain a certificate silently loses every peer that
+ *   has not gained one yet, `unknown_signer` on a key the listener is holding.
+ * - **A credential directory that returned `null`** (unknown selector, or a
+ *   certificate on the revocation list). Falling back here would be a
+ *   **revocation bypass**: the holder of a revoked certificate whose bare
+ *   public key still sits in somebody's `--trust` list would get back in by
+ *   offering a credential that does not resolve — turning "send garbage" into
+ *   a downgrade primitive, and making §6.4's revocation depend on the peer's
+ *   good manners. So that case does not reach this function: it resolves
+ *   through the credential path and is refused as {@link
+ *   HandshakeRejection.UnknownSigner}, exactly as before.
+ *
+ * `credentialProofRequired` keeps its veto on top of the first case. A verifier
+ * that demands the exact proof and cannot check one refuses rather than
+ * downgrades — policy that quietly evaporates when the directory is the wrong
+ * shape is not policy.
+ *
+ * This adds no downgrade surface. An on-path actor may already strip
+ * `credential`/`credentialProof` from a v1 frame without disturbing `sig`
+ * (§7.1, "混版本事实"), and against a directory-less verifier that already
+ * lands on the legacy path today. The fallback reaches the same verdict for
+ * the honest frame that the stripped one already reaches; what changes is only
+ * that the honest peer no longer has to be attacked in order to connect.
+ */
+function readsCredentialClaims(
+  signing: HandshakeIdentity,
+  peerNode: string,
+): boolean {
+  return (
+    hasCredentialDirectory(signing.directory) ||
+    credentialProofRequiredFor(signing, peerNode)
   )
 }
 

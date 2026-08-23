@@ -696,3 +696,83 @@ describe('credential-scoped invalidation', () => {
     releaseRetained?.()
   })
 })
+
+describe('§8.2 phase ① — CA-loaded dialer against a `--trust`-only listener', () => {
+  /** What `--trust-ca` gives the dialer: a directory that resolves selectors. */
+  function caDirectory(): HandshakeCredentialDirectory {
+    return {
+      publicKeyOf(node) {
+        if (node === LISTENER) return listenerKeys.publicKey
+        if (node === DIALER) return dialerKeys.publicKey
+        return null
+      },
+      handshakeCredentialOf(node, selector) {
+        if (node !== DIALER || selector !== 'fingerprint-f1') return null
+        return {
+          publicKey: dialerKeys.publicKey,
+          source: 'certificate',
+          id: selector,
+        }
+      },
+    }
+  }
+
+  test('the upgraded node keeps its link to every peer that has not upgraded', async () => {
+    // The reported configuration, byte for byte: dialer on `--trust-ca` +
+    // `--cert`, listener on `--trust` alone — and the listener holding the very
+    // key that checks the dialer's `sig`. Before this, the first node in a
+    // fleet to gain a certificate lost every peer that had not gained one, and
+    // lost it permanently: 4003 is terminal by this package's contract.
+    const socket = makeSocketPath()
+    cleanups.push(socket.cleanup)
+    const handled: QianmoMessage[] = []
+    const server = startTransportServer({
+      unix: socket.path,
+      psk: TEST_PSK,
+      onMessage: message => {
+        handled.push(message)
+      },
+      // No `--trust-ca`: a plain `StaticPublicKeyDirectory`, which is what
+      // `buildPublicKeyDirectory()` returns when only `--trust` was given.
+      signing: {
+        node: LISTENER,
+        keys: listenerKeys,
+        directory: fullDirectory(),
+      },
+    })
+    servers.push(server)
+    const client = new TransportClient({
+      endpoint: { unix: socket.path },
+      node: DIALER,
+      peerNode: LISTENER,
+      psk: TEST_PSK,
+      keepAliveIntervalMs: 0,
+      backoff: FAST_BACKOFF,
+      signing: {
+        keys: dialerKeys,
+        directory: caDirectory(),
+        credential: {
+          selector: 'fingerprint-f1',
+          source: 'certificate',
+          id: 'fingerprint-f1',
+        },
+      },
+    })
+    clients.push(client)
+
+    await client.connect(5_000)
+    client.send(makeMessage())
+    await client.waitForDrain()
+    expect(handled).toHaveLength(1)
+
+    const accepted = server.events.byType(TransportEventType.AuthAccepted)
+    expect(accepted).toHaveLength(1)
+    // `signature`, not `credential_signature`: this listener checked a
+    // signature and nothing else, and the audit record says only that.
+    expect(accepted[0]?.detail['authentication']).toBe('signature')
+    expect(accepted[0]?.detail['credential']).toBeUndefined()
+    // The dialer's own half. An unsigned ready would have read `psk`, so this
+    // also pins that the §7.1.1 direction crossed the same boundary.
+    expect(client.authenticatedBy).toBe('signature')
+  })
+})
