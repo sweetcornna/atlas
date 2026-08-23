@@ -217,7 +217,7 @@
 
 | 文件 | +/− | 改了什么 |
 | --- | --- | --- |
-| `scripts/test-shards.sh` | +23/−6 | ① 分片名单加入 `tests/boundary` 与 `demo/lib`——不在这个循环里的测试目录**在 CI 里根本不跑**，而本地 `bun test` 会跑，那种「本地绿 + CI 绿」的第二个绿毫无意义；② `@qianmo/*` 包的分片加 `--isolate`（每个测试文件一份全新 global，把跨文件 mock/env 洁净度变成结构保证），**基座分片保持原样**——把 700 个基座文件翻成 `--isolate` 是未经度量的风险且平白制造基座漂移；③ 随 `publish-npm.yml` 删除改掉注释里的交叉引用 |
+| `scripts/test-shards.sh` | +37/−6 | ① 分片名单加入 `tests/boundary`、`demo/lib` 与 `demo/env`——不在这个循环里的测试目录**在 CI 里根本不跑**，而本地 `bun test` 会跑，那种「本地绿 + CI 绿」的第二个绿毫无意义。`demo/env` 那四套（beta-wake-psk / beta-retain / ops/mirror-pull / resident-task-policy）跑的是真运维 shell 脚本，最该在 Linux 上跑，却直到 S14 才进这份名单；写成字面量而不是 `demo/env/*`，因为用例横跨该目录本身与 `beta/`、`beta/ops/` 两层子目录，而 `bun test <dir>` 本来就递归；② `@qianmo/*` 包的分片加 `--isolate`（每个测试文件一份全新 global，把跨文件 mock/env 洁净度变成结构保证），**基座分片保持原样**——把 700 个基座文件翻成 `--isolate` 是未经度量的风险且平白制造基座漂移；③ 随 `publish-npm.yml` 删除改掉注释里的交叉引用 |
 | `scripts/unused-budget.json` | +1/−1 | `exports` 棘轮 1255 → 1251。**每次上游同步必然冲突的那个数字**，对策见 §4 |
 
 ---
