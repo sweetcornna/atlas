@@ -70,6 +70,8 @@ import {
 
 const DIALER = 'node-a'
 const LISTENER = 'node-b'
+/** A second dialer segment, for "same key, other name" cases. */
+const IMPOSTOR = 'node-c'
 const F1 = 'fingerprint-f1'
 const F2 = 'fingerprint-f2'
 const K2 = 'fingerprint-key-2'
@@ -125,10 +127,19 @@ function exact(
   }
 }
 
+/**
+ * One handshake, driven frame by frame.
+ *
+ * `node` is a parameter because the frozen tuple has a leg for it: the PSK
+ * tier proves nothing per node — anyone holding the secret computes the MAC
+ * for any name — so a fixture that can only ever say `node-a` cannot pose the
+ * question the identity freeze answers.
+ */
 async function rawHandshake(
   url: string,
   channelId: string,
   authentication: RawAuthentication,
+  node: string = DIALER,
 ): Promise<RawSession> {
   const socket = new WebSocket(url)
   sockets.push(socket)
@@ -160,7 +171,7 @@ async function rawHandshake(
           serializeFrame({
             t: FrameType.Auth,
             v: FRAME_VERSION,
-            node: DIALER,
+            node,
             nonce: frame.nonce,
             clientNonce,
             channelId,
@@ -168,7 +179,7 @@ async function rawHandshake(
               TEST_PSK,
               frame.nonce,
               clientNonce,
-              DIALER,
+              node,
               channelId,
             ),
             ...(authentication.kind === 'psk'
@@ -176,12 +187,7 @@ async function rawHandshake(
               : {
                   sig: signBytes(
                     authentication.keys,
-                    authSigningInput(
-                      frame.nonce,
-                      clientNonce,
-                      DIALER,
-                      channelId,
-                    ),
+                    authSigningInput(frame.nonce, clientNonce, node, channelId),
                   ),
                 }),
             ...(authentication.kind !== 'credential_signature'
@@ -193,7 +199,7 @@ async function rawHandshake(
                     authCredentialProofInput(
                       frame.nonce,
                       clientNonce,
-                      DIALER,
+                      node,
                       channelId,
                       authentication.credential.selector,
                       authentication.credential.source,
@@ -220,8 +226,31 @@ async function rawHandshake(
   }
 }
 
+function envelopeCount(session: RawSession): number {
+  return session.frames.filter(frame => frame.t === FrameType.Envelope).length
+}
+
 function hasEnvelope(session: RawSession): boolean {
-  return session.frames.some(frame => frame.t === FrameType.Envelope)
+  return envelopeCount(session) > 0
+}
+
+/**
+ * {@link waitUntil}, reported rather than thrown.
+ *
+ * So that a failure points at the assertion that cares — "the owner never got
+ * its reply" — instead of at a polling helper's timeout message, which names
+ * neither the property nor the line that lost it.
+ */
+async function eventually(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  try {
+    await waitUntil(predicate, timeoutMs)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function sendRequest(session: RawSession, taskId: string): void {
@@ -319,6 +348,148 @@ describe('retained channel authentication binding', () => {
     expect(anotherKey.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
     expect(hasEnvelope(anotherKey)).toBe(false)
     expect(same.socket.readyState).toBe(WebSocket.OPEN)
+  })
+
+  test('a PSK-only listener refuses another node name on a retained channel', async () => {
+    // The PSK tier is where the node name is the *only* separator in the frozen
+    // tuple: `verifyAuth` returns neither a key nor a credential, so the other
+    // three legs are byte-identical for any two dialers. The MAC does cover the
+    // name — and proves nothing about it, because anyone holding the secret
+    // computes it for whichever name they please. A shared key confers no
+    // per-node identity, which is precisely why the channel has to keep one.
+    const server = startTransportServer({
+      port: 0,
+      psk: TEST_PSK,
+      onMessage: (_message, context) => {
+        context.channel.send(
+          makeMessage({ taskId: RETAINED_SECRET, payload: { retained: true } }),
+        )
+      },
+    })
+    servers.push(server)
+    const url = server.url ?? ''
+    const channelId = '7'.repeat(32)
+
+    const owner = await rawHandshake(url, channelId, { kind: 'psk' })
+    expect(owner.outcome).toBe('ready')
+    sendRequest(owner, 'seed-psk-retained')
+    await waitUntil(() => hasEnvelope(owner))
+    owner.socket.close(1000)
+    await owner.closed
+    await waitUntil(() => server.connections === 0 && server.channels === 1)
+
+    // Same secret, same channel id, another name — and the outbox it is
+    // reaching for holds an envelope addressed to the identity that left it.
+    const impostor = await rawHandshake(
+      url,
+      channelId,
+      { kind: 'psk' },
+      IMPOSTOR,
+    )
+    expect(impostor.outcome).toBe('closed')
+    expect(impostor.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
+    expect(hasEnvelope(impostor)).toBe(false)
+
+    const mismatches = rejectionsOf(
+      server,
+      HandshakeRejection.ChannelIdentityMismatch,
+    )
+    expect(mismatches).toHaveLength(1)
+    expect(mismatches[0]?.detail['node']).toBe(IMPOSTOR)
+    expect(mismatches[0]?.detail['channelId']).toBe(channelId)
+    expect(mismatches[0]?.detail['pending']).toBe(1)
+  })
+
+  test('two nodes behind one signing key are still two identities', async () => {
+    // The isolating case. Above, a wrong name and a wrong key travel together,
+    // so the key leg alone would refuse the dial and the name leg could be
+    // missing without anything going red. Here the directory answers with the
+    // *same* public key for both names — a fleet issued one certificate, a
+    // half-finished rename — so every leg but the name matches, and the name is
+    // the only thing left that can refuse it.
+    const shared: HandshakeCredentialDirectory = {
+      publicKeyOf(node) {
+        if (node === LISTENER) return listenerKeys.publicKey
+        if (node === DIALER || node === IMPOSTOR) return firstKeys.publicKey
+        return null
+      },
+      handshakeCredentialOf: () => null,
+    }
+    const server = serverFor(shared)
+    const url = server.url ?? ''
+    const channelId = '8'.repeat(32)
+    const signature: RawAuthentication = { kind: 'signature', keys: firstKeys }
+
+    const owner = await rawHandshake(url, channelId, signature)
+    expect(owner.outcome).toBe('ready')
+    sendRequest(owner, 'seed-shared-key-retained')
+    await waitUntil(() => hasEnvelope(owner))
+    owner.socket.close(1000)
+    await owner.closed
+    await waitUntil(() => server.connections === 0 && server.channels === 1)
+
+    const impostor = await rawHandshake(url, channelId, signature, IMPOSTOR)
+    // 4004 rather than 4003 is itself the isolation: the signature verified
+    // under the shared key, so the handshake got past authentication and was
+    // stopped by the channel's identity — the name, and nothing else.
+    expect(impostor.outcome).toBe('closed')
+    expect(impostor.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
+    expect(hasEnvelope(impostor)).toBe(false)
+
+    const mismatches = rejectionsOf(
+      server,
+      HandshakeRejection.ChannelIdentityMismatch,
+    )
+    expect(mismatches).toHaveLength(1)
+    expect(mismatches[0]?.detail['node']).toBe(IMPOSTOR)
+    expect(mismatches[0]?.detail['channelId']).toBe(channelId)
+
+    // The control: the same name and key on a channel of its own is welcome.
+    // Without it, "node-c was refused" could be read as "node-c cannot dial",
+    // and the test would pass for a reason that has nothing to do with the
+    // retained channel.
+    const ownChannel = await rawHandshake(
+      url,
+      '9'.repeat(32),
+      signature,
+      IMPOSTOR,
+    )
+    expect(ownChannel.outcome).toBe('ready')
+  })
+
+  test('an intruder is refused before it is bound, so the owner keeps its live link', async () => {
+    // The ordering — refuse, *then* bind — is a security property that the
+    // payload checks above cannot see: an intruder bound and refused a line
+    // later never drains the outbox either, because it is closed before
+    // `ready()`, so "no payload leaked" passes just as happily. What a late
+    // refusal actually costs is the holder: `bind` replaces the channel's
+    // socket and closes the one it displaces (`CLOSE_REPLACED`), hanging up on
+    // a healthy owner mid-task. Read three independent ways below, because a
+    // property this quiet must not rest on a single line.
+    const directory = credentialDirectory(() => firstKeys.publicKey)
+    const server = serverFor(directory)
+    const url = server.url ?? ''
+    const channelId = 'f'.repeat(32)
+
+    const owner = await rawHandshake(url, channelId, exact(F1))
+    expect(owner.outcome).toBe('ready')
+    sendRequest(owner, 'seed-live-owner')
+    await waitUntil(() => envelopeCount(owner) === 1)
+
+    // Live rather than retained, deliberately: a channel whose owner is still
+    // on it is the case where binding first takes a working link away.
+    const intruder = await rawHandshake(url, channelId, exact(K2, secondKeys))
+    expect(intruder.outcome).toBe('closed')
+    expect(intruder.closeCode).toBe(CLOSE_CHANNEL_CONFLICT)
+
+    // ① The owner's socket, as the owner sees it.
+    expect(owner.socket.readyState).toBe(WebSocket.OPEN)
+    // ② The channel still routes to it — proven by traffic, not by state.
+    sendRequest(owner, 'after-the-refusal')
+    expect(await eventually(() => envelopeCount(owner) >= 2)).toBe(true)
+    // ③ And the listener's own count of live connections, which never
+    // consults the dialer's socket at all.
+    expect(await eventually(() => server.connections === 1)).toBe(true)
   })
 
   test('PSK, legacy signature, and exact signature cannot inherit each other', async () => {
@@ -438,14 +609,20 @@ function startRelay(targetPort: number): Promise<Relay> {
 }
 
 /**
- * A listener that answers every auth frame with {@link CLOSE_CHANNEL_CONFLICT}.
+ * A listener that answers auth frames with {@link CLOSE_CHANNEL_CONFLICT}.
  *
- * No real transport server can do this: a fresh 128-bit channel id cannot
- * collide with a channel that does not exist, so the *first* rotation always
- * resolves a genuine conflict. Which is why the bound is only observable
- * against a listener refusing unconditionally — and that is also the case the
- * bound exists for. A listener saying no to everything is not a collision, and
- * rotating at it forever is a reconnect storm wearing recovery's clothes.
+ * No real transport server can refuse every one of them: a fresh 128-bit
+ * channel id cannot collide with a channel that does not exist, so the *first*
+ * rotation always resolves a genuine conflict. Which is why the bound is only
+ * observable against a listener refusing unconditionally — and that is also
+ * the case the bound exists for. A listener saying no to everything is not a
+ * collision, and rotating at it forever is a reconnect storm wearing
+ * recovery's clothes.
+ *
+ * `answer` scripts that per auth frame, because the *other* shape matters
+ * too: conflicts with an admission between them are separate events rather
+ * than one unresolved one, and only a listener that can do both tells the two
+ * apart.
  */
 interface ConflictingListener {
   readonly url: string
@@ -454,7 +631,9 @@ interface ConflictingListener {
   close(): Promise<void>
 }
 
-function conflictingListener(): ConflictingListener {
+function conflictingListener(
+  answer: (attempt: number) => 'conflict' | 'admit' = () => 'conflict',
+): ConflictingListener {
   const seen: string[] = []
   const listener = Bun.serve<undefined, never>({
     port: 0,
@@ -478,10 +657,19 @@ function conflictingListener(): ConflictingListener {
         const frame = parseFrame(typeof raw === 'string' ? raw : raw.toString())
         if (frame === null || frame.t !== FrameType.Auth) return
         seen.push(frame.channelId)
-        socket.close(
-          CLOSE_CHANNEL_CONFLICT,
-          'logical channel identity conflict',
-        )
+        if (answer(seen.length) === 'conflict') {
+          socket.close(
+            CLOSE_CHANNEL_CONFLICT,
+            'logical channel identity conflict',
+          )
+          return
+        }
+        // Admitted, then dropped the way an ordinary link loss looks — a code
+        // the dialer reconnects from. The drop is the point: the next conflict
+        // has to arrive on a *new* connection to be a second conflict at all.
+        socket.send(serializeFrame({ t: FrameType.Ready, v: FRAME_VERSION }))
+        const drop = setTimeout(() => socket.close(1000, 'link dropped'), 5)
+        drop.unref?.()
       },
     },
   })
@@ -724,6 +912,164 @@ describe('a conflicting channel id is survivable, not fatal', () => {
     // reused an id would collide again by construction.
     expect(listener.seen).toHaveLength(MAX_CHANNEL_ROTATIONS + 1)
     expect(new Set(listener.seen).size).toBe(MAX_CHANNEL_ROTATIONS + 1)
+  })
+
+  test('the bound counts one run of conflicts, not a lifetime of them', async () => {
+    // Every conflict here is resolved by an admission before the next one
+    // arrives, which is the shape the trigger has: an operator edits the
+    // listener's directory, the dialer moves, and the next edit is a separate
+    // event later in the same process's life. A lifetime budget cannot tell
+    // that from a listener refusing every id in a row, so it retires a node
+    // that is doing exactly what it was told to do — and the fourth `--trust`
+    // edit is not a rare number for a long-lived one.
+    const listener = conflictingListener(attempt =>
+      attempt % 2 === 0 ? 'conflict' : 'admit',
+    )
+    conflicting.push(listener)
+    const client = new TransportClient({
+      endpoint: { url: listener.url },
+      node: DIALER,
+      psk: TEST_PSK,
+      keepAliveIntervalMs: 0,
+      backoff: {
+        baseDelayMs: 5,
+        maxDelayMs: 10,
+        jitterRatio: 0,
+        giveUpAfterMs: 20_000,
+      },
+    })
+    clients.push(client)
+
+    await client.connect(5_000)
+    const past = MAX_CHANNEL_ROTATIONS + 1
+    await waitUntil(
+      () =>
+        client.events.byType(TransportEventType.ChannelRotated).length >= past,
+      10_000,
+    )
+    expect(client.isClosed()).toBe(false)
+
+    // Each one is a *first* rotation, which is the reset asserted where it
+    // shows rather than through the counter it comes from: under a lifetime
+    // budget these would read 1, 2, 3 and the fourth would never be recorded.
+    const rotations = client.events.byType(TransportEventType.ChannelRotated)
+    expect(rotations.map(event => event.detail['rotation'])).toEqual(
+      rotations.map(() => 1),
+    )
+    expect(rotations.length).toBeGreaterThanOrEqual(past)
+  })
+
+  test('a client that will not reconnect reports the conflict, not a phantom rotation', async () => {
+    // `giveUpAfterMs: 0` is the live configuration of `@qianmo/tunnel`, not a
+    // corner of the option space: a tunnel that comes back is a lease that
+    // outlived its terms. Such a client never dials again, so a rotation would
+    // put a fresh id in a loss record and on no wire.
+    const listener = conflictingListener()
+    conflicting.push(listener)
+    const client = new TransportClient({
+      endpoint: { url: listener.url },
+      node: DIALER,
+      psk: TEST_PSK,
+      keepAliveIntervalMs: 0,
+      backoff: { giveUpAfterMs: 0 },
+    })
+    clients.push(client)
+    const dialled = client.id
+
+    const parked = client
+      .sendAndWait(makeMessage({ taskId: 'parked-across-unrotatable' }), 30_000)
+      .then(() => 'resolved')
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      )
+
+    await expect(client.connect(5_000)).rejects.toThrow(/4004/)
+    const reported = await parked
+    expect(reported).toMatch(/4004/)
+    // The cause, and specifically not the give-up path's symptom: this client
+    // did not run out of reconnects mid-recovery, it was refused once.
+    expect(reported).not.toMatch(/budget/)
+    expect(
+      client.events.byType(TransportEventType.ReconnectGaveUp),
+    ).toHaveLength(0)
+
+    // And nothing was abandoned, because nothing moved: one dial, one id.
+    expect(
+      client.events.byType(TransportEventType.ChannelRotated),
+    ).toHaveLength(0)
+    expect(client.id).toBe(dialled)
+    expect(listener.seen).toEqual([dialled])
+  })
+
+  test('a budget that expires between the two questions still answers with the conflict', async () => {
+    // A 4004 asks two things at once — may this client take a fresh id, and is
+    // there budget left for the dial that would carry it — and they have to be
+    // answered from one reading of the clock. Read twice and the give-up
+    // boundary can fall in between: the rotation is recorded, the dial never
+    // happens, and the client dies reporting the budget. That is the same pair
+    // of symptoms as the `giveUpAfterMs: 0` case above, on a window too narrow
+    // to race for, so the clock is injected and the jump is armed from the
+    // event sink — `EventRecorder` calls it synchronously, inside the rotation,
+    // which is exactly the gap in question.
+    //
+    // The jump has to clear `giveUpAfterMs` while staying under the E4 freeze
+    // threshold (`maxDelayMs × timeJumpFactor`), or the schedule reads it as a
+    // thaw and hands back a fresh budget instead of giving up.
+    const listener = conflictingListener()
+    conflicting.push(listener)
+    const budgetMs = 1_000
+    let clock = 0
+    let armed = false
+    const client = new TransportClient({
+      endpoint: { url: listener.url },
+      node: DIALER,
+      psk: TEST_PSK,
+      keepAliveIntervalMs: 0,
+      backoff: {
+        baseDelayMs: 1,
+        maxDelayMs: 10_000,
+        jitterRatio: 0,
+        giveUpAfterMs: budgetMs,
+      },
+      now: () => {
+        if (armed) {
+          armed = false
+          clock += 5 * budgetMs
+        }
+        return clock
+      },
+      events: event => {
+        if (event.type === TransportEventType.ChannelRotated) armed = true
+      },
+    })
+    clients.push(client)
+    const abandoned = client.id
+
+    const failure = await client
+      .connect(5_000)
+      .then(() => 'connected')
+      .catch((error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      )
+    // The conflict, not the budget it stepped over on the way out.
+    expect(failure).toMatch(/4004/)
+    expect(failure).not.toMatch(/budget/)
+    expect(
+      client.events.byType(TransportEventType.ReconnectGaveUp),
+    ).toHaveLength(0)
+
+    // And the rotation it did spend was spent on a dial: the abandoned id and
+    // the one that replaced it are both on the wire, in that order. A rotation
+    // recorded without the dial behind it is a loss record for a loss that
+    // never happened, and the two sides cannot reconcile it.
+    const rotations = client.events.byType(TransportEventType.ChannelRotated)
+    expect(rotations).toHaveLength(1)
+    expect(rotations[0]?.detail['abandoned']).toBe(abandoned)
+    expect(rotations[0]?.detail['channelId']).toBe(client.id)
+    expect(listener.seen).toEqual([abandoned, client.id])
+    // Scaffolding, asserted last so it never speaks before the properties do:
+    // the jump fired, so the boundary really was crossed mid-rotation.
+    expect(clock).toBeGreaterThan(0)
   })
 
   test('a 4003 tells parked sends the real cause too', async () => {

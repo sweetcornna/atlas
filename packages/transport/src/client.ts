@@ -244,9 +244,16 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
  * listener saying no. Unbounded rotation there is a reconnect storm dressed up
  * as recovery, and it also silently abandons one retained channel per attempt.
  *
- * Not reset on success: a client that has to rotate three times over its
- * lifetime has something wrong with it, and the budget is per client for the
- * same reason the reconnect budget is.
+ * Counted per outage, not per lifetime: a successful handshake clears it, the
+ * way a successful connection clears the reconnect budget. What this bounds is
+ * a *run* of conflicts with nothing admitted between them — the listener
+ * refusing every id this client can produce — and a run stays three long,
+ * because two rotations can only be separated by a handshake that got through,
+ * which is itself the evidence that the conflict it moved away from is over.
+ * A lifetime budget would instead retire a healthy long-lived node on its
+ * fourth `--trust` edit: the trigger this exists for is the listener's
+ * directory changing under a retained channel (see `CLOSE_CHANNEL_CONFLICT`),
+ * and that is an operational event that recurs for as long as the node runs.
  */
 export const MAX_CHANNEL_ROTATIONS = 3
 
@@ -397,13 +404,15 @@ export class TransportClient implements TransportChannel {
    * True once this client will never carry another envelope.
    *
    * Four ways in: `close()`, a 4003 (the key is wrong), the reconnect budget
-   * running out, and a 4004 that survived {@link MAX_CHANNEL_ROTATIONS}
-   * attempts to move out of its way. All four are terminal, and none of them
-   * is visible through {@link isReady}, which cannot tell "down for a moment"
-   * from "down for good". A holder of a long-lived client needs that
-   * distinction — otherwise it keeps handing envelopes to a corpse, and `send`
-   * throwing is the first it hears of it. The activator's link pool reads this
-   * to decide when a link has to be replaced rather than waited on.
+   * running out, and a 4004 this client cannot move out of the way of — its
+   * {@link MAX_CHANNEL_ROTATIONS} spent on one unbroken run of conflicts, the
+   * id pinned by the caller, or no reconnect left to carry a fresh one. All
+   * four are terminal, and none of them is visible through {@link isReady},
+   * which cannot tell "down for a moment" from "down for good". A holder of a
+   * long-lived client needs that distinction — otherwise it keeps handing
+   * envelopes to a corpse, and `send` throwing is the first it hears of it.
+   * The activator's link pool reads this to decide when a link has to be
+   * replaced rather than waited on.
    *
    * A **single** 4004 is not one of the four: that is the listener saying the
    * channel id is taken, which this client answers by taking a different one.
@@ -714,6 +723,11 @@ export class TransportClient implements TransportChannel {
   private onReady(): void {
     this.state = 'ready'
     this.schedule.succeeded()
+    // Alongside it, and for the same reason: a handshake that got through is
+    // the proof that whatever the last rotation moved away from is resolved.
+    // Keeping the count would make the rotation budget a lifetime allowance
+    // for an event that recurs — see {@link MAX_CHANNEL_ROTATIONS}.
+    this.channelRotations = 0
     this.startKeepAlive()
     // Replay everything unreceipted, oldest first. Duplicates are the
     // receiver's problem by design — that is the whole at-least-once bargain.
@@ -802,19 +816,21 @@ export class TransportClient implements TransportChannel {
     // node out of service — which is what the earlier "4003 for everything"
     // shape did, permanently and for a peer that had not changed a byte.
     if (code === CLOSE_CHANNEL_CONFLICT) {
-      if (this.rotateChannelId()) {
-        this.scheduleReconnect(onFatal)
+      // One reading of the clock for both halves of the answer. Reading it
+      // twice lets the give-up boundary fall *between* them: the rotation is
+      // recorded and the id changed on the first reading, the dial that was to
+      // carry it is refused on the second, and the client dies reporting an
+      // exhausted budget — the two symptoms `rotationRefusal` exists to
+      // prevent, reproduced on a window microseconds wide.
+      const now = this.now()
+      const refusal = this.rotationRefusal(now)
+      if (refusal === null) {
+        this.rotateChannelId()
+        this.scheduleReconnect(onFatal, now)
         return
       }
       this.record(TransportEventType.AuthRejected, { code })
-      this.die(
-        new Error(
-          this.channelIdIsCallerSupplied
-            ? `transport channel ${this.channelId} is held by another identity (4004); a caller-supplied channel id is never rotated`
-            : `transport channel id still conflicted after ${this.channelRotations} rotation(s) (4004)`,
-        ),
-        onFatal,
-      )
+      this.die(new Error(refusal), onFatal)
       return
     }
 
@@ -822,14 +838,43 @@ export class TransportClient implements TransportChannel {
   }
 
   /**
-   * Move to a fresh channel id, or report that this client may not.
+   * Why this client may not answer a {@link CLOSE_CHANNEL_CONFLICT} by taking
+   * a fresh channel id — as the sentence its caller will be given — or `null`
+   * when it may.
    *
-   * Returns `false` for a caller-supplied id and once the rotation budget is
-   * spent; both are then fatal at the call site.
+   * The reconnect budget belongs in here, rather than being discovered by the
+   * dial that follows, because a rotation is only half of the answer: the
+   * other half is the dial carrying the new id. A client that will not dial
+   * again — budget spent, or `giveUpAfterMs: 0`, which is how `@qianmo/tunnel`
+   * configures a lease that must not outlive its link — would otherwise record
+   * a {@link TransportEventType.ChannelRotated}, a *loss* record, for an id
+   * that never reached the wire, and then die reporting an exhausted reconnect
+   * budget: the symptom of the give-up path it fell into, in place of the 4004
+   * that actually ended it.
+   *
+   * `now` comes from the caller rather than the clock so that this answer and
+   * the retry it licenses are the same reading — see `onClose`.
    */
-  private rotateChannelId(): boolean {
-    if (this.channelIdIsCallerSupplied) return false
-    if (this.channelRotations >= MAX_CHANNEL_ROTATIONS) return false
+  private rotationRefusal(now: number): string | null {
+    if (this.channelIdIsCallerSupplied) {
+      return `transport channel ${this.channelId} is held by another identity (4004); a caller-supplied channel id is never rotated`
+    }
+    if (this.channelRotations >= MAX_CHANNEL_ROTATIONS) {
+      return `transport channel id still conflicted after ${this.channelRotations} rotation(s) (4004)`
+    }
+    if (!this.schedule.willRetry(now)) {
+      return `transport channel ${this.channelId} is held by another identity (4004), and this client has no reconnect left to carry a fresh one`
+    }
+    return null
+  }
+
+  /**
+   * Move to a fresh channel id.
+   *
+   * Whether this client *may* is {@link rotationRefusal}'s question, asked
+   * before the move; this only makes it.
+   */
+  private rotateChannelId(): void {
     this.channelRotations += 1
     const abandoned = this.channelId
     this.channelId = newChannelId()
@@ -843,7 +888,6 @@ export class TransportClient implements TransportChannel {
       channelId: this.channelId,
       rotation: this.channelRotations,
     })
-    return true
   }
 
   /**
@@ -865,10 +909,16 @@ export class TransportClient implements TransportChannel {
     onFatal?.(error)
   }
 
-  private scheduleReconnect(onFatal?: (error: Error) => void): void {
+  private scheduleReconnect(
+    onFatal?: (error: Error) => void,
+    // Defaulted, so the two ordinary callers stay as they were; the 4004 path
+    // passes the instant it already decided on, which is what keeps its
+    // rotation and its retry on the same reading of the clock.
+    now: number = this.now(),
+  ): void {
     if (this.state === 'closed') return
     this.state = 'reconnecting'
-    const decision = this.schedule.next(this.now())
+    const decision = this.schedule.next(now)
     if (decision.action === 'give-up') {
       this.record(TransportEventType.ReconnectGaveUp, {
         elapsedMs: decision.elapsedMs,

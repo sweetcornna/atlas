@@ -6,7 +6,18 @@ import type { SuccessfulReceiptStatus } from './outbox.js'
 
 /** Send side of one authenticated logical transport channel. */
 export interface TransportChannel {
-  /** Stable across physical WebSocket reconnects. */
+  /**
+   * Stable across physical WebSocket reconnects.
+   *
+   * With one implementation-side exception, and it is the one a consumer has
+   * to know about before treating this as a durable key: a dialing
+   * `TransportClient` whose id the listener holds under another identity
+   * answers `CLOSE_CHANNEL_CONFLICT` by taking a fresh one, so its `id` can
+   * differ before and after a reconnect. Server-side channels never move.
+   * `activator/routes.ts` compares this field to decide that a re-registration
+   * is the same route, which is correct today only because nothing hands it a
+   * dialer — so check the implementation before doing likewise.
+   */
   readonly id: string
   /** Authenticated audit label when known; not an authorization identity. */
   readonly peerNode: string | null
