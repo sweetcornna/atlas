@@ -76,7 +76,7 @@ async function withFixture<T>(
 
   if ((env.isCI || process.env.CI) && !isEnvTruthy(process.env.VCR_RECORD)) {
     throw new Error(
-      `Fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then commit the result.`,
+      `Fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then \`git add -f\` the result — fixtures/ is gitignored by default.`,
     )
   }
 
@@ -138,7 +138,7 @@ export async function withVCR(
 
   if (env.isCI && !isEnvTruthy(process.env.VCR_RECORD)) {
     throw new Error(
-      `Anthropic API fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then commit the result. Input messages:\n${jsonStringify(dehydratedInput, null, 2)}`,
+      `Anthropic API fixture missing: ${filename}. Re-run tests with VCR_RECORD=1, then \`git add -f\` the result — fixtures/ is gitignored by default. Input messages:\n${jsonStringify(dehydratedInput, null, 2)}`,
     )
   }
 
