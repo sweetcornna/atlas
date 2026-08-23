@@ -60,6 +60,7 @@ const RECORD: AuditRecord = {
 
 const PAGE: AuditPage = {
   records: [RECORD],
+  chain: 'intact',
   intact: true,
   issueCount: 0,
   total: 1,
@@ -340,7 +341,12 @@ describe('the page', () => {
   test('renders every audit source independently with explicit mirror status', async () => {
     const intact = new FakeAudit()
     const broken = new FakeAudit()
-    broken.readResult = okResult({ ...PAGE, intact: false, issueCount: 2 })
+    broken.readResult = okResult({
+      ...PAGE,
+      chain: 'broken',
+      intact: false,
+      issueCount: 2,
+    })
     const { handle } = setupMulti([
       { node: 'beta-1', audit: intact, kind: 'authoritative' },
       {
@@ -363,26 +369,46 @@ describe('the page', () => {
     expect(broken.filters).toHaveLength(1)
   })
 
-  test('keeps a missing audit source empty without failing the other sources', async () => {
+  test('keeps a started-but-quiet source distinct from a missing one', async () => {
     const healthy = new FakeAudit()
-    const missing = new FakeAudit()
-    missing.readResult = okResult({
+    const quiet = new FakeAudit()
+    // The chain file exists and holds nothing: a node that has done no
+    // protocol work yet, which is a normal state and not a finding.
+    quiet.readResult = okResult({
       records: [],
+      chain: 'empty',
       intact: true,
+      issueCount: 0,
+      total: 0,
+    })
+    const absent = new FakeAudit()
+    // No chain file at all: either end of the pipe may owe it, and the page
+    // must not summarise this as an intact chain.
+    absent.readResult = okResult({
+      records: [],
+      chain: 'absent',
+      intact: false,
       issueCount: 0,
       total: 0,
     })
     const { handle } = setupMulti([
       { node: 'beta-1', audit: healthy, kind: 'authoritative' },
-      { node: 'beta-2', audit: missing, kind: 'authoritative' },
+      { node: 'beta-2', audit: quiet, kind: 'authoritative' },
+      { node: 'beta-3', audit: absent, kind: 'authoritative' },
     ])
 
     const markup = await (await handle(get('/fragments/audit', VIEW))).text()
     expect(markup).toContain('data-audit-node="beta-1"')
     expect(markup).toContain('data-audit-node="beta-2"')
+    expect(markup).toContain('data-audit-node="beta-3"')
     expect(markup).toContain('这条链还没有记录')
+    expect(markup).toContain('审计链未建立')
+    expect(markup).toContain('未建立')
+    // One missing source is enough to take the whole view out of 完整.
+    expect(markup).toContain('data-audit-state="absent"')
     expect(healthy.filters).toHaveLength(1)
-    expect(missing.filters).toHaveLength(1)
+    expect(quiet.filters).toHaveLength(1)
+    expect(absent.filters).toHaveLength(1)
   })
 })
 

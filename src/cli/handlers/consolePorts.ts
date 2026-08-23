@@ -34,6 +34,7 @@ import {
 } from '@qianmo/audit'
 import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
 import type {
+  AuditChainState,
   AuditFilter,
   AuditPort,
   CertificatePort,
@@ -334,12 +335,28 @@ function clampLimit(raw: number | undefined): number {
 }
 
 /**
+ * 一次读取落在四态里的哪一态（issue #9②）。
+ *
+ * 顺序不能换：先问「有没有文件」，再问「链验不验得过」，最后才问「有没有
+ * 记录」。倒过来问会让**没有文件**这一态被空记录吃掉——而那正是内测环境里
+ * 每 5 分钟失败一次的镜像链路在控制台上显示成「链完整」的那条路径。
+ */
+function chainStateOf(read: TrailReadResult): AuditChainState {
+  if (!read.present) return 'absent'
+  if (!read.intact) return 'broken'
+  return read.records.length === 0 ? 'empty' : 'intact'
+}
+
+/**
  * 审计链的只读面。
  *
  * **文件不存在返回空页，不是失败**：一个刚起来、还没产生过任何审计记录的节点
  * 是完全正常的状态，把它渲染成红色的「读取失败」会让第一次用控制台的人以为
  * 自己装坏了。`readTrail` 自己就把 ENOENT 当空文件处理，这里只需要不把别的
  * IO 错误（比如权限）混进同一个桶。
+ *
+ * **但「不是失败」不等于「完整」**：文件不存在与文件存在且为空是两件事，
+ * 由 `chain` 分开表述，`intact` 只对前者收回背书（`AuditChainState`）。
  *
  * **只读**：这个端口没有任何写审计链的路径。审计链的写入口只有节点进程自己
  * （append-only fd），控制台连一个能追加的方法都不该有。
@@ -383,7 +400,8 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
 
       const loaded = load()
       if (!loaded.ok) return loaded
-      const { records, issues, intact } = loaded.value
+      const { records, issues } = loaded.value
+      const chain = chainStateOf(loaded.value)
 
       let witness:
         | { readonly tampered: boolean; readonly stale: boolean }
@@ -453,7 +471,9 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
         ok: true,
         value: {
           records: matched,
-          intact,
+          chain,
+          // 只有「有链且没毛病」才算完整——空链算，缺文件不算。
+          intact: chain === 'intact' || chain === 'empty',
           issueCount: issues.length,
           // 过滤前的总数，页面据此说「共 M 条中的 N 条」。
           total: records.length,

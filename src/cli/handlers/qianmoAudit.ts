@@ -269,7 +269,7 @@ export async function runQianmoAudit(
     return
   }
   const config = parseQianmoAuditArgs(args)
-  const { records, issues, intact } = readTrail(config.path)
+  const { records, issues, intact, present } = readTrail(config.path)
 
   if (config.verify) {
     const witness =
@@ -281,16 +281,33 @@ export async function runQianmoAudit(
             config.witness,
             runtime.readWitnessAnchors,
           )
+    // 与控制台同一套四态（`AuditChainState`）：`records: 0` 有两种成因，而
+    // `intact` 表达不了它们的差别——「还没做过协议工作」和「链根本不在这里」
+    // 在一条 `intact: true` 上长得一模一样。
+    const chain = !present
+      ? 'absent'
+      : !intact
+        ? 'broken'
+        : records.length === 0
+          ? 'empty'
+          : 'intact'
     const summary = {
       path: config.path,
       records: records.length,
-      intact,
+      chain,
+      // 同一个判据，两张面上不能各写一份：有链且没毛病才算完整——空链算，
+      // 缺文件不算。
+      intact: chain === 'intact' || chain === 'empty',
       issues,
       ...(witness === undefined ? {} : { witness }),
     }
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`)
     // A broken chain is a finding, and a command that reported it with exit 0
     // would be a command nobody could put in a cron job.
+    //
+    // 退出码只由「发现了问题」驱动，因此**不看** `chain`：一条还没建立的链
+    // 不是一个发现，把它算成失败会让每台新节点上的定时任务从第一分钟起就
+    // 报警——那正是 issue #9① 里 mirror 单元每 5 分钟 fail 一次的形状。
     process.exitCode = intact && witness?.tampered !== true ? 0 : 1
     return
   }

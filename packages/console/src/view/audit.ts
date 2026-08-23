@@ -392,6 +392,18 @@ function activeChips(filter: AuditFilter): string {
 
 const INTEGRITY_LEAD = '审计链断裂'
 const WITNESS_MISMATCH_LEAD = '锚点不符'
+/**
+ * The chain file is not there.
+ *
+ * Stated as a finding rather than as an empty result, and it is the one
+ * distinction this section used to lose: a node with nothing to report and a
+ * node whose trail never arrived both render zero records, and the second one
+ * is the state in which this whole page would stay quiet through anything.
+ * The words are `未建立`, not `读取失败` — nothing failed, there is simply no
+ * chain here yet, and an operator's next step is to find out which end owes
+ * one.
+ */
+const ABSENT_LEAD = '审计链未建立'
 
 /**
  * The second statement of a broken chain: one line, at the top of the results.
@@ -406,6 +418,10 @@ function integrityAlert(
   id = 'audit-integrity',
 ): string {
   if (page === null) return ''
+  // A missing chain gets no strip. It is already stated twice — the rail says
+  // 未建立 and the body leads with the noun — and `断裂 N` needs the strip only
+  // because what sits under *it* is a table rather than a sentence.
+  if (page.chain === 'absent') return ''
   if (!page.intact) {
     const count = Number.isFinite(page.issueCount) ? page.issueCount : 0
     return (
@@ -424,6 +440,9 @@ function integrityAlert(
 }
 
 function integrityStatus(page: AuditPage): string {
+  // Before the integrity verdict, because a file that is not there has no
+  // chain to have a verdict about — and `完整` is what it used to read.
+  if (page.chain === 'absent') return toned('warn', '未建立')
   if (!page.intact) {
     const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
     return toned('bad', `断裂 ${issues}`)
@@ -438,6 +457,31 @@ function integrityStatus(page: AuditPage): string {
 }
 
 /**
+ * No chain file at all — a different body from the empty one, on purpose.
+ *
+ * The empty state invites a wake, because there a wake would produce the first
+ * record. Here it would not: nothing this page offers can make a file appear,
+ * and offering the button anyway would send an operator to press it and
+ * conclude the console is broken when the trail stays blank. So this one only
+ * names the two ends that could owe the file — the node that writes it and the
+ * mirror that carries it — and stops there. Which of the two it is cannot be
+ * decided from this side.
+ *
+ * No filter legend either: a filter cannot be the cause of a missing file, and
+ * repeating it here would suggest it might be.
+ */
+function absentState(): string {
+  return (
+    `<div class="empty">` +
+    `<div class="stack" style="gap:var(--space-4)">` +
+    `<h4 class="empty-title">${escapeHtml(ABSENT_LEAD)}</h4>` +
+    `<p class="empty-note">这个来源还没有链文件 · ` +
+    `节点尚未写入或镜像尚未送达</p>` +
+    `</div></div>`
+  )
+}
+
+/**
  * The empty state: what is true, and the two things worth doing about it.
  *
  * Not `无匹配记录`. An operator looking at a blank trail is either at the start
@@ -445,6 +489,10 @@ function integrityStatus(page: AuditPage): string {
  * and both of those have a next action. The legend under the buttons repeats
  * the filter that produced the emptiness, because the commonest cause of an
  * empty trail is a filter somebody forgot they set.
+ *
+ * It is reached only when the chain file **exists**: a missing one is
+ * {@link absentState}, and the whole point of separating them is that this
+ * body's invitation is a lie in that case.
  */
 function emptyState(filter: AuditFilter): string {
   const current = filter.window ?? ''
@@ -527,6 +575,10 @@ function trailHead(page: AuditPage | null): string {
             : page.witness.stale
               ? 'stale'
               : 'verified',
+      // Emitted here too, not only by the multi-source view: without it the
+      // overview card falls back to reading `intact` alone and a missing
+      // chain arrives there as 断裂 0 — a count of findings nobody made.
+      'audit-state': auditStateOf(page),
     },
   })
 }
@@ -547,9 +599,11 @@ export function renderAudit(
     results.push(integrityAlert(page))
     results.push(activeChips(filter))
     results.push(
-      page.records.length === 0
-        ? emptyState(filter)
-        : recordTable(page.records),
+      page.chain === 'absent'
+        ? absentState()
+        : page.records.length === 0
+          ? emptyState(filter)
+          : recordTable(page.records),
     )
   }
 
@@ -577,8 +631,25 @@ type AggregateAuditState =
   | 'unavailable'
   | 'broken'
   | 'tampered'
+  | 'absent'
   | 'stale'
   | 'unwitnessed'
+
+/**
+ * One page's state, in the vocabulary the stat card reads.
+ *
+ * `absent` comes first because a missing file has no chain, and every verdict
+ * below it would be a statement about a chain that is not there — `verified`
+ * most of all, which is what this used to answer.
+ */
+function auditStateOf(page: AuditPage): AggregateAuditState {
+  if (page.chain === 'absent') return 'absent'
+  if (page.chain === 'broken') return 'broken'
+  if (page.witness?.tampered === true) return 'tampered'
+  if (page.witness === undefined) return 'unwitnessed'
+  if (page.witness.stale) return 'stale'
+  return 'verified'
+}
 
 function aggregateAuditState(
   sources: readonly AuditSourceRender[],
@@ -589,10 +660,14 @@ function aggregateAuditState(
     if (source.page === null || source.failure !== null) return 'unavailable'
     pages.push(source.page)
   }
-  if (pages.some(page => !page.intact)) return 'broken'
+  if (pages.some(page => page.chain === 'broken')) return 'broken'
   if (pages.some(page => page.witness?.tampered === true)) {
     return 'tampered'
   }
+  // After the two integrity findings and before the witness states: one
+  // source with no file at all is worth more of an operator's attention than
+  // an anchor that has gone stale, and it must never be summarised as 完整.
+  if (pages.some(page => page.chain === 'absent')) return 'absent'
   if (pages.some(page => page.witness?.stale === true)) {
     return 'stale'
   }
@@ -615,6 +690,8 @@ function aggregateAuditLabel(
       return toned('critical', WITNESS_MISMATCH_LEAD)
     case 'unavailable':
       return toned('muted', '部分未读取')
+    case 'absent':
+      return toned('warn', '未建立')
     case 'stale':
     case 'unwitnessed':
       return toned('muted', '未见证')
@@ -639,9 +716,11 @@ function sourceBody(source: AuditSourceRender, filter: AuditFilter): string {
   } else {
     results.push(integrityAlert(page, 'audit-integrity-' + source.node))
     results.push(
-      page.records.length === 0
-        ? emptyState(filter)
-        : recordTable(page.records, source.node),
+      page.chain === 'absent'
+        ? absentState()
+        : page.records.length === 0
+          ? emptyState(filter)
+          : recordTable(page.records, source.node),
     )
   }
 

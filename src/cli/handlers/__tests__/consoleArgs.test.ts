@@ -587,14 +587,38 @@ describe('console audit port', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  test('reports an empty page when no trail has been written yet', async () => {
+  test('a missing trail is an empty page, and says the chain is not there', async () => {
     const port = createAuditPort({ path: join(directory, 'absent.ndjson') })
     const page = await port.read({})
 
-    // 还没产生审计不是错误，是一个刚起来的节点的正常状态。
+    // 读不到链不是失败——不该渲染成红色的「读取失败」；但它也不是完整：
+    // 「节点还没做过协议工作」与「链根本没送到」是两件事（issue #9②）。
     expect(page).toEqual({
       ok: true,
-      value: { records: [], intact: true, issueCount: 0, total: 0 },
+      value: {
+        records: [],
+        chain: 'absent',
+        intact: false,
+        issueCount: 0,
+        total: 0,
+      },
+    })
+  })
+
+  test('a trail that exists and holds nothing is an intact empty chain', async () => {
+    const path = join(directory, 'quiet.ndjson')
+    // 节点起来了、还没做过协议工作——`openAuditTrail` 会先把文件建出来。
+    new AuditTrail(path).ensure()
+
+    expect(await createAuditPort({ path }).read({})).toEqual({
+      ok: true,
+      value: {
+        records: [],
+        chain: 'empty',
+        intact: true,
+        issueCount: 0,
+        total: 0,
+      },
     })
   })
 

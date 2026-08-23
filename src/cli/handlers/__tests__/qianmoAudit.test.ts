@@ -128,6 +128,47 @@ describe('audit CLI arguments', () => {
   })
 })
 
+describe('audit --verify says which of the two empties it found', () => {
+  test('a trail that is not there is absent, and not intact', async () => {
+    const previousExitCode = process.exitCode
+    try {
+      const path = join(root, 'never-written.ndjson')
+      const summary = JSON.parse(
+        await captureStdout(() => runQianmoAudit(['--verify', '--path', path])),
+      )
+      expect(summary).toMatchObject({
+        records: 0,
+        chain: 'absent',
+        intact: false,
+      })
+      // 退出码不动：一条还没建立的链不是一个发现，判成失败会让每台新节点上的
+      // 定时任务从第一分钟起报警。
+      expect(process.exitCode).toBe(0)
+    } finally {
+      process.exitCode = previousExitCode
+    }
+  })
+
+  test('a trail that exists and holds nothing is empty, and intact', async () => {
+    const previousExitCode = process.exitCode
+    try {
+      const path = join(root, 'quiet.ndjson')
+      new AuditTrail(path).ensure()
+      const summary = JSON.parse(
+        await captureStdout(() => runQianmoAudit(['--verify', '--path', path])),
+      )
+      expect(summary).toMatchObject({
+        records: 0,
+        chain: 'empty',
+        intact: true,
+      })
+      expect(process.exitCode).toBe(0)
+    } finally {
+      process.exitCode = previousExitCode
+    }
+  })
+})
+
 describe('audit --verify witness verdict', () => {
   test('keeps a rewritten chain at exit 0 without a witness and exits 1 with it', async () => {
     const path = join(root, 'rewritten.ndjson')

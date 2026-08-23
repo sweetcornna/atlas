@@ -64,7 +64,7 @@ flowchart TB
 | 导出 | 一句话 |
 | --- | --- |
 | `AuditTrail` | 追加式写入器：只有 `append()` 与 `close()`，没有任何 seek / truncate / rewrite / delete；构造时从盘上最后一条**续链** |
-| `readTrail(path)` / `TrailReadResult` / `TrailIntegrityIssue` | 读回并校验；四类问题 `corrupt_line` / `torn_tail` / `broken_chain` / `out_of_order`，`intact` 是端到端结论 |
+| `readTrail(path)` / `TrailReadResult` / `TrailIntegrityIssue` | 读回并校验；四类问题 `corrupt_line` / `torn_tail` / `broken_chain` / `out_of_order`，`intact` 是端到端结论。`present` 与它是两件事：**文件不在**时没有链可判，`intact` 说不了话，读到的空与「链在、零条」必须分得开 |
 | `AuditRecord` / `AuditInput` | 落盘记录形状；`seq` 与 `prev` 由 trail 填，调用方给不了 |
 | `AuditSource` | 写入层的枚举，12 个值（transport / router / capability / activator / adapter / resident / negotiation / tunnel / backup / diagnosis / registry / capacity） |
 | `GENESIS_PREVIOUS` | 首条记录的链值（64 个 `0`，刻意不是空串的 sha-256） |
