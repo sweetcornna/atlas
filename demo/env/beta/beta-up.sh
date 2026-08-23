@@ -574,6 +574,13 @@ run_node() {
   # 代码默认已经是 SIGNED_TASK_POLICY，但 S-1~S-4 证据与「连续 7 天若强制会被拒的
   # 消息计数为 0」的观察窗口满足前，舰队保持 §9.3 的 --open-policy 逃生策略，并用
   # --audit-signed-tasks 审计每一条若强制会被拒的消息。
+  #
+  # **两个开关都不许省成默认值**（issue #10）：2026-08-23 实查发现线上四台的
+  # `/proc/<pid>/cmdline` 里一个都没有——它们是更早一版脚本起的，跑在阶段① 靠的是
+  # 「产物早于 P12.4 翻默认」而不是配置。省掉这两行等于让安全姿态由构建日期决定，
+  # 而后果（trusts:[] + 强制策略 = 每条 task.request/wake 被拒）要到第一次真用时
+  # 才出现。**滚新产物之前，先确认在跑的进程是本脚本这一版起的。**
+  # `demo/env/resident-task-policy.test.ts` 钉住这两行不会被悄悄删掉。
   args=(
     bun "$BETA_OCC" resident
     --node "$BETA_NODE"
