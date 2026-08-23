@@ -156,6 +156,8 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--audit <node>=<绝对路径>` | `auditTrailPath()` | 审计链来源，**可重复**。节点名遵循协议段：1–64 个小写字母、数字、`_`、`-`，且首尾为字母或数字；路径必须绝对。旧的单个 `<绝对路径>` 仅能单独使用，显示为 `default` 节点 |
 | `--audit-mirror <node>=<正整数分钟>` | 无 | 把一个已有的命名审计来源标为镜像，并显式给出最大滞后；路径本身从不推断镜像状态 |
 | `--wake-url <node>=<ws://…>` | 无 | 唤醒目标白名单，**可重复**。页面选择节点，服务端只会拨该节点启动时给定的 URL；每个节点各读自己的 PSK（§4.4）。旧的单个 `<ws://…>` 仅能单独使用，兼容地读全局 PSK |
+| `--wake-sign` | 关 | 唤醒是否带 capability token（§4.6）。**默认关，且打开的顺序不能反**：一枚对面解析不出签发方公钥的令牌在两种策略下**同样**被拒，所以每个目标节点先要有 `--trust <控制台节点>=<公钥>` |
+| `--print-wake-identity` | — | 打印控制台的唤醒签名身份 `<node>=<publicKey>` 并退出（首次运行会创建密钥）。输出就是节点侧 `--trust` 后面那一整段。**不起服务器、不读 token、不拨任何端点** |
 | `--chat-url <ws://…>` | 无 | 允许对话拨号的入站端点，**可以给多次**，一次一个。**给了才启用对话面**，且还要有 PSK（§6.7）。同一个端点给两遍会被去重——那是复制粘贴，不是要两条链路 |
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
@@ -346,6 +348,38 @@ HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟
 admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6.7）。对只读
 凭据来说，一台接了聊天通道的控制台和一台没接的，主页看起来一样——和 API 侧「admin
 判定先于存在性判定」是同一条防线（本节开头）。
+
+### 4.6 唤醒的 capability token（issue #14）
+
+节点侧代码的默认策略已经是 `SIGNED_TASK_POLICY`（`resident.ts`，见 issue #10），它对
+`MessageType.Wake` 要求 `write-limited`。**控制台此前一枚令牌都不签**，所以任何一台
+节点一旦跑在默认策略下，控制台的唤醒会被直接拒成 `E_CAP_INSUFFICIENT`。`--wake-sign`
+是补上这条链路的开关。
+
+**控制台为此持有一把自己的 Ed25519 私钥**——这是 §7.2「不碰任何私钥」的一条明确例外，
+逐条论证与 `aud` / `sub` / 有效期的取值写在
+[`key-distribution.md`](./key-distribution.md) §10.4，本文不复制。要点只有三句：
+
+- **身份是控制台自己的**，名字取 `--chat-from` 的 node 段（默认 `console`），不复用任何
+  节点的密钥——复用会让审计上再也分不出「节点自己发起的」和「谁拿到 admin token 后让
+  控制台代它发起的」，而节点身份密钥按定案**不轮换**，等于失陷之后无从收回。
+- **令牌绑死这一次唤醒**：`aud` = 目标节点、`sub` = 完整的 `to` 地址、`taskId` = 本次
+  taskId，有效期 60 s（前挪 30 s 吸收时钟差）。
+- **默认关，顺序不能反。**
+
+```
+1. qm console --print-wake-identity      # → console=<publicKey>
+2. 每个唤醒目标节点加 --trust console=<publicKey>，重启节点
+3. 控制台加 --wake-sign，重启控制台
+```
+
+**为什么顺序是硬的**：`OPEN_POLICY` 停止的是**要求**出示令牌，从不停止**校验**已出示的
+令牌。一枚签发方公钥解析不出来的令牌，在开放策略下**一样**被拒成 `E_CAP_INVALID`。所以
+「先打开签名再去分发公钥」不是降级，是直接打断今天还能用的唤醒。这也是
+`--print-wake-identity` 必须是一条**独立**子路径的原因：第 1 步要能先于第 3 步发生。
+
+打开之后启动横幅多一行 `wake-signing`，内容就是 `<node>=<publicKey>`——**要复制粘贴的
+是那一整段**，不是照着两个字段自己拼一个。公开材料，可以进终端记录。
 
 ---
 
@@ -663,8 +697,13 @@ socket。
 
 ### 7.2 不读
 
-- **不碰任何私钥。**节点身份的私钥半边在节点自己的配置根里，控制台没有读它的路径。
-  名册里出现的 `publicKey` 是注册中心本来就公开的那一半，没发布时字段直接缺席。
+- **不碰任何私钥——除了它自己那一把。**节点身份的私钥半边在节点自己的配置根里，控制台
+  没有读它的路径；CA 私钥、任何节点的 TLS 私钥、RL 的签名能力同样一个都不碰
+  （[`key-distribution.md`](./key-distribution.md) §10.3）。名册里出现的 `publicKey` 是
+  注册中心本来就公开的那一半，没发布时字段直接缺席。
+  **唯一的例外是 `--wake-sign` 打开时控制台自己的唤醒签名密钥**（§4.6）：它签不出证书、
+  签不出 RL、也冒充不了任何一个节点。这条规矩守的是「控制台不能替别人说话」，不是
+  「控制台不能说话」——区分与论证在 `key-distribution.md` §10.3 / §10.4。
 - **不读会话内容。**transcript、消息 payload、prompt 一概不经过这里。审计链本身就
   **不记录 payload**（只有 id、code、计数——`packages/audit/src/record.ts`），所以
   「把一条链贴进工单前要不要脱敏」这个问题在这里不存在。
@@ -772,6 +811,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒四个端口的生产实现 |
+| `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住 |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
