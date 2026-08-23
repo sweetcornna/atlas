@@ -3,7 +3,7 @@
  * and H7 (circuit breaker) improvements.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -12,9 +12,9 @@ import {
   setSkillLearningConfigForTest,
 } from '../config.js'
 import {
-  createLlmObserverBackendForTest,
   llmObserverBackend,
   resetCircuitBreaker,
+  setLlmObserverQueryForTest,
 } from '../llmObserverBackend.js'
 import {
   resetRuntimeLLMBookkeeping,
@@ -47,6 +47,20 @@ function haikuResponse(text: string): AssistantMessage {
 
 function unavailableObserverQuery(): Promise<AssistantMessage> {
   return Promise.reject(new Error('No assistant message found'))
+}
+
+/**
+ * Deny-by-default seam installed for every test in this file. Reaching the real
+ * `queryHaiku` here would go through `withVCR`, which records a live API
+ * response into `fixtures/` on a cache miss. A test that means to exercise the
+ * query path installs its own stub; one that forgets fails loudly instead of
+ * silently going online (the error is not in `isExpectedObserverUnavailable`'s
+ * set, so it propagates out of `analyze()` rather than falling back).
+ */
+function forbiddenObserverQuery(): never {
+  throw new Error(
+    'llm observer query was not stubbed — call setLlmObserverQueryForTest() first',
+  )
 }
 
 function makeCtx(
@@ -94,10 +108,10 @@ beforeEach(() => {
   process.env.CLAUDE_SKILL_LEARNING_HOME = join(root, 'learning-home')
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
   process.env.SKILL_LEARNING_ENABLED = '1'
-  process.env.NODE_ENV = 'test'
   resetRuntimeObserverForTest()
   resetCircuitBreaker()
   setActiveObserverBackend(originalBackendName)
+  setLlmObserverQueryForTest(forbiddenObserverQuery)
 })
 
 afterEach(() => {
@@ -108,6 +122,7 @@ afterEach(() => {
   resetRuntimeObserverForTest()
   resetCircuitBreaker()
   setActiveObserverBackend(originalBackendName)
+  setLlmObserverQueryForTest()
 })
 
 // ---------------------------------------------------------------------------
@@ -312,7 +327,7 @@ describe('H7: circuit breaker', () => {
       calls++
       return await unavailableObserverQuery()
     }
-    const backend = createLlmObserverBackendForTest(query)
+    setLlmObserverQueryForTest(query)
 
     setSkillLearningConfigForTest({
       llm: { failureThreshold: 3, circuitCooldownMs: 60_000, timeoutMs: 50 },
@@ -320,16 +335,16 @@ describe('H7: circuit breaker', () => {
 
     const obs = makeObs(5)
 
-    await backend.analyze(obs)
-    await backend.analyze(obs)
-    await backend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
     expect(calls).toBe(3)
 
-    await backend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
     expect(calls).toBe(3)
 
     resetCircuitBreaker()
-    const result = await backend.analyze(obs)
+    const result = await llmObserverBackend.analyze(obs)
     expect(Array.isArray(result)).toBe(true)
     expect(calls).toBe(4)
   })
@@ -341,7 +356,7 @@ describe('H7: circuit breaker', () => {
       calls++
       return await unavailableObserverQuery()
     }
-    const backend = createLlmObserverBackendForTest(query)
+    setLlmObserverQueryForTest(query)
 
     setSkillLearningConfigForTest({
       llm: { failureThreshold: 1, circuitCooldownMs: 60_000, timeoutMs: 50 },
@@ -349,82 +364,118 @@ describe('H7: circuit breaker', () => {
 
     const obs = makeObs(5)
 
-    await backend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
     expect(calls).toBe(1)
 
-    await backend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
     expect(calls).toBe(1)
 
     resetCircuitBreaker()
-    const result = await backend.analyze(obs)
+    const result = await llmObserverBackend.analyze(obs)
     expect(Array.isArray(result)).toBe(true)
     expect(calls).toBe(2)
   })
 
-  test('empty observations bypass circuit breaker entirely', async () => {
+  test('empty observations short-circuit ahead of the query in either circuit state', async () => {
     resetCircuitBreaker()
+    setSkillLearningConfigForTest({
+      llm: { failureThreshold: 1, circuitCooldownMs: 60_000, timeoutMs: 50 },
+    })
 
-    // Empty observations → short-circuit at top of analyseWithHaiku → []
-    // regardless of circuit state.
-    const result = await llmObserverBackend.analyze([])
-    expect(result).toEqual([])
+    let calls = 0
+    setLlmObserverQueryForTest(async () => {
+      calls++
+      return await unavailableObserverQuery()
+    })
+
+    // Circuit CLOSED: an empty batch must cost nothing. This is the assertion
+    // that has teeth — drop the `observations.length === 0` guard and the call
+    // falls through to the query, so `calls` becomes 1.
+    expect(await llmObserverBackend.analyze([])).toEqual([])
+    expect(calls).toBe(0)
+
+    // Drive the circuit open (threshold 1): one failure, then a skipped query.
+    await llmObserverBackend.analyze(makeObs(5))
+    expect(calls).toBe(1)
+    await llmObserverBackend.analyze(makeObs(5))
+    expect(calls).toBe(1)
+
+    // Circuit OPEN: an empty batch still returns [] and still costs nothing —
+    // it never reaches the circuit check, let alone the heuristic fallback.
+    expect(await llmObserverBackend.analyze([])).toEqual([])
+    expect(calls).toBe(1)
   })
 
-  test('resetCircuitBreaker resets state to closed', async () => {
-    resetCircuitBreaker()
-    setSkillLearningConfigForTest({ llm: { timeoutMs: 50 } })
+  test('resetCircuitBreaker clears the failure counter, not just the open deadline', async () => {
+    setSkillLearningConfigForTest({
+      llm: { failureThreshold: 3, circuitCooldownMs: 60_000, timeoutMs: 50 },
+    })
 
-    // After reset, the backend is in clean state. Calling it with observations
-    // returns an array (either LLM result or heuristic fallback).
-    const result = await llmObserverBackend.analyze(makeObs(3))
-    expect(Array.isArray(result)).toBe(true)
+    let calls = 0
+    setLlmObserverQueryForTest(async () => {
+      calls++
+      return await unavailableObserverQuery()
+    })
+    resetCircuitBreaker()
+
+    const obs = makeObs(5)
+
+    // Two failures — one short of the threshold, so the circuit is still closed
+    // but the counter is primed at 2.
+    await llmObserverBackend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
+    expect(calls).toBe(2)
 
     resetCircuitBreaker()
-    const result2 = await llmObserverBackend.analyze(makeObs(3))
-    expect(Array.isArray(result2)).toBe(true)
+
+    // If reset only cleared `circuitOpenUntil` and left the counter at 2, the
+    // next two failures would hit the threshold and open the circuit, so the
+    // fourth call would be skipped and `calls` would stall at 3.
+    await llmObserverBackend.analyze(obs)
+    await llmObserverBackend.analyze(obs)
+    expect(calls).toBe(4)
+
+    // And a fifth call still gets through, proving the circuit is genuinely
+    // closed rather than merely not-yet-open.
+    await llmObserverBackend.analyze(obs)
+    expect(calls).toBe(5)
   })
 
-  test('test query injection stays offline despite credentials, cwd, and VCR record pollution', async () => {
-    const fixtureRoot = join(root, 'fixtures-root')
+  test('the shipped backend resolves its query through the seam, never queryHaiku', async () => {
+    // The environment a bypass would record in: ambient credentials, a
+    // writable fixture root, VCR forced on and in record mode. `withVCR` only
+    // ever sees this if `analyze` calls the real `queryHaiku`.
     process.env.ANTHROPIC_API_KEY = 'ambient-test-credential'
-    process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = fixtureRoot
+    process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = join(root, 'fixtures-root')
     process.env.FORCE_VCR = '1'
     process.env.USER_TYPE = 'ant'
     process.env.VCR_RECORD = '1'
 
     let calls = 0
-    const query: LlmObserverQuery = async () => {
+    let sawSystemPrompt = false
+    setLlmObserverQueryForTest(async ({ systemPrompt }) => {
       calls++
+      sawSystemPrompt = systemPrompt.length > 0
       return haikuResponse('[]')
-    }
-    const backend = createLlmObserverBackendForTest(query)
-
-    await backend.analyze(makeObs(5))
-
-    expect(calls).toBe(1)
-    expect(existsSync(fixtureRoot)).toBe(false)
-  })
-
-  test('default test backend fails closed despite VCR record pollution', async () => {
-    const fixtureRoot = join(root, 'default-fixtures-root')
-    process.env.ANTHROPIC_API_KEY = 'ambient-test-credential'
-    process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = fixtureRoot
-    process.env.FORCE_VCR = '1'
-    process.env.USER_TYPE = 'ant'
-    process.env.VCR_RECORD = '1'
+    })
 
     await llmObserverBackend.analyze(makeObs(5))
 
-    expect(existsSync(fixtureRoot)).toBe(false)
+    // The module-level singleton — not a test-only copy of it — routed through
+    // the seam. Capture `queryHaiku` at construction time instead of reading
+    // the binding per call and this drops to 0.
+    expect(calls).toBe(1)
+    expect(sawSystemPrompt).toBe(true)
   })
 
   test('unexpected VCR or infrastructure errors propagate instead of falling back', async () => {
     const fixtureFailure = new Error('Anthropic API fixture missing: corrupt')
-    const query: LlmObserverQuery = async () => {
+    setLlmObserverQueryForTest(async () => {
       throw fixtureFailure
-    }
-    const backend = createLlmObserverBackendForTest(query)
+    })
 
-    await expect(backend.analyze(makeObs(5))).rejects.toBe(fixtureFailure)
+    await expect(llmObserverBackend.analyze(makeObs(5))).rejects.toBe(
+      fixtureFailure,
+    )
   })
 })

@@ -71,44 +71,51 @@ Rules:
 - Never include secrets, tokens, full file contents, or personally-identifying data.
 - Scope "global" only when the pattern is obviously project-agnostic (generic testing, git hygiene); default to "project".`
 
-export const llmObserverBackend = createLlmObserverBackend()
+/**
+ * Haiku entry point, resolved at call time through a module-level binding.
+ *
+ * Production never rebinds it, so the shipped behaviour is exactly "call
+ * `queryHaiku`" — no environment sniffing, no branch that a user's shell can
+ * flip. Tests rebind it (see `setLlmObserverQueryForTest`) because a unit test
+ * that reaches the real `queryHaiku` goes through `withVCR`: on a cache miss
+ * that records a live API response into `fixtures/` on any machine with
+ * credentials or `VCR_RECORD` set.
+ *
+ * A module setter rather than `mock.module`: Bun's module mocks are
+ * process-global and last-write-wins across test files (see CLAUDE.md
+ * "Mock 使用规范"), and this binding is the only surface tests need.
+ */
+let observerQuery: LlmObserverQuery = queryHaiku
 
-/** @internal Returns an isolated backend so tests can never invoke VCR. */
-export function createLlmObserverBackendForTest(
-  query: LlmObserverQuery,
-): ObserverBackend {
-  return createLlmObserverBackend(query)
+/**
+ * @internal Test seam. Call with no argument to restore the real `queryHaiku`.
+ * Suites that can reach `analyze()` must install a stub in `beforeEach` and
+ * restore in `afterEach`.
+ */
+export function setLlmObserverQueryForTest(query?: LlmObserverQuery): void {
+  observerQuery = query ?? queryHaiku
 }
 
-function createLlmObserverBackend(query?: LlmObserverQuery): ObserverBackend {
+export const llmObserverBackend = createLlmObserverBackend()
+
+function createLlmObserverBackend(): ObserverBackend {
   return {
     name: 'llm',
     analyze(
       observations: StoredSkillObservation[],
       ctx?: ObserverBackendContext,
     ): Promise<InstinctCandidate[]> {
-      // Tests must opt in to a fake query. Letting a test reach queryHaiku makes
-      // a VCR cache miss capable of recording a real request whenever a
-      // developer has credentials or VCR_RECORD in their environment.
-      //
-      // Residual risk: relies on `NODE_ENV === 'test'`; bun only *defaults*
-      // it to `'test'` under `bun test` when unset (bun 1.3.13 verified:
-      // `NODE_ENV=production bun test` keeps `production`, not overwritten).
-      // A shell that already exports `NODE_ENV=production` silently defeats
-      // this guard, letting `bun test` reach the real `queryHaiku` / VCR path.
-      // No more reliable "in bun test" signal exists — `Bun.jest` is identical
-      // under `bun run` and `bun test`; `process.env` has no bun-test-only key.
-      const queryForCall =
-        query ?? (process.env.NODE_ENV === 'test' ? undefined : queryHaiku)
-      return analyseWithHaiku(observations, ctx, queryForCall)
+      // Read the binding per call, not per construction: tests install their
+      // stub long after this object is created at module load.
+      return analyseWithHaiku(observations, ctx, observerQuery)
     },
   }
 }
 
 async function analyseWithHaiku(
   observations: StoredSkillObservation[],
-  ctx?: ObserverBackendContext,
-  query?: LlmObserverQuery,
+  ctx: ObserverBackendContext | undefined,
+  query: LlmObserverQuery,
 ): Promise<InstinctCandidate[]> {
   if (observations.length === 0) return []
 
@@ -120,9 +127,6 @@ async function analyseWithHaiku(
   const capped = observations.slice(-MAX_OBSERVATIONS_PER_CALL)
   const userPrompt = buildUserPrompt(capped)
   const signal = makeTimeoutSignal(getSkillLearningConfig().llm.timeoutMs)
-  // Test execution is intentionally offline even when credentials, a VCR
-  // record flag, or a writable fixture root leak in from the host environment.
-  if (!query) return runHeuristicFallback(observations, ctx)
 
   let responseText: string
   try {
