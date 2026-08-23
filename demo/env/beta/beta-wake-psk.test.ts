@@ -55,7 +55,10 @@ function loadPeerWakePsk(
   return { exitCode: child.exitCode, stdout: child.stdout.toString() }
 }
 
-function validateNode(node: string): {
+function validateNode(
+  node: string,
+  collation?: string,
+): {
   readonly exitCode: number
   readonly stderr: string
 } {
@@ -74,7 +77,13 @@ function validateNode(node: string): {
     ],
     {
       cwd: REPOSITORY_ROOT,
-      env: { ...process.env, PATH: '/usr/bin:/bin' },
+      env: {
+        ...process.env,
+        PATH: '/usr/bin:/bin',
+        ...(collation === undefined
+          ? {}
+          : { LC_ALL: collation, LC_COLLATE: collation, LANG: collation }),
+      },
       stdout: 'pipe',
       stderr: 'pipe',
     },
@@ -126,6 +135,24 @@ describe('beta named wake PSKs', () => {
       'a' + 'b'.repeat(64),
     ]) {
       expect(validateNode(node).exitCode).toBe(1)
+    }
+  })
+
+  // glob 的 `a-z` 是范围，范围端点按 locale 的排序规则解释：en_US.UTF-8 下它展开成
+  // aAbBcC…zZ，于是大写节点名整条穿过校验（协议侧的 SEGMENT_PATTERN 按码点比较、
+  // 是拒的）。上面那条用例跑在继承来的 locale 里，所以它在哪台机器上是红的取决于
+  // 那台机器 —— 这条把 locale 钉死，让「大写不能绕过」在任何 runner 上都成立。
+  test('rejects uppercase regardless of the collation locale', () => {
+    for (const collation of ['C', 'en_US.UTF-8']) {
+      for (const node of ['Beta-1', 'BETA', 'betA', 'be7A-x', 'A']) {
+        const result = validateNode(node, collation)
+        expect({ collation, node, exitCode: result.exitCode }).toEqual({
+          collation,
+          node,
+          exitCode: 1,
+        })
+      }
+      expect(validateNode('beta-1', collation).exitCode).toBe(0)
     }
   })
 })
