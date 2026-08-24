@@ -1891,6 +1891,52 @@ export function isUsing3PServices(): boolean {
 }
 
 /**
+ * Does this process hold a credential that could reach *some* model provider?
+ *
+ * This is the **credential axis**, and only that one. It is not
+ * `getAPIProvider()` (which wire format do we speak), and it is not
+ * `isThirdPartyModelCatalog()` (whose catalog and rate card) — mixing those
+ * three is a documented way to get this wrong.
+ *
+ * The rule itself is not new: it is exactly the disjunction `occ auth status`
+ * reports as `loggedIn`, lifted out of that handler so the two cannot drift.
+ * `occ auth status --json` is therefore the diagnostic for anything that
+ * consults this: it prints the same answer plus the `authMethod` that produced
+ * it. Terms are ORed, so the order here is only cheapest-first.
+ *
+ * Two things it deliberately does NOT promise:
+ *
+ * - **Not "the credential works".** A revoked key, a wrong-org token and a
+ *   404ing gateway all read as `true`; only a real request can say otherwise.
+ *   What `false` means is much stronger and is the useful half: no credential
+ *   of any kind is present, so every turn will come back
+ *   "Not logged in · Please run /login" before a byte reaches a provider.
+ * - **Not a fix for the `settings.modelType` gap.** `isUsing3PServices()`
+ *   covers the `CLAUDE_CODE_USE_*` env vars only, and says so in its own
+ *   KEEP IN SYNC note; a session that selected OpenAI purely through
+ *   `settings.modelType` answers `false` here. That gap belongs to
+ *   `isUsing3PServices()` and to `occ auth status`, which has always reported
+ *   it the same way — closing it in a second, private copy of the rule is how
+ *   the two answers start disagreeing.
+ *
+ * Never throws. The CI / `NODE_ENV=test` branch of
+ * {@link getAnthropicApiKeyWithSource} throws when nothing is configured, and
+ * that exception *is* the answer `false`.
+ */
+export function hasAnyModelCredential(): boolean {
+  if (isUsing3PServices()) return true
+  // Homespace strips ANTHROPIC_API_KEY on purpose (a Console key is used
+  // instead), so it is not a credential there — same carve-out the handler has.
+  if (!!process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace()) return true
+  try {
+    if (getAuthTokenSource().hasToken) return true
+    return getAnthropicApiKeyWithSource().source !== 'none'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Get the configured otelHeadersHelper from settings
  */
 function getConfiguredOtelHeadersHelper(): string | undefined {
