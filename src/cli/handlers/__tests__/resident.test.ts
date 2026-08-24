@@ -320,6 +320,71 @@ describe('capability flags (P4.3)', () => {
     ).toThrow('not a valid Ed25519 key')
   })
 
+  test('--trust refuses two different keys for one node, and names it', () => {
+    // The failure this replaces did not look like a command-line mistake:
+    // last-write-wins left every check *before* the signature passing, so
+    // correctly minted tokens came back `capability signature does not
+    // verify` and the search went into the Ed25519 path (issue #53).
+    const other = generateNodeKeyPair().publicKey
+    let thrown: unknown
+    try {
+      parseResidentArgs(
+        [...BASE, '--trust', `node-a=${KEY}`, '--trust', `node-a=${other}`],
+        'qianmo',
+      )
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    const message = thrown instanceof Error ? thrown.message : ''
+    // The three facts an operator needs: which flag, which node, how many.
+    expect(message).toContain('--trust')
+    expect(message).toContain('node-a')
+    expect(message).toContain('2 times')
+    // A third conflicting entry is counted, not just the pair that tripped it.
+    expect(() =>
+      parseResidentArgs(
+        [
+          ...BASE,
+          '--trust',
+          `node-a=${KEY}`,
+          '--trust',
+          `node-a=${other}`,
+          '--trust',
+          `node-a=${KEY}`,
+        ],
+        'qianmo',
+      ),
+    ).toThrow('3 times')
+    // A different node with a different key is not a conflict at all.
+    expect(
+      parseResidentArgs(
+        [...BASE, '--trust', `node-a=${KEY}`, '--trust', `node-c=${other}`],
+        'qianmo',
+      ).trusted,
+    ).toEqual([
+      ['node-a', KEY],
+      ['node-c', other],
+    ])
+  })
+
+  test('--trust twice with the same key is idempotent, not a conflict', () => {
+    // Two places agreeing is a list stitched together, not a contradiction —
+    // refusing it would push deduplication onto every caller for no gain.
+    const parsed = parseResidentArgs(
+      [...BASE, '--trust', `node-a=${KEY}`, '--trust', `node-a=${KEY}`],
+      'qianmo',
+    )
+    expect(parsed.trusted).toEqual([
+      ['node-a', KEY],
+      ['node-a', KEY],
+    ])
+    // And the directory built from them answers with that one key.
+    expect(
+      new StaticPublicKeyDirectory(parsed.trusted).publicKeyOf('node-a'),
+    ).toBe(KEY)
+  })
+
   test('signed tasks are required by default; --open-policy is the way out', () => {
     // 这条原本钉的是**旧默认**（P4.3 时 `OPEN_POLICY`，因为当时没有密钥分发）。
     // P12.1~P12.3 把分发建起来之后，`policy.ts` 的收敛条件成立，默认于 P12.4

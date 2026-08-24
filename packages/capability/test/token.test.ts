@@ -301,3 +301,51 @@ describe('replay', () => {
     expect(nonces.admit(NODE_C, 'same', NOW + 1_000, NOW)).toBe(true)
   })
 })
+
+describe('the static directory', () => {
+  test('one node with two different keys is refused at construction', () => {
+    // Silently keeping the last one is the worst outcome available: every
+    // check before the signature (`aud` / `sub` / `taskId`, the clock, rule
+    // S-1) still passes on the surviving key, so a correctly minted token
+    // fails with `signature` and the diagnosis lands on the verifier rather
+    // than on the duplicated entry (issue #53).
+    const first = generateNodeKeyPair()
+    const second = generateNodeKeyPair()
+    let thrown: unknown
+    try {
+      new StaticPublicKeyDirectory([
+        [NODE_A, first.publicKey],
+        [NODE_A, second.publicKey],
+      ])
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    const message = thrown instanceof Error ? thrown.message : ''
+    expect(message).toContain(NODE_A)
+    expect(message).toContain('2 entries')
+  })
+
+  test('the same key twice is idempotent, and other nodes are untouched', () => {
+    const keys = generateNodeKeyPair()
+    const other = generateNodeKeyPair()
+    const directory = new StaticPublicKeyDirectory([
+      [NODE_A, keys.publicKey],
+      [NODE_A, keys.publicKey],
+      [NODE_B, other.publicKey],
+    ])
+    expect(directory.publicKeyOf(NODE_A)).toBe(keys.publicKey)
+    expect(directory.publicKeyOf(NODE_B)).toBe(other.publicKey)
+    expect(directory.size).toBe(2)
+  })
+
+  test('put still replaces — that is the cache refresh path', () => {
+    // The constructor is one operator writing one list; `put` is a directory
+    // learning that a key changed. Only the first is a contradiction.
+    const first = generateNodeKeyPair()
+    const second = generateNodeKeyPair()
+    const directory = new StaticPublicKeyDirectory([[NODE_A, first.publicKey]])
+    directory.put(NODE_A, second.publicKey)
+    expect(directory.publicKeyOf(NODE_A)).toBe(second.publicKey)
+  })
+})
