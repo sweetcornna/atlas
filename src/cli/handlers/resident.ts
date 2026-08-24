@@ -981,6 +981,98 @@ export function warnUnselectedTaskPolicy(
 }
 
 /**
+ * The credential probe, loaded on first use.
+ *
+ * `require` on purpose, not a static import. This handler currently reaches
+ * nothing in `src/utils/auth` / `src/utils/settings` / `src/utils/config`, and
+ * `auth.ts` sits on top of all three (plus the keychain and axios) — a static
+ * edge would put that whole subgraph into the module graph the `check:cycles`
+ * ratchet measures, for one boolean read once at startup. The runtime cost is
+ * identical either way, since the answer is needed immediately. Typed
+ * structurally so not even a type-only import is required. Same technique, and
+ * the same reason, as `services/search/sourceCredentials.ts`.
+ */
+type ModelCredentialProbe = {
+  hasAnyModelCredential: () => boolean
+}
+
+let modelCredentialProbe: ModelCredentialProbe | undefined
+
+function loadModelCredentialProbe(): ModelCredentialProbe {
+  if (!modelCredentialProbe) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    modelCredentialProbe =
+      require('../../utils/auth/auth.js') as ModelCredentialProbe
+  }
+  return modelCredentialProbe
+}
+
+/**
+ * Whether this node can reach a model at all.
+ *
+ * Delegates to the credential-axis rule in `auth.ts` — the same one
+ * `occ auth status` reports as `loggedIn` — rather than enumerating provider
+ * environment variables here. A second, private list of credential keys is how
+ * the node's answer and `auth status`'s answer start disagreeing, and the one
+ * that disagrees is always the one nobody runs.
+ *
+ * Failure to answer is treated as "no credential": the auth stack throws only
+ * from the CI / `NODE_ENV=test` branch, and only when nothing is configured.
+ */
+export function nodeHasModelCredential(): boolean {
+  try {
+    return loadModelCredentialProbe().hasAnyModelCredential()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Say, once at startup, that no model credential is visible to this node.
+ *
+ * The failure this replaces took a live wake and a transcript read to see. On
+ * the beta fleet every layer reported success — envelope delivered,
+ * `receipt: "accepted"`, a `message_accepted` link appended to the audit
+ * chain, an ACP child spawned, a real agent turn opened — and then the
+ * assistant turn was `model: "<synthetic>"`, `error: "authentication_failed"`,
+ * usage all zero, body "Not logged in · Please run /login". The node had been
+ * up for five days in that state (issue #13). Nothing on the node said so,
+ * because nothing on the node had asked.
+ *
+ * Timing is the whole point of doing this at startup rather than at first use:
+ * the ACP child inherits this process's environment (`defaultSpawnAcp` passes
+ * `{...process.env}`), so the credential must already be here *before* the
+ * resident starts. A login performed afterwards in another shell never reaches
+ * the child, and no later checkpoint could tell the operator anything they
+ * could still act on without a restart.
+ *
+ * Deliberately not printed when a credential of any kind is present — not even
+ * a "credential looks fine" line. This node's other startup warning
+ * ({@link warnUnselectedTaskPolicy}) earns attention by being rare, and a
+ * warning that also fires on healthy nodes trains people to skip both.
+ *
+ * stderr rather than stdout, for the same reason as the task-policy warning:
+ * the banner owns stdout, and `<node>.err` is normally zero bytes.
+ */
+export function warnMissingModelCredentials(
+  hasCredential: boolean = nodeHasModelCredential(),
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): void {
+  if (hasCredential) return
+  warn(
+    '[resident] no model credential is visible to this node: no CLAUDE_CODE_USE_* provider selection, ' +
+      'no ANTHROPIC_API_KEY, no auth token, and no stored login under this OCC_CONFIG_DIR. ' +
+      'Every agent turn woken here will come back "Not logged in · Please run /login" ' +
+      '(authentication_failed, zero usage) after the delivery, the receipt and the audit link all report success. ' +
+      'The ACP child inherits this process environment, so the credential has to be in place before the resident ' +
+      'starts — logging in elsewhere afterwards does not reach it. ' +
+      `Run \`${invokedBinName()} auth status\` with this node OCC_CONFIG_DIR for the same answer in detail.`,
+  )
+}
+
+/**
  * `--cert`/`--key` startup self-check (K-2, one of the DoD's four negative
  * cases), run before this node opens a listener.
  *
@@ -1288,6 +1380,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // After the banner, so the two are read in the order they matter: what this
   // node is, then the one thing about it nobody chose.
   warnUnselectedTaskPolicy(config)
+  // And then the one thing that makes a node which passes every other check
+  // still unable to do any work.
+  warnMissingModelCredentials()
 
   // The write-only backup credential comes from the environment, never from a
   // flag: a token on a command line is a token in every process listing on the
