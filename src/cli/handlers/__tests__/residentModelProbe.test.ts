@@ -34,7 +34,7 @@ function inputs(
     provider: 'firstParty',
     model: 'claude-haiku-5',
     env: {},
-    anthropicAuthHeaders: {},
+    anthropicAuthHeaders: () => ({}),
     ...overrides,
   }
 }
@@ -104,7 +104,7 @@ describe('where the probe request goes', () => {
     const target = assertTarget(
       resolveResidentModelProbeTarget(
         inputs({
-          anthropicAuthHeaders: { 'x-api-key': 'mirrored-key' },
+          anthropicAuthHeaders: () => ({ 'x-api-key': 'mirrored-key' }),
           env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic' },
         }),
       ),
@@ -155,6 +155,50 @@ describe('where the probe request goes', () => {
       expect('status' in resolved && resolved.status).toBe('skipped')
       expect('detail' in resolved && resolved.detail).toContain(fragment)
     }
+  })
+
+  test('a lane that does not speak the Anthropic wire never asks for its headers', () => {
+    // Resolved eagerly, this ran ahead of the provider switch and every lane
+    // paid for the Anthropic credential stack. That stack throws on its own
+    // account — set `CI` with no `ANTHROPIC_API_KEY` and
+    // getAnthropicApiKeyWithSource() raises "ANTHROPIC_API_KEY or
+    // CLAUDE_CODE_OAUTH_TOKEN env var is required" from a CI-only branch — so
+    // an OpenAI node holding a perfectly good key had its probe blinded by a
+    // credential it does not use. Verified against a real `qm resident`:
+    // zero requests reached the stub upstream.
+    let asked = 0
+    const target = assertTarget(
+      resolveResidentModelProbeTarget(
+        inputs({
+          provider: 'openai',
+          env: { OPENAI_API_KEY: 'sk-test' },
+          anthropicAuthHeaders: () => {
+            asked += 1
+            throw new Error(
+              'ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required',
+            )
+          },
+        }),
+      ),
+    )
+    expect(asked).toBe(0)
+    expect(target.url).toBe('https://api.openai.com/v1/chat/completions')
+  })
+
+  test('the Anthropic lane still surfaces its own credential stack failing', () => {
+    // The other half of the same rule: deferring must not become swallowing.
+    // A node that really does speak this wire and cannot resolve its headers
+    // has no probe, and `runResidentModelCredentialProbe` turns that throw
+    // into an `unavailable` verdict that prints — see below.
+    expect(() =>
+      resolveResidentModelProbeTarget(
+        inputs({
+          anthropicAuthHeaders: () => {
+            throw new Error('Config accessed before allowed.')
+          },
+        }),
+      ),
+    ).toThrow('Config accessed before allowed.')
   })
 })
 

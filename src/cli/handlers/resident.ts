@@ -1209,16 +1209,26 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
   return modelProbeEnvironment
 }
 
-/** Read this process's provider / model / auth-header resolution, once. */
+/**
+ * Read this process's provider / model / auth-header resolution, once.
+ *
+ * Provider and model are read eagerly because every lane needs both. The auth
+ * headers are **not**: they are handed over as a thunk so that only a node
+ * actually speaking the Anthropic wire pays for the Anthropic credential
+ * stack. See the field's own comment in `residentModelProbe.ts` for the
+ * failure that shape prevents.
+ */
 export function residentModelProbeInputs(
   environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
 ): ResidentModelProbeInputs {
-  const auth = environment.getAuthHeaders()
   return {
     provider: environment.getAPIProvider(),
     model: environment.getSmallFastModel(),
     env: process.env,
-    anthropicAuthHeaders: auth.error === undefined ? auth.headers : {},
+    anthropicAuthHeaders: () => {
+      const auth = environment.getAuthHeaders()
+      return auth.error === undefined ? auth.headers : {}
+    },
   }
 }
 

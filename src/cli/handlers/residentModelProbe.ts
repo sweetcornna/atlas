@@ -93,8 +93,22 @@ export type ResidentModelProbeInputs = {
    * `getAuthHeaders()` for the Anthropic wire: `x-api-key` for a key,
    * `Authorization: Bearer` plus the OAuth beta header for a subscription.
    * Empty means "nothing usable", which the resolver reports as skipped.
+   *
+   * **A thunk, not a value, and the difference is not style.** Resolved
+   * eagerly it ran ahead of the provider switch below, so every lane paid for
+   * the Anthropic credential stack whether or not it speaks that wire — and
+   * that stack throws for reasons of its own. Demonstrated: an
+   * OpenAI-lane node holding a perfectly good `OPENAI_API_KEY`, on a machine
+   * with `CI` set and no `ANTHROPIC_API_KEY`, has `getAnthropicApiKeyWithSource()`
+   * throw `ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required`
+   * from a branch that exists only for CI — and the probe that was going to
+   * check the OpenAI key never gets built. Deferred, only the lane that needs
+   * these headers can be blinded by them.
+   *
+   * The resolver stays pure in the sense that matters: it still reads nothing
+   * this object did not hand it.
    */
-  readonly anthropicAuthHeaders: Readonly<Record<string, string>>
+  readonly anthropicAuthHeaders: () => Readonly<Record<string, string>>
 }
 
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
@@ -241,7 +255,7 @@ export function resolveResidentModelProbeTarget(
   // gateway, DeepSeek's `/anthropic` route, OpenCode's `/messages` lane. The
   // auth headers are whatever this session would really send, resolved by the
   // caller, so a mirrored credential is tested as the mirror wrote it.
-  const headers = input.anthropicAuthHeaders
+  const headers = input.anthropicAuthHeaders()
   if (Object.keys(headers).length === 0) {
     return skip('no Anthropic-wire credential to test')
   }
