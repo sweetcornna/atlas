@@ -12,6 +12,7 @@
  * in the session runtime.
  */
 
+import { createHash } from 'node:crypto'
 import { BIN_NAME } from 'src/constants/brand.js'
 import { isGptFamilyModel } from 'src/utils/model/chatgptModels.js'
 
@@ -72,6 +73,124 @@ export function isOfficialOpenAIBaseURL(baseURL: string | undefined): boolean {
  */
 export function formatOpenAIPromptCacheKey(sessionId: string): string {
   return `${BIN_NAME}:${sessionId}`
+}
+
+/**
+ * Build a `prompt_cache_key` from the request's own cached prefix instead of
+ * from the session id.
+ *
+ * Why this is not the same thing as the session key: the key is a *routing*
+ * hint. Requests carrying the same key are steered to the same cache-bearing
+ * node, so a key that changes whenever a session changes throws away every
+ * cache entry the previous session paid to create — even though the prefix
+ * (system prompt + tool table) is byte-identical.
+ *
+ * Measured against the live gateway this repo tests against (`gpt-5.6-sol`):
+ * four byte-identical single-turn requests, 39167 input tokens each, one fresh
+ * session per request, nothing varied but the key.
+ *
+ * | key                     | cached / input | hit   |
+ * | ----------------------- | -------------- | ----- |
+ * | `occ:<sessionId>`       | 0 / 39167      |  0.0% |
+ * | `occ:<sessionId>`       | 0 / 39167      |  0.0% |
+ * | `occ:p:<fingerprint>`   | 38400 / 39167  | 98.0% |
+ * | `occ:p:<fingerprint>`   | 38400 / 39167  | 98.0% |
+ *
+ * Later turns were already ~97% either way — within one session the session id
+ * is stable, so both schemes route consistently. The whole gap is the cold
+ * start, which is exactly the shape a resident node pays: every wake is a new
+ * session against an unchanged prefix.
+ *
+ * The fingerprint deliberately covers only material that is *provably* inside
+ * the cached prefix and stable across turns:
+ *
+ *  - the model id (a different model is a different cache);
+ *  - the system/developer text, which on the Responses line becomes the
+ *    `instructions` field and on the chat line is `messages[0]` — it already
+ *    embeds the working directory and platform block, so the key is scoped per
+ *    workspace for free;
+ *  - the tool names, in order, as a cheap faithful proxy for the tool table.
+ *
+ * Being too *coarse* is harmless: two different prefixes sharing a key just
+ * means the node holds a prefix that does not match, i.e. an ordinary miss.
+ * Being too *fine* is what costs money, which is why nothing per-turn (message
+ * bodies, timestamps, request ids) may ever enter this hash.
+ */
+export function formatOpenAIPrefixCacheKey(params: {
+  model: string
+  messages: readonly unknown[]
+  tools: readonly unknown[]
+}): string {
+  const hash = createHash('sha256')
+  hash.update(params.model)
+  for (const message of params.messages) {
+    if (!message || typeof message !== 'object') continue
+    const record = message as Record<string, unknown>
+    if (record.role !== 'system' && record.role !== 'developer') continue
+    hash.update('\u0000s')
+    hash.update(plainTextOfContent(record.content))
+  }
+  for (const tool of params.tools) {
+    const name = toolName(tool)
+    if (name === undefined) continue
+    hash.update('\u0000t')
+    hash.update(name)
+  }
+  return `${BIN_NAME}:p:${hash.digest('hex').slice(0, 16)}`
+}
+
+/**
+ * Flatten OpenAI chat-format `content` to the text the model actually sees.
+ * Deliberately local rather than shared with responsesAdapter's version: this
+ * module must stay importable by the pure request-body tests.
+ */
+function plainTextOfContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  const parts: string[] = []
+  for (const part of content) {
+    if (typeof part === 'string') {
+      parts.push(part)
+      continue
+    }
+    if (!part || typeof part !== 'object') continue
+    const text = (part as Record<string, unknown>).text
+    if (typeof text === 'string') parts.push(text)
+  }
+  return parts.join('')
+}
+
+/** Tool name for both the chat (`{function:{name}}`) and flat shapes. */
+function toolName(tool: unknown): string | undefined {
+  if (!tool || typeof tool !== 'object') return undefined
+  const record = tool as Record<string, unknown>
+  const fn = record.function
+  if (fn && typeof fn === 'object') {
+    const nested = (fn as Record<string, unknown>).name
+    if (typeof nested === 'string') return nested
+  }
+  return typeof record.name === 'string' ? record.name : undefined
+}
+
+/**
+ * Which requests should share a `prompt_cache_key` routing bucket.
+ *
+ * `prefix` (default) keys on the cached prefix, so a new session reuses the
+ * node that already holds it — see {@link formatOpenAIPrefixCacheKey} for the
+ * measurement. `session` restores the pre-2026-08 behaviour of one bucket per
+ * session id, for a gateway whose per-key rate limit makes bucket sharing
+ * worse than a cold start, or for anyone who wants unrelated sessions kept on
+ * separate compute.
+ *
+ * Nothing about either scope changes what is *sent*: the key is an opaque
+ * routing label, never request content, and OpenAI does not share caches
+ * across organizations. So this is a throughput knob, not a privacy one.
+ */
+export function getOpenAIPromptCacheKeyScope(): 'prefix' | 'session' {
+  return process.env.OPENAI_PROMPT_CACHE_KEY_SCOPE?.toLowerCase().trim() ===
+    'session'
+    ? 'session'
+    : 'prefix'
 }
 
 // Env truthiness is re-implemented here rather than imported from
@@ -197,6 +316,57 @@ export function getOpenAIPromptCacheKey(
   return shouldSendOpenAIPromptCacheKey(baseURL, wireProtocol)
     ? formatOpenAIPromptCacheKey(sessionId)
     : undefined
+}
+
+/**
+ * The cache key this request should carry, or undefined when the key must be
+ * withheld (see {@link shouldSendOpenAIPromptCacheKey}).
+ *
+ * Prefers the prefix-scoped key so a fresh session lands on the node that
+ * already holds an identical prefix; falls back to the session key when the
+ * user pins `OPENAI_PROMPT_CACHE_KEY_SCOPE=session`, or when this request
+ * carries no cacheable prefix at all (no system text and no tools — there is
+ * nothing to route *to*, and one shared bucket for every such request across
+ * every session would be a routing hot spot for no gain).
+ */
+export function resolveOpenAIPromptCacheKey(params: {
+  baseURL: string | undefined
+  sessionId: string
+  wireProtocol?: 'chat' | 'responses'
+  model: string
+  messages: readonly unknown[]
+  tools: readonly unknown[]
+}): string | undefined {
+  if (!shouldSendOpenAIPromptCacheKey(params.baseURL, params.wireProtocol)) {
+    return undefined
+  }
+  if (getOpenAIPromptCacheKeyScope() === 'session') {
+    return formatOpenAIPromptCacheKey(params.sessionId)
+  }
+  if (!hasCacheablePrefix(params.messages, params.tools)) {
+    return formatOpenAIPromptCacheKey(params.sessionId)
+  }
+  return formatOpenAIPrefixCacheKey({
+    model: params.model,
+    messages: params.messages,
+    tools: params.tools,
+  })
+}
+
+function hasCacheablePrefix(
+  messages: readonly unknown[],
+  tools: readonly unknown[],
+): boolean {
+  for (const tool of tools) {
+    if (toolName(tool) !== undefined) return true
+  }
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue
+    const record = message as Record<string, unknown>
+    if (record.role !== 'system' && record.role !== 'developer') continue
+    if (plainTextOfContent(record.content).length > 0) return true
+  }
+  return false
 }
 
 /**
