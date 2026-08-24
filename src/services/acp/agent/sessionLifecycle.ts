@@ -17,8 +17,6 @@ import type { Message } from '../../../types/message.js'
 import { deserializeMessages } from '../../../utils/session/conversationRecovery.js'
 import { getLastSessionLog } from '../../../utils/sessionStorage.js'
 import type { PermissionMode } from '../../../types/permissions.js'
-import { setOriginalCwd, switchSession } from '../../../bootstrap/state.js'
-import type { SessionId } from '../../../types/ids.js'
 import { replayHistoryMessages } from '../bridge.js'
 import { computeSessionFingerprint } from '../utils.js'
 import { resolveSessionFilePath } from '../../../utils/session/sessionStoragePortable.js'
@@ -30,6 +28,10 @@ import {
   readClientCapabilities,
   syncSessionConfigState,
 } from './internalAccessors.js'
+import {
+  activateAcpSessionWorkspace,
+  projectDirForSessionCwd,
+} from './sessionWorkspace.js'
 
 // ── getOrCreateSession ───────────────────────────────────────────
 
@@ -61,10 +63,15 @@ async function getOrCreateSession(
         params.sessionId,
         params.cwd,
       )
-      const projectDir = resolved ? dirname(resolved.filePath) : null
+      const projectDir = resolved
+        ? dirname(resolved.filePath)
+        : projectDirForSessionCwd(params.cwd)
       existingSession.projectDir = projectDir
-      switchSession(params.sessionId as SessionId, projectDir)
-      setOriginalCwd(params.cwd)
+      activateAcpSessionWorkspace({
+        sessionId: params.sessionId,
+        cwd: params.cwd,
+        projectDir,
+      })
 
       if (shouldReplay) {
         await this.replaySessionHistory(params)
@@ -89,10 +96,18 @@ async function getOrCreateSession(
   // or ephemeral test envs nested in the repo) all persist under the same
   // parent project dir.
   const resolved = await resolveSessionFilePath(params.sessionId, params.cwd)
-  const projectDir = resolved ? dirname(resolved.filePath) : null
+  // No file on disk yet means this id is about to become a fresh session in
+  // `params.cwd` — pin its project dir there rather than leaving it to be
+  // derived from whatever workspace is current (issue #44).
+  const projectDir = resolved
+    ? dirname(resolved.filePath)
+    : projectDirForSessionCwd(params.cwd)
 
-  switchSession(params.sessionId as SessionId, projectDir)
-  setOriginalCwd(params.cwd)
+  activateAcpSessionWorkspace({
+    sessionId: params.sessionId,
+    cwd: params.cwd,
+    projectDir,
+  })
 
   let initialMessages: Message[] | undefined
   if (resolved) {

@@ -261,6 +261,19 @@ describe('resident multi-session delivery', () => {
 
     // Two agents opened at start plus three lazily created contexts.
     expect(connection.opened).toHaveLength(5)
+    // Every one of them carries its OWN agent's workspace — including the
+    // sessions opened for `planner`, which is not the first `--agent` on the
+    // command line. A node that hands the wrong cwd down here gives one agent
+    // read/write access to another's workspace (issue #44); the same claim is
+    // made against the host's session state in
+    // src/services/acp/agent/__tests__/workspaceIsolation.test.ts.
+    const cwdOf = new Map(AGENTS.map(agent => [agent.agent, agent.cwd]))
+    for (const opened of connection.opened) {
+      expect(opened.cwd).toBe(cwdOf.get(opened.agent) as string)
+    }
+    expect(
+      connection.opened.filter(opened => opened.agent === 'planner'),
+    ).not.toHaveLength(0)
     expect(Object.keys(sessions.sessions()).sort()).toEqual(
       [
         sessionKeyOf('planner', DEFAULT_CONTEXT),

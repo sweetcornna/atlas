@@ -762,7 +762,10 @@ describe('AcpAgent', () => {
       expect(mockDoesMessageExistInSession).toHaveBeenCalledWith(
         sessionId,
         messageId,
-        undefined,
+        // The session's own project dir, pinned at session/new from its cwd
+        // rather than left undefined for the reader to derive from whatever
+        // workspace is globally current (issue #44).
+        expect.any(String),
       )
       // A read-only query must not repoint the process at another session:
       // a prompt streaming for a different one would write its transcript
@@ -1572,7 +1575,14 @@ describe('AcpAgent', () => {
     test('newSession calls switchSession with the generated sessionId', async () => {
       const agent = new AcpAgent(makeConn())
       const res = await agent.newSession({ cwd: '/tmp' } as any)
-      expect(mockSwitchSession).toHaveBeenCalledWith(res.sessionId, null)
+      // Second argument is the session's own project dir, derived from its
+      // cwd. It used to be null ("derive from originalCwd at read time"),
+      // which put every session of a multi-workspace process under one
+      // directory (issue #44).
+      expect(mockSwitchSession).toHaveBeenCalledWith(
+        res.sessionId,
+        expect.any(String),
+      )
     })
 
     test('resumeSession calls switchSession with the requested sessionId', async () => {
@@ -1655,7 +1665,7 @@ describe('AcpAgent', () => {
         sessionId: s1,
         prompt: [{ type: 'text', text: 'hello' }],
       } as any)
-      expect(mockSwitchSession).toHaveBeenCalledWith(s1, null)
+      expect(mockSwitchSession).toHaveBeenCalledWith(s1, expect.any(String))
     })
   })
 })
