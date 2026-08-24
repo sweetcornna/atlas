@@ -16,9 +16,13 @@
 import { abortAttributionScenarios } from './scenarios/abortAttribution.js'
 import { auditScenarios } from './scenarios/audit.js'
 import { capabilityScenarios } from './scenarios/capability.js'
+import { certificateScenarios } from './scenarios/certificate.js'
 import { consoleScenarios } from './scenarios/console.js'
 import { deliveryScenarios } from './scenarios/delivery.js'
-import { handshakeScenarios } from './scenarios/handshake.js'
+import {
+  credentialChannelScenarios,
+  handshakeScenarios,
+} from './scenarios/handshake.js'
 import { launcherScenarios } from './scenarios/launcher.js'
 import { limitsScenarios } from './scenarios/limits.js'
 import { modelCredentialScenarios } from './scenarios/modelCredential.js'
@@ -31,6 +35,7 @@ import type { Scenario } from './types.js'
 
 export const ALL_SCENARIOS: readonly Scenario[] = [
   ...handshakeScenarios,
+  ...credentialChannelScenarios,
   ...policyScenarios,
   ...capabilityScenarios,
   ...trustScenarios,
@@ -44,4 +49,5 @@ export const ALL_SCENARIOS: readonly Scenario[] = [
   ...launcherScenarios,
   ...limitsScenarios,
   ...consoleScenarios,
+  ...certificateScenarios,
 ]

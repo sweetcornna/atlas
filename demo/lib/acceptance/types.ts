@@ -55,6 +55,7 @@ export type Dimension =
   | 'launcher'
   | 'limits'
   | 'console'
+  | 'certificate'
 
 export const DIMENSIONS: readonly Dimension[] = [
   'handshake',
@@ -71,6 +72,7 @@ export const DIMENSIONS: readonly Dimension[] = [
   'launcher',
   'limits',
   'console',
+  'certificate',
 ]
 
 /**

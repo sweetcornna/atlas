@@ -150,21 +150,36 @@ export class LocalDriver implements AcceptanceDriver {
       diagnose: () => `stdout:\n${proc.stdout()}\nstderr:\n${proc.stderr()}`,
       signal: ctx.signal,
     })
+    // 就绪判据分两档，因为**探针手里只有 PSK**。
+    //
+    //   · psk / signature 档：签名是可选的，一次 PSK 拨号会被接受，所以判据
+    //     就是「握手走完」—— 那也是最强的判据。
+    //   · credential_signature 档（`--require-signed-handshake`）：服务端要求
+    //     credential proof，而探针拿不到对端的证书与私钥（那是场景自己按需
+    //     签发的材料）。这时判据退到「服务端发出了 challenge 帧」：监听口已
+    //     绑上、协议已经在说话。**这仍然够用**，因为常驻在开始监听之前会先
+    //     `await` 一次证书目录刷新，所以「能收到 challenge」蕴含「目录已就绪」。
+    //     早先这里一律按「握手走完」判，于是任何 `--require-signed-handshake`
+    //     的节点都起不来 —— 表现是每条场景在 30 s 之后报超时，读起来像常驻
+    //     卡死。证书维度的六条场景全撞在这上面。
+    const credentialed = spec.auth.mode === 'credential_signature'
     await waitFor(
       async () => {
         const probe = await rawDial({
           url: endpoint,
           node: 'readiness-probe',
-          auth: { kind: 'psk', psk },
+          auth: { kind: credentialed ? 'none' : 'psk', psk },
           settleMs: 50,
           timeoutMs: 3_000,
         })
-        return probe.authed
+        return credentialed ? probe.frames.length > 0 : probe.authed
       },
       {
         timeoutMs: 30_000,
         stepMs: 200,
-        what: `节点 ${spec.name} 接受握手`,
+        what: credentialed
+          ? `节点 ${spec.name} 发出 challenge 帧`
+          : `节点 ${spec.name} 接受握手`,
         diagnose: () => `stderr:\n${proc.stderr()}`,
         signal: ctx.signal,
       },
