@@ -147,6 +147,16 @@ export interface ScenarioResult {
   readonly knownIssue?: string
   /** 场景自己声明的、这次实际用到的能力（便于复盘覆盖面）。 */
   readonly requires: readonly DriverCapability[]
+  /**
+   * 这条场景实际调用过的驱动方法名，按调用顺序，含重复。
+   *
+   * **这是「它到底有没有碰过目标」的唯一凭据**，由 runner 用
+   * {@link instrumentDriver} 自动采集，场景写不了也改不了它。空数组有两种
+   * 合法情形（`read-repo-source` 那类静态断言、以及被 skip 的场景），除此
+   * 之外的空数组就是一条声明了能力却绕过驱动的场景 —— issue #61 那次假绿
+   * 里 11 条绿全部是这个形态。
+   */
+  readonly driverCalls: readonly string[]
 }
 
 /** 场景返回给 runner 的东西 —— 判定 + 证据，不含 id/耗时这些框架字段。 */
@@ -335,7 +345,20 @@ export interface SuiteRun {
   readonly durationMs: number
   readonly results: readonly ScenarioResult[]
   readonly counts: Readonly<Record<Outcome, number>>
-  /** 是否整体通过：无 `fail` 且无 `error`。skip 不影响。 */
+  /**
+   * 本轮**真正触达目标**的场景数：已执行（非 skip）且至少调用过一次驱动。
+   *
+   * 0 意味着这一轮关于被测目标什么都没证明 —— 见 {@link SuiteRun.pass}。
+   */
+  readonly targetTouches: number
+  /**
+   * 是否整体通过：无 `fail`、无 `error`，**且 `targetTouches > 0`**。
+   * skip 不影响。
+   *
+   * 最后那一项是 issue #61 的直接产物：真机腿曾经在驱动零调用的情况下报出
+   * `pass=11 fail=0 skip=104` 与 exit 0。一轮没碰过目标的运行不是「通过」，
+   * 它是「没验」，而这两者对读报告的人必须长得不一样。
+   */
   readonly pass: boolean
   /** 套件版本 / 提交，便于把一份结果钉回代码。 */
   readonly commit?: string

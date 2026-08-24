@@ -55,6 +55,13 @@ export function summarize(
   const started = Date.parse(meta.startedAt)
   const finished = Date.parse(meta.finishedAt)
 
+  // 「真正触达目标」= 已执行（非 skip）且至少调用过一次驱动。
+  // skip 不算：它本来就没跑。`read-repo-source` 那类静态断言也不算：它们读的
+  // 是 runner 上的仓库源码，两条腿按设计本就相同，证明不了目标的任何事。
+  const targetTouches = results.filter(
+    r => r.outcome !== 'skip' && r.driverCalls.length > 0,
+  ).length
+
   return {
     target: meta.target,
     startedAt: meta.startedAt,
@@ -65,9 +72,15 @@ export function summarize(
         : 0,
     results,
     counts,
+    targetTouches,
     // skip 不参与判定：一个能力在本目标上不存在，不是被测系统的失败。
     // 但它也不是通过 —— 覆盖率那张表会把它单列出来。
-    pass: counts.fail === 0 && counts.error === 0,
+    //
+    // `targetTouches > 0` 是 issue #61 之后加的第三项，它挡的不是「系统答错
+    // 了」而是「这一轮根本没问过系统」：真机腿曾经在驱动零调用的情况下报出
+    // exit 0 + 「判定: PASS」，而那 11 条绿全部跑在开发机上。全绿与没跑必须
+    // 给出不同的退出码，否则修好之后的任何一次退化都会以同样的形态回来。
+    pass: counts.fail === 0 && counts.error === 0 && targetTouches > 0,
     commit: meta.commit,
   }
 }
@@ -116,6 +129,7 @@ export function toNdjson(run: SuiteRun): string {
       finishedAt: run.finishedAt,
       durationMs: run.durationMs,
       counts: run.counts,
+      targetTouches: run.targetTouches,
       pass: run.pass,
       commit: run.commit,
       coverage: coverageByDimension(run),
@@ -235,6 +249,26 @@ export function renderSummary(run: SuiteRun): string {
   out.push('')
   const tally = OUTCOMES.map(o => `${o}=${run.counts[o]}`).join(' ')
   out.push(`合计: ${tally}`)
+
+  // 目标触达 —— 这一行是 issue #61 的直接产物，读报告的人先看它再看判定。
+  const executed = run.results.filter(r => r.outcome !== 'skip')
+  if (run.targetTouches === 0) {
+    out.push(
+      `目标触达: 0 / ${executed.length} 条已执行场景调用过驱动` +
+        ' ← 这一轮没有任何场景碰过被测目标，等于什么都没验（判定按 FAIL 计）',
+    )
+  } else {
+    out.push(
+      `目标触达: ${run.targetTouches} / ${executed.length} 条已执行场景调用过驱动`,
+    )
+    const blind = executed.filter(r => r.driverCalls.length === 0)
+    if (blind.length > 0) {
+      out.push(
+        `  其中 ${blind.length} 条没碰驱动（静态断言应当如此，别的就是绕过了驱动）: ` +
+          blind.map(r => r.id).join(', '),
+      )
+    }
+  }
   const known = run.results.filter(
     r => r.outcome === 'fail' && r.knownIssue !== undefined,
   )
