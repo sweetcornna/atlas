@@ -1,0 +1,271 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
+/**
+ * 阡陌端到端验收套件 —— 执行器。
+ *
+ * 职责只有一件：**把每个场景放进一个互不影响的盒子里跑，然后如实记账。**
+ *
+ * 「互不影响」是这套件唯一不能妥协的性质，它由四条共同保证：
+ *
+ *   ① 每个场景一个专属临时目录（`workdir`）与一套自己分配的端口；
+ *   ② 每个场景一份 `cleanup` 栈，**在 `finally` 里逆序执行**——超时、抛异常、
+ *      甚至场景自己 `process.exit` 之外的任何路径都会跑到；
+ *   ③ 每个场景一个 `AbortSignal` + 硬超时。超时记 `error` 而不是 `fail`：
+ *      「套件没等到」和「系统答错了」是两件事；
+ *   ④ 场景抛出的异常**不向上传播**，只变成一条 `error` 结果。一条炸了不能
+ *      让后面的不跑——那正是负责人要的「无干预跑完全部场景」。
+ *
+ * 不做的事：不重试（重试会把 flake 藏起来）、不并发（真进程 + 端口 + 文件
+ * 系统状态，并发只会制造无法归因的红）、不因为 `knownIssue` 改判定。
+ */
+
+import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { summarize } from './report-core.js'
+import type {
+  AcceptanceDriver,
+  Evidence,
+  Outcome,
+  Scenario,
+  ScenarioContext,
+  ScenarioResult,
+  SuiteRun,
+} from './types.js'
+
+/** 单场景默认超时。真进程起停 + 一次模型轮次，60 s 够，且不至于挂死一夜。 */
+export const DEFAULT_SCENARIO_TIMEOUT_MS = 60_000
+
+export interface RunOptions {
+  readonly driver: AcceptanceDriver
+  readonly scenarios: readonly Scenario[]
+  /** 只跑 id 前缀命中这些的（`--only handshake/ capability/psk`）。 */
+  readonly only?: readonly string[]
+  readonly timeoutMs?: number
+  readonly commit?: string
+  /** 每条结果出来就回调一次，供实时打印。 */
+  onResult?(result: ScenarioResult): void
+  /** 保留临时目录（排查用）。 */
+  readonly keepWorkdir?: boolean
+}
+
+/** 分配一个空闲 TCP 端口：绑 0 让内核选，记下来再放掉。 */
+export async function freePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = createServer()
+    srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address()
+      if (addr === null || typeof addr === 'string') {
+        srv.close()
+        reject(new Error('freePort: 拿不到端口号'))
+        return
+      }
+      const { port } = addr
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function errorEvidence(err: unknown): Evidence[] {
+  if (err instanceof Error) {
+    const out: Evidence[] = [
+      { label: 'error', value: `${err.name}: ${err.message}` },
+    ]
+    if (typeof err.stack === 'string')
+      out.push({ label: 'stack', value: err.stack })
+    const cause = (err as { cause?: unknown }).cause
+    if (cause !== undefined) {
+      out.push({ label: 'cause', value: String(cause) })
+    }
+    return out
+  }
+  return [{ label: 'error', value: String(err) }]
+}
+
+/**
+ * 跑一个场景。
+ *
+ * 永不抛。任何异常都变成 `error` 结果并带上栈原文 —— 排查一条 `error` 全靠
+ * 那段栈，摘要化就等于让人回来重跑一遍。
+ */
+export async function runScenario(
+  scenario: Scenario,
+  driver: AcceptanceDriver,
+  defaultTimeoutMs: number,
+  keepWorkdir: boolean,
+): Promise<ScenarioResult> {
+  const base = {
+    id: scenario.id,
+    dimension: scenario.dimension,
+    title: scenario.title,
+    target: driver.target,
+    expected: scenario.expected,
+    knownIssue: scenario.knownIssue,
+    requires: scenario.requires,
+  } as const
+
+  // 能力差集先算：驱动做不到的事，如实 skip，不要跑一半再假装成功。
+  const missing = scenario.requires.filter(c => !driver.capabilities.has(c))
+  if (missing.length > 0) {
+    return {
+      ...base,
+      outcome: 'skip',
+      durationMs: 0,
+      actual: '未执行',
+      evidence: [],
+      skipReason: `驱动 ${driver.target} 缺少能力: ${missing.join(', ')}`,
+    }
+  }
+
+  const started = Date.now()
+  const cleanups: Array<() => void | Promise<void>> = []
+  const logs: string[] = []
+  const controller = new AbortController()
+  const timeoutMs = scenario.timeoutMs ?? defaultTimeoutMs
+
+  let workdir: string
+  try {
+    workdir = await mkdtemp(join(tmpdir(), 'qm-acc-'))
+  } catch (err) {
+    return {
+      ...base,
+      outcome: 'error',
+      durationMs: Date.now() - started,
+      actual: '无法创建场景临时目录',
+      evidence: errorEvidence(err),
+    }
+  }
+
+  const ctx: ScenarioContext = {
+    driver,
+    workdir,
+    allocPort: freePort,
+    cleanup: fn => {
+      cleanups.push(fn)
+    },
+    log: line => {
+      logs.push(line)
+    },
+    signal: controller.signal,
+  }
+
+  let outcome: Outcome
+  let actual: string
+  let evidence: readonly Evidence[]
+  let skipReason: string | undefined
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        reject(new Error(`场景超时（${timeoutMs}ms）`))
+      }, timeoutMs)
+    })
+    const result = await Promise.race([scenario.run(ctx), timeout])
+    if (result.skip !== undefined) {
+      outcome = 'skip'
+      skipReason = result.skip
+      actual = '场景自行跳过'
+      evidence = result.evidence
+    } else {
+      outcome = result.ok ? 'pass' : 'fail'
+      actual = result.actual
+      evidence = result.evidence
+    }
+  } catch (err) {
+    outcome = 'error'
+    actual = err instanceof Error ? err.message : String(err)
+    evidence = errorEvidence(err)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    controller.abort()
+    // 逆序：后登记的资源依赖先登记的（进程依赖目录），先拆后者。
+    for (const fn of cleanups.reverse()) {
+      try {
+        await fn()
+      } catch (err) {
+        logs.push(
+          `cleanup 失败: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    if (!keepWorkdir) {
+      await rm(workdir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  const withLogs =
+    logs.length === 0
+      ? evidence
+      : [...evidence, { label: 'log', value: logs.join('\n') }]
+
+  return {
+    ...base,
+    outcome,
+    durationMs: Date.now() - started,
+    actual,
+    evidence: withLogs,
+    skipReason,
+  }
+}
+
+/** 按 id 前缀过滤。空 filter = 全跑。 */
+export function selectScenarios(
+  scenarios: readonly Scenario[],
+  only: readonly string[] | undefined,
+): readonly Scenario[] {
+  if (only === undefined || only.length === 0) return scenarios
+  return scenarios.filter(s => only.some(p => s.id.startsWith(p)))
+}
+
+/** 顺序跑完全部场景，返回一轮汇总。 */
+export async function runSuite(options: RunOptions): Promise<SuiteRun> {
+  const startedAt = new Date().toISOString()
+  const selected = selectScenarios(options.scenarios, options.only)
+  const results: ScenarioResult[] = []
+
+  for (const scenario of selected) {
+    const result = await runScenario(
+      scenario,
+      options.driver,
+      options.timeoutMs ?? DEFAULT_SCENARIO_TIMEOUT_MS,
+      options.keepWorkdir === true,
+    )
+    results.push(result)
+    options.onResult?.(result)
+  }
+
+  return summarize(results, {
+    target: options.driver.target,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    commit: options.commit,
+  })
+}
+
+/**
+ * 场景表自检：id 必须唯一、必须有 `dimension` 前缀一致的命名。
+ *
+ * 单独成函数是为了能在单测分片里跑到 —— 场景表本身写坏（两条同 id）会让
+ * NDJSON 的主键失效，而那种错在一次 60 分钟的真跑里才发现太晚了。
+ */
+export function checkScenarioTable(
+  scenarios: readonly Scenario[],
+): readonly string[] {
+  const problems: string[] = []
+  const seen = new Set<string>()
+  for (const s of scenarios) {
+    if (seen.has(s.id)) problems.push(`重复 id: ${s.id}`)
+    seen.add(s.id)
+    if (!s.id.startsWith(`${s.dimension}/`)) {
+      problems.push(`id 与维度不一致: ${s.id} (dimension=${s.dimension})`)
+    }
+    if (s.expected.trim() === '') problems.push(`缺少 expected: ${s.id}`)
+    if (s.requires.length === 0) problems.push(`未声明 requires: ${s.id}`)
+  }
+  return problems
+}
