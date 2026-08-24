@@ -67,6 +67,7 @@
     "verify:p32": "bun run scripts/qianmo-programming-tasks.ts",
     "qianmo:nxn-matrix": "bun run scripts/qianmo-nxn-resolution-matrix.ts",
     "qianmo:policy-probes": "bun run scripts/qianmo-policy-switch-probes.ts",
+    "qianmo:acceptance": "bun run scripts/qianmo-acceptance.ts",
     "sbom": "bun run scripts/sbom.ts",
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
