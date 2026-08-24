@@ -41,6 +41,58 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路的生成物一起删，
 下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
 
+### 尾参透传：`--` 之后的一切交给底层命令
+
+`beta-up.sh` 管的是**拓扑**：端口、配置根、PSK 从哪读、审计链在哪、任务策略那两个开关。
+`resident` / `console` 自己的策略参数**不在这里逐个开口子**，一律走同一条尾参约定：
+
+```bash
+# node 腿 → resident
+./demo/env/beta/beta-up.sh --role node --node <节点名> -- --trust <节点>=<公钥>
+
+# host 腿 → console
+./demo/env/beta/beta-up.sh --role host -- --wake-sign
+```
+
+`--` 之后的参数**原样追加在底层命令行的最后**，所以它同时也是覆盖上面某个默认值的口子
+（最后一个赢）。为什么是一条透传约定而不是三个专用开关：那一侧还有一长串同类的
+（`--require-signed-tasks`、`--trust-ca`、`--cert`、`--chat-url`…），今天补三个，明天就有第四个
+够不着 —— 2026-08-24 的舰队部署正是卡在这里，只能在部署机上手写瘦封装绕开这里的参数解析，
+而那份封装不在仓库里，不可重复、不可交接。
+
+两条边界：
+
+- **`--view-token` / `--admin-token` 的值形式当场拒绝。**命令行上的密钥就是这台机器每一份
+  进程列表里的密钥；两枚 token 一律走 `--*-token-file`（`secrets/` 下的 0600 文件），要换就改
+  文件内容。尾参是逃生门，不是把这条纪律换掉的旁路。
+- **`--print-wake-identity` 本身不是透传参数**，它是 `beta-up.sh` 自己的开关（见下）：那不是
+  一次启动而是一次查询，透传过去会被起成后台进程、把公钥写进 `logs/console.out` 然后退出。
+  `--` 里的**其余**参数照样跟着那次查询走 —— 身份由 `--chat-from` 决定，这一路与起控制台
+  那一路必须问出同一把钥匙。
+
+不认识的参数会把**本脚本支持的全部参数**打出来，并提示尾参透传这条出路。
+
+### 签名唤醒：三步，顺序不能换
+
+```bash
+# ① H 上：拿控制台的唤醒签名身份（一行 <节点>=<公钥>）。标准输出上只有那一行，可以直接接住
+IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
+
+# ② 每台节点机：声明信任这个签名者（幂等脚本不重起在跑的进程，所以先停）
+./demo/env/beta/beta-down.sh <节点名>
+./demo/env/beta/beta-up.sh --role node --node <节点名> -- --trust "$IDENTITY"
+
+# ③ 回到 H：让控制台真的签名
+./demo/env/beta/beta-down.sh console
+./demo/env/beta/beta-up.sh --role host -- --wake-sign
+```
+
+`--print-wake-identity` **前台跑、不写 pid、不落日志**，用的是控制台**自己**那个配置根
+（`nodes/console/config`）。身份按配置根落盘，拿另一个根打出来的公钥与控制台真正用来签名的
+不是同一把，而症状只会在节点侧表现为验签失败 —— 一条「密钥不匹配」的错，查起来看不出是
+打印那一刻就错了。首次运行会现场创建那把私钥（0600，在配置根里），这是有意的：分发公钥本来
+就该发生在控制台第一次带 `--wake-sign` 起来之前。
+
 ### 「已启动」是真的启动了
 
 `beta_start_process` 内建两道校验，**不再要求调用方自己跟一句存活检查**：

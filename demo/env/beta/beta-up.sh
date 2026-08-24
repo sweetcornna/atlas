@@ -31,6 +31,30 @@
 # **幂等**：已在跑的进程不重起（照 demo/env/up.sh 的 demo_running）。这是 §6 L0 的前提——
 # 「① beta-down.sh <name> 只停这一个 → ③ beta-up.sh 幂等，已在跑的不会被重起」。
 #
+# ── 尾参透传：`--` 之后的一切原样交给底层命令 ────────────────────────────────
+#
+#   beta-up.sh --role node --node <名字> -- --trust <节点>=<公钥>   # → resident
+#   beta-up.sh --role host               -- --wake-sign            # → console
+#
+# **为什么是一条透传约定，而不是给每个参数配一个专用开关**（issue #38）：本脚本管的是
+# **拓扑**——端口、配置根、PSK 从哪读、审计链在哪、任务策略两个开关。`--trust` /
+# `--wake-sign` 管的是 resident 与 console 自己的**策略**，而那一侧还有一长串同类的
+# （`--require-signed-tasks`、`--trust-ca`、`--cert`、`--chat-url`…）。今天补三个专用开关，
+# 明天就有第四个够不着——2026-08-24 的舰队部署正是卡在这里：签名唤醒是本仓库已实现、
+# 却用本仓库的部署脚本部署不出来的能力，只能在部署机上手写瘦封装绕开这里的参数解析，
+# 那份封装不可重复、不可交接。一条透传约定让这类参数**再也不用改这个脚本**。
+#
+# 三件事跟着这条约定：
+#   · 透传参数一律**追加在最后**。它是逃生门：真要覆盖上面某个默认值时，最后一个赢。
+#   · 它是逃生门**不是旁路**：`--view-token` / `--admin-token` 的值形式当场拦下（密钥
+#     不上命令行，理由见 run_host 里那段注释）。
+#   · **`--print-wake-identity` 本身不是透传参数**，它是本脚本自己的开关。那不是一次
+#     启动而是一次查询：透传过去会被 beta_start_process 起成后台进程、把那一行公钥
+#     写进 logs/console.out 然后退出，于是存活校验（issue #40）如实报它「起不来」。
+#     `--` 里的**其余**参数照样跟着那次查询走：身份由 --chat-from 决定，所以
+#     `--print-wake-identity -- --chat-from <地址>` 与 `--role host -- --chat-from <地址>`
+#     必须问出同一把钥匙——两边不一致就等于分发了一把控制台根本不用来签名的公钥。
+#
 # 全部状态在 QIANMO_BETA_ROOT 下（默认 $HOME/qianmo-beta）。**不碰用户真实的 ~/.occ / ~/.qianmo。**
 # 停机用 beta-down.sh，回到可重起的干净运行态用 beta-reset.sh。
 
@@ -42,12 +66,31 @@ set -euo pipefail
 ROLE=''
 NODE_GIVEN=0
 AGENTS_GIVEN=''
+PRINT_WAKE_IDENTITY=0
+# `--` 之后的一切，原样追加给底层命令。空数组在 bash 3.2 的 `set -u` 下不能直接
+# `"${PASS_THROUGH[@]}"` 展开，所以下面每一处都用 `${PASS_THROUGH[@]+"..."}` 的形式。
+PASS_THROUGH=()
 READY_TIMEOUT_S="${QIANMO_BETA_READY_TIMEOUT_S:-90}"
 
 usage() {
   beta_say '用法：'
-  beta_say '  beta-up.sh --role host'
-  beta_say '  beta-up.sh --role node --node <名字> [--agent <名字>]... [--port <端口>]'
+  beta_say '  beta-up.sh --role host [-- <透传给 console 的参数>...]'
+  beta_say '  beta-up.sh --role node --node <名字> [--agent <名字>]... [--port <端口>] [-- <透传给 resident 的参数>...]'
+  beta_say '  beta-up.sh --print-wake-identity'
+  beta_say ''
+  beta_say '本脚本支持的全部参数：'
+  beta_say '  --role host|node        起哪条腿。除 --print-wake-identity 外必给'
+  beta_say '  --node <名字>           节点腿：这台机器上那一个节点的名字'
+  beta_say '  --agent <名字>          节点腿：跑哪些 agent；可给多次，给了就把默认那份整体顶掉'
+  beta_say '  --port <端口>           节点腿：入站端口'
+  beta_say '  --print-wake-identity   只打印控制台的唤醒签名身份（<节点>=<公钥>）后退出，不起任何进程'
+  beta_say '  -h, --help              本页'
+  beta_say '  -- <args>...            其余参数原样追加给底层命令：host 腿给 console，node 腿给 resident'
+  beta_say ''
+  beta_say '签名唤醒链路就用尾参透传，三步，顺序不能换：'
+  beta_say '  ① H 上   ：beta-up.sh --print-wake-identity            → 打出 <节点>=<公钥>'
+  beta_say '  ② 每台节点：beta-up.sh --role node --node <名字> -- --trust <节点>=<公钥>'
+  beta_say '  ③ H 上   ：beta-up.sh --role host -- --wake-sign'
   beta_say ''
   beta_say '变量与完整说明见 demo/env/beta/README.md。'
 }
@@ -64,28 +107,109 @@ while [ "$#" -gt 0 ]; do
     --agent=*) AGENTS_GIVEN="$AGENTS_GIVEN ${1#--agent=}"; shift ;;
     --port)   BETA_NODE_PORT="${2:-}"; shift 2 ;;
     --port=*) BETA_NODE_PORT="${1#--port=}"; shift ;;
+    # 它**不是**一次启动，所以它自己不能靠尾参表达（见文件头「尾参透传」第三段）；
+    # 尾参里的其余参数仍然跟着那次查询走。
+    --print-wake-identity) PRINT_WAKE_IDENTITY=1; shift ;;
+    --) shift; PASS_THROUGH=("$@"); break ;;
     -h|--help) usage; exit 0 ;;
-    *) beta_die "未知参数 $1（用 --help 看用法）" ;;
+    # 未知参数把**本脚本支持的参数集**一并打出来。原先只有一句「用 --help 看用法」，
+    # 于是排查要多走一步；而这条路上最常见的未知参数恰恰是 resident / console 认识、
+    # 本脚本不认识的那些（--trust / --wake-sign / --require-signed-tasks …），所以
+    # 顺手把出口指出来。
+    *)
+      usage >&2
+      beta_die "未知参数 $1 —— 上面是本脚本支持的全部参数。
+如果它是 resident / console 的参数（--trust / --wake-sign / --require-signed-tasks 之类），
+把它放到 -- 后面透传，例如：beta-up.sh --role node --node <名字> -- $1"
+      ;;
   esac
 done
 
-[ -n "$ROLE" ] || { usage; beta_die '缺 --role host|node'; }
-case "$ROLE" in
-  host|node) ;;
-  *) beta_die "--role 只能是 host 或 node，收到 $ROLE" ;;
-esac
+# --print-wake-identity 不起任何进程，所以它不需要 --role；给了也只能是 host。
+if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
+  case "$ROLE" in
+    ''|host) ROLE='host' ;;
+    *) beta_die "--print-wake-identity 问的是控制台（H 腿）的身份，与 --role $ROLE 不搭" ;;
+  esac
+else
+  [ -n "$ROLE" ] || { usage; beta_die '缺 --role host|node'; }
+  case "$ROLE" in
+    host|node) ;;
+    *) beta_die "--role 只能是 host 或 node，收到 $ROLE" ;;
+  esac
+fi
+
+# 尾参透传是一条**逃生门，不是一条旁路**：脚本自己保证的那几件事在它后面仍然成立。
+# 现在只有一条是能被尾参推翻的 —— 两枚控制台 token 一律走 `--*-token-file`，因为命令行
+# 上的密钥就是这台机器每一份进程列表里的密钥（`ps -eo args` / `/proc/<pid>/cmdline` 每个
+# 本地账号都读得到，run_host 里那段注释是它的出处）。值形式在这里当场拦下并指到文件
+# 形式；其余参数一律不管、原样透传。
+for _arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+  case "$_arg" in
+    --view-token|--view-token=*|--admin-token|--admin-token=*)
+      beta_die "尾参里不能出现 ${_arg%%=*} —— 命令行上的 token 会出现在这台机器每一份进程列表里。
+本脚本已经在用 --view-token-file / --admin-token-file 传这两枚（0600 文件，在 $BETA_SECRET_DIR 下），
+要换 token 就改那两个文件的内容。"
+      ;;
+  esac
+done
+unset _arg
+
 # 去掉累加时留下的前导空格：它只影响打印出来那一行的观感，`for a in $BETA_AGENTS`
 # 的分词本来就吃得下——但那一行是运维照着抄进运维单页的，别让它带个空格。
 if [ -n "$AGENTS_GIVEN" ]; then
   BETA_AGENTS="$(printf '%s' "$AGENTS_GIVEN" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 fi
 
+# 四道开工前的准备，两条腿与 --print-wake-identity 共用同一份。
+bootstrap() {
+  beta_seed_root
+  beta_require_marker
+  beta_require_occ
+  beta_export_common
+}
+
 STARTED_AT="$(beta_now)"
-beta_seed_root
-beta_require_marker
-beta_require_occ
-beta_export_common
+if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
+  # 这一路的标准输出上只能有那一行公钥（它要能被 `$(...)` 接住），而首跑时铺目录会打
+  # 「标记文件已建 / 地址表模板已建」两行。整段推到 stderr，而不是逐条加 >&2：以后往
+  # bootstrap 里再加一步时，漏掉那一条就会把公钥那一行污染掉，且只在首跑的机器上复现。
+  bootstrap >&2
+else
+  bootstrap
+fi
 cd "$REPO_DIR"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# --print-wake-identity：只回答「该往每个节点的 --trust 里粘什么」
+#
+# **前台跑、不写 pid、不落日志**：它不是一次启动，是一次查询（控制台自己也把这条路
+# 排在读任何凭据之前，正是为了在一台还没配好 token 的机器上也答得出来——那恰好就是
+# 分发公钥的那一刻的状态）。
+#
+# 两个细节决定它能不能用：
+#   · **配置根必须和控制台那一份是同一个**。唤醒身份按配置根落盘，拿另一个根打印出来
+#     的公钥与控制台真正用来签名的那一把不是同一把，而症状是节点端验签失败——一条
+#     「密钥不匹配」的错，查起来看不出是打印的时候就错了。
+#   · **标准输出上只有那一行 `<节点>=<公钥>`**，铺目录/守卫的絮语一律推到 stderr，
+#     这样它能直接被 `$(...)` 接住喂给下一条命令的 --trust。
+# 首次运行会现场创建那把私钥（0600，在配置根里），这是有意的：分发公钥这一步本来就
+# 该发生在控制台第一次带 --wake-sign 起来之前。
+# ─────────────────────────────────────────────────────────────────────────────
+if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
+  mkdir -p "$BETA_CONFIG_CONSOLE"
+  chmod 700 "$BETA_CONFIG_CONSOLE"
+  beta_say '控制台唤醒签名身份（整行原样放进每个节点的 --trust）：' >&2
+  # 尾参一并带上：身份由 --chat-from 决定，这一路与起控制台那一路必须问同一个身份。
+  OCC_CONFIG_DIR="$BETA_CONFIG_CONSOLE" bun "$BETA_OCC" console --print-wake-identity \
+    ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}
+  beta_say '' >&2
+  beta_say '下一步 : 每台节点机上' >&2
+  beta_say '           demo/env/beta/beta-up.sh --role node --node <名字> -- --trust <上面那一行>' >&2
+  beta_say '         回到 H 上' >&2
+  beta_say '           demo/env/beta/beta-down.sh console && demo/env/beta/beta-up.sh --role host -- --wake-sign' >&2
+  exit 0
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # host 腿：注册中心 + 控制台（+ 备份服务）
@@ -194,6 +318,8 @@ run_host() {
       beta_warn "唤醒目标局部降级：$node 缺 PSK：$psk_file"
     fi
   done
+  # 尾参透传（见文件头）。追加在最后：`--wake-sign` 这类开关就是从这里进来的。
+  console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
   beta_start_process "$BETA_CONSOLE_PROC" "$BETA_CONFIG_CONSOLE" "${console_args[@]}"
 
   i=0
@@ -634,6 +760,8 @@ run_node() {
     beta_say '提示 : 未设 QIANMO_BETA_BACKUP_URL，本节点不写备份快照（H 上的备份服务也还没有入口，见 README）'
   fi
 
+  # 尾参透传（见文件头）。追加在最后：`--trust <节点>=<公钥>` 就是从这里进来的。
+  args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
   beta_start_process "$BETA_NODE" "$config_dir" "${args[@]}"
 
   beta_head '③ 就绪探测'
