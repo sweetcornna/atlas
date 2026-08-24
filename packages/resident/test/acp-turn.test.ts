@@ -8,6 +8,7 @@ import {
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
 } from '../src/acp-turn.js'
+import { ResidentInactivityError } from '../src/inactivity.js'
 
 const INPUT = {
   sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -233,6 +234,62 @@ describe('ACP resident turn port', () => {
     expect(RESIDENT_INACTIVITY_CANCEL_META).toEqual({
       qianmo: { cancelReason: 'inactivity' },
     })
+  })
+
+  test('a 401 reported by the child renames the inactivity failure', async () => {
+    // Issue #37 ②, end to end through the port: the ACP child sees the model
+    // endpoint refuse this node's key (`qianmo/upstream-status`), the turn
+    // then produces nothing, and the failure that reaches the sender has to
+    // name the credential instead of describing a slow model.
+    const timers: (() => void)[] = []
+    const connection = {
+      cancel: mock(async () => {}),
+      extMethod: mock(async () => ({ accepted: false })),
+      prompt: mock(() => new Promise<{ userMessageId: null }>(() => {})),
+    }
+    const port = new AcpResidentTurnPort(connection, {
+      inactivity: {
+        timeoutMs: 120_000,
+        schedule: (_delayMs, callback) => {
+          timers.push(callback)
+          return { cancel: () => {} }
+        },
+      },
+    })
+
+    const executing = port.execute(INPUT, async () => {})
+    port.handleUpstreamStatus({
+      status: 401,
+      detail: '{"error":"Invalid API key"}',
+    })
+    timers[0]!()
+
+    const error = await executing.then(
+      () => undefined,
+      (reason: unknown) => reason,
+    )
+    expect(error).toBeInstanceOf(ResidentInactivityError)
+    const failure = error as ResidentInactivityError
+    expect(failure.isCredentialFailure).toBe(true)
+    expect(failure.message).toContain('HTTP 401')
+    expect(failure.message).toContain('credential')
+    expect(failure.message).toContain('Invalid API key')
+  })
+
+  test('a malformed upstream-status notification is ignored', async () => {
+    const port = new AcpResidentTurnPort({
+      extMethod: mock(async () => ({ accepted: false })),
+      prompt: mock(async () => ({ userMessageId: null })),
+    })
+    for (const params of [
+      {},
+      { status: '401' },
+      { status: null },
+      { detail: 'no status at all' },
+    ]) {
+      port.handleUpstreamStatus(params as Record<string, unknown>)
+    }
+    expect(port.upstreamHealth.last).toBeUndefined()
   })
 
   test('unknown acceptance notifications cannot flip a mailbox entry', async () => {

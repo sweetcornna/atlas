@@ -10,6 +10,7 @@ import type {
 } from './contracts.js'
 import {
   ResidentInactivityWatchdog,
+  ResidentUpstreamHealth,
   type ResidentInactivityOptions,
 } from './inactivity.js'
 import type { ResidentTimingRecorder } from './timings.js'
@@ -49,6 +50,15 @@ export const RESIDENT_INACTIVITY_CANCEL_META: Record<string, unknown> = {
 export const ACP_INPUT_ACCEPTED_METHOD = 'qianmo/input-accepted'
 export const ACP_INPUT_STATUS_METHOD = 'qianmo/input-status'
 export const ACP_SESSION_ACTIVITY_METHOD = 'qianmo/session-activity'
+/**
+ * Agent → host: the model endpoint answered a request with this HTTP status.
+ *
+ * One-way and failure-only. The host cannot see the agent's upstream traffic,
+ * and without this the only thing a refused credential produces out here is
+ * silence — which the watchdog then reports as "no activity", pointing every
+ * reader at the model instead of the key (issue #37).
+ */
+export const ACP_UPSTREAM_STATUS_METHOD = 'qianmo/upstream-status'
 
 export interface AcpPromptConnection {
   /**
@@ -98,6 +108,7 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
   readonly #timings: ResidentTimingRecorder | undefined
   readonly #now: () => number
   readonly #inactivity: ResidentInactivityWatchdog | undefined
+  readonly #upstreamHealth: ResidentUpstreamHealth
 
   constructor(
     connection: AcpPromptConnection,
@@ -110,15 +121,24 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
        * business growing a timer, and the production host passes it explicitly.
        */
       readonly inactivity?: ResidentInactivityOptions
+      /**
+       * Where upstream statuses are remembered. Injectable so a test can pin
+       * the clock the staleness window is measured against; the port makes its
+       * own when the caller does not care.
+       */
+      readonly upstreamHealth?: ResidentUpstreamHealth
     } = {},
   ) {
     this.#connection = connection
     this.#timings = options.timings
     this.#now = options.now ?? Date.now
+    this.#upstreamHealth =
+      options.upstreamHealth ?? new ResidentUpstreamHealth()
     this.#inactivity =
       options.inactivity === undefined
         ? undefined
         : new ResidentInactivityWatchdog({
+            upstreamHealth: this.#upstreamHealth,
             ...options.inactivity,
             // Wired here rather than by the caller because "how to stop an ACP
             // turn" is knowledge this port has and the watchdog deliberately
@@ -135,6 +155,29 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
   /** The inactivity budget in force, or `0` when the watchdog is off. */
   get inactivityMs(): number {
     return this.#inactivity?.timeoutMs ?? 0
+  }
+
+  /** What this node last heard from its model endpoint. Observation only. */
+  get upstreamHealth(): ResidentUpstreamHealth {
+    return this.#upstreamHealth
+  }
+
+  /**
+   * Record one upstream HTTP status reported by the ACP child.
+   *
+   * Called from the `qianmo/upstream-status` notification handler and from the
+   * host's own startup credential probe — the two are the same fact arriving
+   * from different directions, so they share one memory rather than producing
+   * two answers that can disagree.
+   */
+  handleUpstreamStatus(params: Record<string, unknown>): void {
+    const status = params.status
+    if (typeof status !== 'number') return
+    const detail = params.detail
+    this.#upstreamHealth.record(
+      status,
+      typeof detail === 'string' && detail.length > 0 ? detail : undefined,
+    )
   }
 
   /**

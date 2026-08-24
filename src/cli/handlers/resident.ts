@@ -13,6 +13,7 @@ import {
   ResidentActivityReporter,
 } from '@qianmo/resident/activity'
 import type { ResidentTimingEvent } from '@qianmo/resident/timings'
+import { ResidentUpstreamHealth } from '@qianmo/resident'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
 import {
   DEFAULT_SNAPSHOT_INTERVAL_MS,
@@ -61,6 +62,13 @@ import {
   parseTrustedKey,
 } from '../../services/qianmo/nodeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
+import {
+  probeResidentModel,
+  resolveResidentModelProbeTarget,
+  warnRefusedModelCredentials,
+  type ResidentModelProbeInputs,
+  type ResidentModelProbeVerdict,
+} from './residentModelProbe.js'
 
 export const MAX_PENDING_TIMING_EVENTS = 1_024
 
@@ -1113,6 +1121,116 @@ export function warnMissingModelCredentials(
 }
 
 /**
+ * The live inputs the startup liveness probe needs, loaded on first use.
+ *
+ * Same `require` technique and the same reason as
+ * {@link loadModelCredentialProbe} above: `providers.ts`, `model.ts` and
+ * `network/http.ts` sit on top of the settings/auth/config subgraph, and a
+ * static edge would drag all of it into the graph the `check:cycles` ratchet
+ * measures for three reads performed once at startup.
+ */
+type ModelProbeEnvironment = {
+  getAPIProvider: () => string
+  getSmallFastModel: () => string
+  getAuthHeaders: () => { headers: Record<string, string>; error?: string }
+}
+
+let modelProbeEnvironment: ModelProbeEnvironment | undefined
+
+function loadModelProbeEnvironment(): ModelProbeEnvironment {
+  if (!modelProbeEnvironment) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const providers = require('../../utils/model/providers.js') as Pick<
+      ModelProbeEnvironment,
+      'getAPIProvider'
+    >
+    const model = require('../../utils/model/model.js') as Pick<
+      ModelProbeEnvironment,
+      'getSmallFastModel'
+    >
+    const http = require('../../utils/network/http.js') as Pick<
+      ModelProbeEnvironment,
+      'getAuthHeaders'
+    >
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    modelProbeEnvironment = {
+      getAPIProvider: providers.getAPIProvider,
+      getSmallFastModel: model.getSmallFastModel,
+      getAuthHeaders: http.getAuthHeaders,
+    }
+  }
+  return modelProbeEnvironment
+}
+
+/** Read this process's provider / model / auth-header resolution, once. */
+export function residentModelProbeInputs(
+  environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
+): ResidentModelProbeInputs {
+  const auth = environment.getAuthHeaders()
+  return {
+    provider: environment.getAPIProvider(),
+    model: environment.getSmallFastModel(),
+    env: process.env,
+    anthropicAuthHeaders: auth.error === undefined ? auth.headers : {},
+  }
+}
+
+/**
+ * Ask this node's model endpoint whether the credential it was started with is
+ * actually accepted, and say so on stderr when it is not (issue #37 ①).
+ *
+ * Runs **beside** startup rather than in front of it. The verdict is a
+ * diagnosis, not an admission decision — a node whose endpoint is momentarily
+ * unreachable must still come up and take work — so nothing here blocks the
+ * listener, and the caller does not await it. The probe carries its own
+ * timeout for the same reason.
+ *
+ * Skipped when no credential is visible at all: {@link
+ * warnMissingModelCredentials} has already said so in more useful words, and
+ * two warnings about one fault teach people to read neither.
+ */
+export async function runResidentModelCredentialProbe(
+  options: {
+    readonly hasCredential?: boolean
+    readonly inputs?: ResidentModelProbeInputs
+    readonly fetchImpl?: typeof fetch
+    readonly timeoutMs?: number
+    readonly warn?: (message: string) => void
+  } = {},
+): Promise<ResidentModelProbeVerdict> {
+  try {
+    const hasCredential = options.hasCredential ?? nodeHasModelCredential()
+    if (!hasCredential) {
+      return { status: 'skipped', detail: 'no model credential is visible' }
+    }
+    const target = resolveResidentModelProbeTarget(
+      options.inputs ?? residentModelProbeInputs(),
+    )
+    if ('status' in target) return target
+    const verdict = await probeResidentModel(target, {
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.timeoutMs }),
+    })
+    warnRefusedModelCredentials(
+      verdict,
+      ...(options.warn === undefined ? [] : ([options.warn] as const)),
+    )
+    return verdict
+  } catch (error) {
+    // A probe that cannot even be built is not a fault of the node. Reported
+    // as `skipped` rather than swallowed so a caller can still see it.
+    return {
+      status: 'skipped',
+      detail: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/**
  * A rendered {@link Bun.inspect} line longer than this cannot be a normal
  * source line under this repo's own Biome width limits (80/120 columns,
  * see `CLAUDE.md`); it is what a bundled `dist/chunks/*.js` line looks like
@@ -1482,6 +1600,24 @@ export async function runResident(args: readonly string[]): Promise<void> {
   // still unable to do any work.
   warnMissingModelCredentials()
 
+  // …and the same question asked of the endpoint rather than of the
+  // environment (issue #37 ①). Deliberately not awaited: the verdict is a
+  // diagnosis, not an admission decision, and a node must not wait on a
+  // network round trip before it starts listening. A refusal lands in
+  // `<node>.err` a moment later, which is where the other two startup warnings
+  // already are.
+  //
+  // The verdict is also remembered, in the same place the ACP child's own
+  // upstream statuses go: if the first task arrives while that 401 is still
+  // fresh, the inactivity watchdog can name the cause instead of reporting a
+  // silence (issue #37 ②). Stale verdicts fall out of the window on their own.
+  const upstreamHealth = new ResidentUpstreamHealth()
+  void runResidentModelCredentialProbe().then(verdict => {
+    if (verdict.status === 'refused') {
+      upstreamHealth.record(verdict.httpStatus, verdict.detail)
+    }
+  })
+
   // The write-only backup credential comes from the environment, never from a
   // flag: a token on a command line is a token in every process listing on the
   // machine. Same injection point discipline as the transport PSK.
@@ -1533,6 +1669,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
     team: config.team,
     agents: config.agents,
     psk,
+    upstreamHealth,
     capability,
     auditSink: routerTrailSink(trail, config.node),
     transportEvents: transportTrailSink(trail, config.node),

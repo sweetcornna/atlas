@@ -25,6 +25,7 @@ import {
   ResidentSupervisor,
   ResidentTimingRecorder,
   type ResidentTimingSink,
+  type ResidentUpstreamHealth,
 } from '@qianmo/resident'
 import type {
   DeliveryLedgerEntry,
@@ -163,6 +164,13 @@ interface QianmoResidentOptions {
    * {@link DEFAULT_RESIDENT_INACTIVITY_MS}; `0` turns the watchdog off.
    */
   readonly inactivityMs?: number
+  /**
+   * Where upstream HTTP statuses reported by the ACP child are remembered, so
+   * the inactivity watchdog can say *why* a turn went quiet (design §3.B10,
+   * issue #37). Injected by the host because the startup credential probe
+   * writes into the same memory; omitted, the node makes its own.
+   */
+  readonly upstreamHealth?: ResidentUpstreamHealth
   /**
    * How the previous life of this node ended (design §3.B2).
    *
@@ -507,6 +515,9 @@ export class QianmoResident {
         inactivity: {
           timeoutMs: options.inactivityMs ?? DEFAULT_RESIDENT_INACTIVITY_MS,
         },
+        ...(options.upstreamHealth === undefined
+          ? {}
+          : { upstreamHealth: options.upstreamHealth }),
       },
     )
     this.#adapter = new InboundAdapter({
@@ -1439,6 +1450,13 @@ export class QianmoResident {
         onActivity: this.#options.onActivity,
         onSessionUpdate: params => {
           this.#turn.handleSessionUpdate(params)
+        },
+        // The ACP child is the only process on this node that talks to a model
+        // endpoint, so it is the only one that can see a refused credential.
+        // Without this the watchdog reports the resulting silence as "no
+        // activity" and every reader goes looking at the model (issue #37).
+        onUpstreamStatus: params => {
+          this.#turn.handleUpstreamStatus(params)
         },
         onExtMethod: async (method, params) =>
           method === ACP_NOTIFY_METHOD

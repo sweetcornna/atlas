@@ -12,6 +12,7 @@ export {
   ACP_INPUT_ACCEPTED_METHOD,
   ACP_INPUT_STATUS_METHOD,
   ACP_SESSION_ACTIVITY_METHOD,
+  ACP_UPSTREAM_STATUS_METHOD,
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
   type AcpPromptConnection,
@@ -56,10 +57,13 @@ export {
 } from './estop.js'
 export {
   DEFAULT_RESIDENT_INACTIVITY_MS,
+  isCredentialHttpStatus,
   ResidentInactivityError,
   ResidentInactivityWatchdog,
+  ResidentUpstreamHealth,
   type ResidentInactivityOptions,
   type ResidentInactivityTurn,
+  type ResidentUpstreamStatus,
 } from './inactivity.js'
 export { FileAdmissionLedger, MAX_ADMISSION_RECOVERIES } from './ledger.js'
 export {

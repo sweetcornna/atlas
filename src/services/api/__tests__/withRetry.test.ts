@@ -58,6 +58,11 @@ import {
 } from '../withRetry.js'
 import { createAssistantAPIErrorMessageFromError } from '../../../utils/messages.js'
 import {
+  registerUpstreamStatusCallback,
+  unregisterUpstreamStatusCallback,
+  type UpstreamStatusReport,
+} from '../upstreamStatus.js'
+import {
   attachAPIErrorSource,
   categorizeRetryableAPIError,
   classifyRetryableAPIError,
@@ -1809,5 +1814,75 @@ describe('official retry policy', () => {
     )
     await expect(generator.next()).rejects.toBeInstanceOf(APIUserAbortError)
     expect(ran).toBe(0)
+  })
+})
+
+describe('reporting the upstream status to an out-of-process observer', () => {
+  /**
+   * Issue #37 ②. 401 is on this ladder's retryable list, so a refused
+   * credential is answered by another attempt and the caller sees nothing for
+   * as long as the budget lasts. On a resident node that window is the whole
+   * "produced no activity for 120000ms" — so the status has to escape from
+   * inside the ladder, on the first attempt, or it never escapes at all.
+   */
+  test('every failed attempt is reported, before any recovery branch runs', async () => {
+    const seen: UpstreamStatusReport[] = []
+    registerUpstreamStatusCallback(report => seen.push(report))
+    try {
+      const unauthorized = new APIError(
+        401,
+        undefined,
+        'unauthorized',
+        new Headers(),
+      )
+      const generator = withRetry(
+        async () => ({}) as unknown as Anthropic,
+        async () => {
+          throw unauthorized
+        },
+        {
+          maxRetries: 3,
+          model: 'claude-sonnet',
+          thinkingConfig: { type: 'disabled' },
+        },
+      )
+      await expect(async () => {
+        let step = await generator.next()
+        while (!step.done) step = await generator.next()
+      }).toThrow()
+      expect(seen.length).toBeGreaterThan(0)
+      expect(seen.every(report => report.status === 401)).toBe(true)
+    } finally {
+      // Process-global sink: leaving one installed makes this file the
+      // observer for every test that runs after it in the same worker.
+      unregisterUpstreamStatusCallback()
+    }
+  })
+
+  test('a transport failure with no status reports nothing', async () => {
+    const seen: UpstreamStatusReport[] = []
+    registerUpstreamStatusCallback(report => seen.push(report))
+    try {
+      const generator = withRetry(
+        async () => ({}) as unknown as Anthropic,
+        async () => {
+          throw new TypeError('fetch failed')
+        },
+        {
+          maxRetries: 1,
+          model: 'claude-sonnet',
+          thinkingConfig: { type: 'disabled' },
+        },
+      )
+      await expect(async () => {
+        let step = await generator.next()
+        while (!step.done) step = await generator.next()
+      }).toThrow()
+      // "No answer" is a different diagnosis from "the answer was 401", and
+      // the watchdog must not be able to blame a credential for a dead link.
+      expect(seen).toEqual([])
+    } finally {
+      unregisterUpstreamStatusCallback()
+    }
   })
 })

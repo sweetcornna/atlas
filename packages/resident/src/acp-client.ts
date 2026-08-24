@@ -17,6 +17,7 @@ import type { ResidentSessionConnection } from './sessions.js'
 import {
   ACP_INPUT_ACCEPTED_METHOD,
   ACP_SESSION_ACTIVITY_METHOD,
+  ACP_UPSTREAM_STATUS_METHOD,
   type AcpPromptConnection,
 } from './acp-turn.js'
 
@@ -29,6 +30,14 @@ export interface ResidentAcpClientOptions {
   readonly onSessionUpdate?: (
     params: SessionNotification,
   ) => void | Promise<void>
+  /**
+   * The agent's model endpoint answered with an HTTP status (failures only).
+   *
+   * The host cannot observe the agent's upstream traffic, so this is the only
+   * way a refused credential becomes visible out here before the inactivity
+   * watchdog has to explain a silence it did not cause (issue #37).
+   */
+  readonly onUpstreamStatus?: (params: Record<string, unknown>) => void
   /**
    * Handle an ACP ext **request** from the agent, agent → host.
    *
@@ -56,6 +65,9 @@ class ResidentClient implements Client {
   readonly #onSessionUpdate:
     | ((params: SessionNotification) => void | Promise<void>)
     | undefined
+  readonly #onUpstreamStatus:
+    | ((params: Record<string, unknown>) => void)
+    | undefined
   readonly #onExtMethod:
     | ((
         method: string,
@@ -67,6 +79,7 @@ class ResidentClient implements Client {
     this.#onInputAccepted = options.onInputAccepted
     this.#onActivity = options.onActivity
     this.#onSessionUpdate = options.onSessionUpdate
+    this.#onUpstreamStatus = options.onUpstreamStatus
     this.#onExtMethod = options.onExtMethod
   }
 
@@ -103,6 +116,10 @@ class ResidentClient implements Client {
       if (typeof params.active === 'boolean') {
         await this.#onActivity?.(params.active)
       }
+      return
+    }
+    if (method === ACP_UPSTREAM_STATUS_METHOD) {
+      this.#onUpstreamStatus?.(params)
     }
   }
 }
