@@ -589,7 +589,7 @@ paired deletion 未提交时，先稳定复验计划 metadata 的原身份与字
 | `beta-up.sh --role host` | 建 / 收敛 / 收残，**已在跑的一律不重起**；单元文件被改写而实例在跑时，在末尾列出实例并给出维护窗口里的 `systemctl --user restart` | `provision_links` / `sweep_orphan_links` / `ensure_unit` |
 | `beta-down.sh`（不给名字） | 按停机顺序最后停链路：隧道与镜像 timer 都停并**取消自启** | `beta_stop_link` |
 | `beta-down.sh <node>` | 只切该节点那一条（前提是它铺过链路） | 同上 |
-| `beta-reset.sh --purge-links` | 再删链路的**生成物**（`ops/` 与三个单元文件）；`mirror/` 一条不动 | `beta-reset.sh` |
+| `beta-reset.sh --purge-links` | 再删链路的**生成物**（`ops/` 与五个单元文件）；`mirror/` 一条不动 | `beta-reset.sh` |
 
 **所以「隧道断了 `beta-up.sh` 修不好」也不再成立**：`beta-up.sh --role host` 会把停掉的单元
 重新拉起来，并且**在返回之前对每个隧道口真读一次应答**（`wait_tunnel_live`），读不到就带分诊
