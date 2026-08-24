@@ -8,6 +8,7 @@ import type {
   InboundAdapter,
   InboundDelivered,
   InboundRejection,
+  InboundVerification,
 } from './inbound.js'
 import type { ObserveOptions } from './observer.js'
 import { observeReadFlip } from './observer.js'
@@ -59,7 +60,7 @@ export async function deliverAndAck(
   message: QianmoMessage,
   observe: DeliveryObserveOptions = {},
   /** What the routing layer verified about this message, if anything. */
-  verified: { readonly capIss?: string } = {},
+  verified: InboundVerification = {},
 ): Promise<DeliveryReply> {
   const result = await adapter.deliver(message, verified)
   if (result.status === 'rejected') {
