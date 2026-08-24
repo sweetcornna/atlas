@@ -381,6 +381,42 @@ admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6
 打开之后启动横幅多一行 `wake-signing`，内容就是 `<node>=<publicKey>`——**要复制粘贴的
 是那一整段**，不是照着两个字段自己拼一个。公开材料，可以进终端记录。
 
+### 4.7 唤醒失败分三类，「不可达」只留给真的没到（issue #29）
+
+上一节那条链路没配好的时候，操作者看到的是**这一节**的东西。三类互不重叠，因为它们的
+排查动作完全不同：
+
+| `code` | HTTP | 含义 | 该去查什么 |
+| --- | --- | --- | --- |
+| `refused` | 403 | 握手成功、信封送达、**节点自己决定不做** | 该节点的策略与审计链 |
+| `rejected` | 400 | **本机**这一侧的规则不让发（钉死的 URL、白名单、路由器本地拒绝） | 控制台的启动参数 |
+| `unreachable` | 503 | 真的没到：拨号失败、重连预算耗尽、回执始终没来 | 隧道、端口、路由 |
+
+**曾经 `refused` 这一类是没有的**，于是 `E_CAP_INSUFFICIENT` 显示成
+`unreachable` + `transport message … rejected (E_UNDELIVERABLE)`，把人整个引向网络排查。
+两处叠加造成的：
+
+1. **回执那一层压平了原因。**`packages/transport/src/receiver.ts` 把 handler 抛出的
+   **任何**异常一律记成 `E_UNDELIVERABLE` / `handler failed`。这是对的——传输层不持有
+   策略知识，也不该现编一份（`@qianmo/transport` 模块注释）。
+2. **发起方没在听另一条。**节点被拒时是**答两次**的：一个 `error` 信封（真码、真句子，
+   `resident.ts` 的 `#receive`）＋一个被压平的回执。而 `executeResidentWake` 当时不注册
+   inbound handler，第一条被自己这个进程当成「没有 handler」拒收掉了，只剩第二条。
+
+所以修法是**发起方把那条信封收起来**（`residentWake.ts` 的 `WakeRefusedError`），不是让
+回执多带一个码。协议行为一个字节没改：那些字节本来就发给每一个握手通过的对端，对话面
+（`consoleChat.ts` 的 `onReply`）一直在读同一条信封——唤醒面只是补上了。
+
+**没拿到原因也不退回「不可达」。**一条走投递层被拒的 `wake` 没有 task 可答，节点什么都
+不回；这时页面说「节点拒绝了这条唤醒 · 原因见该节点的审计链 · msg &lt;id&gt;」，给的是
+去审计链里捞这一条的抓手，而不是一个错误的方向。
+
+**关于「要不要对陌生拨号方含糊」**：这条防线不在这里，在**握手**
+（`packages/transport/src/handshake.ts`）。那个 `error` 信封只发给已经通过 PSK / Ed25519
+握手的对端，一个陌生拨号方连信封都递不进来，谈不上靠观察拒绝原因去探测节点的策略姿态。
+所以这次改动**没有**放松任何边界，只是不再把已经收到的那句话丢掉；节点侧因此也不需要按
+「对端是否被 `--trust`」分档回原因。
+
 ---
 
 ## §5 路由表
