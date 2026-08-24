@@ -815,6 +815,7 @@ v1.0 这里只管 PSK。现场又多了两类持密面（控制台两枚 token �
 | H `secrets/console-view-token`、`secrets/console-admin-token` | 控制台两枚 token | 0600，目录 0700 | 控制台，经 `--view-token-file` / `--admin-token-file`（§3.2）。**控制台自己会校验这两个文件的权限，过宽就拒绝启动** |
 | H `secrets/backup-archive-token` | 归档 token | 0600 | 只在 H（§2.7） |
 | 每台节点机 `secrets/backup-write-token` | 写 token | 0600 | 该节点（若开备份面） |
+| 每台节点机 `secrets/model-env` | 该节点的**模型凭据**，一份 `KEY=VALUE` 的 shell 片段 | 0600，目录 0700 | 该节点进程：`beta-up.sh` 的节点腿在**起 resident 之前**注入（`set -a` + `.`），ACP 子进程再从 resident 继承。**H 上没有这一份**——控制台不跑 agent 轮次，给它只是多一处可被读走的副本，而 H 正是同时装着 admin token、四把 PSK 与 SSH 私钥的那台机器 |
 | **H 上一把 SSH 私钥**，位置由 `QIANMO_BETA_SSH_KEY` 定、单条 `node` 坐标行还能用 `key=` 再覆盖（默认值见 `demo/env/beta/README.md` 的变量表，**本文不复制路径**。**v1.2 更正**：v1.1 这里把它写在内测根的 `secrets/` 下，落地实现的默认位置**不在内测根里**） | **H → 节点的 SSH 私钥** | **0600，目录 0700** | 四条隧道与镜像拉取（§2.6 / §4.3）。默认位置在内测根之外，所以 **`beta-reset.sh` 的任何参数都够不到它**；`ops/tunnel-<node>.env` 里只存**路径**，不存内容——**私钥永不离开 H** |
 | **四台节点的 `~/.ssh/authorized_keys`** | 上面那把的**公钥**，且**必须带那一行选项**：`command="…",restrict,port-forwarding,permitopen="127.0.0.1:<该节点的入站端口>"` | 0600 | 节点的 sshd |
 | 其他任何地方 | 无 | — | — |
