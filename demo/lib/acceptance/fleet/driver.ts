@@ -4,12 +4,15 @@
 /**
  * 真机舰队驱动 —— 四节点 + 控制台，走真实链路。
  *
- * ## 状态：**已写好，尚未在真机上执行过一次。**
+ * ## 状态：已对真舰队跑过（2026-08-24）
  *
- * 这不是谦辞，是这份文件唯一重要的元数据。委托里明确要求「先写出来但不要
- * 执行」，所以下面每一条 SSH 命令的**形状**都对着 `demo/env/beta/` 的既有脚本
- * 抄，但没有任何一条被真机验证过。第一次真跑必须当作一次调试，不是一次验收 ——
- * 那一轮的红大概率是这个文件的问题，不是被测系统的问题。
+ * 第一轮真跑正如预言的那样是一次调试：套件报 `pass=11 fail=0 skip=104` + exit 0
+ * +「判定: PASS」，而这个驱动**一次都没被调用过**（issue #61）。那轮的红不在
+ * 被测系统上，在套件上。修完的现在：`startNode`(附着) / `alive` / `stdout` /
+ * `stderr` / `listNodeDir` / `readNodeFile` / `execNode` / `execHost` / `dial` /
+ * `inspectMirrorTransport` 都对着真机验过。
+ *
+ * **拨号地址是这个文件最容易再错一次的地方**，见 {@link FleetHost.endpoint}。
  *
  * ## 与本地驱动的**能力差**，以及为什么
  *
@@ -26,7 +29,12 @@
  * 信任、投递、唤醒、审计六个维度的**绝大部分**——因为那些场景的材料都在
  * **发起方**手里（错 PSK、过期 token、重放……），拨过去就能问，不需要动节点。
  *
- * `restart-node` 默认也不给；`--allow-restart` 才打开（恢复维度要它）。
+ * `restart-node` 也不给，而且**没有开关能打开它**。原先有一个 `--allow-restart`，
+ * 但它解锁的场景数是 **0**：恢复维度那四条每一条都同时要 `spawn-node`（它们要
+ * 先按特定 policy/trust 起一个自己的节点，再重启它、看身份与审计链接不接得上），
+ * 而真机腿永远不会有 `spawn-node`。一个永远不改变任何行为的开关比没有更糟 ——
+ * 它让人以为「加上它真机腿就能测恢复」。要在真机上测恢复得先有一条**不需要
+ * 自己起节点**的恢复场景，那条场景还不存在（issue #61 第 4 条）。
  *
  * ## 舰队拓扑
  *
@@ -105,8 +113,6 @@ export interface FleetConfig {
   readonly consoleHost?: string
   /** 传输层 PSK。按节点分的话给一张表。 */
   readonly psk: Readonly<Record<string, string>>
-  /** 允许重启节点（恢复维度需要）。默认关。 */
-  readonly allowRestart?: boolean
   /** SSH 额外参数。 */
   readonly sshArgs?: readonly string[]
 }
@@ -170,7 +176,7 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ],
   [
     'restart-node',
-    '重启真机节点会打断内测使用者，并在那条节点的审计链上留下一次计划外中断',
+    '重启真机节点会打断内测使用者，并在那条节点的审计链上留下一次计划外中断；原先那个 --allow-restart 开关解锁的场景数是 0（恢复维度四条都同时要 spawn-node），已删',
   ],
   ['mutate-node-env', '改凭据/环境要重启，与 restart-node 同一条理由'],
   [
@@ -207,7 +213,6 @@ export class FleetDriver implements AcceptanceDriver {
       // 真机腿照跑一遍，是为了「验收当时那份源码长这样」也进真机的报告。
       'read-repo-source',
     ]
-    if (config.allowRestart === true) caps.push('restart-node')
     if (config.consoleHost !== undefined) caps.push('mirror-transport')
     this.capabilities = new Set(caps)
   }
@@ -253,18 +258,16 @@ export class FleetDriver implements AcceptanceDriver {
     )
   }
 
-  async restartNode(
-    _ctx: ScenarioContext,
-    node: NodeHandle,
-  ): Promise<NodeHandle> {
-    if (this.#config.allowRestart !== true) {
-      throw new Error('真机重启需要显式 --allow-restart')
-    }
-    const host = (node as FleetNodeHandle).host
-    await this.#ssh(host, [
-      `cd ~/atlas-beta && demo/env/beta/beta-down.sh node && demo/env/beta/beta-up.sh --role node --node ${host.node}`,
-    ])
-    return node
+  /**
+   * 真机上不重启节点 —— 与 {@link stopNode} 同一条理由，且驱动**不声明**
+   * `restart-node`，所以任何要它的场景在能力差集那一步就被跳掉了，走不到这里。
+   *
+   * 留着这个方法只是因为接口要求；它抛，不是「暂未实现」的占位。
+   */
+  async restartNode(): Promise<NodeHandle> {
+    throw new Error(
+      'FleetDriver 不重启真机节点：那会打断内测使用者，也会在那条节点的审计链上留下一次计划外中断',
+    )
   }
 
   async dial(
@@ -701,10 +704,7 @@ function envSuffix(node: string): string {
  * 「这台 runner 怎么够得着舰队」本来就是运行环境的事，写死在套件里只会在
  * 换一种拓扑时挡路。拨不通是**如实的红**，不是假绿 —— 那正好是这次要修的病。
  */
-export function fleetConfigFromEnv(
-  repoDirOverride?: string,
-  allowRestart = false,
-): FleetConfig {
+export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
   // 控制台主机可关：`QIANMO_ACCEPTANCE_CONSOLE_HOST=` 置空就等于「这一轮没有
   // 控制台机器」，靠它的场景据此老实 skip 而不是红。
   const consoleHostRaw =
@@ -729,7 +729,6 @@ export function fleetConfigFromEnv(
   return {
     hosts,
     psk,
-    allowRestart,
     ...(consoleHostRaw === '' ? {} : { consoleHost: consoleHostRaw }),
   }
 }

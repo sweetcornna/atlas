@@ -8,14 +8,18 @@
  * ```
  * bun run scripts/qianmo-acceptance.ts [--target local|fleet] [--only <前缀>…]
  *                                      [--out <目录>] [--timeout-ms <n>]
- *                                      [--list] [--keep-workdir] [--allow-restart]
+ *                                      [--list] [--keep-workdir]
  * ```
  *
  * 跑完输出两份：
  *   · `<out>/results.ndjson` —— 机器可读，一行一个场景，末行是汇总；
  *   · `<out>/SUMMARY.txt` + stdout —— 人可读汇总表，红的行带证据原文。
  *
- * 退出码：0 = 无 fail 无 error（skip 不影响）；1 = 有红；2 = 用法错。
+ * 退出码：0 = 无 fail 无 error **且至少有一条场景真正调用过驱动**（skip 不影响）；
+ * 1 = 有红，或者这一轮一条都没碰过被测目标；2 = 用法错。
+ *
+ * 最后那半句是 issue #61 的产物：真机腿曾经在驱动零调用的情况下报出
+ * `pass=11 fail=0 skip=104` 与 exit 0。全绿与没跑必须给出不同的退出码。
  *
  * ## 为什么是一条独立入口，而不是一个 `.test.ts`
  *
@@ -65,12 +69,11 @@ const USAGE = `阡陌端到端验收套件
   --only <前缀>          只跑 id 以此开头的场景，可重复（如 --only handshake/ --only audit/）
   --out <目录>           产物目录，默认 ~/qianmo-acceptance/<UTC 时间戳>
   --timeout-ms <n>       单场景默认超时，默认 ${DEFAULT_SCENARIO_TIMEOUT_MS}
-  --allow-restart        真机腿：允许重启节点（恢复维度需要）
   --keep-workdir         保留每个场景的临时目录，便于排查
   --list                 只列出场景表，不执行
   -h, --help             本页
 
-退出码：0 全绿（skip 不影响）· 1 有 fail 或 error · 2 用法错
+退出码：0 全绿且真的碰过目标（skip 不影响）· 1 有 fail/error 或本轮零触达 · 2 用法错
 `
 
 function flag(name: string): boolean {
@@ -123,11 +126,11 @@ async function main(): Promise<number> {
   if (target === 'local') {
     driver = new LocalDriver()
   } else if (target === 'fleet') {
-    driver = new FleetDriver(
-      fleetConfigFromEnv(undefined, flag('allow-restart')),
-    )
+    driver = new FleetDriver(fleetConfigFromEnv())
     process.stderr.write(
-      '注意：真机驱动尚未在真机上执行过一次。第一轮请当作调试，不是验收。\n',
+      '注意：真机腿的拨号走 H 上的隧道口 38631–38634。' +
+        '不在 H 上跑就先把 `ssh -N -L 3863x:127.0.0.1:3863x <H>` 起起来，' +
+        '或用 QIANMO_ACCEPTANCE_DIAL_HOST / QIANMO_ACCEPTANCE_ENDPOINT_<节点> 改道。\n',
     )
   } else {
     process.stderr.write(`未知 --target ${target}\n${USAGE}`)
