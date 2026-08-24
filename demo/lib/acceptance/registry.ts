@@ -19,6 +19,7 @@ import { capabilityScenarios } from './scenarios/capability.js'
 import { deliveryScenarios } from './scenarios/delivery.js'
 import { handshakeScenarios } from './scenarios/handshake.js'
 import { launcherScenarios } from './scenarios/launcher.js'
+import { limitsScenarios } from './scenarios/limits.js'
 import { modelCredentialScenarios } from './scenarios/modelCredential.js'
 import { multiAgentScenarios } from './scenarios/multiAgent.js'
 import { policyScenarios } from './scenarios/policy.js'
@@ -40,4 +41,5 @@ export const ALL_SCENARIOS: readonly Scenario[] = [
   ...wakeScenarios,
   ...recoveryScenarios,
   ...launcherScenarios,
+  ...limitsScenarios,
 ]

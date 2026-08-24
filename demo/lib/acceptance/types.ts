@@ -53,6 +53,7 @@ export type Dimension =
   | 'wake'
   | 'recovery'
   | 'launcher'
+  | 'limits'
 
 export const DIMENSIONS: readonly Dimension[] = [
   'handshake',
@@ -67,6 +68,7 @@ export const DIMENSIONS: readonly Dimension[] = [
   'wake',
   'recovery',
   'launcher',
+  'limits',
 ]
 
 /**

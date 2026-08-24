@@ -193,3 +193,148 @@ export function withBrokenSignature(token: string): string {
 }
 
 export { CapabilityLevel, MessageType }
+
+// ---------------------------------------------------------------------------
+// 批量投递 —— 速率预算那一维唯一测得动的形状
+// ---------------------------------------------------------------------------
+
+/** 一条信封在批量投递里拿到的答复。 */
+export interface BurstResponse {
+  readonly receipt?: string
+  readonly receiptCode?: string
+  readonly errorCode?: string
+  readonly errorReason?: string
+}
+
+export interface BurstResult {
+  /** 与传入 `messages` 同序，一一对应。 */
+  readonly responses: readonly BurstResponse[]
+  readonly frames: readonly string[]
+  readonly closeCode?: number
+  readonly dialError?: string
+}
+
+/**
+ * 在**一条连接上**连发多条信封，把每条的答复各自收回来。
+ *
+ * 为什么不能用 `sendEnvelope` 循环：速率预算是 `LIMITS.ratePerMinute` 条/分钟
+ * 的连续补充令牌桶（`packages/router/src/rate.ts`），每秒补回 1/60 的容量。
+ * 一条一条拨号，每次握手加收帧的开销让六百条要跑好几分钟，那时候桶早就补满
+ * 了 —— 测不出上限，只测出「补得比发得快」。所以必须一次握手、一口气发完。
+ *
+ * 回执与 error 信封两条线都收：预算拒绝走的是 `errorReply`（error 信封里带
+ * `E_RATE_LIMITED`），而回执被 `receiver.ts` 压成 `E_UNDELIVERABLE` —— 只看
+ * 回执分辨不出「被预算拦下」和「投递失败」。
+ */
+export async function sendBurst(options: {
+  readonly url: string
+  readonly psk: string
+  readonly fromNode: string
+  readonly messages: readonly QianmoMessage[]
+  readonly settleMs?: number
+  readonly timeoutMs?: number
+}): Promise<BurstResult> {
+  const byMsgId = new Map<string, number>()
+  const byTaskId = new Map<string, number>()
+  options.messages.forEach((message, index) => {
+    byMsgId.set(message.msgId, index)
+    // 同一个 taskId 只认第一条：批量里本来就该条条不同，重复说明构造有误，
+    // 而静默覆盖会让证据指向错误的那一条。
+    if (!byTaskId.has(message.taskId)) byTaskId.set(message.taskId, index)
+  })
+
+  const answered = new Set<number>()
+  const countAnswered = (frames: readonly string[]): number => {
+    // 只在末帧上做增量判断：`until` 每收一帧问一次，全量重扫是 O(n²)。
+    const last = frames.at(-1)
+    if (last !== undefined) {
+      const index = indexOfReceipt(last, byMsgId)
+      if (index !== undefined) answered.add(index)
+    }
+    return answered.size
+  }
+
+  const probe = await rawDial({
+    url: options.url,
+    node: options.fromNode,
+    auth: { kind: 'psk', psk: options.psk },
+    sendAfterReady: options.messages.map(message => ({
+      t: FrameType.Envelope,
+      v: FRAME_VERSION,
+      envelope: message,
+    })),
+    settleMs: options.settleMs ?? 30_000,
+    timeoutMs: options.timeoutMs ?? 90_000,
+    until: frames => countAnswered(frames) >= options.messages.length,
+  })
+
+  const responses: BurstResponse[] = options.messages.map(() => ({}))
+  for (const raw of probe.frames) {
+    const parsed = parseObject(raw)
+    if (parsed === undefined) continue
+    if (parsed.t === FrameType.Receipt) {
+      const index = byMsgId.get(String(parsed.msgId))
+      if (index === undefined) continue
+      responses[index] = {
+        ...responses[index],
+        ...(typeof parsed.status === 'string'
+          ? { receipt: parsed.status }
+          : {}),
+        ...(typeof parsed.code === 'string'
+          ? { receiptCode: parsed.code }
+          : {}),
+      }
+      continue
+    }
+    if (parsed.t !== FrameType.Envelope) continue
+    const envelope = parsed.envelope as Record<string, unknown> | undefined
+    if (envelope?.type !== MessageType.Error) continue
+    const index = byTaskId.get(String(envelope.taskId))
+    if (index === undefined) continue
+    const payload = envelope.payload as Record<string, unknown> | undefined
+    responses[index] = {
+      ...responses[index],
+      ...(typeof payload?.code === 'string' ? { errorCode: payload.code } : {}),
+      ...(typeof payload?.reason === 'string'
+        ? { errorReason: payload.reason }
+        : {}),
+    }
+  }
+
+  return {
+    responses,
+    frames: probe.frames,
+    ...(probe.closeCode === undefined ? {} : { closeCode: probe.closeCode }),
+    ...(probe.error === undefined ? {} : { dialError: probe.error }),
+  }
+}
+
+function parseObject(raw: string): Record<string, unknown> | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  return parsed as Record<string, unknown>
+}
+
+/**
+ * 这一帧是第几条信封的**回执**。
+ *
+ * 只认回执、不认 error 信封，虽然两者都是答复：一条被拒的信封会先收到 error
+ * 信封、再收到回执（`#receive` 先 `channel.send(errorReply(...))` 再抛，
+ * `receiver.ts` 抛之后才发回执）。按「谁先到就算答完」收工，会在最后一条的
+ * 回执到达之前就把 socket 关掉，于是那一条的 `receipt` 字段永远是空的 ——
+ * 而回执状态正是速率那条场景要读的东西之一。
+ */
+function indexOfReceipt(
+  raw: string,
+  byMsgId: ReadonlyMap<string, number>,
+): number | undefined {
+  const parsed = parseObject(raw)
+  if (parsed === undefined) return undefined
+  if (parsed.t !== FrameType.Receipt) return undefined
+  return byMsgId.get(String(parsed.msgId))
+}
