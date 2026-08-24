@@ -441,7 +441,6 @@ export const handshakeScenarios: readonly Scenario[] = [
 // 这一格在 `--trust` 档上恒为 `(explicit, <节点名>)`，换 selector 也不动它。
 // ---------------------------------------------------------------------------
 
-import { Checks as CredentialChecks } from '../checks.js'
 import {
   certificateFixture,
   dialWithCertificate,
@@ -466,7 +465,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
     requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
     timeoutMs: 300_000,
     async run(ctx) {
-      const checks = new CredentialChecks()
+      const checks = new Checks()
       const skipReason = opensslGate(checks)
       if (skipReason !== undefined) return checks.skip(skipReason)
 

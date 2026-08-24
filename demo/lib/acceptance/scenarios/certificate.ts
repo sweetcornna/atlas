@@ -51,6 +51,8 @@ import {
   type IssuedCertificate,
 } from '../local/ca.js'
 import { mint, sendEnvelope, type Issuer } from '../local/send.js'
+import { runCli } from '../local/spawn.js'
+import { mkdirSync } from 'node:fs'
 import { delay, handshakeRejections, waitForMailbox } from '../observe.js'
 import type { NodeHandle, Scenario, ScenarioContext } from '../types.js'
 import {
@@ -155,6 +157,40 @@ export function opensslGate(checks: Checks): string | undefined {
   return version === null
     ? '本机没有可用的 openssl；qm ca 的签发链跑不起来（这是 CA 工具的外部依赖，不是被测系统的缺陷）'
     : undefined
+}
+
+/** 起一条会自己退出的 `qm resident`，用来测启动期的拒绝。 */
+async function residentStartupProbe(
+  ctx: ScenarioContext,
+  extraArgs: readonly string[],
+  configRoot: string,
+): Promise<{ readonly code: number; readonly output: string }> {
+  const workspace = join(ctx.workdir, 'probe-ws')
+  mkdirSync(workspace, { recursive: true })
+  const result = await runCli({
+    argv: [
+      'resident',
+      '--node',
+      NODE,
+      '--team',
+      TEAM,
+      '--agent',
+      `${AGENT}=${workspace}`,
+      '--port',
+      String(await ctx.allocPort()),
+      '--hostname',
+      '127.0.0.1',
+      '--open-policy',
+      ...extraArgs,
+    ],
+    env: {
+      OCC_IDENTITY: 'qianmo',
+      OCC_CONFIG_DIR: configRoot,
+      QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+    },
+    timeoutMs: 40_000,
+  })
+  return { code: result.code, output: `${result.stdout}\n${result.stderr}` }
 }
 
 export const certificateScenarios: readonly Scenario[] = [
@@ -463,6 +499,160 @@ export const certificateScenarios: readonly Scenario[] = [
           '显式 --trust 条目在 handshakeCredentialOf 里排在最前面并直接返回，既不看有效期也不查吊销。所以要真正把一个节点摘出去，必须**同时**删掉 --trust 条目并发布吊销清单 —— 只做后一半是无效操作（key-distribution.md §6.4）。',
         )
         .done('显式信任压过吊销，代价已被钉住')
+    },
+  },
+
+  {
+    id: 'certificate/registry-url-requires-trust-ca',
+    dimension: 'certificate',
+    title: '--registry-url 没有 --trust-ca 时在解析期就被拒',
+    expected: "非零退出 + '--registry-url requires --trust-ca'",
+    requires: ['exec-node-cli'],
+    timeoutMs: 90_000,
+    async run(ctx) {
+      // 注册中心是零鉴权的，它给出的证书与吊销清单只有 CA 签名这一道验证。
+      // 没有 CA 根就去信它，等于把「谁是谁」交给任何能打到那个端口的人。
+      const probe = await residentStartupProbe(
+        ctx,
+        ['--registry-url', 'http://127.0.0.1:1'],
+        join(ctx.workdir, 'probe-config'),
+      )
+      return new Checks()
+        .note('输出', probe.output.slice(0, 1_500))
+        .expect(probe.code !== 0, '退出码非零', probe.code)
+        .contains(
+          probe.output,
+          '--registry-url requires --trust-ca',
+          '错误输出',
+        )
+        .done('缺 CA 根时不许去信注册中心')
+    },
+  },
+
+  {
+    id: 'certificate/cert-without-trust-ca-is-plaintext',
+    dimension: 'certificate',
+    title: '给了 --cert/--key 却没给 --trust-ca：节点照起，但明说「这是明文」',
+    expected:
+      "stderr 出现 'mTLS is NOT enabled' 与 'serving plaintext ws://'，且一次普通的 ws PSK 拨号照样握得上（行为面证明它真的是明文）",
+    requires: ['spawn-node', 'raw-dial', 'exec-node-cli'],
+    timeoutMs: 240_000,
+    async run(ctx) {
+      const checks = new Checks()
+      const skip = opensslGate(checks)
+      if (skip !== undefined) return checks.skip(skip)
+
+      const fixture = await certificateFixture(ctx)
+      // 证书必须绑**本节点自己**的身份（K-2 的启动检查），所以先在节点将来
+      // 会用的那个配置根里把身份与 CSR 造出来，再让驱动用同一个根起节点。
+      const nodeConfig = join(ctx.workdir, `node-${NODE}`, 'config')
+      mkdirSync(nodeConfig, { recursive: true })
+      const own = await issueCertificate(ctx, fixture.ca, {
+        node: NODE,
+        configRoot: nodeConfig,
+        outName: 'own.crt',
+      })
+      const node = await ctx.driver.startNode(
+        ctx,
+        nodeSpec(ctx, {
+          policy: 'open',
+          extraArgs: [
+            '--cert',
+            own.path,
+            '--key',
+            join(nodeConfig, 'qianmo', 'identity', `${NODE}.tls.key`),
+          ],
+        }),
+      )
+      const stderr = await node.stderr()
+      const probe = await rawDial({
+        url: node.endpoint,
+        node: SENDER_NODE,
+        auth: { kind: 'psk', psk: ACCEPTANCE_PSK },
+        settleMs: 300,
+      })
+
+      return (
+        checks
+          .note('stderr', stderr.slice(0, 2_000))
+          .contains(stderr, 'mTLS is NOT enabled', 'stderr')
+          .contains(stderr, 'serving plaintext ws://', 'stderr')
+          .expect(
+            node.endpoint.startsWith('ws://'),
+            '监听地址仍是 ws://',
+            node.endpoint,
+          )
+          // 只断言那句告警不够 —— 要证明的是「它真的没在做 TLS」。
+          .expect(probe.authed, '明文 PSK 拨号照样握得上', probe.authed)
+          .note(
+            '为什么这条重要',
+            '三个开关只有凑齐才有 mTLS（F-10）。缺一个时节点不会拒绝启动，只会退回明文 —— 那是一台「看起来配好了」的机器，而唯一的区别只在 stderr 的这一行里。',
+          )
+          .done('缺 CA 根时明确退回明文而不是假装加密')
+      )
+    },
+  },
+
+  {
+    id: 'certificate/cert-from-another-ca-refused-at-startup',
+    dimension: 'certificate',
+    title: '--cert 不是 --trust-ca 那个 CA 签的 → 启动期拒绝',
+    expected: "非零退出 + '--cert was not signed by the CA in --trust-ca'",
+    requires: ['exec-node-cli'],
+    timeoutMs: 240_000,
+    async run(ctx) {
+      const checks = new Checks()
+      const skip = opensslGate(checks)
+      if (skip !== undefined) return checks.skip(skip)
+
+      const fixture = await certificateFixture(ctx)
+      const nodeConfig = join(ctx.workdir, 'wrong-ca-config')
+      mkdirSync(nodeConfig, { recursive: true })
+      const own = await issueCertificate(ctx, fixture.ca, {
+        node: NODE,
+        configRoot: nodeConfig,
+        outName: 'own.crt',
+      })
+      // 第二个 CA：证书没变，换掉的是「拿谁的根去验它」。
+      const other = await runCli({
+        argv: [
+          'ca',
+          'init',
+          '--ca-dir',
+          join(ctx.workdir, 'other-ca'),
+          '--cn',
+          'another-ca',
+        ],
+        env: {
+          OCC_IDENTITY: 'qianmo',
+          OCC_CONFIG_DIR: join(ctx.workdir, 'other-ca-tool-config'),
+        },
+        timeoutMs: 90_000,
+      })
+      if (other.code !== 0) {
+        return checks.skip(`第二个 CA 起不来：${other.stderr.slice(0, 400)}`)
+      }
+      const probe = await residentStartupProbe(
+        ctx,
+        [
+          '--cert',
+          own.path,
+          '--key',
+          join(nodeConfig, 'qianmo', 'identity', `${NODE}.tls.key`),
+          '--trust-ca',
+          join(ctx.workdir, 'other-ca', 'ca.crt'),
+        ],
+        nodeConfig,
+      )
+      return checks
+        .note('输出', probe.output.slice(0, 1_500))
+        .expect(probe.code !== 0, '退出码非零', probe.code)
+        .contains(
+          probe.output,
+          '--cert was not signed by the CA in --trust-ca',
+          '错误输出',
+        )
+        .done('换代 CA 的错配在启动期就被挡住')
     },
   },
 

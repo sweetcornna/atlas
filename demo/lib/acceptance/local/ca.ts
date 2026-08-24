@@ -38,9 +38,6 @@ import { join } from 'node:path'
 import { runCli } from './spawn.js'
 import type { ScenarioContext } from '../types.js'
 
-/** 与 `local/driver.ts` 里那把同一个值；证书链路的节点也用它做 PSK。 */
-export { ACCEPTANCE_PSK } from './driver.js'
-
 /** Ed25519 身份密钥对，形状与 `@qianmo/capability` 的 `NodeKeyPair` 一致。 */
 export interface IdentityKeys {
   readonly publicKey: string
@@ -85,10 +82,7 @@ export function opensslSupportsExplicitValidity(): boolean {
 }
 
 /** 读一个配置根里的节点身份。 */
-export function readIdentityKeys(
-  configRoot: string,
-  node: string,
-): IdentityKeys {
+function readIdentityKeys(configRoot: string, node: string): IdentityKeys {
   const raw = readFileSync(
     join(configRoot, 'qianmo', 'identity', `${node}.json`),
     'utf8',

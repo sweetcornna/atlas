@@ -25,7 +25,7 @@
  */
 
 import { startRegistryServer } from '@qianmo/registry'
-import type { InMemoryRegistry, RegistryOptions } from '@qianmo/registry'
+import type { RegistryOptions } from '@qianmo/registry'
 import { join } from 'node:path'
 import type { ScenarioContext } from '../types.js'
 import { spawnCli, waitFor, type SpawnedProcess } from './spawn.js'
@@ -118,8 +118,6 @@ export async function http(
 
 export interface RegistryHandle {
   readonly url: string
-  readonly port: number
-  readonly registry: InMemoryRegistry
   /** `--state` 落盘路径；不给 `statePath` 时是 undefined。 */
   readonly statePath?: string
 }
@@ -152,8 +150,6 @@ export async function startRegistry(
   })
   return {
     url: handle.url,
-    port: handle.port,
-    registry: handle.registry as InMemoryRegistry,
     ...(options.statePath === undefined
       ? {}
       : { statePath: options.statePath }),
@@ -195,8 +191,8 @@ export interface ConsoleFixtureOptions {
   readonly configDirName?: string
 }
 
-/** `qm console` 的 `--print-wake-identity` 用的那个环境变量名。 */
-export function wakePskEnvVar(node: string): string {
+/** 命名唤醒目标的 PSK 环境变量名（`consoleArgs.ts` 的 `wakePskEnvVarForNode`）。 */
+function wakePskEnvVar(node: string): string {
   return `QIANMO_TRANSPORT_PSK_NODE_${Buffer.from(node, 'utf8')
     .toString('hex')
     .toUpperCase()}`
