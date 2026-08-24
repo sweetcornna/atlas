@@ -34,9 +34,8 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { http, startConsole, startRegistry } from '../local/console.js'
-import { runCli } from '../local/spawn.js'
 import { TRAIL_PATH } from '../observe.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { sendEnvelope } from '../local/send.js'
@@ -229,15 +228,17 @@ export const auditMirrorScenarios: readonly Scenario[] = [
     expected:
       "非零退出 + '--audit-mirror names unknown audit node <名字>'；两条 --audit 指同一路径 → '--audit repeats path <路径>'",
     requires: ['exec-node-cli'],
-    timeoutMs: 90_000,
+    timeoutMs: 240_000,
     async run(ctx) {
-      const trail = join(ctx.workdir, 'trail.ndjson')
-      writeFileSync(trail, '')
-      const result = await runCli({
-        argv: [
+      // 两条都是**解析期**规则，所以这里不会有控制台真的起来、也不会 bind
+      // 那个口；经驱动跑是为了让真机腿问的是那台机器上部署的那个二进制。
+      const host = await ctx.driver.execHost(ctx)
+      const trail = await host.writeFile('trail.ndjson', '')
+      const result = await host.exec(
+        [
           'console',
           '--port',
-          String(await ctx.allocPort()),
+          String(await host.freePort()),
           '--hostname',
           '127.0.0.1',
           '--audit',
@@ -245,20 +246,18 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           '--audit-mirror',
           'remote=30',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'console-config'),
-        },
-        timeoutMs: 40_000,
-      })
-      const output = `${result.stdout}\n${result.stderr}`
+        { timeoutMs: 100_000 },
+      )
+      const output = stripMinifiedSourceFrame(
+        `${result.stdout}\n${result.stderr}`,
+      )
       // 第二条规则：同一个路径不许被申报两次。这条挡掉的是「让同一个文件既
       // 当镜像又当权威」的写法 —— 本套件先按那个形状写过一版并撞在这里。
-      const duplicate = await runCli({
-        argv: [
+      const duplicate = await host.exec(
+        [
           'console',
           '--port',
-          String(await ctx.allocPort()),
+          String(await host.freePort()),
           '--hostname',
           '127.0.0.1',
           '--audit',
@@ -266,14 +265,16 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           '--audit',
           `remote=${trail}`,
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'console-config-2'),
+        {
+          env: { OCC_CONFIG_DIR: await host.mkdir('console-config-2') },
+          timeoutMs: 100_000,
         },
-        timeoutMs: 40_000,
-      })
-      const duplicateOutput = `${duplicate.stdout}\n${duplicate.stderr}`
+      )
+      const duplicateOutput = stripMinifiedSourceFrame(
+        `${duplicate.stdout}\n${duplicate.stderr}`,
+      )
       return new Checks()
+        .note('执行位置', host.describe)
         .note('输出', output.slice(0, 1_500))
         .note('重复路径的输出', duplicateOutput.slice(0, 1_500))
         .expect(result.code !== 0, '点名未知源时退出码非零', result.code)

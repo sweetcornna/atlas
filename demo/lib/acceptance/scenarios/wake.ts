@@ -23,7 +23,7 @@
  */
 
 import { join } from 'node:path'
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { mint, newIssuer, sendEnvelope } from '../local/send.js'
 import { runCli } from '../local/spawn.js'
@@ -277,23 +277,22 @@ export const wakeScenarios: readonly Scenario[] = [
     title: 'qm console --print-wake-identity 只输出一行 <node>=<公钥>',
     expected: "stdout 恰好一行，形如 'console=<43 字符 base64url>'，退出码 0",
     requires: ['exec-node-cli'],
-    timeoutMs: 60_000,
+    timeoutMs: 150_000,
     async run(ctx) {
-      const configDir = join(ctx.workdir, 'console-identity')
-      const result = await runCli({
-        argv: ['console', '--print-wake-identity'],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: configDir,
-          QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
-        },
-        timeoutMs: 40_000,
+      // 这条命令**会在配置根里生成一把新的唤醒身份**，所以它必须落在一次性
+      // 配置根里，绝不能是节点的生产根 —— 那是往内测机的身份目录里塞控制面
+      // 凭据。`execHost` 存在的第一理由就是这个（见 types.ts 的对比表）。
+      const host = await ctx.driver.execHost(ctx)
+      const result = await host.exec(['console', '--print-wake-identity'], {
+        env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+        timeoutMs: 120_000,
       })
       const lines = result.stdout.split('\n').filter(l => l !== '')
       const line = lines[0] ?? ''
       return new Checks()
+        .note('执行位置', host.describe)
         .note('stdout', result.stdout)
-        .note('stderr', result.stderr.slice(0, 1_000))
+        .note('stderr', stripMinifiedSourceFrame(result.stderr).slice(0, 1_000))
         .eq(result.code, 0, '退出码')
         .eq(lines.length, 1, 'stdout 行数')
         .expect(

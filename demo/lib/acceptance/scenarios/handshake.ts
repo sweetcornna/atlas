@@ -462,7 +462,13 @@ export const credentialChannelScenarios: readonly Scenario[] = [
     dimension: 'handshake',
     title: '冻结四元组 · credential 腿变化 → 4004',
     expected: `同一节点、同一把签名钥匙，换一张证书重用通道 → ${CLOSE_CHANNEL_CONFLICT}；审计链记 channel_identity_mismatch`,
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()

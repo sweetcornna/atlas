@@ -20,13 +20,20 @@
  *    之后要靠 ② 的拨号验证真的是自己那个进程在应答。
  */
 
-import { mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join } from 'node:path'
 import type {
   AcceptanceDriver,
   DialOptions,
   DialProbe,
   DriverCapability,
+  ExecHost,
   ExecResult,
   NodeHandle,
   NodeSpec,
@@ -59,6 +66,7 @@ const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
   'raw-dial',
   'run-launcher',
   'stub-upstream',
+  'local-ca-fixture',
   'read-repo-source',
 ])
 
@@ -275,6 +283,47 @@ export class LocalDriver implements AcceptanceDriver {
         QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
       },
     })
+  }
+
+  /**
+   * 本地的一次性执行位置就是场景 workdir 下的两个子目录 —— runner 已经保证
+   * 会清理它，所以这里不再另登记 cleanup。
+   */
+  async execHost(ctx: ScenarioContext): Promise<ExecHost> {
+    const configDir = join(ctx.workdir, 'exec-host', 'config')
+    const workdir = join(ctx.workdir, 'exec-host', 'work')
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(workdir, { recursive: true })
+    return {
+      describe: 'runner (local)',
+      configDir,
+      workdir,
+      exec: async (argv, opts) =>
+        await runCli({
+          argv,
+          env: {
+            OCC_IDENTITY: 'qianmo',
+            OCC_CONFIG_DIR: configDir,
+            QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+            ...(opts?.env ?? {}),
+          },
+          ...(opts?.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: opts.timeoutMs }),
+        }),
+      writeFile: async (relPath, content) => {
+        const abs = join(workdir, relPath)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, content)
+        return abs
+      },
+      mkdir: async relPath => {
+        const abs = join(workdir, relPath)
+        mkdirSync(abs, { recursive: true })
+        return abs
+      },
+      freePort: async () => await ctx.allocPort(),
+    }
   }
 }
 

@@ -113,6 +113,17 @@ export type DriverCapability =
   /** 能对着一个可控的假模型上游跑（本地有；真机打真实端点）。 */
   | 'stub-upstream'
   /**
+   * 能**在被测 CLI 所在的那台机器上**现造一套离线 CA 夹具：openssl + `qm ca`
+   * 签出证书，外加一个本机注册中心进程来分发它们。
+   *
+   * 与 `exec-node-cli` 分开，因为真机腿缺的正好是这一半：夹具是在 runner 上
+   * 用本地文件系统造的，而被测二进制在四台节点上 —— 两边不是同一个文件系统，
+   * `--cert`/`--trust-ca` 指过去是一条不存在的路径。声明成 `spawn-node` 是不
+   * 准确的（这些场景根本不需要起常驻），而不声明就是 issue #61 那种装饰性
+   * `requires`。
+   */
+  | 'local-ca-fixture'
+  /**
    * 能读**本仓库源码**（静态断言用，两个目标都有）。
    *
    * 少数场景断言的是「代码里只有一处按 trust 分支」「NoticeTrust 是两值封闭
@@ -258,6 +269,63 @@ export interface ExecResult {
   readonly stderr: string
 }
 
+/**
+ * **目标机上**跑一条一次性 CLI 的位置：一次性配置根 + 一次性工作目录。
+ *
+ * ## 为什么它必须存在（issue #61 第 1 条）
+ *
+ * 有 7 条场景做的是同一件事：**拿一组故意写坏的参数起一次 `qm`，看它在解析期
+ * 或启动期拒不拒**。它们声明了 `exec-node-cli`，然后调 runner 本地的
+ * `runCli()` —— 于是在真机腿上照样在开发机上 spawn，`requires` 纯属装饰。
+ * 而 {@link AcceptanceDriver.execNode} 又用不了：它把 `OCC_CONFIG_DIR` 钉在
+ * 那条节点的**生产配置根**上。
+ *
+ * ## 与 {@link AcceptanceDriver.execNode} 的分工是硬的，不要合并
+ *
+ * | | 配置根 | 给谁用 |
+ * | --- | --- | --- |
+ * | `execNode` | 节点的**生产根** | `qm audit --verify` 这类**必须读那条节点自己的链**的场景 |
+ * | `ExecHost` | 一次性根，跑完删 | 「参数写坏了该拒绝」这类**与配置根内容无关**的场景 |
+ *
+ * 拿生产根跑第二类是不可以的，三条理由：
+ *
+ *   ① 那些命令会在配置根下**生成身份密钥**（`qm console --print-wake-identity`
+ *      的全部作用就是这个），等于往四台内测节点的身份目录里塞验收产物，其中
+ *      一把还是控制面凭据；
+ *   ② 生产根下的审计链是**成果边界证据**，任何一次计划外写入都会在链上留下
+ *      一条没人解释得清的记录；
+ *   ③ 用一次性根**不削弱**这条腿的价值 —— 这些场景断言的是「部署在真机上的
+ *      那个 `dist/cli-node.js`、在真机的架构与内核上、对这组参数怎么反应」，
+ *      被测对象是那个二进制和那台机器，不是配置根里装了什么。
+ */
+export interface ExecHost {
+  /** 人可读的位置标识（`runner (local)` / `cornna-p12 (beta-4)`），进证据用。 */
+  readonly describe: string
+  /** 一次性配置根在**目标机上**的绝对路径（喂 `OCC_CONFIG_DIR`）。 */
+  readonly configDir: string
+  /** 一次性工作目录在**目标机上**的绝对路径（放输入文件、agent 工作区）。 */
+  readonly workdir: string
+  /** 跑一条**会结束**的 `qm` 子命令。 */
+  exec(
+    argv: readonly string[],
+    opts?: {
+      readonly env?: Readonly<Record<string, string>>
+      readonly timeoutMs?: number
+    },
+  ): Promise<ExecResult>
+  /** 在目标机上写一个文件（相对 {@link workdir}），返回它在目标机上的绝对路径。 */
+  writeFile(relPath: string, content: string): Promise<string>
+  /** 在目标机上建一个目录（相对 {@link workdir}），返回绝对路径。 */
+  mkdir(relPath: string): Promise<string>
+  /**
+   * 目标机上此刻**没有人在听**的一个 TCP 端口。
+   *
+   * 注意它保证的只有「现在没人听」，不是「我把它占住了」——
+   * 用它的场景要么根本不 bind（解析期就该被拒），要么正好要一个拨不通的口。
+   */
+  freePort(): Promise<number>
+}
+
 /** 原始拨号的结果 —— 帧级探针要看的全部东西。 */
 export interface DialProbe {
   /** 握手是否走完。 */
@@ -333,8 +401,15 @@ export interface AcceptanceDriver {
   readNodeFile(node: NodeHandle, relPath: string): Promise<string | undefined>
   /** 列目录，不存在返回 undefined。 */
   listNodeDir(node: NodeHandle, relPath: string): Promise<string[] | undefined>
-  /** 在节点侧跑一条 CLI。 */
+  /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
+  /**
+   * 在目标机上开一个**一次性**的 CLI 执行位置。
+   *
+   * 清理登记在 `ctx.cleanup` 上，runner 在 `finally` 里跑（超时也会跑）。
+   * `nodeName` 只用来在舰队里挑一台机器；本地驱动忽略它。
+   */
+  execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost>
 }
 
 /** 整轮运行的汇总（写进 NDJSON 的最后一行 + 汇总表表头）。 */

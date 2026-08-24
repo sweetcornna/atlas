@@ -43,12 +43,21 @@ import type {
   DialOptions,
   DialProbe,
   DriverCapability,
+  ExecHost,
   ExecResult,
   NodeHandle,
   NodeSpec,
   ScenarioContext,
 } from '../types.js'
 import { rawDial } from '../local/dial.js'
+
+/**
+ * 一次性目录的家目录相对前缀。
+ *
+ * 放在 `.cache` 下而不是内测根下：那棵树是部署产物，验收不该往里塞东西；
+ * 而这个前缀出现在每一次 `rm -rf` 的路径里，是那条命令的安全前提。
+ */
+const SCRATCH_PREFIX = '.cache/qianmo-acceptance'
 
 /** 一台真机。 */
 export interface FleetHost {
@@ -115,6 +124,8 @@ export class FleetDriver implements AcceptanceDriver {
   readonly target = 'fleet' as const
   readonly capabilities: ReadonlySet<DriverCapability>
   readonly #config: FleetConfig
+  /** `execHost` 不点名时的轮转游标 —— 见那个方法的注释。 */
+  #execHostCursor = 0
 
   constructor(config: FleetConfig) {
     this.#config = config
@@ -239,7 +250,7 @@ export class FleetDriver implements AcceptanceDriver {
     argv: readonly string[],
   ): Promise<ExecResult> {
     const host = (node as FleetNodeHandle).host
-    const quoted = argv.map(a => `'${a.replaceAll("'", `'\\''`)}'`).join(' ')
+    const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
     // PATH 与 OCC_CONFIG_DIR 都要显式给：非交互 SSH 既解析不到 ~/.bun/bin，
     // 也不会带上部署时那套环境。
     const prefix =
@@ -249,6 +260,122 @@ export class FleetDriver implements AcceptanceDriver {
     ])
   }
 
+  /**
+   * 真机上的一次性执行位置：`$HOME/.cache/qianmo-acceptance/<随机>` 下的
+   * `config/` 与 `work/`，跑完 `rm -rf` 掉。
+   *
+   * **为什么不复用生产配置根** —— 见 {@link ExecHost} 的对比表。一句话：那些
+   * 命令会往配置根里生成身份密钥并可能落 settings，而生产根下的身份与审计链
+   * 是内测节点在用的东西，也是成果边界的证据。
+   *
+   * 清理挂 `ctx.cleanup`，runner 在 `finally` 里逆序跑，超时路径也会跑到。
+   * `rm -rf` 的路径由 `mktemp -d` 自己回显、且被钉在那个前缀下 —— 拼一个
+   * 可能为空的变量再 `rm -rf` 是这类脚本最经典的事故形态。
+   */
+  async execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost> {
+    // 不点名就轮着来，而不是永远第一台。四台里 p12 是 x86_64、另外三台是
+    // aarch64 —— 全压在 hosts[0] 上，「验收跑过真机」就只覆盖了一种架构。
+    // 落在哪台机器写进每条结果的证据里（`执行位置`），所以红了照样可归因。
+    const host =
+      nodeName === undefined
+        ? this.#config.hosts[this.#execHostCursor++ % this.#config.hosts.length]
+        : (this.#config.hosts.find(h => h.node === nodeName) ??
+          this.#config.hosts[0])
+    if (host === undefined) throw new Error('舰队配置里一台机器都没有')
+
+    const made = await this.#ssh(host, [
+      `set -e`,
+      `mkdir -p "$HOME/${SCRATCH_PREFIX}"`,
+      `d="$(mktemp -d "$HOME/${SCRATCH_PREFIX}/run.XXXXXXXX")"`,
+      `mkdir -p "$d/config" "$d/work"`,
+      `printf '%s\n' "$d"`,
+    ])
+    const root = made.stdout.trim()
+    if (made.code !== 0 || !root.includes(SCRATCH_PREFIX)) {
+      throw new Error(
+        `在 ${host.ssh} 上开一次性目录失败 (${made.code}): ${made.stderr.slice(0, 400)}`,
+      )
+    }
+    ctx.cleanup(async () => {
+      // 只删自己刚建的那一层，且再确认一次它带着前缀。
+      if (!root.includes(SCRATCH_PREFIX)) return
+      await this.#ssh(host, [`rm -rf -- '${shellQuote(root)}'`])
+    })
+
+    const configDir = `${root}/config`
+    const workdir = `${root}/work`
+    const prefix =
+      host.extraPath === undefined ? '' : `PATH="${host.extraPath}:$PATH" `
+    return {
+      describe: `${host.ssh} (${host.node})`,
+      configDir,
+      workdir,
+      exec: async (argv, opts) => {
+        const env = Object.entries(opts?.env ?? {})
+          .map(([k, v]) => `${k}='${shellQuote(v)}' `)
+          .join('')
+        const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
+        return await this.#ssh(
+          host,
+          [
+            `${prefix}OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(configDir)}' ` +
+              `${env}bun '${shellQuote(host.occPath)}' ${quoted}`,
+          ],
+          opts?.timeoutMs,
+        )
+      },
+      writeFile: async (relPath, content) => {
+        const abs = `${workdir}/${relPath}`
+        // 内容经 stdin 进去，不进命令行：链文件带引号与换行，拼进 argv 迟早出事。
+        const written = await this.#ssh(
+          host,
+          [
+            `mkdir -p -- "$(dirname -- '${shellQuote(abs)}')"`,
+            `cat > '${shellQuote(abs)}'`,
+          ],
+          undefined,
+          content,
+        )
+        if (written.code !== 0) {
+          throw new Error(
+            `在 ${host.ssh} 上写 ${relPath} 失败 (${written.code}): ${written.stderr.slice(0, 300)}`,
+          )
+        }
+        return abs
+      },
+      mkdir: async relPath => {
+        const abs = `${workdir}/${relPath}`
+        await this.#ssh(host, [`mkdir -p -- '${shellQuote(abs)}'`])
+        return abs
+      },
+      freePort: async () => await this.#freePortOn(host),
+    }
+  }
+
+  /**
+   * 目标机上找一个此刻没人在听的高位端口。
+   *
+   * 用 `ss` 的全量快照做差集而不是逐个口去问：一次 SSH 往返就够，而逐个问是
+   * 每个候选一次往返。答不出来是**错误**，不是随便回一个 —— 回一个碰巧被占的
+   * 口会让「不可达」那条场景红得毫无道理。
+   */
+  async #freePortOn(host: FleetHost): Promise<number> {
+    const probe = await this.#ssh(host, [
+      `ss -H -ltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -u`,
+    ])
+    if (probe.code !== 0) {
+      throw new Error(
+        `在 ${host.ssh} 上取监听端口表失败 (${probe.code}): ${probe.stderr.slice(0, 300)}`,
+      )
+    }
+    const busy = new Set(probe.stdout.split('\n').map(l => l.trim()))
+    for (let i = 0; i < 200; i += 1) {
+      const port = 41_000 + Math.floor(Math.random() * 4_000)
+      if (!busy.has(String(port))) return port
+    }
+    throw new Error(`在 ${host.ssh} 上 200 次都没抽到空闲端口`)
+  }
+
   async #tail(host: FleetHost, stream: 'out' | 'err'): Promise<string> {
     const result = await this.#ssh(host, [
       `tail -200 -- "$(dirname '${host.configRoot}')/../../logs/${host.node}.${stream}" 2>/dev/null || true`,
@@ -256,26 +383,57 @@ export class FleetDriver implements AcceptanceDriver {
     return result.stdout
   }
 
-  async #ssh(host: FleetHost, lines: readonly string[]): Promise<ExecResult> {
+  /**
+   * 跑一条远端命令。
+   *
+   * `stdin` 给了就不能带 `-n`（那个选项把 stdin 接到 /dev/null），这正是
+   * `writeFile` 经管道送内容的那条路径。
+   */
+  async #ssh(
+    host: FleetHost,
+    lines: readonly string[],
+    timeoutMs?: number,
+    stdin?: string,
+  ): Promise<ExecResult> {
     const child = Bun.spawn(
       [
         'ssh',
-        '-n',
+        ...(stdin === undefined ? ['-n'] : []),
         '-o',
         'BatchMode=yes',
         ...(this.#config.sshArgs ?? []),
         host.ssh,
         lines.join('\n'),
       ],
-      { stdout: 'pipe', stderr: 'pipe' },
+      {
+        stdin: stdin === undefined ? 'ignore' : new TextEncoder().encode(stdin),
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
     )
     const [stdout, stderr] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ])
-    const code = await child.exited
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            child.kill('SIGKILL')
+          }, timeoutMs)
+    let code: number
+    try {
+      code = await child.exited
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
     return { code, stdout, stderr }
   }
+}
+
+/** 单引号内的转义 —— 远端命令一律用 `'…'` 包，内部的 `'` 按 POSIX 拼法断开。 */
+function shellQuote(value: string): string {
+  return value.replaceAll("'", `'\\''`)
 }
 
 /**

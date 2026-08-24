@@ -95,6 +95,30 @@ export class Checks {
   }
 }
 
+/**
+ * 去掉 CLI 输出里那条**压缩后的源码帧**，别的一字不动。
+ *
+ * 真机腿跑的是 `dist/cli-node.js`（vite 产物），Bun 打印未捕获异常时会把出错
+ * 那一行源码原样附上 —— 而那"一行"是整块 minify 后的 chunk，单行十几万字符。
+ * 它把两件事同时弄坏了：证据文件被一坨无法阅读的东西撑爆，而真正有用的那句
+ * `error: …` 在它后面。
+ *
+ * 只删「行号 + ` | ` + 超长内容」这一种形状，且长度门槛定在 2000 —— 源码里没有
+ * 这么长的正常行，而被测系统自己打印的任何一行都不会带这个前缀。**删不掉的
+ * 一律留着**：这个函数的失败方向必须是"留了噪声"，不能是"吃掉了证据"。
+ *
+ * 本地腿跑的是源码入口，源码帧本来就是短的，于是这个函数在本地是恒等映射。
+ *
+ * （产品侧那条 `dist` 上打印压缩源码的毛病本身是另一回事，套件只负责不被它
+ * 淹掉。）
+ */
+export function stripMinifiedSourceFrame(output: string): string {
+  return output
+    .split('\n')
+    .filter(line => !(line.length > 2_000 && /^\s*\d+ \| /.test(line)))
+    .join('\n')
+}
+
 function render(value: unknown): string {
   if (typeof value === 'string') return value
   if (value === undefined) return '(undefined)'
