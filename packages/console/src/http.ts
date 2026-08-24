@@ -297,9 +297,17 @@ function statusFor(code: ConsoleFailure['code']): number {
       return 404
     case 'unsupported':
       return 501
-    // `rejected` (the far side refused) and `invalid` (we refused) both land on
-    // 400: the ports cannot tell a conflict from a malformed address, and
-    // inventing a 409 here would be a guess the client would act on.
+    // 403, and emphatically not 503: the far node was reached, read the
+    // request and declined it. A 503 tells a caller — and every retry loop
+    // written against one — that the service is momentarily away and the same
+    // bytes will work later, which for a policy refusal is false in both
+    // halves (issue #29).
+    case 'refused':
+      return 403
+    // `rejected` (a rule on this side would not let it leave) and `invalid`
+    // (the input itself) both land on 400: the ports cannot tell a conflict
+    // from a malformed address, and inventing a 409 here would be a guess the
+    // client would act on.
     case 'rejected':
     case 'invalid':
       return 400
