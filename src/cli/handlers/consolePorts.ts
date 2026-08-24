@@ -61,6 +61,7 @@ import {
   type AuditWitnessSource,
 } from '../../services/qianmo/auditWitness.js'
 import {
+  WakeRefusedError,
   executeResidentWake,
   type WakeCapabilityIssuer,
 } from './residentWake.js'
@@ -728,12 +729,33 @@ interface WakePortOptions {
 }
 
 /**
- * 路由器的本地拒绝长这样：`E_LOOP: ...`、`E_RUNTIME_THROTTLED: ...`
- * （`packages/router/src/router.ts` 的 `reject()`）。那是「规则不让发」，
- * 和「对面连不上」是两种完全不同的处置，页面上也该显示成两种。
+ * 一次唤醒失败到底属于哪一类，这里只分三类，且**三类互不重叠**。
+ *
+ * - `refused`：对面拿到了信封，自己决定不做（issue #29）。握手成功、投递成功、
+ *   节点主动拒绝——把它说成不可达，等于让人去查隧道和端口，而那条链路是好的。
+ * - `rejected`：**本机**这一侧的规则不让发。路由器的本地拒绝长这样：
+ *   `E_LOOP: ...`、`E_RUNTIME_THROTTLED: ...`（`packages/router/src/router.ts`
+ *   的 `reject()`），此外还有本端口自己对钉死 URL 的拒绝。
+ * - `unreachable`：**只**留给真的没到达——拨号失败、重连预算耗尽、回执始终没来。
  */
 function classifyWakeError(error: unknown): ConsoleFailure['code'] {
+  if (error instanceof WakeRefusedError) return 'refused'
   return /^E_[A-Z_]+:/.test(messageOf(error)) ? 'rejected' : 'unreachable'
+}
+
+/**
+ * 操作面上的那一句。
+ *
+ * 两个分支给的东西不同，是刻意的：拿到原因就把原因原样给出去（`E_CAP_INSUFFICIENT`
+ * 这个字必须出现在操作面上，issue #10 / #14 的排查文档一直按它写）；没拿到原因就
+ * 给 msgId，因为那时它是操作者去节点审计链里捞这条记录的唯一抓手。
+ */
+function wakeFailureMessage(error: unknown): string {
+  if (!(error instanceof WakeRefusedError)) return messageOf(error)
+  const detail = error.detail
+  return detail === undefined
+    ? `节点拒绝了这条唤醒 · 原因见该节点的审计链 · msg ${error.msgId}`
+    : `节点拒绝了这条唤醒 · ${detail.code} · ${detail.reason}`
 }
 
 /**
@@ -815,7 +837,7 @@ export function createWakePort(options: WakePortOptions): WakePort {
           },
         }
       } catch (error) {
-        return fail(classifyWakeError(error), messageOf(error))
+        return fail(classifyWakeError(error), wakeFailureMessage(error))
       }
     },
   }

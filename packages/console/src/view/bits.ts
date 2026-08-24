@@ -115,6 +115,9 @@ export function bar(tone: Tone, text: string, extraClass = ''): string {
  */
 const FAILURE_LEAD: Readonly<Record<ConsoleFailure['code'], string>> = {
   unreachable: '不可达',
+  // 与 `rejected` 分开的两个词，不是同义反复：`rejected` 是本机这一侧不让发，
+  // `refused` 是对端收到了并自己决定不做。读起来必须能看出该去查谁（issue #29）。
+  refused: '被对端拒绝',
   rejected: '被拒绝',
   not_found: '未找到',
   unsupported: '不支持',

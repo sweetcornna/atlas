@@ -11,6 +11,7 @@ import { NodeRouter } from '@qianmo/router'
 import {
   PSK_ENV_VAR,
   TransportClient,
+  TransportReceiptError,
   pskFromEnv,
   type SuccessfulReceiptStatus,
 } from '@qianmo/transport'
@@ -251,6 +252,92 @@ interface ResidentWakeResult {
   readonly receipt: SuccessfulReceiptStatus
 }
 
+/** What the target node's `error` envelope said, as it arrived. */
+export interface WakeRefusalDetail {
+  /** The node's own code, not re-typed here: it is whatever it sent. */
+  readonly code: string
+  readonly reason: string
+}
+
+/**
+ * The target node had the envelope and decided against it.
+ *
+ * Kept apart from every other failure this module can raise, and that is the
+ * whole point of the class: a refusal means the handshake completed, the
+ * envelope was delivered, and a node made a decision about it. Reporting that
+ * as anything network-shaped sends an operator to check tunnels and ports for
+ * a message that arrived (issue #29).
+ *
+ * ## Why the reason has to be picked up separately
+ *
+ * A refusing node answers **twice**, on two different channels:
+ *
+ * - a protocol `error` envelope carrying the real code and sentence — the
+ *   node's own account of why (`resident.ts` `#receive`);
+ * - a rejected transport receipt, whose code `receiveEnvelope` flattens to
+ *   `E_UNDELIVERABLE` for *every* handler refusal, because the transport layer
+ *   holds no policy knowledge and must not invent one.
+ *
+ * A dialer that registers no inbound handler discards the first and is left
+ * with the second, which says "the last hop could not write this into the
+ * mailbox" about a message the node deliberately refused. That is exactly how
+ * `E_CAP_INSUFFICIENT` reached an operator as `unreachable`. The console's chat
+ * surface has always read the same envelope (`consoleChat.ts` `onReply`); this
+ * is the wake surface catching up, not a new disclosure — those bytes are
+ * already sent to every peer that clears the handshake.
+ *
+ * ## Why `detail` can be absent
+ *
+ * Not every refusal comes with an envelope: a `wake` refused past the routing
+ * layer (an agent this node does not host, a mailbox write that failed) has no
+ * task to answer on and nothing is sent back. An absent reason is reported as
+ * absent rather than guessed at — the node's audit trail still has it.
+ */
+export class WakeRefusedError extends Error {
+  /** The message the target node refused, for joining onto its audit trail. */
+  readonly msgId: string
+  /** Present only when the node also sent an `error` envelope. */
+  readonly detail: WakeRefusalDetail | undefined
+  /**
+   * What the receipt carried. Always `E_UNDELIVERABLE` today — recorded so a
+   * reader can see it was consulted, never shown to an operator as the reason.
+   */
+  readonly receiptCode: string | undefined
+
+  constructor(
+    receipt: TransportReceiptError,
+    detail: WakeRefusalDetail | undefined,
+  ) {
+    super(
+      detail === undefined
+        ? `the target node refused wake ${receipt.msgId}; the reason is in that node's audit trail`
+        : `the target node refused wake ${receipt.msgId}: ${detail.code}: ${detail.reason}`,
+    )
+    this.name = 'WakeRefusedError'
+    this.msgId = receipt.msgId
+    this.detail = detail
+    this.receiptCode = receipt.receiptCode
+  }
+}
+
+/**
+ * Read an `error` payload off the wire without trusting its shape.
+ *
+ * `code` stays a string rather than being narrowed to `ProtocolErrorCode`: a
+ * node one release ahead may refuse with a code this build has never heard of,
+ * and dropping that on the floor would turn the one useful refusal into the
+ * vague one.
+ */
+function refusalDetailOf(payload: unknown): WakeRefusalDetail | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined
+  const record = payload as Record<string, unknown>
+  const code = record['code']
+  const reason = record['reason']
+  if (typeof code !== 'string' || code === '') return undefined
+  if (typeof reason !== 'string' || reason === '') return undefined
+  return { code, reason }
+}
+
 export async function executeResidentWake(
   config: ResidentWakeConfig,
   psk: string,
@@ -302,17 +389,44 @@ export async function executeResidentWake(
   if (!routed.ok) throw new Error(`${routed.code}: ${routed.reason}`)
   const message = routed.message
 
+  // Correlation is the envelope's `taskId` and nothing else — the same rule
+  // `consoleChat.ts` follows, and `errorReply` copies `taskId` verbatim. An
+  // envelope for some other task belongs to nobody here and is ignored.
+  let refusal: WakeRefusalDetail | undefined
   const client = new TransportClient({
     endpoint: { url: config.url },
     node: from.node,
     psk,
     keepAliveIntervalMs: 0,
+    // Registering a handler at all is the fix for issue #29: without one the
+    // node's `error` envelope is refused as undeliverable by this very process
+    // and its reason is lost, leaving only the receipt's flattened
+    // `E_UNDELIVERABLE`. See {@link WakeRefusedError} for the two channels.
+    onMessage: inbound => {
+      if (inbound.type !== MessageType.Error) return
+      if (inbound.taskId !== taskId) return
+      refusal = refusalDetailOf(inbound.payload) ?? refusal
+    },
   })
 
   try {
     await client.connect(Math.min(config.timeoutMs, CONNECT_TIMEOUT_CAP_MS))
     const receipt = await client.sendAndWait(message, config.timeoutMs)
     return { msgId: message.msgId, taskId: message.taskId, receipt }
+  } catch (error) {
+    // A rejected receipt is the one failure that proves the far side was
+    // reached: it is an answer, not a silence. Everything else here — a refused
+    // dial, an exhausted reconnect budget, a receipt that never came — stays
+    // exactly as it was, because those really are "could not get there".
+    //
+    // The envelope is written to the socket before the receipt is, so by the
+    // time this rejects the reason has already been read; no grace window is
+    // waited out for it, and a refusal that genuinely carried none is reported
+    // as carrying none.
+    if (error instanceof TransportReceiptError) {
+      throw new WakeRefusedError(error, refusal)
+    }
+    throw error
   } finally {
     await client.close()
   }

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   CapabilityLevel,
   createMessage,
@@ -23,6 +24,7 @@ import {
   createResidentCapabilities,
   createResidentMemWriter,
   createResidentTimingWriter,
+  formatResidentError,
   isResidentHelpRequest,
   parseResidentArgs,
   residentTrustedIssuers,
@@ -775,5 +777,86 @@ describe('resident --help', () => {
     expect(() => parseResidentArgs([...BASE, '--noed=x'], 'qianmo')).toThrow(
       'resident --help',
     )
+  })
+})
+
+describe('formatResidentError (#30)', () => {
+  // Bun's own console.error(Error)/Bun.inspect(Error) renders a source
+  // "code frame" — the offending line(s) plus a `^` caret, read off disk at
+  // the throw site. Against a real dist/chunks/*.js that "line" is the
+  // whole minified chunk squashed onto one line (~1KB+), which is exactly
+  // what made <node>.err stop being reliably empty. These two tests throw
+  // from real files on disk (mirroring the bundled case with a single
+  // absurdly long line, and the dev case with ordinary short lines) so
+  // Bun's actual frame-rendering path runs, not a hand-rolled stand-in.
+
+  test('an absurdly long source line is not printed', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'resident-error-long-'))
+    try {
+      // A stand-in for a minified dist chunk: one line, ~1.3KB, that throws.
+      const filler = 'x'.repeat(1300)
+      const path = join(directory, 'chunk.js')
+      writeFileSync(
+        path,
+        `const filler = "${filler}"; throw new Error("boom from bundled chunk");`,
+      )
+
+      let caught: unknown
+      try {
+        await import(pathToFileURL(path).href)
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toBeInstanceOf(Error)
+
+      const formatted = formatResidentError(caught)
+      // The minified "source line" never made it into the formatted error…
+      for (const line of formatted.split('\n')) {
+        expect(line.length).toBeLessThanOrEqual(400)
+      }
+      expect(formatted).not.toContain(filler)
+      // …but the message and a stack frame pointing at the real file did.
+      expect(formatted).toContain('boom from bundled chunk')
+      expect(formatted).toContain('chunk.js')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('a normal-length source line still prints its code frame', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'resident-error-short-'))
+    try {
+      // A stand-in for un-bundled `bun run dev` source: ordinary short lines.
+      const path = join(directory, 'helper.js')
+      writeFileSync(
+        path,
+        [
+          'function helper() {',
+          "  throw new Error('boom from dev source');",
+          '}',
+          'helper();',
+          '',
+        ].join('\n'),
+      )
+
+      let caught: unknown
+      try {
+        await import(pathToFileURL(path).href)
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toBeInstanceOf(Error)
+
+      const formatted = formatResidentError(caught)
+      // Dev mode's short line is exactly what #30 says must not be nuked —
+      // this asserts the code frame (the actual source text plus the `^`
+      // caret) is still there, not just the message.
+      expect(formatted).toBe(Bun.inspect(caught))
+      expect(formatted).toContain("throw new Error('boom from dev source')")
+      expect(formatted).toContain('^')
+      expect(formatted).toContain('boom from dev source')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

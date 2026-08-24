@@ -894,6 +894,41 @@ describe('wake', () => {
     expect(response.status).toBe(400)
     expect((await errorOf(response))['message']).toBe('对端拒绝：超出速率预算')
   })
+
+  test('a node that refuses by policy is 403, never 503', async () => {
+    // The status is the half of this answer a retry loop reads, and it is the
+    // half that was wrong: 503 says "away, come back" about a node that read
+    // the request and declined it (issue #29). Pinned here rather than only in
+    // `statusFor` because the route is what a caller actually sees.
+    const { handle, wake } = setup()
+    wake.result = failResult(
+      'refused',
+      '节点拒绝了这条唤醒 · E_CAP_INSUFFICIENT · wake from console needs write-limited, presented read',
+    )
+    const response = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: { from: 'a', to: 'b', prompt: 'c', url: 'd' },
+      }),
+    )
+    expect(response.status).toBe(403)
+    const error = await errorOf(response)
+    expect(error['code']).toBe('refused')
+    expect(String(error['message'])).toContain('E_CAP_INSUFFICIENT')
+  })
+
+  test('an unreachable node stays 503, so the two never collapse', async () => {
+    const { handle, wake } = setup()
+    wake.result = failResult('unreachable', '连接被拒绝')
+    const response = await handle(
+      req('POST', '/v0/wake', {
+        token: ADMIN,
+        body: { from: 'a', to: 'b', prompt: 'c', url: 'd' },
+      }),
+    )
+    expect(response.status).toBe(503)
+    expect((await errorOf(response))['code']).toBe('unreachable')
+  })
 })
 
 describe('the role matrix', () => {
