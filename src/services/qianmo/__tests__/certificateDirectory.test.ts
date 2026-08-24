@@ -113,6 +113,38 @@ function issueNode(
   }
 }
 
+/**
+ * The earliest instant a set of certificates is admissible, read off the
+ * certificates themselves: `max(notBefore)`.
+ *
+ * Every admission check in `CertificateDirectory` — `publicKeyOf`,
+ * `handshakeCredentialOf`, the permanent-invalidation sweep — is
+ * `now >= notBefore && now < notAfter` against the directory's injected
+ * clock. A test that leaves that clock at its `Date.now()` default is
+ * therefore not asserting only what it says it asserts: it is also betting
+ * that the wall clock at the assertion reads no earlier than the wall clock
+ * OpenSSL stamped into the certificate milliseconds before. OpenSSL
+ * truncates `notBefore` to whole seconds, so the whole bet rides on 0–999 ms
+ * of rounding, and one backwards correction loses it — NTP steps the clock
+ * back, `setTimeout` keeps running on the monotonic clock and notices
+ * nothing, the peer is suddenly not yet valid, and the test reports a defect
+ * that is not there.
+ *
+ * `notBefore` is the one instant such a test can name that is guaranteed not
+ * to be in its own future, so pinning `now` to it removes the wall clock
+ * from the assertion rather than widening a margin — a wider margin is only
+ * ever a smaller bet, never a different kind of thing. Certificates live 90
+ * days, so pinning to the newest of them keeps the older ones admissible
+ * too; pass every certificate the test needs admitted.
+ */
+function admissibleFrom(...issued: readonly IssuedNode[]): number {
+  return Math.max(
+    ...issued.map(one =>
+      Date.parse(new X509Certificate(one.certificatePem).validFrom),
+    ),
+  )
+}
+
 async function publishExactRl(options: {
   readonly issuedAt: number
   readonly revoked?: readonly { node: string; fingerprint256: string }[]
@@ -207,11 +239,13 @@ describe('CertificateDirectory — happy path (§8.1)', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
       })
       await directory.refresh()
 
@@ -226,11 +260,13 @@ describe('CertificateDirectory — happy path (§8.1)', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
       })
       // Before the first refresh: no network call has happened, yet the call
       // returns synchronously with the honest answer (nothing known yet).
@@ -245,7 +281,12 @@ describe('CertificateDirectory — happy path (§8.1)', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      // The audit below only fires on a *conflict*, so it needs the
+      // CA-derived entry to be there to disagree with: an inadmissible
+      // `node-a` makes this test pass its first assertion and silently lose
+      // its second.
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const overridingKey = generateNodeKeyPair().publicKey
       const audits: { node: string; reason: string }[] = []
@@ -254,6 +295,7 @@ describe('CertificateDirectory — happy path (§8.1)', () => {
         registryUrl: server.url,
         trusted: [['node-a', overridingKey]],
         onAudit: event => audits.push(event),
+        now: () => t0,
       })
       await directory.refresh()
 
@@ -333,24 +375,19 @@ describe('CertificateDirectory — fail-closed to --trust (§6.4)', () => {
       await registerIssued(a, 'node-a.example.com')
 
       // One instant, named by the certificate itself, for both the RL and the
-      // directory that reads it.
+      // directory that reads it — see {@link admissibleFrom} for why that
+      // instant and not `Date.now()`.
       //
       // What this test is about — a stale directory recovers the moment a
       // fresh RL arrives — has nothing to do with what time it is, yet the
       // earlier shape let the wall clock decide it three times over: the
       // certificate's `notBefore` came from OpenSSL, the RL's window from one
       // `Date.now()`, and the admission check from another. Those three only
-      // agree while the clock advances monotonically, and a shared runner's
-      // does not promise to: a correction backwards past `notBefore` leaves
-      // `node-a` inadmissible — `publicKeyOf` returns `null` — while every
-      // line of this test still reads as if it should have passed.
-      //
-      // `notBefore` is the one instant this test can name that is guaranteed
-      // not to be in its own future, so pinning `now` to it removes the wall
-      // clock from the assertion entirely rather than betting on it. Two
-      // tests below already pin a clock for the narrower version of this
-      // hazard (OpenSSL's second-granularity timestamps).
-      const t0 = Date.parse(new X509Certificate(a.certificatePem).validFrom)
+      // agree while the clock advances monotonically, and a correction
+      // backwards past `notBefore` leaves `node-a` inadmissible —
+      // `publicKeyOf` returns `null` — while every line of this test still
+      // reads as if it should have passed.
+      const t0 = admissibleFrom(a)
 
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
@@ -373,12 +410,14 @@ describe('CertificateDirectory — cached certificates are revalidated', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       let agentsAvailable = true
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
         fetch: async (input, init) =>
           new URL(input).pathname === '/v0/agents' && !agentsAvailable
             ? new Response(null, { status: 503 })
@@ -387,8 +426,11 @@ describe('CertificateDirectory — cached certificates are revalidated', () => {
       await directory.refresh()
       expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
 
+      // `issuedAt` has to move for the directory to take the second list at
+      // all — an identical stamp with different contents is a same-time fork
+      // and is refused. One millisecond is the whole requirement.
       await publishRl({
-        now: Date.now(),
+        now: t0 + 1,
         validMs: 30 * 24 * 60 * 60 * 1000,
         revoke: [{ node: a.node, fingerprint256: a.fingerprint256 }],
       })
@@ -406,11 +448,11 @@ describe('CertificateDirectory — cached certificates are revalidated', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      // OpenSSL serializes validity timestamps to seconds. Establish this
-      // deterministic clock after issuance so a test that happens to start in
-      // the last millisecond of a second cannot ask for a certificate before
-      // its own `notBefore`.
-      const t0 = Date.now()
+      // The certificate's own `notBefore`, not a `Date.now()` sampled after
+      // issuance: reading the clock later only guarantees a *larger* number
+      // while the clock moves forward, and this test's whole subject is a
+      // clock that does not. See {@link admissibleFrom}.
+      const t0 = admissibleFrom(a)
       await publishRl({ now: t0, validMs: 200 * 24 * 60 * 60 * 1000 })
 
       let now = t0
@@ -445,11 +487,13 @@ describe('CertificateDirectory — directory churn is not revocation', () => {
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
       })
       await directory.refresh()
       expect(directory.publicKeyOf(a.node)).toBe(a.keys.publicKey)
@@ -536,12 +580,20 @@ describe('CertificateDirectory — refresh observers are contained', () => {
     async () => {
       const first = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(first, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      // A second certificate is issued halfway through, and OpenSSL will
+      // stamp it with a `notBefore` of its own — possibly a whole second
+      // later. So the pin moves with the certificates rather than being
+      // taken once: `t0` is the RL's fixed anchor, `now` is what the
+      // directory reads.
+      const t0 = admissibleFrom(first)
+      let now = t0
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const deliveries: string[][] = []
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => now,
       })
       directory.setRefreshSink(result => {
         if (result.permanentlyInvalidated.length > 0) {
@@ -551,7 +603,7 @@ describe('CertificateDirectory — refresh observers are contained', () => {
       await directory.refresh()
 
       await publishRl({
-        now: Date.now(),
+        now: t0 + 1,
         validMs: 30 * 24 * 60 * 60 * 1000,
         revoke: [{ node: first.node, fingerprint256: first.fingerprint256 }],
       })
@@ -570,13 +622,14 @@ describe('CertificateDirectory — refresh observers are contained', () => {
       )
       registry.clear()
       await registerIssued(replacement, 'node-a.example.com')
+      now = admissibleFrom(first, replacement)
       await directory.refresh()
       expect(directory.publicKeyOf(replacement.node)).toBe(
         replacement.keys.publicKey,
       )
 
       await publishRl({
-        now: Date.now(),
+        now: t0 + 2,
         validMs: 30 * 24 * 60 * 60 * 1000,
         revoke: [
           {
@@ -650,11 +703,16 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
         identity,
       )
       await registerIssued(first, 'node-a.example.com')
-      const t0 = Date.now()
+      // Two certificates, issued seconds apart, both of which have to be
+      // admissible for the "two fingerprints, one node" claim to mean
+      // anything — so the pin follows them. See {@link admissibleFrom}.
+      const t0 = admissibleFrom(first)
+      let now = t0
       await publishExactRl({ issuedAt: t0 })
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => now,
       })
       await directory.refresh()
 
@@ -667,6 +725,7 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
       )
       registry.clear()
       await registerIssued(replacement, 'node-a.example.com')
+      now = admissibleFrom(first, replacement)
       await directory.refresh()
 
       await publishExactRl({
@@ -755,11 +814,17 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
       )
       await registerIssued(first, 'node-a.example.com')
       await registerIssued(listener, 'node-b.example.com')
-      const t0 = Date.now()
+      // Both ends of the socket resolve their credential through this
+      // directory, so an inadmissible certificate does not show up as a
+      // failed assertion — it shows up as a 4003 during `connect()`, which
+      // reads as the feature being broken. See {@link admissibleFrom}.
+      const t0 = admissibleFrom(listener, first)
+      let now = t0
       await publishExactRl({ issuedAt: t0 })
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => now,
       })
       await directory.refresh()
 
@@ -824,6 +889,7 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
         registry.clear()
         await registerIssued(replacement, 'node-a.example.com')
         await registerIssued(listener, 'node-b.example.com')
+        now = admissibleFrom(listener, first, replacement)
         await directory.refresh()
         const f2 = await connect(replacement.fingerprint256)
 
@@ -875,12 +941,18 @@ describe('CertificateDirectory — credential history and RL monotonicity', () =
       const listener = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
       await registerIssued(caPeer, 'node-a.example.com')
       await registerIssued(listener, 'node-b.example.com')
-      const t0 = Date.now()
+      // `node-b` is admitted through the CA path (only `node-a` is on the
+      // `--trust` list), so the listener's own certificate has to be
+      // admissible or the dialer never gets past the handshake — which
+      // surfaces as `connect()` timing out, not as a failed assertion. See
+      // {@link admissibleFrom}.
+      const t0 = admissibleFrom(caPeer, listener)
       await publishExactRl({ issuedAt: t0 })
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
         trusted: [[caPeer.node, explicit.publicKey]],
+        now: () => t0,
       })
       await directory.refresh()
       let transport: TransportServerHandle | undefined
@@ -1320,11 +1392,16 @@ describe('CertificateDirectory — four negative cases (DoD #5)', () => {
         root,
       )
       await registerIssued(legit, 'node-legit.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      // Pinned to the legitimate certificate only: the forged one was issued
+      // earlier, so it is comfortably inside its own validity window here and
+      // the `toBeNull()` below can only be the CA signature check firing.
+      const t0 = admissibleFrom(legit)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
       })
       await directory.refresh()
 
@@ -1334,9 +1411,14 @@ describe('CertificateDirectory — four negative cases (DoD #5)', () => {
   )
 
   itNeedsOpenssl('an expired certificate is rejected', async () => {
-    const t0 = Date.now()
     const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
     await registerIssued(a, 'node-a.example.com')
+    // Anchored on the certificate rather than on a `Date.now()` sampled
+    // before it was issued: "91 days past `notBefore`" is past the 90-day
+    // `notAfter` by construction, whereas "91 days past whenever this line
+    // ran" was past it by however far the two clocks happened to agree. See
+    // {@link admissibleFrom}.
+    const t0 = admissibleFrom(a)
     // RL stays fresh well past the certificate's 90-day life, so this is
     // unambiguously the expiry check firing, not fail-closed masking it.
     await publishRl({ now: t0, validMs: 200 * 24 * 60 * 60 * 1000 })
@@ -1357,8 +1439,11 @@ describe('CertificateDirectory — four negative cases (DoD #5)', () => {
     const b = issueNode(caDir, 'node-b', ['node-b.example.com'], root)
     await registerIssued(a, 'node-a.example.com')
     await registerIssued(b, 'node-b.example.com')
+    // Both certificates, so `node-a` being dark is unambiguously the
+    // revocation and not a validity window. See {@link admissibleFrom}.
+    const t0 = admissibleFrom(a, b)
     await publishRl({
-      now: Date.now(),
+      now: t0,
       validMs: 30 * 24 * 60 * 60 * 1000,
       revoke: [{ node: 'node-a', fingerprint256: a.fingerprint256 }],
     })
@@ -1366,6 +1451,7 @@ describe('CertificateDirectory — four negative cases (DoD #5)', () => {
     const directory = new CertificateDirectory({
       caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
       registryUrl: server.url,
+      now: () => t0,
     })
     await directory.refresh()
 
@@ -1427,7 +1513,11 @@ describe('CertificateDirectory — the --trust override is audited (§8.2)', () 
     async () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      // "Disagrees with the CA-derived key" presupposes a CA-derived key to
+      // disagree with; an inadmissible `node-a` records nothing at all. See
+      // {@link admissibleFrom}.
+      const t0 = admissibleFrom(a)
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
 
       const operatorKey = generateNodeKeyPair().publicKey
       const events: { node: string; reason: string }[] = []
@@ -1436,6 +1526,7 @@ describe('CertificateDirectory — the --trust override is audited (§8.2)', () 
         registryUrl: server.url,
         trusted: [['node-a', operatorKey]],
         onAudit: event => events.push({ ...event }),
+        now: () => t0,
       })
       await directory.refresh()
 
