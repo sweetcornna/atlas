@@ -51,6 +51,7 @@ export const TIMINGS_FILE = 'acceptance-timings.jsonl'
 
 const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
   'spawn-node',
+  'spawn-console',
   'restart-node',
   'mutate-node-env',
   'read-node-files',

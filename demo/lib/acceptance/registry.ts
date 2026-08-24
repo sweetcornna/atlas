@@ -16,6 +16,7 @@
 import { abortAttributionScenarios } from './scenarios/abortAttribution.js'
 import { auditScenarios } from './scenarios/audit.js'
 import { capabilityScenarios } from './scenarios/capability.js'
+import { consoleScenarios } from './scenarios/console.js'
 import { deliveryScenarios } from './scenarios/delivery.js'
 import { handshakeScenarios } from './scenarios/handshake.js'
 import { launcherScenarios } from './scenarios/launcher.js'
@@ -42,4 +43,5 @@ export const ALL_SCENARIOS: readonly Scenario[] = [
   ...recoveryScenarios,
   ...launcherScenarios,
   ...limitsScenarios,
+  ...consoleScenarios,
 ]
