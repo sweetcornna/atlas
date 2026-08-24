@@ -88,7 +88,28 @@ interface QueuedTurn {
  */
 export class NodeTurnGate {
   readonly #queue: QueuedTurn[] = []
+  readonly #now: () => number
   #active = false
+
+  constructor(
+    options: {
+      /**
+       * Reads the clock {@link NodeTurnRequest.deadlineAt} is stated on.
+       * Defaults to `Date.now`, the same seam every other clock-reading class
+       * in this package already carries (`lifecycle.ts`, `sessions.ts`,
+       * `notify.ts`, `acp-turn.ts`, …).
+       *
+       * It exists because "the deadline is read at the head of the queue"
+       * is a statement about **order**, and the only way to prove an order
+       * without a clock you control is to race a real one — which is what the
+       * test used to do, on a 15 ms margin, against a wall clock no shared
+       * runner promises to advance monotonically.
+       */
+      readonly now?: () => number
+    } = {},
+  ) {
+    this.#now = options.now ?? Date.now
+  }
 
   /** A turn is running right now. */
   get active(): boolean {
@@ -120,7 +141,7 @@ export class NodeTurnGate {
       this.#queue.push({
         work: work as () => Promise<unknown>,
         deadlineAt: request.deadlineAt ?? Number.POSITIVE_INFINITY,
-        enqueuedAt: Date.now(),
+        enqueuedAt: this.#now(),
         sessionId: request.sessionId ?? '',
         resolve: resolve as (value: unknown) => void,
         reject,
@@ -142,7 +163,7 @@ export class NodeTurnGate {
     for (;;) {
       const next = this.#queue.shift()
       if (next === undefined) return
-      const now = Date.now()
+      const now = this.#now()
       if (now >= next.deadlineAt) {
         next.reject(
           new NodeTurnExpiredError(
