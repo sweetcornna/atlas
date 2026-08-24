@@ -79,8 +79,8 @@ describe('instrumentDriver', () => {
 })
 
 describe('stripMinifiedSourceFrame', () => {
-  test('删掉超长的源码帧行', () => {
-    const noise = `1 | ${'x'.repeat(3_000)}`
+  test('删掉长的源码帧行（真机上实测每行 1028 字符）', () => {
+    const noise = `1 | ${'x'.repeat(1_024)}`
     const output = `${noise}\nerror: resident takes either --open-policy`
     const cleaned = stripMinifiedSourceFrame(output)
     expect(cleaned).not.toContain('xxxx')
@@ -91,8 +91,9 @@ describe('stripMinifiedSourceFrame', () => {
   test('普通输出一字不动，长行但不是源码帧的也留着', () => {
     const plain = 'error: 一切正常\n  at somewhere\n'
     expect(stripMinifiedSourceFrame(plain)).toBe(plain)
-    const longButNotAFrame = `error: ${'y'.repeat(5_000)}`
+    const longButNotAFrame = `error: ${'y'.repeat(1_000)}`
     expect(stripMinifiedSourceFrame(longButNotAFrame)).toBe(longButNotAFrame)
+    // 本地腿跑的是源码入口，源码帧是真源码、远在 400 门槛之下 —— 一行不删。
     const shortFrame = '12 | const a = 1'
     expect(stripMinifiedSourceFrame(shortFrame)).toBe(shortFrame)
   })
