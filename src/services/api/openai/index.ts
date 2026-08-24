@@ -27,10 +27,10 @@ import { getSessionId } from '../../../bootstrap/state.js'
 import { clearOpenAIClientCache, getOpenAIClient } from './client.js'
 import {
   formatOpenAIPromptCacheKey,
-  getOpenAIPromptCacheKey,
   isOfficialOpenAIBaseURL,
   isPromptCacheKeyRejection,
   markPromptCacheKeyRejected,
+  resolveOpenAIPromptCacheKey,
   resolveOpenAIVerbosity,
   updateOpenAIUsage,
 } from './openaiShared.js'
@@ -392,19 +392,30 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    // OpenAI's official OAuth and API-key routes share the same prompt-cache
-    // contract. Scope the key to the real conversation so resumed turns stay
-    // sticky while unrelated sessions do not share a routing bucket. Generic
-    // compatible endpoints intentionally receive no OpenAI-specific fields.
+    // Two different keys on purpose.
+    //
+    // The ChatGPT subscription route keeps the session key: Codex — OpenAI's
+    // own client for that backend — sends its session UUID there, and there is
+    // no way to measure the alternative without a subscription, so it is not
+    // the place to guess.
+    //
+    // The generic API-key route keys on the cached prefix instead, because a
+    // session-scoped key throws away the prefix every time a session starts.
+    // Measured 0% → 98.1% on the first turn of a fresh session; see
+    // resolveOpenAIPromptCacheKey. `OPENAI_PROMPT_CACHE_KEY_SCOPE=session`
+    // restores the old scheme.
     const sessionId = getSessionId()
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
     const promptCacheKey = useChatGPTResponses
       ? sessionPromptCacheKey
-      : getOpenAIPromptCacheKey(
-          process.env.OPENAI_BASE_URL,
+      : resolveOpenAIPromptCacheKey({
+          baseURL: process.env.OPENAI_BASE_URL,
           sessionId,
           wireProtocol,
-        )
+          model: openaiModel,
+          messages: openaiMessages,
+          tools: openaiTools,
+        })
     // `cache_write_tokens` is OpenAI's own usage field; nothing else in the
     // compatible ecosystem reports it, and attributing zero writes there is
     // correct. Deliberately NOT derived from `promptCacheKey`: the key is now
