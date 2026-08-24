@@ -10,10 +10,10 @@
  * 这些脚本要证明的东西恰恰是「在真 bash 上会怎样」，而开发机的 macOS bash 3.2
  * 与线上的 Linux bash 5 差别就在这一层。
  *
- * `LC_ALL=C` 是必须的：`demo/env` 全树用「变量紧跟全角标点」的写法，macOS 的
- * bash 3.2 在 UTF-8 locale 下会把全角逗号算进变量名，`set -u` 当场报 unbound
- * variable（这就是 issue #49）。钉成 C 让本机行为与线上一致 —— 被测的是启动器
- * 的存活校验，不是多字节解析。
+ * **locale 不再被钉成 `C`**：issue #49（全角标点紧跟变量名）已在 PR #58 修掉，
+ * 并由 `demo/env/shell-fullwidth-expansion.test.ts` 静态守着。钉 `LC_ALL=C`
+ * 等于绕开脚本真实的运行条件，而那正是 #49 藏身的地方 —— 所以这里跟随进程
+ * 自己的 locale。
  */
 
 import {
@@ -64,7 +64,6 @@ function runShell(
       env: {
         ...process.env,
         PATH: '/usr/bin:/bin',
-        LC_ALL: 'C',
         QIANMO_BETA_ROOT: root,
         ...extraEnv,
       },
@@ -281,7 +280,6 @@ export const launcherScenarios: readonly Scenario[] = [
           env: {
             ...process.env,
             PATH: `${bin}:/usr/bin:/bin`,
-            LC_ALL: 'C',
             QIANMO_BETA_ROOT: root,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
@@ -343,7 +341,6 @@ export const launcherScenarios: readonly Scenario[] = [
           env: {
             ...process.env,
             PATH: `${bin}:/usr/bin:/bin`,
-            LC_ALL: 'C',
             QIANMO_BETA_ROOT: root,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
@@ -396,7 +393,6 @@ export const launcherScenarios: readonly Scenario[] = [
           env: {
             ...process.env,
             PATH: `${bin}:/usr/bin:/bin`,
-            LC_ALL: 'C',
             QIANMO_BETA_ROOT: root,
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
           },
@@ -450,7 +446,6 @@ export const launcherScenarios: readonly Scenario[] = [
           env: {
             ...process.env,
             PATH: '/usr/bin:/bin',
-            LC_ALL: 'C',
             QIANMO_BETA_ROOT: root,
           },
           stdout: 'pipe',
