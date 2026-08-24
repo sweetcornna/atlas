@@ -212,6 +212,9 @@ mockModulePreservingExports('../../../commands.ts', {
 
 const { AcpAgent } = await import('../agent.js')
 const { forwardSessionUpdates } = await import('../bridge.js')
+const { RESIDENT_INACTIVITY_ABORT_REASON } = await import(
+  '../../../utils/messages.js'
+)
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -670,6 +673,43 @@ describe('AcpAgent', () => {
       await expect(
         agent.cancel({ sessionId: 'ghost' } as any),
       ).resolves.toBeUndefined()
+    })
+
+    test('an ordinary cancel aborts with no reason at all', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const engine = agent.sessions.get(sessionId)!.queryEngine
+      await agent.cancel({ sessionId } as any)
+      // Ctrl+C and every ACP client that does not speak the resident's `_meta`
+      // land here, and the transcript keeps saying a user interrupted — which
+      // for those callers is the truth.
+      expect((engine.interrupt as any).mock.calls).toEqual([[undefined]])
+    })
+
+    test("the resident watchdog's cancel is abortable as its own reason", async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const engine = agent.sessions.get(sessionId)!.queryEngine
+      await agent.cancel({
+        sessionId,
+        _meta: { qianmo: { cancelReason: 'inactivity' } },
+      } as any)
+      // The whole point of issue #39: this reason is what the query loop reads
+      // back off `signal.reason` to pick the non-user abort marker.
+      expect((engine.interrupt as any).mock.calls).toEqual([
+        [RESIDENT_INACTIVITY_ABORT_REASON],
+      ])
+    })
+
+    test('an unrecognized _meta is not evidence that no user was involved', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const engine = agent.sessions.get(sessionId)!.queryEngine
+      await agent.cancel({
+        sessionId,
+        _meta: { qianmo: { cancelReason: 'something-else' }, other: 1 },
+      } as any)
+      expect((engine.interrupt as any).mock.calls).toEqual([[undefined]])
     })
   })
 

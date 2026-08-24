@@ -52,6 +52,7 @@ import { logAntError, logForDebugging } from './utils/telemetry/debug.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,
+  interruptionReasonFromAbort,
   normalizeMessagesForAPI,
   createSystemMessage,
   createAssistantAPIErrorMessage,
@@ -1453,6 +1454,9 @@ async function* queryLoop(
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
         yield createUserInterruptionMessage({
           toolUse: false,
+          reason: interruptionReasonFromAbort(
+            toolUseContext.abortController.signal.reason,
+          ),
         })
       }
       return { reason: 'aborted_streaming' }
@@ -1895,6 +1899,9 @@ async function* queryLoop(
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
         yield createUserInterruptionMessage({
           toolUse: true,
+          reason: interruptionReasonFromAbort(
+            toolUseContext.abortController.signal.reason,
+          ),
         })
       }
       // Check maxTurns before returning when aborted

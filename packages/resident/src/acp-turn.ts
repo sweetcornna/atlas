@@ -31,6 +31,21 @@ const FAILED_STOP_REASONS = new Map<string, string>([
   ['max_turn_requests', 'ACP turn hit the request ceiling before finishing'],
 ])
 
+/**
+ * The `_meta` a watchdog cancel carries, so the agent on the other end can
+ * record the turn as aborted by a machine rather than interrupted by a user.
+ *
+ * The base agent reads exactly this shape (`src/services/acp/agent/AcpAgent.ts`)
+ * and writes `[Request aborted by the resident watchdog: …]` into the
+ * transcript instead of `[Request interrupted by user]`. Before it existed,
+ * every unattended timeout left a session record claiming a human had
+ * cancelled it — while `timings.jsonl` recorded the truth two files away
+ * (issue #39).
+ */
+export const RESIDENT_INACTIVITY_CANCEL_META: Record<string, unknown> = {
+  qianmo: { cancelReason: 'inactivity' },
+}
+
 export const ACP_INPUT_ACCEPTED_METHOD = 'qianmo/input-accepted'
 export const ACP_INPUT_STATUS_METHOD = 'qianmo/input-status'
 export const ACP_SESSION_ACTIVITY_METHOD = 'qianmo/session-activity'
@@ -44,7 +59,17 @@ export interface AcpPromptConnection {
    * degrades to "fail the turn, let the old prompt wind down on its own",
    * which is what every other mid-flight failure already does.
    */
-  cancel?(params: { readonly sessionId: string }): Promise<void>
+  cancel?(params: {
+    readonly sessionId: string
+    /**
+     * ACP `_meta`, carrying **why**. `session/cancel` has no reason field of
+     * its own, so the one piece of information that separates "a person
+     * pressed Ctrl+C" from "this node's watchdog gave up" travels here — see
+     * {@link RESIDENT_INACTIVITY_CANCEL_META}. An agent that ignores `_meta`
+     * (as ACP allows) still cancels; it just records the turn the old way.
+     */
+    readonly _meta?: Record<string, unknown>
+  }): Promise<void>
   extMethod(
     method: string,
     params: Record<string, unknown>,
@@ -99,7 +124,10 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
             // turn" is knowledge this port has and the watchdog deliberately
             // does not.
             onExpired: turn => {
-              void this.#connection.cancel?.({ sessionId: turn.sessionId })
+              void this.#connection.cancel?.({
+                sessionId: turn.sessionId,
+                _meta: RESIDENT_INACTIVITY_CANCEL_META,
+              })
             },
           })
   }

@@ -62,6 +62,26 @@ import { validateUuid } from '../../../utils/collections/uuid.js'
 import { doesMessageExistInSession } from '../../../utils/sessionStorage.js'
 import type { SessionId } from '../../../types/ids.js'
 import type { AcpSession } from './sessionTypes.js'
+import { RESIDENT_INACTIVITY_ABORT_REASON } from '../../../utils/messages.js'
+
+/**
+ * The `AbortController` reason a `session/cancel` should carry, or `undefined`
+ * for the ordinary "a person pressed Ctrl+C" abort.
+ *
+ * Only one value is recognised, and it is recognised positively: an unknown
+ * `_meta` payload — including one from a client this build has never heard of
+ * — is not evidence that no user was involved.
+ */
+function readQianmoCancelReason(
+  meta: CancelNotification['_meta'],
+): string | undefined {
+  if (typeof meta !== 'object' || meta === null) return undefined
+  const qianmo = (meta as Record<string, unknown>).qianmo
+  if (typeof qianmo !== 'object' || qianmo === null) return undefined
+  return (qianmo as Record<string, unknown>).cancelReason === 'inactivity'
+    ? RESIDENT_INACTIVITY_ABORT_REASON
+    : undefined
+}
 
 // ── Agent class ───────────────────────────────────────────────────
 //
@@ -355,6 +375,13 @@ export class AcpAgent implements Agent {
     const session = this.sessions.get(params.sessionId)
     if (!session) return
 
+    // Who asked. ACP's `session/cancel` carries nothing but a session id, so a
+    // caller that is not a person — the resident node's inactivity watchdog —
+    // says so in `_meta`. Anything else stays a user interruption: the base
+    // CLI's own Ctrl+C sends no `_meta` at all, and a turn whose provenance we
+    // cannot establish must keep the wording it has always had (issue #39).
+    const abortReason = readQianmoCancelReason(params._meta)
+
     // Set cancelled flag — checked by prompt() loop to break out
     session.cancelled = true
     session.cancelGeneration += 1
@@ -368,7 +395,7 @@ export class AcpAgent implements Agent {
     session.pendingQueueHead = 0
 
     // Interrupt the query engine to abort the current API call
-    session.queryEngine.interrupt()
+    session.queryEngine.interrupt(abortReason)
   }
 
   // ── setSessionMode ──────────────────────────────────────────────

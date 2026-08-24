@@ -13,6 +13,7 @@ export {
   ACP_INPUT_STATUS_METHOD,
   ACP_SESSION_ACTIVITY_METHOD,
   AcpResidentTurnPort,
+  RESIDENT_INACTIVITY_CANCEL_META,
   type AcpPromptConnection,
 } from './acp-turn.js'
 export {

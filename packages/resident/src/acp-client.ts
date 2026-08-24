@@ -167,8 +167,18 @@ export class ResidentAcpConnection
    * already failed the turn — which is why {@link AcpPromptConnection.cancel}
    * is best effort by contract.
    */
-  async cancel(params: { sessionId: string }): Promise<void> {
-    await this.#connection.cancel({ sessionId: params.sessionId })
+  async cancel(params: {
+    sessionId: string
+    _meta?: Record<string, unknown>
+  }): Promise<void> {
+    await this.#connection.cancel({
+      sessionId: params.sessionId,
+      // Forwarded verbatim. ACP reserves `_meta` for exactly this — one side
+      // telling the other something the schema has no field for — and here it
+      // carries the difference between "a person cancelled" and "this node's
+      // watchdog gave up", which is what the agent writes into the transcript.
+      ...(params._meta === undefined ? {} : { _meta: params._meta }),
+    })
   }
 
   async extMethod(
