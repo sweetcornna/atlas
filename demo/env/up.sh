@@ -51,7 +51,7 @@ start_process() {
   OCC_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
   local pid=$!
   printf '%s\n' "$pid" >"$(demo_pidfile "$name")"
-  demo_ok "$name 已启动（pid $pid，日志 $out）"
+  demo_ok "$name 已启动（pid ${pid}，日志 ${out}）"
 }
 
 # 进程死了就把它的错误摊开来，不要只说一句「没起来」。
@@ -132,7 +132,7 @@ while [ "$i" -lt "$READY_TIMEOUT_S" ]; do
   i=$((i + 2))
 done
 cat "$PROBE_OUT" 2>/dev/null || true
-[ "$probe_ok" = '1' ] || demo_die "拓扑在 ${READY_TIMEOUT_S}s 内未就绪（详见上面的 probe 输出与 $DEMO_LOG_DIR）"
+[ "$probe_ok" = '1' ] || demo_die "拓扑在 ${READY_TIMEOUT_S}s 内未就绪（详见上面的 probe 输出与 ${DEMO_LOG_DIR}）"
 
 # 拓扑快照：谁在哪、公钥是什么。P4.3 的 --trust 要的就是这些公钥。
 {

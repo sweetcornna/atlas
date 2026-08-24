@@ -306,7 +306,7 @@ run_host() {
       console_args+=(--audit "$node=$audit_path")
     fi
     if [ ! -f "$audit_path" ]; then
-      beta_warn "审计链文件还不存在：$node → $audit_path（该节点单独显示为空链）"
+      beta_warn "审计链文件还不存在：$node → ${audit_path}（该节点单独显示为空链）"
     fi
 
     wake_url="$(beta_peer_endpoint "$node")"
@@ -332,7 +332,7 @@ run_host() {
     i=$((i + 2))
   done
   [ "$status" = '200' ] \
-    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 /v0/health 200（收到 $status，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
+    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 /v0/health 200（收到 ${status}，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
   beta_ok "控制台就绪：$BETA_CONSOLE_URL"
 
   beta_head '④ 备份服务'
@@ -347,13 +347,13 @@ run_host() {
   beta_todo '备份服务未启动：@qianmo/backup 没有可执行入口（详见 README「这个脚本不做什么」）'
 
   beta_head "H 腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
-  beta_say "注册中心 : $BETA_REGISTRY_URL（$BETA_PEER_COUNT 条登记，永不出回环）"
-  beta_say "控制台   : $BETA_CONSOLE_URL（由反代以 TLS 暴露；两枚 token 在 $BETA_SECRET_DIR）"
+  beta_say "注册中心 : ${BETA_REGISTRY_URL}（$BETA_PEER_COUNT 条登记，永不出回环）"
+  beta_say "控制台   : ${BETA_CONSOLE_URL}（由反代以 TLS 暴露；两枚 token 在 ${BETA_SECRET_DIR}）"
   beta_say "审计视图 : $(beta_peer_nodes | tr '\n' ' ')（逐节点独立）"
   beta_say "页头标签 : $BETA_LABEL"
-  beta_say "页头标签 : 持久化在 $BETA_CONSOLE_CONF；节点清单只认 $BETA_PEERS_FILE"
+  beta_say "页头标签 : 持久化在 ${BETA_CONSOLE_CONF}；节点清单只认 $BETA_PEERS_FILE"
   if [ "$BETA_SSH_COUNT" -gt 0 ]; then
-    beta_say "链路     : $BETA_SSH_COUNT 条 SSH 隧道 + 审计镜像（systemd --user，见 $BETA_OPS_DIR）"
+    beta_say "链路     : $BETA_SSH_COUNT 条 SSH 隧道 + 审计镜像（systemd --user，见 ${BETA_OPS_DIR}）"
   else
     beta_say '链路     : 全部直连（peers.conf 里没有 node 坐标行）'
   fi
@@ -422,7 +422,7 @@ provision_links() {
     trail="${BETA_SSH_TRAIL[$i]}"
     if [ -n "$trail" ]; then
       unit="$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')"
-      ensure_unit "$unit" "审计镜像 $node（${BETA_MIRROR_INTERVAL_MIN} min）"
+      ensure_unit "$unit" "审计镜像 ${node}（${BETA_MIRROR_INTERVAL_MIN} min）"
     else
       beta_say "提示 : $node 的坐标行没有 trail=，不做审计镜像（H 上看不到它的链）"
     fi
@@ -450,7 +450,7 @@ sweep_orphan_links() {
     env_file="$BETA_OPS_DIR/tunnel-$node.env"
     beta_assert_inside_root "$env_file"
     rm -f "$env_file"
-    beta_say "已删除 $env_file（mirror/$node/ 一条没动）"
+    beta_say "已删除 ${env_file}（mirror/$node/ 一条没动）"
   done
 }
 
@@ -494,7 +494,7 @@ render_ops_files() {
     cp "$BETA_OPS_DIR/$base" "$unit_dst"
     chmod 644 "$unit_dst"
     BETA_SYNC_CHANGED=$((BETA_SYNC_CHANGED + 1))
-    beta_warn "$base 已装进 $BETA_SYSTEMD_USER_DIR（内容有更新）"
+    beta_warn "$base 已装进 ${BETA_SYSTEMD_USER_DIR}（内容有更新）"
   done
 }
 
@@ -558,16 +558,16 @@ ensure_unit() {
   active="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
   if [ "$enabled" != 'enabled' ]; then
     systemctl --user enable "$unit" >/dev/null 2>&1 \
-      || beta_die "$what：systemctl --user enable $unit 失败"
-    beta_ok "$what 已设为开机自启（$unit）"
+      || beta_die "${what}：systemctl --user enable $unit 失败"
+    beta_ok "$what 已设为开机自启（${unit}）"
   fi
   if [ "$active" = 'active' ]; then
-    beta_ok "$what 已在运行，不重起（$unit）"
+    beta_ok "$what 已在运行，不重起（${unit}）"
     return 0
   fi
   systemctl --user start "$unit" \
-    || beta_die "$what：systemctl --user start $unit 失败（journalctl --user -u $unit 看原因）"
-  beta_ok "$what 已启动（$unit）"
+    || beta_die "${what}：systemctl --user start $unit 失败（journalctl --user -u $unit 看原因）"
+  beta_ok "$what 已启动（${unit}）"
 }
 
 # 隧道就绪。**判据是真读一次对端应答，不是 TCP 连得上。**
@@ -612,7 +612,7 @@ assert_registry_matches_peers() {
       [ -n "$saddr" ] || continue
       want="$(beta_peer_addr_endpoint "$saddr")" || continue
       if [ "$want" != "$sep" ]; then
-        beta_warn "落盘表里 $saddr → $sep，而 peers.conf 说是 $want"
+        beta_warn "落盘表里 $saddr → ${sep}，而 peers.conf 说是 $want"
         disk_bad=1
       fi
     done <"$pairs"
@@ -625,7 +625,7 @@ assert_registry_matches_peers() {
       addr="${BETA_PEER_ADDR[$i]}"
       got="$(beta_live_endpoint "$addr")"
       if [ -n "$got" ] && [ "$got" != "${BETA_PEER_EP[$i]}" ]; then
-        beta_warn "在跑的注册中心把 $addr 解析成 $got，而 peers.conf 说是 ${BETA_PEER_EP[$i]}"
+        beta_warn "在跑的注册中心把 $addr 解析成 ${got}，而 peers.conf 说是 ${BETA_PEER_EP[$i]}"
         live_bad=1
       fi
       i=$((i + 1))
@@ -688,7 +688,7 @@ run_node() {
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"
 
-  beta_head "① 工作区（节点 $BETA_NODE）"
+  beta_head "① 工作区（节点 ${BETA_NODE}）"
   local agent
   for agent in $BETA_AGENTS; do
     seed_workspace "$ws_root/$agent" "$BETA_NODE/$agent"
@@ -751,9 +751,9 @@ run_node() {
         *) beta_die "QIANMO_BETA_BACKUP_URL 必须是 https:// —— 收到 $BETA_BACKUP_URL" ;;
       esac
       args+=(--backup-url "$BETA_BACKUP_URL" --backup-interval-ms "$BETA_BACKUP_INTERVAL_MS")
-      beta_ok "备份面已开：$BETA_BACKUP_URL（间隔 ${BETA_BACKUP_INTERVAL_MS} ms）"
+      beta_ok "备份面已开：${BETA_BACKUP_URL}（间隔 ${BETA_BACKUP_INTERVAL_MS} ms）"
     else
-      beta_die "给了 QIANMO_BETA_BACKUP_URL 却没有写 token —— 放一份到 $BETA_BACKUP_WRITE_FILE（0600）。
+      beta_die "给了 QIANMO_BETA_BACKUP_URL 却没有写 token —— 放一份到 ${BETA_BACKUP_WRITE_FILE}（0600）。
 **归档 token 永不下发到节点机**（§2.7）：那等于让任何一台被拿下的 VPS 读走全部快照。"
     fi
   else
@@ -785,7 +785,7 @@ run_node() {
   beta_ok "$BETA_NODE 在 ${probe_host}:${BETA_NODE_PORT} 上监听"
 
   beta_head "节点腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
-  beta_say "节点     : $BETA_NODE（agent：$BETA_AGENTS）"
+  beta_say "节点     : ${BETA_NODE}（agent：${BETA_AGENTS}）"
   beta_say "模型凭据 : $(beta_model_env_line)"
   beta_say "           ↑ 这一行只说**文件**注进来没有。够不够用由节点自己说：无凭据时"
   beta_say "             resident 会在 $(beta_logfile "$BETA_NODE" err) 写一条 [resident] 告警。"

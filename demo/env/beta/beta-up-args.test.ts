@@ -134,9 +134,10 @@ function runBetaUp(place: Scratch, args: readonly string[]): ShellResult {
         // bun 要在 PATH 上（beta_require_occ 的解释器守卫，issue #40），git 要在 PATH 上
         // （节点腿给每个 agent 建真工作区）。
         PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
-        // macOS 自带 bash 3.2 在 UTF-8 locale 下会把 `"$pid，"` 里的全角逗号算进变量名。
-        // 真实机器是 Linux + bash 5，那里没有这个问题；钉成 C 只为让两边行为一致。
-        LC_ALL: 'C',
+        // locale 故意不钉：继承开发机的 UTF-8，让 macOS 自带 bash 3.2 真的按多字节
+        // 跑一遍被测脚本。issue #49 之前这里钉着 `LC_ALL=C` 绕开「变量紧跟全角标点」
+        // 的 unbound variable，现在 demo/env 全树都写 `${var}`，钉 locale 反而会把
+        // 这条真实回归掩盖掉。静态判据另由 shell-fullwidth-expansion.test.ts 守着。
         QIANMO_BETA_ROOT: place.root,
         BETA_ARGV_LOG: place.argvLog,
         FAKE_OCC_LOG: place.occLog,

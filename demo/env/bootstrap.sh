@@ -51,7 +51,7 @@ BUN_PIN="$(awk '$1 == "bun" { print $2 }' "$REPO_DIR/.tool-versions")"
 BUN_HAVE="$(bun --version)"
 [ -n "$BUN_PIN" ] || demo_die '.tool-versions 里读不到 bun 版本'
 if [ "$BUN_HAVE" = "$BUN_PIN" ]; then
-  demo_ok "bun $BUN_HAVE（与 .tool-versions 一致）"
+  demo_ok "bun ${BUN_HAVE}（与 .tool-versions 一致）"
 else
   # 不是硬拦：engines 只要求 >=1.3.11，而 pin 是 lockfile 与 CI 的口径。
   # 但也不静默——lockfile 的解析字段是 bun 1.3.13 规范化过的（roadmap v2.31），

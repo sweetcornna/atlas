@@ -140,7 +140,7 @@ for image in "${QIANMO_DORMICE_BASE_IMAGE:-dormice-base:20260718}" "${QIANMO_DOR
   if docker image inspect "$image" >/dev/null 2>&1; then
     ok "镜像在：$image"
   else
-    warn "镜像缺失：$image（若是 workbench:0.7.10，这是已知遗留项，别用该 template）"
+    warn "镜像缺失：${image}（若是 workbench:0.7.10，这是已知遗留项，别用该 template）"
   fi
 done
 
@@ -148,7 +148,7 @@ head1 '5. daemon 绑定不变式'
 if [ -x "$OPS_DIR/check-daemon-bind.sh" ]; then
   "$OPS_DIR/check-daemon-bind.sh"
   case "$?" in
-    0) ok "daemon 只监听回环（端口 $DORMICE_DAEMON_PORT）" ;;
+    0) ok "daemon 只监听回环（端口 ${DORMICE_DAEMON_PORT}）" ;;
     1) bad 'daemon 绑定不变式被破坏 —— AC-6(c) 当场不成立，先修这个再谈演示' ;;
     *) warn '无法判定 daemon 绑定（多半是 daemon 没在监听）' ;;
   esac

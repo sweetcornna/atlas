@@ -99,12 +99,12 @@ SMOKE_FROM_AGENT="${QIANMO_BETA_SMOKE_FROM_AGENT:-operator}"
 # 不是有人改了审计文件（理由见 common.sh 头注）。
 verify_trail() {
   local node="$1" path="$2" kind="$3"
-  beta_say "--- $node（$kind：$path）---"
+  beta_say "--- ${node}（${kind}：${path}）---"
   if bun "$BETA_OCC" audit --path "$path" --verify; then
     beta_ok "$node 审计链 intact"
     TRAIL_INTACT=$((TRAIL_INTACT + 1))
   else
-    fail_item "$node 审计链有问题（$kind：$path）"
+    fail_item "$node 审计链有问题（${kind}：${path}）"
   fi
 }
 
@@ -113,9 +113,9 @@ trail_missing() {
   local node="$1" where="$2"
   TRAIL_MISSING=$((TRAIL_MISSING + 1))
   if [ "$ALLOW_MISSING_TRAILS" = '1' ]; then
-    beta_warn "$node 还没有审计链（$where）—— 它在第一条审计记录到达时才创建；按 --allow-missing-trails 不判 FAIL"
+    beta_warn "$node 还没有审计链（${where}）—— 它在第一条审计记录到达时才创建；按 --allow-missing-trails 不判 FAIL"
   else
-    fail_item "$node 在 H 上既没有权威链也没有镜像链（找过 $where）"
+    fail_item "$node 在 H 上既没有权威链也没有镜像链（找过 ${where}）"
   fi
 }
 
@@ -173,7 +173,7 @@ check_links() {
       unit="$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')"
       state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
       if [ "$state" = 'active' ]; then
-        beta_ok "$node 审计镜像 timer 在跑（$unit）"
+        beta_ok "$node 审计镜像 timer 在跑（${unit}）"
       else
         # 镜像停了不影响拨号，但会让下面第④步验的那条链**悄悄变旧**——而一条滞后
         # 三天的链和一条实时链在 `--verify` 眼里一模一样，都是 intact。
@@ -196,9 +196,9 @@ run_host() {
   local status
   status="$(beta_http_status "$BETA_REGISTRY_URL/v0/health")"
   if [ "$status" = '200' ]; then
-    beta_ok "注册中心 /v0/health 200（$BETA_REGISTRY_URL）"
+    beta_ok "注册中心 /v0/health 200（${BETA_REGISTRY_URL}）"
   else
-    fail_item "注册中心 /v0/health 回 $status（$BETA_REGISTRY_URL）"
+    fail_item "注册中心 /v0/health 回 ${status}（${BETA_REGISTRY_URL}）"
   fi
 
   beta_head "② 按名解析 + 真拨通（$BETA_PEER_COUNT 条地址）"
@@ -211,7 +211,7 @@ run_host() {
     if [ ! -s "$psk_file" ]; then
       # 缺 PSK 与拨不通是两回事，报错要分开——前者是 H 上的运维副本没铺全（§8.3），
       # 后者才是节点或网络的问题。
-      fail_item "$addr 未探测：H 上缺 $node 的 PSK 副本（$psk_file）"
+      fail_item "$addr 未探测：H 上缺 $node 的 PSK 副本（${psk_file}）"
       i=$((i + 1))
       continue
     fi
@@ -241,9 +241,9 @@ run_host() {
   beta_head '③ 控制台'
   status="$(beta_http_status "$BETA_CONSOLE_URL/v0/health")"
   if [ "$status" = '200' ]; then
-    beta_ok "控制台 /v0/health 200（$BETA_CONSOLE_URL）"
+    beta_ok "控制台 /v0/health 200（${BETA_CONSOLE_URL}）"
   else
-    fail_item "控制台 /v0/health 回 $status（$BETA_CONSOLE_URL）"
+    fail_item "控制台 /v0/health 回 ${status}（${BETA_CONSOLE_URL}）"
   fi
 
   beta_head '④ 审计链'
@@ -261,7 +261,7 @@ run_node() {
     beta_warn "没给 --node，按默认节点名 $BETA_NODE 检查"
   fi
 
-  beta_head "① 进程与端口（节点 $BETA_NODE）"
+  beta_head "① 进程与端口（节点 ${BETA_NODE}）"
   if beta_running "$BETA_NODE"; then
     beta_ok "$BETA_NODE 在跑（pid $(cat "$(beta_pidfile "$BETA_NODE")")）"
   else

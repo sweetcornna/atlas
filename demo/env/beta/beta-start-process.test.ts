@@ -73,12 +73,10 @@ function runShell(
       env: {
         ...process.env,
         PATH: '/usr/bin:/bin',
-        // macOS 自带的是 bash 3.2，它在 UTF-8 locale 下会把 `"$pid，"` 里那个全角逗号
-        // **算进变量名**（`set -u` 下当场报 `pid?: unbound variable`）。bash 5 与 C locale
-        // 都在 ASCII 处断开，所以真实机器（Linux + bash 5）上不存在这个问题。
-        // 这里把 locale 钉成 C，只是让 macOS 的 bash 3.2 与线上行为一致——被测的是存活
-        // 校验，不是多字节解析。demo/env 全树都是这个写法，不在本次改动范围内。
-        LC_ALL: 'C',
+        // locale 故意不钉：继承开发机的 UTF-8。issue #49 之前这里钉着 `LC_ALL=C`，
+        // 因为 macOS 自带 bash 3.2 会把 `"$pid，"` 里的全角逗号算进变量名（`set -u`
+        // 下当场 unbound variable）。那 81 处已统一改成 `${var}`，所以 UTF-8 下再跑
+        // 才是真实条件；钉成 C 等于把回归掩盖掉。
         QIANMO_BETA_ROOT: value,
         ...extraEnv,
       },

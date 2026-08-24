@@ -241,7 +241,7 @@ beta_guard_root() {
     [ -n "$outer" ] || continue
     case "$root" in
       "$outer"|"$outer"/*)
-        beta_die "QIANMO_BETA_ROOT 落在当前环境的真实配置根里：$root（$outer）"
+        beta_die "QIANMO_BETA_ROOT 落在当前环境的真实配置根里：${root}（${outer}）"
         ;;
     esac
   done
@@ -260,9 +260,9 @@ beta_guard_root() {
 beta_require_marker() {
   beta_guard_root "$BETA_ROOT"
   [ -f "$BETA_MARKER" ] \
-    || beta_die "$BETA_ROOT 不是内测环境（缺 $BETA_MARKER）——先跑 demo/env/beta/beta-up.sh"
+    || beta_die "$BETA_ROOT 不是内测环境（缺 ${BETA_MARKER}）——先跑 demo/env/beta/beta-up.sh"
   head -1 "$BETA_MARKER" | grep -qF "$BETA_MARKER_MAGIC" \
-    || beta_die "$BETA_MARKER 的首行不是 $BETA_MARKER_MAGIC，拒绝操作"
+    || beta_die "$BETA_MARKER 的首行不是 ${BETA_MARKER_MAGIC}，拒绝操作"
   return 0
 }
 
@@ -313,7 +313,7 @@ beta_seed_root() {
 
   if [ ! -f "$BETA_PEERS_FILE" ]; then
     beta_write_peers_template
-    beta_ok "地址表模板已建：$BETA_PEERS_FILE（**里面是占位符，要按运维单页填**）"
+    beta_ok "地址表模板已建：${BETA_PEERS_FILE}（**里面是占位符，要按运维单页填**）"
   fi
   return 0
 }
@@ -406,13 +406,13 @@ BETA_TUNNEL_PORTS=' '
 # 一样。钉 `LC_ALL=C` 也能修，但那把正确性挂在「有没有人后来把这行删掉/覆盖掉」上。
 beta_assert_node_name() {
   local name="$1" where="$2"
-  [ -n "$name" ] || beta_die "$where：节点名为空"
-  [ "${#name}" -le 64 ] || beta_die "$where：节点名 $name 超过协议上限 64 字符，拒绝"
+  [ -n "$name" ] || beta_die "${where}：节点名为空"
+  [ "${#name}" -le 64 ] || beta_die "${where}：节点名 $name 超过协议上限 64 字符，拒绝"
   case "$name" in
     *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
-      beta_die "$where：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+      beta_die "${where}：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
     [!abcdefghijklmnopqrstuvwxyz0123456789]*|*[!abcdefghijklmnopqrstuvwxyz0123456789])
-      beta_die "$where：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
+      beta_die "${where}：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
@@ -423,10 +423,10 @@ beta_assert_node_name() {
 beta_assert_port() {
   local value="$1" what="$2" where="$3"
   case "$value" in
-    ''|*[!0123456789]*) beta_die "$where：$what 不是数字：$value" ;;
+    ''|*[!0123456789]*) beta_die "${where}：$what 不是数字：$value" ;;
   esac
   if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
-    beta_die "$where：$what 超出 1–65535：$value"
+    beta_die "${where}：$what 超出 1–65535：$value"
   fi
   return 0
 }
@@ -452,7 +452,7 @@ beta_parse_node_line() {
   if beta_ssh_index "$name" >/dev/null; then
     # 两条同名坐标 = 隧道按后一条搭、镜像按前一条拉（或反过来，取决于谁先被用到）。
     # 那种拓扑的症状是「链路是通的，但镜像永远拉的是另一台机器」，没人会往这里查。
-    beta_die "$where：节点 $name 已经有一条 node 坐标行了，不允许两条"
+    beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
   local trail='' keyfile="$BETA_SSH_KEY" kv key value
@@ -461,7 +461,7 @@ beta_parse_node_line() {
   for kv in $rest; do
     case "$kv" in
       *=*) ;;
-      *) beta_die "$where：$kv 不是 <键>=<值>" ;;
+      *) beta_die "${where}：$kv 不是 <键>=<值>" ;;
     esac
     key="${kv%%=*}"
     value="${kv#*=}"
@@ -473,32 +473,32 @@ beta_parse_node_line() {
       remote-port) remote_port="$value" ;;
       trail) trail="$value" ;;
       key) keyfile="$value" ;;
-      *) beta_die "$where：未知键 $key（只认 user/host/port/local-port/remote-port/trail/key）" ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key）" ;;
     esac
   done
-  [ -n "$user" ] || beta_die "$where：缺 user="
-  [ -n "$host" ] || beta_die "$where：缺 host="
-  [ -n "$local_port" ] || beta_die "$where：缺 local-port=（H 这一侧的回环口）"
+  [ -n "$user" ] || beta_die "${where}：缺 user="
+  [ -n "$host" ] || beta_die "${where}：缺 host="
+  [ -n "$local_port" ] || beta_die "${where}：缺 local-port=（H 这一侧的回环口）"
   # user 与 host 会被拼成 `user@host` 交给 ssh。把 @ 挡在这里，是为了让「user=a@b」
   # 这种写法当场报错，而不是变成一个连得上、但连的是别人的机器的隧道。
-  case "$user" in *@*|*/*) beta_die "$where：user 里不能有 @ 或 /：$user" ;; esac
-  case "$host" in *@*|*/*) beta_die "$where：host 里不能有 @ 或 /：$host" ;; esac
+  case "$user" in *@*|*/*) beta_die "${where}：user 里不能有 @ 或 /：$user" ;; esac
+  case "$host" in *@*|*/*) beta_die "${where}：host 里不能有 @ 或 /：$host" ;; esac
   beta_assert_port "$port" 'port' "$where"
   beta_assert_port "$local_port" 'local-port' "$where"
   beta_assert_port "$remote_port" 'remote-port' "$where"
   case "$BETA_TUNNEL_PORTS" in
-    *" $local_port "*) beta_die "$where：local-port=$local_port 已经被另一个节点占了" ;;
+    *" $local_port "*) beta_die "${where}：local-port=$local_port 已经被另一个节点占了" ;;
   esac
   if [ -n "$trail" ]; then
     case "$trail" in
       /*) ;;
-      *) beta_die "$where：trail 必须是节点上的绝对路径：$trail" ;;
+      *) beta_die "${where}：trail 必须是节点上的绝对路径：$trail" ;;
     esac
-    case "$trail" in *..*) beta_die "$where：trail 里有 ..，拒绝：$trail" ;; esac
+    case "$trail" in *..*) beta_die "${where}：trail 里有 ..，拒绝：$trail" ;; esac
   fi
   case "$keyfile" in
     /*) ;;
-    *) beta_die "$where：key 必须是 H 上的绝对路径：$keyfile" ;;
+    *) beta_die "${where}：key 必须是 H 上的绝对路径：$keyfile" ;;
   esac
   BETA_SSH_NODE[BETA_SSH_COUNT]="$name"
   BETA_SSH_USER[BETA_SSH_COUNT]="$user"
@@ -579,7 +579,7 @@ beta_assert_peers_match_tunnels() {
       want="ws://127.0.0.1:${BETA_SSH_LOCAL[$index]}"
       if [ "${BETA_PEER_EP[$i]}" != "$want" ]; then
         beta_die "$BETA_PEERS_FILE 第 ${BETA_PEER_LINE[$i]} 行：${BETA_PEER_ADDR[$i]} 的端点是 ${BETA_PEER_EP[$i]}，
-但节点 ${BETA_PEER_NODE[$i]} 有一条 node 坐标行（local-port=${BETA_SSH_LOCAL[$index]}），端点必须是 $want。
+但节点 ${BETA_PEER_NODE[$i]} 有一条 node 坐标行（local-port=${BETA_SSH_LOCAL[$index]}），端点必须是 ${want}。
 两边不一致的后果是「名册上在线、拨号全超时」—— 链路搭在一个口上，应用拨的是另一个口。"
       fi
     fi
@@ -641,7 +641,7 @@ beta_load_psk() {
   if [ -n "${QIANMO_TRANSPORT_PSK:-}" ]; then
     return 0
   fi
-  [ -f "$file" ] || beta_die "缺 $what：$file —— 它由 H 生成后分发，**不在本机自动生成**（beta-env.md §8.3）"
+  [ -f "$file" ] || beta_die "缺 ${what}：$file —— 它由 H 生成后分发，**不在本机自动生成**（beta-env.md §8.3）"
   QIANMO_TRANSPORT_PSK="$(cat "$file")"
   export QIANMO_TRANSPORT_PSK
   [ -n "$QIANMO_TRANSPORT_PSK" ] || beta_die "$file 是空的"
@@ -900,7 +900,7 @@ bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式
   printf '%s\n' "$pid" >"$(beta_pidfile "$name")"
   sleep "$BETA_START_GRACE_S"
   beta_dump_if_dead "$name"
-  beta_ok "$name 已启动（pid $pid，日志 $out）"
+  beta_ok "$name 已启动（pid ${pid}，日志 ${out}）"
 }
 
 # 进程死了就把它的错误摊开来，不要只说一句「没起来」。

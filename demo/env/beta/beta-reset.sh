@@ -94,7 +94,7 @@ if [ "$PURGE_LOGS" = '1' ]; then
   # 这里整块清掉是「重来一次」的动作，不是保留策略，别拿它当轮转用。
   purge "$BETA_LOG_DIR"
 else
-  beta_say "保留 $BETA_LOG_DIR（要清用 --purge-logs）"
+  beta_say "保留 ${BETA_LOG_DIR}（要清用 --purge-logs）"
 fi
 
 if [ "$PURGE_STATE" = '1' ]; then
@@ -102,7 +102,7 @@ if [ "$PURGE_STATE" = '1' ]; then
   beta_warn 'state/ 里有 timings —— 它是 P7.3 基线与容量判断的唯一输入（§5），删了只能重来一次内测'
   purge "$BETA_STATE_DIR"
 else
-  beta_say "保留 $BETA_STATE_DIR（含 timings；要清用 --purge-state）"
+  beta_say "保留 ${BETA_STATE_DIR}（含 timings；要清用 --purge-state）"
 fi
 
 if [ "$ARCHIVE_CONFIG" = '1' ]; then
@@ -146,7 +146,7 @@ if [ "$PURGE_LINKS" = '1' ]; then
     systemctl --user daemon-reload
     beta_say 'systemd --user 已 daemon-reload'
   fi
-  beta_say "mirror/ 一条没动（$BETA_MIRROR_DIR）—— 那是已经拉回来的审计链副本"
+  beta_say "mirror/ 一条没动（${BETA_MIRROR_DIR}）—— 那是已经拉回来的审计链副本"
 else
   beta_say "保留链路生成物（$BETA_OPS_DIR 与 systemd --user 的三个单元；要删用 --purge-links）"
 fi
