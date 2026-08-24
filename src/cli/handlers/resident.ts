@@ -663,6 +663,52 @@ export function assertResidentRuntime(
 }
 
 /**
+ * Open this process's config gate (issue #37 ①, follow-up).
+ *
+ * `qm resident` is one of the **fast paths** in `entrypoints/cli.tsx`: it is
+ * dispatched before `main.tsx` bootstraps anything, so unlike an ordinary
+ * subcommand it never passes the `enableConfigs()` the rest of the CLI relies
+ * on. Every read of a config file therefore threw `Config accessed before
+ * allowed.` — and because this handler's two startup credential checks are the
+ * only things here that read one, and both of them catch, the whole credential
+ * diagnosis layer was dead code in the shipped binary while every unit test
+ * stayed green (they inject their inputs and never reach these calls).
+ *
+ * Why here rather than in the dispatch table next to the seven sibling
+ * branches that each call `enableConfigs()` inline: this is a property of the
+ * handler, not of the layer. None of the other `qm` subcommands (`audit`,
+ * `console`, `resident-wake`, `ca`, `cert`, `watch`) touches config or auth at
+ * all, and the comment on the `--daemon-worker` fast path in that same file
+ * states the rule this follows — that layer stays lean, and "if a worker kind
+ * needs configs/auth … it calls them inside its run() fn". `cli/handlers/
+ * import.ts` already does exactly this, for the same reason.
+ *
+ * Never fatal. `enableConfigs()` validates the global config file and throws on
+ * a corrupt one; taking a node down over that would make a *diagnostic* into an
+ * admission decision, which is the rule this file follows everywhere else. A
+ * node that comes up without the gate open still works — it simply cannot check
+ * its own credential, and {@link warnUnavailableModelCredentialProbe} then says
+ * so instead of leaving `<node>.err` empty.
+ */
+export async function enableResidentConfigAccess(
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): Promise<boolean> {
+  try {
+    const { enableConfigs } = await import('../../utils/config/config.js')
+    enableConfigs()
+    return true
+  } catch (error) {
+    warn(
+      `[resident] could not open this node's config store: ${formatResidentError(error)}\n` +
+        "[resident] startup will continue, but this node cannot read its own stored login, so its credential checks below may be wrong. Check the global config file under this node's OCC_CONFIG_DIR.",
+    )
+    return false
+  }
+}
+
+/**
  * `--help` / `-h` 出现在任何位置都算请求帮助。
  *
  * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
@@ -1485,6 +1531,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     return
   }
   assertResidentRuntime()
+  // Before anything reads a credential — see the function's own comment for why
+  // this is the handler's job and not the dispatch table's.
+  await enableResidentConfigAccess()
   const config = parseResidentArgs(args)
   const psk = pskFromEnv()
   const activity =
