@@ -569,6 +569,27 @@ run_node() {
   done
 
   beta_head "② 常驻节点 $BETA_NODE"
+  # 模型凭据必须在**起 resident 之前**进环境：ACP 子进程继承的是 resident 起来那一刻
+  # 的环境（`defaultSpawnAcp` 传 `{...process.env}`），事后在别的 shell 里 export 到不了
+  # 它。这一步缺失就是 issue #13——链路整条走通、回执 accepted、审计链新增，而 agent
+  # 那一轮是 `Not logged in · Please run /login`。
+  local model_env_running=0
+  if beta_running "$BETA_NODE"; then model_env_running=1; fi
+  beta_load_model_env
+  if [ "$BETA_MODEL_ENV_STATUS" = 'loaded' ]; then
+    beta_ok "模型凭据$(beta_model_env_line)"
+    if [ "$model_env_running" = '1' ]; then
+      beta_warn "$BETA_NODE 在本次执行之前就已经在跑 —— 本脚本是幂等的，不会重起它，
+所以**刚注入的这份模型凭据没有进到那个进程里**。环境变量只在进程起来的那一刻传递一次。
+要让它生效：demo/env/beta/beta-down.sh $BETA_NODE 之后再跑本脚本。"
+    fi
+  else
+    beta_warn "模型凭据$(beta_model_env_line) —— 本节点被唤醒后，agent 那一轮会以
+\`Not logged in · Please run /login\`（authentication_failed，usage 全 0）收场，而投递、
+回执与审计链**全部照常成功**（issue #13 就是这个形状）。链路自检不需要凭据，要跑真轮次
+就放一份 0600 的 KEY=VALUE 文件到上面那个路径再重起本节点。"
+  fi
+
   local args
   # P12.4 的真实内测舰队仍处在 §9.2 阶段 ①：这两个参数成对出现，不是永久遗留。
   # 代码默认已经是 SIGNED_TASK_POLICY，但 S-1~S-4 证据与「连续 7 天若强制会被拒的
@@ -637,6 +658,9 @@ run_node() {
 
   beta_head "节点腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
   beta_say "节点     : $BETA_NODE（agent：$BETA_AGENTS）"
+  beta_say "模型凭据 : $(beta_model_env_line)"
+  beta_say "           ↑ 这一行只说**文件**注进来没有。够不够用由节点自己说：无凭据时"
+  beta_say "             resident 会在 $(beta_logfile "$BETA_NODE" err) 写一条 [resident] 告警。"
   beta_say "配置根   : $config_dir"
   beta_say "审计链   : $(beta_node_trail "$BETA_NODE")   ← **权威副本，H 上那份是只读镜像**"
   beta_say "入站端点 : ws://<本机对外地址>:$BETA_NODE_PORT   ← 把它填进 H 的 peers.conf"

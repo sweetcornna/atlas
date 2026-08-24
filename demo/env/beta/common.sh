@@ -153,6 +153,16 @@ BETA_ADMIN_TOKEN_FILE="$BETA_SECRET_DIR/console-admin-token"
 # 备份两枚 token。**归档 token 永不离开 H**（§2.7），所以节点机上只会有 write 那一份。
 BETA_BACKUP_WRITE_FILE="$BETA_SECRET_DIR/backup-write-token"
 BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
+# 该机那一份模型凭据，形如 `KEY=VALUE` 的 shell 片段（0600）。**只在节点机上有用**：
+# 它由 beta-up.sh 的节点腿在起 resident **之前**注入，ACP 子进程继承 resident 起来那一刻
+# 的环境（`defaultSpawnAcp` 传的是 `{...process.env}`），所以这是唯一到得了 agent 轮次的
+# 时机——事后在别的 shell 里 export 一次到不了它。
+#
+# 这个文件此前一直在四台节点机上躺着、**从来没有被任何脚本读过**（issue #13）：链路整条
+# 走通（信封送达、回执 accepted、审计链新增、ACP 子进程开出真实 agent turn），而那一轮
+# 必然是 `Not logged in · Please run /login`（`authentication_failed`，usage 全 0）。
+# H 腿**不注入**：控制台不跑 agent 轮次，给它模型凭据只是多一份可被读走的副本。
+BETA_MODEL_ENV_FILE="$BETA_SECRET_DIR/model-env"
 
 BETA_REGISTRY_URL="http://${BETA_HOST_BIND}:${BETA_REGISTRY_PORT}"
 BETA_CONSOLE_URL="http://${BETA_HOST_BIND}:${BETA_CONSOLE_PORT}"
@@ -636,6 +646,134 @@ beta_load_psk() {
   export QIANMO_TRANSPORT_PSK
   [ -n "$QIANMO_TRANSPORT_PSK" ] || beta_die "$file 是空的"
   return 0
+}
+
+# ── 模型凭据（secrets/model-env）─────────────────────────────────────────────
+#
+# 三个状态变量由 beta_load_model_env 写，由 beta_model_env_line 读。**它们只描述文件，
+# 不描述内容**：有没有、几个键、涉及哪几类 provider。凭据值一个字节都不出现在这里，
+# 也不出现在日志、横幅、argv 或任何一条错误信息里——一份能被 `ps` 读到的密钥，与写在
+# 命令行上的密钥是同一件事（§8.3 对 PSK 定下的那条纪律，对这份同样成立）。
+#
+# 「够不够用」不由这里回答：键名对不对、值是不是活的，只有真发一次请求才知道。那一格
+# 由 resident 自己在启动时回答（`warnMissingModelCredentials`，写在 <节点>.err 里）。
+BETA_MODEL_ENV_STATUS='unknown'
+BETA_MODEL_ENV_COUNT=0
+BETA_MODEL_ENV_CLASSES=''
+
+# beta_model_env_names <文件> —— 文件里出现的**键名**，一行一个。
+#
+# 只喂给下面两个函数算「几个」和「哪几类」，**键名本身永不打印**：一把贴错位置的密钥
+# 可能长在键名上（`ANTHROPIC_API_KEY_sk-…=1` 这种手滑），把键名回显出来等于把它印进日志。
+#
+# 判据是「行首（可带 export）的 KEY=」。多行值的续行里如果恰好也有 `KEY=` 形状会被多数
+# 一次——那只影响「几个」这句话的观感，不影响注入本身（注入是 `.` 干的，不是这里）。
+beta_model_env_names() {
+  LC_ALL=C sed -n \
+    's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' \
+    "$1"
+}
+
+# beta_model_env_classes <键名清单> —— 涉及哪几类 provider，固定顺序，空格分隔。
+#
+# 粒度到此为止：**不报键名、不报值、不报前缀、不报长度**。够运维分辨「我以为配的是
+# openai，怎么报的是 anthropic」，又不足以泄漏任何一把密钥。
+beta_model_env_classes() {
+  local name anthropic=0 openai=0 deepseek=0 opencode=0 gemini=0 grok=0 \
+    bedrock=0 vertex=0 other=0 out=''
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      ANTHROPIC_*|CLAUDE_CODE_OAUTH_TOKEN) anthropic=1 ;;
+      DEEPSEEK_*) deepseek=1 ;;
+      OPENCODE_*) opencode=1 ;;
+      OPENAI_*|CLAUDE_CODE_USE_OPENAI) openai=1 ;;
+      GEMINI_*|CLAUDE_CODE_USE_GEMINI) gemini=1 ;;
+      GROK_*|XAI_*|CLAUDE_CODE_USE_GROK) grok=1 ;;
+      AWS_*|CLAUDE_CODE_USE_BEDROCK) bedrock=1 ;;
+      GOOGLE_APPLICATION_CREDENTIALS|CLOUDSDK_*|CLAUDE_CODE_USE_VERTEX) vertex=1 ;;
+      *) other=1 ;;
+    esac
+  done
+  [ "$anthropic" = '0' ] || out="$out anthropic"
+  [ "$openai" = '0' ] || out="$out openai"
+  [ "$deepseek" = '0' ] || out="$out deepseek"
+  [ "$opencode" = '0' ] || out="$out opencode"
+  [ "$gemini" = '0' ] || out="$out gemini"
+  [ "$grok" = '0' ] || out="$out grok"
+  [ "$bedrock" = '0' ] || out="$out bedrock"
+  [ "$vertex" = '0' ] || out="$out vertex"
+  [ "$other" = '0' ] || out="$out 其他"
+  printf '%s' "${out# }"
+}
+
+# 把 secrets/model-env 注入当前环境。**四种形状分开处理，不许合并成「有 / 没有」两种。**
+#
+#   · 文件不在        —— 不是错误。节点仍然该起来：传输、审计、握手、备份都不需要模型
+#                        凭据（demo-env.md 那批不需要凭据的 AC 就是这么跑的）。只是被
+#                        唤醒后干不了活，所以调用方要把这件事显式说出来。
+#   · 断链 / 不是普通文件 —— 是错误。有人打算给凭据而没给成，静默继续正是 issue #13。
+#   · 读不掉（权限）  —— 同上，是错误。
+#   · 在、但一个赋值都没有 —— 同上，是错误。**这一格与「文件不在」不是一件事**：空文件
+#                        是「配过、配坏了」，缺文件是「没打算配」，把两者报成同一句话
+#                        会让人去查错的那一头。
+beta_load_model_env() {
+  local file="$BETA_MODEL_ENV_FILE" names restore
+  BETA_MODEL_ENV_STATUS='absent'
+  BETA_MODEL_ENV_COUNT=0
+  BETA_MODEL_ENV_CLASSES=''
+
+  if [ -L "$file" ] && [ ! -e "$file" ]; then
+    beta_die "$file 是一条断掉的软链 —— 有人给过模型凭据，现在指空了。
+不猜它本来指哪：静默跳过等于起一个「唤醒得了、干不了活」的节点（issue #13）。"
+  fi
+  if [ ! -e "$file" ]; then
+    return 0
+  fi
+  [ -f "$file" ] \
+    || beta_die "$file 存在但不是普通文件 —— 模型凭据要的是一份 KEY=VALUE 的 shell 片段。"
+  [ -r "$file" ] \
+    || beta_die "$file 存在但读不掉（权限？该是 0600 且属当前用户）—— 拒绝在这种状态下静默起节点。"
+
+  names="$(beta_model_env_names "$file")"
+  BETA_MODEL_ENV_COUNT="$(printf '%s\n' "$names" | grep -c '.' || true)"
+  if [ "$BETA_MODEL_ENV_COUNT" -eq 0 ]; then
+    beta_die "$file 在，但里面一个 KEY=VALUE 都没有（只有注释 / 空行？）。
+这与「没有这个文件」不是一件事：文件在说明有人配过。要么把凭据补上，要么把文件删掉。"
+  fi
+  BETA_MODEL_ENV_CLASSES="$(printf '%s\n' "$names" | beta_model_env_classes)"
+
+  # `set -a` 的作用域是**整个 shell**，不是本函数：先记下调用方进来时是开是关，注入完
+  # 原样还回去。少了这一步，本函数之后每一个普通局部变量都会被导出给子进程——那正是
+  # 「凭据不外泄」这条纪律最容易被自己人破掉的方式。
+  case "$-" in
+    *a*) restore='set -a' ;;
+    *) restore='set +a' ;;
+  esac
+  set -a
+  # shellcheck disable=SC1090
+  #   ↑ 路径是运行期算出来的，shellcheck 跟不进去；这份文件本来就不在仓库里。
+  . "$file"
+  eval "$restore"
+
+  BETA_MODEL_ENV_STATUS='loaded'
+  return 0
+}
+
+# 一行姿态，给横幅用。**只说有 / 无、几个键、哪几类。**
+beta_model_env_line() {
+  case "$BETA_MODEL_ENV_STATUS" in
+    loaded)
+      printf '已加载（%s，%s 个环境键，涉及 %s）' \
+        "$BETA_MODEL_ENV_FILE" "$BETA_MODEL_ENV_COUNT" "$BETA_MODEL_ENV_CLASSES"
+      ;;
+    absent)
+      printf '未加载（没有 %s）' "$BETA_MODEL_ENV_FILE"
+      ;;
+    *)
+      printf '未查（beta_load_model_env 本次没跑）'
+      ;;
+  esac
 }
 
 # H 上那份运维副本：secrets/peers/<node>.psk（**全部四把**，§8.3 的表）。

@@ -24,6 +24,7 @@ import {
   createResidentTimingWriter,
   isResidentHelpRequest,
   parseResidentArgs,
+  warnMissingModelCredentials,
   warnUnselectedTaskPolicy,
 } from '../resident.js'
 
@@ -411,6 +412,37 @@ describe('capability flags (P4.3)', () => {
       })
       expect(warnings).toEqual([])
     }
+  })
+
+  test('a node with no model credential says so once, on stderr', () => {
+    // issue #13：四台节点带着一份 0600 的 secrets/model-env 跑了五天，而那份文件
+    // 从来没有被任何进程读过。每一层都报成功（信封送达、receipt accepted、审计链
+    // 新增、ACP 子进程开出真实 turn），只有 transcript 里那一轮是
+    // authentication_failed。节点自己一个字都没说，因为没有人问过。
+    const warnings: string[] = []
+    warnMissingModelCredentials(false, message => {
+      warnings.push(message)
+    })
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('no model credential is visible to this node')
+    // 后果那一句是这条告警有用的部分：它要说清「别的层全绿也不代表这一层是好的」。
+    expect(warnings[0]).toContain('Not logged in · Please run /login')
+    // 时机那一句同样不能省：ACP 子进程继承的是 resident 起来那一刻的环境，
+    // 事后在别的 shell 里登录一次到不了它——不说，人就会去登录然后以为修好了。
+    expect(warnings[0]).toContain('before the resident')
+    // 一条能自查的下一步，而不是让人去猜检查了哪些键。
+    expect(warnings[0]).toContain('auth status')
+  })
+
+  test('a node that has a credential says nothing at all', () => {
+    // 与任务策略那条同样的纪律：配好的情况一个字都不出。两条告警都靠「极少出现」
+    // 换取被人读到，其中一条开始刷屏，另一条也一起被跳过。
+    const warnings: string[] = []
+    warnMissingModelCredentials(true, message => {
+      warnings.push(message)
+    })
+    expect(warnings).toEqual([])
   })
 
   test('the two directions of the switch cannot be asked for at once', () => {

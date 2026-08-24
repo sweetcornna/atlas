@@ -27,6 +27,7 @@ import {
   getAuthTokenSource,
   getOauthAccountInfo,
   getSubscriptionType,
+  hasAnyModelCredential,
   isUsing3PServices,
   removeApiKey,
   removeClaudeAIOAuthTokens,
@@ -264,15 +265,18 @@ export async function authStatus(opts: {
   json?: boolean
   text?: boolean
 }): Promise<void> {
-  const { source: authTokenSource, hasToken } = getAuthTokenSource()
+  const { source: authTokenSource } = getAuthTokenSource()
   const { source: apiKeySource } = getAnthropicApiKeyWithSource()
   const hasApiKeyEnvVar =
     !!process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace()
   const oauthAccount = getOauthAccountInfo()
   const subscriptionType = getSubscriptionType()
   const using3P = isUsing3PServices()
-  const loggedIn =
-    hasToken || apiKeySource !== 'none' || hasApiKeyEnvVar || using3P
+  // The same four terms this handler used to OR together inline, now in
+  // auth.ts so other callers can ask the question without restating the rule
+  // (`qm resident` warns at startup when it answers false). The locals above
+  // are still needed for `authMethod` and the text output, so they stay.
+  const loggedIn = hasAnyModelCredential()
 
   // Determine auth method
   let authMethod: string = 'none'
