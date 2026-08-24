@@ -690,7 +690,7 @@ export function assertResidentRuntime(
  * its own credential, and {@link warnUnavailableModelCredentialProbe} then says
  * so instead of leaving `<node>.err` empty.
  */
-export async function enableResidentConfigAccess(
+async function enableResidentConfigAccess(
   warn: (message: string) => void = message => {
     process.stderr.write(`${message}\n`)
   },
@@ -702,7 +702,9 @@ export async function enableResidentConfigAccess(
   } catch (error) {
     warn(
       `[resident] could not open this node's config store: ${formatResidentError(error)}\n` +
-        "[resident] startup will continue, but this node cannot read its own stored login, so its credential checks below may be wrong. Check the global config file under this node's OCC_CONFIG_DIR.",
+        '[resident] startup continues, but this node cannot read its own stored login, so the ' +
+        'credential checks below are answering from the environment alone and may be wrong. ' +
+        "The global config file under this node's OCC_CONFIG_DIR is where to look.",
     )
     return false
   }
@@ -1268,10 +1270,7 @@ export async function runResidentModelCredentialProbe(
       return { status: 'skipped', detail: 'no model credential is visible' }
     }
     const target = resolveResidentModelProbeTarget(
-      options.inputs ??
-        (options.environment === undefined
-          ? residentModelProbeInputs()
-          : residentModelProbeInputs(options.environment)),
+      options.inputs ?? residentModelProbeInputs(options.environment),
     )
     if ('status' in target) return target
     const verdict = await probeResidentModel(target, {
