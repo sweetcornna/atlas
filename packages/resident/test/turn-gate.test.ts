@@ -130,24 +130,40 @@ describe('node turn gate', () => {
   })
 
   test('an expiry that passes while a turn is waiting is caught at the head', async () => {
-    const gate = new NodeTurnGate()
+    // The gate's clock, owned outright by this test.
+    //
+    // What is being proved here is an *order* — the deadline is read when the
+    // turn reaches the head, not when it is enqueued — and an order is not a
+    // duration. The earlier shape stated it as one anyway: a deadline 30 ms
+    // out, a `setTimeout(45)`, and 15 ms of margin standing in for "the turn
+    // waited long enough". That margin is only ever as real as the wall clock
+    // behind it, and no shared runner promises `Date.now()` advances
+    // monotonically — one backwards correction wider than 15 ms and the turn
+    // is still alive at the head, so it runs and the test reports the
+    // opposite of the truth. Moving the clock by hand removes the race
+    // instead of widening it: no timer, nothing to be late, nothing to drift.
+    let clock = 1_700_000_000_000
+    const gate = new NodeTurnGate({ now: () => clock })
     let release!: () => void
     const held = new Promise<void>(resolve => {
       release = resolve
     })
     const first = gate.run(async () => await held)
 
-    // Alive at enqueue, dead by the time its slot comes up: the deadline is
-    // read at the head of the queue, which is the only place it can be read
-    // and still mean anything.
     let ran = 0
     const queued = gate.run(
       async () => {
         ran += 1
       },
-      { deadlineAt: Date.now() + 30, sessionId: 'session-slow' },
+      { deadlineAt: clock + 30, sessionId: 'session-slow' },
     )
-    await new Promise(resolve => setTimeout(resolve, 45))
+    // Alive at enqueue — it is waiting, not already culled on the way in.
+    // The old shape could not assert this at all; it only ever saw the end
+    // state, so "dropped immediately" and "dropped at the head" looked alike.
+    expect(gate.queued).toBe(1)
+
+    // …and dead by the time its slot comes up.
+    clock += 31
     release()
 
     await expect(queued).rejects.toBeInstanceOf(NodeTurnExpiredError)
