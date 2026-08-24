@@ -13,9 +13,29 @@ import { cleanupTemporaries, tempDir } from './helpers.js'
 
 afterEach(cleanupTemporaries)
 
-/** A scheduler a test drives by hand: no sleeping, no wall clock. */
+/**
+ * A scheduler a test drives by hand: no sleeping, no wall clock.
+ *
+ * `fire()` used to give the snapshot a flat 5 ms to finish. That budget has to
+ * cover three real filesystem syscalls (`mkdir` plus two `writeFile`), which
+ * cost about a millisecond on an idle machine and rather more inside a full
+ * unsharded `bun test` — so the file was green in isolation and occasionally
+ * red in `precheck`, with `store.list()` reading 0 because the writes had not
+ * landed yet (#33).
+ *
+ * The completion signal is now the scheduler's own `onSnapshot` / `onError`
+ * hook, which the {@link BackupScheduler} calls once the write has returned:
+ * every test that drives this class by hand wires {@link settleRound} into it.
+ * `fire()` waits for that hook and then yields one macrotask turn, which drains
+ * the microtask queue carrying the re-arm no matter how loaded the machine is.
+ * Nothing here is a time budget any more, so there is nothing left to blow.
+ *
+ * A round that never settles hangs until bun's own test timeout rather than
+ * failing fast — deliberately, because the alternative is another deadline.
+ */
 class ManualScheduler implements Scheduler {
   #pending: Array<{ delayMs: number; callback: () => void }> = []
+  #roundSettled: (() => void) | null = null
 
   after(delayMs: number, callback: () => void): CancelTimer {
     const entry = { delayMs, callback }
@@ -29,13 +49,28 @@ class ManualScheduler implements Scheduler {
     return this.#pending.length
   }
 
-  /** Fire everything armed right now, once. */
+  /** Wire into `onSnapshot` / `onError`: one scheduled round has finished. */
+  readonly settleRound = (): void => {
+    const resolve = this.#roundSettled
+    this.#roundSettled = null
+    resolve?.()
+  }
+
+  /** Fire everything armed right now, once, and wait for it to finish. */
   async fire(): Promise<void> {
     const due = this.#pending
     this.#pending = []
+    // Nothing armed means nothing to wait for — a stopped scheduler must not
+    // park the test on a hook that will never be called.
+    if (due.length === 0) return
+    const settled = new Promise<void>(resolve => {
+      this.#roundSettled = resolve
+    })
     for (const entry of due) entry.callback()
-    // Snapshots are async; let their promises settle before asserting.
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await settled
+    // The re-arm rides a `.finally` a few microtasks behind the hook, and a
+    // macrotask turn runs only once the microtask queue is empty.
+    await new Promise(resolve => setTimeout(resolve, 0))
   }
 }
 
@@ -68,6 +103,7 @@ describe('the two triggers', () => {
       scheduler,
       intervalMs: 1_000,
       archive: async () => new Uint8Array([1]),
+      onSnapshot: scheduler.settleRound,
     })
     backups.start()
     expect(scheduler.pending).toBe(1)
@@ -88,6 +124,7 @@ describe('the two triggers', () => {
       writer: store.writer(),
       scheduler,
       archive: async () => new Uint8Array([1]),
+      onSnapshot: scheduler.settleRound,
     })
     backups.start()
     backups.start()
@@ -114,7 +151,11 @@ describe('failures are loud, not fatal', () => {
         if (attempt === 1) throw new Error('tar exploded')
         return new Uint8Array([1])
       },
-      onError: error => errors.push(error),
+      onSnapshot: scheduler.settleRound,
+      onError: error => {
+        errors.push(error)
+        scheduler.settleRound()
+      },
     })
     backups.start()
     await scheduler.fire()
