@@ -32,10 +32,24 @@ export interface ConsoleAgent {
   readonly expiresAt: number
 }
 
-/** Uniform failure shape for every port. `code` is for tests, not for users. */
+/**
+ * Uniform failure shape for every port. `code` is for tests, not for users.
+ *
+ * `unreachable` and `refused` are the pair worth being careful with, because
+ * collapsing them is a bug that costs an operator an afternoon: `unreachable`
+ * means the far side was never reached, and it points at tunnels, ports and
+ * routes; `refused` means it was reached, understood the request and declined
+ * it, and it points at that node's policy and its audit trail. A node that
+ * refuses a wake for want of a capability token is `refused` — reporting it as
+ * `unreachable` sent people to check a network that was working (issue #29).
+ *
+ * `rejected` is the third of the family and it is about **this** side: a rule
+ * here would not let the request leave.
+ */
 export interface ConsoleFailure {
   readonly code:
     | 'unreachable'
+    | 'refused'
     | 'rejected'
     | 'not_found'
     | 'unsupported'
