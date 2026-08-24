@@ -59,7 +59,9 @@ import {
   isReplyType,
   ProtocolError,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   withHop,
+  type NoticeTrust,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import type { CapabilityGate } from './capability.js'
@@ -111,6 +113,12 @@ export type InboundVerdict =
       readonly level: CapabilityLevel
       /** Issuing node of the presented token, when there was one. */
       readonly issuer?: string
+      /**
+       * Provenance tier, as the capability gate decided it (issue #28).
+       * `untrusted` with no gate configured, which is what a node that cannot
+       * verify anything has learned about a message: nothing.
+       */
+      readonly trust: NoticeTrust
     }
   | {
       readonly ok: false
@@ -257,6 +265,7 @@ export class NodeRouter {
 
     let level = CapabilityLevel.Read
     let issuer: string | undefined
+    let trust: NoticeTrust = TRUST_UNTRUSTED
     if (this.capability !== undefined) {
       const decision = this.capability.check(message, now)
       if (!decision.ok) {
@@ -269,6 +278,7 @@ export class NodeRouter {
       }
       level = decision.level
       issuer = decision.issuer
+      trust = decision.trust
     }
 
     const verdict = this.loop.admit(message, gatedNow)
@@ -305,6 +315,7 @@ export class NodeRouter {
       ok: true,
       message,
       level,
+      trust,
       ...(issuer === undefined ? {} : { issuer }),
     }
   }

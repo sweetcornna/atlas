@@ -37,7 +37,11 @@ import type {
   ResidentTurnInput,
   ResidentTurnResult,
 } from '@qianmo/resident'
-import { InboundAdapter, type InboundDelivered } from '@qianmo/adapter/inbound'
+import {
+  InboundAdapter,
+  type InboundDelivered,
+  type InboundVerification,
+} from '@qianmo/adapter/inbound'
 import {
   MessageType,
   ProtocolErrorCode,
@@ -614,7 +618,7 @@ export class QianmoResident {
    */
   async deliver(
     message: QianmoMessage,
-    verified: { readonly capIss?: string } = {},
+    verified: InboundVerification = {},
   ): Promise<InboundDelivered> {
     const runtime = this.#runtime
     if (runtime === null)
@@ -746,10 +750,14 @@ export class QianmoResident {
         ? this.#registerTask(message, context.channel)
         : undefined
     try {
-      await this.deliver(
-        message,
-        routed.issuer === undefined ? {} : { capIss: routed.issuer },
-      )
+      // Both halves of the routing layer's finding travel together: who
+      // signed, and what this node concluded that signature was worth
+      // (issue #28). Passing only the first is what left every cross-node
+      // message pinned to `untrusted` no matter what it presented.
+      await this.deliver(message, {
+        trust: routed.trust,
+        ...(routed.issuer === undefined ? {} : { capIss: routed.issuer }),
+      })
     } catch (error) {
       if (task !== undefined) {
         const code =

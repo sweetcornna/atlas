@@ -3,11 +3,16 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  CapabilityLevel,
   LIMITS,
   MessageType,
+  NOTICE_TRUST_VERIFIED_CAPABILITY,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   createAck,
   createTaskResult,
+  type NoticeTrust,
+  type QianmoMessage,
 } from '@qianmo/protocol'
 import {
   E_RUNTIME_THROTTLED,
@@ -15,6 +20,8 @@ import {
   NodeRouter,
   RUNTIME_RATE,
   RouterEventType,
+  type CapabilityDecision,
+  type CapabilityGate,
   type RouterAuditEvent,
 } from '../src/index.js'
 import {
@@ -291,5 +298,60 @@ describe('release', () => {
     router.release('r-1')
     expect(router.inbound(makeMessage({ createdAt: CLOCK, taskId: 'r-1' })).ok) //
       .toBe(true)
+  })
+})
+
+describe('inbound — the capability tier travels, it is not re-derived', () => {
+  /** A gate that answers with whatever the test wants to see forwarded. */
+  function gateAnswering(decision: CapabilityDecision): CapabilityGate {
+    return {
+      check(_message: QianmoMessage, _now: number): CapabilityDecision {
+        return decision
+      },
+    }
+  }
+
+  function tierSeenBy(decision: CapabilityDecision): NoticeTrust | undefined {
+    const router = new NodeRouter({
+      node: NODE_B,
+      now: () => CLOCK,
+      capability: gateAnswering(decision),
+    })
+    const verdict = router.inbound(makeMessage({ createdAt: CLOCK }))
+    return verdict.ok ? verdict.trust : undefined
+  }
+
+  test('whatever the gate decided is what the verdict carries', () => {
+    // issue #28: the routing layer is a wire between the one layer that may
+    // decide the tier and the one layer that renders it. Both values have to
+    // survive the trip, and neither may be recomputed on the way.
+    expect(
+      tierSeenBy({
+        ok: true,
+        level: CapabilityLevel.WriteLimited,
+        issuer: 'console',
+        trust: NOTICE_TRUST_VERIFIED_CAPABILITY,
+      }),
+    ).toBe(NOTICE_TRUST_VERIFIED_CAPABILITY)
+
+    // An issuer is present and the level clears the bar, and the tier is still
+    // the floor because the gate said so. The router does not have an opinion.
+    expect(
+      tierSeenBy({
+        ok: true,
+        level: CapabilityLevel.WriteLimited,
+        issuer: 'console',
+        trust: TRUST_UNTRUSTED,
+      }),
+    ).toBe(TRUST_UNTRUSTED)
+  })
+
+  test('a node with no capability gate learns nothing, so it trusts nothing', () => {
+    const router = routerAt(NODE_B, () => CLOCK)
+    const verdict = router.inbound(makeMessage({ createdAt: CLOCK }))
+    expect(verdict.ok).toBe(true)
+    if (!verdict.ok) return
+    expect(verdict.trust).toBe(TRUST_UNTRUSTED)
+    expect(verdict.level).toBe(CapabilityLevel.Read)
   })
 })

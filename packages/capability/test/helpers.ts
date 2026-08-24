@@ -56,13 +56,22 @@ export function party(node: string): Party {
   return { node, keys: generateNodeKeyPair() }
 }
 
-/** A verifier for `node`, trusting exactly the parties handed to it. */
+/**
+ * A verifier for `node`, trusting exactly the parties handed to it.
+ *
+ * `trusts` fills the key directory **and**, by default, the issuer-trust list —
+ * which is how `resident.ts` wires a real node (`residentTrustedIssuers`: the
+ * `--trust` entries plus its own name). `trustedIssuers` overrides the second
+ * half alone, so a test can build the case the two axes come apart in: a node
+ * that can check an issuer's signature and was never told to honour it.
+ */
 export function gateFor(
   node: string,
   options: {
     readonly trusts?: readonly Party[]
     readonly policy?: CapabilityPolicy
     readonly keys?: NodeKeyPair
+    readonly trustedIssuers?: readonly string[]
   } = {},
 ): NodeCapabilities {
   const directory = new StaticPublicKeyDirectory(
@@ -71,6 +80,10 @@ export function gateFor(
   return new NodeCapabilities({
     node,
     directory,
+    trustedIssuers: options.trustedIssuers ?? [
+      ...(options.trusts ?? []).map(peer => peer.node),
+      node,
+    ],
     ...(options.policy === undefined ? {} : { policy: options.policy }),
     ...(options.keys === undefined ? {} : { keys: options.keys }),
   })

@@ -17,6 +17,7 @@
 
 import type {
   CapabilityLevel,
+  NoticeTrust,
   ProtocolErrorCode,
   QianmoMessage,
 } from '@qianmo/protocol'
@@ -32,6 +33,17 @@ export type CapabilityDecision =
       readonly level: CapabilityLevel
       /** Issuing node, when a token was presented. */
       readonly issuer?: string
+      /**
+       * The provenance tier this message earned, decided by the gate and
+       * **not** re-derivable downstream (issue #28).
+       *
+       * Required rather than optional on purpose: the field exists so that a
+       * layer which renders the tier does not have to reconstruct it from
+       * `issuer` plus a trust list it has no business holding. An optional
+       * field would let a gate stay silent and leave every consumer to guess,
+       * which is the shape the bug had.
+       */
+      readonly trust: NoticeTrust
     }
   | {
       readonly ok: false

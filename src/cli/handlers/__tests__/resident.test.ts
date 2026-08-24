@@ -8,6 +8,7 @@ import {
   createMessage,
   MessageType,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
 } from '@qianmo/protocol'
 import {
   generateNodeKeyPair,
@@ -26,6 +27,7 @@ import {
   formatResidentError,
   isResidentHelpRequest,
   parseResidentArgs,
+  residentTrustedIssuers,
   warnMissingModelCredentials,
   warnUnselectedTaskPolicy,
 } from '../resident.js'
@@ -473,6 +475,7 @@ describe('capability flags (P4.3)', () => {
     expect(observing.check(unsignedTask, Date.now())).toEqual({
       ok: true,
       level: CapabilityLevel.Read,
+      trust: TRUST_UNTRUSTED,
     })
     expect(shadowRefusals).toHaveLength(1)
     expect(shadowRefusals[0]?.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
@@ -514,6 +517,42 @@ describe('capability flags (P4.3)', () => {
     expect(enforcingRefusals).toEqual([])
   })
 
+  test('the issuer-trust list is the --trust names plus this node (issue #28)', () => {
+    const peer = generateNodeKeyPair()
+    const other = generateNodeKeyPair()
+    const config = parseResidentArgs(
+      [
+        ...BASE,
+        '--trust',
+        `console=${peer.publicKey}`,
+        '--trust',
+        `node-a=${other.publicKey}`,
+      ],
+      'qianmo',
+    )
+
+    // Its own name is in there because rule S-1 accepts `user-confirmed` only
+    // from this node's own key; leaving it out would make the strongest level
+    // the one level that could never be trusted.
+    expect([...residentTrustedIssuers(config)].sort()).toEqual([
+      'console',
+      'node-a',
+      'node-b',
+    ])
+  })
+
+  test('--trust-ca alone names nobody: a CA authenticates, it does not authorize', () => {
+    // Fail-closed, and a deliberate gap rather than an oversight — see
+    // key-distribution.md §10.5. Widening this to "everyone the CA signed"
+    // would make every CA-signed identity an authority over every node.
+    const config = parseResidentArgs(
+      [...BASE, '--trust-ca', join(tmpdir(), 'qianmo-ca-not-read.pem')],
+      'qianmo',
+    )
+
+    expect([...residentTrustedIssuers(config)]).toEqual(['node-b'])
+  })
+
   test('open policy without audit ignores a supplied shadow refusal sink', () => {
     const shadowRefusals: ShadowRefusal[] = []
     const open = createResidentCapabilities(
@@ -523,9 +562,13 @@ describe('capability flags (P4.3)', () => {
       refusal => shadowRefusals.push(refusal),
     )
 
+    // issue #28's first negative, at the unit level: an unsigned task admitted
+    // by the escape hatch carries nothing anybody verified, so it stays at the
+    // floor. `--open-policy` widens what is *admitted*, never what is trusted.
     expect(open.check(unsignedTask, Date.now())).toEqual({
       ok: true,
       level: CapabilityLevel.Read,
+      trust: TRUST_UNTRUSTED,
     })
     expect(shadowRefusals).toEqual([])
   })

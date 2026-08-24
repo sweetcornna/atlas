@@ -26,7 +26,9 @@ import {
 import {
   CapabilityLevel,
   MessageType,
+  NOTICE_TRUST_VERIFIED_CAPABILITY,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   parseCapabilityToken,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -94,15 +96,25 @@ async function sendWake(options: {
   return message
 }
 
-/** The gate a resident node actually runs, wired the way `resident.ts` wires it. */
+/**
+ * A node gate wired the way `resident.ts` wires one: the `--trust` entries fill
+ * both the key directory and the issuer-trust list (`residentTrustedIssuers`).
+ *
+ * `trustedIssuers` can be overridden to pull the two apart — the case where a
+ * node can *verify* an issuer's signature but was never told to *honour* it,
+ * which has no command line today and is exactly the tier's negative case.
+ */
 function nodeGate(options: {
   readonly trusted: readonly (readonly [string, string])[]
   readonly enforcing: boolean
+  readonly trustedIssuers?: readonly string[]
 }): NodeCapabilities {
   return new NodeCapabilities({
     node: TARGET_NODE,
     directory: new StaticPublicKeyDirectory(options.trusted),
     policy: options.enforcing ? SIGNED_TASK_POLICY : OPEN_POLICY,
+    trustedIssuers:
+      options.trustedIssuers ?? options.trusted.map(([node]) => node),
   })
 }
 
@@ -123,6 +135,30 @@ describe('console wake capability tokens', () => {
       ok: true,
       level: CapabilityLevel.WriteLimited,
       issuer: CONSOLE_NODE,
+      trust: NOTICE_TRUST_VERIFIED_CAPABILITY,
+    })
+  })
+
+  test('a signed wake from an issuer this node never named stays untrusted', async () => {
+    // issue #28's second negative. The key is in the directory, so the
+    // signature verifies and the enforcing policy admits the wake — every
+    // layer says yes. What the node was never told is that `console` may
+    // *direct* it, so the tier stays at the floor and the agent is handed the
+    // untrusted notice. "Verifiable" and "authorized" are two questions.
+    const keys = generateNodeKeyPair()
+    const message = await sendWake({ keys })
+
+    expect(
+      nodeGate({
+        trusted: [[CONSOLE_NODE, keys.publicKey]],
+        enforcing: true,
+        trustedIssuers: [],
+      }).check(message, message.createdAt),
+    ).toEqual({
+      ok: true,
+      level: CapabilityLevel.WriteLimited,
+      issuer: CONSOLE_NODE,
+      trust: TRUST_UNTRUSTED,
     })
   })
 
@@ -249,6 +285,7 @@ describe('the wake port itself', () => {
       ok: true,
       level: CapabilityLevel.WriteLimited,
       issuer: CONSOLE_NODE,
+      trust: NOTICE_TRUST_VERIFIED_CAPABILITY,
     })
   })
 
@@ -298,7 +335,11 @@ describe('compatibility with the fleet as it runs today', () => {
         message,
         message.createdAt,
       ),
-    ).toEqual({ ok: true, level: CapabilityLevel.Read })
+    ).toEqual({
+      ok: true,
+      level: CapabilityLevel.Read,
+      trust: TRUST_UNTRUSTED,
+    })
   })
 
   test('open policy does NOT make an unresolvable token optional', async () => {
@@ -338,6 +379,7 @@ describe('compatibility with the fleet as it runs today', () => {
       ok: true,
       level: CapabilityLevel.WriteLimited,
       issuer: CONSOLE_NODE,
+      trust: NOTICE_TRUST_VERIFIED_CAPABILITY,
     })
   })
 })

@@ -1,9 +1,14 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import type { MessageOrigin, QianmoMessage } from '@qianmo/protocol'
+import type {
+  MessageOrigin,
+  NoticeTrust,
+  QianmoMessage,
+} from '@qianmo/protocol'
 import {
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   deliveryExpiresAt,
   firstErrorCode,
   formatAddress,
@@ -61,6 +66,21 @@ import {
  * than trusting the string it was handed, and rejects outright on failure —
  * no best-effort repair.
  */
+
+/**
+ * What the routing layer verified about one message, as the adapter receives
+ * it (issue #28).
+ *
+ * One type rather than an inline shape at four call sites: adding a field to a
+ * structural literal repeated down a call chain is how the tier came to stop
+ * one layer short of the notice in the first place.
+ */
+export interface InboundVerification {
+  /** `iss` of the token that verified, absent when none was presented. */
+  readonly capIss?: string
+  /** Tier the capability gate assigned. Absent means `untrusted`. */
+  readonly trust?: NoticeTrust
+}
 
 /** A message the adapter refused, with the wire code to reply with. */
 export interface InboundRejection {
@@ -145,14 +165,20 @@ export class InboundAdapter {
    * this call; this class owns the structural checks, the TTL check and the
    * write itself.
    *
-   * `verified.capIss` is the one thing the routing layer hands back to be
-   * written into the provenance label — and it is passed in rather than read
-   * off the envelope precisely because §10.2 says provenance is what the
-   * *receiver* established, never what the message said about itself.
+   * `verified` is what the routing layer established and this layer could not:
+   * `capIss` names who signed, `trust` says what that signature was worth here
+   * (issue #28). Both are passed in rather than read off the envelope precisely
+   * because §10.2 says provenance is what the *receiver* established, never
+   * what the message said about itself — and `trust` additionally could not be
+   * computed here at all, since deciding it needs a key directory and a trust
+   * list that this package deliberately has no access to.
+   *
+   * Both default to the safe value. An omitted `trust` is `untrusted`, so a
+   * caller that has not been updated downgrades rather than guesses.
    */
   async deliver(
     message: QianmoMessage,
-    verified: { readonly capIss?: string } = {},
+    verified: InboundVerification = {},
   ): Promise<InboundResult> {
     const receivedAt = this.now()
 
@@ -219,10 +245,11 @@ export class InboundAdapter {
       receivedAt,
       ...(verified.capIss === undefined ? {} : { capIss: verified.capIss }),
     }
+    const trust = verified.trust ?? TRUST_UNTRUSTED
     const labelled: QianmoMessage = { ...envelope, origin }
 
     // 4. Size, by measurement of the final string (rule M-5, §9.3.4).
-    let wrapper = buildWrapper(labelled, buildNotice(origin))
+    let wrapper = buildWrapper(labelled, buildNotice(origin, trust))
     let text = serializeWrapper(wrapper)
     let blob: BlobRef | undefined
 
@@ -240,7 +267,7 @@ export class InboundAdapter {
       }
       wrapper = buildWrapper(
         { ...labelled, payload: blob },
-        buildNotice(origin),
+        buildNotice(origin, trust),
       )
       // Measure again: the reference is a different string, not an estimate.
       text = serializeWrapper(wrapper)

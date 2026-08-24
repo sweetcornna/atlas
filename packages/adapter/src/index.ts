@@ -40,6 +40,7 @@ export {
   type InboundDelivered,
   type InboundRejection,
   type InboundResult,
+  type InboundVerification,
 } from './inbound.js'
 
 export {
