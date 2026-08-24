@@ -712,13 +712,21 @@ Listener, exactly one of --port and --unix:
 Authorization:
 
   --trust <node>=<publicKey>
-                           Accept capability tokens issued by <node>.
+                           Accept capability tokens issued by <node>, and
+                           treat what they authorize as authorized here.
                            Repeatable, one peer per flag. There is no
                            trust-on-first-use, so an issuer never named here
                            is refused. This node's own key is always trusted,
                            and its public half is the first line this command
                            prints. Still works with --trust-ca given (§8.2
                            phase ①) and always wins on conflict.
+                           Naming an issuer here is what lets a message it
+                           signed reach the agent labelled as authorized work
+                           rather than as untrusted relayed text (issue #28,
+                           key-distribution.md §10.5). --trust-ca is
+                           deliberately not a second source for that: a CA
+                           says who a subject is, not that this operator
+                           authorized it to direct this node.
   --trust-ca <abs path>    PEM root certificate of the offline CA
                            (key-distribution.md §5.1, produced by
                            \`${invokedBinName()} ca init\`). Peer keys are then
@@ -894,6 +902,37 @@ export function buildPublicKeyDirectory(
 }
 
 /**
+ * The subjects whose capability tokens this node treats as *authorization*
+ * and not merely as *identification* (issue #28).
+ *
+ * Two sources, and both are a human writing a name down:
+ *
+ * - **every `--trust <node>=<publicKey>` entry.** That flag is already the
+ *   statement "capabilities signed by this subject are honoured here": under
+ *   the enforcing default, a peer named there can mint itself a
+ *   `write-limited` token for any task and this node will run the work. The
+ *   tier does not widen that — it only stops the notice from telling the agent
+ *   the opposite of what the gate just decided.
+ * - **this node's own name.** Rule S-1 accepts `user-confirmed` only from this
+ *   node's own key, so leaving itself out would make the *strongest* level the
+ *   one level that could never be trusted.
+ *
+ * **`--trust-ca` is deliberately not a source.** A CA answers "is this subject
+ * who it says it is", which every subject it ever signed passes; this list
+ * answers "did this operator authorize that subject to direct this node's
+ * agent", which is not a question a CA was ever asked. Under `--trust-ca`
+ * alone the tier therefore stays `untrusted` — fail-closed, and a real gap
+ * once `--trust` retires (key-distribution.md §8.3). It is recorded there
+ * rather than closed here by widening the list, because widening it would make
+ * every CA-signed identity on the network an authority over every node.
+ */
+export function residentTrustedIssuers(
+  config: ResidentCliConfig,
+): readonly string[] {
+  return [...config.trusted.map(([node]) => node), config.node]
+}
+
+/**
  * Build the resident's real capability gate from its parsed policy switches.
  *
  * `NodeCapabilities` intentionally defaults to the enforcing policy. The
@@ -915,6 +954,7 @@ export function createResidentCapabilities(
     directory,
     keys,
     policy: config.requireSignedTasks ? SIGNED_TASK_POLICY : OPEN_POLICY,
+    trustedIssuers: residentTrustedIssuers(config),
     // §9.2 phase ①. Both halves or neither — this factory refuses the
     // half-configuration, and it is the only place that supplies them.
     ...(config.auditSignedTasks
