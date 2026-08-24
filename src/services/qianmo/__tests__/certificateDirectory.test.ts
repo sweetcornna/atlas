@@ -21,6 +21,7 @@ import {
   expect,
   test,
 } from 'bun:test'
+import { X509Certificate } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -331,14 +332,35 @@ describe('CertificateDirectory — fail-closed to --trust (§6.4)', () => {
       const a = issueNode(caDir, 'node-a', ['node-a.example.com'], root)
       await registerIssued(a, 'node-a.example.com')
 
+      // One instant, named by the certificate itself, for both the RL and the
+      // directory that reads it.
+      //
+      // What this test is about — a stale directory recovers the moment a
+      // fresh RL arrives — has nothing to do with what time it is, yet the
+      // earlier shape let the wall clock decide it three times over: the
+      // certificate's `notBefore` came from OpenSSL, the RL's window from one
+      // `Date.now()`, and the admission check from another. Those three only
+      // agree while the clock advances monotonically, and a shared runner's
+      // does not promise to: a correction backwards past `notBefore` leaves
+      // `node-a` inadmissible — `publicKeyOf` returns `null` — while every
+      // line of this test still reads as if it should have passed.
+      //
+      // `notBefore` is the one instant this test can name that is guaranteed
+      // not to be in its own future, so pinning `now` to it removes the wall
+      // clock from the assertion entirely rather than betting on it. Two
+      // tests below already pin a clock for the narrower version of this
+      // hazard (OpenSSL's second-granularity timestamps).
+      const t0 = Date.parse(new X509Certificate(a.certificatePem).validFrom)
+
       const directory = new CertificateDirectory({
         caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
         registryUrl: server.url,
+        now: () => t0,
       })
       await directory.refresh()
       expect(directory.publicKeyOf('node-a')).toBeNull()
 
-      await publishRl({ now: Date.now(), validMs: 30 * 24 * 60 * 60 * 1000 })
+      await publishRl({ now: t0, validMs: 30 * 24 * 60 * 60 * 1000 })
       await directory.refresh()
       expect(directory.publicKeyOf('node-a')).toBe(a.keys.publicKey)
     },
