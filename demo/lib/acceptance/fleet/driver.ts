@@ -456,14 +456,18 @@ export class FleetDriver implements AcceptanceDriver {
       occPath: '',
     }
 
-    // 一次往返把控制台侧的东西全取回来：跑着的控制台命令行 + 每台的单元状态
-    // + 镜像文件的 stat/md5 + 目标机的钟。
+    // 先取「控制台申报了什么」与目标机的钟；每台节点的单元状态与文件在下面
+    // 各自一趟（systemctl 的实例名与镜像路径都要按节点拼，合不成一条）。
     const declared = await this.#ssh(consoleSsh, [
       `date +%s`,
       // 申报是成对的 `--audit <n>=<路径>` / `--audit-mirror <n>=<分钟>`，从
       // **跑着的控制台**的命令行上读 —— 那条命令行才是真源，抄一份进套件只会
       // 在部署改了之后开始说谎。
-      `ps -eo args | grep -oE -- '--audit(-mirror)? [^ ]+' | sort -u`,
+      //
+      // `|| true` 是必须的：grep 一条都没匹配上时退出 1，而「一条申报都没有」
+      // 是这条链路的一种**观察**（下面走 skip 分支），不是采集失败。少了它，
+      // 「没部署镜像」会被报成「读不到搬运现场」。
+      `ps -eo args | grep -oE -- '--audit(-mirror)? [^ ]+' | sort -u || true`,
     ])
     if (declared.code !== 0) {
       return {
@@ -614,23 +618,35 @@ export class FleetDriver implements AcceptanceDriver {
         stderr: 'pipe',
       },
     )
-    const [stdout, stderr] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ])
+    // 计时器必须**在等两条流之前**装上：远端挂住时 `.text()` 就已经不返回了，
+    // 装在它们后面等于这个超时永远没有机会开始计时。
+    let timedOut = false
     const timer =
       timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
+            timedOut = true
             child.kill('SIGKILL')
           }, timeoutMs)
+    let stdout: string
+    let stderr: string
     let code: number
     try {
+      ;[stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
       code = await child.exited
     } finally {
       if (timer !== undefined) clearTimeout(timer)
     }
-    return { code, stdout, stderr }
+    return {
+      code,
+      stdout,
+      stderr: timedOut
+        ? `${stderr}\n[acceptance] ssh ${host.ssh} 超时 ${String(timeoutMs)}ms，已 SIGKILL`
+        : stderr,
+    }
   }
 }
 
