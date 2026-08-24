@@ -82,9 +82,21 @@ export interface LocalNodeHandle extends NodeHandle {
   restart(overrides?: Partial<NodeSpec>): Promise<LocalNodeHandle>
 }
 
+/**
+ * 本地腿唯一缺的那一项，以及为什么缺 —— 这段理由本身是这套件里被引用最多的
+ * 一条取舍，所以它必须出现在报告里而不是只在注释里。
+ */
+const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
+  [
+    'mirror-transport',
+    '审计镜像的搬运需要 systemd 定时器 + 隧道 + 源与镜像两台机器，本地腿三个前提一个都不具备；用一次 cp 冒充会得到一条永远绿的场景，而绿的那一刻恰好证明不了任何事 —— 宁可空着',
+  ],
+])
+
 export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
+  readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
 
   async startNode(
     ctx: ScenarioContext,

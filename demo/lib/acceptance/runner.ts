@@ -117,7 +117,12 @@ export async function runScenario(
       durationMs: 0,
       actual: '未执行',
       evidence: [],
-      skipReason: `驱动 ${driver.target} 缺少能力: ${missing.join(', ')}`,
+      skipReason: `驱动 ${driver.target} 缺少能力: ${missing
+        .map(c => {
+          const why = driver.capabilityGaps?.get(c)
+          return why === undefined ? c : `${c}（${why}）`
+        })
+        .join('; ')}`,
       driverCalls: [],
     }
   }

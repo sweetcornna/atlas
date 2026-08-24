@@ -134,6 +134,18 @@ export type DriverCapability =
    */
   | 'local-ca-fixture'
   /**
+   * 能观察「审计镜像的**搬运**那一半」：控制台机器上的定时器、拉取服务的
+   * 退出码、镜像文件本身，以及源节点上的权威副本。
+   *
+   * 真机腿有（四条 `qianmo-mirror@<节点>` user-scope 单元 + 隧道 + 两台机器）；
+   * 本地腿一台机器、没有隧道、没有单元文件，三个前提一个都不成立 —— 那正是
+   * `audit/mirror-pull-not-constructible` 在本地腿 skip 的**正当**理由。
+   *
+   * 单独成一项能力而不是挂 `read-node-files`：这条要读的是**控制台主机**上的
+   * 东西，而驱动此前根本没有「控制台主机」这个概念（issue #62）。
+   */
+  | 'mirror-transport'
+  /**
    * 能读**本仓库源码**（静态断言用，两个目标都有）。
    *
    * 少数场景断言的是「代码里只有一处按 trust 分支」「NoticeTrust 是两值封闭
@@ -391,6 +403,14 @@ export type DialAuth =
 export interface AcceptanceDriver {
   readonly target: Target
   readonly capabilities: ReadonlySet<DriverCapability>
+  /**
+   * 每个**没有**的能力为什么没有，一句话。runner 把它拼进 skip 理由。
+   *
+   * 没有它的时候，报告里那行只有「驱动 fleet 缺少能力: spawn-node」——
+   * 读的人无从判断这是「这条腿天然做不到、如实跳过」还是「谁忘了实现」。
+   * 两个驱动的头注里本来就写着这些理由，这个字段只是把它们送到报告里。
+   */
+  readonly capabilityGaps?: ReadonlyMap<DriverCapability, string>
   /** 起一个节点（真机驱动上是「附着到已有节点」，见各实现的注释）。 */
   startNode(ctx: ScenarioContext, spec: NodeSpec): Promise<NodeHandle>
   stopNode(node: NodeHandle): Promise<void>
@@ -418,12 +438,67 @@ export interface AcceptanceDriver {
   /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
   /**
+   * 读一次「审计镜像搬运」的现场。**只有声明了 `mirror-transport` 的驱动才
+   * 实现它** —— 场景靠能力差集被 skip，走不到这里。
+   */
+  inspectMirrorTransport?(): Promise<MirrorTransportReport>
+  /**
    * 在目标机上开一个**一次性**的 CLI 执行位置。
    *
    * 清理登记在 `ctx.cleanup` 上，runner 在 `finally` 里跑（超时也会跑）。
    * `nodeName` 只用来在舰队里挑一台机器；本地驱动忽略它。
    */
   execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost>
+}
+
+/**
+ * 一条节点的审计镜像搬运现场（issue #62）。
+ *
+ * 全部字段都是**观察**，不是判定 —— 取不到就是 `undefined`，由场景决定
+ * 「取不到」意味着红还是跳过。驱动不许在这里替场景下结论。
+ */
+export interface MirrorTransportUnit {
+  readonly node: string
+  /** 控制台申报的最大滞后（分钟），从跑着的控制台命令行上读，不是常数。 */
+  readonly maxLagMinutes?: number
+  /** systemd 定时器上次触发的时间（目标机的表述原文，进证据用）。 */
+  readonly lastTriggerAt?: string
+  /** 同一个时刻的 Unix 秒，**由目标机自己换算**（见驱动里那段注释）。 */
+  readonly lastTriggerSec?: number
+  /** 上一次拉取服务的退出码。 */
+  readonly serviceExitCode?: number
+  /** 上一次拉取服务的 systemd `Result`（`success` / `exit-code` / …）。 */
+  readonly serviceResult?: string
+  /** 镜像文件在控制台机器上的路径。 */
+  readonly mirrorPath?: string
+  /** 镜像文件 mtime（Unix 秒，**控制台机器的钟**）。 */
+  readonly mirrorMtimeSec?: number
+  readonly mirrorBytes?: number
+  /** 镜像文件的 md5。 */
+  readonly mirrorHash?: string
+  /** 源节点上权威副本的字节数。 */
+  readonly authoritativeBytes?: number
+  /**
+   * 权威副本**前 `mirrorBytes` 个字节**的 md5。
+   *
+   * 比「整份哈希相等」更准：审计链是只追加的，两次采样之间源端完全可能又写
+   * 了几条，那时整份哈希本来就该不同。前缀相等才是「搬对了」的不变式。
+   */
+  readonly authoritativePrefixHash?: string
+  /** 权威副本整份的 md5（等号成不成立是留痕，不是承重断言）。 */
+  readonly authoritativeHash?: string
+  /** 采集时**控制台机器**的 Unix 秒 —— 算新鲜度必须用它，不是 runner 的钟。 */
+  readonly observedAtSec?: number
+  /** 采集过程的原文（命令输出），红了靠它排查。 */
+  readonly raw: string
+}
+
+export interface MirrorTransportReport {
+  /** 控制台主机的标识，进证据用。 */
+  readonly consoleHost: string
+  readonly units: readonly MirrorTransportUnit[]
+  /** 采集本身失败时的原文（此时 `units` 可能是空的）。 */
+  readonly failure?: string
 }
 
 /** 整轮运行的汇总（写进 NDJSON 的最后一行 + 汇总表表头）。 */

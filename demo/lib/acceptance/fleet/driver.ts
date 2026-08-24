@@ -45,11 +45,14 @@ import type {
   DriverCapability,
   ExecHost,
   ExecResult,
+  MirrorTransportReport,
+  MirrorTransportUnit,
   NodeHandle,
   NodeSpec,
   ScenarioContext,
 } from '../types.js'
 import { rawDial } from '../local/dial.js'
+import { TRAIL_PATH } from '../observe.js'
 
 /**
  * 一次性目录的家目录相对前缀。
@@ -92,6 +95,14 @@ export interface FleetHost {
 
 export interface FleetConfig {
   readonly hosts: readonly FleetHost[]
+  /**
+   * 控制台机器的 SSH 目标（`workbench-iap`）。
+   *
+   * 驱动此前根本没有「控制台主机」这个概念，而审计镜像的**搬运**那一半全部
+   * 发生在它上面：四条 `qianmo-mirror@<节点>` user-scope 单元、镜像文件、
+   * 以及跑着的控制台自己申报的滞后上限（issue #62）。
+   */
+  readonly consoleHost?: string
   /** 传输层 PSK。按节点分的话给一张表。 */
   readonly psk: Readonly<Record<string, string>>
   /** 允许重启节点（恢复维度需要）。默认关。 */
@@ -143,9 +154,44 @@ interface FleetNodeHandle extends NodeHandle {
   readonly host: FleetHost
 }
 
+/**
+ * 真机腿缺的那几项，以及为什么缺。与本文件头注那张表同一批理由 —— 写在这里
+ * 是为了让它们进报告：只印一句「缺少能力: spawn-node」的 skip，读的人分不出
+ * 「这条腿天然做不到」和「谁忘了实现」。
+ */
+const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
+  [
+    'spawn-node',
+    '舰队节点是长期部署的常驻，验收不该按任意参数另起一个：重起会打断内测使用者，也会污染那条节点的审计链',
+  ],
+  [
+    'spawn-console',
+    '控制台既是部署好的、又只经隧道可达，「起一个自己的控制台再打它的端口」两头都不成立',
+  ],
+  [
+    'restart-node',
+    '重启真机节点会打断内测使用者，并在那条节点的审计链上留下一次计划外中断',
+  ],
+  ['mutate-node-env', '改凭据/环境要重启，与 restart-node 同一条理由'],
+  [
+    'run-launcher',
+    '启动器脚本在部署时跑过；验收期再跑一次等于重新部署一遍生产环境',
+  ],
+  [
+    'stub-upstream',
+    '真机打真实模型端点，那正是这条腿的意义；插一个假上游会把它变成一次慢十倍的本地跑',
+  ],
+  [
+    'local-ca-fixture',
+    'CA 目录与证书是在 runner 的文件系统上造的，而被测二进制在四台节点上 —— --cert/--trust-ca 指过去是一条不存在的路径',
+  ],
+  ['mirror-transport', '没有配置控制台主机（QIANMO_ACCEPTANCE_CONSOLE_HOST）'],
+])
+
 export class FleetDriver implements AcceptanceDriver {
   readonly target = 'fleet' as const
   readonly capabilities: ReadonlySet<DriverCapability>
+  readonly capabilityGaps = FLEET_CAPABILITY_GAPS
   readonly #config: FleetConfig
   /** `execHost` 不点名时的轮转游标 —— 见那个方法的注释。 */
   #execHostCursor = 0
@@ -162,6 +208,7 @@ export class FleetDriver implements AcceptanceDriver {
       'read-repo-source',
     ]
     if (config.allowRestart === true) caps.push('restart-node')
+    if (config.consoleHost !== undefined) caps.push('mirror-transport')
     this.capabilities = new Set(caps)
   }
 
@@ -378,6 +425,134 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   /**
+   * 读一次审计镜像搬运的现场（issue #62）。
+   *
+   * ## 三个「不要写死」
+   *
+   * ① **镜像路径与滞后上限从跑着的控制台命令行上读**，不是常数。控制台是
+   *    `--audit <节点>=<路径>` + `--audit-mirror <节点>=<分钟>` 申报的，那条
+   *    命令行才是真源；抄一份进套件，改了部署这边不会红，只会开始说谎。
+   * ② **新鲜度用控制台机器自己的钟算**（同一次采集里取 `date +%s`）。拿
+   *    runner 的钟去减目标机的 mtime，跨时区或时钟漂移会造出假红/假绿。
+   * ③ **权威副本比的是前缀哈希**，不是整份相等。审计链只追加，采样之间源端
+   *    完全可能又写了几条 —— 那时整份哈希本来就该不同，而搬运仍然是对的。
+   *
+   * 采集全程只读：`systemctl show` / `stat` / `md5sum` / `head -c`。
+   */
+  async inspectMirrorTransport(): Promise<MirrorTransportReport> {
+    const consoleHost = this.#config.consoleHost
+    if (consoleHost === undefined) {
+      throw new Error('inspectMirrorTransport 需要 consoleHost')
+    }
+    const consoleSsh: FleetHost = {
+      ssh: consoleHost,
+      node: 'console',
+      tunnelPort: 0,
+      endpoint: '',
+      configRoot: '',
+      occPath: '',
+    }
+
+    // 一次往返把控制台侧的东西全取回来：跑着的控制台命令行 + 每台的单元状态
+    // + 镜像文件的 stat/md5 + 目标机的钟。
+    const declared = await this.#ssh(consoleSsh, [
+      `date +%s`,
+      // 申报是成对的 `--audit <n>=<路径>` / `--audit-mirror <n>=<分钟>`，从
+      // **跑着的控制台**的命令行上读 —— 那条命令行才是真源，抄一份进套件只会
+      // 在部署改了之后开始说谎。
+      `ps -eo args | grep -oE -- '--audit(-mirror)? [^ ]+' | sort -u`,
+    ])
+    if (declared.code !== 0) {
+      return {
+        consoleHost,
+        units: [],
+        failure: `读控制台申报失败 (${declared.code}): ${declared.stderr.slice(0, 400)}`,
+      }
+    }
+    const declaredLines = declared.stdout.split('\n')
+    const observedAtSec = Number.parseInt(declaredLines[0] ?? '', 10)
+    const paths = new Map<string, string>()
+    const lags = new Map<string, number>()
+    for (const line of declaredLines.slice(1)) {
+      const mirror = /^--audit-mirror (\S+)=(\d+)$/.exec(line.trim())
+      if (mirror !== null && mirror[1] !== undefined) {
+        lags.set(mirror[1], Number.parseInt(mirror[2] ?? '', 10))
+        continue
+      }
+      const audit = /^--audit (\S+)=(\S+)$/.exec(line.trim())
+      if (audit !== null && audit[1] !== undefined && audit[2] !== undefined) {
+        paths.set(audit[1], audit[2])
+      }
+    }
+
+    const units: MirrorTransportUnit[] = []
+    for (const host of this.#config.hosts) {
+      const mirrorPath = paths.get(host.node)
+      const quotedMirror =
+        mirrorPath === undefined ? '' : shellQuote(mirrorPath)
+      // 每个值单独一行 `键=值`：`stat -c` 的 `%n` 是**文件名**不是换行，一行
+      // 塞两个字段会拼出 `mirror-mtime=…<路径>mirror-bytes=…` 这种读不回来的
+      // 东西。时间戳让**目标机自己**把 systemd 那串人话转成 epoch —— 那串正是
+      // 它打印的，它一定认得，而在 runner 上 `Date.parse` 一个带时区缩写的
+      // systemd 时间串是另一条会静默给出 NaN 的路。
+      const unit = `qianmo-mirror@${host.node}`
+      const probe = await this.#ssh(consoleSsh, [
+        `lt="$(systemctl --user show '${unit}.timer' -p LastTriggerUSec --value 2>/dev/null)"`,
+        `printf 'last-trigger-at=%s\n' "$lt"`,
+        `printf 'last-trigger-sec=%s\n' "$(date -d "$lt" +%s 2>/dev/null)"`,
+        `systemctl --user show '${unit}.service' -p ExecMainStatus -p Result 2>/dev/null || true`,
+        ...(mirrorPath === undefined
+          ? []
+          : [
+              `printf 'mirror-mtime=%s\n' "$(stat -c '%Y' -- '${quotedMirror}' 2>/dev/null)"`,
+              `printf 'mirror-bytes=%s\n' "$(stat -c '%s' -- '${quotedMirror}' 2>/dev/null)"`,
+              `printf 'mirror-md5=%s\n' "$(md5sum -- '${quotedMirror}' 2>/dev/null | cut -d' ' -f1)"`,
+            ]),
+      ])
+      const mirrorBytes = intField(probe.stdout, 'mirror-bytes')
+      // 权威副本在**节点**上，所以这一段要连到那台机器上去问。
+      const authority =
+        mirrorBytes === undefined
+          ? { code: 0, stdout: '', stderr: '' }
+          : await this.#ssh(host, [
+              `t='${shellQuote(`${host.configRoot}/${TRAIL_PATH}`)}'`,
+              `printf 'authoritative-bytes=%s\n' "$(stat -c '%s' -- "$t" 2>/dev/null)"`,
+              `printf 'authoritative-md5=%s\n' "$(md5sum -- "$t" 2>/dev/null | cut -d' ' -f1)"`,
+              `printf 'authoritative-prefix-md5=%s\n' "$(head -c ${mirrorBytes} -- "$t" 2>/dev/null | md5sum | cut -d' ' -f1)"`,
+            ])
+      units.push({
+        node: host.node,
+        ...(lags.get(host.node) === undefined
+          ? {}
+          : { maxLagMinutes: lags.get(host.node) }),
+        ...(mirrorPath === undefined ? {} : { mirrorPath }),
+        ...pick('lastTriggerAt', strField(probe.stdout, 'last-trigger-at')),
+        ...pick('lastTriggerSec', intField(probe.stdout, 'last-trigger-sec')),
+        ...pick('serviceExitCode', intField(probe.stdout, 'ExecMainStatus')),
+        ...pick('serviceResult', strField(probe.stdout, 'Result')),
+        ...pick('mirrorMtimeSec', intField(probe.stdout, 'mirror-mtime')),
+        ...pick('mirrorBytes', mirrorBytes),
+        ...pick('mirrorHash', strField(probe.stdout, 'mirror-md5')),
+        ...pick(
+          'authoritativeBytes',
+          intField(authority.stdout, 'authoritative-bytes'),
+        ),
+        ...pick(
+          'authoritativeHash',
+          strField(authority.stdout, 'authoritative-md5'),
+        ),
+        ...pick(
+          'authoritativePrefixHash',
+          strField(authority.stdout, 'authoritative-prefix-md5'),
+        ),
+        ...(Number.isFinite(observedAtSec) ? { observedAtSec } : {}),
+        raw: `${probe.stdout}\n${authority.stdout}`.trim(),
+      })
+    }
+    return { consoleHost, units }
+  }
+
+  /**
    * 目标机上找一个此刻没人在听的高位端口。
    *
    * 用 `ss` 的全量快照做差集而不是逐个口去问：一次 SSH 往返就够，而逐个问是
@@ -456,10 +631,43 @@ export class FleetDriver implements AcceptanceDriver {
   }
 }
 
+/** 只在值存在时给出这一项 —— 让 `exactOptionalPropertyTypes` 下的拼装保持干净。 */
+function pick<K extends string, V>(
+  key: K,
+  value: V | undefined,
+): Record<K, V> | Record<string, never> {
+  return value === undefined
+    ? {}
+    : ({ [key]: value } as unknown as Record<K, V>)
+}
+
+/** 从 `key=value` 行里取一个字符串字段；取不到或为空回 undefined。 */
+function strField(text: string, key: string): string | undefined {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith(`${key}=`)) continue
+    const value = trimmed.slice(key.length + 1).trim()
+    return value === '' ? undefined : value
+  }
+  return undefined
+}
+
+/** 同上，但要求它是个整数。**解析不出来一律 undefined，不要退回 0** —— 那会
+ * 让「没取到」和「真的是 0」在断言里长得一模一样，而这两件事的判定相反。 */
+function intField(text: string, key: string): number | undefined {
+  const raw = strField(text, key)
+  if (raw === undefined) return undefined
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 /** 单引号内的转义 —— 远端命令一律用 `'…'` 包，内部的 `'` 按 POSIX 拼法断开。 */
 function shellQuote(value: string): string {
   return value.replaceAll("'", `'\\''`)
 }
+
+/** 控制台机器的默认 SSH 目标 —— 审计镜像的搬运那一半全发生在它上面。 */
+export const DEFAULT_CONSOLE_HOST = 'workbench-iap'
 
 /** 节点名 → 环境变量后缀（`beta-1` → `BETA_1`）。 */
 function envSuffix(node: string): string {
@@ -497,6 +705,10 @@ export function fleetConfigFromEnv(
   repoDirOverride?: string,
   allowRestart = false,
 ): FleetConfig {
+  // 控制台主机可关：`QIANMO_ACCEPTANCE_CONSOLE_HOST=` 置空就等于「这一轮没有
+  // 控制台机器」，靠它的场景据此老实 skip 而不是红。
+  const consoleHostRaw =
+    process.env.QIANMO_ACCEPTANCE_CONSOLE_HOST ?? DEFAULT_CONSOLE_HOST
   const psk: Record<string, string> = {}
   const dialHost = process.env.QIANMO_ACCEPTANCE_DIAL_HOST ?? '127.0.0.1'
   const hosts = DEFAULT_FLEET_HOSTS.map(host => {
@@ -514,5 +726,10 @@ export function fleetConfigFromEnv(
       `ws://${dialHost}:${host.tunnelPort}`
     return { ...host, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
   })
-  return { hosts, psk, allowRestart }
+  return {
+    hosts,
+    psk,
+    allowRestart,
+    ...(consoleHostRaw === '' ? {} : { consoleHost: consoleHostRaw }),
+  }
 }
