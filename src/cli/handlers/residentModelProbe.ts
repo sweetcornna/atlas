@@ -34,6 +34,7 @@
  * process-global module mock.
  */
 
+import { invokedBinName } from '../../constants/brand.js'
 import { buildProviderResourceURL } from '../../utils/network/providerUrl.js'
 
 /** Where one probe request goes, and what it carries. */
@@ -51,6 +52,21 @@ export type ResidentModelProbeTarget = {
 export type ResidentModelProbeVerdict =
   /** Nothing was asked, and the reason is not a fault. */
   | { readonly status: 'skipped'; readonly detail: string }
+  /**
+   * Nothing was asked because the probe could not be *built* — an exception,
+   * not an answer.
+   *
+   * Split out of `skipped` on purpose. `skipped` is a **decision** this file
+   * made and can defend ("Bedrock signs through its own credential chain",
+   * "no OPENAI_API_KEY to test"); it is an expected outcome on healthy nodes,
+   * so it stays silent. This one is the diagnostic failing at its own job,
+   * which is never expected and never self-evident — and folding the two
+   * together is exactly how the first version of this probe shipped dead:
+   * `residentModelProbeInputs()` threw on every real node, the throw became a
+   * `skipped` nobody printed, and a check written to end silent failures spent
+   * its whole life failing silently.
+   */
+  | { readonly status: 'unavailable'; readonly detail: string }
   /** The endpoint answered something that is not a credential refusal. */
   | { readonly status: 'reachable'; readonly httpStatus: number }
   /** 401 / 403 / 407 — the credential itself was rejected. */
@@ -77,8 +93,22 @@ export type ResidentModelProbeInputs = {
    * `getAuthHeaders()` for the Anthropic wire: `x-api-key` for a key,
    * `Authorization: Bearer` plus the OAuth beta header for a subscription.
    * Empty means "nothing usable", which the resolver reports as skipped.
+   *
+   * **A thunk, not a value, and the difference is not style.** Resolved
+   * eagerly it ran ahead of the provider switch below, so every lane paid for
+   * the Anthropic credential stack whether or not it speaks that wire — and
+   * that stack throws for reasons of its own. Demonstrated: an
+   * OpenAI-lane node holding a perfectly good `OPENAI_API_KEY`, on a machine
+   * with `CI` set and no `ANTHROPIC_API_KEY`, has `getAnthropicApiKeyWithSource()`
+   * throw `ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required`
+   * from a branch that exists only for CI — and the probe that was going to
+   * check the OpenAI key never gets built. Deferred, only the lane that needs
+   * these headers can be blinded by them.
+   *
+   * The resolver stays pure in the sense that matters: it still reads nothing
+   * this object did not hand it.
    */
-  readonly anthropicAuthHeaders: Readonly<Record<string, string>>
+  readonly anthropicAuthHeaders: () => Readonly<Record<string, string>>
 }
 
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
@@ -225,7 +255,7 @@ export function resolveResidentModelProbeTarget(
   // gateway, DeepSeek's `/anthropic` route, OpenCode's `/messages` lane. The
   // auth headers are whatever this session would really send, resolved by the
   // caller, so a mirrored credential is tested as the mirror wrote it.
-  const headers = input.anthropicAuthHeaders
+  const headers = input.anthropicAuthHeaders()
   if (Object.keys(headers).length === 0) {
     return skip('no Anthropic-wire credential to test')
   }
@@ -337,6 +367,46 @@ export function warnRefusedModelCredentials(
       'audited — and then produce nothing until the inactivity watchdog fails it. ' +
       'The ACP child inherits this process environment, so the fix has to be in place before the ' +
       'resident starts: rotate the key (or re-login) and restart this node.',
+  )
+  return true
+}
+
+/**
+ * Say, once at startup, that the credential check itself did not run.
+ *
+ * **`unavailable` is not `unreachable`, and the difference is the whole point
+ * of having two statuses.** `unreachable` means the question was asked and the
+ * endpoint did not answer — routine on a node a supervisor starts before the
+ * network is up, so it stays silent for the reason
+ * {@link warnRefusedModelCredentials} gives. `unavailable` means the question
+ * was never asked: no request left this process, and the operator's mental
+ * model ("startup would have told me if the credential were dead") is wrong
+ * without anything on the node saying so.
+ *
+ * That is the same shape as the fault this whole file exists to end (issue
+ * #37), one level up — so it gets a line, and it is worded to say what the
+ * node does *not* know rather than to imply a verdict it never reached.
+ *
+ * Returns whether it warned, so the caller can assert on it.
+ */
+export function warnUnavailableModelCredentialProbe(
+  verdict: ResidentModelProbeVerdict,
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): boolean {
+  if (verdict.status !== 'unavailable') return false
+  warn(
+    // `Error.message` usually ends in a full stop of its own and sometimes
+    // does not; the line reads as a sentence either way only if exactly one
+    // survives.
+    `[resident] the startup model-credential check could not run: ${verdict.detail.replace(/[.\s]+$/, '')}. ` +
+      'Nothing was sent, so this node does NOT know whether its credential is accepted — a revoked ' +
+      'one would still let it print a clean banner, admit tasks and receipt them, and only surface ' +
+      'as an inactivity timeout two minutes into each one. This is different from an endpoint that ' +
+      'did not answer, which is normal at boot and stays silent on purpose: here nobody asked. ' +
+      `Run \`${invokedBinName()} auth status\` with this node's OCC_CONFIG_DIR to check the ` +
+      'credential by hand until this is fixed.',
   )
   return true
 }

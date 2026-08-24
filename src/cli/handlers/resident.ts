@@ -66,6 +66,7 @@ import {
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
+  warnUnavailableModelCredentialProbe,
   type ResidentModelProbeInputs,
   type ResidentModelProbeVerdict,
 } from './residentModelProbe.js'
@@ -662,6 +663,54 @@ export function assertResidentRuntime(
 }
 
 /**
+ * Open this process's config gate (issue #37 ①, follow-up).
+ *
+ * `qm resident` is one of the **fast paths** in `entrypoints/cli.tsx`: it is
+ * dispatched before `main.tsx` bootstraps anything, so unlike an ordinary
+ * subcommand it never passes the `enableConfigs()` the rest of the CLI relies
+ * on. Every read of a config file therefore threw `Config accessed before
+ * allowed.` — and because this handler's two startup credential checks are the
+ * only things here that read one, and both of them catch, the whole credential
+ * diagnosis layer was dead code in the shipped binary while every unit test
+ * stayed green (they inject their inputs and never reach these calls).
+ *
+ * Why here rather than in the dispatch table next to the seven sibling
+ * branches that each call `enableConfigs()` inline: this is a property of the
+ * handler, not of the layer. None of the other `qm` subcommands (`audit`,
+ * `console`, `resident-wake`, `ca`, `cert`, `watch`) touches config or auth at
+ * all, and the comment on the `--daemon-worker` fast path in that same file
+ * states the rule this follows — that layer stays lean, and "if a worker kind
+ * needs configs/auth … it calls them inside its run() fn". `cli/handlers/
+ * import.ts` already does exactly this, for the same reason.
+ *
+ * Never fatal. `enableConfigs()` validates the global config file and throws on
+ * a corrupt one; taking a node down over that would make a *diagnostic* into an
+ * admission decision, which is the rule this file follows everywhere else. A
+ * node that comes up without the gate open still works — it simply cannot check
+ * its own credential, and {@link warnUnavailableModelCredentialProbe} then says
+ * so instead of leaving `<node>.err` empty.
+ */
+async function enableResidentConfigAccess(
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): Promise<boolean> {
+  try {
+    const { enableConfigs } = await import('../../utils/config/config.js')
+    enableConfigs()
+    return true
+  } catch (error) {
+    warn(
+      `[resident] could not open this node's config store: ${formatResidentError(error)}\n` +
+        '[resident] startup continues, but this node cannot read its own stored login, so the ' +
+        'credential checks below are answering from the environment alone and may be wrong. ' +
+        "The global config file under this node's OCC_CONFIG_DIR is where to look.",
+    )
+    return false
+  }
+}
+
+/**
  * `--help` / `-h` 出现在任何位置都算请求帮助。
  *
  * 位置不限，是因为「敲到一半发现忘了选项名」正是人会做的事：
@@ -1162,16 +1211,26 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
   return modelProbeEnvironment
 }
 
-/** Read this process's provider / model / auth-header resolution, once. */
+/**
+ * Read this process's provider / model / auth-header resolution, once.
+ *
+ * Provider and model are read eagerly because every lane needs both. The auth
+ * headers are **not**: they are handed over as a thunk so that only a node
+ * actually speaking the Anthropic wire pays for the Anthropic credential
+ * stack. See the field's own comment in `residentModelProbe.ts` for the
+ * failure that shape prevents.
+ */
 export function residentModelProbeInputs(
   environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
 ): ResidentModelProbeInputs {
-  const auth = environment.getAuthHeaders()
   return {
     provider: environment.getAPIProvider(),
     model: environment.getSmallFastModel(),
     env: process.env,
-    anthropicAuthHeaders: auth.error === undefined ? auth.headers : {},
+    anthropicAuthHeaders: () => {
+      const auth = environment.getAuthHeaders()
+      return auth.error === undefined ? auth.headers : {}
+    },
   }
 }
 
@@ -1188,11 +1247,18 @@ export function residentModelProbeInputs(
  * Skipped when no credential is visible at all: {@link
  * warnMissingModelCredentials} has already said so in more useful words, and
  * two warnings about one fault teach people to read neither.
+ *
+ * `environment` exists for one test and says so: the only step here that
+ * touches the live process is {@link residentModelProbeInputs}, and it is the
+ * step that threw on every real node in the first shipped version. Injecting a
+ * throwing one is the only way to exercise the catch below without breaking
+ * the process the test runs in.
  */
 export async function runResidentModelCredentialProbe(
   options: {
     readonly hasCredential?: boolean
     readonly inputs?: ResidentModelProbeInputs
+    readonly environment?: ModelProbeEnvironment
     readonly fetchImpl?: typeof fetch
     readonly timeoutMs?: number
     readonly warn?: (message: string) => void
@@ -1204,7 +1270,7 @@ export async function runResidentModelCredentialProbe(
       return { status: 'skipped', detail: 'no model credential is visible' }
     }
     const target = resolveResidentModelProbeTarget(
-      options.inputs ?? residentModelProbeInputs(),
+      options.inputs ?? residentModelProbeInputs(options.environment),
     )
     if ('status' in target) return target
     const verdict = await probeResidentModel(target, {
@@ -1221,12 +1287,23 @@ export async function runResidentModelCredentialProbe(
     )
     return verdict
   } catch (error) {
-    // A probe that cannot even be built is not a fault of the node. Reported
-    // as `skipped` rather than swallowed so a caller can still see it.
-    return {
-      status: 'skipped',
+    // A probe that cannot even be built is not a fault of the node — but it is
+    // a fault, and it used to be reported as `skipped` on the theory that "a
+    // caller can still see it". No caller ever looked, so for the whole of
+    // PR #50's life this branch was where the check went to die quietly: every
+    // real node threw here, and `<node>.err` stayed at zero bytes. It now has
+    // its own status and prints one line, because a diagnostic that fails
+    // silently is worth strictly less than no diagnostic at all — it also
+    // convinces the operator the question was asked and answered.
+    const verdict = {
+      status: 'unavailable',
       detail: error instanceof Error ? error.message : String(error),
-    }
+    } as const
+    warnUnavailableModelCredentialProbe(
+      verdict,
+      ...(options.warn === undefined ? [] : ([options.warn] as const)),
+    )
+    return verdict
   }
 }
 
@@ -1463,6 +1540,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     return
   }
   assertResidentRuntime()
+  // Before anything reads a credential — see the function's own comment for why
+  // this is the handler's job and not the dispatch table's.
+  await enableResidentConfigAccess()
   const config = parseResidentArgs(args)
   const psk = pskFromEnv()
   const activity =
