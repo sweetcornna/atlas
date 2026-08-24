@@ -565,6 +565,37 @@ export function parseResidentArgs(
   if (new Set(agents.map(agent => agent.agent)).size !== agents.length) {
     throw new Error('resident agent names must be unique')
   }
+  // Repeating `--trust` for one node with two *different* keys is refused;
+  // repeating it with the same key is not. A node publishes exactly one key,
+  // so the second spelling is a contradiction rather than an update, while an
+  // exact repeat is just a list assembled from two places that agree.
+  //
+  // `StaticPublicKeyDirectory` refuses the same thing, and this check is not
+  // redundant with it. It names the flag and the count, and it runs before the
+  // directory is chosen — under `--trust-ca` these same entries go to
+  // `CertificateDirectory`, which would swallow the conflict just as quietly.
+  //
+  // Left silent the diagnosis points at the wrong file entirely: every check
+  // before the signature still passes, so each token that should have worked
+  // comes back `capability signature does not verify`, and the search starts
+  // in the Ed25519 path instead of in the command line. The acceptance suite
+  // lost a round to exactly this, with six red rows to show for it.
+  const trustedKeysByNode = new Map<string, Set<string>>()
+  for (const [trustedNode, publicKey] of trusted) {
+    const keys = trustedKeysByNode.get(trustedNode)
+    if (keys === undefined)
+      trustedKeysByNode.set(trustedNode, new Set([publicKey]))
+    else keys.add(publicKey)
+  }
+  for (const [trustedNode, keys] of trustedKeysByNode) {
+    if (keys.size === 1) continue
+    const count = trusted.filter(([name]) => name === trustedNode).length
+    throw new Error(
+      `--trust was given ${count} times for node ${trustedNode} with` +
+        ` ${keys.size} different public keys; a node publishes exactly one` +
+        ' key, so keep the right entry and drop the rest',
+    )
+  }
   if (port !== undefined && unix !== undefined) {
     throw new Error('resident takes either --port or --unix, not both')
   }

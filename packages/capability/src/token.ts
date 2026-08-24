@@ -57,8 +57,41 @@ export interface PublicKeyDirectory {
 export class StaticPublicKeyDirectory implements PublicKeyDirectory {
   readonly #keys = new Map<string, string>()
 
+  /**
+   * Two different keys under one node name is a contradiction, not an update,
+   * and last-write-wins is the worst available way to settle it.
+   *
+   * Every check that runs *before* the signature — `aud` / `sub` / `taskId`,
+   * the clock, rule S-1 — still passes on the key that won, so the only
+   * symptom left is `capability signature does not verify` on tokens that were
+   * in fact minted correctly. That reads as a broken Ed25519 implementation
+   * rather than as a name written down twice, and the hunt goes into the
+   * verifier. Refusing the list outright is the difference between a
+   * one-line diagnosis and a day in the wrong file.
+   *
+   * The same name with the *same* key is not a conflict: that is one list
+   * stitched together from two places that agree, and refusing it would only
+   * push deduplication onto every caller.
+   *
+   * {@link put} still replaces without complaint — that is the refresh path a
+   * registry-backed cache needs, where a new key genuinely supersedes the old
+   * one. Only the constructor, which is one operator writing one list, fails
+   * fast.
+   */
   constructor(entries: Iterable<readonly [string, string]> = []) {
-    for (const [node, key] of entries) this.#keys.set(node, key)
+    const all = [...entries]
+    for (const [node, key] of all) {
+      const existing = this.#keys.get(node)
+      if (existing !== undefined && existing !== key) {
+        const count = all.filter(([name]) => name === node).length
+        throw new Error(
+          `conflicting public keys for node ${node}: ${count} entries name` +
+            ' it and they do not agree. A node publishes exactly one key —' +
+            ' keep the right entry and drop the rest.',
+        )
+      }
+      this.#keys.set(node, key)
+    }
   }
 
   publicKeyOf(node: string): string | null {
