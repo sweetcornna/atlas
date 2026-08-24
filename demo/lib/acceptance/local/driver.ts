@@ -57,6 +57,7 @@ export const WRONG_PSK = 'qianmo-acceptance-psk-9999999999'
 export const TIMINGS_FILE = 'acceptance-timings.jsonl'
 
 const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
+  'attach-node',
   'spawn-node',
   'spawn-console',
   'restart-node',
@@ -241,10 +242,11 @@ export class LocalDriver implements AcceptanceDriver {
   ): Promise<DialProbe> {
     return await rawDial({
       url: node.endpoint,
-      node: dialerNameOf(opts),
+      node: opts.nodeName ?? dialerNameOf(opts),
       auth: toRawAuth(opts),
       sendBeforeAuth: opts.sendBeforeAuth,
       sendAfterReady: opts.send,
+      settleMs: opts.settleMs,
       timeoutMs: opts.timeoutMs,
     })
   }

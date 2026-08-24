@@ -65,8 +65,23 @@ export interface FleetHost {
   readonly ssh: string
   /** 节点名，如 `beta-1`。 */
   readonly node: string
-  /** 传输层地址，如 `ws://10.0.0.2:38625`。 */
+  /**
+   * 拨号地址。**这是 runner 那一侧看到的地址，不是节点自己看到的。**
+   *
+   * 节点在自己机器上听 `127.0.0.1:38625`（四台一模一样），所以直接写那个值
+   * 等于让 runner 去拨自己的 38625 —— 那正是 issue #61 第 3 条：四台共用一个
+   * 常量、从舰队外拨永远拨不到任何一台。数据面本身是好的，缺的只是**按主机
+   * 分配的端口**。见 {@link FleetHost.tunnelPort} 与 {@link fleetConfigFromEnv}。
+   */
   readonly endpoint: string
+  /**
+   * 这台节点在**控制台机器 H** 上的隧道入口端口（38631–38634，一台一个）。
+   *
+   * 数据面是 H 单点辐射：H 上四条 `qianmo-tunnel@<节点>` 把
+   * `127.0.0.1:3863x` 转到各自节点的 38625。所以「从舰队外拨得到某台节点」
+   * 等价于「能打到 H 的 3863x」。
+   */
+  readonly tunnelPort: number
   /** 节点配置根的**绝对路径**，如 `/home/cornna/qianmo-beta/nodes/beta-1/config`。 */
   readonly configRoot: string
   /** `dist/cli-node.js` 的绝对路径。 */
@@ -85,33 +100,41 @@ export interface FleetConfig {
   readonly sshArgs?: readonly string[]
 }
 
-/** 舰队默认拓扑。**裸名 `beta-4` 是黑洞，节点四必须用 `cornna-p12`。** */
-export const DEFAULT_FLEET_HOSTS: readonly Omit<FleetHost, 'occPath'>[] = [
+/**
+ * 舰队默认拓扑。**裸名 `beta-4` 是黑洞，节点四必须用 `cornna-p12`。**
+ *
+ * `endpoint` 不写在这里 —— 它由 {@link fleetConfigFromEnv} 按 `tunnelPort` 与
+ * 拨号主机现拼，因为「从哪儿拨」是运行环境的事实而不是拓扑的事实。
+ */
+export const DEFAULT_FLEET_HOSTS: readonly Omit<
+  FleetHost,
+  'occPath' | 'endpoint'
+>[] = [
   {
     ssh: 'cornna-p2',
     node: 'beta-1',
-    endpoint: 'ws://127.0.0.1:38625',
+    tunnelPort: 38_631,
     configRoot: '/home/cornna/qianmo-beta/nodes/beta-1/config',
     extraPath: '$HOME/.bun/bin',
   },
   {
     ssh: 'cornna-p3',
     node: 'beta-2',
-    endpoint: 'ws://127.0.0.1:38625',
+    tunnelPort: 38_632,
     configRoot: '/home/cornna/qianmo-beta/nodes/beta-2/config',
     extraPath: '$HOME/.bun/bin',
   },
   {
     ssh: 'cornna-p7',
     node: 'beta-3',
-    endpoint: 'ws://127.0.0.1:38625',
+    tunnelPort: 38_633,
     configRoot: '/home/cornna/qianmo-beta/nodes/beta-3/config',
     extraPath: '$HOME/.bun/bin',
   },
   {
     ssh: 'cornna-p12',
     node: 'beta-4',
-    endpoint: 'ws://127.0.0.1:38625',
+    tunnelPort: 38_634,
     configRoot: '/root/qianmo-beta/nodes/beta-4/config',
   },
 ]
@@ -130,6 +153,7 @@ export class FleetDriver implements AcceptanceDriver {
   constructor(config: FleetConfig) {
     this.#config = config
     const caps: DriverCapability[] = [
+      'attach-node',
       'raw-dial',
       'read-node-files',
       'exec-node-cli',
@@ -210,13 +234,14 @@ export class FleetDriver implements AcceptanceDriver {
     }
     return await rawDial({
       url: node.endpoint,
-      node: 'acceptance-probe',
+      node: opts.nodeName ?? 'acceptance-probe',
       auth:
         opts.auth.mode === 'none'
           ? { kind: 'none' }
           : { kind: 'psk', psk: opts.auth.psk === '' ? psk : opts.auth.psk },
       sendBeforeAuth: opts.sendBeforeAuth,
       sendAfterReady: opts.send,
+      settleMs: opts.settleMs,
       timeoutMs: opts.timeoutMs,
     })
   }
@@ -436,6 +461,11 @@ function shellQuote(value: string): string {
   return value.replaceAll("'", `'\\''`)
 }
 
+/** 节点名 → 环境变量后缀（`beta-1` → `BETA_1`）。 */
+function envSuffix(node: string): string {
+  return node.replaceAll('-', '_').toUpperCase()
+}
+
 /**
  * 从环境变量拼一份舰队配置。
  *
@@ -446,20 +476,43 @@ function shellQuote(value: string): string {
  * `occPath` 由各 host 的 `configRoot` 推出来，而不是拼一次再对某台机做字符串
  * 替换 —— p12 那台的家目录是 `/root` 而不是 `/home/cornna`，替换写法在新增第
  * 五台机时会静默给出一条不存在的路径。
+ *
+ * ## 拨号地址怎么定（issue #61 第 3 条）
+ *
+ * 原先四台写死同一个 `ws://127.0.0.1:38625` —— 那是**节点自己**的回环地址，
+ * 从舰队外拨等于拨 runner 自己的 38625。改成按主机的隧道端口，三级优先：
+ *
+ *   ① `QIANMO_ACCEPTANCE_ENDPOINT_<节点>`：整条 URL 直接给，最高优先。
+ *      直连节点、换了端口、走别的转发，都用这个；
+ *   ② `QIANMO_ACCEPTANCE_DIAL_HOST`：只换主机名，端口仍用各自的
+ *      `tunnelPort`。**在 H 上跑套件时不用设**（那四个口就在 H 的回环上），
+ *      从别处跑就把 `ssh -N -L 3863x:127.0.0.1:3863x <H>` 起起来再跑；
+ *   ③ 默认 `ws://127.0.0.1:<tunnelPort>`。
+ *
+ * 套件不自己去建隧道：建隧道要一个跨整轮运行的进程与它的生命周期，而
+ * 「这台 runner 怎么够得着舰队」本来就是运行环境的事，写死在套件里只会在
+ * 换一种拓扑时挡路。拨不通是**如实的红**，不是假绿 —— 那正好是这次要修的病。
  */
 export function fleetConfigFromEnv(
   repoDirOverride?: string,
   allowRestart = false,
 ): FleetConfig {
   const psk: Record<string, string> = {}
+  const dialHost = process.env.QIANMO_ACCEPTANCE_DIAL_HOST ?? '127.0.0.1'
   const hosts = DEFAULT_FLEET_HOSTS.map(host => {
-    const key = `QIANMO_ACCEPTANCE_PSK_${host.node.replaceAll('-', '_').toUpperCase()}`
-    psk[host.node] = process.env[key] ?? process.env.QIANMO_TRANSPORT_PSK ?? ''
+    const suffix = envSuffix(host.node)
+    psk[host.node] =
+      process.env[`QIANMO_ACCEPTANCE_PSK_${suffix}`] ??
+      process.env.QIANMO_TRANSPORT_PSK ??
+      ''
     // configRoot 形如 `<家目录>/qianmo-beta/nodes/<节点>/config`，仓库检出与它
     // 同在一个家目录下（`<家目录>/atlas-beta`）—— 那是 `beta-up.sh` 的部署形状。
     const home = host.configRoot.replace(/\/qianmo-beta\/.*$/, '')
     const repoDir = repoDirOverride ?? `${home}/atlas-beta`
-    return { ...host, occPath: `${repoDir}/dist/cli-node.js` }
+    const endpoint =
+      process.env[`QIANMO_ACCEPTANCE_ENDPOINT_${suffix}`] ??
+      `ws://${dialHost}:${host.tunnelPort}`
+    return { ...host, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
   })
   return { hosts, psk, allowRestart }
 }

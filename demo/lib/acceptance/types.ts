@@ -88,6 +88,16 @@ export interface Evidence {
 
 /** 驱动能力。场景按需声明，驱动按实提供，缺一项就 skip。 */
 export type DriverCapability =
+  /**
+   * 能拿到一个**正在跑的**节点句柄（本地靠现起一个，真机靠附着到部署好的那台）。
+   *
+   * 与 `spawn-node` 分开是必要的：一大类场景（错 PSK 被拒、发一帧看回什么）
+   * 的材料全在**发起方**手里，节点是什么配置根本不影响断言，它们要的只是
+   * 「有一台活着的节点可以拨」。把它们一律写成 `spawn-node`，真机腿就会因为
+   * 「不能按任意参数起节点」而跳掉本来完全跑得动的东西 —— issue #61 的另一面：
+   * 那条腿一条 `raw-dial` 场景都没跑过，数据面零覆盖。
+   */
+  | 'attach-node'
   /** 能按任意参数起一个全新常驻节点（本地有，真机没有）。 */
   | 'spawn-node'
   /**
@@ -343,6 +353,10 @@ export interface DialProbe {
 /** 原始拨号参数。故意允许构造非法材料 —— 这正是要测的东西。 */
 export interface DialOptions {
   readonly auth: DialAuth
+  /** 拨号方自称的节点名。缺省由驱动给一个探针名。 */
+  readonly nodeName?: string
+  /** 握手完成后再等多久收帧。缺省走 `rawDial` 的默认值。 */
+  readonly settleMs?: number
   /** 握手成功后要发的帧（原样序列化发出，允许违反协议）。 */
   readonly send?: readonly unknown[]
   /** 不等握手完成就发（用来测 4003）。 */
