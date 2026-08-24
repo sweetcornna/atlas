@@ -13,8 +13,6 @@ import type {
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
-import type { SessionId } from '../../../types/ids.js'
-import { switchSession } from '../../../bootstrap/state.js'
 import { forwardSessionUpdates } from '../bridge.js'
 import type { ToolUseCache } from '../bridge.js'
 import { promptToQueryInput } from '../promptConversion.js'
@@ -23,6 +21,7 @@ import { AcpAgent } from './AcpAgent.js'
 import type { AcpSession } from './sessionTypes.js'
 import { flattenConfigOptionValues } from './configOptions.js'
 import { popNextPendingPrompt } from './promptQueue.js'
+import { activateAcpSessionWorkspace } from './sessionWorkspace.js'
 import {
   getConnection,
   readClientCapabilities,
@@ -84,10 +83,16 @@ async function prompt(
     // After a previous interrupt(), the internal controller is stuck in
     // aborted state — without this, submitMessage() fails immediately.
     session.queryEngine.resetAbortController()
-    // Switch global session state so recordTranscript writes to the correct
-    // session file. Without this, multi-session scenarios (or creating a new
-    // session after another) write transcript data to the wrong file.
-    switchSession(params.sessionId as SessionId, session.projectDir)
+    // Re-establish the whole of this session's workspace before the turn
+    // runs: session id AND cwd AND the per-conversation caches. Switching the
+    // session id alone was not enough — the turn still inherited the working
+    // directory, CLAUDE.md and transcript file of whichever session happened
+    // to touch them first (issue #44).
+    activateAcpSessionWorkspace({
+      sessionId: params.sessionId,
+      cwd: session.cwd,
+      projectDir: session.projectDir,
+    })
 
     const sdkMessages = session.queryEngine.submitMessage(promptInput, {
       uuid: userMessageId,
