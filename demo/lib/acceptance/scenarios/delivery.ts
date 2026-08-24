@@ -17,7 +17,7 @@
 
 import { chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { mint, sendEnvelope } from '../local/send.js'
 import { runCli } from '../local/spawn.js'
@@ -188,11 +188,16 @@ export const deliveryScenarios: readonly Scenario[] = [
     title: '节点不可达：发起方拿到连接失败，而不是一条假的成功',
     expected: 'resident-wake 非零退出，输出里没有 receipt',
     requires: ['exec-node-cli'],
+    timeoutMs: 150_000,
     async run(ctx) {
-      // 先占一个口再放掉：确保这个端口此刻没有任何东西在听。
-      const port = await ctx.allocPort()
-      const result = await runCli({
-        argv: [
+      // 经驱动跑，发起方就在**目标机上** —— 「拨一个没人听的口会怎样」在真机
+      // 上要连着那台机器的网络栈一起问，在 runner 上问只是又跑了一遍本地腿。
+      const host = await ctx.driver.execHost(ctx)
+      // 目标机上此刻没人在听的一个口。它保证的只有「现在没人听」，而这条场景
+      // 要的正是这个。
+      const port = await host.freePort()
+      const result = await host.exec(
+        [
           'resident-wake',
           '--url',
           `ws://127.0.0.1:${port}`,
@@ -205,17 +210,16 @@ export const deliveryScenarios: readonly Scenario[] = [
           '--timeout-ms',
           '8000',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'sender-config'),
-          QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+        {
+          env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+          timeoutMs: 120_000,
         },
-        timeoutMs: 40_000,
-      })
+      )
       return new Checks()
+        .note('执行位置', `${host.describe} · ws://127.0.0.1:${port}`)
         .expect(result.code !== 0, '退出码非零', result.code)
         .notContains(result.stdout, '"receipt"', 'stdout')
-        .note('stderr', result.stderr.slice(0, 2_000))
+        .note('stderr', stripMinifiedSourceFrame(result.stderr).slice(0, 2_000))
         .done('不可达没有被报成成功')
     },
   },

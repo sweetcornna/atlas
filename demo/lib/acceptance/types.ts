@@ -88,6 +88,16 @@ export interface Evidence {
 
 /** 驱动能力。场景按需声明，驱动按实提供，缺一项就 skip。 */
 export type DriverCapability =
+  /**
+   * 能拿到一个**正在跑的**节点句柄（本地靠现起一个，真机靠附着到部署好的那台）。
+   *
+   * 与 `spawn-node` 分开是必要的：一大类场景（错 PSK 被拒、发一帧看回什么）
+   * 的材料全在**发起方**手里，节点是什么配置根本不影响断言，它们要的只是
+   * 「有一台活着的节点可以拨」。把它们一律写成 `spawn-node`，真机腿就会因为
+   * 「不能按任意参数起节点」而跳掉本来完全跑得动的东西 —— issue #61 的另一面：
+   * 那条腿一条 `raw-dial` 场景都没跑过，数据面零覆盖。
+   */
+  | 'attach-node'
   /** 能按任意参数起一个全新常驻节点（本地有，真机没有）。 */
   | 'spawn-node'
   /**
@@ -112,6 +122,29 @@ export type DriverCapability =
   | 'run-launcher'
   /** 能对着一个可控的假模型上游跑（本地有；真机打真实端点）。 */
   | 'stub-upstream'
+  /**
+   * 能**在被测 CLI 所在的那台机器上**现造一套离线 CA 夹具：openssl + `qm ca`
+   * 签出证书，外加一个本机注册中心进程来分发它们。
+   *
+   * 与 `exec-node-cli` 分开，因为真机腿缺的正好是这一半：夹具是在 runner 上
+   * 用本地文件系统造的，而被测二进制在四台节点上 —— 两边不是同一个文件系统，
+   * `--cert`/`--trust-ca` 指过去是一条不存在的路径。声明成 `spawn-node` 是不
+   * 准确的（这些场景根本不需要起常驻），而不声明就是 issue #61 那种装饰性
+   * `requires`。
+   */
+  | 'local-ca-fixture'
+  /**
+   * 能观察「审计镜像的**搬运**那一半」：控制台机器上的定时器、拉取服务的
+   * 退出码、镜像文件本身，以及源节点上的权威副本。
+   *
+   * 真机腿有（四条 `qianmo-mirror@<节点>` user-scope 单元 + 隧道 + 两台机器）；
+   * 本地腿一台机器、没有隧道、没有单元文件，三个前提一个都不成立 —— 那正是
+   * `audit/mirror-pull-not-constructible` 在本地腿 skip 的**正当**理由。
+   *
+   * 单独成一项能力而不是挂 `read-node-files`：这条要读的是**控制台主机**上的
+   * 东西，而驱动此前根本没有「控制台主机」这个概念（issue #62）。
+   */
+  | 'mirror-transport'
   /**
    * 能读**本仓库源码**（静态断言用，两个目标都有）。
    *
@@ -147,6 +180,16 @@ export interface ScenarioResult {
   readonly knownIssue?: string
   /** 场景自己声明的、这次实际用到的能力（便于复盘覆盖面）。 */
   readonly requires: readonly DriverCapability[]
+  /**
+   * 这条场景实际调用过的驱动方法名，按调用顺序，含重复。
+   *
+   * **这是「它到底有没有碰过目标」的唯一凭据**，由 runner 用
+   * {@link instrumentDriver} 自动采集，场景写不了也改不了它。空数组有两种
+   * 合法情形（`read-repo-source` 那类静态断言、以及被 skip 的场景），除此
+   * 之外的空数组就是一条声明了能力却绕过驱动的场景 —— issue #61 那次假绿
+   * 里 11 条绿全部是这个形态。
+   */
+  readonly driverCalls: readonly string[]
 }
 
 /** 场景返回给 runner 的东西 —— 判定 + 证据，不含 id/耗时这些框架字段。 */
@@ -248,6 +291,63 @@ export interface ExecResult {
   readonly stderr: string
 }
 
+/**
+ * **目标机上**跑一条一次性 CLI 的位置：一次性配置根 + 一次性工作目录。
+ *
+ * ## 为什么它必须存在（issue #61 第 1 条）
+ *
+ * 有 7 条场景做的是同一件事：**拿一组故意写坏的参数起一次 `qm`，看它在解析期
+ * 或启动期拒不拒**。它们声明了 `exec-node-cli`，然后调 runner 本地的
+ * `runCli()` —— 于是在真机腿上照样在开发机上 spawn，`requires` 纯属装饰。
+ * 而 {@link AcceptanceDriver.execNode} 又用不了：它把 `OCC_CONFIG_DIR` 钉在
+ * 那条节点的**生产配置根**上。
+ *
+ * ## 与 {@link AcceptanceDriver.execNode} 的分工是硬的，不要合并
+ *
+ * | | 配置根 | 给谁用 |
+ * | --- | --- | --- |
+ * | `execNode` | 节点的**生产根** | `qm audit --verify` 这类**必须读那条节点自己的链**的场景 |
+ * | `ExecHost` | 一次性根，跑完删 | 「参数写坏了该拒绝」这类**与配置根内容无关**的场景 |
+ *
+ * 拿生产根跑第二类是不可以的，三条理由：
+ *
+ *   ① 那些命令会在配置根下**生成身份密钥**（`qm console --print-wake-identity`
+ *      的全部作用就是这个），等于往四台内测节点的身份目录里塞验收产物，其中
+ *      一把还是控制面凭据；
+ *   ② 生产根下的审计链是**成果边界证据**，任何一次计划外写入都会在链上留下
+ *      一条没人解释得清的记录；
+ *   ③ 用一次性根**不削弱**这条腿的价值 —— 这些场景断言的是「部署在真机上的
+ *      那个 `dist/cli-node.js`、在真机的架构与内核上、对这组参数怎么反应」，
+ *      被测对象是那个二进制和那台机器，不是配置根里装了什么。
+ */
+export interface ExecHost {
+  /** 人可读的位置标识（`runner (local)` / `cornna-p12 (beta-4)`），进证据用。 */
+  readonly describe: string
+  /** 一次性配置根在**目标机上**的绝对路径（喂 `OCC_CONFIG_DIR`）。 */
+  readonly configDir: string
+  /** 一次性工作目录在**目标机上**的绝对路径（放输入文件、agent 工作区）。 */
+  readonly workdir: string
+  /** 跑一条**会结束**的 `qm` 子命令。 */
+  exec(
+    argv: readonly string[],
+    opts?: {
+      readonly env?: Readonly<Record<string, string>>
+      readonly timeoutMs?: number
+    },
+  ): Promise<ExecResult>
+  /** 在目标机上写一个文件（相对 {@link workdir}），返回它在目标机上的绝对路径。 */
+  writeFile(relPath: string, content: string): Promise<string>
+  /** 在目标机上建一个目录（相对 {@link workdir}），返回绝对路径。 */
+  mkdir(relPath: string): Promise<string>
+  /**
+   * 目标机上此刻**没有人在听**的一个 TCP 端口。
+   *
+   * 注意它保证的只有「现在没人听」，不是「我把它占住了」——
+   * 用它的场景要么根本不 bind（解析期就该被拒），要么正好要一个拨不通的口。
+   */
+  freePort(): Promise<number>
+}
+
 /** 原始拨号的结果 —— 帧级探针要看的全部东西。 */
 export interface DialProbe {
   /** 握手是否走完。 */
@@ -265,6 +365,10 @@ export interface DialProbe {
 /** 原始拨号参数。故意允许构造非法材料 —— 这正是要测的东西。 */
 export interface DialOptions {
   readonly auth: DialAuth
+  /** 拨号方自称的节点名。缺省由驱动给一个探针名。 */
+  readonly nodeName?: string
+  /** 握手完成后再等多久收帧。缺省走 `rawDial` 的默认值。 */
+  readonly settleMs?: number
   /** 握手成功后要发的帧（原样序列化发出，允许违反协议）。 */
   readonly send?: readonly unknown[]
   /** 不等握手完成就发（用来测 4003）。 */
@@ -299,6 +403,14 @@ export type DialAuth =
 export interface AcceptanceDriver {
   readonly target: Target
   readonly capabilities: ReadonlySet<DriverCapability>
+  /**
+   * 每个**没有**的能力为什么没有，一句话。runner 把它拼进 skip 理由。
+   *
+   * 没有它的时候，报告里那行只有「驱动 fleet 缺少能力: spawn-node」——
+   * 读的人无从判断这是「这条腿天然做不到、如实跳过」还是「谁忘了实现」。
+   * 两个驱动的头注里本来就写着这些理由，这个字段只是把它们送到报告里。
+   */
+  readonly capabilityGaps?: ReadonlyMap<DriverCapability, string>
   /** 起一个节点（真机驱动上是「附着到已有节点」，见各实现的注释）。 */
   startNode(ctx: ScenarioContext, spec: NodeSpec): Promise<NodeHandle>
   stopNode(node: NodeHandle): Promise<void>
@@ -323,8 +435,70 @@ export interface AcceptanceDriver {
   readNodeFile(node: NodeHandle, relPath: string): Promise<string | undefined>
   /** 列目录，不存在返回 undefined。 */
   listNodeDir(node: NodeHandle, relPath: string): Promise<string[] | undefined>
-  /** 在节点侧跑一条 CLI。 */
+  /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
+  /**
+   * 读一次「审计镜像搬运」的现场。**只有声明了 `mirror-transport` 的驱动才
+   * 实现它** —— 场景靠能力差集被 skip，走不到这里。
+   */
+  inspectMirrorTransport?(): Promise<MirrorTransportReport>
+  /**
+   * 在目标机上开一个**一次性**的 CLI 执行位置。
+   *
+   * 清理登记在 `ctx.cleanup` 上，runner 在 `finally` 里跑（超时也会跑）。
+   * `nodeName` 只用来在舰队里挑一台机器；本地驱动忽略它。
+   */
+  execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost>
+}
+
+/**
+ * 一条节点的审计镜像搬运现场（issue #62）。
+ *
+ * 全部字段都是**观察**，不是判定 —— 取不到就是 `undefined`，由场景决定
+ * 「取不到」意味着红还是跳过。驱动不许在这里替场景下结论。
+ */
+export interface MirrorTransportUnit {
+  readonly node: string
+  /** 控制台申报的最大滞后（分钟），从跑着的控制台命令行上读，不是常数。 */
+  readonly maxLagMinutes?: number
+  /** systemd 定时器上次触发的时间（目标机的表述原文，进证据用）。 */
+  readonly lastTriggerAt?: string
+  /** 同一个时刻的 Unix 秒，**由目标机自己换算**（见驱动里那段注释）。 */
+  readonly lastTriggerSec?: number
+  /** 上一次拉取服务的退出码。 */
+  readonly serviceExitCode?: number
+  /** 上一次拉取服务的 systemd `Result`（`success` / `exit-code` / …）。 */
+  readonly serviceResult?: string
+  /** 镜像文件在控制台机器上的路径。 */
+  readonly mirrorPath?: string
+  /** 镜像文件 mtime（Unix 秒，**控制台机器的钟**）。 */
+  readonly mirrorMtimeSec?: number
+  readonly mirrorBytes?: number
+  /** 镜像文件的 md5。 */
+  readonly mirrorHash?: string
+  /** 源节点上权威副本的字节数。 */
+  readonly authoritativeBytes?: number
+  /**
+   * 权威副本**前 `mirrorBytes` 个字节**的 md5。
+   *
+   * 比「整份哈希相等」更准：审计链是只追加的，两次采样之间源端完全可能又写
+   * 了几条，那时整份哈希本来就该不同。前缀相等才是「搬对了」的不变式。
+   */
+  readonly authoritativePrefixHash?: string
+  /** 权威副本整份的 md5（等号成不成立是留痕，不是承重断言）。 */
+  readonly authoritativeHash?: string
+  /** 采集时**控制台机器**的 Unix 秒 —— 算新鲜度必须用它，不是 runner 的钟。 */
+  readonly observedAtSec?: number
+  /** 采集过程的原文（命令输出），红了靠它排查。 */
+  readonly raw: string
+}
+
+export interface MirrorTransportReport {
+  /** 控制台主机的标识，进证据用。 */
+  readonly consoleHost: string
+  readonly units: readonly MirrorTransportUnit[]
+  /** 采集本身失败时的原文（此时 `units` 可能是空的）。 */
+  readonly failure?: string
 }
 
 /** 整轮运行的汇总（写进 NDJSON 的最后一行 + 汇总表表头）。 */
@@ -335,7 +509,20 @@ export interface SuiteRun {
   readonly durationMs: number
   readonly results: readonly ScenarioResult[]
   readonly counts: Readonly<Record<Outcome, number>>
-  /** 是否整体通过：无 `fail` 且无 `error`。skip 不影响。 */
+  /**
+   * 本轮**真正触达目标**的场景数：已执行（非 skip）且至少调用过一次驱动。
+   *
+   * 0 意味着这一轮关于被测目标什么都没证明 —— 见 {@link SuiteRun.pass}。
+   */
+  readonly targetTouches: number
+  /**
+   * 是否整体通过：无 `fail`、无 `error`，**且 `targetTouches > 0`**。
+   * skip 不影响。
+   *
+   * 最后那一项是 issue #61 的直接产物：真机腿曾经在驱动零调用的情况下报出
+   * `pass=11 fail=0 skip=104` 与 exit 0。一轮没碰过目标的运行不是「通过」，
+   * 它是「没验」，而这两者对读报告的人必须长得不一样。
+   */
   readonly pass: boolean
   /** 套件版本 / 提交，便于把一份结果钉回代码。 */
   readonly commit?: string

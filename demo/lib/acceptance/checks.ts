@@ -95,6 +95,34 @@ export class Checks {
   }
 }
 
+/**
+ * 去掉 CLI 输出里那条**压缩后的源码帧**，别的一字不动。
+ *
+ * 真机腿跑的是 `dist/cli-node.js`（vite 产物），Bun 打印未捕获异常时会把出错
+ * 那几行源码原样附上 —— 而那"几行"是 minify 后的 chunk，实测每行 1028 字符
+ * （Bun 自己截断到这个长度），一次拒绝带出两行两千多字符的乱码，真正有用的那句
+ * `error: …` 排在它们后面。
+ *
+ * 只删「行号 + ` | ` + 长内容」这一种形状，门槛 400 —— 本仓库的 biome 把源码限在
+ * 80/120 列，所以本地腿（跑源码入口）的源码帧远在门槛之下、一行都不会被删；
+ * 而被测系统自己打印的任何一行都不带 `N | ` 这个前缀。
+ *
+ * **删不掉的一律留着**：这个函数的失败方向必须是"留了噪声"，不能是"吃掉了
+ * 证据"。就算某个源码帧里恰好含有要找的那句错误串（minify 后的 chunk 里确实
+ * 可能有那个字面量），删掉它的后果也是**判红**而不是误判绿。
+ *
+ * 本地腿跑的是源码入口，源码帧本来就是短的，于是这个函数在本地是恒等映射。
+ *
+ * （产品侧那条 `dist` 上打印压缩源码的毛病本身是另一回事，套件只负责不被它
+ * 淹掉。）
+ */
+export function stripMinifiedSourceFrame(output: string): string {
+  return output
+    .split('\n')
+    .filter(line => !(line.length > 400 && /^\s*\d+ \| /.test(line)))
+    .join('\n')
+}
+
 function render(value: unknown): string {
   if (typeof value === 'string') return value
   if (value === undefined) return '(undefined)'

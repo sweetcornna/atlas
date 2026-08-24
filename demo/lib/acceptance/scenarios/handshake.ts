@@ -70,20 +70,28 @@ export const handshakeScenarios: readonly Scenario[] = [
     dimension: 'handshake',
     title: 'psk 档：错的 PSK 被 4003 拒绝',
     expected: `关闭码 ${CLOSE_UNAUTHORIZED}、reason 'unauthorized'、且没有 ready 帧`,
-    requires: ['spawn-node', 'raw-dial'],
+    // `attach-node` 而不是 `spawn-node`：错 PSK 这件事的材料全在**发起方**
+    // 手里，节点是什么配置、信任谁都不影响判定 —— 它只需要一台活着的节点。
+    // 写成 `spawn-node` 会让真机腿白白跳掉它，而那条腿本来一条数据面场景都
+    // 没有（issue #61 的第二条佐证）。`read-node-files` 是补声明的：下面那句
+    // `handshakeRejections` 本来就在读节点上的审计链。
+    requires: ['attach-node', 'raw-dial', 'read-node-files'],
+    timeoutMs: 120_000,
     async run(ctx) {
       const party = newParty()
       const node = await startNodeTrusting(ctx, party)
-      const probe = await rawDial({
-        url: node.endpoint,
-        node: party.peerNode,
-        auth: { kind: 'psk', psk: WRONG_PSK },
+      // 经 `ctx.driver.dial` 而不是直接 `rawDial`：真机腿的端点是按主机分配的
+      // 隧道口，只有驱动知道该往哪儿拨。
+      const probe = await ctx.driver.dial(ctx, node, {
+        auth: { mode: 'psk', psk: WRONG_PSK },
+        nodeName: party.peerNode,
         settleMs: 300,
       })
       await delay(500)
       const audited = await handshakeRejections(ctx.driver, node)
       return (
         new Checks()
+          .note('端点', node.endpoint)
           .expect(!probe.authed, '没有握手成功', probe.authed)
           .eq(probe.closeCode, CLOSE_UNAUTHORIZED, '关闭码')
           .eq(probe.closeReason, 'unauthorized', '关闭原因')
@@ -462,7 +470,13 @@ export const credentialChannelScenarios: readonly Scenario[] = [
     dimension: 'handshake',
     title: '冻结四元组 · credential 腿变化 → 4004',
     expected: `同一节点、同一把签名钥匙，换一张证书重用通道 → ${CLOSE_CHANNEL_CONFLICT}；审计链记 channel_identity_mismatch`,
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()

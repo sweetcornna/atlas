@@ -40,6 +40,9 @@ function result(
     actual: '实际',
     evidence: [],
     requires: ['raw-dial'],
+    // 缺省「碰过驱动」：这些用例守的是别的规则，不该每条都去想触达那一项。
+    // 触达规则自己的用例显式传 `driverCalls: []`。
+    driverCalls: ['startNode'],
     ...over,
   }
 }
@@ -97,6 +100,73 @@ describe('summarize', () => {
     expect(run.counts.fail).toBe(1)
     expect(run.counts.pass).toBe(0)
     expect(run.pass).toBe(false)
+  })
+
+  // ── 目标触达（issue #61 那次假绿的直接护栏）─────────────────────────────
+  //
+  // 真机腿曾经报 `pass=11 fail=0 skip=104` + exit 0 + 「判定: PASS」，而驱动
+  // **一次都没被调用过** —— 那 11 条绿全部跑在开发机上。下面三条钉住的是
+  // 「全绿」与「没跑」必须给出不同的判定。
+  describe('目标触达', () => {
+    test('一条场景都没碰过驱动时不算通过，哪怕全绿', () => {
+      const run = summarize(
+        [
+          result({
+            id: 'policy/both-flags-refused',
+            outcome: 'pass',
+            driverCalls: [],
+          }),
+          result({
+            id: 'trust/no-execution-gate',
+            outcome: 'pass',
+            driverCalls: [],
+          }),
+          result({ id: 'handshake/psk-ok', outcome: 'skip', skipReason: 'x' }),
+        ],
+        { ...META, target: 'fleet' },
+      )
+      expect(run.counts).toEqual({ pass: 2, fail: 0, skip: 1, error: 0 })
+      expect(run.targetTouches).toBe(0)
+      expect(run.pass).toBe(false)
+      expect(renderSummary(run)).toContain('等于什么都没验')
+    })
+
+    test('哪怕只有一条碰过驱动，判定就回到看 fail/error', () => {
+      const run = summarize(
+        [
+          result({
+            id: 'trust/no-execution-gate',
+            outcome: 'pass',
+            driverCalls: [],
+          }),
+          result({
+            id: 'policy/both-flags-refused',
+            outcome: 'pass',
+            driverCalls: ['execHost', 'startNode'],
+          }),
+        ],
+        { ...META, target: 'fleet' },
+      )
+      expect(run.targetTouches).toBe(1)
+      expect(run.pass).toBe(true)
+    })
+
+    // skip 的场景不该被算成触达 —— 它压根没跑。
+    test('skip 不计入触达', () => {
+      const run = summarize(
+        [
+          result({
+            id: 'handshake/psk-ok',
+            outcome: 'skip',
+            skipReason: '缺 spawn-node',
+            driverCalls: ['startNode'],
+          }),
+        ],
+        { ...META, target: 'fleet' },
+      )
+      expect(run.targetTouches).toBe(0)
+      expect(run.pass).toBe(false)
+    })
   })
 })
 

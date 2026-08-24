@@ -17,9 +17,8 @@
  * 出厂为 true），以及两个开关同时给会在解析期直接报错、而不是按优先级和稀泥。
  */
 
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { runCli } from '../local/spawn.js'
 import { mint, sendEnvelope, withBrokenSignature } from '../local/send.js'
 import type { Scenario } from '../types.js'
 import {
@@ -242,32 +241,41 @@ export const policyScenarios: readonly Scenario[] = [
     expected:
       "非零退出 + 'resident takes either --open-policy or --require-signed-tasks, not both'",
     requires: ['exec-node-cli'],
+    timeoutMs: 150_000,
     async run(ctx) {
-      const result = await runCli({
-        argv: [
+      // 经 `ctx.driver.execHost` 而不是本地的 `runCli`：真机腿要问的是**那台
+      // 机器上部署的那个二进制**怎么反应（p12 还是 x86_64），在 runner 上
+      // spawn 一次只是把本地腿又跑了一遍（issue #61）。
+      const host = await ctx.driver.execHost(ctx)
+      const workspace = await host.mkdir('ws-main')
+      const result = await host.exec(
+        [
           'resident',
           '--node',
           'flagprobe',
           '--team',
           'acceptance',
           '--agent',
-          `main=${ctx.workdir}`,
+          `main=${workspace}`,
           '--port',
-          String(await ctx.allocPort()),
+          // 解析期就该被拒，这个口不会被 bind —— 要的只是「语法上是个端口」
+          // 加上「万一将来解析顺序变了，撞的也不是别人的服务」。
+          String(await host.freePort()),
           '--hostname',
           '127.0.0.1',
           '--open-policy',
           '--require-signed-tasks',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: `${ctx.workdir}/flagprobe`,
-          QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+        {
+          env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+          timeoutMs: 120_000,
         },
-        timeoutMs: 25_000,
-      })
-      const output = `${result.stdout}\n${result.stderr}`
+      )
+      const output = stripMinifiedSourceFrame(
+        `${result.stdout}\n${result.stderr}`,
+      )
       return new Checks()
+        .note('执行位置', host.describe)
         .expect(result.code !== 0, '退出码非零', result.code)
         .contains(
           output,

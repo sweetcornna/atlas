@@ -20,13 +20,20 @@
  *    之后要靠 ② 的拨号验证真的是自己那个进程在应答。
  */
 
-import { mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join } from 'node:path'
 import type {
   AcceptanceDriver,
   DialOptions,
   DialProbe,
   DriverCapability,
+  ExecHost,
   ExecResult,
   NodeHandle,
   NodeSpec,
@@ -50,6 +57,7 @@ export const WRONG_PSK = 'qianmo-acceptance-psk-9999999999'
 export const TIMINGS_FILE = 'acceptance-timings.jsonl'
 
 const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
+  'attach-node',
   'spawn-node',
   'spawn-console',
   'restart-node',
@@ -59,6 +67,7 @@ const LOCAL_CAPABILITIES: ReadonlySet<DriverCapability> = new Set([
   'raw-dial',
   'run-launcher',
   'stub-upstream',
+  'local-ca-fixture',
   'read-repo-source',
 ])
 
@@ -73,9 +82,21 @@ export interface LocalNodeHandle extends NodeHandle {
   restart(overrides?: Partial<NodeSpec>): Promise<LocalNodeHandle>
 }
 
+/**
+ * 本地腿唯一缺的那一项，以及为什么缺 —— 这段理由本身是这套件里被引用最多的
+ * 一条取舍，所以它必须出现在报告里而不是只在注释里。
+ */
+const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
+  [
+    'mirror-transport',
+    '审计镜像的搬运需要 systemd 定时器 + 隧道 + 源与镜像两台机器，本地腿三个前提一个都不具备；用一次 cp 冒充会得到一条永远绿的场景，而绿的那一刻恰好证明不了任何事 —— 宁可空着',
+  ],
+])
+
 export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
+  readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
 
   async startNode(
     ctx: ScenarioContext,
@@ -233,10 +254,11 @@ export class LocalDriver implements AcceptanceDriver {
   ): Promise<DialProbe> {
     return await rawDial({
       url: node.endpoint,
-      node: dialerNameOf(opts),
+      node: opts.nodeName ?? dialerNameOf(opts),
       auth: toRawAuth(opts),
       sendBeforeAuth: opts.sendBeforeAuth,
       sendAfterReady: opts.send,
+      settleMs: opts.settleMs,
       timeoutMs: opts.timeoutMs,
     })
   }
@@ -275,6 +297,47 @@ export class LocalDriver implements AcceptanceDriver {
         QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
       },
     })
+  }
+
+  /**
+   * 本地的一次性执行位置就是场景 workdir 下的两个子目录 —— runner 已经保证
+   * 会清理它，所以这里不再另登记 cleanup。
+   */
+  async execHost(ctx: ScenarioContext): Promise<ExecHost> {
+    const configDir = join(ctx.workdir, 'exec-host', 'config')
+    const workdir = join(ctx.workdir, 'exec-host', 'work')
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(workdir, { recursive: true })
+    return {
+      describe: 'runner (local)',
+      configDir,
+      workdir,
+      exec: async (argv, opts) =>
+        await runCli({
+          argv,
+          env: {
+            OCC_IDENTITY: 'qianmo',
+            OCC_CONFIG_DIR: configDir,
+            QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+            ...(opts?.env ?? {}),
+          },
+          ...(opts?.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: opts.timeoutMs }),
+        }),
+      writeFile: async (relPath, content) => {
+        const abs = join(workdir, relPath)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, content)
+        return abs
+      },
+      mkdir: async relPath => {
+        const abs = join(workdir, relPath)
+        mkdirSync(abs, { recursive: true })
+        return abs
+      },
+      freePort: async () => await ctx.allocPort(),
+    }
   }
 }
 

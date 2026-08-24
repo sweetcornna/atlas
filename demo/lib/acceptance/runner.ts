@@ -24,6 +24,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { instrumentDriver } from './driverProbe.js'
 import { summarize } from './report-core.js'
 import type {
   AcceptanceDriver,
@@ -116,9 +117,19 @@ export async function runScenario(
       durationMs: 0,
       actual: '未执行',
       evidence: [],
-      skipReason: `驱动 ${driver.target} 缺少能力: ${missing.join(', ')}`,
+      skipReason: `驱动 ${driver.target} 缺少能力: ${missing
+        .map(c => {
+          const why = driver.capabilityGaps?.get(c)
+          return why === undefined ? c : `${c}（${why}）`
+        })
+        .join('; ')}`,
+      driverCalls: [],
     }
   }
+
+  // 场景**只能**经这个代理拿到驱动 —— 「它有没有碰过目标」是自动采集的事实，
+  // 不是场景自己申报的。理由见 driverProbe.ts 的头注（issue #61）。
+  const probe = instrumentDriver(driver)
 
   const started = Date.now()
   const cleanups: Array<() => void | Promise<void>> = []
@@ -136,11 +147,12 @@ export async function runScenario(
       durationMs: Date.now() - started,
       actual: '无法创建场景临时目录',
       evidence: errorEvidence(err),
+      driverCalls: probe.calls(),
     }
   }
 
   const ctx: ScenarioContext = {
-    driver,
+    driver: probe.driver,
     workdir,
     allocPort: freePort,
     cleanup: fn => {
@@ -210,6 +222,7 @@ export async function runScenario(
     actual,
     evidence: withLogs,
     skipReason,
+    driverCalls: probe.calls(),
   }
 }
 

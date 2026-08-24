@@ -34,7 +34,7 @@
  */
 
 import { CapabilityLevel } from '@qianmo/protocol'
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { startRegistry } from '../local/console.js'
@@ -54,7 +54,12 @@ import { mint, sendEnvelope, type Issuer } from '../local/send.js'
 import { runCli } from '../local/spawn.js'
 import { mkdirSync } from 'node:fs'
 import { delay, handshakeRejections, waitForMailbox } from '../observe.js'
-import type { NodeHandle, Scenario, ScenarioContext } from '../types.js'
+import type {
+  ExecHost,
+  NodeHandle,
+  Scenario,
+  ScenarioContext,
+} from '../types.js'
 import {
   ADDRESS,
   AGENT,
@@ -193,6 +198,45 @@ async function residentStartupProbe(
   return { code: result.code, output: `${result.stdout}\n${result.stderr}` }
 }
 
+/**
+ * 同一件事的**目标机**版本：在一次性配置根里起一条会自己退出的 `qm resident`。
+ *
+ * 与上面那个的分工按夹具走 —— 需要本机 CA 夹具（`--cert` 指向 runner 上的
+ * 文件）的场景只能用上面那个并声明 `local-ca-fixture`；只用命令行开关就能
+ * 触发的拒绝走这一个，于是真机腿也能问到那台机器上的那个二进制。
+ */
+async function residentStartupProbeOn(
+  host: ExecHost,
+  extraArgs: readonly string[],
+): Promise<{ readonly code: number; readonly output: string }> {
+  const workspace = await host.mkdir('probe-ws')
+  const result = await host.exec(
+    [
+      'resident',
+      '--node',
+      NODE,
+      '--team',
+      TEAM,
+      '--agent',
+      `${AGENT}=${workspace}`,
+      '--port',
+      String(await host.freePort()),
+      '--hostname',
+      '127.0.0.1',
+      '--open-policy',
+      ...extraArgs,
+    ],
+    {
+      env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+      timeoutMs: 120_000,
+    },
+  )
+  return {
+    code: result.code,
+    output: stripMinifiedSourceFrame(`${result.stdout}\n${result.stderr}`),
+  }
+}
+
 export const certificateScenarios: readonly Scenario[] = [
   {
     id: 'certificate/handshake-ok',
@@ -200,7 +244,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: 'CA 签发 → 注册中心分发 → credential 档握手走通',
     expected:
       '一条 --trust 都不给、只给 --trust-ca 与 --registry-url 的节点接受这张证书的握手；审计链里没有拒绝记录',
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
@@ -250,7 +300,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '吊销的证书握不上手，同一节点的另一张证书照样能握',
     expected:
       "被吊销那张 → 4003 + 审计链 code='unknown_signer'；同一节点未吊销的那张 → 握手成功",
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
@@ -329,7 +385,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '过了有效期的证书握不上手，同一节点的有效证书照样能握',
     expected:
       "过期证书 → 4003 + 审计链 code='unknown_signer'；有效证书 → 握手成功",
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
@@ -401,7 +463,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '没有吊销清单时整条 CA 路关闭（fail closed，不是「什么都没吊销」）',
     expected:
       '证书本身完全有效、也已登记，但注册中心上没有吊销清单 → 握手仍然 4003',
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
@@ -450,7 +518,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '仍被 --trust 钉着的对端，吊销对它无效（§6.4 写明的边界）',
     expected:
       '同一张已吊销的证书：只给 --trust-ca 时被拒；同时把该节点写进 --trust 时被放行',
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
@@ -508,16 +582,17 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '--registry-url 没有 --trust-ca 时在解析期就被拒',
     expected: "非零退出 + '--registry-url requires --trust-ca'",
     requires: ['exec-node-cli'],
-    timeoutMs: 90_000,
+    timeoutMs: 180_000,
     async run(ctx) {
       // 注册中心是零鉴权的，它给出的证书与吊销清单只有 CA 签名这一道验证。
       // 没有 CA 根就去信它，等于把「谁是谁」交给任何能打到那个端口的人。
-      const probe = await residentStartupProbe(
-        ctx,
-        ['--registry-url', 'http://127.0.0.1:1'],
-        join(ctx.workdir, 'probe-config'),
-      )
+      const host = await ctx.driver.execHost(ctx)
+      const probe = await residentStartupProbeOn(host, [
+        '--registry-url',
+        'http://127.0.0.1:1',
+      ])
       return new Checks()
+        .note('执行位置', host.describe)
         .note('输出', probe.output.slice(0, 1_500))
         .expect(probe.code !== 0, '退出码非零', probe.code)
         .contains(
@@ -535,7 +610,7 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '给了 --cert/--key 却没给 --trust-ca：节点照起，但明说「这是明文」',
     expected:
       "stderr 出现 'mTLS is NOT enabled' 与 'serving plaintext ws://'，且一次普通的 ws PSK 拨号照样握得上（行为面证明它真的是明文）",
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli'],
+    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'local-ca-fixture'],
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
@@ -598,7 +673,11 @@ export const certificateScenarios: readonly Scenario[] = [
     dimension: 'certificate',
     title: '--cert 不是 --trust-ca 那个 CA 签的 → 启动期拒绝',
     expected: "非零退出 + '--cert was not signed by the CA in --trust-ca'",
-    requires: ['exec-node-cli'],
+    // `local-ca-fixture` 而不是只写 `exec-node-cli`：两张证书、两个 CA 目录
+    // 都在 runner 的文件系统上，`--cert` 指过去在真机上是一条不存在的路径。
+    // 这条**不是**「能不能在目标机上跑 CLI」的问题，声明成那个就是装饰性
+    // requires（issue #61）。
+    requires: ['exec-node-cli', 'local-ca-fixture'],
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
@@ -662,7 +741,13 @@ export const certificateScenarios: readonly Scenario[] = [
     title: '验得了签但不是授权方：消息照投，notice.trust 停在 untrusted',
     expected:
       "只给 --trust-ca 时，CA 认得的签发者签出的能力 token 验得过签、消息被接收，但 notice.trust='untrusted'",
-    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    requires: [
+      'spawn-node',
+      'raw-dial',
+      'exec-node-cli',
+      'read-node-files',
+      'local-ca-fixture',
+    ],
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()

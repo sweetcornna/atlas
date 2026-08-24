@@ -34,9 +34,8 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Checks } from '../checks.js'
+import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { http, startConsole, startRegistry } from '../local/console.js'
-import { runCli } from '../local/spawn.js'
 import { TRAIL_PATH } from '../observe.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { sendEnvelope } from '../local/send.js'
@@ -229,15 +228,17 @@ export const auditMirrorScenarios: readonly Scenario[] = [
     expected:
       "非零退出 + '--audit-mirror names unknown audit node <名字>'；两条 --audit 指同一路径 → '--audit repeats path <路径>'",
     requires: ['exec-node-cli'],
-    timeoutMs: 90_000,
+    timeoutMs: 240_000,
     async run(ctx) {
-      const trail = join(ctx.workdir, 'trail.ndjson')
-      writeFileSync(trail, '')
-      const result = await runCli({
-        argv: [
+      // 两条都是**解析期**规则，所以这里不会有控制台真的起来、也不会 bind
+      // 那个口；经驱动跑是为了让真机腿问的是那台机器上部署的那个二进制。
+      const host = await ctx.driver.execHost(ctx)
+      const trail = await host.writeFile('trail.ndjson', '')
+      const result = await host.exec(
+        [
           'console',
           '--port',
-          String(await ctx.allocPort()),
+          String(await host.freePort()),
           '--hostname',
           '127.0.0.1',
           '--audit',
@@ -245,20 +246,18 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           '--audit-mirror',
           'remote=30',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'console-config'),
-        },
-        timeoutMs: 40_000,
-      })
-      const output = `${result.stdout}\n${result.stderr}`
+        { timeoutMs: 100_000 },
+      )
+      const output = stripMinifiedSourceFrame(
+        `${result.stdout}\n${result.stderr}`,
+      )
       // 第二条规则：同一个路径不许被申报两次。这条挡掉的是「让同一个文件既
       // 当镜像又当权威」的写法 —— 本套件先按那个形状写过一版并撞在这里。
-      const duplicate = await runCli({
-        argv: [
+      const duplicate = await host.exec(
+        [
           'console',
           '--port',
-          String(await ctx.allocPort()),
+          String(await host.freePort()),
           '--hostname',
           '127.0.0.1',
           '--audit',
@@ -266,14 +265,16 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           '--audit',
           `remote=${trail}`,
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'console-config-2'),
+        {
+          env: { OCC_CONFIG_DIR: await host.mkdir('console-config-2') },
+          timeoutMs: 100_000,
         },
-        timeoutMs: 40_000,
-      })
-      const duplicateOutput = `${duplicate.stdout}\n${duplicate.stderr}`
+      )
+      const duplicateOutput = stripMinifiedSourceFrame(
+        `${duplicate.stdout}\n${duplicate.stderr}`,
+      )
       return new Checks()
+        .note('执行位置', host.describe)
         .note('输出', output.slice(0, 1_500))
         .note('重复路径的输出', duplicateOutput.slice(0, 1_500))
         .expect(result.code !== 0, '点名未知源时退出码非零', result.code)
@@ -295,28 +296,110 @@ export const auditMirrorScenarios: readonly Scenario[] = [
   {
     id: 'audit/mirror-pull-not-constructible',
     dimension: 'audit',
-    title: '镜像的「搬运」那一半：本地腿造不出，如实记 skip',
+    title: '镜像的「搬运」那一半：真机腿真断言，本地腿如实记 skip',
     expected:
-      '这条要的是「源端的 trail 被定期同步到控制台机器上，停了要被发现」，需要 systemd 定时器 + 隧道 + 两台机器',
-    requires: ['exec-node-cli'],
-    timeoutMs: 60_000,
-    async run() {
-      return new Checks()
+      '定时器新鲜、拉取服务退出 0、镜像 mtime 在申报的滞后上限内，且**镜像内容是权威副本的前缀**',
+    // 从 `exec-node-cli` 改成 `mirror-transport`（issue #62）：这条场景此前
+    // `run()` 连 `ctx` 都不收、无条件 skip 并给出一段**只对本地腿成立**的理由。
+    // 于是在真机腿上 —— 三个前提明明都满足、链路当时也是健康的 —— 它照样跳过。
+    // 本地腿的那个 skip 是对的，错的是「不管哪条腿都 skip」。
+    requires: ['mirror-transport'],
+    timeoutMs: 180_000,
+    async run(ctx) {
+      const checks = new Checks()
         .note(
           '为什么不用一次 cp 代替',
-          '拉取链路上唯一会坏的东西是「它停了而没人知道」。一次 cp 一定成功，于是这条场景会永远绿，而绿的那一刻恰好证明不了任何事。宁可空着，也不要一条测不到目标的绿。',
-        )
-        .note(
-          '这条属于哪条腿',
-          '真机腿：源节点写链 → 定时器把它拉到控制台机器 → 控制台按 --audit-mirror 申报的滞后上限判定它是否新鲜。本地腿只有一台机器、没有隧道、没有单元文件，三个前提一个都不成立。',
+          '拉取链路上唯一会坏的东西是「它停了而没人知道」。一次 cp 一定成功，于是那样的场景会永远绿，而绿的那一刻恰好证明不了任何事。宁可空着，也不要一条测不到目标的绿 —— 所以本地腿仍然 skip，真机腿才断言。',
         )
         .note(
           '本地腿已经覆盖的那一半',
           'audit/mirror-and-authoritative-are-distinguishable 与 audit/mirror-of-absent-trail —— 申报与读取这一半是进程内的，测得动，而且它正是搬运停掉时唯一的可见面。',
         )
-        .skip(
-          '镜像的搬运需要 systemd 定时器 + 隧道 + 源与镜像两台机器；本地腿三个前提都不具备。用一次 cp 冒充会得到一条永远绿的场景，那比空着更糟。',
+      const report = await ctx.driver.inspectMirrorTransport?.()
+      if (report === undefined) {
+        return checks.skip(
+          '驱动没有 mirror-transport 能力（能力差集本该先拦下）',
         )
+      }
+      checks.note('控制台主机', report.consoleHost)
+      if (report.failure !== undefined) {
+        return checks
+          .expect(false, '能读到搬运现场', report.failure)
+          .done('读不到搬运现场')
+      }
+      const declared = report.units.filter(u => u.mirrorPath !== undefined)
+      if (declared.length === 0) {
+        // 「一个都没申报」分不出「这套部署没配镜像」与「控制台此刻没在跑」，
+        // 而这条场景问的是前者那条链路 —— 分不出来的时候不许替它下结论。
+        return checks
+          .note('采到的现场', JSON.stringify(report.units).slice(0, 1_500))
+          .skip(
+            `${report.consoleHost} 上的控制台命令行里一条 --audit 申报都没有：要么这套部署没配审计镜像，要么控制台此刻没在跑。两者这条场景分不出来，不替它下结论。`,
+          )
+      }
+
+      for (const unit of report.units) {
+        const lag = unit.maxLagMinutes ?? 5
+        // 宽限 120 s 不是"松一点"：定时器是 OnUnitActiveSec=<lag> +
+        // AccuracySec=30s，所以「距上次触发」的正常上界本来就是 lag+30s；
+        // 再加上这一轮采集自己花掉的时间。不给宽限的版本会周期性假红。
+        const bound = lag * 60 + 120
+        const since =
+          unit.observedAtSec === undefined || unit.lastTriggerSec === undefined
+            ? undefined
+            : unit.observedAtSec - unit.lastTriggerSec
+        const stale =
+          unit.observedAtSec === undefined || unit.mirrorMtimeSec === undefined
+            ? undefined
+            : unit.observedAtSec - unit.mirrorMtimeSec
+        checks
+          .note(`${unit.node} · 现场`, unit.raw.slice(0, 800))
+          // 下界 -60 不是凑数：钟与 systemctl 在同一趟里取，正常只可能差几秒。
+          // 更负的值意味着控制台机器的钟往回跳过 —— 那本身就该红，而不是
+          // 「距今是负的所以 ≤ 上限、通过」。少了下界，这条断言在最需要它的
+          // 方向（时间戳看起来来自未来）上是瞎的。
+          .expect(
+            since !== undefined && since <= bound && since >= -60,
+            `${unit.node}: 定时器上次触发距今落在 [-60s, ${bound}s]`,
+            `${since ?? '(取不到)'}s · ${unit.lastTriggerAt ?? '-'}`,
+          )
+          .eq(unit.serviceExitCode, 0, `${unit.node}: 拉取服务退出码`)
+          .eq(unit.serviceResult, 'success', `${unit.node}: 拉取服务 Result`)
+          .expect(
+            stale !== undefined && stale <= bound && stale >= -60,
+            `${unit.node}: 镜像 mtime 距今落在 [-60s, ${bound}s]（申报的滞后上限 ${lag} min）`,
+            `${stale ?? '(取不到)'}s`,
+          )
+          .expect(
+            unit.authoritativeBytes !== undefined &&
+              unit.mirrorBytes !== undefined &&
+              unit.authoritativeBytes >= unit.mirrorBytes,
+            `${unit.node}: 权威副本不短于镜像（链只追加）`,
+            `authoritative=${unit.authoritativeBytes ?? '-'} mirror=${unit.mirrorBytes ?? '-'}`,
+          )
+          // ── 承重的一条 ──────────────────────────────────────────────
+          // 前面几条只证明「它跑过」，这一条才证明「它搬对了」。
+          //
+          // 比的是**前缀**而不是整份哈希：审计链只追加，两次采样之间源端完全
+          // 可能又写了几条，那时整份哈希本来就该不同、而搬运仍然是对的。写成
+          // 整份相等会得到一条按节点活跃度随机变红的场景 —— 那种红没人会查，
+          // 两轮之后就会被改成「已知偶发」。
+          .expect(
+            unit.mirrorHash !== undefined &&
+              unit.authoritativePrefixHash === unit.mirrorHash,
+            `${unit.node}: 镜像内容 == 权威副本的前 ${unit.mirrorBytes ?? '?'} 字节`,
+            `mirror=${unit.mirrorHash ?? '-'} authoritative-prefix=${unit.authoritativePrefixHash ?? '-'}`,
+          )
+          .note(
+            `${unit.node} · 整份哈希是否也相等（留痕，不是断言）`,
+            unit.authoritativeHash === unit.mirrorHash
+              ? '相等 —— 采样期间源端没有再写'
+              : `不等：authoritative=${unit.authoritativeHash ?? '-'} —— 源端在两次采样之间又写了，前缀相等即为正常`,
+          )
+      }
+      return checks.done(
+        `${report.units.length} 条链的搬运都在申报的滞后上限内，且内容与权威副本前缀一致`,
+      )
     },
   },
 ]
