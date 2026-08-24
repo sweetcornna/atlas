@@ -20,6 +20,7 @@ import {
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
+  warnUnavailableModelCredentialProbe,
   type ResidentModelProbeInputs,
   type ResidentModelProbeTarget,
   type ResidentModelProbeVerdict,
@@ -262,6 +263,54 @@ describe('what the operator is told', () => {
     expect(
       warningFor({ status: 'unreachable', detail: 'no answer within 10000ms' }),
     ).toEqual([])
+    expect(
+      warningFor({ status: 'unavailable', detail: 'probe could not be built' }),
+    ).toEqual([])
+  })
+
+  function unavailableWarningFor(verdict: ResidentModelProbeVerdict): string[] {
+    const lines: string[] = []
+    warnUnavailableModelCredentialProbe(verdict, message => lines.push(message))
+    return lines
+  }
+
+  test('"nobody asked" is said out loud, and distinguished from "no answer"', () => {
+    const lines = unavailableWarningFor({
+      status: 'unavailable',
+      detail: 'Config accessed before allowed.',
+    })
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('could not run')
+    expect(lines[0]).toContain('Config accessed before allowed.')
+    // One full stop, not two: the detail already ends in one.
+    expect(lines[0]).not.toContain('allowed..')
+    expect(lines[0]).toContain('nobody asked')
+  })
+
+  test('an endpoint that merely did not answer still says nothing', () => {
+    // The distinction the two statuses exist for. `unreachable` is routine on a
+    // node a supervisor starts before the network is up; warning there would
+    // fire on healthy nodes and train people past both lines.
+    expect(
+      unavailableWarningFor({
+        status: 'unreachable',
+        detail: 'no answer within 10000ms',
+      }),
+    ).toEqual([])
+    expect(
+      unavailableWarningFor({ status: 'reachable', httpStatus: 200 }),
+    ).toEqual([])
+    expect(
+      unavailableWarningFor({ status: 'skipped', detail: 'nothing to test' }),
+    ).toEqual([])
+    expect(
+      unavailableWarningFor({
+        status: 'refused',
+        httpStatus: 401,
+        endpoint: 'https://api.anthropic.com/v1/messages',
+        detail: 'nope',
+      }),
+    ).toEqual([])
   })
 })
 
@@ -296,8 +345,11 @@ describe('the probe as the resident startup runs it', () => {
     expect(lines).toEqual([])
   })
 
-  test('a base URL that cannot even be parsed is skipped, not thrown', async () => {
-    // Startup must not die because a probe could not be built.
+  test('a base URL that cannot even be parsed is reported, not thrown', async () => {
+    // Startup must not die because a probe could not be built — but it must
+    // not go quiet either. An unparseable OPENAI_BASE_URL is never a healthy
+    // node's configuration, so this is `unavailable` rather than `skipped`,
+    // and it says so once.
     const lines: string[] = []
     const verdict = await runResidentModelCredentialProbe({
       hasCredential: true,
@@ -308,7 +360,63 @@ describe('the probe as the resident startup runs it', () => {
       fetchImpl: fetchAnswering(200),
       warn: message => lines.push(message),
     })
-    expect(verdict.status).toBe('skipped')
-    expect(lines).toEqual([])
+    expect(verdict.status).toBe('unavailable')
+    expect(lines.length).toBe(1)
+  })
+
+  test('the exact throw that made this probe dead code now speaks', async () => {
+    // The regression under test, in miniature. `qm resident` is a fast path in
+    // entrypoints/cli.tsx, so for the whole of PR #50's life it ran before any
+    // enableConfigs() and `getAuthHeaders()` threw `Config accessed before
+    // allowed.` on every node — first line of residentModelProbeInputs(),
+    // ahead of the provider switch, so no provider escaped it. The throw was
+    // caught, turned into `skipped`, and never printed: zero requests sent,
+    // zero bytes in <node>.err, and a full unit suite green underneath.
+    //
+    // Two independent guards now stand where that hole was: this one keeps the
+    // failure *audible*, and tests/integration/qianmo-resident-startup-probe
+    // keeps it from happening at all by running a real `qm resident`.
+    const lines: string[] = []
+    const verdict = await runResidentModelCredentialProbe({
+      hasCredential: true,
+      environment: {
+        getAPIProvider: () => 'firstParty',
+        getSmallFastModel: () => 'claude-haiku-5',
+        getAuthHeaders: () => {
+          throw new Error('Config accessed before allowed.')
+        },
+      },
+      fetchImpl: fetchAnswering(200),
+      warn: message => lines.push(message),
+    })
+    expect(verdict).toEqual({
+      status: 'unavailable',
+      detail: 'Config accessed before allowed.',
+    })
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('Config accessed before allowed')
+    // It must not read as a verdict on the credential — nothing was asked.
+    expect(lines[0]).toContain('does NOT know')
+    expect(lines[0]).not.toContain('REFUSED')
+  })
+
+  test('an unbuildable probe never reaches the network', async () => {
+    // The failure it replaces was invisible precisely because no request was
+    // sent; pin that the verdict and the absence of traffic agree.
+    const fetchImpl = fetchAnswering(200)
+    const verdict = await runResidentModelCredentialProbe({
+      hasCredential: true,
+      environment: {
+        getAPIProvider: () => 'firstParty',
+        getSmallFastModel: () => 'claude-haiku-5',
+        getAuthHeaders: () => {
+          throw new Error('Config accessed before allowed.')
+        },
+      },
+      fetchImpl,
+      warn: () => {},
+    })
+    expect(verdict.status).toBe('unavailable')
+    expect(fetchImpl.calls).toEqual([])
   })
 })

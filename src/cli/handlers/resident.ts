@@ -66,6 +66,7 @@ import {
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
+  warnUnavailableModelCredentialProbe,
   type ResidentModelProbeInputs,
   type ResidentModelProbeVerdict,
 } from './residentModelProbe.js'
@@ -1188,11 +1189,18 @@ export function residentModelProbeInputs(
  * Skipped when no credential is visible at all: {@link
  * warnMissingModelCredentials} has already said so in more useful words, and
  * two warnings about one fault teach people to read neither.
+ *
+ * `environment` exists for one test and says so: the only step here that
+ * touches the live process is {@link residentModelProbeInputs}, and it is the
+ * step that threw on every real node in the first shipped version. Injecting a
+ * throwing one is the only way to exercise the catch below without breaking
+ * the process the test runs in.
  */
 export async function runResidentModelCredentialProbe(
   options: {
     readonly hasCredential?: boolean
     readonly inputs?: ResidentModelProbeInputs
+    readonly environment?: ModelProbeEnvironment
     readonly fetchImpl?: typeof fetch
     readonly timeoutMs?: number
     readonly warn?: (message: string) => void
@@ -1204,7 +1212,10 @@ export async function runResidentModelCredentialProbe(
       return { status: 'skipped', detail: 'no model credential is visible' }
     }
     const target = resolveResidentModelProbeTarget(
-      options.inputs ?? residentModelProbeInputs(),
+      options.inputs ??
+        (options.environment === undefined
+          ? residentModelProbeInputs()
+          : residentModelProbeInputs(options.environment)),
     )
     if ('status' in target) return target
     const verdict = await probeResidentModel(target, {
@@ -1221,12 +1232,23 @@ export async function runResidentModelCredentialProbe(
     )
     return verdict
   } catch (error) {
-    // A probe that cannot even be built is not a fault of the node. Reported
-    // as `skipped` rather than swallowed so a caller can still see it.
-    return {
-      status: 'skipped',
+    // A probe that cannot even be built is not a fault of the node — but it is
+    // a fault, and it used to be reported as `skipped` on the theory that "a
+    // caller can still see it". No caller ever looked, so for the whole of
+    // PR #50's life this branch was where the check went to die quietly: every
+    // real node threw here, and `<node>.err` stayed at zero bytes. It now has
+    // its own status and prints one line, because a diagnostic that fails
+    // silently is worth strictly less than no diagnostic at all — it also
+    // convinces the operator the question was asked and answered.
+    const verdict = {
+      status: 'unavailable',
       detail: error instanceof Error ? error.message : String(error),
-    }
+    } as const
+    warnUnavailableModelCredentialProbe(
+      verdict,
+      ...(options.warn === undefined ? [] : ([options.warn] as const)),
+    )
+    return verdict
   }
 }
 

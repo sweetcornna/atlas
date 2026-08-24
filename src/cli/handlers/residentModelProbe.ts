@@ -34,6 +34,7 @@
  * process-global module mock.
  */
 
+import { invokedBinName } from '../../constants/brand.js'
 import { buildProviderResourceURL } from '../../utils/network/providerUrl.js'
 
 /** Where one probe request goes, and what it carries. */
@@ -51,6 +52,21 @@ export type ResidentModelProbeTarget = {
 export type ResidentModelProbeVerdict =
   /** Nothing was asked, and the reason is not a fault. */
   | { readonly status: 'skipped'; readonly detail: string }
+  /**
+   * Nothing was asked because the probe could not be *built* — an exception,
+   * not an answer.
+   *
+   * Split out of `skipped` on purpose. `skipped` is a **decision** this file
+   * made and can defend ("Bedrock signs through its own credential chain",
+   * "no OPENAI_API_KEY to test"); it is an expected outcome on healthy nodes,
+   * so it stays silent. This one is the diagnostic failing at its own job,
+   * which is never expected and never self-evident — and folding the two
+   * together is exactly how the first version of this probe shipped dead:
+   * `residentModelProbeInputs()` threw on every real node, the throw became a
+   * `skipped` nobody printed, and a check written to end silent failures spent
+   * its whole life failing silently.
+   */
+  | { readonly status: 'unavailable'; readonly detail: string }
   /** The endpoint answered something that is not a credential refusal. */
   | { readonly status: 'reachable'; readonly httpStatus: number }
   /** 401 / 403 / 407 — the credential itself was rejected. */
@@ -337,6 +353,46 @@ export function warnRefusedModelCredentials(
       'audited — and then produce nothing until the inactivity watchdog fails it. ' +
       'The ACP child inherits this process environment, so the fix has to be in place before the ' +
       'resident starts: rotate the key (or re-login) and restart this node.',
+  )
+  return true
+}
+
+/**
+ * Say, once at startup, that the credential check itself did not run.
+ *
+ * **`unavailable` is not `unreachable`, and the difference is the whole point
+ * of having two statuses.** `unreachable` means the question was asked and the
+ * endpoint did not answer — routine on a node a supervisor starts before the
+ * network is up, so it stays silent for the reason
+ * {@link warnRefusedModelCredentials} gives. `unavailable` means the question
+ * was never asked: no request left this process, and the operator's mental
+ * model ("startup would have told me if the credential were dead") is wrong
+ * without anything on the node saying so.
+ *
+ * That is the same shape as the fault this whole file exists to end (issue
+ * #37), one level up — so it gets a line, and it is worded to say what the
+ * node does *not* know rather than to imply a verdict it never reached.
+ *
+ * Returns whether it warned, so the caller can assert on it.
+ */
+export function warnUnavailableModelCredentialProbe(
+  verdict: ResidentModelProbeVerdict,
+  warn: (message: string) => void = message => {
+    process.stderr.write(`${message}\n`)
+  },
+): boolean {
+  if (verdict.status !== 'unavailable') return false
+  warn(
+    // `Error.message` usually ends in a full stop of its own and sometimes
+    // does not; the line reads as a sentence either way only if exactly one
+    // survives.
+    `[resident] the startup model-credential check could not run: ${verdict.detail.replace(/[.\s]+$/, '')}. ` +
+      'Nothing was sent, so this node does NOT know whether its credential is accepted — a revoked ' +
+      'one would still let it print a clean banner, admit tasks and receipt them, and only surface ' +
+      'as an inactivity timeout two minutes into each one. This is different from an endpoint that ' +
+      'did not answer, which is normal at boot and stays silent on purpose: here nobody asked. ' +
+      `Run \`${invokedBinName()} auth status\` with this node's OCC_CONFIG_DIR to check the ` +
+      'credential by hand until this is fixed.',
   )
   return true
 }
