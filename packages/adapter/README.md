@@ -53,10 +53,10 @@ flowchart TD
 读 `src/index.ts`（另有 `./inbound` / `./names` / `./wrapper` 三个子入口，供 CI 断言与常驻侧接线单独引用）：
 
 - **`deliverAndAck` / `DeliveryReply` / `DeliveryObserveOptions` / `ErrorReplyPayload`** —— 一次调用完成「投递 + 观察 + 生成回复」。`acked` / `dropped` / `expired` / `rejected` 四支，每支带上要发回去的信封。
-- **`InboundAdapter` / `InboundAdapterOptions` / `InboundDelivered` / `InboundRejection` / `InboundResult`** —— 写信箱本体，返回观察器需要的身份三元组、归一化后的 team、扣除本地冻结重叠后的投递截止时刻，以及（若落盘了）`BlobRef`。
+- **`InboundAdapter` / `InboundAdapterOptions` / `InboundDelivered` / `InboundRejection` / `InboundResult` / `InboundVerification`** —— 写信箱本体，返回观察器需要的身份三元组、归一化后的 team、扣除本地冻结重叠后的投递截止时刻，以及（若落盘了）`BlobRef`。`InboundVerification` 是路由层递进来的两项**已核实**结论（`capIss` 与 `trust`），本包只誊写不推导——它没有密钥、没有目录、没有信任集，缺省即最低档。
 - **`observeReadFlip` / `classifyMailboxEntry` / `ObserveOptions` / `DeliveryOutcome` / `MailboxEntryIdentity` / `MailboxEntryState`** 与三个周期常量 `DEFAULT_POLL_INTERVAL_MS` / `BASE_INPROCESS_POLL_INTERVAL_MS` / `BASE_PANE_POLL_INTERVAL_MS` —— 观察器。基座不给消息 id，所以身份是它自己写下的 `[from, timestamp, text]` 三元组。
 - **`BlobStore` / `BlobRef` / `isBlobRef` / `blobStoreDir` / `BLOB_DIR_SEGMENTS`** —— 暂存区，路径经 `occConfigPath()` 派生；取回时先核 sha256，取不到就是 `E_PAYLOAD_UNAVAILABLE`，绝不静默降级。
-- **`buildWrapper` / `buildNotice` / `serializeWrapper` / `QIANMO_WRAPPER_TYPE` / `BASE_RESERVED_MESSAGE_TYPES` / `isReservedBaseMessageType` / `assertWrapperTypeIsNotReserved` / `textBytes` / `QianmoWrapper` / `QianmoNotice`** —— 写进 `text` 的包装对象。
+- **`buildWrapper` / `buildNotice` / `serializeWrapper` / `QIANMO_WRAPPER_TYPE` / `BASE_RESERVED_MESSAGE_TYPES` / `isReservedBaseMessageType` / `assertWrapperTypeIsNotReserved` / `textBytes` / `QianmoWrapper` / `QianmoNotice`** —— 写进 `text` 的包装对象。`buildNotice(origin, trust)` 按档位选模板，两档各是一段完整文本而不是一段加从句；档位的定义与判据以 `docs/dev/protocol.md` §9.4 / §10.2 为准，本文不复制。
 - **`assertTeamName` / `normalizeTeamName` / `isNormalizedTeamName` / `isReservedDeviceName` / `RESERVED_DEVICE_NAMES` / `TEAM_NAME_PATTERN` / `MAX_TEAM_NAME_LENGTH` / `InvalidTeamNameError`** —— 名字归一化，避开基座两个互相矛盾的 sanitizer。
 
 体积阈值不在本包写死：它从基座常量 `MAX_MAILBOX_MESSAGE_TEXT_BYTES` import；协议级上限一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处。
