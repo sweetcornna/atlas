@@ -449,9 +449,22 @@ admin（`http.ts` 的 `handleIndex`，`view/page.ts` 的 `chatEnabled`，见 §6
 回执多带一个码。协议行为一个字节没改：那些字节本来就发给每一个握手通过的对端，对话面
 （`consoleChat.ts` 的 `onReply`）一直在读同一条信封——唤醒面只是补上了。
 
-**没拿到原因也不退回「不可达」。**一条走投递层被拒的 `wake` 没有 task 可答，节点什么都
-不回；这时页面说「节点拒绝了这条唤醒 · 原因见该节点的审计链 · msg &lt;id&gt;」，给的是
-去审计链里捞这一条的抓手，而不是一个错误的方向。
+**投递层被拒也给真因（issue #34）。**`#receive` 原先只为 `task.request` 备了答复——答复
+是挂在 task 上的——所以一条走**投递层**被拒的 `wake`（`E_UNKNOWN_AGENT`、mailbox 写失败
+这一类）节点一个字都不回，操作者只剩「原因见审计链」。现在**非 task 类型也补一条 `error`
+信封**（`resident.ts` 的 `#receive`），于是这条路径与上面的策略拒绝显示成同一种东西：
+
+```
+HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E_UNKNOWN_AGENT · resident agent ghost is not configured"}}
+```
+
+**唯一不补的是收到的 `error` 本身**：这类失败是**稳定**的（这台节点没有的 agent，下一次
+弹回来还是没有），两台配错的节点互相回 `error` 就永远收敛不了，而 `error` 按 C-1 被
+`isReplyType` 从 `(handler, taskId)` 回访键里豁免掉，环路网兜不住它。**不给退信回退信。**
+
+**兜底那一句仍然留着，也仍然不退回「不可达」。**节点确实一句话都不说的时候（比如对面是
+本次改动之前的旧版本），页面说「节点拒绝了这条唤醒 · 原因见该节点的审计链 · msg
+&lt;id&gt;」，给的是去审计链里捞这一条的抓手，而不是一个错误的方向。
 
 **关于「要不要对陌生拨号方含糊」**：这条防线不在这里，在**握手**
 （`packages/transport/src/handshake.ts`）。那个 `error` 信封只发给已经通过 PSK / Ed25519

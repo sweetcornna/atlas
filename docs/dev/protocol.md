@@ -1083,4 +1083,6 @@ created ──> sent ──> delivered   （回执 Accepted / Duplicate）
 > 用例：`src/services/qianmo/__tests__/resident.integration.test.ts` 的 `wake, end to end on the resident side (T11 blind spot ③)` 两条。第二条是对照式的——同一个节点、同一条通道、同一个一直在监听的对端，`task.request` 拿到 ack 与 `task.result`，`wake` 一条回复都没有——所以「没收到 ack」是关于节点的事实，而不是关于一条已经关掉的 socket 的事实。
 >
 > **若将来要给 `wake` 加 ack，先改的是发送方**：`executeResidentWake` 得先有 `onMessage`、先不在回执处关闭连接、并且先想清楚那条 `taskId` 的任务状态机怎么退休。在那之前，改实现只会制造一条发不出去也没人收的消息。
+>
+> **「一条回复都没有」说的是被收下的 `wake`，不是被拒的（issue #34）。**被拒的 `wake` 现在回一条 `error` 信封，`#receive` 对**所有**非 task 类型都补（`error` 自身除外，理由是不给退信回退信）。这不是给 `wake` 补 ack：ack 断言的是「输入已进入模型输入」，而这条信封断言的恰恰是它**没有**进入——两者一个是 A 类回执一个是拒绝，`taskId` 后面依旧没有任务状态机。发送方那三件事因此一件都没提前发生：`executeResidentWake` 的 `onMessage` 只收 `error`（issue #29 补的），连接照旧在回执处关闭。
 
