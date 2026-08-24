@@ -1073,6 +1073,62 @@ export function warnMissingModelCredentials(
 }
 
 /**
+ * A rendered {@link Bun.inspect} line longer than this cannot be a normal
+ * source line under this repo's own Biome width limits (80/120 columns,
+ * see `CLAUDE.md`); it is what a bundled `dist/chunks/*.js` line looks like
+ * — the whole minified chunk squashed onto "line 1". 400 leaves comfortable
+ * headroom above both column caps while sitting far below any real chunk
+ * (#30's repro line was >1KB).
+ */
+const RESIDENT_ERROR_MAX_LINE_LENGTH = 400
+
+/** Hard cap on the fallback rendering, in case a non-`Error` throw itself
+ * carries a huge payload (e.g. a giant string) — belt and suspenders past
+ * the line-length gate below, which only looks at *line* length. */
+const RESIDENT_ERROR_MAX_TOTAL_LENGTH = 2000
+
+function hasOversizedLine(text: string): boolean {
+  return text
+    .split('\n')
+    .some(line => line.length > RESIDENT_ERROR_MAX_LINE_LENGTH)
+}
+
+/**
+ * Format an error for this node's stderr, the way `console.error('[resident
+ * …]', error)` would — minus the one thing that broke `<node>.err`'s "zero
+ * bytes means nothing happened" property (#30).
+ *
+ * `console.error`/`Bun.inspect` on an `Error` value do not just print the
+ * message and stack: Bun renders a source "code frame" too — the offending
+ * line(s) plus a `^` caret — read straight off disk at the throw site. That
+ * is genuinely useful in `bun run dev` (unbundled TS, ordinary short lines).
+ * It is actively harmful against what this binary actually ships: a
+ * `dist/chunks/*.js` file is minified onto one line per chunk, so the
+ * "source line" becomes upwards of a kilobyte of unreadable chunk source
+ * glued in front of the real error.
+ *
+ * There is no flag to ask Bun for the frame conditionally, and the frame is
+ * not derived from `error.stack` — confirmed by inspection: `error.stack`
+ * never contains it, only `console.error`/`Bun.inspect`'s own rendering
+ * does. So the judge is not "dev vs. built", which we cannot always tell
+ * from here — it is the frame's own rendered width: let Bun render the frame as
+ * it always has, and only fall back to a frame-free rendering (the message
+ * plus stack, which is where `error.stack` already lives) when that render
+ * actually produced a line too long to be real source. Ordinary short
+ * source lines — dev mode's case — pass through byte-for-byte untouched.
+ */
+export function formatResidentError(error: unknown): string {
+  const rendered = Bun.inspect(error)
+  if (!hasOversizedLine(rendered)) return rendered
+  const fallback =
+    error instanceof Error
+      ? (error.stack ?? `${error.name}: ${error.message}`)
+      : String(error)
+  if (!hasOversizedLine(fallback)) return fallback
+  return `${fallback.slice(0, RESIDENT_ERROR_MAX_TOTAL_LENGTH)}…`
+}
+
+/**
  * `--cert`/`--key` startup self-check (K-2, one of the DoD's four negative
  * cases), run before this node opens a listener.
  *
@@ -1266,14 +1322,16 @@ export async function runResident(args: readonly string[]): Promise<void> {
         })
   if (activity !== null) {
     void activity.connect().catch(error => {
-      console.error('[resident activity]', error)
+      process.stderr.write(
+        `[resident activity] ${formatResidentError(error)}\n`,
+      )
     })
   }
   let timingWriteFailed = false
   const reportTimingError = (error: unknown): void => {
     if (timingWriteFailed) return
     timingWriteFailed = true
-    console.error('[resident timing]', error)
+    process.stderr.write(`[resident timing] ${formatResidentError(error)}\n`)
   }
   const timingWriter =
     config.timings === undefined
@@ -1289,7 +1347,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   const reportMemError = (error: unknown): void => {
     if (memWriteFailed) return
     memWriteFailed = true
-    console.error('[resident mem]', error)
+    process.stderr.write(`[resident mem] ${formatResidentError(error)}\n`)
   }
   const memWriter =
     config.memSample === undefined
@@ -1424,7 +1482,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
             ? {}
             : { intervalMs: config.witnessIntervalMs }),
           onError: error => {
-            console.error('[resident witness]', error)
+            process.stderr.write(
+              `[resident witness] ${formatResidentError(error)}\n`,
+            )
           },
         })
 
@@ -1458,7 +1518,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
       try {
         await activity?.report(active)
       } catch (error) {
-        console.error('[resident activity]', error)
+        process.stderr.write(
+          `[resident activity] ${formatResidentError(error)}\n`,
+        )
       }
     },
     ...(config.activityUrl === undefined
@@ -1474,7 +1536,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
           onTiming: (event: ResidentTimingEvent) => timingWriter.write(event),
         }),
     onError: error => {
-      console.error('[resident]', error)
+      process.stderr.write(`[resident] ${formatResidentError(error)}\n`)
     },
   })
 
