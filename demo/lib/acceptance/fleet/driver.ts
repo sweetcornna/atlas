@@ -459,7 +459,6 @@ export class FleetDriver implements AcceptanceDriver {
     // 先取「控制台申报了什么」与目标机的钟；每台节点的单元状态与文件在下面
     // 各自一趟（systemctl 的实例名与镜像路径都要按节点拼，合不成一条）。
     const declared = await this.#ssh(consoleSsh, [
-      `date +%s`,
       // 申报是成对的 `--audit <n>=<路径>` / `--audit-mirror <n>=<分钟>`，从
       // **跑着的控制台**的命令行上读 —— 那条命令行才是真源，抄一份进套件只会
       // 在部署改了之后开始说谎。
@@ -477,10 +476,9 @@ export class FleetDriver implements AcceptanceDriver {
       }
     }
     const declaredLines = declared.stdout.split('\n')
-    const observedAtSec = Number.parseInt(declaredLines[0] ?? '', 10)
     const paths = new Map<string, string>()
     const lags = new Map<string, number>()
-    for (const line of declaredLines.slice(1)) {
+    for (const line of declaredLines) {
       const mirror = /^--audit-mirror (\S+)=(\d+)$/.exec(line.trim())
       if (mirror !== null && mirror[1] !== undefined) {
         lags.set(mirror[1], Number.parseInt(mirror[2] ?? '', 10))
@@ -504,6 +502,10 @@ export class FleetDriver implements AcceptanceDriver {
       // systemd 时间串是另一条会静默给出 NaN 的路。
       const unit = `qianmo-mirror@${host.node}`
       const probe = await this.#ssh(consoleSsh, [
+        // 钟**在这一趟里取**，与 systemctl / stat 读到的是同一个时刻。取一次
+        // 放在整轮采集开头会让后取的那几台算出负的「距今」—— 负值又恰好能
+        // 无条件通过「≤ 上限」，于是这条断言在最需要它的方向上是瞎的。
+        `printf 'observed-at=%s\n' "$(date +%s)"`,
         `lt="$(systemctl --user show '${unit}.timer' -p LastTriggerUSec --value 2>/dev/null)"`,
         `printf 'last-trigger-at=%s\n' "$lt"`,
         `printf 'last-trigger-sec=%s\n' "$(date -d "$lt" +%s 2>/dev/null)"`,
@@ -552,7 +554,7 @@ export class FleetDriver implements AcceptanceDriver {
           'authoritativePrefixHash',
           strField(authority.stdout, 'authoritative-prefix-md5'),
         ),
-        ...(Number.isFinite(observedAtSec) ? { observedAtSec } : {}),
+        ...pick('observedAtSec', intField(probe.stdout, 'observed-at')),
         raw: `${probe.stdout}\n${authority.stdout}`.trim(),
       })
     }

@@ -354,16 +354,20 @@ export const auditMirrorScenarios: readonly Scenario[] = [
             : unit.observedAtSec - unit.mirrorMtimeSec
         checks
           .note(`${unit.node} · 现场`, unit.raw.slice(0, 800))
+          // 下界 -60 不是凑数：钟与 systemctl 在同一趟里取，正常只可能差几秒。
+          // 更负的值意味着控制台机器的钟往回跳过 —— 那本身就该红，而不是
+          // 「距今是负的所以 ≤ 上限、通过」。少了下界，这条断言在最需要它的
+          // 方向（时间戳看起来来自未来）上是瞎的。
           .expect(
-            since !== undefined && since <= bound,
-            `${unit.node}: 定时器上次触发距今 ≤ ${bound}s`,
+            since !== undefined && since <= bound && since >= -60,
+            `${unit.node}: 定时器上次触发距今落在 [-60s, ${bound}s]`,
             `${since ?? '(取不到)'}s · ${unit.lastTriggerAt ?? '-'}`,
           )
           .eq(unit.serviceExitCode, 0, `${unit.node}: 拉取服务退出码`)
           .eq(unit.serviceResult, 'success', `${unit.node}: 拉取服务 Result`)
           .expect(
-            stale !== undefined && stale <= bound,
-            `${unit.node}: 镜像 mtime 距今 ≤ ${bound}s（申报的滞后上限 ${lag} min）`,
+            stale !== undefined && stale <= bound && stale >= -60,
+            `${unit.node}: 镜像 mtime 距今落在 [-60s, ${bound}s]（申报的滞后上限 ${lag} min）`,
             `${stale ?? '(取不到)'}s`,
           )
           .expect(
