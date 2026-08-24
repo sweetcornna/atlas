@@ -2,6 +2,7 @@ import {
   classifyRetryableAPIError,
   getAPIErrorDiagnostics,
 } from '../retryClassification.js'
+import { reportUpstreamFailure } from '../upstreamStatus.js'
 
 /** Ten retries by default; the official CLI allows explicit values up to 15. */
 const DEFAULT_MAX_RETRIES = 10
@@ -251,6 +252,10 @@ export async function retryAPIRequest<T>(
     try {
       return await operation(attempt)
     } catch (error) {
+      // Same reason as the Anthropic-wire ladder in ../withRetry.ts: an
+      // out-of-process observer (the resident inactivity watchdog) has no
+      // other way to learn that the silence it is measuring is a 401.
+      reportUpstreamFailure(error)
       const transform = await options.onError?.(error)
       if (transform && !appliedErrorTransforms.has(transform)) {
         appliedErrorTransforms.add(transform)

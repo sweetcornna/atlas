@@ -118,10 +118,12 @@ export function extractLastJsonStringField(
  * Pattern matching auto-generated or system messages that should be skipped
  * when looking for the first meaningful user prompt. Matches anything that
  * starts with a lowercase XML-like tag (IDE context, hook output, task
- * notifications, channel messages, etc.) or a synthetic interrupt marker.
+ * notifications, channel messages, etc.) or a synthetic abort marker — either
+ * the user's `[Request interrupted by user]` or the resident watchdog's
+ * `[Request aborted by the resident watchdog: …]`.
  */
 const SKIP_FIRST_PROMPT_PATTERN =
-  /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/
+  /^(?:\s*<[a-z][\w-]*[\s>]|\[Request (?:interrupted|aborted)[^\]]*\])/
 
 const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/
 

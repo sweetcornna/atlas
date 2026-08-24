@@ -1222,8 +1222,19 @@ export class QueryEngine {
     }
   }
 
-  interrupt(): void {
-    this.abortController.abort()
+  /**
+   * Abort the running turn.
+   *
+   * `reason` is passed straight to `AbortController.abort` and read back off
+   * `signal.reason` inside the query loop, which is how an abort that no
+   * person performed — a resident node's inactivity watchdog — records itself
+   * as something other than a user interruption (see
+   * `RESIDENT_INACTIVITY_ABORT_REASON`). Omitted, it behaves exactly as
+   * before: an abort with no reason at all.
+   */
+  interrupt(reason?: unknown): void {
+    if (reason === undefined) this.abortController.abort()
+    else this.abortController.abort(reason)
   }
 
   /** Reset the abort controller so the next submitMessage() call can start

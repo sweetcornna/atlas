@@ -44,6 +44,7 @@ import {
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
 import { classifyRetryableAPIError } from './retryClassification.js'
+import { reportUpstreamFailure } from './upstreamStatus.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -352,6 +353,11 @@ export async function* withRetry<T>(
       return await operation(client, attempt, retryContext)
     } catch (error) {
       lastError = error
+      // Before any of the recovery branches below get a chance to swallow,
+      // transform or re-wrap it: this ladder retries a 401 (see
+      // RETRYABLE_HTTP_STATUSES), so on a dead credential the *only* trace an
+      // out-of-process observer ever gets is right here, once per attempt.
+      reportUpstreamFailure(error)
       logForDebugging(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
         { level: 'error' },

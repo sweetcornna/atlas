@@ -4,8 +4,10 @@
 import { describe, expect, test } from 'bun:test'
 import {
   DEFAULT_RESIDENT_INACTIVITY_MS,
+  isCredentialHttpStatus,
   ResidentInactivityError,
   ResidentInactivityWatchdog,
+  ResidentUpstreamHealth,
   type ResidentInactivityTurn,
 } from '../src/inactivity.js'
 
@@ -186,5 +188,116 @@ describe('the inactivity watchdog', () => {
     // (5 min) would never be the one to fire, which would make it decoration.
     expect(DEFAULT_RESIDENT_INACTIVITY_MS).toBeLessThan(300_000)
     expect(DEFAULT_RESIDENT_INACTIVITY_MS).toBeGreaterThan(0)
+  })
+})
+
+describe('why the turn went quiet', () => {
+  /** A clock the test moves by hand, so no staleness assertion races a timer. */
+  class ManualClock {
+    #now = 1_000_000
+    readonly now = (): number => this.#now
+    advance(ms: number): void {
+      this.#now += ms
+    }
+  }
+
+  function failedTurn(
+    health: ResidentUpstreamHealth | undefined,
+    timeoutMs = 120_000,
+  ): Promise<unknown> {
+    const timers = new ManualSchedule()
+    const watchdog = new ResidentInactivityWatchdog({
+      timeoutMs,
+      schedule: timers.schedule,
+      ...(health === undefined ? {} : { upstreamHealth: health }),
+    })
+    const guarded = watchdog.guard(TURN, () => new Promise<void>(() => {}))
+    timers.fire()
+    return guarded.then(
+      () => undefined,
+      (reason: unknown) => reason,
+    )
+  }
+
+  test('a 401 during the silence turns the failure into a credential answer', async () => {
+    // The beta fleet's actual fault: the key was refused in 44ms and retried
+    // quietly until the budget ran out, and the error that came back talked
+    // about model latency (issue #37).
+    const clock = new ManualClock()
+    const health = new ResidentUpstreamHealth({ now: clock.now })
+    health.record(401, '{"error":"Invalid API key"}')
+    clock.advance(120_000)
+
+    const error = (await failedTurn(health)) as ResidentInactivityError
+    expect(error).toBeInstanceOf(ResidentInactivityError)
+    expect(error.isCredentialFailure).toBe(true)
+    expect(error.upstream?.status).toBe(401)
+    // Points at the credential…
+    expect(error.message).toContain('credential')
+    expect(error.message).toContain('HTTP 401')
+    expect(error.message).toContain('Invalid API key')
+    // …and stops recommending the retry that cannot possibly work.
+    expect(error.message).not.toContain("is the sender's call")
+  })
+
+  test('403 and 407 are credential answers too; 429 and 500 are not', async () => {
+    for (const status of [401, 403, 407]) {
+      const health = new ResidentUpstreamHealth()
+      health.record(status)
+      const error = (await failedTurn(health)) as ResidentInactivityError
+      expect(error.isCredentialFailure).toBe(true)
+      expect(isCredentialHttpStatus(status)).toBe(true)
+    }
+    for (const status of [429, 500, 400, 404]) {
+      const health = new ResidentUpstreamHealth()
+      health.record(status)
+      const error = (await failedTurn(health)) as ResidentInactivityError
+      // Still reported — knowing the endpoint said 429 is useful — but never
+      // as "go rotate your key", which would send an operator to fix a
+      // credential that was never broken.
+      expect(error.isCredentialFailure).toBe(false)
+      expect(error.message).toContain(`HTTP ${status}`)
+      expect(error.message).toContain("is the sender's call")
+      expect(error.message).not.toContain('credential')
+    }
+  })
+
+  test('a status older than the silence is not offered as its cause', async () => {
+    const clock = new ManualClock()
+    const health = new ResidentUpstreamHealth({ now: clock.now })
+    health.record(401)
+    // One millisecond past the budget: the 401 happened before the silence
+    // being reported, so it is not evidence about it. A key fixed an hour ago
+    // must not be blamed for a turn that went quiet just now.
+    clock.advance(120_001)
+
+    const error = (await failedTurn(health)) as ResidentInactivityError
+    expect(error.isCredentialFailure).toBe(false)
+    expect(error.upstream).toBeUndefined()
+    expect(error.message).toContain('inactivity')
+    expect(error.message).toContain('taskTtlMs')
+    expect(health.last?.status).toBe(401)
+  })
+
+  test('no health at all leaves the message exactly as it was', async () => {
+    const withoutHealth = (await failedTurn(
+      undefined,
+    )) as ResidentInactivityError
+    const emptyHealth = (await failedTurn(
+      new ResidentUpstreamHealth(),
+    )) as ResidentInactivityError
+    expect(emptyHealth.message).toBe(withoutHealth.message)
+    expect(withoutHealth.upstream).toBeUndefined()
+  })
+
+  test('a status off the HTTP range cannot make the node lie about itself', () => {
+    // Fed from a wire message, so a malformed one must not be storable.
+    const health = new ResidentUpstreamHealth()
+    for (const bad of [0, 99, 600, -401, 401.5, Number.NaN]) {
+      health.record(bad)
+    }
+    expect(health.last).toBeUndefined()
+    health.record(401)
+    expect(health.last?.status).toBe(401)
   })
 })

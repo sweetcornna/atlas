@@ -6,6 +6,49 @@
 export const INTERRUPT_MESSAGE = '[Request interrupted by user]'
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   '[Request interrupted by user for tool use]'
+
+/**
+ * The abort marker for a turn nobody cancelled.
+ *
+ * A resident node runs unattended, and its inactivity watchdog
+ * (`@qianmo/resident`'s `ResidentInactivityWatchdog`) ends a silent turn by
+ * travelling the same abort path a Ctrl+C does. Reusing {@link
+ * INTERRUPT_MESSAGE} for it wrote "[Request interrupted by user]" into the
+ * transcript of a machine no user was sitting at — and that is the record
+ * people read first: `timings.jsonl` said `turn_failed:
+ * ResidentInactivityError` while the transcript said a human cancelled it, so
+ * the infrastructure failure was read as a deliberate one and the
+ * investigation stopped (issue #39).
+ *
+ * Deliberately a **new** string rather than a change to INTERRUPT_MESSAGE:
+ * that one is a user-visible surface of the base CLI, matched by the
+ * first-prompt skip patterns in `utils/sessionStorage/entries.ts` and
+ * `utils/session/sessionStoragePortable.ts`, counted by `/insights`, and
+ * rendered specially by the REPL. Those patterns were widened to cover both
+ * spellings; the `/insights` counter deliberately was not, because
+ * "user interruptions" on an unattended node must stay zero.
+ */
+export const INACTIVITY_ABORT_MESSAGE =
+  '[Request aborted by the resident watchdog: no agent activity]'
+export const INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE =
+  '[Request aborted by the resident watchdog: no agent activity for tool use]'
+
+/** Shared prefix of the two user-interrupt markers above. */
+const USER_INTERRUPT_MARKER_PREFIX = '[Request interrupted by user'
+
+/**
+ * Whether a transcript text block is the marker a **person** cancelled a turn.
+ *
+ * The one caller that has to get this right is `/insights`, which reports a
+ * "user interruptions" count. It used to test `content.includes('[Request
+ * interrupted by user')` inline, in two places; with a second abort marker in
+ * circulation the literal has to be spelled once, next to the strings it
+ * matches, or the next marker silently starts being counted as a human.
+ */
+export function isUserInterruptionText(text: string): boolean {
+  return text.includes(USER_INTERRUPT_MARKER_PREFIX)
+}
+
 export const CANCEL_MESSAGE =
   "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed."
 export const REJECT_MESSAGE =
@@ -44,6 +87,8 @@ export const SYNTHETIC_MODEL = '<synthetic>'
 export const SYNTHETIC_MESSAGES = new Set([
   INTERRUPT_MESSAGE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  INACTIVITY_ABORT_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
   CANCEL_MESSAGE,
   REJECT_MESSAGE,
   NO_RESPONSE_REQUESTED,

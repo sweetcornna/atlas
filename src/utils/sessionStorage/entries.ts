@@ -25,8 +25,16 @@ export type Transcript = (
   | SystemMessage
 )[]
 
+/**
+ * Synthetic openers that are never the session's first *real* prompt.
+ *
+ * The alternation covers both abort markers, not just the user one: a resident
+ * node's inactivity watchdog writes `[Request aborted by the resident
+ * watchdog: …]` (see `utils/messages/constants.ts`), and a marker that is not
+ * skipped here becomes the title of the session it interrupted.
+ */
 export const SKIP_FIRST_PROMPT_PATTERN =
-  /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/
+  /^(?:\s*<[a-z][\w-]*[\s>]|\[Request (?:interrupted|aborted)[^\]]*\])/
 
 /**
  * Type guard to check if an entry is a transcript message.
