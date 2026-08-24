@@ -759,13 +759,48 @@ export class QianmoResident {
         ...(routed.issuer === undefined ? {} : { capIss: routed.issuer }),
       })
     } catch (error) {
+      // Rule N-1 on the way out, the same call the two refusals above make.
+      // Every code reachable here is legacy today, so it is an identity now;
+      // it is written down so a post-legacy delivery code added later cannot
+      // reach an old peer as a payload it reads as malformed.
+      const code = errorCodeForPeer(
+        error instanceof ResidentDeliveryError
+          ? error.code
+          : ProtocolErrorCode.E_UNDELIVERABLE,
+        context.channel.peerSupportedTypes,
+      )
+      const reason = error instanceof Error ? error.message : String(error)
       if (task !== undefined) {
-        const code =
-          error instanceof ResidentDeliveryError
-            ? error.code
-            : ProtocolErrorCode.E_UNDELIVERABLE
-        const reason = error instanceof Error ? error.message : String(error)
         await this.#settleTask(task, errorReply(message, code, reason))
+      } else if (message.type !== MessageType.Error) {
+        // issue #34. A refusal from the delivery layer — `E_UNKNOWN_AGENT`, a
+        // mailbox write that failed — used to be answered only for
+        // `task.request`, because the answer rode on the task. Everything
+        // else, `wake` above all, got silence: the sender saw a receipt
+        // flattened to `E_UNDELIVERABLE` (`packages/transport/src/receiver.ts`
+        // presses every handler throw into that one code) and had to read this
+        // node's audit trail to learn why — the "log into the box to find
+        // out" shape issues #13 / #9 / #29 exist to close.
+        //
+        // Who can read it is settled a layer down and does not depend on this
+        // line: `startTransportServer` dispatches an `Envelope` frame only
+        // after `ws.data.authed` is set, and `ws.data.channel` is assigned
+        // nowhere but the auth-success branch. So this envelope can only reach
+        // a peer that already passed PSK / Ed25519 — a stranger never gets to
+        // send an envelope at all, and cannot dial for node state.
+        //
+        // Not the durable `#settleTask` path: there is no task to settle and
+        // no owed answer to redeliver in a later life. Best-effort on the
+        // connection the message arrived on is exactly right, because that is
+        // the connection the sender is still holding open for its receipt.
+        //
+        // An inbound `error` is the one type left out, because this failure is
+        // *stable* — an agent this node does not host will still not exist on
+        // the next bounce — so two misconfigured nodes answering each other's
+        // `error` would never converge, and nothing else would stop them:
+        // `isReplyType` exempts `error` from the `(handler, taskId)` revisit
+        // key by design (C-1), which is the loop net. Do not bounce a bounce.
+        context.channel.send(errorReply(message, code, reason))
       }
       throw error
     }

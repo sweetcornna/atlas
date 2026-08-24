@@ -44,7 +44,11 @@ import {
   remoteWitnessAnchorWriter,
 } from '@qianmo/witness'
 import { readMailbox } from '../../../utils/agents/teammateMailbox.js'
-import { executeResidentWake } from '../../../cli/handlers/residentWake.js'
+import { createWakePort } from '../../../cli/handlers/consolePorts.js'
+import {
+  WakeRefusedError,
+  executeResidentWake,
+} from '../../../cli/handlers/residentWake.js'
 import type { ResidentTimingEvent } from '@qianmo/resident'
 import { QianmoResident } from '../resident.js'
 import { openAuditTrail, residentNotifyTrailSink } from '../auditTrail.js'
@@ -1476,6 +1480,97 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     // Nothing at all came back for the wake — no ack, and no `task.result`
     // either, because no task was ever registered for it.
     expect(replies.filter(item => item.taskId === wake.taskId)).toEqual([])
+  }, 25_000)
+
+  test('a wake the delivery layer refuses answers with its real code, not with silence (issue #34)', async () => {
+    // issue #34。投递层拒绝（这里是 `E_UNKNOWN_AGENT`：这台节点上没有这个
+    // agent，`assertDeliverable` 在写盘之前就拒了）以前**一个字都不回** ——
+    // `#receive` 只为 `task.request` 备了答复，而 wake 没有 task。发起方于是
+    // 只剩一个被 `receiver.ts` 压平成 `E_UNDELIVERABLE` 的回执，操作者要登机
+    // 读 `trail.ndjson` 才知道为什么。
+    //
+    // 这条用例不测「代码里多发了一条信封」，它从**真节点**一路量到**操作面上
+    // 那一行字**：真 `QianmoResident`、真 `NodeRouter`、真握手、真回执、真
+    // `createWakePort`。中间任何一环把原因弄丢，这里就红。
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-undeliverable-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const ready: { url?: string }[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      // TCP for the same reason the first wake test uses it: the production
+      // sender and the console wake port both take a ws URL.
+      listen: { port: 0, hostname: '127.0.0.1' },
+      spawnAcp: spawnFixture,
+      onReady: address => ready.push(address),
+      onError: () => {},
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+    const url = ready[0]?.url
+    expect(url).toBeDefined()
+
+    // 这台节点只配了 `reviewer`。
+    const ghost = 'qianmo://node-b/ghost'
+
+    let refusal: unknown
+    try {
+      await executeResidentWake(
+        {
+          url: url as string,
+          from: 'qianmo://node-a/planner',
+          to: ghost,
+          prompt: 'wake up and look at the queue',
+          afterMs: 0,
+          timeoutMs: 10_000,
+          deliverTtlMs: 90_000,
+        },
+        PSK,
+      )
+    } catch (error) {
+      refusal = error
+    }
+
+    if (!(refusal instanceof WakeRefusedError)) {
+      throw new Error(`expected a WakeRefusedError, got ${String(refusal)}`)
+    }
+    // 真因回到了发起方本身，而不是只留在节点的审计链里。
+    expect(refusal.detail?.code).toBe(ProtocolErrorCode.E_UNKNOWN_AGENT)
+    expect(refusal.detail?.reason).toContain('ghost')
+    // 回执那一格照旧是被压平的那个码 —— 它被读过，只是不再是拿去给人看的原因。
+    expect(refusal.receiptCode).toBe(ProtocolErrorCode.E_UNDELIVERABLE)
+
+    // 操作者真正看到的那一行。
+    const shown = await createWakePort({
+      url: url as string,
+      psk: PSK,
+      timeoutMs: 10_000,
+    }).send({
+      from: 'qianmo://console/operator',
+      to: ghost,
+      prompt: 'wake up and look at the queue',
+      url: '',
+    })
+    if (shown.ok) throw new Error('the wake was expected to be refused')
+    expect(shown.failure.code).toBe('refused')
+    expect(shown.failure.message).toContain(ProtocolErrorCode.E_UNKNOWN_AGENT)
+    // PR #32 的兜底文案只该在「对面一句话都不说」时出现，而这条路径不再是
+    // 那种；它仍然保留，护栏在 `consoleWakeRefusal.test.ts` 的
+    // `silentlyRefusingNode` 那条用例上。
+    expect(shown.failure.message).not.toContain('原因见该节点的审计链')
+    // 把人引向网络排查的那三个词一个都不许出现。
+    expect(shown.failure.message).not.toContain('不可达')
+    expect(shown.failure.message).not.toContain('unreachable')
+    expect(shown.failure.message).not.toContain('E_UNDELIVERABLE')
+
+    // 拒绝没有花掉收件人的一格 inbox（规则 L-1）：真 agent 的信箱仍然是空的。
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(0)
   }, 25_000)
 
   test('an agent notification reaches the hub on the inbound channel and lands on the audit chain', async () => {
