@@ -131,10 +131,44 @@ export function isReplyType(type: MessageType): boolean {
 }
 
 /**
- * The only value `trust` ever takes: a cross-node message is never trusted.
- * A closed set means the receiver has nothing to decide, only to label.
+ * The only value the **envelope's** `trust` field ever takes: what a message
+ * says about its own trustworthiness is worth nothing, so the field is pinned
+ * and `validate.ts` refuses anything else.
+ *
+ * It is also the floor of {@link NoticeTrust} — the receiver-written tier — so
+ * that the two labels cannot drift into disagreeing about the word for "no
+ * evidence at all". They remain two different statements: this constant on the
+ * envelope is a sender's self-description, the same constant on a notice is
+ * the receiver's own finding.
  */
 export const TRUST_UNTRUSTED = 'untrusted'
+
+/**
+ * The receiver's finding that a message was authorized by a subject this node
+ * was explicitly configured to trust, for this task alone (issue #28).
+ *
+ * **Never a wire value.** It is produced by `@qianmo/capability` *after* a
+ * presented token verified, carried through the routing layer, and rendered by
+ * `@qianmo/adapter` into the mailbox notice. No sender can put it anywhere:
+ * the envelope's `trust` field is still pinned to {@link TRUST_UNTRUSTED}, and
+ * the only field of the envelope this tier is derived from — `cap` — is a
+ * signature this node checked against a public key it was handed out of band.
+ *
+ * What it claims is narrow, and the notice text says so in the same words: the
+ * *request* is authorized, the *content* is still remote text.
+ */
+export const NOTICE_TRUST_VERIFIED_CAPABILITY = 'verified-capability'
+
+/**
+ * The two tiers a receiver-written provenance notice can carry (§9.4).
+ *
+ * A closed union with a default: everything is {@link TRUST_UNTRUSTED} unless
+ * a verification result says otherwise, so a layer that forgets to pass the
+ * tier along produces the safe value rather than an absent one.
+ */
+export type NoticeTrust =
+  | typeof TRUST_UNTRUSTED
+  | typeof NOTICE_TRUST_VERIFIED_CAPABILITY
 
 /**
  * Provenance label (protocol.md §10.2).
