@@ -53,6 +53,9 @@ export type Dimension =
   | 'wake'
   | 'recovery'
   | 'launcher'
+  | 'limits'
+  | 'console'
+  | 'certificate'
 
 export const DIMENSIONS: readonly Dimension[] = [
   'handshake',
@@ -67,6 +70,9 @@ export const DIMENSIONS: readonly Dimension[] = [
   'wake',
   'recovery',
   'launcher',
+  'limits',
+  'console',
+  'certificate',
 ]
 
 /**
@@ -84,6 +90,14 @@ export interface Evidence {
 export type DriverCapability =
   /** 能按任意参数起一个全新常驻节点（本地有，真机没有）。 */
   | 'spawn-node'
+  /**
+   * 能按任意参数起一个全新控制台进程 **并直连它的 HTTP 面**（本地有，真机没有）。
+   *
+   * 与 `spawn-node` 分开，因为两者在真机腿上不足的理由不同：那边节点是部署好的，
+   * 而控制台既是部署好的、又只经隧道可达，「起一个自己的控制台再打它的端口」
+   * 在真机上两头都不成立。合并成一个能力会让真机腿的 skip 理由说不清是哪一半。
+   */
+  | 'spawn-console'
   /** 能重启一个已有节点（本地有；真机需 `--allow-restart`）。 */
   | 'restart-node'
   /** 能改节点的环境变量 / 凭据文件后重启。 */

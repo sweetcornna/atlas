@@ -432,3 +432,171 @@ export const handshakeScenarios: readonly Scenario[] = [
     },
   },
 ]
+
+// ---------------------------------------------------------------------------
+// 冻结四元组剩下的两条腿
+//
+// 前两条（`peerNode` / `authentication`）在上面的数组里，只要 psk 与 signature
+// 两档就造得出来。剩下两条只在 `--trust-ca` 那条路上才有形状 —— `credential`
+// 这一格在 `--trust` 档上恒为 `(explicit, <节点名>)`，换 selector 也不动它。
+// ---------------------------------------------------------------------------
+
+import {
+  certificateFixture,
+  dialWithCertificate,
+  opensslGate,
+  startCaOnlyNode,
+} from './certificate.js'
+import {
+  issueCertificate,
+  publishAgentCertificate,
+  publishRevocationList,
+  signRevocationList,
+} from '../local/ca.js'
+import { readFileSync as readSource } from 'node:fs'
+import { join as joinPath } from 'node:path'
+import { REPO_ROOT } from '../local/spawn.js'
+export const credentialChannelScenarios: readonly Scenario[] = [
+  {
+    id: 'handshake/channel-conflict-credential',
+    dimension: 'handshake',
+    title: '冻结四元组 · credential 腿变化 → 4004',
+    expected: `同一节点、同一把签名钥匙，换一张证书重用通道 → ${CLOSE_CHANNEL_CONFLICT}；审计链记 channel_identity_mismatch`,
+    requires: ['spawn-node', 'raw-dial', 'exec-node-cli', 'read-node-files'],
+    timeoutMs: 300_000,
+    async run(ctx) {
+      const checks = new Checks()
+      const skipReason = opensslGate(checks)
+      if (skipReason !== undefined) return checks.skip(skipReason)
+
+      const fixture = await certificateFixture(ctx)
+      // 同一个配置根签两次：Ed25519 身份是 `wx` 创建、永不覆盖，所以两张证书
+      // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。
+      const first = await issueCertificate(ctx, fixture.ca, {
+        node: 'ctl',
+        configRoot: fixture.peerConfig,
+        outName: 'cert-one.crt',
+      })
+      const second = await issueCertificate(ctx, fixture.ca, {
+        node: 'ctl',
+        configRoot: fixture.peerConfig,
+        outName: 'cert-two.crt',
+      })
+      const rl = await signRevocationList(ctx, fixture.ca)
+      await publishRevocationList(fixture.registryUrl, rl)
+      await publishAgentCertificate(fixture.registryUrl, {
+        address: 'qianmo://ctl/op',
+        endpoint: 'ws://127.0.0.1:1',
+        publicKey: first.nodePublicKey,
+        certificate: first.pem,
+      })
+      await publishAgentCertificate(fixture.registryUrl, {
+        address: 'qianmo://ctl/spare',
+        endpoint: 'ws://127.0.0.1:2',
+        publicKey: second.nodePublicKey,
+        certificate: second.pem,
+      })
+      const node = await startCaOnlyNode(ctx, fixture)
+
+      const channelId = newChannelId()
+      // 第一条连接必须还活着 —— 与上面两条同一个坑：通道空了就被释放。
+      const holder = dialWithCertificate(node, first, {
+        channelId,
+        settleMs: 6_000,
+      })
+      await delay(1_000)
+      const intruder = await dialWithCertificate(node, second, {
+        channelId,
+        settleMs: 400,
+      })
+      const held = await holder
+      await delay(500)
+      const audited = await handshakeRejections(ctx.driver, node)
+
+      return checks
+        .note('第一张证书指纹', first.fingerprint256)
+        .note('第二张证书指纹', second.fingerprint256)
+        .expect(
+          first.keys.publicKey === second.keys.publicKey,
+          '两张证书绑定同一把签名钥匙（隔离出 credential 这一格）',
+          `${first.keys.publicKey} / ${second.keys.publicKey}`,
+        )
+        .expect(held.authed, '第一条连接握手成功并持有通道', held.authed)
+        .expect(!intruder.authed, '第二条没有握手成功', intruder.authed)
+        .eq(intruder.closeCode, CLOSE_CHANNEL_CONFLICT, '关闭码')
+        .eq(
+          intruder.closeReason,
+          'logical channel identity conflict',
+          '关闭原因',
+        )
+        .expect(
+          audited.includes('channel_identity_mismatch'),
+          '审计链里出现 channel_identity_mismatch',
+          audited,
+        )
+        .done('换证书重用通道被 4004 挡住')
+    },
+  },
+
+  {
+    id: 'handshake/channel-conflict-signing-key',
+    dimension: 'handshake',
+    title:
+      '冻结四元组 · signingPublicKey 腿：本地腿造不出（并附一条防回潮的检查）',
+    expected:
+      '要么这条链路仍然造不出来（记 skip 并说明），要么产品新增了让它造得出来的开关 —— 那时这条必须变红，提醒把场景补上',
+    requires: ['read-repo-source'],
+    timeoutMs: 60_000,
+    async run(ctx) {
+      // 为什么造不出来，逐条：
+      //   · `--trust <节点>=<公钥>` 是一张静态表，一个节点只有一个公钥，
+      //     进程活着期间不会变；
+      //   · `--trust-ca` 那条路上公钥来自证书，而 `credential` 的 selector 就是
+      //     那张证书的指纹 —— 换公钥必然同时换指纹，两条腿一起动，隔离不出来；
+      //   · 证书目录只在**启动时**同步拉一次，随后按 `DEFAULT_REGISTRY_POLL_
+      //     INTERVAL_MS`（一小时）轮询，而重启会把在持的那条连接一起带走 ——
+      //     「同一条通道上换一把签名钥匙」因此没有落点。
+      // 于是这条腿由 `packages/transport/test/retained-channel-auth.test.ts`
+      // 用一个手写的 HandshakeCredentialDirectory 覆盖，那里能在两次拨号之间
+      // 换答案。这条场景负责的是**别让这个结论悄悄过期**。
+      const source = readSource(
+        joinPath(REPO_ROOT, 'src/cli/handlers/resident.ts'),
+        'utf8',
+      )
+      const pollConstant =
+        /DEFAULT_REGISTRY_POLL_INTERVAL_MS\s*=\s*([0-9_]+)/.exec(source)?.[1]
+      // 出现任何「让轮询间隔可配」的命令行开关，这条结论就作废了。
+      const pollFlag = /--registry-poll[a-z-]*/.exec(source)?.[0]
+      const unitTest = readSource(
+        joinPath(
+          REPO_ROOT,
+          'packages/transport/test/retained-channel-auth.test.ts',
+        ),
+        'utf8',
+      )
+      ctx.log(`poll interval constant = ${pollConstant ?? '(没找到)'}`)
+
+      const checks = new Checks()
+        .note('轮询间隔常量', pollConstant ?? '(没找到)')
+        .note('命令行上的轮询开关', pollFlag ?? '(没有)')
+        .expect(
+          unitTest.includes('signingPublicKey') ||
+            unitTest.includes('secondKeys'),
+          'transport 的单测仍然覆盖着这条腿（本地腿放弃它的前提）',
+          unitTest.includes('secondKeys'),
+        )
+      if (pollFlag !== undefined) {
+        return checks
+          .expect(
+            false,
+            `产品新增了 ${pollFlag}：证书目录能在两次拨号之间换答案了，这条腿从此造得出来，请把本场景改写成真实断言`,
+            pollFlag,
+          )
+          .done('结论过期')
+      }
+      return checks.skip(
+        '本地腿造不出：--trust 是静态表；--trust-ca 那条路上公钥与 credential 指纹绑死、换一个必然换另一个；证书目录只在启动时同步一次、之后每小时轮询，而重启会带走在持连接。这条腿由 packages/transport/test/retained-channel-auth.test.ts 用手写目录覆盖。',
+      )
+    },
+  },
+]

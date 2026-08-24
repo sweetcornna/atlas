@@ -88,6 +88,17 @@ export interface RawDialOptions {
   /** 握手完成后再等多久收帧（默认 1500ms）。 */
   readonly settleMs?: number
   readonly timeoutMs?: number
+  /**
+   * 提前收工判据：握手之后每收到一帧就问一次，答 true 就立刻结束。
+   *
+   * 只对**握手之后**的帧生效（`authed` 为真才问）—— 在 challenge 还没被应答
+   * 之前收工，拿到的是一次自己造成的「没握手」，不是被测系统的答案。
+   *
+   * 存在的理由是批量场景：一次发七百条信封时，`settleMs` 要按最坏情况给到
+   * 几十秒，而正常情况下最后一条回执两秒就到齐了。没有这条判据，那几十秒
+   * 每轮都要白等。
+   */
+  readonly until?: (frames: readonly string[]) => boolean
 }
 
 /**
@@ -154,6 +165,10 @@ export async function rawDial(options: RawDialOptions): Promise<DialProbe> {
     socket.on('message', raw => {
       const text = raw.toString()
       frames.push(text)
+      if (authed && options.until?.(frames) === true) {
+        finish()
+        return
+      }
       const frame = parseFrame(text)
       if (frame === null) return
 
