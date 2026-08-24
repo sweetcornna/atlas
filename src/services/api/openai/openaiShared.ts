@@ -116,7 +116,7 @@ export function formatOpenAIPromptCacheKey(sessionId: string): string {
  * Being too *fine* is what costs money, which is why nothing per-turn (message
  * bodies, timestamps, request ids) may ever enter this hash.
  */
-export function formatOpenAIPrefixCacheKey(params: {
+function formatOpenAIPrefixCacheKey(params: {
   model: string
   messages: readonly unknown[]
   tools: readonly unknown[]
