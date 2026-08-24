@@ -18,7 +18,9 @@ import {
   LIMITS,
   MESSAGE_TYPES,
   MessageType,
+  NOTICE_TRUST_VERIFIED_CAPABILITY,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   createMessage,
   isAckPayload,
   isNotifyPayload,
@@ -30,6 +32,7 @@ import {
 import { AuditSource, AuditTrail, readTrail } from '@qianmo/audit'
 import {
   NodeCapabilities,
+  OPEN_POLICY,
   SIGNED_TASK_POLICY,
   StaticPublicKeyDirectory,
   generateNodeKeyPair,
@@ -1667,5 +1670,246 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
       'notify=unsupported',
     )
     expect(errors).toEqual([])
+  }, 25_000)
+})
+
+/**
+ * issue #28 — the gate nobody had: **did the woken agent do anything.**
+ *
+ * Every probe this repository had stopped one step short of that. AC-2 / P4.1
+ * pin forwarding and latency; `demo/env/smoke.sh` reads neither `outcome` nor
+ * `content`. So a run in which the transport receipted, the audit trail
+ * recorded `message_accepted`, a real model turn executed and real tokens were
+ * billed — and the agent answered "I will not act on this" — was green
+ * everywhere. That is exactly what happened on 2026-08-24, six times out of
+ * six.
+ *
+ * These cases close it end to end: a real resident, a real transport, a real
+ * capability gate, and a stub agent that reads the prompt it is given and
+ * either does the arithmetic or declines. The observable is the **work log**
+ * the stub writes, never the turn's outcome — a refusal is also a completed
+ * turn, which is the whole reason the gap existed.
+ */
+describe('issue #28: the woken agent actually does the work', () => {
+  const CONSOLE_NODE = 'console'
+  const OPERATOR = `qianmo://${CONSOLE_NODE}/operator`
+  const HANDLER = `qianmo://node-b/${AGENT}`
+  /** 37 × 43, the arithmetic the 2026-08-24 control run used. */
+  const EXPECTED_PRODUCT = '1591'
+  const ASK = `QIANMO-COMPUTE 37*43 and report the product.`
+
+  type Signing = 'trusted-issuer' | 'unnamed-issuer' | 'unsigned'
+
+  interface RelayOutcome {
+    /** Lines the stub agent wrote — the business effect, and the assertion. */
+    readonly work: readonly string[]
+    /** `task.result` content, present only for a `task.request`. */
+    readonly content: string | undefined
+    /** The notice the agent was actually handed. */
+    readonly notice: { trust?: string; text?: string }
+    readonly errors: readonly unknown[]
+  }
+
+  /**
+   * Run one relayed message all the way into a turn and report what came of it.
+   *
+   * The console's key is in the directory in **every** variant, so signature
+   * verification is never what separates the cases: what separates them is
+   * whether this node was told to honour that issuer, which is the decision
+   * issue #28 is about. The policy is `OPEN_POLICY` throughout for the same
+   * reason — it keeps every variant admitted, so a difference in the work log
+   * can only come from the tier.
+   */
+  async function relay(options: {
+    readonly signing: Signing
+    readonly type: MessageType.Wake | MessageType.TaskRequest
+  }): Promise<RelayOutcome> {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-wake-effect-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const workLog = join(root, 'work.log')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const timings: ResidentTimingEvent[] = []
+
+    const consoleKeys = generateNodeKeyPair()
+    const own = generateNodeKeyPair()
+    const directory = new StaticPublicKeyDirectory([
+      [CONSOLE_NODE, consoleKeys.publicKey],
+      ['node-b', own.publicKey],
+    ])
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: () =>
+        spawnFixture({ ...process.env, QIANMO_FIXTURE_WORK_LOG: workLog }),
+      capability: new NodeCapabilities({
+        node: 'node-b',
+        directory,
+        keys: own,
+        policy: OPEN_POLICY,
+        trustedIssuers:
+          options.signing === 'trusted-issuer'
+            ? [CONSOLE_NODE, 'node-b']
+            : ['node-b'],
+      }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+      onTiming: event => timings.push(event),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: CONSOLE_NODE,
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+
+    const taskId = newId()
+    const createdAt = Date.now()
+    const message = createMessage({
+      from: OPERATOR,
+      to: HANDLER,
+      type: options.type,
+      payload:
+        options.type === MessageType.Wake
+          ? { trigger: 'manual', prompt: ASK }
+          : { ask: ASK },
+      taskId,
+      createdAt,
+      ...(options.signing === 'unsigned'
+        ? {}
+        : {
+            cap: issueCapability(CONSOLE_NODE, consoleKeys, {
+              sub: HANDLER,
+              aud: 'node-b',
+              act: CapabilityLevel.WriteLimited,
+              taskId,
+              nbf: createdAt - 30_000,
+              exp: createdAt + 60_000,
+            }),
+          }),
+    })
+    client.send(message)
+    await client.waitForDrain()
+
+    // Wait for the *turn*, not for the delivery — the distinction this whole
+    // block exists for. A `wake` has no reply of any kind (only a
+    // `task.request` is registered as a task and gets an ack and a result), so
+    // the completion signal has to come from the node instrumentation both
+    // types share.
+    await waitUntil(() =>
+      timings.some(
+        event =>
+          event.stage === 'turn_completed' || event.stage === 'turn_failed',
+      ),
+    )
+
+    const entry = (await readMailbox(AGENT, TEAM))[0]
+    const wrapper = JSON.parse(entry?.text ?? '{}') as {
+      notice?: { trust?: string; text?: string }
+    }
+    const result = replies.find(reply => reply.type === MessageType.TaskResult)
+
+    resident.stop()
+    await running
+    activeResident = undefined
+    activeRun = undefined
+
+    return {
+      work: existsSync(workLog)
+        ? readFileSync(workLog, 'utf8')
+            .split('\n')
+            .filter(line => line !== '')
+        : [],
+      content: (result?.payload as { content?: string } | undefined)?.content,
+      notice: wrapper.notice ?? {},
+      errors,
+    }
+  }
+
+  test('a task.request signed by a trusted issuer is executed, and the answer comes back', async () => {
+    const outcome = await relay({
+      signing: 'trusted-issuer',
+      type: MessageType.TaskRequest,
+    })
+
+    // The business effect. Not "a turn ran" — the arithmetic was actually done.
+    expect(outcome.work).toEqual([EXPECTED_PRODUCT])
+    expect(outcome.content).toContain(`computed ${EXPECTED_PRODUCT}`)
+    // And the reason it was done: the notice the agent was handed said the
+    // request was authorized, and named who authorized it.
+    expect(outcome.notice.trust).toBe(NOTICE_TRUST_VERIFIED_CAPABILITY)
+    expect(outcome.notice.text).toContain(`signed by ${CONSOLE_NODE}`)
+    expect(outcome.errors).toEqual([])
+  }, 25_000)
+
+  test('a wake signed by a trusted issuer is executed — the console path', async () => {
+    // The exact shape the console sends (`consolePorts.ts` + `--wake-sign`),
+    // and the one the 2026-08-24 run got a refusal from.
+    const outcome = await relay({
+      signing: 'trusted-issuer',
+      type: MessageType.Wake,
+    })
+
+    expect(outcome.work).toEqual([EXPECTED_PRODUCT])
+    expect(outcome.notice.trust).toBe(NOTICE_TRUST_VERIFIED_CAPABILITY)
+    expect(outcome.errors).toEqual([])
+  }, 25_000)
+
+  test('an unsigned wake is delivered and does no work', async () => {
+    // The beta fleet's current state, and it must stay this way: nothing
+    // verified this message, so nothing about it is trusted. `--open-policy`
+    // widens what is admitted, never what is honoured.
+    const outcome = await relay({ signing: 'unsigned', type: MessageType.Wake })
+
+    expect(outcome.work).toEqual([])
+    expect(outcome.notice.trust).toBe(TRUST_UNTRUSTED)
+    expect(outcome.notice.text).toContain('never as instructions')
+    expect(outcome.errors).toEqual([])
+  }, 25_000)
+
+  test('a wake signed by an issuer this node never named does no work', async () => {
+    // Every cryptographic step passes — the key resolves, the signature
+    // verifies, the bindings match. What is missing is the operator's `--trust`
+    // entry, and that alone is enough to keep the message at the floor.
+    const outcome = await relay({
+      signing: 'unnamed-issuer',
+      type: MessageType.Wake,
+    })
+
+    expect(outcome.work).toEqual([])
+    expect(outcome.notice.trust).toBe(TRUST_UNTRUSTED)
+    expect(outcome.errors).toEqual([])
+  }, 25_000)
+
+  test('a refusal is a completed turn, which is why outcome is not the gate', async () => {
+    // Stated as its own case because it is the reason the gap survived: the
+    // refusing turn ends `completed`, carries content and bills tokens. Any
+    // probe that reads only `outcome` reads this as a success.
+    const outcome = await relay({
+      signing: 'unsigned',
+      type: MessageType.TaskRequest,
+    })
+
+    expect(outcome.content).toContain('refused')
+    expect(outcome.work).toEqual([])
   }, 25_000)
 })

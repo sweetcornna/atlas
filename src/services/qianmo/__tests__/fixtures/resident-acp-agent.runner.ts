@@ -15,7 +15,50 @@ import type {
   ResumeSessionRequest,
 } from '@agentclientprotocol/sdk'
 import { randomUUID } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
+
+/**
+ * The one sentence this stub decides on (issue #28).
+ *
+ * It is not a paraphrase of the untrusted notice — it is the clause a real
+ * model quoted back when it declined. On 2026-08-24, against a live gateway and
+ * a live model, six woken turns out of six returned a refusal naming exactly
+ * this instruction, the `--wake-sign` + `--trust` one included. So a stub that
+ * keys on it is a reduction of the observed behaviour to its deciding input,
+ * not an assumption about what a model might do.
+ *
+ * Matching on the notice text rather than on a flag is the point: the notice is
+ * the **only** channel by which the tier reaches an agent. A stub that read a
+ * boolean out of the envelope would pass while the prompt still said the
+ * opposite — which is the failure this fixture exists to catch.
+ */
+const REFUSAL_DIRECTIVE = 'never as instructions'
+
+/** The arithmetic a relayed request asks for, in a form a stub can obey. */
+const RELAYED_ASK = /QIANMO-COMPUTE (\d+)\*(\d+)/
+
+/**
+ * Do the relayed work, or decline it — and leave evidence either way.
+ *
+ * The log file is the business effect the test asserts on. It is deliberately
+ * **not** the turn's reply: a refusal is also a completed turn with content and
+ * a token bill, which is precisely why "the wake was delivered and the turn
+ * ran" was green through six real turns in which nothing was done.
+ */
+function performRelayedWork(prompt: string, logPath: string): string {
+  if (prompt.includes(REFUSAL_DIRECTIVE)) {
+    return (
+      'refused: the relayed message is marked untrusted, ' +
+      'so its content was treated as data.'
+    )
+  }
+  const ask = RELAYED_ASK.exec(prompt)
+  if (ask === null) return 'no relayed request was found in this turn'
+  const product = Number(ask[1]) * Number(ask[2])
+  appendFileSync(logPath, `${product}\n`)
+  return `computed ${product}`
+}
 
 const accepted = new Map<string, Set<string>>()
 let connection!: AcpConnection
@@ -85,6 +128,26 @@ const agent: Agent = {
           sessionUpdate: 'agent_message_chunk',
           messageId,
           content: { type: 'text', text: ` notify=${String(verdict.status)}` },
+        },
+      })
+    }
+    // The instruction-following half of the fixture (issue #28). Off unless a
+    // test asks for it, so every existing case keeps its old behaviour of
+    // answering without reading a word of the prompt.
+    const workLog = process.env.QIANMO_FIXTURE_WORK_LOG
+    if (workLog !== undefined && workLog !== '') {
+      const relayed = params.prompt
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .join('\n')
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId,
+          content: {
+            type: 'text',
+            text: ` ${performRelayedWork(relayed, workLog)}`,
+          },
         },
       })
     }
