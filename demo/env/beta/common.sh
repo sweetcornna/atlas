@@ -132,6 +132,11 @@ BETA_CONSOLE_CONF="$BETA_ROOT/console.conf"
 BETA_OPS_SRC_DIR="$QIANMO_BETA_ENV_DIR/ops"
 # systemd --user 的单元目录。用 XDG 变量而不是写死 ~/.config：那个变量本来就是它的定义。
 BETA_SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+# H 上那两个长驻进程的单元名。它们不是模板单元（一台 H 各只有一个），所以没有 @。
+# 单元名只在这里拼一次：beta-up.sh 派生、beta-down.sh 提示、beta-reset.sh 清理都从
+# 这里取，三处各写一遍迟早分叉，而分叉的症状是「reset 说清干净了、下次开机它又回来」。
+BETA_REGISTRY_UNIT='qianmo-registry.service'
+BETA_CONSOLE_UNIT='qianmo-console.service'
 # 隧道与镜像共用的那把 key。**私钥永不离开 H**，这里只存路径，不存内容。
 # 它在各节点的 authorized_keys 里带强制命令（restrict + permitopen + command="cat -- <链>"），
 # 所以它既拨不了别的端口，也读不了别的文件——镜像因此只能走 `ssh cat`（见 ops/mirror-pull.sh）。
@@ -241,7 +246,7 @@ beta_guard_root() {
     [ -n "$outer" ] || continue
     case "$root" in
       "$outer"|"$outer"/*)
-        beta_die "QIANMO_BETA_ROOT 落在当前环境的真实配置根里：$root（$outer）"
+        beta_die "QIANMO_BETA_ROOT 落在当前环境的真实配置根里：${root}（${outer}）"
         ;;
     esac
   done
@@ -260,9 +265,9 @@ beta_guard_root() {
 beta_require_marker() {
   beta_guard_root "$BETA_ROOT"
   [ -f "$BETA_MARKER" ] \
-    || beta_die "$BETA_ROOT 不是内测环境（缺 $BETA_MARKER）——先跑 demo/env/beta/beta-up.sh"
+    || beta_die "$BETA_ROOT 不是内测环境（缺 ${BETA_MARKER}）——先跑 demo/env/beta/beta-up.sh"
   head -1 "$BETA_MARKER" | grep -qF "$BETA_MARKER_MAGIC" \
-    || beta_die "$BETA_MARKER 的首行不是 $BETA_MARKER_MAGIC，拒绝操作"
+    || beta_die "$BETA_MARKER 的首行不是 ${BETA_MARKER_MAGIC}，拒绝操作"
   return 0
 }
 
@@ -313,7 +318,7 @@ beta_seed_root() {
 
   if [ ! -f "$BETA_PEERS_FILE" ]; then
     beta_write_peers_template
-    beta_ok "地址表模板已建：$BETA_PEERS_FILE（**里面是占位符，要按运维单页填**）"
+    beta_ok "地址表模板已建：${BETA_PEERS_FILE}（**里面是占位符，要按运维单页填**）"
   fi
   return 0
 }
@@ -406,13 +411,13 @@ BETA_TUNNEL_PORTS=' '
 # 一样。钉 `LC_ALL=C` 也能修，但那把正确性挂在「有没有人后来把这行删掉/覆盖掉」上。
 beta_assert_node_name() {
   local name="$1" where="$2"
-  [ -n "$name" ] || beta_die "$where：节点名为空"
-  [ "${#name}" -le 64 ] || beta_die "$where：节点名 $name 超过协议上限 64 字符，拒绝"
+  [ -n "$name" ] || beta_die "${where}：节点名为空"
+  [ "${#name}" -le 64 ] || beta_die "${where}：节点名 $name 超过协议上限 64 字符，拒绝"
   case "$name" in
     *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
-      beta_die "$where：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+      beta_die "${where}：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
     [!abcdefghijklmnopqrstuvwxyz0123456789]*|*[!abcdefghijklmnopqrstuvwxyz0123456789])
-      beta_die "$where：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
+      beta_die "${where}：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
@@ -423,10 +428,10 @@ beta_assert_node_name() {
 beta_assert_port() {
   local value="$1" what="$2" where="$3"
   case "$value" in
-    ''|*[!0123456789]*) beta_die "$where：$what 不是数字：$value" ;;
+    ''|*[!0123456789]*) beta_die "${where}：$what 不是数字：$value" ;;
   esac
   if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
-    beta_die "$where：$what 超出 1–65535：$value"
+    beta_die "${where}：$what 超出 1–65535：$value"
   fi
   return 0
 }
@@ -452,7 +457,7 @@ beta_parse_node_line() {
   if beta_ssh_index "$name" >/dev/null; then
     # 两条同名坐标 = 隧道按后一条搭、镜像按前一条拉（或反过来，取决于谁先被用到）。
     # 那种拓扑的症状是「链路是通的，但镜像永远拉的是另一台机器」，没人会往这里查。
-    beta_die "$where：节点 $name 已经有一条 node 坐标行了，不允许两条"
+    beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
   local trail='' keyfile="$BETA_SSH_KEY" kv key value
@@ -461,7 +466,7 @@ beta_parse_node_line() {
   for kv in $rest; do
     case "$kv" in
       *=*) ;;
-      *) beta_die "$where：$kv 不是 <键>=<值>" ;;
+      *) beta_die "${where}：$kv 不是 <键>=<值>" ;;
     esac
     key="${kv%%=*}"
     value="${kv#*=}"
@@ -473,32 +478,32 @@ beta_parse_node_line() {
       remote-port) remote_port="$value" ;;
       trail) trail="$value" ;;
       key) keyfile="$value" ;;
-      *) beta_die "$where：未知键 $key（只认 user/host/port/local-port/remote-port/trail/key）" ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key）" ;;
     esac
   done
-  [ -n "$user" ] || beta_die "$where：缺 user="
-  [ -n "$host" ] || beta_die "$where：缺 host="
-  [ -n "$local_port" ] || beta_die "$where：缺 local-port=（H 这一侧的回环口）"
+  [ -n "$user" ] || beta_die "${where}：缺 user="
+  [ -n "$host" ] || beta_die "${where}：缺 host="
+  [ -n "$local_port" ] || beta_die "${where}：缺 local-port=（H 这一侧的回环口）"
   # user 与 host 会被拼成 `user@host` 交给 ssh。把 @ 挡在这里，是为了让「user=a@b」
   # 这种写法当场报错，而不是变成一个连得上、但连的是别人的机器的隧道。
-  case "$user" in *@*|*/*) beta_die "$where：user 里不能有 @ 或 /：$user" ;; esac
-  case "$host" in *@*|*/*) beta_die "$where：host 里不能有 @ 或 /：$host" ;; esac
+  case "$user" in *@*|*/*) beta_die "${where}：user 里不能有 @ 或 /：$user" ;; esac
+  case "$host" in *@*|*/*) beta_die "${where}：host 里不能有 @ 或 /：$host" ;; esac
   beta_assert_port "$port" 'port' "$where"
   beta_assert_port "$local_port" 'local-port' "$where"
   beta_assert_port "$remote_port" 'remote-port' "$where"
   case "$BETA_TUNNEL_PORTS" in
-    *" $local_port "*) beta_die "$where：local-port=$local_port 已经被另一个节点占了" ;;
+    *" $local_port "*) beta_die "${where}：local-port=$local_port 已经被另一个节点占了" ;;
   esac
   if [ -n "$trail" ]; then
     case "$trail" in
       /*) ;;
-      *) beta_die "$where：trail 必须是节点上的绝对路径：$trail" ;;
+      *) beta_die "${where}：trail 必须是节点上的绝对路径：$trail" ;;
     esac
-    case "$trail" in *..*) beta_die "$where：trail 里有 ..，拒绝：$trail" ;; esac
+    case "$trail" in *..*) beta_die "${where}：trail 里有 ..，拒绝：$trail" ;; esac
   fi
   case "$keyfile" in
     /*) ;;
-    *) beta_die "$where：key 必须是 H 上的绝对路径：$keyfile" ;;
+    *) beta_die "${where}：key 必须是 H 上的绝对路径：$keyfile" ;;
   esac
   BETA_SSH_NODE[BETA_SSH_COUNT]="$name"
   BETA_SSH_USER[BETA_SSH_COUNT]="$user"
@@ -579,7 +584,7 @@ beta_assert_peers_match_tunnels() {
       want="ws://127.0.0.1:${BETA_SSH_LOCAL[$index]}"
       if [ "${BETA_PEER_EP[$i]}" != "$want" ]; then
         beta_die "$BETA_PEERS_FILE 第 ${BETA_PEER_LINE[$i]} 行：${BETA_PEER_ADDR[$i]} 的端点是 ${BETA_PEER_EP[$i]}，
-但节点 ${BETA_PEER_NODE[$i]} 有一条 node 坐标行（local-port=${BETA_SSH_LOCAL[$index]}），端点必须是 $want。
+但节点 ${BETA_PEER_NODE[$i]} 有一条 node 坐标行（local-port=${BETA_SSH_LOCAL[$index]}），端点必须是 ${want}。
 两边不一致的后果是「名册上在线、拨号全超时」—— 链路搭在一个口上，应用拨的是另一个口。"
       fi
     fi
@@ -641,7 +646,7 @@ beta_load_psk() {
   if [ -n "${QIANMO_TRANSPORT_PSK:-}" ]; then
     return 0
   fi
-  [ -f "$file" ] || beta_die "缺 $what：$file —— 它由 H 生成后分发，**不在本机自动生成**（beta-env.md §8.3）"
+  [ -f "$file" ] || beta_die "缺 ${what}：$file —— 它由 H 生成后分发，**不在本机自动生成**（beta-env.md §8.3）"
   QIANMO_TRANSPORT_PSK="$(cat "$file")"
   export QIANMO_TRANSPORT_PSK
   [ -n "$QIANMO_TRANSPORT_PSK" ] || beta_die "$file 是空的"
@@ -900,7 +905,7 @@ bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式
   printf '%s\n' "$pid" >"$(beta_pidfile "$name")"
   sleep "$BETA_START_GRACE_S"
   beta_dump_if_dead "$name"
-  beta_ok "$name 已启动（pid $pid，日志 $out）"
+  beta_ok "$name 已启动（pid ${pid}，日志 ${out}）"
 }
 
 # 进程死了就把它的错误摊开来，不要只说一句「没起来」。
@@ -1045,6 +1050,15 @@ BETA_SYNC_CHANGED=0
 # 但它也不会在任何地方留下痕迹，所以必须由脚本自己在末尾说出来。
 BETA_UNITS_STALE=''
 
+# 这台机器现在能用 systemd --user 吗。**只回答，不 die**：起 H 腿的机器不一定有
+# systemd（开发机上跑用例就没有），而那种情况下「不铺单元」是正确行为，不是故障。
+# 要求必须有的那条路径走 beta_require_systemd_user。
+beta_systemd_user_ok() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl --user show-environment >/dev/null 2>&1 || return 1
+  return 0
+}
+
 beta_require_systemd_user() {
   command -v systemctl >/dev/null 2>&1 \
     || beta_die "peers.conf 里有 node 坐标行，但这台机器上没有 systemctl —— 隧道与镜像都靠 systemd --user。
@@ -1098,7 +1112,8 @@ beta_write_if_changed() {
   return 0
 }
 
-# 单元文件只允许落在 systemd --user 目录里，且文件名必须是本包认识的那三个之一。
+# 单元文件只允许落在 systemd --user 目录里，且文件名必须是本包认识的那五个之一
+# （链路三个模板单元 + H 腿那两个）。
 # 这是三重守卫在「不在内测根里的那几个路径」上的对应物：guard_root 管不到
 # ~/.config/systemd/user，所以这里逐个复核。
 beta_assert_unit_file() {
@@ -1111,6 +1126,7 @@ beta_assert_unit_file() {
   base="${path##*/}"
   case "$base" in
     'qianmo-tunnel@.service'|'qianmo-mirror@.service'|'qianmo-mirror@.timer') ;;
+    "$BETA_REGISTRY_UNIT"|"$BETA_CONSOLE_UNIT") ;;
     *) beta_die "拒绝处理不属于本包的单元文件：$base" ;;
   esac
   return 0
@@ -1147,6 +1163,30 @@ beta_conf_get() {
   return 0
 }
 
+# console.conf 的**旧 schema**：审计目标与唤醒目标曾经也存在这里（AUDIT_NODE /
+# AUDIT_PATH / WAKE_NODE，单数，一份文件只放得下一个目标）。改成「只认 peers.conf」
+# 之后这三个键就再也没人读了——**而没人读不等于没人写**：2026-08-24 的舰队实查里，H
+# 上那份 2026-08-18 的 console.conf 还整整齐齐写着它们。一份看着像配置、实际一个字都
+# 不生效的文件，会把下一个照着它配的人直接带沟里。
+#
+# 所以读到它们要说出来。清除本身是回写顺手做的（下面那个函数只写 LABEL 一行），这里
+# 只负责**别让它静默发生**。
+BETA_CONSOLE_CONF_LEGACY_KEYS='AUDIT_NODE AUDIT_PATH WAKE_NODE'
+
+# beta_conf_legacy_keys <文件> —— 打印文件里出现过的旧键，一行一个；没有就什么都不打。
+beta_conf_legacy_keys() {
+  local file="$1" key line
+  [ -f "$file" ] || return 0
+  for key in $BETA_CONSOLE_CONF_LEGACY_KEYS; do
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "$key="*) printf '%s\n' "$key"; break ;;
+      esac
+    done <"$file"
+  done
+  return 0
+}
+
 # 审计节点的链是镜像来的吗（= 它有 node 坐标行且给了 trail=）。
 beta_node_is_mirrored() {
   local node="$1" index
@@ -1159,7 +1199,16 @@ beta_node_is_mirrored() {
 # 它必须在 beta_load_peers 之后调用，以确保一份历史 console.conf 不会重新成为节点
 # 名册的来源。优先级：环境变量 > console.conf > 派生默认。
 beta_resolve_console_conf() {
-  local from_file
+  local from_file legacy
+  # 旧 schema 的键一个都不读，但**必须报出来再删**：静默忽略正是它能在 H 上原样躺
+  # 六天、还骗过一次实查的原因（issue #45）。
+  legacy="$(beta_conf_legacy_keys "$BETA_CONSOLE_CONF" | tr '\n' ' ')"
+  if [ -n "$legacy" ]; then
+    beta_warn "${BETA_CONSOLE_CONF} 里还有旧 schema 的键：${legacy}—— 它们**一个字都不生效**，本次回写会删掉。
+节点名册、审计链路径与唤醒目标只从 ${BETA_PEERS_FILE} 的当前内容派生（那三个键是单数写法，
+一份文件只放得下一个目标；现在每个节点各有一条审计来源和一个唤醒地址）。
+要改目标就改 peers.conf；这个文件从此只剩 LABEL 一行。"
+  fi
   if [ -z "$BETA_LABEL" ]; then
     from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" LABEL)"
     if [ -n "$from_file" ]; then
@@ -1174,6 +1223,8 @@ beta_resolve_console_conf() {
     printf '#\n'
     printf '# 这里只持久化页面标签。环境变量仍然优先，且会被回写到这里。\n'
     printf '# 节点、审计链路径和唤醒目标只从 peers.conf 派生，绝不在这里保留副本。\n'
+    printf '# 旧 schema 的 AUDIT_NODE / AUDIT_PATH / WAKE_NODE 一个字都不生效，写在这里\n'
+    printf '# 会被下一次 beta-up.sh --role host 报出来并删掉（issue #45）。\n'
     printf '#\n'
     printf '# 一行一个 KEY=值，值取到行尾。手改这里立刻生效（下次 beta-up.sh 起控制台时）。\n'
     printf 'LABEL=%s\n' "$BETA_LABEL"
@@ -1254,6 +1305,43 @@ beta_provisioned_nodes() {
   done
 }
 
+# beta_stop_host_unit <单元名> —— 停掉并取消自启 H 腿的一个单元。
+#
+# 只有 beta-reset.sh --purge-links 用它：删掉单元文件之前必须先 disable，否则
+# default.target.wants/ 下会留一条指向已删文件的悬空符号链接，每次开机让 systemd
+# 抱怨一句，而「清干净了」的输出上一个字都看不出来。
+# 幂等：没装过 / 没起过的，一个字都不打。
+beta_stop_host_unit() {
+  local unit="$1"
+  beta_systemd_user_ok || return 0
+  if [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" = 'active' ]; then
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    beta_say "已停止 $unit"
+  fi
+  if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = 'enabled' ]; then
+    systemctl --user disable "$unit" >/dev/null 2>&1 || true
+    beta_say "已取消开机自启 $unit"
+  fi
+  return 0
+}
+
+# beta_note_host_unit <单元名> <说明> —— 进程停了、单元还标着 active 时说一句。
+#
+# oneshot + RemainAfterExit 的单元记的是「那一趟起过了」，不是「进程还活着」：
+# beta-down.sh 把进程停掉之后，`systemctl --user status` 仍然一片绿。那是本包里
+# 唯一一处「单元绿而东西不在」的形状，不说出来就会有人照着它下结论。
+beta_note_host_unit() {
+  local unit="$1" what="$2"
+  beta_systemd_user_ok || return 0
+  [ -f "$BETA_SYSTEMD_USER_DIR/$unit" ] || return 0
+  [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" = 'active' ] || return 0
+  beta_warn "${what}的进程已停，但 systemd 那边 $unit 仍标着 active。
+那是 oneshot + RemainAfterExit 的形状：它记的是「那一趟起过了」，不是「进程还活着」。
+要连单元一起停：systemctl --user stop $unit
+要起回来  ：systemctl --user start ${unit}（等价于跑一趟 beta-up.sh --role host）"
+  return 0
+}
+
 # beta_stop_link <node> —— 停掉并取消自启该节点的隧道与镜像 timer。
 #
 # 顺序是**先镜像后隧道**：镜像那条是主动往外拨的，先让它别再发起新连接。
@@ -1261,8 +1349,7 @@ beta_provisioned_nodes() {
 beta_stop_link() {
   local node="$1" unit
   beta_assert_node_name "$node" '链路实例名'
-  command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  beta_systemd_user_ok || return 0
   for unit in \
     "$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')" \
     "$(beta_unit_instance 'qianmo-tunnel' "$node" '.service')"; do

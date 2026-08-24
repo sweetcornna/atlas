@@ -55,6 +55,16 @@
 #     `--print-wake-identity -- --chat-from <地址>` 与 `--role host -- --chat-from <地址>`
 #     必须问出同一把钥匙——两边不一致就等于分发了一把控制台根本不用来签名的公钥。
 #
+# ── 开机自启：控制台与注册中心各一个 systemd --user 单元 ────────────────────
+#
+# 隧道与审计镜像早就有单元，唯独这两个一直是裸进程 —— H 一重启就都没了，且不会自动
+# 回来（issue #45）。本脚本每次起 H 腿都派生并安装它们（模板真源在 demo/env/beta/ops/），
+# **只 enable 不 start**：这一趟的进程由本脚本自己起。
+#
+# 单元的 ExecStart 调的就是本脚本，用 `--only` 限定起哪一块 —— 命令行是 peers.conf 派生
+# 的，抄进单元文件就是第二处真源。控制台的尾参落进 <root>/ops/console.env，于是
+# `--wake-sign` 这类开关活得过一次重启。
+#
 # 全部状态在 QIANMO_BETA_ROOT 下（默认 $HOME/qianmo-beta）。**不碰用户真实的 ~/.occ / ~/.qianmo。**
 # 停机用 beta-down.sh，回到可重起的干净运行态用 beta-reset.sh。
 
@@ -67,6 +77,9 @@ ROLE=''
 NODE_GIVEN=0
 AGENTS_GIVEN=''
 PRINT_WAKE_IDENTITY=0
+# host 腿只起其中一部分。空 = 全套（= 改造前的行为，一个字都没变）。
+# 它是给 systemd 单元用的：控制台与注册中心各一个单元，各自只该起自己那一块。
+ONLY_GIVEN=''
 # `--` 之后的一切，原样追加给底层命令。空数组在 bash 3.2 的 `set -u` 下不能直接
 # `"${PASS_THROUGH[@]}"` 展开，所以下面每一处都用 `${PASS_THROUGH[@]+"..."}` 的形式。
 PASS_THROUGH=()
@@ -74,7 +87,7 @@ READY_TIMEOUT_S="${QIANMO_BETA_READY_TIMEOUT_S:-90}"
 
 usage() {
   beta_say '用法：'
-  beta_say '  beta-up.sh --role host [-- <透传给 console 的参数>...]'
+  beta_say '  beta-up.sh --role host [--only links|registry|console]... [-- <透传给 console 的参数>...]'
   beta_say '  beta-up.sh --role node --node <名字> [--agent <名字>]... [--port <端口>] [-- <透传给 resident 的参数>...]'
   beta_say '  beta-up.sh --print-wake-identity'
   beta_say ''
@@ -83,6 +96,9 @@ usage() {
   beta_say '  --node <名字>           节点腿：这台机器上那一个节点的名字'
   beta_say '  --agent <名字>          节点腿：跑哪些 agent；可给多次，给了就把默认那份整体顶掉'
   beta_say '  --port <端口>           节点腿：入站端口'
+  beta_say '  --only links|registry|console'
+  beta_say '                          host 腿：只起这一块；可给多次。不给 = 全套（默认）'
+  beta_say '                          systemd 单元用的就是它，日常起机不需要'
   beta_say '  --print-wake-identity   只打印控制台的唤醒签名身份（<节点>=<公钥>）后退出，不起任何进程'
   beta_say '  -h, --help              本页'
   beta_say '  -- <args>...            其余参数原样追加给底层命令：host 腿给 console，node 腿给 resident'
@@ -107,6 +123,9 @@ while [ "$#" -gt 0 ]; do
     --agent=*) AGENTS_GIVEN="$AGENTS_GIVEN ${1#--agent=}"; shift ;;
     --port)   BETA_NODE_PORT="${2:-}"; shift 2 ;;
     --port=*) BETA_NODE_PORT="${1#--port=}"; shift ;;
+    # host 腿限定起哪几块（可给多次）。不给 = 全套。
+    --only)   ONLY_GIVEN="$ONLY_GIVEN ${2:-}"; shift 2 ;;
+    --only=*) ONLY_GIVEN="$ONLY_GIVEN ${1#--only=}"; shift ;;
     # 它**不是**一次启动，所以它自己不能靠尾参表达（见文件头「尾参透传」第三段）；
     # 尾参里的其余参数仍然跟着那次查询走。
     --print-wake-identity) PRINT_WAKE_IDENTITY=1; shift ;;
@@ -138,6 +157,31 @@ else
     *) beta_die "--role 只能是 host 或 node，收到 $ROLE" ;;
   esac
 fi
+
+# --only 只对 host 腿有意义，且只认三个值。**在这里当场拦下**：拼错一个字（`--only
+# consle`）如果只是「一块都不匹配」，结果是一趟什么都没起、还退 0——systemd 会把它记成
+# 一次成功的启动，而控制台根本不在。
+ONLY=''
+if [ -n "$ONLY_GIVEN" ]; then
+  [ "$ROLE" = 'host' ] || beta_die "--only 只对 --role host 有意义（节点腿一台机器就一个常驻），收到 --role ${ROLE:-<空>}"
+  for _only in $ONLY_GIVEN; do
+    case "$_only" in
+      links|registry|console) ONLY="$ONLY $_only" ;;
+      *) beta_die "--only 只认 links / registry / console，收到：$_only" ;;
+    esac
+  done
+  unset _only
+fi
+
+# host_wants <块名> —— 这一趟要不要起这一块。没给 --only 就全要。
+host_wants() {
+  local want="$1" item
+  [ -n "$ONLY" ] || return 0
+  for item in $ONLY; do
+    if [ "$item" = "$want" ]; then return 0; fi
+  done
+  return 1
+}
 
 # 尾参透传是一条**逃生门，不是一条旁路**：脚本自己保证的那几件事在它后面仍然成立。
 # 现在只有一条是能被尾参推翻的 —— 两枚控制台 token 一律走 `--*-token-file`，因为命令行
@@ -211,25 +255,9 @@ if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
   exit 0
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-# host 腿：注册中心 + 控制台（+ 备份服务）
-# ─────────────────────────────────────────────────────────────────────────────
-run_host() {
-  beta_load_peers
-  if [ "$BETA_PEER_COUNT" -eq 0 ]; then
-    beta_die "$BETA_PEERS_FILE 里一条地址都没有 —— 按里面的注释填上「<地址> <端点>」再跑。
-凡是要长期存在的地址都必须写进这里（= 注册中心的 --register 启动参数）：
-租约 90 s，注册中心停机超过 90 s 后落盘表等于空文件，重启后回来的只有 --register 那批
-（beta-env.md §2.4 的硬规矩）。控制台页面上点的那个「注册」活不过一次 90 s 以上的重启。"
-  fi
-
-  # console.conf 只保存页头标签；节点、审计路径和唤醒目标只认 peers.conf。
-  # 必须在 beta_load_peers 之后，避免历史 console.conf 重新成为一份节点名册。
-  beta_resolve_console_conf
-
-  beta_head '① 链路（SSH 隧道与审计镜像）'
-  provision_links
-
+# 注册中心那一块。从 run_host 里提出来只为让 --only 的取舍读起来是一行，
+# 内容一字未改。
+start_registry() {
   beta_head "② 注册中心（$BETA_PEER_COUNT 条登记）"
   assert_registry_matches_peers
   local ready="$BETA_RUN_DIR/registry-ready.json"
@@ -257,6 +285,47 @@ run_host() {
   done
   [ -s "$ready" ] || beta_die "注册中心 30 s 内没有写出 ready 文件（见 $(beta_logfile "$BETA_REGISTRY_PROC" err)）"
   beta_ok "注册中心就绪：$BETA_REGISTRY_URL"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# host 腿：注册中心 + 控制台（+ 备份服务）
+# ─────────────────────────────────────────────────────────────────────────────
+run_host() {
+  beta_load_peers
+  if [ "$BETA_PEER_COUNT" -eq 0 ]; then
+    beta_die "$BETA_PEERS_FILE 里一条地址都没有 —— 按里面的注释填上「<地址> <端点>」再跑。
+凡是要长期存在的地址都必须写进这里（= 注册中心的 --register 启动参数）：
+租约 90 s，注册中心停机超过 90 s 后落盘表等于空文件，重启后回来的只有 --register 那批
+（beta-env.md §2.4 的硬规矩）。控制台页面上点的那个「注册」活不过一次 90 s 以上的重启。"
+  fi
+
+  # console.conf 只保存页头标签；节点、审计路径和唤醒目标只认 peers.conf。
+  # 必须在 beta_load_peers 之后，避免历史 console.conf 重新成为一份节点名册。
+  beta_resolve_console_conf
+
+  # 开机自启的两个单元。**先于起进程铺**：这一趟起没起成功都不影响「下次开机它还在」，
+  # 而反过来（起完再铺）会让一次半途失败的启动同时丢掉持久化。
+  beta_head '⓪ 开机自启（控制台与注册中心的 systemd --user 单元）'
+  provision_host_units
+
+  if host_wants links; then
+    beta_head '① 链路（SSH 隧道与审计镜像）'
+    provision_links
+  fi
+
+  if host_wants registry; then
+    start_registry
+  else
+    beta_say ''
+    beta_say '（--only 未点名 registry，跳过注册中心）'
+  fi
+
+  if ! host_wants console; then
+    beta_say ''
+    beta_say '（--only 未点名 console，跳过控制台）'
+    beta_head "H 腿这一块就绪，耗时 $(beta_elapsed "$STARTED_AT")"
+    return 0
+  fi
 
   beta_head '③ 控制台'
   # 两枚 token 一律从文件取、一律显式传（§3.2）。首跑时现生成一次并落 0600 文件——
@@ -306,7 +375,7 @@ run_host() {
       console_args+=(--audit "$node=$audit_path")
     fi
     if [ ! -f "$audit_path" ]; then
-      beta_warn "审计链文件还不存在：$node → $audit_path（该节点单独显示为空链）"
+      beta_warn "审计链文件还不存在：$node → ${audit_path}（该节点单独显示为空链）"
     fi
 
     wake_url="$(beta_peer_endpoint "$node")"
@@ -332,8 +401,14 @@ run_host() {
     i=$((i + 2))
   done
   [ "$status" = '200' ] \
-    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 /v0/health 200（收到 $status，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
+    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 /v0/health 200（收到 ${status}，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
   beta_ok "控制台就绪：$BETA_CONSOLE_URL"
+
+  if [ -n "$ONLY" ]; then
+    beta_head "H 腿这一块就绪，耗时 $(beta_elapsed "$STARTED_AT")"
+    beta_say "控制台   : ${BETA_CONSOLE_URL}（页头标签：${BETA_LABEL}）"
+    return 0
+  fi
 
   beta_head '④ 备份服务'
   # **这里是一个真缺口，不是省略。**`packages/backup` 只导出库函数 `startBackupService()`，
@@ -347,13 +422,18 @@ run_host() {
   beta_todo '备份服务未启动：@qianmo/backup 没有可执行入口（详见 README「这个脚本不做什么」）'
 
   beta_head "H 腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
-  beta_say "注册中心 : $BETA_REGISTRY_URL（$BETA_PEER_COUNT 条登记，永不出回环）"
-  beta_say "控制台   : $BETA_CONSOLE_URL（由反代以 TLS 暴露；两枚 token 在 $BETA_SECRET_DIR）"
+  beta_say "注册中心 : ${BETA_REGISTRY_URL}（$BETA_PEER_COUNT 条登记，永不出回环）"
+  beta_say "控制台   : ${BETA_CONSOLE_URL}（由反代以 TLS 暴露；两枚 token 在 ${BETA_SECRET_DIR}）"
   beta_say "审计视图 : $(beta_peer_nodes | tr '\n' ' ')（逐节点独立）"
   beta_say "页头标签 : $BETA_LABEL"
-  beta_say "页头标签 : 持久化在 $BETA_CONSOLE_CONF；节点清单只认 $BETA_PEERS_FILE"
+  beta_say "页头标签 : 持久化在 ${BETA_CONSOLE_CONF}；节点清单只认 $BETA_PEERS_FILE"
+  if beta_systemd_user_ok; then
+    beta_say "开机自启 : ${BETA_REGISTRY_UNIT} + ${BETA_CONSOLE_UNIT}（systemd --user，要 loginctl enable-linger）"
+  else
+    beta_say '开机自启 : 无 —— 这台机器上没有可用的 systemd --user，重启后要靠人重跑本脚本'
+  fi
   if [ "$BETA_SSH_COUNT" -gt 0 ]; then
-    beta_say "链路     : $BETA_SSH_COUNT 条 SSH 隧道 + 审计镜像（systemd --user，见 $BETA_OPS_DIR）"
+    beta_say "链路     : $BETA_SSH_COUNT 条 SSH 隧道 + 审计镜像（systemd --user，见 ${BETA_OPS_DIR}）"
   else
     beta_say '链路     : 全部直连（peers.conf 里没有 node 坐标行）'
   fi
@@ -422,7 +502,7 @@ provision_links() {
     trail="${BETA_SSH_TRAIL[$i]}"
     if [ -n "$trail" ]; then
       unit="$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')"
-      ensure_unit "$unit" "审计镜像 $node（${BETA_MIRROR_INTERVAL_MIN} min）"
+      ensure_unit "$unit" "审计镜像 ${node}（${BETA_MIRROR_INTERVAL_MIN} min）"
     else
       beta_say "提示 : $node 的坐标行没有 trail=，不做审计镜像（H 上看不到它的链）"
     fi
@@ -450,11 +530,161 @@ sweep_orphan_links() {
     env_file="$BETA_OPS_DIR/tunnel-$node.env"
     beta_assert_inside_root "$env_file"
     rm -f "$env_file"
-    beta_say "已删除 $env_file（mirror/$node/ 一条没动）"
+    beta_say "已删除 ${env_file}（mirror/$node/ 一条没动）"
   done
 }
 
-# 三个单元 + 拉取脚本，从仓库 ops/ 派生到 <root>/ops/，再装进 systemd --user。
+# ─────────────────────────────────────────────────────────────────────────────
+# H 腿的开机自启：控制台与注册中心各一个 systemd --user 单元
+#
+# 隧道与审计镜像早就有单元，唯独这两个一直是裸进程 —— H 一重启就都没了，且不会自动
+# 回来（issue #45）。这里补上的就是那一件事。
+#
+# 三条与隧道那套一致：模板真源在仓库 demo/env/beta/ops/、派生进 <内测根>/ops/ 与
+# ~/.config/systemd/user/、内容相同就不写（beta_write_if_changed）。
+#
+# **只 enable，不 start。**start 会在「本脚本正跑在这个单元里」的时候要求 systemd 起
+# 一个正在启动的单元，那是自己等自己。enable 只是一个符号链接，幂等且不执行任何东西，
+# 而「重启后自动回来」要的正是它。这一趟的进程由本脚本自己起，两件事互不相干。
+# ─────────────────────────────────────────────────────────────────────────────
+provision_host_units() {
+  if ! beta_systemd_user_ok; then
+    beta_say '这台机器上没有可用的 systemd --user —— 不铺 H 腿的单元。'
+    beta_say '后果要知道：控制台与注册中心**不会**在重启后自动回来（issue #45），得靠人重跑本脚本。'
+    beta_say '（开发机上跑用例时这是正常的：那里本来就不该往 ~/.config/systemd 里装东西。）'
+    return 0
+  fi
+
+  mkdir -p "$BETA_OPS_DIR"
+  chmod 700 "$BETA_OPS_DIR"
+  mkdir -p "$BETA_SYSTEMD_USER_DIR"
+
+  # **只有覆盖控制台的那一趟才重写 console.env。**否则注册中心单元开机跑的
+  # `--only links --only registry`（它没有尾参）会把控制台单元的 --wake-sign 一并抹掉——
+  # 每次重启静默降级一次，而降级的方向恰恰是「看起来还开着」。
+  if host_wants console; then
+    write_console_env
+  fi
+
+  local before="$BETA_SYNC_CHANGED" src dst base unit_dst gen path_env
+  path_env="$(host_unit_path_env)"
+  gen="$BETA_OPS_DIR/.render-host.$$"
+  beta_assert_inside_root "$gen"
+  for base in "$BETA_REGISTRY_UNIT" "$BETA_CONSOLE_UNIT"; do
+    src="$BETA_OPS_SRC_DIR/$base.in"
+    [ -f "$src" ] || beta_die "缺仓库模板 $src —— demo/env/beta/ops/ 是单元的真源"
+    dst="$BETA_OPS_DIR/$base"
+    beta_assert_inside_root "$dst"
+    # 占位符全是路径 / 单元名，用 | 作分隔符不会撞上。
+    sed -e "s|@REPO_DIR@|$(beta_unit_path "$REPO_DIR")|g" \
+      -e "s|@OPS_DIR@|$(beta_unit_path "$BETA_OPS_DIR")|g" \
+      -e "s|@BETA_ROOT@|$(beta_unit_path "$BETA_ROOT")|g" \
+      -e "s|@UNIT_PATH_ENV@|$path_env|g" \
+      -e "s|@REGISTRY_UNIT@|$BETA_REGISTRY_UNIT|g" \
+      "$src" >"$gen"
+    beta_write_if_changed "$gen" "$dst" 644 "单元模板 $base"
+  done
+  rm -f "$gen"
+
+  for base in "$BETA_REGISTRY_UNIT" "$BETA_CONSOLE_UNIT"; do
+    unit_dst="$BETA_SYSTEMD_USER_DIR/$base"
+    beta_assert_unit_file "$unit_dst"
+    if [ -f "$unit_dst" ] && cmp -s "$BETA_OPS_DIR/$base" "$unit_dst"; then
+      beta_ok "$base 已装且内容一致，不动"
+      continue
+    fi
+    cp "$BETA_OPS_DIR/$base" "$unit_dst"
+    chmod 644 "$unit_dst"
+    BETA_SYNC_CHANGED=$((BETA_SYNC_CHANGED + 1))
+    beta_warn "$base 已装进 ${BETA_SYSTEMD_USER_DIR}（内容有更新）"
+  done
+
+  if [ "$BETA_SYNC_CHANGED" -gt "$before" ]; then
+    systemctl --user daemon-reload
+    beta_ok 'systemd --user 已 daemon-reload（H 腿单元有更新）'
+  fi
+
+  for base in "$BETA_REGISTRY_UNIT" "$BETA_CONSOLE_UNIT"; do
+    if [ "$(systemctl --user is-enabled "$base" 2>/dev/null || true)" = 'enabled' ]; then
+      beta_ok "$base 已是开机自启"
+      continue
+    fi
+    systemctl --user enable "$base" >/dev/null 2>&1 \
+      || beta_die "systemctl --user enable $base 失败 —— 没有它，H 一重启这一块就没了"
+    beta_ok "$base 已设为开机自启"
+  done
+  beta_say '开机后由 systemd 起，靠的是 loginctl enable-linger <用户名>（要 root 跑一次）。'
+  beta_say '没开 linger 的话，最后一个登录会话退出时这两个单元会跟着一起消失。'
+  return 0
+}
+
+# 单元里那一行 PATH。**按本脚本自己解析到的那个 bun 派生**：systemd --user 的 PATH 极小，
+# 而 bun 通常在 ~/.bun/bin —— 缺了它的症状是开机后单元 failed、日志里一句「bun 跑不起来」
+# （issue #40 那条守卫抓的是同一个形状，只是那次发生在非交互 SSH 上）。
+host_unit_path_env() {
+  local bun_path bun_dir
+  bun_path="$(command -v bun 2>/dev/null || true)"
+  if [ -n "$bun_path" ]; then
+    bun_dir="$(cd "$(dirname "$bun_path")" && pwd)"
+  else
+    # 这一趟没解析到 bun（起进程时会当场报错）。仍然给出最常见的那个位置，
+    # 免得单元里留下一行连默认安装都够不着的 PATH。
+    bun_dir="$HOME/.bun/bin"
+  fi
+  printf '%s:/usr/local/bin:/usr/bin:/bin' "$(beta_unit_path "$bun_dir")"
+}
+
+# 控制台单元的启动参数。**这一趟的尾参就是下一次开机的尾参**：`--wake-sign` 这类策略
+# 开关走透传（issue #38），写死在单元里就是第二处真源。
+#
+# 撤销的方向要说出来：不带尾参跑一次 host 腿 = 把它们撤掉，而「签名唤醒被静默关掉」
+# 恰恰是唯一一个让人以为还开着的方向。
+write_console_env() {
+  local dst gen args old
+  dst="$BETA_OPS_DIR/console.env"
+  gen="$BETA_OPS_DIR/.render-console-env.$$"
+  beta_assert_inside_root "$dst"
+  beta_assert_inside_root "$gen"
+
+  args=''
+  local one
+  for one in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    # 带空白的参数用一行 KEY=值 表达不出来（systemd 对 $VAR 做的是分词，不是 shell 解析）。
+    # 与其写出一个悄悄被切开的参数，不如当场说清楚它没被持久化。
+    case "$one" in
+      *[[:space:]]*)
+        beta_warn "尾参 ${one} 里有空白，无法写进 ${dst} 的一行 —— 单元不会带上它。
+要让它活过重启，手改 $dst 的 CONSOLE_EXTRA_ARGS（那一行由本脚本重写，改完别再不带尾参跑 host 腿）。"
+        continue
+        ;;
+    esac
+    args="$args $one"
+  done
+  args="${args# }"
+
+  old="$(beta_conf_get "$dst" CONSOLE_EXTRA_ARGS)"
+  if [ -n "$old" ] && [ -z "$args" ]; then
+    beta_warn "这一趟没给尾参，${BETA_CONSOLE_UNIT} 里原先带着的「${old}」会被撤掉。
+要保留就重跑一次并带上：demo/env/beta/beta-up.sh --role host -- ${old}"
+  fi
+
+  {
+    printf '# 阡陌内测 · 控制台单元的启动参数。由 demo/env/beta/beta-up.sh 写。\n'
+    printf '#\n'
+    printf '# **这一趟 beta-up.sh --role host 的尾参就是下一次开机的尾参。**手改这里会被\n'
+    printf '# 下一次 host 腿覆盖；要长期带上某个开关，就带着它跑 host 腿。\n'
+    printf '#\n'
+    printf '# 单元里对它的引用不带花括号，因为 systemd 只对那种写法做分词（带花括号会把\n'
+    printf '# 整串当成一个参数）。所以这里一个参数一个空格，且参数里不能有空白。\n'
+    printf 'CONSOLE_EXTRA_ARGS=%s\n' "$args"
+  } >"$gen"
+  chmod 600 "$gen"
+  beta_write_if_changed "$gen" "$dst" 600 '控制台单元的启动参数 console.env'
+  rm -f "$gen"
+}
+
+# 链路那三个单元 + 拉取脚本，从仓库 ops/ 派生到 <root>/ops/，再装进 systemd --user。
+# H 腿那两个（控制台与注册中心）走 provision_host_units，不在这里。
 render_ops_files() {
   local src dst gen
   gen="$BETA_OPS_DIR/.render.$$"
@@ -494,7 +724,7 @@ render_ops_files() {
     cp "$BETA_OPS_DIR/$base" "$unit_dst"
     chmod 644 "$unit_dst"
     BETA_SYNC_CHANGED=$((BETA_SYNC_CHANGED + 1))
-    beta_warn "$base 已装进 $BETA_SYSTEMD_USER_DIR（内容有更新）"
+    beta_warn "$base 已装进 ${BETA_SYSTEMD_USER_DIR}（内容有更新）"
   done
 }
 
@@ -558,16 +788,16 @@ ensure_unit() {
   active="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
   if [ "$enabled" != 'enabled' ]; then
     systemctl --user enable "$unit" >/dev/null 2>&1 \
-      || beta_die "$what：systemctl --user enable $unit 失败"
-    beta_ok "$what 已设为开机自启（$unit）"
+      || beta_die "${what}：systemctl --user enable $unit 失败"
+    beta_ok "$what 已设为开机自启（${unit}）"
   fi
   if [ "$active" = 'active' ]; then
-    beta_ok "$what 已在运行，不重起（$unit）"
+    beta_ok "$what 已在运行，不重起（${unit}）"
     return 0
   fi
   systemctl --user start "$unit" \
-    || beta_die "$what：systemctl --user start $unit 失败（journalctl --user -u $unit 看原因）"
-  beta_ok "$what 已启动（$unit）"
+    || beta_die "${what}：systemctl --user start $unit 失败（journalctl --user -u $unit 看原因）"
+  beta_ok "$what 已启动（${unit}）"
 }
 
 # 隧道就绪。**判据是真读一次对端应答，不是 TCP 连得上。**
@@ -612,7 +842,7 @@ assert_registry_matches_peers() {
       [ -n "$saddr" ] || continue
       want="$(beta_peer_addr_endpoint "$saddr")" || continue
       if [ "$want" != "$sep" ]; then
-        beta_warn "落盘表里 $saddr → $sep，而 peers.conf 说是 $want"
+        beta_warn "落盘表里 $saddr → ${sep}，而 peers.conf 说是 $want"
         disk_bad=1
       fi
     done <"$pairs"
@@ -625,7 +855,7 @@ assert_registry_matches_peers() {
       addr="${BETA_PEER_ADDR[$i]}"
       got="$(beta_live_endpoint "$addr")"
       if [ -n "$got" ] && [ "$got" != "${BETA_PEER_EP[$i]}" ]; then
-        beta_warn "在跑的注册中心把 $addr 解析成 $got，而 peers.conf 说是 ${BETA_PEER_EP[$i]}"
+        beta_warn "在跑的注册中心把 $addr 解析成 ${got}，而 peers.conf 说是 ${BETA_PEER_EP[$i]}"
         live_bad=1
       fi
       i=$((i + 1))
@@ -688,7 +918,7 @@ run_node() {
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"
 
-  beta_head "① 工作区（节点 $BETA_NODE）"
+  beta_head "① 工作区（节点 ${BETA_NODE}）"
   local agent
   for agent in $BETA_AGENTS; do
     seed_workspace "$ws_root/$agent" "$BETA_NODE/$agent"
@@ -751,9 +981,9 @@ run_node() {
         *) beta_die "QIANMO_BETA_BACKUP_URL 必须是 https:// —— 收到 $BETA_BACKUP_URL" ;;
       esac
       args+=(--backup-url "$BETA_BACKUP_URL" --backup-interval-ms "$BETA_BACKUP_INTERVAL_MS")
-      beta_ok "备份面已开：$BETA_BACKUP_URL（间隔 ${BETA_BACKUP_INTERVAL_MS} ms）"
+      beta_ok "备份面已开：${BETA_BACKUP_URL}（间隔 ${BETA_BACKUP_INTERVAL_MS} ms）"
     else
-      beta_die "给了 QIANMO_BETA_BACKUP_URL 却没有写 token —— 放一份到 $BETA_BACKUP_WRITE_FILE（0600）。
+      beta_die "给了 QIANMO_BETA_BACKUP_URL 却没有写 token —— 放一份到 ${BETA_BACKUP_WRITE_FILE}（0600）。
 **归档 token 永不下发到节点机**（§2.7）：那等于让任何一台被拿下的 VPS 读走全部快照。"
     fi
   else
@@ -785,7 +1015,7 @@ run_node() {
   beta_ok "$BETA_NODE 在 ${probe_host}:${BETA_NODE_PORT} 上监听"
 
   beta_head "节点腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
-  beta_say "节点     : $BETA_NODE（agent：$BETA_AGENTS）"
+  beta_say "节点     : ${BETA_NODE}（agent：${BETA_AGENTS}）"
   beta_say "模型凭据 : $(beta_model_env_line)"
   beta_say "           ↑ 这一行只说**文件**注进来没有。够不够用由节点自己说：无凭据时"
   beta_say "             resident 会在 $(beta_logfile "$BETA_NODE" err) 写一条 [resident] 告警。"

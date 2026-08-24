@@ -105,7 +105,7 @@ demo_guard_root() {
   for outer in "${OCC_CONFIG_DIR:-}" "${CLAUDE_CONFIG_DIR:-}"; do
     [ -n "$outer" ] || continue
     case "$root" in
-      "$outer"|"$outer"/*) demo_die "DEMO_ROOT 落在当前环境的真实配置根里：$root（$outer）" ;;
+      "$outer"|"$outer"/*) demo_die "DEMO_ROOT 落在当前环境的真实配置根里：${root}（${outer}）" ;;
     esac
   done
   return 0
@@ -115,9 +115,9 @@ demo_guard_root() {
 # 没有标记就拒绝——不去猜「这大概是我上次建的」，猜错一次就是删了别人的目录。
 demo_require_marker() {
   demo_guard_root "$DEMO_ROOT"
-  [ -f "$DEMO_MARKER" ] || demo_die "$DEMO_ROOT 不是演示环境（缺 $DEMO_MARKER）——先跑 demo/env/seed.sh"
+  [ -f "$DEMO_MARKER" ] || demo_die "$DEMO_ROOT 不是演示环境（缺 ${DEMO_MARKER}）——先跑 demo/env/seed.sh"
   head -1 "$DEMO_MARKER" | grep -qF "$DEMO_MARKER_MAGIC" \
-    || demo_die "$DEMO_MARKER 的首行不是 $DEMO_MARKER_MAGIC，拒绝操作"
+    || demo_die "$DEMO_MARKER 的首行不是 ${DEMO_MARKER_MAGIC}，拒绝操作"
   return 0
 }
 

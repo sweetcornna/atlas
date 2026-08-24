@@ -49,6 +49,10 @@ if [ "$#" -gt 0 ]; then
     # 留着不致命（beta_running 会 kill -0 复核），但下次 down 会再报一次「没在跑」，
     # 而 pid 号是会被系统复用的——对着一个复用号做 kill -0 就是一次误判。
     beta_stop_one "$name"
+    case "$name" in
+      "$BETA_CONSOLE_PROC") beta_note_host_unit "$BETA_CONSOLE_UNIT" '控制台' ;;
+      "$BETA_REGISTRY_PROC") beta_note_host_unit "$BETA_REGISTRY_UNIT" '注册中心' ;;
+    esac
     # H 上「停掉 rowan」指的是把通往 rowan 的那条链路切掉：H 自己不跑常驻，
     # rowan 这个名字在 run/ 里根本没有 pid 文件。只对真的铺过链路的名字动手。
     if [ -f "$BETA_OPS_DIR/tunnel-$name.env" ]; then
@@ -78,6 +82,7 @@ collect_others() {
 
 beta_head '停止控制台'
 beta_stop_one "$BETA_CONSOLE_PROC"
+beta_note_host_unit "$BETA_CONSOLE_UNIT" '控制台'
 
 beta_head '停止常驻节点'
 STOPPED_ANY=0
@@ -91,6 +96,7 @@ fi
 
 beta_head '停止注册中心'
 beta_stop_one "$BETA_REGISTRY_PROC"
+beta_note_host_unit "$BETA_REGISTRY_UNIT" '注册中心'
 rm -f "$BETA_RUN_DIR/registry-ready.json"
 
 beta_head '停止链路（SSH 隧道与审计镜像 timer）'

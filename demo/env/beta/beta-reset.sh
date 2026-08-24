@@ -8,7 +8,7 @@
 #   demo/env/beta/beta-reset.sh --purge-logs     # 再清 logs/
 #   demo/env/beta/beta-reset.sh --purge-state    # 再清 state/（**会带走 timings**，见下）
 #   demo/env/beta/beta-reset.sh --archive-config # 把配置根改名归档（§6 L2 的第②步）
-#   demo/env/beta/beta-reset.sh --purge-links    # 再删链路的生成物（ops/ 与三个单元文件）
+#   demo/env/beta/beta-reset.sh --purge-links    # 再删链路与 H 腿的生成物（ops/ 与五个单元文件）
 #
 # ── 它敢动东西的全部依据（三重守卫，与 demo/env/reset.sh 同形）────────────────
 # 动作**只发生在 QIANMO_BETA_ROOT 下面**，而且必须同时满足三条，缺一条就退出：
@@ -94,7 +94,7 @@ if [ "$PURGE_LOGS" = '1' ]; then
   # 这里整块清掉是「重来一次」的动作，不是保留策略，别拿它当轮转用。
   purge "$BETA_LOG_DIR"
 else
-  beta_say "保留 $BETA_LOG_DIR（要清用 --purge-logs）"
+  beta_say "保留 ${BETA_LOG_DIR}（要清用 --purge-logs）"
 fi
 
 if [ "$PURGE_STATE" = '1' ]; then
@@ -102,7 +102,7 @@ if [ "$PURGE_STATE" = '1' ]; then
   beta_warn 'state/ 里有 timings —— 它是 P7.3 基线与容量判断的唯一输入（§5），删了只能重来一次内测'
   purge "$BETA_STATE_DIR"
 else
-  beta_say "保留 $BETA_STATE_DIR（含 timings；要清用 --purge-state）"
+  beta_say "保留 ${BETA_STATE_DIR}（含 timings；要清用 --purge-state）"
 fi
 
 if [ "$ARCHIVE_CONFIG" = '1' ]; then
@@ -128,12 +128,17 @@ fi
 
 if [ "$PURGE_LINKS" = '1' ]; then
   beta_head '· 清除链路生成物'
-  # ①停机那一步（beta-down.sh）已经把隧道与 timer 停掉并取消自启了，这里只删文件。
-  # 全都是**生成物**：ops/ 由 peers.conf 的 node 坐标行派生，三个单元文件由仓库
+  # ①停机那一步（beta-down.sh）已经把隧道与 timer 停掉并取消自启了。H 腿那两个单元
+  # 不在它的职责里（停机 ≠ 取消开机自启），所以在这里 disable —— 先 disable 再删文件，
+  # 否则 default.target.wants/ 下会留一条指向已删文件的悬空符号链接。
+  # 全都是**生成物**：ops/ 由 peers.conf 的 node 坐标行派生，五个单元文件由仓库
   # demo/env/beta/ops/ 派生，下一次 beta-up.sh --role host 会原样重新铺出来。
   # **不动 mirror/**：那里面是已经拉回来的审计链副本，「只能挪走、不能撤销」同样适用。
+  beta_stop_host_unit "$BETA_REGISTRY_UNIT"
+  beta_stop_host_unit "$BETA_CONSOLE_UNIT"
   purge "$BETA_OPS_DIR"
-  for unit_file in 'qianmo-tunnel@.service' 'qianmo-mirror@.service' 'qianmo-mirror@.timer'; do
+  for unit_file in 'qianmo-tunnel@.service' 'qianmo-mirror@.service' 'qianmo-mirror@.timer' \
+    "$BETA_REGISTRY_UNIT" "$BETA_CONSOLE_UNIT"; do
     UNIT_PATH="$BETA_SYSTEMD_USER_DIR/$unit_file"
     # ~/.config 不在内测根里，guard_root 管不到它 —— 逐个复核走另一套（见 common.sh）。
     beta_assert_unit_file "$UNIT_PATH"
@@ -146,9 +151,9 @@ if [ "$PURGE_LINKS" = '1' ]; then
     systemctl --user daemon-reload
     beta_say 'systemd --user 已 daemon-reload'
   fi
-  beta_say "mirror/ 一条没动（$BETA_MIRROR_DIR）—— 那是已经拉回来的审计链副本"
+  beta_say "mirror/ 一条没动（${BETA_MIRROR_DIR}）—— 那是已经拉回来的审计链副本"
 else
-  beta_say "保留链路生成物（$BETA_OPS_DIR 与 systemd --user 的三个单元；要删用 --purge-links）"
+  beta_say "保留链路生成物（${BETA_OPS_DIR} 与 systemd --user 的五个单元；要删用 --purge-links）"
 fi
 
 beta_head '③ 重铺目录骨架'

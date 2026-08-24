@@ -67,7 +67,7 @@ if [ "$ROTATE_SECRETS" = '1' ]; then
   purge "$DEMO_SECRET_DIR"
   demo_warn '演示密钥已清除，下一步会生成新的——已经拿着旧 PSK 的对端需要重新取'
 else
-  demo_say "保留 $DEMO_SECRET_DIR（要换用 --rotate-secrets）"
+  demo_say "保留 ${DEMO_SECRET_DIR}（要换用 --rotate-secrets）"
 fi
 
 demo_head '③ 重新铺种子'

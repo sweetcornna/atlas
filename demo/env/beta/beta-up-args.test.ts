@@ -30,6 +30,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -80,6 +81,27 @@ if (args.includes('--print-wake-identity')) {
 }
 `
 
+/**
+ * 假的 `systemctl`：本包对它的全部要求就是「在不在」「--user 通不通」，外加几个查询。
+ *
+ * 有它这几条用例才走得到 H 腿的单元派生（issue #45）——真机上那一段永远执行，开发机上
+ * 却因为没有 systemd 而整段跳过，于是「渲染出来的单元长什么样」在用例里是个盲区。
+ * 它把每次调用记下来，断言据此看「脚本到底对 systemd 做了什么」。
+ *
+ * 两个查询的答案是**故意**给「还没装过」那一档：`is-enabled` 答 disabled、`is-active`
+ * 答 inactive，于是首跑路径（enable、但绝不 start）会被完整走一遍。
+ */
+const FAKE_SYSTEMCTL = `#!/bin/bash
+printf '%s\\n' "$*" >>"$FAKE_SYSTEMCTL_LOG"
+for a in "$@"; do
+  case "$a" in
+    is-enabled) printf 'disabled\\n'; exit 1 ;;
+    is-active)  printf 'inactive\\n'; exit 3 ;;
+  esac
+done
+exit 0
+`
+
 const scratches: string[] = []
 
 interface Scratch {
@@ -87,6 +109,12 @@ interface Scratch {
   readonly root: string
   readonly argvLog: string
   readonly occLog: string
+  /** XDG_CONFIG_HOME —— 单元只许装进这里，**绝不碰开发机真实的 ~/.config**。 */
+  readonly xdg: string
+  readonly systemctlLog: string
+  readonly stubBin: string
+  /** 里面那个 systemctl 对 `--user` 一律答不通。 */
+  readonly noSystemdBin: string
 }
 
 /** 一棵临时「仓库」+ 一个临时内测根。 */
@@ -103,6 +131,27 @@ function scratch(): Scratch {
   writeFileSync(join(beta, 'common.sh'), common + RECORDER)
   writeFileSync(join(repo, 'dist/cli-node.js'), FAKE_OCC)
   chmodSync(join(repo, 'dist/cli-node.js'), 0o755)
+  // 单元模板：**真源在仓库**，所以整棵原样带进临时仓库，用例断言的就是它们派生出来
+  // 的那份内容。
+  const ops = join(beta, 'ops')
+  mkdirSync(ops, { recursive: true })
+  for (const name of readdirSync(join(BETA_DIR, 'ops'))) {
+    if (name.endsWith('.in') || name === 'mirror-pull.sh') {
+      copyFileSync(join(BETA_DIR, 'ops', name), join(ops, name))
+    }
+  }
+
+  const stubBin = join(base, 'bin')
+  mkdirSync(stubBin, { recursive: true })
+  writeFileSync(join(stubBin, 'systemctl'), FAKE_SYSTEMCTL)
+  chmodSync(join(stubBin, 'systemctl'), 0o755)
+  // 「这台机器上 systemd --user 用不了」那一档也要**钉死**，不能靠「PATH 上恰好没有
+  // systemctl」——Linux runner 上它就在 /usr/bin 下。装一个 `--user` 一律不通的桩，
+  // 于是那条分支在 macOS 与 Linux 上走的是同一条路。
+  const noSystemdBin = join(base, 'bin-no-systemd')
+  mkdirSync(noSystemdBin, { recursive: true })
+  writeFileSync(join(noSystemdBin, 'systemctl'), '#!/bin/bash\nexit 1\n')
+  chmodSync(join(noSystemdBin, 'systemctl'), 0o755)
 
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets', 'peers'), { recursive: true })
@@ -115,6 +164,10 @@ function scratch(): Scratch {
     root,
     argvLog: join(base, 'argv.log'),
     occLog: join(base, 'occ.log'),
+    xdg: join(base, 'xdg'),
+    systemctlLog: join(base, 'systemctl.log'),
+    stubBin,
+    noSystemdBin,
   }
 }
 
@@ -124,7 +177,14 @@ interface ShellResult {
   readonly stderr: string
 }
 
-function runBetaUp(place: Scratch, args: readonly string[]): ShellResult {
+function runBetaUp(
+  place: Scratch,
+  args: readonly string[],
+  options: { readonly systemd?: boolean } = {},
+): ShellResult {
+  // 默认带上假 systemctl；`systemd: false` 换成那个「--user 一律不通」的桩。
+  const stubPath =
+    options.systemd === false ? `${place.noSystemdBin}:` : `${place.stubBin}:`
   const child = Bun.spawnSync(
     ['/bin/bash', join(place.repo, 'demo/env/beta/beta-up.sh'), ...args],
     {
@@ -133,10 +193,16 @@ function runBetaUp(place: Scratch, args: readonly string[]): ShellResult {
         ...process.env,
         // bun 要在 PATH 上（beta_require_occ 的解释器守卫，issue #40），git 要在 PATH 上
         // （节点腿给每个 agent 建真工作区）。
-        PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
-        // macOS 自带 bash 3.2 在 UTF-8 locale 下会把 `"$pid，"` 里的全角逗号算进变量名。
-        // 真实机器是 Linux + bash 5，那里没有这个问题；钉成 C 只为让两边行为一致。
-        LC_ALL: 'C',
+        PATH: `${stubPath}${dirname(process.execPath)}:/usr/bin:/bin`,
+        // 单元只许落在临时目录里。这一条不是整洁，是安全：BETA_SYSTEMD_USER_DIR 的
+        // 默认值是 $HOME/.config/systemd/user，不钉住它就等于让用例往开发机真实的
+        // systemd 目录里装东西。
+        XDG_CONFIG_HOME: place.xdg,
+        FAKE_SYSTEMCTL_LOG: place.systemctlLog,
+        // locale 故意不钉：继承开发机的 UTF-8，让 macOS 自带 bash 3.2 真的按多字节
+        // 跑一遍被测脚本。issue #49 之前这里钉着 `LC_ALL=C` 绕开「变量紧跟全角标点」
+        // 的 unbound variable，现在 demo/env 全树都写 `${var}`，钉 locale 反而会把
+        // 这条真实回归掩盖掉。静态判据另由 shell-fullwidth-expansion.test.ts 守着。
         QIANMO_BETA_ROOT: place.root,
         BETA_ARGV_LOG: place.argvLog,
         FAKE_OCC_LOG: place.occLog,
@@ -381,5 +447,200 @@ describe('beta-up.sh says what it accepts', () => {
     // 关键是**没有任何进程被起过**：拦在起进程之前，密钥才没有进过任何一份进程列表。
     expect(existsSync(place.argvLog)).toBe(false)
     expect(result.stdout + result.stderr).not.toContain('super-secret-value')
+  })
+})
+
+/**
+ * H 腿的开机自启（issue #45）。
+ *
+ * 病根是内测环境里隧道与审计镜像都有 systemd 单元，**唯独控制台与注册中心没有**——
+ * 两者都是裸进程，H 一重启就都没了、且不会自动回来。2026-08-24 部署里刚配好的四目标
+ * 控制台同样是易失的。
+ *
+ * 这里钉的是「单元长什么样」而不是「systemd 收没收下」：后者要真机。四件事：
+ * ① 两个单元真的被派生并装进 systemd --user 目录，且没有留下未替换的占位符；
+ * ② 它们调的是**仓库脚本**，不是手写薄壳（薄壳正是 #38 那份不可交接的东西）；
+ * ③ `--wake-sign` 这类尾参活过重启：它落进 console.env，单元从那里取；
+ * ④ 注册中心那一趟（单元自己开机时跑的就是它）**不会**把 console.env 抹掉。
+ */
+describe('beta-up.sh --role host provisions systemd units for console and registry', () => {
+  function unitText(place: Scratch, base: string): string {
+    return readFileSync(join(place.xdg, 'systemd/user', base), 'utf8')
+  }
+
+  test('两个单元都装进了 systemd --user，且没有未替换的占位符', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    const result = runBetaUp(place, ['--role', 'host'])
+    expect(result.stderr).not.toContain('FAIL')
+
+    for (const base of ['qianmo-registry.service', 'qianmo-console.service']) {
+      expect(existsSync(join(place.root, 'ops', base))).toBe(true)
+      const text = unitText(place, base)
+      // 留下一个 @FOO@ 的后果是单元起不来，而报错只会说某个路径不存在。
+      expect(text).not.toMatch(/@[A-Z_]+@/)
+      expect(text).toContain('[Install]')
+      // PATH 必须显式给：systemd --user 的 PATH 极小而整套脚本硬依赖 bun。
+      expect(text).toMatch(/^Environment=PATH=.+/m)
+    }
+    // enable 了、但**没有** start：本脚本这一趟自己就在起进程，让 systemd 再起一次
+    // 等于自己等自己。
+    const calls = readFileSync(place.systemctlLog, 'utf8')
+    expect(calls).toContain('--user enable qianmo-console.service')
+    expect(calls).toContain('--user enable qianmo-registry.service')
+    expect(calls).not.toContain('--user start qianmo-console.service')
+    expect(calls).not.toContain('--user start qianmo-registry.service')
+  })
+
+  test('单元调的是仓库脚本，不是手写薄壳', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    runBetaUp(place, ['--role', 'host'])
+
+    const registry = unitText(place, 'qianmo-registry.service')
+    expect(registry).toContain(
+      'demo/env/beta/beta-up.sh --role host --only links --only registry',
+    )
+    expect(registry).toContain('demo/env/beta/beta-down.sh registry')
+
+    const console_ = unitText(place, 'qianmo-console.service')
+    expect(console_).toContain(
+      'demo/env/beta/beta-up.sh --role host --only console --',
+    )
+    expect(console_).toContain('demo/env/beta/beta-down.sh console')
+    // 控制台排在注册中心之后：反过来的话开机头几十秒的空页面和「注册中心没起来」
+    // 长得一模一样。
+    expect(console_).toContain('Requires=qianmo-registry.service')
+  })
+
+  test('尾参活过重启：--wake-sign 落进 console.env，单元从那里取', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    runBetaUp(place, ['--role', 'host', '--', '--wake-sign'])
+
+    const env = readFileSync(join(place.root, 'ops/console.env'), 'utf8')
+    expect(env).toContain('CONSOLE_EXTRA_ARGS=--wake-sign')
+    // systemd 只对 `$VAR` 这种写法分词；写成 `${VAR}` 会把整串当成一个参数。
+    expect(unitText(place, 'qianmo-console.service')).toContain(
+      '$CONSOLE_EXTRA_ARGS',
+    )
+  })
+
+  test('注册中心那一趟不会把 console.env 抹掉', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    runBetaUp(place, ['--role', 'host', '--', '--wake-sign'])
+    const before = readFileSync(join(place.root, 'ops/console.env'), 'utf8')
+
+    // 开机时注册中心单元跑的正是这一条，而它没有尾参。若它照样重写 console.env，
+    // 每次重启就会静默把签名唤醒关掉一次——而那个方向看起来还是「开着的」。
+    runBetaUp(place, [
+      '--role',
+      'host',
+      '--only',
+      'links',
+      '--only',
+      'registry',
+    ])
+    expect(readFileSync(join(place.root, 'ops/console.env'), 'utf8')).toBe(
+      before,
+    )
+  })
+
+  test('--only 只起点名的那一块', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    runBetaUp(place, [
+      '--role',
+      'host',
+      '--only',
+      'console',
+      '--',
+      '--wake-sign',
+    ])
+    const blocks = recorded(place)
+    expect(blocks.has('console')).toBe(true)
+    expect(blocks.has('registry')).toBe(false)
+  })
+
+  test('--only 拼错 / 用在节点腿上当场拒绝，而不是安静地什么都不起', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    // 「一块都不匹配」若只是跳过，结果是一趟什么都没起还退 0——systemd 会把它记成
+    // 一次成功的启动，而控制台根本不在。
+    const typo = runBetaUp(place, ['--role', 'host', '--only', 'consle'])
+    expect(typo.exitCode).not.toBe(0)
+    expect(typo.stderr).toContain('--only 只认')
+
+    const wrongLeg = runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-1',
+      '--only',
+      'console',
+    ])
+    expect(wrongLeg.exitCode).not.toBe(0)
+    expect(wrongLeg.stderr).toContain('--only 只对 --role host 有意义')
+  })
+
+  test('systemd --user 用不了的机器上如实说「重启后不会自动回来」，而不是装作铺好了', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    const result = runBetaUp(place, ['--role', 'host'], { systemd: false })
+    expect(result.stdout).toContain('没有可用的 systemd --user')
+    expect(result.stdout).toContain('不会**在重启后自动回来')
+    expect(existsSync(join(place.xdg, 'systemd/user'))).toBe(false)
+  })
+})
+
+/**
+ * console.conf 的旧 schema（issue #45 的后半段）。
+ *
+ * `AUDIT_NODE` / `AUDIT_PATH` / `WAKE_NODE` 曾经也存在这里。改成「只认 peers.conf」之后
+ * 它们再也没人读——**而没人读不等于没人写**：2026-08-24 的实查里 H 上那份 2026-08-18 的
+ * console.conf 还整整齐齐写着它们。一份看着像配置、实际一个字都不生效的文件，会把下一个
+ * 照着它配的人直接带沟里。
+ */
+describe('beta-up.sh reports and drops the legacy console.conf schema', () => {
+  test('读到旧键要报出来，并在回写时删掉', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    const conf = join(place.root, 'console.conf')
+    writeFileSync(
+      conf,
+      [
+        'LABEL=旧的页头',
+        'AUDIT_NODE=beta-1',
+        'AUDIT_PATH=/somewhere/trail.ndjson',
+        'WAKE_NODE=beta-1',
+        '',
+      ].join('\n'),
+    )
+    chmodSync(conf, 0o600)
+
+    const result = runBetaUp(place, ['--role', 'host'])
+    for (const key of ['AUDIT_NODE', 'AUDIT_PATH', 'WAKE_NODE']) {
+      expect(result.stdout).toContain(key)
+    }
+    expect(result.stdout).toContain('一个字都不生效')
+
+    // 判的是**赋值行**没了，不是这三个词没出现过：回写出来的文件头会点名它们，
+    // 好让下一个手改这个文件的人当场知道写了也不算数。
+    const after = readFileSync(conf, 'utf8')
+    const assignments = after
+      .split('\n')
+      .filter(line => /^[A-Z_]+=/.test(line))
+      .map(line => line.split('=')[0])
+    expect(assignments).toEqual(['LABEL'])
+    // LABEL 照旧留着——它是这个文件现在**唯一**的用途。
+    expect(after).toContain('LABEL=旧的页头')
+  })
+
+  test('没有旧键时一个字都不多说', () => {
+    const place = scratch()
+    writePeers(place, ['qianmo://beta-1/planner ws://127.0.0.1:38625'])
+    const result = runBetaUp(place, ['--role', 'host'])
+    expect(result.stdout).not.toContain('旧 schema')
   })
 })

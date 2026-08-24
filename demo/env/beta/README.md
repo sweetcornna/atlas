@@ -38,8 +38,8 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 
 停机 `./demo/env/beta/beta-down.sh`（`beta-down.sh <名字>` 只停一个，即 §6 L0 的第①步；
 在 H 上给一个铺过链路的节点名，它的隧道与镜像 timer 也一起停），
-回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路的生成物一起删，
-下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
+回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路与 H 腿的生成物一起删，
+并先取消那两个开机自启单元再删文件；下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
 
 ### 尾参透传：`--` 之后的一切交给底层命令
 
@@ -243,12 +243,42 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 | `<root>/ops/qianmo-tunnel@.service` | 隧道模板单元 | `demo/env/beta/ops/qianmo-tunnel@.service.in` |
 | `<root>/ops/qianmo-mirror@.service` / `.timer` | 镜像 oneshot 与定时器 | 同目录的 `.in` |
 | `<root>/ops/mirror-pull.sh` | 拉取脚本（0700） | `demo/env/beta/ops/mirror-pull.sh` |
-| `~/.config/systemd/user/qianmo-*.{service,timer}` | 装好的那三份 | `<root>/ops/` 里的同名文件 |
+| `<root>/ops/qianmo-registry.service` | H 上注册中心的开机自启单元 | `demo/env/beta/ops/qianmo-registry.service.in` |
+| `<root>/ops/qianmo-console.service` | H 上控制台的开机自启单元 | 同目录的 `.in` |
+| `<root>/ops/console.env` | 控制台单元的启动参数（0600，`CONSOLE_EXTRA_ARGS`） | 最后一次 `beta-up.sh --role host` 的尾参 |
+| `~/.config/systemd/user/qianmo-*.{service,timer}` | 装好的那五份 | `<root>/ops/` 里的同名文件 |
 
 **每次 `beta-up.sh --role host` 都重新派生一遍，且只在内容真的不同时才写。**内容没变就不
 `daemon-reload`、不 `enable`、不 `start`；已经在跑的单元**永远不重起**。文件变了而单元正在
 跑时，脚本会在末尾列出那些实例并给出维护窗口里的 `systemctl --user restart` 一行 —— systemd
 自己不会在任何地方留下这个痕迹。
+
+### 控制台与注册中心的开机自启
+
+隧道与镜像早就有单元，**控制台与注册中心一直是裸进程** —— H 一重启两者就都没了，且不会
+自动回来（issue #45）。现在它们各有一个 `systemd --user` 单元，与隧道那套同一套写法与放置
+约定（模板真源在 [`ops/`](./ops/)，`beta-up.sh --role host` 派生并安装）。
+
+三件事要一起知道：
+
+- **单元调的是仓库脚本，不是手写薄壳。**`ExecStart` 是
+  `beta-up.sh --role host --only links --only registry` 与 `beta-up.sh --role host --only console`，
+  `ExecStop` 是 `beta-down.sh <名字>`。注册中心与控制台的命令行都是 `peers.conf` 派生的
+  （每条地址一个 `--register`、每个节点一条 `--audit` 与 `--wake-url`），抄进单元文件就是第二处
+  真源，而分叉的症状是「改了 `peers.conf` 却不生效」。`--only` 就是为这两个单元加的，日常
+  起机不需要它。
+- **`--wake-sign` 这类尾参活过重启。**每次起 H 腿都把**那一趟的尾参**落进 `ops/console.env`
+  的 `CONSOLE_EXTRA_ARGS`，单元从那里取。于是「单元带什么参数」= 「最后一次
+  `beta-up.sh --role host` 带了什么参数」；不带尾参跑一次就等于把它们撤掉，脚本会在那时
+  WARN 出被撤掉的那几个。（起注册中心的那一趟不重写这个文件——否则开机时它会把控制台的
+  开关一并抹掉。）
+- **单元只保证开机自动回来，不做崩溃拉起。**`Type=oneshot` 上 `Restart=` 无效。反过来说，
+  `beta-down.sh` 停掉进程之后 `systemctl --user status` 仍是绿的（它记的是「那一趟起过了」），
+  所以 `beta-down.sh` 会在那时提醒一句。要连单元一起停用 `systemctl --user stop`。
+
+开机时真能起来还要 `loginctl enable-linger <用户名>`（要 root 跑一次）；没开 linger 的话，
+最后一个登录会话退出时这些单元会跟着一起消失。宿主上没有可用的 `systemd --user` 时（开发机
+就是这样），脚本不铺单元并如实说「重启后不会自动回来」。
 
 ### 镜像为什么只能是 `ssh cat`
 
@@ -341,6 +371,11 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 
 `<root>/console.conf`（0600）只存 `LABEL`。
 
+**旧 schema 会被报出来再删掉。**`AUDIT_NODE` / `AUDIT_PATH` / `WAKE_NODE` 曾经也存在这里
+（单数写法，一份文件只放得下一个目标）。它们现在一个字都不生效，但没人读不等于没人写——
+2026-08-24 的实查里 H 上那份还整整齐齐写着它们。`beta-up.sh --role host` 读到就 WARN 一句
+并在回写时删掉，不再静默忽略（issue #45）。
+
 节点名册只有 `peers.conf` 一份：`beta-up.sh --role host` 按其中每个当前节点各生成一条
 命名 `--audit` 和一条命名 `--wake-url`。权威或镜像路径、镜像滞后以及节点 PSK 都由这份
 名册和对应的 `secrets/peers/<node>.psk` 派生；`console.conf` 绝不追加或保留一个目标。
@@ -378,7 +413,7 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 | **8** | 标记文件首行被改成别的字符串 | `beta_require_marker`：伪造的标记不算数 |
 
 链路那一半的路径不在内测根里（`~/.config/systemd/user/`），guard_root 管不到，所以另有一套
-逐路径复核：`beta_assert_unit_file` 只允许动本包那三个文件名、且必须落在 systemd 用户单元
+逐路径复核：`beta_assert_unit_file` 只允许动本包那五个文件名、且必须落在 systemd 用户单元
 目录里；`beta_stop_link` 与实例名拼接前再过一次 `beta_assert_node_name`（实例名会原样进
 `systemctl` 的命令行）。
 

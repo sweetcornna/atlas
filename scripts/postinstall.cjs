@@ -5,10 +5,28 @@
  * Downloads ripgrep binary (idempotent, skips if exists).
  * Works in dev mode (src/ exists), published mode (dist/ exists), with bun or node.
  *
+ * By default it fetches the binary for the *host* — which is why a dist built on
+ * an arm64 Mac used to ship without an executable `rg` for x86_64 nodes. Name the
+ * targets explicitly to lay down several at once before `build:vite`; the vendor
+ * tree is keyed by `<arch>-<platform>`, so they coexist and `post-build.ts` copies
+ * all of them into `dist/vendor/ripgrep/`.
+ *
+ * Target spec: `<arch>-<platform>[-<libc>]`, e.g. `x64-linux`, `arm64-darwin`,
+ * `x64-win32`, `arm64-linux-gnu`. Arch also accepts `x86_64`/`aarch64` and platform
+ * `macos`/`windows`, so the spellings this script prints while downloading work here
+ * too — but only two or three dash-separated parts, not a whole rust triple.
+ * The libc suffix is linux-only; cross targets default to musl (static-pie, no
+ * glibc dependency), while the implicit host target keeps probing the host.
+ *
  * Usage:
  *   node scripts/postinstall.js
  *   node scripts/postinstall.js --force
+ *   node scripts/postinstall.js --target x64-linux --target arm64-linux
+ *   RIPGREP_TARGETS=x64-linux,arm64-linux node scripts/postinstall.js
  *   bun run scripts/postinstall.js
+ *
+ * Exit code: 0 always, *except* when targets were named explicitly — see the
+ * bottom of this file for why.
  */
 
 const {
@@ -64,11 +82,139 @@ const RG_ARCHIVE_SHA256 = Object.freeze({
 const scriptDir = path.dirname(__filename)
 const projectRoot = path.resolve(scriptDir, '..')
 
+// --- Target selection ---
+
+// Spellings people actually have in hand: node's own (`x64`, `win32`) plus the
+// halves of the rust triple that this script prints while downloading.
+const ARCH_ALIASES = Object.freeze({
+  x64: 'x64',
+  x86_64: 'x64',
+  amd64: 'x64',
+  arm64: 'arm64',
+  aarch64: 'arm64',
+})
+const PLATFORM_ALIASES = Object.freeze({
+  darwin: 'darwin',
+  mac: 'darwin',
+  macos: 'darwin',
+  osx: 'darwin',
+  linux: 'linux',
+  win32: 'win32',
+  win: 'win32',
+  windows: 'win32',
+})
+const LIBC_FLAVOURS = Object.freeze(['musl', 'gnu'])
+
+/** The host, as a build target. Keeps `libc` undefined = "probe this machine". */
+function hostTarget() {
+  return { arch: process.arch, platform: process.platform, libc: undefined }
+}
+
+/** `x64-linux` / `arm64-darwin` / `arm64-linux-gnu` → `{ arch, platform, libc }`. */
+function parseTargetSpec(spec) {
+  const parts = String(spec).trim().toLowerCase().split('-').filter(Boolean)
+  if (parts.length < 2 || parts.length > 3) {
+    throw new Error(
+      `Bad ripgrep target ${JSON.stringify(spec)}: expected <arch>-<platform>[-<libc>], e.g. x64-linux`,
+    )
+  }
+  const arch = ARCH_ALIASES[parts[0]]
+  if (arch === undefined) {
+    throw new Error(
+      `Bad ripgrep target ${JSON.stringify(spec)}: unknown arch ${JSON.stringify(parts[0])} (want ${Object.keys(ARCH_ALIASES).join('/')})`,
+    )
+  }
+  const platform = PLATFORM_ALIASES[parts[1]]
+  if (platform === undefined) {
+    throw new Error(
+      `Bad ripgrep target ${JSON.stringify(spec)}: unknown platform ${JSON.stringify(parts[1])} (want ${Object.keys(PLATFORM_ALIASES).join('/')})`,
+    )
+  }
+  const libc = parts[2]
+  if (libc !== undefined) {
+    if (platform !== 'linux') {
+      throw new Error(
+        `Bad ripgrep target ${JSON.stringify(spec)}: a libc suffix only means something on linux`,
+      )
+    }
+    if (!LIBC_FLAVOURS.includes(libc)) {
+      throw new Error(
+        `Bad ripgrep target ${JSON.stringify(spec)}: unknown libc ${JSON.stringify(libc)} (want ${LIBC_FLAVOURS.join('/')})`,
+      )
+    }
+  }
+  return { arch, platform, libc }
+}
+
+/** Did the caller name targets, or are we the plain lifecycle hook? */
+function hasExplicitTargetRequest(
+  argv = process.argv.slice(2),
+  env = process.env,
+) {
+  return (
+    argv.some(arg => arg === '--target' || arg.startsWith('--target=')) ||
+    (env.RIPGREP_TARGETS ?? '').trim().length > 0
+  )
+}
+
+/** `--target <spec>` (repeatable) and `RIPGREP_TARGETS=a,b`; host when neither. */
+function resolveTargets(argv = process.argv.slice(2), env = process.env) {
+  const specs = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--target') {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error('--target needs a value, e.g. --target x64-linux')
+      }
+      specs.push(value)
+      i++
+    } else if (arg.startsWith('--target=')) {
+      specs.push(arg.slice('--target='.length))
+    }
+  }
+  for (const value of (env.RIPGREP_TARGETS ?? '').split(',')) {
+    if (value.trim().length > 0) specs.push(value)
+  }
+  if (specs.length === 0) return [hostTarget()]
+
+  const seen = new Set()
+  const targets = []
+  for (const spec of specs) {
+    const target = parseTargetSpec(spec)
+    const key = `${target.arch}-${target.platform}-${target.libc ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    targets.push(target)
+  }
+  return targets
+}
+
+/** For log lines and error messages. */
+function describeTarget(target) {
+  return `${target.arch}-${target.platform}${target.libc ? `-${target.libc}` : ''}`
+}
+
 // --- Platform mapping ---
 
-function getPlatformMapping() {
-  const arch = process.arch
-  const platform = process.platform
+/**
+ * Which libc flavour a linux target wants.
+ *
+ * Probing only answers a question about *this* machine, so it is asked only when
+ * the target is this machine. A named cross target gets musl: it is static-pie,
+ * so it does not inherit the build host's glibc floor.
+ */
+function resolveLinuxLibc(target) {
+  if (target.libc !== undefined) return target.libc
+  if (target.arch === process.arch && target.platform === process.platform) {
+    return detectMusl() ? 'musl' : 'gnu'
+  }
+  return 'musl'
+}
+
+function getPlatformMapping(buildTarget = hostTarget()) {
+  const arch = buildTarget.arch
+  const platform = buildTarget.platform
 
   if (platform === 'darwin') {
     if (arch === 'arm64')
@@ -85,12 +231,18 @@ function getPlatformMapping() {
   }
 
   if (platform === 'linux') {
-    const isMusl = detectMusl()
     if (arch === 'x64') {
+      // ripgrep-prebuilt publishes no x86_64 linux-gnu asset; musl is the only
+      // one, and being static-pie it runs on glibc hosts too.
+      if (buildTarget.libc === 'gnu') {
+        throw new Error(
+          'No x86_64 linux-gnu ripgrep asset is published; use x64-linux (musl, static-pie)',
+        )
+      }
       return { target: 'x86_64-unknown-linux-musl', ext: 'tar.gz' }
     }
     if (arch === 'arm64') {
-      return isMusl
+      return resolveLinuxLibc(buildTarget) === 'musl'
         ? { target: 'aarch64-unknown-linux-musl', ext: 'tar.gz' }
         : { target: 'aarch64-unknown-linux-gnu', ext: 'tar.gz' }
     }
@@ -119,10 +271,15 @@ function getVendorDir() {
   return path.resolve(projectRoot, 'dist', 'vendor', 'ripgrep')
 }
 
-function getBinaryPath() {
+/**
+ * Where this target's binary lives. The `<arch>-<platform>` subdir is the same
+ * key `src/utils/filesystem/ripgrep.ts` builds from `process.arch`/`.platform`
+ * at run time, so several targets sit side by side and each node picks its own.
+ */
+function getBinaryPath(buildTarget = hostTarget()) {
   const dir = getVendorDir()
-  const subdir = `${process.arch}-${process.platform}`
-  const binary = process.platform === 'win32' ? 'rg.exe' : 'rg'
+  const subdir = `${buildTarget.arch}-${buildTarget.platform}`
+  const binary = buildTarget.platform === 'win32' ? 'rg.exe' : 'rg'
   return path.resolve(dir, subdir, binary)
 }
 
@@ -323,11 +480,11 @@ async function extractTarGz(buffer, binaryPath, extractedBinary) {
 
 // --- Main ---
 
-async function downloadAndExtract() {
-  const { target, ext } = getPlatformMapping()
+async function downloadAndExtract(buildTarget = hostTarget()) {
+  const { target, ext } = getPlatformMapping(buildTarget)
   const assetName = `ripgrep-v${RG_VERSION}-${target}.${ext}`
 
-  const binaryPath = getBinaryPath()
+  const binaryPath = getBinaryPath(buildTarget)
   const binaryDir = path.dirname(binaryPath)
 
   const force = process.argv.includes('--force')
@@ -341,7 +498,7 @@ async function downloadAndExtract() {
 
   console.log(`[ripgrep] Downloading v${RG_VERSION} for ${target}...`)
 
-  const extractedBinary = process.platform === 'win32' ? 'rg.exe' : 'rg'
+  const extractedBinary = buildTarget.platform === 'win32' ? 'rg.exe' : 'rg'
 
   const expectedSha256 = RG_ARCHIVE_SHA256[assetName]
   if (!expectedSha256) {
@@ -365,7 +522,9 @@ async function downloadAndExtract() {
       await extractZip(buffer, binaryPath, extractedBinary)
     }
 
-    if (process.platform !== 'win32') {
+    // Keyed off the *target*: a linux binary staged from a Mac still has to come
+    // out executable, and a Windows .exe never needs the bit.
+    if (buildTarget.platform !== 'win32') {
       chmodSync(binaryPath, 0o755)
     }
 
@@ -379,7 +538,24 @@ async function downloadAndExtract() {
 }
 
 async function main() {
-  await downloadAndExtract()
+  const targets = resolveTargets()
+  const failures = []
+  for (const buildTarget of targets) {
+    try {
+      await downloadAndExtract(buildTarget)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // One bad target must not strand the others — a half-populated vendor tree
+      // is exactly the state issue #46 is about.
+      if (targets.length > 1) {
+        console.error(`[ripgrep] ${describeTarget(buildTarget)} failed: ${msg}`)
+      }
+      failures.push(`${describeTarget(buildTarget)}: ${msg}`)
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join(' | '))
+  }
 }
 
 if (require.main === module) {
@@ -389,8 +565,14 @@ if (require.main === module) {
     console.error(
       `[postinstall] You can install ripgrep manually: https://github.com/BurntSushi/ripgrep#installation`,
     )
-    // Never exit with error code — postinstall must not break install
-    process.exit(0)
+    // Never exit with error code — postinstall must not break install.
+    //
+    // The one exception is a run that *named* its targets: that is a build-time
+    // step staging binaries for other machines, and swallowing its failure is how
+    // a dist reaches an x86_64 node with no executable rg in it (issue #46). The
+    // npm/bun lifecycle hook never passes --target or RIPGREP_TARGETS, so the
+    // "install must not break" contract is untouched.
+    process.exit(hasExplicitTargetRequest() ? 1 : 0)
   })
 }
 
@@ -401,6 +583,11 @@ module.exports = {
   extractTarEntry,
   extractTarGz,
   extractZip,
+  getBinaryPath,
+  getPlatformMapping,
+  hasExplicitTargetRequest,
   isExpectedArchiveEntry,
+  parseTargetSpec,
+  resolveTargets,
   verifyArchiveChecksum,
 }

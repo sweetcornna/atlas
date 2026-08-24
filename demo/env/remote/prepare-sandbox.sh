@@ -63,7 +63,7 @@ case "$PSK_MIN" in
   '' | *[!0-9]*) : ;;  # 读不出来就不判，不拿猜的数拦人
   *)
     if [ "${#QIANMO_TRANSPORT_PSK}" -lt "$PSK_MIN" ]; then
-      die "QIANMO_TRANSPORT_PSK 只有 ${#QIANMO_TRANSPORT_PSK} 个字符，至少要 $PSK_MIN（出处：packages/transport/src/handshake.ts 的 PSK_MIN_LENGTH）"
+      die "QIANMO_TRANSPORT_PSK 只有 ${#QIANMO_TRANSPORT_PSK} 个字符，至少要 ${PSK_MIN}（出处：packages/transport/src/handshake.ts 的 PSK_MIN_LENGTH）"
     fi
     ;;
 esac
