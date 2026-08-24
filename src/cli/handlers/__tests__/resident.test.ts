@@ -7,6 +7,7 @@ import {
   createMessage,
   MessageType,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
 } from '@qianmo/protocol'
 import {
   generateNodeKeyPair,
@@ -471,6 +472,7 @@ describe('capability flags (P4.3)', () => {
     expect(observing.check(unsignedTask, Date.now())).toEqual({
       ok: true,
       level: CapabilityLevel.Read,
+      trust: TRUST_UNTRUSTED,
     })
     expect(shadowRefusals).toHaveLength(1)
     expect(shadowRefusals[0]?.code).toBe(ProtocolErrorCode.E_CAP_INSUFFICIENT)
@@ -521,9 +523,13 @@ describe('capability flags (P4.3)', () => {
       refusal => shadowRefusals.push(refusal),
     )
 
+    // issue #28's first negative, at the unit level: an unsigned task admitted
+    // by the escape hatch carries nothing anybody verified, so it stays at the
+    // floor. `--open-policy` widens what is *admitted*, never what is trusted.
     expect(open.check(unsignedTask, Date.now())).toEqual({
       ok: true,
       level: CapabilityLevel.Read,
+      trust: TRUST_UNTRUSTED,
     })
     expect(shadowRefusals).toEqual([])
   })

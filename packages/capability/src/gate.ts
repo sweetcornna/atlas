@@ -13,8 +13,12 @@
 
 import {
   CapabilityLevel,
+  NOTICE_TRUST_VERIFIED_CAPABILITY,
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
+  levelAtLeast,
   parseAddress,
+  type NoticeTrust,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import type { CapabilityDecision, CapabilityGate } from '@qianmo/router'
@@ -71,6 +75,25 @@ export interface NodeCapabilitiesOptions {
   /** Needed only to issue; verification never touches a private key. */
   readonly keys?: NodeKeyPair
   /**
+   * The subjects whose signature this node accepts as *authorization*, as
+   * opposed to merely as *identification* (issue #28).
+   *
+   * Empty by default, and that default is the whole safety story: a node that
+   * was never told to trust an issuer never hands one a tier above
+   * `untrusted`, whatever it presents.
+   *
+   * **Not the same question as {@link NodeCapabilitiesOptions.directory}.** The
+   * directory answers "can I check this signature at all" and, under a CA, it
+   * answers yes for every subject the CA ever vouched for. This list answers
+   * "did *this operator* name that subject", which is a decision a CA cannot
+   * make on the operator's behalf. `resident.ts` fills it from the `--trust`
+   * entries plus this node's own name — the two places where a human wrote a
+   * subject down. A CA-derived identity is verifiable here and still not
+   * trusted here; see key-distribution.md §10.5 for why that gap is left open
+   * rather than closed by widening this list.
+   */
+  readonly trustedIssuers?: Iterable<string>
+  /**
    * Observation mode: a second policy evaluated **alongside** the real one,
    * purely so that switching to it can be costed before it is switched to
    * (§9.2 phase ①).
@@ -100,6 +123,7 @@ export class NodeCapabilities implements CapabilityGate {
   readonly #keys: NodeKeyPair | undefined
   readonly #shadowPolicy: CapabilityPolicy | undefined
   readonly #onShadowRefusal: ShadowRefusalSink | undefined
+  readonly #trustedIssuers: ReadonlySet<string>
 
   constructor(options: NodeCapabilitiesOptions) {
     this.node = options.node
@@ -107,6 +131,7 @@ export class NodeCapabilities implements CapabilityGate {
     this.nonces = options.nonces ?? new NonceStore()
     this.#directory = options.directory
     this.#keys = options.keys
+    this.#trustedIssuers = new Set(options.trustedIssuers ?? [])
     // Both or neither: a shadow policy with nowhere to report is work done to
     // produce nothing, and a sink with no policy can never fire. Refusing the
     // half-configuration here means the flag either observes or is absent,
@@ -145,6 +170,33 @@ export class NodeCapabilities implements CapabilityGate {
   }
 
   /**
+   * The tier a *verified* token earns, and the only place it is decided.
+   *
+   * Two conditions, both necessary (issue #28):
+   *
+   * 1. **the issuer is on this node's explicit list** — a signature that only
+   *    proves identity proves nothing about authority;
+   * 2. **the token asks for at least `write-limited`** — `act` is a ceiling
+   *    (rule S-3), and a `read` token is its holder saying, in the one field
+   *    that binds them, that this message is not meant to cause work. Reading
+   *    that as "act on it" would contradict the token rather than obey it.
+   *
+   * `sub` / `aud` / `taskId` are not re-checked here because they cannot be
+   * re-checked *later*: `verifyCapability` already refused anything whose
+   * binding did not match this node, this handler and this task, so by the
+   * time this runs the tier is necessarily a property of **this one message**
+   * and expires with it. There is no state here, and no method that could make
+   * a peer trusted for the next message.
+   */
+  #tierFor(issuer: string, level: CapabilityLevel): NoticeTrust {
+    if (!this.#trustedIssuers.has(issuer)) return TRUST_UNTRUSTED
+    if (!levelAtLeast(level, CapabilityLevel.WriteLimited)) {
+      return TRUST_UNTRUSTED
+    }
+    return NOTICE_TRUST_VERIFIED_CAPABILITY
+  }
+
+  /**
    * Mint a token for a peer to present back at `input.aud`.
    *
    * `user-confirmed` is not special-cased here, and does not need to be: this
@@ -171,6 +223,10 @@ export class NodeCapabilities implements CapabilityGate {
       return {
         ok: true,
         level,
+        // Absent issuer means no token verified, which is the floor by
+        // definition — there is nothing to have trusted.
+        trust:
+          issuer === undefined ? TRUST_UNTRUSTED : this.#tierFor(issuer, level),
         ...(issuer === undefined ? {} : { issuer }),
       }
     }
