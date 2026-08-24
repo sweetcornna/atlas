@@ -41,6 +41,21 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路的生成物一起删，
 下次 `beta-up.sh` 会照仓库重新铺出来；**`mirror/` 一条不动**）。
 
+### 「已启动」是真的启动了
+
+`beta_start_process` 内建两道校验，**不再要求调用方自己跟一句存活检查**：
+
+- 起**之前**问这条命令在不在（`command -v`）。`beta_require_occ` 同时校验产物与解释器 ——
+  这道 `command -v bun` 的守卫此前只在 `bootstrap.sh`、`beta-retain.sh`、
+  `remote/prepare-sandbox.sh` 三处有，唯独这条主部署路径漏了。
+- 起**之后**等 1 s 再问它还在不在；死了就把 `stderr` / `stdout` 末尾摊开、删掉那个 pid 文件、
+  退非零。
+
+它挡的是这个形状：`bun` 装在 `~/.bun/bin`，非交互 SSH（乃至 `bash -lc`）解析不到，`nohup` 以
+127 退出，而操作者看到的是一行绿色的「OK : 已启动（pid N）」，`run/<名字>.pid` 里还留下一个
+指向已死 pid 的陈旧记录。**遇到它就在命令前显式补 PATH**：
+`PATH="$HOME/.bun/bin:$PATH" ./demo/env/beta/beta-up.sh ...`。
+
 ## 宿主侧保留与轮转
 
 **只在宿主 H 上由操作员运行**，不放进节点、常驻进程或 `@qianmo/backup` 的入站面。先看计划，

@@ -853,8 +853,31 @@ beta_stop_one() {
   rm -f "$file"
 }
 
+# 起完到「算它起住了」之间等多久。1 s 足够抓住 exec 失败那一类（`nohup` 找不到命令是
+# 毫秒级的 127），又不至于让三处起法多花十几秒。留一个覆盖口只为用例（把它调到 0 等于
+# 关掉②，见下），运维不需要动它。
+BETA_START_GRACE_S="${QIANMO_BETA_START_GRACE_S:-1}"
+
 # beta_start_process <名字> <配置根> -- <命令...>
 # 起一个后台进程，pid 落 run/，stdout/stderr 落 logs/。已在跑的不重起（幂等）。
+#
+# ── 存活校验是**本函数的义务**，不是调用方的（issue #40）────────────────────
+# 此前这里无条件打一行「已启动（pid N）」并写 pid 文件：`$!` 拿到的是后台那一格的
+# pid，而 `nohup` 随后可以以 127 退出，函数既不检查也不用返回值区分。仓库自己的三处
+# 调用都老实跟了 beta_dump_if_dead，所以主路径一直是安全的——**但那是调用方的自觉**，
+# 第一个出树调用方（部署机上的瘦封装）就漏掉了：操作者看到一行绿色的
+# 「OK : <节点> 已启动（pid N）」，实际节点是死的，`run/<名字>.pid` 里还留下一个指向
+# 已死 pid 的陈旧记录。那与 beta-down.sh 顶部小心提防的「陈旧 pid + pid 号复用」是同一
+# 个隐患的两半：一边不敢信陈旧 pid，另一边在主动生产陈旧 pid。
+#
+# 两道，顺序有意：
+#   ① 起**之前**先问这条命令在不在。那正是 2026-08-24 舰队部署撞上的确切形状
+#      （bun 装在 ~/.bun/bin，非交互 SSH 解析不到），判定是确定性的、不用等，且报出来
+#      的是病因而不是症状。
+#   ② 起**之后**等一个宽限再问它还在不在。②盖住①盖不住的那半边（参数不合法、端口
+#      被占、配置根不可写……），代价是每处起法多 1 s。
+# 死了就把 stderr/stdout 摊开并 die —— 复用 beta_dump_if_dead，输出与调用方原先自己
+# 跟的那一句完全一致，信息量只增不减。
 beta_start_process() {
   local name="$1" config_dir="$2"
   shift 2
@@ -862,6 +885,10 @@ beta_start_process() {
     beta_ok "$name 已在运行（pid $(cat "$(beta_pidfile "$name")")），不重起"
     return 0
   fi
+  command -v "$1" >/dev/null 2>&1 || beta_die "$name 起不来：$1 跑不起来 —— 它既不在 PATH 上，也不是一个可执行文件。
+整套脚本硬依赖 bun（resident 与 console 两条腿都强制它）。非交互 SSH 下最常见的形状是
+bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式补上再跑：
+  PATH=\"\$HOME/.bun/bin:\$PATH\" demo/env/beta/beta-up.sh ..."
   local out err
   out="$(beta_logfile "$name" out)"
   err="$(beta_logfile "$name" err)"
@@ -871,13 +898,24 @@ beta_start_process() {
   OCC_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
   local pid=$!
   printf '%s\n' "$pid" >"$(beta_pidfile "$name")"
+  sleep "$BETA_START_GRACE_S"
+  beta_dump_if_dead "$name"
   beta_ok "$name 已启动（pid $pid，日志 $out）"
 }
 
 # 进程死了就把它的错误摊开来，不要只说一句「没起来」。
+#
+# 顺带**收掉那个 pid 文件**：它此刻指着一个不存在的进程，而 pid 号是会被复用的
+# （beta-down.sh 顶部那段注释讲的正是这个隐患）。留着它，等于给下一次 beta_running
+# 留下一个会说谎的依据——幂等起停的全部判据就是它。
 beta_dump_if_dead() {
-  local name="$1"
+  local name="$1" file
   beta_running "$name" && return 0
+  file="$(beta_pidfile "$name")"
+  if [ -f "$file" ]; then
+    beta_assert_inside_root "$file"
+    rm -f "$file"
+  fi
   beta_say "--- $name stderr 末尾 ---"
   tail -20 "$(beta_logfile "$name" err)" 2>/dev/null || true
   beta_say "--- $name stdout 末尾 ---"
@@ -973,7 +1011,24 @@ beta_http_body() {
 # ── occ 产物 ────────────────────────────────────────────────────────────────
 
 # 没有构建产物就明确报错，不去猜。造它的是 demo/env/bootstrap.sh（内测沿用同一条）。
+#
+# **产物在不在、和跑得动它的解释器在不在，是两件事**（issue #40）。这里原先只查前者，
+# 而整套脚本硬依赖 `bun "$BETA_OCC"`（resident 与 console 两条腿都强制 Bun）。缺 bun 时
+# 唯一的痕迹在 logs/<名字>.err 里的 `nohup: failed to run command 'bun'`，起法脚本当时
+# 一个字都不说。2026-08-24 的舰队部署实际形状：bun 装在 ~/.bun/bin，非交互 SSH（乃至
+# `bash -lc`）解析不到，四台里三台静默死亡，唯独 root 那台因为 /root/.bun/bin 在 PATH 里
+# 而活着 —— 「大部分挂、一台好」看起来像机器有问题，其实是 PATH 有问题。
+#
+# 同一道守卫仓库里另有三处（demo/env/bootstrap.sh、beta-retain.sh、
+# remote/prepare-sandbox.sh），写法照它们对齐，这里只是补上漏掉的这一处。
 beta_require_occ() {
+  # shellcheck disable=SC2016
+  #   ↑ 提示里的 $HOME / $PATH 是**给人照抄的字面量**，不是要在这里展开的。
+  command -v bun >/dev/null 2>&1 || beta_die 'bun 不在 PATH 上 —— resident 与 console 两条腿都强制 Bun。
+非交互 SSH 下最常见的形状是 bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里
+（`ssh <机器> demo/env/beta/beta-up.sh ...` 解析不到它，`bash -lc` 也未必）。
+装法见 docs/dev/demo-env.md §2；已装就在命令前显式补上，例如
+  PATH="$HOME/.bun/bin:$PATH" demo/env/beta/beta-up.sh ...'
   [ -f "$BETA_OCC" ] || beta_die "缺 $BETA_OCC —— 先跑 demo/env/bootstrap.sh"
 }
 
