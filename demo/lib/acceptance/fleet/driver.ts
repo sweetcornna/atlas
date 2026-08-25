@@ -846,11 +846,13 @@ export class FleetDriver implements AcceptanceDriver {
           .map(([k, v]) => `${k}='${shellQuote(v)}' `)
           .join('')
         const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
-        const root = opts?.configDir ?? configDir
+        // 一条命令换一个配置根：一条签发链要同时用到工具根、对端身份根与
+        // 将来那个节点自己的根，而它们本来就该在同一台机器的同一棵树里。
+        const dir = opts?.configDir ?? configDir
         return await this.#ssh(
           ssh,
           [
-            `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(root)}' ` +
+            `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(dir)}' ` +
               `${env}bun '${shellQuote(occPath)}' ${quoted}`,
           ],
           opts?.timeoutMs,
