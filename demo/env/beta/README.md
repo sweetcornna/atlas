@@ -341,7 +341,7 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 | `QIANMO_BETA_NODE` | `beta-1` | 节点名。**四台机器上必须各不相同**；没给 `--node` 时脚本会 WARN |
 | `QIANMO_BETA_AGENTS` | `planner reviewer` | 该节点的 agent（每节点 2 个，按用途分不按人分，§2.2）。也可用重复的 `--agent` 给 |
 | `QIANMO_BETA_TEAM` | `atlas` | `occ resident --team` |
-| `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4） |
+| `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）。**这是设置它的唯一入口**：脚本没有 `--label`，尾参里的 `--label` 只对这一趟的进程生效（标签含空白，写不进 `ops/console.env` 的一行）。`--help` 里单独有一段（issue #60） |
 | `QIANMO_BETA_SSH_KEY` | `$HOME/.ssh/id_ed25519_qianmo` | 隧道与镜像共用的私钥（H 上的路径）。单条坐标行可用 `key=` 覆盖 |
 | `QIANMO_BETA_MIRROR_INTERVAL_MIN` | `5` | 审计镜像拉取间隔。它同时决定每个镜像审计卡上的「滞后 ≤ N 分钟」标注 |
 | `QIANMO_BETA_BACKUP_URL` | 无 | 节点写快照的 https 地址（§2.7）。**不设就不开备份面**；给了就必须有写 token |
@@ -386,6 +386,22 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 标签会被回写。改完这一个展示项后，要先停掉正在运行的 console，再重新运行 H 腿才会生效。
 手改这个文件立刻生效（下一次 `beta-up.sh` 起控制台时）。**注意控制台是幂等启动的**：已经
 在跑的那一份不会被重起，所以改完要让它生效得 `beta-down.sh console && beta-up.sh --role host`。
+
+**存量 `LABEL` 与名册对不上会 WARN。**上面那条只删了旧 schema 的三个键，`LABEL` 自己
+**同样会过期而没有守卫**：2026-08-24 铺新产物时 H 上躺着的是单节点时代的
+「…审计视图：beta-1（…权威副本在节点本机）」，而控制台早已是四目标形态——那一趟显式带了
+`QIANMO_BETA_LABEL` 才没让页头退回单节点文案（issue #60）。现在标签点名的节点与
+`peers.conf` 对不上时会 WARN 一句，形状与 #45 那条一致。
+
+判据故意窄，**只在标签自己点名了名册的一部分时才说话**：
+
+- 一个节点名都没提的标签（派生默认那句「多节点审计视图」就是）永远不报；
+- 提全了的不报。`beta-1..4` 这种**区间写法先展开再比**——现场那份正确的标签正是这个形状，
+  不展开就会每跑一次假警报一次，而一条会误报的警等于没有警；
+- 提了一部分（标签写 `beta-1`、名册四个），或提到名册里已经没有的名字（`beta-9`）——报。
+
+标签不影响任何一条链路，所以没有别的东西会为此变红。这条守卫存在的理由就是这个：
+它是**唯一**会说话的地方。
 
 ## 六个负向用例怎么复跑
 
