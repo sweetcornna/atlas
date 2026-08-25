@@ -41,7 +41,7 @@
  * | --- | --- |
  * | `mutate-node-env` | 本轮没有场景要它。一次性节点上它随 `restart-node` 一起成立，但没有场景验证过 —— 不声明未经验证的能力 |
  * | `stub-upstream` | 真机打真实模型端点，那正是真机腿的意义；插一个假上游会把这条腿变成一次慢十倍的本地跑 |
- * | `local-ca-fixture` | CA 目录与证书是在 runner 的文件系统上造的，被测二进制在另一台机器上，`--cert`/`--trust-ca` 指过去是一条不存在的路径 |
+ * | `local-ca-fixture` | 卡的不是文件位置，是**签发顺序**：证书绑的是节点配置根里那把 Ed25519，而那个根要等 `startNode` 之后才存在，`--cert` 又必须在启动时给。要跑通得先给驱动加「预留节点配置根」这件事 |
  *
  * ## 一次性节点落在哪台机器上
  *
@@ -288,7 +288,7 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ],
   [
     'local-ca-fixture',
-    'CA 目录与证书是在 runner 的文件系统上造的，而被测二进制在另一台机器上 —— --cert/--trust-ca 指过去是一条不存在的路径',
+    '缺的不是「把文件放到目标机上」（execHost/launcherHost 都能做到），是**签发顺序**：证书要绑节点配置根里那把 Ed25519，而那个根要等 startNode 之后才存在，`--cert` 又必须在启动时就给。要在真机上跑这一维，得先让驱动能「预留一个节点配置根」并让 startNode 复用它（certificate/* 目前还直接拼本地驱动的根路径布局）',
   ],
   ['mirror-transport', '没有配置控制台主机（QIANMO_ACCEPTANCE_CONSOLE_HOST）'],
 ])
