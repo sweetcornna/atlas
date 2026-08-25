@@ -1,0 +1,159 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
+/**
+ * 真机腿两条纪律的 CI 护栏（issue #65）。
+ *
+ * 这两条都是「改坏了要到下一次真跑才发现」的那种，而真跑一轮要一小时、还得
+ * 有人手动起隧道 —— 所以它们必须落在分片里：
+ *
+ * ① **附着来的内测节点不许被停 / 重启 / 硬杀 / 往配置根里写。** 这是整条腿
+ *    「不碰生产」的全部保证，实现上收敛在 `requireDisposable` 一处。有人把
+ *    那一处删掉，或者给附着句柄补上一个 `disposable` 字段，一次真跑就会打断
+ *    内测使用者并在那条节点的审计链上留下计划外记录。
+ * ② **能力随配置消失。** 没有可承载一次性进程的机器时，`spawn-node` 那几项
+ *    必须**不在** `capabilities` 里 —— 否则场景会通过能力差集检查然后在别处
+ *    炸掉，那正是 issue #61 的形状。
+ *
+ * 全程零网络：`startNode({attach:true})` 只拼一个句柄，`requireDisposable`
+ * 在任何 ssh 之前就抛。
+ */
+
+import { describe, expect, it } from 'bun:test'
+import { FleetDriver } from '../fleet/driver.js'
+import { runScenario } from '../runner.js'
+import type {
+  AcceptanceDriver,
+  NodeHandle,
+  NodeSpec,
+  Scenario,
+  ScenarioContext,
+} from '../types.js'
+
+const SPEC: NodeSpec = {
+  name: 'beta-1',
+  agents: { main: '/tmp/never-used' },
+  auth: { mode: 'psk', psk: 'qianmo-acceptance-psk-0000000000' },
+  policy: 'open',
+  attach: true,
+}
+
+function driverWith(spawnable: boolean): FleetDriver {
+  return new FleetDriver({
+    hosts: [
+      {
+        ssh: 'never-dialed',
+        node: 'beta-1',
+        tunnelPort: 38_631,
+        endpoint: 'ws://127.0.0.1:38631',
+        configRoot: '/home/nobody/qianmo-beta/nodes/beta-1/config',
+        occPath: '/home/nobody/atlas-beta/dist/cli-node.js',
+      },
+    ],
+    spawnMachines: spawnable
+      ? [{ ssh: 'never-dialed', label: 'fake', repoRel: 'atlas-beta' }]
+      : [],
+    psk: {},
+  })
+}
+
+/** `startNode` 的附着分支是同步拼装的，不发任何 ssh。 */
+async function attachedHandle(driver: FleetDriver): Promise<NodeHandle> {
+  return await driver.startNode(undefined as unknown as ScenarioContext, SPEC)
+}
+
+describe('FleetDriver 对附着来的内测节点', () => {
+  it('停 / 重启 / 硬杀都拒绝，且说清拒绝的是哪一件事', async () => {
+    const driver = driverWith(true)
+    const node = await attachedHandle(driver)
+
+    await expect(driver.stopNode(node)).rejects.toThrow('不停')
+    await expect(
+      driver.restartNode(
+        undefined as unknown as ScenarioContext,
+        node,
+        undefined,
+      ),
+    ).rejects.toThrow('不重启')
+    await expect(driver.killNode(node)).rejects.toThrow('不硬杀')
+  })
+
+  it('往生产配置根里写 / 改权限位都拒绝', async () => {
+    const driver = driverWith(true)
+    const node = await attachedHandle(driver)
+    await expect(
+      driver.writeNodeFile(node, 'qianmo/audit/trail.ndjson', 'x'),
+    ).rejects.toThrow('不写配置根')
+    await expect(driver.setNodePathMode(node, 'teams', '500')).rejects.toThrow(
+      '不改权限位',
+    )
+  })
+
+  it('附着句柄的 hostEndpoint 是节点自己那台机器上的地址，不是隧道口', async () => {
+    const node = await attachedHandle(driverWith(true))
+    expect(node.endpoint).toBe('ws://127.0.0.1:38631')
+    expect(node.hostEndpoint).toBe('ws://127.0.0.1:38625')
+  })
+})
+
+describe('FleetDriver 的能力随配置消失', () => {
+  it('没有可承载一次性进程的机器时，四项一次性能力都不声明', () => {
+    const caps = driverWith(false).capabilities
+    for (const cap of [
+      'spawn-node',
+      'spawn-console',
+      'restart-node',
+      'run-launcher',
+    ] as const) {
+      expect(caps.has(cap)).toBe(false)
+    }
+    // 附着与拨号不受影响 —— 那正是「数据面至少还有一条」的底线。
+    expect(caps.has('attach-node')).toBe(true)
+    expect(caps.has('raw-dial')).toBe(true)
+  })
+
+  it('有机器时四项都声明', () => {
+    const caps = driverWith(true).capabilities
+    for (const cap of [
+      'spawn-node',
+      'spawn-console',
+      'restart-node',
+      'run-launcher',
+    ] as const) {
+      expect(caps.has(cap)).toBe(true)
+    }
+    // `mutate-node-env` 刻意仍然不声明：本轮没有场景验证过它。
+    expect(caps.has('mutate-node-env')).toBe(false)
+  })
+})
+
+describe('超时倍率', () => {
+  const hang: Scenario = {
+    id: 'handshake/never-returns',
+    dimension: 'handshake',
+    title: '永不返回，用来观察超时预算',
+    expected: '不会走到这里',
+    requires: ['raw-dial'],
+    timeoutMs: 50,
+    run: async () => await new Promise(() => {}),
+  }
+  // 只要一个「什么都不缺」的驱动：这条场景在超时之前不碰它。
+  const anyDriver = {
+    target: 'local',
+    capabilities: new Set(['raw-dial']),
+  } as unknown as AcceptanceDriver
+
+  it('场景自报的毫秒数也乘倍率，且超时记 error 不记 fail', async () => {
+    const scaled = await runScenario(hang, anyDriver, 1_000, false, 4)
+    expect(scaled.outcome).toBe('error')
+    // 200 = 50 × 4。写死这个数是刻意的：倍率被谁「优化」成只作用于默认值时，
+    // 这一行会红 —— 而真跑里那种退化的表现只是「又有几条 error」。
+    expect(scaled.actual).toContain('200ms')
+  })
+
+  it('倍率缺省是 1', async () => {
+    const plain = await runScenario(hang, anyDriver, 1_000, false)
+    expect(plain.outcome).toBe('error')
+    expect(plain.actual).toContain('50ms')
+  })
+})
