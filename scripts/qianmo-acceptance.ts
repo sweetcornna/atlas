@@ -80,6 +80,7 @@ import {
 import type {
   AcceptanceDriver,
   ScenarioResult,
+  TestedProvenance,
 } from '../demo/lib/acceptance/types.js'
 
 const USAGE = `阡陌端到端验收套件
@@ -200,9 +201,35 @@ async function main(): Promise<number> {
   const timeoutScale =
     scaleOverride ?? (target === 'fleet' ? FLEET_TIMEOUT_SCALE : undefined)
 
+  // 这是**跑套件那台机器**的检出提交 —— 只回答「套件是哪一版」。
+  // `target=fleet` 时被测的是远端节点上的产物，与它可以毫无关系；那个问题的
+  // 答案在下面的 `testedProvenance` 里，两个值分别记（issue #70）。
   const commit = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'])
     .stdout.toString()
     .trim()
+
+  // 被测端自报的来源 commit。**在场景循环之前采**，因为它要进 NDJSON 的首行 ——
+  // 一轮被打断的跑只剩那一行，而「刚才测的是哪一版」正是那时候最想知道的。
+  //
+  // 本地驱动**不实现**这个探针，于是 `target=local` 上它恒为 undefined，产物
+  // 与汇总表逐字节不变：那条腿被测的就是这棵检出，`commit` 已经答完了。
+  //
+  // 探针抛了也不能让整轮跑不起来，更不能悄悄回退成上面那个 `commit` —— 回退
+  // 正是这条缺陷本身。抛出的原文原样记成一条「问不到」的观察，报告里那一栏
+  // 因此写「未知」。
+  let testedProvenance: TestedProvenance | undefined
+  try {
+    testedProvenance = await driver.testedProvenance?.()
+  } catch (err) {
+    testedProvenance = {
+      units: [
+        {
+          unit: `${target} 被测端`,
+          detail: `采集来源 commit 时抛出：${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+    }
+  }
 
   process.stdout.write(
     `阡陌端到端验收套件 · target=${target} · 场景 ${
@@ -239,6 +266,7 @@ async function main(): Promise<number> {
       target: driver.target,
       startedAt,
       commit,
+      ...(testedProvenance === undefined ? {} : { testedProvenance }),
       planned: selectScenarios(ALL_SCENARIOS, only).length,
     })}\n`,
     { mode: 0o600 },
@@ -257,6 +285,7 @@ async function main(): Promise<number> {
     ...(timeoutScale === undefined ? {} : { timeoutScale }),
     keepWorkdir: flag('keep-workdir'),
     commit,
+    ...(testedProvenance === undefined ? {} : { testedProvenance }),
     onResult: result => {
       // 落盘先于打印：终端那一行是给人看进度的，产物那一行是这一轮唯一
       // 会留下来的东西，被打断时先保住后者。

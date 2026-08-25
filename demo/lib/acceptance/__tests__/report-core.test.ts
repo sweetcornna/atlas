@@ -18,10 +18,17 @@ import {
   ndjsonStartLine,
   ndjsonSummaryLine,
   renderSummary,
+  sameCommit,
   summarize,
   type SuiteMeta,
+  testedCommitConsensus,
 } from '../report-core.js'
-import type { Dimension, Outcome, ScenarioResult } from '../types.js'
+import type {
+  Dimension,
+  Outcome,
+  ScenarioResult,
+  TestedProvenance,
+} from '../types.js'
 import { DIMENSIONS } from '../types.js'
 
 const META: SuiteMeta = {
@@ -384,6 +391,249 @@ describe('renderSummary', () => {
   test('零覆盖维度被点名', () => {
     const run = summarize([result({ id: 'audit/a', outcome: 'pass' })], META)
     expect(renderSummary(run)).toContain('← 本轮零覆盖')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 被测端来源 commit（issue #70 ③）
+//
+// 这一组守的是一句话：**报告盖的必须是被测端报上来的那个 commit**，而不是跑
+// 套件那台机器的 HEAD。四条规矩逐条钉在下面 —— 被测端的值要记、与本地不一致
+// 时两个都要记、拿不到时写「未知」而不是回退、`target=local` 一字不改。
+// ---------------------------------------------------------------------------
+
+/** 舰队上真实的那一版（2026-08-25 四节点 + 控制台实测值）。 */
+const FLEET_SHA = 'fa80e006f18a931cb6386b99a7d5e6503991e2a9'
+
+const FLEET_META: SuiteMeta = {
+  target: 'fleet',
+  startedAt: '2026-08-25T00:00:00.000Z',
+  finishedAt: '2026-08-25T00:01:30.000Z',
+  // 套件那侧是短 SHA（`git rev-parse --short`），被测端报的是 40 位全 SHA。
+  // 两种拼写共存是这条特性的常态，不是待统一的瑕疵。
+  commit: 'c4ed9d8f',
+}
+
+function provenance(
+  units: readonly { unit: string; commit?: string; detail?: string }[],
+): TestedProvenance {
+  return {
+    units: units.map(u => ({
+      unit: u.unit,
+      ...(u.commit === undefined ? {} : { commit: u.commit }),
+      detail: u.detail ?? '',
+    })),
+  }
+}
+
+const ALL_AGREE = provenance([
+  { unit: 'beta-1', commit: FLEET_SHA },
+  { unit: 'beta-2', commit: FLEET_SHA },
+  { unit: 'beta-3', commit: FLEET_SHA },
+  { unit: 'beta-4', commit: FLEET_SHA },
+  { unit: 'console (workbench-iap)', commit: FLEET_SHA },
+])
+
+describe('testedCommitConsensus', () => {
+  test('全体一致才给出一个值', () => {
+    expect(testedCommitConsensus(ALL_AGREE)).toBe(FLEET_SHA)
+  })
+
+  test('有一台停在别的版本上就没有共识 —— 不许挑一个当答案', () => {
+    const mixed = provenance([
+      { unit: 'beta-1', commit: FLEET_SHA },
+      { unit: 'beta-2', commit: 'b'.repeat(40) },
+    ])
+    expect(testedCommitConsensus(mixed)).toBeUndefined()
+  })
+
+  test('有一台报不上来就没有共识（剩下几台一致也不算）', () => {
+    const partial = provenance([
+      { unit: 'beta-1', commit: FLEET_SHA },
+      { unit: 'beta-2', detail: '读不到启动日志' },
+    ])
+    expect(testedCommitConsensus(partial)).toBeUndefined()
+  })
+
+  test('一个都没问到 / 根本没探针 → undefined', () => {
+    expect(testedCommitConsensus(provenance([]))).toBeUndefined()
+    expect(testedCommitConsensus(undefined)).toBeUndefined()
+  })
+})
+
+describe('sameCommit', () => {
+  test('短 SHA 与全 SHA 按前缀算同一个', () => {
+    expect(sameCommit('fa80e006', FLEET_SHA)).toBe(true)
+    expect(sameCommit(FLEET_SHA, 'fa80e006')).toBe(true)
+  })
+
+  test('前缀不够长不作数', () => {
+    expect(sameCommit('fa80e0', FLEET_SHA)).toBe(false)
+  })
+
+  test('带 -dirty 的一律判不同 —— 有未提交内容的树不等于它的 HEAD', () => {
+    expect(sameCommit(`${FLEET_SHA}-dirty`, FLEET_SHA)).toBe(false)
+    expect(sameCommit('fa80e006', `${FLEET_SHA}-dirty`)).toBe(false)
+  })
+
+  test('任一侧缺失就是不同', () => {
+    expect(sameCommit(undefined, FLEET_SHA)).toBe(false)
+    expect(sameCommit(FLEET_SHA, undefined)).toBe(false)
+  })
+})
+
+describe('被测端来源 commit 进产物', () => {
+  test('target=local 的两行逐字节不变 —— 那条腿被测的就是本检出', () => {
+    const run = summarize(
+      [result({ id: 'handshake/a', outcome: 'pass' })],
+      META,
+    )
+    const lines = toNdjsonLines(run)
+    const start = JSON.parse(lines[0] ?? '')
+    const summary = JSON.parse(lines[lines.length - 1] ?? '')
+    // 两个键**根本不出现**，不是出现一个 null：本地腿的产物与这条特性之前
+    // 一模一样，读它的工具（CI 那道防假绿护栏）不需要知道这件事存在。
+    expect('testedCommit' in start).toBe(false)
+    expect('testedUnits' in start).toBe(false)
+    expect('testedCommit' in summary).toBe(false)
+    expect('testedUnits' in summary).toBe(false)
+    expect(renderSummary(run)).toContain('· c4ed9d8f')
+    expect(renderSummary(run)).not.toContain('被测端')
+  })
+
+  test('首行就带被测端的值 —— 被打断的一轮只剩那一行', () => {
+    const run = summarize([result({ id: 'handshake/a', outcome: 'pass' })], {
+      ...FLEET_META,
+      testedProvenance: ALL_AGREE,
+    })
+    const start = JSON.parse(toNdjsonLines(run)[0] ?? '')
+    expect(start.testedCommit).toBe(FLEET_SHA)
+    expect(start.testedUnits).toHaveLength(5)
+    // 套件那侧的值仍在原位：两个问题，两个字段。
+    expect(start.commit).toBe('c4ed9d8f')
+  })
+
+  test('末行同样带，且逐个被测端的原文都在', () => {
+    const run = summarize([result({ id: 'handshake/a', outcome: 'pass' })], {
+      ...FLEET_META,
+      testedProvenance: ALL_AGREE,
+    })
+    const lines = toNdjsonLines(run)
+    const summary = JSON.parse(lines[lines.length - 1] ?? '')
+    expect(summary.testedCommit).toBe(FLEET_SHA)
+    expect(summary.commit).toBe('c4ed9d8f')
+    expect(summary.testedUnits[0].unit).toBe('beta-1')
+    // CI 那道防假绿护栏读的三项不能被挤掉。
+    expect(summary.counts).toBeDefined()
+    expect(summary.targetTouches).toBe(1)
+    expect(summary.pass).toBe(true)
+  })
+
+  test('流式拼出来的与 toNdjson 仍逐字节相同（带被测端字段）', () => {
+    const results = [result({ id: 'handshake/a', outcome: 'pass' })]
+    const run = summarize(results, {
+      ...FLEET_META,
+      testedProvenance: ALL_AGREE,
+    })
+    const streamed =
+      `${ndjsonStartLine({
+        target: run.target,
+        startedAt: run.startedAt,
+        commit: run.commit,
+        testedProvenance: run.testedProvenance,
+        planned: results.length,
+      })}\n` +
+      `${results.map(r => `${ndjsonScenarioLine(r)}\n`).join('')}` +
+      `${ndjsonSummaryLine(run)}\n`
+    expect(streamed).toBe(renderNdjson(run))
+  })
+
+  test('fromNdjson 把逐个被测端的观察原样带回来', () => {
+    const run = summarize([result({ id: 'handshake/a', outcome: 'pass' })], {
+      ...FLEET_META,
+      testedProvenance: provenance([
+        { unit: 'beta-1', commit: FLEET_SHA, detail: '读自 cornna-p2 上的 …' },
+        { unit: 'beta-4', detail: '读不到该节点的启动日志' },
+      ]),
+    })
+    const back = fromNdjson(renderNdjson(run))
+    expect(back?.testedProvenance?.units).toEqual([
+      { unit: 'beta-1', commit: FLEET_SHA, detail: '读自 cornna-p2 上的 …' },
+      { unit: 'beta-4', detail: '读不到该节点的启动日志' },
+    ])
+    expect(testedCommitConsensus(back?.testedProvenance)).toBeUndefined()
+  })
+})
+
+describe('renderSummary 的被测端来源那一段', () => {
+  function render(p: TestedProvenance): string {
+    return renderSummary(
+      summarize([result({ id: 'handshake/a', outcome: 'pass' })], {
+        ...FLEET_META,
+        testedProvenance: p,
+      }),
+    )
+  }
+
+  test('两个值都印，并且点名它们不是同一版', () => {
+    const text = render(ALL_AGREE)
+    expect(text).toContain(`· 套件 c4ed9d8f · 被测端 ${FLEET_SHA}`)
+    expect(text).toContain(`beta-1`)
+    expect(text).toContain(FLEET_SHA)
+    // 「套件是哪版」那一行不能因为多了被测端就消失。
+    expect(text).toContain('套件所在检出')
+    expect(text).toContain('不是同一版')
+  })
+
+  test('两边指同一个提交时不喊「不是同一版」', () => {
+    const text = renderSummary(
+      summarize([result({ id: 'handshake/a', outcome: 'pass' })], {
+        ...FLEET_META,
+        commit: FLEET_SHA.slice(0, 8),
+        testedProvenance: ALL_AGREE,
+      }),
+    )
+    expect(text).not.toContain('不是同一版')
+  })
+
+  test('拿不到就写「未知」，绝不回退成套件那侧的 HEAD', () => {
+    const text = render(
+      provenance([
+        { unit: 'beta-1', detail: '读不到该节点的启动日志' },
+        {
+          unit: 'beta-2',
+          detail:
+            '它自己报的就是 sourceCommit=unknown —— 那份产物构建时没能确定来源',
+        },
+      ]),
+    )
+    expect(text).toContain('· 被测端 未知')
+    expect(text).toContain('beta-1')
+    expect(text).toContain('读不到该节点的启动日志')
+    // 关键的一条：那一栏里不许出现套件那侧的值。
+    const provenanceBlock = text.slice(
+      text.indexOf('被测端来源 commit'),
+      text.indexOf('PASS  handshake/a'),
+    )
+    expect(provenanceBlock).not.toContain('c4ed9d8f  ←')
+    expect(text).toContain('没有一个统一答案')
+  })
+
+  test('一个被测端都没问到时也说清楚，而不是静默留白', () => {
+    expect(render(provenance([]))).toContain('（一个被测端都没问到）')
+  })
+
+  test('四台停在两个版本上时，五行各自的值都在', () => {
+    const other = 'b'.repeat(40)
+    const text = render(
+      provenance([
+        { unit: 'beta-1', commit: FLEET_SHA },
+        { unit: 'beta-2', commit: other },
+      ]),
+    )
+    expect(text).toContain(FLEET_SHA)
+    expect(text).toContain(other)
+    expect(text).toContain('· 被测端 未知')
   })
 })
 
