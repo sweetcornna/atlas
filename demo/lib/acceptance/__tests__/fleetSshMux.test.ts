@@ -31,11 +31,17 @@ import {
   CONTROL_DIR_PREFIX,
   CONTROL_PATH_TOKEN,
   CONTROL_PATH_TOKEN_BYTES,
+  MASTER_OPEN_TIMEOUT_MS,
   SshMultiplex,
   TUNNEL_NO_MUX_ARGS,
   UNIX_SOCKET_PATH_MAX,
 } from '../fleet/sshMux.js'
-import { runScenario } from '../runner.js'
+import {
+  DEFAULT_SCENARIO_TIMEOUT_MS,
+  FLEET_TIMEOUT_SCALE,
+  runScenario,
+} from '../runner.js'
+import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
 import type { Scenario, ScenarioResult } from '../types.js'
 
 /** 假 ssh 回给 `mktemp -d` 的那个根，形状与真的一致。 */
@@ -188,6 +194,17 @@ describe('ControlPath 的长度账（issue #100 ①）', () => {
     const b = new SshMultiplex({ sshBin: 'ssh', sshArgs: [], enabled: true })
     openMuxes.push(a, b)
     expect(a.controlPath()).not.toBe(b.controlPath())
+  })
+
+  it('建 master 打满也炸不掉场景预算', () => {
+    // `#read` / `#diag` 的退避重发会连 master 一起再试，所以最坏是
+    // `TRANSPORT_RETRY_ATTEMPTS` 次 × 每次的 master 预算。它必须小于真机腿的
+    // 场景预算 —— 否则一次链路失败会以「场景超时」的形态收场，而超时记的是
+    // 「套件自己炸了」，那条 `errorKind='transport'` 的分类就白做了。
+    const worst = MASTER_OPEN_TIMEOUT_MS * TRANSPORT_RETRY_ATTEMPTS
+    expect(worst).toBeLessThan(
+      DEFAULT_SCENARIO_TIMEOUT_MS * FLEET_TIMEOUT_SCALE,
+    )
   })
 
   it('关着复用时一个目录都不开', () => {
