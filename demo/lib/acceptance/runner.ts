@@ -34,6 +34,7 @@ import type {
   ScenarioContext,
   ScenarioResult,
   SuiteRun,
+  TestedProvenance,
 } from './types.js'
 
 /** 单场景默认超时。真进程起停 + 一次模型轮次，60 s 够，且不至于挂死一夜。 */
@@ -73,7 +74,17 @@ export interface RunOptions {
    * 见 {@link FLEET_TIMEOUT_SCALE} 与 `ScenarioContext.timeoutScale`。
    */
   readonly timeoutScale?: number
+  /** **跑套件那台机器**的检出提交。 */
   readonly commit?: string
+  /**
+   * 被测端自报的来源 commit（issue #70 ③）。
+   *
+   * 由入口在场景循环之前采一次（`driver.testedProvenance?.()`）再传进来，而不
+   * 是让 runner 自己去问：入口本来就要把它写进 NDJSON 的**首行**（被打断的一
+   * 轮只剩那一行），采集因此必须发生在 runner 开跑之前。传值而不是传驱动，也
+   * 让这一层继续是纯的。
+   */
+  readonly testedProvenance?: TestedProvenance
   /** 每条结果出来就回调一次，供实时打印。 */
   onResult?(result: ScenarioResult): void
   /** 保留临时目录（排查用）。 */
@@ -294,6 +305,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteRun> {
     startedAt,
     finishedAt: new Date().toISOString(),
     commit: options.commit,
+    testedProvenance: options.testedProvenance,
   })
 }
 

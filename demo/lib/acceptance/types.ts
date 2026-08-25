@@ -680,6 +680,41 @@ export type DialAuth =
   | { readonly mode: 'none' }
 
 /**
+ * 一个被测端**自己报上来的**来源 commit（issue #70 ③）。
+ *
+ * 三个字段各有各的不可替代性：
+ *
+ * · `unit` —— 是谁在说话。舰队上同时有四台节点 + 一台控制台，它们完全可能
+ *   停在不同的产物上（滚更新是一台一台滚的），合成一个值就把那件事抹掉了。
+ * · `commit` —— **它说的原文**，40 位全 SHA / `<SHA>-dirty` / `unknown`，与
+ *   `qm resident` 启动行和 `qm console` banner 里那个 `sourceCommit` 字段逐字
+ *   相同。**取不到就是 `undefined`，不许拿 runner 自己的 HEAD 去填** —— 那个
+ *   回退正是这条缺陷本身。
+ * · `detail` —— 从哪儿读到的，或者为什么没读到。没有它，报告上那个「未知」
+ *   分不出「日志被轮转掉了」「产物是 #74 之前构建的」「SSH 不通」。
+ */
+export interface TestedUnitProvenance {
+  /** 被测端标识，如 `beta-1` / `console (workbench-iap)`。 */
+  readonly unit: string
+  /** 它自报的 `sourceCommit` 原文；拿不到就是 `undefined`。 */
+  readonly commit?: string
+  /** 读到的位置，或者没读到的原因原文。 */
+  readonly detail: string
+}
+
+/**
+ * 一轮运行里「**被测的**是哪一版」。
+ *
+ * 与 {@link SuiteRun.commit}（「**跑套件的**是哪一版」）是两件事，报告里两个
+ * 都记。`target=local` 上被测对象就是本检出，两者恒等，于是本地驱动**不实现**
+ * 这个探针 —— 那条腿的报告一字不变。
+ */
+export interface TestedProvenance {
+  /** 逐个被测端的自报值。一个都问不到时是空表（**不要**抛）。 */
+  readonly units: readonly TestedUnitProvenance[]
+}
+
+/**
  * 驱动层。本地与真机各一个实现，场景只认这个接口。
  *
  * 方法都可能抛；runner 会把抛出记成 `error` 并带上栈。驱动**不要**吞异常
@@ -783,6 +818,21 @@ export interface AcceptanceDriver {
   consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot>
   /** 开一个跑启动器脚本的位置。见 {@link LauncherHost}。 */
   launcherHost(ctx: ScenarioContext): Promise<LauncherHost>
+  /**
+   * 问被测端「你是从哪个 commit 构建的」（issue #70 ③）。
+   *
+   * **只有被测对象在别处的驱动才实现它。** 本地腿被测的就是这棵检出，报告上
+   * 那个 commit 本来就是被测端的 commit，再问一遍只会在同一份报告里印两个
+   * 恒等的值；所以 `LocalDriver` 故意不实现，`target=local` 的产物一字不变。
+   *
+   * 整轮跑一次，在场景循环之外 —— 它回答的是「这一轮测的是哪一版」，不是
+   * 任何一条场景的观察，因此**不计入 `targetTouches`**（那一项数的是场景）。
+   *
+   * **实现不许抛，也不许在拿不到时编一个值。** 问不到就把原因写进
+   * {@link TestedUnitProvenance.detail} 并把 `commit` 留空：报告里那一栏写
+   * 「未知」是正确答案，回退成 runner 的 HEAD 才是要修的那个缺陷。
+   */
+  testedProvenance?(): Promise<TestedProvenance>
 }
 
 /**
@@ -873,6 +923,17 @@ export interface SuiteRun {
    * 它是「没验」，而这两者对读报告的人必须长得不一样。
    */
   readonly pass: boolean
-  /** 套件版本 / 提交，便于把一份结果钉回代码。 */
+  /**
+   * **跑套件那台机器**上的检出提交，便于把一份结果钉回代码。
+   *
+   * 注意它回答的是「套件是哪一版」。`target=fleet` 时**被测的是哪一版**是另一
+   * 个问题，答案在 {@link SuiteRun.testedProvenance} 里 —— 两者可以完全无关
+   * （issue #70）。
+   */
   readonly commit?: string
+  /**
+   * 被测端自报的来源 commit。`target=local` 上是 `undefined`（被测对象就是这
+   * 棵检出，`commit` 已经回答了）。见 {@link TestedProvenance}。
+   */
+  readonly testedProvenance?: TestedProvenance
 }

@@ -90,6 +90,8 @@ import type {
   NodeSpec,
   RegistrySpec,
   ScenarioContext,
+  TestedProvenance,
+  TestedUnitProvenance,
 } from '../types.js'
 import {
   consoleLaunch,
@@ -328,6 +330,26 @@ const DISPOSABLE_READY_BUDGET_MS = 60_000
 
 /** 反向隧道「通了没有」的等待基准（远端 curl 探一次，每拍一次 SSH 往返）。 */
 const REVERSE_TUNNEL_READY_BUDGET_MS = 30_000
+
+/**
+ * 采一台机器的「你是哪一版」要等多久。
+ *
+ * 不乘倍率：这一趟发生在**场景循环之外**（整轮开跑前一次），没有 `ctx`，也就
+ * 没有那个倍率可乘。它只是一次 `grep` + 一次 SSH 往返，30 s 足够；而它超时的
+ * 后果是**这台报「未知」**，不是整轮炸掉 —— 「问不到」本来就是这条报告要如实
+ * 说出来的一种答案。
+ */
+const PROVENANCE_PROBE_TIMEOUT_MS = 30_000
+
+/**
+ * 控制台 banner 落在哪儿。
+ *
+ * `beta-up.sh` 把控制台的 stdout 送进 `$QIANMO_BETA_ROOT/logs/console.out`，而
+ * `QIANMO_BETA_ROOT` 缺省是 `$HOME/qianmo-beta`（见 `demo/env/beta/common.sh`）。
+ * 部署改了路径就用 `QIANMO_ACCEPTANCE_CONSOLE_LOG` 指过去 —— 探不到时报告写
+ * 「未知」并把试过的路径原样带上，那比猜一个更有用。
+ */
+const DEFAULT_CONSOLE_LOG = '$HOME/qianmo-beta/logs/console.out'
 
 export class FleetDriver implements AcceptanceDriver {
   readonly target = 'fleet' as const
@@ -1369,6 +1391,113 @@ export class FleetDriver implements AcceptanceDriver {
    *
    * 采集全程只读：`systemctl show` / `stat` / `md5sum` / `head -c`。
    */
+  /**
+   * 问舰队上每一个跑着的东西「你是从哪个 commit 构建的」（issue #70 ③）。
+   *
+   * ## 为什么读的是**启动行**，不是部署树上的 `.source-commit` 戳
+   *
+   * 两者回答的不是同一个问题。戳文件是**构建的输入**（`bootstrap.sh` 读它、
+   * 经 `OCC_SOURCE_COMMIT` 交给 `defines.ts`）；启动行是**此刻跑着的那个进程
+   * 自己报出来的**。中间隔着「构建有没有真的重跑」「跑着的是不是新产物」两步，
+   * 而真机腿要盖进报告的恰恰是后者 —— 一台戳着新 SHA、跑着旧进程的机器，读戳
+   * 会给出一份和之前一样看着权威、实际证明不了的报告。
+   *
+   * ## 一台一条，不合并
+   *
+   * 四节点 + 控制台是**一台一台**滚更新的，停在两个 commit 上完全可能，而那
+   * 正是最该被看见的事实。合并成一个值的那一刻它就消失了；合并只发生在渲染层
+   * （`testedCommitConsensus`），而且只在全体一致时才给出答案。
+   *
+   * ## `sourceCommit=unknown` 记成「没报上来」
+   *
+   * 那是产物构建时**就没能确定来源**（部署树没 `.git` 又没戳）。把这个字面量
+   * 当成一个 commit 往上传，等于让 `unknown` 参与「一致不一致」的比较，四台
+   * 全 unknown 会得出一个「大家一致」的结论 —— 报告于是又变成看着有答案、实际
+   * 没有。所以它落在 `detail` 里，`commit` 留空。
+   *
+   * **这个方法不抛。** 每一种问不到都是一条 `commit` 为空、`detail` 写清原因
+   * 的观察；绝不拿 runner 的 HEAD 去填 —— 那个回退正是这条缺陷本身。
+   */
+  async testedProvenance(): Promise<TestedProvenance> {
+    const units: TestedUnitProvenance[] = []
+    for (const host of this.#config.hosts) {
+      units.push(await this.#nodeProvenance(host))
+    }
+    const consoleHost = this.#config.consoleHost
+    if (consoleHost !== undefined) {
+      units.push(await this.#consoleProvenance(consoleHost))
+    }
+    return { units }
+  }
+
+  /** 一台节点：从 `logs/<节点>.out` 里那行 JSON 启动 banner 上读。 */
+  async #nodeProvenance(host: FleetHost): Promise<TestedUnitProvenance> {
+    // 与 `#tail` 同一条路径推法（`<配置根>/../../../logs/<节点>.out`），但这里
+    // **不能**用 `tail -200`：banner 是进程起来时写的第一行，一台跑了几天的
+    // 节点后面早堆满了别的行。整份 grep，取最后一次匹配 = 最近一次启动。
+    const log = `$(dirname '${shellQuote(host.configRoot)}')/../../logs/${host.node}.out`
+    const probe = await this.#ssh(
+      host.ssh,
+      [
+        `f="${log}"`,
+        `printf 'log=%s\n' "$f"`,
+        `if [ -r "$f" ]; then`,
+        `  printf 'readable=yes\n'`,
+        `  printf 'sourceCommit=%s\n' "$(grep -o '"sourceCommit":"[^"]*"' -- "$f" | tail -1 | sed 's/^.*:"//; s/"$//')"`,
+        `else`,
+        `  printf 'readable=no\n'`,
+        `fi`,
+      ],
+      PROVENANCE_PROBE_TIMEOUT_MS,
+    )
+    return interpretProvenanceProbe(
+      host.node,
+      probe,
+      `${host.ssh} 上的 ${strField(probe.stdout, 'log') ?? '(路径未回显)'}`,
+      strField(probe.stdout, 'readable') === 'no'
+        ? '读不到该节点的启动日志'
+        : '启动日志里没有 sourceCommit 字段（这份产物是 PR #74 之前构建的？）',
+    )
+  }
+
+  /** 控制台：banner 是 `键 值` 形态（`qm console`），不是 JSON。 */
+  async #consoleProvenance(consoleHost: string): Promise<TestedUnitProvenance> {
+    const override = process.env.QIANMO_ACCEPTANCE_CONSOLE_LOG
+    const candidates = [
+      ...(override === undefined || override === ''
+        ? []
+        : [`'${shellQuote(override)}'`]),
+      `"${DEFAULT_CONSOLE_LOG}"`,
+    ]
+    const probe = await this.#ssh(
+      consoleHost,
+      [
+        // **只在读到时才打 `readable=yes`**，别先打一行 `readable=no` 再在循环
+        // 里覆盖：`strField` 取的是**第一条**匹配行，于是它永远读到 `no` ——
+        // 「文件在、只是没有这个字段」会被报成「读不到日志」，把一个「产物太旧」
+        // 的结论说成「路径配错了」。
+        `for f in ${candidates.join(' ')}; do`,
+        `  [ -r "$f" ] || continue`,
+        `  printf 'log=%s\n' "$f"`,
+        `  printf 'readable=yes\n'`,
+        // 控制台那面是 `sourceCommit<空格填充><值>`，与常驻的 JSON 不同 ——
+        // **键名与值的形态是对齐的，行的形态不是**，两处各解析各的。
+        `  printf 'sourceCommit=%s\n' "$(grep -oE '^sourceCommit[[:space:]]+[^[:space:]]+' -- "$f" | tail -1 | awk '{print $2}')"`,
+        `  break`,
+        `done`,
+      ],
+      PROVENANCE_PROBE_TIMEOUT_MS,
+    )
+    return interpretProvenanceProbe(
+      `console (${consoleHost})`,
+      probe,
+      `${consoleHost} 上的 ${strField(probe.stdout, 'log') ?? '(路径未回显)'}`,
+      strField(probe.stdout, 'readable') === 'yes'
+        ? 'banner 里没有 sourceCommit 字段（这份产物是 PR #76 之前构建的？）'
+        : `读不到控制台的启动日志（试过 ${candidates.join(' / ')}；改了部署路径就用 QIANMO_ACCEPTANCE_CONSOLE_LOG 指过去）`,
+    )
+  }
+
   async inspectMirrorTransport(): Promise<MirrorTransportReport> {
     const consoleHost = this.#config.consoleHost
     if (consoleHost === undefined) {
@@ -1630,6 +1759,46 @@ function pick<K extends string, V>(
     : ({ [key]: value } as unknown as Record<K, V>)
 }
 
+/**
+ * 把一次来源探测的输出折成一条 {@link TestedUnitProvenance}。
+ *
+ * 四种结局各说各的话，**没有一种回退成别的值**：SSH 本身失败 → 带退出码与
+ * stderr 原文；读到了一个 40 位 SHA（可带 `-dirty`）→ 那就是答案；读到的是
+ * `unknown` → 那是产物构建时就没确定来源，记进 `detail`、`commit` 留空；
+ * 什么都没读到 → 用调用方给的那句话（日志不存在 / 没有这个字段）。
+ *
+ * 形状校验（40 位十六进制）不是洁癖：这一栏的用处全在「能不能钉回一个提交」，
+ * 一个形状不对的串钉不回去，却会在报告上冒充一个答案。
+ */
+function interpretProvenanceProbe(
+  unit: string,
+  probe: ExecResult,
+  where: string,
+  emptyReason: string,
+): TestedUnitProvenance {
+  if (probe.code !== 0) {
+    return {
+      unit,
+      detail: `采集失败 (${probe.code}): ${probe.stderr.trim().slice(0, 300)}`,
+    }
+  }
+  const raw = strField(probe.stdout, 'sourceCommit')
+  if (raw === undefined) return { unit, detail: `${emptyReason}；${where}` }
+  if (raw === 'unknown') {
+    return {
+      unit,
+      detail: `它自己报的就是 sourceCommit=unknown —— 那份产物构建时没能确定来源（${where}）`,
+    }
+  }
+  if (!/^[0-9a-f]{40}(-dirty)?$/.test(raw)) {
+    return {
+      unit,
+      detail: `读到的 sourceCommit 不是一个 commit 的形状：${raw.slice(0, 80)}（${where}）`,
+    }
+  }
+  return { unit, commit: raw, detail: `读自 ${where}` }
+}
+
 /** 从 `key=value` 行里取一个字符串字段；取不到或为空回 undefined。 */
 function strField(text: string, key: string): string | undefined {
   for (const line of text.split('\n')) {
@@ -1689,6 +1858,18 @@ function envSuffix(node: string): string {
  * 套件不自己去建隧道：建隧道要一个跨整轮运行的进程与它的生命周期，而
  * 「这台 runner 怎么够得着舰队」本来就是运行环境的事，写死在套件里只会在
  * 换一种拓扑时挡路。拨不通是**如实的红**，不是假绿 —— 那正好是这次要修的病。
+ *
+ * ## 节点搬家了怎么办：`QIANMO_ACCEPTANCE_SSH_<节点>`
+ *
+ * 与拨号地址同一条理由 —— **哪台机器承载某个节点是部署的事实**。别名被重指或
+ * 节点换了机器之后，{@link DEFAULT_FLEET_HOSTS} 里写死的那一栏不会报错，它会
+ * 安静地去问另一台机器：`#tail` / `execNode` / `readNodeFile` / 来源探针全部
+ * 得到「那台机器上没有这个」，报告上表现为一条读不通的节点，而现场看起来像那
+ * 个节点坏了。给一条覆盖，运维不必为此改代码。
+ *
+ * **只覆盖 SSH 目标，不覆盖配置根** —— 部署形状（`<家目录>/qianmo-beta/…` +
+ * `<家目录>/atlas-beta`）是 `beta-up.sh` 定的，跟着机器走；真需要改的那天，
+ * 该改的是 {@link DEFAULT_FLEET_HOSTS}，不是再加一条环境变量。
  */
 export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
   // 控制台主机可关：`QIANMO_ACCEPTANCE_CONSOLE_HOST=` 置空就等于「这一轮没有
@@ -1710,7 +1891,14 @@ export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
     const endpoint =
       process.env[`QIANMO_ACCEPTANCE_ENDPOINT_${suffix}`] ??
       `ws://${dialHost}:${host.tunnelPort}`
-    return { ...host, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
+    // SSH 别名可覆盖，与 `ENDPOINT_<节点>` 同一条理由：**哪台机器承载某个节点
+    // 是部署的事实，不是拓扑的常量**。节点搬家（或别名被重指）之后，写死的那
+    // 一栏不会报错，它会安静地去问另一台机器 —— 于是 `#tail` / `execNode` /
+    // `readNodeFile` / 来源探针全部得到「那台机器上没有这个」，报告上表现为
+    // 一条读不通的节点，而现场看起来像那个节点坏了。这条 issue #61 的形状不该
+    // 只能靠改代码来绕过。
+    const ssh = process.env[`QIANMO_ACCEPTANCE_SSH_${suffix}`] ?? host.ssh
+    return { ...host, ssh, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
   })
   // 一次性进程落在哪几台机器上：`QIANMO_ACCEPTANCE_SPAWN_HOSTS` 逗号分隔的
   // SSH 目标；置空 = 这一轮不起任何一次性进程（`spawn-node` 等能力随之消失，
