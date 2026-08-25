@@ -131,6 +131,12 @@ export function activateAcpSessionWorkspace(session: {
 // a session was already serialised by `session.promptRunning` + the pending
 // queue, so this only extends an invariant the agent already had.
 //
+// The worst case of that cost is a turn parked on `session/request_permission`
+// with nobody answering: it holds the lock for as long as the person takes.
+// `session/cancel` is deliberately NOT gated, so the way out of it is the way
+// out of any stuck turn — cancel it — and the client never has to wait on the
+// lock to ask for that.
+//
 // Deadlock is avoided by placing the lock at the protocol entry points only —
 // `newSession`, `loadSession`, `resumeSession`, `forkSession` and `prompt`,
 // none of which calls another — and NOT on the internal `createSession` /
