@@ -465,17 +465,44 @@ export class LocalDriver implements AcceptanceDriver {
             ? {}
             : { timeoutMs: opts.timeoutMs }),
         }),
+      // 必须是**异步** spawn，`Bun.spawnSync` 在这里是个陷阱：本地腿的注册
+      // 中心（与控制台）就跑在 runner 这个进程里（`startRegistryServer`），
+      // 同步 spawn 把事件循环整条堵住之后，子进程要是回头打 runner 一下，
+      // 那一下永远等不到应答 —— 现场是 curl 超时（退出码 28、HTTP 000），
+      // 读起来像「链路根本不通」，而链路好得很。
+      // 实测：同一个进程里 `spawnSync` 打自己的 serve 是 28/000，换成
+      // `Bun.spawn` 是 200。真机腿走 ssh、天生异步，两条腿在这里必须同形，
+      // 否则同一条断言在本地恒红、在真机恒绿。
+      // 顺带把 `opts.timeoutMs` 真正接上 —— 此前它被整个忽略。
       run: async (argv, opts) => {
-        const child = Bun.spawnSync([...argv], {
+        const child = Bun.spawn([...argv], {
           cwd: workdir,
           env: { ...process.env, ...opts?.env },
+          stdin: 'ignore',
           stdout: 'pipe',
           stderr: 'pipe',
         })
+        const timeoutMs = opts?.timeoutMs ?? 60_000
+        const collected = (async () => {
+          const [stdout, stderr] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ])
+          return { code: await child.exited, stdout, stderr }
+        })()
+        const settled = await Promise.race([
+          collected,
+          sleep(timeoutMs).then(() => undefined),
+        ])
+        if (settled !== undefined) return settled
+        child.kill('SIGKILL')
+        const partial = await collected
         return {
-          code: child.exitCode ?? -1,
-          stdout: child.stdout.toString(),
-          stderr: child.stderr.toString(),
+          code: -1,
+          stdout: partial.stdout,
+          stderr:
+            `${partial.stderr}\n` +
+            `[acceptance] 命令超时 ${String(timeoutMs)}ms: ${argv.join(' ')}`,
         }
       },
       writeFile: async (relPath, content) => {
