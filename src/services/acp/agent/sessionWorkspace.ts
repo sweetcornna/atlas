@@ -101,3 +101,101 @@ export function activateAcpSessionWorkspace(session: {
   // all, so they describe whichever workspace asked first.
   resetWorkspaceScopedContext()
 }
+
+// ── The lock that makes the above safe under a concurrent client ──
+//
+// `activateAcpSessionWorkspace` re-establishes the process-wide workspace at
+// the START of an operation and nothing re-establishes it again until the
+// next one begins. That is sufficient exactly as long as operations do not
+// overlap, which is what issue #52 records: two prompts in flight at once and
+// the second one's activation lands in the middle of the first one's turn.
+//
+// ACP is JSON-RPC over stdio and a client is free to have several requests
+// outstanding. The Qianmo resident never does — `NodeTurnGate` serialises at
+// the node — but a general client (Zed's agent panel runs several threads,
+// and `session/new` for a new thread is sent while an older thread is still
+// streaming) has no reason to know it must.
+//
+// Two ways out. Move every global into session scope, or let only one of
+// these operations own the process at a time. The first is not a bigger
+// version of the same change, it is a different program: `createSession`
+// alone `process.chdir()`s, calls `resetSettingsCache()` and re-applies
+// settings env; a turn additionally writes the prompt id, the beta-header
+// latches, the cached CLAUDE.md, the cost accumulators and the transcript
+// writer's file latch. Enumerating that surface is open-ended, and each item
+// missed is another silent cross-session bug of exactly the shape #44 was.
+//
+// So: one at a time. The cost is head-of-line blocking — `session/new` issued
+// while a long turn streams waits for it — and that is the right trade against
+// corrupting the running turn, which is what happens today. Concurrency WITHIN
+// a session was already serialised by `session.promptRunning` + the pending
+// queue, so this only extends an invariant the agent already had.
+//
+// Deadlock is avoided by placing the lock at the protocol entry points only —
+// `newSession`, `loadSession`, `resumeSession`, `forkSession` and `prompt`,
+// none of which calls another — and NOT on the internal `createSession` /
+// `getOrCreateSession` helpers, which do call each other. A new entry point
+// that reaches `activateAcpSessionWorkspace` must take the lock; a new
+// internal helper must not.
+
+type WorkspaceTurnWaiter = () => void
+
+let workspaceTurnActive = false
+const workspaceTurnWaiters: WorkspaceTurnWaiter[] = []
+
+/**
+ * Run `work` as the only operation owning the process-wide workspace.
+ *
+ * FIFO, and free of a scheduling hop when uncontended: an operation that
+ * finds the lock open calls `work()` synchronously, so the single-session
+ * case — every resident node, every ACP client that sends one request at a
+ * time — runs exactly the interleaving it ran before this existed.
+ */
+export function runInAcpWorkspaceTurn<T>(work: () => Promise<T>): Promise<T> {
+  if (!workspaceTurnActive) {
+    workspaceTurnActive = true
+    return startWorkspaceTurn(work)
+  }
+  return new Promise<T>((resolve, reject) => {
+    workspaceTurnWaiters.push(() => {
+      startWorkspaceTurn(work).then(resolve, reject)
+    })
+  })
+}
+
+/** True while some operation holds the workspace lock. Test seam. */
+export function isAcpWorkspaceTurnActive(): boolean {
+  return workspaceTurnActive
+}
+
+function startWorkspaceTurn<T>(work: () => Promise<T>): Promise<T> {
+  let running: Promise<T>
+  try {
+    running = work()
+  } catch (err) {
+    // A synchronous throw out of `work` still ends this operation's turn.
+    releaseWorkspaceTurn()
+    return Promise.reject(err)
+  }
+  return running.then(
+    value => {
+      releaseWorkspaceTurn()
+      return value
+    },
+    err => {
+      releaseWorkspaceTurn()
+      throw err
+    },
+  )
+}
+
+function releaseWorkspaceTurn(): void {
+  const next = workspaceTurnWaiters.shift()
+  if (next) {
+    // Ownership passes straight to the next waiter — `workspaceTurnActive`
+    // deliberately stays true so an arrival in between cannot jump the queue.
+    next()
+    return
+  }
+  workspaceTurnActive = false
+}
