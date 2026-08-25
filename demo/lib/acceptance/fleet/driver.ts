@@ -304,6 +304,31 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ['mirror-transport', '没有配置控制台主机（QIANMO_ACCEPTANCE_CONSOLE_HOST）'],
 ])
 
+/*
+ * 驱动内部那几个「等它就绪」的墙钟预算。
+ *
+ * **一条纪律：用它们的地方一律乘 `ctx.timeoutScale`，不许写裸的
+ * `Date.now() + <常数>`。**
+ *
+ * 这几个等待存在的意义是把「起来了但拨不通」和「压根没起来」分开说 —— 一条
+ * 指名道姓的错误消息，比让场景撞上通用的场景级超时有用得多。但那份价值有个
+ * 前提：**它们必须晚于场景预算触发才对**。倍率此前只作用于场景预算，够不到
+ * 驱动内部，于是真机腿（`FLEET_TIMEOUT_SCALE = 4`）或忙 runner（CI 上
+ * `--timeout-scale 3`）上它们会先炸，把一条只是慢了一步的场景记成 `error`
+ * （「套件自己炸了」）—— 那既不算覆盖也不指向任何产品问题，还恰好是会被人
+ * 当成「套件不稳」而加豁免的那类噪声（issue #85 ②，与 PR #69 同一条纪律）。
+ *
+ * 为什么从 `ctx` 取而不是在这里读 `FLEET_TIMEOUT_SCALE`：`--timeout-scale`
+ * 可以压过那个默认值（PR #73），驱动自己去读常量就会和场景预算用上两个不同
+ * 的倍率 —— 一份倍率、一个出处，出处是 runner。
+ */
+
+/** 一次性节点「拨得通了没有」与一次性控制台 `/v0/health` 的等待基准。 */
+const DISPOSABLE_READY_BUDGET_MS = 60_000
+
+/** 反向隧道「通了没有」的等待基准（远端 curl 探一次，每拍一次 SSH 往返）。 */
+const REVERSE_TUNNEL_READY_BUDGET_MS = 30_000
+
 export class FleetDriver implements AcceptanceDriver {
   readonly target = 'fleet' as const
   readonly capabilities: ReadonlySet<DriverCapability>
@@ -559,7 +584,7 @@ export class FleetDriver implements AcceptanceDriver {
     // 就绪判据与本地驱动同构，见 `local/driver.ts` 里那段长注释：拿不到对端
     // 证书私钥的场景（`--require-signed-handshake`）只能退到「收到 challenge」。
     const credentialed = spec.auth.mode === 'credential_signature'
-    const deadline = Date.now() + 60_000
+    const deadline = Date.now() + DISPOSABLE_READY_BUDGET_MS * ctx.timeoutScale
     for (;;) {
       const probe = await rawDial({
         url: endpoint,
@@ -1046,7 +1071,7 @@ export class FleetDriver implements AcceptanceDriver {
     // 就绪判据是 `GET /v0/health` 答 200 —— 公开、零鉴权，`systemctl --user
     // is-active` 对这两个单元都不可信（`Type=oneshot` + 只 enable 不 start，
     // 实测进程活着而单元报 inactive）。这里同时也在等隧道预热。
-    const deadline = Date.now() + 60_000
+    const deadline = Date.now() + DISPOSABLE_READY_BUDGET_MS * ctx.timeoutScale
     for (;;) {
       if ((await http(`${url}/v0/health`, { timeoutMs: 5_000 })).status === 200)
         break
@@ -1205,7 +1230,8 @@ export class FleetDriver implements AcceptanceDriver {
     })
     // 反向隧道要等它真的通：控制台一起来就会去打注册中心，早一步起等于让
     // 它在第一次请求上拿到 ECONNREFUSED。这里用一次远端 curl 确认。
-    const deadline = Date.now() + 30_000
+    const deadline =
+      Date.now() + REVERSE_TUNNEL_READY_BUDGET_MS * ctx.timeoutScale
     for (;;) {
       const probe = await this.#ssh(ssh, [
         `curl -s -o /dev/null -w '%{http_code}' -m 3 ` +

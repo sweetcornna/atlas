@@ -12,9 +12,13 @@
  *                                      [--list] [--keep-workdir]
  * ```
  *
- * 跑完输出两份：
- *   · `<out>/results.ndjson` —— 机器可读，一行一个场景，末行是汇总；
+ * 输出两份：
+ *   · `<out>/results.ndjson` —— 机器可读，**边跑边写**：首行 `kind:"start"`、
+ *     一条结果一行、跑完追加末行 `kind:"summary"`。被打断的一轮因此仍然留下
+ *     前面那些结果，代价是那份文件**没有末行**——「跑完了没有」怎么读见
+ *     `report-core.ts` 里 `ndjsonStartLine` 的头注（issue #85）；
  *   · `<out>/SUMMARY.txt` + stdout —— 人可读汇总表，红的行带证据原文。
+ *     这一份只有跑完才有，它本来就是全轮汇总。
  *
  * 退出码：0 = 无 fail 无 error **且至少有一条场景真正调用过驱动**（skip 不影响）；
  * 1 = 有红，或者这一轮一条都没碰过被测目标；2 = 用法错。
@@ -51,16 +55,22 @@
  * 凭据放进 CI 是拿一条验收腿去换一个长期泄密面。它仍然是手动跑的。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { renderSummary, toNdjson } from '../demo/lib/acceptance/report-core.js'
+import {
+  ndjsonScenarioLine,
+  ndjsonStartLine,
+  ndjsonSummaryLine,
+  renderSummary,
+} from '../demo/lib/acceptance/report-core.js'
 import { ALL_SCENARIOS } from '../demo/lib/acceptance/registry.js'
 import {
   checkScenarioTable,
   DEFAULT_SCENARIO_TIMEOUT_MS,
   FLEET_TIMEOUT_SCALE,
   runSuite,
+  selectScenarios,
 } from '../demo/lib/acceptance/runner.js'
 import { LocalDriver } from '../demo/lib/acceptance/local/driver.js'
 import {
@@ -82,8 +92,8 @@ const USAGE = `阡陌端到端验收套件
   --out <目录>           产物目录，默认 ~/qianmo-acceptance/<UTC 时间戳>
   --timeout-ms <n>       单场景默认超时，默认 ${DEFAULT_SCENARIO_TIMEOUT_MS}
                          （--target fleet 时全部超时另乘 ${FLEET_TIMEOUT_SCALE}，见 runner.ts）
-  --timeout-scale <n>    全部超时（默认值与场景自报的）乘这个正数，慢机器用；
-                         显式给了就压过 --target fleet 的默认 ${FLEET_TIMEOUT_SCALE}
+  --timeout-scale <n>    全部超时（默认值、场景自报的、驱动内部的等待）乘这个正数，
+                         慢机器用；显式给了就压过 --target fleet 的默认 ${FLEET_TIMEOUT_SCALE}
   --keep-workdir         保留每个场景的临时目录，便于排查
   --list                 只列出场景表，不执行
   -h, --help             本页
@@ -207,6 +217,33 @@ async function main(): Promise<number> {
     error: ' ERR',
   }
 
+  // ------------------------------------------------------------------------
+  // 产物是**流式**落盘的：开跑写首行，每出一条结果追加一行，跑完追加末行。
+  //
+  // 以前这里是「跑完之后 `writeFileSync` 一次」。真机腿一轮两个多小时，中途
+  // 被打断（后台任务上限、工具超时、Ctrl-C、机器掉线）就等于整轮零产物 ——
+  // 前面那几十条结果只存在于终端 log 里。这不是假设：补 CA 覆盖那一轮跑到
+  // 第 84/115 条被杀，NDJSON 全丢，只能按维度切 4 段重跑（issue #85）。
+  //
+  // append 而不是「每次重写整份」：结果里带着证据原文，重写 115 次是 O(n²)
+  // 的写放大，而且**被杀在重写中途会把已有的结果也毁掉** —— 那比不写还糟。
+  //
+  // 首行的作用见 `ndjsonStartLine` 的头注：被打断的文件没有末行，而「缺末行」
+  // 不能是唯一信号，否则只是把「零产物」换成了另一种静默。
+  // ------------------------------------------------------------------------
+  const ndjsonPath = join(outDir, 'results.ndjson')
+  const startedAt = new Date().toISOString()
+  writeFileSync(
+    ndjsonPath,
+    `${ndjsonStartLine({
+      target: driver.target,
+      startedAt,
+      commit,
+      planned: selectScenarios(ALL_SCENARIOS, only).length,
+    })}\n`,
+    { mode: 0o600 },
+  )
+
   const run = await runSuite({
     driver,
     scenarios: ALL_SCENARIOS,
@@ -221,7 +258,9 @@ async function main(): Promise<number> {
     keepWorkdir: flag('keep-workdir'),
     commit,
     onResult: result => {
-      // 实时打一行，长跑时人能看见进度；详情留给最后的汇总表。
+      // 落盘先于打印：终端那一行是给人看进度的，产物那一行是这一轮唯一
+      // 会留下来的东西，被打断时先保住后者。
+      appendFileSync(ndjsonPath, `${ndjsonScenarioLine(result)}\n`)
       process.stdout.write(
         `${mark[result.outcome]}  ${result.id}  (${(result.durationMs / 1000).toFixed(1)}s)` +
           `${result.knownIssue === undefined ? '' : `  [${result.knownIssue}]`}\n`,
@@ -229,10 +268,11 @@ async function main(): Promise<number> {
     },
   })
 
-  const ndjsonPath = join(outDir, 'results.ndjson')
   const summaryPath = join(outDir, 'SUMMARY.txt')
   const summary = renderSummary(run)
-  writeFileSync(ndjsonPath, toNdjson(run), { mode: 0o600 })
+  // 末行只有跑完了才落地 —— 它的存在就是「这一轮完整」的判据，别把它挪到
+  // 任何可能在半路执行的地方（`finally`、信号处理器）。
+  appendFileSync(ndjsonPath, `${ndjsonSummaryLine(run)}\n`)
   writeFileSync(summaryPath, summary, { mode: 0o600 })
 
   process.stdout.write(`\n${summary}\n`)

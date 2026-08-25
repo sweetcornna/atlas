@@ -177,4 +177,34 @@ describe('超时倍率', () => {
     expect(plain.outcome).toBe('error')
     expect(plain.actual).toContain('50ms')
   })
+
+  /**
+   * 驱动内部那几个墙钟等待（`DISPOSABLE_READY_BUDGET_MS`、
+   * `REVERSE_TUNNEL_READY_BUDGET_MS`）乘的就是 `ctx.timeoutScale`，而它们只在
+   * 起一次性进程时走到 —— 那要四台 VPS 加隧道，进不了分片。能钉在这里的是
+   * 它们依赖的那条通路：**runner 把同一个倍率交给了 ctx**。
+   *
+   * 这条通路断掉的表现，正是这次要修的那个形状：场景预算放大了、驱动内部没
+   * 放大，于是驱动先炸，一条只是慢了一步的场景记成 `error`（issue #85 ②）。
+   */
+  it('runner 把同一个倍率交到 ctx 上 —— 驱动内部的硬等待靠它', async () => {
+    const seen: number[] = []
+    const peek: Scenario = {
+      id: 'handshake/peek-scale',
+      dimension: 'handshake',
+      title: '读一下 ctx.timeoutScale',
+      expected: '拿到 runner 那个倍率',
+      requires: ['raw-dial'],
+      run: async ctx => {
+        seen.push(ctx.timeoutScale)
+        return { ok: true, actual: '读到了', evidence: [] }
+      },
+    }
+
+    await runScenario(peek, anyDriver, 1_000, false, 4)
+    await runScenario(peek, anyDriver, 1_000, false)
+    // 4 = 显式给的（真机腿默认，或 --timeout-scale 压过它之后的值）；
+    // 1 = 缺省。两个都写死：倍率被谁改成只作用于场景预算时这里会红。
+    expect(seen).toEqual([4, 1])
+  })
 })
