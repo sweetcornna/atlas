@@ -441,6 +441,10 @@ run_host() {
   beta_say "页头标签 : 持久化在 ${BETA_CONSOLE_CONF}；节点清单只认 $BETA_PEERS_FILE"
   if beta_systemd_user_ok; then
     beta_say "开机自启 : ${BETA_REGISTRY_UNIT} + ${BETA_CONSOLE_UNIT}（systemd --user，要 loginctl enable-linger）"
+    # 这一行必须紧跟上一行：上一行会让人以为「那两个单元的状态可以拿来查死活」，而它
+    # 此刻已经是 inactive 了——本脚本刚刚自己起了进程，只 enable 没 start（issue #64）。
+    beta_say "存活判据 : ${BETA_CONSOLE_URL}/v0/health 答 200；**上面那两个单元的状态不算数**"
+    beta_say '           （两个方向都不算：常年 inactive 而进程活着，也会在进程死后继续 active）'
   else
     beta_say '开机自启 : 无 —— 这台机器上没有可用的 systemd --user，重启后要靠人重跑本脚本'
   fi

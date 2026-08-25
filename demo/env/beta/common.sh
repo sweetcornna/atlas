@@ -1059,6 +1059,50 @@ beta_systemd_user_ok() {
   return 0
 }
 
+# ── 单元状态与现实脱节：两个方向都会，而且都是设计使然 ─────────────────────
+#
+# 2026-08-24 的真机腿实测：`systemctl --user is-active qianmo-console.service` 答
+# `inactive`（rc=3），而同一时刻控制台 `/v0/health` 200、38621 LISTEN、进程已跑
+# 6539 s；同机四条 `qianmo-tunnel@beta-N.service` 全是 active（issue #64）。
+#
+# **这不是 bug，是本包两条设计的合成结果**，两个方向各有一个：
+#   · `inactive` 而进程活着 —— beta-up.sh 每趟都自己起进程、对 H 腿那两个单元**只
+#     enable 不 start**（理由在 provision_host_units 的头注：start 会让脚本要求
+#     systemd 起一个此刻正由自己跑着的单元，那是自己等自己）。于是单元从没被 systemd
+#     跑过，`is-active` 当然是 inactive。
+#   · `active` 而进程已经没了 —— `Type=oneshot` + `RemainAfterExit=yes`：active 只
+#     意味着「那一趟 ExecStart 跑完过」。`Restart=` 对 oneshot 无效，进程崩了没人拉。
+#
+# 于是这两个单元的状态**在两个方向上都不是存活判据**。这里不去把它修成「真实反映
+# 进程」——那要么把 peers.conf 派生出来的整条命令行抄进单元文件（第二处真源，正是
+# 单元头注拒绝的那件事），要么让 beta-up.sh 转手去 `systemctl start`（`Requires=`
+# 会把整条 links+registry 腿再跑一遍，且任何一步绊倒就把一套活着的部署变成 failed）。
+# 代价都比收益大。改为：**把这条差距说出来**，并把唯一算数的判据（`/v0/health`）钉在
+# 所有会有人去看的地方。最坏的中间态是「看起来有个状态可查，查出来是错的」——一句话
+# 就能把它从陷阱变成常识。
+
+# beta_unit_state_note <单元名> <is-active 的输出> <进程活着吗 0/1>
+# 状态与现实一致时什么都不打；不一致时打一段说明。它**永远不下 FAIL 判定**：
+# 「inactive 而进程活着」恰恰是本包的正常形态，报成失败等于把一套对的部署判红。
+beta_unit_state_note() {
+  local unit="$1" state="$2" alive="$3"
+  if [ "$alive" = '1' ] && [ "$state" != 'active' ]; then
+    printf '%s\n' "${unit} 是 ${state:-未知}，而它管的进程活着 —— **这是正常形态，不是故障**。
+本脚本每趟都自己起进程，对这个单元只 enable 不 start（那样才能让「这一趟起没起成」与
+「下次开机它还在」互不牵连），于是它从没被 systemd 跑过。
+**单元状态不是存活判据**，反方向也不是（oneshot + RemainAfterExit 会在进程死后继续报
+active）。算数的只有 /v0/health（issue #64）。"
+    return 0
+  fi
+  if [ "$alive" = '0' ] && [ "$state" = 'active' ]; then
+    printf '%s\n' "${unit} 是 active，而它管的进程答不出话 —— 这是 Type=oneshot + RemainAfterExit=yes
+的固有形状：active 只意味着「那一趟 ExecStart 跑完过」，不意味着进程还在，而 Restart= 对
+oneshot 无效。**以 /v0/health 为准**（issue #64）。"
+    return 0
+  fi
+  return 0
+}
+
 beta_require_systemd_user() {
   command -v systemctl >/dev/null 2>&1 \
     || beta_die "peers.conf 里有 node 坐标行，但这台机器上没有 systemctl —— 隧道与镜像都靠 systemd --user。

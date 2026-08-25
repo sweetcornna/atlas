@@ -280,6 +280,47 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 最后一个登录会话退出时这些单元会跟着一起消失。宿主上没有可用的 `systemd --user` 时（开发机
 就是这样），脚本不铺单元并如实说「重启后不会自动回来」。
 
+### 这两个单元的状态不是存活判据 —— 两个方向都不是
+
+2026-08-24 真机腿实测，同一台 H 同一时刻：
+
+```
+systemctl --user is-active qianmo-console.service   → inactive (rc=3)
+curl /v0/health → 200 ；ss -lnt → 38621 LISTEN ；进程 etimes = 6539
+```
+
+**这不是故障，是两条设计合成出来的**（issue #64）：
+
+- `inactive` 而进程活着 —— `beta-up.sh` 每趟都自己起进程，对这两个单元**只 `enable` 不
+  `start`**（`start` 会让脚本要求 systemd 起一个此刻正由自己跑着的单元，那是自己等自己）。
+  于是它们从没被 systemd 跑过，`is-active` 当然是 `inactive`。
+- `active` 而进程已经没了 —— `Type=oneshot` + `RemainAfterExit=yes`，见上一节。
+
+**对照组是同机四条 `qianmo-tunnel@<节点>.service`：它们全是 `active`，而且那是真的。**
+差别在 `Type=exec`（systemd 直接管着 ssh 进程），不在 user scope —— 别把隧道那边的经验套过来。
+
+判死活只有一条路，公开、零鉴权、两个进程同形：
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:38620/v0/health   # 注册中心
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:38621/v0/health   # 控制台
+```
+
+`beta-smoke.sh --role host` 的第 ①③ 项问的就是这两条；单元状态与现实对不上时，它会在那两项
+旁边解释一句为什么，**但不判 FAIL**（「inactive 而进程活着」是本包的正常形态）。
+
+**注册中心那条探针一直都在**，`/v0/health` 还会回 `{"status":"ok","agents":N}`。issue #64 里
+「注册中心没有存活探针」是路径试错：`/health` 少了 `/v0` 前缀，`/v0/peers` 则是集合名不对——
+注册中心的集合叫 `agents`（`/v0/agents`、`/v0/agents/<地址>`、`/v0/agents/<地址>/heartbeat`），
+路由表在 `packages/registry/src/http.ts`，不认的路径一律 `404 unknown path: <路径>`。
+
+**没有把单元改成「状态真实」，是算过账的。**要么把 `peers.conf` 派生出来的整条命令行抄进单元
+文件让 systemd 直接管进程（第二处真源，正是上一节拒绝的那件事），要么让 `beta-up.sh` 转手去
+`systemctl start`（`Requires=` 会把整条 links+registry 腿再跑一遍，且任何一步绊倒就把一套活着
+的部署变成 `failed`）。代价都比收益大。最坏的中间态是「看起来有个状态可查，查出来是错的」，
+所以改为把这条差距钉在所有会有人去看的地方：单元的 `Description=`、`beta-up.sh` 末尾的
+「存活判据」一行、`beta-smoke.sh` 的 ①③ 项，以及这一节。
+
 ### 镜像为什么只能是 `ssh cat`
 
 **理由是设计面的，真源在 [`beta-env.md`](../../../docs/dev/beta-env.md) §4.3，本文不复制**：
