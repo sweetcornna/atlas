@@ -35,13 +35,18 @@
  *
  * ## 与本地驱动的**能力差**，以及为什么
  *
- * 真机腿仍然**没有**这三种能力，需要它们的场景如实记 `skip`：
+ * 真机腿仍然**没有**这两种能力，需要它们的场景如实记 `skip`：
  *
  * | 能力 | 为什么没有 |
  * | --- | --- |
  * | `mutate-node-env` | 本轮没有场景要它。一次性节点上它随 `restart-node` 一起成立，但没有场景验证过 —— 不声明未经验证的能力 |
  * | `stub-upstream` | 真机打真实模型端点，那正是真机腿的意义；插一个假上游会把这条腿变成一次慢十倍的本地跑 |
- * | `local-ca-fixture` | 卡的不是文件位置，是**签发顺序**：证书绑的是节点配置根里那把 Ed25519，而那个根要等 `startNode` 之后才存在，`--cert` 又必须在启动时给。要跑通得先给驱动加「预留节点配置根」这件事 |
+ *
+ * `local-ca-fixture` **已经补齐**（此前卡在签发顺序上）：`execHost` 多了
+ * `forNodeSpawn`（夹具位落在本场景的落机上）、`readFile`（产物回 runner）与
+ * `run`（openssl），`NodeSpec.configRoot` 让「先签证书、再用同一个根起节点」
+ * 这个顺序成立。于是离线 CA 那条链在真机上跑的是**部署好的那个
+ * `dist/cli-node.js`** 的 `qm ca` / `qm cert`，证书文件也真的在节点那台机器上。
  *
  * ## 一次性节点落在哪台机器上
  *
@@ -294,7 +299,7 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ],
   [
     'local-ca-fixture',
-    '缺的不是「把文件放到目标机上」（execHost/launcherHost 都能做到），是**签发顺序**：证书要绑节点配置根里那把 Ed25519，而那个根要等 startNode 之后才存在，`--cert` 又必须在启动时就给。要在真机上跑这一维，得先让驱动能「预留一个节点配置根」并让 startNode 复用它（certificate/* 目前还直接拼本地驱动的根路径布局）',
+    '没有配置可承载一次性进程的舰队机器（QIANMO_ACCEPTANCE_SPAWN_HOSTS 置空）—— 签发链要跑在被测二进制那台机器上，而这一轮一台都没有',
   ],
   ['mirror-transport', '没有配置控制台主机（QIANMO_ACCEPTANCE_CONSOLE_HOST）'],
 ])
@@ -326,7 +331,15 @@ export class FleetDriver implements AcceptanceDriver {
     ]
     if (config.consoleHost !== undefined) caps.push('mirror-transport')
     if (config.spawnMachines.length > 0) {
-      caps.push('spawn-node', 'restart-node', 'spawn-console', 'run-launcher')
+      caps.push(
+        'spawn-node',
+        'restart-node',
+        'spawn-console',
+        'run-launcher',
+        // 签发链跑在落机上（`execHost({ forNodeSpawn: true })`），证书与 CA 根
+        // 因此和一次性节点同机。没有落机 = 没有地方跑 `qm ca`，这一项随之消失。
+        'local-ca-fixture',
+      )
     }
     this.capabilities = new Set(caps)
   }
