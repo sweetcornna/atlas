@@ -809,6 +809,17 @@ export interface AcceptanceDriver {
   /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
   /**
+   * 一轮跑完把驱动**跨场景**占着的东西收干净（issue #100）。
+   *
+   * 目前只有真机驱动有：SSH 连接复用的 master 是一条**到生产机的活会话**，跑完
+   * 还挂着几条不可接受，而它按定义活得比任何单条场景长 —— `ctx.cleanup` 那条
+   * 场景级的路子够不着它。
+   *
+   * 可选：本地驱动没有这类资源，那条腿因此逐字节不变。调用方在入口的
+   * `finally` 里跑它，于是场景抛异常、超时、判定失败都会走到。
+   */
+  dispose?(): Promise<void>
+  /**
    * 读一次「审计镜像搬运」的现场。**只有声明了 `mirror-transport` 的驱动才
    * 实现它** —— 场景靠能力差集被 skip，走不到这里。
    */
