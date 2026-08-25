@@ -1668,4 +1668,144 @@ describe('AcpAgent', () => {
       expect(mockSwitchSession).toHaveBeenCalledWith(s1, expect.any(String))
     })
   })
+
+  // ── Concurrency (issue #52) ─────────────────────────────────────
+  //
+  // ACP is JSON-RPC over stdio: a client may have several requests in flight,
+  // and a client with more than one thread open routinely does. Every one of
+  // these operations re-points the SAME process-wide workspace — the session
+  // id, the working directory, the transcript file latch, and in
+  // `createSession`'s case `process.chdir()` and the settings cache too. They
+  // are only correct one at a time.
+  //
+  // The tests below are about ordering, so they assert on what reached the
+  // process globals and when, rather than on a return value.
+  describe('concurrent requests', () => {
+    /** Let the microtask queue drain a few times over. */
+    async function settle(): Promise<void> {
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+    }
+
+    test('a second session’s turn does not start until the first turn ends', async () => {
+      const agent = new AcpAgent(makeConn())
+      const first = await agent.newSession({ cwd: '/tmp' } as any)
+      const second = await agent.newSession({ cwd: '/tmp' } as any)
+      mockSwitchSession.mockClear()
+
+      const order: string[] = []
+      let releaseFirst!: () => void
+      const firstStreaming = new Promise<void>(resolve => {
+        releaseFirst = resolve
+      })
+      ;(forwardSessionUpdates as ReturnType<typeof mock>).mockImplementation(
+        async (sessionId: string) => {
+          order.push(`start:${sessionId}`)
+          if (sessionId === first.sessionId) await firstStreaming
+          order.push(`end:${sessionId}`)
+          return { stopReason: 'end_turn' as const }
+        },
+      )
+
+      const firstTurn = agent.prompt({
+        sessionId: first.sessionId,
+        prompt: [{ type: 'text', text: 'first' }],
+      } as any)
+      const secondTurn = agent.prompt({
+        sessionId: second.sessionId,
+        prompt: [{ type: 'text', text: 'second' }],
+      } as any)
+
+      await settle()
+      // The first turn is parked mid-stream. The second must not have begun —
+      // and in particular must not have moved the process onto its own
+      // session, which is what the first turn's transcript writes depend on.
+      expect(order).toEqual([`start:${first.sessionId}`])
+      expect(mockSwitchSession.mock.calls.map(call => call[0])).toEqual([
+        first.sessionId,
+      ])
+
+      releaseFirst()
+      await Promise.all([firstTurn, secondTurn])
+      expect(order).toEqual([
+        `start:${first.sessionId}`,
+        `end:${first.sessionId}`,
+        `start:${second.sessionId}`,
+        `end:${second.sessionId}`,
+      ])
+    })
+
+    test('session/new waits for a streaming turn instead of running beside it', async () => {
+      const agent = new AcpAgent(makeConn())
+      const session = await agent.newSession({ cwd: '/tmp' } as any)
+
+      let releaseTurn!: () => void
+      const streaming = new Promise<void>(resolve => {
+        releaseTurn = resolve
+      })
+      ;(
+        forwardSessionUpdates as ReturnType<typeof mock>
+      ).mockImplementationOnce(async () => {
+        await streaming
+        return { stopReason: 'end_turn' as const }
+      })
+
+      const turn = agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: 'text', text: 'a long task' }],
+      } as any)
+      await settle()
+
+      // Opening a second thread while the first is still answering. Left
+      // ungated this chdir()s the process and resets the settings cache out
+      // from under the running turn.
+      let created = false
+      const creating = agent.newSession({ cwd: '/tmp' } as any).then(result => {
+        created = true
+        return result
+      })
+      await settle()
+      expect(created).toBe(false)
+
+      releaseTurn()
+      await turn
+      await creating
+      expect(created).toBe(true)
+    })
+
+    test('a prompt queued behind another for the same session is still cancellable', async () => {
+      // The workspace lock is taken after the per-session pending queue, not
+      // before it, precisely so this keeps working: a prompt parked in the
+      // workspace queue would have nothing to wake it when the client cancels.
+      const agent = new AcpAgent(makeConn())
+      const session = await agent.newSession({ cwd: '/tmp' } as any)
+
+      let releaseTurn!: () => void
+      const streaming = new Promise<void>(resolve => {
+        releaseTurn = resolve
+      })
+      ;(
+        forwardSessionUpdates as ReturnType<typeof mock>
+      ).mockImplementationOnce(async () => {
+        await streaming
+        return { stopReason: 'end_turn' as const }
+      })
+
+      const running = agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: 'text', text: 'first' }],
+      } as any)
+      await settle()
+      const queued = agent.prompt({
+        sessionId: session.sessionId,
+        prompt: [{ type: 'text', text: 'second' }],
+      } as any)
+      await settle()
+
+      await agent.cancel({ sessionId: session.sessionId } as any)
+      expect((await queued).stopReason).toBe('cancelled')
+
+      releaseTurn()
+      await running
+    })
+  })
 })
