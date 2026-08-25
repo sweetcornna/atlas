@@ -22,7 +22,7 @@
  * 产物，而不是对源码做字符串匹配；同时不起任何真进程、不碰端口。
  */
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
   copyFileSync,
@@ -102,6 +102,56 @@ done
 exit 0
 `
 
+/**
+ * 两个 systemctl 桩**整个文件只写一次，并在这里先跑一次**。
+ *
+ * 不是洁癖，是 issue #56 那条偶发红的病根。macOS 对**新写出来的可执行文件的第一次
+ * exec** 要走一遍策略扫描（Gatekeeper/`syspolicyd`）；同一个 inode 第二次起就只剩
+ * 约 2 ms。实测本文件的用例：写这几个文件 1.7 ms、跑 `beta-up.sh` 124 ms，而那一次
+ * 首执行扫描 **p50 就有 300 ms**——占单条用例七成以上的墙钟。它还没有上界：把
+ * 「写一个新脚本、执行它一次」的负载并发跑起来（6 路），同一次扫描 p50 涨到 2273 ms、
+ * 实测最坏 4278 ms，而写文件与跑脚本这两段纹丝不动。
+ *
+ * 单条用例的预算是 **5 000 ms**（`bunfig.toml` 里那个 `[test] timeout = 10000`
+ * Bun 1.3.13 根本不读），于是「每个用例各写一份桩」就等于让每条用例都押一次那个没有
+ * 上界的尾巴。完整 62 分片跑正是最能把它拉长的场景：每个分片都在不停 exec 新写出的
+ * 文件。实测未修前 17 轮红 1 轮，红的正是本文件的
+ * 「the host leg hands --wake-sign to console」——6034 ms，TimeoutError，
+ * 而它的中位数只有 459 ms。
+ *
+ * 同一条结论 `ops/mirror-pull.test.ts` 已经写过一遍（那里是每个用例各拷一份脚本），
+ * 本文件当时没跟上。**新增任何需要被直接 exec 的桩，都要挂在这里，不要放进
+ * `scratch()`。**
+ *
+ * 桩本身没有每用例状态：它只往 `$FAKE_SYSTEMCTL_LOG` 追加，而那个路径仍然是每个用例
+ * 自己的，所以共享 inode 不会让用例之间互相看见。
+ */
+const STUB_HOME = mkdtempSync(join(tmpdir(), 'qianmo-beta-up-args-bin-'))
+const STUB_BIN = join(STUB_HOME, 'bin')
+const NO_SYSTEMD_BIN = join(STUB_HOME, 'bin-no-systemd')
+mkdirSync(STUB_BIN, { recursive: true })
+writeFileSync(join(STUB_BIN, 'systemctl'), FAKE_SYSTEMCTL)
+chmodSync(join(STUB_BIN, 'systemctl'), 0o755)
+// 「这台机器上 systemd --user 用不了」那一档也要**钉死**，不能靠「PATH 上恰好没有
+// systemctl」——Linux runner 上它就在 /usr/bin 下。装一个 `--user` 一律不通的桩，
+// 于是那条分支在 macOS 与 Linux 上走的是同一条路。
+mkdirSync(NO_SYSTEMD_BIN, { recursive: true })
+writeFileSync(join(NO_SYSTEMD_BIN, 'systemctl'), '#!/bin/bash\nexit 1\n')
+chmodSync(join(NO_SYSTEMD_BIN, 'systemctl'), 0o755)
+// 首执行扫描在**模块作用域**付掉：这里没有任何用例的超时在跑。少了这两行，文件里
+// 第一条用例仍然要独自扛那条尾巴。
+for (const bin of [STUB_BIN, NO_SYSTEMD_BIN]) {
+  Bun.spawnSync([join(bin, 'systemctl'), '--version'], {
+    env: { ...process.env, FAKE_SYSTEMCTL_LOG: join(STUB_HOME, 'warmup.log') },
+    stdout: 'ignore',
+    stderr: 'ignore',
+  })
+}
+
+afterAll(() => {
+  rmSync(STUB_HOME, { force: true, recursive: true })
+})
+
 const scratches: string[] = []
 
 interface Scratch {
@@ -141,18 +191,6 @@ function scratch(): Scratch {
     }
   }
 
-  const stubBin = join(base, 'bin')
-  mkdirSync(stubBin, { recursive: true })
-  writeFileSync(join(stubBin, 'systemctl'), FAKE_SYSTEMCTL)
-  chmodSync(join(stubBin, 'systemctl'), 0o755)
-  // 「这台机器上 systemd --user 用不了」那一档也要**钉死**，不能靠「PATH 上恰好没有
-  // systemctl」——Linux runner 上它就在 /usr/bin 下。装一个 `--user` 一律不通的桩，
-  // 于是那条分支在 macOS 与 Linux 上走的是同一条路。
-  const noSystemdBin = join(base, 'bin-no-systemd')
-  mkdirSync(noSystemdBin, { recursive: true })
-  writeFileSync(join(noSystemdBin, 'systemctl'), '#!/bin/bash\nexit 1\n')
-  chmodSync(join(noSystemdBin, 'systemctl'), 0o755)
-
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets', 'peers'), { recursive: true })
   // PSK 由 H 生成后分发，脚本在本机永不生成——所以用例得先把它放好。
@@ -166,8 +204,8 @@ function scratch(): Scratch {
     occLog: join(base, 'occ.log'),
     xdg: join(base, 'xdg'),
     systemctlLog: join(base, 'systemctl.log'),
-    stubBin,
-    noSystemdBin,
+    stubBin: STUB_BIN,
+    noSystemdBin: NO_SYSTEMD_BIN,
   }
 }
 
