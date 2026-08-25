@@ -450,9 +450,15 @@ export class FleetDriver implements AcceptanceDriver {
       stdout: async () => await this.#tail(host, 'out'),
       stderr: async () => await this.#tail(host, 'err'),
       alive: async () => {
-        const probe = await this.#ssh(host.ssh, [
-          `test -S /proc/1 || true; pgrep -f "resident --node ${host.node}" >/dev/null && echo alive || echo dead`,
-        ])
+        // 纯读一次进程表，重发绝对安全。链路失败时**绝不答 `dead`** —— 那是
+        // 一条关于被测系统的观察，而这一趟根本没问到（issue #98 的那张表）。
+        const probe = await this.#read(
+          host.ssh,
+          [
+            `test -S /proc/1 || true; pgrep -f "resident --node ${host.node}" >/dev/null && echo alive || echo dead`,
+          ],
+          `问 ${host.node} 还活着没有`,
+        )
         return probe.stdout.includes('alive')
       },
     }
@@ -554,7 +560,9 @@ export class FleetDriver implements AcceptanceDriver {
     const errLog = `${root}/err.log`
     const pidFile = `${root}/node.pid`
 
-    const started = await this.#ssh(
+    // **不重试**：这一趟起进程。重发一次的后果是同一个配置根上两个常驻抢同
+    // 一个端口，比一条 `error` 糟得多。只判「有没有走到远端」。
+    const started = await this.#once(
       machine.ssh,
       [
         `set -e`,
@@ -580,22 +588,32 @@ export class FleetDriver implements AcceptanceDriver {
         `done`,
         `printf 'node-pid=%s\\n' "$p"`,
       ],
-      120_000,
+      `在 ${machine.label} 上起一次性节点 ${spec.name}`,
+      { timeoutMs: 120_000 },
     )
-    const banner = await this.#ssh(machine.ssh, [
-      `cat '${shellQuote(outLog)}' 2>/dev/null || true`,
-    ])
+    // banner 是纯读一次日志。**这一条必须能分清「读不到」和「里面没有」** ——
+    // 一次 rc=255 让 stdout 为空，于是下面那句会说「节点没有起来」，而节点
+    // 多半好好地跑着。
+    const banner = await this.#read(
+      machine.ssh,
+      [`cat '${shellQuote(outLog)}' 2>/dev/null || true`],
+      `读一次性节点 ${spec.name} 的启动 banner`,
+    )
     if (!banner.stdout.includes('"publicKey"')) {
-      const diag = await this.#ssh(machine.ssh, [
-        `cat '${shellQuote(errLog)}' 2>/dev/null || true`,
-      ])
+      // 这一段只进错误文本，所以用 `#diag`：它读不到时给一句「取不到」，
+      // 而不是抛掉外面那条**已经成立**的结论。
+      const diag = await this.#diag(
+        machine.ssh,
+        [`cat '${shellQuote(errLog)}' 2>/dev/null || true`],
+        `一次性节点 ${spec.name} 的 stderr`,
+      )
       // **抛**而不是返回一个半死的句柄：`recovery/foreign-identity-refused`
       // 断言的正是这条异常的文本（「拒绝覆盖别人的身份文件」），而一个
       // 「起来了但什么都不答」的句柄会让那条场景在后面某个断言上红得毫无线索。
       throw new Error(
         `一次性节点 ${spec.name} 在 ${machine.label} 上没有起来\n` +
           `启动命令退出码 ${String(started.code)}\n` +
-          `stdout:\n${banner.stdout}\nstderr:\n${diag.stdout}`,
+          `stdout:\n${banner.stdout}\nstderr:\n${diag}`,
       )
     }
 
@@ -608,24 +626,34 @@ export class FleetDriver implements AcceptanceDriver {
       hostEndpoint: `ws://127.0.0.1:${remotePort}`,
       configRoot,
       disposable,
+      // 三条都是纯读，重发绝对安全 —— 而且三条都是**喂给场景断言的输入**：
+      // 静默变空的证据栏与一句假的 `dead` 都会以「产品坏了」的形态红。
       stdout: async () =>
         (
-          await this.#ssh(machine.ssh, [
-            `cat '${shellQuote(outLog)}' 2>/dev/null || true`,
-          ])
+          await this.#read(
+            machine.ssh,
+            [`cat '${shellQuote(outLog)}' 2>/dev/null || true`],
+            `读一次性节点 ${spec.name} 的 stdout`,
+          )
         ).stdout,
       stderr: async () =>
         (
-          await this.#ssh(machine.ssh, [
-            `cat '${shellQuote(errLog)}' 2>/dev/null || true`,
-          ])
+          await this.#read(
+            machine.ssh,
+            [`cat '${shellQuote(errLog)}' 2>/dev/null || true`],
+            `读一次性节点 ${spec.name} 的 stderr`,
+          )
         ).stdout,
       alive: async () =>
         (
-          await this.#ssh(machine.ssh, [
-            `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
-            `if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo alive; else echo dead; fi`,
-          ])
+          await this.#read(
+            machine.ssh,
+            [
+              `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
+              `if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo alive; else echo dead; fi`,
+            ],
+            `问一次性节点 ${spec.name} 还活着没有`,
+          )
         ).stdout.includes('alive'),
     }
 
@@ -643,14 +671,18 @@ export class FleetDriver implements AcceptanceDriver {
       })
       if (credentialed ? probe.frames.length > 0 : probe.authed) break
       if (ctx.signal.aborted || Date.now() >= deadline) {
-        const diag = await this.#ssh(machine.ssh, [
-          `cat '${shellQuote(errLog)}' 2>/dev/null || true`,
-        ])
+        // 同上：这一段只进错误文本，读不到时说「取不到」，不掀掉外面那条
+        // 已经成立的结论（拨不通是拨号那一侧观察到的，与这次读日志无关）。
+        const diag = await this.#diag(
+          machine.ssh,
+          [`cat '${shellQuote(errLog)}' 2>/dev/null || true`],
+          `一次性节点 ${spec.name} 的 stderr`,
+        )
         throw new Error(
           `一次性节点 ${spec.name} 在 ${machine.label} 上起来了但拨不通 ` +
             `(${endpoint} → ${machine.ssh}:${String(remotePort)})\n` +
             `最后一次拨号: ${JSON.stringify(probe).slice(0, 400)}\n` +
-            `stderr:\n${diag.stdout.slice(0, 1_500)}`,
+            `stderr:\n${diag.slice(0, 1_500)}`,
         )
       }
       await sleep(400)
@@ -691,19 +723,37 @@ export class FleetDriver implements AcceptanceDriver {
     signal: 'TERM' | 'KILL',
   ): Promise<void> {
     const pidFile = `${disposable.root}/node.pid`
-    await this.#ssh(node.ssh, [
-      `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
-      `[ -n "$p" ] || exit 0`,
-      // 先按组杀（`-$p`），组不在了再按 pid 补一刀。
-      `kill -${signal} -"$p" 2>/dev/null || kill -${signal} "$p" 2>/dev/null || true`,
-      ...(signal === 'TERM'
-        ? [
-            `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
-            `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
-          ]
-        : []),
-      `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
-    ])
+    // **不重试**：`kill` 不幂等（pid 复用之后那一刀会打到别人头上），见
+    // `#sshRetry` 的头注。这条要的是「判返回码」而不是「再打一次」——
+    // 丢掉返回码的后果是一次性常驻带着它的 ACP 子进程静默活在内测机上，
+    // 而报告里一个字都没有（issue #98 ②）。
+    const killed = await this.#once(
+      node.ssh,
+      [
+        `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
+        `[ -n "$p" ] || exit 0`,
+        // 先按组杀（`-$p`），组不在了再按 pid 补一刀。
+        `kill -${signal} -"$p" 2>/dev/null || kill -${signal} "$p" 2>/dev/null || true`,
+        ...(signal === 'TERM'
+          ? [
+              `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
+              `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
+            ]
+          : []),
+        `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
+      ],
+      `${signal === 'KILL' ? '硬杀' : '停'}一次性节点 ${node.name}`,
+    )
+    if (killed.code !== 0) {
+      // 抛出去。这个方法有两种调用者，两种都需要它说话：`stopNode` /
+      // `killNode` 那条是场景自己要的动作，没做成就是一条如实的红；
+      // `ctx.cleanup` 那条由 runner 逐条 try/catch，记成一行「cleanup 失败」
+      // 而不打断同场景其它清理。
+      throw new Error(
+        `在 ${node.ssh} 上${signal === 'KILL' ? '硬杀' : '停'}一次性节点 ` +
+          `${node.name} 没跑成 (${killed.code}): ${killed.stderr.trim().slice(0, 300)}`,
+      )
+    }
   }
 
   /**
@@ -772,10 +822,17 @@ export class FleetDriver implements AcceptanceDriver {
     relPath: string,
   ): Promise<string | undefined> {
     const fleetNode = node as FleetNodeHandle
+    // 纯读一次文件。**`undefined` 在这里的含义是「那台机器上没有这个文件」**
+    // —— 一次 rc=255 也让 stdout 为空，于是链路失败会变成一句「文件不存在」
+    // 喂进场景的 `expect`。`#read` 打满不通就抛，不再冒充一次观察。
     // `cat --` 而不是 `cat`：路径里的前导 `-` 否则会被当成参数。
-    const result = await this.#ssh(fleetNode.ssh, [
-      `cat -- '${shellQuote(`${node.configRoot}/${relPath}`)}' 2>/dev/null || true`,
-    ])
+    const result = await this.#read(
+      fleetNode.ssh,
+      [
+        `cat -- '${shellQuote(`${node.configRoot}/${relPath}`)}' 2>/dev/null || true`,
+      ],
+      `读节点 ${node.name} 配置根下的 ${relPath}`,
+    )
     return result.stdout === '' ? undefined : result.stdout
   }
 
@@ -791,15 +848,17 @@ export class FleetDriver implements AcceptanceDriver {
     requireDisposable(node, '写配置根')
     const fleetNode = node as FleetNodeHandle
     const abs = `${node.configRoot}/${relPath}`
+    // **不重试**：写文件是改目标状态。返回码这里本来就判着，缺的只是
+    // 「链路失败」与「远端写不进去」分开说 —— 两者的下一步动作完全不同。
     // 内容经 stdin 进去，不进命令行：审计链一行里带引号与换行，拼进 argv 迟早出事。
-    const written = await this.#ssh(
+    const written = await this.#once(
       fleetNode.ssh,
       [
         `mkdir -p -- "$(dirname -- '${shellQuote(abs)}')"`,
         `cat > '${shellQuote(abs)}'`,
       ],
-      undefined,
-      content,
+      `往节点 ${node.name} 的配置根写 ${relPath}`,
+      { stdin: content },
     )
     if (written.code !== 0) {
       throw new Error(
@@ -816,9 +875,20 @@ export class FleetDriver implements AcceptanceDriver {
   ): Promise<void> {
     requireDisposable(node, '改权限位')
     const fleetNode = node as FleetNodeHandle
-    await this.#ssh(fleetNode.ssh, [
-      `chmod ${mode} -- '${shellQuote(`${node.configRoot}/${relPath}`)}'`,
-    ])
+    // `chmod <固定位>` 重发结果相同（与 `#scratch` 里那条 `chmod 700` 同类），
+    // 所以接重试。返回码此前是整个丢掉的 —— 权限位没改成时，靠它立现场的场景
+    // 会在后面某个断言上以「产品没拦住」的形态红（issue #98 ③）。
+    const changed = await this.#read(
+      fleetNode.ssh,
+      [`chmod ${mode} -- '${shellQuote(`${node.configRoot}/${relPath}`)}'`],
+      `把节点 ${node.name} 的 ${relPath} 权限位改成 ${mode}`,
+    )
+    if (changed.code !== 0) {
+      throw new Error(
+        `在 ${fleetNode.ssh} 上把 ${relPath} 改成 ${mode} 失败 ` +
+          `(${changed.code}): ${changed.stderr.trim().slice(0, 300)}`,
+      )
+    }
   }
 
   async listNodeDir(
@@ -826,9 +896,15 @@ export class FleetDriver implements AcceptanceDriver {
     relPath: string,
   ): Promise<string[] | undefined> {
     const fleetNode = node as FleetNodeHandle
-    const result = await this.#ssh(fleetNode.ssh, [
-      `ls -1 -- '${shellQuote(`${node.configRoot}/${relPath}`)}' 2>/dev/null || true`,
-    ])
+    // 与 `readNodeFile` 同一条：`undefined` 的含义是「那个目录不在（或空）」，
+    // 一次链路失败绝不许伪装成它。
+    const result = await this.#read(
+      fleetNode.ssh,
+      [
+        `ls -1 -- '${shellQuote(`${node.configRoot}/${relPath}`)}' 2>/dev/null || true`,
+      ],
+      `列节点 ${node.name} 配置根下的 ${relPath}`,
+    )
     if (result.stdout.trim() === '') return undefined
     return result.stdout.split('\n').filter(line => line !== '')
   }
@@ -839,12 +915,17 @@ export class FleetDriver implements AcceptanceDriver {
   ): Promise<ExecResult> {
     const fleetNode = node as FleetNodeHandle
     const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
-    // PATH 与 OCC_CONFIG_DIR 都要显式给：非交互 SSH 既解析不到 ~/.bun/bin，
-    // 也不会带上部署时那套环境。
-    return await this.#ssh(fleetNode.ssh, [
-      `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(node.configRoot)}' ` +
-        `bun '${shellQuote(fleetNode.occPath)}' ${quoted}`,
-    ])
+    // **不重试**：跑的是任意一条 `qm` 子命令，签发、注册、写审计链都在里面，
+    // 重发一次可能造出第二条记录。只判「有没有走到远端」—— 少了这一判，
+    // `{code: 255, stdout: ''}` 会原样交给场景，读起来正是「这条命令失败了」。
+    return await this.#once(
+      fleetNode.ssh,
+      [
+        `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(node.configRoot)}' ` +
+          `bun '${shellQuote(fleetNode.occPath)}' ${quoted}`,
+      ],
+      `在节点 ${node.name} 上跑 qm ${argv[0] ?? ''}`,
+    )
   }
 
   /**
@@ -922,13 +1003,16 @@ export class FleetDriver implements AcceptanceDriver {
         // 一条命令换一个配置根：一条签发链要同时用到工具根、对端身份根与
         // 将来那个节点自己的根，而它们本来就该在同一台机器的同一棵树里。
         const dir = opts?.configDir ?? configDir
-        return await this.#ssh(
+        // **不重试**：`qm ca` / `qm cert` / `qm task sign` 都从这里走，重发一次
+        // 会在那棵树上多造一份材料。只判「有没有走到远端」。
+        return await this.#once(
           ssh,
           [
             `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(dir)}' ` +
               `${env}bun '${shellQuote(occPath)}' ${quoted}`,
           ],
-          opts?.timeoutMs,
+          `在 ${ssh} 上跑 qm ${argv[0] ?? ''}`,
+          { timeoutMs: opts?.timeoutMs },
         )
       },
       run: async (argv, opts) => {
@@ -936,23 +1020,27 @@ export class FleetDriver implements AcceptanceDriver {
           .map(([k, v]) => `${k}='${shellQuote(v)}' `)
           .join('')
         const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
-        return await this.#ssh(
+        // **不重试**：argv 由场景给（`openssl` 签发那条链就在这儿跑），
+        // 幂等性不由这一层判断得了。
+        return await this.#once(
           ssh,
           [`PATH="$HOME/.bun/bin:$PATH" ${env}${quoted}`],
-          opts?.timeoutMs,
+          `在 ${ssh} 上跑 ${argv[0] ?? ''}`,
+          { timeoutMs: opts?.timeoutMs },
         )
       },
       writeFile: async (relPath, content) => {
         const abs = `${workdir}/${relPath}`
-        // 内容经 stdin 进去，不进命令行：链文件带引号与换行，拼进 argv 迟早出事。
-        const written = await this.#ssh(
+        // **不重试**（写文件）。内容经 stdin 进去，不进命令行：链文件带引号与
+        // 换行，拼进 argv 迟早出事。
+        const written = await this.#once(
           ssh,
           [
             `mkdir -p -- "$(dirname -- '${shellQuote(abs)}')"`,
             `cat > '${shellQuote(abs)}'`,
           ],
-          undefined,
-          content,
+          `在 ${ssh} 上写 ${relPath}`,
+          { stdin: content },
         )
         if (written.code !== 0) {
           throw new Error(
@@ -963,17 +1051,31 @@ export class FleetDriver implements AcceptanceDriver {
       },
       mkdir: async relPath => {
         const abs = `${workdir}/${relPath}`
-        await this.#ssh(ssh, [`mkdir -p -- '${shellQuote(abs)}'`])
+        // `mkdir -p` 幂等，接重试。返回码此前整个丢掉 —— 目录没建成时，
+        // 后面往里写的那一步才炸，而那条错误看起来像别的毛病。
+        const made = await this.#read(
+          ssh,
+          [`mkdir -p -- '${shellQuote(abs)}'`],
+          `在 ${ssh} 上建目录 ${relPath}`,
+        )
+        if (made.code !== 0) {
+          throw new Error(
+            `在 ${ssh} 上建目录 ${relPath} 失败 (${made.code}): ${made.stderr.trim().slice(0, 300)}`,
+          )
+        }
         return abs
       },
       readFile: async pathOrRelPath => {
         const abs = pathOrRelPath.startsWith('/')
           ? pathOrRelPath
           : `${workdir}/${pathOrRelPath}`
+        // 纯读；`undefined` 的含义是「文件不在或是空的」，链路失败不许伪装成它。
         // `cat --` 而不是 `cat`：路径里的前导 `-` 否则会被当成参数。
-        const probe = await this.#ssh(ssh, [
-          `cat -- '${shellQuote(abs)}' 2>/dev/null || true`,
-        ])
+        const probe = await this.#read(
+          ssh,
+          [`cat -- '${shellQuote(abs)}' 2>/dev/null || true`],
+          `在 ${ssh} 上读 ${pathOrRelPath}`,
+        )
         return probe.stdout === '' ? undefined : probe.stdout
       },
       freePort: async () => await this.#freePortOn(ssh),
@@ -1072,7 +1174,10 @@ export class FleetDriver implements AcceptanceDriver {
       await this.#killByPidFile(machine.ssh, pidFile)
     })
 
-    await this.#ssh(
+    // **不重试**：这一趟起进程（理由同一次性节点那里）。返回码此前连接都没
+    // 接 —— 一次 rc=255 之后下面那句会说「控制台没有起来」，而真相是这条
+    // 命令一行都没跑到。
+    await this.#once(
       machine.ssh,
       [
         `set -e`,
@@ -1090,27 +1195,29 @@ export class FleetDriver implements AcceptanceDriver {
         `  sleep 0.5`,
         `done`,
       ],
-      120_000,
+      `在 ${machine.label} 上起一次性控制台`,
+      { timeoutMs: 120_000 },
     )
 
+    // 两条都是纯读、都接重试。`readOut` 更是承重的：banner 里带着两枚 token，
+    // 静默读空会让整条控制台维度以「没起来」的形态红。
+    const outLines = [`cat '${shellQuote(outLog)}' 2>/dev/null || true`]
+    const errLines = [`cat '${shellQuote(errLog)}' 2>/dev/null || true`]
     const readOut = async (): Promise<string> =>
-      (
-        await this.#ssh(machine.ssh, [
-          `cat '${shellQuote(outLog)}' 2>/dev/null || true`,
-        ])
-      ).stdout
+      (await this.#read(machine.ssh, outLines, '读一次性控制台的 banner'))
+        .stdout
     const readErr = async (): Promise<string> =>
-      (
-        await this.#ssh(machine.ssh, [
-          `cat '${shellQuote(errLog)}' 2>/dev/null || true`,
-        ])
-      ).stdout
+      (await this.#read(machine.ssh, errLines, '读一次性控制台的 stderr'))
+        .stdout
+    // 只进错误文本的那一份：读不到时说「取不到」，不掀掉外面已成立的结论。
+    const diagErr = async (): Promise<string> =>
+      await this.#diag(machine.ssh, errLines, '一次性控制台的 stderr')
 
     const banner = await readOut()
     if (!banner.includes('admin-token')) {
       throw new Error(
         `一次性控制台在 ${machine.label} 上没有起来\n` +
-          `stdout:\n${banner}\nstderr:\n${(await readErr()).slice(0, 1_500)}`,
+          `stdout:\n${banner}\nstderr:\n${(await diagErr()).slice(0, 1_500)}`,
       )
     }
 
@@ -1127,7 +1234,7 @@ export class FleetDriver implements AcceptanceDriver {
         throw new Error(
           `一次性控制台在 ${machine.label} 上起来了但 /v0/health 不答 200 ` +
             `(${url} → ${machine.ssh}:${String(remotePort)})\n` +
-            `stderr:\n${(await readErr()).slice(0, 1_500)}`,
+            `stderr:\n${(await diagErr()).slice(0, 1_500)}`,
         )
       }
       await sleep(400)
@@ -1145,13 +1252,26 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   async #killByPidFile(ssh: string, pidFile: string): Promise<void> {
-    await this.#ssh(ssh, [
-      `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
-      `[ -n "$p" ] || exit 0`,
-      `kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
-      `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
-      `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
-    ])
+    // **不重试**（`kill` 不幂等），但返回码要判：这是控制台那条清理路径，
+    // 丢掉它等于让一个一次性控制台静默活在机器上、报告里一个字都没有。
+    // 抛出去由 runner 记成一行「cleanup 失败」（issue #98 ②）。
+    const killed = await this.#once(
+      ssh,
+      [
+        `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
+        `[ -n "$p" ] || exit 0`,
+        `kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
+        `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
+        `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
+      ],
+      '停一次性控制台',
+    )
+    if (killed.code !== 0) {
+      throw new Error(
+        `在 ${ssh} 上停一次性控制台（${pidFile}）没跑成 (${killed.code}): ` +
+          killed.stderr.trim().slice(0, 300),
+      )
+    }
   }
 
   /**
@@ -1169,9 +1289,18 @@ export class FleetDriver implements AcceptanceDriver {
     const root = await this.#scratch(ctx, machine.ssh)
     const betaRoot = `${root}/beta-root`
     const workdir = `${root}/work`
-    await this.#ssh(machine.ssh, [
-      `mkdir -p '${shellQuote(betaRoot)}/run' '${shellQuote(betaRoot)}/logs'`,
-    ])
+    // `mkdir -p` 幂等，接重试。返回码此前整个丢掉 —— 这两个目录是
+    // `beta-up.sh` 写 pid 与日志的地方，没建成时红在脚本里，归因要绕一大圈。
+    const made = await this.#read(
+      machine.ssh,
+      [`mkdir -p '${shellQuote(betaRoot)}/run' '${shellQuote(betaRoot)}/logs'`],
+      `在 ${machine.label} 上开启动器位的 run/ 与 logs/`,
+    )
+    if (made.code !== 0) {
+      throw new Error(
+        `在 ${machine.ssh} 上开启动器位失败 (${made.code}): ${made.stderr.trim().slice(0, 300)}`,
+      )
+    }
     const ssh = machine.ssh
     return {
       describe: machine.label,
@@ -1180,7 +1309,8 @@ export class FleetDriver implements AcceptanceDriver {
       workdir,
       writeFile: async (relPath, content, options) => {
         const abs = `${workdir}/${relPath}`
-        const written = await this.#ssh(
+        // **不重试**（写文件）。
+        const written = await this.#once(
           ssh,
           [
             `mkdir -p -- "$(dirname -- '${shellQuote(abs)}')"`,
@@ -1189,8 +1319,8 @@ export class FleetDriver implements AcceptanceDriver {
               ? []
               : [`chmod ${options.mode} -- '${shellQuote(abs)}'`]),
           ],
-          undefined,
-          content,
+          `在 ${ssh} 上写启动器位的 ${relPath}`,
+          { stdin: content },
         )
         if (written.code !== 0) {
           throw new Error(
@@ -1204,18 +1334,54 @@ export class FleetDriver implements AcceptanceDriver {
           .map(([k, v]) => `${k}='${shellQuote(v)}' `)
           .join('')
         const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
-        return await this.#ssh(ssh, [`${env}${quoted}`], options?.timeoutMs)
+        // **不重试**：跑的是部署机上那份 `beta-up.sh`，它起进程、写 pid、
+        // 改部署树。重发一次就是起第二遍。只判「有没有走到远端」—— 少了这
+        // 一判，`{code: 255}` 会被场景读成「启动器脚本失败了」。
+        return await this.#once(
+          ssh,
+          [`${env}${quoted}`],
+          `在 ${ssh} 上跑启动器 ${argv[0] ?? ''}`,
+          { timeoutMs: options?.timeoutMs },
+        )
       },
-      exists: async absPath =>
-        (
-          await this.#ssh(ssh, [
-            `test -e '${shellQuote(absPath)}' && echo yes || echo no`,
-          ])
-        ).stdout.includes('yes'),
+      // ── issue #98 ①：这两条是全表里最危险的一对 ─────────────────────
+      //
+      // 它们的返回值**直接就是场景 `expect` 的输入**。`#ssh` 不抛，于是一次
+      // rc=255 让 stdout 为空 —— `exists()` 答「文件不存在」、`readFile()` 答
+      // 「文件是空的」。断言「这个文件该在」时是假红，断言「该不在」时是
+      // **假绿**，而两种都看不出与链路有关。这比 #96 ③ 那个形状更坏：那边
+      // 一次链路失败至少还红着、看得见。
+      //
+      // **口径：抛，不返回三态。**「问不到」本来就不该被当成一次观察，这正是
+      // #96 立的规矩。三态（yes/no/unknown）看着更保守，实际是把同一个判断推给
+      // 七八个调用方各写一遍 —— 而只要有一个把 `unknown` 当成 `no`，这条缺陷
+      // 就原样回来了，且下次更难找。抛出去只有一种下场：一条标着
+      // `errorKind='transport'` 的 error，照样把整轮判红。
+      exists: async absPath => {
+        const probe = await this.#read(
+          ssh,
+          [`test -e '${shellQuote(absPath)}' && echo yes || echo no`],
+          `问 ${ssh} 上 ${absPath} 在不在`,
+        )
+        const answer = probe.stdout.trim()
+        // `test -e … && echo yes || echo no` 永远退出 0 并且必答一个词。
+        // 答不上来 = 这一趟没问成，同样不许折成 `false`。
+        if (probe.code !== 0 || (answer !== 'yes' && answer !== 'no')) {
+          throw new Error(
+            `在 ${ssh} 上问不出 ${absPath} 在不在 (${probe.code}): ` +
+              `stdout=${JSON.stringify(answer.slice(0, 120))} ` +
+              `stderr=${probe.stderr.trim().slice(0, 200)}`,
+          )
+        }
+        return answer === 'yes'
+      },
       readFile: async absPath => {
-        const probe = await this.#ssh(ssh, [
-          `cat -- '${shellQuote(absPath)}' 2>/dev/null || true`,
-        ])
+        const probe = await this.#read(
+          ssh,
+          [`cat -- '${shellQuote(absPath)}' 2>/dev/null || true`],
+          `读 ${ssh} 上的 ${absPath}`,
+        )
+        // 到这里 `undefined` 只剩一个含义：那台机器上这个文件不在或是空的。
         return probe.stdout === '' ? undefined : probe.stdout
       },
     }
@@ -1281,12 +1447,25 @@ export class FleetDriver implements AcceptanceDriver {
     const deadline =
       Date.now() + REVERSE_TUNNEL_READY_BUDGET_MS * ctx.timeoutScale
     for (;;) {
+      // 纯读一次 curl 探测。这里**故意不套 `#sshRetry`** —— 这个 for 循环
+      // 自己就是重试（每 500 ms 一轮，直到预算耗尽），再套一层等于把每轮变
+      // 成三次往返、把「隧道没通」这个结论推迟到三倍时间之后。要补的只是
+      // 最后那一下的分类：打到预算还是 255，说的就是链路，不是隧道没通。
       const probe = await this.#ssh(ssh, [
         `curl -s -o /dev/null -w '%{http_code}' -m 3 ` +
           `http://127.0.0.1:${String(remotePort)}/v0/agents 2>/dev/null || echo 000`,
       ])
       if (/[1-5]\d\d/.test(probe.stdout.trim())) return
       if (ctx.signal.aborted || Date.now() >= deadline) {
+        if (isTransportFailure(probe)) {
+          throw new TransportFailure({
+            ssh,
+            what: `等到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 通`,
+            code: probe.code,
+            stderr: probe.stderr,
+            attempts: 1,
+          })
+        }
         throw new Error(
           `到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 没通：${probe.stdout.trim()}`,
         )
@@ -1669,23 +1848,34 @@ export class FleetDriver implements AcceptanceDriver {
     }
     // 先取「控制台申报了什么」与目标机的钟；每台节点的单元状态与文件在下面
     // 各自一趟（systemctl 的实例名与镜像路径都要按节点拼，合不成一条）。
-    const declared = await this.#ssh(consoleHost, [
-      // 申报是成对的 `--audit <n>=<路径>` / `--audit-mirror <n>=<分钟>`，从
-      // **跑着的控制台**的命令行上读 —— 那条命令行才是真源，抄一份进套件只会
-      // 在部署改了之后开始说谎。
-      //
-      // `|| true` 是必须的：grep 一条都没匹配上时退出 1，而「一条申报都没有」
-      // 是这条链路的一种**观察**（下面走 skip 分支），不是采集失败。少了它，
-      // 「没部署镜像」会被报成「读不到搬运现场」。
-      // `--port` 一起捞：它是下面那次健康检查的地址来源，比写死 38621 稳
-      // （改部署这边不会红，只会开始说谎）。
-      `ps -eo args | grep -oE -- '--(audit(-mirror)?|port) [^ ]+' | sort -u || true`,
-      // 同一趟 ssh 里问一次健康。零额外往返，而它把「一条申报都没有」拆成
-      // 「控制台活着但没配镜像」与「控制台没在跑」两件事。
-      `p="$(ps -eo args | grep -oE -- 'cli-node.js console .*--port [0-9]+' | grep -oE -- '--port [0-9]+' | head -1 | awk '{print $2}')"`,
-      `printf 'console-port=%s\n' "$p"`,
-      `if [ -n "$p" ]; then printf 'console-health=%s\n' "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p/v0/health" 2>/dev/null || echo 000)"; fi`,
-    ])
+    // 采集全程只读（`ps` / `curl` / `systemctl show` / `stat` / `md5sum`），
+    // 三趟全部接重试。**这三趟的产物直接进 `expect`** —— 静默读空会让审计镜像
+    // 那条以「搬运停了」的形态红（`(取不到)s`），而搬运多半好好地在跑。
+    const declared = await this.#read(
+      consoleHost,
+      [
+        // 申报是成对的 `--audit <n>=<路径>` / `--audit-mirror <n>=<分钟>`，从
+        // **跑着的控制台**的命令行上读 —— 那条命令行才是真源，抄一份进套件只会
+        // 在部署改了之后开始说谎。
+        //
+        // `|| true` 是必须的：grep 一条都没匹配上时退出 1，而「一条申报都没有」
+        // 是这条链路的一种**观察**（下面走 skip 分支），不是采集失败。少了它，
+        // 「没部署镜像」会被报成「读不到搬运现场」。
+        // `--port` 一起捞：它是下面那次健康检查的地址来源，比写死 38621 稳
+        // （改部署这边不会红，只会开始说谎）。
+        `ps -eo args | grep -oE -- '--(audit(-mirror)?|port) [^ ]+' | sort -u || true`,
+        // 同一趟 ssh 里问一次健康。零额外往返，而它把「一条申报都没有」拆成
+        // 「控制台活着但没配镜像」与「控制台没在跑」两件事。
+        `p="$(ps -eo args | grep -oE -- 'cli-node.js console .*--port [0-9]+' | grep -oE -- '--port [0-9]+' | head -1 | awk '{print $2}')"`,
+        `printf 'console-port=%s\n' "$p"`,
+        `if [ -n "$p" ]; then printf 'console-health=%s\n' "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p/v0/health" 2>/dev/null || echo 000)"; fi`,
+      ],
+      '读控制台的镜像申报',
+    )
+    // 这里的 `failure` 只剩「远端命令自己非零」一种含义了 —— 链路失败在
+    // `#read` 里就抛掉了。区别是承重的：`failure` 会让那条场景记一条 **fail**
+    // （「读不到搬运现场」），而链路失败记成 fail 等于用套件够不着机器去否掉
+    // 一条产品结论，方向正好反了。
     if (declared.code !== 0) {
       return {
         consoleHost,
@@ -1719,34 +1909,42 @@ export class FleetDriver implements AcceptanceDriver {
       // 它打印的，它一定认得，而在 runner 上 `Date.parse` 一个带时区缩写的
       // systemd 时间串是另一条会静默给出 NaN 的路。
       const unit = `qianmo-mirror@${host.node}`
-      const probe = await this.#ssh(consoleHost, [
-        // 钟**在这一趟里取**，与 systemctl / stat 读到的是同一个时刻。取一次
-        // 放在整轮采集开头会让后取的那几台算出负的「距今」—— 负值又恰好能
-        // 无条件通过「≤ 上限」，于是这条断言在最需要它的方向上是瞎的。
-        `printf 'observed-at=%s\n' "$(date +%s)"`,
-        `lt="$(systemctl --user show '${unit}.timer' -p LastTriggerUSec --value 2>/dev/null)"`,
-        `printf 'last-trigger-at=%s\n' "$lt"`,
-        `printf 'last-trigger-sec=%s\n' "$(date -d "$lt" +%s 2>/dev/null)"`,
-        `systemctl --user show '${unit}.service' -p ExecMainStatus -p Result 2>/dev/null || true`,
-        ...(mirrorPath === undefined
-          ? []
-          : [
-              `printf 'mirror-mtime=%s\n' "$(stat -c '%Y' -- '${quotedMirror}' 2>/dev/null)"`,
-              `printf 'mirror-bytes=%s\n' "$(stat -c '%s' -- '${quotedMirror}' 2>/dev/null)"`,
-              `printf 'mirror-md5=%s\n' "$(md5sum -- '${quotedMirror}' 2>/dev/null | cut -d' ' -f1)"`,
-            ]),
-      ])
+      const probe = await this.#read(
+        consoleHost,
+        [
+          // 钟**在这一趟里取**，与 systemctl / stat 读到的是同一个时刻。取一次
+          // 放在整轮采集开头会让后取的那几台算出负的「距今」—— 负值又恰好能
+          // 无条件通过「≤ 上限」，于是这条断言在最需要它的方向上是瞎的。
+          `printf 'observed-at=%s\n' "$(date +%s)"`,
+          `lt="$(systemctl --user show '${unit}.timer' -p LastTriggerUSec --value 2>/dev/null)"`,
+          `printf 'last-trigger-at=%s\n' "$lt"`,
+          `printf 'last-trigger-sec=%s\n' "$(date -d "$lt" +%s 2>/dev/null)"`,
+          `systemctl --user show '${unit}.service' -p ExecMainStatus -p Result 2>/dev/null || true`,
+          ...(mirrorPath === undefined
+            ? []
+            : [
+                `printf 'mirror-mtime=%s\n' "$(stat -c '%Y' -- '${quotedMirror}' 2>/dev/null)"`,
+                `printf 'mirror-bytes=%s\n' "$(stat -c '%s' -- '${quotedMirror}' 2>/dev/null)"`,
+                `printf 'mirror-md5=%s\n' "$(md5sum -- '${quotedMirror}' 2>/dev/null | cut -d' ' -f1)"`,
+              ]),
+        ],
+        `读 ${host.node} 的镜像搬运现场`,
+      )
       const mirrorBytes = intField(probe.stdout, 'mirror-bytes')
       // 权威副本在**节点**上，所以这一段要连到那台机器上去问。
       const authority =
         mirrorBytes === undefined
           ? { code: 0, stdout: '', stderr: '' }
-          : await this.#ssh(host.ssh, [
-              `t='${shellQuote(`${host.configRoot}/${TRAIL_PATH}`)}'`,
-              `printf 'authoritative-bytes=%s\n' "$(stat -c '%s' -- "$t" 2>/dev/null)"`,
-              `printf 'authoritative-md5=%s\n' "$(md5sum -- "$t" 2>/dev/null | cut -d' ' -f1)"`,
-              `printf 'authoritative-prefix-md5=%s\n' "$(head -c ${mirrorBytes} -- "$t" 2>/dev/null | md5sum | cut -d' ' -f1)"`,
-            ])
+          : await this.#read(
+              host.ssh,
+              [
+                `t='${shellQuote(`${host.configRoot}/${TRAIL_PATH}`)}'`,
+                `printf 'authoritative-bytes=%s\n' "$(stat -c '%s' -- "$t" 2>/dev/null)"`,
+                `printf 'authoritative-md5=%s\n' "$(md5sum -- "$t" 2>/dev/null | cut -d' ' -f1)"`,
+                `printf 'authoritative-prefix-md5=%s\n' "$(head -c ${mirrorBytes} -- "$t" 2>/dev/null | md5sum | cut -d' ' -f1)"`,
+              ],
+              `读 ${host.node} 上的权威审计链`,
+            )
       units.push({
         node: host.node,
         ...(lags.get(host.node) === undefined
@@ -1795,9 +1993,16 @@ export class FleetDriver implements AcceptanceDriver {
    * 口会让「不可达」那条场景红得毫无道理。
    */
   async #freePortOn(ssh: string): Promise<number> {
-    const probe = await this.#ssh(ssh, [
-      `ss -H -ltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -u`,
-    ])
+    // **这是 issue #98 那条现场实例。**`ss -H -ltn` 纯读一次内核的监听表，
+    // 重发绝对安全；而 `3aa7fb81` 那轮真机腿唯一的红就是它撞上一次
+    // `Connection closed by`（rc=255），栈停在这里，报告上写着
+    // 「audit/full-rewrite-not-detected-locally 炸了」—— 而那条场景问的是
+    // 审计链回不回得到 intact，跟 p7 的 SSH 一点关系没有。
+    const probe = await this.#read(
+      ssh,
+      [`ss -H -ltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -u`],
+      `在 ${ssh} 上取监听端口表`,
+    )
     if (probe.code !== 0) {
       throw new Error(
         `在 ${ssh} 上取监听端口表失败 (${probe.code}): ${probe.stderr.slice(0, 300)}`,
@@ -1812,9 +2017,16 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   async #tail(host: FleetHost, stream: 'out' | 'err'): Promise<string> {
-    const result = await this.#ssh(host.ssh, [
-      `tail -200 -- "$(dirname '${host.configRoot}')/../../logs/${host.node}.${stream}" 2>/dev/null || true`,
-    ])
+    // 纯读一次日志尾巴，重发绝对安全 —— 而它读的是**证据栏的来源**（issue
+    // #98 ④）。一次链路失败让它静默返回 ''，读报告的人会以为「日志里什么都
+    // 没有」，而那一栏往往正是判断产品对错的那一栏。
+    const result = await this.#read(
+      host.ssh,
+      [
+        `tail -200 -- "$(dirname '${host.configRoot}')/../../logs/${host.node}.${stream}" 2>/dev/null || true`,
+      ],
+      `读 ${host.node} 的 ${stream} 日志`,
+    )
     return result.stdout
   }
 
@@ -1858,10 +2070,177 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   /**
+   * 一条**幂等**远端命令：抖了退避重发，打满仍不通抛 {@link TransportFailure}。
+   *
+   * 这是「读一次」类调用点的**唯一**正确写法。裸 `#ssh` 不抛，于是一次 rc=255
+   * 会安静地折成一个空 stdout —— 而空 stdout 在这个文件里到处都有含义：「文件
+   * 不存在」「进程死了」「日志是空的」「一条申报都没有」。那些含义每一条都是
+   * **关于被测系统的观察**，而这一趟根本没问到。见下面 `#ssh` 头上那张表。
+   *
+   * 远端命令**自己**的非零返回码原样交回调用方 —— 那是一次真的观察，判不判由
+   * 调用方决定。这个包装只回答「有没有走到远端」。
+   */
+  async #read(
+    ssh: string,
+    lines: readonly string[],
+    what: string,
+    options?: { readonly timeoutMs?: number },
+  ): Promise<ExecResult> {
+    let attempts = 1
+    const result = await this.#sshRetry(ssh, lines, {
+      timeoutMs: options?.timeoutMs,
+      onRetry: n => {
+        attempts = n + 1
+      },
+    })
+    if (isTransportFailure(result)) {
+      throw new TransportFailure({
+        ssh,
+        what,
+        code: result.code,
+        stderr: result.stderr,
+        attempts,
+      })
+    }
+    return result
+  }
+
+  /**
+   * 一条**非幂等**远端命令：只发一次，但仍然判「有没有走到远端」。
+   *
+   * 起进程、`kill`、写文件、跑任意 `qm` 子命令都走它。**绝不重发** —— 理由写在
+   * {@link FleetDriver.#sshRetry} 的头注里：重发一次的后果是两个常驻抢一个端口、
+   * 一刀砍到被复用的 pid 上、审计链里多一条记录，每一样都比一条 `error` 糟。
+   *
+   * 它补的是另一半：`#ssh` 不抛，于是 rc=255 会原样交给调用方，而 255 在
+   * `ExecResult` 里长得和「远端命令失败了」一模一样。场景读到的是「这条命令
+   * 失败了」，实际上它一行都没执行到。
+   */
+  async #once(
+    ssh: string,
+    lines: readonly string[],
+    what: string,
+    options?: { readonly timeoutMs?: number; readonly stdin?: string },
+  ): Promise<ExecResult> {
+    const result = await this.#ssh(
+      ssh,
+      lines,
+      options?.timeoutMs,
+      options?.stdin,
+    )
+    if (isTransportFailure(result)) {
+      throw new TransportFailure({
+        ssh,
+        what,
+        code: result.code,
+        stderr: result.stderr,
+        attempts: 1,
+      })
+    }
+    return result
+  }
+
+  /**
+   * 只为**已经在构造的那条错误消息**读一段文本，**永不抛**。
+   *
+   * 用它的地方都长一个样：外面已经拿到一条成立的结论（「节点没起来」「拨不
+   * 通」），现在补一段远端 stderr 给人看。这时候再抛一个 `TransportFailure`
+   * 出去，等于用「日志没读到」把那条**已经观察到**的结论掀掉 —— 报告上会变成
+   * 一条链路错误，而真正的现场（进程没起来）一个字都不剩。
+   *
+   * 所以这一条反过来：读不到就在文本里明说「取不到」，绝不假装日志是空的。
+   */
+  async #diag(
+    ssh: string,
+    lines: readonly string[],
+    what: string,
+  ): Promise<string> {
+    const result = await this.#sshRetry(ssh, lines)
+    if (isTransportFailure(result)) {
+      const signature = transportSignature(result.stderr)
+      return (
+        `[取不到${what}：到 ${ssh} 的 SSH 链路失败 (${result.code}` +
+        `${signature === undefined ? '' : `，${signature}`})]`
+      )
+    }
+    return result.stdout
+  }
+
+  /**
    * 跑一条远端命令。
    *
    * `stdin` 给了就不能带 `-n`（那个选项把 stdin 接到 /dev/null），这正是
    * `writeFile` 经管道送内容的那条路径。
+   *
+   * ## 不要直接用它 —— 先在下面那张表里找到你的调用点（issue #98）
+   *
+   * **`#ssh` 不抛。**它把 `ssh` 自己的失败（rc=255，远端命令一行都没执行到）
+   * 和远端命令的真实回答塞进同一个 `ExecResult`。于是每一个裸调用点都在悄悄
+   * 做一次它没资格做的断言：空 stdout 被读成「文件不存在」「进程死了」「日志
+   * 是空的」，非零 rc 被读成「这条命令失败了」。
+   *
+   * 这个病已经花掉两轮真机腿（各约两小时）。第一轮红在 `#scratch`，PR #97 补
+   * 上；第二轮红在 `#freePortOn`，而它不在 #97 点名的四条里 —— **逐处点名的
+   * 做法本身不成立**。所以下面是全表，三十四条一条不落，包括「本来就对」的。
+   *
+   * 三条纪律：
+   *
+   *   · **幂等**（纯读 / 反复做结果相同）→ `#read`：退避重发，打满抛
+   *     {@link TransportFailure}；
+   *   · **非幂等**（起进程 / `kill` / 写文件 / 任意 `qm` 子命令）→ `#once`：
+   *     只发一次，但仍判「有没有走到远端」。**绝不接重试**；
+   *   · 只进**已成立的错误消息**的那几段 → `#diag`：永不抛，读不到就明说。
+   *
+   * 判不准就判成非幂等：重发一个非幂等命令比一条 `error` 糟得多。
+   *
+   * 表里**不写行号** —— 行号一改就过期，而过期的表比没有表更坏。
+   *
+   * | # | 调用点 | 远端命令 | 幂等 | 丢了 rc 会怎么骗人 | 改成 |
+   * | --- | --- | --- | --- | --- | --- |
+   * | 1 | `#attach().alive` | `pgrep resident` | 纯读 | 答「节点死了」 | `#read` |
+   * | 2 | `#launchDisposable` 启动 | `setsid bun … resident` | **否**（起进程） | 后面 banner 读空 → 「节点没起来」 | `#once` |
+   * | 3 | `#launchDisposable` banner | `cat out.log` | 纯读 | 同上，且这条才是直接原因 | `#read` |
+   * | 4 | `#launchDisposable` 诊断 | `cat err.log` | 纯读 | 诊断段静默变空 | `#diag`（外面那条错误已成立） |
+   * | 5 | 一次性句柄 `stdout` | `cat out.log` | 纯读 | 证据栏静默变空 | `#read` |
+   * | 6 | 一次性句柄 `stderr` | `cat err.log` | 纯读 | 同上 | `#read` |
+   * | 7 | 一次性句柄 `alive` | 读 pid + `kill -0` | 纯读（`-0` 不发信号） | 答「节点死了」 | `#read` |
+   * | 8 | 就绪超时诊断 | `cat err.log` | 纯读 | 诊断段静默变空 | `#diag` |
+   * | 9 | `#killGroup` | `kill -TERM/-KILL` | **否** | 常驻带 ACP 子进程静默存活，报告零线索 | `#once` + 判 rc 抛 |
+   * | 10 | `readNodeFile` | `cat -- <配置根>/…` | 纯读 | 答「文件不存在」→ 直接进 `expect` | `#read` |
+   * | 11 | `writeNodeFile` | `mkdir -p` + `cat >` | **否**（写） | rc 已判，但 255 说成「写不进去」 | `#once` |
+   * | 12 | `setNodePathMode` | `chmod <固定位>` | 是 | 权限位没改成，后面以「产品没拦住」形态红 | `#read` + 判 rc 抛 |
+   * | 13 | `listNodeDir` | `ls -1 --` | 纯读 | 答「目录不存在」→ 直接进 `expect` | `#read` |
+   * | 14 | `execNode` | 任意 `qm` 子命令 | **否** | `{code:255}` 被读成「这条命令失败了」 | `#once` |
+   * | 15 | `execHost.exec` | 任意 `qm` 子命令 | **否** | 同上（签发链走这里） | `#once` |
+   * | 16 | `execHost.run` | 场景给的任意 argv | **否** | 同上（`openssl` 走这里） | `#once` |
+   * | 17 | `execHost.writeFile` | `mkdir -p` + `cat >` | **否**（写） | rc 已判，255 说成「写不进去」 | `#once` |
+   * | 18 | `execHost.mkdir` | `mkdir -p --` | 是 | rc 全丢；目录没建成，红在后面往里写那一步 | `#read` + 判 rc 抛 |
+   * | 19 | `execHost.readFile` | `cat -- … \|\| true` | 纯读 | 答「文件不存在」 | `#read` |
+   * | 20 | `#startConsole` 启动 | `setsid bun … console` | **否**（起进程） | rc 全丢；后面 banner 读空 → 「控制台没起来」 | `#once` |
+   * | 21 | `#startConsole` `readOut` | `cat console.out.log` | 纯读 | banner 读空 → 假的「没起来」，两枚 token 一起丢 | `#read` |
+   * | 22 | `#startConsole` `readErr` | `cat console.err.log` | 纯读 | 证据栏静默变空 | `#read`（进错误消息的那份走 `#diag`） |
+   * | 23 | `#killByPidFile` | `kill -TERM/-KILL` | **否** | 一次性控制台静默存活，报告零线索 | `#once` + 判 rc 抛 |
+   * | 24 | `launcherHost` 开位 | `mkdir -p run/ logs/` | 是 | rc 全丢；`beta-up.sh` 里以别的毛病红 | `#read` + 判 rc 抛 |
+   * | 25 | `launcherHost.writeFile` | `mkdir -p` + `cat >` + `chmod` | **否**（写） | rc 已判，255 说成「写不进去」 | `#once` |
+   * | 26 | `launcherHost.run` | `beta-up.sh` 等 | **否**（起进程/改部署树） | `{code:255}` 被读成「启动器脚本失败了」 | `#once` |
+   * | 27 | `launcherHost.exists` | `test -e … && echo yes \|\| echo no` | 纯读 | **答「文件不存在」并直接进 `expect`** —— 全表最危险，两个方向都能假 | `#read` + 答不上来也抛 |
+   * | 28 | `launcherHost.readFile` | `cat -- … \|\| true` | 纯读 | **答「文件是空的」并直接进 `expect`** | `#read` |
+   * | 29 | `#reverseTunnel` 就绪探测 | `curl /v0/agents` | 纯读 | 「隧道没通」——归因指向产品 | 循环自己就是重试；打到预算时判 255 抛 |
+   * | 30 | `inspectMirrorTransport` 申报 | `ps -eo args` + `curl` | 纯读 | 记成 `failure` → 场景一条 **fail**（比 error 更坏） | `#read` |
+   * | 31 | 镜像现场（每节点） | `systemctl show` / `stat` / `md5sum` | 纯读 | rc 全丢；每栏 `(取不到)` → 「搬运停了」假红 | `#read` |
+   * | 32 | 权威副本（每节点） | `stat` / `md5sum` / `head -c` | 纯读 | 同上，且前缀哈希那条承重断言直接假红 | `#read` |
+   * | 33 | `#freePortOn` | `ss -H -ltn` | 纯读 | **本 issue 的现场实例**：一条无标记的 `error`，写着别的场景名 | `#read` |
+   * | 34 | `#tail` | `tail -200` | 纯读 | 证据栏静默变空，读报告的人以为「日志里什么都没有」 | `#read` |
+   *
+   * 另有两处**本来就对、不用改**，一并写出来以证明它们被看过了：
+   *
+   * | # | 调用点 | 为什么不用改 |
+   * | --- | --- | --- |
+   * | A | `#scratch` 开目录 / 清扫 / `rm -rf` | PR #97 已按同一套纪律接了 `#sshRetry` + `TransportFailure`，清理失败另有 `ctx.log` + 抛 |
+   * | B | `#homeOf` / `#nodeProvenance` / `#consoleProvenance` | 同上，PR #97 已接 |
+   *
+   * 表外还有两处 `#ssh` 出现在 {@link FleetDriver.#sshRetry} 自己体内 —— 那是
+   * 重发循环的实现，不是调用点。
    */
   async #ssh(
     ssh: string,
