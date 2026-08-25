@@ -186,6 +186,17 @@ export interface FleetConfig {
   readonly psk: Readonly<Record<string, string>>
   /** SSH 额外参数。 */
   readonly sshArgs?: readonly string[]
+  /**
+   * SSH 可执行文件 —— **只给护栏测试用的注入点**，缺省 `ssh`。
+   *
+   * 存在的理由：`#ssh` 走 `Bun.spawn(['ssh', …])`，而 Bun 在**进程启动时**就把
+   * PATH 定住了，测试里改 `process.env.PATH` 对它无效（实测 `Bun.which` 直接回
+   * `null`）。于是「假 ssh 回一个 rc=255」这类注入没有别的入口。
+   *
+   * **`fleetConfigFromEnv` 故意不填它，也没有对应的环境变量** —— 真跑永远是
+   * `ssh`。一个能把整条腿指向假二进制的运维开关，换来的风险远大于它的用处。
+   */
+  readonly sshBin?: string
 }
 
 /**
@@ -1281,6 +1292,13 @@ export class FleetDriver implements AcceptanceDriver {
    * `rm -rf` 的路径由 `mktemp -d` 自己回显、且删之前**再确认一次**它带着
    * {@link SCRATCH_PREFIX} —— 拼一个可能为空的变量再 `rm -rf` 是这类脚本最
    * 经典的事故形态。清理挂 `ctx.cleanup`，超时路径也会跑到。
+   *
+   * ## 清理失败必须留下痕迹（issue #96 ①）
+   *
+   * 这两条远端命令的返回码此前是整个丢掉的，而 {@link FleetDriver.#ssh} **不抛**
+   * —— 于是远端删不掉既不抛异常也不进 `logs`，报告里查不到任何线索。实测后果是
+   * 往演示机上静默丢了 107 MB（`run.IrUlmaLK`），而那一轮 `results.ndjson` 里
+   * 「cleanup 失败」出现 **0 次**。现在两条都判返回码，外加一次存在性复查。
    */
   async #scratch(ctx: ScenarioContext, ssh: string): Promise<string> {
     const made = await this.#ssh(ssh, [
@@ -1313,7 +1331,8 @@ export class FleetDriver implements AcceptanceDriver {
       // 当场把自己的进程组杀掉 —— 结果是进程确实清干净了，而后面那句 rm
       // 一次都没执行过。现场是「每台机器上留着一个只含 config/ 的空目录」，
       // 而 `rm` 那一行看起来完全正确。这个坑踩过一次，别把它合回去。
-      await this.#ssh(ssh, [
+      const problems: string[] = []
+      const swept = await this.#ssh(ssh, [
         `for p in $(pgrep -f '${id}' 2>/dev/null); do`,
         `  kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
         `done`,
@@ -1322,7 +1341,59 @@ export class FleetDriver implements AcceptanceDriver {
         `  kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
         `done`,
       ])
-      await this.#ssh(ssh, [`rm -rf -- '${shellQuote(root)}'`])
+      if (swept.code !== 0) {
+        problems.push(
+          `进程清扫没跑成 (${swept.code}): ${swept.stderr.trim().slice(0, 200)}`,
+        )
+      }
+      // `rm` 的退出码要**自己接住再回显**：后面那个 `[ -e ]` 是一条独立语句，
+      // 远端命令的退出码只会是它的，直接看 ssh 的 rc 等于又把 rm 的结果丢了。
+      // 存在性复查不是多余的一层 —— 「rm 报 0 但目录还在」在挂载点上真的会
+      // 发生（只读挂载下的部分删除），而这一栏问的是「机器上还剩不剩东西」。
+      const removed = await this.#ssh(ssh, [
+        `rc=0`,
+        `rm -rf -- '${shellQuote(root)}' || rc=$?`,
+        `printf 'rm=%s\n' "$rc"`,
+        `if [ -e '${shellQuote(root)}' ]; then`,
+        `  printf 'left=%s\n' "$(du -sk -- '${shellQuote(root)}' 2>/dev/null | awk '{print $1}')"`,
+        `else`,
+        `  printf 'left=no\n'`,
+        `fi`,
+      ])
+      const rc = strField(removed.stdout, 'rm')
+      const left = strField(removed.stdout, 'left')
+      if (removed.code !== 0 || rc === undefined) {
+        problems.push(
+          `删除这一步没能确认 (ssh ${removed.code}): ` +
+            `${removed.stderr.trim().slice(0, 200)}`,
+        )
+      } else if (rc !== '0') {
+        problems.push(
+          `远端 rm -rf 失败 (${rc}): ${removed.stderr.trim().slice(0, 200)}`,
+        )
+      }
+      if (left !== undefined && left !== 'no') {
+        problems.push(`删完目录还在，约 ${left} KB 留在机器上`)
+      }
+      if (problems.length === 0) return
+      // **先把细节写进 logs，再抛。**两件事各有各的去处：`ctx.log` 那几行带着
+      // 主机、路径、退出码与 stderr 原文（NDJSON 的 `log` 证据里，`jq` 捞得到）；
+      // 抛出的那一句让 runner 记下它自己那行 `cleanup 失败: …` —— 那正是这条
+      // 缺陷的判据（那一轮 `results.ndjson` 里它出现 0 次，而机器上躺着 107 MB）。
+      //
+      // 抛在**两条远端命令都跑完之后**，所以本条清理自己不会漏做任何一步；
+      // runner 逐条 `try/catch` 跑 cleanup 栈（见 `runner.ts` 的 `finally`），
+      // 所以抛出也不会打断同场景其它清理。
+      //
+      // **它不改判定**，这是有意的：一次清理失败是套件自己的运维债，不是被测
+      // 系统答错了。把它记成 `error` 就等于用套件侧的残留去否掉一条产品结论 ——
+      // 与本 issue ③ 要根治的那个混淆是同一个病，方向相反而已。
+      for (const p of problems) {
+        ctx.log(`[cleanup] ${ssh}:${root} ${p}`)
+      }
+      throw new Error(
+        `清理 ${ssh} 上的一次性目录 ${root} 没做干净：${problems.join('；')}`,
+      )
     })
     return root
   }
@@ -1674,7 +1745,7 @@ export class FleetDriver implements AcceptanceDriver {
   ): Promise<ExecResult> {
     const child = Bun.spawn(
       [
-        'ssh',
+        this.#config.sshBin ?? 'ssh',
         ...(stdin === undefined ? ['-n'] : []),
         '-o',
         'BatchMode=yes',

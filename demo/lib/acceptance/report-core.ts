@@ -452,6 +452,39 @@ function renderProvenance(run: SuiteRun): string[] {
   return out
 }
 
+/** 一条「清理没做干净」的观察：哪条场景、哪一句。 */
+export interface CleanupFailure {
+  readonly id: string
+  readonly line: string
+}
+
+/**
+ * 这一轮里清理没做干净的那几条（issue #96 ①）。
+ *
+ * 来源是 runner 自己那行 —— 它逐条 `try/catch` 跑 cleanup 栈，抛出的清理会被
+ * 记成 `cleanup 失败: …` 追进本场景的 `log` 证据。所以这个函数**与驱动无关**：
+ * 任何驱动的任何一条清理只要肯抛，就会在这里露头。
+ *
+ * **不参与判定。** 一次清理失败是套件自己的运维债（远端目录删不掉、进程没收
+ * 干净），不是被测系统答错了；把它折进 `pass` 等于用套件侧的残留去否掉一条产品
+ * 结论。它要的只是**可见**：那一轮 107 MB 留在演示机上，而报告里一个字都没有。
+ */
+export function cleanupFailures(run: SuiteRun): readonly CleanupFailure[] {
+  const out: CleanupFailure[] = []
+  for (const r of run.results) {
+    for (const e of r.evidence) {
+      if (e.label !== 'log') continue
+      for (const line of e.value.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('cleanup 失败')) {
+          out.push({ id: r.id, line: trimmed })
+        }
+      }
+    }
+  }
+  return out
+}
+
 /** 人可读汇总表。 */
 export function renderSummary(run: SuiteRun): string {
   const out: string[] = []
@@ -513,6 +546,19 @@ export function renderSummary(run: SuiteRun): string {
   out.push('')
   const tally = OUTCOMES.map(o => `${o}=${run.counts[o]}`).join(' ')
   out.push(`合计: ${tally}`)
+
+  // 清理残留 —— 汇总表**只展开红行的证据**，于是一条绿场景留下的残留在这张表
+  // 上原本一个字都看不见（issue #96 ①：107 MB 静默留在演示机上）。单独一节。
+  const residue = cleanupFailures(run)
+  if (residue.length > 0) {
+    out.push(
+      `清理残留: ${residue.length} 条场景的清理没做干净` +
+        '（不改判定 —— 那是套件自己的运维债，不是被测系统的回答；但得有人去收）',
+    )
+    for (const r of residue) {
+      out.push(`  ${r.id}  ${r.line}`)
+    }
+  }
 
   // 目标触达 —— 这一行是 issue #61 的直接产物，读报告的人先看它再看判定。
   const executed = run.results.filter(r => r.outcome !== 'skip')
