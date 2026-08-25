@@ -136,13 +136,21 @@ export type DriverCapability =
   | 'stub-upstream'
   /**
    * 能**在被测 CLI 所在的那台机器上**现造一套离线 CA 夹具：openssl + `qm ca`
-   * 签出证书，外加一个本机注册中心进程来分发它们。
+   * 签出证书、`qm cert request` 造身份，外加一个注册中心来分发它们。
    *
-   * 与 `exec-node-cli` 分开，因为真机腿缺的正好是这一半：夹具是在 runner 上
-   * 用本地文件系统造的，而被测二进制在四台节点上 —— 两边不是同一个文件系统，
-   * `--cert`/`--trust-ca` 指过去是一条不存在的路径。声明成 `spawn-node` 是不
-   * 准确的（这些场景根本不需要起常驻），而不声明就是 issue #61 那种装饰性
-   * `requires`。
+   * 名字里的 `local` 指的是「与被测 CLI 同机」，**不是**「在 runner 上」——
+   * 那正是这一维搬上真机时最容易搞反的一处。夹具必须与节点同机，因为
+   * `--trust-ca` / `--cert` 收的是**那台机器上**的路径。
+   *
+   * 与 `exec-node-cli` 分开，是因为这条比「能在目标机上跑一条 CLI」多要两件
+   * 事，缺哪一件都跑不完整条链：
+   *
+   *   ① **能预留将来那个节点的配置根**（{@link NodeSpec.configRoot}）——
+   *      `--cert` 那两条场景的证书绑的是节点自己的 Ed25519，而那把钥匙必须
+   *      在起节点**之前**就落在那个根里；
+   *   ② **能把目标机上的产物读回 runner**（{@link ExecHost.readFile}）——
+   *      拨号与注册中心登记发生在 runner 上，证书 PEM、吊销清单、对端私钥
+   *      都得回来。
    */
   | 'local-ca-fixture'
   /**
@@ -276,6 +284,26 @@ export interface NodeSpec {
   /** 额外 CLI 参数，给场景开后门用，慎用。 */
   readonly extraArgs?: readonly string[]
   /**
+   * 节点配置根在**目标机上**的绝对路径。不给就由驱动自己开一个一次性的。
+   *
+   * ## 为什么它必须存在（`local-ca-fixture` 卡在这里）
+   *
+   * 证书这一维有两条场景要给节点 `--cert` / `--key`，而 K-2 的启动检查要求
+   * 那张证书绑的是**本节点自己**配置根里的那把 Ed25519。于是顺序是死的：
+   * 先在某个根里 `qm cert request` 造出身份与 CSR、签出证书，**再**用同一个
+   * 根把节点起起来。驱动自己现开配置根的话，那个根要等 `startNode` 之后才
+   * 存在，而 `--cert` 必须在启动时就给 —— 两件事对不上，这一维就搬不动。
+   *
+   * 拿到这个路径的正经方式是 {@link AcceptanceDriver.execHost}：那个执行位
+   * 的 `configDir` 与 `workdir` 都在目标机上，签发链跑在它上面，签完把
+   * `configDir` 交给这里，节点就复用同一个根起来了。
+   *
+   * **只对驱动自己起的节点有意义。** 真机腿的附着分支拿到的是内测节点的生产
+   * 配置根，这个字段在那里一律忽略 —— 换掉它就等于「另起一个节点」，而附着
+   * 分支根本不起进程。
+   */
+  readonly configRoot?: string
+  /**
    * 只要**一台活着的节点**，配置怎样都行 —— 与 `attach-node` 能力配对的那个信号。
    *
    * 驱动看不到场景的 `requires`，所以「我需要一台现成的节点」这件事必须由
@@ -362,8 +390,35 @@ export interface ExecHost {
   readonly configDir: string
   /** 一次性工作目录在**目标机上**的绝对路径（放输入文件、agent 工作区）。 */
   readonly workdir: string
-  /** 跑一条**会结束**的 `qm` 子命令。 */
+  /**
+   * 跑一条**会结束**的 `qm` 子命令。
+   *
+   * `opts.configDir` 换掉这一条命令的 `OCC_CONFIG_DIR`（缺省是
+   * {@link ExecHost.configDir}）。一条离线 CA 的签发链要同时用到**三个**根：
+   * 跑 `qm ca` 的工具根、对端的身份根、将来那个节点自己的根 —— 一个执行位
+   * 一个固定根的话，这三件事得开三个执行位（真机上就是三层一次性目录 + 三次
+   * `rm -rf`），而它们本来就该在同一台机器的同一棵树里。
+   */
   exec(
+    argv: readonly string[],
+    opts?: {
+      readonly env?: Readonly<Record<string, string>>
+      readonly timeoutMs?: number
+      readonly configDir?: string
+    },
+  ): Promise<ExecResult>
+  /**
+   * 在目标机上跑一条**不是 `qm`** 的命令。
+   *
+   * 存在的理由只有一个：`qm ca` 的签发链外挂 openssl，而这一维有两件事
+   * `qm` 自己不做 —— 探 openssl 版本，以及签一张**已经过期**的证书
+   * （`qm ca issue --days` 走 `positiveInteger`，最短一天，签不出过去的）。
+   * 这两件事都必须发生在**被测 CLI 所在的那台机器**上，因为签出来的东西要
+   * 喂给那台机器上的节点。
+   *
+   * 与 {@link LauncherHost.run} 同形（那边跑的是 `bash`），不是新开的口子。
+   */
+  run(
     argv: readonly string[],
     opts?: {
       readonly env?: Readonly<Record<string, string>>
@@ -374,6 +429,14 @@ export interface ExecHost {
   writeFile(relPath: string, content: string): Promise<string>
   /** 在目标机上建一个目录（相对 {@link workdir}），返回绝对路径。 */
   mkdir(relPath: string): Promise<string>
+  /**
+   * 读目标机上的一个文件；绝对路径直接读，相对路径按 {@link workdir} 解析。
+   * 不存在返回 undefined（**不要**抛）。
+   *
+   * 签发链把证书、吊销清单、身份密钥都落在目标机上，而拨号与注册中心登记发生
+   * 在 runner 上 —— 没有这一步，材料就永远停在另一台机器上。
+   */
+  readFile(pathOrRelPath: string): Promise<string | undefined>
   /**
    * 目标机上此刻**没有人在听**的一个 TCP 端口。
    *
@@ -541,6 +604,19 @@ export interface ExecHostWhere {
    * 落在别处就得穿隧道，而隧道只在 runner 那一侧存在。
    */
   readonly sameMachineAs?: NodeHandle
+  /**
+   * 这个执行位要给本场景**还没起**的一次性节点当夹具位（配置根、CA 目录、
+   * 证书文件都放在它下面），所以必须落在**本场景起节点的那台机器**上。
+   *
+   * 与 {@link ExecHostWhere.sameMachineAs} 分开，因为那个要一个已经存在的
+   * 句柄，而这里节点还不存在 —— 「先造材料再起节点」正是证书这一维的固定顺序
+   * （见 {@link NodeSpec.configRoot}）。
+   *
+   * 不置的话真机驱动会在四台内测节点之间轮转，于是 `--trust-ca` 指向的是
+   * **另一台机器**上的一条路径：节点起来了、证书目录空着，每一次 CA 握手都以
+   * `unknown_signer` 收场 —— 而现场看起来像证书签错了。
+   */
+  readonly forNodeSpawn?: boolean
 }
 
 /** 原始拨号的结果 —— 帧级探针要看的全部东西。 */

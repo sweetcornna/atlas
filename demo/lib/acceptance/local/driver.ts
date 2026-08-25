@@ -30,7 +30,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import type {
   AcceptanceDriver,
   AcceptanceRegistry,
@@ -116,21 +116,24 @@ export class LocalDriver implements AcceptanceDriver {
     spec: NodeSpec,
   ): Promise<LocalNodeHandle> {
     const root = join(ctx.workdir, `node-${spec.name}`)
-    mkdirSync(join(root, 'config'), { recursive: true })
+    // 场景给了配置根就用它 —— 那是「证书已经签好、身份已经在里面了」的那种
+    // 根（见 {@link NodeSpec.configRoot}）。不给才现开一个。
+    const configRoot = spec.configRoot ?? join(root, 'config')
+    mkdirSync(configRoot, { recursive: true })
     mkdirSync(join(root, 'state'), { recursive: true })
     for (const cwd of Object.values(spec.agents)) {
       mkdirSync(cwd, { recursive: true })
     }
-    return await this.#launch(ctx, spec, root)
+    return await this.#launch(ctx, spec, root, configRoot)
   }
 
   async #launch(
     ctx: ScenarioContext,
     spec: NodeSpec,
     root: string,
+    configRoot: string,
   ): Promise<LocalNodeHandle> {
     const port = await ctx.allocPort()
-    const configRoot = join(root, 'config')
     // 时间线放**配置根里面**（而不是旁边的 state/）：驱动接口只暴露
     // `readNodeFile(node, relPath)`，真机腿也只能读到配置根下的东西。放在外面
     // 就成了本地专有的观测面，场景一用它就再也搬不到真机上了。
@@ -237,7 +240,14 @@ export class LocalDriver implements AcceptanceDriver {
         await proc.stop()
         // 端口要真的放开，否则新进程会静默绑到同一个口上（Bun 不报错）。
         await sleep(300)
-        return await this.#launch(ctx, { ...spec, ...overrides }, root)
+        // **配置根原样带过去**，不重新按 overrides 解析：它是身份密钥与审计链
+        // 的锚，换一个就不是「重启」而是「另起一个节点」。
+        return await this.#launch(
+          ctx,
+          { ...spec, ...overrides },
+          root,
+          configRoot,
+        )
       },
     }
     return handle
@@ -447,7 +457,7 @@ export class LocalDriver implements AcceptanceDriver {
           argv,
           env: {
             OCC_IDENTITY: 'qianmo',
-            OCC_CONFIG_DIR: configDir,
+            OCC_CONFIG_DIR: opts?.configDir ?? configDir,
             QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
             ...(opts?.env ?? {}),
           },
@@ -455,6 +465,19 @@ export class LocalDriver implements AcceptanceDriver {
             ? {}
             : { timeoutMs: opts.timeoutMs }),
         }),
+      run: async (argv, opts) => {
+        const child = Bun.spawnSync([...argv], {
+          cwd: workdir,
+          env: { ...process.env, ...opts?.env },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        return {
+          code: child.exitCode ?? -1,
+          stdout: child.stdout.toString(),
+          stderr: child.stderr.toString(),
+        }
+      },
       writeFile: async (relPath, content) => {
         const abs = join(workdir, relPath)
         mkdirSync(dirname(abs), { recursive: true })
@@ -465,6 +488,18 @@ export class LocalDriver implements AcceptanceDriver {
         const abs = join(workdir, relPath)
         mkdirSync(abs, { recursive: true })
         return abs
+      },
+      readFile: async pathOrRelPath => {
+        try {
+          return readFileSync(
+            isAbsolute(pathOrRelPath)
+              ? pathOrRelPath
+              : join(workdir, pathOrRelPath),
+            'utf8',
+          )
+        } catch {
+          return undefined
+        }
       },
       freePort: async () => await ctx.allocPort(),
     }
