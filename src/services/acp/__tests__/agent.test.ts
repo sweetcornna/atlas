@@ -1720,9 +1720,11 @@ describe('AcpAgent', () => {
       // and in particular must not have moved the process onto its own
       // session, which is what the first turn's transcript writes depend on.
       expect(order).toEqual([`start:${first.sessionId}`])
-      expect(mockSwitchSession.mock.calls.map(call => call[0])).toEqual([
+      expect(mockSwitchSession).toHaveBeenCalledTimes(1)
+      expect(mockSwitchSession).toHaveBeenCalledWith(
         first.sessionId,
-      ])
+        expect.any(String),
+      )
 
       releaseFirst()
       await Promise.all([firstTurn, secondTurn])
