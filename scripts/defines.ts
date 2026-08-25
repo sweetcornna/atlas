@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,6 +20,20 @@ const ISSUES_URL = 'https://github.com/sweetcornna/open-claude-code/issues'
  * build config's module graph.
  */
 const UNKNOWN_SOURCE_COMMIT = 'unknown'
+
+/**
+ * How a build with no usable git metadata can still be told what it is.
+ *
+ * The fleet's own deployment path needs it: `demo/env/bootstrap.sh` runs
+ * `bun run build` inside `~/atlas-beta/`, and that tree arrives as a plain
+ * directory copy — no `.git`, so git has nothing to answer with and the
+ * artifact would report `unknown` on exactly the machines issue #70 is about.
+ *
+ * Consulted only when git cannot answer, never as an override: where the tree
+ * *is* the repository, the repository is the truth and an exported variable
+ * left over from an earlier shell must not be able to relabel it.
+ */
+const SOURCE_COMMIT_ENV_VAR = 'OCC_SOURCE_COMMIT'
 
 /**
  * `git <args>` run in `cwd`, or `null` if git could not answer.
@@ -55,8 +69,12 @@ let cachedSourceCommit: string | undefined
  * miniature. Untracked files count too: an unstaged `.ts` under `src/` is
  * compiled into the bundle exactly like a tracked one.
  *
- * Conservative in one more place: if HEAD resolves but `git status` does not,
- * the result is marked dirty. "Cannot tell" must never render as "clean".
+ * Conservative in two more places: if HEAD resolves but `git status` does not,
+ * the result is marked dirty — "cannot tell" must never render as "clean"; and
+ * the repository git finds has to *be* this tree, not an ancestor of it.
+ *
+ * With no usable repository the answer comes from `OCC_SOURCE_COMMIT` if the
+ * operator supplied one, and otherwise is `'unknown'`.
  *
  * Memoized for the repo root because both callers (`scripts/dev.ts`,
  * `vite.config.ts`) may ask more than once per process and each miss costs two
@@ -74,10 +92,35 @@ export function resolveSourceCommit(cwd: string = repoRoot): string {
 }
 
 function measureSourceCommit(cwd: string): string {
-  const head = gitOutput(['rev-parse', 'HEAD'], cwd)
-  if (!head) return UNKNOWN_SOURCE_COMMIT
+  // One subprocess for both facts, in this order: rev-parse prints its
+  // arguments' answers left to right.
+  const [toplevel, head] = (
+    gitOutput(['rev-parse', '--show-toplevel', 'HEAD'], cwd) ?? ''
+  ).split('\n')
+  // `rev-parse` walks *up* until it finds a repository. A deployment tree
+  // copied into a home directory that happens to be a dotfiles repo would
+  // otherwise be stamped with that repo's HEAD — a confident, wrong answer,
+  // which is worse than `unknown` and is the same failure shape as the issue
+  // this field exists to close. So the repository has to be this tree itself.
+  if (!head || !toplevel || !isSamePath(toplevel, cwd)) {
+    return sourceCommitFromEnvironment() ?? UNKNOWN_SOURCE_COMMIT
+  }
   const status = gitOutput(['status', '--porcelain'], cwd)
   return status === null || status.length > 0 ? `${head}-dirty` : head
+}
+
+/** Compared through realpath: /tmp vs /private/tmp is the same tree on macOS. */
+function isSamePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
+function sourceCommitFromEnvironment(): string | null {
+  const raw = process.env[SOURCE_COMMIT_ENV_VAR]?.trim()
+  return raw ? raw : null
 }
 
 /**

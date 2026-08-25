@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -143,6 +143,41 @@ describe('resolveSourceCommit', () => {
     git(dir, 'init', '--quiet')
 
     expect(resolveSourceCommit(dir)).toBe('unknown')
+  })
+
+  test('a tree nested inside an unrelated repository is not stamped with it', () => {
+    // `git rev-parse` walks up. A deployment tree unpacked into a home
+    // directory that happens to be a dotfiles repo would otherwise be labelled
+    // with that repo's HEAD — confidently, and wrongly.
+    const outer = committedRepo()
+    const inner = join(outer, 'unpacked')
+    mkdirSync(inner)
+
+    expect(resolveSourceCommit(inner)).toBe('unknown')
+  })
+})
+
+describe('resolveSourceCommit and OCC_SOURCE_COMMIT', () => {
+  afterEach(() => {
+    delete process.env.OCC_SOURCE_COMMIT
+  })
+
+  test('supplies the answer when there is no repository', () => {
+    process.env.OCC_SOURCE_COMMIT = 'c'.repeat(40)
+
+    expect(resolveSourceCommit(scratch())).toBe('c'.repeat(40))
+  })
+
+  test('does not override a repository that can answer for itself', () => {
+    process.env.OCC_SOURCE_COMMIT = 'c'.repeat(40)
+
+    expect(resolveSourceCommit(committedRepo())).not.toBe('c'.repeat(40))
+  })
+
+  test('blank is not an answer', () => {
+    process.env.OCC_SOURCE_COMMIT = '   '
+
+    expect(resolveSourceCommit(scratch())).toBe('unknown')
   })
 })
 
