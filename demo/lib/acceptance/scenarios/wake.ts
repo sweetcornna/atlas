@@ -22,11 +22,9 @@
  *    复用同一个 token，撞的才是能力层 nonce，回 `E_CAP_INVALID`。
  */
 
-import { join } from 'node:path'
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { mint, newIssuer, sendEnvelope } from '../local/send.js'
-import { runCli } from '../local/spawn.js'
 import { readMailbox, waitForMailbox } from '../observe.js'
 import type { Scenario } from '../types.js'
 import {
@@ -228,11 +226,15 @@ export const wakeScenarios: readonly Scenario[] = [
     timeoutMs: 120_000,
     async run(ctx) {
       const node = await startNodeTrusting(ctx, newParty(), { policy: 'open' })
-      const result = await runCli({
-        argv: [
+      // 发起方跑在**节点那台机器上**、用那台机器上部署好的二进制，所以拨的是
+      // `hostEndpoint`。此前这里调本地 `runCli`：那让 `exec-node-cli` 这条
+      // `requires` 在真机腿上什么都没保证（issue #61 的形状）。
+      const host = await ctx.driver.execHost(ctx, { sameMachineAs: node })
+      const result = await host.exec(
+        [
           'resident-wake',
           '--url',
-          node.endpoint,
+          node.hostEndpoint,
           '--from',
           SENDER,
           '--to',
@@ -242,13 +244,11 @@ export const wakeScenarios: readonly Scenario[] = [
           '--timeout-ms',
           '30000',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'wake-sender'),
-          QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+        {
+          env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+          timeoutMs: 60_000,
         },
-        timeoutMs: 60_000,
-      })
+      )
       let parsed: Record<string, unknown> | undefined
       try {
         parsed = JSON.parse(result.stdout.trim()) as Record<string, unknown>
@@ -256,6 +256,7 @@ export const wakeScenarios: readonly Scenario[] = [
         parsed = undefined
       }
       return new Checks()
+        .note('执行位置', host.describe)
         .note('stdout', result.stdout)
         .note('stderr', result.stderr.slice(0, 1_500))
         .eq(result.code, 0, '退出码')

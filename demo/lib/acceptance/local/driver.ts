@@ -21,6 +21,7 @@
  */
 
 import {
+  chmodSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -210,6 +211,8 @@ export class LocalDriver implements AcceptanceDriver {
       name: spec.name,
       spec,
       endpoint,
+      // 本地腿上「从 runner 拨」与「从节点自己那台机器拨」是同一件事。
+      hostEndpoint: endpoint,
       port,
       root,
       configRoot,
@@ -240,7 +243,7 @@ export class LocalDriver implements AcceptanceDriver {
     return await (node as LocalNodeHandle).restart(overrides)
   }
 
-  /** 本地专有：SIGKILL，用来制造「上一条命是被打断的」那种现场。 */
+  /** SIGKILL，用来制造「上一条命是被打断的」那种现场。 */
   async killNode(node: NodeHandle): Promise<void> {
     const local = node as LocalNodeHandle
     process.kill(local.process.pid, 'SIGKILL')
@@ -272,6 +275,25 @@ export class LocalDriver implements AcceptanceDriver {
     } catch {
       return undefined
     }
+  }
+
+  async writeNodeFile(
+    node: NodeHandle,
+    relPath: string,
+    content: string,
+  ): Promise<string> {
+    const abs = join(node.configRoot, relPath)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, content)
+    return abs
+  }
+
+  async setNodePathMode(
+    node: NodeHandle,
+    relPath: string,
+    mode: string,
+  ): Promise<void> {
+    chmodSync(join(node.configRoot, relPath), Number.parseInt(mode, 8))
   }
 
   async listNodeDir(

@@ -19,8 +19,6 @@
  * 这个边界时套件立刻出声。
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { Checks } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { sendEnvelope } from '../local/send.js'
@@ -92,9 +90,16 @@ export const auditScenarios: readonly Scenario[] = [
     timeoutMs: 90_000,
     async run(ctx) {
       const node = await startNodeTrusting(ctx, newParty(), { policy: 'open' })
-      const missing = join(ctx.workdir, 'no-such-trail.ndjson')
-      const emptyPath = join(ctx.workdir, 'empty-trail.ndjson')
-      writeFileSync(emptyPath, '')
+      // 两条路径都必须落在**跑 `qm audit --verify` 的那台机器**上：`execNode`
+      // 在真机腿上是一次 ssh，runner 侧的临时目录在那边根本不存在，指过去
+      // 得到的是「absent」——那正好是这条场景的一半期望，于是它会**因为错误的
+      // 理由变绿**。经 `writeNodeFile` 就没有这个歧义。
+      const missing = `${node.configRoot}/no-such-trail.ndjson`
+      const emptyPath = await ctx.driver.writeNodeFile(
+        node,
+        'empty-trail.ndjson',
+        '',
+      )
 
       const absent = await auditVerify(ctx.driver, node, missing)
       const empty = await auditVerify(ctx.driver, node, emptyPath)
@@ -135,13 +140,11 @@ export const auditScenarios: readonly Scenario[] = [
       await seedTrail(ctx, node, 4)
       await ctx.driver.stopNode(node)
 
-      // 直接改盘上的那一行。这里用 node:fs 而不是驱动接口，是因为**写**不在
-      // 驱动的能力表里（真机腿只读），这条场景也因此只在本地腿有意义 ——
-      // `requires` 里的 `spawn-node` 已经把它挡在真机腿之外。
-      const trailFile = join(node.configRoot, TRAIL_PATH)
-      const lines = readFileSync(trailFile, 'utf8')
-        .split('\n')
-        .filter(l => l !== '')
+      // 直接改盘上的那一行。读写都经驱动 —— 真机腿上的一次性节点在另一台
+      // 机器上，`node:fs` 在那里写的是 runner 自己的一条不存在的路径，而
+      // 「链没被改动」和「链被改动了但改在别处」在断言里长得完全一样。
+      const trailText = await ctx.driver.readNodeFile(node, TRAIL_PATH)
+      const lines = (trailText ?? '').split('\n').filter(l => l !== '')
       if (lines.length < 3) {
         return new Checks()
           .note('链内容', lines.join('\n'))
@@ -155,7 +158,7 @@ export const auditScenarios: readonly Scenario[] = [
       const before = JSON.stringify(target)
       target.outcome = target.outcome === 'ok' ? 'refused' : 'ok'
       lines[targetIndex] = JSON.stringify(target)
-      writeFileSync(trailFile, `${lines.join('\n')}\n`)
+      await ctx.driver.writeNodeFile(node, TRAIL_PATH, `${lines.join('\n')}\n`)
 
       const verify = await auditVerify(ctx.driver, node)
       const broken =
@@ -204,11 +207,10 @@ export const auditScenarios: readonly Scenario[] = [
       await seedTrail(ctx, node, 3)
       await ctx.driver.stopNode(node)
 
-      const trailFile = join(node.configRoot, TRAIL_PATH)
-      const text = readFileSync(trailFile, 'utf8')
+      const text = (await ctx.driver.readNodeFile(node, TRAIL_PATH)) ?? ''
       // 砍掉最后一条记录的后半截，模拟一次写到一半的崩溃。
       const cut = text.slice(0, Math.max(1, text.length - 40))
-      writeFileSync(trailFile, cut)
+      await ctx.driver.writeNodeFile(node, TRAIL_PATH, cut)
 
       const verify = await auditVerify(ctx.driver, node)
       return new Checks()
@@ -239,7 +241,6 @@ export const auditScenarios: readonly Scenario[] = [
       await seedTrail(ctx, node, 3)
       await ctx.driver.stopNode(node)
 
-      const trailFile = join(node.configRoot, TRAIL_PATH)
       const records = (await readTrail(ctx.driver, node)).map(r => ({ ...r }))
       if (records.length < 2) {
         return new Checks().skip(
@@ -277,8 +278,9 @@ export const auditScenarios: readonly Scenario[] = [
         if (prev === undefined || cur === undefined) continue
         cur.prev = digest(prev)
       }
-      writeFileSync(
-        trailFile,
+      await ctx.driver.writeNodeFile(
+        node,
+        TRAIL_PATH,
         `${mutable.map(r => JSON.stringify(r)).join('\n')}\n`,
       )
 

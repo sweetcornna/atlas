@@ -98,7 +98,14 @@ export type DriverCapability =
    * 那条腿一条 `raw-dial` 场景都没跑过，数据面零覆盖。
    */
   | 'attach-node'
-  /** 能按任意参数起一个全新常驻节点（本地有，真机没有）。 */
+  /**
+   * 能按任意参数起一个全新常驻节点。
+   *
+   * 真机腿上这**不是**「重起那台内测节点」—— 那件事仍然禁止。它是「在一台
+   * 舰队机器上，用那台机器上部署好的二进制，在一次性配置根里起一个属于本场景
+   * 的节点，跑完杀掉并 `rm -rf`」。被测对象因此是**部署的产物 + 真机的内核与
+   * 架构**，而配置根是场景自己挑的 —— 断言不必去赌部署配置。
+   */
   | 'spawn-node'
   /**
    * 能按任意参数起一个全新控制台进程 **并直连它的 HTTP 面**（本地有，真机没有）。
@@ -108,7 +115,12 @@ export type DriverCapability =
    * 在真机上两头都不成立。合并成一个能力会让真机腿的 skip 理由说不清是哪一半。
    */
   | 'spawn-console'
-  /** 能重启一个已有节点（本地有；真机需 `--allow-restart`）。 */
+  /**
+   * 能重启一个已有节点（配置根原样保留）。
+   *
+   * 两条腿都只对**自己起的**节点成立。真机腿附着来的那台内测节点永远不许重启：
+   * 那会打断内测使用者，并在它的审计链上留下一次计划外中断。
+   */
   | 'restart-node'
   /** 能改节点的环境变量 / 凭据文件后重启。 */
   | 'mutate-node-env'
@@ -263,6 +275,20 @@ export interface NodeSpec {
   readonly env?: Readonly<Record<string, string>>
   /** 额外 CLI 参数，给场景开后门用，慎用。 */
   readonly extraArgs?: readonly string[]
+  /**
+   * 只要**一台活着的节点**，配置怎样都行 —— 与 `attach-node` 能力配对的那个信号。
+   *
+   * 驱动看不到场景的 `requires`，所以「我需要一台现成的节点」这件事必须由
+   * 规格自己说出来。真机驱动据此分岔：置了就**附着到部署好的那台**（错 PSK
+   * 被拒这类场景的材料全在发起方手里，节点配置不影响判定，而打生产节点正是
+   * 这条腿的意义）；不置就在一台舰队机器上起一个**一次性节点**。
+   *
+   * 本地驱动一律照常起新节点 —— 那边「现成的节点」和「新起的节点」没有区别。
+   *
+   * **不要为了让真机腿跑得快而给普通场景置上它**：附着来的节点是内测在用的
+   * 那台，它的 policy / trust / 审计链都不是场景挑的，断言会变成在赌部署配置。
+   */
+  readonly attach?: boolean
 }
 
 export type AuthSpec =
@@ -276,6 +302,15 @@ export interface NodeHandle {
   readonly spec: NodeSpec
   /** 传输层监听地址，形如 `ws://127.0.0.1:38625`（真机是隧道后的地址）。 */
   readonly endpoint: string
+  /**
+   * 从**节点自己那台机器**上拨它的地址。本地腿与 {@link endpoint} 相同。
+   *
+   * 真机腿上两者不同，而且差别是承重的：`endpoint` 是 runner 这侧隧道口，
+   * 只有 runner 拨得通；节点机器上的 `qm resident-wake` 要拨的是它自己的
+   * 回环口。把 `endpoint` 交给 {@link AcceptanceDriver.execHost} 上跑的命令，
+   * 表现是连不上 —— 而那条红读起来像投递链路坏了。
+   */
+  readonly hostEndpoint: string
   /** 节点配置根（`.../config/qianmo`），审计链与身份都在它下面。 */
   readonly configRoot: string
   /** 进程 stderr 的累计内容（本地驱动实时收集，真机驱动按需拉取）。 */
@@ -346,6 +381,22 @@ export interface ExecHost {
    * 用它的场景要么根本不 bind（解析期就该被拒），要么正好要一个拨不通的口。
    */
   freePort(): Promise<number>
+}
+
+/**
+ * 在哪台机器上开这个一次性执行位置。
+ *
+ * 不给就由驱动挑（真机驱动在舰队里轮转，本地驱动只有一台机器）。
+ */
+export interface ExecHostWhere {
+  /**
+   * 与这个节点句柄**同一台机器**。
+   *
+   * 给它的场景都是「命令要拨到这个节点」的那一类（`qm resident-wake`）——
+   * 那种命令必须和节点落在同一台机器上，然后拨 {@link NodeHandle.hostEndpoint}。
+   * 落在别处就得穿隧道，而隧道只在 runner 那一侧存在。
+   */
+  readonly sameMachineAs?: NodeHandle
 }
 
 /** 原始拨号的结果 —— 帧级探针要看的全部东西。 */
@@ -433,8 +484,44 @@ export interface AcceptanceDriver {
   ): Promise<DialProbe>
   /** 读节点上的文件，不存在返回 undefined（**不要**抛，「不存在」是一种观察）。 */
   readNodeFile(node: NodeHandle, relPath: string): Promise<string | undefined>
+  /**
+   * 往节点配置根下写一个文件（整份覆盖），返回它**在目标机上**的绝对路径。
+   *
+   * 存在的理由是审计维度那三条篡改场景：它们要在盘上改掉一行再让
+   * `qm audit --verify` 去发现。此前它们直接 `node:fs` 写 `node.configRoot`，
+   * 而那条路径在真机腿上属于另一台机器 —— 于是它们只能靠 `requires` 里的
+   * `spawn-node` 把自己挡在真机腿之外。挡不住的那一天就是下一次 issue #61。
+   *
+   * **写只对自己起的节点开放。** 附着来的内测节点上，驱动必须拒绝 —— 往生产
+   * 配置根里写东西没有任何验收价值，只会污染那条链。
+   */
+  writeNodeFile(
+    node: NodeHandle,
+    relPath: string,
+    content: string,
+  ): Promise<string>
+  /**
+   * 改节点配置根下某个路径的权限位（八进制串，如 `'500'`）。
+   *
+   * 只有一条场景要它（把信箱目录设成可进不可写，看投递会不会如实报
+   * `E_UNDELIVERABLE`）。窄接口是刻意的：一个「在节点机器上跑任意命令」的
+   * 出口会让场景绕开能力表，而能力表是这套件唯一的诚实机制。
+   */
+  setNodePathMode(
+    node: NodeHandle,
+    relPath: string,
+    mode: string,
+  ): Promise<void>
   /** 列目录，不存在返回 undefined。 */
   listNodeDir(node: NodeHandle, relPath: string): Promise<string[] | undefined>
+  /**
+   * SIGKILL 掉一个节点 —— 制造「上一条命是被打断的」那种现场。
+   *
+   * 在接口上而不是只在本地驱动上，是因为 `recovery/lifecycle-records-hard-kill`
+   * 此前把 `ctx.driver` 强转成 `LocalDriver` 去够它：那条转换在真机腿上会变成
+   * 一次 `TypeError`，而 `requires` 里没有任何东西拦得住。
+   */
+  killNode(node: NodeHandle): Promise<void>
   /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
   /**
@@ -446,9 +533,9 @@ export interface AcceptanceDriver {
    * 在目标机上开一个**一次性**的 CLI 执行位置。
    *
    * 清理登记在 `ctx.cleanup` 上，runner 在 `finally` 里跑（超时也会跑）。
-   * `nodeName` 只用来在舰队里挑一台机器；本地驱动忽略它。
+   * `where` 只用来在舰队里挑一台机器；本地驱动忽略它。
    */
-  execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost>
+  execHost(ctx: ScenarioContext, where?: ExecHostWhere): Promise<ExecHost>
 }
 
 /**
