@@ -67,7 +67,11 @@
  */
 
 import type {
+  AcceptanceConsole,
   AcceptanceDriver,
+  AcceptanceRegistry,
+  ConsoleSlot,
+  ConsoleSpec,
   DialOptions,
   DialProbe,
   DriverCapability,
@@ -78,8 +82,15 @@ import type {
   MirrorTransportUnit,
   NodeHandle,
   NodeSpec,
+  RegistrySpec,
   ScenarioContext,
 } from '../types.js'
+import {
+  consoleLaunch,
+  http,
+  startRegistry,
+  tokensFromBanner,
+} from '../local/console.js'
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK, TIMINGS_FILE } from '../local/driver.js'
 import { TRAIL_PATH } from '../observe.js'
@@ -292,6 +303,8 @@ export class FleetDriver implements AcceptanceDriver {
   #spawnCursor = 0
   /** `ssh <目标> echo $HOME` 的结果缓存（p12 是 /root，其余是 /home/cornna）。 */
   readonly #homes = new Map<string, Promise<string>>()
+  /** 场景 → 它的落机。见 {@link FleetDriver.#machineFor}。 */
+  readonly #machines = new WeakMap<ScenarioContext, SpawnMachine>()
 
   constructor(config: FleetConfig) {
     this.#config = config
@@ -306,7 +319,7 @@ export class FleetDriver implements AcceptanceDriver {
     ]
     if (config.consoleHost !== undefined) caps.push('mirror-transport')
     if (config.spawnMachines.length > 0) {
-      caps.push('spawn-node', 'restart-node')
+      caps.push('spawn-node', 'restart-node', 'spawn-console')
     }
     this.capabilities = new Set(caps)
   }
@@ -369,11 +382,7 @@ export class FleetDriver implements AcceptanceDriver {
    *    真实存在，何况这里还多一层隧道预热。
    */
   async #spawn(ctx: ScenarioContext, spec: NodeSpec): Promise<NodeHandle> {
-    const machines = this.#config.spawnMachines
-    const machine = machines[this.#spawnCursor++ % machines.length]
-    if (machine === undefined) {
-      throw new Error('没有可承载一次性进程的舰队机器')
-    }
+    const machine = await this.#machineFor(ctx)
     const home = await this.#homeOf(machine.ssh)
     const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
     const root = await this.#scratch(ctx, machine.ssh)
@@ -779,10 +788,21 @@ export class FleetDriver implements AcceptanceDriver {
     }
 
     const root = await this.#scratch(ctx, ssh)
-    const configDir = `${root}/config`
-    const workdir = `${root}/work`
-    return {
+    return this.#execHostOn(ssh, occPath, `${root}/config`, `${root}/work`, {
       describe,
+    })
+  }
+
+  /** 把「在某台机器的某个配置根下跑 `qm`」包成一个 {@link ExecHost}。 */
+  #execHostOn(
+    ssh: string,
+    occPath: string,
+    configDir: string,
+    workdir: string,
+    meta: { readonly describe: string },
+  ): ExecHost {
+    return {
+      describe: meta.describe,
       configDir,
       workdir,
       exec: async (argv, opts) => {
@@ -824,6 +844,248 @@ export class FleetDriver implements AcceptanceDriver {
         return abs
       },
       freePort: async () => await this.#freePortOn(ssh),
+    }
+  }
+
+  /**
+   * 一次性注册中心 —— **跑在 runner 进程里**，靠一条**反向**隧道让远端的控制台
+   * 够得着。
+   *
+   * ## 为什么不在目标机上起一个
+   *
+   * 产品里**没有** `qm registry` 这条子命令；注册中心只经
+   * `demo/lib/p81-registry.ts` 暴露，而那个脚本对本维度差两件事：`--register`
+   * 至少要一条（于是名册里永远多一条会被周期性续租的登记，`租约到期即消失`
+   * 那条当场证伪），以及没有 `--ttl`（那条场景要 3 s 的 TTL，默认 90 s 两轮
+   * 等下来超过它自己的超时）。改那个脚本没用 —— 部署机上是**旧的那一份**。
+   *
+   * ## 那么真机腿的 `console/*` 到底测的是什么（不要含糊过去）
+   *
+   * 测的是**部署机上那个 `dist/cli-node.js console`**：它的命令行、banner、
+   * token 三个入口、鉴权矩阵、`/v0/limits` 报的常量、唤醒白名单与签名唤醒的
+   * 整条链路，全部在真机的内核与架构上跑。注册中心那一半仍是套件进程里的
+   * `@qianmo/registry`（与本地腿同一份代码，同一个提交），只是隔着一条隧道。
+   * 于是 `console/registry-lease-*` 两条在真机腿上**多验的是控制台那半边的
+   * 代理**，租约语义那半边与本地腿等价 —— 这一点写在这里，免得报告把它读成
+   * 「注册中心也在真机上验过了」。
+   */
+  async startRegistry(
+    ctx: ScenarioContext,
+    spec: RegistrySpec = {},
+  ): Promise<AcceptanceRegistry> {
+    const local = await startRegistry(ctx, spec)
+    const machine = await this.#machineFor(ctx)
+    const localPort = Number.parseInt(new URL(local.url).port, 10)
+    const remotePort = await this.#freePortOn(machine.ssh)
+    await this.#reverseTunnel(ctx, machine.ssh, remotePort, localPort)
+    return {
+      url: local.url,
+      hostUrl: `http://127.0.0.1:${String(remotePort)}`,
+      readState: local.readState,
+    }
+  }
+
+  /**
+   * 一次性控制台位：一次性根 + 一个 `start`，都落在本场景那台机器上。
+   *
+   * 与节点同机是**承重的**：控制台要按 `--wake-url` 拨到那个节点，而节点听
+   * 在它自己的回环上。见 {@link FleetDriver.#machineFor}。
+   */
+  async consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot> {
+    const machine = await this.#machineFor(ctx)
+    const home = await this.#homeOf(machine.ssh)
+    const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
+    const root = await this.#scratch(ctx, machine.ssh)
+    const configDir = `${root}/config`
+    const workdir = `${root}/work`
+    const base = this.#execHostOn(machine.ssh, occPath, configDir, workdir, {
+      describe: `${machine.label} (一次性控制台)`,
+    })
+    return {
+      ...base,
+      start: async spec =>
+        await this.#startConsole(ctx, machine, occPath, root, spec),
+    }
+  }
+
+  async #startConsole(
+    ctx: ScenarioContext,
+    machine: SpawnMachine,
+    occPath: string,
+    root: string,
+    spec: ConsoleSpec,
+  ): Promise<AcceptanceConsole> {
+    const configDir = `${root}/config`
+    const remotePort = await this.#freePortOn(machine.ssh)
+    const { argv, env: extraEnv } = consoleLaunch(spec, remotePort)
+    const env: Record<string, string> = {
+      OCC_IDENTITY: 'qianmo',
+      OCC_CONFIG_DIR: configDir,
+      ...extraEnv,
+    }
+    const envPrefix = Object.entries(env)
+      .map(([k, v]) => `${k}='${shellQuote(v)}' `)
+      .join('')
+    const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
+    const outLog = `${root}/console.out.log`
+    const errLog = `${root}/console.err.log`
+    const pidFile = `${root}/console.pid`
+
+    await this.#ssh(
+      machine.ssh,
+      [
+        `set -e`,
+        `: > '${shellQuote(outLog)}'`,
+        `: > '${shellQuote(errLog)}'`,
+        `PATH="$HOME/.bun/bin:$PATH" ${envPrefix}setsid bun '${shellQuote(occPath)}' ${quoted} ` +
+          `>'${shellQuote(outLog)}' 2>'${shellQuote(errLog)}' </dev/null &`,
+        `p=$!`,
+        `printf '%s\\n' "$p" > '${shellQuote(pidFile)}'`,
+        // banner 里带着两枚 token，所以判据是 `admin-token` 那一行落地 ——
+        // 与本地腿同一条。轮询放在远端，理由同一次性节点那里。
+        `for _ in $(seq 1 120); do`,
+        `  if grep -q 'admin-token' '${shellQuote(outLog)}'; then break; fi`,
+        `  if ! kill -0 "$p" 2>/dev/null; then break; fi`,
+        `  sleep 0.5`,
+        `done`,
+      ],
+      120_000,
+    )
+    ctx.cleanup(async () => {
+      await this.#killByPidFile(machine.ssh, pidFile)
+    })
+
+    const readOut = async (): Promise<string> =>
+      (
+        await this.#ssh(machine.ssh, [
+          `cat '${shellQuote(outLog)}' 2>/dev/null || true`,
+        ])
+      ).stdout
+    const readErr = async (): Promise<string> =>
+      (
+        await this.#ssh(machine.ssh, [
+          `cat '${shellQuote(errLog)}' 2>/dev/null || true`,
+        ])
+      ).stdout
+
+    const banner = await readOut()
+    if (!banner.includes('admin-token')) {
+      throw new Error(
+        `一次性控制台在 ${machine.label} 上没有起来\n` +
+          `stdout:\n${banner}\nstderr:\n${(await readErr()).slice(0, 1_500)}`,
+      )
+    }
+
+    const localPort = await this.#tunnel(ctx, machine.ssh, remotePort)
+    const url = `http://127.0.0.1:${String(localPort)}`
+    // 就绪判据是 `GET /v0/health` 答 200 —— 公开、零鉴权，`systemctl --user
+    // is-active` 对这两个单元都不可信（`Type=oneshot` + 只 enable 不 start，
+    // 实测进程活着而单元报 inactive）。这里同时也在等隧道预热。
+    const deadline = Date.now() + 60_000
+    for (;;) {
+      if ((await http(`${url}/v0/health`, { timeoutMs: 5_000 })).status === 200)
+        break
+      if (ctx.signal.aborted || Date.now() >= deadline) {
+        throw new Error(
+          `一次性控制台在 ${machine.label} 上起来了但 /v0/health 不答 200 ` +
+            `(${url} → ${machine.ssh}:${String(remotePort)})\n` +
+            `stderr:\n${(await readErr()).slice(0, 1_500)}`,
+        )
+      }
+      await sleep(400)
+    }
+
+    const { viewToken, adminToken } = tokensFromBanner(banner, spec)
+    return {
+      url,
+      viewToken,
+      adminToken,
+      configRoot: configDir,
+      banner: readOut,
+      stderr: readErr,
+    }
+  }
+
+  async #killByPidFile(ssh: string, pidFile: string): Promise<void> {
+    await this.#ssh(ssh, [
+      `p="$(cat '${shellQuote(pidFile)}' 2>/dev/null || echo)"`,
+      `[ -n "$p" ] || exit 0`,
+      `kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
+      `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
+      `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
+    ])
+  }
+
+  /**
+   * 本场景的**落机**：第一次要机器的时候按轮转挑一台，之后同一场景一律用它。
+   *
+   * 钉在场景上而不是每次现挑，是因为一次性进程之间要互相够得着：控制台按
+   * `--wake-url` 拨节点、拨的是节点自己那台机器的回环口。分散到两台机器上，
+   * 唤醒维度那几条会以「拨不通」的形态红 —— 而那条红读起来像产品坏了。
+   *
+   * 轮转仍在（键是场景），所以整轮下来四台机器都覆盖得到。
+   */
+  async #machineFor(ctx: ScenarioContext): Promise<SpawnMachine> {
+    const pinned = this.#machines.get(ctx)
+    if (pinned !== undefined) return pinned
+    const machines = this.#config.spawnMachines
+    const machine = machines[this.#spawnCursor++ % machines.length]
+    if (machine === undefined) {
+      throw new Error('没有可承载一次性进程的舰队机器')
+    }
+    this.#machines.set(ctx, machine)
+    return machine
+  }
+
+  /**
+   * 从目标机回到 runner 的一条端口转发（`ssh -R`）。
+   *
+   * 注册中心跑在 runner 上，而控制台在目标机上 —— 没有它那条 `--registry`
+   * 指的就是目标机自己的一个空端口。
+   */
+  async #reverseTunnel(
+    ctx: ScenarioContext,
+    ssh: string,
+    remotePort: number,
+    localPort: number,
+  ): Promise<void> {
+    const child = Bun.spawn(
+      [
+        'ssh',
+        '-N',
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ExitOnForwardFailure=yes',
+        '-o',
+        'ServerAliveInterval=15',
+        ...(this.#config.sshArgs ?? []),
+        '-R',
+        `${String(remotePort)}:127.0.0.1:${String(localPort)}`,
+        ssh,
+      ],
+      { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+    )
+    void drain(child.stdout)
+    void drain(child.stderr)
+    ctx.cleanup(() => {
+      child.kill('SIGKILL')
+    })
+    // 反向隧道要等它真的通：控制台一起来就会去打注册中心，早一步起等于让
+    // 它在第一次请求上拿到 ECONNREFUSED。这里用一次远端 curl 确认。
+    const deadline = Date.now() + 30_000
+    for (;;) {
+      const probe = await this.#ssh(ssh, [
+        `curl -s -o /dev/null -w '%{http_code}' -m 3 ` +
+          `http://127.0.0.1:${String(remotePort)}/v0/agents 2>/dev/null || echo 000`,
+      ])
+      if (/[1-5]\d\d/.test(probe.stdout.trim())) return
+      if (ctx.signal.aborted || Date.now() >= deadline) {
+        throw new Error(
+          `到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 没通：${probe.stdout.trim()}`,
+        )
+      }
+      await sleep(500)
     }
   }
 
@@ -964,7 +1226,14 @@ export class FleetDriver implements AcceptanceDriver {
       // `|| true` 是必须的：grep 一条都没匹配上时退出 1，而「一条申报都没有」
       // 是这条链路的一种**观察**（下面走 skip 分支），不是采集失败。少了它，
       // 「没部署镜像」会被报成「读不到搬运现场」。
-      `ps -eo args | grep -oE -- '--audit(-mirror)? [^ ]+' | sort -u || true`,
+      // `--port` 一起捞：它是下面那次健康检查的地址来源，比写死 38621 稳
+      // （改部署这边不会红，只会开始说谎）。
+      `ps -eo args | grep -oE -- '--(audit(-mirror)?|port) [^ ]+' | sort -u || true`,
+      // 同一趟 ssh 里问一次健康。零额外往返，而它把「一条申报都没有」拆成
+      // 「控制台活着但没配镜像」与「控制台没在跑」两件事。
+      `p="$(ps -eo args | grep -oE -- 'cli-node.js console .*--port [0-9]+' | grep -oE -- '--port [0-9]+' | head -1 | awk '{print $2}')"`,
+      `printf 'console-port=%s\n' "$p"`,
+      `if [ -n "$p" ]; then printf 'console-health=%s\n' "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p/v0/health" 2>/dev/null || echo 000)"; fi`,
     ])
     if (declared.code !== 0) {
       return {
@@ -1056,7 +1325,15 @@ export class FleetDriver implements AcceptanceDriver {
         raw: `${probe.stdout}\n${authority.stdout}`.trim(),
       })
     }
-    return { consoleHost, units }
+    return {
+      consoleHost,
+      units,
+      ...pick('consolePort', intField(declared.stdout, 'console-port')),
+      ...pick(
+        'consoleHealthStatus',
+        intField(declared.stdout, 'console-health'),
+      ),
+    }
   }
 
   /**

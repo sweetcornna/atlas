@@ -31,6 +31,8 @@ import {
 import { dirname, join } from 'node:path'
 import type {
   AcceptanceDriver,
+  AcceptanceRegistry,
+  ConsoleSlot,
   DialOptions,
   DialProbe,
   DriverCapability,
@@ -38,8 +40,10 @@ import type {
   ExecResult,
   NodeHandle,
   NodeSpec,
+  RegistrySpec,
   ScenarioContext,
 } from '../types.js'
+import { startConsole, startRegistry } from './console.js'
 import { rawDial, type RawAuth } from './dial.js'
 import {
   runCli,
@@ -98,6 +102,8 @@ export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
   readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
+  /** 同一场景里第几个控制台位 —— 见 {@link LocalDriver.consoleSlot}。 */
+  #consoleSeat = 0
 
   async startNode(
     ctx: ScenarioContext,
@@ -325,13 +331,40 @@ export class LocalDriver implements AcceptanceDriver {
    * 本地的一次性执行位置就是场景 workdir 下的两个子目录 —— runner 已经保证
    * 会清理它，所以这里不再另登记 cleanup。
    */
+  async startRegistry(
+    ctx: ScenarioContext,
+    spec: RegistrySpec = {},
+  ): Promise<AcceptanceRegistry> {
+    return await startRegistry(ctx, spec)
+  }
+
+  /**
+   * 本地的控制台位：一层专属目录 + 一个 `start`。
+   *
+   * 每次调用都换一个目录名（`console-0`、`console-1`…），一个场景里起两个
+   * 控制台时两份身份不会互相盖 —— `loadOrCreateNodeKeys` 是 wx 创建、永不
+   * 覆盖，共用一个根会让第二个控制台悄悄用上第一个的唤醒身份。
+   */
+  async consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot> {
+    const seat = `console-${String(this.#consoleSeat++)}`
+    const base = await this.#execHostAt(ctx, seat)
+    return {
+      ...base,
+      start: async spec => await startConsole(ctx, base.configDir, spec),
+    }
+  }
+
   async execHost(ctx: ScenarioContext): Promise<ExecHost> {
-    const configDir = join(ctx.workdir, 'exec-host', 'config')
-    const workdir = join(ctx.workdir, 'exec-host', 'work')
+    return await this.#execHostAt(ctx, 'exec-host')
+  }
+
+  async #execHostAt(ctx: ScenarioContext, seat: string): Promise<ExecHost> {
+    const configDir = join(ctx.workdir, seat, 'config')
+    const workdir = join(ctx.workdir, seat, 'work')
     mkdirSync(configDir, { recursive: true })
     mkdirSync(workdir, { recursive: true })
     return {
-      describe: 'runner (local)',
+      describe: `runner (local, ${seat})`,
       configDir,
       workdir,
       exec: async (argv, opts) =>

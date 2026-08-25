@@ -384,6 +384,86 @@ export interface ExecHost {
 }
 
 /**
+ * 一次性注册中心的启动参数。
+ *
+ * **注册中心不是可选的门面** —— `console/*` 的每条场景都要它：控制台的
+ * `/v0/agents` 是往注册中心的代理，没有它那些断言测的就只是一个 502。
+ */
+export interface RegistrySpec {
+  /** 打开落盘（`FileRegistryStore`）。持久化是 opt-in，与产品一致。 */
+  readonly persist?: boolean
+  /** 租约 TTL；不给就是 `DEFAULT_TTL_MS`。短 TTL 用来测过期。 */
+  readonly ttlMs?: number
+}
+
+/** 一个一次性注册中心。 */
+export interface AcceptanceRegistry {
+  /** **runner 侧**可达的基址 —— 场景自己打它用这个。 */
+  readonly url: string
+  /**
+   * **控制台那台机器上**可达的基址 —— 喂 {@link ConsoleSpec.registryUrl} 用这个。
+   *
+   * 本地腿两者相同。真机腿上控制台在另一台机器上，它拨的是一条反向隧道的
+   * 入口；把 `url` 喂给它等于让那台机器去打它自己的某个端口。
+   */
+  readonly hostUrl: string
+  /**
+   * 落盘文件的内容；没开持久化、或还没落盘，就是 undefined（**不要**抛）。
+   *
+   * 是方法而不是路径，因为「盘在哪台机器上」由驱动决定：场景拿到路径也读不了。
+   */
+  readState(): Promise<string | undefined>
+}
+
+/** 一次性控制台的启动参数（驱动无关的那部分）。 */
+export interface ConsoleSpec {
+  /** 注册中心地址 —— 传 {@link AcceptanceRegistry.hostUrl}。 */
+  readonly registryUrl: string
+  /** `--wake-url <node>=<ws url>`，可多条。URL 要用节点的 `hostEndpoint`。 */
+  readonly wakeTargets?: readonly {
+    readonly node: string
+    readonly url: string
+  }[]
+  readonly signWakes?: boolean
+  /** 每个唤醒目标的 PSK；键是节点名。 */
+  readonly wakePsk?: Readonly<Record<string, string>>
+  /** 显式 token（经环境变量给，与产品的第二优先级入口一致）。 */
+  readonly viewToken?: string
+  readonly adminToken?: string
+  readonly extraArgs?: readonly string[]
+}
+
+/** 一个跑着的一次性控制台。 */
+export interface AcceptanceConsole {
+  /** `http://127.0.0.1:<port>`，**runner 侧**可达，不带 token。 */
+  readonly url: string
+  readonly viewToken: string
+  readonly adminToken: string
+  /** 配置根**在目标机上**的绝对路径。 */
+  readonly configRoot: string
+  /** 启动 banner 原文（stdout）。 */
+  banner(): Promise<string>
+  stderr(): Promise<string>
+}
+
+/**
+ * 一个**还没起**的控制台位：配置根已经开好，进程还没起。
+ *
+ * 两步分开不是为了对称，是因为 `console/wake-sign-round-trip` 必须这么走：
+ * 先用这个配置根跑 `qm console --print-wake-identity` 把公钥印出来（那一步
+ * **不起服务器、不读 token**，正是分发公钥的那一刻），把公钥交给目标节点的
+ * `--trust`，**然后**才带 `--wake-sign` 把控制台起起来。顺序反了会得到
+ * `E_CAP_INVALID: no published public key for issuer console`。
+ *
+ * 它同时是一个 {@link ExecHost}，于是 `--audit <节点>=<路径>` 要的那些文件
+ * 也能落在**控制台那台机器**上 —— 场景 workdir 在 runner 上，真机腿指过去
+ * 是一条不存在的路径。
+ */
+export interface ConsoleSlot extends ExecHost {
+  start(spec: ConsoleSpec): Promise<AcceptanceConsole>
+}
+
+/**
  * 在哪台机器上开这个一次性执行位置。
  *
  * 不给就由驱动挑（真机驱动在舰队里轮转，本地驱动只有一台机器）。
@@ -536,6 +616,17 @@ export interface AcceptanceDriver {
    * `where` 只用来在舰队里挑一台机器；本地驱动忽略它。
    */
   execHost(ctx: ScenarioContext, where?: ExecHostWhere): Promise<ExecHost>
+  /**
+   * 起一个一次性注册中心。清理挂 `ctx.cleanup`。
+   *
+   * 声明了 `spawn-console` 的场景才走得到这里。
+   */
+  startRegistry(
+    ctx: ScenarioContext,
+    spec?: RegistrySpec,
+  ): Promise<AcceptanceRegistry>
+  /** 开一个一次性控制台位（配置根先有，进程后起）。见 {@link ConsoleSlot}。 */
+  consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot>
 }
 
 /**
@@ -586,6 +677,21 @@ export interface MirrorTransportReport {
   readonly units: readonly MirrorTransportUnit[]
   /** 采集本身失败时的原文（此时 `units` 可能是空的）。 */
   readonly failure?: string
+  /**
+   * 那台控制台 `GET /v0/health` 的状态码；探不到端口时 undefined。
+   *
+   * 它把「一条 `--audit` 申报都没有」拆成两件事：health 是 200 就是**控制台
+   * 活着、这套部署确实没配镜像**（该 skip），不是 200 就是**控制台没在跑**
+   * （该 fail）。此前这两者混在一起，于是一台挂掉的控制台会让镜像场景退化成
+   * 一条 skip —— 报告上看起来像「没配」。
+   *
+   * 端口从**同一条 `ps` 行**上读，不写死 38621。`systemctl --user is-active`
+   * 对 console/registry 两个单元都不可信（`Type=oneshot` + 只 enable 不 start，
+   * 实测进程活着而单元报 inactive），别拿它当存活判据。
+   */
+  readonly consoleHealthStatus?: number
+  /** 那台控制台申报的端口（从 `ps` 行读）。 */
+  readonly consolePort?: number
 }
 
 /** 整轮运行的汇总（写进 NDJSON 的最后一行 + 汇总表表头）。 */

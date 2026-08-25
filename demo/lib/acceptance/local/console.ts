@@ -26,8 +26,15 @@
 
 import { startRegistryServer } from '@qianmo/registry'
 import type { RegistryOptions } from '@qianmo/registry'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { ScenarioContext } from '../types.js'
+import type {
+  AcceptanceConsole,
+  AcceptanceRegistry,
+  ConsoleSpec,
+  RegistrySpec,
+  ScenarioContext,
+} from '../types.js'
 import { spawnCli, waitFor, type SpawnedProcess } from './spawn.js'
 
 /** 一次 HTTP 往返的原文 —— 断言不成立时这就是证据。 */
@@ -116,30 +123,29 @@ export async function http(
 // 注册中心
 // ---------------------------------------------------------------------------
 
-export interface RegistryHandle {
-  readonly url: string
-  /** `--state` 落盘路径；不给 `statePath` 时是 undefined。 */
-  readonly statePath?: string
-}
-
-export interface RegistryFixtureOptions {
-  /** 打开落盘（`FileRegistryStore`）。持久化是 opt-in，与产品一致。 */
-  readonly statePath?: string
-  /** 租约 TTL；不给就是 `DEFAULT_TTL_MS`。短 TTL 用来测过期。 */
-  readonly ttlMs?: number
-}
-
+/**
+ * 起一个注册中心。
+ *
+ * **两条腿共用这一个实现。** 真机腿也跑它（在 runner 进程里），只是靠一条
+ * 反向隧道让远端的控制台够得着 —— 见 `fleet/driver.ts` 的 `startRegistry`。
+ * 那里同时写着「这样一来真机腿的注册中心那一半测的是什么」的诚实说明。
+ */
 export async function startRegistry(
   ctx: ScenarioContext,
-  options: RegistryFixtureOptions = {},
-): Promise<RegistryHandle> {
+  options: RegistrySpec & { readonly statePath?: string } = {},
+): Promise<AcceptanceRegistry> {
   const { FileRegistryStore, InMemoryRegistry: Table } = await import(
     '@qianmo/registry'
   )
+  const statePath =
+    options.statePath ??
+    (options.persist === true
+      ? join(ctx.workdir, 'registry-state', 'agents.json')
+      : undefined)
   const registryOptions: RegistryOptions = {
-    ...(options.statePath === undefined
+    ...(statePath === undefined
       ? {}
-      : { store: new FileRegistryStore(options.statePath) }),
+      : { store: new FileRegistryStore(statePath) }),
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
   }
   const handle = startRegistryServer(0, {
@@ -150,9 +156,15 @@ export async function startRegistry(
   })
   return {
     url: handle.url,
-    ...(options.statePath === undefined
-      ? {}
-      : { statePath: options.statePath }),
+    hostUrl: handle.url,
+    readState: async () => {
+      if (statePath === undefined) return undefined
+      try {
+        return readFileSync(statePath, 'utf8')
+      } catch {
+        return undefined
+      }
+    },
   }
 }
 
@@ -160,35 +172,59 @@ export async function startRegistry(
 // 控制台
 // ---------------------------------------------------------------------------
 
-export interface ConsoleHandle {
-  /** `http://127.0.0.1:<port>`，不带 token。 */
-  readonly url: string
+export interface ConsoleHandle extends AcceptanceConsole {
   readonly port: number
-  readonly viewToken: string
-  readonly adminToken: string
-  readonly configRoot: string
   readonly process: SpawnedProcess
-  /** 启动 banner 原文（stdout）。 */
-  banner(): string
-  stderr(): string
 }
 
-export interface ConsoleFixtureOptions {
-  readonly registryUrl: string
-  /** `--wake-url <node>=<ws url>`，可多条。 */
-  readonly wakeTargets?: readonly {
-    readonly node: string
-    readonly url: string
-  }[]
-  readonly signWakes?: boolean
-  /** 每个唤醒目标的 PSK；键是节点名。 */
-  readonly wakePsk?: Readonly<Record<string, string>>
-  /** 显式 token（经环境变量给，与产品的第二优先级入口一致）。 */
-  readonly viewToken?: string
-  readonly adminToken?: string
-  readonly extraArgs?: readonly string[]
-  /** 配置根目录名，同一场景起两个控制台时要错开。 */
-  readonly configDirName?: string
+/**
+ * `qm console` 的 argv 与 env —— **两条腿共用这一段拼装**。
+ *
+ * 抽出来不是为了少写几行：控制台的命令行有五处按取值分岔（唤醒目标、
+ * 签名、两枚 token 的环境变量名、尾参），两边各拼一份就等于两条腿在测
+ * 两条不同的命令行，而那正是「本地绿」不再说明任何事的那一刻。
+ */
+export function consoleLaunch(
+  spec: ConsoleSpec,
+  port: number,
+): { readonly argv: string[]; readonly env: Record<string, string> } {
+  const argv = [
+    'console',
+    '--port',
+    String(port),
+    '--hostname',
+    '127.0.0.1',
+    '--registry',
+    spec.registryUrl,
+  ]
+  for (const target of spec.wakeTargets ?? []) {
+    argv.push('--wake-url', `${target.node}=${target.url}`)
+  }
+  if (spec.signWakes === true) argv.push('--wake-sign')
+  argv.push(...(spec.extraArgs ?? []))
+
+  const env: Record<string, string> = {}
+  for (const [node, psk] of Object.entries(spec.wakePsk ?? {})) {
+    env[wakePskEnvVar(node)] = psk
+  }
+  if (spec.viewToken !== undefined) {
+    env.QIANMO_CONSOLE_VIEW_TOKEN = spec.viewToken
+  }
+  if (spec.adminToken !== undefined) {
+    env.QIANMO_CONSOLE_ADMIN_TOKEN = spec.adminToken
+  }
+  return { argv, env }
+}
+
+/** 从 banner 里抠两枚 token；显式给了就用显式的（产品不回显它们）。 */
+export function tokensFromBanner(
+  banner: string,
+  spec: ConsoleSpec,
+): { readonly viewToken: string; readonly adminToken: string } {
+  return {
+    viewToken: spec.viewToken ?? VIEW_TOKEN_LINE.exec(banner)?.[1] ?? '',
+    adminToken: spec.adminToken ?? ADMIN_TOKEN_LINE.exec(banner)?.[1] ?? '',
+  }
 }
 
 /** 命名唤醒目标的 PSK 环境变量名（`consoleArgs.ts` 的 `wakePskEnvVarForNode`）。 */
@@ -203,40 +239,15 @@ const ADMIN_TOKEN_LINE = /^admin-token\s+(\S+)/m
 
 export async function startConsole(
   ctx: ScenarioContext,
-  options: ConsoleFixtureOptions,
+  configRoot: string,
+  spec: ConsoleSpec,
 ): Promise<ConsoleHandle> {
   const port = await ctx.allocPort()
-  const configRoot = join(
-    ctx.workdir,
-    options.configDirName ?? 'console-config',
-  )
-  const argv = [
-    'console',
-    '--port',
-    String(port),
-    '--hostname',
-    '127.0.0.1',
-    '--registry',
-    options.registryUrl,
-  ]
-  for (const target of options.wakeTargets ?? []) {
-    argv.push('--wake-url', `${target.node}=${target.url}`)
-  }
-  if (options.signWakes === true) argv.push('--wake-sign')
-  argv.push(...(options.extraArgs ?? []))
-
+  const { argv, env: extraEnv } = consoleLaunch(spec, port)
   const env: Record<string, string> = {
     OCC_IDENTITY: 'qianmo',
     OCC_CONFIG_DIR: configRoot,
-  }
-  for (const [node, psk] of Object.entries(options.wakePsk ?? {})) {
-    env[wakePskEnvVar(node)] = psk
-  }
-  if (options.viewToken !== undefined) {
-    env.QIANMO_CONSOLE_VIEW_TOKEN = options.viewToken
-  }
-  if (options.adminToken !== undefined) {
-    env.QIANMO_CONSOLE_ADMIN_TOKEN = options.adminToken
+    ...extraEnv,
   }
 
   const proc = spawnCli({ argv, env })
@@ -257,10 +268,7 @@ export async function startConsole(
     signal: ctx.signal,
   })
 
-  const banner = proc.stdout()
-  const viewToken = options.viewToken ?? VIEW_TOKEN_LINE.exec(banner)?.[1] ?? ''
-  const adminToken =
-    options.adminToken ?? ADMIN_TOKEN_LINE.exec(banner)?.[1] ?? ''
+  const { viewToken, adminToken } = tokensFromBanner(proc.stdout(), spec)
 
   return {
     url,
@@ -269,7 +277,7 @@ export async function startConsole(
     adminToken,
     configRoot,
     process: proc,
-    banner: () => proc.stdout(),
-    stderr: () => proc.stderr(),
+    banner: async () => proc.stdout(),
+    stderr: async () => proc.stderr(),
   }
 }

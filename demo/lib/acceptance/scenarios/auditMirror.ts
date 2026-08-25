@@ -32,10 +32,8 @@
  * 不是控制台另造的一份。
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
-import { http, startConsole, startRegistry } from '../local/console.js'
+import { http } from '../local/console.js'
 import { TRAIL_PATH } from '../observe.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { sendEnvelope } from '../local/send.js'
@@ -73,7 +71,8 @@ export const auditMirrorScenarios: readonly Scenario[] = [
     requires: ['spawn-console', 'spawn-node', 'raw-dial', 'read-node-files'],
     timeoutMs: 180_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
+      const registry = await ctx.driver.startRegistry(ctx)
+      const slot = await ctx.driver.consoleSlot(ctx)
       // 一条**真**审计链：起一个节点、发一条会被拒的消息，让它写几行出来。
       const node = await startNodeTrusting(ctx, newParty(), {
         policy: 'signed-task',
@@ -87,15 +86,20 @@ export const auditMirrorScenarios: readonly Scenario[] = [
         payload: { trigger: 'manual', prompt: 'mirror seed' },
         settleMs: 800,
       })
-      const trail = join(node.configRoot, TRAIL_PATH)
+      // 两条路径都必须落在**控制台那台机器**上：`--audit <节点>=<路径>` 是
+      // 控制台自己去读的。节点与控制台同机由驱动保证（真机腿把一个场景里的
+      // 一次性进程钉在同一台机器上），所以节点配置根这条路径它读得到。
+      const trail = `${node.configRoot}/${TRAIL_PATH}`
       // 镜像源就是源端那条链在本机的一份副本 —— 这正是镜像**是什么**。
       // 注意这里没有在测「副本是怎么来的」（那是搬运，见本文件末尾那条 skip），
       // 测的是控制台拿到一份副本之后怎么申报它。
-      const mirrored = join(ctx.workdir, 'mirrored-trail.ndjson')
-      writeFileSync(mirrored, readFileSync(trail, 'utf8'))
+      const mirrored = await slot.writeFile(
+        'mirrored-trail.ndjson',
+        (await ctx.driver.readNodeFile(node, TRAIL_PATH)) ?? '',
+      )
 
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
+      const console_ = await slot.start({
+        registryUrl: registry.hostUrl,
         extraArgs: [
           '--audit',
           `remote=${mirrored}`,
@@ -152,14 +156,14 @@ export const auditMirrorScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 180_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const present = join(ctx.workdir, 'present-trail.ndjson')
-      mkdirSync(ctx.workdir, { recursive: true })
-      writeFileSync(present, '')
-      const missing = join(ctx.workdir, 'never-synced', 'trail.ndjson')
+      const registry = await ctx.driver.startRegistry(ctx)
+      const slot = await ctx.driver.consoleSlot(ctx)
+      // 两条路径都在**控制台那台机器**上：一个存在但空，一个从来没有过。
+      const present = await slot.writeFile('present-trail.ndjson', '')
+      const missing = `${slot.workdir}/never-synced/trail.ndjson`
 
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
+      const console_ = await slot.start({
+        registryUrl: registry.hostUrl,
         extraArgs: [
           '--audit',
           `remote=${missing}`,
@@ -327,15 +331,30 @@ export const auditMirrorScenarios: readonly Scenario[] = [
           .expect(false, '能读到搬运现场', report.failure)
           .done('读不到搬运现场')
       }
+      checks.note(
+        '控制台健康',
+        `port=${report.consolePort ?? '(探不到)'} GET /v0/health = ${report.consoleHealthStatus ?? '(没问到)'}`,
+      )
       const declared = report.units.filter(u => u.mirrorPath !== undefined)
       if (declared.length === 0) {
-        // 「一个都没申报」分不出「这套部署没配镜像」与「控制台此刻没在跑」，
-        // 而这条场景问的是前者那条链路 —— 分不出来的时候不许替它下结论。
+        // 「一个都没申报」曾经分不出「这套部署没配镜像」与「控制台此刻没在跑」，
+        // 于是一台挂掉的控制台会让这条退化成 skip —— 报告上看起来像「没配」。
+        // `/v0/health` 把两者分开了：它公开、零鉴权，200 就是活着。
+        if (report.consoleHealthStatus === 200) {
+          return checks
+            .note('采到的现场', JSON.stringify(report.units).slice(0, 1_500))
+            .skip(
+              `${report.consoleHost} 上的控制台活着（/v0/health 200）但命令行里一条 --audit 申报都没有：这套部署没配审计镜像，没有搬运可验。`,
+            )
+        }
         return checks
           .note('采到的现场', JSON.stringify(report.units).slice(0, 1_500))
-          .skip(
-            `${report.consoleHost} 上的控制台命令行里一条 --audit 申报都没有：要么这套部署没配审计镜像，要么控制台此刻没在跑。两者这条场景分不出来，不替它下结论。`,
+          .expect(
+            false,
+            `${report.consoleHost} 上的控制台在跑（否则镜像链路根本无从谈起）`,
+            `/v0/health = ${report.consoleHealthStatus ?? '(端口都没探到)'}；一条 --audit 申报都没有`,
           )
+          .done('控制台没在跑')
       }
 
       for (const unit of report.units) {

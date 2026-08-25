@@ -35,14 +35,12 @@
 import { LIMITS } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { Checks } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { http, startConsole, startRegistry } from '../local/console.js'
-import { runCli, sleep } from '../local/spawn.js'
+import { http } from '../local/console.js'
+import { sleep } from '../local/spawn.js'
 import { delay, waitForMailbox } from '../observe.js'
-import type { Scenario, ScenarioContext } from '../types.js'
+import type { ConsoleSlot, Scenario, ScenarioContext } from '../types.js'
 import {
   ADDRESS,
   AGENT,
@@ -70,18 +68,22 @@ function agentsOf(
   return Array.isArray(agents) ? (agents as Record<string, unknown>[]) : []
 }
 
-/** 跑一次 `qm console --print-wake-identity`，把 `<node>=<公钥>` 拆开。 */
+/**
+ * 跑一次 `qm console --print-wake-identity`，把 `<node>=<公钥>` 拆开。
+ *
+ * 经**控制台位**跑而不是本地 `runCli`：这条命令会在配置根里生成一把唤醒身份
+ * （那是控制面凭据），而后面 `--wake-sign` 的控制台必须复用**同一个**配置根，
+ * 否则它签名用的是另一把私钥、目标节点 `--trust` 的又是这一把公钥。
+ */
 async function printWakeIdentity(
   ctx: ScenarioContext,
-  configRoot: string,
+  slot: ConsoleSlot,
 ): Promise<{
   readonly line: string
   readonly node?: string
   readonly publicKey?: string
 }> {
-  const result = await runCli({
-    argv: ['console', '--print-wake-identity'],
-    env: { OCC_IDENTITY: 'qianmo', OCC_CONFIG_DIR: configRoot },
+  const result = await slot.exec(['console', '--print-wake-identity'], {
     timeoutMs: 40_000,
   })
   const line = result.stdout.trim()
@@ -105,8 +107,10 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
+      const registry = await ctx.driver.startRegistry(ctx)
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
 
       const health = await http(`${console_.url}/v0/health`)
       const anonymousAgents = await http(`${console_.url}/v0/agents`)
@@ -172,8 +176,10 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
+      const registry = await ctx.driver.startRegistry(ctx)
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
       const body = { address: AGENT_ADDRESS, endpoint: AGENT_ENDPOINT }
 
       const asView = await http(`${console_.url}/v0/agents`, {
@@ -228,9 +234,11 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
-      const banner = console_.banner()
+      const registry = await ctx.driver.startRegistry(ctx)
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
+      const banner = await console_.banner()
       const withView = await http(`${console_.url}/v0/limits`, {
         token: console_.viewToken,
       })
@@ -271,15 +279,15 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
+      const registry = await ctx.driver.startRegistry(ctx)
       const viewToken = 'acceptance-view-token-0001'
       const adminToken = 'acceptance-admin-token-0001'
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
         viewToken,
         adminToken,
       })
-      const banner = console_.banner()
+      const banner = await console_.banner()
       const probe = await http(`${console_.url}/v0/limits`, {
         token: viewToken,
       })
@@ -316,8 +324,10 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
+      const registry = await ctx.driver.startRegistry(ctx)
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
       const probe = await http(`${console_.url}/v0/limits`, {
         token: console_.viewToken,
       })
@@ -366,9 +376,10 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const statePath = join(ctx.workdir, 'registry-state', 'agents.json')
-      const registry = await startRegistry(ctx, { statePath })
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
+      const registry = await ctx.driver.startRegistry(ctx, { persist: true })
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
 
       const registered = await http(`${console_.url}/v0/agents`, {
         method: 'POST',
@@ -382,12 +393,12 @@ export const consoleScenarios: readonly Scenario[] = [
       // 落盘是同步的（原子写），但读之前给一拍，免得撞上 rename 的窗口。
       await delay(200)
       let disk: Record<string, unknown> | undefined
-      let diskRaw = ''
+      // 盘在哪台机器上由驱动决定，所以经 `readState()` 而不是 `node:fs`。
+      let diskRaw = (await registry.readState()) ?? ''
       try {
-        diskRaw = readFileSync(statePath, 'utf8')
         disk = JSON.parse(diskRaw) as Record<string, unknown>
       } catch (error) {
-        diskRaw = `读不到 ${statePath}: ${String(error)}`
+        diskRaw = `读不回注册中心的落盘内容: ${String(error)}\n${diskRaw}`
       }
       const persisted = agentsOf(disk).find(a => a.address === AGENT_ADDRESS)
       const lastHeartbeatAt = registered.json?.lastHeartbeatAt
@@ -437,8 +448,10 @@ export const consoleScenarios: readonly Scenario[] = [
     timeoutMs: 120_000,
     async run(ctx) {
       const ttlMs = 3_000
-      const registry = await startRegistry(ctx, { ttlMs })
-      const console_ = await startConsole(ctx, { registryUrl: registry.url })
+      const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
       const encoded = encodeURIComponent(AGENT_ADDRESS)
 
       const registered = await http(`${console_.url}/v0/agents`, {
@@ -495,11 +508,13 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
-      const port = await ctx.allocPort()
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
-        wakeTargets: [{ node: NODE, url: `ws://127.0.0.1:${port}` }],
+      const registry = await ctx.driver.startRegistry(ctx)
+      // 白名单里那条的 URL 拨不拨得通无所谓：这条场景问的是**名字不在表里**
+      // 时的 403，判定发生在拨号之前。所以这里给一个必然拨不通的口，
+      // 而不是去分配一个（分配来的还是 runner 的口，真机腿上更没意义）。
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+        wakeTargets: [{ node: NODE, url: 'ws://127.0.0.1:1' }],
         wakePsk: { [NODE]: ACCEPTANCE_PSK },
       })
       const probe = await http(`${console_.url}/v0/wake`, {
@@ -534,13 +549,16 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console', 'spawn-node', 'read-node-files'],
     timeoutMs: 180_000,
     async run(ctx) {
-      const registry = await startRegistry(ctx)
+      const registry = await ctx.driver.startRegistry(ctx)
       const node = await startNodeTrusting(ctx, newParty(), {
         policy: 'signed-task',
       })
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
-        wakeTargets: [{ node: NODE, url: node.endpoint }],
+      // `hostEndpoint`：拨号方是控制台，它和节点同机（真机腿上由驱动保证），
+      // 拨的是节点自己那台机器的回环口。给 `endpoint` 的话真机腿上它会去打
+      // **控制台机器**上的一个 runner 侧隧道口 —— 那里没有人在听。
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+        wakeTargets: [{ node: NODE, url: node.hostEndpoint }],
         wakePsk: { [NODE]: ACCEPTANCE_PSK },
       })
       const probe = await http(`${console_.url}/v0/wake`, {
@@ -556,7 +574,7 @@ export const consoleScenarios: readonly Scenario[] = [
       return (
         new Checks()
           .note('响应', `${probe.status} ${probe.body}`)
-          .note('控制台 stderr', console_.stderr().slice(0, 1_500))
+          .note('控制台 stderr', (await console_.stderr()).slice(0, 1_500))
           .eq(probe.status, 403, '状态码')
           .eq(
             (probe.json?.error as Record<string, unknown> | undefined)?.code,
@@ -583,12 +601,12 @@ export const consoleScenarios: readonly Scenario[] = [
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
-      const registry = await startRegistry(ctx)
-      const consoleConfig = join(ctx.workdir, 'console-config')
+      const registry = await ctx.driver.startRegistry(ctx)
+      const slot = await ctx.driver.consoleSlot(ctx)
 
       // 第一步：把控制台的唤醒身份印出来。这一步**不起服务器、不读 token**，
       // 所以它在一台还没配好的机器上也答得出来 —— 那正是分发公钥的那一刻。
-      const identity = await printWakeIdentity(ctx, consoleConfig)
+      const identity = await printWakeIdentity(ctx, slot)
       checks
         .note('print-wake-identity', identity.line)
         .eq(identity.node, CONSOLE_NODE, '身份节点段')
@@ -604,9 +622,9 @@ export const consoleScenarios: readonly Scenario[] = [
 
       // 第三步：控制台带 --wake-sign 起来，复用第一步那个配置根（身份文件
       // 就在里面，`loadOrCreateNodeKeys` 是 wx 创建、永不覆盖）。
-      const console_ = await startConsole(ctx, {
-        registryUrl: registry.url,
-        wakeTargets: [{ node: NODE, url: node.endpoint }],
+      const console_ = await slot.start({
+        registryUrl: registry.hostUrl,
+        wakeTargets: [{ node: NODE, url: node.hostEndpoint }],
         wakePsk: { [NODE]: ACCEPTANCE_PSK },
         signWakes: true,
       })
@@ -623,17 +641,14 @@ export const consoleScenarios: readonly Scenario[] = [
       const inbox = await waitForMailbox(ctx, node, TEAM, AGENT)
       const last = inbox.at(-1)
 
+      const banner = await console_.banner()
       return checks
-        .note('banner 的 wake-signing 行', console_.banner())
+        .note('banner 的 wake-signing 行', banner)
         .note('响应', `${probe.status} ${probe.body}`)
         .note('信箱原文', last?.raw ?? '(信箱是空的)')
+        .contains(banner, 'wake-signing', 'banner 里有签名身份那一行')
         .contains(
-          console_.banner(),
-          'wake-signing',
-          'banner 里有签名身份那一行',
-        )
-        .contains(
-          console_.banner(),
+          banner,
           `${CONSOLE_NODE}=${identity.publicKey}`,
           'banner 里那一行的取值（可原样粘进 --trust）',
         )
