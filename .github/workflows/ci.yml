@@ -114,6 +114,140 @@ jobs:
       - name: Check unused exports
         run: bun run check:unused
 
+  # 端到端验收套件的**本地腿**（`demo/lib/acceptance/`，LocalDriver）。
+  #
+  # 为什么是一个兄弟 job，而不是 `ci` 里的一步、也不是 `scripts/test-shards.sh`
+  # 的一格：`scripts/qianmo-acceptance.ts` 顶部那三条理由（要起真进程、要抢真
+  # TCP 端口、它的红是产品结论而不是构建结论）反对的是**混进单元测试分片**,
+  # 不是「不接线」。作为并行的兄弟 job，它既不给合并门禁添一分钟串行时间，也
+  # 不会把一个抢端口的成员塞进那批靠目录隔离 mock 状态的纯内存分片里 —— 后者
+  # 正是这仓库花了 55 次连红才治好的病。先例就在下面：`windows` 也是兄弟 job。
+  #
+  # 接线本身才是重点。PR #63 给套件加了一道防假绿的自保护：一轮里如果没有任何
+  # 场景真的调用过驱动，即便 fail=0 error=0 也判 FAIL 并 exit 1（issue #61 —— 真机
+  # 腿曾经报 `pass=11 fail=0 skip=104` + exit 0，而驱动被调用了 0 次）。但在此
+  # 之前套件**完全没接线**，那道自保护只在有人手动跑时才响 —— 而它挡的恰恰是
+  # 「没人看的时候悄悄变成假绿」。一道只在有人看着时才响的警报不挡这个。
+  #
+  # 真机腿（FleetDriver）不在这里，且这是有意的：它要四台 VPS + SSH 隧道 +
+  # 生产 PSK。把那套凭据放进 GitHub CI 等于拿一条验收腿去换一个长期泄密面，
+  # 而换来的覆盖本地腿这边已经有了 —— 两条腿跑的是**同一张场景表**
+  # （`demo/lib/acceptance/registry.ts`），差别只在驱动。真机腿仍然手动跑，
+  # 它自己那两条纪律另有分片护栏（`demo/lib/acceptance/__tests__/fleetGuards.test.ts`）。
+  acceptance-local:
+    runs-on: ubuntu-latest
+    # 实测（4 核 Linux 容器，见下面 --timeout-scale 的注释）约 13 分钟。给到
+    # 30 是留了一倍余量：这条腿起真进程，慢一步是常态，而 job 级超时一旦切下去
+    # 拿到的是「没有汇总表的红」—— 那种红查不动。场景级超时才是真正的兜底，
+    # 它至少会告诉你是哪一条卡住了。
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 同 `ci` job：dev 检出没有 vendored rg，运行时回退到系统二进制，而裸
+      # runner 没有。这条腿起的是真的 `qm resident`，它会执行真的 Glob 工具。
+      - name: Install ripgrep (system fallback for dev checkouts)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      # 这一步**故意**制造 issue #61 那个形状，然后要求套件因此变红。
+      #
+      # 构造方式不是打桩，是真事：`trust/notice-trust-has-two-values` 只
+      # `readFileSync` 一个仓库文件做静态断言，一次驱动都不调用。于是这一轮
+      # counts 全绿（pass=1 fail=0 error=0）而 targetTouches=0 —— 正是那个
+      # 「报 PASS 却什么都没做」的形状。
+      #
+      # 为什么值得单独占一步：`demo/lib/acceptance/__tests__/report-core.test.ts`
+      # 里那三条断言证明的是 `summarize()` **算得对**，证明不了两件下游的事：
+      #   ① `scripts/qianmo-acceptance.ts` 真的把 `run.pass` 变成了进程退出码；
+      #   ② 这个 workflow 的 `run:` 步骤真的会因为那个退出码变红。
+      # 而接线出错的经典形态全在这两处 —— `|| true`、吞掉退出码的管道、或者
+      # `EXIT=$?` 跟在管道后面（那拿到的是管道**最后一个**命令的退出码）。
+      # 换句话说：这一步测的是这个 YAML 自己，不是套件。
+      - name: Guard - a zero-driver-call run must fail this step
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/acceptance-guard"
+          log="${RUNNER_TEMP}/acceptance-guard.log"
+
+          # 没有管道：要的就是这条命令自己的退出码。
+          if bun run scripts/qianmo-acceptance.ts \
+               --target local \
+               --only trust/notice-trust-has-two-values \
+               --out "$out" > "$log" 2>&1; then
+            echo "::error title=False-green guard is dead::一轮零驱动调用的运行返回了 exit 0。report-core.ts 的 targetTouches 判定或本入口的退出码被改坏了。"
+            cat "$log"
+            exit 1
+          fi
+
+          # 退出码非零还不够 —— 必须是因为**零触达**而不是因为这条场景自己红了。
+          # 后者会让这道护栏以「正确」的退出码通过，而完全没测到它要测的东西。
+          summary="$(tail -n 1 "$out/results.ndjson")"
+          echo "$summary" | jq .
+
+          echo "$summary" | jq -e '.counts.fail == 0 and .counts.error == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景自己红了，这一步没有制造出「全绿但零触达」。"
+            cat "$log"
+            exit 1
+          }
+          echo "$summary" | jq -e '.targetTouches == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景调用了驱动，构造出的不是零触达。换一条纯静态场景。"
+            exit 1
+          }
+          echo "$summary" | jq -e '.pass == false' > /dev/null || {
+            echo "::error title=False-green guard is dead::零触达的一轮被判成了 pass。"
+            exit 1
+          }
+
+          echo "OK：counts 全绿 + 零驱动调用 → 判定 FAIL → 非零退出码 → 本步骤变红。"
+
+      # 真跑。**没有管道、没有 `|| true`、没有 `continue-on-error`** —— 这一步的
+      # 红全靠这条命令的退出码，上一步刚刚证明过那条链路是通的。
+      #
+      # 不需要 tee：套件自己把人可读汇总打到 stdout（于是进 step log），把
+      # NDJSON 写进 --out（于是进下一步的 artifact）。加了管道反而会把退出码
+      # 换成管道末端那个命令的。
+      #
+      # --timeout-scale 3：场景里那 87 个自报的超时（30 s–300 s）是按开发机写的，
+      # 而 runner 是共享的双核机器。不放大的话，一条只是慢了的场景会被记成
+      # `error`（「套件自己炸了」）而不是它本来要说的话 —— 那在 CI 上是纯噪声，
+      # 且是会被人当成「套件不稳」而加豁免的那种噪声。理由与 runner.ts 里
+      # `FLEET_TIMEOUT_SCALE` 逐字相同，只是慢的原因从「每步多一次 SSH 往返」
+      # 换成了「共享 runner」。倍率而不是统一大数：场景之间的相对预算是作者
+      # 定的，压平会让本该快的那些在挂死时也拖满。
+      - name: Acceptance suite (local leg)
+        run: |
+          bun run scripts/qianmo-acceptance.ts \
+            --target local \
+            --timeout-scale 3 \
+            --out "${RUNNER_TEMP}/acceptance-local"
+
+      # `always()`：红的那次才最需要 NDJSON。这个项目的验收留档一向是
+      # 「机器可读产物 + 它的哈希」（见 docs/dev/acceptance-m0.md），CI 这轮
+      # 也按同一个形态留。产物里没有凭据：本地腿的 PSK 是写死在
+      # `demo/lib/acceptance/local/driver.ts` 里的固定串，无秘密可言。
+      - name: Upload acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          name: acceptance-local-${{ github.run_id }}
+          path: ${{ runner.temp }}/acceptance-local
+          if-no-files-found: warn
+          retention-days: 14
+
   # Deliberately a separate job rather than a matrix leg of `ci`: it runs a
   # different, much narrower set of steps. The full suite is slow and flaky on
   # Windows, so we only run the suites that encode Windows-specific behaviour

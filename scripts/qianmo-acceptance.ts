@@ -8,6 +8,7 @@
  * ```
  * bun run scripts/qianmo-acceptance.ts [--target local|fleet] [--only <前缀>…]
  *                                      [--out <目录>] [--timeout-ms <n>]
+ *                                      [--timeout-scale <n>]
  *                                      [--list] [--keep-workdir]
  * ```
  *
@@ -38,6 +39,16 @@
  * 判定层与场景表的**纯逻辑**另有单测，落在 `demo/lib/acceptance/__tests__/`，
  * 由 `demo/lib` 那一格分片带跑 —— 于是「判定规则被改松了」「场景表里有重复
  * id」这类退化仍然有 CI 护栏。
+ *
+ * ## 但「不进分片」不等于「不进 CI」
+ *
+ * 上面三条反对的是**混进单元测试分片**，不是不接线。本地腿现在有自己的 job：
+ * `.github/workflows/ci.yml` 的 `acceptance-local`，与 `ci` 并行，跑的就是这条
+ * 命令。理由很直接 —— PR #63 加的那道防假绿自保护（全绿但零驱动调用要 exit 1）
+ * 此前**只在有人手动跑时才响**，而它挡的正是「没人看的时候悄悄变成假绿」。
+ *
+ * 真机腿进不了 GitHub CI（四台 VPS + SSH 隧道 + 生产 PSK），也不该进：把那套
+ * 凭据放进 CI 是拿一条验收腿去换一个长期泄密面。它仍然是手动跑的。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -71,6 +82,8 @@ const USAGE = `阡陌端到端验收套件
   --out <目录>           产物目录，默认 ~/qianmo-acceptance/<UTC 时间戳>
   --timeout-ms <n>       单场景默认超时，默认 ${DEFAULT_SCENARIO_TIMEOUT_MS}
                          （--target fleet 时全部超时另乘 ${FLEET_TIMEOUT_SCALE}，见 runner.ts）
+  --timeout-scale <n>    全部超时（默认值与场景自报的）乘这个正数，慢机器用；
+                         显式给了就压过 --target fleet 的默认 ${FLEET_TIMEOUT_SCALE}
   --keep-workdir         保留每个场景的临时目录，便于排查
   --list                 只列出场景表，不执行
   -h, --help             本页
@@ -153,6 +166,30 @@ async function main(): Promise<number> {
   const timeoutMs =
     timeoutRaw === undefined ? undefined : Number.parseInt(timeoutRaw, 10)
 
+  // 倍率而不是「慢机器统一给一个大数」：87/115 条场景自报了 30 s–300 s 的预算，
+  // 那是作者定的**相对**关系（有的本来就要等两轮模型）。`--timeout-ms` 只动
+  // 剩下那 28 条走默认值的，压不动自报的那些；统一压平又会让本该快的在挂死时
+  // 也拖满。理由与 `FLEET_TIMEOUT_SCALE` 逐字相同，只是慢的原因换成了「双核
+  // 共享 runner」而不是「每步多一次 SSH 往返」。
+  //
+  // 为什么这条旋钮必须有：场景里的毫秒数按开发机写，而超时记的是 `error` 而
+  // 不是 `fail` —— 一条本来会绿的场景在慢机器上变成「套件自己炸了」，既不算
+  // 覆盖也不指向任何产品问题。CI 上那是纯噪声，且是会被当作「套件不稳」而
+  // 加豁免的那种噪声。
+  const scaleRaw = value('timeout-scale')
+  const scaleOverride =
+    scaleRaw === undefined ? undefined : Number.parseFloat(scaleRaw)
+  if (
+    scaleOverride !== undefined &&
+    (!Number.isFinite(scaleOverride) || scaleOverride <= 0)
+  ) {
+    process.stderr.write(`--timeout-scale 要一个正数，收到 ${scaleRaw}\n`)
+    return 2
+  }
+  // 显式给的压过 fleet 默认：真机腿在更慢的机器上跑时得能再放大一档。
+  const timeoutScale =
+    scaleOverride ?? (target === 'fleet' ? FLEET_TIMEOUT_SCALE : undefined)
+
   const commit = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'])
     .stdout.toString()
     .trim()
@@ -179,8 +216,8 @@ async function main(): Promise<number> {
       : { timeoutMs }),
     // 真机腿每一步都多一次 SSH 往返，场景里那些毫秒数是按本地腿写的。
     // 见 `FLEET_TIMEOUT_SCALE` 的注释：不放大的话红的会是 `error`（套件自己
-    // 炸了），而不是那条场景本来要说的话。
-    ...(target === 'fleet' ? { timeoutScale: FLEET_TIMEOUT_SCALE } : {}),
+    // 炸了），而不是那条场景本来要说的话。`--timeout-scale` 压过它。
+    ...(timeoutScale === undefined ? {} : { timeoutScale }),
     keepWorkdir: flag('keep-workdir'),
     commit,
     onResult: result => {
