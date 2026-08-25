@@ -77,6 +77,7 @@
  * （约 250 MB）留在机器上，一轮下来能攒出几十个。
  */
 
+import { randomBytes } from 'node:crypto'
 import type {
   AcceptanceConsole,
   AcceptanceDriver,
@@ -108,6 +109,14 @@ import {
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK, TIMINGS_FILE } from '../local/driver.js'
 import { TRAIL_PATH } from '../observe.js'
+import {
+  isRetriableTransportFailure,
+  isTransportFailure,
+  TRANSPORT_RETRY_ATTEMPTS,
+  TRANSPORT_RETRY_BACKOFF_MS,
+  TransportFailure,
+  transportSignature,
+} from '../transport.js'
 
 /**
  * 一次性目录的家目录相对前缀。
@@ -186,6 +195,17 @@ export interface FleetConfig {
   readonly psk: Readonly<Record<string, string>>
   /** SSH 额外参数。 */
   readonly sshArgs?: readonly string[]
+  /**
+   * SSH 可执行文件 —— **只给护栏测试用的注入点**，缺省 `ssh`。
+   *
+   * 存在的理由：`#ssh` 走 `Bun.spawn(['ssh', …])`，而 Bun 在**进程启动时**就把
+   * PATH 定住了，测试里改 `process.env.PATH` 对它无效（实测 `Bun.which` 直接回
+   * `null`）。于是「假 ssh 回一个 rc=255」这类注入没有别的入口。
+   *
+   * **`fleetConfigFromEnv` 故意不填它，也没有对应的环境变量** —— 真跑永远是
+   * `ssh`。一个能把整条腿指向假二进制的运维开关，换来的风险远大于它的用处。
+   */
+  readonly sshBin?: string
 }
 
 /**
@@ -1281,16 +1301,58 @@ export class FleetDriver implements AcceptanceDriver {
    * `rm -rf` 的路径由 `mktemp -d` 自己回显、且删之前**再确认一次**它带着
    * {@link SCRATCH_PREFIX} —— 拼一个可能为空的变量再 `rm -rf` 是这类脚本最
    * 经典的事故形态。清理挂 `ctx.cleanup`，超时路径也会跑到。
+   *
+   * ## 清理失败必须留下痕迹（issue #96 ①）
+   *
+   * 这两条远端命令的返回码此前是整个丢掉的，而 {@link FleetDriver.#ssh} **不抛**
+   * —— 于是远端删不掉既不抛异常也不进 `logs`，报告里查不到任何线索。实测后果是
+   * 往演示机上静默丢了 107 MB（`run.IrUlmaLK`），而那一轮 `results.ndjson` 里
+   * 「cleanup 失败」出现 **0 次**。现在两条都判返回码，外加一次存在性复查。
+   *
+   * ## 目录名在 runner 这边生成（issue #96 ③）
+   *
+   * 原先是 `mktemp -d …/run.XXXXXXXX`，名字由远端现取。那样**这一步不可重发**：
+   * 一次半路断掉的 ssh 可能已经建好了目录，而我们永远学不到它叫什么 —— 于是每
+   * 次重试都可能在机器上多留一个再也没人认领的根。改成 runner 侧生成随机名 +
+   * `mkdir -p`（幂等）之后，重发落在**同一条路径**上，重试不制造孤儿。
+   *
+   * 安全前提一个字没松：路径仍然由远端 `printf` 回显、回来之后仍然再确认一次
+   * 它带着 {@link SCRATCH_PREFIX} —— 那一条防的是「拼一个可能为空的变量再
+   * `rm -rf`」，与名字谁生成无关。
    */
   async #scratch(ctx: ScenarioContext, ssh: string): Promise<string> {
-    const made = await this.#ssh(ssh, [
-      `set -e`,
-      `mkdir -p "$HOME/${SCRATCH_PREFIX}"`,
-      `d="$(mktemp -d "$HOME/${SCRATCH_PREFIX}/run.XXXXXXXX")"`,
-      `mkdir -p "$d/config" "$d/work"`,
-      `printf '%s\n' "$d"`,
-    ])
+    // 48 bit 随机（6 字节 → 12 个 hex）；碰撞概率在一轮几百条场景的量级上可以
+    // 忽略，而 `run.` 前缀是下面 pgrep 那个把戏的前提（名字里只有这一个 `.`）。
+    const name = `run.${randomBytes(6).toString('hex')}`
+    let attempts = 1
+    const made = await this.#sshRetry(
+      ssh,
+      [
+        `set -e`,
+        `d="$HOME/${SCRATCH_PREFIX}/${name}"`,
+        `mkdir -p "$d/config" "$d/work"`,
+        `chmod 700 "$HOME/${SCRATCH_PREFIX}" "$d"`,
+        `printf '%s\n' "$d"`,
+      ],
+      {
+        onRetry: n => {
+          attempts = n + 1
+        },
+      },
+    )
     const root = made.stdout.trim()
+    if (isTransportFailure(made)) {
+      // 打满还是不通。**这一条不是被测系统的回答** —— 远端命令一行都没跑到，
+      // `beta-up.sh` 更没有。它仍然把整轮判红（见 `TransportFailure` 的头注），
+      // 只是报告上不再和一条产品缺陷长得一样。
+      throw new TransportFailure({
+        ssh,
+        what: '在目标机上开一次性目录',
+        code: made.code,
+        stderr: made.stderr,
+        attempts,
+      })
+    }
     if (made.code !== 0 || !root.includes(SCRATCH_PREFIX)) {
       throw new Error(
         `在 ${ssh} 上开一次性目录失败 (${made.code}): ${made.stderr.slice(0, 400)}`,
@@ -1313,7 +1375,10 @@ export class FleetDriver implements AcceptanceDriver {
       // 当场把自己的进程组杀掉 —— 结果是进程确实清干净了，而后面那句 rm
       // 一次都没执行过。现场是「每台机器上留着一个只含 config/ 的空目录」，
       // 而 `rm` 那一行看起来完全正确。这个坑踩过一次，别把它合回去。
-      await this.#ssh(ssh, [
+      const problems: string[] = []
+      // 清扫与删除都是幂等的（`kill` 打的是这个根自己的进程、`rm -rf` 重发结果
+      // 相同），所以链路抖了值得再打一次 —— 少留一次残留就少一次 107 MB。
+      const swept = await this.#sshRetry(ssh, [
         `for p in $(pgrep -f '${id}' 2>/dev/null); do`,
         `  kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
         `done`,
@@ -1322,7 +1387,65 @@ export class FleetDriver implements AcceptanceDriver {
         `  kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
         `done`,
       ])
-      await this.#ssh(ssh, [`rm -rf -- '${shellQuote(root)}'`])
+      if (swept.code !== 0) {
+        problems.push(
+          `进程清扫没跑成 (${swept.code}): ${swept.stderr.trim().slice(0, 200)}`,
+        )
+      }
+      // `rm` 的退出码要**自己接住再回显**：后面那个 `[ -e ]` 是一条独立语句，
+      // 远端命令的退出码只会是它的，直接看 ssh 的 rc 等于又把 rm 的结果丢了。
+      // 存在性复查不是多余的一层 —— 「rm 报 0 但目录还在」在挂载点上真的会
+      // 发生（只读挂载下的部分删除），而这一栏问的是「机器上还剩不剩东西」。
+      const removed = await this.#sshRetry(ssh, [
+        `rc=0`,
+        `rm -rf -- '${shellQuote(root)}' || rc=$?`,
+        `printf 'rm=%s\n' "$rc"`,
+        `if [ -e '${shellQuote(root)}' ]; then`,
+        `  printf 'left=%s\n' "$(du -sk -- '${shellQuote(root)}' 2>/dev/null | awk '{print $1}')"`,
+        `else`,
+        `  printf 'left=no\n'`,
+        `fi`,
+      ])
+      const rc = strField(removed.stdout, 'rm')
+      const left = strField(removed.stdout, 'left')
+      if (removed.code !== 0 || rc === undefined) {
+        problems.push(
+          (isTransportFailure(removed)
+            ? `SSH 链路失败 (${removed.code}${
+                transportSignature(removed.stderr) === undefined
+                  ? ''
+                  : `，${transportSignature(removed.stderr)}`
+              })，删除这一步没跑成`
+            : `删除这一步没能确认 (ssh ${removed.code})`) +
+            `: ${removed.stderr.trim().slice(0, 200)}`,
+        )
+      } else if (rc !== '0') {
+        problems.push(
+          `远端 rm -rf 失败 (${rc}): ${removed.stderr.trim().slice(0, 200)}`,
+        )
+      }
+      if (left !== undefined && left !== 'no') {
+        problems.push(`删完目录还在，约 ${left} KB 留在机器上`)
+      }
+      if (problems.length === 0) return
+      // **先把细节写进 logs，再抛。**两件事各有各的去处：`ctx.log` 那几行带着
+      // 主机、路径、退出码与 stderr 原文（NDJSON 的 `log` 证据里，`jq` 捞得到）；
+      // 抛出的那一句让 runner 记下它自己那行 `cleanup 失败: …` —— 那正是这条
+      // 缺陷的判据（那一轮 `results.ndjson` 里它出现 0 次，而机器上躺着 107 MB）。
+      //
+      // 抛在**两条远端命令都跑完之后**，所以本条清理自己不会漏做任何一步；
+      // runner 逐条 `try/catch` 跑 cleanup 栈（见 `runner.ts` 的 `finally`），
+      // 所以抛出也不会打断同场景其它清理。
+      //
+      // **它不改判定**，这是有意的：一次清理失败是套件自己的运维债，不是被测
+      // 系统答错了。把它记成 `error` 就等于用套件侧的残留去否掉一条产品结论 ——
+      // 与本 issue ③ 要根治的那个混淆是同一个病，方向相反而已。
+      for (const p of problems) {
+        ctx.log(`[cleanup] ${ssh}:${root} ${p}`)
+      }
+      throw new Error(
+        `清理 ${ssh} 上的一次性目录 ${root} 没做干净：${problems.join('；')}`,
+      )
     })
     return root
   }
@@ -1332,8 +1455,23 @@ export class FleetDriver implements AcceptanceDriver {
     const cached = this.#homes.get(ssh)
     if (cached !== undefined) return await cached
     const pending = (async () => {
-      const probe = await this.#ssh(ssh, [`printf '%s\n' "$HOME"`])
+      // 纯读一次环境变量，重发绝对安全。
+      let attempts = 1
+      const probe = await this.#sshRetry(ssh, [`printf '%s\n' "$HOME"`], {
+        onRetry: n => {
+          attempts = n + 1
+        },
+      })
       const home = probe.stdout.trim()
+      if (isTransportFailure(probe)) {
+        throw new TransportFailure({
+          ssh,
+          what: '问目标机的家目录',
+          code: probe.code,
+          stderr: probe.stderr,
+          attempts,
+        })
+      }
       if (probe.code !== 0 || !home.startsWith('/')) {
         throw new Error(
           `问不出 ${ssh} 的家目录 (${probe.code}): ${probe.stderr.slice(0, 300)}`,
@@ -1414,6 +1552,10 @@ export class FleetDriver implements AcceptanceDriver {
    * 正是最该被看见的事实。合并成一个值的那一刻它就消失了；合并只发生在渲染层
    * （`testedCommitConsensus`），而且只在全体一致时才给出答案。
    *
+   * **「有台没答上」不是「大家报的不一样」**（issue #96 ②）：探针因此带重试
+   * （纯读一次日志，重发绝对安全），而渲染层用 `testedCommitVerdict` 把这两种
+   * 结局分开措辞。从 4/5 编出共识仍然不做 —— 变的只是那句话怎么写。
+   *
    * ## `sourceCommit=unknown` 记成「没报上来」
    *
    * 那是产物构建时**就没能确定来源**（部署树没 `.git` 又没戳）。把这个字面量
@@ -1442,7 +1584,10 @@ export class FleetDriver implements AcceptanceDriver {
     // **不能**用 `tail -200`：banner 是进程起来时写的第一行，一台跑了几天的
     // 节点后面早堆满了别的行。整份 grep，取最后一次匹配 = 最近一次启动。
     const log = `$(dirname '${shellQuote(host.configRoot)}')/../../logs/${host.node}.out`
-    const probe = await this.#ssh(
+    // 纯读一次日志，重发绝对安全 —— 而「问不到」这件事的代价高得离谱：一台没
+    // 答上，整份来源结论就降级成「未知」（issue #96 ②）。
+    let retries = 0
+    const probe = await this.#sshRetry(
       host.ssh,
       [
         `f="${log}"`,
@@ -1454,7 +1599,12 @@ export class FleetDriver implements AcceptanceDriver {
         `  printf 'readable=no\n'`,
         `fi`,
       ],
-      PROVENANCE_PROBE_TIMEOUT_MS,
+      {
+        timeoutMs: PROVENANCE_PROBE_TIMEOUT_MS,
+        onRetry: n => {
+          retries = n
+        },
+      },
     )
     return interpretProvenanceProbe(
       host.node,
@@ -1463,6 +1613,7 @@ export class FleetDriver implements AcceptanceDriver {
       strField(probe.stdout, 'readable') === 'no'
         ? '读不到该节点的启动日志'
         : '启动日志里没有 sourceCommit 字段（这份产物是 PR #74 之前构建的？）',
+      retries,
     )
   }
 
@@ -1475,7 +1626,8 @@ export class FleetDriver implements AcceptanceDriver {
         : [`'${shellQuote(override)}'`]),
       `"${DEFAULT_CONSOLE_LOG}"`,
     ]
-    const probe = await this.#ssh(
+    let retries = 0
+    const probe = await this.#sshRetry(
       consoleHost,
       [
         // **只在读到时才打 `readable=yes`**，别先打一行 `readable=no` 再在循环
@@ -1492,7 +1644,12 @@ export class FleetDriver implements AcceptanceDriver {
         `  break`,
         `done`,
       ],
-      PROVENANCE_PROBE_TIMEOUT_MS,
+      {
+        timeoutMs: PROVENANCE_PROBE_TIMEOUT_MS,
+        onRetry: n => {
+          retries = n
+        },
+      },
     )
     return interpretProvenanceProbe(
       `console (${consoleHost})`,
@@ -1501,6 +1658,7 @@ export class FleetDriver implements AcceptanceDriver {
       strField(probe.stdout, 'readable') === 'yes'
         ? 'banner 里没有 sourceCommit 字段（这份产物是 PR #76 之前构建的？）'
         : `读不到控制台的启动日志（试过 ${candidates.join(' / ')}；改了部署路径就用 QIANMO_ACCEPTANCE_CONSOLE_LOG 指过去）`,
+      retries,
     )
   }
 
@@ -1661,6 +1819,45 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   /**
+   * 跑一条**幂等**远端命令，链路抖了就再打一次。
+   *
+   * ## 只给幂等命令用
+   *
+   * 这个包装不判断安全性，调用方负责。起一个一次性常驻、写一个文件、`kill` 一
+   * 个 pid —— 这些重发一次的后果是两个进程 / 半截文件 / 打到别人头上，比一条
+   * `error` 糟得多。目前的调用点全是「读一次」或「反复做结果相同」：来源探针、
+   * 家目录、开一次性目录（路径由远端回显、`mkdir -p` 语义）、清理的 `rm -rf`。
+   *
+   * ## 为什么值得重试
+   *
+   * 真机腿一轮两小时、几百次 SSH，其中一台还要经 gcloud IAP 的 ProxyCommand。
+   * 那一轮唯一的红就是这么来的：`mktemp -d` 撞上一次隧道 EOF，栈停在开目录那
+   * 一步，`beta-up.sh` 一行都没跑到 —— 它不可能是在回答场景那个问题，而同条
+   * 重跑就 PASS。**重试成功不是放水**：那说明这一步确实做成了，套件确实问到了
+   * 被测系统。重试**失败**仍然一条不少地报上去，一次都不吞。
+   */
+  async #sshRetry(
+    ssh: string,
+    lines: readonly string[],
+    options?: {
+      readonly timeoutMs?: number
+      readonly attempts?: number
+      /** 每次准备重发时回调一次，参数是「这是第几次重发」与上一次的结果。 */
+      readonly onRetry?: (attempt: number, previous: ExecResult) => void
+    },
+  ): Promise<ExecResult> {
+    const attempts = Math.max(1, options?.attempts ?? TRANSPORT_RETRY_ATTEMPTS)
+    let result = await this.#ssh(ssh, lines, options?.timeoutMs)
+    for (let n = 1; n < attempts; n++) {
+      if (!isRetriableTransportFailure(result)) break
+      options?.onRetry?.(n, result)
+      await sleep(TRANSPORT_RETRY_BACKOFF_MS * n)
+      result = await this.#ssh(ssh, lines, options?.timeoutMs)
+    }
+    return result
+  }
+
+  /**
    * 跑一条远端命令。
    *
    * `stdin` 给了就不能带 `-n`（那个选项把 stdin 接到 /dev/null），这正是
@@ -1674,7 +1871,7 @@ export class FleetDriver implements AcceptanceDriver {
   ): Promise<ExecResult> {
     const child = Bun.spawn(
       [
-        'ssh',
+        this.#config.sshBin ?? 'ssh',
         ...(stdin === undefined ? ['-n'] : []),
         '-o',
         'BatchMode=yes',
@@ -1781,11 +1978,22 @@ function interpretProvenanceProbe(
   probe: ExecResult,
   where: string,
   emptyReason: string,
+  retries = 0,
 ): TestedUnitProvenance {
   if (probe.code !== 0) {
+    // 「链路没通」与「问到了但答不上来」在报告上必须长得不一样：前者说的是套件
+    // 够不着这台机器，后者才是关于这台机器的观察（issue #96 ②）。重试次数也带
+    // 上 —— 打过三次仍不通和只打过一次，是两种可信度。
+    const how = isTransportFailure(probe)
+      ? `SSH 链路失败 (${probe.code}${
+          transportSignature(probe.stderr) === undefined
+            ? ''
+            : `，${transportSignature(probe.stderr)}`
+        }${retries === 0 ? '' : `，已重发 ${retries} 次`})`
+      : `采集失败 (${probe.code})`
     return {
       unit,
-      detail: `采集失败 (${probe.code}): ${probe.stderr.trim().slice(0, 300)}`,
+      detail: `${how}: ${probe.stderr.trim().slice(0, 300)}`,
     }
   }
   const raw = strField(probe.stdout, 'sourceCommit')

@@ -97,22 +97,139 @@ export function summarize(
 }
 
 /**
+ * 「被测端是哪一版」的完整结论 —— 五种，各说各的话（issue #96 ②）。
+ *
+ * 此前只有 `testedCommitConsensus` 一个函数，它把**四种**结局折成同一个
+ * `undefined`，于是首栏一律写「被测端 未知」。实测后果：5 台里 4 台一致报
+ * `fa80e006…`、1 台传输抖动，报告写成「被测端 未知」—— 读起来像「大家报的不
+ * 一样」，而实际**没有任何一台报了别的 SHA**。
+ *
+ * 「4 台一致 + 1 台不可达」和「4 台里有 2 个不同 SHA」是完全不同的两件事，
+ * 前者只缺一次重试，后者是舰队真的滚更新滚了一半。
+ *
+ * **五种里没有一种会从 4/5 编出共识**（`testedCommit` 那个标量仍然只在
+ * `unanimous` 时出现），也没有一种会退回 runner 的 HEAD。变的只是措辞。
+ */
+export type TestedCommitVerdict =
+  /** 根本没有探针（本地腿）。 */
+  | { readonly kind: 'absent' }
+  /** 有被测端，但一个都没答上。 */
+  | {
+      readonly kind: 'silent'
+      readonly total: number
+      readonly silent: readonly string[]
+    }
+  /** 全体答上且完全一致 —— 唯一给出标量的那种。 */
+  | {
+      readonly kind: 'unanimous'
+      readonly commit: string
+      readonly total: number
+    }
+  /** 答上的全一致，但有单位没答上。 */
+  | {
+      readonly kind: 'partial'
+      readonly commit: string
+      readonly answered: number
+      readonly total: number
+      readonly silent: readonly string[]
+    }
+  /** 答上的里面有不同的 commit。 */
+  | {
+      readonly kind: 'divergent'
+      readonly commits: readonly string[]
+      readonly answered: number
+      readonly total: number
+      readonly silent: readonly string[]
+    }
+
+/** 把逐台观察折成一条结论。见 {@link TestedCommitVerdict}。 */
+export function testedCommitVerdict(
+  provenance: TestedProvenance | undefined,
+): TestedCommitVerdict {
+  if (provenance === undefined || provenance.units.length === 0) {
+    return { kind: 'absent' }
+  }
+  const total = provenance.units.length
+  const silent = provenance.units
+    .filter(u => u.commit === undefined)
+    .map(u => u.unit)
+  const answered = provenance.units.filter(u => u.commit !== undefined)
+  if (answered.length === 0) return { kind: 'silent', total, silent }
+  const commits = [...new Set(answered.map(u => u.commit as string))]
+  const first = commits[0] as string
+  if (commits.length > 1) {
+    return {
+      kind: 'divergent',
+      commits,
+      answered: answered.length,
+      total,
+      silent,
+    }
+  }
+  if (silent.length === 0) return { kind: 'unanimous', commit: first, total }
+  return {
+    kind: 'partial',
+    commit: first,
+    answered: answered.length,
+    total,
+    silent,
+  }
+}
+
+/**
  * 「被测端是哪一版」的**单一**答案 —— 只有全部被测端都报上来且完全一致时才有。
  *
  * 不一致时返回 `undefined` 而不是挑一个：舰队是一台一台滚更新的，四台节点停在
  * 两个 commit 上完全可能，而那恰恰是最该被看见的事实。一个都没问到时同样是
- * `undefined`。两种情形的区别由 {@link TestedProvenance.units} 自己说清楚 ——
- * 汇总表把它们分开渲染，**但没有一种情形会退回 runner 的 HEAD**。
+ * `undefined`。**这个函数的语义一个字没变** —— NDJSON 的 `testedCommit` 是给
+ * `jq` 一把取的标量，它必须继续只在「全体一致」时出现。四种 `undefined` 之间
+ * 的区别现在由 {@link testedCommitVerdict} 说，渲染层问它。
  */
 export function testedCommitConsensus(
   provenance: TestedProvenance | undefined,
 ): string | undefined {
-  if (provenance === undefined) return undefined
-  const first = provenance.units[0]
-  if (first?.commit === undefined) return undefined
-  return provenance.units.every(u => u.commit === first.commit)
-    ? first.commit
-    : undefined
+  const verdict = testedCommitVerdict(provenance)
+  return verdict.kind === 'unanimous' ? verdict.commit : undefined
+}
+
+/** 单位名列表：最多点名三个，剩下的记个数。 */
+function nameList(units: readonly string[]): string {
+  if (units.length <= 3) return units.join('、')
+  return `${units.slice(0, 3).join('、')} 等 ${units.length} 个`
+}
+
+/**
+ * 首栏那一句「被测端 …」。
+ *
+ * 短，因为它和 target / 时长 / 套件 commit 挤在同一行；但**必须让人一眼分得清
+ * 「有台没答上」和「大家报的不一样」**，那正是这条缺陷（issue #96 ②）。逐台原文
+ * 在下面的来源段里，这一句只给结论。
+ */
+export function testedCommitStamp(
+  provenance: TestedProvenance | undefined,
+): string {
+  const verdict = testedCommitVerdict(provenance)
+  switch (verdict.kind) {
+    case 'unanimous':
+      return verdict.commit
+    case 'partial':
+      return (
+        `${verdict.answered}/${verdict.total} 一致为 ${verdict.commit}` +
+        `（${nameList(verdict.silent)} 未答）`
+      )
+    case 'divergent':
+      return (
+        `不一致 —— ${verdict.answered}/${verdict.total} 个被测端报了 ` +
+        `${verdict.commits.length} 个不同的 commit` +
+        (verdict.silent.length === 0
+          ? ''
+          : `，另有 ${nameList(verdict.silent)} 未答`)
+      )
+    case 'silent':
+      return `未知（${verdict.total} 个被测端一个都没答上）`
+    default:
+      return '未知'
+  }
 }
 
 /**
@@ -436,20 +553,97 @@ function renderProvenance(run: SuiteRun): string[] {
     )
   }
   out.push(`  ${padWide(suiteLabel, width)}  ${run.commit ?? '未知'}`)
-  const consensus = testedCommitConsensus(provenance)
-  if (consensus === undefined) {
-    out.push(
-      '  ← 被测端的版本**没有一个统一答案**：报上来的那几个不一致，或者根本没' +
-        '报上来。这一轮证明的是那几台此刻各自跑着的东西，不是上面那个套件 commit',
-    )
-  } else if (!sameCommit(consensus, run.commit)) {
-    out.push(
-      `  ← 被测端与套件**不是同一版**：这一轮验的是 ${consensus}，` +
-        `套件停在 ${run.commit ?? '未知'}。两个值都记在这里，别把它们当成一个`,
-    )
+  // 「有台没答上」与「大家报的不一样」曾经共用同一句话（issue #96 ②）——
+  // 一次 SSH 抖动于是读起来像一次滚更新滚了一半。四种结局四句话。
+  const verdict = testedCommitVerdict(provenance)
+  switch (verdict.kind) {
+    case 'partial':
+      out.push(
+        `  ← **没有任何一台报了别的 commit**：${verdict.answered}/${verdict.total} ` +
+          `个被测端一致报 ${verdict.commit}，${nameList(verdict.silent)} 这次没答上` +
+          '（原因见上面各自那一行）。缺的那几台答上之前，这一栏不给一个统一值 —— ' +
+          '从 4/5 编出共识正是这条报告要避免的事',
+      )
+      break
+    case 'divergent':
+      out.push(
+        `  ← 被测端**真的不一致**：${verdict.answered}/${verdict.total} 个报上来的里面有 ` +
+          `${verdict.commits.length} 个不同的 commit（${verdict.commits
+            .map(c => c.slice(0, 12))
+            .join(
+              ' / ',
+            )}）。舰队是一台一台滚更新的，停在两个版本上完全可能 —— ` +
+          '这一轮证明的是那几台此刻各自跑着的东西，不是上面那个套件 commit',
+      )
+      break
+    case 'silent':
+      out.push(
+        `  ← ${verdict.total} 个被测端**一个都没答上**（不是「报的不一致」）：` +
+          '各自的原因写在上面那几行里。这一轮到底验的是哪一版，报告答不出来',
+      )
+      break
+    case 'unanimous':
+      if (!sameCommit(verdict.commit, run.commit)) {
+        out.push(
+          `  ← 被测端与套件**不是同一版**：这一轮验的是 ${verdict.commit}，` +
+            `套件停在 ${run.commit ?? '未知'}。两个值都记在这里，别把它们当成一个`,
+        )
+      }
+      break
+    default:
+      break
   }
   out.push('')
   return out
+}
+
+/** 一条「清理没做干净」的观察：哪条场景、哪一句。 */
+export interface CleanupFailure {
+  readonly id: string
+  readonly line: string
+}
+
+/**
+ * 这一轮里清理没做干净的那几条（issue #96 ①）。
+ *
+ * 来源是 runner 自己那行 —— 它逐条 `try/catch` 跑 cleanup 栈，抛出的清理会被
+ * 记成 `cleanup 失败: …` 追进本场景的 `log` 证据。所以这个函数**与驱动无关**：
+ * 任何驱动的任何一条清理只要肯抛，就会在这里露头。
+ *
+ * **不参与判定。** 一次清理失败是套件自己的运维债（远端目录删不掉、进程没收
+ * 干净），不是被测系统答错了；把它折进 `pass` 等于用套件侧的残留去否掉一条产品
+ * 结论。它要的只是**可见**：那一轮 107 MB 留在演示机上，而报告里一个字都没有。
+ */
+export function cleanupFailures(run: SuiteRun): readonly CleanupFailure[] {
+  const out: CleanupFailure[] = []
+  for (const r of run.results) {
+    for (const e of r.evidence) {
+      if (e.label !== 'log') continue
+      for (const line of e.value.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.startsWith('cleanup 失败')) {
+          out.push({ id: r.id, line: trimmed })
+        }
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * 这一轮里**因为链路够不着目标机**而红的那几条（issue #96 ③）。
+ *
+ * 判据是驱动打的 `errorKind`，不是错误文本 —— 文本会随消息措辞漂移，而这一栏
+ * 的用处恰恰是让人不必读文本就能分开数。
+ *
+ * **它们照样计入 `error`、照样把整轮判红。** 这个函数不改判定，只回答「这几条
+ * 红里有几条问的根本不是被测系统」。分不开的后果是这类红被整批当成「套件不稳」
+ * 而加豁免，那才是套件失去可信度的路径。
+ */
+export function transportErrors(run: SuiteRun): readonly ScenarioResult[] {
+  return run.results.filter(
+    r => r.outcome === 'error' && r.errorKind === 'transport',
+  )
 }
 
 /** 人可读汇总表。 */
@@ -464,9 +658,9 @@ export function renderSummary(run: SuiteRun): string {
       ? ''
       : provenance === undefined
         ? ` · ${run.commit ?? ''}`
-        : ` · 套件 ${run.commit ?? '未知'} · 被测端 ${
-            testedCommitConsensus(provenance) ?? '未知'
-          }`
+        : ` · 套件 ${run.commit ?? '未知'} · 被测端 ${testedCommitStamp(
+            provenance,
+          )}`
   out.push(
     `阡陌端到端验收套件 · target=${run.target} · ${run.startedAt} · ` +
       `${(run.durationMs / 1000).toFixed(1)}s` +
@@ -513,6 +707,32 @@ export function renderSummary(run: SuiteRun): string {
   out.push('')
   const tally = OUTCOMES.map(o => `${o}=${run.counts[o]}`).join(' ')
   out.push(`合计: ${tally}`)
+
+  // 链路失败 —— 它们仍然计入上面那个 `error=N`、仍然把整轮判红；这一行只是
+  // 把「问的根本不是被测系统」的那几条点出来（issue #96 ③），免得整批红被当成
+  // 「套件不稳」而加豁免。
+  const transport = transportErrors(run)
+  if (transport.length > 0) {
+    out.push(
+      `其中 ${transport.length} / ${run.counts.error} 条 error 是**套件到目标机的 ` +
+        'SSH 链路失败**，不是被测系统的回答（重试打满仍不通 = 这一轮确实没能问完，' +
+        '所以照样计入判定）: ' +
+        transport.map(r => r.id).join(', '),
+    )
+  }
+
+  // 清理残留 —— 汇总表**只展开红行的证据**，于是一条绿场景留下的残留在这张表
+  // 上原本一个字都看不见（issue #96 ①：107 MB 静默留在演示机上）。单独一节。
+  const residue = cleanupFailures(run)
+  if (residue.length > 0) {
+    out.push(
+      `清理残留: ${residue.length} 条场景的清理没做干净` +
+        '（不改判定 —— 那是套件自己的运维债，不是被测系统的回答；但得有人去收）',
+    )
+    for (const r of residue) {
+      out.push(`  ${r.id}  ${r.line}`)
+    }
+  }
 
   // 目标触达 —— 这一行是 issue #61 的直接产物，读报告的人先看它再看判定。
   const executed = run.results.filter(r => r.outcome !== 'skip')
