@@ -7,6 +7,7 @@ import {
   stat,
 } from 'fs/promises'
 import { dirname, join } from 'path'
+import { buildVersion } from 'src/constants/buildProvenance.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
   getPlanSlugCache,
@@ -67,9 +68,16 @@ import {
 } from './paths.js'
 import { getSessionMessages } from './transcriptLoader.js'
 
-// Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
+// Cached at module level to work around a bun --define bug in async contexts.
 // See: https://github.com/oven-sh/bun/issues/26168
-const VERSION = typeof MACRO !== 'undefined' ? MACRO.VERSION : 'unknown'
+//
+// Read through buildVersion() and not `typeof MACRO !== 'undefined'`: that
+// spelling tests a bare `MACRO` identifier the bundler does not substitute, so
+// it is answered by whether the entrypoint's globalThis fallback happens to
+// have run yet — and at module scope, for anything in the entry's static
+// import graph, it has not. This constant becoming `'unknown'` would put
+// `"version":"unknown"` on every transcript entry with nothing to notice it.
+const VERSION = buildVersion() ?? 'unknown'
 
 // Use getOriginalCwd() at each call site instead of capturing at module load
 // time. getCwd() at import time may run before bootstrap resolves symlinks via

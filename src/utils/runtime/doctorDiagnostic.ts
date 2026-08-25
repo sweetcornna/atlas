@@ -1,6 +1,7 @@
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { BIN_NAME, NPM_PACKAGE_NAME } from 'src/constants/brand.js'
+import { buildVersion } from 'src/constants/buildProvenance.js'
 import { occConfigPath } from 'src/config/paths.js'
 import { join, posix, win32 } from 'path'
 import { checkGlobalInstallPermissions } from '../update/autoUpdater.js'
@@ -386,8 +387,7 @@ export function detectLinuxGlobPatternWarnings(): Array<{
 
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationType = await getCurrentInstallationType()
-  const version =
-    typeof MACRO !== 'undefined' && MACRO.VERSION ? MACRO.VERSION : 'unknown'
+  const version = buildVersion() ?? 'unknown'
   const installationPath = await getInstallationPath()
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations()

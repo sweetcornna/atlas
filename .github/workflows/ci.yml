@@ -80,6 +80,14 @@ jobs:
       - name: Check mock hygiene
         run: bun run check:mock-hygiene
 
+      # Issue #75: `typeof MACRO` compiles into a test on a bare identifier the
+      # bundler never substitutes, so the define it guards is silently lost in
+      # every artifact — and unit tests cannot see it, because under `bun test`
+      # the fallback branch really is the correct one. Hard zero, milliseconds,
+      # also inside precheck.
+      - name: Check MACRO guards
+        run: bun run check:macro-guards
+
       # The loop lives in scripts/test-shards.sh — see that file for why
       # sharding is what fixed the 55 red runs, and why an unsharded `bun test`
       # is not a stricter substitute.
