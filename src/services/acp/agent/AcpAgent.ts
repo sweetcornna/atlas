@@ -63,6 +63,7 @@ import { doesMessageExistInSession } from '../../../utils/sessionStorage.js'
 import type { SessionId } from '../../../types/ids.js'
 import type { AcpSession } from './sessionTypes.js'
 import { RESIDENT_INACTIVITY_ABORT_REASON } from '../../../utils/messages.js'
+import { runInAcpWorkspaceTurn } from './sessionWorkspace.js'
 
 /**
  * The `AbortController` reason a `session/cancel` should carry, or `undefined`
@@ -185,7 +186,10 @@ export class AcpAgent implements Agent {
   // ── newSession ────────────────────────────────────────────────
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    const result = await this.createSession(params)
+    // Serialised against every other workspace-owning operation (issue #52):
+    // this one activates a session's workspace AND `process.chdir()`s, so
+    // running it beside a streaming turn moves that turn's ground under it.
+    const result = await runInAcpWorkspaceTurn(() => this.createSession(params))
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -199,7 +203,9 @@ export class AcpAgent implements Agent {
     // conversation history via session/update notifications before responding.
     // Only restore context + MCP connections, then return immediately. This
     // differs from session/load which DOES replay history.
-    const result = await this.getOrCreateSession({ ...params, replay: false })
+    const result = await runInAcpWorkspaceTurn(() =>
+      this.getOrCreateSession({ ...params, replay: false }),
+    )
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -207,7 +213,9 @@ export class AcpAgent implements Agent {
   // ── loadSession ────────────────────────────────────────────────
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    const result = await this.getOrCreateSession(params)
+    const result = await runInAcpWorkspaceTurn(() =>
+      this.getOrCreateSession(params),
+    )
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -274,13 +282,15 @@ export class AcpAgent implements Agent {
     // the source conversation rather than starting a blank session. Per the
     // unstable ForkSessionRequest, params.sessionId is the ID to fork from.
     const { initialMessages } = await loadForkSourceMessages(params.sessionId)
-    const response = await this.createSession(
-      {
-        cwd: params.cwd,
-        mcpServers: params.mcpServers ?? [],
-        _meta: params._meta,
-      },
-      { initialMessages },
+    const response = await runInAcpWorkspaceTurn(() =>
+      this.createSession(
+        {
+          cwd: params.cwd,
+          mcpServers: params.mcpServers ?? [],
+          _meta: params._meta,
+        },
+        { initialMessages },
+      ),
     )
     this.scheduleAvailableCommandsUpdate(response.sessionId)
     return response
