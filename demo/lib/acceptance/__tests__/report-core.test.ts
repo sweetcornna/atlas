@@ -22,6 +22,8 @@ import {
   summarize,
   type SuiteMeta,
   testedCommitConsensus,
+  testedCommitStamp,
+  testedCommitVerdict,
 } from '../report-core.js'
 import type {
   Dimension,
@@ -616,14 +618,16 @@ describe('renderSummary 的被测端来源那一段', () => {
       text.indexOf('PASS  handshake/a'),
     )
     expect(provenanceBlock).not.toContain('c4ed9d8f  ←')
-    expect(text).toContain('没有一个统一答案')
+    // 「一台都没答上」不许说成「大家报的不一样」（issue #96 ②）。
+    expect(text).toContain('一个都没答上')
+    expect(text).toContain('不是「报的不一致」')
   })
 
   test('一个被测端都没问到时也说清楚，而不是静默留白', () => {
     expect(render(provenance([]))).toContain('（一个被测端都没问到）')
   })
 
-  test('四台停在两个版本上时，五行各自的值都在', () => {
+  test('四台停在两个版本上时，五行各自的值都在，而且说的是「真的不一致」', () => {
     const other = 'b'.repeat(40)
     const text = render(
       provenance([
@@ -633,7 +637,108 @@ describe('renderSummary 的被测端来源那一段', () => {
     )
     expect(text).toContain(FLEET_SHA)
     expect(text).toContain(other)
-    expect(text).toContain('· 被测端 未知')
+    expect(text).toContain('· 被测端 不一致')
+    expect(text).toContain('真的不一致')
+    // 这一句是「有台没答上」专用的，不许漏到这里来。
+    expect(text).not.toContain('没有任何一台报了别的 commit')
+  })
+
+  // -------------------------------------------------------------------------
+  // issue #96 ②：「4 台一致 + 1 台不可达」与「4 台里有 2 个 SHA」必须长得不一样。
+  //
+  // 那一轮的现场：5 台里 4 台一致报 fa80e006…、beta-2 一次 SSH 抖动，报告首栏
+  // 写成「被测端 未知」—— 读起来像「大家报的不一样」，而实际没有任何一台报了
+  // 别的 SHA。
+  // -------------------------------------------------------------------------
+
+  const FOUR_OF_FIVE = provenance([
+    { unit: 'beta-1', commit: FLEET_SHA },
+    {
+      unit: 'beta-2',
+      detail: 'SSH 链路失败 (255，对端关闭了连接，已重发 2 次)',
+    },
+    { unit: 'beta-3', commit: FLEET_SHA },
+    { unit: 'beta-4', commit: FLEET_SHA },
+    { unit: 'console (workbench-iap)', commit: FLEET_SHA },
+  ])
+
+  test('4/5 一致 + 1 台未答：首栏点名是「谁没答上」，不是「大家不一致」', () => {
+    const text = render(FOUR_OF_FIVE)
+    expect(text).toContain(`· 被测端 4/5 一致为 ${FLEET_SHA}（beta-2 未答）`)
+    expect(text).toContain('没有任何一台报了别的 commit')
+    expect(text).not.toContain('真的不一致')
+    // 但仍然不给一个统一标量 —— 不从 4/5 编共识（#94 的设计不变）。
+    expect(testedCommitConsensus(FOUR_OF_FIVE)).toBeUndefined()
+  })
+
+  test('两种措辞不共用一个字：不一致那句里没有「未答」，反之亦然', () => {
+    const partial = render(FOUR_OF_FIVE)
+    const divergent = render(
+      provenance([
+        { unit: 'beta-1', commit: FLEET_SHA },
+        { unit: 'beta-2', commit: 'b'.repeat(40) },
+      ]),
+    )
+    expect(partial.includes('未答')).toBe(true)
+    expect(divergent.includes('未答')).toBe(false)
+    expect(divergent.includes('不同的 commit')).toBe(true)
+    expect(partial.includes('不同的 commit')).toBe(false)
+  })
+})
+
+describe('testedCommitVerdict（issue #96 ②）', () => {
+  test('全体一致 → unanimous，并且是唯一给出标量的那种', () => {
+    const v = testedCommitVerdict(ALL_AGREE)
+    expect(v.kind).toBe('unanimous')
+    expect(testedCommitConsensus(ALL_AGREE)).toBe(FLEET_SHA)
+  })
+
+  test('答上的全一致但有单位没答上 → partial，并点名是谁', () => {
+    const v = testedCommitVerdict(
+      provenance([
+        { unit: 'beta-1', commit: FLEET_SHA },
+        { unit: 'beta-2', detail: 'SSH 链路失败 (255)' },
+      ]),
+    )
+    expect(v).toEqual({
+      kind: 'partial',
+      commit: FLEET_SHA,
+      answered: 1,
+      total: 2,
+      silent: ['beta-2'],
+    })
+  })
+
+  test('答上的里面有两个值 → divergent（哪怕还有台没答上）', () => {
+    const v = testedCommitVerdict(
+      provenance([
+        { unit: 'beta-1', commit: FLEET_SHA },
+        { unit: 'beta-2', commit: 'b'.repeat(40) },
+        { unit: 'beta-3', detail: '读不到启动日志' },
+      ]),
+    )
+    expect(v.kind).toBe('divergent')
+    expect(v.kind === 'divergent' && v.commits.length).toBe(2)
+    expect(v.kind === 'divergent' && v.silent).toEqual(['beta-3'])
+  })
+
+  test('一台都没答上 → silent；根本没探针 → absent', () => {
+    expect(
+      testedCommitVerdict(provenance([{ unit: 'beta-1', detail: 'x' }])).kind,
+    ).toBe('silent')
+    expect(testedCommitVerdict(provenance([])).kind).toBe('absent')
+    expect(testedCommitVerdict(undefined).kind).toBe('absent')
+  })
+
+  test('未答的单位超过三个只点名三个，剩下记个数', () => {
+    const many = provenance([
+      { unit: 'beta-1', commit: FLEET_SHA },
+      { unit: 'a', detail: 'x' },
+      { unit: 'b', detail: 'x' },
+      { unit: 'c', detail: 'x' },
+      { unit: 'd', detail: 'x' },
+    ])
+    expect(testedCommitStamp(many)).toContain('a、b、c 等 4 个 未答')
   })
 })
 

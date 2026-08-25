@@ -19,12 +19,13 @@
  */
 
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FleetDriver } from '../fleet/driver.js'
 import { cleanupFailures, summarize } from '../report-core.js'
 import { runScenario } from '../runner.js'
+import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
 import type { Scenario, ScenarioResult } from '../types.js'
 
 /** 假 ssh 回给 `mktemp -d` 的那个根，形状与真的一致（带 SCRATCH_PREFIX）。 */
@@ -156,5 +157,98 @@ describe('一次性目录的清理（issue #96 ①）', () => {
     const result = await runOnce(bin)
     expect(result.outcome).toBe('pass')
     expect(result.evidence.filter(e => e.label === 'log')).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// issue #96 ②：来源探针无重试，且一台问不到就把整份结论降级成「未知」。
+//
+// 探针是**纯读一次日志**，重发绝对安全，而「问不到」的代价高得离谱 —— 那一轮
+// 5 台里 4 台一致报 fa80e006…、只有 beta-2 抖了一下，首栏就写成「被测端 未知」。
+// ---------------------------------------------------------------------------
+
+/** 那一轮舰队上真实的那一版。 */
+const FLEET_SHA = 'fa80e006f18a931cb6386b99a7d5e6503991e2a9'
+
+/** 让假 ssh 记一笔调用次数，用来证明「重试了」或「没重试」。 */
+function counterScript(file: string): string {
+  return `printf 'x' >> '${file}'`
+}
+
+function countOf(file: string): number {
+  try {
+    return readFileSync(file, 'utf8').length
+  } catch {
+    return 0
+  }
+}
+
+describe('来源探针的重试（issue #96 ②）', () => {
+  it('前两次链路抖动、第三次答上 —— 那就是答上了，不记「未知」', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+    madeDirs.push(dir)
+    const counter = join(dir, 'calls')
+    const bin = fakeSsh(
+      [
+        counterScript(counter),
+        `n=$(wc -c < '${counter}' | tr -d ' ')`,
+        `if [ "$n" -lt 3 ]; then`,
+        `  printf 'kex_exchange_identification: Connection closed by remote host\\n' >&2`,
+        `  exit 255`,
+        `fi`,
+        `printf 'log=/home/fake/qianmo-beta/logs/beta-1.out\\nreadable=yes\\nsourceCommit=${FLEET_SHA}\\n'`,
+      ].join('\n'),
+    )
+    const units = (await driver(bin).testedProvenance()).units
+    expect(units).toHaveLength(1)
+    expect(units[0]?.commit).toBe(FLEET_SHA)
+    expect(countOf(counter)).toBe(3)
+  })
+
+  it('打满还是不通：说的是「SSH 链路失败」并带上重发次数，不是「采集失败」', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+    madeDirs.push(dir)
+    const counter = join(dir, 'calls')
+    const bin = fakeSsh(
+      [
+        counterScript(counter),
+        `printf 'Connection closed by 149.118.61.165 port 22\\n' >&2`,
+        `exit 255`,
+      ].join('\n'),
+    )
+    const units = (await driver(bin).testedProvenance()).units
+    expect(units[0]?.commit).toBeUndefined()
+    expect(units[0]?.detail).toContain('SSH 链路失败 (255')
+    expect(units[0]?.detail).toContain('对端关闭了连接')
+    expect(units[0]?.detail).toContain('已重发 2 次')
+    expect(countOf(counter)).toBe(TRANSPORT_RETRY_ATTEMPTS)
+  })
+
+  it('认证被拒这类「重试也没用」的 255 一次定音，不白打两次', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+    madeDirs.push(dir)
+    const counter = join(dir, 'calls')
+    const bin = fakeSsh(
+      [
+        counterScript(counter),
+        `printf 'fake-host: Permission denied (publickey).\\n' >&2`,
+        `exit 255`,
+      ].join('\n'),
+    )
+    const units = (await driver(bin).testedProvenance()).units
+    expect(units[0]?.detail).toContain('重试没用')
+    expect(countOf(counter)).toBe(1)
+  })
+
+  it('远端命令自己非零（不是 255）不算链路失败，也不重试', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+    madeDirs.push(dir)
+    const counter = join(dir, 'calls')
+    const bin = fakeSsh(
+      [counterScript(counter), `printf 'boom\\n' >&2`, `exit 2`].join('\n'),
+    )
+    const units = (await driver(bin).testedProvenance()).units
+    expect(units[0]?.detail).toContain('采集失败 (2)')
+    expect(countOf(counter)).toBe(1)
   })
 })

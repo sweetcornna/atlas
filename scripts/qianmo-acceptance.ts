@@ -69,7 +69,7 @@ import {
   ndjsonStartLine,
   ndjsonSummaryLine,
   renderSummary,
-  testedCommitConsensus,
+  testedCommitStamp,
 } from '../demo/lib/acceptance/report-core.js'
 import { ALL_SCENARIOS } from '../demo/lib/acceptance/registry.js'
 import {
@@ -248,7 +248,7 @@ async function main(): Promise<number> {
   // 改主意只花一秒钟。
   if (testedProvenance !== undefined) {
     process.stdout.write(
-      `被测端 ${testedCommitConsensus(testedProvenance) ?? '未知'} · 套件 ${commit}\n` +
+      `被测端 ${testedCommitStamp(testedProvenance)} · 套件 ${commit}\n` +
         testedProvenance.units
           .map(u => `  ${u.unit}: ${u.commit ?? `未知（${u.detail}）`}\n`)
           .join(''),

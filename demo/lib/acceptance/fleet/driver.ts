@@ -108,6 +108,13 @@ import {
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK, TIMINGS_FILE } from '../local/driver.js'
 import { TRAIL_PATH } from '../observe.js'
+import {
+  isRetriableTransportFailure,
+  isTransportFailure,
+  TRANSPORT_RETRY_ATTEMPTS,
+  TRANSPORT_RETRY_BACKOFF_MS,
+  transportSignature,
+} from '../transport.js'
 
 /**
  * 一次性目录的家目录相对前缀。
@@ -1485,6 +1492,10 @@ export class FleetDriver implements AcceptanceDriver {
    * 正是最该被看见的事实。合并成一个值的那一刻它就消失了；合并只发生在渲染层
    * （`testedCommitConsensus`），而且只在全体一致时才给出答案。
    *
+   * **「有台没答上」不是「大家报的不一样」**（issue #96 ②）：探针因此带重试
+   * （纯读一次日志，重发绝对安全），而渲染层用 `testedCommitVerdict` 把这两种
+   * 结局分开措辞。从 4/5 编出共识仍然不做 —— 变的只是那句话怎么写。
+   *
    * ## `sourceCommit=unknown` 记成「没报上来」
    *
    * 那是产物构建时**就没能确定来源**（部署树没 `.git` 又没戳）。把这个字面量
@@ -1513,7 +1524,10 @@ export class FleetDriver implements AcceptanceDriver {
     // **不能**用 `tail -200`：banner 是进程起来时写的第一行，一台跑了几天的
     // 节点后面早堆满了别的行。整份 grep，取最后一次匹配 = 最近一次启动。
     const log = `$(dirname '${shellQuote(host.configRoot)}')/../../logs/${host.node}.out`
-    const probe = await this.#ssh(
+    // 纯读一次日志，重发绝对安全 —— 而「问不到」这件事的代价高得离谱：一台没
+    // 答上，整份来源结论就降级成「未知」（issue #96 ②）。
+    let retries = 0
+    const probe = await this.#sshRetry(
       host.ssh,
       [
         `f="${log}"`,
@@ -1525,7 +1539,12 @@ export class FleetDriver implements AcceptanceDriver {
         `  printf 'readable=no\n'`,
         `fi`,
       ],
-      PROVENANCE_PROBE_TIMEOUT_MS,
+      {
+        timeoutMs: PROVENANCE_PROBE_TIMEOUT_MS,
+        onRetry: n => {
+          retries = n
+        },
+      },
     )
     return interpretProvenanceProbe(
       host.node,
@@ -1534,6 +1553,7 @@ export class FleetDriver implements AcceptanceDriver {
       strField(probe.stdout, 'readable') === 'no'
         ? '读不到该节点的启动日志'
         : '启动日志里没有 sourceCommit 字段（这份产物是 PR #74 之前构建的？）',
+      retries,
     )
   }
 
@@ -1546,7 +1566,8 @@ export class FleetDriver implements AcceptanceDriver {
         : [`'${shellQuote(override)}'`]),
       `"${DEFAULT_CONSOLE_LOG}"`,
     ]
-    const probe = await this.#ssh(
+    let retries = 0
+    const probe = await this.#sshRetry(
       consoleHost,
       [
         // **只在读到时才打 `readable=yes`**，别先打一行 `readable=no` 再在循环
@@ -1563,7 +1584,12 @@ export class FleetDriver implements AcceptanceDriver {
         `  break`,
         `done`,
       ],
-      PROVENANCE_PROBE_TIMEOUT_MS,
+      {
+        timeoutMs: PROVENANCE_PROBE_TIMEOUT_MS,
+        onRetry: n => {
+          retries = n
+        },
+      },
     )
     return interpretProvenanceProbe(
       `console (${consoleHost})`,
@@ -1572,6 +1598,7 @@ export class FleetDriver implements AcceptanceDriver {
       strField(probe.stdout, 'readable') === 'yes'
         ? 'banner 里没有 sourceCommit 字段（这份产物是 PR #76 之前构建的？）'
         : `读不到控制台的启动日志（试过 ${candidates.join(' / ')}；改了部署路径就用 QIANMO_ACCEPTANCE_CONSOLE_LOG 指过去）`,
+      retries,
     )
   }
 
@@ -1732,6 +1759,45 @@ export class FleetDriver implements AcceptanceDriver {
   }
 
   /**
+   * 跑一条**幂等**远端命令，链路抖了就再打一次。
+   *
+   * ## 只给幂等命令用
+   *
+   * 这个包装不判断安全性，调用方负责。起一个一次性常驻、写一个文件、`kill` 一
+   * 个 pid —— 这些重发一次的后果是两个进程 / 半截文件 / 打到别人头上，比一条
+   * `error` 糟得多。目前的调用点全是「读一次」或「反复做结果相同」：来源探针、
+   * 家目录、开一次性目录（路径由远端回显、`mkdir -p` 语义）、清理的 `rm -rf`。
+   *
+   * ## 为什么值得重试
+   *
+   * 真机腿一轮两小时、几百次 SSH，其中一台还要经 gcloud IAP 的 ProxyCommand。
+   * 那一轮唯一的红就是这么来的：`mktemp -d` 撞上一次隧道 EOF，栈停在开目录那
+   * 一步，`beta-up.sh` 一行都没跑到 —— 它不可能是在回答场景那个问题，而同条
+   * 重跑就 PASS。**重试成功不是放水**：那说明这一步确实做成了，套件确实问到了
+   * 被测系统。重试**失败**仍然一条不少地报上去，一次都不吞。
+   */
+  async #sshRetry(
+    ssh: string,
+    lines: readonly string[],
+    options?: {
+      readonly timeoutMs?: number
+      readonly attempts?: number
+      /** 每次准备重发时回调一次，参数是「这是第几次重发」与上一次的结果。 */
+      readonly onRetry?: (attempt: number, previous: ExecResult) => void
+    },
+  ): Promise<ExecResult> {
+    const attempts = Math.max(1, options?.attempts ?? TRANSPORT_RETRY_ATTEMPTS)
+    let result = await this.#ssh(ssh, lines, options?.timeoutMs)
+    for (let n = 1; n < attempts; n++) {
+      if (!isRetriableTransportFailure(result)) break
+      options?.onRetry?.(n, result)
+      await sleep(TRANSPORT_RETRY_BACKOFF_MS * n)
+      result = await this.#ssh(ssh, lines, options?.timeoutMs)
+    }
+    return result
+  }
+
+  /**
    * 跑一条远端命令。
    *
    * `stdin` 给了就不能带 `-n`（那个选项把 stdin 接到 /dev/null），这正是
@@ -1852,11 +1918,22 @@ function interpretProvenanceProbe(
   probe: ExecResult,
   where: string,
   emptyReason: string,
+  retries = 0,
 ): TestedUnitProvenance {
   if (probe.code !== 0) {
+    // 「链路没通」与「问到了但答不上来」在报告上必须长得不一样：前者说的是套件
+    // 够不着这台机器，后者才是关于这台机器的观察（issue #96 ②）。重试次数也带
+    // 上 —— 打过三次仍不通和只打过一次，是两种可信度。
+    const how = isTransportFailure(probe)
+      ? `SSH 链路失败 (${probe.code}${
+          transportSignature(probe.stderr) === undefined
+            ? ''
+            : `，${transportSignature(probe.stderr)}`
+        }${retries === 0 ? '' : `，已重发 ${retries} 次`})`
+      : `采集失败 (${probe.code})`
     return {
       unit,
-      detail: `采集失败 (${probe.code}): ${probe.stderr.trim().slice(0, 300)}`,
+      detail: `${how}: ${probe.stderr.trim().slice(0, 300)}`,
     }
   }
   const raw = strField(probe.stdout, 'sourceCommit')
