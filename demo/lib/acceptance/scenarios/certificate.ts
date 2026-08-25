@@ -19,7 +19,11 @@
  *    `4003 / 'unauthorized'`，具体是哪一步漏了只有节点自己的审计链知道，
  *    而审计链对这五种情况记的**也是同一个 `unknown_signer`**。所以这一维的
  *    每条拒绝场景都必须配一条对照（同一次运行里另一张证书仍然通），否则
- *    「配错了」和「被拒了」在报告里长得一模一样。
+ *    「配错了」和「被拒了」在报告里长得一模一样。**对照必须在同一轮里**——
+ *    分成两条场景跑在不同轮次，正是这条纪律要防的那种绿。`no-revocation-
+ *    list-fails-closed` 是唯一没法用「另一张证书」当对照的（清单缺失时整条
+ *    CA 路是关的，谁都通不过），它的对照落在链路上：{@link
+ *    probeRegistryFromNodeHost} 先证明节点那台机器够得着注册中心（issue #86）。
  *
  * ② **没有吊销清单 = 整条 CA 路关闭**，不是「什么都没吊销」。fail closed。
  *
@@ -210,6 +214,61 @@ export async function opensslGate(
   return version === null
     ? `${host.describe} 上没有可用的 openssl；qm ca 的签发链跑不起来（这是 CA 工具的外部依赖，不是被测系统的缺陷）`
     : undefined
+}
+
+/** {@link probeRegistryFromNodeHost} 的一次探测结果。 */
+interface RegistryProbe {
+  /** curl 自己的退出码；连不上是非 0（拒连 7、超时 28），HTTP 4xx/5xx 仍是 0。 */
+  readonly exitCode: number
+  /** HTTP 状态码；一个字节都没收到时是 0。 */
+  readonly status: number
+  /** 响应体原文。 */
+  readonly body: string
+}
+
+/**
+ * 从**节点那台机器**上打一次注册中心。
+ *
+ * ## 它存在的理由：把两种失败分开（issue #86）
+ *
+ * 这一维的每条拒绝场景都要一条同轮对照（头注 ①）。`no-revocation-list-fails-
+ * closed` 没法用「另一张证书仍然通」那种对照 —— 清单缺失时整条 CA 路是关的，
+ * 谁都通不过。于是它剩下的唯一同轮对照就是**链路本身**：先证明节点那台机器
+ * 够得着注册中心，再证明清单缺失导致了拒绝。少了前一半，「隧道根本没通」与
+ * 「fail closed」在报告里长得完全一样 —— 两者都是每一次 CA 握手以
+ * `unknown_signer` 收场，而两者都会让那条场景变绿。
+ *
+ * ## 必须喂 `registryHostUrl`，不是 `registryUrl`
+ *
+ * 见 {@link CertificateFixture.registryHostUrl}：本地腿两者相同，真机腿上前者
+ * 是那台机器上一条反向隧道的入口。拿 runner 侧那个地址去 curl，验的是 runner
+ * 自己够不够得着自己 —— 恒真，等于什么都没验。
+ *
+ * ## 为什么是 curl 而不是 `fetch`
+ *
+ * `fetch` 跑在 runner 进程里，够不着真机腿那条隧道的**远端**。curl 经
+ * {@link ExecHost.run} 下发到目标机，两条腿上问的都是「节点那侧看到的地址」。
+ * 真机腿本来就假定目标机有 curl（`FleetDriver.#reverseTunnel` 的预检就是
+ * 一次远端 curl），所以这不是新增的外部依赖。
+ */
+async function probeRegistryFromNodeHost(
+  host: ExecHost,
+  url: string,
+): Promise<RegistryProbe> {
+  // `-w` 的格式串把状态码接在响应体后面另起一行；连不上时 curl 仍会写出
+  // `000`，于是「连不上」与「HTTP 000」不会退化成同一个 undefined。
+  const result = await host.run(
+    ['curl', '-sS', '--max-time', '10', '-w', '\n%{http_code}', url],
+    { timeoutMs: 60_000 },
+  )
+  const cut = result.stdout.lastIndexOf('\n')
+  const tail = cut === -1 ? result.stdout : result.stdout.slice(cut + 1)
+  const status = Number.parseInt(tail.trim(), 10)
+  return {
+    exitCode: result.code,
+    status: Number.isNaN(status) ? 0 : status,
+    body: cut === -1 ? '' : result.stdout.slice(0, cut),
+  }
 }
 
 /**
@@ -490,7 +549,7 @@ export const certificateScenarios: readonly Scenario[] = [
     dimension: 'certificate',
     title: '没有吊销清单时整条 CA 路关闭（fail closed，不是「什么都没吊销」）',
     expected:
-      '证书本身完全有效、也已登记，但注册中心上没有吊销清单 → 握手仍然 4003',
+      '同轮对照：节点那台机器 curl 得到 /v0/health 200；证书本身完全有效、也已登记，但注册中心上没有吊销清单 → 握手仍然 4003',
     requires: [
       'spawn-node',
       'raw-dial',
@@ -518,6 +577,21 @@ export const certificateScenarios: readonly Scenario[] = [
       })
       // 故意**不**发布吊销清单。
       const missing = await fetch(`${fixture.registryUrl}/v0/revocation-list`)
+
+      // 同轮对照（issue #86）。这一维每条拒绝场景都得配一条对照（头注 ①），
+      // 而这一条没法用「另一张证书仍然通」那种形态 —— 清单缺失时整条 CA 路
+      // 是关的，谁都通不过。所以对照落在**链路**上：先在节点那台机器上证明
+      // 注册中心够得着、且答的确实是注册中心本身，再去证明清单缺失导致了
+      // 拒绝。没有这一半，「隧道没通」与「fail closed」在报告里长得一模一样。
+      const health = await probeRegistryFromNodeHost(
+        fixture.host,
+        `${fixture.registryHostUrl}/v0/health`,
+      )
+      const rlFromHost = await probeRegistryFromNodeHost(
+        fixture.host,
+        `${fixture.registryHostUrl}/v0/revocation-list`,
+      )
+
       const node = await startCaOnlyNode(ctx, fixture)
       const probe = await dialWithCertificate(node, certificate)
       await delay(500)
@@ -525,7 +599,24 @@ export const certificateScenarios: readonly Scenario[] = [
 
       return checks
         .note('夹具位置', fixture.host.describe)
+        .note('节点那侧的注册中心地址', fixture.registryHostUrl)
         .eq(missing.status, 404, '注册中心上还没有吊销清单')
+        .eq(
+          health.exitCode,
+          0,
+          '对照：节点那台机器 curl 注册中心的退出码（非 0 = 根本够不着）',
+        )
+        .eq(health.status, 200, '对照：节点那台机器上 /v0/health 的 HTTP 码')
+        .contains(
+          health.body,
+          '"status":"ok"',
+          '对照：答话的确实是注册中心本身，不是那个口上的别的东西',
+        )
+        .eq(
+          rlFromHost.status,
+          404,
+          '对照：从节点那台机器看，吊销清单也确实是 404（不是拉不到）',
+        )
         .expect(!probe.authed, '握手没有成功', probe.authed)
         .eq(probe.closeCode, CLOSE_UNAUTHORIZED, '关闭码')
         .expect(
@@ -537,7 +628,7 @@ export const certificateScenarios: readonly Scenario[] = [
           '为什么是这样',
           'handshakeCredentialOf 第一行就是 `if (selector === undefined || !this.#rlFresh()) return null`：拉不到清单时有效凭据集退回只剩 --trust 那几条。撤销机制不可用时宁可谁都不认，也不认一份可能已经作废的名单。',
         )
-        .done('缺吊销清单时 fail closed')
+        .done('链路通着、清单缺着 → fail closed')
     },
   },
 
