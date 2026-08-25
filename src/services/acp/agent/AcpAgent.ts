@@ -99,9 +99,57 @@ export class AcpAgent implements Agent {
   sessions = new Map<string, AcpSession>()
   private clientCapabilities?: ClientCapabilities
   private qianmoResident = false
+  /**
+   * The workspace this connection is about, for read-only methods that the
+   * client asked without naming one (issue #68).
+   *
+   * `session/list` needs a directory to filter by and its `cwd` is optional,
+   * so something has to stand in when the client omits it. The obvious global
+   * — `getOriginalCwd()` — is the wrong thing to read: since #44 every TURN
+   * re-points it at the session it is running (`activateAcpSessionWorkspace`),
+   * so in a process serving more than one workspace the answer depended on
+   * which session happened to be streaming at that instant. A `session/list`
+   * sent during another thread's turn came back filtered by that thread's
+   * directory.
+   *
+   * The lock added for #52 cannot help here and must not be extended to try:
+   * a read-only query taking it would sit behind the long turn, and head-of-
+   * line blocking is the cost that fix already accepted rather than one to
+   * widen. So this is not a lock, it is a different value to read — one the
+   * client DECLARED (`session/new`, `session/load`, `session/resume`,
+   * `session/fork` all carry a cwd) rather than one a turn happened to leave
+   * behind. Turns never write it, so the answer no longer depends on what is
+   * running.
+   *
+   * Initialised to the spawn cwd, which is what `getOriginalCwd()` returns
+   * before any session exists — so a `session/list` sent before the first
+   * `session/new` (the usual order: a client lists past threads to populate
+   * its picker) answers exactly as it did before.
+   *
+   * It is a single value and a process may hold sessions in several
+   * directories, so "the last workspace the client opened" is a guess in that
+   * case. It is a STABLE guess, which is the property that was missing; a
+   * client that needs a specific one passes `cwd`, which the spec provides
+   * for exactly this.
+   */
+  private clientWorkspaceCwd: string
 
   constructor(conn: AgentSideConnection) {
     this.conn = conn
+    this.clientWorkspaceCwd = getOriginalCwd()
+  }
+
+  /**
+   * Record the workspace a client just opened a session in.
+   *
+   * Called from the session-opening entry points only, and only once the open
+   * has succeeded. Nothing on the prompt path may call this — a running turn
+   * saying which workspace the client is asking about is the bug (#68).
+   */
+  private noteClientWorkspace(cwd: string | null | undefined): void {
+    if (typeof cwd === 'string' && cwd.length > 0) {
+      this.clientWorkspaceCwd = cwd
+    }
   }
 
   // ── initialize ────────────────────────────────────────────────
@@ -190,6 +238,7 @@ export class AcpAgent implements Agent {
     // this one activates a session's workspace AND `process.chdir()`s, so
     // running it beside a streaming turn moves that turn's ground under it.
     const result = await runInAcpWorkspaceTurn(() => this.createSession(params))
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -206,6 +255,7 @@ export class AcpAgent implements Agent {
     const result = await runInAcpWorkspaceTurn(() =>
       this.getOrCreateSession({ ...params, replay: false }),
     )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -216,6 +266,7 @@ export class AcpAgent implements Agent {
     const result = await runInAcpWorkspaceTurn(() =>
       this.getOrCreateSession(params),
     )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -236,12 +287,17 @@ export class AcpAgent implements Agent {
     }
 
     // Resolve the effective cwd: client-provided wins, fall back to the
-    // agent's current working directory (set by the most recent session/new
-    // or session/load). Standard ACP clients (e.g. Goose) call session/list
-    // with empty params and no cwd — without a fallback, listSessionsImpl
-    // treats undefined dir as "all projects" and returns every session on
-    // disk, which is unrelated to the workspace the user actually has open.
-    const requestedCwd = params.cwd || getOriginalCwd()
+    // workspace this connection is about. Standard ACP clients (e.g. Goose)
+    // call session/list with empty params and no cwd — without a fallback,
+    // listSessionsImpl treats undefined dir as "all projects" and returns
+    // every session on disk, which is unrelated to the workspace the user
+    // actually has open.
+    //
+    // The fallback deliberately does NOT read `getOriginalCwd()` (issue #68):
+    // that global follows whichever session is currently running a turn, so
+    // this answer used to change depending on what another thread happened to
+    // be doing. See `clientWorkspaceCwd` above.
+    const requestedCwd = params.cwd || this.clientWorkspaceCwd
     const canonicalRequested = await canonicalizePath(requestedCwd)
 
     const candidates = await listSessionsImpl({
@@ -292,6 +348,7 @@ export class AcpAgent implements Agent {
         { initialMessages },
       ),
     )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(response.sessionId)
     return response
   }
