@@ -118,23 +118,90 @@ export function coverageByDimension(
   })
 }
 
-/** 机器可读：一行一个场景，末行 summary。 */
+/**
+ * NDJSON 的三种行，以及「这份文件跑完了没有」怎么读出来。
+ *
+ * 一份完整的产物长这样：
+ *
+ * ```
+ * {"kind":"start",   …}   ← 第一行，开跑就落盘
+ * {"kind":"scenario",…}   ← 一条一行，出一条写一行
+ * …
+ * {"kind":"summary", …}   ← 最后一行，跑完才落盘
+ * ```
+ *
+ * **为什么要有 `start` 这一行。** 结果是流式落盘的（见
+ * `scripts/qianmo-acceptance.ts`），于是被打断的一轮会留下一份**没有末行**的
+ * 文件 —— 那是好事（issue #85：以前是零产物），但「缺末行」本身不能是唯一的
+ * 信号：读的人拿到一份没有 summary 的文件，分不出「跑了一半被杀」「一条都没
+ * 跑起来」「文件被截断了」，也拿不到 target / startedAt（那两个字段以前只存在
+ * 于 summary 行里）。首行把这些先写下来，于是判据是**正向**的：
+ *
+ * | 文件形态 | 结论 |
+ * | --- | --- |
+ * | 不存在 / 空 | 这一轮没开始 |
+ * | 有 `start` 无 `summary` | **跑到一半被打断**；`start.planned` 与 scenario 行数之差就是没跑的条数 |
+ * | 末行是 `summary` | 跑完了，判定看 `summary.pass` |
+ *
+ * 程序化的同一条判据是 {@link fromNdjson}：没有 summary 行就返回 `undefined`，
+ * 绝不拿半份结果编一个 `SuiteRun` 出来。命令行侧是
+ * `tail -n 1 … | jq -e '.kind == "summary"'`，CI 那道防假绿护栏就是这么读的。
+ */
+export function ndjsonStartLine(start: {
+  readonly target: Target
+  readonly startedAt: string
+  readonly commit?: string
+  /** 本轮计划跑多少条（`--only` 过滤之后）。 */
+  readonly planned: number
+}): string {
+  return JSON.stringify({
+    kind: 'start',
+    target: start.target,
+    startedAt: start.startedAt,
+    commit: start.commit,
+    planned: start.planned,
+  })
+}
+
+/** 一条场景结果的一行。见 {@link ndjsonStartLine} 的表。 */
+export function ndjsonScenarioLine(result: ScenarioResult): string {
+  return JSON.stringify({ kind: 'scenario', ...result })
+}
+
+/** 末行汇总。**只有跑完了才写**，所以它的存在就是「这一轮完整」的判据。 */
+export function ndjsonSummaryLine(run: SuiteRun): string {
+  return JSON.stringify({
+    kind: 'summary',
+    target: run.target,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    durationMs: run.durationMs,
+    counts: run.counts,
+    targetTouches: run.targetTouches,
+    pass: run.pass,
+    commit: run.commit,
+    coverage: coverageByDimension(run),
+  })
+}
+
+/**
+ * 机器可读：首行 start、一行一个场景、末行 summary。
+ *
+ * 一次性渲染一份**完整**产物。真跑不走这条路（那边是流式追加的，见
+ * `scripts/qianmo-acceptance.ts`），但两边逐字节同形 —— 三段都是上面那三个
+ * 函数拼的，格式只有一份定义。
+ */
 export function toNdjson(run: SuiteRun): string {
-  const lines = run.results.map(r => JSON.stringify({ kind: 'scenario', ...r }))
-  lines.push(
-    JSON.stringify({
-      kind: 'summary',
+  const lines = [
+    ndjsonStartLine({
       target: run.target,
       startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      durationMs: run.durationMs,
-      counts: run.counts,
-      targetTouches: run.targetTouches,
-      pass: run.pass,
       commit: run.commit,
-      coverage: coverageByDimension(run),
+      planned: run.results.length,
     }),
-  )
+    ...run.results.map(ndjsonScenarioLine),
+    ndjsonSummaryLine(run),
+  ]
   return `${lines.join('\n')}\n`
 }
 
@@ -144,6 +211,13 @@ export function toNdjson(run: SuiteRun): string {
  * 存在是为了让「上一轮的结果」可以被后续工具（趋势对比、真机腿合并）重新
  * 读进来，而不是只能靠肉眼看表。解析失败的行直接跳过而不是抛 —— 结果文件
  * 可能被 tee 混进别的输出，为一行噪声丢掉整份结果是净亏损。
+ *
+ * **没有 summary 行就返回 `undefined`，这是「这一轮没跑完」的程序化判据**
+ * （见 {@link ndjsonStartLine} 那张表）。结果是流式落盘的，半份文件是常态而
+ * 不是异常；拿半份 scenario 行 `summarize()` 一下会得出一个**语法上完整、
+ * 语义上假的** `SuiteRun`（counts 少一截、`pass` 却可能是 true），那正是这条
+ * 修复要避免的另一种静默。`kind: 'start'` 行在这里被忽略：它的用处是让人和
+ * shell 读半份文件，反解一轮完整结果不需要它。
  */
 export function fromNdjson(text: string): SuiteRun | undefined {
   const results: ScenarioResult[] = []

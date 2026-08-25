@@ -239,6 +239,18 @@ jobs:
           summary="$(tail -n 1 "$out/results.ndjson")"
           echo "$summary" | jq .
 
+          # 产物是流式落盘的（issue #85）：末行是 summary **只有跑完了才成立**。
+          # 被打断的一轮会留下一份没有末行的文件，那时 `tail -n 1` 拿到的是一条
+          # scenario 行，它没有 `.counts` / `.pass` —— 下面每一条 `jq -e` 都会
+          # 因为 null 而失败，形态上没问题，但报出来的原因会全部指错方向。先把
+          # 「这份文件到底跑完没有」问清楚，是这道护栏读 NDJSON 的第一步。
+          echo "$summary" | jq -e '.kind == "summary"' > /dev/null || {
+            echo "::error title=Run did not finish::results.ndjson 末行不是 summary —— 这一轮没跑完（被打断/被杀），不是判定结果。首行 kind:start 里有 target/startedAt/planned。"
+            head -n 1 "$out/results.ndjson" | jq . || true
+            cat "$log"
+            exit 1
+          }
+
           # 先证明「真的跑了一条并且它绿了」。少了这条，护栏会以最坏的方式退化：
           # 那条场景一旦被改名或删掉，`--only` 匹配不到任何东西 → 零场景 → counts
           # 全 0、targetTouches 也是 0 → 判定 FAIL → exit 1 → 上面的 `if` 照样满足，

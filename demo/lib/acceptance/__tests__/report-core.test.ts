@@ -14,6 +14,9 @@ import {
   briefEvidence,
   coverageByDimension,
   fromNdjson,
+  ndjsonScenarioLine,
+  ndjsonStartLine,
+  ndjsonSummaryLine,
   renderSummary,
   summarize,
   type SuiteMeta,
@@ -206,7 +209,7 @@ describe('coverageByDimension', () => {
 })
 
 describe('NDJSON 往返', () => {
-  test('每个场景一行 + 末行 summary', () => {
+  test('首行 start + 每个场景一行 + 末行 summary', () => {
     const run = summarize(
       [
         result({ id: 'handshake/a', outcome: 'pass' }),
@@ -215,13 +218,73 @@ describe('NDJSON 往返', () => {
       META,
     )
     const lines = toNdjsonLines(run)
-    expect(lines.length).toBe(3)
-    expect(JSON.parse(lines[0] ?? '').kind).toBe('scenario')
+    expect(lines.length).toBe(4)
+    const start = JSON.parse(lines[0] ?? '')
+    expect(start.kind).toBe('start')
+    // 被打断的文件只有首行这些字段可读 —— target / startedAt 以前只存在于
+    // summary 行里，于是半份产物连「这是哪条腿」都答不出来。
+    expect(start.target).toBe('local')
+    expect(start.startedAt).toBe(META.startedAt)
+    expect(start.commit).toBe('c4ed9d8f')
+    expect(start.planned).toBe(2)
     expect(JSON.parse(lines[1] ?? '').kind).toBe('scenario')
-    const summary = JSON.parse(lines[2] ?? '')
+    expect(JSON.parse(lines[2] ?? '').kind).toBe('scenario')
+    const summary = JSON.parse(lines[3] ?? '')
     expect(summary.kind).toBe('summary')
     expect(summary.pass).toBe(false)
     expect(Array.isArray(summary.coverage)).toBe(true)
+  })
+
+  test('流式拼出来的一份与 toNdjson 逐字节相同', () => {
+    // 真跑走的是「首行 → 每条追加 → 末行」，`toNdjson` 只有单测和一次性
+    // 渲染在用。两条路各写各的格式是这类产物最典型的漂移，这里钉住。
+    const results = [
+      result({ id: 'handshake/a', outcome: 'pass' }),
+      result({ id: 'policy/b', outcome: 'fail' }),
+    ]
+    const run = summarize(results, META)
+    const streamed =
+      `${ndjsonStartLine({
+        target: run.target,
+        startedAt: run.startedAt,
+        commit: run.commit,
+        planned: results.length,
+      })}\n` +
+      `${results.map(r => `${ndjsonScenarioLine(r)}\n`).join('')}` +
+      `${ndjsonSummaryLine(run)}\n`
+    expect(streamed).toBe(renderNdjson(run))
+  })
+
+  test('被打断的一份：有 start 无 summary，读得出跑到哪、也读得出没跑完', () => {
+    const run = summarize(
+      [
+        result({ id: 'handshake/a', outcome: 'pass' }),
+        result({ id: 'policy/b', outcome: 'pass' }),
+      ],
+      META,
+    )
+    // 计划 115 条，写到第 2 条被杀 —— 正是 issue #85 里那个现场的形状。
+    const partial =
+      `${ndjsonStartLine({
+        target: run.target,
+        startedAt: run.startedAt,
+        commit: run.commit,
+        planned: 115,
+      })}\n` + run.results.map(r => `${ndjsonScenarioLine(r)}\n`).join('')
+
+    const lines = partial.trimEnd().split('\n')
+    // ① 末行不是 summary → 这一轮没跑完。CI 那道护栏与人都按这条读。
+    expect(JSON.parse(lines.at(-1) ?? '').kind).not.toBe('summary')
+    // ② 首行还在，于是「计划多少 / 跑了多少 / 哪条腿」都答得出来。
+    const start = JSON.parse(lines[0] ?? '')
+    expect(start.planned).toBe(115)
+    expect(start.target).toBe('local')
+    expect(lines.filter(l => JSON.parse(l).kind === 'scenario').length).toBe(2)
+    // ③ 前面那些结果是真留下来了 —— 修复要的就是这一条。
+    expect(JSON.parse(lines[1] ?? '').id).toBe('handshake/a')
+    // ④ 而程序化反解**不会**拿半份编一个 SuiteRun 出来：那两条全绿，
+    //    `summarize` 一下会得出 pass=true，恰好是最坏的那种静默。
+    expect(fromNdjson(partial)).toBeUndefined()
   })
 
   test('fromNdjson 还原判定与逐条结果', () => {
