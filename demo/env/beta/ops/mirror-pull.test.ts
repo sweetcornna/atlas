@@ -96,6 +96,14 @@ chmodSync(SHARED_SCRIPT, 0o755)
 mkdirSync(SHARED_BIN, { recursive: true })
 writeFileSync(join(SHARED_BIN, 'ssh'), SSH_STUB)
 chmodSync(join(SHARED_BIN, 'ssh'), 0o755)
+// 那笔首执行开销在**模块作用域**付掉——这里没有任何用例的超时在跑。只建一次还不够：
+// 文件里第一条走到这两个文件的用例仍要独自扛它，而它没有上界（issue #56 实测：6 路
+// 「写新脚本再 exec 一次」的负载下，同一次扫描 p50 2273 ms、最坏 4278 ms，对着 5 000 ms
+// 的单测预算）。两次调用都是**空转**：脚本第一行就是 `${1:?}`，桩第一行就是
+// `${STUB_MODE:?}`，都在做任何事之前退出，退出码不看。
+for (const executable of [SHARED_SCRIPT, join(SHARED_BIN, 'ssh')]) {
+  Bun.spawnSync([executable], { stdout: 'ignore', stderr: 'ignore' })
+}
 
 function betaRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'qianmo-mirror-pull-'))
