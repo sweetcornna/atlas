@@ -264,7 +264,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
         with:
-          name: acceptance-local-${{ github.run_id }}
+          # 带上 run_attempt：artifact 名在 v4+ 是唯一键，重跑同一个 run 时
+          # 只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑恰恰是红了之后
+          # 最常做的动作。分开存也正好留住两次尝试各自的现场。
+          name: acceptance-local-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/acceptance-local
           if-no-files-found: warn
           retention-days: 14
