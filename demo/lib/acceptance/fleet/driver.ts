@@ -78,6 +78,7 @@ import type {
   ExecHost,
   ExecHostWhere,
   ExecResult,
+  LauncherHost,
   MirrorTransportReport,
   MirrorTransportUnit,
   NodeHandle,
@@ -319,7 +320,7 @@ export class FleetDriver implements AcceptanceDriver {
     ]
     if (config.consoleHost !== undefined) caps.push('mirror-transport')
     if (config.spawnMachines.length > 0) {
-      caps.push('spawn-node', 'restart-node', 'spawn-console')
+      caps.push('spawn-node', 'restart-node', 'spawn-console', 'run-launcher')
     }
     this.capabilities = new Set(caps)
   }
@@ -1014,6 +1015,73 @@ export class FleetDriver implements AcceptanceDriver {
       `for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done`,
       `kill -KILL -"$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null || true`,
     ])
+  }
+
+  /**
+   * 真机的启动器位：跑**那台机器上部署好的**那一份脚本。
+   *
+   * 「用哪份脚本」这个选择与它的代价写在 {@link LauncherHost} 的头注上 ——
+   * 那不是实现细节，是这一维在真机腿上到底回答了什么问题。
+   *
+   * `betaRoot` 与 `workdir` 都在一次性根下，所以脚本写出来的 `run/*.pid`、
+   * `logs/*`、`peers.conf` 一律落在那儿，**碰不到 `~/qianmo-beta`**。
+   */
+  async launcherHost(ctx: ScenarioContext): Promise<LauncherHost> {
+    const machine = await this.#machineFor(ctx)
+    const home = await this.#homeOf(machine.ssh)
+    const root = await this.#scratch(ctx, machine.ssh)
+    const betaRoot = `${root}/beta-root`
+    const workdir = `${root}/work`
+    await this.#ssh(machine.ssh, [
+      `mkdir -p '${shellQuote(betaRoot)}/run' '${shellQuote(betaRoot)}/logs'`,
+    ])
+    const ssh = machine.ssh
+    return {
+      describe: machine.label,
+      repoDir: `${home}/${machine.repoRel}`,
+      betaRoot,
+      workdir,
+      writeFile: async (relPath, content, options) => {
+        const abs = `${workdir}/${relPath}`
+        const written = await this.#ssh(
+          ssh,
+          [
+            `mkdir -p -- "$(dirname -- '${shellQuote(abs)}')"`,
+            `cat > '${shellQuote(abs)}'`,
+            ...(options?.mode === undefined
+              ? []
+              : [`chmod ${options.mode} -- '${shellQuote(abs)}'`]),
+          ],
+          undefined,
+          content,
+        )
+        if (written.code !== 0) {
+          throw new Error(
+            `在 ${ssh} 上写 ${relPath} 失败 (${written.code}): ${written.stderr.slice(0, 300)}`,
+          )
+        }
+        return abs
+      },
+      run: async (argv, options) => {
+        const env = Object.entries(options?.env ?? {})
+          .map(([k, v]) => `${k}='${shellQuote(v)}' `)
+          .join('')
+        const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
+        return await this.#ssh(ssh, [`${env}${quoted}`], options?.timeoutMs)
+      },
+      exists: async absPath =>
+        (
+          await this.#ssh(ssh, [
+            `test -e '${shellQuote(absPath)}' && echo yes || echo no`,
+          ])
+        ).stdout.includes('yes'),
+      readFile: async absPath => {
+        const probe = await this.#ssh(ssh, [
+          `cat -- '${shellQuote(absPath)}' 2>/dev/null || true`,
+        ])
+        return probe.stdout === '' ? undefined : probe.stdout
+      },
+    }
   }
 
   /**

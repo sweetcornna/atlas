@@ -22,10 +22,12 @@
 
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -38,6 +40,7 @@ import type {
   DriverCapability,
   ExecHost,
   ExecResult,
+  LauncherHost,
   NodeHandle,
   NodeSpec,
   RegistrySpec,
@@ -46,6 +49,7 @@ import type {
 import { startConsole, startRegistry } from './console.js'
 import { rawDial, type RawAuth } from './dial.js'
 import {
+  REPO_ROOT,
   runCli,
   sleep,
   spawnCli,
@@ -104,6 +108,8 @@ export class LocalDriver implements AcceptanceDriver {
   readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
   /** 同一场景里第几个控制台位 —— 见 {@link LocalDriver.consoleSlot}。 */
   #consoleSeat = 0
+  /** 同一场景里第几个启动器位。 */
+  #launcherSeat = 0
 
   async startNode(
     ctx: ScenarioContext,
@@ -356,6 +362,75 @@ export class LocalDriver implements AcceptanceDriver {
 
   async execHost(ctx: ScenarioContext): Promise<ExecHost> {
     return await this.#execHostAt(ctx, 'exec-host')
+  }
+
+  /**
+   * 本地的启动器位。
+   *
+   * `repoDir` 是一棵**镜像仓库树**：`demo` 软链回真仓库、`dist/cli-node.js`
+   * 放一个占位文件。为什么需要它：`common.sh` 把产物路径写死成
+   * `$REPO_DIR/dist/cli-node.js` 且不认任何环境变量覆盖，而 `REPO_DIR` 是从
+   * `common.sh` 自己的 `BASH_SOURCE[0]` 往上三级推出来的 —— 于是「不先跑一次
+   * 真构建就碰不到这条路径」，那正好撞上「不许有手工步骤」。bash 的 `cd` 走
+   * 逻辑路径，`pwd` 因此答的是软链那一侧，`REPO_DIR` 就落在镜像上；**跑的仍是
+   * 仓库里那份真脚本**，只有它眼中的仓库根被换掉了。唯一被伪造的事实是
+   * 「产物存在」这一条。
+   *
+   * 真机腿不需要这一层 —— 那边 `dist/` 是真的（见 {@link LauncherHost}）。
+   */
+  async launcherHost(ctx: ScenarioContext): Promise<LauncherHost> {
+    const seat = join(ctx.workdir, `launcher-${String(this.#launcherSeat++)}`)
+    const repoDir = join(seat, 'repo-mirror')
+    const betaRoot = join(seat, 'beta-root')
+    const workdir = join(seat, 'work')
+    mkdirSync(join(repoDir, 'dist'), { recursive: true })
+    writeFileSync(
+      join(repoDir, 'dist', 'cli-node.js'),
+      '// qianmo acceptance placeholder —— 只为让 beta_require_occ 通过\n',
+    )
+    if (!existsSync(join(repoDir, 'demo'))) {
+      symlinkSync(join(REPO_ROOT, 'demo'), join(repoDir, 'demo'))
+    }
+    mkdirSync(join(betaRoot, 'run'), { recursive: true })
+    mkdirSync(join(betaRoot, 'logs'), { recursive: true })
+    mkdirSync(workdir, { recursive: true })
+    return {
+      describe: 'runner (local)',
+      repoDir,
+      betaRoot,
+      workdir,
+      writeFile: async (relPath, content, options) => {
+        const abs = join(workdir, relPath)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, content, {
+          ...(options?.mode === undefined
+            ? {}
+            : { mode: Number.parseInt(options.mode, 8) }),
+        })
+        return abs
+      },
+      run: async (argv, options) => {
+        const child = Bun.spawnSync([...argv], {
+          cwd: REPO_ROOT,
+          env: { ...process.env, ...options?.env },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        return {
+          code: child.exitCode ?? -1,
+          stdout: child.stdout.toString(),
+          stderr: child.stderr.toString(),
+        }
+      },
+      exists: async absPath => existsSync(absPath),
+      readFile: async absPath => {
+        try {
+          return readFileSync(absPath, 'utf8')
+        } catch {
+          return undefined
+        }
+      },
+    }
   }
 
   async #execHostAt(ctx: ScenarioContext, seat: string): Promise<ExecHost> {

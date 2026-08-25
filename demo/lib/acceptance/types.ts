@@ -384,6 +384,70 @@ export interface ExecHost {
 }
 
 /**
+ * 跑仓库自带启动器脚本（`common.sh` / `beta-up.sh`）的位置。
+ *
+ * ## 真机腿跑**哪一份**脚本：部署机上的那一份（issue #65 第 2 块）
+ *
+ * 两个答案测的是不同的东西，这里选的是前者：
+ *
+ * | 选哪份 | 那一轮回答的问题 |
+ * | --- | --- |
+ * | **部署机上的**（本实现） | 「运维此刻手上那份脚本，在那台机器的 bash 上，行为对不对」 |
+ * | 本分支推过去的 | 「这次改动在真 Linux bash 上行为对不对」 |
+ *
+ * 选前者的三条理由：
+ *
+ * ① **与这条腿其余部分一致。** 真机腿从头到尾验的是**部署产物**（那个
+ *    `dist/cli-node.js`、那台机器的内核与架构），启动器换成分支版本，同一份
+ *    报告里就会有两种「被测对象」，而读的人分不出哪条是哪种。
+ * ② **这一维要抓的差异正好在部署侧。** 它来自 issue #38/#40：`bun` 装在
+ *    `~/.bun/bin`、非交互 SSH 解析不到 —— 那是一条**部署环境**的事实，
+ *    开发机上的 bash 3.2 复现不出来。
+ * ③ **推分支版本在机制上也不成立。** `common.sh` 的 `REPO_DIR` 由
+ *    `BASH_SOURCE[0]` 往上三级推出，脚本必须待在一棵完整的仓库树里；往部署
+ *    检出里写文件是污染部署，而在别处造一棵树又得把 `demo/` 软链回部署检出
+ *    —— 绕一圈跑的还是那一份。
+ *
+ * **代价要说清**：分支上改了启动器脚本，真机腿在重新部署之前看不见。那不是
+ * 盲区，那正是这条腿要报的事实 —— 「部署上去的还是旧的」。分支侧的守护由
+ * `demo/env/*.test.ts` 那几个单测负责，它们进 CI。
+ */
+export interface LauncherHost {
+  /** 人可读位置（`runner (local)` / `cornna-p3 (aarch64)`），进证据用。 */
+  readonly describe: string
+  /**
+   * 启动器脚本所在的仓库根**在目标机上**的绝对路径。
+   *
+   * 保证 `demo/env/beta/*.sh` 是**真脚本**，且 `dist/cli-node.js` 存在
+   * （`beta_require_occ` 过得去）—— 本地腿靠一棵软链镜像树满足后半条，
+   * 真机腿本来就满足。
+   */
+  readonly repoDir: string
+  /** 一次性 `QIANMO_BETA_ROOT`（`run/` 与 `logs/` 已建好）。 */
+  readonly betaRoot: string
+  /** 一次性工作目录（放假 `bun`、日志等）。 */
+  readonly workdir: string
+  /** 写一个文件（相对 {@link workdir}），返回目标机上的绝对路径。 */
+  writeFile(
+    relPath: string,
+    content: string,
+    options?: { readonly mode?: string },
+  ): Promise<string>
+  /** 直接跑一条命令（`argv[0]` 通常是 `/bin/bash`）。 */
+  run(
+    argv: readonly string[],
+    options?: {
+      readonly env?: Readonly<Record<string, string>>
+      readonly timeoutMs?: number
+    },
+  ): Promise<ExecResult>
+  /** 目标机上这条绝对路径存不存在。 */
+  exists(absPath: string): Promise<boolean>
+  /** 读目标机上的一个文件；不存在返回 undefined（**不要**抛）。 */
+  readFile(absPath: string): Promise<string | undefined>
+}
+
+/**
  * 一次性注册中心的启动参数。
  *
  * **注册中心不是可选的门面** —— `console/*` 的每条场景都要它：控制台的
@@ -627,6 +691,8 @@ export interface AcceptanceDriver {
   ): Promise<AcceptanceRegistry>
   /** 开一个一次性控制台位（配置根先有，进程后起）。见 {@link ConsoleSlot}。 */
   consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot>
+  /** 开一个跑启动器脚本的位置。见 {@link LauncherHost}。 */
+  launcherHost(ctx: ScenarioContext): Promise<LauncherHost>
 }
 
 /**
