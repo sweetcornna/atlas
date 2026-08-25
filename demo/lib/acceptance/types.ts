@@ -252,6 +252,20 @@ export interface ScenarioContext {
   log(line: string): void
   /** 中止信号：超时时 abort，长等待应当监听它。 */
   readonly signal: AbortSignal
+  /**
+   * 本轮的超时倍率 —— 与 runner 拿去乘场景预算的**是同一个数**。
+   *
+   * 存在的理由：倍率机制（`FLEET_TIMEOUT_SCALE`、`--timeout-scale`）此前只作用
+   * 于场景预算，够不到**驱动内部**那些自己 `Date.now() + X` 的等待。于是在真机
+   * 腿或忙 runner 上，驱动的硬等待会先于场景预算炸掉，而那种红记的是 `error`
+   * （「套件自己炸了」）而不是那条场景本来要说的话 —— 恰好是会被人当成「套件
+   * 不稳」而加豁免的那类噪声（issue #85 ②，与 PR #69 同一条纪律）。
+   *
+   * **凡是驱动内部按墙钟等的地方都要乘它**，别再引一个自己的常数：`runner` 是
+   * 倍率的唯一出处，`--timeout-scale` 压过 `--target fleet` 的默认值这件事只在
+   * 那一处决定，多一份就会有一份跟不上。缺省 1。
+   */
+  readonly timeoutScale: number
 }
 
 // ---------------------------------------------------------------------------

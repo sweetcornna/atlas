@@ -54,6 +54,11 @@ export const DEFAULT_SCENARIO_TIMEOUT_MS = 60_000
  *
  * 倍率而不是「真机腿统一给一个大数」：场景之间的相对预算是作者定的（有的
  * 本来就要等两轮模型），统一压平会让本该快的那些在挂死时也拖满。
+ *
+ * **作用面不止场景预算。**它同时经 `ScenarioContext.timeoutScale` 交到驱动
+ * 手上，驱动内部那几个「等它就绪」的墙钟等待也乘它 —— 早先没有那条通路，于是
+ * `FleetDriver` 里几个裸的 `Date.now() + 60_000` 会先于场景预算炸掉，把一条
+ * 只是慢了一步的场景记成 `error`（issue #85 ②）。
  */
 export const FLEET_TIMEOUT_SCALE = 4
 
@@ -63,7 +68,10 @@ export interface RunOptions {
   /** 只跑 id 前缀命中这些的（`--only handshake/ capability/psk`）。 */
   readonly only?: readonly string[]
   readonly timeoutMs?: number
-  /** 全部超时（默认值与场景自报的）乘这个系数。见 {@link FLEET_TIMEOUT_SCALE}。 */
+  /**
+   * 全部超时（默认值、场景自报的、以及驱动内部的墙钟等待）乘这个系数。
+   * 见 {@link FLEET_TIMEOUT_SCALE} 与 `ScenarioContext.timeoutScale`。
+   */
   readonly timeoutScale?: number
   readonly commit?: string
   /** 每条结果出来就回调一次，供实时打印。 */
@@ -185,6 +193,11 @@ export async function runScenario(
       logs.push(line)
     },
     signal: controller.signal,
+    // 驱动内部的硬等待要乘的就是这个数 —— 见 `ScenarioContext.timeoutScale`。
+    // 传的是**倍率**而不是算好的 `timeoutMs`：驱动那些等待各有各的基准（起一个
+    // 一次性常驻 vs. 拨一次 health），它们要的是「这台机器慢几倍」，不是「这条
+    // 场景还剩多少预算」。
+    timeoutScale,
   }
 
   let outcome: Outcome

@@ -92,8 +92,8 @@ const USAGE = `阡陌端到端验收套件
   --out <目录>           产物目录，默认 ~/qianmo-acceptance/<UTC 时间戳>
   --timeout-ms <n>       单场景默认超时，默认 ${DEFAULT_SCENARIO_TIMEOUT_MS}
                          （--target fleet 时全部超时另乘 ${FLEET_TIMEOUT_SCALE}，见 runner.ts）
-  --timeout-scale <n>    全部超时（默认值与场景自报的）乘这个正数，慢机器用；
-                         显式给了就压过 --target fleet 的默认 ${FLEET_TIMEOUT_SCALE}
+  --timeout-scale <n>    全部超时（默认值、场景自报的、驱动内部的等待）乘这个正数，
+                         慢机器用；显式给了就压过 --target fleet 的默认 ${FLEET_TIMEOUT_SCALE}
   --keep-workdir         保留每个场景的临时目录，便于排查
   --list                 只列出场景表，不执行
   -h, --help             本页
