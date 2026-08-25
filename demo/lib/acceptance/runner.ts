@@ -39,12 +39,32 @@ import type {
 /** 单场景默认超时。真进程起停 + 一次模型轮次，60 s 够，且不至于挂死一夜。 */
 export const DEFAULT_SCENARIO_TIMEOUT_MS = 60_000
 
+/**
+ * 真机腿的超时倍率。
+ *
+ * **场景里的毫秒数是按本地腿写的**：那边起一个常驻是 3~6 s，读一次审计链是
+ * 一次 `readFileSync`。真机腿上同样两件事分别是 25~35 s（一次性目录 + 远端
+ * 轮询 banner + 建隧道 + 就绪拨号）和一次 SSH 往返（经 IAP 的那台约 1 s），
+ * 于是 `waitForMailbox` 这类轮询循环每一拍都要付一次往返。
+ *
+ * 用同一套毫秒数的后果实测过：`handshake/unknown-signer`（默认 60 s）在真机
+ * 腿上光起节点就用掉一半预算，最后记成 `error`。**而 `error` 与 `fail` 在这
+ * 套件里是两种含义完全相反的结果** —— 一条本来会绿的场景变成「套件自己炸了」，
+ * 报告上既不能算覆盖也不指向任何产品问题。
+ *
+ * 倍率而不是「真机腿统一给一个大数」：场景之间的相对预算是作者定的（有的
+ * 本来就要等两轮模型），统一压平会让本该快的那些在挂死时也拖满。
+ */
+export const FLEET_TIMEOUT_SCALE = 4
+
 export interface RunOptions {
   readonly driver: AcceptanceDriver
   readonly scenarios: readonly Scenario[]
   /** 只跑 id 前缀命中这些的（`--only handshake/ capability/psk`）。 */
   readonly only?: readonly string[]
   readonly timeoutMs?: number
+  /** 全部超时（默认值与场景自报的）乘这个系数。见 {@link FLEET_TIMEOUT_SCALE}。 */
+  readonly timeoutScale?: number
   readonly commit?: string
   /** 每条结果出来就回调一次，供实时打印。 */
   onResult?(result: ScenarioResult): void
@@ -97,6 +117,7 @@ export async function runScenario(
   driver: AcceptanceDriver,
   defaultTimeoutMs: number,
   keepWorkdir: boolean,
+  timeoutScale = 1,
 ): Promise<ScenarioResult> {
   const base = {
     id: scenario.id,
@@ -135,7 +156,9 @@ export async function runScenario(
   const cleanups: Array<() => void | Promise<void>> = []
   const logs: string[] = []
   const controller = new AbortController()
-  const timeoutMs = scenario.timeoutMs ?? defaultTimeoutMs
+  const timeoutMs = Math.round(
+    (scenario.timeoutMs ?? defaultTimeoutMs) * timeoutScale,
+  )
 
   let workdir: string
   try {
@@ -247,6 +270,7 @@ export async function runSuite(options: RunOptions): Promise<SuiteRun> {
       options.driver,
       options.timeoutMs ?? DEFAULT_SCENARIO_TIMEOUT_MS,
       options.keepWorkdir === true,
+      options.timeoutScale ?? 1,
     )
     results.push(result)
     options.onResult?.(result)

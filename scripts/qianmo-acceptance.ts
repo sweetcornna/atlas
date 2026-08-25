@@ -48,6 +48,7 @@ import { ALL_SCENARIOS } from '../demo/lib/acceptance/registry.js'
 import {
   checkScenarioTable,
   DEFAULT_SCENARIO_TIMEOUT_MS,
+  FLEET_TIMEOUT_SCALE,
   runSuite,
 } from '../demo/lib/acceptance/runner.js'
 import { LocalDriver } from '../demo/lib/acceptance/local/driver.js'
@@ -69,6 +70,7 @@ const USAGE = `阡陌端到端验收套件
   --only <前缀>          只跑 id 以此开头的场景，可重复（如 --only handshake/ --only audit/）
   --out <目录>           产物目录，默认 ~/qianmo-acceptance/<UTC 时间戳>
   --timeout-ms <n>       单场景默认超时，默认 ${DEFAULT_SCENARIO_TIMEOUT_MS}
+                         （--target fleet 时全部超时另乘 ${FLEET_TIMEOUT_SCALE}，见 runner.ts）
   --keep-workdir         保留每个场景的临时目录，便于排查
   --list                 只列出场景表，不执行
   -h, --help             本页
@@ -175,6 +177,10 @@ async function main(): Promise<number> {
     ...(timeoutMs === undefined || Number.isNaN(timeoutMs)
       ? {}
       : { timeoutMs }),
+    // 真机腿每一步都多一次 SSH 往返，场景里那些毫秒数是按本地腿写的。
+    // 见 `FLEET_TIMEOUT_SCALE` 的注释：不放大的话红的会是 `error`（套件自己
+    // 炸了），而不是那条场景本来要说的话。
+    ...(target === 'fleet' ? { timeoutScale: FLEET_TIMEOUT_SCALE } : {}),
     keepWorkdir: flag('keep-workdir'),
     commit,
     onResult: result => {
