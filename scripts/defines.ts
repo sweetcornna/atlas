@@ -159,6 +159,27 @@ export function getMacroDefines(): Record<string, string> {
 }
 
 /**
+ * {@link getMacroDefines} rendered as `bun -d` arguments.
+ *
+ * Every process that runs the entrypoint from source has to pass these:
+ * `MACRO.*` is a transpile-time substitution, so a source run without `-d`
+ * leaves the identifier undefined and the first read throws. The alternative —
+ * an entrypoint that installs its own `globalThis.MACRO` when the defines are
+ * missing — is what issue #81 is about: that copy carried Anthropic's empty
+ * `ISSUES_EXPLAINER` long after this file grew its own, and the system prompt
+ * of every source run said "To give feedback, users should " and stopped.
+ *
+ * So the values live here only, and callers ask for the flags rather than
+ * spelling a second list.
+ */
+export function macroDefineArgs(): string[] {
+  return Object.entries(getMacroDefines()).flatMap(([key, value]) => [
+    '-d',
+    `${key}:${value}`,
+  ])
+}
+
+/**
  * Default feature flags enabled in both Bun.build and Vite builds.
  * Additional features can be enabled via FEATURE_<NAME>=1 env vars.
  *

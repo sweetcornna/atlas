@@ -107,7 +107,14 @@ say "本次现场的独特细节（每次运行现生成）：常量名 ${CONST_
 SID="$(bun -e 'process.stdout.write(crypto.randomUUID())')"
 say "预置 session_id：${SID}"
 
-OCC=("bun" "run" "$REPO_DIR/src/entrypoints/cli.tsx")
+# 直跑源码必须自己注 `MACRO.*` defines：那是转译期替换，缺了 `-d` 第一次读就
+# ReferenceError。取值从 scripts/defines.ts 来，与 dev / build 同源——手抄一份
+# 就是 issue #81 那个坑（抄来的空 ISSUES_EXPLAINER 让 system prompt 只说了半句）。
+OCC_DEFINES=()
+while IFS= read -r define_arg; do
+  OCC_DEFINES+=("$define_arg")
+done < <(bun -e "const {macroDefineArgs} = await import('$REPO_DIR/scripts/defines.ts'); for (const a of macroDefineArgs()) console.log(a)")
+OCC=("bun" "run" "${OCC_DEFINES[@]}" "$REPO_DIR/src/entrypoints/cli.tsx")
 COMMON=("--dangerously-skip-permissions" "--output-format" "json")
 
 jget() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p" "$1" | head -1; }
@@ -209,7 +216,7 @@ fi
 # ── 第 4 轮：--resume 追问，命令行不含任何历史 ─────────────────────────────
 head1 '3. 冷启动 --resume 追问（命令行不重发历史）'
 say '  即将执行的命令行逐字如下（除追问句外不含任何历史内容）：'
-say "    bun run src/entrypoints/cli.tsx --resume ${SID} -p '${T4}' --dangerously-skip-permissions --output-format json"
+say "    bun run <MACRO defines> src/entrypoints/cli.tsx --resume ${SID} -p '${T4}' --dangerously-skip-permissions --output-format json"
 say "  追问句里既没有出现常量名，也没有出现数值 —— 自检："
 case "$T4" in
   *"$CONST_NAME"*) bad '追问句里出现了常量名，用例无效' ;;

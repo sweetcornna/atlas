@@ -17,6 +17,14 @@
 //     commands (`auto-mode`, `remote-control`, `ssh`, …) are therefore absent
 //     from the recorded help output on purpose. `bun run dev` / `bun run build`
 //     enable DEFAULT_BUILD_FEATURES and would show more.
+//   - The `MACRO.*` defines ARE injected (`-d`, from scripts/defines.ts, the
+//     same values dev and release builds get). `-d` carries defines only and
+//     touches no `feature()` gate, so the property above is unaffected. Before
+//     issue #81 this suite passed none, and the entrypoint quietly installed a
+//     hand-written stand-in whose values had drifted from the real ones — a
+//     source run therefore rendered `MACRO.ISSUES_EXPLAINER` as the empty
+//     string into the system prompt. There is no stand-in any more: a source
+//     run without these flags throws on the first `MACRO` read.
 //   - `USER_TYPE` is stripped from the child environment, so `[ANT-ONLY]`
 //     commands stay hidden except in the one case that sets it explicitly.
 //   - cwd is the repo root: Bun resolves the `src/*` tsconfig path alias from
@@ -36,9 +44,14 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { macroDefineArgs } from '../../scripts/defines.ts'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../..')
 const CLI_ENTRYPOINT = 'src/entrypoints/cli.tsx'
+
+// Computed once: `resolveSourceCommit()` shells out to git, and this file
+// starts a few dozen children.
+const MACRO_DEFINE_ARGS = macroDefineArgs()
 
 // A cold boot of the full Commander program costs ~10-30s (every `--help`
 // path still evaluates main.tsx). The spawns are therefore batched once in
@@ -103,7 +116,13 @@ async function runCli(
   overrides: Record<string, string> = {},
 ): Promise<CliResult> {
   const proc = Bun.spawn({
-    cmd: [process.execPath, CLI_ENTRYPOINT, ...args],
+    cmd: [
+      process.execPath,
+      'run',
+      ...MACRO_DEFINE_ARGS,
+      CLI_ENTRYPOINT,
+      ...args,
+    ],
     cwd: PROJECT_ROOT,
     stdin: 'ignore',
     stdout: 'pipe',
