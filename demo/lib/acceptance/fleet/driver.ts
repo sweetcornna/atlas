@@ -932,6 +932,14 @@ export class FleetDriver implements AcceptanceDriver {
     const errLog = `${root}/console.err.log`
     const pidFile = `${root}/console.pid`
 
+    // 清理**先登记再启动**。反过来的话，启动那一趟 ssh 自己抛出时（网络抖动、
+    // 远端 OOM）就会留下一个没人管的控制台进程：它的 argv 里不一定带着一次性
+    // 根（`--audit` 那类参数才带），所以 `#scratch` 的兜底清扫也够不着它。
+    // 提前登记没有代价 —— pid 文件不存在时 `#killByPidFile` 直接返回。
+    ctx.cleanup(async () => {
+      await this.#killByPidFile(machine.ssh, pidFile)
+    })
+
     await this.#ssh(
       machine.ssh,
       [
@@ -952,9 +960,6 @@ export class FleetDriver implements AcceptanceDriver {
       ],
       120_000,
     )
-    ctx.cleanup(async () => {
-      await this.#killByPidFile(machine.ssh, pidFile)
-    })
 
     const readOut = async (): Promise<string> =>
       (
