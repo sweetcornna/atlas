@@ -121,6 +121,15 @@ const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
 /** 一个常驻「起来了没有」的等待基准（banner 落地 + 真拨得通，见下）。 */
 const NODE_READY_BUDGET_MS = 30_000
 
+/**
+ * `ExecHost.run` / `LauncherHost.run` 里一条命令的兜底预算 —— 场景没给
+ * `timeoutMs` 时用它。
+ *
+ * 它**不乘倍率**：这是「一条命令卡死了」的兜底，不是「等它就绪」的墙钟；
+ * 场景要更长就显式传 `timeoutMs`（两个 host 的 `run` 都认这个参数）。
+ */
+const HOST_RUN_BUDGET_MS = 60_000
+
 export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
@@ -438,17 +447,52 @@ export class LocalDriver implements AcceptanceDriver {
         })
         return abs
       },
+      // 与 `#execHostAt` 的 `run` 同形，理由也是同一条（见那边的长注释）：
+      // **必须是异步 spawn**。本地腿的注册中心与控制台就跑在 runner 这个
+      // 进程里（`startRegistryServer` / `Bun.serve`），`Bun.spawnSync` 把
+      // 事件循环整条堵死之后，子进程只要回头打 runner 一下就永远等不到
+      // 应答 —— 现场是 curl 超时（退出码 28、HTTP 000），读起来像「链路
+      // 根本不通」，而链路好得很。
+      //
+      // 现在没炸只是因为 launcher 那几条场景跑的是 bash 脚本、不回头打
+      // runner —— 那是「恰好没踩到」，不是「结构上安全」：哪天有一条
+      // launcher 场景要验「脚本起出来的东西够不够得着注册中心」（#86 给
+      // 证书维度加的那种对照就是这个形状），它会立刻踩中，且现场指向错误
+      // 的方向。真机腿的 `launcherHost.run` 走 ssh、天生异步，两条腿在这
+      // 里必须同形，否则同一条断言在本地恒红、在真机恒绿（issue #89）。
+      //
+      // 顺带把 `options.timeoutMs` 真正接上 —— 此前它和 `execHost.run`
+      // 那次一样被整个忽略，超时只能靠外层场景超时兜，而那一层报的是
+      // 「场景超时」，归因不到具体命令。
       run: async (argv, options) => {
-        const child = Bun.spawnSync([...argv], {
+        const child = Bun.spawn([...argv], {
           cwd: REPO_ROOT,
           env: { ...process.env, ...options?.env },
+          stdin: 'ignore',
           stdout: 'pipe',
           stderr: 'pipe',
         })
+        const timeoutMs = options?.timeoutMs ?? HOST_RUN_BUDGET_MS
+        const collected = (async () => {
+          const [stdout, stderr] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ])
+          return { code: await child.exited, stdout, stderr }
+        })()
+        const settled = await Promise.race([
+          collected,
+          sleep(timeoutMs).then(() => undefined),
+        ])
+        if (settled !== undefined) return settled
+        child.kill('SIGKILL')
+        const partial = await collected
         return {
-          code: child.exitCode ?? -1,
-          stdout: child.stdout.toString(),
-          stderr: child.stderr.toString(),
+          code: -1,
+          stdout: partial.stdout,
+          stderr:
+            `${partial.stderr}\n` +
+            `[acceptance] 命令超时 ${String(timeoutMs)}ms: ${argv.join(' ')}`,
         }
       },
       exists: async absPath => existsSync(absPath),
@@ -501,7 +545,7 @@ export class LocalDriver implements AcceptanceDriver {
           stdout: 'pipe',
           stderr: 'pipe',
         })
-        const timeoutMs = opts?.timeoutMs ?? 60_000
+        const timeoutMs = opts?.timeoutMs ?? HOST_RUN_BUDGET_MS
         const collected = (async () => {
           const [stdout, stderr] = await Promise.all([
             new Response(child.stdout).text(),
