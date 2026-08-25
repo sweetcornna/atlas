@@ -96,15 +96,22 @@ describe('FleetDriver 对附着来的内测节点', () => {
   })
 })
 
+/**
+ * 落机在不在，决定这五项在不在。`local-ca-fixture` 也在里面：签发链跑在
+ * `execHost({ forNodeSpawn: true })` 上，而那个执行位要的正是一台落机。
+ */
+const SPAWN_BOUND_CAPABILITIES = [
+  'spawn-node',
+  'spawn-console',
+  'restart-node',
+  'run-launcher',
+  'local-ca-fixture',
+] as const
+
 describe('FleetDriver 的能力随配置消失', () => {
-  it('没有可承载一次性进程的机器时，四项一次性能力都不声明', () => {
+  it('没有可承载一次性进程的机器时，五项一次性能力都不声明', () => {
     const caps = driverWith(false).capabilities
-    for (const cap of [
-      'spawn-node',
-      'spawn-console',
-      'restart-node',
-      'run-launcher',
-    ] as const) {
+    for (const cap of SPAWN_BOUND_CAPABILITIES) {
       expect(caps.has(cap)).toBe(false)
     }
     // 附着与拨号不受影响 —— 那正是「数据面至少还有一条」的底线。
@@ -112,18 +119,32 @@ describe('FleetDriver 的能力随配置消失', () => {
     expect(caps.has('raw-dial')).toBe(true)
   })
 
-  it('有机器时四项都声明', () => {
+  it('有机器时五项都声明', () => {
     const caps = driverWith(true).capabilities
-    for (const cap of [
-      'spawn-node',
-      'spawn-console',
-      'restart-node',
-      'run-launcher',
-    ] as const) {
+    for (const cap of SPAWN_BOUND_CAPABILITIES) {
       expect(caps.has(cap)).toBe(true)
     }
     // `mutate-node-env` 刻意仍然不声明：本轮没有场景验证过它。
     expect(caps.has('mutate-node-env')).toBe(false)
+  })
+
+  it('每一项缺席的能力都带着一句为什么 —— 只印「缺少能力: X」读的人分不出「做不到」和「忘了写」', () => {
+    const driver = driverWith(false)
+    for (const cap of SPAWN_BOUND_CAPABILITIES) {
+      expect(driver.capabilityGaps.get(cap)).toBeString()
+    }
+  })
+})
+
+describe('一次性节点的配置根', () => {
+  it('`NodeSpec.configRoot` 只对自己起的节点有意义，附着分支照旧给生产根', async () => {
+    const node = await driverWith(true).startNode(
+      undefined as unknown as ScenarioContext,
+      { ...SPEC, configRoot: '/tmp/never-used-config' },
+    )
+    // 附着分支不起进程，configRoot 换掉它没有任何意义 —— 那会让审计链、身份、
+    // 会话表全部指向一个空目录，而现场看起来像内测节点被清空了。
+    expect(node.configRoot).toBe('/home/nobody/qianmo-beta/nodes/beta-1/config')
   })
 })
 

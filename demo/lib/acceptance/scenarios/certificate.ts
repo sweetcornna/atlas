@@ -11,7 +11,7 @@
  * —— 这不是巧合，是 key-distribution.md §6.4 写下的取舍，
  * `certificate/explicit-trust-outranks-revocation` 把它连同代价一起钉住。
  *
- * 四条读断言前必须知道的事实：
+ * 五条读断言前必须知道的事实：
  *
  * ① **一条完整的正向链有五步，缺任何一步都会得到同一个 `unknown_signer`。**
  *    `qm ca init` → `qm cert request` → `qm ca issue` → 把证书**带 certificate
@@ -31,6 +31,14 @@
  *    会被投递**，但 `notice.trust` 停在 `untrusted` —— 授权名单只有 `--trust`
  *    与本节点自己。`certificate/verified-signature-is-not-authorization` 是
  *    这一条的落点，也是「验得了签 ≠ 是授权方」这个说法唯一成立的形态。
+ *
+ * ⑤ **这一维的每条路径都是目标机上的路径。** CA 目录、CSR、证书、节点配置根
+ *    全部由 {@link ExecHost} 在被测 CLI 那台机器上造出来，场景一行 `node:fs`
+ *    都不用、也不知道驱动把节点根放在哪。此前这里直接拼 `join(ctx.workdir,
+ *    'node-<名>', 'config')` —— 那是本地驱动的内部布局，`requires` 里写的
+ *    是 `local-ca-fixture` 而真正的耦合是「知道 LocalDriver 把根放在哪」
+ *    （issue #65）。这一层耦合一旦留着，下一个把它搬上真机的人会得到一条
+ *    「节点起来了、证书目录空着」的假红。
  */
 
 import { CapabilityLevel } from '@qianmo/protocol'
@@ -41,17 +49,15 @@ import {
   initCa,
   issueCertificate,
   issueExpiredCertificate,
-  opensslSupportsExplicitValidity,
   opensslVersion,
   publishAgentCertificate,
   publishRevocationList,
   signRevocationList,
+  tlsKeyPath,
   type CaHandle,
   type IssuedCertificate,
-} from '../local/ca.js'
+} from '../ca.js'
 import { mint, sendEnvelope, type Issuer } from '../local/send.js'
-import { runCli } from '../local/spawn.js'
-import { mkdirSync } from 'node:fs'
 import { delay, handshakeRejections, waitForMailbox } from '../observe.js'
 import type {
   ExecHost,
@@ -69,29 +75,64 @@ import {
   newTaskId,
   nodeSpec,
 } from './fixtures.js'
-import { join } from 'node:path'
-
 const CLOSE_UNAUTHORIZED = 4003
 const CLOSE_NORMAL = 1000
 
 /** 对端节点的配置根名 —— 同一个根 = 同一把 Ed25519 身份钥匙。 */
 const PEER_CONFIG = 'peer-config'
+/** 将来那个被测节点自己的配置根名（`--cert` 那两条要它，见 K-2）。 */
+const NODE_CONFIG = 'node-config'
 
-export interface CertificateFixture {
+/**
+ * 一套签发链的家当，全部落在**被测 CLI 那台机器**上。
+ *
+ * `host` 是经 `execHost(ctx, { forNodeSpawn: true })` 拿到的执行位 —— 那个
+ * `forNodeSpawn` 是承重的：它保证夹具与本场景后面起的一次性节点同机，否则
+ * `--trust-ca` 指的是另一台机器上的一条路径。
+ */
+export interface CaFixture {
+  readonly host: ExecHost
   readonly ca: CaHandle
-  readonly registryUrl: string
+  /** 对端（`ctl`）的配置根，目标机上的绝对路径。 */
   readonly peerConfig: string
+  /** 将来那个被测节点自己的配置根，目标机上的绝对路径。 */
+  readonly nodeConfig: string
+}
+
+export interface CertificateFixture extends CaFixture {
+  /** **runner 侧**的注册中心基址 —— 场景自己 PUT / POST 用这个。 */
+  readonly registryUrl: string
+  /**
+   * **节点那台机器上**的注册中心基址 —— 喂 `--registry-url` 用这个。
+   *
+   * 本地腿两者相同；真机腿上节点在舰队机器里，它拨的是一条反向隧道的入口。
+   * 把 `registryUrl` 喂给它等于让那台机器去打它自己的某个空端口，而现场是
+   * 每一次 CA 握手都以 `unknown_signer` 收场。
+   */
+  readonly registryHostUrl: string
+}
+
+/** 只要签发链，不要注册中心（`--cert` 那两条场景根本不拉证书目录）。 */
+export async function caFixture(ctx: ScenarioContext): Promise<CaFixture> {
+  const host = await ctx.driver.execHost(ctx, { forNodeSpawn: true })
+  const ca = await initCa(host)
+  return {
+    host,
+    ca,
+    peerConfig: await host.mkdir(PEER_CONFIG),
+    nodeConfig: await host.mkdir(NODE_CONFIG),
+  }
 }
 
 export async function certificateFixture(
   ctx: ScenarioContext,
 ): Promise<CertificateFixture> {
-  const ca = await initCa(ctx)
+  const base = await caFixture(ctx)
   const registry = await ctx.driver.startRegistry(ctx)
   return {
-    ca,
+    ...base,
     registryUrl: registry.url,
-    peerConfig: join(ctx.workdir, PEER_CONFIG),
+    registryHostUrl: registry.hostUrl,
   }
 }
 
@@ -122,7 +163,7 @@ export async function startCaOnlyNode(
         '--trust-ca',
         fixture.ca.certificatePath,
         '--registry-url',
-        fixture.registryUrl,
+        fixture.registryHostUrl,
       ],
     }),
   )
@@ -154,59 +195,34 @@ export async function dialWithCertificate(
   })
 }
 
-/** openssl 拿不到就整条维度没法跑 —— 如实 skip，别假装覆盖。 */
-export function opensslGate(checks: Checks): string | undefined {
-  const version = opensslVersion()
-  checks.note('openssl', version ?? '(跑不动)')
+/**
+ * openssl 拿不到就整条维度没法跑 —— 如实 skip，别假装覆盖。
+ *
+ * 问的是**目标机**的 openssl，不是 runner 的：`qm ca` 在哪台机器上跑，就由
+ * 哪台机器的 openssl 说了算。
+ */
+export async function opensslGate(
+  checks: Checks,
+  host: ExecHost,
+): Promise<string | undefined> {
+  const version = await opensslVersion(host)
+  checks.note('openssl', `${host.describe}: ${version ?? '(跑不动)'}`)
   return version === null
-    ? '本机没有可用的 openssl；qm ca 的签发链跑不起来（这是 CA 工具的外部依赖，不是被测系统的缺陷）'
+    ? `${host.describe} 上没有可用的 openssl；qm ca 的签发链跑不起来（这是 CA 工具的外部依赖，不是被测系统的缺陷）`
     : undefined
 }
 
-/** 起一条会自己退出的 `qm resident`，用来测启动期的拒绝。 */
-async function residentStartupProbe(
-  ctx: ScenarioContext,
-  extraArgs: readonly string[],
-  configRoot: string,
-): Promise<{ readonly code: number; readonly output: string }> {
-  const workspace = join(ctx.workdir, 'probe-ws')
-  mkdirSync(workspace, { recursive: true })
-  const result = await runCli({
-    argv: [
-      'resident',
-      '--node',
-      NODE,
-      '--team',
-      TEAM,
-      '--agent',
-      `${AGENT}=${workspace}`,
-      '--port',
-      String(await ctx.allocPort()),
-      '--hostname',
-      '127.0.0.1',
-      '--open-policy',
-      ...extraArgs,
-    ],
-    env: {
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: configRoot,
-      QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
-    },
-    timeoutMs: 40_000,
-  })
-  return { code: result.code, output: `${result.stdout}\n${result.stderr}` }
-}
-
 /**
- * 同一件事的**目标机**版本：在一次性配置根里起一条会自己退出的 `qm resident`。
+ * 在**目标机**的一个一次性配置根里起一条会自己退出的 `qm resident`，用来测
+ * 启动期的拒绝。
  *
- * 与上面那个的分工按夹具走 —— 需要本机 CA 夹具（`--cert` 指向 runner 上的
- * 文件）的场景只能用上面那个并声明 `local-ca-fixture`；只用命令行开关就能
- * 触发的拒绝走这一个，于是真机腿也能问到那台机器上的那个二进制。
+ * `configDir` 给了就用它 —— `--cert` 的那条 K-2 检查要求证书绑的是**这个根
+ * 里**的身份，所以证书签在哪个根里，就得拿哪个根去起。
  */
 async function residentStartupProbeOn(
   host: ExecHost,
   extraArgs: readonly string[],
+  configDir?: string,
 ): Promise<{ readonly code: number; readonly output: string }> {
   const workspace = await host.mkdir('probe-ws')
   const result = await host.exec(
@@ -228,6 +244,7 @@ async function residentStartupProbeOn(
     {
       env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
       timeoutMs: 120_000,
+      ...(configDir === undefined ? {} : { configDir }),
     },
   )
   return {
@@ -253,16 +270,16 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
-      const certificate = await issueCertificate(ctx, fixture.ca, {
+      const certificate = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'peer.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca)
+      const rl = await signRevocationList(fixture.ca)
       const rlStatus = await publishRevocationList(fixture.registryUrl, rl)
       const agentStatus = await publishAgentCertificate(fixture.registryUrl, {
         address: SENDER,
@@ -276,6 +293,7 @@ export const certificateScenarios: readonly Scenario[] = [
       const rejections = await handshakeRejections(ctx.driver, node)
 
       return checks
+        .note('夹具位置', fixture.host.describe)
         .note('CA 指纹', fixture.ca.fingerprint256)
         .note('节点证书指纹', certificate.fingerprint256)
         .note('节点 Ed25519 公钥', certificate.nodePublicKey)
@@ -309,22 +327,22 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
       // 同一个配置根签两次 = 同一把 Ed25519、两张不同指纹的证书。
-      const revoked = await issueCertificate(ctx, fixture.ca, {
+      const revoked = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'revoked.crt',
       })
-      const replacement = await issueCertificate(ctx, fixture.ca, {
+      const replacement = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'replacement.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca, {
+      const rl = await signRevocationList(fixture.ca, {
         revoke: [{ node: SENDER_NODE, fingerprint256: revoked.fingerprint256 }],
       })
       await publishRevocationList(fixture.registryUrl, rl)
@@ -349,6 +367,7 @@ export const certificateScenarios: readonly Scenario[] = [
       const rejections = await handshakeRejections(ctx.driver, node)
 
       return checks
+        .note('夹具位置', fixture.host.describe)
         .note('被吊销的指纹', revoked.fingerprint256)
         .note('换发的指纹', replacement.fingerprint256)
         .note('吊销清单原文', rl)
@@ -393,30 +412,23 @@ export const certificateScenarios: readonly Scenario[] = [
     ],
     timeoutMs: 300_000,
     async run(ctx) {
+      const { X509Certificate } = await import('node:crypto')
       const checks = new Checks()
-      const skip = opensslGate(checks)
-      if (skip !== undefined) return checks.skip(skip)
-      if (!opensslSupportsExplicitValidity()) {
-        // `qm ca issue --days` 走 positiveInteger，最短一天，签不出已经过期的
-        // 证书；本机 openssl 又没有 `-not_before/-not_after`（OpenSSL 3.5 起
-        // 才有）。两条路都不通就如实跳过，不改成「一天后到期」那种测不到的形状。
-        return checks.skip(
-          `本机 openssl 没有 -not_before/-not_after（OpenSSL 3.5 起才有），造不出一张已经过期的证书；openssl=${opensslVersion() ?? '?'}`,
-        )
-      }
-
       const fixture = await certificateFixture(ctx)
-      const valid = await issueCertificate(ctx, fixture.ca, {
+      const skip = await opensslGate(checks, fixture.host)
+      if (skip !== undefined) return checks.skip(skip)
+
+      const valid = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'valid.crt',
       })
-      const expired = await issueExpiredCertificate(ctx, fixture.ca, {
+      const expired = await issueExpiredCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'expired.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca)
+      const rl = await signRevocationList(fixture.ca)
       await publishRevocationList(fixture.registryUrl, rl)
       await publishAgentCertificate(fixture.registryUrl, {
         address: SENDER,
@@ -436,23 +448,40 @@ export const certificateScenarios: readonly Scenario[] = [
       const withValid = await dialWithCertificate(node, valid)
       await delay(600)
       const rejections = await handshakeRejections(ctx.driver, node)
+      const parsed = new X509Certificate(expired.pem)
 
-      return checks
-        .note('过期证书指纹', expired.fingerprint256)
-        .note('有效证书指纹', valid.fingerprint256)
-        .expect(!withExpired.authed, '过期证书没有握手成功', withExpired.authed)
-        .eq(withExpired.closeCode, CLOSE_UNAUTHORIZED, '过期证书的关闭码')
-        .expect(
-          rejections.includes('unknown_signer'),
-          "审计链里出现 code='unknown_signer'（过期与「不认识」在链上也不可分辨）",
-          rejections,
-        )
-        .expect(
-          withValid.authed,
-          '同一节点的有效证书仍然握得上（证明拒绝来自有效期而不是配置）',
-          withValid.authed,
-        )
-        .done('过期证书被拒')
+      return (
+        checks
+          .note('夹具位置', fixture.host.describe)
+          .note('过期证书指纹', expired.fingerprint256)
+          // 有效期原文进证据：这条断言的形状是「被拒了」，而被拒的理由在线上
+          // 与在审计链上都塌缩成 unknown_signer。留着这两个日期，读报告的人
+          // 才能确认被拒的那张**确实**是一张过期证书，而不是一张签坏了的。
+          .note('过期证书有效期', `${parsed.validFrom} → ${parsed.validTo}`)
+          .note('有效证书指纹', valid.fingerprint256)
+          .expect(
+            new Date(parsed.validTo).getTime() < Date.now(),
+            '那张证书的 notAfter 确实已经过去',
+            parsed.validTo,
+          )
+          .expect(
+            !withExpired.authed,
+            '过期证书没有握手成功',
+            withExpired.authed,
+          )
+          .eq(withExpired.closeCode, CLOSE_UNAUTHORIZED, '过期证书的关闭码')
+          .expect(
+            rejections.includes('unknown_signer'),
+            "审计链里出现 code='unknown_signer'（过期与「不认识」在链上也不可分辨）",
+            rejections,
+          )
+          .expect(
+            withValid.authed,
+            '同一节点的有效证书仍然握得上（证明拒绝来自有效期而不是配置）',
+            withValid.authed,
+          )
+          .done('过期证书被拒')
+      )
     },
   },
 
@@ -472,11 +501,11 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
-      const certificate = await issueCertificate(ctx, fixture.ca, {
+      const certificate = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'peer.crt',
@@ -495,6 +524,7 @@ export const certificateScenarios: readonly Scenario[] = [
       const rejections = await handshakeRejections(ctx.driver, node)
 
       return checks
+        .note('夹具位置', fixture.host.describe)
         .eq(missing.status, 404, '注册中心上还没有吊销清单')
         .expect(!probe.authed, '握手没有成功', probe.authed)
         .eq(probe.closeCode, CLOSE_UNAUTHORIZED, '关闭码')
@@ -527,16 +557,16 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
-      const certificate = await issueCertificate(ctx, fixture.ca, {
+      const certificate = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'peer.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca, {
+      const rl = await signRevocationList(fixture.ca, {
         revoke: [
           { node: SENDER_NODE, fingerprint256: certificate.fingerprint256 },
         ],
@@ -559,6 +589,7 @@ export const certificateScenarios: readonly Scenario[] = [
       const admitted = await dialWithCertificate(pinned, certificate)
 
       return checks
+        .note('夹具位置', fixture.host.describe)
         .note('被吊销的指纹', certificate.fingerprint256)
         .expect(!refused.authed, '只给 --trust-ca 时被拒', refused.authed)
         .eq(refused.closeCode, CLOSE_UNAUTHORIZED, '只给 --trust-ca 时的关闭码')
@@ -613,28 +644,28 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await caFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
       // 证书必须绑**本节点自己**的身份（K-2 的启动检查），所以先在节点将来
-      // 会用的那个配置根里把身份与 CSR 造出来，再让驱动用同一个根起节点。
-      const nodeConfig = join(ctx.workdir, `node-${NODE}`, 'config')
-      mkdirSync(nodeConfig, { recursive: true })
-      const own = await issueCertificate(ctx, fixture.ca, {
+      // 会用的那个配置根里把身份与 CSR 造出来，再让驱动**用同一个根**起节点
+      // —— `NodeSpec.configRoot` 存在的全部理由就是这个顺序。
+      const own = await issueCertificate(fixture.ca, {
         node: NODE,
-        configRoot: nodeConfig,
+        configRoot: fixture.nodeConfig,
         outName: 'own.crt',
       })
       const node = await ctx.driver.startNode(
         ctx,
         nodeSpec(ctx, {
           policy: 'open',
+          configRoot: fixture.nodeConfig,
           extraArgs: [
             '--cert',
             own.path,
             '--key',
-            join(nodeConfig, 'qianmo', 'identity', `${NODE}.tls.key`),
+            tlsKeyPath(fixture.nodeConfig, NODE),
           ],
         }),
       )
@@ -648,6 +679,8 @@ export const certificateScenarios: readonly Scenario[] = [
 
       return (
         checks
+          .note('夹具位置', fixture.host.describe)
+          .note('节点配置根', node.configRoot)
           .note('stderr', stderr.slice(0, 2_000))
           .contains(stderr, 'mTLS is NOT enabled', 'stderr')
           .contains(stderr, 'serving plaintext ws://', 'stderr')
@@ -672,57 +705,44 @@ export const certificateScenarios: readonly Scenario[] = [
     dimension: 'certificate',
     title: '--cert 不是 --trust-ca 那个 CA 签的 → 启动期拒绝',
     expected: "非零退出 + '--cert was not signed by the CA in --trust-ca'",
-    // `local-ca-fixture` 而不是只写 `exec-node-cli`：两张证书、两个 CA 目录
-    // 都在 runner 的文件系统上，`--cert` 指过去在真机上是一条不存在的路径。
-    // 这条**不是**「能不能在目标机上跑 CLI」的问题，声明成那个就是装饰性
-    // requires（issue #61）。
+    // `local-ca-fixture` 而不是只写 `exec-node-cli`：两张证书、两个 CA 目录、
+    // 以及那个装着节点身份的配置根都得在**被测二进制那台机器**上，而且证书
+    // 必须在起节点之前就签好。这条**不是**「能不能在目标机上跑 CLI」的问题，
+    // 声明成那个就是装饰性 requires（issue #61）。
     requires: ['exec-node-cli', 'local-ca-fixture'],
     timeoutMs: 240_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await caFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
-      const nodeConfig = join(ctx.workdir, 'wrong-ca-config')
-      mkdirSync(nodeConfig, { recursive: true })
-      const own = await issueCertificate(ctx, fixture.ca, {
+      const own = await issueCertificate(fixture.ca, {
         node: NODE,
-        configRoot: nodeConfig,
+        configRoot: fixture.nodeConfig,
         outName: 'own.crt',
       })
       // 第二个 CA：证书没变，换掉的是「拿谁的根去验它」。
-      const other = await runCli({
-        argv: [
-          'ca',
-          'init',
-          '--ca-dir',
-          join(ctx.workdir, 'other-ca'),
-          '--cn',
-          'another-ca',
-        ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'other-ca-tool-config'),
-        },
-        timeoutMs: 90_000,
+      const other = await initCa(fixture.host, {
+        dirName: 'other-ca',
+        cn: 'another-ca',
       })
-      if (other.code !== 0) {
-        return checks.skip(`第二个 CA 起不来：${other.stderr.slice(0, 400)}`)
-      }
-      const probe = await residentStartupProbe(
-        ctx,
+      const probe = await residentStartupProbeOn(
+        fixture.host,
         [
           '--cert',
           own.path,
           '--key',
-          join(nodeConfig, 'qianmo', 'identity', `${NODE}.tls.key`),
+          tlsKeyPath(fixture.nodeConfig, NODE),
           '--trust-ca',
-          join(ctx.workdir, 'other-ca', 'ca.crt'),
+          other.certificatePath,
         ],
-        nodeConfig,
+        fixture.nodeConfig,
       )
       return checks
+        .note('执行位置', fixture.host.describe)
+        .note('签发证书的 CA 指纹', fixture.ca.fingerprint256)
+        .note('拿去验它的 CA 指纹', other.fingerprint256)
         .note('输出', probe.output.slice(0, 1_500))
         .expect(probe.code !== 0, '退出码非零', probe.code)
         .contains(
@@ -750,16 +770,16 @@ export const certificateScenarios: readonly Scenario[] = [
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
-      const skip = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skip = await opensslGate(checks, fixture.host)
       if (skip !== undefined) return checks.skip(skip)
 
-      const fixture = await certificateFixture(ctx)
-      const certificate = await issueCertificate(ctx, fixture.ca, {
+      const certificate = await issueCertificate(fixture.ca, {
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'peer.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca)
+      const rl = await signRevocationList(fixture.ca)
       await publishRevocationList(fixture.registryUrl, rl)
       await publishAgentCertificate(fixture.registryUrl, {
         address: SENDER,
@@ -793,6 +813,7 @@ export const certificateScenarios: readonly Scenario[] = [
 
       return (
         checks
+          .note('夹具位置', fixture.host.describe)
           .note('signer', certificate.nodePublicKey)
           .note('信箱原文', last?.raw ?? '(信箱是空的)')
           // 签名验得过 —— 否则这里会是 E_CAP_INVALID + no published public key。

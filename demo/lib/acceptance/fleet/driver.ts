@@ -35,13 +35,18 @@
  *
  * ## 与本地驱动的**能力差**，以及为什么
  *
- * 真机腿仍然**没有**这三种能力，需要它们的场景如实记 `skip`：
+ * 真机腿仍然**没有**这两种能力，需要它们的场景如实记 `skip`：
  *
  * | 能力 | 为什么没有 |
  * | --- | --- |
  * | `mutate-node-env` | 本轮没有场景要它。一次性节点上它随 `restart-node` 一起成立，但没有场景验证过 —— 不声明未经验证的能力 |
  * | `stub-upstream` | 真机打真实模型端点，那正是真机腿的意义；插一个假上游会把这条腿变成一次慢十倍的本地跑 |
- * | `local-ca-fixture` | 卡的不是文件位置，是**签发顺序**：证书绑的是节点配置根里那把 Ed25519，而那个根要等 `startNode` 之后才存在，`--cert` 又必须在启动时给。要跑通得先给驱动加「预留节点配置根」这件事 |
+ *
+ * `local-ca-fixture` **已经补齐**（此前卡在签发顺序上）：`execHost` 多了
+ * `forNodeSpawn`（夹具位落在本场景的落机上）、`readFile`（产物回 runner）与
+ * `run`（openssl），`NodeSpec.configRoot` 让「先签证书、再用同一个根起节点」
+ * 这个顺序成立。于是离线 CA 那条链在真机上跑的是**部署好的那个
+ * `dist/cli-node.js`** 的 `qm ca` / `qm cert`，证书文件也真的在节点那台机器上。
  *
  * ## 一次性节点落在哪台机器上
  *
@@ -236,8 +241,14 @@ export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
 /** 一个一次性节点的家当 —— 只有这种句柄才允许停 / 重启 / 往配置根里写。 */
 interface DisposableNode {
   readonly machine: SpawnMachine
-  /** 目标机上的一次性根（`config/` 与 `work/` 的父目录）。 */
+  /** 目标机上的一次性根（日志与 pid 文件落在它下面）。 */
   readonly root: string
+  /**
+   * 节点的配置根。缺省是 `${root}/config`，但场景可以经
+   * {@link NodeSpec.configRoot} 换成一个**已经装着身份与证书**的根 —— 那正是
+   * 证书这一维搬上真机的前提。存在这里而不是每次现算，是因为重启必须复用它。
+   */
+  readonly configRoot: string
   /** 节点在**它自己那台机器**上监听的端口。 */
   readonly remotePort: number
   readonly occPath: string
@@ -288,7 +299,7 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ],
   [
     'local-ca-fixture',
-    '缺的不是「把文件放到目标机上」（execHost/launcherHost 都能做到），是**签发顺序**：证书要绑节点配置根里那把 Ed25519，而那个根要等 startNode 之后才存在，`--cert` 又必须在启动时就给。要在真机上跑这一维，得先让驱动能「预留一个节点配置根」并让 startNode 复用它（certificate/* 目前还直接拼本地驱动的根路径布局）',
+    '没有配置可承载一次性进程的舰队机器（QIANMO_ACCEPTANCE_SPAWN_HOSTS 置空）—— 签发链要跑在被测二进制那台机器上，而这一轮一台都没有',
   ],
   ['mirror-transport', '没有配置控制台主机（QIANMO_ACCEPTANCE_CONSOLE_HOST）'],
 ])
@@ -320,7 +331,15 @@ export class FleetDriver implements AcceptanceDriver {
     ]
     if (config.consoleHost !== undefined) caps.push('mirror-transport')
     if (config.spawnMachines.length > 0) {
-      caps.push('spawn-node', 'restart-node', 'spawn-console', 'run-launcher')
+      caps.push(
+        'spawn-node',
+        'restart-node',
+        'spawn-console',
+        'run-launcher',
+        // 签发链跑在落机上（`execHost({ forNodeSpawn: true })`），证书与 CA 根
+        // 因此和一次性节点同机。没有落机 = 没有地方跑 `qm ca`，这一项随之消失。
+        'local-ca-fixture',
+      )
     }
     this.capabilities = new Set(caps)
   }
@@ -388,7 +407,13 @@ export class FleetDriver implements AcceptanceDriver {
     const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
     const root = await this.#scratch(ctx, machine.ssh)
     const remotePort = await this.#freePortOn(machine.ssh)
-    const disposable: DisposableNode = { machine, root, remotePort, occPath }
+    const disposable: DisposableNode = {
+      machine,
+      root,
+      configRoot: spec.configRoot ?? `${root}/config`,
+      remotePort,
+      occPath,
+    }
 
     // 隧道先于进程建：它一旦建好就在整条场景里有效，重启不必重建。
     const localPort = await this.#tunnel(ctx, machine.ssh, remotePort)
@@ -403,8 +428,7 @@ export class FleetDriver implements AcceptanceDriver {
     disposable: DisposableNode,
     endpoint: string,
   ): Promise<NodeHandle> {
-    const { machine, root, remotePort, occPath } = disposable
-    const configRoot = `${root}/config`
+    const { machine, root, configRoot, remotePort, occPath } = disposable
     const psk = spec.auth.mode === 'psk' ? spec.auth.psk : ACCEPTANCE_PSK
 
     const argv = [
@@ -461,7 +485,10 @@ export class FleetDriver implements AcceptanceDriver {
       machine.ssh,
       [
         `set -e`,
-        `mkdir -p ${agentDirs.map(d => `'${shellQuote(d)}'`).join(' ')}`,
+        // 配置根一起建：场景给的那个根（`NodeSpec.configRoot`）多半已经存在
+        // （签发链刚在里面造过身份），而驱动自己开的那个只有 `#scratch` 建过
+        // 一次 —— 两种来源在这里合流，`mkdir -p` 对已存在的目录是幂等的。
+        `mkdir -p '${shellQuote(configRoot)}' ${agentDirs.map(d => `'${shellQuote(d)}'`).join(' ')}`,
         `: > '${shellQuote(outLog)}'`,
         `: > '${shellQuote(errLog)}'`,
         // `setsid` 让常驻成为新会话的组长，于是它和 ACP 子进程同组，停的时候
@@ -779,6 +806,14 @@ export class FleetDriver implements AcceptanceDriver {
       ssh = named.ssh
       occPath = named.occPath
       describe = `${named.ssh} (与节点 ${named.name} 同机)`
+    } else if (where?.forNodeSpawn === true) {
+      // 夹具位：落在本场景的**落机**上，与后面 `#spawn` 起的一次性节点同机。
+      // 走 `hosts` 轮转的话，`--trust-ca` 指向的会是另一台机器上的路径。
+      const machine = await this.#machineFor(ctx)
+      const home = await this.#homeOf(machine.ssh)
+      ssh = machine.ssh
+      occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
+      describe = `${machine.label} (节点夹具)`
     } else {
       const host =
         this.#config.hosts[this.#execHostCursor++ % this.#config.hosts.length]
@@ -811,12 +846,26 @@ export class FleetDriver implements AcceptanceDriver {
           .map(([k, v]) => `${k}='${shellQuote(v)}' `)
           .join('')
         const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
+        // 一条命令换一个配置根：一条签发链要同时用到工具根、对端身份根与
+        // 将来那个节点自己的根，而它们本来就该在同一台机器的同一棵树里。
+        const dir = opts?.configDir ?? configDir
         return await this.#ssh(
           ssh,
           [
-            `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(configDir)}' ` +
+            `PATH="$HOME/.bun/bin:$PATH" OCC_IDENTITY=qianmo OCC_CONFIG_DIR='${shellQuote(dir)}' ` +
               `${env}bun '${shellQuote(occPath)}' ${quoted}`,
           ],
+          opts?.timeoutMs,
+        )
+      },
+      run: async (argv, opts) => {
+        const env = Object.entries(opts?.env ?? {})
+          .map(([k, v]) => `${k}='${shellQuote(v)}' `)
+          .join('')
+        const quoted = argv.map(a => `'${shellQuote(a)}'`).join(' ')
+        return await this.#ssh(
+          ssh,
+          [`PATH="$HOME/.bun/bin:$PATH" ${env}${quoted}`],
           opts?.timeoutMs,
         )
       },
@@ -843,6 +892,16 @@ export class FleetDriver implements AcceptanceDriver {
         const abs = `${workdir}/${relPath}`
         await this.#ssh(ssh, [`mkdir -p -- '${shellQuote(abs)}'`])
         return abs
+      },
+      readFile: async pathOrRelPath => {
+        const abs = pathOrRelPath.startsWith('/')
+          ? pathOrRelPath
+          : `${workdir}/${pathOrRelPath}`
+        // `cat --` 而不是 `cat`：路径里的前导 `-` 否则会被当成参数。
+        const probe = await this.#ssh(ssh, [
+          `cat -- '${shellQuote(abs)}' 2>/dev/null || true`,
+        ])
+        return probe.stdout === '' ? undefined : probe.stdout
       },
       freePort: async () => await this.#freePortOn(ssh),
     }

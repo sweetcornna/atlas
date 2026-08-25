@@ -463,7 +463,7 @@ import {
   publishAgentCertificate,
   publishRevocationList,
   signRevocationList,
-} from '../local/ca.js'
+} from '../ca.js'
 import { readFileSync as readSource } from 'node:fs'
 import { join as joinPath } from 'node:path'
 import { REPO_ROOT } from '../local/spawn.js'
@@ -483,23 +483,23 @@ export const credentialChannelScenarios: readonly Scenario[] = [
     timeoutMs: 300_000,
     async run(ctx) {
       const checks = new Checks()
-      const skipReason = opensslGate(checks)
+      const fixture = await certificateFixture(ctx)
+      const skipReason = await opensslGate(checks, fixture.host)
       if (skipReason !== undefined) return checks.skip(skipReason)
 
-      const fixture = await certificateFixture(ctx)
       // 同一个配置根签两次：Ed25519 身份是 `wx` 创建、永不覆盖，所以两张证书
       // 绑的是**同一把签名钥匙**，四元组里只有 credential 那一格不同。
-      const first = await issueCertificate(ctx, fixture.ca, {
+      const first = await issueCertificate(fixture.ca, {
         node: 'ctl',
         configRoot: fixture.peerConfig,
         outName: 'cert-one.crt',
       })
-      const second = await issueCertificate(ctx, fixture.ca, {
+      const second = await issueCertificate(fixture.ca, {
         node: 'ctl',
         configRoot: fixture.peerConfig,
         outName: 'cert-two.crt',
       })
-      const rl = await signRevocationList(ctx, fixture.ca)
+      const rl = await signRevocationList(fixture.ca)
       await publishRevocationList(fixture.registryUrl, rl)
       await publishAgentCertificate(fixture.registryUrl, {
         address: 'qianmo://ctl/op',
@@ -531,6 +531,7 @@ export const credentialChannelScenarios: readonly Scenario[] = [
       const audited = await handshakeRejections(ctx.driver, node)
 
       return checks
+        .note('夹具位置', fixture.host.describe)
         .note('第一张证书指纹', first.fingerprint256)
         .note('第二张证书指纹', second.fingerprint256)
         .expect(
