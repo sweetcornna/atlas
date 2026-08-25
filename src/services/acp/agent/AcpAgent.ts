@@ -64,6 +64,7 @@ import type { SessionId } from '../../../types/ids.js'
 import type { AcpSession } from './sessionTypes.js'
 import { RESIDENT_INACTIVITY_ABORT_REASON } from '../../../utils/messages.js'
 import { runInAcpWorkspaceTurn } from './sessionWorkspace.js'
+import { buildVersion } from '../../../constants/buildProvenance.js'
 
 /**
  * The `AbortController` reason a `session/cancel` should carry, or `undefined`
@@ -170,22 +171,12 @@ export class AcpAgent implements Agent {
       agentInfo: {
         name: 'claude-code',
         title: 'Claude Code',
-        version:
-          typeof (globalThis as unknown as Record<string, unknown>).MACRO ===
-            'object' &&
-          (globalThis as unknown as Record<string, Record<string, unknown>>)
-            .MACRO !== null
-            ? String(
-                (
-                  (
-                    globalThis as unknown as Record<
-                      string,
-                      Record<string, unknown>
-                    >
-                  ).MACRO as Record<string, unknown>
-                ).VERSION ?? '0.0.0',
-              )
-            : '0.0.0',
+        // buildVersion() reads the substituted `MACRO.VERSION`. Reading
+        // `globalThis.MACRO` instead (issue #79) found the fallback object
+        // that entrypoints/cli.tsx installs and reported its dev placeholder
+        // `2.1.888` to every editor. '0.0.0' stays because ACP requires
+        // agentInfo.version to be a string.
+        version: buildVersion() ?? '0.0.0',
       },
       agentCapabilities: {
         _meta: {
