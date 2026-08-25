@@ -44,7 +44,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { macroDefineArgs } from '../../scripts/defines.ts'
+import { macroDefineArgs } from '../../scripts/defines.js'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../..')
 const CLI_ENTRYPOINT = 'src/entrypoints/cli.tsx'
