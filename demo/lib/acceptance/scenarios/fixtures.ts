@@ -69,6 +69,14 @@ export interface NodeFixtureOptions {
   readonly extraArgs?: readonly string[]
   readonly name?: string
   /**
+   * 目标机上一个**已经装好东西**的配置根（见 {@link NodeSpec.configRoot}）。
+   *
+   * 只有证书那两条 `--cert` 场景用它：它们的证书必须在起节点之前就绑好这个
+   * 根里的 Ed25519（K-2）。别的场景一律不给 —— 让驱动自己开一个一次性根，
+   * 那样审计链才是「这一条场景一条链」。
+   */
+  readonly configRoot?: string
+  /**
    * 只要一台活着的节点 —— 与 `attach-node` 能力配对（见 {@link NodeSpec.attach}）。
    *
    * 声明 `attach-node` 的场景**必须**置上它，否则真机腿会给它起一个一次性节点，
@@ -96,6 +104,9 @@ export function nodeSpec(
           ? { mode: 'signature', keyDir: '' }
           : { mode: 'psk', psk: ACCEPTANCE_PSK },
     policy: options.policy ?? 'signed-task',
+    ...(options.configRoot === undefined
+      ? {}
+      : { configRoot: options.configRoot }),
     ...(options.trust === undefined ? {} : { trust: options.trust }),
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.extraArgs === undefined
