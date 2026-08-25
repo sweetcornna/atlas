@@ -118,7 +118,7 @@ jobs:
   #
   # 为什么是一个兄弟 job，而不是 `ci` 里的一步、也不是 `scripts/test-shards.sh`
   # 的一格：`scripts/qianmo-acceptance.ts` 顶部那三条理由（要起真进程、要抢真
-  # TCP 端口、它的红是产品结论而不是构建结论）反对的是**混进单元测试分片**,
+  # TCP 端口、它的红是产品结论而不是构建结论）反对的是**混进单元测试分片**，
   # 不是「不接线」。作为并行的兄弟 job，它既不给合并门禁添一分钟串行时间，也
   # 不会把一个抢端口的成员塞进那批靠目录隔离 mock 状态的纯内存分片里 —— 后者
   # 正是这仓库花了 55 次连红才治好的病。先例就在下面：`windows` 也是兄弟 job。
@@ -129,11 +129,22 @@ jobs:
   # 之前套件**完全没接线**，那道自保护只在有人手动跑时才响 —— 而它挡的恰恰是
   # 「没人看的时候悄悄变成假绿」。一道只在有人看着时才响的警报不挡这个。
   #
-  # 真机腿（FleetDriver）不在这里，且这是有意的：它要四台 VPS + SSH 隧道 +
-  # 生产 PSK。把那套凭据放进 GitHub CI 等于拿一条验收腿去换一个长期泄密面，
-  # 而换来的覆盖本地腿这边已经有了 —— 两条腿跑的是**同一张场景表**
-  # （`demo/lib/acceptance/registry.ts`），差别只在驱动。真机腿仍然手动跑，
-  # 它自己那两条纪律另有分片护栏（`demo/lib/acceptance/__tests__/fleetGuards.test.ts`）。
+  # 真机腿（FleetDriver）**不接 GitHub CI，而且不是「以后再补」**：
+  #
+  # ① 凭据。它要四台 VPS 的 SSH 私钥 + 生产传输 PSK + 控制台机器 H 的 IAP
+  #    隧道凭据。把这套放进仓库 secrets，是拿一条验收腿去换一个长期泄密面。
+  # ② 自托管 runner 能绕开①（凭据本来就在 H 上），但**现在没有注册**，而
+  #    `runs-on: self-hosted` 在没有 runner 时不会失败、只会**永远排队**。
+  #    一个长期 pending 的检查与「还在跑」长得一模一样，它教会人忽略检查栏 ——
+  #    比没有这个 job 更糟。要接就得先真的注册 runner，那是另一件事。
+  #
+  # 别把这条读成「真机腿是多余的」。它**唯一覆盖**本地腿造不出的两条
+  # （`handshake/channel-conflict-signing-key`、`audit/mirror-pull-not-constructible`），
+  # 而且它验的是真部署面。两条腿跑同一张场景表（`demo/lib/acceptance/registry.ts`），
+  # 本地腿 113/115、真机腿 96/115 —— 各有各的盲区，谁也不替代谁。
+  # 真机腿仍然手动跑（`--target fleet`），它那两条「不碰生产」的纪律另有分片
+  # 护栏（`demo/lib/acceptance/__tests__/fleetGuards.test.ts`），那条护栏零网络、
+  # 进得了分片，所以「改坏了要等下一次真跑才发现」的那部分已经被挡住了。
   acceptance-local:
     runs-on: ubuntu-latest
     # 实测（4 核 Linux 容器，见下面 --timeout-scale 的注释）约 13 分钟。给到
@@ -198,6 +209,16 @@ jobs:
           summary="$(tail -n 1 "$out/results.ndjson")"
           echo "$summary" | jq .
 
+          # 先证明「真的跑了一条并且它绿了」。少了这条，护栏会以最坏的方式退化：
+          # 那条场景一旦被改名或删掉，`--only` 匹配不到任何东西 → 零场景 → counts
+          # 全 0、targetTouches 也是 0 → 判定 FAIL → exit 1 → 上面的 `if` 照样满足，
+          # 于是这一步继续绿，而它实际上什么都没验。护栏自己变成假绿，正是它要挡的
+          # 那个形状。
+          echo "$summary" | jq -e '.counts.pass >= 1' > /dev/null || {
+            echo "::error title=Guard tested nothing::--only 没匹配到场景（改名或删了？）。护栏这一轮零场景，等于没验。"
+            cat "$log"
+            exit 1
+          }
           echo "$summary" | jq -e '.counts.fail == 0 and .counts.error == 0' > /dev/null || {
             echo "::error title=Guard tested nothing::护栏场景自己红了，这一步没有制造出「全绿但零触达」。"
             cat "$log"
@@ -222,7 +243,7 @@ jobs:
       # 换成管道末端那个命令的。
       #
       # --timeout-scale 3：场景里那 87 个自报的超时（30 s–300 s）是按开发机写的，
-      # 而 runner 是共享的双核机器。不放大的话，一条只是慢了的场景会被记成
+      # 而 runner 是共享的虚拟机（2–4 核，且同宿主上还有别人）。不放大的话，一条只是慢了的场景会被记成
       # `error`（「套件自己炸了」）而不是它本来要说的话 —— 那在 CI 上是纯噪声，
       # 且是会被人当成「套件不稳」而加豁免的那种噪声。理由与 runner.ts 里
       # `FLEET_TIMEOUT_SCALE` 逐字相同，只是慢的原因从「每步多一次 SSH 往返」
