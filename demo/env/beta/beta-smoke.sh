@@ -19,6 +19,15 @@
 #   ③ 控制台 /v0/health 200；
 #   ④ 每个节点的审计链各自 `intact`。
 #
+# ── ① 与 ③ 是控制台/注册中心**唯一**的存活判据（issue #64）─────────────────
+# `systemctl --user is-active qianmo-console.service` 在两个方向上都会骗人：它常年
+# 报 inactive 而进程活着（beta-up.sh 只 enable 不 start），也会在进程死后继续报
+# active（`Type=oneshot` + `RemainAfterExit=yes`）。所以这两个单元的状态不进判据，
+# 只在①/③ 旁边由 host_unit_note 解释一句「为什么你查到的那个状态是错的」。
+# **⓪ 里那两条单元判据不在此列，照旧成立**：隧道单元是 `Type=exec`（systemd 直接管着
+# 那个 ssh 进程），镜像那条查的是 `.timer`（定时器的 active 说的就是「它还在计时」）。
+# 会骗人的是 `Type=oneshot` + `RemainAfterExit=yes` 那种，H 腿这两个正是。
+#
 # ── 为什么是「一个地址跑一次 probe」而不是一次 probe 带四个 --expect ──────────
 # 两个理由，第二个是硬的：
 #   · 拨不通时要说出**哪一个**拨不通。一次跑四条只有一个退出码，那句「四条里有一条
@@ -184,6 +193,23 @@ check_links() {
   done
 }
 
+# H 腿那两个单元的状态与现实对不上时说一句（issue #64）。
+#
+# **它自己从不判 FAIL。**不一致的两种形状里，「inactive 而进程活着」恰恰是本包的正常
+# 形态（beta-up.sh 只 enable 不 start），判红就是把一套对的部署报成坏的；另一种
+# 「active 而进程没了」已经被上面那条 /v0/health 判掉了，这里只负责解释状态为什么在
+# 骗人。判死活的**只有** /v0/health —— 这一节存在的全部理由，就是让跑过
+# `systemctl --user is-active` 拿到错答案的人在这里看到为什么。
+host_unit_note() {
+  local unit="$1" alive="$2" state note
+  beta_systemd_user_ok || return 0
+  [ -f "$BETA_SYSTEMD_USER_DIR/$unit" ] || return 0
+  state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+  note="$(beta_unit_state_note "$unit" "$state" "$alive")"
+  [ -n "$note" ] || return 0
+  beta_say "注意 : $note"
+}
+
 run_host() {
   beta_load_peers
   if [ "$BETA_PEER_COUNT" -eq 0 ]; then
@@ -197,8 +223,10 @@ run_host() {
   status="$(beta_http_status "$BETA_REGISTRY_URL/v0/health")"
   if [ "$status" = '200' ]; then
     beta_ok "注册中心 /v0/health 200（${BETA_REGISTRY_URL}）"
+    host_unit_note "$BETA_REGISTRY_UNIT" 1
   else
     fail_item "注册中心 /v0/health 回 ${status}（${BETA_REGISTRY_URL}）"
+    host_unit_note "$BETA_REGISTRY_UNIT" 0
   fi
 
   beta_head "② 按名解析 + 真拨通（$BETA_PEER_COUNT 条地址）"
@@ -242,8 +270,10 @@ run_host() {
   status="$(beta_http_status "$BETA_CONSOLE_URL/v0/health")"
   if [ "$status" = '200' ]; then
     beta_ok "控制台 /v0/health 200（${BETA_CONSOLE_URL}）"
+    host_unit_note "$BETA_CONSOLE_UNIT" 1
   else
     fail_item "控制台 /v0/health 回 ${status}（${BETA_CONSOLE_URL}）"
+    host_unit_note "$BETA_CONSOLE_UNIT" 0
   fi
 
   beta_head '④ 审计链'

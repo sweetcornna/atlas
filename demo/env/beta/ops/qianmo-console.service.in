@@ -21,8 +21,13 @@
 # 控制台把注册中心当数据源。反过来的顺序（§7.1）会让开机后头几十秒的页面是空的，而那
 # 个空页面和「注册中心真的没起来」长得一模一样。
 
+# ── 这个单元的状态不是存活判据（issue #64）──────────────────────────────────
+# 两个方向都不是，见 qianmo-registry.service.in 同名那一节。判死活只有一条：
+#   curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38621/v0/health   # 要 200
+# 那条路径公开、零鉴权，`beta-smoke.sh --role host` 的第③项问的就是它。
+
 [Unit]
-Description=Qianmo beta console on H (started through demo/env/beta/beta-up.sh)
+Description=Qianmo beta console on H (oneshot; unit state is NOT a liveness signal, GET /v0/health is)
 After=network-online.target @REGISTRY_UNIT@
 Wants=network-online.target
 Requires=@REGISTRY_UNIT@

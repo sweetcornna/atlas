@@ -280,6 +280,47 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 最后一个登录会话退出时这些单元会跟着一起消失。宿主上没有可用的 `systemd --user` 时（开发机
 就是这样），脚本不铺单元并如实说「重启后不会自动回来」。
 
+### 这两个单元的状态不是存活判据 —— 两个方向都不是
+
+2026-08-24 真机腿实测，同一台 H 同一时刻：
+
+```
+systemctl --user is-active qianmo-console.service   → inactive (rc=3)
+curl /v0/health → 200 ；ss -lnt → 38621 LISTEN ；进程 etimes = 6539
+```
+
+**这不是故障，是两条设计合成出来的**（issue #64）：
+
+- `inactive` 而进程活着 —— `beta-up.sh` 每趟都自己起进程，对这两个单元**只 `enable` 不
+  `start`**（`start` 会让脚本要求 systemd 起一个此刻正由自己跑着的单元，那是自己等自己）。
+  于是它们从没被 systemd 跑过，`is-active` 当然是 `inactive`。
+- `active` 而进程已经没了 —— `Type=oneshot` + `RemainAfterExit=yes`，见上一节。
+
+**对照组是同机四条 `qianmo-tunnel@<节点>.service`：它们全是 `active`，而且那是真的。**
+差别在 `Type=exec`（systemd 直接管着 ssh 进程），不在 user scope —— 别把隧道那边的经验套过来。
+
+判死活只有一条路，公开、零鉴权、两个进程同形：
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:38620/v0/health   # 注册中心
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:38621/v0/health   # 控制台
+```
+
+`beta-smoke.sh --role host` 的第 ①③ 项问的就是这两条；单元状态与现实对不上时，它会在那两项
+旁边解释一句为什么，**但不判 FAIL**（「inactive 而进程活着」是本包的正常形态）。
+
+**注册中心那条探针一直都在**，`/v0/health` 还会回 `{"status":"ok","agents":N}`。issue #64 里
+「注册中心没有存活探针」是路径试错：`/health` 少了 `/v0` 前缀，`/v0/peers` 则是集合名不对——
+注册中心的集合叫 `agents`（`/v0/agents`、`/v0/agents/<地址>`、`/v0/agents/<地址>/heartbeat`），
+路由表在 `packages/registry/src/http.ts`，不认的路径一律 `404 unknown path: <路径>`。
+
+**没有把单元改成「状态真实」，是算过账的。**要么把 `peers.conf` 派生出来的整条命令行抄进单元
+文件让 systemd 直接管进程（第二处真源，正是上一节拒绝的那件事），要么让 `beta-up.sh` 转手去
+`systemctl start`（`Requires=` 会把整条 links+registry 腿再跑一遍，且任何一步绊倒就把一套活着
+的部署变成 `failed`）。代价都比收益大。最坏的中间态是「看起来有个状态可查，查出来是错的」，
+所以改为把这条差距钉在所有会有人去看的地方：单元的 `Description=`、`beta-up.sh` 末尾的
+「存活判据」一行、`beta-smoke.sh` 的 ①③ 项，以及这一节。
+
 ### 镜像为什么只能是 `ssh cat`
 
 **理由是设计面的，真源在 [`beta-env.md`](../../../docs/dev/beta-env.md) §4.3，本文不复制**：
@@ -341,7 +382,7 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 | `QIANMO_BETA_NODE` | `beta-1` | 节点名。**四台机器上必须各不相同**；没给 `--node` 时脚本会 WARN |
 | `QIANMO_BETA_AGENTS` | `planner reviewer` | 该节点的 agent（每节点 2 个，按用途分不按人分，§2.2）。也可用重复的 `--agent` 给 |
 | `QIANMO_BETA_TEAM` | `atlas` | `occ resident --team` |
-| `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4） |
+| `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）。**这是设置它的唯一入口**：脚本没有 `--label`，尾参里的 `--label` 只对这一趟的进程生效（标签含空白，写不进 `ops/console.env` 的一行）。`--help` 里单独有一段（issue #60） |
 | `QIANMO_BETA_SSH_KEY` | `$HOME/.ssh/id_ed25519_qianmo` | 隧道与镜像共用的私钥（H 上的路径）。单条坐标行可用 `key=` 覆盖 |
 | `QIANMO_BETA_MIRROR_INTERVAL_MIN` | `5` | 审计镜像拉取间隔。它同时决定每个镜像审计卡上的「滞后 ≤ N 分钟」标注 |
 | `QIANMO_BETA_BACKUP_URL` | 无 | 节点写快照的 https 地址（§2.7）。**不设就不开备份面**；给了就必须有写 token |
@@ -386,6 +427,22 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 标签会被回写。改完这一个展示项后，要先停掉正在运行的 console，再重新运行 H 腿才会生效。
 手改这个文件立刻生效（下一次 `beta-up.sh` 起控制台时）。**注意控制台是幂等启动的**：已经
 在跑的那一份不会被重起，所以改完要让它生效得 `beta-down.sh console && beta-up.sh --role host`。
+
+**存量 `LABEL` 与名册对不上会 WARN。**上面那条只删了旧 schema 的三个键，`LABEL` 自己
+**同样会过期而没有守卫**：2026-08-24 铺新产物时 H 上躺着的是单节点时代的
+「…审计视图：beta-1（…权威副本在节点本机）」，而控制台早已是四目标形态——那一趟显式带了
+`QIANMO_BETA_LABEL` 才没让页头退回单节点文案（issue #60）。现在标签点名的节点与
+`peers.conf` 对不上时会 WARN 一句，形状与 #45 那条一致。
+
+判据故意窄，**只在标签自己点名了名册的一部分时才说话**：
+
+- 一个节点名都没提的标签（派生默认那句「多节点审计视图」就是）永远不报；
+- 提全了的不报。`beta-1..4` 这种**区间写法先展开再比**——现场那份正确的标签正是这个形状，
+  不展开就会每跑一次假警报一次，而一条会误报的警等于没有警；
+- 提了一部分（标签写 `beta-1`、名册四个），或提到名册里已经没有的名字（`beta-9`）——报。
+
+标签不影响任何一条链路，所以没有别的东西会为此变红。这条守卫存在的理由就是这个：
+它是**唯一**会说话的地方。
 
 ## 六个负向用例怎么复跑
 

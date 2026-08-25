@@ -1059,6 +1059,50 @@ beta_systemd_user_ok() {
   return 0
 }
 
+# ── 单元状态与现实脱节：两个方向都会，而且都是设计使然 ─────────────────────
+#
+# 2026-08-24 的真机腿实测：`systemctl --user is-active qianmo-console.service` 答
+# `inactive`（rc=3），而同一时刻控制台 `/v0/health` 200、38621 LISTEN、进程已跑
+# 6539 s；同机四条 `qianmo-tunnel@beta-N.service` 全是 active（issue #64）。
+#
+# **这不是 bug，是本包两条设计的合成结果**，两个方向各有一个：
+#   · `inactive` 而进程活着 —— beta-up.sh 每趟都自己起进程、对 H 腿那两个单元**只
+#     enable 不 start**（理由在 provision_host_units 的头注：start 会让脚本要求
+#     systemd 起一个此刻正由自己跑着的单元，那是自己等自己）。于是单元从没被 systemd
+#     跑过，`is-active` 当然是 inactive。
+#   · `active` 而进程已经没了 —— `Type=oneshot` + `RemainAfterExit=yes`：active 只
+#     意味着「那一趟 ExecStart 跑完过」。`Restart=` 对 oneshot 无效，进程崩了没人拉。
+#
+# 于是这两个单元的状态**在两个方向上都不是存活判据**。这里不去把它修成「真实反映
+# 进程」——那要么把 peers.conf 派生出来的整条命令行抄进单元文件（第二处真源，正是
+# 单元头注拒绝的那件事），要么让 beta-up.sh 转手去 `systemctl start`（`Requires=`
+# 会把整条 links+registry 腿再跑一遍，且任何一步绊倒就把一套活着的部署变成 failed）。
+# 代价都比收益大。改为：**把这条差距说出来**，并把唯一算数的判据（`/v0/health`）钉在
+# 所有会有人去看的地方。最坏的中间态是「看起来有个状态可查，查出来是错的」——一句话
+# 就能把它从陷阱变成常识。
+
+# beta_unit_state_note <单元名> <is-active 的输出> <进程活着吗 0/1>
+# 状态与现实一致时什么都不打；不一致时打一段说明。它**永远不下 FAIL 判定**：
+# 「inactive 而进程活着」恰恰是本包的正常形态，报成失败等于把一套对的部署判红。
+beta_unit_state_note() {
+  local unit="$1" state="$2" alive="$3"
+  if [ "$alive" = '1' ] && [ "$state" != 'active' ]; then
+    printf '%s\n' "${unit} 是 ${state:-未知}，而它管的进程活着 —— **这是正常形态，不是故障**。
+本脚本每趟都自己起进程，对这个单元只 enable 不 start（那样才能让「这一趟起没起成」与
+「下次开机它还在」互不牵连），于是它从没被 systemd 跑过。
+**单元状态不是存活判据**，反方向也不是（oneshot + RemainAfterExit 会在进程死后继续报
+active）。算数的只有 /v0/health（issue #64）。"
+    return 0
+  fi
+  if [ "$alive" = '0' ] && [ "$state" = 'active' ]; then
+    printf '%s\n' "${unit} 是 active，而它管的进程答不出话 —— 这是 Type=oneshot + RemainAfterExit=yes
+的固有形状：active 只意味着「那一趟 ExecStart 跑完过」，不意味着进程还在，而 Restart= 对
+oneshot 无效。**以 /v0/health 为准**（issue #64）。"
+    return 0
+  fi
+  return 0
+}
+
 beta_require_systemd_user() {
   command -v systemctl >/dev/null 2>&1 \
     || beta_die "peers.conf 里有 node 坐标行，但这台机器上没有 systemctl —— 隧道与镜像都靠 systemd --user。
@@ -1187,6 +1231,104 @@ beta_conf_legacy_keys() {
   return 0
 }
 
+# ── 存量 LABEL 与当前名册对不上 ─────────────────────────────────────────────
+#
+# 上面那条守卫删了旧 schema 的三个键并报了很响的警，**却漏了同一个文件里同样过时的
+# 第四样东西：LABEL 本身**。2026-08-24 铺新产物时 H 上躺着的是单节点时代的
+# 「…审计视图：beta-1（…权威副本在节点本机）」，而控制台早已是四目标形态；那一趟
+# 显式带了 QIANMO_BETA_LABEL 才没让页头退回单节点文案（issue #60）。
+#
+# 后果只是页头文案错，但形状与 #45 是同一个：**静默继承一份过期状态**。而标签恰恰是
+# 「50 个人都会看到、且不需要账号体系」的那个广播位（beta-env.md §7.4），说错了没有
+# 任何一条链路会红。
+#
+# 判据故意窄 —— **只在标签自己点名了名册的一部分时才说话**：
+#   · 一个节点名都没提的标签（派生默认那句「多节点审计视图」就是）永远不报；
+#   · 提全了的不报。`beta-1..4` 这种区间写法先展开再比，否则现场那份正确的标签会
+#     每跑一次假警报一次 —— 而一条会误报的警等于没有警；
+#   · 提了一部分（`beta-1`，名册四个）、或提到名册里已经没有的名字 —— 报。
+# 宽一点的判据（「数一数标签里出现过几个数字」之类）在正常标签上就会红，那正是这条
+# 守卫此前没人写的原因；把它收窄到「标签自称点名了谁」就既不误报也抓得住那一例。
+
+# beta_label_claimed_nodes <标签> <名册节点>... —— 打印标签「点名」的节点名，一行一个。
+#
+# 点名 = 标签里出现了一个**完整**的节点名词（前后都不是节点名字符），且它要么就在
+# 名册里，要么长得像名册里那批（同一个去掉末尾数字的词根，于是删掉的 beta-9 也算
+# 点名，而 `滞后 ≤ 5 min` 里的 `5` 不算）。区间写法先展开。
+#
+# 用 awk 而不是 bash 循环：切词与区间展开在 bash 3.2 里要写成一串 ${} 剥字符，
+# 而这份标签是 UTF-8 中文 —— bash 3.2 按字节切，那正是 issue #49 那类只在 macOS 上
+# 炸的写法。LC_ALL=C 让 awk 也按字节走：我们只关心 ASCII 词，多字节字符逐字节变成
+# 分隔符，结果一样。
+beta_label_claimed_nodes() {
+  local label="$1"
+  shift
+  LC_ALL=C awk -v label="$label" 'BEGIN {
+    for (i = 1; i < ARGC; i++) {
+      name = ARGV[i]
+      roster[name] = 1
+      stem = name
+      if (sub(/[0-9]+$/, "", stem) > 0 && stem != "") stems[stem] = 1
+    }
+
+    # ① 区间展开：beta-1..4 → beta-1 beta-2 beta-3 beta-4。
+    #    上界 63 是护栏，不是语义：`1..100000` 是笔误，不该让这里转一分钟。
+    s = label
+    out = ""
+    while (match(s, /[a-z0-9_-]*[0-9]+\.\.[0-9]+/)) {
+      tok = substr(s, RSTART, RLENGTH)
+      out = out substr(s, 1, RSTART - 1)
+      s = substr(s, RSTART + RLENGTH)
+      p = index(tok, "..")
+      left = substr(tok, 1, p - 1)
+      last = substr(tok, p + 2) + 0
+      stem = left
+      sub(/[0-9]+$/, "", stem)
+      first = substr(left, length(stem) + 1) + 0
+      if (last < first || last - first > 63) { out = out " " tok " "; continue }
+      for (k = first; k <= last; k++) out = out " " stem k " "
+    }
+    s = out s
+
+    # ② 切词：非节点名字符一律当分隔符，于是「：」「（」「、」都不用逐个枚举。
+    gsub(/[^a-z0-9_-]/, " ", s)
+    m = split(s, words, " ")
+    for (k = 1; k <= m; k++) {
+      w = words[k]
+      if (w == "" || (w in seen)) continue
+      claimed = (w in roster)
+      if (!claimed) {
+        stem = w
+        if (sub(/[0-9]+$/, "", stem) > 0 && (stem in stems)) claimed = 1
+      }
+      if (claimed) { seen[w] = 1; print w }
+    }
+    exit 0
+  }' "$@"
+}
+
+# beta_label_roster_drift <标签> <名册节点>... —— 有漂移时打印，一行一条：
+#   missing <节点>   名册里有、标签没点到的
+#   extra   <节点>   标签点到、名册里已经没有的
+# 没有漂移，或标签一个节点都没点名时，什么都不打（返回码恒 0，调用方看输出）。
+beta_label_roster_drift() {
+  local label="$1" node claimed=' ' roster=' ' any=0
+  shift
+  for node in "$@"; do roster="$roster$node "; done
+  for node in $(beta_label_claimed_nodes "$label" "$@"); do
+    claimed="$claimed$node "
+    any=1
+  done
+  [ "$any" = '1' ] || return 0
+  for node in "$@"; do
+    case "$claimed" in *" $node "*) ;; *) printf 'missing %s\n' "$node" ;; esac
+  done
+  for node in $claimed; do
+    case "$roster" in *" $node "*) ;; *) printf 'extra %s\n' "$node" ;; esac
+  done
+  return 0
+}
+
 # 审计节点的链是镜像来的吗（= 它有 node 坐标行且给了 trail=）。
 beta_node_is_mirrored() {
   local node="$1" index
@@ -1199,7 +1341,7 @@ beta_node_is_mirrored() {
 # 它必须在 beta_load_peers 之后调用，以确保一份历史 console.conf 不会重新成为节点
 # 名册的来源。优先级：环境变量 > console.conf > 派生默认。
 beta_resolve_console_conf() {
-  local from_file legacy
+  local from_file legacy source drift missing extra line
   # 旧 schema 的键一个都不读，但**必须报出来再删**：静默忽略正是它能在 H 上原样躺
   # 六天、还骗过一次实查的原因（issue #45）。
   legacy="$(beta_conf_legacy_keys "$BETA_CONSOLE_CONF" | tr '\n' ' ')"
@@ -1209,13 +1351,40 @@ beta_resolve_console_conf() {
 一份文件只放得下一个目标；现在每个节点各有一条审计来源和一个唤醒地址）。
 要改目标就改 peers.conf；这个文件从此只剩 LABEL 一行。"
   fi
+  source='环境变量 QIANMO_BETA_LABEL'
   if [ -z "$BETA_LABEL" ]; then
     from_file="$(beta_conf_get "$BETA_CONSOLE_CONF" LABEL)"
     if [ -n "$from_file" ]; then
       BETA_LABEL="$from_file"
+      source="${BETA_CONSOLE_CONF} 里的存量 LABEL"
     else
       BETA_LABEL='阡陌内测环境 · 多节点审计视图'
+      source='派生默认'
     fi
+  fi
+
+  # 标签点名的节点与当前名册对不上就说一句（判据与理由见 beta_label_claimed_nodes
+  # 上面那一节）。`$(beta_peer_nodes)` 不加引号是要它按空白拆成多个参数 —— 节点名
+  # 的字符集里没有空白（beta_assert_node_name），这里拆不出意外。
+  missing=''
+  extra=''
+  drift="$(beta_label_roster_drift "$BETA_LABEL" $(beta_peer_nodes))"
+  while IFS= read -r line; do
+    case "$line" in
+      'missing '*) missing="$missing ${line#missing }" ;;
+      'extra '*) extra="$extra ${line#extra }" ;;
+    esac
+  done <<EOF
+$drift
+EOF
+  if [ -n "$missing" ] || [ -n "$extra" ]; then
+    beta_warn "页头标签点名的节点与 ${BETA_PEERS_FILE} 对不上：${missing:+
+  标签没点到：${missing# }}${extra:+
+  标签点到、名册里已经没有：${extra# }}
+现在这句是「${BETA_LABEL}」，来源是${source}。
+标签不影响任何一条链路，所以没有别的东西会为此变红 —— 而它恰恰是 50 个人唯一看得见的那一格
+（beta-env.md §7.4）。一份单节点时代的标签会让人以为这套部署只有一个节点（issue #60）。
+要换：QIANMO_BETA_LABEL='…' demo/env/beta/beta-up.sh --role host（新值会回写进 console.conf）。"
   fi
 
   {

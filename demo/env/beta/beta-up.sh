@@ -108,7 +108,19 @@ usage() {
   beta_say '  ② 每台节点：beta-up.sh --role node --node <名字> -- --trust <节点>=<公钥>'
   beta_say '  ③ H 上   ：beta-up.sh --role host -- --wake-sign'
   beta_say ''
-  beta_say '变量与完整说明见 demo/env/beta/README.md。'
+  # 页头标签在这里单独占一段，而不是留给「变量与完整说明见 README」那一句：**本脚本
+  # 没有 --label**，而这是每次起 H 腿都会碰到的东西（issue #60）。三条路只有一条通：
+  #   · `--label` —— 不存在；
+  #   · 尾参 `-- --label "…"` —— 这一趟的进程会带上它，但标签里必然有空白，写不进
+  #     ops/console.env 的一行（write_console_env 会为此 WARN），于是活不过一次重启；
+  #   · 环境变量 —— 唯一能被回写进 console.conf、因而活过重启的入口。
+  beta_say '页头标签（控制台唯一那格广播位）只有一个入口，本脚本没有 --label：'
+  beta_say "  QIANMO_BETA_LABEL='阡陌内测环境 · 审计视图：…' beta-up.sh --role host"
+  beta_say '  不给就沿用 <内测根>/console.conf 里的存量值，再没有就用派生默认。'
+  beta_say '  存量标签点名的节点与 peers.conf 对不上时，本脚本会 WARN 一句。'
+  beta_say '  尾参里的 --label 只对这一趟的进程生效：标签含空白，写不进 ops/console.env。'
+  beta_say ''
+  beta_say '其余变量与完整说明见 demo/env/beta/README.md。'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -429,6 +441,10 @@ run_host() {
   beta_say "页头标签 : 持久化在 ${BETA_CONSOLE_CONF}；节点清单只认 $BETA_PEERS_FILE"
   if beta_systemd_user_ok; then
     beta_say "开机自启 : ${BETA_REGISTRY_UNIT} + ${BETA_CONSOLE_UNIT}（systemd --user，要 loginctl enable-linger）"
+    # 这一行必须紧跟上一行：上一行会让人以为「那两个单元的状态可以拿来查死活」，而它
+    # 此刻已经是 inactive 了——本脚本刚刚自己起了进程，只 enable 没 start（issue #64）。
+    beta_say "存活判据 : ${BETA_CONSOLE_URL}/v0/health 答 200；**上面那两个单元的状态不算数**"
+    beta_say '           （两个方向都不算：常年 inactive 而进程活着，也会在进程死后继续 active）'
   else
     beta_say '开机自启 : 无 —— 这台机器上没有可用的 systemd --user，重启后要靠人重跑本脚本'
   fi
