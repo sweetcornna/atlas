@@ -102,6 +102,25 @@ const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
   ],
 ])
 
+/*
+ * 驱动内部那两个「等它就绪」的墙钟预算。
+ *
+ * **一条纪律：用它们的地方一律乘 `ctx.timeoutScale`，不许写裸的常数。**
+ * 与 `fleet/driver.ts` 顶部那段是同一条 —— 理由完整版在那边，这里只说本地腿
+ * 独有的那半句：**CI 的 `acceptance-local` job 跑的正是这条腿，且带
+ * `--timeout-scale 3`**（PR #73，理由是 GitHub 托管 runner 是共享虚拟机）。
+ * 场景预算放大了 3 倍而这里没有，于是慢 runner 上驱动的等待会**先于**场景预算
+ * 炸掉 —— 那种红记的是 `error`（「套件自己炸了」）而不是这条场景本来要说的
+ * 话，恰好是会被人当成「套件不稳」而加豁免的那类噪声（issue #91 ①）。
+ *
+ * 倍率从 `ctx` 取、不在这里读 `FLEET_TIMEOUT_SCALE`：`--timeout-scale` 压得过
+ * 那个默认值，驱动自己去读常量就会和场景预算用上两个不同的倍率。一份倍率、
+ * 一个出处，出处是 runner。缺省 1，所以接上它是零行为变化。
+ */
+
+/** 一个常驻「起来了没有」的等待基准（banner 落地 + 真拨得通，见下）。 */
+const NODE_READY_BUDGET_MS = 30_000
+
 export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
@@ -182,7 +201,7 @@ export class LocalDriver implements AcceptanceDriver {
     const endpoint = `ws://127.0.0.1:${port}`
     // 就绪判据：banner 落地 **且** 真拨得通（见文件头 ②）。
     await waitFor(() => proc.stdout().includes('"publicKey"'), {
-      timeoutMs: 30_000,
+      timeoutMs: NODE_READY_BUDGET_MS * ctx.timeoutScale,
       what: `节点 ${spec.name} 的启动 banner`,
       diagnose: () => `stdout:\n${proc.stdout()}\nstderr:\n${proc.stderr()}`,
       signal: ctx.signal,
@@ -212,7 +231,7 @@ export class LocalDriver implements AcceptanceDriver {
         return credentialed ? probe.frames.length > 0 : probe.authed
       },
       {
-        timeoutMs: 30_000,
+        timeoutMs: NODE_READY_BUDGET_MS * ctx.timeoutScale,
         stepMs: 200,
         what: credentialed
           ? `节点 ${spec.name} 发出 challenge 帧`
