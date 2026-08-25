@@ -1858,6 +1858,18 @@ function envSuffix(node: string): string {
  * 套件不自己去建隧道：建隧道要一个跨整轮运行的进程与它的生命周期，而
  * 「这台 runner 怎么够得着舰队」本来就是运行环境的事，写死在套件里只会在
  * 换一种拓扑时挡路。拨不通是**如实的红**，不是假绿 —— 那正好是这次要修的病。
+ *
+ * ## 节点搬家了怎么办：`QIANMO_ACCEPTANCE_SSH_<节点>`
+ *
+ * 与拨号地址同一条理由 —— **哪台机器承载某个节点是部署的事实**。别名被重指或
+ * 节点换了机器之后，{@link DEFAULT_FLEET_HOSTS} 里写死的那一栏不会报错，它会
+ * 安静地去问另一台机器：`#tail` / `execNode` / `readNodeFile` / 来源探针全部
+ * 得到「那台机器上没有这个」，报告上表现为一条读不通的节点，而现场看起来像那
+ * 个节点坏了。给一条覆盖，运维不必为此改代码。
+ *
+ * **只覆盖 SSH 目标，不覆盖配置根** —— 部署形状（`<家目录>/qianmo-beta/…` +
+ * `<家目录>/atlas-beta`）是 `beta-up.sh` 定的，跟着机器走；真需要改的那天，
+ * 该改的是 {@link DEFAULT_FLEET_HOSTS}，不是再加一条环境变量。
  */
 export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
   // 控制台主机可关：`QIANMO_ACCEPTANCE_CONSOLE_HOST=` 置空就等于「这一轮没有
@@ -1879,7 +1891,14 @@ export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
     const endpoint =
       process.env[`QIANMO_ACCEPTANCE_ENDPOINT_${suffix}`] ??
       `ws://${dialHost}:${host.tunnelPort}`
-    return { ...host, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
+    // SSH 别名可覆盖，与 `ENDPOINT_<节点>` 同一条理由：**哪台机器承载某个节点
+    // 是部署的事实，不是拓扑的常量**。节点搬家（或别名被重指）之后，写死的那
+    // 一栏不会报错，它会安静地去问另一台机器 —— 于是 `#tail` / `execNode` /
+    // `readNodeFile` / 来源探针全部得到「那台机器上没有这个」，报告上表现为
+    // 一条读不通的节点，而现场看起来像那个节点坏了。这条 issue #61 的形状不该
+    // 只能靠改代码来绕过。
+    const ssh = process.env[`QIANMO_ACCEPTANCE_SSH_${suffix}`] ?? host.ssh
+    return { ...host, ssh, endpoint, occPath: `${repoDir}/dist/cli-node.js` }
   })
   // 一次性进程落在哪几台机器上：`QIANMO_ACCEPTANCE_SPAWN_HOSTS` 逗号分隔的
   // SSH 目标；置空 = 这一轮不起任何一次性进程（`spawn-node` 等能力随之消失，

@@ -69,6 +69,7 @@ import {
   ndjsonStartLine,
   ndjsonSummaryLine,
   renderSummary,
+  testedCommitConsensus,
 } from '../demo/lib/acceptance/report-core.js'
 import { ALL_SCENARIOS } from '../demo/lib/acceptance/registry.js'
 import {
@@ -240,8 +241,20 @@ async function main(): Promise<number> {
   process.stdout.write(
     `阡陌端到端验收套件 · target=${target} · 场景 ${
       only.length === 0 ? ALL_SCENARIOS.length : `匹配 ${only.join(' ')}`
-    } · 产物 ${outDir}\n\n`,
+    } · 产物 ${outDir}\n`,
   )
+  // 开跑就把「被测的是哪一版」打出来，而不是只写进两小时后的汇总表：这一行
+  // 存在的意义是让操作者在**等待开始之前**发现「舰队上还是上一版」，那时候
+  // 改主意只花一秒钟。
+  if (testedProvenance !== undefined) {
+    process.stdout.write(
+      `被测端 ${testedCommitConsensus(testedProvenance) ?? '未知'} · 套件 ${commit}\n` +
+        testedProvenance.units
+          .map(u => `  ${u.unit}: ${u.commit ?? `未知（${u.detail}）`}\n`)
+          .join(''),
+    )
+  }
+  process.stdout.write('\n')
 
   const mark: Record<ScenarioResult['outcome'], string> = {
     pass: 'PASS',

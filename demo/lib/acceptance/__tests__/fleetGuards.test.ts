@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, it } from 'bun:test'
-import { FleetDriver } from '../fleet/driver.js'
+import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
 import { runScenario } from '../runner.js'
 import type {
   AcceptanceDriver,
@@ -206,5 +206,57 @@ describe('超时倍率', () => {
     // 4 = 显式给的（真机腿默认，或 --timeout-scale 压过它之后的值）；
     // 1 = 缺省。两个都写死：倍率被谁改成只作用于场景预算时这里会红。
     expect(seen).toEqual([4, 1])
+  })
+})
+
+describe('fleetConfigFromEnv 的 SSH 目标覆盖', () => {
+  // 节点搬家（或别名被重指）之后，写死的那一栏不会报错——它会安静地去问另一
+  // 台机器，报告上表现为一条读不通的节点，而现场看起来像那个节点坏了。这条
+  // 覆盖是运维不改代码就能纠正它的唯一入口，所以它得有护栏。
+  function withEnv<T>(
+    patch: Record<string, string | undefined>,
+    fn: () => T,
+  ): T {
+    const before = new Map<string, string | undefined>()
+    for (const [k, v] of Object.entries(patch)) {
+      before.set(k, process.env[k])
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    try {
+      return fn()
+    } finally {
+      for (const [k, v] of before) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  }
+
+  it('给了就用给的，其余节点不受影响', () => {
+    const config = withEnv(
+      { QIANMO_ACCEPTANCE_SSH_BETA_4: 'somewhere-else' },
+      () => fleetConfigFromEnv(),
+    )
+    const four = config.hosts.find(h => h.node === 'beta-4')
+    expect(four?.ssh).toBe('somewhere-else')
+    expect(config.hosts.find(h => h.node === 'beta-1')?.ssh).toBe('cornna-p2')
+  })
+
+  it('不给就是默认拓扑', () => {
+    const config = withEnv({ QIANMO_ACCEPTANCE_SSH_BETA_4: undefined }, () =>
+      fleetConfigFromEnv(),
+    )
+    expect(config.hosts.find(h => h.node === 'beta-4')?.ssh).toBe('cornna-p12')
+  })
+
+  it('覆盖 SSH 目标不动配置根与产物路径 —— 部署形状跟着机器走', () => {
+    const config = withEnv(
+      { QIANMO_ACCEPTANCE_SSH_BETA_4: 'somewhere-else' },
+      () => fleetConfigFromEnv(),
+    )
+    const four = config.hosts.find(h => h.node === 'beta-4')
+    expect(four?.configRoot).toBe('/root/qianmo-beta/nodes/beta-4/config')
+    expect(four?.occPath).toBe('/root/atlas-beta/dist/cli-node.js')
   })
 })
