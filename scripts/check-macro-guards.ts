@@ -91,6 +91,11 @@ export interface MacroGuardOffense {
  *
  * Template literals keep their `${…}` expressions live: a substitution hole is
  * ordinary code and could hide the idiom.
+ *
+ * Regex literals are not tracked, so a quote inside one (`/['"]/`) opens a
+ * string the scanner then closes at end of line. The blast radius is that one
+ * line, and it can only ever hide an offense, never invent one — the trade for
+ * not carrying a real tokenizer here.
  */
 function blankNonCode(source: string): string {
   const out = source.split('')
