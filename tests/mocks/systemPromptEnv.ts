@@ -42,6 +42,7 @@ export function setupSystemPromptMocks(): SystemPromptMockHandle {
   ;(globalThis as unknown as { MACRO: Record<string, string> }).MACRO = {
     VERSION: '2.1.888',
     BUILD_TIME: '2026-04-22T00:00:00Z',
+    SOURCE_COMMIT: '0000000000000000000000000000000000000000',
     FEEDBACK_CHANNEL: 'https://github.com/sweetcornna/open-claude-code/issues',
     ISSUES_EXPLAINER:
       'report the issue at https://github.com/sweetcornna/open-claude-code/issues',
