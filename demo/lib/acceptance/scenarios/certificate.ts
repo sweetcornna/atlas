@@ -257,8 +257,13 @@ async function probeRegistryFromNodeHost(
 ): Promise<RegistryProbe> {
   // `-w` 的格式串把状态码接在响应体后面另起一行；连不上时 curl 仍会写出
   // `000`，于是「连不上」与「HTTP 000」不会退化成同一个 undefined。
+  //
+  // 换行写成 `\n` 两个字符交给 curl 自己转义，**不要**在 argv 里塞一个真
+  // 换行：真机腿的 `run` 把整条命令拼成一个字符串交给 ssh 的远端 shell
+  // （`FleetDriver.#ssh` 的 `lines.join('\n')`），argv 里的真换行虽然此刻
+  // 被单引号护着仍然成立，但那条命令从此就依赖「谁都不会按行再处理它」。
   const result = await host.run(
-    ['curl', '-sS', '--max-time', '10', '-w', '\n%{http_code}', url],
+    ['curl', '-sS', '--max-time', '10', '-w', '\\n%{http_code}', url],
     { timeoutMs: 60_000 },
   )
   const cut = result.stdout.lastIndexOf('\n')
