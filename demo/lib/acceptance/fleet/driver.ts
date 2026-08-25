@@ -77,6 +77,7 @@
  * （约 250 MB）留在机器上，一轮下来能攒出几十个。
  */
 
+import { randomBytes } from 'node:crypto'
 import type {
   AcceptanceConsole,
   AcceptanceDriver,
@@ -113,6 +114,7 @@ import {
   isTransportFailure,
   TRANSPORT_RETRY_ATTEMPTS,
   TRANSPORT_RETRY_BACKOFF_MS,
+  TransportFailure,
   transportSignature,
 } from '../transport.js'
 
@@ -1306,16 +1308,51 @@ export class FleetDriver implements AcceptanceDriver {
    * —— 于是远端删不掉既不抛异常也不进 `logs`，报告里查不到任何线索。实测后果是
    * 往演示机上静默丢了 107 MB（`run.IrUlmaLK`），而那一轮 `results.ndjson` 里
    * 「cleanup 失败」出现 **0 次**。现在两条都判返回码，外加一次存在性复查。
+   *
+   * ## 目录名在 runner 这边生成（issue #96 ③）
+   *
+   * 原先是 `mktemp -d …/run.XXXXXXXX`，名字由远端现取。那样**这一步不可重发**：
+   * 一次半路断掉的 ssh 可能已经建好了目录，而我们永远学不到它叫什么 —— 于是每
+   * 次重试都可能在机器上多留一个再也没人认领的根。改成 runner 侧生成随机名 +
+   * `mkdir -p`（幂等）之后，重发落在**同一条路径**上，重试不制造孤儿。
+   *
+   * 安全前提一个字没松：路径仍然由远端 `printf` 回显、回来之后仍然再确认一次
+   * 它带着 {@link SCRATCH_PREFIX} —— 那一条防的是「拼一个可能为空的变量再
+   * `rm -rf`」，与名字谁生成无关。
    */
   async #scratch(ctx: ScenarioContext, ssh: string): Promise<string> {
-    const made = await this.#ssh(ssh, [
-      `set -e`,
-      `mkdir -p "$HOME/${SCRATCH_PREFIX}"`,
-      `d="$(mktemp -d "$HOME/${SCRATCH_PREFIX}/run.XXXXXXXX")"`,
-      `mkdir -p "$d/config" "$d/work"`,
-      `printf '%s\n' "$d"`,
-    ])
+    // 96 bit 随机；碰撞概率在一轮几百条场景的量级上可以忽略，而 `run.` 前缀是
+    // 下面 pgrep 那个把戏的前提（名字里只有这一个 `.`）。
+    const name = `run.${randomBytes(6).toString('hex')}`
+    let attempts = 1
+    const made = await this.#sshRetry(
+      ssh,
+      [
+        `set -e`,
+        `d="$HOME/${SCRATCH_PREFIX}/${name}"`,
+        `mkdir -p "$d/config" "$d/work"`,
+        `chmod 700 "$HOME/${SCRATCH_PREFIX}" "$d"`,
+        `printf '%s\n' "$d"`,
+      ],
+      {
+        onRetry: n => {
+          attempts = n + 1
+        },
+      },
+    )
     const root = made.stdout.trim()
+    if (isTransportFailure(made)) {
+      // 打满还是不通。**这一条不是被测系统的回答** —— 远端命令一行都没跑到，
+      // `beta-up.sh` 更没有。它仍然把整轮判红（见 `TransportFailure` 的头注），
+      // 只是报告上不再和一条产品缺陷长得一样。
+      throw new TransportFailure({
+        ssh,
+        what: '在目标机上开一次性目录',
+        code: made.code,
+        stderr: made.stderr,
+        attempts,
+      })
+    }
     if (made.code !== 0 || !root.includes(SCRATCH_PREFIX)) {
       throw new Error(
         `在 ${ssh} 上开一次性目录失败 (${made.code}): ${made.stderr.slice(0, 400)}`,
@@ -1339,7 +1376,9 @@ export class FleetDriver implements AcceptanceDriver {
       // 一次都没执行过。现场是「每台机器上留着一个只含 config/ 的空目录」，
       // 而 `rm` 那一行看起来完全正确。这个坑踩过一次，别把它合回去。
       const problems: string[] = []
-      const swept = await this.#ssh(ssh, [
+      // 清扫与删除都是幂等的（`kill` 打的是这个根自己的进程、`rm -rf` 重发结果
+      // 相同），所以链路抖了值得再打一次 —— 少留一次残留就少一次 107 MB。
+      const swept = await this.#sshRetry(ssh, [
         `for p in $(pgrep -f '${id}' 2>/dev/null); do`,
         `  kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true`,
         `done`,
@@ -1357,7 +1396,7 @@ export class FleetDriver implements AcceptanceDriver {
       // 远端命令的退出码只会是它的，直接看 ssh 的 rc 等于又把 rm 的结果丢了。
       // 存在性复查不是多余的一层 —— 「rm 报 0 但目录还在」在挂载点上真的会
       // 发生（只读挂载下的部分删除），而这一栏问的是「机器上还剩不剩东西」。
-      const removed = await this.#ssh(ssh, [
+      const removed = await this.#sshRetry(ssh, [
         `rc=0`,
         `rm -rf -- '${shellQuote(root)}' || rc=$?`,
         `printf 'rm=%s\n' "$rc"`,
@@ -1371,8 +1410,14 @@ export class FleetDriver implements AcceptanceDriver {
       const left = strField(removed.stdout, 'left')
       if (removed.code !== 0 || rc === undefined) {
         problems.push(
-          `删除这一步没能确认 (ssh ${removed.code}): ` +
-            `${removed.stderr.trim().slice(0, 200)}`,
+          (isTransportFailure(removed)
+            ? `SSH 链路失败 (${removed.code}${
+                transportSignature(removed.stderr) === undefined
+                  ? ''
+                  : `，${transportSignature(removed.stderr)}`
+              })，删除这一步没跑成`
+            : `删除这一步没能确认 (ssh ${removed.code})`) +
+            `: ${removed.stderr.trim().slice(0, 200)}`,
         )
       } else if (rc !== '0') {
         problems.push(
@@ -1410,8 +1455,23 @@ export class FleetDriver implements AcceptanceDriver {
     const cached = this.#homes.get(ssh)
     if (cached !== undefined) return await cached
     const pending = (async () => {
-      const probe = await this.#ssh(ssh, [`printf '%s\n' "$HOME"`])
+      // 纯读一次环境变量，重发绝对安全。
+      let attempts = 1
+      const probe = await this.#sshRetry(ssh, [`printf '%s\n' "$HOME"`], {
+        onRetry: n => {
+          attempts = n + 1
+        },
+      })
       const home = probe.stdout.trim()
+      if (isTransportFailure(probe)) {
+        throw new TransportFailure({
+          ssh,
+          what: '问目标机的家目录',
+          code: probe.code,
+          stderr: probe.stderr,
+          attempts,
+        })
+      }
       if (probe.code !== 0 || !home.startsWith('/')) {
         throw new Error(
           `问不出 ${ssh} 的家目录 (${probe.code}): ${probe.stderr.slice(0, 300)}`,

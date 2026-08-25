@@ -561,7 +561,7 @@ function renderProvenance(run: SuiteRun): string[] {
       out.push(
         `  ← **没有任何一台报了别的 commit**：${verdict.answered}/${verdict.total} ` +
           `个被测端一致报 ${verdict.commit}，${nameList(verdict.silent)} 这次没答上` +
-          '（原因见上面各自那一行）。缺的那几台答上之前，这一栏不给一个统一值 ——' +
+          '（原因见上面各自那一行）。缺的那几台答上之前，这一栏不给一个统一值 —— ' +
           '从 4/5 编出共识正是这条报告要避免的事',
       )
       break
@@ -630,6 +630,22 @@ export function cleanupFailures(run: SuiteRun): readonly CleanupFailure[] {
   return out
 }
 
+/**
+ * 这一轮里**因为链路够不着目标机**而红的那几条（issue #96 ③）。
+ *
+ * 判据是驱动打的 `errorKind`，不是错误文本 —— 文本会随消息措辞漂移，而这一栏
+ * 的用处恰恰是让人不必读文本就能分开数。
+ *
+ * **它们照样计入 `error`、照样把整轮判红。** 这个函数不改判定，只回答「这几条
+ * 红里有几条问的根本不是被测系统」。分不开的后果是这类红被整批当成「套件不稳」
+ * 而加豁免，那才是套件失去可信度的路径。
+ */
+export function transportErrors(run: SuiteRun): readonly ScenarioResult[] {
+  return run.results.filter(
+    r => r.outcome === 'error' && r.errorKind === 'transport',
+  )
+}
+
 /** 人可读汇总表。 */
 export function renderSummary(run: SuiteRun): string {
   const out: string[] = []
@@ -691,6 +707,19 @@ export function renderSummary(run: SuiteRun): string {
   out.push('')
   const tally = OUTCOMES.map(o => `${o}=${run.counts[o]}`).join(' ')
   out.push(`合计: ${tally}`)
+
+  // 链路失败 —— 它们仍然计入上面那个 `error=N`、仍然把整轮判红；这一行只是
+  // 把「问的根本不是被测系统」的那几条点出来（issue #96 ③），免得整批红被当成
+  // 「套件不稳」而加豁免。
+  const transport = transportErrors(run)
+  if (transport.length > 0) {
+    out.push(
+      `其中 ${transport.length} / ${run.counts.error} 条 error 是**套件到目标机的 ` +
+        'SSH 链路失败**，不是被测系统的回答（重试打满仍不通 = 这一轮确实没能问完，' +
+        '所以照样计入判定）: ' +
+        transport.map(r => r.id).join(', '),
+    )
+  }
 
   // 清理残留 —— 汇总表**只展开红行的证据**，于是一条绿场景留下的残留在这张表
   // 上原本一个字都看不见（issue #96 ①：107 MB 静默留在演示机上）。单独一节。

@@ -22,8 +22,15 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FleetDriver } from '../fleet/driver.js'
-import { cleanupFailures, summarize } from '../report-core.js'
+import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import {
+  cleanupFailures,
+  fromNdjson,
+  renderSummary,
+  summarize,
+  toNdjson,
+  transportErrors,
+} from '../report-core.js'
 import { runScenario } from '../runner.js'
 import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
 import type { Scenario, ScenarioResult } from '../types.js'
@@ -100,9 +107,14 @@ function logsOf(result: ScenarioResult): string {
     .join('\n')
 }
 
-/** 假 ssh 的公共分支：家目录、mktemp、pgrep 清扫都照常答。 */
+/**
+ * 假 ssh 的公共分支：开一次性目录、pgrep 清扫、家目录都照常答。
+ *
+ * 顺序有讲究 —— 开目录那条命令里也有 `$HOME`，所以它必须排在家目录那条前面。
+ */
+const OPEN_SCRATCH = `if [[ "$cmd" == *'$d/config'* ]]; then printf '%s\\n' '${FAKE_ROOT}'; exit 0; fi`
 const HAPPY_PREFIX = [
-  `if [[ "$cmd" == *"mktemp -d"* ]]; then printf '%s\\n' '${FAKE_ROOT}'; exit 0; fi`,
+  OPEN_SCRATCH,
   `if [[ "$cmd" == *"pgrep"* ]]; then exit 0; fi`,
   `if [[ "$cmd" == *'$HOME'* ]]; then printf '/home/fake\\n'; exit 0; fi`,
 ].join('\n')
@@ -250,5 +262,112 @@ describe('来源探针的重试（issue #96 ②）', () => {
     const units = (await driver(bin).testedProvenance()).units
     expect(units[0]?.detail).toContain('采集失败 (2)')
     expect(countOf(counter)).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// issue #96 ③：传输层 255 无区分、无重试，一次打嗝就是一条 error。
+//
+// 那一轮唯一的红：`#scratch` 里开一次性目录撞上 gcloud IAP 的
+// `[SSL: UNEXPECTED_EOF_WHILE_READING]`，rc=255。栈停在开目录那一步，
+// `beta-up.sh` 一行都没跑到 —— 它不可能是在回答场景那个问题，而同条重跑就 PASS。
+// ---------------------------------------------------------------------------
+
+/** 那次真跑的原文（gcloud IAP 的 ProxyCommand 抛的）。 */
+const IAP_EOF =
+  'ERROR: [0] Error during local connection to [stdin]: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'
+
+describe('传输层失败与产品结论分开（issue #96 ③）', () => {
+  it('抖一下就恢复：重试接住，场景照常给出它本来的结论', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+    madeDirs.push(dir)
+    const counter = join(dir, 'calls')
+    const bin = fakeSsh(
+      [
+        `if [[ "$cmd" == *'$d/config'* ]]; then`,
+        `  ${counterScript(counter)}`,
+        `  n=$(wc -c < '${counter}' | tr -d ' ')`,
+        `  if [ "$n" -lt 2 ]; then printf '${IAP_EOF}\\n' >&2; exit 255; fi`,
+        `  printf '%s\\n' '${FAKE_ROOT}'`,
+        `  exit 0`,
+        `fi`,
+        `if [[ "$cmd" == *"pgrep"* ]]; then exit 0; fi`,
+        `if [[ "$cmd" == *"rm -rf --"* ]]; then printf 'rm=0\\nleft=no\\n'; exit 0; fi`,
+        `if [[ "$cmd" == *'$HOME'* ]]; then printf '/home/fake\\n'; exit 0; fi`,
+      ].join('\n'),
+    )
+    const result = await runOnce(bin)
+    // 重试成功 = 那一步确实做成了、套件确实问到了被测系统。**这不是放水。**
+    expect(result.outcome).toBe('pass')
+    expect(result.errorKind).toBeUndefined()
+    expect(countOf(counter)).toBe(2)
+  })
+
+  it('打满仍不通：记成 error 且标出是链路 —— 判定一个字不松', async () => {
+    const bin = fakeSsh(
+      [
+        `if [[ "$cmd" == *'$d/config'* ]]; then :; elif [[ "$cmd" == *'$HOME'* ]]; then printf '/home/fake\\n'; exit 0; fi`,
+        `printf '${IAP_EOF}\\n' >&2`,
+        `exit 255`,
+      ].join('\n'),
+    )
+    const result = await runOnce(bin)
+    expect(result.outcome).toBe('error')
+    expect(result.errorKind).toBe('transport')
+    expect(result.actual).toContain('SSH 链路失败 (255')
+    expect(result.actual).toContain('gcloud IAP 隧道半路 EOF')
+    expect(result.actual).toContain('不是被测系统的回答')
+
+    // **铁律：不许把 error 悄悄变成绿。**
+    const run = summarize([result], {
+      target: 'fleet',
+      startedAt: '2026-08-25T00:00:00.000Z',
+      finishedAt: '2026-08-25T00:00:20.000Z',
+    })
+    expect(run.counts.error).toBe(1)
+    expect(run.pass).toBe(false)
+    expect(transportErrors(run)).toHaveLength(1)
+    const text = renderSummary(run)
+    expect(text).toContain('SSH 链路失败')
+    expect(text).toContain('照样计入判定')
+    expect(text).toContain('判定: FAIL')
+  })
+
+  it('errorKind 经 NDJSON 原样往返，且只在那一类上出现', async () => {
+    const bin = fakeSsh([`printf 'boom\\n' >&2`, `exit 255`].join('\n'))
+    const transportResult = await runOnce(bin)
+    const run = summarize([transportResult], {
+      target: 'fleet',
+      startedAt: '2026-08-25T00:00:00.000Z',
+      finishedAt: '2026-08-25T00:00:20.000Z',
+    })
+    const back = fromNdjson(toNdjson(run))
+    expect(back?.results[0]?.errorKind).toBe('transport')
+
+    // 远端命令自己非零不是链路失败 —— 那是被测系统（或它的机器）的回答。
+    const plain = fakeSsh(
+      [
+        `if [[ "$cmd" == *'$d/config'* ]]; then :; elif [[ "$cmd" == *'$HOME'* ]]; then printf '/home/fake\\n'; exit 0; fi`,
+        `printf 'mkdir: 权限不够\\n' >&2`,
+        `exit 1`,
+      ].join('\n'),
+    )
+    const plainResult = await runOnce(plain)
+    expect(plainResult.outcome).toBe('error')
+    expect(plainResult.errorKind).toBeUndefined()
+  })
+})
+
+describe('sshBin 只是护栏的注入点', () => {
+  it('fleetConfigFromEnv 永远不填它 —— 真跑没有办法把整条腿指向假 ssh', () => {
+    expect(fleetConfigFromEnv().sshBin).toBeUndefined()
+    // 也不许有对应的环境变量：一个「把 SSH 换掉」的运维开关，换来的风险远大于
+    // 它的用处 —— 整条真机腿会变成对着一个假二进制的自说自话。
+    process.env.QIANMO_ACCEPTANCE_SSH_BIN = '/bin/true'
+    try {
+      expect(fleetConfigFromEnv().sshBin).toBeUndefined()
+    } finally {
+      delete process.env.QIANMO_ACCEPTANCE_SSH_BIN
+    }
   })
 })

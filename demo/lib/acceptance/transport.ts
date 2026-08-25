@@ -92,3 +92,59 @@ export function transportSignature(stderr: string): string | undefined {
   }
   return undefined
 }
+
+/**
+ * 一次**没走到远端**的失败，抛给场景层。
+ *
+ * ## 为什么要一个自己的类
+ *
+ * runner 把任何异常都折成一条 `error`，而 `error` 在这套件里的含义是「套件自己
+ * 炸了」。传输层失败混在里面之后，读报告的人只能靠错误文本去猜 —— 那一轮唯一
+ * 的红就是这样：栈停在 `#scratch`（`mktemp -d`），`beta-up.sh` 一行都没跑到，
+ * 它**不可能**是在回答那条场景的问题，可报告上它和一条真的产品缺陷长得一样。
+ * 于是这类红会被人整批当成「套件不稳」而加豁免，而那正是套件失去可信度的路径。
+ *
+ * ## 它**不改判定**
+ *
+ * `pass = fail === 0 && error === 0 && targetTouches > 0` 一个字不动，带这个
+ * 标记的 `error` 照样把整轮判红、rc 仍是 1。理由：重试打满还是不通 = 这一轮
+ * **确实没能问完**被测系统，那不该被算成绿。改的只有两件事：
+ *
+ *   ① 错误消息自己说清「这是套件到目标机的链路，不是被测系统的回答」；
+ *   ② `ScenarioResult.errorKind` 让 `jq` 和汇总表能把它和产品结论分开数。
+ *
+ * 真正让那一轮变绿的是**重试**（见 `FleetDriver.#sshRetry`）—— 而重试成功
+ * 意味着那一步确实做成了，套件确实问到了被测系统。那不是放水。
+ */
+export class TransportFailure extends Error {
+  readonly ssh: string
+  readonly code: number
+  readonly attempts: number
+
+  constructor(options: {
+    readonly ssh: string
+    readonly what: string
+    readonly code: number
+    readonly stderr: string
+    readonly attempts: number
+  }) {
+    const signature = transportSignature(options.stderr)
+    super(
+      `到 ${options.ssh} 的 SSH 链路失败 (${options.code}` +
+        `${signature === undefined ? '' : `，${signature}`}` +
+        `${options.attempts > 1 ? `，已打 ${options.attempts} 次` : ''})，` +
+        `${options.what}这一步没跑成。` +
+        '**这是套件到目标机的链路，不是被测系统的回答** —— ' +
+        `远端命令一行都没执行到。原文: ${options.stderr.trim().slice(0, 400)}`,
+    )
+    this.name = 'TransportFailure'
+    this.ssh = options.ssh
+    this.code = options.code
+    this.attempts = options.attempts
+  }
+}
+
+/** 这个异常是不是一次传输层失败。 */
+export function isTransportError(err: unknown): err is TransportFailure {
+  return err instanceof TransportFailure
+}

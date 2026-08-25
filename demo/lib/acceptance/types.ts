@@ -188,6 +188,21 @@ export interface ScenarioResult {
   /** 实际观察到的行为。 */
   readonly actual: string
   readonly evidence: readonly Evidence[]
+  /**
+   * 这条 `error` 是**什么类的** error（issue #96 ③）。
+   *
+   * `transport` = 套件到目标机的 SSH 链路失败，远端命令一行都没执行到。它和
+   * 「被测系统答错了」是两件事：那一轮唯一的红是 `mktemp -d` 撞上一次 gcloud
+   * IAP 隧道 EOF，栈停在开一次性目录那一步，`beta-up.sh` 一行都没跑到 ——
+   * 它不可能是在回答那条场景的问题。
+   *
+   * **它不改判定。** `pass` 的算法一个字不动，带这个标记的 `error` 照样把整轮
+   * 判红。它存在只是为了让 `jq` 与汇总表把链路噪声和产品结论**分开数** —— 分不
+   * 开的后果是这类红被整批当成「套件不稳」而加豁免，那才是套件失去可信度的路径。
+   *
+   * 只在 `outcome === 'error'` 上出现；缺省不写这个键，本地腿的产物逐字节不变。
+   */
+  readonly errorKind?: 'transport'
   /** `skip` 时必填：为什么跳过（缺哪个能力 / 被 filter 排除）。 */
   readonly skipReason?: string
   /**

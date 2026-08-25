@@ -16,8 +16,15 @@
  *   ④ 场景抛出的异常**不向上传播**，只变成一条 `error` 结果。一条炸了不能
  *      让后面的不跑——那正是负责人要的「无干预跑完全部场景」。
  *
- * 不做的事：不重试（重试会把 flake 藏起来）、不并发（真进程 + 端口 + 文件
- * 系统状态，并发只会制造无法归因的红）、不因为 `knownIssue` 改判定。
+ * 不做的事：**场景层不重试**（重试会把 flake 藏起来）、不并发（真进程 + 端口 +
+ * 文件系统状态，并发只会制造无法归因的红）、不因为 `knownIssue` 改判定。
+ *
+ * 「场景层」那三个字是 issue #96 ③ 之后补的，别把它读成矛盾：`FleetDriver` 在
+ * **传输层**（一条 SSH 根本没接上，rc=255，远端命令一行都没执行到）会退避重发
+ * 几次。两件事的方向相反 —— 场景层重试藏的是「被测系统这次答错了」，传输层重试
+ * 问的是「套件到底问到没有」，而没问到本来就不该记成一条关于被测系统的结论。
+ * 重发打满仍不通照样是一条 `error`、照样把整轮判红，只是多带一个
+ * `errorKind: 'transport'` 让读报告的人分得开。
  */
 
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -26,6 +33,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { instrumentDriver } from './driverProbe.js'
 import { summarize } from './report-core.js'
+import { isTransportError } from './transport.js'
 import type {
   AcceptanceDriver,
   Evidence,
@@ -215,6 +223,9 @@ export async function runScenario(
   let actual: string
   let evidence: readonly Evidence[]
   let skipReason: string | undefined
+  // 「套件够不着目标机」与「被测系统答错了」是两件事（issue #96 ③）。runner
+  // 不做分类，只把驱动抛出来的那个标记原样记下 —— 判定的算法一个字不动。
+  let errorKind: 'transport' | undefined
 
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -239,6 +250,7 @@ export async function runScenario(
     outcome = 'error'
     actual = err instanceof Error ? err.message : String(err)
     evidence = errorEvidence(err)
+    if (isTransportError(err)) errorKind = 'transport'
   } finally {
     if (timer !== undefined) clearTimeout(timer)
     controller.abort()
@@ -268,6 +280,9 @@ export async function runScenario(
     durationMs: Date.now() - started,
     actual,
     evidence: withLogs,
+    // 只在真是那一类时才出现这个键：本地腿从不抛 TransportFailure，那条腿的
+    // NDJSON 因此逐字节不变。
+    ...(errorKind === undefined ? {} : { errorKind }),
     skipReason,
     driverCalls: probe.calls(),
   }
