@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { sourceCommit } from '../buildProvenance.js'
+import { buildTime, buildVersion, sourceCommit } from '../buildProvenance.js'
 
 /**
  * `MACRO` is a compile-time substitution, so under `bun test` it simply is not
@@ -11,9 +11,14 @@ import { sourceCommit } from '../buildProvenance.js'
  * bundle as a test that is *false* at runtime, so a define read that way is
  * silently lost in exactly the shipped artifact it was meant to stamp.
  */
-type MacroGlobal = { MACRO?: { SOURCE_COMMIT?: string } }
+type MacroFields = {
+  SOURCE_COMMIT?: string
+  VERSION?: string
+  BUILD_TIME?: string
+}
+type MacroGlobal = { MACRO?: MacroFields }
 
-function setMacro(value: { SOURCE_COMMIT?: string } | undefined): void {
+function setMacro(value: MacroFields | undefined): void {
   const holder = globalThis as unknown as MacroGlobal
   if (value === undefined) delete holder.MACRO
   else holder.MACRO = value
@@ -48,5 +53,39 @@ describe('sourceCommit', () => {
     setMacro({ SOURCE_COMMIT: '' })
 
     expect(sourceCommit()).toBe('unknown')
+  })
+})
+
+describe('buildVersion', () => {
+  test('reports the injected version', () => {
+    setMacro({ VERSION: '2.46.0' })
+
+    expect(buildVersion()).toBe('2.46.0')
+  })
+
+  test('answers undefined when the define was never substituted', () => {
+    setMacro(undefined)
+
+    expect(buildVersion()).toBeUndefined()
+  })
+
+  test('answers undefined rather than an empty version', () => {
+    setMacro({ VERSION: '' })
+
+    expect(buildVersion()).toBeUndefined()
+  })
+})
+
+describe('buildTime', () => {
+  test('reports the injected timestamp', () => {
+    setMacro({ BUILD_TIME: '2026-08-25T00:00:00.000Z' })
+
+    expect(buildTime()).toBe('2026-08-25T00:00:00.000Z')
+  })
+
+  test('answers undefined when the define was never substituted', () => {
+    setMacro(undefined)
+
+    expect(buildTime()).toBeUndefined()
   })
 })

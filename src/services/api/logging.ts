@@ -13,6 +13,7 @@ import {
   markFirstTeleportMessageLogged,
   setLastApiCompletionTimestamp,
 } from 'src/bootstrap/state.js'
+import { buildTime } from 'src/constants/buildProvenance.js'
 import type { QueryChainTracking } from 'src/Tool.js'
 import { isConnectorTextBlock } from 'src/types/connectorText.js'
 import type { AssistantMessage } from 'src/types/message.js'
@@ -163,14 +164,18 @@ function getAnthropicEnvMetadata() {
 }
 
 function getBuildAgeMinutes(): number | undefined {
-  // `MACRO.BUILD_TIME` is substituted at build/dev time, but the bare `MACRO`
-  // global only exists via the cli.tsx fallback. Any entrypoint that skips it
-  // (bun test, direct module import) would otherwise throw here and take down
-  // the whole API request path for the sake of one telemetry field.
-  if (typeof MACRO === 'undefined' || !MACRO.BUILD_TIME) return undefined
-  const buildTime = new Date(MACRO.BUILD_TIME).getTime()
-  if (isNaN(buildTime)) return undefined
-  return Math.floor((Date.now() - buildTime) / 60000)
+  // `MACRO.BUILD_TIME` is substituted at build/dev time and simply absent
+  // otherwise (bun test, direct module import), so the read has to survive
+  // both worlds — one telemetry field must never take down the API request
+  // path. buildTime() is that read; the `typeof MACRO === 'undefined'` guard
+  // this used to open with was not, because the bundler leaves the bare
+  // `MACRO` identifier alone: the guard stayed live in the bundle and returned
+  // early for as long as nothing else had installed the global.
+  const stamp = buildTime()
+  if (!stamp) return undefined
+  const builtAtMs = new Date(stamp).getTime()
+  if (isNaN(builtAtMs)) return undefined
+  return Math.floor((Date.now() - builtAtMs) / 60000)
 }
 
 export function logAPIQuery({

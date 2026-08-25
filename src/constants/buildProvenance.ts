@@ -48,3 +48,43 @@ export function sourceCommit(): string {
     return UNKNOWN_SOURCE_COMMIT
   }
 }
+
+/**
+ * The version this artifact was built as, or `undefined` when the define was
+ * never substituted (tests, a direct `bun src/…`).
+ *
+ * Read through `try` for the reason spelled out on {@link sourceCommit}: the
+ * `typeof MACRO !== 'undefined'` spelling compiles into a test on a bare
+ * `MACRO` identifier that the bundler leaves alone, so it answers "not
+ * substituted" in a bundle where the substitution plainly happened. Three
+ * call sites wrote it that way (transcript entries, `doctor`, the Sentry
+ * release tag) and were saved only by an accident of load order —
+ * `entrypoints/cli.tsx` installs a `globalThis.MACRO` fallback, and everything
+ * that happened to be loaded *after* the entry body therefore found the guard
+ * true. Anything pulled into the entry's static import graph would not have
+ * been. `scripts/check-macro-guards.ts` now fails the build on that spelling.
+ *
+ * `undefined` rather than `'unknown'`: the callers disagree about what a
+ * missing version should look like — a transcript field wants the word, a
+ * Sentry release tag wants no tag at all — and that is a display decision each
+ * of them already makes.
+ */
+export function buildVersion(): string | undefined {
+  try {
+    return MACRO.VERSION || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * ISO-8601 timestamp of when this artifact was built, or `undefined` outside a
+ * bundled run. Same `try` contract as {@link buildVersion}.
+ */
+export function buildTime(): string | undefined {
+  try {
+    return MACRO.BUILD_TIME || undefined
+  } catch {
+    return undefined
+  }
+}
