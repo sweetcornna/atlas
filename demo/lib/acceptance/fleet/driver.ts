@@ -51,8 +51,8 @@
  * ## 一次性节点落在哪台机器上
  *
  * 轮转 {@link DEFAULT_SPAWN_MACHINES}：`cornna-p2` / `cornna-p3` / `cornna-p7`
- * （aarch64）+ `workbench-iap`（x86_64）。**`cornna-p12` 不在里面**，理由是
- * 内存：那台一共 967 MB、可用约 380 MB，而一个常驻带上它的 ACP 子进程实测占
+ * （aarch64）+ `workbench-iap`（x86_64）。**承载 beta-4 的那台不在里面**，理由
+ * 是内存：它一共 967 MB、可用约 380 MB，而一个常驻带上它的 ACP 子进程实测占
  * **约 370 MB**。在它上面起第二个常驻，最可能的结局是 OOM killer 挑走
  * beta-4 —— 而「跑完舰队仍然是好的」是这条腿的前置条件，不是它的目标。
  * x86_64 的覆盖由 H 提供，架构面没有因此变窄。
@@ -60,7 +60,13 @@
  * ## 舰队拓扑
  *
  * 四节点 `cornna-p2`(beta-1) / `cornna-p3`(beta-2) / `cornna-p7`(beta-3) /
- * `cornna-p12`(beta-4)，控制台在 `workbench-iap`。
+ * `cornna-p11`(beta-4)，控制台在 `workbench-iap`。
+ *
+ * **别名不是身份，动手前先验 `hostname`。**2026-08-25 `~/.ssh/config` 里
+ * `cornna-p11` / `cornna-p12` 被对调过一次：beta-4 一直在 `ECS114873`（967 MB）
+ * 上跑，而那台的别名从 `cornna-p12` 变成了 `cornna-p11`；`cornna-p12` 现在指向
+ * 另一台空机 `ECS111744`（464 MB，没有 `~/qianmo-beta`）。改别名不改机器，所以
+ * 下面那条「内存不够、不进一次性表」的理由跟着**机器**走，不跟着别名走。
  *
  * **`bun` 在每一台上都位于 `~/.bun/bin/bun`，非交互 SSH 解析不到**（H 上实测
  * `which bun` 也答不出来）—— 这正是 issue #40 那次事故的成因，所以每条远端命令
@@ -183,7 +189,7 @@ export interface FleetConfig {
 }
 
 /**
- * 舰队默认拓扑。**裸名 `beta-4` 是黑洞，节点四必须用 `cornna-p12`。**
+ * 舰队默认拓扑。**裸名 `beta-4` 是黑洞，节点四必须用 `cornna-p11`。**
  *
  * `endpoint` 不写在这里 —— 它由 {@link fleetConfigFromEnv} 按 `tunnelPort` 与
  * 拨号主机现拼，因为「从哪儿拨」是运行环境的事实而不是拓扑的事实。
@@ -214,7 +220,7 @@ export const DEFAULT_FLEET_HOSTS: readonly Omit<
     extraPath: '$HOME/.bun/bin',
   },
   {
-    ssh: 'cornna-p12',
+    ssh: 'cornna-p11',
     node: 'beta-4',
     tunnelPort: 38_634,
     configRoot: '/root/qianmo-beta/nodes/beta-4/config',
@@ -224,8 +230,8 @@ export const DEFAULT_FLEET_HOSTS: readonly Omit<
 /**
  * 舰队默认的一次性进程承载机。
  *
- * `cornna-p12` **故意不在里面** —— 它一共 967 MB 内存、可用约 380 MB，而一个
- * 常驻 + ACP 子进程实测约 370 MB。见文件头。
+ * 承载 beta-4 的那台（现别名 `cornna-p11`）**故意不在里面** —— 它一共 967 MB
+ * 内存、可用约 380 MB，而一个常驻 + ACP 子进程实测约 370 MB。见文件头。
  */
 export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
   { ssh: 'cornna-p2', label: 'cornna-p2 (aarch64)', repoRel: 'atlas-beta' },
@@ -1902,8 +1908,8 @@ export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
   })
   // 一次性进程落在哪几台机器上：`QIANMO_ACCEPTANCE_SPAWN_HOSTS` 逗号分隔的
   // SSH 目标；置空 = 这一轮不起任何一次性进程（`spawn-node` 等能力随之消失，
-  // 靠它们的场景如实 skip）。不给就用默认表 —— 那张表**刻意不含 cornna-p12**，
-  // 理由见文件头。
+  // 靠它们的场景如实 skip）。不给就用默认表 —— 那张表**刻意不含承载 beta-4 的
+  // 那台**，理由见文件头。
   const spawnRaw = process.env.QIANMO_ACCEPTANCE_SPAWN_HOSTS
   const spawnMachines =
     spawnRaw === undefined

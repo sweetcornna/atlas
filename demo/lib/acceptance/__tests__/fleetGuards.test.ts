@@ -247,7 +247,7 @@ describe('fleetConfigFromEnv 的 SSH 目标覆盖', () => {
     const config = withEnv({ QIANMO_ACCEPTANCE_SSH_BETA_4: undefined }, () =>
       fleetConfigFromEnv(),
     )
-    expect(config.hosts.find(h => h.node === 'beta-4')?.ssh).toBe('cornna-p12')
+    expect(config.hosts.find(h => h.node === 'beta-4')?.ssh).toBe('cornna-p11')
   })
 
   it('覆盖 SSH 目标不动配置根与产物路径 —— 部署形状跟着机器走', () => {
