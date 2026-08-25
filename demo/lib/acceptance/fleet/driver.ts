@@ -1321,8 +1321,8 @@ export class FleetDriver implements AcceptanceDriver {
    * `rm -rf`」，与名字谁生成无关。
    */
   async #scratch(ctx: ScenarioContext, ssh: string): Promise<string> {
-    // 96 bit 随机；碰撞概率在一轮几百条场景的量级上可以忽略，而 `run.` 前缀是
-    // 下面 pgrep 那个把戏的前提（名字里只有这一个 `.`）。
+    // 48 bit 随机（6 字节 → 12 个 hex）；碰撞概率在一轮几百条场景的量级上可以
+    // 忽略，而 `run.` 前缀是下面 pgrep 那个把戏的前提（名字里只有这一个 `.`）。
     const name = `run.${randomBytes(6).toString('hex')}`
     let attempts = 1
     const made = await this.#sshRetry(
