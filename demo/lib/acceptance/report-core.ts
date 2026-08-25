@@ -371,6 +371,37 @@ function pad(s: string, n: number): string {
 }
 
 /**
+ * 终端上的显示宽度：CJK / 全角字符占两格。
+ *
+ * 只给「一栏里同时有中文标签和 ASCII 标签」的地方用（被测端那张表：节点名是
+ * `beta-1`，最后一行是「套件所在检出」）。按 `.length` 对齐会让中文那行短掉
+ * 一半，而那一行恰恰是要和上面几行对着读的。
+ */
+function displayWidth(s: string): number {
+  let width = 0
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0
+    width +=
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+        ? 2
+        : 1
+  }
+  return width
+}
+
+/** 按显示宽度右侧补空格。见 {@link displayWidth}。 */
+function padWide(s: string, n: number): string {
+  const w = displayWidth(s)
+  return w >= n ? s : s + ' '.repeat(n - w)
+}
+
+/**
  * 汇总表里「被测的是哪一版」那一段。
  *
  * 没有 {@link SuiteRun.testedProvenance} 就一行都不出（`target=local`：被测
@@ -390,8 +421,8 @@ function renderProvenance(run: SuiteRun): string[] {
   if (provenance === undefined) return []
   const suiteLabel = '套件所在检出'
   const width = Math.max(
-    suiteLabel.length,
-    ...provenance.units.map(u => u.unit.length),
+    displayWidth(suiteLabel),
+    ...provenance.units.map(u => displayWidth(u.unit)),
   )
   const out: string[] = []
   out.push('被测端来源 commit（issue #70 —— 报告盖的是被测端报上来的那个）:')
@@ -400,11 +431,11 @@ function renderProvenance(run: SuiteRun): string[] {
   }
   for (const unit of provenance.units) {
     out.push(
-      `  ${pad(unit.unit, width)}  ${unit.commit ?? '未知'}` +
+      `  ${padWide(unit.unit, width)}  ${unit.commit ?? '未知'}` +
         (unit.detail === '' ? '' : `  ← ${unit.detail}`),
     )
   }
-  out.push(`  ${pad(suiteLabel, width)}  ${run.commit ?? '未知'}`)
+  out.push(`  ${padWide(suiteLabel, width)}  ${run.commit ?? '未知'}`)
   const consensus = testedCommitConsensus(provenance)
   if (consensus === undefined) {
     out.push(

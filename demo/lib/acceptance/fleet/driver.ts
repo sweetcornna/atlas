@@ -1472,7 +1472,10 @@ export class FleetDriver implements AcceptanceDriver {
     const probe = await this.#ssh(
       consoleHost,
       [
-        `printf 'readable=no\n'`,
+        // **只在读到时才打 `readable=yes`**，别先打一行 `readable=no` 再在循环
+        // 里覆盖：`strField` 取的是**第一条**匹配行，于是它永远读到 `no` ——
+        // 「文件在、只是没有这个字段」会被报成「读不到日志」，把一个「产物太旧」
+        // 的结论说成「路径配错了」。
         `for f in ${candidates.join(' ')}; do`,
         `  [ -r "$f" ] || continue`,
         `  printf 'log=%s\n' "$f"`,
@@ -1489,9 +1492,9 @@ export class FleetDriver implements AcceptanceDriver {
       `console (${consoleHost})`,
       probe,
       `${consoleHost} 上的 ${strField(probe.stdout, 'log') ?? '(路径未回显)'}`,
-      strField(probe.stdout, 'readable') === 'no'
-        ? `读不到控制台的启动日志（试过 ${candidates.join(' / ')}；改了部署路径就用 QIANMO_ACCEPTANCE_CONSOLE_LOG 指过去）`
-        : 'banner 里没有 sourceCommit 字段（这份产物是 PR #76 之前构建的？）',
+      strField(probe.stdout, 'readable') === 'yes'
+        ? 'banner 里没有 sourceCommit 字段（这份产物是 PR #76 之前构建的？）'
+        : `读不到控制台的启动日志（试过 ${candidates.join(' / ')}；改了部署路径就用 QIANMO_ACCEPTANCE_CONSOLE_LOG 指过去）`,
     )
   }
 
