@@ -45,7 +45,24 @@ demo_head '① 前置检查'
 command -v bun >/dev/null 2>&1 || demo_die 'bun 不在 PATH 上。装法见 docs/dev/demo-env.md §2'
 command -v git >/dev/null 2>&1 || demo_die 'git 不在 PATH 上'
 # node 不是给 occ 用的，是 demo/lib/p61-worker.ts 真的会 spawn 它（AC-7 的 worker 子进程）。
-command -v node >/dev/null 2>&1 || demo_die 'node 不在 PATH 上（AC-7 的 worker 子进程要用）'
+# 所以它是 **④ 自检**的前置，不是 ②③ 的：`bun install` 与 `bun run build` 全程不碰 node。
+#
+# 这条区分不是理论上的。2026-08-25 实查：内测舰队四台节点机（beta-1..4）上**一台都没有
+# node**——只有 `~/.bun/bin/bun`。而这里原先无条件 die，于是这条「装机 runbook」在真实
+# 部署机上从第一步就跑不起来，历史上那几次上机只能绕开本脚本手工 `bun run build`。绕开
+# 的代价现在具体了：本脚本 ③ 里那段源 commit 注入（issue #70）也一并被绕过，四台节点的
+# 产物因此报 `sourceCommit=unknown`。
+#
+# 缺 node 时**不自动跳过 ④**：静默降级会让「自检过了」与「自检压根没跑」在输出里长得
+# 一样。要操作者显式写 `--skip-selftest`——跳过一道检查得是一个明确的动作。
+if ! command -v node >/dev/null 2>&1; then
+  if [ "$SKIP_SELFTEST" = '1' ]; then
+    demo_warn 'node 不在 PATH 上 —— 已按 --skip-selftest 跳过 ④，②③ 不需要它'
+  else
+    demo_die 'node 不在 PATH 上。它只有 ④ 自检要用（demo/lib/p61-worker.ts 会 spawn 它）——
+装不了 node 的机器（内测舰队四台节点机就是）请加 --skip-selftest，②③ 照跑。'
+  fi
+fi
 
 BUN_PIN="$(awk '$1 == "bun" { print $2 }' "$REPO_DIR/.tool-versions")"
 BUN_HAVE="$(bun --version)"
@@ -58,7 +75,9 @@ else
   # 用别的版本 `bun install` 可能把它改回去，那是一次谁都没打算做的提交。
   demo_warn "bun $BUN_HAVE ≠ .tool-versions 的 $BUN_PIN —— 允许继续，但 lockfile 若出现改动请勿提交"
 fi
-demo_ok "node $(node --version)"
+if command -v node >/dev/null 2>&1; then
+  demo_ok "node $(node --version)"
+fi
 demo_ok "git $(git --version | awk '{print $3}')"
 if command -v docker >/dev/null 2>&1; then
   demo_ok "docker $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ,)（真机腿才用得上）"
