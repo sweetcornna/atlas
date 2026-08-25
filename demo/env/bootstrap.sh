@@ -78,6 +78,14 @@ demo_say "耗时 : $(demo_elapsed "$STEP_AT")"
 # ── ③ 构建 occ ──────────────────────────────────────────────────────────────
 STEP_AT="$(demo_now)"
 demo_head '③ bun run build'
+
+# 先让产物知道自己是从哪个 commit 来的（issue #70）。判定、优先级与三种结局的
+# 措辞都在 common.sh 的 demo_source_commit / demo_export_source_commit 里。
+#
+# 放在 `--skip-build` 判断**之前**：跳过构建时这一行照样有用——它回答的是「这棵树
+# 声称自己是哪一版」，而那正是操作者在一台不重新构建的机器上最想先确认的事。
+demo_export_source_commit
+
 if [ "$SKIP_BUILD" = '1' ]; then
   demo_say '按 --skip-build 跳过'
 else

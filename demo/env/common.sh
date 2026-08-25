@@ -193,6 +193,97 @@ demo_stop_one() {
   rm -f "$file"
 }
 
+# ── 构建溯源：源 commit 怎么跟着代码上机（issue #70）───────────────────────────
+#
+# `scripts/defines.ts` 会把源 commit 注成 `MACRO.SOURCE_COMMIT`，常驻启动行与控制台
+# banner 都报它。但它是**问 git 拿的**，而部署树上没有 git 可问：送代码那一步要么是
+# `git archive`（只出跟踪文件），要么是 tar 排除表（docs/dev/demo-env.md §7.1 里
+# `.git` 就在排除项里，因为仓库根下还压着 `.claude` 与含凭据的 `.occ`）。两条路的
+# 结果一样——机器上那棵树没有 `.git`，于是每台节点的产物都报 `unknown`，而那正是
+# issue #70 要消掉的洞。
+#
+# 补法是把这件事交回**源端**：打包时（demo/env/pack.sh）把 HEAD 写进树里的一个戳
+# 文件，机器上构建前读回来，经 `OCC_SOURCE_COMMIT` 交给 defines.ts。戳跟着树走，
+# 所以之后任何一次重建都还带得上，不靠操作者记得在命令行前面加一个变量。
+DEMO_SOURCE_COMMIT_STAMP="$REPO_DIR/.source-commit"
+
+# demo_tree_is_own_git_repo —— `$REPO_DIR` 自己是不是一个 git 仓库的顶层。
+#
+# 判据与 `scripts/defines.ts` 的 `measureSourceCommit` 逐条对齐，因为两边必须对同一棵
+# 树给出同一个答案；分叉的后果是「shell 以为要设变量、defines 却去问 git」这类只在
+# 某一台机器上出现的错标。三条：
+#   · `rev-parse` 会**向上**走，所以仅仅「问得到答案」不作数——家目录恰好是个 dotfiles
+#     仓库时，它会自信地报出那个仓库的 HEAD，那比 `unknown` 更坏；顶层必须就是这棵树。
+#   · 比较走 realpath：macOS 上 `/tmp` 是指向 `/private/tmp` 的软链，字符串比一定不等，
+#     于是一棵真仓库会被判成「不是仓库」。defines.ts 那边用的正是 `realpathSync`。
+#   · HEAD 也得解析得出来：空仓库（还没有第一个提交）有顶层却没有 HEAD，defines.ts
+#     在那种树上会退回环境变量，这边也必须退。
+demo_tree_is_own_git_repo() {
+  local toplevel
+  toplevel="$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$toplevel" ] || return 1
+  git -C "$REPO_DIR" rev-parse HEAD >/dev/null 2>&1 || return 1
+  [ "$(cd "$toplevel" 2>/dev/null && pwd -P)" = "$(cd "$REPO_DIR" 2>/dev/null && pwd -P)" ]
+}
+
+# demo_source_commit —— 这棵树应当声明的源 commit；答不出就打印空串。
+#
+# 三条，按序：
+#   ① `$REPO_DIR` 自己就是 git 顶层 → **空串**。不是「不知道」，是「不该由我们说」：
+#      defines.ts 会自己去问 git，那条比戳文件新、也比环境变量可信。这与
+#      `scripts/defines.ts` 里 `OCC_SOURCE_COMMIT` 那段注释是同一条纪律——环境变量
+#      是兜底，永远不是覆盖，否则上一轮 shell 里残留的一个 export 就能给一棵真仓库改名。
+#   ② 环境里已经有 `OCC_SOURCE_COMMIT` → 原样沿用。操作者显式给的排在戳文件之上。
+#   ③ 戳文件存在且形状对 → 用它。
+#
+# 形状必须验：戳文件是从别的机器搬过来的普通文件，一个截断了半截的值会一路流进产物、
+# 启动行和验收报告，而它长得像个 commit，没人会怀疑。形状不对时打印空串并在 stderr 上
+# 说一句——**不静默降级成 `unknown`**，那会让「戳坏了」和「压根没打包戳」看起来一样。
+demo_source_commit() {
+  if demo_tree_is_own_git_repo; then
+    return 0
+  fi
+  if [ -n "${OCC_SOURCE_COMMIT:-}" ]; then
+    printf '%s' "${OCC_SOURCE_COMMIT}"
+    return 0
+  fi
+  [ -f "$DEMO_SOURCE_COMMIT_STAMP" ] || return 0
+  local stamped
+  stamped="$(head -n 1 "$DEMO_SOURCE_COMMIT_STAMP" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$stamped" =~ ^[0-9a-f]{40}(-dirty)?$ ]]; then
+    printf '%s' "${stamped}"
+    return 0
+  fi
+  printf 'WARN : %s 里的值不是一个 commit（%s）—— 当作没有戳处理\n' \
+    "${DEMO_SOURCE_COMMIT_STAMP}" "${stamped}" >&2
+  return 0
+}
+
+# demo_export_source_commit —— 构建前把结论 export 出去，并把三种结局各说一句。
+#
+# 与判定分成两个函数，是因为**两件事的可测面不一样**：判定是纯函数（给树、给环境，
+# 看它答什么），这一条是副作用（export 了没有、话说得对不对）。合成一个的话，想验
+# 「git 树上不许设这个变量」就得连带把消息文案也钉进同一个断言里。
+#
+# 最后那一支是这里的重点：没有戳的机器上产物会报 `sourceCommit=unknown`，而
+# `unknown` 一旦上了线，验收报告里那一行就再也答不出「刚才测的是哪一版」。它是
+# WARN 而不是 die——构建本身没坏，拦下来只会让人绕开脚本手工构建，那更糟。
+demo_export_source_commit() {
+  local resolved
+  resolved="$(demo_source_commit)"
+  if [ -n "$resolved" ]; then
+    export OCC_SOURCE_COMMIT="$resolved"
+    demo_ok "源 commit ${resolved}（经 OCC_SOURCE_COMMIT 注进产物）"
+    return 0
+  fi
+  if demo_tree_is_own_git_repo; then
+    demo_ok "源 commit $(git -C "$REPO_DIR" rev-parse HEAD)（本树就是仓库，由 git 直接解析）"
+    return 0
+  fi
+  demo_warn "这棵树没有 .git，也没有 ${DEMO_SOURCE_COMMIT_STAMP} —— 产物会报 sourceCommit=unknown"
+  demo_say '  送代码请用 demo/env/pack.sh 打包，它会把 HEAD 一起封进去'
+}
+
 # occ 的构建产物。bootstrap.sh 负责把它造出来。
 DEMO_OCC="$REPO_DIR/dist/cli-node.js"
 
