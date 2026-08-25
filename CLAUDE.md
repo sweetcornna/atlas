@@ -17,7 +17,7 @@
 
 **本仓库不做的两件事**（章程 N-13/N-14）：
 
-- **不发布 npm 包、不打 tag、不跑基座的 release 流程。**`publish-npm.yml` 与 release 脚本相关门禁按 roadmap P0.4 在 S0 移除；在移除落地前它们仍在仓库里——**不要触发**。看到 `scripts/release.ts`、`CHANGELOG.md` 发布约定、npm 包名同步清单这类基座内容——**那是基座的发布面，不是我们的**，不要去维护它，也不要因为它"看起来该更新"而改它。
+- **不发布 npm 包、不打 tag、不跑基座的 release 流程。**`publish-npm.yml` **已按 roadmap P0.4 移除**（2026-08-25 复核：`.github/workflows/` 下只剩 `ci.yml`）；`scripts/release.ts` 与 `scripts/releaseCore.ts` **仍在仓库里**——**不要触发**。**下半部分基座原文的「发布」一节描述的是那个已不存在的 workflow**（`publish-npm.yml` 的门禁链、`ci.yml`/`publish-npm.yml`/`release` 三处共用分片脚本等），读到时按本条为准；那一节是基座逐字原文，**不要去改它**，基座约定的更新走上游同步。看到 `scripts/release.ts`、`CHANGELOG.md` 发布约定、npm 包名同步清单这类基座内容——**那是基座的发布面，不是我们的**，不要去维护它，也不要因为它"看起来该更新"而改它。
 - **~~M0 期间不跟随上游发版~~（M0 已收口，本条失效）。**M1 起按章程 §5.7 定稿的节奏跟随上游（每 2–4 周 / 每 5–8 个 release）。**首次真实同步已于 2026-08-17 完成**：v2.38.3 → **v2.46.0**（P10.2，650 文件 / 1784 hunk，冲突 1 块）。同步是**有流程的动作**——三方应用（`git apply --3way`，不是 `git merge`）、单独一笔「纯上游内容」提交、`BASE.md` 记录、成果边界快照标签，做法逐条写在 `BASE.md`「上游同步记录」与 `docs/dev/upstream-sync-drill.md`。**不要临时起意做同步。**
 
 ## 1. 基座的工程约定继续适用
