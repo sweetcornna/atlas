@@ -17,7 +17,7 @@
  */
 
 import { Checks } from '../checks.js'
-import { ACCEPTANCE_PSK, type LocalDriver } from '../local/driver.js'
+import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { mint, sendEnvelope } from '../local/send.js'
 import { identityPath, LIFECYCLE_PATH, readTrail } from '../observe.js'
 import type { Scenario } from '../types.js'
@@ -150,12 +150,10 @@ export const recoveryScenarios: readonly Scenario[] = [
       const node = await startNodeTrusting(ctx, newParty(), { policy: 'open' })
       const running = await ctx.driver.readNodeFile(node, LIFECYCLE_PATH)
 
-      // SIGKILL 是本地驱动专有的动作（真机腿没有这个能力，`spawn-node` 已把
-      // 这条场景挡在那边之外）。
-      const local = ctx.driver as unknown as LocalDriver & {
-        killNode(n: typeof node): Promise<void>
-      }
-      await local.killNode(node)
+      // SIGKILL 走驱动接口。它此前是本地驱动专有的方法、靠一次 `as unknown as
+      // LocalDriver` 够到 —— 那条强转在真机腿上会变成一次 `TypeError`，而
+      // `requires` 里没有任何东西拦得住（issue #65）。
+      await ctx.driver.killNode(node)
       const afterKill = await ctx.driver.readNodeFile(node, LIFECYCLE_PATH)
 
       const restarted = await ctx.driver.restartNode(ctx, node)
@@ -270,13 +268,12 @@ export const recoveryScenarios: readonly Scenario[] = [
         )
       }
       // 把文件里的 node 字段改成另一个名字，再用原来的 --node 起 —— 这就是
-      // 「配置根被别的节点用过」的现场。
-      const { writeFileSync } = await import('node:fs')
-      const { join } = await import('node:path')
+      // 「配置根被别的节点用过」的现场。经驱动写：真机腿上配置根在另一台机器上。
       const parsed = JSON.parse(identity) as Record<string, unknown>
       parsed.node = 'someone-else'
-      writeFileSync(
-        join(node.configRoot, identityPath(NODE)),
+      await ctx.driver.writeNodeFile(
+        node,
+        identityPath(NODE),
         `${JSON.stringify(parsed, null, 2)}\n`,
       )
 

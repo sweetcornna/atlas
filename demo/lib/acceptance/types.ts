@@ -98,7 +98,14 @@ export type DriverCapability =
    * 那条腿一条 `raw-dial` 场景都没跑过，数据面零覆盖。
    */
   | 'attach-node'
-  /** 能按任意参数起一个全新常驻节点（本地有，真机没有）。 */
+  /**
+   * 能按任意参数起一个全新常驻节点。
+   *
+   * 真机腿上这**不是**「重起那台内测节点」—— 那件事仍然禁止。它是「在一台
+   * 舰队机器上，用那台机器上部署好的二进制，在一次性配置根里起一个属于本场景
+   * 的节点，跑完杀掉并 `rm -rf`」。被测对象因此是**部署的产物 + 真机的内核与
+   * 架构**，而配置根是场景自己挑的 —— 断言不必去赌部署配置。
+   */
   | 'spawn-node'
   /**
    * 能按任意参数起一个全新控制台进程 **并直连它的 HTTP 面**（本地有，真机没有）。
@@ -108,7 +115,12 @@ export type DriverCapability =
    * 在真机上两头都不成立。合并成一个能力会让真机腿的 skip 理由说不清是哪一半。
    */
   | 'spawn-console'
-  /** 能重启一个已有节点（本地有；真机需 `--allow-restart`）。 */
+  /**
+   * 能重启一个已有节点（配置根原样保留）。
+   *
+   * 两条腿都只对**自己起的**节点成立。真机腿附着来的那台内测节点永远不许重启：
+   * 那会打断内测使用者，并在它的审计链上留下一次计划外中断。
+   */
   | 'restart-node'
   /** 能改节点的环境变量 / 凭据文件后重启。 */
   | 'mutate-node-env'
@@ -263,6 +275,20 @@ export interface NodeSpec {
   readonly env?: Readonly<Record<string, string>>
   /** 额外 CLI 参数，给场景开后门用，慎用。 */
   readonly extraArgs?: readonly string[]
+  /**
+   * 只要**一台活着的节点**，配置怎样都行 —— 与 `attach-node` 能力配对的那个信号。
+   *
+   * 驱动看不到场景的 `requires`，所以「我需要一台现成的节点」这件事必须由
+   * 规格自己说出来。真机驱动据此分岔：置了就**附着到部署好的那台**（错 PSK
+   * 被拒这类场景的材料全在发起方手里，节点配置不影响判定，而打生产节点正是
+   * 这条腿的意义）；不置就在一台舰队机器上起一个**一次性节点**。
+   *
+   * 本地驱动一律照常起新节点 —— 那边「现成的节点」和「新起的节点」没有区别。
+   *
+   * **不要为了让真机腿跑得快而给普通场景置上它**：附着来的节点是内测在用的
+   * 那台，它的 policy / trust / 审计链都不是场景挑的，断言会变成在赌部署配置。
+   */
+  readonly attach?: boolean
 }
 
 export type AuthSpec =
@@ -276,6 +302,15 @@ export interface NodeHandle {
   readonly spec: NodeSpec
   /** 传输层监听地址，形如 `ws://127.0.0.1:38625`（真机是隧道后的地址）。 */
   readonly endpoint: string
+  /**
+   * 从**节点自己那台机器**上拨它的地址。本地腿与 {@link endpoint} 相同。
+   *
+   * 真机腿上两者不同，而且差别是承重的：`endpoint` 是 runner 这侧隧道口，
+   * 只有 runner 拨得通；节点机器上的 `qm resident-wake` 要拨的是它自己的
+   * 回环口。把 `endpoint` 交给 {@link AcceptanceDriver.execHost} 上跑的命令，
+   * 表现是连不上 —— 而那条红读起来像投递链路坏了。
+   */
+  readonly hostEndpoint: string
   /** 节点配置根（`.../config/qianmo`），审计链与身份都在它下面。 */
   readonly configRoot: string
   /** 进程 stderr 的累计内容（本地驱动实时收集，真机驱动按需拉取）。 */
@@ -346,6 +381,166 @@ export interface ExecHost {
    * 用它的场景要么根本不 bind（解析期就该被拒），要么正好要一个拨不通的口。
    */
   freePort(): Promise<number>
+}
+
+/**
+ * 跑仓库自带启动器脚本（`common.sh` / `beta-up.sh`）的位置。
+ *
+ * ## 真机腿跑**哪一份**脚本：部署机上的那一份（issue #65 第 2 块）
+ *
+ * 两个答案测的是不同的东西，这里选的是前者：
+ *
+ * | 选哪份 | 那一轮回答的问题 |
+ * | --- | --- |
+ * | **部署机上的**（本实现） | 「运维此刻手上那份脚本，在那台机器的 bash 上，行为对不对」 |
+ * | 本分支推过去的 | 「这次改动在真 Linux bash 上行为对不对」 |
+ *
+ * 选前者的三条理由：
+ *
+ * ① **与这条腿其余部分一致。** 真机腿从头到尾验的是**部署产物**（那个
+ *    `dist/cli-node.js`、那台机器的内核与架构），启动器换成分支版本，同一份
+ *    报告里就会有两种「被测对象」，而读的人分不出哪条是哪种。
+ * ② **这一维要抓的差异正好在部署侧。** 它来自 issue #38/#40：`bun` 装在
+ *    `~/.bun/bin`、非交互 SSH 解析不到 —— 那是一条**部署环境**的事实，
+ *    开发机上的 bash 3.2 复现不出来。
+ * ③ **推分支版本在机制上也不成立。** `common.sh` 的 `REPO_DIR` 由
+ *    `BASH_SOURCE[0]` 往上三级推出，脚本必须待在一棵完整的仓库树里；往部署
+ *    检出里写文件是污染部署，而在别处造一棵树又得把 `demo/` 软链回部署检出
+ *    —— 绕一圈跑的还是那一份。
+ *
+ * **代价要说清**：分支上改了启动器脚本，真机腿在重新部署之前看不见。那不是
+ * 盲区，那正是这条腿要报的事实 —— 「部署上去的还是旧的」。分支侧的守护由
+ * `demo/env/*.test.ts` 那几个单测负责，它们进 CI。
+ */
+export interface LauncherHost {
+  /** 人可读位置（`runner (local)` / `cornna-p3 (aarch64)`），进证据用。 */
+  readonly describe: string
+  /**
+   * 启动器脚本所在的仓库根**在目标机上**的绝对路径。
+   *
+   * 保证 `demo/env/beta/*.sh` 是**真脚本**，且 `dist/cli-node.js` 存在
+   * （`beta_require_occ` 过得去）—— 本地腿靠一棵软链镜像树满足后半条，
+   * 真机腿本来就满足。
+   */
+  readonly repoDir: string
+  /** 一次性 `QIANMO_BETA_ROOT`（`run/` 与 `logs/` 已建好）。 */
+  readonly betaRoot: string
+  /** 一次性工作目录（放假 `bun`、日志等）。 */
+  readonly workdir: string
+  /** 写一个文件（相对 {@link workdir}），返回目标机上的绝对路径。 */
+  writeFile(
+    relPath: string,
+    content: string,
+    options?: { readonly mode?: string },
+  ): Promise<string>
+  /** 直接跑一条命令（`argv[0]` 通常是 `/bin/bash`）。 */
+  run(
+    argv: readonly string[],
+    options?: {
+      readonly env?: Readonly<Record<string, string>>
+      readonly timeoutMs?: number
+    },
+  ): Promise<ExecResult>
+  /** 目标机上这条绝对路径存不存在。 */
+  exists(absPath: string): Promise<boolean>
+  /** 读目标机上的一个文件；不存在返回 undefined（**不要**抛）。 */
+  readFile(absPath: string): Promise<string | undefined>
+}
+
+/**
+ * 一次性注册中心的启动参数。
+ *
+ * **注册中心不是可选的门面** —— `console/*` 的每条场景都要它：控制台的
+ * `/v0/agents` 是往注册中心的代理，没有它那些断言测的就只是一个 502。
+ */
+export interface RegistrySpec {
+  /** 打开落盘（`FileRegistryStore`）。持久化是 opt-in，与产品一致。 */
+  readonly persist?: boolean
+  /** 租约 TTL；不给就是 `DEFAULT_TTL_MS`。短 TTL 用来测过期。 */
+  readonly ttlMs?: number
+}
+
+/** 一个一次性注册中心。 */
+export interface AcceptanceRegistry {
+  /** **runner 侧**可达的基址 —— 场景自己打它用这个。 */
+  readonly url: string
+  /**
+   * **控制台那台机器上**可达的基址 —— 喂 {@link ConsoleSpec.registryUrl} 用这个。
+   *
+   * 本地腿两者相同。真机腿上控制台在另一台机器上，它拨的是一条反向隧道的
+   * 入口；把 `url` 喂给它等于让那台机器去打它自己的某个端口。
+   */
+  readonly hostUrl: string
+  /**
+   * 落盘文件的内容；没开持久化、或还没落盘，就是 undefined（**不要**抛）。
+   *
+   * 是方法而不是路径，因为「盘在哪台机器上」由驱动决定：场景拿到路径也读不了。
+   */
+  readState(): Promise<string | undefined>
+}
+
+/** 一次性控制台的启动参数（驱动无关的那部分）。 */
+export interface ConsoleSpec {
+  /** 注册中心地址 —— 传 {@link AcceptanceRegistry.hostUrl}。 */
+  readonly registryUrl: string
+  /** `--wake-url <node>=<ws url>`，可多条。URL 要用节点的 `hostEndpoint`。 */
+  readonly wakeTargets?: readonly {
+    readonly node: string
+    readonly url: string
+  }[]
+  readonly signWakes?: boolean
+  /** 每个唤醒目标的 PSK；键是节点名。 */
+  readonly wakePsk?: Readonly<Record<string, string>>
+  /** 显式 token（经环境变量给，与产品的第二优先级入口一致）。 */
+  readonly viewToken?: string
+  readonly adminToken?: string
+  readonly extraArgs?: readonly string[]
+}
+
+/** 一个跑着的一次性控制台。 */
+export interface AcceptanceConsole {
+  /** `http://127.0.0.1:<port>`，**runner 侧**可达，不带 token。 */
+  readonly url: string
+  readonly viewToken: string
+  readonly adminToken: string
+  /** 配置根**在目标机上**的绝对路径。 */
+  readonly configRoot: string
+  /** 启动 banner 原文（stdout）。 */
+  banner(): Promise<string>
+  stderr(): Promise<string>
+}
+
+/**
+ * 一个**还没起**的控制台位：配置根已经开好，进程还没起。
+ *
+ * 两步分开不是为了对称，是因为 `console/wake-sign-round-trip` 必须这么走：
+ * 先用这个配置根跑 `qm console --print-wake-identity` 把公钥印出来（那一步
+ * **不起服务器、不读 token**，正是分发公钥的那一刻），把公钥交给目标节点的
+ * `--trust`，**然后**才带 `--wake-sign` 把控制台起起来。顺序反了会得到
+ * `E_CAP_INVALID: no published public key for issuer console`。
+ *
+ * 它同时是一个 {@link ExecHost}，于是 `--audit <节点>=<路径>` 要的那些文件
+ * 也能落在**控制台那台机器**上 —— 场景 workdir 在 runner 上，真机腿指过去
+ * 是一条不存在的路径。
+ */
+export interface ConsoleSlot extends ExecHost {
+  start(spec: ConsoleSpec): Promise<AcceptanceConsole>
+}
+
+/**
+ * 在哪台机器上开这个一次性执行位置。
+ *
+ * 不给就由驱动挑（真机驱动在舰队里轮转，本地驱动只有一台机器）。
+ */
+export interface ExecHostWhere {
+  /**
+   * 与这个节点句柄**同一台机器**。
+   *
+   * 给它的场景都是「命令要拨到这个节点」的那一类（`qm resident-wake`）——
+   * 那种命令必须和节点落在同一台机器上，然后拨 {@link NodeHandle.hostEndpoint}。
+   * 落在别处就得穿隧道，而隧道只在 runner 那一侧存在。
+   */
+  readonly sameMachineAs?: NodeHandle
 }
 
 /** 原始拨号的结果 —— 帧级探针要看的全部东西。 */
@@ -433,8 +628,44 @@ export interface AcceptanceDriver {
   ): Promise<DialProbe>
   /** 读节点上的文件，不存在返回 undefined（**不要**抛，「不存在」是一种观察）。 */
   readNodeFile(node: NodeHandle, relPath: string): Promise<string | undefined>
+  /**
+   * 往节点配置根下写一个文件（整份覆盖），返回它**在目标机上**的绝对路径。
+   *
+   * 存在的理由是审计维度那三条篡改场景：它们要在盘上改掉一行再让
+   * `qm audit --verify` 去发现。此前它们直接 `node:fs` 写 `node.configRoot`，
+   * 而那条路径在真机腿上属于另一台机器 —— 于是它们只能靠 `requires` 里的
+   * `spawn-node` 把自己挡在真机腿之外。挡不住的那一天就是下一次 issue #61。
+   *
+   * **写只对自己起的节点开放。** 附着来的内测节点上，驱动必须拒绝 —— 往生产
+   * 配置根里写东西没有任何验收价值，只会污染那条链。
+   */
+  writeNodeFile(
+    node: NodeHandle,
+    relPath: string,
+    content: string,
+  ): Promise<string>
+  /**
+   * 改节点配置根下某个路径的权限位（八进制串，如 `'500'`）。
+   *
+   * 只有一条场景要它（把信箱目录设成可进不可写，看投递会不会如实报
+   * `E_UNDELIVERABLE`）。窄接口是刻意的：一个「在节点机器上跑任意命令」的
+   * 出口会让场景绕开能力表，而能力表是这套件唯一的诚实机制。
+   */
+  setNodePathMode(
+    node: NodeHandle,
+    relPath: string,
+    mode: string,
+  ): Promise<void>
   /** 列目录，不存在返回 undefined。 */
   listNodeDir(node: NodeHandle, relPath: string): Promise<string[] | undefined>
+  /**
+   * SIGKILL 掉一个节点 —— 制造「上一条命是被打断的」那种现场。
+   *
+   * 在接口上而不是只在本地驱动上，是因为 `recovery/lifecycle-records-hard-kill`
+   * 此前把 `ctx.driver` 强转成 `LocalDriver` 去够它：那条转换在真机腿上会变成
+   * 一次 `TypeError`，而 `requires` 里没有任何东西拦得住。
+   */
+  killNode(node: NodeHandle): Promise<void>
   /** 在节点侧跑一条 CLI（**生产配置根**，见 {@link ExecHost} 的对比表）。 */
   execNode(node: NodeHandle, argv: readonly string[]): Promise<ExecResult>
   /**
@@ -446,9 +677,22 @@ export interface AcceptanceDriver {
    * 在目标机上开一个**一次性**的 CLI 执行位置。
    *
    * 清理登记在 `ctx.cleanup` 上，runner 在 `finally` 里跑（超时也会跑）。
-   * `nodeName` 只用来在舰队里挑一台机器；本地驱动忽略它。
+   * `where` 只用来在舰队里挑一台机器；本地驱动忽略它。
    */
-  execHost(ctx: ScenarioContext, nodeName?: string): Promise<ExecHost>
+  execHost(ctx: ScenarioContext, where?: ExecHostWhere): Promise<ExecHost>
+  /**
+   * 起一个一次性注册中心。清理挂 `ctx.cleanup`。
+   *
+   * 声明了 `spawn-console` 的场景才走得到这里。
+   */
+  startRegistry(
+    ctx: ScenarioContext,
+    spec?: RegistrySpec,
+  ): Promise<AcceptanceRegistry>
+  /** 开一个一次性控制台位（配置根先有，进程后起）。见 {@link ConsoleSlot}。 */
+  consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot>
+  /** 开一个跑启动器脚本的位置。见 {@link LauncherHost}。 */
+  launcherHost(ctx: ScenarioContext): Promise<LauncherHost>
 }
 
 /**
@@ -499,6 +743,21 @@ export interface MirrorTransportReport {
   readonly units: readonly MirrorTransportUnit[]
   /** 采集本身失败时的原文（此时 `units` 可能是空的）。 */
   readonly failure?: string
+  /**
+   * 那台控制台 `GET /v0/health` 的状态码；探不到端口时 undefined。
+   *
+   * 它把「一条 `--audit` 申报都没有」拆成两件事：health 是 200 就是**控制台
+   * 活着、这套部署确实没配镜像**（该 skip），不是 200 就是**控制台没在跑**
+   * （该 fail）。此前这两者混在一起，于是一台挂掉的控制台会让镜像场景退化成
+   * 一条 skip —— 报告上看起来像「没配」。
+   *
+   * 端口从**同一条 `ps` 行**上读，不写死 38621。`systemctl --user is-active`
+   * 对 console/registry 两个单元都不可信（`Type=oneshot` + 只 enable 不 start，
+   * 实测进程活着而单元报 inactive），别拿它当存活判据。
+   */
+  readonly consoleHealthStatus?: number
+  /** 那台控制台申报的端口（从 `ps` 行读）。 */
+  readonly consolePort?: number
 }
 
 /** 整轮运行的汇总（写进 NDJSON 的最后一行 + 汇总表表头）。 */

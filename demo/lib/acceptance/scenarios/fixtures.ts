@@ -68,6 +68,13 @@ export interface NodeFixtureOptions {
   readonly env?: Readonly<Record<string, string>>
   readonly extraArgs?: readonly string[]
   readonly name?: string
+  /**
+   * 只要一台活着的节点 —— 与 `attach-node` 能力配对（见 {@link NodeSpec.attach}）。
+   *
+   * 声明 `attach-node` 的场景**必须**置上它，否则真机腿会给它起一个一次性节点，
+   * 而那条腿正是靠这几条场景去碰部署好的那台内测节点的。
+   */
+  readonly attach?: boolean
 }
 
 export function nodeSpec(
@@ -94,6 +101,7 @@ export function nodeSpec(
     ...(options.extraArgs === undefined
       ? {}
       : { extraArgs: options.extraArgs }),
+    ...(options.attach === undefined ? {} : { attach: options.attach }),
   }
 }
 

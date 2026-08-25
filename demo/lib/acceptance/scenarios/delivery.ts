@@ -15,12 +15,9 @@
  * 码」的退化。
  */
 
-import { chmodSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { mint, sendEnvelope } from '../local/send.js'
-import { runCli } from '../local/spawn.js'
 import type { Scenario } from '../types.js'
 import {
   ADDRESS,
@@ -132,16 +129,19 @@ export const deliveryScenarios: readonly Scenario[] = [
         from: SENDER,
         to: ADDRESS,
       })
-      const inboxDir = join(node.configRoot, 'teams', TEAM, 'inboxes')
-      if (!existsSync(inboxDir)) {
+      // 存在性与权限位都经驱动：真机腿上配置根在另一台机器上，`node:fs` 在
+      // 那里改的是 runner 自己的一条不存在的路径 —— 于是投递照常成功，
+      // 而这条场景会走进「本机不强制权限位」那个 skip 分支，说一句假话。
+      const inboxRel = `teams/${TEAM}/inboxes`
+      if ((await ctx.driver.listNodeDir(node, inboxRel)) === undefined) {
         return new Checks()
           .note('第一条的 receipt', first.receipt)
-          .skip(`第一条消息之后信箱目录仍不存在（${inboxDir}），无法构造写失败`)
+          .skip(`第一条消息之后信箱目录仍不存在（${inboxRel}），无法构造写失败`)
       }
-      chmodSync(inboxDir, 0o500)
-      ctx.cleanup(() => {
+      await ctx.driver.setNodePathMode(node, inboxRel, '500')
+      ctx.cleanup(async () => {
         try {
-          chmodSync(inboxDir, 0o700)
+          await ctx.driver.setNodePathMode(node, inboxRel, '700')
         } catch {
           // 目录可能已经被清掉了。
         }
@@ -236,11 +236,16 @@ export const deliveryScenarios: readonly Scenario[] = [
       const node = await startNodeTrusting(ctx, party, {
         policy: 'signed-task',
       })
-      const result = await runCli({
-        argv: [
+      // 发起方也要是**被测的那个二进制**：真机腿上它就落在节点那台机器上，
+      // 于是拨的是 `hostEndpoint`（节点自己的回环口）而不是 runner 侧的隧道口。
+      // 此前这里调本地 `runCli`，`requires` 里的 `exec-node-cli` 纯属装饰
+      // ——issue #61 那个形状。
+      const host = await ctx.driver.execHost(ctx, { sameMachineAs: node })
+      const result = await host.exec(
+        [
           'resident-wake',
           '--url',
-          node.endpoint,
+          node.hostEndpoint,
           '--from',
           SENDER,
           '--to',
@@ -250,15 +255,14 @@ export const deliveryScenarios: readonly Scenario[] = [
           '--timeout-ms',
           '20000',
         ],
-        env: {
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(ctx.workdir, 'sender-config'),
-          QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK,
+        {
+          env: { QIANMO_TRANSPORT_PSK: ACCEPTANCE_PSK },
+          timeoutMs: 60_000,
         },
-        timeoutMs: 60_000,
-      })
+      )
       const output = `${result.stdout}\n${result.stderr}`
       return new Checks()
+        .note('执行位置', host.describe)
         .expect(result.code !== 0, '退出码非零', result.code)
         .contains(output, 'E_CAP_INSUFFICIENT', '输出')
         .contains(output, 'needs write-limited', '输出')

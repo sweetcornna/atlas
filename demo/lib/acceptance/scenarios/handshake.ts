@@ -79,7 +79,10 @@ export const handshakeScenarios: readonly Scenario[] = [
     timeoutMs: 120_000,
     async run(ctx) {
       const party = newParty()
-      const node = await startNodeTrusting(ctx, party)
+      // `attach: true` 是 `requires` 里那个 `attach-node` 在驱动那一侧的对应物：
+      // 真机腿据此去**附着部署好的那台内测节点**，而不是给这条场景现起一个
+      // 一次性的。少了它这条腿就再也碰不到生产数据面了。
+      const node = await startNodeTrusting(ctx, party, { attach: true })
       // 经 `ctx.driver.dial` 而不是直接 `rawDial`：真机腿的端点是按主机分配的
       // 隧道口，只有驱动知道该往哪儿拨。
       const probe = await ctx.driver.dial(ctx, node, {

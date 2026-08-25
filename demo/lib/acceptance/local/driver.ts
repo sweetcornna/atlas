@@ -21,26 +21,35 @@
  */
 
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type {
   AcceptanceDriver,
+  AcceptanceRegistry,
+  ConsoleSlot,
   DialOptions,
   DialProbe,
   DriverCapability,
   ExecHost,
   ExecResult,
+  LauncherHost,
   NodeHandle,
   NodeSpec,
+  RegistrySpec,
   ScenarioContext,
 } from '../types.js'
+import { startConsole, startRegistry } from './console.js'
 import { rawDial, type RawAuth } from './dial.js'
 import {
+  REPO_ROOT,
   runCli,
   sleep,
   spawnCli,
@@ -97,6 +106,10 @@ export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
   readonly capabilities = LOCAL_CAPABILITIES
   readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
+  /** 同一场景里第几个控制台位 —— 见 {@link LocalDriver.consoleSlot}。 */
+  #consoleSeat = 0
+  /** 同一场景里第几个启动器位。 */
+  #launcherSeat = 0
 
   async startNode(
     ctx: ScenarioContext,
@@ -210,6 +223,8 @@ export class LocalDriver implements AcceptanceDriver {
       name: spec.name,
       spec,
       endpoint,
+      // 本地腿上「从 runner 拨」与「从节点自己那台机器拨」是同一件事。
+      hostEndpoint: endpoint,
       port,
       root,
       configRoot,
@@ -240,7 +255,7 @@ export class LocalDriver implements AcceptanceDriver {
     return await (node as LocalNodeHandle).restart(overrides)
   }
 
-  /** 本地专有：SIGKILL，用来制造「上一条命是被打断的」那种现场。 */
+  /** SIGKILL，用来制造「上一条命是被打断的」那种现场。 */
   async killNode(node: NodeHandle): Promise<void> {
     const local = node as LocalNodeHandle
     process.kill(local.process.pid, 'SIGKILL')
@@ -274,6 +289,25 @@ export class LocalDriver implements AcceptanceDriver {
     }
   }
 
+  async writeNodeFile(
+    node: NodeHandle,
+    relPath: string,
+    content: string,
+  ): Promise<string> {
+    const abs = join(node.configRoot, relPath)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, content)
+    return abs
+  }
+
+  async setNodePathMode(
+    node: NodeHandle,
+    relPath: string,
+    mode: string,
+  ): Promise<void> {
+    chmodSync(join(node.configRoot, relPath), Number.parseInt(mode, 8))
+  }
+
   async listNodeDir(
     node: NodeHandle,
     relPath: string,
@@ -303,13 +337,109 @@ export class LocalDriver implements AcceptanceDriver {
    * 本地的一次性执行位置就是场景 workdir 下的两个子目录 —— runner 已经保证
    * 会清理它，所以这里不再另登记 cleanup。
    */
+  async startRegistry(
+    ctx: ScenarioContext,
+    spec: RegistrySpec = {},
+  ): Promise<AcceptanceRegistry> {
+    return await startRegistry(ctx, spec)
+  }
+
+  /**
+   * 本地的控制台位：一层专属目录 + 一个 `start`。
+   *
+   * 每次调用都换一个目录名（`console-0`、`console-1`…），一个场景里起两个
+   * 控制台时两份身份不会互相盖 —— `loadOrCreateNodeKeys` 是 wx 创建、永不
+   * 覆盖，共用一个根会让第二个控制台悄悄用上第一个的唤醒身份。
+   */
+  async consoleSlot(ctx: ScenarioContext): Promise<ConsoleSlot> {
+    const seat = `console-${String(this.#consoleSeat++)}`
+    const base = await this.#execHostAt(ctx, seat)
+    return {
+      ...base,
+      start: async spec => await startConsole(ctx, base.configDir, spec),
+    }
+  }
+
   async execHost(ctx: ScenarioContext): Promise<ExecHost> {
-    const configDir = join(ctx.workdir, 'exec-host', 'config')
-    const workdir = join(ctx.workdir, 'exec-host', 'work')
-    mkdirSync(configDir, { recursive: true })
+    return await this.#execHostAt(ctx, 'exec-host')
+  }
+
+  /**
+   * 本地的启动器位。
+   *
+   * `repoDir` 是一棵**镜像仓库树**：`demo` 软链回真仓库、`dist/cli-node.js`
+   * 放一个占位文件。为什么需要它：`common.sh` 把产物路径写死成
+   * `$REPO_DIR/dist/cli-node.js` 且不认任何环境变量覆盖，而 `REPO_DIR` 是从
+   * `common.sh` 自己的 `BASH_SOURCE[0]` 往上三级推出来的 —— 于是「不先跑一次
+   * 真构建就碰不到这条路径」，那正好撞上「不许有手工步骤」。bash 的 `cd` 走
+   * 逻辑路径，`pwd` 因此答的是软链那一侧，`REPO_DIR` 就落在镜像上；**跑的仍是
+   * 仓库里那份真脚本**，只有它眼中的仓库根被换掉了。唯一被伪造的事实是
+   * 「产物存在」这一条。
+   *
+   * 真机腿不需要这一层 —— 那边 `dist/` 是真的（见 {@link LauncherHost}）。
+   */
+  async launcherHost(ctx: ScenarioContext): Promise<LauncherHost> {
+    const seat = join(ctx.workdir, `launcher-${String(this.#launcherSeat++)}`)
+    const repoDir = join(seat, 'repo-mirror')
+    const betaRoot = join(seat, 'beta-root')
+    const workdir = join(seat, 'work')
+    mkdirSync(join(repoDir, 'dist'), { recursive: true })
+    writeFileSync(
+      join(repoDir, 'dist', 'cli-node.js'),
+      '// qianmo acceptance placeholder —— 只为让 beta_require_occ 通过\n',
+    )
+    if (!existsSync(join(repoDir, 'demo'))) {
+      symlinkSync(join(REPO_ROOT, 'demo'), join(repoDir, 'demo'))
+    }
+    mkdirSync(join(betaRoot, 'run'), { recursive: true })
+    mkdirSync(join(betaRoot, 'logs'), { recursive: true })
     mkdirSync(workdir, { recursive: true })
     return {
       describe: 'runner (local)',
+      repoDir,
+      betaRoot,
+      workdir,
+      writeFile: async (relPath, content, options) => {
+        const abs = join(workdir, relPath)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, content, {
+          ...(options?.mode === undefined
+            ? {}
+            : { mode: Number.parseInt(options.mode, 8) }),
+        })
+        return abs
+      },
+      run: async (argv, options) => {
+        const child = Bun.spawnSync([...argv], {
+          cwd: REPO_ROOT,
+          env: { ...process.env, ...options?.env },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        })
+        return {
+          code: child.exitCode ?? -1,
+          stdout: child.stdout.toString(),
+          stderr: child.stderr.toString(),
+        }
+      },
+      exists: async absPath => existsSync(absPath),
+      readFile: async absPath => {
+        try {
+          return readFileSync(absPath, 'utf8')
+        } catch {
+          return undefined
+        }
+      },
+    }
+  }
+
+  async #execHostAt(ctx: ScenarioContext, seat: string): Promise<ExecHost> {
+    const configDir = join(ctx.workdir, seat, 'config')
+    const workdir = join(ctx.workdir, seat, 'work')
+    mkdirSync(configDir, { recursive: true })
+    mkdirSync(workdir, { recursive: true })
+    return {
+      describe: `runner (local, ${seat})`,
       configDir,
       workdir,
       exec: async (argv, opts) =>

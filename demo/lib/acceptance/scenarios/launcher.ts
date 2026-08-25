@@ -14,118 +14,69 @@
  * 并由 `demo/env/shell-fullwidth-expansion.test.ts` 静态守着。钉 `LC_ALL=C`
  * 等于绕开脚本真实的运行条件，而那正是 #49 藏身的地方 —— 所以这里跟随进程
  * 自己的 locale。
+ *
+ * **七条都经 `ctx.driver.launcherHost()`（issue #65）**，不再直接
+ * `Bun.spawnSync` 本地的 `/bin/bash`。于是真机腿上它们跑的是**那台机器上部署
+ * 好的那一份脚本**，在那台机器的 bash 上 —— 「用哪份脚本、代价是什么」写在
+ * `types.ts` 的 {@link LauncherHost} 头注里，改这一维之前先读那一段。
+ *
+ * 三条安全前提，一条都不能松：
+ *
+ * ① **`QIANMO_BETA_ROOT` 一律指向一次性根。** 脚本写出来的 `run/*.pid`、
+ *    `logs/*`、`peers.conf` 全落在那儿，碰不到 `~/qianmo-beta`。
+ * ② **PATH 里只有假 `bun`**（`<假 bun 目录>:/usr/bin:/bin`），真 `bun` 在
+ *    `~/.bun/bin`，不在这条 PATH 上。所以即使某一步没被截住，也只会以
+ *    「命令不可执行」收场，**不会真的起一个节点** —— 那台机器上 38625 正被
+ *    内测节点占着，而 Bun 允许两个服务器绑同一个口且都不报错。
+ * ③ 场景结束时按 pid 文件把假进程收干净。
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
-import { join } from 'node:path'
 import { Checks } from '../checks.js'
-import { REPO_ROOT } from '../local/spawn.js'
-import type { Scenario, ScenarioContext } from '../types.js'
+import type { LauncherHost, Scenario, ScenarioContext } from '../types.js'
 
-const COMMON_SH = join(REPO_ROOT, 'demo/env/beta/common.sh')
-const BETA_UP = join(REPO_ROOT, 'demo/env/beta/beta-up.sh')
-
-interface ShellResult {
-  readonly exitCode: number
-  readonly stdout: string
-  readonly stderr: string
-}
-
-function betaRoot(ctx: ScenarioContext): string {
-  const root = join(ctx.workdir, 'beta-root')
-  mkdirSync(join(root, 'run'), { recursive: true })
-  mkdirSync(join(root, 'logs'), { recursive: true })
-  return root
-}
-
-/** 在真 bash 里 source `common.sh` 之后跑几行。 */
-function runShell(
-  root: string,
+/**
+ * 在真 bash 里 source `common.sh` 之后跑几行。
+ *
+ * `$1` 是 `common.sh` 的绝对路径 —— 由启动器位给出，本地是镜像树、真机是
+ * 部署检出。
+ */
+async function runShell(
+  host: LauncherHost,
   lines: readonly string[],
   extraEnv: Readonly<Record<string, string>> = {},
-): ShellResult {
-  const child = Bun.spawnSync(
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const result = await host.run(
     [
       '/bin/bash',
       '-c',
       ['set -euo pipefail', '. "$1"', ...lines].join('\n'),
       'qianmo-acceptance',
-      COMMON_SH,
+      `${host.repoDir}/demo/env/beta/common.sh`,
     ],
     {
-      cwd: REPO_ROOT,
       env: {
-        ...process.env,
         PATH: '/usr/bin:/bin',
-        QIANMO_BETA_ROOT: root,
+        QIANMO_BETA_ROOT: host.betaRoot,
         ...extraEnv,
       },
-      stdout: 'pipe',
-      stderr: 'pipe',
+      timeoutMs: 60_000,
     },
   )
-  return {
-    exitCode: child.exitCode ?? -1,
-    stdout: child.stdout.toString(),
-    stderr: child.stderr.toString(),
-  }
+  return { exitCode: result.code, stdout: result.stdout, stderr: result.stderr }
 }
 
 /**
- * 跑 `beta-up.sh`，但把它最终要执行的那条命令**截下来**。
- *
- * 手法：给一个只含假 `bun` 的 PATH，那个假 `bun` 把自己收到的 argv 与
- * `OCC_CONFIG_DIR` 追加进一个日志文件然后退出。于是不需要真起节点，就能断言
- * 「尾参有没有原样传到底层命令行上」。
- */
-/**
- * 造一个**镜像仓库根**，让 `beta-up.sh` 相信 `dist/` 已经构建好了。
- *
- * 为什么需要它：`common.sh` 把产物路径写死成 `BETA_OCC="$REPO_DIR/dist/cli-node.js"`
- * 且不认任何环境变量覆盖，而 `REPO_DIR` 是从 `common.sh` 自己的 `BASH_SOURCE[0]`
- * 往上三级推出来的。于是「不先跑一次真构建就没法碰这条路径」——那正好撞上
- * 委托里「不许有手工步骤」。
- *
- * 出路是**换一个 `REPO_DIR`**：临时目录里 `demo` 软链到真仓库、`dist/cli-node.js`
- * 放一个占位文件。bash 的 `cd` 走逻辑路径，`pwd` 因此答的是软链那一侧，
- * `REPO_DIR` 就落在临时目录上 —— 跑的**仍是仓库里那份真脚本**，只有它眼中的
- * 仓库根被换掉了。
- *
- * 唯一被伪造的是「产物存在」这一个事实；`beta_require_occ` 之后的每一步（参数
- * 解析、尾参透传、启动、探活）都照原样走。
- */
-function mirrorRepo(ctx: ScenarioContext): string {
-  const mirror = join(ctx.workdir, 'repo-mirror')
-  mkdirSync(join(mirror, 'dist'), { recursive: true })
-  writeFileSync(
-    join(mirror, 'dist', 'cli-node.js'),
-    '// qianmo acceptance placeholder —— 只为让 beta_require_occ 通过\n',
-  )
-  symlinkSync(join(REPO_ROOT, 'demo'), join(mirror, 'demo'))
-  return join(mirror, 'demo/env/beta/beta-up.sh')
-}
-
-/**
- * 一个假 `bun`：把自己被怎么调起来的记下来。
+ * 造一个假 `bun`：把自己被怎么调起来的记下来，返回它所在的目录。
  *
  * `linger` 决定它记完之后是否挂住。**默认挂住**，因为 `beta_start_process`
  * 的成功判据正是「宽限期之后进程还活着」—— 记完就退等于让每条启动场景都撞上
  * 那道存活校验（PR #48 加的那道），观察点会前移到「起不来」而不是「怎么起的」。
  */
-function stubBunDir(
-  ctx: ScenarioContext,
+async function stubBunDir(
+  host: LauncherHost,
   argvLog: string,
   options: { readonly linger?: boolean } = {},
-): string {
-  const bin = join(ctx.workdir, 'stub-bin')
-  mkdirSync(bin, { recursive: true })
+): Promise<string> {
   // `--ready <路径>`：注册中心用一个 ready 文件宣告自己起来了，而 beta-up.sh
   // 会卡在那儿等 30 s 再 die。假 bun 替它写一下，控制台那一步才够得着。
   const script = `#!/bin/bash
@@ -138,26 +89,23 @@ for arg in "$@"; do
 done
 ${options.linger === false ? 'exit 0' : 'sleep 30'}
 `
-  const path = join(bin, 'bun')
-  writeFileSync(path, script, { mode: 0o755 })
-  return bin
+  const path = await host.writeFile('stub-bin/bun', script, { mode: '755' })
+  return path.slice(0, path.lastIndexOf('/'))
 }
 
 /** 场景结束时按 pid 文件把假进程收干净，别把 `sleep` 留在机器上。 */
-function killStubsOnCleanup(ctx: ScenarioContext, root: string): void {
-  ctx.cleanup(() => {
-    const runDir = join(root, 'run')
-    if (!existsSync(runDir)) return
-    for (const name of readdirSync(runDir)) {
-      if (!name.endsWith('.pid')) continue
-      const pid = Number(readFileSync(join(runDir, name), 'utf8').trim())
-      if (!Number.isFinite(pid) || pid <= 0) continue
-      try {
-        process.kill(pid, 'SIGKILL')
-      } catch {
-        // 早就没了。
-      }
-    }
+function killStubsOnCleanup(ctx: ScenarioContext, host: LauncherHost): void {
+  ctx.cleanup(async () => {
+    // 一条 bash 收干净：pid 文件在目标机上，逐个读回 runner 再 kill 是两倍
+    // 往返，而清理路径上还可能带着超时。
+    await host.run([
+      '/bin/bash',
+      '-c',
+      `for f in "$1"/run/*.pid; do [ -e "$f" ] || continue; p="$(cat "$f")"; ` +
+        `case "$p" in ''|*[!0-9]*) continue;; esac; kill -KILL "$p" 2>/dev/null || true; done`,
+      'qianmo-acceptance',
+      host.betaRoot,
+    ])
   })
 }
 
@@ -169,21 +117,22 @@ export const launcherScenarios: readonly Scenario[] = [
     expected:
       '退出码非零、stderr 含「起不来」与 .bun/bin 提示、run/<名>.pid 不存在',
     requires: ['run-launcher'],
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const result = runShell(root, [
+      const host = await ctx.driver.launcherHost(ctx)
+      const result = await runShell(host, [
         'beta_start_process demo "$QIANMO_BETA_ROOT/config" definitely-not-a-real-binary',
       ])
-      const pidFile = join(root, 'run', 'demo.pid')
+      const pidFile = `${host.betaRoot}/run/demo.pid`
       return new Checks()
+        .note('执行位置', host.describe)
         .note('stdout', result.stdout)
         .note('stderr', result.stderr)
         .expect(result.exitCode !== 0, '退出码非零', result.exitCode)
         .contains(result.stderr, '起不来', 'stderr')
         .contains(result.stderr, '.bun/bin', 'stderr（要指出最常见的那个成因）')
         .notContains(result.stdout, '已启动', 'stdout（不许报成功）')
-        .expect(!existsSync(pidFile), 'pid 文件没有被写出来', pidFile)
+        .expect(!(await host.exists(pidFile)), 'pid 文件没有被写出来', pidFile)
         .done('起不来时不谎报成功')
     },
   },
@@ -195,21 +144,22 @@ export const launcherScenarios: readonly Scenario[] = [
     expected:
       '退出码非零、stdout 含「未能保持运行」之外的日志尾巴、pid 文件被清掉',
     requires: ['run-launcher'],
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const result = runShell(root, [
+      const host = await ctx.driver.launcherHost(ctx)
+      const result = await runShell(host, [
         'beta_start_process demo "$QIANMO_BETA_ROOT/config" /bin/bash -c "echo boom >&2; exit 3"',
       ])
-      const pidFile = join(root, 'run', 'demo.pid')
+      const pidFile = `${host.betaRoot}/run/demo.pid`
       const output = `${result.stdout}\n${result.stderr}`
       return new Checks()
+        .note('执行位置', host.describe)
         .note('stdout', result.stdout)
         .note('stderr', result.stderr)
         .expect(result.exitCode !== 0, '退出码非零', result.exitCode)
         .contains(output, '未能保持运行', '输出')
         .contains(output, 'boom', '输出（子进程的 stderr 要被摊开）')
-        .expect(!existsSync(pidFile), '陈旧 pid 文件被清掉', pidFile)
+        .expect(!(await host.exists(pidFile)), '陈旧 pid 文件被清掉', pidFile)
         .done('起了就死也算失败')
     },
   },
@@ -220,31 +170,22 @@ export const launcherScenarios: readonly Scenario[] = [
     title: 'beta_start_process：进程真活着时照旧报成功（正向对照）',
     expected: '退出码 0、stdout 含「已启动」、pid 文件存在',
     requires: ['run-launcher'],
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const result = runShell(root, [
+      const host = await ctx.driver.launcherHost(ctx)
+      killStubsOnCleanup(ctx, host)
+      const result = await runShell(host, [
         'beta_start_process demo "$QIANMO_BETA_ROOT/config" /bin/sleep 30',
         'cat "$(beta_pidfile demo)"',
       ])
-      const pidFile = join(root, 'run', 'demo.pid')
-      ctx.cleanup(() => {
-        // 别把 sleep 留在机器上。
-        try {
-          const pid = Number(
-            Bun.spawnSync(['cat', pidFile]).stdout.toString().trim(),
-          )
-          if (Number.isFinite(pid) && pid > 0) process.kill(pid, 'SIGKILL')
-        } catch {
-          // 已经没了。
-        }
-      })
+      const pidFile = `${host.betaRoot}/run/demo.pid`
       return new Checks()
+        .note('执行位置', host.describe)
         .note('stdout', result.stdout)
         .note('stderr', result.stderr)
         .eq(result.exitCode, 0, '退出码')
         .contains(result.stdout, '已启动', 'stdout')
-        .expect(existsSync(pidFile), 'pid 文件存在', pidFile)
+        .expect(await host.exists(pidFile), 'pid 文件存在', pidFile)
         .done('正向对照成立')
     },
   },
@@ -255,18 +196,17 @@ export const launcherScenarios: readonly Scenario[] = [
     title: 'beta-up.sh 尾参能表达 --trust（节点腿）',
     expected: '`-- --trust <节点>=<公钥>` 原样出现在 resident 的命令行末尾',
     requires: ['run-launcher'],
-    timeoutMs: 90_000,
+    timeoutMs: 120_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const argvLog = join(ctx.workdir, 'argv-node.log')
-      const bin = stubBunDir(ctx, argvLog)
-      const betaUp = mirrorRepo(ctx)
-      killStubsOnCleanup(ctx, root)
+      const host = await ctx.driver.launcherHost(ctx)
+      const argvLog = `${host.workdir}/argv-node.log`
+      const bin = await stubBunDir(host, argvLog)
+      killStubsOnCleanup(ctx, host)
 
-      const child = Bun.spawnSync(
+      const child = await host.run(
         [
           '/bin/bash',
-          betaUp,
+          `${host.repoDir}/demo/env/beta/beta-up.sh`,
           '--role',
           'node',
           '--node',
@@ -276,25 +216,22 @@ export const launcherScenarios: readonly Scenario[] = [
           'console=fake-public-key-0123456789',
         ],
         {
-          cwd: REPO_ROOT,
           env: {
-            ...process.env,
+            // 只有假 bun：真 bun 在 ~/.bun/bin，不在这条 PATH 上（见文件头 ②）。
             PATH: `${bin}:/usr/bin:/bin`,
-            QIANMO_BETA_ROOT: root,
+            QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
           },
-          stdout: 'pipe',
-          stderr: 'pipe',
+          timeoutMs: 90_000,
         },
       )
-      const log = existsSync(argvLog)
-        ? Bun.spawnSync(['cat', argvLog]).stdout.toString()
-        : ''
+      const log = (await host.readFile(argvLog)) ?? ''
       return (
         new Checks()
-          .note('beta-up stdout', child.stdout.toString().slice(0, 3_000))
-          .note('beta-up stderr', child.stderr.toString().slice(0, 3_000))
+          .note('执行位置', host.describe)
+          .note('beta-up stdout', child.stdout.slice(0, 3_000))
+          .note('beta-up stderr', child.stderr.slice(0, 3_000))
           .note('截获的命令行', log === '' ? '(没有截到)' : log)
           .expect(log !== '', '截到了 resident 的命令行', log)
           // 尾参必须落在**末尾**：它是 `--` 之后原样附加的，夹在中间说明被
@@ -319,44 +256,51 @@ export const launcherScenarios: readonly Scenario[] = [
     title: 'beta-up.sh 尾参能表达 --wake-sign（控制台腿）',
     expected: '`-- --wake-sign` 原样出现在 console 的命令行末尾',
     requires: ['run-launcher'],
-    timeoutMs: 90_000,
+    timeoutMs: 120_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const argvLog = join(ctx.workdir, 'argv-host.log')
-      const bin = stubBunDir(ctx, argvLog)
-      const betaUp = mirrorRepo(ctx)
-      killStubsOnCleanup(ctx, root)
+      const host = await ctx.driver.launcherHost(ctx)
+      const argvLog = `${host.workdir}/argv-host.log`
+      const bin = await stubBunDir(host, argvLog)
+      killStubsOnCleanup(ctx, host)
       // 控制台腿要求地址表里至少有一条 —— 那是脚本的前置（运维单页第一步），
       // 不是本场景要断言的东西，所以在这里补齐而不是让它 die 在前面。
-      writeFileSync(
-        join(root, 'peers.conf'),
-        'qianmo://beta-acc/planner ws://127.0.0.1:38625\n',
-        { mode: 0o600 },
+      await host.run(
+        [
+          '/bin/bash',
+          '-c',
+          `printf '%s\\n' 'qianmo://beta-acc/planner ws://127.0.0.1:38625' > "$1/peers.conf" && chmod 600 "$1/peers.conf"`,
+          'qianmo-acceptance',
+          host.betaRoot,
+        ],
+        { timeoutMs: 30_000 },
       )
 
-      const child = Bun.spawnSync(
-        ['/bin/bash', betaUp, '--role', 'host', '--', '--wake-sign'],
+      const child = await host.run(
+        [
+          '/bin/bash',
+          `${host.repoDir}/demo/env/beta/beta-up.sh`,
+          '--role',
+          'host',
+          '--',
+          '--wake-sign',
+        ],
         {
-          cwd: REPO_ROOT,
           env: {
-            ...process.env,
             PATH: `${bin}:/usr/bin:/bin`,
-            QIANMO_BETA_ROOT: root,
+            QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
           },
-          stdout: 'pipe',
-          stderr: 'pipe',
+          timeoutMs: 90_000,
         },
       )
-      const log = existsSync(argvLog)
-        ? Bun.spawnSync(['cat', argvLog]).stdout.toString()
-        : ''
+      const log = (await host.readFile(argvLog)) ?? ''
       const consoleLine =
         log.split('\n').find(line => line.includes(' console ')) ?? ''
       return new Checks()
-        .note('beta-up stdout', child.stdout.toString().slice(0, 3_000))
-        .note('beta-up stderr', child.stderr.toString().slice(0, 3_000))
+        .note('执行位置', host.describe)
+        .note('beta-up stdout', child.stdout.slice(0, 3_000))
+        .note('beta-up stderr', child.stderr.slice(0, 3_000))
         .note('截获的命令行', log === '' ? '(没有截到)' : log)
         .expect(log !== '', '截到了命令行', log)
         .expect(consoleLine !== '', '其中有 console 那条', log)
@@ -376,48 +320,49 @@ export const launcherScenarios: readonly Scenario[] = [
     title: 'beta-up.sh --print-wake-identity 走专用路径，不起后台进程',
     expected: 'stdout 只有那一行身份，run/console.pid 不存在',
     requires: ['run-launcher'],
-    timeoutMs: 90_000,
+    timeoutMs: 120_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const argvLog = join(ctx.workdir, 'argv-identity.log')
+      const host = await ctx.driver.launcherHost(ctx)
+      const argvLog = `${host.workdir}/argv-identity.log`
       // 这条的 stub 不能 `sleep`：`--print-wake-identity` 是**同步**取一行，
       // 挂住会让整条场景耗到超时，而超时记的是 `error` 而不是它要证明的事。
-      const bin = stubBunDir(ctx, argvLog, { linger: false })
-      const betaUp = mirrorRepo(ctx)
-      killStubsOnCleanup(ctx, root)
+      const bin = await stubBunDir(host, argvLog, { linger: false })
+      killStubsOnCleanup(ctx, host)
 
-      const child = Bun.spawnSync(
-        ['/bin/bash', betaUp, '--print-wake-identity'],
+      const child = await host.run(
+        [
+          '/bin/bash',
+          `${host.repoDir}/demo/env/beta/beta-up.sh`,
+          '--print-wake-identity',
+        ],
         {
-          cwd: REPO_ROOT,
           env: {
-            ...process.env,
             PATH: `${bin}:/usr/bin:/bin`,
-            QIANMO_BETA_ROOT: root,
+            QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
           },
-          stdout: 'pipe',
-          stderr: 'pipe',
+          timeoutMs: 90_000,
         },
       )
-      const stdout = child.stdout.toString()
-      const stderr = child.stderr.toString()
-      const pidFile = join(root, 'run', 'console.pid')
-      const log = existsSync(argvLog)
-        ? Bun.spawnSync(['cat', argvLog]).stdout.toString()
-        : ''
+      const pidFile = `${host.betaRoot}/run/console.pid`
+      const log = (await host.readFile(argvLog)) ?? ''
       return new Checks()
-        .note('stdout', stdout)
-        .note('stderr', stderr.slice(0, 3_000))
+        .note('执行位置', host.describe)
+        .note('stdout', child.stdout)
+        .note('stderr', child.stderr.slice(0, 3_000))
         .note('截获的命令行', log === '' ? '(没有截到)' : log)
         .expect(log !== '', '截到了命令行', log)
         .contains(log, '--print-wake-identity', '截获的命令行')
         .expect(
-          !existsSync(pidFile),
+          !(await host.exists(pidFile)),
           'run/console.pid 不存在（这条路径不起后台进程）',
           pidFile,
         )
-        .notContains(stdout, '已启动', 'stdout（不该走 beta_start_process）')
+        .notContains(
+          child.stdout,
+          '已启动',
+          'stdout（不该走 beta_start_process）',
+        )
         .done('查身份不是一次启动')
     },
   },
@@ -428,13 +373,13 @@ export const launcherScenarios: readonly Scenario[] = [
     title: 'beta-up.sh 拒绝把 token 放进尾参（命令行会进进程列表）',
     expected: '退出码非零，stderr 说明为什么不能这么传',
     requires: ['run-launcher'],
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
     async run(ctx) {
-      const root = betaRoot(ctx)
-      const child = Bun.spawnSync(
+      const host = await ctx.driver.launcherHost(ctx)
+      const child = await host.run(
         [
           '/bin/bash',
-          BETA_UP,
+          `${host.repoDir}/demo/env/beta/beta-up.sh`,
           '--role',
           'host',
           '--',
@@ -442,22 +387,19 @@ export const launcherScenarios: readonly Scenario[] = [
           'this-should-be-refused',
         ],
         {
-          cwd: REPO_ROOT,
           env: {
-            ...process.env,
             PATH: '/usr/bin:/bin',
-            QIANMO_BETA_ROOT: root,
+            QIANMO_BETA_ROOT: host.betaRoot,
           },
-          stdout: 'pipe',
-          stderr: 'pipe',
+          timeoutMs: 60_000,
         },
       )
-      const stderr = child.stderr.toString()
       return new Checks()
-        .note('stderr', stderr)
-        .expect(child.exitCode !== 0, '退出码非零', child.exitCode)
-        .contains(stderr, '--admin-token', 'stderr')
-        .contains(stderr, '进程列表', 'stderr（要说清为什么）')
+        .note('执行位置', host.describe)
+        .note('stderr', child.stderr)
+        .expect(child.code !== 0, '退出码非零', child.code)
+        .contains(child.stderr, '--admin-token', 'stderr')
+        .contains(child.stderr, '进程列表', 'stderr（要说清为什么）')
         .done('尾参不许夹带 token')
     },
   },

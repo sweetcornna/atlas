@@ -108,7 +108,12 @@ export const multiAgentScenarios: readonly Scenario[] = [
     dimension: 'multi-agent',
     title: '两个 agent 各自收到寄给自己的消息',
     expected: '每个 agent 的信箱里都有一条，且各自开了独立 ACP session',
-    requires: ['spawn-node', 'raw-dial', 'read-node-files'],
+    // `stub-upstream` 是补声明的：`twoAgentRun` 起了一个假上游并 `waitForTurn`
+    // 等两轮走完。少了这一条，真机腿上它会通过能力差集、然后对着一个**在
+    // runner 上**的假上游等 120 s × 2，最后以 `error` 收场 —— 一次因为
+    // `requires` 写漏而红的场景，正是 issue #61 那个形状的另一面。
+    // 真机腿实测出来的，本地腿看不见（那边假上游就在同一台机器上）。
+    requires: ['spawn-node', 'raw-dial', 'read-node-files', 'stub-upstream'],
     timeoutMs: 240_000,
     async run(ctx) {
       const run = await twoAgentRun(ctx)

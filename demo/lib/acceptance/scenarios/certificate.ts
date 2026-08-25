@@ -37,7 +37,6 @@ import { CapabilityLevel } from '@qianmo/protocol'
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { startRegistry } from '../local/console.js'
 import {
   initCa,
   issueCertificate,
@@ -88,7 +87,7 @@ export async function certificateFixture(
   ctx: ScenarioContext,
 ): Promise<CertificateFixture> {
   const ca = await initCa(ctx)
-  const registry = await startRegistry(ctx)
+  const registry = await ctx.driver.startRegistry(ctx)
   return {
     ca,
     registryUrl: registry.url,
