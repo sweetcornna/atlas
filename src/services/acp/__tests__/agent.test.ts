@@ -80,8 +80,12 @@ mockModulePreservingExports('../../../utils/config/config.ts', {
 const mockSwitchSession = mock(() => {})
 
 const mockGetOriginalCwd = mock(() => '/current/working/dir')
+// Kept as a named handle so a suite can wire it to mockGetOriginalCwd and get
+// a process cwd global that actually moves — which is what the issue-#68 tests
+// need in order to fail before the fix. Reset to a no-op in beforeEach.
+const mockSetOriginalCwd = mock((_cwd: string) => {})
 mockModulePreservingExports('../../../bootstrap/state.ts', {
-  setOriginalCwd: mock(() => {}),
+  setOriginalCwd: mockSetOriginalCwd,
   switchSession: mockSwitchSession,
   addSlowOperation: mock(() => {}),
   getOriginalCwd: mockGetOriginalCwd,
@@ -271,6 +275,8 @@ describe('AcpAgent', () => {
     mockListSessionsImpl.mockImplementation(async () => [])
     mockGetOriginalCwd.mockReset()
     mockGetOriginalCwd.mockImplementation(() => '/current/working/dir')
+    mockSetOriginalCwd.mockReset()
+    mockSetOriginalCwd.mockImplementation((_cwd: string) => {})
     mockGetLastSessionLog.mockReset()
     mockGetLastSessionLog.mockImplementation(async () => null)
     mockDoesMessageExistInSession.mockReset()
@@ -1568,6 +1574,175 @@ describe('AcpAgent', () => {
       const res = await agent.listSessions({ cwd: '/p' } as any)
       expect(res.sessions).toHaveLength(1)
       expect(res.sessions[0].sessionId).toBe('with-cwd')
+    })
+
+    // ── issue #68 ────────────────────────────────────────────────
+    //
+    // session/list is a read-only query and does NOT take the workspace lock
+    // — a query waiting behind a streaming turn is the head-of-line blocking
+    // #52 accepted as a cost, and widening it to reads would be worse than
+    // the bug. So it runs BESIDE turns, and the only fix available is for it
+    // to stop reading a value that turns move.
+    //
+    // These tests give the suite a process cwd global that behaves like the
+    // real one — `activateAcpSessionWorkspace()` re-points it at whichever
+    // session is running — because with the default flat mock the bug cannot
+    // express itself at all.
+    describe('cwd fallback under a concurrent turn', () => {
+      /** A moving `getOriginalCwd()`, as the real one is. */
+      function useLiveOriginalCwd(initial: string): () => string {
+        let live = initial
+        mockGetOriginalCwd.mockImplementation(() => live)
+        mockSetOriginalCwd.mockImplementation((cwd: string) => {
+          live = cwd
+        })
+        return () => live
+      }
+
+      /** Let the microtask queue drain a few times over. */
+      async function settle(): Promise<void> {
+        for (let i = 0; i < 20; i++) await Promise.resolve()
+      }
+
+      /**
+       * Run `body` while a turn for `sessionId` is parked mid-stream.
+       *
+       * The release is in a `finally` on purpose: a turn holds the workspace
+       * lock, so an assertion that throws before releasing would leave the
+       * lock held for the rest of the file and time out every later test that
+       * takes it. A failing test here must fail alone.
+       */
+      async function duringParkedTurn<T>(
+        agent: InstanceType<typeof AcpAgent>,
+        sessionId: string,
+        body: () => Promise<T>,
+      ): Promise<T> {
+        let release!: () => void
+        const streaming = new Promise<void>(resolve => {
+          release = resolve
+        })
+        ;(
+          forwardSessionUpdates as ReturnType<typeof mock>
+        ).mockImplementationOnce(async () => {
+          await streaming
+          return { stopReason: 'end_turn' as const }
+        })
+        const turn = agent.prompt({
+          sessionId,
+          prompt: [{ type: 'text', text: 'a long task' }],
+        } as any)
+        await settle()
+        try {
+          return await body()
+        } finally {
+          release()
+          await turn
+        }
+      }
+
+      test('another session’s running turn does not decide what session/list filters by', async () => {
+        const liveCwd = useLiveOriginalCwd('/spawn/dir')
+        const agent = new AcpAgent(makeConn())
+        const alpha = await agent.newSession({ cwd: '/ws/alpha' } as any)
+        await agent.newSession({ cwd: '/ws/beta' } as any)
+
+        // Nothing running: the workspace the client last opened.
+        mockListSessionsImpl.mockClear()
+        await agent.listSessions({} as any)
+        expect(mockListSessionsImpl).toHaveBeenCalledWith({ dir: '/ws/beta' })
+
+        await duringParkedTurn(agent, alpha.sessionId, async () => {
+          // The turn really did move the global — otherwise the assertion
+          // below would pass for the wrong reason.
+          expect(liveCwd()).toBe('/ws/alpha')
+
+          mockListSessionsImpl.mockClear()
+          await agent.listSessions({} as any)
+          // Before the fix: '/ws/alpha'. The client asked about the workspace
+          // it has open and got the one that happened to be mid-turn.
+          expect(mockListSessionsImpl).toHaveBeenCalledWith({ dir: '/ws/beta' })
+        })
+      })
+
+      test('the answer is the same before, during and after a turn', async () => {
+        useLiveOriginalCwd('/spawn/dir')
+        const agent = new AcpAgent(makeConn())
+        const alpha = await agent.newSession({ cwd: '/ws/alpha' } as any)
+        await agent.newSession({ cwd: '/ws/beta' } as any)
+
+        const dirsSeen: unknown[] = []
+        const record = async () => {
+          mockListSessionsImpl.mockClear()
+          await agent.listSessions({} as any)
+          dirsSeen.push(
+            (mockListSessionsImpl as ReturnType<typeof mock>).mock
+              .calls[0]?.[0],
+          )
+        }
+
+        await record()
+        await duringParkedTurn(agent, alpha.sessionId, record)
+        await record()
+
+        // Idempotence is the property that was missing: a read-only query
+        // must not answer differently because something else is running.
+        expect(dirsSeen).toEqual([
+          { dir: '/ws/beta' },
+          { dir: '/ws/beta' },
+          { dir: '/ws/beta' },
+        ])
+      })
+
+      test('falls back to the spawn cwd before any session is opened', async () => {
+        // The usual first call: a client lists past threads to populate its
+        // picker before it opens anything. Unchanged by this fix.
+        useLiveOriginalCwd('/spawn/dir')
+        const agent = new AcpAgent(makeConn())
+        mockListSessionsImpl.mockClear()
+        await agent.listSessions({} as any)
+        expect(mockListSessionsImpl).toHaveBeenCalledWith({ dir: '/spawn/dir' })
+      })
+
+      test('an explicit cwd still wins over everything', async () => {
+        useLiveOriginalCwd('/spawn/dir')
+        const agent = new AcpAgent(makeConn())
+        const alpha = await agent.newSession({ cwd: '/ws/alpha' } as any)
+        await agent.newSession({ cwd: '/ws/beta' } as any)
+
+        await duringParkedTurn(agent, alpha.sessionId, async () => {
+          mockListSessionsImpl.mockClear()
+          await agent.listSessions({ cwd: '/ws/gamma' } as any)
+          expect(mockListSessionsImpl).toHaveBeenCalledWith({
+            dir: '/ws/gamma',
+          })
+        })
+      })
+
+      test('session/load re-points the fallback, a turn never does', async () => {
+        useLiveOriginalCwd('/spawn/dir')
+        const agent = new AcpAgent(makeConn())
+        const beta = await agent.newSession({ cwd: '/ws/beta' } as any)
+
+        // The client says which workspace it is on by opening a session in
+        // it. That — and only that — moves the fallback.
+        await agent.loadSession({
+          sessionId: 'load-target-session-id',
+          cwd: '/ws/alpha',
+          mcpServers: [],
+        } as any)
+        mockListSessionsImpl.mockClear()
+        await agent.listSessions({} as any)
+        expect(mockListSessionsImpl).toHaveBeenCalledWith({ dir: '/ws/alpha' })
+
+        // A turn for a session in a different workspace leaves it alone —
+        // during the turn and, just as importantly, after it: the drift the
+        // old fallback picked up outlived the turn that caused it.
+        await duringParkedTurn(agent, beta.sessionId, async () => {})
+
+        mockListSessionsImpl.mockClear()
+        await agent.listSessions({} as any)
+        expect(mockListSessionsImpl).toHaveBeenCalledWith({ dir: '/ws/alpha' })
+      })
     })
   })
 
