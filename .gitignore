@@ -76,3 +76,8 @@ scripts/system-prompt-dump.txt
 # tests/integration/fixtures 等各处手工维护的同名目录。确实需要入库的卡带用
 # `git add -f` 显式带入 —— 现有的 fixtures/token-count-*.json 就是这样进库的。
 /fixtures/
+
+# scripts/test-shards.sh 每个分片的 JUnit XML（用例名 + 逐条耗时）。每次跑都会
+# 先整个清掉再重建，本地跑一次就有 62 个文件——留档靠 CI 的 artifact，不入库。
+# 锚定到根目录：脚本只往仓库根的这一处写。
+/test-reports/

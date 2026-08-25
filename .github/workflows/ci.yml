@@ -86,6 +86,24 @@ jobs:
       - name: Test with Coverage (sharded per directory)
         run: ./scripts/test-shards.sh --coverage
 
+      # 每个分片一份 JUnit XML：用例名 + 逐条耗时。`always()` —— 红的那次才最
+      # 需要它，而这恰恰是上一步非零退出、后续步骤全被跳过的那一次。issue #56
+      # 偶发红了 24 次，用例名一次都没留下来；普通 stdout 里每条用例的耗时根本
+      # 不打，而「中位数 459 ms 的用例跑了 6034 ms」正是那条线索的起点。
+      #
+      # 产物里只有用例名、文件路径、耗时和失败断言的文本，没有凭据。
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          # 与 acceptance-local 同一形态：artifact 名在 v4+ 是唯一键，重跑同一个
+          # run 时只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑正是红了
+          # 之后最常做的动作，也正是要拿两次现场做对照的时候。
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-reports
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Check coverage artifact
         run: |
           test -s coverage/lcov.info

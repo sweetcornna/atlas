@@ -21,6 +21,7 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { invokedBinName } from '../../constants/brand.js'
+import { sourceCommit } from '../../constants/buildProvenance.js'
 import {
   resolveTokens,
   startConsoleServer,
@@ -448,6 +449,19 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     banner += field('chat-store', config.chatStorePath)
   }
   banner += field('label', config.label)
+  // 这份产物是从哪个 commit 构建的（issue #70）。控制台和常驻节点一样是**部署到
+  // 舰队上的产物**：那棵树没有 `.git`，`dist/` 的几百个 chunk 里找不到 SHA，入口
+  // 里唯一的版本串是基座的发布线——本 fork 每个提交上都一模一样。所以在这一行
+  // 之前，一台机器上跑着的控制台答不出自己是哪一版。构建拿不到时是 `'unknown'`，
+  // 那是要照直打出来的事实，不是留给读者拿自己的 HEAD 去填的空。
+  //
+  // 键名 `sourceCommit` 与值的形态（全 40 位 SHA / `-dirty` / `'unknown'`）跟
+  // 常驻侧启动行**逐字对齐**，尽管这一面其他字段是 kebab-case：两处拼写一旦分叉，
+  // 读 banner 的那一侧就得为同一个事实写两套解析。对齐的是常驻侧，不是本地风格。
+  //
+  // 排在 `label` 之后：banner 头上那几行（origin / open / token）是运维要复制粘贴
+  // 的动作面，而「哪个部署、哪个构建」是同一类身份事实，放一起读。
+  banner += field('sourceCommit', sourceCommit())
   process.stdout.write(banner)
 
   const stop = (): void => {

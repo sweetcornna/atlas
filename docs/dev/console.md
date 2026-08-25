@@ -84,13 +84,22 @@ open         http://127.0.0.1:38613/?token=Zk3q…（32 字符）
 view-token   Zk3q…
 admin-token  9pR7…
 registry     http://127.0.0.1:38610
-audit-trail  /Users/you/.qianmo/qianmo/audit/trail.ndjson
+audit-trails default=/Users/you/.qianmo/qianmo/audit/trail.ndjson
 wake         disabled (no --wake-url)
 chat         disabled (no --chat-url)
 label        127.0.0.1:38613
+sourceCommit 4c6bedeae5138fda82b90b81b3ebce20917734db
 ```
 
 `open` 那一行是可以直接点开的——token 就在查询串里。
+
+**`sourceCommit` 是这份产物的来源 commit**（issue #70），40 位全 SHA，工作树脏时带
+`-dirty` 后缀。舰队上的部署树没有 `.git`、`dist/` 的几百个 chunk 里找不到 SHA、入口里
+唯一的版本串是基座的发布线（本 fork 每个提交上都一样）——没有这一行，一台机器上跑着
+的控制台答不出自己是哪一版。构建时拿不到就打 `unknown`，那是照直说的事实，不要拿读
+的人自己那棵树的 HEAD 去填。**键名与值的形态和常驻节点启动行里那一个字字对齐**（`qm
+resident` 的 JSON banner 里也叫 `sourceCommit`），两处分叉的话读 banner 的一侧就得写
+两套解析。
 
 **`view-token` / `admin-token` 两行总是打，但打的东西不是一回事**：自动生成的打
 **值**（除了这一行没有第二个地方拿得到它），显式提供的打**出处**——
