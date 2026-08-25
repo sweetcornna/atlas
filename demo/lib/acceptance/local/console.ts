@@ -237,6 +237,14 @@ function wakePskEnvVar(node: string): string {
 const VIEW_TOKEN_LINE = /^view-token\s+(\S+)/m
 const ADMIN_TOKEN_LINE = /^admin-token\s+(\S+)/m
 
+/**
+ * 一次性控制台「起来了没有」的等待基准（banner 落地 + `/v0/health` 答 200）。
+ *
+ * 用它的地方一律乘 `ctx.timeoutScale`，纪律与理由见 `./driver.ts` 顶部
+ * `NODE_READY_BUDGET_MS` 上面那段（issue #91 ①）—— 一份倍率、一个出处。
+ */
+const CONSOLE_READY_BUDGET_MS = 40_000
+
 export async function startConsole(
   ctx: ScenarioContext,
   configRoot: string,
@@ -255,13 +263,13 @@ export async function startConsole(
 
   const url = `http://127.0.0.1:${port}`
   await waitFor(() => proc.stdout().includes('admin-token'), {
-    timeoutMs: 40_000,
+    timeoutMs: CONSOLE_READY_BUDGET_MS * ctx.timeoutScale,
     what: '控制台的启动 banner',
     diagnose: () => `stdout:\n${proc.stdout()}\nstderr:\n${proc.stderr()}`,
     signal: ctx.signal,
   })
   await waitFor(async () => (await http(`${url}/v0/health`)).status === 200, {
-    timeoutMs: 40_000,
+    timeoutMs: CONSOLE_READY_BUDGET_MS * ctx.timeoutScale,
     stepMs: 150,
     what: '控制台的 /v0/health',
     diagnose: () => `stderr:\n${proc.stderr()}`,
