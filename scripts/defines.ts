@@ -1,13 +1,84 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const pkgPath = resolve(__dirname, '..', 'package.json')
+const repoRoot = resolve(__dirname, '..')
+const pkgPath = resolve(repoRoot, 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
 
 /** occ's own issue tracker. Kept in sync with PRODUCT_URL in src/constants/product.ts. */
 const ISSUES_URL = 'https://github.com/sweetcornna/open-claude-code/issues'
+
+/**
+ * What MACRO.SOURCE_COMMIT says when the build could not establish one.
+ *
+ * Mirrored by UNKNOWN_SOURCE_COMMIT in src/constants/buildProvenance.ts — the
+ * two ends of the same define. Spelled here rather than imported from there
+ * because this file feeds Vite's `define` and must not drag `src/` into the
+ * build config's module graph.
+ */
+const UNKNOWN_SOURCE_COMMIT = 'unknown'
+
+/**
+ * `git <args>` run in `cwd`, or `null` if git could not answer.
+ *
+ * Never throws and never inherits stdio: a build inside a clean tarball, a
+ * Docker layer without git installed, or an unborn branch must still produce a
+ * bundle. Every one of those cases funnels into `null`, which the caller turns
+ * into the explicit "unknown" marker rather than a silent empty string.
+ */
+function gitOutput(args: readonly string[], cwd: string): string | null {
+  try {
+    const result = spawnSync('git', [...args], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    if (result.error || result.status !== 0) return null
+    return typeof result.stdout === 'string' ? result.stdout.trim() : null
+  } catch {
+    return null
+  }
+}
+
+let cachedSourceCommit: string | undefined
+
+/**
+ * The commit this bundle was built from, with a `-dirty` suffix whenever the
+ * working tree carried anything git would report.
+ *
+ * The suffix is not decoration. Fleet artifacts are routinely built from a
+ * working tree that is ahead of (or beside) its commit, and a bare SHA on such
+ * a build claims a provenance the bytes do not have — which is issue #70 in
+ * miniature. Untracked files count too: an unstaged `.ts` under `src/` is
+ * compiled into the bundle exactly like a tracked one.
+ *
+ * Conservative in one more place: if HEAD resolves but `git status` does not,
+ * the result is marked dirty. "Cannot tell" must never render as "clean".
+ *
+ * Memoized for the repo root because both callers (`scripts/dev.ts`,
+ * `vite.config.ts`) may ask more than once per process and each miss costs two
+ * subprocesses. `cwd` exists so the three states above can be exercised
+ * against throwaway trees instead of only against whatever the developer's
+ * checkout happens to be in — the argument-less call is the product path.
+ */
+export function resolveSourceCommit(cwd: string = repoRoot): string {
+  if (cwd === repoRoot && cachedSourceCommit !== undefined) {
+    return cachedSourceCommit
+  }
+  const resolved = measureSourceCommit(cwd)
+  if (cwd === repoRoot) cachedSourceCommit = resolved
+  return resolved
+}
+
+function measureSourceCommit(cwd: string): string {
+  const head = gitOutput(['rev-parse', 'HEAD'], cwd)
+  if (!head) return UNKNOWN_SOURCE_COMMIT
+  const status = gitOutput(['status', '--porcelain'], cwd)
+  return status === null || status.length > 0 ? `${head}-dirty` : head
+}
 
 /**
  * Shared MACRO define map used by both dev.ts (runtime -d flags)
@@ -17,11 +88,19 @@ const ISSUES_URL = 'https://github.com/sweetcornna/open-claude-code/issues'
  * corresponding MACRO.* identifier at transpile / bundle time.
  *
  * VERSION is read from package.json to avoid version drift.
+ *
+ * SOURCE_COMMIT is read from git for the same reason one level down: VERSION
+ * is identical on every commit of this fork (it tracks the base's release
+ * line), so it answers "which upstream did this come from" and nothing about
+ * *our* code. SOURCE_COMMIT is the only field in a shipped bundle that
+ * identifies the source it was built from — see issue #70, where a deployed
+ * fleet artifact turned out to carry no provenance marker at all.
  */
 export function getMacroDefines(): Record<string, string> {
   return {
     'MACRO.VERSION': JSON.stringify(pkg.version),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+    'MACRO.SOURCE_COMMIT': JSON.stringify(resolveSourceCommit()),
     // Both of these are interpolated into user-facing sentences that read as
     // truncated when empty — the system prompt's "To give feedback, users
     // should ${ISSUES_EXPLAINER}" and auth.ts's "post in ${FEEDBACK_CHANNEL}".

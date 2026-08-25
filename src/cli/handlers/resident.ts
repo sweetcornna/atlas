@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { invokedBinName } from '../../constants/brand.js'
+import { sourceCommit } from '../../constants/buildProvenance.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
 import { QianmoResident } from '../../services/qianmo/resident.js'
 import {
@@ -1691,6 +1692,14 @@ export async function runResident(args: readonly string[]): Promise<void> {
   process.stdout.write(
     `${JSON.stringify({
       node: config.node,
+      // Which source this binary was built from (issue #70). The deployment
+      // tree on a fleet machine has no `.git` and `MACRO.VERSION` is the
+      // base's release line — identical on every commit of this fork — so
+      // without this field nothing on the far end of an acceptance run can
+      // say *what* it just tested. `'unknown'` when the build could not
+      // establish one; that is a fact worth printing, not a hole to backfill
+      // with the reader's own HEAD.
+      sourceCommit: sourceCommit(),
       publicKey: keys.publicKey,
       requireSignedTasks: config.requireSignedTasks,
       auditSignedTasks: config.auditSignedTasks,

@@ -1,5 +1,14 @@
-import { describe, expect, test } from 'bun:test'
-import { DEFAULT_BUILD_FEATURES, resolveBuildFeatures } from '../defines.ts'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  DEFAULT_BUILD_FEATURES,
+  getMacroDefines,
+  resolveBuildFeatures,
+  resolveSourceCommit,
+} from '../defines.ts'
 
 const DEFAULT_FEATURE = DEFAULT_BUILD_FEATURES[0]
 const NON_DEFAULT_FEATURE = 'TEST_ONLY_FEATURE'
@@ -50,5 +59,102 @@ describe('resolveBuildFeatures', () => {
 
     expect(features.has('')).toBe(false)
     expect(features).toEqual(new Set(DEFAULT_BUILD_FEATURES))
+  })
+})
+
+/**
+ * Throwaway trees for the provenance probe.
+ *
+ * Real `git init` rather than a stub: what is under test is precisely what
+ * git answers in each of the three states, and a stubbed `spawnSync` would
+ * only assert that the code calls the arguments the test already assumed.
+ * Under `tmpdir()` so no ancestor is a repository — the ".git-less" case has
+ * to actually have no repository above it, or `rev-parse` walks up and finds
+ * one.
+ */
+const scratchDirs: string[] = []
+
+function scratch(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'occ-provenance-'))
+  scratchDirs.push(dir)
+  return dir
+}
+
+function git(dir: string, ...args: string[]): void {
+  const result = spawnSync('git', args, {
+    cwd: dir,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.invalid',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.invalid',
+    },
+  })
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
+  }
+}
+
+function committedRepo(): string {
+  const dir = scratch()
+  git(dir, 'init', '--quiet')
+  writeFileSync(join(dir, 'a.txt'), 'one\n')
+  git(dir, 'add', 'a.txt')
+  git(dir, 'commit', '--quiet', '-m', 'one')
+  return dir
+}
+
+afterAll(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('resolveSourceCommit', () => {
+  test('a clean tree reports the bare 40-char HEAD', () => {
+    const commit = resolveSourceCommit(committedRepo())
+
+    expect(commit).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  test('a modified tracked file makes it -dirty', () => {
+    const dir = committedRepo()
+    writeFileSync(join(dir, 'a.txt'), 'two\n')
+
+    expect(resolveSourceCommit(dir)).toMatch(/^[0-9a-f]{40}-dirty$/)
+  })
+
+  test('an untracked file makes it -dirty too', () => {
+    // Untracked is not cosmetic: a new .ts under src/ that has not been
+    // `git add`ed is bundled exactly like a tracked one, so a bare SHA there
+    // would name a commit that does not contain the shipped code.
+    const dir = committedRepo()
+    writeFileSync(join(dir, 'b.txt'), 'new\n')
+
+    expect(resolveSourceCommit(dir)).toMatch(/^[0-9a-f]{40}-dirty$/)
+  })
+
+  test('a directory with no repository reports unknown, without throwing', () => {
+    expect(resolveSourceCommit(scratch())).toBe('unknown')
+  })
+
+  test('a repository with no commits reports unknown', () => {
+    const dir = scratch()
+    git(dir, 'init', '--quiet')
+
+    expect(resolveSourceCommit(dir)).toBe('unknown')
+  })
+})
+
+describe('getMacroDefines', () => {
+  test('ships SOURCE_COMMIT as a JSON string literal', () => {
+    const value = getMacroDefines()['MACRO.SOURCE_COMMIT']
+
+    expect(value).toBeDefined()
+    // JSON-stringified, like every other entry: the map is fed to Vite's
+    // `define`, which substitutes the text verbatim.
+    expect(JSON.parse(value as string)).toMatch(
+      /^([0-9a-f]{40}(-dirty)?|unknown)$/,
+    )
   })
 })

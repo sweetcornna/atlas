@@ -9,6 +9,13 @@
 declare namespace MACRO {
   export const VERSION: string
   export const BUILD_TIME: string
+  /**
+   * Source commit this bundle was built from, `-dirty` when the working tree
+   * was not clean, `'unknown'` when git could not answer. Read it through
+   * src/constants/buildProvenance.ts — reaching for MACRO directly throws
+   * outside a bundled/`-d`-injected run.
+   */
+  export const SOURCE_COMMIT: string
   export const FEEDBACK_CHANNEL: string
   export const ISSUES_EXPLAINER: string
   export const NATIVE_PACKAGE_URL: string
