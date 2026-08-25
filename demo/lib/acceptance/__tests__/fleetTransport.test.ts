@@ -1082,5 +1082,15 @@ describe('结构棘轮：不许再出现第 35 个裸 #ssh 调用点', () => {
     expect(rows).toHaveLength(34)
     // 编号连续 —— 缺一条就是漏了一个调用点。
     expect(rows).toEqual(Array.from({ length: 34 }, (_, i) => i + 1))
+
+    // **表的行数必须等于真实调用点数。**上面两条只证明「表自己是完整的
+    // 1..34」，一张停在 2026-08 的表照样能通过 —— 而这条 issue 的病根恰恰是
+    // 「有个调用点没人看过」。所以再钉一次真实计数：新加一个 `#read` / `#once`
+    // / `#diag` 而不往表里补一行，这里就红。
+    const used = ['#read(', '#once(', '#diag('].reduce(
+      (n, w) => n + source.split(`this.${w}`).length - 1,
+      0,
+    )
+    expect(used).toBe(rows.length)
   }, 60_000)
 })
