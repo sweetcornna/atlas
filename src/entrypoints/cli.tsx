@@ -7,19 +7,18 @@ import { feature } from 'bun:bundle';
 import { BIN_NAME, DISPLAY_NAME } from '../constants/brand.js';
 import { isEnvTruthy } from '../utils/config/envUtils.js';
 
-// Runtime fallback for MACRO.* when not injected by build/dev defines.
-// This happens when running cli.tsx directly (not via `bun run dev` or built dist/).
-if (typeof globalThis.MACRO === 'undefined') {
-  (globalThis as any).MACRO = {
-    VERSION: process.env.CLAUDE_CODE_VERSION || '2.1.888',
-    BUILD_TIME: new Date().toISOString(),
-    FEEDBACK_CHANNEL: '',
-    ISSUES_EXPLAINER: '',
-    NATIVE_PACKAGE_URL: '',
-    PACKAGE_URL: '',
-    VERSION_CHANGELOG: '',
-  };
-}
+// There is deliberately no `globalThis.MACRO` fallback here. `MACRO.*` is a
+// transpile-time substitution, so a source run has to pass the defines itself
+// (`macroDefineArgs()` in scripts/defines.ts — dev.ts, the golden CLI suite and
+// the acceptance driver all do). A fallback looks like the kind thing to
+// install, and it is how issue #81 happened: a hand-written second copy of the
+// values that kept Anthropic's empty `ISSUES_EXPLAINER` and `FEEDBACK_CHANNEL`
+// long after this fork filled them in, never grew the `SOURCE_COMMIT` field
+// added later, and pinned VERSION at a placeholder — so every source run told
+// the model "To give feedback, users should " and stopped mid-sentence. Nothing
+// reported it because the object was there and the reads succeeded. Without it
+// the first `MACRO` read throws, which is a launcher missing its flags saying
+// so at once instead of shipping a half-empty prompt.
 
 if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_INTERACTIVE)) {
   for (const stream of [process.stdin, process.stdout, process.stderr]) {

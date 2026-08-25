@@ -83,7 +83,7 @@ Every step is the model's own decision — which tool to use, what arguments to 
 
 ## Anatomy of startup
 
-The real entry point is `src/entrypoints/cli.tsx`, which does three things that matter:
+The real entry point is `src/entrypoints/cli.tsx`, which does two things that matter:
 
 ```typescript
 // 1. First import: the performance shim (replaces globalThis.performance)
@@ -92,13 +92,13 @@ import '../utils/performanceShim.js';
 // 2. feature() comes from bun:bundle — its value is resolved at compile time
 //    by the build or by dev defines
 import { feature } from 'bun:bundle';
-
-// 3. Runtime fallback for the MACRO globals, used when cli.tsx runs directly
-//    without the dev/dist injection
-if (typeof globalThis.MACRO === 'undefined') {
-  globalThis.MACRO = { VERSION: "2.1.888", BUILD_TIME: ..., };
-}
 ```
+
+**The absence of a runtime fallback for the MACRO globals is deliberate.**
+`MACRO.*` is a transpile-time substitution, so a process running the source has
+to pass the defines itself (`macroDefineArgs()` in `scripts/defines.ts`).
+Without them the first read throws, rather than handing back a hand-written
+copy of the values that drifts silently.
 
 Control then passes to `src/main.tsx`, which:
 

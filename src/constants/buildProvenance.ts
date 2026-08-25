@@ -59,10 +59,11 @@ export function sourceCommit(): string {
  * substituted" in a bundle where the substitution plainly happened. Three
  * call sites wrote it that way (transcript entries, `doctor`, the Sentry
  * release tag) and were saved only by an accident of load order —
- * `entrypoints/cli.tsx` installs a `globalThis.MACRO` fallback, and everything
- * that happened to be loaded *after* the entry body therefore found the guard
- * true. Anything pulled into the entry's static import graph would not have
- * been. `scripts/check-macro-guards.ts` now fails the build on that spelling.
+ * `entrypoints/cli.tsx` used to install a `globalThis.MACRO` fallback, so
+ * everything loaded *after* the entry body found the guard true. Anything
+ * pulled into the entry's static import graph would not have been, and the
+ * fallback itself is gone since issue #81. `scripts/check-macro-guards.ts`
+ * fails the build on that spelling.
  *
  * `undefined` rather than `'unknown'`: the callers disagree about what a
  * missing version should look like — a transcript field wants the word, a

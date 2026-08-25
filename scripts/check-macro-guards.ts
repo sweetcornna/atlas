@@ -19,9 +19,10 @@
  * because under `bun test` MACRO is genuinely absent and the fallback branch
  * is genuinely correct — the tests and the artifact disagree about which
  * branch is live, and only the artifact ships. Three of the four were then
- * saved by luck: `entrypoints/cli.tsx` installs a `globalThis.MACRO` fallback
- * before it loads anything lazily, so late-loading modules found the guard
- * true. Anything in the entry's static import graph would not have.
+ * saved by luck: `entrypoints/cli.tsx` used to install a `globalThis.MACRO`
+ * fallback before it loaded anything lazily, so late-loading modules found the
+ * guard true. Anything in the entry's static import graph would not have — and
+ * that fallback is gone since issue #81, which is what it was hiding.
  *
  * The spelling that works on both sides is `try`/`catch`, because it does not
  * ask a question at all — substituted, the body is a literal; unsubstituted,
@@ -63,9 +64,9 @@ const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts']
  * `typeof MACRO`, with or without the parenthesised call-looking form.
  *
  * Deliberately does NOT match `typeof globalThis.MACRO`: that one reads a real
- * property of a real object and is how `entrypoints/cli.tsx` decides whether
- * to install its fallback — the only correct question anyone asks about MACRO
- * at runtime.
+ * property of a real object, which is the only correct question anyone asks
+ * about MACRO at runtime. Roughly fifteen test files ask it before installing
+ * their own MACRO, since `bun test` substitutes nothing.
  *
  * This file is not exempt from its own rule and does not need to be: the
  * pattern below is a regex literal, so the character after `typeof` in it is a

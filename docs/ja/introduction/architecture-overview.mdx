@@ -115,7 +115,7 @@ API クライアントは 7 種の provider に対応します。
 
 | エントリ | ファイル | 説明 |
 |---------|---------|------|
-| CLI 起動 | `src/entrypoints/cli.tsx` | `bun:bundle` から `feature()` を import（値はビルドまたは dev defines によりコンパイル時に解決）し、MACRO グローバル変数の実行時フォールバックを提供する（`cli.tsx:11-21`） |
+| CLI 起動 | `src/entrypoints/cli.tsx` | `bun:bundle` から `feature()` を import（値はビルドまたは dev defines によりコンパイル時に解決）する。**MACRO グローバル変数の実行時フォールバックは存在しない**：`MACRO.*` はトランスパイル時の置換なので、ソースを直接実行するプロセスは `-d` で defines を自分で渡す必要があり（`scripts/defines.ts` の `macroDefineArgs()`）、渡さなければ最初の読み取りで例外になる |
 | コマンド定義 | `src/main.tsx` | Commander.js が引数を解析し、認証 / analytics / policy を初期化する |
 | 一度きりの初期化 | `src/entrypoints/init.ts` | テレメトリ設定、信頼ダイアログ |
 | パイプモード | `src/main.tsx` の `-p` フラグ | `echo "say hello" \| bun run dev -p` |
