@@ -83,7 +83,7 @@ Claude Code は、**ローカルのターミナル上で動作するエージェ
 
 ## 起動処理の内訳
 
-実際のエントリポイントは `src/entrypoints/cli.tsx` で、重要なことを 3 つ行います。
+実際のエントリポイントは `src/entrypoints/cli.tsx` で、重要なことを 2 つ行います。
 
 ```typescript
 // 1. 最初の import: performance shim（globalThis.performance を置き換える）
@@ -92,13 +92,13 @@ import '../utils/performanceShim.js';
 // 2. feature() は bun:bundle から取得する。値はビルドまたは dev defines により
 //    コンパイル時に解決される
 import { feature } from 'bun:bundle';
-
-// 3. MACRO グローバル変数の実行時フォールバック。dev/dist の注入を経ずに
-//    cli.tsx を直接実行した場合に使われる
-if (typeof globalThis.MACRO === 'undefined') {
-  globalThis.MACRO = { VERSION: "2.1.888", BUILD_TIME: ..., };
-}
 ```
+
+**MACRO グローバル変数の実行時フォールバックが無いのは意図的です。**`MACRO.*`
+はトランスパイル時の置換であり、ソースを直接実行するプロセスは defines を自分で
+渡す必要があります（`scripts/defines.ts` の `macroDefineArgs()`）。渡さなければ
+最初の読み取りで例外になります——黙って値がずれていく手書きの複製を返すのでは
+なく。
 
 その後、制御は `src/main.tsx` に渡ります。
 

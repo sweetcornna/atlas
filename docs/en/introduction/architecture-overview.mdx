@@ -115,7 +115,7 @@ The API client supports seven providers:
 
 | Entry | File | Notes |
 |-------|------|-------|
-| CLI startup | `src/entrypoints/cli.tsx` | Imports `feature()` from `bun:bundle` (resolved at compile time by the build or dev defines) and provides the runtime fallback for the MACRO globals (`cli.tsx:11-21`) |
+| CLI startup | `src/entrypoints/cli.tsx` | Imports `feature()` from `bun:bundle` (resolved at compile time by the build or dev defines). **There is no runtime fallback for the MACRO globals**: `MACRO.*` is a transpile-time substitution, so a process running the source has to pass the defines itself with `-d` (`macroDefineArgs()` in `scripts/defines.ts`); without them the first read throws |
 | Command definitions | `src/main.tsx` | Commander.js parses arguments and initializes auth, analytics, and policy |
 | One-time initialization | `src/entrypoints/init.ts` | Telemetry configuration, trust dialog |
 | Pipe mode | `-p` flag in `src/main.tsx` | `echo "say hello" \| bun run dev -p` |

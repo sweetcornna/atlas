@@ -67,7 +67,7 @@ Schema 定义在 `src/utils/settings/types.ts:550`（`statusLine` Zod object）�
 | `session_name` | `getCurrentSessionTitle(sessionId)` | 用户命名的会话标题（可选） |
 | `model.id` / `model.display_name` | `getRuntimeMainLoopModel()` | 运行时真实模型（经 permission mode 降级/200k 升级） |
 | `workspace.current_dir` / `project_dir` / `added_dirs` | `getCwd()` / `getOriginalCwd()` / permission context | current_dir 随 `cd` 变化 |
-| `version` | `MACRO.VERSION` | 构建注入，如 `2.1.888` |
+| `version` | `MACRO.VERSION` | 构建 / dev defines 在转译期注入的 `package.json` 版本号，如 `2.46.0`。曾写作 `2.1.888`，那恰恰是**没有**被注入时的兜底占位值，而那份兜底已随 #81 删除 |
 | `output_style.name` | `settings.outputStyle` | 缺省 `DEFAULT_OUTPUT_STYLE_NAME` |
 | `cost.total_cost_usd` / `total_duration_ms` / `total_api_duration_ms` / `total_lines_added` / `total_lines_removed` | `cost-tracker.js` 聚合 | 会话累计 |
 | `context_window.total_input_tokens` / `total_output_tokens` | 同上 | 累计 token |

@@ -12,6 +12,7 @@ import {
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { macroDefineArgs } from './defines.ts'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
 const RESULT_SCHEMA = 'qianmo.p32.task-result.v1'
@@ -795,10 +796,14 @@ async function runTask(
     `Allowed production files: ${spec.allowedFiles.join(', ')}`,
     `Protected regression files: ${spec.protectedFiles.join(', ')}`,
   ].join('\n')
+  // `-d MACRO.*`: the entrypoint is source, and `MACRO.*` only exists after a
+  // transpile-time substitution. Without the flags the first read throws
+  // (issue #81).
   const agent = await runAsync(
     [
       'bun',
       'run',
+      ...macroDefineArgs(),
       join(REPO_ROOT, 'src/entrypoints/cli.tsx'),
       '-p',
       prompt,

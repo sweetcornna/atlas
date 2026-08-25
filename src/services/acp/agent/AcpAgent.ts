@@ -173,9 +173,9 @@ export class AcpAgent implements Agent {
         title: 'Claude Code',
         // buildVersion() reads the substituted `MACRO.VERSION`. Reading
         // `globalThis.MACRO` instead (issue #79) found the fallback object
-        // that entrypoints/cli.tsx installs and reported its dev placeholder
-        // `2.1.888` to every editor. '0.0.0' stays because ACP requires
-        // agentInfo.version to be a string.
+        // entrypoints/cli.tsx used to install and reported its dev placeholder
+        // `2.1.888` to every editor; that fallback is gone (issue #81).
+        // '0.0.0' stays because ACP requires agentInfo.version to be a string.
         version: buildVersion() ?? '0.0.0',
       },
       agentCapabilities: {

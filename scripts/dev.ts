@@ -6,7 +6,7 @@
  */
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getMacroDefines, resolveBuildFeatures } from './defines.ts'
+import { macroDefineArgs, resolveBuildFeatures } from './defines.ts'
 
 // Resolve project root from this script's location
 const __filename = fileURLToPath(import.meta.url)
@@ -14,18 +14,14 @@ const __dirname = dirname(__filename)
 const projectRoot = join(__dirname, '..')
 const cliPath = join(projectRoot, 'src/entrypoints/cli.tsx')
 
-const defines = {
-  ...getMacroDefines(),
+const defineArgs = [
+  ...macroDefineArgs(),
   // React production mode — prevents 6,889+ _debugStack Error objects
   // (12MB) from accumulating during long-running sessions.
   // dev 模式使用 development 模式
-  'process.env.NODE_ENV': JSON.stringify('production'),
-}
-
-const defineArgs = Object.entries(defines).flatMap(([k, v]) => [
   '-d',
-  `${k}:${v}`,
-])
+  `process.env.NODE_ENV:${JSON.stringify('production')}`,
+]
 
 // Bun --feature flags: enable feature() gates at runtime.
 // Defaults from DEFAULT_BUILD_FEATURES, overridden per-flag by FEATURE_<NAME>:

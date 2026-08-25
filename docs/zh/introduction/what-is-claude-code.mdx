@@ -80,7 +80,7 @@ Claude Code 是一个**运行在本地终端中的 agentic coding system**。它
 
 ## 启动入口解剖
 
-真正的代码入口是 `src/entrypoints/cli.tsx`，它做了三件关键的事：
+真正的代码入口是 `src/entrypoints/cli.tsx`，它做了两件关键的事：
 
 ```typescript
 // 1. 首个 import：performance shim（替换 globalThis.performance）
@@ -88,12 +88,11 @@ import '../utils/performanceShim.js';
 
 // 2. 从 bun:bundle 导入 feature()——取值由构建 / dev defines 在编译期求值
 import { feature } from 'bun:bundle';
-
-// 3. MACRO 全局变量的运行时兜底（直接跑 cli.tsx、未经 dev/dist 注入时生效）
-if (typeof globalThis.MACRO === 'undefined') {
-  globalThis.MACRO = { VERSION: "2.1.888", BUILD_TIME: ..., };
-}
 ```
+
+**这里没有 MACRO 全局变量的运行时兜底，是刻意的。**`MACRO.*` 是转译期替换，
+直跑源码的进程必须自己注 defines（`scripts/defines.ts` 的 `macroDefineArgs()`）；
+缺了就在第一次读时抛错，而不是拿到一份手抄的、会静默漂移的值。
 
 然后控制流传递到 `src/main.tsx`：
 1. Commander.js 解析命令行参数
