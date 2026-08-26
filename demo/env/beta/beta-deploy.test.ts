@@ -449,7 +449,21 @@ describe('部署树不是一个形状 —— 整棵换会换掉树里本来就�
 
 describe('这一类坑不许再回来（静态检查脚本本身）', () => {
   test('没有「$变量 紧跟中文标点」—— C locale 下那是 unbound variable', () => {
-    const src = readFileSync(SCRIPT, 'utf8')
+    const dir = resolve(import.meta.dir)
+    const files = [
+      ...readdirSync(dir)
+        .filter(n => n.endsWith('.sh'))
+        .map(n => join(dir, n)),
+      ...readdirSync(join(dir, 'ops'))
+        .filter(n => n.endsWith('.sh'))
+        .map(n => join(dir, 'ops', n)),
+    ]
+    // 扫这个目录下**全部** shell 脚本，不只被测的那一个 —— 这类坑与文件无关，
+    // 是写中文注释/消息的 bash 都会踩。实测把它铺开时存量是 0 处，
+    // 所以这条检查不是「清理」，是「别再回来」。壳脚本 ops/legacy-deploy-shim.sh
+    // 第一次跑就栽在同一个地方（第四次了）。
+    expect(files.length).toBeGreaterThan(5)
+    const src = files.map(f => readFileSync(f, 'utf8')).join('\n')
     // bash 认变量名到第一个非法字符为止，而全角「）」「，」「：」的高位字节
     // 在 C locale 下**不算**非法字符，于是 `$ONLY）` 整个被当成变量名，
     // `set -u` 报 unbound variable —— 真正想说的那句人话一个字也没打出来。
