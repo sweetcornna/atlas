@@ -112,6 +112,10 @@ writeFileSync(
     `if [ -f "$d/logpath" ]; then\n` +
     `  printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> "$(cat "$d/logpath")"\n` +
     `fi\n` +
+    // 真 `ssh -N` 会**一直活着**。第一版这里直接 exit 0，于是长命隧道在
+    // 单测里生下来就是死的 —— 而驱动如今会问它死没死（#105），一问就当场
+    // 说「隧道退了」，把本该测别的东西的用例带偏。挂住它，形状才对得上。
+    `case " $* " in *" -M "*) ;; *" -N "*) exec sleep 300;; esac\n` +
     `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
   { mode: 0o755 },
 )
@@ -406,14 +410,23 @@ describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
     }
   }, 60_000)
 
-  it('源码里那两处 `Bun.spawn` 各带一次 TUNNEL_NO_MUX_ARGS', () => {
+  it('两条长命隧道共用同一处 spawn，那处带且只带一次 TUNNEL_NO_MUX_ARGS', () => {
     const source = readFileSync(
       new URL('../fleet/driver.ts', import.meta.url),
       'utf8',
     )
     // 行为护栏之外再钉一次结构：将来新增第三条长命隧道时，漏带这两个参数会
     // 让「杀掉隧道进程」与「转发真的撤掉」脱钩，而那种坑不会当场表现出来。
-    expect(source.split('...TUNNEL_NO_MUX_ARGS').length - 1).toBe(2)
+    //
+    // **原先这里钉的是「两处 spawn 各带一次」。** 那两处是逐字互抄的，于是
+    // #105 那个缺陷（丢掉子进程句柄）只长在其中一条上、另一条原地等下一次。
+    // 现在两条走同一个 `#longTunnel`，所以钉的改成「只有一处，且两条都从它
+    // 出来」—— 数量从 2 变 1 是修好了，不是漏了。
+    expect(source.split('...TUNNEL_NO_MUX_ARGS').length - 1).toBe(1)
+    expect(source.split('this.#longTunnel(').length - 1).toBe(2)
+    // 那一处必须真的在 `#longTunnel` 体内，而不是又冒出来一条独立的隧道。
+    const body = source.slice(source.indexOf('  #longTunnel('))
+    expect(body.indexOf('...TUNNEL_NO_MUX_ARGS')).toBeGreaterThan(-1)
     expect(TUNNEL_NO_MUX_ARGS).toEqual([
       '-o',
       'ControlMaster=no',

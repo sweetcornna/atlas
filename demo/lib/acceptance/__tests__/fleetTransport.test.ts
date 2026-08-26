@@ -58,10 +58,19 @@ const madeDirs: string[] = []
 const openDrivers: FleetDriver[] = []
 /** 本地假节点（`Bun.serve`）—— 每条用例跑完关掉。 */
 const openServers: { stop: () => void }[] = []
+/** `bareCtx` 收下的清理 —— 真跑时由 runner 执行，这里由 `afterEach` 执行。 */
+const bareCleanups: (() => void | Promise<void>)[] = []
 
 afterEach(async () => {
   // `dispose` 是真机腿收尾的那一条（issue #100）：不拆的话每个驱动都会在 /tmp
   // 下留一个复用目录。这里连带把它当护栏用 —— 拆不干净在本地就看得见。
+  for (const fn of bareCleanups.splice(0)) {
+    try {
+      await fn()
+    } catch {
+      // 清理失败在这里不是被测对象 —— 那条纪律由 runner 那半边的用例钉。
+    }
+  }
   for (const driver of openDrivers.splice(0)) await driver.dispose()
   for (const server of openServers.splice(0)) server.stop()
   for (const dir of madeDirs.splice(0)) {
@@ -171,6 +180,18 @@ writeFileSync(
   SHIM_REAL,
   `#!/bin/bash\nd="$(dirname "$0")"\n` +
     `case " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
+    // 真 `ssh -N` 会**一直活着**，所以长命隧道默认挂住 —— 第一版这里直接
+    // exit 0，于是隧道在单测里生下来就是死的，而驱动如今会问它死没死
+    // （#105），一问就当场说「隧道退了」，把本该测别的东西的用例带偏。
+    // 旁边放一个 `tunnel-dies` 文件则让它当场死掉，那是 #105 那个现场，
+    // 只能这样造（`behavior.sh` 在这一支之后才被 source，够不着）。
+    // `-M` 那一支上面已经退了，这里再挡一次是为了与 fleetSshMux 的同一个
+    // shim 保持同形 —— 那边没有上面那行早退。
+    `case " $* " in *" -M "*) ;; *" -N "*)\n` +
+    `  if [ -f "$d/tunnel-dies" ]; then\n` +
+    `    printf 'bind [127.0.0.1]:45998: Address already in use\\n' >&2; exit 255\n` +
+    `  fi\n` +
+    `  exec sleep 300;; esac\n` +
     `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
   { mode: 0o755 },
 )
@@ -186,12 +207,14 @@ Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
  * `script` 是 bash 片段，进来时 `$cmd` 已经是远端命令原文。落地的是一条指向
  * {@link SHIM_REAL} 的**软链** + 一个不可执行的 `behavior.sh`，所以不付扫描。
  */
-function fakeSsh(script: string): string {
+function fakeSsh(script: string, tunnelDies = false): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
   symlinkSync(SHIM_REAL, bin)
   writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
+  // `-N` 那一支只看这个文件在不在（见 SHIM_REAL）。
+  if (tunnelDies) writeFileSync(join(dir, 'tunnel-dies'), '')
   return bin
 }
 
@@ -683,12 +706,20 @@ function disposableHandle(
   } as unknown as NodeHandle
 }
 
-/** 一个不经 runner 的最小 ctx —— 直接调驱动方法时用。 */
+/**
+ * 一个不经 runner 的最小 ctx —— 直接调驱动方法时用。
+ *
+ * `cleanup` **必须真的收着**：真跑时由 runner 逐条执行，而驱动往里登记的东西
+ * 里有长命隧道那个 `ssh -N`。丢掉它等于每条这样的用例都在测试机上留一个活
+ * 进程（假 ssh 也一样挂着，见 SHIM_REAL 的 `-N` 那一支）。`afterEach` 收尾。
+ */
 function bareCtx(timeoutScale = 0.02): ScenarioContext {
   return {
     workdir: '/tmp/qm-fake-workdir',
     allocPort: async () => 45_998,
-    cleanup: () => {},
+    cleanup: (fn: () => void | Promise<void>) => {
+      bareCleanups.push(fn)
+    },
     log: () => {},
     signal: new AbortController().signal,
     timeoutScale,
@@ -1195,6 +1226,50 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
     // 循环自己就是重试 —— 再套一层 `#sshRetry` 等于把每轮变成三次往返。
     expect(countOf(counter)).toBeGreaterThan(1)
   }, 60_000)
+
+  /**
+   * `ssh -R` 自己死掉时，说的是那条隧道退了，而不是「隧道还没通，再等等」。
+   *
+   * 正向那条的同一个病（#105）。这边的误报比正向轻 —— 消息里本来就写着
+   * 「反向隧道」，不至于赖到被测系统头上 —— 但代价一样在：远端那次 curl 只
+   * 会回 `000`，读起来像还没通，于是整个预算白等一遍，最后那句话也说不出
+   * 是哪一侧坏的。
+   */
+  it('`ssh -R` 自己退了：当场说它退了，不等满预算（issue #105）', async () => {
+    // 远端那次 curl **正常答 `000`** —— 就是「隧道还没通」的样子，链路本身
+    // 一点问题没有。第二个参数让长命隧道生下来就死。这样一来，两种结论的
+    // 差别就干净了：不问隧道 = 等满 30 s 再说一句「没通：000」（连
+    // `errorKind` 都没有）；问了 = 当场说它退了、原文带上。
+    const bin = fakeSsh(
+      [
+        `if [[ "$cmd" == *"/v0/agents"* ]]; then printf '000\\n'; exit 0; fi`,
+        BASE,
+      ].join('\n'),
+      true,
+    )
+    const scenario: Scenario = {
+      id: 'console/fake-registry-dead-tunnel',
+      dimension: 'console',
+      title: '反向转发的 ssh 自己死了',
+      expected: '当场说那条隧道退了',
+      requires: ['spawn-console'],
+      async run(ctx) {
+        await ctx.driver.startRegistry?.(ctx)
+        return { ok: true, actual: '通了', evidence: [] }
+      },
+    }
+    // 倍率 1 = 反向隧道预算 30 s。死掉的隧道该在第一轮就被认出来。
+    const began = Date.now()
+    const result = await runScenario(scenario, driver(bin), 120_000, false, 1)
+    const took = Date.now() - began
+
+    expect(result.outcome).toBe('error')
+    expect(result.errorKind).toBe('transport')
+    expect(String(result.actual)).toContain('反向隧道')
+    expect(String(result.actual)).toContain('Address already in use')
+    // 没等满 30 s 的预算 —— 第一轮 curl 回来就问隧道。
+    expect(took).toBeLessThan(20_000)
+  }, 120_000)
 })
 
 // ---------------------------------------------------------------------------
