@@ -353,18 +353,25 @@ describe('部署树不是一个形状 —— 整棵换会换掉树里本来就�
   test('源头覆盖不住树里现有的顶层条目就拒绝，而且什么都没动', () => {
     const { home, build } = sandbox()
     const tree = join(home, 'tree')
+    // **装两次**：第二次才会留下一份备份。只装一次的话备份数恒为 0，
+    // 下面那条「份数没变」的断言就是句空话 —— 先前写成一次，白写了。
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
     expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
     // 装完之后有人往树里放了 node_modules 与 src —— 真机上 p3/p7 正是这个形状。
     const witness = treeWithCheckout(home, tree)
 
+    const backupsBefore = backups(home).length
+    expect(backupsBefore).toBeGreaterThan(0)
     const r = deploy(home, ['--tree', tree, '--from', build])
     expect(r.code).not.toBe(0)
     expect(r.out).toContain('整棵换会让树里这些东西消失')
     expect(r.out).toContain('node_modules')
     expect(r.out).toContain('--only dist,demo')
-    // 拒绝了就一个字节都不动。
+    // 拒绝了就一个字节都不动 —— 这条守卫只读不写，且排在清理旧备份**之前**，
+    // 所以连备份份数都不该变。（先前它排在清理之后，这个断言会挂。）
     expect(existsSync(witness)).toBe(true)
     expect(existsSync(join(tree, 'src', 'cli.ts'))).toBe(true)
+    expect(backups(home)).toHaveLength(backupsBefore)
   })
 
   test('--only 只换点名的条目，树里其余东西原封不动', () => {

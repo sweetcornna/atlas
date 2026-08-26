@@ -266,6 +266,36 @@ if [ -n "$live" ]; then
 fi
 beta_ok '没有进程跑在这棵树上'
 
+# ── ①· 整棵换之前先问一句：源头有没有树里现在有的东西？ ──────────────────
+#
+# 部署树在各台机器上并不是一个形状：有的就只有 `dist/` 与 `demo/`，有的是一整棵
+# 源码检出（`node_modules`、`src`、`packages`…，而 `node_modules` 根本不在任何
+# payload 里）。拿一个只含 dist+demo 的 payload 去「整棵换」后一种树，等于把
+# 检出和 node_modules 一起换走 —— 备份里还在，但那台机器当场就不是原来那棵树了。
+#
+# 所以整棵换的前提是**源头至少覆盖树里现有的顶层条目**；覆盖不住就拒绝，并告诉
+# 调用方用 `--only`。判据是「会掉什么」而不是「树长什么样」：H 那种从整棵构建树
+# `--from` 拷过去的用法照旧通过，因为它什么都不掉。
+#
+# 和上面那条守卫一样排在动手之前：它只读不写，所以拒绝的时候现场是干净的。
+if [ -z "$ONLY" ] && [ -d "$TREE" ]; then
+  src_list="$(source_entries)"
+  dropped=''
+  for existing in "$TREE"/* "$TREE"/.[!.]*; do
+    [ -e "$existing" ] || continue
+    name="$(basename "$existing")"
+    if ! printf '%s\n' "$src_list" | grep -Fxq "$name"; then
+      dropped="$dropped $name"
+    fi
+  done
+  if [ -n "$dropped" ]; then
+    beta_die "整棵换会让树里这些东西消失（源头里没有）：$dropped
+它们会留在备份里，但这棵树当场就不是原来那棵了 —— 部署树里装着源码检出或 node_modules 时尤其危险。
+只想换产物就用：--only dist,demo"
+  fi
+  beta_ok '源头覆盖得住树里现有的顶层条目'
+fi
+
 # ── ② 先清 ────────────────────────────────────────────────────────────────
 #
 # 装之前腾空间，不是装完再腾。理由见文件头。
@@ -315,36 +345,7 @@ fi
 beta_ok '空间够'
 
 # ── ④ 才动手 ──────────────────────────────────────────────────────────────
-#
-# **整棵换之前先问一句：源头有没有树里现在有的东西？**
-#
-# 部署树在各台机器上并不是一个形状：有的就只有 `dist/` 与 `demo/`，有的是一整棵
-# 源码检出（`node_modules`、`src`、`packages`…，而 `node_modules` 根本不在任何
-# payload 里）。拿一个只含 dist+demo 的 payload 去「整棵换」后一种树，等于把
-# 检出和 node_modules 一起换走 —— 备份里还在，但那台机器当场就不是原来那棵树了。
-#
-# 所以整棵换的前提是**源头至少覆盖树里现有的顶层条目**；覆盖不住就拒绝，并告诉
-# 调用方用 `--only`。判据是「会掉什么」而不是「树长什么样」：H 那种从整棵构建树
-# `--from` 拷过去的用法照旧通过，因为它什么都不掉。
 beta_head '换产物'
-if [ -z "$ONLY" ] && [ -d "$TREE" ]; then
-  src_list="$(source_entries)"
-  dropped=''
-  for existing in "$TREE"/* "$TREE"/.[!.]*; do
-    [ -e "$existing" ] || continue
-    name="$(basename "$existing")"
-    if ! printf '%s\n' "$src_list" | grep -Fxq "$name"; then
-      dropped="$dropped $name"
-    fi
-  done
-  if [ -n "$dropped" ]; then
-    beta_die "整棵换会让树里这些东西消失（源头里没有）：$dropped
-它们会留在备份里，但这棵树当场就不是原来那棵了 —— 部署树里装着源码检出或 node_modules 时尤其危险。
-只想换产物就用：--only dist,demo"
-  fi
-  beta_ok '源头覆盖得住树里现有的顶层条目'
-fi
-
 if [ -n "$ONLY" ]; then
   # 先把新东西备齐在一个暂存目录里，再逐个换过去 —— 暂存目录与树同一文件系统，
   # 所以换那一下是 mv，不是拷。中途失败时树里换掉的那几个是好的，没换的还是旧的，
