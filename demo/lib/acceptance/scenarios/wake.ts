@@ -24,7 +24,7 @@
 
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { mint, newIssuer, sendEnvelope } from '../local/send.js'
+import { mint, newIssuer, sendEnvelope, receiptScene } from '../local/send.js'
 import { readMailbox, waitForMailbox } from '../observe.js'
 import type { Scenario } from '../types.js'
 import {
@@ -66,6 +66,7 @@ export const wakeScenarios: readonly Scenario[] = [
       })
       const inbox = await waitForMailbox(ctx, node, TEAM, AGENT)
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'accepted', 'receipt')
         .eq(result.errorCode, undefined, 'error code')
         .expect(inbox.length > 0, '信箱里有一条', inbox.length)

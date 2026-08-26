@@ -61,7 +61,7 @@ import {
   type CaHandle,
   type IssuedCertificate,
 } from '../ca.js'
-import { mint, sendEnvelope, type Issuer } from '../local/send.js'
+import { mint, sendEnvelope, type Issuer, receiptScene } from '../local/send.js'
 import { delay, handshakeRejections, waitForMailbox } from '../observe.js'
 import type {
   ExecHost,
@@ -909,6 +909,7 @@ export const certificateScenarios: readonly Scenario[] = [
 
       return (
         checks
+          .note('回执现场', receiptScene(result))
           .note('夹具位置', fixture.host.describe)
           .note('signer', certificate.nodePublicKey)
           .note('信箱原文', last?.raw ?? '(信箱是空的)')

@@ -19,7 +19,12 @@
 
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { mint, sendEnvelope, withBrokenSignature } from '../local/send.js'
+import {
+  mint,
+  sendEnvelope,
+  withBrokenSignature,
+  receiptScene,
+} from '../local/send.js'
 import type { Scenario } from '../types.js'
 import {
   ADDRESS,
@@ -76,6 +81,7 @@ export const policyScenarios: readonly Scenario[] = [
         to: ADDRESS,
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_CAP_INSUFFICIENT', 'error code')
         .eq(
@@ -109,6 +115,7 @@ export const policyScenarios: readonly Scenario[] = [
         payload: { instruction: 'acceptance probe' },
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_CAP_INSUFFICIENT', 'error code')
         .eq(
@@ -144,6 +151,7 @@ export const policyScenarios: readonly Scenario[] = [
         taskId,
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_CAP_INVALID', 'error code')
         .eq(
@@ -183,6 +191,7 @@ export const policyScenarios: readonly Scenario[] = [
         taskId,
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_CAP_INVALID', 'error code')
         .eq(result.errorReason, 'capability has expired', 'error reason')

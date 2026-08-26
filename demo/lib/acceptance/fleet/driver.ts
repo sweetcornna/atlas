@@ -1959,6 +1959,15 @@ export class FleetDriver implements AcceptanceDriver {
           return
         }
         attempts += 1
+        // **重建必须留痕。** 静默自愈会造出一种新的假象：隧道在场景跑到一半时
+        // 断了又接上，而**那条已经开着的 WebSocket 是接不回来的** —— 场景于是
+        // 收不到回执，报出来的却是一条关于被测系统的断言失败（「receipt 应为
+        // rejected」）。那正是 issue #96 要挡的形态，只不过挪到了场景执行期，
+        // 就绪循环那两处守卫够不着。留下这一行，报告里就看得见「这条腿抖过」。
+        ctx.log(
+          `[tunnel] ${label}断了，第 ${String(attempts)} 次重建` +
+            `${lastTail === '' ? '' : `（上一次退出：${lastTail.slice(-200)}）`}`,
+        )
         await sleep(TUNNEL_REVIVE_BACKOFF_MS * attempts)
         if (disposed) return
         current = spawnOne()

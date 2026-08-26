@@ -29,8 +29,15 @@ export class Checks {
     return this
   }
 
-  /** 一条断言。`ok` 为假就记一笔失败，但**不中断**后面的断言。 */
-  expect(ok: boolean, description: string, actual?: unknown): this {
+  /**
+   * 一条断言。`ok` 为假就记一笔失败，但**不中断**后面的断言。
+   *
+   * `actual` 用变长参数收，是为了分清**没给**与**给了 `undefined`** ——
+   * 早先两者都渲染成空串，于是「回执压根没来」和「回执来了但字段是空」在
+   * 报告上长得一模一样。第 8 轮那条 `limits/envelope-too-large` 的现场就是
+   * 三行空 `value`，谁也看不出回执到底有没有到（issue #109）。
+   */
+  expect(ok: boolean, description: string, ...actual: [unknown?]): this {
     if (ok) {
       this.#passed += 1
     } else {
@@ -38,7 +45,7 @@ export class Checks {
     }
     this.#evidence.push({
       label: `${ok ? 'ok' : 'FAILED'} · ${description}`,
-      value: actual === undefined ? '' : render(actual),
+      value: actual.length === 0 ? '' : render(actual[0]),
     })
     return this
   }
