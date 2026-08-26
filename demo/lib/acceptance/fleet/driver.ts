@@ -301,13 +301,14 @@ export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
 interface TunnelHandle {
   readonly localPort: number
   /**
-   * 现在有一条活着的 ssh 吗。
+   * 重建预算用完了、这条隧道再也起不来了。
    *
-   * **它为假不等于完了** —— 隧道会自己重建（见 {@link TUNNEL_REVIVE_ATTEMPTS}），
-   * 两次之间有一小段谁都不在的窗口。要判「别再等了」问 {@link TunnelHandle.exhausted}。
+   * **这里故意没有 `alive()`。** 隧道会自己重建（见
+   * {@link TUNNEL_REVIVE_ATTEMPTS}），两次之间有一小段谁都不在的窗口 ——
+   * 「现在活着吗」在那个窗口里为假，而结论应该是「再等等」。给出那个谓词，
+   * 下一个写守卫的人几乎一定会拿它当判据，于是把自愈又变回瞬时判死。
+   * 要判「别再等了」只有这一个入口。
    */
-  readonly alive: () => boolean
-  /** 重建预算用完了、这条隧道再也起不来了。这才是就绪循环该当场抛的信号。 */
   readonly exhausted: () => boolean
   /** 当前那条还活着时是 `null`。 */
   readonly exitCode: () => number | null
@@ -851,6 +852,9 @@ export class FleetDriver implements AcceptanceDriver {
       // 与「节点根本没起来」一模一样。不问它，就会对着一个死掉的本地口拨满
       // 整个预算，然后写下一句关于被测节点的假结论。这是套件到目标机的链路，
       // 判红照旧（见 {@link TransportFailure} 头注），但话要说对。
+      //
+      // 判据是 `exhausted()` 而不是「现在死了没有」：隧道会自己重建，重建
+      // 之间那一小段谁都不在的窗口不是失败，是「再等等」。
       if (disposable.tunnel.exhausted()) {
         throw new TransportFailure({
           ssh: machine.ssh,
@@ -1421,8 +1425,9 @@ export class FleetDriver implements AcceptanceDriver {
     for (;;) {
       if ((await http(`${url}/v0/health`, { timeoutMs: 5_000 })).status === 200)
         break
-      // 与一次性节点那条同一个理由：隧道死了，`fetch` 只会报 connection
-      // refused，读起来却像「控制台不答 200」。
+      // 与一次性节点那条同一个理由：隧道没了，`fetch` 只会报 connection
+      // refused，读起来却像「控制台不答 200」。判据同样是「还有没有指望」，
+      // 不是「此刻活着没有」。
       if (tunnel.exhausted()) {
         throw new TransportFailure({
           ssh: machine.ssh,
@@ -1643,10 +1648,11 @@ export class FleetDriver implements AcceptanceDriver {
           `http://127.0.0.1:${String(remotePort)}/v0/agents 2>/dev/null || echo 000`,
       ])
       if (/[1-5]\d\d/.test(probe.stdout.trim())) return
-      // 与正向那条同一条纪律（#105）：`ssh -R` 自己退了（远端口被占撞上
+      // 与正向那条同一条纪律（#105）：`ssh -R` 起不来了（远端口被占撞上
       // `ExitOnForwardFailure`、网断），远端那次 curl 只会回 `000` —— 读起来
       // 像「隧道还没通，再等等」，于是这里会一直等到预算耗尽。问它一句，
-      // 就能当场说出坏的是哪一侧，还省下整个预算。
+      // 就能当场说出坏的是哪一侧，还省下整个预算。**重建没打完之前不算数**，
+      // 所以问的是 `exhausted()`。
       if (tunnel.exhausted()) {
         throw new TransportFailure({
           ssh,
@@ -1970,7 +1976,6 @@ export class FleetDriver implements AcceptanceDriver {
       // 之后那个口就没人听，而拨号方看到的只是 `1006 Failed to connect` ——
       // 与「被测进程根本没起来」长得一模一样。不问它，一次套件侧的链路故障
       // 就会被写成一条关于被测系统的结论，那正是 issue #96 立规矩要挡的形态。
-      alive: () => !exhausted && current.proc.exitCode === null,
       exhausted: () => exhausted,
       exitCode: () => current.proc.exitCode,
       diagnose: () => {

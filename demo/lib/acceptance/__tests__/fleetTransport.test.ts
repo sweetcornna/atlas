@@ -713,7 +713,6 @@ function disposableHandle(
       occPath: `${FAKE_HOME}/atlas-beta/dist/cli-node.js`,
       tunnel: {
         localPort: 45_998,
-        alive: () => tunnelAlive,
         // 手搭的这个不重建，所以「死了」与「重建预算用完了」是同一件事。
         exhausted: () => !tunnelAlive,
         exitCode: () => (tunnelAlive ? null : 255),
