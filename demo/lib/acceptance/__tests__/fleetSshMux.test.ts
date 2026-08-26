@@ -324,13 +324,15 @@ describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
 
   it('`ssh -N -R` 那条不共享 master', async () => {
     const log = logPath()
-    // 倍率 0.02：反向隧道预算 30 s → 600 ms，场景预算 120 s → 2.4 s。
+    // 倍率 0.1：反向隧道预算 30 s → 3 s，场景预算 120 s → 12 s。**不要再压回
+    // 0.02** —— 这条用例只想看那行 argv，而 2.4 s 的场景预算会在机器忙的时候先于
+    // 隧道起来就到期，`reverse.length` 于是为 0，红得与本意无关（实测飘出来过）。
     await runScenario(
       registryScenario,
       driver(fakeSsh(HAPPY, log), true),
       120_000,
       false,
-      0.02,
+      0.1,
     )
     const t = tally(log)
     const reverse = t.tunnels.filter(l => l.includes(' -R '))
@@ -351,7 +353,8 @@ describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
       ].join('\n'),
       log,
     )
-    await runScenario(consoleScenario, driver(bin, true), 120_000, false, 0.02)
+    // 倍率同上，理由见上一条用例。
+    await runScenario(consoleScenario, driver(bin, true), 120_000, false, 0.1)
     const t = tally(log)
     const forward = t.tunnels.filter(l => l.includes(' -L '))
     expect(forward.length).toBeGreaterThan(0)

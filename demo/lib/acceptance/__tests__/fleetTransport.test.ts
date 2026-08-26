@@ -188,7 +188,12 @@ async function runOnce(
   sshBin: string,
   scenario = OPEN_LAUNCHER,
 ): Promise<ScenarioResult> {
-  return await runScenario(scenario, driver(sshBin), 4_000, false, 1)
+  // 预算是**上限**，不是这些用例要观察的东西 —— 没有一条靠 `runOnce` 超时来
+  // 断言。它必须宽到能装下最坏那条路径：`#sshRetry` 打满（退避 750 + 1500 ms）
+  // + 三次假 `ssh` 起停 + SSH 复用建 master 的那几趟（issue #100 之后多出来的）。
+  // 原先的 4 s 恰好卡在那个和上，于是「打满仍不通」那条会**间歇**地以场景超时
+  // 收场而不是 `errorKind=transport` —— 实测 8 轮里飘出来一次。
+  return await runScenario(scenario, driver(sshBin), 30_000, false, 1)
 }
 
 /** 结果里全部 `log` 证据拼成一段。 */
@@ -1114,13 +1119,15 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
         return { ok: true, actual: '通了', evidence: [] }
       },
     }
-    // 倍率 0.02：反向隧道预算 30 s → 600 ms，场景预算 120 s → 2.4 s。
+    // 倍率 0.1：反向隧道预算 30 s → 3 s，场景预算 120 s → 12 s。**不要再压到
+    // 0.02** —— 这条用例只想看那行 argv，而 2.4 s 的场景预算会在机器忙的时候
+    // 先于隧道起来就到期，于是 `reverse.length` 为 0，红得与本意无关。
     const result = await runScenario(
       registryScenario,
       driver(bin),
       120_000,
       false,
-      0.02,
+      0.1,
     )
     expect(result.outcome).toBe('error')
     expect(result.errorKind).toBe('transport')
