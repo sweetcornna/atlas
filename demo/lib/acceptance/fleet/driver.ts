@@ -297,6 +297,17 @@ export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
   },
 ]
 
+/** 一条端口转发的句柄 —— 端口，加上「它自己还活着没有」。 */
+interface TunnelHandle {
+  readonly localPort: number
+  /** 隧道进程还在跑吗。死了的话本地口没人听，拨号方只会看到 1006。 */
+  readonly alive: () => boolean
+  /** 还活着时是 `null`。 */
+  readonly exitCode: () => number | null
+  /** 死了之后给人看的一句话，含它临死前写的 stderr。 */
+  readonly diagnose: () => string
+}
+
 /** 一个一次性节点的家当 —— 只有这种句柄才允许停 / 重启 / 往配置根里写。 */
 interface DisposableNode {
   readonly machine: SpawnMachine
@@ -2516,7 +2527,6 @@ function requireDisposable(node: NodeHandle, what: string): DisposableNode {
   return disposable
 }
 
-/** 把一条流读干净并丢掉 —— 只为让写它的那一端不被管道憋住。 */
 /**
  * 抽干一条流，但把最后若干字节留下来给错误消息用。
  *
@@ -2547,17 +2557,7 @@ function drainKeepingTail(
   return { text: () => tail }
 }
 
-/** 一条端口转发的句柄 —— 端口，加上「它自己还活着没有」。 */
-interface TunnelHandle {
-  readonly localPort: number
-  /** 隧道进程还在跑吗。死了的话本地口没人听，拨号方只会看到 1006。 */
-  readonly alive: () => boolean
-  /** 还活着时是 `null`。 */
-  readonly exitCode: () => number | null
-  /** 死了之后给人看的一句话，含它临死前写的 stderr。 */
-  readonly diagnose: () => string
-}
-
+/** 把一条流读干净并丢掉 —— 只为让写它的那一端不被管道憋住。 */
 async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
   const reader = stream.getReader()
   try {
