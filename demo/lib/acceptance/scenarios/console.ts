@@ -447,7 +447,20 @@ export const consoleScenarios: readonly Scenario[] = [
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
-      const ttlMs = 3_000
+      // **TTL 要吃倍率**，理由与 issue #91 那几处硬预算是同一条，只是这里更隐蔽：
+      // 流逝的不只是下面那几次 `sleep`，还有**每一次 HTTP 往返**。本地腿的往返
+      // 约 1 ms，相对 3 s 的 TTL 可以当成零；真机腿的每一次都要从 runner 经
+      // SSH 隧道到控制台那台机器，几百毫秒起步。于是「注册 → 睡 0.6×TTL →
+      // 心跳」这条本来留了 40% 余量的路径会被往返吃穿，租约**真的**过期，
+      // 心跳如实回 404 —— 那是产品的正确回答，红的是这条场景自己的算术。
+      //
+      // 实测：真机腿上这条以「心跳 404」收场，而三次 sleep 合计 8.1 s、场景总
+      // 耗时 42.4 s —— 三十多秒全花在启动与往返上。
+      //
+      // 乘上 `timeoutScale` 之后本地腿（倍率 1）逐字节不变，真机腿（默认 4）
+      // 拿到 12 s，往返重新变得可以忽略。
+      const ttlMs = Math.round(3_000 * ctx.timeoutScale)
+      const expiryGraceMs = Math.round(1_500 * ctx.timeoutScale)
       const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
       const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
         registryUrl: registry.hostUrl,
@@ -469,7 +482,7 @@ export const consoleScenarios: readonly Scenario[] = [
       const afterBeat = await http(`${console_.url}/v0/agents`, {
         token: console_.viewToken,
       })
-      await sleep(ttlMs + 1_500)
+      await sleep(ttlMs + expiryGraceMs)
       const afterExpiry = await http(`${console_.url}/v0/agents`, {
         token: console_.viewToken,
       })
