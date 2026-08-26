@@ -300,11 +300,18 @@ export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
 /** 一条端口转发的句柄 —— 端口，加上「它自己还活着没有」。 */
 interface TunnelHandle {
   readonly localPort: number
-  /** 隧道进程还在跑吗。死了的话本地口没人听，拨号方只会看到 1006。 */
+  /**
+   * 现在有一条活着的 ssh 吗。
+   *
+   * **它为假不等于完了** —— 隧道会自己重建（见 {@link TUNNEL_REVIVE_ATTEMPTS}），
+   * 两次之间有一小段谁都不在的窗口。要判「别再等了」问 {@link TunnelHandle.exhausted}。
+   */
   readonly alive: () => boolean
-  /** 还活着时是 `null`。 */
+  /** 重建预算用完了、这条隧道再也起不来了。这才是就绪循环该当场抛的信号。 */
+  readonly exhausted: () => boolean
+  /** 当前那条还活着时是 `null`。 */
   readonly exitCode: () => number | null
-  /** 死了之后给人看的一句话，含它临死前写的 stderr。 */
+  /** 给人看的一句话：死在哪一步、重建过几次、它临死前写的 stderr。 */
   readonly diagnose: () => string
 }
 
@@ -418,6 +425,27 @@ const DISPOSABLE_READY_BUDGET_MS = 60_000
 
 /** 反向隧道「通了没有」的等待基准（远端 curl 探一次，每拍一次 SSH 往返）。 */
 const REVERSE_TUNNEL_READY_BUDGET_MS = 30_000
+
+/**
+ * 一条长命隧道自己死掉之后，最多再把它建回来几次。
+ *
+ * **重建是幂等的**，所以它该重试 —— 与 {@link FleetDriver.#read} 同一条判据：
+ * `ssh -L` / `ssh -R` 在远端不留任何痕迹，重建一次不会让被测系统多看见一个
+ * 字节。这跟 `#once` 那半边（起进程、`kill`、`qm ca`）是两回事，别混。
+ *
+ * 为什么需要它：真机腿有一台走 gcloud IAP，那条 websocket 会半路 EOF ——
+ * 第 6 轮实测 `iap_tunnel_websocket.py` 抛 `ConnectionCreationError`，一条
+ * 隧道断了就把整轮判红，而它与被测系统毫无关系。这与第 1、2 轮那个「两千次
+ * 握手总会抖一次」是同一类问题，而那次的解法同样不是放宽判定，是让链路自己
+ * 扛住（issue #100 的连接复用）。
+ *
+ * **重建用完仍不通就如实红**：`exhausted()` 为真时就绪循环立刻抛，报告里带着
+ * 重建次数。自愈不等于把失败藏起来。
+ */
+export const TUNNEL_REVIVE_ATTEMPTS = 3
+
+/** 每次重建前的退避，按第几次线性放大。 */
+const TUNNEL_REVIVE_BACKOFF_MS = 800
 
 /**
  * 远端「等 banner 落地」的轮询预算基准 —— 一次性节点与一次性控制台共用。
@@ -823,7 +851,7 @@ export class FleetDriver implements AcceptanceDriver {
       // 与「节点根本没起来」一模一样。不问它，就会对着一个死掉的本地口拨满
       // 整个预算，然后写下一句关于被测节点的假结论。这是套件到目标机的链路，
       // 判红照旧（见 {@link TransportFailure} 头注），但话要说对。
-      if (!disposable.tunnel.alive()) {
+      if (disposable.tunnel.exhausted()) {
         throw new TransportFailure({
           ssh: machine.ssh,
           what: `等一次性节点 ${spec.name} 拨得通`,
@@ -1395,7 +1423,7 @@ export class FleetDriver implements AcceptanceDriver {
         break
       // 与一次性节点那条同一个理由：隧道死了，`fetch` 只会报 connection
       // refused，读起来却像「控制台不答 200」。
-      if (!tunnel.alive()) {
+      if (tunnel.exhausted()) {
         throw new TransportFailure({
           ssh: machine.ssh,
           what: '等一次性控制台答 /v0/health',
@@ -1619,7 +1647,7 @@ export class FleetDriver implements AcceptanceDriver {
       // `ExitOnForwardFailure`、网断），远端那次 curl 只会回 `000` —— 读起来
       // 像「隧道还没通，再等等」，于是这里会一直等到预算耗尽。问它一句，
       // 就能当场说出坏的是哪一侧，还省下整个预算。
-      if (!tunnel.alive()) {
+      if (tunnel.exhausted()) {
         throw new TransportFailure({
           ssh,
           what: `等到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 通`,
@@ -1875,43 +1903,85 @@ export class FleetDriver implements AcceptanceDriver {
     localPort: number,
     label: string,
   ): TunnelHandle {
-    const child = Bun.spawn(
-      [
-        this.#config.sshBin ?? 'ssh',
-        '-N',
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'ExitOnForwardFailure=yes',
-        '-o',
-        'ServerAliveInterval=15',
-        // 长命隧道**不走复用**：共享 master 会让「杀掉隧道进程」与「转发真的
-        // 撤掉」脱钩（issue #100 ②）。见 {@link TUNNEL_NO_MUX_ARGS}。
-        ...TUNNEL_NO_MUX_ARGS,
-        ...(this.#config.sshArgs ?? []),
-        ...forward,
-        ssh,
-      ],
-      { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
-    )
-    void drain(child.stdout)
-    // stderr 留尾巴：这条隧道自己死掉时，临死前那句话是唯一说得清「为什么不
-    // 通」的证据。只抽不留等于把它扔了。
-    const stderr = drainKeepingTail(child.stderr)
+    const spawnOne = (): {
+      readonly proc: ReturnType<typeof Bun.spawn>
+      readonly tail: () => string
+    } => {
+      const proc = Bun.spawn(
+        [
+          this.#config.sshBin ?? 'ssh',
+          '-N',
+          '-o',
+          'BatchMode=yes',
+          '-o',
+          'ExitOnForwardFailure=yes',
+          '-o',
+          'ServerAliveInterval=15',
+          // 长命隧道**不走复用**：共享 master 会让「杀掉隧道进程」与「转发真的
+          // 撤掉」脱钩（issue #100 ②）。见 {@link TUNNEL_NO_MUX_ARGS}。
+          ...TUNNEL_NO_MUX_ARGS,
+          ...(this.#config.sshArgs ?? []),
+          ...forward,
+          ssh,
+        ],
+        { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+      )
+      void drain(proc.stdout)
+      // stderr 留尾巴：这条隧道自己死掉时，临死前那句话是唯一说得清「为什么不
+      // 通」的证据。只抽不留等于把它扔了。
+      const stderr = drainKeepingTail(proc.stderr)
+      return { proc, tail: () => stderr.text().trim() }
+    }
+
+    let current = spawnOne()
+    let disposed = false
+    let exhausted = false
+    let attempts = 0
+    let lastTail = ''
+    let lastCode: number | null = null
+
+    // 看门狗。**重建是幂等的**，所以它该重试 —— `ssh -L` / `ssh -R` 在远端不
+    // 留任何痕迹，与 `#read` 同一条判据（见 {@link TUNNEL_REVIVE_ATTEMPTS}）。
+    void (async () => {
+      for (;;) {
+        await current.proc.exited
+        if (current.tail() !== '') lastTail = current.tail()
+        lastCode = current.proc.exitCode
+        if (disposed) return
+        if (attempts >= TUNNEL_REVIVE_ATTEMPTS) {
+          exhausted = true
+          return
+        }
+        attempts += 1
+        await sleep(TUNNEL_REVIVE_BACKOFF_MS * attempts)
+        if (disposed) return
+        current = spawnOne()
+      }
+    })()
+
     ctx.cleanup(() => {
-      child.kill('SIGKILL')
+      disposed = true
+      current.proc.kill('SIGKILL')
     })
+
     return {
       localPort,
       // `exitCode` 在进程还活着时是 `null`。**这一句不是锦上添花**：隧道死了
       // 之后那个口就没人听，而拨号方看到的只是 `1006 Failed to connect` ——
       // 与「被测进程根本没起来」长得一模一样。不问它，一次套件侧的链路故障
       // 就会被写成一条关于被测系统的结论，那正是 issue #96 立规矩要挡的形态。
-      alive: () => child.exitCode === null,
-      exitCode: () => child.exitCode,
-      diagnose: () =>
-        `${label}已退出 (${String(child.exitCode)})` +
-        `${stderr.text().trim() === '' ? '' : `：${stderr.text().trim().slice(-600)}`}`,
+      alive: () => !exhausted && current.proc.exitCode === null,
+      exhausted: () => exhausted,
+      exitCode: () => current.proc.exitCode,
+      diagnose: () => {
+        const now = current.tail()
+        const said = now === '' ? lastTail : now
+        return (
+          `${label}已退出 (${String(current.proc.exitCode ?? lastCode)})` +
+          `${attempts === 0 ? '' : `，已重建 ${String(attempts)} 次仍不通`}` +
+          `${said === '' ? '' : `：${said.slice(-600)}`}`
+        )
+      },
     }
   }
 

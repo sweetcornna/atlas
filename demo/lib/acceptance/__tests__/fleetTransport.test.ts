@@ -22,6 +22,7 @@
 
 import { afterEach, describe, expect, it } from 'bun:test'
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -29,9 +30,13 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { FRAME_VERSION, FrameType } from '@qianmo/transport'
-import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import {
+  FleetDriver,
+  fleetConfigFromEnv,
+  TUNNEL_REVIVE_ATTEMPTS,
+} from '../fleet/driver.js'
 import {
   cleanupFailures,
   fromNdjson,
@@ -188,8 +193,15 @@ writeFileSync(
     // `-M` 那一支上面已经退了，这里再挡一次是为了与 fleetSshMux 的同一个
     // shim 保持同形 —— 那边没有上面那行早退。
     `case " $* " in *" -M "*) ;; *" -N "*)\n` +
+    // `tunnel-dies` 里写着「头几次要死掉」，每次调用往 `tunnel-calls` 追一个
+    // 字节记数。写 `9` 就是怎么重建都不通，写 `1` 就是抖一下之后恢复 ——
+    // 后者才证明看门狗真把隧道建回来了，而不只是重试过。
     `  if [ -f "$d/tunnel-dies" ]; then\n` +
-    `    printf 'bind [127.0.0.1]:45998: Address already in use\\n' >&2; exit 255\n` +
+    `    printf x >> "$d/tunnel-calls"\n` +
+    `    n=$(wc -c < "$d/tunnel-calls" | tr -d ' ')\n` +
+    `    if [ "$n" -le "$(cat "$d/tunnel-dies")" ]; then\n` +
+    `      printf 'bind [127.0.0.1]:45998: Address already in use\\n' >&2; exit 255\n` +
+    `    fi\n` +
     `  fi\n` +
     `  exec sleep 300;; esac\n` +
     `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
@@ -207,15 +219,22 @@ Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
  * `script` 是 bash 片段，进来时 `$cmd` 已经是远端命令原文。落地的是一条指向
  * {@link SHIM_REAL} 的**软链** + 一个不可执行的 `behavior.sh`，所以不付扫描。
  */
-function fakeSsh(script: string, tunnelDies = false): string {
+function fakeSsh(script: string, tunnelDies = 0): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
   symlinkSync(SHIM_REAL, bin)
   writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
-  // `-N` 那一支只看这个文件在不在（见 SHIM_REAL）。
-  if (tunnelDies) writeFileSync(join(dir, 'tunnel-dies'), '')
+  // 头 `tunnelDies` 次长命隧道当场死掉，之后正常挂住（见 SHIM_REAL）。
+  if (tunnelDies > 0)
+    writeFileSync(join(dir, 'tunnel-dies'), String(tunnelDies))
   return bin
+}
+
+/** 那个假 ssh 一共被要求建了几次长命隧道。 */
+function tunnelSpawns(sshBin: string): number {
+  const f = join(dirname(sshBin), 'tunnel-calls')
+  return existsSync(f) ? readFileSync(f, 'utf8').length : 0
 }
 
 function driver(sshBin: string): FleetDriver {
@@ -671,7 +690,8 @@ const DISPOSABLE_SPEC: NodeSpec = {
  * 一次成功的 spawn 会真的交回一个句柄。
  *
  * `tunnelAlive` 是那条转发隧道的死活。默认活着（真跑的常态）；钉成 `false`
- * 就是「隧道自己退了、本地口没人听」那个现场 —— 见 issue #105。
+ * 就是「隧道自己退了、重建也没建回来」那个现场 —— 见 issue #105。真隧道会自己
+ * 重建（{@link TUNNEL_REVIVE_ATTEMPTS}），手搭的这个不会，所以两个谓词同值。
  */
 function disposableHandle(
   endpoint = 'ws://127.0.0.1:45999',
@@ -694,6 +714,8 @@ function disposableHandle(
       tunnel: {
         localPort: 45_998,
         alive: () => tunnelAlive,
+        // 手搭的这个不重建，所以「死了」与「重建预算用完了」是同一件事。
+        exhausted: () => !tunnelAlive,
         exitCode: () => (tunnelAlive ? null : 255),
         diagnose: () =>
           'to fake-host 的转发隧道（本地 45998 → 41999）已退出 (255)：' +
@@ -1245,7 +1267,7 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
         `if [[ "$cmd" == *"/v0/agents"* ]]; then printf '000\\n'; exit 0; fi`,
         BASE,
       ].join('\n'),
-      true,
+      9,
     )
     const scenario: Scenario = {
       id: 'console/fake-registry-dead-tunnel',
@@ -1267,8 +1289,59 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
     expect(result.errorKind).toBe('transport')
     expect(String(result.actual)).toContain('反向隧道')
     expect(String(result.actual)).toContain('Address already in use')
-    // 没等满 30 s 的预算 —— 第一轮 curl 回来就问隧道。
+    // 没等满 30 s 的预算 —— 重建打完就问隧道。
     expect(took).toBeLessThan(20_000)
+    // **真的试过重建**：1 次首建 + 3 次重建。少了就是看门狗没跑，多了就是
+    // 预算没兜住（那会把一条断链拖成无限重连）。
+    expect(tunnelSpawns(bin)).toBe(1 + TUNNEL_REVIVE_ATTEMPTS)
+    expect(String(result.actual)).toContain(
+      `已重建 ${String(TUNNEL_REVIVE_ATTEMPTS)} 次仍不通`,
+    )
+  }, 120_000)
+
+  /**
+   * 抖一下就恢复 —— 看门狗把隧道**建回来了**，场景照常给出它本来的结论。
+   *
+   * 这条与上一条是一对：上一条证明重建有上限、打满会如实红；这条证明重建
+   * 真的管用。少了它，「自愈」就只是「多试了几次然后还是红」。
+   *
+   * 为什么这条可以重试而 `#once` 那半边不行：`ssh -R` 在远端**不留任何痕迹**，
+   * 重建一次不会让被测系统多看见一个字节。判据与 `#read` 是同一条。
+   */
+  it('隧道抖一下就恢复：看门狗把它建回来，场景照常通（issue #105）', async () => {
+    // 头 2 次建隧道失败，第 3 次成功。**远端那次 curl 跟着隧道走** —— 隧道
+    // 没建起来就答 `000`（转发不通），建起来才答 `200`。不把两者挂钩的话，
+    // curl 恒答 200 会让就绪循环在第一拍就返回，重建那段根本不会被跑到。
+    const bin = fakeSsh(
+      [
+        `if [[ "$cmd" == *"/v0/agents"* ]]; then`,
+        `  n=$(wc -c < "$d/tunnel-calls" 2>/dev/null | tr -d ' '); n=\${n:-0}`,
+        `  if [ "$n" -gt "$(cat "$d/tunnel-dies")" ]; then printf '200\\n'; else printf '000\\n'; fi`,
+        `  exit 0`,
+        `fi`,
+        BASE,
+      ].join('\n'),
+      2,
+    )
+    const scenario: Scenario = {
+      id: 'console/fake-registry-flaky-tunnel',
+      dimension: 'console',
+      title: '反向转发的 ssh 抖了两次',
+      expected: '建回来之后照常通',
+      requires: ['spawn-console'],
+      async run(ctx) {
+        await ctx.driver.startRegistry?.(ctx)
+        return { ok: true, actual: '通了', evidence: [] }
+      },
+    }
+    const result = await runScenario(scenario, driver(bin), 120_000, false, 1)
+
+    // 场景绿了 = 那条隧道真的建回来了。**这不是放水**：远端那次 curl 照样
+    // 得答 200，断言一个字没松。
+    expect(result.outcome).toBe('pass')
+    expect(result.errorKind).toBeUndefined()
+    // 1 次首建（死）+ 2 次重建（第 1 次死、第 2 次活）。
+    expect(tunnelSpawns(bin)).toBe(3)
   }, 120_000)
 })
 
