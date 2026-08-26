@@ -646,8 +646,14 @@ const DISPOSABLE_SPEC: NodeSpec = {
  * `endpoint` 可以指到一个本地假节点（{@link fakeNodeServer}）—— `restartNode`
  * 把它原样交给 `#launchDisposable` 的就绪判据，于是那条真路径**跑得完整**，
  * 一次成功的 spawn 会真的交回一个句柄。
+ *
+ * `tunnelAlive` 是那条转发隧道的死活。默认活着（真跑的常态）；钉成 `false`
+ * 就是「隧道自己退了、本地口没人听」那个现场 —— 见 issue #105。
  */
-function disposableHandle(endpoint = 'ws://127.0.0.1:45999'): NodeHandle {
+function disposableHandle(
+  endpoint = 'ws://127.0.0.1:45999',
+  tunnelAlive = true,
+): NodeHandle {
   return {
     name: DISPOSABLE_SPEC.name,
     spec: DISPOSABLE_SPEC,
@@ -662,6 +668,14 @@ function disposableHandle(endpoint = 'ws://127.0.0.1:45999'): NodeHandle {
       configRoot: `${FAKE_ROOT}/config`,
       remotePort: 41_999,
       occPath: `${FAKE_HOME}/atlas-beta/dist/cli-node.js`,
+      tunnel: {
+        localPort: 45_998,
+        alive: () => tunnelAlive,
+        exitCode: () => (tunnelAlive ? null : 255),
+        diagnose: () =>
+          'to fake-host 的转发隧道（本地 45998 → 41999）已退出 (255)：' +
+          'bind [127.0.0.1]:45998: Address already in use',
+      },
     },
     stdout: async () => '',
     stderr: async () => '',
@@ -1325,6 +1339,62 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
     const ok = driver(fakeSsh(slowSsh(okMarker)))
     const back = await ok.restartNode(bareCtx(0.06), disposableHandle(node.url))
     expect(back.name).toBe(DISPOSABLE_SPEC.name)
+  }, 120_000)
+
+  /**
+   * 隧道自己死掉时，说的是「套件的链路断了」，不是「节点起来了但拨不通」。
+   *
+   * ## 这条钉的是 issue #105
+   *
+   * `#tunnel` 第一版只返回端口、把 ssh 子进程的句柄丢掉。隧道一旦自己退出
+   * （本地口被抢、远端拒转发、网断），本地口就没人听 —— 而拨号方看到的只是
+   * `1006 Failed to connect`，与「节点根本没起来」长得一模一样。于是就绪循环
+   * 对着一个死掉的本地口拨满整个预算（真机腿上是 266 s），最后写下一句
+   * **关于被测节点的假结论**。
+   *
+   * 两件事一起钉：话要说对（`errorKind=transport`、文本点名链路），以及
+   * **要快** —— 拨满预算再说错话和当场说错话，前者还多烧四分钟。
+   */
+  it('转发隧道自己死了：说的是链路失败，且不拨满预算（issue #105）', async () => {
+    const landed = (marker: string): string =>
+      [
+        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `  printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
+        `  exit 0`,
+        `fi`,
+        `if [[ "$cmd" == *"out.log"* ]]; then cat '${marker}' 2>/dev/null; exit 0; fi`,
+        BASE,
+      ].join('\n')
+
+    // 倍率 1 = 60 s 的就绪预算。端口 45999 上没有任何东西在听，所以
+    // `rawDial` 每一拍都是 1006 —— 与真机腿上那次一模一样的现场。
+    const d = driver(fakeSsh(landed(tmpFile('marker-dead-tunnel'))))
+    const began = Date.now()
+    const err = await transportThrow(
+      async () =>
+        await d.restartNode(bareCtx(1), disposableHandle(undefined, false)),
+    )
+    const took = Date.now() - began
+
+    // ① 话说对了：点名是链路、带上隧道临死前那句话，且**不含**那句关于节点的。
+    expect(err.message).toContain('转发隧道')
+    expect(err.message).toContain('Address already in use')
+    expect(err.message).not.toContain('起来了但拨不通')
+    // ② 没拨满预算。60 s 的一小半都用不到 —— 第一拍拨不通就问隧道。
+    expect(took).toBeLessThan(20_000)
+  }, 120_000)
+
+  it('隧道活着的时候不抢话 —— 拨不通仍然按「节点起来了但拨不通」报', async () => {
+    const landed = [
+      `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+      `if [[ "$cmd" == *"out.log"* ]]; then printf '{"publicKey":"k"}\\n'; exit 0; fi`,
+      BASE,
+    ].join('\n')
+    // 同样拨不通，但隧道好好活着 —— 那这条结论就该落在被测节点头上。
+    const d = driver(fakeSsh(landed))
+    await expect(
+      d.restartNode(bareCtx(0.02), disposableHandle(undefined, true)),
+    ).rejects.toThrow('起来了但拨不通')
   }, 120_000)
 
   it('ssh 那格必须宽于远端轮询那格 —— 两者乘同一个倍率，余量在任何倍率下都在', () => {

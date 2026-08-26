@@ -297,6 +297,17 @@ export const DEFAULT_SPAWN_MACHINES: readonly SpawnMachine[] = [
   },
 ]
 
+/** 一条端口转发的句柄 —— 端口，加上「它自己还活着没有」。 */
+interface TunnelHandle {
+  readonly localPort: number
+  /** 隧道进程还在跑吗。死了的话本地口没人听，拨号方只会看到 1006。 */
+  readonly alive: () => boolean
+  /** 还活着时是 `null`。 */
+  readonly exitCode: () => number | null
+  /** 死了之后给人看的一句话，含它临死前写的 stderr。 */
+  readonly diagnose: () => string
+}
+
 /** 一个一次性节点的家当 —— 只有这种句柄才允许停 / 重启 / 往配置根里写。 */
 interface DisposableNode {
   readonly machine: SpawnMachine
@@ -311,6 +322,12 @@ interface DisposableNode {
   /** 节点在**它自己那台机器**上监听的端口。 */
   readonly remotePort: number
   readonly occPath: string
+  /**
+   * runner 够到它的那条转发隧道。**存在这里是为了让就绪循环问得到它** ——
+   * 隧道死掉与节点没起来在拨号方看来是同一个 `1006`，不问就会把一次套件侧的
+   * 链路故障写成一条关于被测系统的结论（issue #96 立的规矩）。
+   */
+  readonly tunnel: TunnelHandle
 }
 
 interface FleetNodeHandle extends NodeHandle {
@@ -617,17 +634,17 @@ export class FleetDriver implements AcceptanceDriver {
     const occPath = `${home}/${machine.repoRel}/dist/cli-node.js`
     const root = await this.#scratch(ctx, machine.ssh)
     const remotePort = await this.#freePortOn(machine.ssh)
+    // 隧道先于进程建：它一旦建好就在整条场景里有效，重启不必重建。
+    const tunnel = await this.#tunnel(ctx, machine.ssh, remotePort)
     const disposable: DisposableNode = {
       machine,
       root,
       configRoot: spec.configRoot ?? `${root}/config`,
       remotePort,
       occPath,
+      tunnel,
     }
-
-    // 隧道先于进程建：它一旦建好就在整条场景里有效，重启不必重建。
-    const localPort = await this.#tunnel(ctx, machine.ssh, remotePort)
-    const endpoint = `ws://127.0.0.1:${localPort}`
+    const endpoint = `ws://127.0.0.1:${String(tunnel.localPort)}`
     return await this.#launchDisposable(ctx, spec, disposable, endpoint)
   }
 
@@ -801,6 +818,20 @@ export class FleetDriver implements AcceptanceDriver {
         timeoutMs: 4_000,
       })
       if (credentialed ? probe.frames.length > 0 : probe.authed) break
+      // **先问隧道，再问节点。** 隧道自己退出（本地口被抢、远端拒转发、
+      // 网络断）之后本地口没人听，拨号只会得到 `1006 Failed to connect` ——
+      // 与「节点根本没起来」一模一样。不问它，就会对着一个死掉的本地口拨满
+      // 整个预算，然后写下一句关于被测节点的假结论。这是套件到目标机的链路，
+      // 判红照旧（见 {@link TransportFailure} 头注），但话要说对。
+      if (!disposable.tunnel.alive()) {
+        throw new TransportFailure({
+          ssh: machine.ssh,
+          what: `等一次性节点 ${spec.name} 拨得通`,
+          code: disposable.tunnel.exitCode() ?? -1,
+          stderr: disposable.tunnel.diagnose(),
+          attempts: 1,
+        })
+      }
       if (ctx.signal.aborted || Date.now() >= deadline) {
         // 同上：这一段只进错误文本，读不到时说「取不到」，不掀掉外面那条
         // 已经成立的结论（拨不通是拨号那一侧观察到的，与这次读日志无关）。
@@ -1352,7 +1383,8 @@ export class FleetDriver implements AcceptanceDriver {
       )
     }
 
-    const localPort = await this.#tunnel(ctx, machine.ssh, remotePort)
+    const tunnel = await this.#tunnel(ctx, machine.ssh, remotePort)
+    const localPort = tunnel.localPort
     const url = `http://127.0.0.1:${String(localPort)}`
     // 就绪判据是 `GET /v0/health` 答 200 —— 公开、零鉴权，`systemctl --user
     // is-active` 对这两个单元都不可信（`Type=oneshot` + 只 enable 不 start，
@@ -1361,6 +1393,17 @@ export class FleetDriver implements AcceptanceDriver {
     for (;;) {
       if ((await http(`${url}/v0/health`, { timeoutMs: 5_000 })).status === 200)
         break
+      // 与一次性节点那条同一个理由：隧道死了，`fetch` 只会报 connection
+      // refused，读起来却像「控制台不答 200」。
+      if (!tunnel.alive()) {
+        throw new TransportFailure({
+          ssh: machine.ssh,
+          what: '等一次性控制台答 /v0/health',
+          code: tunnel.exitCode() ?? -1,
+          stderr: tunnel.diagnose(),
+          attempts: 1,
+        })
+      }
       if (ctx.signal.aborted || Date.now() >= deadline) {
         throw new Error(
           `一次性控制台在 ${machine.label} 上起来了但 /v0/health 不答 200 ` +
@@ -1800,13 +1843,19 @@ export class FleetDriver implements AcceptanceDriver {
    * 从 runner 到目标机的一条端口转发，生命周期挂在场景上。
    *
    * 两条流都要抽干：经 IAP 的那台每次连接都往 stderr 写几行提示，管道写满
-   * 之后 ssh 会阻塞在 `write` 上，表现是「隧道建着建着就不转发了」。
+   * 之后 ssh 会阻塞在 `write` 上，表现是「隧道建着建着就不转发了」。stderr
+   * 那条抽干时**留尾巴**，理由见 {@link drainKeepingTail}。
+   *
+   * **返回的是句柄不是端口。** 第一版只返回端口、把 ssh 子进程的句柄丢掉，
+   * 于是隧道自己退出之后没有任何人发现：本地口没人听，就绪循环对着它拨满
+   * 整个预算，最后写下「节点在 X 上起来了但拨不通」—— 一条关于被测系统的
+   * 结论，而坏的是套件自己那条链路。这正是 issue #96 要挡的形态。
    */
   async #tunnel(
     ctx: ScenarioContext,
     ssh: string,
     remotePort: number,
-  ): Promise<number> {
+  ): Promise<TunnelHandle> {
     const localPort = await ctx.allocPort()
     const child = Bun.spawn(
       [
@@ -1828,11 +1877,25 @@ export class FleetDriver implements AcceptanceDriver {
       { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
     )
     void drain(child.stdout)
-    void drain(child.stderr)
+    // stderr 留尾巴：这条隧道自己死掉时，临死前那句话是唯一说得清「为什么拨不
+    // 通」的证据。只抽不留等于把它扔了。
+    const stderr = drainKeepingTail(child.stderr)
     ctx.cleanup(() => {
       child.kill('SIGKILL')
     })
-    return localPort
+    return {
+      localPort,
+      // `exitCode` 在进程还活着时是 `null`。**这一句不是锦上添花**：隧道死了
+      // 之后本地口就没人听，而拨号方看到的只是 `1006 Failed to connect` ——
+      // 与「节点根本没起来」长得一模一样。不问它，一次套件侧的链路故障就会被
+      // 写成一条关于被测系统的结论，那正是 issue #96 立规矩要挡的形态。
+      alive: () => child.exitCode === null,
+      exitCode: () => child.exitCode,
+      diagnose: () =>
+        `到 ${ssh} 的转发隧道（本地 ${String(localPort)} → ${String(remotePort)}）` +
+        `已退出 (${String(child.exitCode)})` +
+        `${stderr.text().trim() === '' ? '' : `：${stderr.text().trim().slice(-600)}`}`,
+    }
   }
 
   /**
@@ -2462,6 +2525,36 @@ function requireDisposable(node: NodeHandle, what: string): DisposableNode {
     )
   }
   return disposable
+}
+
+/**
+ * 抽干一条流，但把最后若干字节留下来给错误消息用。
+ *
+ * `drain` 之所以存在，是因为管道写满之后 ssh 会阻塞在 `write` 上（见 `#tunnel`
+ * 的头注）。但**只抽不留**的代价是：隧道自己死掉时，它临死前写的那句话也一起
+ * 被扔了 —— 而那句话恰恰是唯一说得清「为什么拨不通」的证据。
+ */
+function drainKeepingTail(
+  stream: ReadableStream<Uint8Array>,
+  limit = 2_000,
+): { readonly text: () => string } {
+  let tail = ''
+  void (async () => {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value !== undefined) {
+          tail = (tail + decoder.decode(value, { stream: true })).slice(-limit)
+        }
+      }
+    } catch {
+      // 进程被 kill 时流以异常收场，那不是观察结果。
+    }
+  })()
+  return { text: () => tail }
 }
 
 /** 把一条流读干净并丢掉 —— 只为让写它的那一端不被管道憋住。 */
