@@ -22,7 +22,7 @@
  * 不去真跑 `bun install`——那既慢，也会把两件事的失败混在一个断言里。
  */
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -60,7 +60,67 @@ function stub(binDir: string, name: string, body: string): void {
 }
 
 /**
- * 一次性树 + 一个只有桩的 bin 目录。
+ * 三个桩**整个文件只写一次，并在这里就先各跑一次**。
+ *
+ * 与 `beta/beta-up-args.test.ts` 顶部同一条结论（issue #56 / #102）：macOS 对**新写出
+ * 来的可执行文件的第一次 exec** 要走一遍策略扫描（Gatekeeper/`syspolicyd`），同一个
+ * inode 第二次起就只剩约 2 ms。空载实测这台机上的悬崖是 **470 ms vs 2.6 ms**，约 180
+ * 倍；而它**没有上界**——机器一忙就涨，同期在 `demo/lib/acceptance/` 上量到的新 inode
+ * 首执行是 **1.8–2.5 秒**（同一 inode 再执行仍是 ~5 ms）。
+ *
+ * 原先每条用例各写一份桩，于是 `scaffold(false)` 的用例白付 2 次扫描、
+ * `scaffold(true)` 的付 3 次。本机空载实测正好对上：前者 1.34 s、后者 1.90 s。单条用例
+ * 的预算是 **5 000 ms**（`bunfig.toml` 里那个 `[test] timeout = 10000`
+ * Bun 1.3.13 根本不读），所以按「忙时 2 秒一次」算，三次扫描就已经过线。完整 `verify`
+ * 跑到第 61 个分片时机器早被前面的分片喂热，正是那个价位——issue #102 里这个文件三条
+ * 同时红，全部卡在 5002 ms。
+ *
+ * 三个桩都**没有任何每用例状态**：`bun` 与 `git` 只按 `$1` 答一个常量串，`node` 只
+ * `echo` 一个常量，都不写文件、不读环境。所以共享 inode 不会让用例之间互相看见。**新增
+ * 任何需要被直接 exec 的桩，都要挂在这里，不要放进 `scaffold()`。**真要记每用例的账，
+ * 走 `beta-up-args.test.ts` 那条路：桩本身仍然只有一份，把落点用环境变量
+ * （那边是 `FAKE_SYSTEMCTL_LOG`）指到本条用例自己的临时目录里。
+ *
+ * `node` 单独占一个目录，而不是「有 node 的用例多写一份桩」：`withNode` 于是变成
+ * 「PATH 上要不要多前置一个目录」，两档共用同一对 bun/git inode，全文件一共只付 3 次
+ * 扫描。
+ */
+const STUB_HOME = mkdtempSync(join(tmpdir(), 'qianmo-bootstrap-bin-'))
+const STUB_BIN = join(STUB_HOME, 'bin')
+const NODE_BIN = join(STUB_HOME, 'bin-node')
+mkdirSync(STUB_BIN, { recursive: true })
+mkdirSync(NODE_BIN, { recursive: true })
+// `bun --version` 要报出 pin；其余子命令（install / run build / test）一律成功返回，
+// 用例关心的是「走没走到那一步」，不是那几步自己对不对。
+stub(
+  STUB_BIN,
+  'bun',
+  `[ "$1" = "--version" ] && { echo "${BUN_PIN}"; exit 0; }\nexit 0`,
+)
+// git 只答 --version；`rev-parse` 失败正是「这棵树不是仓库」那一支，与部署机一致。
+stub(
+  STUB_BIN,
+  'git',
+  '[ "$1" = "--version" ] && { echo "git version 2.43.0"; exit 0; }\nexit 1',
+)
+stub(NODE_BIN, 'node', 'echo v22.0.0')
+// 首执行扫描在**模块作用域**付掉：这里没有任何用例的超时计时器在跑。放进 `beforeAll`
+// 是不够的——那时钟已经在走了。少了这三行，文件里前三条要 exec 桩的用例仍然要各自扛
+// 一条没有上界的尾巴。
+for (const path of [
+  join(STUB_BIN, 'bun'),
+  join(STUB_BIN, 'git'),
+  join(NODE_BIN, 'node'),
+]) {
+  Bun.spawnSync([path, '--version'], { stdout: 'ignore', stderr: 'ignore' })
+}
+
+afterAll(() => {
+  rmSync(STUB_HOME, { recursive: true, force: true })
+})
+
+/**
+ * 一次性树 + 该用例要用的 PATH 前缀。
  *
  * `withNode` 是正面对照：少了它，一个「永远报缺 node」的实现也能让①②全绿。
  */
@@ -73,23 +133,7 @@ async function scaffold(
   await place(root, 'demo/env/bootstrap.sh', BOOTSTRAP_SOURCE)
   writeFileSync(join(root, '.tool-versions'), `bun ${BUN_PIN}\n`)
 
-  const bin = join(root, 'stub-bin')
-  mkdirSync(bin, { recursive: true })
-  // `bun --version` 要报出 pin；其余子命令（install / run build / test）一律成功返回，
-  // 用例关心的是「走没走到那一步」，不是那几步自己对不对。
-  stub(
-    bin,
-    'bun',
-    `[ "$1" = "--version" ] && { echo "${BUN_PIN}"; exit 0; }\nexit 0`,
-  )
-  // git 只答 --version；`rev-parse` 失败正是「这棵树不是仓库」那一支，与部署机一致。
-  stub(
-    bin,
-    'git',
-    '[ "$1" = "--version" ] && { echo "git version 2.43.0"; exit 0; }\nexit 1',
-  )
-  if (withNode) stub(bin, 'node', 'echo v22.0.0')
-  return { root, bin }
+  return { root, bin: withNode ? `${NODE_BIN}:${STUB_BIN}` : STUB_BIN }
 }
 
 interface ShellResult {
@@ -108,6 +152,7 @@ function runBootstrap(
     {
       cwd: root,
       // PATH 里**只有**桩目录和系统目录：开发机上装没装 node 不该改变结论。
+      // `bin` 可能是两个目录（有 node 那一档），所以它本身就是一段 PATH 片段。
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root },
       stdout: 'pipe',
       stderr: 'pipe',
