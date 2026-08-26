@@ -32,7 +32,7 @@ import { FRAME_VERSION, FrameType } from '@qianmo/transport'
 import { Checks } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import { rawDial } from '../local/dial.js'
-import { sendBurst, sendEnvelope } from '../local/send.js'
+import { sendBurst, sendEnvelope, receiptScene } from '../local/send.js'
 import type { Scenario } from '../types.js'
 import {
   ADDRESS,
@@ -145,6 +145,7 @@ export const limitsScenarios: readonly Scenario[] = [
         }),
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'accepted', 'receipt')
         .eq(result.receiptCode, undefined, 'receipt 的 code')
         .done('未过期投递被接收')
@@ -174,6 +175,7 @@ export const limitsScenarios: readonly Scenario[] = [
         message: wake({ hops }),
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(hops.length, LIMITS.maxHops + 1, '构造出的跳数')
         .expect(
           !hops.includes(NODE),
@@ -211,6 +213,7 @@ export const limitsScenarios: readonly Scenario[] = [
         message: wake({ hops }),
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(hops.length, LIMITS.maxHops, '构造出的跳数')
         .eq(result.receipt, 'accepted', 'receipt')
         .eq(result.receiptCode, undefined, 'receipt 的 code')
@@ -245,6 +248,7 @@ export const limitsScenarios: readonly Scenario[] = [
         timeoutMs: 30_000,
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .note('信封字节数', `${bytes}（上限 ${LIMITS.maxMessageBytes}）`)
         .expect(
           bytes > LIMITS.maxMessageBytes &&

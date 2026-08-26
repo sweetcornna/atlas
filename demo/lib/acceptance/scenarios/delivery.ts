@@ -17,7 +17,7 @@
 
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { mint, sendEnvelope } from '../local/send.js'
+import { mint, sendEnvelope, receiptScene } from '../local/send.js'
 import type { Scenario } from '../types.js'
 import {
   ADDRESS,
@@ -62,6 +62,7 @@ export const deliveryScenarios: readonly Scenario[] = [
         taskId,
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_UNKNOWN_AGENT', 'error code')
         .eq(
@@ -94,6 +95,7 @@ export const deliveryScenarios: readonly Scenario[] = [
         to: 'qianmo://elsewhere/main',
       })
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'rejected', 'receipt')
         .eq(result.errorCode, 'E_UNKNOWN_AGENT', 'error code')
         .eq(

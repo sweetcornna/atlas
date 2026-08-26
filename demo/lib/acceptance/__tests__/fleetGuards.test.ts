@@ -21,6 +21,7 @@
 
 import { describe, expect, it } from 'bun:test'
 import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import { getDialTimeoutScale, setDialTimeoutScale } from '../local/dial.js'
 import { runScenario } from '../runner.js'
 import type {
   AcceptanceDriver,
@@ -206,6 +207,68 @@ describe('超时倍率', () => {
     // 4 = 显式给的（真机腿默认，或 --timeout-scale 压过它之后的值）；
     // 1 = 缺省。两个都写死：倍率被谁改成只作用于场景预算时这里会红。
     expect(seen).toEqual([4, 1])
+  })
+})
+
+/**
+ * 拨号那一层的墙钟也吃 `--timeout-scale`（issue #91 的同一类，第 8 轮那条）。
+ *
+ * ## 这条钉的是什么
+ *
+ * `settleMs`（握手后再收多久帧）与 `timeoutMs` 是墙钟等待，跟场景预算管的是
+ * 同一件事：慢机器上每一格都要一起放大。改造前它们是**固定常数** —— 真机腿
+ * 场景预算乘 4，收帧窗口还是 3 s，于是最大的那条信封（264 KB）在 aarch64 上
+ * 回执还没到窗口就关了，报出来是三条关于 receipt 的断言不成立，读起来像产品坏了。
+ *
+ * ## 为什么钉在 `rawDial` 而不是调用点
+ *
+ * 24 个 `rawDial` 调用点、37 处 `settleMs` 字面量。issue #99 已经买过这条教训：
+ * 三十多个调用点靠人挑一遍必漏一个。乘法只发生在 `rawDial` 里，调用点一个都不
+ * 用改，也就一个都漏不掉 —— 这条用例连着钉「乘了」和「只乘一次」。
+ */
+describe('拨号层的墙钟也吃倍率（issue #91 的同一类）', () => {
+  it('runScenario 一进来就把倍率交给拨号层 —— 所有路径的唯一入口', async () => {
+    setDialTimeoutScale(1)
+    const seen: number[] = []
+    const scenario: Scenario = {
+      id: 'launcher/records-dial-scale',
+      dimension: 'launcher',
+      title: '记一下拨号层此刻的倍率',
+      expected: '等于本轮的 --timeout-scale',
+      requires: [],
+      run() {
+        seen.push(getDialTimeoutScale())
+        return Promise.resolve({ ok: true, actual: 'ok', evidence: [] })
+      },
+    }
+    await runScenario(scenario, driverWith(false), 5_000, false, 4)
+    await runScenario(scenario, driverWith(false), 5_000, false, 0.5)
+    expect(seen).toEqual([4, 0.5])
+  })
+
+  it('倍率没给就是 1 —— 本地腿逐字节不变', async () => {
+    setDialTimeoutScale(9)
+    const scenario: Scenario = {
+      id: 'launcher/records-dial-scale-default',
+      dimension: 'launcher',
+      title: '不给倍率时拨号层是多少',
+      expected: '1',
+      requires: [],
+      run() {
+        expect(getDialTimeoutScale()).toBe(1)
+        return Promise.resolve({ ok: true, actual: 'ok', evidence: [] })
+      },
+    }
+    const r = await runScenario(scenario, driverWith(false), 5_000, false)
+    expect(r.outcome).toBe('pass')
+  })
+
+  it('非正数不许把等待抹成 0 —— 那会让每一次拨号立刻超时', () => {
+    setDialTimeoutScale(0)
+    expect(getDialTimeoutScale()).toBe(1)
+    setDialTimeoutScale(-3)
+    expect(getDialTimeoutScale()).toBe(1)
+    setDialTimeoutScale(1)
   })
 })
 

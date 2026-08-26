@@ -24,6 +24,7 @@ import {
   newIssuer,
   sendEnvelope,
   withBrokenSignature,
+  receiptScene,
 } from '../local/send.js'
 import type { Scenario, ScenarioContext } from '../types.js'
 import {
@@ -108,6 +109,7 @@ export const capabilityScenarios: readonly Scenario[] = [
       const cap = mint(party.issuer, { sub: ADDRESS, aud: NODE, taskId })
       const result = await fixture.send(cap, taskId)
       return new Checks()
+        .note('回执现场', receiptScene(result))
         .eq(result.receipt, 'accepted', 'receipt')
         .eq(result.errorCode, undefined, 'error code')
         .done('有效 token 被接收')

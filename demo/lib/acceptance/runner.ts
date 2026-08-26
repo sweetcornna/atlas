@@ -34,6 +34,7 @@ import { join } from 'node:path'
 import { instrumentDriver } from './driverProbe.js'
 import { summarize } from './report-core.js'
 import { isTransportError } from './transport.js'
+import { setDialTimeoutScale } from './local/dial.js'
 import type {
   AcceptanceDriver,
   Evidence,
@@ -146,6 +147,11 @@ export async function runScenario(
   keepWorkdir: boolean,
   timeoutScale = 1,
 ): Promise<ScenarioResult> {
+  // 拨号那一层的墙钟同乘 —— **设在这里而不是外层循环**，因为 `runScenario`
+  // 是所有路径（含单测直接调）的唯一入口，设在别处就会有路径漏掉。
+  // 理由见 `local/dial.ts` 的 {@link dialTimeoutScale}。
+  setDialTimeoutScale(timeoutScale)
+
   const base = {
     id: scenario.id,
     dimension: scenario.dimension,

@@ -79,6 +79,34 @@ export function buildMessage(options: SendOptions): QianmoMessage {
   return withHop(draft, options.fromNode)
 }
 
+/**
+ * 回执缺席时的现场 —— 一行话说清坏的是哪一侧。
+ *
+ * `SendResult` 一直带着 `closeCode` / `dialError` / `frames`，而断言 receipt 的
+ * 15 条场景里有 13 条一个都不 note。回执没来的时候，报告上只剩三行空的 FAILED，
+ * 分不出这两件事：
+ *
+ *   · **socket 半路死了** —— 套件自己的链路，与被测系统无关（issue #96 那一类）；
+ *   · **产品收了却不吭声** —— 真的是产品缺陷。
+ *
+ * 这两件事的处置完全相反，而报告上长得一样。第 8 轮那条
+ * `limits/envelope-too-large` 就是这么花掉一小时的（issue #109）。
+ *
+ * 旁边的 `limits/frame-over-socket-cap` 早就 note 了 close 与收到的帧 ——
+ * 那是对的做法，这个 helper 只是让其余 13 条也做得起。
+ */
+export function receiptScene(result: SendResult): string {
+  const parts = [
+    `close=${result.closeCode === undefined ? '-' : String(result.closeCode)}`,
+    `dialError=${result.dialError ?? '-'}`,
+    `帧 ${String(result.frames.length)} 条`,
+  ]
+  if (result.frames.length > 0) {
+    parts.push(result.frames.join(' | ').slice(0, 600))
+  }
+  return parts.join(' · ')
+}
+
 export async function sendEnvelope(options: SendOptions): Promise<SendResult> {
   const message = buildMessage(options)
   const auth: RawAuth = { kind: 'psk', psk: options.psk }

@@ -85,8 +85,14 @@ export interface RawDialOptions {
   readonly sendBeforeAuth?: readonly unknown[]
   /** 握手完成后要发的帧。 */
   readonly sendAfterReady?: readonly unknown[]
-  /** 握手完成后再等多久收帧（默认 1500ms）。 */
+  /**
+   * 握手完成后再等多久收帧（默认 1500ms）。
+   *
+   * **写的是倍率为 1 时的值**，实际等待会乘 {@link dialTimeoutScale} —— 别在
+   * 调用点自己乘一遍，那会变成平方。
+   */
   readonly settleMs?: number
+  /** 同上，写倍率为 1 时的值。 */
   readonly timeoutMs?: number
   /**
    * 提前收工判据：握手之后每收到一帧就问一次，答 true 就立刻结束。
@@ -107,9 +113,44 @@ export interface RawDialOptions {
  * 永不抛：拨不通也是一种观察，写进 `error` 字段。抛出去会被 runner 记成
  * `error`（套件自己炸了），而「连不上」通常是被测系统的答案。
  */
+/**
+ * 拨号这一层的墙钟倍率 —— 由 runner 每轮开跑前设一次。
+ *
+ * ## 为什么是一个环境值，而不是每个调用点自己乘
+ *
+ * `settleMs` / `timeoutMs` 是**墙钟等待**，跟 `--timeout-scale` 管的是同一件
+ * 事（issue #91：慢机器上每一格都要一起放大）。但它们散在 24 个 `rawDial`
+ * 调用点、37 处 `settleMs` 字面量上 —— 而 issue #99 已经用两个小时买过这条
+ * 教训：**三十多个调用点靠人挑一遍必漏一个，漏掉的那个要到下一次真跑才发现**。
+ *
+ * 所以乘法只发生在这一处。调用点一个都不用改，也就一个都漏不掉。
+ *
+ * ## 它修的是什么
+ *
+ * 第 8 轮真机腿那条 `limits/envelope-too-large`：264 KB 的信封发过去，节点
+ * **确实**回了 `E_TOO_LARGE`，但固定 3 s 的收帧窗口在 aarch64 小机器上不够，
+ * 回执还没到窗口就关了。报出来是「receipt 应为 rejected」三条断言不成立 ——
+ * 一条读起来像产品坏了、实际是套件自己等太短的红。把窗口钉成 200 ms 可以
+ * 逐字复现同一条错误，那就是它。
+ *
+ * 与第 4 轮 `console/registry-lease-expires-and-renews` 是同一个病：**场景侧
+ * 的硬编码墙钟不吃倍率**。那次修的是租约 TTL，这次修的是收帧窗口。
+ */
+let dialTimeoutScale = 1
+
+/** runner 每轮开跑前设一次。见 {@link dialTimeoutScale} 的头注。 */
+export function setDialTimeoutScale(scale: number): void {
+  dialTimeoutScale = scale > 0 ? scale : 1
+}
+
+/** 当前倍率 —— 只给测试与自检看。 */
+export function getDialTimeoutScale(): number {
+  return dialTimeoutScale
+}
+
 export async function rawDial(options: RawDialOptions): Promise<DialProbe> {
-  const timeoutMs = options.timeoutMs ?? 8_000
-  const settleMs = options.settleMs ?? 1_500
+  const timeoutMs = (options.timeoutMs ?? 8_000) * dialTimeoutScale
+  const settleMs = (options.settleMs ?? 1_500) * dialTimeoutScale
   const channelId = options.channelId ?? newChannelId()
   const frames: string[] = []
 
