@@ -36,6 +36,12 @@ H 腿会按 `peers.conf` 决定每个节点怎么拨：**没有 `node` 坐标行
 ./demo/env/beta/beta-smoke.sh --role host                  # H 上：DoD① 的四条判据都在这里
 ```
 
+换产物（**只换产物，不起进程**）`./demo/env/beta/beta-deploy.sh`。它带保留策略（`--keep`），
+顺序是先清后装 —— 空间在开始拷贝之前腾出来，不够就一个字节都不动。**给节点滚产物用
+`--only dist,demo`**：部署树各机形状不同，有的树里还压着一整棵源码检出，整棵换会把它换走
+（脚本会在整棵换前比一次，覆盖不住就拒绝）。树上有进程跑着时它拒绝换 —— 先 `beta-down.sh`。
+两种模式、五条护栏与各自的理由都写在脚本头注里，这里不复制。
+
 停机 `./demo/env/beta/beta-down.sh`（`beta-down.sh <名字>` 只停一个，即 §6 L0 的第①步；
 在 H 上给一个铺过链路的节点名，它的隧道与镜像 timer 也一起停），
 回到干净运行态 `./demo/env/beta/beta-reset.sh`（`--purge-links` 连链路与 H 腿的生成物一起删，
