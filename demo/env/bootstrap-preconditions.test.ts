@@ -23,7 +23,13 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -44,6 +50,51 @@ afterEach(() => {
     rmSync(value, { recursive: true, force: true })
 })
 
+/**
+ * 每个可执行文件**整份文件只写一次**，用例里落的是指向它的软链（issue #102）。
+ *
+ * ## 为什么
+ *
+ * macOS 对**每个新写出来的可执行 inode** 收一次首次执行策略扫描
+ * （Gatekeeper / `syspolicyd`）。本机实测：
+ *
+ * macOS 对新写出来的可执行文件收一次首次执行检查（Gatekeeper / `syspolicyd`）。
+ * **它的代价不是一个常数** —— 机器空闲时全新内容约 70–100 ms，而机器一忙实测
+ * 涨到 1.8–2.5 s，**没有上限**；指向一个已经执行过的 inode 的软链稳定在 4.5 ms
+ * 上下。所以「每条用例现写一个可执行文件」在本地几乎看不出来，一到跑满的
+ * `verify` 或 CI 上就会把用例自己的超时预算吃穿 —— 表现为「本该 pass 的用例以
+ * 超时收场」，与被测逻辑毫无关系。
+ *
+ * 这份文件 6 条用例，每条 `scaffold()` 要写 4–5 个可执行文件（两个脚本 + 两三个
+ * bin 桩），全是新 inode —— 每条用例白付近十秒扫描，而 Bun 的单测预算是 **5 s**
+ * （1.3.13 不读 `bunfig` 的 `[test] timeout`）。于是机器一忙这三条最先倒。
+ *
+ * 这些文件的内容**全都是固定的**（两个脚本是仓库原文，桩的 body 只有那两三种），
+ * 所以可以在模块作用域各写一次、当场预热，用例里只落软链。
+ *
+ * `bootstrap.sh` / `common.sh` 靠 `${BASH_SOURCE[0]}` 自定位，而 **bash 不解析
+ * 软链** —— `BASH_SOURCE[0]` 给的是软链自己的路径，于是 `dirname` 仍落在这条
+ * 用例的树里。软链因此不会把它们的 `REPO_DIR` 带偏。
+ */
+const SCAN_ONCE_DIR = mkdtempSync(join(tmpdir(), 'qianmo-bootstrap-shared-'))
+const scanOnce = new Map<string, string>()
+
+/** 同样内容只写一个 inode；第一次写完当场预热，把扫描付在用例计时器之外。 */
+function sharedExecutable(key: string, text: string): string {
+  const hit = scanOnce.get(key)
+  if (hit !== undefined) return hit
+  const path = join(SCAN_ONCE_DIR, key)
+  writeFileSync(path, text, { mode: 0o755 })
+  // **预热必须在这里**，不能等到用例里 —— 那时超时计时器已经在跑了。
+  Bun.spawnSync([path, '--qianmo-warmup'], {
+    stdout: 'ignore',
+    stderr: 'ignore',
+    env: { ...process.env, QIANMO_BOOTSTRAP_WARMUP: '1' },
+  })
+  scanOnce.set(key, path)
+  return path
+}
+
 async function place(
   root: string,
   relative: string,
@@ -52,11 +103,21 @@ async function place(
   const text = await Bun.file(from).text()
   const target = join(root, relative)
   mkdirSync(dirname(target), { recursive: true })
-  writeFileSync(target, text, { mode: 0o755 })
+  symlinkSync(sharedExecutable(relative.replaceAll('/', '_'), text), target)
 }
 
 function stub(binDir: string, name: string, body: string): void {
-  writeFileSync(join(binDir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  symlinkSync(
+    sharedExecutable(`stub_${name}_${hashBody(body)}`, `#!/bin/sh\n${body}\n`),
+    join(binDir, name),
+  )
+}
+
+/** 桩的 body 只有那两三种，用它做键就够把同内容折成一个 inode。 */
+function hashBody(body: string): string {
+  let h = 0
+  for (const ch of body) h = (h * 31 + ch.charCodeAt(0)) | 0
+  return (h >>> 0).toString(36)
 }
 
 /**

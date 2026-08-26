@@ -380,6 +380,20 @@ const FLEET_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
  * 为什么从 `ctx` 取而不是在这里读 `FLEET_TIMEOUT_SCALE`：`--timeout-scale`
  * 可以压过那个默认值（PR #73），驱动自己去读常量就会和场景预算用上两个不同
  * 的倍率 —— 一份倍率、一个出处，出处是 runner。
+ *
+ * ## 跑在**远端**的那种预算也算（issue #91 ②）
+ *
+ * 起一次性节点 / 一次性控制台那两趟里，「等 banner 落地」的轮询是拼进远端
+ * 脚本的一句 `for _ in $(seq 1 N); do … sleep 0.5; done`。远端取不到 `ctx`，
+ * 所以倍率必须**在 runner 这边算成拍数**再拼进去（{@link remotePollTicks}）；
+ * 那一趟 ssh 自己的墙钟预算（{@link REMOTE_LAUNCH_SSH_BUDGET_MS}）同乘。
+ * 两个数一起乘才对：只乘 ssh 那个，远端仍然 60 s 就放弃、banner 读空 → 报
+ * 「节点没起来」；只乘远端那个，ssh 会在远端还在轮询时被 SIGKILL → 报成一次
+ * 链路失败。
+ *
+ * **`#killGroup` / `#killByPidFile` 里那两个 `seq 1 20` 不在这条纪律里**：
+ * 它们等的是「刚被 `kill -TERM` 的那个本地进程死掉没有」，不是一次就绪竞速，
+ * 而且后面紧跟一刀 `kill -KILL` 兜底 —— 等满 5 s 不会把任何东西记成红。
  */
 
 /** 一次性节点「拨得通了没有」与一次性控制台 `/v0/health` 的等待基准。 */
@@ -387,6 +401,50 @@ const DISPOSABLE_READY_BUDGET_MS = 60_000
 
 /** 反向隧道「通了没有」的等待基准（远端 curl 探一次，每拍一次 SSH 往返）。 */
 const REVERSE_TUNNEL_READY_BUDGET_MS = 30_000
+
+/**
+ * 远端「等 banner 落地」的轮询预算基准 —— 一次性节点与一次性控制台共用。
+ *
+ * **这一条跑在远端**（`for _ in $(seq 1 N); do … sleep 0.5; done`），所以倍率
+ * 没法在那边现取：要在 runner 这边先算成拍数，再把那个数拼进脚本。见
+ * {@link remotePollTicks}。
+ *
+ * 轮询之所以放在远端而不是每 0.5 s 往返一次 SSH：经 IAP 的那台一次往返要一秒
+ * 上下，轮询放在 runner 侧等于给每个节点加半分钟。
+ */
+const REMOTE_BANNER_POLL_BUDGET_MS = 60_000
+
+/** 远端轮询的一拍（脚本里那个 `sleep 0.5`）。 */
+const REMOTE_BANNER_POLL_INTERVAL_MS = 500
+
+/**
+ * 起进程那一趟 ssh 自己的墙钟预算基准。
+ *
+ * **必须宽于 {@link REMOTE_BANNER_POLL_BUDGET_MS}**：远端脚本还在轮询、这边就
+ * 把 ssh SIGKILL 掉的话，一次「远端起得慢」会被记成一次链路失败 —— 方向正好
+ * 反了。两者乘的是同一个倍率，所以这条余量在任何倍率下都成立（护栏见
+ * `fleetTransport.test.ts`）。
+ */
+const REMOTE_LAUNCH_SSH_BUDGET_MS = 120_000
+
+/**
+ * 远端轮询要跑几拍 —— 倍率在 runner 这边算好了再拼进脚本。
+ *
+ * 至少一拍：倍率给得极小（单测里用 0.02）时也不能拼出 `seq 1 0`，那会让远端
+ * 一次都不看就往下走，于是「起得慢」变成「没起来」。
+ */
+function remotePollTicks(timeoutScale: number): number {
+  return Math.max(
+    1,
+    Math.round(
+      (REMOTE_BANNER_POLL_BUDGET_MS * timeoutScale) /
+        REMOTE_BANNER_POLL_INTERVAL_MS,
+    ),
+  )
+}
+
+/** 远端轮询那句 `sleep`，秒为单位。 */
+const REMOTE_POLL_SLEEP_SEC = String(REMOTE_BANNER_POLL_INTERVAL_MS / 1_000)
 
 /**
  * 采一台机器的「你是哪一版」要等多久。
@@ -652,17 +710,17 @@ export class FleetDriver implements AcceptanceDriver {
           `>'${shellQuote(outLog)}' 2>'${shellQuote(errLog)}' </dev/null &`,
         `p=$!`,
         `printf '%s\\n' "$p" > '${shellQuote(pidFile)}'`,
-        // 在**远端**轮询 banner，而不是每 0.5 s 往返一次 SSH：经 IAP 的那台
-        // 一次往返要一秒上下，轮询放在 runner 侧等于给每个节点加半分钟。
-        `for _ in $(seq 1 120); do`,
+        // 在**远端**轮询 banner，理由见 {@link REMOTE_BANNER_POLL_BUDGET_MS}。
+        // 拍数由 runner 这边按倍率算好再拼进来 —— 远端取不到 `ctx`。
+        `for _ in $(seq 1 ${String(remotePollTicks(ctx.timeoutScale))}); do`,
         `  if grep -q '"publicKey"' '${shellQuote(outLog)}'; then break; fi`,
         `  if ! kill -0 "$p" 2>/dev/null; then break; fi`,
-        `  sleep 0.5`,
+        `  sleep ${REMOTE_POLL_SLEEP_SEC}`,
         `done`,
         `printf 'node-pid=%s\\n' "$p"`,
       ],
       `在 ${machine.label} 上起一次性节点 ${spec.name}`,
-      { timeoutMs: 120_000 },
+      { timeoutMs: REMOTE_LAUNCH_SSH_BUDGET_MS * ctx.timeoutScale },
     )
     // banner 是纯读一次日志。**这一条必须能分清「读不到」和「里面没有」** ——
     // 一次 rc=255 让 stdout 为空，于是下面那句会说「节点没有起来」，而节点
@@ -1261,15 +1319,15 @@ export class FleetDriver implements AcceptanceDriver {
         `p=$!`,
         `printf '%s\\n' "$p" > '${shellQuote(pidFile)}'`,
         // banner 里带着两枚 token，所以判据是 `admin-token` 那一行落地 ——
-        // 与本地腿同一条。轮询放在远端，理由同一次性节点那里。
-        `for _ in $(seq 1 120); do`,
+        // 与本地腿同一条。轮询放在远端、拍数按倍率算，理由同一次性节点那里。
+        `for _ in $(seq 1 ${String(remotePollTicks(ctx.timeoutScale))}); do`,
         `  if grep -q 'admin-token' '${shellQuote(outLog)}'; then break; fi`,
         `  if ! kill -0 "$p" 2>/dev/null; then break; fi`,
-        `  sleep 0.5`,
+        `  sleep ${REMOTE_POLL_SLEEP_SEC}`,
         `done`,
       ],
       `在 ${machine.label} 上起一次性控制台`,
-      { timeoutMs: 120_000 },
+      { timeoutMs: REMOTE_LAUNCH_SSH_BUDGET_MS * ctx.timeoutScale },
     )
 
     // 两条都是纯读、都接重试。`readOut` 更是承重的：banner 里带着两枚 token，

@@ -20,17 +20,38 @@
  * `Authenticated to` —— 那一行只在密钥交换 + 认证都完成之后才打印。
  */
 
+/**
+ * 场景预算一律写 30 s，不是 4 s（issue #102 的邻居）。
+ *
+ * 预算是**上限**，这些用例没有一条靠它到期来断言 —— 而 4 s 恰好卡在最坏路径的
+ * 和上：`#sshRetry` 打满（退避 750 + 1500 ms）+ 假 `ssh` 起停 + SSH 复用建
+ * master 那几趟，再加上 macOS 对每个新写的可执行文件收的首次执行策略扫描
+ * （代价不是常数：空闲时约 70–100 ms，机器一忙实测涨到 1.8–2.5 s，没有上限）。
+ * 完整 `verify` 里机器跑热之后就会撞墙，表现为「本该 pass 的用例以场景超时收
+ * 场」，与被测逻辑毫无关系。
+ */
 import { afterEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import {
+  DEFAULT_SPAWN_MACHINES,
+  FleetDriver,
+  fleetConfigFromEnv,
+} from '../fleet/driver.js'
 import {
   CONTROL_DIR_BASE,
   CONTROL_DIR_PREFIX,
   CONTROL_PATH_TOKEN,
   CONTROL_PATH_TOKEN_BYTES,
+  MASTER_IDLE_PERSIST_S,
   MASTER_OPEN_TIMEOUT_MS,
   SshMultiplex,
   TUNNEL_NO_MUX_ARGS,
@@ -41,6 +62,7 @@ import {
   FLEET_TIMEOUT_SCALE,
   runScenario,
 } from '../runner.js'
+import { ALL_SCENARIOS } from '../registry.js'
 import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
 import type { Scenario, ScenarioResult } from '../types.js'
 
@@ -68,17 +90,43 @@ afterEach(async () => {
  * `script` 是 bash 片段，进来时 `$cmd` 已经是最后一个参数（命令连接上就是远端
  * 命令原文，master / `-O` 那几条上是目标名）。
  */
+/**
+ * 整份文件**只写这一个**可执行 inode —— 假 `ssh` 靠软链复用它（issue #102）。
+ *
+ * macOS 对新写出来的可执行文件收一次首次执行检查（Gatekeeper / `syspolicyd`）。
+ * **它的代价不是一个常数** —— 机器空闲时全新内容约 70–100 ms，而机器一忙实测
+ * 涨到 1.8–2.5 s，**没有上限**；指向一个已经执行过的 inode 的软链稳定在 4.5 ms
+ * 上下。所以「每条用例现写一个可执行文件」在本地几乎看不出来，一到跑满的
+ * `verify` 或 CI 上就会把用例自己的超时预算吃穿 —— 表现为「本该 pass 的用例以
+ * 超时收场」，与被测逻辑毫无关系。
+ *
+ * argv 日志的落点仍是**调用方给的外部路径**（`logPath()`），经一个不可执行的
+ * `logpath` 文件传给 shim；每条用例的行为同样写在不可执行的 `behavior.sh` 里，
+ * 按 `$0` 的目录去取，所以软链之间互不干扰。
+ */
+const SHIM_ROOT = mkdtempSync(join(tmpdir(), 'qm-ssh-shim-'))
+const SHIM_REAL = join(SHIM_ROOT, 'ssh-real')
+writeFileSync(
+  SHIM_REAL,
+  `#!/bin/bash\nargv="$*"\nd="$(dirname "$0")"\n` +
+    `if [ -f "$d/logpath" ]; then\n` +
+    `  printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> "$(cat "$d/logpath")"\n` +
+    `fi\n` +
+    `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
+  { mode: 0o755 },
+)
+writeFileSync(join(SHIM_ROOT, 'behavior.sh'), 'true\n')
+// **预热必须在模块作用域**：把那两秒扫描付在还没有任何用例计时器在跑的时候。
+Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
+
+/** 写一个假 `ssh`（软链 + 数据文件，不付扫描），返回它的绝对路径。 */
 function fakeSsh(script: string, log: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
-  writeFileSync(
-    bin,
-    `#!/bin/bash\nargv="$*"\n` +
-      `printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> '${log}'\n` +
-      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
-    { mode: 0o755 },
-  )
+  symlinkSync(SHIM_REAL, bin)
+  writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
+  writeFileSync(join(dir, 'logpath'), log)
   return bin
 }
 
@@ -221,7 +269,7 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     const result = await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, log), true),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -245,7 +293,7 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     const result = await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, log), false),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -268,14 +316,14 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, onLog), true),
-      4_000,
+      30_000,
       false,
       1,
     )
     await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, offLog), false),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -318,13 +366,15 @@ describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
 
   it('`ssh -N -R` 那条不共享 master', async () => {
     const log = logPath()
-    // 倍率 0.02：反向隧道预算 30 s → 600 ms，场景预算 120 s → 2.4 s。
+    // 倍率 0.1：反向隧道预算 30 s → 3 s，场景预算 120 s → 12 s。**不要再压回
+    // 0.02** —— 这条用例只想看那行 argv，而 2.4 s 的场景预算会在机器忙的时候先于
+    // 隧道起来就到期，`reverse.length` 于是为 0，红得与本意无关（实测飘出来过）。
     await runScenario(
       registryScenario,
       driver(fakeSsh(HAPPY, log), true),
       120_000,
       false,
-      0.02,
+      0.1,
     )
     const t = tally(log)
     const reverse = t.tunnels.filter(l => l.includes(' -R '))
@@ -345,7 +395,8 @@ describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
       ].join('\n'),
       log,
     )
-    await runScenario(consoleScenario, driver(bin, true), 120_000, false, 0.02)
+    // 倍率同上，理由见上一条用例。
+    await runScenario(consoleScenario, driver(bin, true), 120_000, false, 0.1)
     const t = tally(log)
     const forward = t.tunnels.filter(l => l.includes(' -L '))
     expect(forward.length).toBeGreaterThan(0)
@@ -412,7 +463,7 @@ describe('收尾真的把 master 拆了（issue #100 ③）', () => {
   it('dispose 逐台发 `-O exit`，复用目录随之消失', async () => {
     const log = logPath()
     const d = driver(fakeSsh(HAPPY, log), true)
-    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
     expect(d.multiplexedTargets()).toEqual(['fake-host'])
     const before = tally(log)
     const dir = before.commands[0]?.match(/ControlPath=(\S+)\//)?.[1]
@@ -427,6 +478,97 @@ describe('收尾真的把 master 拆了（issue #100 ③）', () => {
     expect(existsSync(String(dir))).toBe(false)
     expect(d.multiplexedTargets()).toEqual([])
   }, 60_000)
+})
+
+describe('SIGKILL 之后那条有界兜底：ControlPersist', () => {
+  it('只挂在建 master 那条上 —— 命令连接、`-O` 那两条、长命隧道都不带', async () => {
+    const log = logPath()
+    const d = driver(fakeSsh(HAPPY, log), true)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
+    await d.dispose()
+    const t = tally(log)
+    expect(t.masters).toHaveLength(1)
+    // ② 建 master 的 argv 里确实有它，而且是算出来的那个值。
+    for (const line of t.masters) {
+      expect(line).toContain(`ControlPersist=${String(MASTER_IDLE_PERSIST_S)}`)
+    }
+    // 别处一律不带：命令连接带了没有意义（它们不是 master），`-O exit` 带了
+    // 会让「拆」这件事看起来像在配置过期时间。
+    for (const line of [...t.commands, ...t.control, ...t.tunnels]) {
+      expect(line).not.toContain('ControlPersist')
+    }
+  }, 60_000)
+
+  it('① 正常路径仍是显式 `-O exit` 立刻拆 —— 一台一条，不等任何超时', async () => {
+    const log = logPath()
+    const d = driver(fakeSsh(HAPPY, log), true)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
+    const established = d.multiplexedTargets()
+    expect(established).toEqual(['fake-host'])
+
+    const startedAt = Date.now()
+    await d.dispose()
+    const elapsed = Date.now() - startedAt
+    const t = tally(log)
+    const exits = t.control.filter(l => l.includes('-O exit'))
+    // 建起来几台就拆几条，一条不少。
+    expect(exits).toHaveLength(established.length)
+    for (const target of established) {
+      expect(exits.some(l => l.endsWith(target))).toBe(true)
+    }
+    // 「立刻」= 拆的耗时与 `ControlPersist` 毫无关系（后者是 2 h）。
+    expect(elapsed).toBeLessThan(MASTER_IDLE_PERSIST_S * 1_000)
+    expect(elapsed).toBeLessThan(5_000)
+    expect(d.multiplexedTargets()).toEqual([])
+  }, 60_000)
+
+  it('③ 值必须宽于「一轮里同一台机器两次命令之间最长间隔」', () => {
+    // 这个间隔不是拍脑袋的：场景**顺序**跑，一次性进程的落机按场景轮转
+    // （`FleetDriver.#machineFor`），所以一台机器会被连着若干条场景跳过。
+    // 下面按**真实场景表**把那个上界算出来 —— 场景表长了、倍率大了、落机少
+    // 了，这条会先红，逼人重新推算，而不是让 master 在一轮跑到一半时过期。
+    const machineCaps = new Set([
+      'spawn-node',
+      'spawn-console',
+      'restart-node',
+      'run-launcher',
+      'local-ca-fixture',
+      'exec-node-cli',
+      'read-node-files',
+      'read-repo-source',
+      'attach-node',
+      'mirror-transport',
+    ])
+    const budgetOf = (scenario: Scenario): number =>
+      (scenario.timeoutMs ?? DEFAULT_SCENARIO_TIMEOUT_MS) * FLEET_TIMEOUT_SCALE
+    const machines = DEFAULT_SPAWN_MACHINES.length
+    expect(machines).toBeGreaterThan(0)
+    let cursor = 0
+    let clock = 0
+    let worstGapMs = 0
+    const lastTouched = new Map<number, number>()
+    for (const scenario of ALL_SCENARIOS) {
+      const touches = (scenario.requires ?? []).some(r => machineCaps.has(r))
+      if (touches) {
+        const machine = cursor++ % machines
+        const previous = lastTouched.get(machine)
+        if (previous !== undefined) {
+          worstGapMs = Math.max(worstGapMs, clock - previous)
+        }
+        lastTouched.set(machine, clock + budgetOf(scenario))
+      }
+      clock += budgetOf(scenario)
+    }
+    // 算出来是 56 min（115 条场景、四台落机、倍率 4）。
+    expect(worstGapMs).toBeGreaterThan(0)
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeGreaterThan(worstGapMs)
+    // 而且要留够余量 —— 顶着上限过一次不算过。
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeGreaterThan(worstGapMs * 2)
+    // 另一头也钉住：它是**兜底**，不是「等于没配」。`SIGKILL` 之后那几条到
+    // 生产机的闲置会话最多活这么久，超过一整轮墙钟上界就失去意义了。
+    const wholeRunMs = ALL_SCENARIOS.reduce((n, s) => n + budgetOf(s), 0)
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeLessThan(wholeRunMs)
+  })
 })
 
 describe('复用开关（issue #100 ④）', () => {

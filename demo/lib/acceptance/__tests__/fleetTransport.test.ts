@@ -21,9 +21,16 @@
  */
 
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { FRAME_VERSION, FrameType } from '@qianmo/transport'
 import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
 import {
   cleanupFailures,
@@ -49,15 +56,69 @@ const FAKE_ROOT = '/home/fake/.cache/qianmo-acceptance/run.AAAABBBB'
 const madeDirs: string[] = []
 /** 每个驱动都开着一个 SSH 复用目录，跑完要拆 —— 见 `afterEach`。 */
 const openDrivers: FleetDriver[] = []
+/** 本地假节点（`Bun.serve`）—— 每条用例跑完关掉。 */
+const openServers: { stop: () => void }[] = []
 
 afterEach(async () => {
   // `dispose` 是真机腿收尾的那一条（issue #100）：不拆的话每个驱动都会在 /tmp
   // 下留一个复用目录。这里连带把它当护栏用 —— 拆不干净在本地就看得见。
   for (const driver of openDrivers.splice(0)) await driver.dispose()
+  for (const server of openServers.splice(0)) server.stop()
   for (const dir of madeDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * 一个**只答握手**的本地假节点：开了就发 challenge，收到任何帧就回 ready。
+ *
+ * ## 它解掉的是「一次成功的 spawn 拿不到句柄」
+ *
+ * `#launchDisposable` 那条真路径最后一步是 `rawDial` —— 一次真的 WebSocket
+ * 握手。此前的结论是「假 ssh 搭不出来」，于是一次性句柄的 `stdout` / `stderr`
+ * / `alive` 三条（#98 那张表的第 5、6、7 条）只有结构棘轮、没有行为护栏。
+ *
+ * 复核之后那条结论**不成立**：就绪判据确实是驱动自己去 dial，但 dial 的目标
+ * 是 `endpoint`，而 `restartNode` 的 `endpoint` 来自**调用方给的句柄**，测试
+ * 可以随便填。于是握手不必真有节点：`ws` 客户端 + `Bun.serve` 的 WebSocket
+ * 服务端，按 `parseFrame` 认得的形状发两帧就够了 —— challenge 一帧、ready
+ * 一帧，`rawDial` 的 `authed` 就为真。
+ *
+ * **不校验 mac**：这个假节点不是被测对象，它只负责让「一次成功的启动」在单测
+ * 里真的发生。握手本身的对错由 `handshake` 那一整维场景去问真节点。
+ */
+function fakeNodeServer(): { readonly url: string; readonly stop: () => void } {
+  const server = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(request, self): Response | undefined {
+      if (self.upgrade(request)) return undefined
+      return new Response('expected a websocket upgrade', { status: 400 })
+    },
+    websocket: {
+      open(ws): void {
+        ws.send(
+          JSON.stringify({
+            t: FrameType.Challenge,
+            v: FRAME_VERSION,
+            nonce: 'acceptance-fake-node-nonce',
+          }),
+        )
+      },
+      message(ws): void {
+        ws.send(JSON.stringify({ t: FrameType.Ready, v: FRAME_VERSION }))
+      },
+    },
+  })
+  const handle = {
+    url: `ws://127.0.0.1:${String(server.port)}`,
+    stop: (): void => {
+      void server.stop(true)
+    },
+  }
+  openServers.push(handle)
+  return handle
+}
 
 /** 记一笔，好让 `afterEach` 把它的复用目录拆掉。 */
 function track(made: FleetDriver): FleetDriver {
@@ -81,16 +142,56 @@ function track(made: FleetDriver): FleetDriver {
  * 于是这里给它们一个恒成功的短路：本文件测的是**命令连接**上的分类，而
  * 「master 建不起来会怎样」在 `fleetSshMux.test.ts` 里单独钉。
  */
+/**
+ * 整份文件**只写这一个**可执行 inode —— 假 `ssh` 靠软链复用它（issue #102）。
+ *
+ * ## 为什么不能每条用例现写一个
+ *
+ * macOS 对**每个新写出来的可执行 inode** 收一次首次执行策略扫描
+ * （Gatekeeper / `syspolicyd`）。这台机器上实测：
+ *
+ * macOS 对新写出来的可执行文件收一次首次执行检查（Gatekeeper / `syspolicyd`）。
+ * **它的代价不是一个常数** —— 机器空闲时全新内容约 70–100 ms，而机器一忙实测
+ * 涨到 1.8–2.5 s，**没有上限**；指向一个已经执行过的 inode 的软链稳定在 4.5 ms
+ * 上下。所以「每条用例现写一个可执行文件」在本地几乎看不出来，一到跑满的
+ * `verify` 或 CI 上就会把用例自己的超时预算吃穿 —— 表现为「本该 pass 的用例以
+ * 超时收场」，与被测逻辑毫无关系。
+ *
+ * **指向同一个 inode 的软链走的是已扫描的快路，约 450 倍差距。**这份文件有
+ * 五十多处 `fakeSsh`，各写一个 inode 就是两分多钟的纯扫描，而这些钱全都记在
+ * 用例自己的超时预算里 —— 表现为「本该 pass 的用例以场景超时收场」，与被测
+ * 逻辑毫无关系（issue #102 是同一个病在 `demo/env` 下的另一份）。
+ *
+ * 每条用例自己的行为写进 `behavior.sh`，那是**数据文件、不可执行**，所以不
+ * 触发任何扫描；shim 按 `$0` 的目录去取它，于是软链之间互不干扰。
+ */
+const SHIM_ROOT = mkdtempSync(join(tmpdir(), 'qm-ssh-shim-'))
+const SHIM_REAL = join(SHIM_ROOT, 'ssh-real')
+writeFileSync(
+  SHIM_REAL,
+  `#!/bin/bash\nd="$(dirname "$0")"\n` +
+    `case " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
+    `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
+  { mode: 0o755 },
+)
+// 空行为文件，只为下面那次预热能跑通。
+writeFileSync(join(SHIM_ROOT, 'behavior.sh'), 'true\n')
+// **预热必须在模块作用域**：把那 2 秒扫描付在「还没有任何用例的超时计时器在
+// 跑」的时候。放进 `beforeAll` 就晚了。
+Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
+
+/**
+ * 写一个假 `ssh`，返回它的绝对路径。
+ *
+ * `script` 是 bash 片段，进来时 `$cmd` 已经是远端命令原文。落地的是一条指向
+ * {@link SHIM_REAL} 的**软链** + 一个不可执行的 `behavior.sh`，所以不付扫描。
+ */
 function fakeSsh(script: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
-  writeFileSync(
-    bin,
-    `#!/bin/bash\ncase " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
-      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
-    { mode: 0o755 },
-  )
+  symlinkSync(SHIM_REAL, bin)
+  writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
   return bin
 }
 
@@ -133,7 +234,12 @@ async function runOnce(
   sshBin: string,
   scenario = OPEN_LAUNCHER,
 ): Promise<ScenarioResult> {
-  return await runScenario(scenario, driver(sshBin), 4_000, false, 1)
+  // 预算是**上限**，不是这些用例要观察的东西 —— 没有一条靠 `runOnce` 超时来
+  // 断言。它必须宽到能装下最坏那条路径：`#sshRetry` 打满（退避 750 + 1500 ms）
+  // + 三次假 `ssh` 起停 + SSH 复用建 master 的那几趟（issue #100 之后多出来的）。
+  // 原先的 4 s 恰好卡在那个和上，于是「打满仍不通」那条会**间歇**地以场景超时
+  // 收场而不是 `errorKind=transport` —— 实测 8 轮里飘出来一次。
+  return await runScenario(scenario, driver(sshBin), 30_000, false, 1)
 }
 
 /** 结果里全部 `log` 证据拼成一段。 */
@@ -482,9 +588,14 @@ function flaky(
 }
 
 function newCounter(): string {
+  return tmpFile('calls')
+}
+
+/** 一个自己开目录的临时文件路径（跑完由 `afterEach` 收掉）。 */
+function tmpFile(name: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
-  return join(dir, 'calls')
+  return join(dir, name)
 }
 
 /** 带控制台机器的一份配置 —— 审计镜像那三趟采集要它。 */
@@ -529,18 +640,20 @@ const DISPOSABLE_SPEC: NodeSpec = {
 /**
  * 手搭一个**一次性**句柄。
  *
- * `#launchDisposable` 那条真路径要一次成功的 `rawDial`（真的 WebSocket 握手），
- * 在这个文件里搭不出来；而 `stopNode` / `restartNode` / `writeNodeFile` /
- * `setNodePathMode` 只看 `disposable` 这一栏。手搭出来直接喂给它们，钉的是同
- * 一段代码。
+ * `stopNode` / `writeNodeFile` / `setNodePathMode` 只看 `disposable` 这一栏，
+ * 手搭出来直接喂给它们，钉的是同一段代码。
+ *
+ * `endpoint` 可以指到一个本地假节点（{@link fakeNodeServer}）—— `restartNode`
+ * 把它原样交给 `#launchDisposable` 的就绪判据，于是那条真路径**跑得完整**，
+ * 一次成功的 spawn 会真的交回一个句柄。
  */
-function disposableHandle(): NodeHandle {
+function disposableHandle(endpoint = 'ws://127.0.0.1:45999'): NodeHandle {
   return {
     name: DISPOSABLE_SPEC.name,
     spec: DISPOSABLE_SPEC,
     ssh: 'fake-host',
     occPath: `${FAKE_HOME}/atlas-beta/dist/cli-node.js`,
-    endpoint: 'ws://127.0.0.1:45999',
+    endpoint,
     hostEndpoint: 'ws://127.0.0.1:41999',
     configRoot: `${FAKE_ROOT}/config`,
     disposable: {
@@ -557,14 +670,14 @@ function disposableHandle(): NodeHandle {
 }
 
 /** 一个不经 runner 的最小 ctx —— 直接调驱动方法时用。 */
-function bareCtx(): ScenarioContext {
+function bareCtx(timeoutScale = 0.02): ScenarioContext {
   return {
     workdir: '/tmp/qm-fake-workdir',
     allocPort: async () => 45_998,
     cleanup: () => {},
     log: () => {},
     signal: new AbortController().signal,
-    timeoutScale: 0.02,
+    timeoutScale,
   } as unknown as ScenarioContext
 }
 
@@ -1052,19 +1165,357 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
         return { ok: true, actual: '通了', evidence: [] }
       },
     }
-    // 倍率 0.02：反向隧道预算 30 s → 600 ms，场景预算 120 s → 2.4 s。
+    // 倍率 0.1：反向隧道预算 30 s → 3 s，场景预算 120 s → 12 s。**不要再压到
+    // 0.02** —— 这条用例只想看那行 argv，而 2.4 s 的场景预算会在机器忙的时候
+    // 先于隧道起来就到期，于是 `reverse.length` 为 0，红得与本意无关。
     const result = await runScenario(
       registryScenario,
       driver(bin),
       120_000,
       false,
-      0.02,
+      0.1,
     )
     expect(result.outcome).toBe('error')
     expect(result.errorKind).toBe('transport')
     expect(result.actual).toContain('反向隧道')
     // 循环自己就是重试 —— 再套一层 `#sshRetry` 等于把每轮变成三次往返。
     expect(countOf(counter)).toBeGreaterThan(1)
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// issue #91 ②：起进程那两趟的**远端**预算也要吃 `--timeout-scale`。
+//
+// #91 修的另外四处是 `Date.now() + 常数` 的形状，乘一下就完了。这两处不是：
+// 一个是 `#ssh` 的超时参数，另一个整个跑在**远端**（`for _ in $(seq 1 N)`），
+// 那边取不到 `ctx`。所以倍率必须在 runner 这边算成拍数再拼进脚本 —— 下面三条
+// 分别钉「拍数真的乘了」「远端慢一步不再被记成 error」「ssh 自己那格也乘了」。
+// ---------------------------------------------------------------------------
+
+/** 抄下假 ssh 收到的那条启动命令原文（多行，原样落盘）。 */
+function launchRecorder(file: string): string {
+  return [
+    `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+    `  printf '%s\\n' "$cmd" >> '${file}'`,
+    `  exit 0`,
+    `fi`,
+  ].join('\n')
+}
+
+describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
+  it('倍率进了远端脚本的 seq 拍数 —— 一次性节点与一次性控制台都是', async () => {
+    const seen = async (
+      scale: number,
+      what: 'node' | 'console',
+    ): Promise<string> => {
+      const file = tmpFile('launch-cmd')
+      const bin = fakeSsh([launchRecorder(file), BASE].join('\n'))
+      if (what === 'node') {
+        const d = driver(bin)
+        await expect(
+          d.restartNode(bareCtx(scale), disposableHandle()),
+        ).rejects.toThrow('没有起来')
+      } else {
+        const d = driverWithConsole(bin)
+        const slot = await d.consoleSlot(bareCtx(scale))
+        await expect(
+          slot.start({ registryUrl: 'http://127.0.0.1:39999' }),
+        ).rejects.toThrow('没有起来')
+      }
+      return readFileSync(file, 'utf8')
+    }
+
+    // 基准 60 s / 一拍 0.5 s = 120 拍。倍率 1 时与改造前逐字节相同。
+    expect(await seen(1, 'node')).toContain('seq 1 120')
+    expect(await seen(1, 'console')).toContain('seq 1 120')
+    // CI 的 `--timeout-scale 3`。
+    expect(await seen(3, 'node')).toContain('seq 1 360')
+    // 真机腿默认的 `FLEET_TIMEOUT_SCALE = 4`。
+    expect(await seen(4, 'node')).toContain('seq 1 480')
+    expect(await seen(4, 'console')).toContain('seq 1 480')
+    // 倍率再小也不许拼出 `seq 1 0` —— 那会让远端一次都不看就往下走。
+    expect(await seen(0.001, 'node')).toContain('seq 1 1')
+  }, 120_000)
+
+  it('远端慢于基准预算、快于放大后预算：倍率 1 记 error，倍率 4 正常通过', async () => {
+    // 假 ssh 扮演一台「起得慢」的机器：从启动命令里读出远端要轮询几拍，
+    // 只有拍数够到 `READY_AT_TICK` 才认为 banner 落了地。**改造前那条脚本里
+    // 恒是 `seq 1 120`**，所以倍率 4 的那一行在改造前与倍率 1 的这一行走的是
+    // 同一个分支 —— 下面倍率 1 的断言就是改造前的行为。
+    const READY_AT_TICK = 200
+    const slowNode = (marker: string): string =>
+      [
+        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `  n=$(printf '%s' "$cmd" | sed -n 's/.*seq 1 \\([0-9]*\\).*/\\1/p' | head -1)`,
+        `  if [ "\${n:-0}" -ge ${String(READY_AT_TICK)} ]; then`,
+        `    printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
+        `  fi`,
+        `  exit 0`,
+        `fi`,
+        `if [[ "$cmd" == *"out.log"* ]]; then cat '${marker}' 2>/dev/null; exit 0; fi`,
+        BASE,
+      ].join('\n')
+
+    const node = fakeNodeServer()
+    const restartScenario = (endpoint: string): Scenario => ({
+      id: 'recovery/fake-slow-restart',
+      dimension: 'recovery',
+      title: '重启一个起得慢的一次性节点',
+      expected: '起得来',
+      requires: ['restart-node'],
+      async run(ctx) {
+        const back = await ctx.driver.restartNode(
+          ctx,
+          disposableHandle(endpoint),
+        )
+        return { ok: true, actual: back.name, evidence: [] }
+      },
+    })
+
+    // 倍率 1 = 改造前：远端只轮询 120 拍，banner 没落地 → 一条 **error**。
+    const slowMarker = tmpFile('marker-scale-1')
+    const slow = await runScenario(
+      restartScenario(node.url),
+      driver(fakeSsh(slowNode(slowMarker))),
+      60_000,
+      false,
+      1,
+    )
+    expect(slow.outcome).toBe('error')
+    expect(slow.actual).toContain('没有起来')
+
+    // 倍率 4 = 真机腿：480 拍够到 200 拍，banner 落地，整条路径走完并交回句柄。
+    const fastMarker = tmpFile('marker-scale-4')
+    const fast = await runScenario(
+      restartScenario(node.url),
+      driver(fakeSsh(slowNode(fastMarker))),
+      60_000,
+      false,
+      4,
+    )
+    expect(fast.outcome).toBe('pass')
+    expect(fast.errorKind).toBeUndefined()
+  }, 120_000)
+
+  it('那趟 ssh 自己的墙钟预算同乘 —— 否则远端还在轮询就被 SIGKILL', async () => {
+    // 假 ssh 让启动那一趟真的耗 3 s（远端起得慢的样子），之后才写 banner。
+    // 这条脚本**不看** `seq` 拍数，所以两次跑唯一的差别就是 `#ssh` 的超时。
+    const slowSsh = (marker: string): string =>
+      [
+        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `  sleep 3`,
+        `  printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
+        `  exit 0`,
+        `fi`,
+        `if [[ "$cmd" == *"out.log"* ]]; then cat '${marker}' 2>/dev/null; exit 0; fi`,
+        BASE,
+      ].join('\n')
+
+    const node = fakeNodeServer()
+    // 倍率 0.02 → 120 s × 0.02 = 2.4 s，短于远端那 3 s：ssh 被 SIGKILL，
+    // banner 永远写不出来。改造前这里恒是 120 s，这一跑会成功。
+    const killedMarker = tmpFile('marker-killed')
+    const killed = driver(fakeSsh(slowSsh(killedMarker)))
+    await expect(
+      killed.restartNode(bareCtx(0.02), disposableHandle(node.url)),
+    ).rejects.toThrow('没有起来')
+
+    // 倍率 0.06 → 7.2 s，宽于那 3 s：同一个假 ssh 这次跑完，整条路径走通。
+    const okMarker = tmpFile('marker-ok')
+    const ok = driver(fakeSsh(slowSsh(okMarker)))
+    const back = await ok.restartNode(bareCtx(0.06), disposableHandle(node.url))
+    expect(back.name).toBe(DISPOSABLE_SPEC.name)
+  }, 120_000)
+
+  it('ssh 那格必须宽于远端轮询那格 —— 两者乘同一个倍率，余量在任何倍率下都在', () => {
+    const source = readFileSync(
+      new URL('../fleet/driver.ts', import.meta.url),
+      'utf8',
+    )
+    const read = (name: string): number =>
+      Number.parseInt(
+        new RegExp(`const ${name} = ([0-9_]+)`)
+          .exec(source)?.[1]
+          ?.replaceAll('_', '') ?? '0',
+        10,
+      )
+    const remote = read('REMOTE_BANNER_POLL_BUDGET_MS')
+    const ssh = read('REMOTE_LAUNCH_SSH_BUDGET_MS')
+    expect(remote).toBeGreaterThan(0)
+    // 远端还在轮询就把 ssh 掐掉 = 把「起得慢」记成一次链路失败，方向正好反了。
+    expect(ssh).toBeGreaterThan(remote)
+    // 两处调用点都必须写成 `× ctx.timeoutScale`，一处漏掉就是 #91 的原病。
+    const scaled = source.split(
+      'REMOTE_LAUNCH_SSH_BUDGET_MS * ctx.timeoutScale',
+    )
+    expect(scaled).toHaveLength(3)
+    const ticks = source.split('remotePollTicks(ctx.timeoutScale)')
+    expect(ticks).toHaveLength(3)
+    // 裸的 `seq 1 <常数>` 只剩「等进程死掉」那两处（`seq 1 20`），它们不是
+    // 就绪竞速，后面还紧跟一刀 `kill -KILL` 兜底。
+    const bare = [...source.matchAll(/for _ in \$\(seq 1 (\d+)\)/g)].map(
+      m => m[1],
+    )
+    expect(bare).toEqual(['20', '20', '20'])
+  }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// #98 那张表的第 5、6、7 条与第 22 条的另一半：**一次成功的 spawn 之后**，
+// 句柄上那几个闭包各自的行为。
+//
+// 这四条此前只有结构棘轮，没有行为护栏，当时的结论是「拿到句柄要一次真的
+// WebSocket 握手，假 ssh 搭不出来」。复核之后那条结论不成立 —— 握手的对端是
+// `endpoint`，而 `endpoint` 是**调用方给的**（`restartNode` 直接透传句柄那一
+// 栏，`consoleSlot` 那条则经 `ctx.allocPort()`）。所以两条真路径都跑得完整：
+// 节点侧起一个本地 WebSocket 假节点（{@link fakeNodeServer}），控制台侧起一个
+// 本地 HTTP 假控制台答 `/v0/health` 200。
+//
+// 钉的是同一件事：**一次 rc=255 不许折成一段空文本 / 一句「节点死了」。**
+// 那几个闭包全是喂给场景断言的输入，静默变空会以「产品坏了」的形态红。
+// ---------------------------------------------------------------------------
+
+/**
+ * 「先照常答，等测试点火之后再链路失败」的假 ssh 分支。
+ *
+ * 一次成功的启动必须先发生（`#launchDisposable` 读 banner 用的是同一条
+ * `cat out.log`），所以不能一上来就 255 —— 用一个标记文件当开关。
+ */
+function armable(match: string, arm: string, answer: string): string {
+  return [
+    `if [[ "$cmd" == *${JSON.stringify(match)}* ]]; then`,
+    `  if [ -f '${arm}' ]; then printf '${CLOSED}\\n' >&2; exit 255; fi`,
+    `  printf '${answer}\\n'`,
+    `  exit 0`,
+    `fi`,
+  ].join('\n')
+}
+
+describe('一次性句柄的三个闭包（第 5、6、7 条）', () => {
+  /** 起一个真的一次性节点句柄，外加「让某条命令开始链路失败」的开关。 */
+  async function launched(): Promise<{
+    readonly node: NodeHandle
+    readonly arm: () => void
+  }> {
+    const armFile = tmpFile('arm')
+    const server = fakeNodeServer()
+    const d = driver(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          // `alive` 那条：链路好的时候如实答 alive，点火之后 255。
+          armable('echo alive', armFile, 'alive'),
+          armable('err.log', armFile, 'some stderr'),
+          armable('out.log', armFile, '{"publicKey":"fake-key"}'),
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const node = await d.restartNode(bareCtx(1), disposableHandle(server.url))
+    return {
+      node,
+      arm: (): void => {
+        writeFileSync(armFile, 'x')
+      },
+    }
+  }
+
+  it('先证明这条真路径跑得通 —— 三个闭包在链路好的时候如实作答', async () => {
+    const { node } = await launched()
+    expect(node.name).toBe(DISPOSABLE_SPEC.name)
+    expect(await node.stdout()).toContain('"publicKey"')
+    expect((await node.stderr()).trim()).toBe('some stderr')
+    expect(await node.alive()).toBe(true)
+  }, 60_000)
+
+  it('rc=255 之后：`stdout` 不许静默变空，`alive` 不许答「节点死了」', async () => {
+    const { node, arm } = await launched()
+    arm()
+    // 改之前这三条都是裸 `#ssh`：stdout 折成空串（证据栏静默变空）、
+    // stderr 同样、`alive` 因为 stdout 里没有 `alive` 而答 false ——
+    // 「节点死了」是一条**关于被测系统的观察**，而这一趟根本没问到。
+    await transportThrow(async () => await node.stdout())
+    await transportThrow(async () => await node.stderr())
+    await transportThrow(async () => await node.alive())
+  }, 60_000)
+
+  it('远端命令自己非零仍按观察处理 —— 不冒充链路失败', async () => {
+    const server = fakeNodeServer()
+    const d = driver(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"out.log"* ]]; then printf '{"publicKey":"k"}\\n'; exit 0; fi`,
+          // 日志文件真的不存在：远端 `cat … || true` 回 0 且什么都没有。
+          `if [[ "$cmd" == *"err.log"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"echo alive"* ]]; then printf 'dead\\n'; exit 0; fi`,
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const node = await d.restartNode(bareCtx(1), disposableHandle(server.url))
+    // 空 stderr 与一句真的 `dead` 都是**被测系统的回答**，原样交出去。
+    expect(await node.stderr()).toBe('')
+    expect(await node.alive()).toBe(false)
+  }, 60_000)
+})
+
+describe('一次性控制台句柄的两个闭包（第 21、22 条）', () => {
+  /**
+   * 起一个真的一次性控制台句柄。
+   *
+   * 就绪判据是 `GET <隧道本地口>/v0/health` 答 200 —— 那个本地口来自
+   * `ctx.allocPort()`，测试自己说了算，于是在同一个口上起一个假控制台就够了。
+   * 隧道那条 `ssh -N -L` 由假 ssh 扮演（起来就退，不影响判据）。
+   */
+  async function started(armFile: string): Promise<{
+    readonly banner: () => Promise<string>
+    readonly stderr: () => Promise<string>
+  }> {
+    const port = 45_998
+    const health = Bun.serve({
+      port,
+      hostname: '127.0.0.1',
+      fetch: (request): Response =>
+        new URL(request.url).pathname === '/v0/health'
+          ? new Response('ok')
+          : new Response('no', { status: 404 }),
+    })
+    openServers.push({
+      stop: (): void => {
+        void health.stop(true)
+      },
+    })
+    const d = driverWithConsole(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          armable('console.err.log', armFile, 'console stderr'),
+          armable(
+            'console.out.log',
+            armFile,
+            'view-token vvv\\nadmin-token aaa',
+          ),
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const slot = await d.consoleSlot(bareCtx(1))
+    const handle = await slot.start({ registryUrl: 'http://127.0.0.1:39999' })
+    expect(handle.adminToken).toBe('aaa')
+    expect(handle.viewToken).toBe('vvv')
+    return { banner: handle.banner, stderr: handle.stderr }
+  }
+
+  it('链路好的时候如实答，rc=255 之后两条都抛 —— 两枚 token 不许静默丢', async () => {
+    const armFile = tmpFile('arm-console')
+    const handle = await started(armFile)
+    expect(await handle.banner()).toContain('admin-token')
+    expect((await handle.stderr()).trim()).toBe('console stderr')
+
+    writeFileSync(armFile, 'x')
+    await transportThrow(async () => await handle.banner())
+    await transportThrow(async () => await handle.stderr())
   }, 60_000)
 })
 
