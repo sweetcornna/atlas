@@ -1,6 +1,29 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
+/**
+ * 宿主侧保留/轮转工具的用例。**本文件不是 issue #56 那个病，别往这里套那套治法。**
+ *
+ * issue #102 把本文件和 `bootstrap-preconditions.test.ts` 一起列成「每条用例现写可执行
+ * 文件、撞上 macOS 首次执行策略扫描」。前者是，本文件**不是**——这里一个新可执行 inode
+ * 都不写：`run` / `runTogether` / `runPaused` 跑的都是仓库里那份 `beta-retain.sh`，
+ * 而它是被 `bash` 当参数读的、不走 execve，真正被 exec 的只有 `bash` 与 `bun` 两个常驻
+ * inode。实测（同机、把「写新脚本 + 执行一次」的负载并发跑起来）：新 inode 首次执行
+ * p50 1734 ms、最坏 4218 ms，而本文件的四种子进程形状纹丝不动——
+ * `spawnSync` 单发 27 ms、`spawn+await` 27 ms、两路并发 `--apply` 42 ms、
+ * `runPaused` 一个完整握手 44 ms（空载分别是 25/26/41/43 ms）。
+ *
+ * 那次 verify 里本文件之所以跟着红，是**同一个分片进程里的连坐**：`bun test` 把
+ * demo/env 的 12 个文件跑在一个进程里，`bootstrap-preconditions` 排在第一个，它的
+ * `spawnSync` 卡在策略扫描上超时后 Bun 会 `killed 1 dangling process`，本文件（第 7 个）
+ * 随后就开始出 5001 ms 超时。把第一个文件治好之后，同样的负载下 demo/env 分片连跑
+ * 4 轮 151 pass / 0 fail（治前同一负载 3 轮全红）。**所以本文件的用例既不慢、也没被
+ * 扫描拖垮，不要给它加超时、也不要去「共享」什么。**
+ *
+ * 下面只留了两处真正属于本文件的修补，都在 `runPaused` 里，都只影响红的时候看到什么，
+ * 见那里的注释。
+ */
+
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   appendFileSync,
@@ -142,8 +165,27 @@ async function runPaused(
     stdout: 'pipe',
     stderr: 'pipe',
   })
+  // 子进程还没到暂停点就先退了，就当场把它的 stderr 报出来。
+  //
+  // 原先只有下面那条 5 000 ms 的墙钟兜底，而它**恰好等于 Bun 的单条用例预算**（bunfig
+  // 里那个 `[test] timeout = 10000` Bun 1.3.13 不读），何况多数用例在调到这里之前已经
+  // 花掉了一些时间、还有几条要调两次——所以这条 `did not reach checkpoint` 实际上永远
+  // 轮不到它说话，红出来的一律是一句光秃秃的 `timed out after 5000ms`。issue #102 里本
+  // 文件那条红就是这么被记成「表象是 ENOENT」的：真正的信息一句都没留下。
+  //
+  // 退出后再核一次 `ready`：暂停点自己也有一条 10 s 兜底，理论上存在「写了 ready 又
+  // 超时退出」的窗口，那种情况该照常走下面的 mutate/release，不该在这里报错。
   const deadline = Date.now() + 5_000
   while (!existsSync(join(hook, 'ready'))) {
+    if (child.exitCode !== null && !existsSync(join(hook, 'ready'))) {
+      const [stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
+      throw new Error(
+        `child exited ${child.exitCode} before reaching checkpoint ${pauseAt}\n--- stderr\n${stderr}\n--- stdout\n${stdout}`,
+      )
+    }
     if (Date.now() >= deadline) {
       writeFileSync(join(hook, 'release'), 'timeout\n')
       await child.exited
@@ -161,7 +203,11 @@ async function runPaused(
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ])
-  rmSync(hook, { recursive: true })
+  // `force`：用例一旦超时，Bun 会杀掉挂着的子进程、把这条 Promise 的后半截丢到下一条
+  // 用例的时间里跑，而那时 `afterEach` 已经把整棵临时根删了。少了它，这一行就会抛一条
+  // `ENOENT ... .retain-test-hook` 的「Unhandled error between tests」——issue #102 的
+  // 现场正是被这条噪声带偏的：真正的失败是上一条用例的超时，而报告里最显眼的是这里。
+  rmSync(hook, { force: true, recursive: true })
   return { exitCode, stdout, stderr }
 }
 
