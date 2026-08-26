@@ -20,6 +20,15 @@
  * `Authenticated to` —— 那一行只在密钥交换 + 认证都完成之后才打印。
  */
 
+/**
+ * 场景预算一律写 30 s，不是 4 s（issue #102 的邻居）。
+ *
+ * 预算是**上限**，这些用例没有一条靠它到期来断言 —— 而 4 s 恰好卡在最坏路径的
+ * 和上：`#sshRetry` 打满（退避 750 + 1500 ms）+ 假 `ssh` 起停 + SSH 复用建
+ * master 那几趟，再加上 macOS 对每个新写的可执行文件收的首次执行策略扫描
+ * （p50 ~328 ms，实测最大 1074 ms，**没有上限**）。完整 `verify` 里机器跑热之后
+ * 就会撞墙，表现为「本该 pass 的用例以场景超时收场」，与被测逻辑毫无关系。
+ */
 import { afterEach, describe, expect, it } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { rmSync } from 'node:fs'
@@ -227,7 +236,7 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     const result = await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, log), true),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -251,7 +260,7 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     const result = await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, log), false),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -274,14 +283,14 @@ describe('复用真的生效 —— 数连接建立次数（issue #100）', () =
     await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, onLog), true),
-      4_000,
+      30_000,
       false,
       1,
     )
     await runScenario(
       OPEN_LAUNCHER,
       driver(fakeSsh(HAPPY, offLog), false),
-      4_000,
+      30_000,
       false,
       1,
     )
@@ -421,7 +430,7 @@ describe('收尾真的把 master 拆了（issue #100 ③）', () => {
   it('dispose 逐台发 `-O exit`，复用目录随之消失', async () => {
     const log = logPath()
     const d = driver(fakeSsh(HAPPY, log), true)
-    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
     expect(d.multiplexedTargets()).toEqual(['fake-host'])
     const before = tally(log)
     const dir = before.commands[0]?.match(/ControlPath=(\S+)\//)?.[1]
@@ -442,7 +451,7 @@ describe('SIGKILL 之后那条有界兜底：ControlPersist', () => {
   it('只挂在建 master 那条上 —— 命令连接、`-O` 那两条、长命隧道都不带', async () => {
     const log = logPath()
     const d = driver(fakeSsh(HAPPY, log), true)
-    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
     await d.dispose()
     const t = tally(log)
     expect(t.masters).toHaveLength(1)
@@ -460,7 +469,7 @@ describe('SIGKILL 之后那条有界兜底：ControlPersist', () => {
   it('① 正常路径仍是显式 `-O exit` 立刻拆 —— 一台一条，不等任何超时', async () => {
     const log = logPath()
     const d = driver(fakeSsh(HAPPY, log), true)
-    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    await runScenario(OPEN_LAUNCHER, d, 30_000, false, 1)
     const established = d.multiplexedTargets()
     expect(established).toEqual(['fake-host'])
 
