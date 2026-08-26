@@ -21,7 +21,13 @@
  */
 
 import { afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FRAME_VERSION, FrameType } from '@qianmo/transport'
@@ -136,16 +142,56 @@ function track(made: FleetDriver): FleetDriver {
  * 于是这里给它们一个恒成功的短路：本文件测的是**命令连接**上的分类，而
  * 「master 建不起来会怎样」在 `fleetSshMux.test.ts` 里单独钉。
  */
+/**
+ * 整份文件**只写这一个**可执行 inode —— 假 `ssh` 靠软链复用它（issue #102）。
+ *
+ * ## 为什么不能每条用例现写一个
+ *
+ * macOS 对**每个新写出来的可执行 inode** 收一次首次执行策略扫描
+ * （Gatekeeper / `syspolicyd`）。这台机器上实测：
+ *
+ * ```
+ * 原件首次    2153.1 ms      新 inode ①  2333.3 ms
+ * 原件再次       5.4 ms      新 inode ②  1911.5 ms
+ * 软链 ①→原件    4.5 ms      新 inode ③  2489.9 ms
+ * 软链 ②→原件    4.1 ms      新 inode ④  1865.9 ms
+ * ```
+ *
+ * **指向同一个 inode 的软链走的是已扫描的快路，约 450 倍差距。**这份文件有
+ * 五十多处 `fakeSsh`，各写一个 inode 就是两分多钟的纯扫描，而这些钱全都记在
+ * 用例自己的超时预算里 —— 表现为「本该 pass 的用例以场景超时收场」，与被测
+ * 逻辑毫无关系（issue #102 是同一个病在 `demo/env` 下的另一份）。
+ *
+ * 每条用例自己的行为写进 `behavior.sh`，那是**数据文件、不可执行**，所以不
+ * 触发任何扫描；shim 按 `$0` 的目录去取它，于是软链之间互不干扰。
+ */
+const SHIM_ROOT = mkdtempSync(join(tmpdir(), 'qm-ssh-shim-'))
+const SHIM_REAL = join(SHIM_ROOT, 'ssh-real')
+writeFileSync(
+  SHIM_REAL,
+  `#!/bin/bash\nd="$(dirname "$0")"\n` +
+    `case " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
+    `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
+  { mode: 0o755 },
+)
+// 空行为文件，只为下面那次预热能跑通。
+writeFileSync(join(SHIM_ROOT, 'behavior.sh'), 'true\n')
+// **预热必须在模块作用域**：把那 2 秒扫描付在「还没有任何用例的超时计时器在
+// 跑」的时候。放进 `beforeAll` 就晚了。
+Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
+
+/**
+ * 写一个假 `ssh`，返回它的绝对路径。
+ *
+ * `script` 是 bash 片段，进来时 `$cmd` 已经是远端命令原文。落地的是一条指向
+ * {@link SHIM_REAL} 的**软链** + 一个不可执行的 `behavior.sh`，所以不付扫描。
+ */
 function fakeSsh(script: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
-  writeFileSync(
-    bin,
-    `#!/bin/bash\ncase " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
-      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
-    { mode: 0o755 },
-  )
+  symlinkSync(SHIM_REAL, bin)
+  writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
   return bin
 }
 

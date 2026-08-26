@@ -30,8 +30,14 @@
  * 就会撞墙，表现为「本该 pass 的用例以场景超时收场」，与被测逻辑毫无关系。
  */
 import { afterEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -83,17 +89,40 @@ afterEach(async () => {
  * `script` 是 bash 片段，进来时 `$cmd` 已经是最后一个参数（命令连接上就是远端
  * 命令原文，master / `-O` 那几条上是目标名）。
  */
+/**
+ * 整份文件**只写这一个**可执行 inode —— 假 `ssh` 靠软链复用它（issue #102）。
+ *
+ * macOS 对每个新写出来的可执行 inode 收一次首次执行策略扫描，这台机器上实测
+ * 约 1.8–2.5 s，而指向同一 inode 的软链约 4.5 ms —— 约 450 倍。那笔钱会记进
+ * 用例自己的超时预算，表现为「本该 pass 的用例以场景超时收场」。
+ *
+ * argv 日志的落点仍是**调用方给的外部路径**（`logPath()`），经一个不可执行的
+ * `logpath` 文件传给 shim；每条用例的行为同样写在不可执行的 `behavior.sh` 里，
+ * 按 `$0` 的目录去取，所以软链之间互不干扰。
+ */
+const SHIM_ROOT = mkdtempSync(join(tmpdir(), 'qm-ssh-shim-'))
+const SHIM_REAL = join(SHIM_ROOT, 'ssh-real')
+writeFileSync(
+  SHIM_REAL,
+  `#!/bin/bash\nargv="$*"\nd="$(dirname "$0")"\n` +
+    `if [ -f "$d/logpath" ]; then\n` +
+    `  printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> "$(cat "$d/logpath")"\n` +
+    `fi\n` +
+    `cmd="\${@: -1}"\n. "$d/behavior.sh"\nexit 0\n`,
+  { mode: 0o755 },
+)
+writeFileSync(join(SHIM_ROOT, 'behavior.sh'), 'true\n')
+// **预热必须在模块作用域**：把那两秒扫描付在还没有任何用例计时器在跑的时候。
+Bun.spawnSync([SHIM_REAL, 'warmup'], { stdout: 'ignore', stderr: 'ignore' })
+
+/** 写一个假 `ssh`（软链 + 数据文件，不付扫描），返回它的绝对路径。 */
 function fakeSsh(script: string, log: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
-  writeFileSync(
-    bin,
-    `#!/bin/bash\nargv="$*"\n` +
-      `printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> '${log}'\n` +
-      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
-    { mode: 0o755 },
-  )
+  symlinkSync(SHIM_REAL, bin)
+  writeFileSync(join(dir, 'behavior.sh'), `${script}\n`)
+  writeFileSync(join(dir, 'logpath'), log)
   return bin
 }
 
