@@ -25,12 +25,17 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import {
+  DEFAULT_SPAWN_MACHINES,
+  FleetDriver,
+  fleetConfigFromEnv,
+} from '../fleet/driver.js'
 import {
   CONTROL_DIR_BASE,
   CONTROL_DIR_PREFIX,
   CONTROL_PATH_TOKEN,
   CONTROL_PATH_TOKEN_BYTES,
+  MASTER_IDLE_PERSIST_S,
   MASTER_OPEN_TIMEOUT_MS,
   SshMultiplex,
   TUNNEL_NO_MUX_ARGS,
@@ -41,6 +46,7 @@ import {
   FLEET_TIMEOUT_SCALE,
   runScenario,
 } from '../runner.js'
+import { ALL_SCENARIOS } from '../registry.js'
 import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
 import type { Scenario, ScenarioResult } from '../types.js'
 
@@ -427,6 +433,97 @@ describe('收尾真的把 master 拆了（issue #100 ③）', () => {
     expect(existsSync(String(dir))).toBe(false)
     expect(d.multiplexedTargets()).toEqual([])
   }, 60_000)
+})
+
+describe('SIGKILL 之后那条有界兜底：ControlPersist', () => {
+  it('只挂在建 master 那条上 —— 命令连接、`-O` 那两条、长命隧道都不带', async () => {
+    const log = logPath()
+    const d = driver(fakeSsh(HAPPY, log), true)
+    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    await d.dispose()
+    const t = tally(log)
+    expect(t.masters).toHaveLength(1)
+    // ② 建 master 的 argv 里确实有它，而且是算出来的那个值。
+    for (const line of t.masters) {
+      expect(line).toContain(`ControlPersist=${String(MASTER_IDLE_PERSIST_S)}`)
+    }
+    // 别处一律不带：命令连接带了没有意义（它们不是 master），`-O exit` 带了
+    // 会让「拆」这件事看起来像在配置过期时间。
+    for (const line of [...t.commands, ...t.control, ...t.tunnels]) {
+      expect(line).not.toContain('ControlPersist')
+    }
+  }, 60_000)
+
+  it('① 正常路径仍是显式 `-O exit` 立刻拆 —— 一台一条，不等任何超时', async () => {
+    const log = logPath()
+    const d = driver(fakeSsh(HAPPY, log), true)
+    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    const established = d.multiplexedTargets()
+    expect(established).toEqual(['fake-host'])
+
+    const startedAt = Date.now()
+    await d.dispose()
+    const elapsed = Date.now() - startedAt
+    const t = tally(log)
+    const exits = t.control.filter(l => l.includes('-O exit'))
+    // 建起来几台就拆几条，一条不少。
+    expect(exits).toHaveLength(established.length)
+    for (const target of established) {
+      expect(exits.some(l => l.endsWith(target))).toBe(true)
+    }
+    // 「立刻」= 拆的耗时与 `ControlPersist` 毫无关系（后者是 2 h）。
+    expect(elapsed).toBeLessThan(MASTER_IDLE_PERSIST_S * 1_000)
+    expect(elapsed).toBeLessThan(5_000)
+    expect(d.multiplexedTargets()).toEqual([])
+  }, 60_000)
+
+  it('③ 值必须宽于「一轮里同一台机器两次命令之间最长间隔」', () => {
+    // 这个间隔不是拍脑袋的：场景**顺序**跑，一次性进程的落机按场景轮转
+    // （`FleetDriver.#machineFor`），所以一台机器会被连着若干条场景跳过。
+    // 下面按**真实场景表**把那个上界算出来 —— 场景表长了、倍率大了、落机少
+    // 了，这条会先红，逼人重新推算，而不是让 master 在一轮跑到一半时过期。
+    const machineCaps = new Set([
+      'spawn-node',
+      'spawn-console',
+      'restart-node',
+      'run-launcher',
+      'local-ca-fixture',
+      'exec-node-cli',
+      'read-node-files',
+      'read-repo-source',
+      'attach-node',
+      'mirror-transport',
+    ])
+    const budgetOf = (scenario: Scenario): number =>
+      (scenario.timeoutMs ?? DEFAULT_SCENARIO_TIMEOUT_MS) * FLEET_TIMEOUT_SCALE
+    const machines = DEFAULT_SPAWN_MACHINES.length
+    expect(machines).toBeGreaterThan(0)
+    let cursor = 0
+    let clock = 0
+    let worstGapMs = 0
+    const lastTouched = new Map<number, number>()
+    for (const scenario of ALL_SCENARIOS) {
+      const touches = (scenario.requires ?? []).some(r => machineCaps.has(r))
+      if (touches) {
+        const machine = cursor++ % machines
+        const previous = lastTouched.get(machine)
+        if (previous !== undefined) {
+          worstGapMs = Math.max(worstGapMs, clock - previous)
+        }
+        lastTouched.set(machine, clock + budgetOf(scenario))
+      }
+      clock += budgetOf(scenario)
+    }
+    // 算出来是 56 min（115 条场景、四台落机、倍率 4）。
+    expect(worstGapMs).toBeGreaterThan(0)
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeGreaterThan(worstGapMs)
+    // 而且要留够余量 —— 顶着上限过一次不算过。
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeGreaterThan(worstGapMs * 2)
+    // 另一头也钉住：它是**兜底**，不是「等于没配」。`SIGKILL` 之后那几条到
+    // 生产机的闲置会话最多活这么久，超过一整轮墙钟上界就失去意义了。
+    const wholeRunMs = ALL_SCENARIOS.reduce((n, s) => n + budgetOf(s), 0)
+    expect(MASTER_IDLE_PERSIST_S * 1_000).toBeLessThan(wholeRunMs)
+  })
 })
 
 describe('复用开关（issue #100 ④）', () => {

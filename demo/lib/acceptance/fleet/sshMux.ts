@@ -40,15 +40,20 @@
  *    真的撤掉」脱钩 —— master 还活着，转发就还在，而那是一个会静默留下端口占用
  *    的坑。
  *
- * ④ **收尾逐台 `ssh -O exit`**，不靠 `ControlPersist` 超时。那些 socket 背后是
- *    **到生产机的活会话**，跑完还挂着几条不可接受。见
- *    {@link SshMultiplex.dispose}。收尾挂在四条路径上：入口的 `finally`（含场景
- *    抛异常、超时、判定失败）、`SIGINT`/`SIGTERM` 处理器、`process.on('exit')`
- *    的同步版，以及「拆的时候恰好正在建」那个窗口（{@link SshMultiplex.#open}
- *    末尾）。**`SIGKILL` 接不住** —— 那时会在 `/tmp` 下留一个 `qm-ssh-` 开头的
- *    目录和几条闲置 master，手工收法是对那个目录里的每个 socket 发一次
- *    `ssh -O exit -o ControlPath=<那个目录>/%C <目标>`，再把目录删掉。它们**不会**
- *    变成假绿：master 与被测系统无关，留着只是浪费一条会话。
+ * ④ **收尾逐台 `ssh -O exit`，立刻拆、不等超时。**那些 socket 背后是**到生产机
+ *    的活会话**，跑完还挂着几条不可接受。见 {@link SshMultiplex.dispose}。收尾
+ *    挂在四条路径上：入口的 `finally`（含场景抛异常、超时、判定失败）、
+ *    `SIGINT`/`SIGTERM` 处理器、`process.on('exit')` 的同步版，以及「拆的时候
+ *    恰好正在建」那个窗口（{@link SshMultiplex.#open} 末尾）。
+ *
+ *    **`SIGKILL` 接不住，那条改不了** —— 内核直杀，进程收不到任何通知。改得了
+ *    的是「接不住之后留下的东西活多久」：master 现在带
+ *    {@link MASTER_IDLE_PERSIST_S} 的 `ControlPersist`，于是那几条闲置会话在
+ *    有界时间内自己过期、socket 一并 unlink，而不是活到那台机器重启。选值的
+ *    推算与实测写在那个常量上。**它不改正常路径**：六条收尾照旧显式
+ *    `-O exit`，一秒都不等。手工收残局的法子不变：对 `/tmp/qm-ssh-*` 里的每个
+ *    socket 发一次 `ssh -O exit -o ControlPath=<那个目录>/%C <目标>`，再把目录
+ *    删掉。它们**不会**变成假绿：master 与被测系统无关，留着只是浪费一条会话。
  *
  * ## 建不起来时如实红，不许静默退回
  *
@@ -105,6 +110,55 @@ export const CONTROL_PATH_TOKEN_BYTES = 40
 
 /** 建 master 的预算。正常握手 1–5 s，经 IAP 的那台十几秒。 */
 export const MASTER_OPEN_TIMEOUT_MS = 45_000
+
+/**
+ * master 空闲这么久之后自己过期 —— **`SIGKILL` 之后那条唯一还管用的收尾**
+ * （issue #91 ② 的兄弟条目）。
+ *
+ * ## 它兜的是哪一种漏
+ *
+ * 正常收尾一共六条路径（`finally`、判定失败、场景抛异常、超时、
+ * `SIGINT`/`SIGTERM`、`process.on('exit')`），全部走显式 `ssh -O exit`，
+ * **立刻拆、不等超时**。唯独 `SIGKILL` 接不住 —— 内核直杀，进程收不到任何
+ * 通知，那是改不了的。改得了的是「接不住之后留下的东西活多久」：不配
+ * `ControlPersist` 时 master 是条 `ssh -N`，没人再来拆它就一直挂着；配上
+ * 之后它在有界时间内自己过期，socket 也一并 unlink（实测见下）。
+ *
+ * ## 选值：比「一轮里同一台机器两次命令之间最长间隔」宽
+ *
+ * 空闲计时器由**每条命令**重置（实测：`ControlPersist=2` 的 master 每 2 s
+ * 发一条命令，8 s 后仍在跑）。所以要问的正是那个间隔的上界：
+ *
+ *   · 场景是**顺序**跑的，每条的墙钟上界 = `scenario.timeoutMs ?? 60 s` ×
+ *     `FLEET_TIMEOUT_SCALE`(4)；
+ *   · 一次性进程的落机按场景轮转（`FleetDriver.#machineFor`），四台
+ *     （`DEFAULT_SPAWN_MACHINES`）轮着来，于是一台机器会被连着若干条
+ *     场景跳过；
+ *   · 按真实场景表（115 条）+ 四台落机把这个上界算出来是 **56 min**；实测
+ *     一轮 30–100 min，所以那个上界比实测整轮还宽。
+ *   · 附着来的那台（`cornna-p11` / beta-4）更极端：整轮只被来源探针和一条
+ *     `attach-node` 场景碰到，间隔可以接近整轮墙钟（实测 30–100 min）。
+ *
+ * 取 **2 h**：压过 56 min 的硬上界（2.1×），也压过实测最长的一整轮（1.2×），
+ * 而 `SIGKILL` 之后残留的会话最多活 2 h 而不是活到重启。护栏把这个关系钉在
+ * `fleetSshMux.test.ts` 里 —— 场景表长了、倍率大了，那条断言会先红。
+ *
+ * ## 万一还是被跨过去了：那是**降级**，不是红
+ *
+ * 对 OpenSSH_10.3p1 实测过三种残局，全部 rc=0：
+ *
+ *   · socket 已被 unlink（正常过期）→ `Control socket … does not exist` →
+ *     照常新建一条连接；
+ *   · socket 还在但 master 被 SIGKILL 了 → `connect(): Connection refused`
+ *     → 同样退回新建连接（那句话只落 stderr，不参与判定：
+ *     `isTransportFailure` 只看 rc === 255）；
+ *   · 卡在到期那一瞬间发命令 ×10 → 0 次失败。
+ *
+ * 也就是说选短了的代价是**这台机器往后每条命令各付一次握手**（退回 #100
+ * 之前），不是一次假的传输层失败。选长了的代价才是真的：`SIGKILL` 之后到
+ * 生产机的闲置会话多活那么久。两边都不想要，所以上面那个数是算出来的。
+ */
+export const MASTER_IDLE_PERSIST_S = 7_200
 
 /** 等 master socket 出现的轮询间隔。 */
 const MASTER_POLL_INTERVAL_MS = 100
@@ -276,9 +330,14 @@ export class SshMultiplex {
   /**
    * 一轮结束逐台拆 master。
    *
-   * **不靠 `ControlPersist` 超时**：那些 socket 背后是到生产机的活会话，跑完还
-   * 挂着几条不可接受（issue #100 ③）。两条路都走 —— `ssh -O exit` 是正道，
-   * `kill` 补上「socket 已经没了但进程还在」那种残局。
+   * **不等 `ControlPersist` 超时**：那些 socket 背后是到生产机的活会话，跑完还
+   * 挂着几条不可接受（issue #100 ③）。那个超时是 `SIGKILL` 的兜底
+   * （{@link MASTER_IDLE_PERSIST_S}），这条路径上一秒都不该等它。
+   *
+   * 两条路都走 —— `ssh -O exit` 是正道；`kill` 补上「socket 已经没了但进程还在」
+   * 那种残局。后者在 `ControlPersist` 之后**多半是空转**（我们 spawn 的那条父
+   * 进程早已 `daemon(1,1)` 退出，真 master 是另一个 pid），留着不花钱，而它接
+   * 得住的是「socket 还没建出来就被拆」这一种。
    */
   async dispose(): Promise<void> {
     const dir = this.#dir
@@ -350,11 +409,24 @@ export class SshMultiplex {
   /**
    * 建一条到 `target` 的 master。
    *
-   * **不用 `-f`**（那是这个 idiom 的常见写法）：`-f` 之后 master 是个后台进程，
-   * 我们既拿不到它的句柄、也读不干净它的 stderr（那条流永远不 EOF，等它等于挂
-   * 死）。留成子进程则「它死了」与「它的 stderr 说了什么」都是确定的，而
-   * 「起来了没有」用 `ssh -O check` 问 —— 那才是真判据：`-f` 回 0 只说明 fork
-   * 成功了。
+   * **不用 `-f`**（那是这个 idiom 的常见写法）：`-f` 回 0 只说明 fork 成功了，
+   * 那不是「master 起来了」的判据。真判据是 `ssh -O check` —— 问 socket，不问
+   * 进程。
+   *
+   * ## 父进程退出是**正常**结局（`ControlPersist` 之后）
+   *
+   * 带 {@link MASTER_IDLE_PERSIST_S} 之后 ssh 会在 socket 建好之后立刻
+   * `daemon(1,1)`，我们 spawn 的那条**父进程随即退出**，真正的 master 是它 fork
+   * 出来的另一个 pid（实测 OpenSSH_10.3p1：`-O check` 回
+   * `Master running (pid=…)`，而 spawn 出来的那条已经 `exited`）。
+   *
+   * 所以「进程退出了 = 建不起来」这条判断**不成立**了，而且退出与 socket 出现
+   * 恰好是同一瞬间 —— 一看见退出就判失败，会把绝大多数**成功**的 master 判成
+   * 失败。这里改成：看见退出先**再问一次 socket**，socket 在就是成功。
+   *
+   * 它的 stderr 仍然读得到（`daemon(1, 1)` 的 `noclose` 保留 fd，管道的写端还在
+   * daemon 手里），所以「起不来时说了什么」这条没丢。丢掉的只有「用句柄 kill
+   * 它」—— 那本来也只是 `-O exit` 之外的兜底，而现在多了一层有界过期。
    */
   async #open(target: string): Promise<MuxOutcome> {
     let path: string
@@ -381,6 +453,10 @@ export class SshMultiplex {
         'ServerAliveInterval=30',
         '-o',
         'ServerAliveCountMax=6',
+        // `SIGKILL` 之后那条唯一还管用的收尾 —— 正常路径照旧显式 `-O exit`，
+        // 一秒都不等。选值的推算与实测见 {@link MASTER_IDLE_PERSIST_S}。
+        '-o',
+        `ControlPersist=${String(MASTER_IDLE_PERSIST_S)}`,
         ...this.#sshArgs,
         target,
       ],
@@ -395,35 +471,15 @@ export class SshMultiplex {
     const deadline = Date.now() + MASTER_OPEN_TIMEOUT_MS
     for (;;) {
       if (await this.#check(target, path)) {
-        if (this.#closed) {
-          // 拆的时候它还没建好，建好之后又没人来拆它 —— 这里自己收掉，否则
-          // 这条到生产机的会话会一直挂着。
-          Bun.spawnSync(
-            [
-              this.#sshBin,
-              '-O',
-              'exit',
-              '-o',
-              `ControlPath=${path}`,
-              ...this.#sshArgs,
-              target,
-            ],
-            {
-              stdin: 'ignore',
-              stdout: 'ignore',
-              stderr: 'ignore',
-            },
-          )
-          child.kill()
-          return this.#failed(target, '这一轮已经收尾了，不再建复用连接。')
-        }
-        this.#masters.set(target, child)
-        return {
-          kind: 'ready',
-          args: ['-o', 'ControlMaster=no', '-o', `ControlPath=${path}`],
-        }
+        return this.#adopt(target, path, child)
       }
       if (exited) {
+        // **父进程退出不等于建不起来**：`ControlPersist` 之后 ssh 会在 socket
+        // 建好的那一刻 `daemon(1,1)`，父进程退出与 socket 出现是同一瞬间。
+        // 所以这里再问一次 socket —— 上一次 `#check` 只是抢在了 fork 前面。
+        if (await this.#check(target, path)) {
+          return this.#adopt(target, path, child)
+        }
         return this.#failed(target, `master 进程退出了。原文: ${stderrOf()}`)
       }
       if (Date.now() >= deadline) {
@@ -435,6 +491,37 @@ export class SshMultiplex {
         )
       }
       await sleep(MASTER_POLL_INTERVAL_MS)
+    }
+  }
+
+  /**
+   * socket 已经在了：把这条 master 收进账，回「命令连接该带什么参数」。
+   *
+   * 唯一的例外是「拆的时候它恰好正在建」—— 那时收尾已经跑过、不会再有人来拆
+   * 它，所以这里当场收掉，否则一条到生产机的会话会一直挂着。`ControlPersist`
+   * 兜的是 `SIGKILL`，不是这个窗口：这个窗口收得干净，就不该留给超时。
+   */
+  #adopt(target: string, path: string, child: Bun.Subprocess): MuxOutcome {
+    if (this.#closed) {
+      Bun.spawnSync(
+        [
+          this.#sshBin,
+          '-O',
+          'exit',
+          '-o',
+          `ControlPath=${path}`,
+          ...this.#sshArgs,
+          target,
+        ],
+        { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+      )
+      child.kill()
+      return this.#failed(target, '这一轮已经收尾了，不再建复用连接。')
+    }
+    this.#masters.set(target, child)
+    return {
+      kind: 'ready',
+      args: ['-o', 'ControlMaster=no', '-o', `ControlPath=${path}`],
     }
   }
 
