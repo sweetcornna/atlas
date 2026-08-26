@@ -33,6 +33,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import {
   existsSync,
+  readFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -335,5 +336,189 @@ describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
         /* 已经没了就算了 */
       }
     }
+  })
+})
+
+describe('部署树不是一个形状 —— 整棵换会换掉树里本来就有的东西', () => {
+  /** p3/p7 那种树：除了 dist/demo，还压着一整棵源码检出与 node_modules。 */
+  function treeWithCheckout(home: string, tree: string): string {
+    const keep = join(tree, 'node_modules', 'some-dep')
+    mkdirSync(keep, { recursive: true })
+    writeFileSync(join(keep, 'index.js'), 'module.exports=1\n')
+    mkdirSync(join(tree, 'src'), { recursive: true })
+    writeFileSync(join(tree, 'src', 'cli.ts'), '// 源码检出\n')
+    return join(keep, 'index.js')
+  }
+
+  test('源头覆盖不住树里现有的顶层条目就拒绝，而且什么都没动', () => {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
+    // 装完之后有人往树里放了 node_modules 与 src —— 真机上 p3/p7 正是这个形状。
+    const witness = treeWithCheckout(home, tree)
+
+    const r = deploy(home, ['--tree', tree, '--from', build])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('整棵换会让树里这些东西消失')
+    expect(r.out).toContain('node_modules')
+    expect(r.out).toContain('--only dist,demo')
+    // 拒绝了就一个字节都不动。
+    expect(existsSync(witness)).toBe(true)
+    expect(existsSync(join(tree, 'src', 'cli.ts'))).toBe(true)
+  })
+
+  test('--only 只换点名的条目，树里其余东西原封不动', () => {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
+    const witness = treeWithCheckout(home, tree)
+
+    const r = deploy(home, ['--tree', tree, '--from', build, '--only', 'dist'])
+    expect(r.code).toBe(0)
+    expect(existsSync(witness)).toBe(true)
+    expect(existsSync(join(tree, 'src', 'cli.ts'))).toBe(true)
+    expect(existsSync(join(tree, 'dist', 'cli-node.js'))).toBe(true)
+    // 备份落在树里，按条目命名 —— 旧 node-deploy.sh 就是这个约定。
+    expect(
+      readdirSync(tree).filter(n => n.startsWith('dist.bak-')),
+    ).toHaveLength(1)
+  })
+
+  test('--only 的备份也收敛到 --keep，不像旧脚本那样无限长', () => {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
+    for (let i = 0; i < 4; i += 1) {
+      expect(
+        deploy(home, [
+          '--tree',
+          tree,
+          '--from',
+          build,
+          '--only',
+          'dist,demo',
+          '--keep',
+          '2',
+        ]).code,
+      ).toBe(0)
+    }
+    const names = readdirSync(tree)
+    // 这正是把 workbench-iap 的盘撑满的那条路径 —— 旧脚本这里会是 4 份、还在涨。
+    expect(names.filter(n => n.startsWith('dist.bak-'))).toHaveLength(2)
+    expect(names.filter(n => n.startsWith('demo.bak-'))).toHaveLength(2)
+  })
+
+  test('--only 要的条目源头里没有就拒绝，树没被动过', () => {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
+    const marker = join(tree, 'dist', 'cli-node.js')
+    const r = deploy(home, [
+      '--tree',
+      tree,
+      '--from',
+      build,
+      '--only',
+      'nonexistent',
+    ])
+    expect(r.code).not.toBe(0)
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  test('--only 不收路径，免得 ../ 把备份写到树外面去', () => {
+    const { home, build } = sandbox()
+    const r = deploy(home, [
+      '--tree',
+      join(home, 'tree'),
+      '--from',
+      build,
+      '--only',
+      '../evil',
+    ])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('只收顶层条目名')
+  })
+})
+
+describe('这一类坑不许再回来（静态检查脚本本身）', () => {
+  test('没有「$变量 紧跟中文标点」—— C locale 下那是 unbound variable', () => {
+    const src = readFileSync(SCRIPT, 'utf8')
+    // bash 认变量名到第一个非法字符为止，而全角「）」「，」「：」的高位字节
+    // 在 C locale 下**不算**非法字符，于是 `$ONLY）` 整个被当成变量名，
+    // `set -u` 报 unbound variable —— 真正想说的那句人话一个字也没打出来。
+    // 已经栽过三次：两次在 beta_die 的错误消息里（正是最需要它说人话的时候），
+    // 一次在成功路径上。逐个修没用，这里直接把形状钉死。
+    const offenders: string[] = []
+    const lines = src.split('\n')
+    for (const [i, line] of lines.entries()) {
+      // 排除注释行 —— 注释里写 `$TREE（部署树）` 是无害的。
+      if (/^\s*#/.test(line)) continue
+      // 不用 [^\x00-\x7f] 这种字符类 —— biome 的 noControlCharactersInRegex
+      // 不收控制字符。先抓变量引用，再看紧跟其后的那个字符是不是非 ASCII。
+      for (const m of line.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*/g)) {
+        const next = line.codePointAt((m.index ?? 0) + m[0].length)
+        if (next !== undefined && next > 127) {
+          offenders.push(`${i + 1}: ${m[0]}`)
+        }
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('ripgrep 必须是这台机的架构（旧 node-deploy.sh 唯一比我们多做的一件事）', () => {
+  /** 本机在 dist/vendor/ripgrep 下对应的目录名。 */
+  function rgDirForHost(): string {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+    return process.platform === 'darwin' ? `${arch}-darwin` : `${arch}-linux`
+  }
+
+  test('产物里没有本机架构的 rg 就当场红 —— 装错架构的树不算装好', () => {
+    const { home, build } = sandbox()
+    // 只放一个别的架构的 rg：文件在、但不是这台机能跑的那个。
+    const other = rgDirForHost().startsWith('arm64')
+      ? 'x64-linux'
+      : 'arm64-linux'
+    mkdirSync(join(build, 'dist', 'vendor', 'ripgrep', other), {
+      recursive: true,
+    })
+    writeFileSync(
+      join(build, 'dist', 'vendor', 'ripgrep', other, 'rg'),
+      'x\n',
+      {
+        mode: 0o755,
+      },
+    )
+    const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('没有这台机能用的 ripgrep')
+  })
+
+  test('rg 在但跑不起来也要红 —— 只看文件在不在，架构不对照样「在」', () => {
+    const { home, build } = sandbox()
+    const dir = join(build, 'dist', 'vendor', 'ripgrep', rgDirForHost())
+    mkdirSync(dir, { recursive: true })
+    // 可执行位有、但一跑就非零 —— 架构不对时的形状就是这样（Exec format error）。
+    writeFileSync(join(dir, 'rg'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('跑不起来')
+  })
+
+  test('本机架构的 rg 跑得起来就放行', () => {
+    const { home, build } = sandbox()
+    const dir = join(build, 'dist', 'vendor', 'ripgrep', rgDirForHost())
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'rg'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('ripgrep 可执行')
+  })
+
+  test('整个 vendor/ripgrep 都没有时只提醒，不拦住部署', () => {
+    const { home, build } = sandbox()
+    const r = deploy(home, ['--tree', join(home, 'tree'), '--from', build])
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('没有 dist/vendor/ripgrep')
   })
 })

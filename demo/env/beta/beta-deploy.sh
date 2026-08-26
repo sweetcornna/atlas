@@ -4,8 +4,19 @@
 #
 # 阡陌 P11.1 落地包④ —— 把一份新产物装到本机的部署树上。**只换产物，不起进程。**
 #
-#   demo/env/beta/beta-deploy.sh --tree <部署树> --payload <payload.tgz>
+#   demo/env/beta/beta-deploy.sh --tree <部署树> --payload <payload.tgz> --only dist,demo
 #   demo/env/beta/beta-deploy.sh --tree <部署树> --from <构建树>
+#
+# ── 两种模式，按部署树的形状选 ───────────────────────────────────────────────
+#
+# 部署树在各台机器上**不是一个形状**：有的只有 `dist/` 与 `demo/`，有的是一整棵源码
+# 检出（`node_modules`、`src`、`packages`…，而 `node_modules` 不在任何 payload 里）。
+#
+#   · `--only dist,demo` —— 只换点名的顶层条目，其余一律不动，备份落在树里
+#     （`dist.bak-<戳>`）。**树里还压着别的东西时必须用它。**
+#   · 不给 `--only` 就是整棵换，备份是树的兄弟（`<树名>.bak-<戳>`）。
+#     整棵换之前会先比一次：源头覆盖不住树里现有的顶层条目就**拒绝**，
+#     免得拿一个只含 dist+demo 的 payload 把一整棵检出换走。
 #
 # 起进程仍然是 beta-up.sh 的事：这里只做「换产物」这一件，装完自己不拉起任何东西。
 # 分开的理由与 beta-down/beta-up 分开是同一条 —— 换产物与起进程失败的处置不一样，
@@ -51,6 +62,7 @@ TREE=''
 PAYLOAD=''
 FROM=''
 KEEP=1
+ONLY=''
 
 usage() {
   beta_say '用法：beta-deploy.sh --tree <部署树> (--payload <tgz> | --from <构建树>) [--keep N]'
@@ -59,6 +71,9 @@ usage() {
   beta_say '  --payload <tgz>   从 tar 包装（tar 里应含 dist/ 与 demo/）。'
   beta_say '  --from <目录>     从一棵构建树装（整棵拷过去）。'
   beta_say '  --keep N          保留几份旧备份，默认 1。0 = 装完不留备份。'
+  beta_say '  --only a,b        只换这几个顶层条目（如 dist,demo），树里其余东西一律不动。'
+  beta_say '                    备份落在树内（<名字>.bak-<戳>）。部署树里还装着别的东西'
+  beta_say '                    （源码检出、node_modules）时**必须**用它 —— 整棵换会把它们换掉。'
   beta_say ''
   beta_say '先清后装：空间在开始拷贝之前腾出来，不够就一个字节都不动。'
 }
@@ -69,6 +84,7 @@ while [ "$#" -gt 0 ]; do
     --payload) PAYLOAD="${2:-}"; shift 2 ;;
     --from)    FROM="${2:-}"; shift 2 ;;
     --keep)    KEEP="${2:-}"; shift 2 ;;
+    --only)    ONLY="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) beta_say "未知参数：$1"; beta_say ''; usage; exit 1 ;;
   esac
@@ -140,18 +156,76 @@ case "$CWD_REAL/" in
   "$TREE_REAL"/*) beta_die "当前目录在 --tree 之下（${CWD_REAL}）——换产物会把 cwd 抽掉。先 cd 到别处。" ;;
 esac
 
-BACKUP_PREFIX="$(basename "$TREE").bak-"
-BACKUP_DIR="$(dirname "$TREE")"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
 # 同一秒里跑两次部署，时间戳会撞上 —— 而 `mv 树 已存在的目录` 是把树**塞进那个
 # 目录里**，不是覆盖。结果是备份里套着备份、下一次清理算错份数。旧脚本也有这个
 # 坑（同样是秒级时间戳），只是没人在一秒内部署过两次。加个后缀直到不撞。
-BACKUP_PATH="$BACKUP_DIR/$BACKUP_PREFIX$STAMP"
-if [ -e "$BACKUP_PATH" ]; then
-  suffix=2
-  while [ -e "$BACKUP_PATH-$suffix" ]; do suffix=$((suffix + 1)); done
-  BACKUP_PATH="$BACKUP_PATH-$suffix"
+unique_path() {
+  _u="$1"
+  if [ -e "$_u" ]; then
+    _n=2
+    while [ -e "$_u-$_n" ]; do _n=$((_n + 1)); done
+    _u="$_u-$_n"
+  fi
+  printf '%s\n' "$_u"
+}
+
+# 把 <dir>/<prefix>* 清到只剩 keep 份。两种模式共用：整棵换时备份是树的兄弟
+# （<树名>.bak-<戳>），--only 时备份在树里（<条目名>.bak-<戳>）。
+prune_backups() {
+  _dir="$1"; _prefix="$2"; _keep="$3"
+  _existing=''
+  while IFS= read -r _line; do
+    [ -n "$_line" ] && _existing="$_existing$_line"$'\n'
+  done <<EOF
+$(ls -d "$_dir/$_prefix"* 2>/dev/null | sort || true)
+EOF
+  _count=0
+  [ -z "$_existing" ] || _count="$(printf '%s' "$_existing" | grep -c '^' || true)"
+  if [ "$_count" -le "$_keep" ]; then
+    beta_say "  $_prefix* 现有 $_count 份，无需清理"
+    return 0
+  fi
+  _drop=$((_count - _keep))
+  printf '%s' "$_existing" | head -n "$_drop" | while IFS= read -r _old; do
+    [ -n "$_old" ] || continue
+    case "$_old" in
+      "$_dir/$_prefix"*) ;;
+      *) beta_die "拒绝删除不像备份的路径：$_old" ;;
+    esac
+    beta_say "  删 $(basename "$_old")"
+    rm -rf "$_old"
+  done
+  beta_ok "  $_prefix* 清掉 $_drop 份，剩 $_keep 份"
+}
+
+# 源头（构建树或 tar 包）的顶层条目名。整棵换之前要拿它跟树里现有的比。
+source_entries() {
+  if [ -n "$FROM" ]; then
+    ls -A "$FROM"
+  else
+    tar tzf "$PAYLOAD" | sed -e 's|^\./||' -e 's|/.*||' | grep -v '^$' | sort -u
+  fi
+}
+
+# --only 的条目表：逗号分隔转成一行一个。
+ONLY_LIST=''
+if [ -n "$ONLY" ]; then
+  ONLY_LIST="$(printf '%s' "$ONLY" | tr ',' '\n' | grep -v '^$' || true)"
+  [ -n "$ONLY_LIST" ] || beta_die "--only 给了个空表：$ONLY"
+  while IFS= read -r n; do
+    case "$n" in
+      */*|.|..|.*) beta_die "--only 只收顶层条目名，不收路径也不收点开头：$n" ;;
+    esac
+  done <<EOF
+$ONLY_LIST
+EOF
 fi
+
+BACKUP_DIR="$(dirname "$TREE")"
+BACKUP_PREFIX="$(basename "$TREE").bak-"
+BACKUP_PATH="$(unique_path "$BACKUP_DIR/$BACKUP_PREFIX$STAMP")"
 BACKUP_NAME="$(basename "$BACKUP_PATH")"
 
 # ── ① 树上还有活着的进程吗 ────────────────────────────────────────────────
@@ -196,31 +270,18 @@ beta_ok '没有进程跑在这棵树上'
 #
 # 装之前腾空间，不是装完再腾。理由见文件头。
 beta_head "清理旧备份（保留 $KEEP 份）"
-existing=''
-while IFS= read -r line; do
-  [ -n "$line" ] && existing="$existing$line"$'\n'
-done <<EOF
-$(ls -d "$BACKUP_DIR/$BACKUP_PREFIX"* 2>/dev/null | sort || true)
-EOF
-
-count=0
-[ -z "$existing" ] || count="$(printf '%s' "$existing" | grep -c '^' || true)"
 # 这次自己还要再造一份，所以现在最多留 KEEP-1 份。
 target_before=$((KEEP > 0 ? KEEP - 1 : 0))
-if [ "$count" -gt "$target_before" ]; then
-  drop=$((count - target_before))
-  printf '%s' "$existing" | head -n "$drop" | while IFS= read -r old; do
-    [ -n "$old" ] || continue
-    case "$old" in
-      "$BACKUP_DIR/$BACKUP_PREFIX"*) ;;
-      *) beta_die "拒绝删除不像备份的路径：$old" ;;
-    esac
-    beta_say "  删 $(basename "$old")"
-    rm -rf "$old"
-  done
-  beta_ok "清掉 $drop 份，剩 $target_before 份"
+if [ -n "$ONLY" ]; then
+  # --only：备份在树里，按条目各清各的。
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    prune_backups "$TREE" "$n.bak-" "$target_before"
+  done <<EOF
+$ONLY_LIST
+EOF
 else
-  beta_ok "现有 $count 份，无需清理"
+  prune_backups "$BACKUP_DIR" "$BACKUP_PREFIX" "$target_before"
 fi
 
 # ── ③ 再看空间 ────────────────────────────────────────────────────────────
@@ -229,7 +290,16 @@ fi
 # 所以峰值大约就是「再来一棵树」。留 20% 余量。
 beta_head '检查空间'
 need_kb=0
-if [ -n "$FROM" ]; then
+if [ -n "$FROM" ] && [ -n "$ONLY" ]; then
+  # 只算要换的那几个条目 —— 拿整棵构建树的体积去要空间，会在盘还够用时把人挡住。
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ -e "$FROM/$n" ] || beta_die "--only 要 ${n}，但构建树里没有：$FROM/$n"
+    need_kb=$((need_kb + $(du -sk "$FROM/$n" | awk '{print $1}')))
+  done <<EOF
+$ONLY_LIST
+EOF
+elif [ -n "$FROM" ]; then
   need_kb="$(du -sk "$FROM" | awk '{print $1}')"
 else
   # tar 包按 4 倍估解压后体积（gzip 对这类树大致 3–4 倍），宁可高估。
@@ -245,24 +315,95 @@ fi
 beta_ok '空间够'
 
 # ── ④ 才动手 ──────────────────────────────────────────────────────────────
+#
+# **整棵换之前先问一句：源头有没有树里现在有的东西？**
+#
+# 部署树在各台机器上并不是一个形状：有的就只有 `dist/` 与 `demo/`，有的是一整棵
+# 源码检出（`node_modules`、`src`、`packages`…，而 `node_modules` 根本不在任何
+# payload 里）。拿一个只含 dist+demo 的 payload 去「整棵换」后一种树，等于把
+# 检出和 node_modules 一起换走 —— 备份里还在，但那台机器当场就不是原来那棵树了。
+#
+# 所以整棵换的前提是**源头至少覆盖树里现有的顶层条目**；覆盖不住就拒绝，并告诉
+# 调用方用 `--only`。判据是「会掉什么」而不是「树长什么样」：H 那种从整棵构建树
+# `--from` 拷过去的用法照旧通过，因为它什么都不掉。
 beta_head '换产物'
-if [ -d "$TREE" ]; then
-  if [ "$KEEP" -gt 0 ]; then
-    mv "$TREE" "$BACKUP_PATH"
-    beta_ok "旧树 → $BACKUP_NAME"
-  else
-    rm -rf "$TREE"
-    beta_ok '旧树已删（--keep 0）'
+if [ -z "$ONLY" ] && [ -d "$TREE" ]; then
+  src_list="$(source_entries)"
+  dropped=''
+  for existing in "$TREE"/* "$TREE"/.[!.]*; do
+    [ -e "$existing" ] || continue
+    name="$(basename "$existing")"
+    if ! printf '%s\n' "$src_list" | grep -Fxq "$name"; then
+      dropped="$dropped $name"
+    fi
+  done
+  if [ -n "$dropped" ]; then
+    beta_die "整棵换会让树里这些东西消失（源头里没有）：$dropped
+它们会留在备份里，但这棵树当场就不是原来那棵了 —— 部署树里装着源码检出或 node_modules 时尤其危险。
+只想换产物就用：--only dist,demo"
   fi
+  beta_ok '源头覆盖得住树里现有的顶层条目'
 fi
 
-if [ -n "$FROM" ]; then
-  cp -a "$FROM" "$TREE"
-else
+if [ -n "$ONLY" ]; then
+  # 先把新东西备齐在一个暂存目录里，再逐个换过去 —— 暂存目录与树同一文件系统，
+  # 所以换那一下是 mv，不是拷。中途失败时树里换掉的那几个是好的，没换的还是旧的，
+  # 不会出现「一个条目拷了一半」的形状。
+  STAGE="$(unique_path "$BACKUP_DIR/.beta-deploy-stage-$STAMP")"
+  trap 'rm -rf "$STAGE"' EXIT
+  mkdir -p "$STAGE"
+  if [ -n "$FROM" ]; then
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      cp -a "$FROM/$n" "$STAGE/$n"
+    done <<EOF
+$ONLY_LIST
+EOF
+  else
+    tar xzf "$PAYLOAD" -C "$STAGE"
+  fi
+
   mkdir -p "$TREE"
-  tar xzf "$PAYLOAD" -C "$TREE"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ -e "$STAGE/$n" ] || beta_die "--only 要 ${n}，但源头里没有 —— 树没动过。"
+    if [ -e "$TREE/$n" ]; then
+      if [ "$KEEP" -gt 0 ]; then
+        nb="$(unique_path "$TREE/$n.bak-$STAMP")"
+        mv "$TREE/$n" "$nb"
+        beta_ok "旧 $n → $(basename "$nb")"
+      else
+        rm -rf "${TREE:?}/$n"
+        beta_ok "旧 $n 已删（--keep 0）"
+      fi
+    fi
+    mv "$STAGE/$n" "$TREE/$n"
+    beta_ok "装好 $n"
+  done <<EOF
+$ONLY_LIST
+EOF
+  rm -rf "$STAGE"
+  trap - EXIT
+  beta_ok "装好了（只换了：${ONLY}）：$TREE"
+else
+  if [ -d "$TREE" ]; then
+    if [ "$KEEP" -gt 0 ]; then
+      mv "$TREE" "$BACKUP_PATH"
+      beta_ok "旧树 → $BACKUP_NAME"
+    else
+      rm -rf "$TREE"
+      beta_ok '旧树已删（--keep 0）'
+    fi
+  fi
+
+  if [ -n "$FROM" ]; then
+    cp -a "$FROM" "$TREE"
+  else
+    mkdir -p "$TREE"
+    tar xzf "$PAYLOAD" -C "$TREE"
+  fi
+  beta_ok "装好了：$TREE"
 fi
-beta_ok "装好了：$TREE"
 
 # ── ⑤ 校验 ────────────────────────────────────────────────────────────────
 #
@@ -272,8 +413,47 @@ missing=''
 for f in dist/cli-node.js demo/env/beta/beta-up.sh; do
   [ -e "$TREE/$f" ] || missing="$missing $f"
 done
-[ -z "$missing" ] || beta_die "装完少了：$missing —— 这棵树不能用，旧树还在 $BACKUP_NAME"
+if [ -n "$missing" ]; then
+  if [ -n "$ONLY" ]; then
+    beta_die "装完少了：$missing —— 这棵树不能用。旧的那几个条目还在树里的 *.bak-$STAMP"
+  fi
+  beta_die "装完少了：$missing —— 这棵树不能用，旧树还在 $BACKUP_NAME"
+fi
 beta_ok '关键文件都在'
+
+# ── ripgrep 是不是这台机的架构 ────────────────────────────────────────────
+#
+# `dist/vendor/ripgrep/` 里按架构分目录，而**产物是在别的机器上建的**：给
+# aarch64 节点建的包滚到 x86_64 机器上，rg 会原地不动地躺在那里、一跑就
+# `Exec format error`。这支舰队真栽过 —— 有一份产物只带了 arm64，x86_64 那台
+# 的 rg 是后来手工补进去的（见 [部署的构建] 那节）。
+#
+# 关键是**这一条 `--version` 真把它跑起来了**：只看文件在不在，架构不对照样"在"。
+# 旧的 node-deploy.sh 这一点是对的，别在换脚本的时候把它丢了。
+#
+# 没有 vendor/ripgrep 整个目录 → 只提醒（有的树本来就不带）；
+# 目录在、但这台机的架构缺了或跑不起来 → 当场红（那是一棵装错架构的树）。
+RG_ROOT="$TREE/dist/vendor/ripgrep"
+if [ -d "$RG_ROOT" ]; then
+  case "$(uname -s)/$(uname -m)" in
+    Linux/aarch64|Linux/arm64) RG_DIR='arm64-linux' ;;
+    Linux/x86_64)              RG_DIR='x64-linux' ;;
+    Darwin/arm64)              RG_DIR='arm64-darwin' ;;
+    Darwin/x86_64)             RG_DIR='x64-darwin' ;;
+    *)                         RG_DIR='' ;;
+  esac
+  if [ -z "$RG_DIR" ]; then
+    beta_warn "认不出这台机的架构（$(uname -s)/$(uname -m)），跳过 ripgrep 校验"
+  elif [ ! -x "$RG_ROOT/$RG_DIR/rg" ]; then
+    beta_die "产物里没有这台机能用的 ripgrep（缺 ${RG_DIR}）—— 这份产物是给别的架构建的。旧树还在备份里。"
+  elif ! "$RG_ROOT/$RG_DIR/rg" --version >/dev/null 2>&1; then
+    beta_die "ripgrep 在（${RG_DIR}）但跑不起来 —— 架构对不上。旧树还在备份里。"
+  else
+    beta_ok "ripgrep 可执行（${RG_DIR}）"
+  fi
+else
+  beta_warn '产物里没有 dist/vendor/ripgrep —— 若这台机要用搜索工具，它会在运行时才失败'
+fi
 
 # ── 产物里编译进去的 SOURCE_COMMIT（issue #70）────────────────────────────
 #
