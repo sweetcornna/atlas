@@ -75,6 +75,26 @@
  * **一次性常驻用 `setsid` 起**，于是它和它的 ACP 子进程落在同一个进程组里，
  * `kill -- -<pid>` 一次收干净。实测不加这一步的话，杀掉常驻会把 ACP 子进程
  * （约 250 MB）留在机器上，一轮下来能攒出几十个。
+ *
+ * ## SSH 连接复用：一台机器一次真握手（issue #100）
+ *
+ * 一轮 105 条场景 × 每条十几到二十几次 SSH ≈ 两千次**连接建立**，而
+ * `Connection closed by <ip> port 22` 发生在握手阶段、远端命令一行都没执行到。
+ * 连着两轮真跑都是「产品满分、栽在一次握手抖动上」，且**每轮出在不同的调用点**
+ * —— 追着补重试永远追不上，何况 34 个调用点里 11 个非幂等（见
+ * {@link FleetDriver.#once}）。
+ *
+ * 所以 {@link FleetDriver.#ssh} 现在走 `ControlMaster`：两千次连接建立 → 五次。
+ * 做法、`ControlPath` 的长度账、以及「建不起来时如实红」都写在
+ * {@link SshMultiplex} 的头注里。三件与本文件有关的：
+ *
+ *   · **两条长命隧道显式退出复用**（{@link TUNNEL_NO_MUX_ARGS}）；
+ *   · **收尾在 {@link FleetDriver.dispose}**，由入口的 `finally` 与信号处理器
+ *     调用，不靠 `ControlPersist` 超时；
+ *   · `QIANMO_ACCEPTANCE_SSH_MULTIPLEX=0` 一键退回老路。
+ *
+ * 顺带一个好处：来源探针（{@link FleetDriver.testedProvenance}）在场景循环**之
+ * 前**就把五台机器都问了一遍，于是那五次真握手的开销落在任何场景预算之外。
  */
 
 import { randomBytes } from 'node:crypto'
@@ -109,6 +129,7 @@ import {
 import { rawDial } from '../local/dial.js'
 import { ACCEPTANCE_PSK, TIMINGS_FILE } from '../local/driver.js'
 import { TRAIL_PATH } from '../observe.js'
+import { SshMultiplex, TUNNEL_NO_MUX_ARGS } from './sshMux.js'
 import {
   isRetriableTransportFailure,
   isTransportFailure,
@@ -206,6 +227,16 @@ export interface FleetConfig {
    * `ssh`。一个能把整条腿指向假二进制的运维开关，换来的风险远大于它的用处。
    */
   readonly sshBin?: string
+  /**
+   * SSH 连接复用（`ControlMaster`）。**缺省开**；
+   * `QIANMO_ACCEPTANCE_SSH_MULTIPLEX=0` 一键退回「每条命令自己建一次连接」。
+   *
+   * 为什么要这个开关：复用是传输层配置，它出问题的形态（master 卡住、某台机
+   * 的 sshd 禁了多路复用）与被测系统毫无关系，而那时候需要的是**一条命令换回
+   * 老路**，不是改代码再发一版。为什么默认开：见 {@link SshMultiplex} 的头注，
+   * 一轮两千次握手里出一次抖动是必然事件。
+   */
+  readonly sshMultiplex?: boolean
 }
 
 /**
@@ -390,9 +421,21 @@ export class FleetDriver implements AcceptanceDriver {
   readonly #homes = new Map<string, Promise<string>>()
   /** 场景 → 它的落机。见 {@link FleetDriver.#machineFor}。 */
   readonly #machines = new WeakMap<ScenarioContext, SpawnMachine>()
+  /**
+   * 这一轮的 SSH 复用 master —— 一台机器一次真握手（issue #100）。
+   *
+   * 它**只**接在 {@link FleetDriver.#ssh} 上。两条长命隧道显式退出复用，见
+   * {@link TUNNEL_NO_MUX_ARGS}。
+   */
+  readonly #mux: SshMultiplex
 
   constructor(config: FleetConfig) {
     this.#config = config
+    this.#mux = new SshMultiplex({
+      sshBin: config.sshBin ?? 'ssh',
+      sshArgs: config.sshArgs ?? [],
+      enabled: config.sshMultiplex ?? true,
+    })
     const caps: DriverCapability[] = [
       'attach-node',
       'raw-dial',
@@ -415,6 +458,36 @@ export class FleetDriver implements AcceptanceDriver {
       )
     }
     this.capabilities = new Set(caps)
+  }
+
+  /**
+   * 一轮结束把 SSH 复用 master 逐台拆掉（issue #100 ③）。
+   *
+   * **不靠 `ControlPersist` 超时** —— 那些 socket 背后是到生产机的活会话，跑完
+   * 之后还挂着几条不可接受。挂在入口的 `finally` 上，于是场景抛异常、超时、
+   * 判定失败这些路径都会走到；Ctrl-C 走信号处理器，`process.exit()` 走
+   * {@link FleetDriver.disposeSync}。
+   *
+   * 它**不是** {@link AcceptanceDriver} 的必备项：本地驱动没有跨场景的进程或
+   * 套接字要收，那条腿因此逐字节不变。
+   */
+  async dispose(): Promise<void> {
+    await this.#mux.dispose()
+  }
+
+  /**
+   * 同步版收尾 —— 只给 `process.on('exit')` 那条最后防线用。
+   *
+   * 正常路径已经在 `finally` 里 `await dispose()` 过了，到这里是空转。留着是
+   * 因为「还挂着到生产机的会话」这件事不该依赖任何一条路径没被绕过。
+   */
+  disposeSync(): void {
+    this.#mux.disposeSync()
+  }
+
+  /** 这一轮已经建起复用 master 的机器 —— 护栏与排查用。 */
+  multiplexedTargets(): readonly string[] {
+    return this.#mux.establishedTargets()
   }
 
   /**
@@ -1422,7 +1495,7 @@ export class FleetDriver implements AcceptanceDriver {
   ): Promise<void> {
     const child = Bun.spawn(
       [
-        'ssh',
+        this.#config.sshBin ?? 'ssh',
         '-N',
         '-o',
         'BatchMode=yes',
@@ -1430,6 +1503,9 @@ export class FleetDriver implements AcceptanceDriver {
         'ExitOnForwardFailure=yes',
         '-o',
         'ServerAliveInterval=15',
+        // 长命隧道**不走复用**：共享 master 会让「杀掉隧道进程」与「转发真的
+        // 撤掉」脱钩（issue #100 ②）。见 {@link TUNNEL_NO_MUX_ARGS}。
+        ...TUNNEL_NO_MUX_ARGS,
         ...(this.#config.sshArgs ?? []),
         '-R',
         `${String(remotePort)}:127.0.0.1:${String(localPort)}`,
@@ -1676,7 +1752,7 @@ export class FleetDriver implements AcceptanceDriver {
     const localPort = await ctx.allocPort()
     const child = Bun.spawn(
       [
-        'ssh',
+        this.#config.sshBin ?? 'ssh',
         '-N',
         '-o',
         'BatchMode=yes',
@@ -1684,6 +1760,8 @@ export class FleetDriver implements AcceptanceDriver {
         'ExitOnForwardFailure=yes',
         '-o',
         'ServerAliveInterval=15',
+        // 与 `#reverseTunnel` 同一条理由，见 {@link TUNNEL_NO_MUX_ARGS}。
+        ...TUNNEL_NO_MUX_ARGS,
         ...(this.#config.sshArgs ?? []),
         '-L',
         `${String(localPort)}:127.0.0.1:${String(remotePort)}`,
@@ -2241,6 +2319,11 @@ export class FleetDriver implements AcceptanceDriver {
    *
    * 表外还有两处 `#ssh` 出现在 {@link FleetDriver.#sshRetry} 自己体内 —— 那是
    * 重发循环的实现，不是调用点。
+   *
+   * **这张表管的是「远端命令」，不含 SSH 复用自己那两条**（issue #100）：建
+   * master 的 `ssh -M -N` 与拆它的 `ssh -O exit` 都在 {@link SshMultiplex} 里，
+   * 一条远端命令都不跑（前者 `-N`，后者只跟本地 socket 说话），所以它们不落在
+   * 幂等性这条轴上，也就没有第 35 行。
    */
   async #ssh(
     ssh: string,
@@ -2248,12 +2331,21 @@ export class FleetDriver implements AcceptanceDriver {
     timeoutMs?: number,
     stdin?: string,
   ): Promise<ExecResult> {
+    // 复用 master 先就位：这台机器的第一条命令付一次真握手，之后每条只是在
+    // 已建好的会话上开一条 channel（issue #100）。建不起来就**不发这条命令**，
+    // 原样回一次 rc=255 —— 静默退回「每次新建」会让复用是否生效无法验证，而
+    // 那正是这类改动最难发现的失败形态。见 {@link SshMultiplex} 的头注。
+    const mux = await this.#mux.ensure(ssh)
+    if (mux.kind === 'failed') {
+      return { code: mux.code, stdout: '', stderr: mux.stderr }
+    }
     const child = Bun.spawn(
       [
         this.#config.sshBin ?? 'ssh',
         ...(stdin === undefined ? ['-n'] : []),
         '-o',
         'BatchMode=yes',
+        ...mux.args,
         ...(this.#config.sshArgs ?? []),
         ssh,
         lines.join('\n'),
@@ -2513,10 +2605,17 @@ export function fleetConfigFromEnv(repoDirOverride?: string): FleetConfig {
                 repoRel: 'atlas-beta',
               },
           )
+  // SSH 连接复用（issue #100）。**默认开** —— 一轮两千次握手里出一次抖动是必然
+  // 事件，而每轮出在不同的调用点。`QIANMO_ACCEPTANCE_SSH_MULTIPLEX=0`（或
+  // `false`）一键退回每条命令自己建一次连接：复用出问题时要的是一条命令换回老
+  // 路，不是改代码再发一版。**只认这两个值**，别的（含拼错的）一律当没关。
+  const multiplexRaw = process.env.QIANMO_ACCEPTANCE_SSH_MULTIPLEX?.trim()
+  const sshMultiplex = multiplexRaw !== '0' && multiplexRaw !== 'false'
   return {
     hosts,
     spawnMachines,
     psk,
+    sshMultiplex,
     ...(consoleHostRaw === '' ? {} : { consoleHost: consoleHostRaw }),
   }
 }

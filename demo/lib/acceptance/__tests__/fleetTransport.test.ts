@@ -47,44 +47,73 @@ import type {
 const FAKE_ROOT = '/home/fake/.cache/qianmo-acceptance/run.AAAABBBB'
 
 const madeDirs: string[] = []
+/** 每个驱动都开着一个 SSH 复用目录，跑完要拆 —— 见 `afterEach`。 */
+const openDrivers: FleetDriver[] = []
 
-afterEach(() => {
+afterEach(async () => {
+  // `dispose` 是真机腿收尾的那一条（issue #100）：不拆的话每个驱动都会在 /tmp
+  // 下留一个复用目录。这里连带把它当护栏用 —— 拆不干净在本地就看得见。
+  for (const driver of openDrivers.splice(0)) await driver.dispose()
   for (const dir of madeDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
+/** 记一笔，好让 `afterEach` 把它的复用目录拆掉。 */
+function track(made: FleetDriver): FleetDriver {
+  openDrivers.push(made)
+  return made
+}
+
 /**
  * 写一个假 `ssh` 到临时目录，返回它的绝对路径。
  *
  * `script` 是 bash 片段，进来时 `$cmd` 已经是远端命令原文。
+ *
+ * ## 复用那几条先短路掉（issue #100）
+ *
+ * SSH 连接复用之后，同一个假 `ssh` 还会被拿去建 master（`-M -N`）与问它在不在
+ * （`-O check` / `-O exit`）。那几条**一条远端命令都不跑** —— `-M -N` 只建连接，
+ * `-O` 只跟本地 socket 说话 —— 所以本文件这些「远端命令答什么」的脚本对它们
+ * 不适用：让 `exit 2` 那种脚本也去答 master，等于把一次远端命令的返回码冒充成
+ * 链路失败，方向正好反了。
+ *
+ * 于是这里给它们一个恒成功的短路：本文件测的是**命令连接**上的分类，而
+ * 「master 建不起来会怎样」在 `fleetSshMux.test.ts` 里单独钉。
  */
 function fakeSsh(script: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
   madeDirs.push(dir)
   const bin = join(dir, 'ssh')
-  writeFileSync(bin, `#!/bin/bash\ncmd="\${@: -1}"\n${script}\nexit 0\n`, {
-    mode: 0o755,
-  })
+  writeFileSync(
+    bin,
+    `#!/bin/bash\ncase " $* " in *" -M "*|*" -O "*) exit 0;; esac\n` +
+      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
+    { mode: 0o755 },
+  )
   return bin
 }
 
 function driver(sshBin: string): FleetDriver {
-  return new FleetDriver({
-    hosts: [
-      {
-        ssh: 'fake-host',
-        node: 'beta-1',
-        tunnelPort: 38_631,
-        endpoint: 'ws://127.0.0.1:38631',
-        configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
-        occPath: '/home/fake/atlas-beta/dist/cli-node.js',
-      },
-    ],
-    spawnMachines: [{ ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' }],
-    psk: {},
-    sshBin,
-  })
+  return track(
+    new FleetDriver({
+      hosts: [
+        {
+          ssh: 'fake-host',
+          node: 'beta-1',
+          tunnelPort: 38_631,
+          endpoint: 'ws://127.0.0.1:38631',
+          configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
+          occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+        },
+      ],
+      spawnMachines: [
+        { ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' },
+      ],
+      psk: {},
+      sshBin,
+    }),
+  )
 }
 
 /** 一条只做「开一次性目录」的场景 —— 清理由 runner 在 `finally` 里跑。 */
@@ -460,22 +489,26 @@ function newCounter(): string {
 
 /** 带控制台机器的一份配置 —— 审计镜像那三趟采集要它。 */
 function driverWithConsole(sshBin: string): FleetDriver {
-  return new FleetDriver({
-    hosts: [
-      {
-        ssh: 'fake-host',
-        node: 'beta-1',
-        tunnelPort: 38_631,
-        endpoint: 'ws://127.0.0.1:38631',
-        configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
-        occPath: '/home/fake/atlas-beta/dist/cli-node.js',
-      },
-    ],
-    spawnMachines: [{ ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' }],
-    psk: {},
-    consoleHost: 'fake-console',
-    sshBin,
-  })
+  return track(
+    new FleetDriver({
+      hosts: [
+        {
+          ssh: 'fake-host',
+          node: 'beta-1',
+          tunnelPort: 38_631,
+          endpoint: 'ws://127.0.0.1:38631',
+          configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
+          occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+        },
+      ],
+      spawnMachines: [
+        { ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' },
+      ],
+      psk: {},
+      consoleHost: 'fake-console',
+      sshBin,
+    }),
+  )
 }
 
 const ATTACH_SPEC: NodeSpec = {

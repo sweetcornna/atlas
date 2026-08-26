@@ -1,0 +1,464 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: MIT
+
+/**
+ * SSH 连接复用的护栏（issue #100）。
+ *
+ * 这条改动的效果是**数量**上的：一轮两千次连接建立 → 五次。所以护栏也必须是
+ * 数量上的 —— 「看起来在复用其实没有」是这类改动最难发现的失败形态，而它在
+ * 报告上与「复用生效了」长得一模一样。
+ *
+ * ## 怎么数
+ *
+ * 假一个 `ssh` 出来（经 `FleetConfig.sshBin`，与 `fleetTransport.test.ts` 同一个
+ * 注入点，零 `mock.module`），让它把自己每次拿到的 argv 追加进一个日志文件。
+ * 于是一轮跑完之后，「建了几次 master」「几条命令走了复用」「两条长命隧道带没
+ * 带 `ControlPath=none`」全部是可数的。
+ *
+ * 真机上的数字另有实测，写在 PR 描述里：`cornna-p2` 20 条命令 20 → 1 次握手，
+ * 经 IAP 的 `workbench-iap` 10 条命令 10 → 1 次。判据是 ssh 客户端 `-v` 里的
+ * `Authenticated to` —— 那一行只在密钥交换 + 认证都完成之后才打印。
+ */
+
+import { afterEach, describe, expect, it } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { FleetDriver, fleetConfigFromEnv } from '../fleet/driver.js'
+import {
+  CONTROL_DIR_BASE,
+  CONTROL_DIR_PREFIX,
+  CONTROL_PATH_TOKEN,
+  CONTROL_PATH_TOKEN_BYTES,
+  MASTER_OPEN_TIMEOUT_MS,
+  SshMultiplex,
+  TUNNEL_NO_MUX_ARGS,
+  UNIX_SOCKET_PATH_MAX,
+} from '../fleet/sshMux.js'
+import {
+  DEFAULT_SCENARIO_TIMEOUT_MS,
+  FLEET_TIMEOUT_SCALE,
+  runScenario,
+} from '../runner.js'
+import { TRANSPORT_RETRY_ATTEMPTS } from '../transport.js'
+import type { Scenario, ScenarioResult } from '../types.js'
+
+/** 假 ssh 回给 `mktemp -d` 的那个根，形状与真的一致。 */
+const FAKE_ROOT = '/home/fake/.cache/qianmo-acceptance/run.AAAABBBB'
+
+const madeDirs: string[] = []
+const openDrivers: FleetDriver[] = []
+const openMuxes: SshMultiplex[] = []
+
+afterEach(async () => {
+  for (const driver of openDrivers.splice(0)) await driver.dispose()
+  for (const mux of openMuxes.splice(0)) await mux.dispose()
+  for (const dir of madeDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 写一个会记账的假 `ssh`：每次调用把整条 argv 追加进 `log`，**一次调用一行**。
+ *
+ * 远端命令自己是多行的（`lines.join('\n')`），所以记账前先把换行折成字面量
+ * `\n` —— 否则「一次调用」与「一行」对不上，数出来的连接数全是错的。
+ *
+ * `script` 是 bash 片段，进来时 `$cmd` 已经是最后一个参数（命令连接上就是远端
+ * 命令原文，master / `-O` 那几条上是目标名）。
+ */
+function fakeSsh(script: string, log: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'qm-fake-ssh-'))
+  madeDirs.push(dir)
+  const bin = join(dir, 'ssh')
+  writeFileSync(
+    bin,
+    `#!/bin/bash\nargv="$*"\n` +
+      `printf '%s\\n' "\${argv//$'\\n'/\\\\n}" >> '${log}'\n` +
+      `cmd="\${@: -1}"\n${script}\nexit 0\n`,
+    { mode: 0o755 },
+  )
+  return bin
+}
+
+/** 这一轮的 argv 日志落点。 */
+function logPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'qm-ssh-log-'))
+  madeDirs.push(dir)
+  return join(dir, 'argv.log')
+}
+
+function driver(sshBin: string, sshMultiplex: boolean): FleetDriver {
+  const made = new FleetDriver({
+    hosts: [
+      {
+        ssh: 'fake-host',
+        node: 'beta-1',
+        tunnelPort: 38_631,
+        endpoint: 'ws://127.0.0.1:38631',
+        configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
+        occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+      },
+    ],
+    spawnMachines: [{ ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' }],
+    psk: {},
+    sshBin,
+    sshMultiplex,
+  })
+  openDrivers.push(made)
+  return made
+}
+
+/** 一次 argv 记账的分类。 */
+interface Tally {
+  readonly all: readonly string[]
+  /** `ssh -M -N …` —— 一次**真握手**。 */
+  readonly masters: readonly string[]
+  /** `ssh -O check` / `ssh -O exit` —— 纯本地 socket，不发网络包。 */
+  readonly control: readonly string[]
+  /** `-N -R` / `-N -L` 两条长命隧道。 */
+  readonly tunnels: readonly string[]
+  /** 剩下的就是远端命令。 */
+  readonly commands: readonly string[]
+}
+
+function tally(log: string): Tally {
+  const all = existsSync(log)
+    ? readFileSync(log, 'utf8')
+        .split('\n')
+        .filter(l => l.trim() !== '')
+    : []
+  const has = (line: string, flag: string): boolean =>
+    ` ${line} `.includes(` ${flag} `)
+  const masters = all.filter(l => has(l, '-M'))
+  const control = all.filter(
+    l => l.includes('-O check') || l.includes('-O exit'),
+  )
+  const tunnels = all.filter(
+    l => !has(l, '-M') && (has(l, '-R') || has(l, '-L')),
+  )
+  const commands = all.filter(
+    l => !masters.includes(l) && !control.includes(l) && !tunnels.includes(l),
+  )
+  return { all, masters, control, tunnels, commands }
+}
+
+/** 一条只做「开一次性目录」的场景 —— 它对一台机器发好几条远端命令。 */
+const OPEN_LAUNCHER: Scenario = {
+  id: 'launcher/fake-open',
+  dimension: 'launcher',
+  title: '只开一次性目录，什么都不跑',
+  expected: '开得出来',
+  requires: ['run-launcher'],
+  async run(ctx) {
+    const host = await ctx.driver.launcherHost(ctx)
+    return { ok: true, actual: host.betaRoot, evidence: [] }
+  },
+}
+
+const OPEN_SCRATCH = `if [[ "$cmd" == *'$d/config'* ]]; then printf '%s\\n' '${FAKE_ROOT}'; exit 0; fi`
+const HAPPY = [
+  OPEN_SCRATCH,
+  `if [[ "$cmd" == *"pgrep"* ]]; then exit 0; fi`,
+  `if [[ "$cmd" == *'$HOME'* ]]; then printf '/home/fake\\n'; exit 0; fi`,
+].join('\n')
+
+/** 结果里全部 `log` 证据拼成一段。 */
+function logsOf(result: ScenarioResult): string {
+  return result.evidence
+    .filter(e => e.label === 'log')
+    .map(e => e.value)
+    .join('\n')
+}
+
+describe('ControlPath 的长度账（issue #100 ①）', () => {
+  it('展开后远在 macOS 的 104 字节上限之内', () => {
+    const mux = new SshMultiplex({ sshBin: 'ssh', sshArgs: [], enabled: true })
+    openMuxes.push(mux)
+    const path = mux.controlPath()
+    expect(path.startsWith(`${CONTROL_DIR_BASE}/${CONTROL_DIR_PREFIX}`)).toBe(
+      true,
+    )
+    expect(path.endsWith(`/${CONTROL_PATH_TOKEN}`)).toBe(true)
+    // ssh 自己去展开 `%C`（40 位十六进制），所以要核的是展开后的长度。
+    const expanded =
+      path.length - CONTROL_PATH_TOKEN.length + CONTROL_PATH_TOKEN_BYTES
+    expect(expanded).toBeLessThan(UNIX_SOCKET_PATH_MAX)
+    // 留够余量：顶着上限过一次不算过。59 vs 104。
+    expect(expanded).toBeLessThan(80)
+  })
+
+  it('两轮并行跑各占一个目录，socket 不会互相踩', () => {
+    const a = new SshMultiplex({ sshBin: 'ssh', sshArgs: [], enabled: true })
+    const b = new SshMultiplex({ sshBin: 'ssh', sshArgs: [], enabled: true })
+    openMuxes.push(a, b)
+    expect(a.controlPath()).not.toBe(b.controlPath())
+  })
+
+  it('建 master 打满也炸不掉场景预算', () => {
+    // `#read` / `#diag` 的退避重发会连 master 一起再试，所以最坏是
+    // `TRANSPORT_RETRY_ATTEMPTS` 次 × 每次的 master 预算。它必须小于真机腿的
+    // 场景预算 —— 否则一次链路失败会以「场景超时」的形态收场，而超时记的是
+    // 「套件自己炸了」，那条 `errorKind='transport'` 的分类就白做了。
+    const worst = MASTER_OPEN_TIMEOUT_MS * TRANSPORT_RETRY_ATTEMPTS
+    expect(worst).toBeLessThan(
+      DEFAULT_SCENARIO_TIMEOUT_MS * FLEET_TIMEOUT_SCALE,
+    )
+  })
+
+  it('关着复用时一个目录都不开', () => {
+    const mux = new SshMultiplex({ sshBin: 'ssh', sshArgs: [], enabled: false })
+    openMuxes.push(mux)
+    expect(mux.enabled).toBe(false)
+    expect(mux.establishedTargets()).toEqual([])
+  })
+})
+
+describe('复用真的生效 —— 数连接建立次数（issue #100）', () => {
+  it('开着：一台机器只建一次 master，其余全走复用', async () => {
+    const log = logPath()
+    const result = await runScenario(
+      OPEN_LAUNCHER,
+      driver(fakeSsh(HAPPY, log), true),
+      4_000,
+      false,
+      1,
+    )
+    expect(result.outcome).toBe('pass')
+    const t = tally(log)
+    // **这就是这条 issue 的那个数字**：命令好几条，真握手只有一次。
+    expect(t.masters).toHaveLength(1)
+    expect(t.commands.length).toBeGreaterThan(2)
+    // 每一条命令都带着复用参数 —— 少一条就是它自己又建了一次连接。
+    for (const line of t.commands) {
+      expect(line).toContain('ControlMaster=no')
+      expect(line).toContain(`ControlPath=${CONTROL_DIR_BASE}/`)
+      expect(line).toContain(CONTROL_PATH_TOKEN)
+    }
+    // master 起没起来问的是 socket（`-O check`），不是「fork 成功了没有」。
+    expect(t.control.some(l => l.includes('-O check'))).toBe(true)
+  }, 60_000)
+
+  it('关掉：一次 master 都不建，命令行与改造前逐字节相同', async () => {
+    const log = logPath()
+    const result = await runScenario(
+      OPEN_LAUNCHER,
+      driver(fakeSsh(HAPPY, log), false),
+      4_000,
+      false,
+      1,
+    )
+    expect(result.outcome).toBe('pass')
+    const t = tally(log)
+    expect(t.masters).toHaveLength(0)
+    expect(t.control).toHaveLength(0)
+    expect(t.commands.length).toBeGreaterThan(2)
+    for (const line of t.commands) {
+      expect(line).not.toContain('ControlMaster')
+      expect(line).not.toContain('ControlPath')
+      // 改造前的形状：`-n -o BatchMode=yes <目标> <命令>`。
+      expect(line.startsWith('-n -o BatchMode=yes fake-host ')).toBe(true)
+    }
+  }, 60_000)
+
+  it('两种模式发出去的远端命令条数一模一样 —— 复用不改语义', async () => {
+    const onLog = logPath()
+    const offLog = logPath()
+    await runScenario(
+      OPEN_LAUNCHER,
+      driver(fakeSsh(HAPPY, onLog), true),
+      4_000,
+      false,
+      1,
+    )
+    await runScenario(
+      OPEN_LAUNCHER,
+      driver(fakeSsh(HAPPY, offLog), false),
+      4_000,
+      false,
+      1,
+    )
+    const on = tally(onLog)
+    const off = tally(offLog)
+    expect(on.commands).toHaveLength(off.commands.length)
+    // 连接建立次数才是差的那一栏：off 每条命令一次，on 只有一次。
+    expect(on.masters.length).toBe(1)
+    expect(off.commands.length).toBeGreaterThan(on.masters.length)
+  }, 60_000)
+})
+
+describe('两条长命隧道显式退出复用（issue #100 ②）', () => {
+  const registryScenario: Scenario = {
+    id: 'console/fake-registry',
+    dimension: 'console',
+    title: '起一次性注册中心并把它反向转发到落机',
+    expected: '转发得通',
+    requires: ['spawn-console'],
+    async run(ctx) {
+      await ctx.driver.startRegistry?.(ctx)
+      return { ok: true, actual: '通了', evidence: [] }
+    },
+  }
+
+  const consoleScenario: Scenario = {
+    id: 'console/fake-start',
+    dimension: 'console',
+    title: '起一个一次性控制台',
+    expected: '起得来',
+    requires: ['spawn-console'],
+    async run(ctx) {
+      const slot = await ctx.driver.consoleSlot?.(ctx)
+      if (slot === undefined)
+        return { ok: false, actual: '没有位', evidence: [] }
+      await slot.start({ registryUrl: 'http://127.0.0.1:39999' })
+      return { ok: true, actual: '起来了', evidence: [] }
+    },
+  }
+
+  it('`ssh -N -R` 那条不共享 master', async () => {
+    const log = logPath()
+    // 倍率 0.02：反向隧道预算 30 s → 600 ms，场景预算 120 s → 2.4 s。
+    await runScenario(
+      registryScenario,
+      driver(fakeSsh(HAPPY, log), true),
+      120_000,
+      false,
+      0.02,
+    )
+    const t = tally(log)
+    const reverse = t.tunnels.filter(l => l.includes(' -R '))
+    expect(reverse.length).toBeGreaterThan(0)
+    for (const line of reverse) {
+      expect(line).toContain('ControlMaster=no')
+      expect(line).toContain('ControlPath=none')
+    }
+  }, 60_000)
+
+  it('`ssh -N -L` 那条也不共享 master', async () => {
+    const log = logPath()
+    const bin = fakeSsh(
+      [
+        // banner 要过得去，`#tunnel` 才轮得到被拉起来。
+        `if [[ "$cmd" == *"console.out.log"* ]]; then printf 'admin-token=x\\n'; exit 0; fi`,
+        HAPPY,
+      ].join('\n'),
+      log,
+    )
+    await runScenario(consoleScenario, driver(bin, true), 120_000, false, 0.02)
+    const t = tally(log)
+    const forward = t.tunnels.filter(l => l.includes(' -L '))
+    expect(forward.length).toBeGreaterThan(0)
+    for (const line of forward) {
+      expect(line).toContain('ControlMaster=no')
+      expect(line).toContain('ControlPath=none')
+    }
+  }, 60_000)
+
+  it('源码里那两处 `Bun.spawn` 各带一次 TUNNEL_NO_MUX_ARGS', () => {
+    const source = readFileSync(
+      new URL('../fleet/driver.ts', import.meta.url),
+      'utf8',
+    )
+    // 行为护栏之外再钉一次结构：将来新增第三条长命隧道时，漏带这两个参数会
+    // 让「杀掉隧道进程」与「转发真的撤掉」脱钩，而那种坑不会当场表现出来。
+    expect(source.split('...TUNNEL_NO_MUX_ARGS').length - 1).toBe(2)
+    expect(TUNNEL_NO_MUX_ARGS).toEqual([
+      '-o',
+      'ControlMaster=no',
+      '-o',
+      'ControlPath=none',
+    ])
+  })
+})
+
+describe('master 建不起来时如实红（issue #100 ⑤）', () => {
+  it('不静默退回：远端命令一行都不发，红成 errorKind=transport', async () => {
+    const log = logPath()
+    const bin = fakeSsh(
+      [
+        // 建 master 与问它在不在都挂掉 —— 现场就是那两轮真跑的那条错。
+        `if [[ " $* " == *" -M "* || "$*" == *"-O check"* ]]; then`,
+        `  printf 'Connection closed by 129.151.5.169 port 22\\n' >&2`,
+        `  exit 255`,
+        `fi`,
+        HAPPY,
+      ].join('\n'),
+      log,
+    )
+    const result = await runScenario(
+      OPEN_LAUNCHER,
+      driver(bin, true),
+      20_000,
+      false,
+      1,
+    )
+    expect(result.outcome).toBe('error')
+    expect(result.errorKind).toBe('transport')
+    const t = tally(log)
+    // **一条远端命令都没发出去。**对非幂等调用点来说这比原先更安全：原先一次
+    // 握手抖动也可能发生在命令送出之后。
+    expect(t.commands).toHaveLength(0)
+    expect(t.masters.length).toBeGreaterThan(0)
+    const said = `${String(result.actual)}\n${logsOf(result)}`
+    expect(said).toContain('复用 master 建不起来')
+    expect(said).toContain('QIANMO_ACCEPTANCE_SSH_MULTIPLEX=0')
+    // 分类没变：链路失败仍然说「这不是被测系统的回答」。
+    expect(said).toContain('不是被测系统的回答')
+  }, 60_000)
+})
+
+describe('收尾真的把 master 拆了（issue #100 ③）', () => {
+  it('dispose 逐台发 `-O exit`，复用目录随之消失', async () => {
+    const log = logPath()
+    const d = driver(fakeSsh(HAPPY, log), true)
+    await runScenario(OPEN_LAUNCHER, d, 4_000, false, 1)
+    expect(d.multiplexedTargets()).toEqual(['fake-host'])
+    const before = tally(log)
+    const dir = before.commands[0]?.match(/ControlPath=(\S+)\//)?.[1]
+    expect(dir).toBeDefined()
+    expect(existsSync(String(dir))).toBe(true)
+
+    await d.dispose()
+    const after = tally(log)
+    expect(after.control.filter(l => l.includes('-O exit'))).toHaveLength(1)
+    expect(after.control.some(l => l.endsWith('fake-host'))).toBe(true)
+    // 不靠 `ControlPersist` 超时 —— 拆完这一刻目录就得没了。
+    expect(existsSync(String(dir))).toBe(false)
+    expect(d.multiplexedTargets()).toEqual([])
+  }, 60_000)
+})
+
+describe('复用开关（issue #100 ④）', () => {
+  const KEY = 'QIANMO_ACCEPTANCE_SSH_MULTIPLEX'
+  const restore = (previous: string | undefined): void => {
+    if (previous === undefined) delete process.env[KEY]
+    else process.env[KEY] = previous
+  }
+
+  it('默认开 —— 一轮两千次握手里出一次抖动是必然事件', () => {
+    const previous = process.env[KEY]
+    delete process.env[KEY]
+    try {
+      expect(fleetConfigFromEnv().sshMultiplex).toBe(true)
+    } finally {
+      restore(previous)
+    }
+  })
+
+  it('`0` 与 `false` 关得掉，别的值一律当没关', () => {
+    const previous = process.env[KEY]
+    try {
+      for (const off of ['0', 'false', ' 0 ']) {
+        process.env[KEY] = off
+        expect(fleetConfigFromEnv().sshMultiplex).toBe(false)
+      }
+      for (const on of ['1', 'true', 'yes', '', 'no']) {
+        process.env[KEY] = on
+        expect(fleetConfigFromEnv().sshMultiplex).toBe(true)
+      }
+    } finally {
+      restore(previous)
+    }
+  })
+})

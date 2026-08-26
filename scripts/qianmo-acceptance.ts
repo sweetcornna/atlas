@@ -129,6 +129,18 @@ function values(name: string): string[] {
   return out
 }
 
+/**
+ * 这一轮的真机驱动 —— 只为收尾（issue #100）。
+ *
+ * SSH 复用的 master 是**到生产机的活会话**，一轮结束必须逐台 `ssh -O exit`
+ * 拆掉，不能靠 `ControlPersist` 超时。它比任何单条场景活得都长，所以拆它的地方
+ * 只能在这一层：`finally`（含场景抛异常、超时、判定失败）、信号处理器
+ * （Ctrl-C）、以及 `process.on('exit')` 那条最后防线。
+ *
+ * 本地腿上它恒为 undefined，那条腿因此逐字节不变。
+ */
+let fleetDriver: FleetDriver | undefined
+
 async function main(): Promise<number> {
   if (flag('help') || process.argv.includes('-h')) {
     process.stdout.write(USAGE)
@@ -159,7 +171,23 @@ async function main(): Promise<number> {
   if (target === 'local') {
     driver = new LocalDriver()
   } else if (target === 'fleet') {
-    driver = new FleetDriver(fleetConfigFromEnv())
+    fleetDriver = new FleetDriver(fleetConfigFromEnv())
+    driver = fleetDriver
+    // Ctrl-C 与 `kill` 也要拆 master：被打断的那一轮同样在生产机上留着会话。
+    // **不在这里写 NDJSON 末行** —— 那一行的含义是「这一轮完整」，见文件头。
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      process.once(signal, () => {
+        void (async () => {
+          await fleetDriver?.dispose()
+          process.exit(signal === 'SIGINT' ? 130 : 143)
+        })()
+      })
+    }
+    // 最后防线：`process.exit()` 与正常退出都会走到它，而那时候 `await` 不管用。
+    // 正常路径已经在 `finally` 里拆过了，到这里是空转。
+    process.once('exit', () => {
+      fleetDriver?.disposeSync()
+    })
     process.stderr.write(
       '注意：真机腿的拨号走 H 上的隧道口 38631–38634。' +
         '不在 H 上跑就先把 `ssh -N -L 3863x:127.0.0.1:3863x <H>` 起起来，' +
@@ -328,4 +356,10 @@ async function main(): Promise<number> {
   return run.pass ? 0 : 1
 }
 
-process.exitCode = await main()
+try {
+  process.exitCode = await main()
+} finally {
+  // 收尾与「这一轮判成什么」无关，所以它在 `finally` 里而不是 `main` 末尾：
+  // 场景抛异常、超时、判定失败，每一条路径都要把到生产机的会话拆干净。
+  await fleetDriver?.dispose()
+}
