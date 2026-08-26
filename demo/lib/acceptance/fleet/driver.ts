@@ -1594,31 +1594,13 @@ export class FleetDriver implements AcceptanceDriver {
     remotePort: number,
     localPort: number,
   ): Promise<void> {
-    const child = Bun.spawn(
-      [
-        this.#config.sshBin ?? 'ssh',
-        '-N',
-        '-o',
-        'BatchMode=yes',
-        '-o',
-        'ExitOnForwardFailure=yes',
-        '-o',
-        'ServerAliveInterval=15',
-        // 长命隧道**不走复用**：共享 master 会让「杀掉隧道进程」与「转发真的
-        // 撤掉」脱钩（issue #100 ②）。见 {@link TUNNEL_NO_MUX_ARGS}。
-        ...TUNNEL_NO_MUX_ARGS,
-        ...(this.#config.sshArgs ?? []),
-        '-R',
-        `${String(remotePort)}:127.0.0.1:${String(localPort)}`,
-        ssh,
-      ],
-      { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+    const tunnel = this.#longTunnel(
+      ctx,
+      ssh,
+      ['-R', `${String(remotePort)}:127.0.0.1:${String(localPort)}`],
+      localPort,
+      `到 ${ssh} 的反向隧道（${String(remotePort)} → 本地 ${String(localPort)}）`,
     )
-    void drain(child.stdout)
-    void drain(child.stderr)
-    ctx.cleanup(() => {
-      child.kill('SIGKILL')
-    })
     // 反向隧道要等它真的通：控制台一起来就会去打注册中心，早一步起等于让
     // 它在第一次请求上拿到 ECONNREFUSED。这里用一次远端 curl 确认。
     const deadline =
@@ -1633,6 +1615,19 @@ export class FleetDriver implements AcceptanceDriver {
           `http://127.0.0.1:${String(remotePort)}/v0/agents 2>/dev/null || echo 000`,
       ])
       if (/[1-5]\d\d/.test(probe.stdout.trim())) return
+      // 与正向那条同一条纪律（#105）：`ssh -R` 自己退了（远端口被占撞上
+      // `ExitOnForwardFailure`、网断），远端那次 curl 只会回 `000` —— 读起来
+      // 像「隧道还没通，再等等」，于是这里会一直等到预算耗尽。问它一句，
+      // 就能当场说出坏的是哪一侧，还省下整个预算。
+      if (!tunnel.alive()) {
+        throw new TransportFailure({
+          ssh,
+          what: `等到 ${ssh} 的反向隧道 ${String(remotePort)}→${String(localPort)} 通`,
+          code: tunnel.exitCode() ?? -1,
+          stderr: tunnel.diagnose(),
+          attempts: 1,
+        })
+      }
       if (ctx.signal.aborted || Date.now() >= deadline) {
         if (isTransportFailure(probe)) {
           throw new TransportFailure({
@@ -1842,14 +1837,10 @@ export class FleetDriver implements AcceptanceDriver {
   /**
    * 从 runner 到目标机的一条端口转发，生命周期挂在场景上。
    *
-   * 两条流都要抽干：经 IAP 的那台每次连接都往 stderr 写几行提示，管道写满
-   * 之后 ssh 会阻塞在 `write` 上，表现是「隧道建着建着就不转发了」。stderr
-   * 那条抽干时**留尾巴**，理由见 {@link drainKeepingTail}。
-   *
    * **返回的是句柄不是端口。** 第一版只返回端口、把 ssh 子进程的句柄丢掉，
    * 于是隧道自己退出之后没有任何人发现：本地口没人听，就绪循环对着它拨满
    * 整个预算，最后写下「节点在 X 上起来了但拨不通」—— 一条关于被测系统的
-   * 结论，而坏的是套件自己那条链路。这正是 issue #96 要挡的形态。
+   * 结论，而坏的是套件自己那条链路。这正是 issue #96 要挡的形态（#105）。
    */
   async #tunnel(
     ctx: ScenarioContext,
@@ -1857,6 +1848,33 @@ export class FleetDriver implements AcceptanceDriver {
     remotePort: number,
   ): Promise<TunnelHandle> {
     const localPort = await ctx.allocPort()
+    return this.#longTunnel(
+      ctx,
+      ssh,
+      ['-L', `${String(localPort)}:127.0.0.1:${String(remotePort)}`],
+      localPort,
+      `到 ${ssh} 的转发隧道（本地 ${String(localPort)} → ${String(remotePort)}）`,
+    )
+  }
+
+  /**
+   * 两条长命隧道（`-L` 与 `-R`）共用的那一半。
+   *
+   * **合并不是为了少写几行**，是为了让它们不可能再分叉：#105 那个缺陷（丢掉
+   * 子进程句柄）当初只长在 `-L` 那条上，而 `-R` 那条是逐字抄过去的同一段
+   * 代码 —— 只修一条等于留着另一条在原地等下一次。
+   *
+   * 两条流都要抽干：经 IAP 的那台每次连接都往 stderr 写几行提示，管道写满
+   * 之后 ssh 会阻塞在 `write` 上，表现是「隧道建着建着就不转发了」。stderr
+   * 那条抽干时**留尾巴**，理由见 {@link drainKeepingTail}。
+   */
+  #longTunnel(
+    ctx: ScenarioContext,
+    ssh: string,
+    forward: readonly string[],
+    localPort: number,
+    label: string,
+  ): TunnelHandle {
     const child = Bun.spawn(
       [
         this.#config.sshBin ?? 'ssh',
@@ -1867,17 +1885,17 @@ export class FleetDriver implements AcceptanceDriver {
         'ExitOnForwardFailure=yes',
         '-o',
         'ServerAliveInterval=15',
-        // 与 `#reverseTunnel` 同一条理由，见 {@link TUNNEL_NO_MUX_ARGS}。
+        // 长命隧道**不走复用**：共享 master 会让「杀掉隧道进程」与「转发真的
+        // 撤掉」脱钩（issue #100 ②）。见 {@link TUNNEL_NO_MUX_ARGS}。
         ...TUNNEL_NO_MUX_ARGS,
         ...(this.#config.sshArgs ?? []),
-        '-L',
-        `${String(localPort)}:127.0.0.1:${String(remotePort)}`,
+        ...forward,
         ssh,
       ],
       { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
     )
     void drain(child.stdout)
-    // stderr 留尾巴：这条隧道自己死掉时，临死前那句话是唯一说得清「为什么拨不
+    // stderr 留尾巴：这条隧道自己死掉时，临死前那句话是唯一说得清「为什么不
     // 通」的证据。只抽不留等于把它扔了。
     const stderr = drainKeepingTail(child.stderr)
     ctx.cleanup(() => {
@@ -1886,14 +1904,13 @@ export class FleetDriver implements AcceptanceDriver {
     return {
       localPort,
       // `exitCode` 在进程还活着时是 `null`。**这一句不是锦上添花**：隧道死了
-      // 之后本地口就没人听，而拨号方看到的只是 `1006 Failed to connect` ——
-      // 与「节点根本没起来」长得一模一样。不问它，一次套件侧的链路故障就会被
-      // 写成一条关于被测系统的结论，那正是 issue #96 立规矩要挡的形态。
+      // 之后那个口就没人听，而拨号方看到的只是 `1006 Failed to connect` ——
+      // 与「被测进程根本没起来」长得一模一样。不问它，一次套件侧的链路故障
+      // 就会被写成一条关于被测系统的结论，那正是 issue #96 立规矩要挡的形态。
       alive: () => child.exitCode === null,
       exitCode: () => child.exitCode,
       diagnose: () =>
-        `到 ${ssh} 的转发隧道（本地 ${String(localPort)} → ${String(remotePort)}）` +
-        `已退出 (${String(child.exitCode)})` +
+        `${label}已退出 (${String(child.exitCode)})` +
         `${stderr.text().trim() === '' ? '' : `：${stderr.text().trim().slice(-600)}`}`,
     }
   }
