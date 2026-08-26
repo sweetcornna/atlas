@@ -1307,6 +1307,165 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
   }, 60_000)
 })
 
+// ---------------------------------------------------------------------------
+// #98 那张表的第 5、6、7 条与第 22 条的另一半：**一次成功的 spawn 之后**，
+// 句柄上那几个闭包各自的行为。
+//
+// 这四条此前只有结构棘轮，没有行为护栏，当时的结论是「拿到句柄要一次真的
+// WebSocket 握手，假 ssh 搭不出来」。复核之后那条结论不成立 —— 握手的对端是
+// `endpoint`，而 `endpoint` 是**调用方给的**（`restartNode` 直接透传句柄那一
+// 栏，`consoleSlot` 那条则经 `ctx.allocPort()`）。所以两条真路径都跑得完整：
+// 节点侧起一个本地 WebSocket 假节点（{@link fakeNodeServer}），控制台侧起一个
+// 本地 HTTP 假控制台答 `/v0/health` 200。
+//
+// 钉的是同一件事：**一次 rc=255 不许折成一段空文本 / 一句「节点死了」。**
+// 那几个闭包全是喂给场景断言的输入，静默变空会以「产品坏了」的形态红。
+// ---------------------------------------------------------------------------
+
+/**
+ * 「先照常答，等测试点火之后再链路失败」的假 ssh 分支。
+ *
+ * 一次成功的启动必须先发生（`#launchDisposable` 读 banner 用的是同一条
+ * `cat out.log`），所以不能一上来就 255 —— 用一个标记文件当开关。
+ */
+function armable(match: string, arm: string, answer: string): string {
+  return [
+    `if [[ "$cmd" == *${JSON.stringify(match)}* ]]; then`,
+    `  if [ -f '${arm}' ]; then printf '${CLOSED}\\n' >&2; exit 255; fi`,
+    `  printf '${answer}\\n'`,
+    `  exit 0`,
+    `fi`,
+  ].join('\n')
+}
+
+describe('一次性句柄的三个闭包（第 5、6、7 条）', () => {
+  /** 起一个真的一次性节点句柄，外加「让某条命令开始链路失败」的开关。 */
+  async function launched(): Promise<{
+    readonly node: NodeHandle
+    readonly arm: () => void
+  }> {
+    const armFile = tmpFile('arm')
+    const server = fakeNodeServer()
+    const d = driver(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          // `alive` 那条：链路好的时候如实答 alive，点火之后 255。
+          armable('echo alive', armFile, 'alive'),
+          armable('err.log', armFile, 'some stderr'),
+          armable('out.log', armFile, '{"publicKey":"fake-key"}'),
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const node = await d.restartNode(bareCtx(1), disposableHandle(server.url))
+    return {
+      node,
+      arm: (): void => {
+        writeFileSync(armFile, 'x')
+      },
+    }
+  }
+
+  it('先证明这条真路径跑得通 —— 三个闭包在链路好的时候如实作答', async () => {
+    const { node } = await launched()
+    expect(node.name).toBe(DISPOSABLE_SPEC.name)
+    expect(await node.stdout()).toContain('"publicKey"')
+    expect((await node.stderr()).trim()).toBe('some stderr')
+    expect(await node.alive()).toBe(true)
+  }, 60_000)
+
+  it('rc=255 之后：`stdout` 不许静默变空，`alive` 不许答「节点死了」', async () => {
+    const { node, arm } = await launched()
+    arm()
+    // 改之前这三条都是裸 `#ssh`：stdout 折成空串（证据栏静默变空）、
+    // stderr 同样、`alive` 因为 stdout 里没有 `alive` 而答 false ——
+    // 「节点死了」是一条**关于被测系统的观察**，而这一趟根本没问到。
+    await transportThrow(async () => await node.stdout())
+    await transportThrow(async () => await node.stderr())
+    await transportThrow(async () => await node.alive())
+  }, 60_000)
+
+  it('远端命令自己非零仍按观察处理 —— 不冒充链路失败', async () => {
+    const server = fakeNodeServer()
+    const d = driver(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"out.log"* ]]; then printf '{"publicKey":"k"}\\n'; exit 0; fi`,
+          // 日志文件真的不存在：远端 `cat … || true` 回 0 且什么都没有。
+          `if [[ "$cmd" == *"err.log"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"echo alive"* ]]; then printf 'dead\\n'; exit 0; fi`,
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const node = await d.restartNode(bareCtx(1), disposableHandle(server.url))
+    // 空 stderr 与一句真的 `dead` 都是**被测系统的回答**，原样交出去。
+    expect(await node.stderr()).toBe('')
+    expect(await node.alive()).toBe(false)
+  }, 60_000)
+})
+
+describe('一次性控制台句柄的两个闭包（第 21、22 条）', () => {
+  /**
+   * 起一个真的一次性控制台句柄。
+   *
+   * 就绪判据是 `GET <隧道本地口>/v0/health` 答 200 —— 那个本地口来自
+   * `ctx.allocPort()`，测试自己说了算，于是在同一个口上起一个假控制台就够了。
+   * 隧道那条 `ssh -N -L` 由假 ssh 扮演（起来就退，不影响判据）。
+   */
+  async function started(armFile: string): Promise<{
+    readonly banner: () => Promise<string>
+    readonly stderr: () => Promise<string>
+  }> {
+    const port = 45_998
+    const health = Bun.serve({
+      port,
+      hostname: '127.0.0.1',
+      fetch: (request): Response =>
+        new URL(request.url).pathname === '/v0/health'
+          ? new Response('ok')
+          : new Response('no', { status: 404 }),
+    })
+    openServers.push({
+      stop: (): void => {
+        void health.stop(true)
+      },
+    })
+    const d = driverWithConsole(
+      fakeSsh(
+        [
+          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          armable('console.err.log', armFile, 'console stderr'),
+          armable(
+            'console.out.log',
+            armFile,
+            'view-token vvv\\nadmin-token aaa',
+          ),
+          BASE,
+        ].join('\n'),
+      ),
+    )
+    const slot = await d.consoleSlot(bareCtx(1))
+    const handle = await slot.start({ registryUrl: 'http://127.0.0.1:39999' })
+    expect(handle.adminToken).toBe('aaa')
+    expect(handle.viewToken).toBe('vvv')
+    return { banner: handle.banner, stderr: handle.stderr }
+  }
+
+  it('链路好的时候如实答，rc=255 之后两条都抛 —— 两枚 token 不许静默丢', async () => {
+    const armFile = tmpFile('arm-console')
+    const handle = await started(armFile)
+    expect(await handle.banner()).toContain('admin-token')
+    expect((await handle.stderr()).trim()).toBe('console stderr')
+
+    writeFileSync(armFile, 'x')
+    await transportThrow(async () => await handle.banner())
+    await transportThrow(async () => await handle.stderr())
+  }, 60_000)
+})
+
 describe('结构棘轮：不许再出现第 35 个裸 #ssh 调用点', () => {
   /**
    * 这一条才是「不用再挑一遍」的保证。
