@@ -71,6 +71,20 @@ demo_ok()   { printf 'OK   : %s\n' "$*"; }
 demo_warn() { printf 'WARN : %s\n' "$*"; }
 demo_die()  { printf 'FAIL : %s\n' "$*" >&2; exit 1; }
 
+# demo/lib 的入口解析（`demo_entry`）。实现与理由都在 demo/lib/entry.sh —— 投出去的树
+# 上没有 node_modules，源文件里的 @qianmo/* 解析不出来。
+#
+# 缺文件时不在这里死：source 阶段 `set -e` 掉的症状是「脚本什么都没输出就退了」，
+# 与被测函数真的没输出无法区分。把失败推迟到真去解析入口的那一刻（同 beta/common.sh）。
+if [ -f "$REPO_DIR/demo/lib/entry.sh" ]; then
+  # shellcheck source=demo/lib/entry.sh
+  . "$REPO_DIR/demo/lib/entry.sh"
+else
+  demo_entry() {
+    demo_die "要解析 demo 入口 ${1}，但这棵树里没有 ${REPO_DIR}/demo/lib/entry.sh。"
+  }
+fi
+
 # 秒级时刻。`date +%s` 到处都有，不引 GNU 专有格式。
 demo_now() { date +%s; }
 

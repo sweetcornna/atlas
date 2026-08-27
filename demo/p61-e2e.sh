@@ -7,6 +7,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
+
 if [ -z "${QIANMO_TRANSPORT_PSK:-}" ]; then
   printf 'p61-e2e: missing required environment variable QIANMO_TRANSPORT_PSK\n' >&2
   exit 2
@@ -20,4 +25,4 @@ for tool in bun node; do
 done
 
 cd "$REPO_DIR"
-exec bun run demo/lib/p61-scenario.ts "$@"
+exec bun run "$(demo_entry p61-scenario)" "$@"

@@ -179,6 +179,24 @@ function scratch(): Scratch {
   chmodSync(join(beta, 'beta-up.sh'), 0o755)
   const common = readFileSync(join(BETA_DIR, 'common.sh'), 'utf8')
   writeFileSync(join(beta, 'common.sh'), common + RECORDER)
+  // common.sh source 它（demo_entry 的实现，真源在 demo/lib/entry.sh）。缺了它
+  // common.sh 死在 source 阶段的 `set -e` 上，而这套用例断言的是命令行**内容**——
+  // 于是失败会显示成「录到的命令行是空的」，看不出根因。
+  mkdirSync(join(repo, 'demo/lib'), { recursive: true })
+  copyFileSync(
+    join(BETA_DIR, '..', '..', 'lib', 'entry.sh'),
+    join(repo, 'demo/lib/entry.sh'),
+  )
+  // demo 入口的构建产物桩。`demo_entry` 只查在不在（真源 demo/lib/*.ts 与产物
+  // dist/demo/*.js 二选一），而这套用例断言的是**命令行长什么样**，不跑那个入口——
+  // RECORDER 在它被 exec 之前就把命令行录下来了。所以内容无所谓，存在才有所谓。
+  mkdirSync(join(repo, 'dist/demo'), { recursive: true })
+  for (const entry of ['p81-registry', 'p81-probe']) {
+    writeFileSync(
+      join(repo, `dist/demo/${entry}.js`),
+      `// stub for ${entry}; beta-up-args 只断言命令行，不执行它\n`,
+    )
+  }
   writeFileSync(join(repo, 'dist/cli-node.js'), FAKE_OCC)
   chmodSync(join(repo, 'dist/cli-node.js'), 0o755)
   // 单元模板：**真源在仓库**，所以整棵原样带进临时仓库，用例断言的就是它们派生出来

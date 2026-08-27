@@ -56,7 +56,7 @@ probe_args=(
 if [ "$WITH_TASK" = '1' ]; then
   probe_args+=(--task "$DEMO_ADDR_B")
 fi
-if bun run "$REPO_DIR/demo/lib/p81-probe.ts" "${probe_args[@]}"; then
+if bun run "$(demo_entry p81-probe)" "${probe_args[@]}"; then
   demo_ok 'probe 通过'
 else
   demo_say 'probe 未通过（上面那行 JSON 里 pass=false）'

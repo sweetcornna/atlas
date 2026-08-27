@@ -35,6 +35,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
+
 if [ -z "${QIANMO_TRANSPORT_PSK:-}" ]; then
   printf 'p73-baseline: missing required environment variable QIANMO_TRANSPORT_PSK\n' >&2
   exit 2
@@ -51,4 +56,4 @@ chmod 700 "$WORK"
 printf 'P7.3 现场目录（默认保留）：%s\n' "$WORK"
 
 cd "$REPO_DIR"
-exec bun run demo/lib/p73-throughput.ts --out "$WORK/tiers.ndjson" "$@"
+exec bun run "$(demo_entry p73-throughput)" --out "$WORK/tiers.ndjson" "$@"

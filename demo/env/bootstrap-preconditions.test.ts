@@ -36,6 +36,7 @@ import { dirname, join, resolve } from 'node:path'
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..')
 const COMMON_SOURCE = join(REPOSITORY_ROOT, 'demo/env/common.sh')
 const BOOTSTRAP_SOURCE = join(REPOSITORY_ROOT, 'demo/env/bootstrap.sh')
+const ENTRY_SOURCE = join(REPOSITORY_ROOT, 'demo/lib/entry.sh')
 
 /** 真 `.tool-versions` 里的 bun pin，桩要报同一个值，免得用例被那句 WARN 干扰。 */
 const BUN_PIN = (await Bun.file(join(REPOSITORY_ROOT, '.tool-versions')).text())
@@ -132,6 +133,9 @@ async function scaffold(
   roots.push(root)
   await place(root, 'demo/env/common.sh', COMMON_SOURCE)
   await place(root, 'demo/env/bootstrap.sh', BOOTSTRAP_SOURCE)
+  // common.sh source 它（demo_entry 的实现）。缺了它 common.sh 在 source 阶段就死在
+  // `set -e` 上，用例只看得到一个空输出 —— 与真正的前置检查失败无法区分。
+  await place(root, 'demo/lib/entry.sh', ENTRY_SOURCE)
   writeFileSync(join(root, '.tool-versions'), `bun ${BUN_PIN}\n`)
 
   const bin = join(root, 'stub-bin')

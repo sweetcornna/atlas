@@ -172,6 +172,27 @@ BETA_MODEL_ENV_FILE="$BETA_SECRET_DIR/model-env"
 BETA_REGISTRY_URL="http://${BETA_HOST_BIND}:${BETA_REGISTRY_PORT}"
 BETA_CONSOLE_URL="http://${BETA_HOST_BIND}:${BETA_CONSOLE_PORT}"
 
+# demo/lib 的入口解析（`demo_entry`）。实现与理由都在 demo/lib/entry.sh —— 那一份被
+# demo/env/、demo/env/beta/ 与 demo/*.sh 三批脚本共用，这里只是把它接进来。
+#
+# **缺文件时不在这里死。**本文件会被从树外 source：beta-deploy.sh 要先把自己和
+# common.sh 拷出仓库树再跑（不然它会在替换那棵树的中途把自己删掉，见
+# ops/legacy-deploy-shim.sh），那份局部拷贝旁边没有 demo/lib/。在 source 阶段 `set -e`
+# 掉，症状是「脚本什么都没输出就退了」，而真正用不上 demo_entry 的调用方（部署脚本
+# 一个 demo 入口都不跑）会因此整个跑不起来。改为把失败推迟到**真的去解析入口**的那
+# 一刻，那里才说得清缺的是什么。
+if [ -f "$REPO_DIR/demo/lib/entry.sh" ]; then
+  # shellcheck source=demo/lib/entry.sh
+  . "$REPO_DIR/demo/lib/entry.sh"
+else
+  demo_entry() {
+    beta_die "要解析 demo 入口 ${1}，但这棵树里没有 ${REPO_DIR}/demo/lib/entry.sh。
+本文件是从仓库树外被 source 的（部署脚本会这么做），那种形态下解析不了 demo 入口——
+要跑 demo 入口，请在完整的树里跑。"
+  }
+fi
+
+
 # H 上那两个不跑常驻的进程也各要一个配置根（见文件头）。
 BETA_CONFIG_REGISTRY="$BETA_NODES_DIR/registry/config"
 BETA_CONFIG_CONSOLE="$BETA_NODES_DIR/console/config"

@@ -275,7 +275,7 @@ start_registry() {
   local ready="$BETA_RUN_DIR/registry-ready.json"
   local args i
   args=(
-    bun run "$REPO_DIR/demo/lib/p81-registry.ts"
+    bun run "$(demo_entry p81-registry)"
     --ready "$ready"
     --port "$BETA_REGISTRY_PORT"
     --host "$BETA_HOST_BIND"

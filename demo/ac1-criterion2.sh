@@ -21,6 +21,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 OUT="${AC1C2_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/ac1-crit2-out.XXXXXX")}"
 mkdir -p "$OUT"
 
@@ -151,7 +156,7 @@ say "  [turn 2] 回答：$(jget "$WORK/t2.json" result | head -c 200)"
   || bad "turn 2 的 session_id 变了（${sid2}）"
 
 # 会话文件位置（用基座自己的 getProjectDir 口径，不自己拼 sanitize 规则）
-PROJDIR="$(cd "$PROJECT" && bun run "$REPO_DIR/demo/lib/ac1-project-dir.ts" 2>/dev/null)"
+PROJDIR="$(cd "$PROJECT" && bun run "$(demo_entry ac1-project-dir)" 2>/dev/null)"
 JSONL="$PROJDIR/$SID.jsonl"
 say "  会话文件：$JSONL"
 if [ -f "$JSONL" ]; then

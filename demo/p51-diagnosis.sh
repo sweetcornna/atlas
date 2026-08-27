@@ -18,6 +18,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
+
 for tool in bun node sh; do
   command -v "$tool" >/dev/null 2>&1 || {
     printf 'p51-diagnosis: %s is not in PATH\n' "$tool" >&2
@@ -26,4 +31,4 @@ for tool in bun node sh; do
 done
 
 cd "$REPO_DIR"
-bun run demo/lib/p51-diagnosis.ts "$@"
+bun run "$(demo_entry p51-diagnosis)" "$@"

@@ -68,7 +68,7 @@ dump_if_dead() {
 demo_head '① 注册中心'
 rm -f "$REGISTRY_READY"
 start_process registry "$DEMO_CONFIG_REGISTRY" \
-  bun run "$REPO_DIR/demo/lib/p81-registry.ts" \
+  bun run "$(demo_entry p81-registry)" \
   --ready "$REGISTRY_READY" \
   --port "$DEMO_REGISTRY_PORT" \
   --host "$DEMO_HOST" \
@@ -119,7 +119,7 @@ probe_ok=0
 while [ "$i" -lt "$READY_TIMEOUT_S" ]; do
   dump_if_dead "$DEMO_NODE_A"
   dump_if_dead "$DEMO_NODE_B"
-  if bun run "$REPO_DIR/demo/lib/p81-probe.ts" \
+  if bun run "$(demo_entry p81-probe)" \
     --registry "$DEMO_REGISTRY_URL" \
     --expect "$DEMO_ADDR_A" \
     --expect "$DEMO_ADDR_B" \

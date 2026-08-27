@@ -244,7 +244,7 @@ run_host() {
       continue
     fi
     if QIANMO_TRANSPORT_PSK="$(cat "$psk_file")" \
-      bun run "$REPO_DIR/demo/lib/p81-probe.ts" \
+      bun run "$(demo_entry p81-probe)" \
       --registry "$BETA_REGISTRY_URL" \
       --expect "$addr" \
       --task "$addr" \
