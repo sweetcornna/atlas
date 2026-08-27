@@ -267,12 +267,22 @@ run_host() {
   beta_say "小计 : 地址 $ok_addr/$BETA_PEER_COUNT 通，去重后端点 $ok_ep_count 个拨通"
 
   beta_head '③ 控制台'
-  status="$(beta_http_status "$BETA_CONSOLE_URL/v0/health")"
+  # 探控制台**实际**绑上的地址。它可能被尾参挪走过（`-- --hostname 0.0.0.0 --port 80`），
+  # 而那一趟的尾参就落在 ops/console.env —— 与开机单元读的是同一行，所以这里读它
+  # 等于问「systemd 下次会把控制台起在哪」。拿默认值探等于报一个假红（common.sh 的
+  # beta_console_url_from_args 有实测记录）。
+  local console_url console_extra
+  console_extra="$(beta_conf_get "$BETA_OPS_DIR/console.env" CONSOLE_EXTRA_ARGS)"
+  # 不加引号是有意的：这一行要按空白分词还原成参数表。write_console_env 保证写进去的
+  # 每个参数都不含空白（含空白的它当场 WARN 并拒绝写）。
+  # shellcheck disable=SC2086
+  console_url="$(beta_console_url_from_args $console_extra)"
+  status="$(beta_http_status "$console_url/v0/health")"
   if [ "$status" = '200' ]; then
-    beta_ok "控制台 /v0/health 200（${BETA_CONSOLE_URL}）"
+    beta_ok "控制台 /v0/health 200（${console_url}）"
     host_unit_note "$BETA_CONSOLE_UNIT" 1
   else
-    fail_item "控制台 /v0/health 回 ${status}（${BETA_CONSOLE_URL}）"
+    fail_item "控制台 /v0/health 回 ${status}（${console_url}）"
     host_unit_note "$BETA_CONSOLE_UNIT" 0
   fi
 

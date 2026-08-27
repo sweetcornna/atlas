@@ -403,22 +403,27 @@ run_host() {
   console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
   beta_start_process "$BETA_CONSOLE_PROC" "$BETA_CONFIG_CONSOLE" "${console_args[@]}"
 
+  # 探活与下面每一行报出去的地址，都必须是控制台**实际**绑上的那个，而不是覆盖之前的
+  # 默认值——尾参可以把它挪走（common.sh 的 beta_console_url_from_args 有实测记录）。
+  local console_url
+  console_url="$(beta_console_url_from_args "${console_args[@]}")"
+
   i=0
   local status='000'
   while [ "$i" -lt "$READY_TIMEOUT_S" ]; do
     beta_dump_if_dead "$BETA_CONSOLE_PROC"
-    status="$(beta_http_status "$BETA_CONSOLE_URL/v0/health")"
+    status="$(beta_http_status "$console_url/v0/health")"
     if [ "$status" = '200' ]; then break; fi
     sleep 2
     i=$((i + 2))
   done
   [ "$status" = '200' ] \
-    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 /v0/health 200（收到 ${status}，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
-  beta_ok "控制台就绪：$BETA_CONSOLE_URL"
+    || beta_die "控制台 ${READY_TIMEOUT_S}s 内没有回 ${console_url}/v0/health 200（收到 ${status}，见 $(beta_logfile "$BETA_CONSOLE_PROC" err)）"
+  beta_ok "控制台就绪：$console_url"
 
   if [ -n "$ONLY" ]; then
     beta_head "H 腿这一块就绪，耗时 $(beta_elapsed "$STARTED_AT")"
-    beta_say "控制台   : ${BETA_CONSOLE_URL}（页头标签：${BETA_LABEL}）"
+    beta_say "控制台   : ${console_url}（页头标签：${BETA_LABEL}）"
     return 0
   fi
 
@@ -435,7 +440,7 @@ run_host() {
 
   beta_head "H 腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
   beta_say "注册中心 : ${BETA_REGISTRY_URL}（$BETA_PEER_COUNT 条登记，永不出回环）"
-  beta_say "控制台   : ${BETA_CONSOLE_URL}（由反代以 TLS 暴露；两枚 token 在 ${BETA_SECRET_DIR}）"
+  beta_say "控制台   : ${console_url}（由反代以 TLS 暴露；两枚 token 在 ${BETA_SECRET_DIR}）"
   beta_say "审计视图 : $(beta_peer_nodes | tr '\n' ' ')（逐节点独立）"
   beta_say "页头标签 : $BETA_LABEL"
   beta_say "页头标签 : 持久化在 ${BETA_CONSOLE_CONF}；节点清单只认 $BETA_PEERS_FILE"
@@ -443,7 +448,7 @@ run_host() {
     beta_say "开机自启 : ${BETA_REGISTRY_UNIT} + ${BETA_CONSOLE_UNIT}（systemd --user，要 loginctl enable-linger）"
     # 这一行必须紧跟上一行：上一行会让人以为「那两个单元的状态可以拿来查死活」，而它
     # 此刻已经是 inactive 了——本脚本刚刚自己起了进程，只 enable 没 start（issue #64）。
-    beta_say "存活判据 : ${BETA_CONSOLE_URL}/v0/health 答 200；**上面那两个单元的状态不算数**"
+    beta_say "存活判据 : ${console_url}/v0/health 答 200；**上面那两个单元的状态不算数**"
     beta_say '           （两个方向都不算：常年 inactive 而进程活着，也会在进程死后继续 active）'
   else
     beta_say '开机自启 : 无 —— 这台机器上没有可用的 systemd --user，重启后要靠人重跑本脚本'

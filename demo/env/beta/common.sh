@@ -170,7 +170,6 @@ BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
 BETA_MODEL_ENV_FILE="$BETA_SECRET_DIR/model-env"
 
 BETA_REGISTRY_URL="http://${BETA_HOST_BIND}:${BETA_REGISTRY_PORT}"
-BETA_CONSOLE_URL="http://${BETA_HOST_BIND}:${BETA_CONSOLE_PORT}"
 
 # demo/lib 的入口解析（`demo_entry`）。实现与理由都在 demo/lib/entry.sh —— 那一份被
 # demo/env/、demo/env/beta/ 与 demo/*.sh 三批脚本共用，这里只是把它接进来。
@@ -192,6 +191,38 @@ else
   }
 fi
 
+# 控制台**实际**绑上的地址。**没有 BETA_CONSOLE_URL 这个常量**，是有意的：由
+# BETA_HOST_BIND + BETA_CONSOLE_PORT 拼出来的那个串是**覆盖之前**的默认值，而尾参
+# 透传可以改掉 `--hostname` / `--port`（beta-up.sh 文件头：「透传参数一律追加在最后…
+# 最后一个赢」）。拿默认值去探活，一次成功的部署会被报成失败：实测把控制台部到
+# `-- --hostname 0.0.0.0 --port 80` 之后，脚本探 127.0.0.1:38621 收到 000 并 beta_die，
+# 而那一刻控制台正在 :80 上对公网答 200、名册 8 条全在线。那是最坏的一类假红——
+# 它出现在部署的最后一步，读起来像「控制台起不来」，人会照着这句话去重启一个本来
+# 好着的进程。
+#
+# 用法：`beta_console_url_from_args "${console_args[@]}"`，传**最终**那张参数表。
+# 扫描规则与被调命令的解析器一致（src/cli/handlers/consoleArgs.ts 是逐个赋值的
+# 循环，后出现的覆盖先出现的），两种写法都认：`--port 80` 与 `--port=80`。
+beta_console_url_from_args() {
+  local host="$BETA_HOST_BIND" port="$BETA_CONSOLE_PORT" prev='' one
+  for one in "$@"; do
+    case "$prev" in
+      --hostname) host="$one" ;;
+      --port) port="$one" ;;
+    esac
+    case "$one" in
+      --hostname=*) host="${one#--hostname=}" ;;
+      --port=*) port="${one#--port=}" ;;
+    esac
+    prev="$one"
+  done
+  # 通配地址是「绑哪些网卡」，不是「拨哪个地址」。0.0.0.0 在 Linux 上碰巧能连、在别的
+  # 平台上不能，探活不该赌这个；控制台绑通配时，回环一定在它的覆盖范围里。
+  case "$host" in
+    0.0.0.0 | '*' | '::' | '[::]') host='127.0.0.1' ;;
+  esac
+  printf 'http://%s:%s' "$host" "$port"
+}
 
 # H 上那两个不跑常驻的进程也各要一个配置根（见文件头）。
 BETA_CONFIG_REGISTRY="$BETA_NODES_DIR/registry/config"
