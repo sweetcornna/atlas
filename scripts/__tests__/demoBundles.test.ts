@@ -25,7 +25,14 @@ import { DEMO_ENTRYPOINTS, DEMO_ENTRYPOINTS_EXCLUDED } from '../demoBundles.ts'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..')
 
-/** 仓库里所有 shell 脚本。demo/ 之外将来也可能有调用点，所以不写死目录。 */
+/**
+ * `demo/` 下所有 shell 脚本。
+ *
+ * **只扫这一棵是有意的**：`demo_entry` 解析的是 `demo/lib/` 里的入口，调用方按定义就在
+ * `demo/` 下（两个 common.sh 与那批 AC 演示脚本）。扫整个仓库要走 node_modules 与 dist，
+ * 换来的只是一个不会发生的场景。真有一天 `demo/` 之外出现调用点，这里改一个参数即可 ——
+ * 但那时也该先问问它为什么在那儿。
+ */
 function shellScripts(dir: string, found: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === '.git' || name === 'dist') continue
