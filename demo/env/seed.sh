@@ -95,7 +95,7 @@ seed_workspace "$DEMO_WORKSPACE_DIR/$DEMO_NODE_B" "$DEMO_NODE_B"
 demo_head '④ AC-7 数据集'
 # 与 `make -C demo p61-reset` 是同一条命令、同一个 seed。数据集是**确定性**的：
 # 同一个 seed 重新生成出来逐字节相同，所以这一步不会把仓库弄脏（已实测）。
-bun run demo/lib/p61-seed.ts --reset --seed "$P61_SEED" \
+bun run "$(demo_entry p61-seed)" --reset --seed "$P61_SEED" \
   | tee "$DEMO_STATE_DIR/seed-p61.json"
 chmod 600 "$DEMO_STATE_DIR/seed-p61.json"
 

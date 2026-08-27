@@ -21,6 +21,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
+
 if [ -z "${QIANMO_TRANSPORT_PSK:-}" ]; then
   printf 'ac3-loop-rate: missing required environment variable QIANMO_TRANSPORT_PSK\n' >&2
   exit 2
@@ -32,4 +37,4 @@ command -v bun >/dev/null 2>&1 || {
 }
 
 cd "$REPO_DIR"
-bun run demo/lib/ac3-loop-rate.ts
+bun run "$(demo_entry ac3-loop-rate)"

@@ -538,6 +538,21 @@ async function handleNodeB(
   }
 }
 
+/**
+ * worker 子进程的入口 —— 与本文件**同一种形态**的那一份。
+ *
+ * 这里不能写死 `p61-worker.ts`。本文件有两种跑法：开发检出上是 `demo/lib/p61-scenario.ts`
+ * （旁边确实有 `p61-worker.ts`），而在投出去的机器上跑的是构建产物
+ * `dist/demo/p61-scenario.js`（旁边只有 `p61-worker.js`，没有 `.ts`，也没有
+ * node_modules 让它解析 `@qianmo/*`）。写死扩展名等于让这个场景只在开发机上跑得通。
+ *
+ * 规则与 shell 那边的 `demo_entry`（demo/lib/entry.sh）是同一条：先产物，后源文件。
+ */
+function workerEntry(): string {
+  const bundled = join(import.meta.dir, 'p61-worker.js')
+  return existsSync(bundled) ? bundled : join(import.meta.dir, 'p61-worker.ts')
+}
+
 async function runWorker(message: QianmoMessage): Promise<void> {
   const payload = parseChunkPayload(message.payload)
   if (
@@ -555,7 +570,7 @@ async function runWorker(message: QianmoMessage): Promise<void> {
   const child = Bun.spawn(
     [
       process.execPath,
-      join(import.meta.dir, 'p61-worker.ts'),
+      workerEntry(),
       '--dataset',
       datasetPath,
       '--chunk',

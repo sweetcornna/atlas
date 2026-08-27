@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile, cp } from 'fs/promises'
 import { join } from 'path'
 import { getMacroDefines, resolveBuildFeatures } from './scripts/defines.ts'
+import { writeDemoBundles } from './scripts/demoBundles.ts'
 import { writeEntrypoints } from './scripts/entrypoints.ts'
 
 const outdir = 'dist'
@@ -93,6 +94,13 @@ console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 // cli-node / cli-qianmo entry points that enter it. Shared with
 // scripts/post-build.ts so the two builders cannot emit different
 // entrypoints — see scripts/entrypoints.ts.
+// 舰队投递载荷是 dist + demo，没有 node_modules —— demo/lib 里被 shell 调起的那几个
+// 入口必须以自包含产物的形式随 dist 一起走（scripts/demoBundles.ts 有实测记录）。
+const demoBundles = await writeDemoBundles(outdir)
+console.log(
+  `Bundled ${demoBundles} demo entry points to ${join(outdir, 'demo')}/`,
+)
+
 const version = await writeEntrypoints(outdir)
 
 console.log(

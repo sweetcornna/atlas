@@ -244,7 +244,7 @@ run_host() {
       continue
     fi
     if QIANMO_TRANSPORT_PSK="$(cat "$psk_file")" \
-      bun run "$REPO_DIR/demo/lib/p81-probe.ts" \
+      bun run "$(demo_entry p81-probe)" \
       --registry "$BETA_REGISTRY_URL" \
       --expect "$addr" \
       --task "$addr" \
@@ -267,12 +267,25 @@ run_host() {
   beta_say "小计 : 地址 $ok_addr/$BETA_PEER_COUNT 通，去重后端点 $ok_ep_count 个拨通"
 
   beta_head '③ 控制台'
-  status="$(beta_http_status "$BETA_CONSOLE_URL/v0/health")"
+  # 探控制台**实际**绑上的地址。它可能被尾参挪走过（`-- --hostname 0.0.0.0 --port 80`），
+  # 而那一趟的尾参就落在 ops/console.env —— 与开机单元读的是同一行，所以这里读它
+  # 等于问「systemd 下次会把控制台起在哪」。拿默认值探等于报一个假红（common.sh 的
+  # beta_console_url_from_args 有实测记录）。
+  local console_url console_extra
+  local -a console_extra_args=()
+  console_extra="$(beta_conf_get "$BETA_OPS_DIR/console.env" CONSOLE_EXTRA_ARGS)"
+  # 这一行要按空白还原成参数表。**用 read -ra 而不是不加引号的展开**：后者除了分词还会
+  # 做文件名通配，于是一个带 `*` / `?` / `[...]` 的尾参（不含空白，写得进 console.env）
+  # 会在 beta-smoke.sh 的当前目录里意外匹配上文件，参数表当场变形，喂给下面那个按位置
+  # 记状态的扫描器就会解出一个错的地址——而这个脚本存在的意义正是「别报错地址」。
+  read -ra console_extra_args <<<"$console_extra"
+  console_url="$(beta_console_url_from_args ${console_extra_args[@]+"${console_extra_args[@]}"})"
+  status="$(beta_http_status "$console_url/v0/health")"
   if [ "$status" = '200' ]; then
-    beta_ok "控制台 /v0/health 200（${BETA_CONSOLE_URL}）"
+    beta_ok "控制台 /v0/health 200（${console_url}）"
     host_unit_note "$BETA_CONSOLE_UNIT" 1
   else
-    fail_item "控制台 /v0/health 回 ${status}（${BETA_CONSOLE_URL}）"
+    fail_item "控制台 /v0/health 回 ${status}（${console_url}）"
     host_unit_note "$BETA_CONSOLE_UNIT" 0
   fi
 

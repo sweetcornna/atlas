@@ -20,6 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
+
 required=(
   QIANMO_BACKUP_WRITE_TOKEN
   QIANMO_BACKUP_ARCHIVE_TOKEN
@@ -40,4 +45,4 @@ for tool in bun git tar; do
 done
 
 cd "$REPO_DIR"
-bun run demo/lib/ac6b-restore.ts
+bun run "$(demo_entry ac6b-restore)"

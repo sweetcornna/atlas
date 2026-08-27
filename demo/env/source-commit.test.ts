@@ -26,7 +26,13 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -62,6 +68,15 @@ function tree(): string {
   const value = mkdtempSync(join(tmpdir(), 'qianmo-source-commit-'))
   roots.push(value)
   mkdirSync(join(value, 'demo/env'), { recursive: true })
+  // common.sh source 它（demo_entry 的实现）。一次性树里缺这个文件，`set -e` 会让
+  // common.sh 在 source 阶段就死掉，而用例看到的是**一个空 stdout** —— 那读起来像
+  // 「被测函数什么都没输出」，与真正的失败无法区分。抄真文件，别写替身。
+  mkdirSync(join(value, 'demo/lib'), { recursive: true })
+  writeFileSync(
+    join(value, 'demo/lib/entry.sh'),
+    readFileSync(join(REPOSITORY_ROOT, 'demo/lib/entry.sh'), 'utf8'),
+    { mode: 0o755 },
+  )
   return value
 }
 

@@ -27,13 +27,19 @@
 #
 # 内存采样是**另一条腿**，本脚本不起它——它要挂在一个真的常驻进程上：
 #   occ resident ... --mem-sample /srv/p73/mem-inproc.ndjson --mem-interval-ms 60000
-#   bun run demo/lib/p73-sample.ts --resident-pid <pid> --out /srv/p73/mem-external.ndjson
+#   bun run "$(demo_entry p73-sample)" --resident-pid <pid> --out /srv/p73/mem-external.ndjson
+#   （先 `. demo/lib/entry.sh`；投出去的树上没有 node_modules，直接跑 demo/lib/*.ts 会解析不出 @qianmo/*）
 # 两份采样文件之后用 --mem-file / --resident-log 一起折进本脚本的报告。
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 
 if [ -z "${QIANMO_TRANSPORT_PSK:-}" ]; then
   printf 'p73-baseline: missing required environment variable QIANMO_TRANSPORT_PSK\n' >&2
@@ -51,4 +57,4 @@ chmod 700 "$WORK"
 printf 'P7.3 现场目录（默认保留）：%s\n' "$WORK"
 
 cd "$REPO_DIR"
-exec bun run demo/lib/p73-throughput.ts --out "$WORK/tiers.ndjson" "$@"
+exec bun run "$(demo_entry p73-throughput)" --out "$WORK/tiers.ndjson" "$@"
