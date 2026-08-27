@@ -59,7 +59,22 @@ describe('DEMO_ENTRYPOINTS 覆盖每一处 demo_entry 调用', () => {
 
   test('扫得到调用点（这个用例自己不能是空转的）', () => {
     // 少了这一条，正则写坏时上面的 Map 会是空的，下面每一条都会「通过」。
-    expect(calls.size).toBeGreaterThan(10)
+    //
+    // **用锚点而不是数量阈值。**先前写的是 `calls.size > 10`：它只挡得住「正则全废」，
+    // 而且是个会自己过期的魔数——这个仓库做过整轮精简（一次删掉 134 个文件），再退役
+    // 几个 AC 脚本就可能把计数压到 10 附近，那时它会因为一个与正则毫无关系的理由变红，
+    // 且看不出到底是「脚本少了」还是「正则坏了」。锚点没有这个问题：p81-registry 与
+    // p81-probe 是内测拓扑的注册中心与拨号探针，它们不在时该红的是别的东西。
+    // 排序后再比：readdirSync 的顺序由文件系统决定，不保证字典序。
+    expect([...(calls.get('p81-registry') ?? [])].sort()).toEqual([
+      'demo/env/beta/beta-up.sh',
+      'demo/env/up.sh',
+    ])
+    expect([...(calls.get('p81-probe') ?? [])].sort()).toEqual([
+      'demo/env/beta/beta-smoke.sh',
+      'demo/env/smoke.sh',
+      'demo/env/up.sh',
+    ])
   })
 
   test('每个被调用的入口，要么打包、要么在排除名单里', () => {
