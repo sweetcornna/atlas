@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/web-search-tool) · **中文** · [日本語](/docs/ja/features/web-search-tool)
-
 # WEB_SEARCH_TOOL — 网页搜索工具
 
 > 实现状态：适配器架构完成，支持 API / Bing / Brave 三种后端

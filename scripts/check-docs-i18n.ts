@@ -114,7 +114,14 @@ function main(): number {
         absent.push(page)
         continue
       }
-      if (!readFileSync(file, 'utf8').includes(SWITCHER_MARKER)) {
+      // 只剩一种语言时不要求切换行 —— 一行只写着「**中文**」的切换器是噪声，
+      // 所以 sync-docs-i18n.ts 在那种情况下**不生成**它（见该文件 switcherFor）。
+      // 这里必须跟着放宽，否则「生成器不写、校验器强求」会让门禁恒红：
+      // 两个脚本对同一条约定分了叉，先前正是这么红过一次。
+      if (
+        languages.length > 1 &&
+        !readFileSync(file, 'utf8').includes(SWITCHER_MARKER)
+      ) {
         unmarked.push(page)
       }
     }

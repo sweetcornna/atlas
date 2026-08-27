@@ -249,7 +249,7 @@ Run `/login` in the REPL and pick **Anthropic Compatible** to use any third-part
 | **Custom providers** | OpenAI / Anthropic / Gemini / Grok compatible | [docs](./docs/zh/features/all-features-guide.md) |
 | Voice mode | Voice input, including Doubao (`/voice doubao`) | [docs](./docs/zh/features/voice-mode.md) |
 | Computer Use | Screenshots, keyboard and mouse control | [docs](./docs/zh/features/computer-use.md) |
-| Browser MCPs (user-configured) | Add any browser MCP through ordinary MCP configuration; names such as `chrome-devtools` and `mcp-chrome` are not reserved | [docs](./docs/en/extensibility/mcp-configuration.mdx) |
+| Browser MCPs (user-configured) | Add any browser MCP through ordinary MCP configuration; names such as `chrome-devtools` and `mcp-chrome` are not reserved | [docs](./docs/zh/extensibility/mcp-configuration.mdx) |
 | `/dream` | Automatic memory consolidation | [docs](./docs/zh/features/auto-dream.md) |
 
 ## Feature flags

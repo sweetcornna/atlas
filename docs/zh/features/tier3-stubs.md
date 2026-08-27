@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/tier3-stubs) · **中文** · [日本語](/docs/ja/features/tier3-stubs)
-
 # Tier 3 — 纯 Stub / N/A 低优先级 Feature 概览
 
 > 本文档汇总所有 Tier 3 feature。这些功能要么是纯 Stub（所有函数返回空值），

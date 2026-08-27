@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/lsp-integration) · **中文** · [日本語](/docs/ja/lsp-integration)
-
 # LSP Integration
 
 Claude Code 内置了 Language Server Protocol (LSP) 集成，提供代码智能功能（跳转定义、查找引用、悬停信息、文档符号等）和被动的诊断反馈。

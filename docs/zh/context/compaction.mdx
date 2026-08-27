@@ -3,10 +3,6 @@ title: "上下文压缩 - Compaction 三层策略与边界机制"
 description: "深度解析 Claude Code 上下文压缩的完整实现：Session Memory 压缩、传统 API 摘要压缩、MicroCompact 局部压缩三层策略，以及 CompactBoundary 消息、工具对保持、PTL 紧急降级等关键机制。"
 keywords: ["上下文压缩", "Compaction", "token 管理", "对话压缩", "上下文窗口", "MicroCompact"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/context/compaction) · **中文** · [日本語](/docs/ja/context/compaction)
-
 {/* 本章目标：从源码层面剖析压缩的三层策略、边界机制和关键常量 */}
 
 ## 压缩的触发时机

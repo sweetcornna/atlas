@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/tree-sitter-bash) · **中文** · [日本語](/docs/ja/features/tree-sitter-bash)
-
 # TREE_SITTER_BASH — Bash AST 解析
 
 > Feature Flag: `FEATURE_TREE_SITTER_BASH=1`

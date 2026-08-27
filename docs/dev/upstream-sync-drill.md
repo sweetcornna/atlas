@@ -182,3 +182,44 @@ git apply --3way --whitespace=nowarn upstream.patch
   错误从 `{ retryable: !retryWindowClosed() }` 改成 `{ retryable: true, ...(replayable) }` 的
   二维拆分——**改的正是回调体内部**，而 P10.3② 之后我方改的是回调外面那个标识符，两者天然不
   相交，于是演练里唯一的代码语义冲突这次一声不响地过去了。
+
+## 8. 2026-08-26：本仓库删除了 134 个基座文件，冲突画像随之改变
+
+PR #114 删掉了英日文档树（`docs/en/**`、`docs/ja/**` 各 64 页）、
+`CHANGELOG.en.md` / `CHANGELOG.ja.md`，以及基座发布面的四个脚本
+（`scripts/release.ts`、`releaseCore.ts`、`changelog-section.ts` 及其测试）。
+
+**这一条直接推翻了 §3.1 的一项前提。**那里逐项验证过「**我方删/上游改 = 0**」，
+所以 P10.2 那次真实同步从未处理过这个冲突类型。现在它一次性有了 134 条路径。
+叠加 §3.3「冲突的大头不是代码，是文档」（7 个冲突块里 4 个出自文档），
+**下一次同步在文档面上的表现会与前两次都不一样**。
+
+### 下次同步遇到这些路径时怎么办
+
+`git apply --3way` 对「目标文件已不存在」的 hunk 不会静默跳过，它会失败并要求处理。
+处置规则**只有一条，别临时判断**：
+
+> **本仓库已删除的路径，保持删除。**上游对它们的任何改动一律不接。
+
+具体做法是在应用前先把这些路径从上游 diff 里剔掉：
+
+```sh
+git diff <旧 tag>..<新 tag> -- . \
+  ':(exclude)docs/en' ':(exclude)docs/ja' \
+  ':(exclude)CHANGELOG.en.md' ':(exclude)CHANGELOG.ja.md' \
+  ':(exclude)scripts/release.ts' ':(exclude)scripts/releaseCore.ts' \
+  ':(exclude)scripts/changelog-section.ts' \
+  ':(exclude)scripts/__tests__/releaseCore.test.ts' \
+  > /tmp/upstream.patch
+```
+
+**这张排除表要跟着删除动作走。**再删基座文件时，同一个 PR 里就把路径补进这里 ——
+否则下一次同步的人只会看到一屏「apply 失败」，而看不出哪些是故意的。
+
+### 不受影响的两件事
+
+- **成果边界照旧可举证。**§2.5 禁的是 rebase 掉导入提交、squash 跨越它、强推、
+  删 `base-snapshot/*` 标签。删文件是普通提交，标签与历史都在，
+  `git diff base-snapshot/v2.46.0..HEAD` 仍然成立 —— 只是现在也会列出删除。
+- **`BASE.md` 不动。**它只记「导入」与「上游同步」两类事件（CLAUDE.md §2.4），
+  精简不是其中之一。

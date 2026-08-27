@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/external-dependencies) · **中文** · [日本語](/docs/ja/external-dependencies)
-
 # Claude Code 远程服务器依赖
 
 > 只列出代码中实际发起网络请求的远程服务。本地服务、npm 包依赖、展示用 URL 不包含在内。

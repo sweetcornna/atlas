@@ -3,10 +3,6 @@ title: "协调者与蜂群模式：多 Agent 编排机制"
 description: "从源码角度拆解 Claude Code 的 Coordinator Mode、Agent Teams / Swarm、subagent、teammate、Mailbox、Task 工具、runtime task、状态恢复与排障路径。"
 keywords: ["协调者模式", "蜂群模式", "Agent Swarm", "Agent Teams", "多 Agent 协作", "任务编排", "Mailbox", "Subagent"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/agent/coordinator-and-swarm) · **中文** · [日本語](/docs/ja/agent/coordinator-and-swarm)
-
 Claude Code 里有很多看起来都叫“多 Agent”的东西：`Agent` 工具、fork agent、Coordinator Mode、Agent Teams / Swarm、remote agent、后台 runtime task、`TaskCreate` 任务白板。它们共享部分底层设施，但不是同一个抽象。
 
 这篇文档解决的是跨机制理解问题：当你看到一个任务被“派出去”、一个 teammate 变成 idle、一个 `<task-notification>` 回到主线程、一个 team 目录还在但 teammate 不跑了，应该知道它属于哪套机制、状态放在哪里、通信走哪条路、哪些东西能恢复。

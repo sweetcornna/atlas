@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/remote-control-self-hosting) · **中文** · [日本語](/docs/ja/features/remote-control-self-hosting)
-
 # Remote Control（基于 Happy over ACP）
 
 occ 不再自带远程控制的传输层。它自带的是一个 **ACP agent**（`occ --acp`），客户端那一半交给 [Happy](https://github.com/slopus/happy)（MIT）——手机 App、Web 界面、端到端加密，以及一个可以自托管的中继服务。

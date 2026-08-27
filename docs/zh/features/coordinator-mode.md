@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/coordinator-mode) · **中文** · [日本語](/docs/ja/features/coordinator-mode)
-
 # COORDINATOR_MODE — 多 Agent 编排
 
 > Feature Flag: `FEATURE_COORDINATOR_MODE=1` + 环境变量 `CLAUDE_CODE_COORDINATOR_MODE=1`

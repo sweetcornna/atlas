@@ -3,10 +3,6 @@ title: "子 Agent 机制 - 权限、流程、同步/异步与 Fork"
 description: "从源码角度解析 Claude Code 子 Agent：AgentTool 的执行链路、权限模式、同步与异步生命周期、任务通知队列、AgentTool fork、slash command fork 与 runForkedAgent 的边界。"
 keywords: ["子 Agent", "AgentTool", "权限模式", "同步子 Agent", "异步子 Agent", "forkSubagent", "runForkedAgent"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/agent/sub-agents) · **中文** · [日本語](/docs/ja/agent/sub-agents)
-
 {/* 本章目标：把子 Agent 的几条容易混淆的执行链路拆开说明，并给出源码入口。 */}
 
 ## 先分清四个概念

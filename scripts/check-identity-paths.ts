@@ -44,6 +44,17 @@ const ALLOWLIST = new Set([
   'src/config/paths.ts',
   'src/constants/identity.ts',
   'src/constants/brand.ts',
+  // 这一条不是「派生模块」，是**故意的反向例外**。
+  //
+  // `guard.ts` 里那张 `IDENTITY_DIRS` 必须是字面量表，且必须同时列出全部三个
+  // 身份目录（`.occ` / `.qianmo` / `.claude`）—— 它是准入判定的安全硬线：
+  // 从 `paths.ts` 派生就会变成「只保护当前身份」，因为那边要读 `OCC_IDENTITY`
+  // / `OCC_CONFIG_DIR`。守卫只挡住自己这一个身份，恰好废掉它自己。
+  // 文件头注把这条讲得更细（"A hardline list that a session could edit would be
+  // protecting the file that edits it"）。
+  //
+  // 换句话说：这三行**正确**，改成派生才是缺陷。
+  'packages/resident/src/guard.ts',
 ])
 
 const FORBIDDEN: readonly { pattern: RegExp; label: string }[] = [

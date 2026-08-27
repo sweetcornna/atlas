@@ -88,6 +88,22 @@ jobs:
       - name: Check MACRO guards
         run: bun run check:macro-guards
 
+      # 三方身份隔离（官方 .claude / occ .occ / 阡陌 .qianmo）全靠「每条身份路径
+      # 都从 src/config/paths.ts 派生」这一条不变式；绕过它的硬编码字面量是这套
+      # 隔离**唯一**的失效方式，改造前有 12 处，其中两处出过真实事故。
+      #
+      # 这道检查此前定义在 package.json 里却**一处都没接**（precheck / verify / CI
+      # 全无），而且在干净树上就 exit 1 —— 一道看着在、其实从不运行的门禁。
+      # 2026-08-26 补上 guard.ts 的反向例外后接活，毫秒级。
+      - name: Check identity-path bypasses
+        run: bun run check:identity-paths
+
+      # 同样是此前的孤儿门禁。Mintlify 对「导航声明了但文件不存在」的页面不会跳过，
+      # 而是发布成一个 404，所以这条必须在合并前跑。它没接门禁的直接后果是
+      # sync-docs-i18n.ts 与 check-docs-i18n.ts 曾对同一条约定分叉而无人发现。
+      - name: Check docs navigation
+        run: bun run check:docs-i18n
+
       # The loop lives in scripts/test-shards.sh — see that file for why
       # sharding is what fixed the 55 red runs, and why an unsharded `bun test`
       # is not a stricter substitute.

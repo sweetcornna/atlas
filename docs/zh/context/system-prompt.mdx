@@ -3,10 +3,6 @@ title: "System Prompt 动态组装 - AI 工作记忆构建"
 description: "深入解析 open-claude-code 的 System Prompt：src/constants/prompts/ 的模块化布局、段落渲染顺序、静态/动态分界与跨组织缓存、Section 注册表、CLAUDE.md 多级合并，以及 occ 与上游在静态区划分上的有意分歧。"
 keywords: ["System Prompt", "系统提示词", "动态组装", "模块化布局", "CLAUDE.md", "Prompt Cache", "缓存策略"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/context/system-prompt) · **中文** · [日本語](/docs/ja/context/system-prompt)
-
 ## 从数组到 API 调用：System Prompt 的完整链路
 
 System Prompt 在 occ 中不是一段写死的文本，而是一个 **`string[]` 数组**（品牌类型 `SystemPrompt`），经过组装、分块、缓存标记后发送给 API。
