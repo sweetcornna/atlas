@@ -10,7 +10,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIB="$REPO_DIR/demo/lib"
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 
 required=(
   QIANMO_SANDBOX_DAEMON_URL
@@ -78,12 +81,12 @@ printf '凭据：均已注入，不回显\n'
 printf '目标：%s，轮数：%s，P95 上限：%sms\n' "$QIANMO_AC2_SANDBOX" "$ROUNDS" "$LATENCY_LIMIT_MS"
 printf 'A/B factor：resident reconnect=%s，host keepalive=%s\n' "$RESIDENT_RECONNECT_FACTOR" "$KEEPALIVE_TIME_JUMP_FACTOR"
 
-bun run "$LIB/p31-copy-resident-timings.ts" \
+bun run "$(demo_entry p31-copy-resident-timings)" \
   --container-path "$QIANMO_P31_RESIDENT_TIMINGS_PATH" \
   --output "$PREFLIGHT_RESIDENT_TIMINGS" >"$WORK/preflight-copy.json"
 : >"$RESIDENT_TIMINGS"
 
-bun run "$LIB/ac2-activator.ts" \
+bun run "$(demo_entry ac2-activator)" \
   --ready "$READY" \
   --timings "$ACTIVATOR_TIMINGS" \
   --audit "$AUDIT" \
@@ -111,10 +114,10 @@ export QIANMO_AC2_ACTIVATOR_URL="$(jget "$READY" url)"
 ACTUAL_KEEPALIVE_FACTOR="$(jget "$READY" keepaliveTimeJumpFactor)"
 printf 'activator ready; activity port=%s\n' "$(jget "$READY" activityPort)"
 
-bun run "$LIB/p31-copy-resident-timings.ts" \
+bun run "$(demo_entry p31-copy-resident-timings)" \
   --container-path "$QIANMO_P31_RESIDENT_TIMINGS_PATH" \
   --output "$PREFLIGHT_RESIDENT_TIMINGS" >/dev/null
-if ! bun run "$LIB/p31-report.ts" \
+if ! bun run "$(demo_entry p31-report)" \
   --activator-timings "$ACTIVATOR_TIMINGS" \
   --resident-timings "$PREFLIGHT_RESIDENT_TIMINGS" \
   --rounds "$ROUNDS" \
@@ -127,7 +130,7 @@ if ! bun run "$LIB/p31-report.ts" \
   exit 2
 fi
 
-bun run "$LIB/p31-copy-resident-timings.ts" \
+bun run "$(demo_entry p31-copy-resident-timings)" \
   --container-path "$QIANMO_P31_RESIDENT_TIMINGS_PATH" \
   --output "$RESIDENT_TIMINGS" \
   --interval-ms 1000 >"$WORK/timing-watcher.log" 2>&1 &
@@ -136,13 +139,13 @@ TIMING_WATCHER_PID=$!
 pass=0
 for round in $(seq 1 "$ROUNDS"); do
   printf '\n[%s/%s] waiting for frozen\n' "$round" "$ROUNDS"
-  if ! bun run "$LIB/ac2-state.ts" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
+  if ! bun run "$(demo_entry ac2-state)" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
     >"$WORK/state-$round.json"; then
     printf 'round %s: sandbox did not reach frozen\n' "$round" >&2
     continue
   fi
 
-  if ! bun run "$LIB/p31-send.ts" --round "$round" \
+  if ! bun run "$(demo_entry p31-send)" --round "$round" \
     --timeout-ms "$((ROUND_TIMEOUT_S * 1000))" \
     --deliver-ttl-ms "$((ROUND_TIMEOUT_S * 1000))" \
     >"$WORK/send-$round.json"; then
@@ -152,7 +155,7 @@ for round in $(seq 1 "$ROUNDS"); do
   msgid="$(jget "$WORK/send-$round.json" msgId)"
 
   responsive=0
-  if bun run "$LIB/p31-report.ts" \
+  if bun run "$(demo_entry p31-report)" \
     --activator-timings "$ACTIVATOR_TIMINGS" \
     --resident-timings "$RESIDENT_TIMINGS" \
     --rounds "$ROUNDS" \
@@ -180,7 +183,7 @@ fi
 TIMING_WATCHER_PID=''
 
 set +e
-bun run "$LIB/p31-report.ts" \
+bun run "$(demo_entry p31-report)" \
   --activator-timings "$ACTIVATOR_TIMINGS" \
   --resident-timings "$RESIDENT_TIMINGS" \
   --rounds "$ROUNDS" \

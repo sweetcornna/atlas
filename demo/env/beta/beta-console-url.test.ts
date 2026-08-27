@@ -16,7 +16,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const COMMON = 'demo/env/beta/common.sh'
@@ -101,5 +102,77 @@ describe('beta_console_url_from_args', () => {
     expect(consoleUrl(['--hostname', '127.0.0.2', '--port', '80'])).toBe(
       'http://127.0.0.2:80',
     )
+  })
+
+  test('IPv6 字面量加方括号 —— 不加的话冒号分不清哪个是端口', () => {
+    expect(consoleUrl(['--hostname', '::1', '--port', '80'])).toBe(
+      'http://[::1]:80',
+    )
+    expect(consoleUrl(['--hostname', 'fd00::1'])).toBe('http://[fd00::1]:38621')
+    // 已经带括号的不要再括一层。
+    expect(consoleUrl(['--hostname', '[::1]', '--port', '80'])).toBe(
+      'http://[::1]:80',
+    )
+  })
+})
+
+/**
+ * 上面那组测的是函数本身。**函数对了不等于接对了**——它有两个真实调用点，而两个都
+ * 没有被端到端跑到：`beta-up-args.test.ts` 的 RECORDER 对没有 `--ready` 的进程（控制台
+ * 正是这种）直接 `exit 0`，于是 beta-up.sh 在 `beta_start_process` 处就结束，永远走不到
+ * 下面那几行。把控制台起真、再等它答 /v0/health，成本远高于这个缺口的价值。
+ *
+ * 折中：钉**接线本身**。这里查的是「传进去的是不是那张最终参数表」「探活用的是不是
+ * 它的结果」——正是接错时会静默失效、而单元测试看不见的那一处。同类做法见
+ * `demo/env/resident-task-policy.test.ts`（对脚本正文做断言）。
+ */
+describe('两个调用点确实接的是 beta_console_url_from_args 的结果', () => {
+  const betaUp = readFileSync(
+    join(REPOSITORY_ROOT, 'demo/env/beta/beta-up.sh'),
+    'utf8',
+  )
+  const betaSmoke = readFileSync(
+    join(REPOSITORY_ROOT, 'demo/env/beta/beta-smoke.sh'),
+    'utf8',
+  )
+
+  test('beta-up.sh 传的是最终那张 console_args，且在它拼完之后', () => {
+    expect(
+      betaUp.includes(
+        'console_url="$(beta_console_url_from_args "${console_args[@]}")"',
+      ),
+    ).toBe(true)
+    // 顺序：尾参在 console_args 拼好之后才追加，算 URL 必须排在那之后，否则解出来的是
+    // 覆盖前的默认值——那正是本包要修的那个 bug。
+    const appended = betaUp.indexOf(
+      'console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})',
+    )
+    const computed = betaUp.indexOf(
+      'beta_console_url_from_args "${console_args[@]}"',
+    )
+    expect(appended).toBeGreaterThan(-1)
+    expect(computed).toBeGreaterThan(appended)
+  })
+
+  test('beta-up.sh 探活与报出去的地址都用 console_url，不留旧常量', () => {
+    expect(betaUp.includes('beta_http_status "$console_url/v0/health"')).toBe(
+      true,
+    )
+    expect(betaUp.includes('BETA_CONSOLE_URL')).toBe(false)
+    expect(betaSmoke.includes('BETA_CONSOLE_URL')).toBe(false)
+  })
+
+  test('beta-smoke.sh 从 console.env 取尾参再解地址', () => {
+    expect(
+      betaSmoke.includes(
+        'beta_conf_get "$BETA_OPS_DIR/console.env" CONSOLE_EXTRA_ARGS',
+      ),
+    ).toBe(true)
+    expect(
+      betaSmoke.includes('beta_console_url_from_args ${console_extra_args[@]+'),
+    ).toBe(true)
+    expect(
+      betaSmoke.includes('beta_http_status "$console_url/v0/health"'),
+    ).toBe(true)
   })
 })

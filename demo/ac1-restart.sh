@@ -23,7 +23,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIB="$REPO_DIR/demo/lib"
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 
 # 历史规模点位（可用环境变量覆盖）
 SMALL_SESSIONS="${AC1_SMALL_SESSIONS:-5}"
@@ -70,7 +73,7 @@ run_crash_point() {
   point="$1"; session="$2"; note="$WORK/$point.json"; out="$WORK/$point.verify.json"
   if [ "$point" = 'tool' ]; then
     # 工具执行中：状态静止，用**外部** kill -9
-    bun run "$LIB/ac1-crash-writer.ts" --point tool --session "$session" --out "$note" >/dev/null 2>&1 &
+    bun run "$(demo_entry ac1-crash-writer)" --point tool --session "$session" --out "$note" >/dev/null 2>&1 &
     child=$!
     i=0
     while [ ! -s "$note" ] && [ "$i" -lt 300 ]; do i=$((i + 1)); sleep 0.1; done
@@ -88,12 +91,12 @@ run_crash_point() {
     # 末尾的 `; exit $?` 是必要的：只有一条简单命令时 bash -c 会直接 exec 掉
     # 自己，通知就又回到外层 shell 手里了。
     bash -c '"$0" run "$1" --point "$2" --session "$3" --out "$4"; exit $?' \
-      "$(command -v bun)" "$LIB/ac1-crash-writer.ts" "$point" "$session" "$note" \
+      "$(command -v bun)" "$(demo_entry ac1-crash-writer)" "$point" "$session" "$note" \
       >/dev/null 2>&1
     rc=$?
   fi
   say "  崩溃点 ${point}: 退出码 ${rc}（137 = 128+SIGKILL）"
-  bun run "$LIB/ac1-verify.ts" --session "$session" >"$out" 2>/dev/null
+  bun run "$(demo_entry ac1-verify)" --session "$session" >"$out" 2>/dev/null
   say "  $(cat "$out")"
   got_sid="$(jget "$out" sessionId)"
   malformed="$(jget "$out" malformedLines)"
@@ -120,12 +123,12 @@ head1 '2. 半写行容错（字节级截断）'
 # 都会。这里人为把最后一行截半，验证读取侧的容错确实在
 # （src/utils/text/json.ts:129-175「skip malformed lines」）。
 TRUNC_SESSION='aa000000-0000-4000-8000-000000000001'
-TRUNC_FILE="$(bun run "$LIB/ac1-project-dir.ts")/$TRUNC_SESSION.jsonl"
+TRUNC_FILE="$(bun run "$(demo_entry ac1-project-dir)")/$TRUNC_SESSION.jsonl"
 if [ -f "$TRUNC_FILE" ]; then
   before_bytes=$(wc -c <"$TRUNC_FILE" | tr -d ' ')
   cut_to=$((before_bytes - 200))
   bun -e "require('fs').truncateSync(process.argv[1], Number(process.argv[2]))" "$TRUNC_FILE" "$cut_to"
-  bun run "$LIB/ac1-verify.ts" --session "$TRUNC_SESSION" >"$WORK/trunc.verify.json" 2>/dev/null
+  bun run "$(demo_entry ac1-verify)" --session "$TRUNC_SESSION" >"$WORK/trunc.verify.json" 2>/dev/null
   say "  $(cat "$WORK/trunc.verify.json")"
   m="$(jget "$WORK/trunc.verify.json" malformedLines)"
   c="$(jget "$WORK/trunc.verify.json" messageCount)"
@@ -149,7 +152,7 @@ MEASURED_LOAD=''
 measure() { # $1=entry $2=label；--session 由 session_arg 提供
   entry="$1"; label="$2"; out="$WORK/m-$label-$entry.json"
   TIMEFORMAT='%3R'
-  MEASURED_WALL=$( { time bun run "$LIB/ac1-measure.ts" --entry "$entry" \
+  MEASURED_WALL=$( { time bun run "$(demo_entry ac1-measure)" --entry "$entry" \
       ${session_arg} >"$out" 2>/dev/null; } 2>&1 )
   MEASURED_LOAD="$(jget "$out" loadMs)"
   say "  [$label] --${entry}  wall=${MEASURED_WALL}s  $(cat "$out")"
@@ -159,7 +162,7 @@ scale_point() { # $1=label $2=sessions $3=target-msgs
   label="$1"
   rm -rf "${OCC_CONFIG_DIR:?}/projects"
   say "  生成历史：会话文件 $2 个（各 $MSGS_PER_SESSION 条）+ 目标会话 $3 条"
-  bun run "$LIB/ac1-gen-history.ts" --sessions "$2" --msgs "$MSGS_PER_SESSION" \
+  bun run "$(demo_entry ac1-gen-history)" --sessions "$2" --msgs "$MSGS_PER_SESSION" \
     --target "$TARGET" --target-msgs "$3" >"$WORK/gen-$label.json" 2>/dev/null
   say "  $(cat "$WORK/gen-$label.json")"
 

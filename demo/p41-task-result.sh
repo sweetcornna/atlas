@@ -15,7 +15,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIB="$REPO_DIR/demo/lib"
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 
 required=(
   QIANMO_SANDBOX_DAEMON_URL
@@ -81,7 +84,7 @@ printf '凭据：均已注入，不回显\n'
 printf '目标：%s，轮数：%s，ack 上限：%sms，result 上限：%sms\n' \
   "$QIANMO_AC2_SANDBOX" "$ROUNDS" "$ACK_LIMIT_MS" "$RESULT_LIMIT_MS"
 
-bun run "$LIB/ac2-activator.ts" \
+bun run "$(demo_entry ac2-activator)" \
   --ready "$READY" \
   --timings "$ACTIVATOR_TIMINGS" \
   --audit "$AUDIT" \
@@ -109,7 +112,7 @@ export QIANMO_AC2_ACTIVATOR_URL="$(jget "$READY" url)"
 printf 'activator ready; activity port=%s\n' "$(jget "$READY" activityPort)"
 
 # 按名解析那一跳：目标地址登记到 activator 的入站地址上，发送方只认名字。
-bun run "$LIB/p41-registry.ts" \
+bun run "$(demo_entry p41-registry)" \
   --ready "$REGISTRY_READY" \
   --endpoint "$QIANMO_AC2_ACTIVATOR_URL" \
   --port "${P41_REGISTRY_PORT:-0}" \
@@ -132,7 +135,7 @@ pass=0
 for round in $(seq 1 "$ROUNDS"); do
   printf '\n[%s/%s] waiting for frozen\n' "$round" "$ROUNDS"
   frozen=false
-  if bun run "$LIB/ac2-state.ts" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
+  if bun run "$(demo_entry ac2-state)" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
     >"$WORK/state-$round.json"; then
     frozen=true
   else
@@ -140,7 +143,7 @@ for round in $(seq 1 "$ROUNDS"); do
   fi
 
   set +e
-  bun run "$LIB/p41-send.ts" \
+  bun run "$(demo_entry p41-send)" \
     --round "$round" \
     --ack-timeout-ms "$ACK_LIMIT_MS" \
     --result-timeout-ms "$RESULT_LIMIT_MS" \
@@ -173,7 +176,7 @@ for round in $(seq 1 "$ROUNDS"); do
 done
 
 set +e
-bun run "$LIB/p41-report.ts" \
+bun run "$(demo_entry p41-report)" \
   --rounds-file "$ROUNDS_FILE" \
   --rounds "$ROUNDS" \
   --ack-limit-ms "$ACK_LIMIT_MS" \

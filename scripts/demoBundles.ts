@@ -20,14 +20,28 @@
  * 真源仍然是 `demo/lib/*.ts`。这里只产出**构建产物**；`beta_demo_entry`（common.sh）
  * 优先用 `dist/demo/` 里的那份，取不到才回落到源文件，所以未构建的开发检出照常工作。
  *
- * 名单是「shell 脚本会调起的入口」，不是「demo/lib 下的全部文件」。判据是这一条，
- * 排掉注释行之后的调用点：
+ * 名单是「shell 脚本会调起的入口」，不是「demo/lib 下的全部文件」。
  *
- *     grep -rn 'demo/lib/[a-z0-9-]*\.ts' demo --include='*.sh' | grep -vE ':[0-9]+:\s*#'
+ * **判据不写在注释里，写成用例**（`scripts/__tests__/demoBundles.test.ts`）：它扫出仓库
+ * 里每一处 `demo_entry <名字>` 调用，断言每个名字要么在本表、要么在下面的排除名单里。
  *
- * 新增脚本调用点时同步这里 —— 漏一条的症状不是构建失败，而是那个脚本在**投出去的
- * 机器上**才崩，且崩在 Bun 的模块解析层，错误信息与脚本自己想报的事情毫无关系。
- * `demo/lib/entry.sh` 的 `demo_entry` 是消费侧，两边是一对。
+ * 表里有两个**没有** `demo_entry` 调用点：`ac2-target` 与 `p73-sample`。它们是注释里
+ * 教人手敲的命令（`p73-sample` 那条写着 `--out /srv/p73/...`，就是给舰队机器上的人用的）。
+ * 照着注释在投出去的树上敲会撞同一个错，所以产物也要有它们；用例只单向查「每个调用点
+ * 都被覆盖」，不反过来要求表里每一项都有调用点。
+ *
+ * 这条是踩出来的。本文件第一版把判据写成一句注释里的 grep：
+ *
+ *     grep -rn 'demo/lib/[a-z0-9-]*\.ts' demo --include='*.sh'
+ *
+ * 那句话是**错的**——`demo/ac1-restart.sh`、`ac2-wake-forward.sh`、`p31-resident-wake.sh`、
+ * `p41-task-result.sh` 四个脚本先 `LIB="$REPO_DIR/demo/lib"` 再 `bun run "$LIB/xxx.ts"`，
+ * 那条 grep 一个都找不到，于是首版漏了 **14** 个入口。注释里的判据没人执行，写错了不会
+ * 有任何反馈；而漏一条的症状不是构建失败，是那个脚本在**投出去的机器上**才崩，且崩在
+ * Bun 的模块解析层，错误信息与脚本自己想报的事情毫无关系。
+ *
+ * 所以消费侧 `demo_entry`（`demo/lib/entry.sh`）现在是**唯一**的调用形式：只有经过它
+ * 才拿得到一条跑得起来的路径，因此扫它就扫得全，换个变量名也逃不掉。
  */
 
 import { existsSync } from 'node:fs'
@@ -36,12 +50,24 @@ import { join } from 'node:path'
 /** 被 shell 直接调起的入口。加一条前先确认它真的被某个 .sh 调用。 */
 export const DEMO_ENTRYPOINTS = [
   'ac1-project-dir',
+  'ac2-activator',
+  'ac2-report',
+  'ac2-send',
+  'ac2-state',
+  'ac2-target',
   'ac3-loop-rate',
   'ac6a-sandbox',
   'ac6b-restore',
   'chaos-inject',
+  'p31-copy-resident-timings',
+  'p31-report',
+  'p31-send',
+  'p41-registry',
+  'p41-report',
+  'p41-send',
   'p51-diagnosis',
   'p61-seed',
+  'p73-sample',
   'p81-probe',
   'p81-registry',
 ] as const
@@ -66,8 +92,20 @@ export const DEMO_ENTRYPOINTS = [
  * 依赖图从 host 侧摘开，那是另一件事。真把它们加回上面那张表时，`p61-scenario` 里
  * `join(import.meta.dir, 'p61-worker.ts')` 那处也要一并改成「先产物后源文件」，否则
  * 产物旁边只有 `.js`，worker 会找不到。
+ *
+ * `ac1-*` 那四个（`ac1-restart.sh` 用的）是同一个病、更重一档：各 **24 MB**，同样带着
+ * 那句 `import("node-fetch")`。它们经 `src/` 摸到会话与历史那一整片。`ac1-project-dir`
+ * 不在此列——它只算路径，177 KB 以下，打得干净。
+ *
+ * 代价同上：`demo/ac1-restart.sh`、`demo/p61-e2e.sh`、`demo/p73-baseline.sh` 在投出去的
+ * 树上仍跑不起来（`demo_entry` 回落到源文件，那里解析不出 `@qianmo/*`）——这是本次改动
+ * **之前就有的**状态。
  */
-const DEMO_ENTRYPOINTS_EXCLUDED = [
+export const DEMO_ENTRYPOINTS_EXCLUDED = [
+  'ac1-crash-writer',
+  'ac1-gen-history',
+  'ac1-measure',
+  'ac1-verify',
   'p61-scenario',
   'p61-worker',
   'p73-throughput',

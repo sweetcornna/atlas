@@ -272,11 +272,14 @@ run_host() {
   # 等于问「systemd 下次会把控制台起在哪」。拿默认值探等于报一个假红（common.sh 的
   # beta_console_url_from_args 有实测记录）。
   local console_url console_extra
+  local -a console_extra_args=()
   console_extra="$(beta_conf_get "$BETA_OPS_DIR/console.env" CONSOLE_EXTRA_ARGS)"
-  # 不加引号是有意的：这一行要按空白分词还原成参数表。write_console_env 保证写进去的
-  # 每个参数都不含空白（含空白的它当场 WARN 并拒绝写）。
-  # shellcheck disable=SC2086
-  console_url="$(beta_console_url_from_args $console_extra)"
+  # 这一行要按空白还原成参数表。**用 read -ra 而不是不加引号的展开**：后者除了分词还会
+  # 做文件名通配，于是一个带 `*` / `?` / `[...]` 的尾参（不含空白，写得进 console.env）
+  # 会在 beta-smoke.sh 的当前目录里意外匹配上文件，参数表当场变形，喂给下面那个按位置
+  # 记状态的扫描器就会解出一个错的地址——而这个脚本存在的意义正是「别报错地址」。
+  read -ra console_extra_args <<<"$console_extra"
+  console_url="$(beta_console_url_from_args ${console_extra_args[@]+"${console_extra_args[@]}"})"
   status="$(beta_http_status "$console_url/v0/health")"
   if [ "$status" = '200' ]; then
     beta_ok "控制台 /v0/health 200（${console_url}）"
