@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/telemetry-remote-config-audit) · **中文** · [日本語](/docs/ja/telemetry-remote-config-audit)
-
 # 遥测与远程配置下发系统审计（除 Sentry 外）
 
 > **2.45.0 起：发往 `api.anthropic.com` 的一方链路默认关闭，必须显式 opt-in。**

@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/daemon) · **中文** · [日本語](/docs/ja/features/daemon)
-
 # DAEMON — 后台守护进程
 
 > Feature Flag: `FEATURE_DAEMON=1`

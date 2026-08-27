@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/voice-mode) · **中文** · [日本語](/docs/ja/features/voice-mode)
-
 # VOICE_MODE — 语音输入
 
 > Feature Flag: `FEATURE_VOICE_MODE=1`

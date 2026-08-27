@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/computer-use) · **中文** · [日本語](/docs/ja/features/computer-use)
-
 # Computer Use
 
 更新时间：2026-07-31

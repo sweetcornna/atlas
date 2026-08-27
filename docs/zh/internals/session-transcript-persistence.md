@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/internals/session-transcript-persistence) · **中文** · [日本語](/docs/ja/internals/session-transcript-persistence)
-
 # JSONL Transcript 会话持久化与恢复机制
 
 本文梳理 Claude Code 基于 JSONL transcript 的会话持久化、恢复、错误恢复、上下文压缩、分支、subagent、fork agent 和 remote agent 逻辑。

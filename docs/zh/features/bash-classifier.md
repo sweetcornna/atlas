@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/bash-classifier) · **中文** · [日本語](/docs/ja/features/bash-classifier)
-
 # BASH_CLASSIFIER — Bash 命令分类器
 
 > Feature Flag: `FEATURE_BASH_CLASSIFIER=1`

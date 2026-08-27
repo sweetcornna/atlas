@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/token-budget) · **中文** · [日本語](/docs/ja/features/token-budget)
-
 # TOKEN_BUDGET — Token 预算自动持续模式
 
 > Feature Flag: `FEATURE_TOKEN_BUDGET=1`

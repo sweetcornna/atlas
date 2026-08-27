@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/proactive) · **中文** · [日本語](/docs/ja/features/proactive)
-
 # PROACTIVE — 主动模式
 
 > Feature Flag: `FEATURE_PROACTIVE=1`（与 `FEATURE_KAIROS=1` 共享功能）

@@ -3,10 +3,6 @@ title: "MCP 协议 - 连接管理、工具发现与执行链路"
 description: "从源码角度解析 Claude Code 的 MCP 集成：内置 MCP 与外部 MCP 的区别、7 种传输层实现、connectToServer 的 memoize 缓存、工具发现的 LRU 策略、认证状态机、以及 MCP 工具如何进入权限检查链路。"
 keywords: ["MCP", "Model Context Protocol", "工具扩展", "MCP 客户端", "工具发现", "内置 MCP", "外部 MCP"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/extensibility/mcp-protocol) · **中文** · [日本語](/docs/ja/extensibility/mcp-protocol)
-
 {/* 本章目标：从源码角度揭示 MCP 客户端的两种运行模式（内置/外部）、连接管理、工具发现协议和执行链路 */}
 
 ## 架构总览：从配置到可用工具

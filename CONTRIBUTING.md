@@ -31,7 +31,11 @@ bun test src/path/to/x.test.ts # 单个测试文件
 bun run precheck               # 任务完成前必须跑，且必须零错误
 ```
 
-`precheck` = `tsc --noEmit` + `biome check --fix` + 全量 `bun test`。注意它**会改写你的文件**（`check:fix` 而非 `check`），跑完记得看 `git diff`。
+`precheck` = `tsc --noEmit` + `biome check --fix` + 三道毫秒级门禁 + 全量 `bun test`。注意它**会改写你的文件**（`check:fix` 而非 `check`），跑完记得看 `git diff`。
+
+推送 / 发 PR 之前跑 **`bun run verify`** —— 它是只读式的近 CI 全量检查（`biome ci` 而非 `--fix`），并补上 `precheck` 不含的几道重活（`check:cycles`、`check:unused`、`check:bundle`、`build:vite`、分片测试）。**`precheck` 过 ≠ CI 会过**，两者的差集就在这里。
+
+**九道 `check:*` 门禁必须全部接进 `verify` 与 CI。** 一道定义了却没接的门禁比没有更糟：它看着在，其实从不运行，而写的人以为有人在守。2026-08-26 清出过两道这样的孤儿——`check:identity-paths`（守三方身份隔离，且在干净树上恒红）与 `check:docs-i18n`（守文档站死链），后者的失守直接导致 `sync-docs-i18n.ts` 与 `check-docs-i18n.ts` 对同一条约定分叉而无人发现。**新增 `check:*` 脚本时，同一个提交里必须把它接进 `verify` 和 `.github/workflows/ci.yml`。**
 
 完整命令表在 [`CLAUDE.md`](CLAUDE.md) 的 Commands 一节，这里不复制。
 
@@ -141,49 +145,26 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
 
 发现了问题但不在本次范围内？**记录，不要顺手改。** 在 PR 描述里列出来。夹带无关改动的 diff 会拖慢审查，也让回滚变得危险。
 
-## 11. 发布流程
+## 11. 本仓库不发布
 
-发版是一条命令加一次 push：
+**阡陌不发 npm 包、不打 tag、不跑基座的 release 流程**（章程 N-13/N-14，另见
+[`CLAUDE.md`](CLAUDE.md) §0）。`publish-npm.yml` 已按 roadmap P0.4 移除；
+`scripts/release.ts` / `scripts/releaseCore.ts` / `scripts/changelog-section.ts`
+**已于 2026-08-26 一并删除** —— 它们只服务那个不存在的工作流，留着只会让人以为
+这里有一条发布路径。`.github/workflows/` 下只有 `ci.yml`。
 
-```bash
-bun run release 2.10.0 --dry-run   # 先看它打算做什么
-bun run release 2.10.0             # 改版本、跑门禁、提交、打 tag（不 push）
-git push origin main --follow-tags # 这一步才真正发布
-```
+因此下面这些**都不是我们的面**，看到别去维护：
 
-`scripts/release.ts` 会按顺序做：校验版本号 → 校验仓库状态（工作树干净、在 `main`、不落后于 `origin/main`、tag 未占用）→ 跑发布门禁 → 写文件 → `chore(release): v<version>` 提交 + annotated tag。本地领先于 origin 是正常的（那些提交会随 `--follow-tags` 一起 push），落后或分叉才是硬失败。**门禁跑在写盘之前**，所以门禁失败不会留下改了一半的工作树。脚本永远不 push：npm 上的版本发出去就撤不回来，最后那一下必须是人按的。
+| 基座的发布面 | 在本仓库的状态 |
+| --- | --- |
+| `npm publish` / `--provenance` | 不做 |
+| git tag `v<version>` + GitHub Release | 不做（`base-snapshot/*` 标签是另一回事，见 §12 与 CLAUDE.md §2.5） |
+| `CHANGELOG.md` 的发布约定与多语言译本 | 不维护；文件保留为历史记录 |
+| `package.json` 的 `version` | 只作为 `MACRO.VERSION` 的构建真源，不代表任何已发布版本 |
 
-被这条链路更新的**所有**版本源：
-
-| 源 | 谁写 | 作用 |
-| --- | --- | --- |
-| `package.json` 的 `version` | `bun run release` | 唯一构建真源，`scripts/defines.ts` 由它注入 `MACRO.VERSION`；也是 npm 发布的版本 |
-| `CHANGELOG.md` | `bun run release` 插入草稿，**人工润色** | 同时喂给 GitHub Release 正文和应用内「更新说明」 |
-| git tag `v<version>` | `bun run release` | `publish-npm.yml` 的**唯一**触发条件 |
-| npm 包 | `publish-npm.yml` | `npm publish --provenance` |
-| GitHub Release | `publish-npm.yml` | 正文优先取 `CHANGELOG.md` 对应小节，取不到才回退到 commit 列表 |
-| 应用内「更新说明」 | 用户端从 `main` 拉 `CHANGELOG.md` | `src/utils/update/releaseNotes.ts`，所以发布提交必须在 main 上 |
-
-几条不能绕的约束：
-
-- **版本号只能递增。** `occ update` 用 semver 比较判断"有没有新版"，发一个不大于前一版的版本，等于让所有已安装的客户端**永久**认为自己已是最新——他们不会再收到任何后续更新，只能手工重装。脚本因此把"严格大于 `package.json` 当前版本"作为硬校验，并拒绝 `2.10`、`02.10.0`、`latest` 这类形状（`v2.10.0` 可以，会被规范化成 `2.10.0`）。同理，**不要把版本号退回 1.x**：叙事延续 2.8.x，首个对外发布是 v2.9.0。
-- **CHANGELOG 条目是给用户看的。** 脚本生成的是 commit subject 草稿，不是发布说明 —— 它会明确提示你去润色。改完 `git commit --amend` 再 `git tag -f`，然后才 push。写法见下。
-
-### CHANGELOG 写作规范
-
-读者是用户，不是提交历史的考古者。每条只回答一个问题：**这次发布对我意味着什么。**
-
-- **先说结果，再说原因。** 「首次启动现在需要先完成迁移」比「重构启动流程」有用得多。
-- **说人话。** 不写内部符号名、文件路径、提交 hash。要提到代码位置时，说它对应的用户可见功能。
-- **一条一件事，一到三句话。** 需要长篇解释的，写进 `docs/` 再从这里给一个链接。
-- **不喊。** 通篇加粗等于没有重点。一条里最多一处强调，用来标出用户必须采取行动的部分。
-- **破坏性变更必须显式说明用户要做什么。** 只写「BREAKING」不写补救步骤，等于把问题丢给用户。
-- **别写「杂项修复」「若干改进」。** 说不出对用户的影响，就说明这条不该出现在 CHANGELOG 里。
-
-**多语言**：`CHANGELOG.md` 是规范源，也是工具链唯一解析的那份（`parseChangelog` → 应用内「更新说明」、GitHub Release 正文）。`CHANGELOG.en.md` 与 `CHANGELOG.ja.md` 是它的译本，随发布一起更新，格式保持一致但**不参与**工具链。译本缺失不会阻塞发布，但补上之前不要发下一个版本 —— 语种一旦落后就再也追不回来。
-- **格式由解析器约束。** `## <semver>` 或 `## <semver> - <日期>` 作版本标题，条目用顶层 `- `；嵌套列表会被 `parseChangelog` 拍平。写坏了不会报错，只是用户在应用内看不到条目。
-- **发布门禁包含全量单测**（2026-08-07 起）。脚本跑 `typecheck` + `check:cycles` + `check:mock-hygiene` + `./scripts/test-shards.sh`，与 `publish-npm.yml` 同源，所以本地失败 = 工作流也会失败，而且是在打 tag 之前就失败。
-  用的是**分片脚本而不是 `bun test`**：按目录分片是这套测试在 Linux 上能确定性通过的原因（见 [`CLAUDE.md`](CLAUDE.md) 发布一节与脚本头部注释）。`precheck` 仍用不分片的 `bun test`，那是给开发回路的快路径，不是门禁。
+**版本号相关的唯一约束**：`package.json` 的 `version` 仍会编进产物（`scripts/defines.ts`），
+所以它得是个合法 semver；除此之外它不承载对外含义。真正用来标识「跑的是哪份产物」的是
+编译进 `dist/` 的 `SOURCE_COMMIT`，读法见 `demo/env/beta/beta-deploy.sh` 的校验段。
 
 ## 12. 文档放哪里
 
@@ -199,23 +180,30 @@ git push origin main --follow-tags # 这一步才真正发布
 
 **关于 `.claude/` 与 `.occ/` 双目录**：仓库里两个都有，这是有意的。`.claude/` 放**跨工具生态共享**的资产（skills、agents —— 官方 Claude Code 和其他 AI 工具也读这里），`.occ/` 放 **occ 独有**的运行时产物（workflow-runs 等）。判断标准：别的工具也该看到 → `.claude/`；只有 occ 认识 → `.occ/`。
 
-## 12. 文档多语言（i18n）
+## 13. 文档语言
 
-`docs.json` 的 `navigation.languages` 声明三棵导航树：
+`docs.json` 的 `navigation.languages` 现在**只声明一棵树**：
 
 | 语言 | 目录 | 状态 |
 | --- | --- | --- |
-| `en` | `docs/en/**` | 翻译中，**目标默认语言** |
-| `zh` | `docs/zh/**` | 完整（当前默认） |
-| `ja` | `docs/ja/**` | 翻译中 |
+| `zh` | `docs/zh/**` | 完整，且是默认 |
 
-**不要手改 `docs.json` 的 navigation，也不要手写切换器**——两者都由 `bun run sync:docs-i18n` 从磁盘状态生成：
+**英文与日文文档树已于 2026-08-26 移除**（`docs/en/**`、`docs/ja/**` 各 64 页，
+连同 `CHANGELOG.en.md`、`CHANGELOG.ja.md`）。理由：本项目不发布英日文档站，
+那 128 个文件是纯维护负担 —— 而**落后的译本比没有译本更糟**，它会让读者以为
+自己看到的是现状。
 
-- **导航按语言裁剪到实际存在的页面。** Mintlify 对「声明了但文件不存在」的导航项不会跳过，而是发布成一个 404。翻译是一页一页落地的，所以未翻译的页面必须从该语言的树里剪掉，空掉的分组一并去掉。
-- **切换器只链到该页面真实存在的语言。** 同理，链到不存在的翻译等于送用户去 404。只有中文版的页面，切换器就只有一个加粗的 `**中文**`。
-- **默认语言必须 100% 覆盖。** 默认树是所有读者的落地页，有洞就等于把人送进 404。脚本自动选择第一个完整的语言作为默认——英文补齐到 65/65 时会自动接管，无需改配置。
-- 页面集合与分组结构的真源是 `CANONICAL_LANG`（当前 `zh`），其余语言是它的子集。
-- `docs/images/`、`docs/logo/`、`docs/diagrams/`、`docs/favicon.svg` 是**共享资源**，不进语言目录。
-- 未进导航的内部设计文档 / 测试报告只保留中文，放 `docs/zh/` 下即可，不要加进 `docs.json`。
+**三份 README 全部保留**，它们不在这条规则内，原因有两层：`README.md` 是 GitHub
+首页；而 `README.zh.md` 与 `README.ja.md` 是**法律链举证件** ——
+`docs/dev/license-chain-m0.md` 把它们列为核对对象并记着「`README.ja.md`（第 168 行）
+的许可段已无用途限定，实读核对」，章程风险 **L-5「已解除」**的对策②也以它们为据。
+删掉等于把举证件抽走，而章程 §5 是强制条款。**精简时先查一遍 `docs/dev/` 有没有
+把某个文件当证据引用**，这一条比「它看起来没人引用」优先。
 
-新增或删除翻译页面后跑 `bun run sync:docs-i18n`；`bun run check:docs-i18n` 校验断链、缺切换器、默认语言完整性，并报告覆盖率（`--strict` 额外要求三种语言都补齐）。
+**不要手改 `docs.json` 的 navigation**，它由 `bun run sync:docs-i18n` 从磁盘状态生成：
+Mintlify 对「声明了但文件不存在」的导航项不会跳过，而是发布成一个 404。
+
+**要加回一种语言，改 `scripts/sync-docs-i18n.ts` 的 `LANGS`，那是唯一出处。**
+只改 `docs.json` 不改它，下一次 sync 会把你的改动覆盖掉；反过来，只从 `docs.json`
+删语言而不改 `LANGS`，sync 会把空的语言树原样写回去，站点上就是一个空页签
+（2026-08-26 实测踩过）。只剩一种语言时，页面顶部的切换行不再生成。

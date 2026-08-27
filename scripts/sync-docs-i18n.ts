@@ -30,11 +30,17 @@ const MARKER = '<!-- lang-switcher -->'
 /** The tree that is always complete; defines the page set and group order. */
 const CANONICAL_LANG = 'zh'
 
-const LANGS = [
-  { code: 'en', label: 'English' },
-  { code: 'zh', label: '中文' },
-  { code: 'ja', label: '日本語' },
-] as const
+/**
+ * 语言表。**2026-08-26 起只剩 `zh`** —— 英文与日文译本（各 64 页）连同
+ * `CHANGELOG.en/ja.md` 一并移除（三份 README 保留，见 CONTRIBUTING §13）：本项目不发布英日文档站，
+ * 那 128 个文件是纯维护负担，而落后的译本比没有译本更糟。
+ *
+ * **这张表是唯一出处。** 只改 `docs.json` 而不改这里，下一次
+ * `bun run sync:docs-i18n` 会把空的语言树原样写回去（实测：删掉 en/ja 之后
+ * 跑一次 sync，docs.json 里立刻多出两个 `groups: []` 的语言，
+ * 站点上就是两个空页签）。
+ */
+const LANGS = [{ code: 'zh', label: '中文' }] as const
 
 type Group = { group: string; pages?: unknown[]; groups?: unknown[] }
 
@@ -80,8 +86,15 @@ function pruneForLanguage(node: unknown, lang: string): unknown | null {
   return null
 }
 
-/** The switcher line for one page, linking only to languages that have it. */
+/**
+ * The switcher line for one page, linking only to languages that have it.
+ *
+ * 只剩一种语言时返回空串 —— 一行只写着「**中文**」的切换器是纯噪声，
+ * 而它下面本来该有的那些链接现在会指向已经不存在的页面。
+ * 返回空串会让 {@link applySwitcher} 把存量那一行整块剥掉。
+ */
 function switcherFor(lang: string, page: string): string {
+  if (LANGS.length < 2) return ''
   const parts = LANGS.filter(
     l => l.code === lang || resolvePage(l.code, page) !== null,
   ).map(l =>
@@ -101,11 +114,15 @@ function applySwitcher(file: string, lang: string, page: string): boolean {
   )
   const block = switcherFor(lang, page)
   const frontmatter = /^---\n[\s\S]*?\n---\n/.exec(stripped)
-  const next = frontmatter
-    ? `${stripped.slice(0, frontmatter[0].length)}\n${block}\n\n${stripped
-        .slice(frontmatter[0].length)
-        .replace(/^\n+/, '')}`
-    : `${block}\n\n${stripped.replace(/^\n+/, '')}`
+  // block 为空（只剩一种语言）时是**剥掉**，不是插入一段空的 —— 否则正文前面
+  // 会留下两个空行，而 markdown 里那等于凭空多一个段落间距。
+  const body = frontmatter
+    ? stripped.slice(frontmatter[0].length).replace(/^\n+/, '')
+    : stripped.replace(/^\n+/, '')
+  const head = frontmatter ? stripped.slice(0, frontmatter[0].length) : ''
+  const next = block
+    ? `${head}${frontmatter ? '\n' : ''}${block}\n\n${body}`
+    : `${head}${body}`
 
   if (next === original) return false
   writeFileSync(file, next, 'utf8')

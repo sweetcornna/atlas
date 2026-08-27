@@ -124,7 +124,7 @@ REPL で `/login` を実行し、**Anthropic Compatible** を選ぶと、Anthrop
 | **カスタムプロバイダー** | OpenAI / Anthropic / Gemini / Grok 互換 | [ドキュメント](./docs/zh/features/all-features-guide.md) |
 | ボイスモード | 音声入力（Doubao `/voice doubao` を含む） | [ドキュメント](./docs/zh/features/voice-mode.md) |
 | Computer Use | スクリーンショット、キーボードとマウスの操作 | [ドキュメント](./docs/zh/features/computer-use.md) |
-| ブラウザ MCP（ユーザー設定） | 通常の MCP 設定で任意のブラウザ MCP を追加できます。`chrome-devtools` や `mcp-chrome` などの名前も予約されていません | [ドキュメント](./docs/ja/extensibility/mcp-configuration.mdx) |
+| ブラウザ MCP（ユーザー設定） | 通常の MCP 設定で任意のブラウザ MCP を追加できます。`chrome-devtools` や `mcp-chrome` などの名前も予約されていません | [ドキュメント](./docs/zh/extensibility/mcp-configuration.mdx) |
 | `/dream` | メモリの自動統合 | [ドキュメント](./docs/zh/features/auto-dream.md) |
 
 ## フィーチャーフラグ

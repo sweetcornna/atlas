@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/web-browser-tool) · **中文** · [日本語](/docs/ja/features/web-browser-tool)
-
 # WEB_BROWSER_TOOL — 浏览器工具
 
 > Feature Flag: `FEATURE_WEB_BROWSER_TOOL=1`

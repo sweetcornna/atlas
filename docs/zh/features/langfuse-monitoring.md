@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/langfuse-monitoring) · **中文** · [日本語](/docs/ja/features/langfuse-monitoring)
-
 # Langfuse 监控集成
 
 > 实现状态：已完成，通过环境变量启用
