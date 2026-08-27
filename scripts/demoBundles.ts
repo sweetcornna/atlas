@@ -41,15 +41,51 @@ export const DEMO_ENTRYPOINTS = [
   'ac6b-restore',
   'chaos-inject',
   'p51-diagnosis',
-  'p61-scenario',
   'p61-seed',
-  'p61-worker',
-  'p73-throughput',
   'p81-probe',
   'p81-registry',
 ] as const
 
+/**
+ * **故意不打包的入口，以及为什么** —— 这份名单是结论，不是遗漏。
+ *
+ * `p61-scenario` 与 `p73-throughput`（连同只被前者 spawn 的 `p61-worker`）都
+ * `import '../../src/services/qianmo/auditTrail.js'`。那个模块是把每一种审计 sink 的
+ * 类型汇到一处的枢纽，其中 `@qianmo/resident` 一路通向整个 CLI —— 打出来的两个产物
+ * 各 **5.4 MB**（其余九个全在 261 KB 以下），并且里面含一句 `gaxios` 的
+ * `await import("node-fetch")`。
+ *
+ * 那不是一段够不着的死代码：原文是 `hasWindow ? window.fetch : await import("node-fetch")`，
+ * 而 Bun 上没有 `window`，所以真走到 `#getFetch()` 就会去 import 一个载荷里根本没有的
+ * 包。`check:bundle` 正是为这类东西设的，它拦下了这两个产物 —— 那次拦截是对的，不该
+ * 靠放宽门禁绕过去。
+ *
+ * 代价说清楚：`demo/p61-e2e.sh` 与 `demo/p73-baseline.sh` 在**投出去的树上**仍然跑不
+ * 起来（`demo_entry` 会回落到源文件，而那里解析不出 `@qianmo/*`）—— 这是本次改动**之前
+ * 就有的**状态，没有变好也没有变坏。要让它们也跑得起来，得先把 `auditTrail.ts` 的
+ * 依赖图从 host 侧摘开，那是另一件事。真把它们加回上面那张表时，`p61-scenario` 里
+ * `join(import.meta.dir, 'p61-worker.ts')` 那处也要一并改成「先产物后源文件」，否则
+ * 产物旁边只有 `.js`，worker 会找不到。
+ */
+const DEMO_ENTRYPOINTS_EXCLUDED = [
+  'p61-scenario',
+  'p61-worker',
+  'p73-throughput',
+] as const
+
 export async function writeDemoBundles(outdir: string): Promise<number> {
+  // 排除名单不是注释，是不变式。把某一条从下面那段说明里搬回打包表而没读那段说明，
+  // 症状会是「构建通过、产物 5.4 MB、check:bundle 在几步之后才红」——在这里当场说。
+  const readded = DEMO_ENTRYPOINTS.filter(name =>
+    (DEMO_ENTRYPOINTS_EXCLUDED as readonly string[]).includes(name),
+  )
+  if (readded.length > 0) {
+    throw new Error(
+      `${readded.join('、')} 同时在打包表与排除名单里。` +
+        '要把它加回来，先读 DEMO_ENTRYPOINTS_EXCLUDED 上面那段（auditTrail.ts 的依赖图、' +
+        'node-fetch、以及 p61-worker 的路径要一起改），再把它从排除名单里删掉。',
+    )
+  }
   const dest = join(outdir, 'demo')
   const result = await Bun.build({
     entrypoints: DEMO_ENTRYPOINTS.map(name => `demo/lib/${name}.ts`),
