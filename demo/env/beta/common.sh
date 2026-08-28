@@ -960,6 +960,60 @@ beta_export_peer_wake_psk() {
   export "$psk_env=$psk"
 }
 
+# ── 无人值守那一轮的预批准（settings.json） ─────────────────────────────────
+#
+# 常驻的每一轮跑在 `permissionMode: 'dontAsk'` 下，语义是**不提示、未预批准即拒绝**，
+# 而 `requestPermission` 在 `packages/resident/src/acp-client.ts` 里被硬钉成
+# `cancelled`。所以「没人批准」不是等待，是当场拒绝。
+#
+# 2026-08-28 在 p11 上撞到的形状：operator 让 agent 在自己的工作区里建一个文件，回话
+# 是「当前权限模式拒绝写入」——而工作区目录本身可写，节点的 .err 里一条文件系统错误
+# 都没有。**缺的不是权限位，是预批准。**只读工具（`ls` 那次的 Terminal）本来就跑得动，
+# 写文件则一律落在拒绝那一侧。
+#
+# 这里派生一份最小的授权清单。四件事跟着这个选择：
+#
+#  · **逐条绝对路径，不用 `**` 兜底。**这份文件是给人看的授权清单：一行一个工作区，
+#    读的人不必先知道 cwd 是什么才能判断它给出了什么。
+#  · **只放行 Write / Edit，不放行 Bash。**只读命令本来就能跑，而放行整个 Bash 是另一
+#    个量级的授权——要不要给，等有真实需要时单独决定，不在这里顺手带上。
+#  · **它不是天花板。**`packages/resident/src/guard.ts` 的硬名单排在所有 allow 规则**之
+#    前**，身份目录、审计链、admission ledger 无论这份文件写什么都进不去；那张表是包内
+#    的冻结字面量，没有任何配置读取路径能清空它。
+#  · **规则内容的 `//` 前缀是绝对路径的写法**（`Write(//root/…/**)`），不是笔误：规则内
+#    容那一段以 `/` 开头才被当成绝对路径，而工作区路径自己也以 `/` 开头。
+beta_node_settings_json() {
+  local ws_root="$1"
+  shift
+  local agent first=1
+  printf '{\n  "permissions": {\n    "allow": [\n'
+  for agent in "$@"; do
+    [ "$first" = 1 ] || printf ',\n'
+    first=0
+    printf '      "Write(/%s/%s/**)",\n      "Edit(/%s/%s/**)"' \
+      "$ws_root" "$agent" "$ws_root" "$agent"
+  done
+  printf '\n    ]\n  }\n}\n'
+}
+
+# 写入（或确认已一致）节点配置根里的 settings.json。
+#
+# 返回 0 = 这次写了，1 = 本来就一致。**内容不一致时按仓库这份重写**，与单元模板同一条
+# 纪律：这个文件是派生物，手改它的下一次部署会把它盖掉，所以要么改仓库、要么别改。
+beta_seed_node_settings() {
+  local config_dir="$1" ws_root="$2"
+  shift 2
+  local target="$config_dir/settings.json" desired
+  desired="$(beta_node_settings_json "$ws_root" "$@")"
+  mkdir -p "$config_dir"
+  if [ -f "$target" ] && [ "$(cat "$target")" = "$desired" ]; then
+    return 1
+  fi
+  printf '%s' "$desired" >"$target"
+  chmod 600 "$target"
+  return 0
+}
+
 # beta_random_hex <字节数> —— 生成一串随机 hex。
 #
 # 用 `od -N` 而不是 `tr -dc ... | head -c`：后者会让 head 先退出、tr 吃到 SIGPIPE，
