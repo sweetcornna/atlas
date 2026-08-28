@@ -47,8 +47,10 @@ import {
   createAuditPort,
   createCertificatePort,
   createRegistryPort,
+  createServerNotesPort,
   createWakePort,
 } from './consolePorts.js'
+import { ServerNotesStore } from './consoleServerNotes.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
@@ -369,6 +371,16 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     throw new Error('console requires at least one audit source')
   }
 
+  // 归属面是一件事，不是两件：没给 `--node-server` 就既没有名册上的归属，也没有
+  // 服务器区块可以写备注——所以备注端口跟着白名单一起接，而不是无条件接一个
+  // 永远没有合法目标的 store。它也因此不会在一个没配归属的部署上创建那个文件。
+  const serverNotes =
+    config.nodeServers.length === 0
+      ? undefined
+      : createServerNotesPort({
+          store: new ServerNotesStore(config.serverNotesPath),
+        })
+
   const deps: ConsoleDeps = {
     registry,
     // `audit` remains the legacy facade for direct package callers. The page
@@ -393,6 +405,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
     ...(certificates === undefined ? {} : { certificates }),
+    // 启动参数说了算的一张白名单：名册据它显示归属，备注只许写进它里面的服务器
+    // （`packages/console/src/http.ts` 的 handleServerNote）。
+    ...(config.nodeServers.length === 0
+      ? {}
+      : { nodeServers: config.nodeServers }),
+    ...(serverNotes === undefined ? {} : { serverNotes }),
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
@@ -447,6 +465,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   banner += field('chat', chat.status)
   if (chat.hub !== undefined) {
     banner += field('chat-store', config.chatStorePath)
+  }
+  banner += field(
+    'servers',
+    config.nodeServers.length === 0
+      ? 'disabled (no --node-server)'
+      : config.nodeServers
+          .map(entry => `${entry.node}=${entry.server}`)
+          .join(', '),
+  )
+  if (serverNotes !== undefined) {
+    banner += field('server-notes', config.serverNotesPath)
   }
   banner += field('label', config.label)
   // 这份产物是从哪个 commit 构建的（issue #70）。控制台和常驻节点一样是**部署到
