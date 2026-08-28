@@ -337,6 +337,47 @@ const NOTHING_OPEN =
   `<path d="M78 68h44a10 10 0 0 1 10 10v26a10 10 0 0 1-10 10H96l-18 14V78a10 10 0 0 1 10-10z"/>` +
   `</g></svg></div>`
 
+/**
+ * The tail that says a turn is still running.
+ *
+ * **What makes it honest is where it reads the answer from.** It does not ask
+ * a timer or a client-side flag; it reads the transcript. Operator turns stop
+ * at `read` and never reach `done` — the answer is a *new* turn, not a state on
+ * the old one — so "the last thing that is not a notice is the operator's, and
+ * it did not fail" is exactly "nothing has answered yet".
+ *
+ * Notices are skipped when looking for that last turn, and skipping them is the
+ * point: a turn that is producing steps is the most running a turn ever looks,
+ * and a tail that vanished the moment the first tool started would disappear
+ * precisely when the operator most wants it.
+ *
+ * The elapsed number is measured from the operator's turn against the render
+ * clock. It goes up on its own only because the fragment is re-rendered — this
+ * page has no ticking clock, and giving it one would mean a timer running for
+ * every open tab to animate a number nobody is waiting on to the second.
+ */
+function runningTail(turns: readonly ChatTurn[], now: number): string {
+  let last: ChatTurn | undefined
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    if (turn === undefined || turn.variant === 'notice') continue
+    last = turn
+    break
+  }
+  if (last === undefined) return ''
+  if (last.author !== 'operator' || last.state === 'failed') return ''
+  const elapsed = Math.max(0, now - last.at)
+  return (
+    `<div class="turn turn-tail">` +
+    `<span class="turn-av turn-av-notice" aria-hidden="true">` +
+    `<span class="tail-dot"></span></span>` +
+    `<div class="turn-body"><div class="notice-line">` +
+    `<span class="notice-text">还在跑</span>` +
+    `<span class="turn-when">${escapeHtml(formatLatency(elapsed))}</span>` +
+    `</div></div></div>`
+  )
+}
+
 export interface ChatThreadModel {
   readonly transcript: ChatTranscript | null
   readonly failure: ConsoleFailure | null
@@ -378,7 +419,8 @@ export function renderChatThread(model: ChatThreadModel): string {
   const body =
     turns.length === 0
       ? hint('这条会话还没有内容 · 在下面写第一句')
-      : turns.map(turn => renderTurn(turn, session.agent)).join('')
+      : turns.map(turn => renderTurn(turn, session.agent)).join('') +
+        runningTail(turns, model.now)
 
   return (
     `<div class="thread" id="${CHAT_THREAD_MOUNT}" ` +

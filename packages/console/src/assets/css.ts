@@ -868,6 +868,13 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
 .notice-detail > summary::-webkit-details-marker { display: none; }
 .notice-detail[open] > summary > svg { transform: rotate(90deg); }
+/* 还在跑：一个静止的陶土色点。**刻意不做脉动** —— 这份样式表的动效纪律是
+   「只有 ≤200ms 的 transition，一个关键帧动画都没有」（view.test.ts 钉着，
+   而它是按整份样式表做字面查找的——连这行注释也不能写出那个 at-rule 的名字），
+   而一个会呼吸的点是装饰，不是这条尾巴要说的那件事：说话的是「还在跑」四个字
+   和旁边那个一直在涨的秒数。 */
+.tail-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-500); }
+.turn-tail .notice-text { color: color-mix(in srgb, var(--color-text) 52%, transparent); }
 .notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
 
 /* The delivery chain: three facts and the links between them. */

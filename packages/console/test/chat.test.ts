@@ -282,6 +282,44 @@ describe('chat transcript view', () => {
     expect(notice).toContain('命中 3 处')
   })
 
+  test('the tail says a turn is still running, and reads that off the transcript', () => {
+    // 操作者那一轮停在 `read` 就不再前进——回答是**新的一轮**，不是旧那一轮的
+    // 一个状态。所以「最后一条非过程行是操作者的」正好就是「还没人答」。
+    const html = renderChatThread({
+      transcript: { session: SESSION, turns: [ASK, NOTICE] },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(html).toContain('turn-tail')
+    expect(html).toContain('还在跑')
+    // 过程行不算「答了」：一轮正在产出过程时，是它最像在跑的时候。
+    expect(html.indexOf('turn-tail')).toBeGreaterThan(
+      html.indexOf('turn-notice'),
+    )
+  })
+
+  test('the tail is gone once an answer or a failure lands', () => {
+    const answered = renderChatThread({
+      transcript: { session: SESSION, turns: [ASK, NOTICE, ANSWER] },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(answered).not.toContain('turn-tail')
+
+    const failed = renderChatThread({
+      transcript: {
+        session: SESSION,
+        turns: [{ ...ASK, state: 'failed' }],
+      },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(failed).not.toContain('turn-tail')
+  })
+
   test('severity picks a colour and nothing else — no notice is filtered out', () => {
     const turns: readonly ChatTurn[] = [
       { ...NOTICE, id: 'n-info', severity: 'info' },
