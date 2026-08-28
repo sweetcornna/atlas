@@ -387,7 +387,7 @@ beta_write_peers_template() {
     printf '# 阡陌内测地址表 —— 注册中心的 --register、冒烟的 --expect、以及隧道与\n'
     printf '# 审计镜像的连通定义，全部读它。\n'
     printf '#\n'
-    printf '# 两种行，都用空白分隔字段；# 开头是整行注释。\n'
+    printf '# 三种行，都用空白分隔字段；# 开头是整行注释。\n'
     printf '#\n'
     printf '# ① 地址行（老格式，一直没变）：<地址> <入站端点>\n'
     printf '#      地址形如 qianmo://<node>/<agent>，端点形如 ws://<节点机地址>:%s。\n' "$BETA_NODE_PORT"
@@ -408,11 +408,16 @@ beta_write_peers_template() {
     printf '#          key=       这条链路用的私钥（默认 QIANMO_BETA_SSH_KEY）\n'
     printf '#      值里不能有空白（本行按空白分词）。\n'
     printf '#\n'
+    printf '# ③ local-server 行（**可选**，全表只许一条）：local-server <机器名>\n'
+    printf '#      本机在控制台上显示成什么。跑在 H 自己身上的节点没有坐标行，归属只能\n'
+    printf '#      从回环端点推出一个 hostname——写了它，本机就和远端三台用同一套短名。\n'
+    printf '#\n'
     printf '#\n'
     printf '# 服务器归属（控制台名册上「这个节点在哪台机器上」那一栏）：\n'
     printf '#   · 有坐标行 → server=，没给就是 host=。\n'
-    printf '#   · 没有坐标行 → 取地址行端点里的主机名；端点是回环时取本机 hostname\n'
-    printf '#     （在宿主机上从 127.0.0.1 就拨得通又没有隧道的节点，就跑在宿主机自己身上）。\n'
+    printf '#   · 没有坐标行 → 取地址行端点里的主机名；端点是回环时取 local-server，\n'
+    printf '#     没写就取本机 hostname（在宿主机上从 127.0.0.1 就拨得通又没有隧道的\n'
+    printf '#     节点，就跑在宿主机自己身上）。\n'
     printf '#   判定不出来就不显示归属，不会瞎猜一个机器名。\n'
     printf '#\n'
     printf '#      有坐标行的节点，它的每一条地址行端点**必须**正好是\n'
@@ -460,6 +465,12 @@ BETA_SSH_REMOTE=()
 BETA_SSH_TRAIL=()
 BETA_SSH_KEYFILE=()
 BETA_SSH_SERVER=()
+# 本机的机器名，peers.conf 的 `local-server <name>` 行给的。
+#
+# 为什么需要它：跑在 H 自己身上的节点没有坐标行（没有隧道要搭），归属只能从端点推，
+# 而它的端点是回环——推出来的只有 `hostname`。于是同一个控制台上，三台远端机器叫
+# 运维给的短名、本机叫一串云厂商生成的实例名，命名轴断成两截。空着仍旧退回 hostname。
+BETA_LOCAL_SERVER=''
 # 所有隧道在 H 侧的回环口，前后各一个空格，用字符串包含判断（bash 3.2 没有关联数组）。
 # beta_tcp_open 拿它当黑名单——见那个函数的头注。
 BETA_TUNNEL_PORTS=' '
@@ -539,9 +550,10 @@ beta_assert_server_id() {
 #
 # 两条规则，都只读 peers.conf：
 #   ① 有坐标行 → server=（没给就是 host=，见 beta_parse_node_line 里那段）。
-#   ② 没有坐标行 → 地址行端点里的主机名。端点是回环时**取本机 hostname**：一个在宿主
+#   ② 没有坐标行 → 地址行端点里的主机名。端点是回环时**取本机的名字**：一个在宿主
 #      机上从 127.0.0.1 就拨得通、又没有隧道的节点，就是跑在宿主机自己身上——报
-#      「127.0.0.1」等于什么都没说，而这正是控制台所在的那台机器。
+#      「127.0.0.1」等于什么都没说，而这正是控制台所在的那台机器。本机的名字优先取
+#      `local-server` 行，没写才退回 hostname。
 beta_peer_server() {
   local want="$1" index ep host
   if index="$(beta_ssh_index "$want")"; then
@@ -557,7 +569,10 @@ beta_peer_server() {
     *) host="${host%%:*}" ;;
   esac
   case "$host" in
-    127.*|localhost|::1|'') host="$(hostname 2>/dev/null || true)" ;;
+    127.*|localhost|::1|'')
+      # 端点是回环 ⇒ 这个节点就跑在 H 自己身上 ⇒ 它的机器名就是本机的名字。
+      host="${BETA_LOCAL_SERVER:-$(hostname 2>/dev/null || true)}"
+      ;;
   esac
   [ -n "$host" ] || return 1
   # 这一条是派生出来的、不是人写的，所以拿不准就降级而不是让控制台起不来：
@@ -662,6 +677,7 @@ beta_load_peers() {
   BETA_SSH_TRAIL=()
   BETA_SSH_KEYFILE=()
   BETA_SSH_SERVER=()
+  BETA_LOCAL_SERVER=''
   BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
   # 变量名避开 `tail`：bash 的 local 是动态作用域，一个叫 tail 的变量读起来像是在
@@ -675,6 +691,15 @@ beta_load_peers() {
     # 所以 `node` 这个关键字不会和任何一条合法的老行撞上——向后兼容就落在这一点上。
     if [ "$addr" = 'node' ]; then
       beta_parse_node_line "$lineno" "$ep" "$rest"
+      continue
+    fi
+    # 第三种行，理由同上：`local-server` 不会和 qianmo:// 开头的地址行撞上。
+    if [ "$addr" = 'local-server' ]; then
+      [ -z "$BETA_LOCAL_SERVER" ] || beta_die "$BETA_PEERS_FILE 第 $lineno 行：local-server 给了两次"
+      beta_assert_server_id "$ep" "$BETA_PEERS_FILE 第 $lineno 行"
+      # 多出来的字段一律是笔误。静默吃掉它，下一个人会以为自己写的那半边生效了。
+      [ -z "$rest" ] || beta_die "$BETA_PEERS_FILE 第 $lineno 行：local-server 只收一个名字，多了：$rest"
+      BETA_LOCAL_SERVER="$ep"
       continue
     fi
     case "$addr" in

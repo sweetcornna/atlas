@@ -151,3 +151,69 @@ describe('server= 的校验（坏值必须当场拦下，不能进控制台命�
     }
   })
 })
+
+describe('local-server —— 本机也要有个名字', () => {
+  test('回环端点用 local-server 给的名字，而不是 hostname', () => {
+    const place = root([
+      'local-server p11',
+      'qianmo://beta-4/planner ws://127.0.0.1:38625',
+    ])
+    const got = server(place, 'beta-4')
+    expect(got.exitCode).toBe(0)
+    expect(got.stdout).toBe('p11')
+  })
+
+  test('只作用于回环 —— 远端节点仍走 host=', () => {
+    const place = root([
+      'local-server p11',
+      'node beta-1 user=ops host=203.0.113.7 local-port=38631',
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+      'qianmo://beta-4/planner ws://127.0.0.1:38625',
+    ])
+    expect(server(place, 'beta-1').stdout).toBe('203.0.113.7')
+    expect(server(place, 'beta-4').stdout).toBe('p11')
+  })
+
+  test('给两次是笔误，当场拦下 —— 两个名字里生效哪个说不清', () => {
+    const place = root([
+      'local-server p11',
+      'local-server p12',
+      'qianmo://beta-4/planner ws://127.0.0.1:38625',
+    ])
+    const got = run(place, ['beta_load_peers', 'echo UNREACHED'])
+    expect(got.exitCode).not.toBe(0)
+    expect(got.stdout).not.toContain('UNREACHED')
+  })
+
+  test('多余字段是笔误，不静默吃掉', () => {
+    const place = root([
+      'local-server p11 还有别的',
+      'qianmo://beta-4/planner ws://127.0.0.1:38625',
+    ])
+    const got = run(place, ['beta_load_peers', 'echo UNREACHED'])
+    expect(got.exitCode).not.toBe(0)
+    expect(got.stdout).not.toContain('UNREACHED')
+  })
+
+  test('坏名字走同一个校验器', () => {
+    for (const bad of ['a/b', 'a;b', 'x'.repeat(65)]) {
+      const place = root([
+        `local-server ${bad}`,
+        'qianmo://beta-4/planner ws://127.0.0.1:38625',
+      ])
+      const got = run(place, ['beta_load_peers', 'echo UNREACHED'])
+      expect(got.exitCode).not.toBe(0)
+      expect(got.stdout).not.toContain('UNREACHED')
+    }
+  })
+
+  test('空值也是笔误 —— 不能退回 hostname 装作没写过', () => {
+    const place = root([
+      'local-server',
+      'qianmo://beta-4/planner ws://127.0.0.1:38625',
+    ])
+    const got = run(place, ['beta_load_peers', 'echo UNREACHED'])
+    expect(got.exitCode).not.toBe(0)
+    expect(got.stdout).not.toContain('UNREACHED')
+  })
+})
