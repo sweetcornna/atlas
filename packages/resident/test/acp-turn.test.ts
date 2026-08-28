@@ -435,6 +435,41 @@ describe('turn progress', () => {
     await finish()
   })
 
+  test('a tool kind inherited from Object.prototype is not a verb', async () => {
+    // 对象字面量查表会走到原型上：`kind: "constructor"` 会取回一个函数，然后被
+    // 字符串化进 notify 的 summary、渲染进操作者的转录。
+    const steps: Array<{ summary: string }> = []
+    const { port, finish } = await runningPort(steps)
+    for (const kind of [
+      'constructor',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+    ]) {
+      port.handleSessionUpdate(toolCall(`t-${kind}`, { kind }))
+    }
+    for (const step of steps) {
+      expect(step.summary).toBe('packages/router/src/rate.ts')
+    }
+    await finish()
+  })
+
+  test('a chatty turn cannot starve the failures', async () => {
+    // 一个计数器的算术是反的：24 条 start 花光预算之后，第 27 个工具的失败——
+    // 整轮里唯一需要人动手的那一条——恰好是被丢掉的那条。
+    const steps: Array<{ severity: string }> = []
+    const { port, finish } = await runningPort(steps)
+
+    for (let index = 0; index < 30; index += 1) {
+      port.handleSessionUpdate(toolCall(`t${index}`))
+    }
+    port.handleSessionUpdate(toolUpdate('t27', { status: 'failed' }))
+
+    expect(steps.filter(step => step.severity === 'info')).toHaveLength(24)
+    expect(steps.filter(step => step.severity === 'warn')).toHaveLength(1)
+    await finish()
+  })
+
   test('a turn nobody asked for over the network raises no steps', async () => {
     const steps: unknown[] = []
     let releasePrompt!: () => void

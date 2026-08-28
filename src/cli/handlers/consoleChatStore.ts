@@ -23,6 +23,14 @@
  * Volume makes this affordable and is worth stating so the next reader does not
  * generalise it: the writer here is a person typing. Compaction is a non-goal.
  *
+ * **That sentence stopped being the whole truth when progress rows arrived**
+ * (`variant: 'notice'`): those are written by the node, not by a person, up to
+ * a couple of dozen per turn. What keeps the assumption standing is a ceiling
+ * on the other side rather than compaction on this one — `MAX_NOTICES_PER_SESSION`
+ * in `consoleChat.ts`, whose note carries the arithmetic. Raising that number
+ * without revisiting this paragraph is how a log with no compaction becomes a
+ * log with no bound.
+ *
  * ## What is *not* here
  *
  * The path. It arrives from `consoleArgs.ts`, derived from `occConfigPath()`
@@ -142,6 +150,7 @@ function toTurn(value: unknown): ChatTurn | null {
     ...(str(value['detail']) === undefined
       ? {}
       : { detail: str(value['detail']) as string }),
+    ...(value['redelivered'] === true ? { redelivered: true as const } : {}),
   }
 }
 

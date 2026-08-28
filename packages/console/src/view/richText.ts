@@ -49,6 +49,11 @@
  *   stays that way.
  * - **Tables.** Not a safety matter, a scope one: they need column layout in a
  *   pane that is already narrow, and no answer has needed one yet.
+ * - **Nested lists.** Also scope, and stated because the flattening is
+ *   otherwise indistinguishable from a bug: an indented sub-item renders as a
+ *   sibling of its parent rather than beneath it. One level is what a step list
+ *   in an answer needs, and depth would bring its own indent arithmetic into a
+ *   pane whose whole width is already spoken for.
  * - **The fence's info string** (` ```ts `). Not rendered, not put in a class —
  *   there is no highlighting here for it to feed, and a class built from remote
  *   text is an attribute value nobody asked for.
@@ -88,9 +93,16 @@ function splitCodeSpans(escaped: string): readonly Span[] {
       break
     }
     const close = rest.indexOf('`', open + 1)
-    if (close === -1) {
-      spans.push({ code: false, text: rest })
-      break
+    // A span stops at the end of its line, the same bound `bold()` keeps with
+    // `[^*\n]`. A paragraph is `join('\n')`, so without this a lone backtick
+    // in one line can pair with one three lines down and restyle the prose
+    // between them — the very failure the unpaired-backtick note above calls
+    // out, arriving through the paired branch instead.
+    const newline = rest.indexOf('\n', open + 1)
+    if (close === -1 || (newline !== -1 && newline < close)) {
+      spans.push({ code: false, text: rest.slice(0, open + 1) })
+      rest = rest.slice(open + 1)
+      continue
     }
     if (open > 0) spans.push({ code: false, text: rest.slice(0, open) })
     spans.push({ code: true, text: rest.slice(open + 1, close) })

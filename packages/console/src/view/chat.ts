@@ -70,6 +70,18 @@ import { formatClock, formatRelative, formatShortDuration } from './format.js'
 /** How much of the last turn the session rail shows. */
 const PREVIEW_LENGTH = 46
 
+/**
+ * How much of a notice's summary the line shows.
+ *
+ * `NotifyPayload.summary` is documented as one line for a human, but the
+ * protocol gives it **no ceiling of its own** — the only bound is
+ * `LIMITS.maxMessageBytes`, 256 KiB. `.notice-line` is a flex row, so a peer
+ * that puts 100 KB on one line would push the timestamp off screen and take
+ * the transcript column's width with it. A peer that ignores "one line" gets
+ * clipped; the answer beside it is what the pane is for.
+ */
+const NOTICE_LENGTH = 160
+
 /** Longest message the composer accepts, in characters. */
 export const MAX_CHAT_TEXT_LENGTH = 8_000
 
@@ -263,7 +275,9 @@ function renderNotice(turn: ChatTurn): string {
     `<span class="dot dot-${tone}"></span></span>` +
     `<div class="turn-body">` +
     `<div class="notice-line">` +
-    `<span class="notice-text">${escapeHtml(turn.text)}</span>` +
+    `<span class="notice-text">${escapeHtml(
+      truncate(turn.text, NOTICE_LENGTH),
+    )}</span>` +
     `<time class="turn-when">${escapeHtml(formatClock(turn.at))}</time>` +
     `</div>` +
     detail +

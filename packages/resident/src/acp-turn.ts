@@ -136,6 +136,17 @@ export interface ResidentTurnProgress {
 const MAX_PROGRESS_PER_TURN = 24
 
 /**
+ * Failures get their own budget, and it is not the one above.
+ *
+ * With a single counter the arithmetic runs the wrong way: a turn that starts
+ * 24 tools spends the whole budget on `开始跑…` lines, and the failure of tool
+ * 27 — the one line in the whole turn that the operator actually has to act on
+ * — is the one that gets dropped. A separate, smaller reserve means the
+ * informative half survives a chatty turn.
+ */
+const MAX_FAILURES_PER_TURN = 8
+
+/**
  * File paths carried with one step.
  *
  * Bounded because a single edit tool can name a hundred files and the summary
@@ -144,16 +155,26 @@ const MAX_PROGRESS_PER_TURN = 24
  */
 const MAX_LOCATIONS_PER_STEP = 8
 
-/** ACP tool kinds rendered as a verb. Anything unlisted keeps the bare title. */
-const TOOL_KIND_VERBS: Readonly<Record<string, string>> = {
-  read: '读',
-  edit: '改',
-  delete: '删',
-  move: '移动',
-  search: '搜',
-  execute: '执行',
-  fetch: '取',
-}
+/**
+ * ACP tool kinds rendered as a verb. Anything unlisted keeps the bare title.
+ *
+ * A `Map`, not an object literal, because the key comes off the wire: an
+ * object-literal lookup reaches `Object.prototype`, so a tool declaring
+ * `kind: "constructor"` (or `toString`, `valueOf`) would hand back a function
+ * instead of `undefined` — and that function would be stringified into a
+ * `notify` summary and rendered in the operator's transcript.
+ * `Readonly<Record<string, string>>` is a compile-time claim; it does nothing
+ * to the runtime lookup.
+ */
+const TOOL_KIND_VERBS = new Map<string, string>([
+  ['read', '读'],
+  ['edit', '改'],
+  ['delete', '删'],
+  ['move', '移动'],
+  ['search', '搜'],
+  ['execute', '执行'],
+  ['fetch', '取'],
+])
 
 function progressText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
@@ -170,8 +191,10 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       readonly input: ResidentTurnInput
       readonly content: string[]
       firstContent: boolean
-      /** Steps already reported for this turn; stops at {@link MAX_PROGRESS_PER_TURN}. */
+      /** Tool starts reported; stops at {@link MAX_PROGRESS_PER_TURN}. */
       progressCount: number
+      /** Tool failures reported; stops at {@link MAX_FAILURES_PER_TURN}. */
+      failureCount: number
       /** Tool calls already announced, so an update never repeats a start. */
       readonly announcedTools: Set<string>
     }
@@ -304,6 +327,7 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       content: [],
       firstContent: false,
       progressCount: 0,
+      failureCount: 0,
       announcedTools: new Set<string>(),
     }
     this.#active.set(input.sessionId, active)
@@ -430,6 +454,7 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
     active: {
       readonly input: ResidentTurnInput
       progressCount: number
+      failureCount: number
       readonly announcedTools: Set<string>
     },
     update: Record<string, unknown>,
@@ -452,13 +477,16 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
     const dedupKey = `${networkMsgId}:${toolCallId}:${phase}`
     if (failed && active.announcedTools.has(`${toolCallId}#failed`)) return
 
-    if (active.progressCount >= MAX_PROGRESS_PER_TURN) {
-      // Silently stop rather than queue: see MAX_PROGRESS_PER_TURN on why a
-      // step delivered after the answer is worse than one never sent.
+    // Silently stop rather than queue: see MAX_PROGRESS_PER_TURN on why a step
+    // delivered after the answer is worse than one never sent. The two budgets
+    // are separate so a chatty turn cannot starve the failures.
+    if (failed) {
+      if (active.failureCount >= MAX_FAILURES_PER_TURN) return
+    } else if (active.progressCount >= MAX_PROGRESS_PER_TURN) {
       return
     }
     const title = progressText(update['title'])
-    const verb = TOOL_KIND_VERBS[String(update['kind'])]
+    const verb = TOOL_KIND_VERBS.get(String(update['kind']))
     const summary =
       title === undefined
         ? failed
@@ -483,7 +511,8 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
           .slice(0, MAX_LOCATIONS_PER_STEP)
       : []
 
-    active.progressCount += 1
+    if (failed) active.failureCount += 1
+    else active.progressCount += 1
     active.announcedTools.add(toolCallId)
     if (failed) active.announcedTools.add(`${toolCallId}#failed`)
     onProgress({

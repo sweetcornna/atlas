@@ -260,6 +260,19 @@ export function normalizeChatEndpoint(raw: string): string | null {
  * `task.result` 完全可能先于 `sendAndWait` 的回执落地。用一个秩把它们排好，比在
  * 每个回调里各写一遍「除非已经是……」要短得多，也少一处会漂移的判断。
  */
+/**
+ * 一条会话最多收下多少条过程行。
+ *
+ * 这个上限的对手不是流量，是**落盘那一头的假设**：`consoleChatStore.ts` 明说
+ * 不做压缩，理由是「写它的是一个正在打字的人」。过程行不是人打的，所以那句话
+ * 得有个东西替它继续成立——就是这个数。
+ *
+ * **不按 `dedupKey` 去重**：协议 §14.4 明确说那把钥匙由发送方的账本消费，接收
+ * 方不消费它，因为接收方要做同样的事就得为每个上下文攒一份无界的新状态。一个
+ * 计数器是有界的，一张去重表不是。
+ */
+const MAX_NOTICES_PER_SESSION = 200
+
 const STATE_RANK: Readonly<Record<ChatTurn['state'], number>> = {
   pending: 0,
   delivered: 1,
@@ -297,6 +310,17 @@ export function createConsoleChatPort(
     if (normalized === null) {
       throw new Error(`chat endpoint must be ws or wss: ${endpoint.url}`)
     }
+    const clash = allowed.get(normalized)
+    if (clash !== undefined && clash.node !== endpoint.node) {
+      // `parseConsoleArgs` 对同一条输入就是当场报错的，理由一样：PSK 按节点取，
+      // 一个端点挂两个名字就没有唯一的钥匙。**参数解析拦得住不等于这里可以不拦**
+      // ——端口才是导出的那一面，也是真正拿着钥匙的那一层，而 `Map.set` 覆盖是
+      // 静默的：先来的那个节点会悄悄失去授权，然后用后来者的钥匙被拨出去。
+      throw new Error(
+        `chat endpoint ${normalized} is claimed by both ` +
+          `${clash.node ?? '(unbound)'} and ${endpoint.node ?? '(unbound)'}`,
+      )
+    }
     allowed.set(normalized, { ...endpoint, url: normalized })
   }
 
@@ -323,6 +347,8 @@ export function createConsoleChatPort(
   const turns = new Map<string, ChatTurn>()
   const order = new Map<string, string[]>()
   const pending = new Map<string, PendingTask>()
+  /** 每条会话已经收下的过程行数，见 {@link MAX_NOTICES_PER_SESSION}。 */
+  const noticeCount = new Map<string, number>()
   const links = new Map<string, ChatLink>()
   const listeners = new Set<(update: ChatUpdate) => void>()
   let revision = 0
@@ -342,7 +368,16 @@ export function createConsoleChatPort(
     if (ids === undefined) continue
     turns.set(turn.id, turn)
     ids.push(turn.id)
+    // 重放要把上限一起带回来，否则重启就是一次免费的额度重置——而这个上限防的
+    // 正是「一台被授权的机器一直往里写」，那种情形跨得过重启。
+    if (turn.variant === 'notice') {
+      noticeCount.set(
+        turn.sessionId,
+        (noticeCount.get(turn.sessionId) ?? 0) + 1,
+      )
+    }
   }
+  settleRestartOrphans()
 
   // --- notification ------------------------------------------------------
 
@@ -381,6 +416,60 @@ export function createConsoleChatPort(
     if (ids === undefined) return turn
     ids.push(turn.id)
     return persist(turn)
+  }
+
+  /**
+   * 一条会话里最后一条**不是过程行**的轮次。
+   *
+   * 「有没有人答」这个问题只能由消息行回答：过程行是对面推过来的既成事实，一轮
+   * 正在产出过程时恰恰是它最像在跑的时候。视图里的 `runningTail` 用的是同一条
+   * 判据——两处要是分开写，页面就会说「还在跑」而端口认为它已经完事。
+   */
+  function lastMessageTurn(sessionId: string): ChatTurn | undefined {
+    const ids = order.get(sessionId) ?? []
+    for (let index = ids.length - 1; index >= 0; index -= 1) {
+      const turn = turns.get(ids[index] ?? '')
+      if (turn === undefined || turn.variant === 'notice') continue
+      return turn
+    }
+    return undefined
+  }
+
+  /**
+   * 重启把「还在等回复」的那些轮次变成了**永远等不到**，重放时如实落定。
+   *
+   * 在途任务的全部记账都是进程内的：`pending` 表、`armTimeout` 的计时器。重启
+   * 之后两样都没了，而 `onReply` 对认不出 `taskId` 的回复是**静默丢弃**的——所以
+   * 那条回复即使还在路上，也没有任何东西能把它接回这一轮。
+   *
+   * 不落定的话，页面会拿这条轮次一直说「还在跑」，秒数无上限地涨下去：一天之后
+   * 它写着「还在跑 · 1d」。**那不是模糊，那是一句确凿的假话**——之前没有这条尾巴
+   * 时它只是含糊，加了尾巴反而把含糊升级成了断言。
+   *
+   * 只看每条会话的最后一条消息行：它之后要是已经有了 agent 那一轮，这一轮就早已
+   * 有了归宿，不该被改。
+   */
+  function settleRestartOrphans(): void {
+    for (const sessionId of sessions.keys()) {
+      const last = lastMessageTurn(sessionId)
+      if (last === undefined) continue
+      if (last.author !== 'operator') continue
+      if (last.state === 'failed') continue
+      persist({
+        ...last,
+        state: 'failed',
+        code: last.code ?? 'E_TASK_TIMEOUT',
+      })
+      addTurn({
+        id: newId(),
+        sessionId,
+        author: 'agent',
+        at: now(),
+        text: '控制台在这一轮拿到回复之前重启过，这条回复已经接不回来了。',
+        state: 'failed',
+        code: 'E_TASK_TIMEOUT',
+      })
+    }
   }
 
   function patchTurn(id: string, patch: Partial<ChatTurn>): ChatTurn | null {
@@ -457,17 +546,33 @@ export function createConsoleChatPort(
     if (typeof sessionId !== 'string' || !sessions.has(sessionId)) return
     const payload = message.payload
     if (!isNotifyPayload(payload)) return
+
+    // 上限存在，是因为落盘那一头的假设变了。`consoleChatStore.ts` 原本写着
+    // 「写它的是一个正在打字的人」，并据此明说不做压缩；过程行不是人打的。
+    // 对面每分钟能发 60 条（`LIMITS.notifyRatePerMinute`），一个任务期限 5 分钟，
+    // 于是**一个行为异常的节点**——一次构建出错就够——能往一条会话里塞三百条。
+    // 拨号名单挡得住陌生人，挡不住一台被授权过的机器发疯。
+    const counted = noticeCount.get(sessionId) ?? 0
+    if (counted >= MAX_NOTICES_PER_SESSION) return
+    noticeCount.set(sessionId, counted + 1)
+
     addTurn({
       id: newId(),
       sessionId,
       author: 'agent',
-      at: now(),
+      // **观察到的时刻，不是收到的时刻。**协议给 `observedAt` 的定义就是这个，
+      // 而它在这条路上不是学术问题：预算超了的通知是**排队**的，且只在对端下次
+      // 联系时才 drain——也就是操作者发下一句话的时候。用收件钟写，一条描述上
+      // 一轮的过程就会挂着「刚刚」的时间戳、排在它所描述的那个回答的下面。
+      at: payload.observedAt,
       text: payload.summary,
       // 过程行没有投递状态链要走：它不是这台控制台发出去的一轮，是对面推过来
       // 的一条既成事实。`done` 是这条链上唯一诚实的落点。
       state: 'done',
       variant: 'notice',
       severity: payload.severity,
+      // 重发要看得见，不能悄悄变成第二条不同的过程（协议 §14.4）。
+      ...(payload.redelivered === true ? { redelivered: true as const } : {}),
       ...(payload.detail === undefined ? {} : { detail: payload.detail }),
       traceId: message.traceId,
     })
@@ -606,7 +711,17 @@ export function createConsoleChatPort(
 
   function sessionView(stored: StoredChatSession): ChatSession {
     const ids = order.get(stored.id) ?? []
-    const last =
+    // 过程行既不算「一轮」，也不该当预览。一次问答里夹 11 个工具调用，抬头写
+    // 「13 轮」、侧栏预览写「读：packages/router/src/rate.ts」——两处都在说页面
+    // 自己都不认的话。数与取都走同一条判据（`lastMessageTurn`）。
+    const messageCount = ids.reduce(
+      (count, id) => (turns.get(id)?.variant === 'notice' ? count : count + 1),
+      0,
+    )
+    const last = lastMessageTurn(stored.id)
+    // `updatedAt` 反过来看**任意**一种行：侧栏按它排序，而一条正在冒过程的会话
+    // 就是活跃的那一条。「说了什么」与「有没有动静」是两个问题。
+    const latest =
       ids.length === 0 ? undefined : turns.get(ids[ids.length - 1] ?? '')
     return {
       id: stored.id,
@@ -614,8 +729,8 @@ export function createConsoleChatPort(
       node: stored.node,
       agent: stored.agent,
       createdAt: stored.createdAt,
-      updatedAt: last?.at ?? stored.createdAt,
-      turnCount: ids.length,
+      updatedAt: latest?.at ?? stored.createdAt,
+      turnCount: messageCount,
       preview: last?.text ?? '',
     }
   }

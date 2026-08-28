@@ -318,6 +318,13 @@ export interface ChatTurn {
   readonly severity?: ChatNoticeSeverity
   /** 只有 `notice` 有：`notify` 的 `detail`，页面折起来给愿意看的人。 */
   readonly detail?: string
+  /**
+   * 只有 `notice` 有：这条是对面重发的。
+   *
+   * 协议 §14.4 要求重发**看得见**，不能悄悄变成第二条不同的过程。刻意不塞进
+   * `code`——那一格是失败时的协议错误码，而重发既不是失败也不是错误码。
+   */
+  readonly redelivered?: true
 }
 
 /** 一条会话的抬头。列表只需要这些，不需要把转录整篇读出来。 */

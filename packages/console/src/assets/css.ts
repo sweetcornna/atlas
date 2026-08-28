@@ -867,7 +867,6 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .notice-detail { margin-top: 2px; }
 .notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
 .notice-detail > summary::-webkit-details-marker { display: none; }
-.notice-detail[open] > summary > svg { transform: rotate(90deg); }
 /* 还在跑：一个静止的陶土色点。**刻意不做脉动** —— 这份样式表的动效纪律是
    「只有 ≤200ms 的 transition，一个关键帧动画都没有」（view.test.ts 钉着，
    而它是按整份样式表做字面查找的——连这行注释也不能写出那个 at-rule 的名字），

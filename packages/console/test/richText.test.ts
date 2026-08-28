@@ -63,6 +63,15 @@ describe('the transcript markdown subset', () => {
     expect(html).toContain('`')
   })
 
+  test('a code span stops at the end of its line', () => {
+    // 段落是 join('\n') 来的，所以一个落单的反引号能和三行之后的那个配上对，
+    // 把中间的散文整段变成代码——那正是「未配对反引号保持字面」要防的那件事，
+    // 只是从配对成功的那条分支进来的。
+    const html = renderRichText('看 `a\n然后是 `b`')
+    expect(html).not.toContain('<code class="mono">a\n然后是 </code>')
+    expect(html).toContain('<code class="mono">b</code>')
+  })
+
   test('a dash list becomes a list', () => {
     const html = renderRichText('结论：\n- 一\n- 二')
     expect(html).toContain('<ul class="turn-list"><li>一</li><li>二</li></ul>')

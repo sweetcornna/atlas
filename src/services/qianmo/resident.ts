@@ -521,8 +521,15 @@ export class QianmoResident {
           : { upstreamHealth: options.upstreamHealth }),
         // 一轮跑到哪了，回给**问这一轮的那个人**。端口自己不知道对端是谁，
         // 这一格就是它和网络之间那条线。
+        // **排到下一个 tick 再发**，不在 `session/update` 的处理栈上做这件事。
+        // `#pushProgress` 一路下去是 `FileDeliveryLedger` 的三次同步 append 加
+        // 一次全量积压排序，而调它的那条路以前只做一件事：戳一下存活看门狗。
+        // 那条路同时喂着看门狗与首字时延，把每个工具调用都变成几次阻塞写盘，
+        // 就是拿 ACP 流的实时性换一条装饰行。顺序不受影响：setImmediate 是 FIFO。
         onProgress: progress => {
-          void this.#pushProgress(progress)
+          setImmediate(() => {
+            void this.#pushProgress(progress)
+          })
         },
       },
     )

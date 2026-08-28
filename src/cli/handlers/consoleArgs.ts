@@ -495,6 +495,11 @@ export function parseConsoleArgs(
         legacyUrl === undefined
           ? parseNamedValue(parsed.value, '--chat-url')
           : undefined
+      // 这个守卫与 `--wake-url` 那个**形状不同，是有意的**：唤醒面的旧式形态只
+      // 允许单独一个 URL，所以它判的是 `legacyWake || wakeTargets.length > 0`；
+      // 对话面的旧式形态本来就可以给多个端点（它们共用同一把 PSK），所以这里
+      // 判的是「已经有条目了，而且它们不是旧式的」。两者都在挡同一件事——一半绑
+      // 节点一半不绑的控制台——只是各自的旧形态不一样。
       if (
         (legacyUrl !== undefined && chatTargets.length > 0 && !legacyChat) ||
         (named !== undefined && legacyChat)
@@ -523,11 +528,13 @@ export function parseConsoleArgs(
         )
       }
       // 命名条目一个节点只能有一个端点；旧式条目没有名字，可以给多个。
+      // `!repeat` 已经蕴含「不是同一条」，所以这里是一个条件而不是两层判断。
       if (
         named !== undefined &&
-        chatTargets.some(target => target.node === node)
+        !repeat &&
+        chatTargets.some(t => t.node === node)
       ) {
-        if (!repeat) throw new Error(`--chat-url repeats node ${node}`)
+        throw new Error(`--chat-url repeats node ${node}`)
       }
       if (!repeat) {
         legacyChat ||= legacyUrl !== undefined

@@ -170,6 +170,12 @@ function harness(
     readonly endpoints?: readonly (string | ConsoleChatEndpoint)[]
     readonly taskTtlMs?: number
     readonly registry?: FakeRegistry
+    /**
+     * id 前缀。第二个 harness 读同一个 store 时必须给一个不同的——本文件的
+     * `newId` 是个从 1 开始的计数器，两个 harness 各数各的就会造出同一个 id，
+     * 于是新写的一轮会覆盖掉重放回来的那一轮。生产用的是 `randomUUID`，不会。
+     */
+    readonly idPrefix?: string
   } = {},
 ): Harness {
   const registry = options.registry ?? new FakeRegistry()
@@ -188,7 +194,7 @@ function harness(
     registry,
     dial: dialer.dial,
     now: () => clock,
-    newId: () => `id-${(counter += 1)}`,
+    newId: () => `${options.idPrefix ?? 'id'}-${(counter += 1)}`,
     ...(options.taskTtlMs === undefined
       ? {}
       : { taskTtlMs: options.taskTtlMs }),
@@ -563,6 +569,113 @@ describe('chat reply path', () => {
     })
   })
 
+  test('a notice is not a turn, and not the rail preview', async () => {
+    const h = harness()
+    const { sessionId } = await openAndSend(h, '看一下速率表')
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '读：packages/router/src/rate.ts',
+          observedAt: 1,
+        },
+      }),
+    )
+
+    const listed = await h.hub.sessions()
+    if (!listed.ok) throw new Error('unreachable')
+    // 一次提问 + 一条过程 ≠ 两轮；预览也不该是那条过程。
+    expect(listed.value[0]?.turnCount).toBe(1)
+    expect(listed.value[0]?.preview).toBe('看一下速率表')
+  })
+
+  test('a notice is stamped when it was observed, not when it arrived', async () => {
+    // 预算超了的通知是排队的，且只在对端下次联系时才 drain——用收件钟写，一条
+    // 描述上一轮的过程就会挂着「刚刚」的时间戳，排在它所描述的回答下面。
+    const h = harness()
+    const { sessionId } = await openAndSend(h)
+    h.advance(90_000)
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '一分半钟前观察到的',
+          observedAt: 1_700_000_000_123,
+          redelivered: true,
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns[1]).toMatchObject({
+      at: 1_700_000_000_123,
+      redelivered: true,
+    })
+  })
+
+  test('a session stops taking notices at its ceiling, and the ceiling survives a restart', async () => {
+    const storePath = join(directory, 'flood.ndjson')
+    const first = harness({ storePath })
+    const { sessionId } = await openAndSend(first)
+    const flood = (hub: Harness, count: number): void => {
+      for (let index = 0; index < count; index += 1) {
+        hub.dialer.last.reply(
+          createNotify({
+            from: TARGET,
+            to: FROM,
+            contextId: sessionId,
+            payload: {
+              kind: 'task',
+              severity: 'info',
+              summary: `第 ${index} 条`,
+              observedAt: 1,
+            },
+          }),
+        )
+      }
+    }
+    flood(first, 260)
+    const before = await first.hub.transcript(sessionId)
+    if (!before.ok) throw new Error('unreachable')
+    // 200 条过程 + 操作者那一轮。
+    expect(before.value.turns).toHaveLength(201)
+    await first.hub.close()
+
+    // 重启不是一次免费的额度重置：这个上限防的正是「一台被授权的机器一直写」。
+    const second = harness({ storePath, idPrefix: 'second' })
+    const { sessionId: other } = await openAndSend(second)
+    expect(other).not.toBe(sessionId)
+    flood(second, 10)
+    const after = await second.hub.transcript(sessionId)
+    if (!after.ok) throw new Error('unreachable')
+    expect(
+      after.value.turns.filter(turn => turn.variant === 'notice'),
+    ).toHaveLength(200)
+  })
+
+  test('the port refuses one endpoint claimed by two nodes, as the parser does', () => {
+    expect(() =>
+      createConsoleChatPort({
+        from: FROM,
+        endpoints: [
+          { url: ENDPOINT, psk: PSK, node: 'node-a' },
+          { url: ENDPOINT, psk: OTHER_PSK, node: 'node-b' },
+        ],
+        storePath: join(directory, 'clash.ndjson'),
+        registry: new FakeRegistry(),
+      }),
+    ).toThrow('claimed by both')
+  })
+
   test('a notify for a session this console does not have is dropped', async () => {
     const h = harness()
     const { sessionId } = await openAndSend(h)
@@ -770,7 +883,66 @@ describe('chat persistence', () => {
     const listed = await second.hub.sessions()
     if (!listed.ok) throw new Error('unreachable')
     expect(listed.value).toHaveLength(1)
-    expect(listed.value[0]?.preview).toBe('完整的一句')
+    // 完整的那一行照旧读得出来——这才是本用例要钉的事。**预览不再是它**，因为
+    // 重放会把「还在等回复」的那一轮落定（见下一条用例），而那条落定说明本身是
+    // 会话里最后发生的事。
+    const sessionId = listed.value[0]?.id ?? ''
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns.map(turn => turn.text)).toContain(
+      '完整的一句',
+    )
+  })
+
+  test('a turn still waiting when the console restarted is settled, not left running', async () => {
+    // 在途任务的记账全在进程里：`pending` 表与超时计时器。重启之后两样都没了，
+    // 而 `onReply` 对认不出 taskId 的回复是静默丢弃的——那条回复再也接不回来。
+    // 不落定的话，页面会拿它一直说「还在跑」，秒数无上限地涨。
+    const storePath = join(directory, 'orphan.ndjson')
+    const first = harness({ storePath })
+    const { sessionId } = await openAndSend(first, '这一轮没等到回复')
+    await first.hub.close()
+
+    const second = harness({ storePath, idPrefix: 'second' })
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    const turns = transcript.value.turns
+    expect(turns[0]).toMatchObject({
+      author: 'operator',
+      state: 'failed',
+      code: 'E_TASK_TIMEOUT',
+    })
+    expect(turns[1]).toMatchObject({ author: 'agent', state: 'failed' })
+
+    // 再重启一次不会再落定一遍：上一次已经把它改成 failed 了。
+    await second.hub.close()
+    const third = harness({ storePath, idPrefix: 'third' })
+    const again = await third.hub.transcript(sessionId)
+    if (!again.ok) throw new Error('unreachable')
+    expect(again.value.turns).toHaveLength(turns.length)
+  })
+
+  test('an answered turn is not settled by a later restart', async () => {
+    const storePath = join(directory, 'answered.ndjson')
+    const first = harness({ storePath })
+    const { sessionId, request } = await openAndSend(first, '这一轮答过了')
+    first.dialer.last.reply(
+      createMessage({
+        from: TARGET,
+        to: FROM,
+        type: MessageType.TaskResult,
+        taskId: request.taskId,
+        payload: { outcome: 'completed', content: '答了', completedAt: 2 },
+      }),
+    )
+    await first.hub.close()
+
+    const second = harness({ storePath, idPrefix: 'second' })
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    // 最后一条消息行是 agent 的，说明这一轮早有归宿，不该被改。
+    expect(transcript.value.turns).toHaveLength(2)
+    expect(transcript.value.turns[0]?.state).not.toBe('failed')
   })
 })
 
