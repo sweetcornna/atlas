@@ -13,6 +13,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -122,6 +123,27 @@ describe('节点配置根里的预批准清单', () => {
 
     expect(seed(configDir, workspaceRoot, ['planner']).exitCode).toBe(0)
     expect(readFileSync(target, 'utf8')).not.toContain('rm -rf')
+  })
+
+  test('能破坏 JSON 的 agent 名当场拒绝，而不是转义了事', () => {
+    const base = root()
+    const configDir = join(base, 'config')
+    // 一个需要转义才能表达的名字，在工作区路径那一侧也已经是麻烦；静默接受只是把
+    // 发现它的时刻推迟到更难查的地方。
+    const result = seed(configDir, join(base, 'ws'), ['plan"ner'])
+
+    expect(result.exitCode).not.toBe(0)
+    expect(existsSync(join(configDir, 'settings.json'))).toBe(false)
+  })
+
+  test('配置根是 0700，不看 umask 脸色', () => {
+    // 这一步可能先于常驻自己建配置根跑到，而常驻建的那个是 0700。让同一个目录的
+    // 权限位取决于「谁先跑到」，是下一个人查隔离时要多花的一小时。
+    const base = root()
+    const configDir = join(base, 'config')
+    seed(configDir, join(base, 'ws'), ['planner'])
+
+    expect(statSync(configDir).mode & 0o777).toBe(0o700)
   })
 
   test('落盘是 0600', () => {

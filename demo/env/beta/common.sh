@@ -487,15 +487,18 @@ BETA_TUNNEL_PORTS=' '
 # 名字 shell 侧开通得出来、协议侧不认。
 # 显式枚举没有范围端点，因此与 locale 无关：在哪台机器上、`LC_ALL` 是什么，结论都
 # 一样。钉 `LC_ALL=C` 也能修，但那把正确性挂在「有没有人后来把这行删掉/覆盖掉」上。
+# 第三个参数是名词，默认「节点名」。加它是因为 agent 段与 node 段共用同一个字符集
+# （协议地址的两段本来就同规则），复用这个校验器比再抄一份字符类好；但错误信息里说
+# 「节点名」会让读的人去查错东西。
 beta_assert_node_name() {
-  local name="$1" where="$2"
-  [ -n "$name" ] || beta_die "${where}：节点名为空"
-  [ "${#name}" -le 64 ] || beta_die "${where}：节点名 $name 超过协议上限 64 字符，拒绝"
+  local name="$1" where="$2" noun="${3:-节点名}"
+  [ -n "$name" ] || beta_die "${where}：${noun}为空"
+  [ "${#name}" -le 64 ] || beta_die "${where}：${noun} $name 超过协议上限 64 字符，拒绝"
   case "$name" in
     *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
-      beta_die "${where}：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+      beta_die "${where}：${noun} $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
     [!abcdefghijklmnopqrstuvwxyz0123456789]*|*[!abcdefghijklmnopqrstuvwxyz0123456789])
-      beta_die "${where}：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
+      beta_die "${where}：${noun} $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
@@ -1003,9 +1006,25 @@ beta_node_settings_json() {
 beta_seed_node_settings() {
   local config_dir="$1" ws_root="$2"
   shift 2
-  local target="$config_dir/settings.json" desired
+  local target="$config_dir/settings.json" desired agent
+  # 名字直接进 JSON 字符串，所以在这里挡住能破坏它的字符——这个校验器的字符集
+  # （小写字母、数字、-、_）本来就不含引号与反斜杠，一次校验同时解决两件事。
+  # **不做转义而是拒绝**：一个需要转义才能表达的 agent 名，在工作区路径那一侧也
+  # 已经是麻烦，静默接受只是把发现它的时刻推迟到更难查的地方。
+  #
+  # **校验必须在命令替换之外。**放进 beta_node_settings_json 里看起来更贴近用处，
+  # 但那个函数整个跑在 `$( )` 里，`beta_die` 的 exit 只结束那个子 shell：调用方
+  # 拿到一段被截断的 JSON、退出码 0，然后把它写进 settings.json。实测过一次，
+  # 写出来的是半截 `{ "permissions": { "allow": [`。
+  for agent in "$@"; do
+    beta_assert_node_name "$agent" '预批准清单' 'agent 名'
+  done
   desired="$(beta_node_settings_json "$ws_root" "$@")"
+  # 0700 而不是留给 umask：这一步可能先于常驻自己建配置根跑到，而常驻建的那个是
+  # 0700。根目录已经是 0700 所以这不是一道真的暴露面，但让同一个目录的权限位取决于
+  # 「谁先跑到」，是下一个人查隔离时要多花的一小时。
   mkdir -p "$config_dir"
+  chmod 700 "$config_dir"
   if [ -f "$target" ] && [ "$(cat "$target")" = "$desired" ]; then
     return 1
   fi
