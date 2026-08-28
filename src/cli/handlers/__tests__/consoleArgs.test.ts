@@ -49,7 +49,7 @@ import {
   consoleServerNotesPath,
   isConsoleHelpRequest,
   parseConsoleArgs,
-  wakePskEnvVarForNode,
+  transportPskEnvVarForNode,
 } from '../consoleArgs.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
@@ -371,18 +371,21 @@ describe('occ console argument parsing', () => {
   })
 
   test('derives a one-to-one portable PSK variable for each wake node', () => {
-    expect(wakePskEnvVarForNode('beta-1')).toBe(
+    expect(transportPskEnvVarForNode('beta-1')).toBe(
       'QIANMO_TRANSPORT_PSK_NODE_626574612D31',
     )
-    expect(wakePskEnvVarForNode('node-a')).toBe(
+    expect(transportPskEnvVarForNode('node-a')).toBe(
       'QIANMO_TRANSPORT_PSK_NODE_6E6F64652D61',
     )
-    expect(wakePskEnvVarForNode('node-b')).toBe(
+    expect(transportPskEnvVarForNode('node-b')).toBe(
       'QIANMO_TRANSPORT_PSK_NODE_6E6F64652D62',
     )
     expect(
-      new Set(['beta-1', 'beta_1', 'beta1', 'b-1'].map(wakePskEnvVarForNode))
-        .size,
+      new Set(
+        ['beta-1', 'beta_1', 'beta1', 'b-1'].map(node =>
+          transportPskEnvVarForNode(node),
+        ),
+      ).size,
     ).toBe(4)
   })
 

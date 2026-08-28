@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { WakePort } from '@qianmo/console'
-import { parseConsoleArgs, wakePskEnvVarForNode } from '../consoleArgs.js'
+import { parseConsoleArgs, transportPskEnvVarForNode } from '../consoleArgs.js'
 import { wireConsoleWake } from '../console.js'
 
 const GLOBAL_PSK = 'global-psk-that-must-not-enable-named-targets'
@@ -26,7 +26,7 @@ describe('console wake wiring', () => {
     const queried: Array<string | undefined> = []
     const created: Array<{ readonly url: string; readonly psk: string }> = []
     const node = 'beta-1'
-    const nodeVariable = wakePskEnvVarForNode(node)
+    const nodeVariable = transportPskEnvVarForNode(node)
     const wiring = wireConsoleWake(
       parseConsoleArgs([`--wake-url=${node}=ws://127.0.0.1:38611`], 'qianmo'),
       {
@@ -53,8 +53,8 @@ describe('console wake wiring', () => {
     const created: Array<{ readonly url: string; readonly psk: string }> = []
     const nodeA = 'beta-1'
     const nodeB = 'beta-2'
-    const variableA = wakePskEnvVarForNode(nodeA)
-    const variableB = wakePskEnvVarForNode(nodeB)
+    const variableA = transportPskEnvVarForNode(nodeA)
+    const variableB = transportPskEnvVarForNode(nodeB)
     const wiring = wireConsoleWake(
       parseConsoleArgs(
         [

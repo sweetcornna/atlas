@@ -227,7 +227,7 @@ export function tokensFromBanner(
   }
 }
 
-/** 命名唤醒目标的 PSK 环境变量名（`consoleArgs.ts` 的 `wakePskEnvVarForNode`）。 */
+/** 命名唤醒目标的 PSK 环境变量名（`consoleArgs.ts` 的 `transportPskEnvVarForNode`）。 */
 function wakePskEnvVar(node: string): string {
   return `QIANMO_TRANSPORT_PSK_NODE_${Buffer.from(node, 'utf8')
     .toString('hex')

@@ -39,7 +39,7 @@ import {
   assertConsoleRuntime,
   isConsoleHelpRequest,
   parseConsoleArgs,
-  wakePskEnvVarForNode,
+  transportPskEnvVarForNode,
   type ConsoleCliConfig,
 } from './consoleArgs.js'
 import {
@@ -127,7 +127,7 @@ export function wireConsoleWake(
   const targets: WakeTarget[] = config.wakeTargets.map(target => {
     const variable = target.legacy
       ? undefined
-      : wakePskEnvVarForNode(target.node)
+      : transportPskEnvVarForNode(target.node)
     try {
       const psk =
         variable === undefined

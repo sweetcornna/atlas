@@ -89,7 +89,16 @@ export interface ConsoleNodeServer {
   readonly server: string
 }
 
-export interface ConsoleWakeTarget {
+/**
+ * One node and the inbound endpoint this console is allowed to dial on it.
+ *
+ * Shared by `--wake-url` and `--chat-url` because it is the same fact for
+ * both: a node name, the endpoint it listens on, and whether the value came
+ * from the old shape that carried no name. The PSK follows the node, not the
+ * face — the two flags read the same variable for the same node
+ * ({@link transportPskEnvVarForNode}).
+ */
+export interface ConsoleNodeTarget {
   readonly node: string
   readonly url: string
   /** Only the old single URL is allowed to use QIANMO_TRANSPORT_PSK. */
@@ -97,11 +106,17 @@ export interface ConsoleWakeTarget {
 }
 
 /**
- * PSK variable for a named wake target. UTF-8 hex is one-to-one and legal in
+ * PSK variable for a named target. UTF-8 hex is one-to-one and legal in
  * POSIX, Windows, and Bun environment names, unlike replacing '-' with '_'.
+ *
+ * `flag` only names the option in the error a malformed node name raises, so
+ * the person reading it is told which of their own arguments to fix.
  */
-export function wakePskEnvVarForNode(node: string): string {
-  assertConsoleNodeName(node, '--wake-url')
+export function transportPskEnvVarForNode(
+  node: string,
+  flag = '--wake-url',
+): string {
+  assertConsoleNodeName(node, flag)
   return `QIANMO_TRANSPORT_PSK_NODE_${Buffer.from(node, 'utf8')
     .toString('hex')
     .toUpperCase()}`
@@ -198,7 +213,7 @@ export interface ConsoleCliConfig {
   /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
   readonly anchors?: AuditWitnessSource
   /** Explicit allowlist of wake endpoints. */
-  readonly wakeTargets: readonly ConsoleWakeTarget[]
+  readonly wakeTargets: readonly ConsoleNodeTarget[]
   /**
    * 唤醒是否带 capability token（issue #14）。**给了 `--wake-sign` 才签**。
    *
@@ -290,7 +305,7 @@ export function parseConsoleArgs(
   const auditMirrors: ConsoleAuditMirror[] = []
   let legacyAudit = false
   let anchors: AuditWitnessSource | undefined
-  const wakeTargets: ConsoleWakeTarget[] = []
+  const wakeTargets: ConsoleNodeTarget[] = []
   let legacyWake = false
   let signWakes = false
   let printWakeIdentity = false
