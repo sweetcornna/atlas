@@ -957,14 +957,6 @@ run_node() {
     seed_workspace "$ws_root/$agent" "$BETA_NODE/$agent"
   done
 
-  # 预批准清单要在**起 resident 之前**落到配置根里，理由和模型凭据那一条同形：
-  # settings 是进程起来时读的，事后写进去到不了已经在跑的那一个。
-  if beta_seed_node_settings "$config_dir" "$ws_root" $BETA_AGENTS; then
-    beta_ok "预批准清单已写：$config_dir/settings.json（各 agent 工作区内的 Write/Edit）"
-  else
-    beta_ok "预批准清单已是仓库派生的内容，不动：$config_dir/settings.json"
-  fi
-
   beta_head "② 常驻节点 $BETA_NODE"
   # 模型凭据必须在**起 resident 之前**进环境：ACP 子进程继承的是 resident 起来那一刻
   # 的环境（`defaultSpawnAcp` 传 `{...process.env}`），事后在别的 shell 里 export 到不了
@@ -978,8 +970,7 @@ run_node() {
     if [ "$model_env_running" = '1' ]; then
       beta_warn "$BETA_NODE 在本次执行之前就已经在跑 —— 本脚本是幂等的，不会重起它，
 所以**刚注入的这份模型凭据没有进到那个进程里**。环境变量只在进程起来的那一刻传递一次。
-**上面那份预批准清单同理**：settings.json 也是进程起来时读的。
-要让它们生效：demo/env/beta/beta-down.sh $BETA_NODE 之后再跑本脚本。"
+要让它生效：demo/env/beta/beta-down.sh $BETA_NODE 之后再跑本脚本。"
     fi
   else
     beta_warn "模型凭据$(beta_model_env_line) —— 本节点被唤醒后，agent 那一轮会以
@@ -1008,6 +999,14 @@ run_node() {
     --hostname "$BETA_NODE_BIND"
     --open-policy
     --audit-signed-tasks
+    # 没有它，agent 连自己的工作区都写不了：无人值守那一轮跑在 dontAsk 下（不提示、
+    # 未预批准即拒绝），而常驻对每一次授权请求都答 cancelled。2026-08-28 在 p11 上
+    # 的形状是模型回「当前权限模式拒绝文件写入」，而工作区目录可写、节点 .err 里
+    # 一条文件系统错误都没有——查权限位查不出任何东西。
+    #
+    # **写进这里而不是留给命令行**，与上面那两个任务策略开关同一条理由（issue #10）：
+    # 省掉它，这台节点能不能干活就由「跑的是哪一版产物」决定。
+    --allow-workspace-edits
     --timings "$BETA_STATE_DIR/$BETA_NODE-timings.jsonl"
   )
   for agent in $BETA_AGENTS; do

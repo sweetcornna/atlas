@@ -23,6 +23,7 @@ export {
   createResidentAcpStream,
   ResidentAcpConnection,
   type ResidentAcpClientOptions,
+  type ResidentPermissionMode,
   type ResidentActivitySink,
 } from './acp-client.js'
 export type {

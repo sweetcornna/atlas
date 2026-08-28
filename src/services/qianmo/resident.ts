@@ -101,6 +101,13 @@ interface QianmoResidentOptions {
   readonly node: string
   readonly team: string
   readonly agents: readonly QianmoResidentAgentConfig[]
+  /**
+   * 放宽到「工作目录之内的编辑自动放行」（`--allow-workspace-edits`）。
+   *
+   * 缺省不给，节点保持 `dontAsk`——不提示、未预批准即拒绝。放宽是显式动作：它改的
+   * 是这台节点的权限姿态，不该由「跑的是哪一版产物」决定。
+   */
+  readonly allowWorkspaceEdits?: boolean
   readonly pollIntervalMs?: number
   readonly psk: string
   readonly listen: {
@@ -1541,6 +1548,9 @@ export class QianmoResident {
       const streams = webStreams(child)
       const connection = new ResidentAcpConnection({
         stream: createResidentAcpStream(streams.writable, streams.readable),
+        ...(this.#options.allowWorkspaceEdits === true
+          ? { permissionMode: 'acceptEdits' as const }
+          : {}),
         onInputAccepted: async params => {
           await this.#turn.handleInputAccepted(params)
         },

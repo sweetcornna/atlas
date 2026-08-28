@@ -27,7 +27,17 @@ const DEMO_ROOT = join(REPOSITORY_ROOT, 'demo')
 /** 起法脚本 → 该处必须出现的开关。 */
 const REQUIRED_FLAGS: Readonly<Record<string, readonly string[]>> = {
   // 真实内测舰队。§9.2 阶段①：开放策略 + 审计「若强制会被拒」的每一条。
-  'demo/env/beta/beta-up.sh': ['--open-policy', '--audit-signed-tasks'],
+  //
+  // 外加 `--allow-workspace-edits`：它不是任务策略，是**权限姿态**，但落在同一条
+  // 纪律上——省掉它，这台节点能不能在自己的工作区里干活就由「跑的是哪一版产物」
+  // 决定。2026-08-28 在 p11 上就是这个形状：投递、回执、已读、终态回复全绿，
+  // 而 agent 建不出一个文件。演示拓扑不列它：那两处是本机跑给人看的，放宽与否
+  // 该是各自的决定，不该被这条用例代劳。
+  'demo/env/beta/beta-up.sh': [
+    '--open-policy',
+    '--audit-signed-tasks',
+    '--allow-workspace-edits',
+  ],
   // 本机演示拓扑：发送方不出示令牌，强制策略下 ac2/ac3/p41 会被全拒。
   'demo/env/up.sh': ['--open-policy', '--audit-signed-tasks'],
   // 远端沙箱腿，同一条理由。

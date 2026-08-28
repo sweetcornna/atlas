@@ -295,6 +295,27 @@ describe('resident CLI configuration', () => {
   })
 })
 
+describe('--allow-workspace-edits', () => {
+  test('缺省不给，因为放宽姿态不该由默认值决定', () => {
+    // 与任务策略两个开关同一条理由（issue #10）：省掉它，这台节点能不能干活就由
+    // 「跑的是哪一版产物」决定，而故障要等到第一次真用时才出现。
+    expect(
+      parseResidentArgs(BASE, 'qianmo').allowWorkspaceEdits,
+    ).toBeUndefined()
+  })
+
+  test('给了才有，且只影响这一个字段', () => {
+    const config = parseResidentArgs(
+      [...BASE, '--allow-workspace-edits'],
+      'qianmo',
+    )
+
+    expect(config.allowWorkspaceEdits).toBe(true)
+    // 它是权限姿态，不是任务策略——两者互不牵连。
+    expect(config.taskPolicySelected).toBeUndefined()
+  })
+})
+
 describe('capability flags (P4.3)', () => {
   const KEY = 'A'.repeat(43)
   const unsignedTask = createMessage({
