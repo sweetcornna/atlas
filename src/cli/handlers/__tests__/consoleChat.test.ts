@@ -20,9 +20,11 @@ import type {
   RegistryPort,
 } from '@qianmo/console'
 import {
+  LEGACY_MESSAGE_TYPES,
   MessageType,
   ProtocolErrorCode,
   createMessage,
+  createNotify,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
@@ -30,6 +32,7 @@ import {
   normalizeChatEndpoint,
   type ChatDialer,
   type ChatLink,
+  type ConsoleChatEndpoint,
   type ConsoleChatHub,
 } from '../consoleChat.js'
 
@@ -38,6 +41,7 @@ const ENDPOINT = 'ws://127.0.0.1:38612'
 const OTHER = 'qianmo://node-z/stranger'
 const FROM = 'qianmo://console/operator'
 const PSK = 'demo-psk-that-is-long-enough-000'
+const OTHER_PSK = 'other-psk-that-is-long-enough-01'
 
 function agent(address: string, endpoint: string): ConsoleAgent {
   return {
@@ -96,6 +100,7 @@ class FakeLink implements ChatLink {
   constructor(
     readonly url: string,
     readonly reply: (message: QianmoMessage) => void,
+    readonly psk: string,
   ) {}
 
   async connect(): Promise<void> {
@@ -124,7 +129,7 @@ class FakeDialer {
   nextConnectError: Error | null = null
 
   readonly dial: ChatDialer = input => {
-    const link = new FakeLink(input.url, input.onReply)
+    const link = new FakeLink(input.url, input.onReply, input.psk)
     link.connectError = this.nextConnectError
     this.links.push(link)
     return link
@@ -162,9 +167,15 @@ afterEach(async () => {
 function harness(
   options: {
     readonly storePath?: string
-    readonly endpoints?: readonly string[]
+    readonly endpoints?: readonly (string | ConsoleChatEndpoint)[]
     readonly taskTtlMs?: number
     readonly registry?: FakeRegistry
+    /**
+     * id 前缀。第二个 harness 读同一个 store 时必须给一个不同的——本文件的
+     * `newId` 是个从 1 开始的计数器，两个 harness 各数各的就会造出同一个 id，
+     * 于是新写的一轮会覆盖掉重放回来的那一轮。生产用的是 `randomUUID`，不会。
+     */
+    readonly idPrefix?: string
   } = {},
 ): Harness {
   const registry = options.registry ?? new FakeRegistry()
@@ -176,13 +187,14 @@ function harness(
 
   const hub = createConsoleChatPort({
     from: FROM,
-    endpoints: options.endpoints ?? [ENDPOINT],
-    psk: PSK,
+    endpoints: (options.endpoints ?? [ENDPOINT]).map(one =>
+      typeof one === 'string' ? { url: one, psk: PSK } : one,
+    ),
     storePath,
     registry,
     dial: dialer.dial,
     now: () => clock,
-    newId: () => `id-${(counter += 1)}`,
+    newId: () => `${options.idPrefix ?? 'id'}-${(counter += 1)}`,
     ...(options.taskTtlMs === undefined
       ? {}
       : { taskTtlMs: options.taskTtlMs }),
@@ -347,6 +359,85 @@ describe('chat send', () => {
     expect(h.dialer.links).toHaveLength(0)
   })
 
+  test('a turn carries its session id as the context id', async () => {
+    // 一个字段两件事：常驻侧据它分 ACP 会话（多轮上下文），节点发 notify 时也
+    // 只能靠它归组——notify 每条自带全新 taskId，归不到会话就只能丢。
+    const h = harness()
+    const first = await h.hub.open(TARGET)
+    if (!first.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: first.value.id, text: '一' })
+    await h.hub.send({ sessionId: first.value.id, text: '二' })
+
+    const sent = h.dialer.last.sent
+    expect(sent).toHaveLength(2)
+    // 同一条会话的两轮共用一个上下文；taskId 每轮都不同。
+    expect(sent[0]?.contextId).toBe(first.value.id)
+    expect(sent[1]?.contextId).toBe(first.value.id)
+    expect(sent[0]?.taskId).not.toBe(sent[1]?.taskId)
+
+    const second = await h.hub.open(TARGET)
+    if (!second.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: second.value.id, text: '三' })
+    expect(h.dialer.last.sent[2]?.contextId).toBe(second.value.id)
+    expect(second.value.id).not.toBe(first.value.id)
+  })
+
+  test('a named endpoint only serves the node it was authorised for', async () => {
+    // 注册中心零鉴权：它完全可以说 node-z 的 agent 就在 node-b 的端点上。绑定让
+    // 那条被改过的记录拨不动——否则它等于把 node-b 的钥匙借给了任何一个名字。
+    const registry = new FakeRegistry()
+    registry.listResult = {
+      ok: true,
+      value: [agent(TARGET, ENDPOINT), agent(OTHER, ENDPOINT)],
+    }
+    const h = harness({
+      registry,
+      endpoints: [{ url: ENDPOINT, psk: PSK, node: 'node-b' }],
+    })
+
+    const targets = await h.hub.targets()
+    if (!targets.ok) throw new Error('unreachable')
+    expect(targets.value.map(one => [one.address, one.dialable])).toEqual([
+      [TARGET, true],
+      [OTHER, false],
+    ])
+
+    const opened = await h.hub.open(OTHER)
+    if (!opened.ok) throw new Error('unreachable')
+    const sent = await h.hub.send({ sessionId: opened.value.id, text: '你好' })
+    expect(sent).toMatchObject({ ok: false, failure: { code: 'rejected' } })
+    if (sent.ok) throw new Error('unreachable')
+    // 「不在名单里」与「在名单里但绑给了别人」是两句不同的话。
+    expect(sent.failure.message).toContain('在允许名单里是 node-b 的端点')
+    expect(sent.failure.message).toContain('--chat-url node-z=')
+    expect(h.dialer.links).toHaveLength(0)
+  })
+
+  test('each endpoint is dialled with its own key', async () => {
+    const registry = new FakeRegistry()
+    registry.listResult = {
+      ok: true,
+      value: [agent(TARGET, ENDPOINT), agent(OTHER, 'ws://10.0.0.9:38611')],
+    }
+    const h = harness({
+      registry,
+      endpoints: [
+        { url: ENDPOINT, psk: PSK, node: 'node-b' },
+        { url: 'ws://10.0.0.9:38611', psk: OTHER_PSK, node: 'node-z' },
+      ],
+    })
+
+    const first = await h.hub.open(TARGET)
+    if (!first.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: first.value.id, text: '一' })
+    expect(h.dialer.last.psk).toBe(PSK)
+
+    const second = await h.hub.open(OTHER)
+    if (!second.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: second.value.id, text: '二' })
+    expect(h.dialer.last.psk).toBe(OTHER_PSK)
+  })
+
   test('refuses a target the registry does not have', async () => {
     const h = harness()
     const opened = await h.hub.open('qianmo://node-q/ghost')
@@ -436,6 +527,199 @@ describe('chat reply path', () => {
     // 每一次变化都通知一次订阅者，revision 单调递增。
     expect(h.updates.length).toBeGreaterThanOrEqual(4)
     expect(h.updates.at(-1)?.sessionId).toBe(sessionId)
+  })
+
+  test('a notify lands in the transcript as a notice, grouped by contextId', async () => {
+    const h = harness()
+    const { sessionId, request } = await openAndSend(h)
+    const link = h.dialer.last
+
+    h.advance(400)
+    link.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        // 归组只认这个，而不是 taskId——notify 每条都带一个全新的。
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '读了 packages/router/src/rate.ts',
+          observedAt: 1,
+          detail: '命中 3 处',
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns[1]).toMatchObject({
+      author: 'agent',
+      variant: 'notice',
+      severity: 'info',
+      state: 'done',
+      text: '读了 packages/router/src/rate.ts',
+      detail: '命中 3 处',
+    })
+    // 操作者那一轮还在等它自己的回复，没被这条过程推进。
+    expect(transcript.value.turns[0]).toMatchObject({
+      author: 'operator',
+      state: 'delivered',
+      taskId: request.taskId,
+    })
+  })
+
+  test('a notice is not a turn, and not the rail preview', async () => {
+    const h = harness()
+    const { sessionId } = await openAndSend(h, '看一下速率表')
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '读：packages/router/src/rate.ts',
+          observedAt: 1,
+        },
+      }),
+    )
+
+    const listed = await h.hub.sessions()
+    if (!listed.ok) throw new Error('unreachable')
+    // 一次提问 + 一条过程 ≠ 两轮；预览也不该是那条过程。
+    expect(listed.value[0]?.turnCount).toBe(1)
+    expect(listed.value[0]?.preview).toBe('看一下速率表')
+  })
+
+  test('a notice is stamped when it was observed, not when it arrived', async () => {
+    // 预算超了的通知是排队的，且只在对端下次联系时才 drain——用收件钟写，一条
+    // 描述上一轮的过程就会挂着「刚刚」的时间戳，排在它所描述的回答下面。
+    const h = harness()
+    const { sessionId } = await openAndSend(h)
+    h.advance(90_000)
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '一分半钟前观察到的',
+          observedAt: 1_700_000_000_123,
+          redelivered: true,
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns[1]).toMatchObject({
+      at: 1_700_000_000_123,
+      redelivered: true,
+    })
+  })
+
+  test('a session stops taking notices at its ceiling, and the ceiling survives a restart', async () => {
+    const storePath = join(directory, 'flood.ndjson')
+    const first = harness({ storePath })
+    const { sessionId } = await openAndSend(first)
+    const flood = (hub: Harness, count: number): void => {
+      for (let index = 0; index < count; index += 1) {
+        hub.dialer.last.reply(
+          createNotify({
+            from: TARGET,
+            to: FROM,
+            contextId: sessionId,
+            payload: {
+              kind: 'task',
+              severity: 'info',
+              summary: `第 ${index} 条`,
+              observedAt: 1,
+            },
+          }),
+        )
+      }
+    }
+    flood(first, 260)
+    const before = await first.hub.transcript(sessionId)
+    if (!before.ok) throw new Error('unreachable')
+    // 200 条过程 + 操作者那一轮。
+    expect(before.value.turns).toHaveLength(201)
+    await first.hub.close()
+
+    // 重启不是一次免费的额度重置：这个上限防的正是「一台被授权的机器一直写」。
+    const second = harness({ storePath, idPrefix: 'second' })
+    const { sessionId: other } = await openAndSend(second)
+    expect(other).not.toBe(sessionId)
+    flood(second, 10)
+    const after = await second.hub.transcript(sessionId)
+    if (!after.ok) throw new Error('unreachable')
+    expect(
+      after.value.turns.filter(turn => turn.variant === 'notice'),
+    ).toHaveLength(200)
+  })
+
+  test('the port refuses one endpoint claimed by two nodes, as the parser does', () => {
+    expect(() =>
+      createConsoleChatPort({
+        from: FROM,
+        endpoints: [
+          { url: ENDPOINT, psk: PSK, node: 'node-a' },
+          { url: ENDPOINT, psk: OTHER_PSK, node: 'node-b' },
+        ],
+        storePath: join(directory, 'clash.ndjson'),
+        registry: new FakeRegistry(),
+      }),
+    ).toThrow('claimed by both')
+  })
+
+  test('a notify for a session this console does not have is dropped', async () => {
+    const h = harness()
+    const { sessionId } = await openAndSend(h)
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: 'a-session-from-some-other-process',
+        payload: {
+          kind: 'task',
+          severity: 'warn',
+          summary: '不该出现在任何转录里',
+          observedAt: 1,
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns).toHaveLength(1)
+  })
+
+  test('the dialled link declares notify, or the node sends none', async () => {
+    // 少了这句声明，常驻侧按能力发现判定这个对端不实现 notify，一条都不发——
+    // 而且两边日志都不会说为什么。
+    const dialled: Array<readonly string[] | undefined> = []
+    const hub = createConsoleChatPort({
+      from: FROM,
+      endpoints: [{ url: ENDPOINT, psk: PSK }],
+      storePath: join(directory, 'declares.ndjson'),
+      registry: new FakeRegistry(),
+      dial: input => {
+        dialled.push(input.supportedTypes)
+        return new FakeLink(input.url, input.onReply, input.psk)
+      },
+    })
+    created.push(hub)
+    const opened = await hub.open(TARGET)
+    if (!opened.ok) throw new Error('unreachable')
+    await hub.send({ sessionId: opened.value.id, text: '你好' })
+
+    expect(dialled[0]).toEqual([...LEGACY_MESSAGE_TYPES, MessageType.Notify])
+    // floor 那一段不是新承诺（不声明时对面就按它假设）；新增的只有这一条。
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.Notify)
   })
 
   test('a failed task.result becomes a failed agent turn carrying the code', async () => {
@@ -599,7 +883,66 @@ describe('chat persistence', () => {
     const listed = await second.hub.sessions()
     if (!listed.ok) throw new Error('unreachable')
     expect(listed.value).toHaveLength(1)
-    expect(listed.value[0]?.preview).toBe('完整的一句')
+    // 完整的那一行照旧读得出来——这才是本用例要钉的事。**预览不再是它**，因为
+    // 重放会把「还在等回复」的那一轮落定（见下一条用例），而那条落定说明本身是
+    // 会话里最后发生的事。
+    const sessionId = listed.value[0]?.id ?? ''
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns.map(turn => turn.text)).toContain(
+      '完整的一句',
+    )
+  })
+
+  test('a turn still waiting when the console restarted is settled, not left running', async () => {
+    // 在途任务的记账全在进程里：`pending` 表与超时计时器。重启之后两样都没了，
+    // 而 `onReply` 对认不出 taskId 的回复是静默丢弃的——那条回复再也接不回来。
+    // 不落定的话，页面会拿它一直说「还在跑」，秒数无上限地涨。
+    const storePath = join(directory, 'orphan.ndjson')
+    const first = harness({ storePath })
+    const { sessionId } = await openAndSend(first, '这一轮没等到回复')
+    await first.hub.close()
+
+    const second = harness({ storePath, idPrefix: 'second' })
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    const turns = transcript.value.turns
+    expect(turns[0]).toMatchObject({
+      author: 'operator',
+      state: 'failed',
+      code: 'E_TASK_TIMEOUT',
+    })
+    expect(turns[1]).toMatchObject({ author: 'agent', state: 'failed' })
+
+    // 再重启一次不会再落定一遍：上一次已经把它改成 failed 了。
+    await second.hub.close()
+    const third = harness({ storePath, idPrefix: 'third' })
+    const again = await third.hub.transcript(sessionId)
+    if (!again.ok) throw new Error('unreachable')
+    expect(again.value.turns).toHaveLength(turns.length)
+  })
+
+  test('an answered turn is not settled by a later restart', async () => {
+    const storePath = join(directory, 'answered.ndjson')
+    const first = harness({ storePath })
+    const { sessionId, request } = await openAndSend(first, '这一轮答过了')
+    first.dialer.last.reply(
+      createMessage({
+        from: TARGET,
+        to: FROM,
+        type: MessageType.TaskResult,
+        taskId: request.taskId,
+        payload: { outcome: 'completed', content: '答了', completedAt: 2 },
+      }),
+    )
+    await first.hub.close()
+
+    const second = harness({ storePath, idPrefix: 'second' })
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    // 最后一条消息行是 agent 的，说明这一轮早有归宿，不该被改。
+    expect(transcript.value.turns).toHaveLength(2)
+    expect(transcript.value.turns[0]?.state).not.toBe('failed')
   })
 })
 

@@ -56,9 +56,11 @@ import type {
   RegistryPort,
 } from '@qianmo/console'
 import {
+  LEGACY_MESSAGE_TYPES,
   MessageType,
   assertAddress,
   createMessage,
+  isNotifyPayload,
   isTaskResultPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -92,8 +94,37 @@ export type ChatDialer = (input: {
   readonly node: string
   readonly peerNode: string
   readonly psk: string
+  /**
+   * 这台控制台收得下的类型（§14.6）。
+   *
+   * **走 input 而不是让 dialer 自己知道**：忘了声明的后果是「一条过程都不来，
+   * 且两边日志都不说为什么」，那种失败不该由每个 dialer 实现各自记得避开。
+   * 从这里传，意味着换 dialer 换不掉这份声明。
+   */
+  readonly supportedTypes: readonly string[]
   readonly onReply: (message: QianmoMessage) => void
 }) => ChatLink
+
+/**
+ * 这台控制台声明自己收得下什么（协议 §14.6 能力发现）。
+ *
+ * **不声明的后果是静默的**：`resolvePeerTypes` 把「没声明」读成 legacy floor，
+ * 而 `notify` 不在那个 floor 里，于是常驻侧两处（`notify.ts` 的 announce 与
+ * drain）都会判定这个对端不实现它——一条都不发，且积压会被当作「确定性死亡」
+ * 退役。对话面因此看不到任何过程，而两边日志都不会说为什么。
+ *
+ * 列的是 **floor + `notify`**：floor 那一段**不是新承诺**——不声明时对面本来就
+ * 按 floor 假设（§14.6 的 `resolvePeerTypes`），把它写出来只是为了让 `notify`
+ * 有地方加。真正新增的只有最后那一条。
+ *
+ * 不写 `Object.values(MessageType)`：那会把 floor 之外的类型也一并认领，而每
+ * 认领一个就是一句「我会谈这个」。`watch.ts` 报全量是因为它就是为收 notify
+ * 而生的中枢，那不是这里该照抄的先例。
+ */
+const CONSOLE_SUPPORTED_TYPES: readonly string[] = [
+  ...LEGACY_MESSAGE_TYPES,
+  MessageType.Notify,
+]
 
 function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
   const client = new TransportClient({
@@ -101,6 +132,7 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
     node: input.node,
     peerNode: input.peerNode,
     psk: input.psk,
+    supportedTypes: input.supportedTypes,
     onMessage: message => {
       input.onReply(message)
     },
@@ -117,13 +149,31 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
 // 选项与默认值
 // ---------------------------------------------------------------------------
 
+/**
+ * 一个允许拨号的入站端点，连同拨它要用的那把钥匙。
+ *
+ * `node` 给了就是**绑定**：注册中心说某个 agent 在这个端点上，只有当那个地址的
+ * 节点段正是这个名字时才拨。注册中心自己零鉴权（console.md §8.2），所以它说的
+ * 「谁在哪」只是发现，不是授权——绑定让一条被改过的记录最多把消息导向**它自己
+ * 那个节点已经被授权的**端点，而不是名单里的任何一个。
+ *
+ * `node` 不给就是旧的裸 URL 形式：不绑节点，用共享的那把 PSK。保留它是因为它是
+ * 这个参数原本的形状，且单节点的部署里它仍然是最短的写法。
+ */
+export interface ConsoleChatEndpoint {
+  /** 入站端点，已归一（`new URL(...).toString()`）。 */
+  readonly url: string
+  /** 拨这个端点用的传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
+  readonly psk: string
+  /** 绑定到这个节点；不给则不绑（旧式条目）。 */
+  readonly node?: string
+}
+
 interface ConsoleChatOptions {
   /** 控制台自己的地址，`qianmo://<node>/<agent>`。 */
   readonly from: string
-  /** 允许拨号的入站端点，已归一（`new URL(...).toString()`）。 */
-  readonly endpoints: readonly string[]
-  /** 传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
-  readonly psk: string
+  /** 允许拨号的端点与各自的钥匙。 */
+  readonly endpoints: readonly ConsoleChatEndpoint[]
   /** 会话落盘位置（绝对路径，由 `consoleArgs.ts` 从 `occConfigPath()` 派生）。 */
   readonly storePath: string
   /** 复用控制台既有的注册中心端口——名册只有一个出处。 */
@@ -210,6 +260,19 @@ export function normalizeChatEndpoint(raw: string): string | null {
  * `task.result` 完全可能先于 `sendAndWait` 的回执落地。用一个秩把它们排好，比在
  * 每个回调里各写一遍「除非已经是……」要短得多，也少一处会漂移的判断。
  */
+/**
+ * 一条会话最多收下多少条过程行。
+ *
+ * 这个上限的对手不是流量，是**落盘那一头的假设**：`consoleChatStore.ts` 明说
+ * 不做压缩，理由是「写它的是一个正在打字的人」。过程行不是人打的，所以那句话
+ * 得有个东西替它继续成立——就是这个数。
+ *
+ * **不按 `dedupKey` 去重**：协议 §14.4 明确说那把钥匙由发送方的账本消费，接收
+ * 方不消费它，因为接收方要做同样的事就得为每个上下文攒一份无界的新状态。一个
+ * 计数器是有界的，一张去重表不是。
+ */
+const MAX_NOTICES_PER_SESSION = 200
+
 const STATE_RANK: Readonly<Record<ChatTurn['state'], number>> = {
   pending: 0,
   delivered: 1,
@@ -241,13 +304,40 @@ export function createConsoleChatPort(
   const sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_CHAT_SEND_TIMEOUT_MS
 
   const self = assertAddress(options.from, 'chat from')
-  const allowed = new Set<string>()
+  const allowed = new Map<string, ConsoleChatEndpoint>()
   for (const endpoint of options.endpoints) {
-    const normalized = normalizeChatEndpoint(endpoint)
+    const normalized = normalizeChatEndpoint(endpoint.url)
     if (normalized === null) {
-      throw new Error(`chat endpoint must be ws or wss: ${endpoint}`)
+      throw new Error(`chat endpoint must be ws or wss: ${endpoint.url}`)
     }
-    allowed.add(normalized)
+    const clash = allowed.get(normalized)
+    if (clash !== undefined && clash.node !== endpoint.node) {
+      // `parseConsoleArgs` 对同一条输入就是当场报错的，理由一样：PSK 按节点取，
+      // 一个端点挂两个名字就没有唯一的钥匙。**参数解析拦得住不等于这里可以不拦**
+      // ——端口才是导出的那一面，也是真正拿着钥匙的那一层，而 `Map.set` 覆盖是
+      // 静默的：先来的那个节点会悄悄失去授权，然后用后来者的钥匙被拨出去。
+      throw new Error(
+        `chat endpoint ${normalized} is claimed by both ` +
+          `${clash.node ?? '(unbound)'} and ${endpoint.node ?? '(unbound)'}`,
+      )
+    }
+    allowed.set(normalized, { ...endpoint, url: normalized })
+  }
+
+  /**
+   * 这个地址允许拨到哪个端点上——`null` 就是不允许。
+   *
+   * 两道：端点得在名单里，且那条名单如果绑了节点，地址的节点段得对上。绑定的
+   * 那一道是 `--chat-url <节点>=<url>` 才有的；旧式条目对节点不设限。
+   */
+  function allowedFor(
+    address: ReturnType<typeof assertAddress>,
+    endpoint: string,
+  ): ConsoleChatEndpoint | null {
+    const entry = allowed.get(endpoint)
+    if (entry === undefined) return null
+    if (entry.node !== undefined && entry.node !== address.node) return null
+    return entry
   }
 
   const store = new ChatStore(options.storePath)
@@ -257,6 +347,8 @@ export function createConsoleChatPort(
   const turns = new Map<string, ChatTurn>()
   const order = new Map<string, string[]>()
   const pending = new Map<string, PendingTask>()
+  /** 每条会话已经收下的过程行数，见 {@link MAX_NOTICES_PER_SESSION}。 */
+  const noticeCount = new Map<string, number>()
   const links = new Map<string, ChatLink>()
   const listeners = new Set<(update: ChatUpdate) => void>()
   let revision = 0
@@ -276,7 +368,16 @@ export function createConsoleChatPort(
     if (ids === undefined) continue
     turns.set(turn.id, turn)
     ids.push(turn.id)
+    // 重放要把上限一起带回来，否则重启就是一次免费的额度重置——而这个上限防的
+    // 正是「一台被授权的机器一直往里写」，那种情形跨得过重启。
+    if (turn.variant === 'notice') {
+      noticeCount.set(
+        turn.sessionId,
+        (noticeCount.get(turn.sessionId) ?? 0) + 1,
+      )
+    }
   }
+  settleRestartOrphans()
 
   // --- notification ------------------------------------------------------
 
@@ -315,6 +416,60 @@ export function createConsoleChatPort(
     if (ids === undefined) return turn
     ids.push(turn.id)
     return persist(turn)
+  }
+
+  /**
+   * 一条会话里最后一条**不是过程行**的轮次。
+   *
+   * 「有没有人答」这个问题只能由消息行回答：过程行是对面推过来的既成事实，一轮
+   * 正在产出过程时恰恰是它最像在跑的时候。视图里的 `runningTail` 用的是同一条
+   * 判据——两处要是分开写，页面就会说「还在跑」而端口认为它已经完事。
+   */
+  function lastMessageTurn(sessionId: string): ChatTurn | undefined {
+    const ids = order.get(sessionId) ?? []
+    for (let index = ids.length - 1; index >= 0; index -= 1) {
+      const turn = turns.get(ids[index] ?? '')
+      if (turn === undefined || turn.variant === 'notice') continue
+      return turn
+    }
+    return undefined
+  }
+
+  /**
+   * 重启把「还在等回复」的那些轮次变成了**永远等不到**，重放时如实落定。
+   *
+   * 在途任务的全部记账都是进程内的：`pending` 表、`armTimeout` 的计时器。重启
+   * 之后两样都没了，而 `onReply` 对认不出 `taskId` 的回复是**静默丢弃**的——所以
+   * 那条回复即使还在路上，也没有任何东西能把它接回这一轮。
+   *
+   * 不落定的话，页面会拿这条轮次一直说「还在跑」，秒数无上限地涨下去：一天之后
+   * 它写着「还在跑 · 1d」。**那不是模糊，那是一句确凿的假话**——之前没有这条尾巴
+   * 时它只是含糊，加了尾巴反而把含糊升级成了断言。
+   *
+   * 只看每条会话的最后一条消息行：它之后要是已经有了 agent 那一轮，这一轮就早已
+   * 有了归宿，不该被改。
+   */
+  function settleRestartOrphans(): void {
+    for (const sessionId of sessions.keys()) {
+      const last = lastMessageTurn(sessionId)
+      if (last === undefined) continue
+      if (last.author !== 'operator') continue
+      if (last.state === 'failed') continue
+      persist({
+        ...last,
+        state: 'failed',
+        code: last.code ?? 'E_TASK_TIMEOUT',
+      })
+      addTurn({
+        id: newId(),
+        sessionId,
+        author: 'agent',
+        at: now(),
+        text: '控制台在这一轮拿到回复之前重启过，这条回复已经接不回来了。',
+        state: 'failed',
+        code: 'E_TASK_TIMEOUT',
+      })
+    }
   }
 
   function patchTurn(id: string, patch: Partial<ChatTurn>): ChatTurn | null {
@@ -376,6 +531,54 @@ export function createConsoleChatPort(
   }
 
   /**
+   * 一条节点主动推过来的过程。
+   *
+   * 归组只认信封的 `contextId`，而那正是 `send()` 写进去的会话 id。认不出会话
+   * 的一条**丢掉**——和丢无主回复同一条纪律：它要么来自一台还在拨这个端点的
+   * 旧进程，要么来自一条已经被删掉的会话，两种都没有能放它的地方。
+   *
+   * 内容进的是 `text`，和 agent 那一轮走同一条出口，于是 `view/chat.ts` 的转义
+   * 对它同样成立——**远端输出进 DOM 只留服务端渲染一条路**这件事不因为多了一
+   * 种行而多一个出口。
+   */
+  function onNotice(message: QianmoMessage): void {
+    const sessionId = message.contextId
+    if (typeof sessionId !== 'string' || !sessions.has(sessionId)) return
+    const payload = message.payload
+    if (!isNotifyPayload(payload)) return
+
+    // 上限存在，是因为落盘那一头的假设变了。`consoleChatStore.ts` 原本写着
+    // 「写它的是一个正在打字的人」，并据此明说不做压缩；过程行不是人打的。
+    // 对面每分钟能发 60 条（`LIMITS.notifyRatePerMinute`），一个任务期限 5 分钟，
+    // 于是**一个行为异常的节点**——一次构建出错就够——能往一条会话里塞三百条。
+    // 拨号名单挡得住陌生人，挡不住一台被授权过的机器发疯。
+    const counted = noticeCount.get(sessionId) ?? 0
+    if (counted >= MAX_NOTICES_PER_SESSION) return
+    noticeCount.set(sessionId, counted + 1)
+
+    addTurn({
+      id: newId(),
+      sessionId,
+      author: 'agent',
+      // **观察到的时刻，不是收到的时刻。**协议给 `observedAt` 的定义就是这个，
+      // 而它在这条路上不是学术问题：预算超了的通知是**排队**的，且只在对端下次
+      // 联系时才 drain——也就是操作者发下一句话的时候。用收件钟写，一条描述上
+      // 一轮的过程就会挂着「刚刚」的时间戳、排在它所描述的那个回答的下面。
+      at: payload.observedAt,
+      text: payload.summary,
+      // 过程行没有投递状态链要走：它不是这台控制台发出去的一轮，是对面推过来
+      // 的一条既成事实。`done` 是这条链上唯一诚实的落点。
+      state: 'done',
+      variant: 'notice',
+      severity: payload.severity,
+      // 重发要看得见，不能悄悄变成第二条不同的过程（协议 §14.4）。
+      ...(payload.redelivered === true ? { redelivered: true as const } : {}),
+      ...(payload.detail === undefined ? {} : { detail: payload.detail }),
+      traceId: message.traceId,
+    })
+  }
+
+  /**
    * One reply off a link this console dialled.
    *
    * Correlation is the envelope's `taskId` (protocol rule C-1) and nothing
@@ -384,6 +587,14 @@ export function createConsoleChatPort(
    * dedup table let through, or a reply to a turn a restart already settled.
    */
   function onReply(message: QianmoMessage): void {
+    // `notify` **先分出去**，因为它按 `contextId` 归组而不是按 `taskId`
+    // 相关（协议 §14.3：每条自带全新 `taskId`）。放在下面那句之后，它会在
+    // 第一行就被当成「没人在等的回复」丢掉——那正是这条链路此前一条过程都
+    // 显示不出来的原因之一。
+    if (message.type === MessageType.Notify) {
+      onNotice(message)
+      return
+    }
     const task = pending.get(message.taskId)
     if (task === undefined) return
     const at = now()
@@ -455,7 +666,11 @@ export function createConsoleChatPort(
 
   // --- links -------------------------------------------------------------
 
-  async function linkFor(url: string, peerNode: string): Promise<ChatLink> {
+  async function linkFor(
+    endpoint: ConsoleChatEndpoint,
+    peerNode: string,
+  ): Promise<ChatLink> {
+    const url = endpoint.url
     const existing = links.get(url)
     if (existing !== undefined && !existing.isClosed()) return existing
     if (existing !== undefined) {
@@ -470,7 +685,8 @@ export function createConsoleChatPort(
       url,
       node: self.node,
       peerNode,
-      psk: options.psk,
+      psk: endpoint.psk,
+      supportedTypes: CONSOLE_SUPPORTED_TYPES,
       onReply,
     })
     links.set(url, link)
@@ -495,7 +711,17 @@ export function createConsoleChatPort(
 
   function sessionView(stored: StoredChatSession): ChatSession {
     const ids = order.get(stored.id) ?? []
-    const last =
+    // 过程行既不算「一轮」，也不该当预览。一次问答里夹 11 个工具调用，抬头写
+    // 「13 轮」、侧栏预览写「读：packages/router/src/rate.ts」——两处都在说页面
+    // 自己都不认的话。数与取都走同一条判据（`lastMessageTurn`）。
+    const messageCount = ids.reduce(
+      (count, id) => (turns.get(id)?.variant === 'notice' ? count : count + 1),
+      0,
+    )
+    const last = lastMessageTurn(stored.id)
+    // `updatedAt` 反过来看**任意**一种行：侧栏按它排序，而一条正在冒过程的会话
+    // 就是活跃的那一条。「说了什么」与「有没有动静」是两个问题。
+    const latest =
       ids.length === 0 ? undefined : turns.get(ids[ids.length - 1] ?? '')
     return {
       id: stored.id,
@@ -503,13 +729,21 @@ export function createConsoleChatPort(
       node: stored.node,
       agent: stored.agent,
       createdAt: stored.createdAt,
-      updatedAt: last?.at ?? stored.createdAt,
-      turnCount: ids.length,
+      updatedAt: latest?.at ?? stored.createdAt,
+      turnCount: messageCount,
       preview: last?.text ?? '',
     }
   }
 
-  async function endpointFor(address: string): Promise<ConsoleResult<string>> {
+  async function endpointFor(
+    address: string,
+  ): Promise<ConsoleResult<ConsoleChatEndpoint>> {
+    let parsed: ReturnType<typeof assertAddress>
+    try {
+      parsed = assertAddress(address)
+    } catch (error) {
+      return fail('invalid', messageOf(error))
+    }
     const listed = await options.registry.list()
     if (!listed.ok) return listed
     const agent = listed.value.find(entry => entry.address === address)
@@ -523,14 +757,28 @@ export function createConsoleChatPort(
         `${address} 的端点不是 ws/wss 地址：${agent.endpoint}`,
       )
     }
-    if (!allowed.has(normalized)) {
+    const entry = allowedFor(parsed, normalized)
+    if (entry !== null) return { ok: true, value: entry }
+
+    // 「不在名单里」与「在名单里但绑给了别的节点」是两个不同的错，不合并：前者
+    // 要补一条授权，后者说明注册中心那条记录与授权对不上——很可能是有人改了它。
+    const bound = allowed.get(normalized)
+    if (bound?.node !== undefined) {
       return fail(
         'rejected',
-        `控制台只向 ${[...allowed].join('、')} 发消息；` +
-          `${address} 的端点是 ${agent.endpoint}，要加进去请重启控制台并补一个 --chat-url`,
+        `${normalized} 在允许名单里是 ${bound.node} 的端点，而 ${address} 说自己在 ` +
+          `${parsed.node}；注册中心没有鉴权，对不上就不拨。要放行请重启控制台并补一个 ` +
+          `--chat-url ${parsed.node}=${normalized}`,
       )
     }
-    return { ok: true, value: normalized }
+    const listedAllowed = [...allowed.values()]
+      .map(one => (one.node === undefined ? one.url : `${one.node}=${one.url}`))
+      .join('、')
+    return fail(
+      'rejected',
+      `控制台只向 ${listedAllowed} 发消息；` +
+        `${address} 的端点是 ${agent.endpoint}，要加进去请重启控制台并补一个 --chat-url`,
+    )
   }
 
   // --- port --------------------------------------------------------------
@@ -556,7 +804,8 @@ export function createConsoleChatPort(
           agent: parsed.agent,
           endpoint: agent.endpoint,
           status: agent.status,
-          dialable: normalized !== null && allowed.has(normalized),
+          dialable:
+            normalized !== null && allowedFor(parsed, normalized) !== null,
         })
       }
       return { ok: true, value: out }
@@ -626,6 +875,19 @@ export function createConsoleChatPort(
           from: options.from,
           to: stored.target,
           type: MessageType.TaskRequest,
+          // 会话 id 就是上下文 id，这一个字段承担两件事：
+          //
+          // ① **多轮上下文**。常驻侧按 `(agent, contextId)` 分会话
+          //    （`packages/resident/src/session-key.ts` 的 `sessionKeyOf`），
+          //    不给这个字段的请求全都落进同一个 `default` 上下文——今天同一个
+          //    agent 的所有对话因此挤在一起，谁都看得见谁。
+          // ② **过程行的归组键**。节点发 `notify` 时每条自带全新 `taskId`
+          //    （协议 §14.3），能把它归到哪条会话上的只有 `contextId`；常驻侧
+          //    `resident.ts` 的 `#announce` 取的正是这条请求信封上的它。
+          //
+          // 会话 id 是 `randomUUID()`，落在 `SAFE_CONTEXT_PATTERN` 内，不会被
+          // 常驻侧哈希改写，于是两边看到的是同一个字符串。
+          contextId: stored.id,
           payload: { prompt: text },
           deliverTtlMs,
           taskTtlMs,

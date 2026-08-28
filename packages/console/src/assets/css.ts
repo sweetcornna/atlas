@@ -838,7 +838,43 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .turn-p { margin: 0; white-space: pre-wrap; }
 .turn-p + .turn-p { margin-top: var(--space-2); }
 .turn-empty { margin: 0; color: var(--color-muted); }
+/* The closed markdown subset (view/richText.ts). Code scrolls inside its own
+   box so a long command never makes the page scroll sideways. */
+.turn-code {
+  margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  border-radius: var(--radius-md); overflow-x: auto;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+}
+.turn-code > code { white-space: pre; }
+.bubble code.mono {
+  padding: 1px 5px; border-radius: 5px; font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+.turn-list { margin: var(--space-2) 0 0; padding-left: 1.15em; }
+.turn-list > li { margin: 0; }
+.turn-list > li + li { margin-top: 3px; }
+.turn-p + .turn-code, .turn-p + .turn-list { margin-top: var(--space-2); }
 .turn-marks { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* A notice: the same left edge, a dot instead of an avatar, and no bubble.
+   Flat rather than boxed on purpose — a card per tool call stops the column
+   reading as a conversation (view/chat.ts on renderNotice). */
+.turn-notice { align-items: start; }
+.turn-av-notice { background: none; width: 34px; height: 22px; }
+.notice-line { display: flex; align-items: baseline; gap: var(--space-2); min-height: 22px; }
+.notice-text { font-size: 13px; color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+.notice-detail { margin-top: 2px; }
+.notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
+.notice-detail > summary::-webkit-details-marker { display: none; }
+/* 还在跑：一个静止的陶土色点。**刻意不做脉动** —— 这份样式表的动效纪律是
+   「只有 ≤200ms 的 transition，一个关键帧动画都没有」（view.test.ts 钉着，
+   而它是按整份样式表做字面查找的——连这行注释也不能写出那个 at-rule 的名字），
+   而一个会呼吸的点是装饰，不是这条尾巴要说的那件事：说话的是「还在跑」四个字
+   和旁边那个一直在涨的秒数。 */
+.tail-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-500); }
+.turn-tail .notice-text { color: color-mix(in srgb, var(--color-text) 52%, transparent); }
+.notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
 
 /* The delivery chain: three facts and the links between them. */
 .chain { display: inline-flex; align-items: center; gap: 0; }

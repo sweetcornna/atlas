@@ -64,10 +64,23 @@ import {
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { renderRichText } from './richText.js'
 import { formatClock, formatRelative, formatShortDuration } from './format.js'
 
 /** How much of the last turn the session rail shows. */
 const PREVIEW_LENGTH = 46
+
+/**
+ * How much of a notice's summary the line shows.
+ *
+ * `NotifyPayload.summary` is documented as one line for a human, but the
+ * protocol gives it **no ceiling of its own** — the only bound is
+ * `LIMITS.maxMessageBytes`, 256 KiB. `.notice-line` is a flex row, so a peer
+ * that puts 100 KB on one line would push the timestamp off screen and take
+ * the transcript column's width with it. A peer that ignores "one line" gets
+ * clipped; the answer beside it is what the pane is for.
+ */
+const NOTICE_LENGTH = 160
 
 /** Longest message the composer accepts, in characters. */
 export const MAX_CHAT_TEXT_LENGTH = 8_000
@@ -185,21 +198,19 @@ function turnMarks(turn: ChatTurn): string {
 /**
  * The text of one turn.
  *
- * `<p>` per blank-line-separated block, `escapeHtml` on every one. No markdown,
- * no code-fence detection, no link autolinking: the model on the other end is
- * being asked questions by an operator holding an admin token, and every one of
- * those three features is a way for its output to become markup on this page.
- * Whitespace is preserved by CSS (`white-space: pre-wrap`), which is the whole
- * of the formatting this page offers.
+ * A closed subset of markdown — fences, inline code, lists, bold — rendered by
+ * `richText.ts`, whose module note carries the reasoning. The short version,
+ * because this is where someone will look first: **the whole string is escaped
+ * before any structure is decided**, so no branch in there can emit a tag it
+ * did not spell out itself. Links, images and raw HTML stay out.
+ *
+ * This replaced a flat「一律 `<p>`，没有 markdown」rule. That rule was right
+ * about the danger and wrong about the remedy: an answer full of paths and
+ * commands rendered as one grey wall is a wall nobody reads, and an operator
+ * who cannot tell a command from prose eventually runs the prose.
  */
 function turnText(text: string): string {
-  const blocks = text.split(/\n{2,}/).filter(block => block.trim().length > 0)
-  if (blocks.length === 0) {
-    return `<p class="turn-empty">（空）</p>`
-  }
-  return blocks
-    .map(block => `<p class="turn-p">${escapeHtml(block)}</p>`)
-    .join('')
+  return renderRichText(text)
 }
 
 const AUTHOR_CLASS: Readonly<Record<ChatTurn['author'], string>> = {
@@ -226,7 +237,56 @@ function avatarText(who: string): string {
   return who.slice(0, 2)
 }
 
+/**
+ * A notice is a hairline row, not a bubble.
+ *
+ * It is the one visual rule this page borrows wholesale from a mature agent
+ * surface: **flat, not boxed** — a turn-inside-a-turn is what a card would make
+ * of it, and a transcript where every tool call is a card stops reading as a
+ * conversation. So a notice keeps the same left edge as everything else, drops
+ * the avatar to a dot, and gives up the `.bubble` fill entirely.
+ *
+ * Severity picks a colour and **nothing else**. It is not a filter: a notice
+ * that got filtered out and a step that never happened look identical on this
+ * page, and only one of those two is a thing the operator can act on.
+ *
+ * `detail` folds. The summary is one line by contract (protocol §14.2); the
+ * detail is whatever the node had room for, and a transcript that pushes the
+ * answer off screen to show a stack trace has its priorities backwards.
+ */
+const NOTICE_TONE: Readonly<Record<string, Tone>> = {
+  info: 'muted',
+  warn: 'warn',
+  error: 'bad',
+}
+
+function renderNotice(turn: ChatTurn): string {
+  const tone = NOTICE_TONE[turn.severity ?? 'info'] ?? 'muted'
+  const detail =
+    turn.detail === undefined
+      ? ''
+      : `<details class="notice-detail">` +
+        `<summary>${chevron()}详情</summary>` +
+        `<p class="notice-detail-body">${escapeHtml(turn.detail)}</p>` +
+        `</details>`
+  return (
+    `<article class="turn turn-notice">` +
+    `<span class="turn-av turn-av-notice" aria-hidden="true">` +
+    `<span class="dot dot-${tone}"></span></span>` +
+    `<div class="turn-body">` +
+    `<div class="notice-line">` +
+    `<span class="notice-text">${escapeHtml(
+      truncate(turn.text, NOTICE_LENGTH),
+    )}</span>` +
+    `<time class="turn-when">${escapeHtml(formatClock(turn.at))}</time>` +
+    `</div>` +
+    detail +
+    `</div></article>`
+  )
+}
+
 function renderTurn(turn: ChatTurn, agent: string): string {
+  if (turn.variant === 'notice') return renderNotice(turn)
   const who = turn.author === 'operator' ? '你' : agent
   const failed = turn.state === 'failed' ? ' turn-failed' : ''
   return (
@@ -291,6 +351,47 @@ const NOTHING_OPEN =
   `<path d="M78 68h44a10 10 0 0 1 10 10v26a10 10 0 0 1-10 10H96l-18 14V78a10 10 0 0 1 10-10z"/>` +
   `</g></svg></div>`
 
+/**
+ * The tail that says a turn is still running.
+ *
+ * **What makes it honest is where it reads the answer from.** It does not ask
+ * a timer or a client-side flag; it reads the transcript. Operator turns stop
+ * at `read` and never reach `done` — the answer is a *new* turn, not a state on
+ * the old one — so "the last thing that is not a notice is the operator's, and
+ * it did not fail" is exactly "nothing has answered yet".
+ *
+ * Notices are skipped when looking for that last turn, and skipping them is the
+ * point: a turn that is producing steps is the most running a turn ever looks,
+ * and a tail that vanished the moment the first tool started would disappear
+ * precisely when the operator most wants it.
+ *
+ * The elapsed number is measured from the operator's turn against the render
+ * clock. It goes up on its own only because the fragment is re-rendered — this
+ * page has no ticking clock, and giving it one would mean a timer running for
+ * every open tab to animate a number nobody is waiting on to the second.
+ */
+function runningTail(turns: readonly ChatTurn[], now: number): string {
+  let last: ChatTurn | undefined
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    if (turn === undefined || turn.variant === 'notice') continue
+    last = turn
+    break
+  }
+  if (last === undefined) return ''
+  if (last.author !== 'operator' || last.state === 'failed') return ''
+  const elapsed = Math.max(0, now - last.at)
+  return (
+    `<div class="turn turn-tail">` +
+    `<span class="turn-av turn-av-notice" aria-hidden="true">` +
+    `<span class="tail-dot"></span></span>` +
+    `<div class="turn-body"><div class="notice-line">` +
+    `<span class="notice-text">还在跑</span>` +
+    `<span class="turn-when">${escapeHtml(formatLatency(elapsed))}</span>` +
+    `</div></div></div>`
+  )
+}
+
 export interface ChatThreadModel {
   readonly transcript: ChatTranscript | null
   readonly failure: ConsoleFailure | null
@@ -332,7 +433,8 @@ export function renderChatThread(model: ChatThreadModel): string {
   const body =
     turns.length === 0
       ? hint('这条会话还没有内容 · 在下面写第一句')
-      : turns.map(turn => renderTurn(turn, session.agent)).join('')
+      : turns.map(turn => renderTurn(turn, session.agent)).join('') +
+        runningTail(turns, model.now)
 
   return (
     `<div class="thread" id="${CHAT_THREAD_MOUNT}" ` +

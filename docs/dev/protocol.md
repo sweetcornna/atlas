@@ -941,6 +941,12 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 
 `MessageType` 是封闭枚举，`validateMessage` 用 `isMessageType` 拒掉枚举外的 `type`（`E_BAD_TYPE`），所以也没有「先发了再说」这条路。**结论：只能新增类型，且下面六件事必须一次定死。**
 
+**第二个消费面：控制台对话面的过程行**（2026-08-28）。`kind: 'task'` 的通知除了 agent 自己调 `qianmo_notify` 发起，宿主也会在**一条在途任务的 turn 里**替它发：工具开始一条、失败一条（`packages/resident/src/acp-turn.ts` 的 `#reportToolStep` → `src/services/qianmo/resident.ts` 的 `#pushProgress`）。载体、方向、归组、限流**一个字节都没改**——它用的就是本节这套东西。
+
+**这不是 `task.progress` 的复活**，判据仍是 §3 那张对照表：那里否决进度类型的理由是「进度事件必然触碰旧上下文 ⇒ 属 B 类 ack ⇒ 搅浑 §4 的边界」，而这条路**不产生任何 ack**（§14.5），没有边界可搅。差别在载体不在意图：一个是新开一类按 `taskId` 相关的消息，一个是既有的、自带全新 `taskId`、按 `contextId` 归组的通知。**要区分两者，看的是「收到它的一方要不要为它开 turn、要不要回 ack」，不是看它说的内容像不像进度。**
+
+一条纪律随之而来：**过程按打扰一个人计量，不按流量计量**。`notifyRatePerMinute` 是保护人的，而它超限时**排队不丢弃**——所以发送侧必须自己设上限并到顶硬停（当前每轮 24 条），否则超出的部分会在回复到达之后才显示出来，而**过期的过程比没有过程更糟**。逐 token 的流式因此在这条路上明确不做。
+
 ### 14.2 payload
 
 ```ts

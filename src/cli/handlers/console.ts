@@ -33,13 +33,17 @@ import {
 } from '@qianmo/console'
 import { isNodePublicKey } from '@qianmo/protocol'
 import { pskFromEnv } from '@qianmo/transport'
-import { createConsoleChatPort, type ConsoleChatHub } from './consoleChat.js'
+import {
+  createConsoleChatPort,
+  type ConsoleChatEndpoint,
+  type ConsoleChatHub,
+} from './consoleChat.js'
 import {
   CONSOLE_HELP_TEXT,
   assertConsoleRuntime,
   isConsoleHelpRequest,
   parseConsoleArgs,
-  wakePskEnvVarForNode,
+  transportPskEnvVarForNode,
   type ConsoleCliConfig,
 } from './consoleArgs.js'
 import {
@@ -127,7 +131,7 @@ export function wireConsoleWake(
   const targets: WakeTarget[] = config.wakeTargets.map(target => {
     const variable = target.legacy
       ? undefined
-      : wakePskEnvVarForNode(target.node)
+      : transportPskEnvVarForNode(target.node)
     try {
       const psk =
         variable === undefined
@@ -180,40 +184,79 @@ export function wireConsoleWake(
 }
 
 /** 聊天面的接线结果，形状与 {@link WakeWiring} 一致。 */
-interface ChatWiring {
+interface ConsoleChatWiring {
   readonly hub?: ConsoleChatHub
   readonly status: string
 }
 
+/** 生产接线的窄缝，用途与 {@link ConsoleWakeDependencies} 完全一样：让用例证明
+ * 「哪个节点读哪个变量」，而不用往进程环境里塞真钥匙。 */
+interface ConsoleChatDependencies {
+  readonly pskFromEnv: (variable?: string) => string
+  readonly createChatPort: typeof createConsoleChatPort
+}
+
 /**
- * 聊天面要**两个**条件同时成立：至少给了一个 `--chat-url`，且环境里有 PSK。
+ * 聊天面要**两个**条件同时成立：至少给了一个 `--chat-url`，且它指的节点在环境里
+ * 有一把可用的 PSK。
  *
  * 缺任何一个都不注入这个端口。和唤醒面不同的是，这里的后果是**整个 `/chat` 页面
  * 不存在**（侧栏也不显示入口），而不是渲染一个禁用的表单——理由见 `deps.ts` 里
  * `ChatPort` 的注释：一个打开就说「这里什么都没有」的页面不如不给入口。
  *
+ * **PSK 按节点取，和唤醒面同一个变量**（`transportPskEnvVarForNode`）：同一个节点
+ * 的两张面拨的是同一个入站端点、握的是同一把手，各配一把只会让运维在两个地方
+ * 维护同一个秘密。旧式裸 URL 条目仍读共享的那一个变量。
+ *
+ * **一个节点没钥匙不拖垮其余的**：那一条不进允许名单（页面上它就是「不可拨」），
+ * 其余照常。全都没钥匙才等于没有聊天面——那时禁用的原因逐节点写在 banner 上，
+ * 而不是一句笼统的「没有 PSK」。
+ *
  * PSK 只从环境变量取，与唤醒面同一条纪律：命令行上的密钥就是这台机器每一份进程
  * 列表里的密钥。
  */
-function wireChat(
+export function wireConsoleChat(
   config: ConsoleCliConfig,
   registry: RegistryPort,
-): ChatWiring {
-  if (config.chatUrls.length === 0) {
+  dependencies: ConsoleChatDependencies = {
+    pskFromEnv,
+    createChatPort: createConsoleChatPort,
+  },
+): ConsoleChatWiring {
+  if (config.chatTargets.length === 0) {
     return { status: 'disabled (no --chat-url)' }
   }
-  let psk: string
-  try {
-    psk = pskFromEnv()
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    return { status: `disabled (${reason})` }
+  const endpoints: ConsoleChatEndpoint[] = []
+  const notes: string[] = []
+  for (const target of config.chatTargets) {
+    try {
+      const psk = target.legacy
+        ? dependencies.pskFromEnv()
+        : dependencies.pskFromEnv(
+            transportPskEnvVarForNode(target.node, '--chat-url'),
+          )
+      endpoints.push({
+        url: target.url,
+        psk,
+        ...(target.legacy ? {} : { node: target.node }),
+      })
+      notes.push(target.legacy ? target.url : `${target.node} -> ${target.url}`)
+    } catch {
+      // `error.message` 属于秘密边界，与唤醒面同一条纪律：不进 banner，也不进页面。
+      notes.push(
+        target.legacy
+          ? `${target.url} disabled (PSK unavailable)`
+          : `${target.node} disabled (PSK unavailable)`,
+      )
+    }
+  }
+  if (endpoints.length === 0) {
+    return { status: `disabled (${notes.join(', ')})` }
   }
   try {
-    const hub = createConsoleChatPort({
+    const hub = dependencies.createChatPort({
       from: config.chatFrom,
-      endpoints: config.chatUrls,
-      psk,
+      endpoints,
       storePath: config.chatStorePath,
       registry,
       onError: error => {
@@ -226,7 +269,7 @@ function wireChat(
     })
     return {
       hub,
-      status: `enabled as ${config.chatFrom} -> ${config.chatUrls.join(', ')}`,
+      status: `enabled as ${config.chatFrom} -> ${notes.join(', ')}`,
     }
   } catch (error) {
     // A malformed `--chat-from` lands here: the address rules live in
@@ -309,7 +352,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     return
   }
 
-  // 凭据在**接线之前**就要定下来。放在后面的代价很具体：`wireChat` 会真的向
+  // 凭据在**接线之前**就要定下来。放在后面的代价很具体：`wireConsoleChat` 会真的向
   // `--chat-url` 拨出去，于是一个权限过宽的 token 文件会在「拒绝启动」之前先把
   // 链路建起来、把会话文件写出去。起不来的那一次就该什么都没做过。
   //
@@ -334,7 +377,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
   const registry = createRegistryPort({ baseUrl: config.registryUrl })
-  const chat = wireChat(config, registry)
+  const chat = wireConsoleChat(config, registry)
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
   // missing one is a configuration error the operator should hear about now,

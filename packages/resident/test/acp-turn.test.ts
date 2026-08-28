@@ -304,3 +304,205 @@ describe('ACP resident turn port', () => {
     ).resolves.toBeUndefined()
   })
 })
+
+describe('turn progress', () => {
+  const NETWORK_INPUT = { ...INPUT, networkMsgId: 'msg-1' }
+
+  function toolCall(
+    toolCallId: string,
+    fields: Record<string, unknown> = {},
+  ): SessionNotification {
+    return {
+      sessionId: INPUT.sessionId,
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId,
+        title: 'packages/router/src/rate.ts',
+        ...fields,
+      },
+    } as unknown as SessionNotification
+  }
+
+  function toolUpdate(
+    toolCallId: string,
+    fields: Record<string, unknown> = {},
+  ): SessionNotification {
+    return {
+      sessionId: INPUT.sessionId,
+      update: { sessionUpdate: 'tool_call_update', toolCallId, ...fields },
+    } as unknown as SessionNotification
+  }
+
+  async function runningPort(steps: unknown[]) {
+    let releasePrompt!: () => void
+    const connection = {
+      extMethod: mock(async () => ({ accepted: true })),
+      prompt: mock(
+        () =>
+          new Promise<{ userMessageId: null }>(resolve => {
+            releasePrompt = () => resolve({ userMessageId: null })
+          }),
+      ),
+    }
+    const port = new AcpResidentTurnPort(connection, {
+      onProgress: progress => {
+        steps.push(progress)
+      },
+    })
+    const executing = port.execute(NETWORK_INPUT, async () => {})
+    // 让 execute 跑到把这一轮登记进 #active 那一步。
+    await Promise.resolve()
+    return {
+      port,
+      finish: async () => {
+        releasePrompt()
+        await executing
+      },
+    }
+  }
+
+  test('a tool is announced when it starts, not when it succeeds', async () => {
+    const steps: unknown[] = []
+    const { port, finish } = await runningPort(steps)
+
+    port.handleSessionUpdate(toolCall('t1', { kind: 'read' }))
+    // 成功收尾不再占一条：下一个工具的开始已经说明上一个结束了。
+    port.handleSessionUpdate(toolUpdate('t1', { status: 'completed' }))
+
+    expect(steps).toHaveLength(1)
+    expect(steps[0]).toMatchObject({
+      sessionId: INPUT.sessionId,
+      networkMsgId: 'msg-1',
+      severity: 'info',
+      summary: '读：packages/router/src/rate.ts',
+      dedupKey: 'msg-1:t1:start',
+    })
+    await finish()
+  })
+
+  test('a failure gets its own line, and only one', async () => {
+    const steps: Array<{ severity: string; dedupKey: string }> = []
+    const { port, finish } = await runningPort(steps)
+
+    port.handleSessionUpdate(toolCall('t1', { kind: 'execute' }))
+    port.handleSessionUpdate(toolUpdate('t1', { status: 'failed' }))
+    port.handleSessionUpdate(toolUpdate('t1', { status: 'failed' }))
+
+    expect(steps).toHaveLength(2)
+    expect(steps[1]).toMatchObject({
+      severity: 'warn',
+      dedupKey: 'msg-1:t1:failed',
+    })
+    await finish()
+  })
+
+  test('file paths the tool named ride along, bounded', async () => {
+    const steps: Array<{ detail?: string }> = []
+    const { port, finish } = await runningPort(steps)
+
+    port.handleSessionUpdate(
+      toolCall('t1', {
+        kind: 'edit',
+        locations: Array.from({ length: 12 }, (_unused, index) => ({
+          path: `src/f${index}.ts`,
+        })),
+      }),
+    )
+
+    expect(steps[0]?.detail?.split('\n')).toHaveLength(8)
+    expect(steps[0]?.detail).toContain('src/f0.ts')
+    await finish()
+  })
+
+  test('a tool that named no files carries no detail', async () => {
+    const steps: Array<{ detail?: string }> = []
+    const { port, finish } = await runningPort(steps)
+    port.handleSessionUpdate(toolCall('t1'))
+    expect(steps[0]?.detail).toBeUndefined()
+    await finish()
+  })
+
+  test('a turn stops reporting at the cap rather than queueing past it', async () => {
+    const steps: unknown[] = []
+    const { port, finish } = await runningPort(steps)
+
+    for (let index = 0; index < 40; index += 1) {
+      port.handleSessionUpdate(toolCall(`t${index}`))
+    }
+
+    // 上限是硬停，不是排队：一条在回复之后才到的过程，描述的是明明已经跑完的活。
+    expect(steps).toHaveLength(24)
+    await finish()
+  })
+
+  test('a tool kind inherited from Object.prototype is not a verb', async () => {
+    // 对象字面量查表会走到原型上：`kind: "constructor"` 会取回一个函数，然后被
+    // 字符串化进 notify 的 summary、渲染进操作者的转录。
+    const steps: Array<{ summary: string }> = []
+    const { port, finish } = await runningPort(steps)
+    for (const kind of [
+      'constructor',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+    ]) {
+      port.handleSessionUpdate(toolCall(`t-${kind}`, { kind }))
+    }
+    for (const step of steps) {
+      expect(step.summary).toBe('packages/router/src/rate.ts')
+    }
+    await finish()
+  })
+
+  test('a chatty turn cannot starve the failures', async () => {
+    // 一个计数器的算术是反的：24 条 start 花光预算之后，第 27 个工具的失败——
+    // 整轮里唯一需要人动手的那一条——恰好是被丢掉的那条。
+    const steps: Array<{ severity: string }> = []
+    const { port, finish } = await runningPort(steps)
+
+    for (let index = 0; index < 30; index += 1) {
+      port.handleSessionUpdate(toolCall(`t${index}`))
+    }
+    port.handleSessionUpdate(toolUpdate('t27', { status: 'failed' }))
+
+    expect(steps.filter(step => step.severity === 'info')).toHaveLength(24)
+    expect(steps.filter(step => step.severity === 'warn')).toHaveLength(1)
+    await finish()
+  })
+
+  test('a turn nobody asked for over the network raises no steps', async () => {
+    const steps: unknown[] = []
+    let releasePrompt!: () => void
+    const connection = {
+      extMethod: mock(async () => ({ accepted: true })),
+      prompt: mock(
+        () =>
+          new Promise<{ userMessageId: null }>(resolve => {
+            releasePrompt = () => resolve({ userMessageId: null })
+          }),
+      ),
+    }
+    const port = new AcpResidentTurnPort(connection, {
+      onProgress: progress => {
+        steps.push(progress)
+      },
+    })
+    // 本地信箱来的一轮没有 networkMsgId——没有对端，也就没有人该收到这些。
+    const executing = port.execute(INPUT, async () => {})
+    await Promise.resolve()
+    port.handleSessionUpdate(toolCall('t1'))
+    expect(steps).toHaveLength(0)
+    releasePrompt()
+    await executing
+  })
+
+  test('without a consumer the port raises nothing at all', async () => {
+    const connection = {
+      extMethod: mock(async () => ({ accepted: true })),
+      prompt: mock(async () => ({ userMessageId: null })),
+    }
+    const port = new AcpResidentTurnPort(connection)
+    // 不该抛：缺省就是「这个端口不报过程」。
+    expect(() => port.handleSessionUpdate(toolCall('t1'))).not.toThrow()
+  })
+})

@@ -89,7 +89,16 @@ export interface ConsoleNodeServer {
   readonly server: string
 }
 
-export interface ConsoleWakeTarget {
+/**
+ * One node and the inbound endpoint this console is allowed to dial on it.
+ *
+ * Shared by `--wake-url` and `--chat-url` because it is the same fact for
+ * both: a node name, the endpoint it listens on, and whether the value came
+ * from the old shape that carried no name. The PSK follows the node, not the
+ * face — the two flags read the same variable for the same node
+ * ({@link transportPskEnvVarForNode}).
+ */
+export interface ConsoleNodeTarget {
   readonly node: string
   readonly url: string
   /** Only the old single URL is allowed to use QIANMO_TRANSPORT_PSK. */
@@ -97,11 +106,17 @@ export interface ConsoleWakeTarget {
 }
 
 /**
- * PSK variable for a named wake target. UTF-8 hex is one-to-one and legal in
+ * PSK variable for a named target. UTF-8 hex is one-to-one and legal in
  * POSIX, Windows, and Bun environment names, unlike replacing '-' with '_'.
+ *
+ * `flag` only names the option in the error a malformed node name raises, so
+ * the person reading it is told which of their own arguments to fix.
  */
-export function wakePskEnvVarForNode(node: string): string {
-  assertConsoleNodeName(node, '--wake-url')
+export function transportPskEnvVarForNode(
+  node: string,
+  flag = '--wake-url',
+): string {
+  assertConsoleNodeName(node, flag)
   return `QIANMO_TRANSPORT_PSK_NODE_${Buffer.from(node, 'utf8')
     .toString('hex')
     .toUpperCase()}`
@@ -142,7 +157,7 @@ function parseNamedValue(
 }
 
 /** A complete URL is always the legacy form; its protocol is checked by caller. */
-function legacyWakeUrl(raw: string): URL | undefined {
+function legacyUrlValue(raw: string): URL | undefined {
   try {
     return new URL(raw)
   } catch {
@@ -198,7 +213,7 @@ export interface ConsoleCliConfig {
   /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
   readonly anchors?: AuditWitnessSource
   /** Explicit allowlist of wake endpoints. */
-  readonly wakeTargets: readonly ConsoleWakeTarget[]
+  readonly wakeTargets: readonly ConsoleNodeTarget[]
   /**
    * 唤醒是否带 capability token（issue #14）。**给了 `--wake-sign` 才签**。
    *
@@ -243,13 +258,17 @@ export interface ConsoleCliConfig {
   /** `--admin-token-file` 给的绝对路径。 */
   readonly adminTokenFile?: string
   /**
-   * 允许聊天拨号的入站端点。**给了才启用聊天面**，且还要有 PSK。
+   * 允许聊天拨号的节点与它的入站端点。**给了才启用聊天面**，且还要有 PSK。
    *
-   * 可以给多次，一次一个端点——名字从注册中心来（发现），能不能拨从这里来
+   * 可以给多次，一次一个——名字从注册中心来（发现），能不能拨从这里来
    * （授权）。注册中心自己没有鉴权，所以两者必须分开，理由写在
    * `consoleChat.ts` 的模块注释里。
+   *
+   * 命名形式 `<节点>=<url>` 把授权收到「**这个**节点在**这个**端点上」，PSK
+   * 也按节点取；旧的裸 URL 形式保留，那种条目对节点不设限、共用一把
+   * `QIANMO_TRANSPORT_PSK`。两种形式不能混着给。
    */
-  readonly chatUrls: readonly string[]
+  readonly chatTargets: readonly ConsoleNodeTarget[]
   /** 控制台自己在网络上的地址。 */
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
@@ -290,7 +309,7 @@ export function parseConsoleArgs(
   const auditMirrors: ConsoleAuditMirror[] = []
   let legacyAudit = false
   let anchors: AuditWitnessSource | undefined
-  const wakeTargets: ConsoleWakeTarget[] = []
+  const wakeTargets: ConsoleNodeTarget[] = []
   let legacyWake = false
   let signWakes = false
   let printWakeIdentity = false
@@ -300,7 +319,8 @@ export function parseConsoleArgs(
   let adminToken: string | undefined
   let viewTokenFile: string | undefined
   let adminTokenFile: string | undefined
-  const chatUrls: string[] = []
+  const chatTargets: ConsoleNodeTarget[] = []
+  let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
   const nodeServers: ConsoleNodeServer[] = []
@@ -395,7 +415,7 @@ export function parseConsoleArgs(
       const parsed = residentOptionValue(args, index, '--wake-url')
       // A complete URL is legacy even when its query contains `=`. Only
       // remaining values can be interpreted as `<node>=<url>`.
-      const legacyUrl = legacyWakeUrl(parsed.value)
+      const legacyUrl = legacyUrlValue(parsed.value)
       const named =
         legacyUrl === undefined
           ? parseNamedValue(parsed.value, '--wake-url')
@@ -468,14 +488,58 @@ export function parseConsoleArgs(
       index = parsed.next
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
-      const url = new URL(parsed.value)
+      // A complete URL is legacy even when its query contains `=`. Only
+      // remaining values can be interpreted as `<node>=<url>`.
+      const legacyUrl = legacyUrlValue(parsed.value)
+      const named =
+        legacyUrl === undefined
+          ? parseNamedValue(parsed.value, '--chat-url')
+          : undefined
+      // 这个守卫与 `--wake-url` 那个**形状不同，是有意的**：唤醒面的旧式形态只
+      // 允许单独一个 URL，所以它判的是 `legacyWake || wakeTargets.length > 0`；
+      // 对话面的旧式形态本来就可以给多个端点（它们共用同一把 PSK），所以这里
+      // 判的是「已经有条目了，而且它们不是旧式的」。两者都在挡同一件事——一半绑
+      // 节点一半不绑的控制台——只是各自的旧形态不一样。
+      if (
+        (legacyUrl !== undefined && chatTargets.length > 0 && !legacyChat) ||
+        (named !== undefined && legacyChat)
+      ) {
+        throw new Error('--chat-url cannot mix legacy URLs with named values')
+      }
+      const url = legacyUrl ?? new URL(named?.value ?? parsed.value)
       if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
         throw new Error('--chat-url must use ws or wss')
       }
-      // Repeatable, and deduplicated here rather than at the far end: giving
-      // the same endpoint twice is a copy-paste, not a request for two links.
+      const node = named?.node ?? DEFAULT_CONSOLE_NODE
       const normalized = url.toString()
-      if (!chatUrls.includes(normalized)) chatUrls.push(normalized)
+      // Repeatable, and deduplicated here rather than at the far end: giving
+      // the same entry twice is a copy-paste, not a request for two links.
+      const repeat = chatTargets.some(
+        target => target.node === node && target.url === normalized,
+      )
+      // 两个不同的节点写同一个端点是无解的：PSK 按节点取，而这条链路只有一把。
+      // 与其在拨号时挑一个，不如在这里就说这两行有一行是错的。
+      const shared = chatTargets.find(
+        target => target.url === normalized && target.node !== node,
+      )
+      if (shared !== undefined) {
+        throw new Error(
+          `--chat-url gives ${normalized} to both ${shared.node} and ${node}`,
+        )
+      }
+      // 命名条目一个节点只能有一个端点；旧式条目没有名字，可以给多个。
+      // `!repeat` 已经蕴含「不是同一条」，所以这里是一个条件而不是两层判断。
+      if (
+        named !== undefined &&
+        !repeat &&
+        chatTargets.some(t => t.node === node)
+      ) {
+        throw new Error(`--chat-url repeats node ${node}`)
+      }
+      if (!repeat) {
+        legacyChat ||= legacyUrl !== undefined
+        chatTargets.push({ node, url: normalized, legacy: named === undefined })
+      }
       index = parsed.next
     } else if (arg === '--chat-from' || arg?.startsWith('--chat-from=')) {
       const parsed = residentOptionValue(args, index, '--chat-from')
@@ -550,7 +614,7 @@ export function parseConsoleArgs(
     ...(adminToken === undefined ? {} : { adminToken }),
     ...(viewTokenFile === undefined ? {} : { viewTokenFile }),
     ...(adminTokenFile === undefined ? {} : { adminTokenFile }),
-    chatUrls,
+    chatTargets,
     chatFrom,
     chatStorePath,
     nodeServers,
@@ -634,10 +698,14 @@ Options (each accepts both --name value and --name=value):
                            on first run. The output is exactly the argument a
                            resident node takes after --trust. Starts no server
                            and reads no token.
-  --chat-url <ws url>      Endpoint the chat face may dial. Repeatable, one per
-                           flag, duplicates folded. The chat face turns on only
-                           when at least one is given AND ${PSK_ENV_VAR}
-                           holds a usable key.
+  --chat-url <node>=<ws url>
+                           Chat dial allowlist. Repeatable, one per flag,
+                           duplicates folded; each named node reads only its
+                           derived PSK environment variable. A legacy bare
+                           <ws url> is still accepted — those entries are not
+                           bound to a node and share ${PSK_ENV_VAR}. The chat
+                           face turns on when at least one entry is given and
+                           at least one of them has a usable key.
   --chat-from <address>    Address the console speaks as.
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.

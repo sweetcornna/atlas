@@ -23,6 +23,14 @@
  * Volume makes this affordable and is worth stating so the next reader does not
  * generalise it: the writer here is a person typing. Compaction is a non-goal.
  *
+ * **That sentence stopped being the whole truth when progress rows arrived**
+ * (`variant: 'notice'`): those are written by the node, not by a person, up to
+ * a couple of dozen per turn. What keeps the assumption standing is a ceiling
+ * on the other side rather than compaction on this one — `MAX_NOTICES_PER_SESSION`
+ * in `consoleChat.ts`, whose note carries the arithmetic. Raising that number
+ * without revisiting this paragraph is how a log with no compaction becomes a
+ * log with no bound.
+ *
  * ## What is *not* here
  *
  * The path. It arrives from `consoleArgs.ts`, derived from `occConfigPath()`
@@ -72,6 +80,13 @@ const TURN_STATES: ReadonlySet<string> = new Set([
   'read',
   'done',
   'failed',
+])
+
+/** `notify` 的三档（协议 §14.2）。视图只拿它选颜色，不拿它过滤。 */
+const NOTICE_SEVERITIES: ReadonlySet<string> = new Set([
+  'info',
+  'warn',
+  'error',
 ])
 
 /**
@@ -124,6 +139,18 @@ function toTurn(value: unknown): ChatTurn | null {
     ...(str(value['code']) === undefined
       ? {}
       : { code: str(value['code']) as string }),
+    // 三个过程行字段。**缺省即 `message`**：这个文件里绝大多数行是在它们存在
+    // 之前写的，一条读不出 variant 的旧行必须原样回到今天的样子，而不是变成
+    // 一条分量不明的过程。同理，variant 认不出来的值按 `message` 处理——那多半
+    // 是一个更新的版本写的，把它降级成一句话，好过整行丢掉。
+    ...(value['variant'] === 'notice' ? { variant: 'notice' as const } : {}),
+    ...(NOTICE_SEVERITIES.has(String(value['severity']))
+      ? { severity: value['severity'] as ChatTurn['severity'] }
+      : {}),
+    ...(str(value['detail']) === undefined
+      ? {}
+      : { detail: str(value['detail']) as string }),
+    ...(value['redelivered'] === true ? { redelivered: true as const } : {}),
   }
 }
 
