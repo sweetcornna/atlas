@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `@qianmo/console` 四个端口的生产实现。
+ * `@qianmo/console` 五个端口的生产实现。
  *
  * 控制台包本身是叶子：它不知道注册中心在哪、审计链是哪个文件、唤醒要用哪把
  * PSK（`packages/console/src/deps.ts` 的模块注释）。那些答案全在 host 这一侧，
@@ -47,6 +47,8 @@ import type {
   LimitsSnapshot,
   RegisterAgentInput,
   RegistryPort,
+  ServerNote,
+  ServerNotesPort,
   WakeInput,
   WakePort,
 } from '@qianmo/console'
@@ -65,6 +67,7 @@ import {
   executeResidentWake,
   type WakeCapabilityIssuer,
 } from './residentWake.js'
+import { ServerNotesStore } from './consoleServerNotes.js'
 
 function fail<T>(
   code: ConsoleFailure['code'],
@@ -839,6 +842,60 @@ export function createWakePort(options: WakePortOptions): WakePort {
       } catch (error) {
         return fail(classifyWakeError(error), wakeFailureMessage(error))
       }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 服务器备注
+// ---------------------------------------------------------------------------
+
+export interface ServerNotesPortOptions {
+  /** 已经拿到路径的 store。路径的出处只有 `consoleArgs.ts` 一个。 */
+  readonly store: ServerNotesStore
+  /** 可注入，只为让用例能钉住 `updatedAt`。 */
+  readonly now?: () => number
+}
+
+/**
+ * 备注面。
+ *
+ * **回放一次，之后读全在内存里。**备注是一份人手写的、以台计的小表，而
+ * `list()` 被每一次页面渲染调用；每次渲染重读一遍文件只是把一个不会变的答案
+ * 重新算一遍。写入仍然是同步 append，所以「写成功」与「落盘」之间没有窗口。
+ *
+ * 内存那份**在 append 成功之后**才更新：磁盘满或目录不可写时，页面必须看到
+ * 保存失败，而不是看到一条重启后就消失的备注。
+ *
+ * 这个端口**不判白名单**——「这台服务器是不是启动时钉住的那几台之一」由
+ * `http.ts` 拿 `ConsoleDeps.nodeServers` 判定，理由与唤醒目标同一条：允许写的
+ * 集合是启动参数定的，不是请求体定的。
+ */
+export function createServerNotesPort(
+  options: ServerNotesPortOptions,
+): ServerNotesPort {
+  const now = options.now ?? Date.now
+  const cache = new Map<string, ServerNote>()
+  for (const note of options.store.load()) cache.set(note.server, note)
+
+  return {
+    list(): Promise<ConsoleResult<readonly ServerNote[]>> {
+      return Promise.resolve({ ok: true, value: [...cache.values()] })
+    },
+    set(server: string, note: string): Promise<ConsoleResult<ServerNote>> {
+      const record: ServerNote = { server, note, updatedAt: now() }
+      try {
+        options.store.append(record)
+      } catch (error) {
+        // `unreachable` 而不是 `rejected`：请求本身没有任何问题，是这台机器
+        // 上的文件写不进去。它落成 503，而 `rejected` 会落成 400 并让调用方
+        // 以为是自己送错了东西（`http.ts` 的 `statusFor`）。
+        return Promise.resolve(
+          fail('unreachable', `备注写入失败：${messageOf(error)}`),
+        )
+      }
+      cache.set(server, record)
+      return Promise.resolve({ ok: true, value: record })
     },
   }
 }
