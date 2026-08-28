@@ -15,6 +15,7 @@ export {
   ACP_UPSTREAM_STATUS_METHOD,
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
+  SELF_REPORTING_TOOL_TITLE,
   type AcpPromptConnection,
   type ResidentTurnProgress,
 } from './acp-turn.js'
