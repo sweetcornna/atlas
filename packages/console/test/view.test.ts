@@ -30,6 +30,11 @@ import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
 import { renderRoster } from '../src/view/agents.js'
 import {
+  MAX_SERVER_NOTE_LENGTH,
+  renderServers,
+  serverCards,
+} from '../src/view/servers.js'
+import {
   renderAudit,
   renderAuditSources,
   renderChain,
@@ -51,6 +56,8 @@ import type {
   ConsoleAgent,
   ConsoleFailure,
   LimitsSnapshot,
+  NodeServer,
+  ServerNote,
 } from '../src/deps.js'
 
 const NOW = 1_760_000_000_000
@@ -538,6 +545,166 @@ describe('renderRoster', () => {
  * The one graphic element on the page, and therefore the one that has to be
  * pinned down. Three boundaries: under half a lease, past half, and lapsed.
  */
+describe('server attribution on the roster', () => {
+  const FLEET: readonly ConsoleAgent[] = [
+    agent({ address: 'qianmo://node-a/reviewer' }),
+    agent({ address: 'qianmo://node-b/reviewer' }),
+    agent({ address: 'qianmo://node-c/reviewer' }),
+    agent({ address: 'qianmo://node-d/reviewer' }),
+  ]
+
+  test('says nothing about servers when the console was not told', () => {
+    // 缺参数 = 整体降级为不显示归属。不是空白栏，不是「未知」，也不是抛错。
+    const html = renderRoster(FLEET, null, NOW, TTL)
+    expect(html).not.toContain('服务器')
+    // 名册本体照旧：四张卡片都在。
+    expect(html.match(/class="card elev-sm grp"/g)).toHaveLength(4)
+  })
+
+  test('names the machine on the card, beside the endpoint it corrects', () => {
+    const html = renderRoster(FLEET, null, NOW, TTL, undefined, [
+      { node: 'node-a', server: 'p11' },
+    ])
+    expect(html).toContain('服务器 <span class="mono">p11</span>')
+    // 归属必须排在端点前面：端点正是它要纠正的那个值。
+    expect(html.indexOf('p11')).toBeLessThan(html.indexOf('node-a.internal'))
+  })
+
+  test('carries three of four machines without collapsing the fourth', () => {
+    // 部署侧判定不出归属的节点**不传**，所以「部分节点有归属」是常态而不是边角。
+    const html = renderRoster(FLEET, null, NOW, TTL, undefined, [
+      { node: 'node-a', server: 'p11' },
+      { node: 'node-b', server: 'p11' },
+      { node: 'node-c', server: '203.0.113.7' },
+    ])
+    expect(html.match(/class="card elev-sm grp"/g)).toHaveLength(4)
+    expect(html.match(/服务器 <span class="mono">/g)).toHaveLength(3)
+    // 第四张卡片仍在，只是那一行不出现——它不能变成一个空白栏。
+    expect(html).toContain('qianmo://node-d')
+    const fourth = html.slice(html.indexOf('qianmo://node-d'))
+    expect(fourth).not.toContain('服务器')
+  })
+
+  test('ignores a mapping for a node that is not on the roster', () => {
+    const html = renderRoster(FLEET, null, NOW, TTL, undefined, [
+      { node: 'node-z', server: 'ghost-box' },
+    ])
+    expect(html).not.toContain('ghost-box')
+  })
+
+  test('escapes a machine name, which is a startup argument not a constant', () => {
+    const html = renderRoster(FLEET, null, NOW, TTL, undefined, [
+      { node: 'node-a', server: ATTACKS.script },
+    ])
+    expectInert(html)
+  })
+})
+
+describe('renderServers', () => {
+  const NODE_SERVERS: readonly NodeServer[] = [
+    { node: 'node-a', server: 'p11' },
+    { node: 'node-b', server: 'p11' },
+    { node: 'node-c', server: '203.0.113.7' },
+  ]
+
+  function model(over: Partial<Parameters<typeof renderServers>[0]> = {}) {
+    return {
+      cards: serverCards(NODE_SERVERS, []),
+      failure: null,
+      editable: true,
+      notesEnabled: true,
+      now: NOW,
+      ...over,
+    }
+  }
+
+  test('groups the nodes under the machine that carries them', () => {
+    const cards = serverCards(NODE_SERVERS, [])
+    expect(cards).toEqual([
+      { server: 'p11', nodes: ['node-a', 'node-b'], note: null },
+      { server: '203.0.113.7', nodes: ['node-c'], note: null },
+    ])
+    const html = renderServers(model())
+    expect(html).toContain('>p11<')
+    expect(html).toContain('2 个节点')
+    expect(html).toContain('1 个节点')
+  })
+
+  test('puts an existing note in the box and stamps when it was written', () => {
+    const note: ServerNote = {
+      server: 'p11',
+      note: '香港 · 只跑演示',
+      updatedAt: NOW - 60_000,
+    }
+    const html = renderServers(
+      model({ cards: serverCards(NODE_SERVERS, [note]) }),
+    )
+    expect(html).toContain('>香港 · 只跑演示</textarea>')
+    expect(html).toContain('更新于')
+    // 没写过的那台说「未填写」，而不是显示一个空的时间戳。
+    expect(html).toContain('未填写')
+  })
+
+  test('escapes a note, because a textarea is not a safe place either', () => {
+    // 备注是操作者写的，这不等于可信：它经 JSON 路由回来、躺在一个本机任何进程
+    // 都能写的文件里，再被渲染进一张握着 admin token 的页面。
+    const html = renderServers(
+      model({
+        cards: serverCards(NODE_SERVERS, [
+          { server: 'p11', note: ATTACKS.script, updatedAt: NOW },
+          { server: '203.0.113.7', note: ATTACKS.textarea, updatedAt: NOW },
+        ]),
+      }),
+    )
+    expectInert(html)
+    expect(html).not.toContain('</textarea><img')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  test('gives admin a save button and view a read-only box', () => {
+    const admin = renderServers(model())
+    expect(admin).toContain('data-action="server-note"')
+    expect(admin).toContain('data-server="p11"')
+    expect(admin).not.toContain('readonly')
+
+    const view = renderServers(model({ editable: false }))
+    expect(view).not.toContain('data-action="server-note"')
+    expect(view).toContain('readonly')
+    // 框留着而不是消失：一个不见的框会让「你不能改」和「这里没有备注」长得一样。
+    expect(view).toContain('<textarea')
+    expect(view).toContain('只读令牌不能改备注')
+  })
+
+  test('disables the box and says why when there is no note store', () => {
+    const html = renderServers(model({ notesEnabled: false, editable: false }))
+    expect(html).toContain('<textarea')
+    expect(html).toContain(' disabled>')
+    expect(html).toContain('未配置备注存储 · 备注不会保存')
+    expect(html).not.toContain('data-action="server-note"')
+  })
+
+  test('keeps the machines on screen when the notes could not be read', () => {
+    // 机器来自启动参数，仍然是真的；读不到的只有备注。
+    const html = renderServers(
+      model({ failure: { code: 'unreachable', message: '备注文件读不到' } }),
+    )
+    expect(html).toContain('备注不可达 · 备注文件读不到')
+    expect(html).toContain('>p11<')
+  })
+
+  test('caps what the box will accept at the same number the route does', () => {
+    // 两个数字漂开的症状是：页面收下了，路由 400 了。
+    expect(renderServers(model())).toContain(
+      `maxlength="${MAX_SERVER_NOTE_LENGTH}"`,
+    )
+  })
+
+  test('names the missing flag rather than showing an empty section', () => {
+    const html = renderServers(model({ cards: [] }))
+    expect(html).toContain('--node-server')
+  })
+})
+
 describe('lease bar', () => {
   function barOf(over: Partial<ConsoleAgent>): string {
     const html = renderRoster([agent(over)], null, NOW, TTL)
@@ -1212,6 +1379,35 @@ describe('renderPage', () => {
     })
   }
 
+  test('leaves the servers section out when there is no attribution', () => {
+    // 一个 服务器 抬头下面空着，读起来是「这个功能坏了」而不是「没配」。
+    const html = build()
+    expect(html).not.toContain('id="servers-section"')
+    expect(html).not.toContain('id="servers"')
+    expect(html).toContain('id="nodes-section"')
+  })
+
+  test('mounts the servers section under the roster when there is', () => {
+    const html = build({
+      servers: renderServers({
+        cards: serverCards([{ node: 'node-a', server: 'p11' }], []),
+        failure: null,
+        editable: true,
+        notesEnabled: true,
+        now: NOW,
+      }),
+    })
+    expect(html).toContain('id="servers-section"')
+    expect(html).toContain('<div id="servers">')
+    // 紧跟名册，因为它回答的正是名册提出的那个问题。
+    expect(html.indexOf('id="nodes-section"')).toBeLessThan(
+      html.indexOf('id="servers-section"'),
+    )
+    expect(html.indexOf('id="servers-section"')).toBeLessThan(
+      html.indexOf('id="wake-section"'),
+    )
+  })
+
   test('is a complete document that follows the system theme', () => {
     const html = build()
     expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
@@ -1571,6 +1767,36 @@ describe('assets', () => {
     expect(() => new Function(CONSOLE_CLIENT_JS)).not.toThrow()
   })
 
+  test('the note save reports in place and never re-renders the block', () => {
+    // 服务器区块是唯一一块轮询不碰的：它装着人正在打的字。保存只经 say() 写
+    // textContent，不动 innerHTML，也不重取 fragment——否则半句话会被吃掉。
+    expect(CONSOLE_CLIENT_JS).toContain("action === 'server-note'")
+    // 视图那一侧发的就是这个 data-action，两处必须是同一个字符串。
+    expect(
+      renderServers({
+        cards: serverCards([{ node: 'node-a', server: 'p11' }], []),
+        failure: null,
+        editable: true,
+        notesEnabled: true,
+        now: NOW,
+      }),
+    ).toContain('data-action="server-note"')
+    expect(CONSOLE_CLIENT_JS).toContain("servers: '/v0/servers'")
+    expect(CONSOLE_CLIENT_JS).toContain("sendJson('PUT', ROUTES.servers")
+    const handler = CONSOLE_CLIENT_JS.slice(
+      CONSOLE_CLIENT_JS.indexOf('function onServerNote'),
+      CONSOLE_CLIENT_JS.indexOf('function openChain'),
+    )
+    // 这一段确实取到了，否则下面两条是对空串断言。
+    expect(handler.length).toBeGreaterThan(200)
+    expect(handler).not.toContain('innerHTML')
+    expect(handler).toContain('encodeURIComponent(server)')
+    // 轮询只换名册与审计两块，服务器区块不在里面。
+    expect(CONSOLE_CLIENT_JS).toContain(
+      'Promise.all([refreshRoster(), refreshAudit()])',
+    )
+  })
+
   test('neither asset can close its own tag or reach off-origin', () => {
     for (const asset of [CONSOLE_CSS, CONSOLE_CLIENT_JS]) {
       expect(asset).not.toContain('</script')
@@ -1777,6 +2003,26 @@ describe('copy discipline', () => {
       .replace(/<script>[\s\S]*?<\/script>/g, '')
       .replace(/<[^>]*>/g, ' ')
   }
+
+  test('the servers block keeps the same punctuation discipline', () => {
+    const html = renderServers({
+      cards: serverCards(
+        [{ node: 'node-a', server: 'p11' }],
+        [{ server: 'p11', note: '香港', updatedAt: NOW }],
+      ),
+      failure: null,
+      editable: false,
+      notesEnabled: false,
+      now: NOW,
+    })
+    const text = visibleText(html)
+    expect(text).not.toContain('。')
+    expect(text).not.toContain('，')
+    expect(text).not.toContain('！')
+    // 这一块确实有可见文案可查，否则上面三条是空转。
+    expect(text).toContain('服务器')
+    expect(text).toContain('备注')
+  })
 
   test('the word 花名册 is gone, along with its neighbours', () => {
     for (const banned of [

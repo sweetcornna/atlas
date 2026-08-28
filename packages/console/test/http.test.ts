@@ -14,13 +14,17 @@ import type {
   ConsoleFailure,
   ConsoleResult,
   LimitsSnapshot,
+  NodeServer,
   RegisterAgentInput,
   RegistryPort,
+  ServerNote,
+  ServerNotesPort,
   WakeInput,
   WakeOutcome,
   WakePort,
   WakeTarget,
 } from '../src/deps.js'
+import { MAX_SERVER_NOTE_LENGTH } from '../src/view/servers.js'
 import {
   MAX_AUDIT_LIMIT,
   createConsoleHandler,
@@ -928,6 +932,315 @@ describe('wake', () => {
     )
     expect(response.status).toBe(503)
     expect((await errorOf(response))['code']).toBe('unreachable')
+  })
+})
+
+describe('servers', () => {
+  const NODE_SERVERS: readonly NodeServer[] = [
+    { node: 'tokyo-1', server: 'p11' },
+    { node: 'tokyo-2', server: 'p11' },
+    { node: 'osaka-1', server: '203.0.113.7' },
+  ]
+
+  /** Notes live in memory here; the file half is `consoleServerNotes.test.ts`. */
+  class FakeNotes implements ServerNotesPort {
+    readonly stored = new Map<string, ServerNote>()
+    setResult: ConsoleResult<ServerNote> | null = null
+    listResult: ConsoleResult<readonly ServerNote[]> | null = null
+
+    list(): Promise<ConsoleResult<readonly ServerNote[]>> {
+      return Promise.resolve(
+        this.listResult ?? okResult([...this.stored.values()]),
+      )
+    }
+
+    set(server: string, note: string): Promise<ConsoleResult<ServerNote>> {
+      if (this.setResult !== null) return Promise.resolve(this.setResult)
+      const record: ServerNote = { server, note, updatedAt: NOW }
+      this.stored.set(server, record)
+      return Promise.resolve(okResult(record))
+    }
+  }
+
+  interface ServerHarness extends Harness {
+    readonly notes: FakeNotes
+  }
+
+  function setupServers(
+    options: {
+      readonly nodeServers?: readonly NodeServer[]
+      readonly withNotes?: boolean
+    } = {},
+  ): ServerHarness {
+    const base = setup()
+    const notes = new FakeNotes()
+    const nodeServers = options.nodeServers ?? NODE_SERVERS
+    const deps: ConsoleDeps = {
+      ...base.deps,
+      ...(nodeServers.length === 0 ? {} : { nodeServers }),
+      ...(options.withNotes === false ? {} : { serverNotes: notes }),
+    }
+    return {
+      ...base,
+      notes,
+      deps,
+      handle: createConsoleHandler(deps, TOKENS),
+    }
+  }
+
+  const notePath = (server: string): string =>
+    `/v0/servers/${encodeURIComponent(server)}/note`
+
+  test('lists each machine with the nodes it carries', async () => {
+    const { handle } = setupServers()
+    const response = await handle(get('/v0/servers', VIEW))
+    expect(response.status).toBe(200)
+    expect(await body(response)).toEqual({
+      servers: [
+        { server: 'p11', nodes: ['tokyo-1', 'tokyo-2'], note: null },
+        { server: '203.0.113.7', nodes: ['osaka-1'], note: null },
+      ],
+    })
+  })
+
+  test('carries the note back on the machine it belongs to', async () => {
+    const { handle, notes } = setupServers()
+    notes.stored.set('p11', { server: 'p11', note: '香港', updatedAt: 5 })
+    const listed = (await body(await handle(get('/v0/servers', VIEW))))[
+      'servers'
+    ] as readonly Record<string, unknown>[]
+    expect(listed[0]?.['note']).toEqual({
+      server: 'p11',
+      note: '香港',
+      updatedAt: 5,
+    })
+    // 备注挂在机器上，不是挂在每个节点上：另一台不该被带上。
+    expect(listed[1]?.['note']).toBeNull()
+  })
+
+  test('ignores a stored note whose machine is no longer configured', async () => {
+    // 旧的 --node-server 行留下的记录还在文件里，但这个控制台已经不认它了。
+    const { handle, notes } = setupServers()
+    notes.stored.set('retired-box', {
+      server: 'retired-box',
+      note: '早就下线了',
+      updatedAt: 1,
+    })
+    const text = await (await handle(get('/v0/servers', VIEW))).text()
+    expect(text).not.toContain('retired-box')
+    expect(text).not.toContain('早就下线了')
+  })
+
+  test('writes a note with the admin token and reads it straight back', async () => {
+    const { handle, notes } = setupServers()
+    const response = await handle(
+      req('PUT', notePath('p11'), {
+        token: ADMIN,
+        body: { note: '香港 · 演示' },
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(await body(response)).toEqual({
+      server: 'p11',
+      note: '香港 · 演示',
+      updatedAt: NOW,
+    })
+    expect(notes.stored.get('p11')?.note).toBe('香港 · 演示')
+  })
+
+  test('lets a view token read but never write', async () => {
+    const { handle, notes } = setupServers()
+    expect((await handle(get('/v0/servers', VIEW))).status).toBe(200)
+    const refused = await handle(
+      req('PUT', notePath('p11'), {
+        token: VIEW,
+        body: { note: '不该写进去' },
+      }),
+    )
+    expect(refused.status).toBe(403)
+    expect((await errorOf(refused))['code']).toBe('forbidden')
+    expect(notes.stored.size).toBe(0)
+  })
+
+  test('refuses a machine that is not on the startup list', async () => {
+    // 与 handleWake 的白名单同一条：客户端不能凭一个任意字符串让服务端多出一条
+    // 记录来。查不到就 403，而且**不写**。
+    const { handle, notes } = setupServers()
+    const response = await handle(
+      req('PUT', notePath('somebody-elses-box'), {
+        token: ADMIN,
+        body: { note: '凭空造一台' },
+      }),
+    )
+    expect(response.status).toBe(403)
+    expect((await errorOf(response))['code']).toBe('rejected')
+    expect(notes.stored.size).toBe(0)
+  })
+
+  test('refuses a note past the ceiling, and takes the one at it', async () => {
+    const { handle, notes } = setupServers()
+    const tooLong = await handle(
+      req('PUT', notePath('p11'), {
+        token: ADMIN,
+        body: { note: 'x'.repeat(MAX_SERVER_NOTE_LENGTH + 1) },
+      }),
+    )
+    expect(tooLong.status).toBe(400)
+    expect((await errorOf(tooLong))['code']).toBe('invalid')
+    expect(notes.stored.size).toBe(0)
+
+    const atCeiling = await handle(
+      req('PUT', notePath('p11'), {
+        token: ADMIN,
+        body: { note: 'x'.repeat(MAX_SERVER_NOTE_LENGTH) },
+      }),
+    )
+    expect(atCeiling.status).toBe(200)
+  })
+
+  test('takes an empty note, which is how one is cleared', async () => {
+    const { handle, notes } = setupServers()
+    notes.stored.set('p11', { server: 'p11', note: '旧的', updatedAt: 1 })
+    const response = await handle(
+      req('PUT', notePath('p11'), { token: ADMIN, body: { note: '' } }),
+    )
+    expect(response.status).toBe(200)
+    expect(notes.stored.get('p11')?.note).toBe('')
+  })
+
+  test('refuses a note that is not a string', async () => {
+    const { handle } = setupServers()
+    const response = await handle(
+      req('PUT', notePath('p11'), { token: ADMIN, body: { note: 42 } }),
+    )
+    expect(response.status).toBe(400)
+    expect((await errorOf(response))['code']).toBe('invalid')
+  })
+
+  test('answers 501 on both routes when no mapping was configured', async () => {
+    // 「没被告知任何东西在哪跑」与「哪里都没东西在跑」是两件事。
+    const { handle } = setupServers({ nodeServers: [] })
+    const listed = await handle(get('/v0/servers', VIEW))
+    expect(listed.status).toBe(501)
+    expect((await errorOf(listed))['code']).toBe('unsupported')
+    const written = await handle(
+      req('PUT', notePath('p11'), { token: ADMIN, body: { note: 'x' } }),
+    )
+    expect(written.status).toBe(501)
+  })
+
+  test('still lists the machines when there is no note store', async () => {
+    const { handle } = setupServers({ withNotes: false })
+    const listed = await handle(get('/v0/servers', VIEW))
+    expect(listed.status).toBe(200)
+    expect((await body(listed))['servers'] as readonly unknown[]).toHaveLength(
+      2,
+    )
+    const written = await handle(
+      req('PUT', notePath('p11'), { token: ADMIN, body: { note: 'x' } }),
+    )
+    expect(written.status).toBe(501)
+  })
+
+  test('reports a failed note read rather than inventing an empty one', async () => {
+    const { handle, notes } = setupServers()
+    notes.listResult = failResult('unreachable', '备注文件读不到')
+    const response = await handle(get('/v0/servers', VIEW))
+    expect(response.status).toBe(503)
+    expect((await errorOf(response))['message']).toBe('备注文件读不到')
+  })
+
+  test('passes a failed write through as the status that describes it', async () => {
+    const { handle, notes } = setupServers()
+    notes.setResult = failResult('unreachable', '备注写入失败：ENOSPC')
+    const response = await handle(
+      req('PUT', notePath('p11'), { token: ADMIN, body: { note: 'x' } }),
+    )
+    expect(response.status).toBe(503)
+    expect((await errorOf(response))['code']).toBe('unreachable')
+  })
+
+  test('answers 405 for a verb the note route does not take', async () => {
+    const { handle } = setupServers()
+    const response = await handle(
+      req('POST', notePath('p11'), { token: ADMIN, body: { note: 'x' } }),
+    )
+    expect(response.status).toBe(405)
+    expect(response.headers.get('allow')).toBe('PUT')
+  })
+
+  test('401s an anonymous caller before it learns anything else', async () => {
+    const { handle } = setupServers()
+    expect((await handle(get('/v0/servers'))).status).toBe(401)
+    expect(
+      (await handle(req('PUT', notePath('p11'), { body: { note: 'x' } })))
+        .status,
+    ).toBe(401)
+    // 白名单外的 id 对匿名调用者也只能是 401：403 会变成一个「这台机器存在吗」
+    // 的探针。
+    expect(
+      (
+        await handle(
+          req('PUT', notePath('somebody-elses-box'), { body: { note: 'x' } }),
+        )
+      ).status,
+    ).toBe(401)
+  })
+
+  test('takes an IPv6 literal through one encoded path segment', async () => {
+    const { handle, notes } = setupServers({
+      nodeServers: [{ node: 'tokyo-1', server: '2001:db8::5' }],
+    })
+    const response = await handle(
+      req('PUT', notePath('2001:db8::5'), {
+        token: ADMIN,
+        body: { note: '冒号也要能过' },
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(notes.stored.get('2001:db8::5')?.note).toBe('冒号也要能过')
+  })
+
+  test('renders the section on the page, editable only for admin', async () => {
+    // 路由那一侧拒收是一回事，页面别给出一个按下去必定 403 的按钮是另一回事。
+    // 这条钉的是 http.ts 把角色映射成 editable 的那一步。
+    const { handle } = setupServers()
+    // 判据要卡在 textarea 那个标签上：内联样式表里有 `input[readonly]` 选择器，
+    // 整篇文档因此永远含有 readonly 这个词，光找它是一条永真的断言。
+    const READONLY_BOX = 'spellcheck="false" readonly>'
+    const asAdmin = await (await handle(get('/', ADMIN))).text()
+    expect(asAdmin).toContain('id="servers-section"')
+    expect(asAdmin).toContain('data-action="server-note"')
+    expect(asAdmin).not.toContain(READONLY_BOX)
+
+    const asView = await (await handle(get('/', VIEW))).text()
+    expect(asView).toContain('id="servers-section"')
+    expect(asView).not.toContain('data-action="server-note"')
+    expect(asView).toContain(READONLY_BOX)
+  })
+
+  test('leaves the section off the page when nothing was configured', async () => {
+    const { handle } = setupServers({ nodeServers: [] })
+    const html = await (await handle(get('/', ADMIN))).text()
+    expect(html).not.toContain('id="servers-section"')
+    // 名册照旧在——降级只该拿掉归属那一块。
+    expect(html).toContain('id="nodes-section"')
+  })
+
+  test('puts the attribution on the roster the page and the fragment share', async () => {
+    const { handle } = setupServers()
+    for (const path of ['/', '/fragments/roster']) {
+      const html = await (await handle(get(path, ADMIN))).text()
+      expect(
+        `${path} -> ${html.includes('服务器 <span class="mono">p11')}`,
+      ).toBe(`${path} -> true`)
+    }
+  })
+
+  test('404s an unknown shape under /v0/servers', async () => {
+    const { handle } = setupServers()
+    expect((await handle(get('/v0/servers/p11', VIEW))).status).toBe(404)
+    expect((await handle(get('/v0/servers/p11/label', VIEW))).status).toBe(404)
   })
 })
 
