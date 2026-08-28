@@ -23,8 +23,31 @@ import {
 
 export type ResidentActivitySink = (active: boolean) => void | Promise<void>
 
+/**
+ * 无人值守那一轮的权限姿态。
+ *
+ * `dontAsk`（默认，也是这个包一直以来的姿态）的语义是**不提示、未预批准即拒绝**，
+ * 而这个包的 {@link ResidentClient.requestPermission} 又硬钉成 `cancelled`。两者合
+ * 起来：没有任何东西被放行，包括 agent 在**自己工作区里**建一个文件——2026-08-28
+ * 在内测环境上撞到的正是这一条，模型回话说「当前权限模式拒绝文件写入」，而工作区
+ * 目录可写、节点日志里一条文件系统错误都没有。
+ *
+ * `acceptEdits` 只放宽一件事：**工作目录之内**的编辑（基座
+ * `filesystem.ts` 的 `pathInAllowedWorkingPath` 门控，配置文件与敏感路径仍由
+ * `checkPathSafetyForAutoEdit` 挡在前面，本包 `guard.ts` 的硬名单又排在那之前）。
+ * 其余需要授权的工具照样落到 `requestPermission` → `cancelled`，也就是照样拒绝。
+ *
+ * **为什么走「模式」而不是「预批准规则」**：ACP 会话的权限上下文是
+ * `getEmptyToolPermissionContext()` 建的，settings.json 里的 allow 规则根本不进
+ * 这条路——实测把规则写进节点配置根，写文件依然被拒。模式则经 `_meta` 传进去，
+ * 是这条路上真正生效的那一个旋钮。
+ */
+export type ResidentPermissionMode = 'dontAsk' | 'acceptEdits'
+
 export interface ResidentAcpClientOptions {
   readonly stream: Stream
+  /** 缺省 `dontAsk`——放宽是显式动作，不是默认。 */
+  readonly permissionMode?: ResidentPermissionMode
   readonly onInputAccepted: (params: Record<string, unknown>) => Promise<void>
   readonly onActivity?: ResidentActivitySink
   readonly onSessionUpdate?: (
@@ -128,9 +151,11 @@ export class ResidentAcpConnection
   implements ResidentSessionConnection, AcpPromptConnection
 {
   readonly #connection: ClientSideConnection
+  readonly #permissionMode: ResidentPermissionMode
 
   constructor(options: ResidentAcpClientOptions) {
     const client = new ResidentClient(options)
+    this.#permissionMode = options.permissionMode ?? 'dontAsk'
     this.#connection = new ClientSideConnection(() => client, options.stream)
   }
 
@@ -152,7 +177,7 @@ export class ResidentAcpConnection
       cwd: input.cwd,
       mcpServers: [],
       _meta: {
-        permissionMode: 'dontAsk',
+        permissionMode: this.#permissionMode,
         qianmo: { resident: true, agent: input.agent },
       },
     })
@@ -169,7 +194,7 @@ export class ResidentAcpConnection
       cwd: input.cwd,
       mcpServers: [],
       _meta: {
-        permissionMode: 'dontAsk',
+        permissionMode: this.#permissionMode,
         qianmo: { resident: true, agent: input.agent },
       },
     })

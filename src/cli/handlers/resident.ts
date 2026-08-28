@@ -245,6 +245,14 @@ export interface ResidentCliConfig {
   readonly node: string
   readonly team: string
   readonly agents: readonly { agent: string; cwd: string }[]
+  /**
+   * `--allow-workspace-edits`：把 ACP 会话的权限模式从 `dontAsk` 放宽到
+   * `acceptEdits`，也就是**只**自动放行工作目录之内的编辑。
+   *
+   * 缺省不给。放宽是显式动作，不该由「跑的是哪一版产物」决定——issue #10 记的是
+   * 同一个教训的另一半（任务策略两个开关也不许省成默认值）。
+   */
+  readonly allowWorkspaceEdits?: boolean
   readonly port?: number
   readonly hostname?: string
   readonly unix?: string
@@ -351,6 +359,7 @@ export function parseResidentArgs(
   // an invocation that asks for opposite policies has no honest winner.
   let requireSignedTasks = true
   let openPolicy = false
+  let allowWorkspaceEdits = false
   let enforceRequested = false
   let auditSignedTasks = false
   let backupUrl: string | undefined
@@ -480,6 +489,8 @@ export function parseResidentArgs(
       requireSignedTasks = false
     } else if (arg === '--audit-signed-tasks') {
       auditSignedTasks = true
+    } else if (arg === '--allow-workspace-edits') {
+      allowWorkspaceEdits = true
     } else if (arg === '--backup-url' || arg?.startsWith('--backup-url=')) {
       const parsed = residentOptionValue(args, index, '--backup-url')
       const url = new URL(parsed.value)
@@ -646,6 +657,7 @@ export function parseResidentArgs(
     node,
     team,
     agents,
+    ...(allowWorkspaceEdits ? { allowWorkspaceEdits } : {}),
     ...(port === undefined ? {} : { port }),
     ...(hostname === undefined ? {} : { hostname }),
     ...(unix === undefined ? {} : { unix }),
@@ -875,6 +887,21 @@ Authorization:
                            signed message changes its fate in either
                            direction. Cannot be combined with
                            --require-signed-tasks.
+  --allow-workspace-edits  Let a turn edit files inside its own working
+                           directory without asking. Off by default, and the
+                           default is the reason this flag exists: an
+                           unattended turn runs with permissionMode dontAsk —
+                           don't prompt, deny if not pre-approved — and this
+                           node answers every permission request as
+                           cancelled, so without this an agent cannot
+                           create a file in its own workspace. What it
+                           relaxes is only edits under the working directory
+                           (config files and sensitive paths stay blocked,
+                           and this node's own hardline list is checked
+                           first). Everything else that needs authorization
+                           is still refused. Settings-file allow rules are
+                           NOT an alternative — an ACP session builds an
+                           empty permission context, so they never reach it.
   --audit-signed-tasks     Observation mode: record every message that
                            --require-signed-tasks would have refused, and
                            refuse nothing. Nothing about what this node
@@ -1788,6 +1815,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     node: config.node,
     team: config.team,
     agents: config.agents,
+    ...(config.allowWorkspaceEdits === true
+      ? { allowWorkspaceEdits: true }
+      : {}),
     psk,
     upstreamHealth,
     capability,

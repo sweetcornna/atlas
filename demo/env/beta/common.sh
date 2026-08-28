@@ -487,18 +487,15 @@ BETA_TUNNEL_PORTS=' '
 # 名字 shell 侧开通得出来、协议侧不认。
 # 显式枚举没有范围端点，因此与 locale 无关：在哪台机器上、`LC_ALL` 是什么，结论都
 # 一样。钉 `LC_ALL=C` 也能修，但那把正确性挂在「有没有人后来把这行删掉/覆盖掉」上。
-# 第三个参数是名词，默认「节点名」。加它是因为 agent 段与 node 段共用同一个字符集
-# （协议地址的两段本来就同规则），复用这个校验器比再抄一份字符类好；但错误信息里说
-# 「节点名」会让读的人去查错东西。
 beta_assert_node_name() {
-  local name="$1" where="$2" noun="${3:-节点名}"
-  [ -n "$name" ] || beta_die "${where}：${noun}为空"
-  [ "${#name}" -le 64 ] || beta_die "${where}：${noun} $name 超过协议上限 64 字符，拒绝"
+  local name="$1" where="$2"
+  [ -n "$name" ] || beta_die "${where}：节点名为空"
+  [ "${#name}" -le 64 ] || beta_die "${where}：节点名 $name 超过协议上限 64 字符，拒绝"
   case "$name" in
     *[!abcdefghijklmnopqrstuvwxyz0123456789_-]*)
-      beta_die "${where}：${noun} $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
+      beta_die "${where}：节点名 $name 含小写字母、数字、-、_ 之外的字符，拒绝" ;;
     [!abcdefghijklmnopqrstuvwxyz0123456789]*|*[!abcdefghijklmnopqrstuvwxyz0123456789])
-      beta_die "${where}：${noun} $name 必须以小写字母或数字开始和结束，拒绝" ;;
+      beta_die "${where}：节点名 $name 必须以小写字母或数字开始和结束，拒绝" ;;
   esac
   return 0
 }
@@ -961,76 +958,6 @@ beta_export_peer_wake_psk() {
   psk="$(cat "$psk_file")"
   [ -n "$psk" ] || return 1
   export "$psk_env=$psk"
-}
-
-# ── 无人值守那一轮的预批准（settings.json） ─────────────────────────────────
-#
-# 常驻的每一轮跑在 `permissionMode: 'dontAsk'` 下，语义是**不提示、未预批准即拒绝**，
-# 而 `requestPermission` 在 `packages/resident/src/acp-client.ts` 里被硬钉成
-# `cancelled`。所以「没人批准」不是等待，是当场拒绝。
-#
-# 2026-08-28 在 p11 上撞到的形状：operator 让 agent 在自己的工作区里建一个文件，回话
-# 是「当前权限模式拒绝写入」——而工作区目录本身可写，节点的 .err 里一条文件系统错误
-# 都没有。**缺的不是权限位，是预批准。**只读工具（`ls` 那次的 Terminal）本来就跑得动，
-# 写文件则一律落在拒绝那一侧。
-#
-# 这里派生一份最小的授权清单。四件事跟着这个选择：
-#
-#  · **逐条绝对路径，不用 `**` 兜底。**这份文件是给人看的授权清单：一行一个工作区，
-#    读的人不必先知道 cwd 是什么才能判断它给出了什么。
-#  · **只放行 Write / Edit，不放行 Bash。**只读命令本来就能跑，而放行整个 Bash 是另一
-#    个量级的授权——要不要给，等有真实需要时单独决定，不在这里顺手带上。
-#  · **它不是天花板。**`packages/resident/src/guard.ts` 的硬名单排在所有 allow 规则**之
-#    前**，身份目录、审计链、admission ledger 无论这份文件写什么都进不去；那张表是包内
-#    的冻结字面量，没有任何配置读取路径能清空它。
-#  · **规则内容的 `//` 前缀是绝对路径的写法**（`Write(//root/…/**)`），不是笔误：规则内
-#    容那一段以 `/` 开头才被当成绝对路径，而工作区路径自己也以 `/` 开头。
-beta_node_settings_json() {
-  local ws_root="$1"
-  shift
-  local agent first=1
-  printf '{\n  "permissions": {\n    "allow": [\n'
-  for agent in "$@"; do
-    [ "$first" = 1 ] || printf ',\n'
-    first=0
-    printf '      "Write(/%s/%s/**)",\n      "Edit(/%s/%s/**)"' \
-      "$ws_root" "$agent" "$ws_root" "$agent"
-  done
-  printf '\n    ]\n  }\n}\n'
-}
-
-# 写入（或确认已一致）节点配置根里的 settings.json。
-#
-# 返回 0 = 这次写了，1 = 本来就一致。**内容不一致时按仓库这份重写**，与单元模板同一条
-# 纪律：这个文件是派生物，手改它的下一次部署会把它盖掉，所以要么改仓库、要么别改。
-beta_seed_node_settings() {
-  local config_dir="$1" ws_root="$2"
-  shift 2
-  local target="$config_dir/settings.json" desired agent
-  # 名字直接进 JSON 字符串，所以在这里挡住能破坏它的字符——这个校验器的字符集
-  # （小写字母、数字、-、_）本来就不含引号与反斜杠，一次校验同时解决两件事。
-  # **不做转义而是拒绝**：一个需要转义才能表达的 agent 名，在工作区路径那一侧也
-  # 已经是麻烦，静默接受只是把发现它的时刻推迟到更难查的地方。
-  #
-  # **校验必须在命令替换之外。**放进 beta_node_settings_json 里看起来更贴近用处，
-  # 但那个函数整个跑在 `$( )` 里，`beta_die` 的 exit 只结束那个子 shell：调用方
-  # 拿到一段被截断的 JSON、退出码 0，然后把它写进 settings.json。实测过一次，
-  # 写出来的是半截 `{ "permissions": { "allow": [`。
-  for agent in "$@"; do
-    beta_assert_node_name "$agent" '预批准清单' 'agent 名'
-  done
-  desired="$(beta_node_settings_json "$ws_root" "$@")"
-  # 0700 而不是留给 umask：这一步可能先于常驻自己建配置根跑到，而常驻建的那个是
-  # 0700。根目录已经是 0700 所以这不是一道真的暴露面，但让同一个目录的权限位取决于
-  # 「谁先跑到」，是下一个人查隔离时要多花的一小时。
-  mkdir -p "$config_dir"
-  chmod 700 "$config_dir"
-  if [ -f "$target" ] && [ "$(cat "$target")" = "$desired" ]; then
-    return 1
-  fi
-  printf '%s' "$desired" >"$target"
-  chmod 600 "$target"
-  return 0
 }
 
 # beta_random_hex <字节数> —— 生成一串随机 hex。

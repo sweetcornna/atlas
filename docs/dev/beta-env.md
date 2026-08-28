@@ -414,54 +414,39 @@ $QIANMO_BETA_ROOT/                 # 默认 $HOME/qianmo-beta（无 sudo，不�
 
 三身份共存的底线由 `identity-coexistence-m1.md` 承担，本文不重述。**内测机器上多的那一条**：`$QIANMO_BETA_ROOT` 必须在 `~/.occ` / `~/.qianmo` / `~/.claude` **之外**，`demo_guard_root` 的同形守卫要原样搬过来——内测机器上真的会有人拿同一台机器跑别的东西。
 
-### 4.1.1 预批准清单：`nodes/<node>/config/settings.json`
+### 4.1.1 `--allow-workspace-edits`：不给它，agent 连自己的工作区都写不了
 
-上一节说「配置根之下不由本文规定」，这一份是**唯一的例外**，因为它不是基座派生的，是
-`beta-up.sh` 的节点腿写进去的。
+这一节讲的不是目录，是一个**必须显式给**的启动开关，放在这里是因为它决定 `workspaces/`
+那几个目录到底能不能写。
 
-**为什么必须有它。**常驻的每一轮跑在 `permissionMode: 'dontAsk'` 下，语义是**不提示、
-未预批准即拒绝**；`requestPermission` 在 `packages/resident/src/acp-client.ts` 里被硬钉成
-`cancelled`。所以「没人批准」不是等待，是当场拒绝。没有这份清单，agent 连自己的工作区都
-写不了。
+**默认为什么是写不了。**无人值守的每一轮跑在 `permissionMode: 'dontAsk'` 下，语义是**不
+提示、未预批准即拒绝**；而常驻对每一次授权请求都答 `cancelled`
+（`packages/resident/src/acp-client.ts`）。两者合起来：没有任何需要授权的动作会被放行，
+包括在自己工作区里建一个文件。
 
-**失败的形状很难认**（2026-08-28 在 p11 上撞到过）：工作区目录可写、节点 `.err` 里一条
-文件系统错误都没有、只读工具（`ls`）跑得好好的，只有模型回话里一句「当前权限模式拒绝写
-入」。查文件权限位查不出任何东西——**缺的不是权限位，是预批准**。
+**失败的形状很难认**（2026-08-28 在 p11 上撞到过）：投递、回执、已读、终态回复**全绿**，
+工作区目录可写，节点 `.err` 里一条文件系统错误都没有，只读工具（`ls`）跑得好好的——只有
+模型回话里一句「当前权限模式拒绝文件写入」。查文件权限位查不出任何东西。
 
-内容是逐条绝对路径，一个 agent 工作区两条：
+**settings.json 的 allow 规则在这条路上不生效，不要往那个方向修。**这是实测结论，不是推
+测：ACP 会话的权限上下文由 `getEmptyToolPermissionContext()` 建
+（`src/services/acp/agent/createSessionMethod.ts`），`alwaysAllowRules` 是**空的**，settings
+里的规则根本不进这条路。第一版修法正是往节点配置根写了一份 `settings.json`，部署上去之后
+写文件**依然被拒**——那份文件是惰性的，而且比没有更糟：它看起来像已经授权了。
 
-```json
-{
-  "permissions": {
-    "allow": [
-      "Write(//root/qianmo-beta/workspaces/beta-4/planner/**)",
-      "Edit(//root/qianmo-beta/workspaces/beta-4/planner/**)",
-      "Write(//root/qianmo-beta/workspaces/beta-4/reviewer/**)",
-      "Edit(//root/qianmo-beta/workspaces/beta-4/reviewer/**)"
-    ]
-  }
-}
-```
+真正生效的旋钮是**模式**，因为模式经 `_meta` 传进会话。`--allow-workspace-edits` 把它从
+`dontAsk` 放宽到 `acceptEdits`，而 `acceptEdits` 只放宽一件事：**工作目录之内**的编辑
+（基座 `filesystem.ts` 的 `pathInAllowedWorkingPath` 门控）。三层保护一层没少：
 
-四件事跟着这个形状：
+- 配置文件与敏感路径仍由 `checkPathSafetyForAutoEdit` 挡在前面；
+- 本节点的硬名单（`packages/resident/src/guard.ts`）排在所有判定**之前**，身份目录、审计
+  链、准入台账进不去，且那张表是包内的冻结字面量；
+- 其余需要授权的工具照样落到 `cancelled`，也就是照样拒绝。
 
-- **两个斜杠不是笔误。**规则内容那一段以 `/` 开头才被当成绝对路径，而工作区路径自己也以
-  `/` 开头。少一个就变成一条相对 cwd 的规则——而 cwd 正是 agent 的工作区，于是它**看起来
-  照样能用**，只是不再说得清授权范围。
-- **不放行 `Bash`。**只读命令本来就跑得动，放行整个 Bash 是另一个量级的授权；要给，也该
-  是单独一次决定。
-- **它不是天花板。**`packages/resident/src/guard.ts` 的硬名单排在所有 allow 规则**之前**，
-  身份目录、审计链、准入台账无论这份文件写什么都进不去；那张表是包内的冻结字面量，没有
-  任何配置读取路径能清空它。
-- **它是派生物。**每次起节点腿都会比对并按仓库那份重写，手改会被下一次部署盖掉——要改
-  改仓库。**而且它和模型凭据同一条时序纪律**：settings 是进程起来时读的，事后写进去到不了
-  已经在跑的那一个，所以脚本在节点已经在跑时会连带警告这一条。
-
-agent 名进 JSON 之前要过 `beta_assert_node_name`（字符集本来就不含引号与反斜杠，一次校验
-同时解决路径与 JSON 两件事）。**校验必须在命令替换之外**——放进拼 JSON 那个函数里，它整个
-跑在 `$( )` 里，`beta_die` 的 exit 只结束那个子 shell，调用方拿到一段截断的 JSON、退出码 0，
-然后把半截 `{ "permissions": { "allow": [` 写进 settings.json。这不是假想，是写这一节时实测
-出来的第一版行为。
+**它必须写在启动命令里，不能省成默认值**，与任务策略那两个开关同一条纪律（issue #10）：
+省掉它，这台节点能不能干活就由「跑的是哪一版产物」决定。`beta-up.sh` 的节点腿写死了它，
+`demo/env/resident-task-policy.test.ts` 钉住它不会被悄悄删掉。演示拓扑（`demo/env/up.sh`
+等）**不**列它——那两处是本机跑给人看的，放宽与否该是各自的决定。
 
 ### 4.2 定案：审计链按节点分文件，**不集中**
 
