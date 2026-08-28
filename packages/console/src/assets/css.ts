@@ -838,6 +838,23 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .turn-p { margin: 0; white-space: pre-wrap; }
 .turn-p + .turn-p { margin-top: var(--space-2); }
 .turn-empty { margin: 0; color: var(--color-muted); }
+/* The closed markdown subset (view/richText.ts). Code scrolls inside its own
+   box so a long command never makes the page scroll sideways. */
+.turn-code {
+  margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  border-radius: var(--radius-md); overflow-x: auto;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+}
+.turn-code > code { white-space: pre; }
+.bubble code.mono {
+  padding: 1px 5px; border-radius: 5px; font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+.turn-list { margin: var(--space-2) 0 0; padding-left: 1.15em; }
+.turn-list > li { margin: 0; }
+.turn-list > li + li { margin-top: 3px; }
+.turn-p + .turn-code, .turn-p + .turn-list { margin-top: var(--space-2); }
 .turn-marks { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
 /* A notice: the same left edge, a dot instead of an avatar, and no bubble.

@@ -111,6 +111,8 @@ export interface ResidentTurnProgress {
   readonly severity: 'info' | 'warn' | 'error'
   /** Sender-side idempotency key, stable across a redelivery of the same step. */
   readonly dedupKey: string
+  /** File paths the tool named, when it named any. Folded away by the reader. */
+  readonly detail?: string
 }
 
 /**
@@ -132,6 +134,15 @@ export interface ResidentTurnProgress {
  * budget, even when two sessions run at once.
  */
 const MAX_PROGRESS_PER_TURN = 24
+
+/**
+ * File paths carried with one step.
+ *
+ * Bounded because a single edit tool can name a hundred files and the summary
+ * beside it is one line: the point of the list is "which corner of the tree is
+ * this touching", and the first few answer that as well as all of them do.
+ */
+const MAX_LOCATIONS_PER_STEP = 8
 
 /** ACP tool kinds rendered as a verb. Anything unlisted keeps the bare title. */
 const TOOL_KIND_VERBS: Readonly<Record<string, string>> = {
@@ -457,6 +468,21 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
           ? title
           : `${verb}：${title}`
 
+    // 工具报了它碰哪些文件就带上，报了才带——**不去猜**，也不去正则解析模型
+    // 说了什么。带上的是路径本身，不是一个宣称有结构的东西：`notify` 的载荷
+    // 只有字符串，把「改了哪些文件」硬编成一种格式，等于在没有协议支持的地方
+    // 私自定义一个，而下一个读它的人无从知道那是约定还是巧合。
+    const locations = Array.isArray(update['locations'])
+      ? (update['locations'] as unknown[])
+          .map(one =>
+            typeof one === 'object' && one !== null
+              ? progressText((one as Record<string, unknown>)['path'])
+              : undefined,
+          )
+          .filter((one): one is string => one !== undefined)
+          .slice(0, MAX_LOCATIONS_PER_STEP)
+      : []
+
     active.progressCount += 1
     active.announcedTools.add(toolCallId)
     if (failed) active.announcedTools.add(`${toolCallId}#failed`)
@@ -466,6 +492,7 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       summary: failed ? `${summary} — 失败` : summary,
       severity: failed ? 'warn' : 'info',
       dedupKey,
+      ...(locations.length === 0 ? {} : { detail: locations.join('\n') }),
     })
   }
 

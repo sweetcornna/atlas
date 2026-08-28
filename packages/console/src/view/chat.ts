@@ -64,6 +64,7 @@ import {
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { renderRichText } from './richText.js'
 import { formatClock, formatRelative, formatShortDuration } from './format.js'
 
 /** How much of the last turn the session rail shows. */
@@ -185,21 +186,19 @@ function turnMarks(turn: ChatTurn): string {
 /**
  * The text of one turn.
  *
- * `<p>` per blank-line-separated block, `escapeHtml` on every one. No markdown,
- * no code-fence detection, no link autolinking: the model on the other end is
- * being asked questions by an operator holding an admin token, and every one of
- * those three features is a way for its output to become markup on this page.
- * Whitespace is preserved by CSS (`white-space: pre-wrap`), which is the whole
- * of the formatting this page offers.
+ * A closed subset of markdown — fences, inline code, lists, bold — rendered by
+ * `richText.ts`, whose module note carries the reasoning. The short version,
+ * because this is where someone will look first: **the whole string is escaped
+ * before any structure is decided**, so no branch in there can emit a tag it
+ * did not spell out itself. Links, images and raw HTML stay out.
+ *
+ * This replaced a flat「一律 `<p>`，没有 markdown」rule. That rule was right
+ * about the danger and wrong about the remedy: an answer full of paths and
+ * commands rendered as one grey wall is a wall nobody reads, and an operator
+ * who cannot tell a command from prose eventually runs the prose.
  */
 function turnText(text: string): string {
-  const blocks = text.split(/\n{2,}/).filter(block => block.trim().length > 0)
-  if (blocks.length === 0) {
-    return `<p class="turn-empty">（空）</p>`
-  }
-  return blocks
-    .map(block => `<p class="turn-p">${escapeHtml(block)}</p>`)
-    .join('')
+  return renderRichText(text)
 }
 
 const AUTHOR_CLASS: Readonly<Record<ChatTurn['author'], string>> = {

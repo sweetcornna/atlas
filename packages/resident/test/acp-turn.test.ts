@@ -396,6 +396,32 @@ describe('turn progress', () => {
     await finish()
   })
 
+  test('file paths the tool named ride along, bounded', async () => {
+    const steps: Array<{ detail?: string }> = []
+    const { port, finish } = await runningPort(steps)
+
+    port.handleSessionUpdate(
+      toolCall('t1', {
+        kind: 'edit',
+        locations: Array.from({ length: 12 }, (_unused, index) => ({
+          path: `src/f${index}.ts`,
+        })),
+      }),
+    )
+
+    expect(steps[0]?.detail?.split('\n')).toHaveLength(8)
+    expect(steps[0]?.detail).toContain('src/f0.ts')
+    await finish()
+  })
+
+  test('a tool that named no files carries no detail', async () => {
+    const steps: Array<{ detail?: string }> = []
+    const { port, finish } = await runningPort(steps)
+    port.handleSessionUpdate(toolCall('t1'))
+    expect(steps[0]?.detail).toBeUndefined()
+    await finish()
+  })
+
   test('a turn stops reporting at the cap rather than queueing past it', async () => {
     const steps: unknown[] = []
     const { port, finish } = await runningPort(steps)

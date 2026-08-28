@@ -1288,6 +1288,7 @@ export class QianmoResident {
       summary: progress.summary,
       observedAt: Date.now(),
       dedupKey: progress.dedupKey,
+      ...(progress.detail === undefined ? {} : { detail: progress.detail }),
       // Correlation only, never a correlation key (rule C-1).
       causeTaskId: task.envelope.taskId,
     }
