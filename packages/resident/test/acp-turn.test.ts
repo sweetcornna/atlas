@@ -380,6 +380,43 @@ describe('turn progress', () => {
     await finish()
   })
 
+  test('通知工具自己不占一行——它的产出就是那一行', async () => {
+    // 2026-08-28 p11 上的形状：一行裸工具名 `qianmo_notify`，紧接着就是它产出的
+    // 那句话。两行说同一件事，而前一行是没信息的那行。
+    const steps: Array<{ summary: string }> = []
+    const { port, finish } = await runningPort(steps as unknown[])
+
+    port.handleSessionUpdate(
+      toolCall('t1', { kind: 'other', title: 'qianmo_notify' }),
+    )
+    port.handleSessionUpdate(toolCall('t2', { kind: 'edit' }))
+
+    expect(steps.map(step => step.summary)).toEqual([
+      '改：packages/router/src/rate.ts',
+    ])
+    await finish()
+  })
+
+  test('跳过的那一次不白占本轮的过程额度', async () => {
+    // 跳过发生在预算检查之后、扣减之前。所以连着 30 次通知工具调用一分额度都不花，
+    // 第 31 个真工具照样报得出来——否则一个话多的 agent 能把 24 条额度全耗在几行
+    // 根本不会出现的过程上。
+    const steps: Array<{ summary: string }> = []
+    const { port, finish } = await runningPort(steps as unknown[])
+
+    for (let index = 0; index < 30; index += 1) {
+      port.handleSessionUpdate(
+        toolCall(`n${index}`, { kind: 'other', title: 'qianmo_notify' }),
+      )
+    }
+    port.handleSessionUpdate(toolCall('real', { kind: 'edit' }))
+
+    expect(steps.map(step => step.summary)).toEqual([
+      '改：packages/router/src/rate.ts',
+    ])
+    await finish()
+  })
+
   test('a failure gets its own line, and only one', async () => {
     const steps: Array<{ severity: string; dedupKey: string }> = []
     const { port, finish } = await runningPort(steps)

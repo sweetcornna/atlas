@@ -176,6 +176,30 @@ const TOOL_KIND_VERBS = new Map<string, string>([
   ['fetch', '取'],
 ])
 
+/**
+ * The one tool that must not spend a progress row on itself.
+ *
+ * Its whole purpose is to put a line in the operator's transcript. Reporting
+ * the call *and* delivering what the call produced says the same thing twice,
+ * and the tool-call half is the useless one: it arrives as a bare tool name
+ * (its `kind` is not one this file has a verb for, so the fallback prints the
+ * title verbatim) immediately above the sentence the agent actually wrote.
+ * 2026-08-28 on p11 that read:
+ *
+ *     qianmo_notify
+ *     hello.txt 未能创建
+ *
+ * Matching on the title is the only handle available here — the step carries
+ * no tool identity beyond it. That is worth stating because it looks fragile:
+ * if the agent ever reports a different title for this tool, the row comes
+ * back, which is the safe direction to fail (a redundant row, never a missing
+ * one). The spelling is pinned against the host's constant by
+ * `src/services/qianmo/__tests__/notifyToolName.test.ts` — this package is a
+ * leaf and cannot import `src/`, so the two copies are held together by a test
+ * rather than by an import.
+ */
+export const SELF_REPORTING_TOOL_TITLE = 'qianmo_notify'
+
 function progressText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
     ? value.trim()
@@ -486,6 +510,11 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       return
     }
     const title = progressText(update['title'])
+    // 通知工具自己不占一行——它的产出就是一行，见 SELF_REPORTING_TOOL_TITLE。
+    // 位置是刻意的：在预算**检查**之后、预算**扣减**之前。于是被跳过的调用一分额度
+    // 都不花，后面真正的工具不会因为它而少报一条——一轮里连着调二十次通知工具，也
+    // 不该把 MAX_PROGRESS_PER_TURN 耗在几行根本不会出现的过程上。
+    if (title === SELF_REPORTING_TOOL_TITLE) return
     const verb = TOOL_KIND_VERBS.get(String(update['kind']))
     const summary =
       title === undefined
