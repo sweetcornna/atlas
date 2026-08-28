@@ -30,6 +30,7 @@ import {
   normalizeChatEndpoint,
   type ChatDialer,
   type ChatLink,
+  type ConsoleChatEndpoint,
   type ConsoleChatHub,
 } from '../consoleChat.js'
 
@@ -38,6 +39,7 @@ const ENDPOINT = 'ws://127.0.0.1:38612'
 const OTHER = 'qianmo://node-z/stranger'
 const FROM = 'qianmo://console/operator'
 const PSK = 'demo-psk-that-is-long-enough-000'
+const OTHER_PSK = 'other-psk-that-is-long-enough-01'
 
 function agent(address: string, endpoint: string): ConsoleAgent {
   return {
@@ -96,6 +98,7 @@ class FakeLink implements ChatLink {
   constructor(
     readonly url: string,
     readonly reply: (message: QianmoMessage) => void,
+    readonly psk: string,
   ) {}
 
   async connect(): Promise<void> {
@@ -124,7 +127,7 @@ class FakeDialer {
   nextConnectError: Error | null = null
 
   readonly dial: ChatDialer = input => {
-    const link = new FakeLink(input.url, input.onReply)
+    const link = new FakeLink(input.url, input.onReply, input.psk)
     link.connectError = this.nextConnectError
     this.links.push(link)
     return link
@@ -162,7 +165,7 @@ afterEach(async () => {
 function harness(
   options: {
     readonly storePath?: string
-    readonly endpoints?: readonly string[]
+    readonly endpoints?: readonly (string | ConsoleChatEndpoint)[]
     readonly taskTtlMs?: number
     readonly registry?: FakeRegistry
   } = {},
@@ -176,8 +179,9 @@ function harness(
 
   const hub = createConsoleChatPort({
     from: FROM,
-    endpoints: options.endpoints ?? [ENDPOINT],
-    psk: PSK,
+    endpoints: (options.endpoints ?? [ENDPOINT]).map(one =>
+      typeof one === 'string' ? { url: one, psk: PSK } : one,
+    ),
     storePath,
     registry,
     dial: dialer.dial,
@@ -345,6 +349,62 @@ describe('chat send', () => {
     expect(sent).toMatchObject({ ok: false, failure: { code: 'rejected' } })
     // 注册中心没有鉴权，所以「它说端点在那儿」不是拨过去的理由。
     expect(h.dialer.links).toHaveLength(0)
+  })
+
+  test('a named endpoint only serves the node it was authorised for', async () => {
+    // 注册中心零鉴权：它完全可以说 node-z 的 agent 就在 node-b 的端点上。绑定让
+    // 那条被改过的记录拨不动——否则它等于把 node-b 的钥匙借给了任何一个名字。
+    const registry = new FakeRegistry()
+    registry.listResult = {
+      ok: true,
+      value: [agent(TARGET, ENDPOINT), agent(OTHER, ENDPOINT)],
+    }
+    const h = harness({
+      registry,
+      endpoints: [{ url: ENDPOINT, psk: PSK, node: 'node-b' }],
+    })
+
+    const targets = await h.hub.targets()
+    if (!targets.ok) throw new Error('unreachable')
+    expect(targets.value.map(one => [one.address, one.dialable])).toEqual([
+      [TARGET, true],
+      [OTHER, false],
+    ])
+
+    const opened = await h.hub.open(OTHER)
+    if (!opened.ok) throw new Error('unreachable')
+    const sent = await h.hub.send({ sessionId: opened.value.id, text: '你好' })
+    expect(sent).toMatchObject({ ok: false, failure: { code: 'rejected' } })
+    if (sent.ok) throw new Error('unreachable')
+    // 「不在名单里」与「在名单里但绑给了别人」是两句不同的话。
+    expect(sent.failure.message).toContain('在允许名单里是 node-b 的端点')
+    expect(sent.failure.message).toContain('--chat-url node-z=')
+    expect(h.dialer.links).toHaveLength(0)
+  })
+
+  test('each endpoint is dialled with its own key', async () => {
+    const registry = new FakeRegistry()
+    registry.listResult = {
+      ok: true,
+      value: [agent(TARGET, ENDPOINT), agent(OTHER, 'ws://10.0.0.9:38611')],
+    }
+    const h = harness({
+      registry,
+      endpoints: [
+        { url: ENDPOINT, psk: PSK, node: 'node-b' },
+        { url: 'ws://10.0.0.9:38611', psk: OTHER_PSK, node: 'node-z' },
+      ],
+    })
+
+    const first = await h.hub.open(TARGET)
+    if (!first.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: first.value.id, text: '一' })
+    expect(h.dialer.last.psk).toBe(PSK)
+
+    const second = await h.hub.open(OTHER)
+    if (!second.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: second.value.id, text: '二' })
+    expect(h.dialer.last.psk).toBe(OTHER_PSK)
   })
 
   test('refuses a target the registry does not have', async () => {

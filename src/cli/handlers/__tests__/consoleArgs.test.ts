@@ -73,7 +73,7 @@ describe('occ console argument parsing', () => {
       wakeTargets: [],
       label: `${DEFAULT_CONSOLE_HOSTNAME}:${DEFAULT_CONSOLE_PORT}`,
       // 聊天面默认关着：没有 --chat-url 就没有可拨的端点，`/chat` 整页不存在。
-      chatUrls: [],
+      chatTargets: [],
       chatFrom: DEFAULT_CONSOLE_CHAT_FROM,
       chatStorePath: consoleChatStorePath(),
       // 归属面同理：没有 --node-server 就整块不显示，而不是显示一列空白。
@@ -173,7 +173,18 @@ describe('occ console argument parsing', () => {
       label: 'node-a 控制台',
       viewToken: 'view-token-long-enough',
       adminToken: 'admin-token-long-enough',
-      chatUrls: ['ws://10.0.0.3:38611/', 'ws://10.0.0.4:38612/'],
+      chatTargets: [
+        {
+          node: DEFAULT_CONSOLE_NODE,
+          url: 'ws://10.0.0.3:38611/',
+          legacy: true,
+        },
+        {
+          node: DEFAULT_CONSOLE_NODE,
+          url: 'ws://10.0.0.4:38612/',
+          legacy: true,
+        },
+      ],
       chatFrom: 'qianmo://ops/alice',
       chatStorePath: '/tmp/qianmo/chat.ndjson',
       nodeServers: [{ node: 'node-a', server: 'p11' }],
@@ -191,13 +202,91 @@ describe('occ console argument parsing', () => {
           '--chat-url=ws://127.0.0.1:38612',
         ],
         'qianmo',
-      ).chatUrls,
-    ).toEqual(['ws://127.0.0.1:38611/', 'ws://127.0.0.1:38612/'])
+      ).chatTargets,
+    ).toEqual([
+      {
+        node: DEFAULT_CONSOLE_NODE,
+        url: 'ws://127.0.0.1:38611/',
+        legacy: true,
+      },
+      {
+        node: DEFAULT_CONSOLE_NODE,
+        url: 'ws://127.0.0.1:38612/',
+        legacy: true,
+      },
+    ])
+  })
+
+  test('takes named chat targets and keeps them bound to their node', () => {
+    expect(
+      parseConsoleArgs(
+        [
+          '--chat-url=beta-1=ws://127.0.0.1:38631',
+          '--chat-url=beta-2=ws://127.0.0.1:38632',
+          // 同一条给两遍仍然是复制粘贴。
+          '--chat-url=beta-2=ws://127.0.0.1:38632/',
+        ],
+        'qianmo',
+      ).chatTargets,
+    ).toEqual([
+      { node: 'beta-1', url: 'ws://127.0.0.1:38631/', legacy: false },
+      { node: 'beta-2', url: 'ws://127.0.0.1:38632/', legacy: false },
+    ])
+  })
+
+  test('refuses to mix legacy chat URLs with named ones', () => {
+    // 两种形式的 PSK 来源不同（共享的一把 vs 每节点一把），混着给意味着这台
+    // 控制台一半绑了节点一半没绑——没有哪种读法是对的。
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--chat-url=ws://127.0.0.1:38611',
+          '--chat-url=beta-1=ws://127.0.0.1:38631',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('--chat-url cannot mix legacy URLs with named values')
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--chat-url=beta-1=ws://127.0.0.1:38631',
+          '--chat-url=ws://127.0.0.1:38611',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('--chat-url cannot mix legacy URLs with named values')
+  })
+
+  test('one node has one chat endpoint, and one endpoint has one node', () => {
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--chat-url=beta-1=ws://127.0.0.1:38631',
+          '--chat-url=beta-1=ws://127.0.0.1:38632',
+        ],
+        'qianmo',
+      ),
+    ).toThrow('--chat-url repeats node beta-1')
+    // 反过来也不行：PSK 按节点取，一个端点挂两个名字就没有唯一的钥匙。
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--chat-url=beta-1=ws://127.0.0.1:38631',
+          '--chat-url=beta-2=ws://127.0.0.1:38631',
+        ],
+        'qianmo',
+      ),
+    ).toThrow(
+      '--chat-url gives ws://127.0.0.1:38631/ to both beta-1 and beta-2',
+    )
   })
 
   test('rejects a chat endpoint that is not ws or wss', () => {
     expect(() =>
       parseConsoleArgs(['--chat-url=http://127.0.0.1:38611'], 'qianmo'),
+    ).toThrow('--chat-url must use ws or wss')
+    expect(() =>
+      parseConsoleArgs(['--chat-url=beta-1=http://127.0.0.1:38631'], 'qianmo'),
     ).toThrow('--chat-url must use ws or wss')
     expect(() =>
       parseConsoleArgs(['--chat-store=relative/chat.ndjson'], 'qianmo'),

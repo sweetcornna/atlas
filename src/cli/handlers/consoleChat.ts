@@ -117,13 +117,31 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
 // 选项与默认值
 // ---------------------------------------------------------------------------
 
+/**
+ * 一个允许拨号的入站端点，连同拨它要用的那把钥匙。
+ *
+ * `node` 给了就是**绑定**：注册中心说某个 agent 在这个端点上，只有当那个地址的
+ * 节点段正是这个名字时才拨。注册中心自己零鉴权（console.md §8.2），所以它说的
+ * 「谁在哪」只是发现，不是授权——绑定让一条被改过的记录最多把消息导向**它自己
+ * 那个节点已经被授权的**端点，而不是名单里的任何一个。
+ *
+ * `node` 不给就是旧的裸 URL 形式：不绑节点，用共享的那把 PSK。保留它是因为它是
+ * 这个参数原本的形状，且单节点的部署里它仍然是最短的写法。
+ */
+export interface ConsoleChatEndpoint {
+  /** 入站端点，已归一（`new URL(...).toString()`）。 */
+  readonly url: string
+  /** 拨这个端点用的传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
+  readonly psk: string
+  /** 绑定到这个节点；不给则不绑（旧式条目）。 */
+  readonly node?: string
+}
+
 interface ConsoleChatOptions {
   /** 控制台自己的地址，`qianmo://<node>/<agent>`。 */
   readonly from: string
-  /** 允许拨号的入站端点，已归一（`new URL(...).toString()`）。 */
-  readonly endpoints: readonly string[]
-  /** 传输层 PSK。**只从环境变量来**，不从命令行、更不从页面来。 */
-  readonly psk: string
+  /** 允许拨号的端点与各自的钥匙。 */
+  readonly endpoints: readonly ConsoleChatEndpoint[]
   /** 会话落盘位置（绝对路径，由 `consoleArgs.ts` 从 `occConfigPath()` 派生）。 */
   readonly storePath: string
   /** 复用控制台既有的注册中心端口——名册只有一个出处。 */
@@ -241,13 +259,29 @@ export function createConsoleChatPort(
   const sendTimeoutMs = options.sendTimeoutMs ?? DEFAULT_CHAT_SEND_TIMEOUT_MS
 
   const self = assertAddress(options.from, 'chat from')
-  const allowed = new Set<string>()
+  const allowed = new Map<string, ConsoleChatEndpoint>()
   for (const endpoint of options.endpoints) {
-    const normalized = normalizeChatEndpoint(endpoint)
+    const normalized = normalizeChatEndpoint(endpoint.url)
     if (normalized === null) {
-      throw new Error(`chat endpoint must be ws or wss: ${endpoint}`)
+      throw new Error(`chat endpoint must be ws or wss: ${endpoint.url}`)
     }
-    allowed.add(normalized)
+    allowed.set(normalized, { ...endpoint, url: normalized })
+  }
+
+  /**
+   * 这个地址允许拨到哪个端点上——`null` 就是不允许。
+   *
+   * 两道：端点得在名单里，且那条名单如果绑了节点，地址的节点段得对上。绑定的
+   * 那一道是 `--chat-url <节点>=<url>` 才有的；旧式条目对节点不设限。
+   */
+  function allowedFor(
+    address: ReturnType<typeof assertAddress>,
+    endpoint: string,
+  ): ConsoleChatEndpoint | null {
+    const entry = allowed.get(endpoint)
+    if (entry === undefined) return null
+    if (entry.node !== undefined && entry.node !== address.node) return null
+    return entry
   }
 
   const store = new ChatStore(options.storePath)
@@ -455,7 +489,11 @@ export function createConsoleChatPort(
 
   // --- links -------------------------------------------------------------
 
-  async function linkFor(url: string, peerNode: string): Promise<ChatLink> {
+  async function linkFor(
+    endpoint: ConsoleChatEndpoint,
+    peerNode: string,
+  ): Promise<ChatLink> {
+    const url = endpoint.url
     const existing = links.get(url)
     if (existing !== undefined && !existing.isClosed()) return existing
     if (existing !== undefined) {
@@ -470,7 +508,7 @@ export function createConsoleChatPort(
       url,
       node: self.node,
       peerNode,
-      psk: options.psk,
+      psk: endpoint.psk,
       onReply,
     })
     links.set(url, link)
@@ -509,7 +547,15 @@ export function createConsoleChatPort(
     }
   }
 
-  async function endpointFor(address: string): Promise<ConsoleResult<string>> {
+  async function endpointFor(
+    address: string,
+  ): Promise<ConsoleResult<ConsoleChatEndpoint>> {
+    let parsed: ReturnType<typeof assertAddress>
+    try {
+      parsed = assertAddress(address)
+    } catch (error) {
+      return fail('invalid', messageOf(error))
+    }
     const listed = await options.registry.list()
     if (!listed.ok) return listed
     const agent = listed.value.find(entry => entry.address === address)
@@ -523,14 +569,28 @@ export function createConsoleChatPort(
         `${address} 的端点不是 ws/wss 地址：${agent.endpoint}`,
       )
     }
-    if (!allowed.has(normalized)) {
+    const entry = allowedFor(parsed, normalized)
+    if (entry !== null) return { ok: true, value: entry }
+
+    // 「不在名单里」与「在名单里但绑给了别的节点」是两个不同的错，不合并：前者
+    // 要补一条授权，后者说明注册中心那条记录与授权对不上——很可能是有人改了它。
+    const bound = allowed.get(normalized)
+    if (bound?.node !== undefined) {
       return fail(
         'rejected',
-        `控制台只向 ${[...allowed].join('、')} 发消息；` +
-          `${address} 的端点是 ${agent.endpoint}，要加进去请重启控制台并补一个 --chat-url`,
+        `${normalized} 在允许名单里是 ${bound.node} 的端点，而 ${address} 说自己在 ` +
+          `${parsed.node}；注册中心没有鉴权，对不上就不拨。要放行请重启控制台并补一个 ` +
+          `--chat-url ${parsed.node}=${normalized}`,
       )
     }
-    return { ok: true, value: normalized }
+    const listedAllowed = [...allowed.values()]
+      .map(one => (one.node === undefined ? one.url : `${one.node}=${one.url}`))
+      .join('、')
+    return fail(
+      'rejected',
+      `控制台只向 ${listedAllowed} 发消息；` +
+        `${address} 的端点是 ${agent.endpoint}，要加进去请重启控制台并补一个 --chat-url`,
+    )
   }
 
   // --- port --------------------------------------------------------------
@@ -556,7 +616,8 @@ export function createConsoleChatPort(
           agent: parsed.agent,
           endpoint: agent.endpoint,
           status: agent.status,
-          dialable: normalized !== null && allowed.has(normalized),
+          dialable:
+            normalized !== null && allowedFor(parsed, normalized) !== null,
         })
       }
       return { ok: true, value: out }

@@ -157,7 +157,7 @@ function parseNamedValue(
 }
 
 /** A complete URL is always the legacy form; its protocol is checked by caller. */
-function legacyWakeUrl(raw: string): URL | undefined {
+function legacyUrlValue(raw: string): URL | undefined {
   try {
     return new URL(raw)
   } catch {
@@ -258,13 +258,17 @@ export interface ConsoleCliConfig {
   /** `--admin-token-file` 给的绝对路径。 */
   readonly adminTokenFile?: string
   /**
-   * 允许聊天拨号的入站端点。**给了才启用聊天面**，且还要有 PSK。
+   * 允许聊天拨号的节点与它的入站端点。**给了才启用聊天面**，且还要有 PSK。
    *
-   * 可以给多次，一次一个端点——名字从注册中心来（发现），能不能拨从这里来
+   * 可以给多次，一次一个——名字从注册中心来（发现），能不能拨从这里来
    * （授权）。注册中心自己没有鉴权，所以两者必须分开，理由写在
    * `consoleChat.ts` 的模块注释里。
+   *
+   * 命名形式 `<节点>=<url>` 把授权收到「**这个**节点在**这个**端点上」，PSK
+   * 也按节点取；旧的裸 URL 形式保留，那种条目对节点不设限、共用一把
+   * `QIANMO_TRANSPORT_PSK`。两种形式不能混着给。
    */
-  readonly chatUrls: readonly string[]
+  readonly chatTargets: readonly ConsoleNodeTarget[]
   /** 控制台自己在网络上的地址。 */
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
@@ -315,7 +319,8 @@ export function parseConsoleArgs(
   let adminToken: string | undefined
   let viewTokenFile: string | undefined
   let adminTokenFile: string | undefined
-  const chatUrls: string[] = []
+  const chatTargets: ConsoleNodeTarget[] = []
+  let legacyChat = false
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
   const nodeServers: ConsoleNodeServer[] = []
@@ -410,7 +415,7 @@ export function parseConsoleArgs(
       const parsed = residentOptionValue(args, index, '--wake-url')
       // A complete URL is legacy even when its query contains `=`. Only
       // remaining values can be interpreted as `<node>=<url>`.
-      const legacyUrl = legacyWakeUrl(parsed.value)
+      const legacyUrl = legacyUrlValue(parsed.value)
       const named =
         legacyUrl === undefined
           ? parseNamedValue(parsed.value, '--wake-url')
@@ -483,14 +488,51 @@ export function parseConsoleArgs(
       index = parsed.next
     } else if (arg === '--chat-url' || arg?.startsWith('--chat-url=')) {
       const parsed = residentOptionValue(args, index, '--chat-url')
-      const url = new URL(parsed.value)
+      // A complete URL is legacy even when its query contains `=`. Only
+      // remaining values can be interpreted as `<node>=<url>`.
+      const legacyUrl = legacyUrlValue(parsed.value)
+      const named =
+        legacyUrl === undefined
+          ? parseNamedValue(parsed.value, '--chat-url')
+          : undefined
+      if (
+        (legacyUrl !== undefined && chatTargets.length > 0 && !legacyChat) ||
+        (named !== undefined && legacyChat)
+      ) {
+        throw new Error('--chat-url cannot mix legacy URLs with named values')
+      }
+      const url = legacyUrl ?? new URL(named?.value ?? parsed.value)
       if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
         throw new Error('--chat-url must use ws or wss')
       }
-      // Repeatable, and deduplicated here rather than at the far end: giving
-      // the same endpoint twice is a copy-paste, not a request for two links.
+      const node = named?.node ?? DEFAULT_CONSOLE_NODE
       const normalized = url.toString()
-      if (!chatUrls.includes(normalized)) chatUrls.push(normalized)
+      // Repeatable, and deduplicated here rather than at the far end: giving
+      // the same entry twice is a copy-paste, not a request for two links.
+      const repeat = chatTargets.some(
+        target => target.node === node && target.url === normalized,
+      )
+      // 两个不同的节点写同一个端点是无解的：PSK 按节点取，而这条链路只有一把。
+      // 与其在拨号时挑一个，不如在这里就说这两行有一行是错的。
+      const shared = chatTargets.find(
+        target => target.url === normalized && target.node !== node,
+      )
+      if (shared !== undefined) {
+        throw new Error(
+          `--chat-url gives ${normalized} to both ${shared.node} and ${node}`,
+        )
+      }
+      // 命名条目一个节点只能有一个端点；旧式条目没有名字，可以给多个。
+      if (
+        named !== undefined &&
+        chatTargets.some(target => target.node === node)
+      ) {
+        if (!repeat) throw new Error(`--chat-url repeats node ${node}`)
+      }
+      if (!repeat) {
+        legacyChat ||= legacyUrl !== undefined
+        chatTargets.push({ node, url: normalized, legacy: named === undefined })
+      }
       index = parsed.next
     } else if (arg === '--chat-from' || arg?.startsWith('--chat-from=')) {
       const parsed = residentOptionValue(args, index, '--chat-from')
@@ -565,7 +607,7 @@ export function parseConsoleArgs(
     ...(adminToken === undefined ? {} : { adminToken }),
     ...(viewTokenFile === undefined ? {} : { viewTokenFile }),
     ...(adminTokenFile === undefined ? {} : { adminTokenFile }),
-    chatUrls,
+    chatTargets,
     chatFrom,
     chatStorePath,
     nodeServers,
@@ -649,10 +691,14 @@ Options (each accepts both --name value and --name=value):
                            on first run. The output is exactly the argument a
                            resident node takes after --trust. Starts no server
                            and reads no token.
-  --chat-url <ws url>      Endpoint the chat face may dial. Repeatable, one per
-                           flag, duplicates folded. The chat face turns on only
-                           when at least one is given AND ${PSK_ENV_VAR}
-                           holds a usable key.
+  --chat-url <node>=<ws url>
+                           Chat dial allowlist. Repeatable, one per flag,
+                           duplicates folded; each named node reads only its
+                           derived PSK environment variable. A legacy bare
+                           <ws url> is still accepted — those entries are not
+                           bound to a node and share ${PSK_ENV_VAR}. The chat
+                           face turns on when at least one entry is given and
+                           at least one of them has a usable key.
   --chat-from <address>    Address the console speaks as.
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
