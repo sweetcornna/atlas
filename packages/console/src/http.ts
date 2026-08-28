@@ -28,6 +28,8 @@
  * | GET | `/v0/audit?…` | view | `AuditPage` |
  * | GET | `/v0/audit/chain/<enc traceId>` | view | `{ chain }`, may be null |
  * | GET | `/v0/limits` | view | `LimitsSnapshot` |
+ * | GET | `/v0/servers` | view | `{ servers }`, or 501 without a mapping |
+ * | PUT | `/v0/servers/<enc server>/note` | admin | the stored `ServerNote` |
  * | POST | `/v0/wake` | admin | `WakeOutcome`, or 501 without a wake port |
  * | GET | `/fragments/{roster,audit,limits}` | view | `text/html` fragment |
  * | GET | `/fragments/chain/<enc traceId>` | view | `text/html` fragment |
@@ -63,6 +65,20 @@
  * `data-action="chain"`, so the client needs somewhere to fetch that panel
  * from as **markup**. The JSON `/v0/audit/chain/…` route stays exactly as
  * specified, for callers that want the data.
+ *
+ * ## A server id is chosen from the startup list, never supplied
+ *
+ * `PUT /v0/servers/<id>/note` looks the id up in `deps.nodeServers` before it
+ * reads the body, and answers 403 when it is not there. This is the same rule
+ * `handleWake` applies to a wake target and it is there for the same reason: the
+ * set of things this console will act on is fixed when it starts, so a caller
+ * holding the admin token cannot grow it by typing into the page. Without the
+ * check, a note route would be an arbitrary key-value store that anyone with
+ * that token could fill up.
+ *
+ * A console started without any `--node-server` answers 501 on both routes
+ * rather than 200 with an empty list: "this console was not told where anything
+ * runs" and "nothing runs anywhere" are different facts.
  *
  * The two asset routes are public because a browser does not attach the
  * console's credential to a `<link>` or `<script>` it discovers inside a page
@@ -157,6 +173,7 @@ import type {
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
+  NodeServer,
   RegisterAgentInput,
   WakeInput,
 } from './deps.js'
@@ -179,6 +196,11 @@ import {
 } from './view/chat.js'
 import { renderChatPage } from './view/chatPage.js'
 import { renderLimits } from './view/limits.js'
+import {
+  MAX_SERVER_NOTE_LENGTH,
+  renderServers,
+  serverCards,
+} from './view/servers.js'
 import { renderLoginPage } from './view/login.js'
 import { renderPage } from './view/page.js'
 import { LoginThrottle } from './throttle.js'
@@ -958,9 +980,40 @@ async function rosterFragment(
             failure: failureOf(certificates),
             binName: deps.binName ?? DEFAULT_BIN_NAME,
           },
+      deps.nodeServers,
     ),
     agents,
   }
+}
+
+/**
+ * The servers section, or nothing at all.
+ *
+ * `undefined` — not an empty string — when this console was started without a
+ * mapping: `page.ts` then leaves the whole section out rather than rendering a
+ * header over an explanation nobody asked for. Degradation here is "the feature
+ * is not on this console", which is a different thing from "the feature failed".
+ *
+ * A note read that fails does **not** take the section with it: the machines
+ * come from the startup flags and are still true, so the strip goes above them.
+ */
+async function serversFragment(
+  deps: ConsoleDeps,
+  credential: ConsoleCredential,
+  now: number,
+): Promise<string | undefined> {
+  const nodeServers = nodeServersOf(deps)
+  if (nodeServers.length === 0) return undefined
+  const notes = await deps.serverNotes?.list()
+  return renderServers({
+    cards: serverCards(nodeServers, notes?.ok === true ? notes.value : []),
+    failure: notes === undefined ? null : failureOf(notes),
+    // Both halves matter: a view token may read a note but not write one, and
+    // a console with no store may not write one whoever is holding it.
+    editable: credential.role === 'admin' && deps.serverNotes !== undefined,
+    notesEnabled: deps.serverNotes !== undefined,
+    now,
+  })
 }
 
 async function auditFragment(
@@ -1091,9 +1144,10 @@ async function handleIndex(
   // its node filter offers the addresses that exist rather than a box to
   // retype one into — so the two reads still overlap and only the render
   // waits.
-  const [roster, trails] = await Promise.all([
+  const [roster, trails, servers] = await Promise.all([
     rosterFragment(deps, now),
     readAuditSources(deps, filter),
+    serversFragment(deps, credential, now),
   ])
   const targetOptions = wakeTargetOptions(
     roster.agents,
@@ -1125,6 +1179,7 @@ async function handleIndex(
         ? {}
         : { wakeTargets: deps.wakeTargets }),
       ...(deps.identity === undefined ? {} : { identity: deps.identity }),
+      ...(servers === undefined ? {} : { servers }),
       limits: renderLimits(deps.limits),
       // The form is rendered disabled with a reason rather than hidden: an
       // operator who cannot find the wake button assumes the console is broken.
@@ -1259,6 +1314,86 @@ async function handleWake(
     return fail(501, 'unsupported', '该控制台没有配置唤醒通道')
   }
   const result = await wake.send(input.value)
+  return result.ok ? json(result.value) : failureResponse(result.failure)
+}
+
+/** The machines this console was started with. Empty means the face is off. */
+function nodeServersOf(deps: ConsoleDeps): readonly NodeServer[] {
+  return deps.nodeServers ?? []
+}
+
+const SERVERS_UNSUPPORTED =
+  '该控制台没有配置服务器归属（启动时缺少 --node-server），因此没有可看的服务器；' +
+  '请在启动 occ console 时用 --node-server <node>=<server> 指定后重试。'
+
+/** An empty string is a legitimate value: it is how an operator clears a note. */
+function parseServerNote(body: Record<string, unknown>): Parsed<string> {
+  const value = body['note']
+  if (typeof value !== 'string') {
+    return { ok: false, message: '字段 note 必须是字符串' }
+  }
+  if (value.length > MAX_SERVER_NOTE_LENGTH) {
+    return {
+      ok: false,
+      message: `备注最多 ${MAX_SERVER_NOTE_LENGTH} 个字符`,
+    }
+  }
+  return { ok: true, value }
+}
+
+async function handleServers(
+  request: Request,
+  deps: ConsoleDeps,
+  credential: ConsoleCredential,
+): Promise<Response> {
+  const denied = guard(credential, 'view', 'guarded')
+  if (denied !== null) return denied
+  if (request.method !== 'GET') return methodNotAllowed(['GET'])
+  const nodeServers = nodeServersOf(deps)
+  if (nodeServers.length === 0) {
+    return fail(501, 'unsupported', SERVERS_UNSUPPORTED)
+  }
+  const notes = await deps.serverNotes?.list()
+  if (notes !== undefined && !notes.ok) return failureResponse(notes.failure)
+  return json({ servers: serverCards(nodeServers, notes?.value ?? []) })
+}
+
+/**
+ * Write one machine's note.
+ *
+ * The allowlist check runs **before the body is read**, so an unknown id costs
+ * a lookup rather than however many bytes the caller decided to send. See the
+ * module note on why the id can only be one of the startup values.
+ */
+async function handleServerNote(
+  request: Request,
+  deps: ConsoleDeps,
+  credential: ConsoleCredential,
+  server: string,
+): Promise<Response> {
+  const denied = guard(credential, 'admin', 'guarded')
+  if (denied !== null) return denied
+  if (request.method !== 'PUT') return methodNotAllowed(['PUT'])
+  const nodeServers = nodeServersOf(deps)
+  if (nodeServers.length === 0) {
+    return fail(501, 'unsupported', SERVERS_UNSUPPORTED)
+  }
+  if (!nodeServers.some(entry => entry.server === server)) {
+    return fail(403, 'rejected', '该服务器不在启动时配置的白名单中')
+  }
+  const notes = deps.serverNotes
+  if (notes === undefined) {
+    return fail(
+      501,
+      'unsupported',
+      '该控制台没有配置备注存储，因此不能保存备注。',
+    )
+  }
+  const body = await readJsonObject(request)
+  if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+  const note = parseServerNote(body)
+  if (!note.ok) return fail(400, 'invalid', note.message)
+  const result = await notes.set(server, note.value)
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
@@ -1525,6 +1660,25 @@ async function dispatchApi(
 
   if (head === 'chat' && segments.length >= 3) {
     return await dispatchChatApi(request, deps, credential, url, segments)
+  }
+
+  if (head === 'servers') {
+    if (segments.length === 2) {
+      return await handleServers(request, deps, credential)
+    }
+    // The id rides in one percent-encoded segment, the same convention an
+    // address uses. The charset the host enforces stops short of `/`, but it
+    // allows `:` — an IPv6 literal is a legitimate machine name — so the
+    // segment still has to be decoded rather than read raw.
+    if (segments.length === 4 && segments[3] === 'note') {
+      return await handleServerNote(
+        request,
+        deps,
+        credential,
+        decodeURIComponent(segments[2] ?? ''),
+      )
+    }
+    return notFound(`unknown path: ${url.pathname}`)
   }
 
   if (head === 'audit') {

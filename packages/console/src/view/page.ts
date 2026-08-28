@@ -100,6 +100,18 @@ export interface PageModel {
   readonly audit: string
   /** Output of `renderLimits`. */
   readonly limits: string
+  /**
+   * Output of `renderServers`, when this console knows where its nodes run.
+   *
+   * Absent leaves the section out of the document entirely rather than
+   * rendering an empty one: a console started without `--node-server` has
+   * nothing to attribute, and a 服务器 header over a blank box reads as a
+   * feature that broke rather than one that was not configured.
+   *
+   * Unlike the roster and the trail, this markup is **not** polled — it holds
+   * a textarea somebody may be halfway through typing (`view/servers.ts`).
+   */
+  readonly servers?: string
   readonly wakeEnabled: boolean
   readonly auditFilter: AuditFilter
   /**
@@ -746,6 +758,13 @@ export function renderPage(model: PageModel): string {
     `<div id="roster">${model.roster}</div>`,
   )
 
+  // Directly under the roster, because it answers the question the roster
+  // raises: every endpoint up there reads 127.0.0.1 on a tunnelled fleet.
+  const servers =
+    model.servers === undefined
+      ? ''
+      : `${section('servers-section', '', `<div id="servers">${model.servers}</div>`)}\n`
+
   const register = section(
     'register',
     sectionHead('Register', '注册', {
@@ -787,7 +806,7 @@ export function renderPage(model: PageModel): string {
     `<div class="shell">\n` +
     sidebar(model, nodes) +
     `\n<main class="main" aria-labelledby="${NODES_HEADING_ID}">\n` +
-    `${overview}\n${roster}\n${wake}\n${trail}\n${register}\n${limits}\n` +
+    `${overview}\n${roster}\n${servers}${wake}\n${trail}\n${register}\n${limits}\n` +
     `</main>\n</div>\n` +
     deregisterDialog() +
     (model.wakeEnabled ? wakeDialog() : '') +

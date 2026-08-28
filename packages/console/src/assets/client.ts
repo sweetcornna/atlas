@@ -37,6 +37,7 @@
  * | `POST /v0/agents/<address>/heartbeat`   | JSON                        |
  * | `DELETE /v0/agents/<address>`           | 204 or JSON                 |
  * | `POST /v0/wake`                         | JSON                        |
+ * | `PUT /v0/servers/<server>/note`         | JSON                        |
  *
  * A non-HTML content type on the three fragment routes is treated as an error
  * rather than rendered — if the HTTP side ever answers those with JSON, the
@@ -85,7 +86,8 @@ export const CONSOLE_CLIENT_JS = `
     // rejects anything that is not text/html.
     chain: '/fragments/chain/',
     agents: '/v0/agents',
-    wake: '/v0/wake'
+    wake: '/v0/wake',
+    servers: '/v0/servers'
   };
   var TOKEN_KEY = 'qianmo.console.token';
   var memoryToken = '';
@@ -438,6 +440,24 @@ export const CONSOLE_CLIENT_JS = `
       .catch(function (err) { say(status, '注销失败 · ' + message(err), 'bad'); });
   }
 
+  // The servers section is the one block the poller never replaces, because it
+  // holds a textarea somebody may be mid-sentence in. So a save reports itself
+  // in place, through the status line beside the button, and nothing on the
+  // page is re-fetched afterwards.
+  function onServerNote(el) {
+    var card = el.closest('[data-server]');
+    var server = el.getAttribute('data-server') || '';
+    if (!card || !server) return;
+    var box = card.querySelector('textarea[name="note"]');
+    var status = card.querySelector('[data-role="note-status"]');
+    if (!box) return;
+    say(status, '保存中…', 'muted');
+    sendJson('PUT', ROUTES.servers + '/' + encodeURIComponent(server) + '/note',
+      { note: box.value })
+      .then(function () { say(status, '已保存 ' + stamp(new Date()), 'ok'); })
+      .catch(function (err) { say(status, '保存失败 · ' + message(err), 'bad'); });
+  }
+
   function openChain(trace, node) {
     var panel = byId('chain');
     if (!panel || !trace) return;
@@ -465,6 +485,9 @@ export const CONSOLE_CLIENT_JS = `
     if (action === 'heartbeat' || action === 'deregister') {
       event.preventDefault();
       onAgentAction(action, el.getAttribute('data-address') || '');
+    } else if (action === 'server-note') {
+      event.preventDefault();
+      onServerNote(el);
     } else if (action === 'chain') {
       event.preventDefault();
       openChain(

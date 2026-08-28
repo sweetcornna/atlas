@@ -44,6 +44,19 @@
  * fixed-width `.addr`) rather than by a column budget, so one hostile
  * capability string can no longer squeeze a neighbour to one character a line.
  *
+ * ## The endpoint says how to reach it, not where it is
+ *
+ * On a fleet reached through SSH tunnels every node's endpoint is
+ * `ws://127.0.0.1:<some port>` — four machines, four addresses that differ by
+ * one number. So a card also states which *server* the node runs on, when the
+ * console was started with that mapping (`--node-server`). It is deliberately
+ * beside the endpoint rather than anywhere else on the card: the endpoint is
+ * the value it exists to correct.
+ *
+ * Without the mapping the line is absent rather than blank. A blank one would
+ * make "this console was not told" and "this node has no machine" look the
+ * same.
+ *
  * ## The rail is gone; the numbers are not
  *
  * The 140px noun column every row used to open with has been replaced by a
@@ -91,6 +104,7 @@ import type {
   ConsoleAgent,
   ConsoleCertificate,
   ConsoleFailure,
+  NodeServer,
 } from '../deps.js'
 
 /**
@@ -349,6 +363,7 @@ function nodeCard(
   ttlMs: number,
   certificate: ConsoleCertificate | undefined,
   binName: string,
+  server: string | undefined,
 ): string {
   const counts = tallyOf(group.agents, now, ttlMs)
   const first = group.agents[0]
@@ -363,12 +378,20 @@ function nodeCard(
   // stopped being a table.
   const certificate_ = certificateLine(certificate, now)
   const reissue = reissueCommand(certificate, binName)
+  // Before the endpoint, because it is the answer to the question the endpoint
+  // provokes on a tunnelled fleet: every one of them reads 127.0.0.1.
+  const host =
+    server === undefined
+      ? ''
+      : `<span class="note">服务器 <span class="mono">${escapeHtml(
+          server,
+        )}</span></span>`
   return (
     `<div class="card elev-sm grp">` +
     `<div class="grp-head">` +
     `<span class="grp-name">${escapeHtml(name === '' ? group.node : name)}</span>` +
     `<span class="addr">${escapeHtml(group.node)}</span>` +
-    `<div class="grp-tail">${endpoint}${groupBadge(counts)}</div>` +
+    `<div class="grp-tail">${host}${endpoint}${groupBadge(counts)}</div>` +
     `</div>` +
     (certificate_ === ''
       ? ''
@@ -434,6 +457,7 @@ export function renderRoster(
   now: number,
   ttlMs: number,
   certificates?: RosterCertificates,
+  nodeServers?: readonly NodeServer[],
 ): string {
   const body: string[] = []
   if (failure !== null) {
@@ -458,6 +482,12 @@ export function renderRoster(
   const certificateList = certificates?.snapshot?.certificates ?? null
   const byNode = certificateIndex(certificateList)
   const binName = certificates?.binName ?? ''
+  // Keyed on the bare segment for the same reason the certificate index is:
+  // `--node-server beta-1=p11` names a node, and the group key still carries
+  // the scheme.
+  const serverOf = new Map(
+    (nodeServers ?? []).map(entry => [entry.node, entry.server]),
+  )
 
   if (agents === null) {
     if (failure === null) body.push(`<p class="hint">未取得注册数据</p>`)
@@ -491,6 +521,7 @@ export function renderRoster(
             ttlMs,
             byNode.get(bareNode(group.node)),
             binName,
+            serverOf.get(bareNode(group.node)),
           ),
         )
         .join('') +

@@ -424,6 +424,56 @@ export interface CertificatePort {
   read(): Promise<ConsoleResult<CertificateSnapshot>>
 }
 
+// ---------------------------------------------------------------------------
+// 服务器归属与备注 —— 「这个智能体跑在哪台机器上」
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个节点跑在哪台服务器上，**启动时钉死的一条事实**。
+ *
+ * 为什么不从端点推：名册上的端点是宿主机这一侧的隧道本地口
+ * （`ws://127.0.0.1:38631` 这种），四个节点落在四台机器上时它们长得一模一样，
+ * 只差一个端口号。端点回答的是「这个控制台怎么拨到它」，不是「它在哪」——后者
+ * 只有起控制台的那个人知道，所以它从启动参数来。
+ *
+ * `server` 是运维自己的叫法（`p11`、一个 IPv4 字面量、一个机房名），不是协议
+ * 地址段：它要能带点号，所以它**不**走 `isValidSegment`。形状由 host 侧的
+ * `consoleArgs.ts` 把关，这个包只当它是一串要转义后才能进 HTML 的字符。
+ */
+export interface NodeServer {
+  /** 协议节点段，与名册里 `qianmo://<node>/<agent>` 的 node 同一个词。 */
+  readonly node: string
+  /** 那台机器的名字，运维自己起的。 */
+  readonly server: string
+}
+
+/** 一台服务器的一段备注，连同它最后一次被改的时刻。 */
+export interface ServerNote {
+  readonly server: string
+  /** 操作者写的自由文本，可以带换行；空串就是「没有备注」。 */
+  readonly note: string
+  /** epoch 毫秒。 */
+  readonly updatedAt: number
+}
+
+/**
+ * 备注的落盘面。**这个包不碰文件系统**，所以它只是一对方法。
+ *
+ * host 侧（`src/cli/handlers/consoleServerNotes.ts`）把它接到一个
+ * append-only NDJSON 文件上，位置从 `occConfigPath()` 派生。这条边界和
+ * {@link ChatPort} 是同一条：这里不知道有磁盘，用例因此是一个普通对象。
+ *
+ * 可选：缺了备注框渲染成只读并说明原因，而不是给一个按下去必定失败的按钮——
+ * 与唤醒面同一个取舍。
+ *
+ * **`set` 不负责判「这台服务器存不存在」**：那是白名单的事，由 HTTP 层拿
+ * {@link ConsoleDeps.nodeServers} 判定后才会走到这里。端口只管写。
+ */
+export interface ServerNotesPort {
+  list(): Promise<ConsoleResult<readonly ServerNote[]>>
+  set(server: string, note: string): Promise<ConsoleResult<ServerNote>>
+}
+
 /** Protocol/runtime ceilings, read from the packages that own them. */
 export interface LimitsSnapshot {
   /** `@qianmo/protocol` LIMITS — the single source for protocol ceilings. */
@@ -465,6 +515,22 @@ export interface ConsoleDeps {
   readonly chat?: ChatPort
   /** Absent removes the certificate column entirely (§10.1). */
   readonly certificates?: CertificatePort
+  /**
+   * 每个节点跑在哪台服务器上，**启动时确定，而且这就是白名单**。
+   *
+   * 两件事同时由它决定：名册上一个节点显示哪台机器，以及
+   * `PUT /v0/servers/<id>/note` 允许写哪些 id。客户端送来的 server id 必须先在
+   * 这张表里查到才处理，查不到回 403——与 {@link ConsoleDeps.wakeTargets} 同一条
+   * 纪律（`http.ts` 的 `handleWake`）：客户端不能凭一个任意字符串让服务端多出
+   * 一条记录来。
+   *
+   * 缺席就是整个归属面消失（名册不显示归属、服务器区块不渲染、两条路由回 501），
+   * 而不是显示一列空白：一列空白会让「这个部署没配归属」和「归属全丢了」长得
+   * 一样。
+   */
+  readonly nodeServers?: readonly NodeServer[]
+  /** 备注的落盘面。缺席时备注框只读并说明原因。 */
+  readonly serverNotes?: ServerNotesPort
   /**
    * The CLI name the certificate column writes its copyable `qm ca issue`
    * line under. Read from the host's identity roster, never spelled here.
