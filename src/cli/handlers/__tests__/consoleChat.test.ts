@@ -35,6 +35,10 @@ import {
   type ConsoleChatEndpoint,
   type ConsoleChatHub,
 } from '../consoleChat.js'
+import type {
+  WakeCapabilityBinding,
+  WakeCapabilityIssuer,
+} from '../residentWake.js'
 
 const TARGET = 'qianmo://node-b/reviewer'
 const ENDPOINT = 'ws://127.0.0.1:38612'
@@ -176,6 +180,7 @@ function harness(
      * 于是新写的一轮会覆盖掉重放回来的那一轮。生产用的是 `randomUUID`，不会。
      */
     readonly idPrefix?: string
+    readonly issueCapability?: WakeCapabilityIssuer
   } = {},
 ): Harness {
   const registry = options.registry ?? new FakeRegistry()
@@ -198,6 +203,9 @@ function harness(
     ...(options.taskTtlMs === undefined
       ? {}
       : { taskTtlMs: options.taskTtlMs }),
+    ...(options.issueCapability === undefined
+      ? {}
+      : { issueCapability: options.issueCapability }),
   })
   created.push(hub)
   hub.subscribe(update => updates.push({ ...update }))
@@ -953,5 +961,79 @@ describe('chat teardown', () => {
     const link = h.dialer.last
     await h.hub.close()
     expect(link.closed).toBe(true)
+  })
+})
+
+/**
+ * 签名：`/chat` 是问答面还是控制面的那条界线。
+ *
+ * 不签名的会话**照样**投递、回执、已读、拿到回复——两者在这一层长得一模一样，
+ * 差别全在对面：未签名的请求以 untrusted 档进收件箱，那一档的通告让 agent 拒绝
+ * 执行（`packages/adapter/src/wrapper.ts`，protocol.md §9.4）。所以这里钉的不是
+ * 「发出去了没有」，而是**令牌与信封绑的是不是同一个 `taskId`**——绑错了对面验
+ * 不过，而症状会是一条读起来像网络问题的 `E_CAP_INVALID`。
+ */
+describe('chat capability signing', () => {
+  test('no issuer means no token on the envelope', async () => {
+    const h = harness()
+    const { request } = await openAndSend(h)
+
+    expect(request.cap).toBeUndefined()
+  })
+
+  test('the token is bound to the envelope it rides in', async () => {
+    const seen: WakeCapabilityBinding[] = []
+    const h = harness({
+      issueCapability: binding => {
+        seen.push(binding)
+        return `token-for-${binding.taskId}`
+      },
+    })
+    const { request } = await openAndSend(h)
+
+    expect(request.cap).toBe(`token-for-${request.taskId}`)
+    // 四个字段就是 `verifyCapability` 拿去比对的那四个。`sub` 是**整条地址**，
+    // 不是 agent 段：验签方传的是 `handler: message.to`，短一截就是 subject 不符。
+    expect(seen).toEqual([
+      {
+        aud: 'node-b',
+        sub: TARGET,
+        taskId: request.taskId,
+        createdAt: request.createdAt,
+      },
+    ])
+  })
+
+  test('每一轮各签一枚，绑各自的 taskId', async () => {
+    const h = harness({
+      issueCapability: binding => `token-for-${binding.taskId}`,
+    })
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    await h.hub.send({ sessionId: opened.value.id, text: '第一句' })
+    await h.hub.send({ sessionId: opened.value.id, text: '第二句' })
+
+    const sent = h.dialer.last.sent
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.taskId).not.toBe(sent[1]?.taskId)
+    for (const message of sent) {
+      expect(message.cap).toBe(`token-for-${message.taskId}`)
+    }
+  })
+
+  test('签不出来就拒绝这一轮，而不是发一条没签名的出去', async () => {
+    // 静默降级是这里最坏的失败形状：消息照样送到、照样有回复，只是对面按
+    // untrusted 档拒绝执行——而控制台这边一切正常，没有任何一处会说为什么。
+    const h = harness({
+      issueCapability: () => {
+        throw new Error('signing key is unreadable')
+      },
+    })
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    const sent = await h.hub.send({ sessionId: opened.value.id, text: '干活' })
+
+    expect(sent.ok).toBe(false)
+    expect(h.dialer.links).toHaveLength(0)
   })
 })
