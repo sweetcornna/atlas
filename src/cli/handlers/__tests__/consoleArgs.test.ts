@@ -42,9 +42,11 @@ import {
   DEFAULT_CONSOLE_PORT,
   DEFAULT_CONSOLE_REGISTRY_URL,
   MAX_CONSOLE_LABEL_LENGTH,
+  MAX_CONSOLE_SERVER_ID_LENGTH,
   DEFAULT_CONSOLE_NODE,
   assertConsoleRuntime,
   consoleChatStorePath,
+  consoleServerNotesPath,
   isConsoleHelpRequest,
   parseConsoleArgs,
   wakePskEnvVarForNode,
@@ -74,6 +76,9 @@ describe('occ console argument parsing', () => {
       chatUrls: [],
       chatFrom: DEFAULT_CONSOLE_CHAT_FROM,
       chatStorePath: consoleChatStorePath(),
+      // 归属面同理：没有 --node-server 就整块不显示，而不是显示一列空白。
+      nodeServers: [],
+      serverNotesPath: consoleServerNotesPath(),
     })
   })
 
@@ -120,6 +125,10 @@ describe('occ console argument parsing', () => {
         'qianmo://ops/alice',
         '--chat-store',
         '/tmp/qianmo/chat.ndjson',
+        '--node-server',
+        'node-a=p11',
+        '--server-notes',
+        '/tmp/qianmo/server-notes.ndjson',
       ],
       'qianmo',
     )
@@ -138,6 +147,8 @@ describe('occ console argument parsing', () => {
         '--chat-url=ws://10.0.0.4:38612',
         '--chat-from=qianmo://ops/alice',
         '--chat-store=/tmp/qianmo/chat.ndjson',
+        '--node-server=node-a=p11',
+        '--server-notes=/tmp/qianmo/server-notes.ndjson',
       ],
       'qianmo',
     )
@@ -165,6 +176,8 @@ describe('occ console argument parsing', () => {
       chatUrls: ['ws://10.0.0.3:38611/', 'ws://10.0.0.4:38612/'],
       chatFrom: 'qianmo://ops/alice',
       chatStorePath: '/tmp/qianmo/chat.ndjson',
+      nodeServers: [{ node: 'node-a', server: 'p11' }],
+      serverNotesPath: '/tmp/qianmo/server-notes.ndjson',
     })
   })
 
@@ -492,6 +505,107 @@ describe('occ console argument parsing', () => {
       parseConsoleArgs(['--admin-token-file=/run/qianmo/a.token'], 'qianmo')
         .adminToken,
     ).toBeUndefined()
+  })
+})
+
+describe('occ console --node-server (服务器归属)', () => {
+  test('takes one mapping per flag and keeps the order they were written', () => {
+    const config = parseConsoleArgs(
+      [
+        '--node-server=beta-1=p11',
+        '--node-server',
+        'beta-2=p11',
+        '--node-server=beta-3=p2',
+      ],
+      'qianmo',
+    )
+    expect(config.nodeServers).toEqual([
+      { node: 'beta-1', server: 'p11' },
+      { node: 'beta-2', server: 'p11' },
+      { node: 'beta-3', server: 'p2' },
+    ])
+  })
+
+  test('takes the four shapes a real machine name comes in', () => {
+    // 协议段不许带点号也不许带冒号，而运维给机器起的名字一半是 IPv4、一部分是
+    // IPv6、还有带大写的云主机名。复用 isValidSegment 等于让这些一个都配不上。
+    // 这四种取值与写入侧 `beta_assert_server_id` 的注释举的是同一批。
+    for (const server of ['p11', '203.0.113.7', '2001:db8::5', 'ECS114873']) {
+      expect(
+        parseConsoleArgs([`--node-server=beta-1=${server}`], 'qianmo')
+          .nodeServers,
+      ).toEqual([{ node: 'beta-1', server }])
+    }
+  })
+
+  test('is absent by default, so a console with no mapping shows none', () => {
+    expect(parseConsoleArgs([], 'qianmo').nodeServers).toEqual([])
+  })
+
+  test('refuses a value that is not <node>=<server>', () => {
+    expect(() => parseConsoleArgs(['--node-server=p11'], 'qianmo')).toThrow(
+      '--node-server must be <node>=<value>',
+    )
+    // 等号在第一个字符上等于没有 node 段。
+    expect(() => parseConsoleArgs(['--node-server==p11'], 'qianmo')).toThrow(
+      '--node-server must be <node>=<value>',
+    )
+    expect(() => parseConsoleArgs(['--node-server=beta-1='], 'qianmo')).toThrow(
+      '--node-server value must not be empty',
+    )
+  })
+
+  test('refuses anything outside the charset the writer side enforces', () => {
+    // 判据与 `demo/env/beta/common.sh` 的 beta_assert_server_id 逐字对齐：一边
+    // 放行一边拒收的症状是「peers.conf 明明写了，控制台就是不显示」。
+    for (const bad of ['p 11', 'p11\tx', '香港一号', 'a/b', 'a,b', 'p11#1']) {
+      expect(() =>
+        parseConsoleArgs([`--node-server=beta-1=${bad}`], 'qianmo'),
+      ).toThrow('letters, digits, . _ : or -')
+    }
+  })
+
+  test('refuses a server id past the ceiling, and takes the one at it', () => {
+    const atCeiling = 'a'.repeat(MAX_CONSOLE_SERVER_ID_LENGTH)
+    expect(
+      parseConsoleArgs([`--node-server=beta-1=${atCeiling}`], 'qianmo')
+        .nodeServers[0]?.server,
+    ).toBe(atCeiling)
+    expect(() =>
+      parseConsoleArgs(
+        [
+          `--node-server=beta-1=${'a'.repeat(MAX_CONSOLE_SERVER_ID_LENGTH + 1)}`,
+        ],
+        'qianmo',
+      ),
+    ).toThrow(`at most ${MAX_CONSOLE_SERVER_ID_LENGTH} characters`)
+  })
+
+  test('refuses the same node twice, whichever machine it names', () => {
+    // 两条冲突的记录会让名册显示一条、备注面显示另一条，而那种不一致比一条
+    // 启动错误难查得多。
+    expect(() =>
+      parseConsoleArgs(
+        ['--node-server=beta-1=p11', '--node-server=beta-1=p2'],
+        'qianmo',
+      ),
+    ).toThrow('--node-server repeats node beta-1')
+  })
+
+  test('holds the node half to the protocol segment rules', () => {
+    expect(() =>
+      parseConsoleArgs(['--node-server=Beta_1=p11'], 'qianmo'),
+    ).toThrow('--node-server node must be a lowercase protocol segment')
+  })
+
+  test('derives the note path from the config root, never from $HOME', () => {
+    // CLAUDE.md §1.1②，与转录同一条：OCC_CONFIG_DIR 必须对它有效。
+    const path = consoleServerNotesPath()
+    expect(path.endsWith('/qianmo/console/server-notes.ndjson')).toBe(true)
+    expect(parseConsoleArgs([], 'qianmo').serverNotesPath).toBe(path)
+    expect(() =>
+      parseConsoleArgs(['--server-notes=relative/notes.ndjson'], 'qianmo'),
+    ).toThrow('--server-notes must be an absolute path')
   })
 })
 

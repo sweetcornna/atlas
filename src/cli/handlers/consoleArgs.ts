@@ -50,6 +50,26 @@ export const DEFAULT_CONSOLE_REGISTRY_URL = 'http://127.0.0.1:38610'
 /** 页头标签的长度上限，纯粹为了别把页头撑爆。 */
 export const MAX_CONSOLE_LABEL_LENGTH = 120
 
+/**
+ * 服务器标识的长度上限。与协议段同一个数字，因为它出现在同样的位置（一行卡片
+ * 抬头），不是因为它们是同一种东西。
+ */
+export const MAX_CONSOLE_SERVER_ID_LENGTH = 64
+
+/**
+ * 服务器标识允许的字符：`A-Za-z0-9`、`.`、`_`、`:`、`-`。
+ *
+ * **刻意不复用 `isValidSegment`**：那条规则只放小写字母、数字、`-` 和 `_`，
+ * 而这个值会是 `203.0.113.7` 这样的 IPv4 字面量、`2001:db8::5` 这样的 IPv6
+ * 字面量，或 `ECS114873` 这种带大写的机器名——点号与冒号在协议段里都过不去。
+ * 它不是协议里的任何东西，它是运维给机器起的名字。
+ *
+ * **这套判据与写入侧逐字对齐**（`demo/env/beta/common.sh` 的
+ * `beta_assert_server_id`）。两边不一致的后果不是报错而是沉默：一边放行、一边
+ * 拒收，症状是「peers.conf 明明写了，控制台就是不显示」。改这一行必须两边一起改。
+ */
+const CONSOLE_SERVER_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
+
 /** Legacy single-value flags are represented by this stable source name. */
 export const DEFAULT_CONSOLE_NODE = 'default'
 
@@ -61,6 +81,12 @@ export interface ConsoleAuditTarget {
 export interface ConsoleAuditMirror {
   readonly node: string
   readonly maxLagMinutes: number
+}
+
+/** One node and the machine it runs on, as `--node-server` pinned it. */
+export interface ConsoleNodeServer {
+  readonly node: string
+  readonly server: string
 }
 
 export interface ConsoleWakeTarget {
@@ -86,6 +112,17 @@ function assertConsoleNodeName(node: string, flag: string): void {
     throw new Error(
       `${flag} node must be a lowercase protocol segment (letters, digits, - or _, 1-${MAX_SEGMENT_LENGTH} characters, starting and ending with a letter or digit)`,
     )
+  }
+}
+
+function assertConsoleServerId(server: string, flag: string): void {
+  if (server.length > MAX_CONSOLE_SERVER_ID_LENGTH) {
+    throw new Error(
+      `${flag} server must be at most ${MAX_CONSOLE_SERVER_ID_LENGTH} characters`,
+    )
+  }
+  if (!CONSOLE_SERVER_ID_PATTERN.test(server)) {
+    throw new Error(`${flag} server must use letters, digits, . _ : or - only`)
   }
 }
 
@@ -135,6 +172,17 @@ export const DEFAULT_CONSOLE_CHAT_FROM = 'qianmo://console/operator'
  */
 export function consoleChatStorePath(): string {
   return occConfigPath('qianmo', 'console', 'chat.ndjson')
+}
+
+/**
+ * 服务器备注落盘的默认位置。
+ *
+ * 和会话表同一个目录、同一条派生规矩（CLAUDE.md §1.1②）：这里绝不出现拼好的
+ * 家目录路径。分成两个文件而不是共用一个，是因为两者的写入方与量级完全不同——
+ * 转录是一条会话一路追加，备注是一台机器一行。
+ */
+export function consoleServerNotesPath(): string {
+  return occConfigPath('qianmo', 'console', 'server-notes.ndjson')
 }
 
 /** `occ console` 的全部配置，解析完就不再变。 */
@@ -206,6 +254,14 @@ export interface ConsoleCliConfig {
   readonly chatFrom: string
   /** 会话落盘的绝对路径。 */
   readonly chatStorePath: string
+  /**
+   * 每个节点跑在哪台服务器上。**给了才有归属面**，一个都没给就整个不显示。
+   *
+   * 同时是备注的白名单：页面只能给这张表里出现过的服务器写备注。
+   */
+  readonly nodeServers: readonly ConsoleNodeServer[]
+  /** 服务器备注落盘的绝对路径。 */
+  readonly serverNotesPath: string
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -247,6 +303,8 @@ export function parseConsoleArgs(
   const chatUrls: string[] = []
   let chatFrom = DEFAULT_CONSOLE_CHAT_FROM
   let chatStorePath = consoleChatStorePath()
+  const nodeServers: ConsoleNodeServer[] = []
+  let serverNotesPath = consoleServerNotesPath()
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -432,6 +490,24 @@ export function parseConsoleArgs(
       }
       chatStorePath = resolve(parsed.value)
       index = parsed.next
+    } else if (arg === '--node-server' || arg?.startsWith('--node-server=')) {
+      const parsed = residentOptionValue(args, index, '--node-server')
+      const named = parseNamedValue(parsed.value, '--node-server')
+      assertConsoleServerId(named.value, '--node-server')
+      // 一个节点只能在一台机器上。给了两次是笔误，而两条冲突的记录会让名册显示
+      // 其中一条、备注面显示另一条——那种不一致比一条报错难查得多。
+      if (nodeServers.some(entry => entry.node === named.node)) {
+        throw new Error(`--node-server repeats node ${named.node}`)
+      }
+      nodeServers.push({ node: named.node, server: named.value })
+      index = parsed.next
+    } else if (arg === '--server-notes' || arg?.startsWith('--server-notes=')) {
+      const parsed = residentOptionValue(args, index, '--server-notes')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--server-notes must be an absolute path')
+      }
+      serverNotesPath = resolve(parsed.value)
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -477,6 +553,8 @@ export function parseConsoleArgs(
     chatUrls,
     chatFrom,
     chatStorePath,
+    nodeServers,
+    serverNotesPath,
   }
 }
 
@@ -564,6 +642,24 @@ Options (each accepts both --name value and --name=value):
                            Default ${DEFAULT_CONSOLE_CHAT_FROM}.
   --chat-store <abs path>  Where sessions and transcripts land, absolute path.
                            Default <config root>/qianmo/console/chat.ndjson.
+  --node-server <node>=<server>
+                           Which machine a node runs on. Repeatable, one node
+                           per flag, and a node may not be named twice. The
+                           node is a protocol segment; the server is whatever
+                           the operator calls that machine (p11, 203.0.113.7,
+                           2001:db8::5, ECS114873) in at most
+                           ${MAX_CONSOLE_SERVER_ID_LENGTH} characters of
+                           letters, digits, . _ : and -.
+                           Without any of these the roster shows no
+                           attribution and the server section is absent — the
+                           registry only knows the tunnel endpoint, which on a
+                           multi-machine fleet is 127.0.0.1 for every node.
+                           This list is also the allowlist a note may be
+                           written against; a server id that is not on it is
+                           refused rather than created.
+  --server-notes <abs path>
+                           Where per-server notes land, absolute path.
+                           Default <config root>/qianmo/console/server-notes.ndjson.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.
@@ -607,8 +703,8 @@ Environment:
                            The view and admin tokens, entrance 2 above.
   ${WITNESS_READ_TOKEN_ENV_VAR}
                            Read-only token for a remote --anchors endpoint.
-  OCC_CONFIG_DIR           Config root the default audit trail and transcript
-                           paths are derived from.
+  OCC_CONFIG_DIR           Config root the default audit trail, transcript and
+                           server-note paths are derived from.
 `
 
 /** 控制台跑在 `Bun.serve` 上，和常驻模式同一条运行时断言。 */
