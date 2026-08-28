@@ -36,8 +36,11 @@ export type {
   ConsoleResult,
   ConsoleRevocationList,
   LimitsSnapshot,
+  NodeServer,
   RegisterAgentInput,
   RegistryPort,
+  ServerNote,
+  ServerNotesPort,
   WakeInput,
   WakeOutcome,
   WakePort,
@@ -116,5 +119,13 @@ export {
 } from './view/chat.js'
 export { renderChatPage, type ChatPageModel } from './view/chatPage.js'
 export { renderLimits } from './view/limits.js'
+export {
+  MAX_SERVER_NOTE_LENGTH,
+  SERVERS_HEADING_ID,
+  renderServers,
+  serverCards,
+  type ServerCard,
+  type ServersModel,
+} from './view/servers.js'
 export { CONSOLE_CSS } from './assets/css.js'
 export { CONSOLE_CLIENT_JS } from './assets/client.js'
