@@ -25,6 +25,7 @@ import {
   ResidentSupervisor,
   ResidentTimingRecorder,
   type ResidentTimingSink,
+  type ResidentTurnProgress,
   type ResidentUpstreamHealth,
 } from '@qianmo/resident'
 import type {
@@ -518,6 +519,11 @@ export class QianmoResident {
         ...(options.upstreamHealth === undefined
           ? {}
           : { upstreamHealth: options.upstreamHealth }),
+        // 一轮跑到哪了，回给**问这一轮的那个人**。端口自己不知道对端是谁，
+        // 这一格就是它和网络之间那条线。
+        onProgress: progress => {
+          void this.#pushProgress(progress)
+        },
       },
     )
     this.#adapter = new InboundAdapter({
@@ -1255,6 +1261,54 @@ export class QianmoResident {
           ? { status: 'queued', retryAfterMs: outcome.retryAfterMs }
           : { status: outcome.status }
     return { ...verdict }
+  }
+
+  /**
+   * Send one step of a running turn to whoever asked for that turn.
+   *
+   * The same road {@link #announce} takes, minus the parts that only make
+   * sense for an agent calling the notify tool by hand: there is no session
+   * to look up (the port already knows which turn raised this) and no payload
+   * to validate against a hostile caller (it was built two frames down, in
+   * this process).
+   *
+   * **Silence is a correct outcome here.** A turn whose task has already been
+   * answered, or whose peer is gone, has nobody left to tell — and a step is
+   * not worth an error path of its own: it is decoration on an answer that is
+   * already on its way by another route.
+   */
+  async #pushProgress(progress: ResidentTurnProgress): Promise<void> {
+    const task = this.#tasksByMessage.get(progress.networkMsgId)
+    if (task === undefined || task.settled) return
+    const peerNode = parseAddress(task.envelope.from)?.node
+    if (peerNode === undefined) return
+    const payload = {
+      kind: 'task',
+      severity: progress.severity,
+      summary: progress.summary,
+      observedAt: Date.now(),
+      dedupKey: progress.dedupKey,
+      // Correlation only, never a correlation key (rule C-1).
+      causeTaskId: task.envelope.taskId,
+    }
+    if (!isNotifyPayload(payload)) return
+    const contextId =
+      typeof task.envelope.contextId === 'string' &&
+      task.envelope.contextId.length > 0
+        ? task.envelope.contextId
+        : task.envelope.taskId
+    try {
+      await this.#notifier.announce({
+        from: task.envelope.to,
+        to: task.envelope.from,
+        peerNode,
+        contextId,
+        payload,
+        channel: task.channel,
+      })
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
   }
 
   #notifyRefusal(detail: string): Record<string, unknown> {

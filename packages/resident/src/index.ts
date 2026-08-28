@@ -16,6 +16,7 @@ export {
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
   type AcpPromptConnection,
+  type ResidentTurnProgress,
 } from './acp-turn.js'
 export {
   createResidentAcpStream,

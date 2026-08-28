@@ -1697,6 +1697,77 @@ describe('wake, end to end on the resident side (T11 blind spot ③)', () => {
     expect(errors).toEqual([])
   }, 25_000)
 
+  test('a tool running inside a turn reaches the hub as a step, unasked', async () => {
+    // 与上一条的区别就是「谁发起的」：那条是 agent 自己调 `qianmo_notify`，
+    // 这条里 fixture 只是跑了个工具，剩下的全是宿主自己做的。对话面看得到过程
+    // 靠的正是这一条路。
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-progress-e2e-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: () =>
+        spawnFixture({
+          ...process.env,
+          QIANMO_FIXTURE_TOOL_CALL: 'packages/router/src/rate.ts',
+        }),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    const replies: QianmoMessage[] = []
+    const hub = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      supportedTypes: [...MESSAGE_TYPES],
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(hub)
+    await hub.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/console',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      // 控制台把会话 id 放在这里，过程就是靠它归回那条会话的。
+      contextId: 'chat-session-1',
+      payload: { prompt: '看一下速率表' },
+    })
+    hub.send(request)
+    await waitUntil(() =>
+      replies.some(item => item.type === MessageType.Notify),
+    )
+
+    const step = replies.find(item => item.type === MessageType.Notify)
+    expect(step?.contextId).toBe('chat-session-1')
+    expect(step?.taskId).not.toBe(request.taskId)
+    const payload = step?.payload as Record<string, unknown>
+    expect(payload['kind']).toBe('task')
+    expect(payload['severity']).toBe('info')
+    expect(payload['summary']).toBe('读：packages/router/src/rate.ts')
+    // 相关线索，不是相关键（规则 C-1）。
+    expect(payload['causeTaskId']).toBe(request.taskId)
+    expect(errors).toEqual([])
+  }, 25_000)
+
   test('a hub that never declared notify is told nothing at all (§2.7)', async () => {
     root = mkdtempSync(join(tmpdir(), 'qianmo-resident-notify-legacy-'))
     previousConfigDir = process.env.CLAUDE_CONFIG_DIR

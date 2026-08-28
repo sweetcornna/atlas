@@ -105,6 +105,22 @@ const agent: Agent = {
         content: { type: 'text', text: 'fixture response' },
       },
     })
+    // Stands in for a real tool running inside the turn. The host turns these
+    // into `notify` on its own — the agent never asks it to, which is the
+    // whole difference between a step and the `qianmo_notify` tool below.
+    const toolTitle = process.env.QIANMO_FIXTURE_TOOL_CALL
+    if (toolTitle !== undefined && toolTitle !== '') {
+      await connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'fixture-tool-1',
+          title: toolTitle,
+          kind: 'read',
+          status: 'in_progress',
+        },
+      })
+    }
     // Stands in for the `qianmo_notify` tool call. The real tool is built by
     // `src/services/qianmo/notifyTool.ts` and does exactly this — one
     // `qianmo/notify` ext request, mid-turn, and it reports the verdict back

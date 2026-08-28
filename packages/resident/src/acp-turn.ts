@@ -94,6 +94,62 @@ export interface AcpPromptConnection {
   }>
 }
 
+/**
+ * One step of a turn, on its way to whoever asked for the turn.
+ *
+ * The port raises these; **wiring them to the network is the host's job** —
+ * this package knows nothing about envelopes, channels or peers, and the one
+ * message type that can carry a step (`notify`) is addressed from facts only
+ * the host holds (who sent the task, on which channel).
+ */
+export interface ResidentTurnProgress {
+  readonly sessionId: string
+  /** The network message whose turn this step belongs to. */
+  readonly networkMsgId: string
+  /** One line, already human-readable. */
+  readonly summary: string
+  readonly severity: 'info' | 'warn' | 'error'
+  /** Sender-side idempotency key, stable across a redelivery of the same step. */
+  readonly dedupKey: string
+}
+
+/**
+ * How many steps one turn may report.
+ *
+ * **A cap rather than a time window**, and the difference matters. The ceiling
+ * that actually protects the person is `LIMITS.notifyRatePerMinute` downstream,
+ * and it does not drop what it refuses — it *queues* it. So a turn that fires
+ * a hundred steps does not flood the console; it makes the console show the
+ * fortieth step two minutes after the answer already arrived. Stale progress is
+ * worse than absent progress: it describes work that visibly finished.
+ *
+ * A sliding window would need a timer inside this class to flush what it held,
+ * and this class is constructed by a dozen unit tests that have no business
+ * growing one (see the constructor). A hard cap needs no clock at all.
+ *
+ * 24 is chosen against the budget, not against taste: at one step per tool a
+ * turn under this cap cannot on its own exhaust a minute's worth of the human
+ * budget, even when two sessions run at once.
+ */
+const MAX_PROGRESS_PER_TURN = 24
+
+/** ACP tool kinds rendered as a verb. Anything unlisted keeps the bare title. */
+const TOOL_KIND_VERBS: Readonly<Record<string, string>> = {
+  read: '读',
+  edit: '改',
+  delete: '删',
+  move: '移动',
+  search: '搜',
+  execute: '执行',
+  fetch: '取',
+}
+
+function progressText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined
+}
+
 export class AcpResidentTurnPort implements ResidentTurnPort {
   #connection: AcpPromptConnection
   readonly #accepted = new Map<string, () => Promise<void>>()
@@ -103,8 +159,13 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       readonly input: ResidentTurnInput
       readonly content: string[]
       firstContent: boolean
+      /** Steps already reported for this turn; stops at {@link MAX_PROGRESS_PER_TURN}. */
+      progressCount: number
+      /** Tool calls already announced, so an update never repeats a start. */
+      readonly announcedTools: Set<string>
     }
   >()
+  readonly #onProgress: ((progress: ResidentTurnProgress) => void) | undefined
   readonly #timings: ResidentTimingRecorder | undefined
   readonly #now: () => number
   readonly #inactivity: ResidentInactivityWatchdog | undefined
@@ -127,9 +188,16 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
        * own when the caller does not care.
        */
       readonly upstreamHealth?: ResidentUpstreamHealth
+      /**
+       * Where a turn's steps go. **Absent means the port reports none**, which
+       * is what every unit test and every non-networked caller wants: raising
+       * steps nobody consumes would only cost the work of formatting them.
+       */
+      readonly onProgress?: (progress: ResidentTurnProgress) => void
     } = {},
   ) {
     this.#connection = connection
+    this.#onProgress = options.onProgress
     this.#timings = options.timings
     this.#now = options.now ?? Date.now
     this.#upstreamHealth =
@@ -220,7 +288,13 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       return admission
     }
     this.#accepted.set(input.messageId, accept)
-    const active = { input, content: [], firstContent: false }
+    const active = {
+      input,
+      content: [],
+      firstContent: false,
+      progressCount: 0,
+      announcedTools: new Set<string>(),
+    }
     this.#active.set(input.sessionId, active)
     try {
       const ask = async () =>
@@ -306,6 +380,10 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       const content = params.update.content
       if (content.type === 'text') active.content.push(content.text)
     }
+    if (kind === 'tool_call' || kind === 'tool_call_update') {
+      this.#reportToolStep(active, params.update as Record<string, unknown>)
+      return
+    }
     if (kind !== 'agent_message_chunk' && kind !== 'agent_thought_chunk') {
       return
     }
@@ -321,6 +399,73 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
         ? {}
         : { networkMsgId: input.networkMsgId }),
       ...(input.agent === undefined ? {} : { agent: input.agent }),
+    })
+  }
+
+  /**
+   * Turn one tool-call update into at most one step.
+   *
+   * **A tool is announced when it starts, and again only if it fails.** The
+   * successful end of a tool needs no line of its own — the next tool's start
+   * already says the previous one finished, and spending a second message on
+   * "…and it worked" halves how many tools fit under the cap.
+   *
+   * `agent_thought_chunk` and `agent_message_chunk` are deliberately not steps:
+   * they arrive per token, and the one message type that can carry a step is
+   * metered as an interruption of a person (`notify.ts`). Progress here is
+   * discrete by construction, never streamed.
+   */
+  #reportToolStep(
+    active: {
+      readonly input: ResidentTurnInput
+      progressCount: number
+      readonly announcedTools: Set<string>
+    },
+    update: Record<string, unknown>,
+  ): void {
+    const onProgress = this.#onProgress
+    const networkMsgId = active.input.networkMsgId
+    // No consumer, or a turn nobody asked for over the network (local mail):
+    // there is no peer this step belongs to, so there is nothing to raise.
+    if (onProgress === undefined || networkMsgId === undefined) return
+
+    const toolCallId = progressText(update['toolCallId'])
+    if (toolCallId === undefined) return
+    const status = progressText(update['status'])
+    const failed = status === 'failed'
+    const started = !active.announcedTools.has(toolCallId)
+    if (!started && !failed) return
+    // A failure re-announces once; a second `failed` update for the same call
+    // does not. The key carries the phase so the two are distinct records.
+    const phase = failed ? 'failed' : 'start'
+    const dedupKey = `${networkMsgId}:${toolCallId}:${phase}`
+    if (failed && active.announcedTools.has(`${toolCallId}#failed`)) return
+
+    if (active.progressCount >= MAX_PROGRESS_PER_TURN) {
+      // Silently stop rather than queue: see MAX_PROGRESS_PER_TURN on why a
+      // step delivered after the answer is worse than one never sent.
+      return
+    }
+    const title = progressText(update['title'])
+    const verb = TOOL_KIND_VERBS[String(update['kind'])]
+    const summary =
+      title === undefined
+        ? failed
+          ? '一个工具失败了'
+          : '开始跑一个工具'
+        : verb === undefined
+          ? title
+          : `${verb}：${title}`
+
+    active.progressCount += 1
+    active.announcedTools.add(toolCallId)
+    if (failed) active.announcedTools.add(`${toolCallId}#failed`)
+    onProgress({
+      sessionId: active.input.sessionId,
+      networkMsgId,
+      summary: failed ? `${summary} — 失败` : summary,
+      severity: failed ? 'warn' : 'info',
+      dedupKey,
     })
   }
 
