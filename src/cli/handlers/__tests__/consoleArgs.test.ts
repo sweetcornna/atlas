@@ -600,6 +600,24 @@ describe('occ console argument parsing', () => {
   })
 })
 
+describe('occ console --chat-sign', () => {
+  test('两个签名开关互不牵连', () => {
+    // 唤醒是「醒过来看一眼收件箱」，对话是「按这段文字去干活」——合成一个开关就是
+    // 让打开前者的人顺手把后者也交出去。这条用例钉的就是它们没有被合并。
+    const chatOnly = parseConsoleArgs(['--chat-sign'], 'qianmo')
+    expect(chatOnly.signChats).toBe(true)
+    expect(chatOnly.signWakes).toBeUndefined()
+
+    const wakeOnly = parseConsoleArgs(['--wake-sign'], 'qianmo')
+    expect(wakeOnly.signWakes).toBe(true)
+    expect(wakeOnly.signChats).toBeUndefined()
+
+    const both = parseConsoleArgs(['--wake-sign', '--chat-sign'], 'qianmo')
+    expect(both.signWakes).toBe(true)
+    expect(both.signChats).toBe(true)
+  })
+})
+
 describe('occ console --node-server (服务器归属)', () => {
   test('takes one mapping per flag and keeps the order they were written', () => {
     const config = parseConsoleArgs(

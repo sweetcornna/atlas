@@ -194,6 +194,7 @@ interface ConsoleChatWiring {
 interface ConsoleChatDependencies {
   readonly pskFromEnv: (variable?: string) => string
   readonly createChatPort: typeof createConsoleChatPort
+  readonly loadIdentity?: typeof loadConsoleWakeIdentity
 }
 
 /**
@@ -226,6 +227,13 @@ export function wireConsoleChat(
   if (config.chatTargets.length === 0) {
     return { status: 'disabled (no --chat-url)' }
   }
+  // 与唤醒面同一条纪律：身份只在真要签名时读出来（首次运行会创建）。一个从不
+  // 签名的控制台不该在配置根里留下一把没人用的私钥。两张面共用这一把——控制台
+  // 在对面的审计链里只该有一个身份（`consoleWakeIdentity.ts` 的模块注释）。
+  const identity =
+    config.signChats === true
+      ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
+      : undefined
   const endpoints: ConsoleChatEndpoint[] = []
   const notes: string[] = []
   for (const target of config.chatTargets) {
@@ -259,6 +267,7 @@ export function wireConsoleChat(
       endpoints,
       storePath: config.chatStorePath,
       registry,
+      ...(identity === undefined ? {} : { issueCapability: identity.issue }),
       onError: error => {
         // The console has no logger and its stdout is the banner. A chat-side
         // failure that nobody can see is worse than one line of noise.
@@ -269,7 +278,12 @@ export function wireConsoleChat(
     })
     return {
       hub,
-      status: `enabled as ${config.chatFrom} -> ${notes.join(', ')}`,
+      // 签没签名进 banner，因为它是这张面「是问答还是控制」的那条界线，而两者
+      // 在别处长得一模一样：不签名的会话照样投递、照样回执、照样拿到回复，只是
+      // agent 会拒绝执行。运维只有在这里能一眼看出自己开的是哪一种。
+      status: `enabled as ${config.chatFrom}${
+        identity === undefined ? '' : ' (signed)'
+      } -> ${notes.join(', ')}`,
     }
   } catch (error) {
     // A malformed `--chat-from` lands here: the address rules live in

@@ -27,6 +27,8 @@ function chatHub(): ConsoleChatHub {
   } as unknown as ConsoleChatHub
 }
 
+const IDENTITY_PUBLIC_KEY = 'console-public-key-from-the-stubbed-identity'
+
 function wire(
   args: readonly string[],
   keys: Readonly<Record<string, string>>,
@@ -38,6 +40,8 @@ function wire(
     readonly psk: string
     readonly node?: string
   }> = []
+  const identityFor: string[] = []
+  let signed: unknown
   const wiring = wireConsoleChat(
     parseConsoleArgs([...args, `--chat-store=${STORE}`], 'qianmo'),
     registryPort(),
@@ -55,11 +59,20 @@ function wire(
       },
       createChatPort(portOptions) {
         for (const endpoint of portOptions.endpoints) created.push(endpoint)
+        signed = portOptions.issueCapability
         return chatHub()
+      },
+      loadIdentity(chatFrom) {
+        identityFor.push(chatFrom)
+        return {
+          node: 'console',
+          publicKey: IDENTITY_PUBLIC_KEY,
+          issue: () => 'a-token',
+        }
       },
     },
   )
-  return { wiring, queried, created }
+  return { wiring, queried, created, identityFor, signed }
 }
 
 describe('console chat wiring', () => {
@@ -126,6 +139,38 @@ describe('console chat wiring', () => {
     expect(queried).toEqual([undefined])
     expect(created).toEqual([{ url: 'ws://127.0.0.1:38611/', psk: GLOBAL_PSK }])
     expect(wiring.hub).toBeDefined()
+  })
+
+  test('没有 --chat-sign 就不读身份，也不给端口装签发器', () => {
+    const variable = transportPskEnvVarForNode('beta-4')
+    const { wiring, identityFor, signed } = wire(
+      ['--chat-url=beta-4=ws://127.0.0.1:38625'],
+      { [variable]: NAMED_A_PSK },
+    )
+
+    // 一个从不签名的控制台不该在配置根里留下一把没人用的私钥——首次读身份就是
+    // 首次创建它，所以「没开开关就不读」是一条会落盘的差别，不是风格。
+    expect(identityFor).toEqual([])
+    expect(signed).toBeUndefined()
+    expect(wiring.status).not.toContain('signed')
+  })
+
+  test('--chat-sign 装上签发器，并把这件事写进 banner', () => {
+    const variable = transportPskEnvVarForNode('beta-4')
+    const { wiring, identityFor, signed } = wire(
+      ['--chat-url=beta-4=ws://127.0.0.1:38625', '--chat-sign'],
+      { [variable]: NAMED_A_PSK },
+    )
+
+    // 身份名跟着 `--chat-from` 走：控制台在对面的审计链里只该有一个身份。
+    expect(identityFor).toEqual(['qianmo://console/operator'])
+    expect(typeof signed).toBe('function')
+    expect(wiring.status).toBe(
+      'enabled as qianmo://console/operator (signed) -> beta-4 -> ws://127.0.0.1:38625/',
+    )
+    // 公开材料也不进 banner：这一行是给运维看「开没开」，不是给它抄公钥的地方，
+    // 抄公钥有 --print-wake-identity。
+    expect(wiring.status).not.toContain(IDENTITY_PUBLIC_KEY)
   })
 
   test('no --chat-url is the one disabled reason that predates PSK lookup', () => {
