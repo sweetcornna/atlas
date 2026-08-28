@@ -414,6 +414,49 @@ $QIANMO_BETA_ROOT/                 # 默认 $HOME/qianmo-beta（无 sudo，不�
 
 三身份共存的底线由 `identity-coexistence-m1.md` 承担，本文不重述。**内测机器上多的那一条**：`$QIANMO_BETA_ROOT` 必须在 `~/.occ` / `~/.qianmo` / `~/.claude` **之外**，`demo_guard_root` 的同形守卫要原样搬过来——内测机器上真的会有人拿同一台机器跑别的东西。
 
+### 4.1.1 预批准清单：`nodes/<node>/config/settings.json`
+
+上一节说「配置根之下不由本文规定」，这一份是**唯一的例外**，因为它不是基座派生的，是
+`beta-up.sh` 的节点腿写进去的。
+
+**为什么必须有它。**常驻的每一轮跑在 `permissionMode: 'dontAsk'` 下，语义是**不提示、
+未预批准即拒绝**；`requestPermission` 在 `packages/resident/src/acp-client.ts` 里被硬钉成
+`cancelled`。所以「没人批准」不是等待，是当场拒绝。没有这份清单，agent 连自己的工作区都
+写不了。
+
+**失败的形状很难认**（2026-08-28 在 p11 上撞到过）：工作区目录可写、节点 `.err` 里一条
+文件系统错误都没有、只读工具（`ls`）跑得好好的，只有模型回话里一句「当前权限模式拒绝写
+入」。查文件权限位查不出任何东西——**缺的不是权限位，是预批准**。
+
+内容是逐条绝对路径，一个 agent 工作区两条：
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Write(//root/qianmo-beta/workspaces/beta-4/planner/**)",
+      "Edit(//root/qianmo-beta/workspaces/beta-4/planner/**)",
+      "Write(//root/qianmo-beta/workspaces/beta-4/reviewer/**)",
+      "Edit(//root/qianmo-beta/workspaces/beta-4/reviewer/**)"
+    ]
+  }
+}
+```
+
+四件事跟着这个形状：
+
+- **两个斜杠不是笔误。**规则内容那一段以 `/` 开头才被当成绝对路径，而工作区路径自己也以
+  `/` 开头。少一个就变成一条相对 cwd 的规则——而 cwd 正是 agent 的工作区，于是它**看起来
+  照样能用**，只是不再说得清授权范围。
+- **不放行 `Bash`。**只读命令本来就跑得动，放行整个 Bash 是另一个量级的授权；要给，也该
+  是单独一次决定。
+- **它不是天花板。**`packages/resident/src/guard.ts` 的硬名单排在所有 allow 规则**之前**，
+  身份目录、审计链、准入台账无论这份文件写什么都进不去；那张表是包内的冻结字面量，没有
+  任何配置读取路径能清空它。
+- **它是派生物。**每次起节点腿都会比对并按仓库那份重写，手改会被下一次部署盖掉——要改
+  改仓库。**而且它和模型凭据同一条时序纪律**：settings 是进程起来时读的，事后写进去到不了
+  已经在跑的那一个，所以脚本在节点已经在跑时会连带警告这一条。
+
 ### 4.2 定案：审计链按节点分文件，**不集中**
 
 三条理由，任何一条单独成立：
