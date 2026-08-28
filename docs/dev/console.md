@@ -170,6 +170,8 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-url <ws://…>` | 无 | 允许对话拨号的入站端点，**可以给多次**，一次一个。**给了才启用对话面**，且还要有 PSK（§6.7）。同一个端点给两遍会被去重——那是复制粘贴，不是要两条链路 |
 | `--chat-from <地址>` | `qianmo://console/operator` | 控制台自己在网络上的地址。它**不是**一个注册进注册中心的节点（§6.2）；用处是让对面知道这条 `task.request` 是谁发的——`InboundAdapter` 把它渲染进 provenance，并写成收件箱里那条消息的 `from` |
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
+| `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
+| `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
 | `--label <text>` | `hostname:port` | 页头标签，≤120 字符。两个控制台开在两个标签页时，靠它区分 |
 | `--view-token-file <绝对路径>` | 无 | 从文件读只读凭据。**必须是绝对路径**；**权限必须 0600 或更严**（group/other 任一位不为零就拒绝启动），尾部换行会被去掉 |
 | `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
@@ -545,6 +547,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/audit?…` | view | 审计记录（过滤见下） |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
 | POST | `/v0/wake` | **admin** | 唤醒 |
+| GET | `/v0/servers` | view | 每台服务器、它承载的节点、以及备注（§11）。没配 `--node-server` 时 501 |
+| PUT | `/v0/servers/<server id>/note` | **admin** | 写一台服务器的备注。**server id 必须在启动时那张白名单里**，否则 403 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
@@ -964,7 +968,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 
 | 文件 | 是什么 |
 | --- | --- |
-| `packages/console/src/deps.ts` | **五个端口的契约**。改端口形状从这里开始 |
+| `packages/console/src/deps.ts` | **六个端口的契约**。改端口形状从这里开始 |
 | `packages/console/src/auth.ts` | token 策略（生成 / 校验 / 角色判定 / 三个位置）与 **cookie 那套论证**的唯一出处（§4.1） |
 | `packages/console/src/throttle.ts` | 登录失败退避：免罚次数、翻倍、上限、遗忘窗口，以及「为什么反代的 `limit_req` 顶不了它」（§8.4） |
 | `packages/console/src/view/login.ts` | `/login` 那张卡片。包里唯一没有 `<script>` 的页面，理由在模块注释 |
@@ -975,10 +979,12 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
-| `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒四个端口的生产实现 |
+| `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现 |
 | `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住 |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
+| `packages/console/src/view/servers.ts` | 服务器区块的渲染与备注编辑框的三种形态（§11） |
+| `src/cli/handlers/consoleServerNotes.ts` | 服务器备注的 NDJSON 落盘与 replay（§11.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
 | `docs/dev/demo-env.md` §2.4 | 端口分配表。改默认端口前先看它 |
 | `src/cli/handlers/watch.ts` | `qm watch` 的全部：作业文件解析、拨号与握住连接、fire 与 notify 的审计写入（§10） |
@@ -1071,3 +1077,72 @@ qm watch --jobs ./jobs.json --from qianmo://hub/console --once
 - **中枢是定时的单点。**这是 A7 的刻意背离（节点侧 ticker 会让节点永不空闲、永不冻结，
   直接抵消 R-3 的休眠形态），代价就是中枢不在的时候没人发起。补偿是「缺席可见」：
   `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的，接到面板上是遗留项。
+
+---
+
+## §11 服务器归属与备注
+
+### §11.1 问题：端点说的是「怎么拨到它」，不是「它在哪」
+
+名册上一个节点的端点，在走隧道的部署里是 `ws://127.0.0.1:38631` —— 那是**宿主机上的
+隧道本地口**。四个节点分布在四台机器上时，这四行长得几乎一样，只差一个端口号，运维时
+分不清谁是谁。
+
+端点回答的是「这个控制台怎么拨到它」，**不是**「它在哪」。后者注册中心不知道（它只收到
+节点自报的端点），控制台也推不出来——只有起控制台的那个人知道。所以它从启动参数来：
+
+```
+--node-server beta-1=p11 --node-server beta-2=p11 --node-server beta-3=203.0.113.7
+```
+
+写入侧是 `demo/env/beta/beta-up.sh`，归属由 `beta_peer_server` 从 `peers.conf` 派生；
+判定不出来的节点**不传**。
+
+### §11.2 两条降级，都不是空白
+
+- **一个 `--node-server` 都没给** → 名册不显示归属，服务器区块整块不渲染，两条路由回
+  501。不是空白栏，也不是「未知」：一列空白会让「这个部署没配归属」和「归属全丢了」
+  长得一样。
+- **只有部分节点有归属** → 是常态而不是边角（写入侧判定不出来就不传）。有归属的卡片多
+  一行，没有的照旧，页面不因此塌掉。
+
+### §11.3 server id 的形状，两边必须逐字一致
+
+| 侧 | 出处 |
+| --- | --- |
+| 写入 | `demo/env/beta/common.sh` 的 `beta_assert_server_id` |
+| 读取 | `src/cli/handlers/consoleArgs.ts` 的 `CONSOLE_SERVER_ID_PATTERN` |
+
+判据：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`。**不复用协议段的 `isValidSegment`**——
+那条规则不放点号也不放冒号，而真实取值形如 `p11`、`203.0.113.7`、`2001:db8::5`、
+`ECS114873`。
+
+两边不一致的后果不是报错而是沉默：一边放行、一边拒收，症状是「peers.conf 明明写了，
+控制台就是不显示」。改任意一边都必须两边一起改。
+
+### §11.4 备注：白名单是启动参数，不是请求体
+
+`PUT /v0/servers/<id>/note` 在**读请求体之前**先把 id 在 `--node-server` 那张表里查一遍，
+查不到就 403。这和 `handleWake` 对唤醒目标的做法是同一条纪律，理由也一样：这台控制台
+会动的东西在它启动时就定死了，握着 admin token 的人不能靠往页面里打字把它变多。少了这
+一步，这条路由就是一个任何持 admin token 者都能往里灌数据的任意键值存储。
+
+备注上限 500 字符，超了 400；空串是合法值——那正是清空一条备注的方式。渲染必经
+`view/escape.ts`：备注是操作者写的，这不等于可信（它经 JSON 路由回来、躺在一个本机任何
+进程都能写的文件里、再被渲染进一张握着 admin token 的页面）。
+
+### §11.5 落盘：与会话表同一个形态
+
+`server-notes.ndjson`，形态与会话表（§6.5）逐字一致：append-only、一行一条、启动时回放、
+同一台服务器后写覆盖先写、文件 0600 目录 0700、坏行跳过而不是拒绝启动。**不做 compaction**
+——写入方是人在打字，一台机器一行。
+
+路径从 `occConfigPath()` 派生（CLAUDE.md §1.1②），`OCC_CONFIG_DIR` 对它有效。
+
+### §11.6 这一块不参与轮询
+
+五秒轮询换的是名册与审计两块。服务器区块**刻意不在其中**：它装着人正在打的字，一次
+替换就会把半句话吃掉。保存因此只经 `textContent` 更新按钮旁边那一行状态，不重取片段。
+
+只读令牌看得见备注但改不了：框留着、置 `readonly`、按钮换成一行说明。框不能消失——一个
+不见的框会让「你不能改」和「这里没有备注」长得一样。
