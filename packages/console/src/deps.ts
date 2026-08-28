@@ -252,6 +252,30 @@ export interface ChatTarget {
 export type ChatAuthor = 'operator' | 'agent'
 
 /**
+ * 这一条是一句话，还是一条过程。
+ *
+ * **`message`** 是转录本来就有的那种：操作者问的一句，或 agent 答的一句。
+ * **`notice`** 是任务跑到一半时节点推过来的一条 `notify`——工具开始/结束、
+ * 计划更新。两者同处一个有序表而不是分成两条流，因为页面要回答的问题是
+ * 「这一轮里先后发生了什么」，而两条各自有序的流合并起来才是那个答案，
+ * 合并的时机越晚越容易错。
+ *
+ * 字段可选且缺省为 `message`：存量 NDJSON 里没有它，重放必须原样成立。
+ * **刻意不叫 `kind`**——`consoleChatStore.ts` 的落盘信封已经用那个词区分
+ * 「这行是会话还是轮次」，同一个文件里两个 `kind` 指两件事是给未来的读者
+ * 埋雷。
+ */
+export type ChatTurnVariant = 'message' | 'notice'
+
+/**
+ * 一条过程行的分量，原样取自 `notify` 的 `severity`（协议 §14.2）。
+ *
+ * 页面只拿它选颜色，**不拿它过滤**：一条被过滤掉的过程行，和一条从来没发生
+ * 过的过程，在页面上长得一模一样。
+ */
+export type ChatNoticeSeverity = 'info' | 'warn' | 'error'
+
+/**
  * 一轮的处置。**是一条链，不是一个枚举里的平行项**：
  * `pending`（交给传输层了）→ `delivered`（有回执了）→ `read`（对方 ack 了，
  * 也就是消息真的进了它的输入）→ `done`（拿到终态回复）。`failed` 是任何一步的
@@ -288,6 +312,12 @@ export interface ChatTurn {
   readonly elapsedMs?: number
   /** 失败时的协议错误码，例如 `E_TASK_TIMEOUT`。 */
   readonly code?: string
+  /** 缺省为 `message`；`notice` 是任务跑到一半推过来的一条过程。 */
+  readonly variant?: ChatTurnVariant
+  /** 只有 `notice` 有：这条过程的分量。 */
+  readonly severity?: ChatNoticeSeverity
+  /** 只有 `notice` 有：`notify` 的 `detail`，页面折起来给愿意看的人。 */
+  readonly detail?: string
 }
 
 /** 一条会话的抬头。列表只需要这些，不需要把转录整篇读出来。 */

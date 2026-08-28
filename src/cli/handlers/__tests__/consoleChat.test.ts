@@ -20,9 +20,11 @@ import type {
   RegistryPort,
 } from '@qianmo/console'
 import {
+  LEGACY_MESSAGE_TYPES,
   MessageType,
   ProtocolErrorCode,
   createMessage,
+  createNotify,
   type QianmoMessage,
 } from '@qianmo/protocol'
 import {
@@ -351,6 +353,29 @@ describe('chat send', () => {
     expect(h.dialer.links).toHaveLength(0)
   })
 
+  test('a turn carries its session id as the context id', async () => {
+    // 一个字段两件事：常驻侧据它分 ACP 会话（多轮上下文），节点发 notify 时也
+    // 只能靠它归组——notify 每条自带全新 taskId，归不到会话就只能丢。
+    const h = harness()
+    const first = await h.hub.open(TARGET)
+    if (!first.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: first.value.id, text: '一' })
+    await h.hub.send({ sessionId: first.value.id, text: '二' })
+
+    const sent = h.dialer.last.sent
+    expect(sent).toHaveLength(2)
+    // 同一条会话的两轮共用一个上下文；taskId 每轮都不同。
+    expect(sent[0]?.contextId).toBe(first.value.id)
+    expect(sent[1]?.contextId).toBe(first.value.id)
+    expect(sent[0]?.taskId).not.toBe(sent[1]?.taskId)
+
+    const second = await h.hub.open(TARGET)
+    if (!second.ok) throw new Error('unreachable')
+    await h.hub.send({ sessionId: second.value.id, text: '三' })
+    expect(h.dialer.last.sent[2]?.contextId).toBe(second.value.id)
+    expect(second.value.id).not.toBe(first.value.id)
+  })
+
   test('a named endpoint only serves the node it was authorised for', async () => {
     // 注册中心零鉴权：它完全可以说 node-z 的 agent 就在 node-b 的端点上。绑定让
     // 那条被改过的记录拨不动——否则它等于把 node-b 的钥匙借给了任何一个名字。
@@ -496,6 +521,92 @@ describe('chat reply path', () => {
     // 每一次变化都通知一次订阅者，revision 单调递增。
     expect(h.updates.length).toBeGreaterThanOrEqual(4)
     expect(h.updates.at(-1)?.sessionId).toBe(sessionId)
+  })
+
+  test('a notify lands in the transcript as a notice, grouped by contextId', async () => {
+    const h = harness()
+    const { sessionId, request } = await openAndSend(h)
+    const link = h.dialer.last
+
+    h.advance(400)
+    link.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        // 归组只认这个，而不是 taskId——notify 每条都带一个全新的。
+        contextId: sessionId,
+        payload: {
+          kind: 'task',
+          severity: 'info',
+          summary: '读了 packages/router/src/rate.ts',
+          observedAt: 1,
+          detail: '命中 3 处',
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns[1]).toMatchObject({
+      author: 'agent',
+      variant: 'notice',
+      severity: 'info',
+      state: 'done',
+      text: '读了 packages/router/src/rate.ts',
+      detail: '命中 3 处',
+    })
+    // 操作者那一轮还在等它自己的回复，没被这条过程推进。
+    expect(transcript.value.turns[0]).toMatchObject({
+      author: 'operator',
+      state: 'delivered',
+      taskId: request.taskId,
+    })
+  })
+
+  test('a notify for a session this console does not have is dropped', async () => {
+    const h = harness()
+    const { sessionId } = await openAndSend(h)
+    h.dialer.last.reply(
+      createNotify({
+        from: TARGET,
+        to: FROM,
+        contextId: 'a-session-from-some-other-process',
+        payload: {
+          kind: 'task',
+          severity: 'warn',
+          summary: '不该出现在任何转录里',
+          observedAt: 1,
+        },
+      }),
+    )
+
+    const transcript = await h.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns).toHaveLength(1)
+  })
+
+  test('the dialled link declares notify, or the node sends none', async () => {
+    // 少了这句声明，常驻侧按能力发现判定这个对端不实现 notify，一条都不发——
+    // 而且两边日志都不会说为什么。
+    const dialled: Array<readonly string[] | undefined> = []
+    const hub = createConsoleChatPort({
+      from: FROM,
+      endpoints: [{ url: ENDPOINT, psk: PSK }],
+      storePath: join(directory, 'declares.ndjson'),
+      registry: new FakeRegistry(),
+      dial: input => {
+        dialled.push(input.supportedTypes)
+        return new FakeLink(input.url, input.onReply, input.psk)
+      },
+    })
+    created.push(hub)
+    const opened = await hub.open(TARGET)
+    if (!opened.ok) throw new Error('unreachable')
+    await hub.send({ sessionId: opened.value.id, text: '你好' })
+
+    expect(dialled[0]).toEqual([...LEGACY_MESSAGE_TYPES, MessageType.Notify])
+    // floor 那一段不是新承诺（不声明时对面就按它假设）；新增的只有这一条。
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.Notify)
   })
 
   test('a failed task.result becomes a failed agent turn carrying the code', async () => {

@@ -840,6 +840,19 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .turn-empty { margin: 0; color: var(--color-muted); }
 .turn-marks { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
+/* A notice: the same left edge, a dot instead of an avatar, and no bubble.
+   Flat rather than boxed on purpose — a card per tool call stops the column
+   reading as a conversation (view/chat.ts on renderNotice). */
+.turn-notice { align-items: start; }
+.turn-av-notice { background: none; width: 34px; height: 22px; }
+.notice-line { display: flex; align-items: baseline; gap: var(--space-2); min-height: 22px; }
+.notice-text { font-size: 13px; color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+.notice-detail { margin-top: 2px; }
+.notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
+.notice-detail > summary::-webkit-details-marker { display: none; }
+.notice-detail[open] > summary > svg { transform: rotate(90deg); }
+.notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
+
 /* The delivery chain: three facts and the links between them. */
 .chain { display: inline-flex; align-items: center; gap: 0; }
 .chain .lnk { width: 14px; height: 3px; border-radius: 999px; background: var(--color-neutral-300); flex: none; }

@@ -74,6 +74,13 @@ const TURN_STATES: ReadonlySet<string> = new Set([
   'failed',
 ])
 
+/** `notify` 的三档（协议 §14.2）。视图只拿它选颜色，不拿它过滤。 */
+const NOTICE_SEVERITIES: ReadonlySet<string> = new Set([
+  'info',
+  'warn',
+  'error',
+])
+
 /**
  * Rebuild one turn from a line.
  *
@@ -124,6 +131,17 @@ function toTurn(value: unknown): ChatTurn | null {
     ...(str(value['code']) === undefined
       ? {}
       : { code: str(value['code']) as string }),
+    // 三个过程行字段。**缺省即 `message`**：这个文件里绝大多数行是在它们存在
+    // 之前写的，一条读不出 variant 的旧行必须原样回到今天的样子，而不是变成
+    // 一条分量不明的过程。同理，variant 认不出来的值按 `message` 处理——那多半
+    // 是一个更新的版本写的，把它降级成一句话，好过整行丢掉。
+    ...(value['variant'] === 'notice' ? { variant: 'notice' as const } : {}),
+    ...(NOTICE_SEVERITIES.has(String(value['severity']))
+      ? { severity: value['severity'] as ChatTurn['severity'] }
+      : {}),
+    ...(str(value['detail']) === undefined
+      ? {}
+      : { detail: str(value['detail']) as string }),
   }
 }
 

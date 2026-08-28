@@ -102,6 +102,18 @@ const ANSWER: ChatTurn = {
   elapsedMs: 4_100,
 }
 
+const NOTICE: ChatTurn = {
+  id: 'turn-notice',
+  sessionId: SESSION.id,
+  author: 'agent',
+  at: NOW - 3_000,
+  text: '读了 packages/router/src/rate.ts',
+  state: 'done',
+  variant: 'notice',
+  severity: 'info',
+  detail: '命中 3 处',
+}
+
 const TARGETS: readonly ChatTarget[] = [
   {
     address: TARGET,
@@ -245,6 +257,73 @@ describe('chat transcript view', () => {
     expect(html).toContain('>你<')
     expect(html).toContain('turn-operator')
     expect(html).toContain('turn-agent')
+  })
+
+  test('a notice is a hairline row, not a bubble', () => {
+    const html = renderChatThread({
+      transcript: { session: SESSION, turns: [ASK, NOTICE, ANSWER] },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(html).toContain('读了 packages/router/src/rate.ts')
+    expect(html).toContain('turn-notice')
+    // 过程行没有 bubble、没有作者名、没有投递状态链——它不是这台控制台发出去
+    // 的一轮，是对面推过来的一条既成事实。
+    const notice = html.slice(
+      html.indexOf('turn-notice'),
+      html.indexOf('turn-agent', html.indexOf('turn-notice')),
+    )
+    expect(notice).not.toContain('bubble')
+    expect(notice).not.toContain('turn-who')
+    expect(notice).not.toContain('chain')
+    // detail 折起来，不把回复顶下去。
+    expect(notice).toContain('notice-detail')
+    expect(notice).toContain('命中 3 处')
+  })
+
+  test('severity picks a colour and nothing else — no notice is filtered out', () => {
+    const turns: readonly ChatTurn[] = [
+      { ...NOTICE, id: 'n-info', severity: 'info' },
+      { ...NOTICE, id: 'n-warn', severity: 'warn', text: '重试第 2 次' },
+      { ...NOTICE, id: 'n-error', severity: 'error', text: '工具退出码 1' },
+    ]
+    const html = renderChatThread({
+      transcript: { session: SESSION, turns },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    // 三条都在。被过滤掉的一条过程，和从来没发生过的一步，在页面上长得一模一样。
+    expect(html).toContain('重试第 2 次')
+    expect(html).toContain('工具退出码 1')
+    expect(html).toContain('dot-muted')
+    expect(html).toContain('dot-warn')
+    expect(html).toContain('dot-bad')
+  })
+
+  test('a notice escapes on the way out like every other remote string', () => {
+    const html = renderChatThread({
+      transcript: {
+        session: SESSION,
+        turns: [
+          {
+            ...NOTICE,
+            text: '<script>alert(1)</script>',
+            detail: '<img src=x onerror=alert(2)>',
+          },
+        ],
+      },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    // 判据是尖括号被转义，不是「页面里不出现 onerror 这几个字母」——转义之后
+    // 它就是一段谁也执行不了的文本，而按字面禁词判会把一条正确的实现判成红的。
+    expect(html).not.toContain('<script>')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;script&gt;')
+    expect(html).toContain('&lt;img src=x onerror=alert(2)&gt;')
   })
 
   test('shows delivery, read and elapsed as three separate pills', () => {

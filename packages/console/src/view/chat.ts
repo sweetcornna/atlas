@@ -226,7 +226,54 @@ function avatarText(who: string): string {
   return who.slice(0, 2)
 }
 
+/**
+ * A notice is a hairline row, not a bubble.
+ *
+ * It is the one visual rule this page borrows wholesale from a mature agent
+ * surface: **flat, not boxed** — a turn-inside-a-turn is what a card would make
+ * of it, and a transcript where every tool call is a card stops reading as a
+ * conversation. So a notice keeps the same left edge as everything else, drops
+ * the avatar to a dot, and gives up the `.bubble` fill entirely.
+ *
+ * Severity picks a colour and **nothing else**. It is not a filter: a notice
+ * that got filtered out and a step that never happened look identical on this
+ * page, and only one of those two is a thing the operator can act on.
+ *
+ * `detail` folds. The summary is one line by contract (protocol §14.2); the
+ * detail is whatever the node had room for, and a transcript that pushes the
+ * answer off screen to show a stack trace has its priorities backwards.
+ */
+const NOTICE_TONE: Readonly<Record<string, Tone>> = {
+  info: 'muted',
+  warn: 'warn',
+  error: 'bad',
+}
+
+function renderNotice(turn: ChatTurn): string {
+  const tone = NOTICE_TONE[turn.severity ?? 'info'] ?? 'muted'
+  const detail =
+    turn.detail === undefined
+      ? ''
+      : `<details class="notice-detail">` +
+        `<summary>${chevron()}详情</summary>` +
+        `<p class="notice-detail-body">${escapeHtml(turn.detail)}</p>` +
+        `</details>`
+  return (
+    `<article class="turn turn-notice">` +
+    `<span class="turn-av turn-av-notice" aria-hidden="true">` +
+    `<span class="dot dot-${tone}"></span></span>` +
+    `<div class="turn-body">` +
+    `<div class="notice-line">` +
+    `<span class="notice-text">${escapeHtml(turn.text)}</span>` +
+    `<time class="turn-when">${escapeHtml(formatClock(turn.at))}</time>` +
+    `</div>` +
+    detail +
+    `</div></article>`
+  )
+}
+
 function renderTurn(turn: ChatTurn, agent: string): string {
+  if (turn.variant === 'notice') return renderNotice(turn)
   const who = turn.author === 'operator' ? '你' : agent
   const failed = turn.state === 'failed' ? ' turn-failed' : ''
   return (

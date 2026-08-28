@@ -56,9 +56,11 @@ import type {
   RegistryPort,
 } from '@qianmo/console'
 import {
+  LEGACY_MESSAGE_TYPES,
   MessageType,
   assertAddress,
   createMessage,
+  isNotifyPayload,
   isTaskResultPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -92,8 +94,37 @@ export type ChatDialer = (input: {
   readonly node: string
   readonly peerNode: string
   readonly psk: string
+  /**
+   * 这台控制台收得下的类型（§14.6）。
+   *
+   * **走 input 而不是让 dialer 自己知道**：忘了声明的后果是「一条过程都不来，
+   * 且两边日志都不说为什么」，那种失败不该由每个 dialer 实现各自记得避开。
+   * 从这里传，意味着换 dialer 换不掉这份声明。
+   */
+  readonly supportedTypes: readonly string[]
   readonly onReply: (message: QianmoMessage) => void
 }) => ChatLink
+
+/**
+ * 这台控制台声明自己收得下什么（协议 §14.6 能力发现）。
+ *
+ * **不声明的后果是静默的**：`resolvePeerTypes` 把「没声明」读成 legacy floor，
+ * 而 `notify` 不在那个 floor 里，于是常驻侧两处（`notify.ts` 的 announce 与
+ * drain）都会判定这个对端不实现它——一条都不发，且积压会被当作「确定性死亡」
+ * 退役。对话面因此看不到任何过程，而两边日志都不会说为什么。
+ *
+ * 列的是 **floor + `notify`**：floor 那一段**不是新承诺**——不声明时对面本来就
+ * 按 floor 假设（§14.6 的 `resolvePeerTypes`），把它写出来只是为了让 `notify`
+ * 有地方加。真正新增的只有最后那一条。
+ *
+ * 不写 `Object.values(MessageType)`：那会把 floor 之外的类型也一并认领，而每
+ * 认领一个就是一句「我会谈这个」。`watch.ts` 报全量是因为它就是为收 notify
+ * 而生的中枢，那不是这里该照抄的先例。
+ */
+const CONSOLE_SUPPORTED_TYPES: readonly string[] = [
+  ...LEGACY_MESSAGE_TYPES,
+  MessageType.Notify,
+]
 
 function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
   const client = new TransportClient({
@@ -101,6 +132,7 @@ function defaultDialer(input: Parameters<ChatDialer>[0]): ChatLink {
     node: input.node,
     peerNode: input.peerNode,
     psk: input.psk,
+    supportedTypes: input.supportedTypes,
     onMessage: message => {
       input.onReply(message)
     },
@@ -410,6 +442,38 @@ export function createConsoleChatPort(
   }
 
   /**
+   * 一条节点主动推过来的过程。
+   *
+   * 归组只认信封的 `contextId`，而那正是 `send()` 写进去的会话 id。认不出会话
+   * 的一条**丢掉**——和丢无主回复同一条纪律：它要么来自一台还在拨这个端点的
+   * 旧进程，要么来自一条已经被删掉的会话，两种都没有能放它的地方。
+   *
+   * 内容进的是 `text`，和 agent 那一轮走同一条出口，于是 `view/chat.ts` 的转义
+   * 对它同样成立——**远端输出进 DOM 只留服务端渲染一条路**这件事不因为多了一
+   * 种行而多一个出口。
+   */
+  function onNotice(message: QianmoMessage): void {
+    const sessionId = message.contextId
+    if (typeof sessionId !== 'string' || !sessions.has(sessionId)) return
+    const payload = message.payload
+    if (!isNotifyPayload(payload)) return
+    addTurn({
+      id: newId(),
+      sessionId,
+      author: 'agent',
+      at: now(),
+      text: payload.summary,
+      // 过程行没有投递状态链要走：它不是这台控制台发出去的一轮，是对面推过来
+      // 的一条既成事实。`done` 是这条链上唯一诚实的落点。
+      state: 'done',
+      variant: 'notice',
+      severity: payload.severity,
+      ...(payload.detail === undefined ? {} : { detail: payload.detail }),
+      traceId: message.traceId,
+    })
+  }
+
+  /**
    * One reply off a link this console dialled.
    *
    * Correlation is the envelope's `taskId` (protocol rule C-1) and nothing
@@ -418,6 +482,14 @@ export function createConsoleChatPort(
    * dedup table let through, or a reply to a turn a restart already settled.
    */
   function onReply(message: QianmoMessage): void {
+    // `notify` **先分出去**，因为它按 `contextId` 归组而不是按 `taskId`
+    // 相关（协议 §14.3：每条自带全新 `taskId`）。放在下面那句之后，它会在
+    // 第一行就被当成「没人在等的回复」丢掉——那正是这条链路此前一条过程都
+    // 显示不出来的原因之一。
+    if (message.type === MessageType.Notify) {
+      onNotice(message)
+      return
+    }
     const task = pending.get(message.taskId)
     if (task === undefined) return
     const at = now()
@@ -509,6 +581,7 @@ export function createConsoleChatPort(
       node: self.node,
       peerNode,
       psk: endpoint.psk,
+      supportedTypes: CONSOLE_SUPPORTED_TYPES,
       onReply,
     })
     links.set(url, link)
@@ -687,6 +760,19 @@ export function createConsoleChatPort(
           from: options.from,
           to: stored.target,
           type: MessageType.TaskRequest,
+          // 会话 id 就是上下文 id，这一个字段承担两件事：
+          //
+          // ① **多轮上下文**。常驻侧按 `(agent, contextId)` 分会话
+          //    （`packages/resident/src/session-key.ts` 的 `sessionKeyOf`），
+          //    不给这个字段的请求全都落进同一个 `default` 上下文——今天同一个
+          //    agent 的所有对话因此挤在一起，谁都看得见谁。
+          // ② **过程行的归组键**。节点发 `notify` 时每条自带全新 `taskId`
+          //    （协议 §14.3），能把它归到哪条会话上的只有 `contextId`；常驻侧
+          //    `resident.ts` 的 `#announce` 取的正是这条请求信封上的它。
+          //
+          // 会话 id 是 `randomUUID()`，落在 `SAFE_CONTEXT_PATTERN` 内，不会被
+          // 常驻侧哈希改写，于是两边看到的是同一个字符串。
+          contextId: stored.id,
           payload: { prompt: text },
           deliverTtlMs,
           taskTtlMs,
