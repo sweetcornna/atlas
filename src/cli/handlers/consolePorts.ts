@@ -850,7 +850,7 @@ export function createWakePort(options: WakePortOptions): WakePort {
 // 服务器备注
 // ---------------------------------------------------------------------------
 
-export interface ServerNotesPortOptions {
+interface ServerNotesPortOptions {
   /** 已经拿到路径的 store。路径的出处只有 `consoleArgs.ts` 一个。 */
   readonly store: ServerNotesStore
   /** 可注入，只为让用例能钉住 `updatedAt`。 */
