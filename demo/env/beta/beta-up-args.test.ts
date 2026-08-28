@@ -365,6 +365,46 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
     expect(blocks.get('registry') ?? []).not.toContain('--wake-sign')
   })
 
+  test('host 腿把服务器归属传给控制台 —— 走隧道的节点报 host= 而不是隧道口', () => {
+    const place = scratch()
+    writePeers(place, [
+      'node beta-1 user=ops host=203.0.113.7 local-port=38631',
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+      'qianmo://beta-2/planner ws://198.51.100.9:38625',
+    ])
+    // `--only console`：不加的话有坐标行的 peers 会让 host 腿真的去建 SSH 隧道，
+    // 用例会卡在 ssh 的超时上（实测一条跑了 90 s）。这里要测的是 argv，不是链路。
+    const result = runBetaUp(place, ['--role', 'host', '--only', 'console'])
+    const args = recorded(place).get('console') ?? []
+    expect({ got: args.length > 0, stderr: result.stderr }).toEqual({
+      got: true,
+      stderr: result.stderr,
+    })
+    // beta-1 走隧道：端点是 ws://127.0.0.1:38631，那是宿主机上的口——归属必须报
+    // 坐标行里的 host=，否则名册上四个节点看起来都在同一台机器上。
+    expect(args).toContain('beta-1=203.0.113.7')
+    // beta-2 直连：从端点解出主机名。
+    expect(args).toContain('beta-2=198.51.100.9')
+    expect(args.filter(one => one === '--node-server')).toHaveLength(2)
+  })
+
+  test('server= 覆盖 host=，传出去的是那个短名', () => {
+    const place = scratch()
+    writePeers(place, [
+      'node beta-1 user=ops host=203.0.113.7 local-port=38631 server=p11',
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+    ])
+    const result = runBetaUp(place, ['--role', 'host', '--only', 'console'])
+    const args = recorded(place).get('console') ?? []
+    expect({ got: args.includes('beta-1=p11'), stderr: result.stderr }).toEqual(
+      {
+        got: true,
+        stderr: result.stderr,
+      },
+    )
+    expect(args).not.toContain('beta-1=203.0.113.7')
+  })
+
   test('multiple tail arguments keep their order and their spaces', () => {
     const place = scratch()
     const result = runBetaUp(place, [

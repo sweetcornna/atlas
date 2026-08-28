@@ -403,8 +403,17 @@ beta_write_peers_template() {
     printf '#          local-port=H 这一侧的回环口（必填，四个节点必须各不相同）\n'
     printf '#          remote-port=节点侧的入站端口（默认 %s）\n' "$BETA_NODE_PORT"
     printf '#          trail=     节点上审计链的绝对路径；给了才做镜像\n'
+    printf '#          server=    这台机器在控制台上显示成什么（可选，默认取 host=）。\n'
+    printf '#                     想要一个稳定短名（p11）而不是跟着 IP 变，就写它。\n'
     printf '#          key=       这条链路用的私钥（默认 QIANMO_BETA_SSH_KEY）\n'
     printf '#      值里不能有空白（本行按空白分词）。\n'
+    printf '#\n'
+    printf '#\n'
+    printf '# 服务器归属（控制台名册上「这个节点在哪台机器上」那一栏）：\n'
+    printf '#   · 有坐标行 → server=，没给就是 host=。\n'
+    printf '#   · 没有坐标行 → 取地址行端点里的主机名；端点是回环时取本机 hostname\n'
+    printf '#     （在宿主机上从 127.0.0.1 就拨得通又没有隧道的节点，就跑在宿主机自己身上）。\n'
+    printf '#   判定不出来就不显示归属，不会瞎猜一个机器名。\n'
     printf '#\n'
     printf '#      有坐标行的节点，它的每一条地址行端点**必须**正好是\n'
     printf '#      ws://127.0.0.1:<local-port> —— 脚本会带行号拦下不一致。那个不一致\n'
@@ -450,6 +459,7 @@ BETA_SSH_LOCAL=()
 BETA_SSH_REMOTE=()
 BETA_SSH_TRAIL=()
 BETA_SSH_KEYFILE=()
+BETA_SSH_SERVER=()
 # 所有隧道在 H 侧的回环口，前后各一个空格，用字符串包含判断（bash 3.2 没有关联数组）。
 # beta_tcp_open 拿它当黑名单——见那个函数的头注。
 BETA_TUNNEL_PORTS=' '
@@ -506,6 +516,59 @@ beta_ssh_index() {
   return 1
 }
 
+# ── 服务器归属 ───────────────────────────────────────────────────────────────
+#
+# 「这个节点跑在哪台机器上」在控制台上是看不出来的：走隧道的节点，它在名册里的端点是
+# `ws://127.0.0.1:38631` —— 那是**宿主机上的隧道本地口**，四个节点长得几乎一样，而它们
+# 其实分散在四台机器上。运维时分不清谁是谁，正是这一组函数要解决的事。
+#
+# 归属只从 peers.conf 派生，**脚本里没有任何机器名 / IP**（beta-env.md 文首那条纪律）。
+
+# server id 的形状。它会原样进控制台的命令行（`--node-server <节点>=<id>`）和页面，
+# 所以字符集卡紧一点：主机名、IPv4、IPv6（有冒号）、短名都在内，别的不收。
+beta_assert_server_id() {
+  local value="$1" where="$2"
+  [ -n "$value" ] || beta_die "${where}：server 不能为空"
+  [ "${#value}" -le 64 ] || beta_die "${where}：server 超过 64 个字符：$value"
+  case "$value" in
+    *[!A-Za-z0-9._:-]*) beta_die "${where}：server 只收 A-Za-z0-9 . _ : - ，收到：$value" ;;
+  esac
+}
+
+# beta_peer_server <node> —— 该节点所属服务器的 id；判定不出来就返回 1（调用方降级）。
+#
+# 两条规则，都只读 peers.conf：
+#   ① 有坐标行 → server=（没给就是 host=，见 beta_parse_node_line 里那段）。
+#   ② 没有坐标行 → 地址行端点里的主机名。端点是回环时**取本机 hostname**：一个在宿主
+#      机上从 127.0.0.1 就拨得通、又没有隧道的节点，就是跑在宿主机自己身上——报
+#      「127.0.0.1」等于什么都没说，而这正是控制台所在的那台机器。
+beta_peer_server() {
+  local want="$1" index ep host
+  if index="$(beta_ssh_index "$want")"; then
+    printf '%s\n' "${BETA_SSH_SERVER[$index]}"
+    return 0
+  fi
+  ep="$(beta_peer_endpoint "$want")" || return 1
+  # ws://host:port / wss://[::1]:port —— 剥协议、剥端口、剥 IPv6 的方括号。
+  host="${ep#*://}"
+  host="${host%%/*}"
+  case "$host" in
+    \[*\]*) host="${host#\[}"; host="${host%%\]*}" ;;
+    *) host="${host%%:*}" ;;
+  esac
+  case "$host" in
+    127.*|localhost|::1|'') host="$(hostname 2>/dev/null || true)" ;;
+  esac
+  [ -n "$host" ] || return 1
+  # 这一条是派生出来的、不是人写的，所以拿不准就降级而不是让控制台起不来：
+  # 一个形状古怪的 hostname 不该把整个 H 腿拖停。
+  case "$host" in
+    *[!A-Za-z0-9._:-]*) return 1 ;;
+  esac
+  [ "${#host}" -le 64 ] || return 1
+  printf '%s\n' "$host"
+}
+
 # 解析一条 `node <名字> <键>=<值>...`。
 beta_parse_node_line() {
   local lineno="$1" name="$2" rest="$3"
@@ -517,7 +580,7 @@ beta_parse_node_line() {
     beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
-  local trail='' keyfile="$BETA_SSH_KEY" kv key value
+  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 kv key value
   # 按空白分词：所以值里不能有空格。这条限制写在模板注释里，且真实取值（用户名、
   # 主机、端口、绝对路径）本来就不该有空格。
   for kv in $rest; do
@@ -535,7 +598,8 @@ beta_parse_node_line() {
       remote-port) remote_port="$value" ;;
       trail) trail="$value" ;;
       key) keyfile="$value" ;;
-      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key）" ;;
+      server) server="$value"; server_given=1 ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server）" ;;
     esac
   done
   [ -n "$user" ] || beta_die "${where}：缺 user="
@@ -562,6 +626,13 @@ beta_parse_node_line() {
     /*) ;;
     *) beta_die "${where}：key 必须是 H 上的绝对路径：$keyfile" ;;
   esac
+  # server= 不给就落成 host= —— 对走隧道的节点，「它在哪台机器上」这个事实已经由
+  # host= 说清了，再让人写一遍就是同一个事实的第二处出处（根 CLAUDE.md「指针不复制」）。
+  # 给它是为了让运维能起一个稳定的短名（`p11`）而不是被 IP 变更带着走。
+  # 「没给 server=」与「给了 server=（空）」必须分开：后者是打字打漏了，静默落成 host=
+  # 会把一个笔误变成一个看起来正常的配置。本文件对其余每个键都是这个姿态。
+  if [ "$server_given" -eq 0 ]; then server="$host"; fi
+  beta_assert_server_id "$server" "$where" 
   BETA_SSH_NODE[BETA_SSH_COUNT]="$name"
   BETA_SSH_USER[BETA_SSH_COUNT]="$user"
   BETA_SSH_HOST[BETA_SSH_COUNT]="$host"
@@ -570,6 +641,7 @@ beta_parse_node_line() {
   BETA_SSH_REMOTE[BETA_SSH_COUNT]="$remote_port"
   BETA_SSH_TRAIL[BETA_SSH_COUNT]="$trail"
   BETA_SSH_KEYFILE[BETA_SSH_COUNT]="$keyfile"
+  BETA_SSH_SERVER[BETA_SSH_COUNT]="$server"
   BETA_SSH_COUNT=$((BETA_SSH_COUNT + 1))
   BETA_TUNNEL_PORTS="$BETA_TUNNEL_PORTS$local_port "
 }
@@ -589,6 +661,7 @@ beta_load_peers() {
   BETA_SSH_REMOTE=()
   BETA_SSH_TRAIL=()
   BETA_SSH_KEYFILE=()
+  BETA_SSH_SERVER=()
   BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
   # 变量名避开 `tail`：bash 的 local 是动态作用域，一个叫 tail 的变量读起来像是在

@@ -376,7 +376,9 @@ run_host() {
   )
   # peers.conf is the one node roster. Every distinct node gets exactly one
   # audit source and one wake URL; console.conf never adds a target of its own.
-  local node audit_path wake_url psk_file
+  # server 在这里声明而不是循环里写 `local server=$(...)`：那种写法的退出码是 local 的，
+  # 恒为 0，于是「判定不出来就降级」那一支永远走不到。
+  local node audit_path wake_url psk_file server
   for node in $(beta_peer_nodes); do
     if beta_node_is_mirrored "$node"; then
       audit_path="$(beta_mirror_trail "$node")"
@@ -388,6 +390,16 @@ run_host() {
     fi
     if [ ! -f "$audit_path" ]; then
       beta_warn "审计链文件还不存在：$node → ${audit_path}（该节点单独显示为空链）"
+    fi
+
+    # 服务器归属。名册上四个节点的端点长得几乎一样（走隧道的都是 ws://127.0.0.1:386xx），
+    # 看不出谁在哪台机器上；这一行把 peers.conf 已经知道的那件事传给控制台。
+    # **判定不出来就不传**：控制台缺这个参数时整体降级为「不显示归属」，比显示一个
+    # 猜出来的机器名好——运维照着错的机器名去查，比没有归属更贵。
+    if server="$(beta_peer_server "$node")"; then
+      console_args+=(--node-server "$node=$server")
+    else
+      beta_warn "服务器归属未知：${node}（peers.conf 里既没有坐标行、端点也解不出主机名）"
     fi
 
     wake_url="$(beta_peer_endpoint "$node")"
