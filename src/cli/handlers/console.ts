@@ -184,14 +184,14 @@ export function wireConsoleWake(
 }
 
 /** 聊天面的接线结果，形状与 {@link WakeWiring} 一致。 */
-export interface ConsoleChatWiring {
+interface ConsoleChatWiring {
   readonly hub?: ConsoleChatHub
   readonly status: string
 }
 
 /** 生产接线的窄缝，用途与 {@link ConsoleWakeDependencies} 完全一样：让用例证明
  * 「哪个节点读哪个变量」，而不用往进程环境里塞真钥匙。 */
-export interface ConsoleChatDependencies {
+interface ConsoleChatDependencies {
   readonly pskFromEnv: (variable?: string) => string
   readonly createChatPort: typeof createConsoleChatPort
 }
