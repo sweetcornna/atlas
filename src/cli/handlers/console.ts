@@ -227,13 +227,6 @@ export function wireConsoleChat(
   if (config.chatTargets.length === 0) {
     return { status: 'disabled (no --chat-url)' }
   }
-  // 与唤醒面同一条纪律：身份只在真要签名时读出来（首次运行会创建）。一个从不
-  // 签名的控制台不该在配置根里留下一把没人用的私钥。两张面共用这一把——控制台
-  // 在对面的审计链里只该有一个身份（`consoleWakeIdentity.ts` 的模块注释）。
-  const identity =
-    config.signChats === true
-      ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
-      : undefined
   const endpoints: ConsoleChatEndpoint[] = []
   const notes: string[] = []
   for (const target of config.chatTargets) {
@@ -261,6 +254,19 @@ export function wireConsoleChat(
   if (endpoints.length === 0) {
     return { status: `disabled (${notes.join(', ')})` }
   }
+  // 身份只在真要签名时读出来（首次运行会创建），而且排在「有没有一条拨得通的
+  // 端点」之后：一个最终没有对话面的控制台，不该在配置根里留下一把没人用的私钥。
+  // 两张面共用这一把——控制台在对面的审计链里只该有一个身份
+  // （`consoleWakeIdentity.ts` 的模块注释）。
+  //
+  // **读不出来就让启动失败，不在这里 catch。**下面那个 try 只兜 `--chat-from`
+  // 写坏了那一类；密钥读不出来是另一回事：操作者明确要求了签名，而「照常起来但
+  // 悄悄不签」正是这条路径上最坏的失败形状——消息照送、回复照来，只有对面知道
+  // 它没被授权。
+  const identity =
+    config.signChats === true
+      ? (dependencies.loadIdentity ?? loadConsoleWakeIdentity)(config.chatFrom)
+      : undefined
   try {
     const hub = dependencies.createChatPort({
       from: config.chatFrom,

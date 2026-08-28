@@ -173,6 +173,18 @@ describe('console chat wiring', () => {
     expect(wiring.status).not.toContain(IDENTITY_PUBLIC_KEY)
   })
 
+  test('一条端点都拨不通时，即使给了 --chat-sign 也不读身份', () => {
+    // 读身份就是首次创建它。最终没有对话面的控制台不该留下一把没人用的私钥，
+    // 所以这一步排在「有没有可用端点」之后，而不是排在参数解析之后。
+    const { wiring, identityFor } = wire(
+      ['--chat-url=beta-1=ws://127.0.0.1:38631', '--chat-sign'],
+      {},
+    )
+
+    expect(wiring.hub).toBeUndefined()
+    expect(identityFor).toEqual([])
+  })
+
   test('no --chat-url is the one disabled reason that predates PSK lookup', () => {
     const { wiring, queried } = wire([], {}, { globalPsk: GLOBAL_PSK })
 
