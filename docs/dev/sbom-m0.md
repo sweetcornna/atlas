@@ -2,7 +2,7 @@
 
 > **本文件由 `bun run sbom` 生成，不要手改。**改判据请改 `scripts/sbom.ts`。
 >
-> 输入：`bun.lock`（SHA-256 `fd345b5a441e105f…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
+> 输入：`bun.lock`（SHA-256 `b71839e708f564ed…`）+ `node_modules` 的 `license` 字段。机器可读版本见同目录 [`sbom-m0.json`](./sbom-m0.json)（CycloneDX 1.5 形状）。
 
 对应 roadmap **P8.4** 交付物①，章程 §5 与风险 L-2 的证据链见 [`license-chain-m0.md`](./license-chain-m0.md)。
 
@@ -18,33 +18,33 @@
 
 | 项 | 数 |
 |---|---|
-| 组件总数（lockfile 条目，含重复解析） | 1419 |
-| ├ 第三方组件 | 1386 |
-| └ workspace 自有包 | 33 |
-| 唯一 name@version（第三方） | 1056 |
-| runtime 可达 | 194 |
-| dev 可达 | 1224 |
+| 组件总数（lockfile 条目，含重复解析） | 1453 |
+| ├ 第三方组件 | 1417 |
+| └ workspace 自有包 | 36 |
+| 唯一 name@version（第三方） | 1085 |
+| runtime 可达 | 197 |
+| dev 可达 | 1255 |
 | 未被任何根可达（解析遗漏或纯 peer） | 1 |
-| 本机未安装（去重，平台受限 optional） | 193 |
+| 本机未安装（去重，平台受限 optional） | 216 |
 
 ## 2. 许可分布
 
-按归一化后的许可表达式统计，范围为**本机已安装的第三方组件**（去重到 name@version，共 858 项）。未安装的 198 项读不到字段，单列在 §5，不计入本表。
+按归一化后的许可表达式统计，范围为**本机已安装的第三方组件**（去重到 name@version，共 862 项）。未安装的 223 项读不到字段，单列在 §5，不计入本表。
 
 「分类」按 §3 的 SPDX 求值口径给出：`(A OR B)` 取较宽松的一支，所以 `(BSD-3-Clause OR GPL-2.0)` 显示为宽松。
 
 | 许可表达式 | 分类 | 组件数 |
 |---|---|---|
-| `MIT` | 宽松 | 547 |
-| `Apache-2.0` | 宽松 | 211 |
-| `ISC` | 宽松 | 41 |
+| `MIT` | 宽松 | 548 |
+| `Apache-2.0` | 宽松 | 213 |
+| `ISC` | 宽松 | 42 |
 | `BSD-3-Clause` | 宽松 | 22 |
 | `BSD-2-Clause` | 宽松 | 10 |
 | `BlueOak-1.0.0` | 宽松 | 6 |
-| `MIT OR Apache-2.0` | 宽松 | 6 |
+| `MIT OR Apache-2.0` | 宽松 | 5 |
+| `LGPL-3.0-or-later` | 弱传染（文件级） | 3 |
 | `MPL-2.0` | 弱传染（文件级） | 3 |
 | `0BSD` | 宽松 | 2 |
-| `LGPL-3.0-or-later` | 弱传染（文件级） | 2 |
 | `SEE LICENSE IN LICENSE` | 未判定 | 2 |
 | `(BSD-2-Clause OR MIT OR Apache-2.0)` | 宽松 | 1 |
 | `(BSD-3-Clause OR GPL-2.0)` | 宽松 | 1 |
@@ -57,12 +57,13 @@
 
 判定口径：SPDX 表达式按 `OR` 取最宽松分支、`AND` 取最严格分支求值——`(MIT OR GPL-2.0)` **不算命中**，因为可以取 MIT 那一支；`GPL-2.0 WITH Classpath-exception-2.0` 降一档，因为该例外正是为解除链接传染而写的。扫描覆盖 GPL / LGPL / AGPL / SSPL / EUPL / CC-BY-SA / OSL / CDDL / MPL / EPL / CPL / MS-RL / APSL / GFDL / Sleepycat / QPL / CECILL / Artistic 等族。
 
-**结论：强传染 / 网络传染命中 0 项；弱传染（文件级）命中 5 项；受限/非自由 0 项。**
+**结论：强传染 / 网络传染命中 0 项；弱传染（文件级）命中 6 项；受限/非自由 0 项。**
 
 | 包 | 版本 | 许可 | 分类 | 引入路径 | 字段归属 | 处置建议 |
 |---|---|---|---|---|---|---|
 | `@img/sharp-libvips-darwin-arm64` | 1.0.4 | `LGPL-3.0-or-later` | 弱传染（文件级） | image-processor-napi → image-processor-napi/sharp → image-processor-napi/sharp/@img/sharp-libvips-darwin-arm64 | runtime | 可留用（预编译共享库，非 JS，不进 `dist/` 的 JS bundle，随 `node_modules` 以独立文件形式存在）：未修改其源码即不传染到本仓库代码；分发时须随附其许可与版权声明，并保留使用者替换该库的可能（LGPL §4） |
 | `@img/sharp-libvips-darwin-arm64` | 1.2.4 | `LGPL-3.0-or-later` | 弱传染（文件级） | (root) → sharp → @img/sharp-libvips-darwin-arm64 | dev | 可留用（预编译共享库，非 JS，不进 `dist/` 的 JS bundle，随 `node_modules` 以独立文件形式存在）：未修改其源码即不传染到本仓库代码；分发时须随附其许可与版权声明，并保留使用者替换该库的可能（LGPL §4） |
+| `@img/sharp-libvips-darwin-arm64` | 1.3.1 | `LGPL-3.0-or-later` | 弱传染（文件级） | cloud-artifacts → wrangler → miniflare → miniflare/sharp → miniflare/sharp/@img/sharp-libvips-darwin-arm64 | dev | 可留用（预编译共享库，非 JS，不进 `dist/` 的 JS bundle，随 `node_modules` 以独立文件形式存在）：未修改其源码即不传染到本仓库代码；分发时须随附其许可与版权声明，并保留使用者替换该库的可能（LGPL §4） |
 | `lightningcss` | 1.32.0 | `MPL-2.0` | 弱传染（文件级） | (root) → vite → lightningcss | dev | 可留用：未修改其源文件时义务止于该文件；分发时须随附其许可与版权声明 |
 | `lightningcss-darwin-arm64` | 1.32.0 | `MPL-2.0` | 弱传染（文件级） | (root) → vite → lightningcss → lightningcss-darwin-arm64 | dev | 可留用：未修改其源文件时义务止于该文件；分发时须随附其许可与版权声明 |
 | `postcss-values-parser` | 6.0.2 | `MPL-2.0` | 弱传染（文件级） | (root) → … → precinct → detective-postcss → postcss-values-parser | dev | 可留用：未修改其源文件时义务止于该文件；分发时须随附其许可与版权声明 |
@@ -82,14 +83,14 @@
 
 ## 5. 本机未安装的组件（许可待补）
 
-本机 `darwin-arm64`。共 198 项在 lockfile 里但本机 `node_modules` 中不存在，因而读不到 `license` 字段；其中 193 项是被 `os`/`cpu` 过滤掉的平台原生包。**结项材料若要覆盖全平台，须在各目标平台分别跑一次本脚本再并表。**
+本机 `darwin-arm64`。共 223 项在 lockfile 里但本机 `node_modules` 中不存在，因而读不到 `license` 字段；其中 216 项是被 `os`/`cpu` 过滤掉的平台原生包。**结项材料若要覆盖全平台，须在各目标平台分别跑一次本脚本再并表。**
 
 按引入者归组。「同族已安装样本的许可」是同一引入者下已装组件的许可集合——平台变体包通常与同族一致，可据此预判，但**不构成判定**。
 
 | 引入者 | 未安装项数 | 同族已安装样本的许可 |
 |---|---|---|
+| `sharp` | 62 | `MIT`、`Apache-2.0`、`LGPL-3.0-or-later`、`ISC` |
 | `esbuild` | 50 | `MIT` |
-| `sharp` | 39 | `MIT`、`Apache-2.0`、`LGPL-3.0-or-later`、`ISC` |
 | `rollup` | 24 | `MIT` |
 | `oxc-parser` | 19 | `MIT` |
 | `oxc-resolver` | 19 | `MIT` |
@@ -99,13 +100,15 @@
 | `@biomejs/biome` | 7 | `MIT OR Apache-2.0` |
 | `workerd` | 4 | `Apache-2.0` |
 
-另有 5 项**不受平台限制却仍未安装**（多为未被选中的 optional / peer 分支），逐项列出：
+另有 7 项**不受平台限制却仍未安装**（多为未被选中的 optional / peer 分支），逐项列出：
 
 | 包 | 版本 | 引入路径 |
 |---|---|---|
 | `@emnapi/core` | 1.9.2 | (root) → vite → rolldown → @rolldown/binding-wasm32-wasi → @emnapi/core |
+| `@emnapi/runtime` | 1.11.3 | cloud-artifacts → … → @img/sharp-freebsd-wasm32 → @img/sharp-freebsd-wasm32/@img/sharp-wasm32 → @img/sharp-freebsd-wasm32/@img/sharp-wasm32/@emnapi/runtime |
 | `@emnapi/runtime` | 1.9.2 | image-processor-napi → image-processor-napi/sharp → image-processor-napi/sharp/@img/sharp-wasm32 → @emnapi/runtime |
 | `@emnapi/wasi-threads` | 1.2.1 | (root) → … → @rolldown/binding-wasm32-wasi → @emnapi/core → @emnapi/wasi-threads |
+| `@img/sharp-wasm32` | 0.35.2 | cloud-artifacts → … → miniflare/sharp → @img/sharp-freebsd-wasm32 → @img/sharp-freebsd-wasm32/@img/sharp-wasm32 |
 | `@napi-rs/wasm-runtime` | 1.1.3 | (root) → knip → oxc-parser → @oxc-parser/binding-wasm32-wasi → @napi-rs/wasm-runtime |
 | `@tybys/wasm-util` | 0.10.1 | (root) → … → @oxc-parser/binding-wasm32-wasi → @napi-rs/wasm-runtime → @tybys/wasm-util |
 
@@ -123,33 +126,36 @@
 
 ## 7. workspace 自有包
 
-「版权头」列 = 该包 `.ts` 文件中首两行为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT` 的比例（章程 §5.5 要求 `@qianmo/*` 全覆盖）。
+「版权头」列 = 该包 `.ts` 文件中首两行为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: AGPL-3.0-or-later` 的比例（章程 §5.5 要求 `@qianmo/*` 全覆盖）。
 
 ### 7.1 阡陌自有（`@qianmo/*`）
 
 | 包 | 路径 | `license` | private | 版权头 |
 |---|---|---|---|---|
-| `@qianmo/activator` | `packages/activator` | MIT | 是 | 29/29 |
-| `@qianmo/adapter` | `packages/adapter` | MIT | 是 | 14/14 |
-| `@qianmo/audit` | `packages/audit` | MIT | 是 | 5/5 |
-| `@qianmo/backup` | `packages/backup` | MIT | 是 | 13/13 |
-| `@qianmo/capability` | `packages/capability` | MIT | 是 | 11/11 |
-| `@qianmo/capacity` | `packages/capacity` | MIT | 是 | 13/13 |
-| `@qianmo/diagnosis` | `packages/diagnosis` | MIT | 是 | 6/6 |
-| `@qianmo/memory` | `packages/memory` | MIT | 是 | 15/15 |
-| `@qianmo/negotiation` | `packages/negotiation` | MIT | 是 | 7/7 |
-| `@qianmo/protocol` | `packages/protocol` | MIT | 是 | 14/14 |
-| `@qianmo/recall` | `packages/recall` | MIT | 是 | 13/13 |
-| `@qianmo/registry` | `packages/registry` | MIT | 是 | 8/8 |
-| `@qianmo/resident` | `packages/resident` | MIT | 是 | 26/26 |
-| `@qianmo/router` | `packages/router` | MIT | 是 | 10/10 |
-| `@qianmo/sandbox` | `packages/sandbox` | MIT | 是 | 7/7 |
-| `@qianmo/transport` | `packages/transport` | MIT | 是 | 21/21 |
-| `@qianmo/tunnel` | `packages/tunnel` | MIT | 是 | 5/5 |
+| `@qianmo/activator` | `packages/activator` | AGPL-3.0-or-later | 是 | 30/30 |
+| `@qianmo/adapter` | `packages/adapter` | AGPL-3.0-or-later | 是 | 15/15 |
+| `@qianmo/audit` | `packages/audit` | AGPL-3.0-or-later | 是 | 5/5 |
+| `@qianmo/backup` | `packages/backup` | AGPL-3.0-or-later | 是 | 13/13 |
+| `@qianmo/capability` | `packages/capability` | AGPL-3.0-or-later | 是 | 13/13 |
+| `@qianmo/capacity` | `packages/capacity` | AGPL-3.0-or-later | 是 | 13/13 |
+| `@qianmo/console` | `packages/console` | AGPL-3.0-or-later | 是 | 28/28 |
+| `@qianmo/diagnosis` | `packages/diagnosis` | AGPL-3.0-or-later | 是 | 6/6 |
+| `@qianmo/memory` | `packages/memory` | AGPL-3.0-or-later | 是 | 15/15 |
+| `@qianmo/negotiation` | `packages/negotiation` | AGPL-3.0-or-later | 是 | 7/7 |
+| `@qianmo/protocol` | `packages/protocol` | AGPL-3.0-or-later | 是 | 17/17 |
+| `@qianmo/recall` | `packages/recall` | AGPL-3.0-or-later | 是 | 13/13 |
+| `@qianmo/registry` | `packages/registry` | AGPL-3.0-or-later | 是 | 9/9 |
+| `@qianmo/resident` | `packages/resident` | AGPL-3.0-or-later | 是 | 48/48 |
+| `@qianmo/router` | `packages/router` | AGPL-3.0-or-later | 是 | 10/10 |
+| `@qianmo/sandbox` | `packages/sandbox` | AGPL-3.0-or-later | 是 | 7/7 |
+| `@qianmo/scheduler` | `packages/scheduler` | AGPL-3.0-or-later | 是 | 11/11 |
+| `@qianmo/transport` | `packages/transport` | AGPL-3.0-or-later | 是 | 29/29 |
+| `@qianmo/tunnel` | `packages/tunnel` | AGPL-3.0-or-later | 是 | 5/5 |
+| `@qianmo/witness` | `packages/witness` | AGPL-3.0-or-later | 是 | 7/7 |
 
 ### 7.2 基座既有 workspace 包
 
-基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，随仓库根 `LICENSE`（MIT）覆盖——见 `NOTICE` 一、许可。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
+基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的判据是 SPDX 文件头，基座文件不带头。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
 
 | 包 | 路径 | `license` | private |
 |---|---|---|---|
