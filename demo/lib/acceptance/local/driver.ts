@@ -24,15 +24,12 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import type {
   AcceptanceDriver,
@@ -52,7 +49,6 @@ import type {
 import { startConsole, startRegistry } from './console.js'
 import { rawDial, type RawAuth } from './dial.js'
 import {
-  cliPrefix,
   REPO_ROOT,
   runCli,
   sleep,
@@ -96,7 +92,7 @@ export interface LocalNodeHandle extends NodeHandle {
 }
 
 /**
- * 本地腿固定缺的那一项，以及为什么缺 —— 这段理由本身是这套件里被引用最多的
+ * 本地腿唯一缺的那一项，以及为什么缺 —— 这段理由本身是这套件里被引用最多的
  * 一条取舍，所以它必须出现在报告里而不是只在注释里。
  */
 const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
@@ -105,112 +101,6 @@ const LOCAL_CAPABILITY_GAPS: ReadonlyMap<DriverCapability, string> = new Map([
     '审计镜像的搬运需要 systemd 定时器 + 隧道 + 源与镜像两台机器，本地腿三个前提一个都不具备；用一次 cp 冒充会得到一条永远绿的场景，而绿的那一刻恰好证明不了任何事 —— 宁可空着',
   ],
 ])
-
-/** 起得来一个常驻节点才谈得上的那几项能力。 */
-const NODE_CAPABILITIES: readonly DriverCapability[] = [
-  'attach-node',
-  'spawn-node',
-  'restart-node',
-]
-
-/**
- * 这台机器上起的常驻节点，够不够得着一个模型。
- *
- * **为什么这件事决定能力表**：常驻起来之后会立刻开一次 ACP `session/new`，
- * 没有凭据时它被拒（`ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is
- * required`），supervisor 连试五次后 park 并退出。节点从此不会接受任何握手，
- * 于是每条要节点的场景都只能等满就绪预算再报「超时」—— 一条与真因毫无关系的
- * 错。CI 第一次真跑起来时，19 条场景各等满 90 s，把 30 min 的 job 预算耗光，
- * 拿到的是一个 `cancelled`，既没有汇总表也没指出缺的是凭据。
- *
- * **判据为什么必须自己起一个进程去问，而不是在这里读环境变量**：
- * 节点拿到的是 `{...process.env, OCC_CONFIG_DIR: <每节点一个的新根>}`（见
- * `spawnCli`）—— 环境变量继承得到，**开发机上那份 stored login 继承不到**，
- * 因为配置根是新的。所以「本进程有没有凭据」与「节点有没有凭据」是两个问题，
- * 用前者当判据会在开发机上答错（本机登录着，节点照样起不来）。
- * 而把凭据键在这里列一遍是 `resident.ts` 明确警告过的那条路：
- * 「第二份私有的凭据键清单，正是节点的答案和 `auth status` 的答案开始分歧的
- * 方式，而分歧的那一份永远是没人跑的那一份」。
- *
- * 所以照它的建议办：拿一个**空配置根**跑一次 `auth status`，问的就是节点将要
- * 面对的那个环境。`loggedIn` 是那条命令自己的结论，这里不复述判据。
- */
-function nodeCanReachModel(): boolean {
-  const probeRoot = mkdtempSync(join(tmpdir(), 'qm-acc-authprobe-'))
-  try {
-    const probe = Bun.spawnSync([...cliPrefix(), 'auth', 'status'], {
-      cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        OCC_IDENTITY: 'qianmo',
-        OCC_CONFIG_DIR: probeRoot,
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    const stdout = probe.stdout.toString()
-    // `auth status` 把 JSON 打在 stdout 上，但前面可能有 dev 入口的杂音
-    // （`[ripgrep] fallback: …` 之类），所以从第一个 `{` 起截。
-    const brace = stdout.indexOf('{')
-    if (brace < 0) return false
-    const parsed: unknown = JSON.parse(stdout.slice(brace))
-    return (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      (parsed as { loggedIn?: unknown }).loggedIn === true
-    )
-  } catch {
-    // 问不出来就当作没有：这条判据只决定「跳过还是尝试」，答错成「有」会退回
-    // 到那个 19 条各等满预算的形状，答错成「没有」只是如实少跑几条。
-    return false
-  } finally {
-    rmSync(probeRoot, { recursive: true, force: true })
-  }
-}
-
-/**
- * 能力表按这台机器的实际情况算一次。
- *
- * 缓存在模块级：`auth status` 要起一个 bun 子进程，而 `LocalDriver` 在单测里
- * 会被反复 new。
- */
-let cachedLocalCapabilities:
-  | {
-      readonly capabilities: ReadonlySet<DriverCapability>
-      readonly gaps: ReadonlyMap<DriverCapability, string>
-    }
-  | undefined
-
-function resolveLocalCapabilities(): {
-  readonly capabilities: ReadonlySet<DriverCapability>
-  readonly gaps: ReadonlyMap<DriverCapability, string>
-} {
-  if (cachedLocalCapabilities !== undefined) return cachedLocalCapabilities
-  if (nodeCanReachModel()) {
-    cachedLocalCapabilities = {
-      capabilities: LOCAL_CAPABILITIES,
-      gaps: LOCAL_CAPABILITY_GAPS,
-    }
-    return cachedLocalCapabilities
-  }
-  const why =
-    '这台机器上看不到任何模型凭据（拿一个空配置根跑 `qm auth status` 得到 loggedIn:false）。' +
-    '常驻起来后第一次 ACP session/new 就会被拒，supervisor 连试五次后 park 退出，' +
-    '节点永远不会接受握手 —— 跑下去只会等满就绪预算再报一条与真因无关的「超时」。' +
-    '要跑这些场景，请在**起套件的那个 shell 里**用环境变量给出凭据' +
-    '（`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CODE_USE_*` 之一）：' +
-    '节点用的是新配置根，stored login 传不进去。'
-  cachedLocalCapabilities = {
-    capabilities: new Set(
-      [...LOCAL_CAPABILITIES].filter(c => !NODE_CAPABILITIES.includes(c)),
-    ),
-    gaps: new Map([
-      ...LOCAL_CAPABILITY_GAPS,
-      ...NODE_CAPABILITIES.map(c => [c, why] as const),
-    ]),
-  }
-  return cachedLocalCapabilities
-}
 
 /*
  * 驱动内部那两个「等它就绪」的墙钟预算。
@@ -242,8 +132,8 @@ const HOST_RUN_BUDGET_MS = 60_000
 
 export class LocalDriver implements AcceptanceDriver {
   readonly target = 'local' as const
-  readonly capabilities = resolveLocalCapabilities().capabilities
-  readonly capabilityGaps = resolveLocalCapabilities().gaps
+  readonly capabilities = LOCAL_CAPABILITIES
+  readonly capabilityGaps = LOCAL_CAPABILITY_GAPS
   /** 同一场景里第几个控制台位 —— 见 {@link LocalDriver.consoleSlot}。 */
   #consoleSeat = 0
   /** 同一场景里第几个启动器位。 */
