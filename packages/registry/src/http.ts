@@ -57,6 +57,8 @@ function agentBody(entry: AgentRecord): Record<string, unknown> {
     capabilities: entry.capabilities,
     // Dropped from the JSON when absent — no key has been published yet.
     publicKey: entry.publicKey,
+    // Same rule (§5.2): absent until the registrant has adopted certificates.
+    certificate: entry.certificate,
     status: entry.status,
     registeredAt: entry.registeredAt,
     lastHeartbeatAt: entry.lastHeartbeatAt,
@@ -114,6 +116,7 @@ async function handleCollection(
     {
       capabilities: body['capabilities'],
       publicKey: body['publicKey'],
+      certificate: body['certificate'],
       status: body['status'],
     },
   )
@@ -155,6 +158,38 @@ function handleHeartbeat(
 }
 
 /**
+ * `/v0/revocation-list` — the same zero-auth courier the agent table is
+ * (key-distribution.md §5.2), carrying the CA's signed RL instead of a
+ * certificate. `GET` for every node's hourly poll (§6.4); `PUT` for the CA
+ * operator's `qm ca refresh-rl` to publish a fresh one. No `DELETE`: an
+ * RL is superseded by publishing a newer one, never withdrawn to nothing —
+ * an absent list and a stale one must stay distinguishable (§6.4's two rows).
+ */
+async function handleRevocationList(
+  request: Request,
+  registry: InMemoryRegistry,
+): Promise<Response> {
+  if (request.method === 'GET') {
+    const list = registry.revocationList
+    return list === null
+      ? notFound('no revocation list has been published')
+      : json(list)
+  }
+  if (request.method !== 'PUT') {
+    return methodNotAllowed(['GET', 'PUT'])
+  }
+  const body = await readJsonObject(request)
+  if (body === null || !registry.publishRevocationList(body)) {
+    return fail(
+      400,
+      RegistryErrorCode.E_BAD_REQUEST,
+      'body must be a signed revocation list: {payload, signature}',
+    )
+  }
+  return json(registry.revocationList)
+}
+
+/**
  * Build the request handler for the registry HTTP API v0.
  *
  * Exposed separately from {@link startRegistryServer} so it can be exercised
@@ -172,6 +207,10 @@ export function createRegistryHandler(
     if (segments.length === 2 && segments[1] === 'health') {
       if (request.method !== 'GET') return methodNotAllowed(['GET'])
       return json({ status: 'ok', agents: registry.size })
+    }
+
+    if (segments.length === 2 && segments[1] === 'revocation-list') {
+      return await handleRevocationList(request, registry)
     }
 
     if (segments[1] !== 'agents') return notFound(`unknown path: ${pathname}`)

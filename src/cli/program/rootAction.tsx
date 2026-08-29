@@ -126,6 +126,7 @@ import {
   resolveFastModeStatusFromCache,
 } from 'src/utils/model/fastMode.js';
 import { getInitialSettings, getSettingsWithErrors } from 'src/utils/settings/settings.js';
+import { resolveInitialAutoCompactWindow } from 'src/services/compact/autoCompactWindow.js';
 import { getMcpToolsCommandsAndResources, prefetchAllMcpResources } from 'src/services/mcp/client.js';
 import { getModelDeprecationWarning } from 'src/utils/model/deprecation.js';
 import { getOauthConfig } from 'src/constants/oauth.js';
@@ -203,7 +204,10 @@ import { relative, resolve } from 'path';
 import { resetUserCache } from 'src/utils/auth/user.js';
 import { safeParseJSON } from 'src/utils/text/json.js';
 import { seedEarlyInput } from 'src/utils/terminal/earlyInput.js';
+import { MAX_TURNS_ENV_VAR, resolveMaxTurns } from './maxTurns.js';
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
+import { setCliSessionOptions } from '@open-claude-code/tool-runtime/cliSessionOptions.js';
+import { setScreenReaderModeOverride } from 'src/utils/terminal/screenReader.js';
 import { setCwd } from 'src/utils/shell/Shell.js';
 import { shouldEnablePromptSuggestion } from 'src/services/PromptSuggestion/promptSuggestion.js';
 import { shouldEnableThinkingByDefault, type ThinkingConfig } from 'src/utils/model/thinking.js';
@@ -262,6 +266,14 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
   // dir-walk). Must be set before setup() / any of the gated work runs.
   if ((options as { bare?: boolean }).bare) {
     process.env.CLAUDE_CODE_SIMPLE = '1';
+  }
+
+  // --safe-mode = every user customization off (see isSafeMode()). CLAUDE.md is
+  // the one surface with no source-scoped loader, so it reuses the existing
+  // hard-off switch instead of a second gate — same thing the official CLI does.
+  if ((options as { safeMode?: boolean }).safeMode) {
+    process.env.CLAUDE_CODE_SAFE_MODE = '1';
+    process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1';
   }
 
   // Ignore "code" as a prompt - treat it the same as no prompt
@@ -353,7 +365,15 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
     sessionId,
     includeHookEvents,
     includePartialMessages,
+    forwardSubagentText,
   } = options;
+
+  // Accessibility: record the parsed flag so isScreenReaderMode() stops
+  // relying on its pre-parse argv fallback. Always called, so an absent flag
+  // can no longer be faked by a stray argv match later in the process.
+  // Registered in applyExtraRootOptions (after .action()), so it is not part
+  // of the inferred options type — same cast the other extra options use.
+  setScreenReaderModeOverride((options as { axScreenReader?: boolean }).axScreenReader === true);
 
   if (options.prefill) {
     seedEarlyInput(options.prefill);
@@ -383,6 +403,7 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
 
   // Extract disable slash commands flag
   const disableSlashCommands = options.disableSlashCommands || false;
+  const autoCompactState = resolveInitialAutoCompactWindow(options.autocompact);
 
   // Extract tasks mode options (ant-only)
   const tasksOption = process.env.USER_TYPE === 'ant' && (options as { tasks?: boolean | string }).tasks;
@@ -575,7 +596,7 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
   const isNonInteractiveSession = getIsNonInteractiveSession();
 
   // Validate that fallback model is different from main model
-  if (fallbackModel && options.model && fallbackModel === options.model) {
+  if (fallbackModel?.includes(options.model ?? '')) {
     process.stderr.write(
       chalk.red(
         'Error: Fallback model cannot be the same as the main model. Please specify a different model for --fallback-model.\n',
@@ -1064,6 +1085,35 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
     process.exit(1);
   }
 
+  if (forwardSubagentText && (!isNonInteractiveSession || outputFormat !== 'stream-json')) {
+    writeToStderr(`Error: --forward-subagent-text requires --print and --output-format=stream-json.`);
+    process.exit(1);
+  }
+
+  if (options.planModeInstructions && !isNonInteractiveSession) {
+    writeToStderr(`Error: --plan-mode-instructions can only be used with --print mode.`);
+    process.exit(1);
+  }
+
+  if (options.appendSubagentSystemPrompt && !isNonInteractiveSession) {
+    writeToStderr(`Error: --append-subagent-system-prompt can only be used with --print mode.`);
+    process.exit(1);
+  }
+
+  // The three options above cannot ride on ToolUseContext.options: the print
+  // path builds its context inside src/cli/print/. They are process-constant
+  // for the session (and upstream propagates them into nested subagents), so
+  // they live in a tool-runtime store both the host and builtin-tools read.
+  // --append-subagent-system-prompt implies the env gate, matching upstream.
+  if (options.appendSubagentSystemPrompt) {
+    process.env.CLAUDE_CODE_ENABLE_APPEND_SUBAGENT_PROMPT = '1';
+  }
+  setCliSessionOptions({
+    forwardSubagentText: forwardSubagentText === true,
+    appendSubagentSystemPrompt: options.appendSubagentSystemPrompt,
+    planModeInstructions: options.planModeInstructions,
+  });
+
   const effectivePrompt = prompt || '';
   let inputPrompt = await getInputPrompt(effectivePrompt, (inputFormat ?? 'text') as 'text' | 'stream-json');
   profileCheckpoint('action_after_input_prompt');
@@ -1238,7 +1288,10 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
   // user's `/model-settings default …` never applied.
   // NOTE: Model resolution happens after setup() to ensure trust is established before AWS auth
   const userSpecifiedModel = options.model === 'default' ? null : options.model;
-  const userSpecifiedFallbackModel = fallbackModel === 'default' ? getDefaultMainLoopModel() : fallbackModel;
+  const configuredFallbackModels = fallbackModel ?? getInitialSettings().fallbackModel;
+  const userSpecifiedFallbackModels = configuredFallbackModels?.map(model =>
+    parseUserSpecifiedModel(model === 'default' ? getDefaultMainLoopModel() : model),
+  );
 
   // Reuse preSetupCwd unless setup() chdir'd (worktreeEnabled). Saves a
   // getCwd() syscall in the common path.
@@ -1917,6 +1970,7 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
       },
       toolPermissionContext,
       effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+      ...autoCompactState,
       ...(isFastModeEnabled() && {
         fastMode: getInitialFastModeSetting(effectiveModel ?? null),
       }),
@@ -2115,7 +2169,7 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
         permissionPromptToolName: options.permissionPromptTool,
         allowedTools,
         thinkingConfig,
-        maxTurns: options.maxTurns,
+        maxTurns: resolveMaxTurns(options.maxTurns, process.env[MAX_TURNS_ENV_VAR]),
         maxBudgetUsd: options.maxBudgetUsd,
         taskBudget: options.taskBudget ? { total: options.taskBudget } : undefined,
         systemPrompt,
@@ -2124,13 +2178,14 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
         // and reads absence the same way (setMainLoopModelOverride(null) has
         // already recorded the explicit choice on the bootstrap state).
         userSpecifiedModel: effectiveModel ?? undefined,
-        fallbackModel: userSpecifiedFallbackModel,
+        fallbackModel: userSpecifiedFallbackModels,
         teleport,
         sdkUrl,
         replayUserMessages: effectiveReplayUserMessages,
         includePartialMessages: effectiveIncludePartialMessages,
         forkSession: options.forkSession || false,
         resumeSessionAt: options.resumeSessionAt || undefined,
+        resumeDropsTurn: options.resumeDropsTurn || undefined,
         rewindFiles: options.rewindFiles,
         enableAuthStatus: options.enableAuthStatus,
         agent: agentCli,
@@ -2289,7 +2344,9 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
     notifications: {
       current: null,
       queue: initialNotifications,
+      pinned: [],
     },
+    diffPanelVisible: false,
     elicitation: {
       queue: [],
     },
@@ -2334,6 +2391,8 @@ export const rootAction: RootActionHandler = async (prompt, options) => {
         }
       : null,
     effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+    sessionModelSettingsOverrides: {},
+    ...autoCompactState,
     activeOverlays: new Set<string>(),
     fastMode: getInitialFastModeSetting(resolvedInitialModel),
     ...(isAdvisorEnabled() && advisorModel && { advisorModel }),

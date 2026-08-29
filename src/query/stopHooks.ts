@@ -32,6 +32,7 @@ import {
   createStopHookSummaryMessage,
   createSystemMessage,
   createUserInterruptionMessage,
+  interruptionReasonFromAbort,
   createUserMessage,
 } from '../utils/messages.js'
 import type { SystemPrompt } from '../utils/session/systemPromptType.js'
@@ -323,6 +324,9 @@ export async function* handleStopHooks(
         })
         yield createUserInterruptionMessage({
           toolUse: false,
+          reason: interruptionReasonFromAbort(
+            toolUseContext.abortController.signal.reason,
+          ),
         })
         return { blockingErrors: [], preventContinuation: true }
       }

@@ -16,14 +16,18 @@ export {
   DEFAULT_TTL_MS,
   InMemoryRegistry,
   MAX_CAPABILITIES,
+  MAX_CERTIFICATE_LENGTH,
   REGISTRY_SNAPSHOT_VERSION,
   RegistryErrorCode,
+  isSignedRevocationListShape,
   isValidEndpoint,
   isValidPublicKey,
   type AgentRecord,
   type DeclaredStatus,
   type RegisterInput,
   type RegisterResult,
+  type RegistryAuditEvent,
+  type RegistryAuditSink,
   type RegistryOptions,
 } from './registry.js'
 

@@ -30,6 +30,7 @@ import type { FileHistoryState } from '../utils/filesystem/fileHistory.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import type { SessionHooksState } from '../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../utils/model/model.js'
+import type { SessionModelSettingsOverrides } from '../utils/model/modelTier.js'
 import type { DenialTrackingState } from '../utils/permissions/denialTracking.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
@@ -195,7 +196,10 @@ export type AppState = DeepImmutable<{
   notifications: {
     current: Notification | null
     queue: Notification[]
+    pinned: Notification[]
   }
+  /** True while the diff overlay is open and ordinary notifications are held. */
+  diffPanelVisible: boolean
   elicitation: {
     queue: ElicitationRequestEvent[]
   }
@@ -396,8 +400,14 @@ export type AppState = DeepImmutable<{
   fastMode?: boolean
   // Advisor model for server-side advisor tool (undefined = disabled).
   advisorModel?: string
-  // Effort value
+  // Global effort override for this session (/effort and --effort).
   effortValue?: EffortValue
+  // Per-slot model-picker overrides owned by this AppState store only.
+  sessionModelSettingsOverrides: SessionModelSettingsOverrides
+  // Session-scoped auto-compact window. Undefined tracks the model default.
+  autoCompactWindow?: number
+  // True when CLI/runtime state overrides the settings layer, including explicit auto.
+  autoCompactWindowOverride?: boolean
   // Set synchronously in launchUltraplan before the detached flow starts.
   // Prevents duplicate launches during the ~5s window before
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
@@ -499,7 +509,9 @@ export function getDefaultAppState(): AppState {
     notifications: {
       current: null,
       queue: [],
+      pinned: [],
     },
+    diffPanelVisible: false,
     elicitation: {
       queue: [],
     },
@@ -530,6 +542,9 @@ export function getDefaultAppState(): AppState {
     authVersion: 0,
     initialMessage: null,
     effortValue: undefined,
+    sessionModelSettingsOverrides: {},
+    autoCompactWindow: undefined,
+    autoCompactWindowOverride: false,
     activeOverlays: new Set<string>(),
     fastMode: false,
   }

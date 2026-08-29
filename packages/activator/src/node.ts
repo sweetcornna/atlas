@@ -45,12 +45,22 @@
  * `onOutcome`. Widening the receipt is a `@qianmo/transport` change and belongs
  * to whoever owns the frame grammar, not to this file.
  *
- * ## What this file is not
+ * ## Where the routing gates sit
  *
- * It is not a router: it does one lookup (destination node → sandbox) and no
- * loop detection, rate accounting or name resolution. Those are P4.2's and the
- * registry's, and keeping them out is what lets this component be reasoned
- * about as "the gap between a request existing and its target being awake".
+ * `activator.ts` still holds none of them: it does one lookup (destination node
+ * → sandbox) and knows nothing about loops, hop counts or budgets. This file
+ * composes `@qianmo/router` in front of it, in this order per inbound envelope:
+ *
+ *   unknown target → routing gates (hop backstop, loop key, inbound budget)
+ *   → task route registration → catch/wake/forward
+ *
+ * The unknown-target lookup comes first because a message for a node we do not
+ * host is nobody's traffic to account for; the gates come before route
+ * registration and before the wake because both of those have costs a refused
+ * message must not be able to spend — a wake is seconds of daemon work per
+ * E2, and a route holds a channel open until the task deadline.
+ *
+ * Name resolution is still not here: that is the registry's.
  */
 
 import {
@@ -60,9 +70,11 @@ import {
   destinationNode,
   errorReply,
 } from '@qianmo/protocol'
+import { NodeRouter } from '@qianmo/router'
 import {
   type BackoffOptions,
   type ClientTlsOptions,
+  type HandshakeIdentity,
   type InboundContext,
   type TransportServerHandle,
   type TransportServerOptions,
@@ -123,6 +135,14 @@ export interface ActivatorNodeOptions {
    */
   readonly daemon: SandboxDaemon
   readonly directory: TargetDirectory
+  /**
+   * The routing gates (P4.2). Defaults to a fresh {@link NodeRouter} for this
+   * node — on by default, because a loop detector a deployment has to opt into
+   * is one that will be missing from the deployment that needed it. Pass one in
+   * to share the loop table with this node's outbound path, which is what makes
+   * A→B→A detectable on its first return.
+   */
+  readonly router?: NodeRouter
   /** Defaults to a file journal under the config root. */
   readonly journal?: RequestJournal
   readonly audit?: AuditLog
@@ -135,6 +155,18 @@ export interface ActivatorNodeOptions {
   readonly connectTimeoutMs?: number
   readonly forwardTimeoutMs?: number
   readonly linkTls?: ClientTlsOptions
+  /**
+   * Ed25519 identity and peer directory for the links **out** of this host
+   * (key-distribution.md §7.1.1). Forwarded to {@link TransportLinks}; see
+   * `TransportLinksOptions.signing` for why it only applies to targets the
+   * directory can name.
+   *
+   * Separate from whatever the listener half of this node is configured with,
+   * and deliberately so: a host may be dialling into sandboxes that have
+   * already adopted signatures while its own listener still serves peers that
+   * have not, and §8.2's phases are per-direction for exactly that reason.
+   */
+  readonly linkSigning?: HandshakeIdentity
   readonly taskRouteCapacity?: number
   /** Reconnect schedule of the links into sandboxes. */
   readonly backoff?: Partial<BackoffOptions>
@@ -157,6 +189,8 @@ export interface ActivatorNodeHandle {
   readonly audit: AuditLog
   readonly links: TransportLinks
   readonly routes: TaskRouteRegistry
+  /** The routing gates in force, with their own audit trail (AC-3). */
+  readonly router: NodeRouter
   readonly journal: RequestJournal
   /** Dial URL for peers, when listening on TCP. */
   readonly url?: string
@@ -242,6 +276,16 @@ export async function startActivatorNode(
       : { scheduler: options.scheduler }),
     capacity: options.taskRouteCapacity ?? DEFAULT_TASK_ROUTE_CAPACITY,
   })
+  // No `deadlineNow` here, and that is a limitation rather than an oversight:
+  // this process has no process-wide time-jump observer to supply one (the
+  // activator's gate lives inside its own wait loop). So after a freeze *of the
+  // host*, loop keys may expire a little early — a window in which a loop would
+  // read as fresh traffic. The terminal node's router is the gated one
+  // (`resident.ts` passes `ResidentDeadlineClock.nowFor`), so the guard closest
+  // to the mailbox write does not have this gap.
+  const router =
+    options.router ??
+    new NodeRouter({ node: options.node, now: () => clock.now() })
   const failures = new BoundedFailures(routes)
   const links = new TransportLinks({
     node: options.node,
@@ -249,8 +293,18 @@ export async function startActivatorNode(
     directory: options.directory,
     audit,
     clock,
-    onReply: (message, sandboxName) => routes.forward(message, sandboxName),
+    onReply: (message, sandboxName) => {
+      routes.forward(message, sandboxName)
+      // A terminal reply ends the task here, so its loop keys can go now
+      // rather than at the delivery deadline (protocol.md §8.2 rows 19–20).
+      // An `ack` keeps them: the task is still running and a second request
+      // for the same handler is still a loop.
+      if (message.type !== MessageType.Ack) router.release(message.taskId)
+    },
     ...(options.linkTls === undefined ? {} : { tls: options.linkTls }),
+    ...(options.linkSigning === undefined
+      ? {}
+      : { signing: options.linkSigning }),
     connectTimeoutMs:
       options.connectTimeoutMs ?? DEFAULT_LINK_CONNECT_TIMEOUT_MS,
     forwardTimeoutMs: options.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS,
@@ -333,6 +387,22 @@ export async function startActivatorNode(
           )
         }
 
+        const routed = router.inbound(message)
+        if (!routed.ok) {
+          // The router has already written the AC-3 audit event with the whole
+          // message chain on it; what is left is telling the sender, in the
+          // same shape the unknown-target path uses.
+          const reply = errorReply(
+            message,
+            routed.code,
+            routed.reason,
+            clock.now(),
+          )
+          failures.record(reply)
+          context.channel.send(reply)
+          throw new ActivationRejected(routed.code, routed.reason)
+        }
+
         if (message.type === MessageType.TaskRequest) {
           try {
             routes.register(message, sandboxName, context.channel)
@@ -371,6 +441,7 @@ export async function startActivatorNode(
     audit,
     links,
     routes,
+    router,
     journal,
     ...(server.url === undefined ? {} : { url: server.url }),
     ...(server.port === undefined ? {} : { port: server.port }),

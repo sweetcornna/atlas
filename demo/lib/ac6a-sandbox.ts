@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   DAEMON_TOKEN_ENV_VAR,
@@ -16,6 +15,7 @@ import {
   verifyBirthContract,
 } from '@qianmo/sandbox'
 import { defaultSandboxAuditPath } from '../../src/services/qianmo/sandboxAudit.js'
+import { counter, unifiedCgroupDirectory } from './cgroup.js'
 
 const SANDBOX_ENV_VAR = 'QIANMO_P13_SANDBOX'
 const SANDBOX_LABEL = 'dormice.sandbox'
@@ -122,26 +122,11 @@ function containerForSandbox(sandboxId: string): string {
   return listed[0]!
 }
 
-function unifiedCgroupDirectory(containerId: string): string {
+function containerCgroupDirectory(containerId: string): string {
   const pid = docker('inspect', '--format', '{{.State.Pid}}', containerId)
   if (!/^\d+$/.test(pid) || pid === '0')
     throw new Error('container has no running host pid')
-  const unified = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
-    .split('\n')
-    .find(line => line.startsWith('0::'))
-  if (unified === undefined)
-    throw new Error('P1.3 resource probe requires cgroup v2')
-  return join('/sys/fs/cgroup', unified.slice(3))
-}
-
-function counter(path: string, key: string): number {
-  const line = readFileSync(path, 'utf8')
-    .split('\n')
-    .find(candidate => candidate.startsWith(`${key} `))
-  const value = line?.split(/\s+/)[1]
-  if (value === undefined || !/^\d+$/.test(value))
-    throw new Error(`missing ${key} counter`)
-  return Number(value)
+  return unifiedCgroupDirectory(pid)
 }
 
 async function main(): Promise<void> {
@@ -216,7 +201,7 @@ async function main(): Promise<void> {
       }).eventId,
     )
 
-    const cgroup = unifiedCgroupDirectory(containerId)
+    const cgroup = containerCgroupDirectory(containerId)
     const cpuStat = join(cgroup, 'cpu.stat')
     const cpuBefore = counter(cpuStat, 'nr_throttled')
     const cpuWorkers = Math.ceil(observation.nanoCpus / 1_000_000_000) + 2

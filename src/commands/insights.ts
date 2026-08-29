@@ -26,7 +26,10 @@ import { getClaudeConfigHomeDir } from '../utils/config/envUtils.js'
 import { toError } from '../utils/runtime/errors.js'
 import { execFileNoThrow } from '../utils/process/execFileNoThrow.js'
 import { logError } from '../utils/telemetry/log.js'
-import { extractTextContent } from '../utils/messages.js'
+import {
+  extractTextContent,
+  isUserInterruptionText,
+} from '../utils/messages.js'
 import { getDefaultOpusModel } from '../utils/model/model.js'
 import {
   getProjectsDir,
@@ -687,9 +690,14 @@ function extractToolStats(log: LogOption): {
         }
       }
 
-      // Check for interruptions (matching Python reference)
+      // Check for interruptions (matching Python reference).
+      //
+      // Deliberately asks for the *user* marker specifically rather than "any
+      // abort marker": an unattended resident node aborts its own silent turns
+      // through the same path, and counting those here reported human
+      // cancellations on a machine no human was sitting at (issue #39).
       if (typeof content === 'string') {
-        if (content.includes('[Request interrupted by user')) {
+        if (isUserInterruptionText(content)) {
           userInterruptions++
         }
       } else if (Array.isArray(content)) {
@@ -697,7 +705,7 @@ function extractToolStats(log: LogOption): {
           if (
             block.type === 'text' &&
             'text' in block &&
-            (block.text as string).includes('[Request interrupted by user')
+            isUserInterruptionText(block.text as string)
           ) {
             userInterruptions++
             break

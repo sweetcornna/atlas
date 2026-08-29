@@ -36,6 +36,8 @@ import type { SetAppState } from '../../utils/session/messageQueueManager.js'
 import {
   createSystemMessage,
   createUserMessage,
+  INACTIVITY_ABORT_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
   INTERRUPT_MESSAGE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
 } from '../../utils/messages.js'
@@ -251,7 +253,9 @@ export function prepareMessagesForInjection(messages: Message[]): Message[] {
     !(
       b.type === 'text' &&
       (b.text === INTERRUPT_MESSAGE ||
-        b.text === INTERRUPT_MESSAGE_FOR_TOOL_USE)
+        b.text === INTERRUPT_MESSAGE_FOR_TOOL_USE ||
+        b.text === INACTIVITY_ABORT_MESSAGE ||
+        b.text === INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE)
     )
 
   return messages

@@ -24,7 +24,8 @@
 #    这正是 AC-6(c) 依赖的那条边界。请先在沙箱里跑：
 #
 #        QIANMO_TRANSPORT_PSK=<与宿主同一把> \
-#        bun run demo/lib/ac2-target.ts --inbox /tmp/ac2-inbox.jsonl --port 38622
+#        bun run "$(demo_entry ac2-target)" --inbox /tmp/ac2-inbox.jsonl --port 38622
+#        （先 `. demo/lib/entry.sh`）
 #
 #    然后让沙箱空转到被冻结（实测：沙箱内再忙也照冻，见 selection-m0.md E3）。
 #
@@ -52,7 +53,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LIB="$REPO_DIR/demo/lib"
+# demo/lib 入口解析（`demo_entry`）：投出去的树上没有 node_modules，源文件里的
+# @qianmo/* 解析不出来，要用构建产物。理由见 demo/lib/entry.sh。
+# shellcheck source=demo/lib/entry.sh
+. "$REPO_DIR/demo/lib/entry.sh"
 
 ROUNDS="${AC2_ROUNDS:-10}"
 FREEZE_WAIT_S="${AC2_FREEZE_WAIT_S:-300}"
@@ -134,7 +138,7 @@ trap cleanup EXIT INT TERM
 # ---------------------------------------------------------------------------
 head1 '1. 先看一眼沙箱在不在'
 
-bun run "$LIB/ac2-state.ts" >"$WORK/state-0.json" 2>"$WORK/state-0.err"
+bun run "$(demo_entry ac2-state)" >"$WORK/state-0.json" 2>"$WORK/state-0.err"
 rc=$?
 say "  $(cat "$WORK/state-0.json" 2>/dev/null)"
 if [ "$rc" != '0' ] || [ ! -s "$WORK/state-0.json" ]; then
@@ -152,7 +156,7 @@ fi
 # ---------------------------------------------------------------------------
 head1 '2. 拉起宿主侧 activator'
 
-bun run "$LIB/ac2-activator.ts" --ready "$READY" --timings "$TIMINGS" \
+bun run "$(demo_entry ac2-activator)" --ready "$READY" --timings "$TIMINGS" \
   --audit "$AUDIT" \
   --ready-timeout-ms "$((READY_TIMEOUT_S * 1000))" \
   --forward-timeout-ms "$((FORWARD_TIMEOUT_S * 1000))" \
@@ -191,7 +195,7 @@ while [ "$round" -le "$ROUNDS" ]; do
 
   # ① 前提：目标必须真的在休眠态。醒着的目标测不出这条判据，所以不凑数。
   say "  等待沙箱进入 frozen（上限 ${FREEZE_WAIT_S}s）……"
-  bun run "$LIB/ac2-state.ts" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
+  bun run "$(demo_entry ac2-state)" --wait-for frozen --timeout-s "$FREEZE_WAIT_S" \
     >"$WORK/state-$round.json" 2>&1
   frozen_rc=$?
   say "  $(cat "$WORK/state-$round.json")"
@@ -204,7 +208,7 @@ while [ "$round" -le "$ROUNDS" ]; do
   fi
 
   # ② 投递：一轮一个进程、一条消息，避免复用连接把第二次之后的唤醒省掉。
-  bun run "$LIB/ac2-send.ts" --round "$round" \
+  bun run "$(demo_entry ac2-send)" --round "$round" \
     --timeout-ms "$((ROUND_TIMEOUT_S * 1000))" \
     --deliver-ttl-ms "$((ROUND_TIMEOUT_S * 1000))" \
     >"$WORK/send-$round.json" 2>"$WORK/send-$round.err"
@@ -216,11 +220,11 @@ while [ "$round" -le "$ROUNDS" ]; do
   #    发送方先于 activator 放弃时，这一行会查不到——再等一下重查一次，
   #    因为「查不到」和「没走到那一步」是两回事，混起来会误导排查。
   if [ -n "$msgid" ]; then
-    bun run "$LIB/ac2-report.ts" --timings "$TIMINGS" --msg-id "$msgid" \
+    bun run "$(demo_entry ac2-report)" --timings "$TIMINGS" --msg-id "$msgid" \
       >"$WORK/stages-$round.json" 2>&1
     if grep -q '"found":false' "$WORK/stages-$round.json" 2>/dev/null; then
       sleep 3
-      bun run "$LIB/ac2-report.ts" --timings "$TIMINGS" --msg-id "$msgid" \
+      bun run "$(demo_entry ac2-report)" --timings "$TIMINGS" --msg-id "$msgid" \
         >"$WORK/stages-$round.json" 2>&1
     fi
     say "  分阶段：$(cat "$WORK/stages-$round.json")"
@@ -250,7 +254,7 @@ done
 # ---------------------------------------------------------------------------
 head1 '4. 汇总'
 
-bun run "$LIB/ac2-report.ts" --timings "$TIMINGS" >"$WORK/report.json" 2>&1
+bun run "$(demo_entry ac2-report)" --timings "$TIMINGS" >"$WORK/report.json" 2>&1
 say "  $(cat "$WORK/report.json")"
 say ''
 say "  唤醒转发 ${PASS}/${ROUNDS}"

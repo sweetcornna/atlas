@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/auto-dream) · **中文** · [日本語](/docs/ja/features/auto-dream)
-
 # Auto Dream — 自动记忆整理
 
 ## 概述

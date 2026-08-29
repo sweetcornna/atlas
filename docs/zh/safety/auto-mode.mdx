@@ -3,10 +3,6 @@ title: "Auto Mode - AI 分类器驱动的自主执行模式"
 description: "详解 Claude Code 的 auto mode：基于 transcript classifier 的自动权限决策、两阶段分类流水线、危险权限剥离机制、模式切换状态管理、以及与 plan mode 的协作方式。"
 keywords: ["auto mode", "yoloClassifier", "transcript classifier", "权限分类", "自动执行", "两阶段分类"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/safety/auto-mode) · **中文** · [日本語](/docs/ja/safety/auto-mode)
-
 ## 概述
 
 Auto mode 是 Claude Code 的一种权限模式，让 AI 进入**连续自主执行**状态。与传统模式（每个敏感操作都弹出权限对话框等待用户审批）不同，auto mode 使用 AI 分类器（transcript classifier）自动判断每个工具调用是否安全，从而实现无中断的执行体验。

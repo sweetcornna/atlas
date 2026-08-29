@@ -35,6 +35,8 @@ import type {
 import type { PermissionMode } from '../../types/permissions.js'
 import {
   CANCEL_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
   INTERRUPT_MESSAGE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
   SYNTHETIC_MODEL,
@@ -255,12 +257,51 @@ export function prepareUserContent({
   ]
 }
 
+/**
+ * The `AbortController` reason a resident node's inactivity watchdog aborts
+ * with, and the only value {@link interruptionReasonFromAbort} maps to
+ * anything other than "a person did this".
+ *
+ * A string rather than a class so it survives every hop it has to make:
+ * `session/cancel` `_meta` on the ACP wire, `QueryEngine.interrupt(reason)`,
+ * and finally `signal.reason` read back inside the query loop. It sits next to
+ * the message it selects because those two are the same decision written
+ * twice, and splitting them is how they drift.
+ */
+export const RESIDENT_INACTIVITY_ABORT_REASON = 'qianmo-resident-inactivity'
+
+/** Which abort marker an aborted turn should record. */
+export type InterruptionReason = 'user' | 'inactivity'
+
+/**
+ * Read an abort reason as an interruption category.
+ *
+ * Everything that is not positively the resident watchdog is a user
+ * interruption — the base CLI aborts with no reason at all for Ctrl+C, and a
+ * turn whose provenance we cannot establish must keep the pre-existing,
+ * user-visible wording rather than being relabelled on a guess.
+ */
+export function interruptionReasonFromAbort(
+  reason: unknown,
+): InterruptionReason {
+  return reason === RESIDENT_INACTIVITY_ABORT_REASON ? 'inactivity' : 'user'
+}
+
 export function createUserInterruptionMessage({
   toolUse = false,
+  reason = 'user',
 }: {
   toolUse?: boolean
+  reason?: InterruptionReason
 }): UserMessage {
-  const content = toolUse ? INTERRUPT_MESSAGE_FOR_TOOL_USE : INTERRUPT_MESSAGE
+  const content =
+    reason === 'inactivity'
+      ? toolUse
+        ? INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE
+        : INACTIVITY_ABORT_MESSAGE
+      : toolUse
+        ? INTERRUPT_MESSAGE_FOR_TOOL_USE
+        : INTERRUPT_MESSAGE
 
   return createUserMessage({
     content: [

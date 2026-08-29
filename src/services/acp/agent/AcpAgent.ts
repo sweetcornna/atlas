@@ -62,6 +62,28 @@ import { validateUuid } from '../../../utils/collections/uuid.js'
 import { doesMessageExistInSession } from '../../../utils/sessionStorage.js'
 import type { SessionId } from '../../../types/ids.js'
 import type { AcpSession } from './sessionTypes.js'
+import { RESIDENT_INACTIVITY_ABORT_REASON } from '../../../utils/messages.js'
+import { runInAcpWorkspaceTurn } from './sessionWorkspace.js'
+import { buildVersion } from '../../../constants/buildProvenance.js'
+
+/**
+ * The `AbortController` reason a `session/cancel` should carry, or `undefined`
+ * for the ordinary "a person pressed Ctrl+C" abort.
+ *
+ * Only one value is recognised, and it is recognised positively: an unknown
+ * `_meta` payload — including one from a client this build has never heard of
+ * — is not evidence that no user was involved.
+ */
+function readQianmoCancelReason(
+  meta: CancelNotification['_meta'],
+): string | undefined {
+  if (typeof meta !== 'object' || meta === null) return undefined
+  const qianmo = (meta as Record<string, unknown>).qianmo
+  if (typeof qianmo !== 'object' || qianmo === null) return undefined
+  return (qianmo as Record<string, unknown>).cancelReason === 'inactivity'
+    ? RESIDENT_INACTIVITY_ABORT_REASON
+    : undefined
+}
 
 // ── Agent class ───────────────────────────────────────────────────
 //
@@ -78,9 +100,57 @@ export class AcpAgent implements Agent {
   sessions = new Map<string, AcpSession>()
   private clientCapabilities?: ClientCapabilities
   private qianmoResident = false
+  /**
+   * The workspace this connection is about, for read-only methods that the
+   * client asked without naming one (issue #68).
+   *
+   * `session/list` needs a directory to filter by and its `cwd` is optional,
+   * so something has to stand in when the client omits it. The obvious global
+   * — `getOriginalCwd()` — is the wrong thing to read: since #44 every TURN
+   * re-points it at the session it is running (`activateAcpSessionWorkspace`),
+   * so in a process serving more than one workspace the answer depended on
+   * which session happened to be streaming at that instant. A `session/list`
+   * sent during another thread's turn came back filtered by that thread's
+   * directory.
+   *
+   * The lock added for #52 cannot help here and must not be extended to try:
+   * a read-only query taking it would sit behind the long turn, and head-of-
+   * line blocking is the cost that fix already accepted rather than one to
+   * widen. So this is not a lock, it is a different value to read — one the
+   * client DECLARED (`session/new`, `session/load`, `session/resume`,
+   * `session/fork` all carry a cwd) rather than one a turn happened to leave
+   * behind. Turns never write it, so the answer no longer depends on what is
+   * running.
+   *
+   * Initialised to the spawn cwd, which is what `getOriginalCwd()` returns
+   * before any session exists — so a `session/list` sent before the first
+   * `session/new` (the usual order: a client lists past threads to populate
+   * its picker) answers exactly as it did before.
+   *
+   * It is a single value and a process may hold sessions in several
+   * directories, so "the last workspace the client opened" is a guess in that
+   * case. It is a STABLE guess, which is the property that was missing; a
+   * client that needs a specific one passes `cwd`, which the spec provides
+   * for exactly this.
+   */
+  private clientWorkspaceCwd: string
 
   constructor(conn: AgentSideConnection) {
     this.conn = conn
+    this.clientWorkspaceCwd = getOriginalCwd()
+  }
+
+  /**
+   * Record the workspace a client just opened a session in.
+   *
+   * Called from the session-opening entry points only, and only once the open
+   * has succeeded. Nothing on the prompt path may call this — a running turn
+   * saying which workspace the client is asking about is the bug (#68).
+   */
+  private noteClientWorkspace(cwd: string | null | undefined): void {
+    if (typeof cwd === 'string' && cwd.length > 0) {
+      this.clientWorkspaceCwd = cwd
+    }
   }
 
   // ── initialize ────────────────────────────────────────────────
@@ -101,22 +171,12 @@ export class AcpAgent implements Agent {
       agentInfo: {
         name: 'claude-code',
         title: 'Claude Code',
-        version:
-          typeof (globalThis as unknown as Record<string, unknown>).MACRO ===
-            'object' &&
-          (globalThis as unknown as Record<string, Record<string, unknown>>)
-            .MACRO !== null
-            ? String(
-                (
-                  (
-                    globalThis as unknown as Record<
-                      string,
-                      Record<string, unknown>
-                    >
-                  ).MACRO as Record<string, unknown>
-                ).VERSION ?? '0.0.0',
-              )
-            : '0.0.0',
+        // buildVersion() reads the substituted `MACRO.VERSION`. Reading
+        // `globalThis.MACRO` instead (issue #79) found the fallback object
+        // entrypoints/cli.tsx used to install and reported its dev placeholder
+        // `2.1.888` to every editor; that fallback is gone (issue #81).
+        // '0.0.0' stays because ACP requires agentInfo.version to be a string.
+        version: buildVersion() ?? '0.0.0',
       },
       agentCapabilities: {
         _meta: {
@@ -165,7 +225,11 @@ export class AcpAgent implements Agent {
   // ── newSession ────────────────────────────────────────────────
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    const result = await this.createSession(params)
+    // Serialised against every other workspace-owning operation (issue #52):
+    // this one activates a session's workspace AND `process.chdir()`s, so
+    // running it beside a streaming turn moves that turn's ground under it.
+    const result = await runInAcpWorkspaceTurn(() => this.createSession(params))
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -179,7 +243,10 @@ export class AcpAgent implements Agent {
     // conversation history via session/update notifications before responding.
     // Only restore context + MCP connections, then return immediately. This
     // differs from session/load which DOES replay history.
-    const result = await this.getOrCreateSession({ ...params, replay: false })
+    const result = await runInAcpWorkspaceTurn(() =>
+      this.getOrCreateSession({ ...params, replay: false }),
+    )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -187,7 +254,10 @@ export class AcpAgent implements Agent {
   // ── loadSession ────────────────────────────────────────────────
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    const result = await this.getOrCreateSession(params)
+    const result = await runInAcpWorkspaceTurn(() =>
+      this.getOrCreateSession(params),
+    )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(result.sessionId)
     return result
   }
@@ -208,12 +278,17 @@ export class AcpAgent implements Agent {
     }
 
     // Resolve the effective cwd: client-provided wins, fall back to the
-    // agent's current working directory (set by the most recent session/new
-    // or session/load). Standard ACP clients (e.g. Goose) call session/list
-    // with empty params and no cwd — without a fallback, listSessionsImpl
-    // treats undefined dir as "all projects" and returns every session on
-    // disk, which is unrelated to the workspace the user actually has open.
-    const requestedCwd = params.cwd || getOriginalCwd()
+    // workspace this connection is about. Standard ACP clients (e.g. Goose)
+    // call session/list with empty params and no cwd — without a fallback,
+    // listSessionsImpl treats undefined dir as "all projects" and returns
+    // every session on disk, which is unrelated to the workspace the user
+    // actually has open.
+    //
+    // The fallback deliberately does NOT read `getOriginalCwd()` (issue #68):
+    // that global follows whichever session is currently running a turn, so
+    // this answer used to change depending on what another thread happened to
+    // be doing. See `clientWorkspaceCwd` above.
+    const requestedCwd = params.cwd || this.clientWorkspaceCwd
     const canonicalRequested = await canonicalizePath(requestedCwd)
 
     const candidates = await listSessionsImpl({
@@ -254,14 +329,17 @@ export class AcpAgent implements Agent {
     // the source conversation rather than starting a blank session. Per the
     // unstable ForkSessionRequest, params.sessionId is the ID to fork from.
     const { initialMessages } = await loadForkSourceMessages(params.sessionId)
-    const response = await this.createSession(
-      {
-        cwd: params.cwd,
-        mcpServers: params.mcpServers ?? [],
-        _meta: params._meta,
-      },
-      { initialMessages },
+    const response = await runInAcpWorkspaceTurn(() =>
+      this.createSession(
+        {
+          cwd: params.cwd,
+          mcpServers: params.mcpServers ?? [],
+          _meta: params._meta,
+        },
+        { initialMessages },
+      ),
     )
+    this.noteClientWorkspace(params.cwd)
     this.scheduleAvailableCommandsUpdate(response.sessionId)
     return response
   }
@@ -355,6 +433,13 @@ export class AcpAgent implements Agent {
     const session = this.sessions.get(params.sessionId)
     if (!session) return
 
+    // Who asked. ACP's `session/cancel` carries nothing but a session id, so a
+    // caller that is not a person — the resident node's inactivity watchdog —
+    // says so in `_meta`. Anything else stays a user interruption: the base
+    // CLI's own Ctrl+C sends no `_meta` at all, and a turn whose provenance we
+    // cannot establish must keep the wording it has always had (issue #39).
+    const abortReason = readQianmoCancelReason(params._meta)
+
     // Set cancelled flag — checked by prompt() loop to break out
     session.cancelled = true
     session.cancelGeneration += 1
@@ -368,7 +453,7 @@ export class AcpAgent implements Agent {
     session.pendingQueueHead = 0
 
     // Interrupt the query engine to abort the current API call
-    session.queryEngine.interrupt()
+    session.queryEngine.interrupt(abortReason)
   }
 
   // ── setSessionMode ──────────────────────────────────────────────

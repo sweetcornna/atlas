@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/channels) · **中文** · [日本語](/docs/ja/features/channels)
-
 # Channels — 外部频道消息接入
 
 > 启动参数：`--channels` / `--dangerously-load-development-channels`

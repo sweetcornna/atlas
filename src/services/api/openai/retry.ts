@@ -1,44 +1,28 @@
 import {
   classifyRetryableAPIError,
   getAPIErrorDiagnostics,
-  PERMANENT_RETRY_DELAY_MS,
-  PERMANENT_RETRY_MAX_RETRIES,
 } from '../retryClassification.js'
+import { reportUpstreamFailure } from '../upstreamStatus.js'
 
-/** Ten retries after the initial request (eleven total attempts). */
-const OPENAI_MAX_RETRIES = 10
-const DEFAULT_MAX_RETRIES = OPENAI_MAX_RETRIES
-const BASE_DELAY_MS = 200
-/**
- * Longest server-directed wait this ladder will actually sit through.
- *
- * A `Retry-After` beyond this is not a blip, it is a closed window (a 5-hour
- * subscription limit, a daily quota). This used to *clamp* to the ceiling,
- * which is the worst of both worlds: the request comes back too early to
- * succeed, ten times over, so the caller is blocked for ~10 minutes and then
- * fails anyway. Past the ceiling the ladder gives up immediately instead and
- * lets the caller surface the real limit message.
- *
- * That matters most where nobody can cancel: `sideQuery` now routes Anthropic
- * calls through here, and `findRelevantMemories` / `autoMode` call it without
- * an AbortSignal.
- */
-const RETRY_AFTER_MAX_MS = 60_000
-/**
- * Ceiling on one exponential backoff step, matching `getRetryDelay` in
- * withRetry.ts. Uncapped, `200 * 2^n` over the ten-retry budget spends its last
- * three waits at ~26s, ~51s and ~102s — nearly three minutes of the total sat
- * in a single sleep, for a ladder whose point is to outlast a blip.
- */
+/** Ten retries by default; the official CLI allows explicit values up to 15. */
+const DEFAULT_MAX_RETRIES = 10
+const MAX_CONFIGURED_RETRIES = 15
+const BASE_DELAY_MS = 500
 const MAX_BACKOFF_MS = 32_000
-const TRANSIENT_RETRIES_EXHAUSTED = Symbol.for(
-  'occ.api.transientRetriesExhausted',
-)
-
+const MAX_RETRY_AFTER_MS = 60_000
 type OpenAIRetryDelay = (delayMs: number, signal: AbortSignal) => Promise<void>
+
+export type APIRetryOptions = {
+  signal: AbortSignal
+  maxRetries?: number
+  delay?: OpenAIRetryDelay
+  random?: () => number
+  onError?: (error: unknown) => string | undefined | Promise<string | undefined>
+}
 
 export class OpenAIRequestError extends Error {
   readonly retryable: boolean
+  readonly replayable: boolean
   readonly retryAfterMs: number | undefined
   readonly type: string | undefined
   readonly code: string | number | undefined
@@ -49,6 +33,7 @@ export class OpenAIRequestError extends Error {
     message: string,
     options: {
       retryable: boolean
+      replayable?: boolean
       retryAfterMs?: number
       type?: string
       code?: string | number
@@ -60,6 +45,7 @@ export class OpenAIRequestError extends Error {
     super(message, { cause: options.cause })
     this.name = 'OpenAIRequestError'
     this.retryable = options.retryable
+    this.replayable = options.replayable !== false
     this.retryAfterMs = options.retryAfterMs
     this.type = options.type
     this.code = options.code
@@ -94,11 +80,11 @@ export function clampOpenAIMaxRetries(
   fallback = DEFAULT_MAX_RETRIES,
 ): number {
   if (!Number.isFinite(value)) return fallback
-  return Math.min(OPENAI_MAX_RETRIES, Math.max(0, Math.trunc(value)))
+  return Math.min(MAX_CONFIGURED_RETRIES, Math.max(0, Math.trunc(value)))
 }
 
 export function resolveOpenAIMaxRetries(
-  raw = process.env.OPENAI_REQUEST_MAX_RETRIES,
+  raw = process.env.CLAUDE_CODE_MAX_RETRIES,
 ): number {
   if (raw === undefined || !/^\d+$/.test(raw.trim())) {
     return DEFAULT_MAX_RETRIES
@@ -130,10 +116,10 @@ function parseRetryAfterMs(
  * how long to wait.
  *
  * An SSE `response.failed` event carries no HTTP headers, so `Retry-After` is
- * structurally unavailable there and the ladder falls back to its 200ms first
- * step: it re-asks a limiter that just said "1.5s" roughly eight times before
- * the backoff even reaches the stated wait, and can burn the whole budget on a
- * limit that would have cleared. OpenAI's own client reads the number out of
+ * structurally unavailable there and the ladder falls back to its 500ms first
+ * step: it can re-ask a limiter before the wait stated in the error has elapsed
+ * and burn the budget on a limit that would have cleared. OpenAI's own client
+ * reads the number out of
  * the prose for exactly this reason (codex-rs/codex-api/src/sse/responses.rs
  * `try_parse_retry_after`, lines 602-626).
  *
@@ -196,9 +182,8 @@ export async function createOpenAIResponseError(
   const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
   // Deliberately not a hand-rolled status list any more. This function knows
   // the status and nothing else, so it asks the same classifier the ladders
-  // read — otherwise a 401 here would carry `retryable: false`, and that field
-  // is an absolute veto reserved for the one thing only a producer can know:
-  // that this attempt's output already went downstream (see closesRetryWindow).
+  // read. Replay safety is decided separately by the stream producer once
+  // output has crossed the commitment boundary.
   const retryable = classifyRetryableAPIError({
     ...(details ?? {}),
     status: response.status,
@@ -213,19 +198,6 @@ export async function createOpenAIResponseError(
       ...(details ? { cause: details } : {}),
     },
   )
-}
-
-function markRetryBudgetExhausted(error: unknown): void {
-  if (typeof error !== 'object' || error === null) return
-  try {
-    Object.defineProperty(error, TRANSIENT_RETRIES_EXHAUSTED, {
-      value: true,
-      configurable: true,
-    })
-  } catch {
-    // A frozen third-party error cannot carry the marker. The original error is
-    // still rethrown; this only affects the outer de-duplication guard.
-  }
 }
 
 function retryAfterMsFromError(error: unknown): number | undefined {
@@ -251,19 +223,20 @@ function retryAfterMsFromError(error: unknown): number | undefined {
   return parseRetryAfterMs(headers.get('retry-after'))
 }
 
-function retryDelayMs(retryIndex: number, random: () => number): number {
-  const exponential = Math.min(BASE_DELAY_MS * 2 ** retryIndex, MAX_BACKOFF_MS)
-  return Math.round(exponential * (0.9 + random() * 0.2))
+export function getOpenAIRetryDelay(
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const exponential = Math.min(
+    BASE_DELAY_MS * 2 ** (attempt - 1),
+    MAX_BACKOFF_MS,
+  )
+  return Math.round(exponential + random() * 0.25 * exponential)
 }
 
-export async function retryOpenAIRequest<T>(
+export async function retryAPIRequest<T>(
   operation: (attempt: number) => Promise<T>,
-  options: {
-    signal: AbortSignal
-    maxRetries?: number
-    delay?: OpenAIRetryDelay
-    random?: () => number
-  },
+  options: APIRetryOptions,
 ): Promise<T> {
   const maxRetries =
     options.maxRetries === undefined
@@ -271,6 +244,7 @@ export async function retryOpenAIRequest<T>(
       : clampOpenAIMaxRetries(options.maxRetries)
   const delay = options.delay ?? defaultDelay
   const random = options.random ?? Math.random
+  const appliedErrorTransforms = new Set<string>()
   let attempt = 0
 
   while (true) {
@@ -278,34 +252,46 @@ export async function retryOpenAIRequest<T>(
     try {
       return await operation(attempt)
     } catch (error) {
-      const verdict = classifyRetryableAPIError(error)
-      if (options.signal.aborted || !verdict.retryable) {
-        throw error
+      // Same reason as the Anthropic-wire ladder in ../withRetry.ts: an
+      // out-of-process observer (the resident inactivity watchdog) has no
+      // other way to learn that the silence it is measuring is a 401.
+      reportUpstreamFailure(error)
+      const transform = await options.onError?.(error)
+      if (transform && !appliedErrorTransforms.has(transform)) {
+        appliedErrorTransforms.add(transform)
+        continue
       }
-      // A permanent class is retried here too, but on the cheap lane: one
-      // attempt at a fixed short delay instead of the ten-step ladder.
-      const attemptBudget =
-        verdict.persistence === 'permanent'
-          ? Math.min(maxRetries, PERMANENT_RETRY_MAX_RETRIES)
-          : maxRetries
-      if (attempt >= attemptBudget) {
-        markRetryBudgetExhausted(error)
+      const verdict = classifyRetryableAPIError(error)
+      // Deliberately does NOT consult `replayable`, and that is not an
+      // oversight — see "retries the reported stream_read_error even with
+      // legacy replayable=no metadata" in retry.test.ts. The operations this
+      // ladder re-runs rebuild their buffer from scratch, and the one that
+      // streams (fetchResponsesStream's `attempt`) stops reading at the exact
+      // predicate the stamp is taken from (closesRetryWindow), so a stamped
+      // error is thrown past this ladder rather than into it. Exactly-once
+      // delivery is enforced by that barrier; the flag is honoured where output
+      // has actually left — streamAssembly.ts's retryThirdPartyEventStream.
+      if (
+        options.signal.aborted ||
+        !verdict.retryable ||
+        attempt >= maxRetries
+      ) {
         throw error
       }
       const retryAfterMs = retryAfterMsFromError(error)
-      if (retryAfterMs !== undefined && retryAfterMs > RETRY_AFTER_MAX_MS) {
-        // The window this request is waiting on outlasts the whole ladder.
-        // Marked as exhausted so the outer queryModel-level wrapper does not
-        // re-run the generator into the same closed window.
-        markRetryBudgetExhausted(error)
+      const backoffMs = getOpenAIRetryDelay(attempt + 1, random)
+      if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
         throw error
       }
-      const backoffMs =
-        verdict.persistence === 'permanent'
-          ? PERMANENT_RETRY_DELAY_MS
-          : retryDelayMs(attempt, random)
-      await delay(retryAfterMs ?? backoffMs, options.signal)
+      await delay(
+        retryAfterMs === undefined
+          ? backoffMs
+          : Math.max(retryAfterMs, backoffMs),
+        options.signal,
+      )
       attempt++
     }
   }
 }
+
+export const retryOpenAIRequest = retryAPIRequest

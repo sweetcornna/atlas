@@ -133,10 +133,24 @@ export function isAnthropicAuthEnabled(): boolean {
     apiKeyHelper ||
     process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
 
-  // Check if API key is from an external source (not managed by /login)
-  const { source: apiKeySource } = getAnthropicApiKeyWithSource({
-    skipRetrievingKeyFromApiKeyHelper: true,
-  })
+  // Check if API key is from an external source (not managed by /login).
+  //
+  // MUST stay wrapped: getAnthropicApiKeyWithSource() *throws* in the
+  // CI/NODE_ENV=test branch below (line ~340) when no credential is present,
+  // and this predicate is on the startup path — getOauthAccountInfo() →
+  // isAnthropicAuthEnabled() is awaited from init() via initUser(). Letting the
+  // throw escape rejected the Commander preAction hook and left the process
+  // alive but idle with zero output, i.e. `CI=1 occ mcp list` hung until it was
+  // SIGKILLed. A predicate that answers "is 1P auth usable" has nothing to
+  // report but `false` when the credential lookup itself fails.
+  let apiKeySource: ReturnType<typeof getAnthropicApiKeyWithSource>['source']
+  try {
+    apiKeySource = getAnthropicApiKeyWithSource({
+      skipRetrievingKeyFromApiKeyHelper: true,
+    }).source
+  } catch {
+    return false
+  }
   const hasExternalApiKey =
     apiKeySource === 'ANTHROPIC_API_KEY' || apiKeySource === 'apiKeyHelper'
 
@@ -261,9 +275,30 @@ export function hasAnthropicApiKeyAuth(): boolean {
  * approval list is for. (Deliberately not `getEffectiveSettingsEnv()`, which
  * would say the same thing but closes an import cycle from here.)
  */
+/**
+ * Whether `ANTHROPIC_API_KEY` currently holds a credential that belongs to
+ * some OTHER vendor, mirrored there by one of occ's provider wires.
+ *
+ * The DeepSeek and OpenCode wires both copy their own credential onto
+ * `ANTHROPIC_API_KEY` so the first-party client can talk to an
+ * Anthropic-compatible endpoint that is not Anthropic's. That is correct for
+ * inference — the key travels to the endpoint it was issued for — and wrong
+ * for anything occ sends to `api.anthropic.com` on its own behalf, which
+ * would hand a DeepSeek or OpenCode secret to a third party.
+ *
+ * Read it as "not Anthropic's key", not as "not a valid key". The inverse is
+ * NOT `isOccConfiguredAnthropicApiKey()`: that one answers "did occ put this
+ * here", which is also true for a genuine Anthropic key typed into the
+ * Anthropic-compatible setup wizard.
+ */
+export function isThirdPartyMirroredApiKey(
+  apiKey: string | undefined,
+): boolean {
+  return isDeepSeekMirroredApiKey(apiKey) || isOpencodeMirroredApiKey(apiKey)
+}
+
 export function isOccConfiguredAnthropicApiKey(apiKey: string): boolean {
-  if (isDeepSeekMirroredApiKey(apiKey)) return true
-  if (isOpencodeMirroredApiKey(apiKey)) return true
+  if (isThirdPartyMirroredApiKey(apiKey)) return true
   const fromUserSettings =
     getSettingsForSource('userSettings')?.env?.ANTHROPIC_API_KEY
   if (fromUserSettings === apiKey) return true
@@ -510,6 +545,7 @@ export function calculateApiKeyHelperTTL(): number {
 // captured epoch before touching module state so a settings-change or 401-retry
 // mid-flight can't clobber the newer cache/inflight.
 let _apiKeyHelperCache: { value: string; timestamp: number } | null = null
+let _apiKeyHelperError: string | null = null
 let _apiKeyHelperInflight: {
   promise: Promise<string | null>
   // Only set on cold launches (user is waiting); null for SWR background refreshes.
@@ -564,6 +600,7 @@ async function _runAndCache(
     if (epoch !== _apiKeyHelperEpoch) return value
     if (value !== null) {
       _apiKeyHelperCache = { value, timestamp: Date.now() }
+      _apiKeyHelperError = null
     }
     return value
   } catch (e) {
@@ -581,6 +618,7 @@ async function _runAndCache(
       return _apiKeyHelperCache.value
     }
     // Cold cache or prior error — cache ' ' so callers don't fall back to OAuth
+    _apiKeyHelperError = detail
     _apiKeyHelperCache = { value: ' ', timestamp: Date.now() }
     return ' '
   } finally {
@@ -637,9 +675,15 @@ export function getApiKeyFromApiKeyHelperCached(): string | null {
   return _apiKeyHelperCache?.value ?? null
 }
 
+export function getApiKeyHelperError(): string | null {
+  if (!getConfiguredApiKeyHelper()) return null
+  return _apiKeyHelperError
+}
+
 export function clearApiKeyHelperCache(): void {
   _apiKeyHelperEpoch++
   _apiKeyHelperCache = null
+  _apiKeyHelperError = null
   _apiKeyHelperInflight = null
 }
 
@@ -1844,6 +1888,52 @@ export function isUsing3PServices(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GROK)
   )
+}
+
+/**
+ * Does this process hold a credential that could reach *some* model provider?
+ *
+ * This is the **credential axis**, and only that one. It is not
+ * `getAPIProvider()` (which wire format do we speak), and it is not
+ * `isThirdPartyModelCatalog()` (whose catalog and rate card) — mixing those
+ * three is a documented way to get this wrong.
+ *
+ * The rule itself is not new: it is exactly the disjunction `occ auth status`
+ * reports as `loggedIn`, lifted out of that handler so the two cannot drift.
+ * `occ auth status --json` is therefore the diagnostic for anything that
+ * consults this: it prints the same answer plus the `authMethod` that produced
+ * it. Terms are ORed, so the order here is only cheapest-first.
+ *
+ * Two things it deliberately does NOT promise:
+ *
+ * - **Not "the credential works".** A revoked key, a wrong-org token and a
+ *   404ing gateway all read as `true`; only a real request can say otherwise.
+ *   What `false` means is much stronger and is the useful half: no credential
+ *   of any kind is present, so every turn will come back
+ *   "Not logged in · Please run /login" before a byte reaches a provider.
+ * - **Not a fix for the `settings.modelType` gap.** `isUsing3PServices()`
+ *   covers the `CLAUDE_CODE_USE_*` env vars only, and says so in its own
+ *   KEEP IN SYNC note; a session that selected OpenAI purely through
+ *   `settings.modelType` answers `false` here. That gap belongs to
+ *   `isUsing3PServices()` and to `occ auth status`, which has always reported
+ *   it the same way — closing it in a second, private copy of the rule is how
+ *   the two answers start disagreeing.
+ *
+ * Never throws. The CI / `NODE_ENV=test` branch of
+ * {@link getAnthropicApiKeyWithSource} throws when nothing is configured, and
+ * that exception *is* the answer `false`.
+ */
+export function hasAnyModelCredential(): boolean {
+  if (isUsing3PServices()) return true
+  // Homespace strips ANTHROPIC_API_KEY on purpose (a Console key is used
+  // instead), so it is not a credential there — same carve-out the handler has.
+  if (!!process.env.ANTHROPIC_API_KEY && !isRunningOnHomespace()) return true
+  try {
+    if (getAuthTokenSource().hasToken) return true
+    return getAnthropicApiKeyWithSource().source !== 'none'
+  } catch {
+    return false
+  }
 }
 
 /**

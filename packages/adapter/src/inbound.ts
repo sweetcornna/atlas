@@ -1,9 +1,14 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import type { MessageOrigin, QianmoMessage } from '@qianmo/protocol'
+import type {
+  MessageOrigin,
+  NoticeTrust,
+  QianmoMessage,
+} from '@qianmo/protocol'
 import {
   ProtocolErrorCode,
+  TRUST_UNTRUSTED,
   deliveryExpiresAt,
   firstErrorCode,
   formatAddress,
@@ -61,6 +66,21 @@ import {
  * than trusting the string it was handed, and rejects outright on failure —
  * no best-effort repair.
  */
+
+/**
+ * What the routing layer verified about one message, as the adapter receives
+ * it (issue #28).
+ *
+ * One type rather than an inline shape at four call sites: adding a field to a
+ * structural literal repeated down a call chain is how the tier came to stop
+ * one layer short of the notice in the first place.
+ */
+export interface InboundVerification {
+  /** `iss` of the token that verified, absent when none was presented. */
+  readonly capIss?: string
+  /** Tier the capability gate assigned. Absent means `untrusted`. */
+  readonly trust?: NoticeTrust
+}
 
 /** A message the adapter refused, with the wire code to reply with. */
 export interface InboundRejection {
@@ -141,10 +161,25 @@ export class InboundAdapter {
    * purpose: it is the only step with a persistent side effect, so anything
    * that ran after authorization would be an attack surface. Capability
    * verification, the inbound rate budget and loop detection are the routing
-   * layer's steps (P4.2 / P4.3) and slot in ahead of the write; this class
-   * owns the structural checks, the TTL check and the write itself.
+   * layer's steps (`@qianmo/router`, `@qianmo/capability`) and run ahead of
+   * this call; this class owns the structural checks, the TTL check and the
+   * write itself.
+   *
+   * `verified` is what the routing layer established and this layer could not:
+   * `capIss` names who signed, `trust` says what that signature was worth here
+   * (issue #28). Both are passed in rather than read off the envelope precisely
+   * because §10.2 says provenance is what the *receiver* established, never
+   * what the message said about itself — and `trust` additionally could not be
+   * computed here at all, since deciding it needs a key directory and a trust
+   * list that this package deliberately has no access to.
+   *
+   * Both default to the safe value. An omitted `trust` is `untrusted`, so a
+   * caller that has not been updated downgrades rather than guesses.
    */
-  async deliver(message: QianmoMessage): Promise<InboundResult> {
+  async deliver(
+    message: QianmoMessage,
+    verified: InboundVerification = {},
+  ): Promise<InboundResult> {
     const receivedAt = this.now()
 
     // 1. Envelope structure, size, hop count and the DELIVERY deadline.
@@ -201,17 +236,20 @@ export class InboundAdapter {
 
     // 3. Provenance, written by the receiver — the envelope's own account of
     //    where it came from is never taken at face value (§10.2). `capIss` is
-    //    left unset: capability verification lands in P4.3, and inventing an
-    //    issuer here would be worse than admitting there is none.
+    //    present only when the routing layer *verified* a token and tells us
+    //    who signed it; an absent one stays absent, because "we could not tell"
+    //    and "nobody signed for this" must not look alike downstream.
     const origin: MessageOrigin = {
       node: from.node,
       agent: from.agent,
       receivedAt,
+      ...(verified.capIss === undefined ? {} : { capIss: verified.capIss }),
     }
+    const trust = verified.trust ?? TRUST_UNTRUSTED
     const labelled: QianmoMessage = { ...envelope, origin }
 
     // 4. Size, by measurement of the final string (rule M-5, §9.3.4).
-    let wrapper = buildWrapper(labelled, buildNotice(origin))
+    let wrapper = buildWrapper(labelled, buildNotice(origin, trust))
     let text = serializeWrapper(wrapper)
     let blob: BlobRef | undefined
 
@@ -229,7 +267,7 @@ export class InboundAdapter {
       }
       wrapper = buildWrapper(
         { ...labelled, payload: blob },
-        buildNotice(origin),
+        buildNotice(origin, trust),
       )
       // Measure again: the reference is a different string, not an estimate.
       text = serializeWrapper(wrapper)

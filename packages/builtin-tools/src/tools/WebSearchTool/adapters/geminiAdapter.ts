@@ -66,7 +66,7 @@ const DEFAULT_SEARCH_MODEL = 'gemini-2.5-flash'
 /** Cheapest tier the Antigravity backend serves — a grounded search only has
  * to call the tool. */
 const ANTIGRAVITY_SEARCH_MODEL = ANTIGRAVITY_FLASH_LITE_MODEL
-const SEARCH_MAX_RETRIES = 2
+const SEARCH_MAX_RETRIES = 10
 
 /**
  * The two backends serve different model catalogues, and Antigravity rejects
@@ -309,6 +309,11 @@ export class GeminiSearchAdapter implements WebSearchAdapter {
           ...(pinned?.baseURL ? { baseURL: pinned.baseURL } : {}),
           requestType: 'web_search',
           useAntigravityWhenAvailable: this.asExtraSource,
+          // The search credential plane: the Google login while there is one,
+          // and otherwise the copy of it this lane pinned for itself. `/logout`
+          // deletes the login file and knows nothing about the copy, which is
+          // what stops this source going dark the moment somebody signs out.
+          antigravityAuthPlane: 'search',
         })
 
         for await (const chunk of stream) {

@@ -2,9 +2,11 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   _resetPromptCacheKeySupportForTesting,
   getOpenAIPromptCacheKey,
+  getOpenAIPromptCacheKeyScope,
   isOfficialOpenAIBaseURL,
   isPromptCacheKeyRejection,
   markPromptCacheKeyRejected,
+  resolveOpenAIPromptCacheKey,
   resolveOpenAIVerbosity,
   shouldSendOpenAIPromptCacheKey,
 } from '../openaiShared.js'
@@ -139,6 +141,7 @@ describe('getOpenAIPromptCacheKey', () => {
 describe('shouldSendOpenAIPromptCacheKey', () => {
   afterEach(() => {
     delete process.env.OPENAI_PROMPT_CACHE_KEY
+    _resetPromptCacheKeySupportForTesting()
   })
 
   test('Chat Completions sends the key by default, on any base URL', () => {
@@ -164,8 +167,7 @@ describe('shouldSendOpenAIPromptCacheKey', () => {
       expect(
         shouldSendOpenAIPromptCacheKey('https://api.openai.com/v1', 'chat'),
       ).toBe(true)
-      // /responses implements the field by definition — a chat-line rejection
-      // says nothing about it.
+      // A chat-line rejection says nothing about the Responses protocol.
       expect(
         shouldSendOpenAIPromptCacheKey(
           'https://gateway.internal/v1',
@@ -200,23 +202,30 @@ describe('shouldSendOpenAIPromptCacheKey', () => {
     expect(isPromptCacheKeyRejection(new Error('rate limited'))).toBe(false)
   })
 
-  test('the Responses protocol always gets a key, on any base URL', () => {
+  test('the Responses protocol gets a key until that protocol rejects it', () => {
     // Measured against a live gateway (5 turns, identical prefix): omitting
     // the key dropped the cumulative hit rate from 75.8% to 18.3%, per-turn
-    // 95/0/0/0/0. Serving /responses means implementing OpenAI's Responses
-    // schema, where prompt_cache_key is a documented standard field.
+    // 95/0/0/0/0. Compatible implementations still vary, so a recognized
+    // rejection disables only their Responses lane.
     expect(
       shouldSendOpenAIPromptCacheKey(
         'https://gateway.internal/v1',
         'responses',
       ),
     ).toBe(true)
+    markPromptCacheKeyRejected('responses')
     expect(
       getOpenAIPromptCacheKey(
         'https://gateway.internal/v1',
         'sess',
         'responses',
       ),
+    ).toBeUndefined()
+    expect(
+      getOpenAIPromptCacheKey('https://gateway.internal/v1', 'sess', 'chat'),
+    ).toBe('occ:sess')
+    expect(
+      getOpenAIPromptCacheKey('https://api.openai.com/v1', 'sess', 'responses'),
     ).toBe('occ:sess')
   })
 
@@ -266,5 +275,159 @@ describe('shouldSendOpenAIPromptCacheKey', () => {
       process.env.OPENAI_PROMPT_CACHE_KEY = value
       expect(shouldSendOpenAIPromptCacheKey(undefined)).toBe(false)
     }
+  })
+})
+
+describe('prefix-scoped prompt_cache_key', () => {
+  const SYSTEM = { role: 'system', content: 'You are an agent. cwd=/repo' }
+  const TOOLS = [
+    { type: 'function', function: { name: 'Bash', parameters: {} } },
+    { type: 'function', function: { name: 'Read', parameters: {} } },
+  ]
+  const base = {
+    baseURL: 'https://gateway.internal/v1',
+    wireProtocol: 'responses' as const,
+    model: 'gpt-5.6-sol',
+    messages: [SYSTEM, { role: 'user', content: 'hi' }],
+    tools: TOOLS,
+  }
+
+  afterEach(() => {
+    delete process.env.OPENAI_PROMPT_CACHE_KEY
+    delete process.env.OPENAI_PROMPT_CACHE_KEY_SCOPE
+    _resetPromptCacheKeySupportForTesting()
+  })
+
+  test('two different sessions sharing a prefix share one key', () => {
+    // The whole point. Measured against a live gateway, four byte-identical
+    // single-turn requests of 39167 input tokens each: with the session key
+    // both fresh sessions cached 0; with this key both cached 38400.
+    const a = resolveOpenAIPromptCacheKey({ ...base, sessionId: 'session-a' })
+    const b = resolveOpenAIPromptCacheKey({ ...base, sessionId: 'session-b' })
+    expect(a).toBe(b as string)
+    expect(a).toMatch(/^occ:p:[0-9a-f]{16}$/)
+  })
+
+  test('stays stable as the conversation grows', () => {
+    const turn1 = resolveOpenAIPromptCacheKey({ ...base, sessionId: 's' })
+    const turn2 = resolveOpenAIPromptCacheKey({
+      ...base,
+      sessionId: 's',
+      messages: [
+        SYSTEM,
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+        { role: 'user', content: 'and again' },
+      ],
+    })
+    expect(turn2).toBe(turn1 as string)
+  })
+
+  test('tracks the parts that actually change the cached prefix', () => {
+    const key = resolveOpenAIPromptCacheKey({ ...base, sessionId: 's' })
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        model: 'gpt-5.6-terra',
+      }),
+    ).not.toBe(key as string)
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        messages: [{ role: 'system', content: 'different prompt' }],
+      }),
+    ).not.toBe(key as string)
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        tools: [TOOLS[0]],
+      }),
+    ).not.toBe(key as string)
+  })
+
+  test('developer-role system text counts, user turns never do', () => {
+    const asDeveloper = resolveOpenAIPromptCacheKey({
+      ...base,
+      sessionId: 's',
+      messages: [{ role: 'developer', content: SYSTEM.content }],
+    })
+    const asSystem = resolveOpenAIPromptCacheKey({
+      ...base,
+      sessionId: 's',
+      messages: [SYSTEM],
+    })
+    expect(asDeveloper).toBe(asSystem as string)
+    // A different user turn must not move the key — a key that changes every
+    // turn is exactly what defeats routing.
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        messages: [SYSTEM, { role: 'user', content: 'completely different' }],
+      }),
+    ).toBe(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        messages: [SYSTEM, { role: 'user', content: 'hi' }],
+      }) as string,
+    )
+  })
+
+  test('flattens structured system content the same as a plain string', () => {
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        messages: [
+          { role: 'system', content: [{ type: 'text', text: SYSTEM.content }] },
+        ],
+      }),
+    ).toBe(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 's',
+        messages: [SYSTEM],
+      }) as string,
+    )
+  })
+
+  test('OPENAI_PROMPT_CACHE_KEY_SCOPE=session restores the session key', () => {
+    process.env.OPENAI_PROMPT_CACHE_KEY_SCOPE = 'session'
+    expect(getOpenAIPromptCacheKeyScope()).toBe('session')
+    expect(resolveOpenAIPromptCacheKey({ ...base, sessionId: 'abc' })).toBe(
+      'occ:abc',
+    )
+    process.env.OPENAI_PROMPT_CACHE_KEY_SCOPE = 'prefix'
+    expect(getOpenAIPromptCacheKeyScope()).toBe('prefix')
+    // Anything unrecognized keeps the measured default.
+    process.env.OPENAI_PROMPT_CACHE_KEY_SCOPE = 'wat'
+    expect(getOpenAIPromptCacheKeyScope()).toBe('prefix')
+  })
+
+  test('falls back to the session key when there is no prefix to route to', () => {
+    expect(
+      resolveOpenAIPromptCacheKey({
+        ...base,
+        sessionId: 'abc',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+      }),
+    ).toBe('occ:abc')
+  })
+
+  test('suppression still wins over any scope', () => {
+    markPromptCacheKeyRejected('responses')
+    expect(
+      resolveOpenAIPromptCacheKey({ ...base, sessionId: 'abc' }),
+    ).toBeUndefined()
+    _resetPromptCacheKeySupportForTesting()
+    process.env.OPENAI_PROMPT_CACHE_KEY = '0'
+    expect(
+      resolveOpenAIPromptCacheKey({ ...base, sessionId: 'abc' }),
+    ).toBeUndefined()
   })
 })

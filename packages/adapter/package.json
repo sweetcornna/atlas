@@ -11,6 +11,7 @@
     ".": "./src/index.ts",
     "./inbound": "./src/inbound.ts",
     "./names": "./src/names.ts",
+    "./sanitize": "./src/sanitize.ts",
     "./wrapper": "./src/wrapper.ts"
   },
   "files": [

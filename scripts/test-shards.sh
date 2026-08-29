@@ -20,6 +20,9 @@
 #   scripts/test-shards.sh              # plain run
 #   scripts/test-shards.sh --coverage   # per-shard lcov, concatenated
 #
+# Every run also drops one JUnit XML per shard under `test-reports/` — see
+# REPORT_DIR below for why that is not optional decoration.
+#
 # Exit status is 0 only if EVERY directory passed standalone.
 
 # `set +e` is required, not merely omitting `-e`: GitHub Actions invokes `run:`
@@ -34,10 +37,51 @@ if [ "${1:-}" = "--coverage" ]; then
   rm -rf coverage && mkdir -p coverage
 fi
 
+# Per-test names and per-test durations, machine-readable, for every shard.
+#
+# Not decoration: issue #56 went red 24 times on CI and the test's NAME was
+# never once in the log. Plain `bun test` output prints a per-FILE total and
+# nothing per test, so "which test" and "how long did it take" were both
+# unavailable exactly when they were needed. The name finally came out of a
+# JUnit run done by hand after the fact, and the number that cracked it —
+# a test whose median is 459 ms took 6034 ms — only exists in this format.
+# Writing it every run is what turns that into evidence collected at the
+# moment of the failure rather than a reconstruction attempt afterwards.
+#
+# Cleared up front, like `coverage/`: a shard that dies before Bun writes its
+# file would otherwise leave the PREVIOUS run's XML sitting there under the
+# right name, which is the one artifact worse than no artifact.
+#
+# In the repo tree rather than a temp dir so CI can upload the directory as an
+# artifact without the workflow and this script having to agree on a path
+# through some environment variable. `.gitignore` carries the matching entry.
+REPORT_DIR=test-reports
+rm -rf "$REPORT_DIR" && mkdir -p "$REPORT_DIR"
+
 shard=0
 failed=()
 
-for d in src/* packages/* tests/integration scripts; do
+# `tests/boundary` and `demo/lib` are listed explicitly for the same reason
+# every other entry is: this loop is the whole of what CI runs, and a test
+# directory that is not on it does not run there at all — while `bun test`
+# locally does run it. That combination produces "green locally, green in CI"
+# where the second green means nothing. P5.4 added the boundary suite; the demo
+# report cores had been outside CI since P4.1 and are folded in here.
+#
+# `demo/env` is the same hole one directory over, and the sharpest case for the
+# rule: those suites drive the real operator shell scripts through /bin/bash, so
+# what they prove is precisely what differs between a developer's macOS box and
+# the Linux runner — bash 3.2 vs 5.x, BSD vs GNU userland, which locales the
+# machine even has. The regression for the issue #17 locale bypass (a `[a-z]`
+# glob range that collation expands to aAbB…zZ, so `Beta-1` passed node-name
+# validation) lived there and had only ever run on macOS, which for a
+# locale-dependent defect is the worst possible arrangement.
+#
+# It is one literal entry rather than `demo/env/*`: tests sit both directly in
+# it (resident-task-policy) and two levels down (beta/, beta/ops/), and
+# `bun test <dir>` already recurses. The glob would shard the subdirectories and
+# silently drop the top-level file — exactly the miss this list exists to stop.
+for d in src/* packages/* tests/integration tests/boundary demo/lib demo/env scripts; do
   [ -d "$d" ] || continue
   # Skip directories with no tests at all rather than letting `bun test` treat
   # "no files matched" as a failure.
@@ -59,12 +103,23 @@ for d in src/* packages/* tests/integration scripts; do
     isolate="--isolate"
   fi
 
+  # One file per shard, and the name has to be unique across all 62 of them:
+  # a single shared outfile would leave only whichever shard finished last,
+  # which for a red run is almost never the interesting one. Both halves earn
+  # their place — the zero-padded ordinal sorts the way the run happened, the
+  # directory slug means the file that matters can be found by name without
+  # first mapping ordinals back to directories.
+  report="${REPORT_DIR}/$(printf 'shard-%02d' "$shard")-${d//\//-}.xml"
+
+  # `--reporter=junit` writes the XML and leaves stdout alone, so the human
+  # output below is unchanged — the two are additive, not alternatives.
   if [ "$coverage" = "1" ]; then
     bun test $isolate --coverage --coverage-reporter lcov \
-      --coverage-dir "coverage/shard-${shard}" "$d" 2>&1 \
+      --coverage-dir "coverage/shard-${shard}" \
+      --reporter=junit --reporter-outfile "$report" "$d" 2>&1 \
       | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
   else
-    bun test $isolate "$d" 2>&1 \
+    bun test $isolate --reporter=junit --reporter-outfile "$report" "$d" 2>&1 \
       | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
   fi
 

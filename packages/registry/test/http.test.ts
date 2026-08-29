@@ -140,6 +140,23 @@ describe('registry http api v0', () => {
     expect(badStatus.status).toBe(400)
   })
 
+  test('POST /v0/agents wires the certificate field through to register()', async () => {
+    // A real, CA-issued certificate is exercised end to end in
+    // `certificate.test.ts` against `InMemoryRegistry.register()` directly —
+    // this only needs to prove the HTTP body reaches that same validation
+    // rather than being silently dropped, so a certificate-shaped garbage
+    // string is enough: it must be refused, not ignored.
+    const rejected = await post('/v0/agents', {
+      address: PLANNER,
+      endpoint: ENDPOINT,
+      certificate: 'not a certificate',
+    })
+    expect(rejected.status).toBe(400)
+    const error = (await body(rejected))['error'] as Record<string, unknown>
+    expect(error['code']).toBe(RegistryErrorCode.E_BAD_REQUEST)
+    expect(registry.resolve(PLANNER)).toBeNull()
+  })
+
   test('POST /v0/agents returns 409 on an endpoint clash', async () => {
     await post('/v0/agents', { address: PLANNER, endpoint: ENDPOINT })
     const clash = await post('/v0/agents', {
@@ -286,5 +303,61 @@ describe('registry http api v0', () => {
     const health = await body(await fetch(`${server.url}/v0/health`))
     expect(health['status']).toBe('ok')
     expect(health['agents']).toBe(1)
+  })
+})
+
+describe('GET/PUT /v0/revocation-list (§6.4 — the same zero-auth courier)', () => {
+  test('404s until something has been published', async () => {
+    const before = await fetch(`${server.url}/v0/revocation-list`)
+    expect(before.status).toBe(404)
+  })
+
+  test('PUT publishes, GET reads it back verbatim', async () => {
+    const document = { payload: 'cGF5bG9hZA', signature: 'c2ln' }
+    const put = await fetch(`${server.url}/v0/revocation-list`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(document),
+    })
+    expect(put.status).toBe(200)
+    expect(await body(put)).toEqual(document)
+
+    const get = await fetch(`${server.url}/v0/revocation-list`)
+    expect(get.status).toBe(200)
+    expect(await body(get)).toEqual(document)
+  })
+
+  test('a later PUT replaces the earlier document, never merges', async () => {
+    await fetch(`${server.url}/v0/revocation-list`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'a', signature: 'a' }),
+    })
+    await fetch(`${server.url}/v0/revocation-list`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'b', signature: 'b' }),
+    })
+    const get = await body(await fetch(`${server.url}/v0/revocation-list`))
+    expect(get).toEqual({ payload: 'b', signature: 'b' })
+  })
+
+  test('PUT rejects a body that is not {payload, signature}', async () => {
+    const bad = await fetch(`${server.url}/v0/revocation-list`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: 'a' }),
+    })
+    expect(bad.status).toBe(400)
+    const error = (await body(bad))['error'] as Record<string, unknown>
+    expect(error['code']).toBe(RegistryErrorCode.E_BAD_REQUEST)
+  })
+
+  test('no DELETE, and GET/PUT are the only allowed methods', async () => {
+    const wrong = await fetch(`${server.url}/v0/revocation-list`, {
+      method: 'DELETE',
+    })
+    expect(wrong.status).toBe(405)
+    expect(wrong.headers.get('allow')).toBe('GET, PUT')
   })
 })

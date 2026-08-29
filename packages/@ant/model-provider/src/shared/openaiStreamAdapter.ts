@@ -83,6 +83,8 @@ export async function* adaptOpenAIStreamToAnthropic(
   // Deferred finish state
   let pendingFinishReason: string | null = null
   let pendingHasToolCalls = false
+  let sawOutput = false
+  let sawTerminalUsageChunk = false
 
   for await (const chunk of stream) {
     const choice = chunk.choices?.[0]
@@ -90,6 +92,21 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Extract usage from any chunk that carries it.
     if (chunk.usage) {
+      // Some OpenAI-compatible gateways close a successful stream with an
+      // include_usage chunk but omit both finish_reason and [DONE]. The usage
+      // chunk is terminal evidence only after actual output has been seen; an
+      // empty or abruptly truncated stream must remain retryable.
+      if (
+        (chunk.usage.completion_tokens ?? 0) > 0 &&
+        // `choices` is typed as required, but the reader above already guards
+        // it with `chunk.choices?.[0]` — some gateways send the terminal usage
+        // chunk with the field omitted entirely rather than as an empty array.
+        // Reading `.length` off it there would throw; a missing field means the
+        // same thing an empty array does here, so treat it that way.
+        (chunk.choices?.length ?? 0) === 0
+      ) {
+        sawTerminalUsageChunk = true
+      }
       rawInputTokens = chunk.usage.prompt_tokens ?? rawInputTokens
       outputTokens = chunk.usage.completion_tokens ?? outputTokens
 
@@ -163,6 +180,13 @@ export async function* adaptOpenAIStreamToAnthropic(
     const emptyReasoningMidText =
       reasoningContent === '' && textBlockOpen && !thinkingBlockOpen
     if (reasoningContent != null && !emptyReasoningMidText) {
+      // Upstream v2.46.0 added this flag: it is what lets a gateway that
+      // terminates with a usage chunk instead of `finish_reason` be treated as
+      // an ordinary stop rather than an incomplete stream. Setting it inside
+      // the guarded branch is safe — the branch is only skipped when text is
+      // already flowing, and the text handler below sets `sawOutput` before it
+      // ever opens a text block, so `textBlockOpen` already implies it.
+      sawOutput = true
       if (!thinkingBlockOpen) {
         // Close an open text block first, mirroring what the text and
         // tool_call handlers below already do for each other.
@@ -213,6 +237,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Handle text content
     if (delta.content != null && delta.content !== '') {
+      sawOutput = true
       if (!textBlockOpen) {
         // Close thinking block if still open
         if (thinkingBlockOpen) {
@@ -250,6 +275,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
     // Handle tool calls
     if (delta.tool_calls) {
+      sawOutput = true
       for (const tc of delta.tool_calls) {
         const tcIndex = tc.index
 
@@ -352,7 +378,15 @@ export async function* adaptOpenAIStreamToAnthropic(
   }
 
   if (pendingFinishReason === null) {
-    throw new IncompleteOpenAIStreamError()
+    if (sawOutput && sawTerminalUsageChunk) {
+      // Compatibility fallback for gateways that terminate with usage instead of
+      // finish_reason. Text/reasoning answers are ordinary stops; tool output is
+      // still forced to tool_use by pendingHasToolCalls below.
+      pendingFinishReason = 'stop'
+      pendingHasToolCalls = toolBlocks.size > 0
+    } else {
+      throw new IncompleteOpenAIStreamError()
+    }
   }
 
   // Safety: close any remaining open blocks

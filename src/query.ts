@@ -9,6 +9,7 @@ import {
   calculateTokenWarningState,
   estimateMaxTurnGrowth,
   getEffectiveContextWindowSize,
+  isAutoCompactCircuitOpen,
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
 } from './services/compact/autoCompact.js'
@@ -51,6 +52,7 @@ import { logAntError, logForDebugging } from './utils/telemetry/debug.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,
+  interruptionReasonFromAbort,
   normalizeMessagesForAPI,
   createSystemMessage,
   createAssistantAPIErrorMessage,
@@ -96,8 +98,10 @@ import { notifyCommandLifecycle } from './utils/task/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/telemetry/headlessProfiler.js'
 import {
   getRuntimeMainLoopModel,
+  parseUserSpecifiedModel,
   renderModelName,
 } from './utils/model/model.js'
+import { buildAvailabilityFallbackChain } from './utils/model/modelFallback.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -388,7 +392,7 @@ export type QueryParams = {
   systemContext: { [k: string]: string }
   canUseTool: CanUseToolFn
   toolUseContext: ToolUseContext
-  fallbackModel?: string
+  fallbackModels?: string[]
   querySource: QuerySource
   maxOutputTokensOverride?: number
   maxTurns?: number
@@ -554,12 +558,23 @@ async function* queryLoop(
     userContext,
     systemContext,
     canUseTool,
-    fallbackModel,
+    fallbackModels,
     querySource,
     maxTurns,
     skipCacheWrite,
   } = params
   const deps = params.deps ?? productionDeps()
+  // QueryEngine resolves CLI/settings aliases before reaching this loop, but
+  // direct query() callers (including SDK-side helpers) can still pass them.
+  // Resolve at the consumption boundary so aliases are never sent as raw API
+  // model ids and each fallback attempt updates the context consistently.
+  // CLAUDE_CODE_NO_MODEL_FALLBACK collapses the chain here rather than at each
+  // pivot site: with no candidates, `resolvedFallbackModels[nextFallbackIndex]`
+  // is always undefined and no downstream code can substitute a model.
+  const resolvedFallbackModels = buildAvailabilityFallbackChain(
+    fallbackModels,
+  )?.map(parseUserSpecifiedModel)
+  let nextFallbackIndex = 0
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
@@ -891,16 +906,35 @@ async function* queryLoop(
     // it predates the experiment and is already the control-arm baseline.
     const mediaRecoveryEnabled =
       reactiveCompact?.isReactiveCompactEnabled() ?? false
+    //
+    // The skip is a promise that automatic compaction will keep the context
+    // in bounds. Once the autocompact circuit breaker latches open that
+    // promise is void — autoCompactIfNeeded declines every further attempt
+    // this turn — so the preempt has to come back or the turn keeps sending
+    // ever-larger prompts with nothing left to catch them. A gateway whose
+    // overflow wording reactive compact cannot parse would otherwise run
+    // uncapped until the upstream refuses the request outright.
     if (
       !compactionResult &&
       querySource !== 'compact' &&
       querySource !== 'session_memory' &&
-      !(reactiveCompact?.isReactiveCompactEnabled() && isAutoCompactEnabled())
+      !(
+        reactiveCompact?.isReactiveCompactEnabled() &&
+        isAutoCompactEnabled() &&
+        !isAutoCompactCircuitOpen(tracking)
+      )
     ) {
+      const compactContext = {
+        settingsSlot: toolUseContext.options.modelSettingsSlot,
+        sessionOverrides: toolUseContext.options.sessionModelSettingsOverrides,
+        autoCompactWindow: toolUseContext.options.autoCompactWindow,
+        autoCompactWindowOverride:
+          toolUseContext.options.autoCompactWindowOverride,
+      }
       const { isAtBlockingLimit } = calculateTokenWarningState(
         tokenCountWithEstimation(messagesForQuery),
         toolUseContext.options.mainLoopModel,
-        toolUseContext.options.modelSettingsSlot,
+        compactContext,
       )
       if (isAtBlockingLimit) {
         yield createAssistantAPIErrorMessage({
@@ -920,10 +954,14 @@ async function* queryLoop(
       const currentTokens = tokenCountWithEstimation(messagesForQuery)
       const estimatedGrowth = estimateMaxTurnGrowth(model)
       const predictiveThreshold =
-        getEffectiveContextWindowSize(
-          model,
-          toolUseContext.options.modelSettingsSlot,
-        ) - estimatedGrowth
+        getEffectiveContextWindowSize(model, {
+          settingsSlot: toolUseContext.options.modelSettingsSlot,
+          sessionOverrides:
+            toolUseContext.options.sessionModelSettingsOverrides,
+          autoCompactWindow: toolUseContext.options.autoCompactWindow,
+          autoCompactWindowOverride:
+            toolUseContext.options.autoCompactWindowOverride,
+        }) - estimatedGrowth
       if (currentTokens > predictiveThreshold) {
         const predictiveResult = await deps.autocompact(
           messagesForQuery,
@@ -990,13 +1028,15 @@ async function* queryLoop(
               },
               model: currentModel,
               modelSettingsSlot: toolUseContext.options.modelSettingsSlot,
+              sessionModelSettingsOverrides:
+                toolUseContext.options.sessionModelSettingsOverrides,
               ...(config.gates.fastModeEnabled && {
                 fastMode: appState.fastMode,
               }),
               toolChoice: undefined,
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
-              fallbackModel,
+              fallbackModel: resolvedFallbackModels?.[nextFallbackIndex],
               onStreamingFallback: () => {
                 streamingFallbackOccured = true
               },
@@ -1220,9 +1260,19 @@ async function* queryLoop(
             }
           }
         } catch (innerError) {
-          if (innerError instanceof FallbackTriggeredError && fallbackModel) {
-            // Fallback was triggered - switch model and retry
-            currentModel = fallbackModel
+          const nextFallbackModel =
+            innerError instanceof FallbackTriggeredError
+              ? resolvedFallbackModels?.[nextFallbackIndex]
+              : undefined
+          if (
+            innerError instanceof FallbackTriggeredError &&
+            nextFallbackModel
+          ) {
+            // Fallback was triggered - switch model and retry. The next request
+            // is armed with the following configured fallback, so an overloaded
+            // fallback advances through the list rather than retrying itself.
+            currentModel = nextFallbackModel
+            nextFallbackIndex += 1
             attemptWithFallback = true
 
             // Clear assistant messages since we'll retry the entire request
@@ -1248,7 +1298,7 @@ async function* queryLoop(
             }
 
             // Update tool use context with new model
-            toolUseContext.options.mainLoopModel = fallbackModel
+            toolUseContext.options.mainLoopModel = nextFallbackModel
 
             // Thinking signatures are model-bound: replaying a protected-thinking
             // block (e.g. capybara) to an unprotected fallback (e.g. opus) 400s.
@@ -1262,7 +1312,7 @@ async function* queryLoop(
               original_model:
                 innerError.originalModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                nextFallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               entrypoint:
                 'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               queryChainId: queryChainIdForAnalytics,
@@ -1404,6 +1454,9 @@ async function* queryLoop(
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
         yield createUserInterruptionMessage({
           toolUse: false,
+          reason: interruptionReasonFromAbort(
+            toolUseContext.abortController.signal.reason,
+          ),
         })
       }
       return { reason: 'aborted_streaming' }
@@ -1846,6 +1899,9 @@ async function* queryLoop(
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
         yield createUserInterruptionMessage({
           toolUse: true,
+          reason: interruptionReasonFromAbort(
+            toolUseContext.abortController.signal.reason,
+          ),
         })
       }
       // Check maxTurns before returning when aborted
@@ -1913,17 +1969,18 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
-    const queuedCommandsSnapshot = getCommandsByMaxPriority('next').filter(
-      cmd => {
-        if (isSlashCommand(cmd)) return false
-        if (isMainThread) return cmd.agentId === undefined
-        // Subagents only drain task-notifications addressed to them — never
-        // user prompts, even if someone stamps an agentId on one.
-        return (
-          cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
-        )
-      },
-    )
+    const reachedMaxTurns = maxTurns !== undefined && turnCount + 1 > maxTurns
+    const queuedCommandsSnapshot = reachedMaxTurns
+      ? []
+      : getCommandsByMaxPriority('next').filter(cmd => {
+          if (isSlashCommand(cmd)) return false
+          if (isMainThread) return cmd.agentId === undefined
+          // Subagents only drain task-notifications addressed to them — never
+          // user prompts, even if someone stamps an agentId on one.
+          return (
+            cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
+          )
+        })
     const queuedAutonomyClaim = await claimConsumableQueuedAutonomyCommands(
       queuedCommandsSnapshot,
     )
@@ -1945,6 +2002,7 @@ async function* queryLoop(
       removeFromQueue(claimedConsumedCommands)
     }
 
+    let emittedQueuedCommandCount = 0
     for await (const attachment of getAttachmentMessages(
       null,
       updatedToolUseContext,
@@ -1955,6 +2013,12 @@ async function* queryLoop(
     )) {
       yield attachment
       toolResults.push(attachment)
+      if (
+        attachment.attachment.type === 'queued_command' &&
+        attachment.attachment.commandMode !== undefined
+      ) {
+        emittedQueuedCommandCount++
+      }
     }
 
     // Memory prefetch consume: only if settled and not already consumed on
@@ -2010,11 +2074,14 @@ async function* queryLoop(
     // Remove only commands that were actually consumed as attachments.
     // Prompt and task-notification commands are converted to attachments above.
     const claimedCommandSet = new Set(claimedConsumedCommands)
-    const consumedCommands = queuedAutonomyClaim.attachmentCommands.filter(
+    const consumableCommands = queuedAutonomyClaim.attachmentCommands.filter(
       cmd =>
         (cmd.mode === 'prompt' || cmd.mode === 'task-notification') &&
         !claimedCommandSet.has(cmd),
     )
+    const consumedCommands = toolUseContext.abortController.signal.aborted
+      ? []
+      : consumableCommands.slice(0, emittedQueuedCommandCount)
     if (consumedCommands.length > 0) {
       for (const cmd of consumedCommands) {
         if (cmd.uuid) {

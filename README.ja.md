@@ -114,7 +114,7 @@ REPL で `/login` を実行し、**Anthropic Compatible** を選ぶと、Anthrop
 | --- | --- | --- |
 | **Goal による継続実行** | `/goal <objective>` で目標を設定すると、完了までターンをまたいでエージェントを駆動します。トークン予算、completion/blocked の監査、`pause`/`resume`/`continue`/`clear` 付き | [`src/commands/goal/`](./src/commands/goal/) |
 | **Ultracode マルチエージェント編成** | `/ultracode` と `Workflow` ツールで決定論的な JS スクリプト（`agent`/`pipeline`/`parallel`/`phase`）を実行。`/workflows` でライブパネルを表示し、ジャーナル再生と同時実行数の上限に対応 | [ドキュメント](./docs/zh/features/workflow-scripts.md) |
-| **Artifacts** | モデルが HTML／ダッシュボード／レポートを公開 URL にアップロード（7 日／30 日で失効）。Cloudflare Worker + R2 でセルフホスト可能 | [ドキュメント](./packages/cloud-artifacts/README.md) |
+| **Artifacts** | モデルが HTML／ダッシュボード／レポートを単独ページとして生成。既定はローカル出力（`file://`）で、公開 URL への発行は明示的に設定した場合のみ（7 日／30 日で失効、Cloudflare Worker + R2 でセルフホスト可能） | [ドキュメント](./packages/cloud-artifacts/README.md) |
 | **ACP プロトコル** | Zed、Cursor などの IDE と接続。セッション再開、Skills、権限のブリッジに対応 | [ドキュメント](./docs/zh/features/acp-zed.md) |
 | **Remote Control** | `occ remote-control` は occ 自身の ACP エージェント経由でセッションを [Happy](https://github.com/slopus/happy)（スマートフォン／Web／エンドツーエンド暗号化）に引き渡します。サーバーはセルフホスト可能 | [ドキュメント](./docs/zh/features/remote-control-self-hosting.md) |
 | **Langfuse モニタリング** | エージェントループの詳細をすべて確認でき、ワンクリックでデータセット化 | [ドキュメント](./docs/zh/features/langfuse-monitoring.md) |
@@ -124,7 +124,7 @@ REPL で `/login` を実行し、**Anthropic Compatible** を選ぶと、Anthrop
 | **カスタムプロバイダー** | OpenAI / Anthropic / Gemini / Grok 互換 | [ドキュメント](./docs/zh/features/all-features-guide.md) |
 | ボイスモード | 音声入力（Doubao `/voice doubao` を含む） | [ドキュメント](./docs/zh/features/voice-mode.md) |
 | Computer Use | スクリーンショット、キーボードとマウスの操作 | [ドキュメント](./docs/zh/features/computer-use.md) |
-| ブラウザ MCP（ユーザー設定） | 通常の MCP 設定で任意のブラウザ MCP を追加できます。`chrome-devtools` や `mcp-chrome` などの名前も予約されていません | [ドキュメント](./docs/ja/extensibility/mcp-configuration.mdx) |
+| ブラウザ MCP（ユーザー設定） | 通常の MCP 設定で任意のブラウザ MCP を追加できます。`chrome-devtools` や `mcp-chrome` などの名前も予約されていません | [ドキュメント](./docs/zh/extensibility/mcp-configuration.mdx) |
 | `/dream` | メモリの自動統合 | [ドキュメント](./docs/zh/features/auto-dream.md) |
 
 ## フィーチャーフラグ

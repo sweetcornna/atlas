@@ -24,13 +24,13 @@ import {
 import { isGptTuningActiveForModel } from 'src/utils/model/gptTuning.js'
 import { asSystemPrompt } from 'src/utils/session/systemPromptType.js'
 import { getSessionId } from '../../../bootstrap/state.js'
-import { getOpenAIClient } from './client.js'
+import { clearOpenAIClientCache, getOpenAIClient } from './client.js'
 import {
   formatOpenAIPromptCacheKey,
-  getOpenAIPromptCacheKey,
   isOfficialOpenAIBaseURL,
   isPromptCacheKeyRejection,
   markPromptCacheKeyRejected,
+  resolveOpenAIPromptCacheKey,
   resolveOpenAIVerbosity,
   updateOpenAIUsage,
 } from './openaiShared.js'
@@ -82,7 +82,10 @@ export {
   resolveOpenAIMaxTokens,
   buildOpenAIRequestBody,
 }
-import { assembleFinalAssistantOutputs } from '../streamAssembly.js'
+import {
+  assembleFinalAssistantOutputs,
+  retryThirdPartyEventStream,
+} from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
 import { getModelMaxOutputTokens } from '../../../utils/session/context.js'
 import type { Options } from '../claude.js'
@@ -93,7 +96,7 @@ import {
 import { OpenAIRequestError } from './retry.js'
 import {
   isSearchExtraToolsEnabled,
-  isDeferredToolsDeltaEnabled,
+  shouldAppendEphemeralDeferredToolList,
 } from '../../../utils/tools/searchExtraTools.js'
 import {
   formatDeferredToolLine,
@@ -115,7 +118,8 @@ function prependDeferredToolListIfNeeded(
   deferredToolNames: Set<string>,
   useSearchExtraTools: boolean,
 ): (AssistantMessage | UserMessage)[] {
-  if (!useSearchExtraTools || isDeferredToolsDeltaEnabled()) return messages
+  if (!shouldAppendEphemeralDeferredToolList(useSearchExtraTools))
+    return messages
 
   const deferredToolList = tools
     .filter(tool => deferredToolNames.has(tool.name))
@@ -135,8 +139,8 @@ function prependDeferredToolListIfNeeded(
 }
 
 /**
- * Issue the chat-completions request, retrying once without
- * `prompt_cache_key` if the endpoint rejects that field.
+ * Issue the chat-completions request and remember when a compatible endpoint
+ * rejects `prompt_cache_key`.
  *
  * The key is the single largest cache lever on the OpenAI side (75.8% vs
  * 18.3% cumulative hit rate in the measurement quoted on
@@ -144,7 +148,9 @@ function prependDeferredToolListIfNeeded(
  * only to OpenAI's own endpoint. Strict OpenAI-compatible servers that reject
  * unknown top-level keys pay one failed request per session and are then
  * suppressed for the rest of the process; servers that merely ignore the field
- * pay nothing.
+ * pay nothing. The one request without the unsupported field is a protocol-shape
+ * fallback, not a general API retry; any failure from it is handled by the
+ * caller's official retry budget.
  */
 async function createChatStreamWithCacheKeyFallback(params: {
   buildBody: (
@@ -158,8 +164,8 @@ async function createChatStreamWithCacheKeyFallback(params: {
   // once the body is passed through a callback. `stream: true` is fixed by
   // buildOpenAIRequestBody, so narrow to what the adapter consumes.
 }): Promise<AsyncIterable<ChatCompletionChunk>> {
-  // queryModelWithStreaming owns this lane's ten-retry budget. Keep the SDK at
-  // zero so one failed request cannot expand into a nested 10×10 ladder.
+  // The provider stream boundary owns this lane's retry budget. Keep the SDK at
+  // zero so one failed request cannot start a nested ladder.
   const client = getOpenAIClient({
     maxRetries: 0,
     fetchOverride: params.fetchOverride,
@@ -182,7 +188,7 @@ async function createChatStreamWithCacheKeyFallback(params: {
     }
     markPromptCacheKeyRejected()
     logForDebugging(
-      '[OpenAI] endpoint rejected prompt_cache_key; retrying without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
+      '[OpenAI] endpoint rejected prompt_cache_key; retrying once without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
     )
     return create(undefined)
   }
@@ -275,7 +281,10 @@ export async function* queryModelOpenAI(
       )
     }
 
-    // 6. Build tool schemas with deferLoading flag
+    // 6. Build tool schemas.
+    // No deferLoading flag: step 5 already dropped every deferred tool from
+    // filteredTools, so the flag could only ever have been false — and
+    // OpenAI-compatible endpoints have no defer_loading concept to read it.
     const toolSchemas = await Promise.all(
       filteredTools.map(tool =>
         toolToAPISchema(tool, {
@@ -284,7 +293,6 @@ export async function* queryModelOpenAI(
           agents: options.agents,
           allowedAgentTypes: options.allowedAgentTypes,
           model: options.model,
-          deferLoading: useSearchExtraTools && deferredToolNames.has(tool.name),
         }),
       ),
     )
@@ -337,6 +345,7 @@ export async function* queryModelOpenAI(
       options.model,
       options.effortValue,
       options.modelSettingsSlot,
+      options.sessionModelSettingsOverrides,
     )
     const reasoningEffort = modelSupportsEffort(openaiModel)
       ? getResponsesReasoningEffort(openaiModel, appliedEffort)
@@ -383,19 +392,30 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    // OpenAI's official OAuth and API-key routes share the same prompt-cache
-    // contract. Scope the key to the real conversation so resumed turns stay
-    // sticky while unrelated sessions do not share a routing bucket. Generic
-    // compatible endpoints intentionally receive no OpenAI-specific fields.
+    // Two different keys on purpose.
+    //
+    // The ChatGPT subscription route keeps the session key: Codex — OpenAI's
+    // own client for that backend — sends its session UUID there, and there is
+    // no way to measure the alternative without a subscription, so it is not
+    // the place to guess.
+    //
+    // The generic API-key route keys on the cached prefix instead, because a
+    // session-scoped key throws away the prefix every time a session starts.
+    // Measured 0% → 98.1% on the first turn of a fresh session; see
+    // resolveOpenAIPromptCacheKey. `OPENAI_PROMPT_CACHE_KEY_SCOPE=session`
+    // restores the old scheme.
     const sessionId = getSessionId()
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
     const promptCacheKey = useChatGPTResponses
       ? sessionPromptCacheKey
-      : getOpenAIPromptCacheKey(
-          process.env.OPENAI_BASE_URL,
+      : resolveOpenAIPromptCacheKey({
+          baseURL: process.env.OPENAI_BASE_URL,
           sessionId,
           wireProtocol,
-        )
+          model: openaiModel,
+          messages: openaiMessages,
+          tools: openaiTools,
+        })
     // `cache_write_tokens` is OpenAI's own usage field; nothing else in the
     // compatible ecosystem reports it, and attributing zero writes there is
     // correct. Deliberately NOT derived from `promptCacheKey`: the key is now
@@ -421,79 +441,79 @@ export async function* queryModelOpenAI(
     // no max_output_tokens) and generic API-key `/responses` endpoints
     // (standard headers, max_output_tokens honored). Everything else keeps
     // the Chat Completions adapter.
-    const adaptedStream =
-      wireProtocol === 'responses'
-        ? adaptResponsesStreamToAnthropic(
-            useChatGPTResponses
-              ? await createChatGPTResponsesStream({
-                  request: buildResponsesRequest({
+    const adaptedStream = retryThirdPartyEventStream({
+      signal,
+      onRetry: () => clearOpenAIClientCache(),
+      create: async () =>
+        wireProtocol === 'responses'
+          ? adaptResponsesStreamToAnthropic(
+              useChatGPTResponses
+                ? await createChatGPTResponsesStream({
+                    request: buildResponsesRequest({
+                      model: openaiModel,
+                      messages: openaiMessages,
+                      tools: openaiTools,
+                      toolChoice: openaiToolChoice,
+                      reasoningEffort,
+                      verbosity,
+                      promptCacheKey: sessionPromptCacheKey,
+                    }),
+                    signal,
+                    fetchOverride:
+                      options.fetchOverride as unknown as typeof fetch,
+                    maxRetries: 0,
+                  })
+                : await createOpenAIResponsesStream({
+                    request: buildResponsesRequest({
+                      model: openaiModel,
+                      messages: openaiMessages,
+                      tools: openaiTools,
+                      toolChoice: openaiToolChoice,
+                      reasoningEffort,
+                      verbosity,
+                      promptCacheKey,
+                      maxOutputTokens: maxTokens,
+                    }),
+                    signal,
+                    fetchOverride:
+                      options.fetchOverride as unknown as typeof fetch,
+                    maxRetries: 0,
+                  }),
+              openaiModel,
+              { onReasoningItem: item => reasoningItems.push(item) },
+            )
+          : adaptOpenAIStreamToAnthropic(
+              await createChatStreamWithCacheKeyFallback({
+                buildBody: cacheKey =>
+                  buildOpenAIRequestBody({
                     model: openaiModel,
                     messages: openaiMessages,
                     tools: openaiTools,
                     toolChoice: openaiToolChoice,
-                    reasoningEffort,
-                    verbosity,
-                    promptCacheKey: sessionPromptCacheKey,
-                  }),
-                  signal,
-                  fetchOverride:
-                    options.fetchOverride as unknown as typeof fetch,
-                })
-              : await createOpenAIResponsesStream({
-                  request: buildResponsesRequest({
-                    model: openaiModel,
-                    messages: openaiMessages,
-                    tools: openaiTools,
-                    toolChoice: openaiToolChoice,
-                    reasoningEffort,
-                    verbosity,
-                    promptCacheKey,
-                    maxOutputTokens: maxTokens,
-                  }),
-                  signal,
-                  fetchOverride:
-                    options.fetchOverride as unknown as typeof fetch,
-                }),
-            openaiModel,
-            { onReasoningItem: item => reasoningItems.push(item) },
-          )
-        : adaptOpenAIStreamToAnthropic(
-            await createChatStreamWithCacheKeyFallback({
-              buildBody: cacheKey =>
-                buildOpenAIRequestBody({
-                  model: openaiModel,
-                  messages: openaiMessages,
-                  tools: openaiTools,
-                  toolChoice: openaiToolChoice,
-                  enableThinking,
-                  maxTokens,
-                  baseURL: process.env.OPENAI_BASE_URL,
-                  temperatureOverride: options.temperatureOverride,
-                  promptCacheKey: cacheKey,
-                  // DeepSeek runs its own reasoning_effort ladder off this;
-                  // buildOpenAIRequestBody ignores it for every other model.
-                  effortValue: appliedEffort,
-                  ...(isChatGPTCodexReasoningModel(openaiModel)
-                    ? {
-                        reasoningEffort: getChatReasoningEffort(
-                          openaiModel,
-                          appliedEffort,
-                        ),
-                      }
-                    : {}),
-                  // The SDK types `reasoning_effort` as OpenAI's own union, which
-                  // has no `max` rung; DeepSeek's ladder does. The body is passed
-                  // through to HTTP verbatim, so the wider value is correct on the
-                  // wire even though the client types can't express it.
-                }) as unknown as ChatCompletionCreateParamsStreaming,
-              promptCacheKey,
-              fetchOverride: options.fetchOverride as unknown as typeof fetch,
-              querySource: options.querySource,
-              signal,
-            }),
-            openaiModel,
-            { includeCacheWriteTokens: reportsCacheWrites },
-          )
+                    enableThinking,
+                    maxTokens,
+                    baseURL: process.env.OPENAI_BASE_URL,
+                    temperatureOverride: options.temperatureOverride,
+                    promptCacheKey: cacheKey,
+                    effortValue: appliedEffort,
+                    ...(isChatGPTCodexReasoningModel(openaiModel)
+                      ? {
+                          reasoningEffort: getChatReasoningEffort(
+                            openaiModel,
+                            appliedEffort,
+                          ),
+                        }
+                      : {}),
+                  }) as unknown as ChatCompletionCreateParamsStreaming,
+                promptCacheKey,
+                fetchOverride: options.fetchOverride as unknown as typeof fetch,
+                querySource: options.querySource,
+                signal,
+              }),
+              openaiModel,
+              { includeCacheWriteTokens: reportsCacheWrites },
+            ),
+    })
 
     // 12. Convert OpenAI stream to Anthropic events, then process into
     //     AssistantMessage + StreamEvent (matching the Anthropic path behavior)

@@ -10,7 +10,7 @@
  * feed pre-built Anthropic events directly into queryModelOpenAI and inspect
  * what it emits — without any real HTTP calls.
  */
-import { afterAll, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import * as realModelProvider from '@ant/model-provider'
 import type { SystemPrompt } from '@ant/model-provider'
 import * as realMessages from '../../../../utils/messages.js'
@@ -133,6 +133,13 @@ async function runQueryModel(
   envOverrides: Record<string, string | undefined> = {},
   tools: any[] = [],
   optionOverrides: Record<string, unknown> = {},
+  /**
+   * Conversation history. Production hands this lane messages that claude.ts
+   * ALREADY normalized (claude.ts:1388, before the provider branch at :1442),
+   * which is why the shared mock stubs normalizeMessagesForAPI to identity —
+   * attachments have become plain user messages by the time they get here.
+   */
+  messages: any[] = [],
 ) {
   // Wire events into the mocked stream adapter
   _nextEvents = events
@@ -169,13 +176,16 @@ async function runQueryModel(
       ...optionOverrides,
     }
 
-    for await (const item of queryModelOpenAI(
-      [],
+    const signal = new AbortController().signal
+    const output = queryModelOpenAI(
+      messages,
       [] as unknown as SystemPrompt,
       tools as any,
-      new AbortController().signal,
+      signal,
       minimalOptions,
-    )) {
+    )
+
+    for await (const item of output) {
       if (item.type === 'assistant') {
         assistantMessages.push(item as AssistantMessage)
       } else if (item.type === 'stream_event') {
@@ -201,8 +211,10 @@ async function runQueryModel(
 // entire file, so we configure the stream per-test via a shared variable.
 let _nextEvents: BetaRawMessageStreamEvent[] = []
 
-/** Captured arguments from the last chat.completions.create() call */
+/** Captured chat.completions.create() calls and queued failures. */
 let _lastCreateArgs: Record<string, any> | null = null
+let _createArgs: Record<string, any>[] = []
+let _createErrors: unknown[] = []
 
 // Complete-surface mock: every export delegates to the real module unless
 // overridden below. A hand-written partial surface is what kept this file from
@@ -285,6 +297,8 @@ mock.module('../client.js', () => ({
       completions: {
         create: async (args: Record<string, any>) => {
           _lastCreateArgs = args
+          _createArgs.push(args)
+          if (_createErrors.length > 0) throw _createErrors.shift()
           return { [Symbol.asyncIterator]: async function* () {} }
         },
       },
@@ -292,23 +306,14 @@ mock.module('../client.js', () => ({
   }),
 }))
 
-mock.module('../streamAdapter.js', () => ({
-  adaptOpenAIStreamToAnthropic: (_stream: any, _model: string) =>
-    eventStream(_nextEvents),
-}))
-
-mock.module('../modelMapping.js', () => ({
-  resolveOpenAIModel: (m: string) => m,
-}))
-
-mock.module('../convertMessages.js', () => ({
-  anthropicMessagesToOpenAI: () => [],
-}))
-
-mock.module('../convertTools.js', () => ({
-  anthropicToolsToOpenAI: () => [],
-  anthropicToolChoiceToOpenAI: () => undefined,
-}))
+// NOTE: there used to be four more mock.module calls here — '../streamAdapter.js',
+// '../modelMapping.js', '../convertMessages.js', '../convertTools.js'. None of
+// those files exist, and openai/index.ts imports every one of those symbols from
+// '@ant/model-provider', so all four were inert. They were worse than useless:
+// '../convertMessages.js' declared `anthropicMessagesToOpenAI: () => []`, which
+// is the first thing you find when a body comes back with `messages: []` and it
+// sends you down a dead end. The live overrides are in the shared
+// '@ant/model-provider' mock above.
 
 mock.module('../../../../utils/session/context.js', () => ({
   MODEL_CONTEXT_WINDOW_DEFAULT: 200_000,
@@ -409,6 +414,16 @@ mock.module('../../../../utils/telemetry/debug.js', () => ({
 }))
 
 // ─── tests ───────────────────────────────────────────────────────────────────
+
+beforeEach(async () => {
+  _lastCreateArgs = null
+  _createArgs = []
+  _createErrors = []
+  const { _resetPromptCacheKeySupportForTesting } = await import(
+    '../openaiShared.js'
+  )
+  _resetPromptCacheKeySupportForTesting()
+})
 
 describe('queryModelOpenAI — stop_reason propagation', () => {
   test('assembled AssistantMessage has stop_reason end_turn (not null)', async () => {
@@ -741,6 +756,26 @@ describe('queryModelOpenAI — max_tokens forwarded to request', () => {
     expect(_lastCreateArgs!.prompt_cache_key).toStartWith('occ:')
   })
 
+  test('cache-key compatibility fallback retries once without the field', async () => {
+    _nextEvents = [
+      makeMessageStart(),
+      makeMessageDelta('end_turn', 1),
+      makeMessageStop(),
+    ]
+    _createErrors = [new Error("400 Unknown parameter: 'prompt_cache_key'.")]
+
+    await runQueryModel(
+      [],
+      { OPENAI_BASE_URL: 'https://gateway.internal/v1' },
+      [],
+      {},
+    )
+
+    expect(_createArgs).toHaveLength(2)
+    expect(_createArgs[0]!.prompt_cache_key).toStartWith('occ:')
+    expect('prompt_cache_key' in _createArgs[1]!).toBe(false)
+  })
+
   test('OPENAI_PROMPT_CACHE_KEY=0 forces the cache key off', async () => {
     _nextEvents = [makeMessageStart(), makeMessageStop()]
 
@@ -777,12 +812,90 @@ describe('queryModelOpenAI — deferred MCP tool visibility', () => {
   const executeTool = makeApiTool('ExecuteExtraTool')
   const firstMcpTool = makeApiTool('mcp__wechat__send_message', true)
 
+  /**
+   * The normalized form of a `deferred_tools_delta` attachment — i.e. exactly
+   * what claude.ts:1388 has already turned it into by the time this lane runs.
+   * Built through the real renderer so the fixture cannot drift from it.
+   */
+  async function deferredToolsReminderMessages(pool: any[]) {
+    const { getDeferredToolsDelta } = await import(
+      '../../../../utils/tools/searchExtraTools.js'
+    )
+    const { normalizeAttachmentForAPI } = await import(
+      '../../../../utils/messages/attachmentNormalize.js'
+    )
+    const delta = getDeferredToolsDelta(pool as any, [])
+    if (!delta) throw new Error('expected a delta for this pool')
+    return normalizeAttachmentForAPI({
+      type: 'deferred_tools_delta',
+      ...delta,
+    } as any)
+  }
+
   test('defers MCP schemas when both gateway endpoints are available', async () => {
     await runQueryModel([makeMessageStart(), makeMessageStop()], {}, [
       searchTool,
       executeTool,
       firstMcpTool,
     ])
+
+    expect(capturedToolNames()).toEqual([
+      'SearchExtraTools',
+      'ExecuteExtraTool',
+    ])
+  })
+
+  /**
+   * The announcement moved out of request assembly and into conversation
+   * history (persisted `deferred_tools_delta` attachment), so an empty history
+   * now legitimately carries no list — there is nothing to re-announce. What
+   * this lane still owes is delivery: a meta/system-reminder user message must
+   * survive `filter(isOpenAIConvertibleMessage)` and the OpenAI conversion and
+   * reach the wire body. That is the property worth pinning here.
+   */
+  test('carries the deferred-tool reminder from history to the wire', async () => {
+    const pool = [searchTool, executeTool, firstMcpTool]
+    const history = await deferredToolsReminderMessages(pool)
+
+    await runQueryModel(
+      [makeMessageStart(), makeMessageStop()],
+      {},
+      pool,
+      {},
+      history,
+    )
+
+    expect(capturedToolNames()).toEqual([
+      'SearchExtraTools',
+      'ExecuteExtraTool',
+    ])
+    const body = JSON.stringify(_lastCreateArgs!.messages)
+    expect(body).toContain('mcp__wechat__send_message')
+    expect(body).toContain('SearchExtraTools')
+    // No second, synthesized copy — that duplication is what the flip removed.
+    expect(body).not.toContain('<available-deferred-tools>')
+  })
+
+  test('does not synthesize a per-request list when history is empty', async () => {
+    await runQueryModel([makeMessageStart(), makeMessageStop()], {}, [
+      searchTool,
+      executeTool,
+      firstMcpTool,
+    ])
+
+    const body = JSON.stringify(_lastCreateArgs!.messages)
+    expect(body).not.toContain('<available-deferred-tools>')
+    // Pairs with the test above: proves that assertion's hit came from the
+    // history message and not from somewhere else in the body.
+    expect(body).not.toContain('mcp__wechat__send_message')
+  })
+
+  test('the escape hatch restores the per-request list on this lane too', async () => {
+    await runQueryModel(
+      [makeMessageStart(), makeMessageStop()],
+      { CLAUDE_CODE_DEFERRED_TOOLS_DELTA: '0' },
+      [searchTool, executeTool, firstMcpTool],
+    )
 
     expect(capturedToolNames()).toEqual([
       'SearchExtraTools',

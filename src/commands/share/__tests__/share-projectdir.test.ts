@@ -97,15 +97,17 @@ mock.module(
   stateMockWith({
     getSessionId: () => 'test-session-pd',
     getSessionProjectDir: () => _mockProjectDir,
-    getOriginalCwd: () => '/mock/cwd',
-    getProjectRoot: () => '/mock/project',
     getIsNonInteractiveSession: () => false,
     regenerateSessionId: () => {},
     getParentSessionId: () => undefined,
     switchSession: () => {},
     onSessionSwitch: () => () => {},
-    setOriginalCwd: () => {},
-    setProjectRoot: () => {},
+    // Deliberately NOT overridden: getCwdState / getOriginalCwd /
+    // getProjectRoot and their setters — they delegate to the real container.
+    // Pinning them to '/mock/cwd' here leaked a non-existent cwd into every
+    // later file in the process, and the no-op setters made it unrepairable.
+    // See "NEVER override the cwd / projectRoot cluster" in
+    // tests/mocks/state.ts.
     getRemoteServerUrl: () => undefined,
     setRemoteServerUrl: () => {},
     addToTotalDurationState: () => {},
@@ -148,8 +150,6 @@ mock.module(
     getLastAPIRequest: () => _mockLastAPIRequest,
     getSdkAgentProgressSummariesEnabled: () => false,
     addSlowOperation: () => {},
-    getCwdState: () => '/mock/cwd',
-    setCwdState: () => {},
   }),
 )
 

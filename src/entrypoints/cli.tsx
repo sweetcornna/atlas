@@ -4,22 +4,21 @@
 // Without this, JSC's C++ Vector grows without bound in long-running sessions.
 import '../utils/runtime/performanceShim.js';
 import { feature } from 'bun:bundle';
-import { BIN_NAME } from '../constants/brand.js';
+import { BIN_NAME, DISPLAY_NAME } from '../constants/brand.js';
 import { isEnvTruthy } from '../utils/config/envUtils.js';
 
-// Runtime fallback for MACRO.* when not injected by build/dev defines.
-// This happens when running cli.tsx directly (not via `bun run dev` or built dist/).
-if (typeof globalThis.MACRO === 'undefined') {
-  (globalThis as any).MACRO = {
-    VERSION: process.env.CLAUDE_CODE_VERSION || '2.1.888',
-    BUILD_TIME: new Date().toISOString(),
-    FEEDBACK_CHANNEL: '',
-    ISSUES_EXPLAINER: '',
-    NATIVE_PACKAGE_URL: '',
-    PACKAGE_URL: '',
-    VERSION_CHANGELOG: '',
-  };
-}
+// There is deliberately no `globalThis.MACRO` fallback here. `MACRO.*` is a
+// transpile-time substitution, so a source run has to pass the defines itself
+// (`macroDefineArgs()` in scripts/defines.ts — dev.ts, the golden CLI suite and
+// the acceptance driver all do). A fallback looks like the kind thing to
+// install, and it is how issue #81 happened: a hand-written second copy of the
+// values that kept Anthropic's empty `ISSUES_EXPLAINER` and `FEEDBACK_CHANNEL`
+// long after this fork filled them in, never grew the `SOURCE_COMMIT` field
+// added later, and pinned VERSION at a placeholder — so every source run told
+// the model "To give feedback, users should " and stopped mid-sentence. Nothing
+// reported it because the object was there and the reads succeeded. Without it
+// the first `MACRO` read throws, which is a launcher missing its flags saying
+// so at once instead of shipping a half-empty prompt.
 
 if (isEnvTruthy(process.env.CLAUDE_CODE_FORCE_INTERACTIVE)) {
   for (const stream of [process.stdin, process.stdout, process.stderr]) {
@@ -79,8 +78,14 @@ async function main(): Promise<void> {
 
   // Fast-path for --version/-v: zero module loading needed
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
-    // MACRO.VERSION is inlined at build time
-    console.log(`${MACRO.VERSION} (Open Claude Code)`);
+    // MACRO.VERSION is inlined at build time. DISPLAY_NAME is identity-scoped
+    // and was a hardcoded 'Open Claude Code' here until 2026-08-18, so a Qianmo
+    // node announced itself as occ while the very same invocation wrote to
+    // `.qianmo` — and `--version` is exactly what an operator runs to find out
+    // which product they are talking to. Commander's own version string
+    // (cli/program/run.tsx) always used DISPLAY_NAME; this fast path is a
+    // second printer of the same fact and had drifted.
+    console.log(`${MACRO.VERSION} (${DISPLAY_NAME})`);
     return;
   }
 
@@ -140,10 +145,45 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'audit') {
+    profileCheckpoint('cli_qianmo_audit_path');
+    const { runQianmoAudit } = await import('../cli/handlers/qianmoAudit.js');
+    await runQianmoAudit(args.slice(1));
+    return;
+  }
+
   if (args[0] === 'resident-wake') {
     profileCheckpoint('cli_qianmo_resident_wake_path');
     const { runResidentWake } = await import('../cli/handlers/residentWake.js');
     await runResidentWake(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'console') {
+    profileCheckpoint('cli_qianmo_console_path');
+    const { runConsole } = await import('../cli/handlers/console.js');
+    await runConsole(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'ca') {
+    profileCheckpoint('cli_qianmo_ca_path');
+    const { runQianmoCa } = await import('../cli/handlers/ca.js');
+    runQianmoCa(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'cert') {
+    profileCheckpoint('cli_qianmo_cert_path');
+    const { runQianmoCert } = await import('../cli/handlers/cert.js');
+    runQianmoCert(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'watch') {
+    profileCheckpoint('cli_qianmo_watch_path');
+    const { runWatch } = await import('../cli/handlers/watch.js');
+    await runWatch(args.slice(1));
     return;
   }
 
@@ -244,6 +284,40 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Fast-path for the terminal verbs `stop` / `rm`.
+  //
+  // These do not route through `daemon <sub>` the way ps/logs/attach/kill do,
+  // because `daemon stop` already means "stop the supervisor". They dispatch
+  // straight into the same handlers `occ daemon` uses, and stay off the
+  // commander surface (so no `--help` entry, so no golden churn) exactly like
+  // `daemon` and `--bg`.
+  if (feature('BG_SESSIONS') && (args[0] === 'stop' || args[0] === 'rm')) {
+    profileCheckpoint('cli_daemon_path');
+    const { enableConfigs } = await import('../utils/config/config.js');
+    enableConfigs();
+    const { setShellIfWindows } = await import('../utils/filesystem/windowsPaths.js');
+    setShellIfWindows();
+    const bg = await import('../cli/bg.js');
+    if (args[0] === 'stop') await bg.stopHandler(args[1]);
+    else await bg.rmHandler(args[1]);
+    return;
+  }
+
+  // `respawn` is Phase 3. It is claimed here rather than left to commander so
+  // that `occ respawn a1b2c3d4` says what to do instead of failing with "too
+  // many arguments" — the root command takes a single `[prompt]` operand.
+  if (feature('BG_SESSIONS') && args[0] === 'respawn') {
+    console.error(
+      `${BIN_NAME} respawn is not implemented yet.\n` +
+        `To restart a background session on the current build:\n` +
+        `  ${BIN_NAME} stop <id>        stop it, keeping the conversation\n` +
+        `  ${BIN_NAME} --resume <id>    reopen the conversation here\n` +
+        `  ${BIN_NAME} daemon bg --resume <id>   put it back in the background`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   // Backward-compat: ps/logs/attach/kill → daemon <sub> (deprecated)
   if (
     feature('BG_SESSIONS') &&
@@ -317,6 +391,14 @@ async function main(): Promise<void> {
   // option building (not just inside the action handler).
   if (args.includes('--bare')) {
     process.env.CLAUDE_CODE_SIMPLE = '1';
+  }
+
+  // --safe-mode: same reasoning as --bare above — the customization gates run
+  // during module eval and commander option building, well before the root
+  // action handler would set these.
+  if (args.includes('--safe-mode')) {
+    process.env.CLAUDE_CODE_SAFE_MODE = '1';
+    process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1';
   }
 
   // No special flags detected, load and run the full CLI

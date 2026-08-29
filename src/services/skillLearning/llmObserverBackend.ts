@@ -1,4 +1,6 @@
 import { queryHaiku } from '../api/claude.js'
+import { classifyRetryableAPIError } from '../api/retryClassification.js'
+import { isUserAbort } from '../api/userAbort.js'
 import { asSystemPrompt } from '../../utils/session/systemPromptType.js'
 import { getSkillLearningConfig } from './config.js'
 import type { InstinctCandidate } from './instinctParser.js'
@@ -28,13 +30,17 @@ import {
  * - Caps input to the tail of the observation buffer so the prompt stays
  *   small and predictable, and runs under a 10-second abort signal so a
  *   slow Haiku round-trip never blocks the REPL turn end.
- * - On ANY failure (abort, parse error, empty output) returns `[]` —
- *   the backend is opt-in via `SKILL_LEARNING_OBSERVER_BACKEND=llm` and
- *   must never destabilise skill-learning when the API is unavailable.
+ * - Expected observer unavailability (timeout, authentication, transient API
+ *   failure, or no result) falls back to the heuristic backend. Configuration,
+ *   VCR, and filesystem failures propagate to the post-sampling hook, whose
+ *   existing error contract records them without failing the REPL turn.
  */
 
 const MAX_OBSERVATIONS_PER_CALL = 30
 const MAX_CANDIDATES_PER_CALL = 3
+const NO_ASSISTANT_MESSAGE_ERROR = 'No assistant message found'
+
+type LlmObserverQuery = typeof queryHaiku
 
 // --- Circuit breaker state ---
 let consecutiveFailures = 0
@@ -65,19 +71,51 @@ Rules:
 - Never include secrets, tokens, full file contents, or personally-identifying data.
 - Scope "global" only when the pattern is obviously project-agnostic (generic testing, git hygiene); default to "project".`
 
-export const llmObserverBackend: ObserverBackend = {
-  name: 'llm',
-  analyze(
-    observations: StoredSkillObservation[],
-    ctx?: ObserverBackendContext,
-  ): Promise<InstinctCandidate[]> {
-    return analyseWithHaiku(observations, ctx)
-  },
+/**
+ * Haiku entry point, resolved at call time through a module-level binding.
+ *
+ * Production never rebinds it, so the shipped behaviour is exactly "call
+ * `queryHaiku`" — no environment sniffing, no branch that a user's shell can
+ * flip. Tests rebind it (see `setLlmObserverQueryForTest`) because a unit test
+ * that reaches the real `queryHaiku` goes through `withVCR`: on a cache miss
+ * that records a live API response into `fixtures/` on any machine with
+ * credentials or `VCR_RECORD` set.
+ *
+ * A module setter rather than `mock.module`: Bun's module mocks are
+ * process-global and last-write-wins across test files (see CLAUDE.md
+ * "Mock 使用规范"), and this binding is the only surface tests need.
+ */
+let observerQuery: LlmObserverQuery = queryHaiku
+
+/**
+ * @internal Test seam. Call with no argument to restore the real `queryHaiku`.
+ * Suites that can reach `analyze()` must install a stub in `beforeEach` and
+ * restore in `afterEach`.
+ */
+export function setLlmObserverQueryForTest(query?: LlmObserverQuery): void {
+  observerQuery = query ?? queryHaiku
+}
+
+export const llmObserverBackend = createLlmObserverBackend()
+
+function createLlmObserverBackend(): ObserverBackend {
+  return {
+    name: 'llm',
+    analyze(
+      observations: StoredSkillObservation[],
+      ctx?: ObserverBackendContext,
+    ): Promise<InstinctCandidate[]> {
+      // Read the binding per call, not per construction: tests install their
+      // stub long after this object is created at module load.
+      return analyseWithHaiku(observations, ctx, observerQuery)
+    },
+  }
 }
 
 async function analyseWithHaiku(
   observations: StoredSkillObservation[],
-  ctx?: ObserverBackendContext,
+  ctx: ObserverBackendContext | undefined,
+  query: LlmObserverQuery,
 ): Promise<InstinctCandidate[]> {
   if (observations.length === 0) return []
 
@@ -92,7 +130,7 @@ async function analyseWithHaiku(
 
   let responseText: string
   try {
-    const response = await queryHaiku({
+    const response = await query({
       systemPrompt: asSystemPrompt([LLM_OBSERVER_SYSTEM_PROMPT]),
       userPrompt,
       signal,
@@ -108,14 +146,9 @@ async function analyseWithHaiku(
     // Success: reset failure counter.
     consecutiveFailures = 0
     responseText = extractResponseText(response.message?.content)
-  } catch {
-    // Haiku failure (timeout / rate limit / bad response) — increment failure
-    // counter and potentially open the circuit breaker.
-    consecutiveFailures++
-    if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
-      circuitOpenUntil =
-        Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
-    }
+  } catch (error) {
+    if (!isExpectedObserverUnavailable(error, signal)) throw error
+    recordObserverFailure()
     return runHeuristicFallback(observations, ctx)
   }
 
@@ -124,11 +157,7 @@ async function analyseWithHaiku(
     // Empty / malformed LLM output — count as a failure so the circuit
     // breaker opens if Haiku is systematically returning garbage (e.g. the
     // model version drifted and no longer emits the expected JSON).
-    consecutiveFailures++
-    if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
-      circuitOpenUntil =
-        Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
-    }
+    recordObserverFailure()
     return runHeuristicFallback(observations, ctx)
   }
   return parsed
@@ -138,12 +167,34 @@ async function runHeuristicFallback(
   observations: StoredSkillObservation[],
   ctx?: ObserverBackendContext,
 ): Promise<InstinctCandidate[]> {
-  try {
-    const { heuristicObserverBackend } = await import('./sessionObserver.js')
-    const result = heuristicObserverBackend.analyze(observations, ctx)
-    return Array.isArray(result) ? result : await result
-  } catch {
-    return []
+  const { heuristicObserverBackend } = await import('./sessionObserver.js')
+  const result = heuristicObserverBackend.analyze(observations, ctx)
+  return Array.isArray(result) ? result : await result
+}
+
+function isExpectedObserverUnavailable(
+  error: unknown,
+  signal: AbortSignal,
+): boolean {
+  if (isUserAbort(error, signal)) return true
+  // queryModelWithoutStreaming uses this exact sentinel when an API failure
+  // produced no assistant response. It is an observer "no result", not a
+  // configuration or VCR failure.
+  if (error instanceof Error && error.message === NO_ASSISTANT_MESSAGE_ERROR) {
+    return true
+  }
+  const classification = classifyRetryableAPIError(error)
+  return (
+    classification.retryable ||
+    classification.category === 'authentication_failed'
+  )
+}
+
+function recordObserverFailure(): void {
+  consecutiveFailures++
+  if (consecutiveFailures >= getSkillLearningConfig().llm.failureThreshold) {
+    circuitOpenUntil =
+      Date.now() + getSkillLearningConfig().llm.circuitCooldownMs
   }
 }
 

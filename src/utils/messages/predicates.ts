@@ -18,6 +18,7 @@ import type {
 } from '../../types/message.js'
 import {
   DENIAL_WORKAROUND_GUIDANCE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
   SYNTHETIC_MESSAGES,
 } from './constants.js'
@@ -146,10 +147,15 @@ export function isNotEmptyMessage(message: Message): boolean {
     return true
   }
 
+  const text = (msg.content[0] as { text: string }).text
   return (
-    (msg.content[0] as { text: string }).text.trim().length > 0 &&
-    (msg.content[0] as { text: string }).text !== NO_CONTENT_MESSAGE &&
-    (msg.content[0] as { text: string }).text !== INTERRUPT_MESSAGE_FOR_TOOL_USE
+    text.trim().length > 0 &&
+    text !== NO_CONTENT_MESSAGE &&
+    text !== INTERRUPT_MESSAGE_FOR_TOOL_USE &&
+    // The resident watchdog's own tool-use abort marker. Same emptiness rule
+    // as the line above; it only needs its own term because it is a second
+    // spelling of the same event (issue #39).
+    text !== INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE
   )
 }
 

@@ -9,7 +9,9 @@ import {
   type ObserverBackend,
 } from '../observerBackend.js'
 import { analyzeObservations } from '../sessionObserver.js'
+import { setLlmObserverQueryForTest } from '../llmObserverBackend.js'
 import type { StoredSkillObservation } from '../observationStore.js'
+import type { AssistantMessage } from '../../../types/message.js'
 
 function obs(partial: Partial<StoredSkillObservation>): StoredSkillObservation {
   return {
@@ -26,8 +28,32 @@ function obs(partial: Partial<StoredSkillObservation>): StoredSkillObservation {
 
 const originalBackendName = getActiveObserverBackend().name
 
+let observerQueryCalls = 0
+
+/**
+ * The 'llm' backend registered in the default registry is the shipped
+ * singleton, whose query seam points at the real `queryHaiku`. Two tests below
+ * route through it, and one of them (`analyzeObservations` on an async backend)
+ * throws before awaiting, leaving the call in flight. Without this stub that
+ * in-flight call is a real API request, and `withVCR` records the response into
+ * `fixtures/` on a cache miss.
+ */
+function stubbedObserverQuery(): Promise<AssistantMessage> {
+  observerQueryCalls++
+  return Promise.resolve({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: '[]' }] },
+  } as unknown as AssistantMessage)
+}
+
+beforeEach(() => {
+  observerQueryCalls = 0
+  setLlmObserverQueryForTest(stubbedObserverQuery)
+})
+
 afterEach(() => {
   setActiveObserverBackend(originalBackendName)
+  setLlmObserverQueryForTest()
 })
 
 describe('observerBackend', () => {
@@ -76,12 +102,13 @@ describe('observerBackend', () => {
   })
 
   test('llm backend short-circuits to [] on empty observations', async () => {
-    // With the real Haiku-backed implementation the backend only calls
-    // queryHaiku when there are observations to analyse. Empty-input short
-    // circuit guarantees the no-cost path needed for hot loops.
+    // The backend only queries Haiku when there are observations to analyse.
+    // `[]` alone proves nothing — the heuristic fallback also returns `[]` for
+    // an empty batch — so the load-bearing assertion is the call count.
     setActiveObserverBackend('llm')
     const candidates = await analyzeWithActiveBackend([])
     expect(candidates).toEqual([])
+    expect(observerQueryCalls).toBe(0)
   })
 
   test('analyzeObservations routes to active backend (sync path throws for async backends)', () => {

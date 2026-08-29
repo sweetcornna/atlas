@@ -19,8 +19,6 @@ import { getEmptyToolPermissionContext } from '../../../Tool.js'
 import type { PermissionMode } from '../../../types/permissions.js'
 import { getCommands } from '../../../commands.js'
 import { getAgentDefinitionsWithOverrides } from '@open-claude-code/builtin-tools/tools/AgentTool/loadAgentsDir.js'
-import { setOriginalCwd, switchSession } from '../../../bootstrap/state.js'
-import type { SessionId } from '../../../types/ids.js'
 import { enableConfigs } from '../../../utils/config/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../../utils/config/managedEnv.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
@@ -41,6 +39,16 @@ import {
 } from './permissionMode.js'
 import { buildConfigOptions } from './configOptions.js'
 import { readClientCapabilities } from './internalAccessors.js'
+import {
+  activateAcpSessionWorkspace,
+  projectDirForSessionCwd,
+} from './sessionWorkspace.js'
+import { residentToolSurface } from '../../qianmo/notifyTool.js'
+import { withResidentHardline } from '../../qianmo/residentGuard.js'
+import {
+  ACP_NOTIFY_METHOD,
+  parseNotifyVerdict,
+} from '../../qianmo/notifyWire.js'
 
 /**
  * Resolve the effective `permissions.defaultMode` setting by walking the
@@ -77,12 +85,16 @@ async function createSession(
     (qianmoMeta as Record<string, unknown>).resident === true
 
   // Align the global session state so transcript persistence, analytics, and
-  // cost tracking use this ACP session's stable identity.
-  const projectDir = opts.projectDir ?? null
-  switchSession(sessionId as SessionId, projectDir)
+  // cost tracking use this ACP session's stable identity — and its workspace.
+  //
+  // The project dir is PINNED to this session's own cwd rather than left null
+  // ("derive from originalCwd at read time"). In a one-workspace process the
+  // two answers are the same string; in a process serving several sessions
+  // they are not, and leaving it null put every session's transcript under
+  // whichever workspace happened to be current (issue #44).
+  const projectDir = opts.projectDir ?? projectDirForSessionCwd(cwd)
+  activateAcpSessionWorkspace({ sessionId, cwd, projectDir })
 
-  // Set CWD for the session
-  setOriginalCwd(cwd)
   const previousProcessCwd = process.cwd()
   let processCwdChanged = false
   try {
@@ -105,7 +117,7 @@ async function createSession(
   try {
     // Build tools with a permissive permission context.
     const permissionContext = getEmptyToolPermissionContext()
-    const tools: Tools = getTools(permissionContext)
+    const baseTools: Tools = getTools(permissionContext)
 
     // Parse permission mode from _meta (passed by the ACP client) or settings.
     const hasMetaPermissionMode = hasOwnField(meta, 'permissionMode')
@@ -146,8 +158,38 @@ async function createSession(
           .isBypassPermissionsModeAvailable ?? false,
     )
 
-    // Parse MCP servers from ACP params
-    // MCP server config is handled separately in the tools system
+    // Qianmo resident sessions, and only those, are handed one extra tool:
+    // `qianmo_notify`. Everything else about the tool set is unchanged, and a
+    // non-resident ACP session takes the identical `baseTools` array it always
+    // did — the gate is the `_meta.qianmo.resident` flag the resident host
+    // already sets on `session/new`.
+    //
+    // Why the tool is injected here rather than declared as an MCP server the
+    // way the design sketched: `params.mcpServers` reaches only
+    // `computeSessionFingerprint` below, and `mcpClients` is handed to the
+    // query engine as `[]` unconditionally, so an MCP server declared on
+    // `session/new` has never produced a tool in this build. See
+    // `src/services/qianmo/notifyTool.ts` for the rest of that argument.
+    //
+    // The same sessions, and only those, get the hardline ceiling applied to
+    // every tool they are handed (design §4.5, hermes E2/E3). It goes on here
+    // rather than in `permissions.ts` because wrapping `checkPermissions` puts
+    // it ahead of every path that can answer `allow` — see
+    // `src/services/qianmo/residentGuard.ts` for that argument in full.
+    const tools: Tools = isQianmoResident
+      ? withResidentHardline([
+          ...baseTools,
+          ...residentToolSurface({
+            sessionId,
+            announce: async request =>
+              parseNotifyVerdict(
+                await conn.extMethod(ACP_NOTIFY_METHOD, {
+                  ...request,
+                }),
+              ),
+          }),
+        ])
+      : baseTools
 
     // bypassPermissions is exposed to ACP clients whenever the process itself allows it
     // (non-root or sandbox). The previous additional opt-in gate made the mode invisible

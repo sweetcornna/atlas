@@ -51,7 +51,9 @@ import { expandPath } from 'src/utils/filesystem/path.js';
 import { getClaudeTempDir } from 'src/utils/permissions/filesystem.js';
 import type { PermissionResult } from '@open-claude-code/tool-runtime/permissions/PermissionResult.js';
 import { maybeRecordPluginHint } from 'src/utils/plugins/hintRecommendation.js';
+import { getPlatform } from 'src/utils/process/platform.js';
 import { exec } from 'src/utils/shell/Shell.js';
+import { isPowerShellToolEnabled } from 'src/utils/shell/shellToolUtils.js';
 import type { ExecResult } from 'src/utils/shell/ShellCommand.js';
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '@open-claude-code/tool-runtime/semanticBoolean.js';
@@ -62,6 +64,7 @@ import { getTaskOutputPath } from 'src/utils/task/diskOutput.js';
 import { TaskOutput } from 'src/utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from 'src/utils/terminal/terminal.js';
 import {
+  clampBashTimeoutMs,
   getDefaultBashTimeoutMs as getDefaultTimeoutMs,
   getMaxBashTimeoutMs as getMaxTimeoutMs,
 } from 'src/utils/process/timeouts.js';
@@ -79,6 +82,7 @@ import {
   bashToolHasPermission,
   commandHasAnyCd,
   matchWildcardPattern,
+  maybeForceSandboxOverrideAsk,
   permissionRuleExtractPrefix,
 } from './bashPermissions.js';
 import { interpretCommandResult } from './commandSemantics.js';
@@ -670,6 +674,8 @@ export const BashTool = buildTool({
       defaultTimeoutMs: getDefaultTimeoutMs(),
       backgroundTasksEnabled: !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS),
       monitorTool: feature('MONITOR_TOOL') ? true : false,
+      windowsGitBash: getPlatform() === 'windows',
+      powershellToolAvailable: isPowerShellToolEnabled(),
       sandbox: buildSandboxPromptParams(),
       git: buildGitPromptParams(),
     });
@@ -771,7 +777,10 @@ export const BashTool = buildTool({
     return { result: true };
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
-    return bashToolHasPermission(input, context);
+    const result = await bashToolHasPermission(input, context);
+    // If the model requested a sandbox escape via dangerouslyDisableSandbox,
+    // force a confirmation prompt rather than silently running unsandboxed.
+    return maybeForceSandboxOverrideAsk(input, result);
   },
   renderToolUseMessage,
   renderToolUseProgressMessage,
@@ -1114,7 +1123,10 @@ async function* runShellCommand({
   void
 > {
   const { command, description, timeout, run_in_background } = input;
-  const timeoutMs = timeout || getDefaultTimeoutMs();
+  // Clamp to the advertised ceiling — the schema/prompt promise "max 600000"
+  // but nothing enforced it before, so a model could request an hour-long
+  // blocking foreground bash. See clampBashTimeoutMs.
+  const timeoutMs = clampBashTimeoutMs(timeout);
 
   let fullOutput = '';
   let lastProgressOutput = '';

@@ -65,6 +65,7 @@ import { join } from 'path'
 // pre-bootstrap `occ migrate` fast path never pay for the credential module.
 import type { CredentialMigrationOutcome } from './migrateCredentials.js'
 import {
+  LEGACY_GLOBAL_CONFIG_FILENAME,
   legacyClaudeConfigDir,
   occConfigDir,
   occGlobalConfigFile,
@@ -784,7 +785,7 @@ function legacyGlobalConfigFile(
 ): string {
   // Sits next to the legacy config dir, mirroring the shape
   // occGlobalConfigFile() produces for occ itself.
-  return join(sourceDir, '..', '.claude.json')
+  return join(sourceDir, '..', LEGACY_GLOBAL_CONFIG_FILENAME)
 }
 
 function readLegacyGlobalConfig(fs: FsProbe): Record<string, unknown> | null {

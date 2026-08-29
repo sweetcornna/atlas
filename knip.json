@@ -4,6 +4,8 @@
     "@ant/*",
     "react-compiler-runtime",
     "undici",
+    "@modelcontextprotocol/server-filesystem",
+    "@modelcontextprotocol/server-memory",
     "@napi-rs/keyring",
     "auto-bind",
     "bidi-js",
@@ -31,7 +33,16 @@
       "entry": [
         "src/entrypoints/cli.tsx",
         "scripts/**/*.{ts,mjs,cjs}",
-        "src/**/*.runner.ts"
+        "src/**/*.runner.ts",
+        "demo/lib/ac6a-sandbox.ts",
+        "demo/lib/p31-copy-resident-timings.ts",
+        "demo/lib/p61-scenario.ts",
+        "demo/lib/p61-seed.ts",
+        "demo/lib/p61-worker.ts",
+        "demo/lib/p73-sample.ts",
+        "demo/lib/p73-throughput.ts",
+        "demo/lib/p81-probe.ts",
+        "demo/lib/p81-registry.ts"
       ],
       "project": ["src/**/*.{ts,tsx}"],
       "ignore": ["src/types/**"]

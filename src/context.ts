@@ -6,6 +6,7 @@ import {
 } from './bootstrap/state.js'
 import { getLocalISODate } from './constants/common.js'
 import {
+  clearMemoryFileCaches,
   filterInjectedMemoryFiles,
   getClaudeMds,
   getMemoryFiles,
@@ -36,6 +37,31 @@ export function setSystemPromptInjection(value: string | null): void {
   // Clear context caches immediately when injection changes
   getUserContext.cache.clear?.()
   getSystemContext.cache.clear?.()
+}
+
+/**
+ * Drop every process-global cache below whose contents describe a *workspace*.
+ *
+ * They are memoised with no key at all, which is exactly right for a REPL
+ * process — one workspace for its whole life — and exactly wrong for a process
+ * serving several ACP sessions in different directories: the first session to
+ * populate them hands its CLAUDE.md, its git state and its directory listing
+ * to every session that follows, whatever directory that session is in.
+ *
+ * Keying them by cwd instead was the other option and was rejected: these
+ * caches exist to be computed once per conversation, and a key would keep
+ * every workspace's copy alive for the life of a long-running node. Dropping
+ * them when the active session changes costs one recompute per switch and
+ * bounds the memory at one workspace.
+ *
+ * Called from `activateAcpSessionWorkspace()` — see issue #44.
+ */
+export function resetWorkspaceScopedContext(): void {
+  getUserContext.cache.clear?.()
+  getSystemContext.cache.clear?.()
+  getGitStatus.cache.clear?.()
+  getIsGit.cache.clear?.()
+  clearMemoryFileCaches()
 }
 
 export const getGitStatus = memoize(async (): Promise<string | null> => {
@@ -86,11 +112,13 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
       status_length: status.length,
     })
 
-    // Check if status exceeds character limit
+    // The limit is interpolated rather than spelled out: the literal used to
+    // say "2k characters" while MAX_STATUS_CHARS was 1000, so the model was
+    // told a cutoff twice the real one.
     const truncatedStatus =
       status.length > MAX_STATUS_CHARS
         ? status.substring(0, MAX_STATUS_CHARS) +
-          '\n... (truncated because it exceeds 2k characters. If you need more information, run "git status" using BashTool)'
+          `\n... (truncated because it exceeds ${MAX_STATUS_CHARS} characters. If you need more information, run "git status" using BashTool)`
         : status
 
     logForDiagnosticsNoPII('info', 'git_status_completed', {

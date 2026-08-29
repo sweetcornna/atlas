@@ -42,9 +42,6 @@ function findLocalBinary(): string {
   const distPath = resolve(projectRoot, 'dist/cli.js')
   if (existsSync(distPath)) return distPath
 
-  const devPath = resolve(projectRoot, 'src/entrypoints/cli.tsx')
-  if (existsSync(devPath)) return devPath
-
   throw new Error(
     'Cannot find local CLI binary to deploy. Run `bun run build` first.',
   )

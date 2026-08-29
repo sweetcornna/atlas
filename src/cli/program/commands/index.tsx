@@ -16,10 +16,13 @@ import { registerAuthCommands, registerSetupTokenCommand } from './auth.js';
 import { registerAutoModeCommands } from './autoMode.js';
 import { registerAutonomyCommands } from './autonomy.js';
 import { registerDoctorCommand } from './doctor.js';
+import { registerImportCommand } from './import.js';
 import { registerMaintenanceCommands } from './maintenance.js';
 import { registerMcpCommands } from './mcp.js';
 import { registerMigrateCommand } from './migrate.js';
 import { registerPluginCommands } from './plugin.js';
+import { registerProjectCommands } from './project.js';
+import { registerQianmoCommands } from './qianmo.js';
 import { registerRemoteControlCommand } from './remoteControl.js';
 import { registerSshCommand } from './ssh.js';
 import { registerUpdateCommand } from './update.js';
@@ -36,8 +39,11 @@ export function registerSubcommands(program: CommanderCommand): void {
   registerRemoteControlCommand(program);
   registerAssistantCommand(program);
   registerMigrateCommand(program);
+  registerImportCommand(program);
   registerDoctorCommand(program);
+  registerProjectCommands(program);
   registerMaintenanceCommands(program);
   registerUpdateCommand(program);
   registerAntOnlyCommands(program);
+  registerQianmoCommands(program);
 }

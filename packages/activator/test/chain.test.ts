@@ -29,11 +29,15 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
+  type ErrorPayload,
   MessageType,
-  createAck,
-  createTaskResult,
+  ProtocolErrorCode,
   type QianmoMessage,
+  createAck,
+  createMessage,
+  createTaskResult,
 } from '@qianmo/protocol'
+import { RouterEventType } from '@qianmo/router'
 import {
   TransportClient,
   TransportEventType,
@@ -52,6 +56,7 @@ import { durationsOf } from '../src/stages.js'
 import {
   RECIPIENT,
   SANDBOX,
+  SENDER,
   TEST_PSK,
   makeMessage,
   makeSocketDir,
@@ -695,5 +700,82 @@ describe('a slow chain is still a bounded one', () => {
     // twice more often than anyone expects.
     await chain.node.stop()
     await sleep(10)
+  })
+})
+
+describe('the routing gates in front of the wake (P4.2)', () => {
+  test('a second request for the same handler and task is cut, and never wakes anything', async () => {
+    const chain = await startChain({ initialState: 'active' })
+    startTargetNode(chain.targetPath, chain.received)
+    const sender = chain.sender()
+    await sender.connect(2_000)
+
+    const first = makeMessage({ taskId: 'gate-1' })
+    await sender.sendAndWait(first, 10_000)
+    expect(chain.received).toHaveLength(1)
+
+    // Same handler, same task, different envelope — not a retransmission, so
+    // dedup has nothing to say about it. Different payload keeps the
+    // fingerprint distinct too, which is what makes this a loop rather than a
+    // second-level duplicate.
+    const again = makeMessage({ taskId: 'gate-1', payload: { do: 'again' } })
+    await expect(sender.sendAndWait(again, 10_000)).rejects.toThrow()
+
+    expect(chain.received).toHaveLength(1)
+    expect(chain.node.router.audit.count(RouterEventType.LoopDetected)).toBe(1)
+    const detail = chain.node.router.audit.of(RouterEventType.LoopDetected)[0]
+      ?.detail
+    expect(detail?.['taskId']).toBe('gate-1')
+    expect(detail?.['code']).toBe(ProtocolErrorCode.E_LOOP)
+
+    // The refusal came before acceptance, so nothing was journalled and the
+    // sender was told in an envelope of its own.
+    expect(chain.node.journal.pending()).toHaveLength(0)
+    const failure = chain.node.failures().at(-1)
+    expect(failure?.type).toBe(MessageType.Error)
+    expect((failure?.payload as ErrorPayload).code).toBe(
+      ProtocolErrorCode.E_LOOP,
+    )
+  })
+
+  test('a second handler under one live task is not a loop — but the return route still refuses it', async () => {
+    // Two things are true here and the test states both, because conflating
+    // them is how a limitation turns into a mystery:
+    //
+    //   1. the routing layer's verdict is "not a loop" — different handler, so
+    //      D-2's reverse case holds and no `loop_detected` is written;
+    //   2. the request is nevertheless refused, by P4.1's return-route
+    //      registry, which is keyed on `taskId` alone. An `ack` coming back
+    //      from the sandbox carries only that key, so two live routes under one
+    //      task could not be told apart — the refusal is a correlation
+    //      constraint, not a loop judgement, and its code says so.
+    //
+    // Concurrent same-task fan-out to several handlers on one node therefore
+    // does not work in M0. Making it work means giving the return route a
+    // handler dimension, which is a P4.1 change and not one AC-3 asks for.
+    const chain = await startChain({ initialState: 'active' })
+    startTargetNode(chain.targetPath, chain.received)
+    const sender = chain.sender()
+    await sender.connect(2_000)
+
+    await sender.sendAndWait(makeMessage({ taskId: 'gate-2' }), 10_000)
+    await expect(
+      sender.sendAndWait(
+        createMessage({
+          from: SENDER,
+          to: `qianmo://${TARGET_NODE}/second-agent`,
+          type: MessageType.TaskRequest,
+          payload: { do: 'review' },
+          taskId: 'gate-2',
+        }),
+        10_000,
+      ),
+    ).rejects.toThrow()
+
+    expect(chain.received).toHaveLength(1)
+    expect(chain.node.router.audit.count(RouterEventType.LoopDetected)).toBe(0)
+    expect((chain.node.failures().at(-1)?.payload as ErrorPayload).code).toBe(
+      ProtocolErrorCode.E_BAD_ENVELOPE,
+    )
   })
 })

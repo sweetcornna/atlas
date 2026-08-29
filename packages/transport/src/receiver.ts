@@ -91,6 +91,10 @@ export async function receiveEnvelope(
     record(TransportEventType.MessageDuplicate, {
       node: context.peerNode ?? '',
       msgId: message.msgId,
+      // Carried so an audit trail can join this line onto the chain it belongs
+      // to: a dedup hit that cannot be correlated is a dedup hit nobody can
+      // explain to the sender who saw two receipts (P7.2).
+      traceId: message.traceId,
       level: verdict,
     })
     return receipt(message.msgId, ReceiptStatus.Duplicate)
@@ -106,6 +110,7 @@ export async function receiveEnvelope(
     record(TransportEventType.MessageRejected, {
       node: context.peerNode ?? '',
       msgId: message.msgId,
+      traceId: message.traceId,
       code: ProtocolErrorCode.E_UNDELIVERABLE,
       reason: error instanceof Error ? error.name : 'unknown',
     })
@@ -120,6 +125,8 @@ export async function receiveEnvelope(
   record(TransportEventType.MessageAccepted, {
     node: context.peerNode ?? '',
     msgId: message.msgId,
+    traceId: message.traceId,
+    taskId: message.taskId,
   })
   return receipt(message.msgId, ReceiptStatus.Accepted)
 }

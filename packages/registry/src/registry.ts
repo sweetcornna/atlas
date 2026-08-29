@@ -1,13 +1,16 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
+import { X509Certificate } from 'node:crypto'
 import {
   ProtocolError,
   TimeJumpGate,
+  isNodePublicKey,
   assertAddress,
   formatAddress,
   isValidAddress,
   parseAddress,
+  parseNodeCertificateBinding,
   type QianmoAddress,
   type TimeJumpObservation,
 } from '@qianmo/protocol'
@@ -55,15 +58,6 @@ const DECLARABLE: readonly DeclaredStatus[] = [
 ]
 
 /**
- * Ed25519 public key, base64url without padding: 32 raw bytes → 43 chars.
- *
- * protocol.md §10.1 fixes the algorithm but not the encoding; base64url is
- * chosen to match RFC 8037 (the OKP `x` parameter), so the same string can be
- * dropped into the compact-JSON capability tokens that section describes.
- */
-const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/
-
-/**
  * A live registration in the discovery table.
  *
  * Keyed by the composite `<node>/<agent>` derived from {@link address}
@@ -82,6 +76,15 @@ export interface AgentRecord {
    * one node key; it is absent until capability signing lands (P4.3).
    */
   readonly publicKey?: string
+  /**
+   * PEM node certificate (key-distribution.md §4.2), the CA's backing for
+   * {@link publicKey} (§5.2). Optional for the same reason `publicKey` is:
+   * P12.1/P12.2 land the certificate machinery without requiring every
+   * registrant to have adopted it on day one. When present, {@link register}
+   * has already checked it agrees with `publicKey` — see the module header
+   * on why that check does *not* include verifying the CA's signature.
+   */
+  readonly certificate?: string
   /** Last state the agent declared. Never `offline` — see {@link AgentStatus}. */
   readonly status: DeclaredStatus
   readonly registeredAt: number
@@ -118,8 +121,29 @@ export type RegisterResult =
 export interface RegisterInput {
   readonly capabilities?: unknown
   readonly publicKey?: unknown
+  /** PEM node certificate; see {@link AgentRecord.certificate}. */
+  readonly certificate?: unknown
   readonly status?: unknown
 }
+
+/**
+ * One registration the registry refused to store because its certificate did
+ * not agree with the rest of the record (key-distribution.md §5.2).
+ *
+ * This is the audit trail §5.2 requires: "两个字段并存期间必须有一条断言…
+ * 失败会以「签名对某些 agent 验得过、对另一些验不过」的形态出现，那是最难读
+ * 的一种" — so the record is dropped whole (never partially stored) and the
+ * reason is written down at the moment it was caught, not reconstructed later
+ * from a signature failure three hops away.
+ */
+export interface RegistryAuditEvent {
+  /** Canonical `qianmo://<node>/<agent>` address of the refused registration. */
+  readonly address: string
+  readonly node: string
+  readonly reason: string
+}
+
+export type RegistryAuditSink = (event: RegistryAuditEvent) => void
 
 export interface RegistryOptions {
   /** Entry lifetime in milliseconds. */
@@ -141,6 +165,14 @@ export interface RegistryOptions {
    * availability. Without this hook that trade-off would be silent.
    */
   readonly onPersistError?: (error: unknown) => void
+  /**
+   * Called when a registration is refused because its certificate disagrees
+   * with the rest of the record (§5.2). Never called for a registration that
+   * merely fails ordinary validation (bad address, bad endpoint, …) — those
+   * are routine client errors returned to the caller, not the "someone is
+   * trying to publish a lie" signal this hook exists for.
+   */
+  readonly onAudit?: RegistryAuditSink
 }
 
 /**
@@ -178,9 +210,75 @@ export function isValidEndpoint(value: unknown): value is string {
   }
 }
 
-/** True when `value` is a base64url-encoded Ed25519 public key. */
+/**
+ * True when `value` is a base64url-encoded Ed25519 public key.
+ *
+ * The encoding itself is defined once, in `@qianmo/protocol` (§10.1 says so in
+ * as many words): a registry that accepted a shape the verifier rejects would
+ * publish keys nobody can use, and the failure would surface as "signatures
+ * stopped verifying" rather than as "these two regexes disagree".
+ */
 export function isValidPublicKey(value: unknown): value is string {
-  return typeof value === 'string' && PUBLIC_KEY_PATTERN.test(value)
+  return isNodePublicKey(value)
+}
+
+/**
+ * Upper bound on a stored certificate's PEM length.
+ *
+ * A leaf certificate with §4.2's three SAN classes runs a little over 1 KiB
+ * in practice; this is generous headroom, not a measured ceiling — the point
+ * is to stop an unbounded string from one bad or hostile registrant growing
+ * the table without limit, same reasoning as {@link MAX_CAPABILITIES}.
+ */
+export const MAX_CERTIFICATE_LENGTH = 8_192
+
+/**
+ * Read a certificate's §4.2 binding, or `null` when it does not parse as one.
+ *
+ * Deliberately does **not** check the certificate is signed by any CA — the
+ * registry holds no CA public key and is not the reader §5.2 asks to make
+ * that call (see the module header on why "校验方" is a peer's local CA root,
+ * not this zero-auth bulletin board). What this function answers is only
+ * "is this well-formed enough to compare against `publicKey`", which needs
+ * nothing but `node:crypto` (key-distribution.md F-2).
+ */
+function bindingOf(
+  pem: string,
+): ReturnType<typeof parseNodeCertificateBinding> {
+  let certificate: X509Certificate
+  try {
+    certificate = new X509Certificate(pem)
+  } catch {
+    return null
+  }
+  return parseNodeCertificateBinding(certificate.subjectAltName)
+}
+
+/**
+ * True when `value` is the `{payload, signature}` shape a signed revocation
+ * list travels as (key-distribution.md §6.4, `ca/revocationList.ts`).
+ *
+ * Structural only, and deliberately so: verifying the signature would need
+ * the CA's public key, which — same as {@link bindingOf} — this package does
+ * not hold and is not supposed to. The registry's job is to be a courier that
+ * cannot lie convincingly (tampering breaks the signature the *reader*
+ * checks); it is not a verifier.
+ */
+export function isSignedRevocationListShape(
+  value: unknown,
+): value is { readonly payload: string; readonly signature: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  const keys = Object.keys(value)
+  if (keys.length !== 2) return false
+  const record = value as Record<string, unknown>
+  return (
+    typeof record['payload'] === 'string' &&
+    record['payload'].length > 0 &&
+    typeof record['signature'] === 'string' &&
+    record['signature'].length > 0
+  )
 }
 
 /**
@@ -236,6 +334,7 @@ interface PersistedAgent {
   readonly endpoint: string
   readonly capabilities: readonly string[]
   readonly publicKey?: string
+  readonly certificate?: string
   readonly status: DeclaredStatus
   readonly registeredAt: number
   readonly lastHeartbeatAt: number
@@ -247,6 +346,7 @@ function toPersisted(entry: AgentRecord): PersistedAgent {
     endpoint: entry.endpoint,
     capabilities: [...entry.capabilities],
     publicKey: entry.publicKey,
+    certificate: entry.certificate,
     status: entry.status,
     registeredAt: entry.registeredAt,
     lastHeartbeatAt: entry.lastHeartbeatAt,
@@ -266,6 +366,7 @@ function toPersisted(entry: AgentRecord): PersistedAgent {
 function restoreEntry(
   value: unknown,
   ttlMs: number,
+  onAudit?: RegistryAuditSink,
 ): { readonly key: string; readonly entry: AgentRecord } | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     return null
@@ -277,8 +378,48 @@ function restoreEntry(
   if (!isValidEndpoint(endpoint)) return null
   const capabilities = normaliseCapabilities(raw['capabilities'])
   if (capabilities === null) return null
-  const publicKey = raw['publicKey']
-  if (publicKey !== undefined && !isValidPublicKey(publicKey)) return null
+  const rawPublicKey = raw['publicKey']
+  if (rawPublicKey !== undefined && !isValidPublicKey(rawPublicKey)) return null
+  // Re-typed once validation confirms the shape: TypeScript does not carry a
+  // `let` binding's narrowed type across a conditional reassignment further
+  // down, so leaving this as `unknown` would force every later use to
+  // re-prove what was just checked.
+  let publicKey = rawPublicKey as string | undefined
+  const certificate = raw['certificate']
+  if (certificate !== undefined) {
+    if (
+      typeof certificate !== 'string' ||
+      certificate.length === 0 ||
+      certificate.length > MAX_CERTIFICATE_LENGTH
+    ) {
+      return null
+    }
+    // Same trust-boundary discipline as `register()`: a stored document is
+    // edited by whatever has filesystem access to it, which is not a weaker
+    // adversary than the HTTP surface. §5.2's rule applies here too — a
+    // record whose two fields disagree is dropped whole, not repaired.
+    const binding = bindingOf(certificate)
+    if (binding === null || binding.node !== parsed.node) {
+      onAudit?.({
+        address: formatAddress(parsed),
+        node: parsed.node,
+        reason:
+          binding === null
+            ? 'stored certificate does not carry a valid node binding (§4.2)'
+            : `stored certificate names node ${binding.node}, not ${parsed.node}`,
+      })
+      return null
+    }
+    if (publicKey !== undefined && binding.publicKey !== publicKey) {
+      onAudit?.({
+        address: formatAddress(parsed),
+        node: parsed.node,
+        reason: 'stored publicKey does not match the stored certificate (§5.2)',
+      })
+      return null
+    }
+    publicKey = publicKey ?? binding.publicKey
+  }
   const status = normaliseStatus(raw['status'])
   if (status === null) return null
   const lastHeartbeatAt = finiteNumber(raw['lastHeartbeatAt'])
@@ -292,6 +433,7 @@ function restoreEntry(
       endpoint,
       capabilities,
       publicKey,
+      certificate,
       status,
       registeredAt,
       lastHeartbeatAt,
@@ -339,13 +481,16 @@ export class InMemoryRegistry {
   readonly #clock: Clock
   readonly #store: RegistryStore | null
   readonly #onPersistError: ((error: unknown) => void) | undefined
+  readonly #onAudit: RegistryAuditSink | undefined
   #timeJumpGate: TimeJumpGate | null = null
+  #revocationList: unknown | null = null
 
   constructor(options: RegistryOptions = {}) {
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
     this.#clock = options.clock ?? systemClock
     this.#store = options.store ?? null
     this.#onPersistError = options.onPersistError
+    this.#onAudit = options.onAudit
     if (this.#store !== null) this.#restore(this.#store.read())
   }
 
@@ -416,13 +561,75 @@ export class InMemoryRegistry {
         message: 'capabilities must be an array of non-empty strings',
       }
     }
-    const publicKey = input.publicKey
-    if (publicKey !== undefined && !isValidPublicKey(publicKey)) {
+    const rawPublicKey = input.publicKey
+    if (rawPublicKey !== undefined && !isValidPublicKey(rawPublicKey)) {
       return {
         ok: false,
         code: RegistryErrorCode.E_BAD_REQUEST,
         message: 'publicKey must be a base64url Ed25519 key',
       }
+    }
+    // See the matching comment in `restoreEntry`: re-typed once so the
+    // certificate branch below can reassign it without TypeScript widening
+    // the merged type back to `unknown`.
+    let publicKey = rawPublicKey as string | undefined
+    const certificateInput = input.certificate
+    let certificate: string | undefined
+    if (certificateInput !== undefined) {
+      if (
+        typeof certificateInput !== 'string' ||
+        certificateInput.length === 0 ||
+        certificateInput.length > MAX_CERTIFICATE_LENGTH
+      ) {
+        return {
+          ok: false,
+          code: RegistryErrorCode.E_BAD_REQUEST,
+          message: `certificate must be a PEM string up to ${String(MAX_CERTIFICATE_LENGTH)} characters`,
+        }
+      }
+      const binding = bindingOf(certificateInput)
+      const parsedNode = parsed.node
+      // §5.2, written once: a certificate that does not parse, or that binds
+      // a different node, or whose nodekey disagrees with a `publicKey` given
+      // alongside it, is not a validation error to fix and retry — it is the
+      // "someone is trying to publish a lie" case, so the whole record is
+      // refused and the attempt is audited rather than silently 400'd.
+      if (binding === null || binding.node !== parsedNode) {
+        this.#onAudit?.({
+          address: formatAddress(parsed),
+          node: parsedNode,
+          reason:
+            binding === null
+              ? 'certificate does not carry a valid node binding (§4.2)'
+              : `certificate names node ${binding.node}, not ${parsedNode}`,
+        })
+        return {
+          ok: false,
+          code: RegistryErrorCode.E_BAD_REQUEST,
+          message:
+            binding === null
+              ? 'certificate does not carry a valid node certificate binding'
+              : `certificate is bound to node ${binding.node}, not ${parsedNode}`,
+        }
+      }
+      if (publicKey !== undefined && binding.publicKey !== publicKey) {
+        this.#onAudit?.({
+          address: formatAddress(parsed),
+          node: parsedNode,
+          reason: 'publicKey does not match the certificate (§5.2)',
+        })
+        return {
+          ok: false,
+          code: RegistryErrorCode.E_BAD_REQUEST,
+          message: 'publicKey does not match the certificate',
+        }
+      }
+      certificate = certificateInput
+      // A certificate that parses and agrees with whatever `publicKey` was
+      // given is a strictly stronger statement than the bare key, so a
+      // registrant that sends a certificate without also repeating the key
+      // gets it filled in — one fact, one place to have typed it correctly.
+      publicKey = publicKey ?? binding.publicKey
     }
     const status = normaliseStatus(input.status)
     if (status === null) {
@@ -446,12 +653,31 @@ export class InMemoryRegistry {
         message: `${canonical} is already registered at ${existing.endpoint}`,
       }
     }
+    const nodeKey = this.#nodeKeyOf(parsed.node, key, now)
+    if (publicKey !== undefined && nodeKey !== null && nodeKey !== publicKey) {
+      // protocol.md §10.1 says the key belongs to the **node**, while a record
+      // belongs to an agent — so nothing but this check stops one node's agents
+      // publishing two different keys. Left unchecked it would not fail here at
+      // all: it would fail later, as signatures that verify for one agent and
+      // not for another, which is a far harder thing to read.
+      //
+      // First live registration wins, and "live" is the whole rule: the key is
+      // derived from the entries that still hold a lease, so once every agent
+      // on a node has gone silent a restarted node with a new identity file is
+      // free to publish again. No second table, nothing to keep in sync.
+      return {
+        ok: false,
+        code: RegistryErrorCode.E_CONFLICT,
+        message: `node ${parsed.node} already published a different public key`,
+      }
+    }
 
     const entry: AgentRecord = {
       address: canonical,
       endpoint,
       capabilities: caps,
       publicKey,
+      certificate,
       status,
       registeredAt: existing?.registeredAt ?? now,
       lastHeartbeatAt: now,
@@ -460,6 +686,41 @@ export class InMemoryRegistry {
     this.#entries.set(key, entry)
     this.#persist()
     return { ok: true, created: existing === null, entry }
+  }
+
+  /**
+   * Publish a signed revocation list document, or refuse a malformed one.
+   *
+   * Structural validation only — see {@link isSignedRevocationListShape} on
+   * why the registry never checks the signature. `true` means the document
+   * replaced whatever was published before; `false` means nothing changed.
+   */
+  publishRevocationList(document: unknown): boolean {
+    if (!isSignedRevocationListShape(document)) return false
+    this.#revocationList = document
+    return true
+  }
+
+  /** The most recently published revocation list, or `null` if none has been. */
+  get revocationList(): unknown | null {
+    return this.#revocationList
+  }
+
+  /**
+   * The public key this node's other live agents have already published.
+   *
+   * `exclude` is the entry being re-registered: an agent republishing its own
+   * record must not collide with itself.
+   */
+  #nodeKeyOf(node: string, exclude: string, now: number): string | null {
+    for (const [key, entry] of this.#entries) {
+      if (key === exclude) continue
+      if (!key.startsWith(`${node}/`)) continue
+      if (entry.publicKey === undefined) continue
+      if (entry.expiresAt <= now) continue
+      return entry.publicKey
+    }
+    return null
   }
 
   /** Look up one agent by address; `null` when unknown, malformed or expired. */
@@ -564,7 +825,7 @@ export class InMemoryRegistry {
     if (agents === null) return
     const now = this.#clock.now()
     for (const candidate of agents) {
-      const restored = restoreEntry(candidate, this.#ttlMs)
+      const restored = restoreEntry(candidate, this.#ttlMs, this.#onAudit)
       if (restored === null) continue
       if (restored.entry.expiresAt < now) continue
       this.#entries.set(restored.key, restored.entry)

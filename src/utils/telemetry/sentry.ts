@@ -6,6 +6,7 @@
  */
 
 import * as Sentry from '@sentry/node'
+import { buildVersion } from '../../constants/buildProvenance.js'
 import { logForDebugging } from './debug.js'
 
 declare const BUILD_ENV: string | undefined
@@ -29,7 +30,7 @@ export function initSentry(): void {
 
   Sentry.init({
     dsn,
-    release: typeof MACRO !== 'undefined' ? MACRO.VERSION : undefined,
+    release: buildVersion(),
     environment:
       typeof BUILD_ENV !== 'undefined'
         ? (BUILD_ENV as string)

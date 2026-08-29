@@ -3,10 +3,6 @@ title: "沙箱机制 - 权限系统之外的第二道防线"
 description: "系统性梳理 Claude Code 的沙箱设计：什么时候会进沙箱、什么时候不会、如何与权限系统联动、默认限制了什么、不同平台下行为有什么差异，以及用户在被拦截时会看到什么。"
 keywords: ["沙箱", "sandbox", "权限", "Bash", "PowerShell", "bubblewrap", "sandbox-exec", "纵深防御"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/safety/sandbox) · **中文** · [日本語](/docs/ja/safety/sandbox)
-
 ## 一句话结论
 
 这个项目里的沙箱不是用来替代权限系统，而是用来给 **shell 命令** 再套一层 OS 级能力边界：

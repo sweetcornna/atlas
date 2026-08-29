@@ -3,10 +3,6 @@ title: "架构全景 - Claude Code 五层架构详解"
 description: "从交互层到基础设施层，详解 Claude Code 的五层架构设计。基于 src/main.tsx、src/QueryEngine.ts、src/query.ts、src/tools.ts、src/services/api/claude.ts 的源码级数据流分析。"
 keywords: ["Claude Code 架构", "五层架构", "QueryEngine", "Agentic Loop", "数据流"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/introduction/architecture-overview) · **中文** · [日本語](/docs/ja/introduction/architecture-overview)
-
 {/* 本章目标：一张图讲清楚整体架构，为后续章节建立坐标系 */}
 
 ## 五层架构
@@ -112,7 +108,7 @@ API 客户端支持 7 种 Provider：
 
 | 入口 | 文件 | 说明 |
 |------|------|------|
-| CLI 启动 | `src/entrypoints/cli.tsx` | 从 `bun:bundle` 导入 `feature()`（取值由构建 / dev defines 在编译期求值）、为 MACRO 全局变量提供运行时兜底（`cli.tsx:11-21`） |
+| CLI 启动 | `src/entrypoints/cli.tsx` | 从 `bun:bundle` 导入 `feature()`（取值由构建 / dev defines 在编译期求值）。**MACRO 全局变量没有运行时兜底**：`MACRO.*` 是转译期替换，直跑源码的进程必须自己用 `-d` 注 defines（`scripts/defines.ts` 的 `macroDefineArgs()`），缺了就在第一次读时抛错 |
 | 命令定义 | `src/main.tsx` | Commander.js 解析参数，初始化 auth/analytics/policy |
 | 一次性初始化 | `src/entrypoints/init.ts` | 遥测配置、信任对话框 |
 | 管道模式 | `src/main.tsx` `-p` flag | `echo "say hello" \| bun run dev -p` |

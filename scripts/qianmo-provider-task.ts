@@ -22,7 +22,7 @@
  *
  * 用法：
  *   bun run scripts/qianmo-provider-task.ts --provider qianmo-deepseek
- *   bun run scripts/qianmo-provider-task.ts --provider qianmo-qwen
+ *   bun run scripts/qianmo-provider-task.ts --provider qianmo-alt
  * 可选：
  *   --providers-file <path>   换一份 providers.json
  *   --keep                    保留临时仓库（默认保留，便于取证；--clean 删除）

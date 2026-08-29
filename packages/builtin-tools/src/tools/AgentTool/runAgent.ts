@@ -10,6 +10,7 @@ import {
   registerSpawn,
   unregisterSpawn,
 } from './spawnLimits.js'
+import { getAppendSubagentSystemPrompt } from '@open-claude-code/tool-runtime/cliSessionOptions.js'
 import { isSessionBudgetExhausted } from 'src/cost-tracker.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
@@ -114,7 +115,11 @@ import {
 } from 'src/utils/session/messageQueueManager.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { filterIncompleteToolCalls } from './filterIncompleteToolCalls.js'
-import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import {
+  type AgentDefinition,
+  isBuiltInAgent,
+  validateAgentMcpServerSpec,
+} from './loadAgentsDir.js'
 
 export { filterIncompleteToolCalls } from './filterIncompleteToolCalls.js'
 
@@ -239,6 +244,9 @@ export async function initializeAgentMcpServers(
           }
           const [serverName, serverConfig] = entries[0]!
           name = serverName
+          if (!validateAgentMcpServerSpec(agentDefinition.agentType, spec)) {
+            continue
+          }
           config = {
             ...serverConfig,
             scope: 'dynamic' as const,
@@ -523,6 +531,7 @@ export async function* runAgent({
     ),
     process.env.CLAUDE_CODE_1M_CONTEXT_MODELS,
     modelSettingsSlot,
+    toolUseContext.options.sessionModelSettingsOverrides,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
@@ -716,7 +725,7 @@ export async function* runAgent({
     appState.toolPermissionContext.additionalWorkingDirectories.keys(),
   )
 
-  const agentSystemPrompt = override?.systemPrompt
+  const baseAgentSystemPrompt = override?.systemPrompt
     ? override.systemPrompt
     : asSystemPrompt(
         await getAgentSystemPrompt(
@@ -727,6 +736,17 @@ export async function* runAgent({
           resolvedTools,
         ),
       )
+
+  // --append-subagent-system-prompt. Skipped for fork children: their whole
+  // point is a byte-identical prefix with the parent, and the parent's system
+  // prompt never carries this addendum. Nested subagents inherit it because
+  // the store is process-scoped, matching upstream's explicit propagation.
+  const subagentAddendum = useExactTools
+    ? undefined
+    : getAppendSubagentSystemPrompt()
+  const agentSystemPrompt = subagentAddendum
+    ? asSystemPrompt([...baseAgentSystemPrompt, subagentAddendum])
+    : baseAgentSystemPrompt
 
   // Determine abortController:
   // - Override takes precedence
@@ -925,6 +945,10 @@ export async function* runAgent({
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,
     modelSettingsSlot,
+    sessionModelSettingsOverrides:
+      toolUseContext.options.sessionModelSettingsOverrides,
+    autoCompactWindow: toolUseContext.options.autoCompactWindow,
+    autoCompactWindowOverride: toolUseContext.options.autoCompactWindowOverride,
     // For fork children (useExactTools), inherit thinking config to match the
     // parent's API request prefix for prompt cache hits. For regular
     // sub-agents, disable thinking to control output token costs.
@@ -1059,21 +1083,17 @@ export async function* runAgent({
 
       // Yield attachment messages (e.g., structured_output) without recording them
       if (message.type === 'attachment') {
-        // Handle max turns reached signal from query.ts
+        // max_turns_reached used to be swallowed here. That made a subagent
+        // truncated by `maxTurns:` frontmatter indistinguishable from one that
+        // finished: the parent model got a partial answer with no marker and
+        // the terminal check below allowlists 'max_turns'. Yield it through so
+        // finalizeAgentTool can tell the caller the run was cut short.
         if ((message as any).attachment.type === 'max_turns_reached') {
           logForDebugging(
-            `[Agent
-: $
-{
-  agentDefinition.agentType
-}
-] Reached max turns limit ($
-{
-  (message as any).attachment.maxTurns
-}
-)`,
+            `[Agent: ${agentDefinition.agentType}] Reached max turns limit (${
+              (message as any).attachment.maxTurns
+            })`,
           )
-          continue
         }
         yield message as Message
         continue

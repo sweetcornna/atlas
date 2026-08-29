@@ -1,8 +1,14 @@
 import { parseSSEFrames } from 'src/cli/transports/SSETransport.js'
-import { getValidAntigravityAuth } from 'src/services/auth/antigravity/oauth.js'
+import {
+  getValidAntigravityAuth,
+  getValidAntigravitySearchAuth,
+} from 'src/services/auth/antigravity/oauth.js'
 import { errorMessage } from 'src/utils/runtime/errors.js'
 import { isAntigravityAuthMode } from 'src/utils/model/antigravityModels.js'
-import { FreezeAwareWatchdog } from 'src/utils/network/freezeAwareWatchdog.js'
+import {
+  clearFreezeAwareTimeout,
+  setFreezeAwareTimeout,
+} from 'src/utils/network/freezeAwareWatchdog.js'
 import { getProxyFetchOptions } from 'src/utils/network/proxy.js'
 import { buildProviderResourceURL } from 'src/utils/network/providerUrl.js'
 import {
@@ -126,11 +132,10 @@ async function readGeminiChunk(
     'CLAUDE_STREAM_IDLE_TIMEOUT_MS',
   )
   const abort = waitForAbort(controller.signal)
-  const timeout = new FreezeAwareWatchdog({
-    timeoutMs: idleTimeoutMs,
-    onTimeout: () => controller.abort(timeoutError),
-  })
-  timeout.reset()
+  const timeout = setFreezeAwareTimeout(
+    () => controller.abort(timeoutError),
+    idleTimeoutMs,
+  )
   try {
     return await Promise.race([reader.read(), abort.promise])
   } catch (error) {
@@ -148,7 +153,7 @@ async function readGeminiChunk(
     }
     throw error
   } finally {
-    timeout.stop()
+    clearFreezeAwareTimeout(timeout)
     abort.cleanup()
   }
 }
@@ -230,9 +235,13 @@ async function resolveGeminiWireRequest(params: {
   baseURL?: string
   requestType?: AntigravityRequestType
   useAntigravityWhenAvailable?: boolean
+  antigravityAuthPlane?: 'provider' | 'search'
 }): Promise<GeminiWireRequest> {
   if (usesAntigravityRoute(params)) {
-    const auth = await getValidAntigravityAuth()
+    const auth =
+      params.antigravityAuthPlane === 'search'
+        ? await getValidAntigravitySearchAuth()
+        : await getValidAntigravityAuth()
     return {
       url: antigravityStreamUrl(),
       headers: antigravityHeaders(auth.accessToken),
@@ -299,6 +308,17 @@ export async function* streamGeminiGenerateContent(params: {
    * loop is not in Antigravity mode. For callers that are not the main loop.
    */
   useAntigravityWhenAvailable?: boolean
+  /**
+   * Which credential files the Antigravity route may authenticate from.
+   *
+   * `'provider'` (the default, and what the main loop gets by omission) is the
+   * login file alone. `'search'` also accepts the copy of it WebSearch pinned
+   * for itself, which is the only one that outlives a `/logout` — and refreshes
+   * that copy rather than the login file, so a search cannot put the account
+   * the user just signed out of back on disk. See
+   * services/auth/antigravity/oauth.ts.
+   */
+  antigravityAuthPlane?: 'provider' | 'search'
 }): AsyncGenerator<GeminiStreamChunk, void> {
   const fetchImpl = params.fetchOverride ?? fetch
   const wire = await resolveGeminiWireRequest({
@@ -310,6 +330,9 @@ export async function* streamGeminiGenerateContent(params: {
     ...(params.requestType ? { requestType: params.requestType } : {}),
     ...(params.useAntigravityWhenAvailable
       ? { useAntigravityWhenAvailable: true }
+      : {}),
+    ...(params.antigravityAuthPlane
+      ? { antigravityAuthPlane: params.antigravityAuthPlane }
       : {}),
   })
   const { url, unwrapChunk } = wire

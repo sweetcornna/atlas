@@ -9,8 +9,11 @@ import WebSocket from 'ws'
 import {
   TimeJumpGate,
   isValidSegment,
+  peerSupportsType,
+  type MessageType,
   type QianmoMessage,
 } from '@qianmo/protocol'
+import { signBytes } from '@qianmo/capability'
 import {
   DEFAULT_BACKOFF,
   ReconnectSchedule,
@@ -39,11 +42,22 @@ import {
   type TransportFrame,
 } from './frames.js'
 import {
+  CLOSE_CHANNEL_CONFLICT,
+  CLOSE_PROTOCOL_ERROR,
+  CLOSE_UNAUTHORIZED,
+  ReadyRejection,
   assertUsablePsk,
+  authCredentialProofInput,
+  authSigningInput,
   computeMac,
   isChannelId,
   newChannelId,
   newNonce,
+  verifyReady,
+  type HandshakeAuthentication,
+  type AuthenticatedCredential,
+  type HandshakeIdentity,
+  type HandshakeTuple,
 } from './handshake.js'
 import {
   DEFAULT_MAX_QUEUED,
@@ -91,17 +105,101 @@ export interface ClientTlsOptions {
   readonly rejectUnauthorized?: boolean
 }
 
+/**
+ * TLS materials, or a way to go and get them again
+ * (key-distribution.md §6.3 rule 4).
+ *
+ * A node certificate lasts 90 days and a reconnect loop can outlive one
+ * rotation twice over. §6.3 spells out the failure: a live TLS session is
+ * fixed at handshake time and replacing the file on disk does not touch it,
+ * which is fine — but a *client object* holding the PEM string it was
+ * constructed with will keep re-presenting the expired certificate on every
+ * reconnect "to death", long after the operator swapped the file and
+ * concluded the rotation was done.
+ *
+ * So the materials may be a function, and it is called **once per dial** —
+ * including every reconnect. A fixed object is still accepted and still
+ * correct for the case it fits (a CA root, a lab, a test); what a function
+ * buys is that "the file changed" and "the next dial uses it" are the same
+ * event, with no restart and no cache to invalidate.
+ *
+ * The function must not throw for a transient read failure — see
+ * {@link TransportClientOptions.tls} for what happens if it does.
+ */
+export type ClientTlsSource = ClientTlsOptions | (() => ClientTlsOptions)
+
+/** Resolve a {@link ClientTlsSource}. Called once per dial, never cached. */
+function resolveTls(source: ClientTlsSource): ClientTlsOptions {
+  return typeof source === 'function' ? source() : source
+}
+
 export interface TransportClientOptions {
   readonly endpoint: TransportEndpoint
   /** This node's segment, e.g. `node-a`. Sent in the handshake. */
   readonly node: string
-  /** Expected peer label for inbound audit context; not an authority. */
+  /**
+   * Message types this endpoint implements, declared to the peer in the auth
+   * frame. Omit to declare nothing, which the peer reads as the legacy floor.
+   *
+   * The transport cannot work this out for itself — it moves envelopes and
+   * never inspects their `type` — so the host supplies it. Omitting it is the
+   * safe default and the honest one: a host that has not wired up handling for
+   * a post-floor type must not advertise it.
+   */
+  readonly supportedTypes?: readonly string[]
+  /**
+   * The node this client set out to reach.
+   *
+   * Two jobs, and the second one arrived with {@link TransportClientOptions.signing}:
+   * it labels inbound audit context, and — when signing is on — it is *the*
+   * name the listener's ready signature is checked under. That second use is
+   * why it stops being "not an authority" the moment a key is involved: the
+   * whole of §11 T-B′'s second defence is looking the key up under the node
+   * the dialer *meant* to reach rather than the one the endpoint answered
+   * with, so a tampered `AgentRecord.endpoint` fails instead of redirecting.
+   *
+   * Required alongside `signing`, for that reason.
+   */
   readonly peerNode?: string
-  /** Stable across reconnects of this client. Generated when omitted. */
+  /**
+   * Stable across reconnects of this client. Generated when omitted.
+   *
+   * Supplying one also **pins** it: a generated id may be rotated when the
+   * listener answers {@link CLOSE_CHANNEL_CONFLICT}, a supplied one may not,
+   * because the only reason to name a channel from outside is to reattach to
+   * that particular channel and a silent move elsewhere would answer a
+   * different question than the one asked. Such a client goes terminal on the
+   * conflict instead. Nothing in the tree supplies one today.
+   */
   readonly channelId?: string
   /** Pre-shared key. Injected — never a literal (see `handshake.ts`). */
   readonly psk: string
-  readonly tls?: ClientTlsOptions
+  /**
+   * This node's Ed25519 identity and its peer directory (§7.1 / §7.1.1).
+   *
+   * Given it, this client signs its auth frame *in addition to* the MAC — both
+   * proofs travel, and the listener takes whichever it is equipped to check.
+   * Sending both is what makes one end of a link upgradeable without the
+   * other: `sig` costs a listener that never heard of it exactly nothing,
+   * since `parseFrame` hands back a frame it can already answer.
+   *
+   * It also makes this client *check* the listener's half. Requires
+   * {@link TransportClientOptions.peerNode} — there is nothing to check a
+   * signature against without knowing which node was meant.
+   */
+  readonly signing?: HandshakeIdentity
+  /**
+   * TLS materials, or a factory re-read on every dial (§6.3 rule 4).
+   *
+   * A factory that throws is treated as "this dial cannot be made", not as a
+   * fatal error: the throw is recorded as a connection failure and the
+   * reconnect schedule takes over, so a certificate file that is momentarily
+   * absent mid-rotation costs one backoff step rather than the link. It is
+   * *not* silently downgraded to a plaintext dial — a client that quietly
+   * stopped presenting a certificate would look connected while having lost
+   * the whole of L0.
+   */
+  readonly tls?: ClientTlsSource
   readonly backoff?: Partial<BackoffOptions>
   /** Cap on unreceipted envelopes before {@link TransportClient.send} refuses. */
   readonly maxQueued?: number
@@ -132,6 +230,33 @@ export const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000
 /** How long {@link TransportClient.connect} waits before reporting failure. */
 export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
 
+/**
+ * How many times a client will move to a fresh channel id after a
+ * {@link CLOSE_CHANNEL_CONFLICT}, before treating the conflict as fatal.
+ *
+ * Three, because one is the case this exists for — a credential rotated, or
+ * the listener's directory changed underneath a channel that was still
+ * retained — and that case is resolved by the *first* rotation: the new id
+ * cannot collide with a channel that does not exist yet. A second and third
+ * cover a genuine race (two rotations in flight, a listener replaying an old
+ * directory during a refresh); a fourth would mean the listener is rejecting
+ * every id this client can produce, which is not a collision any more but a
+ * listener saying no. Unbounded rotation there is a reconnect storm dressed up
+ * as recovery, and it also silently abandons one retained channel per attempt.
+ *
+ * Counted per outage, not per lifetime: a successful handshake clears it, the
+ * way a successful connection clears the reconnect budget. What this bounds is
+ * a *run* of conflicts with nothing admitted between them — the listener
+ * refusing every id this client can produce — and a run stays three long,
+ * because two rotations can only be separated by a handshake that got through,
+ * which is itself the evidence that the conflict it moved away from is over.
+ * A lifetime budget would instead retire a healthy long-lived node on its
+ * fourth `--trust` edit: the trigger this exists for is the listener's
+ * directory changing under a retained channel (see `CLOSE_CHANNEL_CONFLICT`),
+ * and that is an operational event that recurs for as long as the node runs.
+ */
+export const MAX_CHANNEL_ROTATIONS = 3
+
 type ClientState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed'
 
 /** Build the dial URL. `ws+unix://<socket>:<path>` is the `ws` package's form. */
@@ -157,8 +282,48 @@ export class TransportClient implements TransportChannel {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private lastInboundAt = 0
   private readyWaiters: Array<() => void> = []
+  private declaredPeerTypes: readonly string[] | undefined
+  /** Proof that admitted the current socket; `null` while disconnected. */
+  private peerAuthentication: HandshakeAuthentication | null = null
+  /** Credential metadata proven by the peer's signed ready frame. */
+  private peerCredential: AuthenticatedCredential | null = null
+  /**
+   * The tuple this client signed on the current socket, kept until the ready
+   * frame arrives so the listener's counter-signature can be checked against
+   * the same nonces. Per socket, and dropped with it — a nonce pair reused
+   * across sockets would be exactly the replay the challenge exists to stop.
+   */
+  private pendingHandshake: {
+    readonly socket: WebSocket
+    readonly tuple: HandshakeTuple
+  } | null = null
+  /**
+   * Backing store for {@link id}, mutable for exactly one reason — see
+   * {@link CLOSE_CHANNEL_CONFLICT} and `rotateChannelId`.
+   */
+  private channelId: string
+  /**
+   * The caller named this channel; this client may not rename it.
+   *
+   * No production caller does (checked across the tree: nothing outside this
+   * package's own tests passes `channelId` to `TransportClient`), so this flag
+   * is guarding an affordance rather than a live path. It is still the right
+   * default for the affordance: `channelId` is documented as "stable across
+   * reconnects of this client", and the only reason to name one from outside
+   * is to *reattach to that specific logical channel* — a client that quietly
+   * moved to a different id would return a healthy-looking link to a caller
+   * whose whole request was the id. Silently generated ids carry no such
+   * promise to anyone, so they may be rotated.
+   */
+  private readonly channelIdIsCallerSupplied: boolean
+  /** Rotations spent on {@link CLOSE_CHANNEL_CONFLICT}; bounded. */
+  private channelRotations = 0
 
-  readonly id: string
+  /** Stable across reconnects; see {@link channelIdIsCallerSupplied}. */
+  get id(): string {
+    return this.channelId
+  }
+
   readonly peerNode: string | null
 
   constructor(private readonly options: TransportClientOptions) {
@@ -169,7 +334,15 @@ export class TransportClient implements TransportChannel {
     if (options.peerNode !== undefined && !isValidSegment(options.peerNode)) {
       throw new Error(`invalid peer node segment: ${options.peerNode}`)
     }
-    this.id = options.channelId ?? newChannelId()
+    if (options.signing !== undefined && options.peerNode === undefined) {
+      // Refused at construction rather than skipped at handshake time: a
+      // client that signed its own half and silently accepted anybody's
+      // answer would look like it had the §7.1.1 guarantee while having only
+      // half of it, and the missing half is the half that stops a redirect.
+      throw new Error('signing requires peerNode: there is nothing to verify')
+    }
+    this.channelIdIsCallerSupplied = options.channelId !== undefined
+    this.channelId = options.channelId ?? newChannelId()
     if (!isChannelId(this.id)) throw new Error(`invalid channel id: ${this.id}`)
     this.peerNode = options.peerNode ?? null
     this.now = options.now ?? (() => Date.now())
@@ -203,6 +376,25 @@ export class TransportClient implements TransportChannel {
     return this.outbox.pending
   }
 
+  /** What the server declared on the current connection's ready frame. */
+  get peerSupportedTypes(): readonly string[] | undefined {
+    return this.declaredPeerTypes
+  }
+
+  /** The authentication actually adopted by the current connection. */
+  get authenticatedBy(): HandshakeAuthentication | null {
+    return this.peerAuthentication
+  }
+
+  /** Effective credential metadata adopted locally for the current peer. */
+  get authenticatedCredential(): AuthenticatedCredential | null {
+    return this.peerCredential
+  }
+
+  supports(type: MessageType): boolean {
+    return peerSupportsType(this.declaredPeerTypes, type)
+  }
+
   /** True once the handshake has completed on the current socket. */
   isReady(): boolean {
     return this.state === 'ready'
@@ -211,13 +403,19 @@ export class TransportClient implements TransportChannel {
   /**
    * True once this client will never carry another envelope.
    *
-   * Three ways in: `close()`, a 4003 (the key is wrong), and the reconnect
-   * budget running out. All three are terminal, and none of them is visible
-   * through {@link isReady}, which cannot tell "down for a moment" from "down
-   * for good". A holder of a long-lived client needs that distinction —
-   * otherwise it keeps handing envelopes to a corpse, and `send` throwing is
-   * the first it hears of it. The activator's link pool reads this to decide
-   * when a link has to be replaced rather than waited on.
+   * Four ways in: `close()`, a 4003 (the key is wrong), the reconnect budget
+   * running out, and a 4004 this client cannot move out of the way of — its
+   * {@link MAX_CHANNEL_ROTATIONS} spent on one unbroken run of conflicts, the
+   * id pinned by the caller, or no reconnect left to carry a fresh one. All
+   * four are terminal, and none of them is visible through {@link isReady},
+   * which cannot tell "down for a moment" from "down for good". A holder of a
+   * long-lived client needs that distinction — otherwise it keeps handing
+   * envelopes to a corpse, and `send` throwing is the first it hears of it.
+   * The activator's link pool reads this to decide when a link has to be
+   * replaced rather than waited on.
+   *
+   * A **single** 4004 is not one of the four: that is the listener saying the
+   * channel id is taken, which this client answers by taking a different one.
    */
   isClosed(): boolean {
     return this.state === 'closed'
@@ -294,8 +492,11 @@ export class TransportClient implements TransportChannel {
   async close(): Promise<void> {
     this.state = 'closed'
     this.clearTimers()
+    this.peerAuthentication = null
+    this.peerCredential = null
     const socket = this.socket
     this.socket = null
+    this.pendingHandshake = null
     if (socket !== null) {
       socket.removeAllListeners()
       // Re-arm 'error' before touching the socket again. `removeAllListeners`
@@ -322,9 +523,22 @@ export class TransportClient implements TransportChannel {
     if (this.state === 'closed') return
     this.state = this.state === 'idle' ? 'connecting' : this.state
     const url = dialUrl(this.options.endpoint)
-    const socket = new WebSocket(url, {
-      ...(this.options.tls === undefined ? {} : toTlsOptions(this.options.tls)),
-    })
+    // Resolved here rather than in the constructor: this line is what makes a
+    // rotated certificate reach the wire on the next reconnect (§6.3 rule 4).
+    let tls: Record<string, unknown> | undefined
+    try {
+      tls =
+        this.options.tls === undefined
+          ? undefined
+          : toTlsOptions(resolveTls(this.options.tls))
+    } catch (error) {
+      // A file that is not there *right now* is a reason to try again in a
+      // moment, not a reason to dial without it. `failDial` routes this
+      // through the same backoff a refused connection takes.
+      this.failDial(error, onFatal)
+      return
+    }
+    const socket = new WebSocket(url, { ...(tls ?? {}) })
     this.socket = socket
     this.lastInboundAt = this.now()
 
@@ -350,6 +564,14 @@ export class TransportClient implements TransportChannel {
     switch (frame.t) {
       case FrameType.Challenge: {
         const clientNonce = newNonce()
+        const tuple: HandshakeTuple = {
+          serverNonce: frame.nonce,
+          clientNonce,
+          node: this.options.node,
+          channelId: this.id,
+        }
+        this.pendingHandshake = { socket, tuple }
+        const signing = this.options.signing
         this.write(socket, {
           t: FrameType.Auth,
           v: FRAME_VERSION,
@@ -364,12 +586,72 @@ export class TransportClient implements TransportChannel {
             this.options.node,
             this.id,
           ),
+          // Outside the MAC by design — see `AuthFrame.supportedTypes`.
+          ...(this.options.supportedTypes === undefined
+            ? {}
+            : { supportedTypes: this.options.supportedTypes }),
+          // Both proofs travel together during §8.2's phases ① and ②. The
+          // listener picks — and picking the legacy one is a real outcome
+          // rather than a refusal: a `--trust`-only peer holds no view on
+          // credentials and reads this frame as the plainly signed frame it
+          // also is (`readsCredentialClaims` in `handshake.ts`). Which one it
+          // took never comes back on the wire, so this side does not get to
+          // assume; it sends both and lets the far end decide.
+          ...(signing === undefined
+            ? {}
+            : {
+                ...(signing.credential === undefined
+                  ? {}
+                  : {
+                      credential: signing.credential.selector,
+                      credentialProof: signBytes(
+                        signing.keys,
+                        authCredentialProofInput(
+                          frame.nonce,
+                          clientNonce,
+                          this.options.node,
+                          this.id,
+                          signing.credential.selector,
+                          signing.credential.source,
+                          signing.credential.id,
+                        ),
+                      ),
+                    }),
+                sig: signBytes(
+                  signing.keys,
+                  authSigningInput(
+                    frame.nonce,
+                    clientNonce,
+                    this.options.node,
+                    this.id,
+                  ),
+                ),
+              }),
         })
         return
       }
-      case FrameType.Ready:
+      case FrameType.Ready: {
+        const accepted = this.acceptReady(socket, frame)
+        if (accepted === null) return
+        // Replaced, not merged: a peer that came back on an older build
+        // declares less, and remembering what it used to offer would keep this
+        // client sending types the peer no longer handles.
+        this.declaredPeerTypes = frame.supportedTypes
+        this.peerAuthentication = accepted.authentication
+        this.peerCredential = accepted.credential ?? null
+        this.record(TransportEventType.AuthAccepted, {
+          node: this.peerNode ?? '',
+          authentication: accepted.authentication,
+          ...(accepted.credential === undefined
+            ? {}
+            : {
+                credentialSource: accepted.credential.source,
+                credentialId: accepted.credential.id,
+              }),
+        })
         this.onReady()
         return
+      }
       case FrameType.Receipt:
         this.outbox.receive(frame)
         return
@@ -394,9 +676,63 @@ export class TransportClient implements TransportChannel {
     }
   }
 
+  /**
+   * Check the listener's half of the handshake before believing the link
+   * (§7.1.1). The returned value is the actual proof that admitted the peer.
+   *
+   * A refusal is **not** treated the way a 4003 is. 4003 means "your key is
+   * wrong", which retrying cannot fix; this means "the thing that answered is
+   * not who I dialled", which a retry very well might — the endpoint record
+   * may be mid-update, or the peer may be a build that has yet to be given its
+   * keys. So it closes with a protocol error and falls back into the existing
+   * `ReconnectSchedule`, exactly as §7.1.1 asks, and the backoff budget is what
+   * eventually reports a peer that never becomes the right one.
+   */
+  private acceptReady(
+    socket: WebSocket,
+    frame: {
+      readonly node?: string
+      readonly sig?: string
+      readonly credential?: string
+      readonly credentialProof?: string
+    },
+  ): {
+    readonly authentication: HandshakeAuthentication
+    readonly credential?: AuthenticatedCredential
+  } | null {
+    const signing = this.options.signing
+    const peerNode = this.options.peerNode
+    if (signing === undefined || peerNode === undefined) {
+      return { authentication: 'psk' }
+    }
+    const pending = this.pendingHandshake
+    // No remembered tuple means this ready did not answer a challenge this
+    // socket issued — there is nothing to check it against, and accepting it
+    // would be accepting an unsolicited frame as proof.
+    const verdict =
+      pending !== null && pending.socket === socket
+        ? verifyReady(peerNode, signing, pending.tuple, frame)
+        : ({ ok: false, rejection: ReadyRejection.BadSignature } as const)
+    if (verdict.ok) return verdict
+    this.record(TransportEventType.AuthRejected, {
+      face: 'ready',
+      rejection: verdict.rejection,
+      peerNode,
+    })
+    this.pendingHandshake = null
+    socket.close(CLOSE_PROTOCOL_ERROR, 'ready signature rejected')
+    socket.terminate()
+    return null
+  }
+
   private onReady(): void {
     this.state = 'ready'
     this.schedule.succeeded()
+    // Alongside it, and for the same reason: a handshake that got through is
+    // the proof that whatever the last rotation moved away from is resolved.
+    // Keeping the count would make the rotation budget a lifetime allowance
+    // for an event that recurs — see {@link MAX_CHANNEL_ROTATIONS}.
+    this.channelRotations = 0
     this.startKeepAlive()
     // Replay everything unreceipted, oldest first. Duplicates are the
     // receiver's problem by design — that is the whole at-least-once bargain.
@@ -434,6 +770,21 @@ export class TransportClient implements TransportChannel {
     )
   }
 
+  /**
+   * A dial that could not even be attempted, put on the reconnect schedule.
+   *
+   * Shares `onClose`'s tail deliberately: "the TLS materials were unreadable
+   * for a moment" and "the peer was not answering for a moment" have the same
+   * right answer — back off and try again — and giving them two code paths is
+   * how one of them ends up with no give-up bound.
+   */
+  private failDial(error: unknown, onFatal?: (error: Error) => void): void {
+    this.record(TransportEventType.ConnectionClosed, {
+      reason: error instanceof Error ? error.message : String(error),
+    })
+    this.scheduleReconnect(onFatal)
+  }
+
   private onClose(
     socket: WebSocket,
     code: number,
@@ -445,6 +796,11 @@ export class TransportClient implements TransportChannel {
     // socket may still emit one while it finishes tearing down.
     socket.on('error', () => {})
     this.socket = null
+    this.peerAuthentication = null
+    this.peerCredential = null
+    // The nonce pair belonged to that socket. Carrying it to the next one
+    // would let a ready frame be checked against a challenge it never answered.
+    if (this.pendingHandshake?.socket === socket) this.pendingHandshake = null
     this.stopKeepAlive()
     if (this.state === 'closed') return
 
@@ -453,26 +809,131 @@ export class TransportClient implements TransportChannel {
     // 4003 is the peer saying the key is wrong. Retrying cannot fix a wrong
     // key, and hammering a door that answers 'unauthorized' is how one
     // misconfigured node becomes everyone's incident.
-    if (code === 4003) {
-      this.state = 'closed'
-      this.clearTimers()
-      const error = new Error('transport handshake rejected (4003)')
+    if (code === CLOSE_UNAUTHORIZED) {
       this.record(TransportEventType.AuthRejected, { code })
-      this.readyWaiters = []
-      onFatal?.(error)
+      this.die(new Error('transport handshake rejected (4003)'), onFatal)
       return
     }
 
+    // 4004 is a different sentence: the key is *fine* and the channel id is
+    // taken (`CLOSE_CHANNEL_CONFLICT`). Nothing about this client is wrong, so
+    // killing it would be the listener's directory change taking a healthy
+    // node out of service — which is what the earlier "4003 for everything"
+    // shape did, permanently and for a peer that had not changed a byte.
+    if (code === CLOSE_CHANNEL_CONFLICT) {
+      // One reading of the clock for both halves of the answer. Reading it
+      // twice lets the give-up boundary fall *between* them: the rotation is
+      // recorded and the id changed on the first reading, the dial that was to
+      // carry it is refused on the second, and the client dies reporting an
+      // exhausted budget — the two symptoms `rotationRefusal` exists to
+      // prevent, reproduced on a window microseconds wide.
+      const now = this.now()
+      const refusal = this.rotationRefusal(now)
+      if (refusal === null) {
+        this.rotateChannelId()
+        this.scheduleReconnect(onFatal, now)
+        return
+      }
+      this.record(TransportEventType.AuthRejected, { code })
+      this.die(new Error(refusal), onFatal)
+      return
+    }
+
+    this.scheduleReconnect(onFatal)
+  }
+
+  /**
+   * Why this client may not answer a {@link CLOSE_CHANNEL_CONFLICT} by taking
+   * a fresh channel id — as the sentence its caller will be given — or `null`
+   * when it may.
+   *
+   * The reconnect budget belongs in here, rather than being discovered by the
+   * dial that follows, because a rotation is only half of the answer: the
+   * other half is the dial carrying the new id. A client that will not dial
+   * again — budget spent, or `giveUpAfterMs: 0`, which is how `@qianmo/tunnel`
+   * configures a lease that must not outlive its link — would otherwise record
+   * a {@link TransportEventType.ChannelRotated}, a *loss* record, for an id
+   * that never reached the wire, and then die reporting an exhausted reconnect
+   * budget: the symptom of the give-up path it fell into, in place of the 4004
+   * that actually ended it.
+   *
+   * `now` comes from the caller rather than the clock so that this answer and
+   * the retry it licenses are the same reading — see `onClose`.
+   */
+  private rotationRefusal(now: number): string | null {
+    if (this.channelIdIsCallerSupplied) {
+      return `transport channel ${this.channelId} is held by another identity (4004); a caller-supplied channel id is never rotated`
+    }
+    if (this.channelRotations >= MAX_CHANNEL_ROTATIONS) {
+      return `transport channel id still conflicted after ${this.channelRotations} rotation(s) (4004)`
+    }
+    if (!this.schedule.willRetry(now)) {
+      return `transport channel ${this.channelId} is held by another identity (4004), and this client has no reconnect left to carry a fresh one`
+    }
+    return null
+  }
+
+  /**
+   * Move to a fresh channel id.
+   *
+   * Whether this client *may* is {@link rotationRefusal}'s question, asked
+   * before the move; this only makes it.
+   */
+  private rotateChannelId(): void {
+    this.channelRotations += 1
+    const abandoned = this.channelId
+    this.channelId = newChannelId()
+    // Recorded because it is a loss, not a retry: anything the listener had
+    // queued on `abandoned` for the identity that owned it stays there until
+    // its retention clock expires and never reaches this client. This side's
+    // own unreceipted envelopes are not lost — the outbox replays them onto
+    // the new channel as it does after any reconnect.
+    this.record(TransportEventType.ChannelRotated, {
+      abandoned,
+      channelId: this.channelId,
+      rotation: this.channelRotations,
+    })
+  }
+
+  /**
+   * Terminal state, from any of the ways in (see {@link isClosed}).
+   *
+   * The `outbox.close` is the point of having one function: without it a
+   * caller parked on `sendAndWait`/`waitForDrain` when the link died learns
+   * nothing until its own timeout fires, and then learns the wrong thing —
+   * "no receipt within 5000ms" describes the symptom of a channel that has
+   * been dead since the first millisecond, and hides the cause. `close()` has
+   * always done this; the fatal paths did not, and that asymmetry is the whole
+   * difference between a diagnosable failure and a silent one.
+   */
+  private die(error: Error, onFatal?: (error: Error) => void): void {
+    this.state = 'closed'
+    this.clearTimers()
+    this.readyWaiters = []
+    this.outbox.close(error)
+    onFatal?.(error)
+  }
+
+  private scheduleReconnect(
+    onFatal?: (error: Error) => void,
+    // Defaulted, so the two ordinary callers stay as they were; the 4004 path
+    // passes the instant it already decided on, which is what keeps its
+    // rotation and its retry on the same reading of the clock.
+    now: number = this.now(),
+  ): void {
+    if (this.state === 'closed') return
     this.state = 'reconnecting'
-    const decision = this.schedule.next(this.now())
+    const decision = this.schedule.next(now)
     if (decision.action === 'give-up') {
-      this.state = 'closed'
-      this.clearTimers()
       this.record(TransportEventType.ReconnectGaveUp, {
         elapsedMs: decision.elapsedMs,
       })
-      this.readyWaiters = []
-      onFatal?.(new Error('transport reconnect budget exhausted'))
+      // Routed through `die` with the other two terminal paths. It is the same
+      // asymmetry and it is on the path this file's rotation logic creates:
+      // a rotation that keeps colliding lands here, and a caller parked on
+      // `sendAndWait` would otherwise wait out its own timeout to be told
+      // "no receipt" rather than "the link gave up".
+      this.die(new Error('transport reconnect budget exhausted'), onFatal)
       return
     }
     if (decision.timeJumpDetected) {

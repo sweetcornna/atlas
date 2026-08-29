@@ -9,8 +9,13 @@ import { z } from 'zod/v4'
 import { SandboxSettingsSchema } from '../../entrypoints/sandboxTypes.js'
 import { isEnvTruthy } from '../config/envUtils.js'
 import { lazySchema } from '../collections/lazySchema.js'
-import { PERMISSION_MODES } from '../permissions/PermissionMode.js'
+import {
+  PERMISSION_MODE_INPUTS,
+  type PermissionMode,
+  normalizePermissionModeAlias,
+} from '../../types/permissions.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
+import { THEME_SETTINGS } from '../terminal/themeNames.js'
 import { CLAUDE_CODE_SETTINGS_SCHEMA_URL } from './constants.js'
 import { PermissionRuleSchema } from './permissionValidation.js'
 
@@ -59,8 +64,28 @@ export const PermissionsSchema = lazySchema(() =>
         .describe(
           'List of permission rules that should always prompt for confirmation',
         ),
-      defaultMode: z
-        .enum(PERMISSION_MODES)
+      // 'manual' is an input-only alias for 'default' (upstream renamed the
+      // mode on its input surface). It is accepted and normalized in place so
+      // the parsed value downstream is always a real PermissionMode — and,
+      // more importantly, so a settings.json copied from an official install
+      // does not fail validation. occ skips the ENTIRE file on a schema error
+      // (see InvalidSettingsDialog), so one unknown enum member would silently
+      // drop every other setting in it.
+      //
+      // `.overwrite()` rather than `.transform()`: transform turns the field
+      // into a ZodPipe, which `toJSONSchema` renders as `{}` — the published
+      // settings schema would lose the enum and editors would stop completing
+      // permission modes.
+      defaultMode: (
+        z
+          .enum(PERMISSION_MODE_INPUTS)
+          .overwrite(
+            value =>
+              normalizePermissionModeAlias(
+                value,
+              ) as (typeof PERMISSION_MODE_INPUTS)[number],
+          ) as unknown as z.ZodType<PermissionMode>
+      )
         .optional()
         .describe('Default permission mode when Claude Code needs access'),
       disableBypassPermissionsMode: z
@@ -350,6 +375,87 @@ export const SettingsSchema = lazySchema(() =>
           'Whether file picker should respect .gitignore files (default: true). ' +
             'Note: .ignore files are always respected.',
         ),
+      emojiCompletionEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the :emoji: shortcode typeahead (the suggestion popup and ' +
+            'the :name: inline replacement) is disabled. When absent or true, it is enabled.',
+        ),
+      breakReminder: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe(
+              'Show a friendly nudge after sustained continuous use (default false). ' +
+                'Must be true for the reminder to fire.',
+            ),
+          intervalMinutes: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe(
+              'Minutes of continuous use before the reminder fires (default 30). ' +
+                'Re-fires every interval until you take a break.',
+            ),
+          breakThresholdMinutes: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe(
+              'Minutes of inactivity that count as a break and reset the timer (default 10)',
+            ),
+          message: z
+            .string()
+            .optional()
+            .describe(
+              'Custom reminder text. Leave unset for a rotating set of friendly nudges.',
+            ),
+        })
+        .optional()
+        .describe(
+          'Opt-in break reminder. When enabled, shows a nudge after sustained ' +
+            'continuous use. Never blocks — just a friendly heads-up.',
+        ),
+      quietHours: z
+        .object({
+          enabled: z
+            .boolean()
+            .optional()
+            .describe(
+              'Show a one-time nudge when you start or keep using the CLI inside ' +
+                'your quiet-hours window (default false).',
+            ),
+          start: z
+            .string()
+            .regex(
+              /^([01]?\d|2[0-3]):[0-5]\d$/,
+              'Expected 24-hour local time "HH:MM" (e.g. "22:00")',
+            )
+            .optional()
+            .describe(
+              'Start of the quiet-hours window, 24-hour local time "HH:MM".',
+            ),
+          end: z
+            .string()
+            .regex(
+              /^([01]?\d|2[0-3]):[0-5]\d$/,
+              'Expected 24-hour local time "HH:MM" (e.g. "07:00")',
+            )
+            .optional()
+            .describe(
+              'End of the quiet-hours window, 24-hour local time "HH:MM". ' +
+                'May be earlier than start for an overnight range.',
+            ),
+        })
+        .optional()
+        .describe(
+          'Opt-in quiet hours. When enabled, shows a single soft nudge per session ' +
+            'while inside the configured local-time window. Never blocks.',
+        ),
       cleanupPeriodDays: z
         .number()
         .nonnegative()
@@ -427,6 +533,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      fallbackModel: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Fallback model(s) tried in order when the primary model is overloaded or unavailable. Each element accepts a model name or alias; "default" expands to the default model. CLI --fallback-model takes precedence.',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())
@@ -438,6 +550,19 @@ export const SettingsSchema = lazySchema(() =>
             'and full model IDs. ' +
             'If undefined, all models are available. If empty array, only the default model is available. ' +
             'Typically set in managed settings by enterprise administrators.',
+        ),
+      // Fail closed: a present-but-invalid value must not silently widen the
+      // allowlist. An absent value stays undefined (enforcement off).
+      enforceAvailableModels: z
+        .boolean()
+        .optional()
+        .catch(true)
+        .describe(
+          'When true and availableModels is a non-empty array, the Default model selection is also ' +
+            'constrained: if the default model for the user tier is not in availableModels, Default ' +
+            'resolves to the first allowed availableModels entry instead. Has no effect when ' +
+            'availableModels is unset or an empty array. Typically set in managed settings by ' +
+            'enterprise administrators.',
         ),
       modelOverrides: z
         .record(z.string(), z.string())
@@ -502,6 +627,16 @@ export const SettingsSchema = lazySchema(() =>
             .describe(
               'Directories to include when creating worktrees, via git sparse-checkout (cone mode). ' +
                 'Dramatically faster in large monorepos — only the listed paths are written to disk.',
+            ),
+          baseRef: z
+            .enum(['fresh', 'head'])
+            .optional()
+            .catch(undefined)
+            .describe(
+              "Which ref new worktrees branch from. 'fresh' (default) branches from " +
+                'origin/<default-branch> for a clean tree. ' +
+                "'head' branches from your current local HEAD so unpushed commits and " +
+                'feature-branch state are present.',
             ),
         })
         .optional()
@@ -756,6 +891,24 @@ export const SettingsSchema = lazySchema(() =>
             'Stores explicit choices ONLY — an absent source follows its credentials, ' +
             'so logging in to a provider enables its search layer automatically.',
         ),
+      webSearchAutoPin: z
+        .object({
+          anthropic: z.boolean().optional(),
+          deepseek: z.boolean().optional(),
+          gemini: z.boolean().optional(),
+          codex: z.boolean().optional(),
+        })
+        .optional()
+        // Same reasoning as webSearchSources: a malformed block degrades to
+        // "no explicit choices", never to a rejected settings file. Degrading
+        // that way means auto-pinning, which is the default anyway.
+        .catch(undefined)
+        .describe(
+          'Per-source opt-outs for automatic web-search credential pinning. ' +
+            'Stores explicit "false" ONLY — an absent source is pinned automatically, ' +
+            'so a key found in the environment survives /logout and provider switches. ' +
+            'D in /search-setting writes the opt-out; S clears it.',
+        ),
       webFetchAdapter: z
         .enum(['tavily', 'http'])
         .optional()
@@ -831,6 +984,27 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether to disable syntax highlighting in diffs'),
+      workflowSizeGuideline: z
+        .enum(['unrestricted', 'small', 'medium', 'large'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Advisory agent-count guideline appended to the Workflow tool prompt. ' +
+            '"small" aims for fewer than 5 agents, "medium" fewer than 15, "large" fewer than 50, ' +
+            'and "unrestricted" sends no guideline. Absent also sends no guideline. ' +
+            'This is a guideline, not an enforced limit.',
+        ),
+      axScreenReader: z
+        .boolean()
+        .optional()
+        .describe(
+          'Render screen-reader friendly output (flat text, no decorative borders or animations). ' +
+            'Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag.',
+        ),
+      theme: z
+        .enum(THEME_SETTINGS)
+        .optional()
+        .describe('Color theme for the interface'),
       terminalTitleFromRename: z
         .boolean()
         .optional()
@@ -971,6 +1145,18 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['latest', 'stable'])
         .optional()
         .describe('Release channel for auto-updates (latest or stable)'),
+      requiredMinimumVersion: z
+        .string()
+        .optional()
+        .describe(
+          'Minimum version required to start. If the running version is older, the CLI exits at startup with instructions to update. Only enforced from managed (policy) settings.',
+        ),
+      requiredMaximumVersion: z
+        .string()
+        .optional()
+        .describe(
+          'Maximum version allowed to start. If the running version is newer, the CLI exits at startup with instructions to install an approved version. Only enforced from managed (policy) settings.',
+        ),
       ...(feature('LODESTONE')
         ? {
             disableDeepLinkRegistration: z
@@ -1256,6 +1442,20 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether to show cache hit rate warnings in the message flow when the rate falls below cacheThreshold. Default: true.',
         ),
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(100_000)
+        .max(1_000_000)
+        .optional()
+        .catch(undefined)
+        .describe(
+          'How full the context is allowed to get before auto-compaction runs, in tokens (100k-1M). ' +
+            'This is a compaction threshold, not a context-window override: the effective value is ' +
+            "the minimum of this setting and the model's own context window. " +
+            'Omit (or set via `/autocompact auto`) to track the model window. ' +
+            'CLAUDE_CODE_AUTO_COMPACT_WINDOW takes precedence over this setting.',
+        ),
       pluginTrustMessage: z
         .string()
         .optional()
@@ -1282,6 +1482,25 @@ export const SettingsSchema = lazySchema(() =>
           'Workspace API key (sk-ant-api03-*) saved via /login UI. ' +
             `Stored in plaintext at ${occGlobalConfigFile()} — keep this file gitignored and restrict its permissions. ` +
             'ANTHROPIC_API_KEY environment variable takes precedence when both are set.',
+        ),
+      skillListingMaxDescChars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Per-skill description character cap in the skill listing sent to Claude (default: 1536). ' +
+            'Descriptions longer than this are truncated. Raise to opt in to higher per-turn context cost.',
+        ),
+      skillListingBudgetFraction: z
+        .number()
+        .gt(0)
+        .lte(1)
+        .optional()
+        .describe(
+          'Fraction of the context window (in characters) reserved for the skill listing sent to Claude ' +
+            '(default: 0.01 = 1%). When the listing exceeds this, descriptions are shortened to fit. ' +
+            'Raise to opt in to higher per-turn context cost.',
         ),
     })
     .passthrough(),

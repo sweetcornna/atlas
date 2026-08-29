@@ -3,10 +3,6 @@ title: "GrowthBook 适配器 - 自定义 Feature Flag 服务器接入"
 description: "通过环境变量连接自定义 GrowthBook 服务器，实现远程 feature flag 控制。无配置时自动回退到代码默认值。"
 keywords: ["growthbook", "feature flags", "远程配置", "适配器", "环境变量"]
 ---
-
-<!-- lang-switcher -->
-[English](/docs/en/internals/growthbook-adapter) · **中文** · [日本語](/docs/ja/internals/growthbook-adapter)
-
 ## 概述
 
 Claude Code 的 GrowthBook 系统支持通过环境变量连接自定义 GrowthBook 服务器，实现远程 feature flag 控制。
@@ -144,9 +140,9 @@ bun run dev
    ↓ 未命中
 2. growthBookOverrides 配置（~/.occ.json，仅 ant 构建）
    ↓ 未命中
-3. 内存缓存（remoteEvalFeatureValues，本次进程从服务器拉取）
+3. LOCAL_GATE_DEFAULTS（growthbook.ts 的本地固定值，压过任何远端值）
    ↓ 未命中
-4. 磁盘缓存（~/.occ.json 的 cachedGrowthBookFeatures）
+4. 内存缓存（remoteEvalFeatureValues，本次进程从服务器拉取）
    ↓ 未命中
 5. 代码中的 defaultValue 参数
 ```
@@ -155,7 +151,7 @@ bun run dev
 
 | 机制 | 说明 |
 |---|---|
-| **磁盘缓存** | `~/.occ.json` 的 `cachedGrowthBookFeatures` 字段，跨进程持久化 |
+| **磁盘缓存** | **已移除**（2.45.0）。远端 payload 只留内存，不跨进程持久化 |
 | **周期刷新** | 每 6 小时自动从服务器拉取最新值（`setInterval` + `unref`） |
 | **初始化超时** | 首次连接超时 5 秒，超时后使用磁盘缓存或默认值 |
 | **Auth 变更** | 登录/登出时自动销毁并重建客户端 |

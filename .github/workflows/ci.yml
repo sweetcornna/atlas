@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: [main, "feature/*", "feat/*"]
+  # No branch filter on purpose: every PR runs CI, whatever its base.
+  # The filter here used to be [main, "feat/*"] while the real flow was
+  # codex/* and s4/* into an integration branch, so PRs #2-#4 reported no
+  # checks at all and a false-green test rode along unnoticed. Enumerating
+  # base branches has to be redone every time the integration branch changes
+  # -- it has already been missed once. "Every PR" cannot go stale.
+  # `push` keeps its filter so a branch push and its PR do not both run.
   pull_request:
-    branches: [main, "feat/*"]
   workflow_dispatch:
 
 permissions:
@@ -45,6 +51,13 @@ jobs:
         run: bunx biome ci .
 
       - name: Type check
+        # tsc on this tree peaks at ~2.7 GB RSS (measured 2026-08-17, and the
+        # number is identical one commit earlier — grown over batches, not a
+        # single regression). Node's default ~2 GB old-space cap OOM'd this
+        # step on both runners; the machines have RAM to spare, the default
+        # heap cap is the only bottleneck.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: bun run typecheck
 
       # Two-sided ratchet: fails if cycles were added, and also if cycles were
@@ -67,11 +80,53 @@ jobs:
       - name: Check mock hygiene
         run: bun run check:mock-hygiene
 
+      # Issue #75: `typeof MACRO` compiles into a test on a bare identifier the
+      # bundler never substitutes, so the define it guards is silently lost in
+      # every artifact — and unit tests cannot see it, because under `bun test`
+      # the fallback branch really is the correct one. Hard zero, milliseconds,
+      # also inside precheck.
+      - name: Check MACRO guards
+        run: bun run check:macro-guards
+
+      # 三方身份隔离（官方 .claude / occ .occ / 阡陌 .qianmo）全靠「每条身份路径
+      # 都从 src/config/paths.ts 派生」这一条不变式；绕过它的硬编码字面量是这套
+      # 隔离**唯一**的失效方式，改造前有 12 处，其中两处出过真实事故。
+      #
+      # 这道检查此前定义在 package.json 里却**一处都没接**（precheck / verify / CI
+      # 全无），而且在干净树上就 exit 1 —— 一道看着在、其实从不运行的门禁。
+      # 2026-08-26 补上 guard.ts 的反向例外后接活，毫秒级。
+      - name: Check identity-path bypasses
+        run: bun run check:identity-paths
+
+      # 同样是此前的孤儿门禁。Mintlify 对「导航声明了但文件不存在」的页面不会跳过，
+      # 而是发布成一个 404，所以这条必须在合并前跑。它没接门禁的直接后果是
+      # sync-docs-i18n.ts 与 check-docs-i18n.ts 曾对同一条约定分叉而无人发现。
+      - name: Check docs navigation
+        run: bun run check:docs-i18n
+
       # The loop lives in scripts/test-shards.sh — see that file for why
       # sharding is what fixed the 55 red runs, and why an unsharded `bun test`
       # is not a stricter substitute.
       - name: Test with Coverage (sharded per directory)
         run: ./scripts/test-shards.sh --coverage
+
+      # 每个分片一份 JUnit XML：用例名 + 逐条耗时。`always()` —— 红的那次才最
+      # 需要它，而这恰恰是上一步非零退出、后续步骤全被跳过的那一次。issue #56
+      # 偶发红了 24 次，用例名一次都没留下来；普通 stdout 里每条用例的耗时根本
+      # 不打，而「中位数 459 ms 的用例跑了 6034 ms」正是那条线索的起点。
+      #
+      # 产物里只有用例名、文件路径、耗时和失败断言的文本，没有凭据。
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          # 与 acceptance-local 同一形态：artifact 名在 v4+ 是唯一键，重跑同一个
+          # run 时只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑正是红了
+          # 之后最常做的动作，也正是要拿两次现场做对照的时候。
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-reports
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Check coverage artifact
         run: |
@@ -100,6 +155,180 @@ jobs:
       # exports/types are a two-sided budget. Raw output: `check:unused:raw`.
       - name: Check unused exports
         run: bun run check:unused
+
+  # 端到端验收套件的**本地腿**（`demo/lib/acceptance/`，LocalDriver）。
+  #
+  # 为什么是一个兄弟 job，而不是 `ci` 里的一步、也不是 `scripts/test-shards.sh`
+  # 的一格：`scripts/qianmo-acceptance.ts` 顶部那三条理由（要起真进程、要抢真
+  # TCP 端口、它的红是产品结论而不是构建结论）反对的是**混进单元测试分片**，
+  # 不是「不接线」。作为并行的兄弟 job，它既不给合并门禁添一分钟串行时间，也
+  # 不会把一个抢端口的成员塞进那批靠目录隔离 mock 状态的纯内存分片里 —— 后者
+  # 正是这仓库花了 55 次连红才治好的病。先例就在下面：`windows` 也是兄弟 job。
+  #
+  # 接线本身才是重点。PR #63 给套件加了一道防假绿的自保护：一轮里如果没有任何
+  # 场景真的调用过驱动，即便 fail=0 error=0 也判 FAIL 并 exit 1（issue #61 —— 真机
+  # 腿曾经报 `pass=11 fail=0 skip=104` + exit 0，而驱动被调用了 0 次）。但在此
+  # 之前套件**完全没接线**，那道自保护只在有人手动跑时才响 —— 而它挡的恰恰是
+  # 「没人看的时候悄悄变成假绿」。一道只在有人看着时才响的警报不挡这个。
+  #
+  # 真机腿（FleetDriver）**不接 GitHub CI，而且不是「以后再补」**：
+  #
+  # ① 凭据。它要四台 VPS 的 SSH 私钥 + 生产传输 PSK + 控制台机器 H 的 IAP
+  #    隧道凭据。把这套放进仓库 secrets，是拿一条验收腿去换一个长期泄密面。
+  # ② 自托管 runner 能绕开①（凭据本来就在 H 上），但**现在没有注册**，而
+  #    `runs-on: self-hosted` 在没有 runner 时不会失败、只会**永远排队**。
+  #    一个长期 pending 的检查与「还在跑」长得一模一样，它教会人忽略检查栏 ——
+  #    比没有这个 job 更糟。要接就得先真的注册 runner，那是另一件事。
+  #
+  # 别把这条读成「真机腿是多余的」。它**唯一覆盖**本地腿造不出的两条
+  # （`handshake/channel-conflict-signing-key`、`audit/mirror-pull-not-constructible`），
+  # 而且它验的是真部署面。两条腿跑同一张场景表（`demo/lib/acceptance/registry.ts`），
+  # 本地腿 113/115、真机腿 96/115 —— 各有各的盲区，谁也不替代谁。
+  # 真机腿仍然手动跑（`--target fleet`），它那两条「不碰生产」的纪律另有分片
+  # 护栏（`demo/lib/acceptance/__tests__/fleetGuards.test.ts`），那条护栏零网络、
+  # 进得了分片，所以「改坏了要等下一次真跑才发现」的那部分已经被挡住了。
+  acceptance-local:
+    runs-on: ubuntu-latest
+    # 实测（4 核 aarch64 Linux 容器，bun 1.3.13，非 root，2026-08-25）：
+    # 装依赖 154 s + 护栏 <1 s + 套件本体 709 s（11.8 min）= 全程约 15 min，
+    # 结果 113 pass / 0 fail / 2 skip / 0 error。
+    #
+    # 给到 30 是留一倍余量，而不是掐着实测数：GitHub 托管 runner 是 x86_64
+    # 共享机器，比这个容器慢多少事前不可知。**宁可宽**——job 级超时切下去拿到
+    # 的是「没有汇总表的红」，那种红查不动；真正的兜底是场景级超时，它至少会
+    # 指名是哪一条卡住了。
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # 同 `ci` job：dev 检出没有 vendored rg，运行时回退到系统二进制，而裸
+      # runner 没有。这条腿起的是真的 `qm resident`，它会执行真的 Glob 工具。
+      - name: Install ripgrep (system fallback for dev checkouts)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      # 这一步**故意**制造 issue #61 那个形状，然后要求套件因此变红。
+      #
+      # 构造方式不是打桩，是真事：`trust/notice-trust-has-two-values` 只
+      # `readFileSync` 一个仓库文件做静态断言，一次驱动都不调用。于是这一轮
+      # counts 全绿（pass=1 fail=0 error=0）而 targetTouches=0 —— 正是那个
+      # 「报 PASS 却什么都没做」的形状。
+      #
+      # 为什么值得单独占一步：`demo/lib/acceptance/__tests__/report-core.test.ts`
+      # 里那三条断言证明的是 `summarize()` **算得对**，证明不了两件下游的事：
+      #   ① `scripts/qianmo-acceptance.ts` 真的把 `run.pass` 变成了进程退出码；
+      #   ② 这个 workflow 的 `run:` 步骤真的会因为那个退出码变红。
+      # 而接线出错的经典形态全在这两处 —— `|| true`、吞掉退出码的管道、或者
+      # `EXIT=$?` 跟在管道后面（那拿到的是管道**最后一个**命令的退出码）。
+      # 换句话说：这一步测的是这个 YAML 自己，不是套件。
+      - name: Guard - a zero-driver-call run must fail this step
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP}/acceptance-guard"
+          log="${RUNNER_TEMP}/acceptance-guard.log"
+
+          # 没有管道：要的就是这条命令自己的退出码。
+          if bun run scripts/qianmo-acceptance.ts \
+               --target local \
+               --only trust/notice-trust-has-two-values \
+               --out "$out" > "$log" 2>&1; then
+            echo "::error title=False-green guard is dead::一轮零驱动调用的运行返回了 exit 0。report-core.ts 的 targetTouches 判定或本入口的退出码被改坏了。"
+            cat "$log"
+            exit 1
+          fi
+
+          # 退出码非零还不够 —— 必须是因为**零触达**而不是因为这条场景自己红了。
+          # 后者会让这道护栏以「正确」的退出码通过，而完全没测到它要测的东西。
+          summary="$(tail -n 1 "$out/results.ndjson")"
+          echo "$summary" | jq .
+
+          # 产物是流式落盘的（issue #85）：末行是 summary **只有跑完了才成立**。
+          # 被打断的一轮会留下一份没有末行的文件，那时 `tail -n 1` 拿到的是一条
+          # scenario 行，它没有 `.counts` / `.pass` —— 下面每一条 `jq -e` 都会
+          # 因为 null 而失败，形态上没问题，但报出来的原因会全部指错方向。先把
+          # 「这份文件到底跑完没有」问清楚，是这道护栏读 NDJSON 的第一步。
+          echo "$summary" | jq -e '.kind == "summary"' > /dev/null || {
+            echo "::error title=Run did not finish::results.ndjson 末行不是 summary —— 这一轮没跑完（被打断/被杀），不是判定结果。首行 kind:start 里有 target/startedAt/planned。"
+            head -n 1 "$out/results.ndjson" | jq . || true
+            cat "$log"
+            exit 1
+          }
+
+          # 先证明「真的跑了一条并且它绿了」。少了这条，护栏会以最坏的方式退化：
+          # 那条场景一旦被改名或删掉，`--only` 匹配不到任何东西 → 零场景 → counts
+          # 全 0、targetTouches 也是 0 → 判定 FAIL → exit 1 → 上面的 `if` 照样满足，
+          # 于是这一步继续绿，而它实际上什么都没验。护栏自己变成假绿，正是它要挡的
+          # 那个形状。
+          echo "$summary" | jq -e '.counts.pass >= 1' > /dev/null || {
+            echo "::error title=Guard tested nothing::--only 没匹配到场景（改名或删了？）。护栏这一轮零场景，等于没验。"
+            cat "$log"
+            exit 1
+          }
+          echo "$summary" | jq -e '.counts.fail == 0 and .counts.error == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景自己红了，这一步没有制造出「全绿但零触达」。"
+            cat "$log"
+            exit 1
+          }
+          echo "$summary" | jq -e '.targetTouches == 0' > /dev/null || {
+            echo "::error title=Guard tested nothing::护栏场景调用了驱动，构造出的不是零触达。换一条纯静态场景。"
+            exit 1
+          }
+          echo "$summary" | jq -e '.pass == false' > /dev/null || {
+            echo "::error title=False-green guard is dead::零触达的一轮被判成了 pass。"
+            exit 1
+          }
+
+          echo "OK：counts 全绿 + 零驱动调用 → 判定 FAIL → 非零退出码 → 本步骤变红。"
+
+      # 真跑。**没有管道、没有 `|| true`、没有 `continue-on-error`** —— 这一步的
+      # 红全靠这条命令的退出码，上一步刚刚证明过那条链路是通的。
+      #
+      # 不需要 tee：套件自己把人可读汇总打到 stdout（于是进 step log），把
+      # NDJSON 写进 --out（于是进下一步的 artifact）。加了管道反而会把退出码
+      # 换成管道末端那个命令的。
+      #
+      # --timeout-scale 3：场景里那 87 个自报的超时（30 s–300 s）是按开发机写的，
+      # 而 runner 是共享的虚拟机（2–4 核，且同宿主上还有别人）。不放大的话，一条只是慢了的场景会被记成
+      # `error`（「套件自己炸了」）而不是它本来要说的话 —— 那在 CI 上是纯噪声，
+      # 且是会被人当成「套件不稳」而加豁免的那种噪声。理由与 runner.ts 里
+      # `FLEET_TIMEOUT_SCALE` 逐字相同，只是慢的原因从「每步多一次 SSH 往返」
+      # 换成了「共享 runner」。倍率而不是统一大数：场景之间的相对预算是作者
+      # 定的，压平会让本该快的那些在挂死时也拖满。
+      - name: Acceptance suite (local leg)
+        run: |
+          bun run scripts/qianmo-acceptance.ts \
+            --target local \
+            --timeout-scale 3 \
+            --out "${RUNNER_TEMP}/acceptance-local"
+
+      # `always()`：红的那次才最需要 NDJSON。这个项目的验收留档一向是
+      # 「机器可读产物 + 它的哈希」（见 docs/dev/acceptance-m0.md），CI 这轮
+      # 也按同一个形态留。产物里没有凭据：本地腿的 PSK 是写死在
+      # `demo/lib/acceptance/local/driver.ts` 里的固定串，无秘密可言。
+      - name: Upload acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          # 带上 run_attempt：artifact 名在 v4+ 是唯一键，重跑同一个 run 时
+          # 只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑恰恰是红了之后
+          # 最常做的动作。分开存也正好留住两次尝试各自的现场。
+          name: acceptance-local-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-local
+          if-no-files-found: warn
+          retention-days: 14
 
   # Deliberately a separate job rather than a matrix leg of `ci`: it runs a
   # different, much narrower set of steps. The full suite is slow and flaky on
@@ -130,6 +359,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Type check
+        # Same ~2.7 GB tsc peak as the linux job; same default-heap OOM on the
+        # first run of this branch. See the linux Type check step.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: bun run typecheck
 
       # Paths are single-quoted: the default shell here is pwsh, and quoting

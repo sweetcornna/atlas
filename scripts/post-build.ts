@@ -5,10 +5,12 @@
  * 1. Patch globalThis.Bun destructuring in third-party deps for Node.js compat
  * 2. Copy native addon files
  * 3. Bundle the runtime-farm bootstrap and generate the dual entry points
- *    (cli-bun.js, cli-node.js) that enter it
+ *    (cli-bun.js, cli-node.js, cli-qianmo.js) that enter it
+ * 4. Bundle the demo entry points that shell scripts invoke (see demoBundles.ts)
  */
 import { readdir, readFile, writeFile, cp } from 'node:fs/promises'
 import { join } from 'node:path'
+import { writeDemoBundles } from './demoBundles.ts'
 import { writeEntrypoints } from './entrypoints.ts'
 
 const outdir = 'dist'
@@ -73,8 +75,12 @@ async function postBuild() {
   // that hand control to it — shared with build.ts, see scripts/entrypoints.ts
   const version = await writeEntrypoints(outdir)
 
+  // Step 4: Bundle the demo entry points. The fleet payload ships dist/ + demo/
+  // without node_modules, so the .ts sources cannot resolve @qianmo/* there.
+  const demoBundles = await writeDemoBundles(outdir)
+
   console.log(
-    `Post-build complete: patched ${bunPatched} Bun destructure across ${jsFiles.length + chunkFiles.length} files, generated entry points for v${version}`,
+    `Post-build complete: patched ${bunPatched} Bun destructure across ${jsFiles.length + chunkFiles.length} files, generated entry points for v${version}, bundled ${demoBundles} demo entry points`,
   )
 }
 

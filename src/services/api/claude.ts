@@ -76,9 +76,16 @@ import {
   getSonnet1mExpTreatmentEnabled,
 } from '../../utils/session/context.js'
 import { resolveAppliedEffort } from '../../utils/model/effort.js'
-import type { ModelSettingsSlot } from '../../utils/model/modelTier.js'
+import type {
+  ModelSettingsSlot,
+  SessionModelSettingsOverrides,
+} from '../../utils/model/modelTier.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/config/envUtils.js'
-import { FreezeAwareWatchdog } from '../../utils/network/freezeAwareWatchdog.js'
+import {
+  type FreezeAwareTimer,
+  clearFreezeAwareTimeout,
+  setFreezeAwareTimeout,
+} from '../../utils/network/freezeAwareWatchdog.js'
 import {
   getClaudeStreamIdleTimeoutMs,
   isClaudeStreamWatchdogEnabled,
@@ -206,8 +213,8 @@ import {
   type ThinkingConfig,
 } from 'src/utils/model/thinking.js'
 import {
-  isDeferredToolsDeltaEnabled,
   isSearchExtraToolsEnabled,
+  shouldAppendEphemeralDeferredToolList,
 } from 'src/utils/tools/searchExtraTools.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
@@ -279,10 +286,8 @@ import {
   CannotRetryError,
   FallbackTriggeredError,
   is529Error,
-  markTransientRetriesExhausted,
   type RetryContext,
   withRetry,
-  withTransientNetworkRetry,
 } from './withRetry.js'
 import { isUserAbort } from './userAbort.js'
 
@@ -744,6 +749,7 @@ export type Options = {
   getToolPermissionContext: () => Promise<ToolPermissionContext>
   model: string
   modelSettingsSlot?: ModelSettingsSlot
+  sessionModelSettingsOverrides?: SessionModelSettingsOverrides
   toolChoice?: BetaToolChoiceTool | BetaToolChoiceAuto | undefined
   isNonInteractiveSession: boolean
   extraToolSchemas?: BetaToolUnion[]
@@ -795,17 +801,13 @@ export async function queryModelWithoutStreaming({
   // logAPISuccessAndDuration gets called (which happens after all yields)
   let assistantMessage: AssistantMessage | undefined
   for await (const message of withStreamingVCR(messages, async function* () {
-    yield* withTransientNetworkRetry(
-      () =>
-        queryModel(
-          messages,
-          systemPrompt,
-          thinkingConfig,
-          tools,
-          signal,
-          options,
-        ),
-      { signal, model: options.model, querySource: options.querySource },
+    yield* queryModel(
+      messages,
+      systemPrompt,
+      thinkingConfig,
+      tools,
+      signal,
+      options,
     )
   })) {
     if (message.type === 'assistant') {
@@ -841,37 +843,16 @@ export async function* queryModelWithStreaming({
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
-  // withTransientNetworkRetry sits INSIDE the VCR so a recorded cassette holds
-  // the successful attempt, not the transport failure that preceded it.
   return yield* withStreamingVCR(messages, async function* () {
-    yield* withTransientNetworkRetry(
-      () =>
-        queryModel(
-          messages,
-          systemPrompt,
-          thinkingConfig,
-          tools,
-          signal,
-          options,
-        ),
-      { signal, model: options.model, querySource: options.querySource },
+    yield* queryModel(
+      messages,
+      systemPrompt,
+      thinkingConfig,
+      tools,
+      signal,
+      options,
     )
   })
-}
-
-/**
- * Tags an API error message when the failure already exhausted a `withRetry`
- * ladder (`CannotRetryError`), so `withTransientNetworkRetry` re-runs
- * `queryModel` only for failures that got no backoff at all — third-party
- * providers and mid-stream deaths with the non-streaming fallback disabled.
- */
-function maybeMarkExhausted(
-  message: AssistantMessage,
-  sourceError: unknown,
-): AssistantMessage {
-  return sourceError instanceof CannotRetryError
-    ? markTransientRetriesExhausted(message)
-    : message
 }
 
 /**
@@ -1489,7 +1470,7 @@ async function* queryModel(
   // persisted deferred_tools_delta attachments instead of this ephemeral copy.
   // Otherwise each request needs the complete current pool because the appended
   // message is not written back to conversation history.
-  if (useSearchExtraTools && !isDeferredToolsDeltaEnabled()) {
+  if (shouldAppendEphemeralDeferredToolList(useSearchExtraTools)) {
     messagesForAPI = appendAvailableDeferredToolsForAnthropicRequest(
       messagesForAPI,
       tools,
@@ -1612,6 +1593,7 @@ async function* queryModel(
     options.model,
     options.effortValue,
     options.modelSettingsSlot,
+    options.sessionModelSettingsOverrides,
   )
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
@@ -2076,51 +2058,51 @@ async function* queryModel(
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null
-    let streamIdleWarningTimer: FreezeAwareWatchdog | null = null
-    let streamIdleTimer: FreezeAwareWatchdog | null = null
+    let streamIdleWarningTimer: FreezeAwareTimer | null = null
+    let streamIdleTimer: FreezeAwareTimer | null = null
     function clearStreamIdleTimers(): void {
-      streamIdleWarningTimer?.stop()
-      streamIdleWarningTimer = null
-      streamIdleTimer?.stop()
-      streamIdleTimer = null
+      if (streamIdleWarningTimer !== null) {
+        clearFreezeAwareTimeout(streamIdleWarningTimer)
+        streamIdleWarningTimer = null
+      }
+      if (streamIdleTimer !== null) {
+        clearFreezeAwareTimeout(streamIdleTimer)
+        streamIdleTimer = null
+      }
     }
     function resetStreamIdleTimer(): void {
       clearStreamIdleTimers()
       if (!streamWatchdogEnabled) {
         return
       }
-      streamIdleWarningTimer = new FreezeAwareWatchdog({
-        timeoutMs: STREAM_IDLE_WARNING_MS,
-        onTimeout: () => {
+      streamIdleWarningTimer = setFreezeAwareTimeout(
+        warnMs => {
           logForDebugging(
-            `Streaming idle warning: no chunks received for ${STREAM_IDLE_WARNING_MS / 1000}s`,
+            `Streaming idle warning: no chunks received for ${warnMs / 1000}s`,
             { level: 'warn' },
           )
           logForDiagnosticsNoPII('warn', 'cli_streaming_idle_warning')
         },
-      })
-      streamIdleWarningTimer.reset()
-      streamIdleTimer = new FreezeAwareWatchdog({
-        timeoutMs: STREAM_IDLE_TIMEOUT_MS,
-        onTimeout: () => {
-          streamIdleAborted = true
-          streamWatchdogFiredAt = performance.now()
-          logForDebugging(
-            `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
-            { level: 'error' },
-          )
-          logForDiagnosticsNoPII('error', 'cli_streaming_idle_timeout')
-          logEvent('tengu_streaming_idle_timeout', {
-            model:
-              options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-            request_id: (streamRequestId ??
-              'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-            timeout_ms: STREAM_IDLE_TIMEOUT_MS,
-          })
-          releaseStreamResources()
-        },
-      })
-      streamIdleTimer.reset()
+        STREAM_IDLE_WARNING_MS,
+        STREAM_IDLE_WARNING_MS,
+      )
+      streamIdleTimer = setFreezeAwareTimeout(() => {
+        streamIdleAborted = true
+        streamWatchdogFiredAt = performance.now()
+        logForDebugging(
+          `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
+          { level: 'error' },
+        )
+        logForDiagnosticsNoPII('error', 'cli_streaming_idle_timeout')
+        logEvent('tengu_streaming_idle_timeout', {
+          model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          request_id: (streamRequestId ??
+            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+        })
+        releaseStreamResources()
+      }, STREAM_IDLE_TIMEOUT_MS)
     }
     resetStreamIdleTimer()
 
@@ -2443,25 +2425,36 @@ async function* queryModel(
               }
             }
 
-            // Write final usage and stop_reason back to the last yielded
-            // message. Messages are created at content_block_stop from
-            // partialMessage, which was set at message_start before any tokens
-            // were generated (output_tokens: 0, stop_reason: null).
-            // message_delta arrives after content_block_stop with the real
-            // values.
+            // Write final usage and stop_reason back to EVERY message this
+            // response produced. Messages are created at content_block_stop
+            // from partialMessage, which was set at message_start before any
+            // tokens were generated (output_tokens: 0, stop_reason: null).
+            // message_delta arrives after the last content_block_stop with the
+            // real values.
+            //
+            // All of them, not just the tail: one API response is split into
+            // one record per content block, so a "thinking + text" or
+            // "text + tool_use" turn used to persist every record but the last
+            // with `stop_reason: null` and `output_tokens: 0`. Downstream code
+            // already assumes the splits share one usage snapshot — see the
+            // parallel-tool-call note on tokenCountWithEstimation, which walks
+            // back to the first sibling with the same `message.id`.
+            //
+            // Nothing sums usage across records (every reader scans backwards
+            // and takes the first one it finds), so restating it on the earlier
+            // splits cannot double-count.
             //
             // IMPORTANT: Use direct property mutation, not object replacement.
             // The transcript write queue holds a reference to message.message
             // and serializes it lazily (100ms flush interval). Object
-            // replacement ({ ...lastMsg.message, usage }) would disconnect
-            // the queued reference; direct mutation ensures the transcript
-            // captures the final values.
+            // replacement ({ ...msg.message, usage }) would disconnect the
+            // queued reference; direct mutation ensures the transcript captures
+            // the final values.
             stopReason = part.delta.stop_reason
 
-            const lastMsg = newMessages.at(-1)
-            if (lastMsg) {
-              lastMsg.message.usage = usage
-              lastMsg.message.stop_reason = stopReason
+            for (const msg of newMessages) {
+              msg.message.usage = usage
+              msg.message.stop_reason = stopReason
             }
 
             // Update cost
@@ -2990,18 +2983,12 @@ async function* queryModel(
           return
         }
 
-        // CannotRetryError means withRetry already spent its full backoff
-        // ladder on this failure; tell the queryModel-level wrapper not to
-        // stack a second ladder on top of it.
-        yield maybeMarkExhausted(
-          attachAPIErrorSource(
-            getAssistantMessageFromError(error, errorModel, {
-              messages,
-              messagesForAPI,
-            }),
-            error,
-          ),
-          fallbackError,
+        yield attachAPIErrorSource(
+          getAssistantMessageFromError(error, errorModel, {
+            messages,
+            messagesForAPI,
+          }),
+          error,
         )
         releaseStreamResources()
         return
@@ -3061,15 +3048,12 @@ async function* queryModel(
         return
       }
 
-      yield maybeMarkExhausted(
-        attachAPIErrorSource(
-          getAssistantMessageFromError(error, errorModel, {
-            messages,
-            messagesForAPI,
-          }),
-          error,
-        ),
-        errorFromRetry,
+      yield attachAPIErrorSource(
+        getAssistantMessageFromError(error, errorModel, {
+          messages,
+          messagesForAPI,
+        }),
+        error,
       )
       releaseStreamResources()
       return

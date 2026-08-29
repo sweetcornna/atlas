@@ -1,10 +1,127 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { readFileSync, realpathSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const pkgPath = resolve(__dirname, '..', 'package.json')
+const repoRoot = resolve(__dirname, '..')
+const pkgPath = resolve(repoRoot, 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+
+/** occ's own issue tracker. Kept in sync with PRODUCT_URL in src/constants/product.ts. */
+const ISSUES_URL = 'https://github.com/sweetcornna/open-claude-code/issues'
+
+/**
+ * What MACRO.SOURCE_COMMIT says when the build could not establish one.
+ *
+ * Mirrored by UNKNOWN_SOURCE_COMMIT in src/constants/buildProvenance.ts — the
+ * two ends of the same define. Spelled here rather than imported from there
+ * because this file feeds Vite's `define` and must not drag `src/` into the
+ * build config's module graph.
+ */
+const UNKNOWN_SOURCE_COMMIT = 'unknown'
+
+/**
+ * How a build with no usable git metadata can still be told what it is.
+ *
+ * The fleet's own deployment path needs it: `demo/env/bootstrap.sh` runs
+ * `bun run build` inside `~/atlas-beta/`, and that tree arrives as a plain
+ * directory copy — no `.git`, so git has nothing to answer with and the
+ * artifact would report `unknown` on exactly the machines issue #70 is about.
+ *
+ * Consulted only when git cannot answer, never as an override: where the tree
+ * *is* the repository, the repository is the truth and an exported variable
+ * left over from an earlier shell must not be able to relabel it.
+ */
+const SOURCE_COMMIT_ENV_VAR = 'OCC_SOURCE_COMMIT'
+
+/**
+ * `git <args>` run in `cwd`, or `null` if git could not answer.
+ *
+ * Never throws and never inherits stdio: a build inside a clean tarball, a
+ * Docker layer without git installed, or an unborn branch must still produce a
+ * bundle. Every one of those cases funnels into `null`, which the caller turns
+ * into the explicit "unknown" marker rather than a silent empty string.
+ */
+function gitOutput(args: readonly string[], cwd: string): string | null {
+  try {
+    const result = spawnSync('git', [...args], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    if (result.error || result.status !== 0) return null
+    return typeof result.stdout === 'string' ? result.stdout.trim() : null
+  } catch {
+    return null
+  }
+}
+
+let cachedSourceCommit: string | undefined
+
+/**
+ * The commit this bundle was built from, with a `-dirty` suffix whenever the
+ * working tree carried anything git would report.
+ *
+ * The suffix is not decoration. Fleet artifacts are routinely built from a
+ * working tree that is ahead of (or beside) its commit, and a bare SHA on such
+ * a build claims a provenance the bytes do not have — which is issue #70 in
+ * miniature. Untracked files count too: an unstaged `.ts` under `src/` is
+ * compiled into the bundle exactly like a tracked one.
+ *
+ * Conservative in two more places: if HEAD resolves but `git status` does not,
+ * the result is marked dirty — "cannot tell" must never render as "clean"; and
+ * the repository git finds has to *be* this tree, not an ancestor of it.
+ *
+ * With no usable repository the answer comes from `OCC_SOURCE_COMMIT` if the
+ * operator supplied one, and otherwise is `'unknown'`.
+ *
+ * Memoized for the repo root because both callers (`scripts/dev.ts`,
+ * `vite.config.ts`) may ask more than once per process and each miss costs two
+ * subprocesses. `cwd` exists so the three states above can be exercised
+ * against throwaway trees instead of only against whatever the developer's
+ * checkout happens to be in — the argument-less call is the product path.
+ */
+export function resolveSourceCommit(cwd: string = repoRoot): string {
+  if (cwd === repoRoot && cachedSourceCommit !== undefined) {
+    return cachedSourceCommit
+  }
+  const resolved = measureSourceCommit(cwd)
+  if (cwd === repoRoot) cachedSourceCommit = resolved
+  return resolved
+}
+
+function measureSourceCommit(cwd: string): string {
+  // One subprocess for both facts, in this order: rev-parse prints its
+  // arguments' answers left to right.
+  const [toplevel, head] = (
+    gitOutput(['rev-parse', '--show-toplevel', 'HEAD'], cwd) ?? ''
+  ).split('\n')
+  // `rev-parse` walks *up* until it finds a repository. A deployment tree
+  // copied into a home directory that happens to be a dotfiles repo would
+  // otherwise be stamped with that repo's HEAD — a confident, wrong answer,
+  // which is worse than `unknown` and is the same failure shape as the issue
+  // this field exists to close. So the repository has to be this tree itself.
+  if (!head || !toplevel || !isSamePath(toplevel, cwd)) {
+    return sourceCommitFromEnvironment() ?? UNKNOWN_SOURCE_COMMIT
+  }
+  const status = gitOutput(['status', '--porcelain'], cwd)
+  return status === null || status.length > 0 ? `${head}-dirty` : head
+}
+
+/** Compared through realpath: /tmp vs /private/tmp is the same tree on macOS. */
+function isSamePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
+function sourceCommitFromEnvironment(): string | null {
+  const raw = process.env[SOURCE_COMMIT_ENV_VAR]?.trim()
+  return raw ? raw : null
+}
 
 /**
  * Shared MACRO define map used by both dev.ts (runtime -d flags)
@@ -14,17 +131,52 @@ const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
  * corresponding MACRO.* identifier at transpile / bundle time.
  *
  * VERSION is read from package.json to avoid version drift.
+ *
+ * SOURCE_COMMIT is read from git for the same reason one level down: VERSION
+ * is identical on every commit of this fork (it tracks the base's release
+ * line), so it answers "which upstream did this come from" and nothing about
+ * *our* code. SOURCE_COMMIT is the only field in a shipped bundle that
+ * identifies the source it was built from — see issue #70, where a deployed
+ * fleet artifact turned out to carry no provenance marker at all.
  */
 export function getMacroDefines(): Record<string, string> {
   return {
     'MACRO.VERSION': JSON.stringify(pkg.version),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
-    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(''),
-    'MACRO.ISSUES_EXPLAINER': JSON.stringify(''),
+    'MACRO.SOURCE_COMMIT': JSON.stringify(resolveSourceCommit()),
+    // Both of these are interpolated into user-facing sentences that read as
+    // truncated when empty — the system prompt's "To give feedback, users
+    // should ${ISSUES_EXPLAINER}" and auth.ts's "post in ${FEEDBACK_CHANNEL}".
+    // They inherited Anthropic's empty defaults; occ has its own tracker.
+    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(`${ISSUES_URL}`),
+    'MACRO.ISSUES_EXPLAINER': JSON.stringify(
+      `report the issue at ${ISSUES_URL}`,
+    ),
     'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(''),
     'MACRO.PACKAGE_URL': JSON.stringify(pkg.name),
     'MACRO.VERSION_CHANGELOG': JSON.stringify(''),
   }
+}
+
+/**
+ * {@link getMacroDefines} rendered as `bun -d` arguments.
+ *
+ * Every process that runs the entrypoint from source has to pass these:
+ * `MACRO.*` is a transpile-time substitution, so a source run without `-d`
+ * leaves the identifier undefined and the first read throws. The alternative —
+ * an entrypoint that installs its own `globalThis.MACRO` when the defines are
+ * missing — is what issue #81 is about: that copy carried Anthropic's empty
+ * `ISSUES_EXPLAINER` long after this file grew its own, and the system prompt
+ * of every source run said "To give feedback, users should " and stopped.
+ *
+ * So the values live here only, and callers ask for the flags rather than
+ * spelling a second list.
+ */
+export function macroDefineArgs(): string[] {
+  return Object.entries(getMacroDefines()).flatMap(([key, value]) => [
+    '-d',
+    `${key}:${value}`,
+  ])
 }
 
 /**
@@ -41,7 +193,6 @@ export const DEFAULT_BUILD_FEATURES = [
   'AGENT_TRIGGERS_REMOTE', // sessionIngress 模块级 Map 累积（非 GB 级主因）
   'CHICAGO_MCP', // Chicago MCP 集成（内部代号）
   'VOICE_MODE', // Push-to-Talk 语音输入模式
-  'SHOT_STATS', // 单次请求统计信息收集
   'PROMPT_CACHE_BREAK_DETECTION', // 检测 prompt cache 是否被打破（有 10 条上限，可控）
   'TOKEN_BUDGET', // Token 预算管理与控制
   // P0: local features
@@ -100,6 +251,9 @@ export const DEFAULT_BUILD_FEATURES = [
   // Persistent thread goal command — auto-continuation, JSONL persistence,
   // strict completion/blocked audit. See src/services/goal.
   'GOAL',
+  // Recover automatically when the API rejects an oversized prompt by
+  // summarizing older turns and retrying with the compacted history.
+  'REACTIVE_COMPACT',
 ] as const
 
 /**

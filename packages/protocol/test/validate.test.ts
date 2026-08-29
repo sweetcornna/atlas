@@ -74,15 +74,66 @@ describe('validateMessage — accepts', () => {
   })
 
   test('every declared message type', () => {
+    // Types whose payload is field-closed carry their own sample; everything
+    // else takes an arbitrary object, which is exactly the point of not
+    // constraining those.
+    const CLOSED_PAYLOADS: Partial<Record<MessageType, unknown>> = {
+      [MessageType.Ack]: ACK_PAYLOAD,
+      [MessageType.TaskResult]: TASK_RESULT_PAYLOAD,
+      [MessageType.ResourceRequest]: {
+        need: { durationMs: 60_000, cpuCores: 1, memoryMb: 512 },
+        purpose: 'run the failing test suite',
+      },
+      [MessageType.ResourceOffer]: {
+        offerId: 'offer-1',
+        granted: { durationMs: 60_000, cpuCores: 1, memoryMb: 512 },
+        offerExpiresAt: NOW + 30_000,
+      },
+      [MessageType.ResourceGrant]: { offerId: 'offer-1', acceptedAt: NOW },
+      [MessageType.ResourceRelease]: {
+        offerId: 'offer-1',
+        reason: 'completed',
+        releasedAt: NOW,
+      },
+      [MessageType.Notify]: {
+        kind: 'watch',
+        severity: 'info',
+        summary: 'disk usage crossed 80%',
+        observedAt: NOW,
+      },
+    }
     for (const type of Object.values(MessageType)) {
-      const payload =
-        type === MessageType.Ack
-          ? ACK_PAYLOAD
-          : type === MessageType.TaskResult
-            ? TASK_RESULT_PAYLOAD
-            : { goal: 'summarise' }
+      const payload = CLOSED_PAYLOADS[type] ?? { goal: 'summarise' }
       expect(codesOf(sample({ type, payload }))).toEqual([])
     }
+  })
+
+  test('a negotiation payload with an extra field is refused', () => {
+    // Field-closed for the same reason the ack is: a lease authorizes spending
+    // somebody else's machine, and a field this version does not understand is
+    // one nobody verified.
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.ResourceGrant,
+          payload: { offerId: 'offer-1', acceptedAt: NOW, alsoGiveMe: 'gpu' },
+        }),
+      ),
+    ).toEqual([ProtocolErrorCode.E_BAD_ENVELOPE])
+  })
+
+  test('a negotiation payload with a non-positive axis is refused', () => {
+    expect(
+      codesOf(
+        sample({
+          type: MessageType.ResourceRequest,
+          payload: {
+            need: { durationMs: 60_000, cpuCores: 0, memoryMb: 512 },
+            purpose: 'zero cores is not a request, it is a typo',
+          },
+        }),
+      ),
+    ).toEqual([ProtocolErrorCode.E_BAD_ENVELOPE])
   })
 
   test('narrows the value on success', () => {

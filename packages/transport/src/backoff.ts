@@ -117,6 +117,39 @@ export class ReconnectSchedule {
   }
 
   /**
+   * Whether {@link next} would still retry, spending nothing to find out.
+   *
+   * For a caller that has to decide something *else* on the answer, before the
+   * retry itself: the client abandons its channel id after a 4004, and that
+   * abandonment only makes sense if a dial carrying the new id follows. `next`
+   * cannot answer it — it moves the attempt count, the budget start and the
+   * time-jump timestamp, so "ask it and undo it" is not on offer — and a second
+   * reading of the give-up rule written at the call site would be a copy free
+   * to drift past the time-jump reset that has to precede it.
+   */
+  willRetry(now: number): boolean {
+    return this.survey(now).elapsed < this.options.giveUpAfterMs
+  }
+
+  /**
+   * The budget as {@link next} would read it at `now`, taking nothing.
+   *
+   * The E4 reset has to run before the give-up test, which makes "is the budget
+   * spent" a two-step question; this is the one place it is answered.
+   */
+  private survey(now: number): {
+    readonly timeJumpDetected: boolean
+    readonly elapsed: number
+  } {
+    const threshold = this.options.maxDelayMs * this.options.timeJumpFactor
+    const timeJumpDetected =
+      this.expectedRetryAt !== null && now - this.expectedRetryAt > threshold
+    const startedAt =
+      timeJumpDetected || this.startedAt === null ? now : this.startedAt
+    return { timeJumpDetected, elapsed: now - startedAt }
+  }
+
+  /**
    * Decide what to do about a connection that just failed or dropped.
    *
    * The time-jump test runs *before* the budget test, so a thawed node gets a
@@ -125,19 +158,10 @@ export class ReconnectSchedule {
    * a node that never comes back.
    */
   next(now: number): ReconnectDecision {
-    let timeJumpDetected = false
-    const threshold = this.options.maxDelayMs * this.options.timeJumpFactor
-    if (
-      this.expectedRetryAt !== null &&
-      now - this.expectedRetryAt > threshold
-    ) {
-      timeJumpDetected = true
-      this.attempts = 0
-      this.startedAt = now
-    }
-    if (this.startedAt === null) this.startedAt = now
+    const { timeJumpDetected, elapsed } = this.survey(now)
+    if (timeJumpDetected) this.attempts = 0
+    if (timeJumpDetected || this.startedAt === null) this.startedAt = now
 
-    const elapsed = now - this.startedAt
     if (elapsed >= this.options.giveUpAfterMs) {
       return { action: 'give-up', elapsedMs: elapsed }
     }

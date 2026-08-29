@@ -72,7 +72,11 @@ describe('project memory directory isolation', () => {
       'active occ project rule',
     )
     const legacyDir = join(tempDir, '.claude')
-    const legacyEntriesBefore = await readdir(legacyDir, { recursive: true })
+    // 断言的是「目录未被写动」——集合相等。readdir 顺序不是契约（ext4 哈希序
+    // 与 APFS 排序序不同，同机两次枚举也可能不同），所以两侧都排序后再比。
+    const legacyEntriesBefore = (
+      await readdir(legacyDir, { recursive: true })
+    ).sort()
     await chmod(legacyDir, 0o500)
 
     const files = await getMemoryFiles()
@@ -84,7 +88,7 @@ describe('project memory directory isolation', () => {
     }
     expect(paths.indexOf(legacyMemory)).toBeLessThan(paths.indexOf(occMemory))
     expect(paths.indexOf(legacyRule)).toBeLessThan(paths.indexOf(occRule))
-    expect(await readdir(legacyDir, { recursive: true })).toEqual(
+    expect((await readdir(legacyDir, { recursive: true })).sort()).toEqual(
       legacyEntriesBefore,
     )
   })

@@ -1,6 +1,3 @@
-<!-- lang-switcher -->
-[English](/docs/en/features/fork-subagent) · **中文** · [日本語](/docs/ja/features/fork-subagent)
-
 # FORK_SUBAGENT — 上下文继承子 Agent
 
 > Feature Flag: `FEATURE_FORK_SUBAGENT=1`

@@ -74,7 +74,19 @@ export default defineConfig({
     // inlined into the bundle — they must be resolved from node_modules
     // at runtime.  doubaoime-asr uses opus-encdec which does
     // require.resolve('opus-encdec/dist/libopus-encoder.wasm.js').
-    external: ['doubaoime-asr', 'opus-encdec'],
+    //
+    // 'ws' is here for a different reason: it must stay a *bare* import so
+    // the runtime picks the implementation.  Bun ships a native WebSocket
+    // client behind `import ... from 'ws'`; the pure-JS ws on npm does not
+    // survive Bun's node compat layer — it fails at the upgrade handshake
+    // with `Unexpected server response: 101` and destroys the socket before
+    // a single frame goes out (Node runs that same code fine, so this only
+    // bites the Bun entry points).  Left to the resolver, rolldown decides
+    // per platform: Linux builds externalise it, macOS builds inline it —
+    // i.e. whether a release can open a WebSocket at all depended on which
+    // machine produced it.  `bun run check:bundle` asserts both halves of
+    // this (no inlined copy, bare import still present).
+    external: ['doubaoime-asr', 'opus-encdec', 'ws'],
   },
 
   build: {

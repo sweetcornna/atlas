@@ -121,15 +121,17 @@ mock.module(
   stateMockWith({
     getSessionId: () => 'parent-session-id',
     getParentSessionId: () => undefined,
-    // Additional exports needed by transitive imports (e.g. cwd.ts, sandbox-adapter.ts)
-    getCwdState: () => '/mock/cwd',
-    getOriginalCwd: () => '/mock/cwd',
     getSessionProjectDir: () => null,
-    getProjectRoot: () => '/mock/project',
-    setCwdState: noop,
-    setOriginalCwd: noop,
     getIsNonInteractiveSession: () => false,
     addSlowOperation: noop,
+    // Deliberately NOT overridden: getCwdState / getOriginalCwd /
+    // getProjectRoot and their setters. stateMockWith delegates every
+    // non-overridden export to the real container, so the '/mock/cwd' +
+    // no-op-setter block that used to sit here (labelled "needed by
+    // transitive imports", a leftover from the old hand-stubbed base) bought
+    // this suite nothing and broke later files in the same process. See the
+    // "NEVER override the cwd / projectRoot cluster" note in
+    // tests/mocks/state.ts.
   }),
 )
 

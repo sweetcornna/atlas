@@ -24,20 +24,46 @@
 
 ## 〇bis、新增 provider 会切换会话（这是刻意的）
 
-面板里按 `A` 新增一个 provider：选家族 → （若当前配置尚未存档）问要不要先存档 → 起名 → 问要不要加入聚合 → 跑**既有的**登录向导（`ProviderSetupWizard`，不是第二套表单）→ 回到面板，新行已在。
+面板里按 `A` 新增一个 provider：选家族 → **为新 provider 命名** → 问要不要加入聚合 → 跑**既有的**登录向导（`ProviderSetupWizard`，不是第二套表单）→ 回到面板，新行已在。流程不会用 `openai` 等家族名自动保存当前会话，也不会在后面要求用户再命名一次。
 
 **向导保存的那一刻就是激活**：它写的是 settings.env 整形状，并同步到 `process.env`。所以新增结束后，会话就在新 provider 上。这在第一屏就写明。
 
 为什么不「保存完再恢复原状」：
 
-- 唯一诚实的恢复手段是 `activateProfile()`，而它需要一个档案。`file.active` 不是 —— 那个指针只由档案切换写入，之后一次 `/login` 或手改 settings.env 都会让它指向一个会话早已不在用的配置。拿它去「恢复」等于静默切到第三个配置，比诚实地切到用户刚配好的那个更糟。
-- 从来没经过档案的会话（纯 OAuth、导出的 env、手写的 settings.env）根本没有可恢复的东西 —— 而那恰恰是第一次按 `A` 的常见情形。只在部分情况下生效的回滚，就是这里要避免的「半恢复」。
+- 唯一诚实的恢复手段是 `activateProfile()`，而它需要一个档案。`file.active` 不是 —— 那个指针只由档案切换写入，之后一次 `/login` 或手改 settings.env 都会让它指向一个会话早已不在用的配置。拿它去「恢复」等于静默切到第三份配置，比诚实地切到用户刚配好的那个更糟。
+- 从来没经过档案的会话（纯 OAuth、导出的 env、手写的 settings.env）根本没有可恢复的东西。需要保留当前配置时，先显式执行 `/provider-settings save <名>`；新增流程自身只负责用户正在添加并命名的那一个 provider。
 
-所以做法是把**回程**变成真的：当前配置若匹配不到任何档案，流程会先问一句要不要把它存成档案（就是 `save <名>`）。之后回去只是在某一行按 `Enter` —— 一个既有的、已经能用的机制。
+档案同时会带上 `settings.modelSettings`（见 §〇ter），所以切回去恢复的是保存时的整套配置，而不只是端点和凭据。
 
-判据是纯函数 `sessionProfileMatch()`：某个档案的**每一个**受管键都与当前合并 env 相等（即激活它不会改变任何东西）。多出一个键就不算，因为激活真的会删掉它。
+## 〇ter、档案存什么：env **加上**各档位的 effort / 上下文
 
-**已知粗糙边**：档案只存 env，不存 `settings.modelSettings`。所以切回旧 provider 会恢复端点与凭据，但各档位的 effort / 最大上下文仍是最后一次设置的值。这条在合并前就存在（任何一次 `/login` 都如此），不是新增流程带来的。
+档案快照的是「我在跟哪个 provider 说话、怎么说」：`modelType` + 该家族的受管 env 键 + `settings.modelSettings`（各档位的 thinking effort 与最大上下文）。
+
+**为什么后者必须跟着走**：这些值是**按 provider 形状**来的。`tierPersistence.ts` 按每个档位背后的模型家族播种默认值 —— DeepSeek 一行是 `max` / 1M，GPT 是 `xhigh` / 272k，Claude opus·fable 是 `xhigh` / 1M。只恢复端点和凭据、把上一家的那行留在原地，等于拿 DeepSeek 的数字去跑 GPT 的模型。这正是 2.38.0 给 `/logout` 修过的同一个缺陷（见 `resetProviderConfig.ts` 的注释），现在补上 `/provider use` 这一半。
+
+### 激活是整形状写入（和 env 一样）
+
+`updateSettingsForSource` 是**深合并**，所以只写「本档案配了的槽位」不够 —— 没写到的槽位、乃至同一槽位里没写到的那个轴，都会留着上一家的值。`buildActivationModelSettingsPatch()` 因此点名**全部五个槽位**（`default` + 四档），恢复的槽位里两个轴也都点名，`undefined` 在那次合并里就是删除。
+
+### 本次改动之前存的档案：清空，不是沿用
+
+这是个明确的取舍，两个答案都有代价：
+
+- **沿用**（原行为）就是那个 bug —— 留下的值是从**上一个** provider 的模型家族播种的。
+- **清空**意味着老档案激活后各档位回落到 `getTierDefaults()`，而那正是按这个档案刚刚恢复的那些模型算出来的家族默认值。`/logout` 出于同样理由也是这么做的。
+
+决定性的理由是第三条：清空让激活的结果**只取决于档案本身**。如果结果还要看「这个档案是什么时候存的」，那界面上没有任何地方能告诉用户答案 —— 那比正在修的这条粗糙边更糟。对老档案跑一次 `/provider-settings save <同名>` 就会把当前值记进去，它从此不再是老档案。
+
+### 扁平的 `effortLevel` 不跟着走，而是被删掉
+
+`settings.effortLevel` 是 `modelSettings` 之前的全局单值，它会 seed AppState，而 AppState **压过**分层设置（`resolveAppliedEffort`）。所以档案要是也带着它，恢复出来的分层值会被它自己盖住 —— 看起来就像什么都没修。occ 里其他写入路径（`writeTierSettings`、向导的 `clearFlatEffort`、`resetProviderConfiguration`）本来就见一次删一次，激活跟着删。会话内的另一半（`AppState.effortValue`）由切换入口清掉：`/provider-settings` 面板的 `onProviderSwitched` 与 `/model` 里选中聚合模型的那条分支。
+
+### env 覆盖仍在最上面
+
+`CLAUDE_CODE_EFFORT_LEVEL` 与 `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 按设计排在分层设置之上（见 `tierSettings.ts` 头部），**恢复档案不改这个顺序**：
+
+- `CLAUDE_CODE_MAX_CONTEXT_TOKENS` 是每个家族的受管键，照旧随 settings.env 整形状清除再恢复；
+- `CLAUDE_CODE_EFFORT_LEVEL` 不受管 —— occ 自己从不写它，所以环境里有值就是用户自己设的，激活不碰。
 
 ## 一、聚合是「列表」的聚合，不是「连接」的聚合
 
@@ -62,12 +88,11 @@
 
 ## 二bis、聚合列表不会和当前 provider 叠加
 
-`/model` 里聚合行接在当前 provider 自己的行后面。如果不去重，正在用的那家的模型会出现两次 —— 这正是曾经的实际表现，两个原因各自独立：
+`/model` 里聚合行接在当前 provider 自己的行后面。如果不去重，正在用的那家的模型会出现两次。去重必须准确识别当前会话对应的完整档案：
 
-1. **归属判据依赖 `file.active`**。那个指针只由 `activateProfile()` 写入，所以经 `/login` 配好 provider 再把档案加入聚合的用户根本没有指针，整个去重条件被跳过。现在改问**配置本身**：`sessionOwnedProfiles()` 认为「家族与 `settings.modelType` 相同、且各 `*_BASE_URL` 与当前一致」的档案就是当前 provider（**只比端点不比 key** —— 同一端点两把 key 是同一个 provider）。`file.active` 仍然叠加生效，老行为不变。
-2. **「已提供的模型」比的是 option value**。当前 provider 的行 value 是**档位别名**（`opus`、`sonnet[1m]`），而聚合行带的是**具体 id**，两边根本不是同一种东西，于是对档位行这个条件几乎永远为假。现在两边都比**解析后的具体 id**（`offeredModelIds()` 逐行过 `resolveOptionModel`）。解析会碰模型 provider 链，Gemini 未配置时会抛，`__NO_PREFERENCE__` 还会走订阅链 —— 所以逐行 try/catch：解析不出来的那一行不参与去重，绝不能拖垮整个列表。
+`sessionOwnedProfiles()` 不再依赖 `file.active`：那个指针只记录最后一次档案切换，`/login`、新增向导或手改 settings 后都可能过期。它也不能只比 endpoint；同一个官方端点上的两个账号是两份合法的切换目标。现在只有档案的家族与**该家族管理的全部 env 配置**都和当前会话一致时，才把该档案视作当前 provider 并从聚合行中排除；其他家族的 shell 变量与运行时协议镜像不参与匹配。
 
-**两个条件仍然是「与」**：只有「来自当前 provider」**且**「这个 id 已经在列表里」才丢弃。别家 provider 服务同一个 id 照样列出并标注归属 —— 换个账号/中转跑同一个模型是正当需求，那正是 `ambiguous` 与 `id (profile)` 的意义。
+因此：当前会话自己的档案不会重复出现；过期的 active 指针不会吞掉聚合项；同 endpoint 不同凭据的档案仍会显示并可切换。
 
 ## 三、重名怎么办
 

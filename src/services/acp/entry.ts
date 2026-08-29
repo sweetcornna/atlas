@@ -8,6 +8,10 @@ import {
   registerSessionActivityCallback,
   unregisterSessionActivityCallback,
 } from '../../utils/session/sessionActivity.js'
+import {
+  registerUpstreamStatusCallback,
+  unregisterUpstreamStatusCallback,
+} from '../api/upstreamStatus.js'
 import { getConnection, isQianmoResident } from './agent/internalAccessors.js'
 
 /**
@@ -55,6 +59,33 @@ export async function runAcpAgent(): Promise<void> {
       })
   })
 
+  // What the model endpoint said, for the one observer that cannot see it.
+  //
+  // A resident node's inactivity watchdog runs in the parent process and only
+  // knows that this child stopped speaking. A refused credential is answered
+  // in tens of milliseconds and then retried quietly by the ladders in
+  // services/api, so from out there it is indistinguishable from a slow model
+  // — which is exactly how a dead API key came back as "produced no activity
+  // for 120000ms" on the beta fleet (issue #37). Forwarding the status closes
+  // that gap without the parent ever holding a credential of its own.
+  //
+  // Resident sessions only: an editor speaking ACP has its own error surface
+  // and no use for this, and a notification it did not ask for is noise on a
+  // wire it has to parse.
+  registerUpstreamStatusCallback(report => {
+    if (!isQianmoResident(agent)) return
+    void getConnection(agent)
+      .extNotification('qianmo/upstream-status', {
+        status: report.status,
+        ...(report.detail === undefined ? {} : { detail: report.detail }),
+      })
+      .catch(() => {
+        // Best effort by construction: this is the diagnosis channel for a
+        // request that is already failing, and logging a failure to report a
+        // failure only doubles the noise on a broken link.
+      })
+  })
+
   // stdout is used for ACP messages — redirect console to stderr
   console.log = console.error
   console.info = console.error
@@ -63,6 +94,7 @@ export async function runAcpAgent(): Promise<void> {
 
   async function shutdown(): Promise<void> {
     unregisterSessionActivityCallback()
+    unregisterUpstreamStatusCallback()
     // Clean up all active sessions
     for (const [sessionId] of agent.sessions) {
       try {

@@ -4,12 +4,14 @@
 import { describe, expect, test } from 'bun:test'
 import {
   ENVELOPE_VERSION,
+  LEGACY_MESSAGE_TYPES,
   LIMITS,
   MESSAGE_TYPES,
   MessageType,
   ProtocolError,
   ProtocolErrorCode,
   TRUST_UNTRUSTED,
+  advanceTraceparent,
   computeFingerprint,
   createAck,
   createMessage,
@@ -20,6 +22,7 @@ import {
   errorReply,
   isDeliveryExpired,
   isMessageType,
+  isReplyType,
   isTaskExpired,
   isTaskResultPayload,
   messageBytes,
@@ -45,9 +48,29 @@ describe('message types', () => {
         'task.request',
         'task.result',
         'wake',
+        // §13, added by P5.2. The four negotiation messages are envelope types
+        // rather than a payload discriminator so that routing, dedup and the
+        // audit trail treat them like everything else on the wire.
+        'resource.request',
+        'resource.offer',
+        'resource.grant',
+        'resource.release',
+        // §14, added by P13.2. The only type an agent raises unprompted.
+        'notify',
       ].sort(),
     )
-    expect(MESSAGE_TYPES).toHaveLength(7)
+    expect(MESSAGE_TYPES).toHaveLength(12)
+  })
+
+  test('the legacy floor is the eleven types that predate notify', () => {
+    // Capability discovery reads an absent declaration as "this peer speaks the
+    // floor". A floor that grew with the enum would say every peer speaks every
+    // type, which is the assumption discovery exists to stop making.
+    expect(LEGACY_MESSAGE_TYPES).toHaveLength(11)
+    expect(LEGACY_MESSAGE_TYPES).not.toContain(MessageType.Notify)
+    expect([...LEGACY_MESSAGE_TYPES].sort()).toEqual(
+      MESSAGE_TYPES.filter(type => type !== MessageType.Notify).sort(),
+    )
   })
 
   test('isMessageType accepts known types and rejects the rest', () => {
@@ -144,6 +167,41 @@ describe('createMessage', () => {
       /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/,
     )
     expect(newTraceparent()).not.toBe(newTraceparent())
+  })
+
+  test('advanceTraceparent keeps the trace-id and moves the parent-id', () => {
+    const origin = newTraceparent()
+    const next = advanceTraceparent(origin)
+    const [version, traceId, parentId, flags] = origin.split('-')
+    const [nextVersion, nextTraceId, nextParentId, nextFlags] = next.split('-')
+    expect(nextTraceId).toBe(traceId as string)
+    expect(nextVersion).toBe(version as string)
+    expect(nextFlags).toBe(flags as string)
+    expect(nextParentId).not.toBe(parentId as string)
+    expect(nextParentId).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  test('advanceTraceparent leaves a malformed header alone', () => {
+    // Not a validator: rewriting it would hide the malformation from the
+    // envelope check that does reject it.
+    expect(advanceTraceparent('not-a-traceparent')).toBe('not-a-traceparent')
+  })
+
+  test('isReplyType splits answers from work requests', () => {
+    // The line loop detection depends on: a reply legitimately returns to the
+    // requester under the request's own taskId (C-1), which is exactly the
+    // shape the loop key describes.
+    expect(MESSAGE_TYPES.filter(isReplyType)).toEqual([
+      MessageType.Ack,
+      MessageType.TaskResult,
+      MessageType.Pong,
+      MessageType.Error,
+      // Everything after the opening `resource.request` answers the message
+      // before it (§13), so the loop key must not judge them either.
+      MessageType.ResourceOffer,
+      MessageType.ResourceGrant,
+      MessageType.ResourceRelease,
+    ])
   })
 
   test('trust is a closed set — the caller cannot widen it', () => {
@@ -550,6 +608,75 @@ describe('task result', () => {
         taskId: 'task-1',
       }),
     ).toBe(false)
+  })
+
+  describe('the redelivery marker (P13.5)', () => {
+    test('is accepted on both branches, and is optional', () => {
+      expect(
+        isTaskResultPayload({
+          outcome: 'completed',
+          content: 'done',
+          completedAt: 3_000,
+          redelivered: true,
+        }),
+      ).toBe(true)
+      expect(
+        isTaskResultPayload({
+          outcome: 'failed',
+          code: ProtocolErrorCode.E_TASK_FAILED,
+          reason: 'model stopped',
+          completedAt: 3_000,
+          redelivered: true,
+        }),
+      ).toBe(true)
+    })
+
+    test('is true or absent, never false', () => {
+      // `false` and "absent" are the same fact, and one fact with two
+      // encodings fingerprints as two different messages — which defeats the
+      // honesty the marker exists for. Same rule `notify` already follows.
+      for (const value of [false, 1, 'true', null]) {
+        expect(
+          isTaskResultPayload({
+            outcome: 'completed',
+            content: 'done',
+            completedAt: 3_000,
+            redelivered: value,
+          }),
+        ).toBe(false)
+      }
+    })
+
+    test('is the only extra key the payload will take', () => {
+      // Widening by one field must not turn a closed payload into an open
+      // one: a peer still cannot smuggle business fields into a terminal
+      // result.
+      expect(
+        isTaskResultPayload({
+          outcome: 'completed',
+          content: 'done',
+          completedAt: 3_000,
+          redelivered: true,
+          attempt: 2,
+        }),
+      ).toBe(false)
+    })
+
+    test('carries through the factory when asked for', () => {
+      const result = createTaskResult(
+        request,
+        TO,
+        { outcome: 'completed', content: 'done', redelivered: true },
+        3_000,
+      )
+      expect(result.payload).toEqual({
+        outcome: 'completed',
+        content: 'done',
+        completedAt: 3_000,
+        redelivered: true,
+      })
+      expect(isTaskResultPayload(result.payload)).toBe(true)
+    })
   })
 })
 

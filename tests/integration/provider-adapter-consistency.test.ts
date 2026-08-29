@@ -511,8 +511,8 @@ describe('AC-5 provider 配置与适配分支（无需凭据）', () => {
     })
 
     const deepseek = bodies.find(b => b.id === 'qianmo-deepseek')?.wire
-    const qwen = bodies.find(b => b.id === 'qianmo-qwen')?.wire
-    if (!deepseek || !qwen) throw new Error('fixture ids changed')
+    const strictOpenai = bodies.find(b => b.id === 'qianmo-alt')?.wire
+    if (!deepseek || !strictOpenai) throw new Error('fixture ids changed')
 
     // DeepSeek 分支：thinking 三件套 + reasoning_effort + 保留 stream_options
     expect(deepseek['thinking']).toEqual({ type: 'enabled' })
@@ -521,13 +521,13 @@ describe('AC-5 provider 配置与适配分支（无需凭据）', () => {
     expect(deepseek['stream_options']).toEqual({ include_usage: true })
 
     // strict-openai 分支：一个 thinking 字段都不带，stream_options 被剥除
-    expect(qwen['thinking']).toBeUndefined()
-    expect(qwen['enable_thinking']).toBeUndefined()
-    expect(qwen['chat_template_kwargs']).toBeUndefined()
-    expect(qwen['reasoning_effort']).toBeUndefined()
-    expect(qwen['stream_options']).toBeUndefined()
+    expect(strictOpenai['thinking']).toBeUndefined()
+    expect(strictOpenai['enable_thinking']).toBeUndefined()
+    expect(strictOpenai['chat_template_kwargs']).toBeUndefined()
+    expect(strictOpenai['reasoning_effort']).toBeUndefined()
+    expect(strictOpenai['stream_options']).toBeUndefined()
 
-    expect(JSON.stringify(deepseek)).not.toBe(JSON.stringify(qwen))
+    expect(JSON.stringify(deepseek)).not.toBe(JSON.stringify(strictOpenai))
   })
 
   test('reasoning_content 回声策略：deepseek 保留、strict-openai 剥除', () => {

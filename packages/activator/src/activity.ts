@@ -94,6 +94,9 @@ export function startResidentActivityServer(options: {
     get channels() {
       return server.channels
     },
+    closePeers: peerNodes => server.closePeers(peerNodes),
+    closePeerCredentials: credentials =>
+      server.closePeerCredentials(credentials),
     stop: async () => {
       options.controller.stop()
       await server.stop()

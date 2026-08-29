@@ -33,12 +33,72 @@
  * stays lightweight for the keychain prefetch). Every one of BIN_NAME's ~78
  * consumers keeps importing the same symbol and transparently gets the right
  * value. The names below the divider are NOT switched — see their comments.
+ *
+ * `invokedBinName()` sits alongside BIN_NAME and answers a different question —
+ * "what did the user actually type" rather than "what am I" — for help text
+ * only. It is NOT an identity input; read its comment before reaching for it.
  */
 
 import { byIdentity } from './identity.js'
 
 /** The command users type. Also the process title and socket prefix. */
 export const BIN_NAME = byIdentity({ occ: 'occ', qianmo: 'qm' })
+
+/**
+ * Every name package.json's `bin` block installs.
+ *
+ * A whitelist rather than "whatever argv[1] happens to end with", because this
+ * feeds user-facing prose: `node dist/cli-node.js` must not produce
+ * "Usage: cli-node.js console", and neither must a wrapper script someone
+ * named `deploy.sh`. Only a name we actually ship may be echoed back.
+ *
+ * A Set rather than an object literal so `constructor` and `toString` cannot
+ * masquerade as bin names.
+ */
+const INSTALLED_BIN_NAMES: ReadonlySet<string> = new Set([
+  'occ',
+  'occ-bun',
+  'open-claude-code',
+  'qm',
+])
+
+/**
+ * The name this process was ACTUALLY invoked as — for display only.
+ *
+ * `BIN_NAME` answers "which namespace am I", and it must keep answering that:
+ * it is the process title and the socket prefix, so letting it follow argv
+ * would mean one installation reached through two names produces two socket
+ * prefixes and can no longer find itself. This function answers "what did the
+ * user type", which is the right question for a usage line and the wrong one
+ * for anything else.
+ *
+ * The two answers differ exactly when the env var and the command disagree:
+ * `OCC_IDENTITY=qianmo occ console --help` must say `occ console`, because that
+ * is the line the reader can retype. Printing `qm console` there would be an
+ * instruction to run a command whose own help text then disagrees with it.
+ *
+ * NOT an identity input. It used to be — argv[1]'s basename seeded
+ * `IDENTITY_MODE` for one revision — and that was withdrawn on purpose: the
+ * signal disappears on three separate paths (Bun resolves a symlinked entry
+ * before filling argv[1]; a Windows `.cmd` shim passes the .js path; a
+ * bundled-mode child gets a CLI arg in that slot), and an identity that is
+ * right only sometimes is worse than one that is always explicit. `qm` pins
+ * its identity in its own entrypoint file instead — see
+ * scripts/entrypoints.ts. Nothing but display may depend on this.
+ *
+ * Falls back to `BIN_NAME` whenever argv names nothing installed — which now
+ * includes `qm` itself, since its entrypoint runs under Bun and argv[1] arrives
+ * as `.../dist/cli-qianmo.js`. The fallback is correct there for the same
+ * reason it is correct in a dev checkout: the identity's own name is the best
+ * available guess, and it is what these strings said before this existed.
+ */
+export function invokedBinName(): string {
+  const entry = process.argv[1]
+  if (entry === undefined) return BIN_NAME
+  const cut = Math.max(entry.lastIndexOf('/'), entry.lastIndexOf('\\'))
+  const base = cut === -1 ? entry : entry.slice(cut + 1)
+  return INSTALLED_BIN_NAMES.has(base) ? base : BIN_NAME
+}
 
 /** Full product name, for prose and package metadata. */
 export const PRODUCT_NAME = byIdentity({
