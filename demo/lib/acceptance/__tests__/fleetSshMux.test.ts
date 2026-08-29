@@ -443,7 +443,7 @@ describe('master 建不起来时如实红（issue #100 ⑤）', () => {
       [
         // 建 master 与问它在不在都挂掉 —— 现场就是那两轮真跑的那条错。
         `if [[ " $* " == *" -M "* || "$*" == *"-O check"* ]]; then`,
-        `  printf 'Connection closed by 129.151.5.169 port 22\\n' >&2`,
+        `  printf 'Connection closed by 203.0.113.7 port 22\\n' >&2`,
         `  exit 255`,
         `fi`,
         HAPPY,
