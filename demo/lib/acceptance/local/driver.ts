@@ -230,6 +230,17 @@ export class LocalDriver implements AcceptanceDriver {
     const credentialed = spec.auth.mode === 'credential_signature'
     await waitFor(
       async () => {
+        // 进程已经退出就别再等了。常驻在 ACP 连续失败五次之后会 park 并退出，
+        // 此后再怎么拨都不会有人应答 —— 继续等只是把一条「它死了、这是它的
+        // 遗言」拖成一条「超时」，而后者不含任何排查信息。`waitFor` 不吞
+        // predicate 抛的异常，所以这里抛就是立刻停。
+        if (!proc.alive()) {
+          throw new Error(
+            `节点 ${spec.name} 在就绪之前就退出了（exit=${
+              proc.exitCode() ?? '?'
+            }）；stderr:\n${proc.stderr()}`,
+          )
+        }
         const probe = await rawDial({
           url: endpoint,
           node: 'readiness-probe',
