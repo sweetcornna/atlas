@@ -154,6 +154,17 @@ async function runFromSource(
   // misses, so the request is always made, and the recording dies with the
   // directory.
   env.CLAUDE_CODE_TEST_FIXTURES_ROOT = scratch
+  // ...but "a miss means the request is made" only holds off CI. Under `CI`,
+  // `vcr.ts` turns a miss into a hard error instead of falling through — a
+  // sound rule in general (a missing cassette must not silently reach the
+  // network) that is simply wrong here, because the only endpoint this child
+  // can reach is the loopback server a few lines above. Without this, the
+  // child dies before sending anything, `systemPrompt` stays null, and the
+  // test fails on every CI run while passing on every developer machine —
+  // which is exactly what happened the first time this repository's CI was
+  // able to run at all. `VCR_RECORD=1` restores the fall-through; the cassette
+  // it writes lands in `scratch` and dies with it.
+  env.VCR_RECORD = '1'
   env.DISABLE_TELEMETRY = '1'
   env.NO_COLOR = '1'
 
@@ -221,6 +232,25 @@ describe('MACRO defines on the raw-source path', () => {
 
       // Never reaching the endpoint would make every assertion below vacuous,
       // so it is checked first and separately.
+      //
+      // The child's exit code and both its streams ride along in the failure,
+      // because `Received: null` on its own says nothing about *why* the
+      // request never arrived. This assertion has already gone red on CI
+      // while passing on every developer machine, and that run produced one
+      // line of evidence — `Received: null` — which was not enough to act on.
+      // The child is the only thing that knows; the parent has to ask it —
+      // and asking is what found the cause: `Anthropic API fixture missing`,
+      // i.e. VCR had swallowed the request. See `VCR_RECORD` above.
+      if (run.systemPrompt === null) {
+        throw new Error(
+          [
+            'the child never sent a system prompt to the loopback endpoint',
+            `exitCode=${run.exitCode}`,
+            `stdout:\n${run.stdout}`,
+            `stderr:\n${run.stderr}`,
+          ].join('\n'),
+        )
+      }
       expect(run.systemPrompt).not.toBeNull()
       const line = (run.systemPrompt ?? '')
         .split('\n')

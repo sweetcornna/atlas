@@ -32,6 +32,8 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   readFileSync,
   mkdirSync,
@@ -262,11 +264,35 @@ describe('beta-deploy.sh 的护栏', () => {
 })
 
 describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
-  /** 在 `dir` 里放一个可执行文件并跑起来，返回它的 PID。 */
+  /**
+   * 在 `dir` 里放一个可执行文件并跑起来，返回它的 PID。
+   *
+   * **不要用 shell 脚本 + `exec`。**守卫是按 `ps` 里的 argv 含不含树路径判定的
+   * （见 `beta-deploy.sh` 那段注释），而 `exec` 会把 shell 整个换掉——换完之后
+   * argv 是 `sleep 120`，树路径没了，守卫再也拍不到它。这不是守卫的问题，是固件
+   * 造出来的进程根本不符合「跑在这棵树上」的形状。
+   *
+   * 它此前在 macOS 上偶然是绿的：`/bin/sh` 启动慢，`ps` 常抢在 exec 完成之前拍到
+   * 旧 argv。Linux 的 dash 立刻 exec，一次都抢不到——CI 第一次真跑起来时那条红
+   * 就是这么来的（在此之前 Actions 配额一直挡着，谁也没看见）。
+   *
+   * 改成把 `sleep` 拷进树里直接跑：没有 shell、没有子进程、argv[0] 就是树里的
+   * 路径，两个平台上都确定。
+   */
   function runFromTree(dir: string): number {
     const bin = join(dir, 'qm-fake-resident')
-    writeFileSync(bin, '#!/bin/sh\nexec sleep 120\n', { mode: 0o755 })
-    const child = Bun.spawn([bin], { stdout: 'ignore', stderr: 'ignore' })
+    const sleepBin = Bun.which('sleep')
+    if (sleepBin === null) {
+      throw new Error(
+        '这台机器上找不到 sleep —— 这条用例造不出「树里有进程在跑」',
+      )
+    }
+    copyFileSync(sleepBin, bin)
+    chmodSync(bin, 0o755)
+    const child = Bun.spawn([bin, '120'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
     child.unref()
     return child.pid
   }
