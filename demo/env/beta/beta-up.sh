@@ -44,6 +44,12 @@
 # 却用本仓库的部署脚本部署不出来的能力，只能在部署机上手写瘦封装绕开这里的参数解析，
 # 那份封装不可重复、不可交接。一条透传约定让这类参数**再也不用改这个脚本**。
 #
+# **节点腿的尾参会被记下来**（issue #111）：写进 `<root>/state/<节点>.passthrough`，
+# 下一次不带 `--` 跑节点腿时原样读回来并打印。给了 `--` 就以这一趟为准并重写记录，
+# 给一个**空的** `--` 是明确清空。方向与控制台腿相反，理由写在 `resolve_node_passthrough`
+# 那段注释里——一句话：换产物每次都要重跑本脚本，而「不给就撤掉」在这里等于让
+# 「停机 → 换产物 → 起机」默认改掉节点的策略面。
+#
 # 三件事跟着这条约定：
 #   · 透传参数一律**追加在最后**。它是逃生门：真要覆盖上面某个默认值时，最后一个赢。
 #   · 它是逃生门**不是旁路**：`--view-token` / `--admin-token` 的值形式当场拦下（密钥
@@ -83,6 +89,9 @@ ONLY_GIVEN=''
 # `--` 之后的一切，原样追加给底层命令。空数组在 bash 3.2 的 `set -u` 下不能直接
 # `"${PASS_THROUGH[@]}"` 展开，所以下面每一处都用 `${PASS_THROUGH[@]+"..."}` 的形式。
 PASS_THROUGH=()
+# 给没给过 `--` 与「`--` 后面是空的」是两件事，节点腿要靠它们区分「沿用上一次」
+# 和「明确清空」（issue #111）。`PASS_THROUGH=()` 两种情况下长得一样。
+PASS_THROUGH_GIVEN=0
 READY_TIMEOUT_S="${QIANMO_BETA_READY_TIMEOUT_S:-90}"
 
 usage() {
@@ -141,7 +150,7 @@ while [ "$#" -gt 0 ]; do
     # 它**不是**一次启动，所以它自己不能靠尾参表达（见文件头「尾参透传」第三段）；
     # 尾参里的其余参数仍然跟着那次查询走。
     --print-wake-identity) PRINT_WAKE_IDENTITY=1; shift ;;
-    --) shift; PASS_THROUGH=("$@"); break ;;
+    --) shift; PASS_THROUGH=("$@"); PASS_THROUGH_GIVEN=1; break ;;
     -h|--help) usage; exit 0 ;;
     # 未知参数把**本脚本支持的参数集**一并打出来。原先只有一句「用 --help 看用法」，
     # 于是排查要多走一步；而这条路上最常见的未知参数恰恰是 resident / console 认识、
@@ -200,16 +209,24 @@ host_wants() {
 # 上的密钥就是这台机器每一份进程列表里的密钥（`ps -eo args` / `/proc/<pid>/cmdline` 每个
 # 本地账号都读得到，run_host 里那段注释是它的出处）。值形式在这里当场拦下并指到文件
 # 形式；其余参数一律不管、原样透传。
-for _arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
-  case "$_arg" in
-    --view-token|--view-token=*|--admin-token|--admin-token=*)
-      beta_die "尾参里不能出现 ${_arg%%=*} —— 命令行上的 token 会出现在这台机器每一份进程列表里。
-本脚本已经在用 --view-token-file / --admin-token-file 传这两枚（0600 文件，在 $BETA_SECRET_DIR 下），
+#
+# **它必须对每一处 PASS_THROUGH 的来源都跑一遍**，所以是个函数而不是一段直写的
+# 循环：节点腿的尾参记录（issue #111）是第二个来源，从文件读回来的那一份如果不
+# 再过一次这道门，这条守卫就正好变成它自己那句话里说的「旁路」——手改一次记录
+# 文件，往后每一次不带 `--` 的重起都会把 token 摆进 `ps` 里。
+assert_no_token_values_in_passthrough() {
+  local _arg
+  for _arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$_arg" in
+      --view-token|--view-token=*|--admin-token|--admin-token=*)
+        beta_die "尾参里不能出现 ${_arg%%=*} —— 命令行上的 token 会出现在这台机器每一份进程列表里。
+本脚本已经在用 --view-token-file / --admin-token-file 传这两枚（0600 文件，在 ${BETA_SECRET_DIR} 下），
 要换 token 就改那两个文件的内容。"
-      ;;
-  esac
-done
-unset _arg
+        ;;
+    esac
+  done
+}
+assert_no_token_values_in_passthrough
 
 # 去掉累加时留下的前导空格：它只影响打印出来那一行的观感，`for a in $BETA_AGENTS`
 # 的分词本来就吃得下——但那一行是运维照着抄进运维单页的，别让它带个空格。
@@ -936,6 +953,92 @@ beta_peer_addr_endpoint() {
   return 1
 }
 
+# ── 节点腿的尾参记录（issue #111）───────────────────────────────────────────
+#
+# 控制台那半边靠 `ops/console.env` + systemd 单元记住自己的尾参，节点这半边一直没有
+# 对应物：拓扑类参数由本脚本按 `--role`/`--node` 推导，所以每次都对；而 `--` 之后的
+# 东西**只存在于当初那一次命令行里**。于是「停机 → 换产物 → 起机」这个最常做的动作
+# 会静默改变节点的策略面 —— 2026-08-26 在 cornna-p3 上，beta-2 起来之后 argv 少了一个
+# `--trust <节点>=<公钥>`，其余一字不差。
+#
+# **丢掉的不是显示项，是策略。**掉了 `--trust` 之后节点照常启动、照常在名册上在线、
+# 拨号照常 426 —— 所有存活判据全绿，只有真去发一个签名唤醒任务时才会失败。同一条透传
+# 约定上还挂着 `--require-signed-tasks` / `--trust-ca` / `--cert` / `--chat-url`，每一个
+# 丢了都是同一种「看着正常、实际降级」。
+#
+# 所以节点腿的默认方向与控制台腿**相反**，这是有意的：
+#
+#   · 控制台：这一趟的尾参就是下一次开机的尾参；不给 = 撤掉（WARN 一句）。
+#     它撑得住这个默认，因为开机是 systemd 读 console.env，人不会为一次重启重跑本脚本。
+#   · 节点：不给 `--` = **沿用上一次记下的那一份**，并把沿用了什么打出来；
+#     给了 `--` = 以这一趟为准并重写记录；给一个**空的** `--` = 明确清空。
+#     人每次换产物都要重跑本脚本，「不给就撤掉」在这里等于把 issue #111 变成默认行为。
+#
+# 记录一行一个参数，不是 `KEY=值` 一整行 —— 那是 console.env 为了迁就 systemd 的分词
+# 才有的形状（也是它对含空白的尾参只能 WARN 的原因）。这份记录的读写两边都是本脚本，
+# 没有理由继承那个限制。
+beta_node_passthrough_file() {
+  printf '%s/%s.passthrough' "${BETA_STATE_DIR}" "${BETA_NODE}"
+}
+
+# 这一趟节点腿真正要用的尾参，写进 PASS_THROUGH，并把记录更新到与它一致。
+resolve_node_passthrough() {
+  local dst gen one
+  dst="$(beta_node_passthrough_file)"
+  beta_assert_inside_root "${dst}"
+
+  if [ "${PASS_THROUGH_GIVEN}" = '0' ]; then
+    if [ ! -f "${dst}" ]; then return 0; fi
+    # `read -r` 不吃反斜杠，`IFS=` 不吃前后空白：一行原样就是一个参数。
+    # `#` 开头的是文件头注释 —— 代价写在 `resolve_node_passthrough` 的写入侧：
+    # 一个以 `#` 开头的尾参存不进来，那里会当场 WARN 而不是悄悄写坏这份记录。
+    while IFS= read -r one; do
+      [ -n "${one}" ] || continue
+      case "${one}" in '#'*) continue ;; esac
+      PASS_THROUGH+=("${one}")
+    done <"${dst}"
+    if [ "${#PASS_THROUGH[@]}" -gt 0 ]; then
+      beta_ok "沿用上一次记下的尾参（${dst}）：
+  ${PASS_THROUGH[*]}
+要换成别的就带 \`-- <参数>\` 重跑；要清空就带一个空的 \`--\`。"
+    fi
+    return 0
+  fi
+
+  if [ "${#PASS_THROUGH[@]}" -eq 0 ]; then
+    if [ -s "${dst}" ]; then
+      beta_warn "给了一个空的 \`--\`，${BETA_NODE} 记下的尾参会被清空：
+  $(tr '\n' ' ' <"${dst}")"
+    fi
+    rm -f "${dst}"
+    return 0
+  fi
+
+  gen="${BETA_STATE_DIR}/.render-passthrough.$$"
+  beta_assert_inside_root "${gen}"
+  {
+    printf '# 阡陌内测 · 节点 %s 上一次的尾参，一行一个。由 demo/env/beta/beta-up.sh 写。\n' "${BETA_NODE}"
+    printf '#\n'
+    printf '# 不给 `--` 跑节点腿时，本脚本从这里读回来 —— 换产物不该顺手改掉策略面。\n'
+    printf '# 手改这里会被下一次带 `--` 的节点腿覆盖；要清空就带一个空的 `--` 跑一次。\n'
+    for one in "${PASS_THROUGH[@]}"; do
+      # 文件头是 `#` 开头的注释行，所以一个以 `#` 开头的尾参在这份记录里表达不了。
+      # 与 console.env 对含空白尾参的处置同一条纪律：与其写出一个下次会被读丢的
+      # 参数，不如当场说清楚它没被记下来。真实的 CLI 参数不长这样，但静默是不行的。
+      case "${one}" in
+        '#'*)
+          beta_warn "尾参 ${one} 以 # 开头，写不进 ${dst}（那是注释行的形状）—— 这一趟的进程带着它，但活不过下一次不带 \`--\` 的重起。"
+          continue
+          ;;
+      esac
+      printf '%s\n' "${one}"
+    done
+  } >"${gen}"
+  chmod 600 "${gen}"
+  beta_write_if_changed "${gen}" "${dst}" 600 "节点 ${BETA_NODE} 的尾参记录"
+  rm -f "${gen}"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # node 腿：该机那一个常驻节点
 # ─────────────────────────────────────────────────────────────────────────────
@@ -947,6 +1050,11 @@ run_node() {
   fi
   # PSK 由 H 生成后分发（§8.3）。**本机不生成**，理由见 common.sh 文件头第②条。
   beta_load_psk "$BETA_PSK_FILE" "本机节点的传输层 PSK"
+  # 尾参在这里定下来，早于任何一处用到 PASS_THROUGH 的地方（issue #111）。
+  resolve_node_passthrough
+  # 从记录里读回来的那一份**再过一次那道门**：命令行给的那一份在解析期已经过了，
+  # 而这一份是刚刚才进来的。
+  assert_no_token_values_in_passthrough
 
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"

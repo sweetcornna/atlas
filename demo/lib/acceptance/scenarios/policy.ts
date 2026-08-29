@@ -15,9 +15,35 @@
  *
  * 顺带钉住两条参数面的事实：默认是**严格**（P12.4 起 `requireSignedTasks`
  * 出厂为 true），以及两个开关同时给会在解析期直接报错、而不是按优先级和稀泥。
+ *
+ * ## 开放策略下也要有一条会红的判据（issue #116）
+ *
+ * 2026-08-27 从公网经控制台唤醒 beta-1：回执 `accepted`、任务也真跑完了 ——
+ * 而节点审计链上紧挨着 `message_accepted` 的前一条是
+ *
+ *   `capability_shadow_refusal … required:"write-limited" presented:"read"`
+ *
+ * 也就是说，**「控制台能唤醒节点」当时不是因为鉴权通过，而是因为鉴权被关着**。
+ * 四台节点都跑在 `--open-policy`，那条拒绝只记不拦。翻历史看它一直如此。
+ *
+ * 那件事本身**不需要再定**：`SIGNED_TASK_POLICY` 要求 `wake` 出示
+ * `write-limited`（理由写在 `policy.ts`：一次 wake 开的是一个能改工作区的轮次），
+ * 而控制台带 `--wake-sign` 时签发的正是 `write-limited` 令牌 —— 那条开关
+ * 2026-08-23 就在了，整条链路由 `console/wake-sign-round-trip` 钉着。
+ * 08-27 那台控制台只是**没带那个开关**（或节点没 `--trust` 它的公钥）。
+ *
+ * 缺的是**判据**：当时没有任何存活判据会提前说这件事，要等关掉 open policy
+ * 那天才发现 —— 也就是最坏的时刻。下面两条补上：
+ *
+ *   · `policy/open-records-what-strict-would-refuse` 钉住**机制**：开放策略 +
+ *     `--audit-signed-tasks` 时，那条影子拒绝确实被记下来了，且内容说得出
+ *     「要什么、出示了什么、会用哪个码拒」。它坏了，下面那条就变成永远绿。
+ *   · `policy/no-outstanding-shadow-refusal` 是**判据本身**：链上一条影子拒绝
+ *     都不该有。它在 open policy 下照样会红，08-27 那天就会红。
  */
 
 import { Checks, stripMinifiedSourceFrame } from '../checks.js'
+import { readTrail } from '../observe.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
 import {
   mint,
@@ -332,6 +358,93 @@ export const policyScenarios: readonly Scenario[] = [
         .contains(stderr, 'no task policy was given', 'stderr 的未选策略警告')
         .eq(probe.errorCode, 'E_CAP_INSUFFICIENT', '行为面：无 token 唤醒被拒')
         .done('默认档位是 SIGNED_TASK_POLICY 且会提醒没选')
+    },
+  },
+
+  {
+    id: 'policy/open-records-what-strict-would-refuse',
+    dimension: 'policy',
+    title: '开放策略 + --audit-signed-tasks：放行了，但影子拒绝把真相记下来',
+    expected:
+      "receipt='accepted'，且链上有 capability_shadow_refusal（required=write-limited, presented=read）",
+    requires: ['spawn-node', 'raw-dial', 'read-node-files'],
+    async run(ctx) {
+      const node = await startNodeTrusting(ctx, newParty(), {
+        policy: 'open',
+        // §9.2 阶段①的另一半。没有它，开放策略是**哑的**：放行了，而「若强制
+        // 会怎样」一个字都不留 —— 下面那条判据也就无从谈起。
+        extraArgs: ['--audit-signed-tasks'],
+      })
+      const result = await sendEnvelope({
+        url: node.endpoint,
+        psk: ACCEPTANCE_PSK,
+        fromNode: SENDER_NODE,
+        from: SENDER,
+        to: ADDRESS,
+      })
+      const records = await readTrail(ctx.driver, node)
+      const shadow = records.filter(r => r.kind === 'capability_shadow_refusal')
+      const detail = shadow.at(-1)?.detail ?? {}
+      return new Checks()
+        .note('回执现场', receiptScene(result))
+        .note('影子拒绝', JSON.stringify(shadow.map(r => r.detail)))
+        .note('链长度', records.length)
+        .eq(result.receipt, 'accepted', 'receipt（开放策略放行）')
+        .eq(result.errorCode, undefined, 'error 信封的 code')
+        .expect(shadow.length > 0, '链上记下了影子拒绝', shadow.length)
+        .eq(detail.type, 'wake', '影子拒绝的消息类型')
+        .eq(detail.required, 'write-limited', '若强制则要求的等级')
+        .eq(detail.presented, 'read', '实际出示的等级')
+        .eq(detail.wouldRefuseWith, 'E_CAP_INSUFFICIENT', '若强制会用的错误码')
+        .done('开放策略放行的同时记下了「若强制会被拒」')
+    },
+  },
+
+  {
+    id: 'policy/no-outstanding-shadow-refusal',
+    dimension: 'policy',
+    title:
+      '这台节点上没有欠着的影子拒绝 —— 关掉 open policy 也不会突然全线被拒',
+    expected: '审计链里 capability_shadow_refusal 一条都没有',
+    // 只要一台活着的节点加读文件：真机腿据此读**部署好的那台**的生产链，
+    // 这条判据在那里才有它真正的价值。
+    requires: ['attach-node', 'read-node-files'],
+    async run(ctx) {
+      const node = await startNodeTrusting(ctx, newParty(), { attach: true })
+      const records = await readTrail(ctx.driver, node)
+      // **空链不是通过。**本地腿附着的是一台刚起来的节点，链上一条都没有，
+      // 「没有影子拒绝」于是无条件成立 —— 那是一条什么都没看的绿。如实记 skip，
+      // 让它在报告里与真正查过的那一轮分开；这条判据的价值在真机腿上，那里
+      // `attach-node` 拿到的是部署好的那台的生产链。
+      if (records.length === 0) {
+        return new Checks().skip(
+          '这台节点的审计链是空的 —— 没有可查的历史，「一条都没有」证明不了任何事',
+        )
+      }
+      const shadow = records.filter(r => r.kind === 'capability_shadow_refusal')
+      // 最近几条原文进证据 —— 这条红的时候要回答的问题是「谁、发的什么、缺哪一档」，
+      // 一个计数回答不了。
+      const quoted = shadow
+        .slice(-5)
+        .map(r => JSON.stringify({ seq: r.seq, at: r.at, detail: r.detail }))
+        .join('\n')
+      return (
+        new Checks()
+          .note('链长度', records.length)
+          // 链是空的与「一条都没有」在计数上一样，而它们的含义完全不同：
+          // 前者是这条判据什么都没看，写出来免得被读成通过。
+          .note(
+            '扫描到的记录种类',
+            JSON.stringify([...new Set(records.map(r => r.kind))]),
+          )
+          .note('影子拒绝原文（最近 5 条）', quoted === '' ? '(没有)' : quoted)
+          .expect(
+            shadow.length === 0,
+            '一条影子拒绝都没有欠着',
+            `${shadow.length} 条：${quoted}`,
+          )
+          .done('这台节点在严格策略下也不会被拒')
+      )
     },
   },
 ]
