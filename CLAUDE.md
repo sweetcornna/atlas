@@ -11,7 +11,7 @@
 | 仓库性质 | **open-claude-code（`occ`）的下游 fork**，fork 布局，基座目录结构原样保留在仓库根 |
 | 基座版本 | 当前 pin `1128a3919a7f01298a6cbf5c468a839c6cf4ee6a` = tag **v2.46.0**（2026-08-17 由 P10.2 首次真实同步迁自 v2.38.3，见 `BASE.md`）；导入 pin 为 `848ad8c2…` = v2.38.3 |
 | 基座许可 | MIT，项目负责人自有，已在 npm 发布（`@sweetcornna/open-claude-code`） |
-| 本仓库许可 | MIT，沿用基座（见 `LICENSE` / `NOTICE`） |
+| 本仓库许可 | **双许可**（章程 v2.16，2026-08-29）：阡陌自有代码 **AGPL-3.0-or-later**（根 `LICENSE`），基座导入的代码 **MIT**（根 `LICENSE.base`，上游原文逐字保留）。**判据是 SPDX 文件头**——阡陌文件带 `SPDX-License-Identifier: AGPL-3.0-or-later`，基座文件不带任何 SPDX 头。新增阡陌源文件必须带那两行版权头，否则在机器判据下会被当成基座层。范围与理由见 `NOTICE` 一、许可 |
 | 阡陌自有代码 | `packages/` 下 `@qianmo/*` workspace 包 + 对基座运行时的常驻化改造 |
 | 成果边界 | 基座快照导入于提交 `3380c88`，其后全部提交即阡陌工作（另加导入前的立项提交 `67f6081`、`74f7a22`）。**2026-08-17 首次上游同步后，工作面用 `git diff base-snapshot/v2.46.0..HEAD` 举证，不要再用 `git diff 3380c88..HEAD`**——后者已含上游 v2.46.0 的 6 万行。**`848ad8c2` / `1128a391` 都是上游 SHA，本仓库不含上游历史，它们在干净 clone 上不是有效 git 对象** |
 

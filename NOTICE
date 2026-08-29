@@ -11,15 +11,46 @@ this repository.
 一、许可
 ================================================================================
 
-本仓库整体以 **MIT License** 发布，沿用其基座 open-claude-code 的许可。完整
-许可正文见根目录 LICENSE 文件。
+本仓库是**双许可仓库**，两层各有各的许可，分界线就是成果边界本身：
 
-覆盖范围包括：
+  * **阡陌自有代码 —— GNU AGPL-3.0-or-later**（根目录 `LICENSE`）。
+    包括 `packages/` 下 `@qianmo/*` 命名空间的 workspace 包、对基座运行时的
+    常驻化改造、`demo/` 下的演示与验收套件，以及阡陌团队撰写的文档
+    （`docs/dev/` 等）。判据是**文件头**：这些文件都带
+    `SPDX-License-Identifier: AGPL-3.0-or-later` 与
+    `Copyright 2026 Qianmo AgentNest Team` 两行，共 564 个文件。
 
-  * 由基座导入的全部代码（见下方"二、基座溯源"）；
-  * 阡陌团队在基座之上新增的全部代码，包括 `packages/` 下 `@qianmo/*` 命名空间
-    的 workspace 包，以及对基座运行时的改造；
-  * 阡陌团队撰写的文档（`docs/dev/` 等）。
+  * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
+    逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
+
+        # 属于 AGPL 那一层
+        grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .
+
+    详见下方"二、基座溯源"。
+
+  * **例外一处，如实列出**：`vendor/audio-capture/` 的六个预编译 `.node`
+    **既不属于上面任何一层**——它们不带 SPDX 头，而基座 MIT 那层覆盖的是源码
+    形态的基座代码。它们是**许可待定的随附二进制**，理由与两条收口路径写在
+    下方"五、第三方组件"。**本文件不把它们标成 AGPL**：AGPL 要求分发时提供
+    Corresponding Source，标了却给不出源码等于让本仓库违反自己的许可。
+
+**为什么选 AGPL 而不是 GPL**：阡陌的产品线②是「连接节点的智能体通信协作
+网络」，最可能被无偿占用的方式恰恰是把它做成托管服务对外提供——GPL-3.0 管
+不着这种用法，AGPL-3.0 §13（Remote Network Interaction）管得着。对一个网络
+型产品，只有 AGPL 才是实质意义上的严格。
+
+**MIT → AGPL 的方向是允许的**：MIT 是宽松许可，可并入 AGPL 作品；反过来不
+成立。因此本仓库对基座那层的改动若要回贡上游（MIT），需要单独授权——基座
+与本仓库同属一位负责人，具备双授权条件，但**不是自动发生的**，逐次决定。
+回贡节奏按 roadmap v2.41 已定为「暂不、个案再议」。
+
+**本次变更不可追溯**：本次变更之前本仓库以 MIT 分发，已据此取得副本者的
+MIT 授权不因本次变更而失效；AGPL 只适用于本次变更之后发布的版本。
+
+**§13 对我们自己同样成立**：AGPL-3.0 §13 要求——用户通过网络与本程序交互时，
+运营方须向该用户提供 Corresponding Source。阡陌的控制台与常驻节点都落在这一
+格，**包括我方自己对外开放的部署**。这是本次转许可唯一新增的持续义务，不是
+只约束别人的条款。
 
   说明：本仓库早期版本（历史提交 67f6081 及更早）曾采用 Apache License 2.0，
   该决定已随基座路线变更而作废，见 docs/dev/charter.md §5.5。
@@ -42,8 +73,9 @@ this repository.
 
 完整的导入记录与后续上游同步记录见仓库根目录的 BASE.md。
 
-上游 open-claude-code 的 MIT 许可与版权声明**予以保留**，见根目录 LICENSE。
-本仓库对基座的修改不改变该许可的适用。
+上游 open-claude-code 的 MIT 许可与版权声明**予以保留**，逐字存于根目录
+`LICENSE.base`（该文件与基座快照 `base-snapshot/v2.46.0` 逐字节相同）。本仓库
+对基座的修改不改变该许可对基座那层的适用。
 
 **成果边界**：基座以零改动快照导入于**本仓库提交 `3380c88`**，其后的全部提交为阡陌
 团队的工作。举证命令：
@@ -113,6 +145,16 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     coreaudio-rs 0.11.3 / alsa 0.9.1 / windows 0.54.0）。**该模块自身的源码与许可
     待上游确认**——本文件不作推定，进展记录于 docs/dev/license-chain-m0.md。
 
+    **它与本仓库转 AGPL 的关系（如实记录，不粉饰）**：负责人已决定把这六个二进制
+    一并纳入 copyleft 并补齐源码，但**源码位置尚未提供**。在源码到位之前，本文件
+    **不把它们标注为 AGPL**——AGPL 要求分发时提供 Corresponding Source，标了却给
+    不出源码，等于让本仓库违反自己的许可。因此当前状态是：这六个文件既不在上面
+    第一条（AGPL 层，它们不带 SPDX 头），也不属于第二条（基座 MIT 层覆盖的是源码
+    形态的基座代码）——它们是**许可待定的随附二进制**。收口动作有两个，二选一：
+    补上源码并加 AGPL 标注，或把它们从分发中摘除（`build.ts` / `post-build.ts`
+    的复制步骤 + `packages/audio-capture-napi/` 的装载层降级）。跟踪见
+    docs/dev/license-chain-m0.md 的 D-5。
+
   * `src/utils/vendor/ripgrep/` —— ripgrep 可执行文件，**不入库**，由
     `scripts/postinstall.cjs` 在安装时从 microsoft/ripgrep-prebuilt v15.0.1 下载并
     对每个档案做硬编码 SHA-256 校验。构建工程 microsoft/ripgrep-prebuilt 以 MIT
@@ -136,16 +178,59 @@ ENGLISH
 1. LICENSE
 --------------------------------------------------------------------------------
 
-This repository as a whole is released under the **MIT License**, inherited from
-its base project, open-claude-code. See the LICENSE file for the full text.
+This is a **dual-licensed repository**. The two layers carry different
+licenses, and the boundary is the provenance boundary itself:
 
-The MIT License covers:
+  * **Qianmo's own code -- GNU AGPL-3.0-or-later** (`LICENSE` at the root).
+    This covers the `@qianmo/*` workspace packages under `packages/`, the
+    residency modifications to the base runtime, the demo and acceptance
+    suites under `demo/`, and documentation written by the Qianmo AgentNest
+    Team (`docs/dev/` and others). The test is the **file header**: these 564
+    files carry both `SPDX-License-Identifier: AGPL-3.0-or-later` and
+    `Copyright 2026 Qianmo AgentNest Team`.
 
-  * all code imported from the base project (see section 2 below);
-  * all code added by the Qianmo AgentNest Team on top of the base, including
-    workspace packages under the `@qianmo/*` namespace in `packages/`, and
-    modifications to the base runtime;
-  * documentation authored by the Qianmo AgentNest Team (`docs/dev/`, etc.).
+  * **Code imported from the base project -- MIT License** (`LICENSE.base`,
+    the upstream text kept verbatim). Base files carry **no SPDX header**,
+    which is the machine-checkable test between the two layers:
+
+        # files in the AGPL layer
+        grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .
+
+    See section 2 below.
+
+  * **One exception, stated plainly**: the six prebuilt `.node` files under
+    `vendor/audio-capture/` fall into **neither layer above** -- they carry no
+    SPDX header, and the base MIT layer covers base code in source form. They
+    are **accompanying binaries of undetermined license**; the reasoning and
+    the two ways to close it are in section 5 below. This file does **not**
+    label them AGPL: AGPL requires Corresponding Source on distribution, and
+    labelling a binary whose source we cannot ship would put this repository
+    in violation of its own license.
+
+**Why AGPL rather than GPL**: Qianmo's second product line is a communication
+and collaboration network connecting resident agents. The most likely way for
+it to be taken without reciprocity is for someone to run it as a hosted
+service -- which GPL-3.0 does not reach and AGPL-3.0 section 13 (Remote
+Network Interaction) does. For a network-shaped product, only AGPL is strict
+in substance.
+
+**The MIT-to-AGPL direction is permitted**: MIT is permissive and may be
+incorporated into an AGPL work; the reverse is not true. Contributing this
+repository's changes to the base layer back upstream (MIT) therefore requires
+a separate grant. The base project and this repository share one owner, so
+dual licensing is available, but it is **not automatic** and is decided case
+by case. Per roadmap v2.41 the current position on upstreaming is "not for
+now, revisit individually".
+
+**This change is not retroactive**: the repository was distributed under MIT
+before this change. Copies obtained under MIT keep that grant; AGPL applies
+only to versions published after this change.
+
+**Section 13 binds us too**: AGPL-3.0 section 13 requires an operator to offer
+Corresponding Source to users who interact with the program over a network.
+Qianmo's console and its resident nodes are exactly that, **including the
+deployments we run ourselves**. This is the one ongoing obligation the
+relicensing adds, and it is not a clause that only applies to other people.
 
   Note: earlier revisions of this repository (commit 67f6081 and prior) used the
   Apache License 2.0. That decision was superseded by the base-adoption change;
@@ -172,9 +257,10 @@ into the repository root as an unmodified snapshot.
 The import record and any subsequent upstream synchronization records are kept
 in BASE.md at the repository root.
 
-The upstream MIT license and copyright notice are **retained**; see LICENSE.
+The upstream MIT license and copyright notice are **retained** verbatim in
+`LICENSE.base` (byte-for-byte identical to the `base-snapshot/v2.46.0` tag).
 Modifications made in this repository do not alter the applicability of that
-license.
+license to the base layer.
 
 **Work boundary**: the base was imported as an unmodified snapshot in **this
 repository's commit 3380c88**; every commit after it is the work of the Qianmo
@@ -260,6 +346,21 @@ dependency tree):
     windows 0.54.0). **The source and license of the module itself remain to be
     confirmed with upstream** — this file makes no assumption about them;
     progress is tracked in docs/dev/license-chain-m0.md.
+
+    **How this interacts with the relicensing to AGPL (recorded plainly)**: the
+    project owner has decided to bring these six binaries into the copyleft
+    layer and to supply their source, but **the source location has not been
+    provided yet**. Until it is, this file does **not** label them AGPL: AGPL
+    requires Corresponding Source on distribution, and labelling a binary whose
+    source we cannot ship would put this repository in violation of its own
+    license. Their present status is therefore neither of the two layers above
+    — they carry no SPDX header, and the base MIT layer covers base code in
+    source form — they are **accompanying binaries of undetermined license**.
+    There are two ways to close this, and exactly one must be taken: supply the
+    source and mark them AGPL, or drop them from distribution (the copy steps
+    in `build.ts` / `post-build.ts` plus a degraded loader in
+    `packages/audio-capture-napi/`). Tracked as D-5 in
+    docs/dev/license-chain-m0.md.
 
   * `src/utils/vendor/ripgrep/` — the ripgrep executable, **not checked in**;
     `scripts/postinstall.cjs` downloads it from microsoft/ripgrep-prebuilt
