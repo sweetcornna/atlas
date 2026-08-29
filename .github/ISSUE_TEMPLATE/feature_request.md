@@ -8,9 +8,10 @@ assignees: []
 
 ## 发帖前必读
 
-- [ ] 我已经搜索过 [现有 Issues](https://github.com/sweetcornna/open-claude-code/issues)，没有找到重复。
+- [ ] 我已经搜索过 [现有 Issues](https://github.com/sweetcornna/atlas/issues)，没有找到重复。
 - [ ] 这是功能建议，不是 Bug 报告或使用问题。
-- [ ] 使用问题请前往 [Discussions](https://github.com/sweetcornna/open-claude-code/discussions)。
+- [ ] 我看过 [`docs/dev/charter.md`](https://github.com/sweetcornna/atlas/blob/main/docs/dev/charter.md) 的 §3 范围与 §2.2 非目标 —— 本项目范围以章程为唯一依据，
+      落在非目标里的建议会被记录，但不会在当前里程碑内实现。
 
 ---
 
