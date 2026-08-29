@@ -11,13 +11,13 @@
 | ① 云端常驻编程智能体 | 沙箱驻留、项目记忆、休眠唤醒、随叫随到、模型中立 | **节点** |
 | ② 智能体通信协作网络 | 注册发现、按名寻址、加密消息、权限分级、限流防循环、跨节点资源协同 | 连接节点的**网络** |
 
-当前阶段：**M0 原型验证期（2026H2）**。范围与验收标准以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
+当前阶段：**M1 开发期**。M0 原型验证已于 **2026-08-17 收口**（八条验收判据全部通过、零豁免，见 [`docs/dev/roadmap.md`](docs/dev/roadmap.md) v2.42 与 [`docs/dev/acceptance-m0.md`](docs/dev/acceptance-m0.md)）。范围与验收标准以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
 
 ---
 
 ## 基座说明
 
-本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录，锁定在提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`）。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。
+本仓库是 **[open-claude-code](https://github.com/sweetcornna/open-claude-code)（CLI 名 `occ`，MIT 许可）的下游 fork**。基座由项目负责人自有并已在 npm 公开发布（`@sweetcornna/open-claude-code`），以零改动快照方式导入本仓库根目录。**导入 pin** 是上游提交 `848ad8c2c8daca9f5aa2410da555553e07700f5d`（= tag `v2.38.3`，历史锚点，不随同步变化）；**当前 pin** 是 `1128a3919a7f01298a6cbf5c468a839c6cf4ee6a`（= tag `v2.46.0`），2026-08-17 首次上游同步后跟进——两个 pin 的分工与完整同步记录见 [`BASE.md`](BASE.md)。阡陌的自有代码以 `@qianmo/*` workspace 包的形式加入，常驻化改造直接落在基座运行时上。
 
 **成果边界**：基座导入于**本仓库提交 `3380c88`**，其后的全部提交即阡陌团队的工作——工作记录 `git log 3380c88..HEAD`，另加导入前的立项提交 `67f6081`、`74f7a22`。**2026-08-17 首次上游同步（v2.38.3 → v2.46.0）之后**，基座内容在历史里出现了第二次，因此工作面改用基座零改动快照标签举证：工作面 `git diff base-snapshot/v2.46.0..HEAD`、当前基座边界 `git show --stat base-snapshot/v2.46.0`；工作记录里 `d04a79dd` 一笔的内容全部来自上游，须单独声明（详见 [`BASE.md`](BASE.md)「上游同步记录」与章程 §5.5）。本仓库经零改动快照导入、**不含上游 git 历史**，故举证基线是导入提交 `3380c88`，而不是上游 pin `848ad8c2`（那是上游仓库的 SHA，在本仓库不是有效 git 对象）；上游溯源以 [`BASE.md`](BASE.md) 的记录与上游仓库比对为准。
 

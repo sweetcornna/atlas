@@ -32,8 +32,11 @@ this repository.
 
   上游项目    open-claude-code（CLI 名 occ）
   npm 包名    @sweetcornna/open-claude-code
-  锁定提交    848ad8c2c8daca9f5aa2410da555553e07700f5d
-  对应版本    v2.38.3
+  导入提交    848ad8c2c8daca9f5aa2410da555553e07700f5d
+              对应版本 v2.38.3 —— 零改动快照导入时的上游提交，历史锚点，
+              不随后续同步变化
+  当前锁定    1128a3919a7f01298a6cbf5c468a839c6cf4ee6a
+              对应版本 v2.46.0 —— 2026-08-17 首次上游同步后的 pin
   上游许可    MIT License
               Copyright (c) 2026 open-claude-code contributors
 
@@ -156,8 +159,13 @@ into the repository root as an unmodified snapshot.
 
   Upstream project   open-claude-code (CLI name: occ)
   npm package        @sweetcornna/open-claude-code
-  Pinned commit      848ad8c2c8daca9f5aa2410da555553e07700f5d
-  Corresponding tag  v2.38.3
+  Import commit      848ad8c2c8daca9f5aa2410da555553e07700f5d
+                     tag v2.38.3 -- the upstream commit at the time of the
+                     unmodified-snapshot import. A historical anchor; it does
+                     not change when the base is synchronized.
+  Current pin        1128a3919a7f01298a6cbf5c468a839c6cf4ee6a
+                     tag v2.46.0 -- the pin after the first upstream
+                     synchronization on 2026-08-17.
   Upstream license   MIT License
                      Copyright (c) 2026 open-claude-code contributors
 
