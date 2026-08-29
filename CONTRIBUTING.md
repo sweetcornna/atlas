@@ -1,6 +1,6 @@
 # 贡献指南
 
-欢迎参与 open-claude-code（CLI 名 `occ`）。这份文档讲**怎么在这个仓库里干活**；架构、模块地图、feature flag 体系这些「代码是什么样」的问题，一律以 [`CLAUDE.md`](CLAUDE.md) 为准。
+欢迎参与**阡陌 AgentNest**。这份文档讲**怎么在这个仓库里干活**；架构、模块地图、feature flag 体系这些「代码是什么样」的问题，一律以 [`CLAUDE.md`](CLAUDE.md) 为准。
 
 > 术语保留英文原文（feature flag、barrel、ratchet 等），因为它们同时是代码里的标识符，翻译会让搜索失效。
 
@@ -12,7 +12,18 @@
 2. 本文档 —— 工作流与规范。
 3. 你要改的那块代码附近的 `docs/`。
 
-这是 Anthropic Claude Code CLI 的逆向/反编译社区版，目标是恢复核心功能、裁掉次要能力，并与官方 Claude Code 做到用户态完全隔离。很多模块是 stub 或被 feature flag 关掉的 —— 看到"空实现"先确认是不是有意为之，再动手补。
+**这个仓库是两层。**阡陌基于团队负责人自有的开源项目 **open-claude-code**（CLI 名 `occ`，MIT 许可）构建，
+并在其上实现常驻化改造与智能体通信网络。基座以零改动快照导入，**目录结构原样保留在仓库根**，阡陌自己的代码是
+`packages/` 下的 `@qianmo/*` workspace 包加上对基座运行时的改造（溯源见 [`BASE.md`](BASE.md)）。
+
+因此你要动的那块代码属于哪一层，决定了适用哪套规矩：
+
+- **基座那层**是 Anthropic Claude Code CLI 的逆向/反编译还原版，目标是恢复核心功能、裁掉次要能力，
+  并与官方 Claude Code 做到用户态完全隔离。很多模块是 stub 或被 feature flag 关掉的 —— 看到「空实现」
+  先确认是不是有意为之，再动手补。**改它要考虑上游同步成本**（见 §1 之后各节与 `CLAUDE.md` §2.3：能走扩展点就别改核心）。
+- **阡陌那层**是本项目的自有工作，范围以 [`docs/dev/charter.md`](docs/dev/charter.md) 为唯一依据。
+
+分不清某个 `packages/` 子目录属于哪一层，看它 `package.json` 的 `name`：`@qianmo/*` 是阡陌的，其余是基座的。
 
 ## 2. 环境准备
 
@@ -144,6 +155,16 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
 5. pre-commit hook 会自动对暂存文件跑 `biome check --fix`；CI 会跑 `biome ci` + typecheck + 环数棘轮 + 全量测试 + 构建。
 
 发现了问题但不在本次范围内？**记录，不要顺手改。** 在 PR 描述里列出来。夹带无关改动的 diff 会拖慢审查，也让回滚变得危险。
+
+### 10.1 仓库外的贡献者
+
+没有本仓库写权限就 fork 一份，从你 fork 的 `main` 切分支，改完往本仓库的 `main` 发 PR。上面五条同样适用。
+
+- **不需要签 CLA。**本仓库以 MIT 发布，你的 PR 按同一许可并入（inbound = outbound）。提交即表示你有权以 MIT 贡献这些代码。
+- **先开 issue 再动大工程。**这是一个有明确范围的在研项目：阡陌那层的范围以 [`docs/dev/charter.md`](docs/dev/charter.md) §3 为准，§2.2 列的非目标当前一律不做。
+  落在非目标里的 PR 我们会如实说明并关闭——**先问一句能省掉整块白做的工。**
+- **基座那层的改动优先发给[上游](https://github.com/sweetcornna/open-claude-code)。**在这里改基座代码，每次上游同步都要重解一遍；发到上游则两边都受益。
+- **安全问题不要发 PR，也不要开 issue**，走 [`SECURITY.md`](SECURITY.md) 的私密通道——公开的修复补丁本身就会暴露漏洞。
 
 ## 11. 本仓库不发布
 
