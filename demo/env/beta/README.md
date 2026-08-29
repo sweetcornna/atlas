@@ -312,6 +312,33 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 最后一个登录会话退出时这些单元会跟着一起消失。宿主上没有可用的 `systemd --user` 时（开发机
 就是这样），脚本不铺单元并如实说「重启后不会自动回来」。
 
+### 真机腿（`--target fleet`）怎么起
+
+```bash
+demo/env/beta/ops/fleet-acceptance.sh -- --out /tmp/fleet-run
+```
+
+它只做三件事：**从各机现取 PSK 进环境**（`~/qianmo-beta/secrets/transport-psk`，0600）、
+**校验四把都取到了**、再 exec `scripts/qianmo-acceptance.ts --target fleet`，尾参原样透传。
+值不打印也不落盘 —— 通过时打的是 sha256 前 8 位。
+
+**为什么要有它**（issue #113）：在它之前 `grep -rn "QIANMO_ACCEPTANCE_PSK_"` 在 `*.md` /
+`*.sh` 上是空的，唯一提到那几个变量名的是 `fleetConfigFromEnv()` 自己的实现。于是这条腿
+「怎么跑起来的」是口头知识，换个人接手时最省事的做法是现编一条命令行 —— 而**少接一把
+PSK 的表现不是报错**，是那个节点的场景整片 skip 或红，两者都容易被读成「环境问题」。
+
+两条入口性的事实，真源都在 `demo/lib/acceptance/fleet/driver.ts` 的 `fleetConfigFromEnv()`
+注释里，本文只给指针：
+
+- **节点名 → 变量名**：`beta-1` → `QIANMO_ACCEPTANCE_PSK_BETA_1`（连字符换下划线再大写，
+  即那里的 `envSuffix()`）。取不到时回退 `QIANMO_TRANSPORT_PSK`。
+- **控制台机可置空**：`QIANMO_ACCEPTANCE_CONSOLE_HOST=`（空值）就是「这一轮没有控制台
+  机器」，靠它的场景据此如实 skip 而不是红。缺省是 `workbench-iap`。
+
+拨号地址默认 `ws://127.0.0.1:3863x`，**那四个口在控制台机 H 的回环上**。从别处跑要先起隧道
+（`ssh -N -L 3863x:127.0.0.1:3863x workbench-iap`），或设 `QIANMO_ACCEPTANCE_DIAL_HOST` /
+`QIANMO_ACCEPTANCE_ENDPOINT_<节点>`。套件不自己建隧道 —— 拨不通是**如实的红**，不是假绿。
+
 ### 这两个单元的状态不是存活判据 —— 两个方向都不是
 
 2026-08-24 真机腿实测，同一台 H 同一时刻：
@@ -593,7 +620,7 @@ PSK 是每节点一把、由 H 生成后分发；在节点机上本地重新生�
   坐标行而机器上没有 `systemctl`（或没有用户级 D-Bus 会话）时**直接 die**，不静默跳过 ——
   跳过会得到一个「名册上在线、拨号全超时」的拓扑。无 sudo 的机器要先让 root 跑一次
   `loginctl enable-linger <用户名>`，否则最后一个登录会话退出时全部隧道会跟着消失。
-- `shellcheck demo/env/beta/*.sh demo/env/beta/ops/mirror-pull.sh` 干净（0.11.0 实测）。`common.sh` 里有一条文件级
+- `shellcheck demo/env/beta/*.sh demo/env/beta/ops/*.sh` 干净（0.11.0 实测）。`common.sh` 里有一条文件级
   `disable=SC2034`——它是被 source 的公共层，shellcheck 看不到消费方向，`demo/env/common.sh`
   有同样的 12 条告警；**只在那一个文件禁用，四个消费脚本仍然全开**。
 - 不需要 `curl`：`beta_http_status` 有 bun 兜底（bun 本来就是硬依赖）。
