@@ -216,6 +216,21 @@ interface QianmoResidentOptions {
     readonly url?: string
   }) => void
   readonly spawnAcp?: () => ChildProcess
+  /**
+   * Restart policy for the ACP child; both fields default to the supervisor's
+   * own constants.
+   *
+   * Exposed because parking became *visible*. It used to end the process, so
+   * how long it took to get there was an internal detail nobody could act on.
+   * Now a parked node stays up and refuses turns with a reason, which makes
+   * "how many rapid failures before we stop trying" an operational choice —
+   * and lets a test reach the degraded state without waiting out the
+   * production backoff ladder.
+   */
+  readonly acpRestart?: {
+    readonly initialBackoffMs?: number
+    readonly maxRapidFailures?: number
+  }
 }
 
 class BaseMailboxPort implements ResidentMailboxPort {
@@ -361,6 +376,11 @@ interface ActiveResidentTask {
   timeout: ReturnType<typeof setTimeout> | null
   acked: boolean
   settled: boolean
+  /**
+   * True between `#registerTask` and the end of `deliver()` — the window in
+   * which this task belongs to no ACP generation yet. See `#failActiveTasks`.
+   */
+  delivering: boolean
 }
 
 /**
@@ -424,6 +444,35 @@ class ResidentDeliveryError extends Error {
   }
 }
 
+/**
+ * What a peer is told when this node cannot run an agent turn at all.
+ *
+ * Deliberately not "not ready": the node *is* ready, it just has no agent.
+ */
+const RESIDENT_AGENT_UNAVAILABLE =
+  'resident agent is unavailable on this node (the ACP child could not be started); delivery, receipts and audit still work'
+
+/**
+ * What a peer is told when the agent is merely between generations.
+ *
+ * A different sentence from {@link RESIDENT_AGENT_UNAVAILABLE} on purpose: one
+ * says "come back", the other says "do not". Collapsing them would make an
+ * ordinary restart look like a node that needs an operator.
+ */
+const RESIDENT_AGENT_RESTARTING =
+  'resident agent is restarting and did not come up in time; the node is reachable, retry this task'
+
+/**
+ * How long a delivery waits for an agent that is still coming up.
+ *
+ * Bounded **below** the 5 s receipt budget every caller in this repository
+ * uses ({@link TASK_REPLY_RECEIPT_TIMEOUT_MS}, and the transport outbox's own
+ * default). Waiting longer than the sender does is the worst of both: the
+ * sender times out and gives up while this node goes on to accept the message
+ * and run the turn, so the work happens and nobody is told.
+ */
+const RUNTIME_WAIT_MS = 3_000
+
 export class QianmoResident {
   readonly #options: QianmoResidentOptions
   readonly #gate = new NodeTurnGate()
@@ -483,6 +532,11 @@ export class QianmoResident {
   /** Memory recall for the user-message sidecar (design §4.4). */
   readonly #memory: ResidentMemorySidecar
   #stopping = false
+  #releaseStop: (() => void) | null = null
+  /** Woken when `#runtime` becomes available; see `#runtimeForDelivery`. */
+  #runtimeWaiters: Array<() => void> = []
+  /** The ACP child backing `#runtime`; see `#runtimeIsLive`. */
+  #runtimeChild: ChildProcess | null = null
   #witnessClosed = false
 
   constructor(options: QianmoResidentOptions) {
@@ -577,6 +631,12 @@ export class QianmoResident {
     }
     this.#supervisor = new ResidentSupervisor({
       start: async () => await this.#startAcp(),
+      ...(options.acpRestart?.initialBackoffMs === undefined
+        ? {}
+        : { initialBackoffMs: options.acpRestart.initialBackoffMs }),
+      ...(options.acpRestart?.maxRapidFailures === undefined
+        ? {}
+        : { maxRapidFailures: options.acpRestart.maxRapidFailures }),
       onError: error => this.#options.onError?.(error),
       onParked: failures =>
         this.#options.onError?.(
@@ -600,10 +660,45 @@ export class QianmoResident {
     this.#notifies.outstanding()
     this.#deadlineClock.start()
     for (const backups of this.#backups.values()) backups.start()
+    // Bound before the agent, and outliving it. See `#startTransport`.
+    this.#transport = this.#startTransport()
     try {
       await this.#supervisor.run()
+      // `supervisor.run()` returning means one of two very different things.
+      //
+      // Stopped: we are shutting down, fall through and tear the node down.
+      //
+      // **Parked**: the ACP child failed to start five times in a row and the
+      // supervisor gave up on it. That says nothing about the rest of this
+      // node — the listener is bound, the audit chain is intact, the delivery
+      // ledger is loaded, and peers can still reach us. Tearing all of that
+      // down because the agent could not start is how a node with an expired
+      // credential *disappears from the network* instead of reporting that its
+      // agent is unavailable. Inbound task requests get a rejected receipt
+      // carrying the reason (see `deliver`); everything that never needed a
+      // model keeps working. Stay up until someone actually stops us.
+      if (!this.#stopping) {
+        this.#options.onError?.(
+          new Error(
+            'resident is degraded: the ACP child could not be started, so no ' +
+              'agent turn can run here. Delivery, receipts and audit continue; ' +
+              'inbound task requests will be refused with a reason. The node ' +
+              'stays reachable so peers can tell "agent unavailable" from ' +
+              '"node gone" — restart it once the cause is fixed.',
+          ),
+        )
+        await this.#awaitStop()
+      }
     } finally {
       this.#stopping = true
+      // Before the listener goes, not after. The last generation's own
+      // teardown already drained what *it* sent, but a degraded node keeps
+      // answering after that: every refusal from `#receive` is a reply on the
+      // wire waiting for a receipt, and tearing the transport out from under
+      // one turns a delivered answer into a spurious `transport server closed
+      // before receipt`. Cheap when there is nothing outstanding.
+      await this.#drainReplyReceipts()
+      await this.#stopTransport()
       this.#poller?.stop()
       this.#poller = null
       this.#closeWitness()
@@ -651,9 +746,7 @@ export class QianmoResident {
     message: QianmoMessage,
     verified: InboundVerification = {},
   ): Promise<InboundDelivered> {
-    const runtime = this.#runtime
-    if (runtime === null)
-      throw new Error('resident ACP connection is not ready')
+    const runtime = await this.#runtimeForDelivery()
     // Ahead of the write, and synchronous: the poll below no longer reports
     // "this node hosts no such agent" back in time to stop the write.
     try {
@@ -834,6 +927,8 @@ export class QianmoResident {
         context.channel.send(errorReply(message, code, reason))
       }
       throw error
+    } finally {
+      if (task !== undefined) task.delivering = false
     }
   }
 
@@ -861,6 +956,7 @@ export class QianmoResident {
       timeout: null,
       acked: false,
       settled: false,
+      delivering: true,
     }
     this.#tasksByMessage.set(envelope.msgId, task)
     this.#tasksByTask.set(envelope.taskId, task)
@@ -1369,16 +1465,26 @@ export class QianmoResident {
 
   async #failActiveTasks(reason: string): Promise<void> {
     await Promise.all(
-      [...this.#tasksByTask.values()].map(task =>
-        this.#settleTask(
-          task,
-          createTaskResult(task.envelope, task.envelope.to, {
-            outcome: 'failed',
-            code: ProtocolErrorCode.E_TASK_FAILED,
-            reason,
-          }),
+      [...this.#tasksByTask.values()]
+        // A task still inside `deliver()` has not been handed to the
+        // generation that is dying — it is waiting for the *next* one
+        // (`#runtimeForDelivery`), and its message is not in the mailbox yet.
+        // Failing it here answers the sender `task.result{failed}` for a turn
+        // that then goes on to run and succeed on the new generation, and the
+        // real answer is dropped because the task left both maps. This window
+        // only exists because the listener now outlives the ACP child: before
+        // that, nothing could arrive between the death and the restart.
+        .filter(task => !task.delivering)
+        .map(task =>
+          this.#settleTask(
+            task,
+            createTaskResult(task.envelope, task.envelope.to, {
+              outcome: 'failed',
+              code: ProtocolErrorCode.E_TASK_FAILED,
+              reason,
+            }),
+          ),
         ),
-      ),
     )
   }
 
@@ -1435,6 +1541,89 @@ export class QianmoResident {
     this.#poller = null
     this.#closeWitness()
     this.#supervisor.stop()
+    // Wakes `run()` when it is parked-but-alive; a no-op on every other path.
+    this.#releaseStop?.()
+  }
+
+  /**
+   * The runtime to hand this delivery to, waiting briefly if the agent is
+   * still coming up.
+   *
+   * The listener is bound for the node's whole life now, so a peer can arrive
+   * in two windows where it previously could not: while the first ACP child is
+   * still starting, and during the backoff between restarts. Refusing those
+   * deliveries would trade one wrong answer for another — the node is not
+   * broken, the agent is seconds away — so they wait.
+   *
+   * **Parked is different and must not wait**: the supervisor has given up, so
+   * no amount of waiting produces a runtime. Answer immediately with the
+   * reason, which is what lets a peer tell "agent unavailable" from "node
+   * gone". Same for a node already stopping.
+   */
+  async #runtimeForDelivery(): Promise<ResidentNodeRuntime> {
+    const ready = this.#runtimeIsLive() ? this.#runtime : null
+    if (ready !== null) return ready
+    if (this.#supervisor.parked || this.#stopping) {
+      throw new Error(RESIDENT_AGENT_UNAVAILABLE)
+    }
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(() => {
+        this.#runtimeWaiters = this.#runtimeWaiters.filter(w => w !== wake)
+        resolve()
+      }, RUNTIME_WAIT_MS)
+      timer.unref?.()
+      const wake = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      this.#runtimeWaiters.push(wake)
+    })
+    const runtime = this.#runtimeIsLive() ? this.#runtime : null
+    if (runtime !== null) return runtime
+    throw new Error(
+      this.#supervisor.parked || this.#stopping
+        ? RESIDENT_AGENT_UNAVAILABLE
+        : RESIDENT_AGENT_RESTARTING,
+    )
+  }
+
+  /**
+   * Whether `#runtime` still has a live ACP child behind it.
+   *
+   * `#runtime` is retired when the child's `closed` promise settles, but that
+   * is an event-loop turn or more after the process actually dies — and with
+   * the listener no longer dying alongside it, a peer can deliver inside that
+   * gap. Handing it to the doomed generation costs a failed turn and a second
+   * `read` ack for one task, which is protocol-visible noise for something the
+   * node already knows. `killed` / `exitCode` / `signalCode` are set
+   * synchronously, so asking is exact and free.
+   */
+  #runtimeIsLive(): boolean {
+    if (this.#runtime === null) return false
+    const child = this.#runtimeChild
+    if (child === null) return true
+    return !child.killed && child.exitCode === null && child.signalCode === null
+  }
+
+  /** Resolves when {@link stop} is called. */
+  #awaitStop(): Promise<void> {
+    return new Promise<void>(resolve => {
+      if (this.#stopping) {
+        resolve()
+        return
+      }
+      this.#releaseStop = resolve
+    })
+  }
+
+  async #stopTransport(): Promise<void> {
+    const transport = this.#transport
+    this.#transport = null
+    try {
+      await transport?.stop()
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
   }
 
   /**
@@ -1500,13 +1689,90 @@ export class QianmoResident {
     }
   }
 
+  /**
+   * Bind the inbound listener, once, for this node's whole life.
+   *
+   * **It is deliberately not owned by the ACP child.** It used to be: the
+   * listener was created at the end of `#startAcp`, after `sessions.start()`,
+   * and torn down when that child stopped. Two consequences, both bad, both
+   * invisible until this repository's CI was first able to run:
+   *
+   *   · Every ACP restart dropped the listener. A peer dialling during the
+   *     backoff found nobody, which reads as "the node is gone" rather than
+   *     "the agent is restarting".
+   *   · A child that could not start at all — an expired or missing model
+   *     credential is the ordinary case — meant the listener was **never**
+   *     bound: `sessions.start()` throws before that line is reached, the
+   *     supervisor retries five times, parks, and back then that ended the
+   *     process. The node vanished from the network because it could not
+   *     reach a model, taking the delivery, receipt and audit faces — none of
+   *     which ever needed one — down with it.
+   *
+   * A node whose agent is unavailable is not the same thing as a node that is
+   * down, and the network is entitled to be told which one it is: inbound
+   * `task.request` gets a rejected receipt carrying
+   * {@link RESIDENT_AGENT_UNAVAILABLE} (see {@link deliver}) instead of a
+   * refused connection.
+   */
+  #startTransport(): TransportServerHandle {
+    const transport = startTransportServer({
+      psk: this.#options.psk,
+      deadlineNow: this.#deadlineClock.nowFor,
+      ...(this.#options.transportEvents === undefined
+        ? {}
+        : { events: this.#options.transportEvents }),
+      onMessage: async (message, context) => {
+        await this.#receive(message, context)
+      },
+      ...(this.#options.listen.port === undefined
+        ? {}
+        : { port: this.#options.listen.port }),
+      ...(this.#options.listen.hostname === undefined
+        ? {}
+        : { hostname: this.#options.listen.hostname }),
+      ...(this.#options.listen.unix === undefined
+        ? {}
+        : { unix: this.#options.listen.unix }),
+      ...(this.#options.tls === undefined ? {} : { tls: this.#options.tls }),
+      ...(this.#options.certificateNotAfter === undefined
+        ? {}
+        : { certificateNotAfter: this.#options.certificateNotAfter }),
+      ...(this.#options.handshakeSigning === undefined
+        ? {}
+        : { signing: this.#options.handshakeSigning }),
+    })
+    // Reported here rather than at the end of `#startAcp`: reachability is a
+    // property of the listener, and the address is knowable the moment it
+    // binds. A node whose agent has not come up yet is still addressable, and
+    // saying so is the difference between "restarting" and "gone".
+    this.#options.onReady?.({
+      ...(transport.port === undefined ? {} : { port: transport.port }),
+      ...(transport.unix === undefined ? {} : { unix: transport.unix }),
+      ...(transport.url === undefined ? {} : { url: transport.url }),
+    })
+    return transport
+  }
+
   async #startAcp(): Promise<ResidentChildConnection> {
     const child = (this.#options.spawnAcp ?? defaultSpawnAcp)()
     const closed = childClosed(child)
     void closed.catch(() => {})
+    // Retire the runtime the moment the child is gone, not when the supervisor
+    // gets around to calling `stop()`. With the listener no longer dying with
+    // the child, a peer can deliver in that gap, and a runtime whose ACP
+    // connection is already dead would take the turn and fail it. Nulling here
+    // sends that delivery down the same path as any other mid-restart arrival:
+    // wait for the next generation (`#runtimeForDelivery`).
+    const retireRuntime = (): void => {
+      if (runtime === null || this.#runtime !== runtime) return
+      this.#runtime = null
+      this.#runtimeChild = null
+    }
+    // `then(f, f)`, not `finally`: `closed` rejects on a non-zero exit, and a
+    // `finally` chain would re-raise that rejection with nobody attached.
+    void closed.then(retireRuntime, retireRuntime)
     let runtime: ResidentNodeRuntime | null = null
     let poller: ResidentPoller | null = null
-    let transport: TransportServerHandle | null = null
     let stopping: Promise<void> | null = null
     const stop = (): Promise<void> => {
       stopping ??= (async () => {
@@ -1514,31 +1780,28 @@ export class QianmoResident {
         poller?.stop()
         if (this.#poller === poller) this.#poller = null
         await this.#failActiveTasks('resident ACP connection closed')
-        // Both of these have to finish while the transport is still up: the
-        // sweep above needs a channel to send terminal replies on, and this one
-        // needs it to carry the receipts for replies sent before either ran.
+        // Both of these need the transport up. It is: the listener is owned by
+        // `run()` now, not by this child, so it outlives every ACP restart and
+        // every park. Before that change it was torn down here and rebuilt by
+        // the next `#startAcp`, which is why a child that could not start left
+        // the node with no listener at all.
         await this.#drainReplyReceipts()
-        if (this.#transport === transport) this.#transport = null
+        if (
+          !child.killed &&
+          child.exitCode === null &&
+          child.signalCode === null
+        ) {
+          child.kill('SIGTERM')
+        }
         try {
-          await transport?.stop()
-        } finally {
-          if (
-            !child.killed &&
-            child.exitCode === null &&
-            child.signalCode === null
-          ) {
-            child.kill('SIGTERM')
-          }
-          try {
-            await closed
-          } catch {
-            // Exit status is reported through the supervisor's `closed` await.
-          }
-          try {
-            await this.#options.onActivity?.(false)
-          } catch (error) {
-            this.#options.onError?.(error)
-          }
+          await closed
+        } catch {
+          // Exit status is reported through the supervisor's `closed` await.
+        }
+        try {
+          await this.#options.onActivity?.(false)
+        } catch (error) {
+          this.#options.onError?.(error)
         }
       })()
       return stopping
@@ -1632,34 +1895,10 @@ export class QianmoResident {
         },
       })
       this.#runtime = runtime
-
-      transport = startTransportServer({
-        psk: this.#options.psk,
-        deadlineNow: this.#deadlineClock.nowFor,
-        ...(this.#options.transportEvents === undefined
-          ? {}
-          : { events: this.#options.transportEvents }),
-        onMessage: async (message, context) => {
-          await this.#receive(message, context)
-        },
-        ...(this.#options.listen.port === undefined
-          ? {}
-          : { port: this.#options.listen.port }),
-        ...(this.#options.listen.hostname === undefined
-          ? {}
-          : { hostname: this.#options.listen.hostname }),
-        ...(this.#options.listen.unix === undefined
-          ? {}
-          : { unix: this.#options.listen.unix }),
-        ...(this.#options.tls === undefined ? {} : { tls: this.#options.tls }),
-        ...(this.#options.certificateNotAfter === undefined
-          ? {}
-          : { certificateNotAfter: this.#options.certificateNotAfter }),
-        ...(this.#options.handshakeSigning === undefined
-          ? {}
-          : { signing: this.#options.handshakeSigning }),
-      })
-      this.#transport = transport
+      this.#runtimeChild = child
+      const waiters = this.#runtimeWaiters
+      this.#runtimeWaiters = []
+      for (const wake of waiters) wake()
 
       poller = new ResidentPoller({
         poll: async () => {
@@ -1685,11 +1924,6 @@ export class QianmoResident {
       this.#poller = poller
       poller.start()
 
-      this.#options.onReady?.({
-        ...(transport.port === undefined ? {} : { port: transport.port }),
-        ...(transport.unix === undefined ? {} : { unix: transport.unix }),
-        ...(transport.url === undefined ? {} : { url: transport.url }),
-      })
       return { closed, stop }
     } catch (error) {
       await stop()

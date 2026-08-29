@@ -38,7 +38,11 @@ import {
   generateNodeKeyPair,
   issueCapability,
 } from '@qianmo/capability'
-import { ReceiptStatus, TransportClient } from '@qianmo/transport'
+import {
+  ReceiptStatus,
+  TransportClient,
+  TransportReceiptError,
+} from '@qianmo/transport'
 import {
   AuditWitnessScheduler,
   remoteWitnessAnchorWriter,
@@ -172,7 +176,16 @@ describe('resident product integration', () => {
     const firstSession = readFileSync(sessionPath, 'utf8')
 
     children[0]?.kill('SIGKILL')
-    await waitUntil(() => !client.isReady())
+
+    // **The link stays up.** Killing the agent used to drop the listener with
+    // it, so this test used to wait for the peer to notice the disconnect and
+    // queue behind it. It no longer does, and that is the fix this asserts:
+    // the listener belongs to the node, not to the ACP child, so an agent
+    // restart is invisible at the transport. A peer arriving mid-restart finds
+    // the node rather than a refused connection — and a node whose agent never
+    // comes back stays addressable instead of vanishing from the network.
+    expect(client.isReady()).toBe(true)
+
     const secondMessage = createMessage({
       from: 'qianmo://node-a/planner',
       to: 'qianmo://node-b/reviewer',
@@ -180,9 +193,12 @@ describe('resident product integration', () => {
       payload: { round: 2 },
     })
     client.send(secondMessage)
-    expect(client.pending).toBe(1)
 
-    await waitUntil(() => ready.length === 2)
+    // A second child is what marks the restarted ACP generation now; `onReady`
+    // no longer does, because the listener does not come back up per
+    // generation. The delivery above waits for that new runtime rather than
+    // being refused (see `#runtimeForDelivery`).
+    await waitUntil(() => children.length === 2)
     await client.waitForDrain()
     await waitUntil(async () => (await unreadCount()) === 0)
     expect(readFileSync(sessionPath, 'utf8')).toBe(firstSession)
@@ -197,6 +213,12 @@ describe('resident product integration', () => {
       const events = timings.filter(
         event => event.networkMsgId === message.msgId,
       )
+      // Still exact, including for round 2, which now arrives while the agent
+      // is dead. No `turn_failed`: `child.kill()` sets `killed` synchronously,
+      // so `#runtimeIsLive` is already false when the delivery looks, and the
+      // turn is held for the next generation instead of being run against a
+      // corpse. See `#failActiveTasks` for the other half — the dying
+      // generation must not settle a task it was never handed.
       expect(new Set(events.map(event => event.stage))).toEqual(
         new Set([
           'detected',
@@ -248,6 +270,117 @@ describe('resident product integration', () => {
     expect(errors.map(String)).toEqual([
       'Error: resident ACP child exited code=null signal=SIGKILL',
     ])
+  }, 15_000)
+
+  test('a node whose agent never starts degrades instead of disappearing', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-degraded-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      // Every generation dies on the spot. This is the shape of an expired
+      // credential, a missing binary or a broken build: not a crash mid-turn,
+      // but an agent that cannot come up at all, ever.
+      spawnAcp: () => {
+        const child = spawn(process.execPath, ['-e', 'process.exit(3)'], {
+          stdio: ['pipe', 'pipe', 'ignore'],
+        })
+        children.push(child)
+        return child
+      },
+      // The production ladder is 2s/4s/8s/16s before the fifth failure parks.
+      // Nothing here depends on the wait itself, only on what parking does.
+      acpRestart: { initialBackoffMs: 10, maxRapidFailures: 2 },
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    // Bound before the agent, and never on the agent's behalf: no generation
+    // ever succeeded here, so under the old ownership this address would not
+    // exist at all.
+    await waitUntil(() => ready.length === 1)
+    await waitUntil(() =>
+      errors.some(error => String(error).includes('resident is degraded')),
+    )
+    expect(ready).toEqual([socket])
+    // `run()` has not returned. Parking used to end it, taking the listener,
+    // the ledger and the audit chain down with it.
+    let settled = false
+    void running.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(settled).toBe(false)
+
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    // The peer reaches the node. "Agent unavailable" and "node gone" are
+    // different facts, and this connection is what lets a peer tell them apart.
+    await client.connect()
+
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: 'qianmo://node-b/reviewer',
+      type: MessageType.TaskRequest,
+      payload: { round: 1 },
+    })
+    // Refused, not dropped and not left to time out: the receipt says the
+    // envelope was rejected, and it comes back inside the sender's budget
+    // rather than after `deliverTtlMs` of silence.
+    const startedAt = Date.now()
+    const receipt = await client.sendAndWait(request, RECEIPT_BUDGET_MS).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(receipt).toBeInstanceOf(TransportReceiptError)
+    expect((receipt as TransportReceiptError).receiptCode).toBe(
+      ProtocolErrorCode.E_UNDELIVERABLE,
+    )
+    expect(Date.now() - startedAt).toBeLessThan(RECEIPT_BUDGET_MS)
+
+    // And the reason travels with it, so the operator reads "this node's agent
+    // is unavailable" instead of a bare `E_UNDELIVERABLE`.
+    await waitUntil(() => replies.some(item => item.type === MessageType.Error))
+    const refusal = replies.find(item => item.type === MessageType.Error)
+    expect(String((refusal?.payload as { reason?: string })?.reason)).toContain(
+      'resident agent is unavailable',
+    )
+    // Nothing was written: a turn that cannot run must not leave an inbox slot
+    // spent behind it.
+    expect(await readMailbox(AGENT, TEAM)).toHaveLength(0)
+
+    // It is still a node, on purpose. `stop()` is the only thing that ends it.
+    expect(client.isReady()).toBe(true)
+    resident.stop()
+    await running
   }, 15_000)
 
   test('a never-settling witness tick does not block mailbox admission', async () => {
@@ -776,7 +909,8 @@ describe('resident product integration', () => {
 
     await waitUntil(() => activity.at(-1) === false)
     expect(activity).toEqual([true, false])
-    await waitUntil(() => ready.length === 2)
+    // Second ACP child, not a second `onReady` — see the note above.
+    await waitUntil(() => children.length === 2)
   }, 15_000)
 })
 
