@@ -177,6 +177,13 @@ function scratch(): Scratch {
   mkdirSync(beta, { recursive: true })
   mkdirSync(join(repo, 'dist'), { recursive: true })
   copyFileSync(join(BETA_DIR, 'beta-up.sh'), join(beta, 'beta-up.sh'))
+  // `--purge-state` 那条用例要跑它，而它第一步会调 beta-down.sh。两个都走
+  // `/bin/bash <路径>`，脚本是被当数据读的，不产生新的可执行 inode，所以不必
+  // 进 SCAN_ONCE（见文件头对 issue #56 的注）。
+  for (const name of ['beta-reset.sh', 'beta-down.sh']) {
+    copyFileSync(join(BETA_DIR, name), join(beta, name))
+    chmodSync(join(beta, name), 0o755)
+  }
   chmodSync(join(beta, 'beta-up.sh'), 0o755)
   const common = readFileSync(join(BETA_DIR, 'common.sh'), 'utf8')
   writeFileSync(join(beta, 'common.sh'), common + RECORDER)
@@ -606,6 +613,72 @@ describe('beta-up.sh 节点腿的尾参记录', () => {
     ])
     runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
     expect(shape(place, 'beta-2').slice(-2)).toEqual(['--label', 'two words'])
+  })
+
+  /**
+   * 记录是 PASS_THROUGH 的**第二个来源**，那道 token 守卫必须也管得着它。
+   *
+   * 守卫本身跑在解析期（`--` 刚被吃进来那一刻），而记录是在 `run_node` 里才读
+   * 回来的 —— 少了第二次调用，这条守卫就正好变成它自己那句话里说的「旁路」：
+   * 手改一次记录文件，往后每一次不带 `--` 的重起都把 token 摆进 `ps` 里，而且
+   * 一次都不会再提醒。
+   */
+  test('从记录里读回来的尾参也要过 token 守卫', () => {
+    const place = scratch()
+    // 命令行那条路进不来（解析期就被拦下），所以直接写记录 —— 文件头也确实
+    // 邀请人手改它。
+    mkdirSync(join(place.root, 'state'), { recursive: true })
+    writeFileSync(
+      join(place.root, 'state', 'beta-2.passthrough'),
+      '--admin-token\nsupersecret\n',
+    )
+    const result = runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+
+    expect(result.exitCode).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toContain('--admin-token')
+    // 拦下了就不该起进程。
+    expect(recorded(place).get('beta-2')).toBeUndefined()
+  })
+
+  /**
+   * `beta-reset.sh --purge-state` 会把记录一起带走 —— 那是对的（显式重置），
+   * 但它清掉之后，下一次不带 `--` 的节点腿会起在一个**没有 --trust 的策略面**
+   * 上，而所有存活判据照旧全绿。那正是 issue #111 那个形状换了一扇门进来。
+   * 所以它必须点名说出来，而不是只提 timings。
+   */
+  test('--purge-state 会点名说它要清掉哪几份尾参记录', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    const reset = Bun.spawnSync(
+      [
+        '/bin/bash',
+        join(place.repo, 'demo/env/beta/beta-reset.sh'),
+        '--purge-state',
+      ],
+      {
+        cwd: place.repo,
+        env: {
+          ...process.env,
+          PATH: `${place.stubBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+          QIANMO_BETA_ROOT: place.root,
+          XDG_CONFIG_HOME: place.xdg,
+          FAKE_SYSTEMCTL_LOG: place.systemctlLog,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const said = `${reset.stdout.toString()}${reset.stderr.toString()}`
+    expect(said).toContain('beta-2')
+    expect(said).toContain('--trust console=k1')
   })
 
   test('记录是 0600 —— 里面会有 --trust 这类策略事实', () => {

@@ -100,9 +100,24 @@ fi
 if [ "$PURGE_STATE" = '1' ]; then
   beta_head '· 清除 state/'
   beta_warn 'state/ 里有 timings —— 它是 P7.3 基线与容量判断的唯一输入（§5），删了只能重来一次内测'
+  # 尾参记录也住在 state/（issue #111）。清掉它之后，下一次不带 `--` 的节点腿会
+  # 起在一个**没有 --trust 的策略面**上，而所有存活判据照旧全绿 —— 那正是 #111
+  # 那个形状，只不过换了一扇门进来。所以这里点名说出来，并把该怎么补说清楚。
+  _kept=''
+  for _one in "$BETA_STATE_DIR"/*.passthrough; do
+    [ -e "$_one" ] || continue
+    _kept="$_kept
+  $(basename "$_one" .passthrough)：$(tr '\n' ' ' <"$_one" | sed -e 's/#[^ ]*//g')"
+  done
+  if [ -n "$_kept" ]; then
+    beta_warn "state/ 里还有节点腿的尾参记录，一并会被清掉（issue #111）：${_kept}
+清掉之后**下一次不带 \`--\` 的节点腿会起在没有这些参数的策略面上**，而存活判据照旧全绿。
+要保留就先把上面那几行抄下来，起机时用 \`-- <参数>\` 带回去。"
+  fi
+  unset _kept _one
   purge "$BETA_STATE_DIR"
 else
-  beta_say "保留 ${BETA_STATE_DIR}（含 timings；要清用 --purge-state）"
+  beta_say "保留 ${BETA_STATE_DIR}（含 timings 与节点腿的尾参记录；要清用 --purge-state）"
 fi
 
 if [ "$ARCHIVE_CONFIG" = '1' ]; then

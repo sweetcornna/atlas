@@ -209,16 +209,24 @@ host_wants() {
 # 上的密钥就是这台机器每一份进程列表里的密钥（`ps -eo args` / `/proc/<pid>/cmdline` 每个
 # 本地账号都读得到，run_host 里那段注释是它的出处）。值形式在这里当场拦下并指到文件
 # 形式；其余参数一律不管、原样透传。
-for _arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
-  case "$_arg" in
-    --view-token|--view-token=*|--admin-token|--admin-token=*)
-      beta_die "尾参里不能出现 ${_arg%%=*} —— 命令行上的 token 会出现在这台机器每一份进程列表里。
-本脚本已经在用 --view-token-file / --admin-token-file 传这两枚（0600 文件，在 $BETA_SECRET_DIR 下），
+#
+# **它必须对每一处 PASS_THROUGH 的来源都跑一遍**，所以是个函数而不是一段直写的
+# 循环：节点腿的尾参记录（issue #111）是第二个来源，从文件读回来的那一份如果不
+# 再过一次这道门，这条守卫就正好变成它自己那句话里说的「旁路」——手改一次记录
+# 文件，往后每一次不带 `--` 的重起都会把 token 摆进 `ps` 里。
+assert_no_token_values_in_passthrough() {
+  local _arg
+  for _arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$_arg" in
+      --view-token|--view-token=*|--admin-token|--admin-token=*)
+        beta_die "尾参里不能出现 ${_arg%%=*} —— 命令行上的 token 会出现在这台机器每一份进程列表里。
+本脚本已经在用 --view-token-file / --admin-token-file 传这两枚（0600 文件，在 ${BETA_SECRET_DIR} 下），
 要换 token 就改那两个文件的内容。"
-      ;;
-  esac
-done
-unset _arg
+        ;;
+    esac
+  done
+}
+assert_no_token_values_in_passthrough
 
 # 去掉累加时留下的前导空格：它只影响打印出来那一行的观感，`for a in $BETA_AGENTS`
 # 的分词本来就吃得下——但那一行是运维照着抄进运维单页的，别让它带个空格。
@@ -1044,6 +1052,9 @@ run_node() {
   beta_load_psk "$BETA_PSK_FILE" "本机节点的传输层 PSK"
   # 尾参在这里定下来，早于任何一处用到 PASS_THROUGH 的地方（issue #111）。
   resolve_node_passthrough
+  # 从记录里读回来的那一份**再过一次那道门**：命令行给的那一份在解析期已经过了，
+  # 而这一份是刚刚才进来的。
+  assert_no_token_values_in_passthrough
 
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"

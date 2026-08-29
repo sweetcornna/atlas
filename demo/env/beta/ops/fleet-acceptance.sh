@@ -92,7 +92,10 @@ for pair in $FLEET_PAIRS; do
   var="QIANMO_ACCEPTANCE_PSK_$(suffix_of "$node")"
 
   # 已经在环境里的那一把不覆盖：显式给出的优先，也让离线复跑不必有 SSH。
-  eval "existing=\${$var:-}"
+  # 间接展开而不是 `eval`：`$var` 是从 `FLEET_PAIRS` 里的节点名推出来的，那串
+  # 由运维给，`eval` 会让一个手滑的节点名变成一条可执行的命令。`${!var}` 是
+  # bash 3.2 就有的写法，做的是同一件事而没有那条路。
+  existing="${!var:-}"
   if [ -n "$existing" ]; then
     reused=$((reused + 1))
   else
@@ -110,7 +113,7 @@ for pair in $FLEET_PAIRS; do
     unset value
   fi
 
-  eval "have=\${$var:-}"
+  have="${!var:-}"
   [ -n "$have" ] || die "取不到 ${node} 的 PSK（${host}:\$HOME/${PSK_REMOTE_PATH}）。
 它没有默认值也没有兜底：带着空 PSK 跑，那台节点的场景会整片 skip 或红，
 而两者都容易被读成「环境问题」。先确认 ssh ${host} 通、且那个文件在（0600）。
