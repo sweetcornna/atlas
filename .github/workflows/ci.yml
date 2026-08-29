@@ -316,13 +316,12 @@ jobs:
 
       # 绿也要说清楚绿的是多少。
       #
-      # 托管 runner 上没有任何模型凭据，于是要起常驻节点的那 86 条场景会被驱动
-      # 如实跳过（能力门，见 `local/driver.ts` 的 `nodeCanReachModel`），本轮真正
-      # 执行的只有二十几条。**判定 PASS 是对的**——跳过不是通过，报告里也分得清
-      # 楚——但 GitHub 上只剩一个绿勾，看不出比例。没有这条注解，「验收过了」会
-      # 被当成「115 条都过了」。
+      # 一个绿勾看不出这一轮到底验了多少。托管 runner 上没有模型凭据，要起常驻
+      # 节点的那 86 条场景起不来，`skip` / `error` 的占比会很高——而 GitHub 上
+      # 只剩一行结论。没有这条注解，「验收过了」会被当成「115 条都过了」。
       #
-      # 它自己不判红：该不该因为跳得太多而红，是套件的判定该管的事，不是这里。
+      # 它自己不判红：该不该因为跳得太多、错得太多而红，是套件的判定该管的事，
+      # 不是这里。
       - name: Annotate acceptance coverage
         if: always()
         run: |
@@ -338,7 +337,7 @@ jobs:
           skip="$(echo "$summary" | jq -r '.counts.skip')"
           fail="$(echo "$summary" | jq -r '.counts.fail')"
           err="$(echo "$summary" | jq -r '.counts.error')"
-          echo "::notice title=Acceptance coverage::pass=${pass} skip=${skip} fail=${fail} error=${err} —— 跳过的多半是「本机看不到模型凭据」导致要起节点的场景不可跑，理由逐条写在 artifact 的 SUMMARY.txt 里。"
+          echo "::notice title=Acceptance coverage::pass=${pass} skip=${skip} fail=${fail} error=${err} —— 跳过与失败的逐条理由在 artifact 的 SUMMARY.txt 里；判定本身由套件给出，这条只报比例。"
 
       # `always()`：红的那次才最需要 NDJSON。这个项目的验收留档一向是
       # 「机器可读产物 + 它的哈希」（见 docs/dev/acceptance-m0.md），CI 这轮
