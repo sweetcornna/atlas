@@ -23,8 +23,10 @@ this repository.
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
 
-        # 属于 AGPL 那一层
-        grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .
+        # 属于 AGPL 那一层的 564 个文件（限定在文件头，因此不会把本文件
+        # 这类"正文里引用了这行字"的文档算进去）
+        git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
+          | awk -F: '$2<=5' | cut -d: -f1 | sort -u
 
     详见下方"二、基座溯源"。
 
@@ -193,8 +195,11 @@ licenses, and the boundary is the provenance boundary itself:
     the upstream text kept verbatim). Base files carry **no SPDX header**,
     which is the machine-checkable test between the two layers:
 
-        # files in the AGPL layer
-        grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .
+        # the 564 files in the AGPL layer (restricted to the file header,
+        # so documents that merely quote the identifier -- this file among
+        # them -- are not counted)
+        git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
+          | awk -F: '$2<=5' | cut -d: -f1 | sort -u
 
     See section 2 below.
 

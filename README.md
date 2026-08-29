@@ -122,8 +122,10 @@ bun run check:mock-hygiene # mock 卫生棘轮
 | 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 不带 SPDX 头 |
 
 ```bash
-# 属于 AGPL 那一层的文件
-grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .
+# 属于 AGPL 那一层的 564 个文件
+# 限定在文件头，所以不会把「正文里引用了这行字」的文档（NOTICE、本文件等）算进去
+git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
+  | awk -F: '$2<=5' | cut -d: -f1 | sort -u
 ```
 
 选 AGPL 而不是 GPL，是因为阡陌的产品线②是**网络型产品**：最可能被无偿占用的方式
