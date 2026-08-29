@@ -12,6 +12,12 @@
 > D-3、D-4 的 `NOTICE` 侧与 D-2 的 `BASE.md` 侧**——均为把章程 v2.4 已定案的事实落到文本上，
 > 不改任何口径实质；`LICENSE`（D-5）与 `package.json`（D-6）**未动**。逐条状态见 §3.2。
 >
+> **2026-08-29 更新（章程 v2.16 转 AGPL）**：`LICENSE` 已动——但**不是** D-5 建议的那种动法。
+> 负责人决议把阡陌自有代码改以 **AGPL-3.0-or-later** 发布，基座 MIT 原文移到 `LICENSE.base`，
+> 本仓库自此是**双许可仓库**。D-5 因此**关闭为已处置**（新的 `LICENSE` 是阡陌自己的许可文件，
+> 不再是"只有基座版权行"的状态），D-4 的 `vendor/audio-capture/` 许可归属**没有关闭、反而变紧**——
+> 逐条见 §3.2。根 `package.json` 的 `license` 字段随之改为 `AGPL-3.0-or-later`（D-6 的其余项仍不改）。
+>
 > 配套：机器可读依赖清单见 [`sbom-m0.json`](./sbom-m0.json)，人读摘要见 [`sbom-m0.md`](./sbom-m0.md)（`bun run sbom` 生成）。
 
 ---
@@ -44,7 +50,7 @@
 
 | # | 证据件 | 应证明什么 | 当前位置 | 状态 |
 |---|---|---|---|---|
-| **E-1** | 基座 `LICENSE`（MIT 正文 + `Copyright (c) 2026 open-claude-code contributors`） | 基座以 MIT 授权，允许使用/修改/再分发，条件是保留声明 | 本仓库根 [`LICENSE`](../../LICENSE)（随基座快照导入，未改动） | ✅ |
+| **E-1** | 基座 `LICENSE`（MIT 正文 + `Copyright (c) 2026 open-claude-code contributors`） | 基座以 MIT 授权，允许使用/修改/再分发，条件是保留声明 | 本仓库根 [`LICENSE.base`](../../LICENSE.base)（随基座快照导入，内容未改动；**2026-08-29 起由 `LICENSE` 改名到此**，根 `LICENSE` 现为阡陌自有层的 AGPL-3.0 正文） | ✅ |
 | **E-2** | 上游仓库同一 tag 的 `LICENSE` | 仓库内那份就是上游那份 | 上游 GitHub `https://github.com/sweetcornna/open-claude-code`（URL 出处见 E-5 说明） | 🟡 需存网页/tarball 快照 |
 | **E-3** | npm 公开发布记录 | 基座是**公开发布**的开源包，不是私下产物 | npm registry。已实查（2026-08-15）：包名 `@sweetcornna/open-claude-code`，`license: "MIT"`，**v2.38.3 发布时间 `2026-08-11T14:06:24.040Z`**，包首次发布 `2026-08-03T06:27:30Z` | 🟡 需存 `npm view` 输出与包页面快照 |
 | **E-4** | **npm tarball 的 `gitHead` 字段** | **把 npm 上的 v2.38.3 与 pin 提交直接绑死** | 实查结果：`gitHead = 848ad8c2c8daca9f5aa2410da555553e07700f5d`，与本仓库 `BASE.md` 记录的 pin **逐字一致**；同版本 `dist.shasum = 41a7d8a71c3ec5454beb0c0196d8165752724e14` | 🟡 需存快照 |
@@ -74,9 +80,10 @@
 
 | 核对项 | 结论 |
 |---|---|
-| 许可声明为 MIT | ✅ 一致。`NOTICE` 一/1 = MIT；`LICENSE` = MIT 正文；`package.json` `"license": "MIT"`；`README.md` §许可 = MIT |
-| `@qianmo/*` 随仓库以 MIT 发布（章程 §5.5） | ✅ 一致。**17 个 `@qianmo/*` 包 `license` 字段全部为 `MIT`**，逐包核对见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
-| `@qianmo/*` 版权头两行（章程 §5.5 v2.5） | ✅ 全覆盖。17 个包共 217 个 `.ts` 文件，首两行为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT` 的比例为 **217/217**，逐包比例见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
+| 许可声明为 MIT | ⚠️ **2026-08-29 起该行作废**（章程 v2.16 转 AGPL）。原结论：✅ 一致，`NOTICE` 一/1 = MIT；`LICENSE` = MIT 正文；`package.json` `"license": "MIT"`；`README.md` §许可 = MIT。**新口径见下一行** |
+| 许可声明为**双许可**（2026-08-29 起） | ✅ 一致（实读核对 2026-08-29）。`NOTICE` 一/1 = 双许可说明；`LICENSE` = AGPL-3.0 正文（34,523 B，与 gnu.org 原文逐字节相同）；`LICENSE.base` = MIT 正文（与 `base-snapshot/v2.46.0:LICENSE` 逐字节相同）；根 `package.json` `"license": "AGPL-3.0-or-later"`；`README.md` §许可 = 双许可表 |
+| `@qianmo/*` 随仓库以 MIT 发布（章程 §5.5） | ⚠️ **2026-08-29 起改为 AGPL-3.0-or-later**。原结论：✅ 一致，17 个包 `license` 字段全部为 `MIT`。现状：**19 个 `@qianmo/*` 包的 `license` 字段全部为 `AGPL-3.0-or-later`**（包数由 17 增至 19 是期间新增包，不是本次变更），逐包核对见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
+| `@qianmo/*` 版权头两行（章程 §5.5 v2.5，v2.16 改值） | ✅ 全覆盖。原核对（2026-08-15）：17 个包 217 个 `.ts` 全部为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT`，比例 **217/217**。**2026-08-29 起 SPDX 值改为 `AGPL-3.0-or-later`**，全仓 **564 个**阡陌文件已改写、`MIT` 头剩 **0** 个（`scripts/sbom.ts` 的 `SPDX_HEADER` 常量同步），逐包比例见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
 | 商标声明与章程 §5.8 第 2 条 | ✅ 一致。`NOTICE` 四/4 声明"无关联、未获背书、未获赞助"，与章程 §5.2② 第 2 条、README.md 末段逐条对应 |
 | "明确不改"标识清单 | ✅ 一致。`NOTICE` 四列出的 5 条（系统提示词前缀 / `claude-code/<version>` UA / OTel `service.name` / `CLAUDE.md`·`CLAUDE.local.md`·`AGENTS.md` / `CLAUDECODE=1`）与 `src/constants/brand.ts` 顶部注释、章程 §5.2③ **逐条一致，无增无漏** |
 | 基座性质如实声明（逆向复原） | ✅ 一致。`NOTICE` 三 与章程 §5.2②、`base-adoption.md` §5 R-1 一致；且**不作法律判断**的措辞与章程口径吻合 |
@@ -155,15 +162,54 @@
   **不能确定的**：**模块自身**的源码在哪、以什么许可发布。静态链接的 crate 各有其自身许可（以各自 crates.io / 仓库的许可文件为准，本文不代为判定），但它们的许可**不能**替代模块自身的许可声明。
 - **仍待人（U-4，范围已收窄）**：既然上游仓库里也没有源码与 LICENSE，这一条只能由**负责人以基座作者身份**给出：该原生模块的源码在哪个仓库/分支、以什么许可发布，以及是否愿意把源码或 LICENSE 补进上游 `vendor/audio-capture/`。M0 演示不使用音频能力（章程 N-9 口径），但"不使用"不等于"不分发"——它随 `dist/vendor/` 出货。咨询议题 T-5.2 保持不变。
 
-#### D-5 ⏸ 仍待人 —— `LICENSE` 只有基座的版权行，没有阡陌的（观察项）
+> **2026-08-29 升级（转 AGPL 之后）**：本条从"待人项"升级为**必须收口项**，理由与两条收口路径见新增的
+> **D-8**。一句话：MIT 下"许可待确认"可以挂着，AGPL 下挂不住——copyleft 要求随分发提供 Corresponding Source。
 
-- **现状**：`LICENSE` 仅 `Copyright (c) 2026 open-claude-code contributors`；`NOTICE` 第 2 行另有 `Copyright 2026 Qianmo AgentNest Team`。
-- **说明**：MIT 只要求**保留**上游声明，因此现状不违规；但软著材料通常希望在许可文件里也体现本团队的版权主体。
-- **建议**：**列为科技处咨询议题**（§5 T-4），按其口径再决定是否在 `LICENSE` 增列阡陌版权行。不要凭工程判断改 `LICENSE`。
+#### D-5 ✅ 已处置 —— `LICENSE` 只有基座的版权行，没有阡陌的（原观察项）
+
+> **处置（2026-08-29，负责人决议，章程 v2.16）**：**没有按本条原来的建议做**（"在 MIT 正文里增列阡陌版权行"），
+> 而是换了一条更彻底的路——`git mv LICENSE LICENSE.base` 保留基座 MIT 原文，`LICENSE` 换成 **AGPL-3.0 正文**，
+> 本仓库自此是双许可仓库。原建议里"不要凭工程判断改 `LICENSE`"这一条**仍然成立且被遵守**：本次动 `LICENSE`
+> 是负责人的许可决议，不是工程判断。
+
+- **原现状**：`LICENSE` 仅 `Copyright (c) 2026 open-claude-code contributors`；`NOTICE` 第 2 行另有 `Copyright 2026 Qianmo AgentNest Team`。
+- **原说明**：MIT 只要求**保留**上游声明，因此原状不违规；但软著材料通常希望在许可文件里也体现本团队的版权主体。
+- **为什么这个处置更好**：原建议解决的是"许可文件里看不到阡陌"，但**没有解决归属本身** ——
+  一份 MIT 正文加两行版权，读者仍然读不出哪些文件是谁的。双许可 + SPDX 文件头把这件事变成**机器可判**的：
+  `grep -rl "SPDX-License-Identifier: AGPL-3.0-or-later" .` 出来的 564 个文件就是阡陌那一层，
+  其余不带 SPDX 头的就是基座那一层。**这同时也是软著材料要的那条边界**（章程 §5.5 的成果边界，与
+  `base-snapshot/v2.46.0` 的 git 举证互为印证）。
+- **落地核对（2026-08-29 实读）**：
+  - `LICENSE` = 34,523 B / 661 行，sha256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`，
+    与 `https://www.gnu.org/licenses/agpl-3.0.txt` 逐字节相同；**正文之前不加任何前言**——
+    GitHub 的许可识别按全文比对，加一行说明就会被识别成 "Other"。说明文字一律放 `NOTICE`。
+  - `LICENSE.base` 与 `git show base-snapshot/v2.46.0:LICENSE` 逐字节相同（1,450 B）。
+- **仍开放的一条**：AGPL §13 只在"用户通过网络与本程序交互"时触发。阡陌的**控制台**与**节点**都落在这一格，
+  因此运营方（包括我们自己在 p11 上的部署）负有向使用者提供 Corresponding Source 的义务。
+  **这不是本文能收口的事**——它属于运营纪律，写进 §5 咨询议题 T-4 的新增子项 T-4.1。
+
+#### D-8 ⏸ 仍待人（**新增，2026-08-29，由转 AGPL 直接产生**）—— `vendor/audio-capture/` 在 copyleft 下不能再"待确认"
+
+- **怎么来的**：D-4 把这六个 `.node` 的许可归属列为待人项时，仓库是 MIT——MIT 不要求随分发提供源码，
+  所以"许可待确认"是一个可以挂着的状态。**转 AGPL 之后它不再是。**AGPL 要求分发时提供
+  Corresponding Source，而这六个二进制随 `dist/vendor/` 出货、源码不在任何人手上。
+- **负责人已定的方向（2026-08-29）**：**把它们一并纳入 copyleft 并补齐源码。**
+- **卡在哪**：**源码位置尚未提供。**在它到位之前，`NOTICE` 与本文都**不把这六个文件标成 AGPL** ——
+  标了却给不出源码，等于让本仓库违反自己的许可，比"许可待定"严重得多。
+- **当前如实状态**：它们既不在 AGPL 层（不带 SPDX 头），也不属于基座 MIT 层（那层覆盖的是源码形态的基座代码），
+  而是**许可待定的随附二进制**。`NOTICE` 五/5 已如实写明这一点与两条收口路径。
+- **收口二选一**（**必须选一条，不能长期挂着**）：
+  1. 负责人给出源码仓库/分支 → 源码入库或在 `NOTICE` 给出可取地址 → 六个二进制标 AGPL，本条关闭；
+  2. 把它们从分发中摘除 —— 删 `build.ts` / `scripts/post-build.ts` 的复制步骤，
+     `packages/audio-capture-napi/` 装载层降级为"原生模块缺失时禁用音频采集"。
+     代价是音频采集能力在产物中消失；M0 演示本就不使用它（章程 N-9），**这条路是可行的**。
+- **责任人**：喻永昌（以基座作者身份给源码）/ 陈曦宇（口径与 `NOTICE` 复核）。
 
 #### D-6 ✅ 决定保留 —— 根 `package.json` 仍带基座的发布元数据（观察项，**不改**）
 
 - **现状**：`name` = `@sweetcornna/open-claude-code`、`version` = `2.38.3`、`author` = `open-claude-code`、`repository`/`homepage`/`bugs` 均指向基座仓库。
+  **2026-08-29 更新**：`license` 字段已随章程 v2.16 改为 `AGPL-3.0-or-later`（**只改这一个字段**）。
+  `name` / `version` / `author` / `repository` 等**仍按本条结论不改**——那是基座发布面，本仓库不 publish。
 - **张力**：README 与章程 N-14 都写明"本仓库不发 npm 包"，而 `package.json` 看起来就是基座那个 npm 包。审查者可能据此提问。
 - **建议**：**不改**（这是基座发布面，`CLAUDE.md` §0 明确不维护），但**在答辩 Q&A 预案（P8.3）里备一句解释**："这是 fork 布局的自然结果，本仓库不执行 `publish`，`publish-npm.yml` 与 release 流程按 roadmap P0.4 处置。"
 
@@ -290,17 +336,33 @@
 
 ### 5.4 议题 T-4 许可文件与声明的形式要求
 
-> 对应本文 **D-5**。
+> 对应本文 **D-5**（已按另一条路处置）与 **D-8**（新增，未收口）。
 
-- **T-4.1** 我方仓库沿用基座 MIT，`LICENSE` 中目前只有基座的版权行。软著申报是否要求（或建议）在 `LICENSE` 中增列本团队版权行？增列会不会影响"沿用基座许可"这一表述？
+- **T-4.1**（**原题已作废，2026-08-29**）原问：沿用基座 MIT 时，`LICENSE` 是否要增列本团队版权行。
+  该问题已随章程 v2.16 转 AGPL 而消失——`LICENSE` 现在是阡陌自己的许可文件。**替换为下面两问：**
+  - **T-4.1a** 本仓库现为**双许可**（阡陌层 AGPL-3.0-or-later / 基座层 MIT），
+    以 **SPDX 文件头** 作为两层判据。软著申报接受这种边界举证方式吗？
+    还需要什么形式要件（例如逐文件清单、或在申报材料中单列 AGPL 层的文件数与行数）？
+  - **T-4.1b** AGPL-3.0 §13 要求：用户通过**网络**与程序交互时，运营方须向该用户提供 Corresponding Source。
+    阡陌的控制台与常驻节点都落在这一格，**包括我方自己在 p11 上对公网开放的部署**。
+    履行方式（页面上给出源码地址是否足够、需不需要给出与运行版本一致的 tarball、`SOURCE_COMMIT` 算不算）
+    请给口径。**这条不是形式要件而是持续义务**，是本次转 AGPL 带来的唯一新增运营负担。
 - **T-4.2** 根 `NOTICE` 现有的四节结构（许可 / 基座溯源 / 基座性质如实声明 / Anthropic 商标）是否满足申报要求？还缺什么？
 - **T-4.3** 代码中**技术性保留**的 Anthropic 标识（系统提示词前缀、User-Agent、OTel `service.name`、`CLAUDECODE=1` 等，改动会破坏功能）——现有的"技术性保留不构成关联性主张"声明措辞是否足够？
+
+- **T-4.4**（新增）转许可**不可追溯**这一点，我方在 `NOTICE` / `README.md` / 章程 v2.16 三处都写明了
+  （此前按 MIT 取得副本者的授权不受影响，AGPL 只适用于此后发布的版本）。这样表述是否准确、是否够？
 
 ### 5.5 议题 T-5 第三方依赖与预编译二进制
 
 - **T-5.1** 依赖树中存在一项 **Anthropic PBC 专有授权**的包（`@anthropic-ai/claude-agent-sdk`，仅类型引用、不进产物，见 §4）。**是否需要在申报材料中主动披露？**
 - **T-5.2** 仓库内含**源码与许可未确认的预编译原生二进制**（`vendor/audio-capture/`；**上游仓库里同样只有六个 `.node`、无源码无 LICENSE**，实查见 D-4）。它随产物分发但 M0 不使用该功能——需不需要在申报前移除、或由基座作者补齐源码与许可？（`NOTICE` 已如实披露现状，未推定许可）
 - **T-5.3** 弱传染许可（LGPL-3.0-or-later 的 `@img/sharp-libvips-*`、MPL-2.0 的 `lightningcss` 等，共 5 项）在软著申报中需要单独说明吗？
+
+- **T-5.3**（新增，2026-08-29，对应 **D-8**）在 **AGPL** 下随产物分发一个**源码不在手上**的预编译原生二进制
+  （`vendor/audio-capture/` 六个 `.node`），法律风险有多大？我方当前的处置是**不给它标 AGPL、如实写明许可待定**，
+  并准备了两条收口路径（补源码 / 从分发中摘除）。请判断：① 现状是否已构成对本仓库自身许可的违反？
+  ② 若短期内取不到源码，是否应当立即执行"摘除"那条路？
 
 ### 5.6 咨询结论回填（**咨询后填，空着即视为 P8.4 未闭环**）
 

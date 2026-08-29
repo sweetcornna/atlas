@@ -35,7 +35,7 @@
 | 名称 | open-claude-code，CLI 名 `occ` | 基座 `README.zh.md`、`src/constants/brand.ts`（`BIN_NAME = 'occ'`） |
 | 归属 | 项目负责人自有的开源项目 | 立项决议 |
 | 分发 | 已在 npm 公开发布 | 基座 `package.json`：`"name": "@sweetcornna/open-claude-code"` |
-| 许可 | **MIT** | 基座根 `LICENSE`（`MIT License / Copyright (c) 2026 open-claude-code contributors`）；`package.json`：`"license": "MIT"` |
+| 许可 | **MIT** | 基座根 `LICENSE`（`MIT License / Copyright (c) 2026 open-claude-code contributors`）；`package.json`：`"license": "MIT"`。**本仓库内该文件自 2026-08-29（章程 v2.16）起叫 `LICENSE.base`**，内容逐字未改；根 `LICENSE` 换成了阡陌自有层的 AGPL-3.0 正文 |
 | 版本 | **v2.38.3** | 基座 `package.json`：`"version": "2.38.3"` |
 | pin | `848ad8c2c8daca9f5aa2410da555553e07700f5d` | `git log` 核实：该提交带 tag `v2.38.3` |
 | 自述定位 | "Anthropic 官方 Claude Code 的**社区版**：以逆向复原（reverse-engineered restoration）的代码为基座，由社区维护和优化的衍生版本" | 基座 `README.zh.md` |
