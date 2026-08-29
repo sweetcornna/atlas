@@ -32,6 +32,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -432,6 +433,8 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
     ])
   })
 
+  // 注意它问的是**一棵没有尾参记录的树**。带上记录之后，一个空的 `--` 是「明确
+  // 清空」而不是「什么都没说」——见下面那个 describe。
   test('a bare `--` with nothing after it changes nothing', () => {
     const bare = scratch()
     runBetaUp(bare, ['--role', 'node', '--node', 'beta-3', '--'])
@@ -448,6 +451,177 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
     expect(withDashes.map(normalise(bare))).toEqual(
       without.map(normalise(plain)),
     )
+  })
+})
+
+/**
+ * 节点腿的尾参活过一次「停机 → 换产物 → 起机」（issue #111）。
+ *
+ * 现场是这样丢的：停机前 beta-2 的 argv 结尾带着一个 `--trust <节点>=<公钥>`，
+ * `beta-down.sh` → 换产物 → `beta-up.sh --role node --node beta-2` 之后那一个不见了，
+ * 其余（`--team` / `--port` / `--open-policy` / `--audit-signed-tasks` / `--timings` /
+ * `--agent`）一字不差 —— 因为那些是脚本按 `--role`/`--node` 推导的，而尾参只存在于
+ * 当初那一次命令行里。
+ *
+ * 丢的是策略不是显示项：节点照常启动、照常在名册上在线、拨号照常 426，所有存活判据
+ * 全绿，只有真去发一个签名唤醒任务时才失败。
+ */
+describe('beta-up.sh 节点腿的尾参记录', () => {
+  /** 把每次跑各自的临时路径抹掉，只留下形状。 */
+  function shape(place: Scratch, node: string): string[] {
+    return (recorded(place).get(node) ?? []).map(value =>
+      value.replace(place.repo, '<repo>').replace(place.root, '<root>'),
+    )
+  }
+
+  test('不带 `--` 重跑，argv 与上一次逐字节一致 —— 这就是 #111 的判据', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    const before = shape(place, 'beta-2')
+    expect(before.slice(-2)).toEqual(['--trust', 'console=k1'])
+
+    // 「停机 → 换产物 → 起机」里的那次起机：谁都不会再把尾参抄一遍。
+    runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+
+    expect(shape(place, 'beta-2')).toEqual(before)
+  })
+
+  test('带了新的 `--` 就以这一趟为准，并重写记录', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k2',
+    ])
+    expect(shape(place, 'beta-2').slice(-2)).toEqual(['--trust', 'console=k2'])
+
+    // 记录跟着走，所以第三趟不带 `--` 沿用的是 k2 而不是 k1。
+    runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+    expect(shape(place, 'beta-2').slice(-2)).toEqual(['--trust', 'console=k2'])
+  })
+
+  test('一个空的 `--` 是「明确清空」，不是「什么都没说」', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    const cleared = runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+    ])
+    // 撤销这个方向必须出声：它恰恰是唯一一个让人以为还开着的方向。
+    expect(`${cleared.stdout}${cleared.stderr}`).toContain('会被清空')
+
+    runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+    expect(shape(place, 'beta-2')).not.toContain('--trust')
+  })
+
+  test('沿用的时候要说出来，说的就是那一串', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    const again = runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+    const said = `${again.stdout}${again.stderr}`
+    expect(said).toContain('沿用上一次记下的尾参')
+    expect(said).toContain('--trust console=k1')
+  })
+
+  test('每个节点各记各的，一棵树上不串', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-3',
+      '--',
+      '--trust',
+      'console=k9',
+    ])
+    runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+    expect(shape(place, 'beta-2').slice(-2)).toEqual(['--trust', 'console=k1'])
+  })
+
+  /**
+   * 含空白的尾参也活得过重启 —— 控制台那半边做不到，而那不是本可以不管的差别：
+   * `console.env` 是一行 `KEY=值` 交给 systemd 分词，所以它对含空白的尾参只能 WARN
+   * 一句「没被持久化」。这份记录一行一个参数、读写两边都是本脚本，没有理由继承那个
+   * 限制。
+   */
+  test('含空白的尾参照样活过重启（console.env 做不到的那一格）', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--label',
+      'two words',
+    ])
+    runBetaUp(place, ['--role', 'node', '--node', 'beta-2'])
+    expect(shape(place, 'beta-2').slice(-2)).toEqual(['--label', 'two words'])
+  })
+
+  test('记录是 0600 —— 里面会有 --trust 这类策略事实', () => {
+    const place = scratch()
+    runBetaUp(place, [
+      '--role',
+      'node',
+      '--node',
+      'beta-2',
+      '--',
+      '--trust',
+      'console=k1',
+    ])
+    const file = join(place.root, 'state', 'beta-2.passthrough')
+    expect(existsSync(file)).toBe(true)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 })
 
