@@ -221,6 +221,23 @@ describe('MACRO defines on the raw-source path', () => {
 
       // Never reaching the endpoint would make every assertion below vacuous,
       // so it is checked first and separately.
+      //
+      // The child's exit code and both its streams ride along in the failure,
+      // because `Received: null` on its own says nothing about *why* the
+      // request never arrived. This assertion has already gone red once on
+      // Linux CI while passing on macOS, and that run produced exactly one
+      // line of evidence — `Received: null` — which was not enough to act on.
+      // The child is the only thing that knows; the parent has to ask it.
+      if (run.systemPrompt === null) {
+        throw new Error(
+          [
+            'the child never sent a system prompt to the loopback endpoint',
+            `exitCode=${run.exitCode}`,
+            `stdout:\n${run.stdout}`,
+            `stderr:\n${run.stderr}`,
+          ].join('\n'),
+        )
+      }
       expect(run.systemPrompt).not.toBeNull()
       const line = (run.systemPrompt ?? '')
         .split('\n')
