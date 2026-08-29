@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # demo/env/beta —— 内测拓扑一键起（P11.1 落地包①）
 

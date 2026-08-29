@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 可控假上游 —— 一个 OpenAI 兼容的本地模型端点。

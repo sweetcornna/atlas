@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 P8.1 —— 种子数据：把演示环境铺成「随时可以起节点」的初始态。
 #

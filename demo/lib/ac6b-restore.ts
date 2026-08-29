@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 AC-6(b)(c) 一键复现 —— 删库之后能不能原样回来，以及智能体能不能删备份。

@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * What a lender is willing to lend, and for how long an offer stands.

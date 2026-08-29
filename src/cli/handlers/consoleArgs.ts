@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `occ console` 的参数面，与启动面分开的一个文件。

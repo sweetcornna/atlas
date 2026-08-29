@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * DoD ③, part three: the assertion that goes into CI and stays there.
@@ -212,7 +212,7 @@ describe('nothing key-shaped is committed', () => {
         .split('\n')
         .slice(0, 2)
       expect(head[0]).toBe('// Copyright 2026 Qianmo AgentNest Team')
-      expect(head[1]).toBe('// SPDX-License-Identifier: MIT')
+      expect(head[1]).toBe('// SPDX-License-Identifier: AGPL-3.0-or-later')
     }
   })
 })

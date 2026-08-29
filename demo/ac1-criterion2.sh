@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # AC-1 判据②「不重放历史即可续答」—— 现场留档版。
 #

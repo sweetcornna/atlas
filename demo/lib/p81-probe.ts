@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 P8.1 —— 演示环境自检：注册中心解析得到、节点端口拨得通、（可选）任务能被收下。

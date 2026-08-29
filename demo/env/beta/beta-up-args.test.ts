@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `beta-up.sh` 的参数面：尾参透传与 `--print-wake-identity`（issue #38）。

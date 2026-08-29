@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * AC-5 编程任务用例（roadmap P1.4）——「同一条任务，换 provider 重跑，只改配置」。

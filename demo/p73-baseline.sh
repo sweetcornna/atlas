@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # P7.3 消息吞吐阶梯：八档 1/5/10/25/50/100/200/400 msg/s，三个配置各跑一遍。
 #

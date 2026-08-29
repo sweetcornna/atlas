@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # P1.3 / AC-6(a) host acceptance. Run only against a disposable sandbox.
 # Deployment details and the daemon bearer are injected through environment

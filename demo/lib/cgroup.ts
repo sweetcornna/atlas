@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * cgroup v2 的两个读取原语，从 `ac6a-sandbox.ts` 原样搬出来。

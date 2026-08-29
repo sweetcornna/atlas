@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 P8.1 —— 演示拓扑的注册中心：把**多个**智能体地址登记到各自节点的入口上。

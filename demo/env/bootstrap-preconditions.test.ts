@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `bootstrap.sh` 的前置检查：哪几样是**构建**要的，哪几样只是**自检**要的。

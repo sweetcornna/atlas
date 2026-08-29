@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 P8.1 —— 停掉本地演示拓扑。**只停进程，不删任何数据。**
 #

@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # @qianmo/recall —— 记忆检索唤醒与强制引用
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 P8.1 —— 真机腿：**宿主侧**就位检查（Dormice + gVisor 那台）。
 #

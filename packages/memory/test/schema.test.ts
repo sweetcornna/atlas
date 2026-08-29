@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * The mandatory fields roadmap P2.3 names — 来源 ID、写入时间、标签、废止标记 —

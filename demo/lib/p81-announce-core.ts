@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 P8.1 —— 「把 `--register` 声明的那几条落到表上」这一步的纯逻辑。

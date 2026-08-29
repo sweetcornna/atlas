@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # harden-dormice-host.sh —— 幂等的宿主防火墙加固：禁止沙箱容器访问宿主上的
 # Dormice daemon 控制端口。

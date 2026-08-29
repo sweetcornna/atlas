@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # @qianmo/memory —— 分层记忆的存储层
 

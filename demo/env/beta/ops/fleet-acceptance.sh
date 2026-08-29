@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 真机腿（`--target fleet`）的起法。**它进仓库的理由和 `legacy-deploy-shim.sh`
 # 一样**：在它之前，「这一轮真机验收是怎么跑起来的」是一份口头知识 ——

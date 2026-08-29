@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "description": "Qianmo resource negotiation: request, offer, grant, release — with a ceiling nobody can talk their way past and no state that outlives a silent peer.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

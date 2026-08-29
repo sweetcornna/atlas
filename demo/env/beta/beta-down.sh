@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 P11.1 落地包① —— 停掉本机那部分内测拓扑。**只停进程，不删任何数据。**
 #

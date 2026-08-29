@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # scripts/ops —— 宿主侧安全面加固（阡陌 S0 P0.7）
 

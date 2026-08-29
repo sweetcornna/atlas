@@ -1,5 +1,5 @@
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # dormice-harden.service —— 让 harden-dormice-host.sh 的防火墙规则在 docker
 # 的整个生命周期里持续存在。

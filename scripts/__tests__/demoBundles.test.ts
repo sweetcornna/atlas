@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `DEMO_ENTRYPOINTS` 与仓库里真实的 `demo_entry` 调用点必须对得上。

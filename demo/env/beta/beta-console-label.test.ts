@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 页头标签这一格：**存量 `LABEL` 过期时会不会被说出来**，以及 `--help` 有没有说清

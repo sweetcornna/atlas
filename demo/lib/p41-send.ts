@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 P4.1 —— 一轮跨节点任务：发一条 `task.request`，在**同一条连接上**收 ack 与

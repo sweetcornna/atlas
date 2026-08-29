@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "description": "Qianmo sandbox boundary attestation and durable host-side audit contracts.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
