@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -25,6 +25,43 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
+/**
+ * 这个文件的单测预算（issue #102 的第二半）。
+ *
+ * **issue #102 把这个文件和 `bootstrap-preconditions.test.ts` 归成了同一个病根，
+ * 而那一条对这里不成立。**那边是「每条用例现写一个可执行文件、macOS 对每个新
+ * inode 收一次没有上限的首次执行策略扫描」；这个文件一个可执行文件都不写 ——
+ * 它跑的是 `bash <仓库里那份 beta-retain.sh>`，永远是同一个 inode，而脚本本身
+ * 是被 bash 当数据读的，压根不走 exec 策略那条路。本机实测（空闲）：55 条用例
+ * 13.7 s，除了那条**故意**等满锁超时的以外，最慢一条 0.28 s。
+ *
+ * 真正撑不住的是两处**结构性**的东西，与机器忙不忙无关：
+ *
+ * ① `runPaused` 自己等检查点等 5 s —— 恰好**等于**整条用例的预算。于是它那句
+ *    有名有姓的 `child did not reach checkpoint <名字>` 永远轮不到抛出来，用例
+ *    先一步死在 Bun 那条不含信息的 TimeoutError 上。诊断被自己的预算吃掉了。
+ * ② `beta-retain.ts` 的 apply 锁**自己定了 10 s 的等待上限**（那条「另一个保留
+ *    工具 apply 10 秒内未完成」）。凡是可能撞上这把锁的用例，它的合法最坏情况
+ *    就是 10 s 出头 —— 用 5 s 的预算去装一件实现说要 10 s 的事，是预算写错了，
+ *    不是被测代码慢。旁边那条 `times out without removing a stale lock` 早就为此
+ *    单独写着 15_000，只是没人把这条推广到整个文件。
+ *
+ * 所以这里的 20 s 不是「调大超时盖住偶发红」，是**照着实现自己给出的上限**把
+ * 预算算对。两个下界，取大的那个：
+ *
+ *   · 锁上限 10 s —— 撞上锁的用例的合法最坏情况；
+ *   · 2 × 检查点等待 —— `does not delete a replacement file or replacement
+ *     parent after validation` 那条 `runPaused` 了**两次**，所以一条用例里可以
+ *     排两次检查点等待。
+ *
+ * 取 {@link CHECKPOINT_WAIT_MS} = 6 s，则第二个下界是 12 s；20 s 在两者之上，
+ * 还留出 spawn 与断言的余量。6 s 本身是实测 250 ms 的 24 倍 —— 够宽到不会误报，
+ * 又严格小于用例预算，于是 `runPaused` 那句点名的诊断先于 Bun 的匿名超时抛出。
+ */
+const TEST_BUDGET_MS = 20_000
+const CHECKPOINT_WAIT_MS = 6_000
+setDefaultTimeout(TEST_BUDGET_MS)
+
 const RETAIN = join(REPOSITORY_ROOT, 'demo/env/beta/beta-retain.sh')
 const RETAIN_IMPLEMENTATION = join(
   REPOSITORY_ROOT,
@@ -142,7 +179,9 @@ async function runPaused(
     stdout: 'pipe',
     stderr: 'pipe',
   })
-  const deadline = Date.now() + 5_000
+  // 严格小于 TEST_BUDGET_MS，且**两次也装得下**：这条等待的产出是下面那句点名
+  // 检查点的诊断，而预算和用例一样大就等于把它交给 Bun 的匿名超时。
+  const deadline = Date.now() + CHECKPOINT_WAIT_MS
   while (!existsSync(join(hook, 'ready'))) {
     if (Date.now() >= deadline) {
       writeFileSync(join(hook, 'release'), 'timeout\n')
@@ -377,7 +416,9 @@ describe('beta-retain host retention tool', () => {
     expect(maliciousResult.exitCode).not.toBe(0)
     expect(lstatSync(maliciousLock).isSymbolicLink()).toBe(true)
     expect(readdirSync(outside)).toEqual([])
-  }, 15_000)
+    // 预算不再单写：文件默认已经是 TEST_BUDGET_MS（20 s），而它就是照着这条
+    // 用例暴露的那个 10 s 锁上限定的 —— 这里曾经是全文件唯一一处写对了的地方。
+  })
 
   test('fails closed for append, truncate, rename, and swap while compressing a log, then recovers', async () => {
     const cases: readonly {
