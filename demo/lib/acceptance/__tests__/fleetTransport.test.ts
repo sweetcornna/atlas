@@ -409,7 +409,7 @@ describe('来源探针的重试（issue #96 ②）', () => {
     const bin = fakeSsh(
       [
         counterScript(counter),
-        `printf 'Connection closed by 149.118.61.165 port 22\\n' >&2`,
+        `printf 'Connection closed by 203.0.113.9 port 22\\n' >&2`,
         `exit 255`,
       ].join('\n'),
     )
@@ -569,8 +569,13 @@ describe('sshBin 只是护栏的注入点', () => {
 // 调用点 —— 那才是「不用再挑一遍」的唯一保证。
 // ---------------------------------------------------------------------------
 
-/** 那次真跑的 stderr 原文。 */
-const CLOSED = 'Connection closed by 129.151.5.169 port 22'
+/**
+ * 那次真跑的 stderr 原文（形状逐字保留，地址换成 RFC 5737 文档保留段）。
+ *
+ * 真跑时这里是内测机的公网 IP。仓库公开后不该把机器地址留在树上，而这一节测的是
+ * stderr 的解析与分类，地址取什么值都不影响任何断言。
+ */
+const CLOSED = 'Connection closed by 203.0.113.7 port 22'
 
 const FAKE_HOME = '/home/fake'
 
