@@ -14,17 +14,15 @@ D-4 的上游溯源核查表）。
 
 本仓库 2026-08-29 转为 **AGPL-3.0-or-later**（双许可，见根 `NOTICE`「一、许可」）。
 在 MIT 下，「许可待确认」是一个可以挂着的状态；**在 AGPL 下挂不住**——copyleft
-要求向用户提供 Corresponding Source，而这六个二进制随 `dist/vendor/` 分发、源码
-却不在任何人手上。这正是 `docs/dev/license-chain-m0.md` **D-8**
-（「`vendor/audio-capture/` 在 copyleft 下不能再"待确认"」）记录的问题，负责人
-已定的方向是「把它们一并纳入 copyleft 并补齐源码」。
+要求向用户提供 Corresponding Source。转制时，这六个二进制随 `dist/vendor/` 分发、
+源码却不在任何人手上；这正是 `docs/dev/license-chain-m0.md` **D-9**
+（「`vendor/audio-capture/` 在 copyleft 下不能再"待确认"」）记录的问题。
 
 本文档描述的 `packages/audio-capture-napi/native/`（Rust crate，package name
 `audio-capture`）就是补齐的源码，本文档与 `scripts/build-audio-capture.sh`
-是配套的构建说明。源码入库、六个二进制换绑到这份源码并标注 AGPL 之后，D-8
-才能收口——**在那之前，`NOTICE` 与 `vendor/` 里现有的六个二进制仍是旧的、
-许可待定的预编译产物，不会因为源码入库而自动改变标注**，标注切换是后续
-单独的处置动作，不在本文档范围内。
+是配套的构建说明。六个二进制现已全部换绑为由该源码构建的产物并完成 AGPL
+标注，D-9 已收口；`arm64-win32` 仍缺真实 Windows on ARM 运行时加载证据，
+详见 §3.1。
 
 ## 1. 装载层怎么找到它、以及它对外的契约
 
@@ -146,11 +144,13 @@ stderr 打一行醒目警告，提示这份 `.node` 还没有在任何机器上�
 install）。安装成功后脚本会打印一行回退指引：
 `如需回退：git checkout -- vendor/audio-capture/<dir>/audio-capture.node`。
 
-### 3.1 六条 triple 逐条：本机能不能构建
+### 3.1 六条 triple 逐条：构建与验证现状
 
-以下按最新一轮（2026-08-29，Docker 已用 colima 起来、`native/` 已带
-`rust-toolchain.toml` 钉 Rust 1.85.0）的**实测结论**整理，均来自
-`scripts/build-audio-capture.sh` 真跑，不是从文档推断：
+以下是**实测结论**，不是从文档推断；两批产物的时间与来源不同，分开记：
+darwin/Linux 四个 triple 是 2026-08-29 在本机真跑
+`scripts/build-audio-capture.sh`（当时 Docker 已用 colima 起来、`native/` 已带
+`rust-toolchain.toml` 钉 Rust 1.85.0），Windows 两个 triple 是 2026-08-30 由
+GitHub Actions 的 `windows-latest` 工作流构建：
 
 - **`aarch64-apple-darwin` / `x86_64-apple-darwin`**：`--check` 均报
   `READY`。此前一轮实测卡在 `coreaudio-sys` 要求 Cargo 的 `edition2024`
@@ -159,8 +159,8 @@ install）。安装成功后脚本会打印一行回退指引：
   （`channel = "1.85.0"`）钉死解决：脚本的 `build_one_triple` 始终先
   `cd "${NATIVE_DIR}"` 再跑 `cargo build`，rustup 的 toolchain-file 解析靠
   cwd 向上找，cwd 落在 `native/` 里就能找到这份钉版本文件，自动换到
-  1.85.0，不需要本机默认 toolchain 也是 1.85。`arm64-darwin` 的产物已经
-  实测校验通过（见 §5 的 `verify_artifact` 真实输出）。
+  1.85.0，不需要本机默认 toolchain 也是 1.85。两个 darwin 产物均已在目标架构上
+  真加载验证（见 §5 的验证清单）。
 - **`aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu`**：**两个都已
   实测真跑通**，产物结构校验通过。本机是 macOS，走的是 `cross`
   （`cross 0.2.5` + Docker/colima）。这条路有一个必须踩过才知道的坑：
@@ -204,21 +204,26 @@ install）。安装成功后脚本会打印一行回退指引：
   000000000003a5e0 T napi_register_module_v1
   ```
   两个架构都对、`napi_register_module_v1` 都在——N-API 模块的入口符号存在，
-  说明 napi-rs 的宏正确生成了模块注册代码，是结构层面能过的最强信号（真正
-  的行为验证仍要到对应平台上跑 §5 的 `verify_artifact` 三项检查）。
-- **`aarch64-pc-windows-msvc` / `x86_64-pc-windows-msvc`**：`--check` 报
-  `NEEDS_REMOTE`。这两个 triple 需要真实的 MSVC 工具链（`link.exe` +
+  说明 napi-rs 的宏正确生成了模块注册代码，是结构层面能过的最强信号；本轮
+  四个 darwin/Linux 产物已另在目标架构上完成真加载验证。
+- **`aarch64-pc-windows-msvc` / `x86_64-pc-windows-msvc`**：在本机 `--check`
+  仍报 `NEEDS_REMOTE`，因为这两个 triple 需要真实的 MSVC 工具链（`link.exe` +
   Windows SDK），`cross` 的官方镜像面向 `*-gnu` target、不带 MSVC 授权文件，
-  在非 Windows 宿主上走 `cross` 大概率跑不通。唯一可行路径是在 Windows
-  机器或 CI（如 GitHub Actions `windows-latest`）上直接跑
-  `cargo build --release --target <triple>`。（进阶选项：`cargo-xwin`
-  之类的工具号称能从 Linux/macOS 交叉编译到 `windows-msvc`，本机未安装、
-  未验证，不作为本文档承诺的路径。）
+  在非 Windows 宿主上走 `cross` 大概率跑不通。实际构建已由仅
+  `workflow_dispatch` 的 GitHub Actions `windows-latest` 工作流完成：
+  `x86_64-pc-windows-msvc` 已在同一 runner 上用 Node `require()` 验证，八个导出
+  均为函数且 `microphoneAuthorizationStatus()` 返回 `3`；
+  `aarch64-pc-windows-msvc` 的 `cargo build --release`、`cargo clippy --release
+  -- -D warnings` 和结构性核对均已通过，但 x86_64 runner 无法加载或执行
+  aarch64 DLL，工作流已显式跳过运行时验证，仍需真实 Windows on ARM 机器补做。
+  Windows 产物的静态 CRT 判据见 §3.2。
 
-一句话总结：**六个 triple 里四个（两条 darwin + 两条 linux）已经在这台
-macOS 开发机上实测真跑通并做过结构校验；只剩两条 windows-msvc 只能上
-Windows 机器/CI。**`--check` 的价值就在于把还没打通的那些"卡点"和对应的
-下一步命令一次性列清楚，而不是让人一个个 triple 去试错。
+一句话总结：**六个 triple 的产物现在都已由该源码构建并换入 `vendor/`；其中
+四个 darwin/Linux 和 `x86_64-pc-windows-msvc` 有运行时加载证据，
+`aarch64-pc-windows-msvc` 已通过构建、Clippy 和结构性核对但尚无运行时证据，
+仍需 Windows on ARM 验证。**`--check` 在这台 macOS 开发机上对 Windows 仍报
+`NEEDS_REMOTE`，这只表示当前宿主没有 MSVC 构建路径，不表示 Windows 产物尚未
+构建。
 
 `--check` 的表格前面会打印几行环境信息，其中 rustc 版本**分两行报**，不要
 只看一行就下结论：
@@ -328,21 +333,23 @@ pre-build = [ ... 同上 ... ]
 原生 Linux 宿主（不走 `cross`）对应的检查是 `host_has_alsa_dev()`
 （`pkg-config --exists alsa`），缺了报 `NEEDS_ALSA`。
 
-## 4. 纪律：cargo 不进 precheck / verify / CI
+## 4. 纪律：构建脚本不进 precheck / verify / 常规 CI
 
 **`scripts/build-audio-capture.sh` 不接进 `bun run precheck`、
 `bun run verify`，也不接进 `.github/workflows/ci.yml`。** 它是一个纯带外的
-开发者工具，需要手动调用。理由：
+开发者工具，需要手动调用；Windows 两个 MSVC triple 另由仅
+`workflow_dispatch` 的 `build-audio-capture-windows.yml` 构建。理由：
 
-- CI runner 上没有装 Rust 工具链，接进任何阻塞门禁都会让整条门禁**全红**，
-  而这与「这个原生模块是否正常」毫无关系；
+- 常规 CI 的阻塞门禁没有为这项构建配置 Rust 工具链，若把构建脚本接进去会让
+  整条门禁**全红**，而这与「这个原生模块是否正常」毫无关系；
 - 这个原生模块是**可选能力**：`packages/audio-capture-napi/src/index.ts`
   在模块加载失败（含文件不存在、平台不支持、`require` 抛错）时，全部导出
   函数都优雅降级（`isNativeAudioAvailable()` 返回 `false`，其余变成安全的
   空操作/默认值），不影响其余功能；
-- `vendor/audio-capture/` 下现有的六个二进制是随基座快照带来的既有产物，
-  重新构建/替换它们是一个**审慎的、需要人工确认的动作**（涉及上面第 0 节
-  的许可切换），不应该被任何自动化门禁在无人看管的情况下悄悄触发。
+- `vendor/audio-capture/` 下的六个二进制此前是随基座快照带来的既有产物；本轮已
+  全部替换为该源码构建的产物并完成标注切换。今后重新构建/替换它们仍是一个
+  **审慎的、需要人工确认的动作**，不应该被任何自动化门禁在无人看管的情况下
+  悄悄触发。
 
 需要构建时手动运行 `scripts/build-audio-capture.sh`；`package.json` 的
 `scripts` 字段**不会**加任何指向它的入口（加了会让人以为它进了常规构建链）。
@@ -415,6 +422,14 @@ fi
 三步都过，再考虑真正跑一次端到端录音/播放（真实设备、真实音频数据）——
 那已经超出「产物是否装对了」的范围，属于功能验收，不在本文档讨论。
 
+**`arm64-win32` 不属于上面第①类，它是另一种处境**：两个 Windows 产物都没走
+这个脚本（`--install` 复制的是 cargo 刚在本机构建出来的那个路径，装不了从别处
+取回的文件），而是从 GitHub Actions 工作流 run 下载 artifact、核对后直接复制进
+`vendor/audio-capture/{x64-win32,arm64-win32}/audio-capture.node`。其中
+`x64-win32` 已在构建它的 runner 上完成加载验证；`arm64-win32` 至今没有在任何
+机器上被加载或执行过（runner 是 x86_64，结构上加载不了 aarch64 DLL，工作流对此
+打印显式跳过理由而不是假装通过），欠一次真实 Windows on ARM 上的加载验证。
+
 **跨平台产物在构建机上做不到"加载探针"时的退化验证**：比如在 macOS 上用
 `cross` 交叉构建出的 Linux `.so`，本机运行不了，`require()` 会直接报
 "不是本平台的可执行格式"，不代表产物坏了。这种情况只能验**结构**，不能
@@ -429,6 +444,7 @@ nm -D target/<triple>/release/libaudio_capture.so | grep napi_register_module_v1
 ```
 
 `napi_register_module_v1` 存在只说明 napi-rs 的宏正确生成了模块注册代码，
-**不等于**§5 上面三步的验证结果——真正的加载/导出面/`microphoneAuthorizationStatus()`
-校验必须在目标平台上跑一遍 `verify_artifact` 或本节的三步清单。`--check`
-§3.1 有两个 Linux triple 的真实 `file`/`nm -D` 输出可以对照。
+**不等于**§5 上面三步的验证结果——结构符号不能替代目标平台的加载/导出面/
+`microphoneAuthorizationStatus()` 校验。当前六个产物中，五个已有运行时加载证据；
+`arm64-win32` 仍需在 Windows on ARM 上补这一层验证。`--check` §3.1 有两个
+Linux triple 的真实 `file`/`nm -D` 输出可以对照。
