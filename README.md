@@ -122,7 +122,8 @@ bun run check:mock-hygiene # mock 卫生棘轮
 | 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 不带 SPDX 头 |
 
 ```bash
-# 属于 AGPL 那一层的 564 个文件
+# 举出属于 AGPL 那一层的文件——作数的是这条命令，不是某个写死的数字
+# （每新增一个带该文件头的文件它就会变；带日期锚的实测值以根 NOTICE 一/1 为准）
 # 限定在文件头，所以不会把「正文里引用了这行字」的文档（NOTICE、本文件等）算进去
 git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
   | awk -F: '$2<=5' | cut -d: -f1 | sort -u
@@ -134,7 +135,7 @@ git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
 MIT 可并入 AGPL 作品，反向不成立——因此本仓库对基座那层的改动若要回贡上游（MIT），
 需要单独授权。本次变更**不可追溯**：此前按 MIT 取得副本者的授权不受影响。
 
-覆盖范围、`vendor/audio-capture/` 六个预编译二进制的待定状态，详见 [`NOTICE`](NOTICE)。
+覆盖范围、`vendor/audio-capture/` 六个预编译二进制的来源与逐个的证据等级，详见 [`NOTICE`](NOTICE)。
 
 "Claude"、"Claude Code" 与 "Anthropic" 是 Anthropic, PBC 的商标。本项目与 Anthropic 无关联、未获其背书。
 

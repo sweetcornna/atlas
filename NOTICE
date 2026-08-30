@@ -231,13 +231,25 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     `libm.so.6`。**结论：ALSA 这个硬依赖原厂本来就有，不是自建产物引入的**；
     多出的两个在任何 glibc 系统上必然存在。运行时依赖面没有实质变化。
 
-    **Windows 产物的同一条证据，而且是零差异**：提取被引用的 DLL 名
-    （`strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`，排除 crate 自身的
-    模块名）逐项比对——原厂与自建产物引用**同样 8 项、完全一致**：`advapi32.dll` /
-    `api-ms-win-core-synch-l1-2-0.dll` / `bcryptprimitives.dll` / `dbghelp.dll` /
-    `kernel32.dll` / `ntdll.dll` / `ole32.dll` / `oleaut32.dll`。**这条证据比上面
-    Linux 那条更强**——那边自建产物多出两个库，Windows 这边一个都不多。它不是一次
-    就成的：第一版自建产物额外引入了 `vcruntime140.dll`，那东西既不随 Windows 出厂、
+    **Windows 产物的同一条证据，而且是零差异**：读 PE **导入表**逐项比对——原厂与
+    自建产物的**装载期导入完全相同，共 7 项**：`advapi32.dll` /
+    `api-ms-win-core-synch-l1-2-0.dll` / `bcryptprimitives.dll` / `kernel32.dll` /
+    `ntdll.dll` / `ole32.dll` / `oleaut32.dll`；**延迟导入 0 项**。新旧 × x64/arm64
+    四个文件逐项一致。可复现命令（两个架构要用不同的 objdump）：
+    `x86_64-w64-mingw32-objdump -p <x64 文件> | grep 'DLL Name:'`、
+    `objdump -p <arm64 文件> | grep 'DLL Name:'`。
+    **`dbghelp.dll` 不算在内**：它不在任何一个产物的导入表里——那是 Rust std 的
+    backtrace 在 panic 时才用 `LoadLibrary` 现加载的符号化目标，只作为字符串存在于
+    二进制中。早先用 `strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'` 提取时
+    把它误算成了第 8 项：`strings` 是启发式，只能过度包含，分不出装载期导入、延迟
+    导入与碰巧出现的字符串。**逐项相等这个结论没变，变的是方法与数字（8 → 7）。**
+    若手边没有 objdump 而仍用 `strings` 法，除 `dbghelp.dll` 外还要排除 crate 自身的
+    模块名——自建产物是 `audio_capture.dll`、原厂产物是 `audio_capture_napi.dll`
+    （都是重命名为 `.node` 之前的构建产物原名，不是外部依赖，两边名字不同、都要排）。
+    **这条证据比上面 Linux 那条更强**——那边自建产物多出两个库，Windows 这边一个都
+    不多；改用导入表之后两边的方法也对等了（`readelf -d` 的 `NEEDED` 与 PE 导入表
+    都是权威读法，不是字符串扫描）。
+    它不是一次就成的：第一版自建产物额外引入了 `vcruntime140.dll`，那东西既不随 Windows 出厂、
     也不随 Node.js 安装程序分发，目标机没装 Visual C++ 可再发行组件包时 `require()`
     会抛错——而 `packages/audio-capture-napi/src/index.ts` 的装载层会吞掉这个错误
     静默降级，故障表现是语音模式无声消失、不留线索。改为按 target（而不是全局）
@@ -579,14 +591,33 @@ dependency tree):
     runtime dependency surface has not materially changed.
 
     **The same evidence for the Windows artifacts, and there it is a zero
-    difference**: extracting the referenced DLL names
-    (`strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`, excluding the
-    crate's own module name) and comparing them item by item — the original
-    and the self-built artifact reference **the same 8 libraries, with no
-    difference at all**: `advapi32.dll`, `api-ms-win-core-synch-l1-2-0.dll`,
-    `bcryptprimitives.dll`, `dbghelp.dll`, `kernel32.dll`, `ntdll.dll`,
-    `ole32.dll`, `oleaut32.dll`. **This is stronger evidence than the Linux
-    comparison above**, where the self-built artifact added two libraries.
+    difference**: reading the PE **import table** and comparing item by item —
+    the original and the self-built artifact have **identical load-time
+    imports, 7 of them**: `advapi32.dll`, `api-ms-win-core-synch-l1-2-0.dll`,
+    `bcryptprimitives.dll`, `kernel32.dll`, `ntdll.dll`, `ole32.dll`,
+    `oleaut32.dll`; **delay imports: none**. All four files (original and
+    self-built, x64 and arm64) match item for item. Reproducible commands (the
+    two architectures need different objdumps):
+    `x86_64-w64-mingw32-objdump -p <x64 file> | grep 'DLL Name:'` and
+    `objdump -p <arm64 file> | grep 'DLL Name:'`.
+    **`dbghelp.dll` does not count**: it is in no artifact's import table — it
+    is the symbolisation target that the Rust std backtrace `LoadLibrary`s at
+    panic time, so it exists only as a string in the binary. An earlier
+    extraction with `strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`
+    miscounted it as an 8th entry: `strings` is a heuristic that can only
+    over-include, and cannot tell load-time imports, delay imports and
+    incidental strings apart. **The conclusion is unchanged — the two match
+    item for item; what changed is the method and the number (8 -> 7).** If
+    objdump is not at hand and the `strings` method is used anyway, the
+    crate's own module name must be excluded as well as `dbghelp.dll` — it is
+    `audio_capture.dll` in the self-built artifact and
+    `audio_capture_napi.dll` in the original (both are the build output's name
+    before it was renamed to `.node`, not an external dependency; the two
+    names differ, so both must be excluded). **This is stronger evidence than
+    the Linux comparison above**, where the self-built artifact added two
+    libraries; and with the import table the two methods are now on equal
+    footing as well (`readelf -d`'s `NEEDED` and the PE import table are both
+    authoritative readings, not string scans).
     It did not come out that way on the first attempt: the first Windows build
     additionally pulled in `vcruntime140.dll`, which ships with neither Windows
     itself nor the Node.js installer, so on a machine without the Visual C++
