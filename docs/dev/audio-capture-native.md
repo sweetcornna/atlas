@@ -173,7 +173,7 @@ install）。安装成功后脚本会打印一行回退指引：
   The file `alsa.pc` needs to be installed and the PKG_CONFIG_PATH environment
   variable must contain its parent directory.
   ```
-  修法是 `scripts/audio-capture-cross.toml`（细节见 §3.2），脚本会在调用
+  修法是 `scripts/audio-capture-cross.toml`（细节见 §3.3），脚本会在调用
   `cross build` 前自动 `export CROSS_CONFIG=<该文件路径>`，不需要手动设置。
   修好之后两个 triple 的真实构建输出（节选，`CROSS_CONFIG` 已生效、
   pre-build 装好 `libasound2-dev` 后进入正常编译）：
@@ -241,14 +241,51 @@ toolchain-file 解析靠 cwd 向上找，这个目录里的 `rust-toolchain.toml
 两行说的是一回事（已实测：临时移走该文件重跑 `--check`，确认退化文案按预期
 出现，验完已原样移回、校验和一致，不影响该文件真正的所有者）。
 
-`--check` 还会打印 `scripts/audio-capture-cross.toml`（§3.2）是否存在、以及
+`--check` 还会打印 `scripts/audio-capture-cross.toml`（§3.3）是否存在、以及
 `packages/audio-capture-napi/native/Cargo.lock` 是否存在。**Cargo.lock 不
 存在时会显式警告**：依赖会在下一次构建时全新解析，可能拉到要求更新 Rust
 版本的传递依赖（`edition2024` 就是实测过的例子），所以 `READY` 只代表
 `rustup target`／`cross`＋`Cross` 配置都齐了、构建命令能跑起来，不代表这次
 依赖解析一定能通过——不要看到一整行 `READY` 就当成"构建保证成功"。
 
-### 3.2 `scripts/audio-capture-cross.toml`：Linux 交叉构建的 ALSA pre-build 配置
+### 3.2 Windows MSVC：静态链接 CRT
+
+`x86_64-pc-windows-msvc` 和 `aarch64-pc-windows-msvc` 两个目标必须静态链接
+MSVC CRT。默认的动态 CRT 会让产物依赖 `vcruntime140.dll`；这个 DLL 不随
+Windows 系统提供，也不随 Node.js 安装程序分发。目标机缺少它时，
+`require('audio-capture.node')` 会失败，而
+`packages/audio-capture-napi/src/index.ts` 的 `loadModule()` 会吞掉该
+`require` 错误并静默降级，故障表现是语音模式无声消失，而不是抛出报错。
+
+配置位于 `packages/audio-capture-napi/native/.cargo/config.toml`，按 target
+分别设置 `target-feature=+crt-static`。不能写成 `[build] rustflags = ...`：
+`[build]` 的 rustflags 会作用到所有目标，可能波及已经构建并验证过的
+macOS/Linux 产物；按 target 写只对这两个 Windows MSVC triple 生效。
+
+Windows 新构建产物的外部 DLL 依赖列表必须与原产物的以下八项完全一致，且不得
+出现 `vcruntime140.dll`：
+
+```
+advapi32.dll
+api-ms-win-core-synch-l1-2-0.dll
+bcryptprimitives.dll
+dbghelp.dll
+kernel32.dll
+ntdll.dll
+ole32.dll
+oleaut32.dll
+```
+
+可复现的检查命令：
+
+```
+strings -a <path>/audio-capture.node | grep -oiE '[A-Za-z0-9_.-]+\.dll' | tr 'A-Z' 'a-z' | sort -u
+```
+
+该命令的输出还会出现 crate 自身的模块名 `audio_capture.dll`（构建产物原名，
+之后重命名为 `audio-capture.node`）；它不是外部依赖，不计入上述八项列表。
+
+### 3.3 `scripts/audio-capture-cross.toml`：Linux 交叉构建的 ALSA pre-build 配置
 
 这份文件放在 `scripts/` 下（不是仓库根，也不是
 `packages/audio-capture-napi/native/`），文件名故意不叫裸的 `Cross.toml`。
