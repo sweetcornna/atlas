@@ -966,9 +966,16 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
  * 工具配置，加了会被再生成覆盖或没有意义。
  * 第三类「形态上带得了却漏加的」当天由一批补头提交清零，其中就有
  * `src/constants/identity.ts`（CLAUDE.md §2.3 点名的身份 roster 唯一真源）
- * ——**但仓库里没有任何门禁盯着这件事**（章程 §5.5 明写「不为此新增 CI 断言，
- * 漏加由 PR 评审兜」），所以那一类随时可能重新出现，别把「没头 ⇒ 基座」这条
- * 推断写死。别在这里写死个数，现跑现算（`base-snapshot/v2.46.0` 那棵树之外
+ * ——**但仓库里没有覆盖全仓的门禁盯着这件事**（章程 §5.5 明写「不为此新增
+ * CI 断言，漏加由 PR 评审兜」）。**唯一存在的那道只盖一个包**：
+ * `packages/activator/test/surface-invariant.test.ts` 的
+ * `test('every source file carries the two-line copyright header', …)` 逐字
+ * 断言那两行，随建包提交 `6f30c45c` 一起加入，跑在 `bun test` /
+ * `scripts/test-shards.sh` / CI 里——但它只读 `packages/activator/src` 下的
+ * `.ts`，其余目录一概不管。**盘点时别只数 `package.json` 的 `check:*`**，
+ * 单测本身就是门禁的一部分，唯一那道正好在单测里。所以在 activator 之外，
+ * 那一类随时可能重新出现，别把「没头 ⇒ 基座」这条推断写死。
+ * 别在这里写死个数，现跑现算（`base-snapshot/v2.46.0` 那棵树之外
  * = 阡陌自有，再挑出缺头的、且形态上带得了注释头的；bash/zsh）：
  *
  *     comm -23 <(git -c core.quotePath=false ls-files | sort) \

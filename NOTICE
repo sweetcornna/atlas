@@ -26,8 +26,8 @@ this repository.
     棵树里、又不带这两行文件头的文件共 87 个**——这是下面那条命令给出的定义，按
     路径判据划的一侧，**不是一句所有权主张**。`LICENSE.base` 就落在这 87 个里而
     它并非阡陌自有：那条路径是阡陌新增的（快照里没有它），内容却是上游 MIT 许可
-    正文的逐字保留件；它在这一侧只说明路径判据到此为止，判据的这处边界见本节末尾
-    「权威判据也有它答不了的问题」一段。
+    正文的逐字保留件；它在这一侧只说明路径判据到此为止，判据的这处边界见本节后面
+    「这条判据也有它答不了的问题」一段。
 
     这 87 个里有 83 个按文件格式成类，不加头的理由有两种：一类是
     **二进制或纯数据格式，本来就没有注释语法**——27 个 `.jpg`、3 个 `.png`、
@@ -93,12 +93,12 @@ this repository.
         没补完」，而是上面那 87 个不在快照树里、又无头的文件：其中 **86 个是
         这条推断的反例**。**剩下那一个是 `LICENSE.base`，它不是反例**——它无头，
         而内容逐字就是上游 MIT 正文，按内容本就落在 MIT 那一层，推断在它身上
-        恰好蒙对了；但那是巧合而非判据生效，因为这两条判据看的都是路径、不是
-        内容（见上面的计数句与本节末尾那段）。它也是这 87 个里唯一的一例：
-        逐个比对内容后，只有它与快照里的某个文件逐字节相同。另有一层更细的
-        不成立：下一条要说的 180 个被阡陌改造过的基座文件**确实**属于基座那一
-        层，但文件里的阡陌改动并不因此变成 MIT——按来源分层不等于按行分许可。
-        （它们分发时按什么许可，见下一条 bullet。）
+        恰好蒙对了；但那是巧合而非判据生效，因为这两条判据看的都是路径、不是内
+        容（见上面的计数句与本节后面「这条判据也有它答不了的问题」一段）。它也
+        是这 87 个里唯一的一例：逐个比对内容后，只有它与快照里的某个文件逐字节
+        相同。另有一层更细的不成立：下一条要说的 180 个被阡陌改造过的基座文件
+        **确实**属于基座那一层，但文件里的阡陌改动并不因此变成 MIT——按来源分层
+        不等于按行分许可。（它们分发时按什么许可，见下一条 bullet。）
 
     权威判据是该文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
     **这条判据也有它答不了的问题，一并说明，不要拿它当许可结论用**：它回答的是
@@ -151,13 +151,56 @@ this repository.
     **只要里面还留着上游的表达**，分发出去的就是**组合作品**：其中上游那部分继续
     适用 MIT（这正是 `LICENSE.base` 逐字保留的原因，MIT 的保留义务由它履行），
     阡陌加进去的部分是 AGPL 作品。**但"组合作品"不能对这 180 个文件作全称断言**
-    ——上游内容被整体替换掉的文件不是组合作品，因为里面没有上游表达可供组合；
-    刚论证过的根 `LICENSE` 就是现成的例子，它落在这 180 个里，却一行上游内容都
-    不剩，是纯粹的 AGPL 作品。**两种情形的结论相同，这一点不打折扣**：
-    **这些文件整体只能按 AGPL-3.0-or-later 的条款分发**——组合作品是因为其中的
-    阡陌部分是 AGPL 作品，整体替换掉的文件是因为里面已经没有别人的东西。MIT
-    宽松、可被并入 AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于"可按 MIT
-    取走"**——取走这 180 个文件（连同里面的阡陌改动）受 AGPL 约束。
+    ——上游内容被整体替换掉的文件不是组合作品，因为里面没有上游表达可供组合。
+    刚论证过的根 `LICENSE` 就落在这 180 个里，它一行上游内容都不剩；**但"没有
+    上游的表达"与"没有别人的表达"是两件事，不能混成一句**：那 661 行是 FSF 的
+    AGPL-3.0 许可正文，阡陌一行都没写——`sed -n '1,6p' LICENSE` 可见第 4–6 行
+    写着 "Copyright (C) 2007 Free Software Foundation, Inc." 与 "changing it is
+    not allowed"。**所以根 `LICENSE` 既不是组合作品、也不是阡陌的 AGPL 作品，
+    它就是那份许可文本本身**：著作权属 FSF，只许逐字复制、明文禁止修改。这与本
+    文件上面对 `LICENSE.base` 的说法同源——许可正文的逐字保留件上不该再压一层许
+    可声明——不另立一套说法。**上面那个"两列数分别等于两个版本各自全部行数"的比
+    法套不到全部 180 个上**：它读的是 `git diff --numstat` 报出的两列行数，而
+    这 180 个里有 7 条压根没有行数——`.gitattributes` 把 `*.node` 标成 `binary`、
+    把 `bun.lock` 标成 `-diff`，numstat 对它们两列都报 `-`：
+
+        # 那条比法适用不到的条目（7 条：六个 .node 与 bun.lock）
+        git diff --numstat --diff-filter=M base-snapshot/v2.46.0..HEAD \
+          | awk '$1=="-"{print $3}'
+        # 它们没有行数的原因
+        grep -nE '\.node|bun\.lock' .gitattributes
+
+    所以按那条比法筛过的是余下 173 个文本条目，结论也只限于它们：眼下满足整体
+    替换的只有 `LICENSE` 一个，而它正是许可正文；其余每一个都还留着来自快照的
+    行。**那 7 条要另外说，而且其中六个 `.node` 也是整体替换**——它们与快照里的
+    同名文件根本不是同一个 blob：
+
+        # 六个 .node 与快照里的同名文件都不是同一个 blob
+        for t in arm64-darwin x64-darwin arm64-linux x64-linux \
+                 x64-win32 arm64-win32; do
+          p="vendor/audio-capture/$t/audio-capture.node"
+          git rev-parse "base-snapshot/v2.46.0:$p" "HEAD:$p" | tr '\n' ' '
+          echo "$t"
+        done
+
+    它们里面没有上游的表达可供组合，所以**"组合作品"这条理由对它们不成立**；它
+    们落在哪一层的依据在**下一条 bullet**（「`vendor/audio-capture/` 的例外已
+    不存在」那条）——那六个 `.node` 已由本仓库自有的 AGPL 源码重新构建，是那份
+    源码的构建产物，随源码一同分发并适用同一许可，这里不另立一套说法。余下那条
+    `bun.lock` 不是整体替换：它是生成的依赖锁文件，当前版本里仍有大量条目原样
+    来自快照，按下面"组合作品"那条理由处理。
+
+        # bun.lock 不是整体替换（bash/zsh）：改动量远小于两版各自的总行数
+        git show base-snapshot/v2.46.0:bun.lock | wc -l
+        git show HEAD:bun.lock | wc -l
+        git diff --no-index --numstat \
+          <(git show base-snapshot/v2.46.0:bun.lock) <(git show HEAD:bun.lock)
+
+    **把许可正文这类文件单独摘出来之后，结论不打折扣**：**这些文件整体只能按
+    AGPL-3.0-or-later 的条款分发**——文本条目是组合作品，因为其中的阡陌部分是
+    AGPL 作品；那六个 `.node` 不是组合作品，但它们随其 AGPL 源码分发、适用同一
+    许可。MIT 宽松、可被并入 AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于
+    "可按 MIT 取走"**——取走这 180 个文件（连同里面的阡陌改动）受 AGPL 约束。
 
     不给它们加头有三条理由：① 文件头标的是**文件的来源层**，不是逐行作者——一个
     来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② **这是我们自己定
@@ -169,8 +212,8 @@ this repository.
     文件顶端插三行只在**上游也改到该文件头部时**才冲突，**不是每次同步都 180
     处**，但最坏情况下可以多到 180 处。那些文件里哪些行是阡陌写的，由 git 历史
     记录——命令就是下方"二、基座溯源"给出的工作面命令。根目录的 `LICENSE` 本身
-    就在这 180 个里，也就是本条开头用过的那个极端例子：路径来自基座，内容一行
-    不剩。
+    就在这 180 个里，也就是本条开头用过的那个极端例子：路径来自基座，上游内容
+    一行不剩。
 
     详见下方"二、基座溯源"。
 
@@ -204,8 +247,8 @@ this repository.
     （`grep -c 'pkg:cargo' docs/dev/sbom-m0.json` 为 0 可核）。**这是待补项**，
     本文件不声称它已被覆盖。
 
-    **缺的不只是清单，还有定性**：这 122 个 crate 被静态链接进那六个 `.node`，
-    它们算不算 AGPL-3.0 §1 意义上 Corresponding Source 的一部分，**本文件不作
+    **缺的不只是清单，还有定性**：`Cargo.lock` 记录的那些被链接进产物的第三方
+    crate，算不算 AGPL-3.0 §1 意义上 Corresponding Source 的一部分，**本文件不作
     法律断言**。能如实说的只有事实：这些 crate 的源码按其各自许可公开可取，用
     到哪个版本由 `Cargo.lock` 逐条锁定，而该文件本身就在本仓库里、随源码一同
     分发。**分发时是否还须把这些 crate 的源码一并提供，留待负责人裁定**，本文件
@@ -561,8 +604,7 @@ licenses, and the boundary is the provenance boundary itself:
     by Qianmo and is absent from the snapshot, while its contents are the
     upstream MIT license text kept verbatim. Its presence on this side marks
     where the path test stops rather than anything about title; that limit is
-    set out at the end of this section, under what the authoritative test
-    cannot answer.
+    set out later in this section, under "What that test cannot answer".
 
     Of those 87, 83 group by file format, and within that group there are two
     reasons.
@@ -655,15 +697,15 @@ licenses, and the boundary is the provenance boundary itself:
         content it does sit in the MIT layer and the inference happens to land
         correctly on it. That is a coincidence rather than the test working:
         both tests read the path, not the contents (see the counting sentence
-        above and the closing paragraph of this section). It is also the only
-        such case among the 87 -- comparing contents file by file, it is the
-        one that is byte-for-byte identical to a file in the snapshot. There is
-        a second and finer failure too: the 180
-        modified base files described in the next bullet **do** belong to the
-        base layer, yet the Qianmo changes inside them do not become MIT on
-        that account -- layering by provenance is not the same as licensing
-        by line. (What license those files are distributed under is stated in
-        the next bullet.)
+        above and the "What that test cannot answer" paragraph later in this
+        section). It is also the only such case among the 87 -- comparing
+        contents file by file, it is the one that is byte-for-byte identical
+        to a file in the snapshot. There is a second and finer failure too:
+        the 180 modified base files described in the next bullet **do** belong
+        to the base layer, yet the Qianmo changes inside them do not become
+        MIT on that account -- layering by provenance is not the same as
+        licensing by line. (What license those files are distributed under is
+        stated in the next bullet.)
 
     The authoritative test is whether the file exists in the `base-snapshot/*`
     snapshot; see section 2 below. **What that test cannot answer is set out
@@ -737,17 +779,77 @@ licenses, and the boundary is the provenance boundary itself:
     the portion Qianmo added is an AGPL work. **But "combined work" cannot be
     asserted of all 180 of these files**: a file whose upstream content was
     replaced wholesale is not a combined work, because no upstream expression
-    is left inside it to combine with; the root `LICENSE` just argued through
-    is the ready example -- it is one of the 180, yet not one line of upstream
-    content remains in it, and it is a pure AGPL work. **The conclusion is the
-    same either way, and it is not weakened**: **those files as a whole may
-    only be distributed under the terms of AGPL-3.0-or-later** -- a combined
-    work because the Qianmo portion inside it is an AGPL work, a wholly
-    replaced file because nothing of anyone else's is left inside it. MIT is
-    permissive and may be incorporated into an AGPL work, so there is no
-    conflict of direction; but **"layered by provenance" is in no way "may be
-    taken under MIT"** -- taking those 180 files, and the Qianmo changes
-    inside them, is subject to the AGPL.
+    is left inside it to combine with. The root `LICENSE` just argued through
+    is one of the 180, and not one line of upstream content remains in it;
+    **but "no upstream expression" and "no one else's expression" are two
+    different things and must not be run together as one**: those 661 lines are
+    the FSF's AGPL-3.0 license text, not one line of which Qianmo wrote --
+    `sed -n '1,6p' LICENSE` shows lines 4-6 reading "Copyright (C) 2007 Free
+    Software Foundation, Inc." and "changing it is not allowed". **So the root
+    `LICENSE` is neither a combined work nor an AGPL work of Qianmo's; it is
+    that license text itself**: copyright FSF, permitted to be copied verbatim
+    and expressly not to be modified. This is the same reasoning this file
+    already applies to `LICENSE.base` above -- a verbatim copy of a license
+    text is not something to lay another license notice over -- and no separate
+    doctrine is introduced for it. **The test used just above (both numstat
+    columns equal to the whole line counts of the two versions) does not reach
+    all 180 of them**: it reads the two line-count columns that
+    `git diff --numstat` prints, and 7 of the 180 have no line counts at all
+    -- `.gitattributes` marks `*.node` as `binary` and `bun.lock` as `-diff`,
+    so numstat prints `-` in both columns for them:
+
+        # the entries that test cannot reach (7: the six .node files and
+        # bun.lock)
+        git diff --numstat --diff-filter=M base-snapshot/v2.46.0..HEAD \
+          | awk '$1=="-"{print $3}'
+        # why they carry no line counts
+        grep -nE '\.node|bun\.lock' .gitattributes
+
+    So what that test actually screened is the remaining 173 text entries, and
+    the finding is confined to them: `LICENSE` is at present the only
+    wholesale replacement among them, and it is precisely a license text;
+    every other one still holds lines carried over from the snapshot. **The 7
+    have to be stated separately, and six of them -- the `.node` files -- are
+    wholesale replacements as well**: none of them is the same blob as its
+    namesake in the snapshot.
+
+        # none of the six .node files is the same blob as in the snapshot
+        for t in arm64-darwin x64-darwin arm64-linux x64-linux \
+                 x64-win32 arm64-win32; do
+          p="vendor/audio-capture/$t/audio-capture.node"
+          git rev-parse "base-snapshot/v2.46.0:$p" "HEAD:$p" | tr '\n' ' '
+          echo "$t"
+        done
+
+    No upstream expression is left inside them to combine with, so **the
+    "combined work" reason does not hold for them**; the grounds for which
+    layer they sit in are in the **next bullet** (the one beginning "The
+    `vendor/audio-capture/` exception no longer exists") -- those six `.node`
+    files have been rebuilt from this repository's own AGPL source, are build
+    artifacts of that source, and are distributed with it under the same
+    license; no separate doctrine is introduced here. The remaining entry,
+    `bun.lock`, is not a wholesale replacement: it is a generated dependency
+    lockfile whose current version still holds a large number of entries
+    carried over unchanged from the snapshot, so it falls under the "combined
+    work" reason below.
+
+        # bun.lock is not a wholesale replacement (bash/zsh): the change is
+        # far smaller than either version's total line count
+        git show base-snapshot/v2.46.0:bun.lock | wc -l
+        git show HEAD:bun.lock | wc -l
+        git diff --no-index --numstat \
+          <(git show base-snapshot/v2.46.0:bun.lock) <(git show HEAD:bun.lock)
+
+    **With license texts of that kind set aside, the conclusion is not
+    weakened**: **those files as a whole may only be distributed under the
+    terms of AGPL-3.0-or-later** -- the text entries as combined works,
+    because the Qianmo portion inside them is an AGPL work; the six `.node`
+    files not as combined works, but because they are distributed with, and
+    carry the license of, their AGPL source. MIT is permissive and may be
+    incorporated into an AGPL work, so there is no conflict of direction; but
+    **"layered by provenance" is in no way "may be taken under MIT"** --
+    taking those 180 files, and the Qianmo changes inside them, is subject to
+    the AGPL.
 
     There are three reasons for not adding headers to them. First, the header
     marks **which layer a file came from**, not who wrote which line: a file
@@ -814,8 +916,8 @@ licenses, and the boundary is the provenance boundary itself:
     does not claim it is covered.
 
     **What is missing is not only the inventory but the characterization**:
-    those 122 crates are statically linked into those six `.node` files, and
-    whether they form part of the Corresponding Source in the sense of
+    whether the third-party crates recorded in `Cargo.lock` that are linked
+    into those artifacts form part of the Corresponding Source in the sense of
     AGPL-3.0 section 1 is **not a legal determination this notice makes**.
     What can be stated as fact is only this: the source of those crates is
     publicly available under their respective licenses, and which version of
