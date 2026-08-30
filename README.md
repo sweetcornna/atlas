@@ -119,7 +119,7 @@ bun run check:mock-hygiene # mock 卫生棘轮
 | 哪一层 | 许可 | 正文 | 怎么认出来 |
 |---|---|---|---|
 | 阡陌自有代码 | **GNU AGPL-3.0-or-later** | [`LICENSE`](LICENSE) | 文件头带 `SPDX-License-Identifier: AGPL-3.0-or-later` |
-| 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 不带 SPDX 头 |
+| 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 文件在基座快照里：`git cat-file -e base-snapshot/v2.46.0:<路径>`。**不能用「不带 SPDX 头」反推**，见 [`NOTICE`](NOTICE) 一、许可 |
 
 ```bash
 # 举出属于 AGPL 那一层的文件——作数的是这条命令，不是某个写死的数字

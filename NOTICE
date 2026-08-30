@@ -148,11 +148,16 @@ this repository.
     分别等于两个版本各自的全部行数——`wc -l LICENSE` 与 `git show
     base-snapshot/v2.46.0:LICENSE | wc -l` 可核——所以一行上下文都没有），
     **文件里没有任何一行来自上游**。一个来自基座、其后被阡陌改动过的文件，
-    分发出去的是**组合作品**：其中上游那部分继续适用 MIT（这正是 `LICENSE.base`
-    逐字保留的原因，MIT 的保留义务由它履行），阡陌加进去的部分是 AGPL 作品，
-    **因此这些文件整体只能按 AGPL-3.0-or-later 的条款分发**。MIT 宽松、可被并入
-    AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于"可按 MIT 取走"**——取走这
-    180 个文件（连同里面的阡陌改动）受 AGPL 约束。
+    **只要里面还留着上游的表达**，分发出去的就是**组合作品**：其中上游那部分继续
+    适用 MIT（这正是 `LICENSE.base` 逐字保留的原因，MIT 的保留义务由它履行），
+    阡陌加进去的部分是 AGPL 作品。**但"组合作品"不能对这 180 个文件作全称断言**
+    ——上游内容被整体替换掉的文件不是组合作品，因为里面没有上游表达可供组合；
+    刚论证过的根 `LICENSE` 就是现成的例子，它落在这 180 个里，却一行上游内容都
+    不剩，是纯粹的 AGPL 作品。**两种情形的结论相同，这一点不打折扣**：
+    **这些文件整体只能按 AGPL-3.0-or-later 的条款分发**——组合作品是因为其中的
+    阡陌部分是 AGPL 作品，整体替换掉的文件是因为里面已经没有别人的东西。MIT
+    宽松、可被并入 AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于"可按 MIT
+    取走"**——取走这 180 个文件（连同里面的阡陌改动）受 AGPL 约束。
 
     不给它们加头有三条理由：① 文件头标的是**文件的来源层**，不是逐行作者——一个
     来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② **这是我们自己定
@@ -198,6 +203,13 @@ this repository.
     `node_modules` 的 `license` 字段**，整个 Rust 依赖树不在其覆盖范围内
     （`grep -c 'pkg:cargo' docs/dev/sbom-m0.json` 为 0 可核）。**这是待补项**，
     本文件不声称它已被覆盖。
+
+    **缺的不只是清单，还有定性**：这 122 个 crate 被静态链接进那六个 `.node`，
+    它们算不算 AGPL-3.0 §1 意义上 Corresponding Source 的一部分，**本文件不作
+    法律断言**。能如实说的只有事实：这些 crate 的源码按其各自许可公开可取，用
+    到哪个版本由 `Cargo.lock` 逐条锁定，而该文件本身就在本仓库里、随源码一同
+    分发。**分发时是否还须把这些 crate 的源码一并提供，留待负责人裁定**，本文件
+    不代为下结论。
 
     有两点必须与上一条判据一起读，以免拿那条判据去套它们：
 
@@ -271,8 +283,11 @@ MIT 授权不因本次变更而失效；AGPL 只适用于本次变更之后发�
 
 本仓库对基座的修改不改变该许可对基座那层的适用。
 
-**成果边界**：基座以零改动快照导入于**本仓库提交 `3380c88`**，其后的全部提交为阡陌
-团队的工作。举证命令：
+**成果边界**：基座以零改动快照导入于**本仓库提交 `3380c88`**，其后的提交为阡陌团队
+的工作，**唯一的例外是纯上游同步提交**——那类提交的内容全部来自上游补丁，当前只有
+`d04a79dd` 一笔（2026-08-17），此后每做一次上游同步就会再添一笔。这条例外写在这里而
+不是靠后文更正：下文"工作记录里有一笔不是阡陌工作"给的是同一件事的细节与举证纪律，
+不是另一种说法。举证命令：
 
   工作面            git diff base-snapshot/v2.46.0..HEAD
   工作记录          git log 3380c88..HEAD
@@ -715,11 +730,20 @@ licenses, and the boundary is the provenance boundary itself:
     LICENSE` and `git show base-snapshot/v2.46.0:LICENSE | wc -l` -- so not one
     line is context), and **not a single line in the file came from
     upstream**. A file that came from the base project and was afterwards
-    modified by Qianmo is distributed as a **combined work**: the upstream
-    portion remains under MIT (which is precisely why `LICENSE.base` is kept
+    modified by Qianmo is distributed as a **combined work** -- **so long as
+    upstream expression still remains inside it**: the upstream portion
+    remains under MIT (which is precisely why `LICENSE.base` is kept
     verbatim -- that is how the MIT retention obligation is discharged), while
-    the portion Qianmo added is an AGPL work, **so the file as a whole may
-    only be distributed under the terms of AGPL-3.0-or-later**. MIT is
+    the portion Qianmo added is an AGPL work. **But "combined work" cannot be
+    asserted of all 180 of these files**: a file whose upstream content was
+    replaced wholesale is not a combined work, because no upstream expression
+    is left inside it to combine with; the root `LICENSE` just argued through
+    is the ready example -- it is one of the 180, yet not one line of upstream
+    content remains in it, and it is a pure AGPL work. **The conclusion is the
+    same either way, and it is not weakened**: **those files as a whole may
+    only be distributed under the terms of AGPL-3.0-or-later** -- a combined
+    work because the Qianmo portion inside it is an AGPL work, a wholly
+    replaced file because nothing of anyone else's is left inside it. MIT is
     permissive and may be incorporated into an AGPL work, so there is no
     conflict of direction; but **"layered by provenance" is in no way "may be
     taken under MIT"** -- taking those 180 files, and the Qianmo changes
@@ -788,6 +812,18 @@ licenses, and the boundary is the provenance boundary itself:
     dependency tree falls outside its coverage (`grep -c 'pkg:cargo'
     docs/dev/sbom-m0.json` returns 0). **This is outstanding work**; this file
     does not claim it is covered.
+
+    **What is missing is not only the inventory but the characterization**:
+    those 122 crates are statically linked into those six `.node` files, and
+    whether they form part of the Corresponding Source in the sense of
+    AGPL-3.0 section 1 is **not a legal determination this notice makes**.
+    What can be stated as fact is only this: the source of those crates is
+    publicly available under their respective licenses, and which version of
+    each is used is pinned entry by entry in `Cargo.lock`, a file that is
+    itself in this repository and is distributed together with the source.
+    **Whether that source must also be supplied alongside a distribution is
+    left to the project lead to decide**; this notice does not decide it on
+    their behalf.
 
     Two points must be read alongside that, so the test in the previous bullet
     is not misapplied to them:
@@ -888,7 +924,13 @@ license to the base layer.
 
 **Work boundary**: the base was imported as an unmodified snapshot in **this
 repository's commit 3380c88**; every commit after it is the work of the Qianmo
-AgentNest Team. Evidence commands:
+AgentNest Team, **with the sole exception of the pure upstream-synchronization
+commits** -- their content comes entirely from an upstream patch; at present
+there is exactly one such commit, `d04a79dd` (2026-08-17), and every further
+upstream synchronization adds one more. The exception is stated here rather
+than corrected further down: "One commit in the work log is not Qianmo's work"
+below gives the detail and the evidence discipline for the same fact, not a
+second account of it. Evidence commands:
 
   work surface           git diff base-snapshot/v2.46.0..HEAD
   work log               git log 3380c88..HEAD

@@ -163,7 +163,7 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
 - **不需要签 CLA，但要知道你改的是哪一层。**本仓库是双许可的（见 [`NOTICE`](NOTICE) 一、许可），
   两层都按 inbound = outbound 并入：
   - 改**阡陌自有代码**（文件头带 `SPDX-License-Identifier: AGPL-3.0-or-later` 的那些）→ 你的贡献按 **AGPL-3.0-or-later** 并入。
-  - 改**基座那层**（不带 SPDX 头的文件）→ 按 **MIT** 并入，`LICENSE.base` 是它的正文。
+  - 改**基座那层**（文件在基座快照里，用 `git cat-file -e base-snapshot/v2.46.0:<路径>` 判）→ 按 **MIT** 并入，`LICENSE.base` 是它的正文。**不能用「没有 SPDX 头」反推基座层**——仓库里有 86 个文件无头却是阡陌自有，其中就有 20 个 `package.json` 与 20 个 `tsconfig.json` 这类最常被改的，判据见 [`NOTICE`](NOTICE) 一、许可。
   提交即表示你有权以对应许可贡献这些代码。**新增的阡陌源文件请带上那两行版权头**（章程 §5.5），
   否则它在机器判据下会被当成基座层。
 - **先开 issue 再动大工程。**这是一个有明确范围的在研项目：阡陌那层的范围以 [`docs/dev/charter.md`](docs/dev/charter.md) §3 为准，§2.2 列的非目标当前一律不做。

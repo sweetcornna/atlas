@@ -35,7 +35,7 @@
 | 协议枚举 | ✅ 成立，但**是 11 种不是 10 种** | `packages/protocol/src/message.ts:13-39` |
 | `isReplyType` | ✅ 7 个回复类（含协商三个），非回复类只有 4 个 | `message.ts:64-79` |
 | turn-gate | ✅ 35 行 promise 尾链，无上界 / 无超时 / 无优先级 | `packages/resident/src/turn-gate.ts:4-35` |
-| contextId 透传 | ✅ 零业务消费；**但它已随整条信封落进信箱 `text`**（见 §4.3） | `message.ts:131`、`packages/adapter/src/wrapper.ts:47` |
+| contextId 透传 | ✅ 零业务消费；**但它已随整条信封落进信箱 `text`**（见 §4.3） | `message.ts:217`、`packages/adapter/src/wrapper.ts:200-201` |
 | hermes relay 契约 | ✅ A1–A4 成立；**契约文本自称 PRIMITIVE，行为层显式 out of scope** | `hermes-agent/docs/relay-connector-contract.md` §3.2/§3.3/§3.4 |
 | H-3 回执压在 admission 之后 | ✅ 逐字成立 | `packages/transport/src/receiver.ts:107`、`outbox.ts:84` |
 | wake 不产生协议 ack | ✅ 成立（`#registerTask` 只对 TaskRequest 触发） | `src/services/qianmo/resident.ts:873` |
