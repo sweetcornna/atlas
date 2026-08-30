@@ -267,28 +267,98 @@ Windows 系统提供，也不随 Node.js 安装程序分发。目标机缺少它
 `[build]` 的 rustflags 会作用到所有目标，可能波及已经构建并验证过的
 macOS/Linux 产物；按 target 写只对这两个 Windows MSVC triple 生效。
 
-Windows 新构建产物的外部 DLL 依赖列表必须与原产物的以下八项完全一致，且不得
-出现 `vcruntime140.dll`：
+**`RUSTFLAGS` 环境变量会把这份配置整条丢弃。**cargo 取 rustflags 的四个来源是
+**互斥**的，按顺序检查、命中第一个就不再看后面的：`CARGO_ENCODED_RUSTFLAGS` >
+`RUSTFLAGS` > `target.<triple>.rustflags` / `target.<cfg>.rustflags` >
+`build.rustflags`。所以开发者 shell 里只要设了 `RUSTFLAGS`（哪怕内容与本文无关，例如 `-C target-cpu=native`），
+`.cargo/config.toml` 里这两条 `target-feature=+crt-static` 就**整条不生效**，产物
+静默退回动态 CRT、重新带上 `vcruntime140.dll`。工作流本身是干净的（
+`.github/workflows/build-audio-capture-windows.yml` 没有 `env:` 块、没有
+`RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS`），但本机构建前值得自查一遍。
+
+**别用 `echo $RUSTFLAGS` 自查。**`RUSTFLAGS=`（设了但内容为空）同样会命中上面那条
+优先级、把 `target.<triple>.rustflags` 整条丢弃，而 `echo $RUSTFLAGS` 在「未设」与
+「设为空」两种情况下都打印空行——恰好分不开这两者，后者会静默退回动态 CRT。要用能
+区分的形式：
+
+```
+env | grep -E '^(CARGO_ENCODED_)?RUSTFLAGS='
+```
+
+未设时没有输出，设为空时打印 `RUSTFLAGS=`，两者可分；它同时覆盖优先级更高的
+`CARGO_ENCODED_RUSTFLAGS`，读的也正是 cargo 会看到的那份环境（没 export 的 shell
+变量 cargo 本来就取不到）。只用 shell 内建也行：`printf '%s\n' "${RUSTFLAGS+set}"`
+未设时打印空行，设了（含设为空）时打印 `set`。
+
+无论在哪构建，最终判据都是下面那条依赖面核对。
+
+**静态链接 CRT 对一个被 Node `dlopen` 的 N-API 插件为什么是安全的**（写清楚是因为
+下一个给这个 crate 加 C 依赖的人需要知道这里有前提）。`/MT` 最经典的翻车方式是
+**跨 CRT 堆不匹配**：插件用自己那份 CRT 的 `malloc` 分配、宿主用另一份 CRT 的
+`free` 释放（或反过来），两份 CRT 各有各的堆，行为未定义。这条在这里**结构上不
+成立**：
+
+- **Rust 在 Windows MSVC 上的 system allocator 不走 CRT 的 `malloc`**，走的是
+  `HeapAlloc(GetProcessHeap(), …)`。**判据是 Rust std 源码**：
+  `library/std/src/sys/alloc/windows.rs` 中 `unsafe impl GlobalAlloc for System`
+  的 `alloc` / `alloc_zeroed` / `dealloc` / `realloc` 经 `windows_link::link!` 直接
+  绑到 `kernel32.dll` 的 `GetProcessHeap` / `HeapAlloc` / `HeapFree` /
+  `HeapReAlloc`，整条路径上不出现 CRT 的 `malloc`。
+  **导入表只是与该结论一致的观察，证不了它**：新旧两个 Windows 产物确实都从
+  `kernel32.dll` 导入那四个符号，但 `/MT` 下 CRT 是静态链进产物的，它自己的
+  `malloc` 本来就不会出现在导入表里；而现代 UCRT 的 `malloc` 自身也是
+  `HeapAlloc(GetProcessHeap(), …)`。于是「导入表里有这四个符号」与「Rust 用
+  System allocator」「CRT 的 `malloc` 也在用同一个进程堆」两种假设都相容——它是
+  必要条件，不是判据。
+  进程堆是**进程级**的，不随 CRT 副本分裂，所以插件分配的内存换哪份 CRT 都能释放。
+- **本 crate 不跨边界交换 CRT 对象**：cpal 与 `windows` crate 都是纯 FFI（WASAPI /
+  COM），传的是句柄、COM 接口指针与由调用方分配的缓冲区，没有 `FILE*`、没有
+  `malloc` 出来再交给对方 `free` 的指针。**反向同样不发生**：插件也不把别处（宿主
+  或另一份 CRT）分配出来的指针交给自己这份静态 CRT 的 `free` / `realloc` 去释放。
+  堆不匹配是对称的，两个方向都堵上才算数，只说一向不够。N-API 侧的内存由 Node
+  自己的分配器管，插件只通过 napi 函数访问。
+
+**残留风险，别当成"静态 CRT 一律安全"**：两份 CRT 各有各的 `errno`、各有各的 stdio
+缓冲、各有各的 locale——只要不跨边界读写这些状态就没事，而现在确实不跨。**将来若
+引入一个会返回 `malloc` 指针（或 `FILE*`）给调用方的 C 依赖，上面第二条前提就
+失效了，而且是静默失效**：编译照过、加载照过，崩在释放的那一刻。到那时要么把该
+依赖也静态链进同一份 CRT 并保证分配/释放在同一侧，要么放弃 `crt-static` 改为随产物
+分发 VC++ 运行时。
+
+**依赖面核对：读 PE 导入表，不要用 `strings`。**Windows 新构建产物的**装载期导入**
+必须与原产物完全一致，共 **7 项**，且不得出现 `vcruntime140.dll`：
 
 ```
 advapi32.dll
 api-ms-win-core-synch-l1-2-0.dll
 bcryptprimitives.dll
-dbghelp.dll
 kernel32.dll
 ntdll.dll
 ole32.dll
 oleaut32.dll
 ```
 
-可复现的检查命令：
+**延迟导入应为 0 项。**可复现的检查命令（两个架构要用不同的 objdump，x86_64 那个
+在 macOS 上由 `brew install mingw-w64` 提供）：
 
 ```
-strings -a <path>/audio-capture.node | grep -oiE '[A-Za-z0-9_.-]+\.dll' | tr 'A-Z' 'a-z' | sort -u
+# x64-win32
+x86_64-w64-mingw32-objdump -p <path>/audio-capture.node | grep 'DLL Name:'
+# arm64-win32
+objdump -p <path>/audio-capture.node | grep 'DLL Name:'
+# 延迟导入：Delay Import Directory 一行的 RVA/size 应为全 0
+x86_64-w64-mingw32-objdump -p <path>/audio-capture.node | grep 'Delay Import'
 ```
 
-该命令的输出还会出现 crate 自身的模块名 `audio_capture.dll`（构建产物原名，
-之后重命名为 `audio-capture.node`）；它不是外部依赖，不计入上述八项列表。
+**为什么不用 `strings`（这里曾经数错过一项）**：`strings -a <file> | grep -oiE
+'[A-Za-z0-9_.-]+\.dll'` 是启发式，只能**过度包含**——它分不出装载期导入、延迟导入和
+"碰巧作为字符串出现在二进制里"的名字。用它比对会多出 **`dbghelp.dll`**，把 7 项数成
+8 项；而 `dbghelp.dll` **不在任何一个产物的导入表里**，它是 Rust std 的 backtrace 在
+panic 时才用 `LoadLibrary` 现加载的符号化目标。**结论不受影响**（新旧产物逐项相等、
+`vcruntime140.dll` 确已消除），受影响的是方法与那个数字。若因手边没有 objdump 而
+仍要用 `strings` 法，除 `dbghelp.dll` 外还必须排除 crate 自身的模块名——**自建产物是
+`audio_capture.dll`、原厂产物是 `audio_capture_napi.dll`**（都是构建产物重命名为
+`audio-capture.node` 之前的原名，不是外部依赖，两个名字不同所以两边都要排）。
 
 ### 3.3 `scripts/audio-capture-cross.toml`：Linux 交叉构建的 ALSA pre-build 配置
 

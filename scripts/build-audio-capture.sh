@@ -40,6 +40,32 @@
 # `cross build` 前会自动导出它，不需要手动设置。`--check` 会核对这份配置
 # 是否存在、是否覆盖了对应 target，缺了不报 READY。
 #
+# **所有 cargo / cross 调用必须先 cd 进 packages/audio-capture-napi/native/，
+# 光给 --manifest-path 不够。**cargo 的 `.cargo/config.toml` 和 rustup 的
+# `rust-toolchain.toml` 都是**从当前工作目录逐级向上**查找的，--manifest-path
+# 不参与这个查找。已实测两条：把 rustflags 写进 crate 的 .cargo/config.toml，
+# 在 crate 目录里 `cargo build -v` 的 rustc 命令行上能看到那个 flag，退到上级
+# 目录改用 `--manifest-path <绝对路径>` 跑同一条命令就完全看不到；`rustc
+# --version` 同理——在仓库根拿到的是宿主默认版本，进到 crate 目录才是
+# rust-toolchain.toml 钉的那一版（本机实测 1.82.0 → 1.85.0，而 1.82 根本
+# 构建不出这个 crate，见下面 --check 一节关于 coreaudio-sys 的说明）。
+#
+# 漏掉 cd 的后果不是构建失败，是**静默产出错的二进制**：
+# packages/audio-capture-napi/native/.cargo/config.toml 给
+# x86_64-pc-windows-msvc 和 aarch64-pc-windows-msvc 打开了 +crt-static，
+# 漏掉它就会得到一份动态链接 CRT、依赖 vcruntime140.dll 的 .node。那个 DLL
+# 来自 Visual C++ 可再发行组件包，既不随 Windows 出厂、也不随 Node.js 安装
+# 程序分发；目标机上缺它时 packages/audio-capture-napi/src/index.ts 的
+# loadModule() 会把 require() 的异常整个吞掉，表现是语音功能静默消失、不留
+# 任何线索（第一次 CI 构建出来的产物就带着它，已实测复现）。
+#
+# 所以：本脚本自己执行时一律套 `( cd "${NATIVE_DIR}" && ... )`，而**打印给人
+# 照抄的命令也一律带上那个 cd、并且不再写 --manifest-path**——带着
+# --manifest-path 的写法会让人以为不需要 cd，而它恰恰救不了上面两件事。
+# （已实测 `cargo metadata` 在「cd 后不带 --manifest-path」与「cd 后带
+# --manifest-path」两种形式下解析出完全相同的 workspace_root 与包，去掉它
+# 对构建本身没有任何影响。）
+#
 # 用法：
 #   scripts/build-audio-capture.sh                          构建当前平台
 #   scripts/build-audio-capture.sh --target <triple>         构建指定 triple（可重复）
@@ -301,14 +327,14 @@ check_triple_readiness() {
       if [ "${host_os}" = "darwin" ]; then
         if is_target_installed "${triple}"; then
           READY_STATUS="READY"
-          READY_REASON="就绪：可直接 cargo build --release --target ${triple}"
+          READY_REASON="就绪：\`cd ${NATIVE_DIR} && cargo build --release --target ${triple}\`（cd 不能省：rust-toolchain.toml 与 .cargo/config.toml 都按当前工作目录查找，--manifest-path 替代不了）"
         else
           READY_STATUS="NEEDS_TARGET"
           READY_REASON="缺 rustup target：先运行 \`rustup target add ${triple}\`。macOS 自带的 clang/ld 原生支持 arm64/x86_64 两个 darwin 架构互相交叉编译，装完 target 无需额外工具链即可直接构建。"
         fi
       else
         READY_STATUS="NEEDS_REMOTE"
-        READY_REASON="本机不是 macOS，交叉编译到 Apple 平台一般需要 osxcross（本脚本不处理）。请改到 macOS 机器或 CI（如 GitHub Actions macos-latest）上运行本脚本，或用 cargo build --release --target ${triple} --manifest-path ${MANIFEST} 手动构建。"
+        READY_REASON="本机不是 macOS，交叉编译到 Apple 平台一般需要 osxcross（本脚本不处理）。请改到 macOS 机器或 CI（如 GitHub Actions macos-latest）上运行本脚本，或手动构建：\`cd ${NATIVE_DIR} && cargo build --release --target ${triple}\`（cd 不能省，--manifest-path 替代不了：rust-toolchain.toml 与 .cargo/config.toml 都按当前工作目录查找）。"
       fi
       ;;
     linux)
@@ -321,21 +347,21 @@ check_triple_readiness() {
           READY_REASON="rustup target 已装，但本机没有 ALSA 开发头文件（pkg-config 找不到 alsa.pc）：cpal 在 Linux 上经 alsa-sys 链接系统 ALSA，装了才能过 build script。Debian/Ubuntu 上 \`sudo apt-get install libasound2-dev\`，Fedora 上 \`sudo dnf install alsa-lib-devel\`。"
         else
           READY_STATUS="READY"
-          READY_REASON="就绪：可直接 cargo build --release --target ${triple}（同宿主 OS，跨架构部分视本机是否装有对应交叉链接器而定；若链接失败，退回下面的 cross 路径）"
+          READY_REASON="就绪：\`cd ${NATIVE_DIR} && cargo build --release --target ${triple}\`（cd 不能省：rust-toolchain.toml 与 .cargo/config.toml 都按当前工作目录查找。同宿主 OS，跨架构部分视本机是否装有对应交叉链接器而定；若链接失败，退回下面的 cross 路径）"
         fi
       else
         if ! has_cross; then
           READY_STATUS="NEEDS_CROSS"
-          READY_REASON="需要 cross：先 \`cargo install cross --git https://github.com/cross-rs/cross\`，并确保 Docker 守护进程在跑（docker info 能成功）。装好后用 \`CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple} --manifest-path ${MANIFEST}\`。另一条路：改到 Linux 机器或 CI（如 GitHub Actions ubuntu-latest）上直接用 cargo 构建。"
+          READY_REASON="需要 cross：先 \`cargo install cross --git https://github.com/cross-rs/cross\`，并确保 Docker 守护进程在跑（docker info 能成功）。装好后用 \`cd ${NATIVE_DIR} && CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple}\`。另一条路：改到 Linux 机器或 CI（如 GitHub Actions ubuntu-latest）上直接用 cargo 构建。"
         elif ! docker_running; then
           READY_STATUS="NEEDS_CROSS"
-          READY_REASON="cross 已安装，但 Docker 守护进程没有在跑（docker info 失败）：先启动 Docker，再用 \`CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple} --manifest-path ${MANIFEST}\`。另一条路：改到 Linux 机器或 CI（如 GitHub Actions ubuntu-latest）上直接用 cargo 构建。"
+          READY_REASON="cross 已安装，但 Docker 守护进程没有在跑（docker info 失败）：先启动 Docker，再用 \`cd ${NATIVE_DIR} && CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple}\`。另一条路：改到 Linux 机器或 CI（如 GitHub Actions ubuntu-latest）上直接用 cargo 构建。"
         elif ! cross_config_covers_target "${triple}"; then
           READY_STATUS="NEEDS_ALSA_CONFIG"
-          READY_REASON="cross 与 Docker 都就绪，但 ${CROSS_CONFIG_FILE} 里缺 [target.${triple}] 的 pre-build 段落——cross 官方镜像不带 libasound2-dev，cpal 在 Linux 上经 alsa-sys 需要它，缺了会在 alsa-sys 的 build script 阶段报「The system library \`alsa\` required by crate \`alsa-sys\` was not found.」（已实测复现）。补上该 target 的 pre-build 配置，或改到 Linux 机器/CI 上直接 cargo build（那边通常已装 ALSA）。"
+          READY_REASON="cross 与 Docker 都就绪，但 ${CROSS_CONFIG_FILE} 里缺 [target.${triple}] 的 pre-build 段落——cross 官方镜像不带 libasound2-dev，cpal 在 Linux 上经 alsa-sys 需要它，缺了会在 alsa-sys 的 build script 阶段报「The system library \`alsa\` required by crate \`alsa-sys\` was not found.」（已实测复现）。补上该 target 的 pre-build 配置，或改到 Linux 机器/CI 上进到 ${NATIVE_DIR} 直接 cargo build（那边通常已装 ALSA）。"
         else
           READY_STATUS="READY"
-          READY_REASON="就绪：可用 CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple} --manifest-path ${MANIFEST}（cross 会在 Docker 容器里完成交叉编译，pre-build 阶段装好 libasound2-dev，不需要本机装 rustup target）"
+          READY_REASON="就绪：\`cd ${NATIVE_DIR} && CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple}\`（cross 会在 Docker 容器里完成交叉编译，pre-build 阶段装好 libasound2-dev，不需要本机装 rustup target）"
         fi
       fi
       ;;
@@ -343,14 +369,14 @@ check_triple_readiness() {
       if [ "${host_os}" = "windows" ]; then
         if is_target_installed "${triple}"; then
           READY_STATUS="READY"
-          READY_REASON="就绪：可直接 cargo build --release --target ${triple}"
+          READY_REASON="就绪：\`cd ${NATIVE_DIR} && cargo build --release --target ${triple}\`——「cd」是必须的，不能换成 --manifest-path：+crt-static 写在 ${NATIVE_DIR}/.cargo/config.toml 里，而 cargo 只按当前工作目录向上找这个文件，漏掉就会产出依赖 vcruntime140.dll 的 .node，目标机缺该 DLL 时语音功能静默消失"
         else
           READY_STATUS="NEEDS_TARGET"
           READY_REASON="缺 rustup target：先运行 \`rustup target add ${triple}\`，并确认已装 Visual Studio Build Tools（link.exe + Windows SDK）。"
         fi
       else
         READY_STATUS="NEEDS_REMOTE"
-        READY_REASON="windows-msvc 需要真实的 MSVC 工具链（link.exe + Windows SDK）。cross 的官方镜像面向 *-gnu，通常不含 MSVC 授权文件，走 cross 大概率跑不通。可行路径：在 Windows 机器或 CI（如 GitHub Actions windows-latest）上直接运行 \`cargo build --release --target ${triple} --manifest-path ${MANIFEST}\`。"
+        READY_REASON="windows-msvc 需要真实的 MSVC 工具链（link.exe + Windows SDK）。cross 的官方镜像面向 *-gnu，通常不含 MSVC 授权文件，走 cross 大概率跑不通。可行路径：在 Windows 机器或 CI（如 GitHub Actions windows-latest）上运行 \`cd ${NATIVE_DIR} && cargo build --release --target ${triple}\`——「cd」是必须的，不能换成 --manifest-path：+crt-static 写在 ${NATIVE_DIR}/.cargo/config.toml 里，而 cargo 只按当前工作目录向上找这个文件，漏掉就会产出依赖 vcruntime140.dll 的 .node，目标机缺该 DLL 时语音功能静默消失。"
       fi
       ;;
   esac
@@ -398,8 +424,10 @@ run_check() {
       echo "  构建命令能跑起来，不代表这次依赖解析一定能通过。"
     fi
   else
-    echo "  尚不存在——packages/audio-capture-napi/native/ 由另一个 worker 负责落地。"
-    echo "  下面的就绪度只反映工具链本身，crate 落地前无法实际构建 / --install。"
+    echo "  缺失。packages/audio-capture-napi/native/ 是入库的 Rust crate，正常检出里一定有；"
+    echo "  跑到这里通常意味着检出不完整或该目录被误删。恢复：在仓库根执行"
+    echo "  \`git checkout -- packages/audio-capture-napi/native\`，或重新 clone 本仓库。"
+    echo "  下面的就绪度只反映工具链本身，crate 恢复前无法实际构建 / --install。"
   fi
   echo ""
   printf '%-30s %-14s %-13s %s\n' "TRIPLE" "VENDOR 目录" "状态" "说明"
@@ -540,11 +568,11 @@ build_one_triple() {
   # 指向 CARGO_TARGET_DIR，而真因是 alsa-sys 编译失败，几行前的报错才是真相）。
   local build_rc=0
   if [ "${family}" = "linux" ] && [ "${host_os}" != "linux" ]; then
-    echo "  CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple} --manifest-path ${MANIFEST}"
-    ( cd "${NATIVE_DIR}" && CROSS_CONFIG="${CROSS_CONFIG_FILE}" cross build --release --target "${triple}" --manifest-path "${MANIFEST}" ) || build_rc="${?}"
+    echo "  cd ${NATIVE_DIR} && CROSS_CONFIG=${CROSS_CONFIG_FILE} cross build --release --target ${triple}"
+    ( cd "${NATIVE_DIR}" && CROSS_CONFIG="${CROSS_CONFIG_FILE}" cross build --release --target "${triple}" ) || build_rc="${?}"
   else
-    echo "  cargo build --release --target ${triple} --manifest-path ${MANIFEST}"
-    ( cd "${NATIVE_DIR}" && cargo build --release --target "${triple}" --manifest-path "${MANIFEST}" ) || build_rc="${?}"
+    echo "  cd ${NATIVE_DIR} && cargo build --release --target ${triple}"
+    ( cd "${NATIVE_DIR}" && cargo build --release --target "${triple}" ) || build_rc="${?}"
   fi
 
   if [ "${build_rc}" -ne 0 ]; then
@@ -678,7 +706,10 @@ done
 
 if ! crate_present; then
   echo "错误：native crate 不存在（${MANIFEST}）。" >&2
-  echo "packages/audio-capture-napi/native/ 由另一个 worker 负责落地，crate 就绪前无法构建。" >&2
+  echo "packages/audio-capture-napi/native/ 是入库的 Rust crate，正常检出里一定有；缺失通常" >&2
+  echo "意味着检出不完整或该目录被误删。恢复：在仓库根执行" >&2
+  echo "  git checkout -- packages/audio-capture-napi/native" >&2
+  echo "或重新 clone 本仓库。" >&2
   echo "可以先跑 scripts/build-audio-capture.sh --check 看工具链本身是否就绪。" >&2
   exit 1
 fi

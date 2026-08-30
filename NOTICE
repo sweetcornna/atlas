@@ -16,11 +16,32 @@ this repository.
   * **阡陌自有代码 —— GNU AGPL-3.0-or-later**（根目录 `LICENSE`）。
     包括 `packages/` 下 `@qianmo/*` 命名空间的 workspace 包、对基座运行时的
     常驻化改造、`demo/` 下的演示与验收套件，以及阡陌团队撰写的文档
-    （`docs/dev/` 等）。判据是**文件头**：这一层的文件都带
+    （`docs/dev/` 等）。判据是**文件头**：带
     `SPDX-License-Identifier: AGPL-3.0-or-later` 与
-    `Copyright 2026 Qianmo AgentNest Team` 两行——截至 2026-08-30 共 580 个文件。
-    每新增一个带该文件头的文件这个数就会变，所以真正作数的是下面那条命令，
-    不是这个数字。
+    `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——截至
+    2026-08-30 共 580 个文件。每新增一个带该文件头的文件这个数就会变，
+    所以真正作数的是下面那条命令，不是这个数字。
+
+    **这条文件头判据目前尚未覆盖全部阡陌自有文件。**另有一批阡陌自有文件没有
+    带上这两行：其中一部分（`.json`、图片、`.lock` 等）形态上就带不了注释头，
+    其余是应补而未补的源文件与文档，正由单独一批提交补齐。现算的命令
+    （bash/zsh，不写死个数）：
+
+        # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件
+        comm -23 <(git -c core.quotePath=false ls-files | sort) \
+                 <(git -c core.quotePath=false ls-tree -r --name-only \
+                     base-snapshot/v2.46.0 | sort) \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              || printf '%s\n' "$f"
+          done
+
+    `-c core.quotePath=false` 不能省：默认输出会把非 ASCII 文件名写成带双引号
+    的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算。
+
+    在补齐之前，文件头只在一个方向上作数：**带头 ⇒ 属于 AGPL 层**成立；而下一
+    条给出的反向推断——**没有文件头 ⇒ 属于基座 MIT 层**——不成立。权威判据是该
+    文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
 
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
@@ -231,13 +252,25 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     `libm.so.6`。**结论：ALSA 这个硬依赖原厂本来就有，不是自建产物引入的**；
     多出的两个在任何 glibc 系统上必然存在。运行时依赖面没有实质变化。
 
-    **Windows 产物的同一条证据，而且是零差异**：提取被引用的 DLL 名
-    （`strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`，排除 crate 自身的
-    模块名）逐项比对——原厂与自建产物引用**同样 8 项、完全一致**：`advapi32.dll` /
-    `api-ms-win-core-synch-l1-2-0.dll` / `bcryptprimitives.dll` / `dbghelp.dll` /
-    `kernel32.dll` / `ntdll.dll` / `ole32.dll` / `oleaut32.dll`。**这条证据比上面
-    Linux 那条更强**——那边自建产物多出两个库，Windows 这边一个都不多。它不是一次
-    就成的：第一版自建产物额外引入了 `vcruntime140.dll`，那东西既不随 Windows 出厂、
+    **Windows 产物的同一条证据，而且是零差异**：读 PE **导入表**逐项比对——原厂与
+    自建产物的**装载期导入完全相同，共 7 项**：`advapi32.dll` /
+    `api-ms-win-core-synch-l1-2-0.dll` / `bcryptprimitives.dll` / `kernel32.dll` /
+    `ntdll.dll` / `ole32.dll` / `oleaut32.dll`；**延迟导入 0 项**。新旧 × x64/arm64
+    四个文件逐项一致。可复现命令（两个架构要用不同的 objdump）：
+    `x86_64-w64-mingw32-objdump -p <x64 文件> | grep 'DLL Name:'`、
+    `objdump -p <arm64 文件> | grep 'DLL Name:'`。
+    **`dbghelp.dll` 不算在内**：它不在任何一个产物的导入表里——那是 Rust std 的
+    backtrace 在 panic 时才用 `LoadLibrary` 现加载的符号化目标，只作为字符串存在于
+    二进制中。早先用 `strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'` 提取时
+    把它误算成了第 8 项：`strings` 是启发式，只能过度包含，分不出装载期导入、延迟
+    导入与碰巧出现的字符串。**逐项相等这个结论没变，变的是方法与数字（8 → 7）。**
+    若手边没有 objdump 而仍用 `strings` 法，除 `dbghelp.dll` 外还要排除 crate 自身的
+    模块名——自建产物是 `audio_capture.dll`、原厂产物是 `audio_capture_napi.dll`
+    （都是重命名为 `.node` 之前的构建产物原名，不是外部依赖，两边名字不同、都要排）。
+    **这条证据比上面 Linux 那条更强**——那边自建产物多出两个库，Windows 这边一个都
+    不多；改用导入表之后两边的方法也对等了（`readelf -d` 的 `NEEDED` 与 PE 导入表
+    都是权威读法，不是字符串扫描）。
+    它不是一次就成的：第一版自建产物额外引入了 `vcruntime140.dll`，那东西既不随 Windows 出厂、
     也不随 Node.js 安装程序分发，目标机没装 Visual C++ 可再发行组件包时 `require()`
     会抛错——而 `packages/audio-capture-napi/src/index.ts` 的装载层会吞掉这个错误
     静默降级，故障表现是语音模式无声消失、不留线索。改为按 target（而不是全局）
@@ -292,11 +325,39 @@ licenses, and the boundary is the provenance boundary itself:
     This covers the `@qianmo/*` workspace packages under `packages/`, the
     residency modifications to the base runtime, the demo and acceptance
     suites under `demo/`, and documentation written by the Qianmo AgentNest
-    Team (`docs/dev/` and others). The test is the **file header**: every file
-    in this layer carries both `SPDX-License-Identifier: AGPL-3.0-or-later`
-    and `Copyright 2026 Qianmo AgentNest Team` -- 580 files as of 2026-08-30.
-    The count grows whenever a file with that header is added, so the command
-    below, not this number, is what to rely on.
+    Team (`docs/dev/` and others). The test is the **file header**: a file
+    carrying both `SPDX-License-Identifier: AGPL-3.0-or-later` and
+    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 580 files
+    as of 2026-08-30. The count grows whenever a file with that header is
+    added, so the command below, not this number, is what to rely on.
+
+    **This file-header test does not yet cover every file of Qianmo's own
+    code.** A further set of Qianmo-owned files does not carry those two
+    lines: some of them (`.json`, images, `.lock` and the like) cannot carry a
+    comment header at all, and the rest are source files and documents whose
+    headers are still to be added; a separate set of commits is doing that.
+    To compute the list (bash/zsh; no number is hard-coded):
+
+        # files that are Qianmo's own -- i.e. absent from the base snapshot
+        # tree -- yet carry no file header
+        comm -23 <(git -c core.quotePath=false ls-files | sort) \
+                 <(git -c core.quotePath=false ls-tree -r --name-only \
+                     base-snapshot/v2.46.0 | sort) \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              || printf '%s\n' "$f"
+          done
+
+    `-c core.quotePath=false` cannot be omitted: by default non-ASCII file
+    names are printed double-quoted with octal escapes, and such a name does
+    not resolve to a file when handed to `head`, so it is silently skipped and
+    undercounted.
+
+    Until that work is complete the file header holds in one direction only:
+    **carries the header => belongs to the AGPL layer** holds; the reverse
+    inference stated in the next bullet -- **no file header, therefore the
+    base MIT layer** -- does not. The authoritative test is whether the file
+    exists in the `base-snapshot/*` snapshot; see section 2 below.
 
   * **Code imported from the base project -- MIT License** (`LICENSE.base`,
     the upstream text kept verbatim). Base files carry **no SPDX header**,
@@ -579,14 +640,33 @@ dependency tree):
     runtime dependency surface has not materially changed.
 
     **The same evidence for the Windows artifacts, and there it is a zero
-    difference**: extracting the referenced DLL names
-    (`strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`, excluding the
-    crate's own module name) and comparing them item by item — the original
-    and the self-built artifact reference **the same 8 libraries, with no
-    difference at all**: `advapi32.dll`, `api-ms-win-core-synch-l1-2-0.dll`,
-    `bcryptprimitives.dll`, `dbghelp.dll`, `kernel32.dll`, `ntdll.dll`,
-    `ole32.dll`, `oleaut32.dll`. **This is stronger evidence than the Linux
-    comparison above**, where the self-built artifact added two libraries.
+    difference**: reading the PE **import table** and comparing item by item —
+    the original and the self-built artifact have **identical load-time
+    imports, 7 of them**: `advapi32.dll`, `api-ms-win-core-synch-l1-2-0.dll`,
+    `bcryptprimitives.dll`, `kernel32.dll`, `ntdll.dll`, `ole32.dll`,
+    `oleaut32.dll`; **delay imports: none**. All four files (original and
+    self-built, x64 and arm64) match item for item. Reproducible commands (the
+    two architectures need different objdumps):
+    `x86_64-w64-mingw32-objdump -p <x64 file> | grep 'DLL Name:'` and
+    `objdump -p <arm64 file> | grep 'DLL Name:'`.
+    **`dbghelp.dll` does not count**: it is in no artifact's import table — it
+    is the symbolisation target that the Rust std backtrace `LoadLibrary`s at
+    panic time, so it exists only as a string in the binary. An earlier
+    extraction with `strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll'`
+    miscounted it as an 8th entry: `strings` is a heuristic that can only
+    over-include, and cannot tell load-time imports, delay imports and
+    incidental strings apart. **The conclusion is unchanged — the two match
+    item for item; what changed is the method and the number (8 -> 7).** If
+    objdump is not at hand and the `strings` method is used anyway, the
+    crate's own module name must be excluded as well as `dbghelp.dll` — it is
+    `audio_capture.dll` in the self-built artifact and
+    `audio_capture_napi.dll` in the original (both are the build output's name
+    before it was renamed to `.node`, not an external dependency; the two
+    names differ, so both must be excluded). **This is stronger evidence than
+    the Linux comparison above**, where the self-built artifact added two
+    libraries; and with the import table the two methods are now on equal
+    footing as well (`readelf -d`'s `NEEDED` and the PE import table are both
+    authoritative readings, not string scans).
     It did not come out that way on the first attempt: the first Windows build
     additionally pulled in `vcruntime140.dll`, which ships with neither Windows
     itself nor the Node.js installer, so on a machine without the Visual C++

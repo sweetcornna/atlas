@@ -116,13 +116,13 @@
 
 | 位置 | 内容 | 入库状态 | 目录内 LICENSE | 溯源 |
 |---|---|---|---|---|
-| `vendor/audio-capture/` | 6 个平台三元组的 audio-capture.node 预编译 N-API 插件 | 入库（git 跟踪） | 无 | 仓库内无构建脚本、无源码、无 LICENSE；由 build.ts / post-build.ts 复制进 dist/vendor/ |
+| `vendor/audio-capture/` | 6 个平台三元组的 audio-capture.node 预编译 N-API 插件 | 入库（git 跟踪） | 无 | 源码 packages/audio-capture-napi/native/（Rust crate，Cargo.toml license = AGPL-3.0-or-later）；构建脚本 scripts/build-audio-capture.sh；由 build.ts / post-build.ts 复制进 dist/vendor/ |
 | `src/utils/vendor/ripgrep/` | ripgrep 可执行文件（rg） | 不入库（.gitignore 第 12 行），由 postinstall 下载 | 无 | scripts/postinstall.cjs：microsoft/ripgrep-prebuilt v15.0.1，逐档案 SHA-256 硬编码校验 |
-| `packages/audio-capture-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true，随仓库 MIT） |
-| `packages/color-diff-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true，随仓库 MIT） |
-| `packages/image-processor-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true，随仓库 MIT） |
-| `packages/modifiers-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true，随仓库 MIT） |
-| `packages/url-handler-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true，随仓库 MIT） |
+| `packages/audio-capture-napi/` | TS 装载层 + 原生 Rust 源码 crate（native/），包内无预编译产物 | 入库 | 无 | package.json 无 license 字段（private:true）；TS 装载层 1 个 .ts，带阡陌版权头 0 个（观察值）；TS 装载层 1/1 见于基座快照 base-snapshot/v2.46.0 = 基座导入层，随 LICENSE.base（MIT）；native/ 为阡陌自研 Rust crate（Cargo.toml license = AGPL-3.0-or-later，源文件带 SPDX 头） |
+| `packages/color-diff-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true）；TS 装载层 4 个 .ts，带阡陌版权头 0 个（观察值）；TS 装载层 4/4 见于基座快照 base-snapshot/v2.46.0 = 基座导入层，随 LICENSE.base（MIT） |
+| `packages/image-processor-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true）；TS 装载层 1 个 .ts，带阡陌版权头 0 个（观察值）；TS 装载层 1/1 见于基座快照 base-snapshot/v2.46.0 = 基座导入层，随 LICENSE.base（MIT） |
+| `packages/modifiers-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true）；TS 装载层 2 个 .ts，带阡陌版权头 0 个（观察值）；TS 装载层 2/2 见于基座快照 base-snapshot/v2.46.0 = 基座导入层，随 LICENSE.base（MIT） |
+| `packages/url-handler-napi/` | 纯 TypeScript 装载层，包内无原生产物 | 入库 | 无 | package.json 无 license 字段（private:true）；TS 装载层 2 个 .ts，带阡陌版权头 0 个（观察值）；TS 装载层 2/2 见于基座快照 base-snapshot/v2.46.0 = 基座导入层，随 LICENSE.base（MIT） |
 
 ## 7. workspace 自有包
 
@@ -155,7 +155,7 @@
 
 ### 7.2 基座既有 workspace 包
 
-基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的判据是 SPDX 文件头，基座文件不带头。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
+基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的权威判据是文件在不在基座快照 `base-snapshot/*` 里，不是文件头——**带头 ⇒ 属于 AGPL 层**成立，反向不成立（没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
 
 | 包 | 路径 | `license` | private |
 |---|---|---|---|
