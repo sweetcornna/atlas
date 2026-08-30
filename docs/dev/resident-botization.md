@@ -38,9 +38,9 @@
 | contextId 透传 | ✅ 零业务消费；**但它已随整条信封落进信箱 `text`**（见 §4.3） | `message.ts:131`、`packages/adapter/src/wrapper.ts:47` |
 | hermes relay 契约 | ✅ A1–A4 成立；**契约文本自称 PRIMITIVE，行为层显式 out of scope** | `hermes-agent/docs/relay-connector-contract.md` §3.2/§3.3/§3.4 |
 | H-3 回执压在 admission 之后 | ✅ 逐字成立 | `packages/transport/src/receiver.ts:107`、`outbox.ts:84` |
-| wake 不产生协议 ack | ✅ 成立（`#registerTask` 只对 TaskRequest 触发） | `src/services/qianmo/resident.ts:386` |
+| wake 不产生协议 ack | ✅ 成立（`#registerTask` 只对 TaskRequest 触发） | `src/services/qianmo/resident.ts:873` |
 | 「常驻等于永久 yolo」 | ❌ **不成立**，见 §0.4 与 §4.5 | `acp-client.ts:101`、`src/utils/permissions/permissions.ts:540-552` |
-| `P12.x` 编号可用 | ❌ **已被占用**（mTLS 线） | `docs/dev/key-distribution.md:536-539` |
+| `P12.x` 编号可用 | ❌ **已被占用**（mTLS 线） | `docs/dev/key-distribution.md:717-720` |
 
 ### 0.4 与输入报告不符的四处（详情见 §7.3）
 
@@ -186,7 +186,7 @@ const NOTIFY_ALLOWED  = [...NOTIFY_REQUIRED, 'detail', 'dedupKey', 'redelivered'
 | 判环表 | 进 | 进 | **进**（详见 §2.4） |
 | 需要协议 ack？ | 文档说需要 | 需要 | **不需要** |
 
-**顺带记一条既有的文档实现差**（本轮复核确认，不属本设计的改动）：`protocol.md:175` 写 `wake` **需要 ack**，实现里 `#registerTask` 只对 `MessageType.TaskRequest` 触发（`resident.ts:386`），所以 wake 在常驻侧不产生协议 ack。这条要么改文档要么改实现——本批次把它放进 P13.5 的 DoD（补 wake 端到端用例时一并定夺），不在本节替它下结论。**已定夺（2026-08-19，`114436d6`，P13.5）**：结论是**改文档不改实现**——`protocol.md:175` 现写 `wake`「**不产生协议 ack**，投递保证到「传输回执」为止」，与常驻侧实现一致，本段记录的那条差异因此已不存在；四条依据与对照式用例出处见 `protocol.md` §14.8.1。本段保留为当时的发现记录，不改。
+**顺带记一条既有的文档实现差**（本轮复核确认，不属本设计的改动）：`protocol.md:175` 写 `wake` **需要 ack**，实现里 `#registerTask` 只对 `MessageType.TaskRequest` 触发（`resident.ts:873`），所以 wake 在常驻侧不产生协议 ack。这条要么改文档要么改实现——本批次把它放进 P13.5 的 DoD（补 wake 端到端用例时一并定夺），不在本节替它下结论。**已定夺（2026-08-19，`114436d6`，P13.5）**：结论是**改文档不改实现**——`protocol.md:175` 现写 `wake`「**不产生协议 ack**，投递保证到「传输回执」为止」，与常驻侧实现一致，本段记录的那条差异因此已不存在；四条依据与对照式用例出处见 `protocol.md` §14.8.1。本段保留为当时的发现记录，不改。
 
 ### 2.4 六件必须一起定的事
 
@@ -287,7 +287,7 @@ export interface ReadyFrame {
 }
 ```
 
-**必须先看的既有约束**（本轮复核 + `key-distribution.md:543` 已踩过一次）：`frames.ts:169` 是 `if (parsed['v'] !== FRAME_VERSION) return null` —— **版本不等的帧直接被丢弃**。所以「升 `FRAME_VERSION` 让两代共存」这条路走不通，迁移**只能在 v1 之内用可选字段做**。这与 mTLS 线给 `AuthFrame` 加可选 `sig` 是同一条路子、同一个文件，**两条线会在 `frames.ts` 上撞车，排期必须错开或指定合并顺序**（§5.8）。
+**必须先看的既有约束**（本轮复核 + `key-distribution.md:724` 已踩过一次）：`frames.ts:318` 是 `if (parsed['v'] !== FRAME_VERSION) return null` —— **版本不等的帧直接被丢弃**。所以「升 `FRAME_VERSION` 让两代共存」这条路走不通，迁移**只能在 v1 之内用可选字段做**。这与 mTLS 线给 `AuthFrame` 加可选 `sig` 是同一条路子、同一个文件，**两条线会在 `frames.ts` 上撞车，排期必须错开或指定合并顺序**（§5.8）。
 
 ```ts
 // packages/protocol/src/message.ts
@@ -579,7 +579,7 @@ formatPrompt(snapshot) =
 
 七个包。**第一包必须是文档与范围回写。**每包给：目标 / 改动文件 / 新增测试 / 可机检 DoD / 门禁 / 风险 / 依赖。
 
-> **编号说明**：`P12.1~P12.4` 已被 `docs/dev/key-distribution.md:536-539` 占用（mTLS 落地线）。本批次让号，用 **`P13.x`**。若负责人把两条线排进同一迭代，本批次仍用 P13.x —— 编号不复用是台账可查的前提。
+> **编号说明**：`P12.1~P12.4` 已被 `docs/dev/key-distribution.md:717-720` 占用（mTLS 落地线）。本批次让号，用 **`P13.x`**。若负责人把两条线排进同一迭代，本批次仍用 P13.x —— 编号不复用是台账可查的前提。
 
 ### 依赖顺序
 
@@ -636,7 +636,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
   - `LIMITS` 三个新值的存在性 + charter 一致性（若已有该类断言则扩展）
 - **可机检 DoD**：`packages/protocol` 与 `packages/transport` 用例全绿；`bun run check:cycles` 双向在预算内；协议包对外 API 变更在 `index.ts` 显式导出；`FRAME_VERSION` 未变（grep 断言）
 - **门禁**：`verify`（含 `check:cycles`、`check:unused`）
-- **风险**：**与 mTLS 线 `P12.3` 在 `frames.ts` 撞车**（那条线给 `AuthFrame` 加可选 `sig`）。处置：两包不得并行，先落者在 PR 描述里写明 `frames.ts:169` 的严格版本相等约束，后落者 rebase
+- **风险**：**与 mTLS 线 `P12.3` 在 `frames.ts` 撞车**（那条线给 `AuthFrame` 加可选 `sig`）。处置：两包不得并行，先落者在 PR 描述里写明 `frames.ts:318` 的严格版本相等约束，后落者 rebase
 - **依赖**：P13.1
 
 ---
@@ -789,7 +789,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
 >
 > **编号说明**：`P12.1~P12.4` 已被 `key-distribution.md` 占用（mTLS 落地线），本批次让号用
 > `P13.x`。两条线在 `packages/transport/src/frames.ts` 上有交集（都在 v1 内加可选字段），
-> **排期不得并行**，先落者在 PR 描述里记 `frames.ts:169` 的严格版本相等约束。
+> **排期不得并行**，先落者在 PR 描述里记 `frames.ts:318` 的严格版本相等约束。
 
 | 包 | 目标 | 依赖 | DoD（判据） | owner | 估算 |
 |---|---|---|---|---|---|
@@ -873,7 +873,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 | # | 风险 | 影响 | 对策 |
 |---|---|---|---|
-| R-a | **`frames.ts` 上与 mTLS 线撞车**：两条线都在 v1 内加可选字段（`supportedTypes` / `sig`），且 `frames.ts:169` 是严格版本相等 | 中 / 中 | 排期不并行；先落者在 PR 描述记该约束；后落者 rebase 而不是 merge |
+| R-a | **`frames.ts` 上与 mTLS 线撞车**：两条线都在 v1 内加可选字段（`supportedTypes` / `sig`），且 `frames.ts:318` 是严格版本相等 | 中 / 中 | 排期不并行；先落者在 PR 描述记该约束；后落者 rebase 而不是 merge |
 | R-b | **中枢成为定时单点**（A7 的刻意背离） | 中 / 中 | 调度器缺席可见 + 自身监督 + 重启补跑塌缩为一次；**不引入节点内 ticker 兜底**（会抵消 R-3） |
 | R-c | **回执语义变化是对外可见的行为变化**：Accepted 从此只保证「已落盘」不保证「已排上队」 | 中 / 低 | 写进 `protocol.md` §4 与控制台文案；这不是退步（今天是超时，也就是既无回执也无结果），但它是变化 |
 | R-d | **多会话把 G-9（`--resume` 时间戳并列丢尾部）放大**：每 context 每次唤醒 resume 一次 | 中 / 中 | P13.4 的 DoD 里有 N×M resume 后条目数断言；若实测证伪，需在 M1 内单独排一个包处理 G-9 本体 |
@@ -890,7 +890,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 | 1 | `atlas-resident-status.md`：「协议 **10** 种消息类型」（§0 第 5 行与 §3 各一次） | **11 种**：task.request / ack / task.result / ping / pong / wake / error / resource.{request,offer,grant,release}。`isReplyType` 为真的 7 个，为假的 4 个 | `packages/protocol/src/message.ts:13-39` |
 | 2 | 任务书：「常驻等于永久 yolo」 | **不成立**。常驻是 `permissionMode: 'dontAsk'` = **不提示、未预批准即拒绝**，且该转换刻意放在权限链末端以免被提前 return 旁路；`requestPermission` 又硬编码回 `cancelled`。真实风险面是**预批准白名单没有天花板 + 跨节点 prompt injection（T-7）**，不是「什么都放行」。这改变了 hermes E2 的落法：需要的不是「yolo 的刹车」，而是**求值在 allow 规则之前的 hardline 表** | `packages/resident/src/acp-client.ts:47-51,101`；`src/utils/permissions/permissions.ts:540-552`；`src/entrypoints/sdk/coreSchemas.ts:354` |
 | 3 | `hermes-study.md` §6.A：把 scale-to-zero 的三帧握手 / wake poke 呈现为已落地的行为 | 契约文本**逐字把 §3.2/§3.3 标为 PRIMITIVE**，并把「决定睡」「真挂起机器」「NAS 健康模型」写进 *NOT in scope*；§3.4 是一份**给未来行为层的义务清单**。`gateway/scale_to_zero.py` 确实存在（9.7 KB），但它是**消费**这组原语的另一层。抄的时候必须原语/行为两层分开抄，否则会把行为层的假设当成契约 | `hermes-agent/docs/relay-connector-contract.md` §3.2/§3.3/§3.4 |
-| 4 | 任务书：「建议编号 P12.x」 | **P12.1~P12.4 已被占用**（`key-distribution.md` 的 mTLS 落地四包）。本设计改用 P13.x | `docs/dev/key-distribution.md:536-539` |
+| 4 | 任务书：「建议编号 P12.x」 | **P12.1~P12.4 已被占用**（`key-distribution.md` 的 mTLS 落地四包）。本设计改用 P13.x | `docs/dev/key-distribution.md:717-720` |
 
 **另有三处不是「不符」但输入报告没说、而设计强依赖的事实**（本轮核对新得）：
 
@@ -913,6 +913,6 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 | hermes relay 契约的 PRIMITIVE 边界与 `supported_ops` | 本轮直接读 `docs/relay-connector-contract.md` §2/§3.2/§3.3/§3.4 |
 | hermes 可靠性五件套文件存在性 | 本轮直接 `ls` + 读 `estop.py` 文件头 |
 | roadmap / charter / retro 的条目格式与编号约定 | 本轮直接读 roadmap `:281-400,760-876`、charter `:129-230,425-430`、retro `:399-417` |
-| `P12.x` 占用 | 本轮直接读 `key-distribution.md:532-543` |
+| `P12.x` 占用 | 本轮直接读 `key-distribution.md:717-720` |
 | hermes §2/§3/§4/§5 的其余细节 | **未复核**，沿用 `hermes-study.md` 的行号与结论 |
 | atlas `packages/activator`、`@qianmo/audit`、`@qianmo/console` 的内部细节 | **仅读了 index 与关键片段**，实施包开工时需各自复核 |

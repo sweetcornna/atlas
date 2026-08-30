@@ -137,8 +137,17 @@ this repository.
           done
 
     **这 180 个文件分发时按什么许可，在这里说清，不要靠两条 bullet 相减去推。**
-    文件头——以及"带不带头"这个标记本身——标的是**来源层**，即哪些行来自上游；
-    它**不是**"这个文件按 MIT 授出"的意思。一个来自基座、其后被阡陌改动过的文件，
+    文件头——以及"带不带头"这个标记本身——标的是**来源层**：它回答的是「这个文件
+    是不是随基座导入进来的」，**不回答**「文件里哪些行来自上游」，更**不是**"这个
+    文件按 MIT 授出"的意思。**文件层的来源分类答不了逐行归属**——后者只能查逐行
+    历史（`git diff base-snapshot/v2.46.0..HEAD -- <文件>`）。根目录的 `LICENSE`
+    就是这个区分的极端例子：那条路径**存在于快照**（`git cat-file -e
+    base-snapshot/v2.46.0:LICENSE` 成功），按判据属基座来源；而它今天的内容是
+    29 行 MIT 正文被整体换成 661 行 AGPL 正文（`git diff --numstat
+    base-snapshot/v2.46.0..HEAD -- LICENSE` 报出 `661` 与 `29` 两列，这两个数
+    分别等于两个版本各自的全部行数——`wc -l LICENSE` 与 `git show
+    base-snapshot/v2.46.0:LICENSE | wc -l` 可核——所以一行上下文都没有），
+    **文件里没有任何一行来自上游**。一个来自基座、其后被阡陌改动过的文件，
     分发出去的是**组合作品**：其中上游那部分继续适用 MIT（这正是 `LICENSE.base`
     逐字保留的原因，MIT 的保留义务由它履行），阡陌加进去的部分是 AGPL 作品，
     **因此这些文件整体只能按 AGPL-3.0-or-later 的条款分发**。MIT 宽松、可被并入
@@ -155,8 +164,8 @@ this repository.
     文件顶端插三行只在**上游也改到该文件头部时**才冲突，**不是每次同步都 180
     处**，但最坏情况下可以多到 180 处。那些文件里哪些行是阡陌写的，由 git 历史
     记录——命令就是下方"二、基座溯源"给出的工作面命令。根目录的 `LICENSE` 本身
-    就在这 180 个里：我们把 MIT 正文换成了 AGPL 正文（实测 690 行改动：新增
-    661 行、删除 29 行），而它作为一条路径仍然是基座来源的文件。
+    就在这 180 个里，也就是本条开头用过的那个极端例子：路径来自基座，内容一行
+    不剩。
 
     详见下方"二、基座溯源"。
 
@@ -172,10 +181,16 @@ this repository.
     并与该源码一同分发，因此随源码适用同一许可。对应的 Corresponding Source
     **不止 `native/` 一处**——AGPL-3.0 §1（与 GPL-3.0 §1 同文）把"控制编译与安装
     的脚本"也算在内，因此它至少包括：本仓库里的
-    `packages/audio-capture-napi/native/`（crate 源码与 `Cargo.lock`）、
-    `scripts/build-audio-capture.sh`，以及
-    `.github/workflows/build-audio-capture-windows.yml`。后两样不在 `native/`
-    目录下，本文件第五节也把它们列为溯源要素。
+    `packages/audio-capture-napi/native/`（crate 源码与 `Cargo.lock`；同目录下的
+    `build.rs`、`rust-toolchain.toml`、`.cargo/config.toml` 同属"控制编译"的材料
+    ——后两者分别钉定工具链版本与 `+crt-static` 之类的链接参数——但它们都在
+    `native/` 目录内，随该目录一并覆盖，不必单列）、
+    `scripts/build-audio-capture.sh`、它读取的
+    `scripts/audio-capture-cross.toml`（Linux 交叉构建时喂给 `cross` 的配置，
+    `grep -n CROSS_CONFIG_FILE scripts/build-audio-capture.sh` 可见构建脚本直接
+    引用它），以及 `.github/workflows/build-audio-capture-windows.yml`。**这三样
+    都不在 `native/` 目录下**；其中构建脚本与工作流，本文件第五节也把它们列为
+    溯源要素，那份 `cross` 配置第五节未单列。
 
     **一处已知缺口，如实写明**：这六个 `.node` 静态链接了 `Cargo.lock` 记录的第三
     方 Rust crate（该文件共 122 个 package 条目，含仅构建期用到的），而本仓库的
@@ -685,17 +700,30 @@ licenses, and the boundary is the provenance boundary itself:
     **What license those 180 files are distributed under is stated here, not
     left to be worked out by subtracting one bullet from the other.** The file
     header -- and the presence or absence of one -- marks the **provenance
-    layer**, that is, which lines came from upstream; it does **not** mean
-    "this file is granted under MIT". A file that came from the base project
-    and was afterwards modified by Qianmo is distributed as a **combined
-    work**: the upstream portion remains under MIT (which is precisely why
-    `LICENSE.base` is kept verbatim -- that is how the MIT retention obligation
-    is discharged), while the portion Qianmo added is an AGPL work, **so the
-    file as a whole may only be distributed under the terms of
-    AGPL-3.0-or-later**. MIT is permissive and may be incorporated into an AGPL
-    work, so there is no conflict of direction; but **"layered by provenance"
-    is in no way "may be taken under MIT"** -- taking those 180 files, and the
-    Qianmo changes inside them, is subject to the AGPL.
+    layer**: it answers "was this file imported along with the base project",
+    **not** "which lines inside it came from upstream", and it certainly does
+    **not** mean "this file is granted under MIT". **A file-level provenance
+    classification cannot answer a line-level attribution question** -- for
+    that, read the line history (`git diff base-snapshot/v2.46.0..HEAD --
+    <file>`). The root `LICENSE` is the extreme case that makes the
+    distinction concrete: the path is present in the snapshot (`git cat-file
+    -e base-snapshot/v2.46.0:LICENSE` succeeds), so by the test it is of base
+    provenance; yet its content today is 29 lines of MIT text wholly replaced
+    by 661 lines of AGPL text (`git diff --numstat
+    base-snapshot/v2.46.0..HEAD -- LICENSE` reports the two columns `661` and
+    `29`, which are exactly the whole line counts of the two versions -- `wc -l
+    LICENSE` and `git show base-snapshot/v2.46.0:LICENSE | wc -l` -- so not one
+    line is context), and **not a single line in the file came from
+    upstream**. A file that came from the base project and was afterwards
+    modified by Qianmo is distributed as a **combined work**: the upstream
+    portion remains under MIT (which is precisely why `LICENSE.base` is kept
+    verbatim -- that is how the MIT retention obligation is discharged), while
+    the portion Qianmo added is an AGPL work, **so the file as a whole may
+    only be distributed under the terms of AGPL-3.0-or-later**. MIT is
+    permissive and may be incorporated into an AGPL work, so there is no
+    conflict of direction; but **"layered by provenance" is in no way "may be
+    taken under MIT"** -- taking those 180 files, and the Qianmo changes
+    inside them, is subject to the AGPL.
 
     There are three reasons for not adding headers to them. First, the header
     marks **which layer a file came from**, not who wrote which line: a file
@@ -715,9 +743,9 @@ licenses, and the boundary is the provenance boundary itself:
     case.
     Which lines inside those files are Qianmo's is recorded by git history --
     the command is the work-surface command given in section 2 below. The root
-    `LICENSE` is itself one of the 180: its MIT text was replaced with the
-    AGPL text (690 lines changed: 661 added, 29 removed), yet as a path it
-    remains a file of base provenance.
+    `LICENSE` is itself one of the 180 -- the extreme case used at the start of
+    this bullet: base provenance by path, and not one line of upstream content
+    left inside it.
 
     See section 2 below.
 
@@ -739,10 +767,18 @@ licenses, and the boundary is the provenance boundary itself:
     section 1 (worded as GPL-3.0 section 1 is) counts "scripts to control those
     activities" as part of it -- so it includes at least
     `packages/audio-capture-napi/native/` (the crate source and its
-    `Cargo.lock`), `scripts/build-audio-capture.sh`, and
-    `.github/workflows/build-audio-capture-windows.yml`. The latter two sit
-    outside `native/`, and section 5 of this file lists them as provenance
-    elements in their own right.
+    `Cargo.lock`; the `build.rs`, `rust-toolchain.toml` and `.cargo/config.toml`
+    beside them are build-controlling material as well -- the latter two pin the
+    toolchain version and linker flags such as `+crt-static` -- but all of them
+    sit inside `native/` and are covered along with that directory, so they are
+    not listed separately), `scripts/build-audio-capture.sh`, the
+    `scripts/audio-capture-cross.toml` that script reads (the `cross`
+    configuration used for the Linux cross builds; `grep -n CROSS_CONFIG_FILE
+    scripts/build-audio-capture.sh` shows the build script referencing it
+    directly), and `.github/workflows/build-audio-capture-windows.yml`. **Those
+    three sit outside `native/`**; section 5 of this file lists the build script
+    and the workflow as provenance elements in their own right, but not that
+    `cross` configuration.
 
     **One known gap, stated plainly**: those six `.node` files statically link
     the third-party Rust crates recorded in `Cargo.lock` (122 package entries

@@ -226,6 +226,23 @@
   这四份自己也补上了文件头，于是两种算法都数得到它们。**这个差值两头都会动**（新文档引用这行字会让它变大、
   被引用的文档补头会让它变小），现跑现算：
   `comm -13 <(git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" | awk -F: '$2<=5' | cut -d: -f1 | sort -u) <(git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" | sort -u)`
+  **另一条勘误（2026-08-30 追记）**：上面那句「**其余不带 SPDX 头的就是基座那一层**」是**已被证伪的反向推断**，
+  照本文体例作签署当日的理由记述原样保留，**但它不是现行口径**——现行口径见根 `NOTICE` 一/1「文件头只在一个方向上
+  作数」一段。正向的「带头 ⇒ 属于 AGPL 层」仍然成立（对着 `base-snapshot/v2.46.0` 全量核过、零反例）；不成立的是
+  反过来推。反例是**不在 `base-snapshot/v2.46.0` 那棵树里、又不带文件头**的那批文件：在本分支提交 `39e4f042` 上
+  实测共 **87** 个，其中 **86 个是这条推断的反例**——它们既不在快照树里，内容也不与快照里的任何文件逐字节相同
+  （同一提交上逐个数出来的构成：83 个按文件格式成类——48 个 `.json`、27 个 `.jpg`、3 个 `.png`、2 个 `.pdf`、
+  2 个 `.docx`，加 `native/Cargo.lock`，它们要么没有注释语法、要么是生成件与工具配置；余下 4 个是有意不加头的
+  `BASE.md`、`NOTICE`、`native/.gitignore` 与 `LICENSE.base`。**86 个反例 = 那 83 个 + 前三个有意不加头的**）。
+  **剩下那一个 `LICENSE.base` 不是反例**：它无头，内容又逐字是上游 MIT 正文，推断在它身上恰好蒙对了——
+  但那是巧合而非判据生效，因为这两条判据看的都是**路径**、不是内容；它也是这 87 个里唯一与快照中某个文件
+  逐字节相同的一个。个数会随工作推进而变，现跑现算
+  （`-c core.quotePath=false` 不能省，否则非 ASCII 文件名会被静默跳过而少算）：
+  `comm -23 <(git -c core.quotePath=false ls-files | sort) <(git -c core.quotePath=false ls-tree -r --name-only base-snapshot/v2.46.0 | sort) | while IFS= read -r f; do head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' || printf '%s\n' "$f"; done | wc -l`
+  **还有一层更细的不成立，一并记在这里**：被阡陌改造过的那批基座文件（同一提交上实测 180 个）**确实**属于基座
+  来源那一层，但文件里的阡陌改动并不因此变成 MIT——**按来源分层不等于按行分许可**，而「来源层」这个标记本身也
+  只回答「这个文件是不是随基座导入进来的」，回答不了「文件里哪些行来自上游」（根 `LICENSE` 就是极端例子：路径
+  在快照里，内容却一行不剩）。
 - **落地核对（2026-08-29 实读）**：
   - `LICENSE` = 34,523 B / 661 行，sha256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`，
     与 `https://www.gnu.org/licenses/agpl-3.0.txt` 逐字节相同；**正文之前不加任何前言**——
