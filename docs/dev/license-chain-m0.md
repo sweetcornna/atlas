@@ -26,6 +26,17 @@
 > / `x64-linux` 四项已用该源码重建、真加载验证并替换了 `vendor/` 里的产物**，仅 `arm64-win32` /
 > `x64-win32` 两个 Windows triple 仍是原厂二进制、许可仍待定。**D-9 由"仍待人"转为"部分处置"**，不是
 > "已处置"——六个 triple 还没有全部换完。逐条状态见 D-9；`NOTICE` 一/1 与五/5 同批改写。
+>
+> **2026-08-30 更新（D-9 已收口）**：上一段是当日较早时点的记录，**保留不改**。同日晚些时候，剩余的
+> `x64-win32` / `arm64-win32` 两个 triple 也已用同一份仓库内源码构建并装入 `vendor/`——构建走新增的
+> 手动触发工作流 `.github/workflows/build-audio-capture-windows.yml`（仅 `workflow_dispatch`，
+> `windows-latest`，两个 job）。**六个 triple 至此全部出自本仓库自有的 AGPL-3.0-or-later 源码，
+> `vendor/` 里不再有来源不明、许可未定的二进制，D-9 由"部分处置"转为 ✅ 已处置。**
+> **但有一处验证缺口必须记明**：`arm64-win32` 从未在任何机器上被加载或执行过（`windows-latest` runner
+> 是 x86_64，结构上加载不了 aarch64 的 DLL，工作流对此打印显式跳过理由而非假装通过），它的证据只有
+> 构建成功、`clippy -- -D warnings` 干净与结构性核对，**待在真实 Windows on ARM 机器上补一次加载验证**。
+> **那是验证缺口，不是许可缺口**——该产物与其余五个同出一份源码。逐条见 D-9；`NOTICE` 一/1 与五/5、
+> D-4 升级注、T-5.3、U-4 同批改写。
 
 ---
 
@@ -172,10 +183,12 @@
 > **2026-08-29 升级（转 AGPL 之后）**：本条从"待人项"升级为**必须收口项**，理由与两条收口路径见新增的
 > **D-9**。一句话：MIT 下"许可待确认"可以挂着，AGPL 下挂不住——copyleft 要求随分发提供 Corresponding Source。
 >
-> **2026-08-30 更新**：D-9 已转为**部分处置**——源码已入库并标注 AGPL，六个 triple 中 `arm64-darwin` /
-> `x64-darwin` / `arm64-linux` / `x64-linux` 四项均已完成替换并真加载验证，仅 `arm64-win32` /
-> `x64-win32` 两个 Windows triple 仍是本条描述的原厂二进制、许可仍待定。现状与逐 triple 进度见 D-9，
-> 本条不再重复。
+> **2026-08-30 更新（分两步，当日完成）**：先是源码入库并标注 AGPL，六个 triple 中 `arm64-darwin` /
+> `x64-darwin` / `arm64-linux` / `x64-linux` 四项完成替换并真加载验证（D-9 一度判为"部分处置"）；
+> 同日 `x64-win32` / `arm64-win32` 也由手动触发的 GitHub Actions 工作流用同一份源码构建并装入，
+> **六个 triple 全部出自本仓库自有源码，本条描述的"原厂二进制、许可待定"已不复存在**，D-9 转
+> ✅ 已处置。**唯一尚存的是一项验证待办而非许可待办**：`arm64-win32` 没有运行时证据（构建它的 runner
+> 是 x86_64），欠一次真实 Windows on ARM 机器上的加载验证。现状与逐 triple 证据等级见 D-9，本条不再重复。
 
 #### D-5 ✅ 已处置 —— `LICENSE` 只有基座的版权行，没有阡陌的（原观察项）
 
@@ -190,9 +203,11 @@
   一份 MIT 正文加两行版权，读者仍然读不出哪些文件是谁的。双许可 + SPDX 文件头把这件事变成**机器可判**的：
   `git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" | awk -F: '$2<=5' | cut -d: -f1 | sort -u`
   出来的 564 个文件就是阡陌那一层（**限定在文件头**——不限定的话会多出 8 个「正文里引用了这行字」的文档，
-  数目对不上会让这条判据看起来是错的），
-  其余不带 SPDX 头的就是基座那一层。**这同时也是软著材料要的那条边界**（章程 §5.5 的成果边界，与
-  `base-snapshot/v2.46.0` 的 git 举证互为印证）。
+  数目对不上会让这条判据看起来是错的），其余不带 SPDX 头的就是基座那一层。**这同时也是软著材料要的那条
+  边界**（章程 §5.5 的成果边界，与 `base-snapshot/v2.46.0` 的 git 举证互为印证）。
+  **其中 564 是 2026-08-29 当天的实测值，属本条处置的记录、不是"现在是多少"**——每新增一个带该文件头的
+  文件它就会变，2026-08-30 实测已是 **580**（"多出 8 个"这个差值仍成立）；判据本身不变，数要现跑现算，
+  对外陈述以根 `NOTICE` 一/1 为准（那里已按 2026-08-30 锚定）。
 - **落地核对（2026-08-29 实读）**：
   - `LICENSE` = 34,523 B / 661 行，sha256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`，
     与 `https://www.gnu.org/licenses/agpl-3.0.txt` 逐字节相同；**正文之前不加任何前言**——
@@ -248,9 +263,63 @@
   基座改动优先发上游、安全问题不走 PR/issue）。
 - **未动**：`.github/pull_request_template.md`（已是阡陌版）、`.github/workflows/ci.yml`。
 
-#### D-9 🟡 部分处置（**新增于 2026-08-29，2026-08-30 起从"仍待人"部分处置**）—— `vendor/audio-capture/` 在 copyleft 下不能再"待确认"
+#### D-9 ✅ 已处置（**新增于 2026-08-29 → 2026-08-30 部分处置 → 2026-08-30 已处置**）—— `vendor/audio-capture/` 在 copyleft 下不能再"待确认"
 
-> **处置（2026-08-30，工程交付，源码入库）**：本条卡住的根本原因——"源码位置尚未提供"——已经解决。
+> **处置②（2026-08-30 同日，工程交付，Windows 两个 triple 收口，本条关闭）**：剩余的
+> `x64-win32` / `arm64-win32` 已用同一份仓库内源码构建并装入 `vendor/`。**六个 triple 至此全部出自本仓库
+> 自有的 AGPL-3.0-or-later 源码，`vendor/` 里不再有来源不明、许可未定的二进制。**
+>
+> - **构建路径**：新增 `.github/workflows/build-audio-capture-windows.yml`，**仅 `workflow_dispatch`
+>   手动触发**（不进 push / pull_request 阻塞门禁——那些 runner 不带 Rust，原生模块缺失时应用本就优雅
+>   降级），`windows-latest` runner，矩阵两个 job 对应 `x86_64-pc-windows-msvc` 与
+>   `aarch64-pc-windows-msvc`。跑了两次：`33291590858`（main 上，两 job 均成功，但产物有依赖面退化，
+>   **未装进仓库**）与 `33292271322`（本分支上，带静态 CRT 修复，**这批才是装进 `vendor/` 的产物**）。
+> - **第一次构建暴露的退化与修法**：第一版自建产物比原厂多出四项依赖——三个 `api-ms-win-crt-*` 转发器
+>   （UCRT，Windows 10+ 自带，无所谓）与 **`vcruntime140.dll`**（有所谓：来自 Visual C++ 可再发行组件包，
+>   既不随 Windows 出厂、也不随 Node.js 安装程序分发）。目标机缺它时 `require()` 抛错，而
+>   `packages/audio-capture-napi/src/index.ts` 的 `loadModule()` 会吞掉 `require` 错误静默降级——**故障
+>   表现是语音模式无声消失、不留任何报错线索**。原厂产物本就是静态链接 CRT 构建的
+>   （`bcryptprimitives` + `ntdll` + `dbghelp` 正是 Rust 静态 CRT 二进制的典型形态），所以这是本次重写
+>   引入的退化。修法是新增 `packages/audio-capture-napi/native/.cargo/config.toml`，**按 target** 分别打开
+>   `-C target-feature=+crt-static`，只作用于两个 `windows-msvc` triple；**不能写成 `[build] rustflags`**
+>   ——那会波及已经在目标架构上真加载验证过的 macOS / Linux 产物。工作流无需改动（无 `env:` 块、无
+>   `RUSTFLAGS` / `CARGO_HOME` / `--config`，`working-directory` 就是 crate 目录，cargo 自会向上找到这份
+>   配置）。判据与做法见 `docs/dev/audio-capture-native.md` §3.2。
+> - **`x64-win32` —— 已替换，且在目标平台上真加载验证过**：工作流在 windows-latest（x86_64）runner 上用
+>   Node 真 `require()` 加载刚构建出的 `.node`，逐个断言八个导出均为函数，并调用
+>   `microphoneAuthorizationStatus()` 返回 **3**（落在 0..=3 的合法区间内）。日志原文：
+>   `x64 原生模块加载验证通过；八个导出均为函数，授权状态为 3。`
+> - **`arm64-win32` —— 已替换，但从未在任何机器上被加载或执行过**：`windows-latest` runner 是 x86_64，
+>   结构上加载不了 aarch64 的 DLL。**工作流对此不假装通过**，而是打印一行显式跳过理由：
+>   `跳过 arm64 原生模块加载验证：windows-latest 运行器是 x86_64，无法加载或执行 aarch64-pc-windows-msvc 构建。`
+>   该 triple 取得的证据只有 `cargo build --release` 成功、`cargo clippy --release -- -D warnings` 干净，
+>   加上下面的结构性核对。**这是本轮最重要的诚实点：它与其余五个 triple 的证据等级不同，不得用"已验证"
+>   一类措辞覆盖它。** 待在真实 Windows on ARM 机器上补一次加载验证——**那是验证缺口，不是许可缺口**：
+>   许可上这两个产物已出自本仓库的 AGPL 源码，与其余四个同源。
+> - **结构性核对（在 macOS 上对下载来的第二批产物逐项做的）**：PE 机器类型与 triple 相符
+>   （`x64-win32` = `0x8664` / IMAGE_FILE_MACHINE_AMD64，`arm64-win32` = `0xaa64` /
+>   IMAGE_FILE_MACHINE_ARM64，两者 characteristics 都带 DLL 位 `0x2022`）；`napi_register_module_v1`
+>   存在；八个导出函数名字符串两个产物都齐全。
+> - **依赖面等价性证据，且这条比 Linux 那次更强**：提取被引用的 DLL 名
+>   （`strings -a <file> | grep -oiE '[A-Za-z0-9_.-]+\.dll' | tr 'A-Z' 'a-z' | sort -u`）逐项对照，
+>   原厂与自建产物**同为 8 项、`diff` 无输出**：`advapi32.dll` / `api-ms-win-core-synch-l1-2-0.dll` /
+>   `bcryptprimitives.dll` / `dbghelp.dll` / `kernel32.dll` / `ntdll.dll` / `ole32.dll` / `oleaut32.dll`；
+>   `vcruntime140.dll` 已消除。**Linux 那次自建产物比原厂多出 `libgcc_s.so.1` / `libm.so.6` 两个，
+>   Windows 这两个是零差异。**（注：提取出的列表里还会有 crate 自身的模块名——原厂是
+>   `audio_capture_napi.dll`、自建是 `audio_capture.dll`，那是构建产物重命名前的原名，不是外部依赖，
+>   已从对照中排除。）
+> - **装进仓库的产物指纹**：`vendor/audio-capture/x64-win32/audio-capture.node` sha256
+>   `d0d79b7aa288d9f34d1dca6ac6c0f87d01dc18e72743bb162842520ae6920120`（809984 字节）；
+>   `vendor/audio-capture/arm64-win32/audio-capture.node` sha256
+>   `d619e905d5f3249c828bdea1093e82a2d34a6fc8db8a20731de514f245bfb230`（752640 字节）。被替换掉的原产物
+>   sha256 分别为 `2a8267f4a1fc66202006269341597bcc1923a2975f95f46e8d8c3080e2e2d972`（x64）与
+>   `983860892f4b2b179c16be3f8b2f7ec07249abbdbea394ddaf178e61a1bd290c`（arm64），仍可由
+>   `git show 5459375f:vendor/audio-capture/<平台>/audio-capture.node` 取回。
+> - **落点**：`NOTICE` 一/1 与五/5（中英两侧同批）、本文（文首状态块、本条、D-4 升级注、T-5.3、U-4）、
+>   `docs/dev/audio-capture-native.md` §3.2、`packages/audio-capture-napi/native/.cargo/config.toml`。
+>   **`BASE.md` 一字未动。**
+
+> **处置①（2026-08-30 当日较早，工程交付，源码入库；保留为处置历程，不再是现状描述）**：本条卡住的根本原因——"源码位置尚未提供"——已经解决。
 > `packages/audio-capture-napi/native/` 新增了一个 Rust + napi-rs 2.16 / cpal 0.15.3 crate，**从零重写**
 > （clean-room，未反编译原二进制），10 个源文件全部带 `Copyright 2026 Qianmo AgentNest Team` +
 > `SPDX-License-Identifier: AGPL-3.0-or-later` 两行头，落在本仓库的 AGPL 层内；实现了
@@ -258,7 +327,7 @@
 > `isRecording` / `startPlayback` / `writePlaybackData` / `stopPlayback` / `isPlaying` /
 > `microphoneAuthorizationStatus`）。下方"收口二选一"里，选的是**第①条**（补源码并标 AGPL），不是摘除。
 >
-> **六个 triple 逐条现状（如实列出，4/6 已完成，均为真加载验证，非结构性推断）**：
+> **六个 triple 逐条现状（截至处置①，4/6 已完成，均为真加载验证，非结构性推断；余下两个见处置②）**：
 >
 > - `arm64-darwin` —— **已替换**：从零构建成功，`clippy --all-targets -- -D warnings` 与 crate 自带单元
 >   测试均通过；**本机 Bun 真机验证**录音（16 kHz / 16-bit LE / mono，50 ms 分块，三轮一致，
@@ -271,8 +340,8 @@
 >   二进制并排加载对比，逐项一致，已可标 AGPL。
 > - `arm64-linux` —— **已替换**：通过 **Docker `linux/arm64` 原生容器**与原厂二进制并排加载对比，逐项
 >   一致，已可标 AGPL。
-> - `arm64-win32` / `x64-win32` —— 本机（macOS）无法构建，需要真实 MSVC 工具链，**仍是原厂二进制，许可
->   仍待定**，待 Windows 机器或 CI。
+> - `arm64-win32` / `x64-win32` —— 本机（macOS）无法构建，需要真实 MSVC 工具链，**当时仍是原厂二进制、
+>   许可仍待定**，待 Windows 机器或 CI。（**已于同日由 CI 收口，见上方处置②。**）
 >
 > **关于 `--allow-unverified-install`（避免被误读成"硬装未验证产物"）**：`scripts/build-audio-capture.sh`
 > 的自动校验闸门只能验证"本机能否原生 `require()` 加载"，`x64-darwin` / `arm64-linux` / `x64-linux` 三个
@@ -291,10 +360,10 @@
 > 装载层契约见 `docs/dev/audio-capture-native.md`（源码与 vendor 目录的对应关系、`--install` 校验闸门等，
 > 该文档已有完整记录，此处不复述）；`NOTICE` 一/1 与五/5 同批改写为反映这一进度。
 >
-> **为什么判"部分处置"而不是"已处置"**：六个 triple 里还有两个（`arm64-win32` / `x64-win32`）的 `vendor/`
-> 二进制仍是随基座快照带入的原厂产物，标注仍是"许可待定"——**没有把"四个已验证替换"和"六个二进制全部
-> 合规"混为一谈**。D-9 保持打开，直到剩余两个 Windows triple 也在 Windows 机器或 CI 上构建并替换为自建
-> 产物、标注 AGPL。**下方原文保留为处置依据，不再是现状描述。**
+> **当时为什么判"部分处置"而不是"已处置"（保留为当日较早时点的判断依据）**：六个 triple 里还有两个
+> （`arm64-win32` / `x64-win32`）的 `vendor/` 二进制仍是随基座快照带入的原厂产物，标注仍是"许可待定"
+> ——**没有把"四个已验证替换"和"六个二进制全部合规"混为一谈**。**这条判断已由上方的处置②于同日收口。**
+> **下方原文保留为处置依据，不再是现状描述。**
 
 - **怎么来的**：D-4 把这六个 `.node` 的许可归属列为待人项时，仓库是 MIT——MIT 不要求随分发提供源码，
   所以"许可待确认"是一个可以挂着的状态。**转 AGPL 之后它不再是。**AGPL 要求分发时提供
@@ -396,7 +465,7 @@
 
 ### 5.4 议题 T-4 许可文件与声明的形式要求
 
-> 对应本文 **D-5**（已按另一条路处置）与 **D-9**（新增，未收口；**原编号 D-8，2026-08-30 因与 `SECURITY.md` 那条 D-8 重号而重编为 D-9**）。
+> 对应本文 **D-5**（已按另一条路处置）与 **D-9**（新增于 2026-08-29，**2026-08-30 已处置**；**原编号 D-8，2026-08-30 因与 `SECURITY.md` 那条 D-8 重号而重编为 D-9**）。
 
 - **T-4.1**（**原题已作废，2026-08-29**）原问：沿用基座 MIT 时，`LICENSE` 是否要增列本团队版权行。
   该问题已随章程 v2.16 转 AGPL 而消失——`LICENSE` 现在是阡陌自己的许可文件。**替换为下面两问：**
@@ -434,6 +503,15 @@
   已验证）；**对未替换的两个 Windows triple，问题①②依旧成立**——仍在分发一份源码不在手上的二进制，
   仍需科技处判断在剩余替换完成前是否要先行"摘除"这两个 triple，抑或按当前进度继续补齐即可。
 
+  **2026-08-30 再更新（D-9 已处置，6/6 完成）**：同日晚些时候，`x64-win32` / `arm64-win32` 两个 triple
+  也已用同一份源码构建并替换——构建走新增的手动触发工作流
+  `.github/workflows/build-audio-capture-windows.yml`（仅 `workflow_dispatch`，`windows-latest`，
+  两个 job 分别对应 `x86_64-pc-windows-msvc` 与 `aarch64-pc-windows-msvc`）。**问题①②对全部六个 triple
+  都不再成立**：仓库不再分发任何源码不在手上的二进制，"摘除"那条路也不再需要考虑。**尚存的是一项
+  验证待办，不是许可待办**：`arm64-win32` 从未被加载或执行过（runner 是 x86_64，加载不了 aarch64 的
+  DLL），欠一次真实 Windows on ARM 机器上的加载验证。若科技处对"未经运行时验证但源码在手"的产物另有
+  口径，请一并给出。
+
 ### 5.6 咨询结论回填（**咨询后填，空着即视为 P8.4 未闭环**）
 
 | 议题 | 科技处口径（可复述） | 是否触发范围评审 | 记录人 / 日期 |
@@ -453,7 +531,7 @@
 | U-1 | `NOTICE` 中英两处举证命令改为 `3380c88..HEAD`（D-1）；`README.md` 同批修正 | — | **P8.4 DoD「`NOTICE` 与实际状态一致」** | ✅ **已处置**（2026-08-15，负责人授权）。**剩余**：改后文本仍需负责人 + 安全 owner 双签确认（章程 §5.8 第 4 条） |
 | U-2 | `BASE.md` 补记上游公开仓库 URL；补记 P7.4 演练（D-2） | — | P8.4 证据包 E-9；P7.4 交付物 | ✅ **已处置**（提交 `0c2f3b17`，负责人授权的记录事件） |
 | U-3 | 取齐 E-8 归属关系材料 | 负责人本人 | 科技处咨询 T-2；证据包最大缺口 | ⏸ **仍待人**（工程侧取不到，见 §2「E-8 说明」） |
-| U-4 | `vendor/audio-capture/` **源码位置与许可**说明（D-4） | 负责人（以基座作者身份） | 证据包完整性；咨询 T-5.2 | ⏸ **仍待人，范围已收窄**：`NOTICE` 侧已如实披露（含上游同样无源码/无 LICENSE 的核查结果与二进制符号读出的 crate 清单）；缺的只剩「模块自身源码在哪、以什么许可发布」<br>**2026-08-30 更新**：模块自身源码已提供并入库（`packages/audio-capture-napi/native/`，AGPL-3.0-or-later），U-4 问的那两问就此有答。**范围收窄为工程收尾而非负责人待办**：六个 triple 中 **`arm64-darwin` / `x64-darwin` / `arm64-linux` / `x64-linux` 四项已用该源码重建、真加载验证并替换 `vendor/` 产物**，仅 `arm64-win32` / `x64-win32` 两个 Windows triple 仍待构建替换（需真实 MSVC 工具链，待 Windows 机器或 CI），见 D-9 |
+| U-4 | `vendor/audio-capture/` **源码位置与许可**说明（D-4） | 负责人（以基座作者身份） | 证据包完整性；咨询 T-5.2 | ⏸ **仍待人，范围已收窄**：`NOTICE` 侧已如实披露（含上游同样无源码/无 LICENSE 的核查结果与二进制符号读出的 crate 清单）；缺的只剩「模块自身源码在哪、以什么许可发布」<br>**2026-08-30 更新**：模块自身源码已提供并入库（`packages/audio-capture-napi/native/`，AGPL-3.0-or-later），U-4 问的那两问就此有答。**范围收窄为工程收尾而非负责人待办**：六个 triple 中 **`arm64-darwin` / `x64-darwin` / `arm64-linux` / `x64-linux` 四项已用该源码重建、真加载验证并替换 `vendor/` 产物**，仅 `arm64-win32` / `x64-win32` 两个 Windows triple 仍待构建替换（需真实 MSVC 工具链，待 Windows 机器或 CI），见 D-9<br>**2026-08-30 再更新（D-9 已处置）**：`x64-win32` / `arm64-win32` 两个 triple 已由手动触发的 GitHub Actions 工作流 `.github/workflows/build-audio-capture-windows.yml` 用同一份源码构建并装入 `vendor/`，**六个 triple 全部出自本仓库自有源码，仓库内不再有许可未定的二进制**，U-4 的许可面就此没有待办。**剩下的是一项验证待办而非许可待办**：`arm64-win32` 从未在任何机器上被加载或执行过（构建它的 runner 是 x86_64），欠一次真实 Windows on ARM 机器上的加载验证——保持 ⏸ 只是因为这件事仍需一台我方没有的机器 |
 | U-5 | 上游 `LICENSE` / npm 页面 / tarball 元数据快照存证（E-2/E-3/E-4） | 安全 owner | 证据包 🟡 转 ✅ | ⏸ 仍待人 |
 | U-6 | 科技处咨询实施并回填 §5.6 | 安全 owner 主办 | **P8.4 DoD「科技处咨询已完成」** | ⏸ 仍待人 |
 | U-7 | 是否移除对 `@anthropic-ai/claude-agent-sdk` 的类型依赖（§4） | — | 无（优化项） | ✅ **已决**：保留 + 主动披露，理由与落地见 §4「决定」 |

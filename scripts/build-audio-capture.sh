@@ -6,7 +6,7 @@
 #
 # 背景：`vendor/audio-capture/` 随产物分发六个预编译原生模块，转 AGPL 之后
 # copyleft 要求随分发提供 Corresponding Source（见 docs/dev/license-chain-m0.md
-# D-8）。源码现在写在 packages/audio-capture-napi/native/（Rust crate，
+# D-9）。源码现在写在 packages/audio-capture-napi/native/（Rust crate，
 # package name = audio-capture，crate-type = cdylib），本脚本负责把它编译成
 # 六个平台各自的产物、并按需装进 vendor/ 对应目录。
 #
