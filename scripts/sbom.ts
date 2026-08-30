@@ -953,9 +953,25 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
  * AGPL-3.0-or-later` 两行，基座导入文件不带任何 SPDX 头」。**这句话只在一个
  * 方向上成立**：基座文件确实不会带阡陌版权头，所以「带头 ⇒ 阡陌自有」是安全
  * 的。**反过来不成立**——「没头」既可能是基座文件，也可能是漏加头的阡陌文件。
- * 本仓库当下就有 38 个阡陌自有文件没有头（docs/dev/ 下 23 个 .md、demo/ 下
- * 15 个，均已用 `git cat-file -e base-snapshot/v2.46.0:<path>` 确认不在基座
- * 快照里；另有单独 PR 在补这些头）。把「没头 ⇒ 基座 MIT」写进生成器，等于让
+ * 本仓库当下就有一批这样的文件，而且不止于文档：`src/constants/identity.ts`
+ * （CLAUDE.md §2.3 点名的身份 roster 唯一真源）就在其中。别在这里写死个数，
+ * 现跑现算（`base-snapshot/v2.46.0` 那棵树之外 = 阡陌自有，再挑出缺头的、
+ * 且形态上带得了注释头的；bash/zsh）：
+ *
+ *     comm -23 <(git -c core.quotePath=false ls-files | sort) \
+ *              <(git -c core.quotePath=false ls-tree -r --name-only \
+ *                  base-snapshot/v2.46.0 | sort) \
+ *     | grep -E '\.(ts|tsx|md|sh)$|(^|/)Makefile$' \
+ *     | while IFS= read -r f; do
+ *         head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+ *           || printf '%s\n' "$f"
+ *       done
+ *
+ * `-c core.quotePath=false` 不能省：默认 `git ls-files` 会把非 ASCII 文件名
+ * 输出成带双引号的八进制转义形式（本仓库 docs/ 下有中文名的图片），那种名字
+ * 喂给 `head` 读不到文件，会被静默跳过而少算。`grep -E` 那一档是因为 `.json` /
+ * `.png` / `.lock` 这些形态本来就带不了注释头，不属于「漏加」。
+ * 结论不随个数变：把「没头 ⇒ 基座 MIT」写进生成器，等于让
  * 它可复现地给未来任何一个漏加头的阡陌新包盖上「随 LICENSE.base（MIT）」——
  * 那正是本轮要修掉的失效模式（原先硬编码的「随仓库 MIT」），只是从写死结论
  * 变成了动态推导出同一句假话。
@@ -1660,7 +1676,7 @@ function buildMarkdown(
   out.push('### 7.2 基座既有 workspace 包')
   out.push('')
   out.push(
-    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的判据是 SPDX 文件头，基座文件不带头。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
+    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的权威判据是文件在不在基座快照 `base-snapshot/*` 里，不是文件头——**带头 ⇒ 属于 AGPL 层**成立，反向不成立（没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
   )
   out.push('')
   out.push('| 包 | 路径 | `license` | private |')

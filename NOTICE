@@ -16,11 +16,32 @@ this repository.
   * **阡陌自有代码 —— GNU AGPL-3.0-or-later**（根目录 `LICENSE`）。
     包括 `packages/` 下 `@qianmo/*` 命名空间的 workspace 包、对基座运行时的
     常驻化改造、`demo/` 下的演示与验收套件，以及阡陌团队撰写的文档
-    （`docs/dev/` 等）。判据是**文件头**：这一层的文件都带
+    （`docs/dev/` 等）。判据是**文件头**：带
     `SPDX-License-Identifier: AGPL-3.0-or-later` 与
-    `Copyright 2026 Qianmo AgentNest Team` 两行——截至 2026-08-30 共 580 个文件。
-    每新增一个带该文件头的文件这个数就会变，所以真正作数的是下面那条命令，
-    不是这个数字。
+    `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——截至
+    2026-08-30 共 580 个文件。每新增一个带该文件头的文件这个数就会变，
+    所以真正作数的是下面那条命令，不是这个数字。
+
+    **这条文件头判据目前尚未覆盖全部阡陌自有文件。**另有一批阡陌自有文件没有
+    带上这两行：其中一部分（`.json`、图片、`.lock` 等）形态上就带不了注释头，
+    其余是应补而未补的源文件与文档，正由单独一批提交补齐。现算的命令
+    （bash/zsh，不写死个数）：
+
+        # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件
+        comm -23 <(git -c core.quotePath=false ls-files | sort) \
+                 <(git -c core.quotePath=false ls-tree -r --name-only \
+                     base-snapshot/v2.46.0 | sort) \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              || printf '%s\n' "$f"
+          done
+
+    `-c core.quotePath=false` 不能省：默认输出会把非 ASCII 文件名写成带双引号
+    的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算。
+
+    在补齐之前，文件头只在一个方向上作数：**带头 ⇒ 属于 AGPL 层**成立；而下一
+    条给出的反向推断——**没有文件头 ⇒ 属于基座 MIT 层**——不成立。权威判据是该
+    文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
 
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
@@ -304,11 +325,39 @@ licenses, and the boundary is the provenance boundary itself:
     This covers the `@qianmo/*` workspace packages under `packages/`, the
     residency modifications to the base runtime, the demo and acceptance
     suites under `demo/`, and documentation written by the Qianmo AgentNest
-    Team (`docs/dev/` and others). The test is the **file header**: every file
-    in this layer carries both `SPDX-License-Identifier: AGPL-3.0-or-later`
-    and `Copyright 2026 Qianmo AgentNest Team` -- 580 files as of 2026-08-30.
-    The count grows whenever a file with that header is added, so the command
-    below, not this number, is what to rely on.
+    Team (`docs/dev/` and others). The test is the **file header**: a file
+    carrying both `SPDX-License-Identifier: AGPL-3.0-or-later` and
+    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 580 files
+    as of 2026-08-30. The count grows whenever a file with that header is
+    added, so the command below, not this number, is what to rely on.
+
+    **This file-header test does not yet cover every file of Qianmo's own
+    code.** A further set of Qianmo-owned files does not carry those two
+    lines: some of them (`.json`, images, `.lock` and the like) cannot carry a
+    comment header at all, and the rest are source files and documents whose
+    headers are still to be added; a separate set of commits is doing that.
+    To compute the list (bash/zsh; no number is hard-coded):
+
+        # files that are Qianmo's own -- i.e. absent from the base snapshot
+        # tree -- yet carry no file header
+        comm -23 <(git -c core.quotePath=false ls-files | sort) \
+                 <(git -c core.quotePath=false ls-tree -r --name-only \
+                     base-snapshot/v2.46.0 | sort) \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              || printf '%s\n' "$f"
+          done
+
+    `-c core.quotePath=false` cannot be omitted: by default non-ASCII file
+    names are printed double-quoted with octal escapes, and such a name does
+    not resolve to a file when handed to `head`, so it is silently skipped and
+    undercounted.
+
+    Until that work is complete the file header holds in one direction only:
+    **carries the header => belongs to the AGPL layer** holds; the reverse
+    inference stated in the next bullet -- **no file header, therefore the
+    base MIT layer** -- does not. The authoritative test is whether the file
+    exists in the `base-snapshot/*` snapshot; see section 2 below.
 
   * **Code imported from the base project -- MIT License** (`LICENSE.base`,
     the upstream text kept verbatim). Base files carry **no SPDX header**,

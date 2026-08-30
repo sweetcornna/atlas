@@ -155,7 +155,7 @@
 
 ### 7.2 基座既有 workspace 包
 
-基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的判据是 SPDX 文件头，基座文件不带头。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
+基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的权威判据是文件在不在基座快照 `base-snapshot/*` 里，不是文件头——**带头 ⇒ 属于 AGPL 层**成立，反向不成立（没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。
 
 | 包 | 路径 | `license` | private |
 |---|---|---|---|
