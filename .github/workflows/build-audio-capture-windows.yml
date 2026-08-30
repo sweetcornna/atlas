@@ -1,0 +1,100 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# 这里只允许手动触发：阻塞门禁的 runner 不提供 Rust，原生模块缺失时应用会优雅降级；
+# 该可选能力不能进入 push 或 pull_request 阻塞门禁。
+name: 手动构建 Windows 音频采集原生模块
+
+# 只配置 workflow_dispatch，避免 Rust 工具链进入仓库的阻塞门禁；不要添加其他触发器。
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-audio-capture-windows
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.vendor-directory }}（${{ matrix.target }}）
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            vendor-directory: x64-win32
+          - target: aarch64-pc-windows-msvc
+            vendor-directory: arm64-win32
+
+    defaults:
+      run:
+        # 在 crate 目录运行，使 rustup 自动读取其中固定的 1.85.0 工具链。
+        working-directory: packages/audio-capture-napi/native
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 按 crate 固定工具链添加目标
+        run: |
+          rustup show active-toolchain
+          rustup target add "${{ matrix.target }}"
+
+      - name: 构建 Windows 原生模块
+        run: cargo build --release --target "${{ matrix.target }}"
+
+      - name: 运行 Clippy 严格检查
+        run: cargo clippy --release --target "${{ matrix.target }}" -- -D warnings
+
+      - name: 重命名 Windows 原生模块
+        run: |
+          $dll = "target/${{ matrix.target }}/release/audio_capture.dll"
+          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
+            throw "未找到构建产物：$dll"
+          }
+          Rename-Item -LiteralPath $dll -NewName "audio-capture.node"
+
+      - name: 加载验证 x64 原生模块
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          $nodeScript = @'
+          const addon = require('./target/x86_64-pc-windows-msvc/release/audio-capture.node');
+          const exportNames = [
+            'startRecording',
+            'stopRecording',
+            'isRecording',
+            'startPlayback',
+            'writePlaybackData',
+            'stopPlayback',
+            'isPlaying',
+            'microphoneAuthorizationStatus',
+          ];
+          for (const name of exportNames) {
+            if (typeof addon[name] !== 'function') {
+              throw new Error('导出不是函数：' + name);
+            }
+          }
+          const status = addon.microphoneAuthorizationStatus();
+          if (!Number.isInteger(status) || status < 0 || status > 3) {
+            throw new Error('麦克风授权状态不是 0..=3 的整数：' + status);
+          }
+          console.log('x64 原生模块加载验证通过；八个导出均为函数，授权状态为 ' + status + '。');
+          '@
+          node -e $nodeScript
+          if ($LASTEXITCODE -ne 0) {
+            throw "x64 原生模块加载验证失败。"
+          }
+
+      - name: 跳过 arm64 加载验证
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          Write-Output "跳过 arm64 原生模块加载验证：windows-latest 运行器是 x86_64，无法加载或执行 aarch64-pc-windows-msvc 构建。"
+
+      - name: 上传 Windows 原生模块
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.vendor-directory }}
+          path: packages/audio-capture-napi/native/target/${{ matrix.target }}/release/audio-capture.node
+          if-no-files-found: error
