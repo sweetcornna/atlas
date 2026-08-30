@@ -19,13 +19,27 @@ this repository.
     （`docs/dev/` 等）。判据是**文件头**：带
     `SPDX-License-Identifier: AGPL-3.0-or-later` 与
     `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——截至
-    2026-08-30 共 580 个文件。每新增一个带该文件头的文件这个数就会变，
+    2026-08-30 共 646 个文件。每新增一个带该文件头的文件这个数就会变，
     所以真正作数的是下面那条命令，不是这个数字。
 
-    **这条文件头判据目前尚未覆盖全部阡陌自有文件。**另有一批阡陌自有文件没有
-    带上这两行：其中一部分（`.json`、图片、`.lock` 等）形态上就带不了注释头，
-    其余是应补而未补的源文件与文档，正由单独一批提交补齐。现算的命令
-    （bash/zsh，不写死个数）：
+    **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，阡陌自有却不带
+    这两行的文件共 87 个。其中 83 个形态上就带不了注释头：48 个 `.json`、
+    27 个 `.jpg`、3 个 `.png`、2 个 `.pdf`、2 个 `.docx`，以及
+    `packages/audio-capture-napi/native/Cargo.lock`。**余下 4 个带得了，却是有意
+    不加**，理由逐个不同：
+
+      - `BASE.md` —— 基座溯源的唯一真源。仓库规矩是只有「导入」与「上游同步」
+        两类事件才允许改它，功能性提交一律不得触碰；
+      - `LICENSE.base` —— 里面是上游 MIT 许可正文的逐字保留件，给它加一行
+        AGPL 声明会构成**虚假陈述**；
+      - `NOTICE` —— 本文件自身，是许可声明文件本体。下一条判据里
+        `awk -F: '$2<=5'` 那个前 5 行限定正为此而设：它让本文件正文中引用的
+        那行标识符不把自己算进计数；
+      - `packages/audio-capture-napi/native/.gitignore`。
+
+    本文此前写的「其余是应补而未补的源文件与文档，正由单独一批提交补齐」已经
+    过时——补齐工作于 2026-08-30 完成（66 个文件），上面那 87 个是补齐之后的
+    余量。个数会随工作推进而变，现算的命令（bash/zsh，不写死个数）：
 
         # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件
         comm -23 <(git -c core.quotePath=false ls-files | sort) \
@@ -39,25 +53,74 @@ this repository.
     `-c core.quotePath=false` 不能省：默认输出会把非 ASCII 文件名写成带双引号
     的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算。
 
-    在补齐之前，文件头只在一个方向上作数：**带头 ⇒ 属于 AGPL 层**成立；而下一
-    条给出的反向推断——**没有文件头 ⇒ 属于基座 MIT 层**——不成立。权威判据是该
-    文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
+    文件头只在一个方向上作数，而且两个方向的形状差得很远：
+
+      - **带头 ⇒ 属于 AGPL 层**——成立，且已对着权威判据（该文件在不在
+        `base-snapshot/v2.46.0` 那棵零改动快照里）全量核过一遍：646 个带头的
+        文件里**零反例**（2026-08-30 实测）。这半句因此不是"我们这么规定"，
+        而是实测如此，两条判据在这个方向上完全一致。它同样可证伪——将来谁把
+        一行头误贴到某个基座文件上就会出反例——正因如此，它作为**核对手段**
+        比作为断言更有用：下面这条命令就是"有没有人把 AGPL 头误贴到基座文件
+        上"的检查，输出为空才算过。
+
+            git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
+            | while IFS= read -r f; do
+                head -5 "$f" 2>/dev/null \
+                  | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+                  || continue
+                git cat-file -e "base-snapshot/v2.46.0:$f" 2>/dev/null \
+                  && printf '反例: %s\n' "$f"
+              done
+
+      - **没有文件头 ⇒ 属于基座 MIT 层**——**不成立**。理由不再是「还有一批
+        没补完」，而是上面那 87 个阡陌自有却无头的文件：它们逐个都是这条推断
+        的反例。另有一层更细的不成立：下一条要说的 180 个被阡陌改造过的基座
+        文件**确实**属于基座那一层，但文件里的阡陌改动并不因此变成 MIT——按
+        来源分层不等于按行分许可。
+
+    权威判据是该文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
 
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
 
-        # 属于 AGPL 那一层的文件——截至 2026-08-30 共 580 个（限定在文件头，
+        # 属于 AGPL 那一层的文件——截至 2026-08-30 共 646 个（限定在文件头，
         # 因此不会把本文件这类"正文里引用了这行字"的文档算进去）
         git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
           | awk -F: '$2<=5' | cut -d: -f1 | sort -u
+
+    **被阡陌改造过的基座文件仍然不带 SPDX 头。这是有意为之，不是漏加。**截至
+    2026-08-30，快照里存在、而当前树中内容已变的基座文件共 180 个，其中带 AGPL
+    文件头的是 0 个（快照里另有 135 个文件已被删除；180 + 135 = 315 个条目落在
+    快照那棵树上）：
+
+        # 被改造过的基座文件——存在于快照、内容已变
+        git diff --name-only --diff-filter=M base-snapshot/v2.46.0..HEAD
+        # 其中带 AGPL 文件头的（预期为空）
+        git -c core.quotePath=false diff --name-only --diff-filter=M \
+            base-snapshot/v2.46.0..HEAD \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              && printf '%s\n' "$f"
+          done
+
+    不给它们加头有三条理由：① 文件头标的是**文件的来源层**，不是逐行作者——一个
+    来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② 加头会抹掉上游
+    MIT 的溯源，而保留上游的许可与版权声明正是 MIT 对我们提出的要求；③ 本仓库
+    按每 2–4 周的节奏跟随上游（docs/dev/charter.md §5.7），加头等于在每次上游
+    同步时制造 180 处冲突。那些文件里哪些行是阡陌写的，由 git 历史记录——命令就是
+    下方"二、基座溯源"给出的工作面命令。根目录的 `LICENSE` 本身就在这 180 个里：
+    我们把 MIT 正文换成了 AGPL 正文（实测 690 行改动：新增 661 行、删除 29 行），
+    而它作为一条路径仍然是基座来源的文件。
 
     详见下方"二、基座溯源"。
 
   * **`vendor/audio-capture/` 的例外已不存在，但它们落在哪一层要另作说明**：
     那六个预编译 `.node` 此前全部源码缺失，现已全部由本仓库自有源码
-    （`packages/audio-capture-napi/native/`，源文件都带 AGPL-3.0-or-later
-    文件头）重新构建——`arm64-darwin` / `x64-darwin` / `arm64-linux` /
-    `x64-linux` 四项于 2026-08-30 完成替换，`x64-win32` / `arm64-win32` 两项同日
+    （`packages/audio-capture-napi/native/`，其中 `.rs` 与 `.toml` 源文件都带
+    AGPL-3.0-or-later 文件头；同目录的 `Cargo.lock` 与 `.gitignore` 不带——
+    它们是生成件与工具配置，不是源文件）重新构建——`arm64-darwin` /
+    `x64-darwin` / `arm64-linux` / `x64-linux` 四项于 2026-08-30 完成替换，
+    `x64-win32` / `arm64-win32` 两项同日
     由 GitHub Actions 的 `windows-latest` runner 构建后装入。**它们属于 AGPL 层，
     但依据不是文件头，而是它们是那份 AGPL 源码的构建产物**——衍生自该源码、
     并与该源码一同分发，因此随源码适用同一许可；对应的 Corresponding Source 就是
@@ -67,7 +130,7 @@ this repository.
 
       - 上面那条 `git grep … | awk -F: '$2<=5'` 是**针对源文件**的判据——它读的
         是文件头——二进制形态本来就不在它的适用范围内。因此这六个 `.node`
-        **不在那个计数里**——它报出来的 580 个全是源文件。照那条命令跑一遍，
+        **不在那个计数里**——它报出来的 646 个全是源文件。照那条命令跑一遍，
         输出里本来就不会有它们，那不是遗漏。
       - 「不带 SPDX 头 ⇒ 落在基座 MIT 层」这个反向推断**对二进制不成立**。上一条
         说的是基座与阡陌两层**源文件**之间怎么分，不是给随仓库分发的构建产物
@@ -184,8 +247,8 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     `audio-capture.node`（N-API 原生插件），随基座快照一并导入，并由 `build.ts` /
     `scripts/post-build.ts` 复制进 `dist/vendor/` 随产物分发。**源码此前完全缺失
     这件事已经解决**：`packages/audio-capture-napi/native/`（Rust + napi-rs 2.16 /
-    cpal 0.15.3）已从零重写入库（clean-room，未反编译原二进制），源文件全部
-    带 `SPDX-License-Identifier: AGPL-3.0-or-later` 文件头，实现了
+    cpal 0.15.3）已从零重写入库（clean-room，未反编译原二进制），其 `.rs` 与
+    `.toml` 源文件都带 `SPDX-License-Identifier: AGPL-3.0-or-later` 文件头，实现了
     `packages/audio-capture-napi/src/index.ts` 约定的全部八个导出函数
     （`startRecording` / `stopRecording` / `isRecording` / `startPlayback` /
     `writePlaybackData` / `stopPlayback` / `isPlaying` /
@@ -327,16 +390,34 @@ licenses, and the boundary is the provenance boundary itself:
     suites under `demo/`, and documentation written by the Qianmo AgentNest
     Team (`docs/dev/` and others). The test is the **file header**: a file
     carrying both `SPDX-License-Identifier: AGPL-3.0-or-later` and
-    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 580 files
+    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 646 files
     as of 2026-08-30. The count grows whenever a file with that header is
     added, so the command below, not this number, is what to rely on.
 
-    **This file-header test does not yet cover every file of Qianmo's own
-    code.** A further set of Qianmo-owned files does not carry those two
-    lines: some of them (`.json`, images, `.lock` and the like) cannot carry a
-    comment header at all, and the rest are source files and documents whose
-    headers are still to be added; a separate set of commits is doing that.
-    To compute the list (bash/zsh; no number is hard-coded):
+    **This file-header test does not cover every file of Qianmo's own code.**
+    As of 2026-08-30, 87 files are Qianmo's own yet carry neither line. 83 of
+    them cannot carry a comment header at all by their very form: 48 `.json`,
+    27 `.jpg`, 3 `.png`, 2 `.pdf`, 2 `.docx`, and
+    `packages/audio-capture-napi/native/Cargo.lock`. **The remaining 4 could
+    carry one and deliberately do not**, each for a different reason:
+
+      - `BASE.md` -- the single source of truth for base provenance. A
+        repository rule admits only two kinds of event, an import and an
+        upstream synchronization, as grounds for editing it; a feature commit
+        must never touch it.
+      - `LICENSE.base` -- it holds the upstream MIT license text kept
+        verbatim, and adding an AGPL line to it would be a **misstatement**.
+      - `NOTICE` -- this file itself, the license notice proper. The
+        `awk -F: '$2<=5'` restriction to the first five lines in the next
+        bullet's test exists for exactly this: it keeps the identifier quoted
+        in this file's body from counting itself.
+      - `packages/audio-capture-napi/native/.gitignore`.
+
+    What this file used to say -- "the rest are source files and documents
+    whose headers are still to be added; a separate set of commits is doing
+    that" -- is out of date: that work was completed on 2026-08-30 (66 files),
+    and the 87 above are what remains after it. The number moves as work
+    proceeds, so compute the list (bash/zsh; no number is hard-coded):
 
         # files that are Qianmo's own -- i.e. absent from the base snapshot
         # tree -- yet carry no file header
@@ -353,21 +434,83 @@ licenses, and the boundary is the provenance boundary itself:
     not resolve to a file when handed to `head`, so it is silently skipped and
     undercounted.
 
-    Until that work is complete the file header holds in one direction only:
-    **carries the header => belongs to the AGPL layer** holds; the reverse
-    inference stated in the next bullet -- **no file header, therefore the
-    base MIT layer** -- does not. The authoritative test is whether the file
-    exists in the `base-snapshot/*` snapshot; see section 2 below.
+    The file header holds in one direction only, and the two directions are
+    shaped very differently:
+
+      - **carries the header => belongs to the AGPL layer** -- holds, and it
+        has been checked in full against the authoritative test (whether the
+        file exists in the unmodified `base-snapshot/v2.46.0` snapshot): of
+        the 646 files carrying the header, **not one** is a counterexample
+        (measured 2026-08-30). That half of the test is therefore an
+        observation rather than a stipulation, and the two tests agree
+        completely in this direction. It is falsifiable all the same --
+        someone putting the header on a base file by mistake would produce a
+        counterexample -- which makes it more useful as a **check** than as an
+        assertion: the command below is the check for "has anyone stuck an
+        AGPL header onto a base file", and it passes only when the output is
+        empty.
+
+            git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
+            | while IFS= read -r f; do
+                head -5 "$f" 2>/dev/null \
+                  | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+                  || continue
+                git cat-file -e "base-snapshot/v2.46.0:$f" 2>/dev/null \
+                  && printf 'counterexample: %s\n' "$f"
+              done
+
+      - **no file header, therefore the base MIT layer** -- **does not hold**.
+        The reason is no longer that a batch of headers is outstanding, but
+        the 87 header-less Qianmo-owned files above: every one of them is a
+        counterexample. There is a second and finer failure too: the 180
+        modified base files described in the next bullet **do** belong to the
+        base layer, yet the Qianmo changes inside them do not become MIT on
+        that account -- layering by provenance is not the same as licensing
+        by line.
+
+    The authoritative test is whether the file exists in the `base-snapshot/*`
+    snapshot; see section 2 below.
 
   * **Code imported from the base project -- MIT License** (`LICENSE.base`,
     the upstream text kept verbatim). Base files carry **no SPDX header**,
     which is the machine-checkable test between the two layers:
 
-        # the files in the AGPL layer -- 580 of them as of 2026-08-30
+        # the files in the AGPL layer -- 646 of them as of 2026-08-30
         # (restricted to the file header, so documents that merely quote
         # the identifier -- this file among them -- are not counted)
         git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
           | awk -F: '$2<=5' | cut -d: -f1 | sort -u
+
+    **Base files that Qianmo has modified still carry no SPDX header. That is
+    deliberate, not an omission.** As of 2026-08-30, 180 base files are
+    present in the snapshot with content that has since changed, and 0 of them
+    carry an AGPL file header (a further 135 files in the snapshot have been
+    deleted; 180 + 135 = 315 entries fall on that tree):
+
+        # base files that have been modified -- in the snapshot, content
+        # changed since
+        git diff --name-only --diff-filter=M base-snapshot/v2.46.0..HEAD
+        # of those, the ones carrying an AGPL file header (expected: none)
+        git -c core.quotePath=false diff --name-only --diff-filter=M \
+            base-snapshot/v2.46.0..HEAD \
+        | while IFS= read -r f; do
+            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
+              && printf '%s\n' "$f"
+          done
+
+    There are three reasons for not adding headers to them. First, the header
+    marks **which layer a file came from**, not who wrote which line: a file
+    that came from the base project and was afterwards modified by Qianmo is
+    still a file of base provenance. Second, adding one would erase the
+    upstream MIT provenance -- and retaining the upstream license and
+    copyright notice is precisely what MIT asks of us. Third, this repository
+    follows upstream on a two-to-four-week cadence (docs/dev/charter.md §5.7),
+    so those headers would manufacture 180 conflicts at every synchronization.
+    Which lines inside those files are Qianmo's is recorded by git history --
+    the command is the work-surface command given in section 2 below. The root
+    `LICENSE` is itself one of the 180: its MIT text was replaced with the
+    AGPL text (690 lines changed: 661 added, 29 removed), yet as a path it
+    remains a file of base provenance.
 
     See section 2 below.
 
@@ -375,8 +518,10 @@ licenses, and the boundary is the provenance boundary itself:
     those files sit in has to be stated separately**: the six prebuilt `.node`
     files there previously had no source at all anywhere. They have now all
     been rebuilt from source held in this repository
-    (`packages/audio-capture-napi/native/`, whose source files all carry the
-    AGPL-3.0-or-later file header): `arm64-darwin`, `x64-darwin`,
+    (`packages/audio-capture-napi/native/`, whose `.rs` and `.toml` source
+    files all carry the AGPL-3.0-or-later file header; the `Cargo.lock` and
+    `.gitignore` beside them do not, being a generated file and a tooling
+    config rather than source): `arm64-darwin`, `x64-darwin`,
     `arm64-linux` and `x64-linux` were replaced on 2026-08-30, and `x64-win32`
     and `arm64-win32` were built the same day on a GitHub Actions
     `windows-latest` runner and installed. **They belong to the AGPL layer, but
@@ -392,7 +537,7 @@ licenses, and the boundary is the provenance boundary itself:
       - The `git grep … | awk -F: '$2<=5'` command above is **a test over
         source files** — it reads file headers — and a binary is outside its
         scope by construction. These six `.node` files are therefore **not
-        part of that count** — the 580 files it reports are all source files.
+        part of that count** — the 646 files it reports are all source files.
         Running the command simply never lists them, and that is not an
         omission.
       - The reverse inference "carries no SPDX header, therefore it is in the
@@ -542,8 +687,8 @@ dependency tree):
     that no source existed anywhere has been resolved**:
     `packages/audio-capture-napi/native/` (Rust + napi-rs 2.16 / cpal 0.15.3)
     has been checked in as a from-scratch rewrite (clean-room, not decompiled
-    from the original binaries). Its source files all carry the
-    `SPDX-License-Identifier: AGPL-3.0-or-later` header and implement all
+    from the original binaries). Its `.rs` and `.toml` source files all carry
+    the `SPDX-License-Identifier: AGPL-3.0-or-later` header and implement all
     eight exports the loader at `packages/audio-capture-napi/src/index.ts`
     contracts for (`startRecording` / `stopRecording` / `isRecording` /
     `startPlayback` / `writePlaybackData` / `stopPlayback` / `isPlaying` /

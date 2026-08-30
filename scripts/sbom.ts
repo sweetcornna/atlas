@@ -952,11 +952,15 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
  * NOTICE 一、许可说的是「阡陌文件带 `Copyright` + `SPDX-License-Identifier:
  * AGPL-3.0-or-later` 两行，基座导入文件不带任何 SPDX 头」。**这句话只在一个
  * 方向上成立**：基座文件确实不会带阡陌版权头，所以「带头 ⇒ 阡陌自有」是安全
- * 的。**反过来不成立**——「没头」既可能是基座文件，也可能是漏加头的阡陌文件。
- * 本仓库当下就有一批这样的文件，而且不止于文档：`src/constants/identity.ts`
- * （CLAUDE.md §2.3 点名的身份 roster 唯一真源）就在其中。别在这里写死个数，
- * 现跑现算（`base-snapshot/v2.46.0` 那棵树之外 = 阡陌自有，再挑出缺头的、
- * 且形态上带得了注释头的；bash/zsh）：
+ * 的。**反过来不成立**——「没头」既可能是基座文件，也可能是阡陌自有文件。
+ * 后者 2026-08-30 实测 87 个：83 个形态上就带不了注释头（`.json` / 图片 /
+ * `Cargo.lock`），4 个有意不加（`BASE.md` / `LICENSE.base` / `NOTICE` 与一个
+ * `.gitignore`）。第三类「形态上带得了却漏加的」当天由一批补头提交清零，其中就有
+ * `src/constants/identity.ts`（CLAUDE.md §2.3 点名的身份 roster 唯一真源）
+ * ——**但仓库里没有任何门禁盯着这件事**（章程 §5.5 明写「不为此新增 CI 断言，
+ * 漏加由 PR 评审兜」），所以那一类随时可能重新出现，别把「没头 ⇒ 基座」这条
+ * 推断写死。别在这里写死个数，现跑现算（`base-snapshot/v2.46.0` 那棵树之外
+ * = 阡陌自有，再挑出缺头的、且形态上带得了注释头的；bash/zsh）：
  *
  *     comm -23 <(git -c core.quotePath=false ls-files | sort) \
  *              <(git -c core.quotePath=false ls-tree -r --name-only \
@@ -1019,7 +1023,7 @@ async function baseSnapshotVerdict(
 ): Promise<string> {
   const tag = latestBaseSnapshotTag()
   if (tag === '') {
-    return '归属未核实（本地没有 base-snapshot/* 标签，无法比对基座快照；文件头不是判据——没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）'
+    return '归属未核实（本地没有 base-snapshot/* 标签，无法比对基座快照；文件头不是判据——没有文件头既可能是基座文件，也可能是形态上带不了注释头、或有意不加头的阡陌自有文件）'
   }
   const pkgRel = toPosixRelative(pkgDir)
   const snapshot = gitLsTree(tag, pkgRel)
@@ -1456,6 +1460,14 @@ function buildMarkdown(
   const workspaceRows = rows.filter(r => r.component.origin === 'workspace')
   const external = rows.filter(r => r.component.origin !== 'workspace')
 
+  // 这两行必须由生成器写出来，不能只存在于 docs/dev/sbom-m0.md 里：那个文件
+  // 每次 `bun run sbom` 都被整体覆盖，手加的文件头会被无声抹掉，而抹掉之后
+  // NOTICE 一、许可那条「前 5 行内带两行头」的判据就少数一个文件——一次纯粹
+  // 由再生成造成的计数漂移，且不会有任何门禁报错。JSON 那半边不需要（也无法
+  // 加）：`.json` 形态上带不了注释头。
+  out.push('<!-- Copyright 2026 Qianmo AgentNest Team -->')
+  out.push('<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->')
+  out.push('')
   out.push('# M0 第三方依赖 SBOM 与许可证清单')
   out.push('')
   out.push(
@@ -1676,7 +1688,7 @@ function buildMarkdown(
   out.push('### 7.2 基座既有 workspace 包')
   out.push('')
   out.push(
-    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的权威判据是文件在不在基座快照 `base-snapshot/*` 里，不是文件头——**带头 ⇒ 属于 AGPL 层**成立，反向不成立（没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
+    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的权威判据是文件在不在基座快照 `base-snapshot/*` 里，不是文件头——**带头 ⇒ 属于 AGPL 层**成立，反向不成立：没有文件头的除了基座文件，还有 **87 个阡陌自有文件**（2026-08-30 实测：83 个形态上就带不了注释头——`.json` / 图片 / `Cargo.lock` 之流；另 4 个有意不加——`BASE.md`、`LICENSE.base`、`NOTICE` 与一个 `.gitignore`）。**另有一条独立的限制，别和上面那条混为一谈**：还有 **180 个基座文件带着阡陌的改动而有意不加头**（加头会抹掉上游 MIT 溯源，且每次上游同步要多解 180 处冲突）——**它们的来源层仍是基座，不构成上面那条推断的反例**；其中阡陌写的那些行由 git 历史记录，举证走 `git diff base-snapshot/v2.46.0..HEAD`。三个数都随仓库变，现跑现算的命令见 `NOTICE` 一、许可。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
   )
   out.push('')
   out.push('| 包 | 路径 | `license` | private |')
