@@ -22,11 +22,23 @@ this repository.
     2026-08-30 共 646 个文件。每新增一个带该文件头的文件这个数就会变，
     所以真正作数的是下面那条命令，不是这个数字。
 
-    **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，阡陌自有却不带
-    这两行的文件共 87 个。其中 83 个形态上就带不了注释头：48 个 `.json`、
-    27 个 `.jpg`、3 个 `.png`、2 个 `.pdf`、2 个 `.docx`，以及
-    `packages/audio-capture-napi/native/Cargo.lock`。**余下 4 个带得了，却是有意
-    不加**，理由逐个不同：
+    **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，**不在基座快照那
+    棵树里、又不带这两行文件头的文件共 87 个**——这是下面那条命令给出的定义，按
+    路径判据划的一侧，**不是一句所有权主张**。`LICENSE.base` 就落在这 87 个里而
+    它并非阡陌自有：那条路径是阡陌新增的（快照里没有它），内容却是上游 MIT 许可
+    正文的逐字保留件；它在这一侧只说明路径判据到此为止，判据的这处边界见本节末尾
+    「权威判据也有它答不了的问题」一段。
+
+    这 87 个里有 83 个按文件格式成类，不加头的理由有两种：一类是
+    **二进制或纯数据格式，本来就没有注释语法**——27 个 `.jpg`、3 个 `.png`、
+    2 个 `.pdf`、2 个 `.docx`，以及 28 个 `.json`（JSON 语法不含注释，其中 20 个
+    是 `package.json`）；另一类**技术上带得了注释，但它们是生成件与工具配置、
+    不是源文件，加了会被工具覆盖或没有意义**——20 个 `tsconfig.json`（TypeScript
+    按 JSONC 解析，接受 `//` 注释）与
+    `packages/audio-capture-napi/native/Cargo.lock`（TOML，支持 `#` 注释：它的头
+    两行就是 Cargo 自己写的注释，第二行还明写 "It is not intended for manual
+    editing"，人工加进去的行会在下次生成时被抹掉）。**余下 4 个既带得了注释、也
+    不是生成件，却是有意不加**，理由逐个不同：
 
       - `BASE.md` —— 基座溯源的唯一真源。仓库规矩是只有「导入」与「上游同步」
         两类事件才允许改它，功能性提交一律不得触碰；
@@ -35,7 +47,9 @@ this repository.
       - `NOTICE` —— 本文件自身，是许可声明文件本体。下一条判据里
         `awk -F: '$2<=5'` 那个前 5 行限定正为此而设：它让本文件正文中引用的
         那行标识符不把自己算进计数；
-      - `packages/audio-capture-napi/native/.gitignore`。
+      - `packages/audio-capture-napi/native/.gitignore` —— 工具配置文件而非源
+        文件，与同目录的 `Cargo.lock` 同理，给它加一行许可声明没有意义；它不归
+        上面那两个格式类别中的任何一个，所以在这里单列。
 
     本文此前写的「其余是应补而未补的源文件与文档，正由单独一批提交补齐」已经
     过时——补齐工作于 2026-08-30 完成（66 个文件），上面那 87 个是补齐之后的
@@ -51,7 +65,9 @@ this repository.
           done
 
     `-c core.quotePath=false` 不能省：默认输出会把非 ASCII 文件名写成带双引号
-    的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算。
+    的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算（本仓库
+    现有 33 个非 ASCII 文件名，`git -c core.quotePath=false ls-files | LC_ALL=C
+    grep -c '[^ -~]'` 可核）。**下面那条反例检查命令同理**，它也带着这个开关。
 
     文件头只在一个方向上作数，而且两个方向的形状差得很远：
 
@@ -63,7 +79,8 @@ this repository.
         比作为断言更有用：下面这条命令就是"有没有人把 AGPL 头误贴到基座文件
         上"的检查，输出为空才算过。
 
-            git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
+            git -c core.quotePath=false grep -l \
+                "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
             | while IFS= read -r f; do
                 head -5 "$f" 2>/dev/null \
                   | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
@@ -73,12 +90,26 @@ this repository.
               done
 
       - **没有文件头 ⇒ 属于基座 MIT 层**——**不成立**。理由不再是「还有一批
-        没补完」，而是上面那 87 个阡陌自有却无头的文件：它们逐个都是这条推断
-        的反例。另有一层更细的不成立：下一条要说的 180 个被阡陌改造过的基座
-        文件**确实**属于基座那一层，但文件里的阡陌改动并不因此变成 MIT——按
-        来源分层不等于按行分许可。
+        没补完」，而是上面那 87 个不在快照树里、又无头的文件：其中 **86 个是
+        这条推断的反例**。**剩下那一个是 `LICENSE.base`，它不是反例**——它无头，
+        而内容逐字就是上游 MIT 正文，按内容本就落在 MIT 那一层，推断在它身上
+        恰好蒙对了；但那是巧合而非判据生效，因为这两条判据看的都是路径、不是
+        内容（见上面的计数句与本节末尾那段）。它也是这 87 个里唯一的一例：
+        逐个比对内容后，只有它与快照里的某个文件逐字节相同。另有一层更细的
+        不成立：下一条要说的 180 个被阡陌改造过的基座文件**确实**属于基座那一
+        层，但文件里的阡陌改动并不因此变成 MIT——按来源分层不等于按行分许可。
+        （它们分发时按什么许可，见下一条 bullet。）
 
     权威判据是该文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
+    **这条判据也有它答不了的问题，一并说明，不要拿它当许可结论用**：它回答的是
+    「这个文件是不是随基座导入进来的」，**不是**「这个文件按什么许可授出」。
+    `LICENSE.base` 就是一个站着的反例——那条路径是阡陌新增的（快照里根本没有
+    它），按权威判据落进阡陌 AGPL 层，而它的内容逐字是上游的 MIT 许可正文；
+    **两条判据在它身上都给不出正确答案**，这正是它被列进上面那 4 个"有意不加头"
+    的原因。另有一类落差同样要如实说：按这条判据落在阡陌层的还有 27 张 `.jpg`、
+    3 张 `.png`、2 份 `.pdf`、2 份 `.docx` 等**非代码资产**，而 **AGPL-3.0 是软件
+    许可**——这些作品适用什么许可不由这条判据决定，**目前是待明确项**，本文件不
+    代负责人下结论。
 
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
@@ -90,8 +121,10 @@ this repository.
 
     **被阡陌改造过的基座文件仍然不带 SPDX 头。这是有意为之，不是漏加。**截至
     2026-08-30，快照里存在、而当前树中内容已变的基座文件共 180 个，其中带 AGPL
-    文件头的是 0 个（快照里另有 135 个文件已被删除；180 + 135 = 315 个条目落在
-    快照那棵树上）：
+    文件头的是 0 个（另有 135 个快照里的文件已被删除。**180 + 135 = 315 说的是
+    本次 diff 里落在快照路径上的条目数，不是快照的大小**：快照那棵树共 4,171 个
+    文件——`git ls-tree -r --name-only base-snapshot/v2.46.0 | wc -l` 可核——
+    其余 3,856 个基座文件至今原样未动）：
 
         # 被改造过的基座文件——存在于快照、内容已变
         git diff --name-only --diff-filter=M base-snapshot/v2.46.0..HEAD
@@ -103,14 +136,27 @@ this repository.
               && printf '%s\n' "$f"
           done
 
+    **这 180 个文件分发时按什么许可，在这里说清，不要靠两条 bullet 相减去推。**
+    文件头——以及"带不带头"这个标记本身——标的是**来源层**，即哪些行来自上游；
+    它**不是**"这个文件按 MIT 授出"的意思。一个来自基座、其后被阡陌改动过的文件，
+    分发出去的是**组合作品**：其中上游那部分继续适用 MIT（这正是 `LICENSE.base`
+    逐字保留的原因，MIT 的保留义务由它履行），阡陌加进去的部分是 AGPL 作品，
+    **因此这些文件整体只能按 AGPL-3.0-or-later 的条款分发**。MIT 宽松、可被并入
+    AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于"可按 MIT 取走"**——取走这
+    180 个文件（连同里面的阡陌改动）受 AGPL 约束。
+
     不给它们加头有三条理由：① 文件头标的是**文件的来源层**，不是逐行作者——一个
-    来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② 加头会抹掉上游
-    MIT 的溯源，而保留上游的许可与版权声明正是 MIT 对我们提出的要求；③ 本仓库
-    按每 2–4 周的节奏跟随上游（docs/dev/charter.md §5.7），加头等于在每次上游
-    同步时制造 180 处冲突。那些文件里哪些行是阡陌写的，由 git 历史记录——命令就是
-    下方"二、基座溯源"给出的工作面命令。根目录的 `LICENSE` 本身就在这 180 个里：
-    我们把 MIT 正文换成了 AGPL 正文（实测 690 行改动：新增 661 行、删除 29 行），
-    而它作为一条路径仍然是基座来源的文件。
+    来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② **这是我们自己定
+    的标记规矩，不是 MIT 的要求**——MIT 要求的是"在副本中包含许可与版权声明"，
+    本仓库由逐字保留的 `LICENSE.base` 履行；它并不禁止我们在文件上加别的标识，
+    加一行 SPDX 也抹不掉任何东西。我们不加，是为了让"带头 / 不带头"这个标记继续
+    **只表示来源层**——一旦给改造过的基座文件也加上，这个标记就同时表示两件事、
+    不再可判；③ 本仓库按每 2–4 周的节奏跟随上游（docs/dev/charter.md §5.7），在
+    文件顶端插三行只在**上游也改到该文件头部时**才冲突，**不是每次同步都 180
+    处**，但最坏情况下可以多到 180 处。那些文件里哪些行是阡陌写的，由 git 历史
+    记录——命令就是下方"二、基座溯源"给出的工作面命令。根目录的 `LICENSE` 本身
+    就在这 180 个里：我们把 MIT 正文换成了 AGPL 正文（实测 690 行改动：新增
+    661 行、删除 29 行），而它作为一条路径仍然是基座来源的文件。
 
     详见下方"二、基座溯源"。
 
@@ -123,8 +169,20 @@ this repository.
     `x64-win32` / `arm64-win32` 两项同日
     由 GitHub Actions 的 `windows-latest` runner 构建后装入。**它们属于 AGPL 层，
     但依据不是文件头，而是它们是那份 AGPL 源码的构建产物**——衍生自该源码、
-    并与该源码一同分发，因此随源码适用同一许可；对应的 Corresponding Source 就是
-    本仓库里的 `packages/audio-capture-napi/native/`。
+    并与该源码一同分发，因此随源码适用同一许可。对应的 Corresponding Source
+    **不止 `native/` 一处**——AGPL-3.0 §1（与 GPL-3.0 §1 同文）把"控制编译与安装
+    的脚本"也算在内，因此它至少包括：本仓库里的
+    `packages/audio-capture-napi/native/`（crate 源码与 `Cargo.lock`）、
+    `scripts/build-audio-capture.sh`，以及
+    `.github/workflows/build-audio-capture-windows.yml`。后两样不在 `native/`
+    目录下，本文件第五节也把它们列为溯源要素。
+
+    **一处已知缺口，如实写明**：这六个 `.node` 静态链接了 `Cargo.lock` 记录的第三
+    方 Rust crate（该文件共 122 个 package 条目，含仅构建期用到的），而本仓库的
+    SBOM（`docs/dev/sbom-m0.json` / `sbom-m0.md`）**输入只有 `bun.lock` 与
+    `node_modules` 的 `license` 字段**，整个 Rust 依赖树不在其覆盖范围内
+    （`grep -c 'pkg:cargo' docs/dev/sbom-m0.json` 为 0 可核）。**这是待补项**，
+    本文件不声称它已被覆盖。
 
     有两点必须与上一条判据一起读，以免拿那条判据去套它们：
 
@@ -210,22 +268,49 @@ MIT 授权不因本次变更而失效；AGPL 只适用于本次变更之后发�
 **工作面基线的一次向下修正**：本文此前把工作面写作 `git diff 3380c88..HEAD`。那在
 2026-08-17 的首次上游同步（v2.38.3 → v2.46.0）之后已经不成立——上游那 6 万行随
 该次同步进入了本仓库历史，再拿导入提交作度量基线，就会把上游内容算成我方工作。
-实测对照（2026-08-30）：
 
-    git diff --shortstat 3380c88..HEAD
+**下面两个数锚在提交 `c9c74627` 上，不锚日期**——本仓库每加一笔提交它们都会变
+大，所以它们是某一次测量的记录，不是可以引用的常数。在 `c9c74627` 上实测：
+
+    git diff --shortstat 3380c88..c9c74627
       → 1599 files changed, 292973 insertions(+), 39268 deletions(-)
-    git diff --shortstat base-snapshot/v2.46.0..HEAD
+    git diff --shortstat base-snapshot/v2.46.0..c9c74627
       → 1048 files changed, 234068 insertions(+), 31937 deletions(-)
 
-两条命令的差额约 58,905 行插入，来自两个基线之间的那次上游同步——它不是阡陌的
-工作。**但这个差额不等于那次同步本身的行数**：同步那一笔实测是 650 文件 /
-+60,362 / −7,431（`git show --shortstat d04a79dd`，2026-08-30 实测）。两个数不
-相等是正常的——同步之后的阡陌工作又改动或删除了上游新增的一部分行，所以「两次
-测量之差」与「那次同步的行数」本来就不是同一个量，不该指望它们对得上。**这处
-错误的方向是把我方工作量夸大，所以必须改**——报大数字比报小数字更伤。上面这些
-数字都会随工作推进而变，真正作数的是命令而不是数字。口径依据
-docs/dev/charter.md §5.5「v2.13 更新 · 首次上游同步之后，工作面口径改用基座
+**要报数一律现跑**：把 `c9c74627` 换成 `HEAD` 即可。
+
+**连两者之差也不是常量，这一点要说破。**它在含 `c9c74627` 在内的这一批五笔提交上
+恒为 58,905 行插入，看着像个结构量、因而稳定；但在 `5c96d0b8`（2026-08-17 当天最后
+一笔）上实测是 59,784——把
+`git diff --shortstat base-snapshot/v2.46.0..5c96d0b8` 从
+`git diff --shortstat 3380c88..5c96d0b8` 里减掉即得。差额会随时间缩小，因为其后的
+阡陌工作不断改动或删除上游新增的行，两条基线的分歧量本身在变。**这里没有任何一个
+数是稳的，稳的只有命令。**
+
+那部分差额来自两个基线之间的那次上游同步——它不是阡陌的工作。**但差额不等于那次
+同步本身的行数**：同步落地的那一笔实测是 650 文件 / +60,362 / −7,431
+（`git show --shortstat d04a79dd`）。两个数不相等是正常的——同步之后的阡陌工作又
+改动或删除了上游新增的一部分行，所以「两次测量之差」与「那次同步的行数」本来就
+不是同一个量，不该指望它们对得上。
+
+  **`d04a79dd` 这个数与 BASE.md 记的不是同一个量，两处都对、不构成矛盾**：
+  BASE.md（以及 charter.md、positioning-m0.md、upstream-sync-drill.md）记的是
+  **上游补丁区间** `848ad8c2..1128a391` 的 650 文件 / +60,363 / −7,417；这里给的
+  是**那次同步落地到本仓库的那一笔提交**的 650 文件 / +60,362 / −7,431。那次同步
+  有一块冲突文件取了上游侧原文，落地内容与补丁内容因此略有出入。
+
+**这处错误的方向是把我方工作量夸大，所以必须改**——报大数字比报小数字更伤。口径
+依据 docs/dev/charter.md §5.5「v2.13 更新 · 首次上游同步之后，工作面口径改用基座
 快照标签」。
+
+**工作面这个数必须连同构成一起报，不许只报总数**——依据
+docs/dev/positioning-m0.md §1.4 禁用表述清单：只报总行数而不给分解属禁用表述。
+`c9c74627` 上那 234,068 行插入里，至少有三项一眼就不是我方撰写的产出：
+`docs/dev/sbom-m0.json` 的 31,776 行由 `bun run sbom` 生成、根 `LICENSE` 的
+661 行是 FSF 的 AGPL-3.0 许可正文、`LICENSE.base` 的 29 行是上游的 MIT 许可正
+文——合计 32,466 行，约占 14%。完整的分解口径与「只能报一个数时报哪个」的规矩见
+docs/dev/positioning-m0.md §3.1；现跑命令是
+`git diff --numstat base-snapshot/v2.46.0..HEAD | sort -rn | head`。
 
 **工作记录里有一笔不是阡陌工作**：`git log 3380c88..HEAD` 中的 `d04a79dd`
 （2026-08-17，"三方应用上游 open-claude-code v2.46.0"）改动内容全部来自上游补丁，
@@ -322,9 +407,11 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
         或执行过**——`windows-latest` runner 是 x86_64，结构上加载不了 aarch64 的
         DLL；工作流对此不假装通过，而是打印一行显式跳过理由。除构建与静态检查外，
         它取得的只有结构性核对（PE 机器类型 `0xaa64`、`napi_register_module_v1`
-        存在、八个导出名字符串齐全、依赖面与原厂产物零差异）。**仍欠一次在真实
-        Windows on ARM 机器上的加载验证。**这是验证缺口而非许可缺口——它与其余五个
-        同出一份源码。
+        存在、八个导出名字符串齐全、依赖面与原厂产物零差异）。**在真实 Windows on
+        ARM 机器上的加载验证未做，且不排期**——负责人 2026-08-30 决定不做这一项
+        （本项目没有 Windows on ARM 机器），该验证无限期挂起，见
+        docs/dev/charter.md v2.17 ④。这是验证缺口而非许可缺口——它与其余五个同出
+        一份源码。
 
     **关于 `--allow-unverified-install`（避免被误读为"硬装未验证产物"）——
     这一段只讲三个跨架构 darwin/linux 产物，两个 Windows 产物见紧随其后的一段**：
@@ -395,9 +482,10 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     一并纳入 copyleft 并补齐源码——源码已提供，**六个 triple 现已全部换成由该源码
     构建的产物**，"标了 AGPL 却给不出源码"这个根本障碍就此消失。原两条收口路径中，
     负责人选定的是第一条（补源码并标 AGPL），该工作现已执行完毕。**尚存的是一处
-    验证缺口，不是许可缺口**：`arm64-win32` 没有运行时证据，待在真实 Windows on
-    ARM 机器上补一次加载验证；它的许可归属没有待定项——与其余五个同出一份仓库内
-    的 AGPL 源码。跟踪见 docs/dev/license-chain-m0.md 的 D-9（已处置）。
+    验证缺口，不是许可缺口**：`arm64-win32` 没有运行时证据，而在真实 Windows on
+    ARM 机器上的加载验证**未做、且按章程 v2.17 ④ 不排期**；它的许可归属没有待定
+    项——与其余五个同出一份仓库内的 AGPL 源码。跟踪见
+    docs/dev/license-chain-m0.md 的 D-9（已处置）。
 
   * `src/utils/vendor/ripgrep/` —— ripgrep 可执行文件，**不入库**，由
     `scripts/postinstall.cjs` 在安装时从 microsoft/ripgrep-prebuilt v15.0.1 下载并
@@ -436,11 +524,31 @@ licenses, and the boundary is the provenance boundary itself:
     added, so the command below, not this number, is what to rely on.
 
     **This file-header test does not cover every file of Qianmo's own code.**
-    As of 2026-08-30, 87 files are Qianmo's own yet carry neither line. 83 of
-    them cannot carry a comment header at all by their very form: 48 `.json`,
-    27 `.jpg`, 3 `.png`, 2 `.pdf`, 2 `.docx`, and
-    `packages/audio-capture-napi/native/Cargo.lock`. **The remaining 4 could
-    carry one and deliberately do not**, each for a different reason:
+    As of 2026-08-30, **87 files are absent from the base snapshot tree and
+    carry neither line** -- that is the definition the command below applies,
+    a side of a path-based test, **not an assertion of ownership**.
+    `LICENSE.base` is among the 87 and is not Qianmo's own: the path was added
+    by Qianmo and is absent from the snapshot, while its contents are the
+    upstream MIT license text kept verbatim. Its presence on this side marks
+    where the path test stops rather than anything about title; that limit is
+    set out at the end of this section, under what the authoritative test
+    cannot answer.
+
+    Of those 87, 83 group by file format, and within that group there are two
+    reasons.
+    Some are **binary or pure-data formats with no comment syntax to begin
+    with**: 27 `.jpg`, 3 `.png`, 2 `.pdf`, 2 `.docx`, and 28 `.json` (the JSON
+    grammar has no comments; 20 of those 28 are `package.json`). The others
+    **could carry a comment, but they are generated files and tooling
+    configuration rather than source, so a header there would either be
+    overwritten or mean nothing**: 20 `tsconfig.json` (TypeScript parses these
+    as JSONC and accepts `//`) and
+    `packages/audio-capture-napi/native/Cargo.lock` (TOML, which does support
+    `#` -- its own first two lines are comments written by Cargo, the second of
+    them reading "It is not intended for manual editing", so a hand-added line
+    is wiped on the next regeneration). **The remaining 4 could carry a comment
+    and are not generated either, and deliberately do not**, each for a
+    different reason:
 
       - `BASE.md` -- the single source of truth for base provenance. A
         repository rule admits only two kinds of event, an import and an
@@ -452,7 +560,11 @@ licenses, and the boundary is the provenance boundary itself:
         `awk -F: '$2<=5'` restriction to the first five lines in the next
         bullet's test exists for exactly this: it keeps the identifier quoted
         in this file's body from counting itself.
-      - `packages/audio-capture-napi/native/.gitignore`.
+      - `packages/audio-capture-napi/native/.gitignore` -- tooling
+        configuration rather than source, on the same footing as the
+        `Cargo.lock` beside it: a license line there would mean nothing. It
+        belongs to neither of the two format groups above, hence its own entry
+        here.
 
     What this file used to say -- "the rest are source files and documents
     whose headers are still to be added; a separate set of commits is doing
@@ -473,7 +585,10 @@ licenses, and the boundary is the provenance boundary itself:
     `-c core.quotePath=false` cannot be omitted: by default non-ASCII file
     names are printed double-quoted with octal escapes, and such a name does
     not resolve to a file when handed to `head`, so it is silently skipped and
-    undercounted.
+    undercounted (this repository currently holds 33 non-ASCII file names;
+    check with `git -c core.quotePath=false ls-files | LC_ALL=C grep -c
+    '[^ -~]'`). **The same goes for the counterexample check below**, which
+    carries the switch too.
 
     The file header holds in one direction only, and the two directions are
     shaped very differently:
@@ -491,7 +606,8 @@ licenses, and the boundary is the provenance boundary itself:
         AGPL header onto a base file", and it passes only when the output is
         empty.
 
-            git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
+            git -c core.quotePath=false grep -l \
+                "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
             | while IFS= read -r f; do
                 head -5 "$f" 2>/dev/null \
                   | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
@@ -502,15 +618,38 @@ licenses, and the boundary is the provenance boundary itself:
 
       - **no file header, therefore the base MIT layer** -- **does not hold**.
         The reason is no longer that a batch of headers is outstanding, but
-        the 87 header-less Qianmo-owned files above: every one of them is a
-        counterexample. There is a second and finer failure too: the 180
+        the 87 header-less files above that are absent from the snapshot tree:
+        **86 of them are counterexamples**. **The remaining one is
+        `LICENSE.base`, and it is not a counterexample** -- it carries no
+        header, and its contents are the upstream MIT text verbatim, so by
+        content it does sit in the MIT layer and the inference happens to land
+        correctly on it. That is a coincidence rather than the test working:
+        both tests read the path, not the contents (see the counting sentence
+        above and the closing paragraph of this section). It is also the only
+        such case among the 87 -- comparing contents file by file, it is the
+        one that is byte-for-byte identical to a file in the snapshot. There is
+        a second and finer failure too: the 180
         modified base files described in the next bullet **do** belong to the
         base layer, yet the Qianmo changes inside them do not become MIT on
         that account -- layering by provenance is not the same as licensing
-        by line.
+        by line. (What license those files are distributed under is stated in
+        the next bullet.)
 
     The authoritative test is whether the file exists in the `base-snapshot/*`
-    snapshot; see section 2 below.
+    snapshot; see section 2 below. **What that test cannot answer is set out
+    here as well, so that it is not taken for a licensing conclusion**: it
+    answers "was this file imported along with the base project", **not**
+    "under what license is this file granted". `LICENSE.base` is a standing
+    counterexample -- the path was added by Qianmo and is absent from the
+    snapshot, so the authoritative test places it in Qianmo's AGPL layer, while
+    its contents are the upstream MIT license text verbatim; **neither test
+    gives the right answer for that file**, which is exactly why it is one of
+    the four "deliberately no header" entries above. A second mismatch has to
+    be stated as plainly: the same test places 27 `.jpg`, 3 `.png`, 2 `.pdf`
+    and 2 `.docx` **non-code assets** in Qianmo's layer, and **AGPL-3.0 is a
+    software license**. What licensing arrangement applies to works of that
+    kind is not settled by this test; **it is an open item**, and this notice
+    does not decide it on the project owner's behalf.
 
   * **Code imported from the base project -- MIT License** (`LICENSE.base`,
     the upstream text kept verbatim). Base files carry **no SPDX header**,
@@ -526,7 +665,11 @@ licenses, and the boundary is the provenance boundary itself:
     deliberate, not an omission.** As of 2026-08-30, 180 base files are
     present in the snapshot with content that has since changed, and 0 of them
     carry an AGPL file header (a further 135 files in the snapshot have been
-    deleted; 180 + 135 = 315 entries fall on that tree):
+    deleted. **The 180 + 135 = 315 is the number of entries in this diff that
+    land on snapshot paths, not the size of the snapshot**: that tree holds
+    4,171 files -- check with `git ls-tree -r --name-only
+    base-snapshot/v2.46.0 | wc -l` -- and the other 3,856 base files are
+    untouched to this day):
 
         # base files that have been modified -- in the snapshot, content
         # changed since
@@ -539,14 +682,37 @@ licenses, and the boundary is the provenance boundary itself:
               && printf '%s\n' "$f"
           done
 
+    **What license those 180 files are distributed under is stated here, not
+    left to be worked out by subtracting one bullet from the other.** The file
+    header -- and the presence or absence of one -- marks the **provenance
+    layer**, that is, which lines came from upstream; it does **not** mean
+    "this file is granted under MIT". A file that came from the base project
+    and was afterwards modified by Qianmo is distributed as a **combined
+    work**: the upstream portion remains under MIT (which is precisely why
+    `LICENSE.base` is kept verbatim -- that is how the MIT retention obligation
+    is discharged), while the portion Qianmo added is an AGPL work, **so the
+    file as a whole may only be distributed under the terms of
+    AGPL-3.0-or-later**. MIT is permissive and may be incorporated into an AGPL
+    work, so there is no conflict of direction; but **"layered by provenance"
+    is in no way "may be taken under MIT"** -- taking those 180 files, and the
+    Qianmo changes inside them, is subject to the AGPL.
+
     There are three reasons for not adding headers to them. First, the header
     marks **which layer a file came from**, not who wrote which line: a file
     that came from the base project and was afterwards modified by Qianmo is
-    still a file of base provenance. Second, adding one would erase the
-    upstream MIT provenance -- and retaining the upstream license and
-    copyright notice is precisely what MIT asks of us. Third, this repository
-    follows upstream on a two-to-four-week cadence (docs/dev/charter.md §5.7),
-    so those headers would manufacture 180 conflicts at every synchronization.
+    still a file of base provenance. Second, **this is a marking convention we
+    set ourselves, not something MIT demands of us**: what MIT asks is that the
+    license and copyright notice be *included in copies*, which this repository
+    discharges through the verbatim `LICENSE.base`; it does not forbid us from
+    putting other identifiers on a file, and an SPDX line erases nothing. We
+    leave them off so that "header / no header" keeps meaning **the provenance
+    layer and nothing else** -- put one on a modified base file and the mark
+    would stand for two things at once and stop being decidable. Third, this
+    repository follows upstream on a two-to-four-week cadence
+    (docs/dev/charter.md §5.7), and three lines inserted at the top of a file
+    conflict only where upstream also touches that file's head, **not 180
+    conflicts at every synchronization**, though as many as 180 in the worst
+    case.
     Which lines inside those files are Qianmo's is recorded by git history --
     the command is the work-surface command given in section 2 below. The root
     `LICENSE` is itself one of the 180: its MIT text was replaced with the
@@ -568,9 +734,24 @@ licenses, and the boundary is the provenance boundary itself:
     `windows-latest` runner and installed. **They belong to the AGPL layer, but
     not by virtue of a file header — they belong to it because they are build
     artifacts of that AGPL source**: derived from it and distributed together
-    with it, they carry the license of the source they are built from, and the
-    Corresponding Source for them is `packages/audio-capture-napi/native/` in
-    this very repository.
+    with it, they carry the license of the source they are built from. The
+    Corresponding Source for them is **more than `native/` alone** -- AGPL-3.0
+    section 1 (worded as GPL-3.0 section 1 is) counts "scripts to control those
+    activities" as part of it -- so it includes at least
+    `packages/audio-capture-napi/native/` (the crate source and its
+    `Cargo.lock`), `scripts/build-audio-capture.sh`, and
+    `.github/workflows/build-audio-capture-windows.yml`. The latter two sit
+    outside `native/`, and section 5 of this file lists them as provenance
+    elements in their own right.
+
+    **One known gap, stated plainly**: those six `.node` files statically link
+    the third-party Rust crates recorded in `Cargo.lock` (122 package entries
+    there, build-time-only ones included), whereas this repository's SBOM
+    (`docs/dev/sbom-m0.json` / `sbom-m0.md`) **takes only `bun.lock` and the
+    `license` fields under `node_modules` as its input**, so the whole Rust
+    dependency tree falls outside its coverage (`grep -c 'pkg:cargo'
+    docs/dev/sbom-m0.json` returns 0). **This is outstanding work**; this file
+    does not claim it is covered.
 
     Two points must be read alongside that, so the test in the previous bullet
     is not misapplied to them:
@@ -684,27 +865,67 @@ gave the work surface as `git diff 3380c88..HEAD`. That stopped holding at the
 first upstream synchronization on 2026-08-17 (v2.38.3 -> v2.46.0), which
 brought some sixty thousand upstream lines into this repository's history;
 measured from the import commit, upstream content is counted as our own work.
-Compared side by side on 2026-08-30:
 
-    git diff --shortstat 3380c88..HEAD
+**The two figures below are anchored to the commit `c9c74627`, not to a
+date** -- they grow with every commit added to this repository, so they are the
+record of one measurement rather than constants to be quoted. Measured at
+`c9c74627`:
+
+    git diff --shortstat 3380c88..c9c74627
       -> 1599 files changed, 292973 insertions(+), 39268 deletions(-)
-    git diff --shortstat base-snapshot/v2.46.0..HEAD
+    git diff --shortstat base-snapshot/v2.46.0..c9c74627
       -> 1048 files changed, 234068 insertions(+), 31937 deletions(-)
 
-The gap of roughly 58,905 insertions between the two commands comes from the
-upstream synchronization that sits between the two baselines; it is not
-Qianmo's work. **That gap is not the same quantity as the size of the
-synchronization itself**, which measures 650 files, +60,362, -7,431
-(`git show --shortstat d04a79dd`, measured 2026-08-30). The two figures are not
-expected to agree: the Qianmo work done after the synchronization went on to
-modify or delete some of the lines upstream had added, so "the difference
-between two measurements" and "the size of that synchronization" are different
-quantities to begin with. **The error ran in the direction of overstating our
-own output, which is why it had to be corrected** -- overstating a figure does
-more damage than understating one. All of these numbers move as work proceeds;
-what counts is the command, not the number. The convention follows
-docs/dev/charter.md §5.5, "v2.13 update -- after the first upstream
-synchronization the work surface is measured from the base snapshot tag".
+**Whenever a figure is needed, run the command**: substitute `HEAD` for
+`c9c74627`.
+
+**Not even the gap between the two is a constant, and that bears saying.**
+Across the batch of five commits that includes `c9c74627` it holds at 58,905
+insertions, which makes it look structural and therefore stable; but at
+`5c96d0b8` (the last commit of 2026-08-17) it measures 59,784 -- subtract
+`git diff --shortstat base-snapshot/v2.46.0..5c96d0b8` from
+`git diff --shortstat 3380c88..5c96d0b8` to see it. The gap shrinks over time,
+because the Qianmo work that follows keeps modifying and deleting lines
+upstream had added, so the divergence between the two baselines is itself
+moving. **No number here is stable; only the command is.**
+
+That part of the gap comes from the upstream synchronization sitting between
+the two baselines, and it is not Qianmo's work. **The gap is nevertheless not
+the same quantity as the size of the synchronization itself**, which as landed
+measures 650 files, +60,362, -7,431 (`git show --shortstat d04a79dd`). The two
+figures are not expected to agree: the Qianmo work done after the
+synchronization went on to modify or delete some of the lines upstream had
+added, so "the difference between two measurements" and "the size of that
+synchronization" are different quantities to begin with.
+
+  **That figure for `d04a79dd` is not the same quantity as the one recorded in
+  BASE.md; both are correct and they do not contradict each other**: BASE.md
+  (and charter.md, positioning-m0.md, upstream-sync-drill.md) records the
+  **upstream patch range** `848ad8c2..1128a391` at 650 files, +60,363, -7,417,
+  whereas the figure here is that of **the single commit by which the
+  synchronization landed in this repository**, 650 files, +60,362, -7,431. One
+  conflicted file in that synchronization was resolved by taking the upstream
+  side verbatim, which is why what landed differs slightly from what the patch
+  contained.
+
+**The error ran in the direction of overstating our own output, which is why it
+had to be corrected** -- overstating a figure does more damage than
+understating one. The convention follows docs/dev/charter.md §5.5, "v2.13
+update -- after the first upstream synchronization the work surface is measured
+from the base snapshot tag".
+
+**The work-surface figure must always be reported together with its
+composition; the bare total is not to be quoted on its own** -- per the list of
+disallowed claims in docs/dev/positioning-m0.md §1.4, reporting a total line
+count without a breakdown is itself a disallowed claim. Of the 234,068
+insertions at `c9c74627`, at least three items are plainly not writing of ours:
+`docs/dev/sbom-m0.json` contributes 31,776 lines generated by `bun run sbom`,
+the root `LICENSE` contributes 661 lines that are the FSF's AGPL-3.0 text, and
+`LICENSE.base` contributes 29 lines that are the upstream MIT text -- 32,466
+lines together, about 14%. The full breakdown convention, and the rule for
+which single figure to give when only one can be given, are in
+docs/dev/positioning-m0.md §3.1; the command to run is `git diff --numstat
+base-snapshot/v2.46.0..HEAD | sort -rn | head`.
 
 **One commit in the work log is not Qianmo's work**: within
 `git log 3380c88..HEAD`, `d04a79dd` (2026-08-17, "three-way application of
@@ -832,9 +1053,12 @@ dependency tree):
         instead. Beyond the build and the static check, the only evidence is
         structural (PE machine type `0xaa64`, `napi_register_module_v1`
         present, all eight export-name strings present, dependency surface
-        identical to the original). **A load check on a real Windows on ARM
-        machine is still owed.** This is a verification gap, not a license
-        gap — the artifact comes from the same source as the other five.
+        identical to the original). **The load check on a real Windows on ARM
+        machine has not been done, and is not scheduled** — on 2026-08-30 the
+        project owner decided against doing it (the project has no Windows on
+        ARM hardware) and suspended it indefinitely; see docs/dev/charter.md
+        v2.17, item 4. This is a verification gap, not a license gap — the
+        artifact comes from the same source as the other five.
 
     **On `--allow-unverified-install` (to avoid the misreading that these were
     installed without verification) — this paragraph is about the three
@@ -944,8 +1168,9 @@ dependency tree):
     exists. Of the original two ways to close this, the project owner chose
     the first — supply source and mark as AGPL — and that work is now done.
     **What remains is a verification gap, not a license gap**: `arm64-win32`
-    has no runtime evidence and needs one load check on a real Windows on ARM
-    machine. Its license standing is not in question — it comes from the same
+    has no runtime evidence, and the load check on a real Windows on ARM
+    machine **has not been done and is not scheduled** (charter v2.17, item 4).
+    Its license standing is not in question — it comes from the same
     in-repository AGPL source as the other five. Tracked as D-9 (disposed) in
     docs/dev/license-chain-m0.md.
 
