@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * One-way notice that the model endpoint answered a request with an HTTP
  * status, for consumers that are not the request itself.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 AgentNest —— AC-1「进程重启后凭持久化会话恢复上下文并续答」一键复现。
 #

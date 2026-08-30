@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # `@qianmo/console`
 
 阡陌控制面板：一个跑在本机环回地址上的单页控制台，用来**看**这张网络、并对它做**少数几件事**。

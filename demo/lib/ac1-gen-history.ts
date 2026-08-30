@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * 合成会话历史（走基座真实写入路径 `recordTranscript`，不手写 JSONL）。
  *

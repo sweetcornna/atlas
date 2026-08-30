@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * A resident node's inactivity watchdog must not leave a transcript claiming a
  * user cancelled the turn (issue #39).

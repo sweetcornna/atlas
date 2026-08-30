@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 基座采用报告：open-claude-code 作为阡陌的真实基座
 
 | 项 | 内容 |
@@ -382,7 +385,7 @@
 
 ### 8.5 P0.2 关闭条件（本节**不**自行宣布关闭）
 
-roadmap P0.2 的 DoD 共**五项**（`roadmap.md:345`，交付物在 `:344`）。本节只推进其中两项，**另三项都要人**：
+roadmap P0.2 的 DoD 共**五项**（`roadmap.md:378`，交付物在 `:377`）。本节只推进其中两项，**另三项都要人**：
 
 | # | DoD 项（roadmap 原文摘要） | 状态 | 说明 |
 |---|---|---|---|

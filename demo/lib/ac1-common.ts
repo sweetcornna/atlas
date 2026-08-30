@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * 阡陌 P1.2 —— AC-1 核验脚本的公共部分。
  *

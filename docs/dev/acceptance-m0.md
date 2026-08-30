@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest — M0 验收走查判定记录表（AC-1 ~ AC-8）
 
 | 项 | 内容 |

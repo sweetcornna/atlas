@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # M0 许可链证据包与 `NOTICE` 核对（P8.4）
 
 > **状态：v0.1-draft。**本文是 roadmap **P8.4「软著与开源预检」**交付物 ②③④ 的工程侧部分：

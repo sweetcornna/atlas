@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Out-of-process identity probe for identityIsolation.test.ts and
  * src/constants/__tests__/invokedBinName.test.ts.

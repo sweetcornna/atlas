@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # M0 第三方依赖 SBOM 与许可证清单
 
 > **本文件由 `bun run sbom` 生成，不要手改。**改判据请改 `scripts/sbom.ts`。

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌控制面板（`qm console`）
 
 > **v0.2 · 2026-08-17 · 已在内测环境上经反代对外**（v0.1 的那句「本地回环已跑通」不再是

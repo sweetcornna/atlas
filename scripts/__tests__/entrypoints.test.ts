@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * The generated `bin` entrypoints — and specifically the Qianmo node's, whose
  * identity is pinned in the file rather than inferred from how it was reached.

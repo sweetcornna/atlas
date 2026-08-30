@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Bans the one spelling of a MACRO read that is wrong in every shipped bundle.
  *

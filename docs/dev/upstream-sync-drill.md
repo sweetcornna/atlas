@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 上游同步演练记录（P7.4）
 
 > 本文是 roadmap P7.4 的交付物。**§1~§6 是演练**：目的是测出冲突成本，不是真的升级（章程 §5.7、N-13），

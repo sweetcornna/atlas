@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * 阡陌 P2.5 —— 把 activator 写出的逐条结局翻成分阶段耗时。
  *

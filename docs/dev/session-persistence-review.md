@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest — 会话持久化能力核验与常驻缺口清单（P1.2）
 
 | 项 | 内容 |
