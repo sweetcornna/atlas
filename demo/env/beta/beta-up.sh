@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌 P11.1 落地包① —— 起内测拓扑。**两条腿一个脚本，用 --role 区分。**
 #

@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { MessageType, QianmoMessage } from '@qianmo/protocol'
 import type { SuccessfulReceiptStatus } from './outbox.js'

@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * P0.7 ③ —— 把「Dormice daemon 只绑回环」做成 CI 可断言的不变式。

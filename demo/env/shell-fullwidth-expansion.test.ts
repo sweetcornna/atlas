@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `demo/env` 下的 shell 里，**变量后面紧跟非 ASCII 字符时必须写花括号**。

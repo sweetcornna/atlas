@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * AC-4 —— 项目记忆可跨会话检索唤醒（roadmap P3.3 的 DoD，逐条对应）。

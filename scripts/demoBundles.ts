@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 把 `demo/lib/` 下**被 shell 脚本直接调起**的那几个入口打成自包含单文件，落进

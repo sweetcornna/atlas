@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 控制台**出向面**的签名身份：它自己的一把 Ed25519 密钥，以及它用这把密钥签的

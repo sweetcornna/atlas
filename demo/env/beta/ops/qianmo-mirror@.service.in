@@ -1,5 +1,5 @@
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌内测 · 节点 %i 的审计链镜像拉取（单向、只读、节点 → H）。由同名 .timer 触发。
 #

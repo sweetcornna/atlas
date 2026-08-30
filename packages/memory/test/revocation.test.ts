@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * roadmap P2.3 DoD ②: 软删除（废止）后条目不再被检索命中，但仍可审计查询.

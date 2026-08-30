@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * 阡陌 P5.1 / AC-7 环节 2 一键复现 —— 注入五类真实故障，盲分类，报准确率。

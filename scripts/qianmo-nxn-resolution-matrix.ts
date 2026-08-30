@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * The N×N identity-resolution matrix — the machine-readable gauge

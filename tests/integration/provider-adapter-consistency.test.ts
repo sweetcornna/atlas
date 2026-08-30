@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * AC-5 一致性测试套件（roadmap P1.4）：多轮 / 工具调用 / 流式，对两个 provider

@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # @qianmo/resident —— 常驻 ACP 宿主的读者、账本与闸门
 

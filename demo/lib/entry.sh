@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # `demo_entry <入口名>` —— demo/lib 下某个入口**这台机器上跑得起来的那一份**。
 #

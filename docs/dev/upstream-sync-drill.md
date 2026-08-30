@@ -232,3 +232,58 @@ git diff <旧 tag>..<新 tag> -- . \
   `git diff base-snapshot/v2.46.0..HEAD` 仍然成立 —— 只是现在也会列出删除。
 - **`BASE.md` 不动。**它只记「导入」与「上游同步」两类事件（CLAUDE.md §2.4），
   精简不是其中之一。
+
+---
+
+## 9. 2026-08-29：`LICENSE` 变成了本仓库自己的文件（转 AGPL 的同步面后果）
+
+章程 v2.16 把阡陌自有代码改以 **AGPL-3.0-or-later** 发布，做法是
+`git mv LICENSE LICENSE.base` + 把 AGPL-3.0 正文写进 `LICENSE`。
+这对上游同步只有一条影响，但它是**新的冲突类型**：
+
+> **`LICENSE` 从此是本仓库自己的文件，上游对它的任何改动一律不接。
+> 上游 `LICENSE` 的改动应当落到 `LICENSE.base`。**
+
+因为上游那份文件的路径没变（还是 `LICENSE`），所以上游一旦改动它，
+`git apply --3way` 会把 AGPL 正文当成"我方对 MIT 正文的本地修改"来三方合并 ——
+**那会得到一份两种许可搅在一起的文件，而且大概率能干净应用、不报冲突**。
+这是本节存在的全部理由：它不像 §8 那类"文件已删所以 apply 失败"，
+它是**会静默成功的错误**。
+
+### 做法
+
+同步前把 `LICENSE` 从上游 diff 里剔掉，与 §8 的排除表并列：
+
+```sh
+git diff <旧 tag>..<新 tag> -- . \
+  ':(exclude)LICENSE' \
+  ':(exclude)docs/en' ':(exclude)docs/ja' \
+  … # §8 的其余排除项
+  > /tmp/upstream.patch
+```
+
+然后**单独看一眼上游 `LICENSE` 变没变**：
+
+```sh
+git diff <旧 tag>..<新 tag> -- LICENSE
+```
+
+- 没变（常态）—— 什么都不用做，`LICENSE.base` 保持原样。
+- 变了 —— 把上游那份**手工写进 `LICENSE.base`**，并在 `BASE.md` 的同步记录里
+  单独记一句"上游许可正文有变更"。**不要动 `LICENSE`。**
+
+### 一条可以直接跑的自检
+
+同步收尾时验一次 `LICENSE.base` 仍与基座快照一致：
+
+```sh
+git show base-snapshot/<当前 tag>:LICENSE | diff - LICENSE.base && echo "LICENSE.base OK"
+```
+
+（换 pin 之后判据里的 tag 跟着换；上游许可正文若真的变过，
+这条自检应当对**新**快照成立，而不是对旧的。）
+
+### 不受影响的
+
+- **SPDX 文件头不会与上游冲突。**基座文件一个都不带 SPDX 头，
+  阡陌文件上游根本没有 —— 两层在源文件上零重叠，这也正是转 AGPL 选这条边界的原因。

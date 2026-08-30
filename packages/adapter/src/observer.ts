@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ProtocolErrorCode, TimeJumpGate } from '@qianmo/protocol'
 import type { TeammateMessage } from 'src/utils/agents/teammateMailbox.js'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # check-daemon-bind.sh —— 绑定不变式自检：断言 Dormice daemon 只监听回环地址。
 #

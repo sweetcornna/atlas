@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * The deterministic ranking of roadmap P3.3: 标签匹配 + 关键词 + 时间衰减排序.

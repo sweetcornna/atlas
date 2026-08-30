@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * `FleetDriver` 把 SSH 传输层与被测系统分开说的那几条护栏（issue #96、#98）。

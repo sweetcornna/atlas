@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # P7.1 / AC-8 混沌注入跑批：随机杀进程 / 断网 / 打满磁盘 / 拨动时钟，看系统还能不能干活。
 #

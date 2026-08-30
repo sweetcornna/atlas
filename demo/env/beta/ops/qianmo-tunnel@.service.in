@@ -1,5 +1,5 @@
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌内测 · H → 节点 %i 的本地转发隧道（systemd --user 模板单元）。
 #

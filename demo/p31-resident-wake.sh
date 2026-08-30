@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # P3.1 gVisor benchmark. The resident process must already be running inside the
 # target sandbox with --timings pointing to QIANMO_P31_RESIDENT_TIMINGS_PATH and

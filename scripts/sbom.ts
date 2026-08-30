@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * Third-party SBOM and license inventory for the WHOLE repository.
@@ -985,7 +985,7 @@ type WorkspaceRow = {
 }
 
 const COPYRIGHT_HEADER = '// Copyright 2026 Qianmo AgentNest Team'
-const SPDX_HEADER = '// SPDX-License-Identifier: MIT'
+const SPDX_HEADER = '// SPDX-License-Identifier: AGPL-3.0-or-later'
 
 async function auditWorkspaces(lock: Lockfile): Promise<WorkspaceRow[]> {
   const rows: WorkspaceRow[] = []
@@ -1465,7 +1465,7 @@ function buildMarkdown(
   out.push('## 7. workspace 自有包')
   out.push('')
   out.push(
-    '「版权头」列 = 该包 `.ts` 文件中首两行为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT` 的比例（章程 §5.5 要求 `@qianmo/*` 全覆盖）。',
+    '「版权头」列 = 该包 `.ts` 文件中首两行为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: AGPL-3.0-or-later` 的比例（章程 §5.5 要求 `@qianmo/*` 全覆盖）。',
   )
   out.push('')
   out.push('### 7.1 阡陌自有（`@qianmo/*`）')
@@ -1481,7 +1481,7 @@ function buildMarkdown(
   out.push('### 7.2 基座既有 workspace 包')
   out.push('')
   out.push(
-    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，随仓库根 `LICENSE`（MIT）覆盖——见 `NOTICE` 一、许可。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
+    '基座包普遍不写 `license` 字段。它们 `private: true` 且不单独发布，由 `LICENSE.base`（MIT，基座层）覆盖——见 `NOTICE` 一、许可。**根 `LICENSE` 是阡陌自有层的 AGPL-3.0，不覆盖它们**：两层的判据是 SPDX 文件头，基座文件不带头。**不建议在本任务里补字段**：那是基座发布面（CLAUDE.md §0）。',
   )
   out.push('')
   out.push('| 包 | 路径 | `license` | private |')

@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 export const REQUIRED_RUNTIME = 'runsc' as const
 export const WORKSPACE_MOUNT = '/home/user' as const

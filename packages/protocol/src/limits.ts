@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** Hard boundaries of the v0 protocol. Shared by every node on the network. */
 export const LIMITS = {

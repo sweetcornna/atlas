@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright 2026 Qianmo AgentNest Team
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # 阡陌内测 · 把一个节点的审计链**单向只读**拉到 H 的 mirror/<node>/trail.ndjson。
 #

@@ -1,5 +1,5 @@
 <!-- Copyright 2026 Qianmo AgentNest Team -->
-<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # 阡陌 AgentNest — 节点装机与接网设计（M1 · 控制台填 SSH 凭证 → 自动装好常驻 agent）
 

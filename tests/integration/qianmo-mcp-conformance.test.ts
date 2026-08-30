@@ -1,5 +1,5 @@
 // Copyright 2026 Qianmo AgentNest Team
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
  * P6.3 —— MCP 兼容子集核验：occ 作为 **MCP 客户端**，对着两个**第三方现成

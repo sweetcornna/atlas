@@ -38,7 +38,8 @@ npm install -g @sweetcornna/open-claude-code
 ```
 .
 ├── BASE.md                  基座溯源记录（上游、pin、同步历史）—— 不随功能 PR 改动
-├── LICENSE                  MIT（沿用基座）
+├── LICENSE                  AGPL-3.0（阡陌自有代码）
+├── LICENSE.base             MIT（基座原文，逐字保留）
 ├── NOTICE                   许可范围、基座溯源、Anthropic 商标声明
 ├── CLAUDE.md                本仓库对 AI 代理的工程约定（先读它）；下半部分附基座 CLAUDE.md 原文
 │
@@ -113,7 +114,27 @@ bun run check:mock-hygiene # mock 卫生棘轮
 
 ## 许可
 
-MIT License，沿用基座。详见 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)。
+**双许可仓库，两层各有各的许可，分界线就是成果边界本身。**
+
+| 哪一层 | 许可 | 正文 | 怎么认出来 |
+|---|---|---|---|
+| 阡陌自有代码 | **GNU AGPL-3.0-or-later** | [`LICENSE`](LICENSE) | 文件头带 `SPDX-License-Identifier: AGPL-3.0-or-later` |
+| 由基座导入的代码 | **MIT** | [`LICENSE.base`](LICENSE.base) | 不带 SPDX 头 |
+
+```bash
+# 属于 AGPL 那一层的 564 个文件
+# 限定在文件头，所以不会把「正文里引用了这行字」的文档（NOTICE、本文件等）算进去
+git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
+  | awk -F: '$2<=5' | cut -d: -f1 | sort -u
+```
+
+选 AGPL 而不是 GPL，是因为阡陌的产品线②是**网络型产品**：最可能被无偿占用的方式
+是把它做成托管服务对外提供，而这正是 GPL-3.0 管不着、AGPL-3.0 §13 管得着的那一格。
+
+MIT 可并入 AGPL 作品，反向不成立——因此本仓库对基座那层的改动若要回贡上游（MIT），
+需要单独授权。本次变更**不可追溯**：此前按 MIT 取得副本者的授权不受影响。
+
+覆盖范围、`vendor/audio-capture/` 六个预编译二进制的待定状态，详见 [`NOTICE`](NOTICE)。
 
 "Claude"、"Claude Code" 与 "Anthropic" 是 Anthropic, PBC 的商标。本项目与 Anthropic 无关联、未获其背书。
 
