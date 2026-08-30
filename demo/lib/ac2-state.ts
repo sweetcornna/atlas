@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * 阡陌 P2.5 —— 读沙箱状态，并可等到它进入某个状态。
  *

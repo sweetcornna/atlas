@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * 崩溃后一致性核验：把会话按 `--resume <id>` 的真实路径读回来，报告事实。
  *

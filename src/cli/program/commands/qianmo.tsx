@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Registered so the Qianmo subcommands appear in `occ --help` (P11.5). The
 // actual dispatch is intercepted by the fast-path in cli.tsx before
 // Commander.js runs (same arrangement as `migrate` / `remote-control`), so

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 边界日执行记录模板（P7.1）
 
 每双周一次。**这一页是模板，不是记录**——每次执行复制一份下去，填完留在同一个文件里，

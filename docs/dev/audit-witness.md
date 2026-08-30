@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest —— 审计的机外见证：选型报告
 
 | 项 | 内容 |

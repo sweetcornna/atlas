@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // What a source run of the CLI actually puts on the wire.
 //
 // Every other view of the system prompt in this repository is mocked. The

@@ -163,9 +163,19 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
 - **不需要签 CLA，但要知道你改的是哪一层。**本仓库是双许可的（见 [`NOTICE`](NOTICE) 一、许可），
   两层都按 inbound = outbound 并入：
   - 改**阡陌自有代码**（文件头带 `SPDX-License-Identifier: AGPL-3.0-or-later` 的那些）→ 你的贡献按 **AGPL-3.0-or-later** 并入。
-  - 改**基座那层**（不带 SPDX 头的文件）→ 按 **MIT** 并入，`LICENSE.base` 是它的正文。
-  提交即表示你有权以对应许可贡献这些代码。**新增的阡陌源文件请带上那两行版权头**（章程 §5.5），
-  否则它在机器判据下会被当成基座层。
+  - 改**基座那层**（文件在基座快照里，用 `git cat-file -e base-snapshot/v2.46.0:<路径>` 判）→ 按 **MIT** 并入，`LICENSE.base` 是它的正文。**不能用「没有 SPDX 头」反推基座层**——仓库里有 86 个文件无头却是阡陌自有，其中就有 20 个 `package.json` 与 20 个 `tsconfig.json` 这类最常被改的，判据见 [`NOTICE`](NOTICE) 一、许可。
+  提交即表示你有权以对应许可贡献这些代码。**新增的阡陌源文件请带上那两行版权头**（章程 §5.5）——
+  补头是这条约定本身，归属判据仍是基座快照，不是文件头；仓库里没有任何门禁**按文件头判归属**。
+  只有 `@qianmo/activator` 一个包有一条断言那两行头**必须存在**的测试
+  （`packages/activator/test/surface-invariant.test.ts` 的
+  `test('every source file carries the two-line copyright header', …)`，随建包提交 `6f30c45c`
+  一起加入，跑在 `bun test` / `scripts/test-shards.sh` / CI 里）——那是**约定检查，不是归属判定**，
+  而且只覆盖该包 `src/` 下的 `.ts`，不覆盖其余目录。**这道断言目前是全仓测试面与 CI 面唯一的一处**——测试面：全仓 `.test.ts`/`.test.tsx` 里断言这两行头的只有它自己（`git grep -n "Copyright 2026 Qianmo" -- '*.test.ts' '*.test.tsx' | awk -F: '$2>2'`，排掉文件自身前两行的版权头后只命中这一条 `expect`）；CI 面：`.github/workflows/` 下没有版权头门禁（`git grep -niE 'spdx|copyright' -- '.github/'` 只命中 `build-audio-capture-windows.yml` 自己的文件头，不是断言），pre-commit（`.husky/pre-commit` 只跑 `bunx lint-staged`）与 `lint-staged`/`biome.json` 配置同样不查头。`package.json` 的
+  11 条 `check`/`check:*` 都不读版权头，`scripts/check-*.ts` 里 SPDX 只出现在两个脚本自己的
+  文件头里，`scripts/sbom.ts` 的 `headerCoverage` 只出报表、不断言、不返回非零，也不在 `precheck`/`verify`/`ci.yml` 里。**盘点这类门禁时别只数 `check:*`**——单测本身就是门禁的一部分，这仓库里唯一那道
+  正好在单测里（2026-08-30 复核；现跑现验：`bun test packages/activator/test/surface-invariant.test.ts`）。
+  缺头的真实风险是**下游许可扫描器等外部工具**——那类工具通常按
+  文件头默认判定，会把它误判为基座层。
 - **先开 issue 再动大工程。**这是一个有明确范围的在研项目：阡陌那层的范围以 [`docs/dev/charter.md`](docs/dev/charter.md) §3 为准，§2.2 列的非目标当前一律不做。
   落在非目标里的 PR 我们会如实说明并关闭——**先问一句能省掉整块白做的工。**
 - **基座那层的改动优先发给[上游](https://github.com/sweetcornna/open-claude-code)。**在这里改基座代码，每次上游同步都要重解一遍；发到上游则两边都受益。

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌常驻 agent「bot 化」改造设计规格
 
 **版本** v0.1-draft · **日期** 2026-08-18
@@ -32,12 +35,12 @@
 | 协议枚举 | ✅ 成立，但**是 11 种不是 10 种** | `packages/protocol/src/message.ts:13-39` |
 | `isReplyType` | ✅ 7 个回复类（含协商三个），非回复类只有 4 个 | `message.ts:64-79` |
 | turn-gate | ✅ 35 行 promise 尾链，无上界 / 无超时 / 无优先级 | `packages/resident/src/turn-gate.ts:4-35` |
-| contextId 透传 | ✅ 零业务消费；**但它已随整条信封落进信箱 `text`**（见 §4.3） | `message.ts:131`、`packages/adapter/src/wrapper.ts:47` |
+| contextId 透传 | ✅ 零业务消费；**但它已随整条信封落进信箱 `text`**（见 §4.3） | `message.ts:217`、`packages/adapter/src/wrapper.ts:200-201` |
 | hermes relay 契约 | ✅ A1–A4 成立；**契约文本自称 PRIMITIVE，行为层显式 out of scope** | `hermes-agent/docs/relay-connector-contract.md` §3.2/§3.3/§3.4 |
 | H-3 回执压在 admission 之后 | ✅ 逐字成立 | `packages/transport/src/receiver.ts:107`、`outbox.ts:84` |
-| wake 不产生协议 ack | ✅ 成立（`#registerTask` 只对 TaskRequest 触发） | `src/services/qianmo/resident.ts:386` |
+| wake 不产生协议 ack | ✅ 成立（`#registerTask` 只对 TaskRequest 触发） | `src/services/qianmo/resident.ts:873` |
 | 「常驻等于永久 yolo」 | ❌ **不成立**，见 §0.4 与 §4.5 | `acp-client.ts:101`、`src/utils/permissions/permissions.ts:540-552` |
-| `P12.x` 编号可用 | ❌ **已被占用**（mTLS 线） | `docs/dev/key-distribution.md:536-539` |
+| `P12.x` 编号可用 | ❌ **已被占用**（mTLS 线） | `docs/dev/key-distribution.md:717-720` |
 
 ### 0.4 与输入报告不符的四处（详情见 §7.3）
 
@@ -183,7 +186,7 @@ const NOTIFY_ALLOWED  = [...NOTIFY_REQUIRED, 'detail', 'dedupKey', 'redelivered'
 | 判环表 | 进 | 进 | **进**（详见 §2.4） |
 | 需要协议 ack？ | 文档说需要 | 需要 | **不需要** |
 
-**顺带记一条既有的文档实现差**（本轮复核确认，不属本设计的改动）：`protocol.md:172` 写 `wake` **需要 ack**，实现里 `#registerTask` 只对 `MessageType.TaskRequest` 触发（`resident.ts:386`），所以 wake 在常驻侧不产生协议 ack。这条要么改文档要么改实现——本批次把它放进 P13.5 的 DoD（补 wake 端到端用例时一并定夺），不在本节替它下结论。
+**顺带记一条既有的文档实现差**（本轮复核确认，不属本设计的改动）：`protocol.md:175` 写 `wake` **需要 ack**，实现里 `#registerTask` 只对 `MessageType.TaskRequest` 触发（`resident.ts:873`），所以 wake 在常驻侧不产生协议 ack。这条要么改文档要么改实现——本批次把它放进 P13.5 的 DoD（补 wake 端到端用例时一并定夺），不在本节替它下结论。**已定夺（2026-08-19，`114436d6`，P13.5）**：结论是**改文档不改实现**——`protocol.md:175` 现写 `wake`「**不产生协议 ack**，投递保证到「传输回执」为止」，与常驻侧实现一致，本段记录的那条差异因此已不存在；四条依据与对照式用例出处见 `protocol.md` §14.8.1。本段保留为当时的发现记录，不改。
 
 ### 2.4 六件必须一起定的事
 
@@ -196,7 +199,7 @@ const NOTIFY_ALLOWED  = [...NOTIFY_REQUIRED, 'detail', 'dedupKey', 'redelivered'
 这是本节最容易做错的一格。两个候选：
 
 - **(a) 复用引发它的任务的 taskId** ——❌ **必然坏**。同一个值守作业的第二条 notify 会在接收方的判环表上命中 `(中枢地址, 同一 taskId)`，被判 `E_LOOP` 切断。**这正是 H-8 描述的那个坑，且它只在第二条消息上才出现**（第一条永远是绿的），是本设计里最容易漏进生产的一条。
-- **(b) 全新 taskId + `contextId` 归组** ——✅ 采用。`contextId` 是「跨任务的会话上下文」（`protocol.md:123`），一个值守作业就是一个 contextId，天然合适；判环键因此永远 fresh；`causeTaskId` 放 payload 里供审计串联，**不做相关键**（不违反 C-1）。
+- **(b) 全新 taskId + `contextId` 归组** ——✅ 采用。`contextId` 是「跨任务的会话上下文」（`protocol.md:126`），一个值守作业就是一个 contextId，天然合适；判环键因此永远 fresh；`causeTaskId` 放 payload 里供审计串联，**不做相关键**（不违反 C-1）。
 
 #### ③ 去重：**只在发送方，接收方零改动**
 
@@ -284,7 +287,7 @@ export interface ReadyFrame {
 }
 ```
 
-**必须先看的既有约束**（本轮复核 + `key-distribution.md:543` 已踩过一次）：`frames.ts:169` 是 `if (parsed['v'] !== FRAME_VERSION) return null` —— **版本不等的帧直接被丢弃**。所以「升 `FRAME_VERSION` 让两代共存」这条路走不通，迁移**只能在 v1 之内用可选字段做**。这与 mTLS 线给 `AuthFrame` 加可选 `sig` 是同一条路子、同一个文件，**两条线会在 `frames.ts` 上撞车，排期必须错开或指定合并顺序**（§5.8）。
+**必须先看的既有约束**（本轮复核 + `key-distribution.md:724` 已踩过一次）：`frames.ts:318` 是 `if (parsed['v'] !== FRAME_VERSION) return null` —— **版本不等的帧直接被丢弃**。所以「升 `FRAME_VERSION` 让两代共存」这条路走不通，迁移**只能在 v1 之内用可选字段做**。这与 mTLS 线给 `AuthFrame` 加可选 `sig` 是同一条路子、同一个文件，**两条线会在 `frames.ts` 上撞车，排期必须错开或指定合并顺序**（§5.8）。
 
 ```ts
 // packages/protocol/src/message.ts
@@ -576,7 +579,7 @@ formatPrompt(snapshot) =
 
 七个包。**第一包必须是文档与范围回写。**每包给：目标 / 改动文件 / 新增测试 / 可机检 DoD / 门禁 / 风险 / 依赖。
 
-> **编号说明**：`P12.1~P12.4` 已被 `docs/dev/key-distribution.md:536-539` 占用（mTLS 落地线）。本批次让号，用 **`P13.x`**。若负责人把两条线排进同一迭代，本批次仍用 P13.x —— 编号不复用是台账可查的前提。
+> **编号说明**：`P12.1~P12.4` 已被 `docs/dev/key-distribution.md:717-720` 占用（mTLS 落地线）。本批次让号，用 **`P13.x`**。若负责人把两条线排进同一迭代，本批次仍用 P13.x —— 编号不复用是台账可查的前提。
 
 ### 依赖顺序
 
@@ -633,7 +636,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
   - `LIMITS` 三个新值的存在性 + charter 一致性（若已有该类断言则扩展）
 - **可机检 DoD**：`packages/protocol` 与 `packages/transport` 用例全绿；`bun run check:cycles` 双向在预算内；协议包对外 API 变更在 `index.ts` 显式导出；`FRAME_VERSION` 未变（grep 断言）
 - **门禁**：`verify`（含 `check:cycles`、`check:unused`）
-- **风险**：**与 mTLS 线 `P12.3` 在 `frames.ts` 撞车**（那条线给 `AuthFrame` 加可选 `sig`）。处置：两包不得并行，先落者在 PR 描述里写明 `frames.ts:169` 的严格版本相等约束，后落者 rebase
+- **风险**：**与 mTLS 线 `P12.3` 在 `frames.ts` 撞车**（那条线给 `AuthFrame` 加可选 `sig`）。处置：两包不得并行，先落者在 PR 描述里写明 `frames.ts:318` 的严格版本相等约束，后落者 rebase
 - **依赖**：P13.1
 
 ---
@@ -707,7 +710,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
   - B3：**同一条毒 `detected` 记录连续 3 次重启后被 `abandoned`，节点仍能服务新消息**（这是本包最重要的一条用例：今天它是无限崩溃循环）
   - B6：ESTOP 存在时新 `task.request` 回 `E_BUSY` 且**在途 turn 不被杀**；**空文件仍算 engaged**
   - B10：turn 静默超过 `inactivityMs` ⇒ 提前失败且 `reason` 含不活动字样；有活动时不误杀
-  - **盲区③**：wake 的常驻侧端到端（真进程 + 真传输）—— 并在此用例里**定夺 `protocol.md:172` 那条文档实现差**（wake 到底该不该产生 ack），把结论回写文档
+  - **盲区③**：wake 的常驻侧端到端（真进程 + 真传输）—— 并在此用例里**定夺 `protocol.md:175` 那条文档实现差**（wake 到底该不该产生 ack），把结论回写文档
   - fail-open：台账/lifecycle/ESTOP 文件不可读时不阻断服务
 - **可机检 DoD**：上述全绿；新增四个模块各自有 README 段或文件头注释说明**「本机制不做什么」**（hermes 那种诚实注释是 atlas 既有风格）
 - **门禁**：`verify` + `check:mock-hygiene`（新增文件系统交互**优先用模块自带 setter，不用 `mock.module`**）
@@ -786,7 +789,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
 >
 > **编号说明**：`P12.1~P12.4` 已被 `key-distribution.md` 占用（mTLS 落地线），本批次让号用
 > `P13.x`。两条线在 `packages/transport/src/frames.ts` 上有交集（都在 v1 内加可选字段），
-> **排期不得并行**，先落者在 PR 描述里记 `frames.ts:169` 的严格版本相等约束。
+> **排期不得并行**，先落者在 PR 描述里记 `frames.ts:318` 的严格版本相等约束。
 
 | 包 | 目标 | 依赖 | DoD（判据） | owner | 估算 |
 |---|---|---|---|---|---|
@@ -794,7 +797,7 @@ P13.3 / P13.4 / P13.5 三包**可并行派发**（互不改同一文件的同一
 | **P13.2** ⭐ **协议扩展：`notify` / 能力发现 / `LIMITS` / `E_BUSY`** | 长出唯一一个 agent 主动发起的消息类型，并给跨版本参差一条稳的路 | P13.1 | `MessageType.Notify` + `NotifyPayload` 落地且 `isReplyType` **不给它豁免**；**同一 contextId 连发 3 条 notify 第 2、3 条不被判 `E_LOOP`**（只测第 1 条等于没测）；`ReadyFrame.supportedTypes?` 在 **v1 内**加、`FRAME_VERSION` 未变（grep 断言）；缺省 ⇒ 落回 `LEGACY_MESSAGE_TYPES` 且不发 notify；`E_BUSY` 对未声明支持的对端降级为 `E_RATE_LIMITED`，并有一条用例把「旧节点会整条拒收带新码的 failed result」这个事实钉住；`LIMITS` 新增三项且 charter 一致 | 陈曦宇 | **16–28 人时** |
 | **P13.3** ⭐ **队列治理与传输回执解耦（H-3）** | 让排队不再顶穿发送方 5 s 回执超时，并给队列装上上界与超时剔除 | P13.1（`E_BUSY` 依 P13.2） | `NodeTurnGate` 有界（`LIMITS.maxQueuedTurns`）、过期项出队即丢且 `work` **从未被调用**（spy 断言）、`queued` 进 `ResidentTimingStage`；**一个 turn 占门时第二条 task.request 的传输回执 5 s 内返回 Accepted**（该用例今天必红）；**协议 ack 的发出点一行未动**，仍严格晚于 `markRead`；队列满的拒绝发生在信箱写入之前（refused 不吃配额）；同一 `sessionId` 两个 turn 永不重叠，且该断言不引用门的粒度；`packages/resident` 零 mock 保持 | 董宗岳 | **20–36 人时** |
 | **P13.4** ⭐ **多会话隔离 `(agent, contextId)` 与会话 GC** | 让不同远端请求者/值守作业不再共用一条上下文，并顺带关掉 G-5 / G-6 | P13.1 | `sessionKeyOf(agent, contextId)` 是全仓唯一构造点（扫描断言）；无 contextId 回退 `DEFAULT_CONTEXT` 且与今天行为字节一致；`runtime.pollAll` 在多 agent × 多 context 下有覆盖（T11 盲区②）；GC 的三类永不驱逐各一条负向用例；`session-store` 到上限先驱逐后写、**无静默截断**（G-6）；**能读旧格式 `sessions.json`**（升级不丢会话）；协议 / 适配器 / 基座**三处零改动** | 董宗岳 | **16–30 人时** |
-| **P13.5** ⭐ **常驻可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）** | 把「无痕丢失」「无限崩溃循环」「没有急停」三个空洞补上 | P13.1（`E_BUSY` 依 P13.2） | 回执不来的 `task.result` 进台账并在重启后重投且**带 `redelivered` 标记**；`phase=running` 哨兵能判出上一条命是被杀的；**同一条毒 `detected` 记录连续 3 次重启后 `abandoned`、节点仍服务新消息**；ESTOP 文件存在时新任务回 `E_BUSY` 且**在途从不杀**、**空文件仍算 engaged**；不活动看门狗提前失败且 `reason` 说明原因；四者读写失败一律 fail-open；**wake 常驻侧端到端用例补齐（T11 盲区③）并据此定夺 `protocol.md:172` 的文档实现差** | 陈子轩 | **20–36 人时** |
+| **P13.5** ⭐ **常驻可靠性件套（投递台账 / 终止取证 / 重启熔断 / ESTOP / 不活动早失败）** | 把「无痕丢失」「无限崩溃循环」「没有急停」三个空洞补上 | P13.1（`E_BUSY` 依 P13.2） | 回执不来的 `task.result` 进台账并在重启后重投且**带 `redelivered` 标记**；`phase=running` 哨兵能判出上一条命是被杀的；**同一条毒 `detected` 记录连续 3 次重启后 `abandoned`、节点仍服务新消息**；ESTOP 文件存在时新任务回 `E_BUSY` 且**在途从不杀**、**空文件仍算 engaged**；不活动看门狗提前失败且 `reason` 说明原因；四者读写失败一律 fail-open；**wake 常驻侧端到端用例补齐（T11 盲区③）并据此定夺 `protocol.md:175` 的文档实现差** | 陈子轩 | **20–36 人时** |
 | **P13.6** ⭐ **定时反转（`@qianmo/scheduler`）与主动通知接线** | 值守场景原型的载体：定时由中枢持有、节点只被叫醒；产出默认静默，只有显式 notify 才打扰人 | P13.2、P13.5 | `dedupKey = "<jobId>:<fireAtMs>"` 幂等；两个 scheduler 实例共享 store 时 CAS at-most-once；跨 5 个周期停机后**补跑塌缩为一次**；失败退避递增；notify 端到端（agent 工具 → 中枢 → 审计链）；**中枢缺席时 notify 落台账、回来后按序排空且不重复**；**注入给 ACP 的 MCP 工具表只含 `qianmo_notify`、不含任何排程能力**（E4 结构性断言）；出站限流是**滑动窗口不是令牌桶**（用例覆盖「安静一小时后不放行一整批」）；**节点一次都不拨号**（H-2 不变式的扫描断言）；一个真实值守作业连续跑 ≥ 24 h 留档 | 李怡康 + 董宗岳 | **28–48 人时** |
 | **P13.7** ⭐ **记忆接线与无人值守安全收窄** | 把 `@qianmo/memory` / `@qianmo/recall` 接进常驻链路（sidecar 位置），并给「预批准白名单没有天花板」装上天花板 | P13.4 | 注入出现在**用户消息**里、**不出现在 system prompt** 里（结构断言）；一轮内是冻结快照；作用域按 `(agent, contextId)` 分区；AC-4 的 5/5 与伪造引用负样本在常驻链路下不回归；hardline 拒绝表求值**在 allow 规则之前**且**不从会话配置读取**，file 与 shell **双面封堵各一条负向用例**；注入扫描的对象是**组装后**的完整 prompt（用「入参干净、组装后含注入」的用例证明）；远端 `text` 的分隔符被中和；**往工作树丢一个记忆目录不能劫持本节点记忆**；注入 + 队列 + 工具 schema 叠加后不触发 auto-compact；**`check:unused` 结论只在主检出或干净 clone 上取** | 董宗岳 + 陈曦宇 | **24–40 人时** |
 
@@ -806,7 +809,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 队列优先级、基座 system prompt 三层分层（D1/D2）。
 ```
 
-#### (b) M1 方向表两行补注（改 `roadmap.md:833` 与 `:836`）
+#### (b) M1 方向表两行补注（改 `roadmap.md:853` 与 `:856`）
 
 ```markdown
 | **记忆能力上线** | 语义检索（在确定性检索之上叠加，非替换）、记忆治理（冲突消解、过期废止、跨项目隔离）。**（v2.48 补注）确定性检索接进常驻链路那一段由 P13.7 承接**（注入位置定为用户消息 sidecar，不进 system prompt）；**语义检索仍在 N-8 之内、由本行的后续包承接** | 检索命中率与幻觉引用率有量化指标并优于 M0 基线 |
@@ -824,7 +827,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 **只有一处是必须的，另两处是补注。**
 
-#### (a) 【必须】§3.3 C-4 的 `LIMITS` 数值清单（`charter.md:174`）
+#### (a) 【必须】§3.3 C-4 的 `LIMITS` 数值清单（`charter.md:180`）
 
 原文：
 
@@ -834,7 +837,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 > **所有协议级数值上限以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处**（`maxHops=8`、`maxMessageBytes=256KiB`、`defaultTtlMs=30s`、`defaultTaskTtlMs=5min`、`ratePerMinute=600`、**`defaultNotifyTtlMs=2min`**、**`notifyRatePerMinute=60`**、**`maxQueuedTurns=32`**），文档与其他包不得各写一份。**v2.13 新增后三项**（随 M1 P13.2 的主动通知与队列治理）：`defaultNotifyTtlMs` 是 `notify` 的投递时限默认值，取值介于 30 s 与 5 min 之间——对端是可能正在重启的中枢而不是在跑的 agent，但一条超过两分钟没送到的通知对人已经是历史而不是告警，再投由发送方台账负责；`notifyRatePerMinute` 刻意比入站 `ratePerMinute` 低一个数量级，因为入站预算防的是外部打击、出站预算防的是**本节点在无人值守下把人淹掉**；`maxQueuedTurns` 是节点 turn 队列的上界，在节点级串行（分钟级单 turn）下 32 深已经排到远超任何发送方的 `taskTtlMs`，再大只是把注定超时的消息多存一会儿。依据见 `docs/dev/resident-botization.md` §2.5。
 
-#### (b) 【补注，建议】§3.2 R-3（`charter.md:166`）末尾追加
+#### (b) 【补注，建议】§3.2 R-3（`charter.md:172`）末尾追加
 
 > **v2.13 补注**：R-3 原文的唤醒触发源「消息到达 / 定时 / 手动」中的**「定时」自 M1 P13.6 起明确由中枢持有、节点侧零定时状态**。理由是结构性的而非偏好：节点内的周期性 ticker 会让节点永远不空闲、因而永远不进入 R-3 定义的沙箱冻结态，直接抵消本条。代价是中枢成为定时的单点，补偿为「调度器缺席可见」+ 调度器自身监督 + 重启时补跑塌缩为一次。**R-3 的判据与形态未改。**
 
@@ -870,7 +873,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 
 | # | 风险 | 影响 | 对策 |
 |---|---|---|---|
-| R-a | **`frames.ts` 上与 mTLS 线撞车**：两条线都在 v1 内加可选字段（`supportedTypes` / `sig`），且 `frames.ts:169` 是严格版本相等 | 中 / 中 | 排期不并行；先落者在 PR 描述记该约束；后落者 rebase 而不是 merge |
+| R-a | **`frames.ts` 上与 mTLS 线撞车**：两条线都在 v1 内加可选字段（`supportedTypes` / `sig`），且 `frames.ts:318` 是严格版本相等 | 中 / 中 | 排期不并行；先落者在 PR 描述记该约束；后落者 rebase 而不是 merge |
 | R-b | **中枢成为定时单点**（A7 的刻意背离） | 中 / 中 | 调度器缺席可见 + 自身监督 + 重启补跑塌缩为一次；**不引入节点内 ticker 兜底**（会抵消 R-3） |
 | R-c | **回执语义变化是对外可见的行为变化**：Accepted 从此只保证「已落盘」不保证「已排上队」 | 中 / 低 | 写进 `protocol.md` §4 与控制台文案；这不是退步（今天是超时，也就是既无回执也无结果），但它是变化 |
 | R-d | **多会话把 G-9（`--resume` 时间戳并列丢尾部）放大**：每 context 每次唤醒 resume 一次 | 中 / 中 | P13.4 的 DoD 里有 N×M resume 后条目数断言；若实测证伪，需在 M1 内单独排一个包处理 G-9 本体 |
@@ -887,7 +890,7 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 | 1 | `atlas-resident-status.md`：「协议 **10** 种消息类型」（§0 第 5 行与 §3 各一次） | **11 种**：task.request / ack / task.result / ping / pong / wake / error / resource.{request,offer,grant,release}。`isReplyType` 为真的 7 个，为假的 4 个 | `packages/protocol/src/message.ts:13-39` |
 | 2 | 任务书：「常驻等于永久 yolo」 | **不成立**。常驻是 `permissionMode: 'dontAsk'` = **不提示、未预批准即拒绝**，且该转换刻意放在权限链末端以免被提前 return 旁路；`requestPermission` 又硬编码回 `cancelled`。真实风险面是**预批准白名单没有天花板 + 跨节点 prompt injection（T-7）**，不是「什么都放行」。这改变了 hermes E2 的落法：需要的不是「yolo 的刹车」，而是**求值在 allow 规则之前的 hardline 表** | `packages/resident/src/acp-client.ts:47-51,101`；`src/utils/permissions/permissions.ts:540-552`；`src/entrypoints/sdk/coreSchemas.ts:354` |
 | 3 | `hermes-study.md` §6.A：把 scale-to-zero 的三帧握手 / wake poke 呈现为已落地的行为 | 契约文本**逐字把 §3.2/§3.3 标为 PRIMITIVE**，并把「决定睡」「真挂起机器」「NAS 健康模型」写进 *NOT in scope*；§3.4 是一份**给未来行为层的义务清单**。`gateway/scale_to_zero.py` 确实存在（9.7 KB），但它是**消费**这组原语的另一层。抄的时候必须原语/行为两层分开抄，否则会把行为层的假设当成契约 | `hermes-agent/docs/relay-connector-contract.md` §3.2/§3.3/§3.4 |
-| 4 | 任务书：「建议编号 P12.x」 | **P12.1~P12.4 已被占用**（`key-distribution.md` 的 mTLS 落地四包）。本设计改用 P13.x | `docs/dev/key-distribution.md:536-539` |
+| 4 | 任务书：「建议编号 P12.x」 | **P12.1~P12.4 已被占用**（`key-distribution.md` 的 mTLS 落地四包）。本设计改用 P13.x | `docs/dev/key-distribution.md:717-720` |
 
 **另有三处不是「不符」但输入报告没说、而设计强依赖的事实**（本轮核对新得）：
 
@@ -910,6 +913,6 @@ P13.3 与 P13.4 都碰 `reader.ts`，**合并以 P13.4 先落为准**（它改�
 | hermes relay 契约的 PRIMITIVE 边界与 `supported_ops` | 本轮直接读 `docs/relay-connector-contract.md` §2/§3.2/§3.3/§3.4 |
 | hermes 可靠性五件套文件存在性 | 本轮直接 `ls` + 读 `estop.py` 文件头 |
 | roadmap / charter / retro 的条目格式与编号约定 | 本轮直接读 roadmap `:281-400,760-876`、charter `:129-230,425-430`、retro `:399-417` |
-| `P12.x` 占用 | 本轮直接读 `key-distribution.md:532-543` |
+| `P12.x` 占用 | 本轮直接读 `key-distribution.md:717-720` |
 | hermes §2/§3/§4/§5 的其余细节 | **未复核**，沿用 `hermes-study.md` 的行号与结论 |
 | atlas `packages/activator`、`@qianmo/audit`、`@qianmo/console` 的内部细节 | **仅读了 index 与关键片段**，实施包开工时需各自复核 |

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 对基座的改造点清单
 
 > **定位**：章程 **T-5 对策④**（「必须改基座核心文件时，注明为什么扩展点不够用」）与 roadmap **P9.3** 交付物「对基座的改造点清单」的汇总件。
@@ -231,7 +234,7 @@
 | # | 事项 | 涉及文件 | 请确认什么 |
 | --- | --- | --- | --- |
 | 1 | `QueryEngine.onInputAccepted` | `src/QueryEngine.ts` | ~~是否确实没有 hook / 事件能拿到「输入已入上下文」这一刻？~~ **已核实：确实没有**（逐通道排查记录在 §2 对应行；且该事实是本改动**造出来**的，观测不到）。剩「改动动机」一句话过目 |
-| 2 | 会话活跃度签名连带修改 | `src/cli/transports/WebSocketTransport.ts`、`src/cli/transports/ccrClient.ts` | **核实推翻了「逐字不变」**：忙边缘多一帧、`sendSessionActivitySignal()` 在 refcount 0 时不再发帧（另有 idle 计时器触发面扩大一处，见 §2.4 首行）。三处差异均在 keep_alive / 诊断语义内且有测试钉死。~~请裁定：有意为之（维持现状）还是漏看（需回改）？~~ **已裁定（2026-08-17，自主模式下按测试钉死的语义裁定）：有意为之，维持现状，不回改；依据 `src/utils/session/__tests__/sessionActivity.test.ts:57-77`（`manual signals report the current state` 用例——`:64` 在 refcount 为 0 的空闲态调用 `sendSessionActivitySignal()`，`:69` 断言其回调收到的首个值是 `[false]`，把 `cb(refcount > 0)`（`sessionActivity.ts:82`）钉为有意语义：空闲时发 keep_alive 帧才是谎报状态）。另两处不构成回改理由：忙边缘多发一帧 keep_alive 幂等无害；idle 计时器触发面扩大只影响 `session_idle_30s` 诊断日志、无发包 |
+| 2 | 会话活跃度签名连带修改 | `src/cli/transports/WebSocketTransport.ts`、`src/cli/transports/ccrClient.ts` | **核实推翻了「逐字不变」**：忙边缘多一帧、`sendSessionActivitySignal()` 在 refcount 0 时不再发帧（另有 idle 计时器触发面扩大一处，见 §2.4 首行）。三处差异均在 keep_alive / 诊断语义内且有测试钉死。~~请裁定：有意为之（维持现状）还是漏看（需回改）？~~ **已裁定（2026-08-17，自主模式下按测试钉死的语义裁定）：有意为之，维持现状，不回改；依据 `src/utils/session/__tests__/sessionActivity.test.ts:60-80`（`manual signals report the current state` 用例——`:67` 在 refcount 为 0 的空闲态调用 `sendSessionActivitySignal()`，`:72` 断言其回调收到的首个值是 `[false]`，把 `cb(refcount > 0)`（`sessionActivity.ts:82`）钉为有意语义：空闲时发 keep_alive 帧才是谎报状态）。另两处不构成回改理由：忙边缘多发一帧 keep_alive 幂等无害；idle 计时器触发面扩大只影响 `session_idle_30s` 诊断日志、无发包 |
 | 3 | 子命令分派 | `src/entrypoints/cli.tsx`、`src/cli/program/commands/qianmo.tsx`（新增）、`src/cli/program/commands/index.tsx` | ~~基座确实没有注册表？daemon 分派可复用？~~ **已核实**：Commander 注册表存在但被排除在 print 快速路径外、基座自己就双写；daemon worker 路线四条硬伤坐实不可行（§2 对应行）。**已定夺（P11.5，2026-08-17）**：补第二半——照基座 migrate/remote-control 的先例（`cli.tsx:94` 附近 `Also registered in main.tsx so it appears in --help` 注释）新增 `src/cli/program/commands/qianmo.tsx`（`registerQianmoCommands`，四个命令各一行英文描述，选项面不复刻，`action` 兜底动态 import 同一个 fast-path handler 模块并透传 `process.argv.slice(3)`，正常不可达），`index.tsx` 的 `registerSubcommands` 加一行调用；`cli.tsx` 的 fast-path 分支一行未动。代价只是 `commands/` barrel 里四个 `.command()` 声明——该 barrel 本就只在非 print 路径动态加载（`run.tsx`），不额外引入 bootstrap 开销，先前「付 `main.tsx` 全量 bootstrap 的代价」的说法不成立。四个命令现出现在 `occ --help`，`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步补齐 |
 | 4 | 信箱记账 | `src/utils/agents/teammateMailbox.ts`、`src/utils/__tests__/teammateMailbox.test.ts` | ~~锁内核对的理由是否成立？~~ **已核实：竞态真实、锁内消费无一步在外、新用例恰好钉住它**；原括注「不导出锁」改为「`proper-lockfile` 不可重入」（§2 对应行）。剩「当时是否即此判断」一句话过目 |
 | 5 | ~~`configWatcher` 用例~~ | `src/services/mcp/__tests__/configWatcher.test.ts` | **已闭环（2026-08-16）**：动机被 CI run `31904161135` / `31939084748` / `31939787564` 的失败形态证实；真根因（首个 stat 之前的改动被当基线）考证与修法见 `0e9e7c3b` / `d162fe72` 的提交正文，代价由显式 15 s 预算钉住。该行判定已升为 ✅ 书面 |

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 数模竞赛资源借用场景（P2.4 / AC-7，草案）
 
 | 项 | 内容 |

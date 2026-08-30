@@ -43,7 +43,7 @@
 | 层 | 机制 | 密钥材料 | 分发方式 | 现状问题 |
 |---|---|---|---|---|
 | **传输机密性** | TLS（`wss://`），Bun 直通 | 服务端证书，来自部署方 | 部署方自理 | 演示环境实际跑 `ws://` 与 unix socket（`demo-env.md` §2.4），TLS 只在类型上存在：`client.ts:86-92` 的 `ClientTlsOptions`、`server.ts:84-85` 的 `TLSOptions` 都只是透传 |
-| **连接身份** | PSK challenge/auth/ready 握手 | **全网一把对称 PSK** | 手工：`demo/env/seed.sh` ② 生成一个 0600 文件，两个节点共读 | `handshake.ts:14-24` 自己写明：任何持钥者可冒充任何节点，`node` 字段是审计标签不是权威（`frames.ts:71` 同一句）；无轮换、无过期、无吊销 |
+| **连接身份** | PSK challenge/auth/ready 握手 | **全网一把对称 PSK** | 手工：`demo/env/seed.sh` ② 生成一个 0600 文件，两个节点共读 | `handshake.ts:14-24` 自己写明：任何持钥者可冒充任何节点，`node` 字段是审计标签不是权威（`frames.ts:79-92` 同一句）；无轮换、无过期、无吊销 |
 | **消息授权** | capability 令牌，每节点 Ed25519 签发 | 每节点一对 Ed25519（`nodeIdentity.ts`，0600 / `wx` 独占 / 永不覆盖） | **没有分发**：节点把公钥打印到 stdout（`resident.ts:650-657`），人肉拷进对端的 `--trust <node>=<publicKey>` | `AgentRecord.publicKey` 字段与校验都在（`registry.ts:76`、`:181-183`、`http.ts:59` / `:116`），**但没有任何东西去发布它**——`demo/lib/p81-registry.ts` 的 `--register` 只收 `<address>=<endpoint>` |
 
 ### 1.2 一句话诊断
@@ -383,7 +383,7 @@ server 的可重连逻辑 channel 在首次认证后冻结一个四元组：`{pe
 
 两个部署策略刻意分开：`required` / `requiredPeers` 只要求 legacy 双向签名、负责退出 PSK；`credentialProofRequired` / `credentialProofRequiredPeers` 才要求精确 credential 证明。普通 signed、非 CA 部署不因开启前者而被误要求证书 selector；CA 目录下的 `--require-signed-handshake` 同时推导两者，缺 selector/proof 的旧 peer 会被拒。optional 模式若只剥 `credential`+`credentialProof`，会降为 legacy `signature`；若连 `sig` 一起剥，则仍可降为 PSK。前者只能靠 credential-required 策略关闭，后者由 `requiredPeers` / 全局严格签名策略关闭——这是 v1 additive 迁移的 opportunistic 边界，不得改写成抗降级。
 
-**L1 换完之后，`frames.ts:71` 那句注释要改**：`node` 从「审计标签，MAC 才是证明」变成「**权威**，签名证明的正是它」。这是本设计在传输层的全部收益——`handshake.ts:16-18` 那条「任何持钥者可冒充任何节点」的自陈缺陷就此关闭。
+**L1 换完之后，`frames.ts:79-92` 那句注释要改**：`node` 从「审计标签，MAC 才是证明」变成「**权威**，签名证明的正是它」。这是本设计在传输层的全部收益——`handshake.ts:16-18` 那条「任何持钥者可冒充任何节点」的自陈缺陷就此关闭。
 
 #### 7.1.1 L1 必须是**双向**的（这一条由 F-8/F-9 逼出来）
 
@@ -716,12 +716,12 @@ N-3 原文禁止四件事：**PKI、证书签发与轮换、端到端加密、�
 |---|---|---|---|
 | **P12.1** | **CA 与签发工具（宿主侧）** | `qm ca init/issue/refresh-rl` 三条命令可用（openssl 包装，**不进 `@qianmo/*` 运行时**）；`issue` **必须收 `--host` 并写进 `DNS:`/`IP:` SAN**（F-9，漏了谁也连不上）；签出的 EC 叶被 `Bun.serve` 接受（复现 F-6）、三类 SAN 可被 `node:crypto` 读回（复现 F-1/F-3）；PoP 校验（§4.3）有正负用例；RL 的签名与校验用现有 `signBytes`/`verifyBytes`，零新增依赖；一条扫描断言：CA 目录字面量不出现在任何节点侧代码里 | **8–16 人时** |
 | **P12.2** | **节点侧证书装载与公钥目录** | `--trust-ca` / `--cert` / `--key` 三个参数（沿用 `residentArgs` 的既有解析形态）；`CertificateDirectory` 实现 `PublicKeyDirectory`（**`publicKeyOf` 保持同步只读内存**，`token.ts:44-48`）；注册中心新增 `certificate` 字段与 `publicKey` 不一致时整条丢弃 + 记审计（§5.2）；RL 拉取、`nextUpdate` 过期的 fail-closed（§6.4）；负向用例：伪造证书被拒、过期证书被拒、RL 上的节点被拒、`nodekey` 与 identity 不符被拒；**N×N 解析矩阵脚本**（= §9.1 的 S-2 量具） | **12–24 人时** |
-| **P12.3** | **握手换签名 + mTLS 接线（PSK 退役）** | `AuthFrame` 增加 `sig`、`ReadyFrame` 增加 `node` + `sig`（**双向**，§7.1.1）（**注意 `frames.ts:169` 对 `v` 是严格相等，混版本共存必须靠可选字段而不是升 `FRAME_VERSION`**，见下）；服务端迁移期同时受理 MAC 与签名两种 auth 帧；两台节点一台开签名一台开 PSK 能互通；两台都开签名后 `node` 成为权威（`frames.ts:71` 注释同步改）；`requestCert` + `ca` + `rejectUnauthorized` **三件套一起**接到 `--trust-ca`（**F-10：半套会让谁都连不上**）；**首日先做一个 spike 把 §2 那条 ws 路径的未决测清楚并留档**；证书到期主动断连用 4003（§6.3） | **12–24 人时** |
+| **P12.3** | **握手换签名 + mTLS 接线（PSK 退役）** | `AuthFrame` 增加 `sig`、`ReadyFrame` 增加 `node` + `sig`（**双向**，§7.1.1）（**注意 `frames.ts:318` 对 `v` 是严格相等，混版本共存必须靠可选字段而不是升 `FRAME_VERSION`**，见下）；服务端迁移期同时受理 MAC 与签名两种 auth 帧；两台节点一台开签名一台开 PSK 能互通；两台都开签名后 `node` 成为权威（`frames.ts:79-92` 注释同步改）；`requestCert` + `ca` + `rejectUnauthorized` **三件套一起**接到 `--trust-ca`（**F-10：半套会让谁都连不上**）；**首日先做一个 spike 把 §2 那条 ws 路径的未决测清楚并留档**；证书到期主动断连用 4003（§6.3） | **12–24 人时** |
 | **P12.4** ✅ **已落地（2026-08-20）** | **默认策略切换与 N-3 解除材料** | `--audit-signed-tasks` 观察模式（§9.2 ①）；§9.1 五条判据的探针脚本各出一份机器可判读的报告；控制台证书栏（§10.1）；切默认 + `--open-policy` 逃生开关；§12 的 K-1 ~ K-9 逐条附证据 | **8–16 人时** |
 
 **合计 40–80 人时。**任务包原文给 P11.2（本设计包）的估算是 12–24 人时；落地面比设计面大 3 倍左右，与 M0 的同类比例吻合。估算口径沿用 `retro-m0.md` §7.5（主开发 + AI 协作），**不是**章程 §6.3 的五人口径。
 
-> **P12.3 的一个必须先看的约束**：`frames.ts:169` 是 `if (parsed['v'] !== FRAME_VERSION) return null`——**任何版本不等的帧直接被丢弃**。所以「先升 `FRAME_VERSION` 再让两代共存」这条路走不通（升了之后老节点会把新帧当垃圾）。迁移只能在 **v1 之内**做：`AuthFrame` 加一个**可选** `sig` 字段，服务端「有 `sig` 就验签，没有就验 MAC」。这一条如果到实现时才发现，会整包返工——所以写在 DoD 里。
+> **P12.3 的一个必须先看的约束**：`frames.ts:318` 是 `if (parsed['v'] !== FRAME_VERSION) return null`——**任何版本不等的帧直接被丢弃**。所以「先升 `FRAME_VERSION` 再让两代共存」这条路走不通（升了之后老节点会把新帧当垃圾）。迁移只能在 **v1 之内**做：`AuthFrame` 加一个**可选** `sig` 字段，服务端「有 `sig` 就验签，没有就验 MAC」。这一条如果到实现时才发现，会整包返工——所以写在 DoD 里。
 
 ---
 

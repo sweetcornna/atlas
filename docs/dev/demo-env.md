@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # M0 演示环境（P8.1）
 
 > **v0.1 · 2026-08-15 · 本地腿已实测，真机腿未验证**

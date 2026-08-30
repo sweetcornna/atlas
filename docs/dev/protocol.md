@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest — 消息协议 v0.1
 
 | 项 | 内容 |

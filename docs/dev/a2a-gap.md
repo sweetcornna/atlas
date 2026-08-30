@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest — 与 A2A 的对齐评估
 
 | 项 | 内容 |

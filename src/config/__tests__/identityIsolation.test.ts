@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * P0.3 identity isolation — proves the occ default, the Qianmo node, and (by
  * construction) the official Claude Code can share one machine without touching

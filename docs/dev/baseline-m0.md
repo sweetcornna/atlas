@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # M0 性能与稳定性基线（P7.3）
 
 > **v1.0 · 2026-08-17 · 定稿：两条长跑按负责人决议提前收口（栏 B 22.13 h / 栏 A 3.53 h），基线测量到此为止**

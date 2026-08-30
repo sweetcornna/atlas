@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌 AgentNest — M0 技术选型与调研实测记录
 
 | 项 | 内容 |

@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 阡陌项目申报材料
 
 阡陌（AgentNest）——云端常驻智能体交流网络。本目录存放项目立项与竞赛申报的全部材料。

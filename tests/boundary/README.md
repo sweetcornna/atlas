@@ -1,3 +1,6 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # 边界用例库 v1（P5.4）
 
 这个目录只放一种东西：**五类边界问题的自动化用例**，每条都指向 `docs/dev/protocol.md`

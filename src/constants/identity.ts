@@ -1,3 +1,6 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Which product identity this process runs as — the ONE signal that selects
  * between the occ default and the Qianmo node variant.
