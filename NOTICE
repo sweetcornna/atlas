@@ -176,28 +176,69 @@ MIT 授权不因本次变更而失效；AGPL 只适用于本次变更之后发�
               不随后续同步变化
   当前锁定    1128a3919a7f01298a6cbf5c468a839c6cf4ee6a
               对应版本 v2.46.0 —— 2026-08-17 首次上游同步后的 pin
+  基座快照    base-snapshot/v2.46.0
+              本仓库内的标签，指向一个**无父提交**的基座零改动快照，其树即当前
+              锁定的基座内容。它是「基座内容有多少」的度量基线；此后每次上游
+              同步都照此再打一个 base-snapshot/<版本> 标签
   上游许可    MIT License
               Copyright (c) 2026 open-claude-code contributors
 
 完整的导入记录与后续上游同步记录见仓库根目录的 BASE.md。
 
 上游 open-claude-code 的 MIT 许可与版权声明**予以保留**，逐字存于根目录
-`LICENSE.base`（该文件与基座快照 `base-snapshot/v2.46.0` 逐字节相同）。本仓库
-对基座的修改不改变该许可对基座那层的适用。
+`LICENSE.base`：它与基座快照里的 `LICENSE`（即 `base-snapshot/v2.46.0:LICENSE`）
+逐字节相同（1,450 字节），可现核：
+
+    git show base-snapshot/v2.46.0:LICENSE | cmp - LICENSE.base
+
+  注意逐字节相同的对象是**快照里的 `LICENSE`**，不是快照里的 `LICENSE.base`。
+  `LICENSE.base` 这条路径是阡陌新增的，快照里根本没有它——`git cat-file -e
+  base-snapshot/v2.46.0:LICENSE.base` 会报错。按旧文的字面（「该文件与基座快照
+  逐字节相同」）去核，会得出"这句是假的"的错误结论。
+
+本仓库对基座的修改不改变该许可对基座那层的适用。
 
 **成果边界**：基座以零改动快照导入于**本仓库提交 `3380c88`**，其后的全部提交为阡陌
 团队的工作。举证命令：
 
-  工作面        git diff 3380c88..HEAD
-  工作记录      git log 3380c88..HEAD
-  基座贡献边界  git show --stat 3380c88
+  工作面            git diff base-snapshot/v2.46.0..HEAD
+  工作记录          git log 3380c88..HEAD
+  当前基座贡献边界  git show --stat base-snapshot/v2.46.0
 
 另加导入前的两个立项提交 67f6081、74f7a22。
 
-  说明：本仓库经零改动快照导入、**不含上游 git 历史**，故举证基线是本仓库的导入
-  提交 3380c88，而不是上游 pin 提交 848ad8c2 —— 后者是**上游仓库**的 SHA，在本
-  仓库不是有效的 git 对象。上游溯源以 BASE.md 的记录与上游仓库比对为准，不经本
-  仓库 git 对象。（依据 docs/dev/charter.md §5.5「举证命令勘误」，v2.4）
+**工作面基线的一次向下修正**：本文此前把工作面写作 `git diff 3380c88..HEAD`。那在
+2026-08-17 的首次上游同步（v2.38.3 → v2.46.0）之后已经不成立——上游那 6 万行随
+该次同步进入了本仓库历史，再拿导入提交作度量基线，就会把上游内容算成我方工作。
+实测对照（2026-08-30）：
+
+    git diff --shortstat 3380c88..HEAD
+      → 1599 files changed, 292973 insertions(+), 39268 deletions(-)
+    git diff --shortstat base-snapshot/v2.46.0..HEAD
+      → 1048 files changed, 234068 insertions(+), 31937 deletions(-)
+
+两条命令的差额约 58,905 行插入，来自两个基线之间的那次上游同步——它不是阡陌的
+工作。**但这个差额不等于那次同步本身的行数**：同步那一笔实测是 650 文件 /
++60,362 / −7,431（`git show --shortstat d04a79dd`，2026-08-30 实测）。两个数不
+相等是正常的——同步之后的阡陌工作又改动或删除了上游新增的一部分行，所以「两次
+测量之差」与「那次同步的行数」本来就不是同一个量，不该指望它们对得上。**这处
+错误的方向是把我方工作量夸大，所以必须改**——报大数字比报小数字更伤。上面这些
+数字都会随工作推进而变，真正作数的是命令而不是数字。口径依据
+docs/dev/charter.md §5.5「v2.13 更新 · 首次上游同步之后，工作面口径改用基座
+快照标签」。
+
+**工作记录里有一笔不是阡陌工作**：`git log 3380c88..HEAD` 中的 `d04a79dd`
+（2026-08-17，"三方应用上游 open-claude-code v2.46.0"）改动内容全部来自上游补丁，
+把工作记录作为举证材料时须单独声明这一笔。
+
+**导入提交 `3380c88` 的地位不变**：它仍是「阡陌工作从哪里开始」的历史起点，只是
+不再兼任「基座内容有多少」的度量基线——后者已由标签 `base-snapshot/v2.46.0` 承担。
+
+  说明：本仓库经零改动快照导入、**不含上游 git 历史**，故举证基线是本仓库内的
+  对象（导入提交 3380c88 与标签 base-snapshot/v2.46.0），而不是上游 pin 提交
+  848ad8c2 —— 后者是**上游仓库**的 SHA，在本仓库不是有效的 git 对象。上游溯源以
+  BASE.md 的记录与上游仓库比对为准，不经本仓库 git 对象。（依据
+  docs/dev/charter.md §5.5「举证命令勘误」v2.4 与「v2.13 更新」）
 
 ================================================================================
 三、关于基座的性质（如实声明）
@@ -598,6 +639,13 @@ into the repository root as an unmodified snapshot.
   Current pin        1128a3919a7f01298a6cbf5c468a839c6cf4ee6a
                      tag v2.46.0 -- the pin after the first upstream
                      synchronization on 2026-08-17.
+  Base snapshot      base-snapshot/v2.46.0
+                     a tag in this repository pointing at a **parentless**
+                     unmodified snapshot of the base tree, whose contents are
+                     the base as currently pinned. It is the measurement
+                     baseline for "how much of this is base code"; every
+                     subsequent synchronization gets its own
+                     base-snapshot/<version> tag.
   Upstream license   MIT License
                      Copyright (c) 2026 open-claude-code contributors
 
@@ -605,7 +653,19 @@ The import record and any subsequent upstream synchronization records are kept
 in BASE.md at the repository root.
 
 The upstream MIT license and copyright notice are **retained** verbatim in
-`LICENSE.base` (byte-for-byte identical to the `base-snapshot/v2.46.0` tag).
+`LICENSE.base`: it is byte-for-byte identical to the `LICENSE` held in the base
+snapshot -- that is, `base-snapshot/v2.46.0:LICENSE` -- at 1,450 bytes, which
+can be checked now:
+
+    git show base-snapshot/v2.46.0:LICENSE | cmp - LICENSE.base
+
+  Note that what is byte-for-byte identical is the snapshot's **`LICENSE`**,
+  not a `LICENSE.base` inside the snapshot. The path `LICENSE.base` was added
+  by Qianmo and does not exist in the snapshot at all -- `git cat-file -e
+  base-snapshot/v2.46.0:LICENSE.base` errors out. Checking the earlier wording
+  ("identical to the `base-snapshot/v2.46.0` tag") literally would have led to
+  the false conclusion that the sentence was untrue.
+
 Modifications made in this repository do not alter the applicability of that
 license to the base layer.
 
@@ -613,20 +673,59 @@ license to the base layer.
 repository's commit 3380c88**; every commit after it is the work of the Qianmo
 AgentNest Team. Evidence commands:
 
-  work surface        git diff 3380c88..HEAD
-  work log            git log 3380c88..HEAD
-  base contribution   git show --stat 3380c88
+  work surface           git diff base-snapshot/v2.46.0..HEAD
+  work log               git log 3380c88..HEAD
+  base contribution      git show --stat base-snapshot/v2.46.0
 
 plus the two pre-import project-setup commits 67f6081 and 74f7a22.
 
+**A downward correction to the work-surface baseline**: this file previously
+gave the work surface as `git diff 3380c88..HEAD`. That stopped holding at the
+first upstream synchronization on 2026-08-17 (v2.38.3 -> v2.46.0), which
+brought some sixty thousand upstream lines into this repository's history;
+measured from the import commit, upstream content is counted as our own work.
+Compared side by side on 2026-08-30:
+
+    git diff --shortstat 3380c88..HEAD
+      -> 1599 files changed, 292973 insertions(+), 39268 deletions(-)
+    git diff --shortstat base-snapshot/v2.46.0..HEAD
+      -> 1048 files changed, 234068 insertions(+), 31937 deletions(-)
+
+The gap of roughly 58,905 insertions between the two commands comes from the
+upstream synchronization that sits between the two baselines; it is not
+Qianmo's work. **That gap is not the same quantity as the size of the
+synchronization itself**, which measures 650 files, +60,362, -7,431
+(`git show --shortstat d04a79dd`, measured 2026-08-30). The two figures are not
+expected to agree: the Qianmo work done after the synchronization went on to
+modify or delete some of the lines upstream had added, so "the difference
+between two measurements" and "the size of that synchronization" are different
+quantities to begin with. **The error ran in the direction of overstating our
+own output, which is why it had to be corrected** -- overstating a figure does
+more damage than understating one. All of these numbers move as work proceeds;
+what counts is the command, not the number. The convention follows
+docs/dev/charter.md §5.5, "v2.13 update -- after the first upstream
+synchronization the work surface is measured from the base snapshot tag".
+
+**One commit in the work log is not Qianmo's work**: within
+`git log 3380c88..HEAD`, `d04a79dd` (2026-08-17, "three-way application of
+upstream open-claude-code v2.46.0") consists entirely of content taken from
+the upstream patch, and must be declared separately whenever the log is
+offered as evidence.
+
+**The standing of the import commit 3380c88 is unchanged**: it remains the
+historical starting point of "where Qianmo's work begins" and merely ceases to
+double as the measurement baseline for "how much of this is base code" -- that
+role now belongs to the tag `base-snapshot/v2.46.0`.
+
   Note: this repository was created by an unmodified snapshot import and does
-  **not** contain the upstream git history. The evidence baseline is therefore
-  this repository's import commit 3380c88, not the upstream pinned commit
-  848ad8c2 — the latter is a SHA in the *upstream* repository and is not a
-  valid git object here. Upstream provenance rests on the records in BASE.md
-  and on comparison against the upstream repository, not on git objects in
-  this repository. (Per docs/dev/charter.md §5.5, "evidence command erratum",
-  v2.4.)
+  **not** contain the upstream git history. The evidence baselines are
+  therefore objects inside this repository -- the import commit 3380c88 and
+  the tag base-snapshot/v2.46.0 -- not the upstream pinned commit 848ad8c2;
+  the latter is a SHA in the *upstream* repository and is not a valid git
+  object here. Upstream provenance rests on the records in BASE.md and on
+  comparison against the upstream repository, not on git objects in this
+  repository. (Per docs/dev/charter.md §5.5, "evidence command erratum", v2.4,
+  and the v2.13 update.)
 
 3. NATURE OF THE BASE (STATED PLAINLY)
 --------------------------------------------------------------------------------
