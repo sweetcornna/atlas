@@ -170,9 +170,9 @@ occ 必须能和官方 Claude Code 装在同一台机器上互不干扰。**所�
   （`packages/activator/test/surface-invariant.test.ts` 的
   `test('every source file carries the two-line copyright header', …)`，随建包提交 `6f30c45c`
   一起加入，跑在 `bun test` / `scripts/test-shards.sh` / CI 里）——那是**约定检查，不是归属判定**，
-  而且只覆盖该包 `src/` 下的 `.ts`，不覆盖其余目录。除它之外确实没有别的：`package.json` 的
+  而且只覆盖该包 `src/` 下的 `.ts`，不覆盖其余目录。**这道断言目前是全仓测试面与 CI 面唯一的一处**——测试面：全仓 `.test.ts`/`.test.tsx` 里断言这两行头的只有它自己（`git grep -n "Copyright 2026 Qianmo" -- '*.test.ts' '*.test.tsx' | awk -F: '$2>2'`，排掉文件自身前两行的版权头后只命中这一条 `expect`）；CI 面：`.github/workflows/` 下没有版权头门禁（`git grep -niE 'spdx|copyright' -- '.github/'` 只命中 `build-audio-capture-windows.yml` 自己的文件头，不是断言），pre-commit（`.husky/pre-commit` 只跑 `bunx lint-staged`）与 `lint-staged`/`biome.json` 配置同样不查头。`package.json` 的
   11 条 `check`/`check:*` 都不读版权头，`scripts/check-*.ts` 里 SPDX 只出现在两个脚本自己的
-  文件头里。**盘点这类门禁时别只数 `check:*`**——单测本身就是门禁的一部分，这仓库里唯一那道
+  文件头里，`scripts/sbom.ts` 的 `headerCoverage` 只出报表、不断言、不返回非零，也不在 `precheck`/`verify`/`ci.yml` 里。**盘点这类门禁时别只数 `check:*`**——单测本身就是门禁的一部分，这仓库里唯一那道
   正好在单测里（2026-08-30 复核；现跑现验：`bun test packages/activator/test/surface-invariant.test.ts`）。
   缺头的真实风险是**下游许可扫描器等外部工具**——那类工具通常按
   文件头默认判定，会把它误判为基座层。

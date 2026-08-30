@@ -200,7 +200,8 @@ this repository.
     AGPL-3.0-or-later 的条款分发**——文本条目是组合作品，因为其中的阡陌部分是
     AGPL 作品；那六个 `.node` 不是组合作品，但它们随其 AGPL 源码分发、适用同一
     许可。MIT 宽松、可被并入 AGPL 作品，方向上不冲突；但**"按来源分层"绝不等于
-    "可按 MIT 取走"**——取走这 180 个文件（连同里面的阡陌改动）受 AGPL 约束。
+    "可按 MIT 取走"**——取走这 180 个文件（连同里面的阡陌改动）不受 MIT 约束；
+    除根 `LICENSE` 这份许可正文本身按 FSF 的逐字复制条款外，其余受 AGPL 约束。
 
     不给它们加头有三条理由：① 文件头标的是**文件的来源层**，不是逐行作者——一个
     来自基座、其后被阡陌改动过的文件，仍然是基座来源的文件；② **这是我们自己定
@@ -848,7 +849,9 @@ licenses, and the boundary is the provenance boundary itself:
     carry the license of, their AGPL source. MIT is permissive and may be
     incorporated into an AGPL work, so there is no conflict of direction; but
     **"layered by provenance" is in no way "may be taken under MIT"** --
-    taking those 180 files, and the Qianmo changes inside them, is subject to
+    taking those 180 files, and the Qianmo changes inside them, is not
+    governed by MIT; except for the root `LICENSE` -- itself the license
+    text, bound only by FSF's verbatim-copy terms -- the rest is subject to
     the AGPL.
 
     There are three reasons for not adding headers to them. First, the header
