@@ -48,7 +48,7 @@
 
 import { createHash } from 'node:crypto'
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { parse as parseJsonc } from 'jsonc-parser/lib/esm/main.js'
 
 const REPO_ROOT = resolve(import.meta.dir, '..')
@@ -871,6 +871,14 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
 // ───────────────────────────── prebuilt binaries ──────────────────────────
 
 type BinaryAudit = {
@@ -893,8 +901,7 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
     what: `${triples.length} 个平台三元组的 audio-capture.node 预编译 N-API 插件`,
     tracked: '入库（git 跟踪）',
     licenseFile: (await findLicenseFile(join(REPO_ROOT, 'vendor'))) ?? '无',
-    provenance:
-      '仓库内无构建脚本、无源码、无 LICENSE；由 build.ts / post-build.ts 复制进 dist/vendor/',
+    provenance: await audioCaptureProvenance(),
   })
 
   const ripgrepRoot = join(REPO_ROOT, 'src', 'utils', 'vendor', 'ripgrep')
@@ -919,22 +926,180 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
     const natives = files.filter(
       f => f.endsWith('.node') || f.endsWith('.dylib'),
     )
+    const crateLicense = await readCargoLicense(
+      join(pkgDir, 'native', 'Cargo.toml'),
+    )
     rows.push({
       location: `packages/${dir}/`,
       what:
         natives.length > 0
           ? `${natives.length} 个原生产物 + TS 装载层`
-          : '纯 TypeScript 装载层，包内无原生产物',
+          : crateLicense !== ''
+            ? 'TS 装载层 + 原生 Rust 源码 crate（native/），包内无预编译产物'
+            : '纯 TypeScript 装载层，包内无原生产物',
       tracked: '入库',
       licenseFile: (await findLicenseFile(pkgDir)) ?? '无',
-      provenance:
-        license === ''
-          ? 'package.json 无 license 字段（private:true，随仓库 MIT）'
-          : `package.json license = ${license}`,
+      provenance: await napiPackageProvenance(pkgDir, license, crateLicense),
     })
   }
 
   return rows
+}
+
+/**
+ * 装载层归哪一边——**判据是基座快照比对，不是 SPDX 文件头**。
+ *
+ * NOTICE 一、许可说的是「阡陌文件带 `Copyright` + `SPDX-License-Identifier:
+ * AGPL-3.0-or-later` 两行，基座导入文件不带任何 SPDX 头」。**这句话只在一个
+ * 方向上成立**：基座文件确实不会带阡陌版权头，所以「带头 ⇒ 阡陌自有」是安全
+ * 的。**反过来不成立**——「没头」既可能是基座文件，也可能是漏加头的阡陌文件。
+ * 本仓库当下就有 38 个阡陌自有文件没有头（docs/dev/ 下 23 个 .md、demo/ 下
+ * 15 个，均已用 `git cat-file -e base-snapshot/v2.46.0:<path>` 确认不在基座
+ * 快照里；另有单独 PR 在补这些头）。把「没头 ⇒ 基座 MIT」写进生成器，等于让
+ * 它可复现地给未来任何一个漏加头的阡陌新包盖上「随 LICENSE.base（MIT）」——
+ * 那正是本轮要修掉的失效模式（原先硬编码的「随仓库 MIT」），只是从写死结论
+ * 变成了动态推导出同一句假话。
+ *
+ * 所以归属由 `baseSnapshotVerdict()` 用成果边界标签（CLAUDE.md §2.5 的
+ * `base-snapshot/*`）判定；文件头这里只作为**观察到的事实**报出来，不参与
+ * 定性。快照标签取不到时（浅克隆、未拉 tag）明说「归属未核实」，不退回推断。
+ */
+async function napiPackageProvenance(
+  pkgDir: string,
+  license: string,
+  crateLicense: string,
+): Promise<string> {
+  const parts: string[] = []
+  parts.push(
+    license === ''
+      ? 'package.json 无 license 字段（private:true）'
+      : `package.json license = ${license}`,
+  )
+  const { ok, total } = await countAgplHeaders(pkgDir)
+  if (total > 0) {
+    parts.push(`TS 装载层 ${total} 个 .ts，带阡陌版权头 ${ok} 个（观察值）`)
+    parts.push(await baseSnapshotVerdict(pkgDir, ok, total))
+  }
+  if (crateLicense !== '') {
+    parts.push(
+      `native/ 为阡陌自研 Rust crate（Cargo.toml license = ${crateLicense}，源文件带 SPDX 头）`,
+    )
+  }
+  return parts.join('；')
+}
+
+/**
+ * 用成果边界标签断归属：`base-snapshot/*` 是无父提交的基座零改动快照，
+ * 「这个文件在不在那棵树里」是本仓库里唯一权威的「基座 / 阡陌」判据
+ * （CLAUDE.md §2.5、BASE.md 上游同步记录）。
+ *
+ * 取不到标签就**只报事实、不下结论**——浅克隆和没拉 tag 的检出上这条查询
+ * 必然失败，那时退回文件头推断就等于在最可能出错的环境里给出最不可靠的结论。
+ */
+async function baseSnapshotVerdict(
+  pkgDir: string,
+  headered: number,
+  total: number,
+): Promise<string> {
+  const tag = latestBaseSnapshotTag()
+  if (tag === '') {
+    return '归属未核实（本地没有 base-snapshot/* 标签，无法比对基座快照；文件头不是判据——没有文件头既可能是基座文件，也可能是漏加头的阡陌文件）'
+  }
+  const pkgRel = toPosixRelative(pkgDir)
+  const snapshot = gitLsTree(tag, pkgRel)
+  if (snapshot === null) {
+    return `归属未核实（git ls-tree ${tag} 查询失败，无法比对基座快照）`
+  }
+  const tsFiles = (await listFiles(pkgDir))
+    .filter(f => f.endsWith('.ts'))
+    .map(toPosixRelative)
+  const inSnapshot = tsFiles.filter(f => snapshot.has(f)).length
+  if (inSnapshot === tsFiles.length) {
+    return `TS 装载层 ${inSnapshot}/${tsFiles.length} 见于基座快照 ${tag} = 基座导入层，随 LICENSE.base（MIT）`
+  }
+  if (inSnapshot === 0) {
+    const gap =
+      headered < total
+        ? `；其中 ${total - headered} 个缺章程 §5.5 要求的版权头，需补`
+        : ''
+    return `TS 装载层 0/${tsFiles.length} 见于基座快照 ${tag}（即快照之后新增）= 阡陌自有，随 LICENSE（AGPL-3.0-or-later）${gap}`
+  }
+  return `TS 装载层 ${inSnapshot}/${tsFiles.length} 见于基座快照 ${tag}，基座与阡陌混杂，需人工复核`
+}
+
+/** 仓库最新的成果边界快照标签；没有（或没装 git）时返回空串。 */
+let baseSnapshotTagCache: string | null = null
+function latestBaseSnapshotTag(): string {
+  if (baseSnapshotTagCache !== null) return baseSnapshotTagCache
+  const out = runGit(['tag', '--list', 'base-snapshot/*', '--sort=-v:refname'])
+  baseSnapshotTagCache = out === null ? '' : (out.split('\n')[0]?.trim() ?? '')
+  return baseSnapshotTagCache
+}
+
+/** `<tag>` 那棵树下 `pathRel` 里的全部文件路径；查询失败返回 null。 */
+function gitLsTree(tag: string, pathRel: string): Set<string> | null {
+  const out = runGit(['ls-tree', '-r', '--name-only', tag, '--', pathRel])
+  if (out === null) return null
+  return new Set(
+    out
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line !== ''),
+  )
+}
+
+/** 跑一条 git，非零退出或 git 不可用时返回 null（调用方据此降级）。 */
+function runGit(args: string[]): string | null {
+  try {
+    const proc = Bun.spawnSync(['git', ...args], {
+      cwd: REPO_ROOT,
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    if (proc.exitCode !== 0) return null
+    return proc.stdout.toString()
+  } catch {
+    return null
+  }
+}
+
+function toPosixRelative(absPath: string): string {
+  return relative(REPO_ROOT, absPath).split(sep).join('/')
+}
+
+/**
+ * `vendor/audio-capture/` 的 Corresponding Source 现状——三项全部现读现算：
+ * D-9 收口前这里硬编码的「仓库内无构建脚本、无源码、无 LICENSE」在源码入库
+ * 当天就整条变假，而 NOTICE 恰恰把本文件立成「可随时复现核对」的证据。
+ */
+async function audioCaptureProvenance(): Promise<string> {
+  const crateRel = 'packages/audio-capture-napi/native/'
+  const crateLicense = await readCargoLicense(
+    join(REPO_ROOT, 'packages', 'audio-capture-napi', 'native', 'Cargo.toml'),
+  )
+  const buildScriptRel = 'scripts/build-audio-capture.sh'
+  const hasBuildScript = await isFile(join(REPO_ROOT, buildScriptRel))
+  const parts: string[] = []
+  parts.push(
+    crateLicense !== ''
+      ? `源码 ${crateRel}（Rust crate，Cargo.toml license = ${crateLicense}）`
+      : '仓库内无源码',
+  )
+  parts.push(hasBuildScript ? `构建脚本 ${buildScriptRel}` : '仓库内无构建脚本')
+  parts.push('由 build.ts / post-build.ts 复制进 dist/vendor/')
+  return parts.join('；')
+}
+
+/** Cargo.toml 的 `license = "..."`（顶层 [package] 段），读不到返回空串。 */
+async function readCargoLicense(path: string): Promise<string> {
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch {
+    return ''
+  }
+  const hit = /^\s*license\s*=\s*"([^"]*)"/m.exec(text)
+  return hit?.[1] ?? ''
 }
 
 async function findLicenseFile(dir: string): Promise<string | null> {
@@ -960,8 +1125,15 @@ async function listFiles(dir: string, depth = 0): Promise<string[]> {
   for (const entry of entries) {
     if (entry === 'node_modules' || entry.startsWith('.')) continue
     const full = join(dir, entry)
-    if (await isDirectory(full)) out.push(...(await listFiles(full, depth + 1)))
-    else out.push(full)
+    if (await isDirectory(full)) {
+      // Rust 构建输出目录（native/.gitignore 里的 `target/`）不入库，里面躺的
+      // 是本机刚构建出来的 libaudio_capture.dylib 之类。扫进来会让「包内有几个
+      // 原生产物」随本机构建过没有而变，并把未入库的产物标成「入库」——
+      // 与 NOTICE 承诺的「可随时复现核对」直接冲突。
+      if (entry === 'target' && (await isFile(join(dir, 'Cargo.toml'))))
+        continue
+      out.push(...(await listFiles(full, depth + 1)))
+    } else out.push(full)
   }
   return out
 }
@@ -1011,6 +1183,13 @@ async function auditWorkspaces(lock: Lockfile): Promise<WorkspaceRow[]> {
 
 /** Charter §5.5 requires the two-line header on every @qianmo/* source file. */
 async function headerCoverage(dir: string): Promise<string> {
+  const { ok, total } = await countAgplHeaders(dir)
+  return `${ok}/${total}`
+}
+
+async function countAgplHeaders(
+  dir: string,
+): Promise<{ ok: number; total: number }> {
   const files = (await listFiles(dir)).filter(f => f.endsWith('.ts'))
   let ok = 0
   for (const file of files) {
@@ -1022,7 +1201,7 @@ async function headerCoverage(dir: string): Promise<string> {
       ok++
     }
   }
-  return `${ok}/${files.length}`
+  return { ok, total: files.length }
 }
 
 // ───────────────────────────── report assembly ────────────────────────────
