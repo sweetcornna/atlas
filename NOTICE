@@ -11,6 +11,9 @@ this repository.
 一、许可
 ================================================================================
 
+一.1 两层与判据
+----------------------------------------
+
 本仓库是**双许可仓库**，两层各有各的许可，分界线就是成果边界本身：
 
   * **阡陌自有代码 —— GNU AGPL-3.0-or-later**（根目录 `LICENSE`）。
@@ -21,6 +24,9 @@ this repository.
     `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——锚定提交 `d08b16c3`（新增
     `docs/dev/spdx-backfill-retro.md` 的那一笔）之后，共 647 个文件。每新增一个带该文件头的文件这个数就会变，
     所以真正作数的是下面那条命令，不是这个数字。
+
+一.2 判据不覆盖的那 87 个文件
+----------------------------------------
 
     **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，**不在基座快照那
     棵树里、又不带这两行文件头的文件共 87 个**——这是下面那条命令给出的定义，按
@@ -53,21 +59,26 @@ this repository.
 
     本文此前写的「其余是应补而未补的源文件与文档，正由单独一批提交补齐」已经
     过时——补齐工作于 2026-08-30 完成（66 个文件），上面那 87 个是补齐之后的
-    余量。个数会随工作推进而变，现算的命令（bash/zsh，不写死个数）：
+    余量。个数会随工作推进而变，现算的命令（不写死个数）：
 
-        # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件
-        comm -23 <(git -c core.quotePath=false ls-files | sort) \
-                 <(git -c core.quotePath=false ls-tree -r --name-only \
-                     base-snapshot/v2.46.0 | sort) \
-        | while IFS= read -r f; do
-            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
-              || printf '%s\n' "$f"
-          done
+        # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件——按扩展名与具名
+        # 路径两类拆开报数，同时报出带头文件数、阡陌自有总数与快照树大小
+        bun run check:license-headers --report
 
-    `-c core.quotePath=false` 不能省：默认输出会把非 ASCII 文件名写成带双引号
-    的八进制转义形式，那种名字喂给 `head` 读不到文件，会被静默跳过而少算（本仓库
-    现有 33 个非 ASCII 文件名，`git -c core.quotePath=false ls-files | LC_ALL=C
-    grep -c '[^ -~]'` 可核）。**下面那条反例检查命令同理**，它也带着这个开关。
+    这条从前是内联在本文件里的一段 `comm -23 <(git ls-files) <(git ls-tree …)`
+    管道，现已换成对门禁 `scripts/check-license-headers.ts` 的引用：同一个事实只该
+    有一处出处，手抄的第二份副本会漂。**非 ASCII 文件名那个坑仍在，只是改由门禁内
+    部处理**——`git ls-files` 默认把非 ASCII 路径输出成带双引号的八进制转义形式，
+    那种名字喂给 `head` 读不到文件、会被静默跳过而少算，本仓库现有 33 个这样的文件
+    名（`git -c core.quotePath=false ls-files | LC_ALL=C grep -c '[^ -~]'` 可核）。
+
+    **门禁把 `.json` 报成一档，上面把它拆成两类理由，是同一批文件的两种切法**：
+    28 个「JSON 语法不含注释」加 20 个 `tsconfig.json`「是工具配置不是源文件」，
+    28 + 20 恰是门禁 `.json` 那一档的 48。门禁只需要知道它们都豁免，上面那个拆分
+    记的是**为什么**豁免。
+
+一.3 文件头只在一个方向上作数
+----------------------------------------
 
     文件头只在一个方向上作数，而且两个方向的形状差得很远：
 
@@ -77,17 +88,31 @@ this repository.
         而是实测如此，两条判据在这个方向上完全一致。它同样可证伪——将来谁把
         一行头误贴到某个基座文件上就会出反例——正因如此，它作为**核对手段**
         比作为断言更有用：下面这条命令就是"有没有人把 AGPL 头误贴到基座文件
-        上"的检查，输出为空才算过。
+        上"的检查，它报"基座文件误贴 0"才算过。
 
-            git -c core.quotePath=false grep -l \
-                "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
-            | while IFS= read -r f; do
-                head -5 "$f" 2>/dev/null \
-                  | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
-                  || continue
-                git cat-file -e "base-snapshot/v2.46.0:$f" 2>/dev/null \
-                  && printf '反例: %s\n' "$f"
-              done
+            bun run check:license-headers
+
+        它同样不再是内联管道——与上面那条报数命令是同一道门禁，一次把三个方向
+        都查了。它先打一行环境行（判据标签、快照树文件数、跟踪文件总数、阡陌自有
+        数），再打一行判定行。**环境行那几个数随仓库增删而变，这里不抄——现跑现
+        看**；判定行实测如下，三个 0 才算过：
+
+            [license-headers] OK：阡陌自有缺头 0（另有 87 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
+
+        **门禁查的是三件事，与上面那两个推断方向不是一回事**：①**漏加**——阡陌
+        自有、不在豁免表内、前 5 行没有那两行；②**误贴**——前 5 行带那行 SPDX、
+        文件却在基座快照树里，也就是本段说的反例；③**豁免文件被盖章**——上面那 4
+        个（连同 `Cargo.lock` 共 5 个具名豁免）是**有意**不加头、不是带不了头，所
+        以豁免是双向的：不要求带，也**不许**带。给 `LICENSE.base` 盖上一行 AGPL 头
+        正是本文件上面称之为**虚假陈述**的那件事。**一处例外**：`NOTICE` 自身只禁
+        SPDX 行、不禁版权行——它第 2 行的 `Copyright 2026 Qianmo AgentNest Team`
+        是它作为许可声明文件本应有的版权声明。
+
+        **还有一处口径要分清，别把两个数当成同一个**：门禁报的"带头文件"是**两行
+        俱全**（版权行与 SPDX 行都落在前 5 行内），而下面「一.5」里那条
+        `git grep … | awk -F: '$2<=5'` 只数 SPDX 行。两者今天给出同一个数（缺版权
+        行的文件为 0），但定义不同——将来出现只写了 SPDX 行的文件就会分叉，两条各
+        跑一次比一比即可。
 
       - **没有文件头 ⇒ 属于基座 MIT 层**——**不成立**。理由不再是「还有一批
         没补完」，而是上面那 87 个不在快照树里、又无头的文件：其中 **86 个是
@@ -100,6 +125,9 @@ this repository.
         **确实**属于基座那一层，但文件里的阡陌改动并不因此变成 MIT——按来源分层
         不等于按行分许可。（它们分发时按什么许可，见下一条 bullet。）
 
+一.4 这条判据也有它答不了的问题
+----------------------------------------
+
     权威判据是该文件是否存在于 `base-snapshot/*` 快照，见下方"二、基座溯源"。
     **这条判据也有它答不了的问题，一并说明，不要拿它当许可结论用**：它回答的是
     「这个文件是不是随基座导入进来的」，**不是**「这个文件按什么许可授出」。
@@ -108,8 +136,12 @@ this repository.
     **两条判据在它身上都给不出正确答案**，这正是它被列进上面那 4 个"有意不加头"
     的原因。另有一类落差同样要如实说：按这条判据落在阡陌层的还有 27 张 `.jpg`、
     3 张 `.png`、2 份 `.pdf`、2 份 `.docx` 等**非代码资产**，而 **AGPL-3.0 是软件
-    许可**——这些作品适用什么许可不由这条判据决定，**目前是待明确项**，本文件不
-    代负责人下结论。
+    许可**——这些作品适用什么许可不由这条判据决定，而是按用途另分三类各自定的：自
+    制作品按 CC BY-SA 4.0 授出，第三方标识不授出，申报文书保留所有权利。清单、依
+    据与其中一张 AI 生成件的如实注明见下面「一.7 非代码资产的许可」。
+
+一.5 基座 MIT 层，与被改造过的那 180 个文件
+----------------------------------------
 
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
@@ -220,6 +252,9 @@ this repository.
 
     详见下方"二、基座溯源"。
 
+一.6 `vendor/audio-capture/` 的六个构建产物
+----------------------------------------
+
   * **`vendor/audio-capture/` 的例外已不存在，但它们落在哪一层要另作说明**：
     那六个预编译 `.node` 此前全部源码缺失，现已全部由本仓库自有源码
     （`packages/audio-capture-napi/native/`，其中 `.rs` 与 `.toml` 源文件都带
@@ -272,6 +307,105 @@ this repository.
     `clippy -- -D warnings` 干净与结构性核对。**那是验证缺口，不是许可缺口**——
     它与其余五个同出一份源码，许可上没有待定项。逐 triple 的证据等级见下方
     "五、第三方组件"。
+
+一.7 非代码资产的许可
+----------------------------------------
+
+上面那条路径判据把 34 个**非代码资产**划进了阡陌层，而 AGPL-3.0 是软件许可，套不
+到图片与文书上。它们全部是申报材料，全部由立项初始化提交 `67f6081`（早于基座导入
+提交 `3380c88`）一笔入库，与运行时代码零耦合——不进构建、不进 `dist/`，仓库里除
+`docs/` 与本文件外没有任何地方引用它们：
+
+    # 无输出。末尾两个排除项不能省：`docs/` 下是引用它们的文档本身，而**本文件
+    # 自己也写着这两个路径**——判据类文档会匹配到自己，漏掉 ':!NOTICE' 这条命令
+    # 就永远不会为空。
+    git -c core.quotePath=false grep -Il 'assets/brand\|assets/charts' \
+        -- . ':!docs' ':!NOTICE'
+
+**按用途分三类，各自的许可分别定如下。**
+
+个数与上面「27 张 `.jpg`、3 张 `.png`、2 份 `.pdf`、2 份 `.docx`」是同一批文件的
+两种切法：A 类 26 张 `.jpg` + 1 张 `.png` = 27，B 类 1 张 `.jpg` + 2 张 `.png`
+= 3，C 类 2 份 `.pdf` + 2 份 `.docx` = 4；三类合计 27 + 3 + 4 = 34，与按扩展名合
+计的 27 + 3 + 2 + 2 = 34 逐项对得上。按扩展名的那一组数由
+`bun run check:license-headers --report` 现算（见上面「一.2」），按类别的划分逐条
+列在下面，可自行数一遍。
+
+  * **A 类 · 自制作品 —— CC BY-SA 4.0**（SPDX 标识符 `CC-BY-SA-4.0`，许可 URI
+    https://creativecommons.org/licenses/by-sa/4.0/）。清单是 `docs/assets/charts/`
+    下的全部 24 张信息图（该目录下只有 `.jpg`，`git -c core.quotePath=false
+    ls-files docs/assets/charts | wc -l` 现为 24），加上
+    `docs/assets/brand/正文页背景.jpg`、`docs/assets/brand/愿景水墨图.jpg` 与
+    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`。
+
+    **许可正文不入库是有意的**：CC BY-SA 4.0 §3(a)(1) 只要求保留一个指向该许可的
+    URI，不像 GPL 系那样要求随附全文；入库反而给仓库多添一个既不带文件头、又要进
+    门禁豁免表的文件。
+
+    **那张 `.png` 是 AI 生成件，如实注明**：它内嵌 OpenAI 的 C2PA Content
+    Credentials——`digitalsourcetype/trainedAlgorithmicMedia`、生成器标为
+    `gpt-image`、签名链含 `OpenAI Media Service API` 与 `OpenAI OpCo, LLC`。
+    **AI 生成物的可版权性在部分法域存疑**；我方只就自己实际享有的权利授出，
+    **不因这条 CC BY-SA 声明而主张超出实际享有的权利**。
+
+        # 34 个资产里带 C2PA 痕迹的（只有这一个）
+        git -c core.quotePath=false grep -lai c2pa \
+            -- docs/assets 'docs/*.docx' 'docs/*.pdf'
+
+    **其余 33 个扫 `c2pa` 全部 0 命中，但"没有 C2PA"不等于"不是 AI 生成"**——重编
+    码、裁剪、另存都会把 C2PA 剥掉，这条证据只能证有、不能证无。所以本节不写"其余
+    均非 AI 生成"。
+
+    **那 24 张信息图是用什么做的，仓库里没有记录，也没有生成脚本，因此这里不写来
+    源断言。**能读出来的事实只有三条，而且要连着它们的来源一起读：**ImageMagick
+    读出的 EXIF 标签**在 24 张上完全相同，且只有 `ColorSpace` / `ExifOffset` /
+    `PixelXDimension` / `PixelYDimension` 四项；**其中没有相机标签**（`Make` /
+    `Model` / `DateTimeOriginal`），**也没有 `Software`**；长边恒为 1500 px（其中
+    4 张是 1000×1500 的竖版），不是常见的屏幕分辨率。**前两条是"identify 没报
+    出"，不是"文件里没有"**——MakerNote、它跳过的 IFD 与非标准段都可能不进它的
+    输出，与上面 C2PA 那条同理，只能证有、不能证无。**由此只能推出"不是相机照
+    片、几乎肯定不是屏幕截图"，推不出"由谁、用什么画的"。**
+
+        # EXIF 标签集（需 ImageMagick）：只输出一行，说明 24 张完全一致
+        for f in docs/assets/charts/*.jpg; do
+          identify -format '%[EXIF:*]' "$f" | cut -d= -f1 | sort | tr '\n' ' '; echo
+        done | sort | uniq -c
+        # 长边（只输出 1500）
+        identify -format '%w %h\n' docs/assets/charts/*.jpg \
+          | awk '{print ($1>$2?$1:$2)}' | sort -u
+
+  * **B 类 · 第三方标识 —— 不随本仓库任何许可授出**（3 个）：
+    `docs/assets/brand/大赛logo大图.png`、`docs/assets/brand/大赛logo横版.png`，
+    以及 `docs/assets/brand/封面.jpg`——**那个标识被合成进了封面画面**，不是删掉
+    一个文件就能择出来的。它是**中国国际大学生创新大赛**的官方标识，而**仓库内没
+    有任何授权记录、来源记录或使用许可**。三个文件仅为申报材料原样保留，
+    **第三方不得依据本仓库的许可复用**。明细、证据等级与可核命令见下方
+    "五、第三方组件"。
+
+  * **C 类 · 申报文书 —— 保留所有权利（All rights reserved）**（4 个）：
+    `docs/阡陌项目计划书.docx` / `.pdf` 与
+    `docs/阡陌创新训练项目申请书.docx` / `.pdf`，不随本仓库任何开源许可授出。理由
+    两条：① 正文含团队成员与指导教师的姓名、学号、联系电话与邮箱等个人信息；
+    ② 内嵌 B 类的第三方标识。**第二条只对其中一份成立，不要写满**——
+    `docs/阡陌项目计划书.docx` 的 `word/media/` 里有 B 类那三个标识的逐字节相同副
+    本，而 `docs/阡陌创新训练项目申请书.docx` 的 9 个内嵌媒体全部是 A 类信息图、
+    不含 B 类；两份 `.pdf` 是同源导出件，PDF 会重编码图像流，同样的字节比对在它们
+    身上做不了，所以这里**不对 `.pdf` 的内嵌情况作断言**，它们按理由①落在这一类。
+
+        # 两份 .docx 的 word/media/ 里是否含 B 类那三个标识（逐字节比对）
+        for doc in docs/阡陌项目计划书.docx docs/阡陌创新训练项目申请书.docx; do
+          d=$(mktemp -d); unzip -q -o "$doc" 'word/media/*' -d "$d"
+          shasum -a 256 "$d"/word/media/* | cut -d' ' -f1 | sort -u > "$d/embedded"
+          for f in docs/assets/brand/封面.jpg docs/assets/brand/大赛logo大图.png \
+                   docs/assets/brand/大赛logo横版.png; do
+            grep -qxF "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$d/embedded" \
+              && printf '%s ← %s\n' "$doc" "$f"
+          done
+        done
+        # 输出三行，全部指向 docs/阡陌项目计划书.docx
+
+一.8 为什么是 AGPL，以及本次转许可的边界
+----------------------------------------
 
 **为什么选 AGPL 而不是 GPL**：阡陌的产品线②是「连接节点的智能体通信协作
 网络」，最可能被无偿占用的方式恰恰是把它做成托管服务对外提供——GPL-3.0 管
@@ -568,6 +702,32 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     对每个档案做硬编码 SHA-256 校验。构建工程 microsoft/ripgrep-prebuilt 以 MIT
     发布；ripgrep 本体的许可以上游 BurntSushi/ripgrep 项目的许可文件为准。
 
+**随仓库分发的第三方标识**（不来自依赖树，**不随本仓库任何许可授出**）：
+
+  * `docs/assets/brand/大赛logo大图.png`、`docs/assets/brand/大赛logo横版.png` 与
+    `docs/assets/brand/封面.jpg` —— **中国国际大学生创新大赛的官方标识**。前两个
+    是标识本身（大图版与横版），第三个是申报封面，**该标识被合成进了画面**，不是
+    删掉一个文件就能择出来的。三个都由立项初始化提交 `67f6081` 一笔入库、此后未再
+    改动，不进构建、不进 `dist/`，只随仓库源码分发。
+
+    **证据等级：仓库内零授权记录。**这不是"授权文件放在别处"，而是本仓库里检索不
+    到任何来源、授权或使用许可的记录——`docs/assets/brand/` 目录下只有六个资产文件
+    本身，没有 LICENSE、README 或来源说明，这三个文件的全部 git 历史也只有那一笔
+    导入。两条可核命令：
+
+        # 三个文件的全部历史：只有立项初始化那一笔
+        git -c core.quotePath=false log --oneline \
+            -- 'docs/assets/brand/大赛logo大图.png' \
+               'docs/assets/brand/大赛logo横版.png' \
+               'docs/assets/brand/封面.jpg'
+        # 目录内容：只有资产本身，没有任何随附的授权或来源文件
+        git -c core.quotePath=false ls-files docs/assets/brand
+
+    **口径**：它们**仅为申报材料原样保留**，既不随本仓库的 AGPL-3.0-or-later、也
+    不随基座那层的 MIT 授出；**第三方不得依据本仓库的许可复用这三个文件**，需要使
+    用该标识的应向该赛事主办方取得授权。本仓库不主张对该标识的任何权利。它与另外
+    31 个非代码资产的分类见上文"一、许可"的「一.7 非代码资产的许可」。
+
 **开发期专有授权依赖的披露**：根 `devDependencies` 中的
 `@anthropic-ai/claude-agent-sdk`（及其平台原生包）**不是开源许可**——其包内
 LICENSE.md 全文为「© Anthropic PBC. All rights reserved.」，属专有授权。本仓库对它
@@ -586,6 +746,9 @@ ENGLISH
 1. LICENSE
 --------------------------------------------------------------------------------
 
+1.1 The two layers and the governing test
+----------------------------------------
+
 This is a **dual-licensed repository**. The two layers carry different
 licenses, and the boundary is the provenance boundary itself:
 
@@ -599,6 +762,9 @@ licenses, and the boundary is the provenance boundary itself:
     anchored at commit `d08b16c3`, which added `docs/dev/spdx-backfill-retro.md`.
     The count grows whenever a file with that header is
     added, so the command below, not this number, is what to rely on.
+
+1.2 The 87 files that the test does not cover
+----------------------------------------
 
     **This file-header test does not cover every file of Qianmo's own code.**
     As of 2026-08-30, **87 files are absent from the base snapshot tree and
@@ -633,9 +799,9 @@ licenses, and the boundary is the provenance boundary itself:
       - `LICENSE.base` -- it holds the upstream MIT license text kept
         verbatim, and adding an AGPL line to it would be a **misstatement**.
       - `NOTICE` -- this file itself, the license notice proper. The
-        `awk -F: '$2<=5'` restriction to the first five lines in the next
-        bullet's test exists for exactly this: it keeps the identifier quoted
-        in this file's body from counting itself.
+        `awk -F: '$2<=5'` restriction to the first five lines in section 1.5
+        exists for exactly this: it keeps the identifier quoted in this file's
+        body from counting itself.
       - `packages/audio-capture-napi/native/.gitignore` -- tooling
         configuration rather than source, on the same footing as the
         `Cargo.lock` beside it: a license line there would mean nothing. It
@@ -646,25 +812,33 @@ licenses, and the boundary is the provenance boundary itself:
     whose headers are still to be added; a separate set of commits is doing
     that" -- is out of date: that work was completed on 2026-08-30 (66 files),
     and the 87 above are what remains after it. The number moves as work
-    proceeds, so compute the list (bash/zsh; no number is hard-coded):
+    proceeds, so compute the list (no number is hard-coded):
 
         # files that are Qianmo's own -- i.e. absent from the base snapshot
-        # tree -- yet carry no file header
-        comm -23 <(git -c core.quotePath=false ls-files | sort) \
-                 <(git -c core.quotePath=false ls-tree -r --name-only \
-                     base-snapshot/v2.46.0 | sort) \
-        | while IFS= read -r f; do
-            head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
-              || printf '%s\n' "$f"
-          done
+        # tree -- yet carry no header, grouped by extension and named path;
+        # also reports header-bearing, Qianmo-side, and snapshot-tree totals
+        bun run check:license-headers --report
 
-    `-c core.quotePath=false` cannot be omitted: by default non-ASCII file
-    names are printed double-quoted with octal escapes, and such a name does
-    not resolve to a file when handed to `head`, so it is silently skipped and
-    undercounted (this repository currently holds 33 non-ASCII file names;
-    check with `git -c core.quotePath=false ls-files | LC_ALL=C grep -c
-    '[^ -~]'`). **The same goes for the counterexample check below**, which
-    carries the switch too.
+    The old form was an inline `comm -23 <(git ls-files) <(git ls-tree …)`
+    pipeline; it has been replaced by a reference to the gate at
+    `scripts/check-license-headers.ts`, because the same fact should have one
+    source and a hand-copied second implementation will drift. **The
+    non-ASCII-filename trap remains, but the gate now handles it internally**:
+    by default `git ls-files` double-quotes non-ASCII paths and writes octal
+    escapes, so handing such output to `head` fails to resolve the file and
+    silently undercounts it. This repository currently has 33 such names
+    (`git -c core.quotePath=false ls-files | LC_ALL=C grep -c '[^ -~]'`
+    verifies the count).
+
+    **The gate reports all `.json` files as one class, while the explanation
+    above divides them between two reasons; these are two views of the same
+    files**: 28 files for which "JSON has no comment syntax" plus 20
+    `tsconfig.json` files that are tooling configuration rather than source
+    make the gate's `.json` total of 48. The gate needs only to know that they
+    are exempt; the split above records **why** they are exempt.
+
+1.3 The file header works in one direction only
+----------------------------------------
 
     The file header holds in one direction only, and the two directions are
     shaped very differently:
@@ -679,18 +853,45 @@ licenses, and the boundary is the provenance boundary itself:
         someone putting the header on a base file by mistake would produce a
         counterexample -- which makes it more useful as a **check** than as an
         assertion: the command below is the check for "has anyone stuck an
-        AGPL header onto a base file", and it passes only when the output is
-        empty.
+        AGPL header onto a base file", and it passes only when it reports
+        `基座文件误贴 0` (0 base files mis-stamped).
 
-            git -c core.quotePath=false grep -l \
-                "SPDX-License-Identifier: AGPL-3.0-or-later" -- . \
-            | while IFS= read -r f; do
-                head -5 "$f" 2>/dev/null \
-                  | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
-                  || continue
-                git cat-file -e "base-snapshot/v2.46.0:$f" 2>/dev/null \
-                  && printf 'counterexample: %s\n' "$f"
-              done
+            bun run check:license-headers
+
+        This is no longer an inline pipeline either: the same gate as the
+        reporting command above checks all three directions in one run. It
+        first prints an **environment line** (the test's snapshot tag, the
+        snapshot-tree file count, the tracked-file count, and the count on
+        Qianmo's side), then a **determination line**. The figures on the
+        environment line move whenever files are added or removed, so they are
+        deliberately not copied here -- run the gate to see them. The measured
+        determination line follows; the gate output is in Chinese, and all
+        three values must be zero:
+
+            [license-headers] OK：阡陌自有缺头 0（另有 87 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
+
+        **The gate checks three things, which are not the same as the two
+        inference directions above**: (1) a **missing header** -- a Qianmo-side
+        file not in the exemption table whose first five lines lack either
+        required line; (2) a **mis-stamped base file** -- an SPDX line in the
+        first five lines of a file that is present in the base snapshot, the
+        counterexample discussed here; and (3) a **stamped exempt file**. The
+        four files named above, together with `Cargo.lock` (five named
+        exemptions), deliberately carry no header rather than merely being
+        unable to carry one, so the exemption is two-way: a header is neither
+        required nor permitted. Stamping `LICENSE.base` with an AGPL line is
+        exactly the **misstatement** described above. **One exception**:
+        `NOTICE` itself is forbidden an SPDX line but not a copyright line --
+        its line 2 `Copyright 2026 Qianmo AgentNest Team` is the copyright
+        notice that belongs on the licensing notice itself.
+
+        **One more distinction prevents two counts from being conflated**:
+        the gate calls a file "header-bearing" only when **both lines** appear
+        within its first five lines, whereas the `git grep … | awk -F:
+        '$2<=5'` command in section 1.5 below counts the SPDX line alone. They
+        currently give the same result (there are no files missing the
+        copyright line), but their definitions differ and would diverge if a
+        file carried only the SPDX line; run each to compare them.
 
       - **no file header, therefore the base MIT layer** -- **does not hold**.
         The reason is no longer that a batch of headers is outstanding, but
@@ -711,6 +912,9 @@ licenses, and the boundary is the provenance boundary itself:
         licensing by line. (What license those files are distributed under is
         stated in the next bullet.)
 
+1.4 What that test cannot answer
+----------------------------------------
+
     The authoritative test is whether the file exists in the `base-snapshot/*`
     snapshot; see section 2 below. **What that test cannot answer is set out
     here as well, so that it is not taken for a licensing conclusion**: it
@@ -723,9 +927,15 @@ licenses, and the boundary is the provenance boundary itself:
     the four "deliberately no header" entries above. A second mismatch has to
     be stated as plainly: the same test places 27 `.jpg`, 3 `.png`, 2 `.pdf`
     and 2 `.docx` **non-code assets** in Qianmo's layer, and **AGPL-3.0 is a
-    software license**. What licensing arrangement applies to works of that
-    kind is not settled by this test; **it is an open item**, and this notice
-    does not decide it on the project owner's behalf.
+    software license**. The test does not determine the licenses for those
+    works; they are instead classified by use: project-made works are granted
+    under CC BY-SA 4.0, the third-party mark is not granted, and the
+    application documents are All rights reserved. Section 1.7 below gives the
+    complete inventory, the basis for each class, and the disclosure for one
+    AI-generated asset.
+
+1.5 The base MIT layer and its 180 modified files
+----------------------------------------
 
   * **Code imported from the base project -- MIT License** (`LICENSE.base`,
     the upstream text kept verbatim). Base files carry **no SPDX header**,
@@ -883,6 +1093,9 @@ licenses, and the boundary is the provenance boundary itself:
 
     See section 2 below.
 
+1.6 The six build artifacts in `vendor/audio-capture/`
+----------------------------------------
+
   * **The `vendor/audio-capture/` exception no longer exists, but which layer
     those files sit in has to be stated separately**: the six prebuilt `.node`
     files there previously had no source at all anywhere. They have now all
@@ -958,6 +1171,132 @@ licenses, and the boundary is the provenance boundary itself:
     verification gap, not a license gap** — it comes from the same source as
     the other five and nothing about its license is undetermined. The
     per-triple level of evidence is set out in section 5 below.
+
+1.7 Licensing of the non-code assets
+----------------------------------------
+
+The path test above places 34 **non-code assets** in Qianmo's layer, while
+AGPL-3.0 is a software license and does not apply to images and application
+documents. All 34 are application materials checked in together by the
+project-initialization commit `67f6081` (before the base-import commit
+`3380c88`). They have no coupling to the runtime: they enter neither the build
+nor `dist/`, and nothing outside `docs/` and this file refers to them.
+
+    # No output. Neither exclusion at the end may be omitted: docs/ contains
+    # the documents that refer to the assets, and this file itself contains
+    # both path strings, so a test in NOTICE will otherwise match itself.
+    git -c core.quotePath=false grep -Il 'assets/brand\|assets/charts' \
+        -- . ':!docs' ':!NOTICE'
+
+**They are divided by use into three classes, each with its own licensing
+position.**
+
+This is the same set as the 27 `.jpg`, 3 `.png`, 2 `.pdf`, and 2 `.docx`
+listed above, counted on a different axis. Class A is 26 `.jpg` + 1 `.png` =
+27; class B is 1 `.jpg` + 2 `.png` = 3; class C is 2 `.pdf` + 2 `.docx` = 4.
+Thus 27 + 3 + 4 = 34, matching the extension count 27 + 3 + 2 + 2 = 34.
+The extension counts are computed by `bun run check:license-headers --report`
+(see section 1.2); the class membership is listed item by item below.
+
+  * **Class A -- project-made works, CC BY-SA 4.0** (SPDX identifier
+    `CC-BY-SA-4.0`; license URI
+    https://creativecommons.org/licenses/by-sa/4.0/). This class consists of
+    all 24 infographics under `docs/assets/charts/` (that directory contains
+    only `.jpg` files; `git -c core.quotePath=false ls-files
+    docs/assets/charts | wc -l` currently returns 24), plus
+    `docs/assets/brand/正文页背景.jpg`,
+    `docs/assets/brand/愿景水墨图.jpg`, and
+    `docs/assets/brand/ChatGPT Image Aug 10, 2026, 07_23_41 PM.png`.
+
+    **Not checking in the license text is deliberate**: CC BY-SA 4.0 section
+    3(a)(1) requires retaining a URI or hyperlink to the license; unlike the
+    GPL family, it does not require a copy of the full text. Adding one would
+    create another header-less file requiring a gate exemption without adding
+    a compliance benefit.
+
+    **The `.png` is AI-generated, and is identified as such here**. It embeds
+    OpenAI C2PA Content Credentials: its digital source type is
+    `trainedAlgorithmicMedia`, the generator is `gpt-image`, and the signing
+    chain names `OpenAI Media Service API` and `OpenAI OpCo, LLC`.
+    **Copyrightability of AI-generated material is uncertain in some
+    jurisdictions**; the grant covers only rights actually held, and **this
+    CC BY-SA statement does not assert rights beyond those actually held**.
+
+        # C2PA traces among all 34 assets (only this one is reported)
+        git -c core.quotePath=false grep -lai c2pa \
+            -- docs/assets 'docs/*.docx' 'docs/*.pdf'
+
+    **The other 33 produce no `c2pa` match, but no C2PA does not mean not
+    AI-generated**: re-encoding, cropping, or saving through another tool can
+    strip C2PA. This evidence can establish presence, not absence, so this
+    notice does not say that all of the other assets are non-AI-generated.
+
+    **The repository records neither how the 24 infographics were made nor a
+    generation script, so this notice makes no source assertion about them.**
+    File inspection supports only three narrower observations, each read with
+    its source: **the EXIF tags ImageMagick reports** are identical across all
+    24 files and consist only of `ColorSpace`, `ExifOffset`,
+    `PixelXDimension`, and `PixelYDimension`; `identify` reports no camera tags
+    (`Make`, `Model`, or `DateTimeOriginal`) and no `Software` tag; and the
+    longer side is always 1500 px (four are portrait images at 1000 x 1500),
+    not a common screen resolution. **For the first two observations, that is
+    "identify does not report them", not "the file does not contain them"**:
+    MakerNote data, IFDs that `identify` skips, and non-standard segments may
+    not appear in its output. As with C2PA, this evidence can establish
+    presence, not absence. **The observations support only "not camera
+    photographs and almost certainly not screenshots"; they do not establish
+    who made the images or with what.**
+
+        # EXIF tag set (requires ImageMagick): one output line means all 24 match
+        for f in docs/assets/charts/*.jpg; do
+          identify -format '%[EXIF:*]' "$f" | cut -d= -f1 | sort | tr '\n' ' '; echo
+        done | sort | uniq -c
+        # Longer side (outputs only 1500)
+        identify -format '%w %h\n' docs/assets/charts/*.jpg \
+          | awk '{print ($1>$2?$1:$2)}' | sort -u
+
+  * **Class B -- third-party marks, not granted under any license of this
+    repository** (3 files): `docs/assets/brand/大赛logo大图.png`,
+    `docs/assets/brand/大赛logo横版.png`, and
+    `docs/assets/brand/封面.jpg`. The mark has been composited into the cover,
+    so it cannot be separated merely by removing one file. It is the official
+    mark of the **China International College Students' Innovation
+    Competition**, and this repository contains **no authorization, source,
+    or permission-to-use record** for it. The three files are retained
+    verbatim solely as application materials; **a third party may not reuse
+    them in reliance on this repository's licenses**. Section 5 below gives
+    the itemization, evidence level, and reproducible commands.
+
+  * **Class C -- application documents, All rights reserved** (4 files):
+    `docs/阡陌项目计划书.docx` and its `.pdf`, and
+    `docs/阡陌创新训练项目申请书.docx` and its `.pdf`. They are not granted
+    under any open-source license in this repository, for two reasons: (1)
+    their text contains personal information including team-member and faculty
+    adviser names, student numbers, telephone numbers, and email addresses;
+    and (2) one document embeds the Class B third-party marks. **The second
+    reason applies to only one document and is not asserted of all four**:
+    `word/media/` in `docs/阡陌项目计划书.docx` contains byte-for-byte copies
+    of all three Class B files, whereas all 9 embedded media files in
+    `docs/阡陌创新训练项目申请书.docx` are Class A infographics and include no
+    Class B file. The two `.pdf` files are exports from the same sources, but
+    PDF encoding rewrites image streams, so no claim about their embedded
+    marks is made here; reason (1) is sufficient to place them in this class.
+
+        # Whether word/media/ in the two .docx files contains the three Class B marks
+        # (byte-for-byte comparison)
+        for doc in docs/阡陌项目计划书.docx docs/阡陌创新训练项目申请书.docx; do
+          d=$(mktemp -d); unzip -q -o "$doc" 'word/media/*' -d "$d"
+          shasum -a 256 "$d"/word/media/* | cut -d' ' -f1 | sort -u > "$d/embedded"
+          for f in docs/assets/brand/封面.jpg docs/assets/brand/大赛logo大图.png \
+                   docs/assets/brand/大赛logo横版.png; do
+            grep -qxF "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$d/embedded" \
+              && printf '%s ← %s\n' "$doc" "$f"
+          done
+        done
+        # Outputs three lines, all pointing to docs/阡陌项目计划书.docx
+
+1.8 Why AGPL, and the edges of this relicensing
+----------------------------------------
 
 **Why AGPL rather than GPL**: Qianmo's second product line is a communication
 and collaboration network connecting resident agents. The most likely way for
@@ -1369,6 +1708,42 @@ dependency tree):
     SHA-256. The microsoft/ripgrep-prebuilt build project is published under
     the MIT license; ripgrep itself is governed by the license files of the
     upstream BurntSushi/ripgrep project.
+
+**Third-party marks distributed with the repository** (not from the dependency
+tree and **not granted under any license of this repository**):
+
+  * `docs/assets/brand/大赛logo大图.png`,
+    `docs/assets/brand/大赛logo横版.png`, and
+    `docs/assets/brand/封面.jpg` -- the **official marks of the China
+    International College Students' Innovation Competition**. The first two
+    are the marks themselves (large and horizontal versions); the third is an
+    application cover into which the mark has been composited, so it cannot be
+    separated merely by removing one file. All three were added in the single
+    project-initialization commit `67f6081` and have not changed since. They do
+    not enter the build or `dist/`; they are distributed only with the source
+    repository.
+
+    **Evidence level: no authorization record in this repository.** There is
+    no source, authorization, or permission-to-use record to be found here:
+    `docs/assets/brand/` contains only its six asset files, with no LICENSE,
+    README, or source note, and the complete git history of these three files
+    consists of that one import. Two commands make this checkable:
+
+        # complete history of the three files: only the project-initialization commit
+        git -c core.quotePath=false log --oneline \
+            -- 'docs/assets/brand/大赛logo大图.png' \
+               'docs/assets/brand/大赛logo横版.png' \
+               'docs/assets/brand/封面.jpg'
+        # directory contents: assets only, with no accompanying authorization or source file
+        git -c core.quotePath=false ls-files docs/assets/brand
+
+    **Position**: these files are retained verbatim solely as application
+    materials. They are granted under neither this repository's
+    AGPL-3.0-or-later license nor the MIT license of its base layer. **A third
+    party may not reuse them in reliance on this repository's licenses**;
+    anyone wishing to use the mark must obtain authorization from the
+    competition organizer. This repository claims no rights in the mark. See
+    section 1.7 above for their place among the other 31 non-code assets.
 
 **Disclosure of a proprietary development-time dependency**: the root
 `devDependencies` contain `@anthropic-ai/claude-agent-sdk` (and its

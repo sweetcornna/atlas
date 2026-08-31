@@ -159,7 +159,7 @@ git apply --3way --whitespace=nowarn upstream.patch
 | 其余门禁 | 未跑 | `check:cycles` 443/2054 **恰在上游新预算上**（我方代码零环增量）、`check:identity-paths` 0 绕过、`check:mock-hygiene` 全零、`check:prompt-purity` 在预算、`biome ci` exit 0、`build:vite` + `check:bundle` 通过、双入口 `--version` 均报 2.46.0 | `check:unused` 按设计跳闸后重新测量（见 roadmap v2.45） |
 | 工时 | 估 10–20 h（中位 ~14 h） | **约 1.5 h**（主 agent 组织 + 2 个子代理并行审计 + 1 个子代理归因，含全部门禁与文档回写） | 估算是**人**的工时、且假定 7 块冲突里 4 块要负责人与安全 owner 决策；本次冲突降到 1 块、决策项归零，加上并行审计，因此不具可比性——**不要拿它去修正演练的工时模型** |
 
-### 7.1 演练没预测到、真做时才出现的五件事
+### 7.1 演练没预测到、真做时才出现的六件事
 
 1. **上游新增文件会带进新的身份路径硬编码。**`src/utils/plugins/eval/discovery.ts`（v2.46.0
    新增）把 `.occ` / `.claude` 直接写进 `SKIP_DIRS`，被 `check:identity-paths` 抓到并改成从
@@ -184,6 +184,9 @@ git apply --3way --whitespace=nowarn upstream.patch
    **结论：同步后的回写清单必须包含 `BASE.md` 之外的这三处**——它们不在任何门禁的视野里，
    `check:*` 全绿也不会提示。写法用「导入 pin（历史锚点）/ 当前锁定」两行并列，
    不要只改数字：单写一个 pin 就是这次失准的成因。
+
+6. **版权头门禁的快照 pin 也要回写。**同步后更新 `scripts/check-license-headers.ts` 的期望快照标签常量，
+   与 `BASE.md` 的当前锁定一致；漏改会让门禁用旧快照把上游新文件判成阡陌自有并变红，不会静默错。
 
 ### 7.2 被真做验证的两条设计判断
 

@@ -59,7 +59,7 @@ npm install -g @sweetcornna/open-claude-code
     ├── zh/ en/ ja/            ← 基座：基座自身的三语功能与内部文档
     ├── README.md              阡陌：申报材料索引
     ├── dev/                   阡陌：立项文档（见下）
-    ├── assets/                阡陌：品牌与图表素材
+    ├── assets/                阡陌：品牌与图表素材（许可见 NOTICE 一、许可；大赛 logo 不授出）
     └── *.docx / *.pdf         阡陌：计划书与申请书
 ```
 

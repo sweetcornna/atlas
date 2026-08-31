@@ -65,6 +65,7 @@
     "check:mock-hygiene": "bun run scripts/check-mock-hygiene.ts",
     "check:macro-guards": "bun run scripts/check-macro-guards.ts",
     "check:identity-paths": "bun run scripts/check-identity-paths.ts",
+    "check:license-headers": "bun run scripts/check-license-headers.ts",
     "verify:p32": "bun run scripts/qianmo-programming-tasks.ts",
     "qianmo:nxn-matrix": "bun run scripts/qianmo-nxn-resolution-matrix.ts",
     "qianmo:policy-probes": "bun run scripts/qianmo-policy-switch-probes.ts",
@@ -73,8 +74,8 @@
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
-    "precheck": "bun run typecheck && bun run check:fix && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun test",
-    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:docs-i18n && bun run check:cycles && ./scripts/test-shards.sh && bun run build:vite && bun run check:bundle && bun run check:unused"
+    "precheck": "bun run typecheck && bun run check:fix && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun test",
+    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun run check:docs-i18n && bun run check:cycles && ./scripts/test-shards.sh && bun run build:vite && bun run check:bundle && bun run check:unused"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.0",

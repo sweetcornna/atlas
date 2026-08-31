@@ -22,6 +22,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          # `check:license-headers` 的归属判据是「文件在不在 base-snapshot/*
+          # 那棵基座零改动快照树里」，没有那个标签就没有判据 —— 而这个 action
+          # 默认 fetch-depth: 1 并且传 --no-tags，一个标签都不会到 runner 上
+          # （已实测）。不加这一行，那道门禁在 CI 上必红，而且红的原因与被检查
+          # 的代码毫无关系。它按设计**不降级放行**：浅克隆恰恰是最容易漏头的
+          # 环境，在那里静默通过等于在最不可靠的地方给出最乐观的结论。
+          #
+          # 只加在这个 job 上：另外两个 job（acceptance-local / windows）都不跑
+          # 这道门禁，给它们拉标签是白付一次网络往返。
+          fetch-tags: true
         env:
           GIT_CONFIG_COUNT: 2
           GIT_CONFIG_KEY_0: init.defaultBranch
@@ -97,6 +108,23 @@ jobs:
       # 2026-08-26 补上 guard.ts 的反向例外后接活，毫秒级。
       - name: Check identity-path bypasses
         run: bun run check:identity-paths
+
+      # 双许可仓库的地板。阡陌自有代码 AGPL-3.0-or-later、基座导入代码 MIT，
+      # 归属的权威判据是路径（在不在 base-snapshot/* 那棵快照树里），文件头只是
+      # 这条判据的**标记**。章程 §5.5 原先明写「不为此新增 CI 断言，漏加由 PR
+      # 评审兜」——那条决定作出时判据覆盖 15 个文件，今天覆盖 647 个，而 PR 评审
+      # 这一道在 2026-08-30 一次漏了 66 个。章程 v2.18 反转了它，这一步就是反转。
+      #
+      # 为什么必须在这一层、而不是只留在 precheck：它要跑 git ls-tree 比对快照
+      # 标签，而「本地有标签、CI 上没有」正是这道门禁唯一会环境性失效的地方
+      # （见上面 checkout 的 fetch-tags）。只在开发机上跑，等于永远不验那半边。
+      #
+      # 三向硬零、无预算文件：漏加（阡陌自有文件缺头）、误贴（基座 MIT 文件被
+      # 盖上 AGPL 头）、以及具名豁免文件反过来被盖章（`LICENSE.base` 那几个是
+      # 「有意不加头」，加了就是虚假陈述），都判红。第二向是 NOTICE 一、许可里
+      # 「带头 ⇒ 阡陌自有」那条断言的唯一机器自检。毫秒级，也在 precheck / verify 里。
+      - name: Check license headers
+        run: bun run check:license-headers
 
       # 同样是此前的孤儿门禁。Mintlify 对「导航声明了但文件不存在」的页面不会跳过，
       # 而是发布成一个 404，所以这条必须在合并前跑。它没接门禁的直接后果是
