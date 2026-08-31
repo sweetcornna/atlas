@@ -416,8 +416,12 @@ grep -rn 'frames\.ts:169\|resident\.ts:386\|key-distribution\.md:5[34][0-9]' doc
 
 ## 7. 留给负责人的开放项（本批未落地）
 
+**两条开放项已由后续一批于 2026-08-30 收口，见下。**
+
 1. **要不要把版权头判据做成全仓棘轮。**判据现在是机器可判的，成本很低且有现成实现可比照（§6.2）。**但这条不能由实施方自行落地**：反转章程 §5.5「不为此新增 CI 断言」是**章程级决定、不是工程判断**，而 `CLAUDE.md` §2.1 写明范围变更必须回写章程并升版本号、无书面变更不开工。本批**只记证据、不建门禁**。
+   - **后续批次收口（2026-08-30）**：已落地，见 [`charter.md`](./charter.md) v2.18 与 `scripts/check-license-headers.ts`。
 2. **章程 §5.5 的头模板原文仍写 `SPDX-License-Identifier: MIT`**（`grep -n "SPDX-License-Identifier: MIT" docs/dev/charter.md` → 第 26、341 行）。v2.16 转 AGPL 之后未回改 —— **照它建门禁会断错值**。本批未改章程。
+   - **后续批次收口（2026-08-30）**：已落地，见 [`charter.md`](./charter.md) v2.18 与 `scripts/check-license-headers.ts`。上条括号内的「第 26、341 行」是锚定提交 `060cd550` 的历史实跑结果；现行树上同一命令只命中 `charter.md` 的 v2.5 变更记录行，规范性模板已不再命中。
 
 ## 8. 同批其他改动（只给指针）
 

@@ -88,6 +88,7 @@
 
 - **落地范围**：`packages/protocol/{src,test}` 与 `packages/registry/{src,test}` 下全部 `.ts`，**共 15 个文件**（protocol：`src/` 6 + `test/` 3；registry：`src/` 4 + `test/` 2）。`package.json` / `tsconfig.json` 不加。
 - **对后续包的约定**：此后新增的 `@qianmo/*` 源文件一律带头。**本条不追加 CI 断言**——M0 不为一条格式约定新增门禁（章程 N-12 的同类取舍），漏加由 PR 评审兜。
+- **v2.18 指针（2026-08-30）**：上条「不追加 CI 断言」已随章程 v2.18 反转；现行口径见 [`charter.md`](./charter.md) §5.5 与门禁 `check:license-headers`。
 
 ### 3.2 `license` 字段：`Apache-2.0` → `MIT`
 
