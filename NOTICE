@@ -18,8 +18,8 @@ this repository.
     常驻化改造、`demo/` 下的演示与验收套件，以及阡陌团队撰写的文档
     （`docs/dev/` 等）。判据是**文件头**：带
     `SPDX-License-Identifier: AGPL-3.0-or-later` 与
-    `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——截至
-    2026-08-30 共 646 个文件。每新增一个带该文件头的文件这个数就会变，
+    `Copyright 2026 Qianmo AgentNest Team` 两行的文件属于这一层——锚定提交 `d08b16c3`（新增
+    `docs/dev/spdx-backfill-retro.md` 的那一笔）之后，共 647 个文件。每新增一个带该文件头的文件这个数就会变，
     所以真正作数的是下面那条命令，不是这个数字。
 
     **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，**不在基座快照那
@@ -72,8 +72,8 @@ this repository.
     文件头只在一个方向上作数，而且两个方向的形状差得很远：
 
       - **带头 ⇒ 属于 AGPL 层**——成立，且已对着权威判据（该文件在不在
-        `base-snapshot/v2.46.0` 那棵零改动快照里）全量核过一遍：646 个带头的
-        文件里**零反例**（2026-08-30 实测）。这半句因此不是"我们这么规定"，
+        `base-snapshot/v2.46.0` 那棵零改动快照里）全量核过一遍：647 个带头的
+        文件里**零反例**（在提交 `d08b16c3`——即新增 `docs/dev/spdx-backfill-retro.md` 的那一笔——上实测）。这半句因此不是"我们这么规定"，
         而是实测如此，两条判据在这个方向上完全一致。它同样可证伪——将来谁把
         一行头误贴到某个基座文件上就会出反例——正因如此，它作为**核对手段**
         比作为断言更有用：下面这条命令就是"有没有人把 AGPL 头误贴到基座文件
@@ -114,7 +114,9 @@ this repository.
   * **由基座导入的代码 —— MIT License**（根目录 `LICENSE.base`，上游原文
     逐字保留）。基座文件**不带 SPDX 头**，这条正是两层的机器可判据：
 
-        # 属于 AGPL 那一层的文件——截至 2026-08-30 共 646 个（限定在文件头，
+        # 属于 AGPL 那一层的文件——这条命令读的是你当前的树，不是某一个提交；
+        # 在提交 `d08b16c3`（新增 `docs/dev/spdx-backfill-retro.md` 的那一笔）上，
+        # 它列出 647 个（限定在文件头，
         # 因此不会把本文件这类"正文里引用了这行字"的文档算进去）
         git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
           | awk -F: '$2<=5' | cut -d: -f1 | sort -u
@@ -257,9 +259,9 @@ this repository.
 
     有两点必须与上一条判据一起读，以免拿那条判据去套它们：
 
-      - 上面那条 `git grep … | awk -F: '$2<=5'` 是**针对源文件**的判据——它读的
+      - 上面那条 `git grep … | awk -F: '$2<=5'` 是**针对带文件头的源文件、文档与配置文件**的判据——它读的
         是文件头——二进制形态本来就不在它的适用范围内。因此这六个 `.node`
-        **不在那个计数里**——它报出来的 646 个全是源文件。照那条命令跑一遍，
+        **不在那个计数里**——它报出来的 647 个全是带该文件头的源文件、文档或配置文件。照那条命令跑一遍，
         输出里本来就不会有它们，那不是遗漏。
       - 「不带 SPDX 头 ⇒ 落在基座 MIT 层」这个反向推断**对二进制不成立**。上一条
         说的是基座与阡陌两层**源文件**之间怎么分，不是给随仓库分发的构建产物
@@ -593,8 +595,9 @@ licenses, and the boundary is the provenance boundary itself:
     suites under `demo/`, and documentation written by the Qianmo AgentNest
     Team (`docs/dev/` and others). The test is the **file header**: a file
     carrying both `SPDX-License-Identifier: AGPL-3.0-or-later` and
-    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 646 files
-    as of 2026-08-30. The count grows whenever a file with that header is
+    `Copyright 2026 Qianmo AgentNest Team` belongs to this layer -- 647 files,
+    anchored at commit `d08b16c3`, which added `docs/dev/spdx-backfill-retro.md`.
+    The count grows whenever a file with that header is
     added, so the command below, not this number, is what to rely on.
 
     **This file-header test does not cover every file of Qianmo's own code.**
@@ -669,8 +672,8 @@ licenses, and the boundary is the provenance boundary itself:
       - **carries the header => belongs to the AGPL layer** -- holds, and it
         has been checked in full against the authoritative test (whether the
         file exists in the unmodified `base-snapshot/v2.46.0` snapshot): of
-        the 646 files carrying the header, **not one** is a counterexample
-        (measured 2026-08-30). That half of the test is therefore an
+        the 647 files carrying the header, **not one** is a counterexample
+        (measured at commit `d08b16c3`, which added `docs/dev/spdx-backfill-retro.md`). That half of the test is therefore an
         observation rather than a stipulation, and the two tests agree
         completely in this direction. It is falsifiable all the same --
         someone putting the header on a base file by mistake would produce a
@@ -728,7 +731,9 @@ licenses, and the boundary is the provenance boundary itself:
     the upstream text kept verbatim). Base files carry **no SPDX header**,
     which is the machine-checkable test between the two layers:
 
-        # the files in the AGPL layer -- 646 of them as of 2026-08-30
+        # the files in the AGPL layer -- this command reads your current
+        # tree, not a specific commit; at commit `d08b16c3` (which added
+        # `docs/dev/spdx-backfill-retro.md`) it lists 647 of them
         # (restricted to the file header, so documents that merely quote
         # the identifier -- this file among them -- are not counted)
         git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" \
@@ -934,9 +939,10 @@ licenses, and the boundary is the provenance boundary itself:
     is not misapplied to them:
 
       - The `git grep … | awk -F: '$2<=5'` command above is **a test over
-        source files** — it reads file headers — and a binary is outside its
+        header-bearing source files, documentation, and configuration files** — it reads file headers — and a binary is outside its
         scope by construction. These six `.node` files are therefore **not
-        part of that count** — the 646 files it reports are all source files.
+        part of that count** — the 647 files it reports are all source files,
+        documentation, or configuration files.
         Running the command simply never lists them, and that is not an
         omission.
       - The reverse inference "carries no SPDX header, therefore it is in the

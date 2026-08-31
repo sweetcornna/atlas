@@ -107,7 +107,7 @@
 | 许可声明为 MIT | ⚠️ **2026-08-29 起该行作废**（章程 v2.16 转 AGPL）。原结论：✅ 一致，`NOTICE` 一/1 = MIT；`LICENSE` = MIT 正文；`package.json` `"license": "MIT"`；`README.md` §许可 = MIT。**新口径见下一行** |
 | 许可声明为**双许可**（2026-08-29 起） | ✅ 一致（实读核对 2026-08-29）。`NOTICE` 一/1 = 双许可说明；`LICENSE` = AGPL-3.0 正文（34,523 B，与 gnu.org 原文逐字节相同）；`LICENSE.base` = MIT 正文（与 `base-snapshot/v2.46.0:LICENSE` 逐字节相同）；根 `package.json` `"license": "AGPL-3.0-or-later"`；`README.md` §许可 = 双许可表 |
 | `@qianmo/*` 随仓库以 MIT 发布（章程 §5.5） | ⚠️ **2026-08-29 起改为 AGPL-3.0-or-later**。原结论：✅ 一致，17 个包 `license` 字段全部为 `MIT`。现状：**19 个 `@qianmo/*` 包的 `license` 字段全部为 `AGPL-3.0-or-later`**（包数由 17 增至 19 是期间新增包，不是本次变更），逐包核对见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
-| `@qianmo/*` 版权头两行（章程 §5.5 v2.5，v2.16 改值） | ✅ 全覆盖。原核对（2026-08-15）：17 个包 217 个 `.ts` 全部为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT`，比例 **217/217**。**2026-08-29 起 SPDX 值改为 `AGPL-3.0-or-later`**，全仓 **564 个**阡陌文件已改写、`MIT` 头剩 **0** 个（`scripts/sbom.ts` 的 `SPDX_HEADER` 常量同步），逐包比例见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
+| `@qianmo/*` 版权头两行（章程 §5.5 v2.5，v2.16 改值） | ✅ 全覆盖。原核对（2026-08-15）：17 个包 217 个 `.ts` 全部为 `// Copyright 2026 Qianmo AgentNest Team` + `// SPDX-License-Identifier: MIT`，比例 **217/217**。**2026-08-29 的处置记录**：全仓 **564 个**阡陌文件已改写、`MIT` 头剩 **0** 个；**这不是今天的判据值**。今天的判据值现跑现算，命令与口径见根 [`NOTICE`](../../NOTICE) 一、许可；逐包比例见 [`sbom-m0.md`](./sbom-m0.md) §7.1 |
 | 商标声明与章程 §5.8 第 2 条 | ✅ 一致。`NOTICE` 四/4 声明"无关联、未获背书、未获赞助"，与章程 §5.2② 第 2 条、README.md 末段逐条对应 |
 | "明确不改"标识清单 | ✅ 一致。`NOTICE` 四列出的 5 条（系统提示词前缀 / `claude-code/<version>` UA / OTel `service.name` / `CLAUDE.md`·`CLAUDE.local.md`·`AGENTS.md` / `CLAUDECODE=1`）与 `src/constants/brand.ts` 顶部注释、章程 §5.2③ **逐条一致，无增无漏** |
 | 基座性质如实声明（逆向复原） | ✅ 一致。`NOTICE` 三 与章程 §5.2②、`base-adoption.md` §5 R-1 一致；且**不作法律判断**的措辞与章程口径吻合 |
@@ -227,22 +227,8 @@
   被引用的文档补头会让它变小），现跑现算：
   `comm -13 <(git grep -n "SPDX-License-Identifier: AGPL-3.0-or-later" | awk -F: '$2<=5' | cut -d: -f1 | sort -u) <(git grep -l "SPDX-License-Identifier: AGPL-3.0-or-later" | sort -u)`
   **另一条勘误（2026-08-30 追记）**：上面那句「**其余不带 SPDX 头的就是基座那一层**」是**已被证伪的反向推断**，
-  照本文体例作签署当日的理由记述原样保留，**但它不是现行口径**——现行口径见根 `NOTICE` 一/1「文件头只在一个方向上
-  作数」一段。正向的「带头 ⇒ 属于 AGPL 层」仍然成立（对着 `base-snapshot/v2.46.0` 全量核过、零反例）；不成立的是
-  反过来推。反例是**不在 `base-snapshot/v2.46.0` 那棵树里、又不带文件头**的那批文件：在本分支提交 `39e4f042` 上
-  实测共 **87** 个，其中 **86 个是这条推断的反例**——它们既不在快照树里，内容也不与快照里的任何文件逐字节相同
-  （同一提交上逐个数出来的构成：83 个按文件格式成类——48 个 `.json`、27 个 `.jpg`、3 个 `.png`、2 个 `.pdf`、
-  2 个 `.docx`，加 `native/Cargo.lock`，它们要么没有注释语法、要么是生成件与工具配置；余下 4 个是有意不加头的
-  `BASE.md`、`NOTICE`、`native/.gitignore` 与 `LICENSE.base`。**86 个反例 = 那 83 个 + 前三个有意不加头的**）。
-  **剩下那一个 `LICENSE.base` 不是反例**：它无头，内容又逐字是上游 MIT 正文，推断在它身上恰好蒙对了——
-  但那是巧合而非判据生效，因为这两条判据看的都是**路径**、不是内容；它也是这 87 个里唯一与快照中某个文件
-  逐字节相同的一个。个数会随工作推进而变，现跑现算
-  （`-c core.quotePath=false` 不能省，否则非 ASCII 文件名会被静默跳过而少算）：
-  `comm -23 <(git -c core.quotePath=false ls-files | sort) <(git -c core.quotePath=false ls-tree -r --name-only base-snapshot/v2.46.0 | sort) | while IFS= read -r f; do head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' || printf '%s\n' "$f"; done | wc -l`
-  **还有一层更细的不成立，一并记在这里**：被阡陌改造过的那批基座文件（同一提交上实测 180 个）**确实**属于基座
-  来源那一层，但文件里的阡陌改动并不因此变成 MIT——**按来源分层不等于按行分许可**，而「来源层」这个标记本身也
-  只回答「这个文件是不是随基座导入进来的」，回答不了「文件里哪些行来自上游」（根 `LICENSE` 就是极端例子：路径
-  在快照里，内容却一行不剩）。
+  照本文体例作签署当日的理由记述原样保留，**但它不是现行口径**——现行口径见根 `NOTICE` 一、许可「文件头只在一个方向上
+  作数」一段。具体个数与拆分、以及带着阡陌改动而有意不加头的基座文件数量，均应按该处命令现跑现算，本文不重复。
 - **落地核对（2026-08-29 实读）**：
   - `LICENSE` = 34,523 B / 661 行，sha256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`，
     与 `https://www.gnu.org/licenses/agpl-3.0.txt` 逐字节相同；**正文之前不加任何前言**——
