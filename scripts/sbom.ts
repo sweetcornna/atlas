@@ -955,46 +955,34 @@ async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
  * 不是反例。具体个数与拆分现跑现算，命令与口径见 `NOTICE` 一、许可。
  * 第三类「形态上带得了却漏加的」当天由一批补头提交清零，其中就有
  * `src/constants/identity.ts`（CLAUDE.md §2.3 点名的身份 roster 唯一真源）
- * ——**但仓库里没有覆盖全仓的门禁盯着这件事**（章程 §5.5 明写「不为此新增
- * CI 断言，漏加由 PR 评审兜」）。**唯一存在的那道只盖一个包**：
- * `packages/activator/test/surface-invariant.test.ts` 的
- * `test('every source file carries the two-line copyright header', …)` 逐字
- * 断言那两行，随建包提交 `6f30c45c` 一起加入，跑在 `bun test` /
- * `scripts/test-shards.sh` / CI 里——但它只读 `packages/activator/src` 下的
- * `.ts`，其余目录一概不管。**盘点时别只数 `package.json` 的 `check:*`**，
- * 单测本身就是门禁的一部分，唯一那道正好在单测里。所以在 activator 之外，
- * 那一类随时可能重新出现，别把「没头 ⇒ 基座」这条推断写死。
- * 需要核对形态上可带头却缺头的候选时现跑现算（`base-snapshot/v2.46.0` 那棵树之外
- * = 阡陌自有，再挑出缺头的、且形态上带得了注释头的；bash/zsh）：
+ * ——**并且从此有一道覆盖全仓的门禁盯着这件事**：
+ * `scripts/check-license-headers.ts`（`bun run check:license-headers`，接在
+ * precheck / verify / CI 三处），三向硬零：正向查阡陌自有文件漏加头，反向查
+ * AGPL 头被误贴到基座快照树里的文件上，第三向查那几个「有意不加头」的具名豁免
+ * 文件（`LICENSE.base` 等）有没有反过来被盖上章。章程 §5.5 原先那句「不为此新增 CI
+ * 断言，漏加由 PR 评审兜」已由章程 v2.18 反转——那条决定作出时判据覆盖 15 个
+ * 文件，反转时覆盖 647 个，而「PR 评审兜」这一道在 2026-08-30 一次漏了 66 个。
  *
- *     comm -23 <(git -c core.quotePath=false ls-files | sort) \
- *              <(git -c core.quotePath=false ls-tree -r --name-only \
- *                  base-snapshot/v2.46.0 | sort) \
- *     | grep -E '\.(ts|tsx|md|sh)$|(^|/)Makefile$' \
- *     | grep -vx 'BASE.md' \
- *     | while IFS= read -r f; do
- *         head -5 "$f" | grep -qa 'SPDX-License-Identifier: AGPL-3.0-or-later' \
- *           || printf '%s\n' "$f"
- *       done
+ * 那道门禁与 `packages/activator/test/surface-invariant.test.ts` 的
+ * `test('every source file carries the two-line copyright header', …)`
+ * **分工不同、故意不统一**：后者是包内更强的不变式（恰好第 1–2 行、恰好 `//`
+ * 形式、只扫 `packages/activator/src` 下非递归的 `.ts`，随建包提交 `6f30c45c`
+ * 一起加入），前者是全仓地板（前 5 行、任意注释语法、路径判据 + 豁免表）。
+ * **盘点门禁时别只数 `package.json` 的 `check:*`**，单测本身也是门禁的一部分。
  *
- * `-c core.quotePath=false` 不能省：默认 `git ls-files` 会把非 ASCII 文件名
- * 输出成带双引号的八进制转义形式（本仓库 docs/ 下有中文名的图片），那种名字
- * 喂给 `head` 读不到文件，会被静默跳过而少算。`grep -E` 那一档是把「不该算漏加」
- * 的形态挡在外面：`.png` 之类确实带不了注释，而 `.json` / `.lock` 是**不该带**
- * （`tsconfig.json`、`Cargo.lock` 语法上都接受注释，但它们是工具配置与生成件）
- * ——两种理由不同，判定结果相同，都不算「漏加」。`grep -vx 'BASE.md'` 那一档
- * 排除的是本节开头点名的 4 个「有意不加」文件之一：`BASE.md` 是 `.md`，会被
- * 上面的扩展名过滤器放行，但它按 CLAUDE.md §2.4 与 §0 的规矩本就不许加、也不
- * 许在功能 PR 里顺手改；`LICENSE.base`/`NOTICE`/`.gitignore` 那三个不带匹配
- * 扩展名，本就过不了扩展名那一档，不需要专门排除。**不排除会怎样**：这条命令
- * 每次都会把 `BASE.md` 报成「漏加」，而它从来不是「第三类」（形态上带得了却
- * 被漏掉）的成员，是「有意不加」那一类——把它算进「漏加」会让上面「清零」的
- * 断言本身在自己给出的复核命令下都站不住。排除之后再跑，输出应为空，与「清
- * 零」的断言一致；若哪天不为空，才是真的出现了新的第三类漏加。
- * 结论不随个数变：把「没头 ⇒ 基座 MIT」写进生成器，等于让
+ * 需要核对个数与拆分时跑 `bun run check:license-headers --report`：它报出带头
+ * 文件数、阡陌自有总数、无头数（按豁免扩展名与具名路径拆开）、快照树文件数与
+ * 所用标签名。这里**不再复写**那条手写的 shell 管道——本仓库「指针不复制」，
+ * 而且那条管道取的是「哪些扩展名必须带头」的**白名单**形态，漏掉了 `.rs` /
+ * `.in` / `.toml` / `.yml` / `.service` 共 20 个；门禁取的是**豁免名单**形态，
+ * 明天新增一个不带头的 `.rs` 会红而不是被静默跳过。豁免的逐条理由写在那个脚本
+ * 的 `EXEMPT_EXTENSIONS` / `EXEMPT_PATHS` 与 `NOTICE` 一、许可里，两边同步改。
+ *
+ * 门禁在这里并不改变结论：把「没头 ⇒ 基座 MIT」写进生成器，等于让
  * 它可复现地给未来任何一个漏加头的阡陌新包盖上「随 LICENSE.base（MIT）」——
  * 那正是本轮要修掉的失效模式（原先硬编码的「随仓库 MIT」），只是从写死结论
- * 变成了动态推导出同一句假话。
+ * 变成了动态推导出同一句假话。无头文件依旧既可能是基座件，也可能是豁免表里的
+ * 阡陌件，这条推断本身不成立，与有没有门禁无关。
  *
  * 所以归属由 `baseSnapshotVerdict()` 用成果边界标签（CLAUDE.md §2.5 的
  * `base-snapshot/*`）判定；文件头这里只作为**观察到的事实**报出来，不参与
