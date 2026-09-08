@@ -144,7 +144,8 @@ function toTurn(value: unknown): ChatTurn | null {
     // 一条分量不明的过程。同理，variant 认不出来的值按 `message` 处理——那多半
     // 是一个更新的版本写的，把它降级成一句话，好过整行丢掉。
     ...(value['variant'] === 'notice' ? { variant: 'notice' as const } : {}),
-    ...(NOTICE_SEVERITIES.has(String(value['severity']))
+    ...(typeof value['severity'] === 'string' &&
+    NOTICE_SEVERITIES.has(value['severity'])
       ? { severity: value['severity'] as ChatTurn['severity'] }
       : {}),
     ...(str(value['detail']) === undefined

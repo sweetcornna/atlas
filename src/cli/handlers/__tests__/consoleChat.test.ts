@@ -849,6 +849,30 @@ describe('chat reply path', () => {
 })
 
 describe('chat persistence', () => {
+  test('malformed severity metadata does not prevent transcript recovery', async () => {
+    const storePath = join(directory, 'bad-severity.ndjson')
+    const first = harness({ storePath })
+    const { sessionId } = await openAndSend(first, '保留完整正文')
+    await first.hub.close()
+    const lines = readFileSync(storePath, 'utf8').trim().split('\n')
+    await Bun.write(
+      storePath,
+      lines
+        .map(line => {
+          const row = JSON.parse(line)
+          if (row.kind === 'turn') row.turn.severity = { toString: null }
+          return JSON.stringify(row)
+        })
+        .join('\n') + '\n',
+    )
+    const second = harness({ storePath })
+    const transcript = await second.hub.transcript(sessionId)
+    if (!transcript.ok) throw new Error('transcript failed to recover')
+    const turn = transcript.value.turns.find(t => t.text === '保留完整正文')
+    expect(turn).toBeDefined()
+    expect(turn?.severity).toBeUndefined()
+  })
+
   test('a restarted console still has the conversation', async () => {
     const storePath = join(directory, 'restart.ndjson')
     const first = harness({ storePath })

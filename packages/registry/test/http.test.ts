@@ -7,6 +7,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from 'bun:test'
 import {
@@ -69,6 +70,33 @@ function post(path: string, payload?: unknown): Promise<Response> {
 }
 
 describe('registry http api v0', () => {
+  test('a failed bind leaves no clock interval behind', () => {
+    const interval = spyOn(globalThis, 'setInterval')
+    try {
+      expect(() => startRegistryServer(server.port)).toThrow()
+      expect(interval).not.toHaveBeenCalled()
+    } finally {
+      for (const result of interval.mock.results) {
+        if (result.type === 'return') clearInterval(result.value)
+      }
+      interval.mockRestore()
+    }
+  })
+
+  test.each([
+    '%',
+    '%GG',
+    '%E0%A4',
+    '%FF',
+  ])('returns the existing bad-request response for malformed path escape %s', async address => {
+    const response = await fetch(`${server.url}/v0/agents/${address}`)
+    expect(response.status).toBe(400)
+    expect(await body(response)).toMatchObject({
+      error: { code: RegistryErrorCode.E_BAD_REQUEST },
+    })
+    expect((await fetch(`${server.url}/v0/health`)).status).toBe(200)
+  })
+
   test('binds a real, non-zero port', () => {
     expect(server.port).toBeGreaterThan(0)
     expect(server.url).toContain(String(server.port))

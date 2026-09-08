@@ -89,16 +89,12 @@ async function handleUpload(
       return json({ error: 'invalid_hash' }, 400)
     }
     id = hashParam
-    // 覆盖：先删所有 ttl prefix 下可能的旧 key（R2 delete 不存在的 key 不报错）
-    await Promise.all(
-      TTL_PREFIXES.map(p => env.BUCKET.delete(`${p}/${id}.html`)),
-    )
   } else {
     id = nanoid(21)
   }
 
-  const body = await req.arrayBuffer()
-  if (body.byteLength > maxBytes) {
+  const body = await readBoundedBody(req, maxBytes)
+  if (body === null) {
     return json({ error: 'payload_too_large' }, 413)
   }
 
@@ -106,12 +102,52 @@ async function handleUpload(
   await env.BUCKET.put(key, body, {
     httpMetadata: { contentType: HTML_CONTENT_TYPE },
   })
+  if (hashParam !== null) {
+    // Preserve the published object until validation and the replacement write
+    // succeed. Never delete the key just written when the TTL stays the same.
+    await Promise.all(
+      TTL_PREFIXES.filter(prefix => prefix !== `${ttl}d`).map(prefix =>
+        env.BUCKET.delete(`${prefix}/${id}.html`),
+      ),
+    )
+  }
 
   const expiresAt = new Date(Date.now() + ttl * 24 * 60 * 60 * 1000)
   return json(
     { id, url: `${env.PUBLIC_URL}/${key}`, expiresAt: expiresAt.toISOString() },
     200,
   )
+}
+
+async function readBoundedBody(
+  req: Request,
+  maxBytes: number,
+): Promise<ArrayBuffer | null> {
+  if (req.body === null) return new ArrayBuffer(0)
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let length = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      length += value.byteLength
+      if (length > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const body = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body.buffer
 }
 
 function json(body: unknown, status: number): Response {

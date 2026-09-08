@@ -54,6 +54,7 @@ interface Entry {
 
 export class LoginThrottle {
   private readonly entries = new Map<string, Entry>()
+  private nextExpiry = Number.POSITIVE_INFINITY
 
   /** Seconds the caller must still wait, or 0 when an attempt is allowed. */
   retryAfterSeconds(key: string, nowMs: number): number {
@@ -81,6 +82,7 @@ export class LoginThrottle {
       entry.blockedUntil = nowMs + delay * 1000
     }
     this.entries.set(key, entry)
+    this.nextExpiry = Math.min(this.nextExpiry, nowMs + FORGET_AFTER_MS)
   }
 
   /** Called on a successful login: a right answer erases the wrong ones. */
@@ -94,9 +96,18 @@ export class LoginThrottle {
    * console this size can always afford.
    */
   private sweep(nowMs: number): void {
+    // A burst of new sources cannot expire any entry yet. Scanning the whole
+    // map for every failed login would make that burst quadratic.
+    if (nowMs <= this.nextExpiry) return
+    this.nextExpiry = Number.POSITIVE_INFINITY
     for (const [key, entry] of this.entries) {
       if (nowMs - entry.lastFailureAt > FORGET_AFTER_MS) {
         this.entries.delete(key)
+      } else {
+        this.nextExpiry = Math.min(
+          this.nextExpiry,
+          entry.lastFailureAt + FORGET_AFTER_MS,
+        )
       }
     }
   }

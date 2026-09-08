@@ -220,7 +220,16 @@ export function createRegistryHandler(
     // The address rides in one path segment, percent-encoded by the client
     // (`qianmo%3A%2F%2Fnode-b%2Freviewer`): `URL` leaves the escapes alone, so
     // the split still yields 3 segments and the decode hands back the address.
-    const address = decodeURIComponent(segments[2] ?? '')
+    let address: string
+    try {
+      address = decodeURIComponent(segments[2] ?? '')
+    } catch {
+      return fail(
+        400,
+        RegistryErrorCode.E_BAD_REQUEST,
+        'address contains invalid percent encoding',
+      )
+    }
 
     if (segments.length === 3) return handleItem(request, registry, address)
     if (segments.length === 4 && segments[3] === 'heartbeat') {
@@ -255,10 +264,6 @@ export function startRegistryServer(
   options: RegistryServerOptions = {},
 ): RegistryServerHandle {
   const registry = options.registry ?? new InMemoryRegistry()
-  const clockPulse = setInterval(() => {
-    registry.observeClock(10_000)
-  }, 10_000)
-  clockPulse.unref?.()
   registry.observeClock(10_000)
   const hostname = options.hostname ?? '127.0.0.1'
   const server = Bun.serve({
@@ -266,6 +271,10 @@ export function startRegistryServer(
     hostname,
     fetch: createRegistryHandler(registry),
   })
+  const clockPulse = setInterval(() => {
+    registry.observeClock(10_000)
+  }, 10_000)
+  clockPulse.unref?.()
 
   return {
     // Bun types `Server.port` as `number | undefined` because unix-socket

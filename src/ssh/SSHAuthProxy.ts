@@ -1,6 +1,6 @@
 import { BIN_NAME } from 'src/config/paths.js'
 import { randomUUID } from 'crypto'
-import { unlinkSync } from 'fs'
+import { mkdirSync, rmdirSync, unlinkSync } from 'fs'
 import { getClaudeAIOAuthTokens } from 'src/utils/auth/auth.js'
 import { getOauthConfig } from 'src/constants/oauth.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
@@ -114,12 +114,22 @@ export async function createAuthProxy(): Promise<AuthProxyInfo> {
 }
 
 async function createUnixSocketAuthProxy(id: string): Promise<AuthProxyInfo> {
-  const socketPath = `/tmp/${BIN_NAME}-ssh-auth-${id}.sock`
+  // The socket forwards local credentials without a nonce. Protect its parent
+  // before binding so another local user cannot connect, even with umask 000.
+  const socketDirectory = `/tmp/${BIN_NAME}-ssh-auth-${id}`
+  const socketPath = `${socketDirectory}/proxy.sock`
+  mkdirSync(socketDirectory, { mode: 0o700 })
 
-  const server = Bun.serve({
-    unix: socketPath,
-    fetch: req => proxyFetch(req, null),
-  })
+  let server: Bun.Server<undefined>
+  try {
+    server = Bun.serve({
+      unix: socketPath,
+      fetch: req => proxyFetch(req, null),
+    })
+  } catch (error) {
+    rmdirSync(socketDirectory)
+    throw error
+  }
 
   logForDebugging(`[SSHAuthProxy] listening on unix:${socketPath}`)
 
@@ -130,6 +140,11 @@ async function createUnixSocketAuthProxy(id: string): Promise<AuthProxyInfo> {
         unlinkSync(socketPath)
       } catch {
         // Socket file may already be cleaned up
+      }
+      try {
+        rmdirSync(socketDirectory)
+      } catch {
+        // A repeated stop may find the directory already removed.
       }
     },
   }

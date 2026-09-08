@@ -904,6 +904,24 @@ describe('login throttle', () => {
     for (let i = 0; i < 8; i += 1) throttle.recordFailure('a', START)
     expect(throttle.retryAfterSeconds('a', START + 3_600_001)).toBe(0)
   })
+
+  test('writing a failure forgets an expired counter without a preceding read', () => {
+    for (let i = 0; i < 8; i += 1) throttle.recordFailure('a', START)
+    throttle.recordFailure('b', START + 1_000)
+    throttle.recordFailure('a', START + 3_600_001)
+    expect(throttle.retryAfterSeconds('a', START + 3_600_001)).toBe(0)
+  })
+
+  test('refreshing one counter does not retain a different expired counter', () => {
+    for (let i = 0; i < 8; i += 1) {
+      throttle.recordFailure('a', START)
+      throttle.recordFailure('b', START)
+    }
+    throttle.recordFailure('a', START + 3_600_000)
+    throttle.recordFailure('b', START + 3_600_001)
+    expect(throttle.retryAfterSeconds('a', START + 3_600_001)).toBe(8)
+    expect(throttle.retryAfterSeconds('b', START + 3_600_001)).toBe(0)
+  })
 })
 
 describe('POST /login is throttled', () => {

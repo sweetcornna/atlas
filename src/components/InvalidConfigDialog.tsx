@@ -1,4 +1,5 @@
 import React from 'react';
+import { withResolvers } from 'src/utils/collections/withResolvers.js';
 import { Box, Dialog, wrappedRender as render, Text } from '@anthropic/ink';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../state/AppState.js';
@@ -77,32 +78,31 @@ export async function showInvalidConfigDialog({ error }: InvalidConfigHandlerPro
     theme: SAFE_ERROR_THEME_NAME,
   };
 
-  // biome-ignore lint/suspicious/noAsyncPromiseExecutor: render must be awaited inside executor
-  await new Promise<void>(async resolve => {
-    const { unmount } = await render(
-      <AppStateProvider>
-        <KeybindingSetup>
-          <InvalidConfigDialog
-            filePath={error.filePath}
-            errorDescription={error.message}
-            onExit={() => {
-              unmount();
-              void resolve();
-              process.exit(1);
-            }}
-            onReset={() => {
-              writeFileSync_DEPRECATED(error.filePath, jsonStringify(error.defaultConfig, null, 2), {
-                flush: false,
-                encoding: 'utf8',
-              });
-              unmount();
-              void resolve();
-              process.exit(0);
-            }}
-          />
-        </KeybindingSetup>
-      </AppStateProvider>,
-      renderOptions,
-    );
-  });
+  const { promise, resolve } = withResolvers<void>();
+  const { unmount } = await render(
+    <AppStateProvider>
+      <KeybindingSetup>
+        <InvalidConfigDialog
+          filePath={error.filePath}
+          errorDescription={error.message}
+          onExit={() => {
+            unmount();
+            void resolve();
+            process.exit(1);
+          }}
+          onReset={() => {
+            writeFileSync_DEPRECATED(error.filePath, jsonStringify(error.defaultConfig, null, 2), {
+              flush: false,
+              encoding: 'utf8',
+            });
+            unmount();
+            void resolve();
+            process.exit(0);
+          }}
+        />
+      </KeybindingSetup>
+    </AppStateProvider>,
+    renderOptions,
+  );
+  await promise;
 }
