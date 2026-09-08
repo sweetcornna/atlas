@@ -145,6 +145,17 @@ describe('validateMessage — accepts', () => {
 })
 
 describe('validateMessage — structure', () => {
+  test.each([
+    'constructor',
+    '__proto__',
+    'toString',
+    'hasOwnProperty',
+  ])('rejects inherited object key %s as an unknown message type', type => {
+    expect(codesOf({ ...sample(), type })).toContain(
+      ProtocolErrorCode.E_BAD_TYPE,
+    )
+  })
+
   test('rejects non-objects', () => {
     expect(codesOf(null)).toEqual([ProtocolErrorCode.E_BAD_ENVELOPE])
     expect(codesOf('a string')).toEqual([ProtocolErrorCode.E_BAD_ENVELOPE])

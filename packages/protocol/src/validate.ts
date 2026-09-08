@@ -280,11 +280,11 @@ export function validateMessage(
         'notify payload must carry { kind, severity, summary, observedAt } and no unknown fields',
       ),
     )
-  } else {
+  } else if (isMessageType(raw['type'])) {
     // The four negotiation payloads are field-closed for the same reason the
     // ack is: a lease is an authorization to spend somebody's machine, and a
     // field this version does not understand is one nobody verified.
-    const negotiation = NEGOTIATION_PAYLOADS[raw['type'] as MessageType]
+    const negotiation = NEGOTIATION_PAYLOADS[raw['type']]
     if (negotiation !== undefined && !negotiation.check(raw['payload'])) {
       issues.push(
         issue(ProtocolErrorCode.E_BAD_ENVELOPE, 'payload', negotiation.reason),
