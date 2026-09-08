@@ -238,7 +238,7 @@ export class FileSnapshotStore implements SnapshotArchive {
 }
 
 /** Ids this store issues: digits and one dash, nothing that can traverse. */
-const SNAPSHOT_ID_PATTERN = /^\d{14}-\d{4}$/
+const SNAPSHOT_ID_PATTERN = /^\d{14}-\d{4,}$/
 
 /**
  * True when `value` is an id this store could have issued.

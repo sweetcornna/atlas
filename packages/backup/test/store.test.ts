@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   BackupEventType,
@@ -131,6 +131,19 @@ describe('creating snapshots', () => {
 })
 
 describe('reading them back', () => {
+  test.each([
+    '9999',
+    '10000',
+    '100000',
+  ])('reads an existing snapshot with sequence %s', async sequence => {
+    const { store, root } = storeAt()
+    const id = `01800000000000-${sequence}`
+    mkdirSync(root)
+    writeFileSync(join(root, `${id}.tar.gz`), ARCHIVE)
+    expect(await store.read(id)).toEqual(ARCHIVE)
+    expect(store.audit.count(BackupEventType.SnapshotRead)).toBe(1)
+  })
+
   test('read returns the bytes and audits the read', async () => {
     const { store } = storeAt()
     const meta = await store
