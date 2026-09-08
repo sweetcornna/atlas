@@ -21,7 +21,7 @@ let configDir: string
 
 describe('localStore', () => {
   beforeAll(() => {
-    configDir = mkdtempSync(join(tmpdir(), 'occ-artifact-local-'))
+    configDir = mkdtempSync(join(tmpdir(), 'occ-artifact-local-7d-30d-'))
     process.env.OCC_CONFIG_DIR = configDir
     process.env.CLAUDE_CONFIG_DIR = configDir
   })
@@ -57,8 +57,12 @@ describe('localStore', () => {
 
     expect(a.expiresAt).toBeUndefined()
     expect(b.expiresAt).toBeUndefined()
-    expect(fileURLToPath(a.url)).not.toContain('7d')
-    expect(fileURLToPath(b.url)).not.toContain('30d')
+    expect(fileURLToPath(a.url)).toBe(
+      join(configDir, 'artifacts', `${a.id}.html`),
+    )
+    expect(fileURLToPath(b.url)).toBe(
+      join(configDir, 'artifacts', `${b.id}.html`),
+    )
   })
 
   test('generates a fresh id when no hash is given', async () => {
