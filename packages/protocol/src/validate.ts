@@ -88,6 +88,15 @@ function isAbsent(value: unknown): boolean {
   return value === undefined
 }
 
+function describeInvalidValue(value: unknown): string {
+  try {
+    return String(value)
+  } catch {
+    // JSON objects can shadow toString; formatting a refusal must not throw.
+    return '[unprintable value]'
+  }
+}
+
 /** Structural check of the `origin` provenance label (§10.2). */
 function originIssues(value: unknown): readonly ProtocolIssue[] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -172,7 +181,7 @@ export function validateMessage(
       issue(
         ProtocolErrorCode.E_BAD_VERSION,
         'v',
-        `unsupported envelope version: ${String(raw['v'])}`,
+        `unsupported envelope version: ${describeInvalidValue(raw['v'])}`,
       ),
     )
   }
@@ -217,7 +226,7 @@ export function validateMessage(
       issue(
         ProtocolErrorCode.E_BAD_ADDRESS,
         'from',
-        `invalid sender address: ${String(raw['from'])}`,
+        `invalid sender address: ${describeInvalidValue(raw['from'])}`,
       ),
     )
   }
@@ -226,7 +235,7 @@ export function validateMessage(
       issue(
         ProtocolErrorCode.E_BAD_ADDRESS,
         'to',
-        `invalid recipient address: ${String(raw['to'])}`,
+        `invalid recipient address: ${describeInvalidValue(raw['to'])}`,
       ),
     )
   }
@@ -235,7 +244,7 @@ export function validateMessage(
       issue(
         ProtocolErrorCode.E_BAD_TYPE,
         'type',
-        `unknown message type: ${String(raw['type'])}`,
+        `unknown message type: ${describeInvalidValue(raw['type'])}`,
       ),
     )
   }

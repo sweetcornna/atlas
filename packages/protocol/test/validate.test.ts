@@ -146,6 +146,18 @@ describe('validateMessage — accepts', () => {
 
 describe('validateMessage — structure', () => {
   test.each([
+    ['v', ProtocolErrorCode.E_BAD_VERSION],
+    ['from', ProtocolErrorCode.E_BAD_ADDRESS],
+    ['to', ProtocolErrorCode.E_BAD_ADDRESS],
+    ['type', ProtocolErrorCode.E_BAD_TYPE],
+  ] as const)('diagnostic formatting cannot throw for an invalid JSON value in %s', (field, code) => {
+    const input = JSON.parse(
+      JSON.stringify({ ...sample(), [field]: { toString: null } }),
+    )
+    expect(codesOf(input)).toContain(code)
+  })
+
+  test.each([
     'constructor',
     '__proto__',
     'toString',
