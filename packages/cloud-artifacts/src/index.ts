@@ -97,8 +97,8 @@ async function handleUpload(
     id = nanoid(21)
   }
 
-  const body = await req.arrayBuffer()
-  if (body.byteLength > maxBytes) {
+  const body = await readBoundedBody(req, maxBytes)
+  if (body === null) {
     return json({ error: 'payload_too_large' }, 413)
   }
 
@@ -112,6 +112,37 @@ async function handleUpload(
     { id, url: `${env.PUBLIC_URL}/${key}`, expiresAt: expiresAt.toISOString() },
     200,
   )
+}
+
+async function readBoundedBody(
+  req: Request,
+  maxBytes: number,
+): Promise<ArrayBuffer | null> {
+  if (req.body === null) return new ArrayBuffer(0)
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let length = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      length += value.byteLength
+      if (length > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const body = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return body.buffer
 }
 
 function json(body: unknown, status: number): Response {
