@@ -264,10 +264,6 @@ export function startRegistryServer(
   options: RegistryServerOptions = {},
 ): RegistryServerHandle {
   const registry = options.registry ?? new InMemoryRegistry()
-  const clockPulse = setInterval(() => {
-    registry.observeClock(10_000)
-  }, 10_000)
-  clockPulse.unref?.()
   registry.observeClock(10_000)
   const hostname = options.hostname ?? '127.0.0.1'
   const server = Bun.serve({
@@ -275,6 +271,10 @@ export function startRegistryServer(
     hostname,
     fetch: createRegistryHandler(registry),
   })
+  const clockPulse = setInterval(() => {
+    registry.observeClock(10_000)
+  }, 10_000)
+  clockPulse.unref?.()
 
   return {
     // Bun types `Server.port` as `number | undefined` because unix-socket
