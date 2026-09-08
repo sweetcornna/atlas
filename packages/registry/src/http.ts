@@ -220,7 +220,16 @@ export function createRegistryHandler(
     // The address rides in one path segment, percent-encoded by the client
     // (`qianmo%3A%2F%2Fnode-b%2Freviewer`): `URL` leaves the escapes alone, so
     // the split still yields 3 segments and the decode hands back the address.
-    const address = decodeURIComponent(segments[2] ?? '')
+    let address: string
+    try {
+      address = decodeURIComponent(segments[2] ?? '')
+    } catch {
+      return fail(
+        400,
+        RegistryErrorCode.E_BAD_REQUEST,
+        'address contains invalid percent encoding',
+      )
+    }
 
     if (segments.length === 3) return handleItem(request, registry, address)
     if (segments.length === 4 && segments[3] === 'heartbeat') {
