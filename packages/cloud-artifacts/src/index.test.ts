@@ -51,6 +51,38 @@ function fixture() {
 }
 
 describe('artifact upload boundaries', () => {
+  test('an oversized replacement keeps the previously published page', async () => {
+    const { upload, objects } = fixture()
+    await upload('old', '?hash=report')
+    const response = await upload('too large a page', '?hash=report&ttl=30')
+    expect(response.status).toBe(413)
+    expect(new TextDecoder().decode(objects.get('7d/report.html'))).toBe('old')
+  })
+
+  test('a storage failure keeps the previously published page', async () => {
+    const { upload, objects, env } = fixture()
+    await upload('old', '?hash=report')
+    env.BUCKET.put = async () => {
+      throw new Error('storage unavailable')
+    }
+    await expect(upload('new', '?hash=report&ttl=30')).rejects.toThrow(
+      'storage unavailable',
+    )
+    expect(new TextDecoder().decode(objects.get('7d/report.html'))).toBe('old')
+  })
+
+  test('a successful replacement moves TTL only after the new page is stored', async () => {
+    const { upload, objects } = fixture()
+    await upload('old', '?hash=report')
+    expect((await upload('new', '?hash=report&ttl=30')).status).toBe(200)
+    expect(objects.has('7d/report.html')).toBe(false)
+    expect(new TextDecoder().decode(objects.get('30d/report.html'))).toBe('new')
+    expect((await upload('updated', '?hash=report&ttl=30')).status).toBe(200)
+    expect(new TextDecoder().decode(objects.get('30d/report.html'))).toBe(
+      'updated',
+    )
+  })
+
   test('accepts the exact byte limit and preserves the public response', async () => {
     const { upload, objects } = fixture()
     const response = await upload('0123456789', '?hash=report&ttl=30')

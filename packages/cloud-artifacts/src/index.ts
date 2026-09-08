@@ -89,10 +89,6 @@ async function handleUpload(
       return json({ error: 'invalid_hash' }, 400)
     }
     id = hashParam
-    // 覆盖：先删所有 ttl prefix 下可能的旧 key（R2 delete 不存在的 key 不报错）
-    await Promise.all(
-      TTL_PREFIXES.map(p => env.BUCKET.delete(`${p}/${id}.html`)),
-    )
   } else {
     id = nanoid(21)
   }
@@ -106,6 +102,15 @@ async function handleUpload(
   await env.BUCKET.put(key, body, {
     httpMetadata: { contentType: HTML_CONTENT_TYPE },
   })
+  if (hashParam !== null) {
+    // Preserve the published object until validation and the replacement write
+    // succeed. Never delete the key just written when the TTL stays the same.
+    await Promise.all(
+      TTL_PREFIXES.filter(prefix => prefix !== `${ttl}d`).map(prefix =>
+        env.BUCKET.delete(`${prefix}/${id}.html`),
+      ),
+    )
+  }
 
   const expiresAt = new Date(Date.now() + ttl * 24 * 60 * 60 * 1000)
   return json(
