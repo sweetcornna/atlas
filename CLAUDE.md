@@ -22,4 +22,4 @@ This is 阡陌 AgentNest, built on the open-claude-code base. The detailed rules
 | Prompt/tool/skill guidance | “Working with This Codebase” and the matching dev-standards reference |
 | Checks or contribution readiness | §3 and the matching CONTRIBUTING workflow; preserve ratchets and review gates |
 
-For code changes, `bun run precheck` must pass with zero errors; it includes formatting writes, so preserve unrelated work and inspect its diff. Pure prose/instruction changes use relevant document/link checks and `git diff --check`, without a business test or formatter run. Push/PR readiness still requires the existing `bun run verify` gate. Reuse unchanged valid evidence; fix failures caused by this task and report actual checks and blockers.
+Code changes: `bun run precheck` must be clean (it writes formatting, so inspect its diff for unrelated files). Before push/PR: `bun run verify`.
