@@ -827,7 +827,11 @@ write_tunnel_env() {
       printf 'REMOTE_TRAIL=%s\n' "${BETA_SSH_TRAIL[$i]}"
     fi
     printf '# -L 之外的 ssh 参数（审计见证的反向转发，坐标行的 witness-port=）；空 = 没有。\n'
-    printf 'TUNNEL_EXTRA_ARGS=%s\n' "$(beta_tunnel_extra_args "$i")"
+    # 值里有空格，**必须带引号**：这份文件有两个读者——systemd 的 EnvironmentFile（引号会被
+    # 剥掉，单元里不带花括号的 $TUNNEL_EXTRA_ARGS 再按空白拆成两个参数），以及 mirror-pull.sh
+    # 的 `. "$env_file"`。后者见到不带引号的 `TUNNEL_EXTRA_ARGS=-R 127.0.0.1:…` 会把第二个词
+    # 当命令执行（exit 127），镜像拉取从此每次失败——2026-09-26 在 H 上撞到过。
+    printf 'TUNNEL_EXTRA_ARGS="%s"\n' "$(beta_tunnel_extra_args "$i")"
   } >"$gen"
   chmod 600 "$gen"
   beta_write_if_changed "$gen" "$dst" 600 "连通定义 tunnel-$node.env"
