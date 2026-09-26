@@ -648,7 +648,14 @@ export class QianmoResident {
   async run(): Promise<void> {
     // Read before anything else writes: the sentinel's verdict is about the
     // process that came before this one, and stamping first would erase it.
-    this.#options.onPriorLife?.(this.#lifecycle.start())
+    //
+    // A statement of its own, never an argument to `onPriorLife?.(…)`: an
+    // optional call short-circuits its arguments too, so with no observer the
+    // sentinel was never started. That is every production start — `qm
+    // resident` passes none — and it meant no life stamped `running`, so a
+    // SIGKILL left nothing to find (validation report 2026-09-08, B-1).
+    const prior = this.#lifecycle.start()
+    this.#options.onPriorLife?.(prior)
     // Loaded now so an obligation left over from that previous life is counted
     // — and its damaged lines reported — before the first peer arrives.
     // Nothing is *sent* here: a redelivery leaves on contact from the peer,
