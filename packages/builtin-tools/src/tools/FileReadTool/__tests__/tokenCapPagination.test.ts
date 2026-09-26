@@ -36,8 +36,16 @@ type ReadResult = TextResult | UnchangedResult
 // over 160 bytes is oversized without touching countTokensWithAPI.
 const MAX_TOKENS = 40
 
+// The two reads that FIT the cap (page 2, the small file) are still over
+// maxTokens / 4, so they do reach countTokensWithAPI. Under NODE_ENV=test that
+// is served by the committed VCR cassettes in <repo>/fixtures/, whose root
+// defaults to getCwd() — process-global session state other suites move. A
+// miss records against the real API, i.e. a network round trip per read.
+const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..', '..', '..')
+
 let tmpDir: string
 let previousSimple: string | undefined
+let previousFixturesRoot: string | undefined
 
 function makeContext(readFileState: InstanceType<typeof FileStateCache>) {
   return {
@@ -79,12 +87,17 @@ beforeAll(() => {
   // Skips the skill-discovery fan-out in call(); irrelevant to this behavior
   // and it touches the real filesystem.
   process.env.CLAUDE_CODE_SIMPLE = '1'
+  previousFixturesRoot = process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT
+  process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = REPO_ROOT
   tmpDir = mkdtempSync(join(tmpdir(), 'occ-read-tokencap-'))
 })
 
 afterAll(() => {
   if (previousSimple === undefined) delete process.env.CLAUDE_CODE_SIMPLE
   else process.env.CLAUDE_CODE_SIMPLE = previousSimple
+  if (previousFixturesRoot === undefined)
+    delete process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT
+  else process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = previousFixturesRoot
   rmSync(tmpDir, { recursive: true, force: true })
 })
 
