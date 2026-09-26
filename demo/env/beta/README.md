@@ -483,6 +483,31 @@ demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥>
   `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
 - 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道。
 
+## 可用性与唤醒探针（`ops/fleet-probe.sh`）
+
+M1 出口「可用性 ≥ 99%（按内测时段计）、唤醒 P95 < 30 s」的量具，跑在 H 上，三个 timer：
+
+| timer | 频率 | 量什么 | 样本文件（`<根>/state/fleet-probe/`） |
+|---|---|---|---|
+| `qianmo-probe-minute` | 每分钟 | 每个节点端点真读一行应答（426，不是 TCP 探测）；注册中心与控制台 `/v0/health` | `avail-<节点>.ndjson`、`health.ndjson` |
+| `qianmo-probe-handshake` | 每 5 分钟 | 按名解析 + 真 PSK 握手（`p81-probe`，**不带 `--task`**） | `handshake-<节点>.ndjson` |
+| `qianmo-probe-wake` | 每 10 分钟一格 | 按轮转表经控制台 `POST /v0/wake` 唤醒一个节点，记发起 → 回执与 msgId | `wake-<节点>.ndjson` |
+
+```bash
+demo/env/beta/ops/fleet-probe.sh install --rotation "beta-1 beta-5 beta-4 beta-1 beta-5 -"   # 一格 10 分钟，- 为空格
+systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qianmo-probe-wake.timer   # 开始计时
+```
+
+- **唤醒口径（写死在这里，免得被误读）**：发起 → 首个内容 = 本探针记的发起时刻 + 节点 `--timings` 里按
+  msgId 关联的 `first_content`，离线算。**这不是 baseline-m0 §3 的「沙箱冻结 → unpause → 就绪」链路**——
+  内测舰队上没有沙箱冻结，量的是常驻节点空闲态的唤醒。两个数不能直接比，也不能写成 AC-2 口径。
+- 唤醒走控制台而不是 `resident-wake`：那是用户真实走的路；控制台带 `--wake-sign` 时唤醒是
+  verified-capability 档，不会在节点链上留 `capability_shadow_refusal`。握手那一档不带 `--task` 也是同一个理由。
+- 失败的样本照记，不剔除；P95 按 nearest-rank 算，失败按 +∞ 留在样本里。
+- `MemAvailable` 低于 `PROBE_MIN_AVAILABLE_MB`（默认 150）时只记一行 `skipped:low-mem`：H 上的量具不能成为
+  压垮它的那一个进程。单元带 `OOMScoreAdjust=900`。
+- install **只 enable 不 start**：开始计时是一个有意的动作，要和「这一份部署」对上号。
+
 ## 变量表
 
 一律用环境变量覆盖，脚本里没有任何具体名字、机器名、IP、域名、密钥（beta-env.md 文首）。

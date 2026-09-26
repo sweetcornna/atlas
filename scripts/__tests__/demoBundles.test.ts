@@ -72,6 +72,7 @@ describe('DEMO_ENTRYPOINTS 覆盖每一处 demo_entry 调用', () => {
     ])
     expect([...(calls.get('p81-probe') ?? [])].sort()).toEqual([
       'demo/env/beta/beta-smoke.sh',
+      'demo/env/beta/ops/fleet-probe.sh',
       'demo/env/smoke.sh',
       'demo/env/up.sh',
     ])
