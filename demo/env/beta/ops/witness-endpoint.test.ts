@@ -126,6 +126,184 @@ describe('install', () => {
   })
 })
 
+describe('install 在见证机上（那里没跑过 beta-up.sh）', () => {
+  test('内测根还不存在：建目录（0700）与标记（0600），再照常装', () => {
+    const f = fixture()
+    const fresh = join(f.home, 'witness-only')
+    const env = { ...f.env, QIANMO_BETA_ROOT: fresh }
+    const result = sh(env, ['install', '--key', 'beta-1=AAAA'])
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+    expect(statSync(fresh).mode & 0o777).toBe(0o700)
+    const marker = join(fresh, '.qianmo-beta-env')
+    expect(statSync(marker).mode & 0o777).toBe(0o600)
+    expect(readFileSync(marker, 'utf8').split('\n')[0]).toBe(
+      'qianmo-beta-env/v1',
+    )
+  })
+
+  test('目录在、标记不在：拒绝收编', () => {
+    const f = fixture()
+    const stray = join(f.home, 'stray')
+    mkdirSync(stray)
+    const result = sh({ ...f.env, QIANMO_BETA_ROOT: stray }, [
+      'install',
+      '--key',
+      'beta-1=AAAA',
+    ])
+    expect(result.code).not.toBe(0)
+    expect(existsSync(join(stray, 'secrets'))).toBe(false)
+  })
+})
+
+describe('start / status / stop（见证机没有 linger）', () => {
+  test('nohup 起、pid 文件、不带 token 回 401；oom_score_adj 写 1000；stop 之后不在了', async () => {
+    const f = fixture()
+    const port = await freePort()
+    const oom = join(f.home, 'oom_score_adj')
+    writeFileSync(oom, '0\n')
+    const env = { ...f.env, QIANMO_WITNESS_OOM_ADJ_PATH: oom }
+    expect(
+      sh(env, ['install', '--key', 'beta-1=AAAA', '--port', String(port)]).code,
+    ).toBe(0)
+    const started = sh(env, ['start'])
+    try {
+      expect(started.code).toBe(0)
+      expect(started.stdout).toContain('401')
+      const pidFile = join(f.root, 'run', 'witness.pid')
+      expect(statSync(pidFile).mode & 0o777).toBe(0o600)
+      expect(readFileSync(oom, 'utf8').trim()).toBe('1000')
+      const again = sh(env, ['start'])
+      expect(again.code).toBe(0)
+      expect(again.stdout).toContain('已在跑')
+      const status = sh(env, ['status'])
+      expect(status.code).toBe(0)
+      expect(status.stdout).toContain('401')
+    } finally {
+      const stopped = sh(env, ['stop'])
+      expect(stopped.code).toBe(0)
+    }
+    expect(existsSync(join(f.root, 'run', 'witness.pid'))).toBe(false)
+    expect(sh(env, ['status']).code).not.toBe(0)
+    const gone = await fetch(`http://127.0.0.1:${port}/v0/anchor`).then(
+      r => r.status,
+      () => 0,
+    )
+    expect(gone).toBe(0)
+  })
+})
+
+describe('link-install（H 上，见证在另一台机器）', () => {
+  const hasKeygen = Bun.which('ssh-keygen') !== null
+
+  function keyed(f: ReturnType<typeof fixture>, knownHost?: string) {
+    const key = join(f.home, 'link-key')
+    Bun.spawnSync([
+      'ssh-keygen',
+      '-q',
+      '-t',
+      'ed25519',
+      '-N',
+      '',
+      '-C',
+      'link@h',
+      '-f',
+      key,
+    ])
+    mkdirSync(join(f.home, '.ssh'), { recursive: true })
+    if (knownHost !== undefined) {
+      const hostKey = readFileSync(`${key}.pub`, 'utf8').split(' ').slice(0, 2)
+      writeFileSync(
+        join(f.home, '.ssh', 'known_hosts'),
+        `${knownHost} ${hostKey.join(' ')}\n`,
+      )
+    }
+    return key
+  }
+
+  test.skipIf(!hasKeygen)(
+    'env 0600、单元不留占位符且变量带花括号、打印只放行一个口的 authorized_keys 行',
+    () => {
+      const f = fixture()
+      const key = keyed(f, 'witness.example')
+      const result = sh(f.env, [
+        'link-install',
+        '--user',
+        'u',
+        '--host',
+        'witness.example',
+        '--key',
+        key,
+      ])
+      expect(result.stderr).toBe('')
+      expect(result.code).toBe(0)
+      const conf = join(f.root, 'ops', 'witness-link.env')
+      expect(statSync(conf).mode & 0o777).toBe(0o600)
+      expect(readFileSync(conf, 'utf8')).toContain('WITNESS_LOCAL_PORT=38640\n')
+      const unit = readFileSync(
+        join(
+          f.home,
+          '.config',
+          'systemd',
+          'user',
+          'qianmo-witness-link.service',
+        ),
+        'utf8',
+      )
+      expect(unit).not.toMatch(/@[A-Z_]+@/)
+      const exec = unit.split('\n').find(l => l.startsWith('ExecStart=')) ?? ''
+      expect(exec).toContain('StrictHostKeyChecking=yes')
+      expect(exec).toContain(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: systemd 的变量引用，不是 JS 模板占位
+        '-L 127.0.0.1:${WITNESS_LOCAL_PORT}:127.0.0.1:${WITNESS_REMOTE_PORT}',
+      )
+      expect(exec).not.toMatch(/\$[A-Z]/)
+      const line = result.stdout
+        .split('\n')
+        .find(l => l.startsWith('restrict,'))
+      expect(line).toContain('permitopen="127.0.0.1:38640"')
+      expect(line).toContain('permitlisten="127.0.0.1:1"')
+      expect(line).toContain('command="/bin/false"')
+      expect(line).toContain(readFileSync(`${key}.pub`, 'utf8').trim())
+    },
+  )
+
+  test.skipIf(!hasKeygen)(
+    'known_hosts 里没有见证机：拒绝（不做首次信任）',
+    () => {
+      const f = fixture()
+      const key = keyed(f)
+      const result = sh(f.env, [
+        'link-install',
+        '--user',
+        'u',
+        '--host',
+        'witness.example',
+        '--key',
+        key,
+      ])
+      expect(result.code).not.toBe(0)
+      expect(result.stderr).toContain('known_hosts')
+    },
+  )
+
+  test.skipIf(!hasKeygen)('私钥权限过宽：拒绝', () => {
+    const f = fixture()
+    const key = keyed(f, 'witness.example')
+    Bun.spawnSync(['chmod', '644', key])
+    const result = sh(f.env, [
+      'link-install',
+      '--user',
+      'u',
+      '--host',
+      'witness.example',
+      '--key',
+      key,
+    ])
+    expect(result.code).not.toBe(0)
+  })
+})
+
 describe('run', () => {
   test('真起一个端点：写 token 追加签名锚点，读 token 读回', async () => {
     const f = fixture()
