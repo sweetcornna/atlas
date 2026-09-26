@@ -15,7 +15,7 @@
 | --- | --- |
 | 范围依据 | roadmap **M1「注册发现产品化」**：内容「最小 Web 控制台（智能体列表、状态、消息链查看）、账号体系、智能体生命周期管理」，出口判据「**内测用户无需接触 CLI 即可完成注册与查看**」。本包只做这一行里的**最小 Web 控制台**那一段 |
 | 明确不在本包内 | **账号体系**（章程 N-2：M0/本包不做账号与租户隔离，M1 另排）、权限模型（M1「权限模型上线」是另一行） |
-| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
+| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources,Registrations}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
 | 依赖 | `@qianmo/audit`（只读）、`@qianmo/protocol`、`@qianmo/registry`、`@qianmo/router`；运行时 Bun（`Bun.serve`） |
 | 身份 | **`OCC_IDENTITY=qianmo`**，与 `occ resident` / `occ audit` / `occ resident-wake` 同一条前置校验 |
 | 命令 | 两种写法都对：`OCC_IDENTITY=qianmo … console`，或 **`qm console …`**（`qm` 的入口文件自己把身份钉成 `qianmo`）。`qm` 要求 PATH 上有 Bun，取舍见 §2.1 |
@@ -87,6 +87,7 @@ open         http://127.0.0.1:38613/?token=Zk3q…（32 字符）
 view-token   Zk3q…
 admin-token  9pR7…
 registry     http://127.0.0.1:38610
+ledger       /Users/you/.qianmo/qianmo/console/registrations.json (0 renewed by this console)
 audit-trails default=/Users/you/.qianmo/qianmo/audit/trail.ndjson
 wake         disabled (no --wake-url)
 chat         disabled (no --chat-url)
@@ -94,7 +95,8 @@ label        127.0.0.1:38613
 sourceCommit 4c6bedeae5138fda82b90b81b3ebce20917734db
 ```
 
-`open` 那一行是可以直接点开的——token 就在查询串里。
+`open` 那一行是可以直接点开的——token 就在查询串里。`ledger` 那一行是登记簿的位置和
+启动时簿里有几条（§7.3）。
 
 **`sourceCommit` 是这份产物的来源 commit**（issue #70），40 位全 SHA，工作树脏时带
 `-dirty` 后缀。舰队上的部署树没有 `.git`、`dist/` 的几百个 chunk 里找不到 SHA、入口里
@@ -545,8 +547,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
 | GET | `/v0/agents` | view | 名册 |
-| POST | `/v0/agents` | **admin** | 注册 |
-| DELETE | `/v0/agents/<地址>` | **admin** | 注销 |
+| POST | `/v0/agents` | **admin** | 注册。注册中心收下后入登记簿，由本控制台续租（§7.3） |
+| DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条 |
 | POST | `/v0/agents/<地址>/heartbeat` | **admin** | 续租 |
 | GET | `/v0/audit?…` | view | 审计记录（过滤见下） |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
@@ -1010,7 +1012,7 @@ chat  enabled as qianmo://console/operator (signed) -> beta-4 -> ws://127.0.0.1:
 
 | 端口 | 读什么 | 挂了会怎样 |
 | --- | --- | --- |
-| `RegistryPort` | 注册中心 HTTP v0（`GET/POST /v0/agents`、`DELETE`、`POST …/heartbeat`），5 s 超时 | **页面照常打开**，名册那栏显示 `unreachable` 与地址。网络失败一律转成失败值，从不抛 |
+| `RegistryPort` | 注册中心 HTTP v0（`GET/POST /v0/agents`、`DELETE`、`POST …/heartbeat`），5 s 超时。外面包着登记簿那一层（§7.3），读路径原样透传 | **页面照常打开**，名册那栏显示 `unreachable` 与地址。网络失败一律转成失败值，从不抛；续租失败只进 stderr，下一轮再试 |
 | `AuditPort` | 本机审计链文件，**只读** | 文件不存在 = **空页面，不是错误**，但**也不是「完整」**——四态由 `chain` 表述（见下），`intact` 只对「有链且没毛病」成立。哈希链断了会如实显示，不吞 |
 | `LimitsSnapshot` | `LIMITS`（`@qianmo/protocol`）、`RUNTIME_RATE`（`@qianmo/router`）、`DEFAULT_TTL_MS`（`@qianmo/registry`，只作兜底，见下） | 常量，不会挂 |
 | `WakePort` | —（只写） | 见 §4.4 |
@@ -1068,7 +1070,70 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
   自己的 append-only fd。
 - **不改 settings、不改配置根。**控制台没有任何写本机配置的路径。
 
----
+### 7.3 写什么：登记簿与续租
+
+2026-09-26 修复。M1「注册发现产品化」的判据是「在页面上完成注册」，而此前页面上的
+注册**只在一个租约内成立**：注册中心租约 `DEFAULT_TTL_MS` = 90 s，过期条目从名册与
+解析里消失；控制台只有按需心跳，注册中心宿主（`demo/lib/p81-registry.ts`）只替
+`--register` 启动参数那批续租，节点从不拨号。于是没有任何东西替页面注册的条目续租。
+
+现在的做法是 `tenancy-m1.md` §0.4 所列 P15.2 的最小内核：**控制台保存一本登记簿，
+并替簿中条目续租，直到它们在页面上被注销。**暂停 / 恢复 / 退役、租户、操作主体都不在
+这一版里。
+
+| 动作 | 登记簿 | 注册中心 |
+| --- | --- | --- |
+| 页面注册（`POST /v0/agents`） | 注册中心收下才入簿；被拒或不可达不入簿，页面照常报错 | 原样转发 |
+| 续租（每 `renewIntervalFor(租约)`） | 不变 | 簿中每条整条重新 `POST /v0/agents` |
+| 页面注销（`DELETE /v0/agents/<地址>`） | 先出簿，停止续租 | 原样转发，立即删除。簿里有而注册中心答 404（租约已过或它刚重启）按成功返回 204 |
+| 页面心跳 | 不变 | 原样转发 |
+| 控制台启动 | 读回 | 端口绑上后立刻整簿宣告一轮，再按周期 |
+
+**续租者放在控制台进程里，不放在注册中心宿主旁。**P15 草案（v0.1-draft，未评审）
+§3.6 写的是后者；这里按现有进程拓扑选了前者，留待 P15.1 评审一并裁定。理由：
+
+1. **意图归控制台。**「这一条是页面上注册的、要一直在」是持 admin token 的人做的决定。
+   注册中心零鉴权（§8.2），把这份意图放到它那一侧，就是让任何够得着它端口的人一次
+   `POST` 就造出一条永不过期、重启也回来的登记。
+2. **注册中心 HTTP v0 零改动。**注册中心侧的续租者要分辨哪些条目来自控制台，只能加字段
+   或路由，或者让两个进程共享一个文件（内测里注册中心与控制台是两个进程、两个配置根，
+   `beta-env.md` §4.1）。放在控制台只用既有的 `POST /v0/agents`：新控制台配旧注册中心
+   全功能，旧控制台配新注册中心就是旧行为。
+3. **控制台是产品面，注册中心宿主不是。**没有 `qm registry` 子命令，宿主是 demo 脚本；
+   验收套件的注册中心本来就是进程内的 `startRegistryServer`，续租者在控制台里才会被
+   真实进程场景覆盖（`console/registry-registration-*`）。
+
+**代价**：控制台停机超过一个租约，它登记的条目按租约消失，直到控制台回来（启动即重新
+宣告）。`--register` 那批种子由注册中心宿主续，不受控制台起停影响；必须独立于控制台
+存在的地址仍写进 `peers.conf`（`beta-env.md` §2.4）。
+
+**续租是整条重新注册，不是心跳。**同一端点重新 `POST` 在注册中心那里就是续租，同时把
+能力与状态重新声明一遍；注册中心重启后表上没有这条，`POST` 把它建回来；地址被**另一个
+端点**占着时注册中心答 409、什么都不改，续租者不抢，只在 stderr 出声，下一轮再试。心跳
+做不到最后一条：它不看端点，会替占着这个地址的别人续租。
+
+**周期不另设参数。**`renewIntervalFor(租约)`（`@qianmo/registry`）按每个租约 4.5 次续租
+折算，默认租约下正是 `DEFAULT_RENEW_INTERVAL_MS` = 20 s——`p81-registry.ts` 的
+`--heartbeat-ms` 默认值用的也是这个常量。租约取注册中心回执里的
+`expiresAt − lastHeartbeatAt`（`rosterLease`，与 §7.1 的「注册租约以注册中心为准」同源），
+没有回执时用 `DEFAULT_TTL_MS`。租约比已排的周期短时下一轮提前，新登记的一条不会在第一次
+续租前过期。
+
+**登记簿**落在 `<配置根>/qianmo/console/registrations.json`（`consoleArgs.ts` 的
+`consoleRegistrationsPath()`，从 `occConfigPath()` 派生，无命令行选项），形状是
+`{ "version": 1, "registrations": [{ address, endpoint, capabilities?, publicKey?, status? }] }`。
+写入复用注册中心的 `FileRegistryStore`：同目录临时文件 `wx` 创建、fsync、rename，0600。
+它与注册中心的表不同，是**意图**而不是软状态：读不动的文件（坏 JSON、版本不对）改名为
+`registrations.json.unreadable-<ISO 时间>` 留证，从空登记簿起，并在 stderr 说明；写失败
+不让请求失败，内存里那份照常续租，只在控制台重启时丢，同样在 stderr 说明。
+
+**已知边界**：
+
+- 注册中心零鉴权，够得着它的人可以直接 `DELETE` 一条控制台登记的条目；下一轮续租会把它
+  建回来。**撤销登记以页面注销为准。**
+- 两个控制台共用一个配置根时，登记簿最后写的赢，各自内存里的簿各续各的。一个配置根只起
+  一个控制台。
+- 登记簿不记是谁注册的（§8.1，N-2）。
 
 ## §8 已知边界
 
@@ -1130,7 +1195,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | 限流只有登录路由一处 | 见下。面板其余 HTTP 面（名册、审计、片段、对话、SSE）仍然不限流，回环 + token 是它们的全部防线 |
 | 审计链全量读进内存 | `readTrail` 一次性读整个文件。链很长时首屏会慢；页面侧有尾部条数上限兜着，但这不是分页 |
 | 多条审计链逐条读入内存 | 每个命名来源各自 `readTrail`；缺文件是该来源自己的 `absent`（一条缺失就足以把整页从「完整」上摘下来），断裂也是该节点自己的完整性状态，页面不做跨节点时序合并 |
-| 名册即注册中心的视图 | 注册中心是内存表（可选文件落盘），控制台不缓存也不补齐。它显示不出来的东西，注册中心里就没有 |
+| 名册即注册中心的视图 | 注册中心是内存表（可选文件落盘），名册不缓存也不补齐。它显示不出来的东西，注册中心里就没有。控制台会**重新宣告自己登记过的条目**（§7.3），那是写，不是给名册补数据 |
 
 **登录路由那一处限流长这样**（`packages/console/src/throttle.ts`）：前 5 次失败免罚
 （打错字不是攻击），之后每多失一次，封锁时长翻一倍——第 6 次失败罚 1 s、第 7 次 2 s、
@@ -1168,6 +1233,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现 |
+| `src/cli/handlers/consoleRegistrations.ts` | 登记簿与续租者：页面注册入簿、按租约重新宣告、注销出簿；续租者为什么住在控制台进程里（§7.3） |
 | `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住 |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |

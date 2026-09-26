@@ -200,6 +200,18 @@ export function consoleServerNotesPath(): string {
   return occConfigPath('qianmo', 'console', 'server-notes.ndjson')
 }
 
+/**
+ * 登记簿落盘的位置：页面上注册成功、由本控制台持续续租的那些条目
+ * （`consoleRegistrations.ts`）。
+ *
+ * 同一个目录、同一条派生规矩（CLAUDE.md §1.1②）。**没有命令行选项**：它跟着配置根
+ * 走就够了——同一个配置根重起控制台，条目跟着回来；换一个配置根就是另一个控制台，
+ * 那本来就不该续前一个的登记。
+ */
+export function consoleRegistrationsPath(): string {
+  return occConfigPath('qianmo', 'console', 'registrations.json')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -804,8 +816,11 @@ Environment:
                            The view and admin tokens, entrance 2 above.
   ${WITNESS_READ_TOKEN_ENV_VAR}
                            Read-only token for a remote --anchors endpoint.
-  OCC_CONFIG_DIR           Config root the default audit trail, transcript and
-                           server-note paths are derived from.
+  OCC_CONFIG_DIR           Config root the default audit trail, transcript,
+                           server-note and registration-ledger paths are
+                           derived from. Agents registered on the page are
+                           kept in that ledger and renewed by this console
+                           until they are deregistered on the page.
 `
 
 /** 控制台跑在 `Bun.serve` 上，和常驻模式同一条运行时断言。 */

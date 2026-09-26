@@ -50,6 +50,7 @@ flowchart TD
 - **`FileRegistryStore` / `RegistryStore` / `defaultRegistryStatePath`** —— 落盘层。接口两端都是 `unknown`：文件层只搬字节，schema 与信任边界归 `registry.ts`。
 - **`createRegistryHandler` / `startRegistryServer` / `RegistryServerHandle` / `API_PREFIX`** —— HTTP v0 面，handler 与 server 分开导出，便于用裸 `Request` 测。
 - **`Clock` / `systemClock` / `ManualClock`** —— 注入式时钟，TTL 行为不靠等待来测。
+- **`DEFAULT_RENEW_INTERVAL_MS` / `renewIntervalFor(ttlMs)`** —— 续租方的周期：默认租约下 20 s，其余租约按同一比例（每个租约 4.5 次）折算。`p81-registry.ts` 的 `--heartbeat-ms` 默认值与控制台的续租者（`docs/dev/console.md` §7.3）都取这里。
 - **`DEFAULT_TTL_MS` / `MAX_CAPABILITIES` / `REGISTRY_SNAPSHOT_VERSION`** —— 本包自己的默认值。**注意**：这三个不是协议级上限，协议级数值仍以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处（章程 §3.3 C-4）。
 
 ## 3. 最容易被改坏的五条不变式

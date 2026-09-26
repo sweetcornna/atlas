@@ -15,6 +15,8 @@
  *
  * 租约会过期（`DEFAULT_TTL_MS` = 90 s），所以本进程按周期续租——真实部署里该做的
  * 就是这件事；把 TTL 调大而不续租，测的就不是同一件事了（同 `p41-registry.ts`）。
+ * 周期默认 `DEFAULT_RENEW_INTERVAL_MS`（20 s）。本进程只续 `--register` 这批；控制台
+ * 页面上注册的条目由控制台自己续租（`docs/dev/console.md` §7.3），不经过这里。
  *
  * `--state` 打开落盘（`FileRegistryStore`，原子写），用来演示 P2.1 的「重启后表还在」。
  * 不给就是纯内存表——持久化是 opt-in，构造一个注册中心不该顺手写别人的配置根。
@@ -23,6 +25,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import {
+  DEFAULT_RENEW_INTERVAL_MS,
   FileRegistryStore,
   InMemoryRegistry,
   startRegistryServer,
@@ -114,7 +117,7 @@ const heartbeat = setInterval(
       process.stderr.write(`registry 续租失败：${String(error)}\n`)
     }
   },
-  intArg('heartbeat-ms', 20_000),
+  intArg('heartbeat-ms', DEFAULT_RENEW_INTERVAL_MS),
 )
 heartbeat.unref?.()
 
