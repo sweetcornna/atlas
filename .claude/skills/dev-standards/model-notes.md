@@ -1,3 +1,5 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # 模型相关的调整方向
 
 来源：Opus 5 / Fable 5 时期的官方复盘——针对这代模型删掉 80% 以上的 system prompt，编码评测没有下降。这是特定模型与评测配置的结论，不能直接推广到其他模型；应用前确认实际模型与路由。

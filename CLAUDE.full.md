@@ -1,3 +1,5 @@
+<!-- Copyright 2026 Qianmo AgentNest Team -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 # CLAUDE.md
 
 本文件保存本仓库的详细约定；从 [CLAUDE.md](CLAUDE.md) 按任务选择相关章节。下半部基座原文用于溯源，逐字保留；本仓库范围、发布边界和验证适用范围以上半部及入口为准。
