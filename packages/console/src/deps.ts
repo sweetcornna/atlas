@@ -123,7 +123,10 @@ export interface AuditPage {
   /**
    * Off-host witness verdict, absent only when this console has no anchor
    * source configured. A stale witness is distinct from a chain mismatch: it
-   * means there is no current evidence, not that a rewrite was found.
+   * means records past the newest anchor have no evidence and the witness has
+   * heard nothing within its window (or there is no valid anchor at all), not
+   * that a rewrite was found. An idle trail whose head is anchored is not
+   * stale, so a quiet node keeps its verified state.
    */
   readonly witness?: {
     readonly tampered: boolean

@@ -1027,6 +1027,66 @@ describe('console audit port', () => {
     }
   })
 
+  test('an idle anchored trail stays verified; a new record with a silent witness does not', async () => {
+    const path = join(directory, 'witness-idle.ndjson')
+    const node = 'node-witness-idle'
+    const keys = generateNodeKeyPair()
+    const append = (kind: string) => {
+      const trail = new AuditTrail(path)
+      trail.append({
+        at: Date.now(),
+        source: AuditSource.Resident,
+        kind,
+        outcome: 'ok',
+        node,
+      })
+      trail.close()
+    }
+    append('event-1')
+    append('event-2')
+
+    // The witness accepted the head an hour ago and has heard nothing since:
+    // exactly what an idle node looks like from the witness side.
+    const service = startWitnessService({
+      store: new FileWitnessAnchorStore({
+        root: join(directory, 'witness-idle-endpoint'),
+      }),
+      publicKeys: new StaticPublicKeyDirectory([[node, keys.publicKey]]),
+      writeToken: 'console-witness-write-token',
+      readToken: 'console-witness-read-token',
+      now: () => Date.now() - 3_600_000,
+    })
+    try {
+      await new AuditWitnessScheduler({
+        node,
+        trailPath: path,
+        keys,
+        writer: remoteWitnessAnchorWriter({
+          url: service.url as string,
+          token: 'console-witness-write-token',
+        }),
+      }).tick()
+      const port = createAuditPort({
+        path,
+        witness: { kind: 'url', value: service.url as string },
+        witnessReadToken: 'console-witness-read-token',
+        publicKeyOf: async () => ({ ok: true, value: keys.publicKey }),
+      })
+
+      expect(await port.read({})).toMatchObject({
+        ok: true,
+        value: { witness: { tampered: false, stale: false } },
+      })
+      append('event-3')
+      expect(await port.read({})).toMatchObject({
+        ok: true,
+        value: { witness: { tampered: false, stale: true } },
+      })
+    } finally {
+      await service.stop()
+    }
+  })
+
   test('returns a typed failure when a configured witness endpoint is unreachable', async () => {
     const path = join(directory, 'witness-unreachable.ndjson')
     const trail = new AuditTrail(path)

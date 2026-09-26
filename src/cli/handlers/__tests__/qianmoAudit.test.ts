@@ -252,6 +252,57 @@ describe('audit --verify witness verdict', () => {
     }
   })
 
+  test('an idle trail whose head is anchored is not stale, however old the receipt', async () => {
+    const path = join(root, 'idle.ndjson')
+    const trail = new AuditTrail(path)
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Resident,
+      kind: 'event',
+      outcome: 'ok',
+      node: WITNESS_NODE,
+    })
+    trail.close()
+    const keys = loadOrCreateNodeKeys(WITNESS_NODE)
+    const store = join(root, 'witness-idle')
+    const service = startWitnessService({
+      store: new FileWitnessAnchorStore({ root: store }),
+      publicKeys: new StaticPublicKeyDirectory([
+        [WITNESS_NODE, keys.publicKey],
+      ]),
+      writeToken: WITNESS_WRITE_TOKEN,
+      readToken: WITNESS_READ_TOKEN,
+      now: () => Date.now() - 3_600_000,
+    })
+    const previousExitCode = process.exitCode
+    try {
+      await new AuditWitnessScheduler({
+        node: WITNESS_NODE,
+        trailPath: path,
+        keys,
+        writer: remoteWitnessAnchorWriter({
+          url: service.url as string,
+          token: WITNESS_WRITE_TOKEN,
+        }),
+      }).tick()
+      const output = await captureStdout(() =>
+        runQianmoAudit(['--verify', '--path', path, '--witness', store]),
+      )
+      expect(process.exitCode).toBe(0)
+      expect(JSON.parse(output)).toMatchObject({
+        witness: {
+          tampered: false,
+          stale: false,
+          coveredThrough: 1,
+          issues: [],
+        },
+      })
+    } finally {
+      process.exitCode = previousExitCode ?? 0
+      await service.stop()
+    }
+  })
+
   test('propagates a remote witness reader deadline instead of waiting forever', async () => {
     const path = join(root, 'witness-timeout.ndjson')
     const trail = new AuditTrail(path)

@@ -868,4 +868,73 @@ describe('§5 witness variants', () => {
     ])
     expect(await anchoredSeqs()).toEqual([5, 8, 12])
   })
+
+  test('an anchored head is not stale however old its receipt; one new record is', async () => {
+    await publish(10_000)
+    const anchors = await store.list(NODE)
+    const anHourLater = () => 10_000 + 3_600_000
+    const idle = verifyAuditWitness({
+      trailPath: path,
+      anchors,
+      publicKey: keys.publicKey,
+      now: anHourLater,
+      staleAfterMs: 120_000,
+    })
+    expect(idle).toEqual({
+      tampered: false,
+      stale: false,
+      coveredThrough: 12,
+      issues: [],
+    })
+    // The witness side alone sees the same gap and cannot tell idle from
+    // silenced; only the on-read verdict above has the trail to decide.
+    expect(
+      checkWitnessStaleness({
+        anchors,
+        publicKey: keys.publicKey,
+        now: anHourLater,
+        staleAfterMs: 120_000,
+      }).stale,
+    ).toBe(true)
+
+    appendStory(path, 1)
+    const behind = verifyAuditWitness({
+      trailPath: path,
+      anchors,
+      publicKey: keys.publicKey,
+      now: anHourLater,
+      staleAfterMs: 120_000,
+    })
+    expect(behind.stale).toBe(true)
+    expect(behind.issues).toEqual([
+      { kind: 'stale', ageMs: 3_600_000, thresholdMs: 120_000 },
+      { kind: 'unwitnessed_tail', from: 13, to: 13, count: 1 },
+    ])
+  })
+
+  test('an unwitnessed tail inside the window is not stale; no valid anchor is', async () => {
+    const withinWindow = verifyAuditWitness({
+      trailPath: path,
+      anchors: await store.list(NODE),
+      publicKey: keys.publicKey,
+      now: () => 2_000 + 120_000,
+      staleAfterMs: 120_000,
+    })
+    expect(withinWindow.stale).toBe(false)
+    expect(withinWindow.issues).toEqual([
+      { kind: 'unwitnessed_tail', from: 9, to: 12, count: 4 },
+    ])
+
+    const none = verifyAuditWitness({
+      trailPath: path,
+      anchors: [],
+      publicKey: keys.publicKey,
+      now: () => 2_000,
+      staleAfterMs: 120_000,
+    })
+    expect(none).toMatchObject({ tampered: false, stale: true })
+    expect(none.issues).toEqual([
+      { kind: 'stale', ageMs: null, thresholdMs: 120_000 },
+    ])
+  })
 })
