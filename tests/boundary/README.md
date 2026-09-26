@@ -130,8 +130,8 @@ roadmap M1「边界用例库」的出口判据之一是「内测期新增缺陷 
 | `5f5cb3b6` 制品上传流不在读取时执行体积上限 | — | `packages/cloud-artifacts/src/index.test.ts:112` | 已修，随修复加 |
 | `7aecd760` 协议消息类型接受对象继承属性 | — | `packages/protocol/test/validate.test.ts:165` | 已修，随修复加 |
 | `6869dfcc` SSH 凭据代理 socket 不在私有目录 | — | `src/ssh/__tests__/SSHAuthProxy.test.ts:13` | 已修，随修复加 |
-| B-1 SIGKILL 之后 lifecycle 取证缺失 | ⑤ 目标进程被 SIGKILL | 无 | **修复中，另包** |
-| C-1 控制台的租约判定固定按 90 s，不读注册中心实际 TTL | ① 目标在注册中心已过租约 | 无 | **未修**（`src/cli/handlers/consolePorts.ts` 仍传 `DEFAULT_TTL_MS`） |
+| B-1 SIGKILL 之后 lifecycle 取证缺失 | ⑤ 目标进程被 SIGKILL | `src/services/qianmo/__tests__/resident.integration.test.ts:1541`；`packages/resident/test/lifecycle.test.ts`；场景 `recovery/lifecycle-records-hard-kill` | 已修 `aceddc5e` `5439c301`，随修复加 |
+| C-1 控制台的租约判定固定按 90 s，不读注册中心实际 TTL | ① 目标在注册中心已过租约 | `packages/console/test/view.test.ts:350`；`packages/console/test/http.test.ts`；场景 `console/registry-lease-custom-ttl` | 已修 `b14dcc81` `c998dd7b`，随修复加 |
 | #61 真机腿假绿：驱动零次调用仍报 PASS | — | `demo/lib/acceptance/__tests__/report-core.test.ts:123` | 已修 `bc40f4e7` `20c212ba` `09caf3c0`，随修复加 |
 | #85 NDJSON 只在收尾写，驱动内硬等待不吃倍率 | — | `demo/lib/acceptance/__tests__/report-core.test.ts:267`；`fleetGuards.test.ts:191` | 已修 `dccea348` `e4ad8cb0`，随修复加 |
 | #86 缺吊销清单那条场景没有同轮对照 | — | 无（改在场景本身，没有单测守它） | 已修 `a1766029` `25f06a95`，**无用例** |
@@ -146,9 +146,9 @@ roadmap M1「边界用例库」的出口判据之一是「内测期新增缺陷 
 | `4d7d58f7` beta-4 的默认 SSH 目标指向一台空机 | — | `demo/lib/acceptance/__tests__/fleetGuards.test.ts:313` | 已修，钉默认值的断言随修复改 |
 | `0cd40d16` 节点在就绪前退出，就绪等待仍等满预算 | — | 无 | 已修，**无用例** |
 
-**覆盖率：60 / 72 = 83.3%**（有用例的行 / 全部行；B-1、C-1 计入分母）。其中五类边界的 7 行
-已钉 5 行，没钉的两行是 B-1（修复中，另包）与 C-1（未修）——未修的缺陷写用例只会是一条红
-用例，所以留空。无用例的另外 10 行都不属于五类。
+**覆盖率：62 / 72 = 86.1%**（有用例的行 / 全部行）。五类边界的 7 行全部已钉：B-1 与 C-1 在本表
+初稿时尚未修复（未修的缺陷写用例只会是一条红用例），随后同一批次修复并随修复加了用例。无用例的
+另外 10 行都不属于五类。
 
 ### 没收进表的
 
