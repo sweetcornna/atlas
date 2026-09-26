@@ -81,7 +81,7 @@
 
 ## 3. M0 基线：检索层（已执行）
 
-- 代码：`packages/recall/eval/{dataset,metrics,run}.ts`、`scripts/qianmo-recall-baseline.ts`（`62bef009`）；入口 `bun run qianmo:recall-baseline [--json <path>]`。检索走真实的 `FileMemoryStore` + `recall()`，不重新实现任何环节。每题召回两次：无上限预算取全排序，默认预算取注入集；后者必须是前者的前缀，否则评测直接抛错。
+- 代码：`packages/recall/eval/{dataset,metrics,run}.ts`、`scripts/qianmo-recall-baseline.ts`（`33b81743`）；入口 `bun run qianmo:recall-baseline [--json <path>]`。检索走真实的 `FileMemoryStore` + `recall()`，不重新实现任何环节。每题召回两次：无上限预算取全排序，默认预算取注入集；后者必须是前者的前缀，否则评测直接抛错。
 - `decay=off` 是消融配置（`halfLifeMs: 0`），不是 M0 行为；M0 行为是 `default`（30 天半衰期）。
 - 复现性：2026-09-26 在 macOS（Bun 1.3.13）上连续跑两次，markdown 与 JSON 输出逐字节相同（SHA-256 分别为 `0d5746c2…15a1`、`78fdb790…d481`），单次耗时 11.4–19.8 s。Linux 未跑。
 - **本节全部是检索层数字，不是回答层数字。** AC-4 的 10/10 与 0/6 是另一个量（回答层、5 条、全量模式），两者不能互相替代。
