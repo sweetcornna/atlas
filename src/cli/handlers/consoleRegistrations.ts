@@ -79,7 +79,7 @@ export const REGISTRATION_LEDGER_VERSION = 1
 const LOG_PREFIX = 'console registrations:'
 
 /** 一轮续租里一条地址的结果。 */
-export type RenewOutcome =
+type RenewOutcome =
   | { readonly kind: 'renewed'; readonly address: string }
   /** 这一轮在路上时它被注销了；续租那次 POST 可能把它建了回来，已补一次 DELETE。 */
   | { readonly kind: 'withdrawn'; readonly address: string }
@@ -95,7 +95,7 @@ export type RenewScheduler = (
   delayMs: number,
 ) => () => void
 
-export interface ConsoleRegistrationsOptions {
+interface ConsoleRegistrationsOptions {
   /** 登记簿的绝对路径（`consoleRegistrationsPath()`）。 */
   readonly path: string
   /** 注册中心 HTTP v0 那个端口（`createRegistryPort`）。 */
