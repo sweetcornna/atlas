@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -146,6 +152,26 @@ describe('the termination-cause sentinel', () => {
         (JSON.parse(readFileSync(path, 'utf8')) as { phase: string }).phase,
       ).toBe('stopped')
     })
+  })
+
+  test('a heartbeat or a stop before start stamps nothing, and says so once', () => {
+    // B-1 (2026-09-08): the resident never called `start()`, and a record with
+    // `startedAt: 0` still appeared — first from the poll's heartbeat, then
+    // `stopped` on a clean exit — so the missing claim looked like a working
+    // sentinel. With no claim there is no life to describe.
+    const errors: unknown[] = []
+    const unstarted = sentinel({ errors })
+    for (let index = 0; index < 3; index++) unstarted.heartbeat()
+    unstarted.stop()
+    expect(existsSync(path)).toBe(false)
+    expect(errors.map(String)).toEqual([
+      'Error: resident lifecycle sentinel used before start(); nothing was stamped',
+    ])
+
+    // A late start still works, and the next life reads it as usual.
+    unstarted.start()
+    unstarted.stop()
+    expect(sentinel().start().outcome).toBe('clean')
   })
 
   test('an unwritable path fails open: it reports and never throws', () => {
