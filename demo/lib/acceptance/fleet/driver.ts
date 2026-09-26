@@ -1311,6 +1311,8 @@ export class FleetDriver implements AcceptanceDriver {
       url: local.url,
       hostUrl: `http://127.0.0.1:${String(remotePort)}`,
       readState: local.readState,
+      // 本地那份在同一个端口上重起，反向隧道指的就是那个端口，所以隧道不用动。
+      restart: local.restart,
     }
   }
 
@@ -1455,6 +1457,11 @@ export class FleetDriver implements AcceptanceDriver {
       configRoot: configDir,
       banner: readOut,
       stderr: readErr,
+      // 与清理同一条路径。同一个控制台位第二次 `start` 会覆写这个 pid 文件，
+      // 所以要换一个控制台的场景必须先停掉这一个，否则它就没人管了。
+      stop: async () => {
+        await this.#killByPidFile(machine.ssh, pidFile)
+      },
     }
   }
 

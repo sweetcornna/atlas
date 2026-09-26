@@ -148,15 +148,18 @@ export async function startRegistry(
       : { store: new FileRegistryStore(statePath) }),
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
   }
-  const handle = startRegistryServer(0, {
+  let handle = startRegistryServer(0, {
     registry: new Table(registryOptions),
   })
+  // `restart()` 换掉的是 `handle`，所以清理必须读**当下**那一个，不能在这里
+  // 把第一份闭包进去 —— 否则重启过的场景收尾时停的是一个早已停掉的服务器。
   ctx.cleanup(async () => {
     await handle.stop()
   })
+  const { port, url } = handle
   return {
-    url: handle.url,
-    hostUrl: handle.url,
+    url,
+    hostUrl: url,
     readState: async () => {
       if (statePath === undefined) return undefined
       try {
@@ -164,6 +167,13 @@ export async function startRegistry(
       } catch {
         return undefined
       }
+    },
+    restart: async () => {
+      await handle.stop()
+      // 新表、同一份选项、同一个端口：持久化开着就从盘上恢复，没开就是空表。
+      handle = startRegistryServer(port, {
+        registry: new Table(registryOptions),
+      })
     },
   }
 }
@@ -287,5 +297,8 @@ export async function startConsole(
     process: proc,
     banner: async () => proc.stdout(),
     stderr: async () => proc.stderr(),
+    stop: async () => {
+      await proc.stop()
+    },
   }
 }

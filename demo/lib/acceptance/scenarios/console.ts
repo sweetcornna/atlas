@@ -29,7 +29,13 @@
  * 注册中心那半边有一条**安全事实**顺带钉住：它自己零鉴权（console.md §8.2），
  * 控制台的 admin token 保护的只是控制台。所以这里所有注册动作都经控制台的
  * 代理路由发，测的是那层门；直接打注册中心的场景一条都不写 —— 那会把「注册
- * 中心没有门」写成一条看起来像功能的绿色。
+ * 中心没有门」写成一条看起来像功能的绿色。**只读的例外只有一种**：控制台已经
+ * 停了、或注册中心刚重启，要确认「此刻表上有没有这条」这个前提时，经
+ * `registry.url` 读一次名册。那是在给断言立前提，不是在测注册中心的门。
+ *
+ * **控制台替自己注册的条目续租**（console.md §7.3）。所以凡是要看「租约到期」
+ * 的场景，必须先把续租方 —— 控制台进程 —— 停下；控制台还活着时名册里那条不会
+ * 过期，那正是本维度要钉住的修复。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -39,7 +45,7 @@ import { DEFAULT_TTL_MS, REGISTRY_SNAPSHOT_VERSION } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
 import { Checks } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
-import { http } from '../local/console.js'
+import { http, type HttpProbe } from '../local/console.js'
 import { sleep } from '../local/spawn.js'
 import { delay, waitForMailbox } from '../observe.js'
 import type { ConsoleSlot, Scenario, ScenarioContext } from '../types.js'
@@ -68,6 +74,37 @@ function agentsOf(
 ): Record<string, unknown>[] {
   const agents = json?.agents
   return Array.isArray(agents) ? (agents as Record<string, unknown>[]) : []
+}
+
+function rowOf(
+  probe: HttpProbe,
+  address: string,
+): Record<string, unknown> | undefined {
+  return agentsOf(probe.json).find(a => a.address === address)
+}
+
+/**
+ * 在 `budgetMs` 内反复读一张名册，直到 `address` 出现（或一直读到预算用完）。
+ *
+ * 返回**最后一次**读到的原文与用时，不抛：「没等到」是要进报告的观察，不是
+ * 场景自己的错误。`url` 是一张名册的完整地址（控制台的 `/v0/agents`，或注册
+ * 中心的 `/v0/agents`），`token` 只有控制台那一张需要。
+ */
+async function rosterUntilListed(
+  url: string,
+  token: string | undefined,
+  address: string,
+  budgetMs: number,
+): Promise<{ readonly probe: HttpProbe; readonly elapsedMs: number }> {
+  const started = Date.now()
+  for (;;) {
+    const probe = await http(url, token === undefined ? {} : { token })
+    const elapsedMs = Date.now() - started
+    if (rowOf(probe, address) !== undefined || elapsedMs >= budgetMs) {
+      return { probe, elapsedMs }
+    }
+    await sleep(100)
+  }
 }
 
 /**
@@ -445,7 +482,7 @@ export const consoleScenarios: readonly Scenario[] = [
     dimension: 'console',
     title: '租约到期即从名册消失，心跳能把它续回来',
     expected:
-      '短 TTL 下：心跳后仍在名册；停止心跳并等过 TTL 后名册为空（惰性求值，无定时清扫）',
+      '短 TTL 下：心跳后仍在名册；续租方（控制台进程）停下后等过 TTL，注册中心的名册为空（惰性求值，无定时清扫）',
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
@@ -484,10 +521,11 @@ export const consoleScenarios: readonly Scenario[] = [
       const afterBeat = await http(`${console_.url}/v0/agents`, {
         token: console_.viewToken,
       })
+      // 控制台替自己注册的条目续租，它活着这条就不会过期。要看租约到期，
+      // 先停掉唯一的续租方；控制台停了，名册只能在注册中心那一侧读（只读）。
+      await console_.stop()
       await sleep(ttlMs + expiryGraceMs)
-      const afterExpiry = await http(`${console_.url}/v0/agents`, {
-        token: console_.viewToken,
-      })
+      const afterExpiry = await http(`${registry.url}/v0/agents`)
 
       return new Checks()
         .note('注册', `${registered.status} ${registered.body}`)
@@ -509,8 +547,177 @@ export const consoleScenarios: readonly Scenario[] = [
           1,
           '心跳续过一个 TTL 之后名册里的条数',
         )
-        .eq(agentsOf(afterExpiry.json).length, 0, '停止心跳过了 TTL 之后的条数')
+        .eq(afterExpiry.status, 200, '注册中心名册的状态码')
+        .eq(
+          agentsOf(afterExpiry.json).length,
+          0,
+          '续租方停下、过了 TTL 之后的条数',
+        )
         .done('租约按 TTL 过期、按心跳续期')
+    },
+  },
+
+  {
+    id: 'console/registry-registration-outlives-lease',
+    dimension: 'console',
+    title: '控制台上注册的条目由控制台续租：过了两个租约仍在名册，注销后不再续',
+    expected:
+      '短 TTL 下：注册后不发任何手动心跳，等过两个 TTL 名册里仍有这条且 lastHeartbeatAt 前移；DELETE 204 之后再等一个 TTL，名册里没有它',
+    requires: ['spawn-console'],
+    timeoutMs: 120_000,
+    async run(ctx) {
+      // `tenancy-m1.md` §0.4（P15.2）那条缺陷的原样复现：控制台只有按需心跳，
+      // 注册中心宿主只替 `--register` 续租，节点从不拨号 —— 于是页面上的「注册」
+      // 一个 TTL 后就从名册消失。TTL 取短的并吃倍率，理由见上一条场景的注释。
+      const ttlMs = Math.round(3_000 * ctx.timeoutScale)
+      const graceMs = Math.round(1_500 * ctx.timeoutScale)
+      const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
+      const encoded = encodeURIComponent(AGENT_ADDRESS)
+
+      const registered = await http(`${console_.url}/v0/agents`, {
+        method: 'POST',
+        token: console_.adminToken,
+        body: {
+          address: AGENT_ADDRESS,
+          endpoint: AGENT_ENDPOINT,
+          capabilities: ['task.request'],
+        },
+      })
+      // 两个整租约再加余量：没有续租方的条目在这段时间里早已过期两回。
+      await sleep(2 * ttlMs + graceMs)
+      const held = await http(`${console_.url}/v0/agents`, {
+        token: console_.viewToken,
+      })
+      const row = rowOf(held, AGENT_ADDRESS)
+
+      const removed = await http(`${console_.url}/v0/agents/${encoded}`, {
+        method: 'DELETE',
+        token: console_.adminToken,
+      })
+      // 续租周期是租约的 2/9（`renewIntervalFor`），一个 TTL 里续租方会醒好几回；
+      // 它若还惦记着这条，这段时间足够把它续回来。
+      await sleep(ttlMs + graceMs)
+      const afterRemoval = await http(`${console_.url}/v0/agents`, {
+        token: console_.viewToken,
+      })
+
+      return new Checks()
+        .note('注册', `${registered.status} ${registered.body}`)
+        .note('两个租约之后的名册', `${held.status} ${held.body}`)
+        .note('注销', `${removed.status} ${removed.body}`)
+        .note('注销之后的名册', `${afterRemoval.status} ${afterRemoval.body}`)
+        .note('控制台 stderr', (await console_.stderr()).slice(0, 1_500))
+        .eq(registered.status, 200, '注册状态码')
+        .expect(
+          row !== undefined,
+          '过了两个租约、没有任何手动心跳，名册里仍有这条',
+          held.body,
+        )
+        .expect(
+          typeof row?.lastHeartbeatAt === 'number' &&
+            typeof registered.json?.lastHeartbeatAt === 'number' &&
+            row.lastHeartbeatAt > registered.json.lastHeartbeatAt,
+          '续租来自控制台：lastHeartbeatAt 比注册时前移',
+          `${String(registered.json?.lastHeartbeatAt)} → ${String(row?.lastHeartbeatAt)}`,
+        )
+        .eq(row?.endpoint, AGENT_ENDPOINT, '续租后的 endpoint 未变')
+        .eq(removed.status, 204, '注销状态码')
+        .expect(
+          rowOf(afterRemoval, AGENT_ADDRESS) === undefined,
+          '注销后再等一个租约，这条没有被续回来',
+          afterRemoval.body,
+        )
+        .done('控制台注册的条目活过租约，注销即停止续租')
+    },
+  },
+
+  {
+    id: 'console/registry-registration-survives-restarts',
+    dimension: 'console',
+    title:
+      '注册中心重启、控制台重启之后，控制台注册过的条目都会回来（登记簿落在控制台配置根）',
+    expected:
+      '注册中心在同一端口重起为空表后，一个 TTL 内条目回到名册；控制台停下、租约过期、条目消失之后，用同一个配置根重起控制台，条目回来',
+    requires: ['spawn-console'],
+    timeoutMs: 180_000,
+    async run(ctx) {
+      const ttlMs = Math.round(3_000 * ctx.timeoutScale)
+      const graceMs = Math.round(1_500 * ctx.timeoutScale)
+      // 不开持久化：重起后的注册中心是空表，与「停机超过一个 TTL 后重启」同一个
+      // 结果（`#restore` 按当下时钟重判，过期的一条不留），而不必真等那么久。
+      const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
+      const slot = await ctx.driver.consoleSlot(ctx)
+      const first = await slot.start({ registryUrl: registry.hostUrl })
+
+      const registered = await http(`${first.url}/v0/agents`, {
+        method: 'POST',
+        token: first.adminToken,
+        body: { address: AGENT_ADDRESS, endpoint: AGENT_ENDPOINT },
+      })
+
+      // ① 注册中心重启。
+      await registry.restart()
+      const emptied = await http(`${registry.url}/v0/agents`)
+      const back = await rosterUntilListed(
+        `${first.url}/v0/agents`,
+        first.viewToken,
+        AGENT_ADDRESS,
+        ttlMs,
+      )
+
+      // ② 控制台重启。先停、再等过一个租约，让这条真的从表上消失 —— 否则第二个
+      // 控制台起来时看到的可能只是上一个留下的租约，证明不了登记簿。
+      await first.stop()
+      await sleep(ttlMs + graceMs)
+      const lapsed = await http(`${registry.url}/v0/agents`)
+      // 同一个控制台位 = 同一个配置根 = 同一本登记簿。
+      const second = await slot.start({ registryUrl: registry.hostUrl })
+      const replayed = await rosterUntilListed(
+        `${second.url}/v0/agents`,
+        second.viewToken,
+        AGENT_ADDRESS,
+        graceMs,
+      )
+
+      return new Checks()
+        .note('注册', `${registered.status} ${registered.body}`)
+        .note('注册中心刚重起时的表', `${emptied.status} ${emptied.body}`)
+        .note(
+          '注册中心重起后控制台的名册',
+          `${back.elapsedMs} ms: ${back.probe.status} ${back.probe.body}`,
+        )
+        .note('控制台停下一个租约后的表', `${lapsed.status} ${lapsed.body}`)
+        .note(
+          '控制台重起后的名册',
+          `${replayed.elapsedMs} ms: ${replayed.probe.status} ${replayed.probe.body}`,
+        )
+        .note('第二个控制台的 banner', await second.banner())
+        .note('第一个控制台 stderr', (await first.stderr()).slice(0, 1_500))
+        .eq(registered.status, 200, '注册状态码')
+        .expect(
+          emptied.status === 200 && rowOf(emptied, AGENT_ADDRESS) === undefined,
+          '前提：注册中心重起后表上没有这条',
+          emptied.body,
+        )
+        .expect(
+          rowOf(back.probe, AGENT_ADDRESS) !== undefined,
+          '注册中心重起后一个 TTL 之内，这条回到名册',
+          back.probe.body,
+        )
+        .expect(
+          lapsed.status === 200 && rowOf(lapsed, AGENT_ADDRESS) === undefined,
+          '前提：控制台停下、没人续租，一个租约后这条从表上消失',
+          lapsed.body,
+        )
+        .expect(
+          rowOf(replayed.probe, AGENT_ADDRESS) !== undefined,
+          '同一个配置根重起控制台后，这条回到名册（登记簿）',
+          replayed.probe.body,
+        )
+        .done('两种重启之后控制台注册的条目都回来了')
     },
   },
 
