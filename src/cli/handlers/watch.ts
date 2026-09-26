@@ -136,12 +136,12 @@ export interface WatchConfig {
  * 公钥的节点发送请求。这条路径只需要 `--from`：不读作业文件，不读 PSK，也不
  * 连接任何节点。
  */
-export interface WatchPrintIdentityConfig {
+interface WatchPrintIdentityConfig {
   readonly mode: 'print-identity'
   readonly from: string
 }
 
-export type WatchCommand = WatchConfig | WatchPrintIdentityConfig
+type WatchCommand = WatchConfig | WatchPrintIdentityConfig
 
 /** 作业文件里那一项：调度器认识的部分 + 本文件认识的 `url`。 */
 interface WatchJobEntry {
