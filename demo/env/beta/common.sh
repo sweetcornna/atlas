@@ -1730,7 +1730,7 @@ beta_stop_link() {
       inactive|failed|'') ;;
       *)
         systemctl --user stop "$unit" >/dev/null 2>&1 || true
-        beta_say "已停止 $unit（停之前是 $state）"
+        beta_say "已停止 ${unit}（停之前是 ${state}）"
         ;;
     esac
     if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = 'enabled' ]; then

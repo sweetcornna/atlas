@@ -59,9 +59,9 @@ die() {
 }
 
 require_marker() {
-  [ -f "$MARKER" ] || die "$BETA_ROOT 不是内测环境（缺 $MARKER）"
+  [ -f "$MARKER" ] || die "$BETA_ROOT 不是内测环境（缺 ${MARKER}）"
   head -1 "$MARKER" | grep -qF "$MARKER_MAGIC" \
-    || die "$MARKER 的首行不是 $MARKER_MAGIC，拒绝操作"
+    || die "$MARKER 的首行不是 ${MARKER_MAGIC}，拒绝操作"
 }
 
 # 八进制权限位，GNU 与 BSD stat 各一种写法。
@@ -91,7 +91,7 @@ load_conf() {
 }
 
 check_token_file() {
-  [ -e "$TOKEN_FILE" ] || die "缺 DNS 凭据 $TOKEN_FILE（0600，一行 CF_DNS_API_TOKEN=…）"
+  [ -e "$TOKEN_FILE" ] || die "缺 DNS 凭据 ${TOKEN_FILE}（0600，一行 CF_DNS_API_TOKEN=…）"
   [ -f "$TOKEN_FILE" ] && [ ! -L "$TOKEN_FILE" ] || die "$TOKEN_FILE 不是普通文件"
   [ "$(file_mode "$TOKEN_FILE")" = '600' ] \
     || die "$TOKEN_FILE 权限是 $(file_mode "$TOKEN_FILE")，要 600"
@@ -179,16 +179,16 @@ cmd_install() {
     cp "$OPS_DIR/$unit" "$UNIT_DIR/$unit"
     chmod 644 "$UNIT_DIR/$unit"
   done
-  say "已装：$CONF、$OPS_DIR/{console-tls-front.ts,console-https.sh}、$UNIT_DIR/{$FRONT_UNIT,$CERT_UNIT,$CERT_TIMER}"
+  say "已装：${CONF}、$OPS_DIR/{console-tls-front.ts,console-https.sh}、$UNIT_DIR/{$FRONT_UNIT,$CERT_UNIT,$CERT_TIMER}"
 
   if systemd_user_ok; then
     systemctl --user daemon-reload
     systemctl --user enable "$CERT_TIMER" "$FRONT_UNIT" >/dev/null
     systemctl --user start "$CERT_TIMER"
     if [ "$(systemctl --user is-active "$FRONT_UNIT" 2>/dev/null || true)" = 'active' ]; then
-      say "已 enable：$CERT_TIMER、$FRONT_UNIT。前置**正在跑旧参数**——要生效：systemctl --user restart $FRONT_UNIT"
+      say "已 enable：${CERT_TIMER}、${FRONT_UNIT}。前置**正在跑旧参数**——要生效：systemctl --user restart $FRONT_UNIT"
     else
-      say "已 enable：$CERT_TIMER（已启动）、${FRONT_UNIT}（**没有启动**——证书在了再 systemctl --user start $FRONT_UNIT）"
+      say "已 enable：${CERT_TIMER}（已启动）、${FRONT_UNIT}（**没有启动**——证书在了再 systemctl --user start ${FRONT_UNIT}）"
     fi
   else
     say '这台机器上没有可用的 systemd --user：单元文件已写好，没有 enable'
