@@ -103,6 +103,11 @@ BETA_BACKUP_INTERVAL_MS="${QIANMO_BETA_BACKUP_INTERVAL_MS:-3600000}"
 # 节点往 H 写快照的地址（§2.7，必须 https）。**没有默认值**：它是一个域名，按文首纪律
 # 不进仓库；不设就不开备份面，脚本会明说。
 BETA_BACKUP_URL="${QIANMO_BETA_BACKUP_URL:-}"
+# 节点进程的 oom_score_adj（0~1000，或 off）。默认 1000：内存打满时让内核**先挑阡陌**，
+# 而不是同机的代理、nginx 或别人的服务。理由写在 beta_raise_oom_score 那里。
+BETA_OOM_SCORE_ADJ="${QIANMO_BETA_OOM_SCORE_ADJ:-1000}"
+# 写到哪里。只为用例留的缝：真机上永远是 /proc/self/oom_score_adj。
+BETA_OOM_ADJ_PATH="${BETA_OOM_ADJ_PATH:-/proc/self/oom_score_adj}"
 
 # ── 目录布局（beta-env.md §4.1）。改这里等于改全套脚本 ───────────────────────
 BETA_RUN_DIR="$BETA_ROOT/run"
@@ -1663,6 +1668,43 @@ beta_note_host_unit() {
 那是 oneshot + RemainAfterExit 的形状：它记的是「那一趟起过了」，不是「进程还活着」。
 要连单元一起停：systemctl --user stop $unit
 要起回来  ：systemctl --user start ${unit}（等价于跑一趟 beta-up.sh --role host）"
+  return 0
+}
+
+# beta_raise_oom_score —— 把**本 shell** 的 oom_score_adj 调到 BETA_OOM_SCORE_ADJ。
+#
+# 在起 resident 之前调：子进程（resident 与它 spawn 的 ACP 子进程）继承这个值。
+#
+# 为什么默认 1000：内测节点借住在别人的机器上（2026-09 的舰队是负责人的代理出口，
+# 同机跑着 xray / nginx / 别的服务，内存 1~2 GB）。一个 agent 轮次的峰值约 370 MB，
+# 内存打满时内核按 oom_score 挑进程杀——不调，被挑中的可能是那台机器真正的主业；
+# 调到 1000，被挑中的一定先是我们。阡陌节点被杀的代价是一个轮次失败、下次重起，
+# 这是可以接受的那一边。
+#
+# 调高不需要特权（调低才要），所以非 root 账号也做得到。写不进去（非 Linux、容器
+# 里 /proc 只读）只 WARN，不拦节点起来：OOM 次序是防护，不是节点能不能工作的前提。
+beta_raise_oom_score() {
+  case "$BETA_OOM_SCORE_ADJ" in
+    off)
+      beta_say 'OOM 次序 : 未调整（QIANMO_BETA_OOM_SCORE_ADJ=off）'
+      return 0
+      ;;
+    ''|*[!0-9]*)
+      beta_die "QIANMO_BETA_OOM_SCORE_ADJ 要 0~1000 的整数或 off，收到「${BETA_OOM_SCORE_ADJ}」"
+      ;;
+  esac
+  [ "$BETA_OOM_SCORE_ADJ" -le 1000 ] \
+    || beta_die "QIANMO_BETA_OOM_SCORE_ADJ 超过 1000：${BETA_OOM_SCORE_ADJ}"
+  if [ ! -w "$BETA_OOM_ADJ_PATH" ]; then
+    beta_warn "写不了 ${BETA_OOM_ADJ_PATH}（不是 Linux，或 /proc 只读）—— 本节点的 OOM 次序保持系统默认"
+    return 0
+  fi
+  if printf '%s\n' "$BETA_OOM_SCORE_ADJ" >"$BETA_OOM_ADJ_PATH" 2>/dev/null; then
+    beta_ok "OOM 次序 : oom_score_adj=${BETA_OOM_SCORE_ADJ}（内存打满时内核先挑本节点，而不是同机别的服务）"
+  else
+    # 非 root 想把一个继承来的高值调低，内核会拒绝——那也只是防护没到位。
+    beta_warn "oom_score_adj 写入被拒（${BETA_OOM_SCORE_ADJ}）—— 本节点的 OOM 次序保持继承来的值"
+  fi
   return 0
 }
 

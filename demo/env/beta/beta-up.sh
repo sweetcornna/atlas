@@ -1141,6 +1141,8 @@ run_node() {
 
   # 尾参透传（见文件头）。追加在最后：`--trust <节点>=<公钥>` 就是从这里进来的。
   args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
+  # 紧挨着起进程：resident 与它的 ACP 子进程从本 shell 继承 oom_score_adj。
+  beta_raise_oom_score
   beta_start_process "$BETA_NODE" "$config_dir" "${args[@]}"
 
   beta_head '③ 就绪探测'
