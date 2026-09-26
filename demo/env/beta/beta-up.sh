@@ -430,6 +430,7 @@ run_host() {
   done
   # 尾参透传（见文件头）。追加在最后：`--wake-sign` 这类开关就是从这里进来的。
   console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
+  beta_prepare_console_anchors
   beta_start_process "$BETA_CONSOLE_PROC" "$BETA_CONFIG_CONSOLE" "${console_args[@]}"
 
   # 探活与下面每一行报出去的地址，都必须是控制台**实际**绑上的那个，而不是覆盖之前的

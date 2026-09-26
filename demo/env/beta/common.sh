@@ -160,9 +160,12 @@ BETA_PSK_FILE="$BETA_SECRET_DIR/transport-psk"
 # 同时失效。落成文件就是「显式」的持久形式。
 BETA_VIEW_TOKEN_FILE="$BETA_SECRET_DIR/console-view-token"
 BETA_ADMIN_TOKEN_FILE="$BETA_SECRET_DIR/console-admin-token"
-# 审计见证的**写** token（P11.4）。节点机上是 H 发下来的那一枚；H 自己的那一份由
+# 审计见证的**写** token（P11.4）。节点机上是见证机发下来的那一枚；见证机自己的那一份由
 # ops/witness-endpoint.sh install 生成。只在节点腿、且尾参里有 --witness-url 时才读。
 BETA_WITNESS_WRITE_FILE="$BETA_SECRET_DIR/witness-write-token"
+# 审计见证的**读** token。只在 H 腿、且控制台尾参的 --anchors 是 http(s) 端点时才读：
+# 见证不在 H 上时，控制台要凭它把锚点读回来，才画得出「完整且已见证」。
+BETA_WITNESS_READ_FILE="$BETA_SECRET_DIR/witness-read-token"
 # 备份两枚 token。**归档 token 永不离开 H**（§2.7），所以节点机上只会有 write 那一份。
 BETA_BACKUP_WRITE_FILE="$BETA_SECRET_DIR/backup-write-token"
 BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
@@ -1705,31 +1708,73 @@ beta_tunnel_extra_args() {
 #     经 SSH `-R` 转过来的端点在节点这一侧就是回环口，所以内测形态下永远是回环。
 # 只在节点腿调：控制台与注册中心不需要这枚 token，给了只是多一处能被读走的副本。
 beta_prepare_witness() {
-  local arg prev='' url=''
-  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
-    case "$arg" in
-      --witness-url=*) url="${arg#--witness-url=}" ;;
-    esac
-    if [ "$prev" = '--witness-url' ]; then url="$arg"; fi
-    prev="$arg"
-  done
+  local url
+  url="$(beta_passthrough_value --witness-url)"
   [ -n "$url" ] || return 0
-  case "$url" in
-    https://*) ;;
-    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|http://\[::1\]:*) ;;
-    *) beta_die "--witness-url 是明文 http 且不指向回环：${url}——写 token 在请求头里，走明文就等于广播" ;;
-  esac
+  beta_assert_token_url "$url" --witness-url '写'
   if [ -z "${QIANMO_WITNESS_WRITE_TOKEN:-}" ]; then
-    [ -f "$BETA_WITNESS_WRITE_FILE" ] \
-      || beta_die "尾参里有 --witness-url，但缺见证写 token：${BETA_WITNESS_WRITE_FILE}（0600，由 H 发下来）"
-    local mode
-    mode="$(stat -c %a "$BETA_WITNESS_WRITE_FILE" 2>/dev/null || stat -f %Lp "$BETA_WITNESS_WRITE_FILE")"
-    [ "$mode" = '600' ] || beta_die "${BETA_WITNESS_WRITE_FILE} 权限是 ${mode}，要 600"
-    QIANMO_WITNESS_WRITE_TOKEN="$(cat "$BETA_WITNESS_WRITE_FILE")"
-    [ -n "$QIANMO_WITNESS_WRITE_TOKEN" ] || beta_die "${BETA_WITNESS_WRITE_FILE} 是空的"
-    export QIANMO_WITNESS_WRITE_TOKEN
+    beta_export_secret_file QIANMO_WITNESS_WRITE_TOKEN "$BETA_WITNESS_WRITE_FILE" \
+      "尾参里有 --witness-url，但缺见证写 token：${BETA_WITNESS_WRITE_FILE}（0600，由见证机发下来）"
   fi
   beta_ok "审计见证 : ${url}（写 token 从文件进环境，不上命令行）"
+}
+
+# beta_prepare_console_anchors —— 控制台尾参里的 --anchors 是 http(s) 端点时，把见证
+# **读** token 从文件读进环境（控制台只认 QIANMO_WITNESS_READ_TOKEN，consoleArgs.ts）。
+#
+# 见证放在 H 上时 --anchors 给的是本机目录，用不到这枚 token。可是 H 同时也是节点机
+# （beta-4 就在 H 上）时，见证就不能放在 H 上（audit-witness.md §4.1：见证方与被见证方
+# 不同失陷域），控制台只能经 HTTP 把锚点读回来——这枚 token 就是为这一种形态准备的。
+# 它只能「读」：拿到它的人能列出锚点，改不了任何一条（端点只增不删）。
+# 两种会在起进程之后才暴露的错在这里提前拦下，理由与 beta_prepare_witness 相同。
+beta_prepare_console_anchors() {
+  local url
+  url="$(beta_passthrough_value --anchors)"
+  case "$url" in
+    http://*|https://*) ;;
+    *) return 0 ;;
+  esac
+  beta_assert_token_url "$url" --anchors '读'
+  if [ -z "${QIANMO_WITNESS_READ_TOKEN:-}" ]; then
+    beta_export_secret_file QIANMO_WITNESS_READ_TOKEN "$BETA_WITNESS_READ_FILE" \
+      "尾参里的 --anchors 是 HTTP 端点，但缺见证读 token：${BETA_WITNESS_READ_FILE}（0600，由见证机发下来）"
+  fi
+  beta_ok "见证锚点 : ${url}（读 token 从文件进环境，不上命令行）"
+}
+
+# beta_passthrough_value <开关> —— 尾参里这个开关的值（`--x v` 与 `--x=v` 两种写法都认，
+# 出现多次取最后一个——与各命令自己的解析一致）。没有就打印空串。
+beta_passthrough_value() {
+  local flag="$1" arg prev='' value=''
+  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$arg" in
+      "$flag"=*) value="${arg#"$flag"=}" ;;
+    esac
+    if [ "$prev" = "$flag" ]; then value="$arg"; fi
+    prev="$arg"
+  done
+  printf '%s' "$value"
+}
+
+# beta_assert_token_url <URL> <开关> <读|写> —— 带 token 的请求只许走 https，或者走回环上的 http。
+# 经 SSH -L / -R 转过来的端点在本机这一侧就是回环口，所以内测形态下永远是回环。
+beta_assert_token_url() {
+  case "$1" in
+    https://*) ;;
+    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|http://\[::1\]:*) ;;
+    *) beta_die "$2 是明文 http 且不指向回环：${1}——$3 token 在请求头里，走明文就等于广播" ;;
+  esac
+}
+
+# beta_export_secret_file <变量名> <文件> <缺文件时的话> —— 普通文件、0600、非空，才读进环境。
+beta_export_secret_file() {
+  local var="$1" file="$2" missing="$3" mode value
+  [ -f "$file" ] || beta_die "$missing"
+  mode="$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")"
+  [ "$mode" = '600' ] || beta_die "${file} 权限是 ${mode}，要 600"
+  value="$(cat "$file")"
+  [ -n "$value" ] || beta_die "${file} 是空的"
+  export "$var=$value"
 }
 
 # beta_raise_oom_score —— 把**本 shell** 的 oom_score_adj 调到 BETA_OOM_SCORE_ADJ。
