@@ -483,15 +483,25 @@ systemctl --user start qianmo-witness-link.service
 #    secrets/witness-write-token（0600），节点腿带上尾参
 demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥> --witness-url http://127.0.0.1:38640
 # ⑤ H：W 的读 token 拷成 H 的 secrets/witness-read-token（0600），控制台尾参加 --anchors http://127.0.0.1:38640
+# ⑥ H：把每个节点的公钥发布进名册（每条登记都要，端点/能力/状态照抄现有那条）。控制台带 --anchors 时
+#    只从名册取节点公钥（不从锚点学），p81-registry 的 --register 又不带公钥——漏了这一步，审计页对每个
+#    节点都报「名册没有节点 <名字> 的公钥」，一条记录都读不出来
+curl -s -X POST -H 'content-type: application/json' http://127.0.0.1:38620/v0/agents \
+  --data '{"address":"qianmo://<节点>/<agent>","endpoint":"<现有端点>","capabilities":["task.request"],"status":"online","publicKey":"<节点公钥>"}'
 ```
 
-- **两枚 token 都在 W 上生成。**写 token 发给每个节点；读 token 只给做验证的一方：W 自己
-  （`occ audit --verify --witness`），形态②下还有 H 上的控制台。读 token 只能列出锚点，改不了任何一条。
+- **两枚 token 都在 W 上生成。**写 token 发给每个节点；读 token 只给做验证的一方（形态②下是 H 上的控制台）。
+  读 token 只能列出锚点，改不了任何一条。命令行的 `occ audit --verify --witness` 只从**本机配置根**的身份文件
+  确立节点公钥，所以要在节点机上用节点自己的配置根跑；锚点源给 W 存储的只读快照（绝对路径）或 HTTP 端点加读 token。
+- ⑥ 发布的公钥挂在名册条目上，p81 续租不会抹掉它；但名册停机超过租约（90 s）、条目过期后，p81 会以不带公钥的
+  形式重新登记——H 腿重跑或 H 重启之后要再做一遍 ⑥。
 - 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境；控制台尾参里的 `--anchors` 是 HTTP 端点时，
   H 腿把读 token 读进 `QIANMO_WITNESS_READ_TOKEN`。两边都不上命令行；缺文件、权限不是 600、明文 http 指向
   回环以外，都在起进程之前拦下。
 - 端点不在、或 H → W 那条链路断了，节点照常工作，只在 `.err` 里报写不进去（发送方 fail-open）；控制台审计页
-  退回「未见证」。存活判据：H 上与 W 上各自
+  退回「未见证」。**空闲节点每个周期也会在 `.err` 里记一条 `refused the anchor: 409`**：链头没变时发送方照发同一个
+  seq，端点按 seq 去重回 409——这不是故障，统计见证失败时先剔掉 409。同一个原因，链头超过 2T 没动时 `stale`
+  必然为真、审计页显示「未见证」；区分「节点停了」和「链没动」要看 `unwitnessed_tail`（链头前进了却没有锚点跟上）。存活判据：H 上与 W 上各自
   `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
 - 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道；形态②下它照样经那条 `-L` 落到 W。
 
