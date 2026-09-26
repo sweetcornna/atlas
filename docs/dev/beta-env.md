@@ -450,6 +450,31 @@ $QIANMO_BETA_ROOT/                 # 默认 $HOME/qianmo-beta（无 sudo，不�
 `demo/env/resident-task-policy.test.ts` 钉住它不会被悄悄删掉。演示拓扑（`demo/env/up.sh`
 等）**不**列它——那两处是本机跑给人看的，放宽与否该是各自的决定。
 
+### 4.1.2 值守作业（`qm watch`）：先让节点信任中枢，再签名
+
+`qm watch` 不签名时，作业能送达，但默认策略的节点会拒收；`--open-policy` 的节点会收下，
+agent 却会拒绝执行（console.md §10.1.1）。起法四步，完整说明在 console.md §10.1，这里只列
+内测环境要多做的那一步——节点的 `--trust hub=`：
+
+```bash
+# ① 中枢机：取中枢的签名身份（只需要 --from，不读 PSK，不起调度器）
+qm watch --print-identity --from qianmo://hub/console      # → hub=<publicKey>
+
+# ② 每台目标节点：信任这把公钥。节点腿的尾参以这一趟为准并重写记录（demo/env/beta/README.md
+#    「尾参透传」），所以已有的 --trust（比如控制台那一条）要一起带上，否则会被撤掉
+./demo/env/beta/beta-down.sh <节点名>
+./demo/env/beta/beta-up.sh --role node --node <节点名> -- \
+  --trust console=<控制台公钥> --trust hub=<publicKey>
+
+# ③ 中枢机：带 --sign 起调度器
+qm watch --jobs ./jobs.json --from qianmo://hub/console --sign
+```
+
+只读检查类作业（`df`、工作区内的 Read / Grep）在节点默认的 `dontAsk` 模式下就能执行，
+**不需要为它打开 `--allow-workspace-edits`**；工作区之外的读取在两种模式下都会被拒绝
+（console.md §10.1.2）。节点在作业运行中推送的工具过程行只进中枢审计链
+（`watch_step_received`），不会出现在 `qm watch` 的 stdout 上（console.md §10.1.3）。
+
 ### 4.2 定案：审计链按节点分文件，**不集中**
 
 三条理由，任何一条单独成立：

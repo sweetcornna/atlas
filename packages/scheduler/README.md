@@ -85,6 +85,17 @@ resolve = 本次 fire 成功（失败计数清零），throw = 失败（退避�
 
 ## 5. 边界与已知未做
 
+- **信封签名也是宿主的事，不在本包。**本包不持有密钥，也不知道 capability token 的存在。宿主
+  `qm watch` 用 `--sign` 给每个作业的 `task.request` 签一枚 `write-limited` 令牌，没签名的
+  请求会被节点拒收，或以 untrusted 档送达后被 agent 拒绝执行。起法（细节见
+  `docs/dev/console.md` §10.1–§10.1.1）：
+
+  ```bash
+  qm watch --print-identity --from qianmo://hub/console   # → hub=<publicKey>
+  qm resident ... --trust hub=<publicKey>                  # 每个目标节点，先做
+  qm watch --jobs ./jobs.json --from qianmo://hub/console --sign
+  ```
+
 - **本包只到「派发」为止。**`notify` 端到端（agent 工具 → 中枢 → 审计链）、MCP 工具面只含 `qianmo_notify` 的结构性断言（E4）、出站滑动窗口限流、节点零拨号的扫描断言，都属 P13.6 的**宿主接线**那一半，已在同批次落地但不在本包：见 `packages/resident/src/notify.ts` 与 README §3.4、`src/services/qianmo/notifyTool.ts`、`src/cli/handlers/watch.ts`。
 - **`notifyPolicy` 本包不解读**，只做校验与透传。
 - **没有优先级轴**，作业之间按注册顺序遍历。与 `NodeTurnGate` 同一个理由（README of `@qianmo/resident` §3.2）：值守作业与人工请求谁更急是产品判断，M1 没有判据要求它。
