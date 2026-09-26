@@ -200,6 +200,61 @@ const TOOL_KIND_VERBS = new Map<string, string>([
  */
 export const SELF_REPORTING_TOOL_TITLE = 'qianmo_notify'
 
+/** The two moments a tool call is reported in; see {@link turnStepDedupKey}. */
+export type TurnStepPhase = 'start' | 'failed'
+
+/** A step's `dedupKey`, taken apart. */
+export interface TurnStepKey {
+  /** The network message whose turn raised the step. */
+  readonly networkMsgId: string
+  readonly toolCallId: string
+  readonly phase: TurnStepPhase
+}
+
+/**
+ * The `dedupKey` every step carries, spelled here and nowhere else.
+ *
+ * It is also the only thing a receiver can use to tell a step from a message
+ * the agent sent itself with `qianmo_notify`. Both arrive as `notify`, and a
+ * step is always `kind: 'task'`, which the agent may choose too. The protocol
+ * has no field for "raised by the node", and cannot get one cheaply:
+ * `isNotifyPayload` accepts only the fields it knows, so older receivers
+ * would reject a payload with a new field. `qm watch` needs the distinction
+ * because a watch job stays silent unless the agent itself decides a person
+ * must hear about it (`resident-botization.md` §4.1⑤). Steps are process data
+ * there. So the shape of this key is the marker, and
+ * {@link parseTurnStepDedupKey} is the only code that reads it.
+ */
+export function turnStepDedupKey(
+  networkMsgId: string,
+  toolCallId: string,
+  phase: TurnStepPhase,
+): string {
+  return `${networkMsgId}:${toolCallId}:${phase}`
+}
+
+/**
+ * Take a {@link turnStepDedupKey} apart, or `undefined` when `key` does not
+ * have that shape.
+ *
+ * The first colon ends the message id and the last colon starts the phase,
+ * so a tool call id that contains colons still parses. A message id that
+ * contains a colon does not parse correctly. The reader that uses this
+ * (`qm watch`) mints its own message ids, which never contain one.
+ */
+export function parseTurnStepDedupKey(key: string): TurnStepKey | undefined {
+  const first = key.indexOf(':')
+  const last = key.lastIndexOf(':')
+  if (first <= 0 || last <= first + 1) return undefined
+  const phase = key.slice(last + 1)
+  if (phase !== 'start' && phase !== 'failed') return undefined
+  return {
+    networkMsgId: key.slice(0, first),
+    toolCallId: key.slice(first + 1, last),
+    phase,
+  }
+}
+
 function progressText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
     ? value.trim()
@@ -497,8 +552,8 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
     if (!started && !failed) return
     // A failure re-announces once; a second `failed` update for the same call
     // does not. The key carries the phase so the two are distinct records.
-    const phase = failed ? 'failed' : 'start'
-    const dedupKey = `${networkMsgId}:${toolCallId}:${phase}`
+    const phase: TurnStepPhase = failed ? 'failed' : 'start'
+    const dedupKey = turnStepDedupKey(networkMsgId, toolCallId, phase)
     if (failed && active.announcedTools.has(`${toolCallId}#failed`)) return
 
     // Silently stop rather than queue: see MAX_PROGRESS_PER_TURN on why a step
