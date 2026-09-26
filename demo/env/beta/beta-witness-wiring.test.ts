@@ -179,6 +179,59 @@ describe('② beta_prepare_witness', () => {
   })
 })
 
+describe('③ beta_prepare_console_anchors（见证不在 H 上）', () => {
+  function withReadToken(dir: string, mode = 0o600): void {
+    const file = join(dir, 'root', 'secrets', 'witness-read-token')
+    writeFileSync(file, `${TOKEN}\n`)
+    chmodSync(file, mode)
+  }
+  const call = (passThrough: string) =>
+    `PASS_THROUGH=(${passThrough}); beta_prepare_console_anchors; printf 'env=[%s]\\n' "\${QIANMO_WITNESS_READ_TOKEN:-}"`
+
+  test('--anchors 是回环 HTTP：读 token 从文件进环境，输出里不出现 token', () => {
+    const dir = root()
+    withReadToken(dir)
+    const result = bash(
+      dir,
+      call('--chat-sign --anchors http://127.0.0.1:38640'),
+    )
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain(`env=[${TOKEN}]`)
+    expect(result.stdout.replace(`env=[${TOKEN}]`, '')).not.toContain(TOKEN)
+  })
+
+  test('--anchors 是本机目录：不读 token（见证在 H 上的形态）', () => {
+    const dir = root()
+    withReadToken(dir)
+    const result = bash(dir, call('--anchors=/srv/witness/store'))
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain('env=[]')
+  })
+
+  test.each([
+    ['缺读 token 文件', 'missing', 'http://127.0.0.1:38640'],
+    ['读 token 文件权限过宽', 'wide', 'http://127.0.0.1:38640'],
+    ['明文 http 指向回环以外', 'remote', 'http://10.0.0.5:38640'],
+  ])('%s：在起控制台之前拦下', (_label, kind, url) => {
+    const dir = root()
+    if (kind === 'wide') withReadToken(dir, 0o644)
+    if (kind === 'remote') withReadToken(dir)
+    const result = bash(dir, call(`--anchors ${url}`))
+    expect(result.code).not.toBe(0)
+    expect(result.stdout + result.stderr).not.toContain(TOKEN)
+  })
+
+  test('H 腿在起控制台之前调它', () => {
+    const text = readFileSync(resolve(BETA_DIR, 'beta-up.sh'), 'utf8')
+    const start = text.indexOf('beta_start_process "$BETA_CONSOLE_PROC"')
+    expect(start).toBeGreaterThan(0)
+    const before = text.slice(0, start)
+    expect(before.lastIndexOf('beta_prepare_console_anchors')).toBeGreaterThan(
+      before.lastIndexOf('console_args+=('),
+    )
+  })
+})
+
 describe('beta-up.sh 的节点腿', () => {
   test('在起 resident 之前调 beta_prepare_witness', () => {
     const text = readFileSync(resolve(BETA_DIR, 'beta-up.sh'), 'utf8')

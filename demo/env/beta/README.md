@@ -457,31 +457,68 @@ systemctl --user start qianmo-tls-front.service
   （`--dns.propagation.disable-rns`）；URL 会把显式写的协议默认端口（`:80`）规范化成空串，所以上游端口
   从原文里取。
 
-## 审计见证（P11.4）：端点在 H，节点经隧道的 `-R` 写锚点
+## 审计见证（P11.4）：节点经隧道的 `-R` 写锚点，端点在 H 或另一台机器
 
-形态：见证端点只听 H 的回环（默认 `127.0.0.1:38640`）；节点够到它，靠的是 **H 发起的**那条
-隧道会话里多一个 `-R 127.0.0.1:38640:127.0.0.1:38640`。节点上不放任何指向 H 的凭据，
-§8.3 的单向信任与「见证方、被见证方不同失陷域」（audit-witness.md §4.1）都不破。
+节点够到见证端点，靠的是 **H 发起的**那条隧道会话里多一个 `-R 127.0.0.1:38640:127.0.0.1:38640`：
+节点写自己的回环 38640，SSH 把它送到 H 的回环 38640。节点上不放任何指向 H 的凭据（§8.3 的单向信任）。
+H 的回环 38640 后面是什么，有两种形态：
+
+| 形态 | H 回环 38640 后面 | 什么时候用 |
+|---|---|---|
+| ① 见证在 H | 端点本身（`qianmo-witness.service`） | H 上**没有**节点 |
+| ② 见证在另一台机器 W | `qianmo-witness-link.service`：`ssh -N -L 127.0.0.1:38640:127.0.0.1:38640 W`，W 上的端点同样只听回环 | **H 自己也跑着节点时必须用这一种**：见证和它见证的节点不能在同一台机器上（audit-witness.md §4.1，不同失陷域） |
 
 ```bash
-# ① H：装端点（公钥取各节点 logs/<节点>.out 首行横幅里的 publicKey），起单元
-demo/env/beta/ops/witness-endpoint.sh install --key beta-1=<公钥> --key beta-5=<公钥>
-systemctl --user start qianmo-witness.service
-# ② H：该节点的 peers.conf 坐标行加 witness-port=38640，再跑一次 host 腿（隧道单元会被标成
-#    「文件已更新、运行中的仍是旧定义」，按提示在维护窗口里 restart 那条隧道）
-# ③ 节点机：authorized_keys 里 H 那把 key 那一行补 permitlisten="127.0.0.1:38640"
-#    （改之前备份整个文件；改完立刻用自己的登录钥匙另开一条 ssh 确认还能进）
-# ④ 节点机：把 H 的 secrets/witness-write-token 拷成本机 secrets/witness-write-token（0600），
-#    节点腿带上尾参（随 issue #111 记下来）
+# ── 形态②（2026-09 的现场就是这一种）──
+# ① W：装端点并起它。W 上没跑过 beta-up.sh 也行（内测根不存在时 install 自建标记）；
+#    W 没有 linger 时单元活不过最后一次登出，用 start（nohup + pid 文件，oom_score_adj=1000）
+demo/env/beta/ops/witness-endpoint.sh install --key beta-4=<公钥> --key beta-1=<公钥> --key beta-5=<公钥>
+demo/env/beta/ops/witness-endpoint.sh start          # status：pid 与「不带 token → 401」；stop
+# ② H：W 的主机公钥**核对指纹后**放进 known_hosts，再装链路单元；它会打印 W 的 authorized_keys 要加的那一行：
+#    restrict,port-forwarding,permitopen="127.0.0.1:38640",permitlisten="127.0.0.1:1",command="/bin/false" <H 的公钥>
+demo/env/beta/ops/witness-endpoint.sh link-install --user <W 用户> --host <W 地址> --key <H 上的私钥>
+systemctl --user start qianmo-witness-link.service
+# ③ H：peers.conf 各坐标行加 witness-port=38640，跑 host 腿（隧道会话多一个 -R）
+# ④ 各节点机：authorized_keys 里 H 那一行带 permitlisten="127.0.0.1:38640"；W 的写 token 拷成本机
+#    secrets/witness-write-token（0600），节点腿带上尾参
 demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥> --witness-url http://127.0.0.1:38640
+# ⑤ H：W 的读 token 拷成 H 的 secrets/witness-read-token（0600），控制台尾参加 --anchors http://127.0.0.1:38640
 ```
 
-- **读 token 永不离开 H**：它能列出全部锚点，只给 `occ audit --verify --witness` 与控制台的 `--anchors` 用。
-- 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境（不上命令行）；缺文件、权限不是 600、
-  明文 http 指向回环以外，都在起进程之前拦下。
-- 端点不在时节点照常工作，只在 `.err` 里报写不进去（发送方 fail-open）。存活判据：
+- **两枚 token 都在 W 上生成。**写 token 发给每个节点；读 token 只给做验证的一方：W 自己
+  （`occ audit --verify --witness`），形态②下还有 H 上的控制台。读 token 只能列出锚点，改不了任何一条。
+- 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境；控制台尾参里的 `--anchors` 是 HTTP 端点时，
+  H 腿把读 token 读进 `QIANMO_WITNESS_READ_TOKEN`。两边都不上命令行；缺文件、权限不是 600、明文 http 指向
+  回环以外，都在起进程之前拦下。
+- 端点不在、或 H → W 那条链路断了，节点照常工作，只在 `.err` 里报写不进去（发送方 fail-open）；控制台审计页
+  退回「未见证」。存活判据：H 上与 W 上各自
   `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
-- 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道。
+- 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道；形态②下它照样经那条 `-L` 落到 W。
+
+## 值守作业（`ops/watch-hub.sh`，`qm watch`）
+
+跑在 H 上的 `qm watch`（P13.6；起法与判据的真源是 console.md §10，这里只写内测的三条接线）：
+
+1. **配置根是控制台那一份**（`<根>/nodes/console/config`）。签名身份按配置根落盘，`print-identity`
+   与 `run` 问的是同一个根；调度状态与 `ESTOP` 在 `<根>/nodes/console/config/qianmo/scheduler/`。
+2. **一个单元只服务一个节点**：`qm watch` 只读一把 `QIANMO_TRANSPORT_PSK`，而内测是每节点一把。
+   `install --node` 钉死目标，`run` 从 `secrets/peers/<节点>.psk` 读进环境，并先查作业文件里每个
+   `target` 都在这个节点上。
+3. **先 trust，后 `--sign`**（console.md §10.1.1）。
+
+```bash
+demo/env/beta/ops/watch-hub.sh print-identity                        # → hub=<公钥>
+demo/env/beta/beta-down.sh <节点> && demo/env/beta/beta-up.sh --role node --node <节点> -- \
+  --trust console=<控制台公钥> --trust hub=<上面那一行的公钥>         # 已有的 --trust 要一起带上
+demo/env/beta/ops/watch-hub.sh install --node <节点> --jobs ./jobs.json --sign   # 只 enable，不 start
+systemctl --user start qianmo-watch.service                          # 开始值守
+```
+
+- 单元 `Restart=on-failure`、`OOMScoreAdjust=900`；停手不必停单元：`touch <根>/nodes/console/config/qianmo/scheduler/ESTOP`
+  （只挡新的 fire，在途不杀）。
+- 它跑的是交付树里的 `dist/cli-node.js`：**换产物之前先 `systemctl --user stop qianmo-watch.service`**，否则
+  `beta-deploy.sh` 会因为树里有进程而拒绝。
+- 确认签名生效：中枢审计链 `watch_fire` 的 `detail.signed=true`，节点链上这条请求没有 `capability_shadow_refusal`。
 
 ## 可用性与唤醒探针（`ops/fleet-probe.sh`）
 
