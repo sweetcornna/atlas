@@ -139,6 +139,24 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 指向已死 pid 的陈旧记录。**遇到它就在命令前显式补 PATH**：
 `PATH="$HOME/.bun/bin:$PATH" ./demo/env/beta/beta-up.sh ...`。
 
+### pid 文件对不上真进程时（2026-09-26 p1）
+
+旧树留下的 `run/<节点>.pid` 指着一个早已不在的 pid，真进程却还跑着、占着端口。以前
+`beta-down.sh <节点>` 只认 pid 文件，报「本来就没在跑」；随后的节点腿起了一个注定
+EADDRINUSE 的新进程，就绪探测又被旧进程的应答骗成了绿。现在：
+
+- **`beta-down.sh <节点>`** 在 pid 文件之后再按命令行认一遍：argv 里有 `resident`、`--node <节点>`，
+  且绑在本内测根上（`--agent` 指向本根的工作区，或 Linux 上它的 `OCC_CONFIG_DIR` 就是本根的
+  配置根）。认出来的按同一套 TERM → 10 s → KILL 停掉并 WARN。pid 文件在却陈旧、命令行又认不出
+  任何一个、而 `QIANMO_BETA_NODE_PORT`（默认 38625）被占着时，列出占用者的 pid 与命令行，
+  **一个都不动**，以非零退出。端口上是本内测根的另一个节点（H 上的 beta-4）不算不一致。
+- **节点腿**：pid 文件说没在跑、端口却有人在听，就不起新进程，列出占用者并指向 `beta-down.sh`。
+  就绪要三件事都成立：刚起的 pid 活着；它的启动行（`logs/<节点>.out` 首行）是这个节点、带
+  公钥；端口有应答，且本机查得到的监听者（ss / lsof / `/proc`）里有这个 pid。新进程退出时当场
+  失败并摊开它的 stderr。OK 那一行带出 pid 与公钥，末尾多一行「公钥」，照抄进 H 的
+  `peers.conf` 坐标行 `public-key=`。三种办法都查不到监听者的机器上退回「活着 + 启动行 + 应答」，
+  并 WARN 说没核对 pid。
+
 ## 宿主侧保留与轮转
 
 **只在宿主 H 上由操作员运行**，不放进节点、常驻进程或 `@qianmo/backup` 的入站面。先看计划，

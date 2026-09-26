@@ -1131,27 +1131,272 @@ beta_running() {
   kill -0 "$pid" 2>/dev/null
 }
 
-# beta_stop_one <名字> —— 先 TERM，10 s 不走再 KILL。
+# beta_stop_pid <名字> <pid> —— 先 TERM，10 s 不走再 KILL。已经不在的一个字都不打。
+beta_stop_pid() {
+  local name="$1" pid="$2" i
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
+    sleep 1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    beta_warn "$name (pid $pid) 未响应 SIGTERM，改用 SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  beta_say "已停止 $name (pid $pid)"
+}
+
+# beta_stop_one <名字> —— 停 pid 文件里那一个，再删掉 pid 文件。
 beta_stop_one() {
-  local name="$1" file pid i
+  local name="$1" file pid
   file="$(beta_pidfile "$name")"
   beta_assert_inside_root "$file"
   [ -f "$file" ] || return 0
   pid="$(cat "$file" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || true
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
-      sleep 1
-      i=$((i + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      beta_warn "$name (pid $pid) 未响应 SIGTERM，改用 SIGKILL"
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    beta_say "已停止 $name (pid $pid)"
-  fi
+  if [ -n "$pid" ]; then beta_stop_pid "$name" "$pid"; fi
   rm -f "$file"
+}
+
+# ── pid 文件对不上时：按命令行与端口再认一遍 ──────────────────────────────────
+#
+# 2026-09-26 p1 上 beta-1 的现场：旧树留下的 run/beta-1.pid 写着 3012737，真在跑的是 2701919。
+# 只认 pid 文件的 beta-down 报「beta-1 本来就没在跑」，旧进程照跑、继续占着 38625；紧接着的
+# beta-up 起了一个注定 EADDRINUSE 的新进程，而就绪探测被旧进程的应答骗成了绿。
+#
+# pid 文件仍是第一判据，这里补的是第二判据：**命令行说它是本内测根下的这个节点**。三条同时成立
+# 才算，缺一条就不认——认错的代价是 kill 别人的进程：
+#   ① argv 里有 `resident` 这个词；
+#   ② argv 里有 `--node <名字>`（或 `--node=<名字>`）；
+#   ③ 它和**本内测根**绑在一起：某个参数形如 `<agent>=<本根>/workspaces/<名字>/…`（beta-up 给
+#      每个 agent 的工作区，自第一版起每一版都有），或者（Linux）它的环境里
+#      `OCC_CONFIG_DIR=<本根>/nodes/<名字>/config`——就是它的配置根。
+# 同名节点跑在**另一个**内测根下（同机的演示 / 另一套内测）过不了③，不会被误停。
+#
+# **端口只用来报不一致，从不用来挑人杀。**H 上 38625 是跑在 H 自己身上的那个节点在用，
+# 按端口找进程会把它当成别的节点的旧进程停掉。
+
+# beta_proc_node <pid> <argv 串> —— 这个进程是本内测根下哪个节点的 resident；不是就返回 1。
+beta_proc_node() {
+  local pid="$1" args="$2" word prev='' node='' resident=0 physical='' root env_text
+  local words=()
+  # read -a 只按空白切，不做路径展开：argv 里的 * ? 不会被 glob 成当前目录的文件名。
+  read -r -a words <<<"$args" || true
+  for word in ${words[@]+"${words[@]}"}; do
+    case "$word" in
+      resident) resident=1 ;;
+      --node=*) node="${word#--node=}" ;;
+    esac
+    if [ "$prev" = '--node' ]; then node="$word"; fi
+    prev="$word"
+  done
+  [ "$resident" = '1' ] && [ -n "$node" ] || return 1
+  # 两种拼法都比：argv 里存的是当初被怎么拼出来的那一个，与 pwd -P 解过符号链接的那个
+  # 在有符号链接时不相等（macOS 的 /var → /private/var；beta-deploy.sh 的守卫踩过同一个坑）。
+  physical="$(cd "$BETA_ROOT" 2>/dev/null && pwd -P || true)"
+  for root in "$BETA_ROOT" "$physical"; do
+    [ -n "$root" ] || continue
+    for word in ${words[@]+"${words[@]}"}; do
+      case "$word" in
+        *"=${root}/workspaces/${node}/"*)
+          printf '%s\n' "$node"
+          return 0
+          ;;
+      esac
+    done
+    # 先整份读进变量再比：`tr … | grep -q` 在 pipefail 下会因 tr 吃到 SIGPIPE 而判假。
+    if [ -r "/proc/$pid/environ" ]; then
+      env_text="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null || true)"
+      case "
+${env_text}
+" in
+        *"
+OCC_CONFIG_DIR=${root}/nodes/${node}/config
+"*)
+          printf '%s\n' "$node"
+          return 0
+          ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+# beta_node_pids <名字> —— 按命令行认出来的、本内测根下这个节点的全部进程，一行一个 pid。
+# 进程表数不出来时返回 2（那是「没法复核」，不是「没有」）。
+#
+# `ps` 而不是 `pgrep -af`：macOS 的 pgrep 收下 -a 却只打 PID（beta-deploy.sh 的守卫实测过）。
+# `-ww`：resident 的 argv 常有几百字节（每个 agent 一个工作区路径、--trust 公钥），被截断就
+# 认不出③。
+beta_node_pids() {
+  local want="$1" snapshot pid args
+  snapshot="$(ps -ww -eo pid=,args= 2>/dev/null || true)"
+  [ -n "$snapshot" ] || return 2
+  while read -r pid args; do
+    [ -n "$pid" ] || continue
+    [ "$pid" != "$$" ] || continue
+    # 先用便宜的字符串判断筛掉绝大多数行：下面那一步每行要开子 shell。
+    case " $args " in
+      *' resident '*) ;;
+      *) continue ;;
+    esac
+    case "$args" in
+      *"--node ${want}"*|*"--node=${want}"*) ;;
+      *) continue ;;
+    esac
+    if [ "$(beta_proc_node "$pid" "$args" || true)" = "$want" ]; then
+      printf '%s\n' "$pid"
+    fi
+  done <<<"$snapshot"
+  return 0
+}
+
+# beta_port_holders <端口> —— 在这个 TCP 端口上 LISTEN 的进程，一行一个 pid。
+# 本机三种办法都没有时返回 1（= 认不出，不是「没人在听」）。
+#
+# ss（节点机上现成）→ lsof（macOS 自带，常在 /usr/sbin，不在非交互 PATH 里）→ /proc 扫 fd。
+# 只看得到本账号的进程——内测的进程全是本账号起的，别的账号占着端口时由调用方的 TCP 探测兜底。
+beta_port_holders() {
+  local port="$1" out lsof_bin='' hex inodes inode dir listing
+  if command -v ss >/dev/null 2>&1 && out="$(ss -ltnp "sport = :${port}" 2>/dev/null)"; then
+    printf '%s\n' "$out" | grep -o 'pid=[0123456789]*' | cut -d= -f2 | sort -u || true
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof_bin="$(command -v lsof)"
+  elif [ -x /usr/sbin/lsof ]; then
+    lsof_bin=/usr/sbin/lsof
+  fi
+  if [ -n "$lsof_bin" ]; then
+    "$lsof_bin" -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true
+    return 0
+  fi
+  [ -r /proc/net/tcp ] || return 1
+  hex="$(printf '%04X' "$port")"
+  # 第 4 列 0A = LISTEN；第 2 列是 <地址>:<十六进制端口>；第 10 列是 socket inode。
+  inodes="$(awk -v want=":${hex}" 'FNR > 1 && $4 == "0A" && substr($2, length($2) - 4) == want { print $10 }' \
+    /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)"
+  [ -n "$inodes" ] || return 0
+  for dir in /proc/[0123456789]*; do
+    listing="$(ls -l "$dir/fd" 2>/dev/null || true)"
+    for inode in $inodes; do
+      case "$listing" in
+        *"socket:[${inode}]"*) printf '%s\n' "${dir#/proc/}" ;;
+      esac
+    done
+  done
+  return 0
+}
+
+# beta_port_occupants <端口> —— 谁占着这个端口：pid 一行一个；有人应答却认不出是谁时打一行 `?`。
+# 空输出 = 端口空着。
+beta_port_occupants() {
+  local port="$1" holders
+  holders="$(beta_port_holders "$port" || true)"
+  if [ -n "$holders" ]; then
+    printf '%s\n' "$holders"
+    return 0
+  fi
+  if beta_tcp_open 127.0.0.1 "$port"; then printf '?\n'; fi
+  return 0
+}
+
+# beta_describe_pid <pid 或 ?> —— 给人看的一行：pid 与它的命令行。
+beta_describe_pid() {
+  local pid="$1" args
+  if [ "$pid" = '?' ]; then
+    beta_say '  （有进程在应答，但本机认不出是谁：没有 ss / lsof / /proc 可查，或它属于别的账号）'
+    return 0
+  fi
+  args="$(ps -ww -o args= -p "$pid" 2>/dev/null || true)"
+  beta_say "  pid ${pid}：${args:-（命令行读不到）}"
+}
+
+# beta_stop_node <节点名> —— 停一个常驻节点：pid 文件，再按命令行认一遍。
+#
+# 返回 0 = 停了，或者确实没在跑；返回 3 = 它的端口被**认不出**的进程占着——已如实报出，
+# **一个都没动**。端口按 BETA_NODE_PORT 查（一机一节点，beta-up 用的就是它）。
+#
+# 端口那一步只在「pid 文件在、却指着一个不存在的进程、命令行也认不出任何一个」时才做：
+# 那是这个节点确实在本机跑过、而记录和现实对不上的唯一形状。H 上给一个只铺了链路的名字
+# （run/ 里本来就没有它的 pid 文件）不走这一步——H 的 38625 上是它自己身上那个节点，不相干。
+beta_stop_node() {
+  local name="$1" file recorded='' had_file=0 was_running=0 found=0 pids pid occupants other unknown=0
+  file="$(beta_pidfile "$name")"
+  beta_assert_inside_root "$file"
+  if [ -f "$file" ]; then
+    had_file=1
+    recorded="$(cat "$file" 2>/dev/null || true)"
+  fi
+  if beta_running "$name"; then was_running=1; fi
+  beta_stop_one "$name"
+
+  local rc=0
+  pids="$(beta_node_pids "$name")" || rc=$?
+  if [ "$rc" != '0' ]; then
+    beta_warn "数不出进程表（ps -eo pid=,args= 没有输出）—— 没法按命令行复核 ${name} 还有没有别的进程在跑"
+  fi
+  for pid in $pids; do
+    if [ "$was_running" = '1' ]; then
+      beta_warn "pid 文件里的 ${recorded} 已停，但按命令行还认出一个 ${name}（同一个节点起了两份）："
+    elif [ "$had_file" = '1' ]; then
+      beta_warn "run/${name}.pid 写的是 ${recorded:-（空）}，那个进程已经不在了；按命令行认出 ${name} 真正在跑的是："
+    else
+      beta_warn "run/${name}.pid 不存在，但按命令行认出 ${name} 在跑："
+    fi
+    beta_describe_pid "$pid"
+    beta_stop_pid "$name" "$pid"
+    found=1
+  done
+  if [ "$was_running" = '1' ] || [ "$found" = '1' ]; then return 0; fi
+
+  if [ "$had_file" = '1' ]; then
+    occupants="$(beta_port_occupants "$BETA_NODE_PORT")"
+    if [ -n "$occupants" ]; then
+      # 逐行读而不是 `for pid in $occupants`：那一行可能是 `?`，不加引号的展开会把它
+      # 当 glob 去匹配当前目录里的单字符文件名。
+      while read -r pid; do
+        other=''
+        if [ "$pid" != '?' ]; then
+          other="$(beta_proc_node "$pid" "$(ps -ww -o args= -p "$pid" 2>/dev/null || true)" || true)"
+        fi
+        if [ -n "$other" ]; then
+          beta_say "端口 ${BETA_NODE_PORT} 上是本内测根的节点 ${other}（pid ${pid}），不是 ${name}。"
+        else
+          unknown=1
+        fi
+      done <<<"$occupants"
+      if [ "$unknown" = '1' ]; then
+        beta_warn "${name} 的 pid 文件写着 ${recorded:-（空）}，那个进程已经不在了，按命令行也认不出任何一个 ${name}，
+但端口 ${BETA_NODE_PORT} 被占着："
+        while read -r pid; do beta_describe_pid "$pid"; done <<<"$occupants"
+        beta_say "  这几个进程的命令行说不出它们是本内测根的 ${name}，**本脚本不动它们**（不按端口杀人）。
+  它们不走，接下来的 beta-up.sh 就起不来（EADDRINUSE）。确认是谁之后手动处置；
+  若确实是 ${name} 的旧进程（比如别的内测根 / 手工起的），核对命令行后 kill -TERM <pid>。"
+        return 3
+      fi
+    fi
+  fi
+  beta_say "$name 本来就没在跑"
+  return 0
+}
+
+# beta_node_banner_key <节点名> —— logs/<节点名>.out 首行那条启动 JSON 说它是这个节点吗；
+# 是就打印它的 publicKey，否则返回 1。
+#
+# 启动行是 resident 在**监听之前**打的（resident.ts），日志又是 beta_start_process 刚用 `>`
+# 截断过的——所以它只可能来自刚起的那个进程，与端口上是谁在应答无关。
+beta_node_banner_key() {
+  local node="$1" line key
+  line="$(head -1 "$(beta_logfile "$node" out)" 2>/dev/null || true)"
+  case "$line" in
+    '{'*"\"node\":\"${node}\""*) ;;
+    *) return 1 ;;
+  esac
+  key="$(printf '%s\n' "$line" | sed -n 's/.*"publicKey":"\([^"]*\)".*/\1/p')"
+  beta_public_key_ok "$key" || return 1
+  printf '%s\n' "$key"
 }
 
 # 起完到「算它起住了」之间等多久。1 s 足够抓住 exec 失败那一类（`nohup` 找不到命令是

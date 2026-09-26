@@ -1204,27 +1204,85 @@ run_node() {
   beta_prepare_witness
   # 紧挨着起进程：resident 与它的 ACP 子进程从本 shell 继承 oom_score_adj。
   beta_raise_oom_score
+  # 起之前先问端口空不空（2026-09-26 p1）：pid 文件说本节点没在跑、端口上却已经有人在听，
+  # 新进程起来只会 EADDRINUSE 退出——而它退出之前那一两秒，下面的就绪探测会被旧进程的应答
+  # 骗成绿，退出的新进程还往配置根的 lifecycle.json 里留一条误导的 priorLife。不起它。
+  if ! beta_running "$BETA_NODE"; then
+    local occupants _occupant
+    occupants="$(beta_port_occupants "$BETA_NODE_PORT")"
+    if [ -n "$occupants" ]; then
+      beta_say "端口 ${BETA_NODE_PORT} 已经有人在听，而 run/${BETA_NODE}.pid 说 ${BETA_NODE} 没在跑："
+      while read -r _occupant; do beta_describe_pid "$_occupant"; done <<<"$occupants"
+      beta_die "端口 ${BETA_NODE_PORT} 被占着，不起 ${BETA_NODE}：新进程只会 EADDRINUSE 退出，而就绪探测会把旧进程的应答当成它的。
+先 demo/env/beta/beta-down.sh ${BETA_NODE} —— pid 文件对不上时它按命令行把本节点的旧进程认出来停掉；
+认不出的它只报不杀，那就要人核对上面的命令行再处置。"
+    fi
+  fi
   beta_start_process "$BETA_NODE" "$config_dir" "${args[@]}"
 
   beta_head '③ 就绪探测'
-  # 就绪的定义不是「进程还在」，而是「端口真的收连接」。
-  # 注意它**证不了 PSK 对不对**：握手只有从 H 拨过来才算数（beta-smoke.sh 的 host 腿）。
+  # 就绪的定义不是「端口上有人应答」，而是「**刚起的那个 pid** 在这个端口上应答」。
+  # 2026-09-26 p1：新进程 EADDRINUSE 退出，同一端口上的旧进程照样应答，旧判据打出
+  # 「OK : beta-1 在 127.0.0.1:38625 上监听」——唯一的线索是末尾「节点身份」那一行是空的。
+  # 所以三件事都要成立：
+  #   ① 那个 pid 还活着（死了当场失败，摊开它的 stderr —— 上面那种现场里写着 EADDRINUSE）；
+  #   ② 它的启动行（logs/<节点>.out 首行，beta_start_process 刚截断过）说的是这个节点、带公钥；
+  #   ③ 端口有应答，且本机查得到的监听者里有这个 pid（ss / lsof / /proc）。查不到监听者时
+  #      退回「①②成立 + 端口有应答」，并明说没核对 —— 起之前已确认端口空着，那一格才站得住。
+  # 它仍然**证不了 PSK 对不对**：握手只有从 H 拨过来才算数（beta-smoke.sh 的 host 腿）。
   # 这正是 §9.1 那条——本机一切正常、名册上也在线，而 H 拨过来是超时。
   local probe_host="$BETA_NODE_BIND"
   if [ "$probe_host" = '0.0.0.0' ]; then probe_host='127.0.0.1'; fi
-  local i=0 listening=0
+  local node_pid node_key='' holders='' foreign='' unverified=0 i=0 listening=0 held _holder
+  node_pid="$(cat "$(beta_pidfile "$BETA_NODE")")"
   while [ "$i" -lt "$READY_TIMEOUT_S" ]; do
-    beta_dump_if_dead "$BETA_NODE"
-    if beta_tcp_open "$probe_host" "$BETA_NODE_PORT"; then
-      listening=1
-      break
+    if ! beta_running "$BETA_NODE"; then
+      if [ -n "$foreign" ]; then
+        beta_say "端口 ${BETA_NODE_PORT} 上应答的不是 ${BETA_NODE}（pid ${node_pid}），而是："
+        while read -r _holder; do beta_describe_pid "$_holder"; done <<<"$foreign"
+      fi
+      beta_dump_if_dead "$BETA_NODE"
+    fi
+    node_key="$(beta_node_banner_key "$BETA_NODE" || true)"
+    if [ -n "$node_key" ] && beta_tcp_open "$probe_host" "$BETA_NODE_PORT"; then
+      held=0
+      holders="$(beta_port_holders "$BETA_NODE_PORT")" || held=1
+      if [ "$held" = '1' ]; then
+        unverified=1
+        listening=1
+        break
+      fi
+      case "
+${holders}
+" in
+        *"
+${node_pid}
+"*)
+          listening=1
+          break
+          ;;
+      esac
+      foreign="$holders"
     fi
     sleep 2
     i=$((i + 2))
   done
-  [ "$listening" = '1' ] \
-    || beta_die "$BETA_NODE 在 ${READY_TIMEOUT_S}s 内没有在 ${probe_host}:${BETA_NODE_PORT} 上监听（见 $(beta_logfile "$BETA_NODE" err)）"
-  beta_ok "$BETA_NODE 在 ${probe_host}:${BETA_NODE_PORT} 上监听"
+  if [ "$listening" != '1' ]; then
+    if [ -n "$foreign" ]; then
+      beta_say "端口 ${BETA_NODE_PORT} 上应答的不是 ${BETA_NODE}（pid ${node_pid}），而是："
+      while read -r _holder; do beta_describe_pid "$_holder"; done <<<"$foreign"
+      beta_die "${BETA_NODE}（pid ${node_pid}）在 ${READY_TIMEOUT_S}s 内没有成为 ${probe_host}:${BETA_NODE_PORT} 的监听者 —— 应答来自上面那个进程，不是它（见 $(beta_logfile "$BETA_NODE" err)）"
+    fi
+    if [ -z "$node_key" ]; then
+      beta_die "${BETA_NODE}（pid ${node_pid}）在 ${READY_TIMEOUT_S}s 内没有打出启动行（$(beta_logfile "$BETA_NODE" out) 首行应是带 \"node\":\"${BETA_NODE}\" 与 publicKey 的 JSON；见 $(beta_logfile "$BETA_NODE" err)）"
+    fi
+    beta_die "$BETA_NODE 在 ${READY_TIMEOUT_S}s 内没有在 ${probe_host}:${BETA_NODE_PORT} 上监听（见 $(beta_logfile "$BETA_NODE" err)）"
+  fi
+  if [ "$unverified" = '1' ]; then
+    beta_warn "本机没有 ss / lsof / /proc 可查 ${BETA_NODE_PORT} 的监听者，没核对应答是不是 pid ${node_pid} 发出的；
+只核对了：它活着、启动行是 ${BETA_NODE}、端口有应答（这一趟新起进程时，起之前已确认端口空着）。"
+  fi
+  beta_ok "$BETA_NODE 在 ${probe_host}:${BETA_NODE_PORT} 上监听（pid ${node_pid}，公钥 ${node_key}）"
 
   beta_head "节点腿就绪，耗时 $(beta_elapsed "$STARTED_AT")"
   beta_say "节点     : ${BETA_NODE}（agent：${BETA_AGENTS}）"
@@ -1235,6 +1293,10 @@ run_node() {
   beta_say "审计链   : $(beta_node_trail "$BETA_NODE")   ← **权威副本，H 上那份是只读镜像**"
   beta_say "入站端点 : ws://<本机对外地址>:$BETA_NODE_PORT   ← 把它填进 H 的 peers.conf"
   beta_say "节点身份 : $(head -1 "$(beta_logfile "$BETA_NODE" out)" 2>/dev/null || true)"
+  beta_say "公钥     : ${node_key}"
+  beta_say "           ↑ 在 H 的 peers.conf 里写成该节点 node 坐标行的 public-key=${node_key}"
+  beta_say "             注册中心据此把它发布进名册；控制台带 --anchors 时只从名册取节点公钥。"
+  beta_say "             跑在 H 自己身上的节点不用写，H 腿直接读本机身份文件。"
   beta_say ''
   beta_say '下一步   : demo/env/beta/beta-smoke.sh --role node（本机自检）'
   beta_say '           在 H 上把上面那条入站端点填进 peers.conf，再跑 H 腿的 beta-smoke.sh'
