@@ -212,6 +212,11 @@ function isolatedEnv(options: {
     DISABLE_TELEMETRY: '1',
     DISABLE_AUTOUPDATER: '1',
     DISABLE_ERROR_REPORTING: '1',
+    // 官方插件市场的后台 reconcile 会 `git clone` github.com。它与本冒烟要抓的
+    // 初始化失败无关，却和进程退出抢时序：provider 回得快就退在它前面（绿），
+    // 机器慢或 provider 回得慢就撞进陷阱（红）——Rosetta 容器与延迟 6 s 的
+    // provider 上都稳定复现。关掉这一项，判据④只剩「未预期的出网」。
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1',
     // 跑被检查的这份 dist，而不是它在配置目录里的副本
     OCC_DISABLE_RUNTIME_FARM: '1',
     // 其余出网一律撞进陷阱
