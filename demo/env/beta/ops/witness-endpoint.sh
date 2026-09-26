@@ -172,7 +172,8 @@ cmd_install() {
   {
     printf '# 阡陌内测 · 见证端点的参数。由 witness-endpoint.sh install 写，run 读。\n'
     printf 'WITNESS_PORT=%s\n' "$port"
-    printf 'WITNESS_KEYS=%s\n' "${keys# }"
+    # 多把公钥之间是空格：不加引号，run 那边 source 时第二把会被当成命令执行。
+    printf 'WITNESS_KEYS="%s"\n' "${keys# }"
   } >"$CONF"
   chmod 600 "$CONF"
   say "已写：${CONF}（节点：${keys# }）"

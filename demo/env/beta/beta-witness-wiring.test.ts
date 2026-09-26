@@ -242,10 +242,32 @@ describe('beta-up.sh 的节点腿', () => {
     expect(before.slice(at)).not.toContain('beta_start_process')
   })
 
-  test('tunnel-<node>.env 写出 TUNNEL_EXTRA_ARGS', () => {
+  test('tunnel-<node>.env 写出 TUNNEL_EXTRA_ARGS，且 bash 能 source（mirror-pull.sh 就是这么读的）', () => {
     const text = readFileSync(resolve(BETA_DIR, 'beta-up.sh'), 'utf8')
-    expect(text).toContain(
-      `printf 'TUNNEL_EXTRA_ARGS=%s\\n' "$(beta_tunnel_extra_args "$i")"`,
-    )
+    const line =
+      text
+        .split('\n')
+        .find(l => l.trimStart().startsWith("printf 'TUNNEL_EXTRA_ARGS=")) ?? ''
+    expect(line).not.toBe('')
+    for (const [extra, expected] of [
+      [
+        "printf -- '-R 127.0.0.1:38640:127.0.0.1:38640'",
+        '-R 127.0.0.1:38640:127.0.0.1:38640',
+      ],
+      [':', ''],
+    ] as const) {
+      const dir = root()
+      const envFile = join(dir, 'tunnel.env')
+      const child = Bun.spawnSync([
+        '/bin/bash',
+        '-c',
+        `set -euo pipefail\nbeta_tunnel_extra_args() { ${extra}; }\ni=0\n{ ${line.trim()}; } >"$1"\n. "$1"\nprintf '[%s]' "$TUNNEL_EXTRA_ARGS"`,
+        'tunnel-env-test',
+        envFile,
+      ])
+      expect(child.stderr.toString()).toBe('')
+      expect(child.exitCode).toBe(0)
+      expect(child.stdout.toString()).toBe(`[${expected}]`)
+    }
   })
 })

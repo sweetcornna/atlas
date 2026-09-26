@@ -100,7 +100,7 @@ describe('install', () => {
     expect(again.code).toBe(0)
     expect(readFileSync(write, 'utf8')).toBe(writeValue)
     expect(readFileSync(join(f.root, 'ops', 'witness.env'), 'utf8')).toContain(
-      'WITNESS_KEYS=beta-1=AAAA beta-5=BBBB\n',
+      'WITNESS_KEYS="beta-1=AAAA beta-5=BBBB"\n',
     )
   })
 
@@ -305,15 +305,18 @@ describe('link-install（H 上，见证在另一台机器）', () => {
 })
 
 describe('run', () => {
-  test('真起一个端点：写 token 追加签名锚点，读 token 读回', async () => {
+  test('真起一个端点（两把公钥）：写 token 追加签名锚点，读 token 读回', async () => {
     const f = fixture()
     const keys = generateNodeKeyPair()
+    const other = generateNodeKeyPair()
     const port = await freePort()
     expect(
       sh(f.env, [
         'install',
         '--key',
         `beta-1=${keys.publicKey}`,
+        '--key',
+        `beta-5=${other.publicKey}`,
         '--port',
         String(port),
       ]).code,
