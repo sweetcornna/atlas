@@ -32,8 +32,6 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import {
-  chmodSync,
-  copyFileSync,
   existsSync,
   readFileSync,
   mkdirSync,
@@ -265,35 +263,58 @@ describe('beta-deploy.sh 的护栏', () => {
 
 describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
   /**
-   * 在 `dir` 里放一个可执行文件并跑起来，返回它的 PID。
+   * 在 `dir` 里放一个脚本、用跑测试的这个 bun 把它跑起来，返回它的 PID。
    *
-   * **不要用 shell 脚本 + `exec`。**守卫是按 `ps` 里的 argv 含不含树路径判定的
-   * （见 `beta-deploy.sh` 那段注释），而 `exec` 会把 shell 整个换掉——换完之后
-   * argv 是 `sleep 120`，树路径没了，守卫再也拍不到它。这不是守卫的问题，是固件
-   * 造出来的进程根本不符合「跑在这棵树上」的形状。
+   * 守卫是按 `ps` 里的 argv 含不含树路径判定的（见 `beta-deploy.sh` 那段注释），
+   * 所以固件要造的是「argv 里带着树里路径的活进程」。真机上的常驻正是这个形状：
+   * 解释器在树外，脚本在树里（`node <树>/dist/cli-node.js`）。
    *
-   * 它此前在 macOS 上偶然是绿的：`/bin/sh` 启动慢，`ps` 常抢在 exec 完成之前拍到
-   * 旧 argv。Linux 的 dash 立刻 exec，一次都抢不到——CI 第一次真跑起来时那条红
-   * 就是这么来的（在此之前 Actions 配额一直挡着，谁也没看见）。
+   * 这里栽过两次，两次都是固件造出来的进程不符合这个形状，不是守卫的问题：
    *
-   * 改成把 `sleep` 拷进树里直接跑：没有 shell、没有子进程、argv[0] 就是树里的
-   * 路径，两个平台上都确定。
+   * ① shell 脚本 + `exec sleep`：`exec` 把 shell 整个换掉，argv 变成 `sleep 120`，
+   *    树路径没了。macOS 上偶然是绿的（`/bin/sh` 启动慢，`ps` 常抢在 exec 之前），
+   *    Linux 的 dash 立刻 exec，一次都抢不到——CI 第一次真跑起来时那条红就是这么来的。
+   * ② 把 `/bin/sleep` 拷进树里直接跑：macOS 上它是带启动约束的 Apple 平台二进制，
+   *    拷到系统卷以外再执行会被内核 SIGKILL（崩溃报告写的是
+   *    `SIGKILL (Code Signature Invalid)`，终止原因 `CODESIGNING` /
+   *    `Launch Constraint Violation`）。杀不杀随系统状态变——同一台机器同一天里
+   *    先是照常能跑、后是一启动就被杀——于是这条用例时红时绿，整仓跑与单跑都会红，
+   *    看着像跨套件污染，其实与别的测试无关（2026-09-26，macOS 27.0 实测）。
+   *
+   * 所以不再拷任何系统二进制：解释器就是 `process.execPath`，在它自己的位置上执行，
+   * 只有脚本放进树里。没有 shell、没有子进程，SIGKILL 一下就收干净。
+   *
+   * 起完用守卫同一条 `ps` 先自检一次。固件没造出活进程时要在这里说清楚：否则下面
+   * 「邻居目录不算」那条会空转成绿，这一条则红在一个误导人的断言上。
    */
   function runFromTree(dir: string): number {
-    const bin = join(dir, 'qm-fake-resident')
-    const sleepBin = Bun.which('sleep')
-    if (sleepBin === null) {
-      throw new Error(
-        '这台机器上找不到 sleep —— 这条用例造不出「树里有进程在跑」',
-      )
-    }
-    copyFileSync(sleepBin, bin)
-    chmodSync(bin, 0o755)
-    const child = Bun.spawn([bin, '120'], {
+    const script = join(dir, 'qm-fake-resident.js')
+    writeFileSync(script, 'setTimeout(() => {}, 120_000)\n')
+    const child = Bun.spawn([process.execPath, script], {
+      cwd: dir,
       stdout: 'ignore',
       stderr: 'ignore',
     })
     child.unref()
+    const table = Bun.spawnSync(['ps', '-eo', 'pid=,args='], {
+      stdout: 'pipe',
+      stderr: 'ignore',
+    }).stdout.toString()
+    const seen = table
+      .split('\n')
+      .some(
+        l => l.trimStart().startsWith(`${child.pid} `) && l.includes(script),
+      )
+    if (!seen) {
+      try {
+        process.kill(child.pid, 'SIGKILL')
+      } catch {
+        /* 已经没了就算了 */
+      }
+      throw new Error(
+        `固件没造出「argv 里带着 ${script} 的活进程」（pid ${child.pid}）——这条用例测不了守卫`,
+      )
+    }
     return child.pid
   }
 
@@ -308,7 +329,9 @@ describe('beta-deploy.sh 不许把树从活着的进程脚下抽走', () => {
     try {
       const r = deploy(home, ['--tree', tree, '--from', build])
       expect(r.code).not.toBe(0)
-      expect(r.out).toContain('正跑在')
+      // 只写「正跑在」不够：守卫那一节的标题「检查是否有进程正跑在这棵树上」恒会打出来。
+      // 树里多了个脚本，守卫漏拍时后面的掉件守卫照样退非零，所以要认拒绝消息本身。
+      expect(r.out).toContain('上面这些进程正跑在')
       expect(r.out).toContain('beta-down.sh')
       // 守卫排在最前面，所以现场干净：旧树在原地、连备份都没多出来一份。
       expect(existsSync(marker)).toBe(true)
