@@ -11,6 +11,7 @@
  * | 目标休眠、需要先唤醒 | 目标监听还没起来时投递：连接失败，消息**留在发送方手里**而不是消失 |
  * | 目标在线但正忙 | 同一逻辑通道上排队，收据一条不少 |
  * | 目标刚解冻、截止时间集体越阈 | 过 T-2 闸门的时钟仍接住在飞消息（另见 `timeouts.test.ts`） |
+ * | 唤醒失败 / 目标不可达 | 对面再也不回来：重连预算耗尽的那一刻，挂着的等待拿到真死因 |
  *
  * 走真 socket，因为这一类的失败模式全在连接的边缘上，用假的传输测不出来。
  */
@@ -185,4 +186,61 @@ describe('① 触发时机 —— 目标中途走开又回来', () => {
     await client.waitForDrain(5_000)
     expect(received).toEqual(['before', 'during'])
   }, 15_000)
+})
+
+describe('① 触发时机 —— 目标走了就不再回来', () => {
+  test('重连预算用完的那一刻，挂着的等待拿到真死因，而不是等满自己的时限', async () => {
+    // §8.3 ①「唤醒失败 / activator 不可达」在传输层的那一半：对面再也不回来时，
+    // 发送方要尽快拿到一个说得出原因的失败。修复 d0e59d08（roadmap v2.56 ④）之前，
+    // 重连预算耗尽只把客户端置成 closed、不关 outbox，挂在 sendAndWait 上的调用方
+    // 要等满自己的时限，拿到一句「未在 Xms 内收到回执」——描述的是症状，藏起了死因。
+    // 4003 与 4004 两条致命路径在包内已有用例；「目标不可达」这一条只在断网之后
+    // 才会走到。
+    const receiptWaitMs = 3_000
+    const socket = socketPath()
+    const server = startTransportServer({
+      psk: PSK,
+      unix: socket,
+      onMessage: () => {},
+    })
+    servers.push(server)
+
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      backoff: {
+        baseDelayMs: 10,
+        maxDelayMs: 30,
+        jitterRatio: 0,
+        giveUpAfterMs: 500,
+        // 高到下面的重试永远碰不到冻结检测：预算若被当成解冻而重置，测到的就是
+        // T-2 闸门，而不是放弃这条路径。
+        timeJumpFactor: 1_000,
+      },
+    })
+    clients.push(client)
+    await client.connect(3_000)
+
+    await server.stop()
+    servers.splice(servers.indexOf(server), 1)
+    const deadline = Date.now() + 2_000
+    while (client.isReady() && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+
+    const parkedAt = Date.now()
+    const outcome = await client
+      .sendAndWait(request('gone-for-good'), receiptWaitMs)
+      .then(
+        () => 'receipted',
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      )
+    expect(outcome).toMatch(/reconnect budget exhausted/)
+    // 死因在预算用完时就到，不是等满调用方自己的时限之后。
+    expect(Date.now() - parkedAt).toBeLessThan(receiptWaitMs)
+    expect(client.isClosed()).toBe(true)
+  })
 })
