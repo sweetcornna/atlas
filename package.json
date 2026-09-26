@@ -70,6 +70,7 @@
     "qianmo:nxn-matrix": "bun run scripts/qianmo-nxn-resolution-matrix.ts",
     "qianmo:policy-probes": "bun run scripts/qianmo-policy-switch-probes.ts",
     "qianmo:acceptance": "bun run scripts/qianmo-acceptance.ts",
+    "qianmo:recall-baseline": "bun run scripts/qianmo-recall-baseline.ts",
     "sbom": "bun run scripts/sbom.ts",
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
