@@ -607,6 +607,13 @@ paired deletion 未提交时，先稳定复验计划 metadata 的原身份与字
 在 H 上「停掉 `<node>`」唯一有意义的解释就是切断通往它的那条链路。判据是 `ops/tunnel-<node>.env`
 在不在——`beta-down.sh` 只对真的铺过链路的名字动手。
 
+**③ 之后 `grep priorLife logs/<name>.out` 看上一条命是怎么结束的**，和 ② 那几行一起抄进运维单页。
+这一行紧跟在启动 banner 后面，由节点自己打出：`killed` = 上一条命没走停机路径（OOM、`kill -9`、
+断电，或 ① 等不到 SIGTERM 改用了 SIGKILL，这种情况 ① 自己会报），行里带着那条命的
+`pid` / `startedAt` / `updatedAt`，拿 pid 去 `dmesg` / `journalctl -k` 里对，才分得清是哪一种；
+`clean` = 自己停下的；`unknown` = 配置根里没有可读的记录（首次启动也是这个）。它只是取证，节点不会
+因为它改变任何行为；旧构建没有这一行。
+
 不动任何数据。**80% 的故障应该止步于这一级**；止不住再往下。
 
 **v1.1 补一条已验事实：在 H 上重起「H 腿」那一套（注册中心 + 控制台）不会动到隧道。**

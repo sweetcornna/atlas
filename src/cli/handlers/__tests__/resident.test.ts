@@ -30,6 +30,7 @@ import {
   formatResidentError,
   isResidentHelpRequest,
   parseResidentArgs,
+  residentPriorLifeLine,
   residentTrustedIssuers,
   warnMissingModelCredentials,
   warnUnselectedTaskPolicy,
@@ -660,6 +661,35 @@ describe('capability flags (P4.3)', () => {
       trust: TRUST_UNTRUSTED,
     })
     expect(shadowRefusals).toEqual([])
+  })
+})
+
+describe('the prior-life line (P13.5)', () => {
+  test('names the verdict, and only killed carries a record', () => {
+    // 真进程的三条命在 resident.integration.test.ts 的 P13.5 组里；这里只钉形状。
+    // killed 只带哨兵记录里原有的三格，phase / node 不重复，也不推算死因。
+    const record = {
+      phase: 'running',
+      pid: 4242,
+      startedAt: 1_000,
+      updatedAt: 31_000,
+      node: 'node-b',
+    } as const
+    const line = (prior: Parameters<typeof residentPriorLifeLine>[1]) =>
+      JSON.parse(residentPriorLifeLine('node-b', prior)) as unknown
+
+    expect(line({ outcome: 'killed', record })).toEqual({
+      node: 'node-b',
+      priorLife: 'killed',
+      prior: { pid: 4242, startedAt: 1_000, updatedAt: 31_000 },
+    })
+    expect(
+      line({ outcome: 'clean', record: { ...record, phase: 'stopped' } }),
+    ).toEqual({ node: 'node-b', priorLife: 'clean' })
+    expect(line({ outcome: 'unknown' })).toEqual({
+      node: 'node-b',
+      priorLife: 'unknown',
+    })
   })
 })
 

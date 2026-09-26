@@ -128,7 +128,13 @@ function spawnFixture(env: NodeJS.ProcessEnv = process.env): ChildProcess {
 function spawnResidentCli(
   configDir: string,
   args: readonly string[],
-): { readonly child: ChildProcess; readonly output: () => string } {
+): {
+  readonly child: ChildProcess
+  /** stdout and stderr interleaved, for failure messages. */
+  readonly output: () => string
+  /** stdout alone: the banner and whatever else the node prints there. */
+  readonly stdout: () => string
+} {
   const child = spawn(
     process.execPath,
     [
@@ -157,13 +163,15 @@ function spawnResidentCli(
   )
   children.push(child)
   let output = ''
+  let stdout = ''
   child.stdout?.on('data', chunk => {
     output += String(chunk)
+    stdout += String(chunk)
   })
   child.stderr?.on('data', chunk => {
     output += String(chunk)
   })
-  return { child, output: () => output }
+  return { child, output: () => output, stdout: () => stdout }
 }
 
 async function unreadCount(): Promise<number> {
@@ -1641,6 +1649,118 @@ describe('the reliability kit (P13.5)', () => {
     expect(stopped?.startedAt).toBeGreaterThanOrEqual(atReady?.startedAt ?? 0)
     expect(errors.map(String)).toEqual([])
   }, 90_000)
+
+  test('`qm resident` prints how the previous life ended: unknown, killed, clean', async () => {
+    // The verdict above reached only an observer the CLI never passed, so on
+    // a real node it was computed and shown nowhere. Three real lives on one
+    // config root, each read the way an operator reads it: off its stdout.
+    const base = mkdtempSync(join(tmpdir(), 'qianmo-resident-priorlife-'))
+    root = base
+    const configDir = join(base, 'config')
+    const workspace = join(base, 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    const lifecycle = join(configDir, 'resident', 'lifecycle.json')
+    const readRecord = (): ResidentLifecycleRecord | undefined =>
+      existsSync(lifecycle)
+        ? (JSON.parse(
+            readFileSync(lifecycle, 'utf8'),
+          ) as ResidentLifecycleRecord)
+        : undefined
+    // Complete lines only: the last segment is empty or still arriving.
+    const stdoutLines = (stdout: string): Record<string, unknown>[] =>
+      stdout
+        .split('\n')
+        .slice(0, -1)
+        .map(line => JSON.parse(line) as Record<string, unknown>)
+    const priorLifeOf = (stdout: string): Record<string, unknown> | undefined =>
+      stdoutLines(stdout).find(line => 'priorLife' in line)
+    const launch = async (
+      name: string,
+    ): Promise<ReturnType<typeof spawnResidentCli>> => {
+      const socket = join(base, `${name}.sock`)
+      const life = spawnResidentCli(configDir, [
+        '--node',
+        'node-b',
+        '--team',
+        TEAM,
+        '--agent',
+        `${AGENT}=${workspace}`,
+        '--unix',
+        socket,
+        '--open-policy',
+      ])
+      const failed = (what: string) => (error: unknown) => {
+        throw new Error(
+          `qm resident (${name}, pid ${String(life.child.pid)}) ${what}: ${String(
+            error,
+          )}\n${life.output()}`,
+        )
+      }
+      await waitUntil(
+        () => existsSync(socket) || life.child.exitCode !== null,
+        60_000,
+      ).catch(failed('never listened'))
+      if (life.child.exitCode !== null) {
+        failed('exited before listening')(life.child.exitCode)
+      }
+      // Printed before the listener is bound, so by now the line can only be
+      // in the pipe: the short wait absorbs delivery lag, nothing more.
+      await waitUntil(() => priorLifeOf(life.stdout()) !== undefined).catch(
+        failed('listened without saying how its previous life ended'),
+      )
+      // The banner keeps the first line, unchanged; the verdict follows it.
+      const [banner] = stdoutLines(life.stdout())
+      expect(banner).toMatchObject({
+        node: 'node-b',
+        requireSignedTasks: false,
+      })
+      expect(banner).not.toHaveProperty('priorLife')
+      return life
+    }
+    const exited = async (child: ChildProcess): Promise<void> => {
+      if (child.exitCode === null && child.signalCode === null) {
+        await once(child, 'exit')
+      }
+    }
+
+    // A config root nothing has run on: no evidence either way.
+    const first = await launch('first')
+    expect(priorLifeOf(first.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'unknown',
+    })
+
+    first.child.kill('SIGKILL')
+    await exited(first.child)
+    const leftBehind = readRecord()
+    expect(leftBehind).toMatchObject({ phase: 'running', pid: first.child.pid })
+
+    // Killed, with the dead life's own record — nothing more, nothing derived.
+    const second = await launch('second')
+    expect(priorLifeOf(second.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'killed',
+      prior: {
+        pid: first.child.pid,
+        startedAt: leftBehind?.startedAt,
+        updatedAt: leftBehind?.updatedAt,
+      },
+    })
+
+    // The shutdown path an operator's `beta-down.sh` takes.
+    second.child.kill('SIGTERM')
+    await exited(second.child)
+    expect(readRecord()).toMatchObject({
+      phase: 'stopped',
+      pid: second.child.pid,
+    })
+
+    const third = await launch('third')
+    expect(priorLifeOf(third.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'clean',
+    })
+  }, 120_000)
 })
 
 /**
