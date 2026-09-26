@@ -16,6 +16,10 @@
  * `write-limited`——`SIGNED_TASK_POLICY` 对 `wake` 与 `task.request` 要的正是同
  * 一档。所以下面那个签发器不需要按面分叉。
  *
+ * 第三处调用方是 `qm watch --sign`（`watch.ts`）。值守作业的 `task.request`
+ * 也要 `write-limited`，所以它直接复用这里的加载函数与签发器，身份名取它自己
+ * `--from` 的 node 段。
+ *
  * **文件名与 `--print-wake-identity` 里的 wake 是历史，不是范围。**没有跟着改，
  * 是因为那个开关打出来的 `<node>=<publicKey>` 正是运维粘进每个节点 `--trust`
  * 的那一行，已经分发在舰队上；为一个不改变任何字节的名字去动它，代价全在部署侧。
