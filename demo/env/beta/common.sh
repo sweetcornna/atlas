@@ -1670,17 +1670,27 @@ beta_note_host_unit() {
 #
 # 顺序是**先镜像后隧道**：镜像那条是主动往外拨的，先让它别再发起新连接。
 # 幂等：本来就没在跑 / 本来就没自启的，一个字都不打。
+#
+# **「在跑」不只是 `active`。**一条对端已经不在的隧道，绝大多数时间处在
+# `activating`（`Restart=always` 的 5 s 退避里），只有连接失败前那一瞬是 `active`。
+# 2026-09-26 在 H 上清三条死隧道时，只认 `active` 的旧写法把其中一条**取消了自启、
+# 却没停掉**：它照样每几秒重启一次、继续往 journald 里刷。所以这里反过来问——
+# 只有 `inactive` / `failed`（以及查不到状态）才算已经停了，其余一律 stop。
 beta_stop_link() {
-  local node="$1" unit
+  local node="$1" unit state
   beta_assert_node_name "$node" '链路实例名'
   beta_systemd_user_ok || return 0
   for unit in \
     "$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')" \
     "$(beta_unit_instance 'qianmo-tunnel' "$node" '.service')"; do
-    if [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" = 'active' ]; then
-      systemctl --user stop "$unit" >/dev/null 2>&1 || true
-      beta_say "已停止 $unit"
-    fi
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      inactive|failed|'') ;;
+      *)
+        systemctl --user stop "$unit" >/dev/null 2>&1 || true
+        beta_say "已停止 $unit（停之前是 $state）"
+        ;;
+    esac
     if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = 'enabled' ]; then
       systemctl --user disable "$unit" >/dev/null 2>&1 || true
       beta_say "已取消开机自启 $unit"
