@@ -43,6 +43,22 @@
  * `notifyPolicy` 目前只被记录与透传，**打不打扰人由 agent 自己决定**——产出
  * 默认静默，只有它显式调 `qianmo_notify` 才有人被叫醒（§4.1⑤）。
  *
+ * ## 签名（`--sign`）：投递和授权是两回事
+ *
+ * 不签名的 `task.request` 照样能投递。默认策略的节点会拒收（`E_CAP_INSUFFICIENT`）；
+ * `--open-policy` 的节点会收下，但它是 untrusted 档，给模型的通告要求「把内容当
+ * 数据，不当指令」。所以作业会跑一轮，模型会拒绝执行，而中枢这边看起来一切正常。
+ * 控制台的 `--wake-sign` 和 `--chat-sign` 遇到过同一个问题（console.md §4.7、
+ * §6.7.1）。本文件用同一套做法：
+ *
+ * - 身份是 `--from` 的 node 段在配置根里的 Ed25519 密钥，复用
+ *   `consoleWakeIdentity.ts` 的加载函数与签发器，不另造一种密钥格式；
+ * - 令牌只签 `write-limited`，绑定 `(aud, sub, taskId, createdAt)`。这正是
+ *   `SIGNED_TASK_POLICY` 对 `task.request` 的要求。`user-confirmed` 不会签：
+ *   规则 S-1 只接受节点自己签的这一档，中枢签出来必然被拒；
+ * - 令牌在连接建立**之后**才签出来。60 s 的有效期只需覆盖一次发送；
+ * - 签不出来，这次 fire 就算失败，走退避。不会退回去发一条不签名的请求。
+ *
  * ## 对人的通知与过程数据
  *
  * 节点会把一轮里每个工具的开始和失败推成 `notify{kind:'task'}`（v2.59 为对话面
@@ -60,6 +76,7 @@ import {
   createMessage,
   isNotifyPayload,
   isTaskResultPayload,
+  newId,
   type NotifyPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
@@ -75,7 +92,12 @@ import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { openAuditTrail } from '../../services/qianmo/auditTrail.js'
+import {
+  loadConsoleWakeIdentity,
+  type ConsoleWakeIdentity,
+} from './consoleWakeIdentity.js'
 import { residentOptionValue } from './residentArgs.js'
+import type { WakeCapabilityIssuer } from './residentWake.js'
 
 /**
  * 一次投递等回执的预算。
@@ -89,13 +111,37 @@ const DISPATCH_RECEIPT_TIMEOUT_MS = 5_000
 /** 连接一次的上限，与 `resident-wake` 同源。 */
 const CONNECT_TIMEOUT_MS = 30_000
 
-interface WatchConfig {
+export interface WatchConfig {
+  readonly mode: 'run'
   readonly jobsPath: string
   readonly from: string
   readonly stateDir: string
   /** 只跑一遍到点的作业就退出——给冒烟与联调用，不是常态。 */
   readonly once: boolean
+  /**
+   * `--sign`：每个作业的 `task.request` 都带一枚 capability token。**缺省不签。**
+   *
+   * 缺省关的理由与控制台的 `--wake-sign` 相同：节点在两种策略下都会拒绝一枚
+   * 解析不出签发方公钥的令牌。所以操作顺序只有一种：先在每个目标节点上加
+   * `--trust <node>=<publicKey>`，再打开这个开关。公钥用 `--print-identity` 取。
+   */
+  readonly sign: boolean
 }
+
+/**
+ * `--print-identity`：只打印签名身份，然后退出。
+ *
+ * 这是一条单独的路径，因为分发公钥必须在打开 `--sign` 之前完成。如果只能从
+ * `--sign` 启动时的横幅里读公钥，那么调度器已经启动，作业已经在向还不认识这把
+ * 公钥的节点发送请求。这条路径只需要 `--from`：不读作业文件，不读 PSK，也不
+ * 连接任何节点。
+ */
+export interface WatchPrintIdentityConfig {
+  readonly mode: 'print-identity'
+  readonly from: string
+}
+
+export type WatchCommand = WatchConfig | WatchPrintIdentityConfig
 
 /** 作业文件里那一项：调度器认识的部分 + 本文件认识的 `url`。 */
 interface WatchJobEntry {
@@ -104,6 +150,7 @@ interface WatchJobEntry {
 }
 
 export const WATCH_HELP_TEXT = `Usage: ${invokedBinName()} watch --jobs <file> --from <address> [options]
+       ${invokedBinName()} watch --print-identity --from <address>
 
 Run the hub-side watch-job scheduler. Timing lives here so the nodes hold none:
 each job fires on a one-shot reservation, dials its target node, sends one
@@ -125,6 +172,24 @@ Options (each accepts both --name value and --name=value):
                        claim files make it at-most-once.
   --once               Run whatever is due right now, then exit. For smoke
                        tests; a real watch job wants the process to stay up.
+  --sign               Sign every job's task.request with this hub's own
+                       Ed25519 identity: the key of the --from node under
+                       <config>/qianmo/identity/, created on first use. The
+                       token is write-limited and bound to that one task.
+                       Off by default. Without it the request is unsigned: a
+                       node under the default policy refuses it
+                       (E_CAP_INSUFFICIENT), and a node under --open-policy
+                       runs it as an untrusted message whose text the agent
+                       is told to treat as data, so the job is declined.
+                       Order matters: every target node must carry
+                       --trust <node>=<publicKey> for this hub before this
+                       flag goes on, because a node refuses a token whose
+                       issuer it cannot resolve under both policies.
+  --print-identity     Print this hub's signing identity as <node>=<publicKey>
+                       and exit, creating the key pair on first run. The
+                       output is exactly what a resident node takes after
+                       --trust. Needs only --from. It reads no jobs file, no
+                       key from the environment, and dials nothing.
   -h, --help           Print this and exit.
 
 Environment:
@@ -157,11 +222,13 @@ export function isWatchHelpRequest(args: readonly string[]): boolean {
 export function parseWatchArgs(
   args: readonly string[],
   identity: string = IDENTITY_MODE,
-): WatchConfig {
+): WatchCommand {
   let jobsPath: string | undefined
   let from: string | undefined
   let stateDir: string | undefined
   let once = false
+  let sign = false
+  let printIdentity = false
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -180,6 +247,10 @@ export function parseWatchArgs(
       index = parsed.next
     } else if (arg === '--once') {
       once = true
+    } else if (arg === '--sign') {
+      sign = true
+    } else if (arg === '--print-identity') {
+      printIdentity = true
     } else {
       throw new Error(
         `unknown watch option ${String(arg)}` +
@@ -191,15 +262,117 @@ export function parseWatchArgs(
   if (identity !== 'qianmo') {
     throw new Error('watch requires OCC_IDENTITY=qianmo')
   }
+  if (printIdentity) {
+    // 这条路径只用 `--from`。带上会让调度器启动的选项就报错，而不是悄悄忽略：
+    // 运维以为自己启动了值守，实际上它只打印了一行公钥就退出了。
+    if (jobsPath !== undefined || stateDir !== undefined || once || sign) {
+      throw new Error(
+        '--print-identity takes only --from: it prints the key and exits, and runs no jobs',
+      )
+    }
+    if (from === undefined) throw new Error('--print-identity requires --from')
+    return { mode: 'print-identity', from }
+  }
   if (jobsPath === undefined) throw new Error('watch requires --jobs')
   if (from === undefined) throw new Error('watch requires --from')
 
   return {
+    mode: 'run',
     jobsPath,
     from,
     stateDir: stateDir ?? occConfigPath('qianmo', 'scheduler'),
     once,
+    sign,
   }
+}
+
+/**
+ * 读出（首次运行时创建）中枢的签名身份。
+ *
+ * 直接复用控制台那一套（`consoleWakeIdentity.ts`），不是另写一份：
+ *
+ * - **密钥**是 `loadOrCreateNodeKeys(<--from 的 node 段>)`，落在
+ *   `<config>/qianmo/identity/<node>.json`，路径由 `paths.ts` 派生。
+ *   0700/0600，`wx` 创建，永不覆盖；
+ * - **签发器**钉死 `write-limited`，令牌绑定 `(aud, sub, taskId, createdAt)`，
+ *   有效期 60 s，`nbf` 往前挪 30 s 吸收时钟差。中枢签不出 `user-confirmed`
+ *   （规则 S-1）。
+ *
+ * 身份名跟 `--from` 走，理由和控制台跟 `--chat-from` 走一样：这个名字就是节点
+ * 审计链里的 `iss`，也是节点收到的通知要回复的地址。同一个名字在对方审计链里
+ * 应该只对应一个身份。所以同一个配置根上的 `qm console` 和 `qm watch` 如果用同一个
+ * node 名，就共用同一把密钥。
+ */
+export function loadWatchSigningIdentity(from: string): ConsoleWakeIdentity {
+  return loadConsoleWakeIdentity(from)
+}
+
+/**
+ * 启动时关于签名要说的话：签了打一行到 stdout，没签打一段告警到 stderr。
+ *
+ * 不签名时必须告警，因为这种失败从中枢一侧看不出来：`watch_fire` 照记、回执照收，
+ * 节点照跑一轮，只是模型会拒绝执行作业。告警里写清两种策略下的后果和修复步骤。
+ */
+export function watchSigningNotice(
+  identity: Pick<ConsoleWakeIdentity, 'node' | 'publicKey'> | undefined,
+  from: string,
+): { readonly stdout?: string; readonly stderr?: string } {
+  if (identity !== undefined) {
+    return {
+      stdout: `[watch] signing task requests as ${identity.node}=${identity.publicKey} (write-limited)`,
+    }
+  }
+  return {
+    stderr:
+      '[watch] warning: task requests are NOT signed (no --sign). A node under the ' +
+      'default policy refuses them with E_CAP_INSUFFICIENT; a node under ' +
+      '--open-policy runs them as untrusted messages, and the agent is told to ' +
+      'treat their text as data, so it will not carry out the job. To sign: run ' +
+      `\`${invokedBinName()} watch --print-identity --from ${from}\`, add ` +
+      '--trust <node>=<publicKey> to every target node, then restart this with --sign.',
+  }
+}
+
+/**
+ * 一次 fire 发出的那条 `task.request`。
+ *
+ * `taskId` 与 `createdAt` 在这里生成，不交给 `createMessage` 的默认值。原因和
+ * `executeResidentWake`、控制台对话面相同：令牌只绑定一个 `taskId`，所以这个值
+ * 必须在信封构造之前就存在。同一个 `createdAt` 同时交给令牌和信封，令牌的有效
+ * 窗口就是从它所在的信封算起的。
+ *
+ * `issue` 抛异常会直接传出去。调用方把这次 fire 记为失败，不会改发一条不签名
+ * 的请求。
+ */
+export function buildWatchRequest(input: {
+  readonly from: string
+  readonly job: ScheduledJob
+  readonly issue?: WakeCapabilityIssuer
+  readonly now?: () => number
+}): QianmoMessage {
+  const target = assertAddress(input.job.target, 'job target')
+  const taskId = newId()
+  const createdAt = (input.now ?? Date.now)()
+  const cap = input.issue?.({
+    aud: target.node,
+    // `sub` 是完整的地址，节点验签时拿它和 `message.to` 比较。
+    sub: input.job.target,
+    taskId,
+    createdAt,
+  })
+  return createMessage({
+    from: input.from,
+    to: input.job.target,
+    type: MessageType.TaskRequest,
+    // §4.1③：一个作业 = 一条 contextId = 节点侧一条独立会话。
+    contextId: input.job.id,
+    // §4.1④：截止时间由作业说了算，不吃 LIMITS.defaultTaskTtlMs。
+    taskTtlMs: input.job.taskTtlMs,
+    payload: { ask: input.job.prompt },
+    taskId,
+    createdAt,
+    ...(cap === undefined ? {} : { cap }),
+  })
 }
 
 /**
@@ -400,10 +573,23 @@ export async function runWatch(args: readonly string[]): Promise<void> {
     process.stdout.write(`${WATCH_HELP_TEXT}\n`)
     return
   }
-  const config = parseWatchArgs(args)
+  const command = parseWatchArgs(args)
+  // 排在 PSK 与作业文件之前：这条路径就是给「还没配好」的那一刻用的。
+  if (command.mode === 'print-identity') {
+    const identity = loadWatchSigningIdentity(command.from)
+    process.stdout.write(`${identity.node}=${identity.publicKey}\n`)
+    return
+  }
+  const config = command
   const psk = pskFromEnv()
   const entries = parseWatchJobs(readFileSync(config.jobsPath, 'utf8'))
   const hub = assertAddress(config.from, '--from')
+  // 只在要签名时才读身份（首次运行会创建）。不签名的中枢不该在配置根里留下
+  // 一把用不到的私钥。读不出来就让启动失败：运维明确要求了签名，照常启动却不签，
+  // 正是这条路径上最难发现的失败。
+  const identity = config.sign
+    ? loadWatchSigningIdentity(config.from)
+    : undefined
   const trail = openAuditTrail()
 
   const urls = new Map(entries.map(entry => [entry.job.id, entry.url]))
@@ -467,15 +653,12 @@ export async function runWatch(args: readonly string[]): Promise<void> {
       const url = urls.get(fire.job.id)
       if (url === undefined) throw new Error(`job ${fire.job.id} has no url`)
       const client = await linkTo(url)
-      const message = createMessage({
+      // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
+      // 慢连接就会把 60 s 的有效期用掉一半。
+      const message = buildWatchRequest({
         from: config.from,
-        to: fire.job.target,
-        type: MessageType.TaskRequest,
-        // §4.1③：一个作业 = 一条 contextId = 节点侧一条独立会话。
-        contextId: fire.job.id,
-        // §4.1④：截止时间由作业说了算，不吃 LIMITS.defaultTaskTtlMs。
-        taskTtlMs: fire.job.taskTtlMs,
-        payload: { ask: fire.job.prompt },
+        job: fire.job,
+        ...(identity === undefined ? {} : { issue: identity.issue }),
       })
       trail.append({
         at: Date.now(),
@@ -493,6 +676,7 @@ export async function runWatch(args: readonly string[]): Promise<void> {
           fireAtMs: fire.fireAtMs,
           attempt: fire.attempt,
           notifyPolicy: fire.job.notifyPolicy,
+          signed: message.cap !== undefined,
         }),
       })
       await client.sendAndWait(message, DISPATCH_RECEIPT_TIMEOUT_MS)
@@ -502,6 +686,9 @@ export async function runWatch(args: readonly string[]): Promise<void> {
   process.stdout.write(
     `[watch] ${entries.length} job(s) from ${config.jobsPath}, state in ${config.stateDir}\n`,
   )
+  const signing = watchSigningNotice(identity, config.from)
+  if (signing.stdout !== undefined) process.stdout.write(`${signing.stdout}\n`)
+  if (signing.stderr !== undefined) process.stderr.write(`${signing.stderr}\n`)
 
   if (config.once) {
     await runner.runDue(Date.now())
