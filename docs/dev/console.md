@@ -1012,7 +1012,7 @@ chat  enabled as qianmo://console/operator (signed) -> beta-4 -> ws://127.0.0.1:
 | --- | --- | --- |
 | `RegistryPort` | 注册中心 HTTP v0（`GET/POST /v0/agents`、`DELETE`、`POST …/heartbeat`），5 s 超时 | **页面照常打开**，名册那栏显示 `unreachable` 与地址。网络失败一律转成失败值，从不抛 |
 | `AuditPort` | 本机审计链文件，**只读** | 文件不存在 = **空页面，不是错误**，但**也不是「完整」**——四态由 `chain` 表述（见下），`intact` 只对「有链且没毛病」成立。哈希链断了会如实显示，不吞 |
-| `LimitsSnapshot` | `LIMITS`（`@qianmo/protocol`）、`RUNTIME_RATE`（`@qianmo/router`）、`DEFAULT_TTL_MS`（`@qianmo/registry`） | 常量，不会挂 |
+| `LimitsSnapshot` | `LIMITS`（`@qianmo/protocol`）、`RUNTIME_RATE`（`@qianmo/router`）、`DEFAULT_TTL_MS`（`@qianmo/registry`，只作兜底，见下） | 常量，不会挂 |
 | `WakePort` | —（只写） | 见 §4.4 |
 
 **`chain` 的四态，以及为什么不能只有 `intact`**（issue #9②）：
@@ -1041,6 +1041,16 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 三个上限的数字**一律 import，不抄**。协议速率与运行时速率在页面上是**两列**，不是
 一个数：章程 AC-3 要求两者独立验证且不得混为一谈（`packages/router/src/rate.ts` 的
 模块注释解释了为什么运行时那条不放进 `LIMITS`）。
+
+**注册租约以注册中心为准，`DEFAULT_TTL_MS` 只兜底**（验证报告 2026-09-08 C-1）。注册中心
+可以带任意 `ttlMs` 起，而它发出的每条记录都满足 `expiresAt = lastHeartbeatAt + 当下 TTL`
+（注册、心跳、从落盘表恢复三处同一口径）。所以名册的「在线 / 滞后 / 过期」、租约条和
+「剩余」都按**这条记录自己的** `expiresAt − lastHeartbeatAt` 判：过半为滞后（既有的
+`STALE_FRACTION`，`packages/console/src/view/format.ts`），到期为过期，`expiresAt` 已过则无论心跳多新都是过期。名册抬头、
+上限区与总览卡的「注册租约」取最近一次续租那条记录的租约，三处同源。`DEFAULT_TTL_MS`
+只在两种情况下出场：记录缺 `expiresAt` 或 `lastHeartbeatAt`，以及名册为空、没有可读的
+租约。`GET /v0/limits` 的 `registryTtlMs` 仍原样报这个包默认值，不是注册中心此刻的 TTL。
+控制台不另设租约参数——多一个出处正是 C-1 的来源。
 
 ### 7.2 不读
 

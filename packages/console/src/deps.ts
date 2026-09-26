@@ -530,7 +530,13 @@ export interface LimitsSnapshot {
     readonly capacity: number
     readonly windowMs: number
   }
-  /** Registry lease TTL, so the roster's "expires" column has a scale. */
+  /**
+   * `@qianmo/registry`'s default lease — the scale of last resort, not the
+   * scale. The registry may run with any `ttlMs`, so the roster judges each
+   * record by the lease the registry granted it (`expiresAt − lastHeartbeatAt`)
+   * and the page prints that; this number stands in only for a record that
+   * carries no lease, and for an empty roster. `/v0/limits` reports it as is.
+   */
   readonly registryTtlMs: number
 }
 

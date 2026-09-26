@@ -334,9 +334,117 @@ describe('agentHealth', () => {
     expect(agentHealth(skewed, NOW, TTL)).toBe('live')
   })
 
-  test('a nonsense TTL falls back to the lease alone', () => {
-    expect(agentHealth(agent({ expiresAt: NOW + 1 }), NOW, 0)).toBe('live')
+  test('no lease on the record and a nonsense fallback leave only the lease check', () => {
+    expect(agentHealth(agent({ expiresAt: 0 }), NOW, 0)).toBe('live')
     expect(agentHealth(agent({ expiresAt: NOW - 1 }), NOW, 0)).toBe('expired')
+  })
+
+  test('a lease on the record makes the fallback irrelevant', () => {
+    // 10 s into a lease the registry granted for 10.001 s: past half, whatever
+    // the fallback says — before C-1 a zero fallback read this as live.
+    expect(agentHealth(agent({ expiresAt: NOW + 1 }), NOW, 0)).toBe('stale')
+  })
+})
+
+/**
+ * Validation report 2026-09-08, C-1: a registry started with a one-hour lease,
+ * a console built with the 90 s package default, and every node more than 45 s
+ * past its heartbeat reported 滞后, more than 90 s past it 过期 — while the
+ * registry still listed and routed to it. The records carry the registry's own
+ * lease (`expiresAt − lastHeartbeatAt`), and that is the only scale.
+ */
+describe('the registry lease is the scale (C-1)', () => {
+  const HOUR = 3_600_000
+  const PACKAGE_DEFAULT = 90_000
+
+  function leased(sinceBeatMs: number, leaseMs: number): ConsoleAgent {
+    const beat = NOW - sinceBeatMs
+    return agent({ lastHeartbeatAt: beat, expiresAt: beat + leaseMs })
+  }
+
+  test('an hour-long lease two minutes after the heartbeat is live', () => {
+    expect(agentHealth(leased(120_000, HOUR), NOW, PACKAGE_DEFAULT)).toBe(
+      'live',
+    )
+    // Past half of the package default, still inside the first half-hour.
+    expect(agentHealth(leased(45_000, HOUR), NOW, PACKAGE_DEFAULT)).toBe('live')
+    expect(agentHealth(leased(HOUR / 2 - 1, HOUR), NOW, PACKAGE_DEFAULT)).toBe(
+      'live',
+    )
+  })
+
+  test('half of the hour is stale, not half of the default', () => {
+    expect(agentHealth(leased(HOUR / 2, HOUR), NOW, PACKAGE_DEFAULT)).toBe(
+      'stale',
+    )
+  })
+
+  test('a lease that has run out is still expired', () => {
+    // To the millisecond, and one past it.
+    expect(agentHealth(leased(HOUR, HOUR), NOW, PACKAGE_DEFAULT)).toBe(
+      'expired',
+    )
+    expect(agentHealth(leased(HOUR + 1, HOUR), NOW, PACKAGE_DEFAULT)).toBe(
+      'expired',
+    )
+  })
+
+  test('a lease shorter than the default goes amber at its own half', () => {
+    // 2 s into a 4 s lease; judged by 90 s it would still read as live.
+    expect(agentHealth(leased(2_000, 4_000), NOW, PACKAGE_DEFAULT)).toBe(
+      'stale',
+    )
+  })
+
+  test('the fallback is the scale only for a record that carries no lease', () => {
+    const noLease = (sinceBeatMs: number) =>
+      agent({ lastHeartbeatAt: NOW - sinceBeatMs, expiresAt: 0 })
+    expect(agentHealth(noLease(44_999), NOW, PACKAGE_DEFAULT)).toBe('live')
+    expect(agentHealth(noLease(45_000), NOW, PACKAGE_DEFAULT)).toBe('stale')
+    expect(agentHealth(noLease(90_000), NOW, PACKAGE_DEFAULT)).toBe('expired')
+  })
+
+  test('the row, the bar and the header all read the hour', () => {
+    const html = renderRoster(
+      [leased(120_000, HOUR)],
+      null,
+      NOW,
+      PACKAGE_DEFAULT,
+    )
+    expect(html).toContain('data-health="live"')
+    expect(html).not.toContain('滞后')
+    expect(html).not.toContain('过期')
+    expect(html).toContain('租约 1 小时')
+    expect(html).not.toContain('租约 1 分 30 秒')
+    // 58 of 60 minutes left, and the fill is that share, not 0%.
+    expect(html).toContain('>剩余 58m<')
+    expect(html).toContain('style="width:97%"')
+  })
+
+  test('the header reads the most recently renewed record', () => {
+    // A restart with a new TTL re-stamps every record on restore, and a
+    // time-jump rebase stretches the older ones; the newest stamp is the TTL in
+    // force either way.
+    const older = { ...leased(30_000, 5 * HOUR), address: 'qianmo://n/a' }
+    const newer = { ...leased(1_000, HOUR), address: 'qianmo://n/b' }
+    for (const agents of [
+      [older, newer],
+      [newer, older],
+    ]) {
+      const html = renderRoster(agents, null, NOW, PACKAGE_DEFAULT)
+      expect(html).toContain('租约 1 小时')
+      expect(html).not.toContain('租约 5 小时')
+    }
+  })
+
+  test('with no lease on any record the header falls back to the default', () => {
+    const html = renderRoster(
+      [agent({ expiresAt: 0 })],
+      null,
+      NOW,
+      PACKAGE_DEFAULT,
+    )
+    expect(html).toContain('租约 1 分 30 秒')
   })
 })
 
@@ -766,7 +874,8 @@ describe('lease bar', () => {
   })
 
   test('no scale to draw against means no bar at all', () => {
-    const html = renderRoster([agent()], null, NOW, 0)
+    // No lease on the record and no fallback: nothing to draw against.
+    const html = renderRoster([agent({ expiresAt: 0 })], null, NOW, 0)
     expect(html).not.toContain('lease-fill')
     expect(html).toContain('<span class="lease"><span class="absent">')
   })

@@ -692,6 +692,61 @@ describe('limits', () => {
   })
 })
 
+/**
+ * C-1 (validation report 2026-09-08): the page printed the package default as
+ * the registry lease in three places, and judged every row by it, while the
+ * registry ran an hour-long one.
+ */
+describe('the registry lease on the page (C-1)', () => {
+  const HOUR = 3_600_000
+  const beat = NOW - 120_000
+  const HOUR_AGENT: ConsoleAgent = {
+    ...AGENT,
+    lastHeartbeatAt: beat,
+    expiresAt: beat + HOUR,
+  }
+
+  test('roster, limits strip and overview card all state the registry lease', async () => {
+    const { handle, registry } = setup()
+    registry.listResult = okResult([HOUR_AGENT])
+    const page = await (await handle(get('/', VIEW))).text()
+    expect(page).toContain('data-health="live"')
+    expect(page).toContain('租约 1 小时')
+    expect(page).toContain('data-ttl-ms="3600000"')
+    expect(page).toContain('<div class="stat-num">1 小时</div>')
+    expect(page).not.toContain('1 分 30 秒')
+    // Still one registry read: the limits reuse the roster's.
+    expect(registry.listCalls).toBe(1)
+  })
+
+  test('the limits fragment says what the page says', async () => {
+    const { handle, registry } = setup()
+    registry.listResult = okResult([HOUR_AGENT])
+    const fragment = await (await handle(get('/fragments/limits', VIEW))).text()
+    expect(fragment).toContain('data-ttl-ms="3600000"')
+    expect(fragment).not.toContain('1 分 30 秒')
+  })
+
+  test('with nothing to read a lease from, the default stands in', async () => {
+    const { handle, registry } = setup()
+    registry.listResult = failResult('unreachable', '注册中心不可达')
+    const response = await handle(get('/fragments/limits', VIEW))
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain('data-ttl-ms="90000"')
+
+    registry.listResult = okResult([])
+    const empty = await (await handle(get('/', VIEW))).text()
+    expect(empty).toContain('data-ttl-ms="90000"')
+  })
+
+  test('/v0/limits keeps reporting the package snapshot', async () => {
+    const { handle, registry } = setup()
+    registry.listResult = okResult([HOUR_AGENT])
+    const response = await handle(get('/v0/limits', VIEW))
+    expect((await body(response))['registryTtlMs']).toBe(LIMITS.registryTtlMs)
+  })
+})
+
 describe('wake', () => {
   test('sends the parsed input and returns the outcome', async () => {
     const { handle, wake } = setup()

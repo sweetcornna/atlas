@@ -62,6 +62,8 @@ flowchart TD
 | 4 | **盘上的东西只是可恢复，不是权威**：`expiresAt` 按当下 TTL 重算，未知 schema 版本整篇丢弃，写入是 temp + fsync + rename | 直接采信盘上的 deadline，停机一小时的注册中心会拿一小时前的地址回答查询 | `test/persistence.test.ts`「the deadline is recomputed from the TTL in force, not read off disk」「a document from an unknown schema version is ignored wholesale」与「crash safety」整组 |
 | 5 | **持久化失败只损失持久性，不损失可用性**——写盘异常被吞并走 `onPersistError`，不冒泡到调用方 | 让写盘异常冒泡，一次磁盘满会把整个注册中心变成不可用 | `test/persistence.test.ts`「a failing store costs durability, not availability」「a write failure is swallowed even with no error hook installed」 |
 
+线上的 `expiresAt − lastHeartbeatAt` 就是当下 TTL（注册、心跳、恢复三处同一口径；时间跳跃 rebase 后另含跳跃量，与本包自己的判定一致）——控制台按它判滞后 / 过期，不另带一份 TTL（`docs/dev/console.md` §7.1）；改租约的计算方式时要连同控制台一起看。
+
 另有一条与 P3.1 联动、同样有用例的性质：**时间跳跃期间不删条目**——`observeClock` 判定解冻后先 rebase 全表，宽限窗口内 `#live` 直接返回记录（`test/registry.test.ts`「a thaw rebases leases and lets heartbeat recover」「ordinary elapsed time still expires after time-jump protection is enabled」）。
 
 ## 4. 与基座的关系

@@ -53,6 +53,7 @@ const handle = createConsoleHandler(deps, tokens)
 
 - 整个 `qianmo://…` 地址放在**一个**百分号编码的 path segment 里（`qianmo%3A%2F%2Fnode-b%2Freviewer`），与注册中心 HTTP v0 一致。
 - 错误一律是 `{ "error": { "code": "…", "message": "…" } }`。
+- 名册的在线 / 滞后 / 过期按注册中心给每条记录的租约（`expiresAt − lastHeartbeatAt`）判，不按控制台自己的数；`/v0/limits` 的 `registryTtlMs` 只是 `@qianmo/registry` 的出厂默认，用于兜底。口径见 `docs/dev/console.md` §7.1。
 - `limit` 非正整数或超过 500 一律夹到 500；`from` / `to` 接受 epoch 毫秒或 ISO 字符串，解析不了就当没给（过滤器输到一半不该 400）。
 - 两个 assets 路由公开：浏览器不会给页面里的 `<link>` / `<script>` 带上凭据，锁上它们只会得到一张没有样式的页面；这两个文件是编译进来的常量，不含任何实例数据。
 
