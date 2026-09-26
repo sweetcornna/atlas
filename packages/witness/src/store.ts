@@ -9,6 +9,7 @@ import { isValidSegment } from '@qianmo/protocol'
 import {
   isWitnessAnchor,
   isWitnessAnchorReceipt,
+  isWitnessEvidence,
   witnessAnchorOf,
   type WitnessAnchorReceipt,
   type WitnessEvidence,
@@ -24,9 +25,17 @@ function anchorPath(root: string, node: string, seq: number): string {
 
 /** An existing `(node, seq)` is evidence, not a slot that can be replaced. */
 export class WitnessAnchorExistsError extends Error {
-  constructor(node: string, seq: number) {
+  /**
+   * The head already stored at this `(node, seq)`, or null when that object
+   * cannot be read back. It lets a sender that resent the same head after a
+   * restart recognise its own earlier acceptance; see design §4.1.
+   */
+  readonly head: string | null
+
+  constructor(node: string, seq: number, head: string | null = null) {
     super(`witness anchor already exists for ${node} at seq ${seq}`)
     this.name = 'WitnessAnchorExistsError'
+    this.head = head
   }
 }
 
@@ -66,9 +75,27 @@ export class FileWitnessAnchorStore {
       )
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new WitnessAnchorExistsError(anchor.node, anchor.seq)
+        throw new WitnessAnchorExistsError(
+          anchor.node,
+          anchor.seq,
+          await this.#storedHead(anchor.node, anchor.seq),
+        )
       }
       throw error
+    }
+  }
+
+  /** Read back one existing object; a torn or foreign one confirms nothing. */
+  async #storedHead(node: string, seq: number): Promise<string | null> {
+    try {
+      const parsed: unknown = JSON.parse(
+        await readFile(anchorPath(this.root, node, seq), 'utf8'),
+      )
+      if (!isWitnessEvidence(parsed)) return null
+      const stored = witnessAnchorOf(parsed)
+      return stored.node === node && stored.seq === seq ? stored.head : null
+    } catch {
+      return null
     }
   }
 

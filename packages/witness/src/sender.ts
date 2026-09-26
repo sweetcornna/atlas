@@ -14,7 +14,12 @@ import {
 /** Design §4.2: 60 s buys a <= 60 s window at negligible endpoint traffic. */
 export const DEFAULT_WITNESS_ANCHOR_INTERVAL_MS = 60_000
 
-/** The deliberately narrow sender-side capability. It can only add an anchor. */
+/**
+ * The deliberately narrow sender-side capability. It can only add an anchor.
+ *
+ * Resolving means the endpoint holds this exact anchor head, whether it was
+ * stored now or already present; any other outcome rejects.
+ */
 export interface WitnessAnchorWriter {
   append(anchor: WitnessAnchor, signal?: AbortSignal): Promise<void>
 }
@@ -39,12 +44,21 @@ export interface AuditWitnessSchedulerOptions {
  * concurrent callers and prevents overlapping anchor attempts. Every failure is fail-open, following
  * the existing backup scheduler and audit sink: report it, retain the node,
  * and try again after the next period.
+ *
+ * A head the endpoint has already accepted is not sent again: the store keeps
+ * one receipt per `(node, seq)`, so a resend can add no evidence and only
+ * comes back as a refusal. The memory is per process on purpose. After a
+ * restart the first period sends the current head once, and the endpoint's
+ * `409` that names this same head counts as accepted — so a restart can never
+ * skip an anchor, and needs no local state an attacker on the node could edit.
  */
 export class AuditWitnessScheduler {
   readonly #options: AuditWitnessSchedulerOptions
   readonly #intervalMs: number
   readonly #now: () => number
   #lastAttemptAt: number | null = null
+  /** The newest `(seq, head)` the endpoint confirmed; null until then. */
+  #accepted: { readonly seq: number; readonly head: string } | null = null
   #inFlight: Promise<void> | null = null
   #controller: AbortController | null = null
   #closed = false
@@ -103,13 +117,16 @@ export class AuditWitnessScheduler {
       }
       const head = trail.records.at(-1)
       if (head === undefined) return
+      const digest = digestOf(head)
+      const accepted = this.#accepted
+      if (accepted?.seq === head.seq && accepted.head === digest) return
       const append = this.#options.writer.append(
         signWitnessAnchor(
           {
             v: WITNESS_ANCHOR_VERSION,
             node: this.#options.node,
             seq: head.seq,
-            head: digestOf(head),
+            head: digest,
             count: trail.records.length,
             at,
           },
@@ -131,6 +148,7 @@ export class AuditWitnessScheduler {
           signal.removeEventListener('abort', onAbort)
         }
       }
+      this.#accepted = { seq: head.seq, head: digest }
     } catch (error) {
       if (this.#closed && signal.aborted) return
       try {
