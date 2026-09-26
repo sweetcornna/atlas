@@ -70,6 +70,7 @@ export const DEMO_ENTRYPOINTS = [
   'p73-sample',
   'p81-probe',
   'p81-registry',
+  'witness-endpoint',
 ] as const
 
 /**

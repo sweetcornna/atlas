@@ -1,0 +1,187 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * `witness-endpoint.sh`：install 生成两枚不同的 0600 token 且不回显、重跑不换 token、
+ * 单元不留占位符；run 真的起一个端点（经 `demo_entry` 落到源文件入口），用写 token
+ * 追加一个签名锚点、用读 token 读回来。systemctl 用环境变量关掉。
+ */
+
+import { afterAll, describe, expect, test } from 'bun:test'
+import { generateNodeKeyPair } from '@qianmo/capability'
+import { signWitnessAnchor } from '@qianmo/witness'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+
+const SCRIPT = resolve(import.meta.dir, 'witness-endpoint.sh')
+const dirs: string[] = []
+
+afterAll(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+})
+
+function fixture(): {
+  home: string
+  root: string
+  env: Record<string, string>
+} {
+  const home = mkdtempSync(join(tmpdir(), 'witness-sh-'))
+  dirs.push(home)
+  const root = join(home, 'qianmo-beta')
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(root, '.qianmo-beta-env'), 'qianmo-beta-env/v1\n')
+  return {
+    home,
+    root,
+    env: {
+      HOME: home,
+      PATH: `${dirname(process.execPath)}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+      QIANMO_BETA_ROOT: root,
+      XDG_CONFIG_HOME: join(home, '.config'),
+      QIANMO_WITNESS_NO_SYSTEMCTL: '1',
+    },
+  }
+}
+
+function sh(env: Record<string, string>, args: readonly string[]) {
+  const result = Bun.spawnSync(['bash', SCRIPT, ...args], { env })
+  return {
+    code: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  }
+}
+
+async function freePort(): Promise<number> {
+  const probe = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response(''),
+  })
+  const port = probe.port as number
+  await probe.stop(true)
+  return port
+}
+
+describe('install', () => {
+  test('两枚 token：0600、64 hex、互不相同、不回显；重跑不换', () => {
+    const f = fixture()
+    const first = sh(f.env, ['install', '--key', 'beta-1=AAAA'])
+    expect(first.stderr).toBe('')
+    expect(first.code).toBe(0)
+    const write = join(f.root, 'secrets', 'witness-write-token')
+    const read = join(f.root, 'secrets', 'witness-read-token')
+    for (const file of [write, read]) {
+      expect(statSync(file).mode & 0o777).toBe(0o600)
+      expect(readFileSync(file, 'utf8')).toMatch(/^[0-9a-f]{64}$/)
+    }
+    const writeValue = readFileSync(write, 'utf8')
+    const readValue = readFileSync(read, 'utf8')
+    expect(writeValue).not.toBe(readValue)
+    expect(first.stdout).not.toContain(writeValue)
+    expect(first.stdout).not.toContain(readValue)
+
+    const again = sh(f.env, [
+      'install',
+      '--key',
+      'beta-1=AAAA',
+      '--key',
+      'beta-5=BBBB',
+    ])
+    expect(again.code).toBe(0)
+    expect(readFileSync(write, 'utf8')).toBe(writeValue)
+    expect(readFileSync(join(f.root, 'ops', 'witness.env'), 'utf8')).toContain(
+      'WITNESS_KEYS=beta-1=AAAA beta-5=BBBB\n',
+    )
+  })
+
+  test('单元不留占位符，ExecStart 指向交付树里的本脚本', () => {
+    const f = fixture()
+    expect(sh(f.env, ['install', '--key', 'beta-1=AAAA']).code).toBe(0)
+    const unit = readFileSync(
+      join(f.home, '.config', 'systemd', 'user', 'qianmo-witness.service'),
+      'utf8',
+    )
+    expect(unit).not.toMatch(/@[A-Z_]+@/)
+    expect(unit).toContain('demo/env/beta/ops/witness-endpoint.sh run')
+    expect(unit).toContain('Environment=QIANMO_BETA_ROOT=%h/qianmo-beta')
+  })
+
+  test.each([
+    [['install']],
+    [['install', '--key', 'beta-1']],
+    [['install', '--key', 'beta-1=AAAA', '--port', 'x']],
+  ])('参数不对就拒绝：%j', args => {
+    const f = fixture()
+    expect(sh(f.env, args).code).not.toBe(0)
+  })
+})
+
+describe('run', () => {
+  test('真起一个端点：写 token 追加签名锚点，读 token 读回', async () => {
+    const f = fixture()
+    const keys = generateNodeKeyPair()
+    const port = await freePort()
+    expect(
+      sh(f.env, [
+        'install',
+        '--key',
+        `beta-1=${keys.publicKey}`,
+        '--port',
+        String(port),
+      ]).code,
+    ).toBe(0)
+    const child = Bun.spawn(['bash', SCRIPT, 'run'], {
+      env: f.env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    try {
+      const ready = join(f.root, 'run', 'witness-ready.json')
+      for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(50)
+      expect(existsSync(ready)).toBe(true)
+      const base = `http://127.0.0.1:${port}`
+      const writeToken = readFileSync(
+        join(f.root, 'secrets', 'witness-write-token'),
+        'utf8',
+      )
+      const readToken = readFileSync(
+        join(f.root, 'secrets', 'witness-read-token'),
+        'utf8',
+      )
+      const anchor = signWitnessAnchor(
+        { v: 1, node: 'beta-1', seq: 1, head: 'd'.repeat(64), count: 1, at: 1 },
+        keys,
+      )
+      const created = await fetch(`${base}/v0/anchor`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${writeToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(anchor),
+      })
+      expect(created.status).toBe(201)
+      const listed = await fetch(`${base}/v0/anchor?node=beta-1`, {
+        headers: { authorization: `Bearer ${readToken}` },
+      })
+      expect(listed.status).toBe(200)
+      expect(JSON.stringify(await listed.json())).toContain('d'.repeat(64))
+      expect(statSync(join(f.root, 'witness', 'store')).mode & 0o777).toBe(
+        0o700,
+      )
+    } finally {
+      child.kill()
+      await child.exited
+    }
+  })
+})
