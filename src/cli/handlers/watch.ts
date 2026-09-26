@@ -42,6 +42,14 @@
  *
  * `notifyPolicy` 目前只被记录与透传，**打不打扰人由 agent 自己决定**——产出
  * 默认静默，只有它显式调 `qianmo_notify` 才有人被叫醒（§4.1⑤）。
+ *
+ * ## 对人的通知与过程数据
+ *
+ * 节点会把一轮里每个工具的开始和失败推成 `notify{kind:'task'}`（v2.59 为对话面
+ * 做的过程行）。在值守作业里它们是过程数据，不是对人的通知。
+ * {@link classifyWatchNotify} 把两者分开：只有 agent 自己调用 `qianmo_notify`
+ * 发出的通知才打印到 stdout，并记为 `watch_notify_received`；过程行只记为
+ * `watch_step_received`。
  */
 
 import { readFileSync } from 'node:fs'
@@ -51,9 +59,11 @@ import {
   assertAddress,
   createMessage,
   isNotifyPayload,
+  isTaskResultPayload,
+  type NotifyPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { ResidentEstop } from '@qianmo/resident'
+import { ResidentEstop, parseTurnStepDedupKey } from '@qianmo/resident'
 import {
   SchedulerRunner,
   SchedulerStore,
@@ -124,6 +134,14 @@ Environment:
                        a key on a command line is a key in every process
                        listing on this machine.
 
+Notifications:
+
+  Only a notification the agent sends itself with qianmo_notify is printed
+  here as [notify] and recorded as watch_notify_received. The steps a node
+  reports while a job runs (one per tool start or failure) are process data:
+  they are recorded as watch_step_received and not printed. A finished job is
+  recorded as watch_result_received.
+
 Emergency stop:
 
   touch <config>/qianmo/scheduler/ESTOP stops new fires and nothing else.
@@ -185,6 +203,45 @@ export function parseWatchArgs(
 }
 
 /**
+ * `newId()` 生成的就是这个形状。本进程发出的每条请求都用它作 `msgId`
+ * （`createMessage` 的缺省值）。
+ */
+const HUB_MSG_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * 一条 `notify` 是给人的通知，还是一轮里的过程行。
+ *
+ * 过程行由节点在每个工具开始或失败时自动发出（`@qianmo/resident` 的
+ * `turnStepDedupKey`），不是 agent 的决定。§4.1⑤ 规定只有 agent 显式调用
+ * `qianmo_notify` 才打扰人，所以过程行在这里归为 `step`。
+ *
+ * 判据要同时满足三条，任何一条不成立都按给人的通知处理：
+ *
+ * 1. `kind === 'task'`。过程行固定是这个 kind，所以 agent 发的 `kind=watch`
+ *    告警无论如何都不会被归为过程行；
+ * 2. `dedupKey` 能被 {@link parseTurnStepDedupKey} 解析。格式只定义在常驻
+ *    包里那一处；
+ * 3. 解析出的 message id 是本进程格式的 id。过程行的 key 以触发这一轮的那条
+ *    请求的 `msgId` 开头，而那条请求就是本进程发的。
+ *
+ * 出错时偏向多打一行，而不是漏掉一条告警：agent 自己选的 `dedupKey`
+ * （例如 `disk:/`）不满足第 2、3 条，所以仍然会给人看。
+ */
+export function classifyWatchNotify(
+  payload: NotifyPayload,
+): 'notification' | 'step' {
+  if (payload.kind !== 'task' || payload.dedupKey === undefined) {
+    return 'notification'
+  }
+  const step = parseTurnStepDedupKey(payload.dedupKey)
+  if (step === undefined || !HUB_MSG_ID_PATTERN.test(step.networkMsgId)) {
+    return 'notification'
+  }
+  return 'step'
+}
+
+/**
  * 读作业文件。
  *
  * 校验一律在这里，而不是等到 fire 的时候——一个作业写一次要跑一周，缺陷若只在
@@ -230,10 +287,12 @@ function detailOf(
 }
 
 /**
- * 把一次 notify 落到审计链与 stdout。
+ * 把一次 notify 落到审计链，是给人的通知时还要打到 stdout。
  *
- * stdout 那一半不是调试残留：`qm watch` 现在就是值守场景唯一的人机界面，控制台
- * 的通知页还没做（见 §5 遗留）。审计链那一半才是留档的依据。
+ * stdout 不是调试输出。控制台的通知页还没做（见 §5 遗留），所以 `qm watch` 的
+ * stdout 目前是值守场景唯一的人机界面，**只有给人的通知才能出现在这里**。过程行
+ * 只进审计链，记为另一个 kind（`watch_step_received`），这样
+ * `watch_notify_received` 的条数就等于「打扰了人几次」（console.md §10.2）。
  */
 function recordNotify(
   trail: AuditTrail,
@@ -242,16 +301,19 @@ function recordNotify(
 ): void {
   const payload = message.payload
   if (!isNotifyPayload(payload)) return
-  const line = `[notify] ${new Date(payload.observedAt).toISOString()} ${payload.severity} ${message.contextId ?? '-'} ${payload.summary}`
-  process.stdout.write(`${line}\n`)
-  if (payload.detail !== undefined) {
-    process.stdout.write(`         ${payload.detail}\n`)
+  const toPerson = classifyWatchNotify(payload) === 'notification'
+  if (toPerson) {
+    const line = `[notify] ${new Date(payload.observedAt).toISOString()} ${payload.severity} ${message.contextId ?? '-'} ${payload.summary}`
+    process.stdout.write(`${line}\n`)
+    if (payload.detail !== undefined) {
+      process.stdout.write(`         ${payload.detail}\n`)
+    }
   }
   try {
     trail.append({
       at: Date.now(),
       source: AuditSource.Scheduler,
-      kind: 'watch_notify_received',
+      kind: toPerson ? 'watch_notify_received' : 'watch_step_received',
       outcome: 'ok',
       node,
       peer: message.from,
@@ -269,6 +331,67 @@ function recordNotify(
     })
   } catch {
     // 与其他几个 sink 同一条纪律：日志本写不动不该把值守作业停掉。
+  }
+}
+
+/**
+ * 一个作业跑完了：节点回的 `task.result`，或它拒收时回的 `error`。
+ *
+ * 只写审计链，不打 stdout。§4.1⑤ 说结果「进审计链」，但不会通知人。正文不写
+ * 进审计链，只记字节数：审计链按条 fsync，也不是存放模型输出的地方。节点那一侧
+ * 的会话记录里有全文。
+ */
+function recordResult(
+  trail: AuditTrail,
+  node: string,
+  message: QianmoMessage,
+): void {
+  const payload = message.payload
+  let detail: Record<string, string | number | boolean>
+  let code: string | undefined
+  if (message.type === MessageType.TaskResult && isTaskResultPayload(payload)) {
+    code = payload.outcome === 'failed' ? payload.code : undefined
+    detail = detailOf({
+      contextId: message.contextId,
+      result: payload.outcome,
+      contentBytes:
+        payload.outcome === 'completed'
+          ? Buffer.byteLength(payload.content, 'utf8')
+          : undefined,
+      reason: payload.outcome === 'failed' ? payload.reason : undefined,
+      redelivered: payload.redelivered === true,
+    })
+  } else if (message.type === MessageType.Error) {
+    const record =
+      typeof payload === 'object' && payload !== null
+        ? (payload as Record<string, unknown>)
+        : {}
+    code = typeof record['code'] === 'string' ? record['code'] : undefined
+    detail = detailOf({
+      contextId: message.contextId,
+      result: 'error',
+      reason:
+        typeof record['reason'] === 'string' ? record['reason'] : undefined,
+    })
+  } else {
+    return
+  }
+  try {
+    trail.append({
+      at: Date.now(),
+      source: AuditSource.Scheduler,
+      kind: 'watch_result_received',
+      outcome: 'ok',
+      node,
+      peer: message.from,
+      taskId: message.taskId,
+      msgId: message.msgId,
+      traceId: message.traceId,
+      ...(code === undefined ? {} : { code }),
+      detail,
+    })
+  } catch {
+    // 同上。
   }
 }
 
@@ -299,6 +422,11 @@ export async function runWatch(args: readonly string[]): Promise<void> {
         onMessage: message => {
           if (message.type === MessageType.Notify) {
             recordNotify(trail, hub.node, message)
+          } else if (
+            message.type === MessageType.TaskResult ||
+            message.type === MessageType.Error
+          ) {
+            recordResult(trail, hub.node, message)
           }
         },
       })
