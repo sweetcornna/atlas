@@ -24,14 +24,33 @@
  *
  * 撤了之后如果 register 仍然失败，这条地址会短暂地不在表上。这是可以接受的：下一次
  * 续租周期 `heartbeat` 会返回 null，走的就是整条重登记那一支，自己会长回来。
+ *
+ * ## 公钥：与端点同一个毛病，同一个治法
+ *
+ * 2026-09-26 的现场：控制台带 `--anchors` 时只从名册取节点公钥，而这里的登记从来不带
+ * 公钥——审计页对每个节点都报「名册没有节点的公钥」。手工逐条补上之后，一次租约过期的
+ * 重登记又把它抹掉：`register()` 是**整条声明**，缺省即清空。所以公钥要跟着声明走：
+ *
+ * - 声明了公钥，表上那条没挂（或挂着别的）→ 整条重登记，报 `rekeyed`；
+ * - 没声明公钥 → 与加这个字段之前**完全一样**：续租就是心跳，表上已有的公钥（别人
+ *   发布的）原样留着。
+ *
+ * 换钥（表上挂着**另一把**）要先撤再登记，而且要**整批先撤**：`register()` 拒绝同一节点
+ * 的两条活着的登记发布两把不同的公钥（节点级公钥，protocol.md §10.1），一个节点的第一条
+ * 换上新钥时，第二条还挂着旧钥，逐条来就会撞上。
  */
 
 import { AgentStatus, type InMemoryRegistry } from '@qianmo/registry'
 
-/** 一条登记：地址 → 该节点的入站端点。 */
+/** 一条登记：地址 → 该节点的入站端点（与该节点的公钥）。 */
 export interface Registration {
   readonly address: string
   readonly endpoint: string
+  /**
+   * 该地址所属**节点**的公钥（base64url Ed25519）。不给 = 不替这条声明公钥，
+   * 表上已有的原样留着——与加这个字段之前一致。
+   */
+  readonly publicKey?: string
 }
 
 /** 这一轮对某条地址实际做了什么。调用方据此决定要不要出声。 */
@@ -45,6 +64,16 @@ export type AnnounceOutcome =
       readonly kind: 'moved'
       readonly address: string
       readonly from: string
+      readonly to: string
+    }
+  /**
+   * 端点没变、公钥变了（含「表上那条没挂公钥」）：整条重登记。**这一条也值得打印。**
+   * `from` 缺席 = 表上原来没有公钥。
+   */
+  | {
+      readonly kind: 'rekeyed'
+      readonly address: string
+      readonly from?: string
       readonly to: string
     }
 
@@ -67,30 +96,55 @@ export function announceRegistrations(
   registry: AnnounceTarget,
   registrations: readonly Registration[],
 ): AnnounceOutcome[] {
-  const outcomes: AnnounceOutcome[] = []
-  for (const { address, endpoint } of registrations) {
-    const live = registry.heartbeat(address)
-    let from: string | undefined
-    if (live !== null) {
-      if (live.endpoint === endpoint) {
-        outcomes.push({ kind: 'renewed', address })
-        continue
-      }
-      from = live.endpoint
+  const live = registrations.map(({ address }) => registry.heartbeat(address))
+  // 整批先撤挂着**另一把**公钥的那几条（头注「换钥」）。没挂公钥的不撤：原地重登记
+  // 就够了，还能保住它的 registeredAt。
+  registrations.forEach(({ address, publicKey }, index) => {
+    const held = live[index]?.publicKey
+    if (publicKey !== undefined && held !== undefined && held !== publicKey) {
       registry.deregister(address)
     }
+  })
+
+  const outcomes: AnnounceOutcome[] = []
+  registrations.forEach(({ address, endpoint, publicKey }, index) => {
+    const current = live[index] ?? null
+    const moved = current !== null && current.endpoint !== endpoint
+    const rekeyed =
+      current !== null &&
+      !moved &&
+      publicKey !== undefined &&
+      current.publicKey !== publicKey
+    if (current !== null && !moved && !rekeyed) {
+      outcomes.push({ kind: 'renewed', address })
+      return
+    }
+    if (moved) registry.deregister(address)
     const result = registry.register(address, endpoint, {
       capabilities: ['task.request'],
       status: AgentStatus.Online,
+      ...(publicKey === undefined ? {} : { publicKey }),
     })
     if (!result.ok) {
       throw new Error(`注册失败：${address} ${result.code} ${result.message}`)
     }
-    outcomes.push(
-      from === undefined
-        ? { kind: 'registered', address }
-        : { kind: 'moved', address, from, to: endpoint },
-    )
-  }
+    if (current === null) {
+      outcomes.push({ kind: 'registered', address })
+    } else if (moved) {
+      outcomes.push({
+        kind: 'moved',
+        address,
+        from: current.endpoint,
+        to: endpoint,
+      })
+    } else if (publicKey !== undefined) {
+      outcomes.push({
+        kind: 'rekeyed',
+        address,
+        ...(current.publicKey === undefined ? {} : { from: current.publicKey }),
+        to: publicKey,
+      })
+    }
+  })
   return outcomes
 }

@@ -284,13 +284,41 @@ if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
   exit 0
 fi
 
-# 注册中心那一块。从 run_host 里提出来只为让 --only 的取舍读起来是一行，
-# 内容一字未改。
+# 每条地址要随登记一并发布的节点公钥，下标与 BETA_PEER_ADDR 对齐；空 = 不带
+# （与加公钥之前的行为一致）。由 resolve_peer_keys 填。
+BETA_PEER_KEY=()
+
+# 定下每个节点发布进名册的公钥，逐节点说一句出处或缺口（来源规则见 common.sh 的
+# beta_resolve_node_key）。
+#
+# 为什么是注册中心带公钥、而不是事后手工补（2026-09-26 D9b）：控制台带 --anchors 时只从
+# 名册取节点公钥；手工补上的那一份挂在条目上，条目一旦因租约过期被重新登记就丢了——
+# 而 p81-registry 的登记本来就是整条声明，缺省即清空。
+resolve_peer_keys() {
+  local node i
+  BETA_PEER_KEY=()
+  for node in $(beta_peer_nodes); do
+    if beta_resolve_node_key "$node"; then
+      beta_ok "名册公钥：${node} → ${BETA_NODE_KEY}（${BETA_NODE_KEY_SOURCE}）"
+    else
+      beta_warn "名册不带 ${node} 的公钥：${BETA_NODE_KEY_GAP}。
+登记照旧（与加公钥之前一样）；但控制台带 --anchors 时，审计页会对它报「名册没有节点 ${node} 的公钥」。"
+    fi
+    i=0
+    while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
+      if [ "${BETA_PEER_NODE[$i]}" = "$node" ]; then BETA_PEER_KEY[i]="$BETA_NODE_KEY"; fi
+      i=$((i + 1))
+    done
+  done
+}
+
+# 注册中心那一块。从 run_host 里提出来只为让 --only 的取舍读起来是一行。
 start_registry() {
   beta_head "② 注册中心（$BETA_PEER_COUNT 条登记）"
+  resolve_peer_keys
   assert_registry_matches_peers
   local ready="$BETA_RUN_DIR/registry-ready.json"
-  local args i
+  local args i key keyed=' '
   args=(
     bun run "$(demo_entry p81-registry)"
     --ready "$ready"
@@ -301,6 +329,18 @@ start_registry() {
   i=0
   while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
     args+=(--register "${BETA_PEER_ADDR[$i]}=${BETA_PEER_EP[$i]}")
+    # 公钥按节点给一次：它是节点的事实（protocol.md §10.1），p81-registry 把它挂到该节点
+    # 的每一条登记上。公钥不是凭据，上命令行没有顾虑。
+    key="${BETA_PEER_KEY[$i]:-}"
+    case "$keyed" in
+      *" ${BETA_PEER_NODE[$i]} "*) ;;
+      *)
+        if [ -n "$key" ]; then
+          args+=(--public-key "${BETA_PEER_NODE[$i]}=${key}")
+          keyed="${keyed}${BETA_PEER_NODE[$i]} "
+        fi
+        ;;
+    esac
     i=$((i + 1))
   done
   if ! beta_running "$BETA_REGISTRY_PROC"; then rm -f "$ready"; fi
@@ -907,6 +947,7 @@ assert_registry_matches_peers() {
   fi
 
   if beta_running "$BETA_REGISTRY_PROC"; then
+    local want_key got_key
     i=0
     while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
       addr="${BETA_PEER_ADDR[$i]}"
@@ -914,6 +955,17 @@ assert_registry_matches_peers() {
       if [ -n "$got" ] && [ "$got" != "${BETA_PEER_EP[$i]}" ]; then
         beta_warn "在跑的注册中心把 $addr 解析成 ${got}，而 peers.conf 说是 ${BETA_PEER_EP[$i]}"
         live_bad=1
+      fi
+      # 公钥同一个道理：在跑的那一份是用**当初**那张命令行起的（可能根本没带公钥），
+      # 幂等起停不会重起它，于是这一趟算出来的公钥永远进不了名册。只在这一趟确实有
+      # 公钥要发布时才比——没有来源的节点照旧不带，不因此重起。
+      want_key="${BETA_PEER_KEY[$i]:-}"
+      if [ -n "$got" ] && [ -n "$want_key" ]; then
+        got_key="$(beta_live_public_key "$addr")"
+        if [ "$got_key" != "$want_key" ]; then
+          beta_warn "在跑的注册中心里 $addr 的公钥是 ${got_key:-（没有）}，而这一趟要发布的是 ${want_key}"
+          live_bad=1
+        fi
       fi
       i=$((i + 1))
     done
@@ -938,7 +990,7 @@ assert_registry_matches_peers() {
   fi
 
   if [ "$live_bad" = '1' ]; then
-    beta_warn '在跑的注册中心，它的表在**内存**里 —— 挪开落盘表管不着它，必须重起才能换上新端点。'
+    beta_warn '在跑的注册中心，它的表在**内存**里 —— 挪开落盘表管不着它，必须重起才能换上新端点 / 公钥。'
     beta_stop_one "$BETA_REGISTRY_PROC"
     rm -f "$BETA_RUN_DIR/registry-ready.json"
     beta_warn '已停止注册中心，下面会用 peers.conf 的端点重新起一份。

@@ -420,6 +420,10 @@ beta_write_peers_template() {
     printf '#          witness-port=审计见证端点的端口（可选，常用 38640）。给了，隧道同一条会话里\n'
     printf '#                     多一个 -R 127.0.0.1:<口>:127.0.0.1:<口>，节点经它把锚点写到 H；\n'
     printf '#                     节点侧 authorized_keys 那一行要带 permitlisten="127.0.0.1:<口>"。\n'
+    printf '#          public-key=该节点的公钥（可选，43 位 base64url）。给了，注册中心登记它的每条地址时\n'
+    printf '#                     一并发布这把公钥——控制台带 --anchors 时只从名册取节点公钥。取值就是节点腿\n'
+    printf '#                     末尾「公钥」那一行。不给就照旧不带公钥，H 腿会 WARN 一句。\n'
+    printf '#                     跑在 H 自己身上的节点（没有坐标行）不用写：公钥直接从本机身份文件读。\n'
     printf '#      值里不能有空白（本行按空白分词）。\n'
     printf '#\n'
     printf '# ③ local-server 行（**可选**，全表只许一条）：local-server <机器名>\n'
@@ -480,6 +484,8 @@ BETA_SSH_TRAIL=()
 BETA_SSH_KEYFILE=()
 BETA_SSH_SERVER=()
 BETA_SSH_WITNESS=()
+# 坐标行的 public-key=，空 = 没写（名册上不带公钥，与加这个键之前一致）。
+BETA_SSH_PUBKEY=()
 # 本机的机器名，peers.conf 的 `local-server <name>` 行给的。
 #
 # 为什么需要它：跑在 H 自己身上的节点没有坐标行（没有隧道要搭），归属只能从端点推，
@@ -610,7 +616,7 @@ beta_parse_node_line() {
     beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
-  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 witness_port='' kv key value
+  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 witness_port='' public_key='' kv key value
   # 按空白分词：所以值里不能有空格。这条限制写在模板注释里，且真实取值（用户名、
   # 主机、端口、绝对路径）本来就不该有空格。
   for kv in $rest; do
@@ -630,7 +636,8 @@ beta_parse_node_line() {
       key) keyfile="$value" ;;
       server) server="$value"; server_given=1 ;;
       witness-port) witness_port="$value" ;;
-      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server/witness-port）" ;;
+      public-key) public_key="$value" ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server/witness-port/public-key）" ;;
     esac
   done
   [ -n "$user" ] || beta_die "${where}：缺 user="
@@ -644,6 +651,11 @@ beta_parse_node_line() {
   beta_assert_port "$local_port" 'local-port' "$where"
   beta_assert_port "$remote_port" 'remote-port' "$where"
   if [ -n "$witness_port" ]; then beta_assert_port "$witness_port" 'witness-port' "$where"; fi
+  # 形状在这里就卡死：注册中心对坏形状答 400，p81-registry 就在启动时抛错退出——
+  # 那时报出来的是「注册中心起不来」，而不是这一行写错了。
+  if [ -n "$public_key" ] && ! beta_public_key_ok "$public_key"; then
+    beta_die "${where}：public-key 不是 43 位 base64url 的 Ed25519 公钥：${public_key}"
+  fi
   case "$BETA_TUNNEL_PORTS" in
     *" $local_port "*) beta_die "${where}：local-port=$local_port 已经被另一个节点占了" ;;
   esac
@@ -675,6 +687,7 @@ beta_parse_node_line() {
   BETA_SSH_KEYFILE[BETA_SSH_COUNT]="$keyfile"
   BETA_SSH_SERVER[BETA_SSH_COUNT]="$server"
   BETA_SSH_WITNESS[BETA_SSH_COUNT]="$witness_port"
+  BETA_SSH_PUBKEY[BETA_SSH_COUNT]="$public_key"
   BETA_SSH_COUNT=$((BETA_SSH_COUNT + 1))
   BETA_TUNNEL_PORTS="$BETA_TUNNEL_PORTS$local_port "
 }
@@ -696,6 +709,7 @@ beta_load_peers() {
   BETA_SSH_KEYFILE=()
   BETA_SSH_SERVER=()
   BETA_SSH_WITNESS=()
+  BETA_SSH_PUBKEY=()
   BETA_LOCAL_SERVER=''
   BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
@@ -790,6 +804,114 @@ beta_peer_endpoint() {
     fi
     i=$((i + 1))
   done
+  return 1
+}
+
+# ── 节点公钥：名册上那个 publicKey 从哪来 ────────────────────────────────────
+#
+# 控制台带 `--anchors` 时**只从名册取节点公钥**（console.ts 的 witnessPublicKeyOf，不从锚点学）。
+# 2026-09-26 的现场：p81-registry 的 `--register` 从来不带公钥，审计页对三个节点全报「名册没有
+# 节点 <名字> 的公钥」；手工逐条补上之后，条目一旦因租约过期被重新登记，公钥又丢了。
+#
+# 于是 H 腿自己给 p81-registry 带上公钥。来源只有两个，**都不猜**：
+#   ① 有 node 坐标行 → 坐标行的 `public-key=`。远端节点的身份文件在它自己的机器上，H 读不到，
+#      只能由人把节点腿末尾打印的那一行抄过来（与 `--trust` / 见证端点 `--key` 同一个事实）。
+#   ② 没有坐标行、端点是回环 → 节点就跑在本机（beta_peer_server 同一条推理），读本机内测根下
+#      它的身份文件。首次创建后永不替换（nodeIdentity.ts），所以它就是那个节点此刻的公钥。
+# 其余情形（没写 `public-key=`、直连的远端节点）一律**不带**，与加这一节之前完全一样，由调用方
+# WARN 一句。
+
+# beta_public_key_ok <值> —— 是不是一把 base64url 的 Ed25519 公钥（43 个字符，无填充）。
+# 字符逐个列出，不写 `[A-Za-z0-9]`：理由见 beta_assert_node_name 头注（范围随 locale 变）。
+# 判据与 @qianmo/protocol 的 PUBLIC_KEY_PATTERN 一致；注册中心收的就是那个形状。
+beta_public_key_ok() {
+  local value="$1"
+  [ "${#value}" -eq 43 ] || return 1
+  case "$value" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# 节点身份文件：`occConfigPath('qianmo','identity','<node>.json')`，配置根是 beta-up 给它的那个。
+beta_node_identity_file() {
+  printf '%s/%s/config/qianmo/identity/%s.json' "$BETA_NODES_DIR" "$1" "$1"
+}
+
+# beta_identity_public_key <node> —— 本机身份文件里的公钥；没有 / 读不出就返回 1。
+#
+# 只取 `publicKey`，**私钥那一行一个字节都不进变量**。依赖的形状是我们自己的序列化器
+# （nodeIdentity.ts 写的是 `JSON.stringify(doc, null, 2)`，每个字段独占一行），与
+# beta_state_pairs 读注册表落盘同一条理由。`node` 字段也要对得上：一份别的节点的身份文件
+# 被拷错了地方，比没有更糟。
+beta_identity_public_key() {
+  local node="$1" file key
+  file="$(beta_node_identity_file "$node")"
+  [ -f "$file" ] || return 1
+  key="$(awk -v want="$node" '
+    /"node"[[:space:]]*:/ {
+      v = $0
+      sub(/^.*"node"[[:space:]]*:[[:space:]]*"/, "", v)
+      sub(/".*$/, "", v)
+      node = v
+    }
+    /"publicKey"[[:space:]]*:/ {
+      v = $0
+      sub(/^.*"publicKey"[[:space:]]*:[[:space:]]*"/, "", v)
+      sub(/".*$/, "", v)
+      key = v
+    }
+    END { if (node == want) print key }
+  ' "$file" 2>/dev/null || true)"
+  beta_public_key_ok "$key" || return 1
+  printf '%s\n' "$key"
+}
+
+# beta_resolve_node_key <node> —— 定下该节点要发布进名册的公钥。
+#
+# 结果放全局变量而不是打印：调用方要同时拿到值、出处和「为什么没有」三样，且这里的
+# beta_die 必须真的结束脚本（放进 `$(...)` 就只结束一个子 shell）。
+#   BETA_NODE_KEY         公钥；空 = 没有来源
+#   BETA_NODE_KEY_SOURCE  出处，给 OK 那一行用
+#   BETA_NODE_KEY_GAP     没有来源时的原因与补法，给 WARN 那一行用
+BETA_NODE_KEY=''
+BETA_NODE_KEY_SOURCE=''
+BETA_NODE_KEY_GAP=''
+beta_resolve_node_key() {
+  local node="$1" index ep host key
+  BETA_NODE_KEY=''
+  BETA_NODE_KEY_SOURCE=''
+  BETA_NODE_KEY_GAP=''
+  if index="$(beta_ssh_index "$node")"; then
+    key="${BETA_SSH_PUBKEY[$index]}"
+    if [ -n "$key" ]; then
+      BETA_NODE_KEY="$key"
+      BETA_NODE_KEY_SOURCE="${BETA_PEERS_FILE} 的坐标行 public-key="
+      return 0
+    fi
+    BETA_NODE_KEY_GAP="它的 node 坐标行没有 public-key=。补法：在 ${node} 那台机器上跑一次节点腿，
+把末尾「公钥」那一行的值写成坐标行的 public-key=<值>，再跑 H 腿"
+    return 1
+  fi
+  ep="$(beta_peer_endpoint "$node" || true)"
+  host="${ep#*://}"
+  host="${host%%/*}"
+  case "$host" in
+    127.*|localhost|localhost:*|'[::1]'*) ;;
+    *)
+      BETA_NODE_KEY_GAP="它直连（没有 node 坐标行），不跑在本机，H 读不到它的身份文件。
+直连节点目前没有写公钥的地方：按 demo/env/beta/README.md「审计见证」第 ⑥ 步手工发布，
+租约过期被重新登记后要再做一次"
+      return 1
+      ;;
+  esac
+  if key="$(beta_identity_public_key "$node")"; then
+    BETA_NODE_KEY="$key"
+    BETA_NODE_KEY_SOURCE="本机身份文件 $(beta_node_identity_file "$node")"
+    return 0
+  fi
+  BETA_NODE_KEY_GAP="它跑在本机（端点是回环），但 $(beta_node_identity_file "$node") 不存在或读不出公钥
+（节点从没在这个内测根下起过？先跑节点腿，再跑 H 腿）"
   return 1
 }
 
@@ -1630,6 +1752,18 @@ beta_live_endpoint() {
     *) return 0 ;;
   esac
   printf '%s' "$body" | sed -e 's/.*"endpoint":"//' -e 's/".*//'
+}
+
+# beta_live_public_key <地址> —— 问在跑的注册中心：这条登记上挂着哪把公钥。
+# 没有公钥 / 拿不到就打空串。单条 agent 的响应里 publicKey 最多出现一次（没有就整个键缺席）。
+beta_live_public_key() {
+  local body
+  body="$(beta_http_body "$BETA_REGISTRY_URL/v0/agents/$(beta_urlencode_address "$1")")"
+  case "$body" in
+    *'"publicKey":"'*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$body" | sed -e 's/.*"publicKey":"//' -e 's/".*//'
 }
 
 # beta_provisioned_nodes —— 本机 ops/ 下真的铺过链路的节点名，一行一个。

@@ -6,7 +6,13 @@
  *
  *   bun run demo/lib/p81-registry.ts --ready <file> --port 38610 \
  *     --register 'qianmo://node-a/planner=ws://127.0.0.1:38611' \
- *     --register 'qianmo://node-b/reviewer=ws://127.0.0.1:38612'
+ *     --register 'qianmo://node-b/reviewer=ws://127.0.0.1:38612' \
+ *     --public-key 'node-a=<43 位 base64url 公钥>'
+ *
+ * `--public-key <节点>=<公钥>` 可选、可给多次，按**节点**给一次（公钥是节点的事实，
+ * protocol.md §10.1），挂到该节点的每一条 `--register` 上，随每一次登记 / 重登记一并
+ * 发布。控制台带 `--anchors` 时只从名册取节点公钥——不给它，审计页对该节点报「名册没有
+ * 节点的公钥」（2026-09-26 D9b）。不给的节点与加这个参数之前完全一样。
  *
  * 与 `p41-registry.ts` 的分工：那个是 AC-2 跑批用的，地址从 `ac2-env.ts` 读、**只登记
  * 一个**（沙箱里的那个目标节点）。演示环境要的是「两个节点互相能按名找到对方」，
@@ -24,10 +30,12 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
+import { parseAddress } from '@qianmo/protocol'
 import {
   DEFAULT_RENEW_INTERVAL_MS,
   FileRegistryStore,
   InMemoryRegistry,
+  isValidPublicKey,
   startRegistryServer,
 } from '@qianmo/registry'
 import { arg, intArg } from './cli-args.js'
@@ -61,13 +69,70 @@ function collectRegistrations(argv: readonly string[]): Registration[] {
   return out
 }
 
+/**
+ * 收集 `--public-key <节点>=<公钥>` 并挂到对应节点的每一条登记上。
+ *
+ * 三种写错当场拒绝，而不是悄悄少发一把：形状不对（注册中心会逐条 400）、同一节点给了
+ * 两把不同的、给了一个没有任何 `--register` 的节点（多半是节点名笔误——静默忽略的
+ * 结果就是审计页照旧报缺公钥，而命令行看起来是对的）。
+ */
+function attachPublicKeys(
+  argv: readonly string[],
+  registrations: readonly Registration[],
+): Registration[] {
+  const keys = new Map<string, string>()
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--public-key') continue
+    const raw = argv[i + 1]
+    if (raw === undefined) throw new Error('--public-key 缺少取值')
+    const separator = raw.indexOf('=')
+    if (separator <= 0) {
+      throw new Error(`--public-key 必须是 <节点>=<公钥>，收到 ${raw}`)
+    }
+    const node = raw.slice(0, separator)
+    const key = raw.slice(separator + 1)
+    if (!isValidPublicKey(key)) {
+      throw new Error(
+        `--public-key ${node} 的值不是 base64url 的 Ed25519 公钥：${key}`,
+      )
+    }
+    const earlier = keys.get(node)
+    if (earlier !== undefined && earlier !== key) {
+      throw new Error(`--public-key 给了节点 ${node} 两把不同的公钥`)
+    }
+    keys.set(node, key)
+    i++
+  }
+  const nodes = new Set<string>()
+  const out = registrations.map(registration => {
+    const node = parseAddress(registration.address)?.node
+    if (node === undefined) return registration
+    nodes.add(node)
+    const publicKey = keys.get(node)
+    return publicKey === undefined
+      ? registration
+      : { ...registration, publicKey }
+  })
+  for (const node of keys.keys()) {
+    if (!nodes.has(node)) {
+      throw new Error(
+        `--public-key 给了节点 ${node}，但没有任何 --register 属于它`,
+      )
+    }
+  }
+  return out
+}
+
 const readyFile = arg('ready')
 if (readyFile === undefined || !isAbsolute(readyFile)) {
   throw new Error(
     '用法：--ready <绝对路径> --port <port> --register <a>=<ep> ...',
   )
 }
-const registrations = collectRegistrations(process.argv)
+const registrations = attachPublicKeys(
+  process.argv,
+  collectRegistrations(process.argv),
+)
 if (registrations.length === 0) {
   throw new Error('至少要有一条 --register <address>=<endpoint>')
 }
@@ -95,10 +160,18 @@ const announce = (): void => {
   for (const outcome of announceRegistrations(registry, registrations)) {
     // 端点搬家必须出声：命令行说的和名册答的曾经不一致过整整一轮部署，
     // 而那次没有任何一行输出（见 p81-announce-core.ts 的头注）。
-    if (outcome.kind !== 'moved') continue
-    process.stderr.write(
-      `registry 端点已更新：${outcome.address} ${outcome.from} → ${outcome.to}\n`,
-    )
+    if (outcome.kind === 'moved') {
+      process.stderr.write(
+        `registry 端点已更新：${outcome.address} ${outcome.from} → ${outcome.to}\n`,
+      )
+    }
+    // 公钥同理。每一轮都出现这一行，说明有别的登记方在不带公钥地整条重登记同一个
+    // 地址（比如控制台页面上又注册了一遍），两边在来回覆盖。
+    if (outcome.kind === 'rekeyed') {
+      process.stderr.write(
+        `registry 公钥已更新：${outcome.address} ${outcome.from ?? '（无）'} → ${outcome.to}\n`,
+      )
+    }
   }
 }
 
@@ -136,8 +209,10 @@ writeFileSync(
 process.stdout.write(
   `registry 就绪：${server.url}（${registrations.length} 条登记）\n`,
 )
-for (const { address, endpoint } of registrations) {
-  process.stdout.write(`  ${address} → ${endpoint}\n`)
+for (const { address, endpoint, publicKey } of registrations) {
+  process.stdout.write(
+    `  ${address} → ${endpoint}${publicKey === undefined ? '' : `（公钥 ${publicKey}）`}\n`,
+  )
 }
 
 let stopping = false

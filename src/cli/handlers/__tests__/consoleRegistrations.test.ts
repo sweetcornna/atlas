@@ -234,6 +234,51 @@ describe('ConsoleRegistrations', () => {
     ledger.stop()
   })
 
+  /**
+   * 续租是整条重新注册，而注册中心那边「缺省即清空」：续租声明里一旦少了公钥，
+   * 每 20 s 就把页面上发布的公钥抹掉一次。控制台带 `--anchors` 时只从名册取节点公钥
+   * （2026-09-26 D9b），所以这一格丢了，审计页就对该节点报「名册没有节点的公钥」。
+   */
+  test('keeps the published public key through renewals, a registry restart and a console rebuild', async () => {
+    const KEY = 'Inyg1lW5K3Tsc1VrzZ5-ifdAyfXrFzzBirnDnVsVsvQ'
+    const h = harness()
+    const path = freshLedgerPath()
+    const timer = manualScheduler()
+    const first = new ConsoleRegistrations({
+      path,
+      registry: h.port,
+      schedule: timer.schedule,
+      now: () => h.clock.now(),
+    })
+    await started(first, timer)
+    const registered = await first.port.register({
+      address: PLANNER,
+      endpoint: ENDPOINT,
+      publicKey: KEY,
+    })
+    expect(registered.ok).toBe(true)
+
+    await timer.fire(h.clock)
+    expect(h.registry.resolve(PLANNER)?.publicKey).toBe(KEY)
+    h.restart()
+    await timer.fire(h.clock)
+    expect(h.registry.resolve(PLANNER)?.publicKey).toBe(KEY)
+    first.stop()
+
+    // 控制台自己重建：公钥得从登记簿里读回来，而不是只活在上一个进程的内存里。
+    h.restart()
+    const rebuiltTimer = manualScheduler()
+    const rebuilt = new ConsoleRegistrations({
+      path,
+      registry: h.port,
+      schedule: rebuiltTimer.schedule,
+      now: () => h.clock.now(),
+    })
+    await started(rebuilt, rebuiltTimer)
+    expect(h.registry.resolve(PLANNER)?.publicKey).toBe(KEY)
+    rebuilt.stop()
+  })
+
   test('brings entries back when the console itself is rebuilt from the same ledger', async () => {
     const h = harness()
     const path = freshLedgerPath()
