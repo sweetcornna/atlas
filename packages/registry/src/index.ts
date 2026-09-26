@@ -13,6 +13,7 @@ export { ManualClock, systemClock, type Clock } from './clock.js'
 
 export {
   AgentStatus,
+  DEFAULT_RENEW_INTERVAL_MS,
   DEFAULT_TTL_MS,
   InMemoryRegistry,
   MAX_CAPABILITIES,
@@ -22,6 +23,7 @@ export {
   isSignedRevocationListShape,
   isValidEndpoint,
   isValidPublicKey,
+  renewIntervalFor,
   type AgentRecord,
   type DeclaredStatus,
   type RegisterInput,
