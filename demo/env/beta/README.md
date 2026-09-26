@@ -425,6 +425,38 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 . demo/env/beta/common.sh; beta_endpoint_live 127.0.0.1 38639 || echo '真握手 红（对的）'
 ```
 
+## 控制台 HTTPS：不占 443 的形态（`ops/console-https.sh`）
+
+§2.5 的原方案是「H 上的 host 级 nginx 加一个 server 块」。当 H 上的 443 与 nginx 属于别的业务、
+不归本仓库管时，用这一套：控制台照旧只听回环，对外那一层由
+[`ops/console-tls-front.ts`](./ops/console-tls-front.ts)（一个只做转发的 Bun 小程序）在一个
+非 443 端口上做 TLS 终结，证书走 Let's Encrypt 的 DNS-01（HTTP-01 要 80、TLS-ALPN-01 要 443，
+两个都不是我们的）。**控制台一行代码不改。**
+
+```bash
+# 前置：<根>/secrets/cf-dns.env（0600，一行 CF_DNS_API_TOKEN=…）；lego 可执行文件（默认 ~/.local/lego/lego）
+demo/env/beta/ops/console-https.sh install --domain <域名> --listen 0.0.0.0:38443 --upstream http://127.0.0.1:38621
+<根>/ops/console-https.sh issue --staging   # 先对 staging 走通整条 DNS-01，独立目录，不碰正式证书
+<根>/ops/console-https.sh issue             # 正式证书
+systemctl --user start qianmo-tls-front.service
+```
+
+- **§2.5 的三条强制配置落在前置程序里，由用例钉住**：日志一行只有「时间、对端、方法、路径、状态、
+  耗时」，没有 query、没有请求头；上游只有命令行上那一项，必须是回环明文、且不能是注册中心的
+  38620；`X-Forwarded-Proto: https` 由前置自己设，客户端送来的转发类头一律先删。逐条理由见前置
+  程序的文件头。
+- **install 只能从交付树那一份跑**（它要读 `*.in` 模板）；装好的那一份只给续期 timer 与部署钩子用。
+  换上游 / 换端口 = 从交付树重跑 install，再 `systemctl --user restart qianmo-tls-front.service`。
+- **DNS 凭据只进 lego 那一个进程的环境**，不进 argv、不落第二个文件。那枚 token 能改整个 zone，
+  「只动 `_acme-challenge.<域名>` 那一条 TXT」是 lego 的行为，不是 token 的边界——登记进运维单页。
+- **续期**：`qianmo-console-cert.timer` 每天一次（随机错开一小时，关机错过开机补）；到期前续签成功
+  才调部署钩子重启前置。前置只在启动时读证书。
+- **存活判据**：`curl -s -o /dev/null -w '%{http_code}' https://<域名>:<端口>/v0/health` 要 200，
+  且不加 `-k`。单元状态不算数（与上面那两个单元同一条理由）。
+- 两条现场教训已写进脚本并有用例：lego 预查留下的 NXDOMAIN 会被本机解析器负缓存，所以只查权威 NS
+  （`--dns.propagation.disable-rns`）；URL 会把显式写的协议默认端口（`:80`）规范化成空串，所以上游端口
+  从原文里取。
+
 ## 变量表
 
 一律用环境变量覆盖，脚本里没有任何具体名字、机器名、IP、域名、密钥（beta-env.md 文首）。
@@ -574,6 +606,8 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 
 **② 不配反向代理。**TLS 终结、443、access log 关 query string、upstream allowlist（只有两项）、
 粗粒度限流——全部是 H 上 root 的活（§2.5 / §9.6），不在 shell 脚本的范围里。
+H 上的 443 不归我们时，用上面「控制台 HTTPS：不占 443 的形态」那一套；它独立于本脚本，
+`beta-up.sh` 不调它。
 **开测前置检查「从校园网真拨一次 H 的 443」也不在这里**，那是人的动作（§10 包① DoD③）。
 
 **③ 不做审计链镜像的 rsync —— 因为那把 key 根本起不了 rsync。**
