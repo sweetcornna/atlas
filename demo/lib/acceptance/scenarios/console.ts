@@ -32,8 +32,10 @@
  * 中心没有门」写成一条看起来像功能的绿色。
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { LIMITS } from '@qianmo/protocol'
-import { DEFAULT_TTL_MS } from '@qianmo/registry'
+import { DEFAULT_TTL_MS, REGISTRY_SNAPSHOT_VERSION } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
 import { Checks } from '../checks.js'
 import { ACCEPTANCE_PSK } from '../local/driver.js'
@@ -509,6 +511,112 @@ export const consoleScenarios: readonly Scenario[] = [
         )
         .eq(agentsOf(afterExpiry.json).length, 0, '停止心跳过了 TTL 之后的条数')
         .done('租约按 TTL 过期、按心跳续期')
+    },
+  },
+
+  {
+    id: 'console/registry-lease-custom-ttl',
+    dimension: 'console',
+    title:
+      '注册中心租约 1 小时、上次心跳已超出默认 90 s：控制台按注册中心的租约判在线',
+    expected:
+      "该行 data-health='live'；名册抬头与上限区都报「1 小时」（data-ttl-ms=3600000），不报出厂默认",
+    requires: ['spawn-console'],
+    timeoutMs: 120_000,
+    async run(ctx) {
+      // 验证报告 2026-09-08 C-1 的原样复现：注册中心跑 1 小时租约，控制台曾拿
+      // 自己编译进来的 DEFAULT_TTL_MS 当尺子，于是心跳超过 45 s 判「滞后」、超过
+      // 90 s 判「过期」，而注册中心照样列出、照样路由。
+      //
+      // 「上次心跳在 2 分钟前」靠**预置落盘表**得到，不靠等：注册中心恢复时按当下
+      // TTL 重算 expiresAt（P2.1），与「注册中心重启后读回旧表」是同一条真实路径。
+      // 这个路径与 `local/console.ts` 的 `startRegistry` 在 `persist: true` 时选的
+      // 那个是同一个；两边若分叉，下面「名册里有预置的那条」会红，不会假绿。
+      // 两条腿的注册中心都跑在 runner 进程里，所以文件写在 runner 本地。
+      const leaseMs = 3_600_000
+      const beat = Date.now() - (DEFAULT_TTL_MS + 30_000)
+      const statePath = join(ctx.workdir, 'registry-state', 'agents.json')
+      mkdirSync(dirname(statePath), { recursive: true })
+      writeFileSync(
+        statePath,
+        `${JSON.stringify({
+          version: REGISTRY_SNAPSHOT_VERSION,
+          agents: [
+            {
+              address: AGENT_ADDRESS,
+              endpoint: AGENT_ENDPOINT,
+              capabilities: ['task.request'],
+              status: 'online',
+              registeredAt: beat,
+              lastHeartbeatAt: beat,
+            },
+          ],
+        })}\n`,
+      )
+      const registry = await ctx.driver.startRegistry(ctx, {
+        persist: true,
+        ttlMs: leaseMs,
+      })
+      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+        registryUrl: registry.hostUrl,
+      })
+
+      const listed = await http(`${console_.url}/v0/agents`, {
+        token: console_.viewToken,
+      })
+      const roster = await http(`${console_.url}/fragments/roster`, {
+        token: console_.viewToken,
+      })
+      const page = await http(`${console_.url}/`, {
+        token: console_.viewToken,
+      })
+      const sinceBeatMs = Date.now() - beat
+      const row = agentsOf(listed.json).find(a => a.address === AGENT_ADDRESS)
+      const granted =
+        typeof row?.expiresAt === 'number' &&
+        typeof row.lastHeartbeatAt === 'number'
+          ? row.expiresAt - row.lastHeartbeatAt
+          : undefined
+
+      return (
+        new Checks()
+          .note('/v0/agents', `${listed.status} ${listed.body}`)
+          .note('/fragments/roster', `${roster.status} ${roster.body}`)
+          .eq(listed.status, 200, '/v0/agents 状态码')
+          .expect(
+            row !== undefined,
+            '名册里有预置的那条（注册中心从落盘表恢复）',
+            listed.body,
+          )
+          .eq(
+            granted,
+            leaseMs,
+            '注册中心给这条的租约（expiresAt - lastHeartbeatAt）',
+          )
+          // 前提：按出厂默认算，这条早该判「过期」了。
+          .expect(
+            sinceBeatMs >= DEFAULT_TTL_MS,
+            '前提：上次心跳已超出出厂默认租约',
+            sinceBeatMs,
+          )
+          .eq(roster.status, 200, '/fragments/roster 状态码')
+          .contains(roster.body, 'data-health="live"', '名册该行的健康度')
+          .notContains(roster.body, 'data-health="stale"', '名册')
+          .notContains(roster.body, 'data-health="expired"', '名册')
+          .contains(
+            roster.body,
+            '<span class="ttl">租约 1 小时</span>',
+            '名册抬头的租约',
+          )
+          .eq(page.status, 200, '首页状态码')
+          .contains(page.body, 'data-ttl-ms="3600000"', '上限区（总览卡读它）')
+          .contains(
+            page.body,
+            '<span class="k">注册租约</span><span class="num">1 小时</span>',
+            '上限区的注册租约',
+          )
+          .done('控制台的租约判定与显示都以注册中心为准')
+      )
     },
   },
 
