@@ -8,6 +8,11 @@
  * 3. 缺失的静态 import 依赖（跨 chunk 引用目标不存在）
  * 4. npm 那份纯 JS 的 `ws` 被内联进 chunk（在 Bun 下握手必失败），
  *    或者反过来 —— 裸 `import ... from "ws"` 从产物里消失了
+ * 5. 调用了本 chunk 既未声明、也未 import 的懒初始化包装函数
+ *    （`init_*()` / `require_*()`，运行期必抛 ReferenceError）
+ *
+ * 这些都是静态检查；让主入口真的跑完模块初始化的运行期冒烟在
+ * scripts/check-bundle-smoke.ts，`bun run check:bundle` 两个一起跑。
  *
  * 用法：
  *   bun scripts/check-bundle-integrity.ts          # 检查当前 dist/
@@ -120,6 +125,32 @@ const WS_MARKER_THRESHOLD = 3
 // 放行（ws 在 dependencies 里），这里一并认作「留在包外」。
 const WS_BARE_IMPORT_RE = /(?:\bfrom\s*|\bimport\s*|require\(\s*)["']ws["']/
 
+// ─── 懒初始化包装函数必须有绑定 ────────────────────────────────────
+// rolldown 把需要懒初始化的 ESM 模块包进 `__esmMin`，得到 `init_<模块名>()`；
+// CommonJS 模块包进 `__commonJSMin`，得到 `require_<模块名>()`。这些调用是打包
+// 器合成的，不是源码写的；跨 chunk 用到时，调用方 chunk 必须把包装函数 import
+// 进来。
+//
+// rolldown 1.0.2–1.1.1 有个回归（rolldown/rolldown#9502、#9515，1.1.2 由 #9717
+// 修复）：经命名空间 barrel 转出的包装模块，调用留下了、import 却丢了。本仓库
+// 在 a386e4dc（vite 8.0.16 / rolldown 1.0.3）撞上它：zod 的
+// `v4/classic/external.js` 经 `import { z } from 'zod'` 读取，main 与 REPL 两个
+// chunk 各调用了一次谁都没定义的 `init_external()`，`-p` 与交互入口一启动就
+// ReferenceError —— 构建退出码照样是 0，这里原有的四项检查也全绿。
+//
+// 判据：chunk 里以调用形式出现的 `init_*` / `require_*`，要么在本 chunk 里声明，
+// 要么出现在本 chunk 的 import 绑定里。压缩产物中正常绑定的包装函数都已被改名，
+// 还保留原名的只可能是自由变量；未压缩产物（Bun 构建）逐个核对绑定。正则只做
+// 粗筛，候选再交给 TypeScript 解析器按 AST 复核 —— 字符串、模板、正则字面量里
+// 的同形文本（产物里真有 `init_function_start` 这类埋点名）不算。
+const WRAPPER_CALL_RE = /(?<![\w$.])((?:init|require)_[\w$]+)\s*\(/g
+// `var init_x = …` / `init_x=e(()=>…)` / `function init_x(`
+const WRAPPER_DECLARATION_RE =
+  /(?<![\w$.])((?:init|require)_[\w$]+)\s*=(?![=>])|\bfunction\s*\*?\s*((?:init|require)_[\w$]+)\s*\(/g
+// `import { a as init_x, init_y } from "./chunk.js"`（也认 `import X, { … }`）
+const IMPORT_BINDINGS_RE =
+  /\bimport\s*(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*["']/g
+
 // ─── 模式 ──────────────────────────────────────────────────────────
 // 匹配 import { ... } from "./chunk-xxxxx.js" 或 import"./chunk-xxxxx.js"
 const STATIC_IMPORT_RE = /(?:from\s+|import\s+)"(\.\/[^"]+\.js)"/g
@@ -137,11 +168,82 @@ interface Finding {
     | 'third-party-import'
     | 'third-party-node-require'
     | 'bun-runtime-only'
+    | 'unbound-wrapper-call'
   severity: 'error' | 'warning'
   file: string
   line: number
   module: string
   snippet: string
+}
+
+/** 本 chunk 里能引用到的包装函数名：import 进来的本地名 + 本 chunk 声明的。 */
+function collectBoundWrapperNames(content: string): Set<string> {
+  const bound = new Set<string>()
+  for (const m of content.matchAll(IMPORT_BINDINGS_RE)) {
+    for (const specifier of m[1].split(',')) {
+      const local = specifier
+        .trim()
+        .split(/\s+as\s+/)
+        .pop()
+        ?.trim()
+      if (local) bound.add(local)
+    }
+  }
+  for (const m of content.matchAll(WRAPPER_DECLARATION_RE)) {
+    const name = m[1] ?? m[2]
+    if (name) bound.add(name)
+  }
+  return bound
+}
+
+/**
+ * 正则粗筛出的候选按 AST 复核：只保留确实以标识符形式被调用、且全文件没有
+ * 任何同名声明的那些。只在有候选时才加载 TypeScript，干净产物不付解析成本。
+ */
+async function confirmUnboundWrapperCalls(
+  content: string,
+  candidates: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const { default: ts } = await import('typescript')
+  const source = ts.createSourceFile(
+    'chunk.js',
+    content,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JS,
+  )
+  const called = new Set<string>()
+  const declared = new Set<string>()
+  // 显式栈而不是递归：压缩产物里的逗号表达式链可以很深。
+  const pending: import('typescript').Node[] = [source]
+  while (pending.length > 0) {
+    const node = pending.pop()!
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      candidates.has(node.expression.text)
+    ) {
+      called.add(node.expression.text)
+    }
+    if (
+      (ts.isVariableDeclaration(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isBindingElement(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isImportClause(node) ||
+        ts.isNamespaceImport(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name)
+    ) {
+      declared.add(node.name.text)
+    }
+    ts.forEachChild(node, child => {
+      pending.push(child)
+    })
+  }
+  return new Set([...called].filter(name => !declared.has(name)))
 }
 
 async function listJavaScriptFiles(root: string): Promise<string[]> {
@@ -202,9 +304,25 @@ async function main() {
     }
     if (WS_BARE_IMPORT_RE.test(content)) wsBareImportIn.push(file)
 
+    // 见文件顶部「懒初始化包装函数必须有绑定」一节。
+    const boundWrappers = collectBoundWrapperNames(content)
+    const unboundWrapperCalls: Omit<Finding, 'type' | 'severity'>[] = []
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       const lineNum = i + 1
+
+      for (const m of line.matchAll(WRAPPER_CALL_RE)) {
+        const name = m[1]
+        if (boundWrappers.has(name)) continue
+        const start = Math.max(0, (m.index ?? 0) - 60)
+        unboundWrapperCalls.push({
+          file,
+          line: lineNum,
+          module: name,
+          snippet: line.slice(start, start + 120).trim(),
+        })
+      }
 
       // 2a. 检查静态 chunk 引用是否断链。引用相对于当前 chunk，
       // 不能相对于 dist 根解析：Vite 的绝大多数边都位于 dist/chunks/。
@@ -332,6 +450,22 @@ async function main() {
         })
       }
     }
+
+    // 2e. 未绑定的包装函数调用：正则候选交给 AST 复核后才算数
+    if (unboundWrapperCalls.length > 0) {
+      const confirmed = await confirmUnboundWrapperCalls(
+        content,
+        new Set(unboundWrapperCalls.map(f => f.module)),
+      )
+      for (const call of unboundWrapperCalls) {
+        if (!confirmed.has(call.module)) continue
+        findings.push({
+          type: 'unbound-wrapper-call',
+          severity: 'error',
+          ...call,
+        })
+      }
+    }
   }
 
   // 3. 汇总报告
@@ -339,6 +473,9 @@ async function main() {
   const warnings = findings.filter(f => f.severity === 'warning')
 
   // 按 type 分组
+  const unboundWrapperCalls = errors.filter(
+    f => f.type === 'unbound-wrapper-call',
+  )
   const brokenRefs = errors.filter(f => f.type === 'broken-chunk-ref')
   const thirdPartyRequires = errors.filter(
     f => f.type === 'third-party-require',
@@ -348,6 +485,22 @@ async function main() {
     f => f.type === 'third-party-node-require',
   )
   const bunRuntimeOnly = warnings.filter(f => f.type === 'bun-runtime-only')
+
+  if (unboundWrapperCalls.length > 0) {
+    console.log(
+      '❌ 调用了本 chunk 既未声明、也未 import 的懒初始化包装函数（运行期必抛 ReferenceError）:',
+    )
+    for (const f of unboundWrapperCalls) {
+      console.log(`   ${f.file}:${f.line} → ${f.module}()`)
+      console.log(`     …${f.snippet}…`)
+    }
+    console.log(
+      `   这类调用是打包器合成的（rolldown 的 __esmMin / __commonJSMin 包装），不是源码写的，
+   构建退出码照样是 0。先看 rolldown 版本是否落在已知回归区间（rolldown#9502：
+   1.0.2–1.1.1，1.1.2 修复），再对照 vite.config.ts 的分包配置。`,
+    )
+    console.log()
+  }
 
   if (brokenRefs.length > 0) {
     console.log('❌ 断裂的 chunk 引用（引用了不存在的文件）:')
@@ -452,6 +605,7 @@ async function main() {
         `\n💡 修复建议:
    - 第三方模块问题：在 build.ts 中通过 external 选项排除，或确保它们被正确打包到 chunk 中
    - 断链问题：检查 build 时是否有文件被意外删除或构建不完整
+   - 未绑定的 init_*/require_* 调用：打包器缺陷，升级到已修复的 rolldown / vite，别在源码里补同名函数
    - Bun 专用模块：确保运行时使用 bun 而非 node`,
       )
     }

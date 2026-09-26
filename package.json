@@ -55,7 +55,7 @@
     "check:fix": "biome check --fix .",
     "prepare": "husky",
     "test": "bun test",
-    "check:bundle": "bun run scripts/check-bundle-integrity.ts",
+    "check:bundle": "bun run scripts/check-bundle-integrity.ts && bun run scripts/check-bundle-smoke.ts",
     "check:unused": "bun run scripts/check-unused.ts",
     "check:unused:raw": "knip-bun",
     "sync:docs-i18n": "bun run scripts/sync-docs-i18n.ts",

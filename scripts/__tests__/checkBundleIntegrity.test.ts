@@ -73,6 +73,81 @@ describe('check-bundle-integrity nested chunks', () => {
   })
 })
 
+describe('check-bundle-integrity lazy-init wrapper bindings', () => {
+  // v2.46.1 的真实形态（rolldown 1.0.3，rolldown#9502）：zod 的 external.js
+  // 在 v4 chunk 里定义成 `Bm`、没导出，main chunk 却以原名调用它。
+  test('rejects a chunk that calls an init wrapper it never imports', async () => {
+    const distDir = await createDist({
+      'cli.js': 'import "./chunks/main.js"\n',
+      'chunks/v4.js': `var Bm=e(()=>{config()}),Wm=e(()=>{Bm()});export{Wm as t}\n${WS_BARE_IMPORT}`,
+      'chunks/main.js':
+        'import{t as x}from"./v4.js";x();I(),init_external(),Mr();\n',
+    })
+
+    const result = runCheck(distDir)
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('既未声明、也未 import 的懒初始化包装函数')
+    expect(result.stdout).toContain('chunks/main.js:1 → init_external()')
+  })
+
+  test('also rejects an unbound CommonJS require_* wrapper call', async () => {
+    const distDir = await createDist({
+      'cli.js': `require_lodash();\n${WS_BARE_IMPORT}`,
+    })
+
+    const result = runCheck(distDir)
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('cli.js:1 → require_lodash()')
+  })
+
+  // 未压缩产物（Bun 构建）保留原名：声明过或 import 进来的都合法。
+  test('accepts wrappers that are declared locally or imported', async () => {
+    const distDir = await createDist({
+      'cli.js': 'import "./chunks/entry.js"\n',
+      'chunks/shared.js': [
+        'var init_shared = __esm(() => {});',
+        'function init_other() {}',
+        'var require_cjs = __commonJS(() => {});',
+        'export { init_shared, init_other, require_cjs };',
+        WS_BARE_IMPORT,
+      ].join('\n'),
+      'chunks/entry.js': [
+        'import { init_shared, init_other as init_renamed, require_cjs } from "./shared.js";',
+        'init_shared();',
+        'init_renamed();',
+        'require_cjs();',
+      ].join('\n'),
+    })
+
+    const result = runCheck(distDir)
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('懒初始化包装函数')
+  })
+
+  // 产物里真有 `init_function_start` 这类埋点名；字符串、模板、注释、属性访问
+  // 里的同形文本都不是调用。正则会把前三种当候选，交给 AST 复核后排除。
+  test('ignores look-alikes inside strings, templates, comments and member calls', async () => {
+    const distDir = await createDist({
+      'cli.js': [
+        'const doc = "call init_database() first";',
+        'const tpl = `run init_template() now`;',
+        '// init_comment() is not code',
+        'const re = /init_regex\\(/;',
+        'profiler.init_member();',
+        WS_BARE_IMPORT,
+      ].join('\n'),
+    })
+
+    const result = runCheck(distDir)
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('懒初始化包装函数')
+  })
+})
+
 describe('check-bundle-integrity ws externalisation', () => {
   // npm 的纯 JS ws 混进产物 = 这份产物在 Bun 下每次握手都失败。样本用
   // ws 自己的错误码表，和真产物里出现的是同一批串。
