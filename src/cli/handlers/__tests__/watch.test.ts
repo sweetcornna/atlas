@@ -12,8 +12,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { newId, type NotifyPayload } from '@qianmo/protocol'
+import { turnStepDedupKey } from '@qianmo/resident'
 import {
   WATCH_HELP_TEXT,
+  classifyWatchNotify,
   isWatchHelpRequest,
   parseWatchArgs,
   parseWatchJobs,
@@ -89,6 +92,8 @@ describe('qm watch argument parsing', () => {
     }
     // The brake is only useful if it is documented where somebody looks.
     expect(WATCH_HELP_TEXT).toContain('ESTOP')
+    // So is the rule about what reaches a person.
+    expect(WATCH_HELP_TEXT).toContain('watch_step_received')
   })
 })
 
@@ -128,5 +133,52 @@ describe('the jobs file', () => {
 
   test('a file that is not an array says so', () => {
     expect(() => parseWatchJobs(JSON.stringify(JOB))).toThrow('JSON array')
+  })
+})
+
+const NOW = 1_800_000_000_000
+
+describe('what reaches a person: only what the agent sent itself', () => {
+  function payload(overrides: Partial<NotifyPayload>): NotifyPayload {
+    return {
+      kind: 'task',
+      severity: 'info',
+      summary: 'x',
+      observedAt: NOW,
+      ...overrides,
+    }
+  }
+
+  test('a tool step the node raised is process data, including a failure', () => {
+    // The key comes from the builder the node uses, not from a hand-written
+    // string, so a change to the node's format fails here.
+    const requestMsgId = newId()
+    for (const phase of ['start', 'failed'] as const) {
+      expect(
+        classifyWatchNotify(
+          payload({
+            severity: phase === 'failed' ? 'warn' : 'info',
+            dedupKey: turnStepDedupKey(requestMsgId, 'call_1', phase),
+            causeTaskId: newId(),
+          }),
+        ),
+      ).toBe('step')
+    }
+  })
+
+  test('an alert the agent sent is for a person, whatever key it chose', () => {
+    const stepShaped = turnStepDedupKey(newId(), 'call_1', 'start')
+    for (const shape of [
+      // kind=watch is never a step, even with a step-shaped key.
+      { kind: 'watch' as const, dedupKey: stepShaped },
+      { kind: 'watch' as const, dedupKey: '/' },
+      { kind: 'health' as const },
+      // An agent may pick kind=task too; its own keys do not look like steps.
+      { kind: 'task' as const },
+      { kind: 'task' as const, dedupKey: 'disk:/' },
+      { kind: 'task' as const, dedupKey: 'backup:nightly:failed' },
+    ]) {
+      expect(classifyWatchNotify(payload(shape))).toBe('notification')
+    }
   })
 })
