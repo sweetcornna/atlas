@@ -205,6 +205,7 @@ flowchart TD
 | 29 | **中枢缺席时落台账、回来后按序排空且不重复**；排空只由对端入站接触触发（H-2 与不变式 #17 同一条） | 不落 ⇒ 值守作业的发现随通道断开无痕消失；乱序 ⇒ 同一作业的两条通知在人眼前颠倒；为排空拨号 ⇒ H-2 作废 | `test/notify.test.ts`「the backlog drains in the order it was made, and only once」「a backlog survives the process that made it」「nothing goes to a peer that has not come back」；`test/no-dial.test.ts` 四条 |
 | 30 | **注入给 ACP 会话的工具面只有 `qianmo_notify` 一个，且节点侧根本不存在排程 API**（E4 是结构成立，不是配置成立） | 无人值守的轮次能给自己排更多无人值守的轮次——这条一旦破，节点的产出速率不再有任何上界 | `src/services/qianmo/__tests__/notifyTool.test.ts`「is exactly one tool, and it is qianmo_notify」「carries no scheduling capability, by name or by description」（含诱饵正向对照） |
 | 31 | **对端没声明 `notify` 就一条都不发，且不改写成别的类型** | 静默降级成 `task.request` ⇒ 在对端开一个它没要求的 turn，把「能力缺失」偷换成「行为变化」（hermes F3） | `test/notify.test.ts` 两条；`src/services/qianmo/__tests__/resident.integration.test.ts`「a hub that never declared notify is told nothing at all」 |
+| 41 | **过程行的 `dedupKey` 只由 `turnStepDedupKey` 拼、只由 `parseTurnStepDedupKey` 读** | `qm watch` 靠这个格式把过程行和 agent 自己发的通知分开（§4.1⑤ 产出默认静默，`docs/dev/console.md` §10.1.3）。另拼一种格式，中枢就会把每个工具步骤都当成给人的通知打印出来 | `test/acp-turn.test.ts`「every step key a turn raises parses back, and nothing else does」；`src/cli/handlers/__tests__/watch.test.ts`「a tool step the node raised is process data, including a failure」；`tests/integration/qianmo-watch-signed.test.ts` |
 
 三处容易误读：
 
