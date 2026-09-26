@@ -825,6 +825,8 @@ write_tunnel_env() {
       printf '# 审计镜像（单向、只读、节点 → H）。key 在节点侧带强制命令，只读得到这一个文件。\n'
       printf 'REMOTE_TRAIL=%s\n' "${BETA_SSH_TRAIL[$i]}"
     fi
+    printf '# -L 之外的 ssh 参数（审计见证的反向转发，坐标行的 witness-port=）；空 = 没有。\n'
+    printf 'TUNNEL_EXTRA_ARGS=%s\n' "$(beta_tunnel_extra_args "$i")"
   } >"$gen"
   chmod 600 "$gen"
   beta_write_if_changed "$gen" "$dst" 600 "连通定义 tunnel-$node.env"
@@ -1141,6 +1143,8 @@ run_node() {
 
   # 尾参透传（见文件头）。追加在最后：`--trust <节点>=<公钥>` 就是从这里进来的。
   args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
+  # 审计见证：尾参里有 --witness-url 才读写 token（见 common.sh 的 beta_prepare_witness）。
+  beta_prepare_witness
   # 紧挨着起进程：resident 与它的 ACP 子进程从本 shell 继承 oom_score_adj。
   beta_raise_oom_score
   beta_start_process "$BETA_NODE" "$config_dir" "${args[@]}"

@@ -23,6 +23,11 @@
 # 在本地 LISTEN，每一条连接都被 accept 之后立刻关掉，于是**任何 TCP 探测都是绿的**。
 # 那一条由 common.sh 的 beta_endpoint_live（真读一次应答字节）来判，不是这里。
 
+# ── $TUNNEL_EXTRA_ARGS 不带花括号是有意的 ─────────────────────────────────────
+# 其余变量都是 `${VAR}`（整串一个参数）；这一个要按空白分词成零个或多个参数（审计
+# 见证的 `-R 127.0.0.1:<口>:127.0.0.1:<口>`，没配就是零个），systemd 只对 `$VAR` 这种
+# 写法分词。旧版 beta-up.sh 写的 tunnel-<node>.env 里没有这个键，展开成零个参数，行为不变。
+
 [Unit]
 Description=Qianmo beta SSH tunnel to node %i (H loopback -> node %i inbound port)
 After=network-online.target
@@ -34,7 +39,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 EnvironmentFile=@OPS_DIR@/tunnel-%i.env
-ExecStart=/usr/bin/ssh -i ${NODE_SSH_KEY} -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes -o ConnectTimeout=15 -p ${NODE_SSH_PORT} -L 127.0.0.1:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT} ${NODE_SSH_USER}@${NODE_SSH_HOST}
+ExecStart=/usr/bin/ssh -i ${NODE_SSH_KEY} -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes -o ConnectTimeout=15 -p ${NODE_SSH_PORT} -L 127.0.0.1:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT} $TUNNEL_EXTRA_ARGS ${NODE_SSH_USER}@${NODE_SSH_HOST}
 Restart=always
 RestartSec=5
 

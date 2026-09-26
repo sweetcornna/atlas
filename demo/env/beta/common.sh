@@ -160,6 +160,9 @@ BETA_PSK_FILE="$BETA_SECRET_DIR/transport-psk"
 # 同时失效。落成文件就是「显式」的持久形式。
 BETA_VIEW_TOKEN_FILE="$BETA_SECRET_DIR/console-view-token"
 BETA_ADMIN_TOKEN_FILE="$BETA_SECRET_DIR/console-admin-token"
+# 审计见证的**写** token（P11.4）。节点机上是 H 发下来的那一枚；H 自己的那一份由
+# ops/witness-endpoint.sh install 生成。只在节点腿、且尾参里有 --witness-url 时才读。
+BETA_WITNESS_WRITE_FILE="$BETA_SECRET_DIR/witness-write-token"
 # 备份两枚 token。**归档 token 永不离开 H**（§2.7），所以节点机上只会有 write 那一份。
 BETA_BACKUP_WRITE_FILE="$BETA_SECRET_DIR/backup-write-token"
 BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
@@ -411,6 +414,9 @@ beta_write_peers_template() {
     printf '#          server=    这台机器在控制台上显示成什么（可选，默认取 host=）。\n'
     printf '#                     想要一个稳定短名（p11）而不是跟着 IP 变，就写它。\n'
     printf '#          key=       这条链路用的私钥（默认 QIANMO_BETA_SSH_KEY）\n'
+    printf '#          witness-port=审计见证端点的端口（可选，常用 38640）。给了，隧道同一条会话里\n'
+    printf '#                     多一个 -R 127.0.0.1:<口>:127.0.0.1:<口>，节点经它把锚点写到 H；\n'
+    printf '#                     节点侧 authorized_keys 那一行要带 permitlisten="127.0.0.1:<口>"。\n'
     printf '#      值里不能有空白（本行按空白分词）。\n'
     printf '#\n'
     printf '# ③ local-server 行（**可选**，全表只许一条）：local-server <机器名>\n'
@@ -470,6 +476,7 @@ BETA_SSH_REMOTE=()
 BETA_SSH_TRAIL=()
 BETA_SSH_KEYFILE=()
 BETA_SSH_SERVER=()
+BETA_SSH_WITNESS=()
 # 本机的机器名，peers.conf 的 `local-server <name>` 行给的。
 #
 # 为什么需要它：跑在 H 自己身上的节点没有坐标行（没有隧道要搭），归属只能从端点推，
@@ -600,7 +607,7 @@ beta_parse_node_line() {
     beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
-  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 kv key value
+  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 witness_port='' kv key value
   # 按空白分词：所以值里不能有空格。这条限制写在模板注释里，且真实取值（用户名、
   # 主机、端口、绝对路径）本来就不该有空格。
   for kv in $rest; do
@@ -619,7 +626,8 @@ beta_parse_node_line() {
       trail) trail="$value" ;;
       key) keyfile="$value" ;;
       server) server="$value"; server_given=1 ;;
-      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server）" ;;
+      witness-port) witness_port="$value" ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server/witness-port）" ;;
     esac
   done
   [ -n "$user" ] || beta_die "${where}：缺 user="
@@ -632,6 +640,7 @@ beta_parse_node_line() {
   beta_assert_port "$port" 'port' "$where"
   beta_assert_port "$local_port" 'local-port' "$where"
   beta_assert_port "$remote_port" 'remote-port' "$where"
+  if [ -n "$witness_port" ]; then beta_assert_port "$witness_port" 'witness-port' "$where"; fi
   case "$BETA_TUNNEL_PORTS" in
     *" $local_port "*) beta_die "${where}：local-port=$local_port 已经被另一个节点占了" ;;
   esac
@@ -662,6 +671,7 @@ beta_parse_node_line() {
   BETA_SSH_TRAIL[BETA_SSH_COUNT]="$trail"
   BETA_SSH_KEYFILE[BETA_SSH_COUNT]="$keyfile"
   BETA_SSH_SERVER[BETA_SSH_COUNT]="$server"
+  BETA_SSH_WITNESS[BETA_SSH_COUNT]="$witness_port"
   BETA_SSH_COUNT=$((BETA_SSH_COUNT + 1))
   BETA_TUNNEL_PORTS="$BETA_TUNNEL_PORTS$local_port "
 }
@@ -682,6 +692,7 @@ beta_load_peers() {
   BETA_SSH_TRAIL=()
   BETA_SSH_KEYFILE=()
   BETA_SSH_SERVER=()
+  BETA_SSH_WITNESS=()
   BETA_LOCAL_SERVER=''
   BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
@@ -1669,6 +1680,56 @@ beta_note_host_unit() {
 要连单元一起停：systemctl --user stop $unit
 要起回来  ：systemctl --user start ${unit}（等价于跑一趟 beta-up.sh --role host）"
   return 0
+}
+
+# beta_tunnel_extra_args <坐标行下标> —— 这条隧道在 -L 之外还要带的 ssh 参数。
+#
+# 目前只有一种：审计见证的反向转发（P11.4）。见证端点只听 H 的回环，节点要把锚点
+# 写过去，就借 H 发起的这条会话开一个 `-R`——节点上因此不需要任何指向 H 的凭据
+# （§8.3 的单向信任，也是见证方与被见证方不同失陷域的前提）。节点侧 authorized_keys
+# 那一行的 `permitlisten` 把它钉死在这一个口上（beta-env.md §9.10 那个缺口同时关掉）。
+# 没给 witness-port= 就打印空串：单元里 `$TUNNEL_EXTRA_ARGS` 展开成零个参数。
+beta_tunnel_extra_args() {
+  local port="${BETA_SSH_WITNESS[$1]:-}"
+  [ -n "$port" ] || return 0
+  printf -- '-R 127.0.0.1:%s:127.0.0.1:%s' "$port" "$port"
+}
+
+# beta_prepare_witness —— 尾参里有 --witness-url 时，把写 token 从文件读进环境。
+#
+# URL 走尾参（随 issue #111 的记录活过「停机 → 换产物 → 起机」），token 只走环境：
+# resident 自己就是这么要求的（`--witness-url requires QIANMO_WITNESS_WRITE_TOKEN`），
+# 这里只是把「文件 → 环境」这一步做了，并把两种会在起进程之后才暴露的错提前拦下：
+#   · 有 URL 没 token（或 token 文件权限过宽）——节点会起不来，而错误埋在 .err 里；
+#   · 明文 http 指向回环以外——写 token 在 Authorization 头里，那等于把它广播出去。
+#     经 SSH `-R` 转过来的端点在节点这一侧就是回环口，所以内测形态下永远是回环。
+# 只在节点腿调：控制台与注册中心不需要这枚 token，给了只是多一处能被读走的副本。
+beta_prepare_witness() {
+  local arg prev='' url=''
+  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$arg" in
+      --witness-url=*) url="${arg#--witness-url=}" ;;
+    esac
+    if [ "$prev" = '--witness-url' ]; then url="$arg"; fi
+    prev="$arg"
+  done
+  [ -n "$url" ] || return 0
+  case "$url" in
+    https://*) ;;
+    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|http://\[::1\]:*) ;;
+    *) beta_die "--witness-url 是明文 http 且不指向回环：${url}——写 token 在请求头里，走明文就等于广播" ;;
+  esac
+  if [ -z "${QIANMO_WITNESS_WRITE_TOKEN:-}" ]; then
+    [ -f "$BETA_WITNESS_WRITE_FILE" ] \
+      || beta_die "尾参里有 --witness-url，但缺见证写 token：${BETA_WITNESS_WRITE_FILE}（0600，由 H 发下来）"
+    local mode
+    mode="$(stat -c %a "$BETA_WITNESS_WRITE_FILE" 2>/dev/null || stat -f %Lp "$BETA_WITNESS_WRITE_FILE")"
+    [ "$mode" = '600' ] || beta_die "${BETA_WITNESS_WRITE_FILE} 权限是 ${mode}，要 600"
+    QIANMO_WITNESS_WRITE_TOKEN="$(cat "$BETA_WITNESS_WRITE_FILE")"
+    [ -n "$QIANMO_WITNESS_WRITE_TOKEN" ] || beta_die "${BETA_WITNESS_WRITE_FILE} 是空的"
+    export QIANMO_WITNESS_WRITE_TOKEN
+  fi
+  beta_ok "审计见证 : ${url}（写 token 从文件进环境，不上命令行）"
 }
 
 # beta_raise_oom_score —— 把**本 shell** 的 oom_score_adj 调到 BETA_OOM_SCORE_ADJ。

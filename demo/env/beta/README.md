@@ -457,6 +457,32 @@ systemctl --user start qianmo-tls-front.service
   （`--dns.propagation.disable-rns`）；URL 会把显式写的协议默认端口（`:80`）规范化成空串，所以上游端口
   从原文里取。
 
+## 审计见证（P11.4）：端点在 H，节点经隧道的 `-R` 写锚点
+
+形态：见证端点只听 H 的回环（默认 `127.0.0.1:38640`）；节点够到它，靠的是 **H 发起的**那条
+隧道会话里多一个 `-R 127.0.0.1:38640:127.0.0.1:38640`。节点上不放任何指向 H 的凭据，
+§8.3 的单向信任与「见证方、被见证方不同失陷域」（audit-witness.md §4.1）都不破。
+
+```bash
+# ① H：装端点（公钥取各节点 logs/<节点>.out 首行横幅里的 publicKey），起单元
+demo/env/beta/ops/witness-endpoint.sh install --key beta-1=<公钥> --key beta-5=<公钥>
+systemctl --user start qianmo-witness.service
+# ② H：该节点的 peers.conf 坐标行加 witness-port=38640，再跑一次 host 腿（隧道单元会被标成
+#    「文件已更新、运行中的仍是旧定义」，按提示在维护窗口里 restart 那条隧道）
+# ③ 节点机：authorized_keys 里 H 那把 key 那一行补 permitlisten="127.0.0.1:38640"
+#    （改之前备份整个文件；改完立刻用自己的登录钥匙另开一条 ssh 确认还能进）
+# ④ 节点机：把 H 的 secrets/witness-write-token 拷成本机 secrets/witness-write-token（0600），
+#    节点腿带上尾参（随 issue #111 记下来）
+demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥> --witness-url http://127.0.0.1:38640
+```
+
+- **读 token 永不离开 H**：它能列出全部锚点，只给 `occ audit --verify --witness` 与控制台的 `--anchors` 用。
+- 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境（不上命令行）；缺文件、权限不是 600、
+  明文 http 指向回环以外，都在起进程之前拦下。
+- 端点不在时节点照常工作，只在 `.err` 里报写不进去（发送方 fail-open）。存活判据：
+  `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
+- 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道。
+
 ## 变量表
 
 一律用环境变量覆盖，脚本里没有任何具体名字、机器名、IP、域名、密钥（beta-env.md 文首）。
