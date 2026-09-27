@@ -143,6 +143,13 @@ async function prompt(
         error === undefined
           ? undefined
           : { ...error, ...turnErrorCode(session) }
+      if (turnError !== undefined) {
+        console.error(
+          `[ACP] turn ended in an error: category=${turnError.category}` +
+            `${turnError.code === undefined ? '' : ` code=${turnError.code}`}` +
+            ` ${turnError.message}`,
+        )
+      }
 
       // Per session-usage.mdx RFD and the bundled SDK schema, PromptResponse
       // carries an optional `usage` field at the root with cumulative token
@@ -193,6 +200,11 @@ async function prompt(
     if (session.cancelled || isAbort) {
       return { stopReason: 'cancelled' }
     }
+
+    // The ACP SDK answers an escaped error with `-32603 Internal error` and
+    // keeps only its message, so the stack survives only if it is written
+    // here (stderr; a resident node's `.err`).
+    console.error('[ACP] prompt failed:', err)
 
     // Check for process death errors
     if (

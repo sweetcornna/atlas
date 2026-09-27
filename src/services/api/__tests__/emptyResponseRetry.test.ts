@@ -15,7 +15,7 @@
  * never end as a quiet, successful, empty turn.
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { adaptOpenAIStreamToAnthropic } from '@ant/model-provider'
 import { retryThirdPartyEventStream } from '../streamAssembly.js'
@@ -24,6 +24,10 @@ import {
   categorizeRetryableAPIError,
   isRetryableAPIError,
 } from '../retryClassification.js'
+import {
+  registerEmptyModelResponseCallback,
+  unregisterEmptyModelResponseCallback,
+} from '../upstreamStatus.js'
 
 type Chunk = Record<string, unknown>
 type Reply = 'empty' | 'normal' | 'http500'
@@ -189,5 +193,57 @@ describe('empty model responses on the third-party retry ladder', () => {
 
     expect(run.requests()).toBe(4)
     expect(error).toBeInstanceOf(OpenAIRequestError)
+  })
+})
+
+describe('what an empty response leaves in the node log', () => {
+  afterEach(() => {
+    // Process-global by design (see upstreamStatus.ts); never leave one behind.
+    unregisterEmptyModelResponseCallback()
+  })
+
+  test('one line per empty response: finish_reason, usage, and what happens next', async () => {
+    const lines: string[] = []
+    registerEmptyModelResponseCallback(line => lines.push(line))
+
+    await drain(ladder(['empty'], 10).events)
+
+    expect(lines).toEqual([
+      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=1 action=retry',
+      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=2 action=retry',
+      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=3 action=fail',
+    ])
+  })
+
+  test('a recovered empty response is still recorded', async () => {
+    const lines: string[] = []
+    registerEmptyModelResponseCallback(line => lines.push(line))
+
+    await drain(ladder(['empty', 'normal'], 10).events)
+
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toEndWith('action=retry')
+  })
+
+  test('other failures write nothing here', async () => {
+    const lines: string[] = []
+    registerEmptyModelResponseCallback(line => lines.push(line))
+
+    await drain(ladder(['http500', 'normal'], 10).events)
+
+    expect(lines).toEqual([])
+  })
+
+  test('a subscriber that throws cannot fail the request', async () => {
+    registerEmptyModelResponseCallback(() => {
+      throw new Error('sink broke')
+    })
+
+    const { events, error } = await drain(
+      ladder(['empty', 'normal'], 10).events,
+    )
+
+    expect(error).toBeUndefined()
+    expect(text(events)).toBe('ok')
   })
 })

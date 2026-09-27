@@ -22,6 +22,7 @@ import {
   NonRetryableError,
 } from './retryClassification.js'
 import { getOpenAIRetryDelay, resolveOpenAIMaxRetries } from './openai/retry.js'
+import { reportEmptyModelResponse } from './upstreamStatus.js'
 
 /**
  * Retries for a response that ended properly and said nothing
@@ -236,6 +237,15 @@ export async function* retryThirdPartyEventStream(params: {
         : commitment === 'thinking'
           ? ++thinkingRetries <= 2
           : ++noOutputRetries <= maxRetries
+      if (emptyResponse) {
+        reportEmptyModelResponse({
+          finishReason: error.finishReason,
+          inputTokens: error.inputTokens,
+          outputTokens: error.outputTokens,
+          occurrence: emptyResponseRetries,
+          retrying: retry,
+        })
+      }
       if (!retry) throw error
       await params.onRetry?.(error)
       for (const event of finalizeInterruptedAttempt(

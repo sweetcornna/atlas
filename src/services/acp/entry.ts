@@ -9,7 +9,9 @@ import {
   unregisterSessionActivityCallback,
 } from '../../utils/session/sessionActivity.js'
 import {
+  registerEmptyModelResponseCallback,
   registerUpstreamStatusCallback,
+  unregisterEmptyModelResponseCallback,
   unregisterUpstreamStatusCallback,
 } from '../api/upstreamStatus.js'
 import { getConnection, isQianmoResident } from './agent/internalAccessors.js'
@@ -86,6 +88,13 @@ export async function runAcpAgent(): Promise<void> {
       })
   })
 
+  // Every empty model response, retried or given up on, as one line on this
+  // process's stderr — which is a resident node's `.err`. All sessions, not
+  // only residents: stderr is the log channel here, never the protocol.
+  registerEmptyModelResponseCallback(line => {
+    console.error(line)
+  })
+
   // stdout is used for ACP messages — redirect console to stderr
   console.log = console.error
   console.info = console.error
@@ -95,6 +104,7 @@ export async function runAcpAgent(): Promise<void> {
   async function shutdown(): Promise<void> {
     unregisterSessionActivityCallback()
     unregisterUpstreamStatusCallback()
+    unregisterEmptyModelResponseCallback()
     // Clean up all active sessions
     for (const [sessionId] of agent.sessions) {
       try {
