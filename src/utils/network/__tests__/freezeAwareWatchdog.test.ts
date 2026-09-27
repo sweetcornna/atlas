@@ -145,14 +145,21 @@ describe('freeze-aware watchdog', () => {
 describe('setTimeout-shaped injection point', () => {
   test('passes the trailing arguments through and fires once', async () => {
     const seen: number[] = []
+    const { promise: fired, resolve } = Promise.withResolvers<void>()
     setFreezeAwareTimeout(
       warnMs => {
         seen.push(warnMs)
+        resolve()
       },
       1,
       45_000,
     )
 
+    // Wait for the callback itself, not a fixed sleep: a loaded CI runner can
+    // stall the event loop for seconds, and a 60 ms sleep read that as "never
+    // fired". A callback that never comes still fails, on the test timeout.
+    await fired
+    // One shot: give a repeat the same window the old test allowed.
     await Bun.sleep(60)
 
     expect(seen).toEqual([45_000])
