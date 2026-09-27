@@ -130,7 +130,7 @@ export function renderCredentialPage(model: CredentialPageModel): string {
     `value="${attr(model.credential)}"></div>` +
     next +
     `<div class="tokline">` +
-    `<div class="tokrow">登录时填在令牌框里 · 脚本用 Authorization Bearer</div>` +
+    `<div class="tokrow">登录时填在凭据框里 · 脚本用 Authorization Bearer</div>` +
     `<div class="tokrow">不要放进链接或书签 · 丢失后找运维重置</div>` +
     `</div>` +
     `</div>\n</div>\n` +

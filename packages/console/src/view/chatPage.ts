@@ -29,8 +29,17 @@
  * would drop the credential).
  */
 
-import { CONSOLE_CHAT_JS } from '../assets/chatClient.js'
-import { chevron, icon, identityControl } from './bits.js'
+import {
+  CONSOLE_CHAT_JS,
+  CONSOLE_CHAT_JS_ACCOUNTS,
+} from '../assets/chatClient.js'
+import {
+  chevron,
+  icon,
+  identityControl,
+  viewerNotice,
+  type PageViewer,
+} from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { MAX_CHAT_TEXT_LENGTH } from './chat.js'
 import { BRAND, documentHead } from './page.js'
@@ -47,6 +56,8 @@ export interface ChatPageModel {
   readonly thread: string
   /** False when no session is open, which disables the composer. */
   readonly composerEnabled: boolean
+  /** Who this page is for, when personal accounts are on (`page.ts`). */
+  readonly viewer?: PageViewer
 }
 
 /** The one disabled-state sentence this page is allowed. */
@@ -142,7 +153,7 @@ export function renderChatPage(model: ChatPageModel): string {
     `<div class="divider"></div>` +
     `<div class="stack" style="gap:var(--space-2)">` +
     `<div class="flabel">身份</div>` +
-    identityControl(model.role) +
+    identityControl(model.role, model.viewer?.roleText) +
     tokenControl() +
     `</div>` +
     `</div></aside>`
@@ -153,10 +164,13 @@ export function renderChatPage(model: ChatPageModel): string {
     `<div class="shell">\n` +
     sidebar +
     `\n<main class="chat-main">\n` +
+    viewerNotice(model.viewer) +
     `<div class="thread-mount" id="thread-mount">${model.thread}</div>\n` +
     composer(model.composerEnabled) +
     `\n</main>\n</div>\n` +
-    `<script>${CONSOLE_CHAT_JS}</script>\n` +
+    `<script>${
+      model.viewer === undefined ? CONSOLE_CHAT_JS : CONSOLE_CHAT_JS_ACCOUNTS
+    }</script>\n` +
     `</body>\n</html>\n`
   )
 }

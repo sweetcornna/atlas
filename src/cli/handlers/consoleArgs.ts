@@ -223,6 +223,17 @@ export function consoleAccountsPath(): string {
   return occConfigPath('qianmo', 'console', 'accounts.ndjson')
 }
 
+/**
+ * 会话表的默认位置（`tenancy-m1.md` §3.3，P15.5）：浏览器会话的开、续、关，只存
+ * 会话 id 的哈希。
+ *
+ * 与账号库分开放：会话表每次登录、每 15 分钟的续期都要写，账号库只在开户、
+ * 吊销这类事上写；分开以后账号库不会被会话流水撑大，两本也各自成链、各自可查。
+ */
+export function consoleSessionsPath(): string {
+  return occConfigPath('qianmo', 'console', 'sessions.ndjson')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -330,6 +341,18 @@ export interface ConsoleCliConfig {
   readonly accounts?: boolean
   /** 账号库的绝对路径；只在 {@link accounts} 打开时出现。 */
   readonly accountsStorePath?: string
+  /** 会话表的绝对路径；只在 {@link accounts} 打开时出现。 */
+  readonly sessionsStorePath?: string
+  /**
+   * 迁移期 view token 还认不认（`tenancy-m1.md` §1.5 M-2b）。只在
+   * {@link accounts} 打开时出现，缺省 `true`。
+   */
+  readonly legacyViewToken?: boolean
+  /**
+   * admin token 转为 break-glass（§3.4 D7，M-3）：只收 Bearer、页面常亮、每次
+   * 使用都记账、永远不能当审批人。只在 {@link accounts} 打开时出现，缺省 `false`。
+   */
+  readonly breakGlass?: boolean
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -378,6 +401,11 @@ export function parseConsoleArgs(
   let accounts = false
   let accountsStorePath = consoleAccountsPath()
   let accountsStoreGiven = false
+  let sessionsStorePath = consoleSessionsPath()
+  let legacyViewToken = true
+  let breakGlass = false
+  // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
+  const needsAccounts: string[] = []
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -640,6 +668,31 @@ export function parseConsoleArgs(
       accountsStorePath = resolve(parsed.value)
       accountsStoreGiven = true
       index = parsed.next
+    } else if (
+      arg === '--sessions-store' ||
+      arg?.startsWith('--sessions-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--sessions-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--sessions-store must be an absolute path')
+      }
+      sessionsStorePath = resolve(parsed.value)
+      needsAccounts.push('--sessions-store')
+      index = parsed.next
+    } else if (
+      arg === '--legacy-view-token' ||
+      arg?.startsWith('--legacy-view-token=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--legacy-view-token')
+      if (parsed.value !== 'on' && parsed.value !== 'off') {
+        throw new Error('--legacy-view-token must be on or off')
+      }
+      legacyViewToken = parsed.value === 'on'
+      needsAccounts.push('--legacy-view-token')
+      index = parsed.next
+    } else if (arg === '--break-glass') {
+      breakGlass = true
+      needsAccounts.push('--break-glass')
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -668,6 +721,12 @@ export function parseConsoleArgs(
   if (accountsStoreGiven && !accounts) {
     throw new Error('--accounts-store needs --accounts')
   }
+  // 同理：view token 关掉、admin 转 break-glass，都是「个人账号已经接得住」之后
+  // 才有意义的一步；没有账号时关掉 view token 等于把所有人关在门外。
+  const orphan = needsAccounts[0]
+  if (orphan !== undefined && !accounts) {
+    throw new Error(`${orphan} needs --accounts`)
+  }
 
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
@@ -694,9 +753,17 @@ export function parseConsoleArgs(
     chatStorePath,
     nodeServers,
     serverNotesPath,
-    // Both keys only when the feature is on: a config without accounts has
-    // exactly the shape it had before accounts existed.
-    ...(accounts ? { accounts, accountsStorePath } : {}),
+    // Every account key only when the feature is on: a config without accounts
+    // has exactly the shape it had before accounts existed.
+    ...(accounts
+      ? {
+          accounts,
+          accountsStorePath,
+          sessionsStorePath,
+          legacyViewToken,
+          breakGlass,
+        }
+      : {}),
   }
 }
 
@@ -825,6 +892,19 @@ Options (each accepts both --name value and --name=value):
   --accounts-store <abs path>
                            Where the account ledger lands, absolute path.
                            Default <config root>/qianmo/console/accounts.ndjson.
+                           Only with --accounts.
+  --sessions-store <abs path>
+                           Where the browser session table lands, absolute
+                           path. Default
+                           <config root>/qianmo/console/sessions.ndjson.
+                           Only with --accounts.
+  --legacy-view-token on|off
+                           Whether the shared view token still works.
+                           Default on. Turn off once every viewer has an
+                           account. Only with --accounts.
+  --break-glass            Keep the admin token for emergencies only: Bearer
+                           header only, a notice on every page, every use
+                           recorded, never an approver. Rotate it after use.
                            Only with --accounts.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.

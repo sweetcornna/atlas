@@ -45,8 +45,35 @@
  * | GET, POST | `/invite` | public | accounts only — see `accountsHttp.ts` |
  * | * | `/v0/accounts/…` | admin | accounts only — see `accountsHttp.ts` |
  *
- * The last two rows exist only on a console handed an {@link AccountBook};
- * without one they are the plain 404 they always were.
+ * The last two rows exist only on a console handed an `AccountBook`; without
+ * one they are the plain 404 they always were.
+ *
+ * ## With personal accounts
+ *
+ * A console started with {@link ConsoleServerOptions.accounts} reads every
+ * request through `access.ts` instead of `credentialOf`, and the table above
+ * changes in exactly these places (`tenancy-m1.md` §3.2–§3.4):
+ *
+ * - `ops` is read as admin and `viewer` / `member` as view, so every row keeps
+ *   its role column; a session cookie is read as a cookie, so the three
+ *   protection classes below apply to it unchanged.
+ * - The chat rows admit a `member` as well as admin, **scoped to the sessions
+ *   that member opened**: lists are filtered, and another person's session
+ *   answers the same 404 as one that does not exist, before the port is asked.
+ *   `viewer` and the view token still cannot see that a conversation exists.
+ *   The stream carries only the caller's sessions and ends when the account
+ *   is revoked or reset, its session expires, or the book closes.
+ * - `/login` also takes a personal credential and answers with a server
+ *   session; `/logout` also ends that session on the server.
+ * - A personal credential in `?token=` is refused with a 400 on every route;
+ *   in break-glass mode the admin token works only as a Bearer, every page it
+ *   opens carries a lit notice, and every response to it the
+ *   `x-qianmo-break-glass` header.
+ * - The page scripts are the variants that never keep a personal credential
+ *   in `localStorage` (`assets/client.ts`).
+ *
+ * Without accounts none of this runs, and `test/legacyParity.test.ts` pins
+ * that the answers are byte for byte what they were.
  *
  * ## Chat is admin-only, all of it
  *
@@ -152,11 +179,28 @@
  */
 
 import {
-  assertTokensUnlikeAccountSecrets,
-  type AccountBook,
-} from './accounts.js'
-import { handleAccountsApi, handleInvite } from './accountsHttp.js'
-import { CONSOLE_CLIENT_JS } from './assets/client.js'
+  adminFingerprint,
+  resolveAccess,
+  type Access,
+  type AccessRefusal,
+  type ConsoleAccounts,
+} from './access.js'
+import { assertTokensUnlikeAccountSecrets } from './accounts.js'
+import {
+  accountLogin,
+  accountLogout,
+  chatScopeOf,
+  handleAccountsApi,
+  handleInvite,
+  pageViewer,
+  streamScopeOf,
+  type ChatScope,
+  type StreamScope,
+} from './accountsHttp.js'
+import {
+  CONSOLE_CLIENT_JS,
+  CONSOLE_CLIENT_JS_ACCOUNTS,
+} from './assets/client.js'
 import { CONSOLE_CSS } from './assets/css.js'
 import {
   CONSOLE_HEADER,
@@ -164,7 +208,6 @@ import {
   SESSION_MAX_AGE_SECONDS,
   TOKEN_QUERY_PARAM,
   clearedSessionCookieHeader,
-  credentialOf,
   isCrossOriginRequest,
   isSecureRequest,
   roleOfToken,
@@ -199,7 +242,7 @@ import {
   renderAuditSources,
   renderChain,
 } from './view/audit.js'
-import { failureBar } from './view/bits.js'
+import { failureBar, type PageViewer } from './view/bits.js'
 import {
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,
@@ -374,6 +417,45 @@ function guard(
   return null
 }
 
+/** What a `viewer` account is told on a chat route. */
+const CHAT_MEMBER_REQUIRED = '对话需要成员或运维账号；只读账号看不到会话。'
+
+/** The same, on the login card. */
+const CHAT_MEMBER_REQUIRED_LINE = '该页面需要成员或运维账号'
+
+/**
+ * The one answer to a session a member may not see, whether it belongs to
+ * somebody else or does not exist at all — the host's own wording for the
+ * second case, so the two cannot be told apart (`tenancy-m1.md` §3.2).
+ */
+const CHAT_SESSION_NOT_FOUND = '这条会话不在本控制台的记录里'
+
+/**
+ * The chat face's guard. Without accounts, and for the two legacy tokens, it
+ * is today's rule: admin, all of it (module note). A person needs a `member`
+ * or `ops` account; `ops` reads as admin already, so only `member` is the new
+ * case, and `viewer` is refused with the reason.
+ */
+function guardChat(access: Access, protection: Protection): Response | null {
+  const principal = access.principal
+  if (principal?.kind !== 'user') {
+    return guard(access.credential, 'admin', protection)
+  }
+  const denied = guard(access.credential, 'view', protection)
+  if (denied !== null) return denied
+  return principal.role === 'viewer'
+    ? fail(403, 'forbidden', CHAT_MEMBER_REQUIRED)
+    : null
+}
+
+/** True when this caller gets the chat face at all. */
+function mayChat(access: Access): boolean {
+  const principal = access.principal
+  return principal?.kind === 'user'
+    ? principal.role !== 'viewer'
+    : access.credential.role === 'admin'
+}
+
 // --- the login door ------------------------------------------------------
 
 /**
@@ -413,12 +495,15 @@ function loginPage(
     readonly status?: number
     readonly error?: string
     readonly headers?: Record<string, string>
+    /** A console with accounts: the field takes a personal credential too. */
+    readonly accounts?: boolean
   },
 ): Response {
   const body = renderLoginPage({
     label: deps.label ?? DEFAULT_LABEL,
     redirect: options.redirect,
     ...(options.error === undefined ? {} : { error: options.error }),
+    ...(options.accounts === true ? { accounts: true } : {}),
   })
   return new Response(body, {
     status: options.status ?? 200,
@@ -443,19 +528,46 @@ function documentDenial(
   denied: Response,
   deps: ConsoleDeps,
   url: URL,
+  access?: Access,
 ): Response {
   if (!wantsHtml(request)) return denied
   if (denied.status === 401) return loginRedirect(url)
   if (denied.status === 403) {
     const back = new URL(url.toString())
     back.searchParams.delete(TOKEN_QUERY_PARAM)
+    const person = access?.principal?.kind === 'user'
     return loginPage(deps, {
       redirect: safeRedirect(`${back.pathname}${back.search}`),
       status: 403,
-      error: ADMIN_REQUIRED_LINE,
+      error: person ? CHAT_MEMBER_REQUIRED_LINE : ADMIN_REQUIRED_LINE,
+      ...(access === undefined ? {} : { accounts: true }),
     })
   }
   return denied
+}
+
+/**
+ * A request the account rules refused before any route saw it
+ * (`access.ts`): the JSON a script can act on, or the login card with the
+ * reason for a browser.
+ */
+function accessRefused(
+  request: Request,
+  refusal: AccessRefusal,
+  deps: ConsoleDeps,
+  url: URL,
+): Response {
+  if (!wantsHtml(request)) {
+    return fail(refusal.status, refusal.code, refusal.message)
+  }
+  const back = new URL(url.toString())
+  back.searchParams.delete(TOKEN_QUERY_PARAM)
+  return loginPage(deps, {
+    redirect: safeRedirect(`${back.pathname}${back.search}`),
+    status: refusal.status,
+    error: refusal.line,
+    accounts: true,
+  })
 }
 
 /**
@@ -488,14 +600,19 @@ async function handleLogin(
   url: URL,
   clientKey: string,
   now: number,
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const asked = safeRedirect(url.searchParams.get('redirect'))
+  const accountsOn = accounts !== undefined
 
   if (request.method === 'GET') {
     // Already carrying a credential: there is nothing to fill in. The console
     // itself is the honest answer, not a form that would refuse to appear.
     if (credential.role !== 'none') return seeOther(asked)
-    return loginPage(deps, { redirect: asked })
+    return loginPage(deps, {
+      redirect: asked,
+      ...(accountsOn ? { accounts: true } : {}),
+    })
   }
   if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
 
@@ -516,10 +633,22 @@ async function handleLogin(
       status: 429,
       error: `尝试过多 · 请等 ${wait} 秒`,
       headers: { 'retry-after': String(wait) },
+      ...(accountsOn ? { accounts: true } : {}),
     })
   }
 
   const presented = (form.get('token') ?? '').trim()
+  if (accounts !== undefined) {
+    return accountLogin(request, presented, target, {
+      accounts,
+      tokens,
+      throttle,
+      clientKey,
+      now,
+      card: (status, error) =>
+        loginPage(deps, { redirect: target, status, error, accounts: true }),
+    })
+  }
   const role = roleOfToken(presented, tokens)
   if (role === 'none') {
     throttle.recordFailure(clientKey, now)
@@ -550,11 +679,15 @@ async function handleLogin(
  * is here anyway, because the nuisance version of this (a same-site page on
  * another port logging an operator out on a loop) costs three lines to remove.
  */
-function handleLogout(request: Request): Response {
+function handleLogout(
+  request: Request,
+  accounts: ConsoleAccounts | undefined,
+): Response {
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
   if (isCrossOriginRequest(request)) {
     return fail(403, 'forbidden', '退出只接受来自本控制台自己页面的提交。')
   }
+  if (accounts !== undefined) return accountLogout(request, accounts)
   return seeOther(LOGIN_PATH, {
     'set-cookie': clearedSessionCookieHeader({
       secure: isSecureRequest(request),
@@ -963,20 +1096,34 @@ async function chatTargets(
   return result.ok ? result.value : null
 }
 
+/**
+ * The failure a member gets for a session it may not see, in place of any
+ * port call: the same `not_found` the port gives for one that does not exist.
+ */
+const HIDDEN_SESSION: ConsoleFailure = {
+  code: 'not_found',
+  message: CHAT_SESSION_NOT_FOUND,
+}
+
 async function chatSessionsFragment(
   chat: ChatPort,
   activeId: string | null,
   now: number,
+  scope: ChatScope,
 ): Promise<string> {
   const [sessions, targets] = await Promise.all([
     chat.sessions(),
     chatTargets(chat),
   ])
   return renderChatSessions({
-    sessions: sessions.ok ? sessions.value : [],
+    // Fetched whole and filtered here: the port has no notion of an owner,
+    // and the ownership record lives beside it in the account book.
+    sessions: sessions.ok
+      ? sessions.value.filter(session => scope.visible(session.id))
+      : [],
     targets: targets ?? [],
     failure: failureOf(sessions),
-    activeId,
+    activeId: activeId !== null && scope.visible(activeId) ? activeId : null,
     now,
   })
 }
@@ -992,12 +1139,24 @@ async function chatThreadFragment(
   chat: ChatPort,
   sessionId: string | null,
   now: number,
+  scope: ChatScope,
 ): Promise<ChatThreadRender> {
   if (sessionId === null || sessionId === '') {
     return {
       html: renderChatThread({
         transcript: null,
         failure: null,
+        target: null,
+        now,
+      }),
+      open: false,
+    }
+  }
+  if (!scope.visible(sessionId)) {
+    return {
+      html: renderChatThread({
+        transcript: null,
+        failure: HIDDEN_SESSION,
         target: null,
         now,
       }),
@@ -1030,11 +1189,13 @@ async function handleChatPage(
   credential: ConsoleCredential,
   url: URL,
   now: number,
+  scope: ChatScope,
+  viewer: PageViewer | undefined,
 ): Promise<Response> {
   const sessionId = textParam(url.searchParams, 'session') ?? null
   const [sessions, thread] = await Promise.all([
-    chatSessionsFragment(chat, sessionId, now),
-    chatThreadFragment(chat, sessionId, now),
+    chatSessionsFragment(chat, sessionId, now, scope),
+    chatThreadFragment(chat, sessionId, now, scope),
   ])
   return html(
     renderChatPage({
@@ -1044,16 +1205,19 @@ async function handleChatPage(
       thread: thread.html,
       composerEnabled: thread.open,
       role: credential.role,
+      ...(viewer === undefined ? {} : { viewer }),
     }),
   )
 }
 
 async function handleIndex(
   deps: ConsoleDeps,
-  credential: ConsoleCredential,
+  access: Access,
   url: URL,
   now: number,
+  viewer: PageViewer | undefined,
 ): Promise<Response> {
+  const credential = access.credential
   const filter = parseAuditFilter(url, now)
   // Both panels are independent reads; a slow registry should not serialise
   // in front of the trail. The trail's *markup* does depend on the roster —
@@ -1107,11 +1271,15 @@ async function handleIndex(
       // not even learn that a conversation exists. A link that is present but
       // 403s on click leaks exactly that, so the nav item is hidden from
       // anyone who is not admin, channel or no channel.
-      chatEnabled: deps.chat !== undefined && credential.role === 'admin',
+      //
+      // With accounts, a `member` gets the link too: the chat face is theirs,
+      // scoped to their own sessions (`mayChat`).
+      chatEnabled: deps.chat !== undefined && mayChat(access),
       auditFilter: filter,
       // The sidebar states which of the two credentials this is, and offers the
       // way out of a cookie the page cannot read (`bits.ts`).
       role: credential.role,
+      ...(viewer === undefined ? {} : { viewer }),
     }),
   )
 }
@@ -1412,16 +1580,19 @@ function chatUnsupported(): Response {
  * controller is already closed. A leaked subscription on a long-lived console
  * is a listener list that only grows.
  */
-function chatStream(chat: ChatPort): Response {
+function chatStream(chat: ChatPort, scope?: StreamScope): Response {
   const encoder = new TextEncoder()
   let unsubscribe: (() => void) | null = null
   let heartbeat: ReturnType<typeof setInterval> | null = null
+  let detach: (() => void) | null = null
 
   const release = (): void => {
     unsubscribe?.()
     unsubscribe = null
     if (heartbeat !== null) clearInterval(heartbeat)
     heartbeat = null
+    detach?.()
+    detach = null
   }
 
   const body = new ReadableStream<Uint8Array>({
@@ -1435,18 +1606,35 @@ function chatStream(chat: ChatPort): Response {
           release()
         }
       }
+      // Ended from this side: the account behind it was revoked or reset, its
+      // session ran out, or the book closed (`accountsHttp.ts`, `StreamScope`).
+      const end = (): void => {
+        release()
+        try {
+          controller.close()
+        } catch {
+          // Already closed by the peer; the release above is what mattered.
+        }
+      }
       // A comment first: it completes the response headers immediately, so the
       // browser fires `open` rather than sitting in `CONNECTING` until the
       // first real event, which may be minutes away.
       push(`retry: ${CHAT_STREAM_RETRY_MS}\n: open\n\n`)
       unsubscribe = chat.subscribe((update: ChatUpdate) => {
+        // A person hears about their own sessions only. The event carries no
+        // content, but a session id and its cadence are still somebody else's.
+        if (scope !== undefined && !scope.visible(update.sessionId)) return
         push(`event: chat\ndata: ${JSON.stringify(update)}\n\n`)
       })
-      heartbeat = setInterval(
-        () => push(': keep-alive\n\n'),
-        CHAT_STREAM_HEARTBEAT_MS,
-      )
+      heartbeat = setInterval(() => {
+        if (scope !== undefined && !scope.alive()) {
+          end()
+          return
+        }
+        push(': keep-alive\n\n')
+      }, CHAT_STREAM_HEARTBEAT_MS)
       heartbeat.unref?.()
+      if (scope !== undefined) detach = scope.attach(end)
     },
     cancel() {
       release()
@@ -1471,11 +1659,15 @@ function parseChatText(body: Record<string, unknown>): Parsed<string> {
 async function handleChatSessions(
   request: Request,
   chat: ChatPort,
+  scope: ChatScope,
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   if (request.method === 'GET') {
     const result = await chat.sessions()
     return result.ok
-      ? json({ sessions: result.value })
+      ? json({
+          sessions: result.value.filter(session => scope.visible(session.id)),
+        })
       : failureResponse(result.failure)
   }
   if (request.method === 'POST') {
@@ -1484,7 +1676,19 @@ async function handleChatSessions(
     const target = requiredString(body, 'target')
     if (!target.ok) return fail(400, 'invalid', target.message)
     const result = await chat.open(target.value)
-    return result.ok ? json(result.value) : failureResponse(result.failure)
+    if (!result.ok) return failureResponse(result.failure)
+    if (scope.opener !== null && accounts !== undefined) {
+      // The owner is written before the session is handed back: a session a
+      // person opened must never be seen without one. If the book cannot take
+      // it, the book is closed now and the caller's next request is a 503
+      // anyway; the session stays in the store, owned by nobody, which only
+      // ops and the admin token can see.
+      const owned = accounts.book.recordOwner(result.value.id, scope.opener)
+      if (!owned.ok) {
+        return fail(503, 'unavailable', owned.refusal.message)
+      }
+    }
+    return json(result.value)
   }
   return methodNotAllowed(['GET', 'POST'])
 }
@@ -1492,9 +1696,10 @@ async function handleChatSessions(
 async function dispatchChatApi(
   request: Request,
   deps: ConsoleDeps,
-  credential: ConsoleCredential,
+  access: Access,
   url: URL,
   segments: readonly string[],
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const name = segments[2]
   // The stream is the one route here an `EventSource` opens, and an
@@ -1505,10 +1710,11 @@ async function dispatchChatApi(
     name === 'stream' && segments.length === 3 ? 'stream' : 'guarded'
   // Admin before existence: an anonymous caller must not learn which consoles
   // have a chat channel wired by comparing 401 against 501.
-  const denied = guard(credential, 'admin', protection)
+  const denied = guardChat(access, protection)
   if (denied !== null) return denied
   const chat = deps.chat
   if (chat === undefined) return chatUnsupported()
+  const scope = chatScopeOf(access, accounts)
 
   if (name === 'targets' && segments.length === 3) {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
@@ -1520,19 +1726,23 @@ async function dispatchChatApi(
 
   if (name === 'stream' && segments.length === 3) {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return chatStream(chat)
+    return chatStream(chat, streamScopeOf(access, accounts))
   }
 
   if (name === 'sessions') {
-    if (segments.length === 3) return await handleChatSessions(request, chat)
+    if (segments.length === 3) {
+      return await handleChatSessions(request, chat, scope, accounts)
+    }
     const sessionId = decodeURIComponent(segments[3] ?? '')
     if (segments.length === 4) {
       if (request.method !== 'GET') return methodNotAllowed(['GET'])
+      if (!scope.visible(sessionId)) return failureResponse(HIDDEN_SESSION)
       const result = await chat.transcript(sessionId)
       return result.ok ? json(result.value) : failureResponse(result.failure)
     }
     if (segments.length === 5 && segments[4] === 'messages') {
       if (request.method !== 'POST') return methodNotAllowed(['POST'])
+      if (!scope.visible(sessionId)) return failureResponse(HIDDEN_SESSION)
       const body = await readJsonObject(request)
       if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
       const text = parseChatText(body)
@@ -1550,23 +1760,27 @@ async function dispatchChatApi(
 async function dispatchApi(
   request: Request,
   deps: ConsoleDeps,
-  credential: ConsoleCredential,
+  access: Access,
   url: URL,
   segments: readonly string[],
   now: number,
   accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const head = segments[1]
+  const credential = access.credential
 
   // Only when accounts are on: without a book this path is the plain 404 it
-  // has always been (`test/legacyParity.test.ts`).
+  // has always been (`test/legacyParity.test.ts`). `ops` reads as admin, so
+  // the guard is the one every admin route uses; the ledger names the person,
+  // or `legacy:admin` for the token.
   if (head === 'accounts' && accounts !== undefined) {
     const denied = guard(credential, 'admin', 'guarded')
     if (denied !== null) return denied
+    const principal = access.principal
     return await handleAccountsApi(
       request,
       accounts.book,
-      'legacy:admin',
+      principal?.kind === 'user' ? principal.subject : 'legacy:admin',
       segments,
       url,
     )
@@ -1590,7 +1804,7 @@ async function dispatchApi(
   }
 
   if (head === 'chat' && segments.length >= 3) {
-    return await dispatchChatApi(request, deps, credential, url, segments)
+    return await dispatchChatApi(request, deps, access, url, segments, accounts)
   }
 
   if (head === 'servers') {
@@ -1673,29 +1887,32 @@ async function chainFragment(
 async function dispatchFragment(
   request: Request,
   deps: ConsoleDeps,
-  credential: ConsoleCredential,
+  access: Access,
   url: URL,
   segments: readonly string[],
   now: number,
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const name = segments[1] ?? ''
   const isChain = name === 'chain' && segments.length === 3
+  const credential = access.credential
 
   // The two chat fragments take the admin path in full — see the module note
   // on why the chat face has no read-only tier.
   if (name === 'chat') {
-    const deniedAdmin = guard(credential, 'admin', 'guarded')
+    const deniedAdmin = guardChat(access, 'guarded')
     if (deniedAdmin !== null) return deniedAdmin
     const chat = deps.chat
     if (chat === undefined) return chatUnsupported()
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    const scope = chatScopeOf(access, accounts)
     if (segments[2] === 'sessions' && segments.length === 3) {
       const active = textParam(url.searchParams, 'active') ?? null
-      return html(await chatSessionsFragment(chat, active, now))
+      return html(await chatSessionsFragment(chat, active, now, scope))
     }
     if (segments[2] === 'thread' && segments.length === 4) {
       const sessionId = decodeURIComponent(segments[3] ?? '')
-      return html((await chatThreadFragment(chat, sessionId, now)).html)
+      return html((await chatThreadFragment(chat, sessionId, now, scope)).html)
     }
     return notFound(`unknown path: ${url.pathname}`)
   }
@@ -1731,6 +1948,12 @@ async function dispatchFragment(
   return html(renderLimits(pageLimits(deps, valueOf(listed))))
 }
 
+/**
+ * Set on every response to a request made with the admin token in
+ * break-glass (§3.4 ②), so a script's own logs show it too, not only the page.
+ */
+const BREAK_GLASS_HEADER = 'x-qianmo-break-glass'
+
 async function route(
   request: Request,
   deps: ConsoleDeps,
@@ -1752,10 +1975,66 @@ async function route(
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return segments[1] === 'app.css'
       ? asset(CONSOLE_CSS, 'text/css; charset=utf-8')
-      : asset(CONSOLE_CLIENT_JS, 'text/javascript; charset=utf-8')
+      : asset(
+          accounts === undefined
+            ? CONSOLE_CLIENT_JS
+            : CONSOLE_CLIENT_JS_ACCOUNTS,
+          'text/javascript; charset=utf-8',
+        )
   }
 
-  const credential = credentialOf(request, tokens)
+  // Without accounts this is `credentialOf` and nothing else (`access.ts`).
+  const access = resolveAccess(request, tokens, accounts)
+  if (!access.breakGlass || accounts === undefined) {
+    return await routeAs(
+      request,
+      deps,
+      tokens,
+      throttle,
+      clientKey,
+      now,
+      accounts,
+      access,
+      url,
+      segments,
+    )
+  }
+  // Recorded before the route runs, so a request that fails still counts as a
+  // use; never refused for failing to record (`AccountBook.recordBreakGlass`).
+  accounts.book.recordBreakGlass(
+    adminFingerprint(tokens),
+    request.method,
+    url.pathname,
+  )
+  const response = await routeAs(
+    request,
+    deps,
+    tokens,
+    throttle,
+    clientKey,
+    now,
+    accounts,
+    access,
+    url,
+    segments,
+  )
+  response.headers.set(BREAK_GLASS_HEADER, '1')
+  return response
+}
+
+async function routeAs(
+  request: Request,
+  deps: ConsoleDeps,
+  tokens: ConsoleTokens,
+  throttle: LoginThrottle,
+  clientKey: string,
+  now: () => number,
+  accounts: ConsoleAccounts | undefined,
+  access: Access,
+  url: URL,
+  segments: readonly string[],
+): Promise<Response> {
+  const credential = access.credential
 
   // The door, and the way back out of it. Both public: a login page that needs
   // a credential is a login page nobody can reach, and a logout that needs one
@@ -1770,11 +2049,12 @@ async function route(
       url,
       clientKey,
       now(),
+      accounts,
     )
   }
 
   if (segments[0] === 'logout' && segments.length === 1) {
-    return handleLogout(request)
+    return handleLogout(request, accounts)
   }
 
   // The invitation door. Public like `/login` — an invitee has no credential
@@ -1793,29 +2073,51 @@ async function route(
     })
   }
 
+  // Everything below needs a credential, and a request the account rules
+  // refused (a personal credential in a link, the admin token outside a
+  // Bearer header in break-glass, a closed account book) goes no further.
+  if (access.refusal !== null) {
+    return accessRefused(request, access.refusal, deps, url)
+  }
+  const denial = accounts === undefined ? undefined : access
+  const viewer =
+    accounts === undefined ? undefined : pageViewer(access, accounts, tokens)
+
   if (segments.length === 0) {
     const denied = guard(credential, 'view', 'document')
-    if (denied !== null) return documentDenial(request, denied, deps, url)
+    if (denied !== null) {
+      return documentDenial(request, denied, deps, url, denial)
+    }
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleIndex(deps, credential, url, now())
+    return await handleIndex(deps, access, url, now(), viewer)
   }
 
   if (segments[0] === 'chat' && segments.length === 1) {
-    const denied = guard(credential, 'admin', 'document')
-    if (denied !== null) return documentDenial(request, denied, deps, url)
+    const denied = guardChat(access, 'document')
+    if (denied !== null) {
+      return documentDenial(request, denied, deps, url, denial)
+    }
     const chat = deps.chat
     // 404 rather than 501: this is a page, and on this instance there is no
     // such page. A script asking `/v0/chat/*` gets the 501 instead.
     if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleChatPage(deps, chat, credential, url, now())
+    return await handleChatPage(
+      deps,
+      chat,
+      credential,
+      url,
+      now(),
+      chatScopeOf(access, accounts),
+      viewer,
+    )
   }
 
   if (segments[0] === 'v0') {
     return await dispatchApi(
       request,
       deps,
-      credential,
+      access,
       url,
       segments,
       now(),
@@ -1827,10 +2129,11 @@ async function route(
     return await dispatchFragment(
       request,
       deps,
-      credential,
+      access,
       url,
       segments,
       now(),
+      accounts,
     )
   }
 
@@ -1880,7 +2183,12 @@ export function createConsoleHandler(
   tokens: ConsoleTokens,
   accounts?: ConsoleAccounts,
 ): (request: Request, source?: ClientAddressSource) => Promise<Response> {
-  if (accounts !== undefined) assertTokensUnlikeAccountSecrets(tokens)
+  if (accounts !== undefined) {
+    assertTokensUnlikeAccountSecrets(tokens)
+    // Once, at start: if the admin token last used as break-glass is not the
+    // one in force now, the rotation happened and is written down (§3.4 ④).
+    accounts.book.breakGlassStatus(adminFingerprint(tokens))
+  }
   const now = deps.now ?? Date.now
   const throttle = new LoginThrottle()
   return async (
@@ -1915,17 +2223,6 @@ export interface ConsoleServerOptions {
   readonly tokens: ConsoleTokens
   /** Personal accounts. Absent is today's console, byte for byte. */
   readonly accounts?: ConsoleAccounts
-}
-
-/**
- * Personal accounts, as the HTTP layer receives them (`tenancy-m1.md` §3).
- *
- * Passed beside the tokens rather than inside {@link ConsoleDeps}: the tokens
- * and the book are the two halves of "who is this", and neither is a port the
- * pages read from.
- */
-export interface ConsoleAccounts {
-  readonly book: AccountBook
 }
 
 /** Live server handle returned by {@link startConsoleServer}. */

@@ -12,6 +12,7 @@
  * response looking right.
  */
 
+import type { ConsoleAccounts } from '../src/access.js'
 import { AccountBook, type AccountBookOptions } from '../src/accounts.js'
 import { CONSOLE_HEADER, type ConsoleTokens } from '../src/auth.js'
 import type {
@@ -32,7 +33,7 @@ import type {
   WakeOutcome,
   WakePort,
 } from '../src/deps.js'
-import { type ConsoleAccounts, createConsoleHandler } from '../src/http.js'
+import { createConsoleHandler } from '../src/http.js'
 
 export const VIEW = 'view-token-000000000001'
 export const ADMIN = 'admin-token-00000000001'
@@ -254,6 +255,7 @@ export class CountingChat implements ChatPort {
 export interface AccountsHarness {
   readonly clock: ManualClock
   readonly ledger: MemoryLedger
+  readonly sessions: MemoryLedger
   readonly book: AccountBook
   readonly chat: CountingChat
   readonly wake: CountingWake
@@ -265,15 +267,21 @@ export interface AccountsHarness {
 export function accountsHarness(
   options: {
     readonly ledger?: MemoryLedger
+    readonly sessions?: MemoryLedger
     readonly book?: Partial<AccountBookOptions>
     readonly accounts?: Omit<ConsoleAccounts, 'book'>
+    readonly clock?: ManualClock
+    readonly tokens?: ConsoleTokens
   } = {},
 ): AccountsHarness {
-  const clock = new ManualClock()
+  const clock = options.clock ?? new ManualClock()
   const ledger = options.ledger ?? new MemoryLedger()
+  const sessions =
+    options.sessions ?? new MemoryLedger('memory://sessions.ndjson')
   const alarms: string[] = []
   const book = new AccountBook({
     accounts: ledger,
+    sessions,
     now: clock.now,
     onAlarm: line => {
       alarms.push(line)
@@ -292,11 +300,21 @@ export function accountsHarness(
     chat,
     wake,
   }
-  const handle = createConsoleHandler(deps, TOKENS, {
+  const handle = createConsoleHandler(deps, options.tokens ?? TOKENS, {
     ...options.accounts,
     book,
   })
-  return { clock, ledger, book, chat, wake, registry, alarms, handle }
+  return {
+    clock,
+    ledger,
+    sessions,
+    book,
+    chat,
+    wake,
+    registry,
+    alarms,
+    handle,
+  }
 }
 
 /** A JSON request with an admin bearer. */
@@ -353,6 +371,95 @@ export function credentialOn(page: string): string {
     throw new Error('no credential on the page')
   }
   return match[1]
+}
+
+/** The value a `Set-Cookie` list gives the named cookie, or `null`. */
+export function cookieFrom(response: Response, name: string): string | null {
+  for (const line of response.headers.getSetCookie()) {
+    if (line.startsWith(`${name}=`)) {
+      return line.slice(name.length + 1).split(';')[0] ?? ''
+    }
+  }
+  return null
+}
+
+/** The whole `Set-Cookie` line for the named cookie, or `null`. */
+export function setCookieLine(response: Response, name: string): string | null {
+  return (
+    response.headers.getSetCookie().find(line => line.startsWith(`${name}=`)) ??
+    null
+  )
+}
+
+/** A person, as the tests hold them: the credential and a live session id. */
+export interface Person {
+  readonly credential: string
+  readonly sid: string
+}
+
+/** Invite over HTTP as the admin token, redeem in a browser, return both secrets. */
+export async function person(
+  handle: (request: Request) => Promise<Response>,
+  role: 'viewer' | 'member' | 'ops' = 'member',
+): Promise<Person> {
+  const { token } = await invite(handle, role)
+  const response = await handle(formPost('/invite', { invite: token }))
+  if (response.status !== 200) {
+    throw new Error(`redeem failed: ${response.status}`)
+  }
+  const credential = credentialOn(await response.text())
+  const sid = cookieFrom(response, 'qianmo_session')
+  if (sid === null || sid === '') throw new Error('redeem did not sign in')
+  return { credential, sid }
+}
+
+/**
+ * A request riding a session cookie, the way the page script sends one: with
+ * the console header unless a test says otherwise.
+ */
+export function asSession(
+  method: string,
+  path: string,
+  sid: string,
+  options: {
+    readonly body?: unknown
+    readonly header?: boolean
+    readonly accept?: string
+    readonly extra?: Record<string, string>
+  } = {},
+): Request {
+  return new Request(`${BASE}${path}`, {
+    method,
+    headers: {
+      cookie: `qianmo_session=${sid}`,
+      ...(options.header === false ? {} : { [CONSOLE_HEADER]: '1' }),
+      ...(options.accept === undefined ? {} : { accept: options.accept }),
+      ...(options.body === undefined
+        ? {}
+        : { 'content-type': 'application/json' }),
+      ...(options.extra ?? {}),
+    },
+    ...(options.body === undefined
+      ? {}
+      : { body: JSON.stringify(options.body) }),
+  })
+}
+
+/** A request with a bearer — a personal credential or a legacy token. */
+export function asBearer(
+  method: string,
+  path: string,
+  bearer: string,
+  body?: unknown,
+): Request {
+  return new Request(`${BASE}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${bearer}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
 }
 
 export { CONSOLE_HEADER }

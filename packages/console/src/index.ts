@@ -84,10 +84,22 @@ export { LoginThrottle } from './throttle.js'
 export {
   AccountBook,
   MAX_OPEN_INVITES,
+  SESSION_ABSOLUTE_MS,
+  SESSION_IDLE_MS,
+  mayApprove,
+  tokenFingerprint,
   type AccountBookOptions,
+  type AccountEnded,
   type AccountRole,
   type AccountSubject,
+  type ConsolePrincipal,
 } from './accounts.js'
+export {
+  ACCOUNT_SESSION_COOKIE,
+  ownerOf,
+  principalOf,
+  type ConsoleAccounts,
+} from './access.js'
 export type { LedgerPort } from './deps.js'
 
 export {
@@ -98,7 +110,6 @@ export {
   parseAuditFilter,
   startConsoleServer,
   type ClientAddressSource,
-  type ConsoleAccounts,
   type ConsoleServerHandle,
   type ConsoleServerOptions,
 } from './http.js'

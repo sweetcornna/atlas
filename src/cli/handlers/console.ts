@@ -26,6 +26,7 @@ import {
   AccountBook,
   resolveTokens,
   startConsoleServer,
+  tokenFingerprint,
   type ConsoleAccounts,
   type ConsoleAuditSource,
   type ConsoleDeps,
@@ -78,19 +79,30 @@ export function newConsoleToken(): string {
 }
 
 /**
- * 个人账号的接线（`tenancy-m1.md` §3，P15.3）：一本落在配置根里的账。
+ * 个人账号的接线（`tenancy-m1.md` §3，P15.3 / P15.5）：配置根里的两本账——账号库
+ * 与会话表。
  *
  * 账坏了**不让控制台起不来**：两枚旧 token 还得能进来看是怎么回事，所以账本
  * 自己转为不可用（个人账号一律 503），告警写到 stderr，横幅上照直写出原因。
  */
-function wireConsoleAccounts(storePath: string): ConsoleAccounts {
+function wireConsoleAccounts(config: {
+  readonly accountsStorePath: string
+  readonly sessionsStorePath: string
+  readonly legacyViewToken: boolean
+  readonly breakGlass: boolean
+}): ConsoleAccounts {
   const book = new AccountBook({
-    accounts: new FileLedger(storePath),
+    accounts: new FileLedger(config.accountsStorePath),
+    sessions: new FileLedger(config.sessionsStorePath),
     onAlarm: line => {
       process.stderr.write(`${line}\n`)
     },
   })
-  return { book }
+  return {
+    book,
+    legacyView: config.legacyViewToken,
+    breakGlass: config.breakGlass,
+  }
 }
 
 /** IPv6 字面量要加方括号才能进 URL。 */
@@ -418,8 +430,15 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // console whose account ledger path is wrong should say so before it has
   // opened a single link.
   const accounts =
-    config.accounts === true && config.accountsStorePath !== undefined
-      ? wireConsoleAccounts(config.accountsStorePath)
+    config.accounts === true &&
+    config.accountsStorePath !== undefined &&
+    config.sessionsStorePath !== undefined
+      ? wireConsoleAccounts({
+          accountsStorePath: config.accountsStorePath,
+          sessionsStorePath: config.sessionsStorePath,
+          legacyViewToken: config.legacyViewToken !== false,
+          breakGlass: config.breakGlass === true,
+        })
       : undefined
 
   const wake = wireConsoleWake(config)
@@ -538,9 +557,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   let banner = field('console', origin)
   banner += field(
     'open',
-    viewGenerated
-      ? `${origin}/?token=${tokens.view}`
-      : `${origin}/?token=<your view token>`,
+    // view token 关掉以后，带它的链接只会被拒；门就是登录页。
+    accounts?.legacyView === false
+      ? `${origin}/login`
+      : viewGenerated
+        ? `${origin}/?token=${tokens.view}`
+        : `${origin}/?token=<your view token>`,
   )
   banner += field(
     'view-token',
@@ -595,6 +617,23 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       problem === null
         ? `enabled -> ${config.accountsStorePath}`
         : `UNAVAILABLE (${problem})`,
+    )
+    banner += field('sessions', config.sessionsStorePath ?? '')
+    banner += field(
+      'legacy-view',
+      accounts.legacyView === false ? 'off' : 'on (migration)',
+    )
+    // 处理器构造时已经比对过指纹、记下了轮换；这里读到的是「现在这枚 admin
+    // token 用作 break-glass 之后还没换」。
+    const glass = accounts.book.breakGlassStatus(tokenFingerprint(tokens.admin))
+    banner += field(
+      'break-glass',
+      (accounts.breakGlass === true ? 'on (admin token: Bearer only)' : 'off') +
+        (glass.rotationDue
+          ? ` · ROTATE the admin token, last used ${new Date(
+              glass.lastUsedAt ?? 0,
+            ).toISOString()}`
+          : ''),
     )
   }
   banner += field('label', config.label)

@@ -73,9 +73,42 @@
  * minute" possible without logging out.
  */
 
+import { PERSONAL_CREDENTIAL_PREFIX } from '../accounts.js'
 import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
 
-export const CONSOLE_CLIENT_JS = `
+/**
+ * What is spliced into the two token functions of both page scripts.
+ *
+ * Empty strings reproduce the scripts byte for byte as they were before
+ * accounts (`test/legacyParity.test.ts` pins both). With accounts on, a
+ * personal credential never reaches `localStorage` (`tenancy-m1.md` §3.3):
+ * `writeToken` — the only function here that calls `setItem` — refuses a
+ * value with the credential's prefix before it touches storage, whether it
+ * came from `#token=`, `?token=` or the paste box, and `readToken` drops one
+ * that is somehow already there. The legacy tokens keep the old behaviour for
+ * as long as migration lasts.
+ */
+export interface TokenGuards {
+  readonly read: string
+  readonly write: string
+}
+
+const NO_GUARDS: TokenGuards = { read: '', write: '' }
+
+export const PERSONAL_GUARDS: TokenGuards = {
+  read:
+    `\n    try { if ((window.localStorage.getItem(TOKEN_KEY) || '')` +
+    `.indexOf('${PERSONAL_CREDENTIAL_PREFIX}') === 0) ` +
+    `window.localStorage.removeItem(TOKEN_KEY); } catch (e) { /* none held */ }`,
+  write:
+    `\n    if (value && String(value).indexOf('${PERSONAL_CREDENTIAL_PREFIX}') === 0) {` +
+    `\n      say(byId('token-state'), '个人凭据请在登录页填写', 'warn');` +
+    `\n      return;` +
+    `\n    }`,
+}
+
+function clientScript(guards: TokenGuards): string {
+  return `
 (function () {
   'use strict';
 
@@ -142,12 +175,12 @@ export const CONSOLE_CLIENT_JS = `
 
   /* ---------------- token ---------------- */
 
-  function readToken() {
+  function readToken() {${guards.read}
     try { return window.localStorage.getItem(TOKEN_KEY) || ''; }
     catch (e) { return memoryToken; }
   }
 
-  function writeToken(value) {
+  function writeToken(value) {${guards.write}
     memoryToken = value;
     try {
       if (value) window.localStorage.setItem(TOKEN_KEY, value);
@@ -567,3 +600,13 @@ export const CONSOLE_CLIENT_JS = `
   }
 })();
 `
+}
+
+/** The script as it has always been: what a console without accounts serves. */
+export const CONSOLE_CLIENT_JS = clientScript(NO_GUARDS)
+
+/**
+ * The same script for a console with accounts: identical but for the two
+ * guards that keep a personal credential out of `localStorage`.
+ */
+export const CONSOLE_CLIENT_JS_ACCOUNTS = clientScript(PERSONAL_GUARDS)

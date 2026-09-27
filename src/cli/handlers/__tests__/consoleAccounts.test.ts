@@ -5,8 +5,9 @@
  * 个人账号的宿主面：真文件、真 `Bun.serve`、只用 HTTP 驱动。
  *
  * **零 `mock.module`**：包内用例用内存账本判规矩，这里判的是包内判不到的
- * 三件事——落盘的权限位与符号链接、明文到底有没有落到磁盘上、以及整条开户路径
- * 在一个真起起来的控制台上（不起 CLI 子进程）走不走得通。
+ * 几件事——落盘的权限位与符号链接、明文（邀请、凭据、会话 id）到底有没有落到
+ * 磁盘上、整条开户与会话路径在一个真起起来的控制台上（不起 CLI 子进程）走不走
+ * 得通、重启以后会话还在，以及盘上一条写坏的吊销行不会把人放回来。
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
@@ -30,7 +31,11 @@ import {
   type ConsoleServerHandle,
 } from '@qianmo/console'
 import { FileLedger } from '../consoleAccountsStore.js'
-import { consoleAccountsPath, parseConsoleArgs } from '../consoleArgs.js'
+import {
+  consoleAccountsPath,
+  consoleSessionsPath,
+  parseConsoleArgs,
+} from '../consoleArgs.js'
 import { consoleLimits } from '../consolePorts.js'
 
 const roots: string[] = []
@@ -141,6 +146,7 @@ describe('FileLedger', () => {
     const alarms: string[] = []
     const book = new AccountBook({
       accounts: new FileLedger(link),
+      sessions: new FileLedger(join(dir, 'sessions.ndjson')),
       onAlarm: line => {
         alarms.push(line)
       },
@@ -154,7 +160,11 @@ describe('an account opened over HTTP only, against real files', () => {
   test('invite → confirm card → redeem, and nothing but hashes on disk', async () => {
     const root = tempDir()
     const path = join(root, 'qianmo', 'console', 'accounts.ndjson')
-    const book = new AccountBook({ accounts: new FileLedger(path) })
+    const sessionsPath = join(root, 'qianmo', 'console', 'sessions.ndjson')
+    const book = new AccountBook({
+      accounts: new FileLedger(path),
+      sessions: new FileLedger(sessionsPath),
+    })
     const server = startConsoleServer(deps(), 0, {
       tokens: TOKENS,
       accounts: { book },
@@ -209,10 +219,168 @@ describe('an account opened over HTTP only, against real files', () => {
     expect(disk.includes(sha256(credential))).toBe(true)
 
     // ⑤ A restart reads the same ledger back and the invitation stays spent.
-    const reopened = new AccountBook({ accounts: new FileLedger(path) })
+    const reopened = new AccountBook({
+      accounts: new FileLedger(path),
+      sessions: new FileLedger(sessionsPath),
+    })
     expect(reopened.problem).toBeNull()
     const again = reopened.acceptInvite(token)
     expect(again.ok).toBe(false)
+  })
+})
+
+describe('an account used over HTTP only, against real files (P15.5)', () => {
+  test('redeem signs in, the session survives a restart, revocation ends it', async () => {
+    const root = tempDir()
+    const accountsPath = join(root, 'qianmo', 'console', 'accounts.ndjson')
+    const sessionsPath = join(root, 'qianmo', 'console', 'sessions.ndjson')
+    const open = () =>
+      new AccountBook({
+        accounts: new FileLedger(accountsPath),
+        sessions: new FileLedger(sessionsPath),
+      })
+    const server = startConsoleServer(deps(), 0, {
+      tokens: TOKENS,
+      accounts: { book: open() },
+    })
+    servers.push(server)
+    const sameOrigin = {
+      'content-type': 'application/x-www-form-urlencoded',
+      'sec-fetch-site': 'same-origin',
+    }
+    const sessionCookie = (response: Response): string =>
+      response.headers
+        .getSetCookie()
+        .find(line => line.startsWith('qianmo_session='))
+        ?.slice('qianmo_session='.length)
+        .split(';')[0] ?? ''
+
+    // ① Invite as the admin token, redeem in a "browser": signed in at once.
+    const issued = await fetch(`${server.url}/v0/accounts/invites`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TOKENS.admin}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ role: 'member' }),
+    })
+    const { link } = (await issued.json()) as { link: string }
+    const redeemed = await fetch(`${server.url}/invite`, {
+      method: 'POST',
+      headers: sameOrigin,
+      body: new URLSearchParams({
+        invite: link.slice(link.indexOf('#') + 1),
+      }).toString(),
+    })
+    expect(redeemed.status).toBe(200)
+    const page = await redeemed.text()
+    const credential =
+      /id="credential"[^>]*value="([^"]+)"/.exec(page)?.[1] ?? ''
+    const first = sessionCookie(redeemed)
+    expect(first.startsWith('qms_')).toBe(true)
+
+    // ② The cookie opens the console; a fresh login rotates the id.
+    const index = await fetch(`${server.url}/`, {
+      headers: { cookie: `qianmo_session=${first}` },
+    })
+    expect(index.status).toBe(200)
+    expect((await index.text()).includes('成员账号')).toBe(true)
+    const login = await fetch(`${server.url}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { ...sameOrigin, cookie: `qianmo_session=${first}` },
+      body: new URLSearchParams({ token: credential }).toString(),
+    })
+    expect(login.status).toBe(303)
+    const second = sessionCookie(login)
+    expect(second).not.toBe(first)
+    const limits = (sid: string) =>
+      fetch(`${server.url}/v0/limits`, {
+        headers: {
+          cookie: `qianmo_session=${sid}`,
+          'x-qianmo-console': '1',
+        },
+      })
+    expect((await limits(first)).status).toBe(401)
+    expect((await limits(second)).status).toBe(200)
+
+    // ③ A second console over the same files: nobody has to log in again.
+    const restarted = startConsoleServer(deps(), 0, {
+      tokens: TOKENS,
+      accounts: { book: open() },
+    })
+    servers.push(restarted)
+    const again = await fetch(`${restarted.url}/v0/limits`, {
+      headers: { cookie: `qianmo_session=${second}`, 'x-qianmo-console': '1' },
+    })
+    expect(again.status).toBe(200)
+
+    // ④ Revoke on the first console; its next request is a 401.
+    const list = (await (
+      await fetch(`${server.url}/v0/accounts`, {
+        headers: { authorization: `Bearer ${TOKENS.admin}` },
+      })
+    ).json()) as { accounts: { subject: string }[] }
+    const subject = list.accounts[0]?.subject ?? ''
+    const revoked = await fetch(`${server.url}/v0/accounts/${subject}/revoke`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKENS.admin}` },
+    })
+    expect(revoked.status).toBe(204)
+    expect((await limits(second)).status).toBe(401)
+
+    // ⑤ No session id and no credential anywhere on disk; their hashes are.
+    const disk = everythingUnder(root)
+    for (const secret of [credential, first, second]) {
+      expect(disk.includes(secret)).toBe(false)
+      expect(disk.includes(sha256(secret))).toBe(true)
+    }
+    expect(statSync(sessionsPath).mode & 0o777).toBe(0o600)
+  })
+
+  test('a corrupted revocation on disk keeps the person out and says why', async () => {
+    const root = tempDir()
+    const accountsPath = join(root, 'accounts.ndjson')
+    const sessionsPath = join(root, 'sessions.ndjson')
+    const book = new AccountBook({
+      accounts: new FileLedger(accountsPath),
+      sessions: new FileLedger(sessionsPath),
+    })
+    const issued = book.issueInvite({
+      role: 'member',
+      issuedBy: 'legacy:admin',
+    })
+    if (!issued.ok) throw new Error('issue failed')
+    const accepted = book.acceptInvite(issued.value.token)
+    if (!accepted.ok) throw new Error('accept failed')
+    expect(book.revoke(accepted.value.subject, 'legacy:admin').ok).toBe(true)
+    // A crash mid-write of the revocation: the last line loses its tail.
+    const text = readFileSync(accountsPath, 'utf8')
+    writeFileSync(accountsPath, text.slice(0, -10))
+
+    const alarms: string[] = []
+    const reopened = new AccountBook({
+      accounts: new FileLedger(accountsPath),
+      sessions: new FileLedger(sessionsPath),
+      onAlarm: line => {
+        alarms.push(line)
+      },
+    })
+    expect(reopened.problem).toContain(accountsPath)
+    expect(alarms).toHaveLength(1)
+    const server = startConsoleServer(deps(), 0, {
+      tokens: TOKENS,
+      accounts: { book: reopened },
+    })
+    servers.push(server)
+    const personal = await fetch(`${server.url}/v0/limits`, {
+      headers: { authorization: `Bearer ${accepted.value.credential}` },
+    })
+    expect(personal.status).toBe(503)
+    const admin = await fetch(`${server.url}/v0/limits`, {
+      headers: { authorization: `Bearer ${TOKENS.admin}` },
+    })
+    expect(admin.status).toBe(200)
   })
 })
 
@@ -252,9 +420,53 @@ describe('--accounts', () => {
     ).toThrow('--accounts')
   })
 
+  test('the migration switches need --accounts, and parse strictly', () => {
+    const on = parseConsoleArgs(['--accounts'], 'qianmo')
+    expect(on.sessionsStorePath).toBe(consoleSessionsPath())
+    expect(
+      consoleSessionsPath().endsWith(
+        join('qianmo', 'console', 'sessions.ndjson'),
+      ),
+    ).toBe(true)
+    expect(on.legacyViewToken).toBe(true)
+    expect(on.breakGlass).toBe(false)
+    const off = parseConsoleArgs(
+      [
+        '--accounts',
+        '--legacy-view-token',
+        'off',
+        '--break-glass',
+        '--sessions-store=/tmp/s.ndjson',
+      ],
+      'qianmo',
+    )
+    expect(off.legacyViewToken).toBe(false)
+    expect(off.breakGlass).toBe(true)
+    expect(off.sessionsStorePath).toBe('/tmp/s.ndjson')
+    for (const alone of [
+      ['--break-glass'],
+      ['--legacy-view-token', 'off'],
+      ['--sessions-store', '/tmp/s.ndjson'],
+    ]) {
+      expect(() => parseConsoleArgs(alone, 'qianmo')).toThrow('--accounts')
+    }
+    expect(() =>
+      parseConsoleArgs(['--accounts', '--legacy-view-token', 'no'], 'qianmo'),
+    ).toThrow('on or off')
+    expect(() =>
+      parseConsoleArgs(['--accounts', '--sessions-store', 'rel'], 'qianmo'),
+    ).toThrow('absolute')
+    const plain = parseConsoleArgs([], 'qianmo')
+    for (const key of ['sessionsStorePath', 'legacyViewToken', 'breakGlass']) {
+      expect(key in plain).toBe(false)
+    }
+  })
+
   test('refuses legacy tokens that look like personal secrets', () => {
+    const dir = tempDir()
     const book = new AccountBook({
-      accounts: new FileLedger(join(tempDir(), 'accounts.ndjson')),
+      accounts: new FileLedger(join(dir, 'accounts.ndjson')),
+      sessions: new FileLedger(join(dir, 'sessions.ndjson')),
     })
     expect(() =>
       startConsoleServer(deps(), 0, {
