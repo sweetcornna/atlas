@@ -47,10 +47,12 @@ if (import.meta.main) {
   }
   const overlap = overlapWithGold(set.questions)
   for (const [index, q] of set.questions.entries()) {
-    const matched = overlap[index] ?? []
+    const matched = overlap[index] ?? null
     console.log(
-      `${matched.length === 0 ? 'ok  ' : 'FAIL'} ${q.id} → ${q.gold}` +
-        (matched.length === 0 ? '' : `  shared: ${matched.join(' ')}`),
+      matched === null
+        ? `FAIL ${q.id} → ${q.gold}  not one of the gold decisions`
+        : `${matched.length === 0 ? 'ok  ' : 'FAIL'} ${q.id} → ${q.gold}` +
+            (matched.length === 0 ? '' : `  shared: ${matched.join(' ')}`),
     )
   }
   const counts = goldDecisions().map(

@@ -165,7 +165,11 @@ describe('the checker the author runs', () => {
         toToml({
           ...set,
           questions: set.questions.map(q =>
-            q.id === 'ho-wake-1' ? { ...q, question: wake?.title ?? '' } : q,
+            q.id === 'ho-wake-1'
+              ? { ...q, question: wake?.title ?? '' }
+              : q.id === 'ho-vector-1'
+                ? { ...q, gold: 'no-such-decision' }
+                : q,
           ),
         }),
       )
@@ -176,6 +180,9 @@ describe('the checker the author runs', () => {
       })
       expect(bad.exitCode).toBe(1)
       expect(bad.stdout.toString()).toMatch(/FAIL ho-wake-1 → wake {2}shared: /)
+      expect(bad.stdout.toString()).toContain(
+        'FAIL ho-vector-1 → no-such-decision  not one of the gold decisions',
+      )
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
