@@ -26,6 +26,14 @@
  *
  * `--state` 打开落盘（`FileRegistryStore`，原子写），用来演示 P2.1 的「重启后表还在」。
  * 不给就是纯内存表——持久化是 opt-in，构造一个注册中心不该顺手写别人的配置根。
+ * 同一个开关也落吊销清单：旁边一个文件（`revocationListStatePathFor`，`registry-agents.json`
+ * 旁边是 `registry-revocation-list.json`），重启后照样对外发布。这个文件**读不出来就不启动**：
+ * 吊销清单没有人会替它续租，悄悄从空清单起，节点看到的就是「从没发布过」。
+ *
+ * `--write-token-file <绝对路径>` 打开写鉴权（tenancy-m1.md P15.8）：`POST` / `DELETE` /
+ * 心跳 / 发布吊销清单都要带 `Authorization: Bearer <token>`，不带就 401、表不变；读不受影响。
+ * 文件必须只有属主可读（0600 或更严），否则拒绝启动。本进程自己替 `--register` 续租是进程内
+ * 调用，不经 HTTP，不需要 token。不给这个参数 = 与加它之前完全一样（零鉴权）。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -34,8 +42,11 @@ import { parseAddress } from '@qianmo/protocol'
 import {
   DEFAULT_RENEW_INTERVAL_MS,
   FileRegistryStore,
+  FileRevocationListStore,
   InMemoryRegistry,
   isValidPublicKey,
+  readRegistryWriteTokenFile,
+  revocationListStatePathFor,
   startRegistryServer,
 } from '@qianmo/registry'
 import { arg, intArg } from './cli-args.js'
@@ -141,19 +152,52 @@ const statePath = arg('state')
 if (statePath !== undefined && !isAbsolute(statePath)) {
   throw new Error('--state 必须是绝对路径')
 }
-const registry = new InMemoryRegistry({
-  ...(statePath === undefined
-    ? {}
-    : { store: new FileRegistryStore(statePath) }),
-  onPersistError: error => {
-    // 落盘失败不失败请求（表在内存里仍然权威），但**必须可见**。
-    process.stderr.write(`registry 持久化失败：${String(error)}\n`)
-  },
-})
+const writeTokenFile = arg('write-token-file')
+if (writeTokenFile !== undefined && !isAbsolute(writeTokenFile)) {
+  throw new Error('--write-token-file 必须是绝对路径')
+}
+// 在绑端口、写 ready 之前读：权限不对的 token 文件是配置错，起不来就该什么都没做过。
+const writeToken =
+  writeTokenFile === undefined
+    ? undefined
+    : readRegistryWriteTokenFile(writeTokenFile, '--write-token-file')
+
+const revocationListPath =
+  statePath === undefined ? undefined : revocationListStatePathFor(statePath)
+let registry: InMemoryRegistry
+try {
+  registry = new InMemoryRegistry({
+    ...(statePath === undefined
+      ? {}
+      : { store: new FileRegistryStore(statePath) }),
+    ...(revocationListPath === undefined
+      ? {}
+      : {
+          revocationListStore: new FileRevocationListStore(revocationListPath),
+        }),
+    onPersistError: error => {
+      // 落盘失败不失败请求（表在内存里仍然权威），但**必须可见**。吊销清单例外：
+      // 它落盘失败时那次发布本身被拒（HTTP 500），这里照样出声。
+      process.stderr.write(`registry 持久化失败：${String(error)}\n`)
+    },
+  })
+} catch (error) {
+  // 只有吊销清单会走到这里（表读不动时照旧从空表起）。
+  process.stderr.write(
+    `registry 不启动：吊销清单的落盘文件不可用：${
+      error instanceof Error ? error.message : String(error)
+    }\n` +
+      `不会以空清单启动。用 CA 目录里最新的 revocation-list.json 覆盖 ${String(
+        revocationListPath,
+      )}；或确认要丢弃它，把它移开后再启动，然后重新发布。\n`,
+  )
+  process.exit(1)
+}
 
 const server = startRegistryServer(intArg('port', 0), {
   registry,
   hostname: arg('host') ?? '127.0.0.1',
+  ...(writeToken === undefined ? {} : { writeToken }),
 })
 
 const announce = (): void => {
@@ -203,11 +247,17 @@ writeFileSync(
     pid: process.pid,
     agents: registrations,
     ...(statePath === undefined ? {} : { state: statePath }),
+    ...(revocationListPath === undefined
+      ? {}
+      : { revocationListState: revocationListPath }),
+    writeAuth: writeToken !== undefined,
   })}\n`,
   { mode: 0o600 },
 )
 process.stdout.write(
-  `registry 就绪：${server.url}（${registrations.length} 条登记）\n`,
+  `registry 就绪：${server.url}（${registrations.length} 条登记；写操作${
+    writeToken === undefined ? '不鉴权' : '要 token'
+  }）\n`,
 )
 for (const { address, endpoint, publicKey } of registrations) {
   process.stdout.write(
