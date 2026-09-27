@@ -40,8 +40,10 @@
  * - no two roots share a subject. TLS picks the issuer by name, so with two
  *   same-named roots and a leaf that carries no authority key identifier it
  *   tries the first one and fails the other root's leaves with `certificate
- *   signature failure`. `qm ca init` names every root `CN=qianmo-ca` unless
- *   told otherwise, so this is the rotation mistake most likely to happen.
+ *   signature failure`. `qm ca init` now dates its default name
+ *   (`qianmo-ca-<yyyymmdd>`), but the first production root is plain
+ *   `CN=qianmo-ca`, `--cn` can repeat a name, and two roots made on one UTC
+ *   day share the default — so the file still has to refuse it.
  *
  * A root that is merely out of date is **not** refused here: it anchors
  * nothing (the TLS layer answers `certificate has expired`), and

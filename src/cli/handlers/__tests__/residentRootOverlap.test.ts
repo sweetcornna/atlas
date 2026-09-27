@@ -140,7 +140,8 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-root-overlap-'))
   oldDir = join(root, 'ca-old')
   newDir = join(root, 'ca-new')
-  initCa({ directory: oldDir })
+  // Named like the production root, which predates the dated default CN.
+  initCa({ directory: oldDir, commonName: 'qianmo-ca' })
   // A new root gets a new name: the file refuses two roots called the same.
   initCa({ directory: newDir, commonName: 'qianmo-ca-next' })
   oldLeaf = issueLeaf(oldDir, 'node-old')
@@ -412,15 +413,16 @@ describe('a damaged --trust-ca refuses startup in every reader', () => {
   itNeedsOpenssl(
     'measured: two same-named roots, a leaf without AKI — TLS picks by name',
     async () => {
-      // Why the file refuses two roots with one subject. `ca init` names
-      // every root CN=qianmo-ca unless told otherwise; a leaf that carries no
+      // Why the file refuses two roots with one subject. Two roots end up
+      // with one name when `--cn` repeats the old one, or when both were made
+      // with the dated default on the same UTC day. A leaf that carries no
       // authority key identifier then chains to whichever same-named root
       // Bun tries first, and the other root's leaves fail the signature
       // check — while a signature-only directory would accept both. Pinned
       // the way `mtls.test.ts` pins its limit: if a Bun upgrade turns this
       // red, re-measure before relaxing the same-subject refusal.
       const twinDir = join(root, 'ca-twin')
-      initCa({ directory: twinDir })
+      initCa({ directory: twinDir, commonName: 'qianmo-ca' })
       const noAki = (directory: string, node: string) => {
         const keyPath = join(root, `${node}.noaki.key`)
         writeFileSync(

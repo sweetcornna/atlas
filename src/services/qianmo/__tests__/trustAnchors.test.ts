@@ -50,7 +50,9 @@ beforeAll(() => {
   oldDir = join(root, 'old')
   newDir = join(root, 'new')
   // Two generations, named apart — the rotation `ca init --help` describes.
-  initCa({ directory: oldDir })
+  // The old one is named like the production root, which predates the dated
+  // default CN.
+  initCa({ directory: oldDir, commonName: 'qianmo-ca' })
   initCa({ directory: newDir, commonName: 'qianmo-ca-next' })
   oldPem = readFileSync(caCertPath(oldDir), 'utf8')
   newPem = readFileSync(caCertPath(newDir), 'utf8')
@@ -241,10 +243,11 @@ describe('parseTrustAnchors: what a trust file may hold', () => {
   })
 
   itNeedsOpenssl('two roots with one name are refused', () => {
-    // `ca init` names every root CN=qianmo-ca unless told otherwise, and the
-    // TLS layer picks an issuer by name — see `residentRootOverlap.test.ts`.
+    // The production root is CN=qianmo-ca, and `--cn` can hand a new root the
+    // same name; the TLS layer picks an issuer by name — see
+    // `residentRootOverlap.test.ts`.
     const sameName = join(root, 'same-name')
-    initCa({ directory: sameName })
+    initCa({ directory: sameName, commonName: 'qianmo-ca' })
     expect(() =>
       parseTrustAnchors(
         oldPem + readFileSync(caCertPath(sameName), 'utf8'),
@@ -279,7 +282,7 @@ describe('anchoredValidity: issued by which root, and valid until when', () => {
     // Issuer name matches, key does not: the directory must refuse what the
     // TLS layer refuses, so name and signature are both checked.
     const impostor = join(root, 'impostor')
-    initCa({ directory: impostor })
+    initCa({ directory: impostor, commonName: 'qianmo-ca' })
     const forged = leafUnder(impostor, 'node-a')
     const ours = parseTrustAnchors(oldPem, 'test')
     expect(forged.issuer).toBe('CN=qianmo-ca')

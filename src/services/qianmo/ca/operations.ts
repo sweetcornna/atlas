@@ -101,13 +101,20 @@ export const CA_ROOT_DAYS = 3650
 export const NODE_CERT_DAYS = 90
 
 /**
- * Subject CN of the root.
+ * Default subject CN of a root: `qianmo-ca-<UTC yyyymmdd>`.
  *
- * Taken from the identity roster so the network's name is spelled in exactly
- * one place (CLAUDE.md §2.3). It is decoration either way: §4.2 puts the
- * identity in the SANs, and nothing in Qianmo ever reads a CN.
+ * The prefix comes from the identity roster so the network's name is spelled
+ * in exactly one place (CLAUDE.md §2.3). Nothing in Qianmo reads a CN for
+ * identity (§4.2 puts that in the SANs), but the TLS layer does pick a root by
+ * name, so a `--trust-ca` file refuses two roots that share one
+ * (`trustAnchors.ts`). The date is what keeps a rotation's new root from
+ * inheriting its predecessor's name by default. The first production root
+ * predates it and is `CN=qianmo-ca`.
  */
-const DEFAULT_CA_COMMON_NAME = `${NODE_IDENTITY_MODE}-ca`
+function defaultCaCommonName(now: number): string {
+  const day = new Date(now).toISOString().slice(0, 10).replace(/-/g, '')
+  return `${NODE_IDENTITY_MODE}-ca-${day}`
+}
 
 /** Split `--host` values into the two SAN classes openssl wants (§4.2). */
 function classifyHosts(hosts: readonly string[]): {
@@ -213,9 +220,12 @@ export function initCa(options: {
   readonly directory: string
   readonly commonName?: string
   readonly days?: number
+  /** Picks the date in the default CN; the certificate's validity is openssl's clock. */
+  readonly now?: number
 }): CaInitResult {
   const directory = options.directory
-  const commonName = options.commonName ?? DEFAULT_CA_COMMON_NAME
+  const commonName =
+    options.commonName ?? defaultCaCommonName(options.now ?? Date.now())
   const days = options.days ?? CA_ROOT_DAYS
 
   mkdirSync(directory, { recursive: true, mode: CA_DIR_MODE })

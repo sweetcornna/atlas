@@ -84,15 +84,18 @@ Common options:
 
 init:
 
-  --cn <name>              Subject CN of the root. Decoration: nothing in
-                           Qianmo reads a CN, the identity is in the SANs.
+  --cn <name>              Subject CN of the root. Default qianmo-ca-<UTC
+                           yyyymmdd>, the day it is made. Identity is in the
+                           SANs, but TLS picks a root by this name.
   --days <n>               Root lifetime, default ${CA_ROOT_DAYS} (10 years, §6.2).
                            That is the backstop, not the plan: rotate every
                            3 years with a 90-day overlap.
 
-  A new root for a rotation goes in a new --ca-dir and needs its own --cn:
-  during the overlap nodes hold both roots in one --trust-ca file, and a file
-  with two roots of the same name is refused (TLS picks an issuer by name).
+  A new root for a rotation goes in a new --ca-dir and must not share the old
+  root's name: during the overlap nodes hold both roots in one --trust-ca
+  file, and a file with two roots of the same name is refused. The dated
+  default already differs from any root made on another day, including the
+  first production root (CN=qianmo-ca).
 
   Prints the root's SHA-256 fingerprint. Record it in the runbook -- it is the
   one thing distributed out of band, and comparing it is what makes the first

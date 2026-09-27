@@ -48,6 +48,7 @@ import { opensslVersion, runOpenssl } from '../openssl.js'
 import { caCertPath, caKeyPath, revocationListPath } from '../paths.js'
 import { popMessage } from '../pop.js'
 import { verifyRevocationList } from '../revocationList.js'
+import { parseTrustAnchors } from '../../trustAnchors.js'
 
 const OPENSSL = opensslVersion()
 if (OPENSSL === null) {
@@ -134,6 +135,58 @@ describe('qm ca init', () => {
   itNeedsOpenssl('never overwrites an existing CA private key (§3.3)', () => {
     expect(() => initCa({ directory: caDir })).toThrow(/never\s+overwritten/)
   })
+
+  itNeedsOpenssl(
+    'the default CN carries the UTC date; an explicit --cn wins',
+    () => {
+      // 23:30 UTC is already the next day east of Greenwich: the date must be
+      // the UTC one, or two operators in two zones name one day differently.
+      const now = Date.UTC(2029, 0, 2, 23, 30)
+      const dated = join(root, 'dated')
+      initCa({ directory: dated, now })
+      expect(new X509Certificate(readFileSync(caCertPath(dated))).subject).toBe(
+        'CN=qianmo-ca-20290102',
+      )
+
+      const named = join(root, 'named')
+      initCa({ directory: named, commonName: 'qianmo-ca', now })
+      expect(new X509Certificate(readFileSync(caCertPath(named))).subject).toBe(
+        'CN=qianmo-ca',
+      )
+      // The first production root is CN=qianmo-ca; a default-named root made
+      // on any day is not.
+      expect(
+        new X509Certificate(readFileSync(caCertPath(caDir))).subject,
+      ).toMatch(/^CN=qianmo-ca-\d{8}$/)
+    },
+  )
+
+  itNeedsOpenssl(
+    'a second init on the same day: one directory refuses, two directories collide',
+    () => {
+      const now = Date.UTC(2029, 8, 15, 8)
+      const first = join(root, 'same-day')
+      initCa({ directory: first, now })
+      const before = readFileSync(caCertPath(first), 'utf8')
+      // Same directory: init itself stops it, and the first root is untouched.
+      expect(() => initCa({ directory: first, now })).toThrow(
+        /a CA already exists/,
+      )
+      expect(readFileSync(caCertPath(first), 'utf8')).toBe(before)
+
+      // Another directory on the same UTC day gets the same default name, and
+      // init has no way to know. The collision surfaces where both roots meet:
+      // a --trust-ca file holding them is refused at startup.
+      const second = join(root, 'same-day-2')
+      initCa({ directory: second, now })
+      expect(() =>
+        parseTrustAnchors(
+          before + readFileSync(caCertPath(second), 'utf8'),
+          'test',
+        ),
+      ).toThrow(/two roots share the subject CN=qianmo-ca-20290915/)
+    },
+  )
 })
 
 describe('qm ca issue', () => {
