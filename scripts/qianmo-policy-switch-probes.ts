@@ -958,6 +958,7 @@ function probeS5(now: number): CriterionReport {
         },
       },
       failure: null,
+      roots: [],
       binName: 'qm',
     },
   )

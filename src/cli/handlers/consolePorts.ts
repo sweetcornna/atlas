@@ -41,6 +41,7 @@ import type {
   CertificateSnapshot,
   CertificateStatus,
   ConsoleAgent,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleFailure,
   ConsoleResult,
@@ -511,7 +512,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
 // ---------------------------------------------------------------------------
 
 /**
- * 到期提醒的两道门限，都只写在这里。
+ * 到期提醒的两道门限，都只写在这里，节点证书与 CA 根共用。
  *
  * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。门限在这里换成状态
  * （`expiring` / `expiring-urgent`），颜色由视图按状态查 tone 表——门限若在
@@ -520,6 +521,17 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
  */
 const CERTIFICATE_EXPIRING_MS = 21 * 24 * 60 * 60 * 1000
 const CERTIFICATE_URGENT_MS = 7 * 24 * 60 * 60 * 1000
+
+/** 一个 `notAfter` 在 `now` 时落在哪一档。叶证书与根都经这一个函数。 */
+function expiryStatusOf(
+  notAfter: number,
+  now: number,
+): ConsoleCaRoot['status'] {
+  if (now >= notAfter) return 'expired'
+  if (notAfter - now < CERTIFICATE_URGENT_MS) return 'expiring-urgent'
+  if (notAfter - now < CERTIFICATE_EXPIRING_MS) return 'expiring'
+  return 'valid'
+}
 
 interface CertificatePortOptions {
   /** 注册中心 HTTP v0 基址，不带尾斜杠。 */
@@ -580,16 +592,7 @@ function certificateStatusOf(
   if (revoked.has(fingerprint256)) {
     return { status: 'revoked', fingerprint256, notAfter }
   }
-  if (now >= notAfter) {
-    return { status: 'expired', fingerprint256, notAfter }
-  }
-  if (notAfter - now < CERTIFICATE_URGENT_MS) {
-    return { status: 'expiring-urgent', fingerprint256, notAfter }
-  }
-  if (notAfter - now < CERTIFICATE_EXPIRING_MS) {
-    return { status: 'expiring', fingerprint256, notAfter }
-  }
-  return { status: 'valid', fingerprint256, notAfter }
+  return { status: expiryStatusOf(notAfter, now), fingerprint256, notAfter }
 }
 
 /**
@@ -628,6 +631,16 @@ export function createCertificatePort(
   }
 
   return {
+    roots(): readonly ConsoleCaRoot[] {
+      const at = now()
+      return anchors.anchors.map(anchor => ({
+        // 多个 RDN 的 subject 每项占一行，拼成一行显示。
+        subject: anchor.certificate.subject.replace(/\n/g, ', '),
+        notAfter: anchor.notAfter,
+        status: expiryStatusOf(anchor.notAfter, at),
+      }))
+    },
+
     async read(): Promise<ConsoleResult<CertificateSnapshot>> {
       let agentsBody: unknown
       let rlBody: unknown

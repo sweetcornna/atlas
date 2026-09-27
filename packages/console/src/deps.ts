@@ -457,6 +457,24 @@ export interface CertificateSnapshot {
 }
 
 /**
+ * `--trust-ca` 文件里的一张 CA 根，§6.2 表里「CA 根」那一行的提醒。
+ *
+ * 到期分档与节点证书**同一组**（`valid` / `expiring` / `expiring-urgent` /
+ * `expired`，门限也是同两道）：根过期时它签的每张证书在 TLS 层和证书目录里一并
+ * 失效，这件事对运维的紧迫程度不低于任何一张叶证书。`subject` 足以区分两张根：
+ * 信任文件拒绝两张同名的根。
+ */
+export interface ConsoleCaRoot {
+  readonly subject: string
+  /** 根自己的 `notAfter`，epoch 毫秒。 */
+  readonly notAfter: number
+  readonly status: Extract<
+    CertificateStatus,
+    'valid' | 'expiring' | 'expiring-urgent' | 'expired'
+  >
+}
+
+/**
  * 可选：没有配 CA 根就整条证书栏不出现（不是显示一排「未知」）。
  *
  * 与唤醒面的取舍不同：唤醒是主页上的一块功能，藏起来会让人以为面板坏了；证书栏
@@ -465,6 +483,13 @@ export interface CertificateSnapshot {
  */
 export interface CertificatePort {
   read(): Promise<ConsoleResult<CertificateSnapshot>>
+  /**
+   * 信任文件里的根，按文件顺序，每张一条。
+   *
+   * 与 `read()` 分开、同步返回：根是本机启动时读进来的文件，不经注册中心。放进
+   * `read()` 的快照里，注册中心一不可达，根的到期提示就跟着从页面上消失。
+   */
+  roots(): readonly ConsoleCaRoot[]
 }
 
 // ---------------------------------------------------------------------------

@@ -17,8 +17,8 @@
  *
  * ## Everything on this page is public material
  *
- * Status verdicts, `fingerprint256`, `notAfter`, and the revocation list's two
- * clocks. No private key, of any of the three kinds §10.3 names, can reach
+ * Status verdicts, `fingerprint256`, `notAfter`, the revocation list's two
+ * clocks, and each CA root's subject and `notAfter`. No private key, of any of the three kinds §10.3 names, can reach
  * this file — `ConsoleCertificate` has no field one could arrive in.
  *
  * The fingerprint is shown **whole**, unlike the public-key column next to it
@@ -36,9 +36,10 @@
 
 import { bar, chip, tag, toned, type Tone } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatClock, formatShortDuration } from './format.js'
+import { formatClock, formatDateTime, formatShortDuration } from './format.js'
 import type {
   CertificateStatus,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleFailure,
   ConsoleRevocationList,
@@ -182,6 +183,43 @@ export function renderRevocationBar(
       ? ` · 已过期 ${formatClock(revocationList.nextUpdate)} · 全网按 --trust 收敛`
       : ` · 剩余 ${formatShortDuration(revocationList.nextUpdate - now)}`)
   return bar(stale ? 'bad' : 'muted', line)
+}
+
+/**
+ * A strip is a banner, and a banner has no green: a root in date reads as the
+ * quiet `muted`, the way a fresh revocation list does. The other three tiers
+ * are the leaf's, colour for colour.
+ */
+const ROOT_TONE: Readonly<Record<ConsoleCaRoot['status'], Tone>> = {
+  valid: 'muted',
+  expiring: 'warn',
+  'expiring-urgent': 'critical',
+  expired: 'critical',
+}
+
+/**
+ * One header strip per root in the trust file — §6.2's CA-root reminder.
+ *
+ * Every root gets its line, in date or not: during a rotation overlap the file
+ * holds two, and "which one is running out" is the question. The tiers and
+ * their words are the certificate column's; only the expired strip says what
+ * follows from it, because that consequence — every certificate the root
+ * signed stops working with it — is not visible anywhere else on the page.
+ */
+export function renderRootBars(
+  roots: readonly ConsoleCaRoot[],
+  now: number,
+): string {
+  return roots
+    .map(root => {
+      const head = `CA 根 ${root.subject} · ${STATUS_WORD[root.status]}`
+      const tail =
+        root.status === 'expired'
+          ? ` ${formatDateTime(root.notAfter)} · 所签证书一并失效`
+          : ` · 剩余 ${formatShortDuration(root.notAfter - now)}`
+      return bar(ROOT_TONE[root.status], head + tail)
+    })
+    .join('')
 }
 
 /** The count tag for the roster header: how many nodes need a certificate look. */

@@ -386,6 +386,79 @@ describe('§6.2 expiry tiers, one certificate, one clock', () => {
   )
 })
 
+/**
+ * §6.2's CA-root row, on the same four tiers and the same two thresholds as
+ * a node certificate. One root, one `ManualClock`, each tier's first and last
+ * instant — the root's own `notAfter` is ten years out, so only a clock can
+ * get there.
+ */
+describe('§6.2 expiry tiers for the CA root, one root, one clock', () => {
+  const DAYS = 24 * 60 * 60 * 1000
+  let rootPem: string
+  let rootNotAfter: number
+  let clock: ManualClock
+
+  beforeAll(() => {
+    if (OPENSSL === null) return
+    rootPem = readFileSync(join(caDir, 'ca.crt'), 'utf8')
+    rootNotAfter = Date.parse(new X509Certificate(rootPem).validTo)
+    clock = new ManualClock(rootNotAfter - 400 * DAYS)
+  })
+
+  function rootAt(instant: number) {
+    clock.set(instant)
+    const roots = portFor({ agents: [], now: () => clock.now() }).roots()
+    expect(roots).toHaveLength(1)
+    return roots[0]
+  }
+
+  itNeedsOpenssl('valid: 21 days or more left', () => {
+    const at = rootAt(rootNotAfter - 400 * DAYS)
+    expect(at?.status).toBe('valid')
+    expect(at?.notAfter).toBe(rootNotAfter)
+    expect(at?.subject).toBe(new X509Certificate(rootPem).subject)
+    expect(rootAt(rootNotAfter - 21 * DAYS)?.status).toBe('valid')
+  })
+
+  itNeedsOpenssl('expiring (yellow): under 21 days, 7 or more left', () => {
+    expect(rootAt(rootNotAfter - 21 * DAYS + 1)?.status).toBe('expiring')
+    expect(rootAt(rootNotAfter - 7 * DAYS)?.status).toBe('expiring')
+  })
+
+  itNeedsOpenssl('expiring-urgent (red): under 7 days', () => {
+    expect(rootAt(rootNotAfter - 7 * DAYS + 1)?.status).toBe('expiring-urgent')
+    expect(rootAt(rootNotAfter - 1)?.status).toBe('expiring-urgent')
+  })
+
+  itNeedsOpenssl('expired: from notAfter on, a state of its own', () => {
+    expect(rootAt(rootNotAfter)?.status).toBe('expired')
+    expect(rootAt(rootNotAfter + 30 * DAYS)?.status).toBe('expired')
+  })
+
+  itNeedsOpenssl(
+    'two roots: one entry each, in file order, each on its own clock',
+    () => {
+      const shortDir = join(root, 'root-tier-short')
+      initCa({ directory: shortDir, commonName: 'qianmo-ca-short', days: 10 })
+      const shortPem = readFileSync(join(shortDir, 'ca.crt'), 'utf8')
+      const port = createCertificatePort({
+        baseUrl: 'http://127.0.0.1:1',
+        caCertificatePem: shortPem + rootPem,
+        // The roots are the console's own file: asking for them must not
+        // touch the registry at all.
+        fetch: () => Promise.reject(new Error('the registry was asked')),
+        now: () => Date.now(),
+      })
+      expect(
+        port.roots().map(one => [one.subject, one.status] as const),
+      ).toEqual([
+        ['CN=qianmo-ca-short', 'expiring'],
+        [new X509Certificate(rootPem).subject, 'valid'],
+      ])
+    },
+  )
+})
+
 describe('the console reads a two-root --trust-ca the way a node does', () => {
   itNeedsOpenssl(
     'both roots: both valid; old root removed: the old one is a forgery',

@@ -86,6 +86,7 @@ import {
   certificateLine,
   certificateTally,
   renderRevocationBar,
+  renderRootBars,
   reissueCommand,
 } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
@@ -103,6 +104,7 @@ import {
 import type {
   CertificateSnapshot,
   ConsoleAgent,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleFailure,
   NodeServer,
@@ -119,6 +121,8 @@ import type {
 export interface RosterCertificates {
   readonly snapshot: CertificateSnapshot | null
   readonly failure: ConsoleFailure | null
+  /** The trust file's roots (`CertificatePort.roots`), one header strip each. */
+  readonly roots: readonly ConsoleCaRoot[]
   /**
    * The CLI name §10.2's copyable `ca issue` line is written under. Supplied
    * by the host: this package is a leaf and has no way to learn how it was
@@ -482,6 +486,9 @@ export function renderRoster(
         certificates.failure,
         now,
       ),
+      // The roots come from the console's own trust file, not the registry,
+      // so they are drawn even when the read above failed.
+      renderRootBars(certificates.roots, now),
     )
   }
   const certificateList = certificates?.snapshot?.certificates ?? null

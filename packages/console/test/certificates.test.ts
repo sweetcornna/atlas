@@ -17,9 +17,11 @@ import {
   certificateTally,
   reissueCommand,
   renderRevocationBar,
+  renderRootBars,
 } from '../src/view/certificates.js'
 import type {
   ConsoleAgent,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleRevocationList,
 } from '../src/deps.js'
@@ -62,12 +64,30 @@ const FRESH_RL: ConsoleRevocationList = {
 function roster(
   certificates: readonly ConsoleCertificate[] | null,
   revocationList: ConsoleRevocationList | null = FRESH_RL,
+  roots: readonly ConsoleCaRoot[] = [],
 ): string {
   return renderRoster([agent()], null, NOW, TTL, {
     snapshot: certificates === null ? null : { certificates, revocationList },
     failure: null,
+    roots,
     binName: 'qm',
   })
+}
+
+function caRoot(over: Partial<ConsoleCaRoot> = {}): ConsoleCaRoot {
+  return {
+    subject: 'CN=qianmo-ca',
+    status: 'valid',
+    notAfter: NOW + 3000 * DAY,
+    ...over,
+  }
+}
+
+/** The root strips on a page: `[tone, visible text]`, in page order. */
+function rootStrips(html: string): (readonly [string, string])[] {
+  return [...html.matchAll(/<p class="bar bar-(\w+)">(CA 根 [^<]*)<\/p>/g)].map(
+    match => [match[1] ?? '', match[2] ?? ''] as const,
+  )
 }
 
 /** Visible text only — same extraction `view.test.ts`'s copy block uses. */
@@ -236,25 +256,97 @@ describe('absent port removes the column rather than filling it', () => {
     const html = renderRoster([agent()], null, NOW, TTL, {
       snapshot: null,
       failure: { code: 'unreachable', message: '连接被拒绝' },
+      roots: [caRoot({ status: 'expiring-urgent', notAfter: NOW + 5 * DAY })],
       binName: 'qm',
     })
     expect(html).toContain('吊销清单未读到 · 连接被拒绝')
+    // The roots are the console's own file, not a registry answer: an
+    // unreachable registry does not take the root's reminder with it.
+    expect(rootStrips(html)).toEqual([
+      ['critical', 'CA 根 CN=qianmo-ca · 7 天内到期 · 剩余 5d'],
+    ])
+  })
+})
+
+/**
+ * §6.2's CA-root row: the same four tiers as a node certificate, one strip
+ * per root. The port turns the clock into a tier (`certificatePort.test.ts`
+ * walks a root through all four with a `ManualClock`); pinned here is what
+ * each tier looks like.
+ */
+describe('§6.2 expiry tiers for the CA root', () => {
+  function strips(root: ConsoleCaRoot) {
+    return rootStrips(roster([certificate()], FRESH_RL, [root]))
+  }
+
+  test('in date: a quiet strip with the time left', () => {
+    expect(strips(caRoot({ notAfter: NOW + 400 * DAY }))).toEqual([
+      ['muted', 'CA 根 CN=qianmo-ca · 有效 · 剩余 400d'],
+    ])
+  })
+
+  test('under 21 days: yellow, 将到期', () => {
+    expect(
+      strips(caRoot({ status: 'expiring', notAfter: NOW + 12 * DAY })),
+    ).toEqual([['warn', 'CA 根 CN=qianmo-ca · 将到期 · 剩余 12d']])
+  })
+
+  test('under 7 days: red, 7 天内到期', () => {
+    expect(
+      strips(caRoot({ status: 'expiring-urgent', notAfter: NOW + 5 * DAY })),
+    ).toEqual([['critical', 'CA 根 CN=qianmo-ca · 7 天内到期 · 剩余 5d']])
+  })
+
+  test('expired: red, the instant it ended, and what went with it', () => {
+    const [strip] = strips(caRoot({ status: 'expired', notAfter: NOW - DAY }))
+    expect(strip?.[0]).toBe('critical')
+    expect(strip?.[1]).toMatch(
+      /^CA 根 CN=qianmo-ca · 已过期 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} · 所签证书一并失效$/,
+    )
+    expect(strip?.[1]).not.toContain('剩余')
+  })
+
+  test('two roots during an overlap: one strip each, in file order', () => {
+    const html = roster([certificate()], FRESH_RL, [
+      caRoot({ status: 'expiring', notAfter: NOW + 20 * DAY }),
+      caRoot({ subject: 'CN=qianmo-ca-20290915', notAfter: NOW + 3650 * DAY }),
+    ])
+    expect(rootStrips(html)).toEqual([
+      ['warn', 'CA 根 CN=qianmo-ca · 将到期 · 剩余 20d'],
+      ['muted', 'CA 根 CN=qianmo-ca-20290915 · 有效 · 剩余 3650d'],
+    ])
+    // Under the revocation list's strip, not in place of it.
+    expect(html.indexOf('吊销清单')).toBeLessThan(html.indexOf('CA 根'))
+  })
+
+  test('no roots, no strips', () => {
+    expect(renderRootBars([], NOW)).toBe('')
+    expect(roster([certificate()])).not.toContain('CA 根')
   })
 })
 
 describe('the column obeys the console’s copy discipline', () => {
-  // One card per tier (the roster has one node, so one card per render).
-  const html = [
-    certificate({ status: 'expiring', notAfter: NOW + 12 * DAY }),
-    certificate({ status: 'expiring-urgent', notAfter: NOW + 5 * DAY }),
-    certificate({ status: 'expired', notAfter: NOW - DAY }),
-  ]
-    .map(one => roster([one]))
+  // One card per tier (the roster has one node, so one card per render), and
+  // one root strip per tier alongside.
+  const tiers = [
+    ['expiring', NOW + 12 * DAY],
+    ['expiring-urgent', NOW + 5 * DAY],
+    ['expired', NOW - DAY],
+  ] as const
+  const html = tiers
+    .map(([status, notAfter]) =>
+      roster([certificate({ status, notAfter })], FRESH_RL, [
+        caRoot({ status, notAfter }),
+      ]),
+    )
     .join('')
 
   test('all three expiry words are on the page under test', () => {
     for (const word of ['证书 将到期', '证书 7 天内到期', '证书 已过期']) {
       expect(html).toContain(word)
+    }
+    for (const word of ['· 将到期 ·', '· 7 天内到期 ·', '· 已过期 ']) {
+      expect(html).toContain(`CA 根 CN=qianmo-ca ${word}`)
     }
   })
 
