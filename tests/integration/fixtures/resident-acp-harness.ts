@@ -390,7 +390,10 @@ export function spawnResidentAcpChild(options: {
     env: residentChildEnv(options),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
-  child.stderr?.on('data', chunk => stderr.write(chunk))
+  child.stderr?.on('data', chunk => {
+    stderr.write(chunk)
+    stderr.flush()
+  })
   const stream = ndJsonStream(
     Writable.toWeb(child.stdin as NonNullable<typeof child.stdin>) as never,
     Readable.toWeb(child.stdout as NonNullable<typeof child.stdout>) as never,
