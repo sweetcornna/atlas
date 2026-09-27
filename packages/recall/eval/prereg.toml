@@ -28,27 +28,27 @@ noninferiority_delta = 0.05
 aa_alpha = 0.05
 # A2 的按题聚类自助法次数。出处：§9 预注册表「1 万次」。
 bootstrap_iterations = 10000
-# 未生成。§9：「固定种子（值随冻结写入）」。冻结值见 m1-design-rulings.md
+# §9：「固定种子（值随冻结写入）」。冻结值见 m1-design-rulings.md
 # 「P16.3 回答层口径裁定」第 9 条，由 scripts/qianmo-recall-freeze.ts 写入。
-# bootstrap_seed =
-# 未生成。A2 写的是「自助法或精确符号翻转置换」，冻结时二选一：
-# "bootstrap" 或 "signflip"。E2 的上界只能用自助法算，不受这一项影响。
-# e1_inference =
+bootstrap_seed = 20260927
+# A2 写的是「自助法或精确符号翻转置换」，冻结时二选一：
+# "bootstrap" 或 "signflip"，裁定取后者（同上第 9 条）。E2 的上界只能用自助法算，不受这一项影响。
+e1_inference = "signflip"
 
 [corpus]
-# 以下由 scripts/qianmo-recall-freeze.ts 重算并写入；--check 只核对不写。
+# 以下由 scripts/qianmo-recall-freeze.ts 重算并写入；--check 只核对不写，用来确认冻结后语料与基线没有变。
 # 加固合成语料 synthetic-v1 的哈希：bun run qianmo:recall-baseline --corpus synthetic-v1 --digest
-# synthetic_v1_sha256 =
+synthetic_v1_sha256 = "7ddd7e783a587521067e928e4aa8781f50dd529a75af4bafafe2c6830e2e38d1"
 # docs/dev 第二语料 docs-dev-v1 的哈希：bun run qianmo:recall-baseline --corpus docs-dev-v1 --digest
-# docs_dev_v1_sha256 =
+docs_dev_v1_sha256 = "d75ffac175e27debe33257ef03dbd5f256b055ae94a4ed4abd05fd3884354d0b"
 # 留出改写题集 id 列表的哈希（eval/heldout.ts 的 heldoutDigest）。题集由未接触检索与
 # 融合实现的独立代理撰写，交稿后再冻结；在此之前 R2–R4 拒判。
 # heldout_ids_sha256 =
 # 打乱排列 π 的种子。π = derangement(留出集 id, shuffle_seed)。
-# shuffle_seed =
+shuffle_seed = 20261003
 # 加固语料上 M0 基线 JSON 输出的 SHA-256，即下面这条命令写出的文件：
 # bun run qianmo:recall-baseline --corpus synthetic-v1 --decay default,off --json <path>
-# m0_baseline_sha256 =
+m0_baseline_sha256 = "4bbb543c7971754c77e7de42b887a93f26c7074f07e522adde7410052826f2da"
 
 [plan]
 # P16.12 的对比计划。出处：m1-design-rulings.md「P16.3 回答层口径裁定」第 1–4 条。
