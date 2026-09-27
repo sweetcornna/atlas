@@ -4,7 +4,7 @@ description: "Interview me about my requirements"
 ---
 
 Analyze these requirements "$ARGUMENTS" and interview me in detail using the AskUserQuestionTool about literally anything: technical implementation, UI & UX, concerns, tradeoffs, etc. but make sure the questions are not obvious.
-Be very in-depth and continue interviewing me continually until it's complete, then proceed in plan mode.
+Be in-depth. Stop when no open question would change the implementation approach (usually 3–6 rounds), then proceed in plan mode.
 
 Rules:
 

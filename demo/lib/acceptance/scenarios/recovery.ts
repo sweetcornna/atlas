@@ -12,8 +12,8 @@
  *   · nonce 表在进程内存里，重启即清空 —— 于是一个跨重启的 token 重放**会被
  *     放行**。这不是回归，是当前设计；写成场景是为了它哪天变了有人知道。
  *   · `lifecycle.json` 是取证不是锁：SIGKILL 之后它仍写着 `running`，下次启动
- *     读到就知道上一条命是被打断的 —— 但**它不门控任何东西**，也没有 CLI
- *     把这个判定打出来。
+ *     读到就知道上一条命是被打断的，并在 stdout 的 banner 之后单起一行报出来
+ *     （`"priorLife":"killed"`）—— 但**它不门控任何东西**。
  */
 
 import { Checks } from '../checks.js'
@@ -141,14 +141,18 @@ export const recoveryScenarios: readonly Scenario[] = [
   {
     id: 'recovery/lifecycle-records-hard-kill',
     dimension: 'recovery',
-    title: 'SIGKILL 之后 lifecycle.json 仍写着 running（取证，不门控）',
+    title:
+      'SIGKILL 之后 lifecycle.json 仍写着 running，下一条命报出 killed（取证，不门控）',
     expected:
-      "被 KILL 的进程留下 phase='running'；正常停止留下 phase='stopped'",
+      "被 KILL 的进程留下 phase='running'，下一条命的 stdout 报 priorLife=killed " +
+      '且带着那条命的 pid / startedAt / updatedAt；正常停止留下 ' +
+      "phase='stopped'，再下一条命报 clean；全新配置根上的第一条命报 unknown",
     requires: ['spawn-node', 'restart-node', 'read-node-files'],
-    timeoutMs: 180_000,
+    timeoutMs: 240_000,
     async run(ctx) {
       const node = await startNodeTrusting(ctx, newParty(), { policy: 'open' })
       const running = await ctx.driver.readNodeFile(node, LIFECYCLE_PATH)
+      const firstSaid = priorLifeOf(await node.stdout())
 
       // SIGKILL 走驱动接口。它此前是本地驱动专有的方法、靠一次 `as unknown as
       // LocalDriver` 够到 —— 那条强转在真机腿上会变成一次 `TypeError`，而
@@ -157,23 +161,28 @@ export const recoveryScenarios: readonly Scenario[] = [
       const afterKill = await ctx.driver.readNodeFile(node, LIFECYCLE_PATH)
 
       const restarted = await ctx.driver.restartNode(ctx, node)
+      // 判定在 `run()` 开头、绑监听口之前就打出来了，驱动以拨通为就绪，
+      // 所以此刻这一行必然已经落地。
+      const secondSaid = priorLifeOf(await restarted.stdout())
       await ctx.driver.stopNode(restarted)
       // 停止是异步落盘的，给它一拍。
       await new Promise(resolve => setTimeout(resolve, 1_500))
       const afterStop = await ctx.driver.readNodeFile(restarted, LIFECYCLE_PATH)
 
-      const phaseOf = (raw: string | undefined): string | undefined => {
-        if (raw === undefined) return undefined
-        try {
-          return (JSON.parse(raw) as { phase?: string }).phase
-        } catch {
-          return undefined
-        }
-      }
+      const third = await ctx.driver.restartNode(ctx, restarted)
+      const thirdSaid = priorLifeOf(await third.stdout())
+
+      const phaseOf = (raw: string | undefined): string | undefined =>
+        parseObject(raw)?.phase as string | undefined
+      const killedRecord = parseObject(afterKill)
+      const reported = secondSaid?.prior as Record<string, unknown> | undefined
       return new Checks()
         .note('运行中', running ?? '(无)')
         .note('SIGKILL 之后', afterKill ?? '(无)')
         .note('SIGTERM 之后', afterStop ?? '(无)')
+        .note('第一条命的 priorLife 行', firstSaid ?? '(无)')
+        .note('KILL 之后那条命的 priorLife 行', secondSaid ?? '(无)')
+        .note('正常停止之后那条命的 priorLife 行', thirdSaid ?? '(无)')
         .eq(phaseOf(running), 'running', '运行中的 phase')
         .eq(
           phaseOf(afterKill),
@@ -181,7 +190,19 @@ export const recoveryScenarios: readonly Scenario[] = [
           'SIGKILL 之后的 phase（没来得及改写）',
         )
         .eq(phaseOf(afterStop), 'stopped', '正常停止之后的 phase')
-        .done('上一条命的死法留了痕')
+        .eq(firstSaid?.priorLife, 'unknown', '全新配置根上第一条命报的')
+        .eq(secondSaid?.priorLife, 'killed', 'KILL 之后那条命报的')
+        .expect(
+          killedRecord !== undefined &&
+            reported !== undefined &&
+            reported.pid === killedRecord.pid &&
+            reported.startedAt === killedRecord.startedAt &&
+            reported.updatedAt === killedRecord.updatedAt,
+          'killed 带的 pid / startedAt / updatedAt 与被杀那条命留下的记录逐项相同',
+          reported,
+        )
+        .eq(thirdSaid?.priorLife, 'clean', '正常停止之后那条命报的')
+        .done('上一条命的死法留了痕，下一条命也说出来了')
     },
   },
 
@@ -299,3 +320,32 @@ export const recoveryScenarios: readonly Scenario[] = [
     },
   },
 ]
+
+/** 一段 JSON 文本里的顶层对象；读不到、解析不了、不是对象都是 `undefined`。 */
+function parseObject(
+  raw: string | undefined,
+): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 节点 stdout 里报上一条命结局的那一行（`qm resident` 在 banner 之后打）。
+ * 取**最后**一行：同一份输出里若有多次启动，要的是最近那次。
+ */
+function priorLifeOf(stdout: string): Record<string, unknown> | undefined {
+  const line = stdout
+    .split('\n')
+    .filter(l => l.includes('"priorLife"'))
+    .at(-1)
+  return parseObject(line)
+}

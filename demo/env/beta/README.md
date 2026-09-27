@@ -139,6 +139,24 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 指向已死 pid 的陈旧记录。**遇到它就在命令前显式补 PATH**：
 `PATH="$HOME/.bun/bin:$PATH" ./demo/env/beta/beta-up.sh ...`。
 
+### pid 文件对不上真进程时（2026-09-26 p1）
+
+旧树留下的 `run/<节点>.pid` 指着一个早已不在的 pid，真进程却还跑着、占着端口。以前
+`beta-down.sh <节点>` 只认 pid 文件，报「本来就没在跑」；随后的节点腿起了一个注定
+EADDRINUSE 的新进程，就绪探测又被旧进程的应答骗成了绿。现在：
+
+- **`beta-down.sh <节点>`** 在 pid 文件之后再按命令行认一遍：argv 里有 `resident`、`--node <节点>`，
+  且绑在本内测根上（`--agent` 指向本根的工作区，或 Linux 上它的 `OCC_CONFIG_DIR` 就是本根的
+  配置根）。认出来的按同一套 TERM → 10 s → KILL 停掉并 WARN。pid 文件在却陈旧、命令行又认不出
+  任何一个、而 `QIANMO_BETA_NODE_PORT`（默认 38625）被占着时，列出占用者的 pid 与命令行，
+  **一个都不动**，以非零退出。端口上是本内测根的另一个节点（H 上的 beta-4）不算不一致。
+- **节点腿**：pid 文件说没在跑、端口却有人在听，就不起新进程，列出占用者并指向 `beta-down.sh`。
+  就绪要三件事都成立：刚起的 pid 活着；它的启动行（`logs/<节点>.out` 首行）是这个节点、带
+  公钥；端口有应答，且本机查得到的监听者（ss / lsof / `/proc`）里有这个 pid。新进程退出时当场
+  失败并摊开它的 stderr。OK 那一行带出 pid 与公钥，末尾多一行「公钥」，照抄进 H 的
+  `peers.conf` 坐标行 `public-key=`。三种办法都查不到监听者的机器上退回「活着 + 启动行 + 应答」，
+  并 WARN 说没核对 pid。
+
 ## 宿主侧保留与轮转
 
 **只在宿主 H 上由操作员运行**，不放进节点、常驻进程或 `@qianmo/backup` 的入站面。先看计划，
@@ -256,6 +274,23 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 | `remote-port` | 否 | `38625` | 节点侧的入站端口 |
 | `trail` | 否 | 无 | 节点上审计链的绝对路径。**给了才做镜像**；不给就只有隧道 |
 | `key` | 否 | `QIANMO_BETA_SSH_KEY` | 这条链路用的私钥（H 上的路径；私钥本身永不离开 H） |
+| `public-key` | 否 | 无 | 该节点的公钥（43 位 base64url，节点腿末尾「公钥」那一行）。给了，注册中心登记它的每条地址时一并发布；不给就照旧不带，H 腿 WARN 一句。见下面「名册上的节点公钥」 |
+
+#### 名册上的节点公钥
+
+控制台带 `--anchors` 时**只从名册取节点公钥**。H 腿给 p81-registry 带上 `--public-key <节点>=<公钥>`，
+它随每一次登记与重登记（含租约过期后的那一次）一并发布，不再需要手工补。公钥从哪来：
+
+| 节点 | 来源 |
+| --- | --- |
+| 有坐标行（走隧道的远端节点） | 坐标行的 `public-key=`。H 读不到远端的身份文件，由人把节点腿末尾的「公钥」抄过来 |
+| 没有坐标行、端点是回环（跑在 H 自己身上） | 本机身份文件 `nodes/<节点>/config/qianmo/identity/<节点>.json`，只读 `publicKey` |
+| 直连的远端节点 | 没有来源：照旧不带，按「审计见证」第 ⑥ 步手工发布 |
+
+没有来源时与改动前完全一样（不带公钥），H 腿逐节点 WARN 一句。在跑的注册中心还挂着别的
+（或没有）公钥时，H 腿像处理端点不一致一样重起它一次。**同一个地址别既写进 `peers.conf`
+又在控制台页面上注册**：页面那一条的续租是整条重新声明，没带公钥就会把这里发布的抹掉，
+`logs/registry.err` 会每轮出现一行「registry 公钥已更新」。
 
 向后兼容靠一点：老格式的第一字段必然以 `qianmo://` 开头，所以 `node` 这个关键字不可能和
 任何一条合法的老行撞上。**坏行照旧带行号被拒**，未知键、缺必填键、端口非数字、`trail` 非
@@ -425,6 +460,141 @@ ssh -i "$NODE_SSH_KEY" -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
 . demo/env/beta/common.sh; beta_endpoint_live 127.0.0.1 38639 || echo '真握手 红（对的）'
 ```
 
+## 控制台 HTTPS：不占 443 的形态（`ops/console-https.sh`）
+
+§2.5 的原方案是「H 上的 host 级 nginx 加一个 server 块」。当 H 上的 443 与 nginx 属于别的业务、
+不归本仓库管时，用这一套：控制台照旧只听回环，对外那一层由
+[`ops/console-tls-front.ts`](./ops/console-tls-front.ts)（一个只做转发的 Bun 小程序）在一个
+非 443 端口上做 TLS 终结，证书走 Let's Encrypt 的 DNS-01（HTTP-01 要 80、TLS-ALPN-01 要 443，
+两个都不是我们的）。**控制台一行代码不改。**
+
+```bash
+# 前置：<根>/secrets/cf-dns.env（0600，一行 CF_DNS_API_TOKEN=…）；lego 可执行文件（默认 ~/.local/lego/lego）
+demo/env/beta/ops/console-https.sh install --domain <域名> --listen 0.0.0.0:38443 --upstream http://127.0.0.1:38621
+<根>/ops/console-https.sh issue --staging   # 先对 staging 走通整条 DNS-01，独立目录，不碰正式证书
+<根>/ops/console-https.sh issue             # 正式证书
+systemctl --user start qianmo-tls-front.service
+```
+
+- **§2.5 的三条强制配置落在前置程序里，由用例钉住**：日志一行只有「时间、对端、方法、路径、状态、
+  耗时」，没有 query、没有请求头；上游只有命令行上那一项，必须是回环明文、且不能是注册中心的
+  38620；`X-Forwarded-Proto: https` 由前置自己设，客户端送来的转发类头一律先删。逐条理由见前置
+  程序的文件头。
+- **install 只能从交付树那一份跑**（它要读 `*.in` 模板）；装好的那一份只给续期 timer 与部署钩子用。
+  换上游 / 换端口 = 从交付树重跑 install，再 `systemctl --user restart qianmo-tls-front.service`。
+- **DNS 凭据只进 lego 那一个进程的环境**，不进 argv、不落第二个文件。那枚 token 能改整个 zone，
+  「只动 `_acme-challenge.<域名>` 那一条 TXT」是 lego 的行为，不是 token 的边界——登记进运维单页。
+- **续期**：`qianmo-console-cert.timer` 每天一次（随机错开一小时，关机错过开机补）；到期前续签成功
+  才调部署钩子重启前置。前置只在启动时读证书。
+- **存活判据**：`curl -s -o /dev/null -w '%{http_code}' https://<域名>:<端口>/v0/health` 要 200，
+  且不加 `-k`。单元状态不算数（与上面那两个单元同一条理由）。
+- 两条现场教训已写进脚本并有用例：lego 预查留下的 NXDOMAIN 会被本机解析器负缓存，所以只查权威 NS
+  （`--dns.propagation.disable-rns`）；URL 会把显式写的协议默认端口（`:80`）规范化成空串，所以上游端口
+  从原文里取。
+
+## 审计见证（P11.4）：节点经隧道的 `-R` 写锚点，端点在 H 或另一台机器
+
+节点够到见证端点，靠的是 **H 发起的**那条隧道会话里多一个 `-R 127.0.0.1:38640:127.0.0.1:38640`：
+节点写自己的回环 38640，SSH 把它送到 H 的回环 38640。节点上不放任何指向 H 的凭据（§8.3 的单向信任）。
+H 的回环 38640 后面是什么，有两种形态：
+
+| 形态 | H 回环 38640 后面 | 什么时候用 |
+|---|---|---|
+| ① 见证在 H | 端点本身（`qianmo-witness.service`） | H 上**没有**节点 |
+| ② 见证在另一台机器 W | `qianmo-witness-link.service`：`ssh -N -L 127.0.0.1:38640:127.0.0.1:38640 W`，W 上的端点同样只听回环 | **H 自己也跑着节点时必须用这一种**：见证和它见证的节点不能在同一台机器上（audit-witness.md §4.1，不同失陷域） |
+
+```bash
+# ── 形态②（2026-09 的现场就是这一种）──
+# ① W：装端点并起它。W 上没跑过 beta-up.sh 也行（内测根不存在时 install 自建标记）；
+#    W 没有 linger 时单元活不过最后一次登出，用 start（nohup + pid 文件，oom_score_adj=1000）
+demo/env/beta/ops/witness-endpoint.sh install --key beta-4=<公钥> --key beta-1=<公钥> --key beta-5=<公钥>
+demo/env/beta/ops/witness-endpoint.sh start          # status：pid 与「不带 token → 401」；stop
+# ② H：W 的主机公钥**核对指纹后**放进 known_hosts，再装链路单元；它会打印 W 的 authorized_keys 要加的那一行：
+#    restrict,port-forwarding,permitopen="127.0.0.1:38640",permitlisten="127.0.0.1:1",command="/bin/false" <H 的公钥>
+demo/env/beta/ops/witness-endpoint.sh link-install --user <W 用户> --host <W 地址> --key <H 上的私钥>
+systemctl --user start qianmo-witness-link.service
+# ③ H：peers.conf 各坐标行加 witness-port=38640，跑 host 腿（隧道会话多一个 -R）
+# ④ 各节点机：authorized_keys 里 H 那一行带 permitlisten="127.0.0.1:38640"；W 的写 token 拷成本机
+#    secrets/witness-write-token（0600），节点腿带上尾参
+demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥> --witness-url http://127.0.0.1:38640
+# ⑤ H：W 的读 token 拷成 H 的 secrets/witness-read-token（0600），控制台尾参加 --anchors http://127.0.0.1:38640
+# ⑥ H：让名册带上每个节点的公钥。控制台带 --anchors 时只从名册取节点公钥（不从锚点学），漏了这一步，
+#    审计页对每个节点都报「名册没有节点 <名字> 的公钥」，一条记录都读不出来。
+#    走隧道的节点：坐标行加 public-key=<节点腿末尾「公钥」那一行>，再跑 host 腿；跑在 H 上的节点不用写
+#    （H 腿读本机身份文件）。脚本随每次登记发布，租约过期重登记也带着（见「名册上的节点公钥」）。
+#    只有直连的远端节点（没有坐标行、不在 H 上）还得手工发布，端点/能力/状态照抄现有那条：
+curl -s -X POST -H 'content-type: application/json' http://127.0.0.1:38620/v0/agents \
+  --data '{"address":"qianmo://<节点>/<agent>","endpoint":"<现有端点>","capabilities":["task.request"],"status":"online","publicKey":"<节点公钥>"}'
+```
+
+- **两枚 token 都在 W 上生成。**写 token 发给每个节点；读 token 只给做验证的一方（形态②下是 H 上的控制台）。
+  读 token 只能列出锚点，改不了任何一条。命令行的 `occ audit --verify --witness` 只从**本机配置根**的身份文件
+  确立节点公钥，所以要在节点机上用节点自己的配置根跑；锚点源给 W 存储的只读快照（绝对路径）或 HTTP 端点加读 token。
+- ⑥ 由脚本发布的公钥随每次登记走，名册停机超过租约（90 s）、条目过期后的重新登记也带着它。手工 POST 的那一份
+  （直连远端节点）不在 p81 的声明里：p81 续租不会抹掉它，但条目过期后 p81 以不带公钥的形式重新登记，要再做一遍。
+- 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境；控制台尾参里的 `--anchors` 是 HTTP 端点时，
+  H 腿把读 token 读进 `QIANMO_WITNESS_READ_TOKEN`。两边都不上命令行；缺文件、权限不是 600、明文 http 指向
+  回环以外，都在起进程之前拦下。
+- 端点不在、或 H → W 那条链路断了，节点照常工作，只在 `.err` 里报写不进去（发送方 fail-open）；链上有新记录时
+  控制台审计页退回「未见证」。**链头没变时发送方不重发**，空闲节点的 `.err` 里没有见证记录；重启后第一个周期把
+  当前链头补发一次，端点回 409 且回带同一个 `head` 时按已接受处理，不记错误。`.err` 里仍出现
+  `refused the anchor: 409` 只有两种情况：带 `(seq N already witnessed with a different head)`——端点在同一 seq
+  上存着另一段历史，要查（链被重写，或节点根被重置过）；不带括号——端点是 v1.3 之前的版本，确认不了 head，端点
+  升级后消失。链头长时间不动不再让 `stale` 为真：审计页的「未见证」只在链越过最新锚点、且见证侧超过 2T 没收到
+  新锚点时出现（audit-witness.md §4.1「重发与 409」、§4.3「陈旧的判定」）。存活判据：H 上与 W 上各自
+  `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
+- 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道；形态②下它照样经那条 `-L` 落到 W。
+
+## 值守作业（`ops/watch-hub.sh`，`qm watch`）
+
+跑在 H 上的 `qm watch`（P13.6；起法与判据的真源是 console.md §10，这里只写内测的三条接线）：
+
+1. **配置根是控制台那一份**（`<根>/nodes/console/config`）。签名身份按配置根落盘，`print-identity`
+   与 `run` 问的是同一个根；调度状态与 `ESTOP` 在 `<根>/nodes/console/config/qianmo/scheduler/`。
+2. **一个单元只服务一个节点**：`qm watch` 只读一把 `QIANMO_TRANSPORT_PSK`，而内测是每节点一把。
+   `install --node` 钉死目标，`run` 从 `secrets/peers/<节点>.psk` 读进环境，并先查作业文件里每个
+   `target` 都在这个节点上。
+3. **先 trust，后 `--sign`**（console.md §10.1.1）。
+
+```bash
+demo/env/beta/ops/watch-hub.sh print-identity                        # → hub=<公钥>
+demo/env/beta/beta-down.sh <节点> && demo/env/beta/beta-up.sh --role node --node <节点> -- \
+  --trust console=<控制台公钥> --trust hub=<上面那一行的公钥>         # 已有的 --trust 要一起带上
+demo/env/beta/ops/watch-hub.sh install --node <节点> --jobs ./jobs.json --sign   # 只 enable，不 start
+systemctl --user start qianmo-watch.service                          # 开始值守
+```
+
+- 单元 `Restart=on-failure`、`OOMScoreAdjust=900`；停手不必停单元：`touch <根>/nodes/console/config/qianmo/scheduler/ESTOP`
+  （只挡新的 fire，在途不杀）。
+- 它跑的是交付树里的 `dist/cli-node.js`：**换产物之前先 `systemctl --user stop qianmo-watch.service`**，否则
+  `beta-deploy.sh` 会因为树里有进程而拒绝。
+- 确认签名生效：中枢审计链 `watch_fire` 的 `detail.signed=true`，节点链上这条请求没有 `capability_shadow_refusal`。
+
+## 可用性与唤醒探针（`ops/fleet-probe.sh`）
+
+M1 出口「可用性 ≥ 99%（按内测时段计）、唤醒 P95 < 30 s」的量具，跑在 H 上，三个 timer：
+
+| timer | 频率 | 量什么 | 样本文件（`<根>/state/fleet-probe/`） |
+|---|---|---|---|
+| `qianmo-probe-minute` | 每分钟 | 每个节点端点真读一行应答（426，不是 TCP 探测）；注册中心与控制台 `/v0/health` | `avail-<节点>.ndjson`、`health.ndjson` |
+| `qianmo-probe-handshake` | 每 5 分钟 | 按名解析 + 真 PSK 握手（`p81-probe`，**不带 `--task`**） | `handshake-<节点>.ndjson` |
+| `qianmo-probe-wake` | 每 10 分钟一格 | 按轮转表经控制台 `POST /v0/wake` 唤醒一个节点，记发起 → 回执与 msgId | `wake-<节点>.ndjson` |
+
+```bash
+demo/env/beta/ops/fleet-probe.sh install --rotation "beta-1 beta-5 beta-4 beta-1 beta-5 -"   # 一格 10 分钟，- 为空格
+systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qianmo-probe-wake.timer   # 开始计时
+```
+
+- **唤醒口径（写死在这里，免得被误读）**：发起 → 首个内容 = 本探针记的发起时刻 + 节点 `--timings` 里按
+  msgId 关联的 `first_content`，离线算。**这不是 baseline-m0 §3 的「沙箱冻结 → unpause → 就绪」链路**——
+  内测舰队上没有沙箱冻结，量的是常驻节点空闲态的唤醒。两个数不能直接比，也不能写成 AC-2 口径。
+- 唤醒走控制台而不是 `resident-wake`：那是用户真实走的路；控制台带 `--wake-sign` 时唤醒是
+  verified-capability 档，不会在节点链上留 `capability_shadow_refusal`。握手那一档不带 `--task` 也是同一个理由。
+- 失败的样本照记，不剔除；P95 按 nearest-rank 算，失败按 +∞ 留在样本里。
+- `MemAvailable` 低于 `PROBE_MIN_AVAILABLE_MB`（默认 150）时只记一行 `skipped:low-mem`：H 上的量具不能成为
+  压垮它的那一个进程。单元带 `OOMScoreAdjust=900`。
+- install **只 enable 不 start**：开始计时是一个有意的动作，要和「这一份部署」对上号。
+
 ## 变量表
 
 一律用环境变量覆盖，脚本里没有任何具体名字、机器名、IP、域名、密钥（beta-env.md 文首）。
@@ -574,6 +744,8 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 
 **② 不配反向代理。**TLS 终结、443、access log 关 query string、upstream allowlist（只有两项）、
 粗粒度限流——全部是 H 上 root 的活（§2.5 / §9.6），不在 shell 脚本的范围里。
+H 上的 443 不归我们时，用上面「控制台 HTTPS：不占 443 的形态」那一套；它独立于本脚本，
+`beta-up.sh` 不调它。
 **开测前置检查「从校园网真拨一次 H 的 443」也不在这里**，那是人的动作（§10 包① DoD③）。
 
 **③ 不做审计链镜像的 rsync —— 因为那把 key 根本起不了 rsync。**

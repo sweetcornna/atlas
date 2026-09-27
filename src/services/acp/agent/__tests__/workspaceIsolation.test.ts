@@ -39,7 +39,7 @@ import type { Message } from '../../../../types/message.js'
 const { activateAcpSessionWorkspace, projectDirForSessionCwd } = await import(
   '../sessionWorkspace.js'
 )
-const { getOriginalCwd, setCwdState } = await import(
+const { getOriginalCwd, resetStateForTests, setCwdState } = await import(
   '../../../../bootstrap/state.js'
 )
 const {
@@ -145,6 +145,10 @@ afterEach(async () => {
   await flushSessionStorage()
   clearSessionMessagesCache()
   resetProjectForTesting()
+  // runTurnFor() moved the process-global session (cwd, originalCwd, id,
+  // project dir) into a workspace deleted below; left there, every later file
+  // in this process resolves getCwd() into it. See tests/mocks/state.ts.
+  resetStateForTests()
 
   if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = originalConfigDir

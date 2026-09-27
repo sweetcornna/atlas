@@ -173,6 +173,7 @@ import type {
   ConsoleDeps,
   ConsoleFailure,
   ConsoleResult,
+  LimitsSnapshot,
   NodeServer,
   RegisterAgentInput,
   WakeInput,
@@ -195,6 +196,7 @@ import {
   renderChatThread,
 } from './view/chat.js'
 import { renderChatPage } from './view/chatPage.js'
+import { rosterLease } from './view/format.js'
 import { renderLimits } from './view/limits.js'
 import {
   MAX_SERVER_NOTE_LENGTH,
@@ -987,6 +989,26 @@ async function rosterFragment(
 }
 
 /**
+ * The limits snapshot as the page states it.
+ *
+ * Only `registryTtlMs` differs from `deps.limits`: on the page it is the lease
+ * the registry actually grants ({@link rosterLease}), read off the same roster
+ * the header and every row are judged from, so the three places that print a
+ * lease cannot disagree with each other or with the registry. `deps.limits`
+ * carries the package default and stays what `/v0/limits` reports; it is the
+ * number shown only when the roster offers nothing to read a lease from.
+ */
+function pageLimits(
+  deps: ConsoleDeps,
+  agents: readonly ConsoleAgent[] | null,
+): LimitsSnapshot {
+  return {
+    ...deps.limits,
+    registryTtlMs: rosterLease(agents ?? [], deps.limits.registryTtlMs),
+  }
+}
+
+/**
  * The servers section, or nothing at all.
  *
  * `undefined` — not an empty string — when this console was started without a
@@ -1180,7 +1202,7 @@ async function handleIndex(
         : { wakeTargets: deps.wakeTargets }),
       ...(deps.identity === undefined ? {} : { identity: deps.identity }),
       ...(servers === undefined ? {} : { servers }),
-      limits: renderLimits(deps.limits),
+      limits: renderLimits(pageLimits(deps, roster.agents)),
       // The form is rendered disabled with a reason rather than hidden: an
       // operator who cannot find the wake button assumes the console is broken.
       wakeEnabled:
@@ -1792,7 +1814,12 @@ async function dispatchFragment(
   if (name === 'audit') {
     return html(await auditFragment(deps, parseAuditFilter(url, now)))
   }
-  return html(renderLimits(deps.limits))
+  // The same section the page renders, so the same registry read behind it: a
+  // fragment that printed the package default here would put the page's
+  // 注册租约 back to 1 分 30 秒 on its first refresh. A registry that is down
+  // costs the observed lease, not the fragment.
+  const listed = await deps.registry.list()
+  return html(renderLimits(pageLimits(deps, valueOf(listed))))
 }
 
 async function route(

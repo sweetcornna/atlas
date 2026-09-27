@@ -233,7 +233,18 @@ export function startWitnessService(
         return json(receipt, 201)
       } catch (error) {
         if (error instanceof WitnessAnchorExistsError) {
-          return json({ error: 'anchor_exists' }, 409)
+          // Still a refusal: nothing is replaced and no new receipt is made.
+          // The stored head goes back only to a caller that has just
+          // presented a valid signature for this very (node, seq): one digest
+          // for a seq it signed itself, no listing, no other history. With it
+          // the node can tell its own earlier acceptance from a conflict.
+          return json(
+            {
+              error: 'anchor_exists',
+              ...(error.head === null ? {} : { head: error.head }),
+            },
+            409,
+          )
         }
         return json(
           { error: error instanceof Error ? error.message : String(error) },
@@ -380,6 +391,17 @@ export function remoteWitnessAnchorWriter(
             signal,
             ...(options.unix === undefined ? {} : { unix: options.unix }),
           } as RequestInit)
+          if (response.status === 409) {
+            const held = await heldHeadOf(response)
+            // The endpoint already holds exactly this statement: accepted
+            // earlier, typically before a restart. Nothing is missing.
+            if (held === anchor.head) return
+            throw new Error(
+              held === null
+                ? 'witness service refused the anchor: 409'
+                : `witness service refused the anchor: 409 (seq ${anchor.seq} already witnessed with a different head)`,
+            )
+          }
           if (!response.ok) {
             throw new Error(
               `witness service refused the anchor: ${response.status}`,
@@ -389,6 +411,23 @@ export function remoteWitnessAnchorWriter(
         externalSignal,
       )
     },
+  }
+}
+
+/**
+ * The head a 409 says is already stored at the anchor's `(node, seq)`.
+ *
+ * Null for every other 409 body, including an endpoint from before the head
+ * was reported: without that confirmation the refusal stays an error.
+ */
+async function heldHeadOf(response: Response): Promise<string | null> {
+  try {
+    const body: unknown = await response.json()
+    if (typeof body !== 'object' || body === null) return null
+    const { error, head } = body as Record<string, unknown>
+    return error === 'anchor_exists' && typeof head === 'string' ? head : null
+  } catch {
+    return null
   }
 }
 

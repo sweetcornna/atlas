@@ -29,3 +29,7 @@ bun dist/cli-qianmo.js --version
 ```
 
 本版为源码发行。R2 跨 TTL 并发替换、注册/签名部署策略、原生二进制及真实节点/provider 的验收边界见审计报告；已有平台/凭据相关跳过测试不作为已通过的真实部署验证。
+
+## 已知问题（2026-09-26 追加）
+
+- **按本标签构建的产物，`-p` 与交互入口启动即报 `ReferenceError: init_external is not defined`。**上面的验证步骤只跑 `--version`，那条路径不加载出问题的 chunk；`qm resident --help` 同样不受影响，所以发行时没有暴露。根因在本版依赖升级带入的 rolldown 1.0.3（经 vite 8.0.16）：它的代码生成回归（[rolldown#9502](https://github.com/rolldown/rolldown/issues/9502)，1.0.2–1.1.1 受影响）让 main 与 REPL 两个 chunk 调用了 zod `v4/classic/external.js` 的懒初始化函数，却没有 import 它。修复提交 `767302b8` 把 vite 升到 8.3.1（rolldown 1.2.11）；`5e2446b3` 让 `bun run check:bundle` 同时检查未绑定的懒初始化调用，并对 `-p` 做无网络、无真实凭据的运行期冒烟。本标签的源码归档不含这两处修复，需要可用产物请从包含它们的提交构建。

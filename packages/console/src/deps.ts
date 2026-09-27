@@ -123,7 +123,10 @@ export interface AuditPage {
   /**
    * Off-host witness verdict, absent only when this console has no anchor
    * source configured. A stale witness is distinct from a chain mismatch: it
-   * means there is no current evidence, not that a rewrite was found.
+   * means records past the newest anchor have no evidence and the witness has
+   * heard nothing within its window (or there is no valid anchor at all), not
+   * that a rewrite was found. An idle trail whose head is anchored is not
+   * stale, so a quiet node keeps its verified state.
    */
   readonly witness?: {
     readonly tampered: boolean
@@ -530,7 +533,13 @@ export interface LimitsSnapshot {
     readonly capacity: number
     readonly windowMs: number
   }
-  /** Registry lease TTL, so the roster's "expires" column has a scale. */
+  /**
+   * `@qianmo/registry`'s default lease — the scale of last resort, not the
+   * scale. The registry may run with any `ttlMs`, so the roster judges each
+   * record by the lease the registry granted it (`expiresAt − lastHeartbeatAt`)
+   * and the page prints that; this number stands in only for a record that
+   * carries no lease, and for an empty roster. `/v0/limits` reports it as is.
+   */
   readonly registryTtlMs: number
 }
 

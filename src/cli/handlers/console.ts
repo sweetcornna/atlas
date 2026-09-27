@@ -41,6 +41,7 @@ import {
 import {
   CONSOLE_HELP_TEXT,
   assertConsoleRuntime,
+  consoleRegistrationsPath,
   isConsoleHelpRequest,
   parseConsoleArgs,
   transportPskEnvVarForNode,
@@ -54,6 +55,7 @@ import {
   createServerNotesPort,
   createWakePort,
 } from './consolePorts.js'
+import { ConsoleRegistrations } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import {
   loadConsoleWakeIdentity,
@@ -394,9 +396,20 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   })
 
   const wake = wireConsoleWake(config)
+  // Registrations made on the page are renewed by this process until they are
+  // deregistered on the page; the ledger that remembers them across restarts
+  // lives in this console's config root (`consoleRegistrations.ts`, console.md
+  // §7.3). Its port wraps the HTTP one: the registry itself is unchanged.
+  const registrations = new ConsoleRegistrations({
+    path: consoleRegistrationsPath(),
+    registry: createRegistryPort({ baseUrl: config.registryUrl }),
+    log: line => {
+      process.stderr.write(`${line}\n`)
+    },
+  })
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
-  const registry = createRegistryPort({ baseUrl: config.registryUrl })
+  const registry = registrations.port
   const chat = wireConsoleChat(config, registry)
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
@@ -483,6 +496,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     hostname: config.hostname,
     tokens,
   })
+  // After the port is bound: a console that failed to start must not have
+  // re-announced anything on its way down.
+  registrations.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -507,6 +523,10 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     adminSource === undefined ? tokens.admin : `from ${adminSource.detail}`,
   )
   banner += field('registry', config.registryUrl)
+  banner += field(
+    'ledger',
+    `${registrations.path} (${String(registrations.addresses.length)} renewed by this console)`,
+  )
   banner += field(
     'audit-trails',
     config.auditTargets
@@ -557,6 +577,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   process.stdout.write(banner)
 
   const stop = (): void => {
+    // Leases already granted run out on their own; the ledger stays, so the
+    // next start picks the same entries up again.
+    registrations.stop()
     void handle.stop()
     // Closing the hub drops the outbound links and the pending-task timers. A
     // console that exits without it leaves a WebSocket the far node keeps a

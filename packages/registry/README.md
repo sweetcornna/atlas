@@ -50,6 +50,7 @@ flowchart TD
 - **`FileRegistryStore` / `RegistryStore` / `defaultRegistryStatePath`** —— 落盘层。接口两端都是 `unknown`：文件层只搬字节，schema 与信任边界归 `registry.ts`。
 - **`createRegistryHandler` / `startRegistryServer` / `RegistryServerHandle` / `API_PREFIX`** —— HTTP v0 面，handler 与 server 分开导出，便于用裸 `Request` 测。
 - **`Clock` / `systemClock` / `ManualClock`** —— 注入式时钟，TTL 行为不靠等待来测。
+- **`DEFAULT_RENEW_INTERVAL_MS` / `renewIntervalFor(ttlMs)`** —— 续租方的周期：默认租约下 20 s，其余租约按同一比例（每个租约 4.5 次）折算。`p81-registry.ts` 的 `--heartbeat-ms` 默认值与控制台的续租者（`docs/dev/console.md` §7.3）都取这里。
 - **`DEFAULT_TTL_MS` / `MAX_CAPABILITIES` / `REGISTRY_SNAPSHOT_VERSION`** —— 本包自己的默认值。**注意**：这三个不是协议级上限，协议级数值仍以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处（章程 §3.3 C-4）。
 
 ## 3. 最容易被改坏的五条不变式
@@ -61,6 +62,8 @@ flowchart TD
 | 3 | **一个节点只能有一把公钥；在租者先登记先赢，且不建第二张索引表**（闭合 `protocol.md` §10.1 的已知缺口） | 同节点两个 agent 登记不同公钥，故障会推迟到「签名对一个 agent 验得过、对另一个验不过」才暴露 | `test/registry.test.ts`「one node, one key (protocol.md §10.1, closed in P4.3)」整组，含「once every agent on the node has expired, a new key is accepted」 |
 | 4 | **盘上的东西只是可恢复，不是权威**：`expiresAt` 按当下 TTL 重算，未知 schema 版本整篇丢弃，写入是 temp + fsync + rename | 直接采信盘上的 deadline，停机一小时的注册中心会拿一小时前的地址回答查询 | `test/persistence.test.ts`「the deadline is recomputed from the TTL in force, not read off disk」「a document from an unknown schema version is ignored wholesale」与「crash safety」整组 |
 | 5 | **持久化失败只损失持久性，不损失可用性**——写盘异常被吞并走 `onPersistError`，不冒泡到调用方 | 让写盘异常冒泡，一次磁盘满会把整个注册中心变成不可用 | `test/persistence.test.ts`「a failing store costs durability, not availability」「a write failure is swallowed even with no error hook installed」 |
+
+线上的 `expiresAt − lastHeartbeatAt` 就是当下 TTL（注册、心跳、恢复三处同一口径；时间跳跃 rebase 后另含跳跃量，与本包自己的判定一致）——控制台按它判滞后 / 过期，不另带一份 TTL（`docs/dev/console.md` §7.1）；改租约的计算方式时要连同控制台一起看。
 
 另有一条与 P3.1 联动、同样有用例的性质：**时间跳跃期间不删条目**——`observeClock` 判定解冻后先 rebase 全表，宽限窗口内 `#live` 直接返回记录（`test/registry.test.ts`「a thaw rebases leases and lets heartbeat recover」「ordinary elapsed time still expires after time-jump protection is enabled」）。
 

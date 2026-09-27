@@ -39,7 +39,11 @@ export type WitnessVerificationIssue =
 export interface WitnessVerification {
   /** At least one valid, published prefix hash disagrees with the local chain. */
   readonly tampered: boolean
-  /** There is no current evidence: no valid anchor, or the latest is too old. */
+  /**
+   * No valid anchor at all, or the trail runs past the newest anchor while the
+   * witness has accepted nothing within the threshold. A trail whose head is
+   * already anchored is never stale, however old that receipt: design §4.3.
+   */
   readonly stale: boolean
   readonly coveredThrough: number | null
   readonly issues: readonly WitnessVerificationIssue[]
@@ -55,6 +59,7 @@ export interface VerifyWitnessOptions {
 }
 
 export interface WitnessStaleness {
+  /** No valid receipt, or the newest one is older than the threshold. */
   readonly stale: boolean
   readonly ageMs: number | null
   readonly thresholdMs: number
@@ -76,6 +81,10 @@ export interface CheckWitnessStalenessOptions {
 /**
  * The witness-host check from design §4.4: it needs only evidence it stores,
  * so an operator can schedule it without reading a compromised node's disk.
+ *
+ * It can only say that no new anchor has arrived. A sender does not resend an
+ * unchanged head, so an idle node and a silenced one look the same here; only
+ * {@link verifyAuditWitness}, which also reads the trail, can tell them apart.
  */
 export function checkWitnessStaleness(
   options: CheckWitnessStalenessOptions,
@@ -128,8 +137,19 @@ export function verifyAuditWitness(
 ): WitnessVerification {
   const trail = readTrail(options.trailPath)
   const staleness = checkWitnessStaleness(options)
-  const issues: WitnessVerificationIssue[] = [...staleness.issues]
   const valid = staleness.validAnchors
+  // Receipt age is evidence of a silent sender only where there is something
+  // to send: records past the newest statement the witness holds. Without
+  // them, an idle node and a stopped one leave the same harmless gap.
+  const newest = valid.reduce<number | null>(
+    (max, anchor) => Math.max(max ?? 0, anchor.seq),
+    null,
+  )
+  const stale =
+    staleness.stale && (newest === null || trail.records.length > newest)
+  const issues: WitnessVerificationIssue[] = staleness.issues.filter(
+    issue => issue.kind !== 'stale' || stale,
+  )
 
   let tampered = false
   let coveredThrough: number | null = null
@@ -163,7 +183,7 @@ export function verifyAuditWitness(
       })
     }
   }
-  return { tampered, stale: staleness.stale, coveredThrough, issues }
+  return { tampered, stale, coveredThrough, issues }
 }
 
 /** Human-readable witness output for a future CLI, console, or alert runner. */

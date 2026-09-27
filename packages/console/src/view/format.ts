@@ -211,6 +211,59 @@ export function formatBytes(bytes: number): string {
 export type AgentHealth = 'live' | 'stale' | 'expired'
 
 /**
+ * The lease the registry actually granted this record, or `null`.
+ *
+ * The registry stamps both instants in one step — `expiresAt` is
+ * `lastHeartbeatAt + ttl` for the TTL *it* runs with, on register, on heartbeat
+ * and on restore (where the deadline is recomputed from the TTL in force) — so
+ * their difference is that TTL, read off the wire rather than assumed. The
+ * console used to judge every row against its own compiled-in default instead,
+ * and a registry started with an hour-long lease then showed a node two minutes
+ * past its last heartbeat as 过期 while the registry still routed to it
+ * (validation report 2026-09-08, C-1).
+ *
+ * A time-jump rebase moves `expiresAt` without touching `lastHeartbeatAt`; the
+ * span then includes the jump, and so does the registry's own verdict.
+ */
+function grantedLease(agent: ConsoleAgent): number | null {
+  const beat = agent.lastHeartbeatAt
+  const expires = agent.expiresAt
+  if (!(usableInstant(beat) && usableInstant(expires))) return null
+  return expires > beat ? expires - beat : null
+}
+
+/**
+ * The scale one row is judged against: the registry's own lease for it, and
+ * `fallbackMs` only when the record does not carry both instants.
+ */
+function leaseOf(agent: ConsoleAgent, fallbackMs: number): number {
+  return grantedLease(agent) ?? fallbackMs
+}
+
+/**
+ * The lease the registry is granting now, for the one number the page prints.
+ *
+ * Read off the most recently renewed record: every register and heartbeat
+ * stamps its deadline from the TTL in force at that moment, so the newest stamp
+ * is the newest statement of it. `fallbackMs` when no record carries a readable
+ * lease — an empty roster has nothing to read it from.
+ */
+export function rosterLease(
+  agents: readonly ConsoleAgent[],
+  fallbackMs: number,
+): number {
+  let newest: { readonly beat: number; readonly lease: number } | null = null
+  for (const one of agents) {
+    const lease = grantedLease(one)
+    if (lease === null) continue
+    if (newest === null || one.lastHeartbeatAt > newest.beat) {
+      newest = { beat: one.lastHeartbeatAt, lease }
+    }
+  }
+  return newest === null ? fallbackMs : newest.lease
+}
+
+/**
  * Half a lease. Past this point a well-behaved node is *late*, not merely idle.
  *
  * A node renews by heartbeat, so `expiresAt` is `lastHeartbeatAt + ttl` and
@@ -227,11 +280,14 @@ const STALE_FRACTION = 0.5
  * heartbeating four minutes into a five-minute lease in the same bucket as one
  * that answered a second ago — and that node is precisely the one worth looking
  * at, because it is about to drop off the roster.
+ *
+ * The scale is the record's own lease ({@link leaseOf}); `fallbackTtlMs` only
+ * stands in for a record that does not carry one.
  */
 export function agentHealth(
   agent: ConsoleAgent,
   now: number,
-  ttlMs: number,
+  fallbackTtlMs: number,
 ): AgentHealth {
   // The lease is the registry's own verdict; it wins whenever it has spoken.
   if (usableInstant(agent.expiresAt) && agent.expiresAt <= now) {
@@ -243,14 +299,15 @@ export function agentHealth(
   // has confirmed this node exists beyond the request that created the row.
   if (!usableInstant(beat)) return 'stale'
 
+  const lease = leaseOf(agent, fallbackTtlMs)
   // No scale to judge against — the lease check above is all we have.
-  if (!(Number.isFinite(ttlMs) && ttlMs > 0)) return 'live'
+  if (!(Number.isFinite(lease) && lease > 0)) return 'live'
 
   // Clock skew (a heartbeat stamped in the future) reads as "just now" rather
   // than as a negative age that would sort backwards through the thresholds.
   const age = Math.max(0, now - beat)
-  if (age >= ttlMs) return 'expired'
-  if (age >= ttlMs * STALE_FRACTION) return 'stale'
+  if (age >= lease) return 'expired'
+  if (age >= lease * STALE_FRACTION) return 'stale'
   return 'live'
 }
 
@@ -278,34 +335,36 @@ export function agentHealth(
  *
  * Returns `null` when there is no scale to draw against — no TTL, and no lease
  * to borrow one from. A missing bar is honest; a full-width one would not be.
+ * The scale is the same one {@link agentHealth} judged by ({@link leaseOf}).
  */
 export function leaseView(
   agent: ConsoleAgent,
   now: number,
-  ttlMs: number,
+  fallbackTtlMs: number,
   health: AgentHealth,
 ): {
   readonly ratio: number
   readonly tone: 'ink' | 'stale' | 'dead'
   readonly remainingMs: number
 } | null {
-  if (!(Number.isFinite(ttlMs) && ttlMs > 0)) return null
+  const lease = leaseOf(agent, fallbackTtlMs)
+  if (!(Number.isFinite(lease) && lease > 0)) return null
   if (health === 'expired') return { ratio: 1, tone: 'dead', remainingMs: 0 }
 
   let elapsed: number
   if (usableInstant(agent.lastHeartbeatAt)) {
     elapsed = Math.max(0, now - agent.lastHeartbeatAt)
   } else if (usableInstant(agent.expiresAt)) {
-    elapsed = Math.max(0, ttlMs - (agent.expiresAt - now))
+    elapsed = Math.max(0, lease - (agent.expiresAt - now))
   } else {
     return null
   }
 
-  const ratio = Math.min(1, elapsed / ttlMs)
+  const ratio = Math.min(1, elapsed / lease)
   return {
     ratio,
     tone: health === 'stale' ? 'stale' : 'ink',
-    remainingMs: Math.max(0, ttlMs - elapsed),
+    remainingMs: Math.max(0, lease - elapsed),
   }
 }
 

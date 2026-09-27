@@ -97,6 +97,7 @@ import {
   formatShortDuration,
   leaseView,
   publicKeyFingerprint,
+  rosterLease,
   type AgentHealth,
 } from './format.js'
 import type {
@@ -412,7 +413,7 @@ function nodeCard(
 function headTail(
   total: number,
   counts: HealthTally,
-  ttlMs: number,
+  leaseMs: number,
   certificates: readonly ConsoleCertificate[] | null,
 ): string {
   const parts = [
@@ -421,9 +422,9 @@ function headTail(
   ]
   if (counts.stale > 0) parts.push(toned('warn', `滞后 ${counts.stale}`))
   if (counts.expired > 0) parts.push(toned('bad', `过期 ${counts.expired}`))
-  if (Number.isFinite(ttlMs) && ttlMs > 0) {
+  if (Number.isFinite(leaseMs) && leaseMs > 0) {
     parts.push(
-      `<span class="ttl">租约 ${escapeHtml(formatDuration(ttlMs))}</span>`,
+      `<span class="ttl">租约 ${escapeHtml(formatDuration(leaseMs))}</span>`,
     )
   }
   const certificateCount = certificateTally(certificates)
@@ -450,6 +451,10 @@ function rosterHead(
  * successful first load passes both, and the right answer is to show the strip
  * *and* keep the last known list. A roster blanked by a transient registry
  * hiccup reads as "everyone left".
+ *
+ * `ttlMs` is the scale of last resort. Every row is judged against the lease
+ * the registry granted it (`expiresAt − lastHeartbeatAt`, see `leaseOf` in
+ * `format.ts`); `ttlMs` only stands in for a record that carries no lease.
  */
 export function renderRoster(
   agents: readonly ConsoleAgent[] | null,
@@ -529,8 +534,12 @@ export function renderRoster(
   )
 
   const counts = tallyOf(agents, now, ttlMs)
+  // The registry's lease, not `ttlMs`: that one is only the scale of last
+  // resort, and printing it here is how the header used to say 1 分 30 秒 over
+  // a registry running hour-long leases (C-1).
+  const leaseMs = rosterLease(agents, ttlMs)
   return (
-    rosterHead(headTail(agents.length, counts, ttlMs, certificateList), {
+    rosterHead(headTail(agents.length, counts, leaseMs, certificateList), {
       total: agents.length,
       online: counts.live,
       stale: counts.stale,

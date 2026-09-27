@@ -4,12 +4,14 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import {
   AgentStatus,
+  DEFAULT_RENEW_INTERVAL_MS,
   DEFAULT_TTL_MS,
   InMemoryRegistry,
   ManualClock,
   RegistryErrorCode,
   isValidEndpoint,
   isValidPublicKey,
+  renewIntervalFor,
 } from '../src/index.js'
 
 const TTL = 90_000
@@ -76,6 +78,27 @@ describe('public key validation', () => {
     expect(isValidPublicKey(`${NODE_KEY.slice(0, 42)}=`)).toBe(false)
     expect(isValidPublicKey('')).toBe(false)
     expect(isValidPublicKey(42)).toBe(false)
+  })
+})
+
+describe('renewal period', () => {
+  test('is 20s against the default lease', () => {
+    expect(DEFAULT_RENEW_INTERVAL_MS).toBe(20_000)
+    expect(renewIntervalFor(DEFAULT_TTL_MS)).toBe(DEFAULT_RENEW_INTERVAL_MS)
+  })
+
+  test('keeps 4.5 renewals per lease whatever the lease', () => {
+    expect(renewIntervalFor(3_000)).toBe(666)
+    expect(renewIntervalFor(3_600_000)).toBe(800_000)
+    for (const ttl of [3_000, 12_000, 90_000, 3_600_000]) {
+      // Three renewals may be lost in a row and the fourth still lands in time.
+      expect(renewIntervalFor(ttl) * 4).toBeLessThan(ttl)
+    }
+  })
+
+  test('never drops to a zero-length timer', () => {
+    expect(renewIntervalFor(1)).toBe(1)
+    expect(renewIntervalFor(0)).toBe(1)
   })
 })
 

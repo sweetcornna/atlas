@@ -96,6 +96,20 @@ function signedAnchor(keys: ReturnType<typeof generateNodeKeyPair>) {
   )
 }
 
+function countingFetch(counter: { posts: number }): typeof fetch {
+  return ((input, init) => {
+    counter.posts += 1
+    return fetch(input, init)
+  }) as typeof fetch
+}
+
+function answering(status: number, body: unknown): typeof fetch {
+  return (() =>
+    Promise.resolve(
+      new Response(JSON.stringify(body), { status }),
+    )) as unknown as typeof fetch
+}
+
 function hangingFetch(onAbort: () => void): typeof fetch {
   return ((_input, init) => {
     init?.signal?.addEventListener('abort', onAbort, { once: true })
@@ -215,6 +229,12 @@ describe('the append-only witness endpoint', () => {
       body: JSON.stringify(anchor),
     })
     expect(overwrite.status).toBe(409)
+    // Still a refusal, but it names the head already held at this seq, so a
+    // restarted sender can recognise its own earlier acceptance.
+    expect(await overwrite.json()).toEqual({
+      error: 'anchor_exists',
+      head: anchor.head,
+    })
     const deletion = await fetch(`${base}/v0/anchor?node=${NODE}`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${WRITE_TOKEN}` },
@@ -352,6 +372,43 @@ describe('the append-only witness endpoint', () => {
     })
     await expect(reader.list(NODE)).rejects.toThrow('timed out after 10 ms')
     expect(aborted).toBe(true)
+  })
+
+  test('a 409 resolves only when it names the same head that was sent', async () => {
+    const anchor = signedAnchor(generateNodeKeyPair())
+    const writerAnswering = (status: number, body: unknown) =>
+      remoteWitnessAnchorWriter({
+        url: 'http://witness.test',
+        token: WRITE_TOKEN,
+        fetchImpl: answering(status, body),
+      })
+
+    await expect(
+      writerAnswering(409, {
+        error: 'anchor_exists',
+        head: anchor.head,
+      }).append(anchor),
+    ).resolves.toBeUndefined()
+    await expect(
+      writerAnswering(409, {
+        error: 'anchor_exists',
+        head: 'd'.repeat(64),
+      }).append(anchor),
+    ).rejects.toThrow(
+      'witness service refused the anchor: 409 (seq 1 already witnessed with a different head)',
+    )
+    // An endpoint from before the head was reported cannot confirm anything.
+    await expect(
+      writerAnswering(409, { error: 'anchor_exists' }).append(anchor),
+    ).rejects.toThrow('witness service refused the anchor: 409')
+    await expect(
+      writerAnswering(409, { error: 'other', head: anchor.head }).append(
+        anchor,
+      ),
+    ).rejects.toThrow('witness service refused the anchor: 409')
+    await expect(
+      writerAnswering(403, { error: 'anchor_untrusted' }).append(anchor),
+    ).rejects.toThrow('witness service refused the anchor: 403')
   })
 
   test('reads a legacy bare anchor so verification can conservatively mark it stale', async () => {
@@ -706,5 +763,178 @@ describe('§5 witness variants', () => {
     await scheduler.tick()
     expect(errors).toHaveLength(1)
     expect(String(errors[0])).toContain('timed out after 10 ms')
+  })
+
+  function scheduler(
+    counter: { posts: number },
+    errors: unknown[],
+    now: () => number,
+    trailPath = path,
+  ): AuditWitnessScheduler {
+    return new AuditWitnessScheduler({
+      node: NODE,
+      trailPath,
+      keys,
+      writer: remoteWitnessAnchorWriter({
+        url: base,
+        token: WRITE_TOKEN,
+        fetchImpl: countingFetch(counter),
+      }),
+      now,
+      onError: error => errors.push(error),
+    })
+  }
+
+  async function anchoredSeqs(): Promise<readonly number[]> {
+    return (await store.list(NODE)).map(witnessAnchorOf).map(a => a.seq)
+  }
+
+  test('does not resend an accepted head and anchors the next one', async () => {
+    const counter = { posts: 0 }
+    const errors: unknown[] = []
+    let now = 10_000
+    witnessNow = 10_000
+    const sender = scheduler(counter, errors, () => now)
+
+    await sender.tick()
+    for (let period = 0; period < 3; period++) {
+      now += 60_000
+      await sender.tick()
+    }
+    expect(counter.posts).toBe(1)
+
+    appendStory(path, 1)
+    now += 60_000
+    await sender.tick()
+    expect(counter.posts).toBe(2)
+    expect(errors).toEqual([])
+    expect(await anchoredSeqs()).toEqual([5, 8, 12, 13])
+  })
+
+  test('after a restart, a 409 naming the same head counts as accepted', async () => {
+    await publish(10_000)
+    const counter = { posts: 0 }
+    const errors: unknown[] = []
+    let now = 20_000
+    witnessNow = 20_000
+    const restarted = scheduler(counter, errors, () => now)
+
+    // The first period after a restart resends the head exactly once.
+    await restarted.tick()
+    expect(counter.posts).toBe(1)
+    expect(errors).toEqual([])
+    now += 60_000
+    await restarted.tick()
+    expect(counter.posts).toBe(1)
+    // No second receipt, and the original reception time is untouched.
+    expect(await store.list(NODE)).toContainEqual(
+      expect.objectContaining({ receivedAt: 10_000 }),
+    )
+    expect(await anchoredSeqs()).toEqual([5, 8, 12])
+  })
+
+  test('after a restart with new records, the first period anchors the new head', async () => {
+    await publish(10_000)
+    appendStory(path, 2)
+    const counter = { posts: 0 }
+    const errors: unknown[] = []
+    witnessNow = 20_000
+    await scheduler(counter, errors, () => 20_000).tick()
+    expect(counter.posts).toBe(1)
+    expect(errors).toEqual([])
+    expect(await anchoredSeqs()).toEqual([5, 8, 12, 14])
+  })
+
+  test('a 409 for a different head at the same seq stays an error every period', async () => {
+    await publish(10_000)
+    const attacked = join(directory, 'attacked-same-seq.ndjson')
+    rewriteTrail(path, attacked, records =>
+      records.map(record =>
+        record.seq === 12 ? { ...record, kind: 'rewritten-head' } : record,
+      ),
+    )
+    const counter = { posts: 0 }
+    const errors: unknown[] = []
+    let now = 20_000
+    const sender = scheduler(counter, errors, () => now, attacked)
+
+    await sender.tick()
+    now += 60_000
+    await sender.tick()
+    expect(counter.posts).toBe(2)
+    expect(errors.map(String)).toEqual([
+      'Error: witness service refused the anchor: 409 (seq 12 already witnessed with a different head)',
+      'Error: witness service refused the anchor: 409 (seq 12 already witnessed with a different head)',
+    ])
+    expect(await anchoredSeqs()).toEqual([5, 8, 12])
+  })
+
+  test('an anchored head is not stale however old its receipt; one new record is', async () => {
+    await publish(10_000)
+    const anchors = await store.list(NODE)
+    const anHourLater = () => 10_000 + 3_600_000
+    const idle = verifyAuditWitness({
+      trailPath: path,
+      anchors,
+      publicKey: keys.publicKey,
+      now: anHourLater,
+      staleAfterMs: 120_000,
+    })
+    expect(idle).toEqual({
+      tampered: false,
+      stale: false,
+      coveredThrough: 12,
+      issues: [],
+    })
+    // The witness side alone sees the same gap and cannot tell idle from
+    // silenced; only the on-read verdict above has the trail to decide.
+    expect(
+      checkWitnessStaleness({
+        anchors,
+        publicKey: keys.publicKey,
+        now: anHourLater,
+        staleAfterMs: 120_000,
+      }).stale,
+    ).toBe(true)
+
+    appendStory(path, 1)
+    const behind = verifyAuditWitness({
+      trailPath: path,
+      anchors,
+      publicKey: keys.publicKey,
+      now: anHourLater,
+      staleAfterMs: 120_000,
+    })
+    expect(behind.stale).toBe(true)
+    expect(behind.issues).toEqual([
+      { kind: 'stale', ageMs: 3_600_000, thresholdMs: 120_000 },
+      { kind: 'unwitnessed_tail', from: 13, to: 13, count: 1 },
+    ])
+  })
+
+  test('an unwitnessed tail inside the window is not stale; no valid anchor is', async () => {
+    const withinWindow = verifyAuditWitness({
+      trailPath: path,
+      anchors: await store.list(NODE),
+      publicKey: keys.publicKey,
+      now: () => 2_000 + 120_000,
+      staleAfterMs: 120_000,
+    })
+    expect(withinWindow.stale).toBe(false)
+    expect(withinWindow.issues).toEqual([
+      { kind: 'unwitnessed_tail', from: 9, to: 12, count: 4 },
+    ])
+
+    const none = verifyAuditWitness({
+      trailPath: path,
+      anchors: [],
+      publicKey: keys.publicKey,
+      now: () => 2_000,
+      staleAfterMs: 120_000,
+    })
+    expect(none).toMatchObject({ tampered: false, stale: true })
+    expect(none.issues).toEqual([
+      { kind: 'stale', ageMs: null, thresholdMs: 120_000 },
+    ])
   })
 })

@@ -121,6 +121,8 @@ export class ResidentLifecycleSentinel {
   readonly #onError: ((error: unknown) => void) | undefined
   #startedAt = 0
   #lastStampedAt = 0
+  #started = false
+  #reportedUnstarted = false
   #stopped = false
 
   constructor(options: ResidentLifecycleOptions) {
@@ -147,6 +149,7 @@ export class ResidentLifecycleSentinel {
   start(): ResidentPriorLife {
     const prior = this.#read()
     this.#startedAt = this.#now()
+    this.#started = true
     this.#stopped = false
     this.#stamp('running')
     return prior
@@ -159,6 +162,7 @@ export class ResidentLifecycleSentinel {
    * a comparison.
    */
   heartbeat(): void {
+    if (!this.#claimed()) return
     if (this.#stopped) return
     if (this.#now() - this.#lastStampedAt < RESIDENT_LIFECYCLE_HEARTBEAT_MS) {
       return
@@ -168,9 +172,34 @@ export class ResidentLifecycleSentinel {
 
   /** Mark this life as having ended on purpose. Idempotent. */
   stop(): void {
+    if (!this.#claimed()) return
     if (this.#stopped) return
     this.#stopped = true
     this.#stamp('stopped')
+  }
+
+  /**
+   * Whether {@link start} has claimed the file for this life.
+   *
+   * A heartbeat or a stop without it would stamp `startedAt: 0` for a life
+   * that never read its predecessor's verdict. That is how validation report
+   * B-1 (2026-09-08) stayed hidden: the resident never called `start()`, the
+   * first poll's heartbeat wrote a plausible `running` anyway, and a clean
+   * stop wrote `stopped` — evidence with nothing behind it. Refusing here makes
+   * a missing `start()` leave no file at all, and says so once through
+   * `onError` rather than on every poll.
+   */
+  #claimed(): boolean {
+    if (this.#started) return true
+    if (!this.#reportedUnstarted) {
+      this.#reportedUnstarted = true
+      this.#onError?.(
+        new Error(
+          'resident lifecycle sentinel used before start(); nothing was stamped',
+        ),
+      )
+    }
+    return false
   }
 
   #read(): ResidentPriorLife {

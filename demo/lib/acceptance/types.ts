@@ -569,6 +569,15 @@ export interface AcceptanceRegistry {
    * 是方法而不是路径，因为「盘在哪台机器上」由驱动决定：场景拿到路径也读不了。
    */
   readState(): Promise<string | undefined>
+  /**
+   * 停掉，再在**同一个端口**上按同一份 {@link RegistrySpec} 起一张新表。
+   *
+   * 没开持久化时新表是空的 —— 与「注册中心停机超过一个 TTL 后重启」是同一个
+   * 结果（`#restore` 按当下时钟重判租约，过期的一条不留），省掉真等那么久。
+   * 端口不变是承重的：控制台的 `--registry` 是启动时定下的，换口就等于换了一个
+   * 注册中心，测的不再是「它重启了」。
+   */
+  restart(): Promise<void>
 }
 
 /** 一次性控制台的启动参数（驱动无关的那部分）。 */
@@ -600,6 +609,13 @@ export interface AcceptanceConsole {
   /** 启动 banner 原文（stdout）。 */
   banner(): Promise<string>
   stderr(): Promise<string>
+  /**
+   * 停掉这个控制台进程（先 TERM，宽限后 KILL）。幂等；清理照样会再跑一次。
+   *
+   * 场景要它，是因为控制台会替自己注册的条目续租：要看「没人续租时租约到期」，
+   * 或者「用同一个配置根重起后登记簿把条目带回来」，都得先让这一个停下。
+   */
+  stop(): Promise<void>
 }
 
 /**

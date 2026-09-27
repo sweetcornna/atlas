@@ -4,8 +4,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -53,7 +55,15 @@ import {
   WakeRefusedError,
   executeResidentWake,
 } from '../../../cli/handlers/residentWake.js'
-import type { ResidentTimingEvent } from '@qianmo/resident'
+import type {
+  ResidentLifecycleRecord,
+  ResidentPriorLife,
+  ResidentTimingEvent,
+} from '@qianmo/resident'
+import {
+  macroDefineArgs,
+  resolveBuildFeatures,
+} from '../../../../scripts/defines.js'
 import { QianmoResident } from '../resident.js'
 import { openAuditTrail, residentNotifyTrailSink } from '../auditTrail.js'
 
@@ -66,6 +76,14 @@ const ACP_FIXTURE = join(
   import.meta.dir,
   'fixtures',
   'resident-acp-agent.runner.ts',
+)
+const CLI_ENTRYPOINT = join(
+  import.meta.dir,
+  '..',
+  '..',
+  '..',
+  'entrypoints',
+  'cli.tsx',
 )
 
 const children: ChildProcess[] = []
@@ -94,6 +112,66 @@ function spawnFixture(env: NodeJS.ProcessEnv = process.env): ChildProcess {
   })
   children.push(child)
   return child
+}
+
+/**
+ * The shipped `qm resident`, run from source the way `scripts/dev.ts` runs it:
+ * `MACRO.*` defines and the default feature list from `scripts/defines.ts`, and
+ * `NODE_ENV` pinned to what the bundle substitutes — `bun test` exports `test`,
+ * which a deployed node never sees (see
+ * `tests/integration/qianmo-resident-startup-probe.test.ts`).
+ *
+ * The environment is built rather than inherited: no model credential from the
+ * developer's shell may reach it, or its startup probe would dial a real
+ * provider from a unit test.
+ */
+function spawnResidentCli(
+  configDir: string,
+  args: readonly string[],
+): {
+  readonly child: ChildProcess
+  /** stdout and stderr interleaved, for failure messages. */
+  readonly output: () => string
+  /** stdout alone: the banner and whatever else the node prints there. */
+  readonly stdout: () => string
+} {
+  const child = spawn(
+    process.execPath,
+    [
+      'run',
+      ...macroDefineArgs(),
+      '-d',
+      `process.env.NODE_ENV:${JSON.stringify('production')}`,
+      ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
+      CLI_ENTRYPOINT,
+      'resident',
+      ...args,
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        TMPDIR: tmpdir(),
+        NODE_ENV: 'production',
+        NO_COLOR: '1',
+        OCC_IDENTITY: 'qianmo',
+        OCC_CONFIG_DIR: configDir,
+        QIANMO_TRANSPORT_PSK: PSK,
+      },
+    },
+  )
+  children.push(child)
+  let output = ''
+  let stdout = ''
+  child.stdout?.on('data', chunk => {
+    output += String(chunk)
+    stdout += String(chunk)
+  })
+  child.stderr?.on('data', chunk => {
+    output += String(chunk)
+  })
+  return { child, output: () => output, stdout: () => stdout }
 }
 
 async function unreadCount(): Promise<number> {
@@ -1467,6 +1545,222 @@ describe('the reliability kit (P13.5)', () => {
     expect(reason).toContain('inactivity')
     expect(reason).toContain('taskTtlMs')
   }, 25_000)
+
+  test('a SIGKILLed `qm resident` is read as killed by the next life', async () => {
+    // Validation report 2026-09-08, B-1. `run()` used to start the sentinel
+    // only as the argument of `onPriorLife?.(…)`, and an optional call skips
+    // its arguments when there is no callee. The shipped CLI passes no
+    // observer, so a real node never stamped `running` and a `kill -9` left
+    // nothing behind — while every test that constructs the resident itself
+    // passes whatever it likes and never saw it. So the life that gets killed
+    // here is the real entrypoint: its wiring *is* the thing under test.
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-hardkill-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const configDir = join(root, 'config')
+    process.env.CLAUDE_CONFIG_DIR = configDir
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    const lifecycle = join(configDir, 'resident', 'lifecycle.json')
+    const readRecord = (): ResidentLifecycleRecord | undefined =>
+      existsSync(lifecycle)
+        ? (JSON.parse(
+            readFileSync(lifecycle, 'utf8'),
+          ) as ResidentLifecycleRecord)
+        : undefined
+
+    const firstSocket = join(root, 'first.sock')
+    const launchedAt = Date.now()
+    const first = spawnResidentCli(configDir, [
+      '--node',
+      'node-b',
+      '--team',
+      TEAM,
+      '--agent',
+      `${AGENT}=${workspace}`,
+      '--unix',
+      firstSocket,
+      '--open-policy',
+    ])
+    // Listening is the readiness mark, and it is also the ordering guarantee:
+    // `run()` claims the sentinel before it binds. The banner is not — it is
+    // printed before `run()` is even called.
+    await waitUntil(
+      () => existsSync(firstSocket) || first.child.exitCode !== null,
+      60_000,
+    ).catch((error: unknown) => {
+      throw new Error(`${String(error)}\n${first.output()}`)
+    })
+    if (!existsSync(firstSocket)) {
+      throw new Error(
+        `qm resident exited before listening (code ${String(
+          first.child.exitCode,
+        )}):\n${first.output()}`,
+      )
+    }
+    const atReady = readRecord()
+    expect(atReady).toMatchObject({
+      phase: 'running',
+      pid: first.child.pid,
+      node: 'node-b',
+    })
+    // Claimed by `start()`, not by the first heartbeat: that one only fires
+    // once the agent is up, and before the fix it was the sole writer, with
+    // `startedAt: 0`.
+    expect(atReady?.startedAt).toBeGreaterThanOrEqual(launchedAt)
+
+    first.child.kill('SIGKILL')
+    if (first.child.exitCode === null && first.child.signalCode === null) {
+      await once(first.child, 'exit')
+    }
+    expect(first.child.signalCode).toBe('SIGKILL')
+    // Nothing ran on the way out, so the evidence is exactly what was there.
+    expect(readRecord()).toEqual(atReady)
+
+    // The restart, on the same config root, through the existing observer.
+    const priors: ResidentPriorLife[] = []
+    const errors: unknown[] = []
+    const ready: string[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: workspace }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: join(root, 'second.sock') },
+      spawnAcp: spawnFixture,
+      onPriorLife: prior => priors.push(prior),
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+    await waitUntil(() => ready.length === 1)
+
+    expect(priors).toEqual([{ outcome: 'killed', record: atReady }])
+    expect(readRecord()).toMatchObject({ phase: 'running', pid: process.pid })
+
+    resident.stop()
+    await running
+    const stopped = readRecord()
+    expect(stopped).toMatchObject({ phase: 'stopped', pid: process.pid })
+    expect(stopped?.startedAt).toBeGreaterThanOrEqual(atReady?.startedAt ?? 0)
+    expect(errors.map(String)).toEqual([])
+  }, 90_000)
+
+  test('`qm resident` prints how the previous life ended: unknown, killed, clean', async () => {
+    // The verdict above reached only an observer the CLI never passed, so on
+    // a real node it was computed and shown nowhere. Three real lives on one
+    // config root, each read the way an operator reads it: off its stdout.
+    const base = mkdtempSync(join(tmpdir(), 'qianmo-resident-priorlife-'))
+    root = base
+    const configDir = join(base, 'config')
+    const workspace = join(base, 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    const lifecycle = join(configDir, 'resident', 'lifecycle.json')
+    const readRecord = (): ResidentLifecycleRecord | undefined =>
+      existsSync(lifecycle)
+        ? (JSON.parse(
+            readFileSync(lifecycle, 'utf8'),
+          ) as ResidentLifecycleRecord)
+        : undefined
+    // Complete lines only: the last segment is empty or still arriving.
+    const stdoutLines = (stdout: string): Record<string, unknown>[] =>
+      stdout
+        .split('\n')
+        .slice(0, -1)
+        .map(line => JSON.parse(line) as Record<string, unknown>)
+    const priorLifeOf = (stdout: string): Record<string, unknown> | undefined =>
+      stdoutLines(stdout).find(line => 'priorLife' in line)
+    const launch = async (
+      name: string,
+    ): Promise<ReturnType<typeof spawnResidentCli>> => {
+      const socket = join(base, `${name}.sock`)
+      const life = spawnResidentCli(configDir, [
+        '--node',
+        'node-b',
+        '--team',
+        TEAM,
+        '--agent',
+        `${AGENT}=${workspace}`,
+        '--unix',
+        socket,
+        '--open-policy',
+      ])
+      const failed = (what: string) => (error: unknown) => {
+        throw new Error(
+          `qm resident (${name}, pid ${String(life.child.pid)}) ${what}: ${String(
+            error,
+          )}\n${life.output()}`,
+        )
+      }
+      await waitUntil(
+        () => existsSync(socket) || life.child.exitCode !== null,
+        60_000,
+      ).catch(failed('never listened'))
+      if (life.child.exitCode !== null) {
+        failed('exited before listening')(life.child.exitCode)
+      }
+      // Printed before the listener is bound, so by now the line can only be
+      // in the pipe: the short wait absorbs delivery lag, nothing more.
+      await waitUntil(() => priorLifeOf(life.stdout()) !== undefined).catch(
+        failed('listened without saying how its previous life ended'),
+      )
+      // The banner keeps the first line, unchanged; the verdict follows it.
+      const [banner] = stdoutLines(life.stdout())
+      expect(banner).toMatchObject({
+        node: 'node-b',
+        requireSignedTasks: false,
+      })
+      expect(banner).not.toHaveProperty('priorLife')
+      return life
+    }
+    const exited = async (child: ChildProcess): Promise<void> => {
+      if (child.exitCode === null && child.signalCode === null) {
+        await once(child, 'exit')
+      }
+    }
+
+    // A config root nothing has run on: no evidence either way.
+    const first = await launch('first')
+    expect(priorLifeOf(first.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'unknown',
+    })
+
+    first.child.kill('SIGKILL')
+    await exited(first.child)
+    const leftBehind = readRecord()
+    expect(leftBehind).toMatchObject({ phase: 'running', pid: first.child.pid })
+
+    // Killed, with the dead life's own record — nothing more, nothing derived.
+    const second = await launch('second')
+    expect(priorLifeOf(second.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'killed',
+      prior: {
+        pid: first.child.pid,
+        startedAt: leftBehind?.startedAt,
+        updatedAt: leftBehind?.updatedAt,
+      },
+    })
+
+    // The shutdown path an operator's `beta-down.sh` takes.
+    second.child.kill('SIGTERM')
+    await exited(second.child)
+    expect(readRecord()).toMatchObject({
+      phase: 'stopped',
+      pid: second.child.pid,
+    })
+
+    const third = await launch('third')
+    expect(priorLifeOf(third.stdout())).toEqual({
+      node: 'node-b',
+      priorLife: 'clean',
+    })
+  }, 120_000)
 })
 
 /**

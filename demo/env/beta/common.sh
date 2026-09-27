@@ -103,6 +103,11 @@ BETA_BACKUP_INTERVAL_MS="${QIANMO_BETA_BACKUP_INTERVAL_MS:-3600000}"
 # 节点往 H 写快照的地址（§2.7，必须 https）。**没有默认值**：它是一个域名，按文首纪律
 # 不进仓库；不设就不开备份面，脚本会明说。
 BETA_BACKUP_URL="${QIANMO_BETA_BACKUP_URL:-}"
+# 节点进程的 oom_score_adj（0~1000，或 off）。默认 1000：内存打满时让内核**先挑阡陌**，
+# 而不是同机的代理、nginx 或别人的服务。理由写在 beta_raise_oom_score 那里。
+BETA_OOM_SCORE_ADJ="${QIANMO_BETA_OOM_SCORE_ADJ:-1000}"
+# 写到哪里。只为用例留的缝：真机上永远是 /proc/self/oom_score_adj。
+BETA_OOM_ADJ_PATH="${BETA_OOM_ADJ_PATH:-/proc/self/oom_score_adj}"
 
 # ── 目录布局（beta-env.md §4.1）。改这里等于改全套脚本 ───────────────────────
 BETA_RUN_DIR="$BETA_ROOT/run"
@@ -155,6 +160,12 @@ BETA_PSK_FILE="$BETA_SECRET_DIR/transport-psk"
 # 同时失效。落成文件就是「显式」的持久形式。
 BETA_VIEW_TOKEN_FILE="$BETA_SECRET_DIR/console-view-token"
 BETA_ADMIN_TOKEN_FILE="$BETA_SECRET_DIR/console-admin-token"
+# 审计见证的**写** token（P11.4）。节点机上是见证机发下来的那一枚；见证机自己的那一份由
+# ops/witness-endpoint.sh install 生成。只在节点腿、且尾参里有 --witness-url 时才读。
+BETA_WITNESS_WRITE_FILE="$BETA_SECRET_DIR/witness-write-token"
+# 审计见证的**读** token。只在 H 腿、且控制台尾参的 --anchors 是 http(s) 端点时才读：
+# 见证不在 H 上时，控制台要凭它把锚点读回来，才画得出「完整且已见证」。
+BETA_WITNESS_READ_FILE="$BETA_SECRET_DIR/witness-read-token"
 # 备份两枚 token。**归档 token 永不离开 H**（§2.7），所以节点机上只会有 write 那一份。
 BETA_BACKUP_WRITE_FILE="$BETA_SECRET_DIR/backup-write-token"
 BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
@@ -406,6 +417,13 @@ beta_write_peers_template() {
     printf '#          server=    这台机器在控制台上显示成什么（可选，默认取 host=）。\n'
     printf '#                     想要一个稳定短名（p11）而不是跟着 IP 变，就写它。\n'
     printf '#          key=       这条链路用的私钥（默认 QIANMO_BETA_SSH_KEY）\n'
+    printf '#          witness-port=审计见证端点的端口（可选，常用 38640）。给了，隧道同一条会话里\n'
+    printf '#                     多一个 -R 127.0.0.1:<口>:127.0.0.1:<口>，节点经它把锚点写到 H；\n'
+    printf '#                     节点侧 authorized_keys 那一行要带 permitlisten="127.0.0.1:<口>"。\n'
+    printf '#          public-key=该节点的公钥（可选，43 位 base64url）。给了，注册中心登记它的每条地址时\n'
+    printf '#                     一并发布这把公钥——控制台带 --anchors 时只从名册取节点公钥。取值就是节点腿\n'
+    printf '#                     末尾「公钥」那一行。不给就照旧不带公钥，H 腿会 WARN 一句。\n'
+    printf '#                     跑在 H 自己身上的节点（没有坐标行）不用写：公钥直接从本机身份文件读。\n'
     printf '#      值里不能有空白（本行按空白分词）。\n'
     printf '#\n'
     printf '# ③ local-server 行（**可选**，全表只许一条）：local-server <机器名>\n'
@@ -465,6 +483,9 @@ BETA_SSH_REMOTE=()
 BETA_SSH_TRAIL=()
 BETA_SSH_KEYFILE=()
 BETA_SSH_SERVER=()
+BETA_SSH_WITNESS=()
+# 坐标行的 public-key=，空 = 没写（名册上不带公钥，与加这个键之前一致）。
+BETA_SSH_PUBKEY=()
 # 本机的机器名，peers.conf 的 `local-server <name>` 行给的。
 #
 # 为什么需要它：跑在 H 自己身上的节点没有坐标行（没有隧道要搭），归属只能从端点推，
@@ -595,7 +616,7 @@ beta_parse_node_line() {
     beta_die "${where}：节点 $name 已经有一条 node 坐标行了，不允许两条"
   fi
   local user='' host='' port='22' local_port='' remote_port="$BETA_NODE_PORT"
-  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 kv key value
+  local trail='' keyfile="$BETA_SSH_KEY" server='' server_given=0 witness_port='' public_key='' kv key value
   # 按空白分词：所以值里不能有空格。这条限制写在模板注释里，且真实取值（用户名、
   # 主机、端口、绝对路径）本来就不该有空格。
   for kv in $rest; do
@@ -614,7 +635,9 @@ beta_parse_node_line() {
       trail) trail="$value" ;;
       key) keyfile="$value" ;;
       server) server="$value"; server_given=1 ;;
-      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server）" ;;
+      witness-port) witness_port="$value" ;;
+      public-key) public_key="$value" ;;
+      *) beta_die "${where}：未知键 ${key}（只认 user/host/port/local-port/remote-port/trail/key/server/witness-port/public-key）" ;;
     esac
   done
   [ -n "$user" ] || beta_die "${where}：缺 user="
@@ -627,6 +650,12 @@ beta_parse_node_line() {
   beta_assert_port "$port" 'port' "$where"
   beta_assert_port "$local_port" 'local-port' "$where"
   beta_assert_port "$remote_port" 'remote-port' "$where"
+  if [ -n "$witness_port" ]; then beta_assert_port "$witness_port" 'witness-port' "$where"; fi
+  # 形状在这里就卡死：注册中心对坏形状答 400，p81-registry 就在启动时抛错退出——
+  # 那时报出来的是「注册中心起不来」，而不是这一行写错了。
+  if [ -n "$public_key" ] && ! beta_public_key_ok "$public_key"; then
+    beta_die "${where}：public-key 不是 43 位 base64url 的 Ed25519 公钥：${public_key}"
+  fi
   case "$BETA_TUNNEL_PORTS" in
     *" $local_port "*) beta_die "${where}：local-port=$local_port 已经被另一个节点占了" ;;
   esac
@@ -657,6 +686,8 @@ beta_parse_node_line() {
   BETA_SSH_TRAIL[BETA_SSH_COUNT]="$trail"
   BETA_SSH_KEYFILE[BETA_SSH_COUNT]="$keyfile"
   BETA_SSH_SERVER[BETA_SSH_COUNT]="$server"
+  BETA_SSH_WITNESS[BETA_SSH_COUNT]="$witness_port"
+  BETA_SSH_PUBKEY[BETA_SSH_COUNT]="$public_key"
   BETA_SSH_COUNT=$((BETA_SSH_COUNT + 1))
   BETA_TUNNEL_PORTS="$BETA_TUNNEL_PORTS$local_port "
 }
@@ -677,6 +708,8 @@ beta_load_peers() {
   BETA_SSH_TRAIL=()
   BETA_SSH_KEYFILE=()
   BETA_SSH_SERVER=()
+  BETA_SSH_WITNESS=()
+  BETA_SSH_PUBKEY=()
   BETA_LOCAL_SERVER=''
   BETA_TUNNEL_PORTS=' '
   [ -f "$BETA_PEERS_FILE" ] || return 0
@@ -771,6 +804,114 @@ beta_peer_endpoint() {
     fi
     i=$((i + 1))
   done
+  return 1
+}
+
+# ── 节点公钥：名册上那个 publicKey 从哪来 ────────────────────────────────────
+#
+# 控制台带 `--anchors` 时**只从名册取节点公钥**（console.ts 的 witnessPublicKeyOf，不从锚点学）。
+# 2026-09-26 的现场：p81-registry 的 `--register` 从来不带公钥，审计页对三个节点全报「名册没有
+# 节点 <名字> 的公钥」；手工逐条补上之后，条目一旦因租约过期被重新登记，公钥又丢了。
+#
+# 于是 H 腿自己给 p81-registry 带上公钥。来源只有两个，**都不猜**：
+#   ① 有 node 坐标行 → 坐标行的 `public-key=`。远端节点的身份文件在它自己的机器上，H 读不到，
+#      只能由人把节点腿末尾打印的那一行抄过来（与 `--trust` / 见证端点 `--key` 同一个事实）。
+#   ② 没有坐标行、端点是回环 → 节点就跑在本机（beta_peer_server 同一条推理），读本机内测根下
+#      它的身份文件。首次创建后永不替换（nodeIdentity.ts），所以它就是那个节点此刻的公钥。
+# 其余情形（没写 `public-key=`、直连的远端节点）一律**不带**，与加这一节之前完全一样，由调用方
+# WARN 一句。
+
+# beta_public_key_ok <值> —— 是不是一把 base64url 的 Ed25519 公钥（43 个字符，无填充）。
+# 字符逐个列出，不写 `[A-Za-z0-9]`：理由见 beta_assert_node_name 头注（范围随 locale 变）。
+# 判据与 @qianmo/protocol 的 PUBLIC_KEY_PATTERN 一致；注册中心收的就是那个形状。
+beta_public_key_ok() {
+  local value="$1"
+  [ "${#value}" -eq 43 ] || return 1
+  case "$value" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# 节点身份文件：`occConfigPath('qianmo','identity','<node>.json')`，配置根是 beta-up 给它的那个。
+beta_node_identity_file() {
+  printf '%s/%s/config/qianmo/identity/%s.json' "$BETA_NODES_DIR" "$1" "$1"
+}
+
+# beta_identity_public_key <node> —— 本机身份文件里的公钥；没有 / 读不出就返回 1。
+#
+# 只取 `publicKey`，**私钥那一行一个字节都不进变量**。依赖的形状是我们自己的序列化器
+# （nodeIdentity.ts 写的是 `JSON.stringify(doc, null, 2)`，每个字段独占一行），与
+# beta_state_pairs 读注册表落盘同一条理由。`node` 字段也要对得上：一份别的节点的身份文件
+# 被拷错了地方，比没有更糟。
+beta_identity_public_key() {
+  local node="$1" file key
+  file="$(beta_node_identity_file "$node")"
+  [ -f "$file" ] || return 1
+  key="$(awk -v want="$node" '
+    /"node"[[:space:]]*:/ {
+      v = $0
+      sub(/^.*"node"[[:space:]]*:[[:space:]]*"/, "", v)
+      sub(/".*$/, "", v)
+      node = v
+    }
+    /"publicKey"[[:space:]]*:/ {
+      v = $0
+      sub(/^.*"publicKey"[[:space:]]*:[[:space:]]*"/, "", v)
+      sub(/".*$/, "", v)
+      key = v
+    }
+    END { if (node == want) print key }
+  ' "$file" 2>/dev/null || true)"
+  beta_public_key_ok "$key" || return 1
+  printf '%s\n' "$key"
+}
+
+# beta_resolve_node_key <node> —— 定下该节点要发布进名册的公钥。
+#
+# 结果放全局变量而不是打印：调用方要同时拿到值、出处和「为什么没有」三样，且这里的
+# beta_die 必须真的结束脚本（放进 `$(...)` 就只结束一个子 shell）。
+#   BETA_NODE_KEY         公钥；空 = 没有来源
+#   BETA_NODE_KEY_SOURCE  出处，给 OK 那一行用
+#   BETA_NODE_KEY_GAP     没有来源时的原因与补法，给 WARN 那一行用
+BETA_NODE_KEY=''
+BETA_NODE_KEY_SOURCE=''
+BETA_NODE_KEY_GAP=''
+beta_resolve_node_key() {
+  local node="$1" index ep host key
+  BETA_NODE_KEY=''
+  BETA_NODE_KEY_SOURCE=''
+  BETA_NODE_KEY_GAP=''
+  if index="$(beta_ssh_index "$node")"; then
+    key="${BETA_SSH_PUBKEY[$index]}"
+    if [ -n "$key" ]; then
+      BETA_NODE_KEY="$key"
+      BETA_NODE_KEY_SOURCE="${BETA_PEERS_FILE} 的坐标行 public-key="
+      return 0
+    fi
+    BETA_NODE_KEY_GAP="它的 node 坐标行没有 public-key=。补法：在 ${node} 那台机器上跑一次节点腿，
+把末尾「公钥」那一行的值写成坐标行的 public-key=<值>，再跑 H 腿"
+    return 1
+  fi
+  ep="$(beta_peer_endpoint "$node" || true)"
+  host="${ep#*://}"
+  host="${host%%/*}"
+  case "$host" in
+    127.*|localhost|localhost:*|'[::1]'*) ;;
+    *)
+      BETA_NODE_KEY_GAP="它直连（没有 node 坐标行），不跑在本机，H 读不到它的身份文件。
+直连节点目前没有写公钥的地方：按 demo/env/beta/README.md「审计见证」第 ⑥ 步手工发布，
+租约过期被重新登记后要再做一次"
+      return 1
+      ;;
+  esac
+  if key="$(beta_identity_public_key "$node")"; then
+    BETA_NODE_KEY="$key"
+    BETA_NODE_KEY_SOURCE="本机身份文件 $(beta_node_identity_file "$node")"
+    return 0
+  fi
+  BETA_NODE_KEY_GAP="它跑在本机（端点是回环），但 $(beta_node_identity_file "$node") 不存在或读不出公钥
+（节点从没在这个内测根下起过？先跑节点腿，再跑 H 腿）"
   return 1
 }
 
@@ -990,27 +1131,272 @@ beta_running() {
   kill -0 "$pid" 2>/dev/null
 }
 
-# beta_stop_one <名字> —— 先 TERM，10 s 不走再 KILL。
+# beta_stop_pid <名字> <pid> —— 先 TERM，10 s 不走再 KILL。已经不在的一个字都不打。
+beta_stop_pid() {
+  local name="$1" pid="$2" i
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
+    sleep 1
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    beta_warn "$name (pid $pid) 未响应 SIGTERM，改用 SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  beta_say "已停止 $name (pid $pid)"
+}
+
+# beta_stop_one <名字> —— 停 pid 文件里那一个，再删掉 pid 文件。
 beta_stop_one() {
-  local name="$1" file pid i
+  local name="$1" file pid
   file="$(beta_pidfile "$name")"
   beta_assert_inside_root "$file"
   [ -f "$file" ] || return 0
   pid="$(cat "$file" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || true
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
-      sleep 1
-      i=$((i + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      beta_warn "$name (pid $pid) 未响应 SIGTERM，改用 SIGKILL"
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    beta_say "已停止 $name (pid $pid)"
-  fi
+  if [ -n "$pid" ]; then beta_stop_pid "$name" "$pid"; fi
   rm -f "$file"
+}
+
+# ── pid 文件对不上时：按命令行与端口再认一遍 ──────────────────────────────────
+#
+# 2026-09-26 p1 上 beta-1 的现场：旧树留下的 run/beta-1.pid 写着 3012737，真在跑的是 2701919。
+# 只认 pid 文件的 beta-down 报「beta-1 本来就没在跑」，旧进程照跑、继续占着 38625；紧接着的
+# beta-up 起了一个注定 EADDRINUSE 的新进程，而就绪探测被旧进程的应答骗成了绿。
+#
+# pid 文件仍是第一判据，这里补的是第二判据：**命令行说它是本内测根下的这个节点**。三条同时成立
+# 才算，缺一条就不认——认错的代价是 kill 别人的进程：
+#   ① argv 里有 `resident` 这个词；
+#   ② argv 里有 `--node <名字>`（或 `--node=<名字>`）；
+#   ③ 它和**本内测根**绑在一起：某个参数形如 `<agent>=<本根>/workspaces/<名字>/…`（beta-up 给
+#      每个 agent 的工作区，自第一版起每一版都有），或者（Linux）它的环境里
+#      `OCC_CONFIG_DIR=<本根>/nodes/<名字>/config`——就是它的配置根。
+# 同名节点跑在**另一个**内测根下（同机的演示 / 另一套内测）过不了③，不会被误停。
+#
+# **端口只用来报不一致，从不用来挑人杀。**H 上 38625 是跑在 H 自己身上的那个节点在用，
+# 按端口找进程会把它当成别的节点的旧进程停掉。
+
+# beta_proc_node <pid> <argv 串> —— 这个进程是本内测根下哪个节点的 resident；不是就返回 1。
+beta_proc_node() {
+  local pid="$1" args="$2" word prev='' node='' resident=0 physical='' root env_text
+  local words=()
+  # read -a 只按空白切，不做路径展开：argv 里的 * ? 不会被 glob 成当前目录的文件名。
+  read -r -a words <<<"$args" || true
+  for word in ${words[@]+"${words[@]}"}; do
+    case "$word" in
+      resident) resident=1 ;;
+      --node=*) node="${word#--node=}" ;;
+    esac
+    if [ "$prev" = '--node' ]; then node="$word"; fi
+    prev="$word"
+  done
+  [ "$resident" = '1' ] && [ -n "$node" ] || return 1
+  # 两种拼法都比：argv 里存的是当初被怎么拼出来的那一个，与 pwd -P 解过符号链接的那个
+  # 在有符号链接时不相等（macOS 的 /var → /private/var；beta-deploy.sh 的守卫踩过同一个坑）。
+  physical="$(cd "$BETA_ROOT" 2>/dev/null && pwd -P || true)"
+  for root in "$BETA_ROOT" "$physical"; do
+    [ -n "$root" ] || continue
+    for word in ${words[@]+"${words[@]}"}; do
+      case "$word" in
+        *"=${root}/workspaces/${node}/"*)
+          printf '%s\n' "$node"
+          return 0
+          ;;
+      esac
+    done
+    # 先整份读进变量再比：`tr … | grep -q` 在 pipefail 下会因 tr 吃到 SIGPIPE 而判假。
+    if [ -r "/proc/$pid/environ" ]; then
+      env_text="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null || true)"
+      case "
+${env_text}
+" in
+        *"
+OCC_CONFIG_DIR=${root}/nodes/${node}/config
+"*)
+          printf '%s\n' "$node"
+          return 0
+          ;;
+      esac
+    fi
+  done
+  return 1
+}
+
+# beta_node_pids <名字> —— 按命令行认出来的、本内测根下这个节点的全部进程，一行一个 pid。
+# 进程表数不出来时返回 2（那是「没法复核」，不是「没有」）。
+#
+# `ps` 而不是 `pgrep -af`：macOS 的 pgrep 收下 -a 却只打 PID（beta-deploy.sh 的守卫实测过）。
+# `-ww`：resident 的 argv 常有几百字节（每个 agent 一个工作区路径、--trust 公钥），被截断就
+# 认不出③。
+beta_node_pids() {
+  local want="$1" snapshot pid args
+  snapshot="$(ps -ww -eo pid=,args= 2>/dev/null || true)"
+  [ -n "$snapshot" ] || return 2
+  while read -r pid args; do
+    [ -n "$pid" ] || continue
+    [ "$pid" != "$$" ] || continue
+    # 先用便宜的字符串判断筛掉绝大多数行：下面那一步每行要开子 shell。
+    case " $args " in
+      *' resident '*) ;;
+      *) continue ;;
+    esac
+    case "$args" in
+      *"--node ${want}"*|*"--node=${want}"*) ;;
+      *) continue ;;
+    esac
+    if [ "$(beta_proc_node "$pid" "$args" || true)" = "$want" ]; then
+      printf '%s\n' "$pid"
+    fi
+  done <<<"$snapshot"
+  return 0
+}
+
+# beta_port_holders <端口> —— 在这个 TCP 端口上 LISTEN 的进程，一行一个 pid。
+# 本机三种办法都没有时返回 1（= 认不出，不是「没人在听」）。
+#
+# ss（节点机上现成）→ lsof（macOS 自带，常在 /usr/sbin，不在非交互 PATH 里）→ /proc 扫 fd。
+# 只看得到本账号的进程——内测的进程全是本账号起的，别的账号占着端口时由调用方的 TCP 探测兜底。
+beta_port_holders() {
+  local port="$1" out lsof_bin='' hex inodes inode dir listing
+  if command -v ss >/dev/null 2>&1 && out="$(ss -ltnp "sport = :${port}" 2>/dev/null)"; then
+    printf '%s\n' "$out" | grep -o 'pid=[0123456789]*' | cut -d= -f2 | sort -u || true
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof_bin="$(command -v lsof)"
+  elif [ -x /usr/sbin/lsof ]; then
+    lsof_bin=/usr/sbin/lsof
+  fi
+  if [ -n "$lsof_bin" ]; then
+    "$lsof_bin" -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true
+    return 0
+  fi
+  [ -r /proc/net/tcp ] || return 1
+  hex="$(printf '%04X' "$port")"
+  # 第 4 列 0A = LISTEN；第 2 列是 <地址>:<十六进制端口>；第 10 列是 socket inode。
+  inodes="$(awk -v want=":${hex}" 'FNR > 1 && $4 == "0A" && substr($2, length($2) - 4) == want { print $10 }' \
+    /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)"
+  [ -n "$inodes" ] || return 0
+  for dir in /proc/[0123456789]*; do
+    listing="$(ls -l "$dir/fd" 2>/dev/null || true)"
+    for inode in $inodes; do
+      case "$listing" in
+        *"socket:[${inode}]"*) printf '%s\n' "${dir#/proc/}" ;;
+      esac
+    done
+  done
+  return 0
+}
+
+# beta_port_occupants <端口> —— 谁占着这个端口：pid 一行一个；有人应答却认不出是谁时打一行 `?`。
+# 空输出 = 端口空着。
+beta_port_occupants() {
+  local port="$1" holders
+  holders="$(beta_port_holders "$port" || true)"
+  if [ -n "$holders" ]; then
+    printf '%s\n' "$holders"
+    return 0
+  fi
+  if beta_tcp_open 127.0.0.1 "$port"; then printf '?\n'; fi
+  return 0
+}
+
+# beta_describe_pid <pid 或 ?> —— 给人看的一行：pid 与它的命令行。
+beta_describe_pid() {
+  local pid="$1" args
+  if [ "$pid" = '?' ]; then
+    beta_say '  （有进程在应答，但本机认不出是谁：没有 ss / lsof / /proc 可查，或它属于别的账号）'
+    return 0
+  fi
+  args="$(ps -ww -o args= -p "$pid" 2>/dev/null || true)"
+  beta_say "  pid ${pid}：${args:-（命令行读不到）}"
+}
+
+# beta_stop_node <节点名> —— 停一个常驻节点：pid 文件，再按命令行认一遍。
+#
+# 返回 0 = 停了，或者确实没在跑；返回 3 = 它的端口被**认不出**的进程占着——已如实报出，
+# **一个都没动**。端口按 BETA_NODE_PORT 查（一机一节点，beta-up 用的就是它）。
+#
+# 端口那一步只在「pid 文件在、却指着一个不存在的进程、命令行也认不出任何一个」时才做：
+# 那是这个节点确实在本机跑过、而记录和现实对不上的唯一形状。H 上给一个只铺了链路的名字
+# （run/ 里本来就没有它的 pid 文件）不走这一步——H 的 38625 上是它自己身上那个节点，不相干。
+beta_stop_node() {
+  local name="$1" file recorded='' had_file=0 was_running=0 found=0 pids pid occupants other unknown=0
+  file="$(beta_pidfile "$name")"
+  beta_assert_inside_root "$file"
+  if [ -f "$file" ]; then
+    had_file=1
+    recorded="$(cat "$file" 2>/dev/null || true)"
+  fi
+  if beta_running "$name"; then was_running=1; fi
+  beta_stop_one "$name"
+
+  local rc=0
+  pids="$(beta_node_pids "$name")" || rc=$?
+  if [ "$rc" != '0' ]; then
+    beta_warn "数不出进程表（ps -eo pid=,args= 没有输出）—— 没法按命令行复核 ${name} 还有没有别的进程在跑"
+  fi
+  for pid in $pids; do
+    if [ "$was_running" = '1' ]; then
+      beta_warn "pid 文件里的 ${recorded} 已停，但按命令行还认出一个 ${name}（同一个节点起了两份）："
+    elif [ "$had_file" = '1' ]; then
+      beta_warn "run/${name}.pid 写的是 ${recorded:-（空）}，那个进程已经不在了；按命令行认出 ${name} 真正在跑的是："
+    else
+      beta_warn "run/${name}.pid 不存在，但按命令行认出 ${name} 在跑："
+    fi
+    beta_describe_pid "$pid"
+    beta_stop_pid "$name" "$pid"
+    found=1
+  done
+  if [ "$was_running" = '1' ] || [ "$found" = '1' ]; then return 0; fi
+
+  if [ "$had_file" = '1' ]; then
+    occupants="$(beta_port_occupants "$BETA_NODE_PORT")"
+    if [ -n "$occupants" ]; then
+      # 逐行读而不是 `for pid in $occupants`：那一行可能是 `?`，不加引号的展开会把它
+      # 当 glob 去匹配当前目录里的单字符文件名。
+      while read -r pid; do
+        other=''
+        if [ "$pid" != '?' ]; then
+          other="$(beta_proc_node "$pid" "$(ps -ww -o args= -p "$pid" 2>/dev/null || true)" || true)"
+        fi
+        if [ -n "$other" ]; then
+          beta_say "端口 ${BETA_NODE_PORT} 上是本内测根的节点 ${other}（pid ${pid}），不是 ${name}。"
+        else
+          unknown=1
+        fi
+      done <<<"$occupants"
+      if [ "$unknown" = '1' ]; then
+        beta_warn "${name} 的 pid 文件写着 ${recorded:-（空）}，那个进程已经不在了，按命令行也认不出任何一个 ${name}，
+但端口 ${BETA_NODE_PORT} 被占着："
+        while read -r pid; do beta_describe_pid "$pid"; done <<<"$occupants"
+        beta_say "  这几个进程的命令行说不出它们是本内测根的 ${name}，**本脚本不动它们**（不按端口杀人）。
+  它们不走，接下来的 beta-up.sh 就起不来（EADDRINUSE）。确认是谁之后手动处置；
+  若确实是 ${name} 的旧进程（比如别的内测根 / 手工起的），核对命令行后 kill -TERM <pid>。"
+        return 3
+      fi
+    fi
+  fi
+  beta_say "$name 本来就没在跑"
+  return 0
+}
+
+# beta_node_banner_key <节点名> —— logs/<节点名>.out 首行那条启动 JSON 说它是这个节点吗；
+# 是就打印它的 publicKey，否则返回 1。
+#
+# 启动行是 resident 在**监听之前**打的（resident.ts），日志又是 beta_start_process 刚用 `>`
+# 截断过的——所以它只可能来自刚起的那个进程，与端口上是谁在应答无关。
+beta_node_banner_key() {
+  local node="$1" line key
+  line="$(head -1 "$(beta_logfile "$node" out)" 2>/dev/null || true)"
+  case "$line" in
+    '{'*"\"node\":\"${node}\""*) ;;
+    *) return 1 ;;
+  esac
+  key="$(printf '%s\n' "$line" | sed -n 's/.*"publicKey":"\([^"]*\)".*/\1/p')"
+  beta_public_key_ok "$key" || return 1
+  printf '%s\n' "$key"
 }
 
 # 起完到「算它起住了」之间等多久。1 s 足够抓住 exec 失败那一类（`nohup` 找不到命令是
@@ -1613,6 +1999,18 @@ beta_live_endpoint() {
   printf '%s' "$body" | sed -e 's/.*"endpoint":"//' -e 's/".*//'
 }
 
+# beta_live_public_key <地址> —— 问在跑的注册中心：这条登记上挂着哪把公钥。
+# 没有公钥 / 拿不到就打空串。单条 agent 的响应里 publicKey 最多出现一次（没有就整个键缺席）。
+beta_live_public_key() {
+  local body
+  body="$(beta_http_body "$BETA_REGISTRY_URL/v0/agents/$(beta_urlencode_address "$1")")"
+  case "$body" in
+    *'"publicKey":"'*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$body" | sed -e 's/.*"publicKey":"//' -e 's/".*//'
+}
+
 # beta_provisioned_nodes —— 本机 ops/ 下真的铺过链路的节点名，一行一个。
 #
 # 停机与重置**从这里**取节点，不从 peers.conf 取：那两个动作要处理的是「已经铺出去的
@@ -1666,21 +2064,160 @@ beta_note_host_unit() {
   return 0
 }
 
+# beta_tunnel_extra_args <坐标行下标> —— 这条隧道在 -L 之外还要带的 ssh 参数。
+#
+# 目前只有一种：审计见证的反向转发（P11.4）。见证端点只听 H 的回环，节点要把锚点
+# 写过去，就借 H 发起的这条会话开一个 `-R`——节点上因此不需要任何指向 H 的凭据
+# （§8.3 的单向信任，也是见证方与被见证方不同失陷域的前提）。节点侧 authorized_keys
+# 那一行的 `permitlisten` 把它钉死在这一个口上（beta-env.md §9.10 那个缺口同时关掉）。
+# 没给 witness-port= 就打印空串：单元里 `$TUNNEL_EXTRA_ARGS` 展开成零个参数。
+beta_tunnel_extra_args() {
+  local port="${BETA_SSH_WITNESS[$1]:-}"
+  [ -n "$port" ] || return 0
+  printf -- '-R 127.0.0.1:%s:127.0.0.1:%s' "$port" "$port"
+}
+
+# beta_prepare_witness —— 尾参里有 --witness-url 时，把写 token 从文件读进环境。
+#
+# URL 走尾参（随 issue #111 的记录活过「停机 → 换产物 → 起机」），token 只走环境：
+# resident 自己就是这么要求的（`--witness-url requires QIANMO_WITNESS_WRITE_TOKEN`），
+# 这里只是把「文件 → 环境」这一步做了，并把两种会在起进程之后才暴露的错提前拦下：
+#   · 有 URL 没 token（或 token 文件权限过宽）——节点会起不来，而错误埋在 .err 里；
+#   · 明文 http 指向回环以外——写 token 在 Authorization 头里，那等于把它广播出去。
+#     经 SSH `-R` 转过来的端点在节点这一侧就是回环口，所以内测形态下永远是回环。
+# 只在节点腿调：控制台与注册中心不需要这枚 token，给了只是多一处能被读走的副本。
+beta_prepare_witness() {
+  local url
+  url="$(beta_passthrough_value --witness-url)"
+  [ -n "$url" ] || return 0
+  beta_assert_token_url "$url" --witness-url '写'
+  if [ -z "${QIANMO_WITNESS_WRITE_TOKEN:-}" ]; then
+    beta_export_secret_file QIANMO_WITNESS_WRITE_TOKEN "$BETA_WITNESS_WRITE_FILE" \
+      "尾参里有 --witness-url，但缺见证写 token：${BETA_WITNESS_WRITE_FILE}（0600，由见证机发下来）"
+  fi
+  beta_ok "审计见证 : ${url}（写 token 从文件进环境，不上命令行）"
+}
+
+# beta_prepare_console_anchors —— 控制台尾参里的 --anchors 是 http(s) 端点时，把见证
+# **读** token 从文件读进环境（控制台只认 QIANMO_WITNESS_READ_TOKEN，consoleArgs.ts）。
+#
+# 见证放在 H 上时 --anchors 给的是本机目录，用不到这枚 token。可是 H 同时也是节点机
+# （beta-4 就在 H 上）时，见证就不能放在 H 上（audit-witness.md §4.1：见证方与被见证方
+# 不同失陷域），控制台只能经 HTTP 把锚点读回来——这枚 token 就是为这一种形态准备的。
+# 它只能「读」：拿到它的人能列出锚点，改不了任何一条（端点只增不删）。
+# 两种会在起进程之后才暴露的错在这里提前拦下，理由与 beta_prepare_witness 相同。
+beta_prepare_console_anchors() {
+  local url
+  url="$(beta_passthrough_value --anchors)"
+  case "$url" in
+    http://*|https://*) ;;
+    *) return 0 ;;
+  esac
+  beta_assert_token_url "$url" --anchors '读'
+  if [ -z "${QIANMO_WITNESS_READ_TOKEN:-}" ]; then
+    beta_export_secret_file QIANMO_WITNESS_READ_TOKEN "$BETA_WITNESS_READ_FILE" \
+      "尾参里的 --anchors 是 HTTP 端点，但缺见证读 token：${BETA_WITNESS_READ_FILE}（0600，由见证机发下来）"
+  fi
+  beta_ok "见证锚点 : ${url}（读 token 从文件进环境，不上命令行）"
+}
+
+# beta_passthrough_value <开关> —— 尾参里这个开关的值（`--x v` 与 `--x=v` 两种写法都认，
+# 出现多次取最后一个——与各命令自己的解析一致）。没有就打印空串。
+beta_passthrough_value() {
+  local flag="$1" arg prev='' value=''
+  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$arg" in
+      "$flag"=*) value="${arg#"$flag"=}" ;;
+    esac
+    if [ "$prev" = "$flag" ]; then value="$arg"; fi
+    prev="$arg"
+  done
+  printf '%s' "$value"
+}
+
+# beta_assert_token_url <URL> <开关> <读|写> —— 带 token 的请求只许走 https，或者走回环上的 http。
+# 经 SSH -L / -R 转过来的端点在本机这一侧就是回环口，所以内测形态下永远是回环。
+beta_assert_token_url() {
+  case "$1" in
+    https://*) ;;
+    http://127.0.0.1:*|http://127.0.0.1/*|http://localhost:*|http://localhost/*|http://\[::1\]:*) ;;
+    *) beta_die "$2 是明文 http 且不指向回环：${1}——$3 token 在请求头里，走明文就等于广播" ;;
+  esac
+}
+
+# beta_export_secret_file <变量名> <文件> <缺文件时的话> —— 普通文件、0600、非空，才读进环境。
+beta_export_secret_file() {
+  local var="$1" file="$2" missing="$3" mode value
+  [ -f "$file" ] || beta_die "$missing"
+  mode="$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")"
+  [ "$mode" = '600' ] || beta_die "${file} 权限是 ${mode}，要 600"
+  value="$(cat "$file")"
+  [ -n "$value" ] || beta_die "${file} 是空的"
+  export "$var=$value"
+}
+
+# beta_raise_oom_score —— 把**本 shell** 的 oom_score_adj 调到 BETA_OOM_SCORE_ADJ。
+#
+# 在起 resident 之前调：子进程（resident 与它 spawn 的 ACP 子进程）继承这个值。
+#
+# 为什么默认 1000：内测节点借住在别人的机器上（2026-09 的舰队是负责人的代理出口，
+# 同机跑着 xray / nginx / 别的服务，内存 1~2 GB）。一个 agent 轮次的峰值约 370 MB，
+# 内存打满时内核按 oom_score 挑进程杀——不调，被挑中的可能是那台机器真正的主业；
+# 调到 1000，被挑中的一定先是我们。阡陌节点被杀的代价是一个轮次失败、下次重起，
+# 这是可以接受的那一边。
+#
+# 调高不需要特权（调低才要），所以非 root 账号也做得到。写不进去（非 Linux、容器
+# 里 /proc 只读）只 WARN，不拦节点起来：OOM 次序是防护，不是节点能不能工作的前提。
+beta_raise_oom_score() {
+  case "$BETA_OOM_SCORE_ADJ" in
+    off)
+      beta_say 'OOM 次序 : 未调整（QIANMO_BETA_OOM_SCORE_ADJ=off）'
+      return 0
+      ;;
+    ''|*[!0-9]*)
+      beta_die "QIANMO_BETA_OOM_SCORE_ADJ 要 0~1000 的整数或 off，收到「${BETA_OOM_SCORE_ADJ}」"
+      ;;
+  esac
+  [ "$BETA_OOM_SCORE_ADJ" -le 1000 ] \
+    || beta_die "QIANMO_BETA_OOM_SCORE_ADJ 超过 1000：${BETA_OOM_SCORE_ADJ}"
+  if [ ! -w "$BETA_OOM_ADJ_PATH" ]; then
+    beta_warn "写不了 ${BETA_OOM_ADJ_PATH}（不是 Linux，或 /proc 只读）—— 本节点的 OOM 次序保持系统默认"
+    return 0
+  fi
+  if printf '%s\n' "$BETA_OOM_SCORE_ADJ" >"$BETA_OOM_ADJ_PATH" 2>/dev/null; then
+    beta_ok "OOM 次序 : oom_score_adj=${BETA_OOM_SCORE_ADJ}（内存打满时内核先挑本节点，而不是同机别的服务）"
+  else
+    # 非 root 想把一个继承来的高值调低，内核会拒绝——那也只是防护没到位。
+    beta_warn "oom_score_adj 写入被拒（${BETA_OOM_SCORE_ADJ}）—— 本节点的 OOM 次序保持继承来的值"
+  fi
+  return 0
+}
+
 # beta_stop_link <node> —— 停掉并取消自启该节点的隧道与镜像 timer。
 #
 # 顺序是**先镜像后隧道**：镜像那条是主动往外拨的，先让它别再发起新连接。
 # 幂等：本来就没在跑 / 本来就没自启的，一个字都不打。
+#
+# **「在跑」不只是 `active`。**一条对端已经不在的隧道，绝大多数时间处在
+# `activating`（`Restart=always` 的 5 s 退避里），只有连接失败前那一瞬是 `active`。
+# 2026-09-26 在 H 上清三条死隧道时，只认 `active` 的旧写法把其中一条**取消了自启、
+# 却没停掉**：它照样每几秒重启一次、继续往 journald 里刷。所以这里反过来问——
+# 只有 `inactive` / `failed`（以及查不到状态）才算已经停了，其余一律 stop。
 beta_stop_link() {
-  local node="$1" unit
+  local node="$1" unit state
   beta_assert_node_name "$node" '链路实例名'
   beta_systemd_user_ok || return 0
   for unit in \
     "$(beta_unit_instance 'qianmo-mirror' "$node" '.timer')" \
     "$(beta_unit_instance 'qianmo-tunnel' "$node" '.service')"; do
-    if [ "$(systemctl --user is-active "$unit" 2>/dev/null || true)" = 'active' ]; then
-      systemctl --user stop "$unit" >/dev/null 2>&1 || true
-      beta_say "已停止 $unit"
-    fi
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+    case "$state" in
+      inactive|failed|'') ;;
+      *)
+        systemctl --user stop "$unit" >/dev/null 2>&1 || true
+        beta_say "已停止 ${unit}（停之前是 ${state}）"
+        ;;
+    esac
     if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = 'enabled' ]; then
       systemctl --user disable "$unit" >/dev/null 2>&1 || true
       beta_say "已取消开机自启 $unit"

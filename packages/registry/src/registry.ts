@@ -21,6 +21,33 @@ import type { RegistryStore } from './store.js'
 export const DEFAULT_TTL_MS = 90_000
 
 /**
+ * How often a renewer refreshes a lease of {@link DEFAULT_TTL_MS}.
+ *
+ * The period the demo registry hosts already renew their entries at (the
+ * `--heartbeat-ms` default of `demo/lib/p41-registry.ts` and
+ * `demo/lib/p81-registry.ts`), given a home here so the console's renewer
+ * does not grow another copy of it. 4.5 renewals per lease: three in a row
+ * can be lost before the entry lapses.
+ */
+export const DEFAULT_RENEW_INTERVAL_MS = 20_000
+
+/**
+ * Renewal period for a lease of `ttlMs`: the same 4.5 renewals per lease as
+ * {@link DEFAULT_RENEW_INTERVAL_MS} against {@link DEFAULT_TTL_MS}.
+ *
+ * Proportional rather than a fixed 20 s because the registry may be started
+ * with any `ttlMs` — a short test lease would lapse between two fixed-period
+ * renewals, a long one would be renewed far more often than it needs. Never
+ * below 1 ms, so a degenerate TTL cannot turn a timer into a busy loop.
+ */
+export function renewIntervalFor(ttlMs: number): number {
+  return Math.max(
+    1,
+    Math.floor((ttlMs * DEFAULT_RENEW_INTERVAL_MS) / DEFAULT_TTL_MS),
+  )
+}
+
+/**
  * Schema version of the persisted table.
  *
  * A document carrying any other version is ignored wholesale rather than

@@ -167,3 +167,104 @@ describe('announceRegistrations', () => {
     )
   })
 })
+
+/**
+ * 公钥跟着声明走（2026-09-26 D9b）。控制台带 `--anchors` 时只从名册取节点公钥，而这里的
+ * 登记原先从不带公钥；手工补上的那一份，又在租约过期后的重登记里被抹掉（`register()` 是
+ * 整条声明，缺省即清空）。
+ */
+describe('announceRegistrations 带公钥', () => {
+  const KEY = 'Inyg1lW5K3Tsc1VrzZ5-ifdAyfXrFzzBirnDnVsVsvQ'
+  const ROTATED = '4eaCEVKxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  const PLANNER = 'qianmo://beta-1/planner'
+  const REVIEWER = 'qianmo://beta-1/reviewer'
+  const ENDPOINT = 'ws://127.0.0.1:38631'
+
+  const keyed = (address: string, publicKey: string): Registration => ({
+    address,
+    endpoint: ENDPOINT,
+    publicKey,
+  })
+  const keyOf = (registry: InMemoryRegistry, address: string) =>
+    registry.resolve(address)?.publicKey
+
+  test('首次登记就带上公钥', () => {
+    const registry = makeRegistry(new ManualClock(1_000))
+    announceRegistrations(registry, [keyed(PLANNER, KEY)])
+    expect(keyOf(registry, PLANNER)).toBe(KEY)
+  })
+
+  test('租约过期后的重登记仍带公钥——现场手工补的那一份就是丢在这一步', () => {
+    const clock = new ManualClock(1_000)
+    const registry = makeRegistry(clock)
+    announceRegistrations(registry, [keyed(PLANNER, KEY)])
+    clock.advance(90_001)
+    expect(registry.resolve(PLANNER)).toBeNull()
+
+    expect(announceRegistrations(registry, [keyed(PLANNER, KEY)])).toEqual([
+      { kind: 'registered', address: PLANNER },
+    ])
+    expect(keyOf(registry, PLANNER)).toBe(KEY)
+  })
+
+  test('表上那条还活着但没挂公钥（升级前留下的）：原地补上，报 rekeyed', () => {
+    const clock = new ManualClock(1_000)
+    const registry = makeRegistry(clock)
+    announceRegistrations(registry, [at(PLANNER, ENDPOINT)])
+    const before = registry.resolve(PLANNER)
+    clock.advance(20_000)
+
+    expect(announceRegistrations(registry, [keyed(PLANNER, KEY)])).toEqual([
+      { kind: 'rekeyed', address: PLANNER, to: KEY },
+    ])
+    expect(keyOf(registry, PLANNER)).toBe(KEY)
+    // 原地：没有被撤掉重来。
+    expect(registry.resolve(PLANNER)?.registeredAt).toBe(
+      before?.registeredAt as number,
+    )
+  })
+
+  test('公钥一致时只是续租，不重登记（收敛，不是每轮都换）', () => {
+    const clock = new ManualClock(1_000)
+    const registry = makeRegistry(clock)
+    announceRegistrations(registry, [keyed(PLANNER, KEY)])
+    clock.advance(20_000)
+    expect(announceRegistrations(registry, [keyed(PLANNER, KEY)])).toEqual([
+      { kind: 'renewed', address: PLANNER },
+    ])
+  })
+
+  test('换钥：同一节点的几条整批换，不撞上节点级公钥冲突', () => {
+    const clock = new ManualClock(1_000)
+    const registry = makeRegistry(clock)
+    announceRegistrations(registry, [keyed(PLANNER, KEY), keyed(REVIEWER, KEY)])
+    clock.advance(20_000)
+
+    // 逐条来的话，planner 换上新钥时 reviewer 还挂着旧钥，register() 会拒。
+    const outcomes = announceRegistrations(registry, [
+      keyed(PLANNER, ROTATED),
+      keyed(REVIEWER, ROTATED),
+    ])
+
+    expect(outcomes).toEqual([
+      { kind: 'rekeyed', address: PLANNER, from: KEY, to: ROTATED },
+      { kind: 'rekeyed', address: REVIEWER, from: KEY, to: ROTATED },
+    ])
+    expect(keyOf(registry, PLANNER)).toBe(ROTATED)
+    expect(keyOf(registry, REVIEWER)).toBe(ROTATED)
+  })
+
+  test('没声明公钥的照旧：别人发布在表上的公钥留着（与加这个字段之前一致）', () => {
+    const clock = new ManualClock(1_000)
+    const registry = makeRegistry(clock)
+    announceRegistrations(registry, [at(PLANNER, ENDPOINT)])
+    // 现场 D9b 的手工补法：同端点整条 POST，只多一个 publicKey。
+    registry.register(PLANNER, ENDPOINT, { publicKey: KEY })
+    clock.advance(20_000)
+
+    expect(announceRegistrations(registry, [at(PLANNER, ENDPOINT)])).toEqual([
+      { kind: 'renewed', address: PLANNER },
+    ])
+    expect(keyOf(registry, PLANNER)).toBe(KEY)
+  })
+})

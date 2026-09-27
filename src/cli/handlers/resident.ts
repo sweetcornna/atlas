@@ -14,7 +14,10 @@ import {
   ResidentActivityReporter,
 } from '@qianmo/resident/activity'
 import type { ResidentTimingEvent } from '@qianmo/resident/timings'
-import { ResidentUpstreamHealth } from '@qianmo/resident'
+import {
+  ResidentUpstreamHealth,
+  type ResidentPriorLife,
+} from '@qianmo/resident'
 import { assertTeamName, isReservedDeviceName } from '@qianmo/adapter/names'
 import {
   DEFAULT_SNAPSHOT_INTERVAL_MS,
@@ -1590,6 +1593,49 @@ export function buildHandshakeSigning(
   }
 }
 
+/**
+ * The stdout line saying how the previous life on this config root ended
+ * (design §3.B2, roadmap P13.5): `killed`, `clean` or `unknown`.
+ *
+ * A line of its own after the banner, not a field of it. The banner goes out
+ * before the node is even constructed, and the verdict only exists once
+ * `run()` has read the lifecycle sentinel — a read that must stay the first
+ * thing `run()` does, because stamping this life first erases the evidence.
+ * Holding the banner back until then would move it behind the startup
+ * warnings, and drop it entirely whenever construction throws.
+ *
+ * stdout rather than stderr, for the reason `onPriorLife` is not `onError`:
+ * a node that was killed last time is not failing now. `<node>.err` is kept
+ * empty on a healthy node so that anything in it stands out, and a line on
+ * every start would end that.
+ *
+ * `killed` carries the previous life's `pid`, `startedAt` and `updatedAt`
+ * verbatim from the sentinel record: the pid is what `dmesg` or journald are
+ * searched by, and `updatedAt` is the last time that life stamped itself
+ * alive. No cause is named — the sentinel cannot tell OOM from `kill -9` from
+ * a power loss. The line never names `publicKey` or `sourceCommit`: both are
+ * grepped out of `<node>.out` by the demo and fleet scripts.
+ */
+export function residentPriorLifeLine(
+  node: string,
+  prior: ResidentPriorLife,
+): string {
+  const record = prior.outcome === 'killed' ? prior.record : undefined
+  return JSON.stringify({
+    node,
+    priorLife: prior.outcome,
+    ...(record === undefined
+      ? {}
+      : {
+          prior: {
+            pid: record.pid,
+            startedAt: record.startedAt,
+            updatedAt: record.updatedAt,
+          },
+        }),
+  })
+}
+
 export async function runResident(args: readonly string[]): Promise<void> {
   // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
   // 恰恰是还没把 `OCC_IDENTITY=qianmo` 和 PSK 配对的那个人，让他先撞一条错误
@@ -1862,6 +1908,11 @@ export async function runResident(args: readonly string[]): Promise<void> {
       : {
           onTiming: (event: ResidentTimingEvent) => timingWriter.write(event),
         }),
+    // Printed only. Not an audit record: the trail has no kind for it, and
+    // this is not the place to add one.
+    onPriorLife: prior => {
+      process.stdout.write(`${residentPriorLifeLine(config.node, prior)}\n`)
+    },
     onError: error => {
       process.stderr.write(`[resident] ${formatResidentError(error)}\n`)
     },

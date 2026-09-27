@@ -15,7 +15,7 @@
 | --- | --- |
 | 范围依据 | roadmap **M1「注册发现产品化」**：内容「最小 Web 控制台（智能体列表、状态、消息链查看）、账号体系、智能体生命周期管理」，出口判据「**内测用户无需接触 CLI 即可完成注册与查看**」。本包只做这一行里的**最小 Web 控制台**那一段 |
 | 明确不在本包内 | **账号体系**（章程 N-2：M0/本包不做账号与租户隔离，M1 另排）、权限模型（M1「权限模型上线」是另一行） |
-| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
+| 交付物 | `packages/console/`（`@qianmo/console`）、`src/cli/handlers/console{,Args,Ports,Chat,ChatStore,TokenSources,Registrations}.ts`、`src/entrypoints/cli.tsx` 的分派、本文 |
 | 依赖 | `@qianmo/audit`（只读）、`@qianmo/protocol`、`@qianmo/registry`、`@qianmo/router`；运行时 Bun（`Bun.serve`） |
 | 身份 | **`OCC_IDENTITY=qianmo`**，与 `occ resident` / `occ audit` / `occ resident-wake` 同一条前置校验 |
 | 命令 | 两种写法都对：`OCC_IDENTITY=qianmo … console`，或 **`qm console …`**（`qm` 的入口文件自己把身份钉成 `qianmo`）。`qm` 要求 PATH 上有 Bun，取舍见 §2.1 |
@@ -87,6 +87,7 @@ open         http://127.0.0.1:38613/?token=Zk3q…（32 字符）
 view-token   Zk3q…
 admin-token  9pR7…
 registry     http://127.0.0.1:38610
+ledger       /Users/you/.qianmo/qianmo/console/registrations.json (0 renewed by this console)
 audit-trails default=/Users/you/.qianmo/qianmo/audit/trail.ndjson
 wake         disabled (no --wake-url)
 chat         disabled (no --chat-url)
@@ -94,7 +95,8 @@ label        127.0.0.1:38613
 sourceCommit 4c6bedeae5138fda82b90b81b3ebce20917734db
 ```
 
-`open` 那一行是可以直接点开的——token 就在查询串里。
+`open` 那一行是可以直接点开的——token 就在查询串里。`ledger` 那一行是登记簿的位置和
+启动时簿里有几条（§7.3）。
 
 **`sourceCommit` 是这份产物的来源 commit**（issue #70），40 位全 SHA，工作树脏时带
 `-dirty` 后缀。舰队上的部署树没有 `.git`、`dist/` 的几百个 chunk 里找不到 SHA、入口里
@@ -545,8 +547,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
 | GET | `/v0/agents` | view | 名册 |
-| POST | `/v0/agents` | **admin** | 注册 |
-| DELETE | `/v0/agents/<地址>` | **admin** | 注销 |
+| POST | `/v0/agents` | **admin** | 注册。注册中心收下后入登记簿，由本控制台续租（§7.3） |
+| DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条 |
 | POST | `/v0/agents/<地址>/heartbeat` | **admin** | 续租 |
 | GET | `/v0/audit?…` | view | 审计记录（过滤见下） |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
@@ -1010,9 +1012,9 @@ chat  enabled as qianmo://console/operator (signed) -> beta-4 -> ws://127.0.0.1:
 
 | 端口 | 读什么 | 挂了会怎样 |
 | --- | --- | --- |
-| `RegistryPort` | 注册中心 HTTP v0（`GET/POST /v0/agents`、`DELETE`、`POST …/heartbeat`），5 s 超时 | **页面照常打开**，名册那栏显示 `unreachable` 与地址。网络失败一律转成失败值，从不抛 |
+| `RegistryPort` | 注册中心 HTTP v0（`GET/POST /v0/agents`、`DELETE`、`POST …/heartbeat`），5 s 超时。外面包着登记簿那一层（§7.3），读路径原样透传 | **页面照常打开**，名册那栏显示 `unreachable` 与地址。网络失败一律转成失败值，从不抛；续租失败只进 stderr，下一轮再试 |
 | `AuditPort` | 本机审计链文件，**只读** | 文件不存在 = **空页面，不是错误**，但**也不是「完整」**——四态由 `chain` 表述（见下），`intact` 只对「有链且没毛病」成立。哈希链断了会如实显示，不吞 |
-| `LimitsSnapshot` | `LIMITS`（`@qianmo/protocol`）、`RUNTIME_RATE`（`@qianmo/router`）、`DEFAULT_TTL_MS`（`@qianmo/registry`） | 常量，不会挂 |
+| `LimitsSnapshot` | `LIMITS`（`@qianmo/protocol`）、`RUNTIME_RATE`（`@qianmo/router`）、`DEFAULT_TTL_MS`（`@qianmo/registry`，只作兜底，见下） | 常量，不会挂 |
 | `WakePort` | —（只写） | 见 §4.4 |
 
 **`chain` 的四态，以及为什么不能只有 `intact`**（issue #9②）：
@@ -1042,6 +1044,16 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 一个数：章程 AC-3 要求两者独立验证且不得混为一谈（`packages/router/src/rate.ts` 的
 模块注释解释了为什么运行时那条不放进 `LIMITS`）。
 
+**注册租约以注册中心为准，`DEFAULT_TTL_MS` 只兜底**（验证报告 2026-09-08 C-1）。注册中心
+可以带任意 `ttlMs` 起，而它发出的每条记录都满足 `expiresAt = lastHeartbeatAt + 当下 TTL`
+（注册、心跳、从落盘表恢复三处同一口径）。所以名册的「在线 / 滞后 / 过期」、租约条和
+「剩余」都按**这条记录自己的** `expiresAt − lastHeartbeatAt` 判：过半为滞后（既有的
+`STALE_FRACTION`，`packages/console/src/view/format.ts`），到期为过期，`expiresAt` 已过则无论心跳多新都是过期。名册抬头、
+上限区与总览卡的「注册租约」取最近一次续租那条记录的租约，三处同源。`DEFAULT_TTL_MS`
+只在两种情况下出场：记录缺 `expiresAt` 或 `lastHeartbeatAt`，以及名册为空、没有可读的
+租约。`GET /v0/limits` 的 `registryTtlMs` 仍原样报这个包默认值，不是注册中心此刻的 TTL。
+控制台不另设租约参数——多一个出处正是 C-1 的来源。
+
 ### 7.2 不读
 
 - **不碰任何私钥——除了它自己那一把。**节点身份的私钥半边在节点自己的配置根里，控制台
@@ -1058,7 +1070,70 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
   自己的 append-only fd。
 - **不改 settings、不改配置根。**控制台没有任何写本机配置的路径。
 
----
+### 7.3 写什么：登记簿与续租
+
+2026-09-26 修复。M1「注册发现产品化」的判据是「在页面上完成注册」，而此前页面上的
+注册**只在一个租约内成立**：注册中心租约 `DEFAULT_TTL_MS` = 90 s，过期条目从名册与
+解析里消失；控制台只有按需心跳，注册中心宿主（`demo/lib/p81-registry.ts`）只替
+`--register` 启动参数那批续租，节点从不拨号。于是没有任何东西替页面注册的条目续租。
+
+现在的做法是 `tenancy-m1.md` §0.4 所列 P15.2 的最小内核：**控制台保存一本登记簿，
+并替簿中条目续租，直到它们在页面上被注销。**暂停 / 恢复 / 退役、租户、操作主体都不在
+这一版里。
+
+| 动作 | 登记簿 | 注册中心 |
+| --- | --- | --- |
+| 页面注册（`POST /v0/agents`） | 注册中心收下才入簿；被拒或不可达不入簿，页面照常报错 | 原样转发 |
+| 续租（每 `renewIntervalFor(租约)`） | 不变 | 簿中每条整条重新 `POST /v0/agents` |
+| 页面注销（`DELETE /v0/agents/<地址>`） | 先出簿，停止续租 | 原样转发，立即删除。簿里有而注册中心答 404（租约已过或它刚重启）按成功返回 204 |
+| 页面心跳 | 不变 | 原样转发 |
+| 控制台启动 | 读回 | 端口绑上后立刻整簿宣告一轮，再按周期 |
+
+**续租者放在控制台进程里，不放在注册中心宿主旁。**P15 草案（v0.1-draft，未评审）
+§3.6 写的是后者；这里按现有进程拓扑选了前者，留待 P15.1 评审一并裁定。理由：
+
+1. **意图归控制台。**「这一条是页面上注册的、要一直在」是持 admin token 的人做的决定。
+   注册中心零鉴权（§8.2），把这份意图放到它那一侧，就是让任何够得着它端口的人一次
+   `POST` 就造出一条永不过期、重启也回来的登记。
+2. **注册中心 HTTP v0 零改动。**注册中心侧的续租者要分辨哪些条目来自控制台，只能加字段
+   或路由，或者让两个进程共享一个文件（内测里注册中心与控制台是两个进程、两个配置根，
+   `beta-env.md` §4.1）。放在控制台只用既有的 `POST /v0/agents`：新控制台配旧注册中心
+   全功能，旧控制台配新注册中心就是旧行为。
+3. **控制台是产品面，注册中心宿主不是。**没有 `qm registry` 子命令，宿主是 demo 脚本；
+   验收套件的注册中心本来就是进程内的 `startRegistryServer`，续租者在控制台里才会被
+   真实进程场景覆盖（`console/registry-registration-*`）。
+
+**代价**：控制台停机超过一个租约，它登记的条目按租约消失，直到控制台回来（启动即重新
+宣告）。`--register` 那批种子由注册中心宿主续，不受控制台起停影响；必须独立于控制台
+存在的地址仍写进 `peers.conf`（`beta-env.md` §2.4）。
+
+**续租是整条重新注册，不是心跳。**同一端点重新 `POST` 在注册中心那里就是续租，同时把
+能力与状态重新声明一遍；注册中心重启后表上没有这条，`POST` 把它建回来；地址被**另一个
+端点**占着时注册中心答 409、什么都不改，续租者不抢，只在 stderr 出声，下一轮再试。心跳
+做不到最后一条：它不看端点，会替占着这个地址的别人续租。
+
+**周期不另设参数。**`renewIntervalFor(租约)`（`@qianmo/registry`）按每个租约 4.5 次续租
+折算，默认租约下正是 `DEFAULT_RENEW_INTERVAL_MS` = 20 s——`p81-registry.ts` 的
+`--heartbeat-ms` 默认值用的也是这个常量。租约取注册中心回执里的
+`expiresAt − lastHeartbeatAt`（`rosterLease`，与 §7.1 的「注册租约以注册中心为准」同源），
+没有回执时用 `DEFAULT_TTL_MS`。租约比已排的周期短时下一轮提前，新登记的一条不会在第一次
+续租前过期。
+
+**登记簿**落在 `<配置根>/qianmo/console/registrations.json`（`consoleArgs.ts` 的
+`consoleRegistrationsPath()`，从 `occConfigPath()` 派生，无命令行选项），形状是
+`{ "version": 1, "registrations": [{ address, endpoint, capabilities?, publicKey?, status? }] }`。
+写入复用注册中心的 `FileRegistryStore`：同目录临时文件 `wx` 创建、fsync、rename，0600。
+它与注册中心的表不同，是**意图**而不是软状态：读不动的文件（坏 JSON、版本不对）改名为
+`registrations.json.unreadable-<ISO 时间>` 留证，从空登记簿起，并在 stderr 说明；写失败
+不让请求失败，内存里那份照常续租，只在控制台重启时丢，同样在 stderr 说明。
+
+**已知边界**：
+
+- 注册中心零鉴权，够得着它的人可以直接 `DELETE` 一条控制台登记的条目；下一轮续租会把它
+  建回来。**撤销登记以页面注销为准。**
+- 两个控制台共用一个配置根时，登记簿最后写的赢，各自内存里的簿各续各的。一个配置根只起
+  一个控制台。
+- 登记簿不记是谁注册的（§8.1，N-2）。
 
 ## §8 已知边界
 
@@ -1109,8 +1184,16 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 3. 外部改动**无法阻止，但一定被检测到（锚定窗口内除外）**。✅
 
 P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链内自洽但机外摘要不符显示
-「锚点不符」，未配置或已陈旧的锚点显示「未见证」。完整边界、锚定窗口和见证侧失陷域
-只见 [`audit-witness.md`](./audit-witness.md) §7；这里不复制。
+「锚点不符」。「未见证」只在三种情形出现：没配锚点来源；没有一条验签通过的锚点；链越过了
+最新锚点，且见证侧超过 `2T` 没收到新锚点。链头已被锚定、之后没有新记录的空闲节点不会显示
+「未见证」，不论最新回执有多旧（`e7b2c3bc`；判定只见 [`audit-witness.md`](./audit-witness.md)
+§4.3「陈旧的判定」）。完整边界、锚定窗口和见证侧失陷域只见 `audit-witness.md` §7；这里不复制。
+
+> **2026-09-26 起跑的内测舰队上仍是旧判定。**7 天窗口（至 2026-10-03T18:20:23Z）内不换产物，
+> 控制台与节点跑的是 `e7b2c3bc` 之前的构建：最新回执超过 `2T`（120 s）就判陈旧。所以链头两分钟
+> 没动的健康节点也显示「未见证」，页面上分不清「节点被停」与「链没动」。窗口内要区分这两种情况，
+> 就在节点机上用节点自己的配置根跑 `occ audit --verify --witness`，看 `unwitnessed_tail`：它只在
+> 链头往前走了、锚点却没跟上时出现。新判定在窗口期后随修复一起部署。
 
 ### 8.4 其他
 
@@ -1120,7 +1203,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | 限流只有登录路由一处 | 见下。面板其余 HTTP 面（名册、审计、片段、对话、SSE）仍然不限流，回环 + token 是它们的全部防线 |
 | 审计链全量读进内存 | `readTrail` 一次性读整个文件。链很长时首屏会慢；页面侧有尾部条数上限兜着，但这不是分页 |
 | 多条审计链逐条读入内存 | 每个命名来源各自 `readTrail`；缺文件是该来源自己的 `absent`（一条缺失就足以把整页从「完整」上摘下来），断裂也是该节点自己的完整性状态，页面不做跨节点时序合并 |
-| 名册即注册中心的视图 | 注册中心是内存表（可选文件落盘），控制台不缓存也不补齐。它显示不出来的东西，注册中心里就没有 |
+| 名册即注册中心的视图 | 注册中心是内存表（可选文件落盘），名册不缓存也不补齐。它显示不出来的东西，注册中心里就没有。控制台会**重新宣告自己登记过的条目**（§7.3），那是写，不是给名册补数据 |
 
 **登录路由那一处限流长这样**（`packages/console/src/throttle.ts`）：前 5 次失败免罚
 （打错字不是攻击），之后每多失一次，封锁时长翻一倍——第 6 次失败罚 1 s、第 7 次 2 s、
@@ -1158,14 +1241,16 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现 |
-| `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住 |
+| `src/cli/handlers/consoleRegistrations.ts` | 登记簿与续租者：页面注册入簿、按租约重新宣告、注销出簿；续租者为什么住在控制台进程里（§7.3） |
+| `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住。`qm watch --sign` 也复用它（§10.1.1） |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
 | `packages/console/src/view/servers.ts` | 服务器区块的渲染与备注编辑框的三种形态（§11） |
 | `src/cli/handlers/consoleServerNotes.ts` | 服务器备注的 NDJSON 落盘与 replay（§11.5） |
 | `src/cli/handlers/console.ts` | 启动面：注入、`resolveTokens`、打印、信号 |
 | `docs/dev/demo-env.md` §2.4 | 端口分配表。改默认端口前先看它 |
-| `src/cli/handlers/watch.ts` | `qm watch` 的全部：作业文件解析、拨号与握住连接、fire 与 notify 的审计写入（§10） |
+| `src/cli/handlers/watch.ts` | `qm watch` 的全部：作业文件解析、拨号与握住连接、签名（`--sign` / `--print-identity`）、给人的通知与过程行的区分、fire / notify / result 的审计写入（§10） |
+| `tests/integration/qianmo-watch-signed.test.ts` | `qm watch --sign` 对真实 `qm resident` 的端到端用例，模型用确定性替身（§10.1.1–§10.1.3） |
 | `packages/scheduler/README.md` | 调度器包本身：一次性预约、CAS、补跑塌缩、失败退避（§10） |
 | `docs/dev/node-provisioning.md` | **节点装机与接网设计**：控制台上填 SSH 凭证把一台机器变成节点。它给控制台加的是第三枚 `provision` token（与 view / admin **互不包含**）与五类钉死的动作，本文的鉴权模型是它的地基 |
 
@@ -1180,7 +1265,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 
 ### §10.1 怎么起一个真实值守作业
 
-三步，第三步之后这个进程就不该再退了。
+四步。第四步之后，这个进程不应再退出。
 
 **① 写一个作业文件**（JSON 数组，一项一个作业）：
 
@@ -1217,13 +1302,26 @@ export QIANMO_TRANSPORT_PSK=...  # 变量名的唯一出处是 @qianmo/transport
 export OCC_IDENTITY=qianmo       # qm 入口已经写死，手工跑 occ 时要显式给
 ```
 
-**③ 起它**：
+**③ 让每个目标节点信任中枢的签名身份**（先做这一步，再打开 `--sign`，顺序不能反，
+理由见 §10.1.1）：
 
 ```bash
-qm watch --jobs ./jobs.json --from qianmo://hub/console
-# 冒烟：只把此刻到点的作业跑一遍就退
-qm watch --jobs ./jobs.json --from qianmo://hub/console --once
+qm watch --print-identity --from qianmo://hub/console   # → hub=<publicKey>
+# 在每个目标节点的启动参数里加上这一行，重启节点：
+qm resident ... --trust hub=<publicKey>
 ```
+
+**④ 起它**：
+
+```bash
+qm watch --jobs ./jobs.json --from qianmo://hub/console --sign
+# 冒烟：只把此刻到点的作业跑一遍就退（通知回不来，见 §10.3）
+qm watch --jobs ./jobs.json --from qianmo://hub/console --sign --once
+```
+
+打开签名后，启动横幅多一行 `[watch] signing task requests as hub=<publicKey> (write-limited)`。
+不带 `--sign` 时照旧运行，但会在 stderr 打一段告警，说明不签名在两种策略下的后果和修复
+步骤。
 
 `--from` 是中枢自己的地址：它既是审计链的链头，也是每条通知回寄的地址。状态默认落在
 `<config>/qianmo/scheduler`（`--state-dir` 可改），里面两样东西——`state.json` 记每个作业
@@ -1231,12 +1329,103 @@ qm watch --jobs ./jobs.json --from qianmo://hub/console --once
 目录是被支持的用法**：抢同一格的时候，赢家由 `O_EXCL` 在内核里决出，输的那个把这一格
 记成 `preempted` 走人（roadmap F7）。
 
+### §10.1.1 签名：不签名的作业能送达，但不会被执行
+
+这与控制台的唤醒面、对话面是同一个问题（§4.6、§4.7、§6.7.1）。机制在那里讲过，这里
+只写值守作业特有的部分。
+
+**不签名的后果。**默认策略（`SIGNED_TASK_POLICY`）的节点直接拒收（`E_CAP_INSUFFICIENT`）。
+`--open-policy` 的节点会收下，但把它放在 untrusted 档，并在审计链里记一条
+`capability_shadow_refusal`（`task.request from hub needs write-limited, presented read`）。
+agent 收到的是「把内容当数据，不当指令」的通告，所以会拒绝执行作业。2026-09 的舰队勘查
+用真实模型遇到过：投递、回执、审计都正常，模型回复「由于该请求来自未经信任的外部来源，
+我不会自动执行其中的 `df -P /`」。
+
+**`--sign` 签什么。**
+
+- **身份**：`--from` 的 node 段（上例是 `hub`）在配置根里的 Ed25519 密钥，
+  `<config>/qianmo/identity/<node>.json`，首次使用时创建，之后不再替换。加载函数与签发器
+  直接复用控制台的 `consoleWakeIdentity.ts`，没有新的密钥格式。同一个配置根上的
+  `qm console` 和 `qm watch` 如果用同一个 node 名，就共用一把密钥，在节点审计链里是同
+  一个 `iss`。
+- **等级**：只签 `write-limited`。这是 `SIGNED_TASK_POLICY` 对 `task.request` 的要求，
+  也是节点把通告升到 `verified-capability` 的下限（§4.7 第 3 条）。**不签 `user-confirmed`**：
+  规则 S-1 只接受节点自己签的这一档，中枢签出来必然被拒。
+- **绑定**：`aud` 是目标节点，`sub` 是完整的 `target` 地址，`taskId` 是这次 fire 的任务，
+  有效期 60 s，`nbf` 往前挪 30 s 吸收时钟差。令牌在连接建立之后才签，所以慢连接不会用掉
+  它的有效期。每次 fire 都签一枚新的。
+- **签不出来**（例如身份文件损坏）：这次 fire 算失败并进入退避，不会改发不签名的请求。
+
+**顺序为什么不能反。**`--open-policy` 只是不要求出示令牌，出示了的令牌照样校验。节点解析
+不出签发方公钥时，在两种策略下都会拒成 `E_CAP_INVALID: no published public key for
+issuer hub`。所以要先在节点上 `--trust`，再打开 `--sign`。`--print-identity` 是单独的
+一条路径，正是为了让第 ③ 步能在第 ④ 步之前完成：它只需要 `--from`，不读作业文件和
+PSK，也不连接任何节点。
+
+**确认签名生效。**中枢的 `watch_fire` 记录里 `detail.signed=true`；节点审计链里这条请求
+没有 `capability_shadow_refusal`；节点会话记录里 agent 收到的通告是
+`"trust":"verified-capability"`。
+
+### §10.1.2 权限：只读检查不需要写权限
+
+节点的常驻会话默认运行在 `permissionMode: 'dontAsk'`：不弹提示，未预先批准的操作一律
+拒绝（beta-env.md §4.1.1）。只读检查类作业在这个默认模式下就能完成，**不需要
+`--allow-workspace-edits`，也不需要任何新开关**：
+
+- **Bash 的只读命令**：基座把 `df`、`du`、`free`、`uptime`、`cat`、`head`、`wc` 等列在
+  只读命令表里（`packages/builtin-tools/src/tools/BashTool/readOnlyValidation.ts`），
+  在任何模式下都在询问之前放行。`df` 不在需要校验路径参数的命令里，所以 `df -P /`
+  可以直接执行；
+- **工作目录之内的 Read / Grep / Glob**：基座对工作目录内的读取不要求授权。
+
+**工作目录之外的读取在两种模式下都被拒绝**，这是有意保留的边界：`dontAsk` 下直接拒绝
+（`Permission to use Read has been denied because Claude Code is running in don't ask mode`），
+`acceptEdits`（`--allow-workspace-edits`）下变成授权请求，而常驻节点对授权请求一律回答
+`cancelled`，模型看到的是 `Permission request cancelled by client`。舰队勘查里 Grep 被拒时
+报的正是这句，与这条路径一致（勘查没有留下 Grep 的参数，所以这是推断）。本次没有放宽它：
+ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings 里的 allow 规则不生效，
+而现有的「附加工作目录」一旦加上，在 `acceptEdits` 下也会放开那些目录里的编辑。作业 prompt 应当写明要跑的命令（如 `df -P /`），不要让 agent 自己
+去翻工作目录以外的文件。
+
+验证：`tests/integration/qianmo-watch-signed.test.ts` 让节点在默认 `dontAsk` 下依次执行
+工作目录内的 Read、Grep 与 `df -P /`，断言三个工具都拿到了真实输出。2026-09-26 做过一次
+手工变异：把 Read 的目标改到工作目录之外，同一个用例失败，拿到的正是上面那句 `dontAsk`
+拒绝。这个变异没有提交成用例。
+
+### §10.1.3 什么会打扰人
+
+节点在一轮里每启动一个工具、每失败一个工具，都会向发起者推一条 `notify{kind:'task'}`。
+这是 v2.59 为对话面做的过程行（§6.4.2）。以前 `qm watch` 把它们和 agent 的通知一样打印成
+`[notify]`、记为 `watch_notify_received`，一次正常的作业就会产生几条「通知」，违反
+「产出默认静默」（`resident-botization.md` §4.1⑤）。
+
+现在 `qm watch` 把两者分开（`watch.ts` 的 `classifyWatchNotify`）：
+
+| 来源 | stdout | 审计链 |
+| --- | --- | --- |
+| agent 自己调用 `qianmo_notify` | 打印 `[notify] …` | `watch_notify_received` |
+| 节点自动推送的过程行 | 不打印 | `watch_step_received` |
+| 作业结束（`task.result` 或 `error`） | 不打印 | `watch_result_received`（只记结果与字节数，不记正文） |
+
+判据：`kind='task'`，且 `dedupKey` 是节点过程行的格式（`@qianmo/resident` 的
+`turnStepDedupKey`，以本中枢发出的那条请求的 `msgId` 开头）。`kind=watch` 与 `kind=health`
+永远算给人的通知；agent 自己用 `kind=task` 发的通知，只要 `dedupKey` 不是过程行的形状，
+也算给人的通知。
+
+所以一个正常结束、没有发现问题的作业，`watch_notify_received` 是 0 条，stdout 上没有
+`[notify]`；发现问题时恰好是 agent 发的那一条。`tests/integration/qianmo-watch-signed.test.ts`
+用真实进程锁定这两点，并断言过程行确实到达了中枢（`watch_step_received` 不为 0），
+所以「0 条」不是因为通道里什么都没有。
+
 ### §10.2 怎么确认它在跑
 
 | 想知道 | 看哪儿 |
 | --- | --- |
 | 中枢有没有按时发 | 审计链里 `source=scheduler`、`kind=watch_fire`（`qm audit`，或控制台审计页按来源筛 `scheduler`） |
-| 通知有没有真到人眼前 | 同一条链上 `kind=watch_notify_received`；节点那侧对应 `source=resident` 的 `notify_sent` / `notify_delivered` |
+| 发出去的有没有签名 | 同一条 `watch_fire` 的 `detail.signed`；节点侧这条请求没有 `capability_shadow_refusal`（§10.1.1） |
+| 作业跑完没有 | `kind=watch_result_received`，`detail.result` 是 `completed` / `failed` / `error` |
+| 通知有没有真到人眼前 | `kind=watch_notify_received`，只有 agent 自己发的通知才记这一条（§10.1.3）；节点那侧对应 `source=resident` 的 `notify_sent` / `notify_delivered`，过程行也在其中 |
+| 一轮里调用了哪些工具 | `kind=watch_step_received`（过程行，不打扰人） |
 | 有没有通知被压着没发出去 | 节点侧 `notify_held`（原因 `no_channel` 或 `budget`）与 `notify_abandoned` |
 | 节点这条命是不是被杀过 | `<config>/resident/lifecycle.json`（P13.5 的终止取证哨兵） |
 | 停手 | `touch <config>/qianmo/scheduler/ESTOP`。**只挡新的 fire，在途一律不杀**——节点欠着别人一条 `task.result`，杀掉是把「慢答案」变成「丢答案」。删掉文件即恢复，没有需要重启的东西 |
@@ -1255,6 +1444,20 @@ qm watch --jobs ./jobs.json --from qianmo://hub/console --once
 - **中枢是定时的单点。**这是 A7 的刻意背离（节点侧 ticker 会让节点永不空闲、永不冻结，
   直接抵消 R-3 的休眠形态），代价就是中枢不在的时候没人发起。补偿是「缺席可见」：
   `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的，接到面板上是遗留项。
+- **`--once` 看不到通知。**它在请求拿到回执后就关闭连接退出，而通知要沿同一条连接回来
+  （节点从不主动拨号，H-2）。这一轮 agent 发的通知会压在节点的台账里，等下一次有连接时
+  才送出。要看通知，就让进程常驻，等 `watch_result_received` 出现后再停。
+- **过程行仍然占用节点的通知预算。**节点对所有对端共用一个每分钟 60 条的滑动窗
+  （`LIMITS.notifyRatePerMinute`），过程行和 agent 的通知都从里面扣。中枢现在不打印过程行，
+  但节点仍然发送它们。单个作业一轮最多 24 条过程行加 8 条失败行，自己用不完一分钟的
+  预算。几个作业或对话同时在一个节点上运行时，agent 的告警可能因为预算用完而被压进台账。
+  台账只在对端再次发来消息、或节点再发下一条通知时排空，最晚要等这个作业的下一次 fire。
+- **判据依赖过程行的 `dedupKey` 格式。**格式只定义在 `@qianmo/resident` 一处，两边都从
+  那里取，用例锁住往返。agent 自己发 `kind=task` 的通知，并恰好把 `dedupKey` 写成
+  `<uuid>:<x>:start|failed` 的形状时，会被当成过程行。实际中不会发生；值守作业的告警
+  应当用 `kind=watch`，这一类永远不会被当成过程行。
+- **读不到工作目录之外的文件**（§10.1.2）。需要读 `/var/log` 这类路径的作业，目前没有
+  只读放宽的开关。
 
 ---
 

@@ -16,8 +16,12 @@ export {
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
   SELF_REPORTING_TOOL_TITLE,
+  parseTurnStepDedupKey,
+  turnStepDedupKey,
   type AcpPromptConnection,
   type ResidentTurnProgress,
+  type TurnStepKey,
+  type TurnStepPhase,
 } from './acp-turn.js'
 export {
   createResidentAcpStream,

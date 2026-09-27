@@ -7,6 +7,8 @@ import { ProtocolErrorCode } from '@qianmo/protocol'
 import {
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
+  parseTurnStepDedupKey,
+  turnStepDedupKey,
 } from '../src/acp-turn.js'
 import { ResidentInactivityError } from '../src/inactivity.js'
 
@@ -431,6 +433,36 @@ describe('turn progress', () => {
       dedupKey: 'msg-1:t1:failed',
     })
     await finish()
+  })
+
+  test('every step key a turn raises parses back, and nothing else does', async () => {
+    // `qm watch` uses this parse to keep steps out of a person's view (§4.1⑤).
+    // So the keys must come from the port, not from a hand-written string:
+    // if the builder drifts, a hand-written key would still parse.
+    const steps: Array<{ dedupKey: string }> = []
+    const { port, finish } = await runningPort(steps)
+    port.handleSessionUpdate(toolCall('call:with:colons', { kind: 'execute' }))
+    port.handleSessionUpdate(
+      toolUpdate('call:with:colons', { status: 'failed' }),
+    )
+    await finish()
+
+    expect(steps.map(step => parseTurnStepDedupKey(step.dedupKey))).toEqual([
+      {
+        networkMsgId: 'msg-1',
+        toolCallId: 'call:with:colons',
+        phase: 'start',
+      },
+      {
+        networkMsgId: 'msg-1',
+        toolCallId: 'call:with:colons',
+        phase: 'failed',
+      },
+    ])
+    expect(turnStepDedupKey('m', 't', 'start')).toBe('m:t:start')
+    for (const key of ['/', 'disk:/', 'm::start', ':t:start', 'm:t:done']) {
+      expect(parseTurnStepDedupKey(key)).toBeUndefined()
+    }
   })
 
   test('file paths the tool named ride along, bounded', async () => {

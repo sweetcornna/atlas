@@ -121,6 +121,10 @@ export {
 } from './view/chat.js'
 export { renderChatPage, type ChatPageModel } from './view/chatPage.js'
 export { renderLimits } from './view/limits.js'
+// The lease the registry actually granted, read off its own records (C-1). The
+// host's renewer paces itself by it, so the page and the renewer cannot hold
+// two different ideas of how long a registration lives.
+export { rosterLease } from './view/format.js'
 export {
   MAX_SERVER_NOTE_LENGTH,
   SERVERS_HEADING_ID,
