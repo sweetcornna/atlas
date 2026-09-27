@@ -24,6 +24,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { AUTHZ_LEDGER_FILE } from '@qianmo/resident'
 import type {
   HostPolicy,
   ScriptedCall,
@@ -108,7 +109,7 @@ export function plantAskFixture(loopbackUrl: (port: number) => string): {
     join(consoleConfig, 'qianmo', 'identity', 'console.json'),
     '{"key":"console-private-key-material"}\n',
   )
-  writeFileSync(join(config, 'resident', 'authz.ndjson'), '')
+  writeFileSync(join(config, 'resident', AUTHZ_LEDGER_FILE), '')
   writeFileSync(join(outside, 'secret.txt'), 'outside\n')
   writeFileSync(join(workspace, 'note.txt'), 'alpha\n')
   writeFileSync(join(workspace, 'draft.md'), '# draft\n')
@@ -696,7 +697,9 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     effect: 'none',
     note: 'P14.3 pending and grant rows under <config>/resident/, file surface',
     steps: ctx => [
-      call('Read', { file_path: join(ctx.config, 'resident', 'authz.ndjson') }),
+      call('Read', {
+        file_path: join(ctx.config, 'resident', AUTHZ_LEDGER_FILE),
+      }),
     ],
   },
   {
@@ -705,7 +708,7 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     effect: 'filesystem',
     note: 'P14.3 pending and grant rows under <config>/resident/, shell surface',
     steps: ctx => [
-      bash(`echo '{}' >> ${join(ctx.config, 'resident', 'authz.ndjson')}`),
+      bash(`echo '{}' >> ${join(ctx.config, 'resident', AUTHZ_LEDGER_FILE)}`),
     ],
   },
   {

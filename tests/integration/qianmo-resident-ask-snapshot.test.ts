@@ -38,6 +38,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { AUTHZ_LEDGER_FILE } from '@qianmo/resident'
 import {
   type HostEvent,
   ResidentAcpHarness,
@@ -351,7 +352,7 @@ describe('C_tool ask snapshot, acceptEdits, shipped resident child', () => {
     })
     // The shell probe appends; the file is still the empty one planted.
     expect(
-      readFileSync(join(fixture.config, 'resident', 'authz.ndjson'), 'utf8'),
+      readFileSync(join(fixture.config, 'resident', AUTHZ_LEDGER_FILE), 'utf8'),
     ).toBe('')
   })
 

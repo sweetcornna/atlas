@@ -63,6 +63,18 @@ export {
   type ResidentEstopStatus,
 } from './estop.js'
 export {
+  AUTHZ_LEDGER_FILE,
+  FileGrantStore,
+  type AskOutcome,
+  type AuthzCall,
+  type AuthzGrant,
+  type AuthzIntegrityIssue,
+  type AuthzRefusal,
+  type DecisionOutcome,
+  type FileGrantStoreOptions,
+  type UseOutcome,
+} from './grant-store.js'
+export {
   DEFAULT_RESIDENT_INACTIVITY_MS,
   isCredentialHttpStatus,
   ResidentInactivityError,
