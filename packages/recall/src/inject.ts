@@ -35,6 +35,23 @@ import { MEMORY_ANSWER_TOOL_NAME } from './tool.js'
 
 export type InjectionMode = 'full' | 'ranked'
 
+/**
+ * How the injected set was chosen (`docs/dev/memory-m1.md` §5.4).
+ *
+ * `deterministic` is M0: the semantic layer was off or not applicable (full
+ * mode never uses it). `hybrid` is the floor-plus-RRF fusion. `hybrid-degraded`
+ * means the overlay was asked for and could not be applied — the entries are
+ * then exactly the deterministic ones, and the reason is on the result's
+ * events.
+ */
+export const RETRIEVAL_MODES = [
+  'deterministic',
+  'hybrid',
+  'hybrid-degraded',
+] as const
+
+export type RetrievalMode = (typeof RETRIEVAL_MODES)[number]
+
 export type InjectionBudget = {
   readonly maxEntries: number
   readonly maxChars: number
@@ -66,6 +83,14 @@ export type InjectionView = {
   readonly omittedCount: number
   /** True when the scan could not read part of the store. */
   readonly degraded: boolean
+  /**
+   * Printed only when it is `hybrid`. Every other value renders the block
+   * exactly as M0 did, which is what makes a degraded recall byte-identical to
+   * a deterministic one.
+   */
+  readonly retrieval?: RetrievalMode
+  /** Ids in the block only because the semantic fill put them there. */
+  readonly semanticIds?: readonly string[]
 }
 
 function scopeLabel(entry: MemoryEntry): string {
@@ -221,6 +246,9 @@ export function selectForInjection(
 const OPEN = '<qianmo-memory'
 const CLOSE = '</qianmo-memory>'
 
+/** The line that marks an entry added by the semantic fill (V-8). */
+const SEMANTIC_MARK = 'via: semantic'
+
 /**
  * The memory block, ready to be placed in a system prompt.
  *
@@ -230,9 +258,11 @@ const CLOSE = '</qianmo-memory>'
  * told which of the two it is looking at, and so is anyone reading a transcript.
  */
 export function renderInjection(view: InjectionView): string {
+  const hybrid = view.retrieval === 'hybrid'
   const header =
     `${OPEN} as_of="${view.asOf}" mode="${view.mode}" ` +
-    `injected="${view.entries.length}" omitted="${view.omittedCount}">`
+    `injected="${view.entries.length}" omitted="${view.omittedCount}"` +
+    `${hybrid ? ' retrieval="hybrid"' : ''}>`
   const lines = [header]
   if (view.mode === 'full') {
     lines.push(
@@ -247,6 +277,13 @@ export function renderInjection(view: InjectionView): string {
         'absence in the store.',
     )
   }
+  const semantic = new Set(hybrid ? (view.semanticIds ?? []) : [])
+  if (semantic.size > 0) {
+    lines.push(
+      `# Entries marked "${SEMANTIC_MARK}" were selected by similarity to ` +
+        'the message, not by shared wording or tags.',
+    )
+  }
   if (view.degraded) {
     lines.push(
       '# WARNING: part of the memory store could not be read during this ' +
@@ -258,10 +295,11 @@ export function renderInjection(view: InjectionView): string {
     lines.push('(no live memory entries in scope)')
   }
   for (const [index, ranked] of view.entries.entries()) {
-    lines.push(
-      `--- entry ${index + 1}/${view.entries.length} ---`,
-      renderEntry(ranked.entry),
-    )
+    lines.push(`--- entry ${index + 1}/${view.entries.length} ---`)
+    // Framing, like the separator above it: outside the entry, so outside
+    // the character budget `selectForInjection` counts.
+    if (semantic.has(ranked.entry.id)) lines.push(SEMANTIC_MARK)
+    lines.push(renderEntry(ranked.entry))
   }
   lines.push(CLOSE)
   return lines.join('\n')
