@@ -20,8 +20,9 @@ flowchart TD
 
   subgraph pkg["packages/registry/src"]
     http["http.ts<br/>createRegistryHandler · startRegistryServer<br/>API_PREFIX = /v0"]
+    token["token.ts<br/>写 token：读文件 · 比对"]
     registry["registry.ts<br/>InMemoryRegistry<br/>register / heartbeat / resolve / list<br/>deregister / statusOf / prune / observeClock"]
-    store["store.ts<br/>FileRegistryStore（temp + fsync + rename）<br/>defaultRegistryStatePath()"]
+    store["store.ts<br/>FileRegistryStore（temp + fsync + rename）<br/>FileRevocationListStore · defaultRegistryStatePath()"]
     clock["clock.ts<br/>Clock · systemClock · ManualClock"]
   end
 
@@ -31,13 +32,16 @@ flowchart TD
   caller -->|HTTP| http
   caller -->|进程内| registry
   http --> registry
+  http --> token
   registry --> clock
-  registry -->|read / write 整表| store
+  registry -->|read / write 整表、吊销清单| store
   registry --> protocol
   store --> paths
 ```
 
-路由表（`http.ts`，四条 + 一条健康检查）：`POST /v0/agents` 注册 / 续租，`GET /v0/agents` 列活，`GET|DELETE /v0/agents/:address` 解析与注销，`POST /v0/agents/:address/heartbeat` 续租，`GET /v0/health` 报活体数。地址在一个路径段里 percent-encoded 传输。
+路由表（`http.ts`）：`POST /v0/agents` 注册 / 续租，`GET /v0/agents` 列活，`GET|DELETE /v0/agents/:address` 解析与注销，`POST /v0/agents/:address/heartbeat` 续租，`GET|PUT /v0/revocation-list` 读取与发布 CA 签名的吊销清单（`key-distribution.md` §6.4），`GET /v0/health` 报活体数。地址在一个路径段里 percent-encoded 传输。
+
+**写 token（P15.8，可选）。**`createRegistryHandler(registry, { writeToken })` / `startRegistryServer(port, { writeToken })` 给了 token 以后，四个写操作（`POST /v0/agents`、`DELETE /v0/agents/:address`、`POST …/heartbeat`、`PUT /v0/revocation-list`）要带 `Authorization: Bearer <token>`，否则 401 `E_UNAUTHORIZED`，表、盘与吊销清单都不动；判定在读请求体之前，比对用 `timingSafeEqual`。**读路由与未支持的方法逐字节不变**（405 仍是 405）。不给 token 就是此前的零鉴权行为。token 至少 16 字符；`readRegistryWriteTokenFile` 从文件读，文件的 group/other 位任一不为零就拒绝（0600、0400 可以），在同一个 fd 上先 `fstat` 再读。宿主 `p81-registry.ts` 的开关是 `--write-token-file`。token 只证明「写的人持有这枚共享 token」，不证明身份：名册里的公钥照旧不能当授权材料用（`docs/dev/console.md` §8.2）。
 
 ## 2. 对外 API 面
 
@@ -45,9 +49,11 @@ flowchart TD
 
 - **`InMemoryRegistry`** —— 表本体。`register`（完整声明，能力/公钥/状态是替换不是合并）、`heartbeat`、`resolve`、`list`（按地址排序）、`deregister`、`statusOf`、`prune`、`clear`、`observeClock`（喂时间跳跃闸门并 rebase 全表租期）。
 - **`AgentStatus` / `DeclaredStatus`** —— `online` / `dormant` 可声明，`offline` **只能由租期推导**、从不落库。
-- **`AgentRecord` / `RegisterInput` / `RegisterResult` / `RegistryErrorCode`** —— 记录形状、入参（`unknown`，在信任边界处校验）与三个失败码（`E_BAD_REQUEST` / `E_CONFLICT` / `E_NOT_FOUND`，与 HTTP 状态码 1:1）。
+- **`AgentRecord` / `RegisterInput` / `RegisterResult` / `RegistryErrorCode`** —— 记录形状、入参（`unknown`，在信任边界处校验）与三个失败码（`E_BAD_REQUEST` / `E_CONFLICT` / `E_NOT_FOUND`，与 HTTP 状态码 1:1），以及写 token 与吊销清单落盘引入的 `E_UNAUTHORIZED`（401）、`E_STORAGE`（500），只出现在写路由上。
 - **`isValidEndpoint` / `isValidPublicKey`** —— 端点接受 `qianmo://`、`http(s)`、`ws(s)`（含 `dialUrl` 产出的 `ws+unix`）；公钥形状取自 `@qianmo/protocol` 的 `isNodePublicKey`，不另写一套正则。
 - **`FileRegistryStore` / `RegistryStore` / `defaultRegistryStatePath`** —— 落盘层。接口两端都是 `unknown`：文件层只搬字节，schema 与信任边界归 `registry.ts`。
+- **`FileRevocationListStore` / `revocationListStatePathFor(agentsPath)`** —— 吊销清单的落盘层（K-1 遗留）。与表**不同**，它是严格的：没有文件 = 从未发布；文件读不动或不是 JSON 就抛，`InMemoryRegistry` 的构造随之失败，不以空清单启动。文件名与表文件成对：`agents.json` → `revocation-list.json`，`registry-agents.json` → `registry-revocation-list.json`。
+- **`readRegistryWriteTokenFile`** —— 见上文「写 token」。
 - **`createRegistryHandler` / `startRegistryServer` / `RegistryServerHandle` / `API_PREFIX`** —— HTTP v0 面，handler 与 server 分开导出，便于用裸 `Request` 测。
 - **`Clock` / `systemClock` / `ManualClock`** —— 注入式时钟，TTL 行为不靠等待来测。
 - **`DEFAULT_RENEW_INTERVAL_MS` / `renewIntervalFor(ttlMs)`** —— 续租方的周期：默认租约下 20 s，其余租约按同一比例（每个租约 4.5 次）折算。`p81-registry.ts` 的 `--heartbeat-ms` 默认值与控制台的续租者（`docs/dev/console.md` §7.3）都取这里。
@@ -61,11 +67,13 @@ flowchart TD
 | 2 | **`offline` 由租期推导，不能被声明** | 允许声明 offline，崩掉的节点就会永远停在它最后一次声明的状态上 | `test/registry.test.ts`「offline cannot be declared — it is derived from the lease」「a missed heartbeat turns the status offline on its own」 |
 | 3 | **一个节点只能有一把公钥；在租者先登记先赢，且不建第二张索引表**（闭合 `protocol.md` §10.1 的已知缺口） | 同节点两个 agent 登记不同公钥，故障会推迟到「签名对一个 agent 验得过、对另一个验不过」才暴露 | `test/registry.test.ts`「one node, one key (protocol.md §10.1, closed in P4.3)」整组，含「once every agent on the node has expired, a new key is accepted」 |
 | 4 | **盘上的东西只是可恢复，不是权威**：`expiresAt` 按当下 TTL 重算，未知 schema 版本整篇丢弃，写入是 temp + fsync + rename | 直接采信盘上的 deadline，停机一小时的注册中心会拿一小时前的地址回答查询 | `test/persistence.test.ts`「the deadline is recomputed from the TTL in force, not read off disk」「a document from an unknown schema version is ignored wholesale」与「crash safety」整组 |
-| 5 | **持久化失败只损失持久性，不损失可用性**——写盘异常被吞并走 `onPersistError`，不冒泡到调用方 | 让写盘异常冒泡，一次磁盘满会把整个注册中心变成不可用 | `test/persistence.test.ts`「a failing store costs durability, not availability」「a write failure is swallowed even with no error hook installed」 |
+| 5 | **表的持久化失败只损失持久性，不损失可用性**——写盘异常被吞并走 `onPersistError`，不冒泡到调用方。**吊销清单相反**：落不了盘就不发布（`PUT` 答 500，内存里仍是上一份），盘上那份坏了注册中心不启动 | 让表的写盘异常冒泡，一次磁盘满会把整个注册中心变成不可用；让吊销清单只在内存里生效，重启一次它就没了，节点读到 404 当作「从未发布」 | `test/persistence.test.ts`「a failing store costs durability, not availability」；`test/revocationPersistence.test.ts` 整个文件 |
+| 6 | **写 token 只挡写，不改读**：读路由在有无 token 时逐字节相同；401 之前什么都不读、不改 | 把读也挡上，节点与控制台读名册、读吊销清单的路径全断 | `test/writeToken.test.ts`「every read answers byte for byte as it does without a token」与「without the token is 401 and changes nothing」 |
+| 7 | **过期的行由 10 s 时钟脉冲清出表与落盘文件** | 不清，死行随每一次别的条目续租被整表写回盘上，永远带着 `status: online`；再遇一次时间跳跃，宽限窗口会把它们整批当活的返回 | `test/eviction.test.ts` 整个文件 |
 
 线上的 `expiresAt − lastHeartbeatAt` 就是当下 TTL（注册、心跳、恢复三处同一口径；时间跳跃 rebase 后另含跳跃量，与本包自己的判定一致）——控制台按它判滞后 / 过期，不另带一份 TTL（`docs/dev/console.md` §7.1）；改租约的计算方式时要连同控制台一起看。
 
-另有一条与 P3.1 联动、同样有用例的性质：**时间跳跃期间不删条目**——`observeClock` 判定解冻后先 rebase 全表，宽限窗口内 `#live` 直接返回记录（`test/registry.test.ts`「a thaw rebases leases and lets heartbeat recover」「ordinary elapsed time still expires after time-jump protection is enabled」）。
+另有一条与 P3.1 联动、同样有用例的性质：**时间跳跃不让活着的租约过期**——`observeClock` 判定解冻后先 rebase 全表，宽限窗口内 `#live` 直接返回记录（`test/registry.test.ts`「a thaw rebases leases and lets heartbeat recover」「ordinary elapsed time still expires after time-jump protection is enabled」）。2026-09-27 起，跳跃之前就已过期的行（`expiresAt` 早于上一次观测）在 rebase 之前清出，不被续命（`test/eviction.test.ts`）；没有跳跃的每一拍则按 `prune()` 清过期行。
 
 ## 4. 与基座的关系
 
@@ -87,7 +95,7 @@ flowchart TD
 bun test packages/registry
 ```
 
-实测：**77 pass / 0 fail，3 个测试文件**（`registry` / `persistence` / `http`），零 mock；HTTP 用例绑真实端口。
+实测（2026-09-27）：**142 pass / 0 fail，7 个测试文件**，零 mock；HTTP 用例绑真实端口。
 
 ## 7. P9.3 双人签字
 

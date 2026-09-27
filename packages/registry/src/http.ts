@@ -7,6 +7,7 @@ import {
   type AgentRecord,
   type RegisterResult,
 } from './registry.js'
+import { assertRegistryWriteToken, registryWriteTokenMatches } from './token.js'
 
 /** Prefix of every route in this API version. */
 export const API_PREFIX = '/v0'
@@ -70,12 +71,43 @@ function statusFor(code: RegistryErrorCode): number {
   switch (code) {
     case RegistryErrorCode.E_BAD_REQUEST:
       return 400
+    case RegistryErrorCode.E_UNAUTHORIZED:
+      return 401
     case RegistryErrorCode.E_CONFLICT:
       return 409
     case RegistryErrorCode.E_NOT_FOUND:
       return 404
+    case RegistryErrorCode.E_STORAGE:
+      return 500
   }
 }
+
+/**
+ * The answer to a write that did not carry the write token.
+ *
+ * Returned before the body is read and before the registry is touched, so a
+ * refused write leaves the table exactly as it was. The message names what is
+ * missing and nothing about what the token is.
+ */
+function unauthorized(): Response {
+  return fail(
+    statusFor(RegistryErrorCode.E_UNAUTHORIZED),
+    RegistryErrorCode.E_UNAUTHORIZED,
+    'registry writes require the write token',
+    { 'www-authenticate': 'Bearer realm="qianmo-registry"' },
+  )
+}
+
+function bearerOf(request: Request): string {
+  const header = request.headers.get('authorization') ?? ''
+  return header.startsWith('Bearer ') ? header.slice('Bearer '.length) : ''
+}
+
+/**
+ * `true` when the request may write: no token is configured (the registry's
+ * behaviour before P15.8), or it presents the configured one.
+ */
+type WriteGate = (request: Request) => boolean
 
 async function readJsonObject(
   request: Request,
@@ -93,6 +125,7 @@ async function readJsonObject(
 async function handleCollection(
   request: Request,
   registry: InMemoryRegistry,
+  mayWrite: WriteGate,
 ): Promise<Response> {
   if (request.method === 'GET') {
     return json({ agents: registry.list().map(agentBody) })
@@ -100,6 +133,7 @@ async function handleCollection(
   if (request.method !== 'POST') {
     return methodNotAllowed(['GET', 'POST'])
   }
+  if (!mayWrite(request)) return unauthorized()
 
   const body = await readJsonObject(request)
   if (body === null) {
@@ -130,6 +164,7 @@ function handleItem(
   request: Request,
   registry: InMemoryRegistry,
   address: string,
+  mayWrite: WriteGate,
 ): Response {
   if (request.method === 'GET') {
     const entry = registry.resolve(address)
@@ -138,6 +173,7 @@ function handleItem(
       : json(agentBody(entry))
   }
   if (request.method === 'DELETE') {
+    if (!mayWrite(request)) return unauthorized()
     return registry.deregister(address)
       ? new Response(null, { status: 204 })
       : notFound(`no live agent at ${address}`)
@@ -149,8 +185,10 @@ function handleHeartbeat(
   request: Request,
   registry: InMemoryRegistry,
   address: string,
+  mayWrite: WriteGate,
 ): Response {
   if (request.method !== 'POST') return methodNotAllowed(['POST'])
+  if (!mayWrite(request)) return unauthorized()
   const entry = registry.heartbeat(address)
   return entry === null
     ? notFound(`no live agent at ${address}`)
@@ -158,16 +196,18 @@ function handleHeartbeat(
 }
 
 /**
- * `/v0/revocation-list` — the same zero-auth courier the agent table is
+ * `/v0/revocation-list` — the same courier the agent table is
  * (key-distribution.md §5.2), carrying the CA's signed RL instead of a
  * certificate. `GET` for every node's hourly poll (§6.4); `PUT` for the CA
- * operator's `qm ca refresh-rl` to publish a fresh one. No `DELETE`: an
+ * operator's `qm ca refresh-rl` to publish a fresh one, and a write like any
+ * other once a write token is configured. No `DELETE`: an
  * RL is superseded by publishing a newer one, never withdrawn to nothing —
  * an absent list and a stale one must stay distinguishable (§6.4's two rows).
  */
 async function handleRevocationList(
   request: Request,
   registry: InMemoryRegistry,
+  mayWrite: WriteGate,
 ): Promise<Response> {
   if (request.method === 'GET') {
     const list = registry.revocationList
@@ -178,8 +218,22 @@ async function handleRevocationList(
   if (request.method !== 'PUT') {
     return methodNotAllowed(['GET', 'PUT'])
   }
+  if (!mayWrite(request)) return unauthorized()
   const body = await readJsonObject(request)
-  if (body === null || !registry.publishRevocationList(body)) {
+  let accepted: boolean
+  try {
+    accepted = body !== null && registry.publishRevocationList(body)
+  } catch {
+    // Not persisted, so not published: the previous list is still the one
+    // served, and the publisher is told to try again rather than handed a
+    // 200 the next restart would quietly take back.
+    return fail(
+      statusFor(RegistryErrorCode.E_STORAGE),
+      RegistryErrorCode.E_STORAGE,
+      'the revocation list could not be stored; nothing was published',
+    )
+  }
+  if (!accepted) {
     return fail(
       400,
       RegistryErrorCode.E_BAD_REQUEST,
@@ -187,6 +241,23 @@ async function handleRevocationList(
     )
   }
   return json(registry.revocationList)
+}
+
+/** Options for {@link createRegistryHandler}. */
+interface RegistryHandlerOptions {
+  /**
+   * The write token (tenancy-m1.md P15.8). Given, every write —
+   * `POST /v0/agents`, `DELETE /v0/agents/<address>`,
+   * `POST /v0/agents/<address>/heartbeat`, `PUT /v0/revocation-list` — must
+   * carry `Authorization: Bearer <token>` or is answered 401 with the table
+   * untouched. Reads never need it.
+   *
+   * Omitted, the registry behaves exactly as it did before the token existed.
+   * That is what lets a fleet turn it on in two steps: writers first learn to
+   * send it (an older registry ignores the header), then the registry starts
+   * requiring it.
+   */
+  readonly writeToken?: string
 }
 
 /**
@@ -197,7 +268,16 @@ async function handleRevocationList(
  */
 export function createRegistryHandler(
   registry: InMemoryRegistry,
+  options: RegistryHandlerOptions = {},
 ): (request: Request) => Promise<Response> {
+  const writeToken = options.writeToken
+  if (writeToken !== undefined) {
+    assertRegistryWriteToken(writeToken, 'registry write token')
+  }
+  const mayWrite: WriteGate =
+    writeToken === undefined
+      ? () => true
+      : request => registryWriteTokenMatches(bearerOf(request), writeToken)
   return async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url)
     const segments = pathname.split('/').filter(s => s.length > 0)
@@ -210,12 +290,14 @@ export function createRegistryHandler(
     }
 
     if (segments.length === 2 && segments[1] === 'revocation-list') {
-      return await handleRevocationList(request, registry)
+      return await handleRevocationList(request, registry, mayWrite)
     }
 
     if (segments[1] !== 'agents') return notFound(`unknown path: ${pathname}`)
 
-    if (segments.length === 2) return await handleCollection(request, registry)
+    if (segments.length === 2) {
+      return await handleCollection(request, registry, mayWrite)
+    }
 
     // The address rides in one path segment, percent-encoded by the client
     // (`qianmo%3A%2F%2Fnode-b%2Freviewer`): `URL` leaves the escapes alone, so
@@ -231,15 +313,17 @@ export function createRegistryHandler(
       )
     }
 
-    if (segments.length === 3) return handleItem(request, registry, address)
+    if (segments.length === 3) {
+      return handleItem(request, registry, address, mayWrite)
+    }
     if (segments.length === 4 && segments[3] === 'heartbeat') {
-      return handleHeartbeat(request, registry, address)
+      return handleHeartbeat(request, registry, address, mayWrite)
     }
     return notFound(`unknown path: ${pathname}`)
   }
 }
 
-export interface RegistryServerOptions {
+export interface RegistryServerOptions extends RegistryHandlerOptions {
   /** Registry to serve; a fresh {@link InMemoryRegistry} by default. */
   readonly registry?: InMemoryRegistry
   readonly hostname?: string
@@ -264,12 +348,18 @@ export function startRegistryServer(
   options: RegistryServerOptions = {},
 ): RegistryServerHandle {
   const registry = options.registry ?? new InMemoryRegistry()
+  // Built before the clock is observed or a port bound: a short token is a
+  // configuration error, and it should leave nothing running behind it.
+  const fetchHandler = createRegistryHandler(
+    registry,
+    options.writeToken === undefined ? {} : { writeToken: options.writeToken },
+  )
   registry.observeClock(10_000)
   const hostname = options.hostname ?? '127.0.0.1'
   const server = Bun.serve({
     port,
     hostname,
-    fetch: createRegistryHandler(registry),
+    fetch: fetchHandler,
   })
   const clockPulse = setInterval(() => {
     registry.observeClock(10_000)
