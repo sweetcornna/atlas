@@ -25,10 +25,7 @@ import type {
 } from '@open-claude-code/tool-runtime/Tool.js'
 import type { PermissionMode } from '../../../types/permissions.js'
 import { occConfigDir } from '../../../config/paths.js'
-import {
-  RESIDENT_MEMORY_ROOT_ENV,
-  residentAcpEnvironment,
-} from '../residentAcpEnv.js'
+import { residentAcpEnvironment } from '../residentAcpEnv.js'
 import {
   RESIDENT_EXCLUDED_TOOLS,
   withResidentCanUseTool,
@@ -303,9 +300,16 @@ describe('resident hardline wiring — the memory root the host names', () => {
     // guarding only the default root (review-P14 X-12 follow-up).
     const hostRoot = resolve('/srv/qianmo-host-memory')
     const target = `${hostRoot}/working/main/entry.md`
-    const saved = process.env[RESIDENT_MEMORY_ROOT_ENV]
+    // Whatever `residentAcpEnvironment` adds for the root is what the child
+    // must read back — found by difference, not by copying the name here.
+    const plain = residentAcpEnvironment({})
+    const named = residentAcpEnvironment({}, { memoryRoot: hostRoot })
+    const added = Object.keys(named).filter(key => !(key in plain))
+    expect(added).toHaveLength(1)
+    const key = added[0] ?? ''
+    const saved = process.env[key]
     try {
-      delete process.env[RESIDENT_MEMORY_ROOT_ENV]
+      delete process.env[key]
       const [unnamed] = withResidentHardline([permissiveTool('Read').tool])
       const before = await (unnamed as Tool).checkPermissions(
         { file_path: target } as never,
@@ -313,8 +317,7 @@ describe('resident hardline wiring — the memory root the host names', () => {
       )
       expect(before.behavior).toBe('allow')
 
-      const childEnv = residentAcpEnvironment({}, { memoryRoot: hostRoot })
-      process.env[RESIDENT_MEMORY_ROOT_ENV] = childEnv[RESIDENT_MEMORY_ROOT_ENV]
+      process.env[key] = named[key]
       const [file] = withResidentHardline([permissiveTool('Write').tool])
       const [shell] = withResidentHardline([permissiveTool('Bash').tool])
       const fileDecision = await (file as Tool).checkPermissions(
@@ -340,8 +343,8 @@ describe('resident hardline wiring — the memory root the host names', () => {
       )
       expect(defaultDecision.behavior).toBe('deny')
     } finally {
-      if (saved === undefined) delete process.env[RESIDENT_MEMORY_ROOT_ENV]
-      else process.env[RESIDENT_MEMORY_ROOT_ENV] = saved
+      if (saved === undefined) delete process.env[key]
+      else process.env[key] = saved
     }
   })
 })

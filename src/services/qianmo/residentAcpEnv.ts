@@ -20,7 +20,7 @@ import {
  * The memory root the host serves memory from, as handed to its ACP child.
  * Set by {@link residentAcpEnvironment}; read back by {@link hostMemoryRoot}.
  */
-export const RESIDENT_MEMORY_ROOT_ENV = 'QIANMO_RESIDENT_MEMORY_ROOT'
+const RESIDENT_MEMORY_ROOT_ENV = 'QIANMO_RESIDENT_MEMORY_ROOT'
 
 /**
  * The memory root the host named for this child, or `undefined`.
