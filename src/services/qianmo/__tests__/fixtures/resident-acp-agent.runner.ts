@@ -90,6 +90,16 @@ const agent: Agent = {
       throw new Error('resident fixture requires messageId')
     }
     remember(params.sessionId, messageId)
+    // What the agent was actually handed, one JSON string per turn. Off unless
+    // a test asks for it: this is the only place the assembled prompt can be
+    // read after it crossed the ACP boundary (the memory write path, P16.W).
+    const promptLog = process.env.QIANMO_FIXTURE_PROMPT_LOG
+    if (promptLog !== undefined && promptLog !== '') {
+      const text = params.prompt
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .join('\n')
+      appendFileSync(promptLog, `${JSON.stringify(text)}\n`)
+    }
     await connection.extNotification('qianmo/session-activity', {
       active: true,
     })

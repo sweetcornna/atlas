@@ -116,18 +116,18 @@ flowchart TB
 | 基座召回不识别 tombstone | `scanMemoryFiles` 读到什么算什么，没有废止概念——这正是权威记录放在基座扫描根之外的原因 | `src/mapping.ts` §2「边界」 |
 | 向基座注入链的投影是单向且属 P3.3 | 本包只负责让 `type:` 值已经写在文件里，让投影是复制而非再分类 | `src/mapping.ts` §2(c) |
 | 沉淀归档在 promote 与 seal 之间崩溃会留重复 | 顺序是刻意的：反过来会直接丢内容；重复项下次运行会再次 promote | `src/archive.ts` 行内注释 |
-| 无跨进程写锁 | 写入是原子 rename（不会半截），但并发写同一 id 的先后由文件系统决定，本包不仲裁 | `src/store.ts` `writeFileAtomic` 注释 |
+| 逐条目锁只罩读-改-写 | `revoke` / `retire` / `invalidate` 在条目旁的 `<id>.md.lock`（`wx` 独占创建）下重新读盘再写，两个并发修改不会丢掉其中一个标记；拿不到锁同步等 ≤2 s 后报错，锁龄 >30 s 视为崩溃遗留并清掉（两个等待者同时判定同一把陈旧锁时仍可能并行，窗口是崩溃恰好落在毫秒级临界区内）。`write` 是新 id 新文件，不需要锁 | `src/store.ts` `withEntryLock` 注释；`test/concurrency.test.ts`（两个真实进程并发 revoke / invalidate，无锁版本上实测为红） |
 
 ---
 
 ## 6. 怎么跑测试
 
 ```bash
-bun test packages/memory/test          # 包内：43 用例 / 6 文件（实跑 2026-08-15）
+bun test packages/memory/test          # 包内：48 用例 / 7 文件（实跑 2026-09-26）
 bun test tests/integration/qianmo-memory-recall.test.ts   # 与 recall 的集成腿
 ```
 
-用例分布（逐文件实跑）：`schema` 15 / `resilience` 10 / `revocation` 6 / `frontmatter` 5 / `roundtrip` 4 / `paths` 3，共 **43 pass / 0 fail / 125 expect**。
+用例分布（逐文件实跑）：`schema` 15 / `resilience` 10 / `revocation` 6 / `frontmatter` 5 / `concurrency` 5 / `roundtrip` 4 / `paths` 3，共 **48 pass / 0 fail / 177 expect**。`concurrency` 起真实子进程，其中一条故意等满 2 s 锁超时。
 
 ---
 
