@@ -18,10 +18,27 @@ import {
 
 /**
  * The memory root the host serves memory from, as handed to its ACP child.
- * Read by `residentGuard.ts` on the child side; set only by
- * {@link residentAcpEnvironment}.
+ * Set by {@link residentAcpEnvironment}; read back by {@link hostMemoryRoot}.
  */
 export const RESIDENT_MEMORY_ROOT_ENV = 'QIANMO_RESIDENT_MEMORY_ROOT'
+
+/**
+ * The memory root the host named for this child, or `undefined`.
+ *
+ * A path derivation in the same sense as `occConfigDir()` and
+ * `defaultMemoryRoot()`, which read `OCC_CONFIG_DIR` and
+ * `CLAUDE_CODE_REMOTE_MEMORY_DIR` the same way: the value is fixed when the
+ * host spawns the child, and the only other writer is the node's own
+ * `settings.json` `env` block, which the hardline refuses to every resident
+ * turn. It is only ever *added* to the protected roots, so no value of it can
+ * make the table refuse less.
+ */
+export function hostMemoryRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const root = env[RESIDENT_MEMORY_ROOT_ENV]
+  return root === undefined || root === '' ? undefined : root
+}
 
 /**
  * `parent` plus what every resident ACP child needs regardless of how the

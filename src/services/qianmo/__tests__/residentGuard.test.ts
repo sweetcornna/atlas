@@ -18,6 +18,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { resolve } from 'node:path'
+import { defaultMemoryRoot } from '@qianmo/memory'
 import type {
   Tool,
   ToolUseContext,
@@ -332,6 +333,12 @@ describe('resident hardline wiring — the memory root the host names', () => {
         type: 'other',
         reason: 'qianmo-resident-hardline:memory-root',
       })
+      // Additive: naming a host root does not take the child's default off.
+      const defaultDecision = await (file as Tool).checkPermissions(
+        { file_path: `${defaultMemoryRoot()}/working/main/entry.md` } as never,
+        CONTEXT,
+      )
+      expect(defaultDecision.behavior).toBe('deny')
     } finally {
       if (saved === undefined) delete process.env[RESIDENT_MEMORY_ROOT_ENV]
       else process.env[RESIDENT_MEMORY_ROOT_ENV] = saved

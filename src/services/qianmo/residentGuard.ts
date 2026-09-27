@@ -48,9 +48,10 @@
  *
  * `ResidentHardline` holds a frozen literal in `@qianmo/resident`. The only
  * things supplied from outside are absolute roots, and those come from the
- * process's own path derivation (`occConfigDir()`, `defaultMemoryRoot()`), not
- * anything a session can set. Nothing here reads `settings.json`, and that is
- * the point: the first entry on the table is `settings.json` itself.
+ * process's own path derivation (`occConfigDir()`, `defaultMemoryRoot()`,
+ * `hostMemoryRoot()`), not anything a session can set. Nothing here reads
+ * `settings.json`, and that is the point: the first entry on the table is
+ * `settings.json` itself.
  */
 
 import { ResidentHardline } from '@qianmo/resident'
@@ -69,7 +70,7 @@ import type {
 } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { occConfigDir } from '../../config/paths.js'
-import { RESIDENT_MEMORY_ROOT_ENV } from './residentAcpEnv.js'
+import { hostMemoryRoot } from './residentAcpEnv.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/ExitPlanModeTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/TeamCreateTool/constants.js'
@@ -132,14 +133,12 @@ const ELEVATED_MODES: ReadonlySet<PermissionMode> = Object.freeze(
  * `ResidentHardline` like any other.
  */
 function residentHardline(): ResidentHardline {
-  const hostMemoryRoot = process.env[RESIDENT_MEMORY_ROOT_ENV]
+  const named = hostMemoryRoot()
   return new ResidentHardline({
     stateRoots: [occConfigDir()],
     protectedRoots: [
       defaultMemoryRoot(),
-      ...(hostMemoryRoot === undefined || hostMemoryRoot === ''
-        ? []
-        : [hostMemoryRoot]),
+      ...(named === undefined ? [] : [named]),
     ],
   })
 }
