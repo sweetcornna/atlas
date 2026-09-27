@@ -36,7 +36,7 @@ import {
   PROTOCOL_VERSION,
   ndJsonStream,
 } from '@agentclientprotocol/sdk'
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest, Stream } from '@agentclientprotocol/sdk'
 import {
   getMacroDefines,
   resolveBuildFeatures,
@@ -255,63 +255,15 @@ export class ResidentAcpHarness {
     map.set(id, list)
   }
 
-  #childEnv(): NodeJS.ProcessEnv {
-    const parent: NodeJS.ProcessEnv = {}
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) parent[k] = v
-    }
-    for (const k of INHERITED_KEYS_TO_DROP) delete parent[k]
-    const modelPort = this.#model?.port
-    const env = residentAcpEnvironment({
-      ...parent,
-      NODE_ENV: 'production',
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: this.configDir,
-      CLAUDE_CODE_USE_OPENAI: '1',
-      OPENAI_API_KEY: 'sk-resident-permission-double',
-      OPENAI_BASE_URL: `http://127.0.0.1:${modelPort}/v1`,
-      OPENAI_MODEL: 'resident-permission-double',
-      OPENAI_WIRE_API: 'chat',
-      NO_COLOR: '1',
-      DISABLE_TELEMETRY: '1',
-      DISABLE_AUTOUPDATER: '1',
-    })
-    // The ceiling-only describe needs the child WITHOUT safe mode, so the hook,
-    // agent and skill actually load and the tool-face/hardline/canUseTool
-    // guards are the only thing standing between them and an escalation.
-    if (!this.#safeMode) delete env.CLAUDE_CODE_SAFE_MODE
-    return env
-  }
-
   async start(): Promise<void> {
     this.#serve()
-    const defines = {
-      ...getMacroDefines(),
-      'process.env.NODE_ENV': JSON.stringify('production'),
-    }
-    const args = [
-      'run',
-      ...Object.entries(defines).flatMap(([k, v]) => [
-        '-d',
-        `${k}:${String(v)}`,
-      ]),
-      ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-      CLI_ENTRYPOINT,
-      '--acp',
-    ]
-    const stderr = Bun.file(this.#stderrPath).writer()
-    const child = spawn(process.execPath, args, {
-      cwd: PROJECT_ROOT,
-      env: this.#childEnv(),
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const { child, stream } = spawnResidentAcpChild({
+      configDir: this.configDir,
+      modelBaseUrl: `http://127.0.0.1:${this.#model?.port}/v1`,
+      stderrPath: this.#stderrPath,
+      safeMode: this.#safeMode,
     })
-    child.stderr?.on('data', chunk => stderr.write(chunk))
     this.#child = child
-
-    const stream = ndJsonStream(
-      Writable.toWeb(child.stdin as NonNullable<typeof child.stdin>) as never,
-      Readable.toWeb(child.stdout as NonNullable<typeof child.stdout>) as never,
-    )
     const harness = this
     const client = {
       async requestPermission(params: RequestPermissionRequest) {
@@ -397,6 +349,85 @@ export class ResidentAcpHarness {
     }
     await this.#model?.stop(true)
   }
+}
+
+/**
+ * Start `src/entrypoints/cli.tsx --acp` the way a resident node starts its
+ * child: from source, with the shipped defines and feature list (so
+ * `REACTIVE_COMPACT` and every other default-on branch is live, exactly as in
+ * the artifact), in the environment `residentAcpEnvironment()` builds for
+ * production, pointed at a scripted OpenAI-compatible model.
+ *
+ * Returns the child and an ACP stream over its stdio. Whoever holds the stream
+ * decides what kind of host to be: the harness above is a scripted one, and
+ * `qianmo-empty-model-response.test.ts` puts the resident's own
+ * `ResidentAcpConnection` on it.
+ */
+export function spawnResidentAcpChild(options: {
+  readonly configDir: string
+  /** `http://127.0.0.1:<port>/v1` */
+  readonly modelBaseUrl: string
+  readonly stderrPath: string
+  /** Defaults to `resident-permission-double`. */
+  readonly model?: string
+  /** See {@link ResidentAcpHarness}; defaults to `true`. */
+  readonly safeMode?: boolean
+}): { readonly child: ChildProcess; readonly stream: Stream } {
+  const defines = {
+    ...getMacroDefines(),
+    'process.env.NODE_ENV': JSON.stringify('production'),
+  }
+  const args = [
+    'run',
+    ...Object.entries(defines).flatMap(([k, v]) => ['-d', `${k}:${String(v)}`]),
+    ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
+    CLI_ENTRYPOINT,
+    '--acp',
+  ]
+  const stderr = Bun.file(options.stderrPath).writer()
+  const child = spawn(process.execPath, args, {
+    cwd: PROJECT_ROOT,
+    env: residentChildEnv(options),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  child.stderr?.on('data', chunk => stderr.write(chunk))
+  const stream = ndJsonStream(
+    Writable.toWeb(child.stdin as NonNullable<typeof child.stdin>) as never,
+    Readable.toWeb(child.stdout as NonNullable<typeof child.stdout>) as never,
+  )
+  return { child, stream }
+}
+
+function residentChildEnv(options: {
+  readonly configDir: string
+  readonly modelBaseUrl: string
+  readonly model?: string
+  readonly safeMode?: boolean
+}): NodeJS.ProcessEnv {
+  const parent: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) parent[k] = v
+  }
+  for (const k of INHERITED_KEYS_TO_DROP) delete parent[k]
+  const env = residentAcpEnvironment({
+    ...parent,
+    NODE_ENV: 'production',
+    OCC_IDENTITY: 'qianmo',
+    OCC_CONFIG_DIR: options.configDir,
+    CLAUDE_CODE_USE_OPENAI: '1',
+    OPENAI_API_KEY: 'sk-resident-permission-double',
+    OPENAI_BASE_URL: options.modelBaseUrl,
+    OPENAI_MODEL: options.model ?? 'resident-permission-double',
+    OPENAI_WIRE_API: 'chat',
+    NO_COLOR: '1',
+    DISABLE_TELEMETRY: '1',
+    DISABLE_AUTOUPDATER: '1',
+  })
+  // The ceiling-only describe needs the child WITHOUT safe mode, so the hook,
+  // agent and skill actually load and the tool-face/hardline/canUseTool
+  // guards are the only thing standing between them and an escalation.
+  if (options.safeMode === false) delete env.CLAUDE_CODE_SAFE_MODE
+  return env
 }
 
 /** Credentials and endpoints a developer's shell must not leak into the child. */
