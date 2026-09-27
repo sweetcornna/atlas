@@ -29,7 +29,7 @@ import type { FileMemoryStore } from '@qianmo/memory'
 import type { AnswerResponse, ToolCall } from './types.js'
 
 /** The answer text kept per round in the call log (§4 「answer 前 200 字」). */
-export const ANSWER_HEAD_CODE_POINTS = 200
+const ANSWER_HEAD_CODE_POINTS = 200
 
 /** An `unreadable` citation or a degraded recall: the round is void. */
 export class InvalidRound extends Error {

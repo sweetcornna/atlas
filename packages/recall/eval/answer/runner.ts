@@ -107,7 +107,7 @@ export type AnswerPlan = {
   readonly queryIds?: readonly string[]
 }
 
-export type AnswerRunDeps = {
+type AnswerRunDeps = {
   readonly transports: readonly AnswerTransport[]
   readonly retrievers: Readonly<Partial<Record<Arm, ArmRetriever>>>
   readonly ledger: TokenLedger
@@ -121,7 +121,7 @@ export type AnswerRunDeps = {
 }
 
 /** Every attempt of one round failed. The call is not recorded. */
-export class TransportFailure extends Error {
+class TransportFailure extends Error {
   constructor(
     readonly callKey: string,
     readonly lastError: unknown,
@@ -188,13 +188,13 @@ export function checkPlan(plan: AnswerPlan): void {
   }
 }
 
-export type PreparedQuery = {
+type PreparedQuery = {
   readonly query: CorpusQuery
   readonly labels: AnswerLabels
   readonly results: Readonly<Partial<Record<Arm, RecallResult>>>
 }
 
-export type PreparedTier = {
+type PreparedTier = {
   readonly corpus: CorpusId
   readonly tier: number
   readonly seed: number

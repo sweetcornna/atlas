@@ -65,7 +65,7 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** The AC-5 fixture: the one definition of "the two providers". */
-export const PROVIDERS_FIXTURE = join(
+const PROVIDERS_FIXTURE = join(
   REPO_ROOT,
   'tests/integration/fixtures/qianmo-providers.json',
 )
@@ -79,7 +79,7 @@ export function loadProviders(): ProviderConfig[] {
   )
 }
 
-export type Credentials = { readonly apiKey: string; readonly baseURL: string }
+type Credentials = { readonly apiKey: string; readonly baseURL: string }
 
 /** The credentials, or why the live run is skipped (AC-4's gate, verbatim). */
 export function liveCredentials(
@@ -110,7 +110,7 @@ function userText(text: string): UserMessage {
 }
 
 /** Executor turns → base messages; consecutive tool results share one turn. */
-export function toBaseMessages(
+function toBaseMessages(
   turns: readonly Turn[],
 ): (UserMessage | AssistantMessage)[] {
   const messages: (UserMessage | AssistantMessage)[] = []

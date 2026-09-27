@@ -254,7 +254,7 @@ export function parseCli(argv: readonly string[]): Cli {
 type PlanShape = Pick<AnswerPlan, 'phase' | 'corpora' | 'repetitions' | 'arms'>
 
 /** The plan the flags describe; defaults by phase. */
-export function planOf(cli: Cli, phase: Phase): PlanShape {
+function planOf(cli: Cli, phase: Phase): PlanShape {
   const ids = cli.corpora ?? (Object.keys(CORPORA) as CorpusId[])
   const corpora = ids.map(id => {
     const available = CORPORA[id].tiers
@@ -290,7 +290,7 @@ const NOT_COUNTED: Readonly<Record<string, string>> = {
     'M1 臂按 M0 的提示词计（注入预算相同）',
 }
 
-export function renderEstimate(
+function renderEstimate(
   title: string,
   estimate: AnswerEstimate,
   phase: Phase,

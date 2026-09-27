@@ -37,11 +37,11 @@ export const DOCS_CORPUS_ID = 'docs-dev-v1'
 export const DOCS_SEED = 20260926
 
 /** The day after the pinned commit: every record is in the past. */
-export const DOCS_AS_OF = new Date(Date.UTC(2026, 8, 27, 0, 0, 0))
+const DOCS_AS_OF = new Date(Date.UTC(2026, 8, 27, 0, 0, 0))
 
 const DOCS_PROJECT = 'eval-docs'
 
-export const DOCS_SCOPE: RecallScope = {
+const DOCS_SCOPE: RecallScope = {
   layers: ['project'],
   projectKey: DOCS_PROJECT,
 }
@@ -56,7 +56,7 @@ export const DOCS_TIERS: readonly number[] = [
   DOCS_DEV_RECORD_COUNT,
 ]
 
-export type DocsDataset = {
+type DocsDataset = {
   readonly corpus: typeof DOCS_CORPUS_ID
   readonly sourceCommit: string
   readonly seed: number
@@ -67,7 +67,7 @@ export type DocsDataset = {
   readonly queries: readonly (HardenedQuery | DocsQuery)[]
 }
 
-export type DocsQuery = Omit<HardenedQuery, 'kind'> & {
+type DocsQuery = Omit<HardenedQuery, 'kind'> & {
   readonly kind: (typeof DOCS_KINDS)[number]
 }
 

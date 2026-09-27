@@ -61,7 +61,7 @@ export const TRIAL_TOKEN_CEILING: TokenUsage = {
 /** `trial` is P16.4 (30-tier trial); `comparison` is P16.12. */
 export type Phase = 'trial' | 'comparison'
 
-export const PHASES: readonly Phase[] = ['trial', 'comparison']
+const PHASES: readonly Phase[] = ['trial', 'comparison']
 
 const LEDGER_SCHEMA = 'qianmo-recall-answer-ledger/v1'
 
@@ -91,7 +91,7 @@ type LedgerState = {
   overshoots: number
 }
 
-export type LimitName = 'ceiling' | 'trial' | 'run'
+type LimitName = 'ceiling' | 'trial' | 'run'
 
 /** A reservation did not fit: the call must not be made. */
 export class TokenCapReached extends Error {
@@ -137,7 +137,7 @@ export type LedgerSnapshot = {
   readonly overshoots: number
 }
 
-export type LedgerOpenOptions = {
+type LedgerOpenOptions = {
   readonly runId: string
   readonly phase: Phase
   readonly cap: TokenUsage

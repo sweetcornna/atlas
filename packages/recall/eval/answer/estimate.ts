@@ -27,12 +27,12 @@ import { ANSWER_TOKEN_CEILING } from './ledger.js'
 import { type AnswerPlan, m0Retriever, prepareTier } from './runner.js'
 import type { AnswerRequest, TokenUsage } from './types.js'
 
-export type CharCount = { readonly cjk: number; readonly other: number }
+type CharCount = { readonly cjk: number; readonly other: number }
 
-export type TokenRange = { readonly low: number; readonly high: number }
+type TokenRange = { readonly low: number; readonly high: number }
 
 /** §10's conversion ranges. */
-export const ESTIMATE_RATES = {
+const ESTIMATE_RATES = {
   cjkTokensPerChar: { low: 0.7, high: 1 },
   otherCharsPerToken: { low: 4, high: 2.5 },
   outputTokensPerCall: { low: 300, high: 2000 },
@@ -40,7 +40,7 @@ export const ESTIMATE_RATES = {
 } as const
 
 /** D-7 as approved: the reference the estimate is compared with. */
-export const APPROVED_BUDGET = {
+const APPROVED_BUDGET = {
   calls: { low: 2100, high: 2400 },
   input: { low: 12_000_000, high: 18_500_000 },
   output: { low: 700_000, high: 4_800_000 },
@@ -49,7 +49,7 @@ export const APPROVED_BUDGET = {
 const CJK =
   /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}　-〿＀-￯]/u
 
-export function countChars(text: string): CharCount {
+function countChars(text: string): CharCount {
   let cjk = 0
   let other = 0
   for (const char of text) {
@@ -59,7 +59,7 @@ export function countChars(text: string): CharCount {
   return { cjk, other }
 }
 
-export function inputTokens(chars: CharCount): TokenRange {
+function inputTokens(chars: CharCount): TokenRange {
   const { cjkTokensPerChar: cjk, otherCharsPerToken: other } = ESTIMATE_RATES
   return {
     low: Math.round(chars.cjk * cjk.low + chars.other / other.low),
@@ -67,7 +67,7 @@ export function inputTokens(chars: CharCount): TokenRange {
   }
 }
 
-export type EstimateRow = {
+type EstimateRow = {
   readonly corpus: string
   readonly tier: number
   readonly kind: string

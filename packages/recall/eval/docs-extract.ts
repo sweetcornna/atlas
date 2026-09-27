@@ -33,7 +33,7 @@
 
 import { createHash } from 'node:crypto'
 
-export type DocsRecordKind = 'decision' | 'changelog'
+type DocsRecordKind = 'decision' | 'changelog'
 
 export type DocsRecord = {
   /** `<file stem>#<row id>`, unique across the corpus. */
@@ -50,7 +50,7 @@ export type DocsRecord = {
 }
 
 /** A table whose rows are decisions: `| id | topic | verdict | rationale |`. */
-export type TableSource = {
+type TableSource = {
   readonly kind: 'table'
   readonly file: string
   readonly date: string
@@ -68,7 +68,7 @@ export type TableSource = {
 }
 
 /** `### D-n <question>` sections with a `**决议**：` (or similar) paragraph. */
-export type HeadingSource = {
+type HeadingSource = {
   readonly kind: 'heading'
   readonly file: string
   readonly date: string
@@ -83,7 +83,7 @@ export type HeadingSource = {
  * between rows included. A row's numbered items (① ② …) become separate
  * records: each is one decision, about as long as a decision-table row.
  */
-export type ChangeLogSource = {
+type ChangeLogSource = {
   readonly kind: 'changelog'
   readonly file: string
   readonly marker: string
@@ -92,9 +92,9 @@ export type ChangeLogSource = {
 export type DocsSource = TableSource | HeadingSource | ChangeLogSource
 
 /** Longest title / summary / body an entry keeps, in code points. */
-export const TITLE_MAX = 60
-export const SUMMARY_MAX = 120
-export const BODY_MAX = 480
+const TITLE_MAX = 60
+const SUMMARY_MAX = 120
+const BODY_MAX = 480
 
 /** Strip inline markdown down to its text. */
 export function plainText(markdown: string): string {
@@ -164,7 +164,7 @@ export function cutSentence(text: string, max: number): [string, string] {
 }
 
 /** Cut to at most `max` code points on sentence ends, whole sentences only. */
-export function cutBody(text: string, max: number): string {
+function cutBody(text: string, max: number): string {
   let rest = text.trim()
   let kept = ''
   while (rest.length > 0) {
@@ -374,7 +374,7 @@ export function extractRecords(
  * `docs/dev`. Stored as digests so this module does not become one more
  * place that spells them out.
  */
-export const PERSONAL_TOKEN_SHA256: readonly {
+const PERSONAL_TOKEN_SHA256: readonly {
   readonly script: 'han' | 'ascii'
   readonly length: number
   readonly sha256: string
@@ -427,11 +427,11 @@ export const PERSONAL_TOKEN_SHA256: readonly {
 ]
 
 export const NAME_MARK = '〔姓名略〕'
-export const HANDLE_MARK = '〔账号略〕'
-export const EMAIL_MARK = '〔邮箱略〕'
-export const PHONE_MARK = '〔号码略〕'
-export const NUMBER_MARK = '〔编号略〕'
-export const ADDRESS_MARK = '〔地址略〕'
+const HANDLE_MARK = '〔账号略〕'
+const EMAIL_MARK = '〔邮箱略〕'
+const PHONE_MARK = '〔号码略〕'
+const NUMBER_MARK = '〔编号略〕'
+const ADDRESS_MARK = '〔地址略〕'
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g
 const PHONE = /(?<!\d)1[3-9]\d{9}(?!\d)/g

@@ -27,7 +27,7 @@ import {
   tierReport,
 } from './run.js'
 
-export type CorpusBaselineReport = {
+type CorpusBaselineReport = {
   readonly schema: 'qianmo-recall-baseline/v2'
   readonly corpus: CorpusId
   readonly corpusSha256: string
@@ -42,7 +42,7 @@ export type CorpusBaselineReport = {
   }[]
 }
 
-export type CorpusBaselineOptions = {
+type CorpusBaselineOptions = {
   readonly decay?: readonly DecayMode[]
 }
 

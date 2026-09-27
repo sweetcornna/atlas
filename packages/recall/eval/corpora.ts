@@ -42,7 +42,7 @@ export type CorpusDataset = Omit<BaselineDataset, 'queries'> & {
   readonly queries: readonly CorpusQuery[]
 }
 
-export type CorpusDescriptor = {
+type CorpusDescriptor = {
   readonly id: CorpusId
   readonly seeds: readonly number[]
   readonly tiers: readonly number[]

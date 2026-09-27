@@ -24,7 +24,7 @@ import {
 } from '../src/inject.js'
 import { rankEntries, type RankedEntry, tokensOf } from '../src/rank.js'
 import { recall, type RecallScope } from '../src/recall.js'
-import { mulberry32, shuffled } from './dataset.js'
+import { mulberry32 } from './dataset.js'
 import { fuseReference } from './fusion-reference.js'
 import {
   type BaselineDataset,
@@ -74,7 +74,7 @@ export function exactSignTestOneSided(wins: number, losses: number): number {
   return tail / 2 ** n
 }
 
-export type SignVerdict = {
+type SignVerdict = {
   readonly seed: number
   readonly wins: number
   readonly losses: number
@@ -114,7 +114,7 @@ export function signGate(
   })
 }
 
-export type RegressionFailure = {
+type RegressionFailure = {
   readonly seed: number
   readonly tier: number
   readonly kind: string
@@ -249,12 +249,12 @@ export function matchesRecall(
 }
 
 /** A semantic stand-in that may read the question. */
-export type QueryScorer = (
+type QueryScorer = (
   entries: readonly MemoryEntry[],
   question: string,
 ) => number[]
 
-export type ArmSet = {
+type ArmSet = {
   /** Injected keys per question id, per arm. */
   readonly m0: ReadonlyMap<string, ReadonlySet<string>>
   readonly m1: ReadonlyMap<string, ReadonlySet<string>>
@@ -331,13 +331,4 @@ export function leaks(
       .filter(key => arm.get(query.id)?.has(key) === true)
       .map(key => `${query.id}:${key}`),
   )
-}
-
-/** A seeded subset, for callers that sample random rankers. */
-export function seededSample<T>(
-  items: readonly T[],
-  count: number,
-  seed: number,
-): T[] {
-  return shuffled(items, mulberry32(seed)).slice(0, count)
 }

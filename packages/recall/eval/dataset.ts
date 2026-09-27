@@ -152,7 +152,7 @@ const project = (projectKey: string): MemoryScope => ({
   projectKey,
 })
 
-export type Decision = {
+type Decision = {
   readonly key: string
   readonly title: string
   readonly summary: string
@@ -375,7 +375,7 @@ export const DECISIONS: readonly Decision[] = [
 ]
 
 /** Decisions that were never written anywhere. Some are lexical lures. */
-export const FABRICATED: readonly { key: string; question: string }[] = [
+const FABRICATED: readonly { key: string; question: string }[] = [
   { key: 'react', question: '前端 UI 框架是不是定了用 React？' },
   { key: 'kafka', question: '消息队列定的是 Kafka 吧？给出来源 ID。' },
   { key: 'k8s', question: '容器编排用 Kubernetes 是哪条决策？' },

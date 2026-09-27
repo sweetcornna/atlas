@@ -32,7 +32,7 @@ import {
 import type { RankedEntry } from '../src/rank.js'
 
 /** §5.1's proposed RRF constant. A proposal, not a measured value (§10). */
-export const REFERENCE_RRF_K = 60
+const REFERENCE_RRF_K = 60
 
 /**
  * Fuse a deterministic ranking with semantic scores.
@@ -91,7 +91,7 @@ export function fuseReference(
 }
 
 /** A semantic stand-in: one score per entry, higher is better. */
-export type EntryScorer = (entries: readonly MemoryEntry[]) => number[]
+type EntryScorer = (entries: readonly MemoryEntry[]) => number[]
 
 const textOf = (entry: MemoryEntry): string =>
   `${entry.title}\n${entry.summary}\n${entry.body}`
@@ -147,16 +147,6 @@ function outlier(bagOf: (text: string) => Bag): EntryScorer {
   }
 }
 
-/** FNV-1a over the id, mixed with a seed: a per-entry coin, query-free. */
-function entryCoin(id: string, seed: number): number {
-  let hash = (0x811c9dc5 ^ seed) >>> 0
-  for (let i = 0; i < id.length; i += 1) {
-    hash ^= id.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash / 4294967296
-}
-
 /**
  * Rankers that never read the question and never read a label. Anything they
  * gain over M0 is gained from how entries look, not from what was asked.
@@ -170,11 +160,6 @@ export const NULL_RANKERS: Readonly<Record<string, EntryScorer>> = {
   'length-short': entries => entries.map(entry => -textOf(entry).length),
   /** Longest entries first. */
   'length-long': entries => entries.map(entry => textOf(entry).length),
-}
-
-/** A seeded, query-free random order over entries. */
-export function randomRanker(seed: number): EntryScorer {
-  return entries => entries.map(entry => entryCoin(entry.id, seed))
 }
 
 /**

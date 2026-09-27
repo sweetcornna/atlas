@@ -28,7 +28,7 @@ export const PREREGISTRATION_PATH = fileURLToPath(
   new URL('./prereg.toml', import.meta.url),
 )
 
-export type E1Inference = 'bootstrap' | 'signflip'
+type E1Inference = 'bootstrap' | 'signflip'
 
 export type Preregistration = {
   readonly retrieval: {
@@ -52,7 +52,7 @@ export type Preregistration = {
 }
 
 /** A gate needed a value the preregistration does not (yet) hold. */
-export class PreregistrationMissing extends Error {
+class PreregistrationMissing extends Error {
   constructor(readonly key: string) {
     super(
       `preregistration: ${key} is not generated yet (docs/dev/memory-m1.md §9); ` +

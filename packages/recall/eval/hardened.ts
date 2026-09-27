@@ -103,7 +103,7 @@ export const HARDENED_KINDS = [
   'negative-cross-context',
 ] as const
 
-export type HardenedQueryKind = (typeof HARDENED_KINDS)[number]
+type HardenedQueryKind = (typeof HARDENED_KINDS)[number]
 
 /** The plain positives: the pooled row, and the v0.1-comparable one. */
 export const HARDENED_POOLED_KINDS: readonly HardenedQueryKind[] = [
@@ -111,7 +111,7 @@ export const HARDENED_POOLED_KINDS: readonly HardenedQueryKind[] = [
   'positive-mismatch',
 ]
 
-export type HardenedEntryRole =
+type HardenedEntryRole =
   | 'gold'
   | 'sibling'
   | 'filler'
@@ -160,7 +160,7 @@ const SIBLING_COUNT = Object.values(SIBLINGS).reduce(
 /** Hand-written, decision-shaped, live, in scope — gold and siblings. */
 export const DECISION_ENTRY_COUNT = GOLD_IN_SCOPE + SIBLING_COUNT
 
-export const HARDENED_MAX_LIVE_IN_SCOPE =
+const HARDENED_MAX_LIVE_IN_SCOPE =
   DECISION_ENTRY_COUNT + fillerCombinations().length
 
 /** The resident's recall scope for context A of the twin case. */
@@ -431,7 +431,7 @@ export function buildHardenedDataset(
 }
 
 /** SHA-256 of one dataset, over its canonical JSON. */
-export function datasetDigest(dataset: unknown): string {
+function datasetDigest(dataset: unknown): string {
   return createHash('sha256').update(JSON.stringify(dataset)).digest('hex')
 }
 

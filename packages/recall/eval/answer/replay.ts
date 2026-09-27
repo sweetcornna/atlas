@@ -27,13 +27,13 @@ export type Exchange = {
   readonly response: AnswerResponse
 }
 
-export type ReplayFixture = {
+type ReplayFixture = {
   readonly schema: typeof FIXTURE_SCHEMA
   readonly exchanges: Readonly<Record<string, Exchange>>
 }
 
 /** Recorded or replayed call keys that do not match the fixture. */
-export class ReplayMismatch extends Error {
+class ReplayMismatch extends Error {
   constructor(
     readonly callKey: string,
     reason: string,
@@ -43,7 +43,7 @@ export class ReplayMismatch extends Error {
   }
 }
 
-export function requestDigest(request: AnswerRequest): string {
+function requestDigest(request: AnswerRequest): string {
   return createHash('sha256')
     .update(JSON.stringify({ system: request.system, turns: request.turns }))
     .digest('hex')

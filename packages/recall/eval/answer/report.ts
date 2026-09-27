@@ -40,7 +40,7 @@ import type { Arm, TokenUsage } from './types.js'
 export const ANSWER_REPORT_SCHEMA = 'qianmo-recall-answer-eval/v1'
 
 /** The corpus the preregistered endpoints (E1, E2, A0, A4) are judged on. */
-export const PRIMARY_CORPUS = HARDENED_CORPUS_ID
+const PRIMARY_CORPUS = HARDENED_CORPUS_ID
 
 export type RunStatus = 'complete' | 'capped' | 'invalid' | 'aborted'
 
@@ -97,16 +97,16 @@ export type SummaryRow = {
   readonly secondRounds: number
 }
 
-export type GateStatus = 'pass' | 'fail' | 'not-evaluable' | 'not-applicable'
+type GateStatus = 'pass' | 'fail' | 'not-evaluable' | 'not-applicable'
 
-export type Comparison = {
+type Comparison = {
   readonly name: string
   readonly questions: number
   readonly meanDifference: number
   readonly p: number
 }
 
-export type Gates = {
+type Gates = {
   readonly A0: {
     readonly status: GateStatus
     readonly reason: string | null
@@ -214,7 +214,7 @@ export type AnswerReport = {
 }
 
 /** The blinded A6 list and its key, written next to the report. */
-export type Adjudication = {
+type Adjudication = {
   readonly blinded: readonly {
     readonly item: number
     readonly corpus: string
@@ -388,7 +388,7 @@ function compare(
   }
 }
 
-export type GateContext = {
+type GateContext = {
   readonly arms: readonly Arm[]
   readonly prereg: Preregistration
   /** Tiers whose M0 injection is `ranked`, per corpus. */

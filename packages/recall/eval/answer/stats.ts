@@ -84,7 +84,7 @@ export function meanDifference(
   )
 }
 
-export type Alternative = 'greater' | 'less' | 'two-sided'
+type Alternative = 'greater' | 'less' | 'two-sided'
 
 /**
  * Exact sign-flip permutation p-value of the mean difference.
