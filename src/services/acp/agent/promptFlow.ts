@@ -21,6 +21,7 @@ import { AcpAgent } from './AcpAgent.js'
 import type { AcpSession } from './sessionTypes.js'
 import { flattenConfigOptionValues } from './configOptions.js'
 import { popNextPendingPrompt } from './promptQueue.js'
+import { runInSessionScope } from '../../../utils/session/sessionScope.js'
 import {
   activateAcpSessionWorkspace,
   runInAcpWorkspaceTurn,
@@ -113,15 +114,24 @@ async function prompt(
         uuid: userMessageId,
       })
 
-      const { stopReason, usage } = await forwardSessionUpdates(
+      // The turn runs in this session's scope, so work it leaves behind (a
+      // background command, an async subagent) queues its notice for this
+      // session and no other (sessionScope.ts). Entered here, inside the
+      // lock: a turn woken by the previous turn's release starts in that
+      // turn's context.
+      const { stopReason, usage } = await runInSessionScope(
         params.sessionId,
-        sdkMessages,
-        getConnection(this),
-        session.queryEngine.getAbortSignal(),
-        session.toolUseCache,
-        readClientCapabilities(this),
-        session.cwd,
-        () => session.cancelled,
+        () =>
+          forwardSessionUpdates(
+            params.sessionId,
+            sdkMessages,
+            getConnection(this),
+            session.queryEngine.getAbortSignal(),
+            session.toolUseCache,
+            readClientCapabilities(this),
+            session.cwd,
+            () => session.cancelled,
+          ),
       )
 
       // If the session was cancelled during processing, return cancelled

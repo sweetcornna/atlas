@@ -18,6 +18,7 @@ import { extractTextContent } from '../messages.js'
 import { objectGroupBy } from '../collections/objectGroupBy.js'
 import { recordQueueOperation } from '../sessionStorage.js'
 import { createSignal } from '../process/signal.js'
+import { currentSessionScope } from './sessionScope.js'
 
 export type SetAppState = (f: (prev: AppState) => AppState) => void
 
@@ -50,7 +51,14 @@ function logOperation(operation: QueueOperation, content?: string): void {
 // Within the same priority, commands are processed FIFO.
 // ============================================================================
 
-const commandQueue: QueuedCommand[] = []
+/**
+ * A queued command and the ACP session whose work enqueued it, if any
+ * (`sessionScope.ts`). Kept to this module: the mid-turn drain below is the
+ * only reader in an ACP process, and nothing outside needs the field.
+ */
+type ScopedCommand = QueuedCommand & { readonly sessionScope?: string }
+
+const commandQueue: ScopedCommand[] = []
 /** Agent query loops that can currently drain agent-scoped notifications. */
 const activeAgentConsumers = new Set<string>()
 /** Frozen snapshot — recreated on every mutation for useSyncExternalStore. */
@@ -192,10 +200,14 @@ export function enqueuePendingNotification(command: QueuedCommand): void {
     !activeAgentConsumers.has(command.agentId)
       ? undefined
       : command.agentId
+  // Stamped with the session whose work finished, not the one running now:
+  // in an ACP process those differ, and the drain must tell them apart.
+  const sessionScope = currentSessionScope()
   commandQueue.push({
     ...command,
     priority: command.priority ?? 'later',
     agentId,
+    ...(sessionScope === undefined ? {} : { sessionScope }),
   })
   notifySubscribers()
   logOperation(
@@ -548,13 +560,20 @@ export function popAllEditable(
  *
  * Priority order: 'now' (0) > 'next' (1) > 'later' (2).
  * Passing 'now' returns only now-priority commands; 'later' returns everything.
+ *
+ * A command enqueued by one ACP session's work is returned only inside that
+ * session's scope, so another session's mid-turn drain never receives it.
+ * Unscoped commands (every command outside ACP) are visible as before.
  */
 export function getCommandsByMaxPriority(
   maxPriority: QueuePriority,
 ): QueuedCommand[] {
   const threshold = PRIORITY_ORDER[maxPriority]
+  const scope = currentSessionScope()
   return commandQueue.filter(
-    cmd => PRIORITY_ORDER[cmd.priority ?? 'next'] <= threshold,
+    cmd =>
+      PRIORITY_ORDER[cmd.priority ?? 'next'] <= threshold &&
+      (cmd.sessionScope === undefined || cmd.sessionScope === scope),
   )
 }
 
