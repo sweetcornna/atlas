@@ -57,10 +57,9 @@ npm install -g @sweetcornna/open-claude-code
 │
 └── docs/
     ├── zh/ en/ ja/            ← 基座：基座自身的三语功能与内部文档
-    ├── README.md              阡陌：申报材料索引
+    ├── README.md              阡陌：申报材料索引（计划书与申请书已移出仓库）
     ├── dev/                   阡陌：立项文档（见下）
-    ├── assets/                阡陌：品牌与图表素材（许可见 NOTICE 一、许可；大赛 logo 不授出）
-    └── *.docx / *.pdf         阡陌：计划书与申请书
+    └── assets/                阡陌：品牌与图表素材（许可见 NOTICE 一、许可；大赛 logo 不授出）
 ```
 
 ### 立项文档（`docs/dev/`）
@@ -73,7 +72,7 @@ npm install -g @sweetcornna/open-claude-code
 
 ### 申报材料（`docs/`）
 
-计划书、申请书与全部图表素材见 [`docs/README.md`](docs/README.md)。
+图表与品牌素材见 [`docs/README.md`](docs/README.md)。计划书与申请书含团队成员的个人信息，已于 2026-09-26 移出仓库，说明见同一文件。
 
 ---
 

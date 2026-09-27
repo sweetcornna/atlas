@@ -82,6 +82,27 @@ export {
 export { LoginThrottle } from './throttle.js'
 
 export {
+  AccountBook,
+  MAX_OPEN_INVITES,
+  SESSION_ABSOLUTE_MS,
+  SESSION_IDLE_MS,
+  mayApprove,
+  tokenFingerprint,
+  type AccountBookOptions,
+  type AccountEnded,
+  type AccountRole,
+  type AccountSubject,
+  type ConsolePrincipal,
+} from './accounts.js'
+export {
+  ACCOUNT_SESSION_COOKIE,
+  ownerOf,
+  principalOf,
+  type ConsoleAccounts,
+} from './access.js'
+export type { LedgerPort } from './deps.js'
+
+export {
   API_PREFIX,
   CHAT_STREAM_HEARTBEAT_MS,
   MAX_AUDIT_LIMIT,

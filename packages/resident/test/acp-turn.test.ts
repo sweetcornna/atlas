@@ -8,9 +8,14 @@ import {
   AcpResidentTurnPort,
   RESIDENT_INACTIVITY_CANCEL_META,
   parseTurnStepDedupKey,
+  turnFailureKind,
   turnStepDedupKey,
 } from '../src/acp-turn.js'
 import { ResidentInactivityError } from '../src/inactivity.js'
+import {
+  ResidentTimingRecorder,
+  type ResidentTimingEvent,
+} from '../src/timings.js'
 
 const INPUT = {
   sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -573,5 +578,125 @@ describe('turn progress', () => {
     const port = new AcpResidentTurnPort(connection)
     // 不该抛：缺省就是「这个端口不报过程」。
     expect(() => port.handleSessionUpdate(toolCall('t1'))).not.toThrow()
+  })
+})
+
+describe('a turn the agent reports as a model error', () => {
+  const EMPTY_TEXT =
+    'API Error [OpenAI]: Model returned an empty response (finish_reason=stop) · code=empty_response · category=server_error · retryable=yes'
+
+  function erroredConnection(error: unknown) {
+    return {
+      extMethod: mock(async () => ({ accepted: false })),
+      prompt: mock(async () => ({
+        userMessageId: INPUT.messageId,
+        // ACP has no error stop reason; the agent keeps end_turn and says what
+        // went wrong under `_meta`.
+        stopReason: 'end_turn',
+        _meta: { claudeCode: { error } },
+      })),
+    }
+  }
+
+  test('empty responses that outlasted the retries fail the turn, and say so', async () => {
+    const events: ResidentTimingEvent[] = []
+    const port = new AcpResidentTurnPort(
+      erroredConnection({
+        category: 'server_error',
+        code: 'empty_response',
+        message: EMPTY_TEXT,
+      }),
+      { timings: new ResidentTimingRecorder(event => events.push(event)) },
+    )
+
+    const result = await port.execute(INPUT, async () => {})
+
+    expect(result.outcome).toBe('failed')
+    if (result.outcome !== 'failed') throw new Error('unreachable')
+    expect(result.code).toBe(ProtocolErrorCode.E_TASK_FAILED)
+    expect(result.reason).toMatch(/^Model returned only empty responses/)
+    expect(result.reason).toContain('finish_reason=stop')
+    // What `qm watch` reads back to tell this failure from every other one.
+    expect(turnFailureKind(result.reason)).toBe('model_empty_response')
+    expect(events.map(event => [event.stage, event.error])).toEqual([
+      ['turn_failed', 'model_empty_response'],
+    ])
+  })
+
+  test('any other model error — an HTTP 400, say — is a failure, not a completion', async () => {
+    const events: ResidentTimingEvent[] = []
+    const port = new AcpResidentTurnPort(
+      erroredConnection({
+        category: 'invalid_request',
+        message:
+          'API Error [OpenAI]: 400 bad request · status=400 · category=invalid_request · retryable=no',
+      }),
+      { timings: new ResidentTimingRecorder(event => events.push(event)) },
+    )
+
+    const result = await port.execute(INPUT, async () => {})
+
+    expect(result.outcome).toBe('failed')
+    if (result.outcome !== 'failed') throw new Error('unreachable')
+    expect(result.reason).toMatch(/^Model request failed/)
+    expect(result.reason).toContain('status=400')
+    expect(turnFailureKind(result.reason)).toBe('model_error')
+    expect(events.map(event => [event.stage, event.error])).toEqual([
+      ['turn_failed', 'model_error'],
+    ])
+  })
+
+  test('the reason stays one bounded line whatever the agent sent', async () => {
+    const port = new AcpResidentTurnPort(
+      erroredConnection({
+        category: 'server_error',
+        message: `first line\n${'x'.repeat(4_000)}`,
+      }),
+    )
+
+    const result = await port.execute(INPUT, async () => {})
+
+    if (result.outcome !== 'failed') throw new Error('expected a failure')
+    expect(result.reason).not.toContain('\n')
+    expect(result.reason.length).toBeLessThanOrEqual(400)
+  })
+
+  test('an error with no usable message still fails with a reason', async () => {
+    const port = new AcpResidentTurnPort(erroredConnection({}))
+
+    const result = await port.execute(INPUT, async () => {})
+
+    if (result.outcome !== 'failed') throw new Error('expected a failure')
+    expect(result.reason).toMatch(/^Model request failed/)
+  })
+
+  test('only the reasons written for model errors are classified', () => {
+    for (const reason of [
+      'ACP turn was cancelled',
+      'ACP turn ended in a refusal',
+      'ACP turn hit the token ceiling before finishing',
+      'ACP turn hit the request ceiling before finishing',
+      'Internal error',
+      '',
+    ]) {
+      expect(turnFailureKind(reason)).toBeUndefined()
+    }
+  })
+
+  test('unrelated _meta leaves a clean end_turn completed', async () => {
+    const connection = {
+      extMethod: mock(async () => ({ accepted: false })),
+      prompt: mock(async () => ({
+        userMessageId: INPUT.messageId,
+        stopReason: 'end_turn',
+        _meta: { claudeCode: { usage: { totalTokens: 3 } } },
+      })),
+    }
+    const port = new AcpResidentTurnPort(connection)
+
+    await expect(port.execute(INPUT, async () => {})).resolves.toEqual({
+      outcome: 'completed',
+      content: '',
+    })
   })
 })

@@ -290,6 +290,7 @@ const ROOT_COMMANDS = [
   'doctor',
   'import',
   'mcp',
+  'memory',
   'migrate',
   'plugin|plugins',
   'project',

@@ -23,8 +23,11 @@ import { readFileSync } from 'node:fs'
 import { invokedBinName } from '../../constants/brand.js'
 import { sourceCommit } from '../../constants/buildProvenance.js'
 import {
+  AccountBook,
   resolveTokens,
   startConsoleServer,
+  tokenFingerprint,
+  type ConsoleAccounts,
   type ConsoleAuditSource,
   type ConsoleDeps,
   type RegistryPort,
@@ -62,6 +65,7 @@ import {
   type ConsoleWakeIdentity,
 } from './consoleWakeIdentity.js'
 import { resolveConsoleTokenSource } from './consoleTokenSources.js'
+import { FileLedger } from './consoleAccountsStore.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -72,6 +76,33 @@ import { resolveConsoleTokenSource } from './consoleTokenSources.js'
  */
 export function newConsoleToken(): string {
   return randomBytes(24).toString('base64url')
+}
+
+/**
+ * 个人账号的接线（`tenancy-m1.md` §3，P15.3 / P15.5）：配置根里的两本账——账号库
+ * 与会话表。
+ *
+ * 账坏了**不让控制台起不来**：两枚旧 token 还得能进来看是怎么回事，所以账本
+ * 自己转为不可用（个人账号一律 503），告警写到 stderr，横幅上照直写出原因。
+ */
+function wireConsoleAccounts(config: {
+  readonly accountsStorePath: string
+  readonly sessionsStorePath: string
+  readonly legacyViewToken: boolean
+  readonly breakGlass: boolean
+}): ConsoleAccounts {
+  const book = new AccountBook({
+    accounts: new FileLedger(config.accountsStorePath),
+    sessions: new FileLedger(config.sessionsStorePath),
+    onAlarm: line => {
+      process.stderr.write(`${line}\n`)
+    },
+  })
+  return {
+    book,
+    legacyView: config.legacyViewToken,
+    breakGlass: config.breakGlass,
+  }
 }
 
 /** IPv6 字面量要加方括号才能进 URL。 */
@@ -395,6 +426,21 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
+  // Before anything dials out, for the same reason as the tokens above: a
+  // console whose account ledger path is wrong should say so before it has
+  // opened a single link.
+  const accounts =
+    config.accounts === true &&
+    config.accountsStorePath !== undefined &&
+    config.sessionsStorePath !== undefined
+      ? wireConsoleAccounts({
+          accountsStorePath: config.accountsStorePath,
+          sessionsStorePath: config.sessionsStorePath,
+          legacyViewToken: config.legacyViewToken !== false,
+          breakGlass: config.breakGlass === true,
+        })
+      : undefined
+
   const wake = wireConsoleWake(config)
   // Registrations made on the page are renewed by this process until they are
   // deregistered on the page; the ledger that remembers them across restarts
@@ -495,6 +541,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const handle = startConsoleServer(deps, config.port, {
     hostname: config.hostname,
     tokens,
+    ...(accounts === undefined ? {} : { accounts }),
   })
   // After the port is bound: a console that failed to start must not have
   // re-announced anything on its way down.
@@ -510,9 +557,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   let banner = field('console', origin)
   banner += field(
     'open',
-    viewGenerated
-      ? `${origin}/?token=${tokens.view}`
-      : `${origin}/?token=<your view token>`,
+    // view token 关掉以后，带它的链接只会被拒；门就是登录页。
+    accounts?.legacyView === false
+      ? `${origin}/login`
+      : viewGenerated
+        ? `${origin}/?token=${tokens.view}`
+        : `${origin}/?token=<your view token>`,
   )
   banner += field(
     'view-token',
@@ -559,6 +609,32 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   if (serverNotes !== undefined) {
     banner += field('server-notes', config.serverNotesPath)
+  }
+  if (accounts !== undefined && config.accountsStorePath !== undefined) {
+    const problem = accounts.book.problem
+    banner += field(
+      'accounts',
+      problem === null
+        ? `enabled -> ${config.accountsStorePath}`
+        : `UNAVAILABLE (${problem})`,
+    )
+    banner += field('sessions', config.sessionsStorePath ?? '')
+    banner += field(
+      'legacy-view',
+      accounts.legacyView === false ? 'off' : 'on (migration)',
+    )
+    // 处理器构造时已经比对过指纹、记下了轮换；这里读到的是「现在这枚 admin
+    // token 用作 break-glass 之后还没换」。
+    const glass = accounts.book.breakGlassStatus(tokenFingerprint(tokens.admin))
+    banner += field(
+      'break-glass',
+      (accounts.breakGlass === true ? 'on (admin token: Bearer only)' : 'off') +
+        (glass.rotationDue
+          ? ` · ROTATE the admin token, last used ${new Date(
+              glass.lastUsedAt ?? 0,
+            ).toISOString()}`
+          : ''),
+    )
   }
   banner += field('label', config.label)
   // 这份产物是从哪个 commit 构建的（issue #70）。控制台和常驻节点一样是**部署到

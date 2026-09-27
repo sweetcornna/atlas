@@ -66,7 +66,11 @@ export const IDLE_TIMEOUT_S = Math.min(
   Math.ceil((CONSOLE_CHAT_HEARTBEAT_MS / 1_000) * 4),
 )
 
-/** 请求体上限。控制台最大的请求体是一条聊天消息；登录表单自己只收 4 KiB。 */
+/**
+ * 请求体上限。控制台最大的请求体是一条聊天消息；登录表单自己只收 4 KiB。
+ * 两层落点：`startFront` 的 `maxRequestBodySize`（只挡声明了长度的）与
+ * `readCappedBody` 的边读边数（chunked 也挡）。
+ */
 export const MAX_BODY_BYTES = 1024 * 1024
 
 export const DEFAULT_LISTEN = '0.0.0.0:38443'
@@ -269,13 +273,33 @@ function downstreamHeaders(upstream: Headers): Headers {
   return headers
 }
 
+/**
+ * 边读边数：累计一超过 {@link MAX_BODY_BYTES} 就取消读取、返回 `'too-large'`，
+ * 最多比上限多读一块。**不能先 `arrayBuffer()` 读完再比**：不带 `Content-Length`
+ * 的 chunked 请求会被整个缓冲进内存，而这发生在鉴权之前——公网上任何人都能拿它
+ * 放大这台机器的内存（pentest-m1.md F-1）。写法与 `@qianmo/cloud-artifacts` 的
+ * `readBoundedBody` 同一套；本文件不能 import 仓库代码（见文件头末段），所以各写一份。
+ */
 async function readCappedBody(
   request: Request,
 ): Promise<ArrayBuffer | 'too-large'> {
   const declared = request.headers.get('content-length')
   if (declared !== null && Number(declared) > MAX_BODY_BYTES) return 'too-large'
-  const body = await request.arrayBuffer()
-  return body.byteLength > MAX_BODY_BYTES ? 'too-large' : body
+  if (request.body === null) return new ArrayBuffer(0)
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let length = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    length += value.byteLength
+    if (length > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {})
+      return 'too-large'
+    }
+    chunks.push(value)
+  }
+  return Bun.concatArrayBuffers(chunks)
 }
 
 export interface PeerSource {
@@ -363,6 +387,10 @@ export function startFront(
     hostname: config.listenHost,
     port: config.listenPort,
     idleTimeout: IDLE_TIMEOUT_S,
+    // 只挡声明长度的请求（Bun 1.3.13 实测）：声明的 Content-Length 超限时在套接字层
+    // 直接回 413，不进 handler，所以这类请求不出现在访问日志里。不带 Content-Length
+    // 的 chunked 请求它不管，照样进 handler，那一层靠 readCappedBody 边读边数。
+    maxRequestBodySize: MAX_BODY_BYTES,
     tls: { cert: Bun.file(config.certFile), key: Bun.file(config.keyFile) },
     fetch: (request, bunServer) => handler(request, bunServer),
   })

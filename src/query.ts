@@ -1492,7 +1492,7 @@ async function* queryLoop(
       // prevents a spiral and the error surfaces.
       const isWithheldMedia =
         mediaRecoveryEnabled &&
-        reactiveCompact?.isWithheldMediaSizeError(lastMessage as Message)
+        reactiveCompact?.isWithheldMediaSizeError(lastMessage)
       if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,

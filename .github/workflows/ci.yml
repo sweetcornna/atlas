@@ -138,6 +138,15 @@ jobs:
       - name: Test with Coverage (sharded per directory)
         run: ./scripts/test-shards.sh --coverage
 
+      # 分片测试是普通 `bun test`，它把所有 `feature()` 编译成 false；出货构建则
+      # 编进 scripts/defines.ts 的默认开关。于是默认开启的分支在门禁里是死代码，
+      # 在产物里是活的：beta-5 的空应答崩溃（2026-09-27）就藏在 REACTIVE_COMPACT
+      # 后面，针对它的用例在上一步一直是绿的。这一步用构建同源的开关集合重跑
+      # query 与 compact 的用例，范围与理由见 scripts/test-shipped-features.ts。
+      # 报告落进 test-reports/，排在上传步骤之前。
+      - name: Test query/compact with shipped features
+        run: bun run test:shipped-features
+
       # 每个分片一份 JUnit XML：用例名 + 逐条耗时。`always()` —— 红的那次才最
       # 需要它，而这恰恰是上一步非零退出、后续步骤全被跳过的那一次。issue #56
       # 偶发红了 24 次，用例名一次都没留下来；普通 stdout 里每条用例的耗时根本

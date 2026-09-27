@@ -178,6 +178,11 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
+| `--accounts` | 关 | 个人账号（§8.1.1，`tenancy-m1.md` §3）。**不给就是今天的控制台，HTTP 面逐字节不变**（`packages/console/test/legacyParity.test.ts` 钉住）；给了以后两枚旧 token 照旧可用，另多出邀请开户与个人凭据 |
+| `--accounts-store <绝对路径>` | `occConfigPath('qianmo','console','accounts.ndjson')` | 账号库。只在 `--accounts` 下有效，单独给会报错 |
+| `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
+| `--legacy-view-token on\|off` | `on` | 迁移期 view token 还认不认（M-2b）。`off` 以后 view token 在三个入口一律失效，横幅的 `open` 行改为登录页。只在 `--accounts` 下有效 |
+| `--break-glass` | 关 | admin token 转为 break-glass（M-3）：只收 `Authorization: Bearer`、页面常亮提示、每次使用记账、永远不能当审批人。只在 `--accounts` 下有效 |
 | `--label <text>` | `hostname:port` | 页头标签，≤120 字符。两个控制台开在两个标签页时，靠它区分 |
 | `--view-token-file <绝对路径>` | 无 | 从文件读只读凭据。**必须是绝对路径**；**权限必须 0600 或更严**（group/other 任一位不为零就拒绝启动），尾部换行会被去掉 |
 | `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
@@ -1161,6 +1166,38 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 - **`退出` 只清浏览器那一份**：`POST /logout` 发一枚清空的 cookie、客户端顺手扔掉
   `localStorage` 里那份副本。它是「这台机器上的这个人不再持有凭据」，不是「这枚凭据作废」。
   两者的差别在丢了笔记本的那天才会显现，而那天要做的是换 token。
+
+### 8.1.1 开了 `--accounts` 以后
+
+上面说的是**不开账号**的控制台，它今天仍是缺省形态。开了以后（P15.3 / P15.5，设计见
+`tenancy-m1.md` §3）：
+
+- **邀请开户，没有口令。**`ops` 账号（迁移期也可以是 admin token）签一份邀请，绑定角色
+  （`viewer` / `member` / `ops`）、≤ 72 h、单次；链接形如 `/invite#<令牌>`，令牌在 fragment
+  里，服务端收不到。打开链接只渲染确认页，点「确认开通」发 `POST` 才铸出**个人凭据**，只显示
+  一次，同一个响应顺手登录。丢了凭据由 ops 重置：旧凭据作废、会话全关、发一份绑定同一账号的
+  新邀请。
+- **会话在服务端。**浏览器只拿 `qianmo_session` cookie，里面只有会话 id（`HttpOnly;
+  SameSite=Strict`，TLS 前置后加 `Secure`）；登录必换新 id 并关掉带进来的旧 id，`/logout`
+  删服务端那一份；闲置 2 h、绝对 12 h 失效。上面「没有服务端吊销」那几条对个人账号不再成立：
+  吊销后下一个请求就是 401，这个人的 SSE 连接全部断开。
+- **个人凭据只从登录表单或 `Authorization: Bearer` 进来。**放在 `?token=` 里一律 400；账号版
+  页面脚本拒绝把它写进 `localStorage`。
+- **角色**：`viewer` = 今天的 view；`member` = viewer + 对话，只见自己开的会话（别人的会话与
+  不存在的会话答同一个 404，端口零调用）；`ops` = 今天的 admin + 开户、吊销、重置。view token
+  仍看不到任何会话。
+- **两本账，严格读。**账号库与会话表都是哈希链 NDJSON（与 `@qianmo/audit` 同一种链），明文
+  邀请、凭据、会话 id 一律只存 SHA-256。任何一行读不懂、链断了、末行不完整、语义对不上（例如
+  吊销了一个不存在的账号），**整本不可用**：个人账号一律 503，stderr 告警（之后有请求被拒时
+  每分钟最多再报一次），两枚旧 token 照常，好让人进来看是怎么回事。任何一次写失败同样处理。
+- **break-glass**（`--break-glass`）：admin token 只收 Bearer，页面顶部常亮提示，每个响应带
+  `x-qianmo-break-glass: 1`；写请求每次记一条、读请求十分钟一条（逐请求的动作账本是 P15.9）；
+  用过之后横幅与 ops 页面提示轮换，换了 token 重启时记一条 `breakglass.rotated`。
+
+**已知边界**：链能查出中间改动、删行与乱序，查不出「从尾部截掉几行」或「整本换成旧副本」——
+两者都要有控制台配置根的写权限，属于 `tenancy-m1.md` §1.4 列明不防的中枢失陷。末行被截断
+（写到一半断电）会让整本不可用，运维看过以后手工截掉那半行即可恢复；控制台不替人判断那半行
+是否要紧。
 
 ### 8.2 注册中心本身没有任何鉴权
 

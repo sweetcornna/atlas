@@ -14,6 +14,7 @@ import { CHAT_STREAM_HEARTBEAT_MS } from '@qianmo/console'
 import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connect as connectTls } from 'node:tls'
 import {
   CONSOLE_CHAT_HEARTBEAT_MS,
   createFrontHandler,
@@ -27,8 +28,13 @@ import {
 
 const PEER = { requestIP: () => ({ address: '203.0.113.7' }) }
 
+/** 请求体一块的大小，与 Bun 从套接字交给请求体流的块同一量级。 */
+const CHUNK_BYTES = 64 * 1024
+
 let upstream: ReturnType<typeof Bun.serve>
 let upstreamUrl: URL
+/** 上游 `/sink` 被打到的次数：「不进上游」就是这个数不变。 */
+let sinkHits = 0
 
 beforeAll(() => {
   upstream = Bun.serve({
@@ -41,6 +47,12 @@ beforeAll(() => {
           path: url.pathname,
           search: url.search,
           headers: Object.fromEntries(request.headers),
+        })
+      }
+      if (url.pathname === '/sink' && request.method === 'POST') {
+        sinkHits++
+        return Response.json({
+          bytes: (await request.arrayBuffer()).byteLength,
         })
       }
       if (url.pathname === '/login' && request.method === 'POST') {
@@ -271,6 +283,151 @@ describe('转发', () => {
   })
 })
 
+/**
+ * 不带 Content-Length 的流式请求体，同时记下被读走了多少字节。
+ * `highWaterMark: 0`：读取端真去要才产出下一块，所以「产出的」就是「前置读入的」。
+ */
+function countingBody(total: number): {
+  readonly stream: ReadableStream<Uint8Array>
+  readonly seen: { pulled: number; cancelled: boolean }
+} {
+  const seen = { pulled: 0, cancelled: false }
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (seen.pulled >= total) {
+          controller.close()
+          return
+        }
+        const size = Math.min(CHUNK_BYTES, total - seen.pulled)
+        seen.pulled += size
+        controller.enqueue(new Uint8Array(size))
+      },
+      cancel() {
+        seen.cancelled = true
+      },
+    },
+    { highWaterMark: 0 },
+  )
+  return { stream, seen }
+}
+
+function streamingPost(
+  body: ReadableStream<Uint8Array>,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request('https://h/sink', {
+    method: 'POST',
+    headers,
+    body,
+    // @ts-expect-error Bun supports duplex for streaming request bodies
+    duplex: 'half',
+  })
+}
+
+describe('请求体上限：边读边数，不先整个读进内存（pentest-m1.md F-1）', () => {
+  test('chunked、不带 Content-Length、超限：413，最多多读一块就停，不进上游', async () => {
+    const lines: string[] = []
+    const handle = createFrontHandler(upstreamUrl, line => lines.push(line))
+    const { stream, seen } = countingBody(16 * MAX_BODY_BYTES)
+    const request = streamingPost(stream)
+    expect(request.headers.get('content-length')).toBeNull()
+    const hitsBefore = sinkHits
+    const response = await handle(request, PEER)
+    expect(response.status).toBe(413)
+    expect(lines[0]).toContain(' POST /sink 413 ')
+    // 修之前这里是 16 MiB：整个请求体读完才比上限。
+    expect(seen.pulled).toBeLessThanOrEqual(MAX_BODY_BYTES + CHUNK_BYTES)
+    expect(seen.cancelled).toBe(true)
+    expect(sinkHits).toBe(hitsBefore)
+  })
+
+  test('chunked、恰好等于上限：照常转发，上游收到的字节一个不少', async () => {
+    const handle = createFrontHandler(upstreamUrl, () => {})
+    const { stream, seen } = countingBody(MAX_BODY_BYTES)
+    const response = await handle(streamingPost(stream), PEER)
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as { bytes: number }).bytes).toBe(
+      MAX_BODY_BYTES,
+    )
+    expect(seen.pulled).toBe(MAX_BODY_BYTES)
+    expect(seen.cancelled).toBe(false)
+  })
+
+  test('声明的 Content-Length 超限：一个字节都不读就挡下', async () => {
+    const handle = createFrontHandler(upstreamUrl, () => {})
+    const { stream, seen } = countingBody(16 * MAX_BODY_BYTES)
+    const hitsBefore = sinkHits
+    const response = await handle(
+      streamingPost(stream, { 'content-length': String(MAX_BODY_BYTES + 1) }),
+      PEER,
+    )
+    expect(response.status).toBe(413)
+    expect(seen.pulled).toBe(0)
+    expect(sinkHits).toBe(hitsBefore)
+  })
+})
+
+/**
+ * 用裸 TLS 套接字发一个 POST，返回应答的状态行。`fetch` 自己决定带 Content-Length
+ * 还是 Transfer-Encoding，这里要测的恰恰是这两种请求头形状本身。`blocks` 块请求体
+ * 按 chunked 编码发，服务端一开口就停止上传。
+ */
+function rawTlsPost(
+  port: number,
+  head: string,
+  blocks: number,
+): Promise<string> {
+  return new Promise(resolve => {
+    let reply = ''
+    const socket = connectTls({
+      host: '127.0.0.1',
+      port,
+      rejectUnauthorized: false,
+    })
+    const guard = setTimeout(() => socket.destroy(), 4_000)
+    const finish = (): void => {
+      clearTimeout(guard)
+      socket.destroy()
+      resolve(reply.split('\r\n')[0] ?? '')
+    }
+    socket.on('data', data => {
+      reply += data.toString('latin1')
+      if (reply.includes('\r\n\r\n')) finish()
+    })
+    socket.on('error', () => {})
+    socket.on('close', finish)
+    socket.on('secureConnect', async () => {
+      socket.write(
+        `POST /sink HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n${head}\r\n`,
+      )
+      const frame = Buffer.concat([
+        Buffer.from(`${CHUNK_BYTES.toString(16)}\r\n`),
+        Buffer.alloc(CHUNK_BYTES),
+        Buffer.from('\r\n'),
+      ])
+      for (let i = 0; i < blocks && reply === '' && !socket.destroyed; i++) {
+        if (!socket.write(frame)) {
+          // 两个监听器用完一起摘掉：只挂 once 的话，drain 先到时 close 那个会留下，
+          // 每次背压攒一个，上传一大就触发 MaxListeners 告警。
+          await new Promise<void>(settle => {
+            const resume = (): void => {
+              socket.off('drain', resume)
+              socket.off('close', resume)
+              settle()
+            }
+            socket.on('drain', resume)
+            socket.on('close', resume)
+          })
+        }
+      }
+      if (blocks > 0 && reply === '' && !socket.destroyed) {
+        socket.write('0\r\n\r\n')
+      }
+    })
+  })
+}
+
 describe('startFront：真 TLS', () => {
   const openssl = Bun.which('openssl')
   let dir = ''
@@ -321,6 +478,70 @@ describe('startFront：真 TLS', () => {
       chmodSync(join(dir, 'key.pem'), 0o600)
     }
   })
+
+  test.skipIf(openssl === null)(
+    '声明的 Content-Length 超限：Bun 在套接字层回 413，不进 handler',
+    async () => {
+      const lines: string[] = []
+      const front = startFront(
+        {
+          listenHost: '127.0.0.1',
+          listenPort: 0,
+          upstream: upstreamUrl,
+          certFile: join(dir, 'cert.pem'),
+          keyFile: join(dir, 'key.pem'),
+        },
+        line => lines.push(line),
+      )
+      const hitsBefore = sinkHits
+      try {
+        const status = await rawTlsPost(
+          front.port,
+          `Content-Length: ${MAX_BODY_BYTES + 1}\r\n`,
+          0,
+        )
+        expect(status).toContain(' 413 ')
+        // 没进 handler，所以访问日志里没有这一行：挡它的是 maxRequestBodySize。
+        expect(lines).toHaveLength(0)
+        expect(sinkHits).toBe(hitsBefore)
+      } finally {
+        await front.stop()
+      }
+    },
+  )
+
+  test.skipIf(openssl === null)(
+    'chunked 超限：maxRequestBodySize 挡不住，由 handler 边读边数回 413',
+    async () => {
+      const lines: string[] = []
+      const front = startFront(
+        {
+          listenHost: '127.0.0.1',
+          listenPort: 0,
+          upstream: upstreamUrl,
+          certFile: join(dir, 'cert.pem'),
+          keyFile: join(dir, 'key.pem'),
+        },
+        line => lines.push(line),
+      )
+      const hitsBefore = sinkHits
+      try {
+        const status = await rawTlsPost(
+          front.port,
+          'Transfer-Encoding: chunked\r\n',
+          (16 * MAX_BODY_BYTES) / CHUNK_BYTES,
+        )
+        expect(status).toContain(' 413 ')
+        // Bun 1.3.13 实测：maxRequestBodySize 只挡声明了长度的请求，chunked 照样进
+        // handler，所以日志里有这一行。哪天 Bun 在套接字层挡住 chunked，这条会红，
+        // 届时回头改 startFront 里的注释。
+        expect(lines.some(line => line.includes(' POST /sink 413 '))).toBe(true)
+        expect(sinkHits).toBe(hitsBefore)
+      } finally {
+        await front.stop()
+      }
+    },
+  )
 
   test.skipIf(openssl === null)('https 握手之后转发到回环上游', async () => {
     const lines: string[] = []
