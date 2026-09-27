@@ -234,7 +234,11 @@ export class ResidentAcpConnection
     sessionId: string
     messageId: string
     prompt: readonly [{ type: 'text'; text: string }]
-  }): Promise<{ readonly userMessageId?: string | null }> {
+  }): Promise<{
+    readonly userMessageId?: string | null
+    readonly stopReason?: string
+    readonly _meta?: Record<string, unknown> | null
+  }> {
     return await this.#connection.prompt({
       sessionId: params.sessionId,
       messageId: params.messageId,

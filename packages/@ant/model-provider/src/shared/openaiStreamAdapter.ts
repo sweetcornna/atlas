@@ -47,6 +47,42 @@ class IncompleteOpenAIStreamError extends Error {
   }
 }
 
+/**
+ * The stream ended properly and said nothing: a finish_reason arrived, but no
+ * text, no tool call and no reasoning did.
+ *
+ * OpenAI-compatible gateways do this intermittently — HTTP 200, a clean
+ * stream, finish_reason `stop`, `content_filter` or Gemini's
+ * `MALFORMED_FUNCTION_CALL`. Passed through as an ordinary stop it leaves the
+ * turn with no assistant message at all. Thrown before `message_delta` /
+ * `message_stop`, so the retry ladder sees an attempt that committed nothing;
+ * `streamAssembly.ts` retries it on its own small budget.
+ *
+ * Carries the finish_reason and the usage the gateway reported. There is no
+ * content to carry, and nothing from the request goes in.
+ */
+export class EmptyModelResponseError extends Error {
+  readonly retryable = true
+  readonly code = 'empty_response'
+  /** Reduced to a plain token: it is gateway-controlled text. */
+  readonly finishReason: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+
+  constructor(
+    finishReason: string,
+    usage: { inputTokens: number; outputTokens: number },
+  ) {
+    const reason =
+      finishReason.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || 'unknown'
+    super(`Model returned an empty response (finish_reason=${reason})`)
+    this.name = 'EmptyModelResponseError'
+    this.finishReason = reason
+    this.inputTokens = usage.inputTokens
+    this.outputTokens = usage.outputTokens
+  }
+}
+
 export async function* adaptOpenAIStreamToAnthropic(
   stream: AsyncIterable<ChatCompletionChunk>,
   model: string,
@@ -387,6 +423,19 @@ export async function* adaptOpenAIStreamToAnthropic(
     } else {
       throw new IncompleteOpenAIStreamError()
     }
+  }
+
+  // `length` is exempt: a zero-output truncation is a max_tokens problem and
+  // has its own recovery path downstream.
+  if (
+    !sawOutput &&
+    pendingFinishReason !== null &&
+    pendingFinishReason !== 'length'
+  ) {
+    throw new EmptyModelResponseError(pendingFinishReason, {
+      inputTokens: rawInputTokens,
+      outputTokens,
+    })
   }
 
   // Safety: close any remaining open blocks
