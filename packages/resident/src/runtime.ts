@@ -5,6 +5,7 @@ import type { QianmoMessage } from '@qianmo/protocol'
 import { parseAddress } from '@qianmo/protocol'
 import type {
   AdmissionLedger,
+  ResidentFormattedPrompt,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentPromptScope,
@@ -38,7 +39,7 @@ export class ResidentNodeRuntime {
   readonly #formatPrompt: (
     messages: readonly ResidentMailboxMessage[],
     scope: ResidentPromptScope,
-  ) => string
+  ) => ResidentFormattedPrompt
   readonly #gate: NodeTurnGate
   readonly #readers = new Map<string, ResidentMailboxReader>()
 
@@ -61,7 +62,7 @@ export class ResidentNodeRuntime {
     readonly formatPrompt: (
       messages: readonly ResidentMailboxMessage[],
       scope: ResidentPromptScope,
-    ) => string
+    ) => ResidentFormattedPrompt
     readonly accepts?: (message: ResidentMailboxMessage) => boolean
     readonly selectSnapshot?: (
       messages: readonly ResidentMailboxMessage[],

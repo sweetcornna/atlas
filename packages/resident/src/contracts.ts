@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ProtocolErrorCode } from '@qianmo/protocol'
+import type { RetrievalMode } from '@qianmo/recall'
 
 export interface ResidentMailboxMessage {
   readonly from: string
@@ -36,7 +37,34 @@ export interface DetectedAdmissionRecord {
   readonly snapshot: readonly ResidentMailboxMessage[]
   readonly prompt: string
   readonly networkMsgId?: string
+  /**
+   * How this turn's memory block was retrieved (`docs/dev/memory-m1.md`
+   * §5.4). Written only while the semantic overlay is on, where a timeout can
+   * make one turn hybrid and the next deterministic under the same input —
+   * the record is what lets "why were these entries shown" be answered
+   * afterwards. Absent means M0: the overlay was off, or recall failed and
+   * the turn carried no block.
+   */
+  readonly retrieval?: RetrievalMode
 }
+
+/**
+ * A turn's user message together with how its memory block was retrieved.
+ * `formatPrompt` returns a bare string when there is nothing to record.
+ */
+export interface ResidentAssembledPrompt {
+  readonly prompt: string
+  readonly retrieval?: RetrievalMode
+}
+
+/**
+ * What a prompt formatter may return. Asynchronous only when the semantic
+ * overlay has to wait for an embedding (two-stage assembly, §5.4).
+ */
+export type ResidentFormattedPrompt =
+  | string
+  | ResidentAssembledPrompt
+  | Promise<string | ResidentAssembledPrompt>
 
 export interface AdmittedAdmissionRecord {
   readonly kind: 'admitted'
