@@ -752,6 +752,22 @@ qianmo://node-b/reviewer  →  qianmo---node-b-reviewer      （本次实跑核�
 
 **记忆写入侧**：跨节点消息若被沉淀进项目记忆，按不可信输入处理，沿用 T-3 的来源 ID + 时间戳机制，不另起一套（章程 §6.1 T-7 对策④）。本文不定义记忆 schema（R-2 的活）。
 
+### 10.3 用户授权对象（P14.3）
+
+依据 [`authorization-m1.md`](./authorization-m1.md) §3.4。常驻会话里一次需要确认的工具调用，由节点发出**审批请求**，由审批者经控制台给出**决定**。两者都**不是** §10.1 的 capability：决定来自控制台这个远端签发者，装进 `user-confirmed` 会被 S-1 拒掉；claims 字段封闭，装不下 `digest` 与 `approver`；一次性也不能靠内存 nonce 表，要靠节点上持久化的挂起行。
+
+| 对象 | 签名者 | 签名域 | 字段（封闭，多一个或少一个即拒） |
+|---|---|---|---|
+| `AuthzRequest` | 发起节点的私钥 | `qianmo-authz-request-v1` | `v`、`requestId`（128 bit，32 位小写 hex）、`iss`、`sub`（`qianmo://<iss>/<agent>`）、`contextId`、`toolName`、`input`（宿主收到的原始工具输入）、`digest`、`origin`（`from` / `taskId` / `traceId` / `trust`，同样封闭）、`iat`、`exp` |
+| `AuthzDecision` | 控制台审批私钥（`--approver <控制台>=<公钥>`） | `qianmo-authz-decision-v1` | `v`、`requestId`、`aud`、`sub`、`digest`、`decision`（`allow-once` / `allow-window` / `deny`）、`windowMs`（仅 `allow-window` 取 `0 < windowMs ≤ 60 min`，其余为 `0`）、`approver`、`nbf`、`exp`、`nonce` |
+
+- **线上形态**与令牌同形：`<base64url(固定键序 JSON)>.<签名>`，签名覆盖 `<签名域>\n<负载段>`，负载段按原样送达的字节校验，不重新序列化。签名域让同一把钥匙在令牌（无前缀）、握手（`qianmo-handshake-v1`）、请求、决定之间的签名互不通用。
+- **摘要** `digest = sha256(规范化 JSON [node, agent, contextId, toolName, 投影后的输入])`，投影表见设计 §3.4：Bash 去掉 `description`，Write 只取正文哈希，WebFetch 只取 `url`，`ExecuteExtraTool` 对目标工具递归投影，其余全量规范化。节点校验请求时重算摘要，审批者看到的输入与决定绑定的摘要不会分家。
+- **审批者**：`approver = <控制台名>/u:<16 位小写 hex>`，主体由控制台背书，节点不能离线校验这个人（`tenancy-m1.md` §3.5）。任何 `legacy:*` 主体，包括 break-glass `legacy:admin`，一律不能审批。
+- **节点侧校验顺序**：结构 → 绑定（`aud` 等于本节点、`requestId` 命中一条挂起行、`sub` 与 `digest` 相等）→ 时钟（`exp − nbf` 不超过该请求的 TTL）→ 审批者集（控制台在 `--approver` 里、主体形状、未吊销、审批公钥不在指挥者集 I-6）→ 验签 → nonce → ESTOP → 挂起行迁移落盘。落盘是唯一的副作用且排在最后，所以伪造的决定烧不掉真决定的 nonce；一次性以挂起行迁移为准，重启后重放同一决定仍被拒。
+- **实现**：对象与摘要在 `@qianmo/capability`（`authz.ts`）；挂起行与 grant 的状态机在 `@qianmo/resident` 的 `FileGrantStore`，台账位于 `<config>/resident/authz.ndjson`，hardline 的 `NODE_STATE_DIRS` 覆盖该目录。请求 TTL 缺省 10 min（设计未定数值，取与 `allow-once` 相同的寿命）。
+- **传输不在本节**：`authz.request` / `authz.decision` / `authz.revoke` 三个消息类型由 P14.5 定义，经 `supportedTypes` 声明，不升 `FRAME_VERSION`。
+
 ---
 
 ## 11. 错误码表
