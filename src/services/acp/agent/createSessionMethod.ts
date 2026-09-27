@@ -44,7 +44,10 @@ import {
   projectDirForSessionCwd,
 } from './sessionWorkspace.js'
 import { residentToolSurface } from '../../qianmo/notifyTool.js'
-import { withResidentHardline } from '../../qianmo/residentGuard.js'
+import {
+  withResidentCanUseTool,
+  withResidentHardline,
+} from '../../qianmo/residentGuard.js'
 import {
   ACP_NOTIFY_METHOD,
   parseNotifyVerdict,
@@ -144,7 +147,7 @@ async function createSession(
         conn: import('@agentclientprotocol/sdk').AgentSideConnection
       }
     ).conn
-    const canUseTool = createAcpCanUseTool(
+    const baseCanUseTool = createAcpCanUseTool(
       conn,
       sessionId,
       () => this.sessions.get(sessionId)?.modes.currentModeId ?? 'default',
@@ -157,6 +160,16 @@ async function createSession(
         this.sessions.get(sessionId)?.appState.toolPermissionContext
           .isBypassPermissionsModeAvailable ?? false,
     )
+
+    // Resident sessions get the permission ceiling on `canUseTool` too, not
+    // just on the tool array. `canUseTool` is the one funnel every nested query
+    // (subagents, workflow workers, skill forks) runs through, and those pools
+    // are re-assembled by the base without the hardline wrapper — so a subagent
+    // whose definition asked for `bypassPermissions` is only caught here
+    // (review-P14 E-3). Non-resident ACP clients take the bridge unchanged.
+    const canUseTool = isQianmoResident
+      ? withResidentCanUseTool(baseCanUseTool)
+      : baseCanUseTool
 
     // Qianmo resident sessions, and only those, are handed one extra tool:
     // `qianmo_notify`. Everything else about the tool set is unchanged, and a
