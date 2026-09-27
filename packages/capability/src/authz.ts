@@ -205,7 +205,7 @@ function nullableString(value: unknown): boolean {
 }
 
 /** Structural check of a decision — no clock, no keys, no request state. */
-export function isAuthzDecision(value: unknown): value is AuthzDecision {
+function isAuthzDecision(value: unknown): value is AuthzDecision {
   if (!plainObject(value) || !exactKeys(value, DECISION_KEYS)) return false
   const d = value
   if (d.v !== 1) return false
