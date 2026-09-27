@@ -5,272 +5,355 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v0.1-draft**（待负责人裁定 §0 决策点 0 与 §7 其余各项；评审通过后的修订直接改本文并升版本号） |
-| 日期 | 2026-09-26；源码与文档核对基点 `30878097` |
-| 本文范围 | **只有设计。**不改代码，不改 `roadmap.md` / `charter.md` / 其他设计件；范围回写归 P15.1 |
-| 范围依据 | roadmap M1 方向表「注册发现产品化」（`roadmap.md:852`）中的**账号体系**与**智能体生命周期管理**两段；「多租户与配额雏形」（`roadmap.md:856`）整行 |
-| 上游文档（指针，不复制） | [`console.md`](./console.md)、[`beta-env.md`](./beta-env.md)（§3「账号最小形态」是本文若获解禁要改写的定案）、[`node-provisioning.md`](./node-provisioning.md)（v0.1-draft，本文只给它加一个输入项）、[`key-distribution.md`](./key-distribution.md)、[`resident-botization.md`](./resident-botization.md)（已认领配额「机制」那半，`roadmap.md:870`） |
-| 下游 | `authorization-m1.md`（P14，并行起草）只消费本文 §3.5 的接口，本文不替它设计授权流 |
-| 编号 | P15.x。基点上 `git grep "P15\.[0-9]"` 零命中 |
-| 结论一句话 | **先裁定 N-2。**若解禁：租户以**节点**为隔离单元，映射只住中枢配置，**协议零改动**；账号取「邀请制 + 个人凭据 + 服务端会话」，不做口令与外部身份源；配额只做租户级用量（消息 / turn / token 强制，存储只计量），不进 `LIMITS`、不计价。若不解禁：用一次性注册令牌满足「无需 CLI 即可注册」，租户隔离与账号整体挪 M2。**两个分支都需要的「注册持久化」可以先做** |
+| 文档版本 | **v1.0（生效）**。2026-09-26 负责人委托主 agent 评审定案；负责人本人拍板四项（N-2 A′、E-1 窗口后部署、P16 花费、上游报告时机）。本文直接涉及其中的 N-2 A′，签字栏在章程 v2.19 的 N-2 行 |
+| 日期 | 2026-09-26 |
+| 核对基点 | 源码与文档以 `9770e8a7`（main，v2.46.2 合并提交）为准。v0.1 的基点是 `30878097`，其上的行号已逐条复核，漂移的已在正文改正，对照见 §10 |
+| 本文范围 | **只有设计，不改代码。**范围回写（章程 N-2、roadmap 方向表、`beta-env.md` §0 #4 与 §3）随本版同批完成，见 P15.1 |
+| 范围依据 | roadmap M1 方向表「注册发现产品化」行中的**账号体系**与**智能体生命周期管理**；「按人计量与控制台上限」行（roadmap v2.74 由原「多租户与配额雏形」拆出的 M1 部分）。原行的租户隔离、租户配额与判据「跨租户数据访问用例全部被拒」已挪 M2，与章程 §8 的 M2 行一致 |
+| 上游文档（指针，不复制） | [`console.md`](./console.md)（§4、§5、§6.5–§6.8、§7.3、§8）、[`beta-env.md`](./beta-env.md)（§0 #4、§3、§5）、[`node-provisioning.md`](./node-provisioning.md)（v0.1-draft，未实现）、[`key-distribution.md`](./key-distribution.md)、[`resident-botization.md`](./resident-botization.md) |
+| 相邻与下游 | [`authorization-m1.md`](./authorization-m1.md)（P14）只消费本文 §3.5 的接口；[`memory-m1.md`](./memory-m1.md)（P16）§6.3 的五个接口点由本文 §3.8 逐条答复 |
+| 编号 | P15.x。P15.4、P15.6 挪 M2，编号保留、不复用；P15.8 按裁定改为「注册中心写 token」；v0.1 的 P15.8（跨租户矩阵）改为 P15.10 |
+| 结论一句话 | **N-2 按 A′ 部分解禁：M1 只做控制台个人账号**（邀请开户、每人一枚个人凭据、服务端会话可吊销），以及建在这一主体上的会话属主、按人计量与控制台上限、操作主体入账。**M1 不做租户**：节点粒度的租户隔离与租户配额留到 M2。配额只在中枢强制，节点只计量，**协议零改动**。注册持久化已完成，续租者在控制台进程里 |
+
+**变更记录**
+
+| 版本 | 日期 | 说明 |
+|---|---|---|
+| v0.1-draft | 2026-09-26 | 初稿（`8ae22b02`），待裁定决策点 0 与 D1–D9 |
+| **v1.0** | **2026-09-26** | **定案。2026-09-26 负责人委托主 agent 评审定案；负责人本人拍板四项（N-2 A′、E-1 窗口后部署、P16 花费、上游报告时机）。**① D0 取 A′（§0）；D1–D9 逐条已定（§7），D5 否决扩义 `E_BUDGET_EXHAUSTED`；新增 D10 审批者集合、D11 中枢同机节点。② 采纳已完成的注册持久化（`fe5bd71c`、`4d55cd1f`、`9e78e99a`，`console.md` §7.3），改掉 v0.1 §0.4 与 §3.6 里修复前的描述。③ 四处 fail-open 修正写进 §3.1、§3.3。④ 注册中心鉴权单列 P15.8，并入 K-11 的 F-3。⑤ 与 P14 的接口对账（§3.5），答复 P16 §6.3 五点（§3.8）。⑥ 测试判据改为跨账号越权矩阵（§5）。⑦ 租户模型移到 §9 作 M2 起点，并按评审改正闸位置、过滤层与 notify 归属。⑧ 包表重排，合计重算（§6）。⑨ 评审修改清单里没有采纳的条目与理由在 §7 各行 |
 
 ---
 
-## §0 决策点 0：N-2 解禁与否
+## §0 决策点 0：N-2 解禁（已定：A′）
 
-### 0.1 矛盾在哪（逐条出处）
+### 0.1 定案前的现状判定
+
+按文档位阶，**N-2 在 M1 语境下一直有效，直到本次解禁**：
 
 | 出处 | 原文要点 |
 |---|---|
-| `charter.md:137` N-2 | 「M0 全部节点属于同一团队、同一信任域。不做账号体系、不做租户级数据隔离。**内测（M1）再做。**」 |
-| `charter.md:140`、`:38`（v2.14 解禁 N-5） | 解禁控制台时写明「**不做账号体系（N-2 仍然有效）**」「N-2 保持有效」——这是 M1 语境下的表态 |
-| `charter.md:513` §8 | M2 出口：「对外开放注册，**多租户与配额上线**」 |
-| `roadmap.md:852`、`:856` | M1 方向表列入「账号体系」与「多租户与配额雏形」，判据「跨租户数据访问用例全部被拒」 |
-| `beta-env.md:28`、§3.1 | 已评审定案「不做账号体系（N-2 不解禁）」：一枚共享 view + 两人持 admin |
-| `node-provisioning.md:530` | 第三枚 token「不算账号体系，N-2 不需要解禁」，论证轴是「按能力分 vs 按主体分」 |
+| 章程 §2.2 N-2 | 「M0 全部节点属于同一团队、同一信任域。不做账号体系、不做租户级数据隔离。内测（M1）再做。」 |
+| 章程 v2.14 行与 N-5 行 | 解禁控制台时写明「N-2 保持有效」「不做账号体系（N-2 仍然有效）」——这是 M1 语境下的表态 |
+| 章程 §8 | M1 出口是「注册发现、权限模型、记忆能力对内测用户上线……」，**不含多租户与配额**；M2 行才是「多租户与配额上线」 |
+| roadmap 文首 | 「范围与验收标准以章程为准」「M1 及以后为方向性规划」 |
+| `beta-env.md` §0 #4、§3.1 | 已评审定案「不做账号体系（N-2 不解禁）」：一枚共享 view + 两人持 admin |
+| `node-provisioning.md` §10.1 | 第三枚 token「不算账号体系」，论证轴是「按能力分 vs 按主体分」 |
 
-N-2 列在「M0 明确不做」之下，正文又写「M1 再做」，单读它可以理解为到 M1 自然失效；但 v2.14 在 M1 语境下重申它有效。两份规范文件对同一件事的判断相反，只能按 `charter.md:499`（§7.3「非目标解禁：全员评审 + 负责人签字，回写本文 + 评估对排期影响」）处理。**本文不替负责人判定「是否已经解禁」。**
+两者冲突时以章程为准，所以 v2.74 之前 roadmap 方向表里的「账号体系」与「多租户与配额雏形」都在 N-2 之内。解禁只能走章程 §7.3「非目标解禁：全员评审 + 负责人签字」。全员评审已由章程 v2.11 / roadmap v2.41 关闭；**签字由负责人本人给出**：负责人 2026-09-26 确认（对话记录），记在章程 v2.19 的 N-2 行。
 
-### 0.2 两个选项
+### 0.2 定案：A′
 
-| | **选项 A：按 §7.3 解禁，限定形态** | **选项 B：不解禁，维持 v2.14** |
-|---|---|---|
-| 解禁范围（穷举，照 v2.14 的写法） | ① 控制台个人账号：邀请制开户、每人一枚个人凭据、服务端会话可吊销（§3）；② 节点粒度的租户隔离（§1、§2）；③ 租户级用量配额，只计量与设硬上限，不计价（§4） | 无 |
-| 仍不解禁 | 公开自助注册（章程 §8 放在 M2）、外部身份源、节点内按 agent 分租户、跨租户互通、计费（N-1） | 全部 |
-| M1 能达成的判据 | `:852` 判据（开户 + 页面内注册与查看）；`:856` 判据（§5 矩阵） | `:852` 判据经一次性注册令牌达成（§3.7）；`:856` 判据**在 M1 内不可达**，须随 roadmap 回写挪 M2（与章程 §8 的 M2 行一致） |
-| 工时（§6） | 120–216 人时 | 36–68 人时 |
-| 要改写的既有定案 | `beta-env.md` §3（§0 定案 #4）；`console.md` §8.1；章程 N-2 行加补注并升版本号；roadmap 两行 | 章程不改；roadmap `:852` 的「账号体系」与 `:856` 整行注明挪 M2 |
-| 主要代价 | 中枢多一份凭据库与会话表（新攻击面）；迁移期两套凭据并存；运维要管开户与吊销 | P14 的「用户确认」没有「用户」，确认人只能是「持 admin token 者」；收回一个人的访问仍是全员换 token（`beta-env.md` §3.4 第 1 条）；审计仍答不出「是谁」（`console.md` §8.1） |
+**解禁范围（穷举）**：控制台个人账号，即
 
-### 0.3 建议
+1. 邀请制开户（§3.1）；
+2. 每人一枚个人凭据（§3.1）；
+3. 服务端会话，可吊销（§3.3）；
 
-**建议 A。**决定性理由在 P14：M1「权限模型上线」的判据是「所有需确认动作 100% 经过用户授权链路」（`roadmap.md:853`），链路里的「用户确认」需要一个可区分、可撤销的主体。选 B 等于让 P14 以共享 admin token 为确认主体，事后复盘答不出「谁确认的」。次要理由：`:856` 的判据本身可机检（§5），选 B 只是推迟，不会让它变简单。
+以及只以这一主体为键的四种用法：对话会话按属主可见（§2）、按人计量与控制台侧上限（§4）、控制台动作账本记操作主体（§2、P15.9）、P14 审批按会话属主路由（§3.5）。
 
-**选 A 的前提**是 §1.4 的威胁模型被接受：隔离防的是「另一租户的合法用户」，不防中枢失陷。若负责人要求 M1 的租户隔离能抵御中枢失陷，A 的估算不成立（须先完成 `SIGNED_TASK_POLICY` 切默认与每租户签发身份，见 D3），此时建议改选 B。
+**仍不解禁**：节点粒度的租户隔离与租户配额（章程 §8 放在 M2）；公开自助注册；口令账户与外部身份源（校园统一认证、第三方 OAuth、passkey）；一人多租户与子租户；节点内按 agent 分租户；跨租户互通；协议层的租户或主体字段（信封、帧、capability claims、证书 SAN）；计费（N-1）；能抵御中枢失陷的隔离。清单与 §6.1 相同。
 
-### 0.4 与裁定无关、可以先做的两包
+**决定性理由**：P14「所有需确认动作 100% 经过用户授权链路」要一个**可区分、可吊销、能审批自己会话**的人。20–50 人共用两位运维审批，D-4 的 60 s 同步等待会普遍超时，授权链路名存实亡。这条理由只支撑「个人账号」，不支撑「租户隔离」。
 
-- **P15.2 注册持久化**：今天控制台上的「注册」活不过 90 s。控制台只有按需心跳（`src/cli/handlers/consolePorts.ts:283`），没有续租者；租约 `DEFAULT_TTL_MS = 90_000`（`packages/registry/src/registry.ts:21`），过期条目从 `list()` / `resolve()` 消失（`registry.ts:727-753`）；内测注册中心只替 `--register` 启动参数那批续租（`demo/lib/p81-registry.ts:109-119`，`demo/env/beta/beta-up.sh:295-303`、`:326-327`）。**判据里的「完成注册」今天只在 90 s 内成立**，A、B 都要修。
-- **P15.3 一次性令牌**：B 的全部交付；在 A 里它是邀请开户的底座（§3.1）。
+**放弃的备选**：
+
+| 备选 | 放弃原因 |
+|---|---|
+| A（个人账号 + 节点粒度租户 + 租户配额） | 章程 §8 把租户放在 M2；仓库里没有「多个互不信任的组」的证据（§8 未核实第 5 条）；现场只有 3 个节点，其中 beta-4 与中枢同机，节点粒度租户最多 2–3 个，隔离多半是名义上的；要两轮节点重启；估算偏低（评审给出约 150–270 人时） |
+| B（不解禁，维持 v2.14） | P14 的人工审批在这个规模下不可用；收回一个人仍是全员换 token（`beta-env.md` §3.4 第 1 条）；审计答不出「是谁」 |
+| B+（`beta-env.md` §10 包④，按人发 view token） | 能区分人，不能让人审批自己的会话；包④ 的 DoD ④ 自己写明会触碰 N-2，一样要走 §7.3 |
+| A-lite（A 去掉节点闸） | 负责人没有要求 M1 做多租户，没有必要付这一半 |
+
+### 0.3 A′ 的两条前提
+
+1. **中枢机不承载用户可驱动的节点**，或该节点改用独立的非特权 uid，并且 hardline 覆盖中枢的全部秘密路径。现网 beta-4 在中枢机上（roadmap v2.73①），P14 在舰队上启用之前必须处置，排在 P14.9（`authorization-m1.md` §9）。理由：P14 让用户能批准 ask 之后，任一有对话权的用户都可能经 beta-4 读到中枢上全体用户的转录与全部 PSK（§1.4）。
+2. **对内测用户如实告知**：运维能读转录、同一 agent 的工作区对全体使用者共享、审批页展示工具原始输入、审计链不清空。告知文本在 `beta-env.md` §3.6（v1，负责人可改措辞）。
+
+### 0.4 注册持久化：已完成，采纳现有实现
+
+v0.1 写「今天控制台上的注册活不过 90 s」，那是修复前的状态。修复已落地（`fe5bd71c`、`4d55cd1f`、`9e78e99a`，`console.md` §7.3）：
+
+- **续租者在控制台进程里**，不在注册中心宿主旁。v1.0 采纳 `console.md` §7.3 的三条理由：意图归控制台；注册中心 HTTP v0 零改动；控制台是产品面、注册中心宿主不是。v0.1 §3.6「续租者住在注册中心进程旁」撤回。
+- 登记簿是 `<配置根>/qianmo/console/registrations.json` 快照（`consoleArgs.ts` 的 `consoleRegistrationsPath()`），不是 append-only。
+- 今天没有暂停、恢复、退役，也不记操作主体（`consoleRegistrations.ts` 里没有这些状态）。
+
+P15.2 剩下的是：生命周期状态、操作主体、两个出口的暂停检查、登记簿读失败时的 fail-closed（§3.6）。
 
 ---
 
-## §1 租户模型（若解禁）
+## §1 M1 主体模型（A′）
 
-### 1.1 租户是什么
+### 1.1 主体是什么
 
-租户 = **一组共享节点与数据的人**（课题组、竞赛队、课程小组），不是个人。理由是硬件：内测是 4 个节点服务 20–50 人（`beta-env.md` §2.2），「一人一租户」意味着一人至少一个节点。租户由运维创建，M1 不提供自助开通。
+主体 = **一个人**，由邀请开户得到。M1 没有租户，也没有「组」。主体类型用判别联合，不用字符串哨兵：
+
+```ts
+type ConsolePrincipal =
+  | { readonly kind: 'user'; readonly subject: `u:${string}`; readonly role: 'viewer' | 'member' | 'ops'; readonly authenticatedAt: number; readonly credential: 'session' | 'approval-session' | 'bearer' }
+  | { readonly kind: 'legacy'; readonly subject: 'legacy:view' | 'legacy:admin'; readonly credential: 'session' | 'bearer' }
+```
+
+- `u:<id>` 的 id 取 16 个小写十六进制字符，永不复用。字符集与长度写死，保证能放进审计 `detail` 与 `AuthzDecision.approver`（§3.5）。
+- ops 旁路要能被 grep、被类型检查，所以 ops 是 `role: 'ops'` 的个人账号，不是 `tenant: '*'`。
 
 ### 1.2 对应关系
 
-| 对象 | 与租户的关系 | 理由 / 出处 |
+| 对象 | 与主体的关系 | 依据 |
 |---|---|---|
-| 节点 | **N:1，一个节点只属于一个租户**；隔离单元是节点 | 现有隔离面都已按节点切：配置根（`beta-env.md` §4.1）、审计链（§4.2）、记忆根（由配置根派生，`packages/memory/src/paths.ts:32`、`src/utils/config/envUtils.ts:15`）、会话表（`src/services/qianmo/resident.ts:484`）、准入台账（`:1967`）、ESTOP（`:515`）、节点身份密钥（`src/services/qianmo/nodeIdentity.ts:51`）、PSK（`beta-env.md` §8.2）、机器（一机一节点，§2.2） |
-| agent | **派生**：`tenantOf(qianmo://n/a) = tenantOf(n)`，不另存字段 | 另存就有两份可以不一致的事实 |
-| 控制台用户 | **N:1**，M1 一个账号只属于一个租户；另有不属于任何租户的**运维**角色（§3.2） | 一人多租户需要租户切换与跨租户会话语义，目前没有需求证据 |
-| 证书 / CA | **不变**：单一离线 CA（`key-distribution.md` §3），证书 SAN 不写租户 | SAN 格式「写死，两处不得各写一份」（同文 §4.2）；PSK 档节点没有证书；写进证书要全网重签 |
-| 注册中心记录 | **不带租户字段** | 注册中心零鉴权（`packages/registry/src/http.ts:198-239` 无任何凭据检查，`console.md` §8.2），租户字段在那里只是谁都能写的标签 |
-| 协议（信封、帧、capability） | **零改动** | capability claims 字段闭合，多一个键整枚被拒（`packages/protocol/src/capability.ts:142-152`），加 `tenant` 会让新旧节点互拒；`protocol.md:51`「不定义多租户」保持成立；A2A G-24 维持「不适用」（`a2a-gap.md:304`） |
+| 节点、agent | **不归属任何人**。agent 按用途分、全员共用（`beta-env.md` §2.2），由运维装机 | §3.7 |
+| 对话会话 | **有属主**：控制台会话 id 是 `randomUUID()`（`src/cli/handlers/consoleChat.ts:315`），用作 `contextId`（`:925`）；会话记录加 `owner`，只对属主与 ops 可见 | §2 |
+| 工作区 | 同一 agent 的工作区对它的全体使用者**共享**（`beta-env.md` §4.1 的 `workspaces/<node>/<agent>/`）。M1 有意如此，写进告知 | `beta-env.md` §3.6 |
+| 记忆 | scope 以「节点 × agent」为界，不引入「人」这一维；常驻召回只取 working 层，按 `(agent, contextId)` 分区（`packages/resident/src/memory-sidecar.ts:95-114`） | §3.8 |
+| 证书、CA、注册中心记录、协议 | **不变**，不带主体字段 | 协议零改动 |
 
-### 1.3 映射只住一处：中枢配置
+### 1.3 事实只住一处
 
-事实源是中枢的 `peers.conf`：每条 `node` 坐标行加 `tenant=<id>`，照 `--node-server` 的既有形态（`console.md` §11.1，事实只从启动参数来）派生启动参数——控制台 `--node-tenant <node>=<tenant>`；节点 `--tenant <自己的租户>`，多节点直连拓扑另加 `--peer-tenant <node>=<tenant>`。租户 id 复用 `@qianmo/protocol` 的 `isValidSegment`，不另写正则。**控制台与节点都把这张表当白名单**：表里没有的节点，对任何租户用户都等同不存在。
+账号库与会话表只在中枢（控制台配置根下），**不给节点下发任何主体或配额参数**。配额数值只住中枢配置一处，文档不抄数字。v0.1 §1.3 里节点 `--tenant` / `--peer-tenant` 与「映射只住一处」的矛盾随租户挪 M2 一起消失。
 
-### 1.4 威胁模型：防谁，不防谁
+### 1.4 威胁模型
 
 | 防 | 不防（写明，不在实现里假装） |
 |---|---|
-| 另一租户的合法用户：持有其个人凭据，会用浏览器与 `curl` | **中枢失陷**：注册中心、控制台、审计镜像、全部节点 PSK 同在中枢（`beta-env.md` §8.3），中枢一旦被拿下，所有租户一起失守 |
-| 另一租户的节点按 `from` 投递 | **PSK 档下的 `from` 伪造**：`from` 只是审计标签（`key-distribution.md` §7.1 L1），PSK 档里节点侧租户闸只是纵深，不是边界 |
-| — | 同机、同 uid 的其他进程（配置根分离不是 uid 边界） |
+| **另一个账号的合法用户**：持有自己的个人凭据，会用浏览器与 `curl`，想读别人的会话、转录、SSE，或替别人发消息、审批、吊销 | **中枢失陷**：注册中心、控制台、审计镜像、全部节点 PSK 同在中枢（`beta-env.md` §8.3） |
+| 链接预览机器人、浏览器历史、反代日志拿到邀请或凭据（§3.1、§3.3） | **ops**：按设计能读全部转录（D6），只保证每次打开都记账、当事人查得到 |
+| 已吊销的人继续用旧会话或旧 SSE（§3.3） | 同机、同 uid 的其他进程（配置根分离不是 uid 边界） |
+| 同一 agent 的其他使用者看到自己的会话列表与转录 | 同一 agent 的其他使用者看到**工作区**与该 agent 写下的东西（有意共享，已告知） |
+| — | **中枢机上用户可驱动的节点**：P14 之后这就是一条跨用户通道。这一条不在「不防」里放过，而是写成部署前提（§0.3 第 1 条、P14.9 的 `beta-up.sh` 断言） |
 
-### 1.5 迁移：默认租户、影子模式、数据面零停机
+### 1.5 迁移（A′：只动控制台，零节点重启）
 
-| 阶段 | 做什么 | 行为变化 | 判据 |
-|---|---|---|---|
-| M-0 | 代码上线，映射缺省 | **无**：没有 `tenant=` 的节点全部落入租户 `default`，跨租户判定恒为同租户 | 既有控制台与常驻测试逐字不改，全绿 |
-| M-1 | `peers.conf` 写 `tenant=`；按 `beta-env.md` §7.1 的顺序（注册中心 → 节点逐个 → 控制台）重起 | 节点闸以 **shadow** 运行：只记 `TenantRefused{mode:'shadow'}`、不拒（照 `shadowPolicy` 的既有形态，`src/cli/handlers/resident.ts:1078`） | 建议连续 7 天 shadow 事件为零，或逐条有解释 |
-| M-2 | 控制台开账号（§3.4 共存期） | 旧 view token 只能看 `default` 租户 | 运维单页名单内的人全部开户 |
-| M-3 | 节点闸切 `enforce`，旧 view token 下线 | 跨租户开始被拒 | §5 矩阵 N/N；真机同一部署连续两轮零红 |
+排在 7 天长跑窗口（至 2026-10-03T18:20:23Z）之后。每一步只重启控制台；会话表落盘（§3.3），重启不掉线。
 
-「零停机」的准确含义：**数据面零停机**（节点逐个重起，其余节点不受影响）；控制台每阶段重起一次，实测 H 腿就绪 3–4 s（`beta-env.md` §10 包①）。**节点换租户不是改一行配置**：旧租户的记忆、会话、审计、工作区都在那台节点的配置根里，换租户 = `stop` + 归档配置根 + 重新 `install`（`node-provisioning.md` §5）。
-
----
-
-## §2 隔离面逐层清单
-
-| 层 | 现在靠什么隔离 | 缺什么 | 怎么加 |
-|---|---|---|---|
-| 注册中心 | 只绑中枢回环（`beta-env.md` §2.3 第 1 条）；一张全局表，`list()` 返回全部（`registry.ts:744`） | 租户过滤；写操作的租户校验 | **注册中心本体不改。**在控制台的 `RegistryPort` 适配层（`consolePorts.ts`）按 `--node-tenant` 过滤列表；写操作在调端口之前校验地址的节点段属于主体租户。节点不连注册中心（`beta-env.md` §2.3 第 2 条），没有节点侧泄露面 |
-| 控制台视图 | 两枚共享 token，角色只有 view / admin / none（`packages/console/src/auth.ts:138`）；view 看全部名册与审计，admin 看全部对话 | 主体与租户作用域 | 路由守卫从 `roleOf`（`auth.ts:307`）换成 `principalOf`（§3.5）；每条路由在 `Protection`（`packages/console/src/http.ts:355`）之外再声明租户类别 `public` / `tenant` / `ops`，由元测试保证无遗漏（§5.3）。按 id 读外租户资源回 **404**，与不存在不可区分；写外租户目标回 **403**，文案与「节点不存在」相同。角色判定仍先于存在性判定（`console.md` §4.5） |
-| 审计链 | 每节点一条链（`beta-env.md` §4.2），中枢的只读镜像按节点分（§4.3）；记录有 `node` / `peer`，**没有操作者与租户字段**（`packages/audit/src/record.ts:63-93`） | 控制台动作的主体归属 | 租户由链所属节点派生，控制台只给主体看本租户节点的链（`--audit <node>=<path>` 已按节点分，`src/cli/handlers/consoleArgs.ts:611`），消息链还原只在这些链上做。**主体不写进节点审计**（capability 字段闭合，§1.2），改由中枢一本**控制台动作账本**记 `subject / tenant / action / target / taskId / outcome`，形状照 `@qianmo/audit`、按 `audit-witness.md` 锚定，与 `node-provisioning.md` §9 装机账本同一做法；靠 `taskId` 与节点审计对接 |
-| 记忆 | 记忆根 = 配置根下的 `memory/`（`packages/memory/src/paths.ts:32`，`src/memdir/paths.ts:85-90`），每节点一份；节点内召回只取 working 层，按 `(agent, contextId)` 分区（`packages/resident/src/memory-sidecar.ts:95-114`） | 节点粒度下无跨租户缺口，**唯一漏口是 `CLAUDE_CODE_REMOTE_MEMORY_DIR`**：两个不同租户的节点指向同一目录即合流 | 节点启动与 `beta-up.sh` 双重断言：不同租户节点的记忆根解析后互不为前缀（照 `identity-coexistence-m1.md` §2「前缀不相交」用例的形态）。同租户内 project / baseline 层按 agent 共享是既有设计（`memory-sidecar.ts:95-99`），不改 |
-| 会话 | 每节点一张 `sessions.json`（`resident.ts:484`）；键 `sessionKeyOf(agent, contextId)`（`packages/resident/src/session-key.ts:85-88`）。**`contextId` 由发送方自报、不与发送方绑定**；没带 `contextId` 的请求全部落进共享的 `DEFAULT_CONTEXT`（`:41`） | 一旦允许跨租户投递，外租户用同一个 `contextId` 就能接进别人的 ACP 会话与记忆分区 | M1 靠下一行的「默认拒」在写信箱之前拦住，**不改键格式**（P13.4 的「能读旧格式」判据保持）。**写死一条前提**：将来开放任何跨租户通道之前，`sessionKeyOf` 必须先把发送方租户并入键。同租户多用户：控制台会话 id 是 `randomUUID()`（`src/cli/handlers/consoleChat.ts:315`，`:925` 用作 `contextId`），会话记录加 `owner` 后只对本人与运维可见 |
-| 传输 / 路由 | 每节点一把 PSK，全部由中枢持有（`beta-env.md` §8.3），**内测拓扑里节点之间不互拨**；capability 缺省 `OPEN_POLICY`（`src/cli/handlers/resident.ts:1072`） | 租户闸 | **默认拒。**节点侧在 `#receive` 里、`this.#router.inbound` 之后、ESTOP 检查之前加租户闸（`src/services/qianmo/resident.ts:819` 与 `:841` 之间），与既有拒绝同守 L-1：任何副作用之前拒。控制台发起的流量由控制台按主体租户拦（D3）。中枢 `@qianmo/scheduler` 作业的租户 = 目标节点的租户（`packages/scheduler/src/job.ts:92`），加载时校验。节点回中枢的 `notify` 按 `contextId` 归入会话前，校验发出节点与会话同租户，否则丢弃并记账 |
-| 沙箱与机器 | 一机一节点（`beta-env.md` §2.2），沙箱只在其中 1 台（§0 定案 #1） | 同一台机器上出现两个租户的节点 | `beta-up.sh` 读 `peers.conf` 时断言：同一 `server=` 下的节点租户必须相同，否则拒绝起 |
-| 备份 | 写 / 归档双 token；`workspace` 名由写入方自报（`packages/backup/src/contracts.ts:35`）。**内测未部署**：没有可执行入口（`beta-up.sh:460-468`） | 共享写 token 下，一个节点可以冒名写别人的 `workspace` | **部署时一租户一实例**（独立 store 根 + 独立写 token），零代码改动；归档 token 仍不出中枢 |
-| 中枢侧落盘物 | 对话单文件 `chat.ndjson`（`consoleArgs.ts:189`）、服务器备注（`:200`）、调度器状态（`src/cli/handlers/watch.ts:182`） | 记录没有租户与属主 | 对话记录加 `tenant` 与 `owner`；迁移前的旧记录视为 `default` 租户、属主 `legacy:admin`（它们本来只有 admin 看得见，`console.md` §4.5）。服务器备注与调度器配置为运维专属 |
-
-**跨租户投递的拒绝码（D4）**：建议复用基线码 `E_UNKNOWN_AGENT`（`packages/protocol/src/errors.ts:25`）。对外租户而言那个 agent 确实不可达，且不泄露它的存在；真实原因只写节点本地审计（`TenantRefused`）。备选 `E_CAP_INSUFFICIENT`（`:42`）语义更直白，但等于告诉对方「这里有，只是你不能用」。两者都是基线码，不触发规则 N-1（`protocol.md:786-796`）。
+| 阶段 | 做什么 | 行为变化 | 判据 | 回滚 |
+|---|---|---|---|---|
+| M-0 | 代码上线，账号库为空 | **无**：两枚旧 token 照旧 | 既有控制台测试逐字不改、全绿 | 换回旧产物 |
+| M-1 | 运维给自己开 `ops` 账号，开始发邀请 | 旧 view / admin 照旧可用；新账号能用 | 运维单页名单内的人逐个开户 | 停发邀请；已开账号保留 |
+| M-2a | 全员开户期 | 旧 view token 仍可用，但只看名册、审计、上限（今天 view 的能力），看不到任何会话 | 名单内的人全部开户 | 同上 |
+| M-2b | 下线旧 view token（`--legacy-view-token off`） | 未开户的人进不来 | 名单内全部开户后才执行 | 重新打开开关 |
+| M-3 | admin token 转为 break-glass（§3.4 的四条限制生效） | 运维日常改用个人 `ops` 账号 | 运维单页记录轮换一次 admin token | 取消限制开关（只在事故时） |
 
 ---
 
-## §3 账号体系最小形态与生命周期（若解禁）
+## §2 隔离面逐层清单（A′：跨账号）
+
+| 面 | 现在 | M1 做法 |
+|---|---|---|
+| 控制台整页 `GET /`、`GET /chat` | 服务端渲染里就有名册、审计、侧栏会话入口 | 按主体渲染：侧栏只列本人的会话（ops 全部） |
+| 会话列表与转录（`/v0/chat/sessions`、`/v0/chat/sessions/<id>` 与片段） | 限 admin，看全部（`console.md` §4.5） | member 只见自己；ops 见全部，**每次打开转录**记一条动作账本，不按片段轮询记（D6） |
+| 发消息 | 限 admin | member 只能在自己的会话里发；以别人的会话 id 发回 404 |
+| SSE（`/v0/chat/stream`） | `chatStream(chat)` 不收凭据，`chat.subscribe` 对每个订阅者广播全部 `{sessionId, revision}`（`packages/console/src/http.ts:1548`、`:1629`） | **按主体过滤**；账号被吊销时**断开该主体的全部 SSE 连接** |
+| 唤醒（`/v0/wake`） | 限 admin，目标来自 `--wake-url` | 归 ops；计数进该主体的用量；目标须在登记簿里且不是 `paused` / `retired`（D8） |
+| 注册、暂停、恢复、退役 | 注册、注销、心跳限 admin（`console.md` §5） | 归 ops（§3.2、§3.7） |
+| 审计与消息链（`/v0/audit`、`/v0/audit/chain/<traceId>`） | view 能看全部链的元数据 | 不变（M1 没有租户，内测是同一信任域）；`?node=` 仍只能选启动时 `--audit` 给出的链 |
+| 用量与上限（`/v0/limits`、`/fragments/limits`、页头计数） | 只有协议级上限与运行时限流 | 加「今日已用 / 上限 / 重置时间」，member 只见自己的，ops 见全部 |
+| 账号管理（邀请、名单、吊销、重置） | 无 | 只归 ops；路由进 `guarded` 或同等检查，进完备性扫描（§5.3） |
+| 中枢自有的审计链与日志 | `qm watch` 用中枢配置根的 `openAuditTrail()` 写 `watch_notify_received`，`detail.summary` 是 agent 写的文本；控制台缺省审计源 `DEFAULT_CONSOLE_NODE`（`src/cli/handlers/consoleArgs.ts:623`）；`logs/` 下的 `.out` / `.err` | 明定为 **ops 专属**，不对 member 暴露 |
+| 工作区 | `workspaces/<node>/<agent>/` 一 agent 一份，`--allow-workspace-edits` 下全体会话都能写 | 不隔离，写进告知（`beta-env.md` §3.6） |
+| 记忆 | 常驻召回只取 working 层，按 `(agent, contextId)` 分区；生产上没有写入方（`memory-m1.md` §0 事实 4） | 不引入人这一维（§3.8）。基座自带 auto-memory 是否对常驻 ACP 会话生效**未核实**（§8），P14.0 的安全模式与 P16.W 前要有探针答复 |
+| 注册中心 | 零鉴权，只绑中枢回环（`packages/registry/src/http.ts:198` 起无任何凭据检查） | **写操作要写 token**（P15.8）；读仍只在回环；P14 不从注册中心取任何授权材料 |
+| 见证端点 | 一个端点收全部节点的锚点，控制台以 `witness-read-token` 经 `--anchors` 读取 | 不对用户暴露；控制台 `--anchors` 验签用的节点公钥不再取自注册中心裸字段（K-11 F-3，并入 P15.8） |
+| 模型凭据与上游限流 | 每节点一份 `secrets/model-env`（`beta-env.md` §8.3） | 不变；共用同一上游账号时的吵闹邻居写进遗留风险（§8） |
+
+---
+
+## §3 账号最小形态与生命周期
 
 ### 3.1 身份来源：邀请制 + 个人凭据，无口令
 
 | 候选 | 取舍 |
 |---|---|
-| **邀请制个人凭据**（采纳） | 运维或租户管理员签一枚一次性邀请（绑定租户 + 角色，≤72 h，单次）；用户打开链接后，控制台生成一枚 ≥32 字节的随机个人凭据、**只显示一次**，服务端只存其 SHA-256。登录沿用现有 `/login` 及其退避限流（`console.md` §8.4）。分发渠道与今天发 view 链接相同（`beta-env.md` §3.3 一人一条私信），不新增渠道 |
-| 口令账户 | 放弃：找回口令要一条带外渠道，而邀请已经在用那条渠道；高熵随机凭据不需要慢哈希，口令需要 |
+| **邀请制个人凭据**（采纳） | ops 签一枚一次性邀请（绑定角色，≤ 72 h，单次）。令牌放在 URL **fragment**（`#` 之后），服务端收不到，不进浏览器历史的请求行与反代日志。**GET 只渲染确认页，不铸凭据**；用户点「确认」发 `POST`，这一步过 `isCrossOriginRequest`（与 `/login` 同一道检查，`packages/console/src/http.ts` 的 `handleLogin`）之后才铸凭据，防链接预览抢先消费。凭据 ≥ 32 字节随机、**只显示一次**，服务端只存 SHA-256。页面带 `Referrer-Policy: no-referrer`。未用邀请数设上限（数值在 P15.3 定）。重置 = 吊销旧凭据 + 发新邀请 |
+| 口令账户 | 放弃：找回口令要一条带外渠道，而邀请已经在用那条渠道 |
 | 校园统一认证（CAS / OIDC） | M1 放弃：外部依赖，可用性与接入审批**未核实**；M2 开放注册时再评估 |
-| 第三方 OAuth | 放弃：并非每个内测用户都有账号，且多一个外部可用性依赖 |
+| 第三方 OAuth | 放弃：不是每个内测用户都有账号，且多一个外部可用性依赖 |
 | WebAuthn / passkey | 推迟：设备与浏览器分布未知 |
+
+分发渠道与今天发 view 链接相同（`beta-env.md` §3.3 一人一条私信），不新增渠道。
 
 ### 3.2 角色
 
-| 角色 | 作用域 | 能做 |
-|---|---|---|
-| `viewer` | 本租户 | 名册、审计、消息链、上限——今天 view 的能力，收窄到本租户 |
-| `member` | 本租户 | viewer + 与本租户 agent 对话（只见自己的会话）。对话面今天限 admin 的两条理由（`console.md` §4.5：花对面节点的模型预算；转录是自由文本）分别由 §4 的配额与会话 `owner` 承接 |
-| `tenant-admin` | 本租户 | member + 本租户 agent 的生命周期（§3.6）+ 邀请与吊销本租户用户 |
-| `ops` | 全部租户 | 今天 admin 的全部能力；建租户靠改中枢配置，不在页面上；每次跨租户读写进控制台动作账本 |
+| 角色 | 能做 |
+|---|---|
+| `viewer` | 名册、审计、消息链、上限（今天 view 的能力）；自己的用量 |
+| `member` | viewer + 与 agent 对话（只见自己的会话）；审批自己会话里的 ask（P14） |
+| `ops` | 今天 admin 的全部能力；唤醒；注册、暂停、恢复、退役；开户、吊销、重置；读任何转录（每次打开记账）；审批无控制台会话的 ask |
 
-`provision` 仍是独立的第三枚 token，与以上都不可比（`node-provisioning.md` §8.2），本文不动。
+v0.1 的 `tenant-admin` 随租户挪 M2 删除。`provision` 仍是独立的第三枚 token，与以上都不可比（`node-provisioning.md` §8.2），本文不动。
 
-### 3.3 会话
+### 3.3 会话与凭据（含三处 fail-open 修正）
 
-今天的 cookie 装的就是 token 本身，没有服务端吊销（`console.md` §8.1）。账号模式改为**服务端会话**：cookie 只装随机会话 id，服务端表记 `{sid, subject, expiresAt}`，时长沿用 `SESSION_MAX_AGE_SECONDS`（12 h，`auth.ts:135`）。会话表**只在内存**，控制台重启即全员重登（凭据在用户手里，代价是一次粘贴），与「控制台没有活过重启的状态」一致（`console.md` §8.4）。账号表落盘为 append-only NDJSON，0600，路径 `occConfigPath('qianmo', 'console', 'accounts.ndjson')`，形态同 `chat.ndjson`。吊销 = 追加一条 `revoked` + 清掉该主体全部会话，**下一个请求即生效**，不缓存授权结论。cookie 的三道 CSRF 防线（`HttpOnly` / `SameSite=Strict` / 自定义头，`console.md` §4.1、§5.1）原样保留。
+- **账号库与会话表 fail-closed**：两者都落盘，0600，路径从 `occConfigPath('qianmo', 'console', …)` 派生；用 `@qianmo/audit` 的哈希链写，改动可被检测。**读不动、有坏行、版本不对，一律拒绝服务并告警，绝不「跳过坏行」**：一条写坏的 `revoked` 行被跳过，等于把那个人放回来。形态**不**照 `chat.ndjson` 的容错读（`console.md` §6.5）。
+- **会话 id 只由服务端生成**，从不接受客户端带来的 sid；登录成功必定换新 sid；`/logout` 删除服务端那一份（今天的 `/logout` 只清浏览器那一份，`console.md` §8.1）；闲置 2 h 失效，绝对上限 12 h（沿用 `SESSION_MAX_AGE_SECONDS`，`packages/console/src/auth.ts:135`）。会话表只存 sid 的哈希；落盘后控制台重启不必全员重登。
+- **cookie 只装会话 id**，`HttpOnly; Secure; SameSite=Strict`；三道 CSRF 防线原样保留（`console.md` §4.1、§5.1）。
+- **个人凭据禁止出现在查询串和 `localStorage` 里**。今天 Bearer 会话两处都在用（`console.md` §6.8）；`?token=` 与 `localStorage` 只留给迁移期的 legacy token。个人凭据只从 `/login` 表单进来；给脚本用时另走 `Authorization: Bearer`。
+- **吊销**：追加一条 `revoked`，删除该主体的全部服务端会话与审批会话，**断开该主体的全部 SSE 连接**，并通知 P14 按审批者扇出撤销 grant（§3.5）。HTTP 请求下一次即 401；在途 turn 允许跑完，结果只写转录、不再推送给该主体。
+- **审批会话**（给 P14）：由个人凭据单独换取，不能由普通登录会话升级；独立 cookie 名，只装会话 id，`HttpOnly; Secure; SameSite=Strict`；30 min 失效。`ConsolePrincipal.credential` 与 `authenticatedAt` 让 P14 判定这一点。
+- **登录限流**：反代后面是一个全局桶（`console.md` §8.4）。任何人连续输错能把全员挡在外面最多 300 s。M1 写为已知边界；会话表落盘后，重启不再逼全员重登，放大效应比 v0.1 小。
 
 ### 3.4 与现有 bearer token 的共存与淘汰
 
-| 阶段 | view token | admin token |
+| token | 迁移期 | 之后 |
 |---|---|---|
-| 共存（迁移 M-2） | 仍可用，主体 `legacy:view`，**作用域钉在 `default` 租户** | 仍可用，主体 `legacy:admin`，等同 `ops` |
-| 淘汰（迁移 M-3） | `--legacy-view-token off`；判据：名单内的人全部开户 | **保留为 break-glass**（D7）：它从不离开中枢（`beta-env.md` §3.3），动作照记账本 |
+| view | 主体 `legacy:view`，能力同今天的 view，**看不到任何会话**，永不能审批 | M-2b 全员开户后下线 |
+| admin | 主体 `legacy:admin` | **保留为 break-glass**（D7），四条限制：① **只收 `Authorization: Bearer`**，不能经 `/login` 换 cookie；② 页面顶栏**常亮**「break-glass 会话」，每个请求都记动作账本；③ **不能充当 P14 的审批人**；④ **用后轮换**：每用一次，运维就换一次，运维日常改用个人 `ops` 账号 |
 
-`resolveTokens`（`auth.ts:502`）的三条策略一条不改（先例：`node-provisioning.md` §8.1）；账号解析另起纯函数，两者互不调用。
+`resolveTokens`（`packages/console/src/auth.ts:502`）的三条策略一条不改（先例：`node-provisioning.md` §8.1）；账号解析另起纯函数，两者互不调用。「admin token 从不离开中枢」证明不了「是谁用的」：两个运维都能在中枢上读它（`beta-env.md` §3.3），所以限制 ② 与 ④ 不能省。
 
-### 3.5 给 P14 的接口点（只写契约）
+### 3.5 给 P14 的接口（契约，已与 `authorization-m1.md` §3.3 对账）
 
 ```ts
-interface ConsolePrincipal {
-  readonly subject: string // 'u:<id>' | 'legacy:view' | 'legacy:admin'；稳定、永不复用
-  readonly tenant: string // ops 为 '*'
-  readonly role: 'viewer' | 'member' | 'tenant-admin' | 'ops'
-}
 function principalOf(request: Request): ConsolePrincipal | null
+function ownerOf(contextId: string): `u:${string}` | null // 控制台会话的属主；非控制台会话返回 null
 ```
 
-契约四条：① P14 不自建用户表，「谁确认的」一律取 `subject`；② 求值顺序固定为 认证 → 租户作用域（本文）→ 授权（P14），租户拒绝先于任何授权判定；③ 吊销对下一个请求生效，P14 若签发时效凭据须记下 `subject`，主体被吊销时一并作废；④ 控制台动作账本是两份设计共用的记录面，P14 的授权事件写进去，不另开账本。`legacy:*` 能否充当「确认人」由 P14 决定。
+| 接口点 | P15 提供 | P14 使用（`authorization-m1.md`） |
+|---|---|---|
+| 审批者标识 | `ConsolePrincipal.subject`（`u:<id>`，§1.1） | `AuthzDecision.approver` = `<控制台名>/<subject>`，例如 `hub/u:7f3a…` |
+| 谁能批哪条 ask | `ownerOf(contextId)` 与主体角色 | 审批者集合 = `ownerOf(contextId)` ∪ 个人 `ops` 账号；`ownerOf` 为 `null` 的 ask（`DEFAULT_CONTEXT`、值守作业、对端 `task.request` 引发）只由 ops 批 |
+| 审批凭据 | 审批会话（§3.3）；个人凭据 Bearer；`credential` 与 `authenticatedAt` 字段 | 决定 POST 只收审批会话或个人凭据 Bearer，另要 `X-Qianmo-Console` 头与回传摘要；`legacy:*` 一律拒；**不另发第三枚 token** |
+| 节点能否离线校验审批者 | **不提供**：主体只存在于控制台 | 节点只信一把控制台审批公钥（`--approver`），`approver` 字段由控制台背书，节点不独立验证；与「不防中枢失陷」一致 |
+| 主体吊销 | 吊销时回调 P14，按审批者扇出 | `authz.revoke` 带 `approver` 维度；节点不可达时最坏延迟 = D-5 窗口上限 60 min |
+| 账本分工 | 控制台动作账本（P15.9）记「主体 X 对 requestId R 提交了决定」 | 节点审计链是授权判决的权威记录；两边以 `requestId` 关联；不另开账本 |
+| 求值顺序 | 认证 → 主体作用域（本文：会话属主） | → 授权（P14）；属主拒绝先于任何授权判定 |
+| 注册中心 | P15.8 写 token | **不从注册中心取任何授权材料**（节点公钥、审批投递端点） |
+| 先后 | P15.5 先落 | P14.5 在 `principalOf` 之上接，排在 P15.5 之后 |
 
-### 3.6 智能体生命周期：注册 / 暂停 / 恢复 / 注销
+契约另两条：① P14 不自建用户表，「谁确认的」一律取 `subject`；② `legacy:view` 永不能审批，break-glass admin token 永不能审批（§3.4）。
 
-**事实**：今天的四个写动作（注册、注销、心跳、唤醒）都要 admin（`console.md` §5）；注册只写进注册中心活表，90 s 无续租即消失（§0.4）；节点托管哪些 agent 由节点启动配置决定，控制台的「注册」只是**发布**，不在节点上创建 agent；装机面的动作集钉死五类（`node-provisioning.md:13`），其中没有 agent 粒度的动作；ESTOP 是节点级（`packages/resident/src/estop.ts`）。
+### 3.6 智能体生命周期：注册 / 暂停 / 恢复 / 退役
 
-**设计：中枢一本「登记簿」表达期望状态，注册中心只是它的投影。**
+**事实**：注册持久化已完成（§0.4）；节点托管哪些 agent 由节点启动配置决定，控制台的「注册」只是**发布**，不在节点上创建 agent；装机面的动作集钉死五类（`node-provisioning.md` 文首），其中没有 agent 粒度的动作；ESTOP 是节点级（`packages/resident/src/estop.ts`）。
 
-| 动作 | 登记簿 | 注册中心 | 控制台 | 节点 |
+**托管清单今天唯一的来源是中枢 `peers.conf` 的地址行**，也就是注册中心的 `--register` 种子（`demo/env/beta/beta-up.sh:366`、`beta-env.md` §2.4）。装机面落地（`node-provisioning.md` 仍是 v0.1-draft、未实现）之前，页面上的生命周期操作只能作用于这张清单里的地址，本质上是开关。
+
+| 动作 | 登记簿（`registrations.json`，加状态与操作主体） | 注册中心 | 控制台与出口 | 节点 |
 |---|---|---|---|---|
-| 注册 | 追加 `active`（带租户与操作主体） | 立即 POST，此后续租者每 20 s 心跳（与 `p81-registry.ts` 同周期） | endpoint 由中枢配置派生、表单不再收（顺带消除 roadmap v2.46 ⑥ 那类占位符错误）；agent 名必须在该节点的托管清单里 | 不动 |
-| 暂停 | 追加 `paused` | DELETE，停止续租 | 拒绝对它发起对话与唤醒 | **不动**（D8） |
-| 恢复 | 追加 `active` | 同注册 | 同注册 | 不动 |
-| 注销 | 追加 `retired`；地址**不再分配**给其他租户 | DELETE | 从名册移除 | 不动；节点侧会话与记忆保留到节点退役 |
+| 注册（发布） | 写 `active` 与操作主体；地址须在托管清单里 | 立即 `POST`，此后由控制台续租（已实现） | endpoint 由中枢配置派生，表单不再收 | 不动 |
+| 暂停 | 写 `paused` | `DELETE`，停止续租 | **对话、唤醒、`qm watch` 三个出口都拒发**（D8） | 不动 |
+| 恢复 | 写 `active` | 同注册 | 同注册 | 不动 |
+| 退役 | 写 `retired`；地址不再分配 | `DELETE` | 从名册移除 | 不动；会话与记忆保留到节点退役 |
 
-续租者住在注册中心进程旁，替换 `--register` 的静态列表；`peers.conf` 的地址行作为登记簿的初始种子。**`@qianmo/registry` 的 HTTP API 不改。**
+- **`qm watch` 按作业 URL 直拨**（`src/cli/handlers/watch.ts:595`），不读注册中心也不读登记簿，暂停对值守作业无效。修法：每次发起前查一次登记簿只读副本（或注册中心），不是 `active` 就跳过并记审计。唤醒目标来自 `--wake-url`，同样查登记簿状态。
+- **登记簿读失败 fail-closed**：今天读不动时「从空登记簿起」（`console.md` §7.3），对 `retired` 集合是 fail-open（退役地址会被重新发布）。加生命周期之后，读失败**拒绝一切注册与恢复**，并告警。
+- **`@qianmo/registry` 的 HTTP 路由表不因生命周期而改**；P15.8 的写 token 是唯一的注册中心改动。
 
-**暂停只做到注册层（D8）**：内测拓扑里所有投递都从中枢发起（§2「传输 / 路由」行），中枢拒发即有效；但已知端点的直连对端不经中枢，节点照收。节点侧单 agent 暂停需要装机面的第六类动作或一条新控制消息，前者违反五类定案，后者改协议，M1 都不做。
+**接 `node-provisioning.md`**：托管清单在装机面落地后改由 `install` 确定；节点退役 = `stop` + 登记簿里该节点全部 agent 置 `retired` + 归档配置根。M1 走运维单页，不新增动作。
 
-**接 `node-provisioning.md`**：`install` 的输入加一项 `tenant`，写进节点启动配置（`--tenant`）并同步中枢映射，装机账本记下租户；节点托管的 agent 清单在 `install` 时确定。节点退役 = `stop` + 登记簿里该节点全部 agent 置 `retired` + 归档配置根，M1 走运维单页，不新增动作。
+### 3.7 「完成注册」的定义（D1）
 
-### 3.7 不解禁时的最小替代（选项 B）
+roadmap「注册发现产品化」的判据「内测用户无需接触 CLI 即可完成注册与查看」里，「完成注册」指两件事：
 
-**一次性注册令牌**：admin 在页面上为一个**确切地址**签发令牌（≤24 h，单次），链接私信给用户；用户持共享 view 登录后打开链接，页面只允许对这一个地址完成注册（endpoint 由中枢派生，同上表），令牌随即作废。它在「按能力分」这条轴上：令牌绑定的是一个地址上的一次动作，控制台**不存令牌与人的对应**，账本只记令牌哈希前缀与地址，论证与 `node-provisioning.md` §10.1 同构，因此不触 N-2。**护栏**：一旦有人要在账本上记「发给了谁」，就是 `beta-env.md` §10 包④ 的那条边界，须回到决策点 0。
+1. **开户**：用户凭邀请链接自助拿到个人凭据，不碰 CLI（§3.1）。
+2. **页面上的 agent 生命周期**：ops 在控制台页面上，对托管清单里的 agent 做发布、暂停、恢复、退役（§3.6）。
+
+agent 本体由运维装机。托管清单今天只有 `peers.conf` 这一个来源，照实写明，不把页面开关包装成「用户注册了一个 agent」。
+
+v0.1 §3.7 的「一次性注册令牌」（选项 B）不再作为交付；它的令牌底座并入 P15.3 的邀请令牌。
+
+### 3.8 与 P16 的接口（答复 `memory-m1.md` §6.3 五点）
+
+| P16 接口点 | P15 v1.0 答复 |
+|---|---|
+| 1 租户维度在存储里的位置 | **M1 不引入租户，也不引入「人」这一维**。scope 以「节点 × agent」为界：每节点一个 `memoryRoot`（由配置根派生，`packages/memory/src/paths.ts:32`），常驻链路 working 层按 `(agent, contextId)` 分区。M2 做节点粒度租户时，每节点一个记忆根即每租户一个，是目录级分区，存储不用改 |
+| 2 `getEntry` 限定在租户根之内 | M1 不适用：存储根就是节点根。跨 scope 的存在性探针由 P16.11 收敛 rejection 文本处理 |
+| 3 评测集加「跨租户孪生」 | **不加**：同一个 store 里构造不出跨租户条目，这条会空转。改为 working 层 `(agent, contextId)` 跨 context 孪生负例（P16.2b）。M2 时对应的判据是部署断言「两节点记忆根解析后互不为前缀」（§9 H2） |
+| 4 embedding 调用上限按租户计 | **按节点计**，成本上限按 token 计并持久化（`memory-m1.md` §5.5） |
+| 5 远端 embedding 开关由谁授权 | 节点启动参数，只有运维能改；在内测舰队上开启要负责人另行批准；开关状态进 P14 的 `authz.posture`。member 与 viewer 没有这个开关 |
+
+另：`contextId` 由发送方自报、不与发送方绑定（`packages/resident/src/session-key.ts:85-88`），`(agent, contextId)` 分区只防意外碰撞、不防伪造。M1 拓扑里全部入站都来自中枢，控制台会话 id 是随机 UUID 且只对属主与 ops 可见（§2），风险有限；将来开放任何非中枢入站之前，`sessionKeyOf` 必须先把发送方身份并入键（§9）。
 
 ---
 
-## §4 配额雏形（若解禁）
+## §4 按人计量与控制台上限
 
 ### 4.1 计量什么
 
 | 计量 | 来源 | M1 强制 |
 |---|---|---|
-| 消息数（按主体、租户计 `task.request`） | 控制台发送路径 | 是 |
-| turn 数 | 节点准入 | 是 |
-| token | ACP `PromptResponse.usage`（`src/services/acp/agent/promptFlow.ts:137-160`，注释称其为**会话累计值**，需取差分）。常驻今天**不读**它，只读 `stopReason`（`packages/resident/src/acp-turn.ts:378`） | 是（事后计量，下一轮准入时判） |
-| 存储（记忆根体积、对话落盘字节、会话数） | 定期测量；会话数已有上界 `maxSessionsPerAgent = 16`（`packages/resident/src/session-gc.ts:34`） | **只计量、告警。**审计链永不因配额拒写（`beta-env.md` §0 定案 #6：全程不清） |
+| 消息数（按主体计 `task.request`） | 控制台发送路径 | 是 |
+| 唤醒数（按主体） | 控制台 `/v0/wake` | 是（归 ops，计入该主体） |
+| token | 节点从 ACP `PromptResponse.usage` 取（`src/services/acp/agent/promptFlow.ts:137-160`），经审计链回到中枢；常驻今天**不读**它 | 是（事后计量，判定见 §4.2） |
+| 存储（对话落盘字节、会话数） | 定期测量 | **只计量、告警**。审计链永不因配额拒写（`beta-env.md` §0 #6） |
 
-**初值本文不预设**：P15.7 先以 shadow 跑满两周，按各租户用量的 P50 / P95 定初值，再切 enforce。
+token 口径：
+
+- **按四列分列**：input、output、cacheWrite、cacheRead。配额只按 input + output + cacheWrite。`promptFlow.ts:152-157` 的 `totalTokens` 把 `cachedReadTokens` 也加了进去，缓存命中高的会话会被严重高估，所以不用它。
+- **累计与归零**（已由代码部分回答，读代码，**未实测**）：`QueryEngine.totalUsage` 在构造时置为 `EMPTY_USAGE`（`src/QueryEngine.ts:197`），后续只累加，所以是「引擎实例内累计」；`createSessionMethod.ts:248` 每次建会话或加载会话都 `new QueryEngine`，所以 `loadSession` 或 ACP 子进程重启后归零。差分要带归零检测：本次小于上次时，按本次全量计。P15.7 先用真 ACP 会话实测这一条。
+- **分叉调用**（基座的 `extractMemories`、compact、子 agent）是否计入 `usage`，**未核实**。P15.7 的探针先回答；答不出来就在报表头写明「下限值」。
+
+**初值本文不预设**：P15.7 先以 shadow 跑满两周，按各主体用量的 P50 / P95 定初值，再切 enforce。
 
 ### 4.2 在哪强制
 
-- **中枢（控制台）**：按主体与租户计消息数，在调 `ChatPort` 之前拒。内测拓扑里全部流量从这里出发，这是主闸。
-- **节点准入**：按本节点所属租户计 turn 与 token，位置在租户闸之后、ESTOP 之前（`resident.ts:819-841` 之间），拒绝发生在写信箱之前（L-1）。节点只属于一个租户，所以节点的份额就是该租户在这台节点上的份额；**租户跨节点的总量不做分布式计数**（D9）。
-- **窗口**：自然日（东八区零点重置），页面显示「今日已用 / 上限 / 重置时间」。给人看的额度要能一句话说清，滑动 24 h 做不到。
+- **只在中枢强制**（D5）。内测拓扑里全部流量从中枢发出：控制台（对话、唤醒）与 `qm watch`。判定点在中枢发出之前。
+- **节点只计量**，不给任何线上码加新语义，协议零改动。
+- token 是事后计量，有滞后（≤ 5 min）。超额的上界 = 该主体在途消息数 × 单轮 token，所以另设**每人在途上限**，数值在 P15.7 shadow 期定。
+- **值守作业单独一个桶**，不占任何人的额度，也不能把人挤出去。
+- **每人打开的会话数设上限**：`maxSessionsPerAgent = 16` 加 GC（`packages/resident/src/session-gc.ts:34`），一个人连开会话就能把别人的 ACP 会话挤掉。
+- **总额封顶**：按人配额随人数线性放大，另设全局总额；邀请数也有上限（§3.1）。
+- **窗口**：自然日（东八区零点重置），页面显示「今日已用 / 上限 / 重置时间」。中枢强制之下跨节点总量天然可算（D9）。窗口边界防时钟跳变：沿用注册中心时间跳变闸的思路，跳变期间不重置。
 
 ### 4.3 与 `LIMITS`、运行时限流、P13 的关系
 
-- **租户配额不进 `LIMITS`。**`LIMITS` 是协议级上界的唯一出处（章程 C-4）；租户配额是部署策略，理由与 `RUNTIME_RATE` 不进 `LIMITS` 相同（`packages/router/src/rate.ts` 模块注释「Why the runtime ceiling is not in `LIMITS`」）。数值只住中枢配置一处，节点经启动参数取得，文档不抄数字。
-- **配额管量，限流管速，两者不合并。**`LIMITS.ratePerMinute`（协议层，每发送节点）、`RUNTIME_RATE`（运行时层，每发送方 × 目标，`rate.ts:53-56`）、`NotifyBudget`（出站通知，`rate.ts:310`）防的是突发；配额防的是一天的总量。实现不复用 `KeyedBuckets`（同一模块注释「Do not fold it into `KeyedBuckets`」）；控制台上限视图分三组列显示（`console.md` §7.1「两列不是一个数」的延伸）。
-- **P13 已认领的机制不动**：`notifyRatePerMinute`、`maxQueuedTurns`（`roadmap.md:870`、`resident-botization.md` §2.5）数值与语义一字不改；租户配额不能调高任何协议上界。
-- **N-1**：只计量不计价，`costLimit` 仍恒为 0，非零仍出站即拒（`protocol.md:565`）。
+- **配额不进 `LIMITS`。**`LIMITS` 是协议级上界的唯一出处（章程 C-4）；配额是部署策略，理由与 `RUNTIME_RATE` 不进 `LIMITS` 相同（`packages/router/src/rate.ts` 模块注释）。数值只住中枢配置一处。
+- **配额管量，限流管速，两者不合并。**`LIMITS.ratePerMinute`、`RUNTIME_RATE`（`rate.ts:53-56`）、`NotifyBudget`（`rate.ts:310`）防突发；配额防一天的总量。实现不复用 `KeyedBuckets`。
+- **P13 已认领的机制不动**：`notifyRatePerMinute`、`maxQueuedTurns`（`resident-botization.md` §2.5）数值与语义一字不改。
+- **N-1**：只计量不计价，`costLimit` 仍恒为 0。
 
-### 4.4 超额错误码（D5）
+### 4.4 超额怎么回（D5 已定：不扩义任何线上码）
 
-| 面 | 取舍 | 理由 |
-|---|---|---|
-| 线上（节点拒绝） | **扩义复用 `E_BUDGET_EXHAUSTED`**（`errors.ts:44`，基线码） | 旧节点能解析，不触规则 N-1（`protocol.md:786`）；发送方的正确处置「重置前不要重试」与字面一致。代价：`errors.ts:43` 的注释与 `protocol.md:780` 的码表说明要从「`costLimit` ≠ 0」改为「发送方预算或接收方配额已耗尽」 |
-| 放弃 | `E_RATE_LIMITED` / `E_BUSY` | 两者都是「等一会儿再来」，对零点才重置的额度是错误指引 |
-| 放弃 | 新码 `E_QUOTA_EXCEEDED` | 每个新码都是一份兼容负担加一条降级映射（`protocol.md:796`「不要因为多一种情形就多加一个码」） |
-| 控制台 HTTP | 429，`code` 同为 `E_BUDGET_EXHAUSTED`，附 `resetAt` | 页面与线上用同一个词 |
+- **线上**：M1 没有任何节点侧的超额拒绝，也就不需要线上码。v0.1 的「扩义 `E_BUDGET_EXHAUSTED`」**否决**：那是改变基线码语义的协议变更（`packages/protocol/src/errors.ts:43` 的注释、`protocol.md` 码表与状态机都要改），与「协议零改动」自相矛盾；`protocol.md` §8 已把业务侧额度耗尽归为处理方以 `task.result` 失败报出。以后真要节点侧拒绝，走协议变更的正常流程另立。
+- **控制台 HTTP**：429，响应体给「今日已用 / 上限 / 重置时间」，不借用协议错误码。
 
 ---
 
-## §5 测试计划：「跨租户数据访问用例全部被拒」
+## §5 测试计划：跨账号越权用例全部被拒
+
+M1 判据（roadmap「按人计量与控制台上限」行）：**跨账号越权用例全部被拒**，带正向对照与 fixture，并且「关掉判定就变红」。
 
 ### 5.1 「被拒」的操作定义
 
-- **列表**：结果里外租户条目为零（过滤，不报错）；
-- **按 id 读**：404，响应体与「不存在」逐字节相同；
-- **写 / 动作**：403，文案与「节点不存在」相同；
-- **一律**：被拒路径上端口调用次数为零（手写假端口计数，沿用控制台包零 `mock.module` 的做法）；注册中心、登记簿、落盘物无变化；节点侧信箱未写、未开 ACP turn。
+- **列表**：结果里他人条目为零（过滤，不报错）。
+- **按 id 读**：404，响应体与「不存在」逐字节相同。
+- **写或动作**：403，文案与「不存在」相同。
+- **按 id 读与写**：被拒路径上端口调用次数为零（手写假端口计数，沿用控制台包零 `mock.module` 的做法）；落盘物无变化；节点侧信箱未写、未开 ACP turn。列表必须先取再过滤，所以「零调用」不适用于列表。
 
 ### 5.2 用例矩阵
 
-主体：租户 A、B 各 `viewer` / `member` / `tenant-admin`，另加 `legacy:view`，共 7 个；对象：另一租户的节点、agent、会话、traceId。`ops` 不进矩阵（按定义跨租户），另设正向用例：每次 `ops` 跨租户读都在动作账本留一条。
+主体：`viewer`、member A、member B、`legacy:view`、break-glass（Bearer）；ops 另设正向用例：每次 ops 打开他人转录都在动作账本留一条。
 
 | # | 面 | 操作 | 期望 |
 |---|---|---|---|
-| C1 | 名册（`/v0/agents`、`/fragments/roster`） | 列表 | 外租户零条 |
-| C2 | 注册 / 注销 / 心跳 | 写外租户地址 | 403，注册中心与登记簿不变 |
-| C3 | 暂停 / 恢复 | 写外租户地址 | 403 |
-| C4 | 审计（`/v0/audit`，按 `agent` / `source` / `traceId` 过滤） | 列表 | 外租户零条 |
-| C5 | 消息链（`/v0/audit/chain/<traceId>` 与片段） | 按 id 读 | 404 |
-| C6 | 唤醒（`/v0/wake`） | 外租户节点 | 403，`WakePort` 零调用 |
-| C7 | 对话目标、会话列表 | 列表 | 外租户零条；同租户他人会话零条 |
-| C8 | 会话转录（`/v0/chat/sessions/<id>` 与片段） | 读外租户与同租户他人 | 404 |
-| C9 | 发消息 | 外租户会话 / 以外租户目标开会话 | 404 / 403，`ChatPort` 零调用 |
-| C10 | SSE（`/v0/chat/stream`） | 订阅 | 外租户会话零事件 |
-| C11 | 服务器与备注 | 读 / 写 | 非 ops 一律 403 |
-| C12 | 账号管理 | 邀请进外租户、吊销外租户用户 | 403 |
-| C13 | 一次性令牌 | 持 A 的令牌注册 B 的地址 | 403，令牌不被消耗 |
-| N1 | 节点准入 | 外租户节点发 `task.request` | `E_UNKNOWN_AGENT`；信箱未写、无 ACP turn、无新会话、无记忆读 |
-| N2 | 节点准入 | 外租户节点发 `wake` | 同 N1 |
-| N3 | 中枢收 `notify` | 外租户节点带 A 会话的 `contextId` | 丢弃并记账，A 的转录无变化 |
-| H1 | 调度器 | 作业目标属于外租户 | 加载即拒 |
-| H2 | 部署检查 | 两个租户的节点同 `server=`；两个租户的记忆根重叠 | `beta-up.sh` 拒起 |
+| X1 | 整页 `GET /`、`GET /chat` | 渲染 | 侧栏与会话入口里他人会话零条 |
+| X2 | 会话列表 | 列表 | 他人会话零条 |
+| X3 | 转录与片段 | 读他人会话 | 404 |
+| X4 | 发消息 | 往他人会话发 | 404，`ChatPort` 零调用 |
+| X5 | SSE | 订阅 | 他人会话零事件；吊销后连接被断开 |
+| X6 | 用量与上限视图 | 读 | 只见自己的用量 |
+| X7 | 账号管理 | 非 ops 邀请、吊销、重置 | 403，账号库不变 |
+| X8 | 生命周期与唤醒 | 非 ops 注册、暂停、恢复、退役、唤醒 | 403，端口零调用 |
+| X9 | 审批（P14.5 之后） | 批他人会话的 ask；`legacy:*` 批任何 ask | 403，节点不收到决定 |
+| X10 | 吊销时效 | 吊销后旧会话、旧审批会话、旧 SSE | 401 / 断开 |
+| X11 | break-glass | admin token 经 `/login` 换 cookie；admin token 审批 | 拒 |
 
-C1–C13 对 7 个主体全展开，N、H 各一组；总数 N 由用例表生成，不手写。
+**角色拒绝与属主拒绝分开计数**：viewer 与 `legacy:view` 在 X4、X7、X8 上会先被角色判定拦下，这些格子单列成「角色拒绝」，不计入属主判定的 N。
 
-### 5.3 放在哪、如何机判 100%
+### 5.3 如何机判 100%
+
+1. **正向对照**：每个拒绝格子配一个「同主体、同操作、本人目标」的放行格子，放行格子必须成功。一个什么都拒的实现会在对照上变红。
+2. **拒绝归因**：handler 返回可测的拒绝分支标签（`owner` / `role` / `absent`），用例断言命中的是 `owner`。对外响应仍按 404 或 403 逐字节不可区分。
+3. **红方向 fixture**：同一张矩阵，对一个关掉属主判定的变体再跑一遍（把 `ownerOf` 的判定换成恒真），每一类格子都必须变红。
+4. **汇总行**：`cross-account refused N/N · controls allowed M/M · mutant caught K/K`，任一项不等于期望值就非零退出；N、M、K 由用例表生成，不手写；矩阵用例 skip 计为失败。
+5. **完备性**：控制台路由今天是 `route`（`packages/console/src/http.ts:1825`）分派到 `dispatchApi` / `dispatchChatApi` / `dispatchFragment` 的嵌套 if，没有路由表。不先把路由声明化，改用可扫描的形态：**每个 `guard(` 调用点必须带属主类别参数**（`public` / `owner` / `ops`），扫描断言无遗漏，并有一个故意漏写的 fixture 证明扫描会开火。
+6. **真进程**：`demo/lib/acceptance/scenarios/accounts.ts`，经 `bun run qianmo:acceptance`，沿用 `scripts/qianmo-acceptance.ts` 的退出码语义；**同一份部署连续两轮零红**才算判据达成。
+
+### 5.4 放在哪
 
 | 层 | 位置 | 证明什么 |
 |---|---|---|
-| 包内 | `packages/console/src/__tests__/tenancy.test.ts`；`packages/resident` 与 `src/services/qianmo` 的租户闸单测 | 零件对 |
-| 组合 | 新目录 `tests/tenancy/cross-tenant.test.ts`，**必须写进 `scripts/test-shards.sh:84` 的目录列表**，否则 CI 不跑（`tests/boundary/README.md`「规矩」第 3 条）。不放 `tests/boundary/`：那里每条用例须对应 `protocol.md` §8.3 的五类之一，跨租户不在其中 | 真注册中心 + 真控制台 handler + 真路由闸装在一起表现对 |
-| 真进程 | `demo/lib/acceptance/scenarios/tenancy.ts`，经 `bun run qianmo:acceptance` | 本地腿与舰队腿 |
-
-机判三条：① **完备性元测试**：从控制台路由表枚举全部路由，每条必须有租户类别，每条 `tenant` 类路由在矩阵里至少有一条用例，新增路由不补用例即红（与 `check:identity-paths` 同类的棘轮）；② **不许 skip**：矩阵用例 skip 计为失败，汇总行输出 `cross-tenant refused N/N`，N 与表生成的期望数不等即非零退出；③ 真机腿沿用 `scripts/qianmo-acceptance.ts` 的退出码语义（头注：驱动零调用不得报绿），**同一份部署连续两轮零红**才算判据达成。
+| 包内 | `packages/console/test/accounts.test.ts` | 零件对 |
+| 组合 | `tests/accounts/cross-account.test.ts`，**必须写进 `scripts/test-shards.sh:84` 的目录列表**，否则 CI 不跑。不放 `tests/boundary/`：那里每条用例须对应 `protocol.md` §8.3 的五类之一 | 真控制台 handler + 真账号库 + 真会话表装在一起表现对 |
+| 真进程 | `demo/lib/acceptance/scenarios/accounts.ts` | 本地腿与舰队腿 |
 
 ---
 
@@ -280,65 +363,122 @@ C1–C13 对 7 个主体全展开，N、H 各一组；总数 N 由用例表生�
 
 | 包 | 目标 | 依赖 | DoD（可机检） | 估算 |
 |---|---|---|---|---|
-| **P15.1** ⚖️ 设计定稿与范围回写 | 裁定决策点 0 与 §7 各项，回写范围 | 无 | 本文过评审升 v0.2；A：章程 N-2 行加补注并升版本号，`beta-env.md` §0 #4 与 `console.md` §8.1 加指向本文的改写注；B：roadmap `:852` / `:856` 注明挪 M2；roadmap 收入本表；`git grep "P15\.[0-9]"` 只命中本文与回写处 | 4–8 |
-| **P15.2** 注册持久化与生命周期 | 注册活过 90 s；暂停、恢复、注销 | P15.1（**不依赖 D0**） | `ManualClock` 推进超过 90 s 后控制台注册的条目仍在 `list()`；注册中心重启后登记簿里 `active` 的条目回来、`paused` / `retired` 不回来；暂停后对该地址的对话与唤醒被拒且端口零调用；`retired` 地址再注册被拒；`@qianmo/registry` 的 HTTP 路由表零改动（快照断言） | 12–24 |
-| **P15.3** 一次性令牌 | B 的注册通道；A 的邀请底座 | P15.2 | 令牌绑定单一地址（或租户 + 角色）；过期与二次使用均 403 且不消耗；存储只有哈希；扫描断言控制台代码与落盘物没有「令牌→人」字段；`resolveTokens` 零改动（对照单测） | 8–16 |
-| **P15.4** 租户映射与控制台过滤 | §2 注册中心、控制台视图、审计链、中枢侧落盘物四行 | P15.2 | 缺省 `--node-tenant` 时全部既有控制台测试逐字不改全绿；路由租户类别元测试；C1–C11 全绿；外租户按 id 读的响应与不存在逐字节相同 | 20–36 |
-| **P15.5** 账号最小形态 | §3.1–§3.5 | P15.3、P15.4 | 邀请开户端到端，驱动只用 HTTP、不起任何 CLI 子进程；吊销后下一个请求即 401；重启后会话全失效、账号仍在；`legacy:view` 只见 `default`；`ConsolePrincipal` 从包入口导出并有契约单测；C12、C13 全绿 | 24–40 |
-| **P15.6** 节点侧租户闸与迁移 | §2 记忆、会话、传输、沙箱、备份五行；§1.5 | P15.4 | 闸位于 `router.inbound` 之后、ESTOP 之前（结构断言）；shadow 只记不拒，enforce 拒且无副作用（N1–N3）；`FRAME_VERSION` 与 `CapabilityClaims` 键集零改动（grep 断言）；`beta-up.sh` 两条部署检查（H2）各有负向用例 | 16–28 |
-| **P15.7** 配额雏形 | §4 | P15.5、P15.6（同改 `#receive`，**串行**） | 四类计量落盘；token 取差分，有覆盖 `--resume` 前后累计值的用例；超额在写信箱之前拒、码为 `E_BUDGET_EXHAUSTED`、旧版本对端能解析；`LIMITS` 键集与数值零改动；shadow 两周数据入档后才切 enforce | 20–36 |
-| **P15.8** 跨租户矩阵与验收 | §5 | P15.4–P15.7 | `tests/tenancy` 进分片列表；汇总 `N/N` 且 N 由表生成；完备性元测试；真机同一部署连续两轮零红并留档 | 16–28 |
+| **P15.1** ⚖️ 设计定稿与范围回写 | 本文 v1.0；章程、roadmap、beta-env 回写 | 无 | 本文文首为 v1.0；章程版本号升一（v2.19）且 N-2 行含 A′ 解禁范围、仍不解禁清单与签字栏；roadmap 方向表「多租户与配额雏形」拆为 M1 / M2 两行、M1 行判据为「跨账号越权用例全部被拒」、M1 节出现 P15.1–P15.10 指针；`beta-env.md` §0 #4 与 §3.1 含改写注、§3.6 含告知；`git grep -n "P15\.[0-9]"` 只命中本文、roadmap、章程、beta-env、两份相邻设计，以及 P15.2 持久化已落地的三处（`console.md` §7.3、`src/cli/handlers/consoleRegistrations.ts` 头注释、验收场景 `demo/lib/acceptance/scenarios/console.ts`）。**`console.md` §8.1 的改写注未做**（本批不改该文件），下次触及 `console.md` 时补 | 4–8 |
+| **P15.2** 注册持久化与生命周期 | 持久化**已完成**（`fe5bd71c`、`4d55cd1f`、`9e78e99a`）；剩暂停、恢复、退役、操作主体、出口检查 | P15.1 | 登记簿记状态与操作主体；`paused` 后对话、唤醒、`qm watch` 三个出口对该地址的发起次数为零（手写假端口计数）；`retired` 地址再注册被拒；登记簿读失败时一切注册与恢复被拒且进程告警（负向用例）；地址不在托管清单里的注册被拒；`@qianmo/registry` 的 HTTP 路由表零改动（快照断言）；既有 `consoleRegistrations.test.ts` 全绿 | 8–16 |
+| **P15.3** 邀请令牌 | §3.1 | P15.1 | `GET` 邀请页零次铸凭据（端口计数断言）；`POST` 过跨源检查，跨源 403 且邀请不被消耗；过期与二次使用均 403 且不消耗；存储只有哈希；页面带 `Referrer-Policy: no-referrer`；未用邀请数超上限时签发被拒；扫描断言控制台代码与落盘物没有明文凭据字段；`resolveTokens` 零改动（对照单测） | 8–16 |
+| P15.4 | **挪 M2**：租户映射与控制台过滤（见 §9）。编号保留，不复用 | — | — | M2 重估 |
+| **P15.5** 账号最小形态 | §1.1、§3.2–§3.5 | P15.3 | 邀请开户端到端，驱动只用 HTTP、不起 CLI 子进程；账号库或会话表有一条坏行时控制台拒绝服务并告警（负向用例，含「坏的 `revoked` 行」）；登录换新 sid、客户端带来的 sid 被忽略、`/logout` 后服务端会话不存在；闲置 2 h 与绝对 12 h 各一条 `ManualClock` 用例；吊销后下一个请求 401、该主体 SSE 连接数为零；个人凭据出现在 `?token=` 时被拒、页面脚本不写 `localStorage`（扫描断言）；cookie 属性断言（`HttpOnly; Secure; SameSite=Strict`，只含会话 id）；break-glass 四条限制各一条用例；`legacy:view` 看不到任何会话；`principalOf`、`ownerOf` 从包入口导出并有契约单测 | 28–44 |
+| P15.6 | **挪 M2**：节点侧租户闸与迁移（见 §9）。编号保留，不复用 | — | — | M2 重估 |
+| **P15.7** 按人计量与控制台上限 | §4 | P15.5 | 四列 token 计量落盘，配额不读 `totalTokens`（结构断言）；有一条覆盖 `loadSession` 前后累计值归零的用例（真 ACP 会话）；超额在中枢发出前被拒、`ChatPort` / `WakePort` 零调用；值守作业走独立桶；每人在途上限与会话数上限各一条用例；`LIMITS` 键集与数值零改动、`packages/protocol` 零改动（grep 断言）；shadow 两周数据入档后才切 enforce | 8–14 |
+| **P15.8** 注册中心写 token（含 K-11 F-3） | 注册中心写操作鉴权；控制台见证验签不再取注册中心裸公钥 | P15.1 | 注册中心的 `POST` / `DELETE` / 心跳不带写 token 时 401 且表不变（真 `createRegistryHandler` 用例）；读路由行为不变；token 文件权限不是 0600 时拒绝启动；控制台续租者与 `p81-registry` 宿主都带 token，真进程场景 `console/registry-registration-*` 全绿；**F-3**：控制台 `--anchors` 的验签公钥经 CA 校验的证书目录或显式 `--trust` 集取得，负向用例「注册中心里被替换的公钥不能让篡改过的链显示为已见证」为绿，回退修复时为红；P14 代码里不出现注册中心客户端的导入（扫描断言） | 10–16 |
+| **P15.9** 控制台动作账本 | 主体、动作、目标、`requestId`、结果；只记「打开转录」，不记轮询 | P15.5 | 账本用 `@qianmo/audit` 哈希链写、`--verify` 能判篡改；片段轮询与 SSE 不写账（一次打开 + 100 次轮询 = 1 条，用例）；当事人能查「我的转录被谁在什么时候读过」（HTTP 用例）；break-glass 每个请求一条；P14 决定事件以 `requestId` 能与节点链关联（契约用例） | 8–14 |
+| **P15.10** 跨账号越权矩阵与验收 | §5 | P15.5、P15.7、P15.9 | `tests/accounts` 进分片列表（grep 断言）；汇总行三项全等；关掉属主判定的变体下每一类格子都红；`guard(` 调用点扫描无遗漏且漏写 fixture 会开火；真进程场景同一部署连续两轮零红并留档 | 10–18 |
 
-**合计**：A = **120–216**；B = P15.1 + P15.2 + P15.3 + P15.7 的节点级子集（只按节点计 turn 与 token，无主体维度，12–20）= **36–68**。
+**合计（M1）：84–146 人时**。P15.4、P15.6 挪 M2，不计入。
 
-**排期约束**：P15.4 / P15.5 与 P14 都改控制台鉴权（`auth.ts`、`http.ts`），**P15.5 先落**，P14 在 `principalOf` 之上接；P15.6 与 P15.7 都改 `resident.ts` 的 `#receive`，串行。P15 不碰 `packages/transport/src/frames.ts`，与 P12.x / P13.x 在该文件上的约束无交集。
+**排期约束**：
 
-### 6.1 明确不做
+- 全部在控制台一侧，零节点重启；上线排在 7 天长跑窗口（至 2026-10-03T18:20:23Z）之后。
+- P15.5 与 P14.5 都改控制台鉴权（`auth.ts`、`http.ts`），**P15.5 先落**，P14.5 在 `principalOf` 之上接。
+- P15.8 与 P14 无代码交集，可以先做；它改注册中心，与 `beta-up.sh` 的注册中心起法同一个 PR 落。
 
+### 6.1 明确不做（M1）
+
+- 租户、节点粒度的租户隔离、租户配额（M2，§9）。
 - 计费、定价、账单（N-1）；`costLimit` 仍恒为 0。
 - 公开自助注册、对校外开放（章程 §8 放在 M2）。
 - 口令账户、外部身份源（校园统一认证、第三方 OAuth）、passkey。
-- 节点内按 agent 分租户；一人多租户；子租户。
-- 跨租户互通或共享的放行通道（M1 只有默认拒）。
-- 协议层的租户字段（信封、帧、capability claims）；证书 SAN 里的租户。
-- 注册中心自身的鉴权（仍归「权限模型上线」，`console.md` §8.2）。
+- 一人多租户、子租户、节点内按 agent 分租户、跨租户互通。
+- 协议层的租户或主体字段（信封、帧、capability claims）；证书 SAN 里的租户或主体。
+- 节点侧的配额拒绝与任何新线上码。
 - 装机面第六类动作；节点侧的单 agent 暂停。
-- 租户跨节点的分布式配额计数；存储配额的强制。
-- 能抵御中枢失陷的租户隔离（§1.4）。
+- 能抵御中枢失陷的隔离（§1.4）。
 
 ---
 
-## §7 需要负责人拍板的决策点
+## §7 决策（已定）
 
-| # | 事项 | 本文建议 | 不拍板的后果 |
+依据：主 agent 裁定（2026-09-26，依负责人委托）；D0 由负责人本人签字。
+
+| # | 事项 | 结论 | 理由 |
 |---|---|---|---|
-| **D0** | N-2 解禁与否（§0） | A，限定形态 | P15.4–P15.8 不能开工；P14 没有主体 |
-| D1 | 判据里「完成注册」指什么 | A：开户 + 本租户 agent 的页面内注册；B：凭一次性令牌注册 agent | 验收时各说各话 |
-| D2 | 租户粒度 = 节点，不支持节点内分租户（§1.2） | 接受 | 若要 agent 粒度，§2 的审计、记忆、会话三行都要在节点内再切，另行估算 |
-| D3 | 控制台发起流量的跨租户防线 | M1 由控制台单点强制。每租户一把签发身份（节点只 `--trust` 本租户那把）推迟到 `SIGNED_TASK_POLICY` 切默认之后：`OPEN_POLICY` 下节点不校验 capability（`src/cli/handlers/resident.ts:1072`），且它会改写「控制台只有一个 `iss`」这条既有规则（`src/cli/handlers/consoleWakeIdentity.ts:9-13`） | 若要求节点侧也能挡控制台，§0.3 里 A 的前提不成立 |
-| D4 | 跨租户拒绝码（§2 末） | `E_UNKNOWN_AGENT` | — |
-| D5 | 超额码（§4.4） | 扩义 `E_BUDGET_EXHAUSTED`，同步改 `errors.ts` 注释与 `protocol.md:780` | 另立新码就要走规则 N-1 |
-| D6 | `ops` 能否读外租户的对话转录 | 能，每次进动作账本并在页面上标注 | 若不能，运维排障要另开通道 |
-| D7 | 旧 admin token 是否保留为 break-glass | 保留，动作照记账本 | — |
-| D8 | 暂停只做到注册层（§3.6） | 接受 | 节点侧暂停需第六类装机动作或改协议 |
-| D9 | 配额窗口取自然日；租户跨节点不算总量 | 接受 | — |
+| **D0** | N-2 解禁与否 | **A′**：只解禁控制台个人账号（§0.2）。负责人 2026-09-26 确认（对话记录） | P14 需要的是可区分、可吊销、能审批自己会话的人，不是租户（§0.2） |
+| D1 | 「完成注册」指什么 | 凭邀请自助开户 + 在页面上对托管清单里的 agent 做发布、暂停、恢复、退役；托管清单今天只有 `peers.conf` | §3.7 |
+| D2 | 租户粒度 | M1 不做租户。M2 做租户时用节点粒度，前提是中枢机上不跑用户能驱动的节点 | §9 |
+| D3 | 跨租户防线 | 由中枢单点强制，范围覆盖对话、唤醒、`qm watch`、notify 归属；M1 不做节点侧租户闸 | 内测拓扑里全部入站都来自中枢的同一个 `from` / `iss`，节点闸恒为通过，是空转的纵深 |
+| D4 | 跨租户拒绝码 | M1 不适用 | 没有节点闸就没有这个码。M2 若做节点闸，沿用 v0.1 的 `E_UNKNOWN_AGENT` 理由（不泄露存在性） |
+| D5 | 超额码 | **否决扩义 `E_BUDGET_EXHAUSTED`**。配额只在中枢强制，节点只计量，不改任何线上码，协议零改动 | §4.4 |
+| D6 | ops 读转录 | ops 能读；只记「打开转录」这一动作，不按轮询次数记；当事人能查到谁读过；对用户的告知见 `beta-env.md` §3.6 | 2 s 一次的片段轮询会让「每次读都记」撑爆账本；这是对真人的承诺，所以告知单列、负责人可改措辞 |
+| D7 | admin token 的去留 | 保留作 break-glass，四条限制：只收 Bearer；页面常亮提示；不能充当 P14 审批人；用后轮换 | §3.4 |
+| D8 | 暂停做到哪一层 | 只做到注册层；中枢拒发对话、唤醒和 `qm watch`；`qm watch` 按作业 URL 直拨这一点要堵住 | §3.6 |
+| D9 | 配额窗口 | 自然日；中枢强制以后跨节点总量本来就能算 | §4.2 |
+| D10 | 审批者集合（与 P14 共同决定） | `ownerOf(contextId)` ∪ 个人 `ops` 账号；无控制台会话的 ask 只由 ops 批；`legacy:*` 与 break-glass 永不能审批 | §3.5；与 `authorization-m1.md` D-2 同一句 |
+| D11 | 中枢同机节点 | P14 在舰队上启用之前，中枢机上不得运行用户能驱动的节点，或者节点改用独立的非特权 uid 且 hardline 覆盖中枢的全部秘密路径；排进 P14 的部署计划（P14.9） | §0.3 |
+
+**评审修改清单里没有采纳的条目**：
+
+- `ConsolePrincipal` 从第一天起带恒为 `default` 的 `tenant` 字段：**不采纳**。裁定是 M1 不做租户；一个恒等字段不产生任何行为，却会让读代码的人以为已有租户作用域。M2 加字段是纯加法。
+- 「中枢同机节点上的 ask 只能由 ops 批」：**不采纳为规则**，改由 D11 的部署前提处理：前提成立时，中枢机上要么没有用户可驱动的节点，要么它已与中枢隔离 uid。
+- 「注册中心鉴权两份设计都写 M1 不做」：**不采纳**，裁定单列 P15.8。
 
 ---
 
 ## §8 未核实与遗留风险
 
-**未核实**（本文依赖、但没有实测）：
+**未核实**（本文依赖、没有实测）：
 
-1. ACP `usage` 是会话累计值，出处只是 `promptFlow.ts:137-141` 的注释；`--resume` 后是否归零、跨 compact 是否连续，未测。
-2. 现场节点是否开了 `--require-signed-tasks`、是否设置 `CLAUDE_CODE_REMOTE_MEMORY_DIR`，未核实（启动参数在运维单页，不入库）。
-3. `beta-env.md` 描述的中枢形态是否仍是现场形态，未核实；本文只依赖「所有租户共享一个中枢」这一形状。
-4. 校园统一认证能否接入、需要什么审批，未调研。
-5. 内测是否真的触发过 `beta-env.md` §10 包④ 的条件（被迫全员换 token），仓库内没有记录。
-6. `node-provisioning.md` 仍是 v0.1-draft 且没有实现（基点上 `ProvisionPort` / `resolveProvisionToken` 全仓零命中）；§3.6 对 `install` 增加 `tenant` 输入的要求，要等它定稿时并入。
+1. ACP `usage` 的累计与归零：**已由代码部分回答**（§4.1，读 `src/QueryEngine.ts:197`、`createSessionMethod.ts:248`），没有用真实 ACP 会话测过数值。
+2. 分叉调用与子 agent 的 token 是否计入 `usage`：未核实。
+3. 基座自带 auto-memory 是否对常驻 ACP 会话生效：常驻 ACP 子进程继承 `process.env`（`src/services/qianmo/resident.ts:326-334`），没有设 `CLAUDE_CODE_DISABLE_AUTO_MEMORY`；是否真的加载 `projects/<cwd-slug>/memory/` 并在回合末抽取，未核实。若生效，同一 agent 的所有会话与用户会经它合流。
+4. `default` 模式下工作区外的 Read / Bash 批准后放行、以及由此经 beta-4 读到中枢文件的链路：**未实测**，依据是 hardline 不覆盖这些路径（读代码）与 `authorization-m1.md` F-25 的 hardline 探针。beta-4 与控制台是否同 uid、中枢实际目录布局，未核实（没有连舰队）。
+5. 内测里是否存在多个互不信任的组：仓库内**没有**证据，这是推断；负责人可能掌握仓库之外的需求。
+6. 校园统一认证能否接入、需要什么审批：未调研。
+7. 现场是否设了 `CLAUDE_CODE_REMOTE_MEMORY_DIR`：未核实（启动参数在运维单页，不入库）。任务策略开关已可由仓库核实：`beta-up.sh` 固定带 `--open-policy --audit-signed-tasks --allow-workspace-edits`（`demo/env/beta/beta-up.sh:1161-1178`，由 `demo/env/resident-task-policy.test.ts:36-40` 钉住）。
+8. `node-provisioning.md` 仍是 v0.1-draft 且没有实现；托管清单改由 `install` 确定要等它定稿。
+9. 估算：A′ 各包是粗估，依据是同量级包（P13、P14）的区间，没有经过排期评审。
 
 **遗留风险**：
 
-- 中枢是全体租户共同的失陷域（§1.4），本文不改变这一点；缓解在 `key-distribution.md` 与 `node-provisioning.md` §4.3。
-- 同租户多用户共用 agent 的工作区（`beta-env.md` §4.1 的 `workspaces/<node>/<agent>/`）与 project 层记忆：一个人的会话能读到另一个人让 agent 写下的东西。M1 视为租户内共享，须写进内测公告。
-- `DEFAULT_CONTEXT` 是同一 agent 所有无 `contextId` 请求的共享桶（`session-key.ts:41`）。控制台总是带 UUID，但运维脚本等其他发起方不带时会合流。
-- 迁移期两套凭据并存。`legacy:view` 钉在 `default` 租户这一条若实现漏掉，就是整张矩阵的旁路，所以矩阵主体里包含它。
+- 中枢是全体用户共同的失陷域（§1.4），本文不改变这一点。只要中枢机承载用户可驱动的节点，而 P14 又让用户能批准 ask，任一用户就能到达中枢上的全部秘密；这条由 D11 / P14.9 在 P14 上线前处置。
+- 同一 agent 的工作区（以及可能的基座 auto-memory）在全体使用者之间共享，A′ 下有意为之，已写进告知。
+- 账号库与动作账本的保留期限按 `beta-env.md` §5（内测全程保留，与审计链同一规矩）；内测结束后的处置未定。
+- 上游模型凭据如果几个节点共用一个账号，某人的突发会触发上游 429 并波及全体。日配额管不了这种吵闹邻居。
+- 7 天窗口内一切部署冻结；P15、P14.0、K-2 都在窗口后，排期会挤在一起。
+- 迁移期两套凭据并存；`legacy:view` 看不到会话这一条若实现漏掉，就是矩阵的旁路，所以矩阵主体包含它。
+
+---
+
+## §9 M2 起点：租户模型（M1 不实施）
+
+v0.1 的 §1、§2 大部分留作 M2 起点，按评审改正以下几处。M2 立项时从这里起草，**本节不构成 M1 的任何承诺**。
+
+- **租户 = 一组共享节点与数据的人**，节点粒度（D2）：一个节点只属于一个租户；agent 的租户由节点派生；证书、注册中心记录、协议都不带租户字段（capability claims 字段闭合，`packages/protocol/src/capability.ts:124-133`、`:146-153`）。
+- **硬前提**：中枢机不承载任何用户可驱动的节点（D11）。容量约束：节点数就是租户数的上限。
+- **注册中心过滤放在 handler 层**：v0.1 写「在 `RegistryPort` 适配层按 `--node-tenant` 过滤」放错了层——端口是宿主侧、全实例共享的，不知道请求主体是谁；过滤应在 `@qianmo/console` 的 handler 层按主体做，端口保持与主体无关。
+- **若做节点侧租户闸**，它必须紧接在 `this.#router.inbound(message)` 之后（`src/services/qianmo/resident.ts:826`），排在 `#redeliverOwed` 与 `#notifier.drain` 之前（`:838`、`:842`）、ESTOP（`:848`）之前。v0.1 写的「`router.inbound` 与 ESTOP 之间」包含这两处副作用，不满足「任何副作用之前拒」。
+- **notify 按连接归属**：按「这条连接是中枢拨给哪个节点的」归属，不按信封 `from`；`from` 在 PSK 档里只是标签。
+- **调度器**：v0.1 矩阵的 H1「作业目标属于外租户」没有可判的主体（作业没有属主字段），M2 改为「作业声明的租户与目标节点租户一致」的配置检查。
+- **部署检查（H2）**：同一 `server=` 下的节点租户必须相同；两个租户的记忆根解析后互不为前缀。
+- **跨租户矩阵**沿用 §5.3 的五条机判纪律，判据「跨租户数据访问用例全部被拒」随租户隔离一起在 M2 判定；N1 / N2（节点间投递）在现场拓扑下拨不通，只能在构造拓扑里测，不计入真机腿。
+- **迁移**要逐个重启节点：准确说法是「滚动、单节点短停」，不是零停机；要重启节点的阶段与 K-2 这类同样要重启的工作合批。
+
+---
+
+## §10 附：v0.1 行号复核
+
+在 `30878097` 上 v0.1 的 43 处引用与所述一致（评审逐条抽查）。到 `9770e8a7`，以下几处漂移，正文已改或随章节删除：
+
+| 引用 | v0.1（`30878097`） | v1.0（`9770e8a7`） |
+|---|---|---|
+| roadmap 注册发现 / 权限 / 多租户 / P13 认领 | `roadmap.md:852/853/856/870` | 改用行名与节标题引用，不再写行号 |
+| `resident.ts` 的 `router.inbound` / ESTOP | `:819` / `:841` | `:826` / `:848`（另有 `:838` 重投、`:842` 通告排空） |
+| `resident.ts` 准入台账 | `:1967` | `:1974` |
+| `cli/handlers/resident.ts` 的 `OPEN_POLICY` / `shadowPolicy` | `:1072` / `:1078` | `:1075` / `:1081` |
+| `registry.ts` 的 `resolve()` / `list()` | `:727-753` / `:744` | `:754` / `:771` |
+| `p81-registry.ts` 续租 | `:109-119` | `:185-195` |
+| `beta-up.sh` 注册中心起法 / 硬规矩注释 / 备份缺口 | `:295-303` / `:326-327` / `:460-468` | `:322-328` / `:366-367` / `:501-509` |
+| `console/src/http.ts` 的 `Protection` | `:355` | `:357` |
+| `consoleArgs.ts` 缺省审计源 | `:611` | `:623` |
+| `watch.ts` 调度器状态 | `:182` | `:283` |
+| `acp-turn.ts` 只读 `stopReason` | `:378` | `:433` |
+| `capability.ts` 字段闭合 | `:142-152` | `:124-133`、`:146-153` |
