@@ -62,7 +62,11 @@ import type {
   ToolUseContext,
 } from '@open-claude-code/tool-runtime/Tool.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
-import type { PermissionMode } from '../../types/permissions.js'
+import type {
+  PermissionAskDecision,
+  PermissionDenyDecision,
+  PermissionMode,
+} from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { occConfigDir } from '../../config/paths.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/EnterPlanModeTool/constants.js'
@@ -131,7 +135,7 @@ function hardlineDenial(
   hardline: ResidentHardline,
   toolName: string,
   input: unknown,
-): PermissionResult | null {
+): PermissionDenyDecision | null {
   const denial = hardline.verdict(toolName, input)
   if (denial === null) return null
   return {
@@ -148,7 +152,7 @@ function hardlineDenial(
   }
 }
 
-function excludedDenial(toolName: string): PermissionResult {
+function excludedDenial(toolName: string): PermissionDenyDecision {
   return {
     behavior: 'deny',
     message:
@@ -162,7 +166,7 @@ function excludedDenial(toolName: string): PermissionResult {
   }
 }
 
-function elevatedModeDenial(mode: PermissionMode): PermissionResult {
+function elevatedModeDenial(mode: PermissionMode): PermissionDenyDecision {
   return {
     behavior: 'deny',
     message:
@@ -210,7 +214,7 @@ function currentMode(context: ToolUseContext): PermissionMode {
  * returned by step 1g and by `checkRuleBasedPermissions`, so it reaches the
  * host (or, under `dontAsk`, becomes a deny at the end of the chain).
  */
-function hostReviewAsk(toolName: string): PermissionResult {
+function hostReviewAsk(toolName: string): PermissionAskDecision {
   return {
     behavior: 'ask',
     message:
