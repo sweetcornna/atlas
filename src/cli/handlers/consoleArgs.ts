@@ -212,6 +212,17 @@ export function consoleRegistrationsPath(): string {
   return occConfigPath('qianmo', 'console', 'registrations.json')
 }
 
+/**
+ * 账号库的默认位置（`tenancy-m1.md` §3.3，P15.3）：邀请、账号、凭据哈希与会话
+ * 属主，一本哈希链账。
+ *
+ * 同一个目录、同一条派生规矩（CLAUDE.md §1.1②）。它只在 `--accounts` 打开时
+ * 才会被创建——一个不开账号的控制台不该在配置根里留下一本空账。
+ */
+export function consoleAccountsPath(): string {
+  return occConfigPath('qianmo', 'console', 'accounts.ndjson')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -311,6 +322,14 @@ export interface ConsoleCliConfig {
   readonly nodeServers: readonly ConsoleNodeServer[]
   /** 服务器备注落盘的绝对路径。 */
   readonly serverNotesPath: string
+  /**
+   * 个人账号（`tenancy-m1.md` §3）。**给了 `--accounts` 才开**；不给就是今天的
+   * 控制台，逐字节不变。开了以后两枚旧 token 照旧可用（迁移期 M-1），另多出
+   * 邀请开户这条路。
+   */
+  readonly accounts?: boolean
+  /** 账号库的绝对路径；只在 {@link accounts} 打开时出现。 */
+  readonly accountsStorePath?: string
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -356,6 +375,9 @@ export function parseConsoleArgs(
   let chatStorePath = consoleChatStorePath()
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
+  let accounts = false
+  let accountsStorePath = consoleAccountsPath()
+  let accountsStoreGiven = false
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -605,6 +627,19 @@ export function parseConsoleArgs(
       }
       serverNotesPath = resolve(parsed.value)
       index = parsed.next
+    } else if (arg === '--accounts') {
+      accounts = true
+    } else if (
+      arg === '--accounts-store' ||
+      arg?.startsWith('--accounts-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--accounts-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--accounts-store must be an absolute path')
+      }
+      accountsStorePath = resolve(parsed.value)
+      accountsStoreGiven = true
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -626,6 +661,12 @@ export function parseConsoleArgs(
     if (!auditTargets.some(target => target.node === mirror.node)) {
       throw new Error(`--audit-mirror names unknown audit node ${mirror.node}`)
     }
+  }
+
+  // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
+  // 上线，而页面上什么都没变。
+  if (accountsStoreGiven && !accounts) {
+    throw new Error('--accounts-store needs --accounts')
   }
 
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
@@ -653,6 +694,9 @@ export function parseConsoleArgs(
     chatStorePath,
     nodeServers,
     serverNotesPath,
+    // Both keys only when the feature is on: a config without accounts has
+    // exactly the shape it had before accounts existed.
+    ...(accounts ? { accounts, accountsStorePath } : {}),
   }
 }
 
@@ -773,6 +817,15 @@ Options (each accepts both --name value and --name=value):
   --server-notes <abs path>
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
+  --accounts               Turn on personal accounts: invitation links, one
+                           personal credential per person. Off by default,
+                           and off is exactly the console without accounts.
+                           The view and admin tokens keep working beside
+                           them.
+  --accounts-store <abs path>
+                           Where the account ledger lands, absolute path.
+                           Default <config root>/qianmo/console/accounts.ndjson.
+                           Only with --accounts.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.

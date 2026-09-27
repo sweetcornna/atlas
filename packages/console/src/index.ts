@@ -82,6 +82,15 @@ export {
 export { LoginThrottle } from './throttle.js'
 
 export {
+  AccountBook,
+  MAX_OPEN_INVITES,
+  type AccountBookOptions,
+  type AccountRole,
+  type AccountSubject,
+} from './accounts.js'
+export type { LedgerPort } from './deps.js'
+
+export {
   API_PREFIX,
   CHAT_STREAM_HEARTBEAT_MS,
   MAX_AUDIT_LIMIT,
@@ -89,6 +98,7 @@ export {
   parseAuditFilter,
   startConsoleServer,
   type ClientAddressSource,
+  type ConsoleAccounts,
   type ConsoleServerHandle,
   type ConsoleServerOptions,
 } from './http.js'

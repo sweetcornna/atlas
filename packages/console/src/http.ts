@@ -42,6 +42,11 @@
  * | GET | `/v0/chat/stream` | **admin** | `text/event-stream` |
  * | GET | `/fragments/chat/sessions?active=<id>` | **admin** | `text/html` fragment |
  * | GET | `/fragments/chat/thread/<enc id>` | **admin** | `text/html` fragment |
+ * | GET, POST | `/invite` | public | accounts only — see `accountsHttp.ts` |
+ * | * | `/v0/accounts/…` | admin | accounts only — see `accountsHttp.ts` |
+ *
+ * The last two rows exist only on a console handed an {@link AccountBook};
+ * without one they are the plain 404 they always were.
  *
  * ## Chat is admin-only, all of it
  *
@@ -146,6 +151,11 @@
  * redirected them would redirect them straight back.
  */
 
+import {
+  assertTokensUnlikeAccountSecrets,
+  type AccountBook,
+} from './accounts.js'
+import { handleAccountsApi, handleInvite } from './accountsHttp.js'
 import { CONSOLE_CLIENT_JS } from './assets/client.js'
 import { CONSOLE_CSS } from './assets/css.js'
 import {
@@ -205,6 +215,17 @@ import {
 } from './view/servers.js'
 import { renderLoginPage } from './view/login.js'
 import { renderPage } from './view/page.js'
+import {
+  DOCUMENT_HEADERS,
+  fail,
+  html,
+  json,
+  methodNotAllowed,
+  notFound,
+  readForm,
+  readJsonObject,
+  seeOther,
+} from './respond.js'
 import { LoginThrottle } from './throttle.js'
 
 /** Prefix of every JSON route in this API version. */
@@ -234,63 +255,6 @@ const DEFAULT_LABEL = '阡陌控制台'
 const DEFAULT_BIN_NAME = 'qm'
 const DEFAULT_AUDIT_SOURCE_NODE = 'default'
 
-const JSON_HEADERS = {
-  'content-type': 'application/json; charset=utf-8',
-  'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
-} as const
-
-/**
- * Headers for anything a browser renders.
- *
- * `no-referrer` matters here rather than being boilerplate: the page URL can
- * carry the token (`?token=…`), and a default `Referer` would hand it to
- * whatever the operator clicks next.
- */
-const DOCUMENT_HEADERS = {
-  'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer',
-} as const
-
-/** Error vocabulary of this surface. `code` is for clients, not for users. */
-type ConsoleErrorCode =
-  | ConsoleFailure['code']
-  | 'unauthorized'
-  | 'forbidden'
-  | 'method_not_allowed'
-  | 'internal'
-
-function json(
-  body: unknown,
-  status = 200,
-  headers: Record<string, string> = {},
-): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...JSON_HEADERS, ...headers },
-  })
-}
-
-function fail(
-  status: number,
-  code: ConsoleErrorCode,
-  message: string,
-  headers: Record<string, string> = {},
-): Response {
-  return json({ error: { code, message } }, status, headers)
-}
-
-function html(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      'content-type': 'text/html; charset=utf-8',
-      ...DOCUMENT_HEADERS,
-    },
-  })
-}
-
 function asset(body: string, contentType: string): Response {
   return new Response(body, {
     status: 200,
@@ -299,16 +263,6 @@ function asset(body: string, contentType: string): Response {
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
     },
-  })
-}
-
-function notFound(message: string): Response {
-  return fail(404, 'not_found', message)
-}
-
-function methodNotAllowed(allowed: readonly string[]): Response {
-  return fail(405, 'method_not_allowed', `允许的方法：${allowed.join(', ')}`, {
-    allow: allowed.join(', '),
   })
 }
 
@@ -423,31 +377,6 @@ function guard(
 // --- the login door ------------------------------------------------------
 
 /**
- * Biggest login body this will read.
- *
- * The form has two short fields. Anything larger is not a login attempt, and
- * refusing it by `Content-Length` costs nothing while reading it costs whatever
- * the sender decided.
- */
-const MAX_LOGIN_BODY_BYTES = 4096
-
-/** A redirect that carries no body. `303` so a POST becomes a GET. */
-function seeOther(
-  location: string,
-  headers: Record<string, string> = {},
-): Response {
-  return new Response(null, {
-    status: 303,
-    headers: {
-      location,
-      'cache-control': 'no-store',
-      'referrer-policy': 'no-referrer',
-      ...headers,
-    },
-  })
-}
-
-/**
  * True when this request is a person navigating rather than a script calling.
  *
  * `Accept` is the whole judgement, and it is only consulted for a `GET`: a
@@ -529,23 +458,6 @@ function documentDenial(
   return denied
 }
 
-/** The login form's body, or `null` when this is not one. */
-async function readLoginForm(
-  request: Request,
-): Promise<URLSearchParams | null> {
-  const declared = Number(request.headers.get('content-length') ?? '')
-  if (Number.isFinite(declared) && declared > MAX_LOGIN_BODY_BYTES) return null
-  const type = request.headers.get('content-type') ?? ''
-  if (!type.includes('application/x-www-form-urlencoded')) return null
-  try {
-    const text = await request.text()
-    if (text.length > MAX_LOGIN_BODY_BYTES) return null
-    return new URLSearchParams(text)
-  } catch {
-    return null
-  }
-}
-
 /**
  * `GET /login` renders the field; `POST /login` checks it and sets the cookie.
  *
@@ -591,7 +503,7 @@ async function handleLogin(
     return fail(403, 'forbidden', '登录只接受来自本控制台自己页面的提交。')
   }
 
-  const form = await readLoginForm(request)
+  const form = await readForm(request)
   if (form === null) {
     return fail(400, 'invalid', '请求体必须是登录表单')
   }
@@ -780,24 +692,6 @@ export function parseAuditFilter(
 type Parsed<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly message: string }
-
-async function readJsonObject(
-  request: Request,
-): Promise<Record<string, unknown> | null> {
-  try {
-    const parsed: unknown = await request.json()
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      return null
-    }
-    return parsed as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
 
 function requiredString(
   body: Record<string, unknown>,
@@ -1660,8 +1554,23 @@ async function dispatchApi(
   url: URL,
   segments: readonly string[],
   now: number,
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const head = segments[1]
+
+  // Only when accounts are on: without a book this path is the plain 404 it
+  // has always been (`test/legacyParity.test.ts`).
+  if (head === 'accounts' && accounts !== undefined) {
+    const denied = guard(credential, 'admin', 'guarded')
+    if (denied !== null) return denied
+    return await handleAccountsApi(
+      request,
+      accounts.book,
+      'legacy:admin',
+      segments,
+      url,
+    )
+  }
 
   if (head === 'health' && segments.length === 2) {
     // Public: a liveness probe that needs a credential is a probe nobody wires.
@@ -1829,6 +1738,7 @@ async function route(
   throttle: LoginThrottle,
   clientKey: string,
   now: () => number,
+  accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
   const url = new URL(request.url)
   const segments = url.pathname.split('/').filter(s => s.length > 0)
@@ -1867,6 +1777,22 @@ async function route(
     return handleLogout(request)
   }
 
+  // The invitation door. Public like `/login` — an invitee has no credential
+  // yet, that is the point — and absent entirely without accounts.
+  if (
+    accounts !== undefined &&
+    segments[0] === 'invite' &&
+    segments.length === 1
+  ) {
+    return await handleInvite(request, {
+      book: accounts.book,
+      label: deps.label ?? DEFAULT_LABEL,
+      throttle,
+      clientKey,
+      now: now(),
+    })
+  }
+
   if (segments.length === 0) {
     const denied = guard(credential, 'view', 'document')
     if (denied !== null) return documentDenial(request, denied, deps, url)
@@ -1886,7 +1812,15 @@ async function route(
   }
 
   if (segments[0] === 'v0') {
-    return await dispatchApi(request, deps, credential, url, segments, now())
+    return await dispatchApi(
+      request,
+      deps,
+      credential,
+      url,
+      segments,
+      now(),
+      accounts,
+    )
   }
 
   if (segments[0] === 'fragments' && segments.length >= 2) {
@@ -1944,7 +1878,9 @@ function clientKeyOf(request: Request, source?: ClientAddressSource): string {
 export function createConsoleHandler(
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
+  accounts?: ConsoleAccounts,
 ): (request: Request, source?: ClientAddressSource) => Promise<Response> {
+  if (accounts !== undefined) assertTokensUnlikeAccountSecrets(tokens)
   const now = deps.now ?? Date.now
   const throttle = new LoginThrottle()
   return async (
@@ -1959,6 +1895,7 @@ export function createConsoleHandler(
         throttle,
         clientKeyOf(request, source),
         now,
+        accounts,
       )
     } catch (error) {
       // Only reachable when a port breaks its contract and throws. The message
@@ -1976,6 +1913,19 @@ export interface ConsoleServerOptions {
   readonly hostname?: string
   /** The pair from `resolveTokens`. Required: there is no anonymous console. */
   readonly tokens: ConsoleTokens
+  /** Personal accounts. Absent is today's console, byte for byte. */
+  readonly accounts?: ConsoleAccounts
+}
+
+/**
+ * Personal accounts, as the HTTP layer receives them (`tenancy-m1.md` §3).
+ *
+ * Passed beside the tokens rather than inside {@link ConsoleDeps}: the tokens
+ * and the book are the two halves of "who is this", and neither is a port the
+ * pages read from.
+ */
+export interface ConsoleAccounts {
+  readonly book: AccountBook
 }
 
 /** Live server handle returned by {@link startConsoleServer}. */
@@ -2016,7 +1966,7 @@ export function startConsoleServer(
       255,
       Math.ceil((CHAT_STREAM_HEARTBEAT_MS / 1_000) * 2),
     ),
-    fetch: createConsoleHandler(deps, options.tokens),
+    fetch: createConsoleHandler(deps, options.tokens, options.accounts),
   })
 
   return {
