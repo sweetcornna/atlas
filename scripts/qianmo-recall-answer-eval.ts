@@ -8,12 +8,16 @@
  *
  *   --dry-run   offline token estimate from the real corpora and prompt; no
  *               network, no ledger. Without plan flags it prints the P16.4
- *               trial and the P16.12 comparison, both as preregistered.
+ *               trial and the P16.12 comparison, both as preregistered. The
+ *               M1 arm's block is built by P16.6's hybrid retrieval on a
+ *               stand-in (non-semantic) embedder.
  *   --replay    re-score a recorded run from a fixture; no network. Uses its
  *               own ledger inside the output directory, never the real one.
+ *               The M1 arm replays the fixture's recorded embedding vectors.
  *   --live      real calls through the AC-4 request chain. Needs
  *               OPENAI_API_KEY and OPENAI_BASE_URL; without them it prints why
- *               and exits 0 without touching anything.
+ *               and exits 0 without touching anything. M0 only until the
+ *               embedding adapter (P16.7) exists.
  *
  * Usage:
  *   bun run scripts/qianmo-recall-answer-eval.ts --dry-run [plan flags] [--json <path>]
@@ -68,9 +72,14 @@ import {
 } from '../packages/recall/eval/answer/replay.js'
 import type { AnswerReport } from '../packages/recall/eval/answer/report.js'
 import { InvalidRound } from '../packages/recall/eval/answer/score.js'
+import {
+  m1Arm,
+  replayEmbedder,
+} from '../packages/recall/eval/answer/semantic.js'
 import type {
   AnswerTransport,
   Arm,
+  ArmRetriever,
 } from '../packages/recall/eval/answer/types.js'
 import {
   CORPORA,
@@ -326,8 +335,6 @@ const NOT_COUNTED: Readonly<Record<string, string>> = {
   'second rounds after a rejection (only rejected answers get one)':
     '被拒后的第二轮（只有被拒的回答才有）',
   'retries beyond the 20 % margin': '超出 20% 余量的重试',
-  'the M1 arm is sized with the M0 prompt (same injection budget)':
-    'M1 臂按 M0 的提示词计（注入预算相同）',
 }
 
 function renderEstimate(
@@ -367,6 +374,12 @@ function renderEstimate(
   )
   const notCounted = estimate.notCounted.map(note => NOT_COUNTED[note] ?? note)
   lines.push(`- 未计入：${notCounted.join('；')}`)
+  if (estimate.embedding !== null) {
+    lines.push(
+      '- M1 臂：注入块由 P16.6 的混合检索在替身向量（非语义）上选出，反映块的形态与大小，不代表真实 embedding 会选中哪些条目',
+      `- M1 臂 embedding（悲观口径，不计入上表与 D-7）：回填 ${fmt(estimate.embedding.backfill)} token（每档一次），查询 ${fmt(estimate.embedding.recall)} token`,
+    )
+  }
   return lines.join('\n')
 }
 
@@ -461,12 +474,13 @@ async function execute(
   } catch (error) {
     throw new UsageError(error instanceof Error ? error.message : String(error))
   }
-  if (plan.arms.includes('m1')) {
+  if (cli.mode === 'live' && plan.arms.includes('m1')) {
     throw new UsageError(
-      'the M1 arm has no retriever until P16.6 lands; run --arms m0',
+      'the M1 arm runs with --replay or --dry-run only until the embedding adapter (P16.7) lands; run --arms m0',
     )
   }
   const providers = providersOf(plan)
+  const retrievers: Partial<Record<Arm, ArmRetriever>> = { m0: m0Retriever }
   let transports: AnswerTransport[]
   let ledgerFile: string
   let cap: { input: number; output: number }
@@ -487,6 +501,14 @@ async function execute(
     cap = { input: cli.capInput ?? 0, output: cli.capOutput ?? 0 }
   } else {
     const fixture = readFixture(cli.fixture ?? '')
+    if (plan.arms.includes('m1')) {
+      if (fixture.embeddings === undefined) {
+        throw new UsageError(
+          'the fixture has no recorded embeddings, so the M1 arm cannot be replayed; run --arms m0',
+        )
+      }
+      retrievers.m1 = m1Arm(replayEmbedder(fixture.embeddings)).retrieve
+    }
     transports = providers.map(provider =>
       replayTransport(fixture, {
         providerId: provider.id,
@@ -506,7 +528,7 @@ async function execute(
   try {
     const report = await runAnswerEval(plan, {
       transports,
-      retrievers: { m0: m0Retriever },
+      retrievers,
       ledger,
       outDir: cli.out,
       prereg,

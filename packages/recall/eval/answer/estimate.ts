@@ -7,8 +7,9 @@
  * before anything is spent.
  *
  * The request of every first-round call is built exactly as a run would
- * build it (M0 retrieval, `buildRecallSystemPrompt`, the question as the one
- * user message) and handed to `measure`, which the command line supplies: it
+ * build it (the arm's retrieval, `buildRecallSystemPrompt`, the question as
+ * the one user message) and handed to `measure`, which the command line
+ * supplies: it
  * turns the request into the wire body with the base's adapter chain and
  * returns the text the model would read. Characters are then converted with
  * the design's ranges (`docs/dev/memory-m1.md` §10): CJK 0.7–1 token per
@@ -17,14 +18,21 @@
  *
  * Not counted, and said so in the result: second rounds after a rejection
  * (they happen only for rejected answers, which is exactly what is not yet
- * known) and retries (the design adds a 20 % margin for those). The M1 arm is
- * estimated with M0's prompt: both fill the same injection budget.
+ * known) and retries (the design adds a 20 % margin for those).
+ *
+ * The M1 arm is P16.6's hybrid retrieval on `semantic.ts`'s stand-in
+ * embedder: its block has M1's real shape and size — the hybrid header and
+ * marks, the floor, entries the fill brings in — but which entries those are
+ * says nothing about a real embedding model. The embedding tokens the arm
+ * would be charged (backfill per tier, one query each) are reported apart:
+ * they are not model-call tokens and do not count against D-7.
  */
 
 import { buildRecallSystemPrompt } from '../../src/inject.js'
 import type { CorpusId } from '../corpora.js'
 import { ANSWER_TOKEN_CEILING } from './ledger.js'
 import { type AnswerPlan, m0Retriever, prepareTier } from './runner.js'
+import { m1Arm, standInEmbedder } from './semantic.js'
 import type { AnswerRequest, TokenUsage } from './types.js'
 
 type CharCount = { readonly cjk: number; readonly other: number }
@@ -101,6 +109,14 @@ export type AnswerEstimate = {
   /** How many calls of this plan's average size fit under the ceiling. */
   readonly callsUnderCeiling: TokenRange
   readonly notCounted: readonly string[]
+  /**
+   * Embedding tokens of the M1 arm (`null` without it), at the pessimistic
+   * rate the production meter reserves with. Separate from the totals above.
+   */
+  readonly embedding: {
+    readonly backfill: number
+    readonly recall: number
+  } | null
 }
 
 const add = (a: TokenRange, b: TokenRange): TokenRange => ({
@@ -123,19 +139,28 @@ export async function estimateAnswerPlan(
   const rows = new Map<string, EstimateRow>()
   const perQuestion = plan.repetitions * plan.arms.length
   const { outputTokensPerCall } = ESTIMATE_RATES
+  const m1 = plan.arms.includes('m1') ? m1Arm(standInEmbedder) : null
+  const retrievers = {
+    m0: m0Retriever,
+    ...(m1 === null ? {} : { m1: m1.retrieve }),
+  }
   for (const { id, tiers } of plan.corpora) {
     for (const tier of tiers) {
       const prepared = await prepareTier(
         id as CorpusId,
         tier,
-        { arms: ['m0'], queryIds: plan.queryIds, seed: plan.seed },
-        { m0: m0Retriever },
+        { arms: plan.arms, queryIds: plan.queryIds, seed: plan.seed },
+        retrievers,
       )
       try {
         for (const { query, results } of prepared.queries.values()) {
-          const result = results.m0
-          if (result === undefined) throw new Error('estimate: no M0 result')
-          const system = buildRecallSystemPrompt(result)
+          const systems = plan.arms.map(arm => {
+            const result = results[arm]
+            if (result === undefined) {
+              throw new Error(`estimate: no ${arm} result`)
+            }
+            return buildRecallSystemPrompt(result)
+          })
           const key = JSON.stringify([id, tier, query.kind])
           const row = rows.get(key) ?? {
             corpus: id,
@@ -147,23 +172,26 @@ export async function estimateAnswerPlan(
             output: { low: 0, high: 0 },
           }
           let input: TokenRange = { low: 0, high: 0 }
-          for (const provider of plan.providers) {
-            const tokens = inputTokens(
-              countChars(
-                measure(
-                  {
-                    callKey: `estimate/${id}/${tier}/${query.id}/${provider}`,
-                    system,
-                    turns: [{ role: 'user', text: query.question }],
-                  },
-                  provider,
+          for (const [index, system] of systems.entries()) {
+            const arm = plan.arms[index] ?? ''
+            for (const provider of plan.providers) {
+              const tokens = inputTokens(
+                countChars(
+                  measure(
+                    {
+                      callKey: `estimate/${id}/${tier}/${query.id}/${provider}/${arm}`,
+                      system,
+                      turns: [{ role: 'user', text: query.question }],
+                    },
+                    provider,
+                  ),
                 ),
-              ),
-            )
-            input = add(input, {
-              low: tokens.low * perQuestion,
-              high: tokens.high * perQuestion,
-            })
+              )
+              input = add(input, {
+                low: tokens.low * plan.repetitions,
+                high: tokens.high * plan.repetitions,
+              })
+            }
           }
           const calls = plan.providers.length * perQuestion
           rows.set(key, {
@@ -230,7 +258,7 @@ export async function estimateAnswerPlan(
     notCounted: [
       'second rounds after a rejection (only rejected answers get one)',
       'retries beyond the 20 % margin',
-      'the M1 arm is sized with the M0 prompt (same injection budget)',
     ],
+    embedding: m1?.embeddingTokens() ?? null,
   }
 }

@@ -89,7 +89,7 @@ export interface AnswerTransport {
 /**
  * An arm's retrieval: given the store and the request `recall()` would get,
  * the result whose injection goes into the system prompt. M0 is `recall`
- * itself; M1 arrives with P16.6.
+ * itself; M1 is P16.6's `recallHybrid`, wired in `semantic.ts`.
  */
 export type ArmRetriever = (
   store: FileMemoryStore,

@@ -139,8 +139,8 @@ bun test tests/integration/qianmo-memory-recall.test.ts    # AC-4 集成腿：23
 | M0 检索基线（v0.1 语料） | `bun run qianmo:recall-baseline` | 输出逐字节等于 §3 公布的 SHA-256，不要改它 |
 | M0 检索基线（M1 语料） | `bun run qianmo:recall-baseline --corpus synthetic-v1`（或 `docs-dev-v1`；`--digest` 只出语料哈希） | 加固合成语料与 `docs/dev` 第二语料，种子与档位按预注册，不接受 `--seed` / `--tiers` |
 | 重生成第二语料 | `bun run scripts/qianmo-recall-docs-corpus.ts [--check]` | 只读钉住提交上的文件；人名、账号只以哈希入库 |
-| 回答层 token 预估 | `bun run scripts/qianmo-recall-answer-eval.ts --dry-run` | 离线；默认给出 P16.4 试跑（`prereg.toml` `[trial]`）与 P16.12 对比（`[plan]`）两份 |
-| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `occConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零 |
+| 回答层 token 预估 | `bun run scripts/qianmo-recall-answer-eval.ts --dry-run` | 离线；默认给出 P16.4 试跑（`prereg.toml` `[trial]`）与 P16.12 对比（`[plan]`）两份。M1 臂的注入块由 `recallHybrid` 在替身向量（非语义）上选出，另报 embedding token 预估 |
+| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `occConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零。M1 臂回放时读 fixture 里落档的向量（`embeddings`），缺向量或退化即中止；P16.7 之前 `--live` 拒绝 M1 臂 |
 | 留出集零词面校验 | `bun run scripts/qianmo-recall-heldout-check.ts <file>` | 用语料自己的分词逐题核对与 gold 条目零重叠，末行给出 `heldout_ids_sha256`；0 干净 / 1 有问题 / 2 文件或用法错 |
 | 冻结预注册值 | `bun run scripts/qianmo-recall-freeze.ts [--check]` | 重算语料哈希、M0 基线哈希与留出集哈希，只填空着的键；已有值只核不改，不一致退出 1 |
 

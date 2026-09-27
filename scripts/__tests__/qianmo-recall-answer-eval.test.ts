@@ -12,7 +12,37 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { parseCli } from '../qianmo-recall-answer-eval.js'
+import {
+  TokenLedger,
+  TRIAL_TOKEN_CEILING,
+} from '../../packages/recall/eval/answer/ledger.js'
+import {
+  type Exchange,
+  FIXTURE_SCHEMA,
+  recordingTransport,
+  writeFixture,
+} from '../../packages/recall/eval/answer/replay.js'
+import type { AnswerReport } from '../../packages/recall/eval/answer/report.js'
+import {
+  m0Retriever,
+  REPORT_FILE,
+  runAnswerEval,
+} from '../../packages/recall/eval/answer/runner.js'
+import {
+  m1Arm,
+  standInEmbedder,
+} from '../../packages/recall/eval/answer/semantic.js'
+import type {
+  AnswerRequest,
+  AnswerResponse,
+  AnswerTransport,
+} from '../../packages/recall/eval/answer/types.js'
+import { loadPreregistration } from '../../packages/recall/eval/prereg.js'
+import {
+  contentHash,
+  type EmbeddingProvider,
+} from '../../packages/recall/src/embedding.js'
+import { parseCli, planOf } from '../qianmo-recall-answer-eval.js'
 import {
   buildWireBody,
   liveCredentials,
@@ -250,4 +280,207 @@ describe('command line', () => {
     expect(() => parseCli(['--live', '--dry-run'])).toThrow(/choose one/)
     expect(parseCli([]).mode).toBe('dry-run')
   })
+})
+
+describe('the M1 arm (P16.6): replay and dry run only', () => {
+  /** A scripted model that cites the last entry of whatever block it gets. */
+  function citeLast(providerId: string): AnswerTransport {
+    const respond = (request: AnswerRequest): AnswerResponse => {
+      const ids = [...request.system.join('\n').matchAll(/^entry_id: (\S+)$/gm)]
+      const last = ids.at(-1)?.[1]
+      return {
+        model: `${providerId}-model-v1`,
+        thinking: '',
+        text: '',
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'qianmo_memory_answer',
+            input: {
+              answer: last === undefined ? '没有记录。' : '见记忆条目。',
+              citations: last === undefined ? [] : [last],
+            },
+          },
+        ],
+        stopReason: 'tool_use',
+        usage: { input: 1000, output: 100 },
+      }
+    }
+    return {
+      providerId,
+      requestedModel: `${providerId}-model`,
+      maxOutputTokens: 8192,
+      inputUpperBound: () => 2000,
+      send: async request => respond(request),
+    }
+  }
+
+  test('--replay runs the M1 arm on the fixture vectors and reproduces the recorded run', async () => {
+    const directory = scratch()
+    const prereg = loadPreregistration()
+    const plan = planOf(
+      { corpora: null, tiers: [500], reps: null, arms: ['m0', 'm1'] },
+      'trial',
+      prereg,
+      { runId: 'm1-cli', concurrency: 2 },
+    )
+    const identity = {
+      id: 'test-embedder',
+      model: 'test-v1',
+      dimensions: standInEmbedder.dimensions,
+    }
+    const vectors: Record<string, number[]> = {}
+    const embedder: EmbeddingProvider = {
+      ...identity,
+      embed: async (texts, options) => {
+        const batch = await standInEmbedder.embed(texts, options)
+        for (const [index, text] of texts.entries()) {
+          vectors[contentHash(text)] = [...(batch.vectors[index] ?? [])]
+        }
+        return batch
+      },
+    }
+    const sink: Record<string, Exchange> = {}
+    const ledger = TokenLedger.open(join(directory, 'ledger.json'), {
+      runId: plan.runId,
+      phase: plan.phase,
+      cap: TRIAL_TOKEN_CEILING,
+    })
+    let recorded: AnswerReport
+    try {
+      recorded = await runAnswerEval(plan, {
+        transports: plan.providers.map(id =>
+          recordingTransport(citeLast(id), sink),
+        ),
+        retrievers: { m0: m0Retriever, m1: m1Arm(embedder).retrieve },
+        ledger,
+        outDir: join(directory, 'live'),
+        prereg: { values: prereg, sha256: 'test' },
+      })
+    } finally {
+      ledger.close()
+    }
+    expect(recorded.status).toBe('complete')
+    // The M1 arm sent its own block: the two arms' requests differ.
+    const differing = Object.entries(sink).filter(
+      ([key, exchange]) =>
+        key.includes('/m1/') &&
+        sink[key.replace('/m1/', '/m0/')]?.requestSha256 !==
+          exchange.requestSha256,
+    )
+    expect(differing.length).toBeGreaterThan(0)
+
+    const fixture = join(directory, 'fixture.json')
+    writeFixture(fixture, {
+      schema: FIXTURE_SCHEMA,
+      exchanges: sink,
+      embeddings: { embedder: identity, vectors },
+    })
+    const out = join(directory, 'replay')
+    const result = runCli(
+      [
+        '--replay',
+        fixture,
+        '--run-id',
+        'm1-cli',
+        '--out',
+        out,
+        '--phase',
+        'trial',
+        '--tiers',
+        '500',
+        '--arms',
+        'm0,m1',
+      ],
+      envWithout('OPENAI_API_KEY', 'OPENAI_BASE_URL'),
+    )
+    expect(result.stderr).toBe('')
+    expect(result.exitCode).toBe(0)
+    const replayed = JSON.parse(
+      readFileSync(join(out, REPORT_FILE), 'utf8'),
+    ) as AnswerReport
+    // 101 questions × 2 providers × 2 arms.
+    expect(replayed.calls.completed).toBe(404)
+    expect(replayed.summary).toEqual(recorded.summary)
+  }, 120_000)
+
+  test('refused with --live, and with a fixture that has no vectors', () => {
+    const directory = scratch()
+    const live = runCli(
+      [
+        '--live',
+        '--phase',
+        'trial',
+        '--run-id',
+        't1',
+        '--out',
+        join(directory, 'live'),
+        '--cap-input',
+        '1000',
+        '--cap-output',
+        '1000',
+        '--arms',
+        'm0,m1',
+      ],
+      {
+        ...envWithout('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CLAUDE_CONFIG_DIR'),
+        OCC_CONFIG_DIR: directory,
+      },
+    )
+    expect(live.exitCode).toBe(2)
+    expect(live.stderr).toContain('--replay or --dry-run only')
+    expect(existsSync(join(directory, 'live'))).toBe(false)
+    expect(existsSync(join(directory, 'qianmo'))).toBe(false)
+
+    const fixture = join(directory, 'm0-only.json')
+    writeFixture(fixture, { schema: FIXTURE_SCHEMA, exchanges: {} })
+    const replay = runCli(
+      [
+        '--replay',
+        fixture,
+        '--run-id',
+        't2',
+        '--out',
+        join(directory, 'replay'),
+        '--phase',
+        'trial',
+        '--arms',
+        'm0,m1',
+      ],
+      envWithout('OPENAI_API_KEY'),
+    )
+    expect(replay.exitCode).toBe(2)
+    expect(replay.stderr).toContain('no recorded embeddings')
+  }, 60_000)
+
+  test('--dry-run sizes the M1 arm with its own block and reports its embedding tokens', () => {
+    const directory = scratch()
+    const estimate = (arms: string) => {
+      const json = join(directory, `${arms}.json`)
+      const result = runCli(
+        ['--dry-run', '--tiers', '500', '--arms', arms, '--json', json],
+        envWithout('OPENAI_API_KEY'),
+      )
+      expect(result.exitCode).toBe(0)
+      const [only] = JSON.parse(readFileSync(json, 'utf8')) as {
+        estimate: {
+          total: { calls: number; input: { high: number } }
+          embedding: { backfill: number; recall: number } | null
+        }
+      }[]
+      return { stdout: result.stdout, estimate: only?.estimate }
+    }
+    const m0 = estimate('m0')
+    const both = estimate('m0,m1')
+    expect(m0.estimate?.embedding).toBeNull()
+    expect(both.estimate?.total.calls).toBe(2 * (m0.estimate?.total.calls ?? 0))
+    // Not M0's prompt counted twice: M1's block is its own.
+    expect(both.estimate?.total.input.high).not.toBe(
+      2 * (m0.estimate?.total.input.high ?? 0),
+    )
+    expect(both.estimate?.embedding?.backfill).toBeGreaterThan(0)
+    expect(both.estimate?.embedding?.recall).toBeGreaterThan(0)
+    expect(both.stdout).toContain('替身向量（非语义）')
+    expect(m0.stdout).not.toContain('M1 臂 embedding')
+  }, 120_000)
 })

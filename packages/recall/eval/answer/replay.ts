@@ -13,10 +13,16 @@
  *
  * The digest covers what the executor controls — system prompt and turns —
  * not the wire body, which is the live transport's business.
+ *
+ * A fixture of a run with the M1 arm also carries the embedding vectors that
+ * run used (`embeddings`, see `semantic.ts`). The digest check covers them
+ * indirectly: a different vector changes the M1 block, and with it the
+ * request.
  */
 
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
+import type { RecordedVectors } from './semantic.js'
 import type { AnswerRequest, AnswerResponse, AnswerTransport } from './types.js'
 
 export const FIXTURE_SCHEMA = 'qianmo-recall-answer-fixture/v1'
@@ -30,6 +36,22 @@ export type Exchange = {
 type ReplayFixture = {
   readonly schema: typeof FIXTURE_SCHEMA
   readonly exchanges: Readonly<Record<string, Exchange>>
+  /** The M1 arm's vectors; absent in a fixture of an M0-only run. */
+  readonly embeddings?: RecordedVectors
+}
+
+function isRecordedVectors(value: unknown): value is RecordedVectors {
+  if (typeof value !== 'object' || value === null) return false
+  const { embedder, vectors } = value as Record<string, unknown>
+  if (typeof embedder !== 'object' || embedder === null) return false
+  const { id, model, dimensions } = embedder as Record<string, unknown>
+  return (
+    typeof id === 'string' &&
+    typeof model === 'string' &&
+    Number.isSafeInteger(dimensions) &&
+    typeof vectors === 'object' &&
+    vectors !== null
+  )
 }
 
 /** Recorded or replayed call keys that do not match the fixture. */
@@ -53,7 +75,8 @@ export function readFixture(path: string): ReplayFixture {
   const fixture = JSON.parse(readFileSync(path, 'utf8')) as ReplayFixture
   if (
     fixture.schema !== FIXTURE_SCHEMA ||
-    typeof fixture.exchanges !== 'object'
+    typeof fixture.exchanges !== 'object' ||
+    (fixture.embeddings !== undefined && !isRecordedVectors(fixture.embeddings))
   ) {
     throw new Error(`replay: ${path} is not a ${FIXTURE_SCHEMA} file`)
   }

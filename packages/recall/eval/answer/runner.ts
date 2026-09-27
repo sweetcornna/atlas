@@ -381,7 +381,7 @@ export async function runAnswerEval(
   checkPlan(plan, deps.prereg.values)
   if (plan.arms.includes('m1') && deps.retrievers.m1 === undefined) {
     throw new Error(
-      'answer eval: the M1 arm has no retriever yet (P16.6); run the M0 arm alone',
+      'answer eval: the M1 arm has no retriever; pass one (semantic.ts m1Arm) or run the M0 arm alone',
     )
   }
   const transports = new Map(deps.transports.map(t => [t.providerId, t]))

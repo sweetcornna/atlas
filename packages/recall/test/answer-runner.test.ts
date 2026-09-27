@@ -58,6 +58,11 @@ import {
   secondRoundBound,
 } from '../eval/answer/runner.js'
 import { InvalidRound } from '../eval/answer/score.js'
+import {
+  m1Arm,
+  replayEmbedder,
+  standInEmbedder,
+} from '../eval/answer/semantic.js'
 import type {
   AnswerRequest,
   AnswerResponse,
@@ -67,6 +72,8 @@ import type {
 import { CORPORA } from '../eval/corpora.js'
 import { parsePreregistration, type Preregistration } from '../eval/prereg.js'
 import { UNBOUNDED } from '../eval/run.js'
+import { contentHash, type EmbeddingProvider } from '../src/embedding.js'
+import { buildRecallSystemPrompt } from '../src/inject.js'
 import { recall } from '../src/recall.js'
 
 const CORPUS = CORPORA['synthetic-v1']
@@ -565,6 +572,195 @@ describe('record, then replay without a network', () => {
       transport.send({ callKey: 'missing', system: [], turns: [] }),
     ).rejects.toThrow(/not in the fixture/)
   })
+})
+
+describe('the M1 arm: P16.6 hybrid retrieval, replayed from recorded vectors', () => {
+  const retrievalOf = (result: object | undefined): unknown =>
+    result !== undefined && 'retrieval' in result ? result.retrieval : null
+
+  /** A stand-in live embedder that files every vector it hands out. */
+  function recording(vectors: Record<string, number[]>): EmbeddingProvider {
+    return {
+      id: 'test-embedder',
+      model: 'test-v1',
+      dimensions: standInEmbedder.dimensions,
+      embed: async (texts, options) => {
+        const batch = await standInEmbedder.embed(texts, options)
+        for (const [index, text] of texts.entries()) {
+          vectors[contentHash(text)] = [...(batch.vectors[index] ?? [])]
+        }
+        return batch
+      },
+    }
+  }
+
+  test('ranked: hybrid on a warm index with the floor kept; full: the M0 block', async () => {
+    const arm = m1Arm(standInEmbedder)
+    const retrievers = { m0: m0Retriever, m1: arm.retrieve }
+    const plan = { arms: ['m0', 'm1'] as const, queryIds: QUERIES, seed: SEED }
+    const ranked = await prepareTier('synthetic-v1', 500, plan, retrievers)
+    try {
+      let filled = 0
+      for (const { results } of ranked.queries.values()) {
+        const [m0, m1] = [results.m0, results.m1]
+        if (m0 === undefined || m1 === undefined) fail()
+        expect(retrievalOf(m1)).toBe('hybrid')
+        const floor = Math.ceil(m0.entries.length / 2)
+        const ids = (r: typeof m0) => r.entries.map(e => e.entry.id)
+        expect(ids(m1).slice(0, floor)).toEqual(ids(m0).slice(0, floor))
+        expect(buildRecallSystemPrompt(m1).join('\n')).toContain(
+          'retrieval="hybrid"',
+        )
+        if (ids(m1).some(id => !ids(m0).includes(id))) filled += 1
+      }
+      // The stand-in is not semantic, but its fill does change the block.
+      expect(filled).toBeGreaterThan(0)
+    } finally {
+      ranked.materialised.dispose()
+    }
+    const full = await prepareTier('synthetic-v1', 30, plan, retrievers)
+    try {
+      for (const { results } of full.queries.values()) {
+        const [m0, m1] = [results.m0, results.m1]
+        if (m0 === undefined || m1 === undefined) fail()
+        expect(retrievalOf(m1)).toBe('deterministic')
+        expect(buildRecallSystemPrompt(m1)).toEqual(buildRecallSystemPrompt(m0))
+      }
+    } finally {
+      full.materialised.dispose()
+    }
+    // One backfill per tier, one query embedded per ranked question; full
+    // mode embeds no query.
+    const tokens = arm.embeddingTokens()
+    expect(tokens.backfill).toBeGreaterThan(0)
+    expect(tokens.recall).toBeGreaterThan(0)
+  }, 60_000)
+
+  test('record, then replay: same report; a missing or changed vector is refused', async () => {
+    const plan = { ...PLAN, runId: 'm1-record', repetitions: 1 }
+    const vectors: Record<string, number[]> = {}
+    const sink: Record<string, Exchange> = {}
+    const recorded = await run(
+      plan,
+      ['prov-a', 'prov-b'].map(id => recordingTransport(scripted(id), sink)),
+      {
+        out: join(directory, 'live'),
+        ledger: join(directory, 'ledger.json'),
+        retrievers: { m0: m0Retriever, m1: m1Arm(recording(vectors)).retrieve },
+      },
+    )
+    expect(recorded.status).toBe('complete')
+    const fixturePath = join(directory, 'fixture.json')
+    writeFixture(fixturePath, {
+      schema: FIXTURE_SCHEMA,
+      exchanges: sink,
+      embeddings: {
+        embedder: {
+          id: 'test-embedder',
+          model: 'test-v1',
+          dimensions: standInEmbedder.dimensions,
+        },
+        vectors,
+      },
+    })
+    const fixture = readFixture(fixturePath)
+    const embeddings = fixture.embeddings ?? fail()
+    const transports = () =>
+      ['prov-a', 'prov-b'].map(id =>
+        replayTransport(fixture, {
+          providerId: id,
+          requestedModel: `${id}-model`,
+          maxOutputTokens: 8192,
+        }),
+      )
+
+    const realFetch = globalThis.fetch
+    let networkAttempts = 0
+    globalThis.fetch = (() => {
+      networkAttempts += 1
+      throw new Error('network used during replay')
+    }) as unknown as typeof fetch
+    let replayed: AnswerReport
+    try {
+      replayed = await run({ ...plan, runId: 'm1-replay' }, transports(), {
+        out: join(directory, 'replay'),
+        ledger: join(directory, 'replay-ledger.json'),
+        retrievers: {
+          m0: m0Retriever,
+          m1: m1Arm(replayEmbedder(embeddings)).retrieve,
+        },
+      })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    expect(networkAttempts).toBe(0)
+    expect(replayed.status).toBe('complete')
+    expect(replayed.summary).toEqual(recorded.summary)
+    expect(replayed.gates).toEqual(recorded.gates)
+    const byKey = (path: string) =>
+      readCallLog(path)
+        .map(record => JSON.stringify(record))
+        .sort()
+    expect(byKey(join(directory, 'replay', CALLS_FILE))).toEqual(
+      byKey(join(directory, 'live', CALLS_FILE)),
+    )
+
+    // A vector the run used is missing: the M1 arm degrades, and the
+    // eval stops instead of scoring M0 under M1's name.
+    const question =
+      CORPUS.build(500, SEED).queries.find(q => q.id === 'mis-wake')
+        ?.question ?? fail()
+    const queryHash = contentHash(question)
+    expect(embeddings.vectors[queryHash]).toBeDefined()
+    const rest = Object.fromEntries(
+      Object.entries(embeddings.vectors).filter(([hash]) => hash !== queryHash),
+    )
+    await expect(
+      run({ ...plan, runId: 'm1-missing' }, transports(), {
+        out: join(directory, 'missing'),
+        ledger: join(directory, 'missing-ledger.json'),
+        retrievers: {
+          m0: m0Retriever,
+          m1: m1Arm(replayEmbedder({ ...embeddings, vectors: rest })).retrieve,
+        },
+      }),
+    ).rejects.toThrow(
+      /the M1 arm degraded to M0 \(embed-failed: replay: no recorded vector/,
+    )
+
+    // A vector that differs changes the M1 block, and the recorded answer
+    // no longer belongs to the request.
+    const flipped = (embeddings.vectors[queryHash] ?? fail()).map(v => -v)
+    const changed = await prepareTier(
+      'synthetic-v1',
+      500,
+      { arms: ['m1'], queryIds: ['mis-wake'], seed: SEED },
+      {
+        m1: m1Arm(
+          replayEmbedder({
+            ...embeddings,
+            vectors: { ...embeddings.vectors, [queryHash]: flipped },
+          }),
+        ).retrieve,
+      },
+    )
+    try {
+      const result = changed.queries.get('mis-wake')?.results.m1 ?? fail()
+      const key =
+        Object.keys(sink).find(k =>
+          /\/500\/.*\/mis-wake\/prov-a\/rep1\/m1\/r1$/.test(k),
+        ) ?? fail()
+      await expect(
+        transports()[0]?.send({
+          callKey: key,
+          system: buildRecallSystemPrompt(result),
+          turns: [{ role: 'user', text: question }],
+        }),
+      ).rejects.toThrow(/differs from the recorded one/)
+    } finally {
+      changed.materialised.dispose()
+    }
+  }, 120_000)
 })
 
 describe('schedule', () => {
