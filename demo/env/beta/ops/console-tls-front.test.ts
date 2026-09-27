@@ -408,9 +408,16 @@ function rawTlsPost(
       ])
       for (let i = 0; i < blocks && reply === '' && !socket.destroyed; i++) {
         if (!socket.write(frame)) {
-          await new Promise(settle => {
-            socket.once('drain', settle)
-            socket.once('close', settle)
+          // 两个监听器用完一起摘掉：只挂 once 的话，drain 先到时 close 那个会留下，
+          // 每次背压攒一个，上传一大就触发 MaxListeners 告警。
+          await new Promise<void>(settle => {
+            const resume = (): void => {
+              socket.off('drain', resume)
+              socket.off('close', resume)
+              settle()
+            }
+            socket.on('drain', resume)
+            socket.on('close', resume)
           })
         }
       }
