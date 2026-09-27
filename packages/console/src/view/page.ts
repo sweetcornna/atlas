@@ -637,21 +637,23 @@ function overviewSection(model: PageModel): string {
               ? `<span class="tag tag-critical">锚点不符</span>`
               : auditState === 'stale' || auditState === 'unwitnessed'
                 ? `<span class="tag tag-neutral">未见证</span>`
-                : auditState === 'broken'
-                  ? `<span class="tag tag-accent">断裂 ${escapeHtml(
-                      String(issues),
-                    )}</span>`
-                  : auditState === 'verified'
-                    ? `<span class="tag tag-accent-2">链完整</span>`
-                    : trailIntact === 'false' || issues > 0
-                      ? `<span class="tag tag-accent">断裂 ${escapeHtml(
-                          String(issues),
-                        )}</span>`
-                      : witness === 'tampered'
-                        ? `<span class="tag tag-critical">锚点不符</span>`
-                        : witness === 'verified'
-                          ? `<span class="tag tag-accent-2">链完整</span>`
-                          : `<span class="tag tag-neutral">未见证</span>`,
+                : auditState === 'uncovered'
+                  ? `<span class="tag tag-neutral">未覆盖</span>`
+                  : auditState === 'broken'
+                    ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                        String(issues),
+                      )}</span>`
+                    : auditState === 'verified'
+                      ? `<span class="tag tag-accent-2">链完整</span>`
+                      : trailIntact === 'false' || issues > 0
+                        ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                            String(issues),
+                          )}</span>`
+                        : witness === 'tampered'
+                          ? `<span class="tag tag-critical">锚点不符</span>`
+                          : witness === 'verified'
+                            ? `<span class="tag tag-accent-2">链完整</span>`
+                            : `<span class="tag tag-neutral">未见证</span>`,
       glyph: 'activity',
       blob: 'blob-2',
     }),

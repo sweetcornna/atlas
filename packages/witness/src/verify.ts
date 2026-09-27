@@ -31,6 +31,17 @@ export type WitnessVerificationIssue =
       readonly count: number
     }
   | {
+      /**
+       * Only with {@link VerifyWitnessOptions.prefix}: valid anchors at
+       * sequence numbers past the end of this copy, left uncompared. `from`
+       * and `to` are the lowest and highest such anchor seq.
+       */
+      readonly kind: 'uncovered'
+      readonly from: number
+      readonly to: number
+      readonly count: number
+    }
+  | {
       readonly kind: 'stale'
       readonly ageMs: number | null
       readonly thresholdMs: number
@@ -56,6 +67,19 @@ export interface VerifyWitnessOptions {
   readonly publicKey: string
   readonly now?: () => number
   readonly staleAfterMs?: number
+  /**
+   * The trail is a copy of a prefix of the node's chain — an audit mirror
+   * pulled on a timer — rather than the chain itself.
+   *
+   * Off (the default), an anchor past the end of the trail is a mismatch:
+   * the witness holds a statement about a record this chain no longer has,
+   * which on the node's own file is exactly what truncation looks like.
+   * On, the same anchor only means the copy has not caught up yet: it is left
+   * uncompared and reported as `uncovered`, never as tampering. Anchors
+   * inside the copy are compared exactly as before, so a rewrite of anything
+   * the copy does hold is still `tampered`.
+   */
+  readonly prefix?: boolean
 }
 
 export interface WitnessStaleness {
@@ -153,7 +177,12 @@ export function verifyAuditWitness(
 
   let tampered = false
   let coveredThrough: number | null = null
+  const uncovered: number[] = []
   for (const anchor of valid) {
+    if (options.prefix === true && anchor.seq > trail.records.length) {
+      uncovered.push(anchor.seq)
+      continue
+    }
     const record = trail.records.at(anchor.seq - 1)
     const actual =
       record === undefined || record.seq !== anchor.seq
@@ -183,6 +212,14 @@ export function verifyAuditWitness(
       })
     }
   }
+  if (uncovered.length > 0) {
+    issues.push({
+      kind: 'uncovered',
+      from: Math.min(...uncovered),
+      to: Math.max(...uncovered),
+      count: uncovered.length,
+    })
+  }
   return { tampered, stale, coveredThrough, issues }
 }
 
@@ -203,6 +240,10 @@ export function formatWitnessVerification(
     } else if (issue.kind === 'unwitnessed_tail') {
       lines.push(
         `unwitnessed_tail: seq ${issue.from}..${issue.to} 共 ${issue.count} 条尚未被任何锚点覆盖`,
+      )
+    } else if (issue.kind === 'uncovered') {
+      lines.push(
+        `uncovered: anchor seq ${issue.from}..${issue.to} 共 ${issue.count} 个在本副本末尾之后，未比对`,
       )
     } else if (issue.ageMs === null) {
       lines.push('stale: no valid witness anchor is available')

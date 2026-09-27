@@ -127,10 +127,16 @@ export interface AuditPage {
    * heard nothing within its window (or there is no valid anchor at all), not
    * that a rewrite was found. An idle trail whose head is anchored is not
    * stale, so a quiet node keeps its verified state.
+   *
+   * `uncovered` appears only on a mirror source, and only when the witness
+   * already holds anchors past the end of the copy: the mirror has not
+   * caught up, which is neither a mismatch nor an absence of evidence. It
+   * never appears together with `stale`.
    */
   readonly witness?: {
     readonly tampered: boolean
     readonly stale: boolean
+    readonly uncovered?: true
   }
 }
 
