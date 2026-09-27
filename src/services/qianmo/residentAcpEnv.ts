@@ -17,6 +17,13 @@ import {
 } from '../../constants/identity.js'
 
 /**
+ * The memory root the host serves memory from, as handed to its ACP child.
+ * Read by `residentGuard.ts` on the child side; set only by
+ * {@link residentAcpEnvironment}.
+ */
+export const RESIDENT_MEMORY_ROOT_ENV = 'QIANMO_RESIDENT_MEMORY_ROOT'
+
+/**
  * `parent` plus what every resident ACP child needs regardless of how the
  * node was started. Keys set here win over the same keys in `parent`.
  *
@@ -50,14 +57,28 @@ import {
  * `residentGuard.ts` are the defence in depth for the case where a definition
  * is admin-managed (safe mode keeps those) or a future base change moves one of
  * these load sites — they hold with safe mode off.
+ *
+ * ## Why the memory root travels with it
+ *
+ * The child's hardline refuses the node's memory store as a whole subtree. It
+ * derives that root itself (`defaultMemoryRoot()`), which agrees with the host
+ * only while the host uses the default too. A host started with its own
+ * `memoryRoot` would otherwise protect one directory and serve memory out of
+ * another. So the host names the root it actually uses, and the child adds it
+ * to the protected set — additively: the child's own default stays protected
+ * whatever this says.
  */
 export function residentAcpEnvironment(
   parent: NodeJS.ProcessEnv,
+  options: { readonly memoryRoot?: string } = {},
 ): NodeJS.ProcessEnv {
   return {
     ...parent,
     [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
     CLAUDE_CODE_REMOTE_SEND_KEEPALIVES: '1',
     CLAUDE_CODE_SAFE_MODE: '1',
+    ...(options.memoryRoot === undefined
+      ? {}
+      : { [RESIDENT_MEMORY_ROOT_ENV]: options.memoryRoot }),
   }
 }

@@ -320,9 +320,14 @@ function networkContextId(
     : undefined
 }
 
-function defaultSpawnAcp(): ChildProcess {
+/**
+ * The ACP child, told which memory root this host serves memory from so its
+ * hardline refuses that tree too — not only the default it would derive on
+ * its own (`residentAcpEnv.ts`).
+ */
+function defaultSpawnAcp(memoryRoot: string): ChildProcess {
   const launch = buildCliLaunch(['--acp'], {
-    env: residentAcpEnvironment(process.env),
+    env: residentAcpEnvironment(process.env, { memoryRoot }),
   })
   return spawnCli(launch, { stdio: ['pipe', 'pipe', 'inherit'] })
 }
@@ -524,6 +529,8 @@ export class QianmoResident {
   readonly #backups = new Map<string, BackupScheduler>()
   /** Memory recall for the user-message sidecar (design §4.4). */
   readonly #memory: ResidentMemorySidecar
+  /** The memory root in use, handed to the ACP child's hardline as well. */
+  readonly #memoryRoot: string
   #stopping = false
   #releaseStop: (() => void) | null = null
   /** Woken when `#runtime` becomes available; see `#runtimeForDelivery`. */
@@ -543,9 +550,10 @@ export class QianmoResident {
         ? {}
         : { audit: options.notifyAudit }),
     })
+    this.#memoryRoot = options.memoryRoot ?? defaultMemoryRoot()
     this.#memory = new ResidentMemorySidecar({
       store: new FileMemoryStore({
-        root: options.memoryRoot ?? defaultMemoryRoot(),
+        root: this.#memoryRoot,
       }),
       onError: error => this.#options.onError?.(error),
     })
@@ -1754,7 +1762,8 @@ export class QianmoResident {
   }
 
   async #startAcp(): Promise<ResidentChildConnection> {
-    const child = (this.#options.spawnAcp ?? defaultSpawnAcp)()
+    const child =
+      this.#options.spawnAcp?.() ?? defaultSpawnAcp(this.#memoryRoot)
     const closed = childClosed(child)
     void closed.catch(() => {})
     // Retire the runtime the moment the child is gone, not when the supervisor

@@ -25,6 +25,10 @@ import type {
 import type { PermissionMode } from '../../../types/permissions.js'
 import { occConfigDir } from '../../../config/paths.js'
 import {
+  RESIDENT_MEMORY_ROOT_ENV,
+  residentAcpEnvironment,
+} from '../residentAcpEnv.js'
+import {
   RESIDENT_EXCLUDED_TOOLS,
   withResidentCanUseTool,
   withResidentHardline,
@@ -286,6 +290,51 @@ describe('resident hardline wiring — evaluated before any allow', () => {
         CONTEXT,
       )
       expect(decision.behavior).toBe('deny')
+    }
+  })
+})
+
+describe('resident hardline wiring — the memory root the host names', () => {
+  test('is refused on both surfaces once named, and not before', async () => {
+    // The host passes the root it serves memory from through
+    // `residentAcpEnvironment`; the child reads it when it builds the table.
+    // Before this, a host started with its own `memoryRoot` had the child
+    // guarding only the default root (review-P14 X-12 follow-up).
+    const hostRoot = resolve('/srv/qianmo-host-memory')
+    const target = `${hostRoot}/working/main/entry.md`
+    const saved = process.env[RESIDENT_MEMORY_ROOT_ENV]
+    try {
+      delete process.env[RESIDENT_MEMORY_ROOT_ENV]
+      const [unnamed] = withResidentHardline([permissiveTool('Read').tool])
+      const before = await (unnamed as Tool).checkPermissions(
+        { file_path: target } as never,
+        CONTEXT,
+      )
+      expect(before.behavior).toBe('allow')
+
+      const childEnv = residentAcpEnvironment({}, { memoryRoot: hostRoot })
+      process.env[RESIDENT_MEMORY_ROOT_ENV] = childEnv[RESIDENT_MEMORY_ROOT_ENV]
+      const [file] = withResidentHardline([permissiveTool('Write').tool])
+      const [shell] = withResidentHardline([permissiveTool('Bash').tool])
+      const fileDecision = await (file as Tool).checkPermissions(
+        { file_path: target } as never,
+        CONTEXT,
+      )
+      const shellDecision = await (shell as Tool).checkPermissions(
+        { command: `cat ${target}` } as never,
+        CONTEXT,
+      )
+      expect(fileDecision.decisionReason).toEqual({
+        type: 'other',
+        reason: 'qianmo-resident-hardline:memory-root',
+      })
+      expect(shellDecision.decisionReason).toEqual({
+        type: 'other',
+        reason: 'qianmo-resident-hardline:memory-root',
+      })
+    } finally {
+      if (saved === undefined) delete process.env[RESIDENT_MEMORY_ROOT_ENV]
+      else process.env[RESIDENT_MEMORY_ROOT_ENV] = saved
     }
   })
 })

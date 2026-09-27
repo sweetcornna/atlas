@@ -69,6 +69,7 @@ import type {
 } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { occConfigDir } from '../../config/paths.js'
+import { RESIDENT_MEMORY_ROOT_ENV } from './residentAcpEnv.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/ExitPlanModeTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/TeamCreateTool/constants.js'
@@ -123,11 +124,23 @@ const ELEVATED_MODES: ReadonlySet<PermissionMode> = Object.freeze(
  * the filesystem because the host reads and injects memory for it, so the whole
  * tree is off limits and no single approval can plant an entry a later turn
  * would trust (design X-12).
+ *
+ * The host's own memory root joins it when the host named one
+ * (`residentAcpEnv.ts`): a host running on a non-default root would otherwise
+ * serve memory from a directory this child never refuses. Additive only — the
+ * child's default stays on the list, and a relative value is dropped by
+ * `ResidentHardline` like any other.
  */
 function residentHardline(): ResidentHardline {
+  const hostMemoryRoot = process.env[RESIDENT_MEMORY_ROOT_ENV]
   return new ResidentHardline({
     stateRoots: [occConfigDir()],
-    protectedRoots: [defaultMemoryRoot()],
+    protectedRoots: [
+      defaultMemoryRoot(),
+      ...(hostMemoryRoot === undefined || hostMemoryRoot === ''
+        ? []
+        : [hostMemoryRoot]),
+    ],
   })
 }
 
