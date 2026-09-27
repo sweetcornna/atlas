@@ -274,18 +274,26 @@ node <节点名> user=<ssh 用户> host=<节点机地址> port=22 local-port=<H 
 | `remote-port` | 否 | `38625` | 节点侧的入站端口 |
 | `trail` | 否 | 无 | 节点上审计链的绝对路径。**给了才做镜像**；不给就只有隧道 |
 | `key` | 否 | `QIANMO_BETA_SSH_KEY` | 这条链路用的私钥（H 上的路径；私钥本身永不离开 H） |
-| `public-key` | 否 | 无 | 该节点的公钥（43 位 base64url，节点腿末尾「公钥」那一行）。给了，注册中心登记它的每条地址时一并发布；不给就照旧不带，H 腿 WARN 一句。见下面「名册上的节点公钥」 |
+| `public-key` | 否 | 无 | 该节点的公钥（43 位 base64url，节点腿末尾「公钥」那一行）。给了，注册中心登记它的每条地址时一并发布，控制台带 `--anchors` 时以 `--trust` 交给控制台；不给就照旧不带，H 腿 WARN 一句。见下面「名册上的节点公钥」 |
 
 #### 名册上的节点公钥
 
-控制台带 `--anchors` 时**只从名册取节点公钥**。H 腿给 p81-registry 带上 `--public-key <节点>=<公钥>`，
-它随每一次登记与重登记（含租约过期后的那一次）一并发布，不再需要手工补。公钥从哪来：
+同一份公钥有两个去处：
+
+- **注册中心**：H 腿给 p81-registry 带上 `--public-key <节点>=<公钥>`，它随每一次登记与重登记
+  （含租约过期后的那一次）一并发布，不再需要手工补。
+- **控制台**（2026-09-27 起，K-11 F-3）：控制台尾参里有 `--anchors` 时，H 腿给每个有公钥的节点加一条
+  `--trust <节点>=<公钥>`。控制台**不再从名册取验签公钥**：名册的写口不鉴权（或只凭一枚共享 token），
+  谁往里写一把公钥，谁就能让改过的链显示「已见证」。带 `--anchors` 而一把公钥都没有、尾参里也没有
+  `--trust` / `--trust-ca` 时，H 腿在起控制台之前就停下并说明原因（控制台自己也会拒绝启动）。
+
+公钥从哪来：
 
 | 节点 | 来源 |
 | --- | --- |
 | 有坐标行（走隧道的远端节点） | 坐标行的 `public-key=`。H 读不到远端的身份文件，由人把节点腿末尾的「公钥」抄过来 |
 | 没有坐标行、端点是回环（跑在 H 自己身上） | 本机身份文件 `nodes/<节点>/config/qianmo/identity/<节点>.json`，只读 `publicKey` |
-| 直连的远端节点 | 没有来源：照旧不带，按「审计见证」第 ⑥ 步手工发布 |
+| 直连的远端节点 | 没有来源：注册中心照旧不带；控制台那一侧在尾参里手工给 `--trust <节点>=<公钥>`（见「审计见证」第 ⑥ 步） |
 
 没有来源时与改动前完全一样（不带公钥），H 腿逐节点 WARN 一句。在跑的注册中心还挂着别的
 （或没有）公钥时，H 腿像处理端点不一致一样重起它一次。**同一个地址别既写进 `peers.conf`
@@ -492,6 +500,47 @@ systemctl --user start qianmo-tls-front.service
   （`--dns.propagation.disable-rns`）；URL 会把显式写的协议默认端口（`:80`）规范化成空串，所以上游端口
   从原文里取。
 
+## 注册中心写 token（P15.8）与吊销清单落盘
+
+注册中心默认不鉴权（`beta-env.md` §9.2）：H 上任何本地账号都能改名册、发布吊销清单。P15.8 起它可以要求一枚
+写 token：注册、注销、心跳、发布吊销清单要带 `Authorization: Bearer`，否则 401、什么都不改；**读照旧公开**。
+H 腿只看 `secrets/registry-write-token` 在不在：在，就给注册中心 `--write-token-file`、给控制台
+`--registry-token-file`，两边同一个文件，token 不上命令行；不在，两边都不带，H 腿 WARN 一句。
+
+**启用有先后：先控制台，后注册中心。**控制台先带上 token 没有副作用（没开 token 的注册中心不看这个头）；反过来，
+注册中心先开始要求，在跑的旧控制台续租就会被 401，页面注册的条目在一个租约后消失。**7 天长跑窗口内不做**
+（至 2026-10-03T18:20Z）：两步都要重启 H 上的进程。
+
+```bash
+# ① 生成 token（0600，不回显）。要求 ≥ 16 字符；权限不是 0600/0400，注册中心与控制台都拒绝启动
+( umask 077; LC_ALL=C od -An -tx1 -N 32 /dev/urandom | tr -d ' \n' > "$QIANMO_BETA_ROOT/secrets/registry-write-token" )
+# ② 先重启控制台：它开始带 token。单元从 ops/console.env 取尾参，不会丢 --anchors / --wake-sign
+systemctl --user restart qianmo-console.service
+#    没有单元的宿主：beta-down.sh console，再带上**原来的尾参**跑 beta-up.sh --role host --only console -- <原尾参>
+# ③ 再重启注册中心：它开始要求 token（控制台单元 Requires 它，会跟着重启一次，照样带 token）
+systemctl --user restart qianmo-registry.service
+# ④ 验收：不带 token 的写 401，读 200；横幅里有一行 write-token
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' --data '{}' http://127.0.0.1:38620/v0/agents   # 401
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:38620/v0/agents                                                         # 200
+grep 'write-token' "$QIANMO_BETA_ROOT/logs/console.out"
+```
+
+撤回：把 `secrets/registry-write-token` 挪走，重启注册中心（控制台跟着重启，不再带 token）。
+
+**吊销清单现在落盘**（K-1 遗留）：与名册表同目录，`state/registry-revocation-list.json`（0600）。注册中心重启后
+照旧提供最后一次发布的清单，不必再手工重发。换上带这项改动的构建后，**第一次**启动时盘上还没有这个文件，要照
+`ca-runbook.md` §6.1 重发一次；开了写 token 以后，`PUT` 要带头，token 不进命令行：
+
+```bash
+curl -fsS -X PUT -H 'content-type: application/json' \
+  -H @<(printf 'authorization: Bearer %s\n' "$(cat "$QIANMO_BETA_ROOT/secrets/registry-write-token")") \
+  --data-binary @revocation-list.json http://127.0.0.1:38620/v0/revocation-list
+```
+
+这个文件读不出来（被截断、不是 JSON、不是 `{payload, signature}`）时，注册中心**拒绝启动**，不以空清单起来：
+`logs/registry.err` 写明路径。用 CA 目录里最新的 `revocation-list.json` 覆盖它，或确认要丢弃后把它挪开再起、
+然后重发。`beta-retain.sh --snapshot-registry` 只快照名册表，不含这个文件。
+
 ## 审计见证（P11.4）：节点经隧道的 `-R` 写锚点，端点在 H 或另一台机器
 
 节点够到见证端点，靠的是 **H 发起的**那条隧道会话里多一个 `-R 127.0.0.1:38640:127.0.0.1:38640`：
@@ -518,20 +567,20 @@ systemctl --user start qianmo-witness-link.service
 #    secrets/witness-write-token（0600），节点腿带上尾参
 demo/env/beta/beta-up.sh --role node --node <名字> -- --trust console=<公钥> --witness-url http://127.0.0.1:38640
 # ⑤ H：W 的读 token 拷成 H 的 secrets/witness-read-token（0600），控制台尾参加 --anchors http://127.0.0.1:38640
-# ⑥ H：让名册带上每个节点的公钥。控制台带 --anchors 时只从名册取节点公钥（不从锚点学），漏了这一步，
-#    审计页对每个节点都报「名册没有节点 <名字> 的公钥」，一条记录都读不出来。
+# ⑥ H：让控制台拿到每个节点的验签公钥。控制台只按 --trust / --trust-ca 验锚点（不从名册、不从锚点学），
+#    漏了这一步，审计页对该节点报「没有节点 <名字> 的可信公钥」。
 #    走隧道的节点：坐标行加 public-key=<节点腿末尾「公钥」那一行>，再跑 host 腿；跑在 H 上的节点不用写
-#    （H 腿读本机身份文件）。脚本随每次登记发布，租约过期重登记也带着（见「名册上的节点公钥」）。
-#    只有直连的远端节点（没有坐标行、不在 H 上）还得手工发布，端点/能力/状态照抄现有那条：
-curl -s -X POST -H 'content-type: application/json' http://127.0.0.1:38620/v0/agents \
-  --data '{"address":"qianmo://<节点>/<agent>","endpoint":"<现有端点>","capabilities":["task.request"],"status":"online","publicKey":"<节点公钥>"}'
+#    （H 腿读本机身份文件）。H 腿把它们以 --trust 交给控制台，同时随登记发布进名册（见「名册上的节点公钥」）。
+#    直连的远端节点（没有坐标行、不在 H 上）在控制台尾参里手工给，与 --anchors 写在一起：
+demo/env/beta/beta-up.sh --role host -- --anchors http://127.0.0.1:38640 --trust <节点>=<节点公钥>
 ```
 
 - **两枚 token 都在 W 上生成。**写 token 发给每个节点；读 token 只给做验证的一方（形态②下是 H 上的控制台）。
   读 token 只能列出锚点，改不了任何一条。命令行的 `occ audit --verify --witness` 只从**本机配置根**的身份文件
   确立节点公钥，所以要在节点机上用节点自己的配置根跑；锚点源给 W 存储的只读快照（绝对路径）或 HTTP 端点加读 token。
-- ⑥ 由脚本发布的公钥随每次登记走，名册停机超过租约（90 s）、条目过期后的重新登记也带着它。手工 POST 的那一份
-  （直连远端节点）不在 p81 的声明里：p81 续租不会抹掉它，但条目过期后 p81 以不带公钥的形式重新登记，要再做一遍。
+- ⑥ 控制台的 `--trust` 每次起 H 腿都从 `peers.conf` 与本机身份文件重新算，不落进 `ops/console.env`；尾参里手工给的
+  那几条随尾参落进 `ops/console.env`，活过重启。同一个节点两边给的公钥不一致，控制台拒绝启动。名册里的公钥照旧
+  随每次登记发布，但验签不再用它。
 - 尾参里有 `--witness-url` 时，节点腿把写 token 从文件读进环境；控制台尾参里的 `--anchors` 是 HTTP 端点时，
   H 腿把读 token 读进 `QIANMO_WITNESS_READ_TOKEN`。两边都不上命令行；缺文件、权限不是 600、明文 http 指向
   回环以外，都在起进程之前拦下。
@@ -603,7 +652,7 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
 | --- | --- | --- |
 | `QIANMO_BETA_ROOT` | `$HOME/qianmo-beta` | 内测根目录。**长驻**，故意在仓库外——它要活过 `git clean`、活过换分支。与演示环境的 `.demo-env` 不是一回事，两者可以在 H 上共存 |
 | `QIANMO_BETA_PEERS_FILE` | `$QIANMO_BETA_ROOT/peers.conf` | 地址表（地址行 + 可选的 `node` 坐标行，见上一节）。**H 腿的必填项**，0600，不进仓库 |
-| `QIANMO_BETA_REGISTRY_PORT` | `38620` | 注册中心。**永不出回环**（它零鉴权，§9.2） |
+| `QIANMO_BETA_REGISTRY_PORT` | `38620` | 注册中心。**永不出回环**（它默认零鉴权；写 token 也只挡写不挡读，§9.2） |
 | `QIANMO_BETA_CONSOLE_PORT` | `38621` | 控制台。绑回环，对外那一面由反代做 TLS（§2.5） |
 | `QIANMO_BETA_NODE_PORT` | `38625` | 节点入站。一机一节点，四台用同一个号不用协调 |
 | `QIANMO_BETA_HOST_BIND` | `127.0.0.1` | 注册中心与控制台绑哪。**改成非回环等于同时废掉 §2.5 与 §9.2 两条硬规矩** |
@@ -625,6 +674,7 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
 | `secrets/transport-psk` | 每台节点机 | **只有本机这个节点那一把**（§8.3）。一台 VPS 被拿下时，攻击者只拿到它自己那一把 |
 | `secrets/peers/<node>.psk` | 只在 H | **全部四把**（运维副本）。唤醒与投递都从 H 发起 |
 | `secrets/console-view-token` / `console-admin-token` | 只在 H | 控制台两枚。首跑时脚本现生成一次并落 0600 文件，**之后跨重启不变**——「显式提供」要的正是这个（§3.2）；控制台自己生成的那条路每次重启都变，50 个人手上的链接会同时失效 |
+| `secrets/registry-write-token` | 只在 H | 注册中心写 token（P15.8）。**不由脚本生成**：文件在，注册中心要求它、控制台带上它；不在，注册中心照旧不鉴权。启用有先后，见「注册中心写 token」 |
 | `secrets/backup-write-token` | 每台节点机（若开备份面） | 只写。**归档 token 永不下发到节点机**（§2.7） |
 | `secrets/backup-archive-token` | 只在 H | 只读归档 |
 | `secrets/model-env` | 每台节点机 | 该节点的模型凭据，一份 `KEY=VALUE` 的 shell 片段。节点腿在**起 resident 之前**注入它（ACP 子进程继承 resident 起来那一刻的环境，事后 export 到不了）。**H 上不需要也不该有**：控制台不跑 agent 轮次。没有这个文件节点照常起，但被唤醒后 agent 那一轮必然是 `Not logged in · Please run /login`——脚本与 resident 各会为此报一条 |

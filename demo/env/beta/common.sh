@@ -166,6 +166,12 @@ BETA_WITNESS_WRITE_FILE="$BETA_SECRET_DIR/witness-write-token"
 # 审计见证的**读** token。只在 H 腿、且控制台尾参的 --anchors 是 http(s) 端点时才读：
 # 见证不在 H 上时，控制台要凭它把锚点读回来，才画得出「完整且已见证」。
 BETA_WITNESS_READ_FILE="$BETA_SECRET_DIR/witness-read-token"
+# 注册中心的写 token（P15.8）。**文件在才启用**：有它，注册中心的写操作（登记、注销、
+# 心跳、发布吊销清单）要带 `Authorization: Bearer`，控制台的续租者也带上它；没有它，
+# 注册中心与此前一样不鉴权（H 腿 WARN 一句）。**不自动生成**：启用分先后——控制台先带上
+# （旧注册中心不看这个头），注册中心再开始要求——由运维按 README「注册中心写 token」放置。
+# 注册中心与控制台都在 H 上，读的是同一个文件。
+BETA_REGISTRY_WRITE_TOKEN_FILE="$BETA_SECRET_DIR/registry-write-token"
 # 备份两枚 token。**归档 token 永不离开 H**（§2.7），所以节点机上只会有 write 那一份。
 BETA_BACKUP_WRITE_FILE="$BETA_SECRET_DIR/backup-write-token"
 BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
