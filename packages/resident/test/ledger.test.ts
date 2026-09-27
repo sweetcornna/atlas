@@ -84,6 +84,30 @@ describe('durable admission ledger', () => {
     expect(ledger.query().pending).toEqual([])
   })
 
+  test('records how the memory block was retrieved, through compaction and reload', () => {
+    ledger.append({ ...detected(), retrieval: 'hybrid' })
+    ledger.compact()
+    ledger.close()
+
+    const reopened = new FileAdmissionLedger(path)
+    try {
+      const result = reopened.query()
+      expect(result.integrityIssues).toEqual([])
+      expect(result.pending[0]?.retrieval).toBe('hybrid')
+    } finally {
+      reopened.close()
+    }
+  })
+
+  test('rejects a retrieval mode it does not know', () => {
+    expect(() =>
+      ledger.append({
+        ...detected(),
+        retrieval: 'semantic-only',
+      } as unknown as AdmissionRecord),
+    ).toThrow('invalid admission record')
+  })
+
   test('reports a torn tail and refuses to compact damage', () => {
     ledger.append(detected())
     ledger.close()

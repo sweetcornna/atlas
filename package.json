@@ -1,6 +1,6 @@
 {
   "name": "@sweetcornna/open-claude-code",
-  "version": "2.46.2",
+  "version": "2.46.3",
   "license": "AGPL-3.0-or-later",
   "description": "Community edition of the Anthropic Claude Code CLI — a reverse-engineered restoration with community optimizations; interactive AI coding assistant in the terminal",
   "type": "module",
@@ -55,6 +55,7 @@
     "check:fix": "biome check --fix .",
     "prepare": "husky",
     "test": "bun test",
+    "test:shipped-features": "bun run scripts/test-shipped-features.ts",
     "check:bundle": "bun run scripts/check-bundle-integrity.ts && bun run scripts/check-bundle-smoke.ts",
     "check:unused": "bun run scripts/check-unused.ts",
     "check:unused:raw": "knip-bun",
@@ -75,8 +76,8 @@
     "postinstall": "node scripts/postinstall.cjs",
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
-    "precheck": "bun run typecheck && bun run check:fix && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun test",
-    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun run check:docs-i18n && bun run check:cycles && ./scripts/test-shards.sh && bun run build:vite && bun run check:bundle && bun run check:unused"
+    "precheck": "bun run typecheck && bun run check:fix && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun test && bun run test:shipped-features",
+    "verify": "biome ci . && bun run typecheck && bun run check:prompt-purity && bun run check:mock-hygiene && bun run check:macro-guards && bun run check:identity-paths && bun run check:license-headers && bun run check:docs-i18n && bun run check:cycles && ./scripts/test-shards.sh && bun run test:shipped-features && bun run build:vite && bun run check:bundle && bun run check:unused"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.0",

@@ -119,10 +119,14 @@ flowchart TD
 
 记忆接线与安全收窄（P13.7）：
 
-- **`ResidentMemorySidecar` / `ResidentMemorySidecarOptions` / `residentRecallScope` / `assertNodeOwnedMemoryRoot` / `INJECTION_BUDGET`** —— 用户消息 sidecar 的记忆注入：按 `(agent, contextId)` 取 working 层、渲染成块、失败 fail-open。`ResidentPromptScope`（`contracts.ts`）是那对键的载体，**两半永不在这里拼成一个字符串**（拼法只许在 `sessionKeyOf`，不变式 #7）。
+- **`ResidentMemorySidecar` / `ResidentMemorySidecarOptions` / `residentRecallScope` / `assertNodeOwnedMemoryRoot` / `INJECTION_BUDGET`** —— 用户消息 sidecar 的记忆注入：按 `(agent, contextId)` 取 working 层、渲染成块、失败 fail-open。`ResidentPromptScope`（`contracts.ts`）是那对键的载体，**两半永不在这里拼成一个字符串**（拼法只许在 `sessionKeyOf`，不变式 #7）。可选的 `semantic` 选项接上 `@qianmo/recall` 的语义叠加（`docs/dev/memory-m1.md` §5，P16.6），**缺省即关**：`renderHybrid` 此时就是 `render`。开启后 `formatPrompt` 可以异步返回 `ResidentAssembledPrompt`（两段式组装），其 `retrieval` 由 reader 写进同一条 `detected` 记录；关闭时 `detected` 记录不带这个字段，与原先逐字节相同。
 - **`ResidentHardline` / `HARDLINE_TARGETS` / `HardlineDenial` / `ResidentHardlineOptions`** —— 常驻专属的预批准天花板：冻结字面量、路径与命令两面同表、`stateRoots` 只增不减。
 - **`scanAssembledPrompt` / `PromptScanExpectation` / `PromptInjectionFinding`** —— 对**组装后**完整 prompt 的结构扫描（块计数 + 属性名），不作任何「像不像注入」的判断。
 - 中和函数在 `@qianmo/adapter/sanitize`（`sanitizeRemoteText` / `sanitizeRemoteAttribute` / `hasUnneutralizedDelimiter`），不在本包：分隔符词汇属于包装格式，归 adapter。
+
+生产写入路径（P16.W，`memory-m1.md` §6.4）：
+
+- **`writeResidentMemory` / `revokeResidentMemory` / `invalidateResidentMemory` / `residentMemoryScope` / `ResidentMemoryTarget` / `ResidentMemorySource` / `ResidentMemoryWriteError`** —— 往 `(agent, contextId)` 分区写、撤（摄取轴）、失效（事件轴）。分区由 `residentRecallScope` 算出，与 sidecar 读的是同一个映射；来源只收 `user` / `agent`。今天唯一的调用方是 `qm memory`（`src/cli/handlers/memory.ts`）；agent 侧写入工具等 P14.4 与 P16.5，复用同一组函数。
 
 用户授权流（P14.3，`authorization-m1.md` §3.4 / §3.5；宿主接线在 P14.4）：
 
@@ -242,6 +246,15 @@ flowchart TD
 - **`&` 故意不转义。**转义它会让映射严格单射（更整齐），也会把对端发来的每个 `&&` 改坏——而 `&` 变不出 `<` 或 `>`，重建不出任何分隔符。这是排版与可用性的取舍，不是漏掉的一项。
 - **hardline 的落点是包裹工具的 `checkPermissions`，不是改 `permissions.ts`。**本构建里能答 allow 的只有两条漏斗，且两条都经过 `checkPermissions`（`hasPermissionsToUseToolInner` 的 1c/1d 在 bypass 模式 2a 与整工具 allow 规则 2b 之上；hook 已答 allow 的那条仍跑 `checkRuleBasedPermissions`）。包一层同时压过两条，而不必在每次上游同步里重解一个热路径核心文件。
 - **词法匹配挡不住刻意混淆，这是预批准的天花板不是沙箱。**写进 `guard.ts` 的模块注释里，免得将来有人把它当成越权防护的全部。
+
+### 3.6 生产写入路径的不变式（P16.W）
+
+设计出处：`docs/dev/memory-m1.md` §6.2–§6.4。
+
+| # | 不变式 | 改坏了会怎样 | 钉住它的测试 |
+| --- | --- | --- | --- |
+| 42 | **写入与召回走同一个分区映射**：`residentMemoryScope` 由 `residentRecallScope` 算出，`contextId` 必须显式给出，空串不算 `default` | 写方自己拼 `{ projectKey, taskId }` ＝ 条目落进一个没有任何 turn 读的目录，运维以为写上了，节点永远看不见，且没有任何东西会红 | `test/memory-writer.test.ts`「an entry written for (agent, context) is what that context recalls」「the scope is the recall scope, for verbatim and digested contexts alike」「an empty context is refused instead of meaning "default"」；`src/services/qianmo/__tests__/residentMemoryWrite.integration.test.ts`（`qm memory add` 子进程 → 真 `QianmoResident` → ACP 子进程收到的 prompt 里有该条目） |
+| 43 | **来源只收 `user` / `agent`，改动只许在本分区内**，且「不存在」与「在别的分区」回同一句话 | 放进 `session` / `archive` 等来源 ＝ 条目的信任级由调用方自称；拒绝文案不同 ＝ 只能碰本分区的写方可以借拒绝探测别处的 id（`memory-m1.md` §6.3 缺口 1） | `test/memory-writer.test.ts`「only user and agent provenance is accepted, even from an untyped caller」「an entry of another partition cannot be changed, and the refusal does not say it exists」 |
 
 ## 4. 与基座的关系
 

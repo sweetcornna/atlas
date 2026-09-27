@@ -30,6 +30,7 @@ import {
 } from '@qianmo/resident'
 import type {
   DeliveryLedgerEntry,
+  ResidentAssembledPrompt,
   ResidentChildConnection,
   ResidentNotifyAuditSink,
   ResidentMailboxMessage,
@@ -62,6 +63,13 @@ import {
 import { QIANMO_WRAPPER_TYPE } from '@qianmo/adapter/wrapper'
 import { FileMemoryStore, defaultMemoryRoot } from '@qianmo/memory'
 import {
+  type EmbeddingProvider,
+  FileEmbeddingUsageMeter,
+  type HybridConfig,
+  InMemoryVectorIndex,
+  type RetrievalMode,
+} from '@qianmo/recall'
+import {
   NodeRouter,
   type CapabilityGate,
   type RouterAuditSink,
@@ -85,7 +93,10 @@ import {
 } from '../../utils/agents/teammateMailbox.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
-import { assembleResidentPrompt } from './residentPrompt.js'
+import {
+  assembleResidentPrompt,
+  assembleResidentPromptAsync,
+} from './residentPrompt.js'
 import { residentAcpEnvironment } from './residentAcpEnv.js'
 import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
@@ -206,6 +217,30 @@ interface QianmoResidentOptions {
    * committed to a repository stand in for this node's memory (hermes F9).
    */
   readonly memoryRoot?: string
+  /**
+   * The semantic overlay on memory recall (`docs/dev/memory-m1.md` §5,
+   * P16.6). **Off when absent, and absent by default**: no embedding call, no
+   * usage file, the synchronous assembly of today and admission records
+   * without a `retrieval` field — byte for byte the M0 path.
+   *
+   * Given, every turn is assembled in two stages (batch, then an awaited
+   * `recallHybrid`, then the scan) and its `retrieval` goes into the admission
+   * record. Full mode still never embeds; a ranked recall fuses only when the
+   * index covers enough of the candidates and the day's token budget allows
+   * it, and otherwise falls back to the deterministic block. The budget is
+   * counted in tokens, per node and UTC day, in a file under the identity
+   * config root that a restart does not reset; `dailyTokenLimit: 0` spends
+   * nothing. Fallbacks are reported on `onError`.
+   *
+   * No command-line switch or configuration file sets this yet: real
+   * embedding providers and their operator-only switch are P16.7, and the
+   * in-process index starts cold on every restart until P16.8 persists it.
+   */
+  readonly semanticRecall?: {
+    readonly embedder: EmbeddingProvider
+    readonly dailyTokenLimit: number
+    readonly config?: Partial<HybridConfig>
+  }
   readonly onError?: (error: unknown) => void
   readonly onReady?: (address: {
     readonly port?: number
@@ -551,11 +586,30 @@ export class QianmoResident {
         : { audit: options.notifyAudit }),
     })
     this.#memoryRoot = options.memoryRoot ?? defaultMemoryRoot()
+    const semantic = options.semanticRecall
     this.#memory = new ResidentMemorySidecar({
       store: new FileMemoryStore({
         root: this.#memoryRoot,
       }),
       onError: error => this.#options.onError?.(error),
+      ...(semantic === undefined
+        ? {}
+        : {
+            semantic: {
+              embedder: semantic.embedder,
+              index: new InMemoryVectorIndex(),
+              meter: new FileEmbeddingUsageMeter({
+                dailyTokenLimit: semantic.dailyTokenLimit,
+              }),
+              ...(semantic.config === undefined
+                ? {}
+                : { config: semantic.config }),
+            },
+            onRetrievalEvent: event =>
+              this.#options.onError?.(
+                new Error(`memory semantic recall: ${JSON.stringify(event)}`),
+              ),
+          }),
     })
     this.#lifecycle = new ResidentLifecycleSentinel({
       path: occConfigPath('resident', 'lifecycle.json'),
@@ -985,7 +1039,10 @@ export class QianmoResident {
   #assemblePrompt(
     messages: readonly ResidentMailboxMessage[],
     scope: ResidentPromptScope,
-  ): string {
+  ): string | Promise<ResidentAssembledPrompt> {
+    if (this.#options.semanticRecall !== undefined) {
+      return this.#assembleTwoStage(messages, scope)
+    }
     return assembleResidentPrompt({
       messages,
       // The batch text doubles as the ranking question. It never filters — a
@@ -994,6 +1051,30 @@ export class QianmoResident {
       renderMemory: base => this.#memory.render(scope, base),
       onFinding: error => this.#options.onError?.(error),
     })
+  }
+
+  /**
+   * The semantic overlay's assembly (`memory-m1.md` §5.4): the batch is the
+   * question, so it is rendered first; the turn then waits for the overlay,
+   * bounded by its timeout; the scan runs on the finished string. The
+   * retrieval mode rides out with the prompt so the reader records both in
+   * the same admission record.
+   */
+  async #assembleTwoStage(
+    messages: readonly ResidentMailboxMessage[],
+    scope: ResidentPromptScope,
+  ): Promise<ResidentAssembledPrompt> {
+    let retrieval: RetrievalMode | undefined
+    const prompt = await assembleResidentPromptAsync({
+      messages,
+      renderMemory: async base => {
+        const memory = await this.#memory.renderHybrid(scope, base)
+        retrieval = memory.retrieval
+        return memory.block
+      },
+      onFinding: error => this.#options.onError?.(error),
+    })
+    return retrieval === undefined ? { prompt } : { prompt, retrieval }
   }
 
   /**

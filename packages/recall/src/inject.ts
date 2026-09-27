@@ -35,6 +35,23 @@ import { MEMORY_ANSWER_TOOL_NAME } from './tool.js'
 
 export type InjectionMode = 'full' | 'ranked'
 
+/**
+ * How the injected set was chosen (`docs/dev/memory-m1.md` §5.4).
+ *
+ * `deterministic` is M0: the semantic layer was off or not applicable (full
+ * mode never uses it). `hybrid` is the floor-plus-RRF fusion. `hybrid-degraded`
+ * means the overlay was asked for and could not be applied — the entries are
+ * then exactly the deterministic ones, and the reason is on the result's
+ * events.
+ */
+export const RETRIEVAL_MODES = [
+  'deterministic',
+  'hybrid',
+  'hybrid-degraded',
+] as const
+
+export type RetrievalMode = (typeof RETRIEVAL_MODES)[number]
+
 export type InjectionBudget = {
   readonly maxEntries: number
   readonly maxChars: number
@@ -66,6 +83,14 @@ export type InjectionView = {
   readonly omittedCount: number
   /** True when the scan could not read part of the store. */
   readonly degraded: boolean
+  /**
+   * Printed only when it is `hybrid`. Every other value renders the block
+   * exactly as M0 did, which is what makes a degraded recall byte-identical to
+   * a deterministic one.
+   */
+  readonly retrieval?: RetrievalMode
+  /** Ids in the block only because the semantic fill put them there. */
+  readonly semanticIds?: readonly string[]
 }
 
 function scopeLabel(entry: MemoryEntry): string {
@@ -79,20 +104,98 @@ function scopeLabel(entry: MemoryEntry): string {
   }
 }
 
+/*
+ * ENTRY CONTENT IS DATA, NEVER FRAMING
+ *
+ * Three readers depend on the block's structure: the resident's assembled-
+ * prompt scan counts its tags, the citation check trusts `injectedIds`, and
+ * the model — or anything that later parses a stored prompt back into
+ * entries — reads its lines. An entry whose body said `</qianmo-memory>` used
+ * to fail that scan, and a failed scan withholds every remote message of the
+ * turn; in full mode the entry is injected on every turn, so one write
+ * silenced a partition for good. A body could also print a second
+ * `--- entry` with somebody else's real id in it.
+ *
+ * So every value is neutralized on the way in, and only where it could be
+ * read as structure:
+ *
+ *   - `<` and `>` become `&lt;` / `&gt;` in every field. That removes every
+ *     tag spelling at once — any case, any spacing, the teammate tag, CDATA —
+ *     without a list of names to walk around, and it is the same convention
+ *     `@qianmo/adapter/sanitize` applies to remote text in the same message.
+ *   - Fields printed after a `label: ` stay on that line: every line break
+ *     becomes a space. Values read back off disk are not re-validated, so this
+ *     covers the id, tags and timestamps too, not just the free-text fields.
+ *   - A body keeps its lines, but a line that a reader would take for framing
+ *     loses its first character to a numeric entity: an entry separator, an
+ *     `entry_id:` or `citation:` line (the two that bind an id), or a code
+ *     fence, which could otherwise swallow the entries after it. Leading
+ *     whitespace and letter case do not hide one.
+ *
+ * "Line" means any break JavaScript or Python would split on, not just `\n`.
+ *
+ * Left alone, on purpose: quotes (no entry field reaches an attribute), `&`
+ * (it cannot make a `<`, and escaping it would rewrite every `&&`), the other
+ * labels (a body line saying `summary:` opens no entry and binds no id — its
+ * author already owns every field of this one), and look-alike characters
+ * such as `＜`. Nothing that enforces anything reads those as structure, and
+ * T-7 does not accept "the model was not persuaded" as a verdict.
+ *
+ * Content without any of these fragments renders byte for byte as before.
+ * Not imported from `@qianmo/adapter`: this package depends on
+ * `@qianmo/memory` only, and the line rules here have no counterpart there.
+ */
+
+/** JavaScript's four line terminators plus Python's `str.splitlines` extras. */
+const LINE_BREAK_SOURCE =
+  '\\r\\n|[\\n\\v\\f\\r\\x1c-\\x1e\\x85\\u{2028}\\u{2029}]'
+
+/** Whitespace a reader skips within one line. */
+const INLINE_SPACE = '[^\\S\\n\\v\\f\\r\\u{2028}\\u{2029}]'
+
+const LINE_BREAK = new RegExp(LINE_BREAK_SOURCE, 'gu')
+
+const FRAMING_LINE = new RegExp(
+  `(^|${LINE_BREAK_SOURCE})(${INLINE_SPACE}*)` +
+    `(\`{3,}|~{3,}|-{3,}${INLINE_SPACE}*entry\\b|` +
+    `(?:entry_id|citation)${INLINE_SPACE}*:)`,
+  'giu',
+)
+
+function escapeAngles(text: string): string {
+  return text.replace(/[<>]/g, character =>
+    character === '<' ? '&lt;' : '&gt;',
+  )
+}
+
+/** A value printed after `label: `. */
+function inline(value: string): string {
+  return escapeAngles(value.replace(LINE_BREAK, ' '))
+}
+
+function bodyText(body: string): string {
+  return escapeAngles(body).replace(
+    FRAMING_LINE,
+    (_match, lineStart: string, indent: string, marker: string) =>
+      `${lineStart}${indent}&#${marker.codePointAt(0)};${marker.slice(1)}`,
+  )
+}
+
 /** One entry as it appears in the block. */
 export function renderEntry(entry: MemoryEntry): string {
+  const tags = entry.tags.length === 0 ? '(none)' : entry.tags.join(', ')
   return [
-    `entry_id: ${entry.id}`,
-    `written_at: ${entry.createdAt}`,
-    `source: ${entry.source.kind}:${entry.source.id}`,
-    `scope: ${scopeLabel(entry)}`,
-    `valid_from: ${entry.validAt}`,
-    `tags: ${entry.tags.length === 0 ? '(none)' : entry.tags.join(', ')}`,
-    `citation: ${formatCitation(entry)}`,
-    `title: ${entry.title}`,
-    `summary: ${entry.summary}`,
+    `entry_id: ${inline(entry.id)}`,
+    `written_at: ${inline(entry.createdAt)}`,
+    `source: ${inline(`${entry.source.kind}:${entry.source.id}`)}`,
+    `scope: ${inline(scopeLabel(entry))}`,
+    `valid_from: ${inline(entry.validAt)}`,
+    `tags: ${inline(tags)}`,
+    `citation: ${inline(formatCitation(entry))}`,
+    `title: ${inline(entry.title)}`,
+    `summary: ${inline(entry.summary)}`,
     'body:',
-    entry.body.trimEnd(),
+    bodyText(entry.body.trimEnd()),
   ].join('\n')
 }
 
@@ -143,6 +246,9 @@ export function selectForInjection(
 const OPEN = '<qianmo-memory'
 const CLOSE = '</qianmo-memory>'
 
+/** The line that marks an entry added by the semantic fill (V-8). */
+const SEMANTIC_MARK = 'via: semantic'
+
 /**
  * The memory block, ready to be placed in a system prompt.
  *
@@ -152,9 +258,11 @@ const CLOSE = '</qianmo-memory>'
  * told which of the two it is looking at, and so is anyone reading a transcript.
  */
 export function renderInjection(view: InjectionView): string {
+  const hybrid = view.retrieval === 'hybrid'
   const header =
     `${OPEN} as_of="${view.asOf}" mode="${view.mode}" ` +
-    `injected="${view.entries.length}" omitted="${view.omittedCount}">`
+    `injected="${view.entries.length}" omitted="${view.omittedCount}"` +
+    `${hybrid ? ' retrieval="hybrid"' : ''}>`
   const lines = [header]
   if (view.mode === 'full') {
     lines.push(
@@ -169,6 +277,13 @@ export function renderInjection(view: InjectionView): string {
         'absence in the store.',
     )
   }
+  const semantic = new Set(hybrid ? (view.semanticIds ?? []) : [])
+  if (semantic.size > 0) {
+    lines.push(
+      `# Entries marked "${SEMANTIC_MARK}" were selected by similarity to ` +
+        'the message, not by shared wording or tags.',
+    )
+  }
   if (view.degraded) {
     lines.push(
       '# WARNING: part of the memory store could not be read during this ' +
@@ -180,10 +295,11 @@ export function renderInjection(view: InjectionView): string {
     lines.push('(no live memory entries in scope)')
   }
   for (const [index, ranked] of view.entries.entries()) {
-    lines.push(
-      `--- entry ${index + 1}/${view.entries.length} ---`,
-      renderEntry(ranked.entry),
-    )
+    lines.push(`--- entry ${index + 1}/${view.entries.length} ---`)
+    // Framing, like the separator above it: outside the entry, so outside
+    // the character budget `selectForInjection` counts.
+    if (semantic.has(ranked.entry.id)) lines.push(SEMANTIC_MARK)
+    lines.push(renderEntry(ranked.entry))
   }
   lines.push(CLOSE)
   return lines.join('\n')

@@ -55,11 +55,13 @@ import {
   WakeRefusedError,
   executeResidentWake,
 } from '../../../cli/handlers/residentWake.js'
-import type {
-  ResidentLifecycleRecord,
-  ResidentPriorLife,
-  ResidentTimingEvent,
+import {
+  residentRecallScope,
+  type ResidentLifecycleRecord,
+  type ResidentPriorLife,
+  type ResidentTimingEvent,
 } from '@qianmo/resident'
+import { FileMemoryStore } from '@qianmo/memory'
 import {
   macroDefineArgs,
   resolveBuildFeatures,
@@ -2506,4 +2508,121 @@ describe('issue #28: the woken agent actually does the work', () => {
     expect(outcome.content).toContain('refused')
     expect(outcome.work).toEqual([])
   }, 25_000)
+})
+
+describe('memory semantic overlay on the resident host (P16.6)', () => {
+  test('switched on, a ranked turn is assembled in two stages and its retrieval is recorded', async () => {
+    root = mkdtempSync(join(tmpdir(), 'qianmo-resident-semantic-'))
+    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    const socket = join(root, 'resident.sock')
+    const memoryRoot = join(root, 'memory')
+
+    // More than the injection budget holds, in the partition this requester's
+    // turns recall from: ranked mode, the only mode the overlay acts in.
+    const partition = residentRecallScope({
+      agent: AGENT,
+      contextId: undefined,
+    })
+    const store = new FileMemoryStore({ root: memoryRoot })
+    for (let index = 0; index < 60; index += 1) {
+      store.write({
+        scope: {
+          layer: 'working',
+          projectKey: partition.projectKey as string,
+          taskId: partition.taskId as string,
+        },
+        title: `note ${index}`,
+        summary: `note ${index}`,
+        body: `unrelated note ${index}`,
+        source: { kind: 'user', id: 'test' },
+      })
+    }
+
+    const embedded: string[][] = []
+    const ready: string[] = []
+    const errors: unknown[] = []
+    const resident = new QianmoResident({
+      node: 'node-b',
+      team: TEAM,
+      agents: [{ agent: AGENT, cwd: join(root, 'workspace') }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { unix: socket },
+      spawnAcp: spawnFixture,
+      memoryRoot,
+      semanticRecall: {
+        embedder: {
+          id: 'test-constant',
+          model: 'constant-v1',
+          dimensions: 2,
+          embed: async texts => {
+            embedded.push([...texts])
+            return { vectors: texts.map(() => [1, 0]) }
+          },
+        },
+        dailyTokenLimit: 1_000_000,
+        // One recall may warm the whole partition; the default 32 would leave
+        // this first turn cold, which is its own test in `@qianmo/recall`.
+        config: { maxEmbedPerRecall: 100 },
+      },
+      onReady: address => {
+        if (address.unix !== undefined) ready.push(address.unix)
+      },
+      onError: error => errors.push(error),
+    })
+    const running = resident.run()
+    activeResident = resident
+    activeRun = running
+
+    await waitUntil(() => ready.length === 1)
+    const replies: QianmoMessage[] = []
+    const client = new TransportClient({
+      endpoint: { unix: socket },
+      node: 'node-a',
+      psk: PSK,
+      backoff: { baseDelayMs: 20, maxDelayMs: 100, jitterRatio: 0 },
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        replies.push(message)
+      },
+    })
+    clients.push(client)
+    await client.connect()
+    client.send(
+      createMessage({
+        from: 'qianmo://node-a/planner',
+        to: 'qianmo://node-b/reviewer',
+        type: MessageType.TaskRequest,
+        payload: { ask: 'summarise' },
+      }),
+    )
+    await client.waitForDrain()
+    await waitUntil(() => replies.length >= 2)
+
+    const detected = readFileSync(
+      join(root, 'config', 'resident', AGENT, 'admission.ndjson'),
+      'utf8',
+    )
+      .split('\n')
+      .filter(line => line.length > 0)
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .filter(record => record.kind === 'detected')
+    expect(detected).toHaveLength(1)
+    expect(detected[0]?.retrieval).toBe('hybrid')
+    expect(String(detected[0]?.prompt)).toContain(' retrieval="hybrid">')
+
+    // One call: the batch as the question, plus every candidate's top-up.
+    expect(embedded).toHaveLength(1)
+    expect(embedded[0]).toHaveLength(61)
+    // The spend is on disk under the identity config root.
+    const usage = JSON.parse(
+      readFileSync(
+        join(root, 'config', 'qianmo', 'embedding', 'usage.json'),
+        'utf8',
+      ),
+    ) as { tokens: number }
+    expect(usage.tokens).toBeGreaterThan(0)
+    expect(errors).toEqual([])
+  }, 15_000)
 })
