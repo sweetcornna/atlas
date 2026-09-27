@@ -2,14 +2,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Task notifications stay with the ACP session whose work produced them
- * (review E-8). The end-to-end case — a real `--acp` child, a background
- * command in one session, another session's turn — is
+ * Work an ACP session leaves behind stays with that session (review E-8): its
+ * task notifications, and the directory its task output files go to. The
+ * end-to-end cases — a real `--acp` child, a background command in one
+ * session, another session's turn — are in
  * `tests/integration/qianmo-resident-bypass-corpus.test.ts`; this file pins the
- * queue rule itself, including the shapes that one child cannot easily stage.
+ * two rules themselves, including the shapes one child cannot easily stage.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { join } from 'node:path'
+import { getOriginalCwd, setOriginalCwd } from '../../../bootstrap/state.js'
+import { getProjectTempDir } from '../../permissions/filesystem.js'
+import { getTaskOutputDir } from '../../task/diskOutput.js'
 import {
   enqueuePendingNotification,
   getCommandsByMaxPriority,
@@ -82,5 +87,33 @@ describe('task notifications are scoped to the ACP session that caused them', ()
     )
     expect(seen).toBe('session-b')
     expect(currentSessionScope()).toBeUndefined()
+  })
+})
+
+describe('task output files are kept per ACP session', () => {
+  test("each session's outputs go under its own project temp directory, and stay there", () => {
+    // Before this, the first session to start a task fixed the directory for
+    // the whole process: every other agent's output landed in the first
+    // agent's project temp directory, readable there without asking, and the
+    // owner could not read its own file.
+    const saved = getOriginalCwd()
+    try {
+      setOriginalCwd('/srv/qm-scope-test/agent-one')
+      const tempOne = getProjectTempDir()
+      const dirOne = runInSessionScope('scope-test-one', getTaskOutputDir)
+
+      setOriginalCwd('/srv/qm-scope-test/agent-two')
+      const tempTwo = getProjectTempDir()
+      const dirTwo = runInSessionScope('scope-test-two', getTaskOutputDir)
+
+      expect(tempOne).not.toBe(tempTwo)
+      expect(dirOne).toBe(join(tempOne, 'scope-test-one', 'tasks'))
+      expect(dirTwo).toBe(join(tempTwo, 'scope-test-two', 'tasks'))
+      // Session one's work finishing while session two is current still
+      // names session one's files.
+      expect(runInSessionScope('scope-test-one', getTaskOutputDir)).toBe(dirOne)
+    } finally {
+      setOriginalCwd(saved)
+    }
   })
 })

@@ -6,11 +6,15 @@
  *
  * An ACP process serves several sessions, one turn at a time
  * (`sessionWorkspace.ts`), but work a turn starts can outlive it: a
- * backgrounded command, an async subagent. When that work finishes it posts a
- * task notification to the base's command queue, which is one queue for the
- * whole process, and the next loop to drain it — whichever session's turn is
- * running then — used to receive it. Session B was handed session A's
- * background result, output-file path included (review E-8).
+ * backgrounded command, an async subagent. Two process-wide pieces of the base
+ * used to mix that work up between sessions (review E-8):
+ *
+ *   - the command queue: a finished task posts its notification there, and
+ *     the next loop to drain it — whichever session's turn was running then —
+ *     received it, output-file path included (`messageQueueManager.ts`);
+ *   - the task output directory: memoised at first use, so every agent's
+ *     output landed in the first agent's project temp directory, which that
+ *     agent reads and lists without asking (`task/diskOutput.ts`).
  *
  * The process-wide "current session" cannot answer this: by the time the work
  * finishes, it names whoever is running now. AsyncLocalStorage can, the same
@@ -20,7 +24,7 @@
  * turn still reports A when it fires during session B's.
  *
  * Nothing sets a scope outside the ACP prompt path, so a REPL or print-mode
- * process sees `undefined` everywhere and the queue behaves as it always did.
+ * process sees `undefined` everywhere and both behave as they always did.
  */
 
 import { AsyncLocalStorage } from 'async_hooks'

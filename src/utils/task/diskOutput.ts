@@ -15,6 +15,7 @@ import { getErrnoCode } from '../runtime/errors.js'
 import { readFileRange, tailFile } from '../filesystem/fsOperations.js'
 import { logError } from '../telemetry/log.js'
 import { getProjectTempDir } from '../permissions/filesystem.js'
+import { currentSessionScope } from '../session/sessionScope.js'
 
 // SECURITY: O_NOFOLLOW prevents following symlinks when opening task output files.
 // Without this, an attacker in the sandbox could create symlinks in the tasks directory
@@ -49,7 +50,26 @@ export const MAX_TASK_OUTPUT_BYTES_DISPLAY = '5GB'
  * bash tasks surviving /clear need their output files to stay reachable.
  */
 let _taskOutputDir: string | undefined
+/**
+ * Per ACP session (sessionScope.ts). An ACP process serves one session per
+ * workspace, and the process-wide memo above would put every session's output
+ * under whichever session asked first — inside THAT session's project temp
+ * directory, which the base lets it read and list without asking, while the
+ * owner of the output could not read its own file there. Captured at the
+ * scope's first call (during its own turn, so the project temp directory is
+ * its own), then stable for every continuation that scope's work runs.
+ */
+const _scopedTaskOutputDirs = new Map<string, string>()
 export function getTaskOutputDir(): string {
+  const scope = currentSessionScope()
+  if (scope !== undefined) {
+    let dir = _scopedTaskOutputDirs.get(scope)
+    if (dir === undefined) {
+      dir = join(getProjectTempDir(), scope, 'tasks')
+      _scopedTaskOutputDirs.set(scope, dir)
+    }
+    return dir
+  }
   if (_taskOutputDir === undefined) {
     _taskOutputDir = join(getProjectTempDir(), getSessionId(), 'tasks')
   }
