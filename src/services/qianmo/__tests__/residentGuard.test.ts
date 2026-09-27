@@ -22,10 +22,35 @@ import type {
   Tool,
   ToolUseContext,
 } from '@open-claude-code/tool-runtime/Tool.js'
+import type { PermissionMode } from '../../../types/permissions.js'
 import { occConfigDir } from '../../../config/paths.js'
-import { withResidentHardline } from '../residentGuard.js'
+import {
+  RESIDENT_EXCLUDED_TOOLS,
+  withResidentCanUseTool,
+  withResidentHardline,
+} from '../residentGuard.js'
 
-const CONTEXT = {} as unknown as ToolUseContext
+/**
+ * A context carrying one mode and a set of allow rules. The wrapper reads the
+ * mode to refuse an elevated session and strips the rules before consulting the
+ * real tool, so both are worth being able to vary from a test.
+ */
+function context(
+  mode: PermissionMode = 'default',
+  commandAllowRules: string[] = [],
+): { context: ToolUseContext } {
+  const ctx = {
+    getAppState: () => ({
+      toolPermissionContext: {
+        mode,
+        alwaysAllowRules: { command: commandAllowRules },
+      },
+    }),
+  } as unknown as ToolUseContext
+  return { context: ctx }
+}
+
+const CONTEXT = context().context
 
 /** A tool that pre-approves everything, the way a matched allow rule does. */
 function permissiveTool(name: string): {
@@ -45,6 +70,25 @@ function permissiveTool(name: string): {
     marker: 'inherited-property',
   } as unknown as Tool
   return { tool, calls }
+}
+
+/** A tool that defers to the general permission system (the default shape). */
+function passthroughTool(name: string): {
+  readonly tool: Tool
+  readonly seenRules: unknown[]
+} {
+  const seenRules: unknown[] = []
+  const tool = {
+    name,
+    async checkPermissions(input: unknown, ctx: ToolUseContext) {
+      seenRules.push(ctx.getAppState().toolPermissionContext.alwaysAllowRules)
+      return { behavior: 'passthrough' as const, message: 'ask' }
+    },
+    async description() {
+      return `${name} description`
+    },
+  } as unknown as Tool
+  return { tool, seenRules }
 }
 
 describe('resident hardline wiring — evaluated before any allow', () => {
@@ -118,6 +162,104 @@ describe('resident hardline wiring — evaluated before any allow', () => {
 
     expect(decision.behavior).toBe('allow')
     expect(calls).toHaveLength(1)
+  })
+
+  test('an elevated mode is refused before the tool is consulted', async () => {
+    // review-P14 E-1: plan/bypass/auto are how a session gets a silent allow.
+    // The resident carries only dontAsk/acceptEdits/default, so any of these
+    // means the mode was changed mid-run — refuse ahead of the allow.
+    const { tool, calls } = permissiveTool('Bash')
+    const [guarded] = withResidentHardline([tool])
+
+    for (const mode of ['plan', 'bypassPermissions', 'auto'] as const) {
+      const decision = await (guarded as Tool).checkPermissions(
+        { command: 'touch /tmp/x' } as never,
+        context(mode).context,
+      )
+      expect(decision.behavior).toBe('deny')
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  test('an excluded tool is refused even if it would allow itself', async () => {
+    const { tool, calls } = permissiveTool('EnterPlanMode')
+    // withResidentHardline drops it from the array, so build the guard directly
+    // over it to prove the checkPermissions ceiling refuses it too.
+    const [onlyGuarded] = withResidentHardline([
+      tool,
+      permissiveTool('Bash').tool,
+    ])
+    // The array no longer contains EnterPlanMode at all.
+    expect(onlyGuarded?.name).toBe('Bash')
+    expect(RESIDENT_EXCLUDED_TOOLS.has('EnterPlanMode')).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('injected allow rules are stripped before the tool decides', async () => {
+    // review-P14 E-4: a skill writes its allowed-tools into
+    // alwaysAllowRules.command. The tool must decide as if the session carried
+    // no rules, so the injection cannot turn its passthrough into an allow.
+    const { tool, seenRules } = passthroughTool('Bash')
+    const [guarded] = withResidentHardline([tool])
+
+    const decision = await (guarded as Tool).checkPermissions(
+      { command: 'touch /tmp/x' } as never,
+      context('default', ['Bash', 'Bash(touch:*)']).context,
+    )
+
+    expect(seenRules).toEqual([{}])
+    // passthrough becomes a host-visible, bypass-immune ask.
+    expect(decision.behavior).toBe('ask')
+    expect(decision.decisionReason).toEqual({
+      type: 'safetyCheck',
+      reason: 'qianmo-resident-host-review:Bash',
+      classifierApprovable: false,
+    })
+  })
+
+  test('the canUseTool ceiling refuses an elevated subagent', async () => {
+    // review-P14 E-3: a subagent adopting permissionMode:bypassPermissions runs
+    // with re-assembled tools that never saw the hardline wrapper. canUseTool is
+    // the one funnel it still passes through.
+    let innerCalled = false
+    const inner = async () => {
+      innerCalled = true
+      return { behavior: 'allow' as const, updatedInput: {} }
+    }
+    const guarded = withResidentCanUseTool(inner)
+    const { tool } = permissiveTool('Bash')
+
+    const decision = await guarded(
+      tool,
+      { command: 'touch /tmp/x' },
+      context('bypassPermissions').context,
+      {} as never,
+      'tool-use-1',
+    )
+
+    expect(decision.behavior).toBe('deny')
+    expect(innerCalled).toBe(false)
+  })
+
+  test('the canUseTool ceiling defers ordinary work to the bridge', async () => {
+    let innerCalled = false
+    const inner = async () => {
+      innerCalled = true
+      return { behavior: 'allow' as const, updatedInput: {} }
+    }
+    const guarded = withResidentCanUseTool(inner)
+    const { tool } = permissiveTool('Bash')
+
+    const decision = await guarded(
+      tool,
+      { command: 'ls' },
+      context('default').context,
+      {} as never,
+      'tool-use-2',
+    )
+
+    expect(innerCalled).toBe(true)
+    expect(decision.behavior).toBe('allow')
   })
 
   test('wrapping preserves everything else about the tool', async () => {

@@ -64,6 +64,28 @@ const IDENTITY_DIRS: readonly string[] = Object.freeze([
 /** Directories under a config root that hold node-owned state. */
 const NODE_STATE_DIRS: readonly string[] = Object.freeze(['resident', 'qianmo'])
 
+/**
+ * Customization directories under a config root. A file in any of these is
+ * *loaded* as behaviour — an agent definition sets a permission mode, a skill
+ * injects allow rules, a plugin or hook runs code — so writing one is the same
+ * class of self-authorization as editing `settings.json` (hermes E1/E3/E4).
+ *
+ * Matched under a known state root or spelled out under an identity directory,
+ * exactly like `SETTINGS_FILES`: a `.claude/agents/esc.md` in the repository
+ * the agent is working in carries a `permissionMode` for this very session, so
+ * it is policy in the same sense as the global one. Reads are refused as well
+ * as writes: a resident turn has no reason to read the node's own agent, skill
+ * or plugin catalogue, and the loaders that legitimately consume them are
+ * disabled outright under the resident child's safe mode.
+ */
+const CONFIG_CUSTOMIZATION_DIRS: readonly string[] = Object.freeze([
+  'agents',
+  'skills',
+  'plugins',
+  'commands',
+  'hooks',
+])
+
 /** Files that *are* the security policy (hermes E3). */
 const SETTINGS_FILES: readonly string[] = Object.freeze([
   'settings.json',
@@ -126,6 +148,19 @@ export const HARDLINE_TARGETS: readonly HardlineTarget[] = Object.freeze([
     reason:
       'the identity config root as a whole, which contains all of the above',
   }),
+  Object.freeze({
+    id: 'config-customization',
+    reason:
+      'agent, skill, plugin, command and hook definitions under a config root; ' +
+      'each is loaded as behaviour, so writing one grants a turn a new permission ' +
+      'mode, allow rule or code path',
+  }),
+  Object.freeze({
+    id: 'memory-root',
+    reason:
+      "the node's memory store; a turn that can write it plants a memory a later " +
+      'turn trusts as evidence, which no single approval should be able to do',
+  }),
 ])
 
 const TARGET_BY_ID: ReadonlyMap<string, HardlineTarget> = new Map(
@@ -149,6 +184,15 @@ export interface ResidentHardlineOptions {
    * tree, which is the F9 mistake in a different costume.
    */
   readonly stateRoots?: readonly string[]
+  /**
+   * Absolute subtrees that are refused whole, without any per-name rule. The
+   * node's memory store is the one the host supplies: it can sit outside the
+   * config root (`CLAUDE_CODE_REMOTE_MEMORY_DIR`), and a resident turn never
+   * reaches it through the filesystem — the host reads and injects memory for
+   * it — so the whole tree is off limits and a stray approval cannot poison a
+   * later turn's evidence. Same absolute-only discipline as `stateRoots`.
+   */
+  readonly protectedRoots?: readonly string[]
 }
 
 function segmentsOf(rawPath: string): readonly string[] {
@@ -156,6 +200,24 @@ function segmentsOf(rawPath: string): readonly string[] {
     .replace(/\\/g, '/')
     .split('/')
     .filter(segment => segment.length > 0 && segment !== '.')
+}
+
+/**
+ * Index of `first` where it is immediately followed by `second`, or -1.
+ *
+ * Two adjacent segments rather than "both appear somewhere" on purpose: it is
+ * `qianmo/identity`, in that order and touching, that names the key directory —
+ * a path that merely mentions both words elsewhere is not it.
+ */
+function sequenceIndex(
+  segments: readonly string[],
+  first: string,
+  second: string,
+): number {
+  for (let i = 0; i + 1 < segments.length; i += 1) {
+    if (segments[i] === first && segments[i + 1] === second) return i
+  }
+  return -1
 }
 
 function withinRoot(candidate: string, root: string): boolean {
@@ -170,10 +232,14 @@ function withinRoot(candidate: string, root: string): boolean {
 
 export class ResidentHardline {
   readonly #stateRoots: readonly string[]
+  readonly #protectedRoots: readonly string[]
 
   constructor(options: ResidentHardlineOptions = {}) {
     this.#stateRoots = Object.freeze(
       (options.stateRoots ?? []).filter(root => isAbsolute(root)),
+    )
+    this.#protectedRoots = Object.freeze(
+      (options.protectedRoots ?? []).filter(root => isAbsolute(root)),
     )
   }
 
@@ -189,10 +255,27 @@ export class ResidentHardline {
       surface: 'file',
     })
 
+    // A protected subtree, whole. Checked first: it has no per-name shape and
+    // must hold even for a file that would otherwise read as clear.
+    if (this.#protectedRoots.some(root => withinRoot(rawPath, root))) {
+      return deny('memory-root')
+    }
+
     // Any state file, wherever it lives.
     if (NODE_STATE_FILES.includes(basename)) {
       return deny(basename === 'trail.ndjson' ? 'audit-trail' : 'node-state')
     }
+
+    // Identity and audit material named lexically, wherever it lives. This is
+    // the one rule that does not depend on `stateRoots`: on a host that runs
+    // several nodes (and the console) side by side, a peer's key sits under
+    // `…/qianmo/identity/` in a directory this node's root never covers, and it
+    // must still be refused (hermes TH-6②). Placed ahead of the root-scoped
+    // rules below so it fires for those paths too.
+    const identityKeyAt = sequenceIndex(segments, 'qianmo', 'identity')
+    if (identityKeyAt >= 0) return deny('node-identity')
+    const auditAt = sequenceIndex(segments, 'qianmo', 'audit')
+    if (auditAt >= 0) return deny('audit-trail')
 
     const identityAt = segments.findIndex(segment =>
       IDENTITY_DIRS.includes(segment),
@@ -205,6 +288,19 @@ export class ResidentHardline {
     // session, so it is policy in exactly the same sense as the global one.
     if (SETTINGS_FILES.includes(basename) && (identityAt >= 0 || insideRoot)) {
       return deny('settings')
+    }
+
+    // Customization directories under a config root or identity directory —
+    // same scoping test as settings, and the same reason: a definition loaded
+    // from one of these changes what the session may do.
+    const customizationAt = segments.findIndex(segment =>
+      CONFIG_CUSTOMIZATION_DIRS.includes(segment),
+    )
+    if (
+      customizationAt >= 0 &&
+      (insideRoot || (identityAt >= 0 && identityAt < customizationAt))
+    ) {
+      return deny('config-customization')
     }
 
     // Node-owned state directories, either under a known root or spelled out
