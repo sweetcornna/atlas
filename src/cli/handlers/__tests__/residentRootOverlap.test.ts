@@ -29,6 +29,7 @@ import {
   expect,
   test,
 } from 'bun:test'
+import { X509Certificate } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -265,6 +266,116 @@ describe('directory layer: every root in --trust-ca counts', () => {
           oldLeaf.keys.publicKey,
         ),
       ).toThrow(/was not signed by the CA in --trust-ca/)
+    },
+  )
+})
+
+describe('handing the RL to the new root (ca-runbook.md §6.2 step 5)', () => {
+  itNeedsOpenssl(
+    'a new-root list without the old entries is refused; with --import-from it lands',
+    async () => {
+      // Directories of its own: the RL state of the two above belongs to the
+      // tests above.
+      const fromDir = join(root, 'rl-from')
+      const toDir = join(root, 'rl-to')
+      initCa({ directory: fromDir, commonName: 'qianmo-rl-from' })
+      initCa({ directory: toDir, commonName: 'qianmo-rl-to' })
+      const peer = issueLeaf(toDir, 'node-peer')
+      const peerFingerprint = new X509Certificate(peer.pem).fingerprint256
+      const trust = join(root, 'trust-rl.pem')
+      writeFileSync(
+        trust,
+        readFileSync(caCertPath(fromDir), 'utf8') +
+          readFileSync(caCertPath(toDir), 'utf8'),
+      )
+
+      let published: unknown = null
+      const registry = Bun.serve({
+        port: 0,
+        hostname: '127.0.0.1',
+        fetch(request) {
+          const path = new URL(request.url).pathname
+          if (path === '/v0/revocation-list' && published !== null) {
+            return Response.json(published)
+          }
+          if (path === '/v0/agents') {
+            return Response.json({
+              agents: [
+                {
+                  address: `qianmo://${peer.node}/reviewer`,
+                  publicKey: peer.keys.publicKey,
+                  certificate: peer.pem,
+                },
+              ],
+            })
+          }
+          return new Response('not found', { status: 404 })
+        },
+      })
+      const publish = (signed: { readonly path: string }): void => {
+        published = JSON.parse(readFileSync(signed.path, 'utf8'))
+      }
+      const refused: string[] = []
+      try {
+        const directory = buildPublicKeyDirectory(
+          {
+            ...nodeConfig(peer, trust),
+            node: 'node-observer',
+            registryUrl: `http://127.0.0.1:${registry.port}`,
+          },
+          undefined,
+          event => refused.push(`${event.phase}: ${event.reason}`),
+        ) as CertificateDirectory
+        const t0 = Date.now()
+
+        // The old root's list, naming a certificate long gone.
+        publish(
+          refreshRevocationList({
+            directory: fromDir,
+            revoke: [
+              {
+                node: 'node-gone',
+                fingerprint256: Array.from({ length: 32 }, () => 'EE').join(
+                  ':',
+                ),
+              },
+            ],
+            now: t0,
+          }),
+        )
+        await directory.refresh()
+        expect(refused).toEqual([])
+        expect(directory.publicKeyOf('node-peer')).toBe(peer.keys.publicKey)
+
+        // The new root revokes node-peer but carries nothing over. The node
+        // refuses the whole list, so the new revocation does not land either.
+        publish(
+          refreshRevocationList({
+            directory: toDir,
+            revoke: [{ node: 'node-peer', fingerprint256: peerFingerprint }],
+            now: t0 + 60_000,
+          }),
+        )
+        await directory.refresh()
+        expect(refused).toEqual([
+          'revocation_list: refusing a revocation list that removes prior entries',
+        ])
+        expect(directory.publicKeyOf('node-peer')).toBe(peer.keys.publicKey)
+
+        // Same new directory, the old entries imported: accepted, node-peer out.
+        publish(
+          refreshRevocationList({
+            directory: toDir,
+            importFrom: fromDir,
+            now: t0 + 120_000,
+          }),
+        )
+        await directory.refresh()
+        expect(refused).toHaveLength(1)
+        expect(directory.publicKeyOf('node-peer')).toBeNull()
+      } finally {
+        registry.stop(true)
+      }
     },
   )
 })

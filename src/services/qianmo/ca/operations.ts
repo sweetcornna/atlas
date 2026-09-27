@@ -542,14 +542,21 @@ export interface RevocationRequest {
 interface RefreshRlResult {
   readonly path: string
   readonly list: RevocationList
-  /** Entries this run added — zero on a plain monthly re-sign. */
+  /** Entries this run's `--revoke` added — zero on a plain monthly re-sign. */
   readonly added: number
+  /** Entries `importFrom` added; zero when every one was already here. */
+  readonly imported: number
   readonly caPublicKey: string
 }
 
 function readRevocationState(path: string): RevocationEntry[] {
   if (!existsSync(path)) return []
-  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error(`${path} is not JSON`)
+  }
   if (!Array.isArray(parsed)) {
     throw new Error(`${path} is not a list of revocation entries`)
   }
@@ -567,10 +574,42 @@ function readRevocationState(path: string): RevocationEntry[] {
   return [...candidate.revoked]
 }
 
+/**
+ * The revocation state of another CA directory, for a root rotation.
+ *
+ * Nodes keep the revocation list append-only (§6.4): once they hold the old
+ * root's list, a list from the new root that lacks any of its entries is
+ * refused, and the new root's own revocations never reach them. So the new
+ * directory takes the old one's entries over before it signs its first list —
+ * merged by fingerprint, never copied over the top, because the new directory
+ * may already have revocations of its own.
+ */
+function importedRevocationState(
+  from: string,
+  directory: string,
+): RevocationEntry[] {
+  if (isInsideCaDirectory(from, directory)) {
+    throw new Error(
+      `--import-from ${from} is this CA's own directory; name the previous ` +
+        "root's directory. Nothing was signed.",
+    )
+  }
+  const path = revocationStatePath(from)
+  if (!existsSync(path)) {
+    throw new Error(
+      `--import-from: no ${path}. Point it at the previous root's CA ` +
+        'directory, the one its refresh-rl ran in. Nothing was signed.',
+    )
+  }
+  return readRevocationState(path)
+}
+
 /** Re-sign the revocation list, optionally adding entries first (§6.1 row 4). */
 export function refreshRevocationList(options: {
   readonly directory: string
   readonly revoke?: readonly RevocationRequest[]
+  /** Another CA directory whose revocations this list must carry (§3.3 rotation). */
+  readonly importFrom?: string
   readonly validMs?: number
   readonly outPath?: string
   readonly now?: number
@@ -600,6 +639,21 @@ export function refreshRevocationList(options: {
   const statePath = revocationStatePath(directory)
   const entries = readRevocationState(statePath)
   const known = new Set(entries.map(entry => entry.fingerprint256))
+
+  let imported = 0
+  if (options.importFrom !== undefined) {
+    for (const entry of importedRevocationState(
+      options.importFrom,
+      directory,
+    )) {
+      // Kept as the previous root recorded it — node, reason and the time the
+      // revocation was decided are history, not something this run decides.
+      if (known.has(entry.fingerprint256)) continue
+      known.add(entry.fingerprint256)
+      entries.push(entry)
+      imported++
+    }
+  }
 
   let added = 0
   for (const request of options.revoke ?? []) {
@@ -649,5 +703,5 @@ export function refreshRevocationList(options: {
     CA_PUBLIC_FILE_MODE,
   )
 
-  return { path: outPath, list, added, caPublicKey }
+  return { path: outPath, list, added, imported, caPublicKey }
 }

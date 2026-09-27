@@ -6,7 +6,7 @@
  *
  *   qm ca init
  *   qm ca issue <node> --csr <file> --pop <sig> --nodekey <key> --host <host>
- *   qm ca refresh-rl [--revoke <node>=<fingerprint>]
+ *   qm ca refresh-rl [--revoke <node>=<fingerprint>] [--import-from <dir>]
  *   qm ca ledger [--node <node>]
  *
  * Three signing commands because §6.1 lists three actions that happen on the
@@ -140,6 +140,12 @@ refresh-rl:
                            no-op. Keyed on the certificate, not the node: a
                            compromised node returns as a new identity (§6.5).
   --reason <text>          Reason recorded for the entries added in this run.
+  --import-from <dir>      Take over every revocation in another CA directory
+                           (the previous root's, during a rotation) before
+                           signing. Merged by fingerprint, idempotent, and each
+                           entry keeps its node, reason and time. Needed before
+                           a new root signs its first list: nodes refuse a list
+                           that drops an entry they already hold (§6.4).
   --valid-days <n>         nextUpdate, default ${RL_VALID_DAYS} (§6.2). Past it,
                            nodes fail closed to their explicit --trust entries
                            rather than opening up or going dark (§6.4).
@@ -183,6 +189,7 @@ interface IssueConfig {
 interface RefreshConfig {
   readonly directory: string
   readonly revoke: readonly RevocationRequest[]
+  readonly importFrom?: string
   readonly validMs?: number
   readonly outPath?: string
 }
@@ -319,6 +326,7 @@ export function parseCaIssueArgs(args: readonly string[]): IssueConfig {
 export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
   let caDir: string | undefined
   let reason: string | undefined
+  let importFrom: string | undefined
   let validMs: number | undefined
   let outPath: string | undefined
   const pending: { node: string; fingerprint256: string }[] = []
@@ -344,6 +352,10 @@ export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
       const parsed = residentOptionValue(args, index, '--reason')
       reason = parsed.value
       index = parsed.next
+    } else if (arg === '--import-from' || arg?.startsWith('--import-from=')) {
+      const parsed = residentOptionValue(args, index, '--import-from')
+      importFrom = parsed.value
+      index = parsed.next
     } else if (arg === '--valid-days' || arg?.startsWith('--valid-days=')) {
       const parsed = residentOptionValue(args, index, '--valid-days')
       validMs =
@@ -364,6 +376,7 @@ export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
       ...entry,
       ...(reason === undefined ? {} : { reason }),
     })),
+    ...(importFrom === undefined ? {} : { importFrom }),
     ...(validMs === undefined ? {} : { validMs }),
     ...(outPath === undefined ? {} : { outPath }),
   }
@@ -461,6 +474,9 @@ function runRefresh(args: readonly string[]): void {
   process.stdout.write(
     `Signed a revocation list with ${String(result.list.revoked.length)} ` +
       `entrie(s), ${String(result.added)} new\n` +
+      (config.importFrom === undefined
+        ? ''
+        : `  imported          ${String(result.imported)} from ${config.importFrom}\n`) +
       `  list              ${result.path}\n` +
       `  issued at         ${new Date(result.list.issuedAt).toISOString()}\n` +
       `  next update       ${new Date(result.list.nextUpdate).toISOString()}\n` +

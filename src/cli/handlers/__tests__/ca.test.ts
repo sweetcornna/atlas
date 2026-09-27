@@ -48,6 +48,8 @@ describe('qm ca argument parsing', () => {
       '--replace',
       'ledger',
       'issued-ledger.jsonl',
+      '--import-from <dir>',
+      'qianmo-ca-<UTC',
     ]) {
       expect(QIANMO_CA_HELP_TEXT).toContain(fragment)
     }
@@ -172,6 +174,21 @@ describe('qm ca argument parsing', () => {
     expect(() =>
       parseCaRefreshArgs(['--ca-dir', CA_DIR, '--revoke', 'node-a']),
     ).toThrow(/<node>=<fingerprint256>/)
+  })
+
+  test('refresh-rl --import-from names the previous CA directory', () => {
+    expect(
+      parseCaRefreshArgs(['--ca-dir', CA_DIR, '--import-from', '/tmp/old-ca'])
+        .importFrom,
+    ).toBe('/tmp/old-ca')
+    expect(
+      parseCaRefreshArgs([`--ca-dir=${CA_DIR}`, '--import-from=/tmp/old-ca'])
+        .importFrom,
+    ).toBe('/tmp/old-ca')
+    // Absent means a plain re-sign, not an import from somewhere implied.
+    expect(parseCaRefreshArgs(['--ca-dir', CA_DIR])).not.toHaveProperty(
+      'importFrom',
+    )
   })
 
   test('an unknown command exits 1 with one line, not a stack', () => {
