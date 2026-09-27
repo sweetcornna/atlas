@@ -25,22 +25,22 @@ this repository.
     `docs/dev/spdx-backfill-retro.md` 的那一笔）之后，共 647 个文件。每新增一个带该文件头的文件这个数就会变，
     所以真正作数的是下面那条命令，不是这个数字。
 
-一.2 判据不覆盖的那 87 个文件
+一.2 判据不覆盖的那 83 个文件
 ----------------------------------------
 
-    **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-08-30，**不在基座快照那
-    棵树里、又不带这两行文件头的文件共 87 个**——这是下面那条命令给出的定义，按
-    路径判据划的一侧，**不是一句所有权主张**。`LICENSE.base` 就落在这 87 个里而
+    **这条文件头判据不覆盖全部阡陌自有文件。**截至 2026-09-26，**不在基座快照那
+    棵树里、又不带这两行文件头的文件共 83 个**（2026-08-30 时是 87 个，差的 4 个
+    是 2026-09-26 移出仓库的申报文书，见「一.7」C 类）——这是下面那条命令给出的定义，按
+    路径判据划的一侧，**不是一句所有权主张**。`LICENSE.base` 就落在这 83 个里而
     它并非阡陌自有：那条路径是阡陌新增的（快照里没有它），内容却是上游 MIT 许可
     正文的逐字保留件；它在这一侧只说明路径判据到此为止，判据的这处边界见本节后面
     「这条判据也有它答不了的问题」一段。
 
-    这 87 个里有 83 个按文件格式成类，不加头的理由有两种：一类是
-    **二进制或纯数据格式，本来就没有注释语法**——27 个 `.jpg`、3 个 `.png`、
-    2 个 `.pdf`、2 个 `.docx`，以及 28 个 `.json`（JSON 语法不含注释，其中 20 个
-    是 `package.json`）；另一类**技术上带得了注释，但它们是生成件与工具配置、
-    不是源文件，加了会被工具覆盖或没有意义**——20 个 `tsconfig.json`（TypeScript
-    按 JSONC 解析，接受 `//` 注释）与
+    这 83 个里有 79 个按文件格式成类，不加头的理由有两种：一类是
+    **二进制或纯数据格式，本来就没有注释语法**——27 个 `.jpg`、3 个 `.png`，
+    以及 28 个 `.json`（JSON 语法不含注释，其中 20 个是 `package.json`）；另一类
+    **技术上带得了注释，但它们是生成件与工具配置、不是源文件，加了会被工具覆盖或
+    没有意义**——20 个 `tsconfig.json`（TypeScript 按 JSONC 解析，接受 `//` 注释）与
     `packages/audio-capture-napi/native/Cargo.lock`（TOML，支持 `#` 注释：它的头
     两行就是 Cargo 自己写的注释，第二行还明写 "It is not intended for manual
     editing"，人工加进去的行会在下次生成时被抹掉）。**余下 4 个既带得了注释、也
@@ -58,8 +58,9 @@ this repository.
         上面那两个格式类别中的任何一个，所以在这里单列。
 
     本文此前写的「其余是应补而未补的源文件与文档，正由单独一批提交补齐」已经
-    过时——补齐工作于 2026-08-30 完成（66 个文件），上面那 87 个是补齐之后的
-    余量。个数会随工作推进而变，现算的命令（不写死个数）：
+    过时——补齐工作于 2026-08-30 完成（66 个文件），上面那 83 个是补齐之后、
+    再减去 2026-09-26 移出的 4 份申报文书的余量。个数会随工作推进而变，现算的
+    命令（不写死个数）：
 
         # 阡陌自有（即不在基座快照那棵树里）却缺文件头的文件——按扩展名与具名
         # 路径两类拆开报数，同时报出带头文件数、阡陌自有总数与快照树大小
@@ -69,7 +70,7 @@ this repository.
     管道，现已换成对门禁 `scripts/check-license-headers.ts` 的引用：同一个事实只该
     有一处出处，手抄的第二份副本会漂。**非 ASCII 文件名那个坑仍在，只是改由门禁内
     部处理**——`git ls-files` 默认把非 ASCII 路径输出成带双引号的八进制转义形式，
-    那种名字喂给 `head` 读不到文件、会被静默跳过而少算，本仓库现有 33 个这样的文件
+    那种名字喂给 `head` 读不到文件、会被静默跳过而少算，本仓库现有 29 个这样的文件
     名（`git -c core.quotePath=false ls-files | LC_ALL=C grep -c '[^ -~]'` 可核）。
 
     **门禁把 `.json` 报成一档，上面把它拆成两类理由，是同一批文件的两种切法**：
@@ -97,7 +98,7 @@ this repository.
         数），再打一行判定行。**环境行那几个数随仓库增删而变，这里不抄——现跑现
         看**；判定行实测如下，三个 0 才算过：
 
-            [license-headers] OK：阡陌自有缺头 0（另有 87 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
+            [license-headers] OK：阡陌自有缺头 0（另有 83 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
 
         **门禁查的是三件事，与上面那两个推断方向不是一回事**：①**漏加**——阡陌
         自有、不在豁免表内、前 5 行没有那两行；②**误贴**——前 5 行带那行 SPDX、
@@ -115,12 +116,12 @@ this repository.
         跑一次比一比即可。
 
       - **没有文件头 ⇒ 属于基座 MIT 层**——**不成立**。理由不再是「还有一批
-        没补完」，而是上面那 87 个不在快照树里、又无头的文件：其中 **86 个是
+        没补完」，而是上面那 83 个不在快照树里、又无头的文件：其中 **82 个是
         这条推断的反例**。**剩下那一个是 `LICENSE.base`，它不是反例**——它无头，
         而内容逐字就是上游 MIT 正文，按内容本就落在 MIT 那一层，推断在它身上
         恰好蒙对了；但那是巧合而非判据生效，因为这两条判据看的都是路径、不是内
         容（见上面的计数句与本节后面「这条判据也有它答不了的问题」一段）。它也
-        是这 87 个里唯一的一例：逐个比对内容后，只有它与快照里的某个文件逐字节
+        是这 83 个里唯一的一例：逐个比对内容后，只有它与快照里的某个文件逐字节
         相同。另有一层更细的不成立：下一条要说的 180 个被阡陌改造过的基座文件
         **确实**属于基座那一层，但文件里的阡陌改动并不因此变成 MIT——按来源分层
         不等于按行分许可。（它们分发时按什么许可，见下一条 bullet。）
@@ -135,10 +136,10 @@ this repository.
     它），按权威判据落进阡陌 AGPL 层，而它的内容逐字是上游的 MIT 许可正文；
     **两条判据在它身上都给不出正确答案**，这正是它被列进上面那 4 个"有意不加头"
     的原因。另有一类落差同样要如实说：按这条判据落在阡陌层的还有 27 张 `.jpg`、
-    3 张 `.png`、2 份 `.pdf`、2 份 `.docx` 等**非代码资产**，而 **AGPL-3.0 是软件
-    许可**——这些作品适用什么许可不由这条判据决定，而是按用途另分三类各自定的：自
-    制作品按 CC BY-SA 4.0 授出，第三方标识不授出，申报文书保留所有权利。清单、依
-    据与其中一张 AI 生成件的如实注明见下面「一.7 非代码资产的许可」。
+    3 张 `.png` 等**非代码资产**，而 **AGPL-3.0 是软件许可**——这些作品适用什么
+    许可不由这条判据决定，而是按用途另分三类各自定的：自制作品按 CC BY-SA 4.0 授
+    出，第三方标识不授出，申报文书保留所有权利（已于 2026-09-26 移出当前版本）。
+    清单、依据与其中一张 AI 生成件的如实注明见下面「一.7 非代码资产的许可」。
 
 一.5 基座 MIT 层，与被改造过的那 180 个文件
 ----------------------------------------
@@ -311,10 +312,11 @@ this repository.
 一.7 非代码资产的许可
 ----------------------------------------
 
-上面那条路径判据把 34 个**非代码资产**划进了阡陌层，而 AGPL-3.0 是软件许可，套不
-到图片与文书上。它们全部是申报材料，全部由立项初始化提交 `67f6081`（早于基座导入
-提交 `3380c88`）一笔入库，与运行时代码零耦合——不进构建、不进 `dist/`，仓库里除
-`docs/` 与本文件外没有任何地方引用它们：
+上面那条路径判据把 30 个**非代码资产**划进了阡陌层（2026-08-30 定类时是 34 个，
+其中 4 份申报文书已于 2026-09-26 移出当前版本，见下面 C 类），而 AGPL-3.0 是软件
+许可，套不到图片与文书上。它们全部是申报材料，全部由立项初始化提交 `67f6081`
+（早于基座导入提交 `3380c88`）一笔入库，与运行时代码零耦合——不进构建、不进
+`dist/`，仓库里除 `docs/` 与本文件外没有任何地方引用它们：
 
     # 无输出。末尾两个排除项不能省：`docs/` 下是引用它们的文档本身，而**本文件
     # 自己也写着这两个路径**——判据类文档会匹配到自己，漏掉 ':!NOTICE' 这条命令
@@ -324,10 +326,10 @@ this repository.
 
 **按用途分三类，各自的许可分别定如下。**
 
-个数与上面「27 张 `.jpg`、3 张 `.png`、2 份 `.pdf`、2 份 `.docx`」是同一批文件的
-两种切法：A 类 26 张 `.jpg` + 1 张 `.png` = 27，B 类 1 张 `.jpg` + 2 张 `.png`
-= 3，C 类 2 份 `.pdf` + 2 份 `.docx` = 4；三类合计 27 + 3 + 4 = 34，与按扩展名合
-计的 27 + 3 + 2 + 2 = 34 逐项对得上。按扩展名的那一组数由
+个数与上面「27 张 `.jpg`、3 张 `.png`」是同一批文件的两种切法：A 类 26 张
+`.jpg` + 1 张 `.png` = 27，B 类 1 张 `.jpg` + 2 张 `.png` = 3；合计 27 + 3 = 30，
+与按扩展名合计的 27 + 3 = 30 逐项对得上。C 类在当前版本里是 0 个（原先是 2 份
+`.pdf` + 2 份 `.docx` = 4，2026-08-30 时三类合计 34）。按扩展名的那一组数由
 `bun run check:license-headers --report` 现算（见上面「一.2」），按类别的划分逐条
 列在下面，可自行数一遍。
 
@@ -348,11 +350,10 @@ this repository.
     **AI 生成物的可版权性在部分法域存疑**；我方只就自己实际享有的权利授出，
     **不因这条 CC BY-SA 声明而主张超出实际享有的权利**。
 
-        # 34 个资产里带 C2PA 痕迹的（只有这一个）
-        git -c core.quotePath=false grep -lai c2pa \
-            -- docs/assets 'docs/*.docx' 'docs/*.pdf'
+        # 30 个资产里带 C2PA 痕迹的（只有这一个）
+        git -c core.quotePath=false grep -lai c2pa -- docs/assets
 
-    **其余 33 个扫 `c2pa` 全部 0 命中，但"没有 C2PA"不等于"不是 AI 生成"**——重编
+    **其余 29 个扫 `c2pa` 全部 0 命中，但"没有 C2PA"不等于"不是 AI 生成"**——重编
     码、裁剪、另存都会把 C2PA 剥掉，这条证据只能证有、不能证无。所以本节不写"其余
     均非 AI 生成"。
 
@@ -382,19 +383,28 @@ this repository.
     **第三方不得依据本仓库的许可复用**。明细、证据等级与可核命令见下方
     "五、第三方组件"。
 
-  * **C 类 · 申报文书 —— 保留所有权利（All rights reserved）**（4 个）：
-    `docs/阡陌项目计划书.docx` / `.pdf` 与
-    `docs/阡陌创新训练项目申请书.docx` / `.pdf`，不随本仓库任何开源许可授出。理由
-    两条：① 正文含团队成员与指导教师的姓名、学号、联系电话与邮箱等个人信息；
-    ② 内嵌 B 类的第三方标识。**第二条只对其中一份成立，不要写满**——
-    `docs/阡陌项目计划书.docx` 的 `word/media/` 里有 B 类那三个标识的逐字节相同副
-    本，而 `docs/阡陌创新训练项目申请书.docx` 的 9 个内嵌媒体全部是 A 类信息图、
-    不含 B 类；两份 `.pdf` 是同源导出件，PDF 会重编码图像流，同样的字节比对在它们
-    身上做不了，所以这里**不对 `.pdf` 的内嵌情况作断言**，它们按理由①落在这一类。
+  * **C 类 · 申报文书 —— 保留所有权利（All rights reserved），已于 2026-09-26 移出
+    仓库**（当前版本 0 个，原 4 个）：`docs/阡陌项目计划书.docx` / `.pdf` 与
+    `docs/阡陌创新训练项目申请书.docx` / `.pdf`。**它们从来不随本仓库任何开源许可
+    授出。**2026-09-26 负责人决定把它们从当前版本移出、原件另行保存，**但不改写
+    历史**：移出之前的提交（自立项初始化提交 `67f6081` 起）与此前发行的源码包里
+    仍然有它们。无论从哪个历史版本或源码包取得，本条口径照样适用——不能依据本仓
+    库的许可使用、复制或再分发它们。
 
-        # 两份 .docx 的 word/media/ 里是否含 B 类那三个标识（逐字节比对）
+    定为这一类的理由有两条：① 正文含团队成员的学号、联系电话与电子邮箱，以及成员
+    与指导教师的姓名等个人信息，这也是移出的原因；② 内嵌 B 类的第三方标识。**第二
+    条只对其中一份成立，不要写满**——`docs/阡陌项目计划书.docx` 的 `word/media/`
+    里有 B 类那三个标识的逐字节相同副本，而 `docs/阡陌创新训练项目申请书.docx` 的
+    9 个内嵌媒体全部是 A 类信息图、不含 B 类；两份 `.pdf` 是同源导出件，PDF 会重
+    编码图像流，同样的字节比对在它们身上做不了，所以这里**不对 `.pdf` 的内嵌情况
+    作断言**，它们按理由①落在这一类。
+
+        # 只适用于历史版本：两份 .docx 已不在当前版本里。先找到删除它们的那一笔，
+        # 从它的父提交取出文件，再逐字节比对 word/media/ 与 B 类那三个标识
+        rev=$(git log -1 --format=%H --diff-filter=D -- 'docs/阡陌项目计划书.docx')^
         for doc in docs/阡陌项目计划书.docx docs/阡陌创新训练项目申请书.docx; do
-          d=$(mktemp -d); unzip -q -o "$doc" 'word/media/*' -d "$d"
+          d=$(mktemp -d); git show "$rev:$doc" > "$d/doc.docx"
+          unzip -q -o "$d/doc.docx" 'word/media/*' -d "$d"
           shasum -a 256 "$d"/word/media/* | cut -d' ' -f1 | sort -u > "$d/embedded"
           for f in docs/assets/brand/封面.jpg docs/assets/brand/大赛logo大图.png \
                    docs/assets/brand/大赛logo横版.png; do
@@ -726,7 +736,7 @@ docs/dev/sbom-m0.md。两者均由 `bun run sbom` 生成，可随时复现核对
     **口径**：它们**仅为申报材料原样保留**，既不随本仓库的 AGPL-3.0-or-later、也
     不随基座那层的 MIT 授出；**第三方不得依据本仓库的许可复用这三个文件**，需要使
     用该标识的应向该赛事主办方取得授权。本仓库不主张对该标识的任何权利。它与另外
-    31 个非代码资产的分类见上文"一、许可"的「一.7 非代码资产的许可」。
+    27 个非代码资产的分类见上文"一、许可"的「一.7 非代码资产的许可」。
 
 **开发期专有授权依赖的披露**：根 `devDependencies` 中的
 `@anthropic-ai/claude-agent-sdk`（及其平台原生包）**不是开源许可**——其包内
@@ -763,24 +773,26 @@ licenses, and the boundary is the provenance boundary itself:
     The count grows whenever a file with that header is
     added, so the command below, not this number, is what to rely on.
 
-1.2 The 87 files that the test does not cover
+1.2 The 83 files that the test does not cover
 ----------------------------------------
 
     **This file-header test does not cover every file of Qianmo's own code.**
-    As of 2026-08-30, **87 files are absent from the base snapshot tree and
-    carry neither line** -- that is the definition the command below applies,
-    a side of a path-based test, **not an assertion of ownership**.
-    `LICENSE.base` is among the 87 and is not Qianmo's own: the path was added
+    As of 2026-09-26, **83 files are absent from the base snapshot tree and
+    carry neither line** (on 2026-08-30 there were 87; the difference is the 4
+    application documents removed from the repository on 2026-09-26 -- see
+    Class C in section 1.7) -- that is the definition the command below
+    applies, a side of a path-based test, **not an assertion of ownership**.
+    `LICENSE.base` is among the 83 and is not Qianmo's own: the path was added
     by Qianmo and is absent from the snapshot, while its contents are the
     upstream MIT license text kept verbatim. Its presence on this side marks
     where the path test stops rather than anything about title; that limit is
     set out later in this section, under "What that test cannot answer".
 
-    Of those 87, 83 group by file format, and within that group there are two
+    Of those 83, 79 group by file format, and within that group there are two
     reasons.
     Some are **binary or pure-data formats with no comment syntax to begin
-    with**: 27 `.jpg`, 3 `.png`, 2 `.pdf`, 2 `.docx`, and 28 `.json` (the JSON
-    grammar has no comments; 20 of those 28 are `package.json`). The others
+    with**: 27 `.jpg`, 3 `.png`, and 28 `.json` (the JSON grammar has no
+    comments; 20 of those 28 are `package.json`). The others
     **could carry a comment, but they are generated files and tooling
     configuration rather than source, so a header there would either be
     overwritten or mean nothing**: 20 `tsconfig.json` (TypeScript parses these
@@ -811,8 +823,9 @@ licenses, and the boundary is the provenance boundary itself:
     What this file used to say -- "the rest are source files and documents
     whose headers are still to be added; a separate set of commits is doing
     that" -- is out of date: that work was completed on 2026-08-30 (66 files),
-    and the 87 above are what remains after it. The number moves as work
-    proceeds, so compute the list (no number is hard-coded):
+    and the 83 above are what remains after it, less the 4 application
+    documents removed on 2026-09-26. The number moves as work proceeds, so
+    compute the list (no number is hard-coded):
 
         # files that are Qianmo's own -- i.e. absent from the base snapshot
         # tree -- yet carry no header, grouped by extension and named path;
@@ -826,7 +839,7 @@ licenses, and the boundary is the provenance boundary itself:
     non-ASCII-filename trap remains, but the gate now handles it internally**:
     by default `git ls-files` double-quotes non-ASCII paths and writes octal
     escapes, so handing such output to `head` fails to resolve the file and
-    silently undercounts it. This repository currently has 33 such names
+    silently undercounts it. This repository currently has 29 such names
     (`git -c core.quotePath=false ls-files | LC_ALL=C grep -c '[^ -~]'`
     verifies the count).
 
@@ -868,7 +881,7 @@ licenses, and the boundary is the provenance boundary itself:
         determination line follows; the gate output is in Chinese, and all
         three values must be zero:
 
-            [license-headers] OK：阡陌自有缺头 0（另有 87 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
+            [license-headers] OK：阡陌自有缺头 0（另有 83 个在豁免表内），基座文件误贴 0，豁免文件被盖章 0
 
         **The gate checks three things, which are not the same as the two
         inference directions above**: (1) a **missing header** -- a Qianmo-side
@@ -895,15 +908,15 @@ licenses, and the boundary is the provenance boundary itself:
 
       - **no file header, therefore the base MIT layer** -- **does not hold**.
         The reason is no longer that a batch of headers is outstanding, but
-        the 87 header-less files above that are absent from the snapshot tree:
-        **86 of them are counterexamples**. **The remaining one is
+        the 83 header-less files above that are absent from the snapshot tree:
+        **82 of them are counterexamples**. **The remaining one is
         `LICENSE.base`, and it is not a counterexample** -- it carries no
         header, and its contents are the upstream MIT text verbatim, so by
         content it does sit in the MIT layer and the inference happens to land
         correctly on it. That is a coincidence rather than the test working:
         both tests read the path, not the contents (see the counting sentence
         above and the "What that test cannot answer" paragraph later in this
-        section). It is also the only such case among the 87 -- comparing
+        section). It is also the only such case among the 83 -- comparing
         contents file by file, it is the one that is byte-for-byte identical
         to a file in the snapshot. There is a second and finer failure too:
         the 180 modified base files described in the next bullet **do** belong
@@ -925,12 +938,13 @@ licenses, and the boundary is the provenance boundary itself:
     its contents are the upstream MIT license text verbatim; **neither test
     gives the right answer for that file**, which is exactly why it is one of
     the four "deliberately no header" entries above. A second mismatch has to
-    be stated as plainly: the same test places 27 `.jpg`, 3 `.png`, 2 `.pdf`
-    and 2 `.docx` **non-code assets** in Qianmo's layer, and **AGPL-3.0 is a
-    software license**. The test does not determine the licenses for those
-    works; they are instead classified by use: project-made works are granted
-    under CC BY-SA 4.0, the third-party mark is not granted, and the
-    application documents are All rights reserved. Section 1.7 below gives the
+    be stated as plainly: the same test places 27 `.jpg` and 3 `.png`
+    **non-code assets** in Qianmo's layer, and **AGPL-3.0 is a software
+    license**. The test does not determine the licenses for those works; they
+    are instead classified by use: project-made works are granted under
+    CC BY-SA 4.0, the third-party mark is not granted, and the application
+    documents are All rights reserved (removed from the current version on
+    2026-09-26). Section 1.7 below gives the
     complete inventory, the basis for each class, and the disclosure for one
     AI-generated asset.
 
@@ -1175,10 +1189,12 @@ licenses, and the boundary is the provenance boundary itself:
 1.7 Licensing of the non-code assets
 ----------------------------------------
 
-The path test above places 34 **non-code assets** in Qianmo's layer, while
-AGPL-3.0 is a software license and does not apply to images and application
-documents. All 34 are application materials checked in together by the
-project-initialization commit `67f6081` (before the base-import commit
+The path test above places 30 **non-code assets** in Qianmo's layer (34 when
+they were classified on 2026-08-30; the 4 application documents among them
+were removed from the current version on 2026-09-26 -- see Class C below),
+while AGPL-3.0 is a software license and does not apply to images and
+application documents. All 30 are application materials checked in together
+by the project-initialization commit `67f6081` (before the base-import commit
 `3380c88`). They have no coupling to the runtime: they enter neither the build
 nor `dist/`, and nothing outside `docs/` and this file refers to them.
 
@@ -1191,10 +1207,11 @@ nor `dist/`, and nothing outside `docs/` and this file refers to them.
 **They are divided by use into three classes, each with its own licensing
 position.**
 
-This is the same set as the 27 `.jpg`, 3 `.png`, 2 `.pdf`, and 2 `.docx`
-listed above, counted on a different axis. Class A is 26 `.jpg` + 1 `.png` =
-27; class B is 1 `.jpg` + 2 `.png` = 3; class C is 2 `.pdf` + 2 `.docx` = 4.
-Thus 27 + 3 + 4 = 34, matching the extension count 27 + 3 + 2 + 2 = 34.
+This is the same set as the 27 `.jpg` and 3 `.png` listed above, counted on a
+different axis. Class A is 26 `.jpg` + 1 `.png` = 27; class B is 1 `.jpg` +
+2 `.png` = 3. Thus 27 + 3 = 30, matching the extension count 27 + 3 = 30.
+Class C is 0 in the current version (it was 2 `.pdf` + 2 `.docx` = 4, and
+the three classes totalled 34 on 2026-08-30).
 The extension counts are computed by `bun run check:license-headers --report`
 (see section 1.2); the class membership is listed item by item below.
 
@@ -1222,11 +1239,10 @@ The extension counts are computed by `bun run check:license-headers --report`
     jurisdictions**; the grant covers only rights actually held, and **this
     CC BY-SA statement does not assert rights beyond those actually held**.
 
-        # C2PA traces among all 34 assets (only this one is reported)
-        git -c core.quotePath=false grep -lai c2pa \
-            -- docs/assets 'docs/*.docx' 'docs/*.pdf'
+        # C2PA traces among all 30 assets (only this one is reported)
+        git -c core.quotePath=false grep -lai c2pa -- docs/assets
 
-    **The other 33 produce no `c2pa` match, but no C2PA does not mean not
+    **The other 29 produce no `c2pa` match, but no C2PA does not mean not
     AI-generated**: re-encoding, cropping, or saving through another tool can
     strip C2PA. This evidence can establish presence, not absence, so this
     notice does not say that all of the other assets are non-AI-generated.
@@ -1267,25 +1283,40 @@ The extension counts are computed by `bun run check:license-headers --report`
     them in reliance on this repository's licenses**. Section 5 below gives
     the itemization, evidence level, and reproducible commands.
 
-  * **Class C -- application documents, All rights reserved** (4 files):
+  * **Class C -- application documents, All rights reserved; removed from the
+    repository on 2026-09-26** (0 files in the current version, formerly 4):
     `docs/阡陌项目计划书.docx` and its `.pdf`, and
-    `docs/阡陌创新训练项目申请书.docx` and its `.pdf`. They are not granted
-    under any open-source license in this repository, for two reasons: (1)
-    their text contains personal information including team-member and faculty
-    adviser names, student numbers, telephone numbers, and email addresses;
-    and (2) one document embeds the Class B third-party marks. **The second
-    reason applies to only one document and is not asserted of all four**:
-    `word/media/` in `docs/阡陌项目计划书.docx` contains byte-for-byte copies
-    of all three Class B files, whereas all 9 embedded media files in
+    `docs/阡陌创新训练项目申请书.docx` and its `.pdf`. **They have never been
+    granted under any open-source license in this repository.** On 2026-09-26
+    the project lead decided to remove them from the current version and keep
+    the originals elsewhere, **without rewriting history**: commits before the
+    removal (from the project-initialization commit `67f6081` onward) and
+    previously released source archives still contain them. Wherever a copy
+    is obtained from -- any historical version or source archive -- this
+    position still applies: they may not be used, copied, or redistributed in
+    reliance on this repository's licenses.
+
+    They were placed in this class for two reasons: (1) their text contains
+    personal information -- team members' student numbers, telephone numbers,
+    and email addresses, and the names of the team members and the faculty
+    adviser -- which is also why they were removed; and (2) one document
+    embeds the Class B third-party marks. **The second reason applies to only
+    one document and is not asserted of all four**: `word/media/` in
+    `docs/阡陌项目计划书.docx` contains byte-for-byte copies of all three
+    Class B files, whereas all 9 embedded media files in
     `docs/阡陌创新训练项目申请书.docx` are Class A infographics and include no
     Class B file. The two `.pdf` files are exports from the same sources, but
     PDF encoding rewrites image streams, so no claim about their embedded
     marks is made here; reason (1) is sufficient to place them in this class.
 
-        # Whether word/media/ in the two .docx files contains the three Class B marks
-        # (byte-for-byte comparison)
+        # Historical versions only: the two .docx files are no longer in the
+        # current version. Find the commit that deleted them, take the files
+        # from its parent, then compare word/media/ byte for byte with the
+        # three Class B marks
+        rev=$(git log -1 --format=%H --diff-filter=D -- 'docs/阡陌项目计划书.docx')^
         for doc in docs/阡陌项目计划书.docx docs/阡陌创新训练项目申请书.docx; do
-          d=$(mktemp -d); unzip -q -o "$doc" 'word/media/*' -d "$d"
+          d=$(mktemp -d); git show "$rev:$doc" > "$d/doc.docx"
+          unzip -q -o "$d/doc.docx" 'word/media/*' -d "$d"
           shasum -a 256 "$d"/word/media/* | cut -d' ' -f1 | sort -u > "$d/embedded"
           for f in docs/assets/brand/封面.jpg docs/assets/brand/大赛logo大图.png \
                    docs/assets/brand/大赛logo横版.png; do
@@ -1743,7 +1774,7 @@ tree and **not granted under any license of this repository**):
     party may not reuse them in reliance on this repository's licenses**;
     anyone wishing to use the mark must obtain authorization from the
     competition organizer. This repository claims no rights in the mark. See
-    section 1.7 above for their place among the other 31 non-code assets.
+    section 1.7 above for their place among the other 27 non-code assets.
 
 **Disclosure of a proprietary development-time dependency**: the root
 `devDependencies` contain `@anthropic-ai/claude-agent-sdk` (and its

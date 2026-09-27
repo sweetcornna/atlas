@@ -24,11 +24,22 @@ describe('Qianmo resident host boundary', () => {
       join(import.meta.dir, '..', 'resident.ts'),
       'utf8',
     )
+    // The ACP child env now lives in its own module so the regression suite can
+    // boot a child with the exact production environment. resident.ts must build
+    // the spawn env through it rather than assembling one inline.
+    const env = readFileSync(
+      join(import.meta.dir, '..', 'residentAcpEnv.ts'),
+      'utf8',
+    )
 
     // 钉源码而不是钉行为：这条路径会真的 spawn 一个子进程，测行为要起进程。
     // 钉的是「取自 identity.ts 的常量」而不是字面量——身份名只许在那一处拼写。
-    expect(source).toContain('[IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE')
-    expect(source).toContain("from '../../constants/identity.js'")
+    expect(source).toContain('residentAcpEnvironment(process.env)')
+    expect(env).toContain('[IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE')
+    expect(env).toContain("from '../../constants/identity.js'")
+    // 常驻 ACP 子进程默认安全模式：关掉用户/项目 hook 执行、agents、skills、plugins，
+    // 从加载端堵住 E-2/E-3/E-4（review-P14 D-8）。
+    expect(env).toContain("CLAUDE_CODE_SAFE_MODE: '1'")
     expect(source).not.toMatch(/DAEMON_TOKEN|destroySandbox|execCommand/)
   })
 
