@@ -42,6 +42,8 @@ export type {
   PendingAdmission,
   ReadAdmissionRecord,
   RecoveringAdmissionRecord,
+  ResidentAssembledPrompt,
+  ResidentFormattedPrompt,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentPromptScope,

@@ -32,7 +32,8 @@
  * Node/Bun upgrade cannot quietly change how a stored entry tokenises and with
  * it the order of an injected block.
  */
-const CJK_CLASS = '\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff'
+export const CJK_CLASS =
+  '\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff'
 
 /** Runs of CJK characters. */
 const CJK_RUN = new RegExp(`[${CJK_CLASS}]+`, 'gu')

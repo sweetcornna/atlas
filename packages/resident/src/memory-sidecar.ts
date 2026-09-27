@@ -47,9 +47,15 @@ import type { FileMemoryStore } from '@qianmo/memory'
 import {
   INJECTION_BUDGET,
   type InjectionBudget,
+  type RecallRequest,
   type RecallScope,
+  type RetrievalEvent,
+  type RetrievalMode,
+  type SemanticRecall,
   recall,
+  recallHybrid,
   renderInjection,
+  resolveHybridConfig,
 } from '@qianmo/recall'
 import type { ResidentPromptScope } from './contracts.js'
 import {
@@ -153,6 +159,27 @@ export interface ResidentMemorySidecarOptions {
    * never become the reason the node stops.
    */
   readonly onError?: (error: unknown) => void
+  /**
+   * The semantic overlay (`docs/dev/memory-m1.md` §5). **Off when absent**:
+   * {@link ResidentMemorySidecar.renderHybrid} then renders exactly what
+   * {@link ResidentMemorySidecar.render} does and records no retrieval. Its
+   * configuration is checked here, so a node given one that cannot work
+   * refuses to start instead of degrading every turn.
+   */
+  readonly semantic?: SemanticRecall
+  /**
+   * Where the overlay's fallbacks and shortfalls are reported (I-6): cold
+   * index, exhausted budget, a failed or late embedding call. None of them
+   * costs the turn anything but the overlay.
+   */
+  readonly onRetrievalEvent?: (event: RetrievalEvent) => void
+}
+
+/** One turn's memory block, and how it was retrieved when that is recorded. */
+interface ResidentMemoryBlock {
+  readonly block: string
+  /** Set only while the semantic overlay is on. */
+  readonly retrieval?: RetrievalMode
 }
 
 /**
@@ -168,13 +195,29 @@ export class ResidentMemorySidecar {
   readonly #budget: Partial<InjectionBudget> | undefined
   readonly #now: (() => Date) | undefined
   readonly #onError: ((error: unknown) => void) | undefined
+  readonly #semantic: SemanticRecall | undefined
+  readonly #onRetrievalEvent: ((event: RetrievalEvent) => void) | undefined
 
   constructor(options: ResidentMemorySidecarOptions) {
     assertNodeOwnedMemoryRoot(options.store.root)
+    if (options.semantic !== undefined) {
+      resolveHybridConfig(options.semantic.config)
+    }
     this.#store = options.store
     this.#budget = options.budget
     this.#now = options.now
     this.#onError = options.onError
+    this.#semantic = options.semantic
+    this.#onRetrievalEvent = options.onRetrievalEvent
+  }
+
+  #request(scope: ResidentPromptScope, question?: string): RecallRequest {
+    return {
+      scope: residentRecallScope(scope),
+      ...(question === undefined ? {} : { question }),
+      ...(this.#budget === undefined ? {} : { budget: this.#budget }),
+      ...(this.#now === undefined ? {} : { asOf: this.#now() }),
+    }
   }
 
   /**
@@ -187,17 +230,47 @@ export class ResidentMemorySidecar {
    */
   render(scope: ResidentPromptScope, question?: string): string {
     try {
-      const result = recall(this.#store, {
-        scope: residentRecallScope(scope),
-        ...(question === undefined ? {} : { question }),
-        ...(this.#budget === undefined ? {} : { budget: this.#budget }),
-        ...(this.#now === undefined ? {} : { asOf: this.#now() }),
-      })
+      const result = recall(this.#store, this.#request(scope, question))
       if (result.entries.length === 0) return ''
       return renderInjection(result)
     } catch (error) {
       this.#onError?.(error)
       return ''
+    }
+  }
+
+  /**
+   * The same block through the semantic overlay, when one is configured —
+   * the middle stage of the two-stage assembly (`memory-m1.md` §5.4): the
+   * batch has been rendered, and the turn waits here, bounded by the overlay's
+   * timeout, before its prompt is finished.
+   *
+   * Same freezing rule as {@link render}: called once per turn, and the result
+   * is persisted with the prompt. Same fail-open rule too: a store failure is
+   * an empty block, a semantic failure is the deterministic block.
+   */
+  async renderHybrid(
+    scope: ResidentPromptScope,
+    question?: string,
+  ): Promise<ResidentMemoryBlock> {
+    const semantic = this.#semantic
+    if (semantic === undefined) return { block: this.render(scope, question) }
+    try {
+      const result = await recallHybrid(
+        this.#store,
+        this.#request(scope, question),
+        semantic,
+      )
+      for (const event of result.retrievalEvents) {
+        this.#onRetrievalEvent?.(event)
+      }
+      return {
+        block: result.entries.length === 0 ? '' : renderInjection(result),
+        retrieval: result.retrieval,
+      }
+    } catch (error) {
+      this.#onError?.(error)
+      return { block: '' }
     }
   }
 }

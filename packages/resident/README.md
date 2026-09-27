@@ -116,7 +116,7 @@ flowchart TD
 
 记忆接线与安全收窄（P13.7）：
 
-- **`ResidentMemorySidecar` / `ResidentMemorySidecarOptions` / `residentRecallScope` / `assertNodeOwnedMemoryRoot` / `INJECTION_BUDGET`** —— 用户消息 sidecar 的记忆注入：按 `(agent, contextId)` 取 working 层、渲染成块、失败 fail-open。`ResidentPromptScope`（`contracts.ts`）是那对键的载体，**两半永不在这里拼成一个字符串**（拼法只许在 `sessionKeyOf`，不变式 #7）。
+- **`ResidentMemorySidecar` / `ResidentMemorySidecarOptions` / `residentRecallScope` / `assertNodeOwnedMemoryRoot` / `INJECTION_BUDGET`** —— 用户消息 sidecar 的记忆注入：按 `(agent, contextId)` 取 working 层、渲染成块、失败 fail-open。`ResidentPromptScope`（`contracts.ts`）是那对键的载体，**两半永不在这里拼成一个字符串**（拼法只许在 `sessionKeyOf`，不变式 #7）。可选的 `semantic` 选项接上 `@qianmo/recall` 的语义叠加（`docs/dev/memory-m1.md` §5，P16.6），**缺省即关**：`renderHybrid` 此时就是 `render`。开启后 `formatPrompt` 可以异步返回 `ResidentAssembledPrompt`（两段式组装），其 `retrieval` 由 reader 写进同一条 `detected` 记录；关闭时 `detected` 记录不带这个字段，与原先逐字节相同。
 - **`ResidentHardline` / `HARDLINE_TARGETS` / `HardlineDenial` / `ResidentHardlineOptions`** —— 常驻专属的预批准天花板：冻结字面量、路径与命令两面同表、`stateRoots` 只增不减。
 - **`scanAssembledPrompt` / `PromptScanExpectation` / `PromptInjectionFinding`** —— 对**组装后**完整 prompt 的结构扫描（块计数 + 属性名），不作任何「像不像注入」的判断。
 - 中和函数在 `@qianmo/adapter/sanitize`（`sanitizeRemoteText` / `sanitizeRemoteAttribute` / `hasUnneutralizedDelimiter`），不在本包：分隔符词汇属于包装格式，归 adapter。
