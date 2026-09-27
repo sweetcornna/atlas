@@ -117,6 +117,42 @@ describe('paired tallies and gates', () => {
       { seed: 1, wins: 6, losses: 0, p: 1 / 64, pass: true },
     ])
   })
+
+  test('per gold: the mean paired difference of its questions, zero dropped', () => {
+    // d = m1 − m0 per question; the letter is the gold.
+    const cells = [
+      cell('a1', false, true), // A: (+1 + 0) / 2 > 0 → win
+      cell('a2', false, false),
+      cell('b1', false, true), // B: (+1 − 1) / 2 = 0 → dropped
+      cell('b2', true, false),
+      cell('c1', true, false), // C: (−1 + 0) / 2 < 0 → loss
+      cell('c2', true, true),
+      cell('d1', true, true), // D: every question ties → dropped
+      cell('d2', false, false),
+      cell('e1', false, true), // E: +1 → win
+      cell('e2', false, true),
+      cell('e3', false, true, { seed: 2 }), // another seed: its own test
+    ]
+    const queryIds = new Set(cells.map(c => c.queryId))
+    const byGold = signGate(cells, {
+      tier: 2000,
+      queryIds,
+      alpha: ALPHA,
+      clusterOf: id => id.slice(0, 1),
+    })
+    expect(byGold).toEqual([
+      { seed: 1, wins: 2, losses: 1, p: 0.5, pass: false },
+      { seed: 2, wins: 1, losses: 0, p: 0.5, pass: false },
+    ])
+    // Per question the same seed-1 cells are 4 wins (a1 b1 e1 e2), 2 losses.
+    expect(signGate(cells, { tier: 2000, queryIds, alpha: ALPHA })[0]).toEqual({
+      seed: 1,
+      wins: 4,
+      losses: 2,
+      p: 22 / 64,
+      pass: false,
+    })
+  })
 })
 
 describe('shuffle permutation', () => {

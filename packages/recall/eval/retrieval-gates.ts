@@ -86,11 +86,14 @@ type SignVerdict = {
  * R3 (and, fed the shuffled arm as M0, R4): per seed, on the given questions
  * of one tier, the exact one-sided sign test at the preregistered α.
  *
- * With `clusterOf`, the unit is the cluster rather than the question: a
- * cluster wins when its questions' wins outnumber their losses, loses in the
- * opposite case, and ties otherwise. Several questions on one gold entry are
- * not independent evidence, and counting them singly lets anything that
- * reaches that entry regardless of the question score once per question.
+ * A question's paired difference is d = [M1 injected gold] − [M0 injected
+ * gold] ∈ {−1, 0, +1}. Without `clusterOf` each question is a unit. With it
+ * the unit is the cluster, and a cluster's paired difference is the mean d
+ * of its questions (all of them, ties included). Either way a unit with a
+ * positive difference is a win, a negative one a loss, and a zero one is
+ * dropped from n. Several questions on one gold entry are not independent
+ * evidence, and counting them singly lets anything that reaches that entry
+ * regardless of the question score once per question.
  */
 export function signGate(
   cells: readonly PairedCell[],
@@ -109,19 +112,19 @@ export function signGate(
         c.tier === options.tier &&
         options.queryIds.has(c.queryId),
     )
-    const { wins, losses } = tally(scoped)
-    let up = wins.length
-    let down = losses.length
-    const { clusterOf } = options
-    if (clusterOf !== undefined) {
-      const net = new Map<string, number>()
-      for (const id of wins)
-        net.set(clusterOf(id), (net.get(clusterOf(id)) ?? 0) + 1)
-      for (const id of losses)
-        net.set(clusterOf(id), (net.get(clusterOf(id)) ?? 0) - 1)
-      up = [...net.values()].filter(v => v > 0).length
-      down = [...net.values()].filter(v => v < 0).length
+    const unitOf = options.clusterOf ?? ((queryId: string) => queryId)
+    const differences = new Map<string, number[]>()
+    for (const c of scoped) {
+      const unit = unitOf(c.queryId)
+      const list = differences.get(unit) ?? []
+      list.push(Number(c.m1) - Number(c.m0))
+      differences.set(unit, list)
     }
+    const means = [...differences.values()].map(
+      list => list.reduce((sum, d) => sum + d, 0) / list.length,
+    )
+    const up = means.filter(mean => mean > 0).length
+    const down = means.filter(mean => mean < 0).length
     const p = exactSignTestOneSided(up, down)
     return {
       seed,

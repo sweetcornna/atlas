@@ -30,7 +30,11 @@ import {
 } from '../eval/heldout.js'
 import { parsePreregistration } from '../eval/prereg.js'
 import { referenceArms } from '../eval/retrieval-gates.js'
-import { type HeldoutArms, judgeRetrieval } from '../eval/retrieval-judgment.js'
+import {
+  type HeldoutArms,
+  judgeRetrieval,
+  type RetrievalJudgment,
+} from '../eval/retrieval-judgment.js'
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const CHECKER = join(REPO_ROOT, 'scripts/qianmo-recall-heldout-check.ts')
@@ -253,36 +257,53 @@ describe('R2–R4 judgment on the held-out set', () => {
     expect(withProblems.reason).toMatch(/^held-out set has problems: /)
   })
 
-  test('judges every seed; a query-blind ranker fails R4, and R3 depends on the unit', () => {
-    // Nonsense questions tie every entry at zero relevance, so the fusion
-    // order past the floor is the query-blind ranker's alone — the case R4
-    // exists for. Counted per question, each gold it pulls in scores twice
-    // (two questions per gold) and R3 passes; counted per gold, it does not.
-    const byGold = judgeRetrieval({
-      prereg: prereg(heldoutDigest(set), 'gold'),
+  // Nonsense questions tie every entry at zero relevance, so the fusion order
+  // past the floor is the query-blind ranker's alone — a ranker that must not
+  // pass. One judgment per unit, shared by the two tests below.
+  const judged = new Map<'question' | 'gold', RetrievalJudgment>()
+  const judgeBy = (unit: 'question' | 'gold'): RetrievalJudgment => {
+    const cached = judged.get(unit)
+    if (cached !== undefined) return cached
+    const judgment = judgeRetrieval({
+      prereg: prereg(heldoutDigest(set), unit),
       heldout: set,
       arms: nullArms,
     })
-    expect(byGold.status).toBe('judged')
-    expect(byGold.R3?.perSeed.map(v => v.seed)).toEqual([
-      20260926, 20260927, 20260928, 20260929, 20260930,
-    ])
-    expect(byGold.R3?.pass).toBe(false)
-    expect(byGold.R4?.pass).toBe(false)
-    // Blind to the question, the real and shuffled arms inject the same.
-    expect(byGold.R4?.perSeed.every(v => v.wins === 0 && v.losses === 0)).toBe(
-      true,
-    )
-    const byQuestion = judgeRetrieval({
-      prereg: prereg(heldoutDigest(set), 'question'),
-      heldout: set,
-      arms: nullArms,
-    })
+    judged.set(unit, judgment)
+    return judgment
+  }
+  const SEEDS = [20260926, 20260927, 20260928, 20260929, 20260930]
+
+  test('evidence for sign_test_unit = "gold": a query-blind ranker passes R3 per question and is stopped per gold', () => {
+    // Two questions per gold: per question, each gold the ranker pulls in
+    // counts twice and R3 passes on every seed. Per gold (mean paired
+    // difference of its questions) it fails on every seed. This is the
+    // measured reason for the 2026-09-27 ruling.
+    const byQuestion = judgeBy('question')
+    const byGold = judgeBy('gold')
+    for (const judgment of [byQuestion, byGold]) {
+      expect(judgment.status).toBe('judged')
+      expect(judgment.R3?.perSeed.map(v => v.seed)).toEqual(SEEDS)
+    }
     expect(byQuestion.R3?.pass).toBe(true)
-    expect(byQuestion.R4?.pass).toBe(false)
-    const perSeed = (v: typeof byGold) => v.R3?.perSeed.map(x => x.wins) ?? []
-    for (const [index, wins] of perSeed(byQuestion).entries()) {
-      expect(wins).toBeGreaterThan(perSeed(byGold)[index] ?? 0)
+    expect(byQuestion.R3?.perSeed.every(v => v.pass)).toBe(true)
+    expect(byGold.R3?.pass).toBe(false)
+    expect(byGold.R3?.perSeed.every(v => !v.pass)).toBe(true)
+    const wins = (v: RetrievalJudgment) => v.R3?.perSeed.map(x => x.wins) ?? []
+    for (const [index, count] of wins(byQuestion).entries()) {
+      expect(count).toBeGreaterThan(wins(byGold)[index] ?? 0)
+    }
+  }, 180_000)
+
+  test('the shuffle control stops it under either unit', () => {
+    // Blind to the question, the real and shuffled arms inject the same.
+    for (const unit of ['question', 'gold'] as const) {
+      const judgment = judgeBy(unit)
+      expect(judgment.R4?.pass).toBe(false)
+      expect(judgment.R4?.perSeed.map(v => v.seed)).toEqual(SEEDS)
+      expect(
+        judgment.R4?.perSeed.every(v => v.wins === 0 && v.losses === 0),
+      ).toBe(true)
     }
   }, 180_000)
 })

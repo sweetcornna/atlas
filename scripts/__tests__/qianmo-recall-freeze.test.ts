@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { parsePreregistration } from '../../packages/recall/eval/prereg.js'
-import { applyFreeze } from '../qianmo-recall-freeze.js'
+import { applyFreeze, frozenValues } from '../qianmo-recall-freeze.js'
 
 const TEXT = [
   '[answer]',
@@ -44,6 +44,54 @@ describe('applyFreeze', () => {
     expect(frozen.answer.e1Inference).toBe('bootstrap')
     expect(frozen.corpus.syntheticV1Sha256).toBe('b'.repeat(64))
     expect(outcome.text).toContain('# heldout_ids_sha256 =')
+  })
+
+  test('sign_test_unit is written only together with the held-out hash', () => {
+    const text = [
+      '[retrieval]',
+      'alpha_primary = 0.025',
+      '# sign_test_unit =',
+      '[answer]',
+      'bootstrap_seed = 20260927',
+      'e1_inference = "signflip"',
+      '[corpus]',
+      `synthetic_v1_sha256 = "${'a'.repeat(64)}"`,
+      `docs_dev_v1_sha256 = "${'b'.repeat(64)}"`,
+      '# heldout_ids_sha256 =',
+      'shuffle_seed = 20261003',
+      `m0_baseline_sha256 = "${'c'.repeat(64)}"`,
+      '',
+    ].join('\n')
+    const computed = {
+      syntheticV1: 'a'.repeat(64),
+      docsDevV1: 'b'.repeat(64),
+      m0Baseline: 'c'.repeat(64),
+    }
+    const before = applyFreeze(
+      text,
+      frozenValues({ ...computed, heldout: null }),
+    )
+    expect(before.filled).toEqual([])
+    expect(before.conflicts).toEqual([])
+    expect(before.pending).toEqual(['sign_test_unit', 'heldout_ids_sha256'])
+    expect(before.text).toBe(text)
+    const after = applyFreeze(
+      text,
+      frozenValues({ ...computed, heldout: 'd'.repeat(64) }),
+    )
+    expect(after.filled).toEqual(['sign_test_unit', 'heldout_ids_sha256'])
+    expect(after.conflicts).toEqual([])
+    // Exactly those two lines change: one freeze commit carries both.
+    const lines = text.split('\n')
+    expect(
+      after.text.split('\n').filter((line, index) => line !== lines[index]),
+    ).toEqual([
+      'sign_test_unit = "gold"',
+      `heldout_ids_sha256 = "${'d'.repeat(64)}"`,
+    ])
+    const frozen = parsePreregistration(after.text)
+    expect(frozen.retrieval.signTestUnit).toBe('gold')
+    expect(frozen.corpus.heldoutIdsSha256).toBe('d'.repeat(64))
   })
 
   test('a placeholder in the wrong section is not used', () => {

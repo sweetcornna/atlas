@@ -13,8 +13,10 @@
  *   R2   no regression: on every ranked tier (500, 2000) and seed, every
  *        held-out question whose gold M0 injected is still injected by M1.
  *   R3   primary endpoint ①: at 2000, the exact one-sided sign test of M1
- *        against M0, p < α on every seed; counted per question or per gold
- *        decision as preregistered (`retrieval.sign_test_unit`).
+ *        against M0, p < α on every seed, each seed tested on its own;
+ *        counted per question or per gold decision as preregistered
+ *        (`retrieval.sign_test_unit`; per gold, a gold's paired difference
+ *        is the mean over its questions — see `signGate`).
  *   R4   query-shuffle control: the same test of M1 against the same fusion
  *        fed the query of π(q) = derangement(held-out ids, shuffle_seed).
  *
