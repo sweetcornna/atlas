@@ -125,7 +125,7 @@ export function mulberry32(seed: number): () => number {
 }
 
 /** Fisher–Yates over a copy, driven by `random`. */
-function shuffled<T>(items: readonly T[], random: () => number): T[] {
+export function shuffled<T>(items: readonly T[], random: () => number): T[] {
   const copy = [...items]
   for (let i = copy.length - 1; i > 0; i -= 1) {
     const j = Math.floor(random() * (i + 1))
@@ -137,7 +137,11 @@ function shuffled<T>(items: readonly T[], random: () => number): T[] {
 }
 
 /** An ingest instant `1..MAX_AGE_DAYS` days before {@link EVAL_AS_OF}, whole seconds. */
-function ageFrom(random: () => number, minDays = 1, maxDays = MAX_AGE_DAYS) {
+export function ageFrom(
+  random: () => number,
+  minDays = 1,
+  maxDays = MAX_AGE_DAYS,
+) {
   const days = minDays + random() * (maxDays - minDays)
   const ms = Math.round((days * DAY_MS) / 1000) * 1000
   return new Date(EVAL_AS_OF.getTime() - ms)
@@ -148,7 +152,7 @@ const project = (projectKey: string): MemoryScope => ({
   projectKey,
 })
 
-type Decision = {
+export type Decision = {
   readonly key: string
   readonly title: string
   readonly summary: string
@@ -167,7 +171,7 @@ type Decision = {
  * their entry — the D-6 shape (「语义搜索」 against 「向量数据库」) is the second
  * one on the list.
  */
-const DECISIONS: readonly Decision[] = [
+export const DECISIONS: readonly Decision[] = [
   {
     key: 'runtime',
     title: '统一用 Bun 作为运行时与测试器',
@@ -371,7 +375,7 @@ const DECISIONS: readonly Decision[] = [
 ]
 
 /** Decisions that were never written anywhere. Some are lexical lures. */
-const FABRICATED: readonly { key: string; question: string }[] = [
+export const FABRICATED: readonly { key: string; question: string }[] = [
   { key: 'react', question: '前端 UI 框架是不是定了用 React？' },
   { key: 'kafka', question: '消息队列定的是 Kafka 吧？给出来源 ID。' },
   { key: 'k8s', question: '容器编排用 Kubernetes 是哪条决策？' },
@@ -387,7 +391,7 @@ const FABRICATED: readonly { key: string; question: string }[] = [
  * plausible; no value is `90 秒` / `90 天`, which keeps the two lure questions
  * above genuinely fabricated.
  */
-const FILLER_SUBJECTS: readonly (readonly [string, string])[] = [
+export const FILLER_SUBJECTS: readonly (readonly [string, string])[] = [
   ['注册中心', 'registry'],
   ['传输层', 'transport'],
   ['控制台', 'console'],
@@ -414,7 +418,10 @@ const FILLER_SUBJECTS: readonly (readonly [string, string])[] = [
   ['部署脚本', 'deploy'],
 ]
 
-const FILLER_SETTINGS: readonly (readonly [string, readonly string[]])[] = [
+export const FILLER_SETTINGS: readonly (readonly [
+  string,
+  readonly string[],
+])[] = [
   [
     '超时阈值',
     [
@@ -513,7 +520,7 @@ const FILLER_SETTINGS: readonly (readonly [string, readonly string[]])[] = [
   ],
 ]
 
-const FILLER_REASONS: readonly string[] = [
+export const FILLER_REASONS: readonly string[] = [
   '理由：减少夜间误报。',
   '理由：与 CI 行为保持一致。',
   '理由：小内存机器上更稳。',
@@ -528,49 +535,22 @@ const FILLER_REASONS: readonly string[] = [
   '理由：安全自查建议。',
 ]
 
-/** Every distinct `(subject, setting, value)` triple. 24 × 12 × 8 = 2304. */
-function fillerCombinations(): readonly (readonly [number, number, number])[] {
-  const combos: (readonly [number, number, number])[] = []
-  for (let s = 0; s < FILLER_SUBJECTS.length; s += 1) {
-    for (let k = 0; k < FILLER_SETTINGS.length; k += 1) {
-      const values = FILLER_SETTINGS[k]?.[1] ?? []
-      for (let v = 0; v < values.length; v += 1) {
-        combos.push([s, k, v])
-      }
-    }
-  }
-  return combos
-}
-
-/** Live in-scope entries that exist in every tier (gold + the one replacement). */
-export const FIXED_LIVE_IN_SCOPE = DECISIONS.length + 1
-
-export const MAX_LIVE_IN_SCOPE =
-  FIXED_LIVE_IN_SCOPE + fillerCombinations().length
+const CROSS_PROJECT_TWINS: readonly (readonly [string, string, string])[] = [
+  ['runtime', '统一用 npm 作为运行时与测试器', '另一个项目的工具链选择'],
+  ['sandbox', '沙箱定为 Firecracker', '另一个项目的隔离方案'],
+  ['protocol', '跨节点消息直接采用 A2A 协议栈', '另一个项目整包引入'],
+  ['license', '自有代码采用 Apache-2.0', '另一个项目的许可'],
+  ['notify', '值守产出每轮都通知人', '另一个项目的值守策略'],
+]
 
 /**
- * Build the corpus for one tier.
- *
- * @param liveInScope Exactly how many live entries the target scope holds —
- *   the number the injection budget is compared against.
+ * The hand-written part of the corpus, identical in every tier: the gold
+ * decisions, the retired ones, and the look-alikes kept in other scopes.
+ * Takes the PRNG so the draw order — and with it every age — is exactly the
+ * one `buildDataset` has always used; `hardened.ts` reuses it unchanged.
  */
-export function buildDataset(
-  liveInScope: number,
-  seed: number = DEFAULT_SEED,
-): EvalDataset {
-  if (
-    !Number.isInteger(liveInScope) ||
-    liveInScope < FIXED_LIVE_IN_SCOPE ||
-    liveInScope > MAX_LIVE_IN_SCOPE
-  ) {
-    throw new RangeError(
-      `liveInScope must be an integer in [${FIXED_LIVE_IN_SCOPE}, ${MAX_LIVE_IN_SCOPE}] (got ${liveInScope})`,
-    )
-  }
-  const random = mulberry32(seed)
+export function fixedEntries(random: () => number): EvalEntry[] {
   const entries: EvalEntry[] = []
-  const queries: EvalQuery[] = []
-
   // ── gold: the twenty decisions, live, in scope ────────────────────────────
   for (const decision of DECISIONS) {
     entries.push({
@@ -649,14 +629,7 @@ export function buildDataset(
   })
 
   // ── distractors: real entries in other scopes, some near-duplicates ──────
-  const twins: readonly (readonly [string, string, string])[] = [
-    ['runtime', '统一用 npm 作为运行时与测试器', '另一个项目的工具链选择'],
-    ['sandbox', '沙箱定为 Firecracker', '另一个项目的隔离方案'],
-    ['protocol', '跨节点消息直接采用 A2A 协议栈', '另一个项目整包引入'],
-    ['license', '自有代码采用 Apache-2.0', '另一个项目的许可'],
-    ['notify', '值守产出每轮都通知人', '另一个项目的值守策略'],
-  ]
-  for (const [of, title, summary] of twins) {
+  for (const [of, title, summary] of CROSS_PROJECT_TWINS) {
     entries.push({
       key: `twin-${of}`,
       role: 'distractor',
@@ -704,30 +677,17 @@ export function buildDataset(
       createdAt: ageFrom(random, 1, 60),
     },
   )
+  return entries
+}
 
-  // ── filler: live, in scope, enough to reach the tier ─────────────────────
-  const fillerCount = liveInScope - FIXED_LIVE_IN_SCOPE
-  const picks = shuffled(fillerCombinations(), random).slice(0, fillerCount)
-  for (const [index, [s, k, v]] of picks.entries()) {
-    const [subject, tag] = FILLER_SUBJECTS[s] ?? ['', '']
-    const [setting, values] = FILLER_SETTINGS[k] ?? ['', []]
-    const value = values[v] ?? ''
-    const reason =
-      FILLER_REASONS[Math.floor(random() * FILLER_REASONS.length)] ?? ''
-    entries.push({
-      key: `filler-${String(index + 1).padStart(4, '0')}`,
-      role: 'filler',
-      scope: project(TARGET_PROJECT),
-      title: `${subject}的${setting}定为 ${value}`,
-      summary: `${subject}：${setting}调整为 ${value}`,
-      body: reason,
-      tags: [tag],
-      createdAt: ageFrom(random),
-    })
-  }
-
+/**
+ * Every v0.1 question, in the v0.1 order. Question text is fixed — only the
+ * corpus varies with the seed — so this takes no PRNG.
+ */
+export function fixedQueries(): EvalQuery[] {
+  const queries: EvalQuery[] = []
   // ── queries ───────────────────────────────────────────────────────────────
-  const twinOf = new Map(twins.map(([of]) => [of, `twin-${of}`]))
+  const twinOf = new Map(CROSS_PROJECT_TWINS.map(([of]) => [of, `twin-${of}`]))
   const forbiddenFor = (key: string): readonly string[] => {
     const twin = twinOf.get(key)
     return twin === undefined ? [] : [twin]
@@ -820,6 +780,80 @@ export function buildDataset(
       mustMention: [],
     },
   )
+  return queries
+}
+
+/** Every distinct `(subject, setting, value)` triple. 24 × 12 × 8 = 2304. */
+export function fillerCombinations(): readonly (readonly [
+  number,
+  number,
+  number,
+])[] {
+  const combos: (readonly [number, number, number])[] = []
+  for (let s = 0; s < FILLER_SUBJECTS.length; s += 1) {
+    for (let k = 0; k < FILLER_SETTINGS.length; k += 1) {
+      const values = FILLER_SETTINGS[k]?.[1] ?? []
+      for (let v = 0; v < values.length; v += 1) {
+        combos.push([s, k, v])
+      }
+    }
+  }
+  return combos
+}
+
+/** Live in-scope entries that exist in every tier (gold + the one replacement). */
+export const FIXED_LIVE_IN_SCOPE = DECISIONS.length + 1
+
+export const MAX_LIVE_IN_SCOPE =
+  FIXED_LIVE_IN_SCOPE + fillerCombinations().length
+
+/**
+ * Build the corpus for one tier.
+ *
+ * @param liveInScope Exactly how many live entries the target scope holds —
+ *   the number the injection budget is compared against.
+ */
+export function buildDataset(
+  liveInScope: number,
+  seed: number = DEFAULT_SEED,
+): EvalDataset {
+  if (
+    !Number.isInteger(liveInScope) ||
+    liveInScope < FIXED_LIVE_IN_SCOPE ||
+    liveInScope > MAX_LIVE_IN_SCOPE
+  ) {
+    throw new RangeError(
+      `liveInScope must be an integer in [${FIXED_LIVE_IN_SCOPE}, ${MAX_LIVE_IN_SCOPE}] (got ${liveInScope})`,
+    )
+  }
+  const random = mulberry32(seed)
+  const entries: EvalEntry[] = []
+  const queries: EvalQuery[] = []
+
+  entries.push(...fixedEntries(random))
+
+  // ── filler: live, in scope, enough to reach the tier ─────────────────────
+  const fillerCount = liveInScope - FIXED_LIVE_IN_SCOPE
+  const picks = shuffled(fillerCombinations(), random).slice(0, fillerCount)
+  for (const [index, [s, k, v]] of picks.entries()) {
+    const [subject, tag] = FILLER_SUBJECTS[s] ?? ['', '']
+    const [setting, values] = FILLER_SETTINGS[k] ?? ['', []]
+    const value = values[v] ?? ''
+    const reason =
+      FILLER_REASONS[Math.floor(random() * FILLER_REASONS.length)] ?? ''
+    entries.push({
+      key: `filler-${String(index + 1).padStart(4, '0')}`,
+      role: 'filler',
+      scope: project(TARGET_PROJECT),
+      title: `${subject}的${setting}定为 ${value}`,
+      summary: `${subject}：${setting}调整为 ${value}`,
+      body: reason,
+      tags: [tag],
+      createdAt: ageFrom(random),
+    })
+  }
+
+  queries.push(...fixedQueries())
 
   return {
     seed,

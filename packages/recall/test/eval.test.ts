@@ -11,6 +11,7 @@
  * and the point of M1 is to move it.
  */
 
+import { createHash } from 'node:crypto'
 import { describe, expect, test } from 'bun:test'
 import {
   buildDataset,
@@ -150,6 +151,26 @@ describe('metrics', () => {
 })
 
 describe('dataset', () => {
+  test('the v0.1 corpus is frozen: data hashes of the three default tiers', () => {
+    // This pins the *corpus*, not any number measured on it. The later
+    // corpora reuse its fixed parts (`fixedEntries`, `fixedQueries`), and a
+    // change there must not quietly move the M0 baseline of memory-m1.md §3,
+    // whose outputs are published by SHA-256.
+    const digest = (tier: number) =>
+      createHash('sha256')
+        .update(JSON.stringify(buildDataset(tier, DEFAULT_SEED)))
+        .digest('hex')
+    expect(digest(30)).toBe(
+      '40a9999b6be14c1252cbfa3770e599542e2f8e702e35781f57e3585436316ee4',
+    )
+    expect(digest(500)).toBe(
+      '66d315d27ef02bb36199b0461f0c12a918da4463b60bf518243c576d90349b64',
+    )
+    expect(digest(2000)).toBe(
+      'cc92d544dcdcb0fb370a810a927d8bdbabf6bff15aa53aebf5c4abc3db90e0fc',
+    )
+  })
+
   test('the PRNG is a pure function of its seed', () => {
     const a = mulberry32(42)
     const b = mulberry32(42)

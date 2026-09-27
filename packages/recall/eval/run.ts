@@ -37,7 +37,8 @@ import {
   DEFAULT_SEED,
   DEFAULT_TIERS,
   EVAL_QUERY_KINDS,
-  type EvalDataset,
+  type EvalEntry,
+  type EvalQuery,
   type EvalQueryKind,
 } from './dataset.js'
 import {
@@ -53,9 +54,37 @@ import {
 /** `default` is the shipped 30-day half-life; `off` is an ablation. */
 export type DecayMode = 'default' | 'off'
 
+/**
+ * What the runner needs from an entry. The v0.1 corpus (`dataset.ts`) and
+ * the later corpora (`hardened.ts`, the `docs/dev` corpus) all fit it; the
+ * role label is carried for the corpora's own use and never read here.
+ */
+export type BaselineEntry = Omit<EvalEntry, 'role'> & {
+  readonly role: string
+}
+
+/**
+ * What the runner needs from a query. `scope` overrides the dataset's scope
+ * for one query — the working-layer partition cases recall from a different
+ * table than the rest of their corpus.
+ */
+export type BaselineQuery = Omit<EvalQuery, 'kind'> & {
+  readonly kind: string
+  readonly scope?: RecallScope
+}
+
+export type BaselineDataset = {
+  readonly seed: number
+  readonly liveInScope: number
+  readonly asOf: Date
+  readonly scope: RecallScope
+  readonly entries: readonly BaselineEntry[]
+  readonly queries: readonly BaselineQuery[]
+}
+
 export type QueryOutcome = {
   readonly id: string
-  readonly kind: EvalQueryKind
+  readonly kind: string
   readonly mode: InjectionMode
   readonly candidates: number
   readonly injected: number
@@ -99,7 +128,8 @@ export type TierReport = {
   readonly decay: DecayMode
   readonly meanCandidates: number | null
   readonly meanInjected: number | null
-  readonly byKind: Readonly<Record<EvalQueryKind, KindSummary>>
+  /** One summary per query kind of the corpus, in the corpus's kind order. */
+  readonly byKind: Readonly<Record<string, KindSummary>>
   /** Both positive kinds pooled. */
   readonly positives: KindSummary
   readonly queries: readonly QueryOutcome[]
@@ -121,19 +151,36 @@ export type BaselineOptions = {
   readonly decay?: readonly DecayMode[]
 }
 
-const UNBOUNDED: InjectionBudget = {
+export const UNBOUNDED: InjectionBudget = {
   maxEntries: Number.MAX_SAFE_INTEGER,
   maxChars: Number.MAX_SAFE_INTEGER,
 }
 
-type Materialised = {
+export type Materialised = {
   readonly store: FileMemoryStore
   readonly keyOf: (id: string) => string
+  readonly idOf: (key: string) => string
   dispose(): void
 }
 
+export type MaterialiseOptions = {
+  /**
+   * The `source.id` written for an entry. The block prints it, so it is part
+   * of what a model — or an embedding of the rendered entry — sees. The v0.1
+   * corpus keeps `eval-<key>` because its character budget, and with it the
+   * pinned baseline, depends on that exact length. Later corpora pass an
+   * opaque id so a label such as `filler-0001` never reaches the block.
+   */
+  readonly sourceIdOf?: (entry: BaselineEntry, writeIndex: number) => string
+}
+
 /** Write the corpus to disk through the store's own write / revoke paths. */
-function materialise(dataset: EvalDataset): Materialised {
+export function materialise(
+  dataset: Pick<BaselineDataset, 'asOf' | 'entries'>,
+  options: MaterialiseOptions = {},
+): Materialised {
+  const sourceIdOf =
+    options.sourceIdOf ?? ((entry: BaselineEntry) => `eval-${entry.key}`)
   const directory = mkdtempSync(join(tmpdir(), 'qianmo-recall-eval-'))
   let clock = dataset.asOf
   let counter = 0
@@ -148,7 +195,7 @@ function materialise(dataset: EvalDataset): Materialised {
   const idByKey = new Map<string, string>()
   const keyById = new Map<string, string>()
   try {
-    for (const entry of dataset.entries) {
+    for (const [writeIndex, entry] of dataset.entries.entries()) {
       clock = entry.createdAt
       const written = store.write({
         scope: entry.scope,
@@ -156,7 +203,7 @@ function materialise(dataset: EvalDataset): Materialised {
         summary: entry.summary,
         body: entry.body,
         tags: entry.tags,
-        source: { kind: 'import', id: `eval-${entry.key}` },
+        source: { kind: 'import', id: sourceIdOf(entry, writeIndex) },
         ...(entry.invalidAt === undefined
           ? {}
           : { invalidAt: entry.invalidAt }),
@@ -182,12 +229,17 @@ function materialise(dataset: EvalDataset): Materialised {
       if (key === undefined) throw new Error(`eval: unknown id ${id}`)
       return key
     },
+    idOf: key => {
+      const id = idByKey.get(key)
+      if (id === undefined) throw new Error(`eval: unknown key ${key}`)
+      return id
+    },
     dispose: () => rmSync(directory, { recursive: true, force: true }),
   }
 }
 
-function evaluateQueries(
-  dataset: EvalDataset,
+export function evaluateQueries(
+  dataset: BaselineDataset,
   materialised: Materialised,
   decay: DecayMode,
 ): QueryOutcome[] {
@@ -195,7 +247,7 @@ function evaluateQueries(
   return dataset.queries.map(query => {
     const request = {
       question: query.question,
-      scope: dataset.scope,
+      scope: query.scope ?? dataset.scope,
       asOf: dataset.asOf,
       ...(decay === 'off' ? { halfLifeMs: 0 } : {}),
     }
@@ -266,17 +318,19 @@ export function summarise(outcomes: readonly QueryOutcome[]): KindSummary {
   }
 }
 
-function tierReport(
+export function tierReport(
   liveInScope: number,
   decay: DecayMode,
   outcomes: readonly QueryOutcome[],
+  kinds: readonly string[] = EVAL_QUERY_KINDS,
+  pooledKinds: readonly string[] | null = null,
 ): TierReport {
-  const byKind = Object.fromEntries(
-    EVAL_QUERY_KINDS.map(kind => [
+  const byKind: Record<string, KindSummary> = Object.fromEntries(
+    kinds.map(kind => [
       kind,
       summarise(outcomes.filter(outcome => outcome.kind === kind)),
     ]),
-  ) as Record<EvalQueryKind, KindSummary>
+  )
   return {
     liveInScope,
     decay,
@@ -284,7 +338,11 @@ function tierReport(
     meanInjected: round4(meanOf(outcomes.map(o => o.injected))),
     byKind,
     positives: summarise(
-      outcomes.filter(outcome => outcome.kind.startsWith('positive-')),
+      outcomes.filter(outcome =>
+        pooledKinds === null
+          ? outcome.kind.startsWith('positive-')
+          : pooledKinds.includes(outcome.kind),
+      ),
     ),
     queries: outcomes,
   }
@@ -328,7 +386,7 @@ export function runBaseline(options: BaselineOptions = {}): BaselineReport {
   }
 }
 
-const KIND_LABELS: Readonly<Record<EvalQueryKind, string>> = {
+export const KIND_LABELS: Readonly<Record<EvalQueryKind, string>> = {
   'positive-lexical': '正例·词面重叠',
   'positive-mismatch': '正例·零词面重叠',
   'negative-fabricated': '负例·伪造决策',
@@ -336,7 +394,7 @@ const KIND_LABELS: Readonly<Record<EvalQueryKind, string>> = {
   'negative-cross-scope': '负例·跨 scope',
 }
 
-function cell(value: number | null): string {
+export function cell(value: number | null): string {
   return value === null ? '—' : value.toFixed(3)
 }
 

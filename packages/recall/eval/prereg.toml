@@ -1,0 +1,43 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 记忆评测的预注册值：docs/dev/memory-m1.md §9 的「预注册表」与 D-1 定案。
+#
+# 规矩
+# - 执行器与判定只从这个文件读，不接受命令行覆盖，代码里也没有默认值。
+# - 键不写，就是「未生成」。用到它的判定会直接报错，不会拿一个猜的值顶上。
+# - 设计里写明了的值照抄，并在行尾注明出处。
+# - 设计写「值随冻结写入」的键先留空，由冻结提交填入。冻结提交必须早于 P16.6
+#   的第一个调参提交，用 git log 的先后顺序核对。
+
+[retrieval]
+# R3 / R4 的单侧 α。出处：§9 预注册表「主终点 α：各 0.025，单侧」。
+alpha_primary = 0.025
+
+[answer]
+# E1 的单侧 α。出处同上。
+alpha_primary = 0.025
+# E2 的非劣效界 δ（比例，0.05 = 5 个百分点）。出处：§9 预注册表。
+noninferiority_delta = 0.05
+# A0 的 A/A 有效性检查：两臂配对检验 p 小于这个值，整轮作废。出处：§9 D-1 A0。
+aa_alpha = 0.05
+# A2 的按题聚类自助法次数。出处：§9 预注册表「1 万次」。
+bootstrap_iterations = 10000
+# 未生成。§9：「固定种子（值随冻结写入）」。
+# bootstrap_seed =
+# 未生成。A2 写的是「自助法或精确符号翻转置换」，冻结时二选一：
+# "bootstrap" 或 "signflip"。E2 的上界只能用自助法算，不受这一项影响。
+# e1_inference =
+
+[corpus]
+# 以下全部未生成，P16.2b 冻结时写入。
+# 加固合成语料 synthetic-v1 的哈希：bun run qianmo:recall-baseline --corpus synthetic-v1 --digest
+# synthetic_v1_sha256 =
+# docs/dev 第二语料 docs-dev-v1 的哈希：bun run qianmo:recall-baseline --corpus docs-dev-v1 --digest
+# docs_dev_v1_sha256 =
+# 留出改写题集 id 列表的哈希。题集要由非实现者撰写，目前还没有。
+# heldout_ids_sha256 =
+# 打乱排列 π 的种子。π = derangement(留出集 id, shuffle_seed)。
+# shuffle_seed =
+# 加固语料上 M0 基线 JSON 输出的 SHA-256。
+# m0_baseline_sha256 =
