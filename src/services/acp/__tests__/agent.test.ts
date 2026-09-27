@@ -905,6 +905,100 @@ describe('AcpAgent', () => {
     })
   })
 
+  describe('prompt error reporting', () => {
+    const EMPTY_TEXT =
+      'API Error [OpenAI]: Model returned an empty response (finish_reason=stop) · code=empty_response · category=server_error · retryable=yes'
+
+    function withMessages(
+      agent: InstanceType<typeof AcpAgent>,
+      sessionId: string,
+      messages: unknown[],
+    ): void {
+      const session = agent.sessions.get(sessionId) as unknown as {
+        queryEngine: { getMessages: () => unknown[] }
+      }
+      session.queryEngine.getMessages = () => messages
+    }
+
+    test('an errored turn keeps its stop reason and reports the error under _meta', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      withMessages(agent, sessionId, [
+        { type: 'user', message: { content: 'watch' } },
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          errorDetails: JSON.stringify({
+            name: 'EmptyModelResponseError',
+            code: 'empty_response',
+            category: 'server_error',
+          }),
+          message: { content: [{ type: 'text', text: EMPTY_TEXT }] },
+        },
+      ])
+      ;(forwardSessionUpdates as ReturnType<typeof mock>).mockResolvedValueOnce(
+        {
+          stopReason: 'end_turn',
+          error: { category: 'server_error', message: EMPTY_TEXT },
+        },
+      )
+      const res = await agent.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: 'watch' }],
+      } as any)
+
+      expect(res.stopReason).toBe('end_turn')
+      expect((res as any)._meta?.claudeCode?.error).toEqual({
+        category: 'server_error',
+        message: EMPTY_TEXT,
+        code: 'empty_response',
+      })
+    })
+
+    test('an error without a machine-readable code is reported without one', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      withMessages(agent, sessionId, [
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          message: {
+            content: [
+              { type: 'text', text: 'Model returned an empty response.' },
+            ],
+          },
+        },
+      ])
+      ;(forwardSessionUpdates as ReturnType<typeof mock>).mockResolvedValueOnce(
+        {
+          stopReason: 'end_turn',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 0,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+          },
+          error: {
+            category: 'unknown',
+            message: 'Model returned an empty response.',
+          },
+        },
+      )
+      const res = await agent.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: 'watch' }],
+      } as any)
+
+      expect((res as any)._meta?.claudeCode).toEqual({
+        usage: expect.objectContaining({ totalTokens: 1 }),
+        error: {
+          category: 'unknown',
+          message: 'Model returned an empty response.',
+        },
+      })
+    })
+  })
+
   describe('prompt userMessageId echo (message-id RFD)', () => {
     test('echoes client-supplied messageId as userMessageId', async () => {
       // Per rfds/message-id.mdx: when the client provides a `messageId` on
