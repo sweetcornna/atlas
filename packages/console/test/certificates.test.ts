@@ -123,10 +123,11 @@ describe('the certificate column shows §10.1’s four things', () => {
   })
 })
 
-describe('the six states stay six', () => {
+describe('the seven states stay seven', () => {
   test.each([
     ['valid', '证书 有效'],
     ['expiring', '证书 将到期'],
+    ['expiring-urgent', '证书 7 天内到期'],
     ['expired', '证书 已过期'],
     ['revoked', '证书 已吊销'],
     ['absent', '证书 未发布'],
@@ -145,6 +146,55 @@ describe('the six states stay six', () => {
     // `未发布` on its own also belongs to the public-key cell one row down —
     // the assertion has to name the certificate's word, not the string.
     expect(forged).not.toContain('证书 未发布')
+  })
+})
+
+/**
+ * §6.2: yellow under 21 days, red under 7, expired on its own. The port turns
+ * the clock into a state (`certificatePort.test.ts` walks one certificate
+ * through all four with a `ManualClock`); what is pinned here is that each
+ * state reads as its own tier — word, colour, and the time beside it.
+ */
+describe('§6.2 expiry tiers on the card', () => {
+  function card(status: ConsoleCertificate['status'], notAfter: number) {
+    const html = roster([certificate({ status, notAfter })])
+    const line = /<div class="cert note"[\s\S]*?<\/div>/.exec(html)?.[0] ?? ''
+    return { html, line }
+  }
+
+  test('valid: green, with the days left', () => {
+    const { line } = card('valid', NOW + 62 * DAY)
+    expect(line).toContain('data-cert-status="valid"')
+    expect(line).toContain('tone-ok')
+    expect(line).toContain('剩余 62d')
+  })
+
+  test('under 21 days: yellow, 将到期', () => {
+    const { html, line } = card('expiring', NOW + 12 * DAY)
+    expect(line).toContain('data-cert-status="expiring"')
+    expect(line).toContain('<span class="tone-warn">证书 将到期</span>')
+    expect(line).toContain('剩余 12d')
+    expect(html).toContain('qm ca issue node-a')
+  })
+
+  test('under 7 days: red, 7 天内到期', () => {
+    const { html, line } = card('expiring-urgent', NOW + 5 * DAY)
+    expect(line).toContain('data-cert-status="expiring-urgent"')
+    expect(line).toContain('<span class="tone-critical">证书 7 天内到期</span>')
+    expect(line).toContain('剩余 5d')
+    expect(line).not.toContain('tone-warn')
+    expect(html).toContain('qm ca issue node-a')
+  })
+
+  test('expired: red too, but its own word and the instant it ended', () => {
+    const { html, line } = card('expired', NOW - DAY)
+    expect(line).toContain('data-cert-status="expired"')
+    expect(line).toContain('<span class="tone-critical">证书 已过期</span>')
+    // Not a countdown any more: the time beside it is when it ran out.
+    expect(line).toContain('到期 ')
+    expect(line).not.toContain('剩余')
+    expect(line).not.toContain('7 天内到期')
+    expect(html).toContain('qm ca issue node-a')
   })
 })
 
@@ -193,9 +243,20 @@ describe('absent port removes the column rather than filling it', () => {
 })
 
 describe('the column obeys the console’s copy discipline', () => {
-  const html = roster([
-    certificate({ status: 'expiring', notAfter: NOW + 5 * DAY }),
-  ])
+  // One card per tier (the roster has one node, so one card per render).
+  const html = [
+    certificate({ status: 'expiring', notAfter: NOW + 12 * DAY }),
+    certificate({ status: 'expiring-urgent', notAfter: NOW + 5 * DAY }),
+    certificate({ status: 'expired', notAfter: NOW - DAY }),
+  ]
+    .map(one => roster([one]))
+    .join('')
+
+  test('all three expiry words are on the page under test', () => {
+    for (const word of ['证书 将到期', '证书 7 天内到期', '证书 已过期']) {
+      expect(html).toContain(word)
+    }
+  })
 
   test('no sentences and no comma-joined clauses', () => {
     const text = visibleText(html)

@@ -17,10 +17,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { X509Certificate } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateNodeKeyPair, signBytes } from '@qianmo/capability'
+import { ManualClock } from '@qianmo/registry'
 import {
   initCa,
   issueCertificate,
@@ -293,6 +295,93 @@ describe('createCertificatePort (§10.1)', () => {
       expect(result.ok).toBe(false)
       if (result.ok) return
       expect(result.failure.code).toBe('unreachable')
+    },
+  )
+})
+
+/**
+ * §6.2's reminder schedule: yellow under 21 days, red under 7, and expired as
+ * a fourth state of its own. One certificate and one `ManualClock`, moved to
+ * each tier's first and last instant — the thresholds are strict, so the
+ * boundaries are where a `<` written as `<=` would show.
+ */
+describe('§6.2 expiry tiers, one certificate, one clock', () => {
+  const DAYS = 24 * 60 * 60 * 1000
+  let pem: string
+  let notAfter: number
+  let clock: ManualClock
+
+  beforeAll(() => {
+    if (OPENSSL === null) return
+    const issued = issue(caDir, 'node-t')
+    pem = issued.certificatePem
+    notAfter = Date.parse(new X509Certificate(pem).validTo)
+    clock = new ManualClock(notAfter - 60 * DAYS)
+  })
+
+  async function statusAt(instant: number) {
+    clock.set(instant)
+    const result = await portFor({
+      agents: [{ address: 'qianmo://node-t/reviewer', certificate: pem }],
+      now: () => clock.now(),
+    }).read()
+    if (!result.ok) throw new Error('setup: the port failed')
+    return result.value.certificates[0]
+  }
+
+  itNeedsOpenssl('valid: 21 days or more left', async () => {
+    expect((await statusAt(notAfter - 60 * DAYS))?.status).toBe('valid')
+    expect((await statusAt(notAfter - 21 * DAYS))?.status).toBe('valid')
+  })
+
+  itNeedsOpenssl(
+    'expiring (yellow): under 21 days, 7 or more left',
+    async () => {
+      expect((await statusAt(notAfter - 21 * DAYS + 1))?.status).toBe(
+        'expiring',
+      )
+      expect((await statusAt(notAfter - 7 * DAYS))?.status).toBe('expiring')
+    },
+  )
+
+  itNeedsOpenssl('expiring-urgent (red): under 7 days', async () => {
+    expect((await statusAt(notAfter - 7 * DAYS + 1))?.status).toBe(
+      'expiring-urgent',
+    )
+    expect((await statusAt(notAfter - 1))?.status).toBe('expiring-urgent')
+  })
+
+  itNeedsOpenssl('expired: from notAfter on, a state of its own', async () => {
+    const at = await statusAt(notAfter)
+    expect(at?.status).toBe('expired')
+    expect(at?.notAfter).toBe(notAfter)
+    expect((await statusAt(notAfter + 30 * DAYS))?.status).toBe('expired')
+  })
+
+  itNeedsOpenssl(
+    'a leaf under a root about to expire is urgent on the root’s clock',
+    async () => {
+      // The TLS layer refuses a leaf once its root expires, so the column
+      // counts down to whichever ends first.
+      const shortDir = join(root, 'short-ca')
+      initCa({ directory: shortDir, commonName: 'short-lived', days: 3 })
+      const leaf = issue(shortDir, 'node-s')
+      const rootNotAfter = Date.parse(
+        new X509Certificate(readFileSync(join(shortDir, 'ca.crt'))).validTo,
+      )
+      const result = await portFor({
+        agents: [
+          {
+            address: 'qianmo://node-s/reviewer',
+            certificate: leaf.certificatePem,
+          },
+        ],
+        caCertificatePem: readFileSync(join(shortDir, 'ca.crt'), 'utf8'),
+      }).read()
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.value.certificates[0]?.status).toBe('expiring-urgent')
+      expect(result.value.certificates[0]?.notAfter).toBe(rootNotAfter)
     },
   )
 })

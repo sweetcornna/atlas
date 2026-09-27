@@ -511,13 +511,15 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
 // ---------------------------------------------------------------------------
 
 /**
- * 「快到期」的门限。
+ * 到期提醒的两道门限，都只写在这里。
  *
- * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。这里只产出**一个**
- * `expiring` 状态，颜色由视图按 tone 表决定——两处各写一遍门限，就是两处可以
- * 各自漂移的门限。
+ * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。门限在这里换成状态
+ * （`expiring` / `expiring-urgent`），颜色由视图按状态查 tone 表——门限若在
+ * 视图里再写一遍，就是两处可以各自漂移的门限。已过期是第四档，不借用红条那
+ * 一档：它的下一步不是「赶在到期前重签」，而是「这个节点现在已经被拒」。
  */
 const CERTIFICATE_EXPIRING_MS = 21 * 24 * 60 * 60 * 1000
+const CERTIFICATE_URGENT_MS = 7 * 24 * 60 * 60 * 1000
 
 interface CertificatePortOptions {
   /** 注册中心 HTTP v0 基址，不带尾斜杠。 */
@@ -542,7 +544,7 @@ function nodeSegmentOf(value: unknown): string | null {
 }
 
 /**
- * 判定一张证书的处置——§10.1 的六个取值。
+ * 判定一张证书的处置——§10.1 的取值，`expiring` 按 §6.2 分成两档。
  *
  * **顺序是有讲究的**：先问「有没有」，再问「是不是本 CA 签的」，最后才问时间与
  * 吊销。倒过来问会让一张伪造证书按它自己写的 `notAfter` 显示成「有效」——而
@@ -580,6 +582,9 @@ function certificateStatusOf(
   }
   if (now >= notAfter) {
     return { status: 'expired', fingerprint256, notAfter }
+  }
+  if (notAfter - now < CERTIFICATE_URGENT_MS) {
+    return { status: 'expiring-urgent', fingerprint256, notAfter }
   }
   if (notAfter - now < CERTIFICATE_EXPIRING_MS) {
     return { status: 'expiring', fingerprint256, notAfter }

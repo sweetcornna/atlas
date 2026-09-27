@@ -51,20 +51,31 @@ import type {
  * design would call "no usable certificate": they call for opposite actions,
  * and one of them means somebody put a forgery in a registry that has no
  * authentication (§5.2).
+ *
+ * The three expiry words name their threshold rather than grading urgency
+ * with adverbs: `将到期` is §6.2's 21-day line, `7 天内到期` its 7-day line,
+ * `已过期` the point past which peers refuse the certificate.
  */
 const STATUS_WORD: Readonly<Record<CertificateStatus, string>> = {
   valid: '有效',
   expiring: '将到期',
+  'expiring-urgent': '7 天内到期',
   expired: '已过期',
   revoked: '已吊销',
   absent: '未发布',
   'bad-signature': '签名不符',
 }
 
+/**
+ * §6.2's yellow and red. `critical` rather than `bad` for red, because the
+ * stylesheet gives `bad` the same colour as `warn`; the two expiry tiers past
+ * the 7-day line are the ones that must not read like the 21-day one.
+ */
 const STATUS_TONE: Readonly<Record<CertificateStatus, Tone>> = {
   valid: 'ok',
   expiring: 'warn',
-  expired: 'bad',
+  'expiring-urgent': 'critical',
+  expired: 'critical',
   revoked: 'bad',
   absent: 'muted',
   'bad-signature': 'bad',
@@ -131,6 +142,7 @@ export function reissueCommand(
   if (certificate === undefined) return ''
   if (
     certificate.status !== 'expiring' &&
+    certificate.status !== 'expiring-urgent' &&
     certificate.status !== 'expired' &&
     certificate.status !== 'absent'
   ) {

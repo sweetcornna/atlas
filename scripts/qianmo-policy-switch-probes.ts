@@ -916,9 +916,11 @@ function probeS5(now: number): CriterionReport {
   const certificates: ConsoleCertificate[] = [
     {
       node: 'node-a',
+      // 10 days: inside §6.2's 21-day (yellow) tier and outside the 7-day
+      // (red) one, which is a status of its own (`expiring-urgent`).
       status: 'expiring',
       fingerprint256: 'AB:CD:EF:01',
-      notAfter: now + 5 * DAY_MS,
+      notAfter: now + 10 * DAY_MS,
     },
     { node: 'node-b', status: 'revoked', fingerprint256: 'FE:DC:BA:98' },
   ]
@@ -964,7 +966,7 @@ function probeS5(now: number): CriterionReport {
     expiringState: '证书 将到期',
     revokedState: '证书 已吊销',
     fingerprint: 'AB:CD:EF:01',
-    remaining: '剩余 5d',
+    remaining: '剩余 10d',
     revocationListHeader: '吊销清单 1 条',
     revocationListNextUpdate: '剩余 29d',
     reissueCommand: 'qm ca issue node-a',
