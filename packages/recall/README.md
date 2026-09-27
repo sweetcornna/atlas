@@ -82,7 +82,7 @@ flowchart TB
 
 ---
 
-## 3. 最容易被改坏的五条不变式
+## 3. 最容易被改坏的六条不变式
 
 | # | 不变式 | 改坏会怎样 | 哪个测试钉住 |
 | --- | --- | --- | --- |
@@ -91,6 +91,7 @@ flowchart TB
 | 3 | **只投 live 条目，每次从盘上重建，不缓存**——废止后下一次召回即消失，且已废止条目不可被引用 | 加缓存或放开 `includeRetired`，「废止后必须重投」从自动性质退回成一条要人记得执行的流程 | `test/recall.test.ts`：`a revoked entry is gone from the very next recall` / `an invalidated fact leaves the present but keeps answering the past`；`test/citation.test.ts`：`a revoked entry may not be cited` |
 | 4 | **工具声明是纯数据：无 SDK、无供应商名、不使用任何原生引用块** | 改回原生 `search_result` 引用块，AC-4 与 AC-5 从此永久打架——该路径与结构化输出互斥、且只在一家的线上存在 | `test/tool.test.ts`：`is plain data: no vendor, no SDK, no native citation feature` / `declares both fields as required` |
 | 5 | **存储的降级事件必须抬到结果上**（`RecallResult.events` + `degraded`），上层不得重新盖回静默；排序里衰减是**乘子不是加项** | 前者一盖回，`@qianmo/memory` 为「一个坏文件不拖垮召回」所做的修复就白做了——节点醒来记忆变少而无人知晓；后者一改成加项，常驻节点每隔数周醒来一次，榜首会随墙钟静默漂移 | `test/recall.test.ts`：`recall returns the healthy entries and carries the failure out` / `only the events of this recall are reported`；`test/rank.test.ts`：`relevance dominates recency: a stale hit outranks a fresh miss` |
+| 6 | **条目内容只是数据，不能成为块的框架**——`renderEntry` 对所有字段转义 `<` `>`，单行字段折掉一切换行，正文里读起来像分隔行、`entry_id:` / `citation:` 行或 fence 的行首字符实体化；不含这些片段的条目逐字节不变 | 正文一句 `</qianmo-memory>` 就让常驻组装扫描失败、整轮远端文本被扣，full 模式下每轮都扣；正文还能伪造一条带他处真 id 的条目 | `test/inject.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the assembled-prompt scan stays clean`；`src/services/qianmo/__tests__/residentPrompt.test.ts`：`the turn keeps its remote text` |
 
 ---
 
