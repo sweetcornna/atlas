@@ -129,6 +129,17 @@ describe('format and problems', () => {
     expect(problems).toContain('same question as ho-')
     expect(problems).toMatch(/gold \S+: 1 questions, expected 2/)
   })
+
+  test('full-width letters do not hide an overlap', () => {
+    // The tokeniser keeps `ｐ９５` apart from `p95`; the check folds width.
+    const set = nonsenseSet()
+    const questions = set.questions.map(q =>
+      q.id === 'ho-wake-1' ? { ...q, question: 'ｐ９５要求是多少？' } : q,
+    )
+    expect(heldoutProblems({ ...set, questions })).toEqual([
+      'ho-wake-1: shares tokens with its gold: p95',
+    ])
+  }, 60_000)
 })
 
 describe('the checker the author runs', () => {

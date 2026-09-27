@@ -152,6 +152,10 @@ const normalise = (text: string) =>
  * shipped scorer over the stored entry (title, summary and tags as the head;
  * the body), in question order. Zero overlap is an empty list; a question
  * whose gold is not a decision gets `null`.
+ *
+ * The question is tokenised as written and after NFKC as well: the tokeniser
+ * does not fold width, so `ｐ９５` would slip past `P95` while still being the
+ * same word to any semantic ranker — a lexical overlap in disguise.
  */
 export function overlapWithGold(
   questions: readonly HeldoutQuestion[],
@@ -165,8 +169,12 @@ export function overlapWithGold(
       if (!golds.has(q.gold)) return null
       const entry = materialised.store.getEntry(materialised.idOf(q.gold))
       if (entry === null) throw new Error(`held-out: ${q.gold} not written`)
+      const tokens = new Set([
+        ...tokensOf(q.question),
+        ...tokensOf(q.question.normalize('NFKC')),
+      ])
       return scoreEntry(entry, {
-        tokens: tokensOf(q.question),
+        tokens: [...tokens],
         asOf: dataset.asOf,
       }).matchedTokens
     })
