@@ -83,13 +83,10 @@ import {
   markMessagesAsReadBySnapshot,
   readMailbox,
 } from '../../utils/agents/teammateMailbox.js'
-import {
-  IDENTITY_ENV_VAR,
-  NODE_IDENTITY_MODE,
-} from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
 import { assembleResidentPrompt } from './residentPrompt.js'
+import { residentAcpEnvironment } from './residentAcpEnv.js'
 import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
@@ -325,11 +322,7 @@ function networkContextId(
 
 function defaultSpawnAcp(): ChildProcess {
   const launch = buildCliLaunch(['--acp'], {
-    env: {
-      ...process.env,
-      [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
-      CLAUDE_CODE_REMOTE_SEND_KEEPALIVES: '1',
-    },
+    env: residentAcpEnvironment(process.env),
   })
   return spawnCli(launch, { stdio: ['pipe', 'pipe', 'inherit'] })
 }
