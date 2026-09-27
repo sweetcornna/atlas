@@ -65,6 +65,11 @@ const TARGETS: {
     command: `tee ${CONFIG_ROOT}/resident/sessions.json < /dev/null`,
   },
   {
+    id: 'team-mailbox',
+    path: `${CONFIG_ROOT}/teams/default/inboxes/reviewer.json`,
+    command: `echo '[]' > ${CONFIG_ROOT}/teams/default/inboxes/reviewer.json`,
+  },
+  {
     id: 'config-root',
     path: CONFIG_ROOT,
     command: `rm -rf ${CONFIG_ROOT}`,
@@ -212,6 +217,26 @@ describe('resident hardline — same-host and config-root coverage (review-P14)'
       guard.commandVerdict(`printf x > ${CONFIG_ROOT}/agents/esc.md`)?.target
         .id,
     ).toBe('config-customization')
+  })
+
+  test('teammate mail under a config root is refused, a repo teams/ is not', () => {
+    // review E-7: the host polls these inboxes and turns plain mail into the
+    // addressed agent's next turn, so a write there speaks for someone else.
+    // Reads go too — the base itself reads `teams/` without asking.
+    const guard = hardline()
+    for (const path of [
+      `${CONFIG_ROOT}/teams`,
+      `${CONFIG_ROOT}/teams/default/inboxes/reviewer.json`,
+      `${CONFIG_ROOT}/teams/atlas/config.json`,
+      '/home/other/.qianmo/teams/default/inboxes/main.json',
+    ]) {
+      expect(guard.pathVerdict(path)?.target.id).toBe('team-mailbox')
+    }
+    expect(
+      guard.commandVerdict(`cat ${CONFIG_ROOT}/teams/atlas/inboxes/main.json`)
+        ?.target.id,
+    ).toBe('team-mailbox')
+    expect(guard.pathVerdict('/repo/docs/teams/roster.md')).toBeNull()
   })
 
   test('a repo directory merely named agents is not refused', () => {

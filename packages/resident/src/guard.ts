@@ -86,6 +86,15 @@ const CONFIG_CUSTOMIZATION_DIRS: readonly string[] = Object.freeze([
   'hooks',
 ])
 
+/**
+ * Teammate mail under a config root: `teams/<team>/inboxes/<agent>.json` and
+ * the team files beside it. The resident host polls these inboxes, and plain
+ * mail in one becomes that agent's next turn — so writing one is speaking as
+ * someone else into another agent's context (review E-7), and reading one is
+ * reading another agent's mail. Scoped like the customization directories.
+ */
+const TEAM_DIRS: readonly string[] = Object.freeze(['teams'])
+
 /** Files that *are* the security policy (hermes E3). */
 const SETTINGS_FILES: readonly string[] = Object.freeze([
   'settings.json',
@@ -154,6 +163,13 @@ export const HARDLINE_TARGETS: readonly HardlineTarget[] = Object.freeze([
       'agent, skill, plugin, command and hook definitions under a config root; ' +
       'each is loaded as behaviour, so writing one grants a turn a new permission ' +
       'mode, allow rule or code path',
+  }),
+  Object.freeze({
+    id: 'team-mailbox',
+    reason:
+      'teammate inboxes and team files under a config root; the host turns ' +
+      "mail found there into another agent's turn, so writing one speaks for " +
+      'someone else and reading one reads their mail',
   }),
   Object.freeze({
     id: 'memory-root',
@@ -301,6 +317,16 @@ export class ResidentHardline {
       (insideRoot || (identityAt >= 0 && identityAt < customizationAt))
     ) {
       return deny('config-customization')
+    }
+
+    // Teammate mail, same scoping: a `teams/` directory counts under a config
+    // root or an identity directory, not in an ordinary repository.
+    const teamsAt = segments.findIndex(segment => TEAM_DIRS.includes(segment))
+    if (
+      teamsAt >= 0 &&
+      (insideRoot || (identityAt >= 0 && identityAt < teamsAt))
+    ) {
+      return deny('team-mailbox')
     }
 
     // Node-owned state directories, either under a known root or spelled out

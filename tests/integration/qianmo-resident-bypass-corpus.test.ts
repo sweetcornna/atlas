@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The E-1 ~ E-6 bypass corpus, run against a real `--acp` child (design
- * `authorization-m1.md` I-11, P14.2).
+ * The E-1 ~ E-8 bypass corpus, run against a real `--acp` child (design
+ * `authorization-m1.md` I-11, P14.2, P14.0b).
  *
  * Three things are pinned here, each with its red direction:
  *
@@ -57,7 +57,15 @@ const ALL_BYPASSES: readonly BypassId[] = [
   'E-4',
   'E-5',
   'E-6',
+  'E-7',
+  'E-8',
 ]
+
+/** The two turns an E-8 case runs in its origin session. */
+interface OriginTurns {
+  readonly first: ScenarioResult
+  readonly followUp: ScenarioResult
+}
 
 const REFUSAL =
   /denied|Refused|not available|cancelled|No such tool|not found|Unknown skill/i
@@ -82,6 +90,7 @@ function judge(
   entry: BypassCase,
   result: ScenarioResult,
   ctx: BypassContext,
+  origin: OriginTurns | undefined,
 ): void {
   const escapes = entry.escapes(ctx)
   const lastStep = entry.steps(ctx).length - 1
@@ -126,6 +135,24 @@ function judge(
       }
       return
     }
+    case 'isolated': {
+      const marker = entry.expect.marker
+      // Not vacuous: the probe turn completed every tool round, and the base
+      // drains the notification queue at each of them.
+      expect(result.toolResults).toHaveLength(lastStep + 1)
+      expect(
+        [...result.toolResults, ...result.subToolResults].filter(text =>
+          text.includes(marker),
+        ),
+      ).toEqual([])
+      // The origin session did start the work, and its next turn is where the
+      // notice arrives.
+      expect(origin?.first.toolResults[0]).toMatch(/in background/i)
+      expect(
+        origin?.followUp.toolResults.some(text => text.includes(marker)),
+      ).toBe(true)
+      return
+    }
   }
 }
 
@@ -163,7 +190,7 @@ describe('the bypass corpus is on the full ratchet an upstream sync runs', () =>
     )
   })
 
-  test('each of E-1 ~ E-6 has at least one case, and ids are unique', () => {
+  test('each of E-1 ~ E-8 has at least one case, and ids are unique', () => {
     for (const bypass of ALL_BYPASSES) {
       expect(BYPASS_CORPUS.some(entry => entry.bypass === bypass)).toBe(true)
     }
@@ -177,6 +204,7 @@ describe('every bypass case stays closed in the shipped resident child', () => {
   let ctx: BypassContext
   let harness: ResidentAcpHarness
   const results = new Map<string, ScenarioResult>()
+  const origins = new Map<string, OriginTurns>()
 
   beforeAll(async () => {
     const fixture = plantBypassFixture()
@@ -189,11 +217,21 @@ describe('every bypass case stays closed in the shipped resident child', () => {
     })
     await harness.start()
     for (const entry of BYPASS_CORPUS) {
+      const originId = `${entry.id}-origin`
+      const first =
+        entry.origin === undefined
+          ? undefined
+          : await harness.run({
+              id: originId,
+              mode: entry.mode,
+              cwd: ctx[entry.origin.cwd ?? entry.cwd],
+              steps: entry.origin.steps(ctx),
+            })
       const result = await harness.run({
         id: entry.id,
         mode: entry.mode,
         cwd: ctx[entry.cwd],
-        steps: entry.steps(ctx),
+        steps: entry.steps(ctx, first?.toolResults),
         ...(entry.subSteps === undefined
           ? {}
           : { subSteps: entry.subSteps(ctx) }),
@@ -202,6 +240,16 @@ describe('every bypass case stays closed in the shipped resident child', () => {
           : { hostPolicy: entry.hostPolicy }),
       })
       results.set(entry.id, result)
+      if (entry.origin !== undefined && first !== undefined) {
+        const followUp = await harness.run({
+          id: `${entry.id}-origin-follow-up`,
+          mode: entry.mode,
+          cwd: ctx[entry.origin.cwd ?? entry.cwd],
+          steps: entry.origin.followUp(ctx, first.toolResults),
+          resume: originId,
+        })
+        origins.set(entry.id, { first, followUp })
+      }
     }
     // An approved E-5 monitor writes asynchronously; wait for it before the
     // settle so its presence is not a race, then give everything else time.
@@ -221,7 +269,7 @@ describe('every bypass case stays closed in the shipped resident child', () => {
     test(`${entry.bypass} ${entry.id}: ${entry.note}`, () => {
       const result = results.get(entry.id)
       expect(result).toBeDefined()
-      judge(entry, result as ScenarioResult, ctx)
+      judge(entry, result as ScenarioResult, ctx, origins.get(entry.id))
     })
   }
 

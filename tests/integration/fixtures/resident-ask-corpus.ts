@@ -101,6 +101,8 @@ export function plantAskFixture(loopbackUrl: (port: number) => string): {
   mkdirSync(join(memory, 'working', 'main'), { recursive: true })
   writeFileSync(join(memory, 'working', 'main', 'entry.md'), 'remembered\n')
   mkdirSync(join(config, 'resident'), { recursive: true })
+  mkdirSync(join(config, 'teams', 'default', 'inboxes'), { recursive: true })
+  writeFileSync(join(config, 'teams', 'default', 'inboxes', 'main.json'), '[]')
   mkdirSync(join(consoleConfig, 'qianmo', 'identity'), { recursive: true })
   mkdirSync(workspace, { recursive: true })
   mkdirSync(outside, { recursive: true })
@@ -111,6 +113,7 @@ export function plantAskFixture(loopbackUrl: (port: number) => string): {
   )
   writeFileSync(join(config, 'resident', AUTHZ_LEDGER_FILE), '')
   writeFileSync(join(outside, 'secret.txt'), 'outside\n')
+  writeFileSync(join(outside, 'private.md'), '# outside notes\n')
   writeFileSync(join(workspace, 'note.txt'), 'alpha\n')
   writeFileSync(join(workspace, 'draft.md'), '# draft\n')
   writeFileSync(
@@ -166,6 +169,29 @@ const viaExecute =
     call('ExecuteExtraTool', { tool_name: target, params }),
   ]
 
+/** A deferred tool called by name, with no discovery step before it. */
+const directDeferred = (
+  id: string,
+  tool: string,
+  effect: ProbeEffect,
+  input: (ctx: ProbeContext) => Record<string, unknown>,
+  note = 'deferred, called directly',
+): AskProbe => ({
+  id,
+  tool,
+  effect,
+  note,
+  steps: ctx => [call(tool, input(ctx))],
+})
+
+/** A complete VaultHttpFetch input: the call must get past its own schema. */
+const VAULT_PROBE = {
+  url: 'https://example.invalid/',
+  method: 'POST',
+  vault_auth_key: 'probe',
+  reason: 'probe',
+}
+
 /** Approves reads only — the precondition an edit tool insists on. */
 const approveReadsOnly: HostPolicy = request =>
   (request as { toolCall?: { kind?: unknown } }).toolCall?.kind === 'read'
@@ -175,6 +201,15 @@ function backgroundTaskId(results: readonly string[]): string {
   const match = /with ID: ([\w-]+)/.exec(results.at(-1) ?? '')
   return match?.[1] ?? 'no-background-task'
 }
+
+/** The file a backgrounded command's output goes to, as its result reports it. */
+function backgroundOutputPath(results: readonly string[]): string {
+  const match = /Output is being written to: (\S+)/.exec(results[0] ?? '')
+  return match?.[1] ?? '/no-background-output'
+}
+
+/** What `bash-background-read-output` echoes, to find again in the Read. */
+export const BACKGROUND_OUTPUT_TEXT = 'qianmo-background-output'
 
 /**
  * Approves the outer `ExecuteExtraTool` request only. Used where the inner
@@ -296,6 +331,21 @@ export const ASK_CORPUS: readonly AskProbe[] = [
         description: 'probe',
         run_in_background: true,
       }),
+    ],
+  },
+  {
+    id: 'bash-background-read-output',
+    tool: 'Read',
+    effect: 'none',
+    note: "reading a background command's output file without TaskOutput (P14.0b)",
+    steps: () => [
+      call('Bash', {
+        command: `echo ${BACKGROUND_OUTPUT_TEXT}`,
+        description: 'probe',
+        run_in_background: true,
+      }),
+      bash('sleep 1'),
+      results => call('Read', { file_path: backgroundOutputPath(results) }),
     ],
   },
   {
@@ -634,17 +684,6 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     steps: viaExecute('LocalMemoryRecall', { action: 'list_stores' }),
   },
   {
-    id: 'execute-monitor-outside',
-    tool: 'Monitor',
-    via: 'ExecuteExtraTool',
-    effect: 'filesystem',
-    note: 'deferred: long-running shell monitor writing outside the workspace',
-    steps: viaExecute('Monitor', {
-      command: 'touch /nonexistent-qianmo-probe/monitor',
-      description: 'probe',
-    }),
-  },
-  {
     id: 'execute-refresh-mcp-tools',
     tool: 'RefreshMcpTools',
     via: 'ExecuteExtraTool',
@@ -658,11 +697,7 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     via: 'ExecuteExtraTool',
     effect: 'network',
     note: 'deferred: authenticated HTTP request',
-    steps: viaExecute('VaultHttpFetch', {
-      url: 'https://example.invalid/',
-      method: 'POST',
-      vault_auth_key: 'probe',
-    }),
+    steps: viaExecute('VaultHttpFetch', VAULT_PROBE),
   },
   {
     id: 'execute-wait-for-mcp-servers',
@@ -672,21 +707,136 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     note: 'deferred: MCP readiness',
     steps: viaExecute('WaitForMcpServers', {}),
   },
-  {
-    id: 'execute-artifact',
-    tool: 'artifact',
-    via: 'ExecuteExtraTool',
-    effect: 'network',
-    note: 'deferred: publish a file as an artifact',
-    steps: ctx =>
-      viaExecute('artifact', { file_path: join(ctx.workspace, 'draft.md') })(),
-  },
+
+  // ── Deferred tools called by name, skipping discovery (P14.0b). Nothing in
+  //    the base requires discovery before a direct call, and a direct call
+  //    skips the outer ExecuteExtraTool ask: the tool's own verdict is what a
+  //    model that does not bother with discovery gets. ──
+  directDeferred(
+    'direct-deferred-discover-skills',
+    'DiscoverSkills',
+    'none',
+    () => ({
+      description: 'probe',
+    }),
+  ),
+  directDeferred(
+    'direct-deferred-enter-worktree',
+    'EnterWorktree',
+    'workspace',
+    () => ({ name: 'probe' }),
+    'creates a git worktree and moves the session into it (the fixture is not a repository)',
+  ),
+  directDeferred(
+    'direct-deferred-exit-worktree',
+    'ExitWorktree',
+    'workspace',
+    () => ({
+      action: 'keep',
+    }),
+  ),
+  directDeferred('direct-deferred-goal', 'GoalTool', 'none', () => ({
+    action: 'get',
+  })),
+  directDeferred(
+    'direct-deferred-local-memory-recall',
+    'LocalMemoryRecall',
+    'none',
+    () => ({ action: 'list_stores' }),
+  ),
+  directDeferred(
+    'direct-deferred-refresh-mcp-tools',
+    'RefreshMcpTools',
+    'none',
+    () => ({}),
+  ),
+  directDeferred(
+    'direct-deferred-vault-http-fetch',
+    'VaultHttpFetch',
+    'network',
+    () => VAULT_PROBE,
+  ),
+  directDeferred(
+    'direct-deferred-wait-for-mcp-servers',
+    'WaitForMcpServers',
+    'none',
+    () => ({}),
+  ),
+
+  // ── Removed from the resident surface by P14.0b: directly, and through
+  //    ExecuteExtraTool with the host approving the outer call ──
   {
     id: 'direct-deferred-monitor',
     tool: 'Monitor',
     effect: 'process',
     note: 'a deferred tool called directly, skipping discovery',
     steps: () => [call('Monitor', { wait_seconds: 1, description: 'probe' })],
+  },
+  {
+    id: 'direct-artifact-outside',
+    tool: 'artifact',
+    effect: 'filesystem',
+    note: 'a markdown file outside the workspace: artifact has no read check, renders it into <config>/artifacts/ (a remote OCC_ARTIFACTS_BACKEND uploads it)',
+    steps: ctx => [
+      call('artifact', { file_path: join(ctx.outside, 'private.md') }),
+    ],
+  },
+  {
+    id: 'execute-monitor-outside',
+    tool: 'Monitor',
+    via: 'ExecuteExtraTool',
+    effect: 'filesystem',
+    note: 'long-running shell monitor writing outside the workspace',
+    steps: viaExecute('Monitor', {
+      command: 'touch /nonexistent-qianmo-probe/monitor',
+      description: 'probe',
+    }),
+    hostPolicy: approveExecuteOnly,
+  },
+  {
+    id: 'execute-send-message',
+    tool: 'SendMessage',
+    via: 'ExecuteExtraTool',
+    effect: 'filesystem',
+    note: 'mailbox write under <config>/teams/',
+    steps: viaExecute('SendMessage', {
+      to: 'nobody',
+      summary: 'probe',
+      message: 'hi',
+    }),
+    hostPolicy: approveExecuteOnly,
+  },
+  {
+    id: 'execute-task-output',
+    tool: 'TaskOutput',
+    via: 'ExecuteExtraTool',
+    effect: 'none',
+    note: 'background task output',
+    steps: viaExecute('TaskOutput', {
+      task_id: 'no-background-task',
+      block: false,
+      timeout: 1,
+    }),
+    hostPolicy: approveExecuteOnly,
+  },
+  {
+    id: 'execute-artifact',
+    tool: 'artifact',
+    via: 'ExecuteExtraTool',
+    effect: 'network',
+    note: 'publish a file as an artifact',
+    steps: ctx =>
+      viaExecute('artifact', { file_path: join(ctx.workspace, 'draft.md') })(),
+    hostPolicy: approveExecuteOnly,
+  },
+  {
+    id: 'execute-task-stop',
+    tool: 'TaskStop',
+    via: 'ExecuteExtraTool',
+    effect: 'process',
+    note: 'background task stop',
+    steps: viaExecute('TaskStop', { task_id: 'no-background-task' }),
+    hostPolicy: approveExecuteOnly,
   },
 
   // ── Hardline: refused before any ask (F-10). The E-6 targets (co-located
@@ -709,6 +859,28 @@ export const ASK_CORPUS: readonly AskProbe[] = [
     note: 'P14.3 pending and grant rows under <config>/resident/, shell surface',
     steps: ctx => [
       bash(`echo '{}' >> ${join(ctx.config, 'resident', AUTHZ_LEDGER_FILE)}`),
+    ],
+  },
+  {
+    id: 'hardline-read-team-inbox',
+    tool: 'Read',
+    effect: 'none',
+    note: 'teammate inboxes under <config>/teams/ (P14.0b), file surface',
+    steps: ctx => [
+      call('Read', {
+        file_path: join(ctx.config, 'teams', 'default', 'inboxes', 'main.json'),
+      }),
+    ],
+  },
+  {
+    id: 'hardline-bash-team-inbox',
+    tool: 'Bash',
+    effect: 'filesystem',
+    note: 'teammate inboxes under <config>/teams/ (P14.0b), shell surface',
+    steps: ctx => [
+      bash(
+        `echo '[]' > ${join(ctx.config, 'teams', 'default', 'inboxes', 'main.json')}`,
+      ),
     ],
   },
   {

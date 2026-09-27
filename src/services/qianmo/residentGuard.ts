@@ -10,10 +10,14 @@
  *
  *   1. It removes the tools a resident turn must never be handed —
  *      `EnterPlanMode`/`ExitPlanMode` (whose plan mode, on a non-root child,
- *      is a whole-session bypass), and the schedulers `Cron*`/`Team*` (which
- *      let one unattended turn arrange more). Removed from the array the model
- *      sees *and* from the array `ExecuteExtraTool`/`SearchExtraTools` resolve
- *      against, so the indirect route to them is closed with the direct one.
+ *      is a whole-session bypass), the schedulers `Cron*`/`Team*` (which let
+ *      one unattended turn arrange more), `SendMessage` (which writes another
+ *      agent's inbox), the background-task controls `Monitor`/`TaskStop`/
+ *      `TaskOutput`, and `artifact` (which copies a file past the read check).
+ *      Removed from the array the model sees *and* from the array
+ *      `ExecuteExtraTool`/`SearchExtraTools` resolve against — and a deferred
+ *      tool called by name resolves against the same array — so the indirect
+ *      and the undiscovered routes to them are closed with the direct one.
  *
  *   2. It wraps every tool's `checkPermissions` with a ceiling: the hardline
  *      table (below), a refusal of any elevated mode, and — for anything the
@@ -80,6 +84,11 @@ import {
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
 } from '@open-claude-code/builtin-tools/tools/ScheduleCronTool/prompt.js'
+import { SEND_MESSAGE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/SendMessageTool/constants.js'
+import { MONITOR_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/MonitorTool/constants.js'
+import { TASK_STOP_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/TaskStopTool/prompt.js'
+import { TASK_OUTPUT_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/TaskOutputTool/constants.js'
+import { ARTIFACT_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/ArtifactTool/prompt.js'
 
 /**
  * Tools a resident turn is never handed.
@@ -88,8 +97,26 @@ import {
  * bypass availability is a whole-session allow (review-P14 E-1). `Cron*` and
  * `Team*`: an unattended turn that can schedule work or spin up teammates can
  * arrange more unattended turns, and the teammate path also re-enters plan
- * mode outside this file's reach (E-1b). A frozen set rather than a predicate
- * so `notifyTool.test.ts`-style assertions can pin it.
+ * mode outside this file's reach (E-1b).
+ *
+ * P14.0b, from the P14.2 ask snapshot (each allowed without the host):
+ * `SendMessage` writes `<config>/teams/<team>/inboxes/<to>.json` — the inbox
+ * the resident host polls, where plain teammate mail becomes that agent's next
+ * turn (E-7). `Monitor` starts a watcher that outlives the turn (design
+ * TH-12), and `TaskStop` / `TaskOutput` stop and wait on the session's
+ * background tasks — work an unattended turn has no one to hand over to. A
+ * backgrounded command's output stays readable without `TaskOutput`: its
+ * result and its completion notice both name the output file, which the base
+ * reads from the project temp directory without asking.
+ *
+ * `artifact`, found by P14.0b's direct-call probes: it has no permission check
+ * of its own, so called by name it renders any `.md`/`.html` file — outside
+ * the workspace too, where `Read` asks — into `<config>/artifacts/`, or
+ * uploads it when `OCC_ARTIFACTS_BACKEND` names a remote backend. A local
+ * `file://` artifact on a headless node serves no requester anyway.
+ *
+ * A frozen set rather than a predicate so `notifyTool.test.ts`-style
+ * assertions can pin it.
  */
 export const RESIDENT_EXCLUDED_TOOLS: ReadonlySet<string> = Object.freeze(
   new Set([
@@ -100,6 +127,11 @@ export const RESIDENT_EXCLUDED_TOOLS: ReadonlySet<string> = Object.freeze(
     CRON_LIST_TOOL_NAME,
     TEAM_CREATE_TOOL_NAME,
     TEAM_DELETE_TOOL_NAME,
+    SEND_MESSAGE_TOOL_NAME,
+    MONITOR_TOOL_NAME,
+    TASK_STOP_TOOL_NAME,
+    TASK_OUTPUT_TOOL_NAME,
+    ARTIFACT_TOOL_NAME,
   ]),
 )
 
@@ -169,8 +201,9 @@ function excludedDenial(toolName: string): PermissionDenyDecision {
     behavior: 'deny',
     message:
       `The tool ${toolName} is not available to a Qianmo resident turn: it can ` +
-      'change the session permission mode or schedule further unattended work, ' +
-      'neither of which an unattended turn may do.',
+      'change the session permission mode, arrange or control work that outlives ' +
+      "the turn, write another agent's inbox, or copy a file past the read check " +
+      '— none of which an unattended turn may do.',
     decisionReason: {
       type: 'other',
       reason: `qianmo-resident-excluded:${toolName}`,

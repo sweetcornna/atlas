@@ -15,10 +15,7 @@
     "NotebookEdit",
     "Read",
     "SearchExtraTools",
-    "SendMessage",
     "Skill",
-    "TaskOutput",
-    "TaskStop",
     "TodoWrite",
     "WebFetch",
     "WebSearch",
@@ -32,19 +29,14 @@
     "ExitWorktree",
     "GoalTool",
     "LocalMemoryRecall",
-    "Monitor",
     "RefreshMcpTools",
     "VaultHttpFetch",
-    "WaitForMcpServers",
-    "artifact"
+    "WaitForMcpServers"
   ],
   "sideEffectsAllowedWithoutHost": [
     "agent-general",
     "bash-background",
-    "direct-deferred-monitor",
     "qianmo-notify",
-    "send-message",
-    "task-stop",
     "web-fetch-preapproved"
   ],
   "probes": {
@@ -56,12 +48,14 @@
     "task-output": {
       "tool": "TaskOutput",
       "effect": "none",
-      "verdict": "allowed"
+      "verdict": "refused",
+      "cause": "not-offered"
     },
     "task-stop": {
       "tool": "TaskStop",
       "effect": "process",
-      "verdict": "allowed"
+      "verdict": "refused",
+      "cause": "not-offered"
     },
     "bash-read-workspace": {
       "tool": "Bash",
@@ -107,6 +101,11 @@
     "bash-background": {
       "tool": "Bash",
       "effect": "process",
+      "verdict": "allowed"
+    },
+    "bash-background-read-output": {
+      "tool": "Read",
+      "effect": "none",
       "verdict": "allowed"
     },
     "bash-git-init": {
@@ -228,7 +227,8 @@
     "send-message": {
       "tool": "SendMessage",
       "effect": "filesystem",
-      "verdict": "allowed"
+      "verdict": "refused",
+      "cause": "not-offered"
     },
     "workflow-inline": {
       "tool": "Workflow",
@@ -317,14 +317,6 @@
       "kind": "other",
       "requests": 1
     },
-    "execute-monitor-outside": {
-      "tool": "Monitor",
-      "via": "ExecuteExtraTool",
-      "effect": "filesystem",
-      "verdict": "host",
-      "kind": "other",
-      "requests": 1
-    },
     "execute-refresh-mcp-tools": {
       "tool": "RefreshMcpTools",
       "via": "ExecuteExtraTool",
@@ -349,18 +341,104 @@
       "kind": "other",
       "requests": 1
     },
+    "direct-deferred-discover-skills": {
+      "tool": "DiscoverSkills",
+      "effect": "none",
+      "verdict": "allowed"
+    },
+    "direct-deferred-enter-worktree": {
+      "tool": "EnterWorktree",
+      "effect": "workspace",
+      "verdict": "allowed"
+    },
+    "direct-deferred-exit-worktree": {
+      "tool": "ExitWorktree",
+      "effect": "workspace",
+      "verdict": "invalid"
+    },
+    "direct-deferred-goal": {
+      "tool": "GoalTool",
+      "effect": "none",
+      "verdict": "allowed"
+    },
+    "direct-deferred-local-memory-recall": {
+      "tool": "LocalMemoryRecall",
+      "effect": "none",
+      "verdict": "allowed"
+    },
+    "direct-deferred-refresh-mcp-tools": {
+      "tool": "RefreshMcpTools",
+      "effect": "none",
+      "verdict": "allowed"
+    },
+    "direct-deferred-vault-http-fetch": {
+      "tool": "VaultHttpFetch",
+      "effect": "network",
+      "verdict": "host",
+      "kind": "other",
+      "requests": 1
+    },
+    "direct-deferred-wait-for-mcp-servers": {
+      "tool": "WaitForMcpServers",
+      "effect": "none",
+      "verdict": "allowed"
+    },
+    "direct-deferred-monitor": {
+      "tool": "Monitor",
+      "effect": "process",
+      "verdict": "refused",
+      "cause": "not-offered"
+    },
+    "direct-artifact-outside": {
+      "tool": "artifact",
+      "effect": "filesystem",
+      "verdict": "refused",
+      "cause": "not-offered"
+    },
+    "execute-monitor-outside": {
+      "tool": "Monitor",
+      "via": "ExecuteExtraTool",
+      "effect": "filesystem",
+      "verdict": "host",
+      "kind": "other",
+      "requests": 1,
+      "inner": "missing"
+    },
+    "execute-send-message": {
+      "tool": "SendMessage",
+      "via": "ExecuteExtraTool",
+      "effect": "filesystem",
+      "verdict": "host",
+      "kind": "other",
+      "requests": 1,
+      "inner": "missing"
+    },
+    "execute-task-output": {
+      "tool": "TaskOutput",
+      "via": "ExecuteExtraTool",
+      "effect": "none",
+      "verdict": "host",
+      "kind": "other",
+      "requests": 1,
+      "inner": "missing"
+    },
     "execute-artifact": {
       "tool": "artifact",
       "via": "ExecuteExtraTool",
       "effect": "network",
       "verdict": "host",
       "kind": "other",
-      "requests": 1
+      "requests": 1,
+      "inner": "missing"
     },
-    "direct-deferred-monitor": {
-      "tool": "Monitor",
+    "execute-task-stop": {
+      "tool": "TaskStop",
+      "via": "ExecuteExtraTool",
       "effect": "process",
-      "verdict": "allowed"
+      "verdict": "host",
+      "kind": "other",
+      "requests": 1,
+      "inner": "missing"
     },
     "hardline-read-authz-ledger": {
       "tool": "Read",
@@ -373,6 +451,18 @@
       "effect": "filesystem",
       "verdict": "refused",
       "cause": "hardline:node-state"
+    },
+    "hardline-read-team-inbox": {
+      "tool": "Read",
+      "effect": "none",
+      "verdict": "refused",
+      "cause": "hardline:team-mailbox"
+    },
+    "hardline-bash-team-inbox": {
+      "tool": "Bash",
+      "effect": "filesystem",
+      "verdict": "refused",
+      "cause": "hardline:team-mailbox"
     },
     "hardline-write-config-agent": {
       "tool": "Write",

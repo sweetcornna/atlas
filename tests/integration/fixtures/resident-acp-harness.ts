@@ -58,6 +58,12 @@ import { residentAcpEnvironment } from '../../../src/services/qianmo/residentAcp
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..')
 const CLI_ENTRYPOINT = join(PROJECT_ROOT, 'src/entrypoints/cli.tsx')
 
+/**
+ * How much of each tool result is kept. Enough for a task notice that arrived
+ * with the result: its `<summary>` sits behind a full output-file path.
+ */
+const RESULT_TEXT_LIMIT = 2000
+
 /** Marker a sub-agent prompt carries so the double can tell the two apart. */
 export const SUBAGENT_MARKER = 'RESIDENT-PERMISSION-SUBAGENT'
 
@@ -141,6 +147,12 @@ export interface Scenario {
   readonly hostPolicy?: HostPolicy
   /** Extra time to let an async sub-agent finish after the turn ends. */
   readonly settleMs?: number
+  /**
+   * Run this turn in the session an earlier scenario opened, instead of a new
+   * one — a second turn of the same conversation. Events from here on are
+   * attributed to this scenario.
+   */
+  readonly resume?: string
 }
 
 function textOf(content: unknown): string {
@@ -217,6 +229,7 @@ export class ResidentAcpHarness {
   #hostRequests = new Map<string, HostRequest[]>()
   #events = new Map<string, HostEvent[]>()
   #scenarioOfSession = new Map<string, string>()
+  #sessionOfScenario = new Map<string, string>()
   #current = ''
   #offeredTools: string[] | undefined
   #deferredTools: string[] | undefined
@@ -334,14 +347,21 @@ export class ResidentAcpHarness {
             : textReply('sub done')
         }
 
-        const scnMatch = /SCN:([\w-]+)/.exec(all)
+        // The turn starts at the last prompt carrying a scenario tag: a resumed
+        // session still holds its earlier turns, whose tag and tool results
+        // belong to another scenario.
+        const turnStart = messages.findLastIndex(m =>
+          /SCN:[\w-]+/.test(textOf(m.content)),
+        )
+        const turn = turnStart < 0 ? messages : messages.slice(turnStart)
+        const scnMatch = /SCN:([\w-]+)/.exec(textOf(turn[0]?.content))
         const scenario = scnMatch
           ? this.#scenarios.get(scnMatch[1] as string)
           : undefined
         if (!scenario) return textReply('no scenario')
-        const results = toolResultsOf(messages)
+        const results = toolResultsOf(turn)
         this.#mainResults.set(scenario.id, results)
-        const i = priorToolResults.length
+        const i = turn.filter(m => m.role === 'tool').length
         const step = scenario.steps[i]
         if (step === undefined) return textReply(`done ${scenario.id}`)
         return toolReply(typeof step === 'function' ? step(results) : step)
@@ -351,7 +371,7 @@ export class ResidentAcpHarness {
 
   #push(map: Map<string, string[]>, id: string, content: unknown): void {
     const list = map.get(id) ?? []
-    list.push(textOf(content).slice(0, 400))
+    list.push(textOf(content).slice(0, RESULT_TEXT_LIMIT))
     map.set(id, list)
   }
 
@@ -513,18 +533,27 @@ export class ResidentAcpHarness {
     if (!this.#conn) throw new Error('harness not started')
     this.#scenarios.set(scenario.id, scenario)
     this.#current = scenario.id
-    const session = await this.#conn.newSession({
-      cwd: scenario.cwd,
-      mcpServers: [],
-      _meta: {
-        permissionMode: scenario.mode,
-        qianmo: { resident: true, agent: 'main' },
-      },
-    })
-    this.#scenarioOfSession.set(session.sessionId, scenario.id)
+    const sessionId =
+      scenario.resume === undefined
+        ? (
+            await this.#conn.newSession({
+              cwd: scenario.cwd,
+              mcpServers: [],
+              _meta: {
+                permissionMode: scenario.mode,
+                qianmo: { resident: true, agent: 'main' },
+              },
+            })
+          ).sessionId
+        : this.#sessionOfScenario.get(scenario.resume)
+    if (sessionId === undefined) {
+      throw new Error(`scenario ${scenario.resume} has no session to resume`)
+    }
+    this.#scenarioOfSession.set(sessionId, scenario.id)
+    this.#sessionOfScenario.set(scenario.id, sessionId)
     await Promise.race([
       this.#conn.prompt({
-        sessionId: session.sessionId,
+        sessionId,
         prompt: [{ type: 'text', text: `SCN:${scenario.id}` }],
       }),
       new Promise((_, reject) =>
@@ -567,10 +596,10 @@ function toolResultsOf(
   let open = false
   for (const message of messages) {
     if (message.role === 'tool') {
-      results.push(textOf(message.content).slice(0, 400))
+      results.push(textOf(message.content).slice(0, RESULT_TEXT_LIMIT))
       open = true
     } else if (message.role === 'user' && open) {
-      const follow = textOf(message.content).slice(0, 400)
+      const follow = textOf(message.content).slice(0, RESULT_TEXT_LIMIT)
       results[results.length - 1] = `${results.at(-1)}\n${follow}`
     } else if (message.role === 'assistant') {
       open = false

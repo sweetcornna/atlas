@@ -47,9 +47,11 @@ import {
 import {
   ASK_CORPUS,
   type AskProbe,
+  BACKGROUND_OUTPUT_TEXT,
   type ProbeContext,
   plantAskFixture,
 } from './fixtures/resident-ask-corpus.js'
+import { RESIDENT_EXCLUDED_TOOLS } from '../../src/services/qianmo/residentGuard.js'
 
 const TEST_TIMEOUT_MS = 300_000
 
@@ -58,8 +60,9 @@ const SNAPSHOT_DIR = join(import.meta.dir, 'fixtures', 'resident-ask-snapshot')
 const CI_PLATFORM = 'linux'
 
 /**
- * The 22 tools the review saw a resident model offered (F-26). Two of them
- * are gone since P14.0; the corpus still has to show what calling them does.
+ * The 22 tools the review saw a resident model offered (F-26). Five of them
+ * are gone — two since P14.0, three since P14.0b; the corpus still has to
+ * show what calling them does.
  */
 const REVIEW_F26_TOOLS = [
   'Agent',
@@ -85,6 +88,30 @@ const REVIEW_F26_TOOLS = [
   'ExecuteExtraTool',
   'qianmo_notify',
 ] as const
+
+/** The tools P14.0b took off the resident surface. */
+const P140B_REMOVED = [
+  'SendMessage',
+  'Monitor',
+  'TaskStop',
+  'TaskOutput',
+  'artifact',
+]
+
+/**
+ * What the resident still does without asking although it has an effect — the
+ * D-7 reconsideration list after P14.0b. Each one was looked at and kept:
+ * a subagent runs under the E-3 `canUseTool` ceiling; a background command is
+ * judged like a foreground one (this probe is a `sleep`; a write outside the
+ * workspace asks); `qianmo_notify` goes to the operator of the task that is
+ * running; WebFetch reaches only the base's preapproved documentation hosts.
+ */
+const KEPT_SIDE_EFFECTS = [
+  'agent-general',
+  'bash-background',
+  'qianmo-notify',
+  'web-fetch-preapproved',
+]
 
 /** A dead loopback proxy: whatever tries to leave gets ECONNREFUSED. */
 const OFFLINE_ENV = {
@@ -297,13 +324,18 @@ describe('C_tool ask snapshot, acceptEdits, shipped resident child', () => {
       ...harness.deferredTools,
     ].filter(tool => !probed.has(tool))
     expect(missing).toEqual([])
-    // Every deferred tool is probed on the route the base offers for it.
+    // Every deferred tool is probed on the route the base offers for it, and
+    // called directly — the route a model can take without discovery.
     for (const tool of harness.deferredTools) {
-      expect(
-        ASK_CORPUS.some(
+      expect({
+        tool,
+        viaExecute: ASK_CORPUS.some(
           probe => probe.tool === tool && probe.via === 'ExecuteExtraTool',
         ),
-      ).toBe(true)
+        direct: ASK_CORPUS.some(
+          probe => probe.tool === tool && probe.via === undefined,
+        ),
+      }).toEqual({ tool, viaExecute: true, direct: true })
     }
   })
 
@@ -354,6 +386,87 @@ describe('C_tool ask snapshot, acceptEdits, shipped resident child', () => {
     expect(
       readFileSync(join(fixture.config, 'resident', AUTHZ_LEDGER_FILE), 'utf8'),
     ).toBe('')
+  })
+
+  test('the tools P14.0b removed are unreachable, directly and through ExecuteExtraTool', () => {
+    for (const tool of P140B_REMOVED) {
+      expect(RESIDENT_EXCLUDED_TOOLS.has(tool)).toBe(true)
+      expect(harness.offeredTools).not.toContain(tool)
+      expect(harness.deferredTools).not.toContain(tool)
+    }
+    for (const id of [
+      'task-output',
+      'task-stop',
+      'send-message',
+      'direct-deferred-monitor',
+      'direct-artifact-outside',
+    ]) {
+      expect({ id, ...measured[id] }).toMatchObject({
+        id,
+        verdict: 'refused',
+        cause: 'not-offered',
+      })
+    }
+    // The host approves the outer call; the inner tool is still not there.
+    for (const id of [
+      'execute-monitor-outside',
+      'execute-send-message',
+      'execute-task-output',
+      'execute-task-stop',
+      'execute-artifact',
+    ]) {
+      expect({ id, ...measured[id] }).toMatchObject({
+        id,
+        verdict: 'host',
+        inner: 'missing',
+      })
+    }
+    // Discovery has nothing to offer for them either.
+    expect(results.get('search-extra-tools')?.toolResults[0]).toContain(
+      'No matching deferred tools found',
+    )
+    // Nothing was copied out from beyond the read check.
+    expect(existsSync(join(fixture.config, 'artifacts'))).toBe(false)
+  })
+
+  test('a background command stays readable without TaskOutput', () => {
+    // The completion notice and the Bash result both name the output file,
+    // and the base reads the project temp directory without asking — so
+    // removing TaskOutput takes away no result a read-only command produced.
+    expect(measured['bash-background-read-output']?.verdict).toBe('allowed')
+    expect(
+      results.get('bash-background-read-output')?.toolResults[2],
+    ).toContain(BACKGROUND_OUTPUT_TEXT)
+  })
+
+  test('a deferred tool called directly takes the same permission chain', () => {
+    // Discovery hands the model a schema; it is not an authorization step.
+    // A direct call reaches the host exactly like any offered tool.
+    expect(measured['direct-deferred-vault-http-fetch']).toMatchObject({
+      verdict: 'host',
+    })
+  })
+
+  test('teammate inboxes under <config>/teams/ are refused on both surfaces', () => {
+    expect(measured['hardline-read-team-inbox']).toMatchObject({
+      verdict: 'refused',
+      cause: 'hardline:team-mailbox',
+    })
+    expect(measured['hardline-bash-team-inbox']).toMatchObject({
+      verdict: 'refused',
+      cause: 'hardline:team-mailbox',
+    })
+    expect(
+      readFileSync(
+        join(fixture.config, 'teams', 'default', 'inboxes', 'main.json'),
+        'utf8',
+      ),
+    ).toBe('[]')
+  })
+
+  test('side effects allowed without the host are exactly the kept ones', () => {
+    const actual = snapshotOf(process.platform, harness, measured)
+    expect(actual.sideEffectsAllowedWithoutHost).toEqual(KEPT_SIDE_EFFECTS)
   })
 
   test('the snapshot matches the one pinned for this platform', () => {
