@@ -65,4 +65,12 @@ export function registerQianmoCommands(program: CommanderCommand): void {
       const { runWatch } = await import('src/cli/handlers/watch.js');
       await runWatch(process.argv.slice(3));
     });
+
+  program
+    .command('memory')
+    .description("Write, list and retire a resident agent's memory on this node")
+    .action(async () => {
+      const { runQianmoMemory } = await import('src/cli/handlers/memory.js');
+      runQianmoMemory(process.argv.slice(3));
+    });
 }
