@@ -104,6 +104,8 @@ function issueNode(
     csrPem,
     popSignature: signBytes(keys, popMessage(node, csrPem)),
     hosts: [...hosts],
+    // One CA directory for the whole file, and most tests issue node-a again.
+    replace: true,
   })
   return {
     node,

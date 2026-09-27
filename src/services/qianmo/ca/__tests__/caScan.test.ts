@@ -66,6 +66,10 @@ const CA_LITERALS: readonly { pattern: RegExp; label: string }[] = [
     pattern: /['"`]revo(?:ked|cation-list)\.json['"`]/,
     label: 'revocation file name',
   },
+  {
+    pattern: /['"`][^'"`]*issued-ledger\.jsonl[^'"`]*['"`]/,
+    label: 'issuance ledger file name',
+  },
   { pattern: /QIANMO_CA_DIR/, label: 'CA directory env var' },
 ]
 
@@ -192,6 +196,7 @@ describe('CA isolation scan (§10.3)', () => {
       "const dir = join(homedir(), '.qianmo-ca')",
       "readFileSync(join(dir, 'ca.key'))",
       "writeFileSync('revocation-list.json', body)",
+      "readFileSync(join(dir, 'issued-ledger.jsonl'))",
       'process.env.QIANMO_CA_DIR',
     ]
     for (const [index, sample] of bait.entries()) {

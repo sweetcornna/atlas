@@ -226,9 +226,42 @@ export function caSerialPath(directory: string): string {
   return join(directory, 'ca.srl')
 }
 
-/** Copies of what has been issued, so a revocation can be looked up later. */
+/**
+ * The certificate most recently issued to `node`.
+ *
+ * Only the latest one: a re-issue (`ca issue --replace`) replaces this file.
+ * The fingerprints of the ones it replaced live on in the ledger below, which
+ * is what a later revocation or a compromise review actually needs.
+ */
 export function issuedCertPath(directory: string, node: string): string {
   return join(directory, 'issued', `${node}.crt`)
+}
+
+/**
+ * Every certificate this CA has handed out, one JSON line each, append-only.
+ *
+ * The one place a superseded certificate's fingerprint survives, and the list
+ * a compromise review compares the registry against (ca-runbook.md §6.3):
+ * a certificate the ledger does not name was not issued by this tool.
+ */
+export function issuanceLedgerPath(directory: string): string {
+  return join(directory, 'issued-ledger.jsonl')
+}
+
+/** Held for the whole of one `ca issue`, so two runs cannot interleave. */
+export function issueLockPath(directory: string): string {
+  return join(directory, 'issue.lock')
+}
+
+/**
+ * True when `path` lands inside the CA directory once symlinks are resolved.
+ *
+ * `ca issue --out` must never write there: a certificate written over
+ * `ca.key` destroys the only copy of the private key, and one written over
+ * another node's copy or the ledger loses exactly the record that file keeps.
+ */
+export function isInsideCaDirectory(path: string, directory: string): boolean {
+  return isPathInside(physicalPath(path), physicalPath(directory))
 }
 
 /**

@@ -14,6 +14,14 @@
  *
  * Parsing and printing live in `src/cli/handlers/ca.ts`; this file is the part
  * that can be called from a test without going through argv.
+ *
+ * ## Issuing never destroys a record
+ *
+ * Every certificate `issue` signs is appended to the issuance ledger
+ * (`ledger.ts`) before any certificate file is written, and `issue` refuses to
+ * overwrite an existing file unless told to with `replace`. The two together
+ * are what keep a re-issue from erasing the only copy of the previous
+ * certificate's fingerprint.
  */
 
 import { X509Certificate, createPublicKey } from 'node:crypto'
@@ -42,6 +50,12 @@ import {
   caPublicKeyFromCertificate,
   normalizeFingerprint256,
 } from './caKeys.js'
+import {
+  appendIssuanceRecords,
+  issuanceRecordOf,
+  readIssuanceLedger,
+  replaceFileAtomically,
+} from './ledger.js'
 import { runOpenssl } from './openssl.js'
 import { verifyCsrPop } from './pop.js'
 import {
@@ -51,6 +65,8 @@ import {
   caCertPath,
   caKeyPath,
   caSerialPath,
+  isInsideCaDirectory,
+  issueLockPath,
   issuedCertPath,
   revocationListPath,
   revocationStatePath,
@@ -118,6 +134,67 @@ function writeNew(path: string, data: string, mode: number): void {
 function writeReplacing(path: string, data: string, mode: number): void {
   mkdirSync(dirname(path), { recursive: true, mode: CA_DIR_MODE })
   writeFileSync(path, data, { mode })
+}
+
+/**
+ * Write a certificate file: `wx` when it must not exist yet, an atomic
+ * replace when the caller has already decided it may.
+ */
+function writeCertificateFile(
+  path: string,
+  pem: string,
+  replace: boolean,
+): void {
+  mkdirSync(dirname(path), { recursive: true, mode: CA_DIR_MODE })
+  if (replace) replaceFileAtomically(path, pem)
+  else writeNew(path, pem, CA_PUBLIC_FILE_MODE)
+}
+
+/**
+ * Run `body` holding the CA directory's issue lock.
+ *
+ * One `issue` reads the ledger, signs, then appends: two interleaved runs
+ * would each append to the ledger they read and one record would be lost.
+ * `wx` makes taking the lock atomic. An interrupted run can leave the file
+ * behind; the refusal says so rather than guessing whether it is stale.
+ */
+function withIssueLock<T>(directory: string, body: () => T): T {
+  const lockPath = issueLockPath(directory)
+  try {
+    writeFileSync(lockPath, `${String(process.pid)}\n`, {
+      mode: CA_PUBLIC_FILE_MODE,
+      flag: 'wx',
+    })
+  } catch (error) {
+    if (existsSync(lockPath)) {
+      throw new Error(
+        `another \`ca issue\` holds ${lockPath}. If none is running (an ` +
+          'earlier run was interrupted), delete that file and run again.',
+      )
+    }
+    throw error
+  }
+  try {
+    return body()
+  } finally {
+    rmSync(lockPath, { force: true })
+  }
+}
+
+/** The certificate at `path`, when this CA issued it; `null` otherwise. */
+function ownIssuedCertificate(
+  path: string,
+  caCertificate: X509Certificate,
+): X509Certificate | null {
+  try {
+    const certificate = new X509Certificate(readFileSync(path, 'utf8'))
+    return certificate.checkIssued(caCertificate) &&
+      certificate.verify(caCertificate.publicKey)
+      ? certificate
+      : null
+  } catch {
+    return null
+  }
 }
 
 /** What `qm ca init` produced. */
@@ -206,9 +283,20 @@ interface CaIssueResult {
   readonly notAfter: string
   /** Read back out of the signed certificate, not echoed from the request. */
   readonly binding: NodeCertificateBinding
+  /** The ledger this issuance was appended to. */
+  readonly ledgerPath: string
+  /** Fingerprint of the `issued/<node>.crt` copy this run replaced, if any. */
+  readonly replacedFingerprint256?: string
 }
 
-/** Sign one node certificate (§6.1 row 2). */
+/**
+ * Sign one node certificate (§6.1 row 2).
+ *
+ * Refuses, before signing anything, to overwrite `issued/<node>.crt` or
+ * `outPath` unless `replace` is set, and refuses an `outPath` inside the CA
+ * directory outright. The signed certificate is recorded in the issuance
+ * ledger before either file is written.
+ */
 export function issueCertificate(options: {
   readonly directory: string
   readonly node: string
@@ -218,9 +306,14 @@ export function issueCertificate(options: {
   readonly hosts: readonly string[]
   readonly days?: number
   readonly outPath?: string
+  /** Allow replacing an existing `issued/<node>.crt` or `outPath`. */
+  readonly replace?: boolean
+  /** Signing time as the ledger records it. Defaults to the wall clock. */
+  readonly now?: number
 }): CaIssueResult {
   const { directory, node, publicKey, csrPem } = options
   const days = options.days ?? NODE_CERT_DAYS
+  const replace = options.replace === true
 
   if (!isValidSegment(node)) {
     throw new Error(`invalid node segment: ${String(node)}`)
@@ -280,85 +373,152 @@ export function issueCertificate(options: {
     )
   }
 
-  const { dnsNames, ipAddresses } = classifyHosts(options.hosts)
-  const requested: NodeCertificateBinding = {
-    node,
-    publicKey,
-    dnsNames,
-    ipAddresses,
-  }
-  const extensions =
-    `subjectAltName=${formatNodeSanEntries(requested)}\n` +
-    'basicConstraints=CA:FALSE\n' +
-    // Both, because a node is both ends: it serves inbound connections and
-    // dials outbound ones, and L0's mTLS (F-7) needs the client half too.
-    'extendedKeyUsage=serverAuth,clientAuth\n'
-
-  const scratch = mkdtempSync(join(tmpdir(), `${NODE_IDENTITY_MODE}-ca-`))
-  let certificatePem: string
-  try {
-    const extensionsPath = join(scratch, 'ext.cnf')
-    writeFileSync(extensionsPath, extensions, { mode: CA_PRIVATE_FILE_MODE })
-    certificatePem = runOpenssl(
-      [
-        'x509',
-        '-req',
-        '-CA',
-        certificatePath,
-        '-CAkey',
-        keyPath,
-        '-CAcreateserial',
-        '-CAserial',
-        caSerialPath(directory),
-        '-days',
-        String(days),
-        '-extfile',
-        extensionsPath,
-      ],
-      { input: csrPem },
-    )
-  } finally {
-    rmSync(scratch, { recursive: true, force: true })
-  }
-
-  // Read the binding back out of the signed bytes rather than trusting what we
-  // asked for. This is the same check every node will run (F-1/F-3), done once
-  // here so a certificate that cannot be parsed by a peer never leaves the CA.
-  const certificate = new X509Certificate(certificatePem)
-  const binding = parseNodeCertificateBinding(certificate.subjectAltName)
-  if (binding === null) {
-    throw new Error(
-      'the signed certificate does not parse as a node certificate; refusing ' +
-        `to hand it over. SANs were: ${String(certificate.subjectAltName)}`,
-    )
-  }
-  if (binding.node !== node || binding.publicKey !== publicKey) {
-    throw new Error(
-      'the signed certificate does not carry the requested binding',
-    )
-  }
-  if (
-    !certificate.verify(
-      new X509Certificate(readFileSync(certificatePath, 'utf8')).publicKey,
-    )
-  ) {
-    throw new Error('the signed certificate does not verify against this CA')
-  }
-
   const issuedPath = issuedCertPath(directory, node)
-  writeReplacing(issuedPath, certificatePem, CA_PUBLIC_FILE_MODE)
   const outPath = options.outPath ?? issuedPath
-  if (outPath !== issuedPath) {
-    writeReplacing(outPath, certificatePem, CA_PUBLIC_FILE_MODE)
+  if (outPath !== issuedPath && isInsideCaDirectory(outPath, directory)) {
+    // Not even with `replace`: this is how a certificate lands on `ca.key`,
+    // on another node's copy, or on the ledger.
+    throw new Error(
+      `--out ${outPath} is inside the CA directory ${directory}; write the ` +
+        'certificate somewhere else (the CA keeps its own copy in issued/)',
+    )
   }
 
-  return {
-    certificatePath: outPath,
-    certificatePem,
-    fingerprint256: certificate.fingerprint256,
-    notAfter: certificate.validTo,
-    binding,
-  }
+  return withIssueLock(directory, () => {
+    // Read before signing: a ledger that cannot be read cannot be appended
+    // to, and a certificate that cannot be recorded must not be signed.
+    const ledger = readIssuanceLedger(directory)
+    const caCertificate = new X509Certificate(
+      readFileSync(certificatePath, 'utf8'),
+    )
+
+    let replaced: X509Certificate | undefined
+    if (existsSync(issuedPath)) {
+      if (!replace) {
+        throw new Error(
+          `${node} already has a certificate at ${issuedPath}. Re-issuing ` +
+            'replaces that copy (its fingerprint stays in the ledger); pass ' +
+            '--replace to do that. Nothing was signed.',
+        )
+      }
+      const previous = ownIssuedCertificate(issuedPath, caCertificate)
+      if (previous === null) {
+        throw new Error(
+          `${issuedPath} does not hold a certificate this CA issued, so ` +
+            'replacing it would lose something the ledger cannot account ' +
+            'for; move it aside and run again. Nothing was signed.',
+        )
+      }
+      replaced = previous
+    }
+    if (outPath !== issuedPath && existsSync(outPath) && !replace) {
+      throw new Error(
+        `${outPath} already exists; pass --replace to overwrite it. ` +
+          'Nothing was signed.',
+      )
+    }
+
+    const { dnsNames, ipAddresses } = classifyHosts(options.hosts)
+    const requested: NodeCertificateBinding = {
+      node,
+      publicKey,
+      dnsNames,
+      ipAddresses,
+    }
+    const extensions =
+      `subjectAltName=${formatNodeSanEntries(requested)}\n` +
+      'basicConstraints=CA:FALSE\n' +
+      // Both, because a node is both ends: it serves inbound connections and
+      // dials outbound ones, and L0's mTLS (F-7) needs the client half too.
+      'extendedKeyUsage=serverAuth,clientAuth\n'
+
+    const scratch = mkdtempSync(join(tmpdir(), `${NODE_IDENTITY_MODE}-ca-`))
+    let certificatePem: string
+    try {
+      const extensionsPath = join(scratch, 'ext.cnf')
+      writeFileSync(extensionsPath, extensions, { mode: CA_PRIVATE_FILE_MODE })
+      certificatePem = runOpenssl(
+        [
+          'x509',
+          '-req',
+          '-CA',
+          certificatePath,
+          '-CAkey',
+          keyPath,
+          '-CAcreateserial',
+          '-CAserial',
+          caSerialPath(directory),
+          '-days',
+          String(days),
+          '-extfile',
+          extensionsPath,
+        ],
+        { input: csrPem },
+      )
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+
+    // Read the binding back out of the signed bytes rather than trusting what we
+    // asked for. This is the same check every node will run (F-1/F-3), done once
+    // here so a certificate that cannot be parsed by a peer never leaves the CA.
+    const certificate = new X509Certificate(certificatePem)
+    const binding = parseNodeCertificateBinding(certificate.subjectAltName)
+    if (binding === null) {
+      throw new Error(
+        'the signed certificate does not parse as a node certificate; refusing ' +
+          `to hand it over. SANs were: ${String(certificate.subjectAltName)}`,
+      )
+    }
+    if (binding.node !== node || binding.publicKey !== publicKey) {
+      throw new Error(
+        'the signed certificate does not carry the requested binding',
+      )
+    }
+    if (!certificate.verify(caCertificate.publicKey)) {
+      throw new Error('the signed certificate does not verify against this CA')
+    }
+
+    // The record first, then the files: a crash in between leaves a ledger
+    // line for a certificate nobody received, which is harmless. The other
+    // order could leave a delivered certificate the ledger never heard of.
+    const records = [
+      ...(replaced !== undefined &&
+      !ledger.records.some(
+        record => record.fingerprint256 === replaced.fingerprint256,
+      )
+        ? [
+            // Signed before the ledger existed. Recorded now, because this run
+            // is about to overwrite the only other place its fingerprint lives.
+            issuanceRecordOf(
+              replaced,
+              node,
+              'import',
+              Date.parse(replaced.validFrom),
+            ),
+          ]
+        : []),
+      issuanceRecordOf(certificate, node, 'issue', options.now ?? Date.now()),
+    ]
+    appendIssuanceRecords(ledger, records)
+
+    writeCertificateFile(issuedPath, certificatePem, replaced !== undefined)
+    if (outPath !== issuedPath) {
+      writeCertificateFile(outPath, certificatePem, replace)
+    }
+
+    return {
+      certificatePath: outPath,
+      certificatePem,
+      fingerprint256: certificate.fingerprint256,
+      notAfter: certificate.validTo,
+      binding,
+      ledgerPath: ledger.path,
+      ...(replaced === undefined
+        ? {}
+        : { replacedFingerprint256: replaced.fingerprint256 }),
+    }
+  })
 }
 
 /** One revocation asked for on the command line. */

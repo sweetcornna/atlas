@@ -108,6 +108,9 @@ function issueForTest(overrides: Record<string, unknown> = {}) {
     csrPem,
     popSignature: pop,
     hosts: ['localhost', '127.0.0.1'],
+    // Every test here re-issues node-a into one CA directory; the refusal to
+    // overwrite without it has its own tests in `ledger.test.ts`.
+    replace: true,
     ...overrides,
   })
 }
