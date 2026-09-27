@@ -60,6 +60,12 @@ export interface LoginPageModel {
   readonly redirect: string
   /** The one line above the field when the last attempt did not work. */
   readonly error?: string
+  /**
+   * True on a console with personal accounts: the same field then takes a
+   * personal credential as well, and the legend says so. Absent, the page is
+   * byte for byte what it was.
+   */
+  readonly accounts?: boolean
 }
 
 /** The field label and the button, kept next to each other on purpose. */
@@ -77,8 +83,33 @@ const DECOR =
   `<circle cx="120" cy="120" r="80" fill="var(--color-accent-2-200)"/>` +
   `<circle cx="58" cy="62" r="34" fill="var(--color-accent-300)"/></svg>`
 
+/** The legend under the button: the two tokens, or credential and tokens. */
+function legend(accounts: boolean): string {
+  if (!accounts) {
+    return (
+      `<div class="tokline">` +
+      `<div class="tokrow"><span class="tag tag-neutral mono">view</span>` +
+      `只读参观 · 看名册与消息链 · 不能唤醒与注销</div>` +
+      `<div class="tokrow"><span class="tag tag-accent mono">admin</span>` +
+      `可操作 · 注册 唤醒 注销 全部开放</div>` +
+      `</div>` +
+      `<p class="foot">令牌由环境负责人发放 · 存在浏览器本地 · 退出即清除</p>`
+    )
+  }
+  return (
+    `<div class="tokline">` +
+    `<div class="tokrow"><span class="tag tag-accent mono">个人</span>` +
+    `个人凭据 · 按账号角色开放 · 浏览器只保留会话</div>` +
+    `<div class="tokrow"><span class="tag tag-neutral mono">共享</span>` +
+    `view 与 admin 令牌 · 迁移期保留</div>` +
+    `</div>` +
+    `<p class="foot">个人凭据由邀请开通 · 丢失找运维重置 · 退出即结束会话</p>`
+  )
+}
+
 /** The whole `/login` document. Self-contained: nothing is fetched. */
 export function renderLoginPage(model: LoginPageModel): string {
+  const accounts = model.accounts === true
   const title = `${BRAND} · 登录 · ${model.label}`
   const error =
     model.error === undefined || model.error === ''
@@ -99,22 +130,18 @@ export function renderLoginPage(model: LoginPageModel): string {
     `</div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
     error +
-    `<div class="field"><label for="token">${escapeHtml(FIELD_LABEL)}</label>` +
+    `<div class="field"><label for="token">` +
+    `${escapeHtml(accounts ? '凭据' : FIELD_LABEL)}</label>` +
     // `current-password` rather than `off`: the alternative to a password
     // manager holding a 32-character random string is a text file holding it.
     `<input class="input" type="password" id="token" name="token" ` +
     `autocomplete="current-password" spellcheck="false" ` +
-    `placeholder="粘贴访问令牌" autofocus required></div>` +
+    `placeholder="${accounts ? '粘贴个人凭据或访问令牌' : '粘贴访问令牌'}" ` +
+    `autofocus required></div>` +
     `<button type="submit" class="btn btn-primary btn-block">` +
     icon('log-out', { small: true }) +
     `${escapeHtml(SUBMIT_LABEL)}</button>` +
-    `<div class="tokline">` +
-    `<div class="tokrow"><span class="tag tag-neutral mono">view</span>` +
-    `只读参观 · 看名册与消息链 · 不能唤醒与注销</div>` +
-    `<div class="tokrow"><span class="tag tag-accent mono">admin</span>` +
-    `可操作 · 注册 唤醒 注销 全部开放</div>` +
-    `</div>` +
-    `<p class="foot">令牌由环境负责人发放 · 存在浏览器本地 · 退出即清除</p>` +
+    legend(accounts) +
     `</form>\n</div>\n</body>\n</html>\n`
   )
 }

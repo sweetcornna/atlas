@@ -113,7 +113,7 @@ async function prompt(
         uuid: userMessageId,
       })
 
-      const { stopReason, usage } = await forwardSessionUpdates(
+      const { stopReason, usage, error } = await forwardSessionUpdates(
         params.sessionId,
         sdkMessages,
         getConnection(this),
@@ -134,6 +134,23 @@ async function prompt(
       // channel. The title is derived from the first user prompt.
       await emitSessionInfoUpdate(this, params.sessionId, promptInput)
 
+      // A turn that ended in an error keeps its ACP stop reason (the protocol
+      // has no error value, and editors key off the ones it has) and says what
+      // went wrong in `_meta.claudeCode.error`. Without it an errored turn and
+      // a completed one were the same `end_turn` to a client — a resident node
+      // recorded a gateway 400 as a successful run.
+      const turnError =
+        error === undefined
+          ? undefined
+          : { ...error, ...turnErrorCode(session) }
+      if (turnError !== undefined) {
+        console.error(
+          `[ACP] turn ended in an error: category=${turnError.category}` +
+            `${turnError.code === undefined ? '' : ` code=${turnError.code}`}` +
+            ` ${turnError.message}`,
+        )
+      }
+
       // Per session-usage.mdx RFD and the bundled SDK schema, PromptResponse
       // carries an optional `usage` field at the root with cumulative token
       // totals for the session. The field is UNSTABLE in v1 but is implemented
@@ -141,35 +158,34 @@ async function prompt(
       // `_meta.claudeCode.usage` for consumers that read the vendor namespace.
       // thoughtTokens are reported as 0 until the bridge tracks them, but are
       // included in totalTokens so totals match the sum of components.
-      if (usage) {
-        const thoughtTokens = 0
-        const usagePayload = {
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          cachedReadTokens: usage.cachedReadTokens,
-          cachedWriteTokens: usage.cachedWriteTokens,
-          thoughtTokens,
-          totalTokens:
-            usage.inputTokens +
-            usage.outputTokens +
-            usage.cachedReadTokens +
-            usage.cachedWriteTokens +
-            thoughtTokens,
-        }
-        return {
-          stopReason,
-          usage: usagePayload,
-          ...(userMessageId ? { userMessageId } : {}),
-          _meta: {
-            claudeCode: {
-              usage: usagePayload,
-            },
-          },
-        }
+      const thoughtTokens = 0
+      const usagePayload =
+        usage === undefined
+          ? undefined
+          : {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              cachedReadTokens: usage.cachedReadTokens,
+              cachedWriteTokens: usage.cachedWriteTokens,
+              thoughtTokens,
+              totalTokens:
+                usage.inputTokens +
+                usage.outputTokens +
+                usage.cachedReadTokens +
+                usage.cachedWriteTokens +
+                thoughtTokens,
+            }
+      const claudeCode = {
+        ...(usagePayload === undefined ? {} : { usage: usagePayload }),
+        ...(turnError === undefined ? {} : { error: turnError }),
       }
       return {
         stopReason,
+        ...(usagePayload === undefined ? {} : { usage: usagePayload }),
         ...(userMessageId ? { userMessageId } : {}),
+        ...(Object.keys(claudeCode).length === 0
+          ? {}
+          : { _meta: { claudeCode } }),
       }
     })
   } catch (err: unknown) {
@@ -184,6 +200,11 @@ async function prompt(
     if (session.cancelled || isAbort) {
       return { stopReason: 'cancelled' }
     }
+
+    // The ACP SDK answers an escaped error with `-32603 Internal error` and
+    // keeps only its message, so the stack survives only if it is written
+    // here (stderr; a resident node's `.err`).
+    console.error('[ACP] prompt failed:', err)
 
     // Check for process death errors
     if (
@@ -207,6 +228,34 @@ async function prompt(
     } else {
       session.promptRunning = false
     }
+  }
+}
+
+/**
+ * The machine-readable code of the API error that ended the turn, when it has
+ * one — `empty_response` for an empty model response that outlasted its
+ * retries. Read from the diagnostics the provider layer stored on the error
+ * message (`errorDetails`, JSON), not parsed out of the display text.
+ *
+ * The message looked at is the one QueryEngine's own `is_error` verdict is
+ * taken from: the last assistant-or-user message.
+ */
+function turnErrorCode(session: AcpSession): { code?: string } {
+  const last = session.queryEngine
+    .getMessages()
+    .findLast(m => m.type === 'assistant' || m.type === 'user')
+  if (
+    last?.type !== 'assistant' ||
+    last.isApiErrorMessage !== true ||
+    typeof last.errorDetails !== 'string'
+  ) {
+    return {}
+  }
+  try {
+    const code = (JSON.parse(last.errorDetails) as { code?: unknown }).code
+    return typeof code === 'string' ? { code } : {}
+  } catch {
+    return {}
   }
 }
 

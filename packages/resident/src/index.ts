@@ -17,6 +17,7 @@ export {
   RESIDENT_INACTIVITY_CANCEL_META,
   SELF_REPORTING_TOOL_TITLE,
   parseTurnStepDedupKey,
+  turnFailureKind,
   turnStepDedupKey,
   type AcpPromptConnection,
   type ResidentTurnProgress,

@@ -24,6 +24,9 @@ import { getMatchingModelUsage } from './modelUsage.js'
 // forwardSessionUpdates default branch and replayHistoryMessages reference it.
 const logger: { debug: (...args: unknown[]) => void } = console
 
+/** Upper bound on the error text a turn result carries. */
+const TURN_ERROR_MESSAGE_MAX = 500
+
 export function nextSdkMessageOrAbort(
   sdkMessages: AsyncGenerator<SDKMessage, void, unknown>,
   abortSignal: AbortSignal,
@@ -50,7 +53,10 @@ export function nextSdkMessageOrAbort(
 /**
  * Iterates SDKMessages from QueryEngine.submitMessage(), converts each
  * to ACP SessionUpdate notifications, and sends them via conn.sessionUpdate().
- * Returns the final StopReason and accumulated usage for the prompt turn.
+ * Returns the final StopReason and accumulated usage for the prompt turn,
+ * plus `error` when the turn's result was an error. ACP has no error stop
+ * reason, so an errored turn still ends `end_turn` (or `max_tokens`, …); the
+ * error is how a client tells it apart from a completed answer.
  */
 export async function forwardSessionUpdates(
   sessionId: string,
@@ -61,8 +67,16 @@ export async function forwardSessionUpdates(
   clientCapabilities?: ClientCapabilities,
   cwd?: string,
   isCancelled?: () => boolean,
-): Promise<{ stopReason: StopReason; usage?: SessionUsage }> {
+): Promise<{
+  stopReason: StopReason
+  usage?: SessionUsage
+  error?: { category: string; message: string }
+}> {
   let stopReason: StopReason = 'end_turn'
+  let turnError: { category: string; message: string } | undefined
+  // The SDK error category of the latest top-level assistant message; an API
+  // error message carries one, an ordinary answer does not.
+  let lastAssistantError: string | undefined
   const accumulatedUsage: SessionUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -168,6 +182,19 @@ export async function forwardSessionUpdates(
             break
           }
 
+          if (isError === true) {
+            const text =
+              typeof msg.result === 'string' && msg.result.trim() !== ''
+                ? msg.result
+                : typeof msg.errors?.[0] === 'string'
+                  ? msg.errors[0]
+                  : 'Turn ended in an error'
+            turnError = {
+              category: lastAssistantError ?? 'unknown',
+              message: text.slice(0, TURN_ERROR_MESSAGE_MAX),
+            }
+          }
+
           switch (subtype) {
             case 'success': {
               // Map Anthropic stop_reason to ACP StopReason. Branches are mutually
@@ -260,6 +287,10 @@ export async function forwardSessionUpdates(
               (typeof usage.cache_creation_input_tokens === 'number'
                 ? usage.cache_creation_input_tokens
                 : 0)
+          }
+          if (parentToolUseId === null) {
+            lastAssistantError =
+              typeof msg.error === 'string' ? msg.error : undefined
           }
           // Track the current top-level model for context window size lookup
           if (
@@ -397,7 +428,11 @@ export async function forwardSessionUpdates(
     await sdkMessages.return()
   }
 
-  return { stopReason, usage: accumulatedUsage }
+  return {
+    stopReason,
+    usage: accumulatedUsage,
+    ...(turnError === undefined ? {} : { error: turnError }),
+  }
 }
 
 // ── History replay ──────────────────────────────────────────────────

@@ -34,6 +34,8 @@
  * can fail a request is worse than no diagnostic channel.
  */
 
+import { logForDebugging } from '../../utils/telemetry/debug.js'
+
 export type UpstreamStatusReport = {
   readonly status: number
   /** A short, already-sanitized description, when one is cheaply available. */
@@ -94,5 +96,69 @@ export function reportUpstreamFailure(error: unknown): void {
     notify({ status })
   } catch {
     // A diagnostic sink must never be able to fail the request it describes.
+  }
+}
+
+/**
+ * One empty model response, as the retry ladder saw it: HTTP 200, a
+ * finish_reason, and no text, tool call or reasoning.
+ *
+ * Deliberately narrow. It names the finish_reason and the token counts the
+ * gateway reported, and nothing else: there was no content to leak, and the
+ * request is none of this line's business.
+ */
+type EmptyModelResponseReport = {
+  readonly finishReason: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  /** 1 for this request's first empty response, 2 for the next, … */
+  readonly occurrence: number
+  /** Whether the ladder asks again, or gives up and fails the turn. */
+  readonly retrying: boolean
+}
+
+let emptyResponseSink: ((line: string) => void) | undefined
+
+/**
+ * Subscribe to one-line notices of empty model responses. Replaces any
+ * previous subscriber.
+ *
+ * The same single-sink shape as the status channel above, for the same
+ * reason: the notice starts inside a retry ladder that threads no context, and
+ * the only subscriber is the ACP entry point, which writes it to the child's
+ * stderr — the node's `.err` file. Without it, an empty response that a retry
+ * recovered from leaves no trace at all, and one that did not was only ever
+ * visible as a bare `Internal error` (beta-5, 2026-09-27).
+ */
+export function registerEmptyModelResponseCallback(
+  callback: (line: string) => void,
+): void {
+  emptyResponseSink = callback
+}
+
+export function unregisterEmptyModelResponseCallback(): void {
+  emptyResponseSink = undefined
+}
+
+/**
+ * Record one empty response: to the debug log (written only while debug
+ * logging is on), and to the subscriber when there is one. The REPL registers
+ * none, so nothing is written over its screen.
+ */
+export function reportEmptyModelResponse(
+  report: EmptyModelResponseReport,
+): void {
+  const line =
+    `[model] empty model response: finish_reason=${report.finishReason}` +
+    ` input_tokens=${report.inputTokens} output_tokens=${report.outputTokens}` +
+    ` occurrence=${report.occurrence}` +
+    ` action=${report.retrying ? 'retry' : 'fail'}`
+  logForDebugging(line, { level: 'warn' })
+  const notify = emptyResponseSink
+  if (notify === undefined) return
+  try {
+    notify(line)
+  } catch {
+    // Same rule as above: a diagnostic sink must never fail the request.
   }
 }

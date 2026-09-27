@@ -45,17 +45,21 @@ export const isReactiveCompactEnabled: () => boolean = () => {
   return true
 }
 
-export const isWithheldPromptTooLong: (message: Message) => boolean =
-  message => {
-    if (message.type !== 'assistant' || !message.isApiErrorMessage) return false
-    return isPromptTooLongMessage(message as AssistantMessage)
-  }
+// Both accept `undefined`: the query loop asks about `assistantMessages.at(-1)`,
+// and a model call that produced no assistant message leaves that empty.
+export const isWithheldPromptTooLong: (
+  message: Message | undefined,
+) => boolean = message => {
+  if (message?.type !== 'assistant' || !message.isApiErrorMessage) return false
+  return isPromptTooLongMessage(message as AssistantMessage)
+}
 
-export const isWithheldMediaSizeError: (message: Message) => boolean =
-  message => {
-    if (message.type !== 'assistant' || !message.isApiErrorMessage) return false
-    return isMediaSizeErrorMessage(message as AssistantMessage)
-  }
+export const isWithheldMediaSizeError: (
+  message: Message | undefined,
+) => boolean = message => {
+  if (message?.type !== 'assistant' || !message.isApiErrorMessage) return false
+  return isMediaSizeErrorMessage(message as AssistantMessage)
+}
 
 export const tryReactiveCompact: (params: {
   hasAttempted: boolean

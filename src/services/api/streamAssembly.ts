@@ -1,4 +1,5 @@
 import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { EmptyModelResponseError } from '@ant/model-provider'
 import type {
   BetaMessage,
   BetaRawMessageStreamEvent,
@@ -21,6 +22,17 @@ import {
   NonRetryableError,
 } from './retryClassification.js'
 import { getOpenAIRetryDelay, resolveOpenAIMaxRetries } from './openai/retry.js'
+import { reportEmptyModelResponse } from './upstreamStatus.js'
+
+/**
+ * Retries for a response that ended properly and said nothing
+ * ({@link EmptyModelResponseError}). Its own budget, not the no-output one:
+ * that ladder is sized for 5xx and dropped connections (10 attempts, backoff
+ * capped at 32 s), and spending it on a gateway that keeps answering with
+ * nothing holds a turn for minutes before the failure is reported.
+ */
+const EMPTY_RESPONSE_MAX_RETRIES = 2
+const EMPTY_RESPONSE_RETRY_DELAY_MS = 500
 
 /**
  * Usage shape shared by every third-party adapter. Mirrors Anthropic's
@@ -151,6 +163,7 @@ export async function* retryThirdPartyEventStream(params: {
       sleep(delayMs, signal, { abortError: () => new APIUserAbortError() }))
   let noOutputRetries = 0
   let thinkingRetries = 0
+  let emptyResponseRetries = 0
 
   while (true) {
     if (params.signal.aborted) throw new APIUserAbortError()
@@ -218,10 +231,21 @@ export async function* retryThirdPartyEventStream(params: {
       if (!isAPIErrorReplayable(error)) {
         throw error
       }
-      const retry =
-        commitment === 'thinking'
+      const emptyResponse = error instanceof EmptyModelResponseError
+      const retry = emptyResponse
+        ? ++emptyResponseRetries <= EMPTY_RESPONSE_MAX_RETRIES
+        : commitment === 'thinking'
           ? ++thinkingRetries <= 2
           : ++noOutputRetries <= maxRetries
+      if (emptyResponse) {
+        reportEmptyModelResponse({
+          finishReason: error.finishReason,
+          inputTokens: error.inputTokens,
+          outputTokens: error.outputTokens,
+          occurrence: emptyResponseRetries,
+          retrying: retry,
+        })
+      }
       if (!retry) throw error
       await params.onRetry?.(error)
       for (const event of finalizeInterruptedAttempt(
@@ -232,7 +256,12 @@ export async function* retryThirdPartyEventStream(params: {
       )) {
         yield event
       }
-      if (commitment === 'none') {
+      if (emptyResponse) {
+        await delay(
+          EMPTY_RESPONSE_RETRY_DELAY_MS * emptyResponseRetries,
+          params.signal,
+        )
+      } else if (commitment === 'none') {
         await delay(getOpenAIRetryDelay(noOutputRetries), params.signal)
       } else {
         await delay(100 * thinkingRetries, params.signal)
