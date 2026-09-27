@@ -9,9 +9,9 @@
  * development set (`hardened.ts`) is where hyperparameters may be tuned.
  *
  * This module defines the file, reads it, and says what is wrong with it. It
- * holds no question: the set is delivered by its author into
- * {@link HELDOUT_PATH}, and until then {@link loadHeldout} returns `null` and
- * every judgment that needs it refuses.
+ * holds no question: the set was delivered by its author (an independent
+ * agent, see `prereg.toml`) into {@link HELDOUT_PATH}. Without the file
+ * {@link loadHeldout} returns `null` and every judgment that needs it refuses.
  *
  * FILE FORMAT (TOML, so it carries the licence header as a comment)
  *
@@ -40,7 +40,7 @@ import { type BaselineQuery, materialise } from './run.js'
 
 const HELDOUT_SCHEMA = 'qianmo-recall-heldout/v1'
 
-/** Where the delivered set lives. Absent until its author delivers it. */
+/** Where the delivered set lives; its id-list hash is preregistered. */
 export const HELDOUT_PATH = fileURLToPath(
   new URL('./heldout/synthetic-v1.heldout.toml', import.meta.url),
 )

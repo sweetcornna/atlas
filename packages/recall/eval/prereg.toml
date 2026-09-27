@@ -29,7 +29,7 @@ alpha_primary = 0.025
 # 选 "gold" 的依据：留出集每条 gold 有 2 道题，按题计会把同一条 gold 算两次。一个完全
 # 不看题面的排序器按题计在 5 个种子上都能通过 R3，按 gold 计全部被拦下（heldout.test.ts
 # 的裁定证据用例）。开发集每条 gold 只有 1 道题，两种口径结果相同。
-# sign_test_unit =
+sign_test_unit = "gold"
 
 [answer]
 # E1 的单侧 α。出处同上。
@@ -53,9 +53,10 @@ e1_inference = "signflip"
 synthetic_v1_sha256 = "7ddd7e783a587521067e928e4aa8781f50dd529a75af4bafafe2c6830e2e38d1"
 # docs/dev 第二语料 docs-dev-v1 的哈希：bun run qianmo:recall-baseline --corpus docs-dev-v1 --digest
 docs_dev_v1_sha256 = "d75ffac175e27debe33257ef03dbd5f256b055ae94a4ed4abd05fd3884354d0b"
-# 留出改写题集 id 列表的哈希（eval/heldout.ts 的 heldoutDigest）。题集由未接触检索与
-# 融合实现的独立代理撰写，交稿后再冻结；在此之前 R2–R4 拒判。
-# heldout_ids_sha256 =
+# 留出改写题集 id 列表的哈希（eval/heldout.ts 的 heldoutDigest），题集文件是
+# eval/heldout/synthetic-v1.heldout.toml，40 道，每条 gold 2 道。缺这一项时 R2–R4 拒判。
+# 出处：由未接触检索实现的独立代理撰写；主 agent 审计其工具调用仅限作者包与校验器。2026-09-27 交稿。
+heldout_ids_sha256 = "a70557a550b5b4c6cf2b0df319b517da29ea1c33343b896cd7bf5024102749e6"
 # 打乱排列 π 的种子。π = derangement(留出集 id, shuffle_seed)。
 shuffle_seed = 20261003
 # 加固语料上 M0 基线 JSON 输出的 SHA-256，即下面这条命令写出的文件：

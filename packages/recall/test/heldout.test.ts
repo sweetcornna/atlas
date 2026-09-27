@@ -6,9 +6,10 @@
  * disqualifies a set, and the R2–R4 judgment that only runs on a set that
  * matches its preregistered hash.
  *
- * No real held-out question appears here — its author is someone else. The
- * sets below are made of nonsense tokens (`zqxv…`): zero overlap with any
- * entry by construction, and useless as a template.
+ * No held-out question is written here — its author is someone else; the
+ * delivered set is only loaded and checked. The other sets below are made of
+ * nonsense tokens (`zqxv…`): zero overlap with any entry by construction, and
+ * useless as a template.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -28,7 +29,7 @@ import {
   loadHeldout,
   parseHeldout,
 } from '../eval/heldout.js'
-import { parsePreregistration } from '../eval/prereg.js'
+import { loadPreregistration, parsePreregistration } from '../eval/prereg.js'
 import { referenceArms } from '../eval/retrieval-gates.js'
 import {
   type HeldoutArms,
@@ -73,9 +74,23 @@ function toToml(set: HeldoutSet): string {
 }
 
 describe('format and problems', () => {
-  test('nothing is delivered yet', () => {
-    expect(loadHeldout()).toBeNull()
-    expect(loadHeldout(HELDOUT_PATH)).toBeNull()
+  test('the delivered set is clean and is the preregistered one', () => {
+    const delivered = loadHeldout(HELDOUT_PATH)
+    if (delivered === null) throw new Error(`${HELDOUT_PATH} is missing`)
+    expect(delivered.questions.length).toBe(40)
+    expect(heldoutProblems(delivered)).toEqual([])
+    const { corpus, retrieval } = loadPreregistration()
+    expect(heldoutDigest(delivered)).toBe(corpus.heldoutIdsSha256 ?? '')
+    expect(retrieval.signTestUnit).toBe('gold')
+  }, 60_000)
+
+  test('a set that is not there loads as null', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'qianmo-heldout-'))
+    try {
+      expect(loadHeldout(join(directory, 'absent.heldout.toml'))).toBeNull()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test('the file round-trips; a clean set has no problems', () => {
