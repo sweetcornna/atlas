@@ -997,6 +997,76 @@ describe('AcpAgent', () => {
         },
       })
     })
+
+    test('an errored turn leaves one line on stderr with its category and code', async () => {
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      withMessages(agent, sessionId, [
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          errorDetails: JSON.stringify({ code: 'empty_response' }),
+          message: { content: [{ type: 'text', text: EMPTY_TEXT }] },
+        },
+      ])
+      ;(forwardSessionUpdates as ReturnType<typeof mock>).mockResolvedValueOnce(
+        {
+          stopReason: 'end_turn',
+          error: { category: 'server_error', message: EMPTY_TEXT },
+        },
+      )
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(
+        () => {},
+      )
+      try {
+        await agent.prompt({
+          sessionId,
+          prompt: [{ type: 'text', text: 'watch' }],
+        } as any)
+
+        expect(consoleErrorSpy.mock.calls).toEqual([
+          [
+            `[ACP] turn ended in an error: category=server_error code=empty_response ${EMPTY_TEXT}`,
+          ],
+        ])
+      } finally {
+        consoleErrorSpy.mockRestore()
+      }
+    })
+
+    test('an unexpected prompt error is written to stderr with its stack before it propagates', async () => {
+      // The ACP SDK answers it with `-32603 Internal error` and keeps only the
+      // message; this line is the only place the stack survives.
+      const agent = new AcpAgent(makeConn())
+      const { sessionId } = await agent.newSession({ cwd: '/tmp' } as any)
+      const failure = new Error('unexpected')
+      ;(
+        forwardSessionUpdates as ReturnType<typeof mock>
+      ).mockImplementationOnce(async () => {
+        throw failure
+      })
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(
+        () => {},
+      )
+      try {
+        await expect(
+          agent.prompt({
+            sessionId,
+            prompt: [{ type: 'text', text: 'hello' }],
+          } as any),
+        ).rejects.toThrow('unexpected')
+
+        // The Error object itself, not its message: console.error prints the
+        // stack for it.
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[ACP] prompt failed:',
+          failure,
+        )
+        expect(failure.stack).toContain('agent.test.ts')
+      } finally {
+        consoleErrorSpy.mockRestore()
+      }
+    })
   })
 
   describe('prompt userMessageId echo (message-id RFD)', () => {
