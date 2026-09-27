@@ -117,10 +117,12 @@ function portFor(options: {
   readonly agents: readonly unknown[]
   readonly revocationList?: unknown
   readonly now?: () => number
+  readonly caCertificatePem?: string
 }) {
   return createCertificatePort({
     baseUrl: 'http://127.0.0.1:1',
-    caCertificatePem: readFileSync(join(caDir, 'ca.crt'), 'utf8'),
+    caCertificatePem:
+      options.caCertificatePem ?? readFileSync(join(caDir, 'ca.crt'), 'utf8'),
     fetch: registryOf(options),
     ...(options.now === undefined ? {} : { now: options.now }),
   })
@@ -291,6 +293,49 @@ describe('createCertificatePort (§10.1)', () => {
       expect(result.ok).toBe(false)
       if (result.ok) return
       expect(result.failure.code).toBe('unreachable')
+    },
+  )
+})
+
+describe('the console reads a two-root --trust-ca the way a node does', () => {
+  itNeedsOpenssl(
+    'both roots: both valid; old root removed: the old one is a forgery',
+    async () => {
+      const nextDir = join(root, 'next-ca')
+      initCa({ directory: nextDir, commonName: 'qianmo-ca-next' })
+      const underOld = issue(caDir, 'node-o')
+      const underNew = issue(nextDir, 'node-n')
+      const agents = [
+        {
+          address: 'qianmo://node-o/reviewer',
+          certificate: underOld.certificatePem,
+        },
+        {
+          address: 'qianmo://node-n/reviewer',
+          certificate: underNew.certificatePem,
+        },
+      ]
+      const oldPem = readFileSync(join(caDir, 'ca.crt'), 'utf8')
+      const newPem = readFileSync(join(nextDir, 'ca.crt'), 'utf8')
+
+      const both = await portFor({
+        agents,
+        caCertificatePem: oldPem + newPem,
+      }).read()
+      expect(both.ok).toBe(true)
+      if (!both.ok) return
+      expect(both.value.certificates.map(one => one.status)).toEqual([
+        'valid',
+        'valid',
+      ])
+
+      const newOnly = await portFor({ agents, caCertificatePem: newPem }).read()
+      expect(newOnly.ok).toBe(true)
+      if (!newOnly.ok) return
+      expect(newOnly.value.certificates.map(one => one.status)).toEqual([
+        'bad-signature',
+        'valid',
+      ])
     },
   )
 })

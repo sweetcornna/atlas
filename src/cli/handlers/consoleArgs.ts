@@ -711,7 +711,9 @@ Options (each accepts both --name value and --name=value):
                            published certificate against, and a column of
                            unknowns makes "no certificates yet" and "every
                            certificate is broken" look the same. Read only —
-                           this console verifies, never signs.
+                           this console verifies, never signs. During a root
+                           rotation the file holds both roots (§3.3); a file
+                           that is not all well-formed roots refuses startup.
   --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
                            endpoint. Without this, the trail is 未见证.
   --wake-url <node>=<ws url>

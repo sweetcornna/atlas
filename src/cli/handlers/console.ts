@@ -19,7 +19,6 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { invokedBinName } from '../../constants/brand.js'
 import { sourceCommit } from '../../constants/buildProvenance.js'
 import {
@@ -57,6 +56,7 @@ import {
 } from './consolePorts.js'
 import { ConsoleRegistrations } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
+import { readTrustAnchors } from '../../services/qianmo/trustAnchors.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
@@ -422,7 +422,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       ? undefined
       : createCertificatePort({
           baseUrl: config.registryUrl,
-          caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+          caCertificatePem: readTrustAnchors(config.trustCa).pem,
         })
 
   const audits: ConsoleAuditSource[] = config.auditTargets.map(target => {

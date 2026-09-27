@@ -68,7 +68,10 @@ export interface MutualTlsMaterials {
   readonly cert: string
   /** PEM private key backing it. EC, because F-5 rules out Ed25519 leaves. */
   readonly key: string
-  /** PEM CA root, the one thing distributed out of band (§5.1). */
+  /**
+   * PEM CA root, the one thing distributed out of band (§5.1). Two roots one
+   * after another during a rotation overlap (§3.3); Bun uses every one.
+   */
   readonly ca: string
 }
 
