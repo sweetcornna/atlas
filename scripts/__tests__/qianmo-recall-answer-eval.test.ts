@@ -72,7 +72,8 @@ describe('the live request is the AC-4 request', () => {
       buildWireBody(
         provider,
         { system, turns: [{ role: 'user', text: '问题' }] },
-        'https://gateway.invalid/v1',
+        // Only the body's shape depends on it; no endpoint is written here.
+        provider.baseUrl,
       ),
     )
     for (const wire of wires) {
@@ -119,7 +120,7 @@ describe('the live request is the AC-4 request', () => {
           },
         ],
       },
-      'https://gateway.invalid/v1',
+      deepseek.baseUrl,
     )
     const messages = wire['messages'] as Record<string, unknown>[]
     const assistant = messages.find(m => m['role'] === 'assistant')
