@@ -34,7 +34,7 @@ import {
   type WakeTarget,
   type WakePort,
 } from '@qianmo/console'
-import { isNodePublicKey } from '@qianmo/protocol'
+import { readRegistryWriteTokenFile } from '@qianmo/registry'
 import { pskFromEnv } from '@qianmo/transport'
 import {
   createConsoleChatPort,
@@ -52,7 +52,6 @@ import {
 } from './consoleArgs.js'
 import {
   consoleLimits,
-  createAuditPort,
   createCertificatePort,
   createRegistryPort,
   createServerNotesPort,
@@ -60,6 +59,7 @@ import {
 } from './consolePorts.js'
 import { ConsoleRegistrations } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
+import { consoleAuditSources } from './consoleAuditSources.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
@@ -333,52 +333,6 @@ export function wireConsoleChat(
   }
 }
 
-/** Resolve a node key from the published registry record, never from anchors. */
-function witnessPublicKeyOf(registry: RegistryPort) {
-  return async (node: string) => {
-    const listed = await registry.list()
-    if (!listed.ok) return listed
-    const prefix = `qianmo://${node}/`
-    const agents = listed.value.filter(agent =>
-      agent.address.startsWith(prefix),
-    )
-    const keys = new Set(
-      agents.flatMap(agent =>
-        agent.publicKey === undefined ? [] : [agent.publicKey],
-      ),
-    )
-    if (keys.size === 0) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'not_found' as const,
-          message: `名册没有节点 ${node} 的公钥`,
-        },
-      }
-    }
-    if (keys.size !== 1) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'invalid' as const,
-          message: `名册中的节点 ${node} 公钥不一致`,
-        },
-      }
-    }
-    const publicKey = keys.values().next().value
-    if (publicKey === undefined || !isNodePublicKey(publicKey)) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'invalid' as const,
-          message: `名册中的节点 ${node} 公钥无效`,
-        },
-      }
-    }
-    return { ok: true as const, value: publicKey }
-  }
-}
-
 const FIELD_WIDTH = 13
 
 function field(name: string, value: string): string {
@@ -441,14 +395,31 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
 
+  // The registry write token (P15.8), read with the other credentials and for
+  // the same reason: a file anyone on the machine can read is a startup
+  // error, not something to discover on the first renewal.
+  const registryWriteToken =
+    config.registryTokenFile === undefined
+      ? undefined
+      : readRegistryWriteTokenFile(
+          config.registryTokenFile,
+          '--registry-token-file',
+        )
+
   const wake = wireConsoleWake(config)
   // Registrations made on the page are renewed by this process until they are
   // deregistered on the page; the ledger that remembers them across restarts
   // lives in this console's config root (`consoleRegistrations.ts`, console.md
-  // §7.3). Its port wraps the HTTP one: the registry itself is unchanged.
+  // §7.3). Its port wraps the HTTP one, so every renewal carries the write
+  // token when there is one.
   const registrations = new ConsoleRegistrations({
     path: consoleRegistrationsPath(),
-    registry: createRegistryPort({ baseUrl: config.registryUrl }),
+    registry: createRegistryPort({
+      baseUrl: config.registryUrl,
+      ...(registryWriteToken === undefined
+        ? {}
+        : { writeToken: registryWriteToken }),
+    }),
     log: line => {
       process.stderr.write(`${line}\n`)
     },
@@ -463,31 +434,25 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // not as an empty column later. It is public material — §10.3's rule that no
   // private key of any kind is reachable from this process holds structurally,
   // because there is no option here that could point at one.
-  const certificates =
+  const caCertificatePem =
     config.trustCa === undefined
+      ? undefined
+      : readFileSync(config.trustCa, 'utf8')
+  const certificates =
+    caCertificatePem === undefined
       ? undefined
       : createCertificatePort({
           baseUrl: config.registryUrl,
-          caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+          caCertificatePem,
         })
 
-  const audits: ConsoleAuditSource[] = config.auditTargets.map(target => {
-    const mirror = config.auditMirrors.find(
-      candidate => candidate.node === target.node,
-    )
-    return {
-      node: target.node,
-      audit: createAuditPort({
-        path: target.path,
-        ...(config.anchors === undefined ? {} : { witness: config.anchors }),
-        ...(config.anchors === undefined
-          ? {}
-          : { publicKeyOf: witnessPublicKeyOf(registry) }),
-      }),
-      kind: mirror === undefined ? 'authoritative' : 'mirror',
-      ...(mirror === undefined ? {} : { maxLagMinutes: mirror.maxLagMinutes }),
-    }
-  })
+  // Witness keys come from this side only — `--trust`, or a certificate the
+  // CA root verifies — never from a registry row (K-11 F-3). `parseConsoleArgs`
+  // already refused `--anchors` with neither.
+  const audits: ConsoleAuditSource[] = consoleAuditSources(
+    config,
+    caCertificatePem,
+  )
   const firstAudit = audits[0]
   if (firstAudit === undefined) {
     throw new Error('console requires at least one audit source')
@@ -573,6 +538,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     adminSource === undefined ? tokens.admin : `from ${adminSource.detail}`,
   )
   banner += field('registry', config.registryUrl)
+  if (config.registryTokenFile !== undefined) {
+    // `FIELD_WIDTH` is 13: a 13-character name would run into its value.
+    banner += field(
+      'write-token',
+      `registry writes carry the token from ${config.registryTokenFile}`,
+    )
+  }
   banner += field(
     'ledger',
     `${registrations.path} (${String(registrations.addresses.length)} renewed by this console)`,
@@ -585,6 +557,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   if (config.anchors !== undefined) {
     banner += field('anchors', config.anchors.value)
+    banner += field(
+      'witness-keys',
+      [
+        ...(config.trusted ?? []).map(([node]) => `--trust ${node}`),
+        ...(config.trustCa === undefined ? [] : ['CA-verified certificates']),
+      ].join(', '),
+    )
   }
   banner += field('wake', wake.status)
   if (wake.identity !== undefined) {

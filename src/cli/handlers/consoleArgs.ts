@@ -26,6 +26,7 @@ import {
   WITNESS_READ_TOKEN_ENV_VAR,
   type AuditWitnessSource,
 } from '../../services/qianmo/auditWitness.js'
+import { parseTrustedKey } from '../../services/qianmo/nodeIdentity.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
@@ -246,6 +247,21 @@ export interface ConsoleCliConfig {
   readonly auditMirrors: readonly ConsoleAuditMirror[]
   /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
   readonly anchors?: AuditWitnessSource
+  /**
+   * `--trust <node>=<publicKey>`：见证锚点验签用的节点公钥（K-11 F-3）。
+   *
+   * 与 {@link trustCa} 一起，是验签公钥**仅有的两个来源**：注册中心零鉴权（写 token
+   * 之前）或至少不对公钥作任何背书，它名册上的 `publicKey` 字段不再被当成节点身份。
+   * 同一个节点同一把钥给两次会被合并，两把不同的钥当场报错。没有条目时字段缺席，
+   * 于是没用到它的配置与加它之前形状一致。
+   */
+  readonly trusted?: readonly (readonly [string, string])[]
+  /**
+   * 注册中心写 token 文件的绝对路径（tenancy-m1.md P15.8）。给了，注册、注销、
+   * 心跳与续租都带 `Authorization: Bearer`；读不带。值由 `console.ts` 在启动时读，
+   * 权限不是只有属主可读就拒绝启动。
+   */
+  readonly registryTokenFile?: string
   /** Explicit allowlist of wake endpoints. */
   readonly wakeTargets: readonly ConsoleNodeTarget[]
   /**
@@ -387,6 +403,8 @@ export function parseConsoleArgs(
   let signChats = false
   let printWakeIdentity = false
   let trustCa: string | undefined
+  const trusted = new Map<string, string>()
+  let registryTokenFile: string | undefined
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
@@ -487,6 +505,25 @@ export function parseConsoleArgs(
         throw new Error('--trust-ca must be an absolute path')
       }
       trustCa = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
+      const parsed = residentOptionValue(args, index, '--trust')
+      const [node, publicKey] = parseTrustedKey(parsed.value)
+      const earlier = trusted.get(node)
+      if (earlier !== undefined && earlier !== publicKey) {
+        throw new Error(`--trust gives node ${node} two different keys`)
+      }
+      trusted.set(node, publicKey)
+      index = parsed.next
+    } else if (
+      arg === '--registry-token-file' ||
+      arg?.startsWith('--registry-token-file=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--registry-token-file')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--registry-token-file must be an absolute path')
+      }
+      registryTokenFile = resolve(parsed.value)
       index = parsed.next
     } else if (arg === '--anchors' || arg?.startsWith('--anchors=')) {
       const parsed = residentOptionValue(args, index, '--anchors')
@@ -716,6 +753,16 @@ export function parseConsoleArgs(
     }
   }
 
+  // 见证验签的公钥以前取自注册中心的名册（K-11 F-3）。那条路去掉以后，一个只给了
+  // `--anchors` 的控制台没有任何公钥来源：与其起来之后每条链都报「没有可信公钥」，
+  // 不如在这里说清楚该补什么。
+  if (anchors !== undefined && trusted.size === 0 && trustCa === undefined) {
+    throw new Error(
+      '--anchors needs --trust <node>=<publicKey> or --trust-ca: witness ' +
+        'anchors are verified only against keys established outside the registry',
+    )
+  }
+
   // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
   // 上线，而页面上什么都没变。
   if (accountsStoreGiven && !accounts) {
@@ -738,6 +785,8 @@ export function parseConsoleArgs(
     auditTargets,
     auditMirrors,
     ...(anchors === undefined ? {} : { anchors }),
+    ...(trusted.size === 0 ? {} : { trusted: [...trusted] }),
+    ...(registryTokenFile === undefined ? {} : { registryTokenFile }),
     wakeTargets,
     ...(signWakes ? { signWakes } : {}),
     ...(signChats ? { signChats } : {}),
@@ -806,6 +855,14 @@ Options (each accepts both --name value and --name=value):
                            tokens are supplied.
   --registry <url>         Registry HTTP v0 base URL, http or https.
                            Default ${DEFAULT_CONSOLE_REGISTRY_URL}.
+  --registry-token-file <abs path>
+                           Registry write token. Registrations, removals,
+                           heartbeats and the renewals of agents registered
+                           on the page carry it; reads do not. The file must
+                           not be readable by group or other (chmod 600) or
+                           the console refuses to start. Needed once the
+                           registry is started with a write token; harmless
+                           before that.
   --audit <node>=<path>    Audit trail source. Repeatable; node names use
                            lowercase letters, digits, - and _, are 1-64
                            characters, and paths are absolute.
@@ -822,9 +879,23 @@ Options (each accepts both --name value and --name=value):
                            published certificate against, and a column of
                            unknowns makes "no certificates yet" and "every
                            certificate is broken" look the same. Read only —
-                           this console verifies, never signs.
+                           this console verifies, never signs. With --anchors,
+                           a certificate that verifies against this root (and
+                           a fresh revocation list) also supplies that node's
+                           witness key.
   --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
                            endpoint. Without this, the trail is 未见证.
+                           Anchors are checked only against node keys from
+                           --trust or from CA-verified certificates
+                           (--trust-ca), never against the key a registry
+                           row carries; one of the two is required. A source
+                           marked --audit-mirror is compared only up to where
+                           the copy ends: anchors past it read 未覆盖, not
+                           锚点不符.
+  --trust <node>=<publicKey>
+                           Node key for witness verification. Repeatable, one
+                           node per flag; the same argument a resident node
+                           takes. Wins over a CA-derived key for that node.
   --wake-url <node>=<ws url>
                            Wake target allowlist. Repeatable; each named node
                            reads only its derived PSK environment variable.
