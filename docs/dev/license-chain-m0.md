@@ -81,14 +81,14 @@
 | **E-5** | pin 提交与 tag | 锁定的是哪一版基座 | `BASE.md`（pin 全 SHA + tag v2.38.3）。**本仓库 `git tag` 为空（实测 0 个 tag）**——本仓库经快照导入、不含上游历史，tag 只存在于上游仓库。pin 的可核性靠三条互相独立的链路：① `BASE.md` 记录；② E-4 的 npm `gitHead`；③ P7.4 演练在一次性 clone 中比对上游 tag 的结果（见 [`upstream-sync-drill.md`](./upstream-sync-drill.md) §2：`git diff 3380c88 v2.38.3` 的基座文件修改数为 **0**，零改动快照声明成立） | ✅（本仓库侧）/ 🟡（上游侧需快照） |
 | **E-6** | 第三方依赖 SBOM 与许可清单 | 依赖树里没有会污染成果的许可 | [`sbom-m0.json`](./sbom-m0.json) / [`sbom-m0.md`](./sbom-m0.md)，`bun run sbom` 可复现 | ✅ |
 | **E-7** | 依赖树中唯一一项非开源授权的定性与影响面 | 主动披露而不是被问出来 | 见 §4（`@anthropic-ai/claude-agent-sdk`） | ✅ |
-| **E-8** | **负责人对基座的归属关系** | 「基座是项目负责人自有的开源项目」这句话本身 | **仓库内无任何证据。**仓库里能查到的只有账号标识：npm maintainer `sweetcornna <ymy_live@outlook.com>`、GitHub 组织/用户 `sweetcornna`、`package.json` 的 `author: "open-claude-code"` | ❌ **最大缺口，见下** |
+| **E-8** | **负责人对基座的归属关系** | 「基座是项目负责人自有的开源项目」这句话本身 | **仓库内无任何证据。**仓库里能查到的只有账号标识：npm maintainer `sweetcornna`（登记的邮箱是负责人的个人邮箱，本文不内联；`npm view @sweetcornna/open-claude-code maintainers` 可查）、GitHub 组织/用户 `sweetcornna`、`package.json` 的 `author: "open-claude-code"` | ❌ **最大缺口，见下** |
 | **E-9** | 上游仓库 URL 写进溯源真源 | 溯源可追 | **已补记（2026-08-15，负责人授权，单独提交）**：`BASE.md` 现记「上游仓库 `https://github.com/sweetcornna/open-claude-code`」，原本地路径 `/Users/cornna/project/open-claude-code` 保留但标注为导入当时的本地副本、非权威地址；另补 npm 侧佐证一行（`repository.url` + v2.38.3 `gitHead`，即 E-3/E-4） | ✅ |
 
 ### E-8 说明：这件必须由人去取，工程侧取不到
 
 "负责人自有"目前在文档里是**立项决议的断言**（章程 §5.1 归属行的核实出处就写着"立项决议"），仓库里没有任何可独立验证的对应关系。要闭合它，需要下列材料**至少三选二**，且都只能由负责人本人提供：
 
-1. **npm 账号所有权**：以 `sweetcornna` 账号登录 npmjs.com 的账号设置页截图（含绑定邮箱 `ymy_live@outlook.com`），或 `npm whoami` 在负责人机器上的输出录屏；
+1. **npm 账号所有权**：以 `sweetcornna` 账号登录 npmjs.com 的账号设置页截图（含绑定邮箱），或 `npm whoami` 在负责人机器上的输出录屏；
 2. **GitHub 账号所有权**：`github.com/sweetcornna` 账号设置页 / 仓库 Settings 页截图，证明对 `sweetcornna/open-claude-code` 有 owner 权限；
 3. **实名对应**：上述账号邮箱与负责人本人身份的对应（学校邮箱绑定、或账号页公开的实名信息）。
 
@@ -418,6 +418,7 @@
 - **实际**：本次核对发现 `docs/assets/brand/大赛logo大图.png` 与 `大赛logo横版.png` 是中国国际大学生创新大赛的官方标识（第三方标识），`封面.jpg` 把该标识合成进了画面；两份 docx/pdf 又内嵌了封面。仓库内没有任何授权记录、来源记录或使用许可。因此这不只是措辞问题，B 类不随本仓库任何许可授出。
 - **实测（2026-08-30）**：按 `base-snapshot/v2.46.0` 路径差集命令核得非代码资产共 **34** 个，扩展名拆分为 **27** 张 `.jpg`、**3** 张 `.png`、**2** 份 `.pdf`、**2** 份 `.docx`，与负责人决议记录的合计表一致。
 - **风险（本次不处置）**：C 类申报文书含在校学生个人信息（学号、姓名、指导教师、团队成员），且已入库跟踪；仓库转公开时会随历史一并公开，从 HEAD 删除也去不掉 `67f6081` 里的那一份。本批只落许可口径，转公开前是否脱敏另议。
+- **后续处置（2026-09-26，负责人决议「从当前版本移除，历史不动」）**：四份 C 类申报文书已从当前版本移出，原件由负责人另存；`docs/README.md` 里的成员联系方式与学号、本文 E-8 行与「E-8 说明」里内联的负责人个人邮箱同批删去。**不改写历史**：从 `67f6081` 到移出之前的提交、以及此前发行的源码包里仍有这些文件，上一条所说「从 HEAD 删除也去不掉」依然成立。许可口径不变（从未授出），见根 [`NOTICE`](../../NOTICE) 一.7 的 C 类。
 
 ---
 
