@@ -125,6 +125,18 @@ bun test tests/integration/qianmo-memory-recall.test.ts    # AC-4 集成腿：23
 - 包内逐文件：`citation` 15 / `recall` 11 / `rank` 9 / `tokenize` 8 / `tool` 8 = **51 pass / 0 fail / 132 expect**，零 mock。
 - 集成腿共 **23 个用例**；无 `OPENAI_API_KEY` + `OPENAI_BASE_URL` 时真调用整组自动 skip（实跑 **3 pass / 20 skip**），留下不需要凭据的确定性检查。凭据只从环境变量读，仓库内不存密钥。
 
+### 评测（`eval/`，`docs/dev/memory-m1.md` §2–§4）
+
+| 做什么 | 命令 | 说明 |
+| --- | --- | --- |
+| M0 检索基线（v0.1 语料） | `bun run qianmo:recall-baseline` | 输出逐字节等于 §3 公布的 SHA-256，不要改它 |
+| M0 检索基线（M1 语料） | `bun run qianmo:recall-baseline --corpus synthetic-v1`（或 `docs-dev-v1`；`--digest` 只出语料哈希） | 加固合成语料与 `docs/dev` 第二语料，种子与档位按预注册，不接受 `--seed` / `--tiers` |
+| 重生成第二语料 | `bun run scripts/qianmo-recall-docs-corpus.ts [--check]` | 只读钉住提交上的文件；人名、账号只以哈希入库 |
+| 回答层 token 预估 | `bun run scripts/qianmo-recall-answer-eval.ts --dry-run` | 离线；默认给出 P16.4 试跑与 P16.12 全量两份 |
+| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `occConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零 |
+
+预注册值只从 `eval/prereg.toml` 读，命令行没有覆盖开关；键缺省即「未生成」，用到它的判据拒判。
+
 ---
 
 ## 7. P9.3 双人签字栏
