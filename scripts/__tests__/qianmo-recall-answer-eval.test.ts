@@ -193,6 +193,53 @@ describe('command line', () => {
     expect(only?.estimate.rows.map(r => r.questions)).toEqual([20])
   }, 60_000)
 
+  test('dry run without flags: the preregistered trial (202 calls) and comparison (1 460 calls)', () => {
+    const json = join(scratch(), 'estimate.json')
+    const result = runCli(
+      ['--dry-run', '--json', json],
+      envWithout('OPENAI_API_KEY'),
+    )
+    expect(result.exitCode).toBe(0)
+    const [trial, comparison] = JSON.parse(readFileSync(json, 'utf8')) as {
+      phase: string
+      estimate: {
+        total: {
+          calls: number
+          input: { high: number }
+          output: { high: number }
+        }
+        rows: { corpus: string; tier: number; questions: number }[]
+      }
+    }[]
+    expect(trial?.phase).toBe('trial')
+    expect(trial?.estimate.total.calls).toBe(202)
+    // Within P16.4's sub-cap of a tenth of 18.5 M / 4.8 M.
+    expect(trial?.estimate.total.input.high).toBeLessThanOrEqual(1_850_000)
+    expect(trial?.estimate.total.output.high).toBeLessThanOrEqual(480_000)
+    expect(comparison?.phase).toBe('comparison')
+    expect(comparison?.estimate.total.calls).toBe(1460)
+    const perTier = new Map<string, number>()
+    for (const row of comparison?.estimate.rows ?? []) {
+      const key = `${row.corpus}/${row.tier}`
+      perTier.set(key, (perTier.get(key) ?? 0) + row.questions)
+    }
+    expect(Object.fromEntries(perTier)).toEqual({
+      'synthetic-v1/30': 101,
+      'synthetic-v1/500': 101,
+      'synthetic-v1/2000': 101,
+      'docs-dev-v1/599': 62,
+    })
+  }, 120_000)
+
+  test('the comparison takes no plan flag', () => {
+    const result = runCli(
+      ['--dry-run', '--phase', 'comparison', '--reps', '3'],
+      envWithout('OPENAI_API_KEY'),
+    )
+    expect(result.exitCode).toBe(2)
+    expect(result.stderr).toContain('the comparison plan is prereg.toml [plan]')
+  }, 60_000)
+
   test('no flag moves the ledger or sets a preregistered value', () => {
     for (const flag of ['--ledger', '--alpha', '--delta', '--bootstrap-seed']) {
       expect(() => parseCli([flag, 'x'])).toThrow(/unknown flag/)

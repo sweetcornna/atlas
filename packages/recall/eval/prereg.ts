@@ -30,9 +30,30 @@ export const PREREGISTRATION_PATH = fileURLToPath(
 
 type E1Inference = 'bootstrap' | 'signflip'
 
+/**
+ * A run plan of the answer layer: which corpus tiers, arms and providers,
+ * and how many calls per question per provider. Corpus ids and tiers are
+ * checked against the corpora by the executor; this module checks shapes.
+ */
+export type RunPlan = {
+  readonly arms: readonly ('m0' | 'm1')[]
+  readonly repetitions: number
+  readonly providers: readonly string[]
+  /** The corpus seed the answer layer runs under. */
+  readonly seed: number
+  /** Tiers per corpus; a corpus with no tiers is not in the plan. */
+  readonly tiers: Readonly<
+    Record<'synthetic-v1' | 'docs-dev-v1', readonly number[]>
+  >
+  /** The corpus E1, E2, A0 and A4 are judged on. */
+  readonly primaryCorpus: 'synthetic-v1' | 'docs-dev-v1'
+}
+
 export type Preregistration = {
   readonly retrieval: {
     readonly alphaPrimary: number | null
+    /** R3 / R4 sign-test unit on the held-out set: each question, or each gold. */
+    readonly signTestUnit: 'question' | 'gold' | null
   }
   readonly answer: {
     readonly alphaPrimary: number | null
@@ -49,6 +70,10 @@ export type Preregistration = {
     readonly shuffleSeed: number | null
     readonly m0BaselineSha256: string | null
   }
+  /** P16.12's comparison: the only plan the executor accepts for it. */
+  readonly plan: RunPlan | null
+  /** P16.4's trial default. Not a judgment value; the trial may be narrowed. */
+  readonly trial: RunPlan | null
 }
 
 /** A gate needed a value the preregistration does not (yet) hold. */
@@ -70,8 +95,18 @@ export function required<T>(value: T | null, key: string): T {
 
 type Table = Readonly<Record<string, unknown>>
 
+const PLAN_KEYS = [
+  'arms',
+  'repetitions',
+  'providers',
+  'seed',
+  'synthetic_v1_tiers',
+  'docs_dev_v1_tiers',
+  'primary_corpus',
+] as const
+
 const SECTIONS: Readonly<Record<string, readonly string[]>> = {
-  retrieval: ['alpha_primary'],
+  retrieval: ['alpha_primary', 'sign_test_unit'],
   answer: [
     'alpha_primary',
     'noninferiority_delta',
@@ -87,6 +122,8 @@ const SECTIONS: Readonly<Record<string, readonly string[]>> = {
     'shuffle_seed',
     'm0_baseline_sha256',
   ],
+  plan: PLAN_KEYS,
+  trial: PLAN_KEYS,
 }
 
 function tableOf(root: Table, name: string): Table {
@@ -133,6 +170,79 @@ function sha256(table: Table, section: string, key: string) {
   return value
 }
 
+function signTestUnitOf(value: unknown): 'question' | 'gold' | null {
+  if (value === undefined) return null
+  if (value !== 'question' && value !== 'gold') {
+    throw new Error(
+      'preregistration: retrieval.sign_test_unit must be "question" or "gold"',
+    )
+  }
+  return value
+}
+
+function integerList(table: Table, section: string, key: string): number[] {
+  const value = table[key]
+  if (
+    !Array.isArray(value) ||
+    value.some(item => typeof item !== 'number' || !Number.isInteger(item))
+  ) {
+    throw new Error(
+      `preregistration: ${section}.${key} must be a list of integers`,
+    )
+  }
+  return value as number[]
+}
+
+/** A plan table: absent means not generated; present means every key. */
+function planOf(table: Table, section: string): RunPlan | null {
+  if (Object.keys(table).length === 0) return null
+  for (const key of PLAN_KEYS) {
+    if (table[key] === undefined) {
+      throw new Error(`preregistration: [${section}] is missing ${key}`)
+    }
+  }
+  const arms = table['arms']
+  if (
+    !Array.isArray(arms) ||
+    !(
+      (arms.length === 1 && arms[0] === 'm0') ||
+      (arms.length === 2 && arms[0] === 'm0' && arms[1] === 'm1')
+    )
+  ) {
+    throw new Error(
+      `preregistration: ${section}.arms must be ["m0"] or ["m0", "m1"]`,
+    )
+  }
+  const providers = table['providers']
+  if (
+    !Array.isArray(providers) ||
+    providers.length === 0 ||
+    providers.some(p => typeof p !== 'string' || p.length === 0) ||
+    new Set(providers).size !== providers.length
+  ) {
+    throw new Error(
+      `preregistration: ${section}.providers must be distinct provider ids`,
+    )
+  }
+  const primary = table['primary_corpus']
+  if (primary !== 'synthetic-v1' && primary !== 'docs-dev-v1') {
+    throw new Error(
+      `preregistration: ${section}.primary_corpus must be "synthetic-v1" or "docs-dev-v1"`,
+    )
+  }
+  return {
+    arms: arms as ('m0' | 'm1')[],
+    repetitions: integer(table, section, 'repetitions', 1) ?? 1,
+    providers: providers as string[],
+    seed: integer(table, section, 'seed', 0) ?? 0,
+    tiers: {
+      'synthetic-v1': integerList(table, section, 'synthetic_v1_tiers'),
+      'docs-dev-v1': integerList(table, section, 'docs_dev_v1_tiers'),
+    },
+    primaryCorpus: primary,
+  }
+}
+
 /** Parse and validate preregistration TOML. */
 export function parsePreregistration(text: string): Preregistration {
   const root = Bun.TOML.parse(text) as Table
@@ -157,6 +267,7 @@ export function parsePreregistration(text: string): Preregistration {
   return {
     retrieval: {
       alphaPrimary: probability(retrieval, 'retrieval', 'alpha_primary'),
+      signTestUnit: signTestUnitOf(retrieval['sign_test_unit']),
     },
     answer: {
       alphaPrimary: probability(answer, 'answer', 'alpha_primary'),
@@ -177,6 +288,8 @@ export function parsePreregistration(text: string): Preregistration {
       shuffleSeed: integer(corpus, 'corpus', 'shuffle_seed', 0),
       m0BaselineSha256: sha256(corpus, 'corpus', 'm0_baseline_sha256'),
     },
+    plan: planOf(tableOf(root, 'plan'), 'plan'),
+    trial: planOf(tableOf(root, 'trial'), 'trial'),
   }
 }
 

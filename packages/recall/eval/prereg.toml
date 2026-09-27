@@ -13,6 +13,11 @@
 [retrieval]
 # R3 / R4 的单侧 α。出处：§9 预注册表「主终点 α：各 0.025，单侧」。
 alpha_primary = 0.025
+# 未生成，待裁定。R3 / R4 符号检验在留出集上的计数单位："question" 或 "gold"。
+# 留出集每条 gold 有 2 道题：按题计，同一 gold 的两道题算两个独立样本；按 gold 计，
+# 一条 gold 的题净赢算一胜、净输算一负。开发集每条 gold 1 道题，两种口径相同。
+# 缺这一项时 R2–R4 拒判。依据见 P16.3 追加回报。
+# sign_test_unit =
 
 [answer]
 # E1 的单侧 α。出处同上。
@@ -23,21 +28,51 @@ noninferiority_delta = 0.05
 aa_alpha = 0.05
 # A2 的按题聚类自助法次数。出处：§9 预注册表「1 万次」。
 bootstrap_iterations = 10000
-# 未生成。§9：「固定种子（值随冻结写入）」。
+# 未生成。§9：「固定种子（值随冻结写入）」。冻结值见 m1-design-rulings.md
+# 「P16.3 回答层口径裁定」第 9 条，由 scripts/qianmo-recall-freeze.ts 写入。
 # bootstrap_seed =
 # 未生成。A2 写的是「自助法或精确符号翻转置换」，冻结时二选一：
 # "bootstrap" 或 "signflip"。E2 的上界只能用自助法算，不受这一项影响。
 # e1_inference =
 
 [corpus]
-# 以下全部未生成，P16.2b 冻结时写入。
+# 以下由 scripts/qianmo-recall-freeze.ts 重算并写入；--check 只核对不写。
 # 加固合成语料 synthetic-v1 的哈希：bun run qianmo:recall-baseline --corpus synthetic-v1 --digest
 # synthetic_v1_sha256 =
 # docs/dev 第二语料 docs-dev-v1 的哈希：bun run qianmo:recall-baseline --corpus docs-dev-v1 --digest
 # docs_dev_v1_sha256 =
-# 留出改写题集 id 列表的哈希。题集要由非实现者撰写，目前还没有。
+# 留出改写题集 id 列表的哈希（eval/heldout.ts 的 heldoutDigest）。题集由未接触检索与
+# 融合实现的独立代理撰写，交稿后再冻结；在此之前 R2–R4 拒判。
 # heldout_ids_sha256 =
 # 打乱排列 π 的种子。π = derangement(留出集 id, shuffle_seed)。
 # shuffle_seed =
-# 加固语料上 M0 基线 JSON 输出的 SHA-256。
+# 加固语料上 M0 基线 JSON 输出的 SHA-256，即下面这条命令写出的文件：
+# bun run qianmo:recall-baseline --corpus synthetic-v1 --decay default,off --json <path>
 # m0_baseline_sha256 =
+
+[plan]
+# P16.12 的对比计划。出处：m1-design-rulings.md「P16.3 回答层口径裁定」第 1–4 条。
+# 执行器的 comparison 只接受这一份，命令行不能改，代码里也不缩。
+# 每题每家 1 次是对 §4 与 A2「3 次」的有记录偏离（裁定第 1 条）。
+# 回答层题集：synthetic-v1 每档 40 道正例 + 61 道负例，batch 变体只进检索层（裁定第 2 条）。
+# 合计 (101 × 3 + 62) × 2 臂 × 2 家 × 1 次 = 1 460 次调用。
+arms = ["m0", "m1"]
+repetitions = 1
+providers = ["qianmo-deepseek", "qianmo-alt"]
+# 回答层只跑各语料的第一个种子（裁定第 4 条）。
+seed = 20260926
+synthetic_v1_tiers = [30, 500, 2000]
+docs_dev_v1_tiers = [599]
+# E1、E2、A0、A4 判定所用的语料；docs 语料只进 A5 次要比较（裁定第 3 条）。
+primary_corpus = "synthetic-v1"
+
+[trial]
+# P16.4 试跑的默认计划（裁定第 8 条），不是判定用的值：试跑数字不参与出口判定（A1），
+# 命令行可以在试跑里缩小它。101 道 × 2 家 × 1 次 = 202 次调用，受总上限 1/10 的子上限约束。
+arms = ["m0"]
+repetitions = 1
+providers = ["qianmo-deepseek", "qianmo-alt"]
+seed = 20260926
+synthetic_v1_tiers = [30]
+docs_dev_v1_tiers = []
+primary_corpus = "synthetic-v1"

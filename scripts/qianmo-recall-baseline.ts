@@ -36,6 +36,7 @@ import {
   isCorpusId,
 } from '../packages/recall/eval/corpora.js'
 import {
+  corpusBaselineJson,
   renderCorpusMarkdown,
   runCorpusBaseline,
 } from '../packages/recall/eval/corpus-baseline.js'
@@ -143,7 +144,7 @@ function runCorpus(cli: Cli & { readonly corpus: CorpusId }): void {
   const elapsed = Math.round(performance.now() - started)
   console.log(renderCorpusMarkdown(report))
   if (cli.json !== null) {
-    writeFileSync(cli.json, `${JSON.stringify(report, null, 2)}\n`)
+    writeFileSync(cli.json, corpusBaselineJson(report))
   }
   console.error(`[recall-baseline] ${cli.corpus} done in ${elapsed} ms`)
 }

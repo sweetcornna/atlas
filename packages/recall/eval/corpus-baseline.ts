@@ -95,6 +95,14 @@ export function runCorpusBaseline(
   }
 }
 
+/**
+ * The report as `--json` writes it. The preregistered M0 baseline hash is
+ * the SHA-256 of exactly these bytes, so the command and the freeze share it.
+ */
+export function corpusBaselineJson(report: CorpusBaselineReport): string {
+  return `${JSON.stringify(report, null, 2)}\n`
+}
+
 const MORE_LABELS: Readonly<Record<string, string>> = {
   'positive-lexical-batch': '正例·词面重叠·批',
   'positive-mismatch-batch': '正例·零词面重叠·批',

@@ -36,7 +36,7 @@ import {
   type CorpusId,
   type CorpusQuery,
 } from '../corpora.js'
-import type { Preregistration } from '../prereg.js'
+import { type Preregistration, required, type RunPlan } from '../prereg.js'
 import { type Materialised, materialise } from '../run.js'
 import { TokenCapReached, type Phase, type TokenLedger } from './ledger.js'
 import {
@@ -83,9 +83,6 @@ import {
   type Turn,
 } from './types.js'
 
-/** §4: three independent calls per question per provider. */
-export const ANSWER_REPETITIONS = 3
-
 export const CALLS_FILE = 'calls.ndjson'
 export const REPORT_FILE = 'report.json'
 
@@ -102,10 +99,45 @@ export type AnswerPlan = {
   }[]
   readonly repetitions: number
   readonly arms: readonly Arm[]
+  /** Provider ids; the run's transports must be exactly these. */
+  readonly providers: readonly string[]
+  /** The corpus seed every tier is built with. */
+  readonly seed: number
+  /** The corpus E1, E2, A0 and A4 are judged on. */
+  readonly primaryCorpus: CorpusId
   readonly concurrency: number
   /** Library-only narrowing to a few questions (tests); the CLI never sets it. */
   readonly queryIds?: readonly string[]
 }
+
+/** A preregistered run plan (`prereg.toml` `[plan]` / `[trial]`) as a run. */
+export function answerPlanOf(
+  plan: RunPlan,
+  run: Pick<AnswerPlan, 'runId' | 'phase' | 'concurrency'>,
+): AnswerPlan {
+  return {
+    ...run,
+    corpora: (Object.keys(CORPORA) as CorpusId[]).flatMap(id =>
+      plan.tiers[id].length === 0 ? [] : [{ id, tiers: [...plan.tiers[id]] }],
+    ),
+    repetitions: plan.repetitions,
+    arms: [...plan.arms],
+    providers: [...plan.providers],
+    seed: plan.seed,
+    primaryCorpus: plan.primaryCorpus,
+  }
+}
+
+/** The protocol fields of a plan, for comparing two plans. */
+const protocolOf = (plan: AnswerPlan) =>
+  JSON.stringify({
+    corpora: plan.corpora,
+    repetitions: plan.repetitions,
+    arms: plan.arms,
+    providers: plan.providers,
+    seed: plan.seed,
+    primaryCorpus: plan.primaryCorpus,
+  })
 
 type AnswerRunDeps = {
   readonly transports: readonly AnswerTransport[]
@@ -118,6 +150,31 @@ type AnswerRunDeps = {
   readonly attempts?: number
   /** Consecutive failed calls that abort the run. Default 5. */
   readonly maxConsecutiveFailures?: number
+}
+
+/**
+ * Bytes per output token when a first round's own turn is fed back in the
+ * second: the input bound counts UTF-8 bytes, a CJK character is 3 of them
+ * and an English token about 4. With {@link REJECTION_ALLOWANCE_BYTES} for
+ * the rejection text, this sizes the second-round hold. A practical bound,
+ * not a proof: a turn heavier than 4 bytes per token can still find its
+ * second reservation refused, and the run then stops as `capped`.
+ */
+const TURN_BYTES_PER_TOKEN = 4
+const REJECTION_ALLOWANCE_BYTES = 4096
+
+/** The bound held for a call's second round before its first goes out. */
+export function secondRoundBound(
+  first: { readonly input: number },
+  maxOutputTokens: number,
+): { input: number; output: number } {
+  return {
+    input:
+      first.input +
+      TURN_BYTES_PER_TOKEN * maxOutputTokens +
+      REJECTION_ALLOWANCE_BYTES,
+    output: maxOutputTokens,
+  }
 }
 
 /** Every attempt of one round failed. The call is not recorded. */
@@ -136,11 +193,12 @@ class TransportFailure extends Error {
 }
 
 /**
- * The comparison (P16.12) runs the whole protocol or nothing: both arms,
- * three repetitions, every tier of every corpus. The trial (P16.4) may be
- * narrowed; its numbers never enter a verdict (A1).
+ * The comparison (P16.12) runs exactly the preregistered plan (`prereg.toml`
+ * `[plan]`) or nothing; there is no narrower or wider comparison. The trial
+ * (P16.4) may be anything the corpora allow; its numbers never enter a
+ * verdict (A1).
  */
-export function checkPlan(plan: AnswerPlan): void {
+export function checkPlan(plan: AnswerPlan, prereg: Preregistration): void {
   if (!/^[A-Za-z0-9._-]+$/.test(plan.runId)) {
     throw new Error(`answer eval: run id ${plan.runId} must be [A-Za-z0-9._-]+`)
   }
@@ -158,6 +216,15 @@ export function checkPlan(plan: AnswerPlan): void {
   ) {
     throw new Error('answer eval: arms must be [m0] or [m0, m1]')
   }
+  if (
+    plan.providers.length === 0 ||
+    new Set(plan.providers).size !== plan.providers.length
+  ) {
+    throw new Error('answer eval: providers must be distinct and non-empty')
+  }
+  if (plan.corpora.length === 0) {
+    throw new Error('answer eval: the plan names no corpus tier')
+  }
   for (const { id, tiers } of plan.corpora) {
     const corpus = CORPORA[id]
     for (const tier of tiers) {
@@ -165,24 +232,19 @@ export function checkPlan(plan: AnswerPlan): void {
         throw new Error(`answer eval: ${id} has no tier ${tier}`)
       }
     }
+    if (!corpus.seeds.includes(plan.seed)) {
+      throw new Error(`answer eval: ${id} has no seed ${plan.seed}`)
+    }
   }
   if (plan.phase === 'comparison') {
-    const everything = Object.values(CORPORA).every(corpus => {
-      const planned = plan.corpora.find(c => c.id === corpus.id)
-      return (
-        planned !== undefined &&
-        corpus.tiers.every(tier => planned.tiers.includes(tier))
-      )
-    })
+    const preregistered = answerPlanOf(required(prereg.plan, 'plan'), plan)
     if (
-      plan.arms.length !== 2 ||
-      plan.repetitions !== ANSWER_REPETITIONS ||
-      !everything ||
+      protocolOf(plan) !== protocolOf(preregistered) ||
       plan.queryIds !== undefined
     ) {
       throw new Error(
-        'answer eval: the comparison runs the whole §4 protocol — both arms, ' +
-          `${ANSWER_REPETITIONS} repetitions, every tier of every corpus`,
+        'answer eval: the comparison runs the preregistered plan of ' +
+          'prereg.toml [plan] exactly, nothing narrower or wider',
       )
     }
   }
@@ -223,22 +285,20 @@ function labelsOf(query: CorpusQuery): AnswerLabels {
 export async function prepareTier(
   corpusId: CorpusId,
   tier: number,
-  plan: Pick<AnswerPlan, 'arms' | 'queryIds'>,
+  plan: Pick<AnswerPlan, 'arms' | 'queryIds' | 'seed'>,
   retrievers: AnswerRunDeps['retrievers'],
 ): Promise<PreparedTier> {
   const corpus = CORPORA[corpusId]
-  // The answer layer runs on each corpus's first preregistered seed; the
-  // retrieval layer covers all of them.
-  const seed = corpus.seeds[0]
-  if (seed === undefined)
-    throw new Error(`answer eval: ${corpusId} has no seed`)
+  const seed = plan.seed
   const dataset = corpus.build(tier, seed)
   const materialised = materialise(dataset, { sourceIdOf: corpus.sourceIdOf })
   try {
     const wanted = plan.queryIds === undefined ? null : new Set(plan.queryIds)
     const queries = new Map<string, PreparedQuery>()
     const modes = new Set<string>()
+    const asked = new Set(corpus.answerKinds)
     for (const query of dataset.queries) {
+      if (!asked.has(query.kind)) continue
       if (wanted !== null && !wanted.has(query.id)) continue
       const request = {
         question: query.question,
@@ -318,15 +378,21 @@ export async function runAnswerEval(
   plan: AnswerPlan,
   deps: AnswerRunDeps,
 ): Promise<AnswerReport> {
-  checkPlan(plan)
+  checkPlan(plan, deps.prereg.values)
   if (plan.arms.includes('m1') && deps.retrievers.m1 === undefined) {
     throw new Error(
       'answer eval: the M1 arm has no retriever yet (P16.6); run the M0 arm alone',
     )
   }
   const transports = new Map(deps.transports.map(t => [t.providerId, t]))
-  if (transports.size !== deps.transports.length || transports.size === 0) {
-    throw new Error('answer eval: provider ids must be present and unique')
+  if (
+    transports.size !== deps.transports.length ||
+    [...transports.keys()].sort().join('\n') !==
+      [...plan.providers].sort().join('\n')
+  ) {
+    throw new Error(
+      `answer eval: the transports must be exactly the plan's providers (${plan.providers.join(', ')})`,
+    )
   }
   const now = deps.now ?? (() => new Date())
   const attempts = deps.attempts ?? 2
@@ -440,59 +506,73 @@ export async function runAnswerEval(
 
       const firstTurns: Turn[] = [{ role: 'user', text: prep.query.question }]
       const firstKey = callKey(unit, arm, 1)
-      const firstResponse = await exchange(transport, {
-        callKey: firstKey,
-        system,
-        turns: firstTurns,
-      })
-      const first = judge(firstResponse, firstKey)
-      keep(first, firstResponse)
-      let final = first
-      if (
-        first.verdict === 'rejected' &&
-        first.rejection !== null &&
-        first.toolCall !== null
-      ) {
-        const secondKey = callKey(unit, arm, 2)
-        const answered = first.toolCall
-        const secondResponse = await exchange(transport, {
-          callKey: secondKey,
-          system,
-          turns: [
-            ...firstTurns,
-            {
-              role: 'assistant',
-              thinking: firstResponse.thinking,
-              text: firstResponse.text,
-              toolCalls: firstResponse.toolCalls,
-            },
-            // Every tool call needs its result; only the judged one is
-            // answered with the rejection.
-            ...firstResponse.toolCalls.map(
-              (call): Turn => ({
-                role: 'tool',
-                toolCallId: call.id,
-                content:
-                  call === answered
-                    ? (first.rejection ?? '')
-                    : 'Only the first qianmo_memory_answer call is evaluated.',
-              }),
-            ),
-          ],
-        })
-        final = judge(secondResponse, secondKey)
-        keep(final, secondResponse)
-      }
-      return {
-        key: recordKey(unit, arm),
-        unit,
-        arm,
-        mode: result.mode,
-        requestedModel: transport.requestedModel,
-        at: now().toISOString(),
-        rounds,
-        first: scoreRound(first, prep.labels),
-        final: scoreRound(final, prep.labels),
+      const firstRequest = { callKey: firstKey, system, turns: firstTurns }
+      // Hold room for a second round before the first goes out; a call that
+      // could not finish is not started (TokenCapReached from here).
+      const hold = deps.ledger.hold(
+        secondRoundBound(
+          { input: transport.inputUpperBound(firstRequest) },
+          transport.maxOutputTokens,
+        ),
+      )
+      let holding = true
+      try {
+        const firstResponse = await exchange(transport, firstRequest)
+        const first = judge(firstResponse, firstKey)
+        keep(first, firstResponse)
+        let final = first
+        if (
+          first.verdict === 'rejected' &&
+          first.rejection !== null &&
+          first.toolCall !== null
+        ) {
+          const secondKey = callKey(unit, arm, 2)
+          const answered = first.toolCall
+          // Release and reserve in the same turn of the event loop, so no other
+          // worker can take the room in between.
+          deps.ledger.release(hold)
+          holding = false
+          const secondResponse = await exchange(transport, {
+            callKey: secondKey,
+            system,
+            turns: [
+              ...firstTurns,
+              {
+                role: 'assistant',
+                thinking: firstResponse.thinking,
+                text: firstResponse.text,
+                toolCalls: firstResponse.toolCalls,
+              },
+              // Every tool call needs its result; only the judged one is
+              // answered with the rejection.
+              ...firstResponse.toolCalls.map(
+                (call): Turn => ({
+                  role: 'tool',
+                  toolCallId: call.id,
+                  content:
+                    call === answered
+                      ? (first.rejection ?? '')
+                      : 'Only the first qianmo_memory_answer call is evaluated.',
+                }),
+              ),
+            ],
+          })
+          final = judge(secondResponse, secondKey)
+          keep(final, secondResponse)
+        }
+        return {
+          key: recordKey(unit, arm),
+          unit,
+          arm,
+          mode: result.mode,
+          requestedModel: transport.requestedModel,
+          at: now().toISOString(),
+          rounds,
+          first: scoreRound(first, prep.labels),
+          final: scoreRound(final, prep.labels),
+        }
+      } finally {
+        if (holding) deps.ledger.release(hold)
       }
     }
 
@@ -576,7 +656,7 @@ export async function runAnswerEval(
         id,
         sha256: CORPORA[id].digest(),
         preregisteredSha256: preregistered,
-        seed: CORPORA[id].seeds[0] ?? 0,
+        seed: plan.seed,
         tiers: tiers.map(tier => ({
           tier,
           mode: tierOf.get(`${id}/${tier}`)?.mode ?? 'full',
@@ -589,11 +669,12 @@ export async function runAnswerEval(
         .map(p => p.tier)
     const gates = evaluateGates(counted, {
       arms: plan.arms,
+      primaryCorpus: plan.primaryCorpus,
       prereg: deps.prereg.values,
       rankedTiers: corpus => tiersWith(corpus, 'ranked'),
       smallTier: corpus => tiersWith(corpus, 'full')[0] ?? null,
       positiveKinds: corpus =>
-        (CORPORA[corpus as CorpusId]?.kinds ?? []).filter(isPositiveKind),
+        (CORPORA[corpus as CorpusId]?.answerKinds ?? []).filter(isPositiveKind),
       corpora: plan.corpora.map(c => c.id),
     })
     const describe = {
@@ -659,7 +740,7 @@ export async function runAnswerEval(
       summary: summarise(
         counted,
         plan.corpora.map(c => c.id),
-        corpus => CORPORA[corpus as CorpusId]?.kinds ?? [],
+        corpus => CORPORA[corpus as CorpusId]?.answerKinds ?? [],
       ),
       gates,
       validity: { valid: false, reasons: [] },

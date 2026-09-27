@@ -20,6 +20,7 @@ import {
 } from './docs-corpus.js'
 import {
   buildHardenedDataset,
+  HARDENED_ANSWER_KINDS,
   HARDENED_CORPUS_ID,
   HARDENED_KINDS,
   HARDENED_POOLED_KINDS,
@@ -49,6 +50,8 @@ type CorpusDescriptor = {
   readonly kinds: readonly string[]
   /** The kinds pooled into the 「正例合计」 row. */
   readonly pooledKinds: readonly string[]
+  /** The kinds the answer layer asks, a subset of {@link kinds}. */
+  readonly answerKinds: readonly string[]
   build(tier: number, seed: number): CorpusDataset
   /** The §9 preregistration hash of the whole corpus. */
   digest(): string
@@ -62,6 +65,7 @@ export const CORPORA: Readonly<Record<CorpusId, CorpusDescriptor>> = {
     tiers: HARDENED_TIERS,
     kinds: HARDENED_KINDS,
     pooledKinds: HARDENED_POOLED_KINDS,
+    answerKinds: HARDENED_ANSWER_KINDS,
     build: buildHardenedDataset,
     digest: hardenedCorpusDigest,
     sourceIdOf: hardenedSourceId,
@@ -72,6 +76,7 @@ export const CORPORA: Readonly<Record<CorpusId, CorpusDescriptor>> = {
     tiers: DOCS_TIERS,
     kinds: DOCS_KINDS,
     pooledKinds: DOCS_KINDS,
+    answerKinds: DOCS_KINDS,
     build: tier => buildDocsDataset(tier),
     digest: docsCorpusDigest,
     sourceIdOf: hardenedSourceId,

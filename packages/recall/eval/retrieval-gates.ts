@@ -85,6 +85,12 @@ type SignVerdict = {
 /**
  * R3 (and, fed the shuffled arm as M0, R4): per seed, on the given questions
  * of one tier, the exact one-sided sign test at the preregistered α.
+ *
+ * With `clusterOf`, the unit is the cluster rather than the question: a
+ * cluster wins when its questions' wins outnumber their losses, loses in the
+ * opposite case, and ties otherwise. Several questions on one gold entry are
+ * not independent evidence, and counting them singly lets anything that
+ * reaches that entry regardless of the question score once per question.
  */
 export function signGate(
   cells: readonly PairedCell[],
@@ -92,6 +98,7 @@ export function signGate(
     readonly tier: number
     readonly queryIds: ReadonlySet<string>
     readonly alpha: number
+    readonly clusterOf?: (queryId: string) => string
   },
 ): readonly SignVerdict[] {
   const seeds = [...new Set(cells.map(c => c.seed))].sort((a, b) => a - b)
@@ -103,11 +110,23 @@ export function signGate(
         options.queryIds.has(c.queryId),
     )
     const { wins, losses } = tally(scoped)
-    const p = exactSignTestOneSided(wins.length, losses.length)
+    let up = wins.length
+    let down = losses.length
+    const { clusterOf } = options
+    if (clusterOf !== undefined) {
+      const net = new Map<string, number>()
+      for (const id of wins)
+        net.set(clusterOf(id), (net.get(clusterOf(id)) ?? 0) + 1)
+      for (const id of losses)
+        net.set(clusterOf(id), (net.get(clusterOf(id)) ?? 0) - 1)
+      up = [...net.values()].filter(v => v > 0).length
+      down = [...net.values()].filter(v => v < 0).length
+    }
+    const p = exactSignTestOneSided(up, down)
     return {
       seed,
-      wins: wins.length,
-      losses: losses.length,
+      wins: up,
+      losses: down,
       p,
       pass: p < options.alpha,
     }
@@ -254,7 +273,7 @@ type QueryScorer = (
   question: string,
 ) => number[]
 
-type ArmSet = {
+export type ArmSet = {
   /** Injected keys per question id, per arm. */
   readonly m0: ReadonlyMap<string, ReadonlySet<string>>
   readonly m1: ReadonlyMap<string, ReadonlySet<string>>

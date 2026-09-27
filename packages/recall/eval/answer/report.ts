@@ -20,7 +20,6 @@
  */
 
 import type { InjectionMode } from '../../src/inject.js'
-import { HARDENED_CORPUS_ID } from '../hardened.js'
 import type { Preregistration } from '../prereg.js'
 import type { LedgerSnapshot, Phase } from './ledger.js'
 import { scheduleSeed, type Unit, unitKey } from './schedule.js'
@@ -38,9 +37,6 @@ import { mulberry32 } from '../dataset.js'
 import type { Arm, TokenUsage } from './types.js'
 
 export const ANSWER_REPORT_SCHEMA = 'qianmo-recall-answer-eval/v1'
-
-/** The corpus the preregistered endpoints (E1, E2, A0, A4) are judged on. */
-const PRIMARY_CORPUS = HARDENED_CORPUS_ID
 
 export type RunStatus = 'complete' | 'capped' | 'invalid' | 'aborted'
 
@@ -390,6 +386,8 @@ function compare(
 
 type GateContext = {
   readonly arms: readonly Arm[]
+  /** The corpus E1, E2, A0 and A4 are judged on (`[plan] primary_corpus`). */
+  readonly primaryCorpus: string
   readonly prereg: Preregistration
   /** Tiers whose M0 injection is `ranked`, per corpus. */
   readonly rankedTiers: (corpus: string) => readonly number[]
@@ -405,6 +403,7 @@ export function evaluateGates(
   context: GateContext,
 ): Gates {
   const { prereg } = context
+  const primary = context.primaryCorpus
   if (context.arms.length < 2) {
     const reason = 'one arm: nothing to compare'
     return {
@@ -434,11 +433,11 @@ export function evaluateGates(
     }
   }
   const pairs = completePairs(records)
-  const ranked = context.rankedTiers(PRIMARY_CORPUS)
+  const ranked = context.rankedTiers(primary)
   const all = () => true
 
   // A0: the small tier, where both arms get the same block (R1).
-  const small = context.smallTier(PRIMARY_CORPUS)
+  const small = context.smallTier(primary)
   const aaTests =
     small === null
       ? []
@@ -447,7 +446,7 @@ export function evaluateGates(
             'A0·H',
             pairs,
             {
-              corpus: PRIMARY_CORPUS,
+              corpus: primary,
               tiers: [small],
               kinds: isPositiveKind,
               metric: HIT,
@@ -459,7 +458,7 @@ export function evaluateGates(
             'A0·HR_mis',
             pairs,
             {
-              corpus: PRIMARY_CORPUS,
+              corpus: primary,
               tiers: [small],
               kinds: all,
               metric: MISATTRIBUTED,
@@ -494,7 +493,7 @@ export function evaluateGates(
   // E1: positives' H, ranked tiers pooled, superiority.
   const e1Differences = clusterDifferences(
     observe(pairs, {
-      corpus: PRIMARY_CORPUS,
+      corpus: primary,
       tiers: ranked,
       kinds: isPositiveKind,
       metric: HIT,
@@ -568,7 +567,7 @@ export function evaluateGates(
   // E2: HR_mis over every question, ranked tiers pooled, non-inferiority.
   const e2Differences = clusterDifferences(
     observe(pairs, {
-      corpus: PRIMARY_CORPUS,
+      corpus: primary,
       tiers: ranked,
       kinds: all,
       metric: MISATTRIBUTED,
@@ -637,7 +636,7 @@ export function evaluateGates(
   >()
   for (const { unit, m0, m1 } of pairs) {
     if (
-      unit.corpus !== PRIMARY_CORPUS ||
+      unit.corpus !== primary ||
       unit.kind !== 'negative-fabricated' ||
       !ranked.includes(unit.tier)
     ) {
@@ -698,7 +697,7 @@ export function evaluateGates(
     const tiers = context.rankedTiers(corpus)
     if (tiers.length === 0) continue
     const base = { corpus, tiers, reading: 'first' as const }
-    if (corpus === PRIMARY_CORPUS) {
+    if (corpus === primary) {
       for (const kind of context.positiveKinds(corpus)) {
         secondary.push([
           `${corpus}·H·${kind}`,

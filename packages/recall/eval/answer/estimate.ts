@@ -114,8 +114,10 @@ const add = (a: TokenRange, b: TokenRange): TokenRange => ({
  * @param measure the model-visible text of a request as sent to `provider`.
  */
 export async function estimateAnswerPlan(
-  plan: Pick<AnswerPlan, 'corpora' | 'repetitions' | 'arms' | 'queryIds'>,
-  providers: readonly string[],
+  plan: Pick<
+    AnswerPlan,
+    'corpora' | 'repetitions' | 'arms' | 'providers' | 'seed' | 'queryIds'
+  >,
   measure: (request: AnswerRequest, provider: string) => string,
 ): Promise<AnswerEstimate> {
   const rows = new Map<string, EstimateRow>()
@@ -126,7 +128,7 @@ export async function estimateAnswerPlan(
       const prepared = await prepareTier(
         id as CorpusId,
         tier,
-        { arms: ['m0'], queryIds: plan.queryIds },
+        { arms: ['m0'], queryIds: plan.queryIds, seed: plan.seed },
         { m0: m0Retriever },
       )
       try {
@@ -145,7 +147,7 @@ export async function estimateAnswerPlan(
             output: { low: 0, high: 0 },
           }
           let input: TokenRange = { low: 0, high: 0 }
-          for (const provider of providers) {
+          for (const provider of plan.providers) {
             const tokens = inputTokens(
               countChars(
                 measure(
@@ -163,7 +165,7 @@ export async function estimateAnswerPlan(
               high: tokens.high * perQuestion,
             })
           }
-          const calls = providers.length * perQuestion
+          const calls = plan.providers.length * perQuestion
           rows.set(key, {
             ...row,
             questions: row.questions + 1,
@@ -203,7 +205,7 @@ export async function estimateAnswerPlan(
       corpora: plan.corpora,
       repetitions: plan.repetitions,
       arms: plan.arms,
-      providers,
+      providers: plan.providers,
     },
     rows: list,
     total,

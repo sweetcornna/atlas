@@ -111,6 +111,14 @@ export const HARDENED_POOLED_KINDS: readonly HardenedQueryKind[] = [
   'positive-mismatch',
 ]
 
+/**
+ * The answer layer's question set: §2.2's P is the 40 plain positives, and
+ * the batch variants stay in the retrieval layer (ruling of 2026-09-27, item
+ * 2). 40 positives + 61 negatives = 101 questions per tier.
+ */
+export const HARDENED_ANSWER_KINDS: readonly HardenedQueryKind[] =
+  HARDENED_KINDS.filter(kind => !kind.endsWith('-batch'))
+
 type HardenedEntryRole =
   | 'gold'
   | 'sibling'

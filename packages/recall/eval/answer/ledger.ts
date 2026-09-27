@@ -27,6 +27,16 @@
  * whether that call was billed, so the ledger assumes it was. That is how a
  * crash-restart loop is kept from spending past the cap.
  *
+ * HOLD FOR THE SECOND ROUND
+ *
+ * A call whose citations are rejected gets one more round. If that round did
+ * not fit, the first round would be paid for and then thrown away — and paid
+ * for again on resume. So before a first round goes out the executor also
+ * *holds* an upper bound for the second: checked like a reservation and kept
+ * out of reach of every other call until released, but never charged and
+ * never written to disk. A crash drops it, which is right, because nothing
+ * was spent on it.
+ *
  * One process at a time: a lock file names the holder's pid. A lock whose
  * process is gone is taken over (and its reservations charged); a live one is
  * refused.
@@ -267,6 +277,8 @@ export class TokenLedger {
   #state: LedgerState
   #counter = 0
   #closed = false
+  /** Second-round holds of calls in flight; in memory only (see the header). */
+  readonly #holds = new Map<string, TokenUsage>()
 
   private constructor(path: string, options: LedgerOpenOptions) {
     this.#path = path
@@ -350,9 +362,13 @@ export class TokenLedger {
       .reduce((sum, pending) => plus(sum, pending.reserved), ZERO)
   }
 
-  /** What is left under each limit, after spend and outstanding reservations. */
+  /**
+   * What is left under each limit, after spend, outstanding reservations and
+   * this process's holds.
+   */
   #headroom(phase: Phase): [LimitName, TokenUsage][] {
     const state = this.#state
+    const held = [...this.#holds.values()].reduce(plus, ZERO)
     const minus = (limit: TokenUsage, ...used: TokenUsage[]): TokenUsage => {
       const total = used.reduce(plus, ZERO)
       return {
@@ -367,6 +383,7 @@ export class TokenLedger {
           ANSWER_TOKEN_CEILING,
           state.spent,
           this.#pendingSum(() => true),
+          held,
         ),
       ],
     ]
@@ -377,6 +394,7 @@ export class TokenLedger {
           TRIAL_TOKEN_CEILING,
           state.byPhase.trial,
           this.#pendingSum(pending => pending.phase === 'trial'),
+          held,
         ),
       ])
     }
@@ -388,6 +406,7 @@ export class TokenLedger {
           run.cap,
           run.spent,
           this.#pendingSum(pending => pending.runId === this.#runId),
+          held,
         ),
       ])
     }
@@ -402,14 +421,11 @@ export class TokenLedger {
     if (this.#closed) throw new Error('token ledger: already closed')
   }
 
-  /**
-   * Reserve an upper bound for one call, on disk, before the call is made.
-   * Throws {@link TokenCapReached} when it does not fit under every limit.
-   */
-  reserve(callKey: string, bound: TokenUsage): string {
+  /** Throw {@link TokenCapReached} unless `bound` fits under every limit. */
+  #fit(bound: TokenUsage): void {
     this.#live()
     if (!isUsage(bound)) {
-      throw new Error('token ledger: a reservation must be two whole numbers')
+      throw new Error('token ledger: a bound must be two whole numbers')
     }
     for (const [name, remaining] of this.#headroom(this.#phase)) {
       for (const axis of ['input', 'output'] as const) {
@@ -423,6 +439,14 @@ export class TokenLedger {
         }
       }
     }
+  }
+
+  /**
+   * Reserve an upper bound for one call, on disk, before the call is made.
+   * Throws {@link TokenCapReached} when it does not fit under every limit.
+   */
+  reserve(callKey: string, bound: TokenUsage): string {
+    this.#fit(bound)
     this.#counter += 1
     const id = `${process.pid}-${this.#counter}`
     this.#state.pending[id] = {
@@ -434,6 +458,24 @@ export class TokenLedger {
     }
     this.#persist()
     return id
+  }
+
+  /**
+   * Hold `bound` for a call's possible second round: throws
+   * {@link TokenCapReached} when it does not fit, and otherwise keeps it out
+   * of every later reservation's reach until {@link release}. Not charged.
+   */
+  hold(bound: TokenUsage): string {
+    this.#fit(bound)
+    this.#counter += 1
+    const id = `hold-${this.#counter}`
+    this.#holds.set(id, bound)
+    return id
+  }
+
+  /** Give a hold back. Releasing twice is harmless. */
+  release(id: string): void {
+    this.#holds.delete(id)
   }
 
   /**

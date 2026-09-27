@@ -8,7 +8,7 @@
  *
  *   --dry-run   offline token estimate from the real corpora and prompt; no
  *               network, no ledger. Without plan flags it prints the P16.4
- *               trial and the full P16.12 comparison.
+ *               trial and the P16.12 comparison, both as preregistered.
  *   --replay    re-score a recorded run from a fixture; no network. Uses its
  *               own ledger inside the output directory, never the real one.
  *   --live      real calls through the AC-4 request chain. Needs
@@ -23,9 +23,10 @@
  *   bun run scripts/qianmo-recall-answer-eval.ts --replay <fixture.json> \
  *       --run-id <id> --out <dir> [--phase …] [plan flags]
  *
- * Plan flags: --corpus <id,…>  --tiers <n,…>  --reps <n>  --arms m0|m0,m1
- * (defaults — trial: every corpus, its smallest tier, 1 repetition, M0 only;
- * comparison: the whole protocol, which is also the only plan it accepts).
+ * Plans come from packages/recall/eval/prereg.toml: the comparison is `[plan]`
+ * and takes no plan flag at all; the trial defaults to `[trial]` and may be
+ * narrowed with --corpus <id,…>  --tiers <n,…>  --reps <n>  --arms m0|m0,m1
+ * (its numbers never enter a verdict).
  *
  * The token ledger lives at occConfigPath('qianmo', 'recall-eval',
  * 'token-ledger.json'); there is no flag to move it. There is no flag for any
@@ -40,8 +41,8 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  ANSWER_REPETITIONS,
   type AnswerPlan,
+  answerPlanOf,
   checkPlan,
   m0Retriever,
   REPORT_FILE,
@@ -79,8 +80,11 @@ import {
 import {
   loadPreregistration,
   PREREGISTRATION_PATH,
+  type Preregistration,
+  required,
 } from '../packages/recall/eval/prereg.js'
 import { occConfigPath } from '../src/config/paths.js'
+import type { ProviderConfig } from '../src/services/providerRegistry/types.js'
 import {
   buildWireBody,
   createLiveTransport,
@@ -251,18 +255,40 @@ export function parseCli(argv: readonly string[]): Cli {
   return cli
 }
 
-type PlanShape = Pick<AnswerPlan, 'phase' | 'corpora' | 'repetitions' | 'arms'>
-
-/** The plan the flags describe; defaults by phase. */
-function planOf(cli: Cli, phase: Phase): PlanShape {
-  const ids = cli.corpora ?? (Object.keys(CORPORA) as CorpusId[])
+/**
+ * The plan of a phase: the comparison is `[plan]` as written, and refuses
+ * any plan flag; the trial is `[trial]`, narrowed by whatever flags were
+ * given.
+ */
+export function planOf(
+  cli: Pick<Cli, 'corpora' | 'tiers' | 'reps' | 'arms'>,
+  phase: Phase,
+  prereg: Preregistration,
+  run: Pick<AnswerPlan, 'runId' | 'concurrency'>,
+): AnswerPlan {
+  const narrowed =
+    cli.corpora !== null ||
+    cli.tiers !== null ||
+    cli.reps !== null ||
+    cli.arms !== null
+  if (phase === 'comparison') {
+    if (narrowed) {
+      throw new UsageError(
+        'the comparison plan is prereg.toml [plan]; --corpus / --tiers / --reps / --arms are refused',
+      )
+    }
+    return answerPlanOf(required(prereg.plan, 'plan'), { ...run, phase })
+  }
+  const base = answerPlanOf(required(prereg.trial, 'trial'), { ...run, phase })
+  const ids = cli.corpora ?? base.corpora.map(c => c.id)
   const corpora = ids.map(id => {
     const available = CORPORA[id].tiers
+    const preset = base.corpora.find(c => c.id === id)?.tiers ?? [
+      Math.min(...available),
+    ]
     const tiers =
       cli.tiers === null
-        ? phase === 'trial'
-          ? [Math.min(...available)]
-          : [...available]
+        ? preset
         : cli.tiers.filter(tier => available.includes(tier))
     if (tiers.length === 0) {
       throw new UsageError(
@@ -272,11 +298,25 @@ function planOf(cli: Cli, phase: Phase): PlanShape {
     return { id, tiers }
   })
   return {
-    phase,
+    ...base,
     corpora,
-    repetitions: cli.reps ?? (phase === 'trial' ? 1 : ANSWER_REPETITIONS),
-    arms: cli.arms ?? (phase === 'trial' ? ['m0'] : ['m0', 'm1']),
+    repetitions: cli.reps ?? base.repetitions,
+    arms: cli.arms ?? base.arms,
   }
+}
+
+/** The fixture's providers named by the plan, in the plan's order. */
+function providersOf(plan: AnswerPlan): ProviderConfig[] {
+  const all = loadProviders()
+  return plan.providers.map(id => {
+    const provider = all.find(p => p.id === id)
+    if (provider === undefined) {
+      throw new UsageError(
+        `provider ${id} of the plan is not in the AC-5 provider fixture`,
+      )
+    }
+    return provider
+  })
 }
 
 const fmt = (n: number) => n.toLocaleString('en-US')
@@ -317,11 +357,14 @@ function renderEstimate(
     `- D-7 批准量级：调用 ${fmt(estimate.approved.calls.low)}–${fmt(estimate.approved.calls.high)}，输入 ${mega(estimate.approved.input.low)}–${mega(estimate.approved.input.high)}，输出 ${mega(estimate.approved.output.low)}–${mega(estimate.approved.output.high)}；硬上限 ${mega(estimate.ceiling.input)} / ${mega(estimate.ceiling.output)}`,
     `- 按本计划的平均单次调用，硬上限内能容纳 ${fmt(estimate.callsUnderCeiling.low)}–${fmt(estimate.callsUnderCeiling.high)} 次调用`,
   )
-  if (phase === 'trial') {
-    lines.push(
-      `- P16.4 子上限（总上限 1/10）：${mega(TRIAL_TOKEN_CEILING.input)} / ${mega(TRIAL_TOKEN_CEILING.output)}`,
-    )
-  }
+  const limit = phase === 'trial' ? TRIAL_TOKEN_CEILING : estimate.ceiling
+  const within = (value: number, cap: number) =>
+    value <= cap ? '以内' : '**超出**'
+  lines.push(
+    `- ${phase === 'trial' ? 'P16.4 子上限（总上限 1/10）' : 'D-7 硬上限'} ${mega(limit.input)} / ${mega(limit.output)}：` +
+      `输入上界 ${mega(total.input.high)}（${within(total.input.high, limit.input)}），含余量 ${mega(withMargin.input.high)}（${within(withMargin.input.high, limit.input)}）；` +
+      `输出上界 ${mega(total.output.high)}（${within(total.output.high, limit.output)}），含余量 ${mega(withMargin.output.high)}（${within(withMargin.output.high, limit.output)}）`,
+  )
   const notCounted = estimate.notCounted.map(note => NOT_COUNTED[note] ?? note)
   lines.push(`- 未计入：${notCounted.join('；')}`)
   return lines.join('\n')
@@ -329,6 +372,7 @@ function renderEstimate(
 
 async function dryRun(cli: Cli): Promise<void> {
   const providers = loadProviders()
+  const prereg = loadPreregistration()
   // Only the body's shape depends on the base URL; nothing is sent.
   const measure = (
     request: Parameters<typeof buildWireBody>[1],
@@ -339,7 +383,6 @@ async function dryRun(cli: Cli): Promise<void> {
     const baseURL = process.env.OPENAI_BASE_URL ?? provider.baseUrl
     return modelVisibleText(buildWireBody(provider, request, baseURL))
   }
-  const ids = providers.map(p => p.id)
   const phases: [string, Phase][] =
     cli.phase !== null ||
     cli.corpora !== null ||
@@ -348,14 +391,17 @@ async function dryRun(cli: Cli): Promise<void> {
     cli.arms !== null
       ? [['按参数的计划', cli.phase ?? 'trial']]
       : [
-          ['P16.4 · 30 档试跑（trial）', 'trial'],
-          ['P16.12 · 全量对比（comparison）', 'comparison'],
+          ['P16.4 · 30 档试跑（prereg [trial]）', 'trial'],
+          ['P16.12 · 对比（prereg [plan]）', 'comparison'],
         ]
   const results: { title: string; phase: Phase; estimate: AnswerEstimate }[] =
     []
   for (const [title, phase] of phases) {
-    const plan = planOf(cli, phase)
-    const estimate = await estimateAnswerPlan(plan, ids, measure)
+    const plan = planOf(cli, phase, prereg, {
+      runId: 'dry-run',
+      concurrency: 1,
+    })
+    const estimate = await estimateAnswerPlan(plan, measure)
     results.push({ title, phase, estimate })
     console.log(renderEstimate(title, estimate, phase))
     console.log('')
@@ -404,15 +450,14 @@ function printOutcome(report: AnswerReport, out: string): void {
 async function execute(
   cli: Cli & { runId: string; out: string; phase: Phase },
 ): Promise<number> {
-  const shape = planOf(cli, cli.phase)
-  const plan: AnswerPlan = {
-    ...shape,
+  const prereg = preregistration()
+  const plan = planOf(cli, cli.phase, prereg.values, {
     runId: cli.runId,
     concurrency: cli.concurrency,
-  }
+  })
   // Refuse an unrunnable plan before the ledger records a run for it.
   try {
-    checkPlan(plan)
+    checkPlan(plan, prereg.values)
   } catch (error) {
     throw new UsageError(error instanceof Error ? error.message : String(error))
   }
@@ -421,7 +466,7 @@ async function execute(
       'the M1 arm has no retriever until P16.6 lands; run --arms m0',
     )
   }
-  const providers = loadProviders()
+  const providers = providersOf(plan)
   let transports: AnswerTransport[]
   let ledgerFile: string
   let cap: { input: number; output: number }
@@ -464,7 +509,7 @@ async function execute(
       retrievers: { m0: m0Retriever },
       ledger,
       outDir: cli.out,
-      prereg: preregistration(),
+      prereg,
     })
     printOutcome(report, cli.out)
     return exitCodeOf(report)

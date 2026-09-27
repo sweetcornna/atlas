@@ -145,6 +145,51 @@ describe('limits', () => {
   })
 })
 
+describe('second-round hold', () => {
+  test('a hold counts against every reservation until released, and is never charged', () => {
+    const ledger = TokenLedger.open(path, {
+      runId: 'r1',
+      phase: 'trial',
+      cap: CAP,
+    })
+    const hold = ledger.hold({ input: 700, output: 100 })
+    // 1000 − 700 held leaves 300: a 301 reservation does not fit.
+    expect(() => ledger.reserve('k', { input: 301, output: 1 })).toThrow(
+      TokenCapReached,
+    )
+    const id = ledger.reserve('k', { input: 300, output: 1 })
+    // Nor does a second hold the first one already covers.
+    expect(() => ledger.hold({ input: 1, output: 1 })).toThrow(TokenCapReached)
+    ledger.settle(id, { input: 10, output: 1 })
+    ledger.release(hold)
+    ledger.release(hold)
+    expect(() => ledger.reserve('k2', { input: 990, output: 1 })).not.toThrow()
+    expect(ledger.snapshot().run.spent).toEqual({ input: 10, output: 1 })
+    ledger.close()
+  })
+
+  test('a hold left by a crash is not charged: it was never written down', () => {
+    const ledger = TokenLedger.open(path, {
+      runId: 'r1',
+      phase: 'trial',
+      cap: CAP,
+    })
+    ledger.hold({ input: 900, output: 400 })
+    expect(JSON.parse(readFileSync(path, 'utf8')).pending).toEqual({})
+    ledger.close()
+    const reopened = TokenLedger.open(path, {
+      runId: 'r1',
+      phase: 'trial',
+      cap: CAP,
+    })
+    expect(reopened.snapshot().spent).toEqual({ input: 0, output: 0 })
+    expect(() =>
+      reopened.reserve('k', { input: 1000, output: 500 }),
+    ).not.toThrow()
+    reopened.close()
+  })
+})
+
 describe('persistence', () => {
   test('spend survives reopening; a second holder is refused', () => {
     const first = TokenLedger.open(path, {

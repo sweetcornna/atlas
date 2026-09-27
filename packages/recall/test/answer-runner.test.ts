@@ -47,12 +47,15 @@ import {
 } from '../eval/answer/report.js'
 import {
   type AnswerPlan,
+  answerPlanOf,
   CALLS_FILE,
+  checkPlan,
   m0Retriever,
   prepareTier,
   readCallLog,
   REPORT_FILE,
   runAnswerEval,
+  secondRoundBound,
 } from '../eval/answer/runner.js'
 import { InvalidRound } from '../eval/answer/score.js'
 import type {
@@ -133,6 +136,10 @@ function parseKey(callKey: string) {
 
 const NOTHING = '记忆里没有记录这件事。'
 
+function fail(): never {
+  throw new Error('expected a value')
+}
+
 function respond(request: AnswerRequest): AnswerResponse {
   const { queryId, provider, rep, round } = parseKey(request.callKey)
   const tool = (answer: string, citations: string[]): AnswerResponse => ({
@@ -208,9 +215,15 @@ const PLAN: AnswerPlan = {
   corpora: [{ id: 'synthetic-v1', tiers: [30, 500] }],
   repetitions: 3,
   arms: ['m0', 'm1'],
+  providers: ['prov-a', 'prov-b'],
+  seed: SEED,
+  primaryCorpus: 'synthetic-v1',
   concurrency: 2,
   queryIds: QUERIES,
 }
+
+/** The executor's hold for a second round, for these scripted transports. */
+const HOLD = secondRoundBound({ input: 2000 }, 8192)
 
 const CAP = { input: 500_000, output: 200_000 }
 const FIXED_NOW = () => new Date(Date.UTC(2026, 8, 26, 12, 0, 0))
@@ -342,7 +355,7 @@ describe('record, then replay without a network', () => {
     const premise = await prepareTier(
       'synthetic-v1',
       500,
-      { arms: ['m0', 'm1'], queryIds: QUERIES },
+      { arms: ['m0', 'm1'], queryIds: QUERIES, seed: SEED },
       { m0: m0Retriever, m1: everything },
     )
     try {
@@ -493,6 +506,7 @@ describe('record, then replay without a network', () => {
     )
     const context = {
       arms: PLAN.arms,
+      primaryCorpus: 'synthetic-v1',
       rankedTiers: () => [500],
       smallTier: () => 30,
       positiveKinds: () => ['positive-lexical', 'positive-mismatch'],
@@ -644,11 +658,43 @@ describe('token cap', () => {
     expect(report.validity.valid).toBe(false)
   }, 30_000)
 
+  test('a call whose second round would not fit is not started', async () => {
+    // Room for the first round's 2000, but not also for the held second
+    // round: the run stops before anything is sent.
+    const tight = { input: 2000 + HOLD.input - 1, output: 100_000 }
+    const log: string[] = []
+    const refused = await run(
+      small,
+      [scripted('prov-a', log), scripted('prov-b', log)],
+      {
+        out: join(directory, 'tight'),
+        ledger: join(directory, 'tight.json'),
+        cap: tight,
+      },
+    )
+    expect(log).toEqual([])
+    expect(refused.status).toBe('capped')
+    expect(refused.stop?.detail).toContain('token cap reached: run input')
+    // One token more and the first call goes out.
+    const roomy = await run(
+      { ...small, runId: 'cap-roomy' },
+      [scripted('prov-a', log), scripted('prov-b', log)],
+      {
+        out: join(directory, 'roomy'),
+        ledger: join(directory, 'roomy.json'),
+        cap: { input: tight.input + 1, output: 100_000 },
+      },
+    )
+    expect(log.length).toBeGreaterThan(0)
+    expect(roomy.calls.completed).toBeGreaterThan(0)
+  }, 30_000)
+
   test('a cap reached mid-run keeps what was done and stays reached after a restart', async () => {
     const ledgerPath = join(directory, 'ledger.json')
     const out = join(directory, 'out')
-    // Each call reserves 2000 in and settles 1001 (second rounds 1002).
-    const cap = { input: 10_000, output: 100_000 }
+    // Each call needs 2000 reserved plus the second-round hold free, and
+    // settles 1001 (second rounds 1002).
+    const cap = { input: 2000 + HOLD.input + 20_000, output: 100_000 }
     const log: string[] = []
     const transports = [scripted('prov-a', log), scripted('prov-b', log)]
     const first = await run(small, transports, { out, ledger: ledgerPath, cap })
@@ -660,14 +706,14 @@ describe('token cap', () => {
     )
     const spent = first.tokens.ledger.run.spent
     expect(spent.input).toBeLessThanOrEqual(cap.input)
-    // Every recorded round was one send; at most one more send belongs to
-    // a call whose second round no longer fitted (not recorded).
+    // Every send is a recorded round: with the hold, no first round was paid
+    // for and then lost because its second round no longer fitted.
     const rounds = readCallLog(join(out, CALLS_FILE)).reduce(
       (sum, record) => sum + record.rounds.length,
       0,
     )
-    expect(log.length).toBeGreaterThanOrEqual(rounds)
-    expect(log.length).toBeLessThanOrEqual(rounds + 1)
+    expect(log.length).toBe(rounds)
+    expect(rounds).toBeGreaterThan(first.calls.completed)
 
     // "Restart": a new ledger instance on the same file, the same run.
     const before = log.length
@@ -710,6 +756,7 @@ describe('failure modes', () => {
           runId: 'unreadable',
           corpora: [{ id: 'synthetic-v1', tiers: [30] }],
           arms: ['m0'],
+          providers: ['prov-a'],
           repetitions: 1,
           queryIds: ['lex-wake'],
         },
@@ -724,20 +771,64 @@ describe('failure modes', () => {
     expect(report.validity.reasons).toContain('run invalid')
   }, 30_000)
 
-  test('two arms without an M1 retriever, or a narrowed comparison, are refused', async () => {
+  test('two arms without an M1 retriever, or transports other than the plan providers, are refused', async () => {
+    const both = [scripted('prov-a'), scripted('prov-b')]
     await expect(
-      run(PLAN, [scripted('prov-a')], {
+      run(PLAN, both, {
         out: join(directory, 'a'),
         ledger: join(directory, 'a.json'),
         retrievers: { m0: m0Retriever },
       }),
     ).rejects.toThrow(/M1 arm has no retriever/)
     await expect(
-      run({ ...PLAN, phase: 'comparison' }, [scripted('prov-a')], {
+      run(PLAN, [scripted('prov-a')], {
         out: join(directory, 'b'),
         ledger: join(directory, 'b.json'),
       }),
-    ).rejects.toThrow(/whole §4 protocol/)
+    ).rejects.toThrow(/exactly the plan's providers/)
+  })
+
+  test('the comparison is the preregistered [plan] and nothing else', () => {
+    const planText = [
+      '[plan]',
+      'arms = ["m0", "m1"]',
+      'repetitions = 1',
+      'providers = ["prov-a", "prov-b"]',
+      `seed = ${SEED}`,
+      'synthetic_v1_tiers = [30, 500, 2000]',
+      'docs_dev_v1_tiers = [599]',
+      'primary_corpus = "synthetic-v1"',
+    ].join('\n')
+    const withPlan = parsePreregistration(planText)
+    const preregistered = answerPlanOf(withPlan.plan ?? fail(), {
+      runId: 'p',
+      phase: 'comparison',
+      concurrency: 2,
+    })
+    expect(preregistered.corpora).toEqual([
+      { id: 'synthetic-v1', tiers: [30, 500, 2000] },
+      { id: 'docs-dev-v1', tiers: [599] },
+    ])
+    expect(() => checkPlan(preregistered, withPlan)).not.toThrow()
+    for (const narrowed of [
+      { ...preregistered, repetitions: 3 },
+      { ...preregistered, arms: ['m0' as const] },
+      { ...preregistered, corpora: preregistered.corpora.slice(0, 1) },
+      { ...preregistered, providers: ['prov-a'] },
+      { ...preregistered, queryIds: ['lex-wake'] },
+    ]) {
+      expect(() => checkPlan(narrowed, withPlan)).toThrow(
+        /preregistered plan of prereg.toml \[plan\] exactly/,
+      )
+    }
+    // docs-dev-v1 has one seed, so another seed is refused even earlier.
+    expect(() =>
+      checkPlan({ ...preregistered, seed: SEED + 1 }, withPlan),
+    ).toThrow(/docs-dev-v1 has no seed/)
+    // No [plan] in the file: the comparison cannot run at all.
+    expect(() => checkPlan(preregistered, prereg().values)).toThrow(
+      /plan is not generated yet/,
+    )
   })
 })
 
@@ -791,6 +882,7 @@ describe('report schema', () => {
       ...PLAN,
       runId: 'schema',
       corpora: [{ id: 'synthetic-v1', tiers: [30] }],
+      providers: ['prov-a'],
       repetitions: 1,
     }
     const complete = await run(plan, [scripted('prov-a')], {
