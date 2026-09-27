@@ -115,10 +115,22 @@ function captureEvents<T>(
   return { value, events: index === -1 ? after : after.slice(index + 1) }
 }
 
-export function recall(
+/**
+ * The deterministic pass, with the full ranking kept alongside the result.
+ *
+ * `recall()` is this function's `result` and nothing else, so the semantic
+ * overlay (`hybrid.ts`) and the deterministic path cannot disagree about what
+ * M0 would have injected: there is one implementation of it, not two.
+ */
+export function rankForRecall(
   store: FileMemoryStore,
   request: RecallRequest = {},
-): RecallResult {
+): {
+  readonly result: RecallResult
+  /** Every live candidate in scope, in deterministic order. */
+  readonly ranked: readonly RankedEntry[]
+  readonly budget: InjectionBudget
+} {
   const scope = request.scope ?? {}
   // One instant for the whole recall, resolved before anything reads the disk.
   // The validity filter and the decay origin must be the same moment: if the
@@ -150,15 +162,26 @@ export function recall(
   const selection = selectForInjection(ranked, budget)
 
   return {
-    asOf: asOf.toISOString(),
-    mode: selection.mode,
-    entries: selection.chosen,
-    candidateCount: candidates.length,
-    omittedCount: selection.omittedCount,
-    tokens,
-    events,
-    degraded: events.some(event => DEGRADING.has(event.type)),
+    result: {
+      asOf: asOf.toISOString(),
+      mode: selection.mode,
+      entries: selection.chosen,
+      candidateCount: candidates.length,
+      omittedCount: selection.omittedCount,
+      tokens,
+      events,
+      degraded: events.some(event => DEGRADING.has(event.type)),
+    },
+    ranked,
+    budget,
   }
+}
+
+export function recall(
+  store: FileMemoryStore,
+  request: RecallRequest = {},
+): RecallResult {
+  return rankForRecall(store, request).result
 }
 
 /** The ids the model was actually shown. The verifier's allow-list. */
