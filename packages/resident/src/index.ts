@@ -160,6 +160,15 @@ export {
   type ResidentNotifyEvent,
 } from './notify.js'
 export {
+  invalidateResidentMemory,
+  residentMemoryScope,
+  revokeResidentMemory,
+  writeResidentMemory,
+  ResidentMemoryWriteError,
+  type ResidentMemorySource,
+  type ResidentMemoryTarget,
+} from './memory-writer.js'
+export {
   INJECTION_BUDGET,
   ResidentMemorySidecar,
   assertNodeOwnedMemoryRoot,
