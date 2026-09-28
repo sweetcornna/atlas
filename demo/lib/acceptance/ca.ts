@@ -175,6 +175,11 @@ export async function issueCertificate(
     readonly outName: string
     readonly hosts?: readonly string[]
     readonly days?: number
+    /**
+     * 同一个 CA 再签同一个节点时要给：`qm ca issue` 默认拒绝覆盖
+     * `issued/<节点>.crt`（旧证书指纹只剩台账里那一行，覆盖要显式说）。
+     */
+    readonly replace?: boolean
   },
 ): Promise<IssuedCertificate> {
   const { host } = ca
@@ -202,6 +207,7 @@ export async function issueCertificate(
       issueCommand.value('--nodekey'),
       ...hosts.flatMap(entry => ['--host', entry]),
       ...(options.days === undefined ? [] : ['--days', String(options.days)]),
+      ...(options.replace === true ? ['--replace'] : []),
       '--out',
       out,
     ],

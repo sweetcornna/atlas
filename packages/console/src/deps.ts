@@ -403,17 +403,20 @@ export interface ChatPort {
 // ---------------------------------------------------------------------------
 
 /**
- * 一个节点证书的处置。§10.1 的六个取值，一个不多一个不少。
+ * 一个节点证书的处置。§10.1 的六个取值，其中 `expiring(<n>d)` 按 §6.2 的两道
+ * 门限拆成两个：`expiring`（< 21 天，黄）与 `expiring-urgent`（< 7 天，红）。
  *
- * **六个是有意的，不能折成「好/坏」两档**：`absent`（还没发布）与
- * `bad-signature`（发布了但不是本 CA 签的）指向完全相反的下一步动作——前者
- * 是「这个节点还没走过签发流程」，后者是「有人往零鉴权的注册中心里塞了东西」
- * （§5.2 T-B）。同理 `expired` 与 `revoked`：一个是运维忘了续签，一个是这把
- * 钥匙被主动作废了。
+ * **不能折成「好/坏」两档**：`absent`（还没发布）与 `bad-signature`（发布了但
+ * 不是本 CA 签的）指向完全相反的下一步动作——前者是「这个节点还没走过签发
+ * 流程」，后者是「有人往零鉴权的注册中心里塞了东西」（§5.2 T-B）。同理
+ * `expired` 与 `revoked`：一个是运维忘了续签，一个是这把钥匙被主动作废了。
+ * `expiring-urgent` 与 `expired` 也是两件事：前者还来得及，后者这个节点已经被
+ * 对端拒绝。
  */
 export type CertificateStatus =
   | 'valid'
   | 'expiring'
+  | 'expiring-urgent'
   | 'expired'
   | 'revoked'
   | 'absent'
@@ -460,6 +463,24 @@ export interface CertificateSnapshot {
 }
 
 /**
+ * `--trust-ca` 文件里的一张 CA 根，§6.2 表里「CA 根」那一行的提醒。
+ *
+ * 到期分档与节点证书**同一组**（`valid` / `expiring` / `expiring-urgent` /
+ * `expired`，门限也是同两道）：根过期时它签的每张证书在 TLS 层和证书目录里一并
+ * 失效，这件事对运维的紧迫程度不低于任何一张叶证书。`subject` 足以区分两张根：
+ * 信任文件拒绝两张同名的根。
+ */
+export interface ConsoleCaRoot {
+  readonly subject: string
+  /** 根自己的 `notAfter`，epoch 毫秒。 */
+  readonly notAfter: number
+  readonly status: Extract<
+    CertificateStatus,
+    'valid' | 'expiring' | 'expiring-urgent' | 'expired'
+  >
+}
+
+/**
  * 可选：没有配 CA 根就整条证书栏不出现（不是显示一排「未知」）。
  *
  * 与唤醒面的取舍不同：唤醒是主页上的一块功能，藏起来会让人以为面板坏了；证书栏
@@ -468,6 +489,13 @@ export interface CertificateSnapshot {
  */
 export interface CertificatePort {
   read(): Promise<ConsoleResult<CertificateSnapshot>>
+  /**
+   * 信任文件里的根，按文件顺序，每张一条。
+   *
+   * 与 `read()` 分开、同步返回：根是本机启动时读进来的文件，不经注册中心。放进
+   * `read()` 的快照里，注册中心一不可达，根的到期提示就跟着从页面上消失。
+   */
+  roots(): readonly ConsoleCaRoot[]
 }
 
 // ---------------------------------------------------------------------------

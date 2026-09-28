@@ -6,10 +6,12 @@
  *
  *   qm ca init
  *   qm ca issue <node> --csr <file> --pop <sig> --nodekey <key> --host <host>
- *   qm ca refresh-rl [--revoke <node>=<fingerprint>]
+ *   qm ca refresh-rl [--revoke <node>=<fingerprint>] [--import-from <dir>]
+ *   qm ca ledger [--node <node>]
  *
- * Three commands because §6.1 lists three actions that happen on the CA
- * machine, and nothing else happens there. Everything a *node* does with
+ * Three signing commands because §6.1 lists three actions that happen on the
+ * CA machine, and nothing else happens there; `ledger` only reads back what
+ * `issue` recorded. Everything a *node* does with
  * certificates — loading them, checking them, reading a peer's public key out
  * of one — needs no CA and no openssl (F-2), and lands in P12.2.
  *
@@ -28,6 +30,10 @@
 
 import { readFileSync } from 'node:fs'
 import { invokedBinName } from '../../constants/brand.js'
+import {
+  formatIssuanceRecord,
+  readIssuanceLedger,
+} from '../../services/qianmo/ca/ledger.js'
 import {
   CA_ROOT_DAYS,
   NODE_CERT_DAYS,
@@ -67,6 +73,7 @@ Commands:
   init                     Create the root key and self-signed certificate.
   issue <node>             Sign one node certificate from a CSR.
   refresh-rl               Re-sign the revocation list, adding entries first.
+  ledger                   List every certificate issue has recorded.
 
 Common options:
 
@@ -77,11 +84,18 @@ Common options:
 
 init:
 
-  --cn <name>              Subject CN of the root. Decoration: nothing in
-                           Qianmo reads a CN, the identity is in the SANs.
+  --cn <name>              Subject CN of the root. Default qianmo-ca-<UTC
+                           yyyymmdd>, the day it is made. Identity is in the
+                           SANs, but TLS picks a root by this name.
   --days <n>               Root lifetime, default ${CA_ROOT_DAYS} (10 years, §6.2).
                            That is the backstop, not the plan: rotate every
                            3 years with a 90-day overlap.
+
+  A new root for a rotation goes in a new --ca-dir and must not share the old
+  root's name: during the overlap nodes hold both roots in one --trust-ca
+  file, and a file with two roots of the same name is refused. The dated
+  default already differs from any root made on another day, including the
+  first production root (CN=qianmo-ca).
 
   Prints the root's SHA-256 fingerprint. Record it in the runbook -- it is the
   one thing distributed out of band, and comparing it is what makes the first
@@ -107,7 +121,16 @@ issue <node>:
   --days <n>               Certificate lifetime, default ${NODE_CERT_DAYS} (§6.2).
   --out <file>             Where to write the certificate. Default
                            <ca-dir>/issued/<node>.crt, which is written either
-                           way so a later revocation can find its fingerprint.
+                           way. Never inside the CA directory itself.
+  --replace                Allow replacing the node's existing
+                           <ca-dir>/issued/<node>.crt (a re-issue) or an
+                           existing --out file. Without it, either one existing
+                           is refused before anything is signed.
+
+  Every certificate issued is first appended to <ca-dir>/issued-ledger.jsonl
+  (node, serial, fingerprint, validity, time of issue). That file keeps the
+  fingerprints a re-issue replaces, for a later --revoke. A ledger that does not
+  read cleanly stops issue before signing; restore it from the backup.
 
 refresh-rl:
 
@@ -117,6 +140,12 @@ refresh-rl:
                            no-op. Keyed on the certificate, not the node: a
                            compromised node returns as a new identity (§6.5).
   --reason <text>          Reason recorded for the entries added in this run.
+  --import-from <dir>      Take over every revocation in another CA directory
+                           (the previous root's, during a rotation) before
+                           signing. Merged by fingerprint, idempotent, and each
+                           entry keeps its node, reason and time. Needed before
+                           a new root signs its first list: nodes refuse a list
+                           that drops an entry they already hold (§6.4).
   --valid-days <n>         nextUpdate, default ${RL_VALID_DAYS} (§6.2). Past it,
                            nodes fail closed to their explicit --trust entries
                            rather than opening up or going dark (§6.4).
@@ -124,6 +153,13 @@ refresh-rl:
                            <ca-dir>/revocation-list.json. Publish it to the
                            registry: the signature is what makes a zero-auth
                            courier safe (§5.2).
+
+ledger:
+
+  --node <node>            Only this node's certificates.
+
+  Checks the whole ledger and prints one line per certificate, oldest first.
+  Exits 1 on a line it cannot read.
 
 Environment:
 
@@ -147,11 +183,13 @@ interface IssueConfig {
   readonly hosts: readonly string[]
   readonly days?: number
   readonly outPath?: string
+  readonly replace: boolean
 }
 
 interface RefreshConfig {
   readonly directory: string
   readonly revoke: readonly RevocationRequest[]
+  readonly importFrom?: string
   readonly validMs?: number
   readonly outPath?: string
 }
@@ -208,6 +246,7 @@ export function parseCaIssueArgs(args: readonly string[]): IssueConfig {
   let publicKey: string | undefined
   let days: number | undefined
   let outPath: string | undefined
+  let replace = false
   const hosts: string[] = []
 
   for (let index = 0; index < args.length; index++) {
@@ -244,6 +283,8 @@ export function parseCaIssueArgs(args: readonly string[]): IssueConfig {
       const parsed = residentOptionValue(args, index, '--out')
       outPath = parsed.value
       index = parsed.next
+    } else if (arg === '--replace') {
+      replace = true
     } else if (
       arg !== undefined &&
       !arg.startsWith('-') &&
@@ -278,12 +319,14 @@ export function parseCaIssueArgs(args: readonly string[]): IssueConfig {
     hosts,
     ...(days === undefined ? {} : { days }),
     ...(outPath === undefined ? {} : { outPath }),
+    replace,
   }
 }
 
 export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
   let caDir: string | undefined
   let reason: string | undefined
+  let importFrom: string | undefined
   let validMs: number | undefined
   let outPath: string | undefined
   const pending: { node: string; fingerprint256: string }[] = []
@@ -309,6 +352,10 @@ export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
       const parsed = residentOptionValue(args, index, '--reason')
       reason = parsed.value
       index = parsed.next
+    } else if (arg === '--import-from' || arg?.startsWith('--import-from=')) {
+      const parsed = residentOptionValue(args, index, '--import-from')
+      importFrom = parsed.value
+      index = parsed.next
     } else if (arg === '--valid-days' || arg?.startsWith('--valid-days=')) {
       const parsed = residentOptionValue(args, index, '--valid-days')
       validMs =
@@ -329,6 +376,7 @@ export function parseCaRefreshArgs(args: readonly string[]): RefreshConfig {
       ...entry,
       ...(reason === undefined ? {} : { reason }),
     })),
+    ...(importFrom === undefined ? {} : { importFrom }),
     ...(validMs === undefined ? {} : { validMs }),
     ...(outPath === undefined ? {} : { outPath }),
   }
@@ -359,6 +407,7 @@ function runIssue(args: readonly string[]): void {
     hosts: config.hosts,
     ...(config.days === undefined ? {} : { days: config.days }),
     ...(config.outPath === undefined ? {} : { outPath: config.outPath }),
+    replace: config.replace,
   })
   const hosts = [
     ...result.binding.dnsNames.map(name => `DNS:${name}`),
@@ -370,8 +419,53 @@ function runIssue(args: readonly string[]): void {
       `  fingerprint256    ${result.fingerprint256}\n` +
       `  not after         ${result.notAfter}\n` +
       `  hosts             ${hosts}\n` +
-      `  node key          ${result.binding.publicKey}\n`,
+      `  node key          ${result.binding.publicKey}\n` +
+      `  ledger            ${result.ledgerPath}\n` +
+      (result.replacedFingerprint256 === undefined
+        ? ''
+        : `  replaced          ${result.replacedFingerprint256}\n`),
   )
+}
+
+function parseCaLedgerArgs(args: readonly string[]): {
+  readonly directory: string
+  readonly node?: string
+} {
+  let caDir: string | undefined
+  let node: string | undefined
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === '--ca-dir' || arg?.startsWith('--ca-dir=')) {
+      const parsed = residentOptionValue(args, index, '--ca-dir')
+      caDir = parsed.value
+      index = parsed.next
+    } else if (arg === '--node' || arg?.startsWith('--node=')) {
+      const parsed = residentOptionValue(args, index, '--node')
+      node = parsed.value
+      index = parsed.next
+    } else {
+      unknownOption('ca ledger', arg)
+    }
+  }
+  return {
+    directory: caDirectory(caDir),
+    ...(node === undefined ? {} : { node }),
+  }
+}
+
+function runLedger(args: readonly string[]): void {
+  const config = parseCaLedgerArgs(args)
+  const ledger = readIssuanceLedger(config.directory)
+  const records = ledger.records.filter(
+    record => config.node === undefined || record.node === config.node,
+  )
+  process.stdout.write(
+    `${ledger.path}: ${String(records.length)} of ` +
+      `${String(ledger.records.length)} certificate(s)\n`,
+  )
+  for (const record of records) {
+    process.stdout.write(`  ${formatIssuanceRecord(record)}\n`)
+  }
 }
 
 function runRefresh(args: readonly string[]): void {
@@ -380,6 +474,9 @@ function runRefresh(args: readonly string[]): void {
   process.stdout.write(
     `Signed a revocation list with ${String(result.list.revoked.length)} ` +
       `entrie(s), ${String(result.added)} new\n` +
+      (config.importFrom === undefined
+        ? ''
+        : `  imported          ${String(result.imported)} from ${config.importFrom}\n`) +
       `  list              ${result.path}\n` +
       `  issued at         ${new Date(result.list.issuedAt).toISOString()}\n` +
       `  next update       ${new Date(result.list.nextUpdate).toISOString()}\n` +
@@ -411,10 +508,13 @@ export function runQianmoCa(args: readonly string[]): void {
       case 'refresh-rl':
         runRefresh(rest)
         return
+      case 'ledger':
+        runLedger(rest)
+        return
       default:
         throw new Error(
           `unknown ca command ${String(command)}` +
-            ` (expected init, issue or refresh-rl)`,
+            ` (expected init, issue, refresh-rl or ledger)`,
         )
     }
   } catch (error) {

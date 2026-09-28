@@ -405,6 +405,8 @@ export const certificateScenarios: readonly Scenario[] = [
         node: SENDER_NODE,
         configRoot: fixture.peerConfig,
         outName: 'replacement.crt',
+        // 第二张：CA 里已有这个节点的副本，重签要显式说覆盖。
+        replace: true,
       })
       const rl = await signRevocationList(fixture.ca, {
         revoke: [{ node: SENDER_NODE, fingerprint256: revoked.fingerprint256 }],

@@ -991,9 +991,10 @@ async function rosterFragment(
   // same zero-auth registry the roster does (§5.2), and serialising them would
   // double the page's worst case for no gain. A certificate port that fails is
   // a strip on the page, never a 500 — same rule as every other port here.
+  const certificatePort = deps.certificates
   const [result, certificates] = await Promise.all([
     deps.registry.list(),
-    deps.certificates?.read(),
+    certificatePort?.read(),
   ])
   const agents = valueOf(result)
   return {
@@ -1002,11 +1003,12 @@ async function rosterFragment(
       failureOf(result),
       now,
       deps.limits.registryTtlMs,
-      certificates === undefined
+      certificatePort === undefined || certificates === undefined
         ? undefined
         : {
             snapshot: valueOf(certificates),
             failure: failureOf(certificates),
+            roots: certificatePort.roots(),
             binName: deps.binName ?? DEFAULT_BIN_NAME,
           },
       deps.nodeServers,

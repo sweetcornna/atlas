@@ -41,6 +41,7 @@ import type {
   CertificateSnapshot,
   CertificateStatus,
   ConsoleAgent,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleFailure,
   ConsoleResult,
@@ -52,8 +53,12 @@ import type {
   WakeInput,
   WakePort,
 } from '@qianmo/console'
-import { X509Certificate, type KeyObject } from 'node:crypto'
-import { verifyRevocationList } from '../../services/qianmo/ca/revocationList.js'
+import { X509Certificate } from 'node:crypto'
+import {
+  anchoredValidity,
+  parseTrustAnchors,
+  verifyRevocationListByAnchors,
+} from '../../services/qianmo/trustAnchors.js'
 import { LIMITS, assertAddress } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { RUNTIME_RATE } from '@qianmo/router'
@@ -540,18 +545,34 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
 // ---------------------------------------------------------------------------
 
 /**
- * 「快到期」的门限。
+ * 到期提醒的两道门限，都只写在这里，节点证书与 CA 根共用。
  *
- * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。这里只产出**一个**
- * `expiring` 状态，颜色由视图按 tone 表决定——两处各写一遍门限，就是两处可以
- * 各自漂移的门限。
+ * §6.2 的提醒机制原文：剩余 < 21 天黄条、< 7 天红条。门限在这里换成状态
+ * （`expiring` / `expiring-urgent`），颜色由视图按状态查 tone 表——门限若在
+ * 视图里再写一遍，就是两处可以各自漂移的门限。已过期是第四档，不借用红条那
+ * 一档：它的下一步不是「赶在到期前重签」，而是「这个节点现在已经被拒」。
  */
 const CERTIFICATE_EXPIRING_MS = 21 * 24 * 60 * 60 * 1000
+const CERTIFICATE_URGENT_MS = 7 * 24 * 60 * 60 * 1000
+
+/** 一个 `notAfter` 在 `now` 时落在哪一档。叶证书与根都经这一个函数。 */
+function expiryStatusOf(
+  notAfter: number,
+  now: number,
+): ConsoleCaRoot['status'] {
+  if (now >= notAfter) return 'expired'
+  if (notAfter - now < CERTIFICATE_URGENT_MS) return 'expiring-urgent'
+  if (notAfter - now < CERTIFICATE_EXPIRING_MS) return 'expiring'
+  return 'valid'
+}
 
 interface CertificatePortOptions {
   /** 注册中心 HTTP v0 基址，不带尾斜杠。 */
   readonly baseUrl: string
-  /** CA 根证书 PEM——**公开材料**，控制台读它是为了做 F-2 那一次校验。 */
+  /**
+   * CA 根证书 PEM——**公开材料**，控制台读它是为了做 F-2 那一次校验。换根
+   * 重叠期（§3.3）里可以是新旧两张根，两张都用，与节点侧同一个解析函数。
+   */
   readonly caCertificatePem: string
   readonly fetch?: ConsoleFetch
   readonly timeoutMs?: number
@@ -568,15 +589,18 @@ function nodeSegmentOf(value: unknown): string | null {
 }
 
 /**
- * 判定一张证书的处置——§10.1 的六个取值。
+ * 判定一张证书的处置——§10.1 的取值，`expiring` 按 §6.2 分成两档。
  *
  * **顺序是有讲究的**：先问「有没有」，再问「是不是本 CA 签的」，最后才问时间与
  * 吊销。倒过来问会让一张伪造证书按它自己写的 `notAfter` 显示成「有效」——而
  * 「注册中心零鉴权，谁都能往里塞一张」正是 §5.2 T-B 的原话。
+ *
+ * 报出的 `notAfter` 是证书与签它的那张根**取早**的那个：根过期了，叶在 TLS 层
+ * 同样被拒，页面不该还显示「剩余 60d」。
  */
 function certificateStatusOf(
   pem: unknown,
-  caPublicKey: KeyObject,
+  anchors: ReturnType<typeof parseTrustAnchors>,
   revoked: ReadonlySet<string>,
   now: number,
 ): { status: CertificateStatus; fingerprint256?: string; notAfter?: number } {
@@ -589,20 +613,19 @@ function certificateStatusOf(
     return { status: 'bad-signature' }
   }
   const fingerprint256 = certificate.fingerprint256
-  const notAfter = Date.parse(certificate.validTo)
-  if (!certificate.verify(caPublicKey)) {
-    return { status: 'bad-signature', fingerprint256, notAfter }
+  const validity = anchoredValidity(anchors, certificate)
+  if (validity === null) {
+    return {
+      status: 'bad-signature',
+      fingerprint256,
+      notAfter: Date.parse(certificate.validTo),
+    }
   }
+  const notAfter = validity.notAfter
   if (revoked.has(fingerprint256)) {
     return { status: 'revoked', fingerprint256, notAfter }
   }
-  if (!Number.isFinite(notAfter) || now >= notAfter) {
-    return { status: 'expired', fingerprint256, notAfter }
-  }
-  if (notAfter - now < CERTIFICATE_EXPIRING_MS) {
-    return { status: 'expiring', fingerprint256, notAfter }
-  }
-  return { status: 'valid', fingerprint256, notAfter }
+  return { status: expiryStatusOf(notAfter, now), fingerprint256, notAfter }
 }
 
 /**
@@ -624,9 +647,9 @@ export function createCertificatePort(
   const now = options.now ?? Date.now
   const doFetch: ConsoleFetch =
     options.fetch ?? ((input, init) => fetch(input, init))
-  const caCertificate = new X509Certificate(options.caCertificatePem)
-  const caJwk = caCertificate.publicKey.export({ format: 'jwk' })
-  const caPublicKey = caJwk.x
+  // 构造时解析整份根证书文件，坏了就在这里抛——控制台随之起不来，与节点同一
+  // 条规矩：少了一张根还照常起的服务，看上去配好了，实际拒掉半个网络。
+  const anchors = parseTrustAnchors(options.caCertificatePem, '--trust-ca')
 
   async function get(path: string): Promise<unknown> {
     const response = await doFetch(`${baseUrl}${path}`, {
@@ -641,6 +664,16 @@ export function createCertificatePort(
   }
 
   return {
+    roots(): readonly ConsoleCaRoot[] {
+      const at = now()
+      return anchors.anchors.map(anchor => ({
+        // 多个 RDN 的 subject 每项占一行，拼成一行显示。
+        subject: anchor.certificate.subject.replace(/\n/g, ', '),
+        notAfter: anchor.notAfter,
+        status: expiryStatusOf(anchor.notAfter, at),
+      }))
+    },
+
     async read(): Promise<ConsoleResult<CertificateSnapshot>> {
       let agentsBody: unknown
       let rlBody: unknown
@@ -660,15 +693,15 @@ export function createCertificatePort(
         return fail('invalid', '注册中心返回的不是 agents 列表')
       }
 
+      const at = now()
       const verified =
-        rlBody === undefined || typeof caPublicKey !== 'string'
+        rlBody === undefined
           ? null
-          : verifyRevocationList(caPublicKey, rlBody)
+          : verifyRevocationListByAnchors(anchors, rlBody, at)
       const revoked = new Set(
         (verified?.revoked ?? []).map(entry => entry.fingerprint256),
       )
 
-      const at = now()
       const certificates: ConsoleCertificate[] = []
       const seen = new Set<string>()
       for (const raw of agents) {
@@ -682,7 +715,7 @@ export function createCertificatePort(
           node,
           ...certificateStatusOf(
             isRecord(raw) ? raw['certificate'] : undefined,
-            caCertificate.publicKey,
+            anchors,
             revoked,
             at,
           ),

@@ -41,13 +41,22 @@
  * ## What is verified here, and what is not
  *
  * A certificate must, in order: parse as a §4.2 binding, name the node it
- * was registered under, agree with any `publicKey` field alongside it,
- * verify against the configured CA root (F-2), be currently valid (not
- * before `notAfter`, not after — well, not *before* `notBefore` either), and
- * — only while the revocation list is fresh — not be on it. Any failure
- * drops that one node from the CA-derived cache; it does not throw, because
- * one bad record from a zero-auth registry (§5.2) must not stop every other
- * node from resolving.
+ * was registered under, agree with any `publicKey` field alongside it, have
+ * been issued by one of the configured CA roots (F-2), be currently valid
+ * (not before `notAfter`, not after — well, not *before* `notBefore` either;
+ * the root's own validity counts too), and — only while the revocation list
+ * is fresh — not be on it. Any failure drops that one node from the
+ * CA-derived cache; it does not throw, because one bad record from a
+ * zero-auth registry (§5.2) must not stop every other node from resolving.
+ *
+ * ## One root or several (§3.3's 90-day overlap)
+ *
+ * `caCertificatePem` may hold more than one root, and every one of them is
+ * used — the same set the TLS layer is handed, because both come out of
+ * `trustAnchors.ts`. A malformed trust file is the one thing here that
+ * *does* throw, from the constructor: it is local configuration, not a
+ * registry record, and a node that started with part of its trust set
+ * silently missing would look configured while refusing half the network.
  *
  * What this class does **not** do: verify the RL's own freshness against a
  * clock the operator cannot see (that is exactly {@link publicKeyOf}'s
@@ -59,7 +68,6 @@
 
 import { X509Certificate } from 'node:crypto'
 import {
-  isNodePublicKey,
   parseAddress,
   parseNodeCertificateBinding,
   type NodeCertificateBinding,
@@ -75,10 +83,12 @@ import type {
   HandshakeCredentialDirectory,
   ResolvedHandshakeCredential,
 } from '@qianmo/transport'
+import type { RevocationList } from './ca/revocationList.js'
 import {
-  verifyRevocationList,
-  type RevocationList,
-} from './ca/revocationList.js'
+  anchoredValidity,
+  parseTrustAnchors,
+  verifyRevocationListByAnchors,
+} from './trustAnchors.js'
 
 /** Injection point for tests; production always uses the global `fetch`. */
 type DirectoryFetch = (input: string, init: RequestInit) => Promise<Response>
@@ -169,7 +179,10 @@ type CertificateDirectoryRefreshSink = (
  * inline at `new CertificateDirectory({...})` and never names the type.
  */
 interface CertificateDirectoryOptions {
-  /** PEM root certificate — the one thing distributed out of band (§5.1). */
+  /**
+   * PEM root certificate(s) — the one thing distributed out of band (§5.1).
+   * Several roots during a rotation overlap (§3.3); all of them are used.
+   */
   readonly caCertificatePem: string
   /** `<node>=<publicKey>` pairs from `--trust`; always wins over the CA cache. */
   readonly trusted?: Iterable<readonly [string, string]>
@@ -197,24 +210,13 @@ interface CertificateDirectoryOptions {
 
 const DEFAULT_TIMEOUT_MS = 5_000
 
-/** The CA's Ed25519 public key, 43-char form, read out of its certificate. */
-function caPublicKeyOf(certificate: X509Certificate): string {
-  const jwk = certificate.publicKey.export({ format: 'jwk' })
-  const publicKey = jwk.x
-  if (!isNodePublicKey(publicKey)) {
-    throw new Error('--trust-ca does not carry an Ed25519 public key')
-  }
-  return publicKey
-}
-
 /**
  * `CertificateDirectory` — see the module header for the contract this keeps.
  */
 export class CertificateDirectory
   implements PublicKeyDirectory, HandshakeCredentialDirectory
 {
-  readonly #caCertificate: X509Certificate
-  readonly #caPublicKey: string
+  readonly #anchors: ReturnType<typeof parseTrustAnchors>
   readonly #registryUrl: string | undefined
   readonly #fetch: DirectoryFetch
   readonly #timeoutMs: number
@@ -247,8 +249,7 @@ export class CertificateDirectory
   #onRefresh: CertificateDirectoryRefreshSink | undefined
 
   constructor(options: CertificateDirectoryOptions) {
-    this.#caCertificate = new X509Certificate(options.caCertificatePem)
-    this.#caPublicKey = caPublicKeyOf(this.#caCertificate)
+    this.#anchors = parseTrustAnchors(options.caCertificatePem, '--trust-ca')
     this.#registryUrl = options.registryUrl?.replace(/\/+$/, '')
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init))
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -470,7 +471,11 @@ export class CertificateDirectory
   async #refreshRevocationList(registryUrl: string): Promise<void> {
     const body = await this.#getJson(registryUrl, '/v0/revocation-list')
     if (body === undefined) return
-    const verified = verifyRevocationList(this.#caPublicKey, body)
+    const verified = verifyRevocationListByAnchors(
+      this.#anchors,
+      body,
+      this.#now(),
+    )
     if (verified !== null) this.#acceptRevocationList(verified)
   }
 
@@ -580,20 +585,18 @@ export class CertificateDirectory
       return null // nodekey does not match the record's own declared key
     }
     // F-2: this is the entire "was it forged" question, and it needs nothing
-    // but the CA's public key.
-    if (!certificate.verify(this.#caCertificate.publicKey)) return null
-
-    const notBefore = Date.parse(certificate.validFrom)
-    const notAfter = Date.parse(certificate.validTo)
-    if (!Number.isFinite(notBefore) || !Number.isFinite(notAfter)) return null
+    // but the CA roots. The window it returns already includes the issuing
+    // root's own validity, which is what the TLS layer enforces as well.
+    const validity = anchoredValidity(this.#anchors, certificate)
+    if (validity === null) return null
 
     return {
       node: binding.node,
       certificate: {
         publicKey: binding.publicKey,
         fingerprint256: certificate.fingerprint256,
-        notBefore,
-        notAfter,
+        notBefore: validity.notBefore,
+        notAfter: validity.notAfter,
       },
     }
   }

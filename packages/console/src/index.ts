@@ -32,6 +32,7 @@ export type {
   ChatUpdate,
   ConsoleAgent,
   ConsoleAuditSource,
+  ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleDeps,
   ConsoleFailure,

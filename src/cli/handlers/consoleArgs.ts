@@ -879,10 +879,12 @@ Options (each accepts both --name value and --name=value):
                            published certificate against, and a column of
                            unknowns makes "no certificates yet" and "every
                            certificate is broken" look the same. Read only —
-                           this console verifies, never signs. With --anchors,
-                           a certificate that verifies against this root (and
-                           a fresh revocation list) also supplies that node's
-                           witness key.
+                           this console verifies, never signs. During a root
+                           rotation the file holds both roots (§3.3); a file
+                           that is not all well-formed roots refuses startup.
+                           With --anchors, a certificate that verifies against
+                           a root here (and a fresh revocation list) also
+                           supplies that node's witness key.
   --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
                            endpoint. Without this, the trail is 未见证.
                            Anchors are checked only against node keys from

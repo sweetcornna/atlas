@@ -65,6 +65,10 @@ import {
   loadOrCreateNodeKeys,
   parseTrustedKey,
 } from '../../services/qianmo/nodeIdentity.js'
+import {
+  anchoredValidity,
+  readTrustAnchors,
+} from '../../services/qianmo/trustAnchors.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
   probeResidentModel,
@@ -269,10 +273,12 @@ export interface ResidentCliConfig {
   /** `<node>=<publicKey>` pairs this node will accept capabilities from. */
   readonly trusted: readonly (readonly [string, string])[]
   /**
-   * Path to the CA root certificate (key-distribution.md §8.1's `--trust-ca`,
-   * §8.2 phase ①). When given, peer keys are resolved through a
+   * Path to the CA root certificate(s) (key-distribution.md §8.1's
+   * `--trust-ca`, §8.2 phase ①). When given, peer keys are resolved through a
    * `CertificateDirectory` instead of only `StaticPublicKeyDirectory`;
-   * `--trust` entries continue to work and take priority on conflict.
+   * `--trust` entries continue to work and take priority on conflict. The
+   * file may hold several roots during a rotation overlap (§3.3); the
+   * directory and the TLS layer both use all of them.
    */
   readonly trustCa?: string
   /** Path to this node's own certificate (§4.1's `<node>.tls.crt`). */
@@ -835,12 +841,17 @@ Authorization:
                            (key-distribution.md §5.1, produced by
                            \`${invokedBinName()} ca init\`). Peer keys are then
                            resolved through a certificate directory instead
-                           of only --trust: a certificate not signed by this
-                           root, expired, or on the revocation list is
-                           refused for that peer. An RL that has never been
-                           fetched or has gone stale degrades to exactly the
-                           --trust entries above, not to full-open or a dead
-                           node (§6.4).
+                           of only --trust: a certificate not issued by a
+                           root in this file, expired, or on the revocation
+                           list is refused for that peer. An RL that has never
+                           been fetched or has gone stale degrades to exactly
+                           the --trust entries above, not to full-open or a
+                           dead node (§6.4).
+                           During a root rotation the file holds the old and
+                           the new root one after another (§3.3); both are
+                           used, for peer certificates and for TLS alike.
+                           Anything in the file that is not a well-formed
+                           self-signed Ed25519 root refuses startup.
   --cert <abs path>        This node's own certificate. Checked at startup
                            against this node's own identity key — a
                            certificate naming a different node or a
@@ -1010,7 +1021,9 @@ export function buildPublicKeyDirectory(
     return new StaticPublicKeyDirectory(config.trusted)
   }
   return new CertificateDirectory({
-    caCertificatePem: readFileSync(config.trustCa, 'utf8'),
+    // The parsed-and-reserialized roots, not the raw file: the same bytes
+    // `buildListenerTls` hands the TLS layer, so the two cannot disagree.
+    caCertificatePem: readTrustAnchors(config.trustCa).pem,
     trusted: config.trusted,
     ...(config.registryUrl === undefined
       ? {}
@@ -1453,15 +1466,17 @@ export function assertOwnCertificateAndKey(
       // does not trust is not a subtle misconfiguration — the node would
       // present it happily and every peer would refuse it — but without this
       // it survives until the first handshake, which is the worst place to
-      // find out.
-      const caCertificate = new X509Certificate(
-        readFileSync(config.trustCa, 'utf8'),
-      )
-      if (!certificate.verify(caCertificate.publicKey)) {
+      // find out. Any root in the file will do: during a rotation overlap
+      // this node's certificate may still be the old root's (§3.3).
+      if (
+        anchoredValidity(readTrustAnchors(config.trustCa), certificate) === null
+      ) {
+        // The leading phrase is unchanged from the single-root days: the
+        // acceptance scenario matches on it, including against older builds.
         throw new Error(
-          '--cert was not signed by the CA in --trust-ca ' +
-            '(key-distribution.md F-2); check that the two files belong to ' +
-            'the same CA generation',
+          '--cert was not signed by the CA in --trust-ca: no root in that ' +
+            'file issued it (key-distribution.md F-2); check that the two ' +
+            'files belong to the same CA generation',
         )
       }
     }
@@ -1541,7 +1556,9 @@ export function buildListenerTls(
     tls: mutualTlsServerOptions({
       cert: certificatePem,
       key: readFileSync(config.key, 'utf8'),
-      ca: readFileSync(config.trustCa, 'utf8'),
+      // Every root the file holds, as parsed — a malformed block refuses
+      // startup here rather than being skipped by the TLS stack (§3.3).
+      ca: readTrustAnchors(config.trustCa).pem,
     }),
     // Read off the certificate rather than configured separately: two places
     // to say when a certificate expires is two places that can disagree, and

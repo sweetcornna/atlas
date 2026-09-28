@@ -8,6 +8,7 @@ import type {
   AuditFilter,
   AuditPage,
   AuditPort,
+  CertificatePort,
   ConsoleAgent,
   ConsoleAuditSource,
   ConsoleDeps,
@@ -432,6 +433,30 @@ describe('fragments', () => {
     registry.listResult = failResult('unreachable', '注册中心不可达')
     const response = await handle(get('/fragments/roster', VIEW))
     expect(response.status).toBe(200)
+  })
+
+  test('the roster draws the CA roots even when the certificate read fails', async () => {
+    // The roots come from `roots()`, the console's own trust file; the
+    // registry being down is `read()`'s problem, not theirs.
+    const certificates: CertificatePort = {
+      read: () => Promise.resolve(failResult('unreachable', '连接被拒绝')),
+      roots: () => [
+        {
+          subject: 'CN=qianmo-ca',
+          notAfter: NOW + 5 * 24 * 60 * 60 * 1000,
+          status: 'expiring-urgent',
+        },
+      ],
+    }
+    const handle = createConsoleHandler(
+      { ...setup().deps, certificates },
+      TOKENS,
+    )
+    const markup = await (await handle(get('/fragments/roster', VIEW))).text()
+    expect(markup).toContain('吊销清单未读到 · 连接被拒绝')
+    expect(markup).toContain(
+      '<p class="bar bar-critical">CA 根 CN=qianmo-ca · 7 天内到期 · 剩余 5d</p>',
+    )
   })
 
   test('the chain fragment decodes the traceId and renders markup', async () => {

@@ -48,6 +48,7 @@ import { opensslVersion, runOpenssl } from '../openssl.js'
 import { caCertPath, caKeyPath, revocationListPath } from '../paths.js'
 import { popMessage } from '../pop.js'
 import { verifyRevocationList } from '../revocationList.js'
+import { parseTrustAnchors } from '../../trustAnchors.js'
 
 const OPENSSL = opensslVersion()
 if (OPENSSL === null) {
@@ -108,6 +109,9 @@ function issueForTest(overrides: Record<string, unknown> = {}) {
     csrPem,
     popSignature: pop,
     hosts: ['localhost', '127.0.0.1'],
+    // Every test here re-issues node-a into one CA directory; the refusal to
+    // overwrite without it has its own tests in `ledger.test.ts`.
+    replace: true,
     ...overrides,
   })
 }
@@ -131,6 +135,58 @@ describe('qm ca init', () => {
   itNeedsOpenssl('never overwrites an existing CA private key (§3.3)', () => {
     expect(() => initCa({ directory: caDir })).toThrow(/never\s+overwritten/)
   })
+
+  itNeedsOpenssl(
+    'the default CN carries the UTC date; an explicit --cn wins',
+    () => {
+      // 23:30 UTC is already the next day east of Greenwich: the date must be
+      // the UTC one, or two operators in two zones name one day differently.
+      const now = Date.UTC(2029, 0, 2, 23, 30)
+      const dated = join(root, 'dated')
+      initCa({ directory: dated, now })
+      expect(new X509Certificate(readFileSync(caCertPath(dated))).subject).toBe(
+        'CN=qianmo-ca-20290102',
+      )
+
+      const named = join(root, 'named')
+      initCa({ directory: named, commonName: 'qianmo-ca', now })
+      expect(new X509Certificate(readFileSync(caCertPath(named))).subject).toBe(
+        'CN=qianmo-ca',
+      )
+      // The first production root is CN=qianmo-ca; a default-named root made
+      // on any day is not.
+      expect(
+        new X509Certificate(readFileSync(caCertPath(caDir))).subject,
+      ).toMatch(/^CN=qianmo-ca-\d{8}$/)
+    },
+  )
+
+  itNeedsOpenssl(
+    'a second init on the same day: one directory refuses, two directories collide',
+    () => {
+      const now = Date.UTC(2029, 8, 15, 8)
+      const first = join(root, 'same-day')
+      initCa({ directory: first, now })
+      const before = readFileSync(caCertPath(first), 'utf8')
+      // Same directory: init itself stops it, and the first root is untouched.
+      expect(() => initCa({ directory: first, now })).toThrow(
+        /a CA already exists/,
+      )
+      expect(readFileSync(caCertPath(first), 'utf8')).toBe(before)
+
+      // Another directory on the same UTC day gets the same default name, and
+      // init has no way to know. The collision surfaces where both roots meet:
+      // a --trust-ca file holding them is refused at startup.
+      const second = join(root, 'same-day-2')
+      initCa({ directory: second, now })
+      expect(() =>
+        parseTrustAnchors(
+          before + readFileSync(caCertPath(second), 'utf8'),
+          'test',
+        ),
+      ).toThrow(/two roots share the subject CN=qianmo-ca-20290915/)
+    },
+  )
 })
 
 describe('qm ca issue', () => {
@@ -375,5 +431,158 @@ describe('qm ca refresh-rl', () => {
     expect(() =>
       refreshRevocationList({ directory: join(root, 'nothing-here') }),
     ).toThrow(/no CA at/)
+  })
+})
+
+/**
+ * Handing the RL to a new root (ca-runbook.md §6.2, root rotation step 5).
+ * Nodes keep the list append-only (§6.4), so the new root's first list has to
+ * carry every entry the old root published — `importFrom` is how.
+ */
+describe('qm ca refresh-rl --import-from', () => {
+  const fingerprint = (byte: string): string =>
+    Array.from({ length: 32 }, () => byte).join(':')
+
+  function rotation(name: string) {
+    const oldDir = join(root, `${name}-old`)
+    const newDir = join(root, `${name}-new`)
+    initCa({ directory: oldDir, commonName: `${name}-old` })
+    const fresh = initCa({ directory: newDir, commonName: `${name}-new` })
+    const t0 = Date.now()
+    refreshRevocationList({
+      directory: oldDir,
+      revoke: [
+        {
+          node: 'node-a',
+          fingerprint256: fingerprint('A1'),
+          reason: 'key lost',
+        },
+      ],
+      now: t0,
+    })
+    refreshRevocationList({
+      directory: oldDir,
+      revoke: [{ node: 'node-b', fingerprint256: fingerprint('B2') }],
+      now: t0 + 1_000,
+    })
+    return { oldDir, newDir, newPublicKey: fresh.publicKey, t0 }
+  }
+
+  function stateOf(directory: string): unknown {
+    return JSON.parse(readFileSync(join(directory, 'revoked.json'), 'utf8'))
+  }
+
+  itNeedsOpenssl(
+    'every old entry is in the list the new root signs, as it was recorded',
+    () => {
+      const { oldDir, newDir, newPublicKey, t0 } = rotation('carry')
+      // The new root already revoked something of its own during the
+      // overlap: a merge keeps it, a copy of the old file would not.
+      refreshRevocationList({
+        directory: newDir,
+        revoke: [
+          {
+            node: 'node-c',
+            fingerprint256: fingerprint('C3'),
+            reason: 'drill',
+          },
+        ],
+        now: t0 + 2_000,
+      })
+      const result = refreshRevocationList({
+        directory: newDir,
+        importFrom: oldDir,
+        now: t0 + 3_000,
+      })
+      expect(result.imported).toBe(2)
+      expect(result.added).toBe(0)
+
+      const published: unknown = JSON.parse(readFileSync(result.path, 'utf8'))
+      const verified = verifyRevocationList(newPublicKey, published)
+      expect(verified?.revoked).toEqual([
+        {
+          node: 'node-a',
+          fingerprint256: fingerprint('A1'),
+          reason: 'key lost',
+          at: t0,
+        },
+        {
+          node: 'node-b',
+          fingerprint256: fingerprint('B2'),
+          reason: 'unspecified',
+          at: t0 + 1_000,
+        },
+        {
+          node: 'node-c',
+          fingerprint256: fingerprint('C3'),
+          reason: 'drill',
+          at: t0 + 2_000,
+        },
+      ])
+      // Signed by the new root, and only by it.
+      const oldPublicKey = parseTrustAnchors(
+        readFileSync(caCertPath(oldDir), 'utf8'),
+        'test',
+      ).anchors[0]?.publicKey
+      expect(verifyRevocationList(oldPublicKey ?? '', published)).toBeNull()
+      // The old directory is read, never written.
+      expect(stateOf(oldDir)).toHaveLength(2)
+    },
+  )
+
+  itNeedsOpenssl('importing again changes nothing but the dates', () => {
+    const { oldDir, newDir, t0 } = rotation('again')
+    const first = refreshRevocationList({
+      directory: newDir,
+      importFrom: oldDir,
+      now: t0 + 2_000,
+    })
+    const stateBytes = readFileSync(join(newDir, 'revoked.json'), 'utf8')
+    const second = refreshRevocationList({
+      directory: newDir,
+      importFrom: oldDir,
+      now: t0 + 3_000,
+    })
+    expect(first.imported).toBe(2)
+    expect(second.imported).toBe(0)
+    expect(second.list.revoked).toEqual(first.list.revoked)
+    expect(readFileSync(join(newDir, 'revoked.json'), 'utf8')).toBe(stateBytes)
+    expect(second.list.issuedAt).toBeGreaterThan(first.list.issuedAt)
+  })
+
+  itNeedsOpenssl('refuses before writing anything', () => {
+    const { oldDir, newDir, t0 } = rotation('refuse')
+    const listPath = revocationListPath(newDir)
+    const untouched = () => {
+      expect(() => readFileSync(listPath)).toThrow()
+      expect(() => readFileSync(join(newDir, 'revoked.json'))).toThrow()
+    }
+
+    // Its own directory: almost certainly a --ca-dir mix-up.
+    expect(() =>
+      refreshRevocationList({ directory: newDir, importFrom: newDir, now: t0 }),
+    ).toThrow(/this CA's own directory/)
+    untouched()
+
+    // A directory with no revocation state: a wrong path, not "nothing to do".
+    expect(() =>
+      refreshRevocationList({
+        directory: newDir,
+        importFrom: join(root, 'refuse-nowhere'),
+        now: t0,
+      }),
+    ).toThrow(/--import-from: no .*revoked\.json/)
+    untouched()
+
+    // A damaged file: refused whole, never partly imported.
+    writeFileSync(join(oldDir, 'revoked.json'), '[{"node":"node-a"}')
+    expect(() =>
+      refreshRevocationList({ directory: newDir, importFrom: oldDir, now: t0 }),
+    ).toThrow(/revoked\.json is not JSON/)
+    writeFileSync(join(oldDir, 'revoked.json'), '[{"node":"node-a"}]\n')
+    expect(() =>
+      refreshRevocationList({ directory: newDir, importFrom: oldDir, now: t0 }),
+    ).toThrow(/malformed revocation entry/)
+    untouched()
   })
 })
