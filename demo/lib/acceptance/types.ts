@@ -550,6 +550,11 @@ export interface RegistrySpec {
   readonly persist?: boolean
   /** 租约 TTL；不给就是 `DEFAULT_TTL_MS`。短 TTL 用来测过期。 */
   readonly ttlMs?: number
+  /**
+   * 写 token（tenancy-m1.md P15.8）。给了，注册中心的写操作不带它就 401；
+   * 不给就是零鉴权，与产品缺省一致。重启沿用同一枚。
+   */
+  readonly writeToken?: string
 }
 
 /** 一个一次性注册中心。 */

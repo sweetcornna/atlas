@@ -17,6 +17,13 @@
  * ④ `public-key=` 形状不对当场带行号拒绝；
  * ⑤ 在跑的注册中心还是旧命令行（名册上没挂这把公钥）→ 与端点不一致同一个处置：重起它。
  *
+ * 以及同一份公钥的另一个去处与注册中心写 token（K-11 F-3、P15.8）：
+ *
+ * ⑥ 控制台带 `--anchors` → 每个有公钥的节点一条 `--trust <节点>=<公钥>`（不经注册中心）；
+ *    不带 `--anchors` 不加；一把都没有且尾参里也没有 `--trust` / `--trust-ca` → 起之前拒绝；
+ * ⑦ `secrets/registry-write-token` 在 → 注册中心 `--write-token-file`、控制台
+ *    `--registry-token-file`，两边同一个路径、token 值不上命令行；不在 → 两边都不带，WARN。
+ *
  * 做法同 beta-up-args：临时「仓库」里的 common.sh 末尾把 beta_start_process 换成只记账的桩，
  * 断言的是真参数解析的产物，不起真注册中心。
  */
@@ -158,6 +165,8 @@ interface ShellResult {
 function runHost(
   at: Place,
   env: Readonly<Record<string, string>> = {},
+  // 默认只起注册中心：坐标行会让链路那一步真的去建 SSH 隧道。⑥⑦ 另点名控制台。
+  only: readonly string[] = ['--only', 'registry'],
 ): ShellResult {
   const child = Bun.spawnSync(
     [
@@ -165,9 +174,7 @@ function runHost(
       join(at.repo, 'demo/env/beta/beta-up.sh'),
       '--role',
       'host',
-      // 只起注册中心：坐标行会让链路那一步真的去建 SSH 隧道；控制台与本用例无关。
-      '--only',
-      'registry',
+      ...only,
     ],
     {
       cwd: at.repo,
@@ -188,17 +195,25 @@ function runHost(
   }
 }
 
-/** 注册中心那一段底层命令行里全部 `--public-key` 的取值。 */
-function publicKeyArgs(at: Place): string[] {
-  if (!existsSync(at.argvLog)) return []
+/** 桩记下来的某一段底层命令行；没起那个进程就是 undefined。 */
+function blockArgs(at: Place, name: string): string[] | undefined {
+  if (!existsSync(at.argvLog)) return undefined
   const lines = readFileSync(at.argvLog, 'utf8').split('\n')
-  const start = lines.indexOf('=== registry')
+  const start = lines.indexOf(`=== ${name}`)
+  if (start < 0) return undefined
   const block = lines.slice(start + 1)
   const end = block.findIndex(line => line.startsWith('=== '))
-  const args = end < 0 ? block : block.slice(0, end)
-  return args.flatMap((arg, i) =>
-    arg === '--public-key' ? [args[i + 1] ?? ''] : [],
-  )
+  return (end < 0 ? block : block.slice(0, end)).filter(line => line !== '')
+}
+
+/** 某一段命令行里某个开关的全部取值。 */
+function flagValues(args: readonly string[], flag: string): string[] {
+  return args.flatMap((arg, i) => (arg === flag ? [args[i + 1] ?? ''] : []))
+}
+
+/** 注册中心那一段底层命令行里全部 `--public-key` 的取值。 */
+function publicKeyArgs(at: Place): string[] {
+  return flagValues(blockArgs(at, 'registry') ?? [], '--public-key')
 }
 
 describe('beta-up.sh --role host 把节点公钥交给注册中心', () => {
@@ -336,4 +351,142 @@ describe('beta-up.sh --role host 把节点公钥交给注册中心', () => {
     }
     expect(gone).toBe(true)
   }, 30_000)
+})
+
+describe('beta-up.sh --role host 把同一份公钥以 --trust 交给控制台（K-11 F-3）', () => {
+  const CONSOLE_ONLY = ['--only', 'console'] as const
+  const ANCHORS = ['--', '--anchors', '/srv/witness/anchors.json'] as const
+
+  test('⑥ 带 --anchors：有公钥的节点各一条 --trust，排在尾参之前；没公钥的节点不给', () => {
+    const at = place()
+    writePeers(at, [
+      `node beta-1 user=ops host=203.0.113.7 local-port=38631 public-key=${KEY_1}`,
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+      'qianmo://beta-1/reviewer ws://127.0.0.1:38631',
+      'qianmo://beta-5/ops ws://198.51.100.9:38625',
+    ])
+    const run = runHost(at, {}, [...CONSOLE_ONLY, ...ANCHORS])
+    const args = blockArgs(at, 'console')
+    expect({ started: args !== undefined, out: run.out }).toEqual({
+      started: true,
+      out: run.out,
+    })
+    expect(flagValues(args ?? [], '--trust')).toEqual([`beta-1=${KEY_1}`])
+    expect((args ?? []).indexOf('--trust')).toBeLessThan(
+      (args ?? []).indexOf('--anchors'),
+    )
+    expect(run.out).toContain('见证验签公钥：1 个节点经 --trust 交给控制台')
+    expect(run.out).toContain('没有节点 beta-5 的可信公钥')
+  })
+
+  test('⑥ 不带 --anchors：控制台命令行与此前一样，不加 --trust', () => {
+    const at = place()
+    writePeers(at, [
+      `node beta-1 user=ops host=203.0.113.7 local-port=38631 public-key=${KEY_1}`,
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+    ])
+    const run = runHost(at, {}, [...CONSOLE_ONLY])
+    const args = blockArgs(at, 'console')
+    expect({ started: args !== undefined, out: run.out }).toEqual({
+      started: true,
+      out: run.out,
+    })
+    expect(args).not.toContain('--trust')
+    expect(run.out).not.toContain('见证验签公钥')
+  })
+
+  test('⑥ 带 --anchors 而一把可信公钥都没有：起控制台之前拒绝，说清原因', () => {
+    const at = place()
+    writePeers(at, ['qianmo://beta-5/ops ws://198.51.100.9:38625'])
+    const run = runHost(at, {}, [...CONSOLE_ONLY, ...ANCHORS])
+    expect(run.exitCode).not.toBe(0)
+    expect(run.out).toContain('控制台带 --anchors，但没有一把可信公钥')
+    expect(blockArgs(at, 'console')).toBeUndefined()
+  })
+
+  test('⑥ 公钥来源只有尾参里的 --trust-ca：照起，不自己编 --trust', () => {
+    const at = place()
+    writePeers(at, ['qianmo://beta-5/ops ws://198.51.100.9:38625'])
+    const run = runHost(at, {}, [
+      ...CONSOLE_ONLY,
+      ...ANCHORS,
+      '--trust-ca',
+      '/srv/ca/root.pem',
+    ])
+    const args = blockArgs(at, 'console')
+    expect({ started: args !== undefined, out: run.out }).toEqual({
+      started: true,
+      out: run.out,
+    })
+    expect(args).not.toContain('--trust')
+    expect(args).toContain('--trust-ca')
+  })
+
+  test('⑥ 注册中心与控制台一趟都起：公钥只算一次、只说一遍，两边拿到同一把', () => {
+    const at = place()
+    writePeers(at, [
+      `node beta-1 user=ops host=203.0.113.7 local-port=38631 public-key=${KEY_1}`,
+      'qianmo://beta-1/planner ws://127.0.0.1:38631',
+    ])
+    const run = runHost(at, {}, [
+      '--only',
+      'registry',
+      ...CONSOLE_ONLY,
+      ...ANCHORS,
+    ])
+    expect({
+      console: blockArgs(at, 'console') !== undefined,
+      out: run.out,
+    }).toEqual({ console: true, out: run.out })
+    expect(publicKeyArgs(at)).toEqual([`beta-1=${KEY_1}`])
+    expect(flagValues(blockArgs(at, 'console') ?? [], '--trust')).toEqual([
+      `beta-1=${KEY_1}`,
+    ])
+    expect(run.out.split('名册公钥：beta-1').length - 1).toBe(1)
+  })
+})
+
+describe('beta-up.sh --role host 的注册中心写 token（P15.8）', () => {
+  const BOTH = ['--only', 'registry', '--only', 'console'] as const
+  const WRITE_TOKEN = 'registry-write-token-value-for-test'
+
+  test('⑦ secrets/registry-write-token 在：注册中心与控制台各带同一个路径，值不上命令行', () => {
+    const at = place()
+    writePeers(at, ['qianmo://beta-4/planner ws://127.0.0.1:38625'])
+    const file = join(at.root, 'secrets', 'registry-write-token')
+    writeFileSync(file, `${WRITE_TOKEN}\n`)
+    chmodSync(file, 0o600)
+
+    const run = runHost(at, {}, [...BOTH])
+
+    expect({
+      console: blockArgs(at, 'console') !== undefined,
+      out: run.out,
+    }).toEqual({ console: true, out: run.out })
+    expect(
+      flagValues(blockArgs(at, 'registry') ?? [], '--write-token-file'),
+    ).toEqual([file])
+    expect(
+      flagValues(blockArgs(at, 'console') ?? [], '--registry-token-file'),
+    ).toEqual([file])
+    expect(readFileSync(at.argvLog, 'utf8')).not.toContain(WRITE_TOKEN)
+    expect(run.out).not.toContain(WRITE_TOKEN)
+    expect(run.out).not.toContain('注册中心写操作不鉴权')
+  })
+
+  test('⑦ 文件不在：两边都不带（与此前一样），并 WARN 说清启用步骤在哪', () => {
+    const at = place()
+    writePeers(at, ['qianmo://beta-4/planner ws://127.0.0.1:38625'])
+
+    const run = runHost(at, {}, [...BOTH])
+
+    expect({
+      console: blockArgs(at, 'console') !== undefined,
+      out: run.out,
+    }).toEqual({ console: true, out: run.out })
+    expect(blockArgs(at, 'registry')).not.toContain('--write-token-file')
+    expect(blockArgs(at, 'console')).not.toContain('--registry-token-file')
+    expect(run.out).toContain('注册中心写操作不鉴权')
+    expect(run.out).toContain('注册中心写 token')
+  })
 })

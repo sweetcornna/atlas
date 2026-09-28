@@ -109,6 +109,10 @@ describe('occ console argument parsing', () => {
         '/tmp/qianmo/trail.ndjson',
         '--anchors',
         '/tmp/qianmo/witness',
+        '--trust',
+        'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        '--registry-token-file',
+        '/tmp/qianmo/registry-token',
         '--wake-url',
         'ws://10.0.0.3:38611',
         '--label',
@@ -139,6 +143,8 @@ describe('occ console argument parsing', () => {
         '--registry=http://10.0.0.2:38610',
         '--audit=/tmp/qianmo/trail.ndjson',
         '--anchors=/tmp/qianmo/witness',
+        '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+        '--registry-token-file=/tmp/qianmo/registry-token',
         '--wake-url=ws://10.0.0.3:38611',
         '--label=node-a 控制台',
         '--view-token=view-token-long-enough',
@@ -163,6 +169,8 @@ describe('occ console argument parsing', () => {
       ],
       auditMirrors: [],
       anchors: { kind: 'path', value: '/tmp/qianmo/witness' },
+      trusted: [['node-a', '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo']],
+      registryTokenFile: '/tmp/qianmo/registry-token',
       wakeTargets: [
         {
           node: DEFAULT_CONSOLE_NODE,
@@ -500,17 +508,75 @@ describe('occ console argument parsing', () => {
   })
 
   test('accepts only an absolute anchor directory or HTTP(S) endpoint', () => {
+    const trust = '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'
     expect(
-      parseConsoleArgs(['--anchors=/tmp/qianmo/witness'], 'qianmo'),
+      parseConsoleArgs(['--anchors=/tmp/qianmo/witness', trust], 'qianmo'),
     ).toMatchObject({ anchors: { kind: 'path', value: '/tmp/qianmo/witness' } })
     expect(
-      parseConsoleArgs(['--anchors=https://witness.example/v0'], 'qianmo'),
+      parseConsoleArgs(
+        ['--anchors=https://witness.example/v0', trust],
+        'qianmo',
+      ),
     ).toMatchObject({
       anchors: { kind: 'url', value: 'https://witness.example/v0' },
     })
     expect(() =>
-      parseConsoleArgs(['--anchors=relative/witness'], 'qianmo'),
+      parseConsoleArgs(['--anchors=relative/witness', trust], 'qianmo'),
     ).toThrow('absolute path or http(s) URL')
+  })
+
+  test('--anchors needs a key source established on this side (K-11 F-3)', () => {
+    expect(() =>
+      parseConsoleArgs(['--anchors=/tmp/qianmo/witness'], 'qianmo'),
+    ).toThrow('--anchors needs --trust <node>=<publicKey> or --trust-ca')
+    expect(
+      parseConsoleArgs(
+        ['--anchors=/tmp/qianmo/witness', '--trust-ca=/etc/qianmo/ca.pem'],
+        'qianmo',
+      ),
+    ).toMatchObject({ trustCa: '/etc/qianmo/ca.pem' })
+  })
+
+  test('--trust folds a repeat and refuses two keys for one node', () => {
+    const other = 'hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR8'
+    expect(
+      parseConsoleArgs(
+        [
+          '--trust',
+          'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+          '--trust=node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+          '--trust',
+          `node-b=${other}`,
+        ],
+        'qianmo',
+      ).trusted,
+    ).toEqual([
+      ['node-a', '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'],
+      ['node-b', other],
+    ])
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--trust',
+          'node-a=11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo',
+          '--trust',
+          `node-a=${other}`,
+        ],
+        'qianmo',
+      ),
+    ).toThrow('--trust gives node node-a two different keys')
+    expect(() =>
+      parseConsoleArgs(['--trust', 'node-a=nope'], 'qianmo'),
+    ).toThrow('valid Ed25519 key')
+  })
+
+  test('--registry-token-file must be absolute, and neither new key appears unless given', () => {
+    expect(() =>
+      parseConsoleArgs(['--registry-token-file', 'token'], 'qianmo'),
+    ).toThrow('--registry-token-file must be an absolute path')
+    const plain = parseConsoleArgs([], 'qianmo')
+    expect('trusted' in plain).toBe(false)
+    expect('registryTokenFile' in plain).toBe(false)
   })
 
   test('rejects blank and oversized labels and blank tokens', () => {
@@ -1209,6 +1275,60 @@ describe('console registry port', () => {
       value: undefined,
     })
     expect(await port.list()).toEqual({ ok: true, value: [] })
+  })
+
+  test('carries the write token on writes only, against a registry that requires it (P15.8)', async () => {
+    const writeToken = 'console-registry-write-token'
+    const gated = startRegistryServer(0, { writeToken })
+    try {
+      const seen: { method: string; authorization: string | null }[] = []
+      const recording: Parameters<typeof createRegistryPort>[0]['fetch'] = (
+        input,
+        init,
+      ) => {
+        seen.push({
+          method: init.method ?? 'GET',
+          authorization: new Headers(init.headers).get('authorization'),
+        })
+        return fetch(input, init)
+      }
+
+      const without = createRegistryPort({ baseUrl: gated.url })
+      const refused = await without.register({
+        address,
+        endpoint: 'ws://127.0.0.1:38612',
+      })
+      expect(refused).toMatchObject({ ok: false, failure: { code: 'refused' } })
+      if (refused.ok) throw new Error('unreachable')
+      expect(refused.failure.message).toContain('write token')
+      expect(await without.list()).toEqual({ ok: true, value: [] })
+
+      const port = createRegistryPort({
+        baseUrl: gated.url,
+        writeToken,
+        fetch: recording,
+      })
+      const registered = await port.register({
+        address,
+        endpoint: 'ws://127.0.0.1:38612',
+      })
+      expect(registered.ok).toBe(true)
+      expect((await port.heartbeat(address)).ok).toBe(true)
+      expect((await port.list()).ok).toBe(true)
+      expect(await port.deregister(address)).toEqual({
+        ok: true,
+        value: undefined,
+      })
+
+      expect(seen).toEqual([
+        { method: 'POST', authorization: `Bearer ${writeToken}` },
+        { method: 'POST', authorization: `Bearer ${writeToken}` },
+        { method: 'GET', authorization: null },
+        { method: 'DELETE', authorization: `Bearer ${writeToken}` },
+      ])
+    } finally {
+      await gated.stop()
+    }
   })
 
   test('maps the registry own error codes onto port failures', async () => {

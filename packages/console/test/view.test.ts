@@ -950,6 +950,19 @@ describe('renderAudit', () => {
     expect(html).not.toContain('<span class="tone-ok">完整</span>')
   })
 
+  test('a mirror that has not caught up with the witness reads 未覆盖, neutral', () => {
+    const html = renderAudit(
+      page({ witness: { tampered: false, stale: false, uncovered: true } }),
+      null,
+      NO_FILTER,
+    )
+    expect(html).toContain('<span class="tone-muted">未覆盖</span>')
+    expect(html).not.toContain('锚点不符')
+    expect(html).not.toContain('<span class="tone-ok">完整</span>')
+    expect(html).not.toContain('audit-integrity')
+    expect(html).toContain('data-witness="uncovered"')
+  })
+
   test('the rail states the trail size and only names what is hidden', () => {
     const unfiltered = renderAudit(page(), null, NO_FILTER)
     expect(unfiltered).toContain('<span class="total">1</span>')
@@ -1749,6 +1762,62 @@ describe('renderPage', () => {
     })
     expect(html).toContain('<span class="tag tag-critical">锚点不符</span>')
     expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+  })
+
+  test('a lagging mirror is 未覆盖 on its card and in the overview, never 锚点不符 or 链完整', () => {
+    const html = build({
+      audit: renderAuditSources(
+        [
+          {
+            node: 'beta-1',
+            kind: 'authoritative',
+            page: page(),
+            failure: null,
+          },
+          {
+            node: 'beta-2',
+            kind: 'mirror',
+            maxLagMinutes: 5,
+            page: page({
+              witness: { tampered: false, stale: false, uncovered: true },
+            }),
+            failure: null,
+          },
+        ],
+        NO_FILTER,
+      ),
+    })
+    expect(html).toContain('data-audit-state="uncovered"')
+    expect(html).toContain('<span class="tag tag-neutral">未覆盖</span>')
+    expect(html).not.toContain('锚点不符')
+    expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
+  })
+
+  test('a mismatch elsewhere still outranks a lagging mirror', () => {
+    const html = build({
+      audit: renderAuditSources(
+        [
+          {
+            node: 'beta-1',
+            kind: 'authoritative',
+            page: page({ witness: { tampered: true, stale: false } }),
+            failure: null,
+          },
+          {
+            node: 'beta-2',
+            kind: 'mirror',
+            maxLagMinutes: 5,
+            page: page({
+              witness: { tampered: false, stale: false, uncovered: true },
+            }),
+            failure: null,
+          },
+        ],
+        NO_FILTER,
+      ),
+    })
+    expect(html).toContain('data-audit-state="tampered"')
+    expect(html).toContain('<span class="tag tag-critical">锚点不符</span>')
   })
 
   test('the label is escaped like any other value', () => {
