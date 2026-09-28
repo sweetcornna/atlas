@@ -127,10 +127,16 @@ export interface AuditPage {
    * heard nothing within its window (or there is no valid anchor at all), not
    * that a rewrite was found. An idle trail whose head is anchored is not
    * stale, so a quiet node keeps its verified state.
+   *
+   * `uncovered` appears only on a mirror source, and only when the witness
+   * already holds anchors past the end of the copy: the mirror has not
+   * caught up, which is neither a mismatch nor an absence of evidence. It
+   * never appears together with `stale`.
    */
   readonly witness?: {
     readonly tampered: boolean
     readonly stale: boolean
+    readonly uncovered?: true
   }
 }
 
@@ -540,6 +546,32 @@ export interface ServerNote {
 export interface ServerNotesPort {
   list(): Promise<ConsoleResult<readonly ServerNote[]>>
   set(server: string, note: string): Promise<ConsoleResult<ServerNote>>
+}
+
+// ---------------------------------------------------------------------------
+// LedgerPort —— 账号库与会话表的落盘面（P15.3 / P15.5）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一本哈希链账的文件面：整篇读出来，或在末尾追加一行。
+ *
+ * **只搬字节，不判内容**：解析、验链、语义校验全在包内（`ledger.ts`、
+ * `accounts.ts`），那样 fail-closed 的每一条规矩都能用一个普通对象测到。host
+ * 侧（`src/cli/handlers/consoleAccountsStore.ts`）只负责 0600、O_APPEND、
+ * 每行 fsync，路径从 `occConfigPath()` 派生。
+ *
+ * 与其余端口不同，这两个方法**允许抛**：它们失败只可能是 I/O 坏了，而账本对
+ * 任何一次抛出的处置都是同一个——整本转为不可用并告警（`AccountBook`）。
+ * 同步也是有意的：「查这枚邀请还没用过」与「写下它已用掉」必须在同一拍里完成，
+ * 中间一个 `await` 就是两次并发兑换同一枚邀请的窗口。
+ */
+export interface LedgerPort {
+  /** 文件位置，只用于横幅与告警，不是秘密。 */
+  readonly path: string
+  /** 整篇内容；文件不存在时 `null`。 */
+  read(): string | null
+  /** 追加一行（已带换行）并落盘。 */
+  append(line: string): void
 }
 
 /** Protocol/runtime ceilings, read from the packages that own them. */

@@ -33,6 +33,83 @@ const FAILED_STOP_REASONS = new Map<string, string>([
 ])
 
 /**
+ * The reasons a turn fails with when the agent reports a model error, spelled
+ * here and nowhere else.
+ *
+ * `task.result{failed}` has one error code for every execution failure
+ * (`E_TASK_FAILED`) and one free-text `reason`. A new protocol code would make
+ * every older peer refuse the whole result (rule N-1, `@qianmo/protocol`
+ * errors.ts), so the kind of failure travels as the start of `reason` instead,
+ * and {@link turnFailureKind} is the only code that reads it back — the same
+ * arrangement as {@link turnStepDedupKey}.
+ */
+const MODEL_EMPTY_RESPONSE_REASON =
+  'Model returned only empty responses; retries exhausted'
+const MODEL_ERROR_REASON = 'Model request failed'
+
+/** How much of the agent's error text a reason carries. */
+const MAX_MODEL_ERROR_DETAIL = 300
+
+/**
+ * The code the agent reports for an empty model response that outlasted its
+ * retries: `EmptyModelResponseError.code` in `@ant/model-provider`, carried in
+ * `_meta.claudeCode.error.code` (`src/services/acp/agent/promptFlow.ts`). This
+ * package is a leaf and cannot import either; the two spellings are held
+ * together by `tests/integration/qianmo-empty-model-response.test.ts`.
+ */
+const EMPTY_RESPONSE_ERROR_CODE = 'empty_response'
+
+/**
+ * What kind of failure a `task.result` reason records, when it is one this
+ * package wrote for a model error; `undefined` for every other reason.
+ */
+export function turnFailureKind(
+  reason: string,
+): 'model_empty_response' | 'model_error' | undefined {
+  if (reason.startsWith(MODEL_EMPTY_RESPONSE_REASON)) {
+    return 'model_empty_response'
+  }
+  if (reason.startsWith(MODEL_ERROR_REASON)) return 'model_error'
+  return undefined
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+/**
+ * The model error the agent reported for a turn, if it reported one.
+ *
+ * ACP has no error stop reason, so an errored turn still arrives as `end_turn`
+ * and says what went wrong in `_meta.claudeCode.error`. Read as a failure
+ * whenever that is an object: a malformed message must not turn a failure the
+ * agent did report back into a completion.
+ */
+function reportedModelError(
+  meta: unknown,
+):
+  | { readonly kind: 'model_empty_response' | 'model_error'; reason: string }
+  | undefined {
+  const error = recordOf(recordOf(recordOf(meta)?.claudeCode)?.error)
+  if (error === undefined) return undefined
+  const empty = error.code === EMPTY_RESPONSE_ERROR_CODE
+  const prefix = empty ? MODEL_EMPTY_RESPONSE_REASON : MODEL_ERROR_REASON
+  const detail =
+    typeof error.message === 'string'
+      ? error.message
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, MAX_MODEL_ERROR_DETAIL)
+      : ''
+  return {
+    kind: empty ? 'model_empty_response' : 'model_error',
+    reason: detail === '' ? prefix : `${prefix}: ${detail}`,
+  }
+}
+
+/**
  * The `_meta` a watchdog cancel carries, so the agent on the other end can
  * record the turn as aborted by a machine rather than interrupted by a user.
  *
@@ -91,6 +168,8 @@ export interface AcpPromptConnection {
   }): Promise<{
     readonly userMessageId?: string | null
     readonly stopReason?: string
+    /** Carries `claudeCode.error` when the turn ended in a model error. */
+    readonly _meta?: Record<string, unknown> | null
   }>
 }
 
@@ -431,7 +510,9 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
       if (response.userMessageId === input.messageId) await accept()
       else if (admission !== null) await admission
       const failure = FAILED_STOP_REASONS.get(response.stopReason ?? '')
-      if (failure !== undefined) {
+      const modelError =
+        failure === undefined ? reportedModelError(response._meta) : undefined
+      if (failure !== undefined || modelError !== undefined) {
         this.#timings?.record({
           stage: 'turn_failed',
           at: this.#now(),
@@ -441,12 +522,15 @@ export class AcpResidentTurnPort implements ResidentTurnPort {
             ? {}
             : { networkMsgId: input.networkMsgId }),
           ...(input.agent === undefined ? {} : { agent: input.agent }),
-          error: response.stopReason ?? 'unknown',
+          error:
+            modelError === undefined
+              ? (response.stopReason ?? 'unknown')
+              : modelError.kind,
         })
         return {
           outcome: 'failed',
           code: ProtocolErrorCode.E_TASK_FAILED,
-          reason: failure,
+          reason: failure ?? modelError?.reason ?? MODEL_ERROR_REASON,
         }
       }
       this.#timings?.record({

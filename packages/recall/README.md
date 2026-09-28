@@ -8,7 +8,7 @@
 | 项 | 指针 |
 | --- | --- |
 | 任务包 | roadmap **P3.3 记忆检索唤醒 v0**（交付物 / DoD 三条真机判据 / 完成记录都在那里） |
-| 章程条目 | charter §3.2 **R-2 分层记忆**的「检索唤醒」半边 + §4 **AC-4**；N-8「不做向量检索」是本包的硬约束 |
+| 章程条目 | charter §3.2 **R-2 分层记忆**的「检索唤醒」半边 + §4 **AC-4**；N-8：M0 不做向量检索，M1 的语义层只按「叠加，不替换」进入（`docs/dev/memory-m1.md` §5） |
 | 关键决策 | D-6（小规模全量注入 + 工具层强制引用，取代供应商原生引用块）——出处 `docs/dev/selection-m0.md` |
 | 协议级数值 | 本包的 `INJECTION_BUDGET` / `RANKING` 是**召回层策略，不跨节点边界**，故不属 `@qianmo/protocol` 的 `LIMITS`；协议级上限一律见 `LIMITS` |
 
@@ -79,10 +79,16 @@ flowchart TB
 | `normaliseCitationId` | 从模型给的整行引用里抠出裸 ID——对格式宽容，对实质不让步 |
 | `handleMemoryAnswer` / `MemoryAnswer` / `MemoryAnswerOptions` | 强制点：核验 → 通过就附来源行，不通过给出可喂回模型的 `rejection` 文本 |
 | `renderCitedAnswer` | 把 `accepted` 条目按引用顺序渲染成「来源 / sources」列表 |
+| `recallHybrid` / `HybridRecallResult` / `SemanticRecall` / `RetrievalEvent` | M1 语义叠加（`docs/dev/memory-m1.md` §5，P16.6）：异步；full 模式不启用、不调 embedding；ranked 模式先保留确定性注入集的前 ⌈\|I_det\|·floorRatio⌉ 条，其余名额按 RRF 融合确定性名次与语义名次填充；任何语义侧故障退回与 `recall()` 相同的结果，标 `hybrid-degraded` 并带事件 |
+| `HYBRID_DEFAULTS` / `resolveHybridConfig` / `HybridConfig` | 融合参数：保底比例 0.5、RRF k = 60、每次补算 32 条、覆盖率闸 0.95、超时 300 ms、输入截断 8 000 字、同源占比 0.5。**全部是提议值，未测量** |
+| `RETRIEVAL_MODES` / `RetrievalMode` | `deterministic` / `hybrid` / `hybrid-degraded`；块头只在 `hybrid` 时多一个 `retrieval="hybrid"`，语义填充进来的条目前加一行 `via: semantic` |
+| `EmbeddingProvider` / `EmbeddingBatch` | 模型中立的 embedding 接口（`id` / `model` / `dimensions` / `embed(texts, { signal })`），不含供应商名；真实适配是 P16.7 |
+| `VectorIndex` / `VectorKey` / `InMemoryVectorIndex` | 向量索引只是排序缓存，键为 `(entryId, contentHash, providerId, model, dimensions)`，只按本轮候选查询；持久化是 P16.8 |
+| `EmbeddingUsageMeter` / `FileEmbeddingUsageMeter` / `defaultEmbeddingUsagePath` | 成本上限：按 token、按节点、按 UTC 自然日，计数器持久化在 `occConfigPath('qianmo', 'embedding', 'usage.json')`；调用前预留、调用后按供应商 usage 对账；文件坏了按「已用尽」处理，不清零 |
 
 ---
 
-## 3. 最容易被改坏的六条不变式
+## 3. 最容易被改坏的七条不变式
 
 | # | 不变式 | 改坏会怎样 | 哪个测试钉住 |
 | --- | --- | --- | --- |
@@ -92,6 +98,7 @@ flowchart TB
 | 4 | **工具声明是纯数据：无 SDK、无供应商名、不使用任何原生引用块** | 改回原生 `search_result` 引用块，AC-4 与 AC-5 从此永久打架——该路径与结构化输出互斥、且只在一家的线上存在 | `test/tool.test.ts`：`is plain data: no vendor, no SDK, no native citation feature` / `declares both fields as required` |
 | 5 | **存储的降级事件必须抬到结果上**（`RecallResult.events` + `degraded`），上层不得重新盖回静默；排序里衰减是**乘子不是加项** | 前者一盖回，`@qianmo/memory` 为「一个坏文件不拖垮召回」所做的修复就白做了——节点醒来记忆变少而无人知晓；后者一改成加项，常驻节点每隔数周醒来一次，榜首会随墙钟静默漂移 | `test/recall.test.ts`：`recall returns the healthy entries and carries the failure out` / `only the events of this recall are reported`；`test/rank.test.ts`：`relevance dominates recency: a stale hit outranks a fresh miss` |
 | 6 | **条目内容只是数据，不能成为块的框架**——`renderEntry` 对所有字段转义 `<` `>`，单行字段折掉一切换行，正文里读起来像分隔行、`entry_id:` / `citation:` 行或 fence 的行首字符实体化；不含这些片段的条目逐字节不变 | 正文一句 `</qianmo-memory>` 就让常驻组装扫描失败、整轮远端文本被扣，full 模式下每轮都扣；正文还能伪造一条带他处真 id 的条目 | `test/inject.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the assembled-prompt scan stays clean`；`src/services/qianmo/__tests__/residentPrompt.test.ts`：`the turn keeps its remote text` |
+| 7 | **语义层只叠加、不替换**——候选集仍只按 scope 取，索引只按候选查询；ranked 模式保底部分 ⊆ 注入集（每次结果都校验，违反即退化）；full 模式与语义层故障时结果与 `recall()` 逐字节相同 | 语义层一旦能过滤或替换候选，D-6 的「0 结果」失败面与 I-1 一起回来；保底一失守，被改写的索引就能把确定性前列挤出块 | `test/hybrid.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the semantic overlay (P16.6)` |
 
 ---
 
@@ -107,7 +114,7 @@ flowchart TB
 
 | 事项 | 一行摘要 | 指针 |
 | --- | --- | --- |
-| 不做向量 / 语义检索 | M0 用可解释性换召回率；语义检索是 M1「记忆能力上线」的事 | 章程 N-8；roadmap M1 表 |
+| 语义检索只做叠加 | M0 用可解释性换召回率；M1 的语义层（`hybrid.ts`）只在 ranked 模式重排填充名额，不过滤、不替换确定性检索；真实 embedding 适配（P16.7）与索引持久化（P16.8）不在本包现有代码里 | 章程 N-8；`docs/dev/memory-m1.md` §5 |
 | 二元组会过匹配 | CJK 二元组会跨词边界命中，是刻意的取舍——过匹配只损失排序精度，欠匹配会丢条目 | `src/tokenize.ts` 顶部注释 |
 | 提示词只是协作半边 | 引用规则本身不被信任，唯一强制点是 `verifyCitations`；章程 §6.1 T-7「不以模型是否被说服验收」 | `src/inject.ts` `citationInstructions` 注释 |
 | 单条超预算的条目仍会被注入 | 字符预算不得把块压成空——从模型内部看，空块与「没有记忆」无法区分 | `src/inject.ts` `selectForInjection` 注释 |
@@ -124,6 +131,20 @@ bun test tests/integration/qianmo-memory-recall.test.ts    # AC-4 集成腿：23
 
 - 包内逐文件：`citation` 15 / `recall` 11 / `rank` 9 / `tokenize` 8 / `tool` 8 = **51 pass / 0 fail / 132 expect**，零 mock。
 - 集成腿共 **23 个用例**；无 `OPENAI_API_KEY` + `OPENAI_BASE_URL` 时真调用整组自动 skip（实跑 **3 pass / 20 skip**），留下不需要凭据的确定性检查。凭据只从环境变量读，仓库内不存密钥。
+
+### 评测（`eval/`，`docs/dev/memory-m1.md` §2–§4）
+
+| 做什么 | 命令 | 说明 |
+| --- | --- | --- |
+| M0 检索基线（v0.1 语料） | `bun run qianmo:recall-baseline` | 输出逐字节等于 §3 公布的 SHA-256，不要改它 |
+| M0 检索基线（M1 语料） | `bun run qianmo:recall-baseline --corpus synthetic-v1`（或 `docs-dev-v1`；`--digest` 只出语料哈希） | 加固合成语料与 `docs/dev` 第二语料，种子与档位按预注册，不接受 `--seed` / `--tiers` |
+| 重生成第二语料 | `bun run scripts/qianmo-recall-docs-corpus.ts [--check]` | 只读钉住提交上的文件；人名、账号只以哈希入库 |
+| 回答层 token 预估 | `bun run scripts/qianmo-recall-answer-eval.ts --dry-run` | 离线；默认给出 P16.4 试跑（`prereg.toml` `[trial]`）与 P16.12 对比（`[plan]`）两份。M1 臂的注入块由 `recallHybrid` 在替身向量（非语义）上选出，另报 embedding token 预估 |
+| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `occConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零。M1 臂回放时读 fixture 里落档的向量（`embeddings`），缺向量或退化即中止；P16.7 之前 `--live` 拒绝 M1 臂 |
+| 留出集零词面校验 | `bun run scripts/qianmo-recall-heldout-check.ts <file>` | 用语料自己的分词逐题核对与 gold 条目零重叠，末行给出 `heldout_ids_sha256`；0 干净 / 1 有问题 / 2 文件或用法错 |
+| 冻结预注册值 | `bun run scripts/qianmo-recall-freeze.ts [--check]` | 重算语料哈希、M0 基线哈希与留出集哈希，只填空着的键；已有值只核不改，不一致退出 1 |
+
+预注册值只从 `eval/prereg.toml` 读，命令行没有覆盖开关；键缺省即「未生成」，用到它的判据拒判。对比只接受 `[plan]` 这一份计划，`--corpus` / `--tiers` / `--reps` / `--arms` 只能收窄试跑。R2–R4 只在留出集（`eval/heldout/synthetic-v1.heldout.toml`，由独立代理交付）上判定，交付并冻结哈希之前拒判。
 
 ---
 

@@ -22,15 +22,18 @@ import { randomBytes } from 'node:crypto'
 import { invokedBinName } from '../../constants/brand.js'
 import { sourceCommit } from '../../constants/buildProvenance.js'
 import {
+  AccountBook,
   resolveTokens,
   startConsoleServer,
+  tokenFingerprint,
+  type ConsoleAccounts,
   type ConsoleAuditSource,
   type ConsoleDeps,
   type RegistryPort,
   type WakeTarget,
   type WakePort,
 } from '@qianmo/console'
-import { isNodePublicKey } from '@qianmo/protocol'
+import { readRegistryWriteTokenFile } from '@qianmo/registry'
 import { pskFromEnv } from '@qianmo/transport'
 import {
   createConsoleChatPort,
@@ -48,7 +51,6 @@ import {
 } from './consoleArgs.js'
 import {
   consoleLimits,
-  createAuditPort,
   createCertificatePort,
   createRegistryPort,
   createServerNotesPort,
@@ -56,12 +58,14 @@ import {
 } from './consolePorts.js'
 import { ConsoleRegistrations } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
+import { consoleAuditSources } from './consoleAuditSources.js'
 import { readTrustAnchors } from '../../services/qianmo/trustAnchors.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
 } from './consoleWakeIdentity.js'
 import { resolveConsoleTokenSource } from './consoleTokenSources.js'
+import { FileLedger } from './consoleAccountsStore.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -72,6 +76,33 @@ import { resolveConsoleTokenSource } from './consoleTokenSources.js'
  */
 export function newConsoleToken(): string {
   return randomBytes(24).toString('base64url')
+}
+
+/**
+ * 个人账号的接线（`tenancy-m1.md` §3，P15.3 / P15.5）：配置根里的两本账——账号库
+ * 与会话表。
+ *
+ * 账坏了**不让控制台起不来**：两枚旧 token 还得能进来看是怎么回事，所以账本
+ * 自己转为不可用（个人账号一律 503），告警写到 stderr，横幅上照直写出原因。
+ */
+function wireConsoleAccounts(config: {
+  readonly accountsStorePath: string
+  readonly sessionsStorePath: string
+  readonly legacyViewToken: boolean
+  readonly breakGlass: boolean
+}): ConsoleAccounts {
+  const book = new AccountBook({
+    accounts: new FileLedger(config.accountsStorePath),
+    sessions: new FileLedger(config.sessionsStorePath),
+    onAlarm: line => {
+      process.stderr.write(`${line}\n`)
+    },
+  })
+  return {
+    book,
+    legacyView: config.legacyViewToken,
+    breakGlass: config.breakGlass,
+  }
 }
 
 /** IPv6 字面量要加方括号才能进 URL。 */
@@ -302,52 +333,6 @@ export function wireConsoleChat(
   }
 }
 
-/** Resolve a node key from the published registry record, never from anchors. */
-function witnessPublicKeyOf(registry: RegistryPort) {
-  return async (node: string) => {
-    const listed = await registry.list()
-    if (!listed.ok) return listed
-    const prefix = `qianmo://${node}/`
-    const agents = listed.value.filter(agent =>
-      agent.address.startsWith(prefix),
-    )
-    const keys = new Set(
-      agents.flatMap(agent =>
-        agent.publicKey === undefined ? [] : [agent.publicKey],
-      ),
-    )
-    if (keys.size === 0) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'not_found' as const,
-          message: `名册没有节点 ${node} 的公钥`,
-        },
-      }
-    }
-    if (keys.size !== 1) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'invalid' as const,
-          message: `名册中的节点 ${node} 公钥不一致`,
-        },
-      }
-    }
-    const publicKey = keys.values().next().value
-    if (publicKey === undefined || !isNodePublicKey(publicKey)) {
-      return {
-        ok: false as const,
-        failure: {
-          code: 'invalid' as const,
-          message: `名册中的节点 ${node} 公钥无效`,
-        },
-      }
-    }
-    return { ok: true as const, value: publicKey }
-  }
-}
-
 const FIELD_WIDTH = 13
 
 function field(name: string, value: string): string {
@@ -395,14 +380,46 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
+  // Before anything dials out, for the same reason as the tokens above: a
+  // console whose account ledger path is wrong should say so before it has
+  // opened a single link.
+  const accounts =
+    config.accounts === true &&
+    config.accountsStorePath !== undefined &&
+    config.sessionsStorePath !== undefined
+      ? wireConsoleAccounts({
+          accountsStorePath: config.accountsStorePath,
+          sessionsStorePath: config.sessionsStorePath,
+          legacyViewToken: config.legacyViewToken !== false,
+          breakGlass: config.breakGlass === true,
+        })
+      : undefined
+
+  // The registry write token (P15.8), read with the other credentials and for
+  // the same reason: a file anyone on the machine can read is a startup
+  // error, not something to discover on the first renewal.
+  const registryWriteToken =
+    config.registryTokenFile === undefined
+      ? undefined
+      : readRegistryWriteTokenFile(
+          config.registryTokenFile,
+          '--registry-token-file',
+        )
+
   const wake = wireConsoleWake(config)
   // Registrations made on the page are renewed by this process until they are
   // deregistered on the page; the ledger that remembers them across restarts
   // lives in this console's config root (`consoleRegistrations.ts`, console.md
-  // §7.3). Its port wraps the HTTP one: the registry itself is unchanged.
+  // §7.3). Its port wraps the HTTP one, so every renewal carries the write
+  // token when there is one.
   const registrations = new ConsoleRegistrations({
     path: consoleRegistrationsPath(),
-    registry: createRegistryPort({ baseUrl: config.registryUrl }),
+    registry: createRegistryPort({
+      baseUrl: config.registryUrl,
+      ...(registryWriteToken === undefined
+        ? {}
+        : { writeToken: registryWriteToken }),
+    }),
     log: line => {
       process.stderr.write(`${line}\n`)
     },
@@ -417,31 +434,25 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // not as an empty column later. It is public material — §10.3's rule that no
   // private key of any kind is reachable from this process holds structurally,
   // because there is no option here that could point at one.
-  const certificates =
+  const caCertificatePem =
     config.trustCa === undefined
+      ? undefined
+      : readTrustAnchors(config.trustCa).pem
+  const certificates =
+    caCertificatePem === undefined
       ? undefined
       : createCertificatePort({
           baseUrl: config.registryUrl,
-          caCertificatePem: readTrustAnchors(config.trustCa).pem,
+          caCertificatePem,
         })
 
-  const audits: ConsoleAuditSource[] = config.auditTargets.map(target => {
-    const mirror = config.auditMirrors.find(
-      candidate => candidate.node === target.node,
-    )
-    return {
-      node: target.node,
-      audit: createAuditPort({
-        path: target.path,
-        ...(config.anchors === undefined ? {} : { witness: config.anchors }),
-        ...(config.anchors === undefined
-          ? {}
-          : { publicKeyOf: witnessPublicKeyOf(registry) }),
-      }),
-      kind: mirror === undefined ? 'authoritative' : 'mirror',
-      ...(mirror === undefined ? {} : { maxLagMinutes: mirror.maxLagMinutes }),
-    }
-  })
+  // Witness keys come from this side only — `--trust`, or a certificate the
+  // CA root verifies — never from a registry row (K-11 F-3). `parseConsoleArgs`
+  // already refused `--anchors` with neither.
+  const audits: ConsoleAuditSource[] = consoleAuditSources(
+    config,
+    caCertificatePem,
+  )
   const firstAudit = audits[0]
   if (firstAudit === undefined) {
     throw new Error('console requires at least one audit source')
@@ -495,6 +506,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   const handle = startConsoleServer(deps, config.port, {
     hostname: config.hostname,
     tokens,
+    ...(accounts === undefined ? {} : { accounts }),
   })
   // After the port is bound: a console that failed to start must not have
   // re-announced anything on its way down.
@@ -510,9 +522,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   let banner = field('console', origin)
   banner += field(
     'open',
-    viewGenerated
-      ? `${origin}/?token=${tokens.view}`
-      : `${origin}/?token=<your view token>`,
+    // view token 关掉以后，带它的链接只会被拒；门就是登录页。
+    accounts?.legacyView === false
+      ? `${origin}/login`
+      : viewGenerated
+        ? `${origin}/?token=${tokens.view}`
+        : `${origin}/?token=<your view token>`,
   )
   banner += field(
     'view-token',
@@ -523,6 +538,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     adminSource === undefined ? tokens.admin : `from ${adminSource.detail}`,
   )
   banner += field('registry', config.registryUrl)
+  if (config.registryTokenFile !== undefined) {
+    // `FIELD_WIDTH` is 13: a 13-character name would run into its value.
+    banner += field(
+      'write-token',
+      `registry writes carry the token from ${config.registryTokenFile}`,
+    )
+  }
   banner += field(
     'ledger',
     `${registrations.path} (${String(registrations.addresses.length)} renewed by this console)`,
@@ -535,6 +557,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   if (config.anchors !== undefined) {
     banner += field('anchors', config.anchors.value)
+    banner += field(
+      'witness-keys',
+      [
+        ...(config.trusted ?? []).map(([node]) => `--trust ${node}`),
+        ...(config.trustCa === undefined ? [] : ['CA-verified certificates']),
+      ].join(', '),
+    )
   }
   banner += field('wake', wake.status)
   if (wake.identity !== undefined) {
@@ -559,6 +588,32 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   )
   if (serverNotes !== undefined) {
     banner += field('server-notes', config.serverNotesPath)
+  }
+  if (accounts !== undefined && config.accountsStorePath !== undefined) {
+    const problem = accounts.book.problem
+    banner += field(
+      'accounts',
+      problem === null
+        ? `enabled -> ${config.accountsStorePath}`
+        : `UNAVAILABLE (${problem})`,
+    )
+    banner += field('sessions', config.sessionsStorePath ?? '')
+    banner += field(
+      'legacy-view',
+      accounts.legacyView === false ? 'off' : 'on (migration)',
+    )
+    // 处理器构造时已经比对过指纹、记下了轮换；这里读到的是「现在这枚 admin
+    // token 用作 break-glass 之后还没换」。
+    const glass = accounts.book.breakGlassStatus(tokenFingerprint(tokens.admin))
+    banner += field(
+      'break-glass',
+      (accounts.breakGlass === true ? 'on (admin token: Bearer only)' : 'off') +
+        (glass.rotationDue
+          ? ` · ROTATE the admin token, last used ${new Date(
+              glass.lastUsedAt ?? 0,
+            ).toISOString()}`
+          : ''),
+    )
   }
   banner += field('label', config.label)
   // 这份产物是从哪个 commit 构建的（issue #70）。控制台和常驻节点一样是**部署到

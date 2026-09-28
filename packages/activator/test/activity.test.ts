@@ -13,6 +13,7 @@ import {
 } from '../src/activity.js'
 import { KeepaliveLoop } from '../src/keepalive.js'
 import type { KeepalivePort } from '../src/keepalive.js'
+import { ManualScheduler } from './helpers.js'
 import type { TransportServerHandle } from '@qianmo/transport'
 
 const PSK = 'activity-test-not-a-real-secret-0000'
@@ -43,11 +44,16 @@ describe('resident activity keepalive bridge', () => {
         return { sandboxName, state: 'active' }
       },
     }
+    // Timers fire only when this test says so. With the real scheduler the
+    // zero-delay beat that `start()` schedules races the socket round trip and
+    // the explicit beat below, so the acquire count depended on the runner.
+    const scheduler = new ManualScheduler()
     const loop = new KeepaliveLoop({
       sandboxName: 'sandbox-node-b',
       daemon,
       policy: { freezeAfterSeconds: 60, stopAfterSeconds: 600 },
       audit: new AuditLog(),
+      scheduler,
     })
     const controller = new ResidentActivityController(loop)
     const socket = makeSocketPath()
@@ -71,15 +77,20 @@ describe('resident activity keepalive bridge', () => {
     await reporter.report(true)
     expect(controller.active).toBe(true)
     expect(loop.running).toBe(true)
+    // Busy starts the loop, which schedules an immediate beat.
+    expect(scheduler.delays).toEqual([0])
     await loop.beat()
     expect(acquireCalls).toBe(1)
 
     await reporter.report(false)
     expect(controller.active).toBe(false)
     expect(loop.running).toBe(false)
+    // Idle stops it: the pending beat is cancelled, not left to fire.
+    expect(scheduler.size).toBe(0)
 
     await reporter.report(true)
     expect(loop.running).toBe(true)
+    expect(scheduler.delays).toEqual([0])
     await reporter.close()
     reporters.splice(reporters.indexOf(reporter), 1)
     await new Promise(resolve => setTimeout(resolve, 10))

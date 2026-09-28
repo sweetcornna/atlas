@@ -26,18 +26,20 @@
  *    issuer console`，而那条错读起来像「签名坏了」。本维度把正序走通的那条与
  *    「不签名」「不在白名单」两条拒绝各测一遍。
  *
- * 注册中心那半边有一条**安全事实**顺带钉住：它自己零鉴权（console.md §8.2），
- * 控制台的 admin token 保护的只是控制台。所以这里所有注册动作都经控制台的
- * 代理路由发，测的是那层门；直接打注册中心的场景一条都不写 —— 那会把「注册
- * 中心没有门」写成一条看起来像功能的绿色。**只读的例外只有一种**：控制台已经
- * 停了、或注册中心刚重启，要确认「此刻表上有没有这条」这个前提时，经
- * `registry.url` 读一次名册。那是在给断言立前提，不是在测注册中心的门。
+ * 注册中心那半边：**缺省**它仍零鉴权（console.md §8.2），控制台的 admin token
+ * 保护的只是控制台，所以注册动作一律经控制台的代理路由发，测的是那层门。
+ * `console/registry-registration-*` 两条让注册中心带上**写 token**（tenancy-m1.md
+ * P15.8）、控制台带上 `--registry-token-file`：续租者真的带着 token 在跑，而绕过
+ * 控制台直接写注册中心的那一枪如实吃 401、表不变——这是注册中心那扇门本身，
+ * 只在它存在时才测。**只读的例外**：控制台已经停了、或注册中心刚重启，要确认
+ * 「此刻表上有没有这条」这个前提时，经 `registry.url` 读一次名册。
  *
  * **控制台替自己注册的条目续租**（console.md §7.3）。所以凡是要看「租约到期」
  * 的场景，必须先把续租方 —— 控制台进程 —— 停下；控制台还活着时名册里那条不会
  * 过期，那正是本维度要钉住的修复。
  */
 
+import { randomBytes } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { LIMITS } from '@qianmo/protocol'
@@ -133,6 +135,44 @@ async function printWakeIdentity(
     line,
     node: line.slice(0, separator),
     publicKey: line.slice(separator + 1),
+  }
+}
+
+/**
+ * 注册中心写 token（P15.8）：一枚随机 token，文件落在**控制台那台机器上**、0600。
+ *
+ * 权限要在写完之后单独改：`ExecHost.writeFile` 不带 mode，而控制台对权限宽于
+ * 0600 的 token 文件拒绝启动——那正是它该做的事。
+ */
+async function registryWriteToken(
+  slot: ConsoleSlot,
+): Promise<{ readonly token: string; readonly file: string }> {
+  const token = randomBytes(24).toString('base64url')
+  const file = await slot.writeFile('registry-write-token', `${token}\n`)
+  const chmod = await slot.run(['chmod', '600', file])
+  if (chmod.code !== 0) {
+    throw new Error(`chmod 600 ${file} 失败：${chmod.stderr}`)
+  }
+  return { token, file }
+}
+
+/** 不带 token、绕过控制台直接写注册中心——那扇门本身。 */
+async function unauthenticatedWrites(
+  registryUrl: string,
+  address: string,
+): Promise<{ readonly post: HttpProbe; readonly remove: HttpProbe }> {
+  return {
+    post: await http(`${registryUrl}/v0/agents`, {
+      method: 'POST',
+      body: {
+        address: 'qianmo://node-z/intruder',
+        endpoint: 'ws://127.0.0.1:1',
+      },
+    }),
+    remove: await http(
+      `${registryUrl}/v0/agents/${encodeURIComponent(address)}`,
+      { method: 'DELETE' },
+    ),
   }
 }
 
@@ -482,7 +522,7 @@ export const consoleScenarios: readonly Scenario[] = [
     dimension: 'console',
     title: '租约到期即从名册消失，心跳能把它续回来',
     expected:
-      '短 TTL 下：心跳后仍在名册；续租方（控制台进程）停下后等过 TTL，注册中心的名册为空（惰性求值，无定时清扫）',
+      '短 TTL 下：心跳后仍在名册；续租方（控制台进程）停下后等过 TTL，注册中心的名册为空（读时按租约判，过期行由 10 s 时钟脉冲清出表）',
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
@@ -560,20 +600,28 @@ export const consoleScenarios: readonly Scenario[] = [
   {
     id: 'console/registry-registration-outlives-lease',
     dimension: 'console',
-    title: '控制台上注册的条目由控制台续租：过了两个租约仍在名册，注销后不再续',
+    title:
+      '控制台上注册的条目由控制台续租（带写 token）：过了两个租约仍在名册，注销后不再续；不带 token 直接写注册中心被拒',
     expected:
-      '短 TTL 下：注册后不发任何手动心跳，等过两个 TTL 名册里仍有这条且 lastHeartbeatAt 前移；DELETE 204 之后再等一个 TTL，名册里没有它',
+      '注册中心带写 token、控制台带 --registry-token-file；短 TTL 下注册后不发任何手动心跳，等过两个 TTL 名册里仍有这条且 lastHeartbeatAt 前移；绕过控制台的 POST 与 DELETE 各 401、名册不变；DELETE 204 之后再等一个 TTL，名册里没有它',
     requires: ['spawn-console'],
     timeoutMs: 120_000,
     async run(ctx) {
       // `tenancy-m1.md` §0.4（P15.2）那条缺陷的原样复现：控制台只有按需心跳，
       // 注册中心宿主只替 `--register` 续租，节点从不拨号 —— 于是页面上的「注册」
       // 一个 TTL 后就从名册消失。TTL 取短的并吃倍率，理由见上一条场景的注释。
+      // P15.8 起续租者要带写 token：这一条让注册中心真的要求它。
       const ttlMs = Math.round(3_000 * ctx.timeoutScale)
       const graceMs = Math.round(1_500 * ctx.timeoutScale)
-      const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
-      const console_ = await (await ctx.driver.consoleSlot(ctx)).start({
+      const slot = await ctx.driver.consoleSlot(ctx)
+      const writeToken = await registryWriteToken(slot)
+      const registry = await ctx.driver.startRegistry(ctx, {
+        ttlMs,
+        writeToken: writeToken.token,
+      })
+      const console_ = await slot.start({
         registryUrl: registry.hostUrl,
+        extraArgs: ['--registry-token-file', writeToken.file],
       })
       const encoded = encodeURIComponent(AGENT_ADDRESS)
 
@@ -593,6 +641,9 @@ export const consoleScenarios: readonly Scenario[] = [
       })
       const row = rowOf(held, AGENT_ADDRESS)
 
+      const bypass = await unauthenticatedWrites(registry.url, AGENT_ADDRESS)
+      const afterBypass = await http(`${registry.url}/v0/agents`)
+
       const removed = await http(`${console_.url}/v0/agents/${encoded}`, {
         method: 'DELETE',
         token: console_.adminToken,
@@ -607,10 +658,28 @@ export const consoleScenarios: readonly Scenario[] = [
       return new Checks()
         .note('注册', `${registered.status} ${registered.body}`)
         .note('两个租约之后的名册', `${held.status} ${held.body}`)
+        .note('绕过控制台的 POST', `${bypass.post.status} ${bypass.post.body}`)
+        .note(
+          '绕过控制台的 DELETE',
+          `${bypass.remove.status} ${bypass.remove.body}`,
+        )
         .note('注销', `${removed.status} ${removed.body}`)
         .note('注销之后的名册', `${afterRemoval.status} ${afterRemoval.body}`)
         .note('控制台 stderr', (await console_.stderr()).slice(0, 1_500))
+        .contains(
+          await console_.banner(),
+          'write-token  registry writes carry the token from',
+          '控制台 banner 报出写 token 的出处',
+        )
         .eq(registered.status, 200, '注册状态码')
+        .eq(bypass.post.status, 401, '不带 token 直接 POST 注册中心')
+        .eq(bypass.remove.status, 401, '不带 token 直接 DELETE 注册中心')
+        .expect(
+          rowOf(afterBypass, AGENT_ADDRESS) !== undefined &&
+            rowOf(afterBypass, 'qianmo://node-z/intruder') === undefined,
+          '被拒的两次写没有改动名册',
+          afterBypass.body,
+        )
         .expect(
           row !== undefined,
           '过了两个租约、没有任何手动心跳，名册里仍有这条',
@@ -638,19 +707,28 @@ export const consoleScenarios: readonly Scenario[] = [
     id: 'console/registry-registration-survives-restarts',
     dimension: 'console',
     title:
-      '注册中心重启、控制台重启之后，控制台注册过的条目都会回来（登记簿落在控制台配置根）',
+      '注册中心重启、控制台重启之后，控制台注册过的条目都会回来（登记簿落在控制台配置根；续租带写 token）',
     expected:
-      '注册中心在同一端口重起为空表后，一个 TTL 内条目回到名册；控制台停下、租约过期、条目消失之后，用同一个配置根重起控制台，条目回来',
+      '注册中心带写 token、控制台带 --registry-token-file；注册中心在同一端口重起为空表后，一个 TTL 内条目回到名册；控制台停下、租约过期、条目消失之后，用同一个配置根重起控制台，条目回来',
     requires: ['spawn-console'],
     timeoutMs: 180_000,
     async run(ctx) {
       const ttlMs = Math.round(3_000 * ctx.timeoutScale)
       const graceMs = Math.round(1_500 * ctx.timeoutScale)
+      const slot = await ctx.driver.consoleSlot(ctx)
+      const writeToken = await registryWriteToken(slot)
       // 不开持久化：重起后的注册中心是空表，与「停机超过一个 TTL 后重启」同一个
       // 结果（`#restore` 按当下时钟重判，过期的一条不留），而不必真等那么久。
-      const registry = await ctx.driver.startRegistry(ctx, { ttlMs })
-      const slot = await ctx.driver.consoleSlot(ctx)
-      const first = await slot.start({ registryUrl: registry.hostUrl })
+      // 重起沿用同一枚写 token（`RegistrySpec.writeToken`）。
+      const registry = await ctx.driver.startRegistry(ctx, {
+        ttlMs,
+        writeToken: writeToken.token,
+      })
+      const withToken = {
+        registryUrl: registry.hostUrl,
+        extraArgs: ['--registry-token-file', writeToken.file],
+      }
+      const first = await slot.start(withToken)
 
       const registered = await http(`${first.url}/v0/agents`, {
         method: 'POST',
@@ -674,7 +752,7 @@ export const consoleScenarios: readonly Scenario[] = [
       await sleep(ttlMs + graceMs)
       const lapsed = await http(`${registry.url}/v0/agents`)
       // 同一个控制台位 = 同一个配置根 = 同一本登记簿。
-      const second = await slot.start({ registryUrl: registry.hostUrl })
+      const second = await slot.start(withToken)
       const replayed = await rosterUntilListed(
         `${second.url}/v0/agents`,
         second.viewToken,

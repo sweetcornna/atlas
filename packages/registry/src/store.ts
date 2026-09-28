@@ -12,7 +12,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { occConfigPath } from '../../../src/config/paths.js'
 
 /**
@@ -93,25 +93,86 @@ export class FileRegistryStore implements RegistryStore {
   }
 
   write(document: unknown): void {
-    const directory = dirname(this.#path)
-    mkdirSync(directory, { recursive: true, mode: DIR_MODE })
+    writeDocument(this.#path, document)
+  }
+}
 
-    // Same directory as the target: `rename` is only atomic within a filesystem.
-    const temporary = `${this.#path}.${process.pid}.${randomUUID()}.tmp`
+/**
+ * Replace the JSON document at `path` atomically: a sibling temporary file,
+ * flushed, then `rename`d over the target. One implementation for both
+ * stores, so the table and the revocation list are exactly as crash-safe as
+ * each other.
+ */
+function writeDocument(path: string, document: unknown): void {
+  mkdirSync(dirname(path), { recursive: true, mode: DIR_MODE })
+
+  // Same directory as the target: `rename` is only atomic within a filesystem.
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    const handle = openSync(temporary, 'wx', FILE_MODE)
     try {
-      const handle = openSync(temporary, 'wx', FILE_MODE)
-      try {
-        writeFileSync(handle, `${JSON.stringify(document, null, 2)}\n`)
-        // Without the flush the rename can land before the bytes do, which on a
-        // power loss yields the one outcome the temp file was meant to prevent.
-        fsyncSync(handle)
-      } finally {
-        closeSync(handle)
-      }
-      renameSync(temporary, this.#path)
+      writeFileSync(handle, `${JSON.stringify(document, null, 2)}\n`)
+      // Without the flush the rename can land before the bytes do, which on a
+      // power loss yields the one outcome the temp file was meant to prevent.
+      fsyncSync(handle)
+    } finally {
+      closeSync(handle)
+    }
+    renameSync(temporary, path)
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
+  }
+}
+
+/**
+ * Durable home for the published revocation list — same file format and the
+ * same atomic write as {@link FileRegistryStore}, but the opposite answer to an
+ * unreadable file.
+ *
+ * The agent table is soft state: every row is re-announced within one lease,
+ * so starting empty is the right recovery. A revocation list is not. Nothing
+ * re-announces it; it comes back only when the CA operator publishes again,
+ * and a registry that quietly started without it would look to every node
+ * started afterwards exactly like "never published" (key-distribution.md
+ * §6.4). So `read` separates "there is no file" (`null`, a registry that never
+ * received one) from "there is a file this process cannot use", which throws
+ * — the registry refuses to start rather than serve an empty list.
+ */
+export class FileRevocationListStore extends FileRegistryStore {
+  override read(): unknown {
+    let raw: string
+    try {
+      raw = readFileSync(this.path, 'utf8')
     } catch (error) {
-      rmSync(temporary, { force: true })
-      throw error
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw new Error(
+        `revocation list state ${this.path} cannot be read: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
+    try {
+      return JSON.parse(raw) as unknown
+    } catch {
+      throw new Error(`revocation list state ${this.path} is not valid JSON`)
     }
   }
+}
+
+/**
+ * Where the revocation list lives beside a given agent-table file.
+ *
+ * A sibling, so one `--state` option keeps both: `agents.json` pairs with
+ * `revocation-list.json`, `registry-agents.json` with
+ * `registry-revocation-list.json`, and any other name gets
+ * `.revocation-list.json` appended.
+ */
+export function revocationListStatePathFor(agentsStatePath: string): string {
+  const suffix = 'agents.json'
+  const base = basename(agentsStatePath)
+  const name = base.endsWith(suffix)
+    ? `${base.slice(0, -suffix.length)}revocation-list.json`
+    : `${base}.revocation-list.json`
+  return join(dirname(agentsStatePath), name)
 }

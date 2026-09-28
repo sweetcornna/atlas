@@ -17,6 +17,30 @@ import {
 } from '../../constants/identity.js'
 
 /**
+ * The memory root the host serves memory from, as handed to its ACP child.
+ * Set by {@link residentAcpEnvironment}; read back by {@link hostMemoryRoot}.
+ */
+const RESIDENT_MEMORY_ROOT_ENV = 'QIANMO_RESIDENT_MEMORY_ROOT'
+
+/**
+ * The memory root the host named for this child, or `undefined`.
+ *
+ * A path derivation in the same sense as `occConfigDir()` and
+ * `defaultMemoryRoot()`, which read `OCC_CONFIG_DIR` and
+ * `CLAUDE_CODE_REMOTE_MEMORY_DIR` the same way: the value is fixed when the
+ * host spawns the child, and the only other writer is the node's own
+ * `settings.json` `env` block, which the hardline refuses to every resident
+ * turn. It is only ever *added* to the protected roots, so no value of it can
+ * make the table refuse less.
+ */
+export function hostMemoryRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const root = env[RESIDENT_MEMORY_ROOT_ENV]
+  return root === undefined || root === '' ? undefined : root
+}
+
+/**
  * `parent` plus what every resident ACP child needs regardless of how the
  * node was started. Keys set here win over the same keys in `parent`.
  *
@@ -50,14 +74,28 @@ import {
  * `residentGuard.ts` are the defence in depth for the case where a definition
  * is admin-managed (safe mode keeps those) or a future base change moves one of
  * these load sites — they hold with safe mode off.
+ *
+ * ## Why the memory root travels with it
+ *
+ * The child's hardline refuses the node's memory store as a whole subtree. It
+ * derives that root itself (`defaultMemoryRoot()`), which agrees with the host
+ * only while the host uses the default too. A host started with its own
+ * `memoryRoot` would otherwise protect one directory and serve memory out of
+ * another. So the host names the root it actually uses, and the child adds it
+ * to the protected set — additively: the child's own default stays protected
+ * whatever this says.
  */
 export function residentAcpEnvironment(
   parent: NodeJS.ProcessEnv,
+  options: { readonly memoryRoot?: string } = {},
 ): NodeJS.ProcessEnv {
   return {
     ...parent,
     [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
     CLAUDE_CODE_REMOTE_SEND_KEEPALIVES: '1',
     CLAUDE_CODE_SAFE_MODE: '1',
+    ...(options.memoryRoot === undefined
+      ? {}
+      : { [RESIDENT_MEMORY_ROOT_ENV]: options.memoryRoot }),
   }
 }

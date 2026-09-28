@@ -143,20 +143,31 @@ describe('freeze-aware watchdog', () => {
 // here is the drop-in contract, not the freeze semantics above: argument order,
 // trailing-args passthrough, one shot only, and a clear that also swallows null.
 describe('setTimeout-shaped injection point', () => {
+  // Real timers, so the freeze detection is live: an event-loop stall past the
+  // 2 s jump threshold (seen on loaded CI runners) reads as a sandbox freeze
+  // and holds the deadline for the 15 s grace (TimeJumpGate). The callback then
+  // fires about 17 s in, which the default 5 s test budget cannot wait for.
+  // Hence the explicit timeout; the ordinary run still finishes in milliseconds.
   test('passes the trailing arguments through and fires once', async () => {
     const seen: number[] = []
+    const { promise: fired, resolve } = Promise.withResolvers<void>()
     setFreezeAwareTimeout(
       warnMs => {
         seen.push(warnMs)
+        resolve()
       },
       1,
       45_000,
     )
 
+    // Wait for the callback itself, not a fixed sleep. A callback that never
+    // comes still fails, on the test timeout below.
+    await fired
+    // One shot: give a repeat the same window the old test allowed.
     await Bun.sleep(60)
 
     expect(seen).toEqual([45_000])
-  })
+  }, 30_000)
 
   test('clearing before the deadline cancels the callback', async () => {
     const onTimeout = mock(() => {})

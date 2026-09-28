@@ -16,6 +16,7 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 import { isValidSegment } from '@qianmo/protocol'
+import { RETRIEVAL_MODES } from '@qianmo/recall'
 import type {
   AdmissionIntegrityIssue,
   AdmissionLedger,
@@ -104,6 +105,7 @@ function isDetected(
       'snapshot',
       'prompt',
       ...(value.networkMsgId === undefined ? [] : ['networkMsgId']),
+      ...(value.retrieval === undefined ? [] : ['retrieval']),
     ]) &&
     value.kind === 'detected' &&
     typeof value.messageId === 'string' &&
@@ -129,7 +131,10 @@ function isDetected(
     typeof value.prompt === 'string' &&
     value.prompt.length > 0 &&
     (value.networkMsgId === undefined ||
-      (typeof value.networkMsgId === 'string' && value.networkMsgId.length > 0))
+      (typeof value.networkMsgId === 'string' &&
+        value.networkMsgId.length > 0)) &&
+    (value.retrieval === undefined ||
+      RETRIEVAL_MODES.some(mode => mode === value.retrieval))
   )
 }
 

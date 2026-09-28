@@ -80,7 +80,11 @@ import {
   type NotifyPayload,
   type QianmoMessage,
 } from '@qianmo/protocol'
-import { ResidentEstop, parseTurnStepDedupKey } from '@qianmo/resident'
+import {
+  ResidentEstop,
+  parseTurnStepDedupKey,
+  turnFailureKind,
+} from '@qianmo/resident'
 import {
   SchedulerRunner,
   SchedulerStore,
@@ -513,6 +517,11 @@ function recordNotify(
  * 只写审计链，不打 stdout。§4.1⑤ 说结果「进审计链」，但不会通知人。正文不写
  * 进审计链，只记字节数：审计链按条 fsync，也不是存放模型输出的地方。节点那一侧
  * 的会话记录里有全文。
+ *
+ * 失败的结果多记一个 `failure`：节点把模型错误写成可识别的 `reason`，这里用
+ * {@link turnFailureKind} 读回来。`model_empty_response` 是模型连续空应答、重试
+ * 用完；`model_error` 是其他模型错误（如网关 4xx）。认不出的失败不写这个字段。
+ * 协议帧没有为此加字段：`task.result` 的错误码对所有执行失败都是 `E_TASK_FAILED`。
  */
 function recordResult(
   trail: AuditTrail,
@@ -532,6 +541,10 @@ function recordResult(
           ? Buffer.byteLength(payload.content, 'utf8')
           : undefined,
       reason: payload.outcome === 'failed' ? payload.reason : undefined,
+      failure:
+        payload.outcome === 'failed'
+          ? turnFailureKind(payload.reason)
+          : undefined,
       redelivered: payload.redelivered === true,
     })
   } else if (message.type === MessageType.Error) {

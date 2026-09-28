@@ -17,6 +17,7 @@ export {
   RESIDENT_INACTIVITY_CANCEL_META,
   SELF_REPORTING_TOOL_TITLE,
   parseTurnStepDedupKey,
+  turnFailureKind,
   turnStepDedupKey,
   type AcpPromptConnection,
   type ResidentTurnProgress,
@@ -41,6 +42,8 @@ export type {
   PendingAdmission,
   ReadAdmissionRecord,
   RecoveringAdmissionRecord,
+  ResidentAssembledPrompt,
+  ResidentFormattedPrompt,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentPromptScope,
@@ -62,6 +65,18 @@ export {
   type ResidentEstopOptions,
   type ResidentEstopStatus,
 } from './estop.js'
+export {
+  AUTHZ_LEDGER_FILE,
+  FileGrantStore,
+  type AskOutcome,
+  type AuthzCall,
+  type AuthzGrant,
+  type AuthzIntegrityIssue,
+  type AuthzRefusal,
+  type DecisionOutcome,
+  type FileGrantStoreOptions,
+  type UseOutcome,
+} from './grant-store.js'
 export {
   DEFAULT_RESIDENT_INACTIVITY_MS,
   isCredentialHttpStatus,
@@ -159,6 +174,15 @@ export {
   type ResidentNotifyAuditSink,
   type ResidentNotifyEvent,
 } from './notify.js'
+export {
+  invalidateResidentMemory,
+  residentMemoryScope,
+  revokeResidentMemory,
+  writeResidentMemory,
+  ResidentMemoryWriteError,
+  type ResidentMemorySource,
+  type ResidentMemoryTarget,
+} from './memory-writer.js'
 export {
   INJECTION_BUDGET,
   ResidentMemorySidecar,

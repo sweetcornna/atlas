@@ -74,10 +74,20 @@
  * the variable, says what to go and do.
  */
 
-import { CONSOLE_CLIENT_JS } from '../assets/client.js'
+import {
+  CONSOLE_CLIENT_JS,
+  CONSOLE_CLIENT_JS_ACCOUNTS,
+} from '../assets/client.js'
 import { CONSOLE_CSS } from '../assets/css.js'
 import { NODES_HEADING_ID } from './agents.js'
-import { chevron, icon, identityControl, sectionHead } from './bits.js'
+import {
+  chevron,
+  icon,
+  identityControl,
+  sectionHead,
+  viewerNotice,
+  type PageViewer,
+} from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatDuration } from './format.js'
 import type { ConsoleRole } from '../auth.js'
@@ -136,6 +146,12 @@ export interface PageModel {
    * while this is a door to a page that would have nothing on it.
    */
   readonly chatEnabled?: boolean
+  /**
+   * Who this page is for, when personal accounts are on. Its presence also
+   * picks the page script that refuses to keep a personal credential
+   * (`assets/client.ts`).
+   */
+  readonly viewer?: PageViewer
 }
 
 /**
@@ -531,7 +547,7 @@ function sidebar(model: PageModel, nodes: string | null): string {
     `<div class="divider"></div>` +
     `<div class="stack" style="gap:var(--space-2)">` +
     `<div class="flabel">身份</div>` +
-    identityControl(model.role) +
+    identityControl(model.role, model.viewer?.roleText) +
     tokenControl() +
     `</div>` +
     `</div></aside>`
@@ -621,21 +637,23 @@ function overviewSection(model: PageModel): string {
               ? `<span class="tag tag-critical">锚点不符</span>`
               : auditState === 'stale' || auditState === 'unwitnessed'
                 ? `<span class="tag tag-neutral">未见证</span>`
-                : auditState === 'broken'
-                  ? `<span class="tag tag-accent">断裂 ${escapeHtml(
-                      String(issues),
-                    )}</span>`
-                  : auditState === 'verified'
-                    ? `<span class="tag tag-accent-2">链完整</span>`
-                    : trailIntact === 'false' || issues > 0
-                      ? `<span class="tag tag-accent">断裂 ${escapeHtml(
-                          String(issues),
-                        )}</span>`
-                      : witness === 'tampered'
-                        ? `<span class="tag tag-critical">锚点不符</span>`
-                        : witness === 'verified'
-                          ? `<span class="tag tag-accent-2">链完整</span>`
-                          : `<span class="tag tag-neutral">未见证</span>`,
+                : auditState === 'uncovered'
+                  ? `<span class="tag tag-neutral">未覆盖</span>`
+                  : auditState === 'broken'
+                    ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                        String(issues),
+                      )}</span>`
+                    : auditState === 'verified'
+                      ? `<span class="tag tag-accent-2">链完整</span>`
+                      : trailIntact === 'false' || issues > 0
+                        ? `<span class="tag tag-accent">断裂 ${escapeHtml(
+                            String(issues),
+                          )}</span>`
+                        : witness === 'tampered'
+                          ? `<span class="tag tag-critical">锚点不符</span>`
+                          : witness === 'verified'
+                            ? `<span class="tag tag-accent-2">链完整</span>`
+                            : `<span class="tag tag-neutral">未见证</span>`,
       glyph: 'activity',
       blob: 'blob-2',
     }),
@@ -806,11 +824,16 @@ export function renderPage(model: PageModel): string {
     `<div class="shell">\n` +
     sidebar(model, nodes) +
     `\n<main class="main" aria-labelledby="${NODES_HEADING_ID}">\n` +
+    viewerNotice(model.viewer) +
     `${overview}\n${roster}\n${servers}${wake}\n${trail}\n${register}\n${limits}\n` +
     `</main>\n</div>\n` +
     deregisterDialog() +
     (model.wakeEnabled ? wakeDialog() : '') +
-    `\n<script>${CONSOLE_CLIENT_JS}</script>\n` +
+    `\n<script>${
+      model.viewer === undefined
+        ? CONSOLE_CLIENT_JS
+        : CONSOLE_CLIENT_JS_ACCOUNTS
+    }</script>\n` +
     `</body>\n</html>\n`
   )
 }

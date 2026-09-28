@@ -562,6 +562,84 @@ describe('§5 witness variants', () => {
     )
   })
 
+  /**
+   * An audit mirror is the node's chain as of its last pull. Pulled before
+   * the second anchor's records existed, it holds seq 1..6 while the witness
+   * already holds anchors at 5 and 8.
+   */
+  function mirrorOf(records: number, source = path): string {
+    const mirror = join(directory, `mirror-${String(records)}.ndjson`)
+    const lines = readFileSync(source, 'utf8').split('\n').filter(Boolean)
+    writeFileSync(mirror, `${lines.slice(0, records).join('\n')}\n`)
+    return mirror
+  }
+
+  test('M1: a mirror behind the newest anchor is uncovered, not tampered', async () => {
+    const mirror = mirrorOf(6)
+    const anchors = await store.list(NODE)
+    const verify = (prefix: boolean) =>
+      verifyAuditWitness({
+        trailPath: mirror,
+        anchors,
+        publicKey: keys.publicKey,
+        now: () => 2_500,
+        staleAfterMs: 1_000_000,
+        prefix,
+      })
+
+    const asMirror = verify(true)
+    expect(asMirror).toEqual({
+      tampered: false,
+      stale: false,
+      coveredThrough: 5,
+      issues: [
+        { kind: 'unwitnessed_tail', from: 6, to: 6, count: 1 },
+        { kind: 'uncovered', from: 8, to: 8, count: 1 },
+      ],
+    })
+    expect(formatWitnessVerification(asMirror)).toContain(
+      'uncovered: anchor seq 8..8 共 1 个在本副本末尾之后，未比对',
+    )
+    // The same bytes read as the node's own chain are a truncation.
+    expect(verify(false).tampered).toBe(true)
+  })
+
+  test('M2: a rewrite inside what the mirror does hold is still tampered', async () => {
+    const attacked = join(directory, 'attacked-m2.ndjson')
+    rewriteTrail(path, attacked, records =>
+      records.filter(record => record.outcome !== 'refused'),
+    )
+    const result = verifyAuditWitness({
+      trailPath: mirrorOf(6, attacked),
+      anchors: await store.list(NODE),
+      publicKey: keys.publicKey,
+      now: () => 2_500,
+      staleAfterMs: 1_000_000,
+      prefix: true,
+    })
+    expect(result.tampered).toBe(true)
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ kind: 'head_mismatch', seq: 5 }),
+    )
+  })
+
+  test('M3: a mirror that has caught up reads exactly as the node chain does', async () => {
+    const anchors = await store.list(NODE)
+    const options = {
+      anchors,
+      publicKey: keys.publicKey,
+      now: () => 2_500,
+      staleAfterMs: 1_000_000,
+    }
+    expect(
+      verifyAuditWitness({
+        ...options,
+        trailPath: mirrorOf(12),
+        prefix: true,
+      }),
+    ).toEqual(verifyAuditWitness({ ...options, trailPath: path }))
+  })
+
   test('E: reports stale when anchoring stops even though the local chain is unchanged', async () => {
     expect(readFileSync(path, 'utf8')).toBe(baseline)
     const result = verifyAuditWitness({

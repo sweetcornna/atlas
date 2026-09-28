@@ -272,9 +272,13 @@ export function assistantMessageToAcpNotifications(
 
   // When streaming is active, text/thinking were already sent via stream_event
   // messages. Filter them out to avoid duplicate agent_message_chunk /
-  // agent_thought_chunk notifications. String content (synthetic messages)
-  // is unaffected — those have no corresponding stream_events.
-  const contentToProcess = options?.streamingActive
+  // agent_thought_chunk notifications. Synthetic messages are unaffected,
+  // whatever shape their content has — those have no corresponding
+  // stream_events. That includes every API error message: filtering its text
+  // left the client an empty end_turn for a failed turn.
+  const alreadyStreamed =
+    options?.streamingActive === true && message.model !== '<synthetic>'
+  const contentToProcess = alreadyStreamed
     ? content.filter(
         block => block.type !== 'text' && block.type !== 'thinking',
       )

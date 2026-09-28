@@ -11,6 +11,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -117,13 +118,101 @@ function writeFileAtomic(path: string, contents: string): void {
   }
 }
 
-function isMissing(error: unknown): boolean {
+function hasCode(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    (error as { code?: unknown }).code === 'ENOENT'
+    (error as { code?: unknown }).code === code
   )
+}
+
+function isMissing(error: unknown): boolean {
+  return hasCode(error, 'ENOENT')
+}
+
+/**
+ * How long a change to one entry waits for another change to the same entry.
+ * A holder keeps the lock for one read, one fsync'd write and one rename, so
+ * two seconds is contention far beyond anything a healthy node produces.
+ */
+const ENTRY_LOCK_WAIT_MS = 2_000
+
+/**
+ * A lock older than this was left by a process that died while holding it.
+ * Wall-clock age, not the holder's pid: the resident may run in a sandbox with
+ * its own pid namespace while the operator's CLI runs on the host, and a pid
+ * seen from one side means nothing on the other.
+ */
+const ENTRY_LOCK_STALE_MS = 30_000
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** `true` when the lock was removed as stale; `false` when it is live or gone. */
+function clearStaleLock(lock: string): boolean {
+  let age: number
+  try {
+    age = Date.now() - statSync(lock).mtimeMs
+  } catch (error) {
+    if (isMissing(error)) return false
+    throw error
+  }
+  if (age <= ENTRY_LOCK_STALE_MS) return false
+  rmSync(lock, { force: true })
+  return true
+}
+
+/**
+ * Run a read-modify-write of one entry file under that entry's lock.
+ *
+ * `revoke` and `invalidate` both read a record, add a mark and rename a new
+ * copy over it. Without this, two processes that read before either renames
+ * each write back a copy missing the other's mark — and when the lost mark is
+ * a revocation, the operator was told the entry is withdrawn while it goes on
+ * being injected. `writeFileAtomic` keeps each copy whole; it cannot keep both
+ * marks.
+ *
+ * The lock is a sibling file created with `wx` (exclusive create): a name that
+ * does not end in `.md`, so neither this store's scan nor the base's ever reads
+ * it as an entry. Waiting is synchronous because the store API is; a writer
+ * that cannot get the lock in {@link ENTRY_LOCK_WAIT_MS} is refused rather than
+ * left to overwrite. A lock older than {@link ENTRY_LOCK_STALE_MS} is removed.
+ * Known gap: two waiters that judge the same stale lock at the same instant can
+ * both proceed — the outcome is the unlocked behaviour, and it needs a crash
+ * inside a millisecond-long critical section to set up.
+ */
+function withEntryLock<T>(entryFile: string, id: string, change: () => T): T {
+  const lock = `${entryFile}.lock`
+  const deadline = Date.now() + ENTRY_LOCK_WAIT_MS
+  for (let attempt = 0; ; attempt++) {
+    let handle: number
+    try {
+      handle = openSync(lock, 'wx', FILE_MODE)
+    } catch (error) {
+      if (!hasCode(error, 'EEXIST')) throw error
+      if (clearStaleLock(lock)) continue
+      if (Date.now() >= deadline) {
+        throw new MemoryStoreError(
+          `memory entry ${id} is being changed by another writer; retry`,
+        )
+      }
+      sleepSync(Math.min(25, 2 ** Math.min(attempt, 5)))
+      continue
+    }
+    try {
+      try {
+        // Who holds it, for whoever finds a lock that outlived its writer.
+        writeFileSync(handle, `${process.pid}\n`)
+      } finally {
+        closeSync(handle)
+      }
+      return change()
+    } finally {
+      rmSync(lock, { force: true })
+    }
+  }
 }
 
 /**
@@ -370,24 +459,31 @@ export class FileMemoryStore {
     return this.retire(id, { kind: 'revoked', ...revocation })
   }
 
-  /** Shared by {@link revoke} and the sedimentation task. */
+  /**
+   * Shared by {@link revoke} and the sedimentation task.
+   *
+   * The state check and the write happen under the entry's lock, on a copy
+   * read after the lock was taken — see {@link withEntryLock}. Two concurrent
+   * retirements therefore produce exactly one success and one "already
+   * retired", never two successes with the first reason silently overwritten.
+   */
   retire(id: string, retirement: MemoryRetirement): MemoryEntry {
-    const located = this.#locate(id)
-    if (located === null) {
-      throw new MemoryStoreError(`no memory entry with id ${id}`)
-    }
-    if (located.entry.expiredAt !== null) {
-      throw new MemoryStoreError(
-        `memory entry ${id} was already retired at ${located.entry.expiredAt}`,
-      )
-    }
-    const retired: MemoryEntry = {
-      ...located.entry,
-      expiredAt: this.#now().toISOString(),
-      retirement,
-    }
-    writeFileAtomic(located.path, serializeEntry(retired))
-    return retired
+    const path = this.#requirePath(id)
+    return withEntryLock(path, id, () => {
+      const current = readEntryFile(path)
+      if (current.expiredAt !== null) {
+        throw new MemoryStoreError(
+          `memory entry ${id} was already retired at ${current.expiredAt}`,
+        )
+      }
+      const retired: MemoryEntry = {
+        ...current,
+        expiredAt: this.#now().toISOString(),
+        retirement,
+      }
+      writeFileAtomic(path, serializeEntry(retired))
+      return retired
+    })
   }
 
   /**
@@ -400,22 +496,31 @@ export class FileMemoryStore {
    * how a memory system starts contradicting its own history.
    */
   invalidate(id: string, at?: Date): MemoryEntry {
+    const path = this.#requirePath(id)
+    return withEntryLock(path, id, () => {
+      const current = readEntryFile(path)
+      if (current.invalidAt !== null) {
+        throw new MemoryStoreError(
+          `memory entry ${id} was already invalidated at ${current.invalidAt}`,
+        )
+      }
+      const invalidAt = (at ?? this.#now()).toISOString()
+      if (invalidAt < current.validAt) {
+        throw new MemoryStoreError('invalidAt must not precede validAt')
+      }
+      const updated: MemoryEntry = { ...current, invalidAt }
+      writeFileAtomic(path, serializeEntry(updated))
+      return updated
+    })
+  }
+
+  /** Where the entry lives; throws the same error the two changes always did. */
+  #requirePath(id: string): string {
     const located = this.#locate(id)
     if (located === null) {
       throw new MemoryStoreError(`no memory entry with id ${id}`)
     }
-    if (located.entry.invalidAt !== null) {
-      throw new MemoryStoreError(
-        `memory entry ${id} was already invalidated at ${located.entry.invalidAt}`,
-      )
-    }
-    const invalidAt = (at ?? this.#now()).toISOString()
-    if (invalidAt < located.entry.validAt) {
-      throw new MemoryStoreError('invalidAt must not precede validAt')
-    }
-    const updated: MemoryEntry = { ...located.entry, invalidAt }
-    writeFileAtomic(located.path, serializeEntry(updated))
-    return updated
+    return located.path
   }
 
   #report(type: MemoryEventType, path: string, error: unknown): void {

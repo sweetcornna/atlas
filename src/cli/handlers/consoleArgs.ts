@@ -26,6 +26,7 @@ import {
   WITNESS_READ_TOKEN_ENV_VAR,
   type AuditWitnessSource,
 } from '../../services/qianmo/auditWitness.js'
+import { parseTrustedKey } from '../../services/qianmo/nodeIdentity.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
@@ -212,6 +213,28 @@ export function consoleRegistrationsPath(): string {
   return occConfigPath('qianmo', 'console', 'registrations.json')
 }
 
+/**
+ * 账号库的默认位置（`tenancy-m1.md` §3.3，P15.3）：邀请、账号、凭据哈希与会话
+ * 属主，一本哈希链账。
+ *
+ * 同一个目录、同一条派生规矩（CLAUDE.md §1.1②）。它只在 `--accounts` 打开时
+ * 才会被创建——一个不开账号的控制台不该在配置根里留下一本空账。
+ */
+export function consoleAccountsPath(): string {
+  return occConfigPath('qianmo', 'console', 'accounts.ndjson')
+}
+
+/**
+ * 会话表的默认位置（`tenancy-m1.md` §3.3，P15.5）：浏览器会话的开、续、关，只存
+ * 会话 id 的哈希。
+ *
+ * 与账号库分开放：会话表每次登录、每 15 分钟的续期都要写，账号库只在开户、
+ * 吊销这类事上写；分开以后账号库不会被会话流水撑大，两本也各自成链、各自可查。
+ */
+export function consoleSessionsPath(): string {
+  return occConfigPath('qianmo', 'console', 'sessions.ndjson')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -224,6 +247,21 @@ export interface ConsoleCliConfig {
   readonly auditMirrors: readonly ConsoleAuditMirror[]
   /** 给了才读取机外锚点；目录或 HTTP(S) 端点。 */
   readonly anchors?: AuditWitnessSource
+  /**
+   * `--trust <node>=<publicKey>`：见证锚点验签用的节点公钥（K-11 F-3）。
+   *
+   * 与 {@link trustCa} 一起，是验签公钥**仅有的两个来源**：注册中心零鉴权（写 token
+   * 之前）或至少不对公钥作任何背书，它名册上的 `publicKey` 字段不再被当成节点身份。
+   * 同一个节点同一把钥给两次会被合并，两把不同的钥当场报错。没有条目时字段缺席，
+   * 于是没用到它的配置与加它之前形状一致。
+   */
+  readonly trusted?: readonly (readonly [string, string])[]
+  /**
+   * 注册中心写 token 文件的绝对路径（tenancy-m1.md P15.8）。给了，注册、注销、
+   * 心跳与续租都带 `Authorization: Bearer`；读不带。值由 `console.ts` 在启动时读，
+   * 权限不是只有属主可读就拒绝启动。
+   */
+  readonly registryTokenFile?: string
   /** Explicit allowlist of wake endpoints. */
   readonly wakeTargets: readonly ConsoleNodeTarget[]
   /**
@@ -311,6 +349,26 @@ export interface ConsoleCliConfig {
   readonly nodeServers: readonly ConsoleNodeServer[]
   /** 服务器备注落盘的绝对路径。 */
   readonly serverNotesPath: string
+  /**
+   * 个人账号（`tenancy-m1.md` §3）。**给了 `--accounts` 才开**；不给就是今天的
+   * 控制台，逐字节不变。开了以后两枚旧 token 照旧可用（迁移期 M-1），另多出
+   * 邀请开户这条路。
+   */
+  readonly accounts?: boolean
+  /** 账号库的绝对路径；只在 {@link accounts} 打开时出现。 */
+  readonly accountsStorePath?: string
+  /** 会话表的绝对路径；只在 {@link accounts} 打开时出现。 */
+  readonly sessionsStorePath?: string
+  /**
+   * 迁移期 view token 还认不认（`tenancy-m1.md` §1.5 M-2b）。只在
+   * {@link accounts} 打开时出现，缺省 `true`。
+   */
+  readonly legacyViewToken?: boolean
+  /**
+   * admin token 转为 break-glass（§3.4 D7，M-3）：只收 Bearer、页面常亮、每次
+   * 使用都记账、永远不能当审批人。只在 {@link accounts} 打开时出现，缺省 `false`。
+   */
+  readonly breakGlass?: boolean
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -345,6 +403,8 @@ export function parseConsoleArgs(
   let signChats = false
   let printWakeIdentity = false
   let trustCa: string | undefined
+  const trusted = new Map<string, string>()
+  let registryTokenFile: string | undefined
   let label: string | undefined
   let viewToken: string | undefined
   let adminToken: string | undefined
@@ -356,6 +416,14 @@ export function parseConsoleArgs(
   let chatStorePath = consoleChatStorePath()
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
+  let accounts = false
+  let accountsStorePath = consoleAccountsPath()
+  let accountsStoreGiven = false
+  let sessionsStorePath = consoleSessionsPath()
+  let legacyViewToken = true
+  let breakGlass = false
+  // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
+  const needsAccounts: string[] = []
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
@@ -437,6 +505,25 @@ export function parseConsoleArgs(
         throw new Error('--trust-ca must be an absolute path')
       }
       trustCa = resolve(parsed.value)
+      index = parsed.next
+    } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
+      const parsed = residentOptionValue(args, index, '--trust')
+      const [node, publicKey] = parseTrustedKey(parsed.value)
+      const earlier = trusted.get(node)
+      if (earlier !== undefined && earlier !== publicKey) {
+        throw new Error(`--trust gives node ${node} two different keys`)
+      }
+      trusted.set(node, publicKey)
+      index = parsed.next
+    } else if (
+      arg === '--registry-token-file' ||
+      arg?.startsWith('--registry-token-file=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--registry-token-file')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--registry-token-file must be an absolute path')
+      }
+      registryTokenFile = resolve(parsed.value)
       index = parsed.next
     } else if (arg === '--anchors' || arg?.startsWith('--anchors=')) {
       const parsed = residentOptionValue(args, index, '--anchors')
@@ -605,6 +692,44 @@ export function parseConsoleArgs(
       }
       serverNotesPath = resolve(parsed.value)
       index = parsed.next
+    } else if (arg === '--accounts') {
+      accounts = true
+    } else if (
+      arg === '--accounts-store' ||
+      arg?.startsWith('--accounts-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--accounts-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--accounts-store must be an absolute path')
+      }
+      accountsStorePath = resolve(parsed.value)
+      accountsStoreGiven = true
+      index = parsed.next
+    } else if (
+      arg === '--sessions-store' ||
+      arg?.startsWith('--sessions-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--sessions-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--sessions-store must be an absolute path')
+      }
+      sessionsStorePath = resolve(parsed.value)
+      needsAccounts.push('--sessions-store')
+      index = parsed.next
+    } else if (
+      arg === '--legacy-view-token' ||
+      arg?.startsWith('--legacy-view-token=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--legacy-view-token')
+      if (parsed.value !== 'on' && parsed.value !== 'off') {
+        throw new Error('--legacy-view-token must be on or off')
+      }
+      legacyViewToken = parsed.value === 'on'
+      needsAccounts.push('--legacy-view-token')
+      index = parsed.next
+    } else if (arg === '--break-glass') {
+      breakGlass = true
+      needsAccounts.push('--break-glass')
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -628,6 +753,28 @@ export function parseConsoleArgs(
     }
   }
 
+  // 见证验签的公钥以前取自注册中心的名册（K-11 F-3）。那条路去掉以后，一个只给了
+  // `--anchors` 的控制台没有任何公钥来源：与其起来之后每条链都报「没有可信公钥」，
+  // 不如在这里说清楚该补什么。
+  if (anchors !== undefined && trusted.size === 0 && trustCa === undefined) {
+    throw new Error(
+      '--anchors needs --trust <node>=<publicKey> or --trust-ca: witness ' +
+        'anchors are verified only against keys established outside the registry',
+    )
+  }
+
+  // 给了库路径却没开账号，多半是以为给路径就开了。静默照旧跑会让人以为账号已
+  // 上线，而页面上什么都没变。
+  if (accountsStoreGiven && !accounts) {
+    throw new Error('--accounts-store needs --accounts')
+  }
+  // 同理：view token 关掉、admin 转 break-glass，都是「个人账号已经接得住」之后
+  // 才有意义的一步；没有账号时关掉 view token 等于把所有人关在门外。
+  const orphan = needsAccounts[0]
+  if (orphan !== undefined && !accounts) {
+    throw new Error(`${orphan} needs --accounts`)
+  }
+
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
   // 同一条规则开了第二个可以漂移的出处。
@@ -638,6 +785,8 @@ export function parseConsoleArgs(
     auditTargets,
     auditMirrors,
     ...(anchors === undefined ? {} : { anchors }),
+    ...(trusted.size === 0 ? {} : { trusted: [...trusted] }),
+    ...(registryTokenFile === undefined ? {} : { registryTokenFile }),
     wakeTargets,
     ...(signWakes ? { signWakes } : {}),
     ...(signChats ? { signChats } : {}),
@@ -653,6 +802,17 @@ export function parseConsoleArgs(
     chatStorePath,
     nodeServers,
     serverNotesPath,
+    // Every account key only when the feature is on: a config without accounts
+    // has exactly the shape it had before accounts existed.
+    ...(accounts
+      ? {
+          accounts,
+          accountsStorePath,
+          sessionsStorePath,
+          legacyViewToken,
+          breakGlass,
+        }
+      : {}),
   }
 }
 
@@ -695,6 +855,14 @@ Options (each accepts both --name value and --name=value):
                            tokens are supplied.
   --registry <url>         Registry HTTP v0 base URL, http or https.
                            Default ${DEFAULT_CONSOLE_REGISTRY_URL}.
+  --registry-token-file <abs path>
+                           Registry write token. Registrations, removals,
+                           heartbeats and the renewals of agents registered
+                           on the page carry it; reads do not. The file must
+                           not be readable by group or other (chmod 600) or
+                           the console refuses to start. Needed once the
+                           registry is started with a write token; harmless
+                           before that.
   --audit <node>=<path>    Audit trail source. Repeatable; node names use
                            lowercase letters, digits, - and _, are 1-64
                            characters, and paths are absolute.
@@ -714,8 +882,22 @@ Options (each accepts both --name value and --name=value):
                            this console verifies, never signs. During a root
                            rotation the file holds both roots (§3.3); a file
                            that is not all well-formed roots refuses startup.
+                           With --anchors, a certificate that verifies against
+                           a root here (and a fresh revocation list) also
+                           supplies that node's witness key.
   --anchors <path|url>     Witness anchor directory (absolute) or HTTP(S)
                            endpoint. Without this, the trail is 未见证.
+                           Anchors are checked only against node keys from
+                           --trust or from CA-verified certificates
+                           (--trust-ca), never against the key a registry
+                           row carries; one of the two is required. A source
+                           marked --audit-mirror is compared only up to where
+                           the copy ends: anchors past it read 未覆盖, not
+                           锚点不符.
+  --trust <node>=<publicKey>
+                           Node key for witness verification. Repeatable, one
+                           node per flag; the same argument a resident node
+                           takes. Wins over a CA-derived key for that node.
   --wake-url <node>=<ws url>
                            Wake target allowlist. Repeatable; each named node
                            reads only its derived PSK environment variable.
@@ -775,6 +957,28 @@ Options (each accepts both --name value and --name=value):
   --server-notes <abs path>
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
+  --accounts               Turn on personal accounts: invitation links, one
+                           personal credential per person. Off by default,
+                           and off is exactly the console without accounts.
+                           The view and admin tokens keep working beside
+                           them.
+  --accounts-store <abs path>
+                           Where the account ledger lands, absolute path.
+                           Default <config root>/qianmo/console/accounts.ndjson.
+                           Only with --accounts.
+  --sessions-store <abs path>
+                           Where the browser session table lands, absolute
+                           path. Default
+                           <config root>/qianmo/console/sessions.ndjson.
+                           Only with --accounts.
+  --legacy-view-token on|off
+                           Whether the shared view token still works.
+                           Default on. Turn off once every viewer has an
+                           account. Only with --accounts.
+  --break-glass            Keep the admin token for emergencies only: Bearer
+                           header only, a notice on every page, every use
+                           recorded, never an approver. Rotate it after use.
+                           Only with --accounts.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.

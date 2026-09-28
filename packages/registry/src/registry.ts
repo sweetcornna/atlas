@@ -123,8 +123,12 @@ export interface AgentRecord {
 /** Failure modes of the registry, mapped 1:1 onto HTTP status codes. */
 export enum RegistryErrorCode {
   E_BAD_REQUEST = 'E_BAD_REQUEST',
+  /** A write without the configured write token (P15.8). Never on a read. */
+  E_UNAUTHORIZED = 'E_UNAUTHORIZED',
   E_CONFLICT = 'E_CONFLICT',
   E_NOT_FOUND = 'E_NOT_FOUND',
+  /** A revocation list that could not be written down was not accepted. */
+  E_STORAGE = 'E_STORAGE',
 }
 
 export type RegisterResult =
@@ -192,6 +196,17 @@ export interface RegistryOptions {
    * availability. Without this hook that trade-off would be silent.
    */
   readonly onPersistError?: (error: unknown) => void
+  /**
+   * Durable backing for the published revocation list, read once at
+   * construction and written before every accepted publish.
+   *
+   * The contract differs from {@link store} on purpose: `read` returns `null`
+   * only when nothing was ever stored and **throws** when something is stored
+   * but unusable (`FileRevocationListStore`). A list that cannot be read back
+   * makes the constructor throw rather than start as if none had been
+   * published — see {@link InMemoryRegistry.publishRevocationList}.
+   */
+  readonly revocationListStore?: RegistryStore
   /**
    * Called when a registration is refused because its certificate disagrees
    * with the rest of the record (§5.2). Never called for a registration that
@@ -484,12 +499,30 @@ function readSnapshot(document: unknown): readonly unknown[] | null {
 }
 
 /**
+ * The revocation list a store held, or `null` when it held none.
+ *
+ * Throws on anything else: a stored document that is not the `{payload,
+ * signature}` shape is as unusable as an unreadable file, and the answer to
+ * both is to refuse to start, not to start as if nothing had been published.
+ */
+function restoreRevocationList(document: unknown): unknown | null {
+  if (document === null) return null
+  if (!isSignedRevocationListShape(document)) {
+    throw new Error(
+      'stored revocation list is not a signed revocation list {payload, signature}',
+    )
+  }
+  return document
+}
+
+/**
  * Registration and discovery table, served entirely from memory.
  *
  * Every entry point takes a full `qianmo://<node>/<agent>` address — there is
  * deliberately no second form (protocol.md §2.4 A-3). Entries expire `ttlMs`
- * after their last heartbeat; expiry is evaluated lazily on read, so no timer
- * is needed and tests can drive a `ManualClock`.
+ * after their last heartbeat; expiry is evaluated on read, so lookups never
+ * depend on a timer and tests can drive a `ManualClock`. Expired rows are
+ * evicted by the host's clock pulse ({@link InMemoryRegistry.observeClock}).
  *
  * Given a {@link RegistryOptions.store} the map is mirrored to durable storage
  * after every change and read back at construction, so the table survives a
@@ -509,6 +542,7 @@ export class InMemoryRegistry {
   readonly #store: RegistryStore | null
   readonly #onPersistError: ((error: unknown) => void) | undefined
   readonly #onAudit: RegistryAuditSink | undefined
+  readonly #revocationListStore: RegistryStore | null
   #timeJumpGate: TimeJumpGate | null = null
   #revocationList: unknown | null = null
 
@@ -516,21 +550,53 @@ export class InMemoryRegistry {
     this.#ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
     this.#clock = options.clock ?? systemClock
     this.#store = options.store ?? null
+    this.#revocationListStore = options.revocationListStore ?? null
     this.#onPersistError = options.onPersistError
     this.#onAudit = options.onAudit
     if (this.#store !== null) this.#restore(this.#store.read())
+    if (this.#revocationListStore !== null) {
+      this.#revocationList = restoreRevocationList(
+        this.#revocationListStore.read(),
+      )
+    }
   }
 
   get ttlMs(): number {
     return this.#ttlMs
   }
 
+  /**
+   * One tick of the host's clock pulse: detect a time jump, and evict leases
+   * that have run out.
+   *
+   * **Eviction is part of the pulse, not only of a read.** Reads hide an
+   * expired row, but only a write to that same key, {@link prune} or a
+   * restart removes it — and nothing in production called `prune`. So a node
+   * that went away for good left its row in the map for the life of the
+   * process, and every other entry's renewal rewrote it to the state file,
+   * still carrying the `status` it last declared (`online`). The pulse now
+   * prunes, so a dead row leaves memory and disk within one period.
+   *
+   * **A jump carries forward only the leases that were alive at the previous
+   * tick.** The grace window exists for renewers that were frozen along with
+   * this process; a row whose own deadline had already passed when the clock
+   * was last seen has no such renewer, and granting it grace would put a
+   * long-retired node back on the roster for the whole window.
+   */
   observeClock(periodMs: number): TimeJumpObservation {
     this.#timeJumpGate ??= new TimeJumpGate({ periodMs })
     const now = this.#clock.now()
     const observation = this.#timeJumpGate.observe(now)
-    if (!observation.jumped) return observation
+    if (!observation.jumped) {
+      this.prune()
+      return observation
+    }
+    const previous = now - observation.gapMs
     for (const [key, entry] of this.#entries) {
+      if (entry.expiresAt < previous) {
+        this.#entries.delete(key)
+        continue
+      }
       this.#entries.set(key, {
         ...entry,
         expiresAt: this.#timeJumpGate.rebase(entry.expiresAt, observation),
@@ -721,9 +787,24 @@ export class InMemoryRegistry {
    * Structural validation only — see {@link isSignedRevocationListShape} on
    * why the registry never checks the signature. `true` means the document
    * replaced whatever was published before; `false` means nothing changed.
+   *
+   * With a {@link RegistryOptions.revocationListStore} the document is written
+   * **before** it replaces the one in memory, and a failed write throws with
+   * nothing changed. The agent table can trade durability for availability
+   * because every row is re-announced within a lease; a revocation list is
+   * published once, so accepting one that the next restart would forget is
+   * how an operator ends up believing a revocation is live when it is not.
    */
   publishRevocationList(document: unknown): boolean {
     if (!isSignedRevocationListShape(document)) return false
+    if (this.#revocationListStore !== null) {
+      try {
+        this.#revocationListStore.write(document)
+      } catch (error) {
+        this.#onPersistError?.(error)
+        throw error
+      }
+    }
     this.#revocationList = document
     return true
   }
@@ -868,7 +949,8 @@ export class InMemoryRegistry {
    *
    * Expired-but-not-yet-evicted rows ride along unchanged — {@link #restore}
    * re-judges every lease against the clock, so the deadline never has to be
-   * accurate on disk, only recoverable.
+   * accurate on disk, only recoverable. They stay at most one clock pulse:
+   * {@link observeClock} evicts them.
    */
   #persist(): void {
     const store = this.#store

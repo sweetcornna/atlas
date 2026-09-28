@@ -300,17 +300,43 @@ const ROLE_TEXT: Readonly<Record<ConsoleRole, string>> = {
   none: '',
 }
 
-export function identityControl(role: ConsoleRole): string {
+export function identityControl(role: ConsoleRole, roleText?: string): string {
   if (role === 'none') return ''
   return (
     `<div class="fblock identity">` +
     `<span class="tag tag-accent" id="role">` +
     icon('shield', { small: true }) +
-    `${escapeHtml(ROLE_TEXT[role])}</span>` +
+    `${escapeHtml(roleText ?? ROLE_TEXT[role])}</span>` +
     `<form id="logout-form" method="post" action="/logout">` +
     `<button type="submit" class="btn btn-ghost">` +
     icon('log-out', { small: true }) +
     `退出</button></form>` +
     `</div>`
+  )
+}
+
+/**
+ * Who a page is rendered for, when personal accounts are on
+ * (`tenancy-m1.md` §3). Absent on a console without accounts, and then every
+ * page is byte for byte what it was.
+ */
+export interface PageViewer {
+  /** The role chip's text, in place of the two legacy ones. */
+  readonly roleText: string
+  /**
+   * One line lit at the top of the page and never dismissed: break-glass in
+   * use, the account book closed, an admin token that was used and not yet
+   * rotated (§3.4 ②④).
+   */
+  readonly notice?: string
+}
+
+/** The lit line a {@link PageViewer} may carry. */
+export function viewerNotice(viewer: PageViewer | undefined): string {
+  if (viewer?.notice === undefined) return ''
+  return (
+    `<p class="bar bar-warn" role="alert" id="account-notice">` +
+    icon('alert-triangle', { small: true }) +
+    `${escapeHtml(viewer.notice)}</p>`
   )
 }

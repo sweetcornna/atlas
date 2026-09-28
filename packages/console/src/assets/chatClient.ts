@@ -41,8 +41,10 @@
  */
 
 import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
+import { PERSONAL_GUARDS, type TokenGuards } from './client.js'
 
-export const CONSOLE_CHAT_JS = `
+function chatScript(guards: TokenGuards): string {
+  return `
 (function () {
   'use strict';
 
@@ -74,12 +76,12 @@ export const CONSOLE_CHAT_JS = `
 
   /* ---------------- token ---------------- */
 
-  function readToken() {
+  function readToken() {${guards.read}
     try { return window.localStorage.getItem(TOKEN_KEY) || ''; }
     catch (e) { return memoryToken; }
   }
 
-  function writeToken(value) {
+  function writeToken(value) {${guards.write}
     memoryToken = value;
     try {
       if (value) window.localStorage.setItem(TOKEN_KEY, value);
@@ -442,3 +444,10 @@ export const CONSOLE_CHAT_JS = `
   }
 })();
 `
+}
+
+/** The script as it has always been: what a console without accounts serves. */
+export const CONSOLE_CHAT_JS = chatScript({ read: '', write: '' })
+
+/** The same script with the personal-credential guards (`client.ts`). */
+export const CONSOLE_CHAT_JS_ACCOUNTS = chatScript(PERSONAL_GUARDS)

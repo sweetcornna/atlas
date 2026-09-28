@@ -53,6 +53,7 @@ import { join, resolve } from 'node:path'
 import { type AuditRecord, readTrail } from '@qianmo/audit'
 import { getMacroDefines, resolveBuildFeatures } from '../../scripts/defines.js'
 import {
+  EMPTY_JOB_MARKER,
   type ModelDouble,
   RUNBOOK_FILE,
   RUNBOOK_MARKER,
@@ -279,6 +280,8 @@ async function runJob(input: {
   readonly id: string
   readonly threshold: number
   readonly sign: boolean
+  /** Replaces the disk-check prompt. */
+  readonly prompt?: string
 }): Promise<JobRun> {
   const jobsPath = join(root, `${input.id}.json`)
   writeFileSync(
@@ -290,10 +293,11 @@ async function runJob(input: {
         target: TARGET,
         url: `ws://127.0.0.1:${port}`,
         prompt:
+          input.prompt ??
           `WATCH-DF threshold=${input.threshold}. Run \`df -P /\`. If the ` +
-          'root filesystem is at or above the threshold percentage, call ' +
-          'qianmo_notify with kind=watch, severity=warn, dedupKey "/". ' +
-          'Otherwise do nothing and just finish.',
+            'root filesystem is at or above the threshold percentage, call ' +
+            'qianmo_notify with kind=watch, severity=warn, dedupKey "/". ' +
+            'Otherwise do nothing and just finish.',
         // Not anchored: the first plan fires at once, the next is an hour out.
         schedule: { everyMs: 3_600_000 },
         taskTtlMs: 120_000,
@@ -524,6 +528,35 @@ describe('qm watch --sign against a real qm resident', () => {
       expect(
         forJob(run.hub, 'watch_step_received', 'disk-alert').length,
       ).toBeGreaterThanOrEqual(3)
+    },
+    FILE_TIMEOUT_MS,
+  )
+
+  test(
+    'a job whose model keeps answering with nothing fails, and the hub can tell why',
+    async () => {
+      // beta-5, 2026-09-27: the gateway answered HTTP 200 with a finish_reason
+      // and no content. The node crashed the turn (`-32603 Internal error`);
+      // fixing only the crash made the same turn a silent `completed` with an
+      // empty body. What must hold instead: a bounded retry, then a failure
+      // the hub records as such and can tell apart from any other failure.
+      const run = await runJob({
+        id: 'disk-empty',
+        threshold: 0,
+        sign: true,
+        prompt: `${EMPTY_JOB_MARKER}: run \`df -P /\` and report the usage.`,
+      })
+
+      // One request and two retries, all empty.
+      expect(run.steps.filter(step => step.kind === 'empty')).toHaveLength(3)
+      const results = forJob(run.hub, 'watch_result_received', 'disk-empty')
+      expect(results.map(record => record.detail?.result)).toEqual(['failed'])
+      expect(results[0]?.code).toBe('E_TASK_FAILED')
+      expect(results[0]?.detail?.failure).toBe('model_empty_response')
+      expect(String(results[0]?.detail?.reason)).toMatch(
+        /^Model returned only empty responses; retries exhausted: .*finish_reason=stop/,
+      )
+      expect(notifyLines(run.stdout)).toEqual([])
     },
     FILE_TIMEOUT_MS,
   )

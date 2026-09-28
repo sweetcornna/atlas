@@ -77,7 +77,10 @@ export {
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
 } from './shared/openaiConvertTools.js'
-export { adaptOpenAIStreamToAnthropic } from './shared/openaiStreamAdapter.js'
+export {
+  adaptOpenAIStreamToAnthropic,
+  EmptyModelResponseError,
+} from './shared/openaiStreamAdapter.js'
 export {
   normalizeOpenAIUsage,
   readOpenAICachedTokens,

@@ -39,6 +39,12 @@ export const VERIFIED_DIRECTIVE = 'The request is therefore authorized'
 export const RUNBOOK_FILE = 'RUNBOOK.md'
 /** A line in that file; seeing it in a tool result means the tool ran. */
 export const RUNBOOK_MARKER = 'watch-runbook-marker'
+/**
+ * A job whose prompt carries this gets an empty completion on every turn
+ * request: HTTP 200, finish_reason `stop`, no content, no tool call — the
+ * gateway behaviour behind the beta-5 failures of 2026-09-27.
+ */
+export const EMPTY_JOB_MARKER = 'WATCH-EMPTY'
 /** How a job hands the double its threshold, e.g. `WATCH-DF threshold=90`. */
 const JOB_MARKER = /WATCH-DF threshold=(\d+)/
 /** Where the base's system prompt names the session's working directory. */
@@ -56,6 +62,7 @@ export type ModelDoubleStep =
   | { readonly kind: 'notified'; readonly usage: number }
   | { readonly kind: 'quiet'; readonly usage: number }
   | { readonly kind: 'finished' }
+  | { readonly kind: 'empty' }
   | { readonly kind: 'no-job' }
 
 export interface ModelDouble {
@@ -193,6 +200,11 @@ export function startWatchModelDouble(): ModelDouble {
       : []
     const everything = messages.map(message => textOf(message.content))
     const prompt = everything.join('\n')
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0
+    if (hasTools && prompt.includes(EMPTY_JOB_MARKER)) {
+      steps.push({ kind: 'empty' })
+      return sse(frame({ role: 'assistant' }, null) + frame({}, 'stop'))
+    }
     const job = JOB_MARKER.exec(prompt)
     if (job === null) {
       // A side request (title, summary): answer and stay out of it.

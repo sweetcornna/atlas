@@ -16,6 +16,10 @@
  * 4. **levels** (`policy.ts`, `gate.ts`) — the three-rung ladder of charter
  *    C-5, applied as a ceiling on what an inbound message may cause.
  *
+ * Plus the two signed objects of the user authorization flow (`authz.ts`,
+ * P14.3): a node's request for approval and an approver's decision. They
+ * reuse the keys and the wire shape, not the token — see that file for why.
+ *
  * What is *not* here: any way to raise a local agent's permissions. That
  * absence is rule S-3, and `test/authorization-invariants.test.ts` keeps it an
  * absence rather than a habit.
@@ -25,6 +29,26 @@
  * signing its own capability tokens with its own key is none of those. §3.3 C-5
  * draws that line explicitly.
  */
+
+export {
+  AUTHZ_DECISION_DOMAIN,
+  AUTHZ_REQUEST_DOMAIN,
+  MAX_AUTHZ_WINDOW_MS,
+  authzDigest,
+  isAuthzRequest,
+  parseApprover,
+  parseAuthzDecision,
+  signAuthzDecision,
+  signAuthzRequest,
+  verifyAuthzDecisionSignature,
+  verifyAuthzRequest,
+  type ApproverIdentity,
+  type AuthzDecision,
+  type AuthzDecisionKind,
+  type AuthzOrigin,
+  type AuthzRequest,
+  type SignedAuthz,
+} from './authz.js'
 
 export {
   NodeCapabilities,

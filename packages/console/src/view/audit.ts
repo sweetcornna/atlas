@@ -393,6 +393,13 @@ function activeChips(filter: AuditFilter): string {
 const INTEGRITY_LEAD = '审计链断裂'
 const WITNESS_MISMATCH_LEAD = '锚点不符'
 /**
+ * A mirror that has not caught up with the witness: the anchors past the end
+ * of the copy were not compared, and everything the copy does hold matched.
+ * Neutral on purpose — it is the expected state of a mirror between pulls,
+ * and reading it as either 锚点不符 or 完整 would be wrong in one direction.
+ */
+const WITNESS_UNCOVERED_LEAD = '未覆盖'
+/**
  * The chain file is not there.
  *
  * Stated as a finding rather than as an empty result, and it is the one
@@ -452,6 +459,9 @@ function integrityStatus(page: AuditPage): string {
   }
   if (page.witness === undefined || page.witness.stale) {
     return toned('muted', '未见证')
+  }
+  if (page.witness.uncovered === true) {
+    return toned('muted', WITNESS_UNCOVERED_LEAD)
   }
   return toned('ok', '完整')
 }
@@ -574,7 +584,9 @@ function trailHead(page: AuditPage | null): string {
             ? 'tampered'
             : page.witness.stale
               ? 'stale'
-              : 'verified',
+              : page.witness.uncovered === true
+                ? 'uncovered'
+                : 'verified',
       // Emitted here too, not only by the multi-source view: without it the
       // overview card falls back to reading `intact` alone and a missing
       // chain arrives there as 断裂 0 — a count of findings nobody made.
@@ -634,6 +646,7 @@ type AggregateAuditState =
   | 'absent'
   | 'stale'
   | 'unwitnessed'
+  | 'uncovered'
 
 /**
  * One page's state, in the vocabulary the stat card reads.
@@ -648,6 +661,7 @@ function auditStateOf(page: AuditPage): AggregateAuditState {
   if (page.witness?.tampered === true) return 'tampered'
   if (page.witness === undefined) return 'unwitnessed'
   if (page.witness.stale) return 'stale'
+  if (page.witness.uncovered === true) return 'uncovered'
   return 'verified'
 }
 
@@ -674,6 +688,11 @@ function aggregateAuditState(
   if (pages.some(page => page.witness === undefined)) {
     return 'unwitnessed'
   }
+  // Last before 完整: every source has evidence and nothing disagrees, but at
+  // least one mirror has not caught up with it yet.
+  if (pages.some(page => page.witness?.uncovered === true)) {
+    return 'uncovered'
+  }
   return 'verified'
 }
 
@@ -695,6 +714,8 @@ function aggregateAuditLabel(
     case 'stale':
     case 'unwitnessed':
       return toned('muted', '未见证')
+    case 'uncovered':
+      return toned('muted', WITNESS_UNCOVERED_LEAD)
   }
 }
 

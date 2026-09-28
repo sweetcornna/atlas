@@ -108,6 +108,12 @@ type ConsoleFetch = (input: string, init: RequestInit) => Promise<Response>
 interface RegistryPortOptions {
   /** HTTP v0 基址，不带尾斜杠（`consoleArgs.ts` 已经归一过）。 */
   readonly baseUrl: string
+  /**
+   * 注册中心写 token（tenancy-m1.md P15.8）。给了，注册、注销、心跳三种写请求
+   * 带 `Authorization: Bearer`；读请求从不带——名册是公开的，没有理由让这枚
+   * 凭据多走一趟。
+   */
+  readonly writeToken?: string
   readonly fetch?: ConsoleFetch
   readonly timeoutMs?: number
 }
@@ -115,6 +121,8 @@ interface RegistryPortOptions {
 /** HTTP 状态码 → 端口失败码。5xx 归 `unreachable`：那是「下游坏了」。 */
 function codeForStatus(status: number): ConsoleFailure['code'] {
   if (status === 400) return 'invalid'
+  // 注册中心要写 token 而这边没带或带错：是这台控制台的配置问题，不是请求的错。
+  if (status === 401) return 'refused'
   if (status === 404) return 'not_found'
   if (status === 405) return 'unsupported'
   if (status === 409) return 'rejected'
@@ -183,15 +191,21 @@ export function createRegistryPort(options: RegistryPortOptions): RegistryPort {
   const timeoutMs = options.timeoutMs ?? DEFAULT_REGISTRY_TIMEOUT_MS
   const doFetch: ConsoleFetch =
     options.fetch ?? ((input, init) => fetch(input, init))
+  const writeToken = options.writeToken
 
   async function call(
     path: string,
     init: RequestInit,
   ): Promise<ConsoleResult<unknown>> {
+    const headers = new Headers(init.headers)
+    if (writeToken !== undefined && (init.method ?? 'GET') !== 'GET') {
+      headers.set('authorization', `Bearer ${writeToken}`)
+    }
     let response: Response
     try {
       response = await doFetch(`${baseUrl}${path}`, {
         ...init,
+        headers,
         signal: AbortSignal.timeout(timeoutMs),
       })
     } catch (error) {
@@ -330,8 +344,17 @@ interface AuditPortOptions {
   readonly path: string
   /** Absent until the console is given `--anchors`. */
   readonly witness?: AuditWitnessSource
-  /** The registry owns published public keys; this port never learns one. */
+  /**
+   * Node keys established on the console side (`--trust` / `--trust-ca`,
+   * `consoleWitnessKeys.ts`). Never a registry row: that is K-11 F-3.
+   */
   readonly publicKeyOf?: (node: string) => Promise<ConsoleResult<string>>
+  /**
+   * The trail is an audit mirror (`--audit-mirror`): a copy of the node's
+   * chain as of its last pull. Anchors past its end are reported as not yet
+   * covered instead of as a mismatch; see `verifyAuditWitness`'s `prefix`.
+   */
+  readonly mirror?: boolean
   /** Optional only for direct callers; production reads the environment. */
   readonly witnessReadToken?: string
   /** Direct callers may provide the reader; production uses the parsed source. */
@@ -413,7 +436,11 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       const chain = chainStateOf(loaded.value)
 
       let witness:
-        | { readonly tampered: boolean; readonly stale: boolean }
+        | {
+            readonly tampered: boolean
+            readonly stale: boolean
+            readonly uncovered?: true
+          }
         | undefined
       if (options.witness !== undefined) {
         try {
@@ -440,10 +467,16 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
               trailPath: options.path,
               anchors,
               publicKey: publicKey.value,
+              ...(options.mirror === true ? { prefix: true } : {}),
             })
             witness = {
               tampered: verification.tampered,
               stale: verification.stale,
+              // Present only when true, so an authoritative trail's page keeps
+              // exactly the shape it had before mirrors were told apart.
+              ...(verification.issues.some(issue => issue.kind === 'uncovered')
+                ? { uncovered: true as const }
+                : {}),
             }
           }
         } catch (error) {

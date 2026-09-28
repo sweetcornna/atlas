@@ -18,12 +18,14 @@
 
 import { describe, expect, test } from 'bun:test'
 import { resolve } from 'node:path'
+import { defaultMemoryRoot } from '@qianmo/memory'
 import type {
   Tool,
   ToolUseContext,
 } from '@open-claude-code/tool-runtime/Tool.js'
 import type { PermissionMode } from '../../../types/permissions.js'
 import { occConfigDir } from '../../../config/paths.js'
+import { residentAcpEnvironment } from '../residentAcpEnv.js'
 import {
   RESIDENT_EXCLUDED_TOOLS,
   withResidentCanUseTool,
@@ -286,6 +288,63 @@ describe('resident hardline wiring — evaluated before any allow', () => {
         CONTEXT,
       )
       expect(decision.behavior).toBe('deny')
+    }
+  })
+})
+
+describe('resident hardline wiring — the memory root the host names', () => {
+  test('is refused on both surfaces once named, and not before', async () => {
+    // The host passes the root it serves memory from through
+    // `residentAcpEnvironment`; the child reads it when it builds the table.
+    // Before this, a host started with its own `memoryRoot` had the child
+    // guarding only the default root (review-P14 X-12 follow-up).
+    const hostRoot = resolve('/srv/qianmo-host-memory')
+    const target = `${hostRoot}/working/main/entry.md`
+    // Whatever `residentAcpEnvironment` adds for the root is what the child
+    // must read back — found by difference, not by copying the name here.
+    const plain = residentAcpEnvironment({})
+    const named = residentAcpEnvironment({}, { memoryRoot: hostRoot })
+    const added = Object.keys(named).filter(key => !(key in plain))
+    expect(added).toHaveLength(1)
+    const key = added[0] ?? ''
+    const saved = process.env[key]
+    try {
+      delete process.env[key]
+      const [unnamed] = withResidentHardline([permissiveTool('Read').tool])
+      const before = await (unnamed as Tool).checkPermissions(
+        { file_path: target } as never,
+        CONTEXT,
+      )
+      expect(before.behavior).toBe('allow')
+
+      process.env[key] = named[key]
+      const [file] = withResidentHardline([permissiveTool('Write').tool])
+      const [shell] = withResidentHardline([permissiveTool('Bash').tool])
+      const fileDecision = await (file as Tool).checkPermissions(
+        { file_path: target } as never,
+        CONTEXT,
+      )
+      const shellDecision = await (shell as Tool).checkPermissions(
+        { command: `cat ${target}` } as never,
+        CONTEXT,
+      )
+      expect(fileDecision.decisionReason).toEqual({
+        type: 'other',
+        reason: 'qianmo-resident-hardline:memory-root',
+      })
+      expect(shellDecision.decisionReason).toEqual({
+        type: 'other',
+        reason: 'qianmo-resident-hardline:memory-root',
+      })
+      // Additive: naming a host root does not take the child's default off.
+      const defaultDecision = await (file as Tool).checkPermissions(
+        { file_path: `${defaultMemoryRoot()}/working/main/entry.md` } as never,
+        CONTEXT,
+      )
+      expect(defaultDecision.behavior).toBe('deny')
+    } finally {
+      if (saved === undefined) delete process.env[key]
+      else process.env[key] = saved
     }
   })
 })

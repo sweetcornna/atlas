@@ -6,6 +6,8 @@ import type {
   AdmissionLedger,
   DetectedAdmissionRecord,
   PendingAdmission,
+  ResidentAssembledPrompt,
+  ResidentFormattedPrompt,
   ResidentMailboxMessage,
   ResidentMailboxPort,
   ResidentTurnInput,
@@ -45,7 +47,13 @@ export interface ResidentMailboxReaderOptions {
   readonly mailbox: ResidentMailboxPort
   readonly turn: ResidentTurnPort
   readonly ledger: AdmissionLedger
-  readonly formatPrompt: (messages: readonly ResidentMailboxMessage[]) => string
+  /**
+   * The turn's user message. May resolve asynchronously and may carry how its
+   * memory block was retrieved; see {@link ResidentFormattedPrompt}.
+   */
+  readonly formatPrompt: (
+    messages: readonly ResidentMailboxMessage[],
+  ) => ResidentFormattedPrompt
   readonly accepts?: (message: ResidentMailboxMessage) => boolean
   readonly selectSnapshot?: (
     messages: readonly ResidentMailboxMessage[],
@@ -197,7 +205,9 @@ export class ResidentMailboxReader {
     if (snapshot.length === 0)
       return { detected: 0, recovered, read, abandoned }
 
-    const prompt = this.#options.formatPrompt(snapshot)
+    const formatted = await this.#options.formatPrompt(snapshot)
+    const { prompt, retrieval }: ResidentAssembledPrompt =
+      typeof formatted === 'string' ? { prompt: formatted } : formatted
     if (prompt.length === 0) {
       throw new Error('resident mailbox formatter returned an empty prompt')
     }
@@ -223,6 +233,7 @@ export class ResidentMailboxReader {
         snapshot,
         prompt,
         ...(networkMsgId === undefined ? {} : { networkMsgId }),
+        ...(retrieval === undefined ? {} : { retrieval }),
       }
       this.#options.ledger.append(record)
       this.#options.timings?.record({

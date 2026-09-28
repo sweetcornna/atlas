@@ -5,8 +5,9 @@
  * `@qianmo/registry` — where agents announce themselves and find each other.
  *
  * Ships an in-process table, an optional crash-safe file backing so the table
- * survives a restart, and a thin HTTP v0 surface over `Bun.serve`; no
- * third-party dependencies.
+ * and the published revocation list survive a restart, and a thin HTTP v0
+ * surface over `Bun.serve` whose writes can be gated by a write token (P15.8);
+ * no third-party dependencies.
  */
 
 export { ManualClock, systemClock, type Clock } from './clock.js'
@@ -35,9 +36,13 @@ export {
 
 export {
   FileRegistryStore,
+  FileRevocationListStore,
   defaultRegistryStatePath,
+  revocationListStatePathFor,
   type RegistryStore,
 } from './store.js'
+
+export { readRegistryWriteTokenFile } from './token.js'
 
 export {
   API_PREFIX,

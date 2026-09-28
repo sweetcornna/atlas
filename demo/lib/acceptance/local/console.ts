@@ -148,8 +148,11 @@ export async function startRegistry(
       : { store: new FileRegistryStore(statePath) }),
     ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
   }
+  const serverOptions =
+    options.writeToken === undefined ? {} : { writeToken: options.writeToken }
   let handle = startRegistryServer(0, {
     registry: new Table(registryOptions),
+    ...serverOptions,
   })
   // `restart()` 换掉的是 `handle`，所以清理必须读**当下**那一个，不能在这里
   // 把第一份闭包进去 —— 否则重启过的场景收尾时停的是一个早已停掉的服务器。
@@ -173,6 +176,7 @@ export async function startRegistry(
       // 新表、同一份选项、同一个端口：持久化开着就从盘上恢复，没开就是空表。
       handle = startRegistryServer(port, {
         registry: new Table(registryOptions),
+        ...serverOptions,
       })
     },
   }

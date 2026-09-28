@@ -287,28 +287,47 @@ fi
 # 每条地址要随登记一并发布的节点公钥，下标与 BETA_PEER_ADDR 对齐；空 = 不带
 # （与加公钥之前的行为一致）。由 resolve_peer_keys 填。
 BETA_PEER_KEY=()
+# 这一趟算过没有：注册中心与控制台两块都要用，只算一次、只说一遍。
+BETA_PEER_KEYS_RESOLVED=0
 
-# 定下每个节点发布进名册的公钥，逐节点说一句出处或缺口（来源规则见 common.sh 的
-# beta_resolve_node_key）。
+# 定下每个节点的公钥，逐节点说一句出处或缺口（来源规则见 common.sh 的
+# beta_resolve_node_key）。同一份结果有两个去处：
 #
-# 为什么是注册中心带公钥、而不是事后手工补（2026-09-26 D9b）：控制台带 --anchors 时只从
-# 名册取节点公钥；手工补上的那一份挂在条目上，条目一旦因租约过期被重新登记就丢了——
-# 而 p81-registry 的登记本来就是整条声明，缺省即清空。
+#   · 注册中心：随登记发布（2026-09-26 D9b）。手工补上的那一份挂在条目上，条目一旦因租约
+#     过期被重新登记就丢了——而 p81-registry 的登记本来就是整条声明，缺省即清空。
+#   · 控制台：带 --anchors 时以 `--trust <节点>=<公钥>` 直接交给它（K-11 F-3）。控制台
+#     **不再**从名册取验签公钥：名册的写口不鉴权（或只凭一枚共享 token），谁往里写一把
+#     公钥，谁就能让一条改过的链显示「已见证」。这里的来源（坐标行、本机身份文件）都不经过
+#     注册中心。
 resolve_peer_keys() {
   local node i
+  if [ "$BETA_PEER_KEYS_RESOLVED" = '1' ]; then return 0; fi
   BETA_PEER_KEY=()
   for node in $(beta_peer_nodes); do
     if beta_resolve_node_key "$node"; then
       beta_ok "名册公钥：${node} → ${BETA_NODE_KEY}（${BETA_NODE_KEY_SOURCE}）"
     else
       beta_warn "名册不带 ${node} 的公钥：${BETA_NODE_KEY_GAP}。
-登记照旧（与加公钥之前一样）；但控制台带 --anchors 时，审计页会对它报「名册没有节点 ${node} 的公钥」。"
+登记照旧（与加公钥之前一样）；但控制台带 --anchors 时也没有它的可信公钥，审计页对它报「没有节点 ${node} 的可信公钥」。"
     fi
     i=0
     while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
       if [ "${BETA_PEER_NODE[$i]}" = "$node" ]; then BETA_PEER_KEY[i]="$BETA_NODE_KEY"; fi
       i=$((i + 1))
     done
+  done
+  BETA_PEER_KEYS_RESOLVED=1
+}
+
+# beta_peer_key_of <节点> —— resolve_peer_keys 给这个节点定下的公钥；没有就打印空串。
+beta_peer_key_of() {
+  local i=0
+  while [ "$i" -lt "$BETA_PEER_COUNT" ]; do
+    if [ "${BETA_PEER_NODE[$i]}" = "$1" ]; then
+      printf '%s' "${BETA_PEER_KEY[$i]:-}"
+      return 0
+    fi
+    i=$((i + 1))
   done
 }
 
@@ -343,6 +362,15 @@ start_registry() {
     esac
     i=$((i + 1))
   done
+  # 写 token 传文件路径（token 不上命令行）。权限与长度由 p81-registry 自己查：不是
+  # 0600 就不起，报错在 registry.err 里。
+  if [ -f "$BETA_REGISTRY_WRITE_TOKEN_FILE" ]; then
+    args+=(--write-token-file "$BETA_REGISTRY_WRITE_TOKEN_FILE")
+    beta_ok "注册中心写操作要 token：${BETA_REGISTRY_WRITE_TOKEN_FILE}"
+  else
+    beta_warn "注册中心写操作不鉴权：没有 ${BETA_REGISTRY_WRITE_TOKEN_FILE}。
+本机任何账号都能改名册、发布吊销清单。启用步骤见 demo/env/beta/README.md「注册中心写 token」。"
+  fi
   if ! beta_running "$BETA_REGISTRY_PROC"; then rm -f "$ready"; fi
   beta_start_process "$BETA_REGISTRY_PROC" "$BETA_CONFIG_REGISTRY" "${args[@]}"
 
@@ -431,6 +459,11 @@ run_host() {
     --view-token-file "$BETA_VIEW_TOKEN_FILE"
     --admin-token-file "$BETA_ADMIN_TOKEN_FILE"
   )
+  # 续租者（控制台页面上点的「注册」）带注册中心写 token。只看文件在不在，不看注册中心
+  # 是否已经在要求：没在要求的注册中心不看这个头，所以控制台可以先于注册中心启用。
+  if [ -f "$BETA_REGISTRY_WRITE_TOKEN_FILE" ]; then
+    console_args+=(--registry-token-file "$BETA_REGISTRY_WRITE_TOKEN_FILE")
+  fi
   # peers.conf is the one node roster. Every distinct node gets exactly one
   # audit source and one wake URL; console.conf never adds a target of its own.
   # server 在这里声明而不是循环里写 `local server=$(...)`：那种写法的退出码是 local 的，
@@ -468,6 +501,28 @@ run_host() {
       beta_warn "唤醒目标局部降级：$node 缺 PSK：$psk_file"
     fi
   done
+  # 见证锚点的验签公钥（K-11 F-3，理由见 resolve_peer_keys 上方）。控制台带 --anchors 而
+  # 一把可信公钥都没有（--trust / --trust-ca 都没给）时会拒绝启动，这里先说清楚为什么。
+  # 尾参里另给的 `--trust <节点>=…` 与这里算出来的不一致，控制台同样拒绝启动。
+  if [ -n "$(beta_passthrough_value --anchors)" ]; then
+    local key trusted=0
+    resolve_peer_keys
+    for node in $(beta_peer_nodes); do
+      key="$(beta_peer_key_of "$node")"
+      if [ -n "$key" ]; then
+        console_args+=(--trust "$node=$key")
+        trusted=$((trusted + 1))
+      fi
+    done
+    if [ "$trusted" -eq 0 ] \
+      && [ -z "$(beta_passthrough_value --trust)" ] \
+      && [ -z "$(beta_passthrough_value --trust-ca)" ]; then
+      beta_die "控制台带 --anchors，但没有一把可信公钥：peers.conf 的坐标行都没有 public-key=，
+本机也没有节点身份文件，尾参里也没有 --trust / --trust-ca。锚点只按注册中心以外确立的公钥验签，
+控制台会拒绝启动。补上公钥来源（见上面「名册不带 … 的公钥」各行的补法）后再跑。"
+    fi
+    beta_ok "见证验签公钥：${trusted} 个节点经 --trust 交给控制台（不从注册中心取）"
+  fi
   # 尾参透传（见文件头）。追加在最后：`--wake-sign` 这类开关就是从这里进来的。
   console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
   beta_prepare_console_anchors
