@@ -25,6 +25,7 @@ flowchart TD
     token["token.ts<br/>issueCapability / verifyCapability<br/>PublicKeyDirectory · StaticPublicKeyDirectory"]
     keys["keys.ts<br/>generateNodeKeyPair / signBytes / verifyBytes<br/>（JWK OKP 的 x / d，base64url 43 字符）"]
     nonce["nonce.ts · NonceStore<br/>(iss, nonce) 记到 exp 为止"]
+    authz["authz.ts（P14.3）<br/>AuthzRequest / AuthzDecision 签名与校验<br/>两个独立签名域 · authzDigest 按工具投影"]
   end
 
   protocol["@qianmo/protocol · capability.ts<br/>CapabilityLevel · encodeClaims / parseCapabilityToken<br/>PUBLIC_KEY_PATTERN（编码只此一处）"]
@@ -42,6 +43,8 @@ flowchart TD
   token --> protocol
   keys --> protocol
   policy --> protocol
+  authz --> keys
+  authz --> protocol
   identity -->|注入密钥串| gate
   registry -.->|"公钥来源"| token
 ```
@@ -58,6 +61,9 @@ flowchart TD
 - **`generateNodeKeyPair` / `isNodeKeyPair` / `signBytes` / `verifyBytes` / `NodeKeyPair`** —— 密钥面。**不碰文件系统**：知道自己住哪儿的密钥会让每个使用方都继承一套路径约定，而路径的唯一出处是基座 `src/config/paths.ts`（CLAUDE.md §1.1②）。
 - **`NonceStore` / `NonceStoreOptions` / `DEFAULT_NONCE_CAPACITY`** —— 重放表，按签发者分域，记到令牌 `exp` 为止（与 `protocol.md` §7.2 去重表同一 TTL 口径）。
 - **`CapabilityPolicy` / `capabilityPolicy` / `satisfies` / `OPEN_POLICY` / `SIGNED_TASK_POLICY`** —— 每种消息类型需要什么等级。未列出的类型一律落到 `read`。
+- **`AuthzRequest` / `AuthzDecision` / `AuthzOrigin` / `AuthzDecisionKind` / `SignedAuthz` / `signAuthzRequest` / `verifyAuthzRequest` / `signAuthzDecision` / `parseAuthzDecision` / `verifyAuthzDecisionSignature` / `isAuthzRequest` / `AUTHZ_REQUEST_DOMAIN` / `AUTHZ_DECISION_DOMAIN` / `MAX_AUTHZ_WINDOW_MS`** —— 用户授权流的两个签名对象（P14.3，`authorization-m1.md` §3.4）。字段封闭，签名覆盖原样送达的负载段，请求与决定各用一个签名域（`qianmo-authz-request-v1` / `qianmo-authz-decision-v1`），与令牌（无前缀）、握手（`qianmo-handshake-v1`）互不通用。**不是 capability 令牌**：审批来自控制台这个远端签发者，装进 `user-confirmed` 会被 S-1 拒掉。本包只答「结构对不对、谁签的」；决定是否生效（命中挂起行、时钟、审批者集、一次性）在 `@qianmo/resident` 的 `FileGrantStore`。
+- **`authzDigest`** —— 审批绑定的摘要：`sha256(规范化 JSON [node, agent, contextId, toolName, 投影后的输入])`。投影按 §3.4 表：Bash 去掉 `description`，Write 只取正文哈希，WebFetch 只取 `url`，`ExecuteExtraTool` 对目标工具递归投影，其余工具全量规范化。
+- **`parseApprover` / `ApproverIdentity`** —— 按 P15 契约读 `approver`：`<控制台名>/u:<16 位小写十六进制>`；任何 `legacy:*` 主体（含 break-glass `legacy:admin`）一律判为不能审批。
 
 三级权限本身（`CapabilityLevel` / `levelAtLeast`）与公钥编码（`PUBLIC_KEY_PATTERN`）在 `@qianmo/protocol`，本包与 `@qianmo/registry` 都 import 它，不各写一份。协议级数值一律以 `LIMITS` 为唯一出处。
 
@@ -97,7 +103,7 @@ flowchart TD
 bun test packages/capability
 ```
 
-实测：**43 pass / 0 fail，4 个测试文件**（`token` / `attacks` / `policy` / `authorization-invariants`），零 mock。其中 `attacks.test.ts` 是 T-7 的三族攻击用例（伪造凭据 / 内容夹带指令 / 已签名令牌里的越权）+ 一条正向对照，**判据一律是「等级没被抬高 + 审计有记录」，一条都不看模型是否被说服**。
+实测（P14.3 后）：**86 pass / 0 fail，7 个测试文件**（`token` / `attacks` / `policy` / `authorization-invariants` / `observation` / `trust-tier` / `authz`），零 mock。其中 `attacks.test.ts` 是 T-7 的三族攻击用例（伪造凭据 / 内容夹带指令 / 已签名令牌里的越权）+ 一条正向对照，**判据一律是「等级没被抬高 + 审计有记录」，一条都不看模型是否被说服**。
 
 ## 7. P9.3 双人签字
 

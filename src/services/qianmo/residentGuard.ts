@@ -48,9 +48,10 @@
  *
  * `ResidentHardline` holds a frozen literal in `@qianmo/resident`. The only
  * things supplied from outside are absolute roots, and those come from the
- * process's own path derivation (`occConfigDir()`, `defaultMemoryRoot()`), not
- * anything a session can set. Nothing here reads `settings.json`, and that is
- * the point: the first entry on the table is `settings.json` itself.
+ * process's own path derivation (`occConfigDir()`, `defaultMemoryRoot()`,
+ * `hostMemoryRoot()`), not anything a session can set. Nothing here reads
+ * `settings.json`, and that is the point: the first entry on the table is
+ * `settings.json` itself.
  */
 
 import { ResidentHardline } from '@qianmo/resident'
@@ -69,6 +70,7 @@ import type {
 } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { occConfigDir } from '../../config/paths.js'
+import { hostMemoryRoot } from './residentAcpEnv.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/ExitPlanModeTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '@open-claude-code/builtin-tools/tools/TeamCreateTool/constants.js'
@@ -123,11 +125,21 @@ const ELEVATED_MODES: ReadonlySet<PermissionMode> = Object.freeze(
  * the filesystem because the host reads and injects memory for it, so the whole
  * tree is off limits and no single approval can plant an entry a later turn
  * would trust (design X-12).
+ *
+ * The host's own memory root joins it when the host named one
+ * (`residentAcpEnv.ts`): a host running on a non-default root would otherwise
+ * serve memory from a directory this child never refuses. Additive only — the
+ * child's default stays on the list, and a relative value is dropped by
+ * `ResidentHardline` like any other.
  */
 function residentHardline(): ResidentHardline {
+  const named = hostMemoryRoot()
   return new ResidentHardline({
     stateRoots: [occConfigDir()],
-    protectedRoots: [defaultMemoryRoot()],
+    protectedRoots: [
+      defaultMemoryRoot(),
+      ...(named === undefined ? [] : [named]),
+    ],
   })
 }
 

@@ -40,6 +40,7 @@ flowchart TD
   lifecycle["lifecycle.ts · ResidentLifecycleSentinel<br/>phase=running 留在盘上 ⇒ 上一条命被杀"]
   inactivity["inactivity.ts · ResidentInactivityWatchdog<br/>turn 静默即早失败，reason 说明原因"]
   notify["notify.ts · ResidentNotifier<br/>出站 notify：滑动窗 + 台账 + 按序排空<br/>只走对端已开的通道，一次都不拨号"]
+  grants["grant-store.ts · FileGrantStore（P14.3）<br/>挂起行 + 绑定行，一本追加台账<br/>损坏即 fail closed，hardline 优先于 grant"]
 
   acp["ACP 子进程（occ --acp）"]
   host["宿主：@qianmo/activator 的 ResidentActivityController"]
@@ -73,6 +74,8 @@ flowchart TD
   turnport --> inactivity
   inactivity -.->|"session/cancel"| client
   notify -->|"复用 P13.5 台账"| delivery
+  grants -->|"先问"| hardline["guard.ts · ResidentHardline"]
+  grants -->|"engaged 即不命中"| estop
 ```
 
 四个可靠性件套模块（`delivery-ledger` / `estop` / `lifecycle` / `inactivity`，P13.5）在包内**没有任何互相依赖**，也不参与准入循环的判定——它们各自被宿主接线一次，见 §3.3。
@@ -124,6 +127,11 @@ flowchart TD
 生产写入路径（P16.W，`memory-m1.md` §6.4）：
 
 - **`writeResidentMemory` / `revokeResidentMemory` / `invalidateResidentMemory` / `residentMemoryScope` / `ResidentMemoryTarget` / `ResidentMemorySource` / `ResidentMemoryWriteError`** —— 往 `(agent, contextId)` 分区写、撤（摄取轴）、失效（事件轴）。分区由 `residentRecallScope` 算出，与 sidecar 读的是同一个映射；来源只收 `user` / `agent`。今天唯一的调用方是 `qm memory`（`src/cli/handlers/memory.ts`）；agent 侧写入工具等 P14.4 与 P16.5，复用同一组函数。
+
+用户授权流（P14.3，`authorization-m1.md` §3.4 / §3.5；宿主接线在 P14.4）：
+
+- **`FileGrantStore` / `FileGrantStoreOptions` / `AUTHZ_LEDGER_FILE`** —— 挂起请求与 grant 的持久化状态机，落在 `<config>/resident/authz.ndjson`（hardline 的 `NODE_STATE_DIRS` 已覆盖；构造时若 hardline 不拒这个路径就抛错）。`ask` 记挂起行，`applyDecision` 按「结构 → 绑定 → 时钟 → 审批者集 → 验签 → nonce → ESTOP → 追加」校验，追加是唯一副作用；`use` 先问 hardline、再看 ESTOP、再按摘要找 grant，`allow-once` 的消费先 fsync 再放行；另有 `revoke` / `revokeApprover` / `endContext` / `sweep` / `pending`。坏行或不可能的状态迁移使所有调用拒绝（`integrity`），只有未确认的撕裂尾行被忽略并在下次追加前截掉。
+- **`AuthzCall` / `AuthzGrant` / `AskOutcome` / `DecisionOutcome` / `UseOutcome` / `AuthzRefusal` / `AuthzIntegrityIssue`** —— 上述调用的入参与结果类型。签名对象与摘要在 `@qianmo/capability`（`authz.ts`）。
 
 协议级数值一律以 `@qianmo/protocol` 的 `LIMITS` 为唯一出处，本包不复制。
 

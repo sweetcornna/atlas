@@ -34,7 +34,9 @@ describe('Qianmo resident host boundary', () => {
 
     // 钉源码而不是钉行为：这条路径会真的 spawn 一个子进程，测行为要起进程。
     // 钉的是「取自 identity.ts 的常量」而不是字面量——身份名只许在那一处拼写。
-    expect(source).toContain('residentAcpEnvironment(process.env)')
+    expect(source).toContain('residentAcpEnvironment(process.env, {')
+    // 子进程的 hardline 要护住宿主实际在用的记忆根，而不只是它自己推出来的缺省根。
+    expect(source).toContain('defaultSpawnAcp(this.#memoryRoot)')
     expect(env).toContain('[IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE')
     expect(env).toContain("from '../../constants/identity.js'")
     // 常驻 ACP 子进程默认安全模式：关掉用户/项目 hook 执行、agents、skills、plugins，
