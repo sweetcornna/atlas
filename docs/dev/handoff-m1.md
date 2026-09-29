@@ -45,7 +45,7 @@
 | 项 | 内容 |
 |---|---|
 | 上游 | `github.com/openai/codex`，Rust，**Apache-2.0**（已用 GitHub API 核实） |
-| 放在哪 | **单独的 fork 仓库**，保留上游完整 git 历史，按上游发行标签定期合并；不导入本仓库（避开 Rust 工具链混入 Bun monorepo，也避开 occ 快照导入那种无历史的同步成本） |
+| 放在哪 | **单独的 fork 仓库 `github.com/sweetcornna/qianmo-codex`**（2026-09-28 已建并同步到上游 main），保留上游完整 git 历史，按上游发行标签定期合并；不导入本仓库（避开 Rust 工具链混入 Bun monorepo，也避开 occ 快照导入那种无历史的同步成本） |
 | 许可 | fork 仓库保持 Apache-2.0，保留上游 `LICENSE` 与 `NOTICE`，改过的文件标注修改；本仓库 AGPL 部分只经协议与它通信 |
 | 身份隔离 | 改二进制名与状态目录（不用 `codex`、`~/.codex`），与官方 Codex 同机共存；不用 OpenAI / Codex 商标作产品名，对外按章程 §5.8 办 |
 | 改造原则 | 改动尽量放在新增 crate 或上游已有扩展点（hooks、MCP、app-server 协议、model provider 配置）里，少改上游核心文件，降低合并成本 |
@@ -118,7 +118,7 @@ Claude Code + qm mcp ┼─ 同步 ──▶    会话仓                       
 | 包 | 目标 | DoD | 估算（人时） |
 |---|---|---|---|
 | **P17.0** 设计与范围回写 | 本文、章程 v2.20、roadmap v2.77 入库 | 评审通过 | 2–4 |
-| **P17.1** 建 fork 与身份隔离 | 阡陌 Codex 能构建、能与官方 Codex 同机共存 | fork 仓库建立（负责人操作）并钉在一个上游发行标签；Linux x86_64 / aarch64 构建产物；改名后与官方 Codex 同机各用各的状态目录；上游测试不新增失败 | 16–32 |
+| **P17.1** 建 fork 与身份隔离 | 阡陌 Codex 能构建、能与官方 Codex 同机共存 | fork 仓库已建（`sweetcornna/qianmo-codex`），钉在一个上游发行标签；Linux x86_64 / aarch64 构建产物；改名后与官方 Codex 同机各用各的状态目录；上游测试不新增失败 | 16–32 |
 | **P17.2** 探针 | 先量最大的未知 | 在一台节点的沙箱里：app-server 守护进程常驻、远程界面接入、接我们的模型网关、Claude Code 会话导入后按 AC-H2 方法续接。每项记结论与版本号 | 12–24 |
 | **P17.3** 入口 | `/handoff` `/pull` 与 `qm mcp` | 两个入口都能发起转交与接回；`qm mcp` 工具表只含 §4 五项 | 24–40 |
 | **P17.4** 同步与中枢存储 | 同步 + 落地核对 + 台账 | 不改用户 HEAD / index / stash；秘密命中拒推；核对不等不回「可以关机」；中枢重启台账不丢 | 32–56 |
