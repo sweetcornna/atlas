@@ -8,7 +8,7 @@ This is 阡陌 AgentNest, built on the open-claude-code base. The detailed rules
 - Scope comes from [docs/dev/charter.md](docs/dev/charter.md). Do not publish npm packages, create release tags, run the base release workflow, or initiate an upstream sync as incidental work.
 - Preserve the base/local provenance and dual-license boundary. Determine file ownership from `base-snapshot/v2.46.0`, not a missing SPDX header; apply the required headers to new owned files. `BASE.md` is owner-maintained for imports/syncs. Never rewrite the import/sync boundaries, move/delete `base-snapshot/*`, or rewrite post-baseline history.
 - Derive runtime paths from `src/config/paths.ts`; preserve official Claude Code state, protocol/brand compatibility strings, and explicit user choices for credential migration.
-- Keep model/provider/effort behavior tied to actual configuration and the compatibility rules. Preserve explicit “not generated / not evaluated” claims and required approvals for external claims.
+- Keep model/provider/effort behavior tied to actual configuration and the compatibility rules. Preserve explicit “not generated / not evaluated” claims.
 - All PRs require review; no direct push to `main`. Follow the existing Conventional Commits and acceptance rules in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Task routes
