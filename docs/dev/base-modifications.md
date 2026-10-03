@@ -73,10 +73,10 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/services/acp/agent/AcpAgent.ts` | `4fe8cd1e`（+`4b06f672`） | +40/−1 | ACP 扩展通道必须**在基座侧有人实现**：`initialize` 的 `_meta.qianmo.resident` 握手位与 `qianmo/input-status` 方法都需要 `sessions` map 与会话内部状态，外部包够不到。`4b06f672` 进一步把 input-status 改回**只读查询**——代码里写明它「deliberately does not switch the process's current session」，因为那个全局指针正是并发流式 prompt 用来决定写哪个 transcript 文件的 | 🟢 依据：`AcpAgent.ts` `qianmo/input-status` 分支上方注释 |
+| `src/services/acp/agent/AcpAgent.ts` | `4fe8cd1e`（+`4b06f672`） | +40/−1 | ACP 扩展通道必须**在基座侧有人实现**：`initialize` 的 `_meta.qianmo.resident` 握手位与 `qianmo/input-status` 方法都需要 `sessions` map 与会话内部状态，外部包够不到。`4b06f672` 进一步把 input-status 改回**只读查询**——代码里写明它「deliberately does not switch the process's current session」，因为那个全局指针正是并发流式 prompt 用来决定写哪个 transcript 文件的。**P18.20 后续改动（`9ed5f5fc`，D-9，+3/−0，相对快照现值 +161/−34）**：`sendAvailableCommandsUpdate` 在原 filter/map 之后纯插入一行 `availableCommands.push(...acpLocalCommandEntries(session.commands))`，另加一行 import；白名单与入选条件在阡陌自有的 `localCommands.ts`（§2.14）。通告表是这个私有方法里的局部数组，外部够不到，也没有注册点 | 🟢 依据：`AcpAgent.ts` `qianmo/input-status` 分支上方注释 |
 | `src/services/acp/agent/createSessionMethod.ts` | `4fe8cd1e`（+P13.6、+P13.7） | +63/−15 | 同一握手位；`onInputAccepted` 由此接出 `qianmo/input-accepted` 扩展通知；同时把 `projectDir` 从全局 `getSessionProjectDir()` 改为显式入参。**P13.6** 在此按 `_meta.qianmo.resident` 给常驻会话加一个 `qianmo_notify` 工具（`params.mcpServers` 在本构建里到不了工具面，理由写在 `src/services/qianmo/notifyTool.ts`）。**P13.7** 在同一分支上给该会话的整个工具数组套 hardline 天花板——**这一处正是「扩展点够用」的例子**：包裹 `checkPermissions` 就同时压过本构建里仅有的两条能答 allow 的漏斗（`hasPermissionsToUseToolInner` 的 1c/1d 在 bypass 模式 2a 与整工具 allow 规则 2b 之上；PreToolUse hook 已答 allow 的那条仍跑 `checkRuleBasedPermissions`），因此**没有改 `src/utils/permissions/permissions.ts`**，那是每次工具调用的热路径核心文件，改它等于每次上游同步手工重解一遍 | 🟢 依据：`src/services/qianmo/residentGuard.ts` 顶部注释 |
 | `src/services/acp/agent/internalAccessors.ts` | `4fe8cd1e` | +5/−0 | 只加一个 `isQianmoResident()` 访问器——`qianmoResident` 是 `AcpAgent` 的私有字段，`entry.ts` 需要它才能决定要不要发扩展通知 | 🟢 |
-| `src/services/acp/agent/promptFlow.ts` | `4fe8cd1e` | +5/−6 | 把 `switchSession(..., getSessionProjectDir())` 改成 `session.projectDir`（去掉对全局的依赖）；`submitMessage` 传 `uuid`，好让受理回调能报出**这一条**输入的 id | 🟢 |
+| `src/services/acp/agent/promptFlow.ts` | `4fe8cd1e` | +5/−6 | 把 `switchSession(..., getSessionProjectDir())` 改成 `session.projectDir`（去掉对全局的依赖）；`submitMessage` 传 `uuid`，好让受理回调能报出**这一条**输入的 id。**P18.20 后续改动（`f1967600`，D-9，+4/−0，相对快照现值 +139/−66）**：`prompt` 在 `activateAcpSessionWorkspace` 之后、`submitMessage` 之前纯插入一次 `refreshAcpTurnSettings(session)`（`localCommands.ts`，§2.14）。基座的设置变更检测器不在 `--acp` 快速路径上启动，`submitMessage` 开头从会话 AppState 抄走压缩窗口；「每轮开始、提交之前」只有这一处 | 🟢 |
 | `src/services/acp/agent/sessionLifecycle.ts` | `4fe8cd1e` | +4/−5 | 把解析出来的 `projectDir` 记到 session 上，供上两项使用 | 🟢 |
 | `src/services/acp/agent/sessionTypes.ts` | `4fe8cd1e` | +1/−0 | 一个字段：`projectDir: string \| null` | 🟢 |
 | `src/services/acp/entry.ts` | `4fe8cd1e` | +15/−0 | 挂载点本身：注册 `registerSessionActivityCallback`，把忙闲边缘经 `qianmo/session-activity` 扩展通知发出，并在 shutdown 时注销。**只留挂载点，逻辑不在这里** | 🟢 |
@@ -161,6 +161,16 @@
 **在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/services/api/openai/responsesAdapter.ts`（§2.2）与 `packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`（§5.1）。
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
+
+### 2.14 M1 · P18.20 ACP 会话里的本地命令（无新增行，2 个在册文件的后续改动补在原行）
+
+依据设计 `providers-console-m1.md` §0.1 D-9 与 §9.2 P18.20 行。本节不计入 §1 与 §2 标题里的「32 / 24」。
+
+- **改动前的实况**（真 `--acp` 子进程，2026-10-03 实测）：ACP 会话本来就执行斜杠命令。`QueryEngine.submitMessage` 的 `processUserInput` → `processSlashCommand` 对会话命令表（未过滤的 `getCommands(cwd)`）里的任何命令生效，`/autocompact 150k` 写入设置并回显，模型请求为 0。所以**没有新增执行路径**，只补两件：`available_commands_update` 通告白名单内的本地命令；每轮开始时按需重读设置并解除 `/autocompact` 对会话值的钉住，让任一途径改的 `autoCompactWindow` 在运行中的会话下一轮生效。
+- **在册文件的后续改动**（按 §6.3 第 1 条补进原行）：`src/services/acp/agent/AcpAgent.ts`、`src/services/acp/agent/promptFlow.ts`（§2.3），各一处纯插入。
+- **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/acp/agent/localCommands.ts`（白名单 `ACP_LOCAL_COMMANDS`、通告条目、`refreshAcpTurnSettings`），用例 `src/services/acp/agent/__tests__/localCommands.test.ts` 与 `tests/integration/qianmo-acp-local-commands.test.ts`。
+- **上游同步时**：上游若也把 local 命令放进通告，删掉 `AcpAgent.ts` 的那一行，否则重复通告；上游若在 ACP 里启动设置变更检测器，`refreshAcpTurnSettings` 里重置缓存的一半可以去掉，解除钉住的一半仍然需要。
+- **不在本节范围**：控制台对话页的消息经 resident 组装成 `<teammate-message>`（`src/services/qianmo/residentPrompt.ts`）再交给 ACP 子进程，不以 `/` 开头，走不到这条路径。
 
 ---
 
