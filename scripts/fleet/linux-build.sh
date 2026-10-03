@@ -15,15 +15,17 @@
 #
 # 用法：
 #   linux-build.sh [--branch fix/m1-gap-closure] [--commit <40位sha，缺省=分支头>] [--platform linux/arm64]
-#                  [--repo /Users/cornna/project/atlas] [--out <目录>]
+#                  [--repo /Users/cornna/project/atlas] [--out <目录，缺省在 ~/.atlas-fleet-build/out/ 下>]
 # 退出码：0 = 全部判据通过；非 0 = 第一个失败的判据（见 out/verdict.txt）。
+#
+# Linux 构建机（含 GitHub runner，见 .github/workflows/fleet-payload.yml）不用 colima：
+# 设 DOCKER_CONTEXT_NAME=default，本机 docker 通就直接用。
 set -euo pipefail
 
 BRANCH=fix/m1-gap-closure
 EXPECT=""
 PLATFORM=linux/arm64
 REPO=/Users/cornna/project/atlas
-HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT=""
 # 专用 colima profile：default profile 的 docker 数据盘已被别的项目占满（2026-09-26 实测 100%），
 # 不去清别人的镜像。首次需要：colima start atlas-build --cpu 4 --memory 6 --disk 40 --vm-type vz --mount-type virtiofs
@@ -50,7 +52,9 @@ HEAD_SHA="${EXPECT:-$BRANCH_HEAD}"
 HEAD_SHA="$(git -C "$REPO" rev-parse --verify "$HEAD_SHA^{commit}")"
 git -C "$REPO" merge-base --is-ancestor "$HEAD_SHA" "$BRANCH_HEAD" \
   || { echo "$HEAD_SHA is not on $BRANCH (head $BRANCH_HEAD)" >&2; exit 3; }
-[ -n "$OUT" ] || OUT="$HERE/build/${HEAD_SHA:0:8}-${PLATFORM//\//-}"
+# 缺省产出不放脚本旁边：脚本在仓库里，scripts/fleet/build/ 不在 .gitignore 里，
+# 一个 12 MB 的 payload.tgz 会以未跟踪文件留在工作区。
+[ -n "$OUT" ] || OUT="$HOME/.atlas-fleet-build/out/${HEAD_SHA:0:8}-${PLATFORM//\//-}"
 # colima 只把 $HOME 共享进 VM：容器的输入/输出必须落在家目录下，结束后再拷到 OUT。
 WORK="$HOME/.atlas-fleet-build/${HEAD_SHA:0:8}-${PLATFORM//\//-}"
 FINAL_OUT="$OUT"
@@ -60,6 +64,9 @@ rm -rf "$OUT" "$FINAL_OUT"; mkdir -p "$OUT/in" "$FINAL_OUT"
 # ── 0. 构建机在不在（colima start 会顺手把 docker 默认 context 切过去，要切回来）──────
 # 判活用 docker info 而不是 `colima status`：后者会经 limactl shell 跑 docker ps，实测会卡住。
 if ! docker --context "$DOCKER_CONTEXT" info >/dev/null 2>&1; then
+  # 没装 colima 的机器（Linux 构建机）：context 不通就照实说，别报成「colima 起不来」
+  command -v colima >/dev/null 2>&1 \
+    || { echo "docker context $DOCKER_CONTEXT unreachable, and no colima here to start (Linux: DOCKER_CONTEXT_NAME=default)" >&2; exit 4; }
   PREV_CTX="$(docker context show 2>/dev/null || echo default)"
   colima start "$COLIMA_PROFILE" >/dev/null 2>&1 || { echo "colima profile $COLIMA_PROFILE failed to start" >&2; exit 4; }
   docker context use "$PREV_CTX" >/dev/null 2>&1 || true
@@ -174,6 +181,8 @@ fi
 # 结果搬回 OUT（bundle 不搬：它是源，按需重建）
 find "$OUT" -maxdepth 1 -type f -exec cp -p {} "$FINAL_OUT/" \;
 mkdir -p "$FINAL_OUT/in" && cp -p "$OUT/in/"*.sh "$FINAL_OUT/in/"
-sed -i '' "s|$OUT|$FINAL_OUT|g" "$FINAL_OUT/verdict.txt"
+# `sed -i ''` 是 BSD 专用：GNU sed 会把 '' 当脚本、把替换式当文件名，set -e 下整个配方
+# 在这里退出 2，判定输出与退出码都丢。带后缀的 -i.bak 两边同义。
+sed -i.bak "s|$OUT|$FINAL_OUT|g" "$FINAL_OUT/verdict.txt" && rm -f "$FINAL_OUT/verdict.txt.bak"
 cat "$FINAL_OUT/verdict.txt"
 exit $FAIL
