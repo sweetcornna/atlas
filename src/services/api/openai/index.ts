@@ -94,6 +94,7 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { FallbackTriggeredError } from '../withRetry.js'
 import { getModelMaxOutputTokens } from '../../../utils/session/context.js'
 import type { Options } from '../claude.js'
 import {
@@ -465,6 +466,8 @@ export async function* queryModelOpenAI(
     // the Chat Completions adapter.
     const adaptedStream = retryThirdPartyEventStream({
       signal,
+      // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+      fallback: { model: options.model, fallbackModel: options.fallbackModel },
       onRetry: () => clearOpenAIClientCache(),
       // qianmo P18.5 (hermes #5): an output-cap rejection lowers the cap once
       // (src/services/qianmo/modelCompat/outputCap.ts). The ChatGPT route sends
@@ -720,6 +723,9 @@ export async function* queryModelOpenAI(
       logForDebugging('[OpenAI] Request aborted by user')
       return
     }
+    // qianmo P18.12 (hermes #1): the ladder's model fallback is for query.ts
+    // to act on, not an error to report.
+    if (error instanceof FallbackTriggeredError) throw error
     logForDebugging('[OpenAI] API request failed', { level: 'error' })
     // One failure on this lane needs occ's own words. OpenCode's Console plane
     // answers 403 `managed_inference_model_disabled` for a model the

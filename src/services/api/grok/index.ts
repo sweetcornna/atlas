@@ -51,6 +51,7 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { FallbackTriggeredError } from '../withRetry.js'
 import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
 
 const GROK_MAX_TOKENS_ENV_HINT =
@@ -154,6 +155,8 @@ export async function* queryModelGrok(
 
     const adaptedStream = retryThirdPartyEventStream({
       signal,
+      // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+      fallback: { model: options.model, fallbackModel: options.fallbackModel },
       onRetry: () => clearGrokClientCache(),
       create: async () =>
         adaptOpenAIStreamToAnthropic(
@@ -323,6 +326,9 @@ export async function* queryModelGrok(
       logForDebugging('[Grok] Request aborted by user')
       return
     }
+    // qianmo P18.12 (hermes #1): the ladder's model fallback is for query.ts
+    // to act on, not an error to report.
+    if (error instanceof FallbackTriggeredError) throw error
     logForDebugging('[Grok] API request failed', { level: 'error' })
     yield createAssistantAPIErrorMessageFromError({
       apiError: 'api_error',

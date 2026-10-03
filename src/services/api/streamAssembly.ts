@@ -23,6 +23,10 @@ import {
 } from './retryClassification.js'
 import { getOpenAIRetryDelay, resolveOpenAIMaxRetries } from './openai/retry.js'
 import { reportEmptyModelResponse } from './upstreamStatus.js'
+import {
+  thirdPartyFallback,
+  type ThirdPartyFallbackTarget,
+} from '../qianmo/modelCompat/thirdPartyFallback.js'
 
 /**
  * Retries for a response that ended properly and said nothing
@@ -162,6 +166,13 @@ export async function* retryThirdPartyEventStream(params: {
    * src/services/qianmo/modelCompat/outputCap.ts.
    */
   recoverOutputCap?: (error: unknown) => boolean
+  /**
+   * qianmo P18.12 (hermes #1): the model and its armed fallback. When the
+   * ladder gives up before any output, a fallback reason throws
+   * `FallbackTriggeredError` for query.ts; see
+   * src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+   */
+  fallback?: ThirdPartyFallbackTarget
 }): AsyncGenerator<BetaRawMessageStreamEvent, void> {
   const maxRetries = params.maxRetries ?? resolveOpenAIMaxRetries()
   const delay =
@@ -238,6 +249,15 @@ export async function* retryThirdPartyEventStream(params: {
         continue
       }
       if (params.signal.aborted || !isRetryableAPIError(error)) {
+        // qianmo P18.12 (hermes #1): a model that does not exist or may not
+        // be used — switch to the fallback, if nothing was shown yet.
+        const fallback =
+          !params.signal.aborted &&
+          commitment === 'none' &&
+          isAPIErrorReplayable(error)
+            ? thirdPartyFallback(error, params.fallback, 'refused')
+            : undefined
+        if (fallback) throw fallback
         throw error
       }
       if (commitment === 'visible') {
@@ -274,6 +294,12 @@ export async function* retryThirdPartyEventStream(params: {
           occurrence: emptyResponseRetries,
           retrying: retry,
         })
+      }
+      // qianmo P18.12 (hermes #1): 5xx retries spent before any output —
+      // switch to the fallback.
+      if (!retry && !emptyResponse && commitment === 'none') {
+        const fallback = thirdPartyFallback(error, params.fallback, 'exhausted')
+        if (fallback) throw fallback
       }
       if (!retry) throw error
       await params.onRetry?.(error)

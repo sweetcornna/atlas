@@ -113,6 +113,8 @@ export type CaptureParams = {
   chatSSE?: string
   /** Receives everything `queryModelOpenAI` yields (P18.8). */
   outputs?: unknown[]
+  /** options.fallbackModel — what query.ts armed the request with (P18.12). */
+  fallbackModel?: string
 }
 
 /**
@@ -184,6 +186,7 @@ export async function captureOpenAIRequests(
     effortValue: params.effortValue,
     temperatureOverride: params.temperatureOverride,
     maxOutputTokensOverride: params.maxOutputTokensOverride,
+    fallbackModel: params.fallbackModel,
   } as unknown as Options
 
   try {

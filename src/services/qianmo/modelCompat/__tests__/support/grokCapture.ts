@@ -48,6 +48,8 @@ export type GrokCaptureParams = {
   chatSSE?: string | string[]
   outputs?: unknown[]
   signal?: AbortSignal
+  /** options.fallbackModel — what query.ts armed the request with. */
+  fallbackModel?: string
 }
 
 export async function captureGrokRequests(
@@ -114,6 +116,7 @@ export async function captureGrokRequests(
       isBypassPermissionsModeAvailable: false,
     }),
     fetchOverride,
+    fallbackModel: params.fallbackModel,
   } as unknown as Options
 
   try {

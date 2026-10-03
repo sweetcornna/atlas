@@ -21,6 +21,7 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { FallbackTriggeredError } from '../withRetry.js'
 import { resolveAppliedEffort } from '../../../utils/model/effort.js'
 import { applyGeminiEffortToThinkingBudget } from './reasoning.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
@@ -169,6 +170,8 @@ export async function* queryModelGemini(
 
     const adaptedStream = retryThirdPartyEventStream({
       signal,
+      // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+      fallback: { model: options.model, fallbackModel: options.fallbackModel },
       create: async () =>
         adaptGeminiStreamToAnthropic(
           streamGeminiGenerateContent(request),
@@ -355,6 +358,9 @@ export async function* queryModelGemini(
       logForDebugging('[Gemini] Request aborted by user')
       return
     }
+    // qianmo P18.12 (hermes #1): the ladder's model fallback is for query.ts
+    // to act on, not an error to report.
+    if (error instanceof FallbackTriggeredError) throw error
     logForDebugging('[Gemini] API request failed', { level: 'error' })
     yield createAssistantAPIErrorMessageFromError({
       apiError: 'api_error',
