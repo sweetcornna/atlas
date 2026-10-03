@@ -14,6 +14,7 @@
  * `runXxx(args)` 才有副作用。
  */
 
+import { isIPv6 } from 'node:net'
 import { isAbsolute, resolve } from 'node:path'
 import { isValidSegment, MAX_SEGMENT_LENGTH } from '@qianmo/protocol'
 import { PSK_ENV_VAR } from '@qianmo/transport'
@@ -27,6 +28,10 @@ import {
   type AuditWitnessSource,
 } from '../../services/qianmo/auditWitness.js'
 import { parseTrustedKey } from '../../services/qianmo/nodeIdentity.js'
+import {
+  isProtocolNodeName,
+  type ProviderNodeTarget,
+} from './consoleProvidersExec.js'
 import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
@@ -246,6 +251,112 @@ export function consoleActionsPath(): string {
   return occConfigPath('qianmo', 'console', 'actions.ndjson')
 }
 
+/**
+ * 模型服务（`providers-console-m1.md` §3.6–§3.8，P18.6）的四个文件的默认位置。
+ *
+ * 同一条派生规矩（CLAUDE.md §1.1②）。主密钥与中枢的 known_hosts 默认放在
+ * `console-keys/`，不和档案、密文同一个目录：内测里主密钥由 `--provider-key-file`
+ * 指到配置根之外（§3.8），默认值只是没有那一层时的去处。
+ */
+function consoleProviderPaths(): ConsoleProvidersConfig {
+  return {
+    storePath: occConfigPath('qianmo', 'console', 'providers.ndjson'),
+    secretsPath: occConfigPath('qianmo', 'console', 'provider-secrets.json'),
+    keyFile: occConfigPath('qianmo', 'console-keys', 'provider-master.key'),
+    knownHostsFile: occConfigPath(
+      'qianmo',
+      'console-keys',
+      'provider_known_hosts',
+    ),
+    nodes: [],
+  }
+}
+
+/** `--providers` 打开时的模型服务配置（P18.6）。 */
+interface ConsoleProvidersConfig {
+  /** 期望状态账本 `providers.ndjson`。 */
+  readonly storePath: string
+  /** 密文库：信封加密的模型密钥，只写不读（§3.7、§3.8）。 */
+  readonly secretsPath: string
+  /** 主密钥文件；权限过宽、缺失而密文在时，这一面停用（§3.8）。 */
+  readonly keyFile: string
+  /** 中枢自有的 known_hosts；ssh 节点只认这里登记过的主机钥（§2.5）。 */
+  readonly knownHostsFile: string
+  /** 执行器到得了的节点：local 直跑、ssh 走每节点一把的专用 key（§2.5、§2.8）。 */
+  readonly nodes: readonly ProviderNodeTarget[]
+}
+
+const SSH_USER_PATTERN = /^[a-z_][a-z0-9_.-]{0,31}$/
+const SSH_HOST_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/
+
+/**
+ * 交给 ssh 的路径。ssh 会把 `UserKnownHostsFile` 按空白拆成多个文件，并对它和
+ * `-i` 的路径做 `%` 展开，所以这几个字符在这里就拒绝，而不是让 ssh 去读另一个文件。
+ */
+function sshPathValue(raw: string, flag: string): string {
+  if (!isAbsolute(raw)) throw new Error(`${flag} must be an absolute path`)
+  if (/[\s%"']/.test(raw)) {
+    throw new Error(`${flag} must not contain whitespace, %, or quotes`)
+  }
+  return resolve(raw)
+}
+
+/** `<node>=<value>` with the protocol's node rule (`[a-z0-9-]{1,32}`). */
+function providerNodeValue(
+  raw: string,
+  flag: string,
+): { readonly node: string; readonly value: string } {
+  const equals = raw.indexOf('=')
+  const node = equals <= 0 ? '' : raw.slice(0, equals)
+  if (!isProtocolNodeName(node)) {
+    throw new Error(
+      `${flag} must be <node>=<value>, node 1-32 lowercase letters, digits or -`,
+    )
+  }
+  const value = raw.slice(equals + 1)
+  if (value.trim() === '') throw new Error(`${flag} value must not be empty`)
+  return { node, value }
+}
+
+/** `<user>@<host>[:<port>]`, an IPv6 host in brackets. */
+function sshDestination(
+  raw: string,
+  flag: string,
+): { readonly user: string; readonly host: string; readonly port: number } {
+  const usage = `${flag} must be <node>=<user>@<host>[:<port>]`
+  const at = raw.indexOf('@')
+  const user = at <= 0 ? '' : raw.slice(0, at)
+  if (!SSH_USER_PATTERN.test(user)) throw new Error(usage)
+  const rest = raw.slice(at + 1)
+  let host: string
+  let portText: string | undefined
+  if (rest.startsWith('[')) {
+    const close = rest.indexOf(']')
+    host = close < 0 ? '' : rest.slice(1, close)
+    const after = close < 0 ? '' : rest.slice(close + 1)
+    if (!isIPv6(host) || (after !== '' && !after.startsWith(':'))) {
+      throw new Error(usage)
+    }
+    portText = after === '' ? undefined : after.slice(1)
+  } else {
+    const parts = rest.split(':')
+    if (parts.length > 2) throw new Error(`${usage} (IPv6 in brackets)`)
+    host = parts[0] ?? ''
+    portText = parts[1]
+    if (!SSH_HOST_PATTERN.test(host)) throw new Error(usage)
+  }
+  const port = portText === undefined ? 22 : Number(portText)
+  if (
+    (portText !== undefined && !/^[0-9]{1,5}$/.test(portText)) ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
+    throw new Error(`${flag} port must be 1-65535`)
+  }
+  return { user, host, port }
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -391,6 +502,12 @@ export interface ConsoleCliConfig {
    * 服务器、不读 token、不拨任何端点。
    */
   readonly verifyActions?: boolean
+  /**
+   * 模型服务（P18.6）。**给了 `--providers` 才开**，且要 `--accounts`：写动作只有
+   * ops 账号能做、每一次都记进动作账本，没有账号就没有人能写。不给就是今天的
+   * 控制台，配置形状不变。
+   */
+  readonly providers?: ConsoleProvidersConfig
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -447,6 +564,16 @@ export function parseConsoleArgs(
   let actionsStorePath = consoleActionsPath()
   let actionsStoreGiven = false
   let verifyActions = false
+  let providers = false
+  const providerPaths = { ...consoleProviderPaths() }
+  const providerLocal = new Map<string, string>()
+  const providerSsh = new Map<
+    string,
+    { readonly user: string; readonly host: string; readonly port: number }
+  >()
+  const providerKeys = new Map<string, string>()
+  // 只认 `--providers` 才有意义的几项，同 `needsAccounts`。
+  const needsProviders: string[] = []
   // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
   const needsAccounts: string[] = []
 
@@ -768,6 +895,91 @@ export function parseConsoleArgs(
       index = parsed.next
     } else if (arg === '--verify-actions') {
       verifyActions = true
+    } else if (arg === '--providers') {
+      providers = true
+    } else if (
+      arg === '--providers-store' ||
+      arg?.startsWith('--providers-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--providers-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--providers-store must be an absolute path')
+      }
+      providerPaths.storePath = resolve(parsed.value)
+      needsProviders.push('--providers-store')
+      index = parsed.next
+    } else if (
+      arg === '--provider-secrets' ||
+      arg?.startsWith('--provider-secrets=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--provider-secrets')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--provider-secrets must be an absolute path')
+      }
+      providerPaths.secretsPath = resolve(parsed.value)
+      needsProviders.push('--provider-secrets')
+      index = parsed.next
+    } else if (
+      arg === '--provider-key-file' ||
+      arg?.startsWith('--provider-key-file=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--provider-key-file')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--provider-key-file must be an absolute path')
+      }
+      providerPaths.keyFile = resolve(parsed.value)
+      needsProviders.push('--provider-key-file')
+      index = parsed.next
+    } else if (
+      arg === '--provider-known-hosts' ||
+      arg?.startsWith('--provider-known-hosts=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--provider-known-hosts')
+      providerPaths.knownHostsFile = sshPathValue(
+        parsed.value,
+        '--provider-known-hosts',
+      )
+      needsProviders.push('--provider-known-hosts')
+      index = parsed.next
+    } else if (
+      arg === '--provider-local' ||
+      arg?.startsWith('--provider-local=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--provider-local')
+      const named = providerNodeValue(parsed.value, '--provider-local')
+      if (!isAbsolute(named.value)) {
+        throw new Error('--provider-local command must be an absolute path')
+      }
+      if (providerLocal.has(named.node) || providerSsh.has(named.node)) {
+        throw new Error(`--provider-local repeats node ${named.node}`)
+      }
+      providerLocal.set(named.node, resolve(named.value))
+      needsProviders.push('--provider-local')
+      index = parsed.next
+    } else if (arg === '--provider-ssh' || arg?.startsWith('--provider-ssh=')) {
+      const parsed = residentOptionValue(args, index, '--provider-ssh')
+      const named = providerNodeValue(parsed.value, '--provider-ssh')
+      if (providerLocal.has(named.node) || providerSsh.has(named.node)) {
+        throw new Error(`--provider-ssh repeats node ${named.node}`)
+      }
+      providerSsh.set(named.node, sshDestination(named.value, '--provider-ssh'))
+      needsProviders.push('--provider-ssh')
+      index = parsed.next
+    } else if (
+      arg === '--provider-ssh-key' ||
+      arg?.startsWith('--provider-ssh-key=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--provider-ssh-key')
+      const named = providerNodeValue(parsed.value, '--provider-ssh-key')
+      if (providerKeys.has(named.node)) {
+        throw new Error(`--provider-ssh-key repeats node ${named.node}`)
+      }
+      providerKeys.set(
+        named.node,
+        sshPathValue(named.value, '--provider-ssh-key'),
+      )
+      needsProviders.push('--provider-ssh-key')
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -817,6 +1029,45 @@ export function parseConsoleArgs(
     throw new Error('--actions-store needs --accounts or --verify-actions')
   }
 
+  // 模型服务的写动作只认个人账号的 ops 角色，并且一次一条记进动作账本；没有账号
+  // 的控制台上这一面没有任何人能写，起来只会是一张谁都改不了的表。
+  const providerOrphan = needsProviders[0]
+  if (providerOrphan !== undefined && !providers) {
+    throw new Error(`${providerOrphan} needs --providers`)
+  }
+  if (providers && !accounts) {
+    throw new Error('--providers needs --accounts')
+  }
+  // 每台 ssh 节点一把专用 key（§2.5：与隧道、镜像那把不是同一把）。漏给一把，
+  // 那台节点就只能拿用户 ssh 配置里的随便哪把去连，而那正是 `-F /dev/null` 要挡的。
+  for (const node of providerSsh.keys()) {
+    if (!providerKeys.has(node)) {
+      throw new Error(
+        `--provider-ssh ${node} needs --provider-ssh-key ${node}=<abs path>`,
+      )
+    }
+  }
+  for (const node of providerKeys.keys()) {
+    if (!providerSsh.has(node)) {
+      throw new Error(
+        `--provider-ssh-key names ${node}, which has no --provider-ssh`,
+      )
+    }
+  }
+  const providerNodes: ProviderNodeTarget[] = [
+    ...[...providerLocal].map(([node, command]) => ({
+      node,
+      kind: 'local' as const,
+      command,
+    })),
+    ...[...providerSsh].map(([node, destination]) => ({
+      node,
+      kind: 'ssh' as const,
+      ...destination,
+      keyFile: providerKeys.get(node) ?? '',
+    })),
+  ].sort((a, b) => (a.node < b.node ? -1 : 1))
+
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
   // 同一条规则开了第二个可以漂移的出处。
@@ -857,6 +1108,9 @@ export function parseConsoleArgs(
       : {}),
     ...(accounts || verifyActions ? { actionsStorePath } : {}),
     ...(verifyActions ? { verifyActions } : {}),
+    ...(providers
+      ? { providers: { ...providerPaths, nodes: providerNodes } }
+      : {}),
   }
 }
 
@@ -1038,6 +1292,51 @@ Options (each accepts both --name value and --name=value):
                            ${invokedBinName()} audit --verify cannot read this
                            file: its lines are the account book's, not the
                            audit trail's.
+  --providers              Turn on model services: provider profiles kept on
+                           this console, keys sealed under a master key, and
+                           applied to nodes over the sixth action. Off by
+                           default. Needs --accounts: only an ops account may
+                           change anything, and every change is recorded in
+                           the action ledger.
+  --providers-store <abs path>
+                           Where the profile ledger lands. Default
+                           <config root>/qianmo/console/providers.ndjson.
+                           A bad line closes model services until the file
+                           is moved aside. Only with --providers.
+  --provider-secrets <abs path>
+                           Where sealed keys land (0600). Default
+                           <config root>/qianmo/console/provider-secrets.json.
+                           Only with --providers.
+  --provider-key-file <abs path>
+                           The master key that seals them. Default
+                           <config root>/qianmo/console-keys/provider-master.key.
+                           Created on the first key saved; a file or
+                           directory readable by group or other, or a missing
+                           key while sealed keys exist, closes model services
+                           and is never regenerated. Keep it outside the
+                           config root. Only with --providers.
+  --provider-local <node>=<abs path>
+                           A node on this machine: the executable is run as
+                           <abs path> <node> with one JSON line on stdin.
+                           Repeatable, one node per flag. Only with
+                           --providers.
+  --provider-ssh <node>=<user>@<host>[:<port>]
+                           A node reached over ssh with its own key and a
+                           forced command on the far side; the client command
+                           is a sentinel that fails if that line is gone.
+                           IPv6 hosts go in brackets. Repeatable. Only with
+                           --providers.
+  --provider-ssh-key <node>=<abs path>
+                           The dedicated private key for that node, one per
+                           --provider-ssh node and not the tunnel key: the
+                           forced command lives on the first authorized_keys
+                           line for a key.
+  --provider-known-hosts <abs path>
+                           Host keys this console accepts for --provider-ssh
+                           nodes (StrictHostKeyChecking=yes). A node without
+                           an entry is refused before ssh starts. Default
+                           <config root>/qianmo/console-keys/provider_known_hosts.
+                           No whitespace or %. Only with --providers.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.
