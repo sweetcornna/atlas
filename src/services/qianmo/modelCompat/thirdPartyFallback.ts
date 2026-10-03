@@ -53,7 +53,7 @@ export type ThirdPartyFallbackTarget = {
 }
 
 /** Where the ladder gave up. */
-export type FallbackStage = 'exhausted' | 'refused'
+type FallbackStage = 'exhausted' | 'refused'
 
 type Reason = FallbackTriggeredError['reason']
 

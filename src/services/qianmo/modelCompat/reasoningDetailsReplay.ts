@@ -67,7 +67,7 @@ type StampedReasoningDetails = {
 type Target = { model: string; baseURL: string | undefined }
 
 /** The vendor that takes `reasoning_details` back, if `baseURL` is one. */
-export function reasoningDetailsVendor(
+function reasoningDetailsVendor(
   baseURL: string | undefined,
 ): ReplayVendor | undefined {
   return REPLAY_VENDORS.find(row => targetHostIs(baseURL, row.hosts))?.vendor

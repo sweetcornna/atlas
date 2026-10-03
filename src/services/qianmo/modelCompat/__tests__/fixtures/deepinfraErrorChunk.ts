@@ -26,7 +26,7 @@ const ROLE_CHUNK = {
 }
 
 /** `choices` absent, error at the top level. */
-export const DEEPINFRA_ERROR_CHUNK = {
+const DEEPINFRA_ERROR_CHUNK = {
   id: 'chatcmpl-deepinfra-fixture',
   object: 'chat.completion.chunk',
   created: 0,
@@ -37,7 +37,7 @@ export const DEEPINFRA_ERROR_CHUNK = {
 }
 
 /** The same with `choices: []`. */
-export const DEEPINFRA_ERROR_CHUNK_EMPTY_CHOICES = {
+const DEEPINFRA_ERROR_CHUNK_EMPTY_CHOICES = {
   ...DEEPINFRA_ERROR_CHUNK,
   choices: [],
 }

@@ -81,7 +81,7 @@ type Part = { type?: unknown; text?: unknown }
  * `body` with each tool message's image parts replaced by its text, or
  * `undefined` when no tool message carries an image.
  */
-export function stripToolMessageImages<Body extends { messages?: unknown }>(
+function stripToolMessageImages<Body extends { messages?: unknown }>(
   body: Body,
 ): Body | undefined {
   if (!Array.isArray(body.messages)) return undefined

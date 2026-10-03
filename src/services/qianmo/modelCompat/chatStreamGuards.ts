@@ -83,7 +83,7 @@ export function chatStreamIdleTimeoutMs(
   )
 }
 
-export type ChatStreamGuards = {
+type ChatStreamGuards = {
   /**
    * Receives this attempt's `reasoning_details` entries in order
    * (`reasoningDetailsReplay.ts`); emptied when the attempt starts.
@@ -108,7 +108,7 @@ export type ChatStreamGuards = {
  * chunk takes longer than `ms`. The SDK stream's own controller is aborted,
  * which cancels the HTTP request.
  */
-export async function* watchChatStreamIdle(
+async function* watchChatStreamIdle(
   stream: AsyncIterable<ChatCompletionChunk>,
   idleTimeout: { ms: number; label: string },
 ): AsyncGenerator<ChatCompletionChunk> {
@@ -158,7 +158,7 @@ export async function* watchChatStreamIdle(
  * a top-level `error_type` or `error_message`. `undefined` for every other
  * chunk, including the usage-only final chunk.
  */
-export function streamErrorChunk(
+function streamErrorChunk(
   chunk: unknown,
 ): { type?: string; message?: string } | undefined {
   if (typeof chunk !== 'object' || chunk === null) return undefined
@@ -177,7 +177,7 @@ export function streamErrorChunk(
 }
 
 /** `stream`, ending the attempt at the first in-stream error chunk. */
-export async function* throwOnStreamErrorChunks(
+async function* throwOnStreamErrorChunks(
   stream: AsyncIterable<ChatCompletionChunk>,
   label: string,
 ): AsyncGenerator<ChatCompletionChunk> {
@@ -197,7 +197,7 @@ export async function* throwOnStreamErrorChunks(
 }
 
 /** `stream`, recording a `content_filter` finish in `sink` (#27). */
-export async function* noteContentFilter(
+async function* noteContentFilter(
   stream: AsyncIterable<ChatCompletionChunk>,
   sink: ContentFilterSink,
 ): AsyncGenerator<ChatCompletionChunk> {
@@ -213,7 +213,7 @@ export async function* noteContentFilter(
 }
 
 /** `stream` with every guard in `guards` applied, in chunk order. */
-export function guardChatStream(
+function guardChatStream(
   stream: AsyncIterable<ChatCompletionChunk>,
   guards: ChatStreamGuards,
 ): AsyncIterable<ChatCompletionChunk> {

@@ -36,7 +36,7 @@ const CHAT_SSE =
   'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
   'data: [DONE]\n\n'
 
-export type GrokCaptureParams = {
+type GrokCaptureParams = {
   model: string
   /** GROK_BASE_URL; `undefined` leaves it unset (the xAI default). */
   baseURL?: string
