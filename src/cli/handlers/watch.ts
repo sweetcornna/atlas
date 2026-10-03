@@ -102,6 +102,7 @@ import { openAuditTrail } from '../../services/qianmo/auditTrail.js'
 import { consoleRegistrationsPath } from './consoleArgs.js'
 import {
   readExitRefusal,
+  readRegistrationLedger,
   type ExitRefusal,
 } from './consoleRegistrationLedger.js'
 import {
@@ -815,8 +816,12 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
   process.stdout.write(
     `[watch] ${entries.length} job(s) from ${config.jobsPath}, state in ${config.stateDir}\n`,
   )
+  // 没有登记簿也放行（出口按黑名单判），所以在这里说清楚：多半是这个进程没跑在
+  // 控制台的配置根上，那样页面上的暂停管不到它。
   process.stdout.write(
-    `[watch] paused and retired agents are skipped, as ${registrationsPath} says\n`,
+    readRegistrationLedger(registrationsPath).kind === 'absent'
+      ? `[watch] no registration ledger at ${registrationsPath}: nothing is paused or retired as far as this process can see; run it on the console's config root\n`
+      : `[watch] paused and retired agents are skipped, as ${registrationsPath} says\n`,
   )
   const signing = watchSigningNotice(identity, config.from)
   if (signing.stdout !== undefined) process.stdout.write(`${signing.stdout}\n`)

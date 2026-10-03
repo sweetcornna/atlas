@@ -978,68 +978,96 @@ function child(
   })
 }
 
+/**
+ * One `qm watch --once` over a single job aimed at {@link PLANNER}, under
+ * `root`. A future `anchorMs` is a start date: nothing is due, nothing dials.
+ */
+async function watchOnce(root: string, anchorMs?: number) {
+  const jobsPath = join(root, 'jobs.json')
+  writeFileSync(
+    jobsPath,
+    JSON.stringify([
+      {
+        id: 'watch-planner',
+        title: 'status',
+        target: PLANNER,
+        url: DEAD_EP,
+        prompt: 'status?',
+        schedule:
+          anchorMs === undefined
+            ? { everyMs: 600_000 }
+            : { everyMs: 600_000, anchorMs },
+        taskTtlMs: 60_000,
+        notifyPolicy: 'agent-initiated',
+      },
+    ]),
+  )
+  const run = child(
+    root,
+    "const { runWatchJobs } = await import('./src/cli/handlers/watch.ts');" +
+      ' await runWatchJobs(JSON.parse(process.env.QM_TEST_CONFIG))',
+    {
+      QIANMO_TRANSPORT_PSK: PSK,
+      QM_TEST_CONFIG: JSON.stringify({
+        mode: 'run',
+        jobsPath,
+        from: FROM,
+        stateDir: join(root, 'qianmo', 'scheduler'),
+        once: true,
+        sign: false,
+      }),
+    },
+  )
+  const [code, stdout, stderr] = await Promise.all([
+    run.exited,
+    new Response(run.stdout).text(),
+    new Response(run.stderr).text(),
+  ])
+  const trailPath = join(root, 'qianmo', 'audit', 'trail.ndjson')
+  const fires = (existsSync(trailPath) ? readFileSync(trailPath, 'utf8') : '')
+    .split('\n')
+    .filter(line => line !== '')
+    .map(line => JSON.parse(line) as AuditRecord)
+    .filter(record => record.kind === 'watch_fire')
+    .map(record => [record.outcome, record.code])
+  return { code, stdout, stderr, fires }
+}
+
 describe('qm watch and qm console, end to end', () => {
   test('qm watch --once reads the console ledger and skips a paused target without dialling it', async () => {
     const root = scratch()
-    writeLedger(join(root, 'qianmo', 'console', 'registrations.json'), {
+    const ledger = join(root, 'qianmo', 'console', 'registrations.json')
+    writeLedger(ledger, {
       version: 2,
       registrations: [
         { address: PLANNER, endpoint: DEAD_EP, state: 'paused', by: OPS },
       ],
     })
-    const jobsPath = join(root, 'jobs.json')
-    writeFileSync(
-      jobsPath,
-      JSON.stringify([
-        {
-          id: 'watch-planner',
-          title: 'status',
-          target: PLANNER,
-          url: DEAD_EP,
-          prompt: 'status?',
-          schedule: { everyMs: 600_000 },
-          taskTtlMs: 60_000,
-          notifyPolicy: 'agent-initiated',
-        },
-      ]),
-    )
-    const run = child(
-      root,
-      "const { runWatchJobs } = await import('./src/cli/handlers/watch.ts');" +
-        ' await runWatchJobs(JSON.parse(process.env.QM_TEST_CONFIG))',
-      {
-        QIANMO_TRANSPORT_PSK: PSK,
-        QM_TEST_CONFIG: JSON.stringify({
-          mode: 'run',
-          jobsPath,
-          from: FROM,
-          stateDir: join(root, 'qianmo', 'scheduler'),
-          once: true,
-          sign: false,
-        }),
-      },
-    )
-    const [code, stdout, stderr] = await Promise.all([
-      run.exited,
-      new Response(run.stdout).text(),
-      new Response(run.stderr).text(),
-    ])
+    const { code, stdout, stderr, fires } = await watchOnce(root)
     expect({ code, stderr }).toEqual({ code: 0, stderr: expect.any(String) })
     expect(stdout).toContain(
-      join(root, 'qianmo', 'console', 'registrations.json'),
+      `paused and retired agents are skipped, as ${ledger} says`,
     )
     expect(stderr).toContain(`job watch-planner skipped: ${PLANNER} 已暂停`)
-    const trail = readFileSync(
-      join(root, 'qianmo', 'audit', 'trail.ndjson'),
-      'utf8',
+    expect(fires).toEqual([['refused', 'agent_paused']])
+  }, 60_000)
+
+  test('qm watch on a config root with no ledger says so at startup', async () => {
+    // 黑名单判法下「没有登记簿」就是谁都放行（不在簿里的地址照常拨，见上面
+    // REVIEWER）；多半是没跑在控制台的配置根上，启动时要让人看见，而不是让页面
+    // 上的暂停安静地管不到它。作业的起点在一小时后，这一轮什么都不拨。
+    const root = scratch()
+    const { code, stdout, stderr, fires } = await watchOnce(
+      root,
+      Date.now() + 3_600_000,
     )
-      .split('\n')
-      .filter(line => line !== '')
-      .map(line => JSON.parse(line) as AuditRecord)
-      .filter(record => record.kind === 'watch_fire')
-    expect(trail.map(record => [record.outcome, record.code])).toEqual([
-      ['refused', 'agent_paused'],
-    ])
+    expect({ code, stderr }).toEqual({ code: 0, stderr: expect.any(String) })
+    expect(stdout).toContain(
+      `no registration ledger at ${join(root, 'qianmo', 'console', 'registrations.json')}`,
+    )
+    expect(stdout).toContain("run it on the console's config root")
+    expect(stdout).not.toContain('paused and retired agents are skipped')
+    expect(fires).toEqual([])
   }, 60_000)
 
   test('qm console with --managed: publish is held to the list, and a paused agent is refused by wake and chat before any dial', async () => {
