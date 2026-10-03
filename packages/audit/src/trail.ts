@@ -197,6 +197,14 @@ export interface TrailScan {
   previous: string
   /** The `seq` the next record must carry for the chain to be in order. */
   expectedSeq: number
+  /**
+   * True while every record's `seq` is above the one before it, in file
+   * order. A reader that knows this may stop scanning backwards at a `seq`
+   * instead of looking at every record (`query.ts`, `pageTrail`).
+   */
+  ordered: boolean
+  /** `seq` of the last record, 0 before the first. */
+  lastSeq: number
 }
 
 export function startScan(): TrailScan {
@@ -205,6 +213,8 @@ export function startScan(): TrailScan {
     issues: [],
     previous: GENESIS_PREVIOUS,
     expectedSeq: 1,
+    ordered: true,
+    lastSeq: 0,
   }
 }
 
@@ -240,6 +250,8 @@ export function scanLine(
   scan.records.push(record)
   scan.previous = digestOf(record)
   scan.expectedSeq = record.seq + 1
+  if (record.seq <= scan.lastSeq) scan.ordered = false
+  scan.lastSeq = record.seq
 }
 
 /**

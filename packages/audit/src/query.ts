@@ -34,6 +34,37 @@ export interface TrailQuery {
   /** Inclusive upper bound, epoch ms. */
   readonly to?: number
   readonly outcome?: AuditRecord['outcome']
+  /**
+   * Free text: a case-insensitive substring of the kind, the trace, task and
+   * message ids, the code, the node, the peer, the source or a string value
+   * in the detail. What an operator types into one search box when they have
+   * a fragment of an id from a ticket and do not know which field it is.
+   */
+  readonly text?: string
+}
+
+/** The fields {@link TrailQuery.text} looks in. */
+function mentionsText(record: AuditRecord, needle: string): boolean {
+  for (const value of [
+    record.kind,
+    record.traceId,
+    record.taskId,
+    record.msgId,
+    record.code,
+    record.node,
+    record.peer,
+    record.source,
+  ]) {
+    if (value !== undefined && value.toLowerCase().includes(needle)) {
+      return true
+    }
+  }
+  for (const value of Object.values(record.detail ?? {})) {
+    if (typeof value === 'string' && value.toLowerCase().includes(needle)) {
+      return true
+    }
+  }
+  return false
 }
 
 function mentionsAgent(record: AuditRecord, agent: string): boolean {
@@ -44,13 +75,14 @@ function mentionsAgent(record: AuditRecord, agent: string): boolean {
   return false
 }
 
-/** Filter the trail. Every criterion is an AND; absent criteria match all. */
-export function queryTrail(
-  records: readonly AuditRecord[],
-  query: TrailQuery,
-): readonly AuditRecord[] {
+/** The query as one predicate, with what can be worked out once worked out once. */
+function matcherOf(query: TrailQuery): (record: AuditRecord) => boolean {
   const wantedTrace = traceIdSegment(query.traceId)
-  return records.filter(record => {
+  const needle =
+    query.text === undefined || query.text === ''
+      ? null
+      : query.text.toLowerCase()
+  return record => {
     if (
       wantedTrace !== null &&
       traceIdSegment(record.traceId) !== wantedTrace
@@ -72,8 +104,103 @@ export function queryTrail(
     if (query.agent !== undefined && !mentionsAgent(record, query.agent)) {
       return false
     }
+    if (needle !== null && !mentionsText(record, needle)) return false
     return true
-  })
+  }
+}
+
+/** Filter the trail. Every criterion is an AND; absent criteria match all. */
+export function queryTrail(
+  records: readonly AuditRecord[],
+  query: TrailQuery,
+): readonly AuditRecord[] {
+  return records.filter(matcherOf(query))
+}
+
+/** Where a page of the trail starts and how long it is. */
+export interface TrailCursor {
+  /** Only records whose `seq` is below this: the page older than one already shown. */
+  readonly before?: number
+  /** Only records whose `seq` is above this: what arrived after a reader last looked. */
+  readonly after?: number
+  /** Records per page; anything below one is one. */
+  readonly limit: number
+  /**
+   * The records' `seq` rises in array order (`TrailSnapshot.ordered`), so the
+   * page can be found by `seq` instead of by looking at every record. Leave
+   * it out for a trail that is out of order: the answer is the same, only
+   * slower.
+   */
+  readonly ordered?: boolean
+}
+
+/** One page of the trail. */
+export interface TrailPage {
+  /** The newest matches under the cursor, at most `limit`, oldest first — file order. */
+  readonly records: readonly AuditRecord[]
+  /**
+   * The `before` that fetches the next older page, or `null` when no match is
+   * older than this page. Never a guess: it is set only after an older match
+   * was actually found.
+   */
+  readonly earlier: number | null
+}
+
+/** The first index whose `seq` is not below `seq`, in an ordered trail. */
+function firstAtOrAbove(records: readonly AuditRecord[], seq: number): number {
+  let low = 0
+  let high = records.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if ((records[middle]?.seq ?? 0) < seq) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+/**
+ * The newest page of the trail that matches `query` under `cursor`.
+ *
+ * Scanned from the newest record back, and stopped as soon as the page is
+ * full and one older match has been seen. The first screen of an unfiltered
+ * trail therefore costs `limit + 1` records whatever the length of the trail;
+ * a narrow filter costs as far back as it has to look, and never more than
+ * one pass. Walking the pages with `earlier` visits every match exactly once,
+ * and lines appended meanwhile cannot shift a page: they are all above every
+ * `before` already handed out.
+ */
+export function pageTrail(
+  records: readonly AuditRecord[],
+  query: TrailQuery,
+  cursor: TrailCursor,
+): TrailPage {
+  const limit = Math.max(1, Math.floor(cursor.limit))
+  const matches = matcherOf(query)
+  const { before, after } = cursor
+  const ordered = cursor.ordered === true
+  let index = records.length - 1
+  if (ordered && before !== undefined) {
+    index = firstAtOrAbove(records, before) - 1
+  }
+  const page: AuditRecord[] = []
+  let earlier: number | null = null
+  for (; index >= 0; index--) {
+    const record = records[index]
+    if (record === undefined) continue
+    if (after !== undefined && record.seq <= after) {
+      if (ordered) break
+      continue
+    }
+    if (before !== undefined && record.seq >= before) continue
+    if (!matches(record)) continue
+    if (page.length === limit) {
+      earlier = page[page.length - 1]?.seq ?? null
+      break
+    }
+    page.push(record)
+  }
+  page.reverse()
+  return { records: page, earlier }
 }
 
 /** One reconstructed chain. */

@@ -38,8 +38,19 @@ export {
 
 export {
   formatChain,
+  pageTrail,
   queryTrail,
   reconstructChain,
   type MessageChain,
+  type TrailCursor,
+  type TrailPage,
   type TrailQuery,
 } from './query.js'
+
+export {
+  DEFAULT_RECHECK_MS,
+  TrailReader,
+  type TrailReaderOptions,
+  type TrailReaderStats,
+  type TrailSnapshot,
+} from './reader.js'
