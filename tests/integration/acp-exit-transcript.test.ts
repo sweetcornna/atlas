@@ -271,6 +271,21 @@ class AcpChild {
     return within(this.exited, EXIT_MS, 'exit after SIGTERM')
   }
 
+  /** Ctrl-C from a terminal the child was started in. */
+  async interrupt(): Promise<Exit> {
+    this.child.kill('SIGINT')
+    return within(this.exited, EXIT_MS, 'exit after SIGINT')
+  }
+
+  /**
+   * All a child gets when its host goes without a word — a resident killed
+   * outright, an editor that crashed: its stdin ends.
+   */
+  async hangUp(): Promise<Exit> {
+    this.child.stdin?.end()
+    return within(this.exited, EXIT_MS, 'exit after stdin closed')
+  }
+
   async dispose(): Promise<void> {
     if (this.child.exitCode === null && this.child.signalCode === null) {
       this.child.kill('SIGKILL')
@@ -363,34 +378,50 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true })
 })
 
+/**
+ * The ways a child is let go. The resident sends SIGTERM; SIGINT reaches the
+ * same handler; a host that dies without a word leaves only stdin closing.
+ */
+const STOPS: ReadonlyArray<{
+  readonly name: string
+  readonly stop: (node: AcpChild) => Promise<Exit>
+}> = [
+  { name: 'SIGTERM', stop: node => node.terminate() },
+  { name: 'SIGINT', stop: node => node.interrupt() },
+  { name: 'stdin closing', stop: node => node.hangUp() },
+]
+
 describe('ACP child: transcript at exit', () => {
-  test(
-    'a turn answered just before SIGTERM is in the resumed conversation',
-    async () => {
-      const workspace = join(root, 'ws-exit')
-      mkdirSync(workspace)
-      const before = model.turns.length
+  for (const [index, { name, stop }] of STOPS.entries()) {
+    test(
+      `a turn answered just before ${name} is in the resumed conversation`,
+      async () => {
+        const workspace = join(root, `ws-exit-${index}`)
+        mkdirSync(workspace)
+        const before = model.turns.length
+        const question = `EXIT-FLUSH ${name}`
 
-      const first = await startChild()
-      const sessionId = await first.newSession(workspace)
-      await first.prompt(sessionId, 'EXIT-FLUSH first question')
-      const answer = model.answer(before + 1)
-      // No grace: the resident stops a child the moment it is done with it.
-      const exit = await first.terminate()
-      // `QianmoResident` reads anything else as a crash.
-      expect(exit).toEqual({ code: 0, signal: null })
+        const first = await startChild()
+        const sessionId = await first.newSession(workspace)
+        await first.prompt(sessionId, `${question} first question`)
+        const answer = model.answer(before + 1)
+        // No grace: the resident stops a child the moment it is done with it.
+        const exit = await stop(first)
+        // `QianmoResident` reads anything else as a crash.
+        expect(exit).toEqual({ code: 0, signal: null })
 
-      const second = await startChild()
-      await second.resume(sessionId, workspace)
-      await second.prompt(sessionId, 'EXIT-FLUSH second question')
-      const resumedTurn = model.turns.at(-1) ?? ''
-      expect(resumedTurn).toContain('EXIT-FLUSH second question')
-      expectCarried(resumedTurn, answer)
-      expect(resumedTurn).toContain('EXIT-FLUSH first question')
-      await second.terminate()
-    },
-    TEST_MS,
-  )
+        const second = await startChild()
+        await second.resume(sessionId, workspace)
+        await second.prompt(sessionId, `${question} second question`)
+        const resumedTurn = model.turns.at(-1) ?? ''
+        expect(resumedTurn).toContain(`${question} second question`)
+        expectCarried(resumedTurn, answer)
+        expect(resumedTurn).toContain(`${question} first question`)
+        await second.terminate()
+      },
+      TEST_MS,
+    )
+  }
 })
 
 describe('ACP child: workspace reached through a symlink', () => {
