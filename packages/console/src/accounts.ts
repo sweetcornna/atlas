@@ -348,8 +348,27 @@ interface AccountSummary {
   readonly role: AccountRole
   readonly createdAt: number
   readonly state: 'active' | 'reset' | 'revoked'
+  /** Browser sessions alive right now: not closed, not idle, not past their age. */
   readonly sessions: number
+  /**
+   * When the newest browser session of this account was opened — a login or
+   * the redemption that signed the browser in — whether or not it is still
+   * open. `null` for an account that never signed a browser in.
+   */
+  readonly lastLoginAt: number | null
+  /** The latest request on any live session; `null` when none is live. */
+  readonly lastSeenAt: number | null
+  /** Event streams held right now, on a session or on the credential as a bearer. */
+  readonly streams: number
   readonly label?: string
+}
+
+/** What signing a person out everywhere ended. */
+interface EndedSessions {
+  /** Live browser sessions closed. */
+  readonly sessions: number
+  /** Event streams cut, on a session or on a bearer. */
+  readonly streams: number
 }
 
 /** What a revocation listener is told. P14 fans approvals out from this. */
@@ -1126,6 +1145,15 @@ export class AccountBook {
     return this.#sessions.get(hashSecret(sid))
   }
 
+  /** Open, and inside both of its limits at `now` (§3.3). */
+  #live(session: SessionState, now: number): boolean {
+    return (
+      !session.closed &&
+      now - session.createdAt < SESSION_ABSOLUTE_MS &&
+      now - session.lastSeenAt < SESSION_IDLE_MS
+    )
+  }
+
   /**
    * Open a browser session for an account whose credential was just proven.
    *
@@ -1256,6 +1284,44 @@ export class AccountBook {
     if (this.#problem !== null) return
     const session = this.#sessionOf(sid)
     if (session !== undefined) this.#closeSession(session, 'logout')
+  }
+
+  /**
+   * Sign a person out everywhere, now: every browser session of `subject`
+   * closes and every event stream it holds ends, on a session or a bearer.
+   * The account and its credential are left alone — the person can sign in
+   * again, and revoke or reset is how somebody is kept out (§3.3).
+   *
+   * A live session is closed as `logout`, one already past its limits as
+   * `expired`. There is deliberately no reason of its own for "somebody else
+   * ended it": the session table refuses a reason it does not know and closes
+   * the whole book (`#applySession`), so a new one would lock every personal
+   * account out of any build before this one — a rollback included. Who ended
+   * the sessions is the action ledger's line (`http.ts`, `accounts.post`).
+   */
+  endSessions(subject: string): AccountOutcome<EndedSessions> {
+    if (this.#problem !== null) return this.#unavailable()
+    const account = isSubject(subject)
+      ? this.#accountsBySubject.get(subject)
+      : undefined
+    if (account === undefined || account.revoked) {
+      return refuse('not_found', '没有这个在用的账号')
+    }
+    // Counted first: closing a session also ends the streams riding on it.
+    const streams = this.openStreams(account.subject)
+    const now = this.#now()
+    let sessions = 0
+    for (const session of this.#sessions.values()) {
+      if (session.subject !== account.subject || session.closed) continue
+      const live = this.#live(session, now)
+      if (!this.#closeSession(session, live ? 'logout' : 'expired')) {
+        return this.#unavailable()
+      }
+      if (live) sessions += 1
+    }
+    // What is left rides on the credential itself, as a bearer.
+    this.#closeStreams(account.subject, null)
+    return { ok: true, value: { sessions, streams } }
   }
 
   // --- revocation --------------------------------------------------------
@@ -1529,11 +1595,20 @@ export class AccountBook {
     if (this.#problem !== null) return this.#unavailable()
     const now = this.#now()
     const live = new Map<AccountSubject, number>()
+    const lastLogin = new Map<AccountSubject, number>()
+    const lastSeen = new Map<AccountSubject, number>()
     for (const session of this.#sessions.values()) {
-      if (session.closed) continue
-      if (now - session.createdAt >= SESSION_ABSOLUTE_MS) continue
-      if (now - session.lastSeenAt >= SESSION_IDLE_MS) continue
-      live.set(session.subject, (live.get(session.subject) ?? 0) + 1)
+      const subject = session.subject
+      lastLogin.set(
+        subject,
+        Math.max(lastLogin.get(subject) ?? 0, session.createdAt),
+      )
+      if (!this.#live(session, now)) continue
+      live.set(subject, (live.get(subject) ?? 0) + 1)
+      lastSeen.set(
+        subject,
+        Math.max(lastSeen.get(subject) ?? 0, session.lastSeenAt),
+      )
     }
     const accounts: AccountSummary[] = [...this.#accountsBySubject.values()]
       .map(account => ({
@@ -1546,6 +1621,11 @@ export class AccountBook {
             ? ('reset' as const)
             : ('active' as const),
         sessions: account.revoked ? 0 : (live.get(account.subject) ?? 0),
+        lastLoginAt: lastLogin.get(account.subject) ?? null,
+        lastSeenAt: account.revoked
+          ? null
+          : (lastSeen.get(account.subject) ?? null),
+        streams: this.openStreams(account.subject),
         ...(account.label === undefined ? {} : { label: account.label }),
       }))
       .sort((a, b) => b.createdAt - a.createdAt)

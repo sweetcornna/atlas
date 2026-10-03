@@ -117,7 +117,11 @@ const PAGES: readonly PageRow[] = [
     path: '/access',
     title: '账号与访问',
     active: 'access',
-    reads: [STUB_LINE],
+    reads: [
+      'id="tab-members"',
+      'href="/access/actions"',
+      '这台控制台没有开启个人账号',
+    ],
   },
   { path: '/usage', title: '用量', active: 'usage', reads: [STUB_LINE] },
   {
@@ -256,11 +260,10 @@ describe('every page', () => {
 describe('placeholders', () => {
   const STUBS = ROUTES.filter(module => module.area.pending === true)
 
-  test('there are four, and each says so in one line and polls nothing', async () => {
+  test('there are three, and each says so in one line and polls nothing', async () => {
     expect(STUBS.map(module => module.area.id)).toEqual([
       'approvals',
       'providers',
-      'access',
       'usage',
     ])
     for (const module of STUBS) {

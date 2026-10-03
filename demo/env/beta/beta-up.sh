@@ -387,6 +387,55 @@ start_registry() {
 # ─────────────────────────────────────────────────────────────────────────────
 # host 腿：注册中心 + 控制台（+ 备份服务）
 # ─────────────────────────────────────────────────────────────────────────────
+# 模型服务的那几项控制台参数（P18.6，`providers-console-m1.md` §2.5、§2.8），追加进
+# run_host 的 console_args（bash 的 local 是动态作用域，这里看得见它）。
+#
+# `--providers` 与 `--wake-sign` 一样走尾参，是策略开关；这里只补**拓扑**那一半：
+#   · 主密钥 `--provider-key-file`：内测根 secrets/ 下（common.sh 的 BETA_PROVIDER_KEY_FILE）；
+#   · 中枢自有的 known_hosts；
+#   · 逐节点的执行器——有坐标行、且专用 key 在 → ssh；没有坐标行、端点是回环（节点跑在
+#     H 自己身上）→ 本机直接起 model-apply.sh；其余（直连的远端节点、缺 key）WARN 后跳过：
+#     中枢没有到它的控制面，页面上它显示为「中枢够不着」，而不是起不来整个控制台。
+#
+# **不替运维开账号**：`--providers` 要 `--accounts`（写动作只认个人账号的 ops 角色），
+# 缺了控制台会拒绝启动；这里先说清楚为什么。
+provider_console_args() {
+  beta_passthrough_has --accounts || beta_die "尾参里有 --providers 但没有 --accounts。
+模型服务的写动作只认个人账号的 ops 角色、每一次都记进动作账本；没有个人账号就没有人能写，
+控制台会拒绝启动。两个一起给：beta-up.sh --role host -- --accounts --providers"
+  console_args+=(--provider-key-file "$BETA_PROVIDER_KEY_FILE")
+  console_args+=(--provider-known-hosts "$BETA_MODEL_KNOWN_HOSTS")
+  local node index host key ep reached=0
+  for node in $(beta_peer_nodes); do
+    if index="$(beta_ssh_index "$node")"; then
+      key="$BETA_MODEL_KEY_DIR/$node"
+      if [ ! -f "$key" ]; then
+        beta_warn "模型服务：$node 缺第六类动作专用 key ${key}，中枢够不着它（装法见 README「模型服务」）"
+        continue
+      fi
+      host="${BETA_SSH_HOST[$index]}"
+      case "$host" in *:*) host="[$host]" ;; esac
+      console_args+=(--provider-ssh "$node=${BETA_SSH_USER[$index]}@$host:${BETA_SSH_PORT[$index]}")
+      console_args+=(--provider-ssh-key "$node=$key")
+      beta_ok "模型服务：$node → ssh（专用 key ${key}）"
+      reached=$((reached + 1))
+    else
+      ep="$(beta_peer_endpoint "$node")"
+      if beta_endpoint_is_loopback "$ep"; then
+        console_args+=(--provider-local "$node=$BETA_MODEL_APPLY_SCRIPT")
+        beta_ok "模型服务：$node → 本机（${BETA_MODEL_APPLY_SCRIPT}）"
+        reached=$((reached + 1))
+      else
+        beta_warn "模型服务：$node 是直连的远端节点、没有 node 坐标行，中枢没有到它的控制面（跳过）"
+      fi
+    fi
+  done
+  beta_ok "模型服务：主密钥 ${BETA_PROVIDER_KEY_FILE}（不回显），${reached} 个节点接上执行器"
+  if [ "$reached" -gt 0 ] && [ ! -f "$BETA_MODEL_KNOWN_HOSTS" ]; then
+    beta_warn "模型服务：缺中枢的 known_hosts ${BETA_MODEL_KNOWN_HOSTS}，走 ssh 的节点会被拒绝（装法见 README「模型服务」）"
+  fi
+}
+
 run_host() {
   beta_load_peers
   if [ "$BETA_PEER_COUNT" -eq 0 ]; then
@@ -530,6 +579,10 @@ run_host() {
 控制台会拒绝启动。补上公钥来源（见上面「名册不带 … 的公钥」各行的补法）后再跑。"
     fi
     beta_ok "见证验签公钥：${trusted} 个节点经 --trust 交给控制台（不从注册中心取）"
+  fi
+  # 模型服务（P18.6）：尾参里有 `--providers` 才接，接法从 peers.conf 派生。
+  if beta_passthrough_has --providers; then
+    provider_console_args
   fi
   # 尾参透传（见文件头）。追加在最后：`--wake-sign` 这类开关就是从这里进来的。
   console_args+=(${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"})
