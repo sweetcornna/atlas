@@ -620,8 +620,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 4809,
-    "sha256": "ee0d4b57036390e81ea119a1f2b701f6c5cc7ed2557fc435ceb0d80ff107a64b"
+    "length": 4849,
+    "sha256": "844c481d88eacb4eefec9bcc4e04f885e08a3b9d086181b8dbbbe92e57af4203"
   },
   {
     "probe": "GET /fragments/limits as view-bearer",
@@ -1089,8 +1089,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 81144,
-    "sha256": "ba3a0797ece1547d5ade07fdf0dab984cf120dc7cfe3fcf4d9c78a6e7ff177bb"
+    "length": 81184,
+    "sha256": "6d82b55e6eebc3de27335ffacd987102adc0c3e514e290f360a640bfa7867255"
   },
   {
     "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
