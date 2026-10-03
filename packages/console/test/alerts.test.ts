@@ -498,6 +498,49 @@ describe('conditions', () => {
     )
   })
 
+  test('an anchor that disagrees again after a repair is a new alert, not the acknowledged one', () => {
+    const rewritten = (seq: number, actual: string | null) => ({
+      audits: [
+        {
+          node: 'kyoto-1',
+          page: {
+            ...PAGE_OK,
+            witness: {
+              tampered: true,
+              stale: false,
+              firstMismatch: { seq, actual },
+            },
+          },
+          failure: null,
+        },
+      ],
+    })
+    const digest = 'a'.repeat(64)
+    const first = board(rewritten(40, digest))
+    const id = first.alerts[0]?.id ?? ''
+    expect(id).toBe(`witness-tampered:kyoto-1:40:${'a'.repeat(16)}`)
+    expect(first.alerts[0]?.detail).toBe(
+      '链上内容与见证锚点对不上 · 自第 40 条起',
+    )
+    const acks = ok([{ id, at: NOW, by: 'u:00000000000000aa' }])
+
+    // The same rewrite, read again: still the acknowledged alert.
+    expect(board({ ...rewritten(40, digest), acks }).unread).toBe(0)
+
+    // Repaired, then rewritten again: other content at that seq, another
+    // seq, the record gone. Each is a new, unread alert.
+    for (const again of [
+      rewritten(40, 'b'.repeat(64)),
+      rewritten(52, digest),
+      rewritten(40, null),
+    ]) {
+      const next = board({ ...again, acks })
+      expect(next.unread).toBe(1)
+      expect(next.alerts[0]?.id).not.toBe(id)
+      expect(next.alerts[0]?.ackedAt).toBeUndefined()
+    }
+  })
+
   test('a redelivered notice with the same message id is one alert', () => {
     const twice = board({
       notices: ok({

@@ -137,6 +137,17 @@ export interface AuditPage {
     readonly tampered: boolean
     readonly stale: boolean
     readonly uncovered?: true
+    /**
+     * Only with `tampered`: the lowest anchor whose head disagrees, and the
+     * local record's digest at that seq (`null` when the record is missing).
+     * Together they name this occurrence of the mismatch — the alert inbox
+     * keys on them, so a chain repaired and later rewritten again raises a
+     * new alert instead of hiding under the old acknowledgement.
+     */
+    readonly firstMismatch?: {
+      readonly seq: number
+      readonly actual: string | null
+    }
   }
 }
 

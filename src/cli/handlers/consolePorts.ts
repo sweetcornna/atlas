@@ -32,11 +32,16 @@ import {
   type TrailQuery,
   type TrailReadResult,
 } from '@qianmo/audit'
-import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
+import {
+  verifyAuditWitness,
+  type WitnessEvidence,
+  type WitnessVerificationIssue,
+} from '@qianmo/witness'
 import type {
   AlertAck,
   AuditChainState,
   AuditFilter,
+  AuditPage,
   AuditPort,
   CertificatePort,
   CertificateSnapshot,
@@ -401,6 +406,26 @@ function chainStateOf(read: TrailReadResult): AuditChainState {
 }
 
 /**
+ * 锚点对不上的那一处：序号最小的 `head_mismatch`，连同本地那条记录的摘要。
+ * 告警箱拿它区分「同一次篡改」与「修好之后又一次」（`deps.ts` 的
+ * `AuditPage.witness.firstMismatch`）。
+ */
+function firstMismatchOf(
+  issues: readonly WitnessVerificationIssue[],
+): { readonly seq: number; readonly actual: string | null } | undefined {
+  let first:
+    | { readonly seq: number; readonly actual: string | null }
+    | undefined
+  for (const issue of issues) {
+    if (issue.kind !== 'head_mismatch') continue
+    if (first === undefined || issue.seq < first.seq) {
+      first = { seq: issue.seq, actual: issue.actual }
+    }
+  }
+  return first
+}
+
+/**
  * 审计链的只读面。
  *
  * **文件不存在返回空页，不是失败**：一个刚起来、还没产生过任何审计记录的节点
@@ -456,13 +481,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       const { records, issues } = loaded.value
       const chain = chainStateOf(loaded.value)
 
-      let witness:
-        | {
-            readonly tampered: boolean
-            readonly stale: boolean
-            readonly uncovered?: true
-          }
-        | undefined
+      let witness: AuditPage['witness']
       if (options.witness !== undefined) {
         try {
           const node = witnessNodeOf(records)
@@ -490,6 +509,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
               publicKey: publicKey.value,
               ...(options.mirror === true ? { prefix: true } : {}),
             })
+            const firstMismatch = firstMismatchOf(verification.issues)
             witness = {
               tampered: verification.tampered,
               stale: verification.stale,
@@ -498,6 +518,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
               ...(verification.issues.some(issue => issue.kind === 'uncovered')
                 ? { uncovered: true as const }
                 : {}),
+              ...(firstMismatch === undefined ? {} : { firstMismatch }),
             }
           }
         } catch (error) {

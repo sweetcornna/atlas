@@ -306,6 +306,19 @@ function rootAlerts(
 }
 
 /**
+ * Which occurrence of an anchor mismatch this is: the first anchor seq that
+ * disagrees and what the chain holds there now. A chain repaired and rewritten
+ * again differs in one or the other, so it is a new alert rather than one the
+ * earlier acknowledgement already covers. `-` when the port did not say.
+ */
+function episodeOf(
+  first: { readonly seq: number; readonly actual: string | null } | undefined,
+): string {
+  if (first === undefined) return '-'
+  return `${first.seq}:${first.actual === null ? 'missing' : first.actual.slice(0, 16)}`
+}
+
+/**
  * 审计链: a chain that does not verify, an anchor that disagrees, a trail that
  * never arrived. A witness that is merely behind is the trail page's business,
  * not an alarm — an idle node is behind by design.
@@ -333,12 +346,16 @@ function auditAlerts(audits: readonly AlertAuditRead[]): ConsoleAlert[] {
       })
     }
     if (page.witness?.tampered === true) {
+      const first = page.witness.firstMismatch
       out.push({
-        id: `witness-tampered:${source.node}`,
+        id: `witness-tampered:${source.node}:${episodeOf(first)}`,
         level: 'error',
         origin: 'audit',
         title: `锚点不符 · ${source.node}`,
-        detail: '链上内容与见证锚点对不上',
+        detail:
+          first === undefined
+            ? '链上内容与见证锚点对不上'
+            : `链上内容与见证锚点对不上 · 自第 ${first.seq} 条起`,
       })
     }
   }
