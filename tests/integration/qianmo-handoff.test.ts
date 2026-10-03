@@ -76,6 +76,8 @@ const TEMP_THREAD = '0199a4c2-7c1e-7d32-9a5e-ffffffffffff'
 const TURN_1 = '0199a4c2-8000-7000-8000-000000000001'
 const TURN_2 = '0199a4c2-8000-7000-8000-000000000002'
 const TURN_3 = '0199a4c2-8000-7000-8000-000000000003'
+const TURN_4 = '0199a4c2-8000-7000-8000-000000000004'
+const TURN_5 = '0199a4c2-8000-7000-8000-000000000005'
 const CC_DONE = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
 const CC_OPEN = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4c'
 /** In the environment of every laptop command; must end up nowhere. */
@@ -249,6 +251,22 @@ function syncLog(): Record<string, unknown>[] {
     .split('\n')
     .filter(Boolean)
     .map(line => JSON.parse(line) as Record<string, unknown>)
+}
+
+/** Pending entries the laptop is holding for the next sync, in every repository. */
+function pendingFiles(): string[] {
+  const state = join(laptopConfig, 'qianmo', 'handoff', 'state')
+  const out: string[] = []
+  for (const key of readdirSync(state)) {
+    try {
+      out.push(
+        ...readdirSync(join(state, key, 'pending')).filter(name =>
+          name.endsWith('.json'),
+        ),
+      )
+    } catch {}
+  }
+  return out
 }
 
 /** Everything of the user's repository nothing here may touch. */
@@ -490,6 +508,59 @@ describe('qm handoff end to end', () => {
   )
 
   test(
+    'init again: what is not given is kept; only --no-token-file forgets the credential',
+    async () => {
+      const again = (...extra: string[]) =>
+        qm([
+          'handoff',
+          'init',
+          '--hub',
+          hubRoot,
+          '--console',
+          `http://127.0.0.1:${port}`,
+          ...extra,
+        ])
+      const registered = (): Record<string, unknown> =>
+        (
+          JSON.parse(
+            readFileSync(
+              join(laptopConfig, 'qianmo', 'handoff', 'projects.json'),
+              'utf8',
+            ),
+          ) as { projects: Record<string, Record<string, unknown>> }
+        ).projects[repo] ?? {}
+
+      const kept = await again()
+      expect(kept.code).toBe(0)
+      expect(kept.stdout).toContain('（沿用已登记的）')
+      expect(registered()).toMatchObject({
+        tokenFile: adminTokenFile,
+        device: DEVICE,
+        project: 'atlas',
+      })
+
+      const empty = await again('--token-file', '')
+      expect(empty.code).toBe(2)
+      expect(empty.stderr).toContain('--no-token-file')
+      expect(registered().tokenFile).toBe(adminTokenFile)
+
+      const cleared = await again('--no-token-file')
+      expect(cleared.code).toBe(0)
+      expect(cleared.stdout).toContain('已清除登记的凭据文件')
+      expect(registered().tokenFile).toBeUndefined()
+      expect(registered().device).toBe(DEVICE)
+      const status = await qm(['handoff', 'status'])
+      expect(status.code).toBe(1)
+      expect(status.stderr).toContain('没有登记控制台凭据')
+
+      const back = await again('--token-file', adminTokenFile)
+      expect(back.code).toBe(0)
+      expect(registered().tokenFile).toBe(adminTokenFile)
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
     'criterion 6 · qmcode: a complete turn is pushed; an incomplete one is not; a thread without a rollout is skipped',
     async () => {
       turns.push({ turnId: TURN_1, user: '把 a.txt 读出来', assistant: 'one' })
@@ -693,8 +764,16 @@ describe('qm handoff end to end', () => {
       ])
       if (!ended) second.child.kill('SIGKILL')
       expect(ended).toBe(true)
-      expect(second.child.exitCode).not.toBe(0)
-      expect(second.stderr()).toContain('is in use')
+      expect(second.child.exitCode).toBe(1)
+      // One sentence with the lock file and the holder, no stack.
+      const refusal = second.stderr()
+      expect(refusal).toContain('控制台没有启动')
+      expect(refusal).toContain(
+        `锁文件 ${join(hubConfig, 'qianmo', 'handoff', 'ledger.ndjson.lock')}`,
+      )
+      expect(refusal).toContain(`持锁进程 pid ${hub?.child.pid}`)
+      expect(refusal).not.toMatch(/\n\s+at /)
+      expect(refusal).not.toContain('HandoffLedgerError')
 
       await stopHub()
       await bootHub()
@@ -757,6 +836,48 @@ describe('qm handoff end to end', () => {
       const again = await qm(['handoff', 'now'])
       expect(again.code).toBe(0)
       expect(again.stdout.split('\n')[0]).toBe(SAFE)
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
+    'a hook sync that fails while the hub is unreachable is kept; the next hook pushes the latest turn',
+    async () => {
+      const sessionRef = `refs/qianmo/sessions/${DEVICE}/${THREAD}`
+      const name = rolloutFile().split('/').at(-1) ?? ''
+      const away = `${bare}.away`
+      renameSync(bare, away)
+      try {
+        turns.push({ turnId: TURN_4, user: '再跑一次', assistant: 'four' })
+        writeRollout()
+        const failed = await qm([
+          'handoff',
+          'sync',
+          '--hook',
+          'qmcode',
+          qmcodeNotify(THREAD, TURN_4, repo),
+        ])
+        expect(failed).toEqual({ code: 0, stdout: '', stderr: '' })
+        expect(syncLog().at(-1)).toMatchObject({ event: 'sync', ok: false })
+        expect(pendingFiles()).toHaveLength(1)
+      } finally {
+        renameSync(away, bare)
+      }
+      turns.push({ turnId: TURN_5, user: '收尾', assistant: 'five' })
+      writeRollout()
+      const next = await qm([
+        'handoff',
+        'sync',
+        '--hook',
+        'qmcode',
+        qmcodeNotify(THREAD, TURN_5, repo),
+      ])
+      expect(next).toEqual({ code: 0, stdout: '', stderr: '' })
+      expect(syncLog().at(-1)).toMatchObject({ event: 'sync', ok: true })
+      expect(pendingFiles()).toEqual([])
+      const stored = git(bare, 'show', `${hubRefs().get(sessionRef)}:${name}`)
+      expect(stored).toContain(TURN_4)
+      expect(stored).toContain(TURN_5)
     },
     STEP_TIMEOUT_MS,
   )
