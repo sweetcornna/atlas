@@ -182,6 +182,67 @@ function parseRecord(line: string): AuditRecord | null {
 }
 
 /**
+ * How far a check of the chain has got: the records and issues so far, and
+ * what the next line has to continue from.
+ *
+ * One shape for both readers — {@link readTrail} runs it over a whole file
+ * once, `reader.ts` keeps one between reads and feeds it only what was
+ * appended — so "what counts as a broken line" is decided in exactly one
+ * place.
+ */
+export interface TrailScan {
+  readonly records: AuditRecord[]
+  readonly issues: TrailIntegrityIssue[]
+  /** Digest of the last record, {@link GENESIS_PREVIOUS} before the first. */
+  previous: string
+  /** The `seq` the next record must carry for the chain to be in order. */
+  expectedSeq: number
+}
+
+export function startScan(): TrailScan {
+  return {
+    records: [],
+    issues: [],
+    previous: GENESIS_PREVIOUS,
+    expectedSeq: 1,
+  }
+}
+
+/**
+ * Check one line and add it to the scan.
+ *
+ * `complete` is whether the line ended in a newline. An empty or unreadable
+ * complete line is a `corrupt_line`; an unreadable line the file ends in
+ * without a newline is a `torn_tail` — what a crash during the last write
+ * looks like — and an empty one is no line at all.
+ */
+export function scanLine(
+  scan: TrailScan,
+  text: string,
+  line: number,
+  complete: boolean,
+): void {
+  if (text === '') {
+    if (complete) scan.issues.push({ line, kind: 'corrupt_line' })
+    return
+  }
+  const record = parseRecord(text)
+  if (record === null) {
+    scan.issues.push({ line, kind: complete ? 'corrupt_line' : 'torn_tail' })
+    return
+  }
+  if (record.seq !== scan.expectedSeq) {
+    scan.issues.push({ line, kind: 'out_of_order', seq: record.seq })
+  }
+  if (record.prev !== scan.previous) {
+    scan.issues.push({ line, kind: 'broken_chain', seq: record.seq })
+  }
+  scan.records.push(record)
+  scan.previous = digestOf(record)
+  scan.expectedSeq = record.seq + 1
+}
+
+/**
  * Read a trail and check it.
  *
  * A file that ends mid-line is a `torn_tail`, not corruption: it is what a
@@ -203,40 +264,16 @@ export function readTrail(path: string): TrailReadResult {
     throw error
   }
 
+  // Every element but the last ended in a newline; the last is whatever came
+  // after the final newline — empty for a file that ends in one.
   const lines = raw.split('\n')
-  const endsWithNewline = raw.endsWith('\n')
-  const records: AuditRecord[] = []
-  const issues: TrailIntegrityIssue[] = []
-  let previous = GENESIS_PREVIOUS
-  let expectedSeq = 1
-
-  for (const [index, line] of lines.entries()) {
-    if (line === '') {
-      const isLast = index === lines.length - 1
-      if (!isLast || !endsWithNewline) {
-        if (!isLast) issues.push({ line: index + 1, kind: 'corrupt_line' })
-      }
-      continue
-    }
-    const isLastLine = index === lines.length - 1
-    const record = parseRecord(line)
-    if (record === null) {
-      issues.push({
-        line: index + 1,
-        kind: isLastLine && !endsWithNewline ? 'torn_tail' : 'corrupt_line',
-      })
-      continue
-    }
-    if (record.seq !== expectedSeq) {
-      issues.push({ line: index + 1, kind: 'out_of_order', seq: record.seq })
-    }
-    if (record.prev !== previous) {
-      issues.push({ line: index + 1, kind: 'broken_chain', seq: record.seq })
-    }
-    records.push(record)
-    previous = digestOf(record)
-    expectedSeq = record.seq + 1
+  const scan = startScan()
+  const last = lines.length - 1
+  for (let index = 0; index < last; index++) {
+    scanLine(scan, lines[index] ?? '', index + 1, true)
   }
+  scanLine(scan, lines[last] ?? '', last + 1, false)
 
+  const { records, issues } = scan
   return { records, issues, intact: issues.length === 0, present: true }
 }
