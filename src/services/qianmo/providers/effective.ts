@@ -21,10 +21,9 @@ import {
   resolveGrokModel,
   resolveOpenAIModel,
 } from '@ant/model-provider'
-import type { EffectiveState, EffortLevel } from '@qianmo/providers'
+import type { EffectiveState, WireEffortLevel } from '@qianmo/providers'
 import { enableConfigs } from '../../../utils/config/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../../utils/config/managedEnv.js'
-import { isChatGPTCodexReasoningModel } from '../../../utils/model/chatgptModels.js'
 import {
   isDeepSeekTuningActiveForModel,
   resolveDeepSeekReasoningEffort,
@@ -42,17 +41,25 @@ import {
 import { getAPIProvider } from '../../../utils/model/providers.js'
 import { getContextWindowForModel } from '../../../utils/session/context.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
-import { resolveGrokReasoningEffort } from '../../api/grok/reasoning.js'
 import {
-  getChatReasoningEffort,
-  getResponsesReasoningEffort,
-} from '../../api/openai/reasoning.js'
+  type AutoCompactWindowSource,
+  resolveActiveAutoCompactWindow,
+} from '../../compact/autoCompactWindow.js'
+import { resolveGrokReasoningEffort } from '../../api/grok/reasoning.js'
+import { getResponsesReasoningEffort } from '../../api/openai/reasoning.js'
 import { isOpenAIThinkingEnabled } from '../../api/openai/requestBody.js'
 import { resolveOpenAIWireProtocol } from '../../api/openai/wireProtocol.js'
+import { resolveChatReasoningEffort } from '../modelCompat/chatEffort.js'
 
-/** A wire vocabulary value back on the five-level scale, when it is one. */
-function asLevel(value: unknown): EffortLevel | null {
-  return value === 'low' ||
+/**
+ * A wire vocabulary value back on the five-level scale, or `none` — what a
+ * vendor table sends to switch reasoning off (`resolveChatReasoningEffort`
+ * since P18.8): the key IS on the wire, so `effortOnWire` stays true and the
+ * level says what it carries. Anything else is not reported as a level.
+ */
+export function wireEffortLevel(value: unknown): WireEffortLevel | null {
+  return value === 'none' ||
+    value === 'low' ||
     value === 'medium' ||
     value === 'high' ||
     value === 'xhigh' ||
@@ -65,7 +72,7 @@ type WireEffort = {
   wire: string
   wireModel: string
   onWire: boolean
-  level: EffortLevel | null
+  level: WireEffortLevel | null
 }
 
 /**
@@ -89,11 +96,13 @@ function wireEffort(
         wire,
         wireModel,
         onWire: level !== undefined,
-        level: asLevel(level),
+        level: wireEffortLevel(level),
       }
     }
-    // requestBody.ts: DeepSeek's ladder when thinking is on, else the
-    // openai/index.ts chat gate `isChatGPTCodexReasoningModel(openaiModel)`.
+    // requestBody.ts: DeepSeek's ladder when thinking is on, else the value
+    // the chat lane puts on the wire — `resolveChatReasoningEffort`, the gate
+    // openai/index.ts asks (`chatLaneSendsReasoningEffort`, P18.5) and the
+    // value it sends, so this is not a second copy of either.
     const deepseek =
       isDeepSeekTuningActiveForModel(wireModel, process.env.OPENAI_BASE_URL) &&
       isOpenAIThinkingEnabled(wireModel)
@@ -101,14 +110,16 @@ function wireEffort(
         : undefined
     const level =
       deepseek ??
-      (isChatGPTCodexReasoningModel(wireModel)
-        ? getChatReasoningEffort(wireModel, applied)
-        : undefined)
+      resolveChatReasoningEffort(
+        wireModel,
+        applied,
+        process.env.OPENAI_BASE_URL,
+      )
     return {
       wire,
       wireModel,
       onWire: level !== undefined,
-      level: asLevel(level),
+      level: wireEffortLevel(level),
     }
   }
   if (provider === 'grok') {
@@ -118,7 +129,7 @@ function wireEffort(
       wire: 'grok',
       wireModel,
       onWire: level !== undefined,
-      level: asLevel(level),
+      level: wireEffortLevel(level),
     }
   }
   if (provider === 'gemini') {
@@ -148,14 +159,14 @@ function wireEffort(
       wire: 'anthropic',
       wireModel: model,
       onWire: true,
-      level: asLevel(level),
+      level: wireEffortLevel(level),
     }
   }
   return {
     wire: 'anthropic',
     wireModel: model,
     onWire: typeof applied === 'string',
-    level: asLevel(applied),
+    level: wireEffortLevel(applied),
   }
 }
 
@@ -182,6 +193,11 @@ export function computeEffectiveProviderState(
   // undefined), so the applied value is env → per-slot setting → default.
   const applied = resolveAppliedEffort(model, undefined, slot)
   const effort = wireEffort(model, applied)
+  const contextTokens = getContextWindowForModel(model, undefined, slot)
+  // A fresh ACP session seeds AppState from settings without an override
+  // (`resolveInitialAutoCompactWindow`), which resolves exactly as the live
+  // settings file does here.
+  const autoCompact = resolveActiveAutoCompactWindow(contextTokens)
   return {
     apiProvider: getAPIProvider(),
     wire: effort.wire,
@@ -190,6 +206,20 @@ export function computeEffectiveProviderState(
     modelSettingsSlot: slot ?? null,
     effortOnWire: effort.onWire,
     effortLevel: effort.level,
-    contextTokens: getContextWindowForModel(model, undefined, slot),
+    contextTokens,
+    autoCompactWindow: autoCompact.window,
+    autoCompactSource: autoCompactSourceOf(autoCompact.source),
   }
+}
+
+/**
+ * The runtime's source label in the three words §2.4 reports (D-9). The
+ * other labels — `experiment`, `clientdata`, `model-default`,
+ * `unknown-model` — are unreachable in this build (`autoCompactWindow.ts`)
+ * and would all mean "chosen for the model", so they read as `auto`.
+ */
+export function autoCompactSourceOf(
+  source: AutoCompactWindowSource,
+): EffectiveState['autoCompactSource'] {
+  return source === 'env' || source === 'settings' ? source : 'auto'
 }
