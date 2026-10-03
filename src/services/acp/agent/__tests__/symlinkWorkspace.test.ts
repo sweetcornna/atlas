@@ -1,15 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {
-  afterAll,
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  test,
-} from 'bun:test'
-import type { UUID } from 'node:crypto'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   mkdirSync,
   mkdtempSync,
@@ -19,34 +11,30 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import type { Message } from '../../../../types/message.js'
+import { join } from 'node:path'
 
 // A workspace reached through a symlink (P18.3 finding). An ACP session's
 // transcript was written under the cwd as given and looked up on resume under
 // its realpath, so every resume of such a session started empty.
 //
-// The end-to-end case — a real `--acp` child, stopped and resumed — is in
-// tests/integration/acp-exit-transcript.test.ts. These pin the contract that
-// makes it hold: the write key IS the lookup key, and the key older builds
-// wrote is still found.
+// The end-to-end case — a real `--acp` child writes a turn, is stopped, and
+// a second one resumes it — is in tests/integration/acp-exit-transcript.test.ts.
+// These pin the contract that makes it hold: the write key IS the lookup key,
+// and the key older builds wrote is still found.
 //
-// No mock.module, same as workspaceIsolation.test.ts next door: isolation
-// comes from CLAUDE_CONFIG_DIR and real temp directories.
+// Deliberately nothing here goes through the process-global session
+// (`switchSession`, `getSessionId`, the transcript writer): several suites
+// install a `bootstrap/state` mock with no teardown that pins those for every
+// later file in the shard (see tests/mocks/state.ts), so a case built on them
+// passes or fails by file order. The child process in the integration test is
+// out of their reach.
+//
+// No mock.module; isolation comes from CLAUDE_CONFIG_DIR and real temp
+// directories.
 
-const {
-  activateAcpSessionWorkspace,
-  projectDirForSessionCwd,
-  resolveAcpSessionFile,
-} = await import('../sessionWorkspace.js')
-const { resetStateForTests } = await import('../../../../bootstrap/state.js')
-const {
-  clearSessionMessagesCache,
-  flushSessionStorage,
-  getLastSessionLog,
-  recordTranscript,
-  resetProjectForTesting,
-} = await import('../../../../utils/sessionStorage.js')
+const { projectDirForSessionCwd, resolveAcpSessionFile } = await import(
+  '../sessionWorkspace.js'
+)
 const { canonicalizePath, getProjectDir } = await import(
   '../../../../utils/session/sessionStoragePortable.js'
 )
@@ -58,15 +46,6 @@ let root: string
 let real: string
 let link: string
 let originalConfigDir: string | undefined
-let originalTestPersistence: string | undefined
-
-function userMessage(uuid: string, text: string): Message {
-  return {
-    type: 'user',
-    uuid: uuid as UUID,
-    message: { role: 'user', content: text },
-  } as unknown as Message
-}
 
 /** A transcript file with one user line, written straight to `projectDir`. */
 function writeTranscriptAt(projectDir: string, text: string): string {
@@ -97,32 +76,14 @@ beforeEach(() => {
 
   originalConfigDir = process.env.CLAUDE_CONFIG_DIR
   process.env.CLAUDE_CONFIG_DIR = configDir
-  originalTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE
-  process.env.TEST_ENABLE_SESSION_PERSISTENCE = '1'
-
-  resetProjectForTesting()
-  clearSessionMessagesCache()
 })
 
-afterEach(async () => {
-  await flushSessionStorage()
-  clearSessionMessagesCache()
-  resetProjectForTesting()
-  resetStateForTests()
-
+afterEach(() => {
   if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-  if (originalTestPersistence === undefined)
-    delete process.env.TEST_ENABLE_SESSION_PERSISTENCE
-  else process.env.TEST_ENABLE_SESSION_PERSISTENCE = originalTestPersistence
 
   rmSync(configDir, { recursive: true, force: true })
   rmSync(root, { recursive: true, force: true })
-})
-
-afterAll(() => {
-  resetProjectForTesting()
-  clearSessionMessagesCache()
 })
 
 describe('ACP session at a symlinked cwd', () => {
@@ -138,33 +99,6 @@ describe('ACP session at a symlinked cwd', () => {
     expect(projectDirForSessionCwd(missing)).toBe(
       getProjectDir(await canonicalizePath(missing)),
     )
-  })
-
-  test('a turn written at the symlinked cwd is there on resume', async () => {
-    // What createSession does, then a turn's transcript write.
-    activateAcpSessionWorkspace({
-      sessionId: SESSION,
-      cwd: link,
-      projectDir: projectDirForSessionCwd(link),
-    })
-    await recordTranscript([
-      userMessage('aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa', 'symlinked turn'),
-    ])
-    await flushSessionStorage()
-
-    // What getOrCreateSession does in a fresh process.
-    clearSessionMessagesCache()
-    resetProjectForTesting()
-    resetStateForTests()
-    const resolved = await resolveAcpSessionFile(SESSION, link)
-    expect(resolved).toBeDefined()
-    activateAcpSessionWorkspace({
-      sessionId: SESSION,
-      cwd: link,
-      projectDir: dirname(resolved!.filePath),
-    })
-    const log = await getLastSessionLog(SESSION as UUID)
-    expect(JSON.stringify(log?.messages ?? [])).toContain('symlinked turn')
   })
 
   test('a transcript an older build wrote under the cwd as given is found', async () => {
