@@ -420,6 +420,17 @@ export type EffectiveState = {
   effortOnWire: boolean
   effortLevel: EffortLevel | null
   contextTokens: number
+  /**
+   * D-9: the auto-compact window in effect, `min(contextTokens, configured)`
+   * as the runtime resolves it (`resolveActiveAutoCompactWindow`).
+   */
+  autoCompactWindow: number
+  /**
+   * Where that window comes from: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the
+   * node's own `settings.autoCompactWindow`, or the model window (`auto`).
+   * Node-owned (D-9): never part of a profile, never a managed key.
+   */
+  autoCompactSource: 'env' | 'settings' | 'auto'
 }
 
 export type ProviderResponse =

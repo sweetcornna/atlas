@@ -33,7 +33,7 @@ import {
   CANARY_KEY,
 } from '../../../services/qianmo/providers/__tests__/helpers.js'
 import { readRequestLine } from '../provider.js'
-import { childEnv, sourceArgs } from './providerSource.js'
+import { runQmProvider, type SourceRun } from './providerSource.js'
 
 const LIMIT = 64 * 1024
 const PROCESS_KEY = 'sk-test-canary-provider-cli-env-4Nf7'
@@ -42,37 +42,14 @@ const CLI_TIMEOUT_MS = 120_000
 let root: string
 let config: string
 
-type Run = { code: number; stdout: string; stderr: string }
+type Run = SourceRun
 
-async function qmProvider(
+function qmProvider(
   args: string[],
   stdin: string | null,
   env: Record<string, string> = {},
 ): Promise<Run> {
-  const child = Bun.spawn(
-    [process.execPath, ...sourceArgs(['provider', ...args])],
-    {
-      cwd: root,
-      env: childEnv({ CLAUDE_CONFIG_DIR: config, HOME: root, ...env }),
-      stdin: stdin === null ? 'ignore' : 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    },
-  )
-  if (stdin !== null && child.stdin) {
-    try {
-      child.stdin.write(stdin)
-      await child.stdin.end()
-    } catch {
-      // The node may answer and exit before reading all of an oversized line.
-    }
-  }
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ])
-  return { code, stdout, stderr }
+  return runQmProvider({ args, stdin, config, cwd: root, env })
 }
 
 function responseOf(run: Run): Record<string, unknown> {

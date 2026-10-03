@@ -70,7 +70,11 @@ function isEffectiveState(value: unknown): value is EffectiveState {
       typeof state.modelSettingsSlot === 'string') &&
     typeof state.effortOnWire === 'boolean' &&
     (state.effortLevel === null || typeof state.effortLevel === 'string') &&
-    typeof state.contextTokens === 'number'
+    typeof state.contextTokens === 'number' &&
+    typeof state.autoCompactWindow === 'number' &&
+    (state.autoCompactSource === 'env' ||
+      state.autoCompactSource === 'settings' ||
+      state.autoCompactSource === 'auto')
   )
 }
 

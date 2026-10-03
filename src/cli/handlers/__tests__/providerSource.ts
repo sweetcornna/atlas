@@ -26,7 +26,7 @@ const CLI_ENTRYPOINT = join(
 )
 
 /** `bun run <defines> <features> src/entrypoints/cli.tsx <cliArgs>` */
-export function sourceArgs(cliArgs: readonly string[]): string[] {
+function sourceArgs(cliArgs: readonly string[]): string[] {
   return [
     'run',
     ...macroDefineArgs(),
@@ -67,4 +67,47 @@ export function childEnv(
   delete env.CLAUDE_CONFIG_DIR
   for (const key of inheritedProviderKeyNames(env)) delete env[key]
   return { ...env, NODE_ENV: 'production', NO_COLOR: '1', ...overrides }
+}
+
+export type SourceRun = { code: number; stdout: string; stderr: string }
+
+/**
+ * `qm provider <args>` from source against the config root `config`, with
+ * `stdin` written and closed (`null`: no stdin), started in `cwd`.
+ */
+export async function runQmProvider(input: {
+  readonly args: readonly string[]
+  readonly stdin: string | null
+  readonly config: string
+  readonly cwd: string
+  readonly env?: Record<string, string>
+}): Promise<SourceRun> {
+  const child = Bun.spawn(
+    [process.execPath, ...sourceArgs(['provider', ...input.args])],
+    {
+      cwd: input.cwd,
+      env: childEnv({
+        CLAUDE_CONFIG_DIR: input.config,
+        HOME: input.cwd,
+        ...input.env,
+      }),
+      stdin: input.stdin === null ? 'ignore' : 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  )
+  if (input.stdin !== null && child.stdin) {
+    try {
+      child.stdin.write(input.stdin)
+      await child.stdin.end()
+    } catch {
+      // The node may answer and exit before reading all of an oversized line.
+    }
+  }
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ])
+  return { code, stdout, stderr }
 }

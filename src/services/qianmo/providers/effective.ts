@@ -41,6 +41,10 @@ import {
 import { getAPIProvider } from '../../../utils/model/providers.js'
 import { getContextWindowForModel } from '../../../utils/session/context.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
+import {
+  type AutoCompactWindowSource,
+  resolveActiveAutoCompactWindow,
+} from '../../compact/autoCompactWindow.js'
 import { resolveGrokReasoningEffort } from '../../api/grok/reasoning.js'
 import { getResponsesReasoningEffort } from '../../api/openai/reasoning.js'
 import { isOpenAIThinkingEnabled } from '../../api/openai/requestBody.js'
@@ -183,6 +187,11 @@ export function computeEffectiveProviderState(
   // undefined), so the applied value is env → per-slot setting → default.
   const applied = resolveAppliedEffort(model, undefined, slot)
   const effort = wireEffort(model, applied)
+  const contextTokens = getContextWindowForModel(model, undefined, slot)
+  // A fresh ACP session seeds AppState from settings without an override
+  // (`resolveInitialAutoCompactWindow`), which resolves exactly as the live
+  // settings file does here.
+  const autoCompact = resolveActiveAutoCompactWindow(contextTokens)
   return {
     apiProvider: getAPIProvider(),
     wire: effort.wire,
@@ -191,6 +200,20 @@ export function computeEffectiveProviderState(
     modelSettingsSlot: slot ?? null,
     effortOnWire: effort.onWire,
     effortLevel: effort.level,
-    contextTokens: getContextWindowForModel(model, undefined, slot),
+    contextTokens,
+    autoCompactWindow: autoCompact.window,
+    autoCompactSource: autoCompactSourceOf(autoCompact.source),
   }
+}
+
+/**
+ * The runtime's source label in the three words §2.4 reports (D-9). The
+ * other labels — `experiment`, `clientdata`, `model-default`,
+ * `unknown-model` — are unreachable in this build (`autoCompactWindow.ts`)
+ * and would all mean "chosen for the model", so they read as `auto`.
+ */
+export function autoCompactSourceOf(
+  source: AutoCompactWindowSource,
+): EffectiveState['autoCompactSource'] {
+  return source === 'env' || source === 'settings' ? source : 'auto'
 }

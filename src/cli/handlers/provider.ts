@@ -8,6 +8,7 @@
  *   qm provider serve-stdin --node <name>   what the sshd forced command runs
  *   qm provider status [--node <name>]
  *   qm provider probe|models|apply [--node <name>] < request.json
+ *   qm provider autocompact [auto|<tokens>] [--json]
  *
  * One JSON request line on stdin (at most 64 KiB, read up to the first
  * newline), one JSON response line on stdout; the dispatch is
@@ -17,6 +18,9 @@
  * Exit status: 0 — a response with `ok: true` was written; 1 — a response
  * with `ok: false`; 2 — no response (a usage error, or a fault of the node;
  * stderr names it without any message text that could carry a value).
+ *
+ * `autocompact` is not a protocol op: it is the base `/autocompact` for this
+ * node's settings (D-9, `providerAutocompact.ts`), with `--json` for the hub.
  *
  * `__effective` is internal: the child `status` starts to compute §2.4
  * `effective` in a process of its own (`effectiveProcess.ts`).
@@ -33,6 +37,7 @@ import {
   EFFECTIVE_CHILD_SUBCOMMAND,
   printEffectiveProviderState,
 } from '../../services/qianmo/providers/effectiveProcess.js'
+import { parseAutocompactArgs, runAutocompact } from './providerAutocompact.js'
 import { handleProviderLine, type NodeProviderResponse } from './providerOps.js'
 import { residentOptionValue } from './residentArgs.js'
 
@@ -56,6 +61,11 @@ Commands:
   apply                      Stage a profile from stdin; it takes effect at the
                              resident's next idle point, or now if no resident
                              is running.
+  autocompact [auto|<tokens>]
+                             Show or set this node's auto-compact window (the
+                             /autocompact setting: auto, or 100k-1M tokens).
+                             --json prints one JSON line. Refused while
+                             CLAUDE_CODE_AUTO_COMPACT_WINDOW is set.
 
 Options:
 
@@ -190,6 +200,7 @@ export async function runProvider(args: readonly string[]): Promise<void> {
     })
     await respondAndExit(0, line)
   }
+  if (command === 'autocompact') await autocompact(rest)
   if (
     command !== 'serve-stdin' &&
     command !== 'status' &&
@@ -250,6 +261,26 @@ export async function runProvider(args: readonly string[]): Promise<void> {
     return
   }
   await respondAndExit(response.ok ? 0 : 1, `${JSON.stringify(response)}\n`)
+}
+
+async function autocompact(args: readonly string[]): Promise<never> {
+  let parsed: ReturnType<typeof parseAutocompactArgs>
+  try {
+    parsed = parseAutocompactArgs(args)
+  } catch (error) {
+    return usageError(error instanceof Error ? error.message : 'bad options')
+  }
+  let run: ReturnType<typeof runAutocompact>
+  try {
+    run = runAutocompact(parsed)
+  } catch (error) {
+    process.stderr.write(
+      `${invokedBinName()} provider: internal error (${error instanceof Error ? error.name : typeof error})\n`,
+    )
+    return respondAndExit(2, '')
+  }
+  if (run.stderr !== '') process.stderr.write(run.stderr)
+  return respondAndExit(run.exitCode, run.stdout)
 }
 
 /**

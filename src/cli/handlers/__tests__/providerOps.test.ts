@@ -69,6 +69,8 @@ const EFFECTIVE: EffectiveState = {
   effortOnWire: true,
   effortLevel: 'max',
   contextTokens: 200_000,
+  autoCompactWindow: 200_000,
+  autoCompactSource: 'auto',
 }
 
 let root: string
