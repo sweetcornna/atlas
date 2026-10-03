@@ -259,13 +259,35 @@ function rowNote(health: AgentHealth): string {
   return '注销后该地址立即从名册摘除 · 需要重新注册才能再被唤醒'
 }
 
-function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
+function agentRow(
+  agent: ConsoleAgent,
+  now: number,
+  ttlMs: number,
+  canWrite: boolean,
+): string {
   const health = agentHealth(agent, now, ttlMs)
   const address = attr(agent.address)
   const beatable = health !== 'expired'
   const kv = (key: string, value: string) =>
     `<div class="kv"><span class="k">${escapeHtml(key)}</span>` +
     `<span class="v">${value}</span></div>`
+
+  // The two writes on a row are not drawn for a credential that may not make
+  // them (C7): a button that can only ever answer 403 teaches the operator
+  // that the console is broken, not that they are read-only. The page says
+  // "read-only" once, in the top bar, rather than on every row.
+  const heartbeat = canWrite
+    ? `<button type="button" class="btn btn-secondary btn-small" ` +
+      `data-action="heartbeat" data-address="${address}" data-write${
+        beatable ? '' : ' disabled'
+      }>心跳</button>`
+    : ''
+  const deregister = canWrite
+    ? `<button type="button" class="btn btn-ghost btn-danger" ` +
+      `data-action="deregister" data-address="${address}" data-write>` +
+      icon('power', { small: true }) +
+      `注销</button>`
+    : ''
 
   return (
     `<details class="row" data-address="${address}" data-health="${attr(
@@ -275,10 +297,7 @@ function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
     addressLine(agent.address) +
     statusCell(agent, health) +
     leaseCell(agent, now, ttlMs, health) +
-    `<button type="button" class="btn btn-secondary btn-small" ` +
-    `data-action="heartbeat" data-address="${address}"${
-      beatable ? '' : ' disabled'
-    }>心跳</button>` +
+    heartbeat +
     chevron() +
     `</summary>` +
     `<div class="row-panel">` +
@@ -287,10 +306,7 @@ function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
     kv('公钥', keyCell(agent.publicKey)) +
     kv('上次心跳', heartbeatValue(agent.lastHeartbeatAt, now)) +
     `<div class="row-acts">` +
-    `<button type="button" class="btn btn-ghost btn-danger" ` +
-    `data-action="deregister" data-address="${address}">` +
-    icon('power', { small: true }) +
-    `注销</button>` +
+    deregister +
     `<span class="note">${escapeHtml(rowNote(health))}</span>` +
     `</div></div></details>`
   )
@@ -371,6 +387,7 @@ function nodeCard(
   certificate: ConsoleCertificate | undefined,
   binName: string,
   server: string | undefined,
+  canWrite: boolean,
 ): string {
   const counts = tallyOf(group.agents, now, ttlMs)
   const first = group.agents[0]
@@ -403,7 +420,7 @@ function nodeCard(
     (certificate_ === ''
       ? ''
       : `<div class="grp-cert">${certificate_}${reissue}</div>`) +
-    group.agents.map(one => agentRow(one, now, ttlMs)).join('') +
+    group.agents.map(one => agentRow(one, now, ttlMs, canWrite)).join('') +
     `</div>`
   )
 }
@@ -461,6 +478,10 @@ function rosterHead(
  * `ttlMs` is the scale of last resort. Every row is judged against the lease
  * the registry granted it (`expiresAt − lastHeartbeatAt`, see `leaseOf` in
  * `format.ts`); `ttlMs` only stands in for a record that carries no lease.
+ *
+ * `options.canWrite` draws the row's 心跳 and 注销 and the empty state's
+ * invitation to register. Off unless asked for: a caller that forgets to say
+ * gets the read-only roster, never a page of buttons that 403.
  */
 export function renderRoster(
   agents: readonly ConsoleAgent[] | null,
@@ -469,7 +490,9 @@ export function renderRoster(
   ttlMs: number,
   certificates?: RosterCertificates,
   nodeServers?: readonly NodeServer[],
+  options: { readonly canWrite?: boolean } = {},
 ): string {
+  const canWrite = options.canWrite === true
   const body: string[] = []
   if (failure !== null) {
     body.push(failureBar(failure, '注册中心'))
@@ -510,11 +533,14 @@ export function renderRoster(
 
   if (agents.length === 0) {
     // The empty state spends its one line on the next action rather than on
-    // the news.
+    // the news — for whoever may take it. A read-only credential is told who
+    // does instead of being offered a dialog that is not there.
     body.push(
-      `<p class="hint">还没有节点 · ` +
-        `<a class="jump" href="#register-dialog" ` +
-        `data-open-dialog="register-dialog">注册第一个</a></p>`,
+      canWrite
+        ? `<p class="hint">还没有节点 · ` +
+            `<a class="jump" href="#register-dialog" ` +
+            `data-open-dialog="register-dialog" data-write>注册第一个</a></p>`
+        : `<p class="hint">还没有节点 · 由运维注册</p>`,
     )
     return (
       rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
@@ -537,6 +563,7 @@ export function renderRoster(
             byNode.get(bareNode(group.node)),
             binName,
             serverOf.get(bareNode(group.node)),
+            canWrite,
           ),
         )
         .join('') +

@@ -603,8 +603,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 2451,
-    "sha256": "1c5b9501838c78256ecc06e224dd3bf48fb2e0677c205f98e1cef63332edb1df"
+    "length": 1963,
+    "sha256": "56b4c1268651b909d07b28dcc3a129ae05cfd1ff812943cd9abfb21cb86c1908"
   },
   {
     "probe": "GET /fragments/audit as view-bearer",
@@ -1015,8 +1015,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 84651,
-    "sha256": "15689d6a58238ec8838e751d636f56e249c7a9572c4abc1612cd513229d7a99a"
+    "length": 74110,
+    "sha256": "f5b3a1bf618282cc68d566d9fae7416de514a6ffd8ee069e6bc76bb07dacdd00"
   },
   {
     "probe": "GET /nodes as none (html)",
@@ -1055,8 +1055,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 80555,
-    "sha256": "0deb3c6045104091be6b3afdffbe9772e3f193be58c286498b8ed7ab70da55ee"
+    "length": 74179,
+    "sha256": "3f3bde6197d45966cdbf23646a2870a6cafc056bf70189cac32bda90a8dd44bb"
   },
   {
     "probe": "GET /nodes/nowhere as admin-bearer (html)",

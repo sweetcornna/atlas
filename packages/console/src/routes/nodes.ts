@@ -52,11 +52,13 @@ import { icon } from '../view/bits.js'
 import { attr } from '../view/escape.js'
 import {
   DEFAULT_BIN_NAME,
+  canWrite,
   failureOf,
   failureResponse,
   guard,
   optionalString,
   outcomeOf,
+  readOnlyNote,
   requiredString,
   safeDecode,
   textParam,
@@ -166,7 +168,7 @@ interface RosterRender {
  * (`/nodes/<node>`); the header counts then describe that node.
  */
 export async function rosterFragment(
-  ctx: Pick<RouteContext, 'deps' | 'now' | 'roster'>,
+  ctx: Pick<RouteContext, 'deps' | 'now' | 'roster' | 'access'>,
   node?: string,
 ): Promise<RosterRender> {
   const { deps, now } = ctx
@@ -197,6 +199,7 @@ export async function rosterFragment(
             binName: deps.binName ?? DEFAULT_BIN_NAME,
           },
       deps.nodeServers,
+      { canWrite: canWrite(ctx.access) },
     ),
     agents,
   }
@@ -351,6 +354,8 @@ function nodeDialogs(
   withRegister: boolean,
 ): string {
   const { deps, now } = ctx
+  // Nothing to open for a caller with nothing they may submit.
+  if (!canWrite(ctx.access)) return ''
   return (
     (withRegister ? registerDialog() : '') +
     wakeDialog({
@@ -367,7 +372,12 @@ function nodeDialogs(
   )
 }
 
-function nodeActions(withRegister: boolean): string {
+/**
+ * The top bar's actions: 唤醒 and 注册节点 for a caller who may use them, the
+ * read-only line for one who may not (C7).
+ */
+function nodeActions(ctx: RouteContext, withRegister: boolean): string {
+  if (!canWrite(ctx.access)) return readOnlyNote(ctx.accounts !== undefined)
   return (
     `<button type="button" class="btn btn-secondary" ` +
     `data-open-dialog="wake-dialog" data-write>` +
@@ -396,7 +406,7 @@ async function nodesPage(ctx: RouteContext): Promise<PageRender> {
   const roster = await rosterFragment(ctx)
   return {
     title: '节点',
-    actions: nodeActions(true),
+    actions: nodeActions(ctx, true),
     body:
       rosterRegion(roster.html, '/fragments/roster') +
       nodeDialogs(ctx, roster.agents, true),
@@ -423,7 +433,7 @@ async function nodePage(
   return {
     title: node,
     crumbs: [{ label: node }],
-    actions: nodeActions(false),
+    actions: nodeActions(ctx, false),
     body:
       rosterRegion(
         roster.html,

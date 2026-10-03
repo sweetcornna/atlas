@@ -147,6 +147,9 @@ const LIMITS: LimitsSnapshot = {
 
 const NO_FILTER: AuditFilter = {}
 
+/** The roster as a caller who may write sees it. */
+const WRITER = { canWrite: true } as const
+
 /** Payloads that a peer on the network could plausibly put in an address. */
 const ATTACKS = {
   script: '<script>alert(1)</script>',
@@ -477,13 +480,13 @@ describe('the registry lease is the scale (C-1)', () => {
 
 describe('renderRoster', () => {
   test('an empty registry names the next action instead of going blank', () => {
-    const html = renderRoster([], null, NOW, TTL)
+    const html = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
     expect(html).toContain('还没有节点 · ')
     // The register form moved into a dialog on the same page (`/nodes`), so
     // the next action opens it; the anchor is kept so the link still names
     // its target without script.
     expect(html).toContain(
-      '<a class="jump" href="#register-dialog" data-open-dialog="register-dialog">注册第一个</a>',
+      '<a class="jump" href="#register-dialog" data-open-dialog="register-dialog" data-write>注册第一个</a>',
     )
     expect(html).not.toContain('<table')
     // One short line. The empty state is allowed a sentence; it is not allowed
@@ -614,7 +617,15 @@ describe('renderRoster', () => {
   })
 
   test('the expanded panel holds what the row no longer has room for', () => {
-    const html = renderRoster([agent({ publicKey: 'k' })], null, NOW, TTL)
+    const html = renderRoster(
+      [agent({ publicKey: 'k' })],
+      null,
+      NOW,
+      TTL,
+      undefined,
+      undefined,
+      WRITER,
+    )
     const panel = html.slice(html.indexOf('<div class="row-panel">'))
     for (const key of ['能力', '端点', '公钥', '上次心跳']) {
       expect(panel).toContain(key)
@@ -669,10 +680,43 @@ describe('renderRoster', () => {
     expect(html).not.toContain('-90')
   })
 
-  test('each row offers heartbeat and deregister', () => {
-    const html = renderRoster([agent()], null, NOW, TTL)
+  test('each row offers heartbeat and deregister, to a caller who may use them', () => {
+    const html = renderRoster(
+      [agent()],
+      null,
+      NOW,
+      TTL,
+      undefined,
+      undefined,
+      WRITER,
+    )
     expect(html).toContain('data-action="heartbeat"')
     expect(html).toContain('data-action="deregister"')
+    expect(html.match(/ data-write/g)).toHaveLength(2)
+  })
+
+  test('a read-only roster draws neither, and its empty state offers nothing to open (C7)', () => {
+    // Off unless asked for: a caller that forgets to say gets no buttons.
+    for (const options of [undefined, { canWrite: false }]) {
+      const html = renderRoster(
+        [agent({ publicKey: 'k' })],
+        null,
+        NOW,
+        TTL,
+        undefined,
+        undefined,
+        options,
+      )
+      expect(html).not.toContain('data-action="heartbeat"')
+      expect(html).not.toContain('data-action="deregister"')
+      expect(html).not.toContain('data-write')
+      // Everything else about the row is still there to read.
+      expect(html).toContain('<div class="row-panel">')
+      expect(html).toContain('上次心跳')
+    }
+    const empty = renderRoster([], null, NOW, TTL)
+    expect(empty).toContain('还没有节点 · 由运维注册')
+    expect(empty).not.toContain('data-open-dialog')
   })
 })
 
@@ -2228,7 +2272,15 @@ describe('assets', () => {
     expect(base).toContain('background: transparent')
     expect(base).not.toContain('--color-accent-700')
 
-    const row = renderRoster([agent()], null, NOW, TTL)
+    const row = renderRoster(
+      [agent()],
+      null,
+      NOW,
+      TTL,
+      undefined,
+      undefined,
+      WRITER,
+    )
     expect(row).toContain('class="btn btn-ghost btn-danger"')
   })
 
@@ -2395,7 +2447,15 @@ describe('copy discipline', () => {
     null,
     NO_FILTER,
   )
-  const roster = renderRoster([agent()], null, NOW, TTL)
+  const roster = renderRoster(
+    [agent()],
+    null,
+    NOW,
+    TTL,
+    undefined,
+    undefined,
+    WRITER,
+  )
   const limits = renderLimits(LIMITS)
   const rendered = renderShell({
     label: 'node-a',
@@ -2519,11 +2579,13 @@ describe('copy discipline', () => {
   })
 
   test('the empty state is an invitation, not a status', () => {
-    const empty = renderRoster([], null, NOW, TTL)
+    const empty = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
     expect(empty).toContain('还没有节点 · ')
     // The register form is a dialog on the same page now, not a section
     // further down, so the invitation opens it rather than pointing at it.
-    expect(empty).toContain('data-open-dialog="register-dialog">注册第一个</a>')
+    expect(empty).toContain(
+      'data-open-dialog="register-dialog" data-write>注册第一个</a>',
+    )
     expect(empty).not.toContain('暂无')
   })
 

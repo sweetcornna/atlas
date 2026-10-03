@@ -297,3 +297,29 @@ export function outcomeOf(
 ): readonly [ActionOutcome, string?] {
   return result.ok ? ['ok'] : ['failed', result.failure.code]
 }
+
+// --- presenting by role (C7) ---------------------------------------------
+
+/**
+ * Whether this caller may use the console's write controls: the admin token,
+ * or a personal `ops` account (which reads as admin, `access.ts`).
+ *
+ * The one test every page runs before it draws a write control. A control
+ * this says no to is not drawn at all — not drawn disabled, not drawn and
+ * left to 403 — and the page states once, in its top bar, that it is
+ * read-only ({@link readOnlyNote}). Every write control a page does draw
+ * carries `data-write`, which is what `test/roles.test.ts` scans for.
+ */
+export function canWrite(access: Access): boolean {
+  return access.credential.role === 'admin'
+}
+
+/** What a read-only caller is told, in the vocabulary of how they signed in. */
+export function readOnlyLine(accountsOn: boolean): string {
+  return accountsOn ? '只读 · 写操作需要运维角色' : '只读 · 写操作需要管理令牌'
+}
+
+/** The top bar's read-only statement, in place of the actions it replaces. */
+export function readOnlyNote(accountsOn: boolean): string {
+  return `<span class="note" id="read-only">${readOnlyLine(accountsOn)}</span>`
+}
