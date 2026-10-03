@@ -54,8 +54,9 @@
 # ⑧ 规范化之后名字仍是 <…>.git，且是裸仓：HEAD、objects/、refs/ 都在，core.bare=true，并且
 #    **没有 .git 子项**——不带 --strict 的 git-upload-pack 进仓时先试 <路径>/.git（实测：裸仓里
 #    放一个 .git，广告出来的是里面那个仓的引用）。
-# 通过后清掉 GIT_PROTOCOL 以外的 GIT_* 环境变量（sshd 若 AcceptEnv 放得太宽，GIT_CONFIG_PARAMETERS
-# 一类就能改掉 git 的行为），再 `exec git-<服务> <规范化路径>`：argv 直接交给内核，不经过任何 shell。
+# 判定之前先清掉 GIT_PROTOCOL 以外的 GIT_* 环境变量（sshd 若 AcceptEnv 放得太宽，
+# GIT_CONFIG_PARAMETERS、GIT_TRACE 一类就能改掉 git 的行为）；通过后 `exec git-<服务> <规范化路径>`：
+# argv 直接交给内核，不经过任何 shell。
 #
 # 退出码：3 = 拒绝这次请求；2 = 闸门自身的配置或用法错（根目录不对、参数不对）。放行时退出码
 # 是 git-upload-pack / git-receive-pack 自己的。
@@ -109,6 +110,11 @@ is_bare_repo() {
 
 serve() {
   local root="$1" root_canon cmd svc rest path rel abs base canon v
+  # 在跑任何 git 命令之前：裸仓检查里那条 `git config` 也吃这些变量（GIT_TRACE=<文件> 就能让它
+  # 往任意文件追加）。
+  for v in "${!GIT_@}"; do
+    [ "$v" = GIT_PROTOCOL ] || unset "$v"
+  done
   root_canon="$(canon_dir "$root")" || die_config "根目录不存在或进不去：$root"
   [ "$root_canon" != / ] || die_config '根目录不能是 /'
 
@@ -170,9 +176,6 @@ serve() {
   case "${canon##*/}" in ?*.git) ;; *) deny "解析之后不是 <名字>.git：$path" ;; esac
   is_bare_repo "$canon" || deny "不是裸仓：$path"
 
-  for v in "${!GIT_@}"; do
-    [ "$v" = GIT_PROTOCOL ] || unset "$v"
-  done
   exec "git-$svc" "$canon"
 }
 
