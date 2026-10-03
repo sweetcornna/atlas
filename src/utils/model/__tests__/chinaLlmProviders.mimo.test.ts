@@ -17,8 +17,8 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import {
+  CHINA_LLM_PROVIDERS,
   findChinaProviderByBaseURL,
-  findChinaProviderById,
   getChinaProviderContextWindow,
   resolveChinaProviderBaseURL,
 } from '../chinaLlmProviders.js'
@@ -78,7 +78,7 @@ describe('MiMo preset after the 2026-10-21 retirement', () => {
   })
 
   test('default model is mimo-v2.6-pro and the haiku tier is mimo-v2.6-flash', () => {
-    const mimo = findChinaProviderById('mimo')
+    const mimo = CHINA_LLM_PROVIDERS.find(p => p.id === 'mimo')
     expect(mimo?.defaultModel).toBe('mimo-v2.6-pro')
     expect(mimo?.tiers).toEqual({
       haiku: 'mimo-v2.6-flash',
@@ -89,7 +89,7 @@ describe('MiMo preset after the 2026-10-21 retirement', () => {
   })
 
   test('the model table offers exactly the current MiMo models', () => {
-    const mimo = findChinaProviderById('mimo')
+    const mimo = CHINA_LLM_PROVIDERS.find(p => p.id === 'mimo')
     expect(mimo?.models.map(model => model.id)).toEqual([
       'mimo-v2.6-pro',
       'mimo-v2.6-flash',
