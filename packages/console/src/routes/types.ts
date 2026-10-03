@@ -110,13 +110,18 @@ export interface RouteContext {
    * Write one action down (`deps.ts`, `ActionLedgerPort`). Never throws and
    * never fails the request: the action already happened, which is why a
    * write asks {@link admit} first.
+   *
+   * `true` when the line is in the ledger, or there is no ledger to write to;
+   * `false` when the ledger refused it or threw. Most callers have nothing to
+   * do with the answer; one that leans on the line having been written (the
+   * transcript read window, `routes/chat.ts`) must not assume it.
    */
   record(
     action: ConsoleActionName,
     target: string,
     outcome: ActionOutcome,
     code?: string,
-  ): Promise<void>
+  ): Promise<boolean>
 }
 
 /** The verbs the ledger knows (`deps.ts`, `CONSOLE_ACTIONS`). */

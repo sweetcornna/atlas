@@ -34,6 +34,9 @@
  * re-establishes all of it together. A new call site that switches sessions
  * without going through here re-opens the same class of bug.
  */
+import { realpathSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import {
   getSessionId,
   setOriginalCwd,
@@ -48,7 +51,12 @@ import {
   saveOnSwitch,
 } from '../../qianmo/promptCache/sessionPromptContext.js'
 import type { SessionId } from '../../../types/ids.js'
-import { getProjectDir } from '../../../utils/session/sessionStoragePortable.js'
+import {
+  canonicalizePath,
+  findProjectDir,
+  getProjectDir,
+  resolveSessionFilePath,
+} from '../../../utils/session/sessionStoragePortable.js'
 import {
   clearSessionMetadata,
   resetSessionFilePointer,
@@ -62,11 +70,66 @@ import {
  * time", which is only the same answer when the process has one workspace.
  * Pinning it per session makes a session's transcript independent of whatever
  * else the process is serving.
+ *
+ * Keyed by the cwd's canonical form — realpath, then NFC, the cwd as given
+ * (NFC) when it cannot be resolved — because that is the key every reader
+ * looks under: `resolveSessionFilePath` on resume, `listSessionsImpl` for
+ * `session/list`, and the interactive CLI, whose own cwd is resolved the same
+ * way at startup (`getInitialState`). Keying by the cwd as given put every
+ * session opened through a symlink — `/tmp` on macOS is one — where none of
+ * them looked, so each resume of it started empty.
  */
 export function projectDirForSessionCwd(cwd: string): string {
-  // NFC to match setOriginalCwd(), so a pinned dir and a derived one are the
-  // same string for the same directory.
-  return getProjectDir(cwd.normalize('NFC'))
+  return getProjectDir(canonicalSessionCwd(cwd))
+}
+
+/**
+ * `canonicalizePath`, synchronously, so `projectDirForSessionCwd` keeps its
+ * signature and the base call sites in `createSessionMethod.ts` and
+ * `sessionLifecycle.ts` stay as they are.
+ */
+function canonicalSessionCwd(cwd: string): string {
+  try {
+    return realpathSync(cwd).normalize('NFC')
+  } catch {
+    return cwd.normalize('NFC')
+  }
+}
+
+/**
+ * Find a session's transcript for `session/load` and `session/resume`.
+ *
+ * The canonical key first — where {@link projectDirForSessionCwd} writes, and
+ * the base's own lookup, worktree fallback included. Then, only when the cwd
+ * as given differs from its canonical form, under the cwd as given: that is
+ * where builds before this fix wrote a session opened through a symlink.
+ *
+ * What such a file gives back is the conversation since its last resume, not
+ * all of it. Each resume under an older build found nothing, started empty,
+ * and appended its turns to the same file as a new chain (the first message
+ * of a turn with no history has no parent); loading follows the newest chain
+ * only. That is the context the last older process was working with.
+ */
+export async function resolveAcpSessionFile(
+  sessionId: string,
+  cwd: string,
+): ReturnType<typeof resolveSessionFilePath> {
+  const found = await resolveSessionFilePath(sessionId, cwd)
+  if (found) return found
+
+  const asGiven = cwd.normalize('NFC')
+  if (asGiven === (await canonicalizePath(cwd))) return undefined
+  const legacyDir = await findProjectDir(asGiven)
+  if (!legacyDir) return undefined
+  const filePath = join(legacyDir, `${sessionId}.jsonl`)
+  try {
+    const { size } = await stat(filePath)
+    // Zero bytes is not found, as in `resolveSessionFilePath`.
+    if (size > 0) return { filePath, projectPath: asGiven, fileSize: size }
+  } catch {
+    // ENOENT/EACCES — not there either.
+  }
+  return undefined
 }
 
 /**

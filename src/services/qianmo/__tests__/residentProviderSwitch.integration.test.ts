@@ -401,14 +401,14 @@ async function settle(child: ChildProcess | undefined): Promise<void> {
 }
 
 /**
- * What the resident does to a generation a switch retires: the default retire
- * grace (1 s, for the child's transcript queue), then SIGTERM.
+ * What the resident does to a generation a switch retires: SIGTERM, then wait
+ * for the exit. No grace: the child drains its transcript queue on SIGTERM
+ * (`src/services/acp/exitFlush.ts`).
  */
 async function retireLikeASwitch(
   child: ChildProcess | undefined,
 ): Promise<void> {
   if (child === undefined || !alive(child)) return
-  await new Promise(resolve => setTimeout(resolve, 1_000))
   child.kill('SIGTERM')
   await once(child, 'exit')
 }
