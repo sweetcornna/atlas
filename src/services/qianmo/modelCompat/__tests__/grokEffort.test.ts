@@ -37,7 +37,7 @@ describe('default: unchanged until a real-endpoint check (design §5.10)', () =>
     expect(resolveGrokReasoningEffort('grok-3-mini-fast', 'low')).toBe('low')
   })
 
-  test.each(NEW_ROWS)('%s sends nothing without an opt-in', model => {
+  test.each([...NEW_ROWS])('%s sends nothing without an opt-in', model => {
     delete process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
     expect(resolveGrokReasoningEffort(model, 'high')).toBeUndefined()
     // Display agrees with the wire: the control stays off too.
