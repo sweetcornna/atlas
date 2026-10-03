@@ -61,7 +61,7 @@ import type {
   WatchJobStatus,
 } from '@qianmo/console'
 import { X509Certificate } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   anchoredValidity,
   parseTrustAnchors,
@@ -72,11 +72,13 @@ import { DEFAULT_TTL_MS } from '@qianmo/registry'
 import { ResidentEstop } from '@qianmo/resident'
 import { RUNTIME_RATE } from '@qianmo/router'
 import {
+  SCHEDULER_STATUS_FILE,
   SchedulerStore,
   backoffMs,
-  planFire,
+  readSchedulerStatus,
   type JobState,
-  type ScheduledJob,
+  type SchedulerStatusJob,
+  type SchedulerStatusRead,
 } from '@qianmo/scheduler'
 import {
   readAuditWitnessAnchors,
@@ -90,7 +92,6 @@ import {
 } from './residentWake.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { AlertAcksStore, consoleAlertAcksPath } from './consoleAlertAcks.js'
-import { parseWatchJobs } from './watch.js'
 import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
 import { occConfigPath } from '../../config/paths.js'
 
@@ -1126,23 +1127,29 @@ export function createNotifyPort(options: NotifyPortOptions): NotifyPort {
 
 /**
  * 为什么心跳拿不到，写在一处。调度器跑在 `qm watch` 里（`console.md` §10），
- * `lastTickAt` 只在那个进程的内存里（`SchedulerRunner.status()`），没有落盘，
- * 控制台进程读不到它。要接上，得先让 `qm watch` 把它写出来。
+ * `lastTickAt` 与各作业的下一次触发只有它写出的 `status.json` 带得出来
+ * （`@qianmo/scheduler` 的 `status.ts`）。那份文件不在，就是它没在这个配置根上
+ * 跑过，或者版本早于这份文件。
  */
-const TICK_UNWIRED_REASON = 'qm watch 是独立进程 · 最后一次运行只在它的内存里'
+const STATUS_ABSENT_REASON = 'qm watch 没有写出状态文件'
 
-const DEFINITIONS_UNWIRED_REASON =
-  '控制台没有读取 qm watch 的作业文件 · 作业文件只在 qm watch --jobs 里'
+/** 心跳与作业定义缺席的原因：文件不在，或者在但读不出来。 */
+function statusMissingReason(read: SchedulerStatusRead): string {
+  return read.state === 'invalid'
+    ? `状态文件读不出来 · ${read.reason}`
+    : STATUS_ABSENT_REASON
+}
 
 interface SchedulerPortOptions {
-  /** `qm watch --state-dir`，缺省 `occConfigPath('qianmo','scheduler')`。 */
+  /**
+   * `qm watch --state-dir`，缺省 `occConfigPath('qianmo','scheduler')`：
+   * `state.json`、`status.json` 与认领文件都在这里。
+   */
   readonly stateDir: string
   /** 固定在 `occConfigPath('qianmo','scheduler','ESTOP')`，不随 `--state-dir`。 */
   readonly estopPath: string
   /** 中枢审计链：取 `watch_fire` 的目标与 `watch_result_received` 的结果。 */
   readonly trailPath: string
-  /** `qm watch --jobs` 的那份文件。缺席时周期与下次触发是「未接入」。 */
-  readonly jobsPath?: string
   readonly now?: () => number
 }
 
@@ -1190,22 +1197,86 @@ function trailFacts(path: string): TrailFacts {
 }
 
 /**
- * 下次触发：用调度器自己的 `planFire` 与 `backoffMs` 算，与 `SchedulerRunner`
- * 同一套函数、同一组缺省退避参数（`qm watch` 没有改它们），所以页面说的就是
- * 调度器在跑时会做的事。三种计划都带 `fireAtMs`，正是 runner 接下来盯着的那一刻。
+ * 退避的终点：`state.json` 里落账的时刻加上调度器自己的 `backoffMs`（`qm watch`
+ * 没有改退避参数）。只用来在「下次触发」旁边写「退避至」——下次触发本身取自
+ * `status.json`，是调度器自己的值。
  */
-function nextOf(
-  job: ScheduledJob,
+function holdOf(
   state: JobState,
   now: number,
-): Pick<WatchJobStatus, 'next' | 'holdUntil'> {
-  const plan = planFire({ job, lastFiredAt: state.lastFiredAt, now })
-  if (state.consecutiveFailures === 0) return { next: plan.fireAtMs }
+): Pick<WatchJobStatus, 'holdUntil'> {
+  if (state.consecutiveFailures === 0) return {}
   const holdUntil =
     (state.lastOutcomeAt ?? 0) + backoffMs(state.consecutiveFailures)
-  return holdUntil > now
-    ? { next: plan.fireAtMs, holdUntil }
-    : { next: plan.fireAtMs }
+  return holdUntil > now ? { holdUntil } : {}
+}
+
+/** `state.json` 里一个作业的上次触发，`recordedAt` 是落账的墙上时间。 */
+function lastOf(state: JobState): Pick<WatchJobStatus, 'last'> {
+  return state.lastFiredAt === undefined || state.lastOutcome === undefined
+    ? {}
+    : {
+        last: {
+          at: state.lastFiredAt,
+          outcome: state.lastOutcome,
+          ...(state.lastOutcomeAt === undefined
+            ? {}
+            : { recordedAt: state.lastOutcomeAt }),
+        },
+      }
+}
+
+/**
+ * `status.json` 里的一个作业：定义与计划取自它，落账时间与退避取自
+ * `state.json`。两份都是 `qm watch` 在同一轮里写的，`state.json` 先写。
+ */
+function listedJob(
+  job: SchedulerStatusJob,
+  state: JobState,
+  facts: TrailFacts,
+  now: number,
+): WatchJobStatus {
+  const result = facts.results.get(job.id)
+  const recordedAt =
+    state.lastFiredAt === job.lastFireAt ? state.lastOutcomeAt : undefined
+  return {
+    id: job.id,
+    title: job.title,
+    target: job.target,
+    everyMs: job.everyMs,
+    listed: true,
+    ...(job.lastFireAt === undefined || job.lastResult === undefined
+      ? {}
+      : {
+          last: {
+            at: job.lastFireAt,
+            outcome: job.lastResult,
+            ...(recordedAt === undefined ? {} : { recordedAt }),
+          },
+        }),
+    consecutiveFailures: job.consecutiveFailures,
+    ...(job.nextFireAt === undefined ? {} : { next: job.nextFireAt }),
+    ...holdOf(state, now),
+    ...(result === undefined ? {} : { result }),
+  }
+}
+
+/** 只在 `state.json` 里有、正在跑的调度器没有的作业：不会再触发。 */
+function unlistedJob(
+  id: string,
+  state: JobState,
+  facts: TrailFacts,
+): WatchJobStatus {
+  const target = facts.targets.get(id)
+  const result = facts.results.get(id)
+  return {
+    id,
+    ...(target === undefined ? {} : { target }),
+    listed: false,
+    ...lastOf(state),
+    consecutiveFailures: state.consecutiveFailures,
+    ...(result === undefined ? {} : { result }),
+  }
 }
 
 function estopOf(path: string): SchedulerEstop {
@@ -1226,13 +1297,17 @@ function estopOf(path: string): SchedulerEstop {
 }
 
 /**
- * 值守作业的只读面：状态文件、急停哨兵、作业文件（可选）、中枢审计链。
+ * 值守作业的只读面：`status.json`、`state.json`、急停哨兵、中枢审计链。
+ *
+ * **优先读 `status.json`**：心跳、作业定义与下次触发只有它有，读到了就照它说，
+ * 判「可能已停止」的尺子（`tickMs`）也是它带来的。读不到时退回只看
+ * `state.json` 与审计链，心跳与作业定义写「未接入」并说明是文件不在还是读不出来。
  *
  * **只读**：`SchedulerStore` 在这里只用构造（读一次）与 `stateOf` / `entries`，
  * 从不调 `claim` / `recordFire`；急停只 `stat`。控制台进程从不往调度目录里写
  * 一个字节——那里的每个文件都是 `qm watch` 的承诺（`store.ts` 模块注释）。
  *
- * 状态文件坏了（`SchedulerStore` 报了错）整个端口回失败，不渲染一张以为
+ * `state.json` 坏了（`SchedulerStore` 报了错）整个端口回失败，不渲染一张以为
  * 「从没跑过」的表：调度器自己对坏文件 fail-open，页面不该跟着装作没事。
  */
 export function createSchedulerPort(
@@ -1257,74 +1332,40 @@ export function createSchedulerPort(
         )
       }
 
-      let defined: readonly ScheduledJob[] = []
-      let definitions: SchedulerSnapshot['definitions'] = {
-        state: 'unwired',
-        reason: DEFINITIONS_UNWIRED_REASON,
-      }
-      if (options.jobsPath !== undefined) {
-        try {
-          defined = parseWatchJobs(readFileSync(options.jobsPath, 'utf8')).map(
-            entry => entry.job,
-          )
-          definitions = { state: 'wired', source: options.jobsPath }
-        } catch (error) {
-          return Promise.resolve(
-            fail(
-              'invalid',
-              `作业文件读不出来 ${options.jobsPath} · ${messageOf(error)}`,
-            ),
-          )
-        }
-      }
-
       const facts = trailFacts(options.trailPath)
-      const byId = new Map(defined.map(job => [job.id, job]))
-      const ids = [
-        ...defined.map(job => job.id),
+      const read = readSchedulerStatus(options.stateDir)
+      const listed = read.state === 'ok' ? read.status.jobs : []
+      const listedIds = new Set(listed.map(job => job.id))
+      const jobs = [
+        ...listed.map(job => listedJob(job, store.stateOf(job.id), facts, now)),
         ...Object.keys(store.entries())
-          .filter(id => !byId.has(id))
-          .sort(),
+          .filter(id => !listedIds.has(id))
+          .sort()
+          .map(id => unlistedJob(id, store.stateOf(id), facts)),
       ]
-      const jobs = ids.map((id): WatchJobStatus => {
-        const job = byId.get(id)
-        const state = store.stateOf(id)
-        const target = job?.target ?? facts.targets.get(id)
-        const result = facts.results.get(id)
-        return {
-          id,
-          ...(job === undefined
-            ? {}
-            : {
-                title: job.title,
-                everyMs: job.schedule.everyMs,
-                notifyPolicy: job.notifyPolicy,
-              }),
-          ...(target === undefined ? {} : { target }),
-          listed: job !== undefined,
-          ...(state.lastFiredAt === undefined || state.lastOutcome === undefined
-            ? {}
-            : {
-                last: {
-                  at: state.lastFiredAt,
-                  outcome: state.lastOutcome,
-                  ...(state.lastOutcomeAt === undefined
-                    ? {}
-                    : { recordedAt: state.lastOutcomeAt }),
-                },
-              }),
-          consecutiveFailures: state.consecutiveFailures,
-          ...(job === undefined ? {} : nextOf(job, state, now)),
-          ...(result === undefined ? {} : { result }),
-        }
-      })
 
       return Promise.resolve({
         ok: true,
         value: {
-          tick: { state: 'unwired', reason: TICK_UNWIRED_REASON },
+          tick:
+            read.state === 'ok'
+              ? {
+                  state: 'seen',
+                  at: read.status.lastTickAt,
+                  everyMs: read.status.tickMs,
+                }
+              : { state: 'unwired', reason: statusMissingReason(read) },
           estop: estopOf(options.estopPath),
-          definitions,
+          definitions:
+            read.state === 'ok'
+              ? {
+                  state: 'wired',
+                  source: join(options.stateDir, SCHEDULER_STATUS_FILE),
+                }
+              : {
+                  state: 'unwired',
+                  reason: `${statusMissingReason(read)} · 作业定义只在它的内存里`,
+                },
           jobs,
         },
       })
@@ -1336,13 +1377,12 @@ export function createSchedulerPort(
  * 两个端口在生产上的接法：路径全部从 `paths.ts` 派生，与 `qm watch` 的缺省
  * 一致（状态目录与急停见 `watch.ts` 的 `parseWatchArgs` / `runWatch`，审计链
  * 见 `openAuditTrail`）。`qm watch` 用了 `--state-dir`、或不与控制台共用配置根
- * 时，这里读到的是另一份，作业页上表现为没有作业记录。横幅里 `alert-acks` 那一
- * 行带出了控制台的配置根，可以拿来与 `qm watch` 启动时打的 `state in <dir>` 对照。
- *
- * `jobsPath` 今天没有命令行入口，缺席时作业页的周期与下次触发写「未接入」。
+ * 时，这里读到的是另一份，作业页上表现为心跳未接入、没有作业记录。横幅里
+ * `alert-acks` 那一行带出了控制台的配置根，可以拿来与 `qm watch` 启动时打的
+ * `state in <dir>` 对照。
  */
 export function consoleWatchDeps(
-  options: { readonly jobsPath?: string; readonly acksPath?: string } = {},
+  options: { readonly acksPath?: string } = {},
 ): { readonly notify: NotifyPort; readonly scheduler: SchedulerPort } {
   const trailPath = auditTrailPath()
   return {
@@ -1354,7 +1394,6 @@ export function consoleWatchDeps(
       stateDir: occConfigPath('qianmo', 'scheduler'),
       estopPath: occConfigPath('qianmo', 'scheduler', 'ESTOP'),
       trailPath,
-      ...(options.jobsPath === undefined ? {} : { jobsPath: options.jobsPath }),
     }),
   }
 }

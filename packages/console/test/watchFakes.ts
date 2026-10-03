@@ -127,17 +127,20 @@ export function certificatesOf(
   }
 }
 
-/** A watch job snapshot in its ordinary state: one job, all wired but the tick. */
+/**
+ * A watch job snapshot in its ordinary state: `qm watch` wrote its status
+ * twenty seconds ago, one job, everything wired.
+ */
 export function snapshotOf(
   over: Partial<SchedulerSnapshot> = {},
 ): SchedulerSnapshot {
   return {
-    tick: {
-      state: 'unwired',
-      reason: 'qm watch 是独立进程 · 最后一次运行只在它的内存里',
-    },
+    tick: { state: 'seen', at: NOW - 20_000, everyMs: 60_000 },
     estop: { state: 'released' },
-    definitions: { state: 'wired', source: '/srv/watch/jobs.json' },
+    definitions: {
+      state: 'wired',
+      source: '/srv/qianmo/scheduler/status.json',
+    },
     jobs: [
       {
         id: 'disk-watch',
@@ -158,6 +161,35 @@ export function snapshotOf(
     ],
     ...over,
   }
+}
+
+/** Why the tick and the definitions are missing when `status.json` is. */
+export const STATUS_ABSENT = 'qm watch 没有写出状态文件'
+
+/**
+ * What the port reads without `status.json`: no heartbeat, no definitions,
+ * and the job known only from `state.json`.
+ */
+export function unwiredSnapshotOf(
+  over: Partial<SchedulerSnapshot> = {},
+): SchedulerSnapshot {
+  return snapshotOf({
+    tick: { state: 'unwired', reason: STATUS_ABSENT },
+    definitions: {
+      state: 'unwired',
+      reason: `${STATUS_ABSENT} · 作业定义只在它的内存里`,
+    },
+    jobs: [
+      {
+        id: 'disk-watch',
+        target: 'qianmo://tokyo-1/reviewer',
+        listed: false,
+        consecutiveFailures: 0,
+        last: { at: NOW - 300_000, outcome: 'completed' },
+      },
+    ],
+    ...over,
+  })
 }
 
 /** `osaka-1/writer` with its lease long gone: the registry's 节点失联. */

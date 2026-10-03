@@ -35,6 +35,7 @@ import {
   certificatesOf,
   notice,
   snapshotOf,
+  unwiredSnapshotOf,
   watchConsole,
 } from './watchFakes.js'
 
@@ -234,12 +235,13 @@ function jobStates(): readonly (SchedulerSnapshot | null | 'failing')[] {
     'failing',
     snapshotOf(),
     snapshotOf({ tick: { state: 'never' } }),
-    snapshotOf({ tick: { state: 'seen', at: NOW - 900_000 } }),
-    snapshotOf({ tick: { state: 'seen', at: NOW - 5_000 } }),
+    snapshotOf({ tick: { state: 'seen', at: NOW - 900_000, everyMs: 60_000 } }),
+    snapshotOf({ tick: { state: 'seen', at: NOW - 5_000, everyMs: 60_000 } }),
     snapshotOf({ estop: { state: 'engaged', since: NOW - 60_000 } }),
     snapshotOf({ estop: { state: 'unknown', reason: 'EACCES' } }),
-    snapshotOf({
-      definitions: { state: 'unwired', reason: '控制台没有读取作业文件' },
+    unwiredSnapshotOf(),
+    unwiredSnapshotOf({
+      tick: { state: 'unwired', reason: '状态文件读不出来 · not JSON' },
       jobs: [{ id: 'x', listed: false, consecutiveFailures: 1 }],
     }),
     snapshotOf({
@@ -373,7 +375,7 @@ describe('with script off', () => {
       await (await c.handle(browse('/jobs', VIEW))).text(),
     )
     expect(bare).toContain('<tr data-key="disk-watch">')
-    expect(bare).toContain('调度器心跳未接入')
+    expect(bare).toContain('刚运行过')
     expect(bare).toContain('id="sched-estop"')
     expect(bare).toContain('id="nav-alerts" href="/alerts"')
   })

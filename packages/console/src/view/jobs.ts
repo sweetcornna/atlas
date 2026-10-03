@@ -54,13 +54,12 @@ import { attr, escapeHtml } from './escape.js'
 import { formatDateTime, formatDuration, formatRelative } from './format.js'
 
 /**
- * How old a seen heartbeat may be before the scheduler reads as stopped.
- *
- * A live runner re-arms at least once a minute (`@qianmo/scheduler`
- * `fire.ts`, `DEFAULT_MAX_DELAY_MS`); three missed arms is past any doubt
- * without flapping on one slow pass.
+ * How many of the scheduler's own longest gaps (`SchedulerTick.everyMs`) may
+ * pass without a new pass before it reads as stopped. Two: one late pass —
+ * a slow dispatch, a busy host — is not an outage, and the yardstick is the
+ * scheduler's, so a hub configured to pass less often is not called stopped.
  */
-const TICK_STALE_MS = 3 * 60_000
+const TICK_STALE_GAPS = 2
 
 /** The word that marks a value this console has no source for. */
 const UNWIRED = '未接入'
@@ -123,7 +122,7 @@ function tickSaid(tick: SchedulerTick, now: number): Said {
   switch (tick.state) {
     case 'seen': {
       const ago = formatRelative(tick.at, now)
-      if (now - tick.at > TICK_STALE_MS) {
+      if (now - tick.at > TICK_STALE_GAPS * tick.everyMs) {
         return {
           value: state('critical', `${ago} · 可能已停止`),
           strip: bar(
@@ -132,7 +131,7 @@ function tickSaid(tick: SchedulerTick, now: number): Said {
           ),
         }
       }
-      return { value: state('ok', ago) }
+      return { value: state('ok', `刚运行过 · ${ago}`) }
     }
     case 'never':
       return {
@@ -229,7 +228,7 @@ function jobCell(job: WatchJobStatus, wired: boolean): string {
       ? `<b class="mono">${escapeHtml(job.id)}</b>`
       : `<b>${escapeHtml(job.title)}</b>` +
         `<span class="note mono">${escapeHtml(job.id)}</span>`
-  const gone = wired && !job.listed ? tag('不在作业文件中', 'muted') : ''
+  const gone = wired && !job.listed ? tag('已移出调度', 'muted') : ''
   return `<td class="job"><span class="job-name">${name}</span>${gone}</td>`
 }
 
@@ -350,7 +349,7 @@ function jobsSection(snapshot: SchedulerSnapshot, now: number): string {
     snapshot.jobs.length === 0
       ? hint(
           snapshot.definitions.state === 'wired'
-            ? '作业文件里没有作业'
+            ? '调度器里没有作业'
             : '没有作业记录',
         )
       : jobsTable(snapshot, now)

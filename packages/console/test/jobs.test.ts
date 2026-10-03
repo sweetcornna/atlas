@@ -14,7 +14,13 @@ import { jobsRoute } from '../src/routes/jobs.js'
 import type { ConsoleResult, SchedulerSnapshot } from '../src/deps.js'
 import { formatDateTime } from '../src/view/format.js'
 import { ADMIN, NOW, VIEW, browse, call } from './pageHarness.js'
-import { FixedScheduler, snapshotOf, watchConsole } from './watchFakes.js'
+import {
+  FixedScheduler,
+  STATUS_ABSENT,
+  snapshotOf,
+  unwiredSnapshotOf,
+  watchConsole,
+} from './watchFakes.js'
 
 const UNWIRED_TICK = '调度器心跳未接入'
 
@@ -85,7 +91,7 @@ describe('each job, its last and its next fire', () => {
     expect(held).toContain('投递失败')
     expect(held).toContain('<span class="tone-bad">3</span>')
     const gone = html.slice(html.indexOf('data-key="gone"'))
-    expect(gone).toContain('不在作业文件中')
+    expect(gone).toContain('已移出调度')
     expect(gone).toContain('不再调度')
     expect(html).toContain('连续失败 1')
   })
@@ -99,30 +105,14 @@ describe('each job, its last and its next fire', () => {
   })
 
   test('without job definitions, period and next fire are 未接入 rather than blank', async () => {
-    const html = await jobsPage(
-      snapshotOf({
-        definitions: {
-          state: 'unwired',
-          reason: '控制台没有读取 qm watch 的作业文件',
-        },
-        jobs: [
-          {
-            id: 'disk-watch',
-            target: 'qianmo://tokyo-1/reviewer',
-            listed: false,
-            consecutiveFailures: 0,
-            last: { at: NOW - 300_000, outcome: 'completed' },
-          },
-        ],
-      }),
-    )
+    const html = await jobsPage(unwiredSnapshotOf())
     expect(html).toContain(
-      '作业定义未接入 · 控制台没有读取 qm watch 的作业文件 · 周期与下次触发无从计算',
+      `作业定义未接入 · ${STATUS_ABSENT} · 作业定义只在它的内存里 · 周期与下次触发无从计算`,
     )
     const row = html.slice(html.indexOf('<tr data-key="disk-watch">'))
     expect(row.match(/data-unwired>未接入/g)).toHaveLength(2)
-    // Not "no longer in the file": there is no file to be missing from.
-    expect(row).not.toContain('不在作业文件中')
+    // Not "taken out of the schedule": there is no schedule to be missing from.
+    expect(row).not.toContain('已移出调度')
     expect(cardRow(html, 'sched-defs')).toContain('未接入')
   })
 })
@@ -155,10 +145,25 @@ describe('the emergency stop', () => {
 
 describe('the scheduler heartbeat is never a blank', () => {
   test('not wired: stated, with the reason, above the table', async () => {
-    const html = await jobsPage(snapshotOf())
+    const html = await jobsPage(
+      unwiredSnapshotOf({
+        jobs: [
+          {
+            id: 'disk-watch',
+            listed: false,
+            consecutiveFailures: 0,
+            last: {
+              at: NOW - 300_000,
+              outcome: 'completed',
+              recordedAt: NOW - 299_000,
+            },
+          },
+        ],
+      }),
+    )
     expect(cardRow(html, 'sched-tick')).toContain('未接入')
     expect(html).toContain(
-      `${UNWIRED_TICK} · qm watch 是独立进程 · 最后一次运行只在它的内存里 · 无法判断调度器是否在运行`,
+      `${UNWIRED_TICK} · ${STATUS_ABSENT} · 无法判断调度器是否在运行`,
     )
     // The weaker sign of life that is available is shown under it.
     expect(cardRow(html, 'sched-activity')).toContain('4 分钟前')
@@ -172,20 +177,39 @@ describe('the scheduler heartbeat is never a blank', () => {
 
   test('seen too long ago: possibly stopped', async () => {
     const html = await jobsPage(
-      snapshotOf({ tick: { state: 'seen', at: NOW - 600_000 } }),
+      snapshotOf({
+        tick: { state: 'seen', at: NOW - 600_000, everyMs: 60_000 },
+      }),
     )
     expect(cardRow(html, 'sched-tick')).toContain('10 分钟前 · 可能已停止')
     expect(html).toContain('调度器可能已停止 · 最后一次运行 10 分钟前')
   })
 
-  test('seen just now: no strip — the control for the three above', async () => {
+  test('seen just now: 刚运行过 and no strip — the control for the three above', async () => {
     const html = await jobsPage(
-      snapshotOf({ tick: { state: 'seen', at: NOW - 20_000 } }),
+      snapshotOf({
+        tick: { state: 'seen', at: NOW - 20_000, everyMs: 60_000 },
+      }),
     )
-    expect(cardRow(html, 'sched-tick')).toContain('20 秒前')
+    expect(cardRow(html, 'sched-tick')).toContain('刚运行过 · 20 秒前')
     expect(html).not.toContain(UNWIRED_TICK)
     expect(html).not.toContain('可能已停止')
     expect(html).not.toContain('从未运行')
+  })
+
+  test("too long is two of the scheduler's own gaps, not a number of the page's", async () => {
+    const at = NOW - 150_000
+    // Two and a half one-minute gaps: stopped.
+    const minute = await jobsPage(
+      snapshotOf({ tick: { state: 'seen', at, everyMs: 60_000 } }),
+    )
+    expect(cardRow(minute, 'sched-tick')).toContain('可能已停止')
+    // The same age against a two-minute gap is not yet two of them.
+    const twoMinutes = await jobsPage(
+      snapshotOf({ tick: { state: 'seen', at, everyMs: 120_000 } }),
+    )
+    expect(cardRow(twoMinutes, 'sched-tick')).toContain('刚运行过')
+    expect(twoMinutes).not.toContain('可能已停止')
   })
 
   test('no scheduler port at all: the same words, and the page says why', async () => {
@@ -231,7 +255,7 @@ describe('the JSON face and the fragment', () => {
       await c.handle(call('GET', '/fragments/jobs', VIEW))
     ).text()
     expect(fragment).toContain('<tr data-key="disk-watch">')
-    expect(fragment).toContain(UNWIRED_TICK)
+    expect(fragment).toContain('刚运行过')
     expect(pageHtml).toContain(fragment)
   })
 

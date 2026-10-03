@@ -652,16 +652,23 @@ export interface NotifyPort {
  *
  * **三态，缺一不可**（`console.md` §10.3「缺席可见」）：
  *
- * - `seen`：读到了，`at` 是那一刻；
+ * - `seen`：读到了，`at` 是那一刻，`everyMs` 是调度器自报的两轮之间最长的间隔
+ *   （`qm watch` 写进 `status.json` 的 `tickMs`）。超过两个间隔没有新的一轮，
+ *   页面就说它可能已停止——这把尺子来自调度器自己，控制台不另定一个数；
  * - `never`：调度器在，但一次都没跑过；
- * - `unwired`：这个端口拿不到它，`reason` 说为什么。今天的生产实现就是这一态：
- *   调度器跑在 `qm watch` 里，`lastTickAt` 只在那个进程的内存里。
+ * - `unwired`：这个端口拿不到它，`reason` 说为什么。生产实现在
+ *   `qm watch` 没有写出 `status.json`（没在这个配置根上跑过，或版本早于它）、
+ *   或那份文件读不出来时就是这一态。
  *
  * 一个没在跑的调度器和一个没事可做的调度器看起来一模一样，只有这个时间戳能
  * 把两者分开；所以拿不到它这件事本身必须写在页面上，不能渲染成一格空白。
  */
 export type SchedulerTick =
-  | { readonly state: 'seen'; readonly at: number }
+  | {
+      readonly state: 'seen'
+      readonly at: number
+      readonly everyMs: number
+    }
   | { readonly state: 'never' }
   | { readonly state: 'unwired'; readonly reason: string }
 
@@ -687,9 +694,10 @@ export type WatchFireOutcome = 'completed' | 'failed' | 'skipped' | 'preempted'
 /**
  * 一个值守作业此刻的样子。
  *
- * 定义里的字段（标题、目标、周期、通知策略）**都可选**：作业定义只在
- * `qm watch --jobs` 的那份文件里，端口没接到那份文件时只能从状态文件与审计链里
- * 看到作业 id、上次触发和最近结果。缺席的字段页面写「未接入」，不猜。
+ * 定义里的字段（标题、目标、周期、通知策略）**都可选**：作业定义在
+ * `qm watch` 的内存里，经它写出的 `status.json` 才到得了控制台。读不到那份文件
+ * 时只能从调度状态与审计链里看到作业 id、上次触发和最近结果。缺席的字段页面写
+ * 「未接入」，不猜。
  */
 export interface WatchJobStatus {
   readonly id: string
@@ -700,9 +708,9 @@ export interface WatchJobStatus {
   readonly everyMs?: number
   readonly notifyPolicy?: string
   /**
-   * 作业文件里有它。`false` 是「状态文件里还有记录、作业文件里已经没有」——
-   * 调度器只调度作业文件里的作业，所以它不会再触发。作业定义未接入时恒为
-   * `false`，页面按 {@link SchedulerSnapshot.definitions} 区分两种情形。
+   * 调度器正在调度它。`false` 是「调度状态里还有记录、正在跑的 `qm watch` 已经
+   * 没有这个作业」，所以它不会再触发。作业定义未接入时恒为 `false`，页面按
+   * {@link SchedulerSnapshot.definitions} 区分两种情形。
    */
   readonly listed: boolean
   /**
@@ -717,8 +725,9 @@ export interface WatchJobStatus {
   }
   readonly consecutiveFailures: number
   /**
-   * 下次触发的排定时刻，用调度器自己的 `planFire` 算出来。小于等于当前时刻就是
-   * 「已到期」：调度器在跑的话这一刻就该触发。没有作业定义时缺席。
+   * 调度器下一次要处理它的时刻：`planFire` 的排定时刻，退避中则是退避结束的
+   * 时刻——取自调度器写出的 `status.json`，不是控制台另算的。小于等于当前时刻
+   * 就是「已到期」：调度器在跑的话这一刻就该触发。没有作业定义时缺席。
    */
   readonly next?: number
   /** 失败退避：这一刻之前不会触发。 */
@@ -743,7 +752,7 @@ export interface SchedulerSnapshot {
   readonly definitions:
     | {
         readonly state: 'wired'
-        /** 定义从哪来，显示用（文件路径）。 */
+        /** 定义从哪来，显示用（`status.json` 的路径）。 */
         readonly source: string
       }
     | { readonly state: 'unwired'; readonly reason: string }

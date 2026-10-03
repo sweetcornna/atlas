@@ -4,7 +4,8 @@
 /**
  * 告警与值守作业两个端口的生产实现（P18.15），全部对着真文件：真的审计链
  * （`@qianmo/audit` 的 `AuditTrail`）、真的调度状态（`@qianmo/scheduler` 的
- * `SchedulerStore` 写出来的 `state.json`）、真的急停哨兵与作业文件。
+ * `SchedulerStore` 写出来的 `state.json` 与 `writeSchedulerStatus` 写出来的
+ * `status.json`）、真的急停哨兵；最后一组跑真的 `qm watch --once` 再读真的作业页。
  *
  * **零 `mock.module`**：这两个端口的全部价值在于「读的是 `qm watch` 写下的那几份
  * 文件」，假的 fs 恰好测不到这一点。审计记录的形状照 `watch.ts` 的
@@ -25,19 +26,26 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AuditSource, AuditTrail } from '@qianmo/audit'
+import { createConsoleHandler } from '@qianmo/console'
 import {
+  SCHEDULER_STATUS_FILE,
   SchedulerStore,
-  assertJob,
   backoffMs,
-  planFire,
+  describeSchedule,
+  readSchedulerStatus,
+  writeSchedulerStatus,
+  type SchedulerStatusFile,
+  type SchedulerStatusJob,
 } from '@qianmo/scheduler'
+import { PSK_ENV_VAR } from '@qianmo/transport'
 import { AlertAcksStore, consoleAlertAcksPath } from '../consoleAlertAcks.js'
 import {
+  consoleLimits,
   consoleWatchDeps,
   createNotifyPort,
   createSchedulerPort,
 } from '../consolePorts.js'
-import { parseWatchArgs } from '../watch.js'
+import { parseWatchArgs, runWatchJobs } from '../watch.js'
 import { openAuditTrail } from '../../../services/qianmo/auditTrail.js'
 
 const roots: string[] = []
@@ -297,39 +305,33 @@ const JOB = {
   id: 'disk-watch',
   title: '每十分钟看一次磁盘',
   target: 'qianmo://beta-1/reviewer',
-  url: 'ws://127.0.0.1:38611',
   prompt: '检查 / 的使用率',
   schedule: { everyMs: 600_000, anchorMs: NOW - 3_600_000 },
   taskTtlMs: 900_000,
-  notifyPolicy: 'agent-initiated',
+  notifyPolicy: 'agent-initiated' as const,
 }
 
 interface Hub {
   readonly stateDir: string
   readonly estopPath: string
   readonly trailPath: string
-  readonly jobsPath: string
 }
 
-function hub(jobs: readonly unknown[] = [JOB]): Hub {
+function hub(): Hub {
   const dir = tempDir()
   const stateDir = join(dir, 'qianmo', 'scheduler')
-  const jobsPath = join(dir, 'jobs.json')
-  writeFileSync(jobsPath, JSON.stringify(jobs))
   return {
     stateDir,
     estopPath: join(stateDir, 'ESTOP'),
     trailPath: join(dir, 'qianmo', 'audit', 'trail.ndjson'),
-    jobsPath,
   }
 }
 
-function port(h: Hub, withJobs = true, now = NOW) {
+function port(h: Hub, now = NOW) {
   return createSchedulerPort({
     stateDir: h.stateDir,
     estopPath: h.estopPath,
     trailPath: h.trailPath,
-    ...(withJobs ? { jobsPath: h.jobsPath } : {}),
     now: () => now,
   })
 }
@@ -349,73 +351,96 @@ function retire(
   )
 }
 
+/** `status.json` as `qm watch` writes it, through the scheduler's own writer. */
+function writeStatus(
+  h: Hub,
+  over: Partial<SchedulerStatusFile> = {},
+  job: Partial<SchedulerStatusJob> = {},
+): SchedulerStatusFile {
+  const status: SchedulerStatusFile = {
+    version: 1,
+    pid: 4242,
+    lastTickAt: NOW - 20_000,
+    tickMs: 60_000,
+    jobs: [
+      {
+        id: JOB.id,
+        title: JOB.title,
+        target: JOB.target,
+        schedule: describeSchedule(JOB.schedule),
+        everyMs: JOB.schedule.everyMs,
+        lastFireAt: NOW - 600_000,
+        lastResult: 'completed',
+        nextFireAt: NOW,
+        consecutiveFailures: 0,
+        ...job,
+      },
+    ],
+    ...over,
+  }
+  writeSchedulerStatus(h.stateDir, status)
+  return status
+}
+
 async function snapshot(p: ReturnType<typeof port>) {
   const read = await p.read()
   if (!read.ok) throw new Error(`read failed: ${read.failure.message}`)
   return read.value
 }
 
-describe('SchedulerPort', () => {
-  test('a job: its definition, the slot it last retired, and the next one the runner would act on', async () => {
+describe('SchedulerPort with status.json', () => {
+  test('heartbeat and its yardstick, the job as the runner saw it, the landing time from state.json', async () => {
     const h = hub()
-    const lastSlot = NOW - 600_000
-    retire(h, 'disk-watch', lastSlot, 'completed', lastSlot + 2_000)
+    retire(h, 'disk-watch', NOW - 600_000, 'completed', NOW - 598_000)
+    writeStatus(h)
     const value = await snapshot(port(h))
     expect(value.tick).toEqual({
-      state: 'unwired',
-      reason: 'qm watch 是独立进程 · 最后一次运行只在它的内存里',
+      state: 'seen',
+      at: NOW - 20_000,
+      everyMs: 60_000,
     })
     expect(value.estop).toEqual({ state: 'released' })
-    expect(value.definitions).toEqual({ state: 'wired', source: h.jobsPath })
-    const expected = planFire({
-      job: assertJob(JOB),
-      lastFiredAt: lastSlot,
-      now: NOW,
+    expect(value.definitions).toEqual({
+      state: 'wired',
+      source: join(h.stateDir, SCHEDULER_STATUS_FILE),
     })
     expect(value.jobs).toEqual([
       {
         id: 'disk-watch',
         title: '每十分钟看一次磁盘',
-        everyMs: 600_000,
-        notifyPolicy: 'agent-initiated',
         target: 'qianmo://beta-1/reviewer',
+        everyMs: 600_000,
         listed: true,
         last: {
-          at: lastSlot,
+          at: NOW - 600_000,
           outcome: 'completed',
-          recordedAt: lastSlot + 2_000,
+          recordedAt: NOW - 598_000,
         },
         consecutiveFailures: 0,
-        next: expected.fireAtMs,
+        next: NOW,
       },
     ])
-    // The anchored grid: the slot at NOW is due.
-    expect(expected.fireAtMs).toBe(NOW)
   })
 
-  test('a failing job carries the hold its backoff imposes', async () => {
+  test('a failing job: its next fire from the file, and the hold its backoff imposes', async () => {
     const h = hub()
     retire(h, 'disk-watch', NOW - 1_200_000, 'failed', NOW - 20_000)
     retire(h, 'disk-watch', NOW - 600_000, 'failed', NOW - 10_000)
+    const holdUntil = NOW - 10_000 + backoffMs(2)
+    writeStatus(
+      h,
+      {},
+      { lastResult: 'failed', consecutiveFailures: 2, nextFireAt: holdUntil },
+    )
     const job = (await snapshot(port(h))).jobs[0]
     expect(job?.consecutiveFailures).toBe(2)
-    expect(job?.holdUntil).toBe(NOW - 10_000 + backoffMs(2))
+    expect(job?.next).toBe(holdUntil)
+    expect(job?.holdUntil).toBe(holdUntil)
   })
 
-  test('the emergency stop: absent, then present with its mtime', async () => {
+  test('a job the state remembers and the running scheduler does not, with its target and result from the trail', async () => {
     const h = hub()
-    expect((await snapshot(port(h))).estop).toEqual({ state: 'released' })
-    mkdirSync(h.stateDir, { recursive: true })
-    writeFileSync(h.estopPath, '')
-    const engaged = (await snapshot(port(h))).estop
-    expect(engaged).toEqual({
-      state: 'engaged',
-      since: Math.floor(statSync(h.estopPath).mtimeMs),
-    })
-  })
-
-  test('a job the state remembers and the file no longer lists, with its target and result from the trail', async () => {
-    const h = hub()
+    writeStatus(h)
     retire(h, 'old-job', NOW - 7_200_000, 'completed', NOW - 7_100_000)
     const trail = new AuditTrail(h.trailPath)
     trail.append({
@@ -452,12 +477,21 @@ describe('SchedulerPort', () => {
       result: { at: NOW - 7_000_000, result: 'failed', code: 'E_TASK_FAILED' },
     })
   })
+})
 
-  test('without the jobs file: definitions unwired, no period, no next fire', async () => {
+describe('SchedulerPort without status.json', () => {
+  test('absent: heartbeat and definitions unwired, saying why, and the job from state.json alone', async () => {
     const h = hub()
     retire(h, 'disk-watch', NOW - 600_000, 'completed', NOW - 598_000)
-    const value = await snapshot(port(h, false))
-    expect(value.definitions.state).toBe('unwired')
+    const value = await snapshot(port(h))
+    expect(value.tick).toEqual({
+      state: 'unwired',
+      reason: 'qm watch 没有写出状态文件',
+    })
+    expect(value.definitions).toEqual({
+      state: 'unwired',
+      reason: 'qm watch 没有写出状态文件 · 作业定义只在它的内存里',
+    })
     expect(value.jobs).toEqual([
       {
         id: 'disk-watch',
@@ -472,35 +506,104 @@ describe('SchedulerPort', () => {
     ])
   })
 
-  test('a state file that does not parse is a failure, not an empty table', async () => {
+  test('unreadable: the same fallback, and the reason is the file', async () => {
     const h = hub()
     mkdirSync(h.stateDir, { recursive: true })
+    writeFileSync(join(h.stateDir, SCHEDULER_STATUS_FILE), '{"version":1,')
+    expect((await snapshot(port(h))).tick).toEqual({
+      state: 'unwired',
+      reason: '状态文件读不出来 · not JSON',
+    })
+    writeStatus(h, { version: 2 as 1 })
+    expect((await snapshot(port(h))).tick).toEqual({
+      state: 'unwired',
+      reason: '状态文件读不出来 · version 2',
+    })
+  })
+})
+
+describe('SchedulerPort, either way', () => {
+  test('the emergency stop: absent, then present with its mtime', async () => {
+    const h = hub()
+    expect((await snapshot(port(h))).estop).toEqual({ state: 'released' })
+    mkdirSync(h.stateDir, { recursive: true })
+    writeFileSync(h.estopPath, '')
+    const engaged = (await snapshot(port(h))).estop
+    expect(engaged).toEqual({
+      state: 'engaged',
+      since: Math.floor(statSync(h.estopPath).mtimeMs),
+    })
+  })
+
+  test('a state file that does not parse is a failure, not an empty table', async () => {
+    const h = hub()
+    writeStatus(h)
     writeFileSync(join(h.stateDir, 'state.json'), '{not json')
     const read = await port(h).read()
     expect(read.ok).toBe(false)
     if (!read.ok) expect(read.failure.code).toBe('unreachable')
   })
 
-  test('a jobs file qm watch would refuse is refused here too', async () => {
-    const h = hub([{ ...JOB, notifyPolicy: 'loud' }])
-    const read = await port(h).read()
-    expect(read.ok).toBe(false)
-    if (!read.ok) expect(read.failure.code).toBe('invalid')
-  })
-
   test('reading never writes into the scheduler directory', async () => {
     const h = hub()
     retire(h, 'disk-watch', NOW - 600_000, 'completed', NOW - 598_000)
+    writeStatus(h)
     chmodSync(h.stateDir, 0o700)
     const before = readdirSync(h.stateDir).sort()
-    const stateBefore = readFileSync(join(h.stateDir, 'state.json'), 'utf8')
+    const files = ['state.json', SCHEDULER_STATUS_FILE].map(name =>
+      readFileSync(join(h.stateDir, name), 'utf8'),
+    )
     for (let index = 0; index < 3; index++) await snapshot(port(h))
     expect(readdirSync(h.stateDir).sort()).toEqual(before)
-    expect(readFileSync(join(h.stateDir, 'state.json'), 'utf8')).toBe(
-      stateBefore,
-    )
+    expect(
+      ['state.json', SCHEDULER_STATUS_FILE].map(name =>
+        readFileSync(join(h.stateDir, name), 'utf8'),
+      ),
+    ).toEqual(files)
   })
 })
+
+// ---------------------------------------------------------------------------
+// The production wiring: a real `qm watch`, a real console
+// ---------------------------------------------------------------------------
+
+/** A console on this config root: the production watch ports, nothing else. */
+function consoleOnThisRoot() {
+  const empty = { ok: true as const, value: [] }
+  const refused = {
+    ok: false as const,
+    failure: { code: 'unsupported' as const, message: 'not in this test' },
+  }
+  const handle = createConsoleHandler(
+    {
+      registry: {
+        list: () => Promise.resolve(empty),
+        register: () => Promise.resolve(refused),
+        deregister: () => Promise.resolve(refused),
+        heartbeat: () => Promise.resolve(refused),
+      },
+      audit: {
+        read: () => Promise.resolve(refused),
+        chain: () => Promise.resolve({ ok: true as const, value: null }),
+      },
+      limits: consoleLimits(),
+      ...consoleWatchDeps(),
+    },
+    { view: 'view-token-000000000001', admin: 'admin-token-00000000001' },
+  )
+  return async (path: string): Promise<string> => {
+    const response = await handle(
+      new Request(`http://console.test${path}`, {
+        headers: {
+          accept: 'text/html',
+          authorization: 'Bearer view-token-000000000001',
+        },
+      }),
+    )
+    expect(response.status).toBe(200)
+    return await response.text()
+  }
+}
 
 describe('the production wiring', () => {
   test('reads exactly where qm watch writes, all derived from the config root', async () => {
@@ -538,6 +641,98 @@ describe('the production wiring', () => {
     } finally {
       if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = previous
+    }
+  })
+
+  test('qm watch writes status.json every pass; the jobs page reads it, and says 未接入 again once it is gone', async () => {
+    const previousRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousPsk = process.env[PSK_ENV_VAR]
+    const dir = tempDir()
+    const root = join(dir, 'config')
+    process.env.CLAUDE_CONFIG_DIR = root
+    process.env[PSK_ENV_VAR] = 'qianmo-watch-status-test-psk-000000000000'
+    try {
+      // A job whose first slot is five minutes out: every pass plans it and
+      // none dials anything, so the two passes below touch no network.
+      const everyMs = 600_000
+      const start = Date.now() + 300_000
+      const jobsPath = join(dir, 'jobs.json')
+      writeFileSync(
+        jobsPath,
+        JSON.stringify([
+          {
+            ...JOB,
+            schedule: { everyMs, anchorMs: start },
+            url: 'ws://127.0.0.1:9',
+          },
+        ]),
+      )
+      // Parsed as the qianmo identity would parse it, so the state directory
+      // is qm watch's own default on this root — the one the console reads.
+      const config = parseWatchArgs(
+        ['--jobs', jobsPath, '--from', 'qianmo://hub/console', '--once'],
+        'qianmo',
+      )
+      if (config.mode !== 'run') throw new Error('unexpected mode')
+      const statusPath = join(
+        root,
+        'qianmo',
+        'scheduler',
+        SCHEDULER_STATUS_FILE,
+      )
+      const read = (): SchedulerStatusFile => {
+        const status = readSchedulerStatus(join(root, 'qianmo', 'scheduler'))
+        if (status.state !== 'ok') throw new Error(`status ${status.state}`)
+        return status.status
+      }
+
+      // Two real passes of the real scheduler, each its own `qm watch --once`.
+      await runWatchJobs(config)
+      const first = read()
+      expect(statSync(statusPath).mode & 0o777).toBe(0o600)
+      expect(first.pid).toBe(process.pid)
+      expect(first.tickMs).toBe(60_000)
+      expect(first.jobs).toEqual([
+        {
+          id: 'disk-watch',
+          title: JOB.title,
+          target: JOB.target,
+          schedule: `every 10m anchored at ${new Date(start).toISOString()}`,
+          everyMs,
+          nextFireAt: start,
+          consecutiveFailures: 0,
+        },
+      ])
+      // Long enough for the clock to move between the two passes.
+      const firstTick = first.lastTickAt
+      while (Date.now() <= firstTick) {
+        await new Promise<void>(resolveTurn => setImmediate(resolveTurn))
+      }
+      await runWatchJobs(config)
+      const second = read()
+      expect(second.lastTickAt).toBeGreaterThan(first.lastTickAt)
+      expect(second.jobs[0]?.nextFireAt).toBe(start)
+
+      const page = consoleOnThisRoot()
+      const live = await page('/jobs')
+      expect(live).toContain('刚运行过')
+      expect(live).not.toContain('调度器心跳未接入')
+      const row = live.slice(live.indexOf('<tr data-key="disk-watch">'))
+      expect(row).toContain('<td>10 分</td>')
+      expect(row).toContain(`datetime="${new Date(start).toISOString()}"`)
+      expect(row).toContain('尚未触发')
+
+      rmSync(statusPath)
+      const gone = await page('/jobs')
+      expect(gone).toContain(
+        '调度器心跳未接入 · qm watch 没有写出状态文件 · 无法判断调度器是否在运行',
+      )
+      expect(gone).not.toContain('刚运行过')
+    } finally {
+      if (previousRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousRoot
+      if (previousPsk === undefined) delete process.env[PSK_ENV_VAR]
+      else process.env[PSK_ENV_VAR] = previousPsk
     }
   })
 })
