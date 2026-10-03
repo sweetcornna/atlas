@@ -17,6 +17,7 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
+import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -387,7 +388,7 @@ export async function* queryModelOpenAI(
     //     3. CLAUDE_CODE_MAX_OUTPUT_TOKENS env var (generic override)
     //     4. upperLimit default (64000)
     const { upperLimit } = getModelMaxOutputTokens(openaiModel)
-    const maxTokens = resolveOpenAIMaxTokens(
+    let maxTokens = resolveOpenAIMaxTokens(
       upperLimit,
       options.maxOutputTokensOverride,
     )
@@ -444,6 +445,17 @@ export async function* queryModelOpenAI(
     const adaptedStream = retryThirdPartyEventStream({
       signal,
       onRetry: () => clearOpenAIClientCache(),
+      // qianmo P18.5 (hermes #5): an output-cap rejection lowers the cap once
+      // (src/services/qianmo/modelCompat/outputCap.ts). The ChatGPT route sends
+      // no cap of its own, so there is nothing to lower there.
+      recoverOutputCap: useChatGPTResponses
+        ? undefined
+        : error => {
+            const next = outputCapRetryTokens(error, maxTokens)
+            if (next === undefined) return false
+            maxTokens = next
+            return true
+          },
       create: async () =>
         wireProtocol === 'responses'
           ? adaptResponsesStreamToAnthropic(

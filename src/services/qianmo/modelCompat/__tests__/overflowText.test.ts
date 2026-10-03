@@ -133,7 +133,9 @@ describe('bare phrases deliberately not taken (see overflowText.ts header)', () 
     ['file size limit', 'Uploaded file exceeds the limit of 20 MB'],
     ['max_tokens validation', 'max_tokens must be a positive integer'],
   ])('%s', (_label, raw) => {
-    expect(overflowTextVerdict(raw)).toBeUndefined()
+    // Never `true`: the table does not claim them (an output-cap guard may
+    // answer `false` for the max_tokens one, which is also not overflow).
+    expect(overflowTextVerdict(raw)).not.toBe(true)
     expect(isContextOverflowErrorText(raw)).toBe(false)
   })
 })

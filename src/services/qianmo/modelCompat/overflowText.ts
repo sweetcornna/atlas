@@ -21,7 +21,7 @@
  * `errors.ts`'s `isContextOverflowErrorText` consults {@link overflowTextVerdict}
  * at its entry. The base regex (`CONTEXT_OVERFLOW_ERROR_PATTERN`) still
  * decides whatever this returns `undefined` for. Order: rate limit → request
- * validation → (P18.5 #5) output cap → overflow table.
+ * validation → output cap (`outputCap.ts`, hermes #5) → overflow table.
  *
  * Differences from hermes, on purpose:
  *
@@ -47,6 +47,7 @@
  * The phrasings are hermes's records plus vendor wording quoted in its
  * comments; none was checked against a real endpoint (design §11 item 5).
  */
+import { isOutputCapError } from './outputCap.js'
 
 /** hermes `error_classifier.py:183-207`. */
 const RATE_LIMIT_TEXT = [
@@ -144,6 +145,8 @@ export function overflowTextVerdict(raw: string): boolean | undefined {
   const lower = raw.toLowerCase()
   if (isRateLimitErrorText(lower)) return false
   if (includesAny(lower, REQUEST_VALIDATION_TEXT)) return false
+  // The input fits; only the requested output does not (outputCap.ts).
+  if (isOutputCapError(lower)) return false
   if (includesAny(lower, OVERFLOW_TEXT)) return true
   return undefined
 }
