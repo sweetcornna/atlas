@@ -31,7 +31,7 @@ import { errorMessageTexts } from '../modelCompat/errorMessages.js'
 import { isUnsupportedParameterText } from '../modelCompat/unsupportedParam.js'
 import { previousResponseId } from './responseRecord.js'
 
-export type PromptCacheRetention = 'in_memory' | '24h'
+type PromptCacheRetention = 'in_memory' | '24h'
 
 /** Hosts whose retention is raised without being asked (hermes's table). */
 const DEFAULT_RETENTION_BY_HOST: Readonly<
@@ -69,7 +69,7 @@ export function resolvePromptCacheRetention(
   return host === undefined ? undefined : DEFAULT_RETENTION_BY_HOST[host]
 }
 
-export function isPromptCacheDiagnosticsEnabled(): boolean {
+function isPromptCacheDiagnosticsEnabled(): boolean {
   return isEnvTruthy(process.env.OPENAI_PROMPT_CACHE_DIAGNOSTICS)
 }
 

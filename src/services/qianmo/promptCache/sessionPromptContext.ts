@@ -86,7 +86,7 @@ type LiveSnapshot = {
 }
 
 /** The on-disk form, written after each turn and read on resume. */
-export type PromptContextSidecar = {
+type PromptContextSidecar = {
   readonly format: 1
   readonly sessionId: string
   readonly cwd: string
@@ -99,7 +99,7 @@ export type PromptContextSidecar = {
 export const PROMPT_CONTEXT_SIDECAR_NAME = 'prompt-context.json'
 
 /** Sessions whose live snapshot is kept in memory; older ones fall back to disk. */
-export const MAX_LIVE_SNAPSHOTS = 64
+const MAX_LIVE_SNAPSHOTS = 64
 
 const live = new Map<string, LiveSnapshot>()
 /** Sessions this process has activated — the only ids worth snapshotting. */
@@ -107,7 +107,7 @@ const activated = new Set<string>()
 /** Last sidecar body written per session, so an unchanged turn writes nothing. */
 const lastWritten = new Map<string, string>()
 
-export function isPromptContextSnapshotEnabled(): boolean {
+function isPromptContextSnapshotEnabled(): boolean {
   return !isEnvDefinedFalsy(process.env.QIANMO_PROMPT_CONTEXT_SNAPSHOT)
 }
 
