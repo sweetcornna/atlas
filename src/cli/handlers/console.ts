@@ -57,7 +57,7 @@ import {
   createWakePort,
   consoleWatchDeps,
 } from './consolePorts.js'
-import { ConsoleRegistrations } from './consoleRegistrations.js'
+import { ConsoleRegistrations, gateWakePort } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
 import { consoleAlertAcksPath } from './consoleAlertAcks.js'
 import { consoleAuditSources } from './consoleAuditSources.js'
@@ -449,7 +449,6 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           '--registry-token-file',
         )
 
-  const wake = wireConsoleWake(config)
   // Registrations made on the page are renewed by this process until they are
   // deregistered on the page; the ledger that remembers them across restarts
   // lives in this console's config root (`consoleRegistrations.ts`, console.md
@@ -463,14 +462,26 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         ? {}
         : { writeToken: registryWriteToken }),
     }),
+    ...(config.managed === undefined ? {} : { managed: config.managed }),
     log: line => {
       process.stderr.write(`${line}\n`)
     },
   })
+  // The exit check (P15.2): chat and wake ask the ledger before they dial, so
+  // a paused or retired agent — or every agent, while the ledger cannot be
+  // read — is never reached from here.
+  const exitGate = (address: string) => registrations.exitRefusal(address)
+  const wake = wireConsoleWake(config, {
+    pskFromEnv,
+    createWakePort: options => gateWakePort(createWakePort(options), exitGate),
+  })
   // One registry port, shared: the chat face's target list and the roster are
   // the same question, and two ports would be two answers that can disagree.
   const registry = registrations.port
-  const chat = wireConsoleChat(config, registry)
+  const chat = wireConsoleChat(config, registry, {
+    pskFromEnv,
+    createChatPort: options => createConsoleChatPort({ ...options, exitGate }),
+  })
   // The certificate column, or nothing at all (§10.1). Read at startup rather
   // than per request: the CA root is the one file this console needs and a
   // missing one is a configuration error the operator should hear about now,
@@ -513,6 +524,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
 
   const deps: ConsoleDeps = {
     registry,
+    lifecycle: registrations.lifecycle,
     // `audit` remains the legacy facade for direct package callers. The page
     // and HTTP routes consume `audits`, so every configured source is isolated.
     audit: firstAudit.audit,
@@ -595,10 +607,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       `registry writes carry the token from ${config.registryTokenFile}`,
     )
   }
-  banner += field(
-    'ledger',
-    `${registrations.path} (${String(registrations.addresses.length)} renewed by this console)`,
-  )
+  banner += field('ledger', registrations.summary)
   banner += field(
     'audit-trails',
     config.auditTargets

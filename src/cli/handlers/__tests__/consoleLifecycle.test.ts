@@ -26,7 +26,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { AuditInput, AuditRecord } from '@qianmo/audit'
 import type {
   ConsoleAgent,
@@ -43,6 +43,7 @@ import {
   InMemoryRegistry,
   ManualClock,
   createRegistryHandler,
+  startRegistryServer,
 } from '@qianmo/registry'
 import { assertJob, type FireDispatch } from '@qianmo/scheduler'
 import { ReceiptStatus } from '@qianmo/transport'
@@ -51,6 +52,7 @@ import {
   type ChatDialer,
   type ChatLink,
 } from '../consoleChat.js'
+import { parseConsoleArgs, transportPskEnvVarForNode } from '../consoleArgs.js'
 import { createRegistryPort } from '../consolePorts.js'
 import { readExitRefusal } from '../consoleRegistrationLedger.js'
 import {
@@ -905,4 +907,264 @@ describe('a paused agent is reached by none of the three exits (DoD ②)', () =>
     expect(exits.trail[0]?.code).toBe('registrations_unreadable')
     await exits.chat.close()
   })
+})
+
+describe('--managed', () => {
+  test('one address per flag, its endpoint after the first =, and absent means no list at all', () => {
+    const config = parseConsoleArgs(
+      [
+        '--managed',
+        `${PLANNER}=${PLANNER_EP}`,
+        `--managed=${REVIEWER}=${REVIEWER_EP}`,
+      ],
+      'qianmo',
+    )
+    expect(config.managed).toEqual([...MANAGED])
+    // A console started without it keeps the shape it had before.
+    expect('managed' in parseConsoleArgs([], 'qianmo')).toBe(false)
+  })
+
+  test('a malformed line, a bad address or a repeated address stops the console from starting', () => {
+    expect(() => parseConsoleArgs(['--managed', PLANNER], 'qianmo')).toThrow(
+      '--managed must be <address>=<endpoint>',
+    )
+    expect(() =>
+      parseConsoleArgs(['--managed', `node-a/planner=${PLANNER_EP}`], 'qianmo'),
+    ).toThrow()
+    expect(() =>
+      parseConsoleArgs(['--managed', `${PLANNER}=`], 'qianmo'),
+    ).toThrow('--managed must not be empty')
+    expect(() =>
+      parseConsoleArgs(
+        [
+          '--managed',
+          `${PLANNER}=${PLANNER_EP}`,
+          '--managed',
+          `${PLANNER}=${REVIEWER_EP}`,
+        ],
+        'qianmo',
+      ),
+    ).toThrow(`--managed repeats address ${PLANNER}`)
+  })
+})
+
+// --- the real processes -------------------------------------------------------
+
+const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
+
+/** A port nothing listens on: a dial that gets this far fails, it does not hang on a stranger. */
+const DEAD_EP = 'ws://127.0.0.1:1'
+
+/**
+ * A child `bun` running one exported function under a config root of its own:
+ * the config root is memoised per process (`paths.ts`), which is why this is a
+ * child and not a call.
+ */
+function child(
+  configRoot: string,
+  script: string,
+  env: Record<string, string>,
+) {
+  return Bun.spawn(['bun', '-e', script], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      OCC_IDENTITY: 'qianmo',
+      OCC_CONFIG_DIR: configRoot,
+      ...env,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+}
+
+describe('qm watch and qm console, end to end', () => {
+  test('qm watch --once reads the console ledger and skips a paused target without dialling it', async () => {
+    const root = scratch()
+    writeLedger(join(root, 'qianmo', 'console', 'registrations.json'), {
+      version: 2,
+      registrations: [
+        { address: PLANNER, endpoint: DEAD_EP, state: 'paused', by: OPS },
+      ],
+    })
+    const jobsPath = join(root, 'jobs.json')
+    writeFileSync(
+      jobsPath,
+      JSON.stringify([
+        {
+          id: 'watch-planner',
+          title: 'status',
+          target: PLANNER,
+          url: DEAD_EP,
+          prompt: 'status?',
+          schedule: { everyMs: 600_000 },
+          taskTtlMs: 60_000,
+          notifyPolicy: 'agent-initiated',
+        },
+      ]),
+    )
+    const run = child(
+      root,
+      "const { runWatchJobs } = await import('./src/cli/handlers/watch.ts');" +
+        ' await runWatchJobs(JSON.parse(process.env.QM_TEST_CONFIG))',
+      {
+        QIANMO_TRANSPORT_PSK: PSK,
+        QM_TEST_CONFIG: JSON.stringify({
+          mode: 'run',
+          jobsPath,
+          from: FROM,
+          stateDir: join(root, 'qianmo', 'scheduler'),
+          once: true,
+          sign: false,
+        }),
+      },
+    )
+    const [code, stdout, stderr] = await Promise.all([
+      run.exited,
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+    ])
+    expect({ code, stderr }).toEqual({ code: 0, stderr: expect.any(String) })
+    expect(stdout).toContain(
+      join(root, 'qianmo', 'console', 'registrations.json'),
+    )
+    expect(stderr).toContain(`job watch-planner skipped: ${PLANNER} 已暂停`)
+    const trail = readFileSync(
+      join(root, 'qianmo', 'audit', 'trail.ndjson'),
+      'utf8',
+    )
+      .split('\n')
+      .filter(line => line !== '')
+      .map(line => JSON.parse(line) as AuditRecord)
+      .filter(record => record.kind === 'watch_fire')
+    expect(trail.map(record => [record.outcome, record.code])).toEqual([
+      ['refused', 'agent_paused'],
+    ])
+  }, 60_000)
+
+  test('qm console with --managed: publish is held to the list, and a paused agent is refused by wake and chat before any dial', async () => {
+    const root = scratch()
+    const registry = startRegistryServer(0, {
+      registry: new InMemoryRegistry(),
+    })
+    const target = 'qianmo://node-a/planner'
+    const console_ = child(
+      root,
+      "const { runConsole } = await import('./src/cli/handlers/console.ts');" +
+        ' await runConsole(JSON.parse(process.env.QM_TEST_ARGS))',
+      {
+        [transportPskEnvVarForNode('node-a')]: PSK,
+        QM_TEST_ARGS: JSON.stringify([
+          '--port',
+          '0',
+          '--registry',
+          registry.url,
+          '--managed',
+          `${target}=${DEAD_EP}`,
+          '--wake-url',
+          `node-a=${DEAD_EP}`,
+          '--chat-url',
+          `node-a=${DEAD_EP}`,
+        ]),
+      },
+    )
+    try {
+      const reader = console_.stdout.getReader()
+      const decoder = new TextDecoder()
+      let banner = ''
+      while (!banner.includes('sourceCommit')) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        banner += decoder.decode(chunk.value)
+      }
+      const field = (name: string): string =>
+        new RegExp(`^${name}\\s+(\\S+)`, 'm').exec(banner)?.[1] ?? ''
+      const origin = field('console')
+      const admin = field('admin-token')
+      expect(banner).toContain('managed list 1 addresses')
+      const call = async (method: string, path: string, body?: unknown) => {
+        const response = await fetch(`${origin}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${admin}`,
+            ...(body === undefined
+              ? {}
+              : { 'content-type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return {
+          status: response.status,
+          body: (await response.json()) as Record<string, unknown>,
+        }
+      }
+      const enc = encodeURIComponent(target)
+
+      const outside = await call('POST', '/v0/agents', {
+        address: STRANGER,
+        endpoint: STRANGER_EP,
+      })
+      expect(outside.status).toBe(403)
+      expect(registry.registry.list()).toEqual([])
+
+      expect(
+        (await call('POST', '/v0/agents', { address: target })).status,
+      ).toBe(200)
+      expect(registry.registry.resolve(target)?.endpoint).toBe(DEAD_EP)
+
+      expect((await call('POST', `/v0/agents/${enc}/pause`)).status).toBe(200)
+      expect(registry.registry.list()).toEqual([])
+      expect((await call('GET', '/v0/registrations')).body).toMatchObject({
+        problem: null,
+        managed: [target],
+        registrations: [
+          {
+            address: target,
+            state: 'paused',
+            by: 'legacy:admin',
+            managed: true,
+          },
+        ],
+      })
+
+      const woke = await call('POST', '/v0/wake', {
+        node: 'node-a',
+        from: FROM,
+        to: target,
+        prompt: 'status?',
+      })
+      expect(woke.status).toBe(400)
+      expect(woke.body).toMatchObject({ error: { code: 'rejected' } })
+      expect(JSON.stringify(woke.body)).toContain('已暂停')
+
+      const opened = await call('POST', '/v0/chat/sessions', { target })
+      expect(opened.status).toBe(200)
+      const said = await call(
+        'POST',
+        `/v0/chat/sessions/${String(opened.body['id'])}/messages`,
+        { text: 'status?' },
+      )
+      expect(said.status).toBe(400)
+      expect(JSON.stringify(said.body)).toContain('已暂停')
+
+      expect((await call('POST', `/v0/agents/${enc}/resume`)).status).toBe(200)
+      expect(registry.registry.resolve(target)?.endpoint).toBe(DEAD_EP)
+      expect((await call('POST', `/v0/agents/${enc}/retire`)).status).toBe(200)
+      expect(
+        (await call('POST', '/v0/agents', { address: target })).status,
+      ).toBe(409)
+    } finally {
+      console_.kill()
+      await console_.exited
+      await registry.stop()
+    }
+    expect(
+      onDisk(join(root, 'qianmo', 'console', 'registrations.json')),
+    ).toMatchObject({
+      version: 2,
+      registrations: [
+        { address: target, state: 'retired', by: 'legacy:admin' },
+      ],
+    })
+  }, 60_000)
 })

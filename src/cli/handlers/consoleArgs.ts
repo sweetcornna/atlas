@@ -15,7 +15,11 @@
  */
 
 import { isAbsolute, resolve } from 'node:path'
-import { isValidSegment, MAX_SEGMENT_LENGTH } from '@qianmo/protocol'
+import {
+  assertAddress,
+  isValidSegment,
+  MAX_SEGMENT_LENGTH,
+} from '@qianmo/protocol'
 import { PSK_ENV_VAR } from '@qianmo/transport'
 import { occConfigPath } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
@@ -82,6 +86,15 @@ export interface ConsoleAuditTarget {
 export interface ConsoleAuditMirror {
   readonly node: string
   readonly maxLagMinutes: number
+}
+
+/**
+ * One line of the hub's managed list (`--managed`): an address `peers.conf`
+ * holds, and the endpoint the registry is told for it (`tenancy-m1.md` §3.6).
+ */
+interface ConsoleManagedAddress {
+  readonly address: string
+  readonly endpoint: string
 }
 
 /** One node and the machine it runs on, as `--node-server` pinned it. */
@@ -361,6 +374,11 @@ export interface ConsoleCliConfig {
   /** 服务器备注落盘的绝对路径。 */
   readonly serverNotesPath: string
   /**
+   * 托管清单（P15.2，`--managed`）：中枢 `peers.conf` 的地址行。给了，页面上的
+   * 发布与恢复只认这里的地址、端点从这里取；不给就不查，横幅写明。
+   */
+  readonly managed?: readonly ConsoleManagedAddress[]
+  /**
    * 个人账号（`tenancy-m1.md` §3）。**给了 `--accounts` 才开**；不给就是今天的
    * 控制台，逐字节不变。开了以后两枚旧 token 照旧可用（迁移期 M-1），另多出
    * 邀请开户这条路。
@@ -445,6 +463,7 @@ export function parseConsoleArgs(
   let chatStorePath = consoleChatStorePath()
   const nodeServers: ConsoleNodeServer[] = []
   let serverNotesPath = consoleServerNotesPath()
+  const managed: ConsoleManagedAddress[] = []
   let accounts = false
   let accountsStorePath = consoleAccountsPath()
   let accountsStoreGiven = false
@@ -718,6 +737,19 @@ export function parseConsoleArgs(
       }
       nodeServers.push({ node: named.node, server: named.value })
       index = parsed.next
+    } else if (arg === '--managed' || arg?.startsWith('--managed=')) {
+      const parsed = residentOptionValue(args, index, '--managed')
+      const equals = parsed.value.indexOf('=')
+      if (equals <= 0) throw new Error('--managed must be <address>=<endpoint>')
+      // 地址的规矩只住在协议包里；端点的规矩住在注册中心，发布时它会如实拒绝。
+      const address = parsed.value.slice(0, equals)
+      assertAddress(address, '--managed')
+      const endpoint = nonEmpty(parsed.value.slice(equals + 1), '--managed')
+      if (managed.some(entry => entry.address === address)) {
+        throw new Error(`--managed repeats address ${address}`)
+      }
+      managed.push({ address, endpoint })
+      index = parsed.next
     } else if (arg === '--server-notes' || arg?.startsWith('--server-notes=')) {
       const parsed = residentOptionValue(args, index, '--server-notes')
       if (!isAbsolute(parsed.value)) {
@@ -859,6 +891,7 @@ export function parseConsoleArgs(
     chatStorePath,
     nodeServers,
     serverNotesPath,
+    ...(managed.length === 0 ? {} : { managed }),
     // Every account key only when the feature is on: a config without accounts
     // has exactly the shape it had before accounts existed.
     ...(accounts
@@ -1014,6 +1047,14 @@ Options (each accepts both --name value and --name=value):
                            This list is also the allowlist a note may be
                            written against; a server id that is not on it is
                            refused rather than created.
+  --managed <address>=<endpoint>
+                           One line of the hub's managed list: an address
+                           peers.conf holds, and the endpoint the registry is
+                           told for it. Repeatable, an address at most once.
+                           With any of these, publishing and resuming on the
+                           page accept only listed addresses and take the
+                           endpoint from here. Without them nothing is checked
+                           and the banner says so.
   --server-notes <abs path>
                            Where per-server notes land, absolute path.
                            Default <config root>/qianmo/console/server-notes.ndjson.
@@ -1112,7 +1153,9 @@ Environment:
                            server-note and registration-ledger paths are
                            derived from. Agents registered on the page are
                            kept in that ledger and renewed by this console
-                           until they are deregistered on the page.
+                           until they are deregistered on the page; paused and
+                           retired ones stay in it, and chat, wake and
+                           ${invokedBinName()} watch send them nothing.
 `
 
 /** 控制台跑在 `Bun.serve` 上，和常驻模式同一条运行时断言。 */

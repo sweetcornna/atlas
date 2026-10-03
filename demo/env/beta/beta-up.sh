@@ -464,6 +464,14 @@ run_host() {
   if [ -f "$BETA_REGISTRY_WRITE_TOKEN_FILE" ]; then
     console_args+=(--registry-token-file "$BETA_REGISTRY_WRITE_TOKEN_FILE")
   fi
+  # 托管清单（P15.2，tenancy-m1.md §3.6）：peers.conf 的每一条地址行，与上面注册
+  # 中心的 --register 同一份。控制台页面上的发布与恢复只认这里的地址、端点从这里取；
+  # 暂停与退役在控制台的登记簿里，对话、唤醒、qm watch 拨号前都查它。
+  local managed_i=0
+  while [ "$managed_i" -lt "$BETA_PEER_COUNT" ]; do
+    console_args+=(--managed "${BETA_PEER_ADDR[$managed_i]}=${BETA_PEER_EP[$managed_i]}")
+    managed_i=$((managed_i + 1))
+  done
   # peers.conf is the one node roster. Every distinct node gets exactly one
   # audit source and one wake URL; console.conf never adds a target of its own.
   # server 在这里声明而不是循环里写 `local server=$(...)`：那种写法的退出码是 local 的，
