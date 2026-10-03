@@ -294,6 +294,7 @@ const ROOT_COMMANDS = [
   'migrate',
   'plugin|plugins',
   'project',
+  'provider',
   'resident',
   'resident-wake',
   'setup-token',

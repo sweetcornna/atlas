@@ -23,7 +23,7 @@
 | `effort.ts` | 档位只往低夹：`clampEffortDown`、`clampSharedEffortDown`（`effortLock` 用）、`compiledEffortLevel` |
 | `compatKeys.ts` | §3.6 闭合兼容键集、取值范围，以及进程级禁止键（`PATH`、`LD_PRELOAD`、`CLAUDE_CODE_USE_*` 等） |
 | `protocol.ts` | 第六类动作 schema v1：`parseProviderRequest`、节点状态和响应类型 |
-| `errors.ts` | 错误码：§2.5 的码表，再加 `unsupported-multi-key` |
+| `errors.ts` | 错误码：§2.5 的码表，再加 `unsupported-multi-key` 与 `env-override`（D-9） |
 | `fingerprint.ts` | 单把密钥的对账指纹 |
 | `secretRef.ts` | `profileId + keyId` 二元组和它的槽键 |
 
@@ -38,7 +38,7 @@
 
 ## 3. 协议 v1
 
-操作闭合为 `status / probe / models / apply`；请求不超过 64 KiB；顶层未知字段返回 `bad-request`；`v` 不等于 1 返回 `version-skew`。`apply` 带 `expect.ownedHash`（第一次下发为 `null`），以及 `recycle.sessions`、`dryRun`、`force`。响应里不回显任何密钥值，只给指纹和键名。
+操作闭合为 `status / probe / models / apply / autocompact`（第五个是 D-9 的自动压缩阈值，读或写节点自己的 `autoCompactWindow`，`value` 只收 `auto` 或 100000–1000000 的整数）；请求不超过 64 KiB；顶层未知字段返回 `bad-request`；`v` 不等于 1 返回 `version-skew`。`apply` 带 `expect.ownedHash`（第一次下发为 `null`），以及 `recycle.sessions`、`dryRun`、`force`。响应里不回显任何密钥值，只给指纹和键名。
 
 ## 4. 预设
 

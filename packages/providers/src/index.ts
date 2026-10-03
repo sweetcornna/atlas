@@ -54,8 +54,12 @@ export {
   type TemplateVar,
 } from './presets.js'
 export {
+  AUTO_COMPACT_LIMITS,
   type AppliedRecord,
   type ApplyRequest,
+  type AutoCompactReport,
+  type AutoCompactSource,
+  type AutocompactRequest,
   type EffectiveState,
   errorResponse,
   type LastCommitResult,
@@ -79,6 +83,7 @@ export {
   SESSION_POLICIES,
   type SessionPolicy,
   type StatusRequest,
+  type WireEffortLevel,
 } from './protocol.js'
 export {
   modelRetirementStatus,
