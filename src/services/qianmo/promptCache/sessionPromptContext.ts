@@ -55,13 +55,18 @@ import {
   getOriginalCwd,
   getSessionId,
   getSystemPromptSectionCache,
+  isSessionPersistenceDisabled,
   setCachedClaudeMdContent,
   setLastEmittedDate,
   setSystemPromptSectionCacheEntry,
 } from '../../../bootstrap/state.js'
 import { getSystemContext, getUserContext } from '../../../context.js'
-import { isEnvDefinedFalsy } from '../../../utils/config/envUtils.js'
-import { getTranscriptPath } from '../../../utils/sessionStorage.js'
+import {
+  isEnvDefinedFalsy,
+  isEnvTruthy,
+} from '../../../utils/config/envUtils.js'
+import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js'
+import { getNodeEnv, getTranscriptPath } from '../../../utils/sessionStorage.js'
 import { logForDebugging } from '../../../utils/telemetry/debug.js'
 import {
   getPinnedPromptCacheKeys,
@@ -72,6 +77,8 @@ type ContextValues = { [k: string]: string }
 
 /** What a live process keeps for a session it switched away from. */
 type LiveSnapshot = {
+  /** The workspace it was computed for; a session reopened elsewhere starts fresh. */
+  readonly cwd: string
   readonly userContext: Promise<ContextValues> | undefined
   readonly systemContext: Promise<ContextValues> | undefined
   readonly sections: ReadonlyArray<readonly [string, string | null]>
@@ -113,6 +120,21 @@ function memoValue(memo: {
     : undefined
 }
 
+/**
+ * The transcript writer's own "keep nothing on disk" conditions
+ * (`transcriptWriter.ts` `shouldSkipPersistence`): a sidecar is part of the
+ * session's on-disk record and follows the same rule.
+ */
+function persistenceDisabled(): boolean {
+  return (
+    (getNodeEnv() === 'test' &&
+      !isEnvTruthy(process.env.TEST_ENABLE_SESSION_PERSISTENCE)) ||
+    getSettings_DEPRECATED()?.cleanupPeriodDays === 0 ||
+    isSessionPersistenceDisabled() ||
+    isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY)
+  )
+}
+
 function sidecarPath(sessionId: string): string {
   return join(
     dirname(getTranscriptPath()),
@@ -142,6 +164,7 @@ export function saveOnSwitch(outgoingSessionId: string): void {
   if (!isPromptContextSnapshotEnabled()) return
   if (!activated.has(outgoingSessionId)) return
   const snapshot: LiveSnapshot = {
+    cwd: getOriginalCwd(),
     userContext: memoValue(getUserContext),
     systemContext: memoValue(getSystemContext),
     sections: [...getSystemPromptSectionCache().entries()],
@@ -184,7 +207,7 @@ function applyUserContext(values: Promise<ContextValues>): void {
 export function restoreOnSwitch(sessionId: string, cwd: string): void {
   if (!isPromptContextSnapshotEnabled()) return
   const snapshot = live.get(sessionId)
-  if (snapshot !== undefined) {
+  if (snapshot !== undefined && sameCwd(snapshot.cwd, cwd)) {
     if (snapshot.userContext !== undefined) {
       applyUserContext(snapshot.userContext)
     }
@@ -286,7 +309,7 @@ function readSidecar(
  * later switch cannot redirect the write.
  */
 export async function persistActivePromptContext(): Promise<void> {
-  if (!isPromptContextSnapshotEnabled()) return
+  if (!isPromptContextSnapshotEnabled() || persistenceDisabled()) return
   const sessionId = getSessionId()
   if (!activated.has(sessionId)) return
   const userContext = memoValue(getUserContext)
