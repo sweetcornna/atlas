@@ -11,6 +11,9 @@
  *   restart, a provider hot switch recycling it — resumed the session one
  *   answer short. P18.3 (#164) masks it with a 1 s grace before a provider
  *   switch recycles the child.
+ * - **A workspace reached through a symlink resumed empty, every time.** The
+ *   transcript was written under the cwd as given and looked up under its
+ *   realpath. `/tmp` → `/private/tmp` on macOS is one such path.
  *
  * ## What is real
  *
@@ -36,14 +39,17 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import {
   ClientSideConnection,
   PROTOCOL_VERSION,
 } from '@agentclientprotocol/sdk'
+import { sanitizePath } from '../../src/utils/session/sessionStoragePortable.js'
 import { spawnResidentAcpChild } from './fixtures/resident-acp-harness.js'
 
 /** A cold boot of the entrypoint from source on a loaded machine. */
@@ -273,6 +279,43 @@ class AcpChild {
   }
 }
 
+function findTranscripts(dir: string, sessionId: string): string[] {
+  const found: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) found.push(...findTranscripts(path, sessionId))
+    else if (entry.name === `${sessionId}.jsonl`) found.push(path)
+  }
+  return found
+}
+
+/** The one transcript file of `sessionId` under the child's config root. */
+function transcriptOf(configDir: string, sessionId: string): string {
+  const files = findTranscripts(configDir, sessionId)
+  expect(files).toHaveLength(1)
+  return files[0] as string
+}
+
+/**
+ * Wait until `text` is on disk in the session's transcript — for a test that
+ * must not depend on what the child does at exit.
+ */
+async function durable(
+  configDir: string,
+  sessionId: string,
+  text: string,
+): Promise<void> {
+  const deadline = Date.now() + TURN_MS
+  while (Date.now() < deadline) {
+    const onDisk = findTranscripts(configDir, sessionId).some(file =>
+      readFileSync(file, 'utf8').includes(text),
+    )
+    if (onDisk) return
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  throw new Error(`"${text}" never reached the transcript of ${sessionId}`)
+}
+
 let root: string
 let configDir: string
 let model: ModelDouble
@@ -345,6 +388,57 @@ describe('ACP child: transcript at exit', () => {
       expectCarried(resumedTurn, answer)
       expect(resumedTurn).toContain('EXIT-FLUSH first question')
       await second.terminate()
+    },
+    TEST_MS,
+  )
+})
+
+describe('ACP child: workspace reached through a symlink', () => {
+  test(
+    'a session opened at a symlinked cwd resumes with its history',
+    async () => {
+      const real = join(root, 'ws-real')
+      const link = join(root, 'ws-link')
+      mkdirSync(real)
+      symlinkSync(real, link, 'dir')
+      const before = model.turns.length
+
+      const first = await startChild()
+      const sessionId = await first.newSession(link)
+      await first.prompt(sessionId, 'SYMLINK first question')
+      const firstAnswer = model.answer(before + 1)
+      await durable(configDir, sessionId, firstAnswer)
+      await first.terminate()
+
+      const second = await startChild()
+      await second.resume(sessionId, link)
+      await second.prompt(sessionId, 'SYMLINK second question')
+      const resumedTurn = model.turns.at(-1) ?? ''
+      expect(resumedTurn).toContain('SYMLINK second question')
+      expectCarried(resumedTurn, firstAnswer)
+
+      // Written under the realpath — the key the lookup uses — so the base's
+      // own readers (`session/list`, `getSessionInfo`) find it too.
+      const transcript = transcriptOf(configDir, sessionId)
+      expect(basename(dirname(transcript))).toBe(sanitizePath(real))
+      const secondAnswer = model.answer(before + 2)
+      await durable(configDir, sessionId, secondAnswer)
+      await second.terminate()
+
+      // A transcript an older build wrote under the cwd as given still
+      // resumes: move this one to that key and go again.
+      const legacyDir = join(dirname(dirname(transcript)), sanitizePath(link))
+      mkdirSync(legacyDir, { recursive: true })
+      renameSync(transcript, join(legacyDir, basename(transcript)))
+
+      const third = await startChild()
+      await third.resume(sessionId, link)
+      await third.prompt(sessionId, 'SYMLINK third question')
+      const legacyTurn = model.turns.at(-1) ?? ''
+      expect(legacyTurn).toContain('SYMLINK third question')
+      expectCarried(legacyTurn, firstAnswer)
+      expectCarried(legacyTurn, secondAnswer)
+      await third.terminate()
     },
     TEST_MS,
   )

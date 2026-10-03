@@ -19,7 +19,6 @@ import { getLastSessionLog } from '../../../utils/sessionStorage.js'
 import type { PermissionMode } from '../../../types/permissions.js'
 import { replayHistoryMessages } from '../bridge.js'
 import { computeSessionFingerprint } from '../utils.js'
-import { resolveSessionFilePath } from '../../../utils/session/sessionStoragePortable.js'
 import { AcpAgent } from './AcpAgent.js'
 import type { AcpSession } from './sessionTypes.js'
 import { isPermissionMode } from './permissionMode.js'
@@ -31,6 +30,7 @@ import {
 import {
   activateAcpSessionWorkspace,
   projectDirForSessionCwd,
+  resolveAcpSessionFile,
 } from './sessionWorkspace.js'
 
 // ── getOrCreateSession ───────────────────────────────────────────
@@ -59,10 +59,7 @@ async function getOrCreateSession(
         | undefined,
     })
     if (fingerprint === existingSession.sessionFingerprint) {
-      const resolved = await resolveSessionFilePath(
-        params.sessionId,
-        params.cwd,
-      )
+      const resolved = await resolveAcpSessionFile(params.sessionId, params.cwd)
       const projectDir = resolved
         ? dirname(resolved.filePath)
         : projectDirForSessionCwd(params.cwd)
@@ -95,7 +92,7 @@ async function getOrCreateSession(
   // worktrees — sessions created inside a repo (including from subdirectories
   // or ephemeral test envs nested in the repo) all persist under the same
   // parent project dir.
-  const resolved = await resolveSessionFilePath(params.sessionId, params.cwd)
+  const resolved = await resolveAcpSessionFile(params.sessionId, params.cwd)
   // No file on disk yet means this id is about to become a fresh session in
   // `params.cwd` — pin its project dir there rather than leaving it to be
   // derived from whatever workspace is current (issue #44).
