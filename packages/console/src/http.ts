@@ -640,7 +640,7 @@ function requestLedger(
       outcome: ActionOutcome,
       code?: string,
     ) {
-      if (port === undefined) return
+      if (port === undefined) return true
       const entry: ConsoleAction = {
         at: now(),
         requestId,
@@ -652,10 +652,11 @@ function requestLedger(
         ...(code === undefined ? {} : { code }),
       }
       try {
-        await port.record(entry)
+        return (await port.record(entry)).ok
       } catch {
         // Never fails the request: the action already happened (see
         // `RouteContext.record`), and `admit` is where a write is stopped.
+        return false
       }
     },
   }

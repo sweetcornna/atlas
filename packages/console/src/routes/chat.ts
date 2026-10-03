@@ -47,6 +47,7 @@ import {
   readJsonObject,
 } from '../respond.js'
 import {
+  chatPreview,
   MAX_CHAT_TEXT_LENGTH,
   renderChatSessions,
   renderChatThread,
@@ -249,7 +250,8 @@ interface TranscriptReading {
  *   ahead unrecorded; if not, it is an opening like any other. Leaving
  *   `?open=1` off therefore never makes a read invisible — it only spares the
  *   ledger a line per refresh — and "one opening and a hundred polls" is still
- *   one line, because the opening starts the window.
+ *   one line, because the opening starts the window. Only a line the ledger
+ *   took starts it: a failed write leaves the next poll to ask again.
  *
  * Refused, the answer is the 503 the ledger's `admit` produced; the caller
  * decides how a refusal looks on its own surface. Only for a conversation the
@@ -270,8 +272,11 @@ async function noteTranscriptRead(
   return {
     async done(loaded) {
       if (!loaded) return
-      await ctx.record('chat.transcript.open', sessionId, 'ok')
-      window?.note(key, ctx.now)
+      // Only a line that is in the ledger covers the polls after it: a write
+      // that failed has closed the ledger, and the next poll must ask again.
+      if (await ctx.record('chat.transcript.open', sessionId, 'ok')) {
+        window?.note(key, ctx.now)
+      }
     },
   }
 }
@@ -440,9 +445,16 @@ async function handleChatSessions(
   const { request } = ctx
   if (request.method === 'GET') {
     const result = await chat.sessions()
+    // The list is a summary, as on the rail: each last turn cut to the same
+    // length, so it is not a way round the recorded transcript read.
     return result.ok
       ? json({
-          sessions: result.value.filter(session => scope.visible(session.id)),
+          sessions: result.value
+            .filter(session => scope.visible(session.id))
+            .map(session => ({
+              ...session,
+              preview: chatPreview(session.preview),
+            })),
         })
       : failureResponse(result.failure)
   }

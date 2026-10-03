@@ -716,6 +716,31 @@ describe('chat routes', () => {
     })
   })
 
+  test('the session list is a summary in JSON too: each preview cut as the rail cuts it', async () => {
+    const chat = new FakeChat()
+    const long = `第一行\n${'很长的一轮回答，'.repeat(80)}`
+    chat.sessionsResult = ok([
+      { ...SESSION, preview: long },
+      { ...SESSION, id: 'session-2', preview: '好的' },
+    ])
+    const handler = createConsoleHandler(depsWith(chat), TOKENS)
+    const response = await handler(get('/v0/chat/sessions'))
+    expect(response.status).toBe(200)
+    const { sessions } = (await response.json()) as {
+      sessions: { id: string; preview: string }[]
+    }
+    const [cut, short] = sessions
+    // 46: the rail's PREVIEW_LENGTH (`view/chat.ts`).
+    expect(cut?.preview.length).toBeLessThanOrEqual(46)
+    expect(cut?.preview.endsWith('…')).toBe(true)
+    expect(short?.preview).toBe('好的')
+    // The same text the rail draws, not a second idea of "short".
+    const rail = await (await handler(get('/fragments/chat/sessions'))).text()
+    expect(rail).toContain(`>${cut?.preview}<`)
+    // Nothing past the cut left the console.
+    expect(JSON.stringify(sessions)).not.toContain(long.slice(60))
+  })
+
   test('answers the two fragments with markup the poller can adopt', async () => {
     const chat = new FakeChat()
     const handler = createConsoleHandler(depsWith(chat), TOKENS)

@@ -285,7 +285,7 @@ describe('polls: the first read in a window is a reading', () => {
   })
 
   test('a closed ledger: an unrecorded poll is a 503 and reads nothing; one inside its window still reads', async () => {
-    const { h, actions, id, poll, readings } = await polling()
+    const { h, actions, poll, readings } = await polling()
     // Recorded once while the ledger was open: that reading covers the window.
     await poll()
     actions.admitResult = {
@@ -302,7 +302,28 @@ describe('polls: the first read in a window is a reading', () => {
     expect(await refused.text()).toContain(CLOSED_TEXT)
     expect(h.chat.transcripts).toBe(1)
     expect(readings()).toHaveLength(1)
-    expect(id).not.toBe('')
+  })
+
+  test('a reading whose line was not written covers nothing: the next poll asks, and the ledger it closed says 503', async () => {
+    const store = new MemoryActionStore()
+    const ledger = new ActionLedger({ store, onAlarm: () => {} })
+    const h = accountsHarness({ deps: { actions: ledger } })
+    const opened = await h.handle(
+      asAdmin('POST', '/v0/chat/sessions', { target: ADDRESS }),
+    )
+    const { id } = (await opened.json()) as { id: string }
+    const poll = () => h.handle(asAdmin('GET', `/fragments/chat/thread/${id}`))
+    // The disk fills between `admit` and the line: the transcript was already
+    // read (the action happened), the line is not there, the ledger closes.
+    store.failAppends = true
+    expect((await poll()).status).toBe(200)
+    expect(ledger.problem).not.toBeNull()
+    expect(h.chat.transcripts).toBe(1)
+    // A window started by that reading would let this one through unrecorded.
+    const next = await poll()
+    expect(next.status).toBe(503)
+    expect(await next.text()).toContain(CLOSED_TEXT)
+    expect(h.chat.transcripts).toBe(1)
   })
 
   test('a pair pushed out of the window by 4096 others is recorded again', async () => {
