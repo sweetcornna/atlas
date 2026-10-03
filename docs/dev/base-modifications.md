@@ -97,7 +97,7 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`，+ s4/p11-console 新增 `console` 分支） | +28/−0 | 四个子命令分派分支（`resident` / `audit` / `resident-wake` / `console`），各自 `await import(...)` 动态加载。**核实记录（2026-08-16）：原「基座没有子命令注册表」的说法不成立，须改写**——基座有 Commander 注册表（`src/cli/program/commands/index.tsx` 的 `registerSubcommands`，15 个模块），但它被刻意排除在 print 快速路径之外（`src/cli/program/run.tsx`：`-p`/`--print` 提前 return，之后才动态 import，注释自陈为省约 65 ms）；走它就要付 `main.tsx` 全量 bootstrap 与 root preAction。基座自己对 `migrate` / `autonomy` / `remote-control` 的做法正是**两处都写**（`cli.tsx:94` 注释原文 `Also registered in main.tsx so it appears in --help`），另有 `daemon` / `job` 等 4 组子命令只存在于字面量分支。**已收口（P11.5，2026-08-17）**：补了第二半——新增 `src/cli/program/commands/qianmo.tsx`（`registerQianmoCommands`，四个命令各一句英文描述、不复刻选项面，`action` 里动态 import 同一个 fast-path handler 模块，`process.argv.slice(3)` 透传剩余参数，正常不可达），并在 `src/cli/program/commands/index.tsx` 的 `registerSubcommands` 里加一行调用；fast-path 分支本身一行未动。四个命令现出现在 `occ --help`，`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步补齐。「挂成 daemon worker」仍不可行：`DAEMON_WORKER_KINDS` 是空数组、`runDaemonWorker()` 无 dispatch、未知 kind 退出码 78 被永久 parking（`src/daemon/workerRegistry.ts:16,25-34`、`daemon/main.ts:397`），且 supervisor 只发 `--daemon-worker=<kind>` 加固定 env、没有 argv 通道接 `runResident` 的 14 个选项，还会把表里每个 kind 自动起一份 | 🟢 代码依据（2026-08-16 核实 + P11.5 `--help` 待办已收口；「当时是否评估过 daemon 路线」仍待改动人一句话） |
+| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`，+ s4/p11-console 新增 `console` 分支） | +28/−0 | 四个子命令分派分支（`resident` / `audit` / `resident-wake` / `console`），各自 `await import(...)` 动态加载。**核实记录（2026-08-16）：原「基座没有子命令注册表」的说法不成立，须改写**——基座有 Commander 注册表（`src/cli/program/commands/index.tsx` 的 `registerSubcommands`，15 个模块），但它被刻意排除在 print 快速路径之外（`src/cli/program/run.tsx`：`-p`/`--print` 提前 return，之后才动态 import，注释自陈为省约 65 ms）；走它就要付 `main.tsx` 全量 bootstrap 与 root preAction。基座自己对 `migrate` / `autonomy` / `remote-control` 的做法正是**两处都写**（`cli.tsx:94` 注释原文 `Also registered in main.tsx so it appears in --help`），另有 `daemon` / `job` 等 4 组子命令只存在于字面量分支。**已收口（P11.5，2026-08-17）**：补了第二半——新增 `src/cli/program/commands/qianmo.tsx`（`registerQianmoCommands`，四个命令各一句英文描述、不复刻选项面，`action` 里动态 import 同一个 fast-path handler 模块，`process.argv.slice(3)` 透传剩余参数，正常不可达），并在 `src/cli/program/commands/index.tsx` 的 `registerSubcommands` 里加一行调用；fast-path 分支本身一行未动。四个命令现出现在 `occ --help`，`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步补齐。「挂成 daemon worker」仍不可行：`DAEMON_WORKER_KINDS` 是空数组、`runDaemonWorker()` 无 dispatch、未知 kind 退出码 78 被永久 parking（`src/daemon/workerRegistry.ts:16,25-34`、`daemon/main.ts:397`），且 supervisor 只发 `--daemon-worker=<kind>` 加固定 env、没有 argv 通道接 `runResident` 的 14 个选项，还会把表里每个 kind 自动起一份。**P18.7 后续改动（`7ff9820d`，+7/−0；相对快照现值 +84/−16，其间的 `ca` / `cert` / `watch` / `memory` 分支、`--version` 改用 `DISPLAY_NAME`、删去 `MACRO` 兜底不属本批，本行此前未登记）**：在 `memory` 分支之后纯插入 `provider` 分支，与其余快速路径同形（`profileCheckpoint` + 动态 import `src/cli/handlers/provider.js` 的 `runProvider` + `return`）。第六类动作的 sshd 强制命令每次只起 `qm provider serve-stdin` 这一个子命令，走 Commander 就要付 `main.tsx` 全量 bootstrap，理由同上；`--help` 条目照 P11.5 的做法加在阡陌自有的 `qianmo.tsx`，`cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步（§2.13） | 🟢 代码依据（2026-08-16 核实 + P11.5 `--help` 待办已收口；「当时是否评估过 daemon 路线」仍待改动人一句话） |
 
 ### 2.6 会话与信箱（3 个修改；前两行 P1.2 缺陷修复，第三行 P3.1 常驻化）
 
@@ -161,6 +161,19 @@
 **在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/services/api/openai/responsesAdapter.ts`（§2.2）与 `packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`（§5.1）。
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
+
+### 2.13 M1 · P18.7 节点侧 `qm provider`（2 个修改，另有 1 个在册文件的后续改动补在原行）
+
+依据设计 `providers-console-m1.md` §2.5、§7.5。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值；本批只占其中括号里的那部分。
+
+| 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
+| --- | --- | --- | --- | --- |
+| `src/utils/process/subprocessEnv.ts` | `ef72d2c7`（P18.7） | +7/−0 | **形态：常量表纯插入**。`GHA_SUBPROCESS_SCRUB` 在 `ANTHROPIC_CUSTOM_HEADERS` 之后插入一行注释与 `OPENAI_API_KEY`、`GEMINI_API_KEY`、`GROK_API_KEY`、`XAI_API_KEY`、`OPENCODE_API_KEY` 五项。名单是模块内常量，`subprocessEnv()` 是 Shell / Bash 快照、hook、MCP stdio、LSP 子进程共用的出口，名单没有注入点。基座只列了 Anthropic 系的密钥，托管节点的 ACP 子进程打开 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` 之后，别家线路的 key 仍会原样进 Bash（设计 §7.5）。用例：`src/utils/process/__tests__/subprocessEnv.test.ts`（逐项清除、开关关时不变）与 `src/services/qianmo/__tests__/residentAcpEnv.integration.test.ts`（真 `--acp` 子进程里跑 Bash，读不到 `OPENAI_API_KEY`；去掉这五行它就读到）| ✅ 书面 |
+| `tests/integration/cli-golden.test.ts` | P11.5 `31dcf795` 起；本批 `7ff9820d` | +29/−1（P18.7 +1/−0；其余是 P11.5、`watch`、`ca`、`cert`、`memory` 各子命令进 `--help` 时补的 `ROOT_COMMANDS` 与 #81 的 defines 注入，本文此前未登记） | 随 §2.5 `cli.tsx` 行同步的基座既有测试：`ROOT_COMMANDS` 按字母序插入 `'provider'`。用例逐字比对 `--help` 列出的顶层命令，不加就红 | 🟢 |
+
+**在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/entrypoints/cli.tsx`（§2.5，`provider` 快速路径，+7/−0）。
+
+**同批新增或改动的阡陌自有文件**（快照之外，带 AGPL 头）：`src/cli/handlers/` 下 `provider.ts`、`providerOps.ts`、`providerProbe.ts`、`providerCall.ts` 与 4 个测试文件、2 个测试支撑（`__tests__/providerStub.ts` 录制桩、`__tests__/providerSource.ts` 从源码起 CLI）；`src/services/qianmo/providers/effectiveProcess.ts` 及其测试；`src/services/qianmo/residentAcpEnv.ts`（托管节点剥离 provider 键并打开子进程清理；未托管节点逐字节不变）及其两个测试；`src/cli/program/commands/qianmo.tsx`（`provider` 帮助条目）。
 
 ---
 
