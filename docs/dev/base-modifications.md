@@ -65,7 +65,7 @@
 | --- | --- | --- | --- | --- |
 | `src/services/api/claude.ts` | `4fe8cd1e` | +11/−6（整改前 +34/−33） | **改动理由是书面的**：基座那条 90 s 流空闲看门狗默认开着，沙箱冻结（`docker pause`）期间墙钟继续走，解冻后计时器立即到期，把一条正常的流判成挂死；修法是跨过时间跳跃后重新计时，不是简单加大阈值。**「扩展点为何不够用」是本次补出的**：超时是流读取函数体内的 `setTimeout` 字面量，基座在这三处没有任何可注入的计时器接口，唯一不改核心的替代是 fork 整条流读取路径。**P10.3② 后这条依然成立**——注入点消除的是「就地重写」，不是「必须改这三行」：基座仍然没有可注入的计时器接口，我方只是把替换收窄成一个与 `setTimeout` 同形的标识符 | 🟢 依据：`4fe8cd1e` 提交正文 + `src/utils/network/freezeAwareWatchdog.ts`；`upstream-sync-drill.md` §5 行动项③ 点名的「应抽成注入点而不是就地替换」**已于 P10.3② 落地** |
 | `src/services/api/gemini/client.ts` | `4fe8cd1e` | +6/−2（整改前 +7/−5） | 同上 | 🟢 |
-| `src/services/api/openai/responsesAdapter.ts` | `4fe8cd1e` | +6/−2（整改前 +15/−10） | 同上。**这一处曾是演练中唯一的代码语义冲突文件，P10.3② 后实测已可干净合并**。**P18.5 后续改动（`c3d3061e`，hermes #12b，+12/−10，相对快照现值 +18/−12）**：`isReasoningSummaryRejection` 的内联判断换成通用检测 `isUnsupportedParameterText`（`modelCompat/unsupportedParam.ts`），这一字段原有的文案表原样留在本文件，行为不变；适配器内的回退走 `retryOpenAIRequest` 的 `onError` 指令，没有别的入口 | 🟢 |
+| `src/services/api/openai/responsesAdapter.ts` | `4fe8cd1e` | +6/−2（整改前 +15/−10） | 同上。**这一处曾是演练中唯一的代码语义冲突文件，P10.3② 后实测已可干净合并**。**P18.5 后续改动（`c3d3061e`，hermes #12b，+12/−10，相对快照现值 +18/−12）**：`isReasoningSummaryRejection` 的内联判断换成通用检测 `isUnsupportedParameterText`（`modelCompat/unsupportedParam.ts`），这一字段原有的文案表原样留在本文件，行为不变；适配器内的回退走 `retryOpenAIRequest` 的 `onError` 指令，没有别的入口。**P18.8 后续改动（`d868176e` hermes #23、`fc6edcb1` hermes #26，+29/−2，相对快照现值 +47/−14）**：① 推理条目捕获时，`onReasoningItem` 的实参插入签发方印记 `issuer`；回放循环的数据源换成一次 `replayableReasoningItems(…, currentReasoningIssuer())` 调用（`modelCompat/responsesIssuer.ts`），另插入模块内小函数 `currentReasoningIssuer` 与导入；② `extractUsage` 给 `normalizeOpenAIUsage` 的实参插入 `reasoningTokens`（`modelCompat/responsesUsage.ts`）。捕获与回放都只在本文件里发生，没有钩子。舰队线（gpt-6-luna · Responses）同端点回放逐字节不变，由 `requestParity.test.ts` 的 fleet lock 用例钉住 | 🟢 |
 
 ### 2.3 P3.1 常驻化改造 —— ACP 扩展方法（8 个修改）
 
@@ -153,7 +153,7 @@
 | `src/utils/model/modelSupportOverrides.ts` | `610f76fd`（Q-2） | +56/−1 | 档位表是模块内常量，`get3PModelCapabilityOverride` 是唯一入口，没有注册点；基座自己的 `PROFILE_ENV_KEYS` 写了 FABLE 档与 `GEMINI_` / `GROK_` 前缀的键却没人读。改法只有常量表插入条目（`ANTHROPIC_TIERS` / `OPENAI_TIERS` 各加 FABLE 档，新增 `GEMINI_TIERS` / `GROK_TIERS`）与选档三元式按 provider 插两支 | ✅ 书面（设计 §5.8 + 提交正文） |
 | `src/services/api/openai/index.ts` | `8530028d`（Q-1）；后续 `b6041a5f`（#5）、`f6295347`（#3）、`c3d3061e`（#12b）、`55760a88`（#12c） | +74/−32（P18.5 +55/−24；其余 +19/−8 是 P18.5 之前的改动，本文此前未登记） | chat 线 effort 门控、输出上限、cache-key 回退都内联在请求组装里，没有钩子。四处：① 门控谓词 `isChatGPTCodexReasoningModel` 换成 `chatLaneSendsReasoningEffort`（`modelCompat/chatEffort.ts`）；② `resolveOpenAIMaxTokens` 换成 `resolveOpenAIRequestMaxTokens`（`modelCompat/outputTokenDefault.ts`），`maxTokens` 由 `const` 改 `let`，给重试循环插入 `recoverOutputCap` 回调；③ `createChatStreamWithCacheKeyFallback` 的 try/catch 换成一次 `sendDroppingRejectedParameters` 调用（`modelCompat/unsupportedParam.ts`），`prompt_cache_key` 的判据与锁存原样；④ 名单插入 `TEMPERATURE_DROPPABLE` | ✅ 书面（设计 §5.8 + 各提交正文） |
 | `src/services/api/openai/wireProtocol.ts` | `5067ba82`（#22） | +8/−0 | `resolveOpenAIWireProtocol` 是唯一的选线函数。在显式 `OPENAI_WIRE_API` 与 ChatGPT 订阅判断之后纯插入一次查表（`modelCompat/wireHosts.ts`），显式值仍然优先 | ✅ 书面 |
-| `src/services/api/openai/requestBody.ts` | `5cd8d785`（#11）；后续 `f6295347`（#3）、`24b6a76e`（#12a） | +17/−9 | 请求体由一个函数组装，键名与 temperature 的取舍没有钩子。三处：① `useMaxCompletionTokens` 的谓词换成 `usesMaxCompletionTokens`（`modelCompat/outputTokenParam.ts`）；② 参数 `maxTokens` 改为可选，`undefined` 时不发；③ temperature 分支插入 `omitsSamplingTemperature`（`modelCompat/samplingParams.ts`） | ✅ 书面 |
+| `src/services/api/openai/requestBody.ts` | `5cd8d785`（#11）；后续 `f6295347`（#3）、`24b6a76e`（#12a） | +17/−9 | 请求体由一个函数组装，键名与 temperature 的取舍没有钩子。三处：① `useMaxCompletionTokens` 的谓词换成 `usesMaxCompletionTokens`（`modelCompat/outputTokenParam.ts`）；② 参数 `maxTokens` 改为可选，`undefined` 时不发；③ temperature 分支插入 `omitsSamplingTemperature`（`modelCompat/samplingParams.ts`）。**P18.8 后续改动（`4438b0b4` hermes #4、`3749187e` hermes #14，+23/−2，相对快照现值 +40/−11）**：① 返回对象的 `messages` 换成一次 `applyReasoningReplayPolicy(messages, { model, baseURL })` 调用（`modelCompat/reasoningEcho.ts`；#10 的 Gemini 签名回放在同一遍里，`thoughtSignatureReplay.ts`）；② 原函数改名为模块内的 `buildGenericOpenAIRequestBody`，函数体与对象字面量逐字不变，文件末尾插入同名导出包装，对结果调用一次 `applyChatVendorReasoning`（`modelCompat/effortVendors.ts`）。**不是纯插入**：厂商表要先清掉通用体的全部推理键再写自己的键，在字面量里做不到「先删后写」；直接在 `return {…}` 外面包一层调用会让整段约 60 行重缩进。改名之后导出名与签名不变，调用方零改动 | ✅ 书面 |
 | `src/services/api/errors.ts` | `420f6711`（#6） | +5/−0 | 溢出正则与 `isContextOverflowErrorText` 是常量加函数，「限流 → 参数校验 → 输出上限 → 溢出」的顺序只能在函数入口插入。入口插入一次 `overflowTextVerdict`（`modelCompat/overflowText.ts`，输出上限一支在 `outputCap.ts`），基座正则兜底不变 | ✅ 书面 |
 | `src/services/api/streamAssembly.ts` | `b6041a5f`（#5） | +61/−3（P18.5 +29/−0；其余 +32/−3 是 P18.5 之前的改动，本文此前未登记） | `retryThirdPartyEventStream` 是第三方线路唯一的重试循环，「缩小上限重发一次」必须走它的 commitment 屏障（#29）。纯插入：一个可选回调参数 `recoverOutputCap`、一个标志位、catch 入口一段判断（只在 commitment 为 `none`、错误可重放时问一次） | ✅ 书面 |
 | `src/services/api/retryClassification.ts` | `ed338613`（#15） | +7/−0 | 分类管线是有序的 if 链，没有注册点。在读 `x-should-retry` 之前纯插入一次 `isQuotaExhaustedError`（`modelCompat/errorText.ts`），命中即 `billing_error`、不重试 | ✅ 书面 |
@@ -161,6 +161,25 @@
 **在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/services/api/openai/responsesAdapter.ts`（§2.2）与 `packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`（§5.1）。
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
+
+### 2.11 M1 · P18.8 调用层第二批 · 推理一致性（4 个修改，另有 3 个在册文件的后续改动补在原行）
+
+依据设计 `providers-console-m1.md` §5.4、§5.6、§5.8。规则表落在阡陌自有的新文件里（见本节末），基座文件只留调用点。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值；下表四个文件此前都没改过，现值就是本批的量。
+
+| 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
+| --- | --- | --- | --- | --- |
+| `packages/@ant/model-provider/src/shared/openaiConvertMessages.ts` | `d868176e`（#23）；后续 `7f084b24`（#10） | +9/−0 | 消息转换是唯一把 tool_use 块变成 tool call、把推理条目带进下一轮的地方，没有钩子。纯插入两处：① `OpenAIReasoningItem` 类型加可选字段 `issuer`（#23 签发方印记，回放时滤掉、从不上线）；② tool_use → tool call 的对象里插入一次 `carriedToolCallSignature(tu)` 展开（`shared/qianmo/geminiToolSignature.ts`），签名挂在注册 symbol 键上，JSON 序列化看不见，只有 chat 线发送边界按目标模型决定写不写成 `extra_content` | ✅ 书面 |
+| `packages/@ant/model-provider/src/shared/openaiUsage.ts` | `fc6edcb1`（#26） | +13/−0 | usage 归一就是这几个导出函数，没有注册点。纯插入：`AnthropicUsage` 加可选字段 `reasoning_tokens`；`readOpenAICachedTokens` 的候选表在 OpenAI 写法之后插入顶层 `cache_read_input_tokens`；`normalizeOpenAIUsage` 加可选参数 `reasoningTokens` 与一处条件展开（没报时返回对象逐键不变） | ✅ 书面 |
+| `src/services/api/grok/reasoning.ts` | `893426a1`（#13） | +14/−17 | 允许名单与夹取都是模块内函数，没有注入点。允许名单判断换成一次 `grokAcceptsReasoningEffort` 调用，夹取的 `switch` 换成一次 `resolveGrokEffort` 调用（`modelCompat/effortVendors.ts`），文件头插入一段说明。**不是纯插入**：两处调用替换之后原 `switch` 与局部类型没有别的用处，留着就是两套规则，所以删去；返回类型随表放宽（`providers/effective.ts` 的 `asLevel` 本就接受全集）。grok-3-mini 的两档梯子在表里原样保留 | ✅ 书面 |
+| `src/services/api/openai/__tests__/responsesAdapter.test.ts` | `d868176e`（#23） | +7/−1 | 随 #23 同步的基座既有用例：「captures reasoning items from output_item.done」的期望值加一个 `issuer: expect.any(String)`（捕获时盖印）。其余断言不变 | 🟢 |
+
+**在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/services/api/openai/requestBody.ts`（§2.10）、`src/services/api/openai/responsesAdapter.ts`（§2.2）、`packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`（§5.1）。
+
+**设计 §5.8 列出、本批没有改的**：`src/services/providerRegistry/providerCompatMatrix.ts`（R-14，删除 `applyCompatRule`）。它剩下的调用方 `tests/integration/provider-adapter-consistency.test.ts`（M0 AC-5 的证据套件）、`tests/integration/qianmo-memory-recall.test.ts`、`scripts/qianmo-recall-answer-live.ts` 都不在 P18.8 的可改范围内，删了会让 AC-5 的离线断言改变含义，需要负责人另行决定；本文件与其测试原样。
+
+**P18.7 待补**（该批在另一分支，提交号与 +/− 由 P18.7 合入时按 §6.3 补齐）：`src/entrypoints/cli.tsx`（在册 §2.5，`qm provider` 快速路径的后续改动补进原行；设计形态是与现有快速路径同形的一段纯插入）；`src/utils/process/subprocessEnv.ts`（新行；设计形态是常量表 `GHA_SUBPROCESS_SCRUB` 插入 `OPENAI_API_KEY`、`GEMINI_API_KEY`、`GROK_API_KEY`、`XAI_API_KEY`、`OPENCODE_API_KEY` 五项——名单是模块内常量，没有注入点）。
+
+**同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 6 个源文件（`targetMatch.ts`、`reasoningEcho.ts`、`responsesIssuer.ts`、`thoughtSignatureReplay.ts`、`effortVendors.ts`、`responsesUsage.ts`）与 7 个测试文件；`packages/@ant/model-provider/src/shared/qianmo/` 下 4 个源文件（`reasoningStream.ts`、`thinkTags.ts`、`geminiToolSignature.ts`、`usageFields.ts`）与 4 个测试文件。P18.5 的自有文件 `capabilities.ts`、`chatEffort.ts`、`toolCallDeltas.ts`、`requestParity.test.ts`、`support/requestCapture.ts`、`chatEffort.test.ts` 有后续改动。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
 
 ---
 
@@ -225,7 +244,9 @@
 
 | 文件 | 提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts` | `8f4c13c8`（2026-08-12，P1.4） | +16/−1 | **提交信息末段直接作答**：「改的是基座核心（流适配器），按 `CLAUDE.md` §2.3 说明：这是流式解析内部的判断，没有任何扩展点能在不 fork 整个适配器的前提下改它」。改动本身很窄——空 `reasoning_content` **且正文已在流动**时忽略它；DeepSeek 的「正文前空串」契约不动。真机实测：修前 qwen3.8-max 一条两点问答产出 251 块（126 thinking，125 个是空的），修后 2 块。**P18.5 后续改动（`0ffa45f8`，hermes #9，+82/−66；相对快照现值 +159/−68，本行 +16/−1 是 P1.4 当时的数）**：原内联的 tool_use 发射代码挪进局部生成器 `emitToolCallSteps`，逐行不变，只是槽位、id、名字改从 `shared/qianmo/toolCallDeltas.ts` 的步骤里取；在 finish_reason 与「以 usage 收尾」两处各纯插入一次 flush。理由同上：流解析是单个状态机，没有插件点 | ✅ 书面 |
+| `packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts` | `8f4c13c8`（2026-08-12，P1.4） | +16/−1 | **提交信息末段直接作答**：「改的是基座核心（流适配器），按 `CLAUDE.md` §2.3 说明：这是流式解析内部的判断，没有任何扩展点能在不 fork 整个适配器的前提下改它」。改动本身很窄——空 `reasoning_content` **且正文已在流动**时忽略它；DeepSeek 的「正文前空串」契约不动。真机实测：修前 qwen3.8-max 一条两点问答产出 251 块（126 thinking，125 个是空的），修后 2 块。**P18.5 后续改动（`0ffa45f8`，hermes #9，+82/−66；相对快照现值 +159/−68，本行 +16/−1 是 P1.4 当时的数）**：原内联的 tool_use 发射代码挪进局部生成器 `emitToolCallSteps`，逐行不变，只是槽位、id、名字改从 `shared/qianmo/toolCallDeltas.ts` 的步骤里取；在 finish_reason 与「以 usage 收尾」两处各纯插入一次 flush。理由同上：流解析是单个状态机，没有插件点。**P18.8 后续改动（`c0f8ce26` #7、`a13f11fb` #8、`7f084b24` #10、`fc6edcb1` #26，+21/−2，相对快照现值 +180/−70）**：① 主循环的数据源 `stream` 换成一次 `normalizeReasoningChunks(stream)` 调用（`shared/qianmo/reasoningStream.ts`、`thinkTags.ts`：`delta.reasoning` / `reasoning_details` 归一到 `reasoning_content`，正文内联的 `<think>` 等标签切成推理）；② tool_use 的 `content_block_start` 对象插入一行条件展开，带出 `_geminiThoughtSignature`（`geminiToolSignature.ts`）；③ usage 分支插入 `reasoning_tokens` 读取，非 OpenAI 官方端点的缓存写入由字面量 `0` 换成一次 `readAnthropicStyleCacheWriteTokens` 调用（`usageFields.ts`）。理由同上 | ✅ 书面 |
+
+> M1 · P18.8 又改了两个基座 `packages/` 文件（`openaiConvertMessages.ts`、`openaiUsage.ts`），按批登记在 §2.11，本节标题的「1 个」仍是 M0 口径。
 
 > 该文件同时是同步演练中的冲突文件之一（`upstream-sync-drill.md` §3.1，归因族「其他 / provider 兼容修复」）。
 

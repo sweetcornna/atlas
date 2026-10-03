@@ -12,6 +12,11 @@
  * (`wireHosts.ts`, `outputTokenDefault.ts`, `samplingParams.ts`).
  *
  * An unset base URL is the OpenAI SDK's default, `api.openai.com`.
+ *
+ * 规则来源 NousResearch/hermes-agent（MIT，Copyright (c) 2025 Nous Research，
+ * 声明见 NOTICE 五），取于 `f9b29c49b6`（2026-10-03 取用）：`utils.py:906-924`
+ * `base_url_host_matches` — exact host or a dot-suffix subdomain. Only the
+ * rule is taken; the code is ours.
  */
 
 const SDK_DEFAULT_HOST = 'api.openai.com'
