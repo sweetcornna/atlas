@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ChildProcess } from 'node:child_process'
+import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
   AcpResidentTurnPort,
@@ -93,6 +95,7 @@ import {
 } from '../../utils/agents/teammateMailbox.js'
 import { occConfigPath } from '../../config/paths.js'
 import { buildCliLaunch, spawnCli } from '../../utils/process/cliLaunch.js'
+import { writePrivateFileAtomicSync } from '../../utils/secureStorage/atomicWrite.js'
 import {
   assembleResidentPrompt,
   assembleResidentPromptAsync,
@@ -104,6 +107,126 @@ interface QianmoResidentAgentConfig {
   readonly agent: string
   readonly cwd: string
 }
+
+/**
+ * What `commitPendingProviderConfig()` (`providers/node.ts`, P18.2) can
+ * answer, restated structurally: this module never imports the write path
+ * itself — the CLI handler hands it over (`ResidentProviderNode`), so the
+ * provider stack stays out of this file's module graph.
+ */
+type ResidentProviderCommit =
+  | { readonly status: 'none' }
+  | { readonly status: 'busy' }
+  | {
+      readonly status: 'committed'
+      readonly requestId: string
+      readonly sessions: 'keep' | 'reset'
+      readonly recovered: boolean
+    }
+  | {
+      readonly status: 'conflict'
+      readonly requestId: string
+      readonly diffKeys: readonly string[]
+    }
+  | { readonly status: 'refused'; readonly message: string }
+  | { readonly status: 'bad-pending'; readonly movedTo: string }
+  | {
+      readonly status: 'write-failed'
+      readonly requestId: string
+      readonly message: string
+    }
+
+/**
+ * The node's provider write path, as the resident uses it. The functions are
+ * the ones `providers/node.ts` exports, under the same names; see that module's
+ * header for the contract.
+ */
+export interface ResidentProviderNode {
+  /** A single `stat`. */
+  hasPendingProviderConfig(): boolean
+  commitPendingProviderConfig(): ResidentProviderCommit
+  recordProviderGeneration(input: {
+    readonly generation: number
+    readonly env?: Readonly<Record<string, string | undefined>>
+  }): unknown
+  readProviderState(): {
+    readonly applied: { readonly requestId: string } | null
+    readonly pending: { readonly requestId: string } | null
+  }
+  currentManagedHash(): string
+}
+
+/** What a provider switch would cut off if the ACP child stopped now. */
+interface ResidentInFlight {
+  /** A turn is running in the node gate. */
+  readonly turns: number
+  /** Turns queued behind it. */
+  readonly queued: number
+  /** Network tasks registered and not yet answered. */
+  readonly tasks: number
+  /** `deliver()` calls still on their way to a turn. */
+  readonly deliveries: number
+  /** Admission polls in progress (mailbox read → turn submitted). */
+  readonly polls: number
+  /** Admission-ledger records not yet read (recovery still owes a turn). */
+  readonly admissions: number
+  /** A generation is being started. */
+  readonly starting: boolean
+}
+
+/** Told once per provider configuration this resident takes on. */
+export interface ResidentProviderSwitchEvent {
+  readonly requestId: string
+  readonly sessions: 'keep' | 'reset'
+  /** Finished something a crash had interrupted. */
+  readonly recovered: boolean
+  /**
+   * `switch`: committed at an idle boundary, ACP child recycled.
+   * `startup`: committed before the first generation (crash roll-forward).
+   * `reconcile`: found already applied at startup without its session policy
+   * having been carried out here; sessions were reset (R-7 default).
+   */
+  readonly via: 'switch' | 'startup' | 'reconcile'
+}
+
+/**
+ * `occConfigPath('resident', 'provider-switch.json')`: what this resident is
+ * doing about the node's provider configuration, for `qm provider status`
+ * (P18.7) to read next to `generation.json`. Written only when there is
+ * something to say — a pending intent, a commit outcome, a startup
+ * reconciliation — so a node that never has a pending intent never has one.
+ */
+interface ResidentProviderSwitchStatus {
+  readonly v: 1
+  /** The resident that wrote it; a stale file names a dead pid. */
+  readonly pid: number
+  readonly updatedAt: string
+  readonly waiting: {
+    readonly requestId: string | null
+    readonly since: string
+    readonly inFlight: ResidentInFlight
+    readonly alertedAt: string | null
+  } | null
+  readonly last: {
+    readonly at: string
+    readonly outcome: string
+    readonly requestId: string | null
+    readonly sessions: 'keep' | 'reset' | null
+    readonly detail: string | null
+  } | null
+  /**
+   * The applied `requestId` whose session policy this resident has carried
+   * out. A managed node whose `state.json` names a different one was committed
+   * without the resident seeing the result, so the policy is unknown.
+   */
+  readonly reconciledRequestId: string | null
+}
+
+/** §2.7: the resident stats for a pending intent this often. */
+const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 5_000
+
+/** R-6: how long a pending intent waits for idle before it is reported. */
+const DEFAULT_PROVIDER_MAX_WAIT_MS = 30 * 60_000
 
 interface QianmoResidentOptions {
   readonly node: string
@@ -263,6 +386,34 @@ interface QianmoResidentOptions {
     readonly initialBackoffMs?: number
     readonly maxRapidFailures?: number
   }
+  /**
+   * The node's provider write path (`providers/node.ts`), which turns on hot
+   * switching (design `providers-console-m1.md` §2.7). **Absent, nothing
+   * below happens** — no poll, no commit, no generation record.
+   *
+   * Present, a pending intent is committed at a generation boundary and only
+   * there: once at startup before the first ACP child (crash roll-forward),
+   * and afterwards when the node is idle, immediately followed by a recycle of
+   * the ACP child. A node with no pending intent is never recycled and its
+   * child's environment is untouched; the only trace is `generation.json`.
+   */
+  readonly providerNode?: ResidentProviderNode
+  readonly providerSwitch?: {
+    /** Pending-intent stat interval; `0` turns the poll off. Default 5 s. */
+    readonly pollIntervalMs?: number
+    /** When a waiting intent is reported. Default 30 min; never a kill. */
+    readonly maxWaitMs?: number
+    /** Clock for the wait above. Default `Date.now`. */
+    readonly now?: () => number
+  }
+  /**
+   * Something about the provider configuration an operator has to act on:
+   * a refused or conflicting commit, a 30-minute wait, a parked agent.
+   * Absent, these go to {@link onError}.
+   */
+  readonly onProviderAlert?: (message: string) => void
+  /** A provider configuration was committed (the CLI re-runs its probe). */
+  readonly onProviderSwitched?: (event: ResidentProviderSwitchEvent) => void
 }
 
 class BaseMailboxPort implements ResidentMailboxPort {
@@ -573,6 +724,21 @@ export class QianmoResident {
   /** The ACP child backing `#runtime`; see `#runtimeIsLive`. */
   #runtimeChild: ChildProcess | null = null
   #witnessClosed = false
+  /** Generations this process has started (`generation.json`, §2.4). */
+  #generation = 0
+  /** Between the start of `#startAcp` and its runtime being ready. */
+  #generationStarting = false
+  /** `deliver()` calls not yet past the hand-off to a turn. */
+  #deliveriesInFlight = 0
+  /** Admission polls not yet past submitting their turn. */
+  #pollsInFlight = 0
+  /** Set once startup has rolled a pending intent forward (§2.6 step 5). */
+  #providerReady = false
+  #providerTimer: ReturnType<typeof setInterval> | null = null
+  /** The pending intent being waited on, if any. */
+  #providerWaiting: ProviderWaiting | null = null
+  /** In-memory copy of `provider-switch.json`, once read or written. */
+  #switchStatus: ResidentProviderSwitchStatus | undefined
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -724,6 +890,10 @@ export class QianmoResident {
     for (const backups of this.#backups.values()) backups.start()
     // Bound before the agent, and outliving it. See `#startTransport`.
     this.#transport = this.#startTransport()
+    // Before the first ACP child: an intent a crash left behind is committed
+    // now, while no child can be reading settings (§2.6 step 5).
+    this.#prepareProviderConfig()
+    this.#startProviderPoll()
     try {
       await this.#supervisor.run()
       // `supervisor.run()` returning means one of two very different things.
@@ -753,6 +923,7 @@ export class QianmoResident {
       }
     } finally {
       this.#stopping = true
+      this.#stopProviderPoll()
       // Before the listener goes, not after. The last generation's own
       // teardown already drained what *it* sent, but a degraded node keeps
       // answering after that: every refusal from `#receive` is a reply on the
@@ -808,6 +979,21 @@ export class QianmoResident {
     message: QianmoMessage,
     verified: InboundVerification = {},
   ): Promise<InboundDelivered> {
+    // Counted for the provider switch's idle check (§2.7): from here until the
+    // turn is handed off, this delivery belongs to whichever generation it
+    // finds, and the switch must not pull that generation out from under it.
+    this.#deliveriesInFlight += 1
+    try {
+      return await this.#deliverDurably(message, verified)
+    } finally {
+      this.#deliveriesInFlight -= 1
+    }
+  }
+
+  async #deliverDurably(
+    message: QianmoMessage,
+    verified: InboundVerification,
+  ): Promise<InboundDelivered> {
     const runtime = await this.#runtimeForDelivery()
     // Ahead of the write, and synchronous: the poll below no longer reports
     // "this node hosts no such agent" back in time to stop the write.
@@ -837,7 +1023,9 @@ export class QianmoResident {
    * teammate mail — has nowhere to report to and goes to `onError`.
    */
   #startTurn(runtime: ResidentNodeRuntime, message: QianmoMessage): void {
-    void runtime.deliver(message).catch(async error => {
+    // Counted until the poll has handed its turn to the gate, for the provider
+    // switch's idle check (§2.7). Still not awaited.
+    void this.#trackPoll(runtime.deliver(message)).catch(async error => {
       const task = this.#tasksByMessage.get(message.msgId)
       if (task === undefined || task.settled) {
         this.#options.onError?.(error)
@@ -1626,6 +1814,7 @@ export class QianmoResident {
   stop(): void {
     if (this.#stopping) return
     this.#stopping = true
+    this.#stopProviderPoll()
     this.#poller?.stop()
     this.#poller = null
     this.#closeWitness()
@@ -1842,7 +2031,25 @@ export class QianmoResident {
     return transport
   }
 
+  /**
+   * One generation: record what it is about to load, then spawn it.
+   *
+   * The record comes first because `loadedHash` has to describe the child
+   * that reads settings next, and the switch never commits while a
+   * generation is starting (`#inFlightWork`), so nothing changes in between.
+   */
   async #startAcp(): Promise<ResidentChildConnection> {
+    this.#generation += 1
+    this.#recordProviderGeneration()
+    this.#generationStarting = true
+    try {
+      return await this.#spawnGeneration()
+    } finally {
+      this.#generationStarting = false
+    }
+  }
+
+  async #spawnGeneration(): Promise<ResidentChildConnection> {
     const child =
       this.#options.spawnAcp?.() ?? defaultSpawnAcp(this.#memoryRoot)
     const closed = childClosed(child)
@@ -1979,9 +2186,11 @@ export class QianmoResident {
         onBreakerError: error => this.#options.onError?.(error),
         onTurnResult: async (input, result) => {
           await this.#completeTask(input, result)
+          this.#checkProviderSoon()
         },
         onTurnError: async (error, input) => {
           await this.#failTask(error, input)
+          this.#checkProviderSoon()
         },
       })
       this.#runtime = runtime
@@ -1999,7 +2208,7 @@ export class QianmoResident {
           // existing timer avoids another resident timer, but it must never
           // hold up mailbox admission while its second location is half-open.
           this.#triggerWitnessTick()
-          await runtime?.pollAll()
+          if (runtime !== null) await this.#trackPoll(runtime.pollAll())
         },
         // The admission loop is the only thing that turns an unread mailbox
         // entry into a turn, so skipping it here is what makes "no new work"
@@ -2060,4 +2269,556 @@ export class QianmoResident {
     }
     return ledger
   }
+
+  // -------------------------------------------------------------------------
+  // Provider hot switch (design `providers-console-m1.md` §2.7)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Look for a pending provider configuration and, when the node is idle,
+   * commit it and recycle the ACP child.
+   *
+   * Called by the 5 s poll, by the CLI on SIGHUP, and after each turn while an
+   * intent is waiting. **Synchronous on purpose**: the idle check, the commit,
+   * the session policy and the recycle run with no `await` between them, and
+   * `recycle()` retires the old generation's runtime and poller before it
+   * returns. So no delivery can reach the old child once `settings.json` has
+   * changed — which is the whole hazard (matrix §4.4: a `createSession` there
+   * would pull the new env into a process other sessions are still using).
+   *
+   * Busy means: wait. New work keeps going to the current generation until it
+   * is idle; nothing in flight is ever cut off, and a wait past the limit is
+   * reported once, never enforced (R-6).
+   */
+  checkProviderConfig(): void {
+    const node = this.#options.providerNode
+    if (node === undefined || !this.#providerReady || this.#stopping) return
+    let pending: boolean
+    try {
+      pending = node.hasPendingProviderConfig()
+    } catch (error) {
+      this.#options.onError?.(error)
+      return
+    }
+    if (!pending) {
+      if (this.#providerWaiting !== null) {
+        this.#providerWaiting = null
+        this.#writeSwitchStatus({ waiting: null })
+      }
+      return
+    }
+    const now = this.#providerNow()
+    let waiting = this.#providerWaiting
+    if (waiting === null) {
+      waiting = {
+        since: now,
+        requestId: this.#pendingRequestId(node),
+        raised: new Set(),
+        alertedAt: null,
+        statusKey: '',
+      }
+      this.#providerWaiting = waiting
+    }
+    if (this.#supervisor.parked) {
+      this.#raiseOnce(
+        waiting,
+        'parked',
+        'a provider configuration is pending, but the ACP child is parked and no generation will start to load it; it will be committed when this resident is restarted',
+      )
+      this.#writeWaiting(waiting, this.#inFlightWork() ?? IDLE)
+      return
+    }
+    const inFlight = this.#inFlightWork()
+    if (inFlight !== null) {
+      const maxWait =
+        this.#options.providerSwitch?.maxWaitMs ?? DEFAULT_PROVIDER_MAX_WAIT_MS
+      if (waiting.alertedAt === null && now - waiting.since >= maxWait) {
+        waiting.alertedAt = now
+        this.#providerAlert(
+          `provider configuration ${waiting.requestId ?? '(unknown request)'} has been waiting ` +
+            `${Math.round((now - waiting.since) / 60_000)} min for the ACP child to go idle ` +
+            `(${describeInFlight(inFlight)}). It is not forced: the switch happens when the ` +
+            'work in flight ends.',
+        )
+      }
+      this.#writeWaiting(waiting, inFlight)
+      return
+    }
+    this.#commitAndRecycle(node, waiting)
+  }
+
+  /** The idle half of {@link checkProviderConfig}. */
+  #commitAndRecycle(
+    node: ResidentProviderNode,
+    waiting: ProviderWaiting,
+  ): void {
+    const before = managedHashOf(node)
+    let result: ResidentProviderCommit
+    try {
+      result = node.commitPendingProviderConfig()
+    } catch (error) {
+      this.#afterFailedCommit(node, waiting, before, null, errorText(error))
+      return
+    }
+    switch (result.status) {
+      case 'committed':
+        this.#providerCommitted(result, 'switch')
+        return
+      case 'busy':
+        // Another process holds `apply.lock` for a moment; the next check
+        // retries. Nothing was touched.
+        return
+      case 'none':
+        this.#providerWaiting = null
+        this.#writeSwitchStatus({ waiting: null })
+        return
+      case 'write-failed':
+        this.#afterFailedCommit(
+          node,
+          waiting,
+          before,
+          result.requestId,
+          result.message,
+        )
+        return
+      default:
+        this.#reportUncommitted(result, waiting)
+    }
+  }
+
+  /**
+   * Carry out a commit: the session policy, the record, then the recycle.
+   *
+   * At startup there is no generation yet, so there is nothing to recycle; the
+   * first one starts on the committed configuration.
+   */
+  #providerCommitted(
+    result: Extract<ResidentProviderCommit, { status: 'committed' }>,
+    via: 'switch' | 'startup',
+  ): void {
+    this.#applySessionPolicy(result.sessions)
+    this.#providerWaiting = null
+    this.#writeSwitchStatus({
+      waiting: null,
+      last: this.#switchOutcome(
+        'committed',
+        result.requestId,
+        result.sessions,
+        result.recovered ? 'finished a commit a crash had interrupted' : null,
+      ),
+      reconciledRequestId: result.requestId,
+    })
+    if (via === 'switch') this.#supervisor.recycle()
+    this.#announceSwitch({
+      requestId: result.requestId,
+      sessions: result.sessions,
+      recovered: result.recovered,
+      via,
+    })
+  }
+
+  /**
+   * A commit that threw or failed to write. If `settings.json` changed anyway,
+   * the running child no longer matches its file: recycle it, with sessions
+   * reset because the policy that came with the intent is not known to have
+   * been carried out. Otherwise the intent stays pending for the next check.
+   */
+  #afterFailedCommit(
+    node: ResidentProviderNode,
+    waiting: ProviderWaiting,
+    before: string | undefined,
+    requestId: string | null,
+    detail: string,
+  ): void {
+    const after = managedHashOf(node)
+    const changed =
+      before !== undefined && after !== undefined && before !== after
+    this.#raiseOnce(
+      waiting,
+      'write-failed',
+      `could not commit the pending provider configuration: ${detail}. ` +
+        (changed
+          ? 'settings.json did change, so the ACP child is recycled anyway, with its sessions reset.'
+          : 'It stays pending and is retried on the next check.'),
+    )
+    this.#writeSwitchStatus({
+      last: this.#switchOutcome('write-failed', requestId, null, detail),
+    })
+    if (changed) {
+      this.#applySessionPolicy('reset')
+      this.#supervisor.recycle()
+    }
+  }
+
+  /** `conflict`, `bad-pending` and `refused`: nothing was written. */
+  #reportUncommitted(
+    result: Extract<
+      ResidentProviderCommit,
+      { status: 'conflict' | 'bad-pending' | 'refused' }
+    >,
+    waiting: ProviderWaiting | null,
+  ): void {
+    switch (result.status) {
+      case 'conflict':
+        // The intent is gone (it held a key); the hub has to re-send.
+        this.#providerWaiting = null
+        this.#providerAlert(
+          `provider configuration ${result.requestId} was not committed: the managed keys in ` +
+            `settings.json changed after it was staged (${result.diffKeys.join(', ') || 'no key names'}). ` +
+            'The intent was discarded; the hub has to send it again once ops decide.',
+        )
+        this.#writeSwitchStatus({
+          waiting: null,
+          last: this.#switchOutcome(
+            'conflict',
+            result.requestId,
+            null,
+            result.diffKeys.join(', '),
+          ),
+        })
+        return
+      case 'bad-pending':
+        this.#providerWaiting = null
+        this.#providerAlert(
+          `a pending provider configuration could not be read and was moved to ${result.movedTo}; nothing was committed.`,
+        )
+        this.#writeSwitchStatus({
+          waiting: null,
+          last: this.#switchOutcome('bad-pending', null, null, result.movedTo),
+        })
+        return
+      case 'refused': {
+        const message = `provider configuration not committed: ${result.message}. It stays pending and is retried on every check.`
+        if (waiting === null) this.#providerAlert(message)
+        else this.#raiseOnce(waiting, 'refused', message)
+        this.#writeSwitchStatus({
+          last: this.#switchOutcome('refused', null, null, result.message),
+        })
+      }
+    }
+  }
+
+  /**
+   * Startup: commit an intent a crash left behind, then make sure the session
+   * map matches whatever is applied.
+   *
+   * The second half covers the commits whose session policy this resident
+   * never saw — a crash between commit and recycle, or a commit `qm provider`
+   * made while no resident was running. The policy is unknown, so the session
+   * map is reset, which is R-7's default. A node that is not managed has no
+   * applied configuration and is left exactly as it was.
+   */
+  #prepareProviderConfig(): void {
+    const node = this.#options.providerNode
+    if (node === undefined) return
+    try {
+      const result = node.commitPendingProviderConfig()
+      if (result.status === 'committed') {
+        this.#providerCommitted(result, 'startup')
+      } else if (
+        result.status === 'conflict' ||
+        result.status === 'bad-pending'
+      ) {
+        // Discarded by the attempt; nothing later would mention it.
+        this.#reportUncommitted(result, null)
+      }
+      // `refused`, `write-failed` and `busy` leave the intent pending: the
+      // first check after the first generation is up deals with it.
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+    let applied: string | null = null
+    try {
+      applied = node.readProviderState().applied?.requestId ?? null
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+    if (
+      applied !== null &&
+      applied !== this.#readSwitchStatus()?.reconciledRequestId
+    ) {
+      this.#applySessionPolicy('reset')
+      this.#writeSwitchStatus({
+        last: this.#switchOutcome(
+          'reconciled',
+          applied,
+          'reset',
+          'committed without this resident applying its session policy',
+        ),
+        reconciledRequestId: applied,
+      })
+      this.#announceSwitch({
+        requestId: applied,
+        sessions: 'reset',
+        recovered: true,
+        via: 'reconcile',
+      })
+    }
+    this.#providerReady = true
+  }
+
+  /** `reset`: forget every session mapping, so each context starts anew. */
+  #applySessionPolicy(policy: 'keep' | 'reset'): void {
+    if (policy !== 'reset') return
+    try {
+      for (const key of Object.keys(this.#sessions.entries())) {
+        this.#sessions.delete(key)
+      }
+    } catch (error) {
+      this.#providerAlert(
+        `could not reset the session map after a provider switch: ${errorText(error)}. ` +
+          'The next generation may resume sessions recorded under the previous provider.',
+      )
+    }
+  }
+
+  /** `generation.json` for the generation about to start (§2.4). */
+  #recordProviderGeneration(): void {
+    const node = this.#options.providerNode
+    if (node === undefined) return
+    try {
+      node.recordProviderGeneration({
+        generation: this.#generation,
+        env: process.env,
+      })
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  /**
+   * What stopping the ACP child now would cut off, or `null` when nothing.
+   *
+   * Wider than "a turn is running" on purpose: an admission poll can be
+   * between reading the mailbox and submitting its turn, and a delivery can be
+   * between the transport and the poll it starts. Either would land on the old
+   * child a moment after it was judged idle.
+   */
+  #inFlightWork(): ResidentInFlight | null {
+    let admissions: number
+    try {
+      admissions = pendingSessionIds(
+        this.#options.agents.map(agent => this.#ledger(agent.agent)),
+      ).length
+    } catch {
+      // A ledger that cannot answer is not evidence of idle.
+      admissions = 1
+    }
+    const work: ResidentInFlight = {
+      turns: this.#gate.active ? 1 : 0,
+      queued: this.#gate.queued,
+      tasks: this.#tasksByTask.size,
+      deliveries: this.#deliveriesInFlight,
+      polls: this.#pollsInFlight,
+      admissions,
+      starting: this.#generationStarting,
+    }
+    const busy =
+      work.starting ||
+      work.turns +
+        work.queued +
+        work.tasks +
+        work.deliveries +
+        work.polls +
+        work.admissions >
+        0
+    return busy ? work : null
+  }
+
+  #trackPoll<T>(poll: Promise<T>): Promise<T> {
+    this.#pollsInFlight += 1
+    return poll.finally(() => {
+      this.#pollsInFlight -= 1
+    })
+  }
+
+  /** After a turn ends: a waiting intent may be committable now. */
+  #checkProviderSoon(): void {
+    if (this.#providerWaiting === null) return
+    // After the gate has released the turn that called this.
+    setImmediate(() => this.checkProviderConfig())
+  }
+
+  #startProviderPoll(): void {
+    if (this.#options.providerNode === undefined) return
+    const interval =
+      this.#options.providerSwitch?.pollIntervalMs ??
+      DEFAULT_PROVIDER_POLL_INTERVAL_MS
+    if (interval <= 0) return
+    this.#providerTimer = setInterval(
+      () => this.checkProviderConfig(),
+      interval,
+    )
+    this.#providerTimer.unref?.()
+  }
+
+  #stopProviderPoll(): void {
+    if (this.#providerTimer !== null) clearInterval(this.#providerTimer)
+    this.#providerTimer = null
+  }
+
+  #providerNow(): number {
+    return (this.#options.providerSwitch?.now ?? Date.now)()
+  }
+
+  #pendingRequestId(node: ResidentProviderNode): string | null {
+    try {
+      return node.readProviderState().pending?.requestId ?? null
+    } catch {
+      return null
+    }
+  }
+
+  #providerAlert(message: string): void {
+    const alert = this.#options.onProviderAlert
+    if (alert !== undefined) alert(message)
+    else this.#options.onError?.(new Error(message))
+  }
+
+  /** One alert per kind per waiting intent; the poll would repeat it every 5 s. */
+  #raiseOnce(waiting: ProviderWaiting, kind: string, message: string): void {
+    if (waiting.raised.has(kind)) return
+    waiting.raised.add(kind)
+    this.#providerAlert(message)
+  }
+
+  #announceSwitch(event: ResidentProviderSwitchEvent): void {
+    try {
+      this.#options.onProviderSwitched?.(event)
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+
+  /** Rewrite the waiting block only when what it says has changed. */
+  #writeWaiting(waiting: ProviderWaiting, inFlight: ResidentInFlight): void {
+    const key = JSON.stringify([inFlight, waiting.alertedAt])
+    if (key === waiting.statusKey) return
+    waiting.statusKey = key
+    this.#writeSwitchStatus({
+      waiting: {
+        requestId: waiting.requestId,
+        since: new Date(waiting.since).toISOString(),
+        inFlight,
+        alertedAt:
+          waiting.alertedAt === null
+            ? null
+            : new Date(waiting.alertedAt).toISOString(),
+      },
+    })
+  }
+
+  #switchOutcome(
+    outcome: string,
+    requestId: string | null,
+    sessions: 'keep' | 'reset' | null,
+    detail: string | null,
+  ): NonNullable<ResidentProviderSwitchStatus['last']> {
+    return {
+      at: new Date(this.#providerNow()).toISOString(),
+      outcome,
+      requestId,
+      sessions,
+      detail,
+    }
+  }
+
+  #readSwitchStatus(): ResidentProviderSwitchStatus | undefined {
+    if (this.#switchStatus !== undefined) return this.#switchStatus
+    try {
+      const parsed: unknown = JSON.parse(
+        readFileSync(occConfigPath('resident', PROVIDER_SWITCH_FILE), 'utf8'),
+      )
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        (parsed as { v?: unknown }).v === 1
+      ) {
+        this.#switchStatus = parsed as ResidentProviderSwitchStatus
+      }
+    } catch {
+      // Missing or unreadable: nothing has been reconciled.
+    }
+    return this.#switchStatus
+  }
+
+  #writeSwitchStatus(
+    update: Partial<
+      Pick<
+        ResidentProviderSwitchStatus,
+        'waiting' | 'last' | 'reconciledRequestId'
+      >
+    >,
+  ): void {
+    const current = this.#readSwitchStatus()
+    const next: ResidentProviderSwitchStatus = {
+      v: 1,
+      pid: process.pid,
+      updatedAt: new Date(this.#providerNow()).toISOString(),
+      waiting:
+        update.waiting !== undefined
+          ? update.waiting
+          : (current?.waiting ?? null),
+      last: update.last !== undefined ? update.last : (current?.last ?? null),
+      reconciledRequestId:
+        update.reconciledRequestId !== undefined
+          ? update.reconciledRequestId
+          : (current?.reconciledRequestId ?? null),
+    }
+    try {
+      const path = occConfigPath('resident', PROVIDER_SWITCH_FILE)
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+      chmodSync(dirname(path), 0o700)
+      writePrivateFileAtomicSync(path, `${JSON.stringify(next, null, 2)}\n`)
+      this.#switchStatus = next
+    } catch (error) {
+      this.#options.onError?.(error)
+    }
+  }
+}
+
+/** See {@link ResidentProviderSwitchStatus}. */
+const PROVIDER_SWITCH_FILE = 'provider-switch.json'
+
+const IDLE: ResidentInFlight = {
+  turns: 0,
+  queued: 0,
+  tasks: 0,
+  deliveries: 0,
+  polls: 0,
+  admissions: 0,
+  starting: false,
+}
+
+interface ProviderWaiting {
+  readonly since: number
+  readonly requestId: string | null
+  /** Alert kinds already raised for this intent. */
+  readonly raised: Set<string>
+  alertedAt: number | null
+  /** What the status file last said, to skip identical rewrites. */
+  statusKey: string
+}
+
+function describeInFlight(work: ResidentInFlight): string {
+  const parts: string[] = []
+  if (work.turns > 0) parts.push(`${work.turns} turn running`)
+  if (work.queued > 0) parts.push(`${work.queued} queued`)
+  if (work.tasks > 0) parts.push(`${work.tasks} task(s) unanswered`)
+  if (work.admissions > 0) parts.push(`${work.admissions} admission(s) open`)
+  if (work.deliveries + work.polls > 0) parts.push('a delivery in progress')
+  if (work.starting) parts.push('a generation starting')
+  return parts.join(', ')
+}
+
+function managedHashOf(node: ResidentProviderNode): string | undefined {
+  try {
+    return node.currentManagedHash()
+  } catch {
+    return undefined
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
