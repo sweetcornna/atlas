@@ -275,6 +275,72 @@ const ROWS: ParityRow[] = [
     source: 'hermes hermes_cli/providers.py:650-654',
   },
 
+  // ── #11: max_tokens or max_completion_tokens on the chat lane ──
+  // maxOutputTokensOverride makes the cap explicit, so these rows keep a cap
+  // to name whatever #3 decides for an unknown model.
+  ...(
+    [
+      [
+        'o3-mini',
+        GATEWAY,
+        true,
+        'hermes utils.py:871-903 (o-series, any host)',
+      ],
+      [
+        'openai/o4-mini',
+        'https://openrouter.ai/api/v1',
+        true,
+        'hermes utils.py:893-894 (vendor prefix)',
+      ],
+      [
+        'gpt-5.4',
+        OFFICIAL,
+        true,
+        'baseline 1b477a37 (Codex lineage, official)',
+      ],
+      [
+        'gpt-6-luna',
+        OFFICIAL,
+        true,
+        'hermes run_agent.py:1631-1636 (official host)',
+      ],
+      ['gpt-5.4', AZURE, true, 'hermes run_agent.py:1631-1636 (Azure host)'],
+      [
+        'gpt-4o',
+        OFFICIAL,
+        false,
+        'pinned by thinking.test.ts (narrowed, see outputTokenParam.ts)',
+      ],
+      [
+        'gpt-5.4',
+        GATEWAY,
+        false,
+        'pinned by thinking.test.ts (narrowed, see outputTokenParam.ts)',
+      ],
+      ['glm-5.2', GATEWAY, false, 'baseline 1b477a37'],
+    ] as const
+  ).map(
+    ([model, baseURL, newName, source]): ParityRow => ({
+      id: `11-${model.replace('/', '_')}-${new URL(baseURL).hostname}`,
+      vendor: 'chat lane output-cap name',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      maxOutputTokensOverride: 4096,
+      expect: {
+        path: '/chat/completions',
+        present: newName
+          ? { max_completion_tokens: 4096 }
+          : { max_tokens: 4096 },
+        absent: [newName ? 'max_tokens' : 'max_completion_tokens'],
+      },
+      source,
+    }),
+  ),
+
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
   // Baseline captured from 1b477a37 through this same stub:
   // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt

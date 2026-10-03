@@ -9,7 +9,6 @@ import {
   isEnvDefinedFalsy,
 } from '../../../utils/config/envUtils.js'
 import { logForDebugging } from '../../../utils/telemetry/debug.js'
-import { isCodexFamilyModel } from '../../../utils/model/chatgptModels.js'
 import {
   buildDeepSeekThinkingFields,
   capDeepSeekTools,
@@ -17,7 +16,7 @@ import {
   resolveDeepSeekReasoningEffort,
   resolveDeepSeekTemperature,
 } from '../../../utils/model/deepseekTuning.js'
-import { isOfficialOpenAIBaseURL } from './openaiShared.js'
+import { usesMaxCompletionTokens } from '../../qianmo/modelCompat/outputTokenParam.js'
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -129,8 +128,7 @@ export function buildOpenAIRequestBody(params: {
     reasoningEffort,
     effortValue,
   } = params
-  const useMaxCompletionTokens =
-    isOfficialOpenAIBaseURL(baseURL) && isCodexFamilyModel(model)
+  const useMaxCompletionTokens = usesMaxCompletionTokens(model, baseURL)
 
   // Everything DeepSeek-specific hangs off this one predicate; when it is
   // false the body below is byte-identical to what it has always been.
