@@ -79,6 +79,8 @@ v0.1 写「今天控制台上的注册活不过 90 s」，那是修复前的状�
 
 P15.2 剩下的是：生命周期状态、操作主体、两个出口的暂停检查、登记簿读失败时的 fail-closed（§3.6）。
 
+（2026-10-03 补记：这几项已实现，出口按 §3.6 是对话、唤醒、`qm watch` 三个，见 §6 P15.2 行与 `console.md` §7.3.1–§7.3.3。）
+
 ---
 
 ## §1 M1 主体模型（A′）
@@ -364,7 +366,7 @@ M1 判据（roadmap「按人计量与控制台上限」行）：**跨账号越�
 | 包 | 目标 | 依赖 | DoD（可机检） | 估算 |
 |---|---|---|---|---|
 | **P15.1** ⚖️ 设计定稿与范围回写 | 本文 v1.0；章程、roadmap、beta-env 回写 | 无 | 本文文首为 v1.0；章程版本号升一（v2.19）且 N-2 行含 A′ 解禁范围、仍不解禁清单与签字栏；roadmap 方向表「多租户与配额雏形」拆为 M1 / M2 两行、M1 行判据为「跨账号越权用例全部被拒」、M1 节出现 P15.1–P15.10 指针；`beta-env.md` §0 #4 与 §3.1 含改写注、§3.6 含告知；`git grep -n "P15\.[0-9]"` 只命中本文、roadmap、章程、beta-env、两份相邻设计，以及 P15.2 持久化已落地的三处（`console.md` §7.3、`src/cli/handlers/consoleRegistrations.ts` 头注释、验收场景 `demo/lib/acceptance/scenarios/console.ts`）。**`console.md` §8.1 的改写注未做**（本批不改该文件），下次触及 `console.md` 时补 | 4–8 |
-| **P15.2** 注册持久化与生命周期 | 持久化**已完成**（`fe5bd71c`、`4d55cd1f`、`9e78e99a`）；剩暂停、恢复、退役、操作主体、出口检查 | P15.1 | 登记簿记状态与操作主体；`paused` 后对话、唤醒、`qm watch` 三个出口对该地址的发起次数为零（手写假端口计数）；`retired` 地址再注册被拒；登记簿读失败时一切注册与恢复被拒且进程告警（负向用例）；地址不在托管清单里的注册被拒；`@qianmo/registry` 的 HTTP 路由表零改动（快照断言）；既有 `consoleRegistrations.test.ts` 全绿 | 8–16 |
+| **P15.2** 注册持久化与生命周期 | 持久化**已完成**（`fe5bd71c`、`4d55cd1f`、`9e78e99a`）；暂停、恢复、退役、操作主体、出口检查、读失败 fail-closed **已完成**（2026-10-03，分支 `feat/p15-2-lifecycle`；`console.md` §7.3.1–§7.3.3） | P15.1 | 登记簿记状态与操作主体；`paused` 后对话、唤醒、`qm watch` 三个出口对该地址的发起次数为零（手写假端口计数）；`retired` 地址再注册被拒；登记簿读失败时一切注册与恢复被拒且进程告警（负向用例）；地址不在托管清单里的注册被拒；`@qianmo/registry` 的 HTTP 路由表零改动（快照断言）；既有 `consoleRegistrations.test.ts` 全绿。**完成情况（2026-10-03）**：以上每条都有用例——状态与主体、旧文件兼容、退役、托管清单、读失败（坏文件 / 权限 / IO 各一条，另有坏行、地址重复、写失败）、三个出口计数与去掉检查的对照组、`qm watch` 与 `qm console` 真进程各一条，在 `src/cli/handlers/__tests__/consoleLifecycle.test.ts`；四类主体的写路由权限与「一次写恰好一条账」在 `packages/console/test/lifecycle.test.ts`；路由表快照在 `packages/registry/test/routeTable.test.ts`；`consoleRegistrations.test.ts` 未改、全绿。告警只进 stderr（告警页没有这一类来源）；`--register` 种子在注册中心层会被 `p81-registry` 续回来，只靠出口检查挡（`console.md` §7.3.3） | 8–16 |
 | **P15.3** 邀请令牌 | §3.1 | P15.1 | `GET` 邀请页零次铸凭据（端口计数断言）；`POST` 过跨源检查，跨源 403 且邀请不被消耗；过期与二次使用均 403 且不消耗；存储只有哈希；页面带 `Referrer-Policy: no-referrer`；未用邀请数超上限时签发被拒；扫描断言控制台代码与落盘物没有明文凭据字段；`resolveTokens` 零改动（对照单测） | 8–16 |
 | P15.4 | **挪 M2**：租户映射与控制台过滤（见 §9）。编号保留，不复用 | — | — | M2 重估 |
 | **P15.5** 账号最小形态 | §1.1、§3.2–§3.5 | P15.3 | 邀请开户端到端，驱动只用 HTTP、不起 CLI 子进程；账号库或会话表有一条坏行时控制台拒绝服务并告警（负向用例，含「坏的 `revoked` 行」）；登录换新 sid、客户端带来的 sid 被忽略、`/logout` 后服务端会话不存在；闲置 2 h 与绝对 12 h 各一条 `ManualClock` 用例；吊销后下一个请求 401、该主体 SSE 连接数为零；个人凭据出现在 `?token=` 时被拒、页面脚本不写 `localStorage`（扫描断言）；cookie 属性断言（`HttpOnly; Secure; SameSite=Strict`，只含会话 id）；break-glass 四条限制各一条用例；`legacy:view` 看不到任何会话；`principalOf`、`ownerOf` 从包入口导出并有契约单测 | 28–44 |

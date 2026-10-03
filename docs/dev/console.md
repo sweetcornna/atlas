@@ -87,7 +87,7 @@ open         http://127.0.0.1:38613/?token=Zk3q…（32 字符）
 view-token   Zk3q…
 admin-token  9pR7…
 registry     http://127.0.0.1:38610
-ledger       /Users/you/.qianmo/qianmo/console/registrations.json (0 renewed by this console)
+ledger       /Users/you/.qianmo/qianmo/console/registrations.json (0 renewed by this console, 0 paused, 0 retired; managed list off (no --managed))
 audit-trails default=/Users/you/.qianmo/qianmo/audit/trail.ndjson
 wake         disabled (no --wake-url)
 chat         disabled (no --chat-url)
@@ -95,8 +95,9 @@ label        127.0.0.1:38613
 sourceCommit 4c6bedeae5138fda82b90b81b3ebce20917734db
 ```
 
-`open` 那一行是可以直接点开的——token 就在查询串里。`ledger` 那一行是登记簿的位置和
-启动时簿里有几条（§7.3）。
+`open` 那一行是可以直接点开的——token 就在查询串里。`ledger` 那一行是登记簿的位置、
+启动时簿里各状态几条、托管清单开没开（§7.3）；登记簿读不出来时，这一行末尾多一段
+`UNAVAILABLE: <原因>`，那时页面上的发布与恢复一律被拒、对话与唤醒谁都不拨（§7.3.2）。
 
 **`sourceCommit` 是这份产物的来源 commit**（issue #70），40 位全 SHA，工作树脏时带
 `-dirty` 后缀。舰队上的部署树没有 `.git`、`dist/` 的几百个 chunk 里找不到 SHA、入口里
@@ -167,6 +168,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--port <0-65535>` | `38613` | `0` = 让内核挑一个空端口，真实端口打印在 `console` 那一行。默认值避开了 demo-env.md §2.4 的 38610/38611/38612 |
 | `--hostname <host>` | `127.0.0.1` | 绑哪个地址。**非回环地址会强制要求显式 token**（§4.2） |
 | `--registry <url>` | `http://127.0.0.1:38610` | 注册中心 HTTP v0 基址，`http`/`https`。尾斜杠会被去掉 |
+| `--managed <地址>=<端点>` | 无 | 托管清单的一行（P15.2，§7.3.1）：中枢 `peers.conf` 里的一个地址，和告诉注册中心的那个端点。**可重复**，同一地址至多一次；地址按协议包校验，端点只查非空（规矩住在注册中心，发布时它会如实拒绝）。给了任何一条，页面上的发布与恢复只认清单里的地址、端点从这里取；不给就不查，横幅 `ledger` 行写 `managed list off`。`beta-up.sh` 的 host 腿把 `peers.conf` 每条地址行都传进来 |
 | `--registry-token-file <绝对路径>` | 无 | 注册中心写 token（P15.8，§8.2）。给了以后续租者与页面转发的写请求（注册、注销、心跳）带 `Authorization: Bearer`，读请求不带。文件规矩同 `--view-token-file`；启动横幅多一行 `write-token`，只报路径。注册中心没开写 token 时它不看这个头，所以控制台可以先启用 |
 | `--trust <node>=<公钥>` | 无 | 见证锚点验签用的节点公钥，**可重复**，同一节点给两把不同的公钥当场报错（K-11 F-3，§8.3）。与 `--trust-ca` 一起是验签公钥仅有的两个来源；**`--anchors` 给了而两者都没给，控制台拒绝启动**。名册里的 `publicKey` 不再用于验签 |
 | `--audit <node>=<绝对路径>` | `auditTrailPath()` | 审计链来源，**可重复**。节点名遵循协议段：1–64 个小写字母、数字、`_`、`-`，且首尾为字母或数字；路径必须绝对。旧的单个 `<绝对路径>` 仅能单独使用，显示为 `default` 节点 |
@@ -190,7 +192,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--view-token-file <绝对路径>` | 无 | 从文件读只读凭据。**必须是绝对路径**；**权限必须 0600 或更严**（group/other 任一位不为零就拒绝启动），尾部换行会被去掉 |
 | `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
 | `--view-token <token>` | 环回时自动生成 | 只读凭据。**三个入口里优先级最低，且它会出现在这台机器每一份进程列表里**（见下） |
-| `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒）凭据，暴露面同上 |
+| `--admin-token <token>` | 环回时自动生成 | 读 + 写（注册/注销/心跳/唤醒/暂停/恢复/退役）凭据，暴露面同上 |
 | `-h`, `--help` | — | 打印选项表并退出。**排在身份校验与运行时断言之前**——问「这个命令怎么用」的人，恰恰是还没把 `OCC_IDENTITY=qianmo` 配对的那个人。Usage 那一行回显的是**你敲的名字**，见下 |
 
 `Usage:` 那一行、以及未知选项报错末尾那句「run … console --help 看列表」，命令名都取自
@@ -352,6 +354,9 @@ URL（或页面留空）；多目标模式要求页面给出一个允许的节�
 `qianmo://<该节点>/` 开头，浏览器提交的 URL 会被丢弃并由服务端替换为白名单 URL。
 否则这个端口等于「任何拿到 admin token 的人都能让本机往任意 ws 地址发一条带 PSK
 握手的消息」，而 admin token 的门槛远低于「能改本机的 systemd 单元」。
+
+**白名单之后还有登记簿那一道**（P15.2，§7.3.2）：`to` 是暂停或退役的地址、或登记簿读不
+出来时，唤醒在拨号之前就以 `rejected` 被拒。
 
 页面上能排的延时上限是 **60 s**：`executeResidentWake` 是先等够再发，而它是在一个
 HTTP 请求里被调用的——十分钟的定时唤醒等于一个挂十分钟的请求。真要排长定时器，用
@@ -564,9 +569,13 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
 | GET | `/v0/agents` | view | 名册 |
-| POST | `/v0/agents` | **admin** | 注册。注册中心收下后入登记簿，由本控制台续租（§7.3） |
-| DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条 |
-| POST | `/v0/agents/<地址>/heartbeat` | **admin** | 续租 |
+| POST | `/v0/agents` | **admin** | 注册（发布）。先过登记簿的规矩——托管清单、退役与暂停的地址不收、登记簿读不出来不收（§7.3.1）——注册中心收下后入登记簿、记操作主体，由本控制台续租。响应体仍是注册中心那条记录 |
+| DELETE | `/v0/agents/<地址>` | **admin** | 注销。先出登记簿、停止续租，再删注册中心那条；暂停与退役的条目留在簿里 |
+| POST | `/v0/agents/<地址>/heartbeat` | **admin** | 续租。暂停、退役、登记簿读不出来时被拒 |
+| POST | `/v0/agents/<地址>/pause` | **admin** | 暂停（§7.3.1）：簿里写 `paused`，停止续租，删注册中心那条；对话、唤醒、`qm watch` 不再拨它。无请求体，响应 `{ registration, agent? }`。没接生命周期时 501 |
+| POST | `/v0/agents/<地址>/resume` | **admin** | 恢复：簿里写回 `active`，同发布那样重新注册并续租。同上 |
+| POST | `/v0/agents/<地址>/retire` | **admin** | 退役：簿里写 `retired`，删注册中心那条；这个地址从此不再发布、不再恢复。同上 |
+| GET | `/v0/registrations` | view | 登记簿：`{ problem, managed, registrations: [{ address, state, at?, by?, managed? }] }`。`by`（谁改的）只给能写的人，与告警确认同一条规矩。没接生命周期时 501 |
 | GET | `/v0/audit?…` | view | 审计记录（过滤见下） |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
 | POST | `/v0/wake` | **admin** | 唤醒 |
@@ -801,6 +810,9 @@ PSK 与身份、把 `qianmo://<console>/<operator>` 注册进注册中心——�
 
 端点在比较之前一律归一（`normalizeChatEndpoint`）：`ws://h:p` 与 `ws://h:p/` 是同一个
 端点；不是 `ws`/`wss` 的一概不认。
+
+**名单之外还有登记簿那一道**（P15.2，§7.3.2）：登记簿里暂停或退役的地址、以及登记簿读不
+出来时的每一个地址，在 `endpointFor` 之前就被拒，目标清单里同样标成不可拨。
 
 页面上「不在名册」与「名册不可达」是**两个不同的答案**，不合并成一个灰点：前者是注册
 中心答了而这个地址不在里面（有人把它注销了，下一次发送会失败），后者是根本没人问到，
@@ -1161,19 +1173,21 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 `--register` 启动参数那批续租，节点从不拨号。于是没有任何东西替页面注册的条目续租。
 
 现在的做法是 `tenancy-m1.md` §0.4 所列 P15.2 的最小内核：**控制台保存一本登记簿，
-并替簿中条目续租，直到它们在页面上被注销。**暂停 / 恢复 / 退役、租户、操作主体都不在
-这一版里。
+并替簿中条目续租，直到它们在页面上被注销。**2026-10-03 起（P15.2 其余部分）每条还带
+生命周期状态与最近一次改它的操作主体：发布、暂停、恢复、退役见 §7.3.1，三个出口的检查
+见 §7.3.2。租户不在这一版里（M2，`tenancy-m1.md` §9）。
 
 | 动作 | 登记簿 | 注册中心 |
 | --- | --- | --- |
-| 页面注册（`POST /v0/agents`） | 注册中心收下才入簿；被拒或不可达不入簿，页面照常报错 | 原样转发 |
-| 续租（每 `renewIntervalFor(租约)`） | 不变 | 簿中每条整条重新 `POST /v0/agents` |
-| 页面注销（`DELETE /v0/agents/<地址>`） | 先出簿，停止续租 | 原样转发，立即删除。簿里有而注册中心答 404（租约已过或它刚重启）按成功返回 204 |
-| 页面心跳 | 不变 | 原样转发 |
-| 控制台启动 | 读回 | 端口绑上后立刻整簿宣告一轮，再按周期 |
+| 页面注册 / 发布（`POST /v0/agents`） | 先过 §7.3.1 的规矩；注册中心收下才入簿（`active`，记主体）；被拒或不可达不入簿，页面照常报错 | 原样转发 |
+| 续租（每 `renewIntervalFor(租约)`） | 不变 | 簿中每条 **`active`** 整条重新 `POST /v0/agents`；`paused` / `retired` 不续 |
+| 页面注销（`DELETE /v0/agents/<地址>`） | `active` 的先出簿，停止续租；`paused` / `retired` 的留在簿里，注销抹不掉它们 | 原样转发，立即删除。簿里有而注册中心答 404（租约已过或它刚重启）按成功返回 204 |
+| 页面心跳 | 不变；`paused` / `retired` 与登记簿读不出来时拒 | 原样转发 |
+| 暂停 / 恢复 / 退役 | 见 §7.3.1 | 暂停与退役 `DELETE`，恢复同发布 |
+| 控制台启动 | 读回；读不出来见 §7.3.2 | 端口绑上后立刻把簿中 `active` 的宣告一轮，再按周期 |
 
-**续租者放在控制台进程里，不放在注册中心宿主旁。**P15 草案（v0.1-draft，未评审）
-§3.6 写的是后者；这里按现有进程拓扑选了前者，留待 P15.1 评审一并裁定。理由：
+**续租者放在控制台进程里，不放在注册中心宿主旁。**P15 草案 v0.1 §3.6 写的是后者；
+这里按现有进程拓扑选了前者，`tenancy-m1.md` v1.0 §0.4 已采纳。理由：
 
 1. **意图归控制台。**「这一条是页面上注册的、要一直在」是持 admin token 的人做的决定。
    注册中心零鉴权（§8.2），把这份意图放到它那一侧，就是让任何够得着它端口的人一次
@@ -1204,11 +1218,15 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 
 **登记簿**落在 `<配置根>/qianmo/console/registrations.json`（`consoleArgs.ts` 的
 `consoleRegistrationsPath()`，从 `occConfigPath()` 派生，无命令行选项），形状是
-`{ "version": 1, "registrations": [{ address, endpoint, capabilities?, publicKey?, status? }] }`。
+`{ "version": 2, "registrations": [{ address, endpoint, capabilities?, publicKey?, status?, state?, by?, at? }] }`
+（读法与形状的唯一出处是 `src/cli/handlers/consoleRegistrationLedger.ts`）。`state` 缺席
+就是 `active`，`active` 也不写它；`by` / `at` 是最近一次改这一条的主体（与动作账本同一种
+写法：`u:…`、`legacy:admin`）与 epoch 毫秒，P15.2 之前写的条目没有。版本 1 的旧文件照读，
+全部按 `active`，下一次写盘时改写成版本 2；版本升到 2 是为了旧控制台：它读到带 `state`
+的版本 1 会把暂停与退役的条目当成要续租的重新发布，而版本不认识时它整份挪开、一条不续。
 写入复用注册中心的 `FileRegistryStore`：同目录临时文件 `wx` 创建、fsync、rename，0600。
-它与注册中心的表不同，是**意图**而不是软状态：读不动的文件（坏 JSON、版本不对）改名为
-`registrations.json.unreadable-<ISO 时间>` 留证，从空登记簿起，并在 stderr 说明；写失败
-不让请求失败，内存里那份照常续租，只在控制台重启时丢，同样在 stderr 说明。
+它与注册中心的表不同，是**意图**而不是软状态，所以**读不出来时不从空登记簿起**（那会把
+退役的地址重新放出去），见 §7.3.2。
 
 **已知边界**：
 
@@ -1217,7 +1235,106 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
   持有 token；续租者用 `--registry-token-file` 带上同一枚。
 - 两个控制台共用一个配置根时，登记簿最后写的赢，各自内存里的簿各续各的。一个配置根只起
   一个控制台。
-- 登记簿不记是谁注册的（§8.1，N-2）。
+- 登记簿只记**最近一次**改这一条的主体与时刻；谁在什么时候做过什么，在动作账本里
+  （P15.9，`agent.register` / `agent.pause` / `agent.resume` / `agent.retire` 各一条）。
+- 生命周期的其余边界见 §7.3.3。
+
+### 7.3.1 生命周期：发布、暂停、恢复、退役（P15.2）
+
+设计出处是 `tenancy-m1.md` §3.6。节点托管哪些 agent 由节点启动配置决定，控制台的这四个
+动作都**不碰节点**：它们改的是登记簿、注册中心那一条，以及三个出口拨不拨（§7.3.2）。
+
+**托管清单**是 `--managed <地址>=<端点>`（§3），今天唯一的来源是中枢 `peers.conf` 的地址
+行，也就是注册中心的 `--register` 种子；`beta-up.sh` 的 host 腿把每一条都传进来。给了
+清单，发布与恢复只认清单里的地址，端点从清单取——页面不必再填端点，填了就必须与清单一致
+（同一端点的不同写法照收）。**不给 `--managed` 就不查**，发布要像以前一样带端点，横幅
+`ledger` 行写 `managed list off`；这与写 token（P15.8）同一个先例：不配就是今天的行为。
+
+| 动作 | 路由 | 登记簿 | 注册中心 | 这一侧的拒绝（HTTP） |
+| --- | --- | --- | --- | --- |
+| 发布 | `POST /v0/agents` | 注册中心收下才写 `active`、主体、时刻 | `POST`，此后由控制台续租 | 读不出来或写不进去 503；不在托管清单 403；已退役 409；已暂停 409（用恢复）；端点与清单不一致 400 |
+| 暂停 | `POST /v0/agents/<地址>/pause` | **先**写 `paused`，从这一刻起出口不拨、续租者不碰 | **再** `DELETE`；失败只进 stderr，租约会自己到期 | 读不出来 503；簿里与清单里都没有 404；已退役 409 |
+| 恢复 | `POST /v0/agents/<地址>/resume` | 注册中心收下才写回 `active` | 同发布；有清单时用清单里的端点 | 读不出来或写不进去 503；簿里没有 404；已退役 409；已不在托管清单 403 |
+| 退役 | `POST /v0/agents/<地址>/retire` | **先**写 `retired` | **再** `DELETE` | 读不出来 503；簿里与清单里都没有 404 |
+
+- **退役不可逆。**退役的地址此后发布、恢复、暂停一律 409，控制台重启后仍然（它在簿里）；
+  页面注销也抹不掉它。要把这个地址重新放出去，只有运维手改登记簿这一条路。
+- **暂停与退役是收紧，不查托管清单**：簿里有的地址都可以停；清单里有、簿里还没有的地址
+  （从没在页面上发布过的种子）也可以停，簿里新添一条。暂停与退役重复做是幂等的。
+- **发布在路上时被暂停或退役**：注册中心回执回来之后再看一眼簿，那一个决定在后，收回这次
+  发布（`DELETE`）并按 409 回答。
+- **写失败**（盘满、目录只读）：这一次的变更在本进程里已经生效，请求照常成功，stderr
+  告警；此后不再接受发布与恢复（503）——写不进去的暂停重启后会丢，不能再在它上面叠放宽的
+  变更。暂停与退役照收，出口按内存里那份判。
+
+每个动作先过动作账本的准入（`ctx.admit()`），之后**恰好记一条**：`agent.register`（发布）、
+`agent.pause`、`agent.resume`、`agent.retire`，结局是 `ok`；这一侧拒的记 `refused` 加上面
+那个原因（`unavailable` / `unmanaged` / `retired` / `paused` / `not_found` / `invalid`）；交给
+注册中心、它没收的记 `failed` 加注册中心的码。角色不够的 403 不记，与其他写路由一样。
+四个动作都是 admin 等级：admin token，或个人 `ops` 账号；`viewer`、`member` 与 view token
+一律 403，端口零调用。HTTP 响应体的错误码仍是 `respond.ts` 那张封闭词表（503
+`unavailable`、403 与 409 `rejected`、404 `not_found`、400 `invalid`），具体原因在
+`message` 里与动作账本里。
+
+`GET /v0/registrations`（view）给页面读登记簿此刻的样子：`problem`（`null` 或原因）、
+`managed`（清单里的地址，没给清单是 `null`）、每条的 `address`、`state`、`at`、`managed`，
+以及 `by`——**只给能写的人**，与告警确认的 `by` 同一条规矩。页面本身是 P18.11 的事。
+
+### 7.3.2 出口检查与 fail-closed
+
+**三个出口拨号之前都问登记簿**，问的是同一句话（`consoleRegistrationLedger.ts` 的
+`exitRefusalOf`）：
+
+| 出口 | 在哪问 | 被拒时 |
+| --- | --- | --- |
+| 对话（`--chat-url`） | 对话端口的 `exitGate`，发一句话之前；目标清单里标成不可拨 | 那一轮 `rejected`，HTTP 400，文案「<地址> 已暂停 · …」 |
+| 唤醒（`--wake-url`） | `gateWakePort` 包在唤醒端口外面 | `POST /v0/wake` 400 `rejected`，同一句文案 |
+| 值守作业（`qm watch`） | 每次派发前**现读一遍**登记簿文件（只读，绝不改盘） | 不拨号、不签令牌；审计链记一条 `watch_fire`，`outcome: refused`，`code` 是 `agent_paused` / `agent_retired` / `registrations_unreadable`；这一刻按 `skipped` 退休，不算失败、不进退避；stderr 只在原因变了与恢复时各出一声 |
+
+**判法是黑名单**：簿里明确记成 `paused` / `retired` 的拒，其余放行。不在簿里的地址照常拨：
+今天舰队上的地址全是 `peers.conf` 种子，由注册中心宿主续租，大多从没进过控制台的登记簿。
+文案不带操作主体：对话面的成员也会看到它，「谁停的」属于动作账本。
+
+`qm watch` 读的是**它自己配置根下**的 `qianmo/console/registrations.json`——与作业页读
+调度状态目录同一条约定（§10.4）：`qm watch` 要跑在控制台的配置根上。启动时它打印读的是
+哪个文件；那里没有登记簿时，启动行改为点明「这个进程看不到任何暂停或退役」。
+
+**登记簿读不出来时 fail-closed。**读不出来有五种样子，处置是同一个：
+
+| 情形 | 文件怎么办 |
+| --- | --- |
+| 不是 JSON、不是对象、版本不认识、没有 `registrations` | 改名为 `registrations.json.unreadable-<ISO 时间>` 留证 |
+| 权限不够、IO 错误（例如路径是个目录） | 原地不动 |
+| 有一条形状不对，或同一地址出现两次 | 原地不动；读得出的 `active` 条目照常续租（不续它们，名册会无故掉人），但整本按读不出来处理——跳过一条写坏的 `retired` 就等于把那个地址放出去 |
+| 文件不在，同目录还躺着先前挪开的 `.unreadable-*` | 不动；重启也不会从空登记簿起 |
+
+无论哪种：**发布与恢复一律 503，暂停与退役也不收（任何写盘都会盖掉那份证据），本进程不再
+写这个文件，三个出口谁都不拨**，`qm watch` 同样按读不出来跳过每一个作业。stderr 立刻告警一行
+（`console registrations: … publishing and resuming are refused, and chat, wake and qm watch
+reach no agent, until the ledger is repaired and this console restarts`），横幅 `ledger`
+行末尾带 `UNAVAILABLE: …`，`GET /v0/registrations` 的 `problem` 写原因；之后有请求因此被拒
+时，每分钟最多再提醒一次——首次那一行没人会往回翻。
+
+**怎么恢复**：把修好的文件放回原处后重启控制台；或者确认要从空登记簿起，把
+`.unreadable-*` 移出这个目录再重启（与注册中心吊销清单「确认要丢弃它，把它移开后再启动」
+同一个先例）。`qm watch` 每次派发都现读，文件修好的下一刻就恢复，不用重启。
+
+### 7.3.3 生命周期的已知边界
+
+- **暂停与退役在注册中心那一层挡不住 `--register` 种子。**`p81-registry` 每 20 s 替
+  `peers.conf` 的地址续租，暂停一个种子地址时控制台的 `DELETE` 会在下一轮被它建回来，名册里
+  它仍然在。真正挡流量的是三个出口的检查，它们照样拒；但**名册不等于「可以拨」**，读名册
+  的人要看 `GET /v0/registrations` 的状态。要让种子从名册里也消失，今天只能从 `peers.conf`
+  删掉那一行并重启注册中心；装机面落地后由 `install` 决定（`tenancy-m1.md` §3.6）。
+- **在页面上发布一个种子地址，声明会和 `p81-registry` 那一份打架。**注册中心的
+  `register()` 缺省即清空，两边每 20 s 轮流写各自那一份，公钥、能力、状态在名册上来回变；
+  `p81-registry` 的种子可以带 `--public-key`，页面发布不带就会把它抹掉一轮。种子本来就在
+  名册上，不必发布；要暂停或退役它，直接用那两个动作（簿里没有也可以）。
+- **告警只进 stderr。**告警页（§10.4）今天没有「登记簿」这一类来源；运维看横幅、stderr 与
+  `GET /v0/registrations`。
+- **对话面的目标清单只说「不可拨」，不说为什么**；原因在发一句话时的那条拒绝里。
+- **出口只认地址，不认作业 URL 背后是谁。**`qm watch` 按作业的 `target` 判，`url` 指向的
+  节点上实际是不是那个 agent，它不知道（§10.1）。
 
 ## §8 已知边界
 
@@ -1384,7 +1501,8 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
 | `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现，以及告警页的 `NotifyPort` 与作业页的 `SchedulerPort`（§10.4） |
 | `src/cli/handlers/consoleAlertAcks.ts` | 告警确认记录的落盘：追加写、同一 id 第一条为准（§10.4） |
-| `src/cli/handlers/consoleRegistrations.ts` | 登记簿与续租者：页面注册入簿、按租约重新宣告、注销出簿；续租者为什么住在控制台进程里（§7.3） |
+| `src/cli/handlers/consoleRegistrations.ts` | 登记簿与续租者：页面注册入簿、按租约重新宣告、注销出簿；续租者为什么住在控制台进程里（§7.3）；生命周期的四个动作、托管清单、读不出来时的 fail-closed（§7.3.1–§7.3.2） |
+| `src/cli/handlers/consoleRegistrationLedger.ts` | 登记簿文件的读法与形状、三个出口共用的那一句判定（`exitRefusalOf`）；`qm watch` 只读这一个文件（§7.3.2） |
 | `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住。`qm watch --sign` 也复用它（§10.1.1） |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
 | `src/cli/handlers/consoleChatStore.ts` | 会话与转录的 NDJSON 落盘与 replay（§6.5） |
@@ -1605,6 +1723,9 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
   那里取，用例锁住往返。agent 自己发 `kind=task` 的通知，并恰好把 `dedupKey` 写成
   `<uuid>:<x>:start|failed` 的形状时，会被当成过程行。实际中不会发生；值守作业的告警
   应当用 `kind=watch`，这一类永远不会被当成过程行。
+- **页面上暂停、退役的目标被跳过**（P15.2，§7.3.2）。每次派发前现读控制台的登记簿，所以
+  `qm watch` 要跑在控制台的配置根上才看得到它；那里没有登记簿时，启动行会点明。跳过的那一刻
+  记 `watch_fire` / `refused`，调度状态里的结局是 `skipped`，作业页显示「已跳过」。
 - **读不到工作目录之外的文件**（§10.1.2）。需要读 `/var/log` 这类路径的作业，目前没有
   只读放宽的开关。
 
