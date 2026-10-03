@@ -74,6 +74,7 @@
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",
         "@qianmo/protocol": "workspace:*",
+        "@qianmo/providers": "workspace:*",
         "@qianmo/recall": "workspace:*",
         "@qianmo/registry": "workspace:*",
         "@qianmo/resident": "workspace:*",
@@ -335,6 +336,10 @@
     },
     "packages/protocol": {
       "name": "@qianmo/protocol",
+      "version": "0.0.0",
+    },
+    "packages/providers": {
+      "name": "@qianmo/providers",
       "version": "0.0.0",
     },
     "packages/recall": {
@@ -1073,6 +1078,8 @@
     "@qianmo/negotiation": ["@qianmo/negotiation@workspace:packages/negotiation"],
 
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
+
+    "@qianmo/providers": ["@qianmo/providers@workspace:packages/providers"],
 
     "@qianmo/recall": ["@qianmo/recall@workspace:packages/recall"],
 
