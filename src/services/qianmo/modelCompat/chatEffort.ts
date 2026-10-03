@@ -17,8 +17,9 @@
  *    off while a Codex reasoning model on chat kept sending it.
  *
  * Now the chat lane asks the same `modelSupportsEffort()`. The value is still
- * the chat mapping (`getChatReasoningEffort`: xhigh / max fold to high); which
- * key each vendor wants is P18.8's vendor table (hermes #14).
+ * the chat mapping (`getChatReasoningEffort`: xhigh / max fold to high),
+ * except for the targets in P18.8's vendor table (hermes #14,
+ * `effortVendors.ts`), which choose their own key and rungs.
  *
  * DeepSeek is the one exception, and it is not a new one: its ladder lives in
  * `requestBody.ts` (three rungs, only while thinking is on), and that code
@@ -29,6 +30,10 @@
 import { getChatReasoningEffort } from 'src/services/api/openai/reasoning.js'
 import { isDeepSeekTuningActiveForModel } from 'src/utils/model/deepseekTuning.js'
 import { modelSupportsEffort } from 'src/utils/model/effort.js'
+import { resolveChatVendorReasoning } from './effortVendors.js'
+
+/** A `reasoning_effort` value the chat lane can put on the wire. */
+type ChatWireReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
 
 /**
  * The gate: does a chat request for `model` carry `reasoning_effort` at all.
@@ -49,16 +54,40 @@ export function chatLaneSendsReasoningEffort(
  * the session-selected model — the same input the Responses lane uses.
  *
  * This is the chat half of a node's `effective.effortOnWire` (design §2.4):
- * P18.7's `status` should call it rather than re-deriving the rule.
+ * P18.7's `status` should call it rather than re-deriving the rule. Since
+ * P18.8 it is the value `requestBody.ts` actually sends, vendor table
+ * included — Kimi's `max`, Ollama's `none`, nothing for GLM before 5.2.
+ * `OPENAI_ENABLE_THINKING` is read, as the request builder reads it.
  */
 export function resolveChatReasoningEffort(
   model: string,
   appliedEffort: unknown,
   baseURL: string | undefined,
-): 'low' | 'medium' | 'high' | undefined {
-  return chatLaneSendsReasoningEffort(model, baseURL)
+): ChatWireReasoningEffort | undefined {
+  const generic = chatLaneSendsReasoningEffort(model, baseURL)
     ? getChatReasoningEffort(model, appliedEffort)
     : undefined
+  const vendor = resolveChatVendorReasoning({
+    model,
+    baseURL,
+    gatedEffort: generic,
+    effortValue: appliedEffort,
+  })
+  if (vendor === undefined) return generic
+  const value = vendor.reasoning_effort
+  return isChatWireReasoningEffort(value) ? value : undefined
+}
+
+function isChatWireReasoningEffort(
+  value: unknown,
+): value is ChatWireReasoningEffort {
+  return (
+    value === 'none' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'max'
+  )
 }
 
 /**

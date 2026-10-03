@@ -154,9 +154,7 @@ describe('Q-1 · chat gate = modelSupportsEffort', () => {
 
 describe('Q-1 · node capability report', () => {
   test('chatEffortHonorsOverride is true and backed by the gate', () => {
-    expect(getModelCompatCapabilities()).toEqual({
-      chatEffortHonorsOverride: true,
-    })
+    expect(getModelCompatCapabilities().chatEffortHonorsOverride).toBe(true)
     // The behaviour the flag promises: an override alone turns the key on.
     expect(resolveChatReasoningEffort(UNKNOWN, 'low', GATEWAY)).toBeUndefined()
     process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
