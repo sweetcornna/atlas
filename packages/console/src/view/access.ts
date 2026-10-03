@@ -966,7 +966,7 @@ export function renderActionLog(model: {
     entries =>
       table(
         '操作记录',
-        ['时间', '主体', '动作', '目标', '结果', 'requestId'],
+        ['时间', '主体', '动作', '目标', '结果', '请求 id'],
         entries
           .map(entry => actionRow(entry, model.names, model.now, model.self))
           .join(''),
@@ -1020,7 +1020,7 @@ export function renderReads(model: {
     entries =>
       table(
         '谁读了我的对话',
-        ['时间', '读者', '对话', 'requestId'],
+        ['时间', '读者', '对话', '请求 id'],
         entries
           .map(
             entry =>
@@ -1079,4 +1079,5 @@ export const ACCESS_PAGE_CSS = `
 .invite-link { padding: var(--space-4); }
 .invite-link[hidden] { display: none; }
 .pager { justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); }
+#actions-refresh { display: inline-flex; align-items: center; gap: 4px; }
 `
