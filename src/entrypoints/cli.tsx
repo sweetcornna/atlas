@@ -426,4 +426,8 @@ async function main(): Promise<void> {
 }
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
-await main();
+await main().catch(async (error: unknown) => {
+  // qianmo P18.12 (F5): print and exit 1 — src/services/qianmo/startupFailure.ts.
+  const { exitOnStartupFailure } = await import('../services/qianmo/startupFailure.js');
+  exitOnStartupFailure(error);
+});
