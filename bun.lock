@@ -298,6 +298,14 @@
       "name": "@qianmo/diagnosis",
       "version": "0.0.0",
     },
+    "packages/handoff": {
+      "name": "@qianmo/handoff",
+      "version": "0.0.0",
+      "dependencies": {
+        "@open-claude-code/tool-runtime": "workspace:*",
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/image-processor-napi": {
       "name": "image-processor-napi",
       "version": "1.0.0",
@@ -1067,6 +1075,8 @@
     "@qianmo/console": ["@qianmo/console@workspace:packages/console"],
 
     "@qianmo/diagnosis": ["@qianmo/diagnosis@workspace:packages/diagnosis"],
+
+    "@qianmo/handoff": ["@qianmo/handoff@workspace:packages/handoff"],
 
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 
