@@ -18,6 +18,7 @@
  */
 
 import type { ConsoleAgent, ConsoleResult } from '../deps.js'
+import { nodeCount } from '../view/agents.js'
 import type { Tone } from '../view/bits.js'
 import {
   renderShell,
@@ -144,11 +145,15 @@ function visibleTo(module: RouteModule, ctx: RouteContext): boolean {
   return true
 }
 
-/** How many agents the registry lists, or nothing when it could not say. */
+/**
+ * How many nodes the registry lists — nodes, not agents (A5): three agents
+ * on two machines is 2 beside 节点. Nothing when the registry could not say,
+ * rather than a 0 that reads as "no nodes".
+ */
 function nodesCount(
   listed: ConsoleResult<readonly ConsoleAgent[]>,
 ): number | undefined {
-  return listed.ok ? listed.value.length : undefined
+  return listed.ok ? nodeCount(listed.value) : undefined
 }
 
 /** The sidebar for this caller, with the counts that are honest to show. */

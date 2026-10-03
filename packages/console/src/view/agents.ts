@@ -666,6 +666,16 @@ export function renderNodeSummary(
   )
 }
 
+/**
+ * How many nodes the agents run on: the number the sidebar prints beside
+ * 节点. Grouped the way the roster groups its cards, so the count and the
+ * cards under it can never disagree; the agent total is the overview's
+ * 智能体 card, a different number with a different name.
+ */
+export function nodeCount(agents: readonly ConsoleAgent[]): number {
+  return groupByNode(agents).length
+}
+
 /** The agents registered under one bare node name, in registry order. */
 export function agentsOfNode(
   agents: readonly ConsoleAgent[],

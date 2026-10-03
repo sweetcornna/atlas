@@ -36,6 +36,7 @@ import {
 } from '../src/assets/pageScripts.js'
 import {
   deregisterConfirm,
+  nodeCount,
   registerDialog,
   renderNodeSummary,
   renderRoster,
@@ -2560,5 +2561,20 @@ describe('copy discipline', () => {
     // What is unavailable, and the exact name of the thing to go and set.
     expect(disabled).toContain('唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK')
     expect(visibleText(disabled)).not.toContain('。')
+  })
+})
+
+describe('nodeCount', () => {
+  test("counts machines, not agents, by the roster's own grouping", () => {
+    expect(nodeCount([])).toBe(0)
+    expect(
+      nodeCount([
+        agent({ address: 'qianmo://node-a/one' }),
+        agent({ address: 'qianmo://node-a/two' }),
+        agent({ address: 'qianmo://node-b/one' }),
+      ]),
+    ).toBe(2)
+    // An address that does not parse is its own group, as on the roster.
+    expect(nodeCount([agent({ address: 'garbage' })])).toBe(1)
   })
 })

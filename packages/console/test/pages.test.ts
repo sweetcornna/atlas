@@ -413,6 +413,30 @@ describe('the shell around every page', () => {
     }
   })
 
+  test('the count beside 节点 is nodes, not agents (A5)', async () => {
+    // Three agents on two machines. The overview's 智能体 card says 3; the
+    // sidebar item named 节点 says 2.
+    const h = harness()
+    const html = await (await h.handle(browse('/', ADMIN))).text()
+    expect(html).toContain(
+      '<span class="nav-label">节点</span><span class="cnt">2</span>',
+    )
+    expect(html).toContain('<div class="card-kicker">智能体</div>')
+    expect(html).toContain('<div class="stat-num">3</div>')
+    // An empty registry is 0; an unreadable one is no number at all.
+    h.registry.listResult = { ok: true, value: [] }
+    expect(await (await h.handle(browse('/', ADMIN))).text()).toContain(
+      '<span class="nav-label">节点</span><span class="cnt">0</span>',
+    )
+    h.registry.listResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: '连接被拒绝' },
+    }
+    expect(await (await h.handle(browse('/', ADMIN))).text()).toContain(
+      '<span class="nav-label">节点</span></a>',
+    )
+  })
+
   test('the conversation is not offered to a token that may not open it', async () => {
     const h = harness()
     const asView = await (await h.handle(browse('/', VIEW))).text()
