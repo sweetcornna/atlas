@@ -719,6 +719,23 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'chat.transcript.open': '打开转录',
   'breakglass.request': 'break-glass 请求',
   'alert.ack': '确认告警',
+  'handoff.accept': '登记接力',
+  'handoff.send': '追加接力消息',
+  'provider.save': '保存模型服务',
+  'provider.delete': '删除模型服务',
+  'provider.secret.set': '设置密钥',
+  'provider.secret.clear': '清除密钥',
+  'provider.default.set': '设全局默认',
+  'provider.assign': '指派模型服务',
+  'provider.context.set': '设上下文窗口',
+  'provider.context.clear': '恢复默认上下文',
+  'provider.apply': '下发模型配置',
+  'provider.apply.force': '覆盖下发',
+  'provider.probe.auth': '测连',
+  'provider.probe.latency': '测速',
+  'provider.probe.call': '真实调用',
+  'provider.autocompact': '设自动压缩阈值',
+  'provider.import': '导入模型服务',
 }
 
 /** The account API's writes are one verb per method; the path says which. */
@@ -747,6 +764,8 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   accounts: '账号',
   breakglass: 'break-glass',
   alert: '告警',
+  handoff: '接力',
+  provider: '模型服务',
 }
 
 function families(): readonly (readonly [string, string])[] {
