@@ -31,8 +31,8 @@
  *
  * Which session: qmcode names its thread in every `tools/call` as
  * `params._meta.threadId` (`codex-rs/core/src/mcp_tool_call.rs`,
- * `with_mcp_tool_call_ids_meta`); when that thread has a rollout, it is the
- * one. Otherwise — Claude Code, or a thread not on disk — the session last
+ * `with_mcp_tool_call_ids_meta`; seen on a local debug build of the fork,
+ * 2026-10-03); when that thread has a rollout, it is the one. Otherwise — Claude Code, or a thread not on disk — the session last
  * reported from this directory (`sessions.json`, written by the hooks). The
  * environment's `CODEX_THREAD_ID` is not read: qmcode does not pass it to MCP
  * servers, and a Claude Code started from a qmcode shell inherits some other

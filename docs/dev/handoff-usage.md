@@ -7,7 +7,7 @@
 |---|---|
 | 版本 | v0.1（2026-10-03，随 P17.3 本仓库部分） |
 | 适用 | `qm handoff`（P17.4）与 `qm handoff mcp`（P17.3）；工作包与判据见 [`handoff-p17-plan.md`](./handoff-p17-plan.md) |
-| 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，**未在官方 Claude Code 上实测** |
+| 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写。qmcode 一侧 2026-10-03 用本机 debug 构建（fork `34e0d210ed`）加假 Responses 服务实测过 `qianmo_handoff` 回合内调用与审批；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，**未在官方 Claude Code 上实测** |
 
 ## 1. 先登记仓库
 
@@ -48,6 +48,20 @@ enabled = false
 只写 `enabled = false` 时，`qmcode mcp add`、`qmcode mcp remove` 会报 `invalid transport in 'qianmo'`。
 
 另外两点：自己写的 `notify` 会整个替换内置值，两者都要只能自写包装脚本；给 `[mcp_servers.qianmo]` 另写 `env_vars` 会替换内置值，要把 `QMCODE_HOME` 留在里面。
+
+**审批**：`qianmo_status`、`qianmo_task` 标为只读，qmcode 不问（读码）。`qianmo_handoff` 会把工作区推出本机，按 qmcode 的规则要审批：默认的 `on-request` 下会弹审批（读码，界面里未实测）；`approval_policy = "never"` 且不是完全访问时，qmcode 直接拒绝，模型看到 `MCP tool call requires approval, but approval policy is never`（实测）。这种配置下想让模型直接转交，给这个工具单独放行（实测用的是同义的命令行覆盖 `-c 'mcp_servers.qianmo.tools.qianmo_handoff.approval_mode="approve"'`，转交成功）。写进 `config.toml` 时同样连完整表一起写，理由同上：
+
+```toml
+[mcp_servers.qianmo]
+command = "qm"
+args = ["handoff", "mcp"]
+env_vars = ["QMCODE_HOME"]
+
+[mcp_servers.qianmo.tools.qianmo_handoff]
+approval_mode = "approve"
+```
+
+不想放行就用界面里的 `/handoff`，它不经过 MCP。
 
 ## 3. Claude Code：两行，自己写
 
