@@ -59,7 +59,7 @@ export class HandoffUserError extends Error {
 }
 
 /** `<config root>/qianmo/handoff/<segments>`. */
-export function handoffPath(...segments: string[]): string {
+function handoffPath(...segments: string[]): string {
   return occConfigPath('qianmo', 'handoff', ...segments)
 }
 
@@ -75,7 +75,7 @@ const FILE_MODE = 0o600
  */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-export function isHandoffName(value: string): boolean {
+function isHandoffName(value: string): boolean {
   return (
     value.length <= 64 &&
     NAME.test(value) &&
@@ -405,7 +405,7 @@ export async function saveProject(project: HandoffProject): Promise<void> {
 // ─── sessions.json (会话定位) ────────────────────────────────────────
 
 /** The last session a tool reported from one working directory. */
-export interface SessionLocation {
+interface SessionLocation {
   readonly cwd: string
   readonly tool: HandoffTool
   readonly sessionId: string

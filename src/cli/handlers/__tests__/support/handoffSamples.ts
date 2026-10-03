@@ -153,7 +153,7 @@ export function qmcodeRolloutPath(home: string, threadId: string): string {
 }
 
 /** How a Claude Code transcript ends. */
-export type ClaudeCodeEnding =
+type ClaudeCodeEnding =
   /** Final text, `stop_reason: end_turn`. */
   | 'complete'
   /** Last record is a `tool_use` the tool has not answered. */

@@ -69,7 +69,7 @@ import {
 } from './handoffTranscript.js'
 
 /** The sentence. Printed only after the hub answered `accepted`. */
-export const SAFE_TO_SHUT_DOWN = '已落地，可以关机'
+const SAFE_TO_SHUT_DOWN = '已落地，可以关机'
 
 const DEFAULT_GOAL = '接着本地会话，继续完成当前任务'
 const DEFAULT_DEADLINE_MS = 24 * 60 * 60 * 1000
@@ -160,7 +160,7 @@ function consoleError(answer: ConsoleAnswer): string {
   return `控制台回 ${answer.status}：${message}`
 }
 
-export interface NowOptions {
+interface NowOptions {
   readonly goal?: string
   readonly done?: string
   readonly remaining?: string
@@ -382,7 +382,7 @@ function describeTask(task: TaskLine): string {
   return `  ${task.taskId}  ${task.state.padEnd(10)} ${new Date(task.acceptedAt).toISOString()}  ${task.goal.slice(0, 60)}`
 }
 
-export interface StatusOptions {
+interface StatusOptions {
   readonly wait: boolean
   readonly taskId?: string
 }

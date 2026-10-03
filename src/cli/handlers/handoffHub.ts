@@ -179,7 +179,7 @@ export async function initHubRepository(
 // ─── Git against the hub ─────────────────────────────────────────────
 
 /** How to reach one project's bare repository. */
-export interface HubConnection {
+interface HubConnection {
   readonly url: string
   /** `GIT_SSH_COMMAND` for an SSH hub; empty for a local one. */
   readonly env: Readonly<Record<string, string>>
@@ -236,7 +236,7 @@ export function dfConflicts(
 }
 
 /** Run `use` with an empty directory to point `core.hooksPath` at. */
-export async function withoutHooks<T>(
+async function withoutHooks<T>(
   use: (hooksPath: string) => Promise<T>,
 ): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), 'qianmo-handoff-nohooks-'))

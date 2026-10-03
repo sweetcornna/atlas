@@ -46,7 +46,7 @@ import { HandoffUserError, sleep } from './handoffStore.js'
 
 // ─── Hook inputs ─────────────────────────────────────────────────────
 
-export interface ClaudeCodeHookInput {
+interface ClaudeCodeHookInput {
   readonly sessionId: string
   readonly transcriptPath: string
   readonly cwd: string
@@ -89,7 +89,7 @@ export function parseClaudeCodeHookInput(text: string): ClaudeCodeHookInput {
   }
 }
 
-export interface QmcodeNotify {
+interface QmcodeNotify {
   readonly threadId: string
   readonly turnId: string
   readonly cwd: string
@@ -291,7 +291,7 @@ export function claudeCodeTurnEnd(
 }
 
 /** What `now` may hand over of a qmcode rollout. */
-export type QmcodeSnapshot =
+type QmcodeSnapshot =
   | { readonly open: false; readonly end: number }
   | {
       readonly open: true

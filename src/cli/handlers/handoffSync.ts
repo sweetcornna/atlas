@@ -82,7 +82,7 @@ import {
 } from './handoffStore.js'
 
 /** The plan card's 5 s. */
-export const SYNC_DEBOUNCE_MS = 5_000
+const SYNC_DEBOUNCE_MS = 5_000
 
 /** A transcript prefix that has been checked complete. */
 export interface SessionSnapshot {
@@ -92,7 +92,7 @@ export interface SessionSnapshot {
   readonly content: Buffer
 }
 
-export interface SyncedSession {
+interface SyncedSession {
   readonly sessionId: string
   readonly ref: string
   readonly commit: string
@@ -100,7 +100,7 @@ export interface SyncedSession {
   readonly redactions: SessionRedactions | null
 }
 
-export interface SyncResult {
+interface SyncResult {
   readonly branch: string
   readonly head: string | null
   readonly wip: string
@@ -245,7 +245,7 @@ function lastPath(root: string): string {
 }
 
 /** What a hook checked and leaves for the drainer. */
-export interface PendingSync {
+interface PendingSync {
   readonly tool: HandoffTool
   readonly sessionId: string
   readonly file: string
@@ -312,7 +312,7 @@ export function takePending(root: string): PendingSync[] {
 }
 
 /** The checked prefix of a pending entry, or `null` when the file no longer has it. */
-export function snapshotOf(entry: PendingSync): SessionSnapshot | null {
+function snapshotOf(entry: PendingSync): SessionSnapshot | null {
   let content: Buffer
   try {
     content = readFileSync(entry.file)
@@ -328,7 +328,7 @@ export function snapshotOf(entry: PendingSync): SessionSnapshot | null {
   }
 }
 
-export interface LastSync {
+interface LastSync {
   readonly at: number
   readonly ok: boolean
   readonly wip?: string
@@ -401,7 +401,7 @@ export function mergeSnapshots(
   return out
 }
 
-export interface DrainOptions {
+interface DrainOptions {
   readonly debounceMs?: number
   readonly trigger: string
   readonly now?: () => number

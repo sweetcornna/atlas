@@ -68,16 +68,16 @@ export const HANDOFF_AUDIT_KINDS = [
 ] as const
 
 /** The hub's ledger: `<config root>/qianmo/handoff/ledger.ndjson`. */
-export function handoffLedgerPath(): string {
+function handoffLedgerPath(): string {
   return occConfigPath('qianmo', 'handoff', 'ledger.ndjson')
 }
 
 /** The hub's own audit chain for handoff events. */
-export function handoffAuditPath(): string {
+function handoffAuditPath(): string {
   return occConfigPath('qianmo', 'handoff', 'audit.ndjson')
 }
 
-export interface ConsoleHandoffOptions {
+interface ConsoleHandoffOptions {
   /** Directory holding `<project>.git`; the `--handoff-root` value. */
   readonly root: string
   readonly ledgerPath?: string
@@ -89,7 +89,7 @@ export interface ConsoleHandoffOptions {
   readonly onError?: (line: string) => void
 }
 
-export interface ConsoleHandoff {
+interface ConsoleHandoff {
   readonly port: HandoffPort
   readonly root: string
   readonly ledgerPath: string

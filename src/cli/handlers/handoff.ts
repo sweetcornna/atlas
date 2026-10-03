@@ -86,7 +86,7 @@ const RESERVED: Readonly<Record<string, string>> = {
   attach: 'P17.6',
 }
 
-export const HANDOFF_HELP_TEXT = `Usage: ${invokedBinName()} handoff <command> [options]
+const HANDOFF_HELP_TEXT = `Usage: ${invokedBinName()} handoff <command> [options]
 
 Hand the work in this repository over to the cloud: the work tree (including
 uncommitted and untracked, not ignored files) and the current qmcode or Claude
@@ -528,7 +528,7 @@ async function runStatusCommand(
 // ─── entry ───────────────────────────────────────────────────────────
 
 /** Dispatch `qm handoff <command>`; returns the exit code. */
-export async function dispatchHandoff(
+async function dispatchHandoff(
   args: readonly string[],
   cwd: string = process.cwd(),
   output: Output = PROCESS_OUTPUT,
