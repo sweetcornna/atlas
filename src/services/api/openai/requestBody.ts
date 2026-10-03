@@ -18,6 +18,7 @@ import {
 } from '../../../utils/model/deepseekTuning.js'
 import { usesMaxCompletionTokens } from '../../qianmo/modelCompat/outputTokenParam.js'
 import { omitsSamplingTemperature } from '../../qianmo/modelCompat/samplingParams.js'
+import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -179,7 +180,9 @@ export function buildOpenAIRequestBody(params: {
 
   return {
     model,
-    messages,
+    // qianmo P18.8 (hermes #4): history reasoning is kept, padded or stripped
+    // for THIS endpoint — src/services/qianmo/modelCompat/reasoningEcho.ts.
+    messages: applyReasoningReplayPolicy(messages, { model, baseURL }),
     ...(maxTokens === undefined
       ? {}
       : useMaxCompletionTokens

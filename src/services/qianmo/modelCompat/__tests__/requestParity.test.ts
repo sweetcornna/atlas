@@ -20,6 +20,7 @@
  * (`support/requestCapture.ts`): no network, a canary key.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import type { Message } from 'src/types/message.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
 import {
   type CaptureParams,
@@ -62,6 +63,8 @@ type ParityRow = {
   extraEnv?: Record<string, string>
   /** options.maxOutputTokensOverride. */
   maxOutputTokensOverride?: number
+  /** P18.8: history the request replays (default none). */
+  history?: Message[]
   expect: {
     /** Path the request went to. */
     path: '/chat/completions' | '/responses'
@@ -69,6 +72,11 @@ type ParityRow = {
     present?: Record<string, unknown>
     /** Keys that must be absent. */
     absent?: string[]
+    /**
+     * P18.8: per assistant message in `messages`, in order — keys with their
+     * exact value, or {@link ABSENT}.
+     */
+    assistants?: Record<string, unknown>[]
   }
   /** Where the expectation comes from (design § / hermes file:line / baseline). */
   source: string
@@ -93,8 +101,12 @@ function captureParams(row: ParityRow): CaptureParams {
     effortValue: row.effort.session,
     temperatureOverride: row.sideQuery ? 0 : undefined,
     maxOutputTokensOverride: row.maxOutputTokensOverride,
+    messages: row.history,
   }
 }
+
+/** `expect.assistants` value for "this key is not on the message". */
+const ABSENT = Symbol('absent')
 
 // ─── rows ────────────────────────────────────────────────────────────────────
 
@@ -104,6 +116,48 @@ const DEEPSEEK = 'https://api.deepseek.com'
 const AZURE = 'https://myres.openai.azure.com/openai/v1'
 /** DeepSeek's default is the Anthropic wire; these rows pin the chat lane. */
 const DEEPSEEK_CHAT_LANE = { CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE: '0' }
+
+/**
+ * P18.8 replay rows: a constructed conversation (not recorded) with one
+ * assistant turn of each shape hermes `message_sanitization.py:714-802`
+ * distinguishes — reasoning text, a tool call with no reasoning, and the
+ * empty reasoning DeepSeek returns when it answers directly.
+ */
+function replayHistory(): Message[] {
+  const user = (uuid: string, content: unknown): Message =>
+    ({
+      type: 'user',
+      uuid,
+      message: { role: 'user', content },
+    }) as unknown as Message
+  const assistant = (id: string, content: unknown[]): Message =>
+    ({
+      type: 'assistant',
+      uuid: `a-${id}`,
+      message: { id, role: 'assistant', content },
+    }) as unknown as Message
+  return [
+    user('u1', 'q1'),
+    assistant('m1', [
+      { type: 'thinking', thinking: 'chain', signature: '' },
+      { type: 'text', text: 'a1' },
+    ]),
+    user('u2', 'q2'),
+    assistant('m2', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]),
+    user('u3', [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]),
+    assistant('m3', [
+      { type: 'thinking', thinking: '', signature: '' },
+      { type: 'text', text: 'a2' },
+    ]),
+    user('u4', 'q3'),
+  ]
+}
+/** `reasoning_content` on the three replayed assistant turns, per side. */
+const STRICT_REPLAY = [ABSENT, ABSENT, ABSENT].map(v => ({
+  reasoning_content: v,
+}))
+const PADDED_REPLAY = ['chain', ' ', ' '].map(v => ({ reasoning_content: v }))
+const DEEPSEEK_REPLAY = ['chain', '', ''].map(v => ({ reasoning_content: v }))
 
 const ROWS: ParityRow[] = [
   // ── Q-1: chat lane effort gate = modelSupportsEffort (design §5.2) ──
@@ -535,6 +589,99 @@ const ROWS: ParityRow[] = [
     source: 'baseline 1b477a37 (Responses never sent it)',
   },
 
+  // ── #4 (P18.8): reasoning replay by target endpoint (design §5.4) ──
+  // hermes message_sanitization.py:655-664 family table, row by row.
+  ...(
+    [
+      ['mistral', 'mistral-large-latest', 'https://api.mistral.ai/v1'],
+      ['cerebras', 'llama-4-scout', 'https://api.cerebras.ai/v1'],
+      ['groq', 'llama-3.3-70b', 'https://api.groq.com/openai/v1'],
+      ['sambanova', 'Meta-Llama-3.3-70B', 'https://api.sambanova.ai/v1'],
+      ['openrouter-kimi', 'moonshotai/kimi-k3', 'https://openrouter.ai/api/v1'],
+      ['gateway', 'vendor-model-x', GATEWAY],
+      ['official', 'gpt-4.1', OFFICIAL],
+    ] as const
+  ).map(
+    ([label, model, baseURL]): ParityRow => ({
+      id: `4-strict-${label}`,
+      vendor: `strict side (${label})`,
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      history: replayHistory(),
+      expect: { path: '/chat/completions', assistants: STRICT_REPLAY },
+      source:
+        'hermes message_sanitization.py:630-653 (strict side: strip, even " ")',
+    }),
+  ),
+  ...(
+    [
+      ['moonshot-cn', 'kimi-k3', 'https://api.moonshot.cn/v1'],
+      ['moonshot-ai', 'kimi-k2.6', 'https://api.moonshot.ai/v1'],
+      ['kimi-code', 'k3', 'https://api.kimi.com/coding/v1'],
+    ] as const
+  ).map(
+    ([label, model, baseURL]): ParityRow => ({
+      id: `4-kimi-${label}`,
+      vendor: 'Kimi / Moonshot',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      history: replayHistory(),
+      expect: { path: '/chat/completions', assistants: PADDED_REPLAY },
+      source:
+        'hermes message_sanitization.py:655-664 kimi row (host-driven) + :788-798 pad',
+    }),
+  ),
+  ...(
+    [
+      ['official', 'mimo-v2.6-pro', 'https://api.xiaomimimo.com/v1'],
+      ['by-name', 'mimo-v2.6-flash', GATEWAY],
+    ] as const
+  ).map(
+    ([label, model, baseURL]): ParityRow => ({
+      id: `4-mimo-${label}`,
+      vendor: 'Xiaomi MiMo',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      history: replayHistory(),
+      expect: { path: '/chat/completions', assistants: PADDED_REPLAY },
+      source: 'hermes message_sanitization.py:655-664 mimo row + :726-753',
+    }),
+  ),
+  ...(
+    [
+      ['official', 'deepseek-v4-pro', DEEPSEEK],
+      ['by-name', 'deepseek-v4-flash', GATEWAY],
+    ] as const
+  ).map(
+    ([label, model, baseURL]): ParityRow => ({
+      id: `4-deepseek-${label}`,
+      vendor: 'DeepSeek',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      extraEnv: DEEPSEEK_CHAT_LANE,
+      history: replayHistory(),
+      expect: { path: '/chat/completions', assistants: DEEPSEEK_REPLAY },
+      source:
+        'hermes deepseek row; value kept at Qianmo "" (design §5.4, §5.10) — baseline 2799eac7',
+    }),
+  ),
+
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
   // Baseline captured from 1b477a37 through this same stub:
   // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt
@@ -584,6 +731,22 @@ describe('request parity (OpenAI-compatible lane)', () => {
       }
       for (const key of row.expect.absent ?? []) {
         expect({ key, present: key in body }).toEqual({ key, present: false })
+      }
+      if (row.expect.assistants) {
+        const assistants = (body.messages as Record<string, unknown>[]).filter(
+          m => m.role === 'assistant',
+        )
+        expect(assistants.length).toBe(row.expect.assistants.length)
+        row.expect.assistants.forEach((expected, i) => {
+          for (const [key, value] of Object.entries(expected)) {
+            const actual = assistants[i]!
+            expect({
+              turn: i,
+              key,
+              value: key in actual ? actual[key] : ABSENT,
+            }).toEqual({ turn: i, key, value })
+          }
+        })
       }
     })
   }
