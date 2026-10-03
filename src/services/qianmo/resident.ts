@@ -229,18 +229,6 @@ const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 5_000
 /** R-6: how long a pending intent waits for idle before it is reported. */
 const DEFAULT_PROVIDER_MAX_WAIT_MS = 30 * 60_000
 
-/**
- * How long a generation retired for a provider switch keeps running, already
- * cut off from deliveries, before it is sent SIGTERM.
- *
- * The child writes its transcript through a queue drained every 100 ms
- * (`transcriptWriter.ts`), and its SIGTERM handler exits without draining it
- * (`acp/entry.ts`). A switch fires exactly when a turn has just ended, so
- * without this the answer to that turn is missing from the session a `keep`
- * switch resumes — measured with the real child. Ten drain intervals.
- */
-const DEFAULT_PROVIDER_RETIRE_GRACE_MS = 1_000
-
 interface QianmoResidentOptions {
   readonly node: string
   readonly team: string
@@ -425,8 +413,6 @@ interface QianmoResidentOptions {
     readonly maxWaitMs?: number
     /** Clock for the wait above. Default `Date.now`. */
     readonly now?: () => number
-    /** Grace before a switch's old child is terminated. Default 1 s. */
-    readonly retireGraceMs?: number
   }
   /**
    * Something about the provider configuration an operator has to act on:
@@ -769,8 +755,6 @@ export class QianmoResident {
   #providerWaiting: ProviderWaiting | null = null
   /** In-memory copy of `provider-switch.json`, once read or written. */
   #switchStatus: ResidentProviderSwitchStatus | undefined
-  /** Set just before a switch's recycle; read once by the generation it stops. */
-  #retireForSwitch = false
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
@@ -2129,7 +2113,6 @@ export class QianmoResident {
         if (this.#runtime === runtime) this.#runtime = null
         poller?.stop()
         if (this.#poller === poller) this.#poller = null
-        const grace = this.#takeRetireGrace()
         await this.#failActiveTasks('resident ACP connection closed')
         // Both of these need the transport up. It is: the listener is owned by
         // `run()` now, not by this child, so it outlives every ACP restart and
@@ -2137,7 +2120,6 @@ export class QianmoResident {
         // the next `#startAcp`, which is why a child that could not start left
         // the node with no listener at all.
         await this.#drainReplyReceipts()
-        if (grace > 0) await new Promise(resolve => setTimeout(resolve, grace))
         if (
           !child.killed &&
           child.exitCode === null &&
@@ -2463,7 +2445,7 @@ export class QianmoResident {
       ),
       reconciledRequestId: result.requestId,
     })
-    if (via === 'switch') this.#recycleForSwitch()
+    if (via === 'switch') this.#supervisor.recycle()
     this.#announceSwitch({
       requestId: result.requestId,
       sessions: result.sessions,
@@ -2501,37 +2483,8 @@ export class QianmoResident {
     })
     if (changed) {
       this.#applySessionPolicy('reset')
-      this.#recycleForSwitch()
-    }
-  }
-
-  /**
-   * Recycle the running generation for a committed configuration. Its runtime
-   * is retired from deliveries at once (the generation's `stop()` does that
-   * before its first await); the process itself gets
-   * {@link DEFAULT_PROVIDER_RETIRE_GRACE_MS} to write its transcript out.
-   */
-  #recycleForSwitch(): void {
-    // The generation's `stop()` reads the flag before its first await, i.e.
-    // inside `recycle()`. Cleared after either way: a generation already
-    // stopping (a second commit inside the grace) never reads it, and a
-    // leftover flag would hand the grace to some later, unrelated stop.
-    this.#retireForSwitch = true
-    try {
       this.#supervisor.recycle()
-    } finally {
-      this.#retireForSwitch = false
     }
-  }
-
-  /** The grace the generation now stopping owes a switch; `0` otherwise. */
-  #takeRetireGrace(): number {
-    if (!this.#retireForSwitch) return 0
-    this.#retireForSwitch = false
-    return (
-      this.#options.providerSwitch?.retireGraceMs ??
-      DEFAULT_PROVIDER_RETIRE_GRACE_MS
-    )
   }
 
   /** `conflict`, `bad-pending` and `refused`: nothing was written. */

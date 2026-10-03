@@ -83,8 +83,18 @@ const PAGES: readonly PageRow[] = [
     active: 'audit',
     reads: ['class="hops"'],
   },
-  { path: '/alerts', title: '告警', active: 'alerts', reads: [STUB_LINE] },
-  { path: '/jobs', title: '值守作业', active: 'jobs', reads: [STUB_LINE] },
+  {
+    path: '/alerts',
+    title: '告警',
+    active: 'alerts',
+    reads: ['收件箱', 'id="alerts-filter"', 'id="alerts-unread"', '来源'],
+  },
+  {
+    path: '/jobs',
+    title: '值守作业',
+    active: 'jobs',
+    reads: ['调度器', '调度器心跳未接入', '急停'],
+  },
   {
     path: '/approvals',
     title: '审批',
@@ -246,10 +256,8 @@ describe('every page', () => {
 describe('placeholders', () => {
   const STUBS = ROUTES.filter(module => module.area.pending === true)
 
-  test('there are six, and each says so in one line and polls nothing', async () => {
+  test('there are four, and each says so in one line and polls nothing', async () => {
     expect(STUBS.map(module => module.area.id)).toEqual([
-      'alerts',
-      'jobs',
       'approvals',
       'providers',
       'access',
@@ -276,7 +284,7 @@ describe('placeholders', () => {
 
   test('nothing under a placeholder is a page', async () => {
     const { handle } = harness()
-    expect((await handle(browse('/alerts/x', ADMIN))).status).toBe(404)
+    expect((await handle(browse('/approvals/x', ADMIN))).status).toBe(404)
   })
 })
 

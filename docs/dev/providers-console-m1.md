@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.1（生效）**。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-7），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13 |
+| 文档版本 | **v1.2（生效）**。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13 |
 | 日期 | 2026-10-03 |
 | 核对基点 | origin/main `33dc81bf`（PR #154 的合入提交）。**本文自己引用的行号**都在这个提交上核过，清单见附 B。**从 hermes 调研 §11 转引的阡陌行号**按该调研的基线 `e123b2ec` 记，本文没有逐条在 `33dc81bf` 上复核 |
 | 本文范围 | **只有设计，不改代码。**范围回写与本版同批完成，记为 P18.0：章程 v2.22、roadmap v2.80、`beta-env.md` v1.4 补注、`node-provisioning.md` 补注、`tenancy-m1.md` §6.1 补注 |
@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v1.2** | **2026-10-03** | **D-8：每个 agent 的上下文窗口默认 200 000 token，控制台可改；D-9：自动压缩阈值可用 `/autocompact` 等方式设置。**档案里模型的 `contextTokens` 缺省按 200 000 编译；节点指派可单独覆盖；仍编译到同一个 `modelSettings.<slot>.contextTokens`，不新开上下文覆盖。P18.6、P18.9 各加 4 人时。**D-9：自动压缩阈值可用 `/autocompact` 等方式设置**，新增 P18.20（ACP 会话里的本地命令，16–24 人时），核心合计改为 680–1002，全部合计改为 1030–1512。同步改了 §0.1、§3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9、§9.4 |
 | **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
 
@@ -36,7 +37,7 @@
 >
 > 「调用模型兼容尽量参照 hermes agent，他们做的很好」
 
-以下决定照此定案，不再回问。D-1 ~ D-3 是设计之前定的；D-4 ~ D-7 是同日对 v1.0 §13 四个待决点的拍板：
+以下决定照此定案，不再回问。D-1 ~ D-3 是设计之前定的；D-4 ~ D-7 是同日对 v1.0 §13 四个待决点的拍板；D-8、D-9 是同日追加的要求：
 
 | # | 决定 | 落在本文哪里 |
 |---|---|---|
@@ -46,6 +47,8 @@
 | **D-4** | 第六类动作**不要求 provision token**，要求个人账号的 ops 角色，由动作账本记录操作者。确认 R-13 | §1.2 R-13、§1.3 O-3、§7.4 |
 | **D-5** | **真 key 只用舰队现有的 `gpt-6-luna` 凭据**；其他预设一律保持「未评估」 | §8.4、§13 |
 | **D-6** | **多 key 轮换（hermes #2）进 M1**，新增包 P18.18 | §9.2 P18.18、§13 |
+| **D-8** | **每个 agent 的上下文窗口默认 200 000 token，控制台可改**。档案里每个模型的 `contextTokens` 不填时按 200 000 编译；节点指派可以单独覆盖，优先级为节点覆盖 > 档案 > 200 000。三者都编译到同一个 `modelSettings.<slot>.contextTokens`。超过模型实际能力时由基座按能力夹取，节点 `effective` 报回实际生效值，页面显示这个值 | §3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9 |
+| **D-9** | **自动压缩阈值可以用 `/autocompact` 等方式设置**。入口：交互终端、节点上的 ACP 会话（含控制台对话页里输入 `/autocompact 150k`）、节点 CLI `qm provider autocompact [auto|<tokens>]`、控制台节点页。取值沿用基座：`auto` 或 100k–1M token，生效值为 `min(上下文窗口, 设定值)`。存放沿用基座的 `autoCompactWindow` 设置键，**归节点所有**：不进档案、不进中枢托管键集合，节点上改了不算漂移；控制台的修改经第六类动作调用节点 CLI 写入，显示值取自节点 `effective`。运行中的会话在下一轮生效 | §6.3.1、§6.3.8、§9.2 P18.6 / P18.7 / P18.9 / P18.20 |
 | **D-7** | **发版预先授权**：P18 核心包合入、干净 clone 的 `bun run verify` 全绿之后，主 agent 直接定版本号、打标签、发布，并部署到内测舰队；之后各包的开发、合并、发版、部署都不再逐项等负责人授权 | §9.2 P18.13、§13 |
 
 ### 0.2 已经执行的现场事实
@@ -323,7 +326,7 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 - `baseUrl` 的主机和 `lane` 都没变（只换模型或 effort）：`keep`。
 - 其他情况默认 `reset`，直到节点 `capabilities.replayFilter == true`（P18.8 已合入并部署）。之后由 ops 在切换对话框里选，默认仍然是 `reset`。
 - 会话续上之后钉住的是哪个模型：P18.3 用真 `--acp` 子进程实测（`src/services/qianmo/__tests__/residentProviderSwitch.integration.test.ts`），钉住的是**新**配置的主模型，带新 key。子进程在 `session/resume` 时按当时的 settings 重新解析主循环模型（`createSession` 里的 `setModel(getMainLoopModel())`），会话记录里不存模型。resident 从不调 `session/set_model`，所以 `keep` 之后的下一轮一定跑在新档案的主模型上。就算某个宿主在会话里显式 `set_model` 过，这个选择也只存在于那一个子进程的内存里，换代 resume 之后回到默认模型（同一文件第二组；正对照：换代前的请求确实带着显式选的模型）。matrix §4.5「除非用户在会话里显式选过」这半句，对 resident 节点不成立。
-- `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程在 SIGTERM 之前得有时间把会话记录写盘。基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列。所以 resident 在切换触发的回收里先把旧代从投递面摘下，等 1 s 再发 SIGTERM。实测去掉这 1 s，丢的正是那一轮的回答。
+- `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程退出前得把会话记录写盘。P18.3 实测发现基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列，当时用「回收前等 1 s」缓解。这个缺陷已在 ACP 侧修好（`src/services/acp/exitFlush.ts`：SIGTERM、SIGINT 和连接关闭都先刷写再退出，2 s 封顶），所以 resident 在切换触发的回收里把旧代从投递面摘下后直接发 SIGTERM，那 1 s 已删掉。
 
 ### 2.8 中枢同机节点
 
@@ -372,7 +375,7 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 | `tiers` | 这个模型占哪些档位：`opus` / `sonnet` / `haiku` / `fable` 的子集。主模型至少占一个档位，否则显式能力没有地方挂（§3.4） |
 | `capabilities` | `mode: 'family'`：不写能力覆盖，按基座的模型族默认判断；`mode: 'explicit'`：六个布尔位 `effort`、`xhigh_effort`、`max_effort`、`thinking`、`adaptive_thinking`、`interleaved_thinking` 全部显式给出。**这份列表是全有或全无的**：基座的读法是「列表存在但不含某一项就等于 false」（`modelSupportOverrides.ts` `get3PModelCapabilityOverride`），所以只要有一项要显式，六项就都要显式。页面切到「显式」时，用节点算出的当前值预填 |
 | `effort` | `{send, level, levels}`：`send` 取 `always`、`never`、`auto` 三者之一，见 §3.4 |
-| `contextTokens` | 可选。编译成 `modelSettings.<slot>.contextTokens`。不新开第三个上下文覆盖（`CLAUDE.full.md` 的规则） |
+| `contextTokens` | 可选，**不填按 200 000 编译**（D-8）；节点指派里的覆盖值优先。编译成 `modelSettings.<slot>.contextTokens`。不新开第三个上下文覆盖（`CLAUDE.full.md` 的规则） |
 | `maxOutputTokens` | 可选。供 P18.5 的 hermes #3 使用：有值才发 `max_tokens`，没值就不发（§5.6） |
 | `retireAt` | 可选，ISO 时间。来自目录的下线表；到期以后编译器拒绝（`retired-model`） |
 
@@ -788,7 +791,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 #### 6.3.1 `/providers`：一屏看清楚
 
 - **顶部**：「全局默认」卡片：档案名、线路、主模型、effort 状态、几个节点在用、几个节点有漂移。
-- **节点矩阵**：每个节点一行，列为「期望 · 实际 · 状态 · 线路 · 模型 · effort（节点算出）· 最近测连 · 操作」。状态徽标用 §2.4 的漂移类型。行操作：下发、测连、查看差异、改为单独指定。
+- **节点矩阵**：每个节点一行，列为「期望 · 实际 · 状态 · 线路 · 模型 · effort（节点算出）· 上下文（节点算出）· 最近测连 · 操作」。状态徽标用 §2.4 的漂移类型。行操作：下发、测连、查看差异、改为单独指定、改上下文窗口（D-8，写入该节点的指派覆盖，随下一次下发生效）、改自动压缩阈值（D-9，立即写到节点）。
 - **档案列表**：卡片形式，显示名称、厂商、按量或套餐、线路、主模型、「未评估」或「已评估（日期）」、密钥状态（已设置 / 未设置，**不显示任何片段**）。
 - **主操作**：「新增模型服务」。
 
@@ -829,7 +832,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 #### 6.3.8 节点详情的「模型」页签与对话页
 
-- `/nodes/<node>` 的「模型」页签：只读，显示期望、实际、漂移、`effective` 的全部字段、最近 10 次下发与测连记录，链回 `/providers?node=<node>`。
+- `/nodes/<node>` 的「模型」页签：显示期望、实际、漂移、`effective` 的全部字段、最近 10 次下发与测连记录，链回 `/providers?node=<node>`。只有「上下文窗口」一项可改（ops，D-8）：显示节点算出的实际值和来源（节点覆盖 / 档案 / 默认 200 000），「修改」写入该节点的指派覆盖，「恢复默认」清除覆盖；随下一次下发生效，写动作进动作账本。「自动压缩阈值」一项同样可改（ops，D-9）：经第六类动作调用节点的 `qm provider autocompact`，显示节点算出的生效值与来源（环境变量 / 设置 / auto）。
 - 对话页的线程头显示目标节点当前生效的模型，做成只读标签。发消息的人需要知道这一轮用的是哪个模型。
 - 转录里在切换发生的时间点画一条分隔线。数据来自 `providers.ndjson` 的 `apply.result` 事件，由视图按时间戳插入，**不改对话存储**。
 
@@ -1002,11 +1005,11 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.4** 控制台外壳与 P0 基础 | B1 | A1、A5、C1、C3、C7、D1、D2、D7、H1、K1；路由表与各区域的桩文件；动作账本的端口接口（实现在 P15.9） | `packages/console/src/{http.ts,respond.ts,deps.ts}`；`packages/console/src/view/{page.ts,chatPage.ts,bits.ts,agents.ts,shell.ts}`（`shell.ts` 新建）；`packages/console/src/routes/**`（新）；`packages/console/src/assets/**`；`packages/console/test/**`（含 golden、`browser/**`）；`packages/console/README.md`；`docs/dev/console.md` | P18.0 | 否 | 每个 URL 都服务端渲染、无脚本可读（逐路由用例）；响应头带 `frame-ancestors 'none'` 和 `X-Frame-Options: DENY`，一次真实的 iframe 嵌入被拒（K1）；401 时出现失效模态且轮询停止（K1）；轮询刷新之后展开的行和焦点都还在（K1）；viewer 页面上不出现任何写控件（扫描断言）；侧栏计数口径正确；HTML 请求出错时返回 HTML 错误页；golden 按规程重生；控制台包仍然零第三方依赖 | 108–164 |
 | **P18.5** 调用层第一批 · 止血 | B1 | hermes #3、#5、#6、#9、#11、#12、#15、#22；Q-1、Q-2；对等表的表头；`NOTICE` 第三方声明 | `src/services/qianmo/modelCompat/**`（新）；`packages/@ant/model-provider/src/shared/qianmo/**`（新）；`src/services/api/{errors.ts,retryClassification.ts,streamAssembly.ts}`；`src/services/api/openai/{index.ts,requestBody.ts,wireProtocol.ts,responsesAdapter.ts}`；`packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`；`src/utils/model/modelSupportOverrides.ts`；`NOTICE`；`docs/dev/base-modifications.md`；新增测试 | P18.0 | **是** | hermes §11.9 的实测在修复后翻转：①C 后到的名字生效，①D 两个调用不再合并；③ vLLM 和 LM Studio 的输出上限错误不再判成溢出，「Too many tokens, please wait」这类限流文案也不判溢出；④ 未知模型不发 `max_tokens`；`insufficient_quota` 判为 billing，不重试；chat 线在显式覆盖下发 `reasoning_effort`、`modelSupportsEffort` 为 false 时不发（对等表）；FABLE 档的能力覆盖生效；`api.openai.com` 未显式指定时走 Responses，显式 `OPENAI_WIRE_API=chat` 仍走 chat；新加的重试越过 commitment 屏障之后不再重放（用例）；§11.9-⑤ 那 147 条既有用例保持全绿 | 64–88 |
 | P15.9（指针） | B1 | 控制台动作账本后端 | 以 `tenancy-m1.md` §6 为准。本批只许动 `packages/console/src/actionLedger.ts`（新）、`src/cli/handlers/consoleActionLedger.ts`（新）、`src/cli/handlers/console.ts`、`src/cli/handlers/consoleArgs.ts` | P15.5（已在 main）、P18.4 的端口接口 | 否 | 见 `tenancy-m1.md` §6；P18.6 合入后补「模型服务每类写动作各记一条」的用例 | 8–14（计入 P15，不计入本表合计） |
-| **P18.6** 中枢存储与第六类动作 | B2 | 档案账本、密文库、主密钥、编译预览、执行器（local / ssh）、`ProviderPort` 的实现、节点脚本与内测接线 | `src/cli/handlers/consoleProviders*.ts`（新）；`src/cli/handlers/{console.ts,consoleArgs.ts}`；`packages/console/src/deps.ts`（`ProviderPort`）；`demo/env/beta/ops/model-apply.sh`（新）及其测试；`demo/env/beta/{common.sh,beta-up.sh,beta-reset.sh,README.md}`；`docs/dev/beta-env.md`（§8.3 新增持密面的行） | P18.2、P18.4、P15.9 | 否 | 密文库 0600、目录 0700；主密钥权限过宽时拒绝启动模型服务这一面；轮换之后旧密文从文件里消失（字节扫描）；主密钥缺失而密文存在时 fail-closed，且不重新生成；`providers.ndjson` 有坏行时页面拒绝服务；ssh 命令行不含密钥（argv 断言）；客户端命令是哨兵，强制命令缺失时操作失败；`model-apply.sh` 忽略 `SSH_ORIGINAL_COMMAND`，节点名不合法时拒绝；同一节点的两次 apply 串行；`StrictHostKeyChecking=yes` 且 known_hosts 缺条目时拒绝；`beta-reset.sh` 任何参数都不动主密钥（用例） | 40–64 |
-| **P18.7** 节点侧 `qm provider` | B2 | `serve-stdin` / `status` / `probe` / `models` / `apply`；ACP spawn env 剥离；子进程清理 | `src/cli/handlers/provider*.ts`（新）；`src/entrypoints/cli.tsx`；`src/cli/program/commands/qianmo.tsx`；`src/services/qianmo/residentAcpEnv.ts`；`src/utils/process/subprocessEnv.ts` | P18.2、P18.3 | **是**（`cli.tsx` 一处快速路径；`subprocessEnv.ts` 名单加五项；由 P18.8 统一登记） | stdin 超过 64 KiB 时拒绝；错误码闭合集合逐个有用例；响应里不出现任何值（扫描断言）；托管节点的 ACP 子进程 env 里没有 `ALL_PROFILE_ENV_KEYS` 和 `CLAUDE_CODE_USE_*`（真子进程断言），未托管节点的行为与今天逐字节一致；Bash 工具的子进程看不到 `OPENAI_API_KEY`（真 ACP 用例）；probe 三态各有用例（录制桩：200 好 key、200 加错误体、400 坏 key、连接被拒）；`/v1` 纠正有用例；`call` 模式的临时配置根用完即删 | 24–40 |
+| **P18.6** 中枢存储与第六类动作 | B2 | 档案账本、密文库、主密钥、编译预览、执行器（local / ssh）、`ProviderPort` 的实现、节点脚本与内测接线；节点指派的上下文覆盖与编译缺省 200 000（D-8） | `src/cli/handlers/consoleProviders*.ts`（新）；`src/services/qianmo/providers/compile.ts`（缺省值）；`src/cli/handlers/{console.ts,consoleArgs.ts}`；`packages/console/src/deps.ts`（`ProviderPort`）；`demo/env/beta/ops/model-apply.sh`（新）及其测试；`demo/env/beta/{common.sh,beta-up.sh,beta-reset.sh,README.md}`；`docs/dev/beta-env.md`（§8.3 新增持密面的行） | P18.2、P18.4、P15.9 | 否 | 密文库 0600、目录 0700；主密钥权限过宽时拒绝启动模型服务这一面；轮换之后旧密文从文件里消失（字节扫描）；主密钥缺失而密文存在时 fail-closed，且不重新生成；`providers.ndjson` 有坏行时页面拒绝服务；ssh 命令行不含密钥（argv 断言）；客户端命令是哨兵，强制命令缺失时操作失败；`model-apply.sh` 忽略 `SSH_ORIGINAL_COMMAND`，节点名不合法时拒绝；同一节点的两次 apply 串行；`StrictHostKeyChecking=yes` 且 known_hosts 缺条目时拒绝；`beta-reset.sh` 任何参数都不动主密钥（用例）；未写 `contextTokens` 的档案编译出 200 000，节点覆盖优先于档案，清除覆盖后回到档案值（用例） | 44–68 |
+| **P18.7** 节点侧 `qm provider` | B2 | `serve-stdin` / `status` / `probe` / `models` / `apply` / `autocompact`（D-9：与 `/autocompact` 同一实现，`status` 的 `effective` 报回自动压缩生效值与来源）；ACP spawn env 剥离；子进程清理 | `src/cli/handlers/provider*.ts`（新）；`src/entrypoints/cli.tsx`；`src/cli/program/commands/qianmo.tsx`；`src/services/qianmo/residentAcpEnv.ts`；`src/utils/process/subprocessEnv.ts` | P18.2、P18.3 | **是**（`cli.tsx` 一处快速路径；`subprocessEnv.ts` 名单加五项；由 P18.8 统一登记） | stdin 超过 64 KiB 时拒绝；错误码闭合集合逐个有用例；响应里不出现任何值（扫描断言）；托管节点的 ACP 子进程 env 里没有 `ALL_PROFILE_ENV_KEYS` 和 `CLAUDE_CODE_USE_*`（真子进程断言），未托管节点的行为与今天逐字节一致；Bash 工具的子进程看不到 `OPENAI_API_KEY`（真 ACP 用例）；probe 三态各有用例（录制桩：200 好 key、200 加错误体、400 坏 key、连接被拒）；`/v1` 纠正有用例；`call` 模式的临时配置根用完即删 | 24–40 |
 | **P18.8** 调用层第二批 · 推理一致性 | B2 | hermes #4、#7、#8、#10、#13、#14、#23、#26；删除 `applyCompatRule` | 新规则文件；`packages/@ant/model-provider/src/shared/{openaiConvertMessages.ts,openaiStreamAdapter.ts,openaiUsage.ts}`；`src/services/api/openai/{requestBody.ts,responsesAdapter.ts}`；`src/services/api/grok/reasoning.ts`；`src/services/providerRegistry/providerCompatMatrix.ts` 及其测试；`docs/dev/base-modifications.md`（登记本批全部基座改动，含 P18.7 的两处） | P18.5 | **是** | hermes §11.9-① 的 A、B、E、F 翻转；回放家族表逐行有对等用例（严格端点不带 `reasoning_content`，kimi、deepseek、mimo 带）；内联标签被切在两个增量之间的用例；正文中夹空 `reasoning_content` 的既有用例仍绿（#31）；Kimi 不会同时发 `thinking` 和 `reasoning_effort`；换端点之后 `encrypted_content` 被丢弃；全仓 grep `applyCompatRule` 为空；节点 `capabilities.replayFilter` 为 true | 72–96 |
 | P15.2 余下（指针） | B2 | 暂停、恢复、退役的后端 | 以 `tenancy-m1.md` §6 为准。本批不许动 `console.ts`、`consoleArgs.ts`、`deps.ts`（归 P18.6），确实要动时排到 P18.6 合入之后 | P15.1 | 否 | 见 `tenancy-m1.md` §6 | 8–16（计入 P15） |
-| **P18.9** 模型服务页 | B3 | §6.3 全部 | `packages/console/src/routes/providers.ts`；`packages/console/src/view/providers*.ts`（新）；路由模块自带的样式与脚本片段；`packages/console/src/view/chatPage.ts`（模型标签、分隔线） | P18.4、P18.6、P18.7 | 否 | AC-P1（端到端：录制桩 + 真 resident）；AC-P3；AC-P4 的界面一侧（显示值取自节点 `effective`，结构断言中枢不自己算）；无脚本时只读可用，写控件写明原因；viewer、member、break-glass、legacy 四种主体都看不到写控件和指纹（扫描断言）；所有可见文案过禁句读门禁；导出文件不含 key 和指纹；导入出现未知键时整份拒绝 | 56–88 |
+| **P18.9** 模型服务页 | B3 | §6.3 全部 | `packages/console/src/routes/providers.ts`；`packages/console/src/view/providers*.ts`（新）；路由模块自带的样式与脚本片段；`packages/console/src/view/chatPage.ts`（模型标签、分隔线） | P18.4、P18.6、P18.7 | 否 | AC-P1（端到端：录制桩 + 真 resident）；AC-P3；AC-P4 的界面一侧（显示值取自节点 `effective`，结构断言中枢不自己算）；无脚本时只读可用，写控件写明原因；viewer、member、break-glass、legacy 四种主体都看不到写控件和指纹（扫描断言）；所有可见文案过禁句读门禁；导出文件不含 key 和指纹；导入出现未知键时整份拒绝；档案编辑、节点矩阵、节点详情三处都能改上下文窗口，显示值取自节点 `effective`（D-8，用例） | 60–92 |
 | **P18.10** 账号与访问 · 操作记录页 | B3 | H3、H4 的页面 | `packages/console/src/routes/access.ts`；`packages/console/src/view/{access.ts,invite.ts}`（`access.ts` 新建）；`packages/console/src/{accountsHttp.ts,access.ts}`；`docs/dev/beta-env.md` §3.6（告知措辞需要改时） | P18.4、P15.9 | 否 | 成员、邀请、会话、操作记录四个页签各有 HTTP 用例；强制下线之后该主体的 SSE 连接数为零；member 只看得到与自己有关的操作记录；邀请页 `Referrer-Policy: no-referrer`（断言） | 48–72 |
 | **P18.11** 审计列表 · 生命周期 · 节点详情 | B3 | D5、J2 的页面、A3 | `packages/console/src/routes/{audit.ts,nodes.ts}`；`packages/console/src/view/{audit.ts,agents.ts,node.ts}`（`node.ts` 新建）；`packages/console/src/deps.ts`（`AuditPort` 游标）；`src/cli/handlers/consolePorts.ts`；`packages/audit` 的只读查询；`docs/dev/console.md`；`packages/console/README.md` | P18.4、P15.2 余下 | 否 | 10 万条审计下首屏响应时间有上界（基准用例记数）；游标分页无重复、无遗漏；生命周期四个动作都走二次确认并进动作账本；节点详情的「模型」页签显示 §2.4 的全部字段；`console.md` 路由表与实际路由一致（扫描断言） | 56–80 |
 | **P18.12** 调用层第三批 · 韧性 | B3 | hermes #1、#16–#21、#24、#25、#27、#33 | 新规则文件；`src/services/api/{streamAssembly.ts,retryClassification.ts}`；`src/services/api/openai/{retry.ts,index.ts}`；`packages/@ant/model-provider/src/shared/{openaiStreamAdapter.ts,openaiConvertMessages.ts,openaiConvertTools.ts}`；`src/services/api/{gemini,grok}/index.ts`（如需）；`src/query.ts`；`tests/preload.ts`；`tests/support/**`（新）；`docs/dev/base-modifications.md` | P18.8 | **是** | 第三方线路配了 `fallbackModels` 时，5xx 重试用尽会切到 fallback（以前从不发生），切换前回放已过滤；常驻会话的 `Retry-After` 上限 600 s、交互式 60 s，各一条用例；chat 流空闲超时会触发；DeepInfra 形状的错误块不重试；工具结果图片被拒之后降级并记住；思考耗尽时不续写；preload 之后，开发机带订阅登录态时 `codexPinnedSearch` 不再红；逐厂商对等表覆盖目录里的全部预设 | 88–112 |
@@ -1016,6 +1019,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.16** 用量与审批页（条件） | B5 | J7、J8 | `packages/console/src/routes/{usage.ts,approvals.ts}`；`deps.ts` | P15.7、P14.5 | 否 | 用量按自然日、按人；审批页与 P14 协议的契约用例 | 48–80 |
 | **P18.17** 控制台 P2 | B5 | §6.5 的 P2 | 视图与样式 | P18.14 | 否 | 各项「改法」逐条有用例 | 110–150 |
 | **P18.18** 多 key 轮换（D-6） | B4 | hermes #2：同一份档案挂 1..N 把 key，节点调用层按策略选取、按错误分类换 key 并冷却；中枢逐把加密保管；控制台逐把管理、显示每把的状态 | `packages/providers/**`（池字段；P18.2 已经按多 key 定好 schema）；`src/services/qianmo/providers/**`；`src/services/qianmo/modelCompat/credentialPool*.ts`（新）；`src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`；`src/cli/handlers/consoleProviders*.ts`；`src/cli/handlers/provider*.ts`；`packages/console/src/routes/providers.ts`、`packages/console/src/view/providers*.ts`；`docs/dev/base-modifications.md` | P18.6、P18.7、P18.9、P18.12 | **是**（三个调用层文件，纯插入） | 单 key 档案的编译、写入、请求行为与 P18.12 合入时逐字节一致（回归用例）；`fill_first`、`round_robin`、`least_used` 三种策略各有用例；hermes 行为表逐行有录制桩用例：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先；全部 key 都在冷却时报错，并给出最早的恢复时间；换 key 越过 commitment 屏障之后不再重放；冷却状态持久化在节点 0600 文件里，重启后仍然有效；节点 `status` 逐把报 `ok / cooling / dead`，只带 key id，不带值；轮换或删除单把 key 之后，旧密文从密文库消失（字节扫描）；AC-P2 的金丝雀扫描覆盖多 key 流程。真机只有一把真 key（D-5），轮换只用录制桩验证，P18.13 不要求真机轮换 | 24–40 |
+| **P18.20** ACP 会话里的本地命令（D-9） | B2 | ACP 会话执行白名单内的本地命令（首批 `/autocompact`、`/compact`、`/context`），在 `available_commands_update` 里通告，输出作为 agent 消息返回、不发给模型；同一节点上任一途径改了 `autoCompactWindow`，运行中的会话在下一轮按新值判断 | `src/services/acp/agent/*.ts`（基座，纯插入或调用替换）；`src/services/acp/agent/localCommands.ts`（新）；`docs/dev/base-modifications.md` | P18.3 | **是** | 控制台对话页（经 resident 的 ACP）发 `/autocompact 150k` 后，节点 `settings.json` 的 `autoCompactWindow` 为 150 000，回显与终端一致，模型桩收到的请求数为 0；`/autocompact` 不带参数时回显当前值与来源；白名单外的本地命令仍按原样处理；改值后同一会话下一轮的压缩判断用新值（用例） | 16–24 |
 
 ### 9.3 同批文件范围（互不相交）
 
@@ -1030,12 +1034,12 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 | 范围 | 人时 |
 |---|---|
-| 核心：P18.0–P18.13 与 P18.18（M1 出口相关） | **656–970** |
+| 核心：P18.0–P18.13、P18.18 与 P18.20（M1 出口相关） | **680–1002** |
 | 其中调用层三批（P18.5、P18.8、P18.12） | 224–296 |
-| 其中控制台 P0 与模型服务页（P18.4、P18.9、P18.10、P18.11） | 268–404 |
+| 其中控制台 P0 与模型服务页（P18.4、P18.9、P18.10、P18.11） | 272–408 |
 | 控制台 P1、P2 与条件页（P18.14–P18.17） | 350–510 |
 | 其中多 key 轮换（P18.18，D-6） | 24–40 |
-| **全部** | **1006–1480** |
+| **全部** | **1030–1512** |
 | 指针包（计入 P15，不计入上面各行） | P15.9 8–14；P15.2 余下 8–16 |
 
 估算按「主开发 + AI 协作」口径。调研件自陈的误差是 ±50%（hermes §11.10 第 9 条），本表沿用这个量级，没有再细拆到文件级。

@@ -1882,7 +1882,13 @@ describe('adaptResponsesStreamToAnthropic reasoning capture', () => {
     ])
 
     expect(captured).toEqual([
-      { id: 'rs_1', encrypted_content: 'ENC', summary: [] },
+      {
+        id: 'rs_1',
+        encrypted_content: 'ENC',
+        summary: [],
+        // qianmo P18.8 (hermes #23): stamped with its issuer on capture.
+        issuer: expect.any(String),
+      },
     ])
   })
 

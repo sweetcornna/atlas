@@ -89,6 +89,8 @@ import {
   SchedulerRunner,
   SchedulerStore,
   assertJob,
+  schedulerStatusOf,
+  writeSchedulerStatus,
   type ScheduledJob,
 } from '@qianmo/scheduler'
 import { PSK_ENV_VAR, TransportClient, pskFromEnv } from '@qianmo/transport'
@@ -170,8 +172,9 @@ Options (each accepts both --name value and --name=value):
   --from <address>     This hub's address, qianmo://<node>/<agent>. Required —
                        it is the head of the audit chain and the address every
                        notification is addressed back to.
-  --state-dir <dir>    Where claims and job state live. Defaults to
-                       <config>/qianmo/scheduler. Two hubs pointed at one
+  --state-dir <dir>    Where claims, job state and status.json live. Defaults
+                       to <config>/qianmo/scheduler, which is where the console
+                       reads status.json from. Two hubs pointed at one
                        directory is a supported (and tested) arrangement: the
                        claim files make it at-most-once.
   --once               Run whatever is due right now, then exit. For smoke
@@ -466,10 +469,10 @@ function detailOf(
 /**
  * 把一次 notify 落到审计链，是给人的通知时还要打到 stdout。
  *
- * stdout 不是调试输出。控制台的通知页还没做（见 §5 遗留），所以 `qm watch` 的
- * stdout 目前是值守场景唯一的人机界面，**只有给人的通知才能出现在这里**。过程行
- * 只进审计链，记为另一个 kind（`watch_step_received`），这样
- * `watch_notify_received` 的条数就等于「打扰了人几次」（console.md §10.2）。
+ * stdout 不是调试输出。它和控制台的告警页（读的正是这里记下的
+ * `watch_notify_received`，console.md §10.4）是值守场景的两个人机界面，**只有给人的
+ * 通知才能出现在这里**。过程行只进审计链，记为另一个 kind（`watch_step_received`），
+ * 这样 `watch_notify_received` 的条数就等于「打扰了人几次」（console.md §10.2）。
  */
 function recordNotify(
   trail: AuditTrail,
@@ -593,7 +596,17 @@ export async function runWatch(args: readonly string[]): Promise<void> {
     process.stdout.write(`${identity.node}=${identity.publicKey}\n`)
     return
   }
-  const config = command
+  await runWatchJobs(command)
+}
+
+/**
+ * 按解析好的配置跑起来：读作业文件与 PSK、接审计链、起调度器。
+ *
+ * 与参数解析分开，是为了让用例能在本进程里跑一遍真的 `qm watch --once`：
+ * `parseWatchArgs` 要求进程身份是 qianmo，而身份在进程启动时就定了
+ * （`constants/identity.ts`），用例进程不是。
+ */
+export async function runWatchJobs(config: WatchConfig): Promise<void> {
   const psk = pskFromEnv()
   const entries = parseWatchJobs(readFileSync(config.jobsPath, 'utf8'))
   const hub = assertAddress(config.from, '--from')
@@ -655,12 +668,20 @@ export async function runWatch(args: readonly string[]): Promise<void> {
     },
   })
 
-  const runner = new SchedulerRunner({
+  const runner: SchedulerRunner = new SchedulerRunner({
     store,
     jobs: entries.map(entry => entry.job),
     paused: () => estop.engaged(),
     onError: error => {
       process.stderr.write(`[watch] ${String(error)}\n`)
+    },
+    // 每一轮之后把心跳与各作业的下一次触发写进状态目录的 status.json，控制台的
+    // 值守作业页就读它（console.md §10.4）。写不进去只报错，调度照常。
+    onTick: () => {
+      writeSchedulerStatus(
+        config.stateDir,
+        schedulerStatusOf(runner, process.pid),
+      )
     },
     dispatch: async fire => {
       const url = urls.get(fire.job.id)

@@ -1,9 +1,10 @@
 import { z } from 'zod'
 
 /**
- * Compat rule identifiers. Each maps to a CompatProfile in providerCompatMatrix.ts.
+ * Compat rule identifiers: a label in the provider config. The profiles they
+ * selected (providerCompatMatrix.ts) were removed in Qianmo P18.8 (R-14).
  */
-export const CompatRuleSchema = z.enum([
+const CompatRuleSchema = z.enum([
   'cerebras',
   'groq',
   'deepseek',
@@ -28,7 +29,7 @@ export type ProviderKind = z.infer<typeof ProviderKindSchema>
  * - baseUrl: full base URL including /v1 suffix if needed
  * - apiKeyEnv: name of the env var that holds the API key
  * - defaultModel: model string passed as OPENAI_MODEL
- * - compatRule: selects CompatProfile from providerCompatMatrix
+ * - compatRule: label only (see CompatRuleSchema)
  */
 export const ProviderConfigSchema = z.object({
   id: z

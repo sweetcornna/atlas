@@ -55,9 +55,11 @@ import {
   createRegistryPort,
   createServerNotesPort,
   createWakePort,
+  consoleWatchDeps,
 } from './consolePorts.js'
 import { ConsoleRegistrations } from './consoleRegistrations.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
+import { consoleAlertAcksPath } from './consoleAlertAcks.js'
 import { consoleAuditSources } from './consoleAuditSources.js'
 import { readTrustAnchors } from '../../services/qianmo/trustAnchors.js'
 import {
@@ -514,6 +516,11 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(wake.targets === undefined ? {} : { wakeTargets: wake.targets }),
     ...(chat.hub === undefined ? {} : { chat: chat.hub }),
     ...(certificates === undefined ? {} : { certificates }),
+    // 告警与值守作业两页（P18.15）：读本配置根下 `qm watch` 留在磁盘上的东西——
+    // 审计链里的通知与触发、调度状态目录、ESTOP 文件。没在这里跑过 `qm watch`
+    // 时，告警页的来源一栏写审计链尚未建立，作业页写没有作业记录，都不是空白。
+    // 确认记录写在 `consoleAlertAcksPath()`，路径打在启动横幅里。
+    ...consoleWatchDeps(),
     // 启动参数说了算的一张白名单：名册据它显示归属，备注只许写进它里面的服务器
     // （`packages/console/src/http.ts` 的 handleServerNote）。
     ...(config.nodeServers.length === 0
@@ -612,6 +619,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   if (serverNotes !== undefined) {
     banner += field('server-notes', config.serverNotesPath)
   }
+  banner += field('alert-acks', consoleAlertAcksPath())
   if (accounts !== undefined && config.accountsStorePath !== undefined) {
     const problem = accounts.book.problem
     banner += field(
