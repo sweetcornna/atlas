@@ -19,6 +19,7 @@ import type {
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
+import { resolveSessionStablePromptCacheKey } from 'src/services/qianmo/promptCache/sessionCacheKey.js'
 import {
   sendDroppingRejectedParameters,
   TEMPERATURE_DROPPABLE,
@@ -36,7 +37,6 @@ import {
   isOfficialOpenAIBaseURL,
   isPromptCacheKeyRejection,
   markPromptCacheKeyRejected,
-  resolveOpenAIPromptCacheKey,
   resolveOpenAIVerbosity,
   updateOpenAIUsage,
 } from './openaiShared.js'
@@ -421,11 +421,14 @@ export async function* queryModelOpenAI(
     // Measured 0% → 98.1% on the first turn of a fresh session; see
     // resolveOpenAIPromptCacheKey. `OPENAI_PROMPT_CACHE_KEY_SCOPE=session`
     // restores the old scheme.
+    //
+    // qianmo P18.19 (CH-3): the prefix key is fixed per (session, model) at
+    // its first request — src/services/qianmo/promptCache/sessionCacheKey.ts.
     const sessionId = getSessionId()
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
     const promptCacheKey = useChatGPTResponses
       ? sessionPromptCacheKey
-      : resolveOpenAIPromptCacheKey({
+      : resolveSessionStablePromptCacheKey({
           baseURL: process.env.OPENAI_BASE_URL,
           sessionId,
           wireProtocol,
