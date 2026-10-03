@@ -284,6 +284,25 @@ export function resolveResidentModelProbeTarget(
   }
 }
 
+/**
+ * The Anthropic-wire credential an env block carries, as request headers:
+ * `ANTHROPIC_AUTH_TOKEN` as a bearer token, else `ANTHROPIC_API_KEY` as
+ * `x-api-key` — the two keys a profile compiles the Anthropic lane's secret
+ * into (design `providers-console-m1.md` §3.3), one of them always deleted.
+ *
+ * For a node whose credential is in `settings.json` rather than in the
+ * resident's own environment, where the auth stack does not look.
+ */
+export function anthropicAuthHeadersFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const token = env.ANTHROPIC_AUTH_TOKEN
+  if (token) return { authorization: `Bearer ${token}` }
+  const apiKey = env.ANTHROPIC_API_KEY
+  if (apiKey) return { 'x-api-key': apiKey }
+  return {}
+}
+
 /** Trim a response body to something that fits on one warning line. */
 function summarize(body: string): string {
   const collapsed = body.replace(/\s+/g, ' ').trim()

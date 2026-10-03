@@ -1,14 +1,25 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { X509Certificate, createPrivateKey, createPublicKey } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import {
+  X509Certificate,
+  createPrivateKey,
+  createPublicKey,
+  randomBytes,
+} from 'node:crypto'
+import { chmodSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { appendFile } from 'node:fs/promises'
-import { isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
+import { occConfigPath } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
 import { sourceCommit } from '../../constants/buildProvenance.js'
 import { IDENTITY_MODE, type IdentityMode } from '../../constants/identity.js'
-import { QianmoResident } from '../../services/qianmo/resident.js'
+import {
+  QianmoResident,
+  type ResidentProviderNode,
+  type ResidentProviderSwitchEvent,
+} from '../../services/qianmo/resident.js'
+import { writePrivateFileAtomicSync } from '../../utils/secureStorage/atomicWrite.js'
 import {
   DEFAULT_RESIDENT_ACTIVITY_TIME_JUMP_FACTOR,
   ResidentActivityReporter,
@@ -71,6 +82,7 @@ import {
 } from '../../services/qianmo/trustAnchors.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
+  anthropicAuthHeadersFromEnv,
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
@@ -987,6 +999,13 @@ Environment:
                            listing.
   OCC_CONFIG_DIR           Config root the node identity, the audit trail and
                            the session table are derived from.
+
+Signals:
+
+  SIGTERM, SIGINT          Stop the node.
+  SIGHUP                   Look for a pending model-service configuration now
+                           instead of at the next 5 s check. It does not stop
+                           the node.
 `
 
 /**
@@ -1257,6 +1276,16 @@ type ModelProbeEnvironment = {
   getAPIProvider: () => string
   getSmallFastModel: () => string
   getAuthHeaders: () => { headers: Record<string, string>; error?: string }
+  /**
+   * `getEffectiveSettingsEnv()`: the env block the ACP child applies over its
+   * inherited environment at session start. Once a node's model service is
+   * managed (design `providers-console-m1.md` §2.6), the credential and the
+   * endpoint live there and not in this process's environment, so a probe
+   * that read `process.env` alone would test the wrong thing — or report "no
+   * credential" on a node that has one (§2.7). Optional so an injected
+   * environment without it reads `process.env` exactly as before.
+   */
+  getEffectiveSettingsEnv?: () => Record<string, string>
 }
 
 let modelProbeEnvironment: ModelProbeEnvironment | undefined
@@ -1276,11 +1305,15 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
       ModelProbeEnvironment,
       'getAuthHeaders'
     >
+    const managedEnv = require('../../utils/config/managedEnv.js') as Required<
+      Pick<ModelProbeEnvironment, 'getEffectiveSettingsEnv'>
+    >
     /* eslint-enable @typescript-eslint/no-require-imports */
     modelProbeEnvironment = {
       getAPIProvider: providers.getAPIProvider,
       getSmallFastModel: model.getSmallFastModel,
       getAuthHeaders: http.getAuthHeaders,
+      getEffectiveSettingsEnv: managedEnv.getEffectiveSettingsEnv,
     }
   }
   return modelProbeEnvironment
@@ -1294,18 +1327,71 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
  * actually speaking the Anthropic wire pays for the Anthropic credential
  * stack. See the field's own comment in `residentModelProbe.ts` for the
  * failure that shape prevents.
+ *
+ * The environment is this process's with the node's settings env laid over
+ * it, the way the ACP child ends up with it (settings win). A settings read
+ * that fails leaves `process.env` alone, which is the answer this gave before
+ * settings could hold a model service. The model id still comes from this
+ * process's own resolution; the probe does not depend on it (see the
+ * module header of `residentModelProbe.ts`).
  */
 export function residentModelProbeInputs(
   environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
 ): ResidentModelProbeInputs {
+  let settingsEnv: Record<string, string> | undefined
+  try {
+    settingsEnv = environment.getEffectiveSettingsEnv?.()
+  } catch {
+    settingsEnv = undefined
+  }
   return {
     provider: environment.getAPIProvider(),
     model: environment.getSmallFastModel(),
-    env: process.env,
+    env:
+      settingsEnv === undefined
+        ? process.env
+        : { ...process.env, ...settingsEnv },
     anthropicAuthHeaders: () => {
+      if (settingsEnv !== undefined) {
+        // Settings win, as they do in the child.
+        const fromSettings = anthropicAuthHeadersFromEnv(settingsEnv)
+        if (Object.keys(fromSettings).length > 0) return fromSettings
+        // An endpoint from settings with no credential beside it: this
+        // process's own login must not be sent there (design §3.1).
+        const baseUrl = settingsEnv.ANTHROPIC_BASE_URL
+        if (
+          baseUrl !== undefined &&
+          baseUrl !== process.env.ANTHROPIC_BASE_URL
+        ) {
+          return {}
+        }
+      }
       const auth = environment.getAuthHeaders()
       return auth.error === undefined ? auth.headers : {}
     },
+  }
+}
+
+/**
+ * {@link nodeHasModelCredential}, or a credential this node's settings carry
+ * for the lane it is configured for — the shape of a managed node, whose
+ * provider keys are in `settings.json` and not in this process's environment.
+ *
+ * Asks the probe's own resolver rather than a list of key names: "is there a
+ * request to send" is exactly "is there a credential for this lane", and a
+ * second list would be the one that drifts.
+ */
+export function nodeHasConfiguredModelCredential(
+  environment?: ModelProbeEnvironment,
+): boolean {
+  if (nodeHasModelCredential()) return true
+  try {
+    return !(
+      'status' in
+      resolveResidentModelProbeTarget(residentModelProbeInputs(environment))
+    )
+  } catch {
+    return false
   }
 }
 
@@ -1340,7 +1426,9 @@ export async function runResidentModelCredentialProbe(
   } = {},
 ): Promise<ResidentModelProbeVerdict> {
   try {
-    const hasCredential = options.hasCredential ?? nodeHasModelCredential()
+    const hasCredential =
+      options.hasCredential ??
+      nodeHasConfiguredModelCredential(options.environment)
     if (!hasCredential) {
       return { status: 'skipped', detail: 'no model credential is visible' }
     }
@@ -1653,6 +1741,228 @@ export function residentPriorLifeLine(
   })
 }
 
+/**
+ * The node's provider write path (`services/qianmo/providers/node.ts`, P18.2),
+ * loaded on first use.
+ *
+ * `require` for the reason {@link loadModelCredentialProbe} gives: that module
+ * sits on the settings writer and the provider compiler, and a static edge
+ * would put both into the graph `check:cycles` measures for a handful of calls
+ * this process makes. Typed by the resident's own structural port.
+ */
+let providerNodeModule: ResidentProviderNode | undefined
+
+function loadProviderNode(): ResidentProviderNode {
+  if (!providerNodeModule) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    providerNodeModule =
+      require('../../services/qianmo/providers/node.js') as ResidentProviderNode
+  }
+  return providerNodeModule
+}
+
+/**
+ * `occConfigPath('resident', 'resident.pid')`: who to send SIGHUP to when a
+ * provider configuration has been staged (design `providers-console-m1.md`
+ * §2.7). Read by `qm provider` (P18.7) through
+ * {@link signalResidentProviderCheck}; nothing else acts on it.
+ */
+export interface ResidentPidRecord {
+  readonly pid: number
+  /**
+   * When the process started. On Linux it is the kernel's own start time
+   * (`/proc/<pid>/stat`), so the signaller can recompute it for whatever
+   * process now holds the pid; elsewhere it is this process's own estimate and
+   * nothing compares it.
+   */
+  readonly startedAt: string
+  /** Lets this process remove the file only while it is still its own. */
+  readonly nonce: string
+}
+
+export function residentPidPath(): string {
+  return occConfigPath('resident', 'resident.pid')
+}
+
+/** `sysconf(_SC_CLK_TCK)`: `USER_HZ`, 100 on every Linux ABI this runs on. */
+const PROC_TICKS_PER_SECOND = 100
+
+/**
+ * How far apart two computations of one start time may be. `btime` is whole
+ * seconds and has been seen to read one apart between two reads; a pid that is
+ * reused belongs to a process that started much later than the resident did.
+ */
+const PROCESS_START_TOLERANCE_MS = 2_000
+
+type ResidentProcDeps = {
+  readonly platform?: NodeJS.Platform
+  /** Reads a `/proc` file; throws when it does not exist. */
+  readonly readProc?: (path: string) => string
+}
+
+/**
+ * When `pid` started, in epoch ms, from `/proc`: boot time plus the process's
+ * `starttime` ticks. `undefined` off Linux, and `null` when there is no such
+ * process (or its stat cannot be parsed).
+ */
+export function linuxProcessStartedAt(
+  pid: number,
+  deps: ResidentProcDeps = {},
+): number | null | undefined {
+  if ((deps.platform ?? process.platform) !== 'linux') return undefined
+  const read = deps.readProc ?? ((path: string) => readFileSync(path, 'utf8'))
+  let stat: string
+  let bootStat: string
+  try {
+    stat = read(`/proc/${pid}/stat`)
+    bootStat = read('/proc/stat')
+  } catch {
+    return null
+  }
+  // `comm` (field 2) is parenthesised and may hold spaces or parentheses of
+  // its own, so the fields are counted from the last ')'. `starttime` is
+  // field 22; the first field after ')' is field 3.
+  const fields = stat
+    .slice(stat.lastIndexOf(')') + 1)
+    .trim()
+    .split(/\s+/)
+  const ticks = Number(fields[22 - 3])
+  const btime = Number(/^btime\s+(\d+)\s*$/m.exec(bootStat)?.[1])
+  if (!Number.isFinite(ticks) || !Number.isFinite(btime)) return null
+  return btime * 1_000 + Math.round((ticks * 1_000) / PROC_TICKS_PER_SECOND)
+}
+
+/**
+ * Write this process's pid file. Install the SIGHUP handler **before**
+ * calling this: a signaller that finds the file assumes the handler is there,
+ * and SIGHUP's default action is to end the process.
+ */
+export function writeResidentPidFile(
+  deps: ResidentProcDeps & { readonly pid?: number } = {},
+): ResidentPidRecord {
+  const pid = deps.pid ?? process.pid
+  const kernel = linuxProcessStartedAt(pid, deps)
+  const record: ResidentPidRecord = {
+    pid,
+    startedAt: new Date(
+      typeof kernel === 'number'
+        ? kernel
+        : Date.now() - Math.round(process.uptime() * 1_000),
+    ).toISOString(),
+    nonce: randomBytes(8).toString('hex'),
+  }
+  const path = residentPidPath()
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  chmodSync(dirname(path), 0o700)
+  writePrivateFileAtomicSync(path, `${JSON.stringify(record)}\n`)
+  return record
+}
+
+/** Remove the pid file if it is still the one `record` describes. */
+export function removeResidentPidFile(record: ResidentPidRecord): void {
+  const path = residentPidPath()
+  try {
+    const current = JSON.parse(readFileSync(path, 'utf8')) as {
+      nonce?: unknown
+    }
+    if (current.nonce === record.nonce) unlinkSync(path)
+  } catch {
+    // Gone already, or replaced by a later resident: either way not ours.
+  }
+}
+
+export type ResidentSignalOutcome =
+  | { readonly signalled: true; readonly pid: number }
+  | {
+      readonly signalled: false
+      /**
+       * `no-resident`: no pid file. `unreadable`: a pid file that does not
+       * parse. `not-running`: no process holds the pid. `start-mismatch`: a
+       * process holds it, but it started at another time — the pid was
+       * reused. `unverifiable`: not Linux, so the start time cannot be checked
+       * (§11 item 8). `signal-failed`: the check passed and `kill` threw.
+       */
+      readonly reason:
+        | 'no-resident'
+        | 'unreadable'
+        | 'not-running'
+        | 'start-mismatch'
+        | 'unverifiable'
+        | 'signal-failed'
+    }
+
+/**
+ * Tell a running resident to look for a pending provider configuration now —
+ * for `qm provider apply` (P18.7), after `stageProviderApply` reported
+ * `pending: true`.
+ *
+ * Signals only a process that provably is the resident that wrote the pid
+ * file: same pid **and** the same kernel start time. Anything short of that
+ * sends nothing, because the resident's own 5 s poll finds the intent anyway
+ * and a SIGHUP to a stranger ends it. Off Linux there is no start time to
+ * check, so this never signals there (design §11 item 8).
+ */
+export function signalResidentProviderCheck(
+  deps: ResidentProcDeps & {
+    readonly readPidFile?: () => string
+    readonly kill?: (pid: number, signal: NodeJS.Signals) => void
+  } = {},
+): ResidentSignalOutcome {
+  let text: string
+  try {
+    text = (
+      deps.readPidFile ?? (() => readFileSync(residentPidPath(), 'utf8'))
+    )()
+  } catch {
+    return { signalled: false, reason: 'no-resident' }
+  }
+  let record: { pid?: unknown; startedAt?: unknown }
+  try {
+    record = JSON.parse(text) as typeof record
+  } catch {
+    return { signalled: false, reason: 'unreadable' }
+  }
+  const pid = record.pid
+  const recordedAt =
+    typeof record.startedAt === 'string' ? Date.parse(record.startedAt) : NaN
+  if (
+    typeof pid !== 'number' ||
+    !Number.isInteger(pid) ||
+    pid <= 0 ||
+    !Number.isFinite(recordedAt)
+  ) {
+    return { signalled: false, reason: 'unreadable' }
+  }
+  const startedAt = linuxProcessStartedAt(pid, deps)
+  if (startedAt === undefined) {
+    return { signalled: false, reason: 'unverifiable' }
+  }
+  if (startedAt === null) return { signalled: false, reason: 'not-running' }
+  if (Math.abs(startedAt - recordedAt) > PROCESS_START_TOLERANCE_MS) {
+    return { signalled: false, reason: 'start-mismatch' }
+  }
+  try {
+    ;(deps.kill ?? ((target, signal) => process.kill(target, signal)))(
+      pid,
+      'SIGHUP',
+    )
+    return { signalled: true, pid }
+  } catch {
+    return { signalled: false, reason: 'signal-failed' }
+  }
+}
+
+/**
+ * The stdout line saying this node took on a provider configuration. Next to
+ * the banner and the prior-life line; names the request, never a key.
+ */
+export function residentProviderSwitchLine(
+  node: string,
+  event: ResidentProviderSwitchEvent,
+): string {
+  return JSON.stringify({ node, providerSwitch: event })
+}
+
 export async function runResident(args: readonly string[]): Promise<void> {
   // 帮助排在最前面，**在身份校验与运行时断言之前**：问「这个命令怎么用」的人
   // 恰恰是还没把 `OCC_IDENTITY=qianmo` 和 PSK 配对的那个人，让他先撞一条错误
@@ -1808,7 +2118,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   warnUnselectedTaskPolicy(config)
   // And then the one thing that makes a node which passes every other check
   // still unable to do any work.
-  warnMissingModelCredentials()
+  warnMissingModelCredentials(nodeHasConfiguredModelCredential())
 
   // …and the same question asked of the endpoint rather than of the
   // environment (issue #37 ①). Deliberately not awaited: the verdict is a
@@ -1874,6 +2184,18 @@ export async function runResident(args: readonly string[]): Promise<void> {
           },
         })
 
+  // Hot switching (design `providers-console-m1.md` §2.7). A node with no
+  // pending configuration is never recycled; a build that cannot load the
+  // write path still runs, it just cannot switch.
+  let providerNode: ResidentProviderNode | undefined
+  try {
+    providerNode = loadProviderNode()
+  } catch (error) {
+    process.stderr.write(
+      `[resident provider] model-service hot switching is unavailable in this build: ${formatResidentError(error)}\n`,
+    )
+  }
+
   const resident = new QianmoResident({
     node: config.node,
     team: config.team,
@@ -1933,6 +2255,24 @@ export async function runResident(args: readonly string[]): Promise<void> {
     onError: error => {
       process.stderr.write(`[resident] ${formatResidentError(error)}\n`)
     },
+    ...(providerNode === undefined ? {} : { providerNode }),
+    onProviderAlert: message => {
+      process.stderr.write(`[resident provider] ${message}\n`)
+    },
+    onProviderSwitched: event => {
+      process.stdout.write(
+        `${residentProviderSwitchLine(config.node, event)}\n`,
+      )
+      // The startup probe asked about a configuration that is no longer the
+      // one on disk. A reconcile changed nothing on disk, so it is not asked
+      // again for that.
+      if (event.via === 'reconcile') return
+      void runResidentModelCredentialProbe().then(verdict => {
+        if (verdict.status === 'refused') {
+          upstreamHealth.record(verdict.httpStatus, verdict.detail)
+        }
+      })
+    },
   })
 
   if (directory instanceof CertificateDirectory) {
@@ -1948,9 +2288,23 @@ export async function runResident(args: readonly string[]): Promise<void> {
   const stop = (): void => resident.stop()
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
+  // Installed before the pid file exists: whoever reads that file sends
+  // SIGHUP, and SIGHUP's default action would end this process.
+  const checkProvider = (): void => resident.checkProviderConfig()
+  process.on('SIGHUP', checkProvider)
+  let pidRecord: ResidentPidRecord | undefined
+  try {
+    pidRecord = writeResidentPidFile()
+  } catch (error) {
+    process.stderr.write(
+      `[resident provider] could not write ${residentPidPath()}; a staged model-service configuration is picked up by the 5 s check only: ${formatResidentError(error)}\n`,
+    )
+  }
   try {
     await resident.run()
   } finally {
+    if (pidRecord !== undefined) removeResidentPidFile(pidRecord)
+    process.off('SIGHUP', checkProvider)
     if (directory instanceof CertificateDirectory) {
       directory.setRefreshSink(undefined)
       directory.stopPolling()

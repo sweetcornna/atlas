@@ -20,6 +20,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import {
+  anthropicAuthHeadersFromEnv,
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
@@ -28,7 +29,11 @@ import {
   type ResidentModelProbeTarget,
   type ResidentModelProbeVerdict,
 } from '../residentModelProbe.js'
-import { runResidentModelCredentialProbe } from '../resident.js'
+import {
+  nodeHasConfiguredModelCredential,
+  residentModelProbeInputs,
+  runResidentModelCredentialProbe,
+} from '../resident.js'
 
 function inputs(
   overrides: Partial<ResidentModelProbeInputs> = {},
@@ -465,5 +470,136 @@ describe('the probe as the resident startup runs it', () => {
     })
     expect(verdict.status).toBe('unavailable')
     expect(fetchImpl.calls).toEqual([])
+  })
+})
+
+/**
+ * A managed node keeps its model service in `settings.json` (design
+ * `providers-console-m1.md` §2.6), not in the resident's environment, so the
+ * probe reads `getEffectiveSettingsEnv()` laid over `process.env` (§2.7).
+ */
+describe('the probe on a node whose model service lives in settings', () => {
+  const CANARY = 'sk-test-canary-probe-settings-4Fq'
+
+  function environment(
+    settings: Record<string, string> | (() => Record<string, string>),
+    provider = 'openai',
+  ): Parameters<typeof residentModelProbeInputs>[0] & {
+    authCalls: number
+  } {
+    const env = {
+      authCalls: 0,
+      getAPIProvider: () => provider,
+      getSmallFastModel: () => 'small-model',
+      getAuthHeaders: () => {
+        env.authCalls += 1
+        return { headers: { 'x-api-key': 'process-level-login' } }
+      },
+      getEffectiveSettingsEnv:
+        typeof settings === 'function' ? settings : () => settings,
+    }
+    return env
+  }
+
+  test('settings are laid over the process environment, and win', () => {
+    const inputs = residentModelProbeInputs(
+      environment({
+        OPENAI_API_KEY: CANARY,
+        OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
+        PATH: 'settings-wins',
+      }),
+    )
+    expect(inputs.env.OPENAI_API_KEY).toBe(CANARY)
+    expect(inputs.env.OPENAI_BASE_URL).toBe('http://127.0.0.1:9/v1')
+    expect(inputs.env.PATH).toBe('settings-wins')
+    expect(inputs.env.HOME).toBe(process.env.HOME)
+    const target = resolveResidentModelProbeTarget(inputs)
+    if ('status' in target) throw new Error(target.detail)
+    expect(target.url).toBe('http://127.0.0.1:9/v1/chat/completions')
+    expect(target.headers.authorization).toBe(`Bearer ${CANARY}`)
+  })
+
+  test('a settings read that throws leaves the process environment as it was', () => {
+    const inputs = residentModelProbeInputs(
+      environment(() => {
+        throw new Error('Config accessed before allowed.')
+      }),
+    )
+    expect(inputs.env).toBe(process.env)
+  })
+
+  test('the Anthropic lane takes the credential from settings when it is there', () => {
+    expect(
+      anthropicAuthHeadersFromEnv({ ANTHROPIC_AUTH_TOKEN: CANARY }),
+    ).toEqual({
+      authorization: `Bearer ${CANARY}`,
+    })
+    expect(anthropicAuthHeadersFromEnv({ ANTHROPIC_API_KEY: CANARY })).toEqual({
+      'x-api-key': CANARY,
+    })
+    expect(anthropicAuthHeadersFromEnv({})).toEqual({})
+
+    const env = environment(
+      {
+        ANTHROPIC_BASE_URL: 'https://gateway.example.test/anthropic',
+        ANTHROPIC_AUTH_TOKEN: CANARY,
+      },
+      'firstParty',
+    )
+    expect(residentModelProbeInputs(env).anthropicAuthHeaders()).toEqual({
+      authorization: `Bearer ${CANARY}`,
+    })
+    expect(env.authCalls).toBe(0)
+  })
+
+  test("a settings endpoint with no credential never gets this process's login", () => {
+    // design §3.1: a third-party Anthropic host with no key beside it would be
+    // handed whatever the auth stack finds locally.
+    const env = environment(
+      { ANTHROPIC_BASE_URL: 'https://gateway.example.test/anthropic' },
+      'firstParty',
+    )
+    const inputs = residentModelProbeInputs(env)
+    expect(inputs.anthropicAuthHeaders()).toEqual({})
+    expect(env.authCalls).toBe(0)
+    expect(resolveResidentModelProbeTarget(inputs)).toEqual({
+      status: 'skipped',
+      detail: 'no Anthropic-wire credential to test',
+    })
+  })
+
+  test('with no Anthropic settings the auth stack answers, as before', () => {
+    const env = environment({ MY_TOOL_FLAG: 'on' }, 'firstParty')
+    expect(residentModelProbeInputs(env).anthropicAuthHeaders()).toEqual({
+      'x-api-key': 'process-level-login',
+    })
+    expect(env.authCalls).toBe(1)
+  })
+
+  test('a key in settings counts as a credential, so the startup warning stays quiet', () => {
+    expect(
+      nodeHasConfiguredModelCredential(environment({ OPENAI_API_KEY: CANARY })),
+    ).toBe(true)
+  })
+
+  test('after a switch the probe asks the endpoint the settings now name', async () => {
+    const fetchImpl = fetchAnswering(200)
+    const verdict = await runResidentModelCredentialProbe({
+      environment: environment({
+        OPENAI_API_KEY: CANARY,
+        OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
+        OPENAI_WIRE_API: 'responses',
+      }),
+      fetchImpl,
+      warn: () => {},
+    })
+    expect(verdict).toEqual({ status: 'reachable', httpStatus: 200 })
+    expect(fetchImpl.calls.map(call => call.url)).toEqual([
+      'http://127.0.0.1:9/v1/responses',
+    ])
+    expect(
+      (fetchImpl.calls[0]?.init.headers as Record<string, string>)
+        .authorization,
+    ).toBe(`Bearer ${CANARY}`)
   })
 })

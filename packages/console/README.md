@@ -3,12 +3,12 @@
 
 # `@qianmo/console`
 
-阡陌控制面板：一个跑在本机环回地址上的单页控制台，用来**看**这张网络、并对它做**少数几件事**。
+阡陌控制面板：一个跑在本机环回地址上的控制台，用来**看**这张网络、并对它做**少数几件事**。
 
 - **看**：在线节点名册（能力、心跳、租约到期）、审计轨迹（可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、协议与运行时的各项上限。
 - **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒。页面上注册成功的条目由 host 侧的 `occ console` 记进登记簿并持续续租，直到在页面上注销（`docs/dev/console.md` §7.3）；本包只看到一个 `RegistryPort`。
 
-页面本身是服务端渲染的 HTML，外加三个可局部刷新的片段；没有构建步骤、没有第三方依赖、不打包任何外部资源。
+页面是服务端渲染的 HTML，每个区域一页、套同一个外壳，外加几个可局部刷新的片段；没有构建步骤、没有第三方依赖、不打包任何外部资源（`test/dependencies.test.ts` 钉住）。
 
 ## 怎么起
 
@@ -34,7 +34,12 @@ const handle = createConsoleHandler(deps, tokens)
 
 | 方法 | 路径 | 角色 | 返回 |
 | --- | --- | --- | --- |
-| GET | `/` | view | `text/html`，整页 |
+| GET | `/` | view | `text/html`，总览 |
+| GET | `/nodes`、`/nodes/<节点>` | view | `text/html`，节点名册 |
+| GET | `/audit`、`/audit/trace/<traceId>` | view | `text/html`，审计轨迹与单条消息链 |
+| GET | `/servers`、`/settings` | view | `text/html`，服务器、设置与关于 |
+| GET | `/chat` | **admin** | `text/html`，对话面；没接对话通道时 404 |
+| GET | `/alerts`、`/jobs`、`/approvals`、`/providers`、`/access`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
 | GET | `/assets/app.css` | 公开 | `text/css` |
 | GET | `/assets/app.js` | 公开 | `text/javascript` |
 | GET | `/v0/health` | 公开 | `{ status: 'ok' }` |
@@ -52,7 +57,9 @@ const handle = createConsoleHandler(deps, tokens)
 约定：
 
 - 整个 `qianmo://…` 地址放在**一个**百分号编码的 path segment 里（`qianmo%3A%2F%2Fnode-b%2Freviewer`），与注册中心 HTTP v0 一致。
-- 错误一律是 `{ "error": { "code": "…", "message": "…" } }`。
+- 错误一律是 `{ "error": { "code": "…", "message": "…" } }`；浏览器导航（`GET`/`HEAD`、`Accept: text/html`）到页面路径时拿到的是 HTML 错误页。
+- 每个 HTML 文档都带 `Content-Security-Policy`（含 `frame-ancestors 'none'`）与 `X-Frame-Options: DENY` 两个响应头。
+- 整页按区域分模块：`src/routes/` 下一个区域一个文件，模块形状见 `src/routes/types.ts` 的 `RouteModule`；占位区域用 `src/routes/stub.ts` 的 `stubRoute`。约定与前端标记（`data-write`、`data-poll`、`data-key`）见 `docs/dev/console.md` §5.2。
 - 名册的在线 / 滞后 / 过期按注册中心给每条记录的租约（`expiresAt − lastHeartbeatAt`）判，不按控制台自己的数；`/v0/limits` 的 `registryTtlMs` 只是 `@qianmo/registry` 的出厂默认，用于兜底。口径见 `docs/dev/console.md` §7.1。
 - `limit` 非正整数或超过 500 一律夹到 500；`from` / `to` 接受 epoch 毫秒或 ISO 字符串，解析不了就当没给（过滤器输到一半不该 400）。
 - 两个 assets 路由公开：浏览器不会给页面里的 `<link>` / `<script>` 带上凭据，锁上它们只会得到一张没有样式的页面；这两个文件是编译进来的常量，不含任何实例数据。
@@ -95,12 +102,15 @@ M0 内没有 TLS（章程 N-3），所以第 2 种用法的前提是外面已经
 ```
 src/deps.ts     端口契约（控制台能看到的全部东西）
 src/auth.ts     双 token、角色判定、token 来源策略
-src/http.ts     路由、鉴权接线、失败降级、Bun.serve
-src/view/       服务端 HTML 渲染（整页 + 三个片段）
-src/assets/     编译进来的 CSS 与前端脚本常量
-test/           路由 / 鉴权矩阵 / 过滤器解析，全部用手写假端口
+src/http.ts     鉴权接线、登录与邀请、错误页、把请求分给区域模块、Bun.serve
+src/routes/     每个区域一个模块（页面 + 它的 /v0 与 /fragments），index.ts 是路由表与外壳拼装
+src/view/       服务端 HTML 渲染（shell.ts 是外壳）
+src/assets/     编译进来的 CSS、共享运行时与各页脚本常量
+test/           路由 / 鉴权矩阵 / 页面 / 角色扫描，全部用手写假端口
+test/browser/   浏览器级测试：经 DevTools 协议驱动无头 Chrome，没有 Chrome 时跳过
 ```
 
 ```bash
 bun test packages/console/
+QIANMO_CHROME=/path/to/chrome bun test packages/console/test/browser   # 指定浏览器
 ```

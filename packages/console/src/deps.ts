@@ -574,6 +574,128 @@ export interface LedgerPort {
   append(line: string): void
 }
 
+// ---------------------------------------------------------------------------
+// ActionLedgerPort —— 控制台动作账本（P15.9 实现；P18.4 定接口与调用点）
+// ---------------------------------------------------------------------------
+
+/**
+ * 一次动作的结果。
+ *
+ * - `ok`：做成了。
+ * - `refused`：过了角色门，但被这次请求本身挡下——输入不合法、目标不在启动时
+ *   的白名单里、账本不收（{@link ActionLedgerPort.admit}）。
+ * - `failed`：交给端口了，端口失败（注册中心不可达、对端拒收……）。
+ *
+ * 角色门本身的 401 / 403 **不记**：那是凭据不够，不是一次动作；记下来只会让
+ * 一个拿着只读令牌乱点的人把账本刷满（`console.md` 的守门顺序见 `routes/shared.ts`）。
+ */
+export type ActionOutcome = 'ok' | 'refused' | 'failed'
+
+/**
+ * 账本里的一条：谁、在哪次请求里、对什么、做了什么、结果如何。
+ *
+ * **从不记载荷**：唤醒的提示词、对话的正文、备注的内容、公钥都不进账——账本
+ * 回答「谁动过什么」，不是第二份数据副本（`console.md` §7.2 的「控制台不碰
+ * 载荷」）。`target` 是被动对象的标识（地址、服务器名、会话 id），不是内容。
+ */
+export interface ConsoleAction {
+  /** 毫秒时间戳，取自 `deps.now`。 */
+  readonly at: number
+  /** 这次 HTTP 请求的 id，控制台为每个请求生成；同一请求的多条记录共用一个。 */
+  readonly requestId: string
+  /**
+   * 主体：个人账号的 `u:…`，或 `legacy:admin` / `legacy:view`；没有任何凭据时
+   * 为 `anonymous`（只会出现在 break-glass 之外的公开路由上，今天没有）。
+   */
+  readonly subject: string
+  /** admin 令牌以 break-glass 方式使用时为 `true`（`tenancy-m1.md` §3.4）。 */
+  readonly breakGlass?: true
+  /**
+   * 点分动词，见 {@link CONSOLE_ACTIONS}。前缀可筛：`agent.`、`chat.`。
+   */
+  readonly action: string
+  /** 被动对象：地址、服务器名、会话 id、`方法 路径`。 */
+  readonly target: string
+  readonly outcome: ActionOutcome
+  /** 结果不是 `ok` 时的错误码（`ConsoleFailure['code']` 或 HTTP 侧的码）。 */
+  readonly code?: string
+}
+
+/**
+ * 控制台今天会写的动作名。P15.9 与之后的页面包增加动作时在这里补一行，
+ * 让「账本里会出现哪些动作」有一个可以 grep 的地方。
+ */
+export const CONSOLE_ACTIONS = [
+  'agent.register',
+  'agent.deregister',
+  'agent.heartbeat',
+  'wake.send',
+  'server.note.set',
+  'chat.session.open',
+  'chat.message.send',
+  /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
+  'chat.transcript.open',
+  /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
+  'accounts.post',
+  'accounts.put',
+  'accounts.patch',
+  'accounts.delete',
+  /** break-glass 下的每一个请求（P15.9 DoD），target 是 `方法 路径`。 */
+  'breakglass.request',
+] as const
+
+/** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
+export interface ActionRecord extends ConsoleAction {
+  readonly seq: number
+}
+
+/** 查询条件。全部可选；缺省为「最新的一页」。 */
+export interface ActionQuery {
+  /** 只要这个主体做的。 */
+  readonly subject?: string
+  /**
+   * 只要作用于这些对象的——「我的转录被谁读过」就是把自己的会话 id 放进来、
+   * 再配 `actionPrefix: 'chat.transcript.'`。
+   */
+  readonly targets?: readonly string[]
+  /** 动作名前缀，例如 `chat.`。 */
+  readonly actionPrefix?: string
+  /** 游标：只要序号小于它的（更早的）。 */
+  readonly beforeSeq?: number
+  /** 每页条数；实现自定上限。 */
+  readonly limit?: number
+}
+
+/** 一页记录，新的在前。 */
+export interface ActionPage {
+  readonly entries: readonly ActionRecord[]
+  /** 下一页（更早）的 `beforeSeq`；没有更早的时为 `null`。 */
+  readonly nextBeforeSeq: number | null
+}
+
+/**
+ * 控制台动作账本：P15.9 用 `@qianmo/audit` 的哈希链实现（`tenancy-m1.md` §6），
+ * 页面（H4「操作记录」）在 P18.10。
+ *
+ * 控制台对它的用法只有三处，全部在路由层（`routes/*.ts` 经 `RouteContext`）：
+ *
+ * 1. 写动作执行**之前**调 {@link admit}：账本写不进去（链断、盘满、文件被改）时
+ *    这次写被拒（503），不会出现「做了但没记」。
+ * 2. 写动作执行**之后**调 {@link record}，带上结果。这一步失败不回滚已经做成的
+ *    动作——那正是 `admit` 存在的原因；实现应让 `admit` 通过即意味着随后一次
+ *    `record` 能落盘。
+ * 3. 读：{@link list}，供 H4 页面与「我的转录被谁读过」。
+ *
+ * 缺席（`ConsoleDeps.actions` 未接）时控制台照旧工作、什么都不记——今天的
+ * 部署就是这样，legacyParity 的金样也是在缺席时取的。
+ */
+export interface ActionLedgerPort {
+  /** 写动作之前问一次：现在能记账吗。缺省视为能。 */
+  admit?(): Promise<ConsoleResult<void>>
+  record(entry: ConsoleAction): Promise<ConsoleResult<void>>
+  list(query: ActionQuery): Promise<ConsoleResult<ActionPage>>
+}
+
 /** Protocol/runtime ceilings, read from the packages that own them. */
 export interface LimitsSnapshot {
   /** `@qianmo/protocol` LIMITS — the single source for protocol ceilings. */
@@ -661,4 +783,8 @@ export interface ConsoleDeps {
    * `发起方`. Absent leaves the field editable and empty.
    */
   readonly identity?: string
+  /**
+   * 动作账本（P15.9）。缺席时什么都不记，其余行为不变。
+   */
+  readonly actions?: ActionLedgerPort
 }
