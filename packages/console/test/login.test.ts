@@ -1066,21 +1066,30 @@ describe('the login document', () => {
 })
 
 describe('the sidebar says which credential this is', () => {
+  /**
+   * The role chip's text. Read off the chip itself: since the shell, 管理 is
+   * also the name of a sidebar group, so the bare word is on every page.
+   */
+  function roleChip(html: string): string {
+    const match = /id="role">(?:<svg[\s\S]*?<\/svg>)?([^<]*)<\/span>/.exec(html)
+    return match?.[1] ?? ''
+  }
+
   test('admin and view are told apart, and both offer the way out', async () => {
     const { handle } = setup()
     const asAdmin = await (await handle(withCookie('/', ADMIN))).text()
-    expect(asAdmin).toContain('>管理<')
+    expect(roleChip(asAdmin)).toBe('管理')
     expect(asAdmin).toContain('action="/logout"')
 
     const asView = await (await handle(withCookie('/', VIEW))).text()
-    expect(asView).toContain('>只读<')
-    expect(asView).not.toContain('>管理<')
+    expect(roleChip(asView)).toBe('只读')
+    expect(asView).toContain('action="/logout"')
   })
 
   test('the chat page states it too', async () => {
     const { handle } = setup()
     const html = await (await handle(withCookie('/chat', ADMIN))).text()
-    expect(html).toContain('>管理<')
+    expect(roleChip(html)).toBe('管理')
     expect(html).toContain('action="/logout"')
   })
 })

@@ -1,5 +1,6 @@
 import { APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
+import { isQuotaExhaustedError } from '../qianmo/modelCompat/errorText.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const API_ERROR_SOURCE = Symbol.for('occ.api.sourceError')
@@ -486,6 +487,12 @@ export function classifyRetryableAPIError(
   }
   if (error instanceof APIConnectionError) {
     return classify('server_error', 'transient')
+  }
+
+  // qianmo P18.5 (hermes #15): an account that cannot pay is not a rate limit
+  // — see src/services/qianmo/modelCompat/errorText.ts.
+  if (isQuotaExhaustedError({ status: explicitStatus, records, messages })) {
+    return neverRetry('billing_error')
   }
 
   const retryDirective = retryDirectiveFromRecords(records)

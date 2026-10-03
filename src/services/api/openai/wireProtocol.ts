@@ -11,6 +11,9 @@
  *  1. `OPENAI_WIRE_API` env — explicit `chat` / `responses` wins outright.
  *  2. ChatGPT-subscription auth (`OPENAI_AUTH_MODE=chatgpt`) forces
  *     'responses': the Codex backend it talks to has no Chat Completions.
+ *  2b. (qianmo P18.5) A host that mandates a lane — api.openai.com and
+ *     api.meta.ai → 'responses'; Azure per model family. Table and sources in
+ *     src/services/qianmo/modelCompat/wireHosts.ts.
  *  3. Codex-family model (id contains 'codex', or the GPT-5 generation —
  *     see isCodexFamilyModel) defaults to 'responses': OpenAI serves these
  *     models Responses-first. `OPENAI_WIRE_API=chat` remains the escape
@@ -21,6 +24,7 @@
  */
 
 import { isCodexFamilyModel } from '../../../utils/model/chatgptModels.js'
+import { hostMandatedLane } from '../../qianmo/modelCompat/wireHosts.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 
 export type OpenAIWireProtocol = 'chat' | 'responses'
@@ -35,6 +39,10 @@ export function resolveOpenAIWireProtocol(model?: string): OpenAIWireProtocol {
   if (explicit === 'responses') return 'responses'
   if (explicit === 'chat') return 'chat'
   if (isChatGPTAuthEnabled()) return 'responses'
+  // qianmo P18.5 (hermes #22): hosts that mandate a lane, after the explicit
+  // choice above — see src/services/qianmo/modelCompat/wireHosts.ts.
+  const mandated = hostMandatedLane(process.env.OPENAI_BASE_URL, model)
+  if (mandated === 'responses' || mandated === 'chat') return mandated
   if (model !== undefined && isCodexFamilyModel(model)) return 'responses'
   return 'chat'
 }

@@ -21,16 +21,69 @@ const JSON_HEADERS = {
 } as const
 
 /**
+ * Content-Security-Policy, as strict as an inline-everything page can be.
+ *
+ * `'unsafe-inline'` is unavoidable for the one style and the one script — but
+ * every *host* directive stays `'none'`, which is the half that matters: no
+ * origin other than this one can contribute anything, and `connect-src 'self'`
+ * keeps the token from being sent anywhere else.
+ *
+ * `img-src data:` is the one loosening, and it buys exactly one thing: the
+ * favicon, which is an inline SVG data URI in the document head. `data:` is not
+ * an origin — nothing can be fetched through it and no third party can put
+ * anything there — so the property this policy exists for ("no host other than
+ * this one contributes anything") is untouched.
+ *
+ * Lives here rather than beside the document head because two places state
+ * it: the `<meta>` in every document (`view/shell.ts`) and the response header
+ * on every document ({@link DOCUMENT_CSP}). One constant, so the two cannot
+ * drift.
+ */
+export const CSP = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "script-src 'unsafe-inline'",
+  // `connect-src` also covers `EventSource`: the chat page's stream is a
+  // same-origin `GET /v0/chat/stream`, and without this directive the browser
+  // would refuse to open it while reporting nothing useful.
+  "connect-src 'self'",
+  "form-action 'self'",
+  "base-uri 'none'",
+  'img-src data:',
+  "font-src 'none'",
+].join('; ')
+
+/**
+ * The policy as a response header: {@link CSP} plus `frame-ancestors 'none'`.
+ *
+ * `frame-ancestors` is the one directive a `<meta>` policy cannot carry — the
+ * browser ignores it there (`authorization-m1.md` TH-5) — and it is the one
+ * that stops another page from framing the console with the operator's
+ * cookie attached and a click-target laid over 注销 (`SameSite` does not
+ * look at the port, so a page on the same host at another port is "same
+ * site"). The `<meta>` copy stays as well: it is what a saved copy of the
+ * page still enforces.
+ */
+export const DOCUMENT_CSP = `${CSP}; frame-ancestors 'none'`
+
+/**
  * Headers for anything a browser renders.
  *
  * `no-referrer` matters here rather than being boilerplate: the page URL can
  * carry the token (`?token=…`), and a default `Referer` would hand it to
  * whatever the operator clicks next.
+ *
+ * `x-frame-options: DENY` says what `frame-ancestors 'none'` says, for a
+ * browser old enough to know only the older header. Every document carries
+ * both — the login door and the invitation pages too, since a framed login
+ * form is the other half of a clickjacking attack.
  */
 export const DOCUMENT_HEADERS = {
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
+  'content-security-policy': DOCUMENT_CSP,
+  'x-frame-options': 'DENY',
 } as const
 
 /** Error vocabulary of this surface. `code` is for clients, not for users. */

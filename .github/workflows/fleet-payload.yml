@@ -1,0 +1,165 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 内测舰队部署载荷（payload.tgz = dist + demo）的 Linux x86_64 构建。
+#
+# 配方只有一份：scripts/fleet/linux-build.sh。为什么必须在 Linux 上出、16 项判据
+# 各防什么，都写在那个文件里，这里不抄。这个 workflow 只做配方做不了的事：取两份
+# 代码、跑配方、留档、按判据个数定红绿。不发布、不打标签；产物作为 artifact 留
+# 30 天，拿去部署（beta-deploy.sh --payload）是人的事。
+#
+# 不用任何 secret：仓库公开，构建也不需要凭据。
+name: Fleet payload
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 要构建的标签、分支或完整 40 位提交 sha（短 sha 不认，actions/checkout 的限制）
+        required: true
+        type: string
+      platform:
+        description: 目标平台
+        required: false
+        default: linux/amd64
+        type: choice
+        # 只开 amd64：舰队是 x86_64，ubuntu-latest 也是，容器原生跑。arm64 要么 QEMU
+        # 模拟、要么让 runs-on 跟着平台换 arm runner，两条都没在这里实跑过，所以不开。
+        options:
+          - linux/amd64
+  # 改了配方或本文件的 PR 实跑一次，当冒烟。其余 PR 不跑：一次要好几分钟，而配方
+  # 之外的改动已有 ci.yml 的 build:vite + check:bundle 在管。
+  pull_request:
+    paths:
+      - .github/workflows/fleet-payload.yml
+      - scripts/fleet/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 09-26 在 rosetta 里全程 130 s；runner 上要多装一遍 apt / bun / 依赖并拉镜像。
+    # 给宽：job 级超时切下去拿到的是没有 verdict 的红，那种红查不动。
+    timeout-minutes: 30
+    env:
+      PLATFORM: ${{ inputs.platform || 'linux/amd64' }}
+      # PR 冒烟构建 PR 自己的头，不是 GitHub 合成的 merge 提交：合成提交不在任何
+      # 分支上，产物里编进去的 SOURCE_COMMIT 就对不上任何人能检出的东西。
+      BUILD_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref }}
+
+    steps:
+      # 配方取本 workflow 所在的提交（github.sha），只要 scripts/fleet 这一棵。
+      # 构建 v2.46.x 这类旧标签时，用的仍是今天的配方与判据。
+      - name: Check out the recipe
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          path: recipe
+          sparse-checkout: scripts/fleet
+          persist-credentials: false
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      # 要构建的源：完整历史 + 真 .git。配方从这里 `git bundle` 取源、在容器里真 clone，
+      # 浅克隆打出的 bundle 带前置条件，容器里 clone 不出来。
+      # 目录不能叫 src/：会和仓库自己的 src/ 混在一棵树里。
+      - name: Check out the source to build
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
+        with:
+          path: source
+          ref: ${{ env.BUILD_REF }}
+          fetch-depth: 0
+          persist-credentials: false
+        env:
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
+
+      # 配方要求 --branch 是本地分支、--commit 在它上面；标签或 sha 检出后是游离 HEAD，
+      # 这里给它一个本地分支，并把提交钉成 40 位 sha 显式传下去。
+      - name: Pin the commit for the recipe
+        id: src
+        working-directory: source
+        run: |
+          sha="$(git rev-parse --verify 'HEAD^{commit}')"
+          git branch -f fleet-payload "$sha"
+          echo "ref=$BUILD_REF -> $sha"
+          {
+            echo "sha=$sha"
+            echo "short=${sha:0:8}"
+            echo "platform_slug=${PLATFORM//\//-}"
+          } >> "$GITHUB_OUTPUT"
+
+      # 退出码就是配方的：任一判据 FAIL 都是 1，这一步因此变红。
+      - name: Build payload (scripts/fleet/linux-build.sh)
+        id: build
+        env:
+          # runner 上没有 colima，本机 docker 守护进程就是构建机。
+          DOCKER_CONTEXT_NAME: default
+        run: |
+          docker --context "$DOCKER_CONTEXT_NAME" version --format 'docker server {{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'
+          bash recipe/scripts/fleet/linux-build.sh \
+            --repo "$GITHUB_WORKSPACE/source" \
+            --branch fleet-payload \
+            --commit "${{ steps.src.outputs.sha }}" \
+            --platform "$PLATFORM" \
+            --out "$RUNNER_TEMP/fleet-payload"
+
+      # 配方写出的全部判据文件都传：payload.tgz、verdict.txt、dist-sha256.txt、
+      # check-bundle.log、env.txt、各 rc / 日志，以及容器里实际跑的两段脚本（in/）。
+      # 源 bundle 配方本来就不拷出来。`always()`：红的那次最需要这些；只在配方真跑过
+      # 时传，前面检出失败就没东西可传。名字带运行号与尝试号：artifact 名在一次运行里
+      # 是唯一键，重跑同一个 run 时不带尝试号会撞上上一次的产物。
+      - name: Upload payload and evidence
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
+        with:
+          name: fleet-payload-${{ steps.src.outputs.short }}-${{ steps.src.outputs.platform_slug }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fleet-payload
+          if-no-files-found: error
+          retention-days: 30
+
+      # 配方只在有 FAIL 时非零退出；这一步另外钉死判据**个数**。哪天配方里一条判据
+      # 被删了或没写进 verdict.txt，15/15 PASS 会以 exit 0 收场，这里会红。配方加判据
+      # 时，这里的 16 要跟着改。再核一遍 verdict 里记的 sha256 就是 artifact 里那份 tgz。
+      - name: Gate - verdict must be 16/16 PASS, 0 FAIL
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/fleet-payload"
+          v="$out/verdict.txt"
+          if [ ! -s "$v" ]; then
+            echo "::error title=No verdict::配方没写出 verdict.txt，它在判定之前就退出了。看上一步的日志，以及 artifact 里的 docker.log / rc.txt。"
+            exit 1
+          fi
+          {
+            echo "### Fleet payload ${{ steps.src.outputs.short }} ($PLATFORM)"
+            echo '```'
+            cat "$out/source.txt" "$v"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 没有管道：grep -c 零命中时退出 1，`|| true` 只为留住它打印的那个 0。
+          pass="$(grep -c '^PASS ' "$v" || true)"
+          fail="$(grep -c '^FAIL ' "$v" || true)"
+          if [ "$pass" != 16 ] || [ "$fail" != 0 ]; then
+            # 变量紧贴全角标点时必须加花括号：UTF-8 区域设置下 bash 可能把标点的首字节
+            # 读进变量名，set -u 报 unbound variable，这条注解就丢了（本机实测过）。
+            echo "::error title=Verdict not 16/16::PASS=${pass} FAIL=${fail}，要求 PASS=16 FAIL=0。逐条见 verdict.txt。"
+            exit 1
+          fi
+
+          want="$(sed -n 's/^payload=.* sha256=\([0-9a-f]\{64\}\)$/\1/p' "$v")"
+          got="$(sha256sum "$out/payload.tgz" | cut -d' ' -f1)"
+          if [ -z "$want" ] || [ "$want" != "$got" ]; then
+            echo "::error title=Payload sha256 mismatch::verdict.txt 记的是「${want:-空}」，payload.tgz 实算 $got"
+            exit 1
+          fi
+          echo "::notice title=Fleet payload::16/16 PASS, 0 FAIL. payload.tgz sha256=$got"

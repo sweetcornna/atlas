@@ -73,6 +73,7 @@ import {
   chevron,
   chip,
   failureBar,
+  field,
   icon,
   sectionHead,
   splitAddress,
@@ -108,6 +109,7 @@ import type {
   ConsoleCertificate,
   ConsoleFailure,
   NodeServer,
+  WakeTarget,
 } from '../deps.js'
 
 /**
@@ -144,7 +146,7 @@ const DECLARED: Readonly<Record<string, string | undefined>> = {
   dormant: '休眠',
 }
 
-export const NODES_HEADING_ID = 'h-nodes'
+const NODES_HEADING_ID = 'h-nodes'
 
 /** The id the overview cards read their numbers off. */
 const ROSTER_HEAD_ID = 'roster-head'
@@ -257,7 +259,12 @@ function rowNote(health: AgentHealth): string {
   return '注销后该地址立即从名册摘除 · 需要重新注册才能再被唤醒'
 }
 
-function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
+function agentRow(
+  agent: ConsoleAgent,
+  now: number,
+  ttlMs: number,
+  canWrite: boolean,
+): string {
   const health = agentHealth(agent, now, ttlMs)
   const address = attr(agent.address)
   const beatable = health !== 'expired'
@@ -265,18 +272,33 @@ function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
     `<div class="kv"><span class="k">${escapeHtml(key)}</span>` +
     `<span class="v">${value}</span></div>`
 
+  // The two writes on a row are not drawn for a credential that may not make
+  // them (C7): a button that can only ever answer 403 teaches the operator
+  // that the console is broken, not that they are read-only. The page says
+  // "read-only" once, in the top bar, rather than on every row.
+  const heartbeat = canWrite
+    ? `<button type="button" class="btn btn-secondary btn-small" ` +
+      `data-action="heartbeat" data-address="${address}" data-write${
+        beatable ? '' : ' disabled'
+      }>心跳</button>`
+    : ''
+  const deregister = canWrite
+    ? `<button type="button" class="btn btn-ghost btn-danger" ` +
+      `data-action="deregister" data-address="${address}" data-write>` +
+      icon('power', { small: true }) +
+      `注销</button>`
+    : ''
+
   return (
-    `<details class="row" data-address="${address}" data-health="${attr(
-      health,
-    )}">` +
+    // `data-key` is what the runtime reopens this row by after the poller
+    // replaces the roster under it (`assets/client.ts`, D1).
+    `<details class="row" data-key="${address}" data-address="${address}" ` +
+    `data-health="${attr(health)}">` +
     `<summary>` +
     addressLine(agent.address) +
     statusCell(agent, health) +
     leaseCell(agent, now, ttlMs, health) +
-    `<button type="button" class="btn btn-secondary btn-small" ` +
-    `data-action="heartbeat" data-address="${address}"${
-      beatable ? '' : ' disabled'
-    }>心跳</button>` +
+    heartbeat +
     chevron() +
     `</summary>` +
     `<div class="row-panel">` +
@@ -285,10 +307,7 @@ function agentRow(agent: ConsoleAgent, now: number, ttlMs: number): string {
     kv('公钥', keyCell(agent.publicKey)) +
     kv('上次心跳', heartbeatValue(agent.lastHeartbeatAt, now)) +
     `<div class="row-acts">` +
-    `<button type="button" class="btn btn-ghost btn-danger" ` +
-    `data-action="deregister" data-address="${address}">` +
-    icon('power', { small: true }) +
-    `注销</button>` +
+    deregister +
     `<span class="note">${escapeHtml(rowNote(health))}</span>` +
     `</div></div></details>`
   )
@@ -369,6 +388,7 @@ function nodeCard(
   certificate: ConsoleCertificate | undefined,
   binName: string,
   server: string | undefined,
+  canWrite: boolean,
 ): string {
   const counts = tallyOf(group.agents, now, ttlMs)
   const first = group.agents[0]
@@ -401,7 +421,7 @@ function nodeCard(
     (certificate_ === ''
       ? ''
       : `<div class="grp-cert">${certificate_}${reissue}</div>`) +
-    group.agents.map(one => agentRow(one, now, ttlMs)).join('') +
+    group.agents.map(one => agentRow(one, now, ttlMs, canWrite)).join('') +
     `</div>`
   )
 }
@@ -459,6 +479,10 @@ function rosterHead(
  * `ttlMs` is the scale of last resort. Every row is judged against the lease
  * the registry granted it (`expiresAt − lastHeartbeatAt`, see `leaseOf` in
  * `format.ts`); `ttlMs` only stands in for a record that carries no lease.
+ *
+ * `options.canWrite` draws the row's 心跳 and 注销 and the empty state's
+ * invitation to register. Off unless asked for: a caller that forgets to say
+ * gets the read-only roster, never a page of buttons that 403.
  */
 export function renderRoster(
   agents: readonly ConsoleAgent[] | null,
@@ -467,7 +491,9 @@ export function renderRoster(
   ttlMs: number,
   certificates?: RosterCertificates,
   nodeServers?: readonly NodeServer[],
+  options: { readonly canWrite?: boolean } = {},
 ): string {
+  const canWrite = options.canWrite === true
   const body: string[] = []
   if (failure !== null) {
     body.push(failureBar(failure, '注册中心'))
@@ -508,10 +534,14 @@ export function renderRoster(
 
   if (agents.length === 0) {
     // The empty state spends its one line on the next action rather than on
-    // the news.
+    // the news — for whoever may take it. A read-only credential is told who
+    // does instead of being offered a dialog that is not there.
     body.push(
-      `<p class="hint">还没有节点 · ` +
-        `<a class="jump" href="#register">在下面注册第一个</a></p>`,
+      canWrite
+        ? `<p class="hint">还没有节点 · ` +
+            `<a class="jump" href="#register-dialog" ` +
+            `data-open-dialog="register-dialog" data-write>注册第一个</a></p>`
+        : `<p class="hint">还没有节点 · 由运维注册</p>`,
     )
     return (
       rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
@@ -534,6 +564,7 @@ export function renderRoster(
             byNode.get(bareNode(group.node)),
             binName,
             serverOf.get(bareNode(group.node)),
+            canWrite,
           ),
         )
         .join('') +
@@ -607,4 +638,348 @@ export function agentFilterOptions(
         }>${escapeHtml(one.address)}</option>`,
     )
     .join('')
+}
+
+// ---------------------------------------------------------------------------
+// The overview's one line per node
+// ---------------------------------------------------------------------------
+
+/**
+ * One line per node, for the overview: the name (a link to the node's own
+ * page), how many agents it carries, and the same badge its roster card shows.
+ *
+ * The badge is {@link groupBadge}, not a second judgement: the overview and
+ * the roster must not be able to disagree about whether a node needs
+ * attention.
+ */
+export function renderNodeSummary(
+  agents: readonly ConsoleAgent[] | null,
+  failure: ConsoleFailure | null,
+  now: number,
+  ttlMs: number,
+): string {
+  const head = sectionHead('Nodes', '节点', {
+    tail: `<a class="jump" href="/nodes" data-nav>查看名册</a>`,
+  })
+  if (agents === null) {
+    return (
+      head +
+      (failure === null
+        ? `<p class="hint">未取得注册数据</p>`
+        : failureBar(failure, '注册中心'))
+    )
+  }
+  if (agents.length === 0) return head + `<p class="hint">还没有节点</p>`
+  const rows = groupByNode(agents)
+    .map(group => {
+      const name = bareNode(splitAddress(group.node).node)
+      const shown = name === '' ? group.node : name
+      return (
+        `<li class="node-line">` +
+        `<a class="node-link" href="/nodes/${attr(
+          encodeURIComponent(shown),
+        )}" data-nav>${escapeHtml(shown)}</a>` +
+        `<span class="note">${escapeHtml(
+          String(group.agents.length),
+        )} 个智能体</span>` +
+        groupBadge(tallyOf(group.agents, now, ttlMs)) +
+        `</li>`
+      )
+    })
+    .join('')
+  return (
+    head +
+    (failure === null ? '' : failureBar(failure, '注册中心')) +
+    `<ul class="node-lines card elev-sm">${rows}</ul>`
+  )
+}
+
+/**
+ * How many nodes the agents run on: the number the sidebar prints beside
+ * 节点. Grouped the way the roster groups its cards, so the count and the
+ * cards under it can never disagree; the agent total is the overview's
+ * 智能体 card, a different number with a different name.
+ */
+export function nodeCount(agents: readonly ConsoleAgent[]): number {
+  return groupByNode(agents).length
+}
+
+/** The agents registered under one bare node name, in registry order. */
+export function agentsOfNode(
+  agents: readonly ConsoleAgent[],
+  node: string,
+): readonly ConsoleAgent[] {
+  return agents.filter(one => bareNode(splitAddress(one.address).node) === node)
+}
+
+// ---------------------------------------------------------------------------
+// The two forms and two confirmations of the nodes page
+// ---------------------------------------------------------------------------
+
+/** Wake delay ceiling, matching the one `createWakePort` enforces. */
+const MAX_WAKE_AFTER_MS = 60_000
+
+/** The capabilities the register form offers as ticks rather than as prose. */
+const CAPABILITY_CHOICES: readonly (readonly [string, boolean])[] = [
+  ['task.request', true],
+  ['task.result', false],
+  ['chat.message', false],
+  ['audit.read', false],
+]
+
+function capabilityChecks(): string {
+  return CAPABILITY_CHOICES.map(
+    ([value, on]) =>
+      `<label class="chk"><input type="checkbox" name="capabilities" ` +
+      `value="${attr(value)}"${on ? ' checked' : ''}><span class="bx">` +
+      icon('check', { small: true }) +
+      `</span><span class="mono">${escapeHtml(value)}</span></label>`,
+  ).join('')
+}
+
+/** A dialog's title row: an icon disc and the title. */
+function dialogTop(
+  id: string,
+  glyph: string,
+  title: string,
+  alt = false,
+): string {
+  return (
+    `<div class="dlg-top"><span class="dlg-icon${alt ? ' dlg-icon-2' : ''}">` +
+    icon(glyph) +
+    `</span><div class="dialog-title" id="${attr(id)}">` +
+    `${escapeHtml(title)}</div></div>`
+  )
+}
+
+/**
+ * The register form, in its own dialog.
+ *
+ * 地址 and 端点 stay in the open (capabilities are four checkboxes with the
+ * common one pre-ticked); status and key fold away behind a native
+ * `<details>`. The register action used to be a form at the bottom of a page
+ * six screens tall, under the trail; it is now the nodes page's primary action
+ * and opens here, over the roster it adds to.
+ */
+export function registerDialog(): string {
+  return (
+    `<dialog class="dialog dialog-wide" id="register-dialog" ` +
+    `aria-labelledby="register-title">` +
+    dialogTop('register-title', 'plus', '注册节点', true) +
+    `<form id="register-form" class="stack" novalidate>` +
+    `<div class="form-grid">` +
+    field('address', '地址', 'qianmo://node-a/reviewer', { required: true }) +
+    // The registry's isValidEndpoint takes a schemed URL (ws:// et al.) or a
+    // qianmo:// address — a bare host:port is refused with a 400. The
+    // placeholder must teach a format that will actually be accepted.
+    field('endpoint', '端点', 'ws://主机:端口 · 也接受 qianmo:// 地址', {
+      required: true,
+    }) +
+    `</div>` +
+    `<div class="field"><span>能力</span>` +
+    `<div class="rowx" style="gap:var(--space-2)">${capabilityChecks()}</div>` +
+    `</div>` +
+    `<details class="adv"><summary>${chevron()}高级选项 · 状态与公钥</summary>` +
+    `<div class="adv-body">` +
+    `<div class="field"><label for="f-status">状态 · 默认在线</label>` +
+    `<span class="sel"><select class="input" id="f-status" name="status">` +
+    `<option value="online" selected>在线</option>` +
+    `<option value="dormant">休眠</option>` +
+    `</select>${chevron()}</span></div>` +
+    `<div class="field field-wide"><label for="f-publicKey">` +
+    `公钥 · 可选 · 留空则该地址不参与签名校验</label>` +
+    `<textarea class="input" id="f-publicKey" name="publicKey" rows="3" ` +
+    `spellcheck="false" placeholder="ed25519 公钥 · base64"></textarea></div>` +
+    `</div></details>` +
+    `<p class="note">注册即获得一份租约 · 到期前必须续心跳</p>` +
+    `<p class="status" id="register-status" role="status"></p>` +
+    `<div class="dialog-actions">` +
+    `<button type="button" class="btn btn-secondary" ` +
+    `data-action="confirm-cancel">取消</button>` +
+    `<button type="submit" class="btn btn-primary" data-write>` +
+    icon('plus', { small: true }) +
+    `注册</button>` +
+    `</div></form></dialog>`
+  )
+}
+
+/** What the nodes page knows about waking, from the startup flags. */
+export interface WakeFormModel {
+  readonly enabled: boolean
+  /** `<option>` markup from {@link wakeTargetOptions}; empty is a text box. */
+  readonly targetOptions: string
+  readonly wakeUrl?: string
+  readonly wakeTargets?: readonly WakeTarget[]
+  /** The address this console speaks as, prefilled into 发起方. */
+  readonly identity?: string
+}
+
+/**
+ * The one disabled-state sentence the wake face is allowed.
+ *
+ * Both halves are load-bearing: what is unavailable, and the exact name of the
+ * thing to go and set. "唤醒不可用" on its own sends somebody to the docs.
+ */
+const WAKE_DISABLED_REASON = '唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK'
+
+function wakeTargetField(options: string): string {
+  if (options === '') {
+    return field('to', '目标', 'qianmo://node-b/reviewer', { required: true })
+  }
+  return (
+    `<div class="field"><label for="wake-to">目标</label>` +
+    `<span class="sel"><select class="input" id="wake-to" name="to">` +
+    `${options}</select>${chevron()}</span></div>`
+  )
+}
+
+function wakeReceipt(url: string | undefined): string {
+  if (url === undefined || url === '') return ''
+  return (
+    `<div class="hintline" style="margin-top:var(--space-2)">` +
+    icon('info', { small: true }) +
+    `唤醒回执 · <span class="mono">${escapeHtml(url)}</span></div>`
+  )
+}
+
+function wakeNodeTargets(targets: readonly WakeTarget[] | undefined): string {
+  if (targets === undefined || targets.length === 0) return ''
+  const options = targets
+    .map(target => {
+      const suffix = target.wake === undefined ? ' · PSK 不可用' : ' · 已配置'
+      return (
+        '<option value="' +
+        attr(target.node) +
+        '"' +
+        (target.wake === undefined ? ' disabled' : '') +
+        '>' +
+        escapeHtml(target.node + suffix) +
+        '</option>'
+      )
+    })
+    .join('')
+  return (
+    '<div class="field"><label for="wake-node">唤醒节点</label>' +
+    '<span class="sel"><select class="input" id="wake-node" name="node">' +
+    options +
+    '</select>' +
+    chevron() +
+    '</span></div>'
+  )
+}
+
+/**
+ * The wake form, in its own dialog.
+ *
+ * With no PSK the fields render inside a disabled `<fieldset>` with the
+ * reason, and **no submit button at all**. A greyed-out button still invites a
+ * click; a missing one, next to the name of the variable, says what to go and
+ * do. The form's 回调 box stays gone: it could only ever hold the one URL the
+ * console is pinned to, so it is a line of read-only small print.
+ */
+export function wakeDialog(model: WakeFormModel): string {
+  const identity = model.identity ?? ''
+  const fields =
+    `<div class="form-grid wake-grid">` +
+    `<div>${wakeNodeTargets(model.wakeTargets)}${wakeTargetField(
+      model.targetOptions,
+    )}${wakeReceipt(model.wakeUrl)}</div>` +
+    `<div class="field"><label for="wake-prompt">提示词<i class="req">*</i></label>` +
+    `<textarea class="input" id="wake-prompt" name="prompt" rows="4" ` +
+    `placeholder="告诉这个智能体要做什么 · 例如 把 packages/console 的 CSS token 按用途分组并回报数量"` +
+    `></textarea></div>` +
+    `</div>` +
+    `<details class="adv"><summary>${chevron()}高级选项 · 发起方与延迟</summary>` +
+    `<div class="adv-body">` +
+    `<div class="field"><label for="wake-from">发起方 · 已预填当前控制台身份</label>` +
+    // readonly, never disabled: a disabled field is not submitted, and the
+    // HTTP side still requires `from`.
+    `<input class="input" id="wake-from" name="from" value="${attr(
+      identity,
+    )}"${identity === '' ? '' : ' readonly'}></div>` +
+    `<div class="field"><label for="wake-after">延迟（毫秒）· 上限 ${MAX_WAKE_AFTER_MS}</label>` +
+    `<input class="input" id="wake-after" name="afterMs" type="number" ` +
+    `value="0" min="0" max="${MAX_WAKE_AFTER_MS}"></div>` +
+    `</div></details>`
+
+  const cancel =
+    `<button type="button" class="btn btn-secondary" ` +
+    `data-action="confirm-cancel">取消</button>`
+  const body = model.enabled
+    ? `<form id="wake-form" class="stack" novalidate>${fields}` +
+      `<p class="note">点一下会先弹确认 · 确认后才真的投递</p>` +
+      `<p class="status" id="wake-status" role="status"></p>` +
+      `<div class="dialog-actions">${cancel}` +
+      `<button type="submit" class="btn btn-primary" data-write>` +
+      icon('zap', { small: true }) +
+      `唤醒</button></div></form>`
+    : `<p class="note" id="wake-why">${escapeHtml(WAKE_DISABLED_REASON)}</p>` +
+      `<fieldset disabled aria-describedby="wake-why">${fields}</fieldset>` +
+      `<div class="dialog-actions">${cancel}</div>`
+  return (
+    `<dialog class="dialog dialog-wide" id="wake-dialog" ` +
+    `aria-labelledby="wake-title">` +
+    dialogTop('wake-title', 'zap', '唤醒智能体', true) +
+    body +
+    `</dialog>`
+  )
+}
+
+/**
+ * The 注销 confirmation.
+ *
+ * Rendered once, outside the roster, hidden. The address is written in by the
+ * page script with `textContent` when a row's 注销 is pressed — a dialog inside
+ * the polled roster fragment would be replaced out from under the operator
+ * mid-read.
+ */
+export function deregisterConfirm(): string {
+  return (
+    `<dialog class="dialog" id="confirm-deregister" ` +
+    `aria-labelledby="confirm-deregister-title">` +
+    dialogTop('confirm-deregister-title', 'power', '注销这个智能体') +
+    `<div class="dialog-body">` +
+    `<div class="recap"><div class="recap-row"><span class="k">地址</span>` +
+    `<span class="addr mono" id="confirm-deregister-addr"></span></div></div>` +
+    `<p>这个地址会立刻从名册摘除 · 在途消息按丢弃处理 · ` +
+    `节点重新注册之前不能再被唤醒</p>` +
+    `</div>` +
+    `<div class="dialog-actions">` +
+    `<button type="button" class="btn btn-secondary" ` +
+    `data-action="confirm-cancel">取消</button>` +
+    `<button type="button" class="btn btn-danger" ` +
+    `data-action="confirm-deregister" data-write>` +
+    icon('power', { small: true }) +
+    `注销</button>` +
+    `</div></dialog>`
+  )
+}
+
+/** The 唤醒 confirmation: the target, who is asking, the delay, the prompt. */
+export function wakeConfirm(): string {
+  return (
+    `<dialog class="dialog" id="confirm-wake" ` +
+    `aria-labelledby="confirm-wake-title">` +
+    dialogTop('confirm-wake-title', 'zap', '唤醒这个智能体', true) +
+    `<div class="dialog-body">` +
+    `<div class="recap">` +
+    `<div class="recap-row"><span class="k">目标</span>` +
+    `<span class="addr mono" id="confirm-wake-to"></span></div>` +
+    `<div class="recap-row"><span class="k">发起方</span>` +
+    `<span class="addr mono" id="confirm-wake-from"></span></div>` +
+    `<div class="recap-row"><span class="k">延迟</span>` +
+    `<span class="mono" id="confirm-wake-after"></span></div>` +
+    `</div>` +
+    `<p class="note">提示词</p>` +
+    `<p class="quote" id="confirm-wake-prompt"></p>` +
+    `</div>` +
+    `<div class="dialog-actions">` +
+    `<button type="button" class="btn btn-secondary" ` +
+    `data-action="confirm-cancel">返回修改</button>` +
+    `<button type="button" class="btn btn-primary" ` +
+    `data-action="confirm-wake" data-write>` +
+    icon('zap', { small: true }) +
+    `唤醒</button>` +
+    `</div></dialog>`
+  )
 }

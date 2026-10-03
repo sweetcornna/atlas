@@ -6,6 +6,10 @@ import {
   readOpenAICachedTokens,
   readOpenAICacheWriteTokens,
 } from './openaiUsage.js'
+import {
+  type ToolCallStep,
+  ToolCallDeltaAssembler,
+} from './qianmo/toolCallDeltas.js'
 
 /**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
@@ -93,7 +97,7 @@ export async function* adaptOpenAIStreamToAnthropic(
   let started = false
   let currentContentIndex = -1
 
-  // Track tool_use blocks: tool_calls index → { contentIndex, id, name, arguments }
+  // Track tool_use blocks: call slot (toolCallDeltas.ts) → { contentIndex, id, name, arguments }
   const toolBlocks = new Map<
     number,
     { contentIndex: number; id: string; name: string; arguments: string }
@@ -121,6 +125,73 @@ export async function* adaptOpenAIStreamToAnthropic(
   let pendingHasToolCalls = false
   let sawOutput = false
   let sawTerminalUsageChunk = false
+
+  // qianmo P18.5 (hermes #9): tool_use emission, unchanged except that the
+  // slot, id and name come from shared/qianmo/toolCallDeltas.ts.
+  const toolCallDeltas = new ToolCallDeltaAssembler(
+    () => `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+  )
+  function* emitToolCallSteps(
+    steps: ToolCallStep[],
+  ): Generator<BetaRawMessageStreamEvent, void> {
+    for (const step of steps) {
+      if (step.type === 'start') {
+        // Close thinking block if open
+        if (thinkingBlockOpen) {
+          yield {
+            type: 'content_block_stop',
+            index: currentContentIndex,
+          } as BetaRawMessageStreamEvent
+          openBlockIndices.delete(currentContentIndex)
+          thinkingBlockOpen = false
+        }
+
+        // Close text block if open
+        if (textBlockOpen) {
+          yield {
+            type: 'content_block_stop',
+            index: currentContentIndex,
+          } as BetaRawMessageStreamEvent
+          openBlockIndices.delete(currentContentIndex)
+          textBlockOpen = false
+        }
+
+        // Start new tool_use block
+        currentContentIndex++
+        toolBlocks.set(step.slot, {
+          contentIndex: currentContentIndex,
+          id: step.id,
+          name: step.name,
+          arguments: '',
+        })
+        openBlockIndices.add(currentContentIndex)
+
+        yield {
+          type: 'content_block_start',
+          index: currentContentIndex,
+          content_block: {
+            type: 'tool_use',
+            id: step.id,
+            name: step.name,
+            input: {},
+          },
+        } as BetaRawMessageStreamEvent
+        continue
+      }
+
+      // Stream argument fragments
+      const block = toolBlocks.get(step.slot)!
+      block.arguments += step.fragment
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: step.fragment,
+        },
+      } as BetaRawMessageStreamEvent
+    }
+  }
 
   for await (const chunk of stream) {
     const choice = chunk.choices?.[0]
@@ -309,77 +380,20 @@ export async function* adaptOpenAIStreamToAnthropic(
       } as BetaRawMessageStreamEvent
     }
 
-    // Handle tool calls
+    // Handle tool calls. qianmo P18.5 (hermes #9): which delta belongs to
+    // which call, and when a call's block may open, is decided in
+    // shared/qianmo/toolCallDeltas.ts; emitToolCallSteps turns that into events.
     if (delta.tool_calls) {
       sawOutput = true
-      for (const tc of delta.tool_calls) {
-        const tcIndex = tc.index
-
-        if (!toolBlocks.has(tcIndex)) {
-          // Close thinking block if open
-          if (thinkingBlockOpen) {
-            yield {
-              type: 'content_block_stop',
-              index: currentContentIndex,
-            } as BetaRawMessageStreamEvent
-            openBlockIndices.delete(currentContentIndex)
-            thinkingBlockOpen = false
-          }
-
-          // Close text block if open
-          if (textBlockOpen) {
-            yield {
-              type: 'content_block_stop',
-              index: currentContentIndex,
-            } as BetaRawMessageStreamEvent
-            openBlockIndices.delete(currentContentIndex)
-            textBlockOpen = false
-          }
-
-          // Start new tool_use block
-          currentContentIndex++
-          const toolId =
-            tc.id || `toolu_${randomUUID().replace(/-/g, '').slice(0, 24)}`
-          const toolName = tc.function?.name || ''
-
-          toolBlocks.set(tcIndex, {
-            contentIndex: currentContentIndex,
-            id: toolId,
-            name: toolName,
-            arguments: '',
-          })
-          openBlockIndices.add(currentContentIndex)
-
-          yield {
-            type: 'content_block_start',
-            index: currentContentIndex,
-            content_block: {
-              type: 'tool_use',
-              id: toolId,
-              name: toolName,
-              input: {},
-            },
-          } as BetaRawMessageStreamEvent
-        }
-
-        // Stream argument fragments
-        const argFragment = tc.function?.arguments
-        if (argFragment) {
-          toolBlocks.get(tcIndex)!.arguments += argFragment
-          yield {
-            type: 'content_block_delta',
-            index: toolBlocks.get(tcIndex)!.contentIndex,
-            delta: {
-              type: 'input_json_delta',
-              partial_json: argFragment,
-            },
-          } as BetaRawMessageStreamEvent
-        }
-      }
+      yield* emitToolCallSteps(toolCallDeltas.accept(delta.tool_calls))
     }
 
     // Handle finish
     if (choice?.finish_reason) {
+      // qianmo P18.5 (hermes #9): a call whose name never arrived opens now,
+      // with the empty name it always had.
+      yield* emitToolCallSteps(toolCallDeltas.flush())
+
       if (thinkingBlockOpen) {
         yield {
           type: 'content_block_stop',
@@ -415,6 +429,8 @@ export async function* adaptOpenAIStreamToAnthropic(
 
   if (pendingFinishReason === null) {
     if (sawOutput && sawTerminalUsageChunk) {
+      // qianmo P18.5 (hermes #9): as at finish_reason above.
+      yield* emitToolCallSteps(toolCallDeltas.flush())
       // Compatibility fallback for gateways that terminate with usage instead of
       // finish_reason. Text/reasoning answers are ordinary stops; tool output is
       // still forced to tool_use by pendingHasToolCalls below.
