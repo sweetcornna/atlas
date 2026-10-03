@@ -377,6 +377,39 @@ describe('强制下线: POST /v0/accounts/<subject>/logout', () => {
     ])
   })
 
+  test('a path segment that is not valid percent-encoding is 400 invalid, not 500', async () => {
+    const { h, actions, a } = await scene()
+    await stream(h, asSession('GET', '/v0/chat/stream', a.sid))
+    const before = await listed(h, asAdmin('GET', '/v0/accounts'))
+    const requests = [
+      ...['revoke', 'reset', 'logout'].flatMap(action =>
+        ['%E0%A4', '%'].map(subject =>
+          asAdmin('POST', `/v0/accounts/${subject}/${action}`),
+        ),
+      ),
+      asAdmin('DELETE', '/v0/accounts/invites/%E0%A4'),
+    ]
+    for (const request of requests) {
+      const response = await h.handle(request)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(`${request.method} ${request.url} ${response.status}`).toBe(
+        `${request.method} ${request.url} 400`,
+      )
+      expect(body.error.code).toBe('invalid')
+    }
+    // Nothing was ended, revoked or reset by any of them.
+    expect(await listed(h, asAdmin('GET', '/v0/accounts'))).toEqual(before)
+    expect(rowOf(before, subjectOf(h, a)).streams).toBe(1)
+    expect(accountLines(actions.entries)).toEqual([
+      ...['revoke', 'reset', 'logout'].flatMap(action =>
+        ['%E0%A4', '%'].map(
+          subject => `legacy:admin accounts.post /${subject}/${action} refused`,
+        ),
+      ),
+      'legacy:admin accounts.delete /invites/%E0%A4 refused',
+    ])
+  })
+
   test('the admin token is named as the actor when it is the one that pressed it', async () => {
     const { h, actions, a } = await scene()
     const sa = subjectOf(h, a)

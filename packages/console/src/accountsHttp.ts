@@ -75,6 +75,7 @@ import {
   readJsonObject,
   seeOther,
 } from './respond.js'
+import { safeDecode } from './routes/shared.js'
 import type { LoginThrottle } from './throttle.js'
 import type { PageViewer } from './view/bits.js'
 import { renderCredentialPage, renderInvitePage } from './view/invite.js'
@@ -472,6 +473,9 @@ function parseInviteRequest(body: Record<string, unknown>):
   }
 }
 
+const SUBJECT_UNDECODABLE = '路径里的账号不是合法的百分号编码'
+const INVITE_ID_UNDECODABLE = '路径里的邀请 id 不是合法的百分号编码'
+
 function answer<T>(
   outcome: AccountOutcome<T>,
   shape: (value: T) => Response,
@@ -503,7 +507,10 @@ export async function handleAccountsApi(
       return notFound(`unknown path: ${url.pathname}`)
     }
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
-    const subject = decodeURIComponent(segments[2] ?? '')
+    // A stray `%` is the caller's mistake, not this server's: 400, not the
+    // 500 an uncaught `URIError` would make of it.
+    const subject = safeDecode(segments[2] ?? '')
+    if (subject === null) return fail(400, 'invalid', SUBJECT_UNDECODABLE)
     if (action === 'revoke') {
       return answer(
         book.revoke(subject, actor),
@@ -558,8 +565,10 @@ export async function handleAccountsApi(
   }
   if (segments.length === 4) {
     if (request.method !== 'DELETE') return methodNotAllowed(['DELETE'])
+    const inviteId = safeDecode(segments[3] ?? '')
+    if (inviteId === null) return fail(400, 'invalid', INVITE_ID_UNDECODABLE)
     return answer(
-      book.withdrawInvite(decodeURIComponent(segments[3] ?? ''), actor),
+      book.withdrawInvite(inviteId, actor),
       () => new Response(null, { status: 204 }),
     )
   }
