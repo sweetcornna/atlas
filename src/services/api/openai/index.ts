@@ -16,7 +16,7 @@ import type {
   ChatCompletionChunk,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
-import { isChatGPTCodexReasoningModel } from 'src/utils/model/chatgptModels.js'
+import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -496,7 +496,10 @@ export async function* queryModelOpenAI(
                     temperatureOverride: options.temperatureOverride,
                     promptCacheKey: cacheKey,
                     effortValue: appliedEffort,
-                    ...(isChatGPTCodexReasoningModel(openaiModel)
+                    ...(chatLaneSendsReasoningEffort(
+                      openaiModel,
+                      process.env.OPENAI_BASE_URL,
+                    )
                       ? {
                           reasoningEffort: getChatReasoningEffort(
                             openaiModel,
