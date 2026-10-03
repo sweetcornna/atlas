@@ -57,7 +57,7 @@ import type {
  * with adverbs: `将到期` is §6.2's 21-day line, `7 天内到期` its 7-day line,
  * `已过期` the point past which peers refuse the certificate.
  */
-const STATUS_WORD: Readonly<Record<CertificateStatus, string>> = {
+export const STATUS_WORD: Readonly<Record<CertificateStatus, string>> = {
   valid: '有效',
   expiring: '将到期',
   'expiring-urgent': '7 天内到期',

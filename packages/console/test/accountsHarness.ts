@@ -166,6 +166,8 @@ export class CountingChat implements ChatPort {
   opened = 0
   transcripts = 0
   sends = 0
+  /** What each send was asked to carry, in order. */
+  readonly sent: ChatSendInput[] = []
   #next = 0
   #revision = 0
 
@@ -224,6 +226,7 @@ export class CountingChat implements ChatPort {
 
   send(input: ChatSendInput): Promise<ConsoleResult<ChatTurn>> {
     this.sends += 1
+    this.sent.push(input)
     return Promise.resolve(
       ok({
         id: `turn-${this.sends}`,

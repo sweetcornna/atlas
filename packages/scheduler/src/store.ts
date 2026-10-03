@@ -2,20 +2,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {
-  chmodSync,
   closeSync,
-  constants,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import {
+  DIRECTORY_MODE,
+  EXCLUSIVE_CREATE,
+  FILE_MODE,
+  writeFileAtomically,
+} from './atomic.js'
 import { dedupKeyOf } from './job.js'
 
 /**
@@ -87,8 +90,6 @@ import { dedupKeyOf } from './job.js'
  * absent.
  */
 
-const DIRECTORY_MODE = 0o700
-const FILE_MODE = 0o600
 const STATE_FILE = 'state.json'
 const CLAIMS_DIR = 'claims'
 const CLAIM_SUFFIX = '.claim'
@@ -137,14 +138,14 @@ const EMPTY_STATE: JobState = {
   lastOutcomeAt: undefined,
 }
 
-const FIRE_OUTCOMES: readonly string[] = [
+export const FIRE_OUTCOMES: readonly string[] = [
   'completed',
   'failed',
   'skipped',
   'preempted',
 ]
 
-function isCount(value: unknown): value is number {
+export function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
@@ -234,14 +235,7 @@ export class SchedulerStore {
     let fd: number
     try {
       mkdirSync(dirname(path), { recursive: true, mode: DIRECTORY_MODE })
-      fd = openSync(
-        path,
-        constants.O_WRONLY |
-          constants.O_CREAT |
-          constants.O_EXCL |
-          (constants.O_NOFOLLOW ?? 0),
-        FILE_MODE,
-      )
+      fd = openSync(path, EXCLUSIVE_CREATE, FILE_MODE)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
       // Anything else — EACCES, ENOSPC, EROFS — is reported and read as
@@ -408,30 +402,15 @@ export class SchedulerStore {
     return state
   }
 
-  /** Temp-then-rename, the house pattern. A failed write is reported, not thrown. */
+  /** Temp-then-rename (`atomic.ts`). A failed write is reported, not thrown. */
   #write(): void {
-    const temporary = `${this.#statePath}.${process.pid}.${this.#now()}.tmp`
     try {
-      mkdirSync(this.#root, { recursive: true, mode: DIRECTORY_MODE })
-      chmodSync(this.#root, DIRECTORY_MODE)
-      const fd = openSync(
-        temporary,
-        constants.O_WRONLY |
-          constants.O_CREAT |
-          constants.O_EXCL |
-          (constants.O_NOFOLLOW ?? 0),
-        FILE_MODE,
+      writeFileAtomically(
+        this.#statePath,
+        `${JSON.stringify(this.#state)}\n`,
+        this.#now(),
       )
-      try {
-        writeFileSync(fd, `${JSON.stringify(this.#state)}\n`)
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
-      renameSync(temporary, this.#statePath)
-      chmodSync(this.#statePath, FILE_MODE)
     } catch (error) {
-      rmSync(temporary, { force: true })
       // Kept in memory regardless. The claim file is the durable half of
       // at-most-once, so a hub that cannot write its state still does not
       // double-fire — it only forgets, and forgetting costs one make-up run

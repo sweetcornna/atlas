@@ -40,7 +40,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { ChatTurn } from '@qianmo/console'
+import { CHAT_LOCAL_COMMANDS, type ChatTurn } from '@qianmo/console'
 
 /** The half of a session that never changes. The rest is derived from turns. */
 export interface StoredChatSession {
@@ -152,7 +152,14 @@ function toTurn(value: unknown): ChatTurn | null {
       ? {}
       : { detail: str(value['detail']) as string }),
     ...(value['redelivered'] === true ? { redelivered: true as const } : {}),
+    // P18.20。认不出的命令名按一句话处理，理由同上。
+    ...commandOf(value['command']),
   }
+}
+
+function commandOf(value: unknown): Pick<ChatTurn, 'command'> {
+  const command = CHAT_LOCAL_COMMANDS.find(name => name === value)
+  return command === undefined ? {} : { command }
 }
 
 function toSession(value: unknown): StoredChatSession | null {

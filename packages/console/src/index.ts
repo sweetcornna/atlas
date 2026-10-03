@@ -20,6 +20,7 @@ export type {
   CertificateSnapshot,
   CertificateStatus,
   ChatAuthor,
+  ChatLocalCommand,
   ChatNoticeSeverity,
   ChatPort,
   ChatSendInput,
@@ -102,6 +103,7 @@ export {
   type ConsoleAccounts,
 } from './access.js'
 export type { LedgerPort } from './deps.js'
+export { CHAT_LOCAL_COMMANDS } from './deps.js'
 
 // The action ledger (P15.9): the port the routes call (`deps.ts`), and the
 // hash-chained store the host puts behind it.
@@ -219,3 +221,18 @@ export {
 } from './view/servers.js'
 export { CONSOLE_CSS } from './assets/css.js'
 export { CONSOLE_CLIENT_JS } from './assets/client.js'
+// 告警与值守作业的两个端口（J5 / J6，P18.15）。宿主 `consolePorts.ts` 实现它们，
+// 所以类型要从包入口出去；单独一段放在文件尾，不插进上面那张按字母排的表。
+export type {
+  AlertAck,
+  AlertLevel,
+  ConsoleNotice,
+  NoticeFeed,
+  NotifyPort,
+  SchedulerEstop,
+  SchedulerPort,
+  SchedulerSnapshot,
+  SchedulerTick,
+  WatchFireOutcome,
+  WatchJobStatus,
+} from './deps.js'

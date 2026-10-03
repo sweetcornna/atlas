@@ -12,6 +12,12 @@
  * refused by name instead of having the extras silently dropped — silently
  * using one key would let the hub believe rotation is in effect when it is
  * not. Nodes advertise `capabilities.multiKey: false` until P18.18.
+ *
+ * `env-override` is the second (D-9): `autocompact` refuses to write while
+ * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set, because the environment wins over
+ * settings and the write would silently do nothing. It is a fact about the
+ * node's environment, which only an operator on the node can change — not a
+ * bad value and not a failed write.
  */
 export const PROVIDER_ERROR_CODES = [
   'bad-request',
@@ -28,6 +34,7 @@ export const PROVIDER_ERROR_CODES = [
   'busy',
   'write-failed',
   'probe-failed',
+  'env-override',
 ] as const
 
 export type ProviderErrorCode = (typeof PROVIDER_ERROR_CODES)[number]

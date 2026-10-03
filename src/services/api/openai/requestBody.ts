@@ -18,6 +18,8 @@ import {
 } from '../../../utils/model/deepseekTuning.js'
 import { usesMaxCompletionTokens } from '../../qianmo/modelCompat/outputTokenParam.js'
 import { omitsSamplingTemperature } from '../../qianmo/modelCompat/samplingParams.js'
+import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
+import { applyChatVendorReasoning } from '../../qianmo/modelCompat/effortVendors.js'
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -80,7 +82,7 @@ export function resolveOpenAIMaxTokens(
  * - MiMo (Xiaomi):            `chat_template_kwargs: { enable_thinking: true }`
  * OpenAI SDK passes unknown keys through to the HTTP body.
  */
-export function buildOpenAIRequestBody(params: {
+function buildGenericOpenAIRequestBody(params: {
   model: string
   messages: any[]
   tools: any[]
@@ -179,7 +181,9 @@ export function buildOpenAIRequestBody(params: {
 
   return {
     model,
-    messages,
+    // qianmo P18.8 (hermes #4): history reasoning is kept, padded or stripped
+    // for THIS endpoint — src/services/qianmo/modelCompat/reasoningEcho.ts.
+    messages: applyReasoningReplayPolicy(messages, { model, baseURL }),
     ...(maxTokens === undefined
       ? {}
       : useMaxCompletionTokens
@@ -225,4 +229,21 @@ export function buildOpenAIRequestBody(params: {
             temperature: temperatureOverride,
           })),
   }
+}
+
+/**
+ * The chat request body: the generic body above, with its reasoning keys then
+ * chosen by the target endpoint. qianmo P18.8 (hermes #14): Kimi, GLM,
+ * MiniMax M3, Ollama — src/services/qianmo/modelCompat/effortVendors.ts. Every
+ * other target gets the generic body unchanged.
+ */
+export function buildOpenAIRequestBody(
+  params: Parameters<typeof buildGenericOpenAIRequestBody>[0],
+): ReturnType<typeof buildGenericOpenAIRequestBody> {
+  return applyChatVendorReasoning(buildGenericOpenAIRequestBody(params), {
+    model: params.model,
+    baseURL: params.baseURL,
+    gatedEffort: params.reasoningEffort,
+    effortValue: params.effortValue,
+  })
 }

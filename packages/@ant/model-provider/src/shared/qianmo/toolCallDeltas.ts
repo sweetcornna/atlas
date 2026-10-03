@@ -37,9 +37,17 @@
  * stream as visible (`streamAssembly.ts` commitment): an attempt that fails
  * while a call is still unnamed has shown nothing and may be replayed.
  */
+import { readExtraContentSignature } from './geminiToolSignature.js'
 
 export type ToolCallStep =
-  | { type: 'start'; slot: number; id: string; name: string }
+  | {
+      type: 'start'
+      slot: number
+      id: string
+      name: string
+      /** P18.8 hermes #10 — `geminiToolSignature.ts`. */
+      thoughtSignature?: string
+    }
   | { type: 'arguments'; slot: number; fragment: string }
 
 /** The fields of a Chat Completions `tool_calls[]` delta this reads. */
@@ -47,6 +55,8 @@ export type ToolCallDelta = {
   index?: number | null
   id?: string | number | null
   function?: { name?: string | null; arguments?: string | null } | null
+  /** Gemini's `{ google: { thought_signature } }` (P18.8, hermes #10). */
+  extra_content?: unknown
 }
 
 type Call = {
@@ -56,6 +66,8 @@ type Call = {
   name: string | undefined
   /** Argument fragments received before the block opened. */
   heldArguments: string[]
+  /** Latest Gemini thought signature received before the block opened. */
+  thoughtSignature?: string
 }
 
 function idOf(raw: ToolCallDelta['id']): string {
@@ -87,6 +99,10 @@ export class ToolCallDeltaAssembler {
 
       const call = this.calls.get(slot)!
       if (id && call.name === undefined) call.id = id
+      const signature = readExtraContentSignature(delta.extra_content)
+      if (signature !== undefined && call.name === undefined) {
+        call.thoughtSignature = signature
+      }
 
       const name = delta.function?.name
       if (name && call.name === undefined) {
@@ -117,7 +133,17 @@ export class ToolCallDeltaAssembler {
   private start(slot: number, call: Call, name: string): ToolCallStep[] {
     call.name = name
     if (!call.id) call.id = this.newId()
-    const steps: ToolCallStep[] = [{ type: 'start', slot, id: call.id, name }]
+    const steps: ToolCallStep[] = [
+      {
+        type: 'start',
+        slot,
+        id: call.id,
+        name,
+        ...(call.thoughtSignature !== undefined && {
+          thoughtSignature: call.thoughtSignature,
+        }),
+      },
+    ]
     for (const fragment of call.heldArguments) {
       steps.push({ type: 'arguments', slot, fragment })
     }
