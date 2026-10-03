@@ -377,7 +377,7 @@ function groupBadge(counts: HealthTally): string {
  * (`node-a`), because that is what a certificate's SAN binds. One place strips
  * the scheme, because two places doing it is two regexes that can drift.
  */
-function bareNode(groupKey: string): string {
+export function bareNode(groupKey: string): string {
   return groupKey.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
 }
 
