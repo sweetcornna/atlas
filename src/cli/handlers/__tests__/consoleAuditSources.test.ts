@@ -204,6 +204,13 @@ describe('K-11 F-3: a key swapped in the registry cannot vouch for a rewritten t
       ok: true,
       value: { intact: true, witness: { tampered: true, stale: false } },
     })
+    // Where it first disagrees: the genuine anchor at seq 4, and the digest
+    // of what the rewritten chain holds there now. The alert inbox keys this
+    // occurrence on the pair (P18.15).
+    expect(page.ok && page.value.witness?.firstMismatch).toEqual({
+      seq: 4,
+      actual: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
   })
 
   test('a node with no established key is a failure, never a verdict from the registry', async () => {

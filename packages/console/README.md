@@ -39,7 +39,8 @@ const handle = createConsoleHandler(deps, tokens)
 | GET | `/audit`、`/audit/trace/<traceId>` | view | `text/html`，审计轨迹与单条消息链 |
 | GET | `/servers`、`/settings` | view | `text/html`，服务器、设置与关于 |
 | GET | `/chat` | **admin** | `text/html`，对话面；没接对话通道时 404 |
-| GET | `/alerts`、`/jobs`、`/approvals`、`/providers`、`/access`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
+| GET | `/alerts?level=&state=`、`/jobs` | view | `text/html`，告警收件箱与值守作业（`docs/dev/console.md` §10.4） |
+| GET | `/approvals`、`/providers`、`/access`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
 | GET | `/assets/app.css` | 公开 | `text/css` |
 | GET | `/assets/app.js` | 公开 | `text/javascript` |
 | GET | `/v0/health` | 公开 | `{ status: 'ok' }` |
@@ -51,7 +52,11 @@ const handle = createConsoleHandler(deps, tokens)
 | GET | `/v0/audit/chain/<urlencoded traceId>` | view | `{ chain }`（可为 `null`） |
 | GET | `/v0/limits` | view | `LimitsSnapshot` |
 | POST | `/v0/wake` | **admin** | `WakeOutcome`；没有唤醒通道时 501 |
+| GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }` |
+| POST | `/v0/alerts/<urlencoded id>/ack` | **admin** | `{ ack, unread }`；id 不在当前收件箱时 404，没有 `NotifyPort` 时 501 |
+| GET | `/v0/jobs` | view | `SchedulerSnapshot`；没有 `SchedulerPort` 时 501 |
 | GET | `/fragments/{roster,audit,limits}` | view | `text/html` 片段 |
+| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | `text/html` 片段 |
 | GET | `/fragments/chain/<urlencoded traceId>` | view | `text/html` 片段，一条消息链 |
 
 约定：

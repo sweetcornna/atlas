@@ -122,6 +122,17 @@ export interface SchedulerRunnerOptions {
    * the node is contacted only by a fire, never by this timer.
    */
   readonly maxDelayMs?: number
+  /**
+   * Called once after every pass, when that pass's plans are known — the
+   * point at which {@link SchedulerRunner.status} says what the runner will do
+   * next. `qm watch` writes `status.json` from here (`status.ts`), which is how
+   * `lastTickAt` leaves this process for the console.
+   *
+   * A throw is reported through `onError` and changes nothing else: a status
+   * that cannot be written makes the scheduler look absent on the console,
+   * which is the visible failure, not a reason to stop firing.
+   */
+  readonly onTick?: () => void
 }
 
 const DEFAULT_MAX_DELAY_MS = 60_000
@@ -157,6 +168,16 @@ export class SchedulerRunner {
 
   get lastTickAt(): number | undefined {
     return this.#lastTickAt
+  }
+
+  /**
+   * The longest this runner waits between two passes while it is running.
+   * Not a tick rate (see {@link SchedulerRunnerOptions.maxDelayMs}), but the
+   * yardstick for "too long since the last pass": a live runner passes at
+   * least this often, give or take the dispatches of one pass.
+   */
+  get maxDelayMs(): number {
+    return this.#maxDelayMs
   }
 
   get jobs(): readonly ScheduledJob[] {
@@ -238,6 +259,18 @@ export class SchedulerRunner {
       }
     } finally {
       this.#inFlight = false
+      this.#reportTick()
+    }
+  }
+
+  /** {@link SchedulerRunnerOptions.onTick}, fail-open. */
+  #reportTick(): void {
+    const onTick = this.#options.onTick
+    if (onTick === undefined) return
+    try {
+      onTick()
+    } catch (error) {
+      this.#options.onError?.(error)
     }
   }
 

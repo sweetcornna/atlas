@@ -553,7 +553,9 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/audit?…`、`/audit/trace/<traceId>` | view | 审计轨迹（查询参数同 `/v0/audit`）；单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/servers` | view | 服务器归属与备注（§11） |
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名，以及协议与运行时上限 |
-| GET | `/alerts`、`/jobs`、`/approvals`、`/providers`、`/access`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
+| GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
+| GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
+| GET | `/approvals`、`/providers`、`/access`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
@@ -569,7 +571,11 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/wake` | **admin** | 唤醒 |
 | GET | `/v0/servers` | view | 每台服务器、它承载的节点、以及备注（§11）。没配 `--node-server` 时 501 |
 | PUT | `/v0/servers/<server id>/note` | **admin** | 写一台服务器的备注。**server id 必须在启动时那张白名单里**，否则 403 |
+| GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }`（§10.4） |
+| POST | `/v0/alerts/<告警 id>/ack` | **admin** | 确认一条。**id 必须在当前收件箱里**，否则 404；没接告警存储时 501 |
+| GET | `/v0/jobs` | view | 调度器快照（§10.4）。没接调度器端口时 501 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
+| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
 | GET | `/v0/chat/targets` | **admin** | 能聊的对象，含可不可拨（§6.3） |
@@ -639,8 +645,8 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
 **节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
 
-**占位页**（`routes/stub.ts` 的 `stubRoute`）：告警、值守作业、审批、模型服务、账号与
-访问、用量六个区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
+**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、模型服务、账号与访问、用量四个
+区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
 真页面就是把那个模块文件里的 `stubRoute(...)` 换成完整的 `RouteModule`。
 
 **响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
@@ -1362,12 +1368,14 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
 | `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
 | `packages/console/src/view/` | 服务端渲染 |
+| `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
 | `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
-| `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现 |
+| `src/cli/handlers/consolePorts.ts` | 注册中心 / 审计 / 上限 / 唤醒 / 服务器备注五个端口的生产实现，以及告警页的 `NotifyPort` 与作业页的 `SchedulerPort`（§10.4） |
+| `src/cli/handlers/consoleAlertAcks.ts` | 告警确认记录的落盘：追加写、同一 id 第一条为准（§10.4） |
 | `src/cli/handlers/consoleRegistrations.ts` | 登记簿与续租者：页面注册入簿、按租约重新宣告、注销出簿；续租者为什么住在控制台进程里（§7.3） |
 | `src/cli/handlers/consoleWakeIdentity.ts` | 控制台自己的签名身份与唤醒令牌的签发（§4.6）：身份名怎么来、`act` 为什么钉死 `write-limited`、两个时间常数各自被什么夹住。`qm watch --sign` 也复用它（§10.1.1） |
 | `src/cli/handlers/consoleChat.ts` | `ChatPort` 的生产实现：拨号、回程关联、允许名单（§6.2、§6.3） |
@@ -1387,8 +1395,8 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 
 **这不是控制台的一个页面，是另一个进程。**P13.6 把定时反转到了中枢侧：作业的
 时间表全部住在中枢，节点侧一行调度状态都没有（`docs/dev/resident-botization.md`
-§4.1）。跑它的入口是 `qm watch`，与 `qm console` 各起各的——控制台的作业页与通知页
-本批次**没有做**，见下面的「已知边界」。
+§4.1）。跑它的入口是 `qm watch`，与 `qm console` 各起各的。控制台上的「值守作业」与
+「告警」两页只读它留在磁盘上的东西，见 §10.4。
 
 ### §10.1 怎么起一个真实值守作业
 
@@ -1554,6 +1562,7 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 | 通知有没有真到人眼前 | `kind=watch_notify_received`，只有 agent 自己发的通知才记这一条（§10.1.3）；节点那侧对应 `source=resident` 的 `notify_sent` / `notify_delivered`，过程行也在其中 |
 | 一轮里调用了哪些工具 | `kind=watch_step_received`（过程行，不打扰人） |
 | 有没有通知被压着没发出去 | 节点侧 `notify_held`（原因 `no_channel` 或 `budget`）与 `notify_abandoned` |
+| 调度器还在不在跑 | `<config>/qianmo/scheduler/status.json` 的 `lastTickAt`，或控制台的值守作业页（§10.4） |
 | 节点这条命是不是被杀过 | `<config>/resident/lifecycle.json`（P13.5 的终止取证哨兵） |
 | 停手 | `touch <config>/qianmo/scheduler/ESTOP`。**只挡新的 fire，在途一律不杀**——节点欠着别人一条 `task.result`，杀掉是把「慢答案」变成「丢答案」。删掉文件即恢复，没有需要重启的东西 |
 
@@ -1563,14 +1572,19 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 
 ### §10.3 已知边界
 
-- **控制台没有作业页与通知页。**本批次的通知出口是 `qm watch` 的 stdout 加审计链；
-  `packages/console` 一行没动。要在面板上看，先按 §9 的端口形状加 `SchedulerPort` /
-  `NotifyPort`。
+- **控制台只看得到磁盘上的东西。**两个进程之间没有通道：作业页与告警页读的是审计链、
+  调度状态目录（含 `qm watch` 每一轮写出的 `status.json`）和 ESTOP 文件（§10.4）。
+  `status.json` 不在——`qm watch` 没在这个配置根上跑过，或版本早于它——心跳与作业定义
+  的格子写「未接入」。
 - **`notifyPolicy` 只被记录与透传，没有任何一处读它做判断。**它是留给「always / silent」
   那两档策略的位置，本批次三档行为一致——打不打扰人完全由 agent 自己决定。
 - **中枢是定时的单点。**这是 A7 的刻意背离（节点侧 ticker 会让节点永不空闲、永不冻结，
   直接抵消 R-3 的休眠形态），代价就是中枢不在的时候没人发起。补偿是「缺席可见」：
-  `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的，接到面板上是遗留项。
+  `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的。`qm watch` 每一轮之后把它连同
+  两轮之间的最长间隔（`tickMs`）写进 `status.json`，作业页超过两个间隔没看到新的一轮就说
+  调度器可能已停止。一轮里派发卡住（连不上节点最长 30 s、等回执 5 s，按作业依次）时，
+  这一轮写完之前文件里还是上一轮的时刻，所以卡得够久也会被说成可能已停止——它确实没在
+  按时发起。
 - **`--once` 看不到通知。**它在请求拿到回执后就关闭连接退出，而通知要沿同一条连接回来
   （节点从不主动拨号，H-2）。这一轮 agent 发的通知会压在节点的台账里，等下一次有连接时
   才送出。要看通知，就让进程常驻，等 `watch_result_received` 出现后再停。
@@ -1585,6 +1599,54 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
   应当用 `kind=watch`，这一类永远不会被当成过程行。
 - **读不到工作目录之外的文件**（§10.1.2）。需要读 `/var/log` 这类路径的作业，目前没有
   只读放宽的开关。
+
+### §10.4 控制台上的告警与值守作业（J5 / J6）
+
+两页都是只读的，唯一的写是「确认一条告警」。数据只来自磁盘与已有端口；没有来源的格子写
+「未接入」并说明原因，不留空白，也不拿别的数字顶替。
+
+**告警收件箱**（`/alerts`）把几类来源合成一张表，按级别、再按时间倒序排：
+
+| 来源 | 进收件箱的条件 | 级别 | 数据从哪来 |
+| --- | --- | --- | --- |
+| 值守通知 | 审计链里每条 `watch_notify_received`（§10.2），最近 200 条 | 节点给的 `severity`；认不出按警告 | `NotifyPort`：中枢审计链 `auditTrailPath()` |
+| 节点失联 | 一个节点的全部智能体都过了租约 | 严重 | 注册中心名册（与侧栏同一次读取） |
+| 证书 | 节点证书不是「有效」；吊销清单未发布或已过期；CA 根将到期或已到期 | 按状态，见 `view/alerts.ts` | 证书端口（配了 `--trust-ca` 才有） |
+| 审计链 | 链断裂、未建立、锚点不符 | 断裂与锚点不符为严重，未建立为警告 | 审计端口（控制台配置的每一条审计源） |
+| 链路 | — | — | **未接入**：控制台没有节点连通探测的数据 |
+
+每条告警有一个稳定 id。通知用节点生成的消息 id（重发的那一条与原件合成一条）；状况类
+告警的 id 带上这一回的特征，例如节点失联带最后一次心跳的时刻、证书带状态与到期时刻、锚点
+不符带第一处对不上的锚点序号与本地链在那里的摘要，所以同一个节点恢复后再失联、链修好后
+又被改写，都是新的一条，不会被上一次的确认盖住。
+
+**确认**：`POST /v0/alerts/<id>/ack`，admin 等级：旧 admin token，或账号模型里的运维。
+服务端先重算收件箱，**id 不在当前列表里就 404**，与服务器备注的白名单同一条纪律：写权限
+不能用来往存储里塞任意字符串。确认追加写到 `<配置根>/qianmo/console/alert-acks.ndjson`
+（目录 0700、文件 0600），同一 id 第一条为准；写入失败时页面看到失败。确认的成败，以及因
+id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；角色不够的拒绝不记，与其他写操作
+相同。未确认计数在收件箱标题旁，随收件箱一起轮询；侧栏不带这个数，因为侧栏每页都渲染，
+算这个数要把全部审计源读一遍。
+
+**值守作业页**（`/jobs`）每一格的来源：
+
+| 格子 | 来源 | 缺席时 |
+| --- | --- | --- |
+| 调度器心跳 | `status.json` 的 `lastTickAt`；超过两个 `tickMs` 没有新的一轮写「可能已停止」，否则「刚运行过」 | **未接入**：`status.json` 不在或读不出来，原因写在横幅里；旁边的「最近落账」是 `state.json` 里最近一次结局的时刻 |
+| 作业、标题、目标、周期、下次触发、连续失败 | `status.json`：正在跑的调度器里的作业，下次触发是调度器自己的值（`planFire`，退避中则是退避结束） | 周期与下次触发**未接入** |
+| 上次触发与结局 | `status.json` 的 `lastFireAt` / `lastResult`；「退避至」与落账时刻取自 `state.json` | 取 `state.json` 的 `lastFiredAt` / `lastOutcome` |
+| 已移出调度的作业 | `state.json` 里有、`status.json` 里没有；目标取审计链里它最近一次 `watch_fire` 的对端 | `status.json` 不在时，`state.json` 里的作业都这样列出，不标「已移出调度」 |
+| 最近结果 | 审计链里该作业最近一次 `watch_result_received` | — |
+| 急停 | `<配置根>/qianmo/scheduler/ESTOP` 是否存在，读不出来按未拉下处理并写明原因 | — |
+
+`status.json` 由 `qm watch` 每一轮之后整份替换：先写临时文件、fsync，再改名，权限 0600，
+目录 0700（`@qianmo/scheduler` 的 `status.ts` 与 `atomic.ts`）。读的一方看到的不是旧的
+一份就是新的一份，不会读到半个文件。写不进去时 `qm watch` 只在 stderr 报错，调度照常。
+
+急停在页面上只显示状态，不提供开关；拉下与松开仍然是建删那个文件（§10.2）。
+
+两页不依赖脚本：收件箱与作业表都由服务端渲染，筛选是一个 `GET` 表单。只有确认按钮需要
+脚本（它要带控制台头），关掉脚本时那里会写明。
 
 ---
 
