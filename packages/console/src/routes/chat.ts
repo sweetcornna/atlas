@@ -31,12 +31,14 @@ import {
   type ChatScope,
   type StreamScope,
 } from '../accountsHttp.js'
-import type {
-  ActionLedgerPort,
-  ChatPort,
-  ChatTarget,
-  ChatUpdate,
-  ConsoleFailure,
+import {
+  CHAT_LOCAL_COMMANDS,
+  type ActionLedgerPort,
+  type ChatLocalCommand,
+  type ChatPort,
+  type ChatTarget,
+  type ChatUpdate,
+  type ConsoleFailure,
 } from '../deps.js'
 import {
   fail,
@@ -58,6 +60,7 @@ import {
   chatPageBody,
 } from '../view/chatPage.js'
 import {
+  canWrite,
   failureOf,
   failureResponse,
   guardChat,
@@ -436,6 +439,37 @@ function parseChatText(body: Record<string, unknown>): Parsed<string> {
   return text
 }
 
+// --- local commands (P18.20, D-9) -------------------------------------------
+
+/**
+ * The head a local command is recognised by — the whole recognition, so a
+ * sentence that merely mentions `/compact` further along is a sentence.
+ */
+const CHAT_COMMAND_HEAD = new RegExp(
+  `^/(${CHAT_LOCAL_COMMANDS.join('|')})(?:\\s|$)`,
+)
+
+/**
+ * Which commands need the write role. `/autocompact` changes a setting of the
+ * whole node, every session on it included; `/compact` and `/context` act on
+ * this conversation's own session, so whoever may talk in it may run them.
+ */
+const COMMAND_NEEDS_WRITE: Readonly<Record<ChatLocalCommand, boolean>> = {
+  autocompact: true,
+  compact: false,
+  context: false,
+}
+
+/** What a member is told instead, the page's status line included. */
+const COMMAND_NEEDS_OPS =
+  '/autocompact 改的是整台节点的设置 · 需要运维账号或管理令牌 · /compact 与 /context 照常可用'
+
+/** The local command `text` is, as the port will send it (trimmed), or `null`. */
+function chatCommandOf(text: string): ChatLocalCommand | null {
+  const head = CHAT_COMMAND_HEAD.exec(text.trim())?.[1]
+  return CHAT_LOCAL_COMMANDS.find(name => name === head) ?? null
+}
+
 async function handleChatSessions(
   ctx: RouteContext,
   chat: ChatPort,
@@ -542,10 +576,29 @@ async function dispatchChatApi(
       if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
       const text = parseChatText(body)
       if (!text.ok) return fail(400, 'invalid', text.message)
+      // A role refusal is not sent and not recorded, like every other guard:
+      // nothing was done. Everything past it is admitted, then written down
+      // under the command's own verb in place of `chat.message.send`.
+      const command = chatCommandOf(text.value)
+      if (
+        command !== null &&
+        COMMAND_NEEDS_WRITE[command] &&
+        !canWrite(access)
+      ) {
+        return fail(403, 'forbidden', COMMAND_NEEDS_OPS)
+      }
       const blocked = await ctx.admit()
       if (blocked !== null) return blocked
-      const result = await chat.send({ sessionId, text: text.value })
-      await ctx.record('chat.message.send', sessionId, ...outcomeOf(result))
+      const result = await chat.send({
+        sessionId,
+        text: text.value,
+        ...(command === null ? {} : { command }),
+      })
+      await ctx.record(
+        command === null ? 'chat.message.send' : `chat.command.${command}`,
+        sessionId,
+        ...outcomeOf(result),
+      )
       return result.ok ? json(result.value) : failureResponse(result.failure)
     }
   }

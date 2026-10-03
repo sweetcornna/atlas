@@ -44,6 +44,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type {
+  ChatLocalCommand,
   ChatPort,
   ChatSendInput,
   ChatSession,
@@ -244,6 +245,8 @@ interface PendingTask {
   readonly turnId: string
   readonly sessionId: string
   readonly sentAt: number
+  /** 这一轮是本地命令时，回复那一轮也记成命令输出。 */
+  readonly command?: ChatLocalCommand
   timer: ReturnType<typeof setTimeout> | null
 }
 
@@ -636,6 +639,7 @@ export function createConsoleChatPort(
           taskId: message.taskId,
           traceId: message.traceId,
           elapsedMs: at - task.sentAt,
+          ...(task.command === undefined ? {} : { command: task.command }),
         })
         return
       }
@@ -882,6 +886,18 @@ export function createConsoleChatPort(
       }
       const text = input.text.trim()
       if (text === '') return fail('invalid', '消息不能为空')
+      // 本地命令只认签名（P18.20）：节点只把控制台签过的那一条当命令跑。不签就发
+      // 出去，对面会把它当一句话交给模型，而这边会把模型的回答画成「命令输出」——
+      // 两头都不对，所以在这里就说清楚。
+      if (
+        input.command !== undefined &&
+        options.issueCapability === undefined
+      ) {
+        return fail(
+          'unsupported',
+          `/${input.command} 要控制台签名才会在节点上执行 · 请用 --chat-sign 重启控制台`,
+        )
+      }
 
       const endpoint = await endpointFor(stored.target)
       if (!endpoint.ok) return endpoint
@@ -923,7 +939,15 @@ export function createConsoleChatPort(
           // 会话 id 是 `randomUUID()`，落在 `SAFE_CONTEXT_PATTERN` 内，不会被
           // 常驻侧哈希改写，于是两边看到的是同一个字符串。
           contextId: stored.id,
-          payload: { prompt: text },
+          // 本地命令另带 `command: { name }`，原文不改（P18.20）。节点只在签名
+          // 出自它的控制台时据此把原文交给会话当命令跑；旧节点不认这个字段，照旧
+          // 当一句话——`task.request` 的 payload 本来就不设字段表。
+          payload: {
+            prompt: text,
+            ...(input.command === undefined
+              ? {}
+              : { command: { name: input.command } }),
+          },
           taskId,
           createdAt,
           deliverTtlMs,
@@ -952,6 +976,7 @@ export function createConsoleChatPort(
         state: 'pending',
         taskId: message.taskId,
         traceId: message.traceId,
+        ...(input.command === undefined ? {} : { command: input.command }),
       })
 
       const task: PendingTask = {
@@ -959,6 +984,7 @@ export function createConsoleChatPort(
         turnId: turn.id,
         sessionId: stored.id,
         sentAt,
+        ...(input.command === undefined ? {} : { command: input.command }),
         timer: null,
       }
       // Registered *before* the send: on a loopback link the ack can arrive
