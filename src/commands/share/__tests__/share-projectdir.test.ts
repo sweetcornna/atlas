@@ -16,9 +16,8 @@ import {
   mock,
   test,
 } from 'bun:test'
-import * as realState from 'src/bootstrap/state.js'
 import type { SessionId } from 'src/types/ids.js'
-import { makeSharedModuleMock } from '../../../../tests/mocks/sharedModuleMock.js'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
@@ -99,10 +98,7 @@ let _mockProjectDir: string | null = null
 // fix, P18.3). The command reads three state getters; `getOriginalCwd` stays
 // real — see "NEVER override the cwd / projectRoot cluster" in
 // tests/mocks/state.ts.
-const stateMock = makeSharedModuleMock(
-  'src/bootstrap/state.ts',
-  realState,
-).setup()
+const stateMock = setupStateMock()
 beforeAll(() => {
   stateMock.set({
     getSessionId: () => 'test-session-pd' as SessionId,
