@@ -66,6 +66,10 @@ import {
 } from './consoleWakeIdentity.js'
 import { resolveConsoleTokenSource } from './consoleTokenSources.js'
 import { FileLedger } from './consoleAccountsStore.js'
+import {
+  openConsoleActionLedger,
+  runActionLedgerVerify,
+} from './consoleActionLedger.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -359,6 +363,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     return
   }
 
+  // 同一类「做一件事就退出」：只读动作账本、打判定，能进 cron。也排在 token 解析
+  // 之前——校验账本不需要、也不该碰任何凭据。
+  if (config.verifyActions === true && config.actionsStorePath !== undefined) {
+    process.exitCode = runActionLedgerVerify(config.actionsStorePath)
+    return
+  }
+
   // 凭据在**接线之前**就要定下来。放在后面的代价很具体：`wireConsoleChat` 会真的向
   // `--chat-url` 拨出去，于是一个权限过宽的 token 文件会在「拒绝启动」之前先把
   // 链路建起来、把会话文件写出去。起不来的那一次就该什么都没做过。
@@ -392,6 +403,17 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           sessionsStorePath: config.sessionsStorePath,
           legacyViewToken: config.legacyViewToken !== false,
           breakGlass: config.breakGlass === true,
+        })
+      : undefined
+
+  // 动作账本跟着个人账号走（P15.9）：记的是「哪个人」做了什么、读了谁的转录。
+  // 坏了不阻止启动，理由同账号库；两枚 token 作为已知秘密交给它，万一出现在
+  // 某条 URL 路径里，落盘的是 `***`。
+  const actions =
+    accounts !== undefined && config.actionsStorePath !== undefined
+      ? openConsoleActionLedger({
+          path: config.actionsStorePath,
+          secrets: [tokens.view, tokens.admin],
         })
       : undefined
 
@@ -498,6 +520,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       ? {}
       : { nodeServers: config.nodeServers }),
     ...(serverNotes === undefined ? {} : { serverNotes }),
+    ...(actions === undefined ? {} : { actions }),
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
@@ -598,6 +621,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         : `UNAVAILABLE (${problem})`,
     )
     banner += field('sessions', config.sessionsStorePath ?? '')
+    if (actions !== undefined) {
+      banner += field(
+        'actions',
+        actions.problem === null
+          ? `enabled -> ${actions.path}`
+          : `UNAVAILABLE (${actions.problem})`,
+      )
+    }
     banner += field(
       'legacy-view',
       accounts.legacyView === false ? 'off' : 'on (migration)',
