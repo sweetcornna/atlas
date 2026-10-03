@@ -16,7 +16,8 @@ import {
   mock,
   test,
 } from 'bun:test'
-import { stateMockWith } from '../../../../tests/mocks/state.js'
+import type { SessionId } from 'src/types/ids.js'
+import { setupStateMock } from '../../../../tests/mocks/state.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
@@ -88,70 +89,25 @@ mock.module('bun:bundle', () => ({
 
 // ── State mock with non-null projectDir ──
 let _mockProjectDir: string | null = null
-// Faithful pair, not noop/null: this mock leaks process-globally into later
-// test files (postCompactCleanup asserts clear/retain through these).
-let _mockLastAPIRequest: unknown = null
 
-mock.module(
-  'src/bootstrap/state.ts',
-  stateMockWith({
-    getSessionId: () => 'test-session-pd',
+// Complete delegating surface; this suite's overrides live from beforeAll to
+// afterAll only. It used to be a `stateMockWith(...)` with no teardown, so its
+// pinned `getSessionId` and no-op `switchSession` stayed installed for every
+// later file in the process: a later suite that switched sessions for real
+// wrote its transcript under 'test-session-pd' (found by the ACP symlink-cwd
+// fix, P18.3). The command reads three state getters; `getOriginalCwd` stays
+// real — see "NEVER override the cwd / projectRoot cluster" in
+// tests/mocks/state.ts.
+const stateMock = setupStateMock()
+beforeAll(() => {
+  stateMock.set({
+    getSessionId: () => 'test-session-pd' as SessionId,
     getSessionProjectDir: () => _mockProjectDir,
-    getIsNonInteractiveSession: () => false,
-    regenerateSessionId: () => {},
-    getParentSessionId: () => undefined,
-    switchSession: () => {},
-    onSessionSwitch: () => () => {},
-    // Deliberately NOT overridden: getCwdState / getOriginalCwd /
-    // getProjectRoot and their setters — they delegate to the real container.
-    // Pinning them to '/mock/cwd' here leaked a non-existent cwd into every
-    // later file in the process, and the no-op setters made it unrepairable.
-    // See "NEVER override the cwd / projectRoot cluster" in
-    // tests/mocks/state.ts.
-    getRemoteServerUrl: () => undefined,
-    setRemoteServerUrl: () => {},
-    addToTotalDurationState: () => {},
-    resetTotalDurationStateAndCost_FOR_TESTS_ONLY: () => {},
-    addToTotalCostState: () => {},
-    getTotalCostUSD: () => 0,
-    getTotalAPIDuration: () => 0,
-    getTotalDuration: () => 0,
-    getTotalAPIDurationWithoutRetries: () => 0,
-    getTotalToolDuration: () => 0,
-    addToToolDuration: () => {},
-    getTurnHookDurationMs: () => 0,
-    addToTurnHookDuration: () => {},
-    resetTurnHookDuration: () => {},
-    getTurnHookCount: () => 0,
-    getTurnToolDurationMs: () => 0,
-    resetTurnToolDuration: () => {},
-    getTurnToolCount: () => 0,
-    getTurnClassifierDurationMs: () => 0,
-    addToTurnClassifierDuration: () => {},
-    resetTurnClassifierDuration: () => {},
-    getTurnClassifierCount: () => 0,
-    getStatsStore: () => ({}),
-    setStatsStore: () => {},
-    updateLastInteractionTime: () => {},
-    flushInteractionTime: () => {},
-    addToTotalLinesChanged: () => {},
-    getTotalLinesAdded: () => 0,
-    getTotalLinesRemoved: () => 0,
-    getTotalInputTokens: () => 0,
-    getTotalOutputTokens: () => 0,
-    getTotalCacheReadInputTokens: () => 0,
-    getTotalCacheCreationInputTokens: () => 0,
-    getTotalWebSearchRequests: () => 0,
-    getTurnOutputTokens: () => 0,
-    getCurrentTurnTokenBudget: () => null,
-    setLastAPIRequest: (params: unknown) => {
-      _mockLastAPIRequest = params
-    },
-    getLastAPIRequest: () => _mockLastAPIRequest,
-    getSdkAgentProgressSummariesEnabled: () => false,
-    addSlowOperation: () => {},
-  }),
-)
+  })
+})
+afterAll(() => {
+  stateMock.reset()
+})
 
 // ── State ──
 let tmpDir: string
