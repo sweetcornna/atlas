@@ -54,7 +54,11 @@
  *     sends both `reasoning_effort: "none"` and `think: false`
  *     (ollama#14820, hermes #25758);
  *   - `agent/auxiliary_client.py:8334-8345` — the keys that can carry a
- *     reasoning control, which a table row clears before writing its own.
+ *     reasoning control, which a table row clears before writing its own;
+ *   - Grok lane (hermes #13, end of file): `agent/model_metadata.py:582-632`
+ *     — the allowlist of models that accept an effort, by prefix after any
+ *     `vendor/` prefix; `agent/transports/codex.py:439-451` — the clamp,
+ *     grok-4.6 tops out at `xhigh`, the others at `high`.
  * Only the rules are taken; the code is ours.
  *
  * Qianmo differences, on purpose:
@@ -75,11 +79,16 @@
  *   - MiMo is not a row: hermes sends it no reasoning control at all, and
  *     which single dialect MiMo's API wants has not been checked against a
  *     real endpoint, so the three-dialect body stays.
+ *   - Grok: only grok-3-mini is sent by default, with Qianmo's existing
+ *     two-rung ladder; hermes's four newer rows need an explicit opt-in until
+ *     a real-endpoint check (design §5.10) — hermes verified them on xAI's
+ *     Responses API, and Qianmo's Grok lane speaks Chat Completions.
  * None of the vendor rows has been checked against a real endpoint here.
  */
 import { getResponsesReasoningEffort } from 'src/services/api/openai/reasoning.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from 'src/utils/config/envUtils.js'
 import { isDeepSeekTuningActiveForModel } from 'src/utils/model/deepseekTuning.js'
+import { modelSupportsEffort } from 'src/utils/model/effort.js'
 import { isKimiModel } from './samplingParams.js'
 import { bareModelId, targetHostIs } from './targetMatch.js'
 
@@ -295,4 +304,109 @@ export function applyChatVendorReasoning<T extends object>(
   const out = { ...body } as Record<string, unknown>
   for (const key of drop) delete out[key]
   return { ...out, ...vendorFields } as T
+}
+
+// ── Grok lane (P18.8, hermes #13; design §5.6 row 13, §5.10) ──────────────
+
+/** A `reasoning_effort` value the Grok lane sends. */
+export type GrokWireEffort = 'low' | 'medium' | 'high' | 'xhigh'
+
+type GrokEffortRow = {
+  /** Prefix of the model id after any `vendor/` prefix. */
+  prefix: string
+  /**
+   * Sent without an explicit opt-in. Only the row Qianmo already sent
+   * (grok-3-mini); hermes's newer rows wait for a real-endpoint check
+   * (design §5.10) and need `modelSupportsEffort` — which for them only an
+   * explicit capability or `CLAUDE_CODE_ALWAYS_ENABLE_EFFORT` makes true.
+   */
+  defaultOn: boolean
+  clamp: Record<Level, GrokWireEffort>
+}
+
+/**
+ * Qianmo's own two-rung grok-3-mini ladder, unchanged (`grok/reasoning.ts`
+ * before P18.8): the middle rounds up.
+ */
+const GROK_3_MINI_CLAMP: Record<Level, GrokWireEffort> = {
+  low: 'low',
+  medium: 'high',
+  high: 'high',
+  xhigh: 'high',
+  max: 'high',
+}
+/** hermes `codex.py:449-451`: above high clamps to high. */
+const GROK_HIGH_CEILING: Record<Level, GrokWireEffort> = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'high',
+  max: 'high',
+}
+/** hermes `codex.py:442-448`: grok-4.6 tops out at xhigh. */
+const GROK_46_CLAMP: Record<Level, GrokWireEffort> = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'xhigh',
+}
+
+/**
+ * hermes `agent/model_metadata.py:582-624` `_GROK_EFFORT_CAPABLE_PREFIXES`
+ * (grok-4.5 "verified live … 2026-07-08", the rest 2026-05-10, both against
+ * `/v1/responses`; Qianmo's Grok lane is Chat Completions, which is one more
+ * reason the new rows are opt-in). Every other Grok model — grok-4,
+ * grok-4.20-*-reasoning, grok-code-fast-1 — rejects the parameter.
+ */
+const GROK_EFFORT_ROWS: readonly GrokEffortRow[] = [
+  { prefix: 'grok-3-mini', defaultOn: true, clamp: GROK_3_MINI_CLAMP },
+  {
+    prefix: 'grok-4.20-multi-agent',
+    defaultOn: false,
+    clamp: GROK_HIGH_CEILING,
+  },
+  { prefix: 'grok-4.3', defaultOn: false, clamp: GROK_HIGH_CEILING },
+  { prefix: 'grok-4.5', defaultOn: false, clamp: GROK_HIGH_CEILING },
+  { prefix: 'grok-4.6', defaultOn: false, clamp: GROK_46_CLAMP },
+]
+
+function grokEffortRow(model: string): GrokEffortRow | undefined {
+  const bare = bareModelId(model).replace(/_/g, '-')
+  return GROK_EFFORT_ROWS.find(
+    row =>
+      bare.startsWith(row.prefix) ||
+      // The base rule matched grok-3-mini anywhere in the id; kept.
+      (row.defaultOn && model.toLowerCase().includes(row.prefix)),
+  )
+}
+
+/** Whether the Grok lane sends `reasoning_effort` for `model` at all. */
+export function grokAcceptsReasoningEffort(model: string): boolean {
+  const row = grokEffortRow(model)
+  return row !== undefined && (row.defaultOn || modelSupportsEffort(model))
+}
+
+/**
+ * The rung for `effortValue` (occ's applied effort) on `model`, or
+ * `undefined`: no row, a row not switched on, or no level chosen (unset, or an
+ * ant-only number).
+ */
+export function resolveGrokEffort(
+  model: string,
+  effortValue: unknown,
+): GrokWireEffort | undefined {
+  if (!grokAcceptsReasoningEffort(model)) return undefined
+  const row = grokEffortRow(model)
+  return isLevel(effortValue) ? row?.clamp[effortValue] : undefined
+}
+
+function isLevel(value: unknown): value is Level {
+  return (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max'
+  )
 }
