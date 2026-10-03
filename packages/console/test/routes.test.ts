@@ -71,7 +71,7 @@ describe('the pages', () => {
     ['chat', '/chat', 'run', false],
     ['audit', '/audit', 'run', false],
     ['alerts', '/alerts', 'run', true],
-    ['jobs', '/jobs', 'run', true],
+    ['jobs', '/jobs', 'run', false],
     ['approvals', '/approvals', 'run', true],
     ['providers', '/providers', 'config', true],
     ['servers', '/servers', 'config', false],

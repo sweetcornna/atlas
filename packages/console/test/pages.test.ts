@@ -84,7 +84,12 @@ const PAGES: readonly PageRow[] = [
     reads: ['class="hops"'],
   },
   { path: '/alerts', title: '告警', active: 'alerts', reads: [STUB_LINE] },
-  { path: '/jobs', title: '值守作业', active: 'jobs', reads: [STUB_LINE] },
+  {
+    path: '/jobs',
+    title: '值守作业',
+    active: 'jobs',
+    reads: ['调度器', '调度器心跳未接入', '急停'],
+  },
   {
     path: '/approvals',
     title: '审批',
@@ -246,10 +251,9 @@ describe('every page', () => {
 describe('placeholders', () => {
   const STUBS = ROUTES.filter(module => module.area.pending === true)
 
-  test('there are six, and each says so in one line and polls nothing', async () => {
+  test('there are five, and each says so in one line and polls nothing', async () => {
     expect(STUBS.map(module => module.area.id)).toEqual([
       'alerts',
-      'jobs',
       'approvals',
       'providers',
       'access',
