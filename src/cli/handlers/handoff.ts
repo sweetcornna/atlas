@@ -118,16 +118,23 @@ Commands:
                            session transcript (secrets redacted) to the hub.
                            Without --hook: now, for the session last seen in
                            this directory. With --hook: the turn-end entry
-                           point, debounced 5 s on the trailing edge, always
-                           exit 0, outcome in <config root>/qianmo/handoff/sync.log.
+                           point — at most one push per 5 s, the last turn of a
+                           burst always pushed, a turn not yet complete on disk
+                           not pushed; always exit 0, outcome in
+                           <config root>/qianmo/handoff/sync.log.
                              qmcode: notify passes its JSON as the last
-                               argument (built in: notify = ["qm", "handoff",
-                               "sync", "--hook", "qmcode"]).
-                             claude-code: reads the hook JSON on stdin; add
+                               argument: notify = ["qm", "handoff", "sync",
+                               "--hook", "qmcode"] in config.toml (a notify
+                               of your own replaces it).
+                             claude-code: reads the hook JSON on stdin. Add
                                "${invokedBinName()} handoff sync --hook claude-code"
-                               as a command hook for Stop and SessionEnd in
-                               ~/.claude/settings.json yourself — nothing here
-                               writes to ~/.claude.
+                               to ~/.claude/settings.json yourself — nothing
+                               here writes to ~/.claude — as a Stop command
+                               hook with "async": true, so the turn does not
+                               wait for the push, and on SessionEnd if you
+                               like (Claude Code gives SessionEnd hooks 1.5 s;
+                               what does not fit is picked up by the next sync
+                               or by now).
 
   now [--goal <text>] [--done <text>] [--remaining <text>] [--deadline <UTC>]
                            Sync, check both refs on the hub, check the work
