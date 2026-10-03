@@ -44,6 +44,7 @@
  * `withRetry.ts` already reports (`modelFallbackReason`).
  */
 import { FallbackTriggeredError } from 'src/services/api/withRetry.js'
+import { errorRecords, httpStatus, lowerStrings } from './errorRecords.js'
 
 /** The model this request is for, and the fallback `query.ts` armed it with. */
 export type ThirdPartyFallbackTarget = {
@@ -55,52 +56,6 @@ export type ThirdPartyFallbackTarget = {
 export type FallbackStage = 'exhausted' | 'refused'
 
 type Reason = FallbackTriggeredError['reason']
-
-function errorRecords(error: unknown): Record<string, unknown>[] {
-  const records: Record<string, unknown>[] = []
-  const pending: unknown[] = [error]
-  const seen = new Set<object>()
-  while (pending.length > 0 && records.length < 16) {
-    const current = pending.shift()
-    if (typeof current !== 'object' || current === null) continue
-    if (seen.has(current)) continue
-    seen.add(current)
-    const record = current as Record<string, unknown>
-    records.push(record)
-    for (const key of ['error', 'cause', 'response', 'data']) {
-      if (record[key] !== undefined) pending.push(record[key])
-    }
-  }
-  return records
-}
-
-function httpStatus(records: readonly Record<string, unknown>[]) {
-  for (const record of records) {
-    for (const key of ['status', 'statusCode', 'httpStatus']) {
-      const value = record[key]
-      const status =
-        typeof value === 'number'
-          ? value
-          : typeof value === 'string' && /^\d{3}$/.test(value)
-            ? Number(value)
-            : undefined
-      if (status !== undefined && status >= 100 && status < 600) return status
-    }
-  }
-  return undefined
-}
-
-function lowerStrings(
-  records: readonly Record<string, unknown>[],
-  keys: readonly string[],
-): string[] {
-  return records.flatMap(record =>
-    keys
-      .map(key => record[key])
-      .filter((value): value is string => typeof value === 'string')
-      .map(value => value.toLowerCase()),
-  )
-}
 
 const NAMES_A_MODEL = /\bmodels?\b/i
 
