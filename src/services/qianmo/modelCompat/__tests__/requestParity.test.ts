@@ -101,6 +101,7 @@ function captureParams(row: ParityRow): CaptureParams {
 const GATEWAY = 'https://gateway.example/v1'
 const OFFICIAL = 'https://api.openai.com/v1'
 const DEEPSEEK = 'https://api.deepseek.com'
+const AZURE = 'https://myres.openai.azure.com/openai/v1'
 /** DeepSeek's default is the Anthropic wire; these rows pin the chat lane. */
 const DEEPSEEK_CHAT_LANE = { CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE: '0' }
 
@@ -209,6 +210,69 @@ const ROWS: ParityRow[] = [
       present: { reasoning_effort: 'high', thinking: { type: 'enabled' } },
     },
     source: 'baseline 1b477a37 (deepseekTuning.ts: medium → high)',
+  },
+
+  // ── #22: hosts that mandate a lane, after an explicit OPENAI_WIRE_API ──
+  {
+    id: '22-official-default-responses',
+    vendor: 'OpenAI (official)',
+    model: 'gpt-4o',
+    baseURL: OFFICIAL,
+    wire: undefined,
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/responses', absent: ['messages', 'reasoning'] },
+    source: 'hermes hermes_cli/providers.py:644-649; design §5.6 row 22',
+  },
+  {
+    id: '22-official-explicit-chat',
+    vendor: 'OpenAI (official)',
+    model: 'gpt-4o',
+    baseURL: OFFICIAL,
+    wire: 'chat',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/chat/completions' },
+    source: 'design §5.6 row 22: explicit OPENAI_WIRE_API wins',
+  },
+  {
+    id: '22-azure-o-series-responses',
+    vendor: 'Azure OpenAI',
+    model: 'o3-mini',
+    baseURL: AZURE,
+    wire: undefined,
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/responses' },
+    source: 'hermes hermes_cli/models.py:4436-4479 (Foundry families)',
+  },
+  {
+    id: '22-azure-gpt-4o-chat',
+    vendor: 'Azure OpenAI',
+    model: 'gpt-4o',
+    baseURL: AZURE,
+    wire: undefined,
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/chat/completions' },
+    source:
+      'hermes hermes_cli/models.py:4458-4460: other families stay on chat',
+  },
+  {
+    id: '22-meta-responses',
+    vendor: 'Meta Model API',
+    model: 'muse-spark',
+    baseURL: 'https://api.meta.ai/v1',
+    wire: undefined,
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/responses' },
+    source: 'hermes hermes_cli/providers.py:650-654',
   },
 
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
