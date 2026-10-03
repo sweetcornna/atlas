@@ -36,7 +36,7 @@ import { flushSessionStorage } from '../../utils/sessionStorage.js'
 /** How long a stopping ACP process may spend on its way out. */
 const EXIT_BUDGET_MS = 2_000
 
-export interface AcpExitGate {
+interface AcpExitGate {
   /**
    * True for the first caller only, which owns the shutdown. Also starts the
    * budget: once it runs out the process exits whatever is still pending.
