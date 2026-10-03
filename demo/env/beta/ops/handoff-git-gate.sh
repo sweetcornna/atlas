@@ -34,21 +34,23 @@
 # `-o SendEnv=GIT_PROTOCOL`（环境里 GIT_PROTOCOL=version=2），push 不带。只实测了 git 本身。
 #
 # ── 判定（任何一步不过：stderr 一行原因，退出码 3）──────────────────────────────
-# ① SSH_ORIGINAL_COMMAND 非空。没有它 = 交互登录（`restrict` 已经不给 pty）；scp / sftp 子系统 /
-#    git-upload-archive / sh -c 都落到下一条。
+# ① SSH_ORIGINAL_COMMAND 非空。真 sshd（OpenSSH 10.3）实测：不带命令、`ssh host ''`、`ssh -tt`
+#    都**不设**这个变量（`restrict` 也不给 pty）；sftp 与默认走 SFTP 的 scp 给的是 sshd_config 里
+#    Subsystem 的值（如 internal-sftp），`scp -O` 给 `scp -t <路径>`——这些与 git-upload-archive、
+#    sh -c 一样落到下一条。
 # ② 整条恰好是 `<动词> '<路径>'`：动词只认 git-upload-pack、git upload-pack、git-receive-pack、
 #    git receive-pack，后面恰好一个空格，再是一对单引号。不解析、不 eval——只剥掉首尾那对引号。
 # ③ 路径只许 [A-Za-z0-9._~/-]。这一条一次挡掉 shell 元字符（; $ ` | & < > 空格 引号 反斜杠）、
 #    换行与一切控制字符、非 ASCII，以及 git 的 '\'' / '\!' 转义。NUL 到不了这里：环境变量是
-#    C 字符串，sshd 也拒收带 NUL 的 exec 请求。**项目名因此也只能用这套字符**，
+#    C 字符串，最多到达截断后的前半截，而那一截过不了 ②。**项目名因此也只能用这套字符**，
 #    `qm handoff init` 那边要按同一套校验。
 # ④ 不许以 - 开头（会被 git 当成选项）；~ 只许作开头的 ~/（~user/ 拒绝）；有 .. 段就拒绝——
 #    不先解析再看落在哪，见到就拒。
 # ⑤ ~/ 与相对路径都按 $HOME 展开（sshd 在登录目录里起 command=，git 自己解析相对路径也是相对
 #    那里）；末尾一个 / 去掉；请求的名字必须是 <至少一个字符>.git。
 # ⑥ 规范化：用 `cd -P` + `pwd -P` 求物理路径，根目录同样求一次，所以根目录本身是软链、
-#    或者路径经过 macOS 的 /var → /private/var 都比得对。不用 realpath(1)：macOS 12 及更早没有
-#    它，BSD 与 GNU 版对路径不存在时的行为也不一样；这里要求目录存在，cd -P 就够了。
+#    或者路径经过 macOS 的 /var → /private/var 都比得对。不用 realpath(1)：cd -P / pwd -P 是 bash
+#    内建，不依赖外部命令在各平台上的版本与选项差异；这里本来就要求目录存在，cd -P 就够了。
 # ⑦ 规范化之后必须严格在根目录**之下**（/srv/repos-evil 不算 /srv/repos 之下）。不存在、进不去、
 #    软链逃逸、绝对路径越界给**同一句**话，免得这把钥匙变成「根目录外某个目录在不在」的探针。
 # ⑧ 规范化之后名字仍是 <…>.git，且是裸仓：HEAD、objects/、refs/ 都在，core.bare=true，并且
@@ -63,7 +65,9 @@
 #
 # 闸门不管引用级的规矩（能推哪些 ref）——那归 receive-pack 的钩子或调用方。
 # 选项行只有 `restrict` 与 `command=`：`restrict` 关掉端口转发、代理转发、X11、pty 与 ~/.ssh/rc
-# （OpenSSH 7.2 起有；更老的 sshd 认不得这个词，会让整行作废，是关着的那一边）。sshd_config 的
+# （OpenSSH 7.2 起有。本机 OpenSSH 10.3 实测：服务端 AllowTcpForwarding yes 时 -L / -W / -R 照样被
+# 这一行拒掉，-tt 要不到 pty；代理转发、X11、rc 没有实测。更老的 sshd 不认这个词时整行作废，
+# 是关着的那一边——按 OpenSSH 的选项解析规则推断，未实测）。sshd_config 的
 # AcceptEnv 只该放 LANG LC_* GIT_PROTOCOL：BASH_ENV、LD_PRELOAD 这类在闸门第一行之前就生效了，
 # 脚本里拦不住。
 
@@ -166,10 +170,10 @@ serve() {
 
   # ⑥ ⑦
   canon="$(canon_dir "$abs")" \
-    || deny "根目录下没有这个仓：$path（不存在，或解析后在根目录之外；闸门不建仓）"
+    || deny "根目录下没有这个仓：${path}（不存在，或解析后在根目录之外；闸门不建仓）"
   case "$canon" in
     "$root_canon"/?*) ;;
-    *) deny "根目录下没有这个仓：$path（不存在，或解析后在根目录之外；闸门不建仓）" ;;
+    *) deny "根目录下没有这个仓：${path}（不存在，或解析后在根目录之外；闸门不建仓）" ;;
   esac
 
   # ⑧
@@ -201,7 +205,7 @@ cmd_authorized_key() {
   [ -n "$root" ] && [ -n "$pubkey" ] \
     || die_config '用法：authorized-key --root <根目录> --pubkey <公钥文件>'
   shell_safe_abs '--root' "$root"
-  [ -d "$root" ] || die_config "根目录不存在：$root（先 mkdir -p 它；闸门不建目录）"
+  [ -d "$root" ] || die_config "根目录不存在：${root}（先 mkdir -p 它；闸门不建目录）"
 
   here="$(cd "$(dirname "$0")" && pwd)"
   gate="$here/$(basename "$0")"
