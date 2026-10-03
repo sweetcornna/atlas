@@ -219,6 +219,31 @@ function startResident(
   }
 }
 
+/**
+ * A mailbox poll interval that leaves each generation exactly one poll: the
+ * one scheduled when it is ready. Once that poll has finished, the node is
+ * idle until the test itself sends work.
+ */
+const ONE_POLL_PER_GENERATION_MS = 60 * 60_000
+
+/**
+ * Check for a pending configuration until `done()` holds.
+ *
+ * A check that lands while a mailbox poll is running is deferred, by design:
+ * `#inFlightWork` counts polls, because one may admit a turn. With the
+ * provider poll off nothing checks again, so a single check can be lost; at
+ * the default 20 ms a poll is nearly always running on a loaded machine (CI
+ * run 37137331132 recorded `polls: 1` and nothing else). Start the node with
+ * {@link ONE_POLL_PER_GENERATION_MS} and the first check that finds it idle is
+ * the one that makes `done()` true.
+ */
+async function checkUntil(node: Harness, done: () => boolean): Promise<void> {
+  await waitUntil(() => {
+    node.resident.checkProviderConfig()
+    return done()
+  })
+}
+
 async function connect(
   socket: string,
 ): Promise<{ client: TransportClient; replies: QianmoMessage[] }> {
@@ -532,21 +557,14 @@ describe('resident provider hot switch (P18.3)', () => {
     'a refused commit is reported once and leaves the child and the intent alone',
     async () => {
       const { config, socket } = setUpNode('refused')
-      // A check that lands while a mailbox poll is running is deferred, by
-      // design: `#inFlightWork` counts polls, because one may admit a turn.
-      // At the default 20 ms a poll is nearly always running on a loaded
-      // machine (CI run 37137331132 recorded `polls: 1` and nothing else). An
-      // hour leaves exactly one poll — the one scheduled when the child is
-      // ready — so the node is idle for good once it has finished.
-      const node = startResident(socket, { mailboxPollMs: 60 * 60_000 })
+      const node = startResident(socket, {
+        mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
+      })
       await waitUntil(() => node.ready() === 1)
       stage()
       chmodSync(config, 0o755)
-      // Check until one lands after that poll: that check is the refusal.
-      await waitUntil(() => {
-        node.resident.checkProviderConfig()
-        return node.alerts.length > 0
-      })
+      // The first check that finds the node idle is the refusal.
+      await checkUntil(node, () => node.alerts.length > 0)
       // Idle from here on, so these are refused too, and reported never.
       for (let i = 0; i < 3; i++) node.resident.checkProviderConfig()
 
