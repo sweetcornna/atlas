@@ -134,3 +134,17 @@ export function applyReasoningReplayPolicy(
     message.role === 'assistant' ? replayAssistant(message, family) : message,
   )
 }
+
+/**
+ * True since P18.8, reported as `capabilities.replayFilter`: on the OpenAI
+ * lane, reasoning in history is filtered by the target endpoint before it is
+ * sent — chat `reasoning_content` here (#4), Responses `encrypted_content` by
+ * issuer (#23, `responsesIssuer.ts`). Pinned by behavioural tests
+ * (`capabilities.test.ts`), not only by this constant.
+ *
+ * Not covered, and so not claimed: the Grok lane builds its own body from
+ * `anthropicMessagesToOpenAI` and does not pass through `requestBody.ts`
+ * (P18.12 owns `grok/index.ts`); thinking-block signatures on the
+ * Anthropic-compatible lane are untouched.
+ */
+export const REPLAY_FILTER = true
