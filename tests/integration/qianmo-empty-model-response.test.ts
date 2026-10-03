@@ -333,8 +333,10 @@ describe('empty model responses through a resident node', () => {
     async () => {
       const turn = await runTurn('persistent-empty', ['empty_stop'])
 
-      // One request and two retries — not the 10-attempt 5xx ladder.
-      expect(turn.requests).toBe(3)
+      // One request and one retry: the second identical empty with usage is
+      // judged deterministic (P18.12, hermes #25) — not the 10-attempt 5xx
+      // ladder, and not the third request the small budget would allow.
+      expect(turn.requests).toBe(2)
       expect(turn.result.outcome).toBe('failed')
       if (turn.result.outcome !== 'failed') throw new Error('unreachable')
       expect(turn.result.code).toBe(ProtocolErrorCode.E_TASK_FAILED)
@@ -386,8 +388,8 @@ describe('empty model responses through a resident node', () => {
 
       expect(stderr).not.toContain('Error handling request')
       expect(stderr).not.toContain("evaluating 'message.type'")
-      // Six recovered shapes plus three in the persistent scenario.
-      expect(lines.length).toBeGreaterThanOrEqual(9)
+      // Six recovered shapes plus two in the persistent scenario.
+      expect(lines.length).toBeGreaterThanOrEqual(8)
       expect(lines.some(line => line.includes('finish_reason=stop'))).toBe(true)
       expect(
         lines.some(line =>

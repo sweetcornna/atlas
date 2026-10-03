@@ -32,6 +32,7 @@ import {
   type ThirdPartyFallbackTarget,
 } from '../qianmo/modelCompat/thirdPartyFallback.js'
 import type { BackoffTarget } from '../qianmo/modelCompat/vendorBackoff.js'
+import { isDeterministicEmpty } from '../qianmo/modelCompat/emptyResponse.js'
 
 /**
  * Retries for a response that ended properly and said nothing
@@ -192,6 +193,9 @@ export async function* retryThirdPartyEventStream(params: {
   let noOutputRetries = 0
   let thinkingRetries = 0
   let emptyResponseRetries = 0
+  // qianmo P18.12 (hermes #25): the previous failure, when it was an empty
+  // response — src/services/qianmo/modelCompat/emptyResponse.ts.
+  let previousEmpty: EmptyModelResponseError | undefined
   let outputCapRecovered = false
 
   while (true) {
@@ -288,6 +292,24 @@ export async function* retryThirdPartyEventStream(params: {
       // Re-running that stream re-renders reasoning the reader cannot un-see
       // and yields a second AssistantMessage for the same response.
       if (!isAPIErrorReplayable(error)) {
+        throw error
+      }
+      // qianmo P18.12 (hermes #25): the same empty twice in a row, input
+      // counted and nothing generated, is the endpoint's answer — the last
+      // retry is skipped.
+      const deterministicEmpty =
+        error instanceof EmptyModelResponseError &&
+        isDeterministicEmpty(previousEmpty, error)
+      previousEmpty =
+        error instanceof EmptyModelResponseError ? error : undefined
+      if (deterministicEmpty) {
+        reportEmptyModelResponse({
+          finishReason: error.finishReason,
+          inputTokens: error.inputTokens,
+          outputTokens: error.outputTokens,
+          occurrence: ++emptyResponseRetries,
+          retrying: false,
+        })
         throw error
       }
       const emptyResponse = error instanceof EmptyModelResponseError
