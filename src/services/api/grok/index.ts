@@ -15,14 +15,17 @@ import type {
   ChatCompletionChunk,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
-import { clearGrokClientCache, getGrokClient } from './client.js'
+import {
+  clearGrokClientCache,
+  getGrokClient,
+  grokTargetBaseURL,
+} from './client.js'
 import { grokConversationHeaders } from '../../qianmo/promptCache/grokConversation.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
-  adaptOpenAIStreamToAnthropic,
   resolveGrokModel,
 } from '@ant/model-provider'
 import {
@@ -48,6 +51,16 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { FallbackTriggeredError } from '../withRetry.js'
+import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
+import {
+  adaptGuardedChatStream,
+  chatStreamIdleTimeoutMs,
+} from '../../qianmo/modelCompat/chatStreamGuards.js'
+import {
+  type ContentFilterSink,
+  contentFilterNotice,
+} from '../../qianmo/modelCompat/contentFilter.js'
 
 const GROK_MAX_TOKENS_ENV_HINT =
   'GROK_MAX_TOKENS or CLAUDE_CODE_MAX_OUTPUT_TOKENS'
@@ -94,9 +107,11 @@ export async function* queryModelGrok(
       },
     )
 
-    const openaiMessages = anthropicMessagesToOpenAI(
-      messagesForAPI,
-      systemPrompt,
+    // qianmo P18.12: reasoning in history is filtered by the endpoint this
+    // request goes to, as the OpenAI lane does in requestBody.ts (P18.8).
+    const openaiMessages = applyReasoningReplayPolicy(
+      anthropicMessagesToOpenAI(messagesForAPI, systemPrompt),
+      { model: grokModel, baseURL: grokTargetBaseURL() },
     )
     const openaiTools = anthropicToolsToOpenAI(standardTools)
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
@@ -149,11 +164,15 @@ export async function* queryModelGrok(
       ...(grokReasoningEffort && { reasoning_effort: grokReasoningEffort }),
     } as ChatCompletionCreateParamsStreaming
 
+    // qianmo P18.12 (hermes #27): src/services/qianmo/modelCompat/contentFilter.ts.
+    const contentFilter: ContentFilterSink = { seen: false }
     const adaptedStream = retryThirdPartyEventStream({
       signal,
+      // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+      fallback: { model: options.model, fallbackModel: options.fallbackModel },
       onRetry: () => clearGrokClientCache(),
       create: async () =>
-        adaptOpenAIStreamToAnthropic(
+        adaptGuardedChatStream(
           (await getClient().chat.completions.create(request, {
             signal,
             // qianmo P18.19 (CH-7): sticky cache routing per conversation —
@@ -161,6 +180,15 @@ export async function* queryModelGrok(
             headers: grokConversationHeaders(sessionId),
           })) as AsyncIterable<ChatCompletionChunk>,
           grokModel,
+          undefined,
+          // qianmo P18.12 (hermes #18): chatStreamGuards.ts.
+          {
+            idleTimeout: { ms: chatStreamIdleTimeoutMs(), label: 'Grok' },
+            // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
+            errorChunks: { label: 'Grok' },
+            // qianmo P18.12 (hermes #27): contentFilter.ts.
+            contentFilter,
+          },
         ),
     })
 
@@ -263,6 +291,8 @@ export async function* queryModelGrok(
                 ? { maxTokens: grokMaxTokens }
                 : {}),
               maxTokensEnvHint: GROK_MAX_TOKENS_ENV_HINT,
+              // qianmo P18.12 (hermes #27): contentFilter.ts.
+              terminalError: contentFilterNotice(stopReason, contentFilter),
             })) {
               if (output.type === 'assistant') {
                 collectedMessages.push(output)
@@ -323,6 +353,9 @@ export async function* queryModelGrok(
       logForDebugging('[Grok] Request aborted by user')
       return
     }
+    // qianmo P18.12 (hermes #1): the ladder's model fallback is for query.ts
+    // to act on, not an error to report.
+    if (error instanceof FallbackTriggeredError) throw error
     logForDebugging('[Grok] API request failed', { level: 'error' })
     yield createAssistantAPIErrorMessageFromError({
       apiError: 'api_error',

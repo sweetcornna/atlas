@@ -30,7 +30,12 @@ import {
 } from '../upstreamStatus.js'
 
 type Chunk = Record<string, unknown>
-type Reply = 'empty' | 'normal' | 'http500'
+type Reply =
+  | 'empty'
+  | 'empty_nousage'
+  | 'empty_length_filter'
+  | 'normal'
+  | 'http500'
 
 function chunk(
   delta: Record<string, unknown> | null,
@@ -55,6 +60,21 @@ const EMPTY: Chunk[] = [
     completion_tokens: 0,
     total_tokens: 1000,
   }),
+]
+/**
+ * The same empty answer without a usage chunk. P18.12 (hermes #25): only an
+ * empty WITH usage can be judged deterministic, so the budget tests below use
+ * this one to keep testing the budget.
+ */
+const EMPTY_NO_USAGE: Chunk[] = [
+  chunk({ role: 'assistant' }),
+  chunk({}, 'stop'),
+]
+/** An empty with usage and a different finish_reason. */
+const EMPTY_OTHER_FINISH: Chunk[] = [
+  chunk({ role: 'assistant' }),
+  chunk({}, 'MALFORMED_FUNCTION_CALL'),
+  chunk(null, null, { prompt_tokens: 1000, completion_tokens: 0 }),
 ]
 const NORMAL: Chunk[] = [
   chunk({ role: 'assistant', content: 'ok' }),
@@ -92,8 +112,16 @@ function ladder(replies: readonly Reply[], maxRetries: number) {
             },
           )
         }
+        const chunks =
+          reply === 'empty'
+            ? EMPTY
+            : reply === 'empty_nousage'
+              ? EMPTY_NO_USAGE
+              : reply === 'empty_length_filter'
+                ? EMPTY_OTHER_FINISH
+                : NORMAL
         return adaptOpenAIStreamToAnthropic(
-          stream(reply === 'empty' ? EMPTY : NORMAL) as never,
+          stream(chunks) as never,
           'gemini-3.8-flash-high',
         )
       },
@@ -143,7 +171,8 @@ describe('empty model responses on the third-party retry ladder', () => {
   })
 
   test('two empty responses in a row still recover', async () => {
-    const run = ladder(['empty', 'empty', 'normal'], 10)
+    // Without usage: not judged deterministic (P18.12, hermes #25).
+    const run = ladder(['empty_nousage', 'empty_nousage', 'normal'], 10)
     const { events, error } = await drain(run.events)
 
     expect(error).toBeUndefined()
@@ -152,7 +181,7 @@ describe('empty model responses on the third-party retry ladder', () => {
   })
 
   test('persistent empty responses fail after the small budget, not the 10-attempt one', async () => {
-    const run = ladder(['empty'], 10)
+    const run = ladder(['empty_nousage'], 10)
     const { events, error } = await drain(run.events)
 
     // One request plus two retries, then a real error instead of a quiet stop.
@@ -169,7 +198,10 @@ describe('empty model responses on the third-party retry ladder', () => {
 
   test('empty responses do not spend the 5xx budget', async () => {
     // maxRetries 1: the single 5xx retry is still available after two empties.
-    const run = ladder(['empty', 'empty', 'http500', 'normal'], 1)
+    const run = ladder(
+      ['empty_nousage', 'empty_nousage', 'http500', 'normal'],
+      1,
+    )
     const { events, error } = await drain(run.events)
 
     expect(error).toBeUndefined()
@@ -196,6 +228,38 @@ describe('empty model responses on the third-party retry ladder', () => {
   })
 })
 
+describe('a deterministic empty (P18.12, hermes #25)', () => {
+  test('twice in a row with usage, nothing generated, same finish_reason: the last retry is skipped', async () => {
+    const run = ladder(['empty'], 10)
+    const { error } = await drain(run.events)
+
+    expect(run.requests()).toBe(2)
+    expect(run.delays()).toEqual([500])
+    expect(error).toMatchObject({
+      name: 'EmptyModelResponseError',
+      code: 'empty_response',
+    })
+  })
+
+  test('a different finish_reason the second time: retried as before', async () => {
+    const run = ladder(['empty', 'empty_length_filter', 'normal'], 10)
+    const { error, events } = await drain(run.events)
+
+    expect(error).toBeUndefined()
+    expect(run.requests()).toBe(3)
+    expect(text(events)).toBe('ok')
+  })
+
+  test('another failure in between breaks the streak', async () => {
+    const run = ladder(['empty', 'http500', 'empty', 'normal'], 10)
+    const { error, events } = await drain(run.events)
+
+    expect(error).toBeUndefined()
+    expect(run.requests()).toBe(4)
+    expect(text(events)).toBe('ok')
+  })
+})
+
 describe('what an empty response leaves in the node log', () => {
   afterEach(() => {
     // Process-global by design (see upstreamStatus.ts); never leave one behind.
@@ -208,10 +272,10 @@ describe('what an empty response leaves in the node log', () => {
 
     await drain(ladder(['empty'], 10).events)
 
+    // P18.12 (hermes #25): the second identical empty with usage ends it.
     expect(lines).toEqual([
       '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=1 action=retry',
-      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=2 action=retry',
-      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=3 action=fail',
+      '[model] empty model response: finish_reason=stop input_tokens=1000 output_tokens=0 occurrence=2 action=fail',
     ])
   })
 

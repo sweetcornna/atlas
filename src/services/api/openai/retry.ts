@@ -3,6 +3,11 @@ import {
   getAPIErrorDiagnostics,
 } from '../retryClassification.js'
 import { reportUpstreamFailure } from '../upstreamStatus.js'
+import {
+  type BackoffTarget,
+  retryAfterCapMs,
+  zaiOverloadWait,
+} from '../../qianmo/modelCompat/vendorBackoff.js'
 
 /** Ten retries by default; the official CLI allows explicit values up to 15. */
 const DEFAULT_MAX_RETRIES = 10
@@ -234,6 +239,42 @@ export function getOpenAIRetryDelay(
   return Math.round(exponential + random() * 0.25 * exponential)
 }
 
+/**
+ * qianmo P18.12 (hermes #16, #17): what the main loop's ladder
+ * (`retryThirdPartyEventStream`) does before its `retry`-th re-send after a
+ * failure with no output — wait out the server's `Retry-After` when it is
+ * within the run mode's bound (`retryAfterCapMs`), never less than the
+ * ladder's own backoff (or the vendor's, `zaiOverloadWait`, when `target` is
+ * Z.AI's coding endpoint), or give up when it is past the bound. Same
+ * `Retry-After` rule as {@link retryAPIRequest}; that ladder keeps its own
+ * inline copy.
+ */
+export function resolveRetryWait(
+  error: unknown,
+  retry: number,
+  options: { target?: BackoffTarget; random?: () => number } = {},
+): { giveUp: true } | { giveUp: false; delayMs: number } {
+  const random = options.random ?? Math.random
+  const retryAfterMs = retryAfterMsFromError(error)
+  if (
+    retryAfterMs !== undefined &&
+    retryAfterMs > retryAfterCapMs(MAX_RETRY_AFTER_MS)
+  ) {
+    return { giveUp: true }
+  }
+  const ladderMs = getOpenAIRetryDelay(retry, random)
+  const vendor = zaiOverloadWait(error, retry, ladderMs, options.target, random)
+  if (vendor?.giveUp) return vendor
+  const backoffMs = vendor?.delayMs ?? ladderMs
+  return {
+    giveUp: false,
+    delayMs:
+      retryAfterMs === undefined
+        ? backoffMs
+        : Math.max(retryAfterMs, backoffMs),
+  }
+}
+
 export async function retryAPIRequest<T>(
   operation: (attempt: number) => Promise<T>,
   options: APIRetryOptions,
@@ -280,7 +321,12 @@ export async function retryAPIRequest<T>(
       }
       const retryAfterMs = retryAfterMsFromError(error)
       const backoffMs = getOpenAIRetryDelay(attempt + 1, random)
-      if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
+      // qianmo P18.12 (hermes #16): the bound depends on the run mode —
+      // src/services/qianmo/modelCompat/vendorBackoff.ts.
+      if (
+        retryAfterMs !== undefined &&
+        retryAfterMs > retryAfterCapMs(MAX_RETRY_AFTER_MS)
+      ) {
         throw error
       }
       await delay(
