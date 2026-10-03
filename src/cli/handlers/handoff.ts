@@ -145,7 +145,9 @@ Commands:
                            tree did not change since, and register the handoff
                            with the console. Prints "已落地，可以关机" and the
                            task id only when the hub accepted it. Refuses while
-                           a qmcode model turn is still running. Deadline
+                           a qmcode turn is still running. Run by /handoff (or
+                           !) in qmcode, it takes that thread ($CODEX_THREAD_ID)
+                           and leaves out the shell turn it runs in. Deadline
                            default: 24 h from now, e.g. 2026-11-20T02:00:00Z.
 
   status [--wait] [--task <id>]

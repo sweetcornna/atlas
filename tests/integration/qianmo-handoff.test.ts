@@ -26,6 +26,9 @@
  * 1. `now` prints 「已落地，可以关机」 only after the hub accepted: refused
  *    while a qmcode turn runs, no sentence when the console is down, the
  *    sentence once the ledger holds the task and the hub holds the objects.
+ *    Run by `/handoff` in qmcode (`CODEX_THREAD_ID` set, the rollout ending
+ *    on the shell turn's own `task_started`), that shell turn is left out; a
+ *    model turn running is still refused.
  * 2. A session object lost on the hub after the push: `now` fails and says so.
  * 3. The hub keeps the ledger across a restart; a second console on the same
  *    root cannot take the ledger.
@@ -78,6 +81,9 @@ const TURN_2 = '0199a4c2-8000-7000-8000-000000000002'
 const TURN_3 = '0199a4c2-8000-7000-8000-000000000003'
 const TURN_4 = '0199a4c2-8000-7000-8000-000000000004'
 const TURN_5 = '0199a4c2-8000-7000-8000-000000000005'
+const TURN_6 = '0199a4c2-8000-7000-8000-000000000006'
+/** The shell turn `/handoff` opens to run `qm handoff now` in. */
+const SHELL_TURN = '0199a4c2-8000-7000-8000-000000000007'
 const CC_DONE = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
 const CC_OPEN = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4c'
 /** In the environment of every laptop command; must end up nowhere. */
@@ -878,6 +884,92 @@ describe('qm handoff end to end', () => {
       const stored = git(bare, 'show', `${hubRefs().get(sessionRef)}:${name}`)
       expect(stored).toContain(TURN_4)
       expect(stored).toContain(TURN_5)
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
+    '/handoff in qmcode: the shell turn running now is left out; a model turn running is refused',
+    async () => {
+      const sessionRef = `refs/qianmo/sessions/${DEVICE}/${THREAD}`
+      const name = rolloutFile().split('/').at(-1) ?? ''
+      // What qmcode gives `/handoff` and `!` commands (QIANMO.md 10.3).
+      const fromThread = {
+        ...laptopEnv(),
+        CODEX_THREAD_ID: THREAD,
+        CODEX_SESSION_ID: THREAD,
+      }
+      const before = hubRefs()
+
+      // A model turn runs. The TUI disables `/handoff` then; `!qm handoff now`
+      // still runs, inside that turn.
+      turns.push({
+        turnId: TURN_6,
+        user: '再看一眼',
+        assistant: 'six',
+        ending: 'open',
+      })
+      writeRollout()
+      const busy = await qm(['handoff', 'now'], { env: fromThread })
+      expect(busy.code).toBe(1)
+      expect(busy.stderr).toContain(`回合进行中（${TURN_6}）`)
+      expect(busy.stdout).not.toContain(SAFE)
+      expect(hubRefs()).toEqual(before)
+
+      // It ends; `/handoff` opens its own shell turn and runs `now` in it: the
+      // rollout ends on that turn's task_started.
+      turns[turns.length - 1] = {
+        turnId: TURN_6,
+        user: '再看一眼',
+        assistant: 'six',
+      }
+      turns.push({
+        turnId: SHELL_TURN,
+        shell: 'qm handoff now',
+        ending: 'runs',
+      })
+      writeRollout()
+      // From a terminal the same open turn is a turn running.
+      const terminal = await qm(['handoff', 'now'])
+      expect(terminal.code).toBe(1)
+      expect(terminal.stderr).toContain(`回合进行中（${SHELL_TURN}）`)
+      expect(hubRefs()).toEqual(before)
+
+      // From the thread itself it goes through — here from `docs/`, where the
+      // last session reported is a Claude Code one: `/handoff` hands over the
+      // thread it was typed in.
+      const ran = await qm(['handoff', 'now'], {
+        cwd: join(repo, 'docs'),
+        env: fromThread,
+      })
+      expect(ran.stderr).toBe('')
+      expect(ran.code).toBe(0)
+      expect(ran.stdout.split('\n')[0]).toBe(SAFE)
+      const taskId = /任务\s+(\S+)/.exec(ran.stdout)?.[1] ?? ''
+      const { body } = await hubGet(`/v0/handoff/${taskId}`)
+      const manifest = (body.task as Record<string, unknown>)
+        .manifest as Record<string, unknown>
+      expect(manifest.tool).toBe('qmcode')
+      expect(manifest.sessionId).toBe(THREAD)
+      const stored = git(bare, 'show', `${hubRefs().get(sessionRef)}:${name}`)
+      expect(stored).toContain(TURN_6)
+      expect(stored).not.toContain(SHELL_TURN)
+
+      // The shell turn ends after `now` has exited.
+      turns[turns.length - 1] = { turnId: SHELL_TURN, shell: 'qm handoff now' }
+      writeRollout()
+      // `status` names the session `now` takes from there.
+      const status = await qm(['handoff', 'status'], {
+        cwd: join(repo, 'docs'),
+        env: fromThread,
+      })
+      expect(status.code).toBe(0)
+      expect(status.stdout).toContain(
+        `会话    qmcode ${THREAD}（运行这条命令的 qmcode 线程）`,
+      )
+      expect(
+        (await qm(['handoff', 'status'], { cwd: join(repo, 'docs') })).stdout,
+      ).toContain(`会话    claude-code ${CC_DONE}`)
     },
     STEP_TIMEOUT_MS,
   )

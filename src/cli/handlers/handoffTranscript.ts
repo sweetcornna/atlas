@@ -300,49 +300,82 @@ type QmcodeSnapshot =
       readonly before: number
     }
 
-/**
- * Whether a model turn is still running, and how much of the rollout to take
- * (probe 第 7 项第 5 条: the latest `task_started` must have its
- * `task_complete` / `turn_aborted`, or it is 「回合进行中」).
- *
- * One open turn is not the model's: `/handoff` in the qmcode TUI runs
- * `qm handoff now` as a standalone user-shell turn, which emits
- * `task_started` and nothing the model writes (`codex-rs/core/src/tasks/
- * user_shell.rs`, `StandaloneTurn`). An open last turn with no `turn_context`
- * and no `response_item` after its start is taken to be that, and the
- * snapshot is cut just before it so the session handed over ends on a
- * complete turn. A model turn writes both within its first request; the
- * window in which a just-started model turn has neither is the one this rule
- * cannot tell apart.
- */
-export function qmcodeSnapshot(content: Buffer): QmcodeSnapshot {
-  const lines = completeLines(content)
-  let lastStart = -1
-  let lastTurn: string | null = null
+interface OpenTurn {
+  readonly turnId: string
+  /** Index of its `task_started` line. */
+  readonly index: number
+}
+
+/** The latest turn started in `records[0, count)`, if it has no end there. */
+function openTurn(
+  records: readonly (Record<string, unknown> | null)[],
+  count: number,
+): OpenTurn | null {
+  let latest: OpenTurn | null = null
   const ended = new Set<string>()
-  const records = lines.map(parsed)
-  for (const [index, record] of records.entries()) {
-    if (record === null) continue
+  for (let index = 0; index < count; index++) {
+    const record = records[index]
+    if (record === undefined || record === null) continue
     const started = turnStartOf(record)
-    if (started !== null) {
-      lastStart = index
-      lastTurn = started
-    }
+    if (started !== null) latest = { turnId: started, index }
     const finished = turnEndOf(record)
     if (finished !== null) ended.add(finished)
   }
-  const end = lastNewlineEnd(content)
-  if (lastTurn === null || ended.has(lastTurn)) return { open: false, end }
-  const modelActivity = records
-    .slice(lastStart + 1)
-    .some(
-      record =>
-        record !== null &&
-        (record.type === 'turn_context' || record.type === 'response_item'),
-    )
-  const before = lines[lastStart]?.start ?? end
-  if (modelActivity) return { open: true, turnId: lastTurn, before }
-  return { open: false, end: before }
+  return latest === null || ended.has(latest.turnId) ? null : latest
+}
+
+/**
+ * Whether a turn is still running, and how much of the rollout to take
+ * (probe 第 7 项第 5 条: the latest `task_started` must have its
+ * `task_complete` / `turn_aborted`, or it is 「回合进行中」).
+ *
+ * One open turn is the caller's own. `/handoff` in the qmcode TUI, like any
+ * `!` command typed while no turn runs, runs `qm handoff now` as a standalone
+ * user-shell turn (`codex-rs/core/src/session/handlers.rs`
+ * `run_user_shell_command`, `core/src/tasks/user_shell.rs` `StandaloneTurn`):
+ * its `task_started` is written before the command starts, and nothing else
+ * of that turn is until the command has exited — no `turn_context` (the
+ * task never records one), and the command's begin and output events are
+ * not persisted (`codex-rs/rollout/src/policy.rs`). Measured the same way
+ * (QIANMO.md 10.3): while `qm handoff now` runs, the rollout ends on that
+ * `task_started`. So when `fromThreadShell` — this process is a shell
+ * command of the very thread the rollout belongs to (`CODEX_THREAD_ID`) —
+ * and the open turn is exactly the last line of the file, nothing after it,
+ * that turn is left out and what precedes it is judged by the same rule.
+ *
+ * Every other open turn is refused, the bare `task_started` included: a
+ * model turn writes only that while it waits for MCP servers before its first
+ * `turn_context`, and from a terminal, or from another thread, nothing tells
+ * the two apart. A `!` command typed while a model turn runs gets no turn of
+ * its own (`ActiveTurnAuxiliary`); the open turn is the model's and is
+ * refused — unless that turn is still in the wait just described, the one
+ * case this rule takes for the caller's own.
+ */
+export function qmcodeSnapshot(
+  content: Buffer,
+  fromThreadShell = false,
+): QmcodeSnapshot {
+  const lines = completeLines(content)
+  const records = lines.map(parsed)
+  let end = lastNewlineEnd(content)
+  let open = openTurn(records, lines.length)
+  const last = lines.at(-1)
+  if (
+    open !== null &&
+    fromThreadShell &&
+    last !== undefined &&
+    open.index === lines.length - 1 &&
+    last.end === content.length
+  ) {
+    end = last.start
+    open = openTurn(records, open.index)
+  }
+  if (open === null) return { open: false, end }
+  return {
+    open: true,
+    turnId: open.turnId,
+    before: lines[open.index]?.start ?? end,
+  }
 }
 
 /** The bytes of `file` now, or `null` when it does not exist. */

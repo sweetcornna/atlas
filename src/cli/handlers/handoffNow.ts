@@ -9,9 +9,11 @@
  * In this order, and any step that does not hold ends the command with a
  * reason on stderr, exit 1, and **without the sentence**:
  *
- * 1. find the session reported from this directory (`sessions.json`); for
- *    qmcode, refuse while a model turn is still running (「回合进行中」) —
- *    the transcript would end mid-turn;
+ * 1. find the session: the calling qmcode thread's (`CODEX_THREAD_ID`, set
+ *    when `/handoff` or `!` runs this), else the one reported from this
+ *    directory (`sessions.json`); for qmcode, refuse while a turn is still
+ *    running (「回合进行中」) — the transcript would end mid-turn — except
+ *    the shell turn running this very command, which is left out;
  * 2. take the repository's sync lock and sync now (shadow commit, session
  *    commit, atomic push), including whatever hooks left pending;
  * 3. `git ls-remote` the hub: both refs must point at exactly the commits
@@ -39,6 +41,7 @@ import {
   sessionRef,
   shadowTree,
 } from '@qianmo/handoff'
+import { qmcodeHome } from '../../config/paths.js'
 import { gitTopLevel, hubConnection, lsRemote } from './handoffHub.js'
 import {
   formatHub,
@@ -64,6 +67,7 @@ import {
   writeLastSync,
 } from './handoffSync.js'
 import {
+  findQmcodeRollout,
   lastNewlineEnd,
   qmcodeSnapshot,
   readTranscript,
@@ -169,16 +173,50 @@ interface NowOptions {
 }
 
 /**
- * The session reported from `cwd`, cut where it is complete. `now` refuses a
- * running model turn; a manual sync (`whileRunning: 'cut'`) takes everything
- * before it.
+ * The qmcode thread this process is a shell command of. qmcode sets
+ * `CODEX_THREAD_ID` for `!` commands, `/handoff` and the model's shell tool —
+ * not for `notify` or the MCP server (QIANMO.md 10.2, 10.3).
+ */
+function callingThread(): string | undefined {
+  const id = process.env.CODEX_THREAD_ID
+  return id === undefined || id === '' ? undefined : id
+}
+
+/**
+ * The session to hand over: the calling qmcode thread's own rollout when
+ * there is one (`/handoff` hands over the thread it was typed in), else the
+ * one reported from `cwd` — with `at`, when a hook reported it.
+ */
+function sessionToHandOver(
+  cwd: string,
+  root: string,
+  thread: string | undefined,
+):
+  | (Pick<SessionSnapshot, 'tool' | 'sessionId' | 'file'> & {
+      readonly at?: number
+    })
+  | undefined {
+  const own =
+    thread === undefined ? null : findQmcodeRollout(qmcodeHome(), thread)
+  if (thread !== undefined && own !== null) {
+    return { tool: 'qmcode', sessionId: thread, file: own }
+  }
+  return sessionFor(cwd, root)
+}
+
+/**
+ * The session to hand over, cut where it is complete. `now` refuses a
+ * running turn — except the shell turn of the thread that is running it
+ * (`qmcodeSnapshot`); a manual sync (`whileRunning: 'cut'`) takes everything
+ * before the open turn.
  */
 export function sessionSnapshot(
   cwd: string,
   root: string,
   whileRunning: 'refuse' | 'cut' = 'refuse',
 ): SessionSnapshot {
-  const location = sessionFor(cwd, root)
+  const thread = callingThread()
+  const location = sessionToHandOver(cwd, root, thread)
   if (location === undefined) {
     throw new HandoffUserError(
       '找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
@@ -190,7 +228,7 @@ export function sessionSnapshot(
   }
   let end: number
   if (location.tool === 'qmcode') {
-    const snapshot = qmcodeSnapshot(content)
+    const snapshot = qmcodeSnapshot(content, location.sessionId === thread)
     if (snapshot.open && whileRunning === 'refuse') {
       throw new HandoffUserError(
         `回合进行中（${snapshot.turnId}）：等这一轮结束再转交`,
@@ -402,11 +440,11 @@ export async function runStatus(
     output.out(`项目    ${project.project}（设备 ${project.device}）`)
     output.out(`中枢    ${formatHub(project.hub)}`)
     output.out(`控制台  ${project.console}`)
-    const session = sessionFor(cwd, project.root)
+    const session = sessionToHandOver(cwd, project.root, callingThread())
     output.out(
       session === undefined
         ? '会话    （还没有 hook 报过）'
-        : `会话    ${session.tool} ${session.sessionId}（${new Date(session.at).toISOString()}）`,
+        : `会话    ${session.tool} ${session.sessionId}（${session.at === undefined ? '运行这条命令的 qmcode 线程' : new Date(session.at).toISOString()}）`,
     )
     const last = readLastSync(project.root)
     output.out(

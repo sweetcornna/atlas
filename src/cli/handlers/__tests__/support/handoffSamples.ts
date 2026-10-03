@@ -10,7 +10,9 @@
  *   `task_complete` carry `turn_id`; the end of a turn is written
  *   `token_count` → `task_complete` (handoff-probe-p17.md 第 7 项).
  * - The qmcode notify argument is `legacy_notify.rs`'s `agent-turn-complete`,
- *   kebab-case, every field present.
+ *   kebab-case; `client` is optional and `last-assistant-message` nullable.
+ * - A `/handoff` or `!` shell turn is what `user_shell.rs` persists: while
+ *   the command runs, its `task_started` and nothing after it.
  * - Claude Code records carry the fields a real transcript has around
  *   `type` / `message`; one API response is one record per content block, each
  *   with the response's final `stop_reason` (`services/api/claude.ts`). The hook
@@ -22,13 +24,35 @@
 
 const MODEL = 'gpt-6-luna'
 
-export interface QmcodeTurn {
+interface QmcodeModelTurn {
   readonly turnId: string
   readonly user: string
   readonly assistant: string
-  /** `complete` (default) ends with `task_complete`; `aborted` with `turn_aborted`; `open` stops mid-turn. */
-  readonly ending?: 'complete' | 'aborted' | 'open'
+  /**
+   * `complete` (default) ends with `task_complete`; `aborted` with
+   * `turn_aborted`; `open` stops mid-turn, after the first tool call;
+   * `starting` stops after `task_started` (the wait for MCP servers before the
+   * first `turn_context`, `codex-rs/core/src/session/turn.rs`).
+   */
+  readonly ending?: 'complete' | 'aborted' | 'open' | 'starting'
 }
+
+/**
+ * A `!` command, or `/handoff`, run while no turn runs: a standalone turn of
+ * its own (`codex-rs/core/src/tasks/user_shell.rs`, `StandaloneTurn`).
+ * `task_started` is written before the command starts; while it `runs`,
+ * nothing follows — its begin and output events are not persisted
+ * (`codex-rs/rollout/src/policy.rs`). Once it has exited, the
+ * `<user_shell_command>` record (`core/src/context/user_shell_command.rs`)
+ * and `task_complete`.
+ */
+interface QmcodeShellTurn {
+  readonly turnId: string
+  readonly shell: string
+  readonly ending?: 'complete' | 'runs'
+}
+
+export type QmcodeTurn = QmcodeModelTurn | QmcodeShellTurn
 
 function line(timestamp: string, type: string, payload: unknown): string {
   return `${JSON.stringify({ timestamp, type, payload })}\n`
@@ -55,10 +79,31 @@ export function qmcodeRollout(
     out += line(ts(), 'event_msg', {
       type: 'task_started',
       turn_id: turn.turnId,
+      root_turn_id: turn.turnId,
       started_at: Math.floor(at / 1000),
       model_context_window: 272000,
       collaboration_mode_kind: 'default',
     })
+    if ('shell' in turn) {
+      if (turn.ending === 'runs') continue
+      out += line(ts(), 'response_item', {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `<user_shell_command>\n<command>\n${turn.shell}\n</command>\n<result>\nExit code: 0\nDuration: 0.0120 seconds\nOutput:\none\n\n</result>\n</user_shell_command>`,
+          },
+        ],
+      })
+      out += line(ts(), 'event_msg', {
+        type: 'task_complete',
+        turn_id: turn.turnId,
+        last_agent_message: null,
+      })
+      continue
+    }
+    if (turn.ending === 'starting') continue
     out += line(ts(), 'turn_context', {
       turn_id: turn.turnId,
       cwd,
@@ -129,21 +174,31 @@ export function qmcodeRollout(
   return out
 }
 
-/** The argument qmcode's `notify` appends: every field, as `legacy_notify.rs` writes it. */
+/**
+ * The argument qmcode's `notify` appends, as `legacy_notify.rs` writes it:
+ * kebab-case, `client` left out when there is none (`client: null`), and
+ * `last-assistant-message` possibly `null`.
+ */
 export function qmcodeNotify(
   threadId: string,
   turnId: string,
   cwd: string,
-  extra: { readonly input?: string; readonly last?: string } = {},
+  extra: {
+    readonly input?: string
+    readonly last?: string | null
+    readonly client?: string | null
+  } = {},
 ): string {
+  const client = extra.client === undefined ? 'codex-tui' : extra.client
   return JSON.stringify({
     type: 'agent-turn-complete',
     'thread-id': threadId,
     'turn-id': turnId,
     cwd,
-    client: 'codex-tui',
+    ...(client === null ? {} : { client }),
     'input-messages': [extra.input ?? '把 a.txt 读出来'],
-    'last-assistant-message': extra.last ?? 'a.txt 里是 one',
+    'last-assistant-message':
+      extra.last === undefined ? 'a.txt 里是 one' : extra.last,
   })
 }
 

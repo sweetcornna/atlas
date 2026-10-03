@@ -62,6 +62,26 @@ describe('parseQmcodeNotify', () => {
     })
   })
 
+  test('`client` absent and `last-assistant-message` null are the same turn end', () => {
+    const payload = qmcodeNotify(THREAD, TURN_1, '/work/atlas', {
+      client: null,
+      last: null,
+    })
+    expect(Object.keys(JSON.parse(payload))).toEqual([
+      'type',
+      'thread-id',
+      'turn-id',
+      'cwd',
+      'input-messages',
+      'last-assistant-message',
+    ])
+    expect(parseQmcodeNotify(payload)).toEqual({
+      threadId: THREAD,
+      turnId: TURN_1,
+      cwd: '/work/atlas',
+    })
+  })
+
   test('another notification type is not a turn end', () => {
     expect(
       parseQmcodeNotify(JSON.stringify({ type: 'approval-requested' })),
@@ -248,22 +268,124 @@ describe('qmcodeSnapshot (what `now` may take)', () => {
     })
   })
 
-  test('the user-shell turn running `qm handoff now` itself is cut off, not refused', () => {
+  // `/handoff` in qmcode runs `qm handoff now` as a standalone shell turn;
+  // while it runs the rollout ends on that turn's `task_started`.
+  const SHELL_TURN = '0199a4c2-8000-7000-8000-00000000000a'
+  const handoff = { turnId: SHELL_TURN, shell: 'qm handoff now' } as const
+
+  test("from the thread's own /handoff: the shell turn at the end is left out, not refused", () => {
     const first = qmcodeRollout(THREAD, cwd, [
       { turnId: TURN_1, user: 'q1', assistant: 'a1' },
     ])
-    const shell = `${JSON.stringify({
-      timestamp: '2026-10-03T09:10:00.000Z',
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { ...handoff, ending: 'runs' },
+    ])
+    // The real shape: the file ends on the shell turn's task_started.
+    expect(JSON.parse(text.trimEnd().split('\n').at(-1) ?? '')).toMatchObject({
       type: 'event_msg',
-      payload: {
-        type: 'task_started',
-        turn_id: TURN_2,
-        model_context_window: 272000,
-      },
-    })}\n`
-    expect(qmcodeSnapshot(Buffer.from(first + shell))).toEqual({
+      payload: { type: 'task_started', turn_id: SHELL_TURN },
+    })
+    expect(qmcodeSnapshot(Buffer.from(text), true)).toEqual({
       open: false,
       end: Buffer.byteLength(first),
+    })
+  })
+
+  test("from the thread's own shell: a model turn at the end is still refused", () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'open' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(text), true)).toEqual({
+      open: true,
+      turnId: TURN_2,
+      before: Buffer.byteLength(first),
+    })
+  })
+
+  test("not from the thread's own shell: a bare task_started is a turn running", () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    // The same shell turn, judged from a terminal or another thread.
+    const shell = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { ...handoff, ending: 'runs' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(shell))).toEqual({
+      open: true,
+      turnId: SHELL_TURN,
+      before: Buffer.byteLength(first),
+    })
+    // A model turn waiting for MCP servers before its first turn_context.
+    const starting = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'starting' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(starting))).toEqual({
+      open: true,
+      turnId: TURN_2,
+      before: Buffer.byteLength(first),
+    })
+  })
+
+  test("from the thread's own shell: anything after the open task_started makes it not the caller's", () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const shell = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { ...handoff, ending: 'runs' },
+    ])
+    const open = {
+      open: true as const,
+      turnId: SHELL_TURN,
+      before: Buffer.byteLength(first),
+    }
+    const turnContext = `${JSON.stringify({
+      timestamp: '2026-10-03T09:10:00.000Z',
+      type: 'turn_context',
+      payload: { turn_id: SHELL_TURN, cwd, model: 'gpt-6-luna' },
+    })}\n`
+    expect(qmcodeSnapshot(Buffer.from(shell + turnContext), true)).toEqual(open)
+    // A line still being written counts as something after it.
+    expect(qmcodeSnapshot(Buffer.from(`${shell}{"timestamp"`), true)).toEqual(
+      open,
+    )
+  })
+
+  test("from the thread's own shell: what precedes the shell turn is judged by the same rule", () => {
+    // Earlier `!` commands are complete turns of their own.
+    const done = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, shell: 'git status' },
+    ])
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, shell: 'git status' },
+      { ...handoff, ending: 'runs' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(text), true)).toEqual({
+      open: false,
+      end: Buffer.byteLength(done),
+    })
+    // A turn left open before it (qmcode killed mid-turn) is still open.
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const stale = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'open' },
+      { ...handoff, ending: 'runs' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(stale), true)).toEqual({
+      open: true,
+      turnId: TURN_2,
+      before: Buffer.byteLength(first),
     })
   })
 })
