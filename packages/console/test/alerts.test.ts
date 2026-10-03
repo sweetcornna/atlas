@@ -12,6 +12,8 @@ import { describe, expect, test } from 'bun:test'
 import type { AlertBoard } from '../src/view/alerts.js'
 import { alertBoard } from '../src/view/alerts.js'
 import type { AuditPage, ConsoleAgent, ConsoleResult } from '../src/deps.js'
+import { ActionLedger, verifyActionLedger } from '../src/actionLedger.js'
+import { MemoryActionStore } from './actionStore.js'
 import { MemoryActionLedger } from './memoryActions.js'
 import {
   ADMIN,
@@ -220,6 +222,58 @@ describe('acknowledging is a guarded write', () => {
     expect(response.status).toBe(403)
     expect(notify.ackCalls).toBe(0)
     expect(actions.entries).toHaveLength(0)
+  })
+})
+
+describe('with the real action ledger (P15.9)', () => {
+  function onTheLedger() {
+    const store = new MemoryActionStore()
+    const ledger = new ActionLedger({ store, now: () => NOW })
+    const notify = new MemoryNotify([
+      notice('n:disk', 'error', '根分区使用率 95%'),
+    ])
+    const c = watchConsole({ notify, actions: ledger })
+    return { ...c, store, ledger, notify }
+  }
+
+  test('a done acknowledgement and a refused one are two chained lines that verify', async () => {
+    const { handle, store } = onTheLedger()
+    expect(
+      (await handle(call('POST', '/v0/alerts/n%3Adisk/ack', ADMIN))).status,
+    ).toBe(200)
+    expect(
+      (await handle(call('POST', '/v0/alerts/made-up/ack', ADMIN))).status,
+    ).toBe(404)
+    const actions = store.lines().slice(1)
+    expect(actions.map(line => line.kind)).toEqual(['alert.ack', 'alert.ack'])
+    expect(actions[0]?.data).toMatchObject({
+      subject: 'legacy:admin',
+      target: 'n:disk',
+      outcome: 'ok',
+    })
+    expect(actions[0]?.data['code']).toBeUndefined()
+    expect(actions[1]?.data).toMatchObject({
+      target: 'made-up',
+      outcome: 'refused',
+      code: 'not_found',
+    })
+    expect(verifyActionLedger(store.text)).toEqual({
+      chain: 'intact',
+      actions: 2,
+    })
+  })
+
+  test('a ledger edited under the running console stops the acknowledgement before the store', async () => {
+    const { handle, store, notify } = onTheLedger()
+    await handle(call('POST', '/v0/alerts/made-up/ack', ADMIN))
+    store.text = (store.text ?? '').replace('"made-up"', '"made-up2"')
+    const before = store.text
+    const response = await handle(
+      call('POST', '/v0/alerts/n%3Adisk/ack', ADMIN),
+    )
+    expect(response.status).toBe(503)
+    expect(notify.ackCalls).toBe(0)
+    expect(store.text).toBe(before)
   })
 })
 
