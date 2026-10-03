@@ -16,7 +16,13 @@ import type {
   ChatCompletionChunk,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
-import { isChatGPTCodexReasoningModel } from 'src/utils/model/chatgptModels.js'
+import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
+import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
+import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
+import {
+  sendDroppingRejectedParameters,
+  TEMPERATURE_DROPPABLE,
+} from 'src/services/qianmo/modelCompat/unsupportedParam.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -171,27 +177,30 @@ async function createChatStreamWithCacheKeyFallback(params: {
     fetchOverride: params.fetchOverride,
     source: params.querySource,
   })
-  const create = (cacheKey: string | undefined) =>
-    client.chat.completions.create(params.buildBody(cacheKey), {
-      signal: params.signal,
-    }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>
-
-  if (params.promptCacheKey === undefined) {
-    return create(undefined)
-  }
-
-  try {
-    return await create(params.promptCacheKey)
-  } catch (error) {
-    if (params.signal.aborted || !isPromptCacheKeyRejection(error)) {
-      throw error
-    }
-    markPromptCacheKeyRejected()
-    logForDebugging(
-      '[OpenAI] endpoint rejected prompt_cache_key; retrying once without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
-    )
-    return create(undefined)
-  }
+  // qianmo P18.5 (hermes #12): the drop-and-resend is the shared mechanism in
+  // src/services/qianmo/modelCompat/unsupportedParam.ts; prompt_cache_key keeps
+  // its own detector and latch.
+  return sendDroppingRejectedParameters({
+    body: params.buildBody(params.promptCacheKey),
+    send: body =>
+      client.chat.completions.create(body, {
+        signal: params.signal,
+      }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+    signal: params.signal,
+    droppable: [
+      {
+        key: 'prompt_cache_key',
+        isRejection: isPromptCacheKeyRejection,
+        onDropped: () => {
+          markPromptCacheKeyRejected()
+          logForDebugging(
+            '[OpenAI] endpoint rejected prompt_cache_key; retrying once without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
+          )
+        },
+      },
+      TEMPERATURE_DROPPABLE,
+    ],
+  })
 }
 
 function isOpenAIConvertibleMessage(
@@ -386,10 +395,18 @@ export async function* queryModelOpenAI(
     //        with small context windows, e.g. RTX 3060 12GB running 65536-token models)
     //     3. CLAUDE_CODE_MAX_OUTPUT_TOKENS env var (generic override)
     //     4. upperLimit default (64000)
+    //     qianmo P18.5 (hermes #3): on the chat lane an unknown model on a named
+    //     provider host gets no cap at all — src/services/qianmo/modelCompat/
+    //     outputTokenDefault.ts.
     const { upperLimit } = getModelMaxOutputTokens(openaiModel)
-    const maxTokens = resolveOpenAIMaxTokens(
+    let maxTokens = resolveOpenAIRequestMaxTokens(
       upperLimit,
       options.maxOutputTokensOverride,
+      {
+        wireProtocol,
+        model: openaiModel,
+        baseURL: process.env.OPENAI_BASE_URL,
+      },
     )
 
     // Two different keys on purpose.
@@ -444,6 +461,17 @@ export async function* queryModelOpenAI(
     const adaptedStream = retryThirdPartyEventStream({
       signal,
       onRetry: () => clearOpenAIClientCache(),
+      // qianmo P18.5 (hermes #5): an output-cap rejection lowers the cap once
+      // (src/services/qianmo/modelCompat/outputCap.ts). The ChatGPT route sends
+      // no cap of its own, so there is nothing to lower there.
+      recoverOutputCap: useChatGPTResponses
+        ? undefined
+        : error => {
+            const next = outputCapRetryTokens(error, maxTokens)
+            if (next === undefined) return false
+            maxTokens = next
+            return true
+          },
       create: async () =>
         wireProtocol === 'responses'
           ? adaptResponsesStreamToAnthropic(
@@ -496,7 +524,10 @@ export async function* queryModelOpenAI(
                     temperatureOverride: options.temperatureOverride,
                     promptCacheKey: cacheKey,
                     effortValue: appliedEffort,
-                    ...(isChatGPTCodexReasoningModel(openaiModel)
+                    ...(chatLaneSendsReasoningEffort(
+                      openaiModel,
+                      process.env.OPENAI_BASE_URL,
+                    )
                       ? {
                           reasoningEffort: getChatReasoningEffort(
                             openaiModel,

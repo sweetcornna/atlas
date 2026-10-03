@@ -21,6 +21,10 @@ const ANTHROPIC_TIERS = [
     modelEnvVar: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
     capabilitiesEnvVar: 'ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
   },
+  {
+    modelEnvVar: 'ANTHROPIC_DEFAULT_FABLE_MODEL',
+    capabilitiesEnvVar: 'ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES',
+  },
 ] as const
 
 const OPENAI_TIERS = [
@@ -35,6 +39,53 @@ const OPENAI_TIERS = [
   {
     modelEnvVar: 'OPENAI_DEFAULT_HAIKU_MODEL',
     capabilitiesEnvVar: 'OPENAI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'OPENAI_DEFAULT_FABLE_MODEL',
+    capabilitiesEnvVar: 'OPENAI_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES',
+  },
+] as const
+
+// qianmo P18.5 (Q-2): the Gemini and Grok lanes read their own prefix. Before
+// this they fell through to ANTHROPIC_TIERS, so the GEMINI_/GROK_ capability
+// keys that PROFILE_ENV_KEYS manages (providerProfiles/envKeys.ts) were
+// written by /provider and read by nothing. The Anthropic list stays behind
+// them as the fallback those lanes have always had.
+const GEMINI_TIERS = [
+  {
+    modelEnvVar: 'GEMINI_DEFAULT_OPUS_MODEL',
+    capabilitiesEnvVar: 'GEMINI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GEMINI_DEFAULT_SONNET_MODEL',
+    capabilitiesEnvVar: 'GEMINI_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GEMINI_DEFAULT_HAIKU_MODEL',
+    capabilitiesEnvVar: 'GEMINI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GEMINI_DEFAULT_FABLE_MODEL',
+    capabilitiesEnvVar: 'GEMINI_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES',
+  },
+] as const
+
+const GROK_TIERS = [
+  {
+    modelEnvVar: 'GROK_DEFAULT_OPUS_MODEL',
+    capabilitiesEnvVar: 'GROK_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GROK_DEFAULT_SONNET_MODEL',
+    capabilitiesEnvVar: 'GROK_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GROK_DEFAULT_HAIKU_MODEL',
+    capabilitiesEnvVar: 'GROK_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES',
+  },
+  {
+    modelEnvVar: 'GROK_DEFAULT_FABLE_MODEL',
+    capabilitiesEnvVar: 'GROK_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES',
   },
 ] as const
 
@@ -59,7 +110,11 @@ export function get3PModelCapabilityOverride(
       ? OPENAI_TIERS
       : getAPIProvider() === 'firstParty'
         ? [...ANTHROPIC_TIERS, ...OPENAI_TIERS]
-        : ANTHROPIC_TIERS
+        : getAPIProvider() === 'gemini'
+          ? [...GEMINI_TIERS, ...ANTHROPIC_TIERS]
+          : getAPIProvider() === 'grok'
+            ? [...GROK_TIERS, ...ANTHROPIC_TIERS]
+            : ANTHROPIC_TIERS
   for (const tier of tiers) {
     const pinned = process.env[tier.modelEnvVar]
     const capabilities = process.env[tier.capabilitiesEnvVar]

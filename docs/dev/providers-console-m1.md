@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.0（生效）**。三项负责人决定来自 2026-10-03 对话记录（§0.1），其余裁定由主 agent 按 M1 委托作出（§1.2）。§13 列了四个仍需负责人拍板的点，都不阻塞 B0–B2 开工；在拍板之前按本文的默认做法执行，拍板结果回写为 v1.1 |
+| 文档版本 | **v1.1（生效）**。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-7），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13 |
 | 日期 | 2026-10-03 |
 | 核对基点 | origin/main `33dc81bf`（PR #154 的合入提交）。**本文自己引用的行号**都在这个提交上核过，清单见附 B。**从 hermes 调研 §11 转引的阡陌行号**按该调研的基线 `e123b2ec` 记，本文没有逐条在 `33dc81bf` 上复核 |
 | 本文范围 | **只有设计，不改代码。**范围回写与本版同批完成，记为 P18.0：章程 v2.22、roadmap v2.80、`beta-env.md` v1.4 补注、`node-provisioning.md` 补注、`tenancy-m1.md` §6.1 补注 |
@@ -19,13 +19,14 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
 
 ---
 
 ## §0 问题定义
 
-### 0.1 负责人原话与三项决定（2026-10-03，对话记录）
+### 0.1 负责人原话与决定（2026-10-03，对话记录）
 
 原话：
 
@@ -35,13 +36,17 @@
 >
 > 「调用模型兼容尽量参照 hermes agent，他们做的很好」
 
-三项决定，照此定案，不再回问：
+以下决定照此定案，不再回问。D-1 ~ D-3 是设计之前定的；D-4 ~ D-7 是同日对 v1.0 §13 四个待决点的拍板：
 
 | # | 决定 | 落在本文哪里 |
 |---|---|---|
 | **D-1** | 前端保持**服务端渲染、零新依赖、零外部资产**，这是 2026-08-28 的定案，不变。交互只用少量原生 JS 做渐进增强 | §6、§7.1 |
 | **D-2** | **中枢持有模型密钥**，加密存储，只写不读。SSH 控制面新增**第六类钉死动作「下发模型配置」**。这条推翻两处旧定案，逐条见 §1.3 | §2、§3.7–§3.8、§7 |
 | **D-3** | **套餐 key 也支持**。界面上标出条款限制，由使用者自己判断 | §4.3、§6.6 |
+| **D-4** | 第六类动作**不要求 provision token**，要求个人账号的 ops 角色，由动作账本记录操作者。确认 R-13 | §1.2 R-13、§1.3 O-3、§7.4 |
+| **D-5** | **真 key 只用舰队现有的 `gpt-6-luna` 凭据**；其他预设一律保持「未评估」 | §8.4、§13 |
+| **D-6** | **多 key 轮换（hermes #2）进 M1**，新增包 P18.18 | §9.2 P18.18、§13 |
+| **D-7** | **发版预先授权**：P18 核心包合入、干净 clone 的 `bun run verify` 全绿之后，主 agent 直接定版本号、打标签、发布，并部署到内测舰队；之后各包的开发、合并、发版、部署都不再逐项等负责人授权 | §9.2 P18.13、§13 |
 
 ### 0.2 已经执行的现场事实
 
@@ -74,7 +79,7 @@
 | 不做 | 理由 |
 |---|---|
 | 计费、定价、账单 | 章程 N-1 仍然有效。界面上不展示价格，目录里也不存价格 |
-| 多 key 轮换（hermes #2） | 依赖凭据池设计，hermes 也标为待裁定。v1 每份档案一把 key，调用层先留出「换 key」这个动作位（§5.6）。列为 §13 的第 3 点 |
+| 多 key 池的 `random` 选取策略（hermes 四种之一） | 不可复现，测试难以断言；多 key 轮换本身已经进 M1（D-6，P18.18），只做 `fill_first`、`round_robin`、`least_used` 三种 |
 | 同一节点同时挂多家 provider | 阡陌一个进程只服务一家 provider（hermes §11.1 对照），v1 也只做「节点当前用哪一份档案」 |
 | 托管 OAuth 或订阅登录（ChatGPT、Claude、Copilot、xAI 订阅） | 有条款风险（`ccswitch-research.md` §9.3 第 8 条），而且登录态是节点本地的 0600 文件，每小时刷新，不适合集中下发 |
 | 本地协议互转代理、熔断与故障转移代理 | 协议兼容只走阡陌自己的线路与 compat 规则（§5），控制台不再造一层代理（CC Switch 那套约 8.1 万行） |
@@ -88,7 +93,7 @@
 
 ### 1.1 负责人决定
 
-见 §0.1 的 D-1 ~ D-3。
+见 §0.1 的 D-1 ~ D-7。
 
 ### 1.2 主 agent 裁定
 
@@ -106,7 +111,7 @@
 | **R-10** | **预设以国产厂商的 Anthropic 兼容线优先**；OpenAI、xAI 走 Responses；Gemini 走原生线；Mistral 走 Chat。按量和套餐分成两组。所有预设在真 key 冒烟之前一律标「未评估」 | `vendors-research.md` §6.1；CLAUDE.md「未评估」声明必须保留 |
 | **R-11** | **调用层照 hermes 三批排期**；规则表放进新建的阡陌自有文件，基座文件只改调用点；阡陌的「恰好一次」重试屏障保留，新加的重试都要过这道屏障（#29） | hermes §11.7 的落法前提；章程 §7.2 第 7 条（v2.12 强化）「改完之后基座差异要退化成标识符替换或纯插入」 |
 | **R-12** | **控制台先抽外壳（A1），再逐页迁移**；`legacyParity.golden.json` 按规程重生，每个包都在 PR 里写明「这次 legacy 行为本来就要变」 | 一次性重写会让 legacy 守卫整体失效（`console-audit.md` §7） |
-| **R-13** | 第六类动作**不要求 provision token**，要求**个人账号的 ops 角色**，并由动作账本（P15.9）记录操作者 | 模型配置不属于装机类动作；provision token 只给 1–2 人，装机账本明写「不记操作者」，而切换模型是日常运维动作，需要知道是谁做的。这条碰到了 08-18 定案 ③ 的边界，所以列为 §13 第 1 点 |
+| **R-13** | 第六类动作**不要求 provision token**，要求**个人账号的 ops 角色**，并由动作账本（P15.9）记录操作者 | 模型配置不属于装机类动作；provision token 只给 1–2 人，装机账本明写「不记操作者」，而切换模型是日常运维动作，需要知道是谁做的。这条碰到了 08-18 定案 ③ 的边界，负责人 2026-10-03 已确认（D-4） |
 | **R-14** | 基座的 `providerCompatMatrix.ts` 里那套 `applyCompatRule`（没有任何生产调用方）在 P18.8 用新规则表取代后**删除**，不留两套 | hermes #4：「要么删掉要么接上，不要留两套」。这张矩阵的判据只看历史里有没有 thinking 块，hermes 的按目标端点判定更好 |
 | **R-15** | 照搬 hermes 的规则表时，每个新文件头注明「规则来源 NousResearch/hermes-agent `文件:行号`，取于 `f9b29c49b6`」；`NOTICE` 第五节加一条第三方 MIT 声明，措辞照 `CLAUDE.full.md` §§0–2 和章程许可条款写 | hermes §11.8 的署名提醒。逐字复制的字符串和正则会触发 MIT 的保留义务 |
 | **R-16** | 估算单位用**人时**（主开发 + AI 协作），与 `tenancy-m1.md`、`handoff-m1.md` 一致；调研件里的人日乘 8 换算 | 和现有包表口径统一 |
@@ -119,7 +124,7 @@
 |---|---|---|---|---|
 | **O-1** | `beta-env.md` §8.3 持密面表「每台节点机 `secrets/model-env`」一行 | 「**H 上没有这一份**——控制台不跑 agent 轮次，给它只是多一处可被读走的副本，而 H 正是同时装着 admin token、四把 PSK 与 SSH 私钥的那台机器」 | **H 持有全部模型密钥**：以信封加密存放（§3.8），控制台只写不读（§7.5），经第六类动作下发到节点的 `settings.json`（0600）。原文对风险的判断（H 已经是单点）仍然成立，代价写在 §7.7。节点上的 `model-env` 不再放 provider 键，迁移见 §2.9 | 负责人 2026-10-03 决定（D-2） |
 | **O-2** | `node-provisioning.md` 文首「负责人已定」第 ② 条、§0 第 6 行、§5 标题与 §5.0 | 「动作集**钉死成有限五类**（装 / 起 / 停 / 建隧道 / 拉审计镜像），**不留任意命令字段**」 | **钉死成有限六类**，第六类是「下发模型配置」（`model-apply`）。「钉死」与「不留任意命令字段」两条原样保留：第六类的子操作是闭合集合 `{status, probe, models, apply}`，参数只认 JSON schema 里的字段；它的闭合同样由目标机 sshd 的强制命令保证（§2.5） | 负责人 2026-10-03 决定（D-2） |
-| **O-3** | `node-provisioning.md` 文首第 ③ 条 | 「**单独一枚 `provision` token**，装机类动作要它，admin token 拿不到」 | **不改原文**。第六类不算装机类动作，不要求 provision token，要求个人账号的 ops 角色并记操作者（R-13）。这是本文对原定案适用范围的解读，**需要负责人确认**（§13 第 1 点） | 主 agent 裁定，待确认 |
+| **O-3** | `node-provisioning.md` 文首第 ③ 条 | 「**单独一枚 `provision` token**，装机类动作要它，admin token 拿不到」 | **不改原文**。第六类不算装机类动作，不要求 provision token，要求个人账号的 ops 角色并记操作者（R-13）。这是本文对原定案适用范围的解读，负责人 2026-10-03 已确认（D-4） | 主 agent 裁定，负责人确认（D-4） |
 | **O-4** | `tenancy-m1.md` §6.1「明确不做（M1）」 | 「装机面第六类动作；节点侧的单 agent 暂停」 | 「第六类」这个编号让给模型配置。原意（agent 粒度的暂停动作）在 M1 **仍然不做**；以后要做时编为第七类 | 随 O-2 |
 | **O-5** | `node-provisioning.md` §3.4 OpenBao 升级触发条件第 2 条 | 「凭据种类超过『私钥 + 指纹』两类（例如引入了要定期轮换的第三方 API 凭据）」时重新评估 (c) | **触发条件已经成立，已经重评，结论仍然是不复用。**§3.4 代价第 1–4 条（跨项目部署耦合、要伸手改别人的部署、新的运行时供应链、成果边界）都没有变；节点数是 3，远低于 20。复用 OpenBao 本来能买到的三样东西，替代做法如下：审计日志 → 动作账本加密钥事件只记指纹；版本化 → 不做，轮换时旧值立即删除；seal → 不做，如实写明信封加密防不住 H 失陷 | 主 agent 按 §3.4 写死的条件重评 |
 | **O-6** | 章程 N-5 v2.14 解禁行 | 解禁的是「一个**运维用**的最小 Web 控制台」；「不做面向终端用户的产品级前端」 | 章程 v2.22 补注：控制台扩为商业级完成度的运维与内测成员控制台，并加上模型服务管理；技术形态（服务端渲染、零依赖、零外部资产）不变；「面向终端用户的产品级前端」理解为面向校外公众的产品前端，**仍然不做** | 负责人 2026-10-03 原话与 D-1 |
@@ -393,8 +398,14 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 | `never` | 能力 `explicit`，`effort: false` | 同左（不发本来就是今天的行为） | 同上 |
 | `auto` | 能力 `family`，不写覆盖；节点算出来是什么就显示什么 | 同左 | 同左 |
 
-- **档位**：`level` 写进模型所占每个档位的 `modelSettings.<slot>.effort`，主模型另外写 `default` 槽。档案级的 `effortLock` 设了值时，另写 `CLAUDE_CODE_EFFORT_LEVEL`（它的优先级高于 `modelSettings`，对档案里所有模型生效，所以它的值也要先对每个模型的 `levels` 往低夹，夹不了就拒绝）。舰队现在的 `CLAUDE_CODE_EFFORT_LEVEL=max` 迁移过来就是 `effortLock: max`。P18.2 的完成标准里要用节点 `status` 实算核对「哪个槽对主循环生效」（§11 第 3 条）。
-- **只往低夹**：请求的档位不在 `levels` 里，就取不高于它的最高一档；没有更低的就拒绝（`bad-value`），**不往高夹**。界面上只提供 `levels` 里的档位，所以基座里那些往上映射的规则（例如 DeepSeek、Grok 的 `medium → high`）不会被触发。基座本身不会按 `max_effort` / `xhigh_effort` 往下夹（`effort.ts:131-132` 注释：「API errors are the user's responsibility」），所以夹取必须在编译时做。
+- **档位**：`level` 写进模型所占每个档位的 `modelSettings.<slot>.effort`，主模型另外写 `default` 槽。档案级的 `effortLock` 设了值时，另写 `CLAUDE_CODE_EFFORT_LEVEL`（它的优先级高于 `modelSettings`，对档案里所有模型生效，所以它的值也要先对每个模型的 `levels` 往低夹，夹不了就拒绝）。舰队现在的 `CLAUDE_CODE_EFFORT_LEVEL=max` 迁移过来就是 `effortLock: max`。`CLAUDE_CODE_EFFORT_LEVEL` 只有一个值，所以「往低夹」取的是所有受约束模型 `levels` 的交集里、不高于请求的最高一档（例如 `max` 遇到 `[low, high, max]` 和 `[low, medium, high]` 两个模型，写 `high`）。
+- **哪个槽对主循环生效（P18.2 实算，§11 第 3 条）**：用节点 `status` 里 `effective` 的计算函数 `computeEffectiveProviderState` 实算。它在独立进程里运行，进程环境里的 provider 键先剥掉，五个槽各给一个不同的档位，看算回来的是哪一档（`src/services/qianmo/providers/__tests__/effective.test.ts`）。结论如下：
+  - 新会话的主循环读 **`default`** 槽。anthropic 和 openai-responses 两条线都一样；主模型同时占着 opus / sonnet / fable，也不改变这一点。
+  - 会话切到快速模型后，读它所占的档位（haiku）；按 id 切回主模型，又回到 `default`。
+  - 所以主模型的 `default` 槽和它的档位槽必须写同一个值，编译器就是这样写的。
+  - `CLAUDE_CODE_EFFORT_LEVEL` 压过所有槽。
+  - 非 anthropic 线路上，节点 `settings.json` 里残留的 `model` 字段算一次选择，会盖过档案的主模型：值是别名就换到别名对应的槽，值是具体 id 就连模型一起换掉。anthropic 线不受影响，因为 `ANTHROPIC_MODEL` 会盖住它。编译器和基座 `/provider` 都不管这个字段。
+- **只往低夹**：请求的档位不在 `levels` 里，就取不高于它的最高一档；没有更低的就拒绝（`bad-value`），**不往高夹**。界面上只提供 `levels` 里的档位，所以基座里那些往上映射的规则（例如 DeepSeek、Grok 的 `medium → high`）不会被触发。基座本身不会按 `max_effort` / `xhigh_effort` 往下夹（`effort.ts:131-132` 注释：「API errors are the user's responsibility」），所以夹取必须在编译时做。`always` 没写 `level` 时按 `high` 编译（不发 effort 时 API 自己用的就是 `high`），再往低夹，夹不到同样拒绝。什么都不写不行：运行时会退回族默认值，第三方 opus / sonnet 槽的族默认值是 `xhigh`，而且不按 `levels` 夹。实算中阶跃预设的 `levels` 是 `[low, medium, high]`，不写档位时线上会收到 `xhigh`。
 - **`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`**：只有档案里**每个**模型都是 `send: always` 时才写，作为简写，和舰队现在的配置一致。它是全局开关，会影响 haiku 档和子 agent，所以不是首选。
 - **显示 = 线上**：页面上「发 effort」这一列只取节点的 `effective.effortOnWire`，中枢自己不判断。
 
@@ -600,7 +611,7 @@ DeepSeek 的空推理回放到底该用 `""` 还是 `" "`，两边的注释说�
 | # | 项 | 批 | 包 | 改法摘要（规则表一律放新文件） | 改的基座文件（只改调用点） | 估算 |
 |---|---|---|---|---|---|---|
 | 1 | 第三方线路的模型 fallback | 三 | P18.12 | `retryThirdPartyEventStream` 放弃时，按分类结果（5xx 重试用尽、模型不存在、权限或模型被禁用）抛 `FallbackTriggeredError`，复用 `query.ts` 现有的分支；换模型前先过 #4 的回放过滤 | `src/services/api/streamAssembly.ts`；各第三方线路的错误出口（`openai/index.ts` 今天把车道内的错误转成一条错误消息，要让 `FallbackTriggeredError` 透传；gemini、grok 两条线同理） | 2–3（16–24） |
-| 2 | 多 key 轮换 | **v1 不做** | — | 留出「换 key」动作位，依赖凭据池设计（§13 第 3 点） | — | 3–5（不计） |
+| 2 | 多 key 轮换 | 本文归入（D-6） | P18.18 | 同家多 key 池：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先于默认冷却；换 key 只在 commitment 屏障之前发生 | `src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`（纯插入：调用池模块） | 3–5（24–40） |
 | 3 | `max_tokens` 默认值 | 一 | P18.5 | 未知模型不发；目录或显式值才发；保留 `OPENAI_MAX_TOKENS`；Claude / MiniMax / Qwen3 名字补发。必须和 #5 同批 | `src/services/api/openai/index.ts`（`:389-393` 一带） | 1（8） |
 | 4 | 推理回放策略 | 二 | P18.8 | 照搬 §11.2.3 家族表；`anthropicMessagesToOpenAI` 加一个「目标端点」参数；删掉 `applyCompatRule` 那套（R-14） | `packages/@ant/model-provider/src/shared/openaiConvertMessages.ts`、`src/services/providerRegistry/providerCompatMatrix.ts` | 2（16） |
 | 5 | 输出上限 vs 溢出 | 一 | P18.5 | 照搬 §11.4.4 的识别表和取数规则；在 `isPromptTooLongMessage` 之前先判输出上限；第三方线路加「缩小上限重发一次」，走 commitment 屏障 | `src/services/api/errors.ts`、`src/services/api/streamAssembly.ts` 的重发点 | 2（16） |
@@ -903,7 +914,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 ### 7.4 第六类动作的权限
 
 - 要求个人账号的 `ops` 角色；动作账本（P15.9）记录主体、动作（`provider.save`、`provider.secret.set`、`provider.apply`、`provider.probe.call` 等）、目标、`requestId`、结果。
-- 不要求 provision token（R-13，§13 第 1 点）。
+- 不要求 provision token（R-13，负责人已确认，D-4）。
 - 节点侧不认识「角色」：节点只认 sshd 强制命令和 schema。**中枢失陷**时，攻击者能做的事被限制在「把六类动作的参数改成别的合法值」：比如把节点的模型服务换成攻击者的端点，从而截获后续的对话内容。这一条写进 §7.7。
 
 ### 7.5 密钥纪律（禁地清单）
@@ -956,9 +967,9 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 - **同一份部署连续两轮零红**，一轮绿不算数。
 - 每轮包括：所有节点 `status` 无漂移；一次真 key 三态测连（`auth`）；一次真实切换并切回；一次 `call` 模式的真实调用；AC-P2 金丝雀扫描；一次「resident 有在途 turn 时下发」，验证要等空闲、在途 turn 不失败。
-- 真 key 由负责人提供，`call` 模式会花少量费用（§13 第 2 点）。
+- 真 key 只用舰队现有的 `gpt-6-luna` 凭据，`call` 模式会花少量费用（D-5，§13 第 2 点）。
 - 预设的 `evaluated` 只有在真 key 冒烟通过之后才能改，证据（日期、提交、结果摘要，不含 key）记进档案；没有冒烟的预设一直显示「未评估」，**不能在任何对外材料里写「已兼容 X」**（hermes §11.11 最后一条）。
-- 7 天长跑已于 2026-10-03T09:33:08Z 因负责人换模型提前结束（§0.2）；真机工作在它的收数完成之后进行；部署只用负责人批准的发行标签（§13 第 4 点）。
+- 7 天长跑已于 2026-10-03T09:33:08Z 因负责人换模型提前结束（§0.2）；真机工作在它的收数完成之后进行；部署只用发行标签，不部署 main；发版由主 agent 执行（D-7）。
 
 ---
 
@@ -972,10 +983,10 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **B1** | P18.2、P18.3、P18.4、P18.5；P15.9（指针） | 调用层**第一批（止血）**在这里。P18.3 与 P18.2 可以并行开发，合入顺序是 P18.2 先 |
 | **B2** | P18.6、P18.7、P18.8；P15.2 余下（指针） | 调用层**第二批（推理一致性）**在这里 |
 | **B3** | P18.9、P18.10、P18.11、P18.12 | 调用层**第三批（韧性）**在这里；三个页面包同批 |
-| **B4** | P18.13、P18.14 | 真机验收与控制台 P1 收口 |
+| **B4** | P18.18、P18.13、P18.14 | 多 key 轮换、真机验收与控制台 P1 收口。P18.18 先于 P18.13 合入，真机验收的部署要包含它 |
 | **B5** | P18.15、P18.16（条件）、P18.17 | 批内串行（三包都要动 `deps.ts` 或共享样式），或者先拆成不相交的文件再并行 |
 
-**关键路径**：P18.0 → P18.4 → P18.6 → P18.9 → P18.13，合计 226–358 人时。P18.2 → P18.3 → P18.7（76–120 人时）与 P18.4 并行，在 P18.9 之前汇合。
+**关键路径**：P18.0 → P18.4 → P18.6 → P18.9 → P18.13，合计 226–358 人时。调用层这条 P18.5 → P18.8 → P18.12 → P18.18 → P18.13（264–368 人时）与它相当，两条都要盯。P18.2 → P18.3 → P18.7（76–120 人时）与 P18.4 并行，在 P18.9 之前汇合。
 
 ### 9.2 包表
 
@@ -998,17 +1009,19 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.10** 账号与访问 · 操作记录页 | B3 | H3、H4 的页面 | `packages/console/src/routes/access.ts`；`packages/console/src/view/{access.ts,invite.ts}`（`access.ts` 新建）；`packages/console/src/{accountsHttp.ts,access.ts}`；`docs/dev/beta-env.md` §3.6（告知措辞需要改时） | P18.4、P15.9 | 否 | 成员、邀请、会话、操作记录四个页签各有 HTTP 用例；强制下线之后该主体的 SSE 连接数为零；member 只看得到与自己有关的操作记录；邀请页 `Referrer-Policy: no-referrer`（断言） | 48–72 |
 | **P18.11** 审计列表 · 生命周期 · 节点详情 | B3 | D5、J2 的页面、A3 | `packages/console/src/routes/{audit.ts,nodes.ts}`；`packages/console/src/view/{audit.ts,agents.ts,node.ts}`（`node.ts` 新建）；`packages/console/src/deps.ts`（`AuditPort` 游标）；`src/cli/handlers/consolePorts.ts`；`packages/audit` 的只读查询；`docs/dev/console.md`；`packages/console/README.md` | P18.4、P15.2 余下 | 否 | 10 万条审计下首屏响应时间有上界（基准用例记数）；游标分页无重复、无遗漏；生命周期四个动作都走二次确认并进动作账本；节点详情的「模型」页签显示 §2.4 的全部字段；`console.md` 路由表与实际路由一致（扫描断言） | 56–80 |
 | **P18.12** 调用层第三批 · 韧性 | B3 | hermes #1、#16–#21、#24、#25、#27、#33 | 新规则文件；`src/services/api/{streamAssembly.ts,retryClassification.ts}`；`src/services/api/openai/{retry.ts,index.ts}`；`packages/@ant/model-provider/src/shared/{openaiStreamAdapter.ts,openaiConvertMessages.ts,openaiConvertTools.ts}`；`src/services/api/{gemini,grok}/index.ts`（如需）；`src/query.ts`；`tests/preload.ts`；`tests/support/**`（新）；`docs/dev/base-modifications.md` | P18.8 | **是** | 第三方线路配了 `fallbackModels` 时，5xx 重试用尽会切到 fallback（以前从不发生），切换前回放已过滤；常驻会话的 `Retry-After` 上限 600 s、交互式 60 s，各一条用例；chat 流空闲超时会触发；DeepInfra 形状的错误块不重试；工具结果图片被拒之后降级并记住；思考耗尽时不续写；preload 之后，开发机带订阅登录态时 `codexPinnedSearch` 不再红；逐厂商对等表覆盖目录里的全部预设 | 88–112 |
-| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5；负责人批准的发行标签 | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据 | 16–32 |
+| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5、P18.18；主 agent 打的发行标签（D-7） | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据 | 16–32 |
 | **P18.14** 控制台 P1 收口 | B4 | §6.5 的 P1 两组 | `packages/console/src/**` 里路由文件以外的视图与 assets；`src/cli/handlers/consolePorts.ts` 的错误映射 | P18.4（建议排在 B3 之后，减少 golden 往返） | 否 | `console-audit.md` §4 各项的「改法」逐条有用例；I1 与 C5 在同一个提交里；亮色和暗色对比度都达 AA（K1 计算）；375 px 宽可以读状态、可以发对话（K1） | 144–216 |
 | **P18.15** 告警与值守作业页 | B5 | J5、J6 | `packages/console/src/routes/{alerts.ts,jobs.ts}`；`NotifyPort`、`SchedulerPort`（`deps.ts`、`consolePorts.ts`） | P18.4 | 否 | 告警有收件箱、未读角标、级别筛选；值守作业页显示上次和下次触发、ESTOP 状态，`lastTickAt` 缺席可见 | 48–64 |
 | **P18.16** 用量与审批页（条件） | B5 | J7、J8 | `packages/console/src/routes/{usage.ts,approvals.ts}`；`deps.ts` | P15.7、P14.5 | 否 | 用量按自然日、按人；审批页与 P14 协议的契约用例 | 48–80 |
 | **P18.17** 控制台 P2 | B5 | §6.5 的 P2 | 视图与样式 | P18.14 | 否 | 各项「改法」逐条有用例 | 110–150 |
+| **P18.18** 多 key 轮换（D-6） | B4 | hermes #2：同一份档案挂 1..N 把 key，节点调用层按策略选取、按错误分类换 key 并冷却；中枢逐把加密保管；控制台逐把管理、显示每把的状态 | `packages/providers/**`（池字段；P18.2 已经按多 key 定好 schema）；`src/services/qianmo/providers/**`；`src/services/qianmo/modelCompat/credentialPool*.ts`（新）；`src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`；`src/cli/handlers/consoleProviders*.ts`；`src/cli/handlers/provider*.ts`；`packages/console/src/routes/providers.ts`、`packages/console/src/view/providers*.ts`；`docs/dev/base-modifications.md` | P18.6、P18.7、P18.9、P18.12 | **是**（三个调用层文件，纯插入） | 单 key 档案的编译、写入、请求行为与 P18.12 合入时逐字节一致（回归用例）；`fill_first`、`round_robin`、`least_used` 三种策略各有用例；hermes 行为表逐行有录制桩用例：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先；全部 key 都在冷却时报错，并给出最早的恢复时间；换 key 越过 commitment 屏障之后不再重放；冷却状态持久化在节点 0600 文件里，重启后仍然有效；节点 `status` 逐把报 `ok / cooling / dead`，只带 key id，不带值；轮换或删除单把 key 之后，旧密文从密文库消失（字节扫描）；AC-P2 的金丝雀扫描覆盖多 key 流程。真机只有一把真 key（D-5），轮换只用录制桩验证，P18.13 不要求真机轮换 | 24–40 |
 
 ### 9.3 同批文件范围（互不相交）
 
 - **B1**：`bun.lock` 只归 P18.2；`NOTICE` 与 `base-modifications.md` 只归 P18.5；`packages/console/**` 只归 P18.4；`console.ts`、`consoleArgs.ts` 只归 P15.9；resident 四个文件只归 P18.3。P18.5 与 P18.2 不共享文件（编译器在 `src/services/qianmo/providers/`，规则表在 `src/services/qianmo/modelCompat/`）。
 - **B2**：`console.ts`、`consoleArgs.ts`、`deps.ts`、`demo/env/beta/**`、`beta-env.md` 归 P18.6；`cli.tsx`、`qianmo.tsx`、`residentAcpEnv.ts`、`subprocessEnv.ts` 归 P18.7；模型调用层文件与 `base-modifications.md` 归 P18.8；P15.2 余下避开前面这些文件。
 - **B3**：每个页面包只改自己的路由文件和视图文件（P18.4 已经建好桩）；`deps.ts`、`consolePorts.ts`、`console.md`、`README.md` 只归 P18.11；`chatPage.ts` 只归 P18.9；`beta-env.md` 只归 P18.10；调用层文件归 P18.12。
+- **B4**：`packages/console/src/routes/providers.ts`、`view/providers*.ts`、调用层三个文件和 `base-modifications.md` 归 P18.18，P18.14 避开这几个文件；P18.13 只动 `demo/env/beta/**` 和文档。
 - **不算冲突的生成物**：`legacyParity.golden.json` 由合入者在 rebase 之后按规程重生（§8.1）。
 - 同一批里两个包都要改同一个文件时，按本节的归属裁决；另一个包把要改的内容写在 PR 描述里，由归属包代改，或者排到下一批。
 
@@ -1016,11 +1029,12 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 | 范围 | 人时 |
 |---|---|
-| 核心：P18.0–P18.13（M1 出口相关） | **632–930** |
+| 核心：P18.0–P18.13 与 P18.18（M1 出口相关） | **656–970** |
 | 其中调用层三批（P18.5、P18.8、P18.12） | 224–296 |
 | 其中控制台 P0 与模型服务页（P18.4、P18.9、P18.10、P18.11） | 268–404 |
 | 控制台 P1、P2 与条件页（P18.14–P18.17） | 350–510 |
-| **全部** | **982–1440** |
+| 其中多 key 轮换（P18.18，D-6） | 24–40 |
+| **全部** | **1006–1480** |
 | 指针包（计入 P15，不计入上面各行） | P15.9 8–14；P15.2 余下 8–16 |
 
 估算按「主开发 + AI 协作」口径。调研件自陈的误差是 ±50%（hermes §11.10 第 9 条），本表沿用这个量级，没有再细拆到文件级。
@@ -1053,7 +1067,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | 录制真实流量做 VCR 夹具 | 本阶段否 | 用构造夹具并注明出处代替；真实调用只做 opt-in |
 | 整份导入 CC Switch 的预设表 | 否 | 一大半是中转站；整份编排是作者的作品；带推广参数 |
 | 套餐 key 默认隐藏或拦截 | 否 | D-3 |
-| 多 key 轮换进 v1（hermes #2） | 否 | §13 第 3 点 |
+| 多 key 池的 `random` 策略 | 否 | 不可复现，测试难以断言（§0.5） |
 | 按会话选模型（hermes B11 的 session 作用域） | 暂缓 | v1 只做节点级；以后可以在不换 provider 的前提下用 `unstable_setSessionModel` 做 |
 | 价格展示与「贵模型确认」（hermes B13） | 否 | N-1；价格变化快，目录里不存价格 |
 
@@ -1063,7 +1077,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 1. **所有预设都没有用真 key 验证过**。调研件的「实测」只是用空 key 或无效 key 探路由和错误体形状；本文的预设表是官网文档的整理，不是兼容性证据。
 2. **OpenAI 各模型可用的 effort 档位**：舰队上 `gpt-6-luna` 的请求体里确实发了 `max`（负责人抓包），但服务端是否按 `max` 执行，没有证据。OpenAI 预设各模型的 `levels` 在录入时要逐个对照官网。
-3. **哪个 `modelSettings` 槽对主循环模型生效**（`default` 还是它所占的档位）没有实算，留给 P18.2（§3.4）。
+3. **哪个 `modelSettings` 槽对主循环模型生效**：P18.2 已实算，结论见 §3.4。新会话读 `default`，切到别的模型后读该模型所占的档位。实算调用的是节点自己的函数，没有起真的 ACP 子进程。`session/set_model` 之后读哪个槽，是按 `QueryEngine` 用的同一个函数（`getMainLoopModelSettingsSlot`）推出来的，没有在真会话里核对。
 4. **会话续上之后钉住的模型**：matrix §4.5 说是新 provider 的默认模型，除非用户显式选过；需要 P18.3 用真 ACP 子进程验证（§2.7）。
 5. **hermes §11 里所有「某厂商会 400」的结论**都来自 hermes 或阡陌的代码注释，不是实测（§5.10）。
 6. **从 hermes 转引的阡陌行号**按 `e123b2ec`，没有在 `33dc81bf` 上逐条复核。本文自己引用的行号已复核（附 B）。
@@ -1073,6 +1087,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 10. **中枢同机节点的隔离**依赖 P14.9（hardline 覆盖中枢机上全部秘密路径），P14.9 还没实现。
 11. **roadmap「M1 完成状态速查」的「注册发现产品化」行**仍写着 P15.3 / P15.5「未实现」，但 `21b2dd3f`（P15.3）、`fb2ca677`（P15.5）、`d74e0c9f`（P15.8）已经在 main 里。本文按任务约束不改那一行，只在 roadmap v2.80 的版本行里记下这个出入，由下一次状态回写处理。
 12. **估算**是读代码和调研件之后给的，误差可能在 ±50%。
+13. **多 key 轮换没有真机证据**：负责人只提供一把真 key（D-5），P18.18 的轮换行为只用录制桩验证。
 
 ---
 
@@ -1093,14 +1108,16 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 ---
 
-## §13 仍需负责人拍板
+## §13 负责人拍板（v1.0 的四个待决点，2026-10-03 已全部拍板）
 
-| # | 问题 | 本文默认（拍板前按此执行） | 不拍板会卡住什么 |
+v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D-4 ~ D-7。
+
+| # | 问题 | 拍板结果 | 对本文的影响 |
 |---|---|---|---|
-| 1 | 第六类动作**不要求 provision token**，改为要求个人账号的 ops 角色并由动作账本记录操作者（R-13、O-3）。这碰到了 2026-08-18 定案 ③「装机类动作要单独一枚 provision token」的适用范围 | 按本文执行 | 不卡开工；如果改判为「要 provision token」，P18.6 和 P18.9 要加第三枚 token 的入口（`node-provisioning.md` §8.3 的形态） |
-| 2 | **真 key 与花费**：AC-P6 需要真 key；`call` 模式每次花一次最小调用；其他预设要评估，也需要对应厂商的 key | 只用舰队现有的 `gpt-6-luna` 凭据做 AC-P6；其他预设保持「未评估」 | 卡 P18.13 的「至少一个预设评估通过」；卡任何预设去掉「未评估」 |
-| 3 | **hermes #2 多 key 轮换**是否进入 M1 | v1 不做，调用层留出动作位 | 不卡 |
-| 4 | **发版**：真机验收需要一个包含 P18 的发行标签。现行委托是「收口部署 v2.46.3 标签，不部署 main；常设合并授权不含发版」 | 不发版；P18.13 等批准 | 卡 P18.13 与 AC-P6 |
+| 1 | 第六类动作要不要 provision token。这碰到了 2026-08-18 定案 ③「装机类动作要单独一枚 provision token」的适用范围 | **不要**。要求个人账号的 ops 角色，由动作账本记录操作者（D-4） | 无。R-13、O-3 按原文执行 |
+| 2 | **真 key 与花费**：AC-P6 需要真 key；`call` 模式每次花一次最小调用；其他预设要评估，也需要对应厂商的 key | **只用舰队现有的 `gpt-6-luna` 凭据**（D-5） | AC-P6 用这份凭据。P18.13「至少一个预设评估通过」只能落在它对应的那条：OpenAI 兼容自定义网关，走 Responses（§4.4）。其他预设保持「未评估」，对外不写「已兼容」 |
+| 3 | **hermes #2 多 key 轮换**是否进入 M1 | **进 M1**（D-6） | 新增 P18.18（B4，24–40 人时）；§0.5、§5.6、§9、§10、§11 已同步。P18.2 的 schema 一开始就按多 key 定 |
+| 4 | **发版**：真机验收需要一个包含 P18 的发行标签 | **预先授权**，由主 agent 发版并部署（D-7） | P18.13 不再等批准；仍然只部署发行标签，不部署 main |
 
 ---
 
