@@ -82,6 +82,7 @@ import {
 } from '../../services/qianmo/trustAnchors.js'
 import { residentOptionValue } from './residentArgs.js'
 import {
+  anthropicAuthHeadersFromEnv,
   probeResidentModel,
   resolveResidentModelProbeTarget,
   warnRefusedModelCredentials,
@@ -1275,6 +1276,16 @@ type ModelProbeEnvironment = {
   getAPIProvider: () => string
   getSmallFastModel: () => string
   getAuthHeaders: () => { headers: Record<string, string>; error?: string }
+  /**
+   * `getEffectiveSettingsEnv()`: the env block the ACP child applies over its
+   * inherited environment at session start. Once a node's model service is
+   * managed (design `providers-console-m1.md` §2.6), the credential and the
+   * endpoint live there and not in this process's environment, so a probe
+   * that read `process.env` alone would test the wrong thing — or report "no
+   * credential" on a node that has one (§2.7). Optional so an injected
+   * environment without it reads `process.env` exactly as before.
+   */
+  getEffectiveSettingsEnv?: () => Record<string, string>
 }
 
 let modelProbeEnvironment: ModelProbeEnvironment | undefined
@@ -1294,11 +1305,15 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
       ModelProbeEnvironment,
       'getAuthHeaders'
     >
+    const managedEnv = require('../../utils/config/managedEnv.js') as Required<
+      Pick<ModelProbeEnvironment, 'getEffectiveSettingsEnv'>
+    >
     /* eslint-enable @typescript-eslint/no-require-imports */
     modelProbeEnvironment = {
       getAPIProvider: providers.getAPIProvider,
       getSmallFastModel: model.getSmallFastModel,
       getAuthHeaders: http.getAuthHeaders,
+      getEffectiveSettingsEnv: managedEnv.getEffectiveSettingsEnv,
     }
   }
   return modelProbeEnvironment
@@ -1312,18 +1327,71 @@ function loadModelProbeEnvironment(): ModelProbeEnvironment {
  * actually speaking the Anthropic wire pays for the Anthropic credential
  * stack. See the field's own comment in `residentModelProbe.ts` for the
  * failure that shape prevents.
+ *
+ * The environment is this process's with the node's settings env laid over
+ * it, the way the ACP child ends up with it (settings win). A settings read
+ * that fails leaves `process.env` alone, which is the answer this gave before
+ * settings could hold a model service. The model id still comes from this
+ * process's own resolution; the probe does not depend on it (see the
+ * module header of `residentModelProbe.ts`).
  */
 export function residentModelProbeInputs(
   environment: ModelProbeEnvironment = loadModelProbeEnvironment(),
 ): ResidentModelProbeInputs {
+  let settingsEnv: Record<string, string> | undefined
+  try {
+    settingsEnv = environment.getEffectiveSettingsEnv?.()
+  } catch {
+    settingsEnv = undefined
+  }
   return {
     provider: environment.getAPIProvider(),
     model: environment.getSmallFastModel(),
-    env: process.env,
+    env:
+      settingsEnv === undefined
+        ? process.env
+        : { ...process.env, ...settingsEnv },
     anthropicAuthHeaders: () => {
+      if (settingsEnv !== undefined) {
+        // Settings win, as they do in the child.
+        const fromSettings = anthropicAuthHeadersFromEnv(settingsEnv)
+        if (Object.keys(fromSettings).length > 0) return fromSettings
+        // An endpoint from settings with no credential beside it: this
+        // process's own login must not be sent there (design §3.1).
+        const baseUrl = settingsEnv.ANTHROPIC_BASE_URL
+        if (
+          baseUrl !== undefined &&
+          baseUrl !== process.env.ANTHROPIC_BASE_URL
+        ) {
+          return {}
+        }
+      }
       const auth = environment.getAuthHeaders()
       return auth.error === undefined ? auth.headers : {}
     },
+  }
+}
+
+/**
+ * {@link nodeHasModelCredential}, or a credential this node's settings carry
+ * for the lane it is configured for — the shape of a managed node, whose
+ * provider keys are in `settings.json` and not in this process's environment.
+ *
+ * Asks the probe's own resolver rather than a list of key names: "is there a
+ * request to send" is exactly "is there a credential for this lane", and a
+ * second list would be the one that drifts.
+ */
+export function nodeHasConfiguredModelCredential(
+  environment?: ModelProbeEnvironment,
+): boolean {
+  if (nodeHasModelCredential()) return true
+  try {
+    return !(
+      'status' in
+      resolveResidentModelProbeTarget(residentModelProbeInputs(environment))
+    )
+  } catch {
+    return false
   }
 }
 
@@ -1358,7 +1426,9 @@ export async function runResidentModelCredentialProbe(
   } = {},
 ): Promise<ResidentModelProbeVerdict> {
   try {
-    const hasCredential = options.hasCredential ?? nodeHasModelCredential()
+    const hasCredential =
+      options.hasCredential ??
+      nodeHasConfiguredModelCredential(options.environment)
     if (!hasCredential) {
       return { status: 'skipped', detail: 'no model credential is visible' }
     }
@@ -2048,7 +2118,7 @@ export async function runResident(args: readonly string[]): Promise<void> {
   warnUnselectedTaskPolicy(config)
   // And then the one thing that makes a node which passes every other check
   // still unable to do any work.
-  warnMissingModelCredentials()
+  warnMissingModelCredentials(nodeHasConfiguredModelCredential())
 
   // …and the same question asked of the endpoint rather than of the
   // environment (issue #37 ①). Deliberately not awaited: the verdict is a
