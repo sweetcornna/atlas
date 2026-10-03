@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.2**（2026-10-03，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写；v1.2 同日随 P17.3 本仓库部分回写：MCP 工具表随各包合入逐个增加，`now` 遇到未完成回合的三种情形 |
+| 文档版本 | **v1.2**（2026-10-03，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写；v1.2 同日随 P17.3 本仓库部分回写：MCP 工具表随各包合入逐个增加，`now` 遇到未完成回合的三种情形，会话同步「等待」一格按实现改为超时不推送 |
 | 上位设计 | [`handoff-m1.md`](./handoff-m1.md) v1.2（范围、场景、AC-H1~H5 以设计为准，本文只讲怎么做） |
 | 核对基点 | 本仓库 `c0c52924`（main，#153 合并提交）；fork 仓库 `sweetcornna/qianmo-codex` 钉上游标签 `rust-v0.158.0`（提交 `064c6b8c`） |
 | 用法 | 每个工作包一张卡：仓库、要改的文件、接口、步骤、完成标准、依赖、估算、计划时间。按卡开工；卡里没写的不做 |
@@ -154,7 +154,7 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 | 项 | 内容 |
 |---|---|
 | 判完整 | 按本回合 `turn_id` 的 `task_complete` 行（中断时为 `turn_aborted`）判完整；键取 notify 载荷的 `turn-id` 或 `turn/completed` 的 `turn.id`。**不用「大小与 mtime 稳定」的计时窗口** |
-| 等待 | 没读到就每 10 ms 重读，上限 2 s；超时仍按最后一个完整行同步，台账标「未完整」，下一次 notify 再补 |
+| 等待 | 没读到就每 10 ms 重读，上限 2 s（`handoffTranscript.ts` 的 `waitForTurnEnd`）。超时这次**不推送**：`sync.log` 记一条 `skip`（`turn not complete on disk after 2 s; not pushed`），hook 照样退出 0；`sessions.json` 里的会话记录在等待之前已更新，这次没推的内容由下一次同步或 `now` 一并带上（`handoff.ts` 的 `runHookSync`） |
 | 截断 | 只同步到最后一个换行符 |
 | 去抖 | 尾沿去抖：连续触发时最后一次必须被同步（下文 5 s 去抖按此实现） |
 | `now` | 回「可以关机」前要确认会话里没有半个回合。遇到未完成的回合（qmcode：最近一个 `task_started` 没有同 `turn_id` 的 `task_complete` / `turn_aborted`）分三种情形（`handoffTranscript.ts` 的 `qmcodeSnapshot(content, fromThreadShell)`、`claudeCodeCompleteEnd`）：<br>① **终端里，或别的线程里**运行 `qm handoff now`：qmcode 会话一律提示「回合进行中」，什么都不推（Claude Code 会话在 ①② 下不判回合，截到最后一个换行，P17.4 第二批已接受的偏差）。<br>② **qmcode 的 `/handoff`、`!`**（`thread/shellCommand` 先开一个 shell 回合再执行命令）：三条**同时**满足才认作调用方自己的 shell 回合——环境里的 `CODEX_THREAD_ID` 与本会话相同；那条未完成的 `task_started` 是文件最后一个完整行；它后面没有任何字节（连半行都没有）。满足就截到它之前，对前面部分按同一规则再判（前面还有未完成回合照样拒绝）；任何一条不满足都按 ①。<br>③ **MCP 工具 `qianmo_handoff`**（模型回合**内**的工具调用）：文件末尾是这个回合的 `task_started`、`turn_context`、`response_item`……最后一条是调用本工具的 `function_call`。这个回合在工具返回之前结束不了，等它就是自锁，所以不拒绝也不等：qmcode 截到最近一个未完成回合的 `task_started` 之前；Claude Code 截到最后一个完整回合（最后一条结束回合的主链记录：`stop_reason` 非空且不是 `tool_use` 的 assistant，或基座写的中断标记；其后的非主链记录一并带上），返回里写明截到哪、略去几行。<br>会话选择：② 环境里有 `CODEX_THREAD_ID` 且找得到它的 rollout 时用这个线程；③ `tools/call` 的 `_meta.threadId` 找得到 rollout 时用它；都没有再按 cwd 查 `sessions.json`。依据写在 `handoffTranscript.ts` 的模块注释与 `qmcodeSnapshot`、`claudeCodeCompleteEnd` 的注释里 |
