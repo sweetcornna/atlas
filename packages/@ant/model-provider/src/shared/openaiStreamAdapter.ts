@@ -10,6 +10,7 @@ import {
   type ToolCallStep,
   ToolCallDeltaAssembler,
 } from './qianmo/toolCallDeltas.js'
+import { normalizeReasoningChunks } from './qianmo/reasoningStream.js'
 
 /**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
@@ -193,7 +194,10 @@ export async function* adaptOpenAIStreamToAnthropic(
     }
   }
 
-  for await (const chunk of stream) {
+  // qianmo P18.8 (hermes #7): reasoning sent as `reasoning` or
+  // `reasoning_details` reaches the handler below as `reasoning_content` —
+  // shared/qianmo/reasoningStream.ts.
+  for await (const chunk of normalizeReasoningChunks(stream)) {
     const choice = chunk.choices?.[0]
     const delta = choice?.delta
 
