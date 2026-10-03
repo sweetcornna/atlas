@@ -194,9 +194,9 @@ export async function* adaptOpenAIStreamToAnthropic(
     }
   }
 
-  // qianmo P18.8 (hermes #7): reasoning sent as `reasoning` or
-  // `reasoning_details` reaches the handler below as `reasoning_content` —
-  // shared/qianmo/reasoningStream.ts.
+  // qianmo P18.8 (hermes #7, #8): reasoning sent as `reasoning`, as
+  // `reasoning_details`, or inline in the text as `<think>…</think>` reaches
+  // the handlers below as `reasoning_content` — shared/qianmo/reasoningStream.ts.
   for await (const chunk of normalizeReasoningChunks(stream)) {
     const choice = chunk.choices?.[0]
     const delta = choice?.delta

@@ -16,6 +16,12 @@
  * handed to the adapter as `reasoning_content`; a chunk that needs nothing is
  * passed through as the same object.
  *
+ * The same pass splits reasoning written inline in `delta.content`
+ * (`<think>…</think>`, hermes #8; rules in `thinkTags.ts`). A chunk whose text
+ * holds both is handed on as several chunks, in stream order, each carrying
+ * one piece: the first keeps the chunk's `usage`, the last its `tool_calls`
+ * and `finish_reason`, so the adapter sees them where it did before.
+ *
  * 规则来源 NousResearch/hermes-agent（MIT，Copyright (c) 2025 Nous Research，
  * 声明见 NOTICE 五），取于 `f9b29c49b6`（2026-10-03 取用）：
  *   - `agent/chat_completion_helpers.py:4128` — the streamed reasoning is
@@ -37,6 +43,7 @@
  * replay it either.
  */
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
+import { type InlineSegment, InlineThinkSplitter } from './thinkTags.js'
 
 type ReasoningDelta = ChatCompletionChunk.Choice.Delta & {
   reasoning_content?: string | null
@@ -96,14 +103,85 @@ function normalizeChunk(chunk: ChatCompletionChunk): ChatCompletionChunk {
   }
 }
 
+type PieceDelta = { content?: string; reasoning_content?: string }
+
+function pieceOf(segment: InlineSegment): PieceDelta {
+  return segment.kind === 'text'
+    ? { content: segment.text }
+    : { reasoning_content: segment.text }
+}
+
+/**
+ * `chunk` with inline reasoning split out of its `delta.content`: the same
+ * object when the text needed no split, else one chunk per piece.
+ */
+function splitChunk(
+  chunk: ChatCompletionChunk,
+  splitter: InlineThinkSplitter,
+): ChatCompletionChunk[] {
+  const choice = chunk.choices?.[0]
+  const delta = choice?.delta as ReasoningDelta | undefined
+  if (!choice || !delta) return [chunk]
+  const content = typeof delta.content === 'string' ? delta.content : ''
+  const segments = splitter.feed(content)
+  if (choice.finish_reason) segments.push(...splitter.flush())
+  const only = segments.length === 1 ? segments[0] : undefined
+  if (only?.kind === 'text' && only.text === content) return [chunk]
+  if (segments.length === 0 && content === '') return [chunk]
+
+  const {
+    content: _content,
+    reasoning_content: fieldReasoning,
+    ...rest
+  } = delta
+  const pieces: PieceDelta[] = []
+  if (fieldReasoning != null) pieces.push({ reasoning_content: fieldReasoning })
+  for (const segment of segments) pieces.push(pieceOf(segment))
+  if (pieces.length === 0) pieces.push({ content: '' })
+
+  const { usage, ...withoutUsage } = chunk
+  return pieces.map((piece, i) => {
+    const last = i === pieces.length - 1
+    const pieceDelta: ReasoningDelta = last ? { ...rest, ...piece } : piece
+    return {
+      ...withoutUsage,
+      ...(i === 0 && usage !== undefined ? { usage } : {}),
+      choices: [
+        {
+          ...choice,
+          delta: pieceDelta,
+          finish_reason: last ? choice.finish_reason : null,
+        },
+        ...(last ? chunk.choices.slice(1) : []),
+      ],
+    }
+  })
+}
+
 /**
  * The stream with each chunk's reasoning under `delta.reasoning_content`, the
- * one field the adapter reads.
+ * one field the adapter reads, and inline-tagged reasoning split out of
+ * `delta.content`.
  */
 export async function* normalizeReasoningChunks(
   stream: AsyncIterable<ChatCompletionChunk>,
 ): AsyncGenerator<ChatCompletionChunk, void> {
+  const splitter = new InlineThinkSplitter()
+  let last: ChatCompletionChunk | undefined
   for await (const chunk of stream) {
-    yield normalizeChunk(chunk)
+    last = chunk
+    yield* splitChunk(normalizeChunk(chunk), splitter)
+  }
+  // A stream that ended without finish_reason: release what is still held.
+  const tail = splitter.flush()
+  if (last === undefined) return
+  for (const segment of tail) {
+    yield {
+      id: last.id,
+      object: last.object,
+      created: last.created,
+      model: last.model,
+      choices: [{ index: 0, delta: pieceOf(segment), finish_reason: null }],
+    }
   }
 }
