@@ -48,6 +48,8 @@ export class ResidentSupervisor {
   #running: Promise<void> | null = null
   #child: ResidentChildConnection | null = null
   #parked = false
+  /** The generation now running was stopped by {@link recycle}. */
+  #recycling = false
 
   constructor(options: ResidentSupervisorOptions) {
     this.#options = options
@@ -68,6 +70,41 @@ export class ResidentSupervisor {
     this.#child?.stop()
   }
 
+  /**
+   * Stop the generation now running and let the loop start the next one
+   * (design `providers-console-m1.md` §2.7: a new provider configuration is
+   * only loaded by a new ACP child).
+   *
+   * The stop is planned, so it is not a failure: it does not count towards
+   * parking, however short-lived the generation was, and the child's exit on
+   * the way down is not reported through `onError`. A generation that lived
+   * past `stableAfterMs` still resets the backoff exactly as a stable one
+   * always has.
+   *
+   * Returns `false` when there is no generation to stop — the loop is between
+   * generations, has parked, or was stopped. The caller decides what that
+   * means; nothing is queued for later.
+   *
+   * `stop()` is called synchronously, the same way {@link stop} calls it, so
+   * whatever a child does before its first `await` (the resident retires its
+   * runtime there) has happened by the time this returns.
+   */
+  recycle(): boolean {
+    if (this.#controller.signal.aborted || this.#parked) return false
+    const child = this.#child
+    if (child === null) return false
+    this.#recycling = true
+    const report = (error: unknown): void => {
+      if (!this.#controller.signal.aborted) this.#options.onError?.(error)
+    }
+    try {
+      void Promise.resolve(child.stop()).catch(report)
+    } catch (error) {
+      report(error)
+    }
+    return true
+  }
+
   async #loop(): Promise<void> {
     const now = this.#options.now ?? Date.now
     const wait = this.#options.wait ?? defaultWait
@@ -82,6 +119,7 @@ export class ResidentSupervisor {
 
     while (!this.#controller.signal.aborted) {
       const startedAt = now()
+      this.#recycling = false
       try {
         this.#child = await this.#options.start()
         if (this.#controller.signal.aborted) {
@@ -90,7 +128,11 @@ export class ResidentSupervisor {
           await this.#child.closed
         }
       } catch (error) {
-        if (!this.#controller.signal.aborted) this.#options.onError?.(error)
+        // A recycled child exits because it was told to; its exit status is
+        // not news.
+        if (!this.#controller.signal.aborted && !this.#recycling) {
+          this.#options.onError?.(error)
+        }
       } finally {
         try {
           await this.#child?.stop()
@@ -102,7 +144,13 @@ export class ResidentSupervisor {
       if (this.#controller.signal.aborted) return
 
       const duration = now() - startedAt
-      if (duration < stableAfter) {
+      if (this.#recycling) {
+        // Planned: neither a rapid failure nor proof of a healthy child.
+        if (duration >= stableAfter) {
+          rapidFailures = 0
+          backoff = initialBackoff
+        }
+      } else if (duration < stableAfter) {
         rapidFailures += 1
         if (rapidFailures >= maxRapidFailures) {
           this.#parked = true
