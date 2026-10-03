@@ -63,6 +63,18 @@ export {
 } from './store.js'
 
 export {
+  SCHEDULER_STATUS_FILE,
+  SCHEDULER_STATUS_VERSION,
+  describeSchedule,
+  readSchedulerStatus,
+  schedulerStatusOf,
+  writeSchedulerStatus,
+  type SchedulerStatusFile,
+  type SchedulerStatusJob,
+  type SchedulerStatusRead,
+} from './status.js'
+
+export {
   SchedulerRunner,
   type FireDispatch,
   type SchedulerDispatch,

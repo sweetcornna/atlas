@@ -138,14 +138,14 @@ const EMPTY_STATE: JobState = {
   lastOutcomeAt: undefined,
 }
 
-const FIRE_OUTCOMES: readonly string[] = [
+export const FIRE_OUTCOMES: readonly string[] = [
   'completed',
   'failed',
   'skipped',
   'preempted',
 ]
 
-function isCount(value: unknown): value is number {
+export function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
