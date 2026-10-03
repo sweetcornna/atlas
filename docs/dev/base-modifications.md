@@ -136,6 +136,14 @@
 | `src/utils/sessionStorage/__tests__/logAssemblyTieBreak.test.ts` | 1 | +36 | P1.2 | `--resume` 锚点缺陷的红→绿用例 |
 | `src/__tests__/queryEngineInputAdmission.test.ts` | 1 | +101 | P3.1 | 输入受理回调 |
 
+### 2.9 M1 · P18.1 MiMo 预设止血（1 个修改）
+
+本节不计入 §1 与 §2 标题里的「32 / 24」（那是 `da98d86f` 的 M0 口径），+/− 按 `git diff base-snapshot/v2.46.0 -- <file>` 量。设计依据是 `providers-console-m1.md` §4.6 与 §5.8 第一行。同时新增的用例 `src/utils/model/__tests__/chinaLlmProviders.mimo.test.ts` 是阡陌自有文件，不在本表。
+
+| 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
+| --- | --- | --- | --- | --- |
+| `src/utils/model/chinaLlmProviders.ts` | `6c068da9`（2026-10-03，P18.1） | +10/−18 | **形态：值替换**（章程 §7.2 第 7 条）。只动 MiMo 段的数据：默认模型与 sonnet/opus/fable 档 `mimo-v2.5-pro` → `mimo-v2.6-pro`，haiku 档 `mimo-v2-flash` → `mimo-v2.6-flash`，模型表两条换 id 与 label（第二条的 tag `Multimodal` → `Fast`），`freeTier` 文案里的 id 同步换掉；`mimo-v2-flash` 那条没有一对一后继，整条删去（占 −18 里的 −8）。类型、函数和其余三家预设一字未动。**为什么改基座**：基座 `/provider` 向导（`ConsoleOAuthFlow.tsx` 的 `china_apikey` 步）把这张静态表的 `defaultModel`、`tiers`、`models` 原样写进 `OPENAI_MODEL` / `OPENAI_DEFAULT_*_MODEL`，没有覆盖层；阡陌的模型目录只服务控制台，管不到基座向导的用户。小米 `mimo-v2-flash` 已于 2026-06-30 下线，`mimo-v2.5-pro`、`mimo-v2.5` 于 2026-10-21 10:00（北京时间）下线且没有系统替换（`https://mimo.mi.com/static/docs/updates/deprecate.md`，2026-10-03 取页），不改的话，10-21 之后选 MiMo 的第一个请求就失败。**上游同步时**：上游若也改了这一段，取 id 更新的一侧，再跑 `chinaLlmProviders.mimo.test.ts` | ✅ 书面 |
+
 ---
 
 ## 3. 基座扩展点覆盖不到的三类改动
