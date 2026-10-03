@@ -66,11 +66,16 @@ export const NODES_PAGE_JS = `
     if (key) body.publicKey = key;
     say(status, '注册中…', 'muted');
     qc.sendJson('POST', ROUTES.agents, body).then(function () {
-      say(status, '已注册 ' + address, 'ok');
+      say(status, '', 'muted');
       form.reset();
+      qc.closeDialog(byId('register-dialog'));
+      qc.toast('已注册 ' + address, 'ok');
       return refreshRoster();
     }).catch(function (err) {
+      // Said where the form is, and in the corner: the dialog may be the
+      // thing the operator is looking at, or the thing they just closed.
       say(status, '注册失败 · ' + message(err), 'bad');
+      qc.toast('注册失败 · ' + message(err), 'bad');
     });
   }
 
@@ -107,22 +112,25 @@ export const NODES_PAGE_JS = `
       var task = data && data.taskId ? String(data.taskId) : '';
       // The button says 唤醒, so the result says 已唤醒. An operator should not
       // have to work out whether 已发送 is the same event they asked for.
-      say(status, '已唤醒 · task ' + task + (receipt ? ' · 回执 ' + receipt : ''), 'ok');
+      var line = '已唤醒 · task ' + task + (receipt ? ' · 回执 ' + receipt : '');
+      say(status, line, 'ok');
+      qc.toast(line, 'ok');
     }).catch(function (err) {
       say(status, '唤醒失败 · ' + message(err), 'bad');
+      qc.toast('唤醒失败 · ' + message(err), 'bad');
     });
   }
 
+  // A row's two actions report in the corner: the row itself is replaced by
+  // the refresh that follows, so a line written into it would not survive.
   function onHeartbeat(el) {
-    var status = byId('nodes-status');
     var address = el.getAttribute('data-address') || '';
-    say(status, '心跳 ' + address + '…', 'muted');
     qc.sendJson('POST', ROUTES.agents + '/' + encodeURIComponent(address) + '/heartbeat')
       .then(function () {
-        say(status, '已心跳 ' + address, 'ok');
+        qc.toast('已心跳 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { say(status, '心跳失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast('心跳失败 · ' + message(err), 'bad'); });
   }
 
   function onDeregister(el) {
@@ -132,14 +140,12 @@ export const NODES_PAGE_JS = `
   }
 
   function doDeregister(address) {
-    var status = byId('nodes-status');
-    say(status, '注销 ' + address + '…', 'muted');
     qc.sendJson('DELETE', ROUTES.agents + '/' + encodeURIComponent(address))
       .then(function () {
-        say(status, '已注销 ' + address, 'ok');
+        qc.toast('已注销 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { say(status, '注销失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast('注销失败 · ' + message(err), 'bad'); });
   }
 
   qc.onAction('heartbeat', onHeartbeat);
@@ -223,8 +229,14 @@ export const SERVERS_PAGE_JS = `
     qc.say(status, '保存中…', 'muted');
     qc.sendJson('PUT', '/v0/servers/' + encodeURIComponent(server) + '/note',
       { note: box.value })
-      .then(function () { qc.say(status, '已保存 ' + qc.stamp(new Date()), 'ok'); })
-      .catch(function (err) { qc.say(status, '保存失败 · ' + qc.message(err), 'bad'); });
+      .then(function () {
+        qc.say(status, '已保存 ' + qc.stamp(new Date()), 'ok');
+        qc.toast('备注已保存 · ' + server, 'ok');
+      })
+      .catch(function (err) {
+        qc.say(status, '保存失败 · ' + qc.message(err), 'bad');
+        qc.toast('保存失败 · ' + qc.message(err), 'bad');
+      });
   }
 
   qc.onAction('server-note', onServerNote);

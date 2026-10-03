@@ -2685,3 +2685,53 @@ describe('a refresh keeps what the reader was doing (D1)', () => {
     expect(CONSOLE_CLIENT_JS).toContain('target.focus({ preventScroll: true })')
   })
 })
+
+describe('one place an action reports back (D2)', () => {
+  test('every shell page has the toast region, polite, outside the polled regions', () => {
+    const html = renderShell({
+      label: 'x',
+      role: 'admin',
+      nav: [],
+      crumbs: [{ label: '节点' }],
+      title: '节点',
+      body: '<div id="roster" data-poll="/fragments/roster"></div>',
+    })
+    expect(html).toContain(
+      '<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>',
+    )
+    expect(html.indexOf('id="toasts"')).toBeGreaterThan(html.indexOf('</main>'))
+  })
+
+  test('a toast is text, and a failure interrupts', () => {
+    const toast = CONSOLE_CLIENT_JS.slice(
+      CONSOLE_CLIENT_JS.indexOf('function toast(text, tone)'),
+      CONSOLE_CLIENT_JS.indexOf('/* ---------------- dialogs'),
+    )
+    expect(toast).toContain('line.textContent = text')
+    expect(toast).not.toContain('innerHTML')
+    expect(toast).toContain(
+      "if (tone === 'bad') line.setAttribute('role', 'alert')",
+    )
+  })
+
+  test('the row actions and the forms report through it', () => {
+    for (const line of [
+      "qc.toast('已心跳 ' + address, 'ok')",
+      "qc.toast('心跳失败 · ' + message(err), 'bad')",
+      "qc.toast('已注销 ' + address, 'ok')",
+      "qc.toast('已注册 ' + address, 'ok')",
+      "qc.toast(line, 'ok')",
+    ]) {
+      expect(NODES_PAGE_JS).toContain(line)
+    }
+    // The status line inside the register form is no longer where a row's
+    // heartbeat lands.
+    expect(NODES_PAGE_JS).not.toContain('nodes-status')
+    expect(SERVERS_PAGE_JS).toContain(
+      "qc.toast('备注已保存 · ' + server, 'ok')",
+    )
+    expect(CONSOLE_CHAT_JS).toContain(
+      "qc.toast('发送失败 · ' + message(err), 'bad')",
+    )
+  })
+})

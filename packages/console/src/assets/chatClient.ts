@@ -174,6 +174,7 @@ function chatScript(): string {
       else say(status, '新建失败 · 服务端没有返回会话', 'bad');
     }).catch(function (err) {
       say(status, '新建失败 · ' + message(err), 'bad');
+      qc.toast('新建失败 · ' + message(err), 'bad');
     });
   }
 
@@ -196,6 +197,7 @@ function chatScript(): string {
       return refreshAll(false);
     }).catch(function (err) {
       say(status, '发送失败 · ' + message(err), 'bad');
+      qc.toast('发送失败 · ' + message(err), 'bad');
     }).then(function () {
       busy = false;
       box.disabled = false;

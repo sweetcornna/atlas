@@ -392,11 +392,14 @@ function nodeActions(ctx: RouteContext, withRegister: boolean): string {
   )
 }
 
-/** The polled roster region, and the line the row actions report on. */
+/**
+ * The polled roster region. The row actions report through the shell's
+ * toasts (`assets/client.ts`), not a status line here: the rows are replaced
+ * by the refresh that follows every action.
+ */
 function rosterRegion(fragment: string, poll: string): string {
   return (
     `<section class="sec" id="nodes-section">` +
-    `<p class="status" id="nodes-status" role="status"></p>` +
     `<div id="roster" data-poll="${attr(poll)}">${fragment}</div>` +
     `</section>`
   )

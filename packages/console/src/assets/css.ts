@@ -799,6 +799,21 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .empty-art { justify-self: end; }
 .legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12.5px; color: var(--color-muted); }
 
+/* ---- toasts: one line per result, bottom right, never over a dialog ---- */
+.toasts {
+  position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: 50;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2);
+  width: min(380px, calc(100vw - var(--space-8))); pointer-events: none;
+}
+.toast {
+  pointer-events: auto; cursor: pointer; max-width: 100%;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg);
+  background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-md);
+  border-left: 3px solid var(--color-accent-2); font-size: 13px; overflow-wrap: anywhere;
+}
+.toast[data-tone='bad'] { border-left-color: var(--color-accent-700); }
+.toast[data-tone='muted'] { border-left-color: var(--color-neutral-400); }
+
 /* ---- dialogs: native <dialog>, opened with showModal() ----
    The browser owns the hard parts: the top layer, the focus trap, Escape, and
    giving focus back to the control that opened it. The closed state is the UA

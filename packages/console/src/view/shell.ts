@@ -400,6 +400,10 @@ export function renderShell(model: ShellModel): string {
     model.body +
     `\n</main>\n</div>\n</div>\n` +
     (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
+    // Where an action's result is said (`assets/client.ts`, D2): outside
+    // every polled region, so a refresh never takes a message with it.
+    `<div class="toasts" id="toasts" aria-live="polite" ` +
+    `aria-relevant="additions"></div>\n` +
     `<script>${runtime}${model.pageScript ?? ''}</script>\n` +
     `</body>\n</html>\n`
   )

@@ -78,6 +78,15 @@
  * the cookie, which is what makes "look at this console as the other role for a
  * minute" possible without logging out.
  *
+ * ## One place an action reports back (D2)
+ *
+ * `toast(text, tone)` puts one line in the shell's `#toasts` region, bottom
+ * right, through `textContent` like every other string here. The region is
+ * `aria-live="polite"`; a failure is additionally `role="alert"`, so a screen
+ * reader interrupts for it. A line leaves on its own after a few seconds, or
+ * on a click. Before this, a heartbeat's result was written into a status
+ * line inside the register form — measured off-screen.
+ *
  * ## A 401 ends the page's session, once (C1)
  *
  * The first 401 any request gets — a poll, a write, a page script's fetch —
@@ -160,6 +169,27 @@ function runtimeScript(guards: TokenGuards): string {
   function stamp(d) {
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' +
       pad(d.getSeconds());
+  }
+
+  /* ---------------- toasts ---------------- */
+
+  var TOAST_MS = 6000;
+  var TOAST_BAD_MS = 10000;
+  var TOAST_MAX = 4;
+
+  function toast(text, tone) {
+    var region = byId('toasts');
+    if (!region || !text) return;
+    var line = document.createElement('div');
+    line.className = 'toast';
+    line.setAttribute('data-tone', tone || 'muted');
+    if (tone === 'bad') line.setAttribute('role', 'alert');
+    line.textContent = text;
+    region.appendChild(line);
+    while (region.children.length > TOAST_MAX) region.removeChild(region.firstChild);
+    var gone = function () { if (line.parentNode) line.parentNode.removeChild(line); };
+    line.addEventListener('click', gone);
+    setTimeout(gone, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
   }
 
   /* ---------------- dialogs ---------------- */
@@ -582,6 +612,7 @@ function runtimeScript(guards: TokenGuards): string {
     stamp: stamp,
     message: message,
     readToken: readToken,
+    toast: toast,
     loadHtml: loadHtml,
     sendJson: sendJson,
     openDialog: openDialog,
