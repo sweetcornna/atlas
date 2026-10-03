@@ -194,6 +194,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'provider') {
+    profileCheckpoint('cli_qianmo_provider_path');
+    const { runProvider } = await import('../cli/handlers/provider.js');
+    await runProvider(args.slice(1));
+    return;
+  }
+
   if (args[0] === 'handoff') {
     profileCheckpoint('cli_qianmo_handoff_path');
     const { runHandoff } = await import('../cli/handlers/handoff.js');

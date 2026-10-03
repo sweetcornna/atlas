@@ -75,6 +75,14 @@ export function registerQianmoCommands(program: CommanderCommand): void {
     });
 
   program
+    .command('provider')
+    .description("Check, try out and apply this node's model service")
+    .action(async () => {
+      const { runProvider } = await import('src/cli/handlers/provider.js');
+      await runProvider(process.argv.slice(3));
+    });
+
+  program
     .command('handoff')
     .description('Hand the work in this repository over to the cloud')
     .action(async () => {

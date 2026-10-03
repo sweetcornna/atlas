@@ -11,10 +11,13 @@
  * exists to catch.
  */
 
+import { readFileSync } from 'node:fs'
 import {
   IDENTITY_ENV_VAR,
   NODE_IDENTITY_MODE,
 } from '../../constants/identity.js'
+import { providerPaths } from './providers/store.js'
+import { inheritedProviderKeyNames } from './providers/whitelist.js'
 
 /**
  * The memory root the host serves memory from, as handed to its ACP child.
@@ -38,6 +41,51 @@ export function hostMemoryRoot(
 ): string | undefined {
   const root = env[RESIDENT_MEMORY_ROOT_ENV]
   return root === undefined || root === '' ? undefined : root
+}
+
+/**
+ * Whether the hub manages this node's model service: `state.json` under
+ * `occConfigPath('qianmo','provider')` parses and records an applied profile.
+ *
+ * The same judgment as `readProviderState().managed` (`providers/node.ts`),
+ * restated here so the ACP child's guard path does not load the provider
+ * write path; a test pins the two together. A file that is missing, does not
+ * parse or records no applied profile (a first apply that ended in
+ * `conflict` writes one like that) means "not managed": the node's model then
+ * still comes from wherever it came from before, and stripping it would leave
+ * the child with none.
+ */
+function isProviderManagedNode(): boolean {
+  let text: string
+  try {
+    text = readFileSync(providerPaths.state(), 'utf8')
+  } catch {
+    return false
+  }
+  try {
+    const state: unknown = JSON.parse(text)
+    if (typeof state !== 'object' || state === null || Array.isArray(state)) {
+      return false
+    }
+    const { v, applied } = state as { v?: unknown; applied?: unknown }
+    return v === 1 && applied !== null && applied !== undefined
+  } catch {
+    return false
+  }
+}
+
+/**
+ * `parent` without any key that selects or shapes a model provider — the
+ * spawn env of a managed node's ACP child, and of every process the node runs
+ * to compute or try out a provider configuration (`qm provider`), so that
+ * what those report is what the child will do.
+ */
+export function withoutProviderKeys(
+  parent: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const env = { ...parent }
+  for (const key of inheritedProviderKeyNames(parent)) delete env[key]
+  return env
 }
 
 /**
@@ -84,16 +132,42 @@ export function hostMemoryRoot(
  * another. So the host names the root it actually uses, and the child adds it
  * to the protected set — additively: the child's own default stays protected
  * whatever this says.
+ *
+ * ## Why a managed node's child gets no provider keys from here
+ *
+ * Once the hub manages the node's model service (design
+ * `providers-console-m1.md` §2.6, P18.7), `settings.json` is the one source
+ * of the provider, and the process environment must not be a second one. It
+ * would be: the fleet's residents are started with their model in the
+ * environment (`CLAUDE_CODE_USE_OPENAI`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`
+ * …), settings only override the keys they name, and `getAPIProvider()` reads
+ * `CLAUDE_CODE_USE_*` whenever `modelType` is `anthropic` — so a switch to an
+ * Anthropic-lane profile would still route through the inherited OpenAI
+ * switch, and a key the profile deleted would survive from the environment.
+ * The child therefore gets `parent` minus exactly the set the node's
+ * `effective` computation strips (`inheritedProviderKeyNames`), so what the
+ * console shows and what the child sends are computed from the same inputs.
+ *
+ * A managed child also gets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`: the keys now
+ * reach it through `settings.json`, and the scrub keeps them out of what its
+ * Bash tool, hooks, MCP and LSP servers inherit (§7.5). That is a shell
+ * expansion closed, not a secrecy boundary — the agent runs as the same user
+ * as the process holding the key.
+ *
+ * A node the hub does not manage gets exactly what it got before this
+ * existed, key for key and in the same order.
  */
 export function residentAcpEnvironment(
   parent: NodeJS.ProcessEnv,
   options: { readonly memoryRoot?: string } = {},
 ): NodeJS.ProcessEnv {
+  const managed = isProviderManagedNode()
   return {
-    ...parent,
+    ...(managed ? withoutProviderKeys(parent) : parent),
     [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
     CLAUDE_CODE_REMOTE_SEND_KEEPALIVES: '1',
     CLAUDE_CODE_SAFE_MODE: '1',
+    ...(managed ? { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : {}),
     ...(options.memoryRoot === undefined
       ? {}
       : { [RESIDENT_MEMORY_ROOT_ENV]: options.memoryRoot }),

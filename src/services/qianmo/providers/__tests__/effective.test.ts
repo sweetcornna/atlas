@@ -29,6 +29,7 @@ import {
   type WireProfile,
 } from '@qianmo/providers'
 import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
+import { wireEffortLevel } from '../effective.js'
 import {
   commitPendingProviderConfig,
   inheritedProviderKeyNames,
@@ -223,6 +224,31 @@ describe('§11 item 3: the slot that governs the main loop', () => {
   })
 })
 
+function chatLane(
+  capabilities: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    modelType: 'openai',
+    env: {
+      OPENAI_BASE_URL: 'https://api.vendor.example/v1',
+      OPENAI_API_KEY: CANARY_KEY,
+      OPENAI_WIRE_API: 'chat',
+      OPENAI_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_OPUS_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_SONNET_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_FABLE_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_HAIKU_MODEL: 'vendor-chat-flash',
+      OPENAI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+    },
+    modelSettings: DISTINCT_SLOTS,
+    ...extra,
+  }
+}
+
 describe('effortOnWire is the runtime gate, not the profile', () => {
   test('anthropic lane without a capability list: the family default decides', () => {
     const settings = anthropicLane()
@@ -244,6 +270,70 @@ describe('effortOnWire is the runtime gate, not the profile', () => {
     }
     writeSettings(settings)
     const state = effective()
+    expect(state.effortOnWire).toBe(false)
+    expect(state.effortLevel).toBeNull()
+  })
+
+  // The chat lane asks `chatLaneSendsReasoningEffort` since P18.5
+  // (openai/index.ts); `effective` must report what that request carries —
+  // through `resolveChatReasoningEffort`, not a second copy of the gate.
+  test('chat lane, a non-Codex model with the effort capability: on the wire, in the chat mapping', () => {
+    writeSettings(chatLane(ALL_EFFORT_CAPS))
+    const state = effective()
+    expect(state.wire).toBe('chat')
+    expect(state.wireModel).toBe('vendor-chat-pro')
+    expect(state.effortOnWire).toBe(true)
+    expect(state.effortLevel).toBe('low')
+    // The haiku slot asks for `max`; the chat mapping sends `high`.
+    const fast = effective('vendor-chat-flash')
+    expect(fast.effortOnWire).toBe(true)
+    expect(fast.effortLevel).toBe('high')
+  })
+
+  test('a vendor table’s `none` (reasoning switched off on the wire) is reported as `none`, not dropped', () => {
+    // Since P18.8 `resolveChatReasoningEffort` returns what the table sends,
+    // `none` included (Ollama with thinking off). The key is on the wire, so
+    // `effortOnWire` is true and the level has to say what it carries.
+    expect(wireEffortLevel('none')).toBe('none')
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      expect(wireEffortLevel(level)).toBe(level)
+    }
+    for (const other of ['minimal', 'disabled', '', undefined, 3]) {
+      expect(wireEffortLevel(other)).toBeNull()
+    }
+  })
+
+  test('end to end: Ollama Cloud with thinking off sends `reasoning_effort: "none"`, and that is what the node reports', () => {
+    // P18.8's vendor table (hermes #14, `effortVendors.ts`): on ollama.com
+    // "off" has to be said, as `none`; leaving the key out keeps thinking on.
+    writeSettings({
+      modelType: 'openai',
+      env: {
+        OPENAI_BASE_URL: 'https://ollama.com/v1',
+        OPENAI_API_KEY: CANARY_KEY,
+        OPENAI_WIRE_API: 'chat',
+        OPENAI_ENABLE_THINKING: '0',
+        OPENAI_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_OPUS_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+        OPENAI_DEFAULT_SONNET_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+        OPENAI_DEFAULT_HAIKU_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+      },
+    })
+    const state = effective()
+    expect({
+      wire: state.wire,
+      effortOnWire: state.effortOnWire,
+      effortLevel: state.effortLevel,
+    }).toEqual({ wire: 'chat', effortOnWire: true, effortLevel: 'none' })
+  })
+
+  test('chat lane without the effort capability: off the wire', () => {
+    writeSettings(chatLane('thinking'))
+    const state = effective()
+    expect(state.wire).toBe('chat')
     expect(state.effortOnWire).toBe(false)
     expect(state.effortLevel).toBeNull()
   })
