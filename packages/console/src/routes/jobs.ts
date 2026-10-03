@@ -2,16 +2,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 值守作业 — placeholder (J6 值守作业).
+ * 值守作业 — placeholder (J6 值守作业), and the handoff API (P17.4).
  *
  * The page package that builds this area replaces the `stubRoute(...)` call
  * below with a module of its own (`routes/types.ts`) and changes no other
  * route file. Until then `/jobs` is the one-line placeholder of `stub.ts`.
+ *
+ * The area also answers `/v0/handoff` (`routes/handoff.ts`): handing work over
+ * to the cloud is a task the hub holds, so it lives with the tasks. The page
+ * package keeps `api: handoffApi` when it replaces the placeholder.
  */
 
+import { handoffApi } from './handoff.js'
 import { stubRoute } from './stub.js'
+import type { RouteModule } from './types.js'
 
-export const jobsRoute = stubRoute(
-  { id: 'jobs', label: '值守作业', group: 'run', icon: 'calendar-clock' },
-  '定时与值守任务的列表 · 最近一次运行 · 下一次运行',
-)
+export const jobsRoute: RouteModule = {
+  ...stubRoute(
+    { id: 'jobs', label: '值守作业', group: 'run', icon: 'calendar-clock' },
+    '定时与值守任务的列表 · 最近一次运行 · 下一次运行',
+  ),
+  api: handoffApi,
+}

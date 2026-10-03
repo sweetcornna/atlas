@@ -642,6 +642,10 @@ export const CONSOLE_ACTIONS = [
   'accounts.delete',
   /** break-glass 下的每一个请求（P15.9 DoD），target 是 `方法 路径`。 */
   'breakglass.request',
+  /** 登记一次本地—云端接力（P17.4），target 是任务 id；没登上时是项目名。 */
+  'handoff.accept',
+  /** 给接力任务追加一句话（P17.4 只记账），target 是任务 id。 */
+  'handoff.send',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -694,6 +698,113 @@ export interface ActionLedgerPort {
   admit?(): Promise<ConsoleResult<void>>
   record(entry: ConsoleAction): Promise<ConsoleResult<void>>
   list(query: ActionQuery): Promise<ConsoleResult<ActionPage>>
+}
+
+// ---------------------------------------------------------------------------
+// HandoffPort —— 本地—云端接力的中枢台账（P17.4）
+// ---------------------------------------------------------------------------
+
+/**
+ * 接力任务的状态，与 `@qianmo/handoff` 的 `HANDOFF_STATES` 同一组词。
+ *
+ * 这里按形状重新声明而不是 import：控制台是只依赖 `@qianmo/audit` 的叶子包
+ * （`test/dependencies.test.ts` 钉着），而 `@qianmo/handoff` 会带进
+ * tool-runtime 的扫描器。宿主（`src/cli/handlers/consoleHandoff.ts`）把那个包
+ * 的 `HandoffTask` 原样交过来，结构一致即可赋值，类型检查就是两边对得上的证据。
+ */
+export type HandoffTaskState =
+  | 'accepted'
+  | 'dispatched'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'returned'
+
+/** 接力清单：只有引用，没有代码与会话正文（`handoff-p17-plan.md` §1）。 */
+export interface HandoffManifestView {
+  readonly kind: 'handoff'
+  readonly project: string
+  readonly device: string
+  readonly branch: string
+  readonly wip: string
+  readonly tree: string
+  readonly tool: 'qmcode' | 'claude-code'
+  readonly sessionId: string
+  readonly sessionRef: string
+  readonly sessionCommit: string
+  readonly cwd: string
+  readonly brief: {
+    readonly goal: string
+    readonly done: string
+    readonly remaining: string
+  }
+  readonly deadline: string
+}
+
+/** 云端回合的结果（`task.result.content` 解出来的那份）。 */
+export interface HandoffResultView {
+  readonly status: 'completed' | 'interrupted' | 'failed'
+  readonly branch: string
+  readonly head: string
+  readonly threadId: string
+  readonly summary: string
+}
+
+/** 台账里的一个任务。 */
+export interface HandoffTaskView {
+  readonly taskId: string
+  readonly state: HandoffTaskState
+  readonly manifest: HandoffManifestView
+  /** 派发以后才有。 */
+  readonly node: string | null
+  readonly result: HandoffResultView | null
+  readonly reason: string | null
+  /** epoch 毫秒。 */
+  readonly acceptedAt: number
+  readonly updatedAt: number
+}
+
+/** 记下的一句给云端的话。 */
+export interface HandoffSendView {
+  readonly taskId: string
+  /** 每个任务从 1 起。 */
+  readonly seq: number
+  readonly at: number
+  readonly text: string
+}
+
+/** 登记的结果：新任务，或同一份清单已经登记过的那个任务。 */
+export interface HandoffAcceptance {
+  readonly task: HandoffTaskView
+  /** false = 同一份清单（项目、设备、影子提交、会话提交都相同）已在台账里且仍是 accepted。 */
+  readonly created: boolean
+}
+
+/**
+ * 中枢的接力台账（`handoff-p17-plan.md` P17.4「中枢」表）。
+ *
+ * **「可以关机」的依据就在 {@link accept} 里**：它返回成功之前，宿主已经在
+ * 中枢裸仓里确认影子提交与会话提交都在、影子提交的树就是清单里的树，并把
+ * `accepted` 写进台账、fsync 过。本地的 `qm handoff now` 只有拿到成功才告诉人
+ * 可以关机，所以这个端口不能有「先回成功、后核对」的实现。
+ *
+ * 失败的码：清单不合法 `invalid`；裸仓里缺对象、树对不上、项目没有裸仓
+ * `rejected`（数据没落地，这正是「不能关机」的那种回答）；任务不存在
+ * `not_found`；台账读写坏了 `unreachable`。
+ *
+ * 可选：缺席时 `/v0/handoff` 回 501，与其余可选面同一条规矩。
+ */
+export interface HandoffPort {
+  /** `body` 是请求体解出来的 JSON，校验在宿主做。 */
+  accept(body: unknown): Promise<ConsoleResult<HandoffAcceptance>>
+  /** 全部任务，按登记先后。 */
+  list(): Promise<ConsoleResult<readonly HandoffTaskView[]>>
+  get(taskId: string): Promise<ConsoleResult<HandoffTaskView>>
+  /**
+   * 记下一句给云端的话。P17.4 只记账，派发与投递是节点桥（P17.5）的事；
+   * 任务已结束（done / failed / returned）时 `rejected`。
+   */
+  send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
 }
 
 /** Protocol/runtime ceilings, read from the packages that own them. */
@@ -787,4 +898,6 @@ export interface ConsoleDeps {
    * 动作账本（P15.9）。缺席时什么都不记，其余行为不变。
    */
   readonly actions?: ActionLedgerPort
+  /** 接力台账（P17.4）。缺席时 `/v0/handoff` 回 501。 */
+  readonly handoff?: HandoffPort
 }
