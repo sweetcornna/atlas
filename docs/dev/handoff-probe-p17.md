@@ -5,25 +5,25 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v0.1**（2026-10-03）。第 1、6、7 项已在负责人本机实测；第 2–5 项需要节点，**待真机** |
+| 文档版本 | **v0.2**（2026-10-03）。v0.1 只有本机实测的第 1、6、7 项；v0.2 补上节点 p4 实测的第 2–5 项和第 7 项的 Linux 补测，第 1 项改写为补上辅助程序后的重跑结果。第 2 项的 24 h 采样还在跑，到 2026-10-04 13:27 UTC 结束，本文只写到前 82 min |
 | 上位 | [`handoff-p17-plan.md`](./handoff-p17-plan.md) §2 P17.2 卡；设计 [`handoff-m1.md`](./handoff-m1.md) v1.1 |
-| 被测二进制 | `qmcode 0.158.0`，fork 分支 `qianmo/p17.1-identity` 头 `348bd27f76`，本机 macOS aarch64 release 构建（`codex-rs/target/release/qmcode`，sha256 `4bec959f…ad4f7b`）。fork 只读，本次未改 |
-| 模型网关 | `https://api.cornna.xyz/v1`，模型 `gpt-6-luna`，`wire_api = "responses"`。key 只经环境变量传入，配置里只写 `env_key = "OPENAI_API_KEY"` |
-| 环境 | macOS（Darwin 27.0.0，aarch64）。没有在节点、Linux 或 gVisor 上跑 |
-| 用量 | 真实模型调用：第 1 项 3 个任务（各 2 轮，共 13 次 `/v1/responses`），第 7 项 2 个任务（各 2 回合，共 5 次）。第 6 项不调模型 |
-| 原始证据 | 负责人本机 `~/atlas-evidence/m1-work/p172/`，不入库。内容：命令、输出、时间戳、录制的请求体与响应流。索引在 `commands.txt`；全目录 33705 个文件逐个做 key 计数，命中 0（`keycheck-all.txt`） |
+| 被测二进制 | `qmcode 0.158.0`。本机：fork 分支 `qianmo/p17.1-identity` 在 `348bd27f76` 时的 macOS aarch64 release 构建（`codex-rs/target/release/qmcode`，sha256 `4bec959f…ad4f7b`），旁边放同一源码本机编的 `codex-code-mode-host`（sha256 `81e79b19…08a5bd`）。节点：fork 提交 `90e00225c6` 的 Linux 产物 `qmcode-rust-v0.158.0-90e00225c6-x86_64`（fork 的 `qianmo-build-linux` workflow 构建，run `37123317219`），`qmcode` sha256 `f642651f…b10b81e`、`codex-code-mode-host` sha256 `d5047fcf…daca6b38`，都已剥离 |
+| 模型网关 | `https://api.cornna.xyz/v1`，模型 `gpt-6-luna`，`wire_api = "responses"`。key 只经环境变量传入，配置里只写 `env_key = "OPENAI_API_KEY"`；到节点时经 ssh 的标准输入传过去，在远端子 shell 里 `read` 进环境变量，不进命令行参数、文件和日志 |
+| 环境 | 本机 macOS（Darwin 27.0.0，aarch64）。节点 p4：KVM 虚拟机，Debian 13（trixie），内核 6.12.43，x86_64，2 核，内存 1973 MB（另有 5 GB swap）。p4 上同时跑着内测节点 beta-5，本次没有碰它的进程、目录和端口。p4 上没有 gVisor（`runsc`），**gVisor 未测** |
+| 用量 | 真实模型调用：v0.1 第 1 项 3 个任务（共 13 次 `/v1/responses`），第 7 项 2 个任务（共 5 次）。v0.2：第 1 项 A′ 1 个任务 2 轮（5 次）；第 3 项本机造会话 1 轮；节点上 6 个回合（第 3 项 1、第 4 项 2、第 5 项 2、第 7 项 1），外加第 5 项界面附带的 1 个临时线程回合；第 4 项另用 `claude -p` 造了 1 个 Claude Code 会话。每项都是 1 次跑成，只有第 5 项跑了 2 次（第 1 次没有发出模型调用，见第 5 项）。第 6 项不调模型 |
+| 原始证据 | 负责人本机 `~/atlas-evidence/m1-work/p172/`（v0.1）与其下 `node/`（v0.2），不入库。内容：命令、输出、时间戳、录制的请求体与响应流、从 p4 取回的输出与会话文件。索引在 `commands.txt` 与 `node/commands.txt`。key 计数：v0.1 全目录 33705 个文件命中 0（`keycheck-all.txt`）；`node/` 5830 个文件命中 0（`node/keycheck-all.txt`）；p4 上本次目录 238 个文件命中 0（`node/keycheck-remote-p4.txt`）。两个 app-server 的令牌在 `node/` 下也是 0 命中 |
 
 ## 结论一览
 
 | # | 探什么 | 结论 | 要点 |
 |---|---|---|---|
-| 1 | 网关是否提供 Responses API | **有条件通过** | 网关侧全部通过：多轮、工具调用、无状态回传 `encrypted_content`、effort 都正常，**不需要兼容层**。条件在 qmcode 产物：内置模型目录把 `gpt-6-luna` 定为 `code_mode_only`，工具调用要经同目录的辅助二进制 `codex-code-mode-host`，P17.1 产物里没有它，工具全部失败 |
-| 2 | app-server 在节点（含 gVisor）常驻 | 待真机 | 计划在节点 p4 上做 |
-| 3 | 会话跨机续接 | 待真机 | 计划在节点 p4 上做 |
-| 4 | Claude Code 会话导入 | 待真机 | 计划在节点 p4 上做 |
-| 5 | 远程直连 | 待真机 | 计划在节点 p4 上做 |
+| 1 | 网关是否提供 Responses API | **通过**（辅助程序补上后） | 网关侧全部通过：多轮、工具调用、无状态回传 `encrypted_content`、effort 都正常，**不需要兼容层**。v0.1 的条件（产物缺 `codex-code-mode-host`，`code_mode_only` 下工具全部失败）已由 fork `90e00225c6` 解除：产物带上辅助程序后，内置目录、直连网关跑通带工具的两轮任务 |
+| 2 | app-server 在节点常驻 | **有条件通过**（24 h 未满；gVisor 未测） | p4 上经软链接起的 app-server 只听 `127.0.0.1`，无令牌、错令牌的升级都是 401；前 82 min 的 84 次 `/readyz` 全部 200。p4 没有 bwrap，qmcode 只有 `danger-full-access` 能用，按计划卡退路处理；把 Debian 的 bwrap 0.12.0 解包到用户目录后，普通用户能建 user namespace，`read-only`、`workspace` 两档都按预期生效。内存：VmRSS 常驻约 147 MB，其中约 124 MB 是可执行文件映射进来的干净文件页，匿名内存约 22 MB；150 MB 上限按哪个算待定 |
+| 3 | 会话跨机续接 | **通过** | 本机 rollout 原样放进 p4 全新 `QMCODE_HOME` 的 `sessions/YYYY/MM/DD/`，`thread/resume` 显式传 `cwd` 即找到；首条相关回答命中原会话算出的代号和工具读到的「甲」。续接前 `thread/turns/list` 就返回原回合（摘要视图），历史不为空 |
+| 4 | Claude Code 会话导入 | **通过** | `externalAgentConfig/import` 返回 `successes[0].target`，续接后首条回答命中原会话里工具读到的事实。长会话：导入的历史超过自动压缩阈值时，第一个回合开头就先压缩（阈值调低到 20000 实测）；`gpt-6-luna` 默认阈值是 244800 token，一般的会话不会触发 |
+| 5 | 远程直连 | **通过** | 本机 `ssh -L` + `qmcode resume --remote … --remote-auth-token-env …` 接上 p4 上的线程，界面显示完整历史；界面里的输入在 p4 上经 code mode 执行（`hostname` 返回 p4 的主机名），p4 本机的第二个连接收到这个回合的全部事件；第二个连接随后开的回合也显示在界面上。本次自动化驱动时界面要按两次回车才提交，见第 5 项 |
 | 6 | fork 内置配置 | **有条件通过** | 上游已有「随二进制内置的默认配置层」：`codex-rs/config/defaults.toml` 编译进二进制，优先级最低。MCP 在首个线程启动时即被拉起，用户层 `enabled = false` 能关掉。条件：用户文件里**只写** `enabled = false` 会让 `qmcode mcp add/remove` 报错，文档必须给完整写法；`notify` 是数组，用户自设会整体顶掉内置值 |
-| 7 | 回合结束后会话文件何时落盘完整 | **通过**（得出 P17.4 规则） | 4 个回合全部是：`task_complete` 行落盘 → 0.6–2.1 ms 后收到 `turn/completed` → 再过 0.4–15.6 ms notify 回调进程起来；之后 15 s 内零写入。代码不保证这个先后顺序，所以 P17.4 **按内容判完整**（找本回合的 `task_complete` 行），不用「大小与 mtime 稳定」的计时窗口 |
+| 7 | 回合结束后会话文件何时落盘完整 | **通过**（得出 P17.4 规则） | 本机 4 个回合全部是：`task_complete` 行落盘 → 0.6–2.1 ms 后收到 `turn/completed` → 再过 0.4–15.6 ms notify 回调进程起来；之后 15 s 内零写入。p4 补测 1 个回合，顺序相同（B − A 7.5 ms，C − B 10.0 ms）。代码不保证这个先后顺序，所以 P17.4 **按内容判完整**（找本回合的 `task_complete` 行），不用「大小与 mtime 稳定」的计时窗口 |
 
 ---
 
@@ -69,6 +69,9 @@ qmcode exec resume --json --skip-git-repo-check -c 'model_reasoning_effort="<档
 | A | 直连网关 | `max` / `max` | 二进制内置（`gpt-6-luna` 为 `code_mode_only`） |
 | B | 经本机录制反代到同一网关 | `low` / `max` | `model_catalog_json` 覆盖：内置条目原样，只把 `tool_mode` 改为 `direct` |
 | C | 同 B | `max` / `max` | 同 B |
+| A′（辅助程序补上后重跑） | 直连网关 | `max` / `max` | 二进制内置（同 A），无 `tool_mode` 覆盖 |
+
+A′ 与 A 用同一个 qmcode（sha256 `4bec959f…ad4f7b`），只在它旁边放了本机编的 `codex-code-mode-host`（同一源码，`cargo build --release --locked --bin codex-code-mode-host`，sha256 `81e79b19…08a5bd`），配置、工作目录内容、两轮提示词都与 A 相同。
 
 录制反代是一个只绑 `127.0.0.1` 的 Bun 小程序：把请求原样转给网关，记录请求体和 SSE 响应流，请求头只记名字，不记值，所以 `Authorization` 不落盘。反代进程本身不持有 key。
 
@@ -79,6 +82,9 @@ qmcode exec resume --json --skip-git-repo-check -c 'model_reasoning_effort="<档
 | A | 5 | 未录制；5 次都完成，`exec` 退出码 0 | 模型发起 3 次 `exec`（code mode 的自由格式工具），3 次都报 `failed to spawn code-mode host …/codex-code-mode-host: No such file or directory`；`app.cfg` 未改 | 「当前命令环境无法启动，未能读取 notes.txt」 | 「前文没有提供」（与轮 1 一致） |
 | B | 4 | 全部 200，`response.completed` | `exec_command` 读文件、`sed` 改文件、`cat` 确认；`app.cfg` 改为 `release = 2.4.9` | 「青石-7731」 | 「林望舒；2.4.9」，未运行命令 |
 | C | 4 | 全部 200，`response.completed` | 同 B | 「青石-7731」 | 「林望舒；2.4.9」，未运行命令 |
+| A′ | 5（轮 1 4 次，轮 2 1 次） | 未录制；两轮 `exec` 退出码都是 0 | 模型发起 3 次 code mode 的 `exec`（脚本里调 `tools.exec_command`：`cat notes.txt`、`perl -pi` 改文件、`cat app.cfg`），3 次都返回 `Script completed` 和真实输出；`app.cfg` 改为 `release = 2.4.9` | 「青石-7731」 | 「林望舒；2.4.9」，未运行命令 |
+
+A′ 结束后没有残留的 `codex-code-mode-host` 进程。
 
 从 B、C 的录制看到的线上形态：
 
@@ -87,62 +93,136 @@ qmcode exec resume --json --skip-git-repo-check -c 'model_reasoning_effort="<档
 - 无状态多轮：C 的第 2、3 次请求（同一回合内）和第 4 次请求（`exec resume` 新进程）把此前每个响应里的 reasoning 项原样放回 `input`。第 4 次请求带回 3 个 reasoning 项，`encrypted_content` 与当初的响应**逐字节一致**（1764 / 1676 / 1508 字节），网关回 200 并正常完成。
 - A 没有录制线上请求体。从它的 rollout 看：工具虽然失败，`custom_tool_call` 与 `custom_tool_call_output`（错误文本）之后的请求都正常完成；5 次请求都产出了带 `encrypted_content` 的 reasoning 项。
 
-### 结论：有条件通过
+### 结论：通过（辅助程序补上后）
 
 - **网关：通过。** 多轮、工具调用、无状态回传 `encrypted_content`、effort 档位都已端到端跑通。计划 §6 第一条风险（网关不提供 Responses API）可以关闭，不需要另立兼容层工作包。
-- **条件：qmcode 产物缺 `codex-code-mode-host`。** 二进制内置目录（`codex-rs/models-manager/models.json`）里 `gpt-6-luna` 的 `tool_mode` 是 `code_mode_only`，同目录里的 gpt-6 / gpt-5.6 系列也都是。这种模式下工具调用由独立进程 `codex-code-mode-host` 执行；找不到它时不回退到普通工具，而是直接失败（「Code mode will fail closed」）。qmcode 按 `install-context/src/lib.rs` 的 `code_mode_host_program` 查找：先找包布局里的 `codex-resources/`，再找 qmcode 可执行文件所在目录。P17.1 的本机构建与 `qianmo/build-linux.sh` 都只编 `--bin qmcode`，Linux 产物同样缺这个文件。两种修法：
-  1. **建议**：构建时一起出 `codex-code-mode-host`（`cargo build --release --locked --bin qmcode --bin codex-code-mode-host`），与 qmcode 放同一目录；产物命名、`.sha256`、部署树 `qmcode/` 目录都按两个文件处理。工具面与上游对这个模型的设定一致。
-  2. 临时绕过：在内置配置或节点配置里用 `model_catalog_json` 把 `gpt-6-luna` 覆盖为 `tool_mode = "direct"`（本次 B、C 就是这样跑通的）。代价是目录要随上游手工同步，且偏离了模型的默认工具面。
-- 未验证：code mode 带真实执行输出时的回传（缺辅助二进制，没法跑）。
+- **v0.1 的条件已解除。** 二进制内置目录（`codex-rs/models-manager/models.json`）里 `gpt-6-luna` 的 `tool_mode` 是 `code_mode_only`，同目录里的 gpt-6 / gpt-5.6 系列也都是。这种模式下工具调用由独立进程 `codex-code-mode-host` 执行，找不到它时不回退普通工具，直接失败（「Code mode will fail closed」，A 就是这样）。按主 agent 裁定，fork 提交 `90e00225c6` 让产物带上它：`qianmo/build-linux.sh` 与 workflow 编 `qmcode`、`codex-code-mode-host` 两个 bin，都剥离、都出 `.debug`，放进同一个产物目录；辅助程序不改名。补上后 A′ 在内置目录、直连网关下跑通了带工具的两轮任务，code mode 的真实执行输出随历史回传给网关，第二轮答对。不再需要 B、C 那样的 `tool_mode = "direct"` 目录覆盖。
+- **查找逻辑**（读源码，`install-context/src/lib.rs` 的 `code_mode_host_program`）：先找包布局 `<包>/codex-resources/` 或 `$QMCODE_HOME/packages/standalone/releases/<版本>/codex-resources/`，再找 qmcode 可执行文件所在目录（`current_exe()` 的父目录）；没有环境变量或配置项能另指路径。Linux 上 `current_exe()` 读 `/proc/self/exe`，经软链接调用时找的是真实文件旁边（p4 上的两个 app-server 都经软链接 `bin/qmcode` 启动，辅助程序只在真实文件旁边；第 5 项里 code mode 的工具调用正常，停测试实例前进程表里的辅助程序子进程路径也是真实文件旁边那个）。部署要求：两个文件同一目录，一个版本一个目录。
+- **构建上新发现的坑**：`codex-code-mode-host` 链接 V8，工作区开了 `v8_enable_sandbox`，v8 的构建脚本默认去 denoland 下 `ptrcomp_sandbox` 变体的预编译库，那边没有这个变体（404），直接 `cargo build --bin codex-code-mode-host` 会失败。fork 新增 `qianmo/fetch-rusty-v8.sh`，照上游 `.github/actions/setup-rusty-v8` 从上游 `openai/codex` 的 `rusty-v8-v150.4.0` 发行取预编译库，并按仓库内的清单校验；本机与 Linux 构建都用它。qmcode 本身不链接 V8。
+- **Linux 产物**：fork 的 workflow 由推送 `qianmo/build/p171-helper` 分支触发，run `37123317219`，编译 44 min 50 s（整个 job 约 47 min）。产物目录 7 个文件；`.sha256` 的四行在本机全部校验通过，传到 p4 的两个程序在 p4 上再校验一次也通过（`.debug` 没传到节点）。
+- 未验证：effort 只测了 `low`、`max`；「生效」的依据是网关回显和 reasoning token 数的差别，不是回答质量评估。
 
-## 第 2–5 项：待真机，计划在节点 p4 上做
+## 第 2 项：app-server 在节点常驻
 
-以下为计划用的命令，均未执行。节点上的 qmcode 同样要带 `codex-code-mode-host`（见第 1 项），否则改用目录覆盖。
+### 做法
 
-**第 2 项 app-server 常驻（含 gVisor 沙箱内）**
+- 部署：产物目录 `qmcode-rust-v0.158.0-90e00225c6-x86_64/` 整个放到 p4 的 `~/qianmo-2b/qmcode/`（0700），按 `.sha256` 校验 `qmcode` 与 `codex-code-mode-host`；`~/qianmo-2b/qmcode/bin/qmcode` 是指向产物目录里 `qmcode` 的软链接，辅助程序只在产物目录里。辅助程序动态链接 `libssl.so.3`、`libcrypto.so.3`、`libz.so.1`、`libzstd.so.1` 等，Debian 13 都自带。
+- 端口：先用 `ss -ltnp` 看已有监听，选 18472（常驻实例）和 18473（第 4、5、7 项用的短期测试实例），不碰 beta-5 的 38625。
+- 启动常驻实例（`HOME` 指向临时目录，第 4 项要用它下面的 `.claude/projects/`）：
 
-```sh
-install -d -m 700 "$QMCODE_HOME"; umask 077; openssl rand -hex 32 > <令牌文件>
-QMCODE_HOME=<…> qmcode app-server --listen ws://127.0.0.1:<端口> \
-  --ws-auth capability-token --ws-token-file <令牌文件>
-# 24 h 内每 5 min 记一次，另记进程 RSS
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<端口>/readyz
-# gVisor 内能否建 user namespace、bwrap 能否起来
-unshare -Ur true; echo $?
-qmcode sandbox linux -- true   # 子命令写法以节点上 `qmcode sandbox --help` 为准
-```
+  ```sh
+  umask 077; openssl rand -hex 32 > <令牌文件>
+  HOME=<临时 HOME> QMCODE_HOME=<状态目录> setsid nohup ~/qianmo-2b/qmcode/bin/qmcode app-server \
+    --listen ws://127.0.0.1:18472 --ws-auth capability-token --ws-token-file <令牌文件> </dev/null &
+  ```
 
-本机已验证的部分（macOS，非节点）：该命令只监听 `127.0.0.1`；不带令牌的 WebSocket 升级请求返回 401；`/readyz` 返回 200；进程停止后端口释放。另外，每个新的 `QMCODE_HOME` 首次启动时会从 GitHub 克隆 `openai/plugins` 到 `.tmp/plugins`（本机约 89 MB），失败时改走 GitHub API，再失败走 `chatgpt.com` 的备份包（`core-plugins/src/startup_sync.rs`）。小内存、小磁盘的节点要把这项算进去；`[features] plugins = false` 能否关掉它，读代码是能（`core-plugins/src/manager.rs` 的 `maybe_start_curated_repo_sync_for_config` 以 `plugins_enabled` 为前提），未实测。
+  `config.toml` 与第 1 项相同，另加 `sandbox_mode = "danger-full-access"`（p4 没有 bwrap，见下）、`notify`（第 7 项的 perl 记录器）和 `[features] plugins = false`。模型 key 由本机经 ssh 的标准输入送到远端子 shell，`read` 进环境变量，由 app-server 继承。
+- 采样：一个 bash 脚本每分钟整点 `curl http://127.0.0.1:18472/readyz` 一次，记 HTTP 码与耗时、进程是否在、app-server 及其子孙进程的 `VmRSS` / `RssAnon` / `RssFile`、机器的 `MemAvailable`。脚本用 `env -u OPENAI_API_KEY setsid nohup` 起，环境里没有 key 变量；到 24 h（2026-10-04 13:27:20 UTC）自己退出。app-server 不会跟着退出，要另外停。
+- 沙箱：查 `runsc`、`bwrap`、`kernel.unprivileged_userns_clone`、`user.max_user_namespaces`，跑 `unshare -Ur true`。不装系统包：只把 Debian 官方源里的 `bubblewrap` 包下载到用户目录，`dpkg-deb -x` 解开后放进 `PATH`，再用 `qmcode sandbox -P <档位> -C <工作目录> -- sh -c '…'` 在工作目录内外各写一个文件。
 
-**第 3 项 会话跨机**
+### 结果
 
-```sh
-# 本机 → 节点：原样拷贝一份 rollout JSONL
-scp ~/.qmcode/sessions/YYYY/MM/DD/rollout-*-<threadId>.jsonl <节点>:<QMCODE_HOME>/sessions/YYYY/MM/DD/
-# 节点上经 WebSocket：initialize → initialized
-#   → thread/resume {threadId, cwd: <节点工作目录>}
-#   → thread/turns/list {threadId}   记录历史是否为空（paginated 投影尚未生成时）
-#   → turn/start 问一个只有原会话里才有的事实，按 AC-H2 判是否命中
-```
+| 检查 | 结果 |
+|---|---|
+| 监听 | 只有 `127.0.0.1:18472`；启动后第 2 次轮询 `/readyz` 即 200 |
+| 鉴权 | 不带令牌、带错令牌的 WebSocket 升级请求都返回 401 |
+| key | 启动前后 `ps -eo args` 里 key 都出现 0 次；采样进程的环境里没有 key 变量 |
+| 插件目录 | `[features] plugins = false` 后状态目录里没有 `.tmp/plugins`（v0.1 本机每个新目录约 89 MB）；p4 上本次的整个工作目录 15 MB |
+| `/readyz` | 截至 14:49 UTC（起跑后 82 min）84 次采样全部 200，耗时 0.6–4.1 ms |
+| 内存：常驻实例 | 刚起 87.7 MB；第 3 项一个回合后 144.5 MB，之后空闲时缓慢升到 147.1 MB 并持平（采样最大 147.2 MB）。其中匿名内存只有 20–22.5 MB，其余约 124 MB 是 `RssFile`：278 MB 的可执行文件被映射进来的干净页（smaps 里 `Private_Clean` 116 MB）。18 个线程；这个实例只跑了第 3 项，没有调工具，没有子进程 |
+| 内存：测试实例 | 刚起 81.8 MB（匿名 11.3 MB）；第 4、4b、7、5 项之后依次是 140.6 / 146.9 / 150.3 / 167.2 MB，匿名 21.2 / 26.5 / 28.0 / 36.1 MB。这个实例没有挂采样，数字是每项做完时读的。第 5 项调过工具后有一个 `codex-code-mode-host` 子进程，它的内存没有单独记。做完第 5 项后停掉，端口释放，无残留进程 |
+| 机器余量 | 内存 1973 MB，`MemAvailable` 最低 888 MB |
 
-**第 4 项 Claude Code 会话导入**
+| 沙箱检查 | 结果 |
+|---|---|
+| 虚拟化 / gVisor | p4 是 KVM 虚拟机，没有 `runsc`。**gVisor 未测** |
+| user namespace | `unprivileged_userns_clone=1`，`max_user_namespaces=7676`，`unshare -Ur true` 返回 0 |
+| 不装 bwrap 时 | 系统没有 bwrap。`qmcode sandbox -P :read-only` 和 `-P :workspace` 都直接 panic：`bubblewrap is unavailable: no system bwrap was found on PATH and no bundled codex-resources/bwrap binary was found next to the Codex executable`。只有 `-P :danger-full-access` 能跑。读代码：旧的 Landlock 模式（`features.use_legacy_landlock`）只接受全盘可写的策略，要限制文件系统同样需要 bwrap（`linux-sandbox/src/linux_run_main.rs`），没有不靠 bwrap 的退路 |
+| 取 bwrap | `apt-get download bubblewrap` 失败：p4 的 apt 索引里的候选 `0.11.0-2+deb13u1` 已从源上撤下（404）。没有 `apt-get update`（不改系统），直接从 `deb.debian.org` 的 pool 取 `bubblewrap_0.12.0-1~deb13u1_amd64.deb`（sha256 `70aca4fa…24c43431`） |
+| 普通用户跑 bwrap | `bwrap --unshare-user --unshare-pid --unshare-net … id` 返回 0 |
+| 带 bwrap 的 qmcode 沙箱 | `:read-only`：工作目录内外写文件都报 `Read-only file system`。`:workspace`：工作目录内可写，外面报 `Read-only file system`。都符合预期 |
 
-```sh
-# 改写 JSONL 每行的 cwd 为节点工作目录，放到 app-server 进程的 $HOME/.claude/projects/qianmo-import/
-# 经 WebSocket：externalAgentConfig/import（SESSIONS 项 {path, cwd, title}）
-#   → 等完成通知，取 successes[0].target 作 threadId
-#   → thread/resume → turn/start，按 AC-H2 判；记录首个回合是否立即触发压缩
-```
+### 结论：有条件通过
 
-**第 5 项 远程直连**
+- **常驻与鉴权：通过（24 h 还在跑）。** 经软链接起的 app-server 只听回环地址，能力令牌鉴权生效，key 不进命令行参数，`/readyz` 前 82 min 全部 200。24 h 的结论等采样结束后补。
+- **沙箱：p4 上按计划卡退路处理。** p4 不是 gVisor，没有 bwrap，app-server 两个实例都用 `danger-full-access`，只靠外层隔离。只要节点上有 bwrap（系统包，或随产物放 `codex-resources/bwrap`），这类 KVM 节点上普通用户就能建 user namespace，`read-only`、`workspace` 两档都能用。gVisor 内能否建 user namespace 本次答不了。
+- **内存上限的口径要定。** 按 `VmRSS` 算：常驻实例空闲约 147 MB，离 150 MB 只差 3 MB；测试实例第 7 项后 150.3 MB 已到线，第 5 项调过工具后 167.2 MB，超了，当时没有立即停，做完第 5 项才停。按匿名内存算：常驻约 22 MB，测试实例最多 36 MB，远低于上限。`VmRSS` 的大头是可执行文件的干净页，内存紧张时内核可以回收，不代表进程真占了这么多。采样脚本起初按 `VmRSS` 判停；13:34 UTC 起改为「app-server 与子孙进程的匿名内存合计超过 150 MB，或机器 `MemAvailable` 低于 300 MB」就停，`VmRSS` 照记，等裁定。
+- **`[features] plugins = false` 实测有效**（v0.1 只读了代码），节点上应加上。
 
-```sh
-# 另一台机器
-ssh -N -L <本地端口>:127.0.0.1:<端口> <节点> &
-QMCODE_REMOTE_TOKEN="$(ssh <节点> cat <令牌文件>)" \
-  qmcode --remote ws://127.0.0.1:<本地端口> --remote-auth-token-env QMCODE_REMOTE_TOKEN
-# 同时让节点桥（或本次的 WebSocket 驱动脚本）resume 同一线程；判据：两个连接都收到事件，界面输入被执行
-```
+## 第 3 项：会话跨机续接
+
+### 做法
+
+1. 本机造会话：本机 qmcode（带辅助程序）在临时 `QMCODE_HOME` 下 `qmcode exec` 一轮。工作目录里的 `rules.txt` 写着代号规则（城市表第 3 个城市，接「甲 + 乙」的和；甲 = 1729，乙 = 4096），要求用 shell 读文件后回答代号。回答「代号是金陵-5825。」，rollout 46235 字节。
+2. 把这份 rollout 原样拷到 p4 常驻实例全新的 `QMCODE_HOME/sessions/2026/10/03/`，两边 sha256 一致（`44bfd8b6…5c0050`）。p4 上的工作目录 `work3` 是空目录，`rules.txt` 不在节点上。
+3. p4 本机经 WebSocket：`initialize` → `initialized` → `thread/resume {threadId, cwd: <p4 的 work3>, approvalPolicy: "never", sandbox: "danger-full-access"}` → `thread/turns/list {threadId, limit: 50}` → `turn/start`（「这一轮不要运行任何命令，也不要读任何文件，只凭本会话前面的内容回答两个问题：刚才按 rules.txt 的规则算出的代号是什么？rules.txt 里「甲」的值是多少？」）→ 再 `thread/turns/list`。
+
+### 结果
+
+- `thread/resume` 直接找到线程，返回 p4 上那份 rollout 的路径，`cwd` 是 p4 的 work3；带回 1 个回合的全部条目（用户消息、两条助手消息、`commandExecution` 及其输出）。
+- 续接前的 `thread/turns/list` 返回 1 个回合，只含用户消息和最后一条助手回答（摘要视图，没有中间的命令执行），**不为空**；续接后返回 2 个回合。
+- 回答「代号是金陵-5825；「甲」的值是 1729。」，回合 4.0 s，没有执行命令。「甲」只出现在原会话里工具读到的文件内容中，按 AC-H2 判命中。
+- 新回合追加在同一个文件里（46235 → 59957 字节），没有另起文件；notify 触发 1 次。
+
+### 结论：通过
+
+- 跨机续接只需要把 rollout 原样放进 `sessions/YYYY/MM/DD/`，`thread/resume` 显式传节点上的 `cwd`。原会话里的本机路径（`turn_context` 的 `cwd`、命令里的 shell）不影响续接。
+- 「远程界面翻历史是否为空」：不为空。在全新的 `QMCODE_HOME` 里，第一次续接之前 `thread/turns/list` 就能返回回合（摘要视图）；界面接入后显示完整历史，实测见第 5 项（那个线程是导入来的，不是拷来的 rollout）。
+
+## 第 4 项：Claude Code 会话导入
+
+### 做法
+
+1. 造会话：本机在临时目录用 `claude -p`（Claude Code 2.1.288）新开一个不含敏感内容的会话。工作目录里的 `rules.txt` 写着另一条规则（星宿表第 4 个星宿名，接「甲 × 乙」的积；甲 = 37，乙 = 211），回答「代号是 **房-7807**」。
+2. 裁剪与改写：原始 JSONL 40 行，其中有 22 行 `attachment`（带 CLAUDE.md 等本机上下文）和若干其他非对话记录。只保留 8 行 `user` / `assistant`，每行的 `cwd` 改为 p4 上的工作目录（空目录），放进 app-server 进程 `$HOME/.claude/projects/qianmo-import/`（`HOME` 是临时目录）。
+3. 再造一份长会话：同一段对话后面接 30 对无关的填充问答（每对约 4 KB），共 68 行、138743 字节。
+4. p4 本机经 WebSocket：`externalAgentConfig/import {migrationItems: [{itemType: "SESSIONS", details: {sessions: [{path, cwd}]}}]}` → 等 `externalAgentConfig/import/completed` → 取 `successes[0].target` → `thread/resume {threadId, cwd, …}` → `turn/start` 问只有原会话工具结果里才有的事实。长会话续接时另带 `config: {"model_auto_compact_token_limit": 20000}`，把阈值压到它的长度以下。
+5. 第 4、5、7 项都在短期测试实例（18473）上做，常驻实例留给 24 h 采样。
+
+### 结果
+
+- 导入：请求立即返回 `importId`；`import/completed` 里 `SESSIONS` 成功 1、失败 0，`target` 就是新线程 id，标题取第一条用户消息。
+- 导入后的线程：1 个回合 `external-import-turn-1`，7 个条目。用户消息原样；原会话的两次工具调用和结果各变成一条助手消息（`[external_agent_tool_call: Bash] …`、`[external_agent_tool_result] …`）；然后是原来的回答；末尾加一条 `<EXTERNAL SESSION IMPORTED>`。工具调用里的本机绝对路径原样保留，我们只改写了记录的 `cwd` 字段。原会话第一次工具结果是 macOS `cat -v` 的转义输出，导入后也是这样（乱码在原文件里就有，不是导入造成的）。
+- 续接：回答「刚才算出的代号是房-7807；「乙」的值是 211。」，没有执行命令，按 AC-H2 判命中。这个回合从开始到第一个输出等了 103 s（推理 token 0，输出 25 token，app-server 日志里没有重试记录），原因未查；本次其余回合都在 10 s 内。
+- 长会话：导入后 31 个回合。续接后的第一个回合一开始就是 `contextCompaction` 条目，压缩请求的输入 39209 token，用时 5.8 s，随后收到告警「Heads up: Long threads and multiple compactions can cause the model to be less accurate…」；再回答「房-7807」，事实在压缩后保留。整个回合 8.2 s。
+
+### 结论：通过
+
+- 导入链路按计划卡的写法可用，`successes[0].target` 就是可续接的 thread id。读代码：会话文件必须在 app-server 进程 `$HOME/.claude/projects` 下；`cwd` 取第一条带 `cwd` 的记录，必须是节点上存在的目录。
+- 「长会话是否一上来就触发压缩」：看导入的历史是否超过自动压缩阈值。阈值 = min(配置的 `model_auto_compact_token_limit`, 上下文窗口 × 90%)（`protocol/src/openai_models.rs` 的 `auto_compact_token_limit`）。`gpt-6-luna` 的窗口是 272000，默认阈值 244800 token。超过时第一个回合先压缩再回答（本次把阈值调低后实测）；本次的长会话约 39k token，按默认阈值不会压缩。
+- 导入只读 `user` / `assistant` 记录（读代码），但整个文件会留在节点上。我们放过去的是只留对话记录的版本，P17.x 往节点送会话时也应先这样裁剪。
+
+## 第 5 项：远程直连
+
+### 做法
+
+- 节点侧：用 p4 测试实例上第 4 项导入的线程。p4 本机起第二个 WebSocket 连接（Bun 写的小程序，下称「桥」）：`thread/resume {threadId, cwd: <p4 的 work5>, approvalPolicy: "never", sandbox: "danger-full-access", excludeTurns: true}`，记下收到的全部通知；界面那个回合结束 5 s 后，桥自己 `turn/start` 一个回合。
+- 本机：`ssh -N -L 28472:127.0.0.1:18473 p4`。令牌经 ssh 读进本地 shell 变量，再 `export QMCODE_REMOTE_TOKEN`，不打印、不落盘。界面用本机 macOS 的 qmcode（与节点同为 0.158.0），临时 `QMCODE_HOME`，配置里审批 `never`、沙箱 `danger-full-access`，不载入模型 key：
+
+  ```sh
+  qmcode resume --remote ws://127.0.0.1:28472 --remote-auth-token-env QMCODE_REMOTE_TOKEN <threadId>
+  ```
+
+  界面在 160×48 的伪终端里由 expect 驱动：等历史出现 → 等状态栏出现模型名 → 输入「Use your shell tool to run the command hostname, then reply with its exact output only.」并回车 → 等回答 → 等桥那个回合的回答 → Ctrl-C 退出 → 关隧道。
+
+### 结果
+
+- 第 1 次实跑（13:39 UTC）：历史 5 s 内出现；输入后回车，文字留在输入框里没有提交，没有回合、没有模型调用。随后本机电量低进入睡眠（13:43–14:26），桥 15 min 后超时退出。这次作废。
+- 第 2 次实跑（14:29 UTC，接电源并 `caffeinate`）：
+  - 界面 6 s 内显示完整历史（导入的用户消息、工具调用说明、第 4 项那一轮问答），状态栏显示 `GPT-6-Luna` 和 `permissions: YOLO mode`，工作目录显示 p4 上的 work5（由桥的 resume 设置）。
+  - 第一次回车后 15 s 内没有回合开始，第二次回车才提交。
+  - 提交后 2 s，界面显示「Ran hostname」和 p4 的主机名。p4 上：code mode 的 `exec` 脚本调 `tools.exec_command({cmd: "hostname"})`，`commandExecution` 为 `/bin/bash -lc hostname`，退出码 0。
+  - 桥收到这个回合的全部事件：`turn/started`、用户消息、推理、两条助手消息、`commandExecution` 的开始与完成（含输出）、两次 `thread/tokenUsage/updated`、`turn/completed`。
+  - 桥 5 s 后开的回合（让模型只回答「6 乘以 7 再加 5500」，不跑命令）在界面上显示了提问和回答「5530」。模型算错了（应为 5542），这里判的是事件到达，不是答案对错。
+  - Ctrl-C 后界面退出；关隧道后本地端口释放。
+- 回合期间桥还看到另一个线程的 `thread/started`，约 3 s 后转为空闲，随后本线程收到 `thread/name/updated`。notify 也为那个线程触发了一次，它没有 rollout 文件。推测是界面触发的自动起标题临时线程，未核实。
+- 显示遗留：界面标题框写 `OpenAI Codex (v0.158.0)`；退出时提示 `Reconnect: codex --remote … resume <threadId>`，命令名应为 `qmcode`；app-server 启动横幅写 `codex app-server (WebSockets)`。
+
+### 结论：通过
+
+- 两个连接同时接在同一线程上，各自都收到对方回合的事件；界面输入在节点上执行。AC-H4 的前提成立。
+- 读代码（`tui/src/app_server_session.rs` 的 `thread_resume_params_from_config`）：远程模式下 resume 不带审批和沙箱，沿用节点上线程已保存的设置；`cwd` 只在给了 `--cd` 时才带。`turn/start` 的参数里有 `cwd`、审批和权限，由界面会话里的当前值填，来源未逐一核对。本次本机配置与节点线程一致，实测区分不出两者；不一致的情形未测。
+- 「要按两次回车」原因未查。疑与界面把一次性写入的整段文字当作粘贴处理有关；手工输入时是否也这样未测。P17.6 的用例要覆盖。
 
 ## 第 6 项：fork 内置配置
 
@@ -214,7 +294,9 @@ A = `task_complete` 行写入时刻（文件 mtime）；B = 客户端收到 `tur
 | run1（perl） | 2 | 0.57 | 5.51 | 4.94 | 是 | 是 | 否 | 2.40 |
 | run2（C） | 1 | 0.79 | 1.16 | 0.37 | 是 | 是 | 否 | 2.21 |
 | run2（C） | 2 | 2.10 | 3.57 | 1.47 | 是 | 是 | 否 | 5.52 |
+| p4（perl，Linux） | 1 | 7.51 | 17.46 | 9.95 | 是 | 是 | 否 | 16.00 |
 
+- p4 补测（v0.2）：p4 的短期测试实例，产物 `90e00225c6`，二进制内置目录（code mode，带辅助程序），notify 用同一个 perl 记录器，1 个回合（读 `data.txt` 第二行）。模型没有调工具，直接回答「无法直接读取当前目录的文件」，不影响回合末时序的测量。2 ms 轮询在收到 `turn/completed` 之前 4.0 ms 就看到了 `task_complete` 行；没看到半行。先后顺序与本机相同，各段间隔比本机长几毫秒。
 - run1 的 notify 快照与最终文件的同长前缀逐字节一致。
 - 轮询从未看到半行。
 - 回合末的写入顺序固定为 `token_usage_record` → `event_msg/token_count` → `event_msg/task_complete`。`task_complete` 带 `turn_id`，与 notify 载荷里的 `turn-id`、`turn/completed` 里的 `turn.id` 相同。
@@ -229,7 +311,7 @@ A = `task_complete` 行写入时刻（文件 mtime）；B = 客户端收到 `tur
 ### 结论：通过；P17.4 的同步规则
 
 1. **不用「大小与 mtime 稳定」的计时窗口。** 回合末 `task_complete` 之后 15 s 内零写入，计时窗口没有收益；回合中途模型思考时文件可能几秒不变，计时窗口反而会把未完成的回合当成稳定。
-2. **按内容判完整，短等待。** 以 notify 载荷的 `turn-id`（或 `turn/completed` 的 `turn.id`）为键，读到 `event_msg` 且 `payload.type` 为 `task_complete`（中断时为 `turn_aborted`）、`payload.turn_id` 相同的行，才算本回合已落盘。没读到就每 10 ms 重读，上限 2 s；超时仍按最后一个完整行同步，台账标「未完整」，下一次 notify 再补。本次实测需要的等待是 0 ms（4/4）。
+2. **按内容判完整，短等待。** 以 notify 载荷的 `turn-id`（或 `turn/completed` 的 `turn.id`）为键，读到 `event_msg` 且 `payload.type` 为 `task_complete`（中断时为 `turn_aborted`）、`payload.turn_id` 相同的行，才算本回合已落盘。没读到就每 10 ms 重读，上限 2 s；超时仍按最后一个完整行同步，台账标「未完整」，下一次 notify 再补。本次实测需要的等待是 0 ms（本机 4/4，p4 1/1）。notify 也会为没有 rollout 文件的临时线程触发（第 5 项），找不到这个线程的会话文件就跳过，不算失败。
 3. **只同步到最后一个换行符。** 写入不是原子的，本次虽没见半行，规则上不依赖它。
 4. **去抖用尾沿。** notify 即发即忘，回合紧挨着时会连续触发；计划里 5 s 去抖必须保证最后一个回合会被同步。
 5. **`qm handoff now`**：回「可以关机」前，最近一个 `task_started` 必须已有同 `turn_id` 的 `task_complete` 或 `turn_aborted`，否则提示「回合进行中」。这是 AC-H1「会话记录已完整落地」在会话一侧的判据。
@@ -241,18 +323,26 @@ A = `task_complete` 行写入时刻（文件 mtime）；B = 客户端收到 `tur
 
 | 回写到 | 内容 |
 |---|---|
-| 计划 P17.1 卡、fork `QIANMO.md`（第 6、7 节） | 产物增加 `codex-code-mode-host`：`build-linux.sh` 与 workflow 编两个 bin，产物命名、`.sha256`、部署树 `qmcode/` 都按两个文件处理；完成标准加「带工具调用的 `qmcode exec` 跑通」。或者明确选第 1 项的目录覆盖作为绕过 |
+| 计划 P17.1 卡、fork `QIANMO.md` | **产物部分已在 fork 做完**（`90e00225c6`，`QIANMO.md` 第 2、4、6、7、9 节已同步）：产物目录里 `qmcode` 与 `codex-code-mode-host` 并列，各带 `.debug`，`.sha256` 四行；V8 预编译库经 `qianmo/fetch-rusty-v8.sh` 从上游发行取并校验。卡上的完成标准可加「带工具调用的 `qmcode exec` 跑通」（第 1 项 A′）。还剩的显示遗留：界面标题 `OpenAI Codex`、退出时的重连提示 `codex --remote …`、app-server 启动横幅 `codex app-server`、若干帮助文本 |
 | `handoff-m1.md` §2「要改的」第 2 条 | 改为「往上游已有的 `codex-rs/config/defaults.toml` 加两项」；补「用户关闭须写完整表」「用户自设 notify 会顶掉内置值」 |
-| 计划 P17.3 卡（fork 部分） | `defaults.toml` 内容按第 6 项结论；顺带加 `check_for_update_on_startup = false`（`QIANMO.md` 待办）；节点是否加 `[features] plugins = false` 待实测；完成标准加「`qm handoff mcp` 可并发多实例」「`qm handoff sync` 不记录环境变量」 |
-| 计划 P17.4 卡 | 第 7 项的 6 条规则：按 `turn_id` 判完整、10 ms / 2 s、截到最后一个换行、尾沿去抖、`now` 的「回合进行中」检查 |
-| 计划 P17.5 卡 | 节点上的 qmcode 同样需要辅助二进制；`turn/completed` 后用同一判据；新 `QMCODE_HOME` 首次启动会从 GitHub 克隆约 89 MB 的插件目录 |
-| 计划 §6 风险表 | 「网关不提供 Responses API」一行可关闭 |
+| 计划 P17.3 卡（fork 部分） | `defaults.toml` 内容按第 6 项结论；顺带加 `check_for_update_on_startup = false`（`QIANMO.md` 待办）；节点加 `[features] plugins = false`（第 2 项已实测有效）；完成标准加「`qm handoff mcp` 可并发多实例」「`qm handoff sync` 不记录环境变量」 |
+| 计划 P17.4 卡 | 第 7 项的规则：按 `turn_id` 判完整、10 ms / 2 s、截到最后一个换行、尾沿去抖、`now` 的「回合进行中」检查；notify 指向没有会话文件的临时线程时跳过 |
+| 计划 P17.5 卡 | ① 沙箱：节点要么带 bwrap（系统装 `bubblewrap`，或随产物放 `codex-resources/bwrap`），要么定为 `danger-full-access` 只靠外层隔离；KVM 上的 Debian 13 普通用户能用 bwrap。② 部署：两个文件同一目录，可经软链接调用。③ 内存：150 MB 上限要写明按 `VmRSS` 还是匿名内存 / PSS；按 `VmRSS` 常驻空闲约 147 MB，调过工具约 167 MB，大头是可回收的文件页。④ 续接：拷来的 rollout 放进 `sessions/YYYY/MM/DD/`，`thread/resume` 显式传 `cwd` 即可。⑤ 导入：app-server 进程的 `HOME` 决定 Claude Code 会话目录；送到节点的会话先裁成只含 `user` / `assistant` 记录；工具调用里的本机路径不会被改写。⑥ 导入的历史超过压缩阈值时，第一个回合先压缩（多几秒，会出告警）。⑦ `turn/completed` 后用第 7 项的同一判据 |
+| 计划 P17.6 卡 | 接入命令用 `qmcode resume --remote ws://127.0.0.1:<本地端口> --remote-auth-token-env <变量> <threadId>`；不传 `--cd` 就不改线程的 `cwd`；本机配置的审批 / 沙箱与节点不一致时的行为要进用例；本次自动化驱动时要按两次回车才提交，用例要覆盖 |
+| 计划 §6 风险表 | 「网关不提供 Responses API」一行可关闭；「gVisor 内 bwrap 不可用」仍开着（gVisor 未测），补一句：非 gVisor 的 KVM 节点上 bwrap 可用，缺的只是包 |
 
 ## 未验证与存疑
 
-- 第 2–5 项全部未做。
-- 第 1 项：code mode 带真实执行输出的回传未测；effort 只测了 `low`、`max`；「生效」的依据是网关回显和 reasoning token 数的差别，不是回答质量评估。
+- 第 1 项：effort 只测了 `low`、`max`；「生效」的依据是网关回显和 reasoning token 数的差别，不是回答质量评估。A′ 只在本机 macOS 跑；Linux 产物上的 code mode 工具调用由第 5 项覆盖（1 次）。
+- 第 2 项：
+  - 24 h 采样还没跑完，本文只写到起跑后 82 min；采样到 2026-10-04 13:27:20 UTC 结束，结论要等收数后补。
+  - gVisor 未测（p4 没有 `runsc`）。bwrap 是解包到用户目录后单独测的，两个 app-server 实例本身都以 `danger-full-access` 运行，「带 bwrap 的 app-server 回合」没有测。
+  - 内存口径待裁定（见第 2 项结论）。按 `VmRSS` 读，测试实例在第 7 项后到线、第 5 项后超限，没有在超限时立即停。
+- 第 3 项：两台机器时区相同，rollout 文件名和日期目录都按本地时间，跨时区时的情形没有测。远程界面直接接「拷来的 rollout」线程没有单独测（第 5 项接的是导入的线程）。
+- 第 4 项：默认阈值下的真实长会话压缩没有测，只测了把阈值调低的情形。续接后第一个回合首个输出等了 103 s，原因未查。
+- 第 5 项：第 1 次实跑因本机睡眠和回车未提交作废；「两次回车」原因未查；回合期间出现的临时线程是什么没有核实。界面与节点的审批 / 沙箱设置不一致时的行为未测。
 - 第 6 项：没有重编二进制把两项真正写进 `defaults.toml`；MCP 与 notify 用的是替身低层，内置层本身的合并语义用它现有的 `[history]` 和 `project_root_markers` 证实。TUI 首次启动、`qmcode mcp remove qianmo` 对内置项的表现、`notify = []` 关闭，只读了代码。
-- 第 7 项：只在空闲的 macOS 本机测了 4 个回合，Linux 节点与 gVisor 下的时序未测；中断回合（`turn_aborted`）、自动压缩后的写入未测。4 个回合里只有 1 个调了工具：run1 的第一回合模型没有尝试工具就回答「无法访问 data.txt」，上下文与 run2 相同，没有告警，属模型行为，不影响回合末时序的测量。
-- 本机副作用：第 7 项第一次空跑时脚本有错（变量紧跟全角冒号），`config.toml` 写成了空文件，app-server 退回内置的 `openai` 提供方，向 `wss://api.openai.com/v1/responses` 发起约 10 次连接，均因无凭据返回 401；那次没有载入 key。每个新的 `QMCODE_HOME` 都克隆了一份 `openai/plugins`，证据目录因此约 682 MB。
+- 第 7 项：本机 4 个回合、p4 1 个回合，gVisor 下的时序未测；中断回合（`turn_aborted`）、自动压缩后的写入未测。本机 4 个回合里只有 1 个调了工具，p4 那个回合也没有调工具，都是模型自己的选择，不影响回合末时序的测量。
+- 本机副作用（v0.1）：第 7 项第一次空跑时脚本有错（变量紧跟全角冒号），`config.toml` 写成了空文件，app-server 退回内置的 `openai` 提供方，向 `wss://api.openai.com/v1/responses` 发起约 10 次连接，均因无凭据返回 401；那次没有载入 key。每个新的 `QMCODE_HOME` 都克隆了一份 `openai/plugins`，证据目录因此约 682 MB。
+- p4 上的副作用（v0.2）：`~/qianmo-2b/qmcode/` 下新增产物目录（330 MB）和 `p172/` 工作目录（15 MB），`bin/qmcode` 软链接现在指向新产物；常驻 app-server 和采样进程还在跑。没有装系统包，没有动 beta-5 的进程、目录和端口。
 - 观察：qmcode 的若干帮助文本仍写 `~/.codex/config.toml`、`Usage: codex exec`，属 P17.1 遗留的显示问题，不影响状态隔离。
