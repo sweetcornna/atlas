@@ -162,9 +162,9 @@
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
 
-### 2.11 M1 · P18.8 调用层第二批 · 推理一致性（4 个修改、2 个删除，另有 3 个在册文件的后续改动补在原行）
+### 2.11 M1 · P18.8 调用层第二批 · 推理一致性（5 个修改、2 个删除，另有 3 个在册文件的后续改动补在原行）
 
-依据设计 `providers-console-m1.md` §5.4、§5.6、§5.8。规则表落在阡陌自有的新文件里（见本节末），基座文件只留调用点。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值；下表六个文件此前都没改过，现值就是本批的量。
+依据设计 `providers-console-m1.md` §5.4、§5.6、§5.8。规则表落在阡陌自有的新文件里（见本节末），基座文件只留调用点。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值；下表七个文件此前都没改过，现值就是本批的量。
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
@@ -172,8 +172,9 @@
 | `packages/@ant/model-provider/src/shared/openaiUsage.ts` | `fc6edcb1`（#26） | +13/−0 | usage 归一就是这几个导出函数，没有注册点。纯插入：`AnthropicUsage` 加可选字段 `reasoning_tokens`；`readOpenAICachedTokens` 的候选表在 OpenAI 写法之后插入顶层 `cache_read_input_tokens`；`normalizeOpenAIUsage` 加可选参数 `reasoningTokens` 与一处条件展开（没报时返回对象逐键不变） | ✅ 书面 |
 | `src/services/api/grok/reasoning.ts` | `893426a1`（#13） | +14/−17 | 允许名单与夹取都是模块内函数，没有注入点。允许名单判断换成一次 `grokAcceptsReasoningEffort` 调用，夹取的 `switch` 换成一次 `resolveGrokEffort` 调用（`modelCompat/effortVendors.ts`），文件头插入一段说明。**形态：调用替换并删除被取代的分支**，不是纯插入：两处调用替换之后原 `switch` 与局部类型没有别的用处，留着就是两套规则，所以删去；返回类型随表放宽（`providers/effective.ts` 的 `asLevel` 本就接受全集）。grok-3-mini 的两档梯子在表里原样保留 | ✅ 书面 |
 | `src/services/api/openai/__tests__/responsesAdapter.test.ts` | `d868176e`（#23） | +7/−1 | 随 #23 同步的基座既有用例：「captures reasoning items from output_item.done」的期望值加一个 `issuer: expect.any(String)`（捕获时盖印）。其余断言不变 | 🟢 |
-| `src/services/providerRegistry/providerCompatMatrix.ts` | 删除于 `46a3f2ec`（R-14） | +0/−179（整文件删除） | **形态：整文件删除**。不是扩展点不够，是两套规则不能并存（设计 R-14、§5.8）：这套 compat 档案（`applyCompatRule`）在生产请求路径零调用方（M0 缺口 G-2），只按历史里有没有 thinking 块判定；P18.8 的发送边界回放策略（`modelCompat/reasoningEcho.ts`）按目标端点判定，取代了它。剩下的三个调用方都是阡陌自有文件（`tests/integration/provider-adapter-consistency.test.ts`、`tests/integration/qianmo-memory-recall.test.ts`、`scripts/qianmo-recall-answer-live.ts`），同一提交里改为直接发 `buildOpenAIRequestBody` 的结果；M0 AC-5 的「严格 OpenAI 端点收不到 `reasoning_content`」改走真实请求路径断言，用例名带「M0 AC-5」。`types.ts` 的 `CompatRuleSchema` 与 `compatRule` 字段保留（用户的 `providers.json` 与 `loader.ts` 内置条目仍写它，删字段会让既有配置校验失败），它的两处注释仍提到本文件，未改，以免为注释再动一个基座文件。**上游同步时**：上游若改了本文件，确认 `applyCompatRule` 仍无生产调用方后维持删除 | ✅ 书面（设计 §5.8 + 提交正文） |
+| `src/services/providerRegistry/providerCompatMatrix.ts` | 删除于 `46a3f2ec`（R-14） | +0/−179（整文件删除） | **形态：整文件删除**。不是扩展点不够，是两套规则不能并存（设计 R-14、§5.8）：这套 compat 档案（`applyCompatRule`）在生产请求路径零调用方（M0 缺口 G-2），只按历史里有没有 thinking 块判定；P18.8 的发送边界回放策略（`modelCompat/reasoningEcho.ts`）按目标端点判定，取代了它。剩下的三个调用方都是阡陌自有文件（`tests/integration/provider-adapter-consistency.test.ts`、`tests/integration/qianmo-memory-recall.test.ts`、`scripts/qianmo-recall-answer-live.ts`），同一提交里改为直接发 `buildOpenAIRequestBody` 的结果；M0 AC-5 的「严格 OpenAI 端点收不到 `reasoning_content`」改走真实请求路径断言，用例名带「M0 AC-5」。`types.ts` 的 `compatRule` 字段保留（见下一行）。**上游同步时**：上游若改了本文件，确认 `applyCompatRule` 仍无生产调用方后维持删除 | ✅ 书面（设计 §5.8 + 提交正文） |
 | `src/services/providerRegistry/__tests__/providerCompatMatrix.test.ts` | 删除于 `46a3f2ec`（R-14） | +0/−204（整文件删除） | 随被测文件删除 | 🟢 |
+| `src/services/providerRegistry/types.ts` | `4ce8cd3e`（R-14 跟进） | +4/−3 | 随上一行的删除收尾，不是扩展点问题。**形态：删除一个 `export` 关键字 + 两处注释改写**：`CompatRuleSchema` 原先只因被删文件引用 `CompatRule` 才算有人用，删后成了无人导入的导出，unused 棘轮 exports 1240 → 1241，按棘轮的要求收回为模块内常量（`ProviderConfigSchema` 仍在本文件里用它）；文件头与 `ProviderConfigSchema` 说明里指向已删文件的两处注释改为「配置里的标签」。`compatRule` 字段与枚举值不动：用户的 `providers.json` 与 `loader.ts` 内置条目仍写它，删字段会让既有配置校验失败 | ✅ 书面 |
 
 **在册文件的后续改动**（按 §6.3 第 1 条补进原行，不新开行）：`src/services/api/openai/requestBody.ts`（§2.10）、`src/services/api/openai/responsesAdapter.ts`（§2.2）、`packages/@ant/model-provider/src/shared/openaiStreamAdapter.ts`（§5.1）。
 
