@@ -105,7 +105,7 @@ const PAGES: readonly PageRow[] = [
     path: '/providers',
     title: '模型服务',
     active: 'providers',
-    reads: [STUB_LINE],
+    reads: ['模型服务未开启'],
   },
   {
     path: '/servers',
@@ -260,12 +260,8 @@ describe('every page', () => {
 describe('placeholders', () => {
   const STUBS = ROUTES.filter(module => module.area.pending === true)
 
-  test('there are three, and each says so in one line and polls nothing', async () => {
-    expect(STUBS.map(module => module.area.id)).toEqual([
-      'approvals',
-      'providers',
-      'usage',
-    ])
+  test('there are two, and each says so in one line and polls nothing', async () => {
+    expect(STUBS.map(module => module.area.id)).toEqual(['approvals', 'usage'])
     for (const module of STUBS) {
       const html = await read(module.area.href)
       const main = html.slice(html.indexOf('<main'), html.indexOf('</main>'))
