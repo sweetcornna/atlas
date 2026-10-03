@@ -20,6 +20,7 @@
  */
 import { queryModelOpenAI } from 'src/services/api/openai/index.js'
 import type { Options } from 'src/services/api/claude.js'
+import type { Message } from 'src/types/message.js'
 import type { SystemPrompt } from 'src/utils/session/systemPromptType.js'
 
 const CANARY_API_KEY = 'sk-test-canary-p185-not-a-real-key'
@@ -101,6 +102,17 @@ export type CaptureParams = {
    * row exercise the request-level fallbacks without a network.
    */
   failFirst?: { status: number; body: unknown }[]
+  /**
+   * Conversation history handed to `queryModelOpenAI` (P18.8: replay rows).
+   * Default: none.
+   */
+  messages?: Message[]
+  /** Answer `/responses` with this SSE body instead of the default (P18.8). */
+  responsesSSE?: string
+  /** Answer `/chat/completions` with this SSE body instead (P18.8). */
+  chatSSE?: string
+  /** Receives everything `queryModelOpenAI` yields (P18.8). */
+  outputs?: unknown[]
 }
 
 /**
@@ -147,7 +159,9 @@ export async function captureOpenAIRequests(
         headers: { 'content-type': 'application/json' },
       })
     }
-    return new Response(url.endsWith('/responses') ? RESPONSES_SSE : CHAT_SSE, {
+    const responsesSSE = params.responsesSSE ?? RESPONSES_SSE
+    const chatSSE = params.chatSSE ?? CHAT_SSE
+    return new Response(url.endsWith('/responses') ? responsesSSE : chatSSE, {
       status: 200,
       headers: { 'content-type': 'text/event-stream' },
     })
@@ -174,14 +188,14 @@ export async function captureOpenAIRequests(
 
   try {
     const signal = new AbortController().signal
-    for await (const _ of queryModelOpenAI(
-      [],
+    for await (const output of queryModelOpenAI(
+      params.messages ?? [],
       [] as unknown as SystemPrompt,
       [],
       signal,
       options,
     )) {
-      // drain
+      params.outputs?.push(output)
     }
     return captured
   } finally {

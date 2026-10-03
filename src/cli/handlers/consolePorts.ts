@@ -32,10 +32,16 @@ import {
   type TrailQuery,
   type TrailReadResult,
 } from '@qianmo/audit'
-import { verifyAuditWitness, type WitnessEvidence } from '@qianmo/witness'
+import {
+  verifyAuditWitness,
+  type WitnessEvidence,
+  type WitnessVerificationIssue,
+} from '@qianmo/witness'
 import type {
+  AlertAck,
   AuditChainState,
   AuditFilter,
+  AuditPage,
   AuditPort,
   CertificatePort,
   CertificateSnapshot,
@@ -44,16 +50,23 @@ import type {
   ConsoleCaRoot,
   ConsoleCertificate,
   ConsoleFailure,
+  ConsoleNotice,
   ConsoleResult,
   LimitsSnapshot,
+  NotifyPort,
   RegisterAgentInput,
   RegistryPort,
+  SchedulerEstop,
+  SchedulerPort,
+  SchedulerSnapshot,
   ServerNote,
   ServerNotesPort,
   WakeInput,
   WakePort,
+  WatchJobStatus,
 } from '@qianmo/console'
 import { X509Certificate } from 'node:crypto'
+import { join } from 'node:path'
 import {
   anchoredValidity,
   parseTrustAnchors,
@@ -61,7 +74,17 @@ import {
 } from '../../services/qianmo/trustAnchors.js'
 import { LIMITS, assertAddress } from '@qianmo/protocol'
 import { DEFAULT_TTL_MS } from '@qianmo/registry'
+import { ResidentEstop } from '@qianmo/resident'
 import { RUNTIME_RATE } from '@qianmo/router'
+import {
+  SCHEDULER_STATUS_FILE,
+  SchedulerStore,
+  backoffMs,
+  readSchedulerStatus,
+  type JobState,
+  type SchedulerStatusJob,
+  type SchedulerStatusRead,
+} from '@qianmo/scheduler'
 import {
   readAuditWitnessAnchors,
   witnessNodeOf,
@@ -73,6 +96,9 @@ import {
   type WakeCapabilityIssuer,
 } from './residentWake.js'
 import { ServerNotesStore } from './consoleServerNotes.js'
+import { AlertAcksStore, consoleAlertAcksPath } from './consoleAlertAcks.js'
+import { auditTrailPath } from '../../services/qianmo/auditTrail.js'
+import { occConfigPath } from '../../config/paths.js'
 
 function fail<T>(
   code: ConsoleFailure['code'],
@@ -380,6 +406,26 @@ function chainStateOf(read: TrailReadResult): AuditChainState {
 }
 
 /**
+ * 锚点对不上的那一处：序号最小的 `head_mismatch`，连同本地那条记录的摘要。
+ * 告警箱拿它区分「同一次篡改」与「修好之后又一次」（`deps.ts` 的
+ * `AuditPage.witness.firstMismatch`）。
+ */
+function firstMismatchOf(
+  issues: readonly WitnessVerificationIssue[],
+): { readonly seq: number; readonly actual: string | null } | undefined {
+  let first:
+    | { readonly seq: number; readonly actual: string | null }
+    | undefined
+  for (const issue of issues) {
+    if (issue.kind !== 'head_mismatch') continue
+    if (first === undefined || issue.seq < first.seq) {
+      first = { seq: issue.seq, actual: issue.actual }
+    }
+  }
+  return first
+}
+
+/**
  * 审计链的只读面。
  *
  * **文件不存在返回空页，不是失败**：一个刚起来、还没产生过任何审计记录的节点
@@ -435,13 +481,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       const { records, issues } = loaded.value
       const chain = chainStateOf(loaded.value)
 
-      let witness:
-        | {
-            readonly tampered: boolean
-            readonly stale: boolean
-            readonly uncovered?: true
-          }
-        | undefined
+      let witness: AuditPage['witness']
       if (options.witness !== undefined) {
         try {
           const node = witnessNodeOf(records)
@@ -469,6 +509,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
               publicKey: publicKey.value,
               ...(options.mirror === true ? { prefix: true } : {}),
             })
+            const firstMismatch = firstMismatchOf(verification.issues)
             witness = {
               tampered: verification.tampered,
               stale: verification.stale,
@@ -477,6 +518,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
               ...(verification.issues.some(issue => issue.kind === 'uncovered')
                 ? { uncovered: true as const }
                 : {}),
+              ...(firstMismatch === undefined ? {} : { firstMismatch }),
             }
           }
         } catch (error) {
@@ -963,5 +1005,416 @@ export function createServerNotesPort(
       cache.set(server, record)
       return Promise.resolve({ ok: true, value: record })
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NotifyPort —— 告警的通知来源与确认存储（J5，P18.15）
+// ---------------------------------------------------------------------------
+
+/** 值守进程给人的通知在审计链里的那一种记录（`watch.ts` 的 `recordNotify`）。 */
+const NOTICE_KIND = 'watch_notify_received'
+
+const NOTICE_LEVELS: ReadonlySet<string> = new Set(['info', 'warn', 'error'])
+
+function detailString(
+  detail: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): string | undefined {
+  const value = detail?.[key]
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+/**
+ * 一条 `watch_notify_received` 记录，读成页面上的一条通知。
+ *
+ * 字段一一对应 `recordNotify` 写下的东西，没有的不补：`detail`（通知正文）
+ * 只打到 `qm watch` 的 stdout、不进链，所以这里没有；`at` 是中枢收到的时刻，
+ * 不是节点观测的时刻（`observedAt` 也没进链）。级别认不出时按 `warn` 读——
+ * 一条认不出分量的通知往大里报，比悄悄降成「提示」安全。
+ *
+ * id 用通知消息的 `msgId`：链被重置之后序号从 1 重数，序号做 id 会让旧的确认
+ * 落到新的通知上；`msgId` 是节点为每条通知生成的 UUID，重发时不变，正好让重发
+ * 的那一条与原件合成一条告警。没有 `msgId` 的记录（不该有）退回序号加时刻。
+ */
+function toNotice(record: {
+  readonly seq: number
+  readonly at: number
+  readonly peer?: string
+  readonly msgId?: string
+  readonly detail?: Readonly<Record<string, unknown>>
+}): ConsoleNotice {
+  const severity = detailString(record.detail, 'severity')
+  const job = detailString(record.detail, 'contextId')
+  return {
+    id:
+      record.msgId === undefined
+        ? `n:${record.seq}:${record.at}`
+        : `n:${record.msgId}`,
+    at: record.at,
+    level:
+      severity !== undefined && NOTICE_LEVELS.has(severity)
+        ? (severity as ConsoleNotice['level'])
+        : 'warn',
+    kind: detailString(record.detail, 'kind') ?? 'watch',
+    ...(record.peer === undefined ? {} : { from: record.peer }),
+    ...(job === undefined ? {} : { job }),
+    summary: detailString(record.detail, 'summary') ?? '',
+    ...(record.detail?.['redelivered'] === true
+      ? { redelivered: true as const }
+      : {}),
+  }
+}
+
+interface NotifyPortOptions {
+  /**
+   * 中枢自己的审计链，`qm watch` 写通知的那一份。缺省 `auditTrailPath()`：
+   * 控制台与 `qm watch` 共用配置根时（内测的接法，`watch-hub.sh` 文件头①）
+   * 两边派生出来的是同一个文件。
+   */
+  readonly trailPath: string
+  readonly acks: AlertAcksStore
+  /** 可注入，只为让用例能钉住确认时刻。 */
+  readonly now?: () => number
+}
+
+/**
+ * 告警的通知与确认。
+ *
+ * **通知每次现读**：链在别的进程手里不停追加，缓存会让新通知晚一个重启才出现。
+ * **确认回放一次、之后在内存里**：确认只有本进程写，写入是同步追加，内存那份在
+ * 落盘成功之后才更新（与服务器备注同一条纪律：磁盘写不进去时页面必须看到失败，
+ * 而不是一条重启就消失的确认）。
+ */
+export function createNotifyPort(options: NotifyPortOptions): NotifyPort {
+  const now = options.now ?? Date.now
+  const acks = new Map<string, AlertAck>()
+  for (const ack of options.acks.load()) acks.set(ack.id, ack)
+
+  return {
+    notices(limit: number) {
+      let read: TrailReadResult
+      try {
+        read = readTrail(options.trailPath)
+      } catch (error) {
+        return Promise.resolve(
+          fail(
+            'unreachable',
+            `中枢审计链读不出来 ${options.trailPath} · ${messageOf(error)}`,
+          ),
+        )
+      }
+      const all = read.records.filter(
+        record =>
+          record.source === AuditSource.Scheduler &&
+          record.kind === NOTICE_KIND,
+      )
+      const tail = Math.max(0, Math.floor(limit))
+      return Promise.resolve({
+        ok: true,
+        value: {
+          notices: (tail === 0 ? [] : all.slice(-tail)).reverse().map(toNotice),
+          total: all.length,
+          intact: read.intact,
+          present: read.present,
+        },
+      })
+    },
+    acks() {
+      return Promise.resolve({ ok: true, value: [...acks.values()] })
+    },
+    ack(id: string, by: string) {
+      const existing = acks.get(id)
+      if (existing !== undefined) {
+        return Promise.resolve({ ok: true, value: existing })
+      }
+      const record: AlertAck = { id, at: now(), by }
+      try {
+        options.acks.append(record)
+      } catch (error) {
+        return Promise.resolve(
+          fail('unreachable', `确认写入失败 · ${messageOf(error)}`),
+        )
+      }
+      acks.set(id, record)
+      return Promise.resolve({ ok: true, value: record })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SchedulerPort —— 值守作业的只读面（J6，P18.15）
+// ---------------------------------------------------------------------------
+
+/**
+ * 为什么心跳拿不到，写在一处。调度器跑在 `qm watch` 里（`console.md` §10），
+ * `lastTickAt` 与各作业的下一次触发只有它写出的 `status.json` 带得出来
+ * （`@qianmo/scheduler` 的 `status.ts`）。那份文件不在，就是它没在这个配置根上
+ * 跑过，或者版本早于这份文件。
+ */
+const STATUS_ABSENT_REASON = 'qm watch 没有写出状态文件'
+
+/** 心跳与作业定义缺席的原因：文件不在，或者在但读不出来。 */
+function statusMissingReason(read: SchedulerStatusRead): string {
+  return read.state === 'invalid'
+    ? `状态文件读不出来 · ${read.reason}`
+    : STATUS_ABSENT_REASON
+}
+
+interface SchedulerPortOptions {
+  /**
+   * `qm watch --state-dir`，缺省 `occConfigPath('qianmo','scheduler')`：
+   * `state.json`、`status.json` 与认领文件都在这里。
+   */
+  readonly stateDir: string
+  /** 固定在 `occConfigPath('qianmo','scheduler','ESTOP')`，不随 `--state-dir`。 */
+  readonly estopPath: string
+  /** 中枢审计链：取 `watch_fire` 的目标与 `watch_result_received` 的结果。 */
+  readonly trailPath: string
+  readonly now?: () => number
+}
+
+/** 链里关于每个作业的最近两件事：派发给谁，结果是什么。 */
+interface TrailFacts {
+  readonly targets: ReadonlyMap<string, string>
+  readonly results: ReadonlyMap<string, NonNullable<WatchJobStatus['result']>>
+}
+
+/**
+ * 从中枢审计链读出每个作业最近一次派发的目标与最近一次结果。
+ *
+ * 链读不出来不算作业页的失败：这两列只是补充，状态文件与急停才是这一页的主干，
+ * 所以读不到就是两列空着（结果写 —，目标在没有作业定义时写「未接入」）。
+ */
+function trailFacts(path: string): TrailFacts {
+  const targets = new Map<string, string>()
+  const results = new Map<string, NonNullable<WatchJobStatus['result']>>()
+  let records: TrailReadResult['records']
+  try {
+    records = readTrail(path).records
+  } catch {
+    return { targets, results }
+  }
+  for (const record of records) {
+    if (record.source !== AuditSource.Scheduler) continue
+    if (record.kind === 'watch_fire') {
+      const job = detailString(record.detail, 'jobId')
+      if (job !== undefined && record.peer !== undefined) {
+        targets.set(job, record.peer)
+      }
+    } else if (record.kind === 'watch_result_received') {
+      const job = detailString(record.detail, 'contextId')
+      const result = detailString(record.detail, 'result')
+      if (job !== undefined && result !== undefined) {
+        results.set(job, {
+          at: record.at,
+          result,
+          ...(record.code === undefined ? {} : { code: record.code }),
+        })
+      }
+    }
+  }
+  return { targets, results }
+}
+
+/**
+ * 退避的终点：`state.json` 里落账的时刻加上调度器自己的 `backoffMs`（`qm watch`
+ * 没有改退避参数）。只用来在「下次触发」旁边写「退避至」——下次触发本身取自
+ * `status.json`，是调度器自己的值。
+ */
+function holdOf(
+  state: JobState,
+  now: number,
+): Pick<WatchJobStatus, 'holdUntil'> {
+  if (state.consecutiveFailures === 0) return {}
+  const holdUntil =
+    (state.lastOutcomeAt ?? 0) + backoffMs(state.consecutiveFailures)
+  return holdUntil > now ? { holdUntil } : {}
+}
+
+/** `state.json` 里一个作业的上次触发，`recordedAt` 是落账的墙上时间。 */
+function lastOf(state: JobState): Pick<WatchJobStatus, 'last'> {
+  return state.lastFiredAt === undefined || state.lastOutcome === undefined
+    ? {}
+    : {
+        last: {
+          at: state.lastFiredAt,
+          outcome: state.lastOutcome,
+          ...(state.lastOutcomeAt === undefined
+            ? {}
+            : { recordedAt: state.lastOutcomeAt }),
+        },
+      }
+}
+
+/**
+ * `status.json` 里的一个作业：定义与计划取自它，落账时间与退避取自
+ * `state.json`。两份都是 `qm watch` 在同一轮里写的，`state.json` 先写。
+ */
+function listedJob(
+  job: SchedulerStatusJob,
+  state: JobState,
+  facts: TrailFacts,
+  now: number,
+): WatchJobStatus {
+  const result = facts.results.get(job.id)
+  const recordedAt =
+    state.lastFiredAt === job.lastFireAt ? state.lastOutcomeAt : undefined
+  return {
+    id: job.id,
+    title: job.title,
+    target: job.target,
+    everyMs: job.everyMs,
+    listed: true,
+    ...(job.lastFireAt === undefined || job.lastResult === undefined
+      ? {}
+      : {
+          last: {
+            at: job.lastFireAt,
+            outcome: job.lastResult,
+            ...(recordedAt === undefined ? {} : { recordedAt }),
+          },
+        }),
+    consecutiveFailures: job.consecutiveFailures,
+    ...(job.nextFireAt === undefined ? {} : { next: job.nextFireAt }),
+    ...holdOf(state, now),
+    ...(result === undefined ? {} : { result }),
+  }
+}
+
+/** 只在 `state.json` 里有、正在跑的调度器没有的作业：不会再触发。 */
+function unlistedJob(
+  id: string,
+  state: JobState,
+  facts: TrailFacts,
+): WatchJobStatus {
+  const target = facts.targets.get(id)
+  const result = facts.results.get(id)
+  return {
+    id,
+    ...(target === undefined ? {} : { target }),
+    listed: false,
+    ...lastOf(state),
+    consecutiveFailures: state.consecutiveFailures,
+    ...(result === undefined ? {} : { result }),
+  }
+}
+
+function estopOf(path: string): SchedulerEstop {
+  let problem: unknown
+  const status = new ResidentEstop({
+    path,
+    onError: error => {
+      problem = error
+    },
+  }).status()
+  if (problem !== undefined) {
+    return { state: 'unknown', reason: messageOf(problem) }
+  }
+  if (!status.engaged) return { state: 'released' }
+  return status.engagedAt === undefined
+    ? { state: 'engaged' }
+    : { state: 'engaged', since: status.engagedAt }
+}
+
+/**
+ * 值守作业的只读面：`status.json`、`state.json`、急停哨兵、中枢审计链。
+ *
+ * **优先读 `status.json`**：心跳、作业定义与下次触发只有它有，读到了就照它说，
+ * 判「可能已停止」的尺子（`tickMs`）也是它带来的。读不到时退回只看
+ * `state.json` 与审计链，心跳与作业定义写「未接入」并说明是文件不在还是读不出来。
+ *
+ * **只读**：`SchedulerStore` 在这里只用构造（读一次）与 `stateOf` / `entries`，
+ * 从不调 `claim` / `recordFire`；急停只 `stat`。控制台进程从不往调度目录里写
+ * 一个字节——那里的每个文件都是 `qm watch` 的承诺（`store.ts` 模块注释）。
+ *
+ * `state.json` 坏了（`SchedulerStore` 报了错）整个端口回失败，不渲染一张以为
+ * 「从没跑过」的表：调度器自己对坏文件 fail-open，页面不该跟着装作没事。
+ */
+export function createSchedulerPort(
+  options: SchedulerPortOptions,
+): SchedulerPort {
+  const clock = options.now ?? Date.now
+  return {
+    read(): Promise<ConsoleResult<SchedulerSnapshot>> {
+      const now = clock()
+      const storeErrors: unknown[] = []
+      const store = new SchedulerStore(options.stateDir, {
+        onError: error => {
+          storeErrors.push(error)
+        },
+      })
+      if (storeErrors.length > 0) {
+        return Promise.resolve(
+          fail(
+            'unreachable',
+            `调度状态读不出来 ${options.stateDir} · ${messageOf(storeErrors[0])}`,
+          ),
+        )
+      }
+
+      const facts = trailFacts(options.trailPath)
+      const read = readSchedulerStatus(options.stateDir)
+      const listed = read.state === 'ok' ? read.status.jobs : []
+      const listedIds = new Set(listed.map(job => job.id))
+      const jobs = [
+        ...listed.map(job => listedJob(job, store.stateOf(job.id), facts, now)),
+        ...Object.keys(store.entries())
+          .filter(id => !listedIds.has(id))
+          .sort()
+          .map(id => unlistedJob(id, store.stateOf(id), facts)),
+      ]
+
+      return Promise.resolve({
+        ok: true,
+        value: {
+          tick:
+            read.state === 'ok'
+              ? {
+                  state: 'seen',
+                  at: read.status.lastTickAt,
+                  everyMs: read.status.tickMs,
+                }
+              : { state: 'unwired', reason: statusMissingReason(read) },
+          estop: estopOf(options.estopPath),
+          definitions:
+            read.state === 'ok'
+              ? {
+                  state: 'wired',
+                  source: join(options.stateDir, SCHEDULER_STATUS_FILE),
+                }
+              : {
+                  state: 'unwired',
+                  reason: `${statusMissingReason(read)} · 作业定义只在它的内存里`,
+                },
+          jobs,
+        },
+      })
+    },
+  }
+}
+
+/**
+ * 两个端口在生产上的接法：路径全部从 `paths.ts` 派生，与 `qm watch` 的缺省
+ * 一致（状态目录与急停见 `watch.ts` 的 `parseWatchArgs` / `runWatch`，审计链
+ * 见 `openAuditTrail`）。`qm watch` 用了 `--state-dir`、或不与控制台共用配置根
+ * 时，这里读到的是另一份，作业页上表现为心跳未接入、没有作业记录。横幅里
+ * `alert-acks` 那一行带出了控制台的配置根，可以拿来与 `qm watch` 启动时打的
+ * `state in <dir>` 对照。
+ */
+export function consoleWatchDeps(
+  options: { readonly acksPath?: string } = {},
+): { readonly notify: NotifyPort; readonly scheduler: SchedulerPort } {
+  const trailPath = auditTrailPath()
+  return {
+    notify: createNotifyPort({
+      trailPath,
+      acks: new AlertAcksStore(options.acksPath ?? consoleAlertAcksPath()),
+    }),
+    scheduler: createSchedulerPort({
+      stateDir: occConfigPath('qianmo', 'scheduler'),
+      estopPath: occConfigPath('qianmo', 'scheduler', 'ESTOP'),
+      trailPath,
+    }),
   }
 }
