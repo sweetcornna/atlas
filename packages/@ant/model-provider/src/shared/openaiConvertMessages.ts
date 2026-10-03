@@ -13,6 +13,7 @@ import type {
 import type { AssistantMessage, UserMessage } from '../types/message.js'
 import { carriedToolCallSignature } from './qianmo/geminiToolSignature.js'
 import { carriedReasoningDetails } from './qianmo/reasoningDetails.js'
+import { toolResultContentParts } from './qianmo/toolResultImages.js'
 import type { SystemPrompt } from '../types/systemPrompt.js'
 
 export interface ConvertMessagesOptions {
@@ -30,6 +31,12 @@ export interface ConvertMessagesOptions {
    * strict OpenAI-compatible endpoints would reject.
    */
   preserveReasoningItems?: boolean
+  /**
+   * qianmo P18.12 (hermes #20): a tool result that carries images becomes a
+   * text + `image_url` parts list instead of its text alone. Chat wire only;
+   * off by default — see shared/qianmo/toolResultImages.ts.
+   */
+  toolResultImages?: boolean
 }
 
 /**
@@ -115,7 +122,7 @@ export function anthropicMessagesToOpenAI(
   for (const msg of messages) {
     switch (msg.type) {
       case 'user':
-        result.push(...convertInternalUserMessage(msg))
+        result.push(...convertInternalUserMessage(msg, options))
         break
       case 'assistant':
         result.push(...convertInternalAssistantMessage(msg, options))
@@ -135,6 +142,7 @@ function systemPromptToText(systemPrompt: SystemPrompt): string {
 
 function convertInternalUserMessage(
   msg: UserMessage,
+  options?: ConvertMessagesOptions,
 ): ChatCompletionMessageParam[] {
   const result: ChatCompletionMessageParam[] = []
   const content = msg.message.content
@@ -172,7 +180,7 @@ function convertInternalUserMessage(
     // message with tool_calls. If we emit a user message first, the API will
     // reject the request with "insufficient tool messages following tool_calls".
     for (const tr of toolResults) {
-      result.push(convertToolResult(tr))
+      result.push(convertToolResult(tr, options))
     }
 
     // 如果有图片，构建多模态 content 数组
@@ -202,7 +210,21 @@ function convertInternalUserMessage(
 
 function convertToolResult(
   block: BetaToolResultBlockParam,
+  options?: ConvertMessagesOptions,
 ): ChatCompletionToolMessageParam {
+  // qianmo P18.12 (hermes #20): shared/qianmo/toolResultImages.ts.
+  const parts = options?.toolResultImages
+    ? toolResultContentParts(block.content, convertImageBlockToOpenAI)
+    : undefined
+  if (parts) {
+    // The SDK types tool content as text parts only; the list with images is
+    // what the endpoints that take it accept (hermes #20).
+    return {
+      role: 'tool',
+      tool_call_id: block.tool_use_id,
+      content: parts,
+    } as unknown as ChatCompletionToolMessageParam
+  }
   let content: string
   if (typeof block.content === 'string') {
     content = block.content

@@ -25,6 +25,10 @@ import {
 } from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
 import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
 import {
+  sendDegradingToolImages,
+  toolResultImagesAccepted,
+} from 'src/services/qianmo/modelCompat/toolResultImages.js'
+import {
   sendDroppingRejectedParameters,
   TEMPERATURE_DROPPABLE,
 } from 'src/services/qianmo/modelCompat/unsupportedParam.js'
@@ -187,10 +191,17 @@ async function createChatStreamWithCacheKeyFallback(params: {
   // its own detector and latch.
   return sendDroppingRejectedParameters({
     body: params.buildBody(params.promptCacheKey),
+    // qianmo P18.12 (hermes #20): a refused tool image is dropped and the
+    // body re-sent — src/services/qianmo/modelCompat/toolResultImages.ts.
     send: body =>
-      client.chat.completions.create(body, {
-        signal: params.signal,
-      }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+      sendDegradingToolImages(
+        body,
+        degraded =>
+          client.chat.completions.create(degraded, {
+            signal: params.signal,
+          }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+        { model: body.model, baseURL: process.env.OPENAI_BASE_URL },
+      ),
     signal: params.signal,
     droppable: [
       {
@@ -346,6 +357,14 @@ export async function* queryModelOpenAI(
       {
         enableThinking,
         preserveReasoningItems: wireProtocol === 'responses',
+        // qianmo P18.12 (hermes #20): chat wire only —
+        // src/services/qianmo/modelCompat/toolResultImages.ts.
+        toolResultImages:
+          wireProtocol !== 'responses' &&
+          toolResultImagesAccepted({
+            model: openaiModel,
+            baseURL: process.env.OPENAI_BASE_URL,
+          }),
       },
     )
     const openaiTools = anthropicToolsToOpenAI(standardTools)
