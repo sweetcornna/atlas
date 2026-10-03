@@ -52,13 +52,26 @@ import {
   refreshAcpTurnSettings,
 } from '../localCommands.js'
 
-/** What an ACP session's command table holds for these names in this process. */
+/**
+ * The non-interactive `/context` as an `--acp` process sees it. The real
+ * object's `isEnabled` / `isHidden` read the process's interactivity, which an
+ * earlier file in the same `bun test` process may have pinned to "interactive"
+ * (`tests/mocks/state.ts` has no teardown); the real reading in a real child is
+ * covered by tests/integration/qianmo-acp-local-commands.test.ts.
+ */
+const contextInAcp: Command = {
+  ...contextNonInteractive,
+  isEnabled: () => true,
+  isHidden: false,
+}
+
+/** What an ACP session's command table holds for these names. */
 const SESSION_COMMANDS: Command[] = [
   init,
   autocompact,
   compact,
   context,
-  contextNonInteractive,
+  contextInAcp,
   version,
 ]
 
@@ -91,7 +104,7 @@ describe('acpLocalCommandEntries', () => {
       // Takes no argument and the base command declares no hint, so no input.
       {
         name: 'context',
-        description: contextNonInteractive.description,
+        description: contextInAcp.description,
         input: undefined,
       },
     ])
