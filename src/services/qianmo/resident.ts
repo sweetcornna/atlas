@@ -2475,8 +2475,16 @@ export class QianmoResident {
    * {@link DEFAULT_PROVIDER_RETIRE_GRACE_MS} to write its transcript out.
    */
   #recycleForSwitch(): void {
+    // The generation's `stop()` reads the flag before its first await, i.e.
+    // inside `recycle()`. Cleared after either way: a generation already
+    // stopping (a second commit inside the grace) never reads it, and a
+    // leftover flag would hand the grace to some later, unrelated stop.
     this.#retireForSwitch = true
-    if (!this.#supervisor.recycle()) this.#retireForSwitch = false
+    try {
+      this.#supervisor.recycle()
+    } finally {
+      this.#retireForSwitch = false
+    }
   }
 
   /** The grace the generation now stopping owes a switch; `0` otherwise. */
