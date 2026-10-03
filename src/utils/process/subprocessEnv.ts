@@ -20,6 +20,13 @@ const GHA_SUBPROCESS_SCRUB = [
   'ANTHROPIC_FOUNDRY_API_KEY',
   'ANTHROPIC_CUSTOM_HEADERS',
 
+  // Other model providers' keys — same per-request reads, same exposure
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GROK_API_KEY',
+  'XAI_API_KEY',
+  'OPENCODE_API_KEY',
+
   // OTLP exporter headers — documented to carry Authorization=Bearer tokens
   // for monitoring backends; read in-process by OTEL SDK, subprocesses never need them
   'OTEL_EXPORTER_OTLP_HEADERS',
