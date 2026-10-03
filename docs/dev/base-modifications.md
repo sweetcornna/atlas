@@ -284,3 +284,16 @@
 3. **本文不复制** `positioning-m0.md` 的目录汇总表、`upstream-sync-drill.md` 的冲突数据、章程 §5.7 的 M1 候选清单——只放指针（「指针不复制」铁律，`CLAUDE.md` §1.1⑧）。
 4. **本文不是 `BASE.md`。**上游、pin、导入日期、同步记录仍由负责人在 `BASE.md` 维护（`CLAUDE.md` §2.4）。
 5. 数字过期时**重跑**表头那条命令并更新「本文实跑口径」行，不要凭印象改。
+
+### 2.x（acp 修复）M1 · ACP 退出时刷写会话记录、符号链接 cwd 续会话（2 个在册文件的后续改动）
+
+> **占位节号**：P18.8 同时在本文加 §2.11。本节按派发要求以纯插入的形态先落在文件末尾，合并时由主 agent 统一编号并挪回 §2。两个文件都已在 §2.3 有行；按 §6.3 第 1 条，后续改动应补进原行，合并时一并处理。§2.3 两行的 +/− 是 M0 口径（+15/−0、+4/−5），本节之前已经过期，本节不改它们。
+
+两处都是 P18.3 实测查出的**基座既有缺陷**，问题出在基座代码里，没有扩展点可以绕开。出处：退出刷写见 PR #164 的说明（「切换触发的回收会先等 1 s 再停旧子进程……根因在基座 `acp/entry.ts`：SIGTERM 时不先刷写会话记录」）；符号链接见同一 PR 的集成测试 `residentProviderSwitch.integration.test.ts` 里 `setUpRoot` 的注释。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值，括号里是本次的量。
+
+| 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
+| --- | --- | --- | --- | --- |
+| `src/services/acp/entry.ts` | `4fe8cd1e`；本次 `de34761a` | +68/−0（本次 +11/−0） | **基座既有缺陷**：`--acp` 模式不走 `gracefulShutdown`，信号由本文件的 `shutdown()` 处理，关掉会话后直接 `process.exit(0)`。会话记录写队列每 100 ms 才刷一次，刚结束那一轮的回答可能还在队列里，于是丢掉；resident 停机、崩溃重启、热切换回收子进程都会撞上。另外 SIGTERM、SIGINT 和连接关闭都会调 `shutdown()`，第二次调用会截断第一次的收尾。**形态：纯插入**，共四处：一行 import、建一个 `exitGate`、`shutdown()` 开头加一行守卫、`process.exit(0)` 前加一行 `await exitGate.flush()`。逻辑放在阡陌自有的 `src/services/acp/exitFlush.ts`：只有第一个触发者执行收尾；先等写队列刷完再退出；整个收尾 2 s 封顶；退出码恒为 0，因为 resident 的 `childClosed` 把非 0 当崩溃。**为什么不复用 `gracefulShutdown`**：它会把 SessionEnd hooks、analytics flush 和 5 s failsafe 一起带进 ACP 子进程，行为变化超出本修复的范围 | ✅ 书面 |
+| `src/services/acp/agent/sessionLifecycle.ts` | `4fe8cd1e`；本次 `921b282f` | +28/−17（本次 +3/−6） | **基座既有缺陷**：会话记录按调用方给的 cwd 原样写，resume 时 `resolveSessionFilePath` 却按 realpath 后的 cwd 查找。cwd 路径里只要有符号链接，每次续会话都是空的。写入 key 由阡陌自有的 `sessionWorkspace.ts` 决定：`projectDirForSessionCwd` 改为先 realpath 再做 NFC，与 `canonicalizePath` 语义相同。本文件**只做标识符替换**：两处 `resolveSessionFilePath` 换成 `resolveAcpSessionFile`，import 随之调整。`resolveAcpSessionFile` 也在 `sessionWorkspace.ts`，先按规范 key 走基座查找；找不到、并且原样 key 与规范 key 不同时，再按原样 key 找一次，兼容旧版写下的记录。第一处调用被 biome 从 4 行折成 1 行，所以本次删除数是 6。**为什么不改基座 `resolveSessionFilePath` 本身**：它还服务 SDK 和 CLI，而按原样 key 写记录的只有 ACP | ✅ 书面 |
+
+**同批改动的阡陌自有文件**（快照之外）：新增 `src/services/acp/exitFlush.ts`、`src/services/acp/__tests__/exitFlush.test.ts`、`src/services/acp/agent/__tests__/symlinkWorkspace.test.ts`、`tests/integration/acp-exit-transcript.test.ts`（起真 `--acp` 子进程，两组用例分别钉住两处缺陷）；修改 `src/services/acp/agent/sessionWorkspace.ts`。
