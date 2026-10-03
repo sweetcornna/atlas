@@ -53,7 +53,7 @@ export class HandoffGitError extends Error {
   }
 }
 
-export interface GitRunOptions {
+interface GitRunOptions {
   readonly cwd: string
   /** Added on top of the sanitised inherited environment. */
   readonly env?: Readonly<Record<string, string>>
@@ -65,7 +65,7 @@ export interface GitRunOptions {
   readonly okExitCodes?: readonly number[]
 }
 
-export interface GitRunResult {
+interface GitRunResult {
   readonly exitCode: number
   readonly stdout: Buffer
   readonly stderr: string

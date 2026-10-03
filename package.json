@@ -146,7 +146,6 @@
     "@qianmo/capacity": "workspace:*",
     "@qianmo/console": "workspace:*",
     "@qianmo/diagnosis": "workspace:*",
-    "@qianmo/handoff": "workspace:*",
     "@qianmo/memory": "workspace:*",
     "@qianmo/negotiation": "workspace:*",
     "@qianmo/protocol": "workspace:*",
