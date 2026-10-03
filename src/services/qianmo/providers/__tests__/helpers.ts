@@ -21,7 +21,7 @@ export const V1: NodeCapabilities = {
   multiKey: false,
 }
 
-export const CATALOG_DAY = new Date('2026-10-03T00:00:00Z')
+const CATALOG_DAY = new Date('2026-10-03T00:00:00Z')
 
 export function model(overrides: Partial<ProviderModel> = {}): ProviderModel {
   return {
@@ -39,7 +39,7 @@ export function model(overrides: Partial<ProviderModel> = {}): ProviderModel {
   }
 }
 
-export function profileJson(
+function profileJson(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {

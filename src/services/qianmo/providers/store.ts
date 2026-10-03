@@ -32,7 +32,7 @@ import { occConfigPath } from '../../../config/paths.js'
 import { getFsImplementation } from '../../../utils/filesystem/fsOperations.js'
 
 export const PRIVATE_FILE_MODE = 0o600
-export const PRIVATE_DIR_MODE = 0o700
+const PRIVATE_DIR_MODE = 0o700
 
 export function providerDir(): string {
   return occConfigPath('qianmo', 'provider')
@@ -68,7 +68,7 @@ function isErrno(error: unknown, code: string): boolean {
   )
 }
 
-export function isMissing(error: unknown): boolean {
+function isMissing(error: unknown): boolean {
   return isErrno(error, 'ENOENT')
 }
 
@@ -131,7 +131,7 @@ export function isProcessAlive(pid: number): boolean {
 
 type LockRecord = { pid: number; at: string; nonce: string }
 
-export type ApplyLock = { release(): void }
+type ApplyLock = { release(): void }
 
 /**
  * `apply.lock` via `O_EXCL` (§2.6 step 1). A lock whose pid is gone is stale

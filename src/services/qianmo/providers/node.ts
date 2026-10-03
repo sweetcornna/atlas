@@ -37,6 +37,11 @@
  * Polling: `hasPendingProviderConfig()` is a single `stat`; the resident polls
  * it every 5 s and on SIGHUP (no `fs.watchFile`, see §2.7).
  *
+ * The option and result types (`StageResult`, `CommitResult`, …) stay
+ * module-private until something outside imports them — the dead-code
+ * ratchet counts an exported type nobody imports. The caller that needs one
+ * adds the `export` in its own change, or uses `ReturnType<typeof …>`.
+ *
  * ## Crash windows (roll forward, never back)
  *
  *   1. after `pending.json`, before `settings.json` changes → the disk still
@@ -111,7 +116,7 @@ export { computeEffectiveProviderState } from './effective.js'
 export { inheritedProviderKeyNames } from './whitelist.js'
 
 /** What this build can do. Flipped by the packages that add each ability. */
-export const NODE_PROVIDER_CAPABILITIES: NodeCapabilities = {
+const NODE_PROVIDER_CAPABILITIES: NodeCapabilities = {
   protocol: 1,
   chatEffortHonorsOverride: false,
   replayFilter: false,
@@ -182,7 +187,7 @@ type StateFile = {
   lastResult: LastCommitResult | null
 }
 
-export type GenerationRecord = {
+type GenerationRecord = {
   generation: number
   startedAt: string
   loadedHash: string
@@ -296,14 +301,14 @@ function readGeneration(): GenerationRecord | null {
 // Phase 1: stage
 // ---------------------------------------------------------------------------
 
-export type StageOptions = {
+type StageOptions = {
   /** The node name from the forced command; checked against `req.node`. */
   node?: string
   capabilities?: NodeCapabilities
   now?: Date
 }
 
-export type StageResult =
+type StageResult =
   | {
       ok: true
       requestId: string
@@ -535,7 +540,7 @@ export function stageProviderApply(
 // Phase 2: commit
 // ---------------------------------------------------------------------------
 
-export type CommitResult =
+type CommitResult =
   | { status: 'none' }
   | {
       status: 'committed'
@@ -552,7 +557,7 @@ export type CommitResult =
   | { status: 'bad-pending'; movedTo: string }
   | { status: 'write-failed'; requestId: string; message: string }
 
-export type CommitOptions = { now?: Date }
+type CommitOptions = { now?: Date }
 
 /** Single `stat`, for the resident's 5 s poll. */
 export function hasPendingProviderConfig(): boolean {

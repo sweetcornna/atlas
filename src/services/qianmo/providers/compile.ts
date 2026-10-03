@@ -167,7 +167,7 @@ function slotEffort(model: ProviderModel): EffortLevel | undefined {
   return compiledEffortLevel(model.effort) ?? undefined
 }
 
-export type CompileOptions = {
+type CompileOptions = {
   /** The key value to write — already resolved from `value` or `keep`. */
   secret: string
   capabilities: NodeCapabilities
