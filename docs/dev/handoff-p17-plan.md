@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.1**（2026-10-03，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写 |
+| 文档版本 | **v1.2**（2026-10-03，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写；v1.2 同日随 P17.3 本仓库部分回写：MCP 工具表随各包合入逐个增加，`now` 遇到未完成回合的三种情形 |
 | 上位设计 | [`handoff-m1.md`](./handoff-m1.md) v1.2（范围、场景、AC-H1~H5 以设计为准，本文只讲怎么做） |
 | 核对基点 | 本仓库 `c0c52924`（main，#153 合并提交）；fork 仓库 `sweetcornna/qianmo-codex` 钉上游标签 `rust-v0.158.0`（提交 `064c6b8c`） |
 | 用法 | 每个工作包一张卡：仓库、要改的文件、接口、步骤、完成标准、依赖、估算、计划时间。按卡开工；卡里没写的不做 |
@@ -112,15 +112,17 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 
 ### P17.3 两个入口（仓库：本仓库 + fork）
 
+**进度**：fork 部分已在 `qianmo/main`（`34e0d210ed`）；本仓库的 `qm handoff mcp` 在分支 `feat/p17-3-handoff-mcp`（基点 `b95eaff1`），待审计合入。接法见 [`handoff-usage.md`](./handoff-usage.md)。
+
 **本仓库**
 
 | 项 | 内容 |
 |---|---|
 | 新文件 | `src/cli/handlers/handoff.ts`（`qm handoff` 各子命令分派）<br>`src/cli/handlers/handoffMcp.ts`（stdio MCP 服务，用仓库已装的 `@modelcontextprotocol/server` v2 直接写，样板参照 `src/utils/computerUse/mcpServer.ts` 的 `serveStdio` + `tools/list`、`tools/call`；**不复用基座 `src/entrypoints/mcp.ts`**，它绑着整套基座工具） |
 | 改动 | `src/entrypoints/cli.tsx` fast path 加 `args[0] === 'handoff'` 分支（仿 `resident`）；`src/cli/program/commands/qianmo.tsx` 加帮助条目；`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 加 `handoff` |
-| MCP 工具（仅五个，名字带 `qianmo_` 前缀） | `qianmo_status`：同步状态与进行中的接力任务<br>`qianmo_handoff {goal, done, remaining, deadline?}`：执行一次 `qm handoff now`，返回「可以关机」或失败原因<br>`qianmo_task {taskId?}`：查一个任务的状态与摘要<br>`qianmo_pull {taskId?}`：执行接回<br>`qianmo_send {taskId, text}`：给云端正在跑的任务追加一句话 |
-| Claude Code 接法 | 文档给两行命令：`claude mcp add qianmo -- qm handoff mcp`；在 `~/.claude/settings.json` 的 `Stop` 与 `SessionEnd` hook 调 `qm handoff sync --hook claude-code`（从 stdin 读 `session_id`、`transcript_path`、`cwd`）。**阡陌不代写用户的 `~/.claude`** |
-| 会话定位 | 每次 hook 或 notify 回调时，把「cwd → 最近的工具、会话 id、会话文件路径」记到 `occConfigPath('qianmo','handoff','sessions.json')`；`qianmo_handoff` 按当前 cwd 取最近一条。**随 P17.4 第二批实现。**qmcode 的会话文件按 thread id 在 `$QMCODE_HOME/sessions/**/rollout-*-<id>.jsonl` 查找，`QMCODE_HOME` 的默认值由 `src/config/paths.ts` 新增的 helper 给出（identity-paths 门禁禁止在别处拼家目录路径） |
+| MCP 工具（最终五个，名字带 `qianmo_` 前缀；**随各包合入逐个增加**，后端没合入的工具不进工具表——调了必然失败的工具只会浪费模型的回合） | **P17.3 交付三个**：<br>`qianmo_status`：只读，同 `qm handoff status`（登记信息、转交会带的会话、最近一次同步、中枢上本项目的任务）<br>`qianmo_handoff {goal, done, remaining, deadline?}`：有副作用，执行一次 `qm handoff now` 的截断模式（见 P17.4「会话同步规则」`now` 一行的情形 ③），返回「已落地，可以关机」或 P17.4 的失败原因<br>`qianmo_task {taskId?}`：只读，查一个任务的状态、简报与结果摘要（`GET /v0/handoff/<id>`；不给 id 取本项目最近一个）<br>**P17.5 补** `qianmo_send {taskId, text}`：给云端正在跑的任务追加一句话（中枢 `POST /v0/handoff/<id>/send` 已能记账，投递要等节点桥）<br>**P17.6 补** `qianmo_pull {taskId?}`：执行接回 |
+| Claude Code 接法 | 文档给两行命令：`claude mcp add qianmo -- qm handoff mcp`；在 `~/.claude/settings.json` 的 `Stop` 与 `SessionEnd` hook 调 `qm handoff sync --hook claude-code`（从 stdin 读 `session_id`、`transcript_path`、`cwd`）。**阡陌不代写用户的 `~/.claude`**。写在 [`handoff-usage.md`](./handoff-usage.md) |
+| 会话定位 | 每次 hook 或 notify 回调时，把「cwd → 最近的工具、会话 id、会话文件路径」记到 `occConfigPath('qianmo','handoff','sessions.json')`；`qianmo_handoff` 按当前 cwd 取最近一条（先找同一目录，再找同一仓库里最近的一条）。**随 P17.4 第二批实现。**qmcode 在每个 MCP `tools/call` 的 `params._meta.threadId` 里带线程 id（上游 `core/src/mcp_tool_call.rs` 的 `with_mcp_tool_call_ids_meta`，读码），这个线程的 rollout 找得到时优先用它，找不到才按 cwd 查；MCP 进程不读环境里的 `CODEX_THREAD_ID`（qmcode 不传给 MCP 服务；从 qmcode 的 shell 里起的 Claude Code 会继承到别的线程的 id）。qmcode 的会话文件按 thread id 在 `$QMCODE_HOME/sessions/**/rollout-*-<id>.jsonl` 查找，`QMCODE_HOME` 的默认值由 `src/config/paths.ts` 新增的 helper 给出（identity-paths 门禁禁止在别处拼家目录路径） |
 
 **fork**
 
@@ -129,7 +131,7 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 | `codex-rs/config/defaults.toml` | 上游已有随二进制内置的默认层（优先级最低），本项是往里加，不新建机制，不改 Rust，不用 `/etc/qmcode`。内容（探针第 6 项）：<br>`notify = ["qm", "handoff", "sync", "--hook", "qmcode"]`（回合结束时把 thread id、cwd 作为最后一个参数传入）<br>`[mcp_servers.qianmo]`，`command = "qm"`，`args = ["handoff", "mcp"]`；不设 `required`，`qm` 不在 `PATH` 上时只报启动失败，线程照常<br>`check_for_update_on_startup = false`，并关闭 `qmcode update` 等指向官方包的升级检查（P17.1 裁定第 6 条）<br>文档写明：用户关闭 MCP 要写**完整表**（`command`、`args`、`enabled = false`），只写 `enabled = false` 会让 `qmcode mcp add/remove` 报错；用户自设 `notify` 会整个顶掉内置值，想两者都要只能自写包装脚本。节点另在自己的配置里加 `[features] plugins = false` |
 | 显示遗留 | 承接 P17.1：界面标题 `OpenAI Codex`、`codex --remote` 重连提示、`codex app-server` 横幅、帮助文本里的 `~/.codex/config.toml` 与 `Usage: codex exec` |
 | `/handoff` `/pull` | `tui/src/slash_command.rs` 加两个变体与说明；`tui/src/chatwidget/slash_dispatch.rs` 加分支，复用界面现成的 `!` 执行路径，分别执行 `qm handoff now` 与 `qm handoff pull`（带 `CODEX_THREAD_ID` 环境变量，结果显示在界面）；`tui/src/chatwidget/input_submission.rs` 把对应函数改为 `pub(super)`。约 25 行 Rust |
-| 完成标准 | 在 qmcode 里输入 `/handoff`、在 Claude Code 里说「交给云端」，都走到 `qm handoff now` 并显示结果；MCP 工具表恰为上述五项；**`qm handoff mcp` 可并发多实例**（每个线程拉起一份，状态查询还会再起一份，必须无状态）；**`qm handoff sync` 不记录环境变量**（notify 继承 qmcode 的完整环境，含模型 key 变量）；cli-golden、fork 的 TUI 快照测试更新并通过 |
+| 完成标准 | 在 qmcode 里输入 `/handoff`、在 Claude Code 里说「交给云端」，都走到 `qm handoff now` 并显示结果；MCP 工具表恰为已合入各包交付的那几项（P17.3 合入时为 `qianmo_status`、`qianmo_handoff`、`qianmo_task` 三项）；**`qm handoff mcp` 可并发多实例**（每个线程拉起一份，状态查询还会再起一份，必须无状态）；**`qm handoff sync` 不记录环境变量**（notify 继承 qmcode 的完整环境，含模型 key 变量）；cli-golden、fork 的 TUI 快照测试更新并通过 |
 
 - 估算 20–36 人时；依赖 P17.1（fork 部分）；计划 **2026-10-19 至 11-08**，与 P17.4 并行。
 
@@ -155,7 +157,7 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 | 等待 | 没读到就每 10 ms 重读，上限 2 s；超时仍按最后一个完整行同步，台账标「未完整」，下一次 notify 再补 |
 | 截断 | 只同步到最后一个换行符 |
 | 去抖 | 尾沿去抖：连续触发时最后一次必须被同步（下文 5 s 去抖按此实现） |
-| `now` | 回「可以关机」前，最近一个 `task_started` 必须已有同 `turn_id` 的 `task_complete` 或 `turn_aborted`，否则提示「回合进行中」 |
+| `now` | 回「可以关机」前要确认会话里没有半个回合。遇到未完成的回合（qmcode：最近一个 `task_started` 没有同 `turn_id` 的 `task_complete` / `turn_aborted`）分三种情形（`handoffTranscript.ts` 的 `qmcodeSnapshot(content, fromThreadShell)`、`claudeCodeCompleteEnd`）：<br>① **终端里，或别的线程里**运行 `qm handoff now`：qmcode 会话一律提示「回合进行中」，什么都不推（Claude Code 会话在 ①② 下不判回合，截到最后一个换行，P17.4 第二批已接受的偏差）。<br>② **qmcode 的 `/handoff`、`!`**（`thread/shellCommand` 先开一个 shell 回合再执行命令）：三条**同时**满足才认作调用方自己的 shell 回合——环境里的 `CODEX_THREAD_ID` 与本会话相同；那条未完成的 `task_started` 是文件最后一个完整行；它后面没有任何字节（连半行都没有）。满足就截到它之前，对前面部分按同一规则再判（前面还有未完成回合照样拒绝）；任何一条不满足都按 ①。<br>③ **MCP 工具 `qianmo_handoff`**（模型回合**内**的工具调用）：文件末尾是这个回合的 `task_started`、`turn_context`、`response_item`……最后一条是调用本工具的 `function_call`。这个回合在工具返回之前结束不了，等它就是自锁，所以不拒绝也不等：qmcode 截到最近一个未完成回合的 `task_started` 之前；Claude Code 截到最后一个完整回合（最后一条结束回合的主链记录：`stop_reason` 非空且不是 `tool_use` 的 assistant，或基座写的中断标记；其后的非主链记录一并带上），返回里写明截到哪、略去几行。<br>会话选择：② 环境里有 `CODEX_THREAD_ID` 且找得到它的 rollout 时用这个线程；③ `tools/call` 的 `_meta.threadId` 找得到 rollout 时用它；都没有再按 cwd 查 `sessions.json`。依据写在 `handoffTranscript.ts` 的模块注释与 `qmcodeSnapshot`、`claudeCodeCompleteEnd` 的注释里 |
 | 临时线程 | notify 指向没有会话文件的临时线程时跳过，不算失败 |
 
 **本地命令**（`src/cli/handlers/handoff.ts`）
