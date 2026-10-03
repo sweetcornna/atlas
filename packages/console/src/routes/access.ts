@@ -2,19 +2,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 账号与访问 — placeholder (H3 账号与访问 · H4 操作记录), and the action
- * ledger's read API (P15.9).
+ * 账号与访问 (H3) and 操作记录 (H4): the `/access` page and its four tabs,
+ * their polled fragments, and the action ledger's read API (P15.9).
  *
- * The page package that builds this area replaces the `stubRoute(...)` call
- * below with a module of its own (`routes/types.ts`) and changes no other
- * route file. Until then `/access` is the one-line placeholder of `stub.ts`.
+ * ## The page
  *
- * ## `/v0/actions` — the 操作记录 tab's data, before its page
+ * | Path | Tab | Who |
+ * | --- | --- | --- |
+ * | `/access` | 成员 for whoever may administer accounts, else 操作记录 | any credential |
+ * | `/access/invites` | 邀请 | administers; anyone else a 403 page saying who may |
+ * | `/access/sessions` | 会话 | administers; likewise |
+ * | `/access/actions` | 操作记录, and 谁读了我的对话 for a person | any credential |
+ * | `/fragments/access/<members\|invites\|sessions>` | the polled regions | administers |
  *
- * The ledger's backend is P15.9's and its page is P18.10's
- * (`providers-console-m1.md` §6.2 H4). The page will live in this area, so
- * the API is claimed here, by this module, the way every area claims its own
- * heads; the page package keeps it when it replaces the placeholder.
+ * "Administers" is {@link canWrite}: the admin token or a personal `ops`
+ * account — the same test `http.ts` puts in front of `/v0/accounts`, so the
+ * page never offers a tab whose API would refuse the reader. The write
+ * controls go further and need the account book usable and the action ledger
+ * admitting writes: a button that can only answer 503 is not drawn, and the
+ * tab says why instead.
+ *
+ * Every write on these tabs goes to the account API (`accountsHttp.ts`), and
+ * `http.ts` already asks the ledger before each one and writes it down after
+ * (`accounts.<method>`, the path as the target). This module writes nothing
+ * to the ledger of its own: a second line for the same act would make every
+ * count over the ledger wrong by one.
+ *
+ * ## `/v0/actions` — the 操作记录 tab's data, as an API
  *
  * - `GET /v0/actions` — what was done. `ops` and the admin token see every
  *   entry and may filter by `subject`, `action` (a prefix), `target`
@@ -36,15 +50,54 @@
  * Nothing on either route is recorded — reading the ledger is a read — except
  * that a break-glass request is, as every break-glass request is (`http.ts`).
  * A closed ledger answers 503 rather than the lines that still parse.
+ *
+ * The page reads the ledger through the same two queries, so the tab and the
+ * API cannot disagree about who sees what.
  */
 
 import type { ConsoleAccounts } from '../access.js'
+import { MAX_OPEN_INVITES } from '../accounts.js'
 import { chatScopeOf } from '../accountsHttp.js'
-import type { ActionPage, ActionQuery, ActionRecord } from '../deps.js'
-import { fail, json, methodNotAllowed, notFound } from '../respond.js'
-import { failureResponse, guard } from './shared.js'
-import { stubRoute } from './stub.js'
-import type { RouteContext, RouteModule } from './types.js'
+import type {
+  ActionPage,
+  ActionQuery,
+  ActionRecord,
+  ConsoleResult,
+} from '../deps.js'
+import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
+import {
+  ACCESS_PAGE_CSS,
+  ACCOUNTS_OFF_LINE,
+  ADMIN_ONLY_LINE,
+  BOOK_CLOSED_LINE,
+  LEDGER_CLOSED_LINE,
+  TAB_LABEL,
+  accessDialogs,
+  inviteLinkPanel,
+  namesOf,
+  renderAccessTabs,
+  renderActionFilter,
+  renderActionLog,
+  renderForbiddenTab,
+  renderInviteForm,
+  renderInvites,
+  renderMembers,
+  renderReads,
+  renderSessions,
+  type AccessListing,
+  type AccessTab,
+  type ActionFilterView,
+  type LedgerShown,
+} from '../view/access.js'
+import { bar } from '../view/bits.js'
+import {
+  canWrite,
+  failureResponse,
+  guard,
+  readOnlyNote,
+  underPath,
+} from './shared.js'
+import type { PageRender, RouteContext, RouteModule } from './types.js'
 
 /** The verb a transcript opening is recorded under (`deps.ts`). */
 const TRANSCRIPT_OPEN = 'chat.transcript.open'
@@ -173,7 +226,7 @@ function everyQuery(
 async function readsQuery(
   ctx: RouteContext,
   filters: ActionFilters,
-): Promise<ActionQuery | Response> {
+): Promise<ConsoleResult<ActionQuery>> {
   const { access, accounts, deps } = ctx
   let targets: readonly string[] = []
   if (filters.session !== undefined) {
@@ -190,13 +243,16 @@ async function readsQuery(
       deps.chat !== undefined
     ) {
       const sessions = await deps.chat.sessions()
-      if (!sessions.ok) return failureResponse(sessions.failure)
+      if (!sessions.ok) return { ok: false, failure: sessions.failure }
       targets = sessions.value
         .map(session => session.id)
         .filter(id => accounts.book.ownerOf(id) === principal.subject)
     }
   }
-  return { targets, actionPrefix: TRANSCRIPT_OPEN, ...paging(filters) }
+  return {
+    ok: true,
+    value: { targets, actionPrefix: TRANSCRIPT_OPEN, ...paging(filters) },
+  }
 }
 
 /** A reading, with the reader's display name when the account book has one. */
@@ -253,10 +309,14 @@ async function handleActionsApi(
 
   const filters = parseFilters(url.searchParams)
   if (!filters.ok) return fail(400, 'invalid', filters.message)
-  const query = reads
-    ? await readsQuery(ctx, filters.value)
-    : everyQuery(ctx, filters.value)
-  if (query instanceof Response) return query
+  let query: ActionQuery | null
+  if (reads) {
+    const owned = await readsQuery(ctx, filters.value)
+    if (!owned.ok) return failureResponse(owned.failure)
+    query = owned.value
+  } else {
+    query = everyQuery(ctx, filters.value)
+  }
   // Somebody else's subject asked for by a member: the list is filtered, and
   // filtered to nothing — but the ledger is still read, so a closed one says
   // so here too.
@@ -265,13 +325,446 @@ async function handleActionsApi(
   return json(reads ? withReaderNames(page.value, ctx.accounts) : page.value)
 }
 
+// --- the page --------------------------------------------------------------
+
+/** Most entries one page of 操作记录 lists, in either of its two lists. */
+const PAGE_LIMIT = 50
+
+/** The tabs of somebody who administers accounts, in order. */
+const ADMIN_TABS = ['members', 'invites', 'sessions'] as const
+type AdminTab = (typeof ADMIN_TABS)[number]
+
+const EVERY_TAB: readonly AccessTab[] = [...ADMIN_TABS, 'actions']
+
+/** The tab each `/access/<segment>` names. 成员 is `/access` itself. */
+const TAB_OF_SEGMENT: Readonly<Record<string, AccessTab>> = {
+  invites: 'invites',
+  sessions: 'sessions',
+  actions: 'actions',
+}
+
+/** The polled regions, by the segment after `/fragments/access/`. */
+const FRAGMENT_TABS: Readonly<Record<string, AdminTab>> = {
+  members: 'members',
+  invites: 'invites',
+  sessions: 'sessions',
+}
+
+/** What a script is told on a fragment it may not read. */
+const ADMIN_ONLY = '成员、邀请与会话需要运维角色的个人账号或 admin 令牌。'
+
+/** 操作记录, to a credential the ledger has no answer for. */
+const PERSON_REQUIRED_LINE =
+  '操作记录需要个人账号或管理令牌 · 共用的只读令牌看不到'
+
+/** 操作记录, on a console without a ledger. */
+const LEDGER_UNWIRED_LINE =
+  '这台控制台没有接动作账本 · 开启个人账号后才有操作记录'
+
+/** Said where the write controls are, to a writer with script off. */
+const NO_SCRIPT_LINE =
+  '签发 · 作废 · 重置 · 吊销与强制下线需要启用脚本 · 阅读不受影响'
+
+/**
+ * May this caller administer accounts. The same test `http.ts` puts in front
+ * of `/v0/accounts` (`guard(…, 'admin', …)`), so the page never offers a tab
+ * whose API would refuse the reader.
+ */
+function administers(ctx: RouteContext): boolean {
+  return canWrite(ctx.access)
+}
+
+/** Where the account book stands, for an administration tab. */
+type BookState =
+  | { readonly kind: 'off' }
+  | { readonly kind: 'closed' }
+  | {
+      readonly kind: 'open'
+      readonly listing: AccessListing
+      /** The action ledger refuses writes: every one here would be a 503. */
+      readonly ledgerClosed: boolean
+      /** The write controls are drawn. */
+      readonly writable: boolean
+    }
+
+async function bookOf(ctx: RouteContext): Promise<BookState> {
+  const accounts = ctx.accounts
+  if (accounts === undefined) return { kind: 'off' }
+  const listed = accounts.book.list()
+  if (!listed.ok) return { kind: 'closed' }
+  // Asked now rather than at the click: a button whose only possible answer
+  // is 503 is not drawn, and the tab says why instead.
+  const ledgerClosed = (await ctx.admit()) !== null
+  return {
+    kind: 'open',
+    listing: listed.value,
+    ledgerClosed,
+    writable: administers(ctx) && !ledgerClosed,
+  }
+}
+
+/** One administration tab's polled region. */
+function adminFragment(
+  ctx: RouteContext,
+  tab: AdminTab,
+  book: BookState,
+): string {
+  if (book.kind === 'off') return bar('muted', ACCOUNTS_OFF_LINE)
+  if (book.kind === 'closed') return bar('bad', BOOK_CLOSED_LINE)
+  const lead = book.ledgerClosed ? bar('bad', LEDGER_CLOSED_LINE) : ''
+  const principal = ctx.access.principal
+  const model = {
+    listing: book.listing,
+    now: ctx.now,
+    canWrite: book.writable,
+    self: principal?.kind === 'user' ? principal.subject : undefined,
+  }
+  switch (tab) {
+    case 'members':
+      return lead + renderMembers(model)
+    case 'invites':
+      return lead + renderInvites({ ...model, cap: MAX_OPEN_INVITES })
+    case 'sessions':
+      return lead + renderSessions(model)
+  }
+}
+
+/** An administration tab: its region, and the writer's form, panel and dialogs. */
+async function adminBody(
+  ctx: RouteContext,
+  tab: AdminTab,
+): Promise<{ readonly body: string; readonly poll: boolean }> {
+  const book = await bookOf(ctx)
+  const writable = book.kind === 'open' && book.writable
+  // Nothing on a console without accounts changes under the reader.
+  const poll = book.kind !== 'off'
+  const region =
+    `<div id="access-${tab}"` +
+    (poll ? ` data-poll="/fragments/access/${tab}"` : '') +
+    `>${adminFragment(ctx, tab, book)}</div>`
+  const body =
+    (writable
+      ? `<noscript><p class="note">${NO_SCRIPT_LINE}</p></noscript>` +
+        (tab === 'invites' ? renderInviteForm() : '') +
+        (tab === 'sessions' ? '' : inviteLinkPanel())
+      : '') +
+    `<section class="sec" id="access-${tab}-section">${region}</section>` +
+    (writable ? accessDialogs() : '')
+  return { body, poll }
+}
+
+/** Empty fields of the filter form are absent filters, not empty ones. */
+function filledParams(params: URLSearchParams): URLSearchParams {
+  return new URLSearchParams(
+    [...params].filter(([, value]) => value.trim() !== ''),
+  )
+}
+
+/** One page of the ledger, as the tab shows it. */
+function shownOf(
+  page: ConsoleResult<ActionPage>,
+  name: (page: ActionPage) => readonly NamedActionRecord[] = p => p.entries,
+): LedgerShown {
+  return page.ok
+    ? {
+        kind: 'page',
+        entries: name(page.value),
+        nextBeforeSeq: page.value.nextBeforeSeq,
+      }
+    : { kind: 'closed' }
+}
+
+/** 操作记录: the caller's view of the ledger, and of who read their conversations. */
+async function actionsBody(ctx: RouteContext): Promise<string> {
+  const principal = ctx.access.principal
+  if (principal === null || principal.subject === 'legacy:view') {
+    return bar('muted', PERSON_REQUIRED_LINE)
+  }
+  const ledger = ctx.deps.actions
+  if (ledger === undefined) return bar('muted', LEDGER_UNWIRED_LINE)
+
+  const params = filledParams(ctx.url.searchParams)
+  const filter: ActionFilterView = {
+    ...(params.get('subject') === null
+      ? {}
+      : { subject: params.get('subject') ?? '' }),
+    ...(params.get('action') === null
+      ? {}
+      : { action: params.get('action') ?? '' }),
+    ...(params.get('target') === null
+      ? {}
+      : { target: params.get('target') ?? '' }),
+  }
+  const seesAll =
+    principal.kind === 'legacy' ||
+    (principal.kind === 'user' && principal.role === 'ops')
+  const self = principal.kind === 'user' ? principal.subject : undefined
+  const listed = ctx.accounts?.book.list()
+  const names = namesOf(listed?.ok === true ? listed.value : null)
+
+  const parsed = parseFilters(params)
+  let main: LedgerShown
+  if (!parsed.ok) {
+    main = { kind: 'invalid', message: parsed.message }
+  } else {
+    const query = everyQuery(ctx, { ...parsed.value, limit: PAGE_LIMIT })
+    // Somebody else's subject asked for by a member: nothing can match, and
+    // the ledger is still read, so a closed one says so here too.
+    main = shownOf(await ledger.list(query ?? { targets: [] }))
+  }
+  const before = parsed.ok ? parsed.value.beforeSeq : undefined
+  const readsCursor = positiveInteger(params.get('readsBefore'), 'readsBefore')
+  const readsBefore = readsCursor.ok ? readsCursor.value : undefined
+
+  let reads = ''
+  if (principal.kind === 'user') {
+    let shown: LedgerShown
+    if (!readsCursor.ok) {
+      shown = { kind: 'invalid', message: readsCursor.message }
+    } else {
+      const owned = await readsQuery(ctx, {
+        ...(readsBefore === undefined ? {} : { beforeSeq: readsBefore }),
+        limit: PAGE_LIMIT,
+      })
+      shown = owned.ok
+        ? shownOf(
+            await ledger.list(owned.value),
+            page => withReaderNames(page, ctx.accounts).entries,
+          )
+        : { kind: 'failed', failure: owned.failure }
+    }
+    reads = renderReads({
+      shown,
+      filter,
+      before,
+      readsBefore,
+      names,
+      self,
+      now: ctx.now,
+    })
+  }
+
+  return (
+    `<section class="sec" id="actions-section" aria-labelledby="h-actions">` +
+    renderActionFilter(filter, seesAll) +
+    renderActionLog({
+      shown: main,
+      filter,
+      before,
+      readsBefore,
+      seesAll,
+      names,
+      self,
+      now: ctx.now,
+    }) +
+    `</section>` +
+    reads
+  )
+}
+
+async function accessPage(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<PageRender | Response> {
+  const admin = administers(ctx)
+  const segment = rest[0]
+  const tab: AccessTab | undefined =
+    segment === undefined
+      ? admin
+        ? 'members'
+        : 'actions'
+      : TAB_OF_SEGMENT[segment]
+  if (tab === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  const tabs: readonly AccessTab[] = admin ? EVERY_TAB : ['actions']
+  const frame = {
+    title: '账号与访问',
+    ...(segment === undefined ? {} : { crumbs: [{ label: TAB_LABEL[tab] }] }),
+    ...(canWrite(ctx.access)
+      ? {}
+      : { actions: readOnlyNote(ctx.accounts !== undefined) }),
+  }
+  if (!tabs.includes(tab)) {
+    return {
+      ...frame,
+      status: 403,
+      body: renderForbiddenTab(
+        ctx.accounts === undefined ? ACCOUNTS_OFF_LINE : ADMIN_ONLY_LINE,
+      ),
+    }
+  }
+  const nav = renderAccessTabs(tabs, tab)
+  if (tab === 'actions') {
+    return { ...frame, body: nav + (await actionsBody(ctx)) }
+  }
+  const { body, poll } = await adminBody(ctx, tab)
+  return { ...frame, body: nav + body, ...(poll ? { poll: true } : {}) }
+}
+
+async function handleFragment(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<Response> {
+  const denied = guard(ctx.access.credential, 'view', 'guarded')
+  if (denied !== null) return denied
+  const tab = rest.length === 1 ? FRAGMENT_TABS[rest[0] ?? ''] : undefined
+  if (tab === undefined) return notFound(`unknown path: ${ctx.url.pathname}`)
+  if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
+  if (!administers(ctx)) return fail(403, 'forbidden', ADMIN_ONLY)
+  return html(adminFragment(ctx, tab, await bookOf(ctx)))
+}
+
+/**
+ * 账号与访问: every write goes to the account API, after a confirmation
+ * where the act cannot be taken back, and the region it changed is reloaded
+ * from the server rather than patched here. A freshly minted link is put into
+ * the one field made for it, by `value`, and nowhere else.
+ */
+const ACCESS_PAGE_JS = `
+(function () {
+  'use strict';
+
+  var qc = window.qianmoConsole;
+  if (!qc) return;
+
+  // Subjects come from the server's own markup; anything else is not sent.
+  var SUBJECT = /^u:[0-9a-f]{16}$/;
+  var INVITE = /^[0-9a-f]{16}$/;
+
+  function refresh(id) {
+    var mount = qc.byId(id);
+    return mount ? qc.refreshRegion(mount) : null;
+  }
+
+  function showLink(link, title) {
+    var panel = qc.byId('invite-link');
+    var field = qc.byId('invite-link-value');
+    if (!panel || !field || typeof link !== 'string' || link.charAt(0) !== '/') return;
+    field.value = window.location.origin + link;
+    qc.setText('invite-link-title', title);
+    panel.hidden = false;
+    field.focus();
+    field.select();
+  }
+
+  qc.onAction('invite-link-copy', function () {
+    var field = qc.byId('invite-link-value');
+    if (!field || !field.value) return;
+    field.select();
+    var done = function () { qc.toast('已复制', 'ok'); };
+    var manual = function () { qc.toast('复制没有成功 · 链接已选中 · 请手动复制', 'bad'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(field.value).then(done, manual);
+    } else {
+      manual();
+    }
+  });
+
+  qc.onAction('invite-link-close', function () {
+    var panel = qc.byId('invite-link');
+    var field = qc.byId('invite-link-value');
+    if (field) field.value = '';
+    if (panel) panel.hidden = true;
+  });
+
+  qc.onSubmit('invite-form', function (form) {
+    var role = form.querySelector('input[name="role"]:checked');
+    var ttl = form.querySelector('select[name="ttlHours"]');
+    var label = form.querySelector('input[name="label"]');
+    var button = form.querySelector('button[type="submit"]');
+    var body = {
+      role: role ? role.value : 'member',
+      ttlHours: ttl ? parseInt(ttl.value, 10) : 72
+    };
+    var text = label ? label.value.trim() : '';
+    if (text) body.label = text;
+    if (button) button.disabled = true;
+    qc.sendJson('POST', '/v0/accounts/invites', body)
+      .then(function (data) {
+        showLink(data && data.link, '邀请链接 · 只显示这一次');
+        if (label) label.value = '';
+        qc.toast('已签发', 'ok');
+        return refresh('access-invites');
+      })
+      .catch(function (err) { qc.toast('签发失败 · ' + qc.message(err), 'bad'); })
+      .then(function () { if (button) button.disabled = false; });
+  });
+
+  qc.onAction('invite-withdraw', function (el) {
+    var id = el.getAttribute('data-invite') || '';
+    if (!INVITE.test(id)) return;
+    qc.setText('confirm-invite-withdraw-name', id);
+    qc.openDialog('confirm-invite-withdraw', function () {
+      qc.sendJson('DELETE', '/v0/accounts/invites/' + id)
+        .then(function () {
+          qc.toast('已作废', 'ok');
+          return refresh('access-invites');
+        })
+        .catch(function (err) { qc.toast('作废失败 · ' + qc.message(err), 'bad'); });
+    });
+  });
+
+  // One confirmation per act on a person: name them, then do it.
+  function onPerson(action, dialog, run) {
+    qc.onAction(action, function (el) {
+      var subject = el.getAttribute('data-subject') || '';
+      if (!SUBJECT.test(subject)) return;
+      qc.setText(dialog + '-name', el.getAttribute('data-name') || subject);
+      qc.openDialog(dialog, function () { run(subject); });
+    });
+  }
+
+  onPerson('account-logout', 'confirm-account-logout', function (subject) {
+    qc.sendJson('POST', '/v0/accounts/' + subject + '/logout')
+      .then(function (data) {
+        var ended = data && typeof data.sessions === 'number' ? data.sessions : 0;
+        qc.toast('已强制下线 · 结束 ' + ended + ' 个会话', 'ok');
+        return refresh('access-sessions');
+      })
+      .catch(function (err) { qc.toast('强制下线失败 · ' + qc.message(err), 'bad'); });
+  });
+
+  onPerson('account-revoke', 'confirm-account-revoke', function (subject) {
+    qc.sendJson('POST', '/v0/accounts/' + subject + '/revoke')
+      .then(function () {
+        qc.toast('已吊销', 'ok');
+        return refresh('access-members');
+      })
+      .catch(function (err) { qc.toast('吊销失败 · ' + qc.message(err), 'bad'); });
+  });
+
+  onPerson('account-reset', 'confirm-account-reset', function (subject) {
+    qc.sendJson('POST', '/v0/accounts/' + subject + '/reset', {})
+      .then(function (data) {
+        showLink(data && data.link, '重置链接 · 只显示这一次');
+        qc.toast('已重置', 'ok');
+        return refresh('access-members');
+      })
+      .catch(function (err) { qc.toast('重置失败 · ' + qc.message(err), 'bad'); });
+  });
+})();
+`
+
 export const accessRoute: RouteModule = {
-  ...stubRoute(
-    { id: 'access', label: '账号与访问', group: 'admin', icon: 'users' },
-    '成员 · 邀请 · 会话 · 操作记录',
-  ),
+  area: {
+    id: 'access',
+    label: '账号与访问',
+    group: 'admin',
+    href: '/access',
+    icon: 'users',
+  },
+  page: {
+    match: underPath('access', 1),
+    guard: 'view',
+    render: accessPage,
+    css: ACCESS_PAGE_CSS,
+    script: ACCESS_PAGE_JS,
+  },
   api: {
     heads: ['actions'],
     handle: (ctx, _head, rest) => handleActionsApi(ctx, rest),
+  },
+  fragments: {
+    heads: ['access'],
+    handle: (ctx, _head, rest) => handleFragment(ctx, rest),
   },
 }
