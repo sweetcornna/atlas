@@ -593,7 +593,17 @@ export async function runWatch(args: readonly string[]): Promise<void> {
     process.stdout.write(`${identity.node}=${identity.publicKey}\n`)
     return
   }
-  const config = command
+  await runWatchJobs(command)
+}
+
+/**
+ * 按解析好的配置跑起来：读作业文件与 PSK、接审计链、起调度器。
+ *
+ * 与参数解析分开，是为了让用例能在本进程里跑一遍真的 `qm watch --once`：
+ * `parseWatchArgs` 要求进程身份是 qianmo，而身份在进程启动时就定了
+ * （`constants/identity.ts`），用例进程不是。
+ */
+export async function runWatchJobs(config: WatchConfig): Promise<void> {
   const psk = pskFromEnv()
   const entries = parseWatchJobs(readFileSync(config.jobsPath, 'utf8'))
   const hub = assertAddress(config.from, '--from')
