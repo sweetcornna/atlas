@@ -109,6 +109,8 @@ export type CaptureParams = {
   messages?: Message[]
   /** Answer `/responses` with this SSE body instead of the default (P18.8). */
   responsesSSE?: string
+  /** Answer `/chat/completions` with this SSE body instead (P18.8). */
+  chatSSE?: string
   /** Receives everything `queryModelOpenAI` yields (P18.8). */
   outputs?: unknown[]
 }
@@ -158,7 +160,8 @@ export async function captureOpenAIRequests(
       })
     }
     const responsesSSE = params.responsesSSE ?? RESPONSES_SSE
-    return new Response(url.endsWith('/responses') ? responsesSSE : CHAT_SSE, {
+    const chatSSE = params.chatSSE ?? CHAT_SSE
+    return new Response(url.endsWith('/responses') ? responsesSSE : chatSSE, {
       status: 200,
       headers: { 'content-type': 'text/event-stream' },
     })

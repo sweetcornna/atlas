@@ -11,6 +11,7 @@ import type {
   ChatCompletionUserMessageParam,
 } from 'openai/resources/chat/completions/completions.mjs'
 import type { AssistantMessage, UserMessage } from '../types/message.js'
+import { carriedToolCallSignature } from './qianmo/geminiToolSignature.js'
 import type { SystemPrompt } from '../types/systemPrompt.js'
 
 export interface ConvertMessagesOptions {
@@ -281,6 +282,9 @@ function convertInternalAssistantMessage(
           arguments:
             typeof tu.input === 'string' ? tu.input : JSON.stringify(tu.input),
         },
+        // qianmo P18.8 (hermes #10): not serialised — the chat lane's send
+        // boundary decides; shared/qianmo/geminiToolSignature.ts.
+        ...carriedToolCallSignature(tu),
       })
     } else if (block.type === 'thinking') {
       // DeepSeek thinking mode: always preserve reasoning_content,

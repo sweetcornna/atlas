@@ -159,6 +159,51 @@ const STRICT_REPLAY = [ABSENT, ABSENT, ABSENT].map(v => ({
 const PADDED_REPLAY = ['chain', ' ', ' '].map(v => ({ reasoning_content: v }))
 const DEEPSEEK_REPLAY = ['chain', '', ''].map(v => ({ reasoning_content: v }))
 
+/**
+ * P18.8 #10 rows: one tool call whose block captured a Gemini thought
+ * signature on an earlier turn (constructed; the field is the one the stream
+ * adapter writes, `GEMINI_THOUGHT_SIGNATURE_FIELD`).
+ */
+function signedToolHistory(): Message[] {
+  return [
+    {
+      type: 'user',
+      uuid: 'u1',
+      message: { role: 'user', content: 'q1' },
+    },
+    {
+      type: 'assistant',
+      uuid: 'a-m1',
+      message: {
+        id: 'm1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Read',
+            input: {},
+            _geminiThoughtSignature: 'SIG-P188',
+          },
+        ],
+      },
+    },
+    {
+      type: 'user',
+      uuid: 'u2',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+      },
+    },
+  ] as unknown as Message[]
+}
+const SIGNED_CALL = {
+  id: 't1',
+  type: 'function',
+  function: { name: 'Read', arguments: '{}' },
+}
+
 const ROWS: ParityRow[] = [
   // ── Q-1: chat lane effort gate = modelSupportsEffort (design §5.2) ──
   {
@@ -682,6 +727,66 @@ const ROWS: ParityRow[] = [
     }),
   ),
 
+  // ── #10 (P18.8): Gemini tool-call signature, by target model ──
+  // hermes transports/chat_completions.py:218-231, :280-282, :399-416.
+  ...(
+    [
+      [
+        'gemini-google',
+        'gemini-3-pro-preview',
+        'https://generativelanguage.googleapis.com/v1beta/openai',
+        true,
+      ],
+      [
+        'gemini-openrouter',
+        'google/gemini-3-flash-preview',
+        'https://openrouter.ai/api/v1',
+        true,
+      ],
+      ['gemma-local', 'gemma-4-27b-it', 'http://localhost:11434/v1', true],
+      [
+        'strict-mistral',
+        'mistral-large-latest',
+        'https://api.mistral.ai/v1',
+        false,
+      ],
+      ['strict-kimi', 'kimi-k3', 'https://api.moonshot.cn/v1', false],
+      ['strict-gateway', 'vendor-model-x', GATEWAY, false],
+    ] as const
+  ).map(
+    ([label, model, baseURL, keeps]): ParityRow => ({
+      id: `10-${label}`,
+      vendor: keeps ? 'Gemini family' : `strict side (${label})`,
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      history: signedToolHistory(),
+      expect: {
+        path: '/chat/completions',
+        assistants: [
+          {
+            tool_calls: [
+              keeps
+                ? {
+                    ...SIGNED_CALL,
+                    extra_content: {
+                      google: { thought_signature: 'SIG-P188' },
+                    },
+                  }
+                : SIGNED_CALL,
+            ],
+          },
+        ],
+      },
+      source: keeps
+        ? 'hermes chat_completions.py:218-231 (gemini/gemma model keeps it)'
+        : 'hermes chat_completions.py:254-261 (every other target: stripped)',
+    }),
+  ),
+
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
   // Baseline captured from 1b477a37 through this same stub:
   // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt
@@ -868,5 +973,90 @@ describe('fleet lock: encrypted_content replay on the same endpoint (P18.8 #23)'
       messages: [replayHistory()[0]!, reply, replayHistory()[2]!],
     })
     expect(replayed(body)).toEqual([])
+  })
+})
+
+describe('Gemini tool-call signature, two turns end to end (P18.8 #10)', () => {
+  // Turn 1 streams a signed tool call from a Gemini OpenAI-compatible
+  // endpoint; turn 2 replays the assembled assistant message. Constructed SSE
+  // (not recorded): the `extra_content` shape hermes documents in
+  // agent/transports/types.py:27-32. Covers the hand-offs this batch does not
+  // own — index.ts block assembly, normalizeContentFromAPI, the API
+  // normaliser — keeping the block field.
+  const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  const SIGNED_SSE =
+    'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_g1","type":"function","function":{"name":"Read","arguments":"{}"},"extra_content":{"google":{"thought_signature":"SIG-E2E"}}}]},"finish_reason":null}]}\n\n' +
+    'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
+    'data: [DONE]\n\n'
+  const user = (uuid: string, content: unknown): Message =>
+    ({ type: 'user', uuid, message: { role: 'user', content } }) as Message
+
+  async function signedTurn(): Promise<Message> {
+    const outputs: unknown[] = []
+    await captureOpenAIRequest({
+      model: 'gemini-3-pro-preview',
+      baseURL: GEMINI,
+      env: { OPENAI_WIRE_API: 'chat' },
+      messages: [user('u1', 'q1')],
+      chatSSE: SIGNED_SSE,
+      outputs,
+    })
+    const reply = outputs.find(
+      o => (o as { type?: string }).type === 'assistant',
+    ) as Message | undefined
+    if (!reply) throw new Error('first turn produced no assistant message')
+    return reply
+  }
+
+  async function replayedCalls(model: string, baseURL: string) {
+    const reply = await signedTurn()
+    const { body } = await captureOpenAIRequest({
+      model,
+      baseURL,
+      env: { OPENAI_WIRE_API: 'chat' },
+      messages: [
+        user('u1', 'q1'),
+        reply,
+        user('u2', [
+          { type: 'tool_result', tool_use_id: 'call_g1', content: 'ok' },
+        ]),
+      ],
+    })
+    return (body.messages as Record<string, unknown>[]).find(
+      m => m.role === 'assistant',
+    )?.tool_calls
+  }
+
+  test('the stored tool_use block keeps the signature', async () => {
+    const reply = await signedTurn()
+    const content = (reply as { message: { content: unknown[] } }).message
+      .content as Record<string, unknown>[]
+    expect(content.find(b => b.type === 'tool_use')).toMatchObject({
+      id: 'call_g1',
+      _geminiThoughtSignature: 'SIG-E2E',
+    })
+  })
+
+  test('the next Gemini request sends it as extra_content', async () => {
+    expect(await replayedCalls('gemini-3-pro-preview', GEMINI)).toEqual([
+      {
+        id: 'call_g1',
+        type: 'function',
+        function: { name: 'Read', arguments: '{}' },
+        extra_content: { google: { thought_signature: 'SIG-E2E' } },
+      },
+    ])
+  })
+
+  test('switching to a strict endpoint sends the call without it', async () => {
+    expect(
+      await replayedCalls('mistral-large-latest', 'https://api.mistral.ai/v1'),
+    ).toEqual([
+      {
+        id: 'call_g1',
+        type: 'function',
+        function: { name: 'Read', arguments: '{}' },
+      },
+    ])
   })
 })

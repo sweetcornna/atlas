@@ -11,6 +11,7 @@ import {
   ToolCallDeltaAssembler,
 } from './qianmo/toolCallDeltas.js'
 import { normalizeReasoningChunks } from './qianmo/reasoningStream.js'
+import { GEMINI_THOUGHT_SIGNATURE_FIELD } from '../providers/gemini/types.js'
 
 /**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
@@ -175,6 +176,10 @@ export async function* adaptOpenAIStreamToAnthropic(
             id: step.id,
             name: step.name,
             input: {},
+            // qianmo P18.8 (hermes #10): shared/qianmo/geminiToolSignature.ts.
+            ...(step.thoughtSignature !== undefined && {
+              [GEMINI_THOUGHT_SIGNATURE_FIELD]: step.thoughtSignature,
+            }),
           },
         } as BetaRawMessageStreamEvent
         continue

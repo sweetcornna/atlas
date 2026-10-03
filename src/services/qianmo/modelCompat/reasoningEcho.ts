@@ -54,6 +54,7 @@
  */
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions.mjs'
 import { targetHostIs } from './targetMatch.js'
+import { replayThoughtSignatures } from './thoughtSignatureReplay.js'
 
 export type ReasoningEchoFamily = 'kimi' | 'deepseek' | 'mimo'
 
@@ -121,7 +122,9 @@ function replayAssistant(
 }
 
 /**
- * Reconcile the converted messages with the endpoint the request goes to.
+ * Reconcile the converted messages with the endpoint the request goes to:
+ * `reasoning_content` by echo family (#4), and Gemini's tool-call signature
+ * for Gemini-family targets (#10, `thoughtSignatureReplay.ts`).
  * Pure: returns a new array, and new objects only for the messages it
  * changed; `model` is the wire model id, `baseURL` the request's endpoint.
  */
@@ -131,15 +134,18 @@ export function applyReasoningReplayPolicy(
 ): ChatCompletionMessageParam[] {
   const family = reasoningEchoFamily(target.model, target.baseURL)
   return messages.map(message =>
-    message.role === 'assistant' ? replayAssistant(message, family) : message,
+    message.role === 'assistant'
+      ? replayThoughtSignatures(replayAssistant(message, family), target.model)
+      : message,
   )
 }
 
 /**
  * True since P18.8, reported as `capabilities.replayFilter`: on the OpenAI
  * lane, reasoning in history is filtered by the target endpoint before it is
- * sent — chat `reasoning_content` here (#4), Responses `encrypted_content` by
- * issuer (#23, `responsesIssuer.ts`). Pinned by behavioural tests
+ * sent — chat `reasoning_content` here (#4), Gemini tool-call signatures only
+ * to Gemini-family targets (#10), Responses `encrypted_content` by issuer
+ * (#23, `responsesIssuer.ts`). Pinned by behavioural tests
  * (`capabilities.test.ts`), not only by this constant.
  *
  * Not covered, and so not claimed: the Grok lane builds its own body from
