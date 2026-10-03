@@ -170,7 +170,7 @@
 - **在册文件的后续改动**（按 §6.3 第 1 条补进原行）：`src/services/acp/agent/AcpAgent.ts`、`src/services/acp/agent/promptFlow.ts`（§2.3），各一处纯插入。
 - **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/acp/agent/localCommands.ts`（白名单 `ACP_LOCAL_COMMANDS`、通告条目、`refreshAcpTurnSettings`），用例 `src/services/acp/agent/__tests__/localCommands.test.ts` 与 `tests/integration/qianmo-acp-local-commands.test.ts`。
 - **上游同步时**：上游若也把 local 命令放进通告，删掉 `AcpAgent.ts` 的那一行，否则重复通告；上游若在 ACP 里启动设置变更检测器，`refreshAcpTurnSettings` 里重置缓存的一半可以去掉，解除钉住的一半仍然需要。
-- **不在本节范围**：控制台对话页的消息经 resident 组装成 `<teammate-message>`（`src/services/qianmo/residentPrompt.ts`）再交给 ACP 子进程，不以 `/` 开头，走不到这条路径。
+- **控制台对话页那一段不改基座**：对话页的消息经 resident 组装成 `<teammate-message>`（`src/services/qianmo/residentPrompt.ts`）再交给 ACP 子进程，不以 `/` 开头，走不到上面的路径。打通它的改动全在阡陌自有文件里：控制台按 `^/(autocompact|compact|context)(\s|$)` 认出命令、查角色、记账本，信封 payload 另带 `command: { name }`（`packages/console/src/routes/chat.ts`、`src/cli/handlers/consoleChat.ts`）；resident 只对「验签通过、签名名在 `--local-commands-from` 里、带标记、原文就是那条命令」的 `task.request` 把原文直接交给 ACP 子进程（`src/services/qianmo/residentLocalCommand.ts`、`resident.ts` 的 `#assemblePrompt`），其余照旧包装。
 
 ---
 
