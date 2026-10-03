@@ -39,7 +39,7 @@
  * and only for the model families it names; GPT-4-era deployments stay on chat.
  */
 
-export type MandatedLane = 'responses' | 'chat' | 'anthropic-messages'
+type MandatedLane = 'responses' | 'chat' | 'anthropic-messages'
 
 /** hermes `models.py:4444-4450` `_AZURE_FOUNDRY_RESPONSES_PREFIXES`. */
 const AZURE_RESPONSES_MODEL_PREFIXES = ['codex', 'gpt-5', 'o1', 'o3', 'o4']

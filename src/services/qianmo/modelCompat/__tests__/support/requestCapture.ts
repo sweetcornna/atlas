@@ -22,14 +22,14 @@ import { queryModelOpenAI } from 'src/services/api/openai/index.js'
 import type { Options } from 'src/services/api/claude.js'
 import type { SystemPrompt } from 'src/utils/session/systemPromptType.js'
 
-export const CANARY_API_KEY = 'sk-test-canary-p185-not-a-real-key'
+const CANARY_API_KEY = 'sk-test-canary-p185-not-a-real-key'
 
 /**
  * Every env key that can steer the body this helper captures. All of them are
  * cleared before a row applies its own, so rows cannot leak into each other
  * and a developer's shell cannot leak into any row.
  */
-export const OPENAI_LANE_ENV_KEYS = [
+const OPENAI_LANE_ENV_KEYS = [
   'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_GEMINI',
   'CLAUDE_CODE_USE_GROK',
@@ -78,7 +78,7 @@ const RESPONSES_SSE =
   'data: {"type":"response.output_text.delta","delta":"ok"}\n\n' +
   'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
 
-export type CapturedRequest = {
+type CapturedRequest = {
   url: string
   body: Record<string, unknown>
 }

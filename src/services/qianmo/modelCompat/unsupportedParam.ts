@@ -29,7 +29,7 @@
 import { errorMessageTexts } from './errorMessages.js'
 
 /** hermes `auxiliary_client.py:4297-4306`. */
-export const UNSUPPORTED_PARAMETER_MARKERS: readonly string[] = [
+const UNSUPPORTED_PARAMETER_MARKERS: readonly string[] = [
   'unsupported parameter',
   'unsupported_parameter',
   'not supported',
@@ -66,7 +66,7 @@ export function isUnsupportedParameterError(
   )
 }
 
-export type DroppableParameter = {
+type DroppableParameter = {
   /** Top-level request-body key to drop. */
   key: string
   /** Whether `error` is the endpoint refusing this key. */

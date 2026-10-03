@@ -115,7 +115,7 @@ export function isOverloadedErrorText(raw: string): boolean {
   return includesAny(raw.toLowerCase(), OVERLOADED_TEXT)
 }
 
-export function isBillingErrorText(raw: string): boolean {
+function isBillingErrorText(raw: string): boolean {
   return includesAny(raw.toLowerCase(), BILLING_TEXT)
 }
 
