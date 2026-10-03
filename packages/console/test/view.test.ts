@@ -2640,3 +2640,18 @@ describe('nodeCount', () => {
     expect(nodeCount([agent({ address: 'garbage' })])).toBe(1)
   })
 })
+
+describe('selection (D7)', () => {
+  test('the page text is selectable, the controls are not', () => {
+    // The body used to be `user-select: none`, which made an error strip
+    // impossible to copy into a ticket.
+    expect(ruleOf('body')).not.toContain('user-select')
+    expect(CONSOLE_CSS).not.toMatch(
+      /(^|[\s{;])body[^{]*\{[^}]*user-select:\s*none/,
+    )
+    const controls = ruleOf('.nav-item, .nav-group-name, .btn, .sw, .seg-opt')
+    expect(controls).toContain('user-select: none')
+    // Nothing else in the sheet switches selection off.
+    expect(CONSOLE_CSS.match(/user-select:\s*none/g)).toHaveLength(1)
+  })
+})

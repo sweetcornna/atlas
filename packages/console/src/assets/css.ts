@@ -208,13 +208,12 @@ body {
   font-variant-numeric: tabular-nums;
   overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased;
-  /* The page defaults to unselectable, matching the reference product's
-     desktop-app feel — but code/pre/kbd/input/textarea/.mono stay selectable.
-     Most copyable values here (addresses, trace ids) carry .mono rather than
-     being wrapped in <code>, so the exemption covers the class too. */
-  user-select: none;
 }
-code, pre, kbd, samp, input, textarea, select, .mono, .addr, .bubble { user-select: text; }
+/* Text is selectable: an error strip goes into a ticket, a node name into a
+   terminal, and a page that refuses a triple-click is a page an operator
+   retypes from (D7). Only the controls are not — dragging across the sidebar
+   or double-clicking a button should not paint a selection. */
+.nav-item, .nav-group-name, .btn, .sw, .seg-opt { user-select: none; }
 h1, h2, h3, h4 {
   font-family: var(--font-heading);
   font-weight: var(--font-heading-weight);
