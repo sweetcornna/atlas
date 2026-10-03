@@ -195,7 +195,7 @@ function nodeCapabilities(base: NodeCapabilities): NodeCapabilities {
  * believed from a `provider-switch.json` written by the resident that is
  * running now.
  */
-export function currentProviderState(): ProviderNodeState {
+function currentProviderState(): ProviderNodeState {
   const base = readProviderState()
   const pid = runningResidentPid()
   const generation = readJson(providerPaths.generation())

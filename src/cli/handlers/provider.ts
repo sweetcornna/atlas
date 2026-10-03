@@ -36,7 +36,7 @@ import {
 import { handleProviderLine, type NodeProviderResponse } from './providerOps.js'
 import { residentOptionValue } from './residentArgs.js'
 
-export const QIANMO_PROVIDER_HELP_TEXT = `Usage: ${invokedBinName()} provider <command> [--node <name>]
+const QIANMO_PROVIDER_HELP_TEXT = `Usage: ${invokedBinName()} provider <command> [--node <name>]
 
 The node's side of the console's model-service action: check, try out and
 apply a model service on this node. Requests are one line of JSON on stdin,
