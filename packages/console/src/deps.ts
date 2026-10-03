@@ -81,6 +81,135 @@ export interface RegistryPort {
   heartbeat(address: string): Promise<ConsoleResult<ConsoleAgent>>
 }
 
+// ---------------------------------------------------------------------------
+// LifecyclePort —— 智能体生命周期（P15.2）
+// ---------------------------------------------------------------------------
+
+/**
+ * 智能体生命周期：注册（发布）、暂停、恢复、退役（`tenancy-m1.md` §3.6，P15.2）。
+ *
+ * ## 这是控制台登记簿上的开关，不是节点上的动作
+ *
+ * 节点托管哪些 agent 由节点启动配置决定；装机面的动作集里没有 agent 粒度的
+ * 动作。所以这四个动作只改两处：控制台的登记簿（`registrations.json`，状态与
+ * 最近一次改它的主体），以及注册中心的那条记录（发布与恢复 `POST`，暂停与
+ * 退役 `DELETE`）。真正挡住流量的是中枢的三个出口——对话、唤醒、`qm watch`——
+ * 它们在拨号之前查登记簿，`paused` 与 `retired` 的地址一次都不拨（D8）。
+ *
+ * ## 托管清单
+ *
+ * 装机面落地之前，能被这样开关的地址只有中枢 `peers.conf` 的地址行
+ * （注册中心的 `--register` 种子）。宿主用 `--managed <地址>=<端点>` 把它交给
+ * 控制台；给了清单，发布与恢复只认清单里的地址，端点从清单取。
+ *
+ * ## 读不出来就全拒
+ *
+ * 登记簿读不出来时，宿主不知道哪些地址被暂停、哪些已退役。这时四个写动作
+ * 一律 `unavailable`，三个出口一律不发——「从空登记簿起」会把退役的地址重新
+ * 发布出去。
+ *
+ * 这一段只放形状。实现在宿主（`src/cli/handlers/consoleRegistrations.ts`），
+ * 与其余端口同一条边界：这个包不碰文件系统。
+ */
+
+/** 登记簿里一条的状态。盘上缺这个字段的条目（P15.2 之前写的）就是 `active`。 */
+export const REGISTRATION_STATES = ['active', 'paused', 'retired'] as const
+
+export type RegistrationState = (typeof REGISTRATION_STATES)[number]
+
+/** 登记簿里的一条，连同最近一次改它的人。历史在动作账本里，这里只有现状。 */
+export interface RegistrationRecord {
+  readonly address: string
+  readonly state: RegistrationState
+  /** 主体（`u:…` / `legacy:admin`），与动作账本同一种写法。旧条目没有。 */
+  readonly by?: string
+  /** epoch 毫秒。旧条目没有。 */
+  readonly at?: number
+  /** 在不在托管清单里。控制台没有托管清单时缺席。 */
+  readonly managed?: boolean
+}
+
+/** 登记簿此刻的样子。 */
+export interface LifecycleSnapshot {
+  /**
+   * `null` 表示可用；否则是读不出来或写不进去的原因。这时发布与恢复一律被拒，
+   * 读不出来时三个出口也一律不发。
+   */
+  readonly problem: string | null
+  /** 托管清单里的地址；控制台起的时候没给清单就是 `null`。 */
+  readonly managed: readonly string[] | null
+  readonly registrations: readonly RegistrationRecord[]
+}
+
+/** 页面上的「发布」。有托管清单时端点从清单取，可以不给；给了就必须一致。 */
+export interface PublishInput {
+  readonly address: string
+  readonly endpoint?: string
+  readonly capabilities?: readonly string[]
+  readonly publicKey?: string
+  readonly status?: string
+}
+
+/**
+ * 在这一侧挡下、什么都没发出去的拒绝。
+ *
+ * - `unavailable`：登记簿读不出来或写不进去（503）；
+ * - `unmanaged`：地址不在托管清单里（403）；
+ * - `retired` / `paused`：状态不允许（409）——退役的地址不再分配，暂停的
+ *   地址要用恢复；
+ * - `not_found`：登记簿与托管清单里都没有这个地址（404）；
+ * - `invalid`：输入本身不对，例如端点与托管清单不一致（400）。
+ */
+export interface LifecycleRefusal {
+  readonly code:
+    | 'unavailable'
+    | 'unmanaged'
+    | 'retired'
+    | 'paused'
+    | 'not_found'
+    | 'invalid'
+  readonly message: string
+}
+
+/**
+ * 三种结局分开：做成了；这一侧拒了（`refusal`）；交给注册中心、它没收
+ * （`failure`）。动作账本据此记 `refused` 或 `failed`。
+ */
+export type LifecycleOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly refusal: LifecycleRefusal }
+  | { readonly ok: false; readonly failure: ConsoleFailure }
+
+/** 一次动作之后：登记簿里那一条，以及（发布与恢复时）注册中心的回执。 */
+export interface LifecycleChange {
+  readonly registration: RegistrationRecord
+  readonly agent?: ConsoleAgent
+}
+
+/**
+ * 生命周期的写面与读面。可选：缺席时这几条路由回 501，`POST /v0/agents`
+ * 照旧直接走 {@link ConsoleDeps.registry}。
+ *
+ * 写方法都带 `by`：路由取当前请求的主体（`access.ts` 的 `subjectOf`），
+ * 实现把它与时刻一起写进登记簿。
+ */
+export interface LifecyclePort {
+  read(): Promise<LifecycleSnapshot>
+  publish(
+    input: PublishInput,
+    by: string,
+  ): Promise<LifecycleOutcome<LifecycleChange>>
+  pause(address: string, by: string): Promise<LifecycleOutcome<LifecycleChange>>
+  resume(
+    address: string,
+    by: string,
+  ): Promise<LifecycleOutcome<LifecycleChange>>
+  retire(
+    address: string,
+    by: string,
+  ): Promise<LifecycleOutcome<LifecycleChange>>
+}
+
 /**
  * Where a trail stands, in the four states that call for four different next
  * actions.
@@ -887,6 +1016,10 @@ export const CONSOLE_ACTIONS = [
   'agent.register',
   'agent.deregister',
   'agent.heartbeat',
+  /** 生命周期（P15.2），target 是地址；注册（发布）仍记 `agent.register`。 */
+  'agent.pause',
+  'agent.resume',
+  'agent.retire',
   'wake.send',
   'server.note.set',
   'chat.session.open',
@@ -1103,6 +1236,11 @@ export interface LimitsSnapshot {
 /** Everything a console instance needs. `wake` and `chat` are optional. */
 export interface ConsoleDeps {
   readonly registry: RegistryPort
+  /**
+   * 生命周期（P15.2，见上面 {@link LifecyclePort} 那一段）。缺席时生命周期
+   * 路由回 501，注册照旧直接走 {@link registry}。
+   */
+  readonly lifecycle?: LifecyclePort
   /**
    * Legacy single-audit facade. New hosts provide {@link audits}; retaining
    * this keeps direct package consumers on the old one-source contract.

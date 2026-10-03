@@ -57,6 +57,18 @@ export type {
   WakePort,
   WakeTarget,
 } from './deps.js'
+// 生命周期（P15.2）：宿主 `consoleRegistrations.ts` 实现这个端口。
+export {
+  REGISTRATION_STATES,
+  type LifecycleChange,
+  type LifecycleOutcome,
+  type LifecyclePort,
+  type LifecycleRefusal,
+  type LifecycleSnapshot,
+  type PublishInput,
+  type RegistrationRecord,
+  type RegistrationState,
+} from './deps.js'
 
 export {
   CONSOLE_HEADER,
