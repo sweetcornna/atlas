@@ -355,6 +355,19 @@ describe('model-apply.sh', () => {
   }, 30_000)
 })
 
+describe('how sshd and the local executor start it', () => {
+  test('it is 100755 in the git index: both exec the path directly', () => {
+    // The cases above run it as `bash <script>`, which passes without the bit;
+    // sshd and the hub's local executor exec the path and would get EACCES.
+    // The deploy payload comes from a clone, so the index is what counts.
+    const out = Bun.spawnSync(
+      ['git', 'ls-files', '-s', '--', 'demo/env/beta/ops/model-apply.sh'],
+      { cwd: REPO },
+    )
+    expect(out.stdout.toString().trim().split(/\s+/)[0]).toBe('100755')
+  })
+})
+
 describe('the hub through ssh to model-apply.sh', () => {
   test('the forced command answers; without it the sentinel fails the operation', async () => {
     const t = tree()
