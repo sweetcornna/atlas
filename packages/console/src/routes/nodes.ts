@@ -167,7 +167,7 @@ interface RosterRender {
  * come from one answer. `node` narrows the cards to one bare node name
  * (`/nodes/<node>`); the header counts then describe that node.
  */
-export async function rosterFragment(
+async function rosterFragment(
   ctx: Pick<RouteContext, 'deps' | 'now' | 'roster' | 'access'>,
   node?: string,
 ): Promise<RosterRender> {

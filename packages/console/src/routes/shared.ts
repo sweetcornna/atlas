@@ -127,14 +127,6 @@ export function guardChat(
     : null
 }
 
-/** True when this caller gets the chat face at all. */
-export function mayChat(access: Access): boolean {
-  const principal = access.principal
-  return principal?.kind === 'user'
-    ? principal.role !== 'viewer'
-    : access.credential.role === 'admin'
-}
-
 /** HTTP status for a port failure. Never 500 — the port answered. */
 function statusFor(code: ConsoleFailure['code']): number {
   switch (code) {
@@ -215,7 +207,7 @@ export function optionalString(
 
 // --- audit sources -------------------------------------------------------
 
-export function auditSources(deps: ConsoleDeps): readonly ConsoleAuditSource[] {
+function auditSources(deps: ConsoleDeps): readonly ConsoleAuditSource[] {
   return (
     deps.audits ?? [
       {
@@ -320,7 +312,7 @@ export function canWrite(access: Access): boolean {
 }
 
 /** What a read-only caller is told, in the vocabulary of how they signed in. */
-export function readOnlyLine(accountsOn: boolean): string {
+function readOnlyLine(accountsOn: boolean): string {
   return accountsOn ? '只读 · 写操作需要运维角色' : '只读 · 写操作需要管理令牌'
 }
 

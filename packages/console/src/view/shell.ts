@@ -410,7 +410,7 @@ export function renderShell(model: ShellModel): string {
 }
 
 /** What a page outside the shell says: an error with nowhere else to go. */
-export interface StandaloneModel {
+interface StandaloneModel {
   readonly label: string
   readonly title: string
   readonly line: string

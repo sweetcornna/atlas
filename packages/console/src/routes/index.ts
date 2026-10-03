@@ -158,7 +158,7 @@ function nodesCount(
 }
 
 /** The sidebar for this caller, with the counts that are honest to show. */
-export function navFor(
+function navFor(
   ctx: RouteContext,
   listed: ConsoleResult<readonly ConsoleAgent[]>,
   modules: readonly RouteModule[] = ROUTES,

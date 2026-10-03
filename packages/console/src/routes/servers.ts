@@ -82,7 +82,7 @@ function parseServerNote(body: Record<string, unknown>): Parsed<string> {
  * A note read that fails does **not** take the section with it: the machines
  * come from the startup flags and are still true, so the strip goes above them.
  */
-export async function serversFragment(
+async function serversFragment(
   deps: ConsoleDeps,
   credential: ConsoleCredential,
   now: number,

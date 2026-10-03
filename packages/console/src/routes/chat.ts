@@ -132,7 +132,7 @@ async function chatTargets(
   return result.ok ? result.value : null
 }
 
-export async function chatSessionsFragment(
+async function chatSessionsFragment(
   chat: ChatPort,
   activeId: string | null,
   now: number,
@@ -162,7 +162,7 @@ interface ChatThreadRender {
   readonly open: boolean
 }
 
-export async function chatThreadFragment(
+async function chatThreadFragment(
   chat: ChatPort,
   sessionId: string | null,
   now: number,

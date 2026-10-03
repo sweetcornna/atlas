@@ -146,7 +146,7 @@ const DECLARED: Readonly<Record<string, string | undefined>> = {
   dormant: '休眠',
 }
 
-export const NODES_HEADING_ID = 'h-nodes'
+const NODES_HEADING_ID = 'h-nodes'
 
 /** The id the overview cards read their numbers off. */
 const ROSTER_HEAD_ID = 'roster-head'
