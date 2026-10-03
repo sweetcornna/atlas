@@ -52,15 +52,37 @@ export function sourceLaunch(
 }
 
 /**
+ * Variables of the machine the suite runs on that change what a child of
+ * this CLI does, and that no node has.
+ *
+ * `CI`: a CI runner sets it, and the base's credential stack has a branch
+ * for it alone — `getAnthropicApiKeyWithSource()` throws "ANTHROPIC_API_KEY
+ * or CLAUDE_CODE_OAUTH_TOKEN env var is required" whenever `CI` is set and
+ * no Anthropic credential is (`utils/auth/auth.ts`). A `-p` child on the
+ * OpenAI lane then dies in command loading before its first request and
+ * exits 0 without a result (measured: `CI=true` alone turns the call-probe
+ * suite red on macOS too). `tests/integration/fixtures/resident-acp-harness.ts`
+ * drops it for its `--acp` children for the same reason.
+ */
+const RUNNER_ONLY_KEYS = ['CI'] as const
+
+/** `env` without the keys above (a copy). */
+export function withoutRunnerKeys(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env }
+  for (const key of RUNNER_ONLY_KEYS) delete out[key]
+  return out
+}
+
+/**
  * The environment a test child gets: this process's, minus whatever a
- * developer's shell set for running occ or naming a model, plus the given
- * overrides.
+ * developer's shell or the CI runner set for running occ or naming a model,
+ * plus the given overrides.
  */
 export function childEnv(
   overrides: Record<string, string>,
 ): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(withoutRunnerKeys(process.env))) {
     if (value !== undefined) env[key] = value
   }
   delete env.OCC_CONFIG_DIR

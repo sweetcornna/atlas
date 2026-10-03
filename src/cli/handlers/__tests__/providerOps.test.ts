@@ -55,7 +55,7 @@ import {
   type NodeProviderResponse,
   type ProviderContext,
 } from '../providerOps.js'
-import { sourceLaunch } from './providerSource.js'
+import { sourceLaunch, withoutRunnerKeys } from './providerSource.js'
 import { RecordingStub, refusedOrigin } from './providerStub.js'
 
 const NOW = new Date('2026-10-03T08:00:00Z')
@@ -185,7 +185,7 @@ const CHILD_TIMEOUT_MS = 60_000
  */
 function sourceChild(cliArgs: string[], env: NodeJS.ProcessEnv) {
   return sourceLaunch(cliArgs, {
-    ...env,
+    ...withoutRunnerKeys(env),
     HOME: root,
     NODE_ENV: 'production',
     NO_COLOR: '1',
