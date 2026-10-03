@@ -45,7 +45,7 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/config/paths.ts` | `189268d6` | +100/−16 | 基座**没有**路径派生的扩展点：路径与目录名是 `export const`，被约 200 处调用点直接 import。第三重身份（阡陌节点与 occ、官方 CLI 三者共存）只有两条路——改这一个定义点，或 fork 全部调用点。另：本文件在启动期 keychain prefetch 路径上，所以新增的 `identity.ts` 被刻意做成**零 import 模块**，不给它加模块初始化开销 | 🟢 依据：`src/constants/identity.ts` 顶部「WHY THIS EXISTS」「ZERO IMPORTS, ON PURPOSE」两节 |
+| `src/config/paths.ts` | `189268d6` | +100/−16 | 基座**没有**路径派生的扩展点：路径与目录名是 `export const`，被约 200 处调用点直接 import。第三重身份（阡陌节点与 occ、官方 CLI 三者共存）只有两条路——改这一个定义点，或 fork 全部调用点。另：本文件在启动期 keychain prefetch 路径上，所以新增的 `identity.ts` 被刻意做成**零 import 模块**，不给它加模块初始化开销。**P17.4 后续改动（`ce2314bb`，+15/−0；相对快照现值 +122/−16，本行 +100/−16 是 P0.3 当时的数）**：纯插入一个函数 `qmcodeHome()`——`$QMCODE_HOME`，否则 `~/.qmcode`，与 fork `codex-rs/utils/home-dir` 同一条规则；`qm handoff sync --hook qmcode` 在它的 `sessions/` 下按 thread id 找 rollout。理由同本行：家目录下的路径只能在这里派生（`CLAUDE.md` §1.1②，身份路径门禁），阡陌自有文件里写 `homedir()` 会被门禁拦下 | 🟢 依据：`src/constants/identity.ts` 顶部「WHY THIS EXISTS」「ZERO IMPORTS, ON PURPOSE」两节 |
 | `src/constants/brand.ts` | `189268d6` | +31/−4 | 同上，品牌侧：`BIN_NAME` 的约 78 个消费者继续 import 同一符号、透明拿到正确值。文件内同时逐条注明**哪些不随身份切换**及理由（`NPM_PACKAGE_NAME`、OS deep-link scheme），并保留基座「明确不改」清单原样 | 🟢 依据：本文件顶部「Identity switching」节 |
 | `src/config/__tests__/paths.test.ts` | `189268d6` | +13/−1 | 随上两项同步的基座既有测试 | 🟢 |
 | `src/commands/plugin/ManagePlugins.tsx` | `06ad1423` | +4/−3 | 三处用户可见文案把 `.claude/settings*.json` **硬编码在本文件里**，那是官方 CLI 的目录、本构建从不写它；文案没有可注入的来源 | ✅ 书面 |
@@ -97,7 +97,7 @@
 
 | 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`，+ s4/p11-console 新增 `console` 分支） | +28/−0 | 四个子命令分派分支（`resident` / `audit` / `resident-wake` / `console`），各自 `await import(...)` 动态加载。**核实记录（2026-08-16）：原「基座没有子命令注册表」的说法不成立，须改写**——基座有 Commander 注册表（`src/cli/program/commands/index.tsx` 的 `registerSubcommands`，15 个模块），但它被刻意排除在 print 快速路径之外（`src/cli/program/run.tsx`：`-p`/`--print` 提前 return，之后才动态 import，注释自陈为省约 65 ms）；走它就要付 `main.tsx` 全量 bootstrap 与 root preAction。基座自己对 `migrate` / `autonomy` / `remote-control` 的做法正是**两处都写**（`cli.tsx:94` 注释原文 `Also registered in main.tsx so it appears in --help`），另有 `daemon` / `job` 等 4 组子命令只存在于字面量分支。**已收口（P11.5，2026-08-17）**：补了第二半——新增 `src/cli/program/commands/qianmo.tsx`（`registerQianmoCommands`，四个命令各一句英文描述、不复刻选项面，`action` 里动态 import 同一个 fast-path handler 模块，`process.argv.slice(3)` 透传剩余参数，正常不可达），并在 `src/cli/program/commands/index.tsx` 的 `registerSubcommands` 里加一行调用；fast-path 分支本身一行未动。四个命令现出现在 `occ --help`，`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步补齐。「挂成 daemon worker」仍不可行：`DAEMON_WORKER_KINDS` 是空数组、`runDaemonWorker()` 无 dispatch、未知 kind 退出码 78 被永久 parking（`src/daemon/workerRegistry.ts:16,25-34`、`daemon/main.ts:397`），且 supervisor 只发 `--daemon-worker=<kind>` 加固定 env、没有 argv 通道接 `runResident` 的 14 个选项，还会把表里每个 kind 自动起一份 | 🟢 代码依据（2026-08-16 核实 + P11.5 `--help` 待办已收口；「当时是否评估过 daemon 路线」仍待改动人一句话） |
+| `src/entrypoints/cli.tsx` | `4fe8cd1e`（+`11c0a622`，+ s4/p11-console 新增 `console` 分支） | +28/−0 | 四个子命令分派分支（`resident` / `audit` / `resident-wake` / `console`），各自 `await import(...)` 动态加载。**核实记录（2026-08-16）：原「基座没有子命令注册表」的说法不成立，须改写**——基座有 Commander 注册表（`src/cli/program/commands/index.tsx` 的 `registerSubcommands`，15 个模块），但它被刻意排除在 print 快速路径之外（`src/cli/program/run.tsx`：`-p`/`--print` 提前 return，之后才动态 import，注释自陈为省约 65 ms）；走它就要付 `main.tsx` 全量 bootstrap 与 root preAction。基座自己对 `migrate` / `autonomy` / `remote-control` 的做法正是**两处都写**（`cli.tsx:94` 注释原文 `Also registered in main.tsx so it appears in --help`），另有 `daemon` / `job` 等 4 组子命令只存在于字面量分支。**已收口（P11.5，2026-08-17）**：补了第二半——新增 `src/cli/program/commands/qianmo.tsx`（`registerQianmoCommands`，四个命令各一句英文描述、不复刻选项面，`action` 里动态 import 同一个 fast-path handler 模块，`process.argv.slice(3)` 透传剩余参数，正常不可达），并在 `src/cli/program/commands/index.tsx` 的 `registerSubcommands` 里加一行调用；fast-path 分支本身一行未动。四个命令现出现在 `occ --help`，`tests/integration/cli-golden.test.ts` 的 `ROOT_COMMANDS` 同步补齐。「挂成 daemon worker」仍不可行：`DAEMON_WORKER_KINDS` 是空数组、`runDaemonWorker()` 无 dispatch、未知 kind 退出码 78 被永久 parking（`src/daemon/workerRegistry.ts:16,25-34`、`daemon/main.ts:397`），且 supervisor 只发 `--daemon-worker=<kind>` 加固定 env、没有 argv 通道接 `runResident` 的 14 个选项，还会把表里每个 kind 自动起一份。**P17.4 后续改动（`0ed84275`，+7/−0；相对快照现值 +84/−16）**：纯插入一个 `args[0] === 'handoff'` 分支，与 `resident` / `console` / `memory` 同形（`profileCheckpoint` + 动态 import `cli/handlers/handoff.js`），理由同本行；`--help` 条目照 P11.5 的做法写在阡陌自有的 `qianmo.tsx` | 🟢 代码依据（2026-08-16 核实 + P11.5 `--help` 待办已收口；「当时是否评估过 daemon 路线」仍待改动人一句话） |
 
 ### 2.6 会话与信箱（3 个修改；前两行 P1.2 缺陷修复，第三行 P3.1 常驻化）
 
@@ -162,16 +162,13 @@
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
 
-### 2.12 M1 · P17.4 接力本地命令（3 个在册文件的后续改动 + 1 个新登记）
+### 2.12 M1 · P17.4 接力本地命令（1 个新登记；另 3 个在册文件的后续改动补在原行）
 
-（§2.11 由 P18.8 占用。）依据 `handoff-p17-plan.md` P17.4 卡与 `handoff-m1.md` v1.1。+/− 为本批相对基点 `fe73379d` 的增量；相对 `base-snapshot/v2.46.0` 的现值放在括号里。三个在册文件按 §6.3 第 1 条本该补进原行，本节先集中写，合并时由主 agent 决定是否并回原行（与 §2.11 等并行批次同改一行会冲突）。
+依据 `handoff-p17-plan.md` P17.4 卡与 `handoff-m1.md` v1.1。+/− 为相对 `base-snapshot/v2.46.0` 的现值。`src/config/paths.ts`（§2.1）、`src/entrypoints/cli.tsx`（§2.5）、`package.json`（§5.2）已在册，后续改动按 §6.3 第 1 条补进各自原行；本节只留此前没有单独成行的文件。
 
-| 文件 | 提交 | +/− | 为什么不走扩展点 | 判定 |
+| 文件 | 首改提交 | +/− | 为什么不走扩展点 | 判定 |
 | --- | --- | --- | --- | --- |
-| `src/config/paths.ts`（§2.1 在册） | `ce2314bb` | +15/−0（现值 +122/−16） | **形态：纯插入**一个函数 `qmcodeHome()`：`$QMCODE_HOME`，否则 `~/.qmcode`，与 fork `codex-rs/utils/home-dir` 同一条规则。`qm handoff sync --hook qmcode` 要在 `<qmcode 状态根>/sessions/` 下按 thread id 找 rollout。理由同 §2.1 本行：家目录下的路径只能在这里派生（`CLAUDE.md` §1.1②，身份路径门禁），阡陌自有文件里写 `homedir()` 会被门禁拦下 | ✅ 书面 |
-| `src/entrypoints/cli.tsx`（§2 在册） | `0ed84275` | +7/−0（现值 +84/−16） | **形态：纯插入**一个 `args[0] === 'handoff'` 快速路径分支，与 `resident` / `console` / `memory` 同形（`profileCheckpoint` + 动态 import `cli/handlers/handoff.js`）。理由同本文件原行：Commander 注册表被排除在快速路径外，子命令只能在这里分派；`--help` 条目照 P11.5 的做法写在阡陌自有的 `src/cli/program/commands/qianmo.tsx` | ✅ 书面 |
-| `tests/integration/cli-golden.test.ts`（§2 在册） | `0ed84275` | +1/−0（现值 +29/−1） | **形态：纯插入** `ROOT_COMMANDS` 一项 `'handoff'`。golden 逐条比对 `occ --help` 的顶层命令，新子命令必须同步进表，否则它就失去守门作用 | ✅ 书面 |
-| `package.json`（§5.2 在册） | `97256e34` | +1/−0（现值 +58/−21） | **形态：纯插入**一条 `"@qianmo/handoff": "workspace:*"`（P17 裁定 1：根包直接依赖 workspace 包），`bun.lock` 随之多一行。与 §5.2 其余 `@qianmo/*` 依赖同类 | ✅ 书面 |
+| `tests/integration/cli-golden.test.ts` | `31dcf795`（P11.5，此前只在 §2.5 `cli.tsx` 行里提到）；其后 watch / ca / cert / memory 各加一项，`841ff387` 改 defines 注入 | +29/−1（P17.4 `0ed84275` 占 +1/−0） | 基座自己的 golden 逐条比对 `occ --help` 的顶层命令，没有注册点：每个新顶层子命令都要在 `ROOT_COMMANDS` 里**纯插入**一项，否则它就失去守门作用。P17.4 插入的是 `'handoff'` | ✅ 书面 |
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/cli/handlers/` 下 `handoff.ts`、`handoffStore.ts`、`handoffTranscript.ts`、`handoffHub.ts`、`handoffSync.ts`、`handoffNow.ts`、`consoleHandoff.ts`，各自的测试与 `__tests__/support/handoffSamples.ts`，`src/config/__tests__/qmcodeHome.test.ts`，`tests/integration/qianmo-handoff.test.ts`；`packages/console/src/routes/handoff.ts`。已在册的阡陌自有文件（`console.ts`、`consoleArgs.ts`、`qianmo.tsx`、`packages/*`）的改动不属本文范围。
 
@@ -249,7 +246,7 @@
 | `.github/workflows/publish-npm.yml` | 删除（−135） | **整份移除**——本仓库不发布 npm 包、不打 tag、不跑基座 release 流程（章程 N-13/N-14，roadmap P0.4） |
 | `.github/workflows/ci.yml` | +13/−6 | 两处 `bun-version: latest` → `bun-version-file: .tool-versions`（CI 不得静默跟随上游 Bun 发版，会威胁 P8.1 的「全新机器 30 min 复现」）；随 `publish-npm.yml` 删除同步改掉两处注释里的交叉引用 |
 | `.github/pull_request_template.md` | +14/−3 | 新增必填项「**本 PR 修复的边界问题对应哪条用例**」（P0.4 为 AC-8 流程约束预埋）；自查清单补 `bun run verify`、一件事一个提交、走 PR 不直推 |
-| `package.json` | +23/−1 | 新增 17 条 `@qianmo/*` workspace 依赖；新增 script `verify` / `verify:p32` / `sbom`；新增两个 MCP server 依赖（P6.3 兼容子集核验用）。**`release` script 与其余基座发布面原样保留、不触发** |
+| `package.json` | +23/−1 | 新增 17 条 `@qianmo/*` workspace 依赖；新增 script `verify` / `verify:p32` / `sbom`；新增两个 MCP server 依赖（P6.3 兼容子集核验用）。**`release` script 与其余基座发布面原样保留、不触发**。**P17.4 后续改动（`97256e34`，+1/−0；相对快照现值 +58/−21）**：纯插入 `"@qianmo/handoff": "workspace:*"`（P17 裁定 1：根包直接依赖 workspace 包），`bun.lock` 随之多一行 |
 | `knip.json` | +12/−1 | 两个 MCP server 加进 `ignoreDependencies`；`demo/lib/*.ts` 的 9 个入口加进 entry 列表（否则被判「未使用文件」） |
 | `.gitignore` | +4/−0 | 忽略 `.demo-env/`——演示环境运行态（密钥、节点配置根、日志、工作区），由 `demo/env/seed.sh` 生成，永不入库 |
 
