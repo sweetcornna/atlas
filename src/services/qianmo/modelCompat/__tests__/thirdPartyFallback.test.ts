@@ -13,7 +13,6 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'crypto'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { resetStateForTests } from 'src/bootstrap/state.js'
-import { query } from 'src/query.js'
 import { queryModelOpenAI } from 'src/services/api/openai/index.js'
 import { OpenAIRequestError } from 'src/services/api/openai/retry.js'
 import { retryThirdPartyEventStream } from 'src/services/api/streamAssembly.js'
@@ -25,6 +24,7 @@ import { asSystemPrompt } from 'src/utils/session/systemPromptType.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
 import { thirdPartyFallback } from '../thirdPartyFallback.js'
 import { captureGrokRequests } from './support/grokCapture.js'
+import { emittedTexts, runQueryOverOpenAILane } from './support/queryHarness.js'
 import { captureOpenAIRequests } from './support/requestCapture.js'
 
 const settingsMock = setupSettingsMock()
@@ -327,42 +327,6 @@ describe('end to end through query(): 5xx retries spent → fallback model', () 
     resetStateForTests()
   })
 
-  function toolUseContext(model: string) {
-    let appState = {
-      toolPermissionContext: getEmptyToolPermissionContext(),
-      fastMode: false,
-      mcp: { tools: [], clients: [] },
-      effortValue: undefined,
-      advisorModel: undefined,
-      sessionHooks: new Map(),
-    }
-    return {
-      options: {
-        commands: [],
-        debug: false,
-        mainLoopModel: model,
-        tools: [],
-        verbose: false,
-        thinkingConfig: { type: 'disabled' },
-        mcpClients: [],
-        mcpResources: {},
-        isNonInteractiveSession: true,
-        agentDefinitions: { activeAgents: [], allowedAgentTypes: [] },
-      },
-      abortController: new AbortController(),
-      readFileState: new Map(),
-      getAppState: () => appState,
-      setAppState: (updater: (state: typeof appState) => typeof appState) => {
-        appState = updater(appState)
-      },
-      setInProgressToolUseIDs: () => {},
-      setResponseLength: () => {},
-      updateFileHistoryState: () => {},
-      updateAttributionState: () => {},
-      messages: [],
-    }
-  }
-
   const OK_SSE =
     'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"from the fallback"},"finish_reason":null}]}\n\n' +
     'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
@@ -417,58 +381,12 @@ describe('end to end through query(): 5xx retries spent → fallback model', () 
       createUserMessage({ content: 'follow up' }),
     ] as unknown as Message[]
 
-    // Nothing may reach the network. A side query that builds its own client
-    // would land here — and the main request would then reuse that cached
-    // client and bypass fetchOverride (getOpenAIClient's cache key ignores it).
-    const stray: string[] = []
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (input: unknown) => {
-      stray.push(String(input))
-      return new Response('{}', { status: 418 })
-    }) as unknown as typeof fetch
-    const context = toolUseContext('deepseek-v4-pro')
-    const emitted: unknown[] = []
-    try {
-      for await (const message of query({
-        messages: history,
-        systemPrompt: asSystemPrompt([]),
-        userContext: {},
-        systemContext: {},
-        canUseTool: async (_tool, input) => ({
-          behavior: 'allow',
-          updatedInput: input,
-        }),
-        toolUseContext: context as never,
-        fallbackModels: ['vendor-model-x'],
-        querySource: 'sdk',
-        deps: {
-          uuid: () => 'p1812-fallback-chain',
-          microcompact: async (messages: unknown[]) => ({ messages }),
-          autocompact: async () => ({
-            compactionResult: undefined,
-            consecutiveFailures: 0,
-          }),
-          callModel: (params: {
-            messages: Message[]
-            systemPrompt: Parameters<typeof queryModelOpenAI>[1]
-            tools: Parameters<typeof queryModelOpenAI>[2]
-            signal: AbortSignal
-            options: Parameters<typeof queryModelOpenAI>[4]
-          }) =>
-            queryModelOpenAI(
-              params.messages,
-              params.systemPrompt,
-              params.tools,
-              params.signal,
-              { ...params.options, fetchOverride },
-            ),
-        } as never,
-      })) {
-        emitted.push(message)
-      }
-    } finally {
-      globalThis.fetch = realFetch
-    }
+    const { emitted, stray, mainLoopModel } = await runQueryOverOpenAILane({
+      model: 'deepseek-v4-pro',
+      history,
+      fetchOverride,
+      fallbackModels: ['vendor-model-x'],
+    })
     expect(stray).toEqual([])
     // Two tries on the primary (one retry), then the fallback.
     expect(sent.map(request => request.model)).toEqual([
@@ -481,21 +399,8 @@ describe('end to end through query(): 5xx retries spent → fallback model', () 
     // … and the fallback request was filtered for the fallback target.
     expect('reasoning_content' in sent[2]!.assistant).toBe(false)
 
-    expect(context.options.mainLoopModel).toBe('vendor-model-x')
-    const texts = emitted.flatMap(message => {
-      const m = message as {
-        type?: string
-        content?: unknown
-        message?: { content?: { type: string; text?: string }[] }
-      }
-      if (m.type === 'system' && typeof m.content === 'string') {
-        return [m.content]
-      }
-      if (m.type === 'assistant') {
-        return (m.message?.content ?? []).map(block => block.text ?? '')
-      }
-      return []
-    })
+    expect(mainLoopModel).toBe('vendor-model-x')
+    const texts = emittedTexts(emitted)
     expect(texts.some(text => text.startsWith('Switched to'))).toBe(true)
     expect(texts).toContain('from the fallback')
   }, 20_000)
