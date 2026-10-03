@@ -341,6 +341,10 @@ describe('beta-reset.sh never touches the master key', () => {
       expect(after.mtimeMs).toBe(before.mtimeMs)
       expect(statSync(join(place.root, 'secrets')).mode & 0o777).toBe(0o700)
       if (args.includes('--archive-config')) {
+        // §3.8: the deliberate deviation is said out loud.
+        expect(result.out).toContain(
+          '模型服务的密文随配置根一起归档了（console',
+        )
         // Positive control: the reset did reach the config roots — the ciphertext
         // moved with the console's, the key stayed where it was.
         expect(existsSync(join(place.root, 'nodes/console/config'))).toBe(false)

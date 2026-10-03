@@ -131,12 +131,23 @@ if [ "$ARCHIVE_CONFIG" = '1' ]; then
   beta_head '· 归档配置根'
   STAMP="$(beta_stamp)"
   ARCHIVED=0
+  SEALED=''
   # glob 没匹配到时 bash 会把模式原样留下，所以逐个 `[ -d ]` 复核。
   for dir in "$BETA_NODES_DIR"/*; do
     [ -d "$dir/config" ] || continue
+    if [ -f "$dir/config/qianmo/console/provider-secrets.json" ]; then
+      SEALED="$SEALED $(basename "$dir")"
+    fi
     archive_config "$dir/config" "$STAMP"
     ARCHIVED=1
   done
+  # providers-console-m1.md §3.8 写明的有意偏离：密文跟着配置根归档（仍在 H 上、同一个
+  # 信任域），主密钥不跟着走。说出来，免得有人以为归档里的东西能离开这把钥匙单独用，
+  # 或者以为主密钥也该一起挪走。
+  if [ -n "$SEALED" ]; then
+    beta_warn "模型服务的密文随配置根一起归档了（${SEALED# }，config.bad-$STAMP/qianmo/console/provider-secrets.json）；
+主密钥 ${BETA_PROVIDER_KEY_FILE} 留在原处没动——归档要搬回来，用的就是这同一把。"
+  fi
   if [ "$ARCHIVED" = '1' ]; then
     beta_warn "在运维单页写一行：「<node> 于 $STAMP 归档了配置根，那一段审计记录在 config.bad-$STAMP 里」。
 这是 §6 L2 最容易漏、后果最大的一步 —— 不留这一行，三天后查链的人会看到一段无法解释的

@@ -611,6 +611,8 @@ H 腿见到 `--providers` 才补拓扑那一半（`beta-up.sh` 的 `provider_con
   都不碰它**；`--archive-config` 只把密文随控制台配置根一起归档，归档搬回来用同一把就能解开。权限过宽、或者
   密文还在而它不在时，模型服务这一面停用（横幅 `providers  UNAVAILABLE (…)`），**绝不重新生成**——要么把它找回来，
   要么把密文库挪走留证、重新填密钥。它要和配置根分开备份：只备份了配置根，等于备份了一库打不开的密文。
+  反过来，整目录 tar 控制台配置根（`beta-env.md` §6 L4）时要排除 `qianmo/console/provider-secrets.json`
+  （`providers-console-m1.md` §3.8 ②）：带着密文离开 H 的快照，和主密钥只差一次拷贝。
 - **逐节点的执行器**，从 `peers.conf` 派生：
   - 有 `node` 坐标行、且 `$QIANMO_BETA_MODEL_KEY_DIR/<node>` 在 → ssh，用这把**专用 key**；
   - 没有坐标行、端点是回环（节点跑在 H 自己身上）→ 控制台直接起本仓库的 `ops/model-apply.sh <node>`，不经 ssh；
