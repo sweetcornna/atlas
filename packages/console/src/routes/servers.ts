@@ -41,6 +41,7 @@ import {
   failureOf,
   failureResponse,
   guard,
+  outcomeOf,
   underPath,
   type Parsed,
 } from './shared.js'
@@ -131,6 +132,7 @@ async function handleServerNote(
     return fail(501, 'unsupported', SERVERS_UNSUPPORTED)
   }
   if (!nodeServers.some(entry => entry.server === server)) {
+    await ctx.record('server.note.set', server, 'refused', 'rejected')
     return fail(403, 'rejected', '该服务器不在启动时配置的白名单中')
   }
   const notes = ctx.deps.serverNotes
@@ -145,7 +147,10 @@ async function handleServerNote(
   if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
   const note = parseServerNote(body)
   if (!note.ok) return fail(400, 'invalid', note.message)
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
   const result = await notes.set(server, note.value)
+  await ctx.record('server.note.set', server, ...outcomeOf(result))
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 

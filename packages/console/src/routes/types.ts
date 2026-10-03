@@ -35,7 +35,13 @@
  */
 
 import type { Access, ConsoleAccounts } from '../access.js'
-import type { ConsoleAgent, ConsoleDeps, ConsoleResult } from '../deps.js'
+import type {
+  ActionOutcome,
+  CONSOLE_ACTIONS,
+  ConsoleAgent,
+  ConsoleDeps,
+  ConsoleResult,
+} from '../deps.js'
 import type { PageViewer } from '../view/bits.js'
 import type { Crumb } from '../view/shell.js'
 
@@ -92,7 +98,29 @@ export interface RouteContext {
    * could disagree with each other on one screen.
    */
   roster(): Promise<ConsoleResult<readonly ConsoleAgent[]>>
+  /** This request's id; every ledger entry it writes carries it. */
+  readonly requestId: string
+  /**
+   * Ask the action ledger whether a write may go ahead. `null` to proceed;
+   * otherwise the 503 to answer with, before anything was done. A console
+   * without a ledger always proceeds.
+   */
+  admit(): Promise<Response | null>
+  /**
+   * Write one action down (`deps.ts`, `ActionLedgerPort`). Never throws and
+   * never fails the request: the action already happened, which is why a
+   * write asks {@link admit} first.
+   */
+  record(
+    action: ConsoleActionName,
+    target: string,
+    outcome: ActionOutcome,
+    code?: string,
+  ): Promise<void>
 }
+
+/** The verbs the ledger knows (`deps.ts`, `CONSOLE_ACTIONS`). */
+export type ConsoleActionName = (typeof CONSOLE_ACTIONS)[number]
 
 /** What a page hands the shell. Markup fields are view output, already escaped. */
 export interface PageRender {

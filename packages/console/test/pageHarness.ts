@@ -15,6 +15,7 @@
 import { AuditSource, type AuditRecord, type MessageChain } from '@qianmo/audit'
 import type { ConsoleTokens } from '../src/auth.js'
 import type {
+  ActionLedgerPort,
   AuditFilter,
   AuditPage,
   AuditPort,
@@ -25,6 +26,8 @@ import type {
   NodeServer,
   RegisterAgentInput,
   RegistryPort,
+  ServerNote,
+  ServerNotesPort,
   WakeInput,
   WakeOutcome,
   WakePort,
@@ -173,6 +176,8 @@ export function pageHarness(
     readonly chat?: boolean
     readonly wake?: boolean
     readonly nodeServers?: readonly NodeServer[]
+    readonly actions?: ActionLedgerPort
+    readonly serverNotes?: ServerNotesPort
   } = {},
 ): PageHarness {
   const registry = new PageRegistry()
@@ -191,6 +196,10 @@ export function pageHarness(
     ...(options.nodeServers === undefined
       ? {}
       : { nodeServers: options.nodeServers }),
+    ...(options.actions === undefined ? {} : { actions: options.actions }),
+    ...(options.serverNotes === undefined
+      ? {}
+      : { serverNotes: options.serverNotes }),
   }
   return {
     registry,
@@ -220,4 +229,34 @@ export function visibleText(html: string): string {
 /** The document with every inline script removed: what a no-script reader gets. */
 export function withoutScripts(html: string): string {
   return html.replace(/<script>[\s\S]*?<\/script>/g, '')
+}
+
+/** Server notes in memory. */
+export class PageNotes implements ServerNotesPort {
+  readonly stored = new Map<string, ServerNote>()
+  list(): Promise<ConsoleResult<readonly ServerNote[]>> {
+    return Promise.resolve(ok([...this.stored.values()]))
+  }
+  set(server: string, note: string): Promise<ConsoleResult<ServerNote>> {
+    const record: ServerNote = { server, note, updatedAt: NOW }
+    this.stored.set(server, record)
+    return Promise.resolve(ok(record))
+  }
+}
+
+/** A script's JSON request: a Bearer, the console header, a JSON body. */
+export function call(
+  method: string,
+  path: string,
+  token: string,
+  body?: unknown,
+): Request {
+  return new Request(`${BASE}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
 }

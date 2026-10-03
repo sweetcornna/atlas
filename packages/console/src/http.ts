@@ -220,7 +220,7 @@ import {
   type ConsoleCredential,
   type ConsoleTokens,
 } from './auth.js'
-import type { ConsoleDeps } from './deps.js'
+import type { ActionOutcome, ConsoleAction, ConsoleDeps } from './deps.js'
 import {
   DOCUMENT_HEADERS,
   fail,
@@ -240,7 +240,7 @@ import {
   type PageMatch,
 } from './routes/index.js'
 import { DEFAULT_LABEL, guard, guardChat } from './routes/shared.js'
-import type { RouteContext } from './routes/types.js'
+import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
 import { LoginThrottle } from './throttle.js'
@@ -562,6 +562,7 @@ function routeContext(
   accounts: ConsoleAccounts | undefined,
   now: number,
   viewer: PageViewer | undefined,
+  ledger: RequestLedger,
 ): RouteContext {
   let roster: ReturnType<RouteContext['roster']> | undefined
   return {
@@ -576,7 +577,98 @@ function routeContext(
       roster ??= deps.registry.list()
       return roster
     },
+    requestId: ledger.requestId,
+    admit: ledger.admit,
+    record: ledger.record,
   }
+}
+
+// --- the action ledger ---------------------------------------------------
+
+/** One request's two hooks into the action ledger (`deps.ts`, P15.9). */
+interface RequestLedger {
+  readonly requestId: string
+  readonly admit: RouteContext['admit']
+  readonly record: RouteContext['record']
+}
+
+/** What a write is told when the ledger cannot take its entry. */
+const LEDGER_CLOSED =
+  '操作记录暂时写不进去，写操作已暂停；恢复动作账本之后再试。'
+
+/** Who the ledger names: the person, the legacy token, or nobody. */
+function subjectOf(access: Access): string {
+  if (access.principal !== null) return access.principal.subject
+  if (access.credential.role === 'admin') return 'legacy:admin'
+  if (access.credential.role === 'view') return 'legacy:view'
+  return 'anonymous'
+}
+
+/** A finished response as a ledger outcome, for routes that only have a status. */
+function outcomeOfStatus(status: number): readonly [ActionOutcome, string?] {
+  if (status < 400) return ['ok']
+  return status >= 500
+    ? ['failed', `http_${status}`]
+    : ['refused', `http_${status}`]
+}
+
+/**
+ * The ledger hooks for one request. Every entry it writes carries the same
+ * request id, the subject the credential resolved to and the break-glass
+ * mark; a console without `deps.actions` gets hooks that do nothing.
+ */
+function requestLedger(
+  deps: ConsoleDeps,
+  access: Access,
+  now: () => number,
+): RequestLedger {
+  const port = deps.actions
+  const requestId = crypto.randomUUID()
+  return {
+    requestId,
+    async admit() {
+      if (port?.admit === undefined) return null
+      try {
+        const verdict = await port.admit()
+        if (verdict.ok) return null
+      } catch {
+        // A ledger that throws is a ledger that cannot write: same answer.
+      }
+      return fail(503, 'unavailable', LEDGER_CLOSED)
+    },
+    async record(
+      action: ConsoleActionName,
+      target: string,
+      outcome: ActionOutcome,
+      code?: string,
+    ) {
+      if (port === undefined) return
+      const entry: ConsoleAction = {
+        at: now(),
+        requestId,
+        subject: subjectOf(access),
+        ...(access.breakGlass ? { breakGlass: true as const } : {}),
+        action,
+        target,
+        outcome,
+        ...(code === undefined ? {} : { code }),
+      }
+      try {
+        await port.record(entry)
+      } catch {
+        // Never fails the request: the action already happened (see
+        // `RouteContext.record`), and `admit` is where a write is stopped.
+      }
+    },
+  }
+}
+
+/** The account API's writes, by method, as ledger verbs. */
+const ACCOUNT_WRITES: Readonly<Record<string, ConsoleActionName>> = {
+  POST: 'accounts.post',
+  PUT: 'accounts.put',
+  PATCH: 'accounts.patch',
+  DELETE: 'accounts.delete',
 }
 
 // --- dispatch ------------------------------------------------------------
@@ -606,13 +698,26 @@ async function dispatchApi(
     const denied = guard(credential, 'admin', 'guarded')
     if (denied !== null) return denied
     const principal = access.principal
-    return await handleAccountsApi(
+    const write = ACCOUNT_WRITES[request.method]
+    if (write !== undefined) {
+      const blocked = await ctx.admit()
+      if (blocked !== null) return blocked
+    }
+    const response = await handleAccountsApi(
       request,
       accounts.book,
       principal?.kind === 'user' ? principal.subject : 'legacy:admin',
       segments,
       url,
     )
+    if (write !== undefined) {
+      await ctx.record(
+        write,
+        url.pathname.slice('/v0/accounts'.length) || '/',
+        ...outcomeOfStatus(response.status),
+      )
+    }
+    return response
   }
 
   if (head === 'health' && segments.length === 2) {
@@ -677,6 +782,7 @@ async function route(
 
   // Without accounts this is `credentialOf` and nothing else (`access.ts`).
   const access = resolveAccess(request, tokens, accounts)
+  const ledger = requestLedger(deps, access, now)
   if (!access.breakGlass || accounts === undefined) {
     return await routeAs(
       request,
@@ -689,6 +795,7 @@ async function route(
       access,
       url,
       segments,
+      ledger,
     )
   }
   // Recorded before the route runs, so a request that fails still counts as a
@@ -709,6 +816,15 @@ async function route(
     access,
     url,
     segments,
+    ledger,
+  )
+  // Every request, reads included, one entry each (P15.9): the account
+  // book's own record above keeps reads to one per ten minutes, the action
+  // ledger does not.
+  await ledger.record(
+    'breakglass.request',
+    `${request.method} ${url.pathname}`,
+    ...outcomeOfStatus(response.status),
   )
   response.headers.set(BREAK_GLASS_HEADER, '1')
   return response
@@ -725,6 +841,7 @@ async function routeAs(
   access: Access,
   url: URL,
   segments: readonly string[],
+  ledger: RequestLedger,
 ): Promise<Response> {
   const credential = access.credential
 
@@ -780,7 +897,7 @@ async function routeAs(
   const page = pageOf(ROUTES, segments)
   if (page !== undefined) {
     return await servePage(
-      routeContext(request, url, deps, access, accounts, now(), viewer),
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       page,
       denial,
     )
@@ -788,14 +905,14 @@ async function routeAs(
 
   if (segments[0] === 'v0') {
     return await dispatchApi(
-      routeContext(request, url, deps, access, accounts, now(), viewer),
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       segments,
     )
   }
 
   if (segments[0] === 'fragments' && segments.length >= 2) {
     return await dispatchFragment(
-      routeContext(request, url, deps, access, accounts, now(), viewer),
+      routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       segments,
     )
   }

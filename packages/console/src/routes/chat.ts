@@ -60,6 +60,7 @@ import {
   failureResponse,
   guardChat,
   requiredString,
+  outcomeOf,
   textParam,
   underPath,
   valueOf,
@@ -301,11 +302,12 @@ function parseChatText(body: Record<string, unknown>): Parsed<string> {
 }
 
 async function handleChatSessions(
-  request: Request,
+  ctx: RouteContext,
   chat: ChatPort,
   scope: ChatScope,
   accounts: ConsoleAccounts | undefined,
 ): Promise<Response> {
+  const { request } = ctx
   if (request.method === 'GET') {
     const result = await chat.sessions()
     return result.ok
@@ -319,7 +321,10 @@ async function handleChatSessions(
     if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
     const target = requiredString(body, 'target')
     if (!target.ok) return fail(400, 'invalid', target.message)
+    const blocked = await ctx.admit()
+    if (blocked !== null) return blocked
     const result = await chat.open(target.value)
+    await ctx.record('chat.session.open', target.value, ...outcomeOf(result))
     if (!result.ok) return failureResponse(result.failure)
     if (scope.opener !== null && accounts !== undefined) {
       // The owner is written before the session is handed back: a session a
@@ -374,13 +379,15 @@ async function dispatchChatApi(
 
   if (name === 'sessions') {
     if (rest.length === 1) {
-      return await handleChatSessions(request, chat, scope, accounts)
+      return await handleChatSessions(ctx, chat, scope, accounts)
     }
     const sessionId = decodeURIComponent(rest[1] ?? '')
     if (rest.length === 2) {
       if (request.method !== 'GET') return methodNotAllowed(['GET'])
       if (!scope.visible(sessionId)) return failureResponse(HIDDEN_SESSION)
       const result = await chat.transcript(sessionId)
+      // A script reading a transcript is somebody reading it.
+      if (result.ok) await ctx.record('chat.transcript.open', sessionId, 'ok')
       return result.ok ? json(result.value) : failureResponse(result.failure)
     }
     if (rest.length === 3 && rest[2] === 'messages') {
@@ -390,7 +397,10 @@ async function dispatchChatApi(
       if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
       const text = parseChatText(body)
       if (!text.ok) return fail(400, 'invalid', text.message)
+      const blocked = await ctx.admit()
+      if (blocked !== null) return blocked
       const result = await chat.send({ sessionId, text: text.value })
+      await ctx.record('chat.message.send', sessionId, ...outcomeOf(result))
       return result.ok ? json(result.value) : failureResponse(result.failure)
     }
   }
@@ -417,7 +427,14 @@ async function dispatchChatFragment(
   }
   if (rest[0] === 'thread' && rest.length === 2) {
     const sessionId = decodeURIComponent(rest[1] ?? '')
-    return html((await chatThreadFragment(chat, sessionId, now, scope)).html)
+    const thread = await chatThreadFragment(chat, sessionId, now, scope)
+    // `?open=1` is the page switching to this conversation; without it the
+    // fetch is the poller or a stream event refreshing what is already open,
+    // and a hundred refreshes are not a hundred readings (P15.9).
+    if (thread.open && url.searchParams.get('open') === '1') {
+      await ctx.record('chat.transcript.open', sessionId, 'ok')
+    }
+    return html(thread.html)
   }
   return notFound(`unknown path: ${url.pathname}`)
 }
@@ -446,6 +463,10 @@ export const chatRoute: RouteModule = {
         chatSessionsFragment(chat, sessionId, now, scope),
         chatThreadFragment(chat, sessionId, now, scope),
       ])
+      // The page opened with a conversation in it: one reading.
+      if (thread.open && sessionId !== null) {
+        await ctx.record('chat.transcript.open', sessionId, 'ok')
+      }
       return {
         title: '对话',
         body: chatPageBody({

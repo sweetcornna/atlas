@@ -56,6 +56,7 @@ import {
   failureResponse,
   guard,
   optionalString,
+  outcomeOf,
   requiredString,
   safeDecode,
   textParam,
@@ -219,7 +220,14 @@ async function handleAgentsCollection(ctx: RouteContext): Promise<Response> {
     if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
     const input = parseRegisterInput(body)
     if (!input.ok) return fail(400, 'invalid', input.message)
+    const blocked = await ctx.admit()
+    if (blocked !== null) return blocked
     const result = await deps.registry.register(input.value)
+    await ctx.record(
+      'agent.register',
+      input.value.address,
+      ...outcomeOf(result),
+    )
     // 200, not 201: the port answers with the record either way and cannot say
     // whether this address was new, so claiming "created" would be a guess.
     return result.ok ? json(result.value) : failureResponse(result.failure)
@@ -236,7 +244,10 @@ async function handleAgentItem(
   const denied = guard(ctx.access.credential, 'admin', 'guarded')
   if (denied !== null) return denied
   if (ctx.request.method !== 'DELETE') return methodNotAllowed(['DELETE'])
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
   const result = await ctx.deps.registry.deregister(address)
+  await ctx.record('agent.deregister', address, ...outcomeOf(result))
   return result.ok
     ? new Response(null, { status: 204 })
     : failureResponse(result.failure)
@@ -249,7 +260,10 @@ async function handleHeartbeat(
   const denied = guard(ctx.access.credential, 'admin', 'guarded')
   if (denied !== null) return denied
   if (ctx.request.method !== 'POST') return methodNotAllowed(['POST'])
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
   const result = await ctx.deps.registry.heartbeat(address)
+  await ctx.record('agent.heartbeat', address, ...outcomeOf(result))
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
@@ -279,10 +293,15 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
     const target = configuredTargets.find(
       candidate => candidate.node === input.value.node,
     )
+    // A wake aimed outside the startup allowlist is the one refusal here
+    // worth a ledger line: somebody holding the admin token tried to reach a
+    // node this console was never told it may act on.
     if (target === undefined) {
+      await ctx.record('wake.send', input.value.to, 'refused', 'rejected')
       return fail(403, 'rejected', '唤醒节点不在启动时配置的白名单中')
     }
     if (!input.value.to.startsWith('qianmo://' + target.node + '/')) {
+      await ctx.record('wake.send', input.value.to, 'refused', 'rejected')
       return fail(403, 'rejected', '唤醒地址与所选节点不匹配')
     }
     if (target.wake === undefined) {
@@ -292,18 +311,24 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
         '节点 ' + target.node + ' 没有可用的唤醒 PSK',
       )
     }
+    const blocked = await ctx.admit()
+    if (blocked !== null) return blocked
     // The URL is selected only from the startup allowlist. A client-supplied
     // URL is intentionally discarded before it reaches the pinned wake port.
     const result = await target.wake.send({
       ...input.value,
       url: target.url,
     })
+    await ctx.record('wake.send', input.value.to, ...outcomeOf(result))
     return result.ok ? json(result.value) : failureResponse(result.failure)
   }
   if (wake === undefined) {
     return fail(501, 'unsupported', '该控制台没有配置唤醒通道')
   }
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
   const result = await wake.send(input.value)
+  await ctx.record('wake.send', input.value.to, ...outcomeOf(result))
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 

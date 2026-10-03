@@ -15,6 +15,7 @@
 import { CONSOLE_HEADER, type ConsoleCredential } from '../auth.js'
 import type { Access } from '../access.js'
 import type {
+  ActionOutcome,
   AuditFilter,
   ConsoleAuditSource,
   ConsoleDeps,
@@ -283,4 +284,16 @@ export function safeDecode(segment: string): string | null {
   } catch {
     return null
   }
+}
+
+// --- the action ledger ---------------------------------------------------
+
+/**
+ * A port result as a ledger outcome: `ok`, or `failed` with the port's code.
+ * Spread into `RouteContext.record` after the target.
+ */
+export function outcomeOf(
+  result: ConsoleResult<unknown>,
+): readonly [ActionOutcome, string?] {
+  return result.ok ? ['ok'] : ['failed', result.failure.code]
 }

@@ -721,8 +721,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 80171,
-    "sha256": "d9489c8a26ccca37e027d55250941bd3d39e5ed120bf6c856a38a646f3b2f401"
+    "length": 80457,
+    "sha256": "54a84e0545a91cce6d27e6e020b3893c3b75f2a81ba5d8aaa1c5f15df6d42cec"
   },
   {
     "probe": "GET /chat?session=session-1 as admin-cookie",
@@ -738,8 +738,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 80801,
-    "sha256": "7137a0a5032c41238f9ad25d414b157091405ed89d931c028ef9ec7337323a73"
+    "length": 81087,
+    "sha256": "8cf549ddb228bc8240755c48188f60f0f3642257dbb9fb5fb1e3013b7648937d"
   },
   {
     "probe": "GET /v0/chat/targets as admin-bearer",

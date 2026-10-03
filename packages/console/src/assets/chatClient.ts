@@ -87,11 +87,15 @@ function chatScript(): string {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
-  function refreshThread(keepScroll) {
+  // opening marks the one fetch that is somebody switching to a
+  // conversation rather than a refresh of the one already open: the server
+  // writes a ledger line for it (P15.9), and never for a poll.
+  function refreshThread(keepScroll, opening) {
     var mount = byId('thread-mount');
     if (!mount || !active) return Promise.resolve();
     var stick = keepScroll === false ? true : atBottom(mount);
-    return qc.loadHtml(ROUTES.thread + encodeURIComponent(active)).then(function (html) {
+    var url = ROUTES.thread + encodeURIComponent(active) + (opening ? '?open=1' : '');
+    return qc.loadHtml(url).then(function (html) {
       mount.innerHTML = html;
       paintComposer();
       if (stick) mount.scrollTop = mount.scrollHeight;
@@ -122,8 +126,8 @@ function chatScript(): string {
     });
   }
 
-  function refreshAll(keepScroll) {
-    return Promise.all([refreshThread(keepScroll), refreshSessions()]);
+  function refreshAll(keepScroll, opening) {
+    return Promise.all([refreshThread(keepScroll, opening), refreshSessions()]);
   }
 
   /* ---------------- actions ---------------- */
@@ -153,7 +157,7 @@ function chatScript(): string {
     } catch (e) { /* the address bar is cosmetic; the state is in the variable */ }
     setComposerEnabled(true);
     say(byId('chat-status'), '', 'muted');
-    refreshAll(false).then(function () {
+    refreshAll(false, true).then(function () {
       var box = byId('chat-text');
       if (box) box.focus();
     });
