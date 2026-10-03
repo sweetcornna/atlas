@@ -94,16 +94,22 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
       getDefaultBranch(),
       execFileNoThrow(gitExe(), ['--no-optional-locks', 'status', '--short'], {
         preserveOutputOnError: false,
+        // qianmo P18.19 (CH-4): an options object drops the default
+        // `useCwd: true`, which ran these three in the PROCESS cwd while the
+        // branch above comes from the session cwd. Same for log and user.name.
+        useCwd: true,
       }).then(({ stdout }) => stdout.trim()),
       execFileNoThrow(
         gitExe(),
         ['--no-optional-locks', 'log', '--oneline', '-n', '5'],
         {
           preserveOutputOnError: false,
+          useCwd: true,
         },
       ).then(({ stdout }) => stdout.trim()),
       execFileNoThrow(gitExe(), ['config', 'user.name'], {
         preserveOutputOnError: false,
+        useCwd: true,
       }).then(({ stdout }) => stdout.trim()),
     ])
 
