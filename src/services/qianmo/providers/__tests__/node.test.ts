@@ -24,6 +24,7 @@ import {
   setOriginalFsImplementation,
 } from '../../../../utils/filesystem/fsOperations.js'
 import { updateSettingsForSource } from '../../../../utils/settings/settings.js'
+import { getModelCompatCapabilities } from '../../modelCompat/capabilities.js'
 import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
 import {
   commitPendingProviderConfig,
@@ -536,6 +537,37 @@ describe('crash recovery rolls forward (§2.6 step 5)', () => {
     expect(bad.length).toBe(1)
     expect(mode(join(config, 'qianmo', 'provider', bad[0] as string))).toBe(
       0o600,
+    )
+  })
+})
+
+describe("capabilities: the call layer's own flags (P18.12)", () => {
+  // node.ts used to carry its own copy, `false` for both, long after P18.5
+  // and P18.8 had made them true. `qm provider` merged the real values over
+  // it; a stage without explicit capabilities did not, and refused `always`
+  // on the chat lane, and readProviderState() reported both as off.
+  test('reported as modelCompat reports them', () => {
+    expect(readProviderState().capabilities).toEqual({
+      protocol: 1,
+      ...getModelCompatCapabilities(),
+      multiKey: false,
+    })
+  })
+
+  test('a stage without explicit capabilities takes `always` on the chat lane', () => {
+    const result = stageProviderApply(
+      applyRequest({
+        dryRun: true,
+        profile: {
+          lane: 'openai-chat',
+          baseUrl: 'https://api.vendor.example/v1',
+          compat: {},
+        },
+      }),
+      { node: 'beta-1' },
+    )
+    expect(result.ok ? 'staged' : `${result.code}: ${result.message}`).toBe(
+      'staged',
     )
   })
 })

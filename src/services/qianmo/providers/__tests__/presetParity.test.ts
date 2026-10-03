@@ -17,8 +17,10 @@
  * profile asked for (`never` → off; `always` → on, at the compiled level).
  *
  * A cell the node refuses to deliver is a cell too: §3.4 refuses an explicit
- * effort on the Gemini lane, and `always` on the chat lane while the node
- * does not report `chatEffortHonorsOverride`. Exactly those are refused.
+ * effort on the Gemini lane, and exactly those are refused. `always` on the
+ * chat lane is delivered: the node reports `chatEffortHonorsOverride` from
+ * the call layer (true since P18.5; node.ts carried a stale `false` copy
+ * until P18.12).
  *
  * `requestParity.test.ts` stays the OpenAI-lane table of hand-picked inputs
  * (side queries, thinking switch, replay); this one is catalog-driven and
@@ -133,9 +135,6 @@ const PROFILE_NOT_HONOURED: Readonly<Record<string, string>> = {
 /** §3.4, as the design states it — not as the validator computes it. */
 function refusedBy(preset: Preset, state: EffortState): string | null {
   if (preset.lane === 'gemini' && state !== 'auto') return 'effort-unsendable'
-  if (preset.lane === 'openai-chat' && state === 'always') {
-    return 'effort-unsendable'
-  }
   return null
 }
 
