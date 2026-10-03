@@ -393,8 +393,14 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 | `never` | 能力 `explicit`，`effort: false` | 同左（不发本来就是今天的行为） | 同上 |
 | `auto` | 能力 `family`，不写覆盖；节点算出来是什么就显示什么 | 同左 | 同左 |
 
-- **档位**：`level` 写进模型所占每个档位的 `modelSettings.<slot>.effort`，主模型另外写 `default` 槽。档案级的 `effortLock` 设了值时，另写 `CLAUDE_CODE_EFFORT_LEVEL`（它的优先级高于 `modelSettings`，对档案里所有模型生效，所以它的值也要先对每个模型的 `levels` 往低夹，夹不了就拒绝）。舰队现在的 `CLAUDE_CODE_EFFORT_LEVEL=max` 迁移过来就是 `effortLock: max`。P18.2 的完成标准里要用节点 `status` 实算核对「哪个槽对主循环生效」（§11 第 3 条）。
-- **只往低夹**：请求的档位不在 `levels` 里，就取不高于它的最高一档；没有更低的就拒绝（`bad-value`），**不往高夹**。界面上只提供 `levels` 里的档位，所以基座里那些往上映射的规则（例如 DeepSeek、Grok 的 `medium → high`）不会被触发。基座本身不会按 `max_effort` / `xhigh_effort` 往下夹（`effort.ts:131-132` 注释：「API errors are the user's responsibility」），所以夹取必须在编译时做。
+- **档位**：`level` 写进模型所占每个档位的 `modelSettings.<slot>.effort`，主模型另外写 `default` 槽。档案级的 `effortLock` 设了值时，另写 `CLAUDE_CODE_EFFORT_LEVEL`（它的优先级高于 `modelSettings`，对档案里所有模型生效，所以它的值也要先对每个模型的 `levels` 往低夹，夹不了就拒绝）。舰队现在的 `CLAUDE_CODE_EFFORT_LEVEL=max` 迁移过来就是 `effortLock: max`。`CLAUDE_CODE_EFFORT_LEVEL` 只有一个值，所以「往低夹」取的是所有受约束模型 `levels` 的交集里、不高于请求的最高一档（例如 `max` 遇到 `[low, high, max]` 和 `[low, medium, high]` 两个模型，写 `high`）。
+- **哪个槽对主循环生效（P18.2 实算，§11 第 3 条）**：用节点 `status` 里 `effective` 的计算函数 `computeEffectiveProviderState` 实算。它在独立进程里运行，进程环境里的 provider 键先剥掉，五个槽各给一个不同的档位，看算回来的是哪一档（`src/services/qianmo/providers/__tests__/effective.test.ts`）。结论如下：
+  - 新会话的主循环读 **`default`** 槽。anthropic 和 openai-responses 两条线都一样；主模型同时占着 opus / sonnet / fable，也不改变这一点。
+  - 会话切到快速模型后，读它所占的档位（haiku）；按 id 切回主模型，又回到 `default`。
+  - 所以主模型的 `default` 槽和它的档位槽必须写同一个值，编译器就是这样写的。
+  - `CLAUDE_CODE_EFFORT_LEVEL` 压过所有槽。
+  - 非 anthropic 线路上，节点 `settings.json` 里残留的 `model` 字段算一次选择，会盖过档案的主模型：值是别名就换到别名对应的槽，值是具体 id 就连模型一起换掉。anthropic 线不受影响，因为 `ANTHROPIC_MODEL` 会盖住它。编译器和基座 `/provider` 都不管这个字段。
+- **只往低夹**：请求的档位不在 `levels` 里，就取不高于它的最高一档；没有更低的就拒绝（`bad-value`），**不往高夹**。界面上只提供 `levels` 里的档位，所以基座里那些往上映射的规则（例如 DeepSeek、Grok 的 `medium → high`）不会被触发。基座本身不会按 `max_effort` / `xhigh_effort` 往下夹（`effort.ts:131-132` 注释：「API errors are the user's responsibility」），所以夹取必须在编译时做。`always` 没写 `level` 时按 `high` 编译（不发 effort 时 API 自己用的就是 `high`），再往低夹，夹不到同样拒绝。什么都不写不行：运行时会退回族默认值，第三方 opus / sonnet 槽的族默认值是 `xhigh`，而且不按 `levels` 夹。实算中阶跃预设的 `levels` 是 `[low, medium, high]`，不写档位时线上会收到 `xhigh`。
 - **`CLAUDE_CODE_ALWAYS_ENABLE_EFFORT`**：只有档案里**每个**模型都是 `send: always` 时才写，作为简写，和舰队现在的配置一致。它是全局开关，会影响 haiku 档和子 agent，所以不是首选。
 - **显示 = 线上**：页面上「发 effort」这一列只取节点的 `effective.effortOnWire`，中枢自己不判断。
 
@@ -1063,7 +1069,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 
 1. **所有预设都没有用真 key 验证过**。调研件的「实测」只是用空 key 或无效 key 探路由和错误体形状；本文的预设表是官网文档的整理，不是兼容性证据。
 2. **OpenAI 各模型可用的 effort 档位**：舰队上 `gpt-6-luna` 的请求体里确实发了 `max`（负责人抓包），但服务端是否按 `max` 执行，没有证据。OpenAI 预设各模型的 `levels` 在录入时要逐个对照官网。
-3. **哪个 `modelSettings` 槽对主循环模型生效**（`default` 还是它所占的档位）没有实算，留给 P18.2（§3.4）。
+3. **哪个 `modelSettings` 槽对主循环模型生效**：P18.2 已实算，结论见 §3.4。新会话读 `default`，切到别的模型后读该模型所占的档位。实算调用的是节点自己的函数，没有起真的 ACP 子进程。`session/set_model` 之后读哪个槽，是按 `QueryEngine` 用的同一个函数（`getMainLoopModelSettingsSlot`）推出来的，没有在真会话里核对。
 4. **会话续上之后钉住的模型**：matrix §4.5 说是新 provider 的默认模型，除非用户显式选过；需要 P18.3 用真 ACP 子进程验证（§2.7）。
 5. **hermes §11 里所有「某厂商会 400」的结论**都来自 hermes 或阡陌的代码注释，不是实测（§5.10）。
 6. **从 hermes 转引的阡陌行号**按 `e123b2ec`，没有在 `33dc81bf` 上逐条复核。本文自己引用的行号已复核（附 B）。
