@@ -22,8 +22,8 @@
  *
  * **全部真代码 + 真网络**：真的 `FileMemoryStore`（写在临时目录里的真文件）、
  * 真的 `@qianmo/recall` 检索与注入、基座真的适配链（`anthropicMessagesToOpenAI`
- * / `anthropicToolsToOpenAI` / `buildOpenAIRequestBody` / `applyCompatRule` /
- * `getOpenAIClient` / `adaptOpenAIStreamToAnthropic`）。没有任何 `mock.module`，
+ * / `anthropicToolsToOpenAI` / `buildOpenAIRequestBody` / `getOpenAIClient` /
+ * `adaptOpenAIStreamToAnthropic`）。没有任何 `mock.module`，
  * 没有录制回放。
  *
  * ## 为什么不用某家的原生引用块（D-6）
@@ -80,7 +80,6 @@ import {
   buildOpenAIRequestBody,
   isOpenAIThinkingEnabled,
 } from '../../src/services/api/openai/requestBody.js'
-import { applyCompatRule } from '../../src/services/providerRegistry/providerCompatMatrix.js'
 import {
   ProvidersFileSchema,
   type ProviderConfig,
@@ -319,10 +318,9 @@ async function askWithMemory(params: {
     baseURL,
     effortValue: 'low',
   })
-  const wireBody = applyCompatRule(
-    body as unknown as Record<string, unknown>,
-    provider.compatRule,
-  )
+  // 发出去的就是生产路径构造的请求体（M0 时另有一次 compat 档案裁剪，生产
+  // 路径从不调用，P18.8 按 R-14 删去）。
+  const wireBody = body as unknown as Record<string, unknown>
 
   const client = getOpenAIClient({
     apiKeyOverride: API_KEY,
@@ -397,11 +395,7 @@ describe('AC-4 来源标注机制与供应商无关（无需凭据）', () => {
         baseURL: provider.baseUrl,
         effortValue: 'low',
       })
-      const wire = applyCompatRule(
-        body as unknown as Record<string, unknown>,
-        provider.compatRule,
-      )
-      return { id: provider.id, tools: wire['tools'] }
+      return { id: provider.id, tools: body.tools }
     })
 
     expect(declarations.length).toBe(2)
@@ -416,23 +410,20 @@ describe('AC-4 来源标注机制与供应商无关（无需凭据）', () => {
     const provider = loadFixtureProviders()[0]
     if (!provider) throw new Error('fixture ids changed')
     const enableThinking = isOpenAIThinkingEnabled(provider.defaultModel)
-    const wire = applyCompatRule(
-      buildOpenAIRequestBody({
-        model: provider.defaultModel,
-        messages: anthropicMessagesToOpenAI(
-          [userMessage('q')],
-          asSystemPrompt(['s']),
-          { enableThinking },
-        ),
-        tools: anthropicToolsToOpenAI([MEMORY_TOOL]),
-        toolChoice: undefined,
-        enableThinking,
-        maxTokens: MAX_TOKENS,
-        baseURL: provider.baseUrl,
-        effortValue: 'low',
-      }) as unknown as Record<string, unknown>,
-      provider.compatRule,
-    )
+    const wire = buildOpenAIRequestBody({
+      model: provider.defaultModel,
+      messages: anthropicMessagesToOpenAI(
+        [userMessage('q')],
+        asSystemPrompt(['s']),
+        { enableThinking },
+      ),
+      tools: anthropicToolsToOpenAI([MEMORY_TOOL]),
+      toolChoice: undefined,
+      enableThinking,
+      maxTokens: MAX_TOKENS,
+      baseURL: provider.baseUrl,
+      effortValue: 'low',
+    }) as unknown as Record<string, unknown>
     const serialized = JSON.stringify(wire)
     // D-6：原生引用块与结构化输出互斥且只此一家有。它一旦出现在线上请求里，
     // AC-4 就又被绑回单一供应商，与 AC-5 重新冲突。

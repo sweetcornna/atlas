@@ -137,6 +137,17 @@ export interface AuditPage {
     readonly tampered: boolean
     readonly stale: boolean
     readonly uncovered?: true
+    /**
+     * Only with `tampered`: the lowest anchor whose head disagrees, and the
+     * local record's digest at that seq (`null` when the record is missing).
+     * Together they name this occurrence of the mismatch — the alert inbox
+     * keys on them, so a chain repaired and later rewritten again raises a
+     * new alert instead of hiding under the old acknowledgement.
+     */
+    readonly firstMismatch?: {
+      readonly seq: number
+      readonly actual: string | null
+    }
   }
 }
 
@@ -549,6 +560,227 @@ export interface ServerNotesPort {
 }
 
 // ---------------------------------------------------------------------------
+// NotifyPort —— 告警收件箱（J5，P18.15）
+// ---------------------------------------------------------------------------
+
+/**
+ * 告警的三档，与协议 `notify.severity` 同名同序（`@qianmo/protocol` 的
+ * `NOTIFY_SEVERITIES`，protocol §14.2）。
+ *
+ * 不另起一套词：agent 自己发的通知带的就是这三个值，控制台从注册中心、证书、
+ * 审计链推出来的「状况」也落在这三档里，筛选因此只有一把尺子。
+ */
+export type AlertLevel = 'info' | 'warn' | 'error'
+
+/**
+ * 一条到了中枢的通知：值守作业里 agent 自己调 `qianmo_notify` 发出、由
+ * `qm watch` 收到并记进中枢审计链的那一条（`console.md` §10.1.3）。
+ *
+ * **只有给人的通知**：节点自动推的过程行（`watch_step_received`）不在这里，
+ * 那是过程数据，不打扰人。正文（`detail`）也不在这里——`qm watch` 只把它打到
+ * stdout，审计链里没有，所以这里没有来源。
+ */
+export interface ConsoleNotice {
+  /**
+   * 同一条通知每次读出来都是同一个 id，换一条通知就换一个 id。确认按它记。
+   * 生产实现取通知消息自己的 `msgId`：链被重置后序号会从 1 重新数，序号做 id
+   * 会让旧的确认落到新的通知上。
+   */
+  readonly id: string
+  /** 中枢收到它的时刻（审计记录的 `at`），epoch 毫秒。不是节点观测到的时刻。 */
+  readonly at: number
+  readonly level: AlertLevel
+  /** 协议 `notify.kind`：`watch` / `task` / `health`。 */
+  readonly kind: string
+  /** 发出它的节点地址（审计记录的 `peer`）。 */
+  readonly from?: string
+  /** 值守作业 id：通知的 `contextId`，值守作业里就是作业 id（§4.1③）。 */
+  readonly job?: string
+  readonly summary: string
+  /** 对端重发的那一条（协议 §14.4 要求重发看得见）。 */
+  readonly redelivered?: true
+}
+
+/** 一次读到的通知，新的在前。 */
+export interface NoticeFeed {
+  readonly notices: readonly ConsoleNotice[]
+  /** 截断之前一共有几条，页面据此说「最近 N 条 · 共 M 条」。 */
+  readonly total: number
+  /**
+   * 通知所在的那条审计链验不验得过。验不过时通知照样列出来，页面另起一条说明
+   * ——链断了不等于通知是假的，但读的人应该知道。
+   */
+  readonly intact: boolean
+  /**
+   * 那条链的文件在不在。`qm watch` 一启动就建好它（`openAuditTrail`），所以
+   * 不在就是值守进程从没在这个配置根上跑过——和「跑过、没人发通知」是两件事，
+   * 两者都是零条，只有这一格能分开。
+   */
+  readonly present: boolean
+}
+
+/** 一次确认：哪条告警、什么时候、谁。 */
+export interface AlertAck {
+  readonly id: string
+  /** epoch 毫秒。 */
+  readonly at: number
+  /**
+   * 主体，与动作账本同一种写法（`u:…` / `legacy:admin`）。只落盘，不上页面：
+   * 「谁动过什么」的页面是操作记录（H4），只读角色看不到它。
+   */
+  readonly by: string
+}
+
+/**
+ * 告警的两件事：通知从哪来，确认记在哪。
+ *
+ * 可选：缺席时告警页仍然列出控制台自己推得出来的状况（节点失联、证书、审计链），
+ * 通知那一栏写「未接入」，确认按钮不出现——没有地方记的确认按下去只会丢。
+ *
+ * 与其余端口同一条规矩：过得去的失败不抛，落成 `{ ok: false }`。
+ */
+export interface NotifyPort {
+  /** 最近 `limit` 条给人的通知，新的在前。 */
+  notices(limit: number): Promise<ConsoleResult<NoticeFeed>>
+  /** 记过的全部确认。告警页拿它判「未确认」，所以它就是未读角标的来源。 */
+  acks(): Promise<ConsoleResult<readonly AlertAck[]>>
+  /**
+   * 记一次确认。**幂等**：已经确认过的 id 原样返回第一次那条，不重写——
+   * 两个人同时点同一条，留下的是先到的那一次。
+   *
+   * **不判 id 存不存在**：那是路由层的事，它拿当前告警集合查过才会走到这里
+   * （与服务器备注的白名单同一条纪律）。
+   */
+  ack(id: string, by: string): Promise<ConsoleResult<AlertAck>>
+}
+
+// ---------------------------------------------------------------------------
+// SchedulerPort —— 值守作业（J6，P18.15）
+// ---------------------------------------------------------------------------
+
+/**
+ * 调度器最后一次运行（`SchedulerRunner.status().lastTickAt`）。
+ *
+ * **三态，缺一不可**（`console.md` §10.3「缺席可见」）：
+ *
+ * - `seen`：读到了，`at` 是那一刻，`everyMs` 是调度器自报的两轮之间最长的间隔
+ *   （`qm watch` 写进 `status.json` 的 `tickMs`）。超过两个间隔没有新的一轮，
+ *   页面就说它可能已停止——这把尺子来自调度器自己，控制台不另定一个数；
+ * - `never`：调度器在，但一次都没跑过；
+ * - `unwired`：这个端口拿不到它，`reason` 说为什么。生产实现在
+ *   `qm watch` 没有写出 `status.json`（没在这个配置根上跑过，或版本早于它）、
+ *   或那份文件读不出来时就是这一态。
+ *
+ * 一个没在跑的调度器和一个没事可做的调度器看起来一模一样，只有这个时间戳能
+ * 把两者分开；所以拿不到它这件事本身必须写在页面上，不能渲染成一格空白。
+ */
+export type SchedulerTick =
+  | {
+      readonly state: 'seen'
+      readonly at: number
+      readonly everyMs: number
+    }
+  | { readonly state: 'never' }
+  | { readonly state: 'unwired'; readonly reason: string }
+
+/**
+ * 急停哨兵（`<config>/qianmo/scheduler/ESTOP`）的状态。
+ *
+ * `unknown` 与 `released` 必须分开：`stat` 本身失败时调度器按「未拉下」处理
+ * （可靠性件套 fail-open，`@qianmo/resident` 的 `ResidentEstop`），页面要说出
+ * 「读不出来、调度器照常触发」，而不是说「未拉下」。
+ */
+export type SchedulerEstop =
+  | { readonly state: 'released' }
+  | {
+      readonly state: 'engaged'
+      /** 拉下的时刻（文件 mtime），尽力而为，只用于显示。 */
+      readonly since?: number
+    }
+  | { readonly state: 'unknown'; readonly reason: string }
+
+/** 一次触发怎么结束的，与 `@qianmo/scheduler` 的 `FireOutcome` 同一组值。 */
+export type WatchFireOutcome = 'completed' | 'failed' | 'skipped' | 'preempted'
+
+/**
+ * 一个值守作业此刻的样子。
+ *
+ * 定义里的字段（标题、目标、周期、通知策略）**都可选**：作业定义在
+ * `qm watch` 的内存里，经它写出的 `status.json` 才到得了控制台。读不到那份文件
+ * 时只能从调度状态与审计链里看到作业 id、上次触发和最近结果。缺席的字段页面写
+ * 「未接入」，不猜。
+ */
+export interface WatchJobStatus {
+  readonly id: string
+  readonly title?: string
+  /** `qianmo://<node>/<agent>`。没有定义时取最近一次派发记录的目标。 */
+  readonly target?: string
+  /** 周期，毫秒。只有作业定义有。 */
+  readonly everyMs?: number
+  readonly notifyPolicy?: string
+  /**
+   * 调度器正在调度它。`false` 是「调度状态里还有记录、正在跑的 `qm watch` 已经
+   * 没有这个作业」，所以它不会再触发。作业定义未接入时恒为 `false`，页面按
+   * {@link SchedulerSnapshot.definitions} 区分两种情形。
+   */
+  readonly listed: boolean
+  /**
+   * 上次触发：已退休的**排定**时刻与结局（`state.json` 的 `lastFiredAt` 与
+   * `lastOutcome`），不是 turn 跑完的墙上时间（scheduler README §4）。
+   * `recordedAt` 是这条结局落账的墙上时间。
+   */
+  readonly last?: {
+    readonly at: number
+    readonly outcome: WatchFireOutcome
+    readonly recordedAt?: number
+  }
+  readonly consecutiveFailures: number
+  /**
+   * 调度器下一次要处理它的时刻：`planFire` 的排定时刻，退避中则是退避结束的
+   * 时刻——取自调度器写出的 `status.json`，不是控制台另算的。小于等于当前时刻
+   * 就是「已到期」：调度器在跑的话这一刻就该触发。没有作业定义时缺席。
+   */
+  readonly next?: number
+  /** 失败退避：这一刻之前不会触发。 */
+  readonly holdUntil?: number
+  /**
+   * 最近一次作业结果（节点回的 `task.result` 或 `error`），取自中枢审计链的
+   * `watch_result_received`。与 {@link last} 是两件事：`last` 说派发有没有拿到
+   * 回执，这里说节点上那一轮跑完是什么结果。
+   */
+  readonly result?: {
+    readonly at: number
+    /** `completed` / `failed` / `error`。 */
+    readonly result: string
+    readonly code?: string
+  }
+}
+
+export interface SchedulerSnapshot {
+  readonly tick: SchedulerTick
+  readonly estop: SchedulerEstop
+  /** 作业定义有没有来源；没有时「周期」「下次触发」两列整列未接入。 */
+  readonly definitions:
+    | {
+        readonly state: 'wired'
+        /** 定义从哪来，显示用（`status.json` 的路径）。 */
+        readonly source: string
+      }
+    | { readonly state: 'unwired'; readonly reason: string }
+  readonly jobs: readonly WatchJobStatus[]
+}
+
+/**
+ * 值守作业的只读面。
+ *
+ * 可选：缺席时作业页整页写「未接入」并说明原因。**没有写方法**：急停的拉下与
+ * 松开今天仍是 `touch` / `rm` 那个文件（`console.md` §10.2），控制台只看。
+ */
+export interface SchedulerPort {
+  read(): Promise<ConsoleResult<SchedulerSnapshot>>
+}
+
+// ---------------------------------------------------------------------------
 // LedgerPort —— 账号库与会话表的落盘面（P15.3 / P15.5）
 // ---------------------------------------------------------------------------
 
@@ -642,6 +874,8 @@ export const CONSOLE_ACTIONS = [
   'accounts.delete',
   /** break-glass 下的每一个请求（P15.9 DoD），target 是 `方法 路径`。 */
   'breakglass.request',
+  /** 确认一条告警（J5），target 是告警 id。 */
+  'alert.ack',
   /** 登记一次本地—云端接力（P17.4），target 是任务 id；没登上时是项目名。 */
   'handoff.accept',
   /** 给接力任务追加一句话（P17.4 只记账），target 是任务 id。 */
@@ -898,6 +1132,13 @@ export interface ConsoleDeps {
    * 动作账本（P15.9）。缺席时什么都不记，其余行为不变。
    */
   readonly actions?: ActionLedgerPort
+  /**
+   * 告警的通知来源与确认存储（J5）。缺席时告警页照常列出状况，通知一栏与确认
+   * 写「未接入」。
+   */
+  readonly notify?: NotifyPort
+  /** 值守作业的只读面（J6）。缺席时作业页写「未接入」。 */
+  readonly scheduler?: SchedulerPort
   /** 接力台账（P17.4）。缺席时 `/v0/handoff` 回 501。 */
   readonly handoff?: HandoffPort
 }

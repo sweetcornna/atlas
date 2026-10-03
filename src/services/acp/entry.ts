@@ -15,6 +15,7 @@ import {
   unregisterUpstreamStatusCallback,
 } from '../api/upstreamStatus.js'
 import { getConnection, isQianmoResident } from './agent/internalAccessors.js'
+import { createAcpExitGate } from './exitFlush.js'
 
 /**
  * Creates an ACP Stream from a pair of Node.js streams.
@@ -101,7 +102,13 @@ export async function runAcpAgent(): Promise<void> {
   console.warn = console.error
   console.debug = console.error
 
+  // Drains the transcript queue on the way out, within a budget, and lets only
+  // the first of SIGTERM / SIGINT / connection-closed run the shutdown. See
+  // ./exitFlush.ts for why each of those matters.
+  const exitGate = createAcpExitGate()
+
   async function shutdown(): Promise<void> {
+    if (!exitGate.begin()) return
     unregisterSessionActivityCallback()
     unregisterUpstreamStatusCallback()
     unregisterEmptyModelResponseCallback()
@@ -113,6 +120,10 @@ export async function runAcpAgent(): Promise<void> {
         // Best-effort cleanup
       }
     }
+    // Last, so it also takes whatever closing the sessions queued. A turn
+    // still streaming when the stop came is interrupted, not awaited; what it
+    // would have written after this point is not covered.
+    await exitGate.flush()
     process.exit(0)
   }
 

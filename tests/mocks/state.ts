@@ -91,6 +91,7 @@
  */
 
 import * as realState from 'src/bootstrap/state.js'
+import { makeSharedModuleMock } from './sharedModuleMock.js'
 
 const pinnedBase: Record<string, unknown> = {
   getSessionId: () => 'mock-session-id',
@@ -156,3 +157,18 @@ export function stateMockDelegating(
 }
 
 export const stateMock = stateMockWith()
+
+/**
+ * The resettable form: overrides live only between this suite's `set()` and
+ * `reset()`, and the surface delegates everything — pins included — once
+ * reset. Use it instead of `stateMockWith` whenever a suite overrides
+ * `getSessionId` or `switchSession`: left installed, those make every later
+ * file that switches sessions for real write under the wrong session id.
+ *
+ *   const stateMock = setupStateMock()              // top level
+ *   beforeAll(() => stateMock.set({ getSessionId: () => id }))
+ *   afterAll(() => stateMock.reset())
+ */
+export function setupStateMock() {
+  return makeSharedModuleMock('src/bootstrap/state.ts', realState).setup()
+}

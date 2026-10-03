@@ -3,6 +3,11 @@ export type AnthropicUsage = {
   output_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
+  /**
+   * Part of `output_tokens` the endpoint reports as reasoning, when it says
+   * (qianmo P18.8, hermes #26 — shared/qianmo/usageFields.ts).
+   */
+  reasoning_tokens?: number
 }
 
 /** First finite number among the candidates, or undefined if none qualify. */
@@ -20,6 +25,8 @@ function firstNumber(...candidates: unknown[]): number | undefined {
  * object, in order of preference:
  *
  *   1. `prompt_tokens_details.cached_tokens` — the OpenAI spelling
+ *   1a. `cache_read_input_tokens`            — Anthropic-style, top level, from
+ *       proxies routing Claude (qianmo P18.8, hermes #26)
  *   2. `prompt_cache_hit_tokens`             — DeepSeek's own schema
  *   3. `cached_tokens`                       — flattened by some proxies
  *
@@ -40,6 +47,7 @@ export function readOpenAICachedTokens(usage: unknown): number | undefined {
       : undefined
   return firstNumber(
     details?.cached_tokens,
+    record.cache_read_input_tokens,
     record.prompt_cache_hit_tokens,
     record.cached_tokens,
   )
@@ -70,6 +78,8 @@ export function normalizeOpenAIUsage(params: {
   outputTokens: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
+  /** qianmo P18.8 (hermes #26): carried through when the endpoint said. */
+  reasoningTokens?: number
 }): AnthropicUsage {
   const totalInput = Math.max(0, params.totalInputTokens)
   const cacheRead = Math.min(
@@ -87,5 +97,8 @@ export function normalizeOpenAIUsage(params: {
     output_tokens: Math.max(0, params.outputTokens),
     cache_creation_input_tokens: cacheCreation,
     cache_read_input_tokens: cacheRead,
+    ...(params.reasoningTokens !== undefined && {
+      reasoning_tokens: Math.max(0, params.reasoningTokens),
+    }),
   }
 }

@@ -9,6 +9,7 @@ import {
 import {
   getValidChatGPTAuth,
   getValidChatGPTAuthForSearch,
+  isChatGPTAuthEnabled,
 } from './chatgptAuth.js'
 import type {
   ResponsesReasoningEffort,
@@ -26,6 +27,11 @@ import { getProxyFetchOptions } from 'src/utils/network/proxy.js'
 import { buildProviderResourceURL } from 'src/utils/network/providerUrl.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
 import { isUnsupportedParameterText } from '../../qianmo/modelCompat/unsupportedParam.js'
+import {
+  replayableReasoningItems,
+  responsesIssuer,
+} from '../../qianmo/modelCompat/responsesIssuer.js'
+import { readResponsesReasoningTokens } from '../../qianmo/modelCompat/responsesUsage.js'
 import {
   getAPIErrorDiagnostics,
   isRetryableAPIError,
@@ -116,12 +122,24 @@ function convertUserContent(content: unknown): unknown {
   return result.length > 0 ? result : textFromContent(content)
 }
 
+/**
+ * qianmo P18.8 (hermes #23): the endpoint that mints — and alone can decrypt —
+ * this session's reasoning items; see modelCompat/responsesIssuer.ts.
+ */
+function currentReasoningIssuer(): string {
+  return responsesIssuer({
+    chatgpt: isChatGPTAuthEnabled(),
+    endpoint: resolveResponsesEndpoint(process.env.OPENAI_BASE_URL),
+  })
+}
+
 function convertMessagesToResponsesInput(messages: unknown[]): {
   input: ResponsesInputItem[]
   instructions?: string
 } {
   const input: ResponsesInputItem[] = []
   const instructions: string[] = []
+  const reasoningIssuer = currentReasoningIssuer()
 
   for (const message of messages) {
     if (!message || typeof message !== 'object') continue
@@ -151,7 +169,10 @@ function convertMessagesToResponsesInput(messages: unknown[]): {
       // them in. Replaying them is what carries the model's chain of thought
       // across turns under `store: false`; see OPENAI_REASONING_ITEMS_FIELD
       // for why this is a fidelity fix rather than a cache fix.
-      for (const item of readReasoningItems(record)) {
+      for (const item of replayableReasoningItems(
+        readReasoningItems(record),
+        reasoningIssuer,
+      )) {
         input.push({
           type: 'reasoning',
           ...(item.id !== undefined ? { id: item.id } : {}),
@@ -703,6 +724,8 @@ export function extractUsage(
     outputTokens,
     cacheReadTokens: cachedRaw,
     cacheWriteTokens: writeRaw,
+    // qianmo P18.8 (hermes #26): src/services/qianmo/modelCompat/responsesUsage.ts.
+    reasoningTokens: readResponsesReasoningTokens(usage),
   })
 }
 
@@ -1066,7 +1089,11 @@ export async function* adaptResponsesStreamToAnthropic(
     if (type === 'response.output_item.done') {
       const doneItem = event.item as Record<string, unknown> | undefined
       const reasoning = extractReasoningItem(doneItem)
-      if (reasoning) options?.onReasoningItem?.(reasoning)
+      if (reasoning)
+        options?.onReasoningItem?.({
+          ...reasoning,
+          issuer: currentReasoningIssuer(),
+        })
       let block = findToolBlock([
         toolBlockKey('item', event.item_id ?? doneItem?.id),
         toolBlockKey('call', event.call_id ?? doneItem?.call_id),

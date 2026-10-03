@@ -8,13 +8,17 @@
  * `buildWireBody` is `askWithMemory` of `tests/integration/qianmo-memory-
  * recall.test.ts` step for step — `anthropicMessagesToOpenAI`,
  * `anthropicToolsToOpenAI`, `buildOpenAIRequestBody` (max_tokens 8192, effort
- * `low`, no sampling parameter of its own), `applyCompatRule` — so a number
- * measured here is a number about the request AC-4 sends (§4 「请求构造与
+ * `low`, no sampling parameter of its own; since P18.8 it also filters
+ * replayed reasoning by the target endpoint) — so a number measured here is a
+ * number about the request AC-4 sends (§4 「请求构造与
  * AC-4 腿的 askWithMemory 相同」). The one addition is the second round: the
  * model's own turn, thinking included, and the rejection as the tool result,
  * the way the AC-5 leg feeds a tool result back.
  *
- * Providers are the two of the AC-5 fixture (id, default model, compat rule).
+ * Providers are the two of the AC-5 fixture (id, default model). Their
+ * `compatRule` no longer shapes the body: the compat profile it selected
+ * (`providerCompatMatrix.ts`) was never on the production path and was
+ * deleted in P18.8 (R-14).
  * The endpoint and the key come from `OPENAI_BASE_URL` / `OPENAI_API_KEY`
  * only; nothing here writes either anywhere, and the call log records the
  * provider id, never a host.
@@ -56,7 +60,6 @@ import {
   buildOpenAIRequestBody,
   isOpenAIThinkingEnabled,
 } from '../src/services/api/openai/requestBody.js'
-import { applyCompatRule } from '../src/services/providerRegistry/providerCompatMatrix.js'
 import {
   type ProviderConfig,
   ProvidersFileSchema,
@@ -192,10 +195,7 @@ export function buildWireBody(
     baseURL,
     effortValue: 'low',
   })
-  return applyCompatRule(
-    body as unknown as Record<string, unknown>,
-    provider.compatRule,
-  )
+  return body as unknown as Record<string, unknown>
 }
 
 /**
