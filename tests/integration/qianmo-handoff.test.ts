@@ -42,7 +42,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { type ChildProcess, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   appendFileSync,
@@ -56,11 +55,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { readTrail } from '@qianmo/audit'
-import { getMacroDefines, resolveBuildFeatures } from '../../scripts/defines.js'
 import {
   claudeCodeHookInput,
   claudeCodeTranscript,
@@ -69,9 +66,16 @@ import {
   qmcodeRolloutPath,
   type QmcodeTurn,
 } from '../../src/cli/handlers/__tests__/support/handoffSamples.js'
+import {
+  cliPrefix,
+  freePort,
+  INHERITED_KEYS_TO_DROP,
+  type RunningConsole,
+  startHandoffConsole,
+  stopConsole,
+  waitForConsole,
+} from './fixtures/handoff-processes.js'
 
-const PROJECT_ROOT = resolve(import.meta.dir, '../..')
-const CLI_ENTRYPOINT = join(PROJECT_ROOT, 'src/entrypoints/cli.tsx')
 const SAFE = '已落地，可以关机'
 const DEVICE = 'laptop'
 const THREAD = '0199a4c2-7c1e-7d32-9a5e-3b1f2c4d5e6f'
@@ -91,41 +95,6 @@ const CANARY = `sk-test-canary-${randomBytes(12).toString('hex')}`
 
 const BOOT_TIMEOUT_MS = 90_000
 const STEP_TIMEOUT_MS = 90_000
-
-/** The same list the other end-to-end tests drop. */
-const INHERITED_KEYS_TO_DROP = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_USE_OPENAI',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'OPENAI_MODEL',
-  'OCC_CONFIG_DIR',
-  'CLAUDE_CONFIG_DIR',
-  'QMCODE_HOME',
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-]
-
-/** `bun run -d… --feature… src/entrypoints/cli.tsx`, as `scripts/dev.ts` does. */
-function cliPrefix(): readonly string[] {
-  const defines = {
-    ...getMacroDefines(),
-    'process.env.NODE_ENV': JSON.stringify('production'),
-  }
-  return [
-    'run',
-    ...Object.entries(defines).flatMap(([key, value]) => [
-      '-d',
-      `${key}:${String(value)}`,
-    ]),
-    ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-    CLI_ENTRYPOINT,
-  ]
-}
 
 let root = ''
 let repo = ''
@@ -325,93 +294,29 @@ function userState(): string {
 
 // ─── The hub process ─────────────────────────────────────────────────
 
-interface Running {
-  readonly child: ChildProcess
-  readonly exited: Promise<void>
-  stderr(): string
-  stdout(): string
-}
+let hub: RunningConsole | undefined
 
-let hub: Running | undefined
-
-function startConsole(listen: number): Running {
-  const child = spawn(
-    process.execPath,
-    [
-      ...cliPrefix(),
-      'console',
-      '--port',
-      String(listen),
-      '--admin-token-file',
-      adminTokenFile,
-      '--view-token-file',
-      viewTokenFile,
-      '--handoff-root',
-      hubRoot,
-    ],
-    { cwd: root, env: hubEnv(), stdio: ['ignore', 'pipe', 'pipe'] },
-  )
-  let stdout = ''
-  let stderr = ''
-  child.stdout?.on('data', chunk => {
-    stdout += String(chunk)
-  })
-  child.stderr?.on('data', chunk => {
-    stderr += String(chunk)
-  })
-  const exited = new Promise<void>(done => child.once('exit', () => done()))
-  return { child, exited, stdout: () => stdout, stderr: () => stderr }
-}
-
-async function accepts(listen: number): Promise<boolean> {
-  try {
-    const socket = await Bun.connect({
-      hostname: '127.0.0.1',
-      port: listen,
-      socket: { data() {} },
-    })
-    socket.end()
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function freePort(): Promise<number> {
-  return await new Promise((done, fail) => {
-    const server = createServer()
-    server.once('error', fail)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      const value =
-        typeof address === 'object' && address !== null ? address.port : 0
-      server.close(() => done(value))
-    })
+function startConsole(listen: number): RunningConsole {
+  return startHandoffConsole({
+    port: listen,
+    handoffRoot: hubRoot,
+    adminTokenFile,
+    viewTokenFile,
+    cwd: root,
+    env: hubEnv(),
   })
 }
 
 async function bootHub(): Promise<void> {
   const running = startConsole(port)
   hub = running
-  const deadline = Date.now() + BOOT_TIMEOUT_MS
-  while (!(await accepts(port))) {
-    if (running.child.exitCode !== null || Date.now() > deadline) {
-      throw new Error(`console did not come up\n${running.stderr()}`)
-    }
-    await Bun.sleep(100)
-  }
+  await waitForConsole(running, port, BOOT_TIMEOUT_MS)
 }
 
 async function stopHub(): Promise<void> {
   const running = hub
   hub = undefined
-  if (running === undefined) return
-  if (running.child.exitCode === null && running.child.signalCode === null) {
-    running.child.kill('SIGTERM')
-    const killer = setTimeout(() => running.child.kill('SIGKILL'), 5_000)
-    await running.exited
-    clearTimeout(killer)
-  }
+  if (running !== undefined) await stopConsole(running)
 }
 
 async function hubGet(
