@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { runGit } from './git.js'
 import { isSha } from './manifest.js'
+import { redactHandoffSecrets } from './redact.js'
 import { handoffIdentityEnv } from './shadow.js'
 
 /**
@@ -31,10 +32,13 @@ import { handoffIdentityEnv } from './shadow.js'
  * such a session would make most real sessions impossible to hand off, so
  * with {@link SessionCommitOptions.redact} the bytes go through the same
  * gitleaks rule subset as the shadow commit's scan (`scanForSecrets`), and
- * every hit is replaced with `[REDACTED]` (`redactSecrets`) before anything
- * is hashed. What comes back is how many spans were replaced and under which
- * rule ids — never the text — so the caller can log the fact without logging
- * the secret. Bytes without a hit are committed exactly as read.
+ * every hit is replaced with `[REDACTED]` (`redactSecrets`); then the
+ * handoff's own broader rules run (`redact.ts`: generic `sk-` keys, console
+ * tokens, `Authorization: Bearer`, `"api_key"` fields → `***`), all before
+ * anything is hashed. What comes back is how many spans were replaced and
+ * under which rule ids — never the text — so the caller can log the fact
+ * without logging the secret. Bytes without a hit are committed exactly as
+ * read.
  *
  * ## Unchanged is not a new commit
  *
@@ -127,18 +131,23 @@ function redacted(bytes: Uint8Array): {
 } {
   const text = Buffer.from(bytes).toString('utf8')
   const matches = scanForSecrets(text)
-  if (matches.length === 0) {
+  const clean = matches.length === 0 ? text : redactSecrets(text)
+  const vendor =
+    matches.length === 0
+      ? 0
+      : Math.max(
+          occurrences(clean, REDACTED) - occurrences(text, REDACTED),
+          matches.length,
+        )
+  const handoff = redactHandoffSecrets(clean)
+  if (vendor === 0 && handoff.count === 0) {
     return { bytes, redactions: { count: 0, ruleIds: [] } }
   }
-  const clean = redactSecrets(text)
   return {
-    bytes: Buffer.from(clean, 'utf8'),
+    bytes: Buffer.from(handoff.text, 'utf8'),
     redactions: {
-      count: Math.max(
-        occurrences(clean, REDACTED) - occurrences(text, REDACTED),
-        matches.length,
-      ),
-      ruleIds: matches.map(match => match.ruleId),
+      count: vendor + handoff.count,
+      ruleIds: [...matches.map(match => match.ruleId), ...handoff.ruleIds],
     },
   }
 }

@@ -20,6 +20,7 @@
 | `src/manifest.ts` | 接力清单类型与校验；`refs/qianmo/...` 三类引用的构造与解析；`task.result.content` 的 JSON 编解码 |
 | `src/shadow.ts` | 影子提交 `shadowCommit`，以及只算树不提交的 `shadowTree`（AC-H1 核对用） |
 | `src/session.ts` | 会话文件 → 单文件树 → 提交（父为上一次的会话提交） |
+| `src/redact.ts` | 会话文件的接力专用脱敏层：在 `redactSecrets` 之后再跑一遍，通用 `sk-` / `sk_` key、控制台令牌 `qmu_` / `qmi_` / `qms_`、`Authorization: Bearer`、`"api_key"` 字段，命中换成 `***` |
 | `src/ledger.ts` | 追加式 NDJSON 台账、状态机、重放、同节点互斥、独占锁、给云端的话（send） |
 | `src/lock.ts` | O_EXCL + pid 的独占锁文件，陈旧锁按 pid 不存在回收；台账与 `qm handoff` 的同步锁共用 |
 | `src/git.ts` | 跑 `git` 的唯一入口（参数向量、不经 shell、剥掉重定向用的环境变量）；`runGit` 也导出给 `qm handoff` 推拉用 |
@@ -48,8 +49,9 @@ shadowTree({ cwd }): Promise<ShadowTree>
 // 会话
 sessionCommit({ cwd, file, name?, parent?, message?, content?, redact? })
   : Promise<{ commit, tree, blob, name, reused, redactions }>
-// content：只提交这些字节（file 只用来起条目名）；redact：redactSecrets 脱敏，
-// redactions = { count, ruleIds }（不带原文）；树与 parent 相同则 reused=true、commit=parent
+// content：只提交这些字节（file 只用来起条目名）；redact：redactSecrets 脱敏，再过一遍
+// redact.ts 的接力规则；redactions = { count, ruleIds }（两层合计，不带原文）；
+// 树与 parent 相同则 reused=true、commit=parent
 
 // 台账
 HandoffLedger.open(path, { now? }): HandoffLedger                     // 文件不存在即空台账；损坏抛 corrupt
@@ -104,5 +106,5 @@ accepted ──▶ dispatched ──▶ running ──▶ done ──▶ returne
 
 - 影子提交在 `git add` 阶段已把 blob 写进用户仓库的对象库，秘密命中时这些对象仍留在本地（不可达，随 `git gc` 回收），不会被推送。
 - 影子提交与会话提交在本包里都不建 ref；`qm handoff` 在本地另写 `refs/qianmo/local/<设备>/{wip,sessions}/…` 指向最近一次提交防 GC（裁定 8）。直接调用本包而不建引用的调用方，`git gc` 的 prune 过期后对象可能被回收，下一次会话提交引用已被回收的父提交时 `commit-tree` 报错。
-- 会话文件**脱敏后提交、不拒推**（裁定 5，`redact: true`）：用的是与影子提交同一套 gitleaks 高置信规则，规则之外的密钥形态不会被认出。脱敏把整段按 UTF-8 解码再编码，含非法 UTF-8 字节且命中规则的文件，其非法字节会变成 U+FFFD；未命中时原样提交。
+- 会话文件**脱敏后提交、不拒推**（裁定 5，`redact: true`）：先过与影子提交同一套 gitleaks 高置信规则（命中换成 `[REDACTED]`），再过 `redact.ts` 的四条接力规则（命中换成 `***`）。两层之外的密钥形态（没有前缀、不在 Bearer 头或 `api_key` 字段里的裸串）认不出来；接力规则更宽，偶尔会把一个以 `sk-` 开头、20 个字符以上的普通词当成 key。脱敏把整段按 UTF-8 解码再编码，含非法 UTF-8 字节且命中规则的文件，其非法字节会变成 U+FFFD；两层都未命中时原样提交。
 - 台账没有压缩，任务只增不减；M1 单用户的量级下不是问题。
