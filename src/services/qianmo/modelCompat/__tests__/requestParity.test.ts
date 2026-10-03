@@ -1,0 +1,318 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Per-vendor request-body parity table (design `providers-console-m1.md`
+ * §5.9 item 2; hermes-research §11.6 recommendation 2).
+ *
+ * Each row is (vendor, model, base URL, explicit wire, effort inputs, thinking
+ * switch, side query) → what the OpenAI-compatible lane puts on the wire:
+ * which endpoint, which keys with which values, which keys are absent. It is
+ * the executable form of AC-P4 ("display = node computation = request
+ * body") for the OpenAI lane and of the mapping tables in §5.6.
+ *
+ * P18.5 lays down the header (the `ParityRow` columns) and the rows for its
+ * own items; P18.8 and P18.12 append rows for theirs. A row never encodes a
+ * vendor claim as fact: `source` says where the expectation comes from, and
+ * no row has been checked against a real endpoint (design §11 item 5).
+ *
+ * Every row runs the real `queryModelOpenAI` through a recording stub
+ * (`support/requestCapture.ts`): no network, a canary key.
+ */
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
+import {
+  type CaptureParams,
+  captureOpenAIRequest,
+} from './support/requestCapture.js'
+
+const settingsMock = setupSettingsMock()
+beforeAll(() => settingsMock.set({ getInitialSettings: () => ({}) }))
+afterAll(() => settingsMock.reset())
+
+// ─── header ──────────────────────────────────────────────────────────────────
+
+type ParityRow = {
+  /** Stable id; later batches reference rows by it. */
+  id: string
+  /** 厂商 — free text, for the reader. */
+  vendor: string
+  /** 模型 — the session model (options.model). */
+  model: string
+  /** base URL — OPENAI_BASE_URL; `undefined` = unset (SDK default). */
+  baseURL: string | undefined
+  /** 显式线路 — OPENAI_WIRE_API; `undefined` = not set. */
+  wire: 'chat' | 'responses' | undefined
+  /** effort 输入 — what the session asked for, and the explicit switches. */
+  effort: {
+    /** In-session `/effort` (options.effortValue). */
+    session?: CaptureParams['effortValue']
+    /** CLAUDE_CODE_EFFORT_LEVEL. */
+    env?: string
+    /** CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1. */
+    alwaysEnable?: boolean
+    /** Tier pin + capability list for this model (OPENAI_DEFAULT_OPUS_*). */
+    capabilities?: string
+  }
+  /** 思考开关 — OPENAI_ENABLE_THINKING; `auto` = unset. */
+  thinking: 'auto' | 'on' | 'off'
+  /** 是否副查询 — a side query passes temperatureOverride: 0. */
+  sideQuery: boolean
+  /** Anything else the row needs in env (e.g. the DeepSeek wire switch). */
+  extraEnv?: Record<string, string>
+  /** options.maxOutputTokensOverride. */
+  maxOutputTokensOverride?: number
+  expect: {
+    /** Path the request went to. */
+    path: '/chat/completions' | '/responses'
+    /** Keys that must be present, with their exact (deep-equal) value. */
+    present?: Record<string, unknown>
+    /** Keys that must be absent. */
+    absent?: string[]
+  }
+  /** Where the expectation comes from (design § / hermes file:line / baseline). */
+  source: string
+}
+
+function captureParams(row: ParityRow): CaptureParams {
+  const env: Record<string, string | undefined> = { ...row.extraEnv }
+  if (row.wire) env.OPENAI_WIRE_API = row.wire
+  if (row.effort.env) env.CLAUDE_CODE_EFFORT_LEVEL = row.effort.env
+  if (row.effort.alwaysEnable) env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
+  if (row.effort.capabilities !== undefined) {
+    env.OPENAI_DEFAULT_OPUS_MODEL = row.model
+    env.OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES =
+      row.effort.capabilities
+  }
+  if (row.thinking === 'on') env.OPENAI_ENABLE_THINKING = '1'
+  if (row.thinking === 'off') env.OPENAI_ENABLE_THINKING = '0'
+  return {
+    model: row.model,
+    baseURL: row.baseURL,
+    env,
+    effortValue: row.effort.session,
+    temperatureOverride: row.sideQuery ? 0 : undefined,
+    maxOutputTokensOverride: row.maxOutputTokensOverride,
+  }
+}
+
+// ─── rows ────────────────────────────────────────────────────────────────────
+
+const GATEWAY = 'https://gateway.example/v1'
+const OFFICIAL = 'https://api.openai.com/v1'
+const DEEPSEEK = 'https://api.deepseek.com'
+/** DeepSeek's default is the Anthropic wire; these rows pin the chat lane. */
+const DEEPSEEK_CHAT_LANE = { CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE: '0' }
+
+const ROWS: ParityRow[] = [
+  // ── Q-1: chat lane effort gate = modelSupportsEffort (design §5.2) ──
+  {
+    id: 'q1-unknown-no-override',
+    vendor: 'OpenAI-compatible gateway',
+    model: 'vendor-model-x',
+    baseURL: GATEWAY,
+    wire: 'chat',
+    effort: { session: 'high' },
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/chat/completions', absent: ['reasoning_effort'] },
+    source: 'design §5.2: modelSupportsEffort false ⇒ not sent',
+  },
+  {
+    id: 'q1-unknown-always-enable',
+    vendor: 'OpenAI-compatible gateway',
+    model: 'vendor-model-x',
+    baseURL: GATEWAY,
+    wire: 'chat',
+    effort: { session: 'max', alwaysEnable: true },
+    thinking: 'auto',
+    sideQuery: false,
+    expect: {
+      path: '/chat/completions',
+      present: { reasoning_effort: 'high' },
+    },
+    source:
+      'design §5.2: explicit override reaches chat; chat folds max → high (reasoning.ts getChatReasoningEffort)',
+  },
+  {
+    id: 'q1-unknown-capability-effort',
+    vendor: 'OpenAI-compatible gateway',
+    model: 'vendor-model-x',
+    baseURL: GATEWAY,
+    wire: 'chat',
+    effort: { session: 'low', capabilities: 'effort' },
+    thinking: 'auto',
+    sideQuery: false,
+    expect: {
+      path: '/chat/completions',
+      present: { reasoning_effort: 'low' },
+    },
+    source: 'design §3.4 send=always compiles to an explicit capability list',
+  },
+  {
+    id: 'q1-codex-model-unchanged',
+    vendor: 'OpenAI-compatible gateway',
+    model: 'gpt-5.4',
+    baseURL: GATEWAY,
+    wire: 'chat',
+    effort: { session: 'medium' },
+    thinking: 'auto',
+    sideQuery: false,
+    expect: {
+      path: '/chat/completions',
+      present: { reasoning_effort: 'medium' },
+    },
+    source: 'baseline 1b477a37: Codex reasoning models already sent it',
+  },
+  {
+    id: 'q1-codex-model-capability-off',
+    vendor: 'OpenAI-compatible gateway',
+    model: 'gpt-5.4',
+    baseURL: GATEWAY,
+    wire: 'chat',
+    effort: { session: 'medium', capabilities: 'thinking' },
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/chat/completions', absent: ['reasoning_effort'] },
+    source: 'design §3.4 send=never: explicit list without effort',
+  },
+  {
+    id: 'q1-deepseek-thinking-off-unchanged',
+    vendor: 'DeepSeek (chat lane)',
+    model: 'deepseek-v4-pro',
+    baseURL: DEEPSEEK,
+    wire: undefined,
+    effort: { session: 'high' },
+    thinking: 'off',
+    sideQuery: false,
+    extraEnv: DEEPSEEK_CHAT_LANE,
+    expect: {
+      path: '/chat/completions',
+      present: { thinking: { type: 'disabled' } },
+      absent: ['reasoning_effort'],
+    },
+    source:
+      'baseline 1b477a37 (requestBody.ts DeepSeek ladder: thinking off sends no effort)',
+  },
+  {
+    id: 'q1-deepseek-thinking-on-unchanged',
+    vendor: 'DeepSeek (chat lane)',
+    model: 'deepseek-v4-pro',
+    baseURL: DEEPSEEK,
+    wire: undefined,
+    effort: { session: 'medium' },
+    thinking: 'on',
+    sideQuery: false,
+    extraEnv: DEEPSEEK_CHAT_LANE,
+    expect: {
+      path: '/chat/completions',
+      present: { reasoning_effort: 'high', thinking: { type: 'enabled' } },
+    },
+    source: 'baseline 1b477a37 (deepseekTuning.ts: medium → high)',
+  },
+
+  // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
+  // Baseline captured from 1b477a37 through this same stub:
+  // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt
+  ...[OFFICIAL, GATEWAY, undefined].map(
+    (baseURL): ParityRow => ({
+      id: `fleet-gpt-6-luna-${baseURL ?? 'unset'}`,
+      vendor: 'OpenAI Responses (fleet, 2026-10-03)',
+      model: 'gpt-6-luna',
+      baseURL,
+      wire: 'responses',
+      effort: { env: 'max', alwaysEnable: true },
+      thinking: 'auto',
+      sideQuery: false,
+      expect: {
+        path: '/responses',
+        present: {
+          model: 'gpt-6-luna',
+          stream: true,
+          store: false,
+          reasoning: { effort: 'max', summary: 'auto' },
+          include: ['reasoning.encrypted_content'],
+          parallel_tool_calls: true,
+          max_output_tokens: 64000,
+        },
+        absent: ['temperature', 'max_tokens', 'max_completion_tokens'],
+      },
+      source:
+        'baseline 1b477a37 + design §0.2 (effort still sent, lane unchanged)',
+    }),
+  ),
+]
+
+// ─── runner ──────────────────────────────────────────────────────────────────
+
+describe('request parity (OpenAI-compatible lane)', () => {
+  test('row ids are unique', () => {
+    const ids = ROWS.map(row => row.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  for (const row of ROWS) {
+    test(`${row.id} — ${row.vendor} · ${row.model}`, async () => {
+      const { url, body } = await captureOpenAIRequest(captureParams(row))
+      expect(new URL(url).pathname.endsWith(row.expect.path)).toBe(true)
+      for (const [key, value] of Object.entries(row.expect.present ?? {})) {
+        expect({ key, value: body[key] }).toEqual({ key, value })
+      }
+      for (const key of row.expect.absent ?? []) {
+        expect({ key, present: key in body }).toEqual({ key, present: false })
+      }
+    })
+  }
+})
+
+describe('fleet lock: full key set is the baseline key set', () => {
+  // Same capture, compared as a whole key list so an added or dropped field
+  // on the live path fails loudly, not only the fields named above.
+  const BASELINE_KEYS = {
+    official: [
+      'include',
+      'input',
+      'instructions',
+      'max_output_tokens',
+      'model',
+      'parallel_tool_calls',
+      'prompt_cache_key',
+      'reasoning',
+      'store',
+      'stream',
+      'text',
+    ],
+    gateway: [
+      'include',
+      'input',
+      'instructions',
+      'max_output_tokens',
+      'model',
+      'parallel_tool_calls',
+      'prompt_cache_key',
+      'reasoning',
+      'store',
+      'stream',
+    ],
+  }
+  for (const [label, baseURL, keys] of [
+    ['official', OFFICIAL, BASELINE_KEYS.official],
+    ['gateway', GATEWAY, BASELINE_KEYS.gateway],
+    ['unset', undefined, BASELINE_KEYS.official],
+  ] as const) {
+    test(`gpt-6-luna @ ${label}`, async () => {
+      const { url, body } = await captureOpenAIRequest({
+        model: 'gpt-6-luna',
+        baseURL,
+        env: {
+          OPENAI_WIRE_API: 'responses',
+          CLAUDE_CODE_EFFORT_LEVEL: 'max',
+          CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: '1',
+        },
+      })
+      expect(url).toBe(`${baseURL ?? OFFICIAL}/responses`)
+      expect(Object.keys(body).sort()).toEqual([...keys])
+      expect(body.reasoning).toEqual({ effort: 'max', summary: 'auto' })
+    })
+  }
+})
