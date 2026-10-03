@@ -27,10 +27,12 @@ import {
   type AccountEnded,
   type ConsolePrincipal,
 } from '../src/accounts.js'
+import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
 import {
-  CONSOLE_CHAT_JS,
-  CONSOLE_CHAT_JS_ACCOUNTS,
-} from '../src/assets/chatClient.js'
+  AUDIT_PAGE_JS,
+  NODES_PAGE_JS,
+  SERVERS_PAGE_JS,
+} from '../src/assets/pageScripts.js'
 import {
   CONSOLE_CLIENT_JS,
   CONSOLE_CLIENT_JS_ACCOUNTS,
@@ -422,9 +424,19 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
   })
 
   test('the page scripts refuse to keep a personal credential in localStorage', () => {
+    // Token storage has one home since the shell: the shared runtime. Every
+    // page script reads the token through it and none touches storage, so
+    // the guard below covers them all without a second copy.
+    for (const page of [
+      CONSOLE_CHAT_JS,
+      NODES_PAGE_JS,
+      AUDIT_PAGE_JS,
+      SERVERS_PAGE_JS,
+    ]) {
+      expect(page.includes('localStorage')).toBe(false)
+    }
     for (const [legacy, guarded] of [
       [CONSOLE_CLIENT_JS, CONSOLE_CLIENT_JS_ACCOUNTS],
-      [CONSOLE_CHAT_JS, CONSOLE_CHAT_JS_ACCOUNTS],
     ] as const) {
       expect(legacy.includes('qmu_')).toBe(false)
       // One setItem in the whole script, and it is inside writeToken, after
@@ -487,7 +499,17 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
     const chat = await (
       await h.handle(asSession('GET', '/chat', a.sid, { header: false }))
     ).text()
-    expect(chat.includes(CONSOLE_CHAT_JS_ACCOUNTS)).toBe(true)
+    expect(chat.includes(CONSOLE_CLIENT_JS_ACCOUNTS)).toBe(true)
+    expect(chat.includes(CONSOLE_CHAT_JS)).toBe(true)
+    // And never the unguarded runtime, on any page.
+    for (const path of ['/', '/nodes', '/audit', '/settings']) {
+      const page = await (
+        await h.handle(asSession('GET', path, a.sid, { header: false }))
+      ).text()
+      expect(`${path} ${page.includes(CONSOLE_CLIENT_JS_ACCOUNTS)}`).toBe(
+        `${path} true`,
+      )
+    }
     const asset = await (
       await h.handle(new Request(`${BASE}/assets/app.js`))
     ).text()

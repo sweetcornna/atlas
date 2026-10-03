@@ -21,6 +21,38 @@ const JSON_HEADERS = {
 } as const
 
 /**
+ * Content-Security-Policy, as strict as an inline-everything page can be.
+ *
+ * `'unsafe-inline'` is unavoidable for the one style and the one script — but
+ * every *host* directive stays `'none'`, which is the half that matters: no
+ * origin other than this one can contribute anything, and `connect-src 'self'`
+ * keeps the token from being sent anywhere else.
+ *
+ * `img-src data:` is the one loosening, and it buys exactly one thing: the
+ * favicon, which is an inline SVG data URI in the document head. `data:` is not
+ * an origin — nothing can be fetched through it and no third party can put
+ * anything there — so the property this policy exists for ("no host other than
+ * this one contributes anything") is untouched.
+ *
+ * Lives here rather than beside the document head because two places state
+ * it: the `<meta>` in every document (`view/shell.ts`) and the response header
+ * on every document. One constant, so the two cannot drift.
+ */
+export const CSP = [
+  "default-src 'none'",
+  "style-src 'unsafe-inline'",
+  "script-src 'unsafe-inline'",
+  // `connect-src` also covers `EventSource`: the chat page's stream is a
+  // same-origin `GET /v0/chat/stream`, and without this directive the browser
+  // would refuse to open it while reporting nothing useful.
+  "connect-src 'self'",
+  "form-action 'self'",
+  "base-uri 'none'",
+  'img-src data:',
+  "font-src 'none'",
+].join('; ')
+
+/**
  * Headers for anything a browser renders.
  *
  * `no-referrer` matters here rather than being boilerplate: the page URL can

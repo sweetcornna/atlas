@@ -198,11 +198,9 @@ import { assertTokensUnlikeAccountSecrets } from './accounts.js'
 import {
   accountLogin,
   accountLogout,
-  chatScopeOf,
   handleAccountsApi,
   handleInvite,
   pageViewer,
-  type ChatScope,
 } from './accountsHttp.js'
 import {
   CONSOLE_CLIENT_JS,
@@ -222,7 +220,7 @@ import {
   type ConsoleCredential,
   type ConsoleTokens,
 } from './auth.js'
-import type { ChatPort, ConsoleDeps } from './deps.js'
+import type { ConsoleDeps } from './deps.js'
 import {
   DOCUMENT_HEADERS,
   fail,
@@ -233,33 +231,18 @@ import {
   readForm,
   seeOther,
 } from './respond.js'
-import { parseAuditFilter } from './routes/audit.js'
+import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
 import {
-  CHAT_STREAM_HEARTBEAT_MS,
-  chatSessionsFragment,
-  chatThreadFragment,
-} from './routes/chat.js'
-import { ROUTES, headIndex } from './routes/index.js'
-import { rosterFragment } from './routes/nodes.js'
-import { serversFragment } from './routes/servers.js'
-import { pageLimits } from './routes/settings.js'
-import {
-  DEFAULT_LABEL,
-  guard,
-  guardChat,
-  mayChat,
-  readAuditSources,
-  singleLegacyAudit,
-  textParam,
-} from './routes/shared.js'
+  ROUTES,
+  areaDocument,
+  headIndex,
+  pageOf,
+  type PageMatch,
+} from './routes/index.js'
+import { DEFAULT_LABEL, guard, guardChat } from './routes/shared.js'
 import type { RouteContext } from './routes/types.js'
-import { agentFilterOptions, wakeTargetOptions } from './view/agents.js'
-import { renderAudit, renderAuditSources } from './view/audit.js'
 import type { PageViewer } from './view/bits.js'
-import { renderChatPage } from './view/chatPage.js'
-import { renderLimits } from './view/limits.js'
 import { renderLoginPage } from './view/login.js'
-import { renderPage } from './view/page.js'
 import { LoginThrottle } from './throttle.js'
 
 /** Prefix of every JSON route in this API version. */
@@ -536,103 +519,34 @@ function handleLogout(
 
 // --- pages ---------------------------------------------------------------
 
-async function handleChatPage(
-  deps: ConsoleDeps,
-  chat: ChatPort,
-  credential: ConsoleCredential,
-  url: URL,
-  now: number,
-  scope: ChatScope,
-  viewer: PageViewer | undefined,
+/**
+ * One area page: the guard its module names, then whether the page exists on
+ * this console, then the method, then the render — the order `/` and `/chat`
+ * have always kept (`test/legacyParity.test.ts`). The module returns its own
+ * part; the frame around it is `routes/index.ts`'s.
+ */
+async function servePage(
+  ctx: RouteContext,
+  match: PageMatch,
+  denial: Access | undefined,
 ): Promise<Response> {
-  const sessionId = textParam(url.searchParams, 'session') ?? null
-  const [sessions, thread] = await Promise.all([
-    chatSessionsFragment(chat, sessionId, now, scope),
-    chatThreadFragment(chat, sessionId, now, scope),
-  ])
+  const { request, deps, url, access } = ctx
+  const denied =
+    match.page.guard === 'chat'
+      ? guardChat(access, 'document')
+      : guard(access.credential, 'view', 'document')
+  if (denied !== null) {
+    return documentDenial(request, denied, deps, url, denial)
+  }
+  if (match.page.available?.(ctx) === false) {
+    return notFound(`unknown path: ${url.pathname}`)
+  }
+  if (request.method !== 'GET') return methodNotAllowed(['GET'])
+  const rendered = await match.page.render(ctx, match.rest)
+  if (rendered instanceof Response) return rendered
   return html(
-    renderChatPage({
-      label: deps.label ?? DEFAULT_LABEL,
-      now,
-      sessions,
-      thread: thread.html,
-      composerEnabled: thread.open,
-      role: credential.role,
-      ...(viewer === undefined ? {} : { viewer }),
-    }),
-  )
-}
-
-async function handleIndex(
-  deps: ConsoleDeps,
-  access: Access,
-  url: URL,
-  now: number,
-  viewer: PageViewer | undefined,
-): Promise<Response> {
-  const credential = access.credential
-  const filter = parseAuditFilter(url, now)
-  // Both panels are independent reads; a slow registry should not serialise
-  // in front of the trail. The trail's *markup* does depend on the roster —
-  // its node filter offers the addresses that exist rather than a box to
-  // retype one into — so the two reads still overlap and only the render
-  // waits.
-  const [roster, trails, servers] = await Promise.all([
-    rosterFragment(deps, now),
-    readAuditSources(deps, filter),
-    serversFragment(deps, credential, now),
-  ])
-  const targetOptions = wakeTargetOptions(
-    roster.agents,
-    now,
-    deps.limits.registryTtlMs,
-  )
-  const audit = singleLegacyAudit(deps)
-    ? renderAudit(
-        trails[0]?.page ?? null,
-        trails[0]?.failure ?? null,
-        filter,
-        agentFilterOptions(roster.agents, filter.agent),
-      )
-    : renderAuditSources(
-        trails,
-        filter,
-        agentFilterOptions(roster.agents, filter.agent),
-      )
-  return html(
-    renderPage({
-      label: deps.label ?? DEFAULT_LABEL,
-      now,
-      roster: roster.html,
-      audit,
-      targetOptions,
-      ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
-      ...(deps.wakeTargets === undefined
-        ? {}
-        : { wakeTargets: deps.wakeTargets }),
-      ...(deps.identity === undefined ? {} : { identity: deps.identity }),
-      ...(servers === undefined ? {} : { servers }),
-      limits: renderLimits(pageLimits(deps, roster.agents)),
-      // The form is rendered disabled with a reason rather than hidden: an
-      // operator who cannot find the wake button assumes the console is broken.
-      wakeEnabled:
-        deps.wake !== undefined ||
-        deps.wakeTargets?.some(target => target.wake !== undefined) === true,
-      // Gated on role, not merely on whether a channel is wired: the module
-      // note above ("Chat is admin-only, all of it") says a view token must
-      // not even learn that a conversation exists. A link that is present but
-      // 403s on click leaks exactly that, so the nav item is hidden from
-      // anyone who is not admin, channel or no channel.
-      //
-      // With accounts, a `member` gets the link too: the chat face is theirs,
-      // scoped to their own sessions (`mayChat`).
-      chatEnabled: deps.chat !== undefined && mayChat(access),
-      auditFilter: filter,
-      // The sidebar states which of the two credentials this is, and offers the
-      // way out of a cookie the page cannot read (`bits.ts`).
-      role: credential.role,
-      ...(viewer === undefined ? {} : { viewer }),
-    }),
+    await areaDocument(ctx, match.module, rendered),
+    rendered.status ?? 200,
   )
 }
 
@@ -861,33 +775,14 @@ async function routeAs(
   const viewer =
     accounts === undefined ? undefined : pageViewer(access, accounts, tokens)
 
-  if (segments.length === 0) {
-    const denied = guard(credential, 'view', 'document')
-    if (denied !== null) {
-      return documentDenial(request, denied, deps, url, denial)
-    }
-    if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleIndex(deps, access, url, now(), viewer)
-  }
-
-  if (segments[0] === 'chat' && segments.length === 1) {
-    const denied = guardChat(access, 'document')
-    if (denied !== null) {
-      return documentDenial(request, denied, deps, url, denial)
-    }
-    const chat = deps.chat
-    // 404 rather than 501: this is a page, and on this instance there is no
-    // such page. A script asking `/v0/chat/*` gets the 501 instead.
-    if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
-    if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return await handleChatPage(
-      deps,
-      chat,
-      credential,
-      url,
-      now(),
-      chatScopeOf(access, accounts),
-      viewer,
+  // Every area page: `/`, `/nodes`, `/chat`, the placeholders. Reserved first
+  // segments (`v0`, `fragments`, the doors above) never reach a page.
+  const page = pageOf(ROUTES, segments)
+  if (page !== undefined) {
+    return await servePage(
+      routeContext(request, url, deps, access, accounts, now(), viewer),
+      page,
+      denial,
     )
   }
 

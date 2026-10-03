@@ -51,11 +51,17 @@ import {
   renderChatThread,
 } from '../view/chat.js'
 import {
+  CHAT_PAGE_CSS,
+  CHAT_PAGE_SCRIPT,
+  chatPageBody,
+} from '../view/chatPage.js'
+import {
   failureOf,
   failureResponse,
   guardChat,
   requiredString,
   textParam,
+  underPath,
   valueOf,
   type Parsed,
   type Protection,
@@ -423,6 +429,34 @@ export const chatRoute: RouteModule = {
     group: 'run',
     href: '/chat',
     icon: 'messages-square',
+  },
+  page: {
+    match: underPath('chat'),
+    guard: 'chat',
+    // 404 rather than 501: this is a page, and on this instance there is no
+    // such page. A script asking `/v0/chat/*` gets the 501 instead.
+    available: ctx => ctx.deps.chat !== undefined,
+    async render(ctx) {
+      const { deps, url, now } = ctx
+      const chat = deps.chat
+      if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
+      const scope = chatScopeOf(ctx.access, ctx.accounts)
+      const sessionId = textParam(url.searchParams, 'session') ?? null
+      const [sessions, thread] = await Promise.all([
+        chatSessionsFragment(chat, sessionId, now, scope),
+        chatThreadFragment(chat, sessionId, now, scope),
+      ])
+      return {
+        title: '对话',
+        body: chatPageBody({
+          sessions,
+          thread: thread.html,
+          composerEnabled: thread.open,
+        }),
+      }
+    },
+    css: CHAT_PAGE_CSS,
+    script: CHAT_PAGE_SCRIPT,
   },
   api: {
     heads: ['chat'],

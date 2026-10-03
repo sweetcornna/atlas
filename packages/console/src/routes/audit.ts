@@ -5,7 +5,8 @@
  * 消息链 — the trail, one reconstructed chain out of it, and the filter that
  * drives both.
  *
- * Owns `/v0/audit`, `/v0/audit/chain/<traceId>`, `/fragments/audit` and
+ * Owns the `/audit` and `/audit/trace/<traceId>` pages, `/v0/audit`,
+ * `/v0/audit/chain/<traceId>`, `/fragments/audit` and
  * `/fragments/chain/<traceId>`. The filter parser lives here rather than in
  * `http.ts` because the trail is the one area whose query string is a real
  * interface: the page's own form, the poller and a hand-edited bookmark all
@@ -13,8 +14,10 @@
  * §6.4 D5) belongs to this area alone.
  */
 
+import { AUDIT_PAGE_JS } from '../assets/pageScripts.js'
 import type { AuditFilter, ConsoleDeps } from '../deps.js'
 import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
+import { agentFilterOptions } from '../view/agents.js'
 import {
   AUDIT_WINDOWS,
   renderAudit,
@@ -22,17 +25,19 @@ import {
   renderChain,
 } from '../view/audit.js'
 import { failureBar } from '../view/bits.js'
+import { attr } from '../view/escape.js'
 import {
   auditSourceOf,
   failureResponse,
   guard,
   readAuditSources,
+  safeDecode,
   singleLegacyAudit,
   textParam,
   valueOf,
   failureOf,
 } from './shared.js'
-import type { RouteContext, RouteModule } from './types.js'
+import type { PageRender, RouteContext, RouteModule } from './types.js'
 
 /**
  * Hard ceiling on the audit tail, whatever the query string asks for.
@@ -243,6 +248,115 @@ async function handleChain(
     : failureResponse(result.failure)
 }
 
+/**
+ * The query string that reproduces a filter: what the poller replays.
+ *
+ * The *window* is replayed rather than the instant it resolved to, so "the
+ * last hour" keeps meaning the last hour five minutes later.
+ */
+function auditQuery(filter: AuditFilter): string {
+  const params = new URLSearchParams()
+  const put = (key: string, value: string | number | undefined) => {
+    if (value === undefined) return
+    const text = String(value)
+    if (text !== '') params.set(key, text)
+  }
+  put('source', filter.source)
+  put('outcome', filter.outcome)
+  put('traceId', filter.traceId)
+  put('taskId', filter.taskId)
+  put('agent', filter.agent)
+  if (filter.window === undefined) {
+    put('from', filter.from)
+    put('to', filter.to)
+  } else {
+    put('window', filter.window)
+  }
+  put('limit', filter.limit)
+  return params.toString()
+}
+
+/**
+ * The trail page. Only the header digits and the results are polled
+ * (`data-swap`): the filter form between them must survive a refresh with
+ * whatever the operator was halfway through typing. The node filter offers
+ * the addresses that exist, from the same registry read as the sidebar.
+ */
+async function auditPage(ctx: RouteContext): Promise<PageRender> {
+  const { deps, url, now } = ctx
+  const filter = parseAuditFilter(url, now)
+  const [roster, trails] = await Promise.all([
+    ctx.roster(),
+    readAuditSources(deps, filter),
+  ])
+  const options = agentFilterOptions(valueOf(roster), filter.agent)
+  const trail = singleLegacyAudit(deps)
+    ? renderAudit(
+        trails[0]?.page ?? null,
+        trails[0]?.failure ?? null,
+        filter,
+        options,
+      )
+    : renderAuditSources(trails, filter, options)
+  const query = auditQuery(filter)
+  return {
+    title: '消息链',
+    body:
+      `<section class="sec" id="trail-section">` +
+      `<div id="audit" data-poll="${attr(
+        `/fragments/audit${query === '' ? '' : `?${query}`}`,
+      )}" data-swap="audit-rail audit-results">${trail}</div>` +
+      `<div class="chain-panel" id="chain" hidden></div>` +
+      `</section>`,
+    poll: true,
+  }
+}
+
+/**
+ * One reconstructed chain, at its own address: what the inline panel shows,
+ * as a page that can be linked and read without script. A trace the trail
+ * does not hold is a 404 with the same "未找到" line the panel would show.
+ */
+async function tracePage(
+  ctx: RouteContext,
+  traceId: string,
+): Promise<PageRender> {
+  const node = textParam(ctx.url.searchParams, 'node')
+  const source = auditSourceOf(ctx.deps, node)
+  const crumbs = [{ label: traceId }]
+  if (source === undefined) {
+    return {
+      title: '消息链详情',
+      crumbs,
+      body: `<section class="sec chain-panel trace-page">${await chainFragment(
+        ctx.deps,
+        traceId,
+        node,
+      )}</section>`,
+      status: node === undefined ? 400 : 404,
+    }
+  }
+  const result = await source.audit.chain(traceId)
+  return {
+    title: '消息链详情',
+    crumbs,
+    body: `<section class="sec chain-panel trace-page">${
+      result.ok
+        ? renderChain(result.value)
+        : failureBar(result.failure, '读取消息链失败')
+    }</section>`,
+    ...(result.ok && result.value === null ? { status: 404 } : {}),
+  }
+}
+
+/**
+ * The chain view carries a 关闭 for the inline panel on the trail page; on
+ * the trace's own page there is nothing to close it into, so it is not shown.
+ */
+const AUDIT_PAGE_CSS = `
+.trace-page [data-action="chain-close"] { display: none; }
+`
+
 export const auditRoute: RouteModule = {
   area: {
     id: 'audit',
@@ -250,6 +364,25 @@ export const auditRoute: RouteModule = {
     group: 'run',
     href: '/audit',
     icon: 'activity',
+  },
+  page: {
+    match(segments) {
+      if (segments[0] !== 'audit') return null
+      if (segments.length === 1) return []
+      return segments.length === 3 && segments[1] === 'trace'
+        ? segments.slice(1)
+        : null
+    },
+    guard: 'view',
+    async render(ctx, rest) {
+      if (rest.length === 0) return await auditPage(ctx)
+      const traceId = safeDecode(rest[1] ?? '')
+      return traceId === null
+        ? notFound(`unknown trace: ${ctx.url.pathname}`)
+        : await tracePage(ctx, traceId)
+    },
+    css: AUDIT_PAGE_CSS,
+    script: AUDIT_PAGE_JS,
   },
   api: {
     heads: ['audit'],

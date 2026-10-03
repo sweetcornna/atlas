@@ -9,10 +9,18 @@
 
 import type { ConsoleAgent, ConsoleDeps, LimitsSnapshot } from '../deps.js'
 import { html, json, methodNotAllowed, notFound } from '../respond.js'
+import { sectionHead } from '../view/bits.js'
+import { escapeHtml } from '../view/escape.js'
 import { rosterLease } from '../view/format.js'
 import { renderLimits } from '../view/limits.js'
-import { guard, valueOf } from './shared.js'
-import type { RouteModule } from './types.js'
+import {
+  DEFAULT_BIN_NAME,
+  DEFAULT_LABEL,
+  guard,
+  underPath,
+  valueOf,
+} from './shared.js'
+import type { RouteContext, RouteModule } from './types.js'
 
 /**
  * The limits snapshot as the page states it.
@@ -34,6 +42,30 @@ export function pageLimits(
   }
 }
 
+/**
+ * The instance's own facts, as a definition list: the things an operator
+ * reads off this page before reporting a problem with it.
+ */
+function instanceFacts(ctx: RouteContext): string {
+  const { deps } = ctx
+  const rows: (readonly [string, string])[] = [
+    ['实例', deps.label ?? DEFAULT_LABEL],
+    ['控制台身份', deps.identity ?? '未设置'],
+    ['命令名', deps.binName ?? DEFAULT_BIN_NAME],
+  ]
+  return (
+    `<dl class="dl">` +
+    rows
+      .map(
+        ([key, value]) =>
+          `<div class="lim-row"><dt>${escapeHtml(key)}</dt>` +
+          `<dd class="mono">${escapeHtml(value)}</dd></div>`,
+      )
+      .join('') +
+    `</dl>`
+  )
+}
+
 export const settingsRoute: RouteModule = {
   area: {
     id: 'settings',
@@ -41,6 +73,28 @@ export const settingsRoute: RouteModule = {
     group: 'admin',
     href: '/settings',
     icon: 'settings',
+  },
+  page: {
+    match: underPath('settings'),
+    guard: 'view',
+    async render(ctx) {
+      const listed = await ctx.roster()
+      return {
+        title: '设置与关于',
+        body:
+          `<section class="sec" id="instance-section">` +
+          sectionHead('Instance', '实例', { headingId: 'h-instance' }) +
+          `<div class="card elev-sm">${instanceFacts(ctx)}</div></section>` +
+          `<section class="sec" id="limits-section">` +
+          sectionHead('Limits', '限额', {
+            headingId: 'h-limits',
+            tail: `<span class="note">只读 · 数值真源在 @qianmo/protocol 的 LIMITS</span>`,
+          }) +
+          `<div class="card elev-sm" id="limits">${renderLimits(
+            pageLimits(ctx.deps, valueOf(listed)),
+          )}</div></section>`,
+      }
+    },
   },
   api: {
     heads: ['limits'],
@@ -67,7 +121,7 @@ export const settingsRoute: RouteModule = {
       // it: a fragment that printed the package default here would put the
       // page's 注册租约 back to 1 分 30 秒 on its first refresh. A registry
       // that is down costs the observed lease, not the fragment.
-      const listed = await ctx.deps.registry.list()
+      const listed = await ctx.roster()
       return html(renderLimits(pageLimits(ctx.deps, valueOf(listed))))
     },
   },

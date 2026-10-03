@@ -37,6 +37,7 @@
 import type { Access, ConsoleAccounts } from '../access.js'
 import type { ConsoleAgent, ConsoleDeps, ConsoleResult } from '../deps.js'
 import type { PageViewer } from '../view/bits.js'
+import type { Crumb } from '../view/shell.js'
 
 /** Every area the console has a place for (`providers-console-m1.md` §6.1). */
 export type AreaId =
@@ -93,18 +94,14 @@ export interface RouteContext {
   roster(): Promise<ConsoleResult<readonly ConsoleAgent[]>>
 }
 
-/** One step of the breadcrumb after the area itself. */
-export interface Crumb {
-  readonly label: string
-  /** Absent on the last crumb, which is the page itself. */
-  readonly href?: string
-}
-
 /** What a page hands the shell. Markup fields are view output, already escaped. */
 export interface PageRender {
-  /** The `<h1>` and the tail of the document title. */
+  /** The `<h1>` and the head of the document title. */
   readonly title: string
-  /** Crumbs after the area's own; absent on an area's landing page. */
+  /**
+   * Crumbs after the area's own, the last one being this page. Absent on an
+   * area's landing page, where the area's own crumb is the page.
+   */
   readonly crumbs?: readonly Crumb[]
   /** The page's main actions, rendered on the right of the top bar. */
   readonly actions?: string
@@ -128,7 +125,9 @@ export interface PageRender {
 export interface PageRoute {
   /**
    * The segments after the area's own path when this module answers the path,
-   * `null` when it does not. `[]` is the area's landing page.
+   * `null` when it does not. `[]` is the area's landing page. Usually
+   * `underPath(...)` from `shared.ts`. Never claims `v0`, `fragments`,
+   * `assets`, `login`, `logout` or `invite` (`test/routes.test.ts`).
    */
   match(segments: readonly string[]): readonly string[] | null
   /**
@@ -146,9 +145,16 @@ export interface PageRoute {
     ctx: RouteContext,
     rest: readonly string[],
   ): Promise<PageRender | Response>
-  /** Styles only this page needs, inlined after the shared sheet. */
+  /**
+   * Styles only this page needs, inlined after the shared sheet. A page's
+   * own rules live here, never in `assets/css.ts` (§6.1): that is how two page
+   * packages avoid editing one file.
+   */
   readonly css?: string
-  /** Script only this page needs, inlined after the shared runtime. */
+  /**
+   * Script only this page needs, inlined after the shared runtime and talking
+   * to it through `window.qianmoConsole` (`assets/client.ts`).
+   */
   readonly script?: string
 }
 

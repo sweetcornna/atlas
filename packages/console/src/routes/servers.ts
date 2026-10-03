@@ -4,7 +4,7 @@
 /**
  * 服务器 — which machine each node runs on, and the operator's note on it.
  *
- * Owns `/v0/servers` and `/v0/servers/<id>/note`.
+ * Owns the `/servers` page, `/v0/servers` and `/v0/servers/<id>/note`.
  *
  * ## A server id is chosen from the startup list, never supplied
  *
@@ -21,6 +21,7 @@
  * runs" and "nothing runs anywhere" are different facts.
  */
 
+import { SERVERS_PAGE_JS } from '../assets/pageScripts.js'
 import type { ConsoleCredential } from '../auth.js'
 import type { ConsoleDeps, NodeServer } from '../deps.js'
 import {
@@ -35,7 +36,14 @@ import {
   renderServers,
   serverCards,
 } from '../view/servers.js'
-import { failureOf, failureResponse, guard, type Parsed } from './shared.js'
+import { escapeHtml } from '../view/escape.js'
+import {
+  failureOf,
+  failureResponse,
+  guard,
+  underPath,
+  type Parsed,
+} from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
 /** The machines this console was started with. Empty means the face is off. */
@@ -141,6 +149,12 @@ async function handleServerNote(
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
+/**
+ * What the page says when the console was not told where anything runs: the
+ * same fact the 501 states, in one line, with the flag that changes it.
+ */
+const SERVERS_ABSENT_LINE = '未配置服务器归属 · 启动时用 --node-server 指定'
+
 export const serversRoute: RouteModule = {
   area: {
     id: 'servers',
@@ -148,6 +162,27 @@ export const serversRoute: RouteModule = {
     group: 'config',
     href: '/servers',
     icon: 'hard-drive',
+  },
+  page: {
+    match: underPath('servers'),
+    guard: 'view',
+    async render(ctx) {
+      // Never polled: the cards hold a textarea somebody may be typing in.
+      const cards = await serversFragment(
+        ctx.deps,
+        ctx.access.credential,
+        ctx.now,
+      )
+      return {
+        title: '服务器',
+        body:
+          cards === undefined
+            ? `<p class="hint">${escapeHtml(SERVERS_ABSENT_LINE)}</p>`
+            : `<section class="sec" id="servers-section">` +
+              `<div id="servers">${cards}</div></section>`,
+      }
+    },
+    script: SERVERS_PAGE_JS,
   },
   api: {
     heads: ['servers'],

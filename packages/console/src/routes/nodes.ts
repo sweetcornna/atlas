@@ -5,7 +5,15 @@
  * 节点 — the roster, and the four things the console does to it: register,
  * deregister, heartbeat, wake.
  *
- * Owns `/v0/agents/…`, `/v0/wake` and `/fragments/roster`.
+ * Owns the `/nodes` and `/nodes/<node>` pages, `/v0/agents/…`, `/v0/wake`
+ * and `/fragments/roster`.
+ *
+ * ## Register and wake are this page's actions
+ *
+ * They used to be two forms at the bottom of the one long page, five screens
+ * under the roster they act on. They are now the top bar's two buttons here,
+ * each opening its form in a `<dialog>` over the roster (§6.4), and the
+ * deregister and wake confirmations are dialogs on the same page.
  *
  * ## A wake target is chosen from the startup list, never supplied
  *
@@ -30,7 +38,18 @@ import {
   notFound,
   readJsonObject,
 } from '../respond.js'
-import { renderRoster } from '../view/agents.js'
+import { NODES_PAGE_JS } from '../assets/pageScripts.js'
+import {
+  agentsOfNode,
+  deregisterConfirm,
+  registerDialog,
+  renderRoster,
+  wakeConfirm,
+  wakeDialog,
+  wakeTargetOptions,
+} from '../view/agents.js'
+import { icon } from '../view/bits.js'
+import { attr } from '../view/escape.js'
 import {
   DEFAULT_BIN_NAME,
   failureOf,
@@ -38,10 +57,13 @@ import {
   guard,
   optionalString,
   requiredString,
+  safeDecode,
+  textParam,
+  underPath,
   valueOf,
   type Parsed,
 } from './shared.js'
-import type { RouteContext, RouteModule } from './types.js'
+import type { PageRender, RouteContext, RouteModule } from './types.js'
 
 function parseRegisterInput(
   body: Record<string, unknown>,
@@ -134,20 +156,31 @@ interface RosterRender {
   readonly agents: readonly ConsoleAgent[] | null
 }
 
+/**
+ * The roster fragment, for the whole registry or for one node.
+ *
+ * The registry is read through `ctx.roster()`, the once-per-request read the
+ * shell's sidebar count shares, so the count beside 节点 and the cards under it
+ * come from one answer. `node` narrows the cards to one bare node name
+ * (`/nodes/<node>`); the header counts then describe that node.
+ */
 export async function rosterFragment(
-  deps: ConsoleDeps,
-  now: number,
+  ctx: Pick<RouteContext, 'deps' | 'now' | 'roster'>,
+  node?: string,
 ): Promise<RosterRender> {
+  const { deps, now } = ctx
   // Two independent reads, overlapped: the certificate face lives behind the
   // same zero-auth registry the roster does (§5.2), and serialising them would
   // double the page's worst case for no gain. A certificate port that fails is
   // a strip on the page, never a 500 — same rule as every other port here.
   const certificatePort = deps.certificates
   const [result, certificates] = await Promise.all([
-    deps.registry.list(),
+    ctx.roster(),
     certificatePort?.read(),
   ])
-  const agents = valueOf(result)
+  const listed = valueOf(result)
+  const agents =
+    listed === null || node === undefined ? listed : agentsOfNode(listed, node)
   return {
     html: renderRoster(
       agents,
@@ -274,6 +307,107 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
+/** True when this console can send a wake at all, to anyone. */
+function wakeEnabled(deps: ConsoleDeps): boolean {
+  return (
+    deps.wake !== undefined ||
+    deps.wakeTargets?.some(target => target.wake !== undefined) === true
+  )
+}
+
+/**
+ * The two dialogs and two confirmations, rendered once, outside the polled
+ * roster: a dialog inside a region the poller replaces would be replaced out
+ * from under whoever is filling it in.
+ */
+function nodeDialogs(
+  ctx: RouteContext,
+  agents: readonly ConsoleAgent[] | null,
+  withRegister: boolean,
+): string {
+  const { deps, now } = ctx
+  return (
+    (withRegister ? registerDialog() : '') +
+    wakeDialog({
+      enabled: wakeEnabled(deps),
+      targetOptions: wakeTargetOptions(agents, now, deps.limits.registryTtlMs),
+      ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
+      ...(deps.wakeTargets === undefined
+        ? {}
+        : { wakeTargets: deps.wakeTargets }),
+      ...(deps.identity === undefined ? {} : { identity: deps.identity }),
+    }) +
+    deregisterConfirm() +
+    wakeConfirm()
+  )
+}
+
+function nodeActions(withRegister: boolean): string {
+  return (
+    `<button type="button" class="btn btn-secondary" ` +
+    `data-open-dialog="wake-dialog" data-write>` +
+    icon('zap', { small: true }) +
+    `唤醒</button>` +
+    (withRegister
+      ? `<button type="button" class="btn btn-primary" ` +
+        `data-open-dialog="register-dialog" data-write>` +
+        icon('plus', { small: true }) +
+        `注册节点</button>`
+      : '')
+  )
+}
+
+/** The polled roster region, and the line the row actions report on. */
+function rosterRegion(fragment: string, poll: string): string {
+  return (
+    `<section class="sec" id="nodes-section">` +
+    `<p class="status" id="nodes-status" role="status"></p>` +
+    `<div id="roster" data-poll="${attr(poll)}">${fragment}</div>` +
+    `</section>`
+  )
+}
+
+async function nodesPage(ctx: RouteContext): Promise<PageRender> {
+  const roster = await rosterFragment(ctx)
+  return {
+    title: '节点',
+    actions: nodeActions(true),
+    body:
+      rosterRegion(roster.html, '/fragments/roster') +
+      nodeDialogs(ctx, roster.agents, true),
+    poll: true,
+  }
+}
+
+/**
+ * One node's page: its card alone, polled on its own.
+ *
+ * A node the registry does not list is a 404, not an empty card: the URL
+ * names something, and "nothing is registered under that name" is the
+ * answer. A registry that cannot be read is the roster's own failure strip,
+ * at 200 — the node may well exist.
+ */
+async function nodePage(
+  ctx: RouteContext,
+  node: string,
+): Promise<PageRender | Response> {
+  const roster = await rosterFragment(ctx, node)
+  if (roster.agents !== null && roster.agents.length === 0) {
+    return notFound(`unknown node: ${node}`)
+  }
+  return {
+    title: node,
+    crumbs: [{ label: node }],
+    actions: nodeActions(false),
+    body:
+      rosterRegion(
+        roster.html,
+        `/fragments/roster?node=${encodeURIComponent(node)}`,
+      ) + nodeDialogs(ctx, roster.agents, false),
+    poll: true,
+  }
+}
+
 export const nodesRoute: RouteModule = {
   area: {
     id: 'nodes',
@@ -281,6 +415,19 @@ export const nodesRoute: RouteModule = {
     group: 'run',
     href: '/nodes',
     icon: 'server',
+  },
+  page: {
+    match: underPath('nodes', 1),
+    guard: 'view',
+    async render(ctx, rest) {
+      const node = rest[0]
+      if (node === undefined) return await nodesPage(ctx)
+      const name = safeDecode(node)
+      return name === null
+        ? notFound(`unknown node: ${node}`)
+        : await nodePage(ctx, name)
+    },
+    script: NODES_PAGE_JS,
   },
   api: {
     heads: ['agents', 'wake'],
@@ -307,7 +454,10 @@ export const nodesRoute: RouteModule = {
       const denied = guard(ctx.access.credential, 'view', 'guarded')
       if (denied !== null) return denied
       if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
-      return html((await rosterFragment(ctx.deps, ctx.now)).html)
+      return html(
+        (await rosterFragment(ctx, textParam(ctx.url.searchParams, 'node')))
+          .html,
+      )
     },
   },
 }

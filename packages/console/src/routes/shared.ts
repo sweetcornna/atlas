@@ -253,3 +253,34 @@ export async function readAuditSources(deps: ConsoleDeps, filter: AuditFilter) {
 export function singleLegacyAudit(deps: ConsoleDeps): boolean {
   return auditSources(deps).length === 1 && deps.audits === undefined
 }
+
+// --- page paths ----------------------------------------------------------
+
+/**
+ * The usual {@link PageRoute.match}: the area's own top segment, and at most
+ * `depth` segments under it. `/nodes` is `underPath('nodes', 1)` because
+ * `/nodes/<node>` is a page too; a stub is `underPath('alerts')`, so
+ * `/alerts/anything` is the console's ordinary 404 rather than the stub.
+ */
+export function underPath(
+  head: string,
+  depth = 0,
+): (segments: readonly string[]) => readonly string[] | null {
+  return segments =>
+    segments[0] === head && segments.length - 1 <= depth
+      ? segments.slice(1)
+      : null
+}
+
+/**
+ * One path segment, percent-decoded, or `null` when it is not valid
+ * percent-encoding. A page answers a malformed name with its 404 rather than
+ * letting `URIError` become the last-resort 500.
+ */
+export function safeDecode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
+}

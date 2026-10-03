@@ -26,9 +26,24 @@
 
 import { describe, expect, test } from 'bun:test'
 import { AuditSource, type AuditRecord, type MessageChain } from '@qianmo/audit'
+import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
-import { renderRoster } from '../src/view/agents.js'
+import {
+  AUDIT_PAGE_JS,
+  NODES_PAGE_JS,
+  SERVERS_PAGE_JS,
+} from '../src/assets/pageScripts.js'
+import {
+  deregisterConfirm,
+  registerDialog,
+  renderNodeSummary,
+  renderRoster,
+  wakeConfirm,
+  wakeDialog,
+  wakeTargetOptions,
+  type WakeFormModel,
+} from '../src/view/agents.js'
 import {
   MAX_SERVER_NOTE_LENGTH,
   renderServers,
@@ -49,7 +64,16 @@ import {
   publicKeyFingerprint,
 } from '../src/view/format.js'
 import { renderLimits } from '../src/view/limits.js'
-import { renderPage } from '../src/view/page.js'
+import {
+  renderOverview,
+  renderPage,
+  type OverviewModel,
+} from '../src/view/page.js'
+import {
+  renderShell,
+  type ShellModel,
+  type ShellNavGroup,
+} from '../src/view/shell.js'
 import type {
   AuditFilter,
   AuditPage,
@@ -454,8 +478,12 @@ describe('renderRoster', () => {
   test('an empty registry names the next action instead of going blank', () => {
     const html = renderRoster([], null, NOW, TTL)
     expect(html).toContain('还没有节点 · ')
-    expect(html).toContain('在下面注册第一个')
-    expect(html).toContain('href="#register"')
+    // The register form moved into a dialog on the same page (`/nodes`), so
+    // the next action opens it; the anchor is kept so the link still names
+    // its target without script.
+    expect(html).toContain(
+      '<a class="jump" href="#register-dialog" data-open-dialog="register-dialog">注册第一个</a>',
+    )
     expect(html).not.toContain('<table')
     // One short line. The empty state is allowed a sentence; it is not allowed
     // a paragraph of encouragement.
@@ -1486,49 +1514,55 @@ describe('renderLimits', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('renderPage', () => {
-  function build(over: Partial<Parameters<typeof renderPage>[0]> = {}) {
-    return renderPage({
+describe('the shell', () => {
+  const NAV: readonly ShellNavGroup[] = [
+    {
+      label: '运行',
+      items: [
+        { id: 'overview', label: '总览', href: '/', icon: 'layout-dashboard' },
+        {
+          id: 'nodes',
+          label: '节点',
+          href: '/nodes',
+          icon: 'server',
+          count: 2,
+        },
+        {
+          id: 'alerts',
+          label: '告警',
+          href: '/alerts',
+          icon: 'bell',
+          pending: true,
+        },
+      ],
+    },
+    { label: '配置', items: [] },
+    {
+      label: '管理',
+      items: [
+        {
+          id: 'settings',
+          label: '设置与关于',
+          href: '/settings',
+          icon: 'settings',
+        },
+      ],
+    },
+  ]
+
+  function build(over: Partial<ShellModel> = {}): string {
+    return renderShell({
       label: 'node-a 本机',
-      now: NOW,
       role: 'admin',
-      roster: renderRoster([agent()], null, NOW, TTL),
-      audit: renderAudit(page(), null, NO_FILTER),
-      limits: renderLimits(LIMITS),
-      wakeEnabled: true,
-      auditFilter: NO_FILTER,
+      nav: NAV,
+      active: 'nodes',
+      crumbs: [{ label: '运行' }, { label: '节点' }],
+      title: '节点',
+      body: '<p id="probe">名册在这里</p>',
+      poll: true,
       ...over,
     })
   }
-
-  test('leaves the servers section out when there is no attribution', () => {
-    // 一个 服务器 抬头下面空着，读起来是「这个功能坏了」而不是「没配」。
-    const html = build()
-    expect(html).not.toContain('id="servers-section"')
-    expect(html).not.toContain('id="servers"')
-    expect(html).toContain('id="nodes-section"')
-  })
-
-  test('mounts the servers section under the roster when there is', () => {
-    const html = build({
-      servers: renderServers({
-        cards: serverCards([{ node: 'node-a', server: 'p11' }], []),
-        failure: null,
-        editable: true,
-        notesEnabled: true,
-        now: NOW,
-      }),
-    })
-    expect(html).toContain('id="servers-section"')
-    expect(html).toContain('<div id="servers">')
-    // 紧跟名册，因为它回答的正是名册提出的那个问题。
-    expect(html.indexOf('id="nodes-section"')).toBeLessThan(
-      html.indexOf('id="servers-section"'),
-    )
-    expect(html.indexOf('id="servers-section"')).toBeLessThan(
-      html.indexOf('id="wake-section"'),
-    )
-  })
 
   test('is a complete document that follows the system theme', () => {
     const html = build()
@@ -1574,54 +1608,33 @@ describe('renderPage', () => {
     expect(html).toContain('font-src &#39;none&#39;')
   })
 
-  test('inlines exactly one stylesheet and one script', () => {
-    const html = build()
-    expect(html.split('<style>')).toHaveLength(2)
-    expect(html.split('<script>')).toHaveLength(2)
-    // Nothing in the script can close the tag early.
-    const script = html.slice(html.indexOf('<script>'))
-    expect(script.split('</script>')).toHaveLength(2)
-  })
-
-  test('carries the three fragments and their mount points', () => {
-    const html = build()
-    expect(html).toContain('id="roster"')
-    expect(html).toContain('id="audit"')
-    expect(html).toContain('id="limits"')
-    expect(html).toContain('id="chain"')
-    expect(html).toContain('id="register"')
-    expect(html).toContain('qianmo://node-a/reviewer')
-    // The dark red banner and its dock are gone: a broken chain now reads
-    // `断裂 N` on the 消息链 rail.
-    expect(html).not.toContain('alert-dock')
-    expect(html).not.toContain('integrity-alert')
-  })
-
-  test('every section is a stacked header over its own body', () => {
-    const html = build()
-    const body = html.slice(html.indexOf('<main'))
-    // The 140px noun rail is gone; each section names itself in a header
-    // instead, with a Latin kicker over the Chinese noun.
-    expect(body).not.toContain('class="rail"')
-    expect(body).not.toContain('class="rail-name"')
-    expect(body).not.toContain('class="pane"><div class="rail"')
-    for (const name of ['总览', '名册', '注册', '消息链', '限额', '唤醒']) {
-      expect(body).toContain(name)
-    }
-    for (const kicker of [
-      'Overview',
-      'Roster',
-      'Register',
-      'Trail',
-      'Limits',
-      'Wake',
+  test('inlines exactly one stylesheet and one script, with the page parts after the shared ones', () => {
+    for (const html of [
+      build(),
+      build({
+        pageCss: '.page-only { gap: 1px; }',
+        pageScript: 'var pageOnly;',
+      }),
     ]) {
-      expect(body).toContain(`<div class="kicker">${kicker}</div>`)
+      expect(html.split('<style>')).toHaveLength(2)
+      expect(html.split('<script>')).toHaveLength(2)
+      // Nothing in the script can close the tag early.
+      const script = html.slice(html.indexOf('<script>'))
+      expect(script.split('</script>')).toHaveLength(2)
     }
-    expect(body.match(/class="sec-head"/g)?.length).toBe(6)
+    const withPage = build({
+      pageCss: '.page-only { gap: 1px; }',
+      pageScript: 'var pageOnly;',
+    })
+    expect(withPage.indexOf('.page-only')).toBeGreaterThan(
+      withPage.indexOf('--color-bg'),
+    )
+    expect(withPage.indexOf('var pageOnly;')).toBeGreaterThan(
+      withPage.indexOf('window.qianmoConsole ='),
+    )
   })
 
-  test('the sidebar carries the brand, the label and the controls — and no clock', () => {
+  test('the sidebar carries the brand, the label and the refresh switch — and no clock', () => {
     const html = build()
     expect(html).toContain('阡陌 console')
     expect(html).toContain('class="brand-en"')
@@ -1637,39 +1650,120 @@ describe('renderPage', () => {
     expect(html).not.toContain('id="clock"')
     const script = html.slice(html.indexOf('<script>'))
     expect(script).not.toContain("byId('clock')")
+    // A page with nothing to poll does not offer a switch that does nothing.
+    expect(build({ poll: false })).not.toContain('id="auto-refresh"')
   })
 
-  test('the shell is a sand panel and a content column, with three nav items', () => {
+  test('the sidebar is every area in three groups, the current one marked', () => {
     const html = build()
     expect(html).toContain('class="shell"')
     expect(html).toContain('class="side"')
     expect(html).toContain('class="main"')
     expect(html).not.toContain('class="topbar"')
-    // Three places, not five anchors: the ledger, the conversation, the
-    // ceilings. 总览/注册/唤醒 were jumps to things within a screen of each
-    // other or of the thing they act on.
-    expect(html).toContain('href="#nodes-section" aria-current="page"')
-    expect(html).toContain('href="#limits-section"')
-    expect(html.match(/class="nav-item"/g)).toHaveLength(2)
-    expect(html).toContain('账本<span class="cnt">1 节点</span>')
-    const withChat = build({ chatEnabled: true })
-    expect(withChat.match(/class="nav-item"/g)).toHaveLength(3)
-    expect(withChat).toContain('id="to-chat"')
+    // Group names in order; a group with nothing in it is not drawn.
+    const names = [...html.matchAll(/<p class="nav-group-name">([^<]*)<\/p>/g)]
+    expect(names.map(match => match[1])).toEqual(['运行', '管理'])
+    expect(html.match(/class="nav-item"/g)).toHaveLength(4)
+    // Every item is a plain link the browser follows without script, and one
+    // the runtime may sign with the stored token (`data-nav`).
+    expect(html).toContain(
+      '<a class="nav-item" id="nav-nodes" href="/nodes" data-nav aria-current="page">',
+    )
+    expect(html).toContain(
+      '<a class="nav-item" id="nav-overview" href="/" data-nav>',
+    )
+    // One in the sidebar, one on the last crumb; the stylesheet's selectors
+    // are not counted.
+    const markup = html.slice(html.indexOf('<body>'), html.indexOf('<script>'))
+    expect(markup.match(/aria-current="page"/g)).toHaveLength(2)
+    expect(html).toContain(
+      '<span class="nav-label">节点</span><span class="cnt">2</span>',
+    )
+    // A placeholder area is offered and marked, never drawn as if it worked.
+    expect(html).toContain(
+      '<span class="nav-label">告警</span><span class="nav-tag">未提供</span>',
+    )
   })
 
-  test('the token box is folded away rather than parked beside the logout', () => {
+  test('the top bar says where you are, what this is, and who you are', () => {
+    const html = build({
+      crumbs: [
+        { label: '运行' },
+        { label: '节点', href: '/nodes' },
+        { label: 'tokyo-1' },
+      ],
+      title: 'tokyo-1',
+      actions: '<button type="button" class="btn">唤醒</button>',
+      health: [{ label: '注册中心', tone: 'ok' }],
+    })
+    expect(html).toContain('<nav aria-label="位置"><ol class="crumbs">')
+    expect(html).toContain('<li>运行</li>')
+    expect(html).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
+    expect(html).toContain('<li aria-current="page">tokyo-1</li>')
+    expect(html).toContain(
+      '<h1 class="page-title" id="page-title">tokyo-1</h1>',
+    )
+    expect(html).toContain(
+      '<title>阡陌 console · tokyo-1 · node-a 本机</title>',
+    )
+    expect(html).toContain('<div class="top-actions"><button')
+    expect(html).toContain(
+      '<div class="health" role="group" aria-label="健康">',
+    )
+    expect(html).toContain('id="role">')
+    expect(html).toContain(
+      '<main class="main" id="main" aria-labelledby="page-title">',
+    )
+    expect(html).toContain('<p id="probe">名册在这里</p>')
+  })
+
+  test('the token box is folded away inside the user menu, beside the way out', () => {
     const html = build()
     // Still one click from "look at this console as the other role"; no longer
     // a password field whose everyday function is to be ignored.
-    expect(html).toContain('<details class="adv">')
+    const menu = html.indexOf('<details class="usermenu">')
+    expect(menu).toBeGreaterThan(-1)
     const summary = html.indexOf('换令牌')
-    expect(summary).toBeGreaterThan(-1)
+    expect(summary).toBeGreaterThan(menu)
     expect(html.indexOf('id="token"')).toBeGreaterThan(summary)
     expect(html).toContain('data-action="token-save"')
     expect(html).toContain('data-action="token-clear"')
+    expect(html.indexOf('action="/logout"')).toBeGreaterThan(menu)
   })
 
-  test('an overview section leads with four stat cards, summarising numbers the ledger already shows', () => {
+  test('the label is escaped like any other value', () => {
+    const html = build({ label: ATTACKS.handler })
+    expect(html).not.toContain('" onload="')
+    expect(html).toContain('&quot; onload=&quot;')
+  })
+
+  test('renderPage, the historic export, is the shell', () => {
+    const model: ShellModel = {
+      label: 'x',
+      role: 'view',
+      nav: NAV,
+      crumbs: [{ label: '总览' }],
+      title: '总览',
+      body: '',
+    }
+    expect(renderPage(model)).toBe(renderShell(model))
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('the overview', () => {
+  function build(over: Partial<OverviewModel> = {}): string {
+    return renderOverview({
+      roster: renderRoster([agent()], null, NOW, TTL),
+      audit: renderAudit(page(), null, NO_FILTER),
+      limits: renderLimits(LIMITS),
+      nodes: renderNodeSummary([agent()], null, NOW, TTL),
+      ...over,
+    })
+  }
+
+  test('leads with four stat cards, summarising numbers the other pages already show', () => {
     const html = build()
     expect(html).toContain('id="overview"')
     expect(html).toContain('class="cards g4"')
@@ -1764,97 +1858,163 @@ describe('renderPage', () => {
     expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
   })
 
-  test('a lagging mirror is 未覆盖 on its card and in the overview, never 锚点不符 or 链完整', () => {
-    const html = build({
-      audit: renderAuditSources(
-        [
-          {
-            node: 'beta-1',
-            kind: 'authoritative',
-            page: page(),
-            failure: null,
-          },
-          {
-            node: 'beta-2',
-            kind: 'mirror',
-            maxLagMinutes: 5,
-            page: page({
-              witness: { tampered: false, stale: false, uncovered: true },
-            }),
-            failure: null,
-          },
-        ],
-        NO_FILTER,
-      ),
-    })
-    expect(html).toContain('data-audit-state="uncovered"')
+  test('a lagging mirror is 未覆盖 in the overview, never 锚点不符 or 链完整', () => {
+    const audit = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page(),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'mirror',
+          maxLagMinutes: 5,
+          page: page({
+            witness: { tampered: false, stale: false, uncovered: true },
+          }),
+          failure: null,
+        },
+      ],
+      NO_FILTER,
+    )
+    // The card on the trail page, and the overview's reading of it.
+    expect(audit).toContain('data-audit-state="uncovered"')
+    const html = build({ audit })
     expect(html).toContain('<span class="tag tag-neutral">未覆盖</span>')
     expect(html).not.toContain('锚点不符')
     expect(html).not.toContain('<span class="tag tag-accent-2">链完整</span>')
   })
 
   test('a mismatch elsewhere still outranks a lagging mirror', () => {
-    const html = build({
-      audit: renderAuditSources(
-        [
-          {
-            node: 'beta-1',
-            kind: 'authoritative',
-            page: page({ witness: { tampered: true, stale: false } }),
-            failure: null,
-          },
-          {
-            node: 'beta-2',
-            kind: 'mirror',
-            maxLagMinutes: 5,
-            page: page({
-              witness: { tampered: false, stale: false, uncovered: true },
-            }),
-            failure: null,
-          },
-        ],
-        NO_FILTER,
-      ),
-    })
-    expect(html).toContain('data-audit-state="tampered"')
-    expect(html).toContain('<span class="tag tag-critical">锚点不符</span>')
+    const audit = renderAuditSources(
+      [
+        {
+          node: 'beta-1',
+          kind: 'authoritative',
+          page: page({ witness: { tampered: true, stale: false } }),
+          failure: null,
+        },
+        {
+          node: 'beta-2',
+          kind: 'mirror',
+          maxLagMinutes: 5,
+          page: page({
+            witness: { tampered: false, stale: false, uncovered: true },
+          }),
+          failure: null,
+        },
+      ],
+      NO_FILTER,
+    )
+    expect(audit).toContain('data-audit-state="tampered"')
+    expect(build({ audit })).toContain(
+      '<span class="tag tag-critical">锚点不符</span>',
+    )
   })
 
-  test('the label is escaped like any other value', () => {
-    const html = build({ label: ATTACKS.handler })
+  test("one line per node, each a link to that node, with the roster card's badge", () => {
+    const html = renderNodeSummary(
+      [
+        agent(),
+        agent({ address: 'qianmo://node-a/writer' }),
+        agent({
+          address: 'qianmo://node-b/planner',
+          lastHeartbeatAt: NOW - TTL * 2,
+          expiresAt: NOW - TTL,
+        }),
+      ],
+      null,
+      NOW,
+      TTL,
+    )
+    expect(html.match(/class="node-line"/g)).toHaveLength(2)
+    expect(html).toContain(
+      '<a class="node-link" href="/nodes/node-a" data-nav>node-a</a>',
+    )
+    expect(html).toContain('<span class="note">2 个智能体</span>')
+    expect(html).toContain(
+      '<a class="node-link" href="/nodes/node-b" data-nav>node-b</a>',
+    )
+    expect(html).toContain('整节点不可拨')
+    expect(html).toContain('href="/nodes" data-nav>查看名册</a>')
+  })
+
+  test('a node line escapes a hostile node name in the link and the text', () => {
+    const html = renderNodeSummary(
+      [agent({ address: `qianmo://${ATTACKS.handler}/x` })],
+      null,
+      NOW,
+      TTL,
+    )
     expect(html).not.toContain('" onload="')
-    expect(html).toContain('&quot; onload=&quot;')
+    expect(html).toContain('href="/nodes/%22%20onload%3D%22alert(1)"')
   })
 
-  test('the register form is on the page — it is the exit criterion', () => {
-    const html = build()
+  test('the node lines say what they could not read, and an empty network', () => {
+    expect(
+      renderNodeSummary(
+        null,
+        { code: 'unreachable', message: '连接被拒绝' },
+        NOW,
+        TTL,
+      ),
+    ).toContain('注册中心不可达 · 连接被拒绝')
+    expect(renderNodeSummary([], null, NOW, TTL)).toContain('还没有节点')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('the nodes page dialogs', () => {
+  const ENABLED: WakeFormModel = { enabled: true, targetOptions: '' }
+
+  test('the register form is in its dialog — it is the exit criterion', () => {
+    const html = registerDialog()
+    expect(
+      html.startsWith(
+        '<dialog class="dialog dialog-wide" id="register-dialog"',
+      ),
+    ).toBe(true)
     expect(html).toContain('id="register-form"')
     expect(html).toContain('name="address"')
     expect(html).toContain('name="endpoint"')
     expect(html).toContain('name="capabilities"')
     expect(html).toContain('name="publicKey"')
     expect(html).toContain('name="status"')
-    expect(html).toContain('>注册</button>')
+    expect(html).toContain('注册</button>')
+    expect(html).toContain('data-action="confirm-cancel">取消</button>')
   })
 
   test('a disabled wake face explains why and offers no button to press', () => {
-    const html = build({ wakeEnabled: false })
+    const html = wakeDialog({ enabled: false, targetOptions: '' })
     expect(html).toContain('QIANMO_TRANSPORT_PSK')
     expect(html).toContain('<fieldset disabled')
     expect(html).not.toContain('id="wake-form"')
-    expect(html).not.toContain('>唤醒</button>')
+    expect(html).not.toContain('唤醒</button>')
   })
 
   test('an enabled wake face is a real form', () => {
-    const html = build({ wakeEnabled: true })
+    const html = wakeDialog(ENABLED)
     expect(html).toContain('id="wake-form"')
-    expect(html).toContain('>唤醒</button>')
+    expect(html).toContain('唤醒</button>')
     expect(html).not.toContain('QIANMO_TRANSPORT_PSK')
   })
 
+  test('the wake target is picked from the roster when there is one', () => {
+    const html = wakeDialog({
+      enabled: true,
+      targetOptions: wakeTargetOptions([agent()], NOW, TTL),
+    })
+    expect(html).toContain('<select class="input" id="wake-to" name="to">')
+    expect(html).toContain('qianmo://node-a/reviewer · 在线')
+  })
+
   test('a named wake selector keeps an unavailable node visible but disabled', () => {
-    const html = build({
-      wakeEnabled: true,
+    const html = wakeDialog({
+      enabled: true,
+      targetOptions: '',
       wakeTargets: [
         {
           node: 'beta-1',
@@ -1887,47 +2047,85 @@ describe('renderPage', () => {
     expect(html).toContain('id="wake-form"')
   })
 
-  test('the poller replays the current filter, escaped, as a query string', () => {
-    const html = build({
-      auditFilter: {
-        source: AuditSource.Router,
-        traceId: ATTACKS.handler,
-        limit: 25,
-        from: NOW - 3_600_000,
-      },
-      audit: renderAudit(page(), null, { source: AuditSource.Router }),
-    })
-    expect(html).toContain('data-query="')
-    expect(html).toContain('source=router')
-    expect(html).toContain('limit=25')
-    expect(html).toContain(`from=${NOW - 3_600_000}`)
-    expect(html).not.toContain('" onload="')
+  test('the identity is prefilled read-only, never disabled', () => {
+    const html = wakeDialog({ ...ENABLED, identity: 'qianmo://console/op' })
+    expect(html).toContain('name="from" value="qianmo://console/op" readonly>')
   })
 
-  test('an empty filter yields an empty query rather than a stray question mark', () => {
-    const html = build()
-    expect(html).toContain('data-query=""')
+  test('the two confirmations are native dialogs, filled in with text by the page script', () => {
+    const deregister = deregisterConfirm()
+    expect(
+      deregister.startsWith('<dialog class="dialog" id="confirm-deregister"'),
+    ).toBe(true)
+    expect(deregister).toContain('data-action="confirm-deregister"')
+    expect(deregister).toContain('id="confirm-deregister-addr"></span>')
+    const wake = wakeConfirm()
+    expect(wake.startsWith('<dialog class="dialog" id="confirm-wake"')).toBe(
+      true,
+    )
+    expect(wake).toContain('data-action="confirm-wake"')
+    for (const id of [
+      'confirm-wake-to',
+      'confirm-wake-from',
+      'confirm-wake-after',
+      'confirm-wake-prompt',
+    ]) {
+      expect(wake).toContain(`id="${id}"`)
+    }
+    expect(NODES_PAGE_JS).toContain(
+      "setText('confirm-deregister-addr', address)",
+    )
+    expect(NODES_PAGE_JS).toContain(
+      "setText('confirm-wake-prompt', body.prompt)",
+    )
   })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('the client scripts', () => {
+  const ALL = [
+    CONSOLE_CLIENT_JS,
+    NODES_PAGE_JS,
+    AUDIT_PAGE_JS,
+    SERVERS_PAGE_JS,
+    CONSOLE_CHAT_JS,
+  ]
 
   test('the client script never builds HTML out of a response body', () => {
-    const html = build()
-    const script = html.slice(html.indexOf('<script>'))
     // Error text and server messages go through textContent; the only
     // innerHTML assignments take server-rendered fragments.
-    expect(script).toContain('panel.textContent =')
-    expect(script).toContain('el.textContent = value')
-    expect(script).not.toContain('innerHTML = message')
-    expect(script).not.toContain("innerHTML = '<")
+    expect(AUDIT_PAGE_JS).toContain('panel.textContent =')
+    expect(CONSOLE_CLIENT_JS).toContain('el.textContent = value')
+    for (const script of ALL) {
+      expect(script).not.toContain('innerHTML = message')
+      expect(script).not.toContain("innerHTML = '<")
+      expect(script).not.toContain('innerHTML = err')
+    }
   })
 
   test('the token rides in a header, never in a URL or the document', () => {
-    const html = build()
-    const script = html.slice(html.indexOf('<script>'))
-    expect(script).toContain("headers['Authorization'] = 'Bearer ' + token")
-    expect(script).toContain('history.replaceState')
+    expect(CONSOLE_CLIENT_JS).toContain(
+      "headers['Authorization'] = 'Bearer ' + token",
+    )
+    expect(CONSOLE_CLIENT_JS).toContain('history.replaceState')
     // The input is never seeded from storage, so a saved token is not sitting
     // in the DOM waiting to be read out of a screenshot.
-    expect(script).not.toContain('input.value = readToken')
+    for (const script of ALL) {
+      expect(script).not.toContain('input.value = readToken')
+    }
+  })
+
+  test('a page script reaches the runtime through one object, never its own fetch', () => {
+    for (const script of [
+      NODES_PAGE_JS,
+      AUDIT_PAGE_JS,
+      SERVERS_PAGE_JS,
+      CONSOLE_CHAT_JS,
+    ]) {
+      expect(script).toContain('var qc = window.qianmoConsole;')
+      expect(script).not.toContain('fetch(')
+    }
   })
 })
 
@@ -1941,14 +2139,24 @@ describe('assets', () => {
    * JavaScript. Parsing the emitted script is the cheap way to catch the second
    * class before it reaches a browser.
    */
-  test('the emitted client script is valid JavaScript', () => {
-    expect(() => new Function(CONSOLE_CLIENT_JS)).not.toThrow()
+  test('the emitted client scripts are valid JavaScript', () => {
+    for (const script of [
+      CONSOLE_CLIENT_JS,
+      NODES_PAGE_JS,
+      AUDIT_PAGE_JS,
+      SERVERS_PAGE_JS,
+      CONSOLE_CHAT_JS,
+    ]) {
+      expect(() => new Function(script)).not.toThrow()
+    }
   })
 
   test('the note save reports in place and never re-renders the block', () => {
     // 服务器区块是唯一一块轮询不碰的：它装着人正在打的字。保存只经 say() 写
     // textContent，不动 innerHTML，也不重取 fragment——否则半句话会被吃掉。
-    expect(CONSOLE_CLIENT_JS).toContain("action === 'server-note'")
+    expect(SERVERS_PAGE_JS).toContain(
+      "qc.onAction('server-note', onServerNote)",
+    )
     // 视图那一侧发的就是这个 data-action，两处必须是同一个字符串。
     expect(
       renderServers({
@@ -1959,24 +2167,29 @@ describe('assets', () => {
         now: NOW,
       }),
     ).toContain('data-action="server-note"')
-    expect(CONSOLE_CLIENT_JS).toContain("servers: '/v0/servers'")
-    expect(CONSOLE_CLIENT_JS).toContain("sendJson('PUT', ROUTES.servers")
-    const handler = CONSOLE_CLIENT_JS.slice(
-      CONSOLE_CLIENT_JS.indexOf('function onServerNote'),
-      CONSOLE_CLIENT_JS.indexOf('function openChain'),
+    expect(SERVERS_PAGE_JS).toContain("qc.sendJson('PUT', '/v0/servers/'")
+    const handler = SERVERS_PAGE_JS.slice(
+      SERVERS_PAGE_JS.indexOf('function onServerNote'),
+      SERVERS_PAGE_JS.indexOf("qc.onAction('server-note'"),
     )
     // 这一段确实取到了，否则下面两条是对空串断言。
     expect(handler.length).toBeGreaterThan(200)
     expect(handler).not.toContain('innerHTML')
+    expect(handler).not.toContain('refreshRegion')
     expect(handler).toContain('encodeURIComponent(server)')
-    // 轮询只换名册与审计两块，服务器区块不在里面。
-    expect(CONSOLE_CLIENT_JS).toContain(
-      'Promise.all([refreshRoster(), refreshAudit()])',
-    )
+    // 轮询是声明式的（data-poll），服务器页一个都不标——见 pages.test.ts。
+    expect(CONSOLE_CLIENT_JS).toContain("querySelectorAll('[data-poll]')")
   })
 
   test('neither asset can close its own tag or reach off-origin', () => {
-    for (const asset of [CONSOLE_CSS, CONSOLE_CLIENT_JS]) {
+    for (const asset of [
+      CONSOLE_CSS,
+      CONSOLE_CLIENT_JS,
+      NODES_PAGE_JS,
+      AUDIT_PAGE_JS,
+      SERVERS_PAGE_JS,
+      CONSOLE_CHAT_JS,
+    ]) {
       expect(asset).not.toContain('</script')
       expect(asset).not.toContain('</style')
       expect(asset).not.toContain('http://')
@@ -2064,6 +2277,15 @@ describe('assets', () => {
     expect(kicker).toContain('color: var(--color-accent)')
   })
 
+  test('a closed dialog stays closed: display is only ever set on [open]', () => {
+    // The UA sheet hides a closed <dialog> with display:none; an author rule
+    // setting display on .dialog would override it and draw every closed
+    // dialog on the page.
+    expect(ruleOf('dialog.dialog')).not.toContain('display')
+    expect(ruleOf('dialog.dialog[open]')).toContain('display: flex')
+    expect(CONSOLE_CSS).not.toContain('.dialog-backdrop')
+  })
+
   test('the shell is two columns that collapse, and wide content scrolls in its own box', () => {
     expect(ruleOf('.shell')).toContain(
       'grid-template-columns: 264px minmax(0, 1fr)',
@@ -2137,13 +2359,17 @@ describe('assets', () => {
   })
 
   test('the scrim is its own token, because the ramp flip cannot express it', () => {
-    // .dialog-backdrop used to borrow --color-neutral-900, which after the
-    // flip is the *lightest* step — a backdrop that washes the screen with
-    // light instead of dimming it.
+    // The backdrop used to borrow --color-neutral-900, which after the flip
+    // is the *lightest* step — a backdrop that washes the screen with light
+    // instead of dimming it. It is the native dialog's ::backdrop now, with
+    // the light value as the fallback for a browser whose ::backdrop does not
+    // inherit custom properties.
     const dark = CONSOLE_CSS.slice(
       CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
     )
-    expect(ruleOf('.dialog-backdrop')).toContain('var(--color-scrim)')
+    expect(ruleOf('dialog.dialog::backdrop')).toContain(
+      'var(--color-scrim, #2e2b25)',
+    )
     expect(CONSOLE_CSS).toContain('--color-scrim: #2e2b25;')
     expect(dark).toContain('--color-scrim: #050403;')
   })
@@ -2159,19 +2385,43 @@ describe('assets', () => {
  * way a copy rule survives the third person to touch the file.
  */
 describe('copy discipline', () => {
-  const rendered = renderPage({
+  // Everything the old one-page console carried, drawn in the shell: the
+  // overview, the roster, the four dialogs, the trail and the limits, with
+  // the nodes page script. Each page is also checked on its own, through
+  // the router, in `pages.test.ts`.
+  const audit = renderAudit(
+    page({ intact: false, issueCount: 2, total: 9 }),
+    null,
+    NO_FILTER,
+  )
+  const roster = renderRoster([agent()], null, NOW, TTL)
+  const limits = renderLimits(LIMITS)
+  const rendered = renderShell({
     label: 'node-a',
-    now: NOW,
     role: 'admin',
-    roster: renderRoster([agent()], null, NOW, TTL),
-    audit: renderAudit(
-      page({ intact: false, issueCount: 2, total: 9 }),
-      null,
-      NO_FILTER,
-    ),
-    limits: renderLimits(LIMITS),
-    wakeEnabled: true,
-    auditFilter: NO_FILTER,
+    nav: [
+      {
+        label: '运行',
+        items: [{ id: 'nodes', label: '节点', href: '/nodes', icon: 'server' }],
+      },
+    ],
+    crumbs: [{ label: '运行' }, { label: '节点' }],
+    title: '节点',
+    body:
+      renderOverview({
+        roster,
+        audit,
+        limits,
+        nodes: renderNodeSummary([agent()], null, NOW, TTL),
+      }) +
+      roster +
+      registerDialog() +
+      wakeDialog({ enabled: true, targetOptions: '' }) +
+      deregisterConfirm() +
+      wakeConfirm() +
+      audit +
+      limits,
+    pageScript: NODES_PAGE_JS,
   })
 
   /** Visible text only: markup, attributes, the inline style and script out. */
@@ -2214,8 +2464,10 @@ describe('copy discipline', () => {
   })
 
   test('section headings are bare nouns', () => {
+    // 限额 is the settings page's section head now; `pages.test.ts` reads it
+    // there.
     const text = visibleText(rendered)
-    for (const heading of ['名册', '消息链', '限额', '唤醒']) {
+    for (const heading of ['名册', '消息链', '注册', '唤醒']) {
       expect(text).toContain(heading)
     }
   })
@@ -2268,7 +2520,9 @@ describe('copy discipline', () => {
   test('the empty state is an invitation, not a status', () => {
     const empty = renderRoster([], null, NOW, TTL)
     expect(empty).toContain('还没有节点 · ')
-    expect(empty).toContain('在下面注册第一个')
+    // The register form is a dialog on the same page now, not a section
+    // further down, so the invitation opens it rather than pointing at it.
+    expect(empty).toContain('data-open-dialog="register-dialog">注册第一个</a>')
     expect(empty).not.toContain('暂无')
   })
 
@@ -2302,16 +2556,7 @@ describe('copy discipline', () => {
   })
 
   test('the disabled wake face keeps its one allowed line', () => {
-    const disabled = renderPage({
-      label: 'node-a',
-      now: NOW,
-      role: 'admin',
-      roster: renderRoster([], null, NOW, TTL),
-      audit: renderAudit(page(), null, NO_FILTER),
-      limits: renderLimits(LIMITS),
-      wakeEnabled: false,
-      auditFilter: NO_FILTER,
-    })
+    const disabled = wakeDialog({ enabled: false, targetOptions: '' })
     // What is unavailable, and the exact name of the thing to go and set.
     expect(disabled).toContain('唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK')
     expect(visibleText(disabled)).not.toContain('。')
