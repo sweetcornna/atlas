@@ -153,6 +153,21 @@ export function legacyClaudeConfigDir(): string {
   return join(homedir(), LEGACY_CONFIG_DIR_BASENAME).normalize('NFC')
 }
 
+/**
+ * The Qianmo Codex (`qmcode`) state root: `$QMCODE_HOME`, else `~/.qmcode`
+ * — the same rule the fork applies (`codex-rs/utils/home-dir`). Read-only
+ * from here: `qm handoff` looks up rollout transcripts under
+ * `<root>/sessions/` and never writes anything below it. Derived here, like
+ * every other home-directory path, so the identity-path gate stays at zero
+ * (CLAUDE.md §1.1②).
+ */
+export function qmcodeHome(): string {
+  const configured = process.env.QMCODE_HOME
+  return (
+    configured ? resolve(configured) : join(homedir(), '.qmcode')
+  ).normalize('NFC')
+}
+
 /** Resolve a path inside the occ config root. */
 export function occConfigPath(...segments: string[]): string {
   return join(occConfigDir(), ...segments)

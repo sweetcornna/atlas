@@ -81,4 +81,12 @@ export function registerQianmoCommands(program: CommanderCommand): void {
       const { runProvider } = await import('src/cli/handlers/provider.js');
       await runProvider(process.argv.slice(3));
     });
+
+  program
+    .command('handoff')
+    .description('Hand the work in this repository over to the cloud')
+    .action(async () => {
+      const { runHandoff } = await import('src/cli/handlers/handoff.js');
+      await runHandoff(process.argv.slice(3));
+    });
 }

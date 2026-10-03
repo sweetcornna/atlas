@@ -72,6 +72,7 @@ import {
   openConsoleActionLedger,
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
+import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -393,6 +394,24 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
+  // The handoff ledger (P17.4), first of the stores and before anything dials
+  // out: it is locked to one process, and a second console on this config
+  // root must stop here — having opened nothing else — rather than become a
+  // second writer. That refusal is one sentence, not a stack.
+  let handoff: ReturnType<typeof openConsoleHandoff> | undefined
+  try {
+    handoff =
+      config.handoffRoot === undefined
+        ? undefined
+        : openConsoleHandoff({ root: config.handoffRoot })
+  } catch (error) {
+    const refusal = handoffLockRefusal(error)
+    if (refusal === null) throw error
+    process.stderr.write(`${refusal}\n`)
+    process.exitCode = 1
+    return
+  }
+
   // Before anything dials out, for the same reason as the tokens above: a
   // console whose account ledger path is wrong should say so before it has
   // opened a single link.
@@ -528,6 +547,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : { nodeServers: config.nodeServers }),
     ...(serverNotes === undefined ? {} : { serverNotes }),
     ...(actions === undefined ? {} : { actions }),
+    ...(handoff === undefined ? {} : { handoff: handoff.port }),
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
@@ -620,6 +640,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     banner += field('server-notes', config.serverNotesPath)
   }
   banner += field('alert-acks', consoleAlertAcksPath())
+  banner += field(
+    'handoff',
+    handoff === undefined
+      ? 'disabled (no --handoff-root)'
+      : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
+          `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
+  )
   if (accounts !== undefined && config.accountsStorePath !== undefined) {
     const problem = accounts.book.problem
     banner += field(
@@ -679,6 +706,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // console that exits without it leaves a WebSocket the far node keeps a
     // channel record for until its own idle timeout.
     void chat.hub?.close()
+    // Gives the ledger lock back, so the next start does not have to wait for
+    // the stale-pid check to reclaim it.
+    handoff?.close()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
