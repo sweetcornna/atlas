@@ -180,6 +180,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
+| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给了才有 `/v0/handoff`**。台账在 `occConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
 | `--accounts` | 关 | 个人账号（§8.1.1，`tenancy-m1.md` §3）。**不给就是今天的控制台，HTTP 面逐字节不变**（`packages/console/test/legacyParity.test.ts` 钉住）；给了以后两枚旧 token 照旧可用，另多出邀请开户与个人凭据 |
 | `--accounts-store <绝对路径>` | `occConfigPath('qianmo','console','accounts.ndjson')` | 账号库。只在 `--accounts` 下有效，单独给会报错 |
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
@@ -574,6 +575,9 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }`（§10.4） |
 | POST | `/v0/alerts/<告警 id>/ack` | **admin** | 确认一条。**id 必须在当前收件箱里**，否则 404；没接告警存储时 501 |
 | GET | `/v0/jobs` | view | 调度器快照（§10.4）。没接调度器端口时 501 |
+| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
+| GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
+| POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话，只写进台账（202），转发由 P17.5 做 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
@@ -589,6 +593,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
 两种缺席答案（404 与 501）见 §6.7。
+
+接力那三行的「成员」：`member` / `ops` 个人账号，或 admin token；view token 与 `viewer`
+账号读得到、写不了（403）。转交与追加是开发者对自己任务的动作，不是运维动作，所以门槛
+与对话面同级而不是 admin（`packages/console/src/routes/handoff.ts`）。
 
 **地址与 traceId 都在单个 path segment 里百分号编码**：
 `qianmo://node-b/reviewer` → `qianmo%3A%2F%2Fnode-b%2Freviewer`。这和注册中心

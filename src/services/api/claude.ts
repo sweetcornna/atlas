@@ -1457,6 +1457,9 @@ async function* queryModel(
       filteredTools,
       signal,
       options,
+      // qianmo P18.19 (CH-7): sticky cache routing per conversation —
+      // src/services/qianmo/promptCache/grokConversation.ts.
+      getSessionId(),
     )
     return
   }

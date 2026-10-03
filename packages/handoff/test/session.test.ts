@@ -9,6 +9,7 @@ import { sessionCommit } from '../src/session.js'
 import {
   cleanupTemporaries,
   commitAll,
+  FAKE_GITHUB_PAT,
   git,
   initRepo,
   tempDir,
@@ -101,5 +102,61 @@ describe('sessionCommit', () => {
     await expect(
       sessionCommit({ cwd: repo, file: transcript(), parent: 'f'.repeat(40) }),
     ).rejects.toThrow('commit-tree')
+  })
+})
+
+describe('sessionCommit: redaction, given bytes, unchanged parent', () => {
+  test('secrets are replaced before hashing; counts and rule ids come back', async () => {
+    const repo = initRepo()
+    const file = join(tempDir(), 'transcript.jsonl')
+    writeFileSync(
+      file,
+      `{"type":"user","text":"token ${FAKE_GITHUB_PAT} here"}\n` +
+        `{"type":"tool","out":"again ${FAKE_GITHUB_PAT}"}\n`,
+    )
+    const result = await sessionCommit({ cwd: repo, file, redact: true })
+    const stored = git(repo, 'cat-file', 'blob', result.blob)
+    expect(stored).not.toContain(FAKE_GITHUB_PAT)
+    expect(stored).toContain('[REDACTED]')
+    expect(result.redactions).toEqual({ count: 2, ruleIds: ['github-pat'] })
+    // The file itself is not touched.
+    expect(readFileSync(file, 'utf8')).toContain(FAKE_GITHUB_PAT)
+  })
+
+  test('without a hit the bytes are committed exactly; redactions report zero', async () => {
+    const repo = initRepo()
+    const file = transcript()
+    const result = await sessionCommit({ cwd: repo, file, redact: true })
+    const stored = Bun.spawnSync(['git', 'cat-file', 'blob', result.blob], {
+      cwd: repo,
+    }).stdout
+    expect(Buffer.from(stored).equals(readFileSync(file))).toBe(true)
+    expect(result.redactions).toEqual({ count: 0, ruleIds: [] })
+  })
+
+  test('content commits only the given prefix; the file still names the entry', async () => {
+    const repo = initRepo()
+    const file = transcript()
+    const prefix = readFileSync(file).subarray(0, 24)
+    appendFileSync(file, '{"type":"half')
+    const result = await sessionCommit({ cwd: repo, file, content: prefix })
+    expect(result.name).toBe(NAME)
+    const stored = Bun.spawnSync(['git', 'cat-file', 'blob', result.blob], {
+      cwd: repo,
+    }).stdout
+    expect(Buffer.from(stored).equals(prefix)).toBe(true)
+  })
+
+  test('the same tree as the parent returns the parent', async () => {
+    const repo = initRepo()
+    const file = transcript()
+    const first = await sessionCommit({ cwd: repo, file })
+    const again = await sessionCommit({ cwd: repo, file, parent: first.commit })
+    expect(again.reused).toBe(true)
+    expect(again.commit).toBe(first.commit)
+    appendFileSync(file, '{"type":"turn","n":2}\n')
+    const next = await sessionCommit({ cwd: repo, file, parent: first.commit })
+    expect(next.reused).toBe(false)
+    expect(git(repo, 'rev-parse', `${next.commit}^`)).toBe(first.commit)
   })
 })

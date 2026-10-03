@@ -54,6 +54,16 @@ export enum AuditSource {
    * trail cannot express.
    */
   Scheduler = 'scheduler',
+  /**
+   * The hub's handoff ledger (P17.4): a task accepted for the cloud side, and
+   * later dispatched, completed, failed, returned or attached to. Its own
+   * source rather than `Scheduler` or `Resident`, because a handoff is
+   * neither a timed job nor a node turn — it is a person handing their work
+   * over, and "who handed what over, and did it land" is read on its own.
+   * The kinds are `handoff.<event>`, listed in the hub's
+   * `src/cli/handlers/consoleHandoff.ts`.
+   */
+  Handoff = 'handoff',
 }
 
 /** The chain value of the first record: sha-256 of the empty string is not it. */

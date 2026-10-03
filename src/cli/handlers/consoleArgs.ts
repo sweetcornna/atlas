@@ -508,6 +508,13 @@ export interface ConsoleCliConfig {
    * 控制台，配置形状不变。
    */
   readonly providers?: ConsoleProvidersConfig
+  /**
+   * 接力裸仓的根目录（P17.4）。**给了才有 `/v0/handoff`**：仓是
+   * `<根>/<项目>.git`，由本机 `qm handoff init` 经用户自己的 SSH 建好，经 SSH
+   * 闸门（同一个根）推拉。台账与审计链在配置根下
+   * （`consoleHandoff.ts`），这里只有根目录这一个选择。
+   */
+  readonly handoffRoot?: string
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -574,6 +581,7 @@ export function parseConsoleArgs(
   const providerKeys = new Map<string, string>()
   // 只认 `--providers` 才有意义的几项，同 `needsAccounts`。
   const needsProviders: string[] = []
+  let handoffRoot: string | undefined
   // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
   const needsAccounts: string[] = []
 
@@ -980,6 +988,13 @@ export function parseConsoleArgs(
       )
       needsProviders.push('--provider-ssh-key')
       index = parsed.next
+    } else if (arg === '--handoff-root' || arg?.startsWith('--handoff-root=')) {
+      const parsed = residentOptionValue(args, index, '--handoff-root')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--handoff-root must be an absolute path')
+      }
+      handoffRoot = resolve(parsed.value)
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -1111,6 +1126,7 @@ export function parseConsoleArgs(
     ...(providers
       ? { providers: { ...providerPaths, nodes: providerNodes } }
       : {}),
+    ...(handoffRoot === undefined ? {} : { handoffRoot }),
   }
 }
 
@@ -1337,6 +1353,17 @@ Options (each accepts both --name value and --name=value):
                            an entry is refused before ssh starts. Default
                            <config root>/qianmo/console-keys/provider_known_hosts.
                            No whitespace or %. Only with --providers.
+  --handoff-root <abs path>
+                           Turn on /v0/handoff, the hub side of the local-to-
+                           cloud handoff. The directory holds one bare
+                           repository per project (<root>/<project>.git),
+                           created by \`${invokedBinName()} handoff init\` on the
+                           laptop and pushed to through the SSH gate
+                           (demo/env/beta/ops/handoff-git-gate.sh) with the
+                           same root. The ledger and its audit chain live
+                           under <config root>/qianmo/handoff/; the ledger is
+                           locked while this console runs, so a second console
+                           on the same config root refuses to start.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.
