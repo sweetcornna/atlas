@@ -317,7 +317,8 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 
 - `baseUrl` 的主机和 `lane` 都没变（只换模型或 effort）：`keep`。
 - 其他情况默认 `reset`，直到节点 `capabilities.replayFilter == true`（P18.8 已合入并部署）。之后由 ops 在切换对话框里选，默认仍然是 `reset`。
-- 会话续上之后钉住的是哪个模型：matrix §4.5 写的是「新钉住的是新 provider 的默认模型，除非用户在会话里显式选过」，这一点要在 P18.3 用真 ACP 子进程验证（§11 第 4 条）。
+- 会话续上之后钉住的是哪个模型：P18.3 用真 `--acp` 子进程实测（`src/services/qianmo/__tests__/residentProviderSwitch.integration.test.ts`），钉住的是**新**配置的主模型，带新 key。子进程在 `session/resume` 时按当时的 settings 重新解析主循环模型（`createSession` 里的 `setModel(getMainLoopModel())`），会话记录里不存模型。resident 从不调 `session/set_model`，所以 `keep` 之后的下一轮一定跑在新档案的主模型上。就算某个宿主在会话里显式 `set_model` 过，这个选择也只存在于那一个子进程的内存里，换代 resume 之后回到默认模型（同一文件第二组；正对照：换代前的请求确实带着显式选的模型）。matrix §4.5「除非用户在会话里显式选过」这半句，对 resident 节点不成立。
+- `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程在 SIGTERM 之前得有时间把会话记录写盘。基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列。所以 resident 在切换触发的回收里先把旧代从投递面摘下，等 1 s 再发 SIGTERM。实测去掉这 1 s，丢的正是那一轮的回答。
 
 ### 2.8 中枢同机节点
 
@@ -1070,7 +1071,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 1. **所有预设都没有用真 key 验证过**。调研件的「实测」只是用空 key 或无效 key 探路由和错误体形状；本文的预设表是官网文档的整理，不是兼容性证据。
 2. **OpenAI 各模型可用的 effort 档位**：舰队上 `gpt-6-luna` 的请求体里确实发了 `max`（负责人抓包），但服务端是否按 `max` 执行，没有证据。OpenAI 预设各模型的 `levels` 在录入时要逐个对照官网。
 3. **哪个 `modelSettings` 槽对主循环模型生效**：P18.2 已实算，结论见 §3.4。新会话读 `default`，切到别的模型后读该模型所占的档位。实算调用的是节点自己的函数，没有起真的 ACP 子进程。`session/set_model` 之后读哪个槽，是按 `QueryEngine` 用的同一个函数（`getMainLoopModelSettingsSlot`）推出来的，没有在真会话里核对。
-4. **会话续上之后钉住的模型**：matrix §4.5 说是新 provider 的默认模型，除非用户显式选过；需要 P18.3 用真 ACP 子进程验证（§2.7）。
+4. **会话续上之后钉住的模型**：P18.3 已用真 ACP 子进程验证，结论见 §2.7：钉住新配置的主模型，显式 `set_model` 不跨子进程保留。验证走的是 `openai-chat` 线路和回环模型桩；`anthropic` 线路和真实厂商端点都没有跑过。
 5. **hermes §11 里所有「某厂商会 400」的结论**都来自 hermes 或阡陌的代码注释，不是实测（§5.10）。
 6. **从 hermes 转引的阡陌行号**按 `e123b2ec`，没有在 `33dc81bf` 上逐条复核。本文自己引用的行号已复核（附 B）。
 7. **Azure 的鉴权写法**、**MiMo Token Plan 的 Anthropic 路径**、**方舟和千帆套餐的 key 前缀**，调研件都没有核实（§4.2、§4.3）。
