@@ -65,6 +65,7 @@ export {
   sessionCommit,
   type SessionCommit,
   type SessionCommitOptions,
+  type SessionRedactions,
 } from './session.js'
 
 export {

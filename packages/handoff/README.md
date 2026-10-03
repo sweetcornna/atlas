@@ -45,7 +45,10 @@ shadowTree({ cwd }): Promise<ShadowTree>
 // 拒绝时抛 SecretFoundError（findings: {path, matches}[]）或 OversizedFileError（files: {path, bytes}[]）
 
 // 会话
-sessionCommit({ cwd, file, name?, parent?, message? }): Promise<{ commit, tree, blob, name }>
+sessionCommit({ cwd, file, name?, parent?, message?, content?, redact? })
+  : Promise<{ commit, tree, blob, name, reused, redactions }>
+// content：只提交这些字节（file 只用来起条目名）；redact：redactSecrets 脱敏，
+// redactions = { count, ruleIds }（不带原文）；树与 parent 相同则 reused=true、commit=parent
 
 // 台账
 HandoffLedger.open(path, { now? }): HandoffLedger                     // 文件不存在即空台账；损坏抛 corrupt
@@ -94,5 +97,5 @@ accepted ──▶ dispatched ──▶ running ──▶ done ──▶ returne
 
 - 影子提交在 `git add` 阶段已把 blob 写进用户仓库的对象库，秘密命中时这些对象仍留在本地（不可达，随 `git gc` 回收），不会被推送。
 - 影子提交与会话提交在本地都不被任何 ref 引用；`git gc` 的 prune 过期后可能被回收。下一次会话提交若引用了已被回收的父提交，`commit-tree` 会报错。
-- 会话文件原样提交，**不做秘密扫描**。会话记录里可能有模型读到过的密钥；要不要扫、命中后拒推还是脱敏，尚待裁定。
+- 会话文件**脱敏后提交、不拒推**（裁定 5，`redact: true`）：用的是与影子提交同一套 gitleaks 高置信规则，规则之外的密钥形态不会被认出。脱敏把整段按 UTF-8 解码再编码，含非法 UTF-8 字节且命中规则的文件，其非法字节会变成 U+FFFD；未命中时原样提交。
 - 台账没有压缩，任务只增不减；M1 单用户的量级下不是问题。
