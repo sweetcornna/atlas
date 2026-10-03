@@ -107,6 +107,10 @@ export type CaptureParams = {
    * Default: none.
    */
   messages?: Message[]
+  /** Answer `/responses` with this SSE body instead of the default (P18.8). */
+  responsesSSE?: string
+  /** Receives everything `queryModelOpenAI` yields (P18.8). */
+  outputs?: unknown[]
 }
 
 /**
@@ -153,7 +157,8 @@ export async function captureOpenAIRequests(
         headers: { 'content-type': 'application/json' },
       })
     }
-    return new Response(url.endsWith('/responses') ? RESPONSES_SSE : CHAT_SSE, {
+    const responsesSSE = params.responsesSSE ?? RESPONSES_SSE
+    return new Response(url.endsWith('/responses') ? responsesSSE : CHAT_SSE, {
       status: 200,
       headers: { 'content-type': 'text/event-stream' },
     })
@@ -180,14 +185,14 @@ export async function captureOpenAIRequests(
 
   try {
     const signal = new AbortController().signal
-    for await (const _ of queryModelOpenAI(
+    for await (const output of queryModelOpenAI(
       params.messages ?? [],
       [] as unknown as SystemPrompt,
       [],
       signal,
       options,
     )) {
-      // drain
+      params.outputs?.push(output)
     }
     return captured
   } finally {

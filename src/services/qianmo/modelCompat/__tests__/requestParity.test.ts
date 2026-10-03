@@ -803,3 +803,70 @@ describe('fleet lock: full key set is the baseline key set', () => {
     })
   }
 })
+
+describe('fleet lock: encrypted_content replay on the same endpoint (P18.8 #23)', () => {
+  // The fleet path minting a reasoning item and replaying it next turn,
+  // end to end through queryModelOpenAI. Constructed SSE (not recorded): the
+  // item shape `extractReasoningItem` keeps. Same endpoint must keep sending
+  // the payload exactly as before P18.8; another endpoint must not get it.
+  const FLEET_ENV = {
+    OPENAI_WIRE_API: 'responses',
+    CLAUDE_CODE_EFFORT_LEVEL: 'max',
+    CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: '1',
+  }
+  const MINTING_SSE =
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_fleet","encrypted_content":"ENC-FLEET","summary":[]}}\n\n' +
+    'data: {"type":"response.output_text.delta","delta":"ok"}\n\n' +
+    'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+
+  async function firstTurn(baseURL: string | undefined): Promise<Message> {
+    const outputs: unknown[] = []
+    await captureOpenAIRequest({
+      model: 'gpt-6-luna',
+      baseURL,
+      env: FLEET_ENV,
+      messages: [replayHistory()[0]!],
+      responsesSSE: MINTING_SSE,
+      outputs,
+    })
+    const reply = outputs.find(
+      o => (o as { type?: string }).type === 'assistant',
+    ) as Message | undefined
+    if (!reply) throw new Error('first turn produced no assistant message')
+    return reply
+  }
+
+  function replayed(body: Record<string, unknown>): unknown[] {
+    return (body.input as Record<string, unknown>[])
+      .filter(item => item.type === 'reasoning')
+      .map(item => item.encrypted_content)
+  }
+
+  for (const [label, baseURL] of [
+    ['gateway', GATEWAY],
+    ['official', OFFICIAL],
+    ['unset', undefined],
+  ] as const) {
+    test(`gpt-6-luna @ ${label}: same endpoint replays ENC`, async () => {
+      const reply = await firstTurn(baseURL)
+      const { body } = await captureOpenAIRequest({
+        model: 'gpt-6-luna',
+        baseURL,
+        env: FLEET_ENV,
+        messages: [replayHistory()[0]!, reply, replayHistory()[2]!],
+      })
+      expect(replayed(body)).toEqual(['ENC-FLEET'])
+    })
+  }
+
+  test('gpt-6-luna: switching to another endpoint drops ENC', async () => {
+    const reply = await firstTurn(GATEWAY)
+    const { body } = await captureOpenAIRequest({
+      model: 'gpt-6-luna',
+      baseURL: 'https://other-relay.example/v1',
+      env: FLEET_ENV,
+      messages: [replayHistory()[0]!, reply, replayHistory()[2]!],
+    })
+    expect(replayed(body)).toEqual([])
+  })
+})

@@ -38,6 +38,11 @@ export type OpenAIReasoningItem = {
   id?: string
   encrypted_content?: string
   summary?: unknown[]
+  /**
+   * qianmo P18.8 (hermes #23): which endpoint minted `encrypted_content`.
+   * Never sent; see src/services/qianmo/modelCompat/responsesIssuer.ts.
+   */
+  issuer?: string
 }
 
 /**
