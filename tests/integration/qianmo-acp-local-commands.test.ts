@@ -29,21 +29,31 @@
  * (window − reserved output − 13k buffer) is crossed at a 100k window and not
  * at 150k or at auto — so "compaction happened" is "the turn read 100k".
  *
- * Not covered here: the console chat page. The resident assembles every turn
- * into `<teammate-message>` blocks (`src/services/qianmo/residentPrompt.ts`)
- * before it reaches this child, so a slash command typed there does not arrive
- * as one; this file sends the command text the way a raw ACP client would.
+ * ## The console chat page (last describe)
+ *
+ * The whole chain: the console's own HTTP handler with personal accounts and
+ * an action ledger, the production chat port (`consoleChat.ts`) signing with a
+ * console key, a real `QianmoResident` listening on loopback TCP with a
+ * capability gate, and the real `--acp` child it spawns. A resident wraps
+ * every turn into `<teammate-message>` blocks (`residentPrompt.ts`); only a
+ * task its console signed and marked as a local command reaches the child as
+ * the command (`residentLocalCommand.ts`). A peer on the same listener — the
+ * "any network peer" of D-9 — sends the same marker and text, unsigned and
+ * signed by a trusted peer key, and is answered by the model as before.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { ChildProcess } from 'node:child_process'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -51,15 +61,49 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SessionNotification } from '@agentclientprotocol/sdk'
 import {
+  NodeCapabilities,
+  OPEN_POLICY,
+  StaticPublicKeyDirectory,
+  generateNodeKeyPair,
+  issueCapability,
+} from '@qianmo/capability'
+import type { ConsoleAgent, ConsoleResult, RegistryPort } from '@qianmo/console'
+import {
+  CapabilityLevel,
+  MessageType,
+  createMessage,
+  isTaskResultPayload,
+  type QianmoMessage,
+} from '@qianmo/protocol'
+import {
   AcpResidentTurnPort,
   ResidentAcpConnection,
+  type ResidentTimingEvent,
   type ResidentTurnResult,
 } from '@qianmo/resident'
+import { TransportClient } from '@qianmo/transport'
+import {
+  accountsHarness,
+  asSession,
+  type AccountsHarness,
+  type Person,
+  person,
+} from '../../packages/console/test/accountsHarness.js'
+import { MemoryActionLedger } from '../../packages/console/test/memoryActions.js'
 import { getMacroDefines, resolveBuildFeatures } from '../../scripts/defines.js'
+import {
+  type ConsoleChatHub,
+  createConsoleChatPort,
+  normalizeChatEndpoint,
+} from '../../src/cli/handlers/consoleChat.js'
+import { createConsoleWakeIssuer } from '../../src/cli/handlers/consoleWakeIdentity.js'
 import {
   IDENTITY_ENV_VAR,
   NODE_IDENTITY_MODE,
 } from '../../src/constants/identity.js'
+import { QianmoResident } from '../../src/services/qianmo/resident.js'
+import { residentAcpEnvironment } from '../../src/services/qianmo/residentAcpEnv.js'
+import { resetSettingsCache } from '../../src/utils/settings/settingsCache.js'
 import { spawnResidentAcpChild } from './fixtures/resident-acp-harness.js'
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../..')
@@ -81,6 +125,8 @@ const NEUTRALIZED_ENV = {
 /** A streamed Chat Completions reply: fixed text, then a usage-only frame. */
 class ModelDouble {
   promptTokens = 1_000
+  /** The `messages` of every streamed request, as JSON. */
+  readonly turnTexts: string[] = []
   #requests = 0
   readonly #server: ReturnType<typeof Bun.serve>
 
@@ -90,11 +136,14 @@ class ModelDouble {
       hostname: '127.0.0.1',
       fetch: async req => {
         this.#requests += 1
-        let body: { stream?: unknown } = {}
+        let body: { stream?: unknown; messages?: unknown } = {}
         try {
           body = (await req.json()) as typeof body
         } catch {
           // Not a model turn; answered with the trivial shape below.
+        }
+        if (body.stream === true) {
+          this.turnTexts.push(JSON.stringify(body.messages ?? null))
         }
         if (body.stream !== true) {
           return Response.json({
@@ -530,6 +579,439 @@ describe('the next turn of a running session reads the current window', () => {
         `${JSON.stringify({ ...settings, autoCompactWindow: 100_000 }, null, 2)}\n`,
       )
       await expectNextTurnAt100k(session)
+    },
+    TEST_TIMEOUT_MS,
+  )
+})
+
+describe('the console chat page, through a resident, to the ACP child', () => {
+  const PSK = 'p1820-console-path-psk-not-a-secret'
+  const NODE = 'node-b'
+  const TARGET = `qianmo://${NODE}/reviewer`
+  const consoleKeys = generateNodeKeyPair()
+  const peerKeys = generateNodeKeyPair()
+  const ownKeys = generateNodeKeyPair()
+
+  let nodeRoot = ''
+  let nodeConfig = ''
+  let nodeModel: ModelDouble
+  let resident: QianmoResident
+  let running: Promise<void>
+  let endpoint = ''
+  let hub: ConsoleChatHub
+  let h: AccountsHarness
+  let ledger: MemoryActionLedger
+  let ops: Person
+  let member: Person
+  let peer: TransportClient
+  const peerReplies: QianmoMessage[] = []
+  const nodeChildren: ChildProcess[] = []
+  const timings: ResidentTimingEvent[] = []
+  const errors: unknown[] = []
+  const previousEnv = {
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    OCC_CONFIG_DIR: process.env.OCC_CONFIG_DIR,
+  }
+
+  const nodeWindow = (): unknown => {
+    const path = join(nodeConfig, 'settings.json')
+    if (!existsSync(path)) return undefined
+    return (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>)
+      .autoCompactWindow
+  }
+
+  const chatLines = (): readonly string[] =>
+    ledger
+      .lines()
+      .filter(
+        line =>
+          line.startsWith('chat.message.') || line.startsWith('chat.command.'),
+      )
+
+  /** The child, started the way the resident's `defaultSpawnAcp` does, from source. */
+  function spawnNodeChild(workspace: string, home: string, memory: string) {
+    const env = residentAcpEnvironment(
+      {
+        PATH: process.env.PATH,
+        HOME: home,
+        TMPDIR: tmpdir(),
+        NODE_ENV: 'production',
+        NO_COLOR: '1',
+        DISABLE_TELEMETRY: '1',
+        DISABLE_AUTOUPDATER: '1',
+        [IDENTITY_ENV_VAR]: NODE_IDENTITY_MODE,
+        OCC_CONFIG_DIR: nodeConfig,
+        CLAUDE_CODE_USE_OPENAI: '1',
+        OPENAI_BASE_URL: nodeModel.baseUrl,
+        OPENAI_API_KEY: 'sk-test-canary-p1820-console-path',
+        OPENAI_MODEL: MODEL,
+        OPENAI_WIRE_API: 'chat',
+      },
+      { memoryRoot: memory },
+    )
+    const defines = {
+      ...getMacroDefines(),
+      'process.env.NODE_ENV': JSON.stringify('production'),
+    }
+    const child = spawn(
+      process.execPath,
+      [
+        'run',
+        ...Object.entries(defines).flatMap(([k, v]) => [
+          '-d',
+          `${k}:${String(v)}`,
+        ]),
+        ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
+        join(PROJECT_ROOT, 'src/entrypoints/cli.tsx'),
+        '--acp',
+      ],
+      { cwd: workspace, env, stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    const log = Bun.file(join(nodeRoot, 'node-child.stderr')).writer()
+    child.stderr?.on('data', chunk => {
+      log.write(chunk)
+      log.flush()
+    })
+    nodeChildren.push(child)
+    return child
+  }
+
+  /** The registry the chat port discovers the node through: just this node. */
+  class OneNodeRegistry implements RegistryPort {
+    list(): Promise<ConsoleResult<readonly ConsoleAgent[]>> {
+      return Promise.resolve({
+        ok: true,
+        value: [
+          {
+            address: TARGET,
+            endpoint,
+            capabilities: [],
+            status: 'online',
+            registeredAt: 1,
+            lastHeartbeatAt: 2,
+            expiresAt: Date.now() + 3_600_000,
+          },
+        ],
+      })
+    }
+    register(): Promise<ConsoleResult<ConsoleAgent>> {
+      return Promise.resolve({
+        ok: false,
+        failure: { code: 'unsupported', message: 'not used here' },
+      })
+    }
+    deregister(): Promise<ConsoleResult<void>> {
+      return Promise.resolve({
+        ok: false,
+        failure: { code: 'unsupported', message: 'not used here' },
+      })
+    }
+    heartbeat(): Promise<ConsoleResult<ConsoleAgent>> {
+      return Promise.resolve({
+        ok: false,
+        failure: { code: 'unsupported', message: 'not used here' },
+      })
+    }
+  }
+
+  async function waitFor<T>(
+    find: () => T | undefined | Promise<T | undefined>,
+    what: string,
+  ): Promise<T> {
+    const deadline = Date.now() + TURN_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      const found = await find()
+      if (found !== undefined) return found
+      await Bun.sleep(25)
+    }
+    throw new Error(
+      `timed out waiting for ${what}; errors: ${errors.map(String).join(' | ')}`,
+    )
+  }
+
+  async function openAs(who: Person): Promise<string> {
+    const response = await h.handle(
+      asSession('POST', '/v0/chat/sessions', who.sid, {
+        body: { target: TARGET },
+      }),
+    )
+    expect(response.status).toBe(200)
+    return ((await response.json()) as { id: string }).id
+  }
+
+  function say(
+    who: Person,
+    sessionId: string,
+    text: string,
+  ): Promise<Response> {
+    return h.handle(
+      asSession('POST', `/v0/chat/sessions/${sessionId}/messages`, who.sid, {
+        body: { text },
+      }),
+    )
+  }
+
+  /** The agent's turn answering the operator's last one, once it is in. */
+  async function answerIn(sessionId: string) {
+    return await waitFor(async () => {
+      const transcript = await hub.transcript(sessionId)
+      if (!transcript.ok) return undefined
+      const last = transcript.value.turns.at(-1)
+      return last?.author === 'agent' ? last : undefined
+    }, `the answer in ${sessionId}`)
+  }
+
+  /** A task from the peer node, the same marker and text the page sends. */
+  async function fromPeer(signed: boolean) {
+    const taskId = randomUUID()
+    const createdAt = Date.now()
+    const request = createMessage({
+      from: 'qianmo://node-a/planner',
+      to: TARGET,
+      type: MessageType.TaskRequest,
+      payload: {
+        prompt: '/autocompact 100k',
+        command: { name: 'autocompact' },
+      },
+      taskId,
+      createdAt,
+      ...(signed
+        ? {
+            cap: issueCapability('node-a', peerKeys, {
+              sub: TARGET,
+              aud: NODE,
+              act: CapabilityLevel.WriteLimited,
+              taskId,
+              nbf: createdAt - 1_000,
+              exp: createdAt + 60_000,
+            }),
+          }
+        : {}),
+    })
+    const requestsBefore = nodeModel.requests
+    const textsBefore = nodeModel.turnTexts.length
+    await peer.sendAndWait(request, 10_000)
+    const reply = await waitFor(
+      () =>
+        peerReplies.find(
+          message =>
+            message.type === MessageType.TaskResult &&
+            message.taskId === request.taskId,
+        ),
+      `task.result for ${request.taskId}`,
+    )
+    return {
+      payload: reply.payload,
+      modelRequests: nodeModel.requests - requestsBefore,
+      turnTexts: nodeModel.turnTexts.slice(textsBefore),
+    }
+  }
+
+  beforeAll(async () => {
+    nodeRoot = realpathSync(mkdtempSync(join(tmpdir(), 'qianmo-p1820-path-')))
+    nodeConfig = join(nodeRoot, 'config')
+    const workspace = join(nodeRoot, 'ws')
+    const home = join(nodeRoot, 'home')
+    const memory = join(nodeRoot, 'memory')
+    mkdirSync(nodeConfig, { mode: 0o700 })
+    chmodSync(nodeConfig, 0o700)
+    mkdirSync(workspace)
+    mkdirSync(home)
+    // The resident runs in this process: its own state goes to the node's
+    // config root, as `qm resident` on that node would put it.
+    process.env.CLAUDE_CONFIG_DIR = nodeConfig
+    delete process.env.OCC_CONFIG_DIR
+    resetSettingsCache()
+
+    nodeModel = new ModelDouble()
+    resident = new QianmoResident({
+      node: NODE,
+      team: 'nest',
+      agents: [{ agent: 'reviewer', cwd: workspace }],
+      pollIntervalMs: 20,
+      psk: PSK,
+      listen: { port: 0, hostname: '127.0.0.1' },
+      memoryRoot: memory,
+      spawnAcp: () => spawnNodeChild(workspace, home, memory),
+      // What `qm resident --open-policy --trust console=<key>
+      // --trust node-a=<key> --local-commands-from console` builds. Open, so
+      // an unsigned peer task is admitted and its fate is up to this change.
+      capability: new NodeCapabilities({
+        node: NODE,
+        directory: new StaticPublicKeyDirectory([
+          ['console', consoleKeys.publicKey],
+          ['node-a', peerKeys.publicKey],
+          [NODE, ownKeys.publicKey],
+        ]),
+        keys: ownKeys,
+        policy: OPEN_POLICY,
+        trustedIssuers: ['console', 'node-a', NODE],
+      }),
+      localCommandIssuers: ['console'],
+      onReady: address => {
+        if (address.url !== undefined) endpoint = address.url
+      },
+      onTiming: event => timings.push(event),
+      onError: error => errors.push(error),
+    })
+    running = resident.run()
+    await waitFor(
+      () =>
+        timings.some(event => event.stage === 'acp_ready') ? true : undefined,
+      'the node ACP child',
+    )
+
+    ledger = new MemoryActionLedger()
+    hub = createConsoleChatPort({
+      from: 'qianmo://console/operator',
+      endpoints: [
+        {
+          url: normalizeChatEndpoint(endpoint) ?? endpoint,
+          psk: PSK,
+          node: NODE,
+        },
+      ],
+      storePath: join(nodeRoot, 'console-chat.ndjson'),
+      registry: new OneNodeRegistry(),
+      // `--chat-sign`, under the default `--chat-from` node segment.
+      issueCapability: createConsoleWakeIssuer('console', consoleKeys),
+    })
+    h = accountsHarness({ deps: { chat: hub, actions: ledger } })
+    ops = await person(h.handle, 'ops')
+    member = await person(h.handle, 'member')
+
+    peer = new TransportClient({
+      endpoint: { url: endpoint },
+      node: 'node-a',
+      psk: PSK,
+      keepAliveIntervalMs: 0,
+      onMessage: message => {
+        peerReplies.push(message)
+      },
+    })
+    await peer.connect()
+  }, BOOT_TIMEOUT_MS + 30_000)
+
+  afterAll(async () => {
+    resident?.stop()
+    await running
+    await hub?.close()
+    await peer?.close()
+    for (const child of nodeChildren) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL')
+        await once(child, 'exit')
+      }
+    }
+    await nodeModel?.stop()
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    resetSettingsCache()
+    if (nodeRoot !== '') rmSync(nodeRoot, { recursive: true, force: true })
+  }, 30_000)
+
+  test(
+    'member: /autocompact 150k is refused with the reason, and nothing moves',
+    async () => {
+      const sid = await openAs(member)
+      const response = await say(member, sid, '/autocompact 150k')
+
+      expect(response.status).toBe(403)
+      const body = (await response.json()) as { error: { message: string } }
+      expect(body.error.message).toContain('需要运维账号或管理令牌')
+      const transcript = await hub.transcript(sid)
+      expect(transcript.ok && transcript.value.turns).toEqual([])
+      expect(nodeWindow()).toBeUndefined()
+      expect(nodeModel.requests).toBe(0)
+      expect(chatLines()).toEqual([])
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'ops: /autocompact 150k sets the node setting, echoes as command output, never reaches the model',
+    async () => {
+      const sid = await openAs(ops)
+      const requestsBefore = nodeModel.requests
+
+      const response = await say(ops, sid, '/autocompact 150k')
+      expect(response.status).toBe(200)
+      const answer = await answerIn(sid)
+
+      expect(answer).toMatchObject({
+        state: 'done',
+        text: 'Auto-compact window set to 150k tokens',
+        command: 'autocompact',
+      })
+      expect(nodeWindow()).toBe(150_000)
+      expect(nodeModel.requests - requestsBefore).toBe(0)
+      expect(chatLines()).toEqual([`chat.command.autocompact ${sid} ok`])
+
+      const thread = await h.handle(
+        asSession('GET', `/fragments/chat/thread/${sid}`, ops.sid),
+      )
+      const html = await thread.text()
+      expect(html).toContain('<span class="turn-who">命令输出</span>')
+      expect(html).toContain(
+        '<pre class="turn-code command-output"><code>Auto-compact window set to 150k tokens</code></pre>',
+      )
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'member: /context answers in the transcript as command output',
+    async () => {
+      const sid = await openAs(member)
+      const requestsBefore = nodeModel.requests
+
+      const response = await say(member, sid, '/context')
+      expect(response.status).toBe(200)
+      const answer = await answerIn(sid)
+
+      expect(answer.state).toBe('done')
+      expect(answer.command).toBe('context')
+      expect(answer.text).toStartWith('## Context Usage')
+      expect(nodeModel.requests - requestsBefore).toBe(0)
+      expect(chatLines().at(-1)).toBe(`chat.command.context ${sid} ok`)
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'a peer: the same marker and text, unsigned, is a wrapped message as before',
+    async () => {
+      const result = await fromPeer(false)
+
+      expect(isTaskResultPayload(result.payload)).toBe(true)
+      expect(result.payload).toMatchObject({
+        outcome: 'completed',
+        content: MODEL_REPLY,
+      })
+      expect(result.modelRequests).toBe(1)
+      expect(result.turnTexts).toHaveLength(1)
+      expect(result.turnTexts[0]).toContain('<teammate-message')
+      expect(result.turnTexts[0]).toContain('/autocompact 100k')
+      expect(nodeWindow()).toBe(150_000)
+    },
+    TEST_TIMEOUT_MS,
+  )
+
+  test(
+    'a peer: the same marker and text, signed by a trusted peer key, is still a message',
+    async () => {
+      const result = await fromPeer(true)
+
+      expect(result.payload).toMatchObject({
+        outcome: 'completed',
+        content: MODEL_REPLY,
+      })
+      expect(result.modelRequests).toBe(1)
+      expect(result.turnTexts[0]).toContain('<teammate-message')
+      expect(nodeWindow()).toBe(150_000)
+      expect(errors.map(String)).toEqual([])
     },
     TEST_TIMEOUT_MS,
   )
