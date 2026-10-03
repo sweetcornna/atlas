@@ -1,0 +1,244 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * The page scripts of the areas that have one, as strings.
+ *
+ * Each runs after the shared runtime (`client.ts`) on its own page only
+ * (`routes/types.ts`, `PageRoute.script`), and reaches the runtime through
+ * `window.qianmoConsole`. They hold what used to be the one page script's
+ * area-specific half — the register, wake, heartbeat and deregister actions,
+ * the chain panel, the server note — moved without changing what any of them
+ * sends. The runtime's rules hold here too: the server renders HTML, the
+ * client renders text, and every response string reaches the page through
+ * `textContent`.
+ */
+
+/** 节点: register, wake, heartbeat, deregister. */
+export const NODES_PAGE_JS = `
+(function () {
+  'use strict';
+
+  var qc = window.qianmoConsole;
+  if (!qc) return;
+  var byId = qc.byId;
+  var say = qc.say;
+  var message = qc.message;
+  var setText = qc.setText;
+
+  var ROUTES = { agents: '/v0/agents', wake: '/v0/wake' };
+
+  function refreshRoster() {
+    var mount = byId('roster');
+    return mount ? qc.refreshRegion(mount) : Promise.resolve();
+  }
+
+  function fieldValue(form, name) {
+    var el = form.elements[name];
+    return el && typeof el.value === 'string' ? el.value.trim() : '';
+  }
+
+  // Capabilities are four checkboxes sharing one name, so the value is every
+  // ticked box rather than one string to split. The server still accepts the
+  // comma-separated form an older client would have sent.
+  function checkedValues(form, name) {
+    var out = [];
+    var nodes = form.querySelectorAll('input[name="' + name + '"]:checked');
+    for (var i = 0; i < nodes.length; i++) out.push(nodes[i].value);
+    return out;
+  }
+
+  function onRegister(form) {
+    var status = byId('register-status');
+    var address = fieldValue(form, 'address');
+    var endpoint = fieldValue(form, 'endpoint');
+    if (!address || !endpoint) {
+      say(status, '地址与端点必填', 'bad');
+      return;
+    }
+    var body = {
+      address: address,
+      endpoint: endpoint,
+      capabilities: checkedValues(form, 'capabilities'),
+      status: fieldValue(form, 'status') || 'online'
+    };
+    var key = fieldValue(form, 'publicKey');
+    if (key) body.publicKey = key;
+    say(status, '注册中…', 'muted');
+    qc.sendJson('POST', ROUTES.agents, body).then(function () {
+      say(status, '', 'muted');
+      form.reset();
+      qc.closeDialog(byId('register-dialog'));
+      qc.toast('已注册 ' + address, 'ok');
+      return refreshRoster();
+    }).catch(function (err) {
+      // Said where the form is, and in the corner: the dialog may be the
+      // thing the operator is looking at, or the thing they just closed.
+      say(status, '注册失败 · ' + message(err), 'bad');
+      qc.toast('注册失败 · ' + message(err), 'bad');
+    });
+  }
+
+  // The 回调 field is gone from the form: the console can only ever wake the
+  // one URL it was started with, so url is left out of the body entirely and
+  // the server falls back to the pinned one.
+  function onWake(form) {
+    var status = byId('wake-status');
+    var body = {
+      from: fieldValue(form, 'from'),
+      to: fieldValue(form, 'to'),
+      prompt: fieldValue(form, 'prompt')
+    };
+    var node = fieldValue(form, 'node');
+    if (node) body.node = node;
+    var after = fieldValue(form, 'afterMs');
+    if (after) body.afterMs = Number(after);
+    if (!body.from || !body.to || !body.prompt) {
+      say(status, '发起方 目标与提示词必填', 'bad');
+      return;
+    }
+    setText('confirm-wake-to', body.to);
+    setText('confirm-wake-from', body.from);
+    setText('confirm-wake-after', (body.afterMs || 0) + ' ms');
+    setText('confirm-wake-prompt', body.prompt);
+    qc.openDialog('confirm-wake', function () { doWake(body); });
+  }
+
+  function doWake(body) {
+    var status = byId('wake-status');
+    say(status, '唤醒中…', 'muted');
+    qc.sendJson('POST', ROUTES.wake, body).then(function (data) {
+      var receipt = data && data.receipt ? String(data.receipt) : '';
+      var task = data && data.taskId ? String(data.taskId) : '';
+      // The button says 唤醒, so the result says 已唤醒. An operator should not
+      // have to work out whether 已发送 is the same event they asked for.
+      var line = '已唤醒 · task ' + task + (receipt ? ' · 回执 ' + receipt : '');
+      say(status, line, 'ok');
+      qc.toast(line, 'ok');
+    }).catch(function (err) {
+      say(status, '唤醒失败 · ' + message(err), 'bad');
+      qc.toast('唤醒失败 · ' + message(err), 'bad');
+    });
+  }
+
+  // A row's two actions report in the corner: the row itself is replaced by
+  // the refresh that follows, so a line written into it would not survive.
+  function onHeartbeat(el) {
+    var address = el.getAttribute('data-address') || '';
+    qc.sendJson('POST', ROUTES.agents + '/' + encodeURIComponent(address) + '/heartbeat')
+      .then(function () {
+        qc.toast('已心跳 ' + address, 'ok');
+        return refreshRoster();
+      })
+      .catch(function (err) { qc.toast('心跳失败 · ' + message(err), 'bad'); });
+  }
+
+  function onDeregister(el) {
+    var address = el.getAttribute('data-address') || '';
+    setText('confirm-deregister-addr', address);
+    qc.openDialog('confirm-deregister', function () { doDeregister(address); });
+  }
+
+  function doDeregister(address) {
+    qc.sendJson('DELETE', ROUTES.agents + '/' + encodeURIComponent(address))
+      .then(function () {
+        qc.toast('已注销 ' + address, 'ok');
+        return refreshRoster();
+      })
+      .catch(function (err) { qc.toast('注销失败 · ' + message(err), 'bad'); });
+  }
+
+  qc.onAction('heartbeat', onHeartbeat);
+  qc.onAction('deregister', onDeregister);
+  qc.onSubmit('register-form', onRegister);
+  qc.onSubmit('wake-form', onWake);
+})();
+`
+
+/** 消息链: the chain panel, and the filter form's shortest URL. */
+export const AUDIT_PAGE_JS = `
+(function () {
+  'use strict';
+
+  var qc = window.qianmoConsole;
+  if (!qc) return;
+  var byId = qc.byId;
+
+  // Markup, not JSON: /v0/audit/chain/ answers with the data and loadHtml
+  // rejects anything that is not text/html.
+  var CHAIN = '/fragments/chain/';
+
+  function openChain(el) {
+    var panel = byId('chain');
+    var trace = el.getAttribute('data-trace') || '';
+    var node = el.getAttribute('data-audit-node') || '';
+    if (!panel || !trace) return;
+    var path = CHAIN + encodeURIComponent(trace);
+    if (node) path += '?node=' + encodeURIComponent(node);
+    qc.loadHtml(path).then(function (html) {
+      panel.innerHTML = html;
+      panel.hidden = false;
+      panel.scrollIntoView({ block: 'nearest' });
+    }).catch(function (err) {
+      // textContent, never innerHTML: this string can carry a server message.
+      panel.textContent = '消息链加载失败 · ' + qc.message(err);
+      panel.hidden = false;
+    });
+  }
+
+  function closeChain() {
+    var panel = byId('chain');
+    if (panel) { panel.hidden = true; panel.textContent = ''; }
+  }
+
+  qc.onAction('chain', openChain);
+  qc.onAction('chain-close', closeChain);
+
+  // The filter is a native GET and stays one: it works with this script
+  // disabled. All that is added is dropping the empty boxes, so the resulting
+  // URL is the shortest thing that reproduces this view.
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || form.id !== 'audit-filter') return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) {
+      if (controls[i].value === '') controls[i].disabled = true;
+    }
+  });
+})();
+`
+
+/** 服务器: saving a note. */
+export const SERVERS_PAGE_JS = `
+(function () {
+  'use strict';
+
+  var qc = window.qianmoConsole;
+  if (!qc) return;
+
+  // The servers page is never polled, because it holds a textarea somebody may
+  // be mid-sentence in. So a save reports itself in place, through the status
+  // line beside the button, and nothing on the page is re-fetched afterwards.
+  function onServerNote(el) {
+    var card = el.closest('[data-server]');
+    var server = el.getAttribute('data-server') || '';
+    if (!card || !server) return;
+    var box = card.querySelector('textarea[name="note"]');
+    var status = card.querySelector('[data-role="note-status"]');
+    if (!box) return;
+    qc.say(status, '保存中…', 'muted');
+    qc.sendJson('PUT', '/v0/servers/' + encodeURIComponent(server) + '/note',
+      { note: box.value })
+      .then(function () {
+        qc.say(status, '已保存 ' + qc.stamp(new Date()), 'ok');
+        qc.toast('备注已保存 · ' + server, 'ok');
+      })
+      .catch(function (err) {
+        qc.say(status, '保存失败 · ' + qc.message(err), 'bad');
+        qc.toast('保存失败 · ' + qc.message(err), 'bad');
+      });
+  }
+
+  qc.onAction('server-note', onServerNote);
+})();
+`

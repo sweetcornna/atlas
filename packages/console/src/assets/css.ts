@@ -208,13 +208,12 @@ body {
   font-variant-numeric: tabular-nums;
   overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased;
-  /* The page defaults to unselectable, matching the reference product's
-     desktop-app feel — but code/pre/kbd/input/textarea/.mono stay selectable.
-     Most copyable values here (addresses, trace ids) carry .mono rather than
-     being wrapped in <code>, so the exemption covers the class too. */
-  user-select: none;
 }
-code, pre, kbd, samp, input, textarea, select, .mono, .addr, .bubble { user-select: text; }
+/* Text is selectable: an error strip goes into a ticket, a node name into a
+   terminal, and a page that refuses a triple-click is a page an operator
+   retypes from (D7). Only the controls are not — dragging across the sidebar
+   or double-clicking a button should not paint a selection. */
+.nav-item, .nav-group-name, .btn, .sw, .seg-opt { user-select: none; }
 h1, h2, h3, h4 {
   font-family: var(--font-heading);
   font-weight: var(--font-heading-weight);
@@ -284,10 +283,45 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
   height: calc(100vh - var(--space-8));
   overflow-y: auto;
 }
+/* The right column: the top bar, the notice line when there is one, the page. */
+.frame { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
 .main {
   display: flex; flex-direction: column; gap: calc(var(--space-8) * 1.2);
-  padding: var(--space-2) var(--space-2) var(--space-8);
+  padding: 0 var(--space-2) var(--space-8);
   min-width: 0;
+}
+
+/* ---- top bar: where you are, what this is, its actions, who you are ---- */
+.top {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--space-3) var(--space-4); flex-wrap: wrap;
+  padding: var(--space-3) var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-divider);
+}
+.top-lead { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.crumbs {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: var(--space-1);
+  font-size: 12px; color: var(--color-muted);
+}
+.crumbs li + li::before { content: "/"; margin-right: var(--space-1); opacity: .6; }
+.crumbs a { color: inherit; text-decoration: none; }
+.crumbs a:hover { color: var(--color-accent-700); }
+.page-title { font-size: 28px; overflow-wrap: anywhere; }
+.top-tail { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.top-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.health { display: flex; align-items: center; gap: var(--space-3); font-size: 12.5px; }
+.usermenu { position: relative; }
+.usermenu > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: var(--space-1);
+}
+.usermenu > summary::-webkit-details-marker { display: none; }
+.usermenu-body {
+  position: absolute; right: 0; top: calc(100% + var(--space-2)); z-index: 30;
+  width: min(300px, 86vw); display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-4); border-radius: var(--radius-lg);
+  background: var(--color-surface); box-shadow: var(--shadow-lg);
 }
 
 /* ---- brand ---- */
@@ -303,17 +337,36 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
 }
 a.brand-cn:hover { color: var(--color-accent-700); }
 
-/* ---- nav ---- */
-.nav-list { display: flex; flex-direction: column; gap: var(--space-1); }
+/* ---- nav: three groups, every area listed, unbuilt ones marked ---- */
+.nav { display: flex; flex-direction: column; gap: var(--space-4); }
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-group-name {
+  padding: 0 var(--space-3) var(--space-1);
+  font-size: 11px; letter-spacing: .08em;
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+}
 .nav-item {
   display: flex; align-items: center; gap: var(--space-2);
-  padding: 9px var(--space-3); border-radius: 999px;
+  padding: 7px var(--space-3); border-radius: 999px;
   font-size: 14px; color: var(--color-text); text-decoration: none;
   transition: background-color 150ms ease, color 150ms ease;
 }
 .nav-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .nav-item[aria-current="page"] { background: var(--color-accent); color: var(--color-bg); }
 .nav-item .cnt { margin-left: auto; font-size: 11px; opacity: .75; }
+.nav-tag {
+  margin-left: auto; padding: 0 7px; border-radius: 999px; font-size: 10.5px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+.nav-item[aria-current="page"] .nav-tag { background: color-mix(in srgb, var(--color-bg) 22%, transparent); color: inherit; }
+
+/* ---- a page that is not there yet, and a page that failed ---- */
+.stub {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  padding: var(--space-8) var(--space-6); max-width: 64ch;
+}
+.stub-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 20px; }
 
 /* ---- sidebar foot ---- */
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-3); }
@@ -746,19 +799,35 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .empty-art { justify-self: end; }
 .legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12.5px; color: var(--color-muted); }
 
-/* ---- the confirm dialog ---- */
-.dialog-backdrop {
-  position: fixed; inset: 0; z-index: 40;
-  display: grid; place-items: center; padding: var(--space-4);
-  background: color-mix(in srgb, var(--color-scrim) 55%, transparent);
+/* ---- toasts: one line per result, bottom right, never over a dialog ---- */
+.toasts {
+  position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: 50;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2);
+  width: min(380px, calc(100vw - var(--space-8))); pointer-events: none;
 }
-.dialog-backdrop[hidden] { display: none; }
-.dialog {
-  width: min(460px, 100%); display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-6); border-radius: calc(var(--radius-lg) * 1.15);
-  background: var(--color-surface); box-shadow: var(--shadow-lg);
+.toast {
+  pointer-events: auto; cursor: pointer; max-width: 100%;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg);
+  background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-md);
+  border-left: 3px solid var(--color-accent-2); font-size: 13px; overflow-wrap: anywhere;
+}
+.toast[data-tone='bad'] { border-left-color: var(--color-accent-700); }
+.toast[data-tone='muted'] { border-left-color: var(--color-neutral-400); }
+
+/* ---- dialogs: native <dialog>, opened with showModal() ----
+   The browser owns the hard parts: the top layer, the focus trap, Escape, and
+   giving focus back to the control that opened it. The closed state is the UA
+   sheet's display:none, which is why display is only ever set on [open] —
+   setting it on .dialog would draw every closed dialog on the page. */
+dialog.dialog {
+  width: min(460px, calc(100% - var(--space-8)));
+  padding: var(--space-6); border: 0; border-radius: calc(var(--radius-lg) * 1.15);
+  background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow-lg);
   max-height: 90vh; overflow-y: auto;
 }
+dialog.dialog[open] { display: flex; flex-direction: column; gap: var(--space-3); }
+dialog.dialog-wide { width: min(720px, calc(100% - var(--space-8))); }
+dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2b25) 55%, transparent); }
 .dlg-top { display: flex; align-items: center; gap: var(--space-3); }
 .dlg-icon {
   width: 44px; height: 44px; border-radius: 50%; flex: none;
@@ -783,7 +852,6 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 
 /* ---- /chat ---- */
-.chat-main { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; padding: var(--space-2); }
 .chat-head {
   display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
   padding: var(--space-2) var(--space-3) var(--space-3);
@@ -927,7 +995,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 /* ---- narrow ---- */
 @media (max-width: 1000px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
-  .side { position: static; height: auto; }
+  .side { position: static; height: auto; gap: var(--space-4); }
+  .nav-group { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
+  .nav-group-name { width: 100%; }
   .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .row > summary { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
   .row-panel, .form-grid, .limits, .adv-body { grid-template-columns: minmax(0, 1fr); }
@@ -936,7 +1006,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 }
 @media (max-width: 620px) {
   .shell { padding: var(--space-2); gap: var(--space-2); }
-  .main, .chat-main { padding: var(--space-1); }
+  .main { padding: var(--space-1); }
   .g4 { grid-template-columns: minmax(0, 1fr); }
   .turn { grid-template-columns: minmax(0, 1fr); }
   .turn-av { display: none; }

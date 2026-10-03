@@ -98,7 +98,7 @@ describe('who gets the chat face', () => {
     const index = await (
       await h.handle(asSession('GET', '/', v.sid, { header: false }))
     ).text()
-    expect(index.includes('id="to-chat"')).toBe(false)
+    expect(index.includes('id="nav-chat"')).toBe(false)
     expect(index.includes('只读账号')).toBe(true)
     expect(h.chat.opened + h.chat.transcripts + h.chat.sends).toBe(0)
   })
@@ -109,7 +109,7 @@ describe('who gets the chat face', () => {
     const index = await (
       await h.handle(asSession('GET', '/', m.sid, { header: false }))
     ).text()
-    expect(index.includes('id="to-chat"')).toBe(true)
+    expect(index.includes('id="nav-chat"')).toBe(true)
     expect(index.includes('成员账号')).toBe(true)
     for (const [method, path, body] of [
       ['POST', '/v0/agents', { address: ADDRESS, endpoint: 'ws://x' }],
@@ -203,7 +203,7 @@ describe('who gets the chat face', () => {
     expect(reads()).toBe(before)
     expect(h.chat.listeners.size).toBe(listeners)
     const index = await (await h.handle(asBearer('GET', '/', VIEW))).text()
-    expect(index.includes('id="to-chat"')).toBe(false)
+    expect(index.includes('id="nav-chat"')).toBe(false)
     expect(index.includes('只读令牌')).toBe(true)
   })
 })

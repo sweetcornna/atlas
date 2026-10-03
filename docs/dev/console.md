@@ -542,11 +542,18 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 ## §5 路由表
 
-`v0` 是 API，`fragments` 是页面局部刷新用的 HTML 片段，两者数据同源。
+`v0` 是 API，`fragments` 是页面局部刷新用的 HTML 片段，两者数据同源。整页按区域分开，
+每个区域一个模块（`packages/console/src/routes/`，约定见 §5.2）；下表的页面行就是那张
+路由表的十二个区域。
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | view | 整页 |
+| GET | `/` | view | 总览：节点、审计近况、上限 |
+| GET | `/nodes`、`/nodes/<节点>` | view | 节点名册；带节点名时只列那一个节点，注册中心没有它就是 404 页 |
+| GET | `/audit?…`、`/audit/trace/<traceId>` | view | 审计轨迹（查询参数同 `/v0/audit`）；单条消息链一页，轨迹里没有就是 404 页 |
+| GET | `/servers` | view | 服务器归属与备注（§11） |
+| GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名，以及协议与运行时上限 |
+| GET | `/alerts`、`/jobs`、`/approvals`、`/providers`、`/access`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
@@ -597,7 +604,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 | 等级 | 哪些路由 | cookie 单独够不够 |
 | --- | --- | --- |
-| `document` | `GET /`、`GET /chat` | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
+| `document` | 每个区域页：`GET /`、`/nodes`、`/audit`、`/chat`……（`routes/` 里各模块的 `page`） | **够。**顶层导航带不了自定义头；而外站页面就算逼浏览器导航过来，同源策略让它一个字节都读不到，渲染一张页面本身也不改变这台控制台或它背后的网络 |
 | `stream` | `GET /v0/chat/stream` | **够，除非 `Sec-Fetch-Site` 说调用者来自别的源。**`EventSource` 同样带不了头，所以它只能拿这个等级 |
 | `guarded` | **其余每一条要凭据的**：所有写、所有 JSON 读、所有 HTML 片段 | **不够**，必须同时带 `X-Qianmo-Console`。跨源调用者设不了它，因为那会触发一次本服务从不回答的预检 |
 
@@ -609,6 +616,61 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 角色判定**排在位置判定之前**：没有有效凭据的调用者一律拿 401，无论他有没有顺手带上那个
 控制台头——否则那个头就成了一个「这是不是一枚真 cookie」的探针。
+
+
+### 5.2 页面外壳与区域模块
+
+**一个区域一个模块。**`packages/console/src/routes/index.ts` 的 `ROUTES` 按侧栏顺序列出
+十二个区域（运行：总览、节点、对话、消息链、告警、值守作业、审批；配置：模型服务、
+服务器；管理：账号与访问、用量、设置与关于），每个模块是 `routes/types.ts` 的 `RouteModule`：
+
+| 字段 | 是什么 |
+| --- | --- |
+| `area` | 侧栏与面包屑里的名字、分组、`href`、图标；`pending: true` 表示占位 |
+| `page` | 文档：`match(segments)` 认领路径、`guard`（`view` 或 `chat`）、可选的 `available`、`render` 返回 `PageRender`（标题、面包屑、右上动作、正文、是否轮询、状态码），以及只属于这一页的 `css` 与 `script` |
+| `api` / `fragments` | 这个区域认领的 `/v0/<head>` 与 `/fragments/<head>` |
+
+`http.ts` 只留不属于任何区域的东西：凭据、登录与邀请两道门、账号 API、`/v0/health`、
+两个 assets、外壳、HTML 错误页和兜底 500。一个 head 只能被一个模块认领，页面不得认领
+`v0`、`fragments`、`assets`、`login`、`logout`、`invite`（`test/routes.test.ts` 钉住）。
+新区域的页面包只改自己的路由文件、视图文件和页面脚本，不碰 `http.ts` 与共享样式。
+
+**外壳**（`view/shell.ts`）：左侧三组导航、顶栏面包屑与页面动作、注册中心健康标记、
+用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
+**节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
+
+**占位页**（`routes/stub.ts` 的 `stubRoute`）：告警、值守作业、审批、模型服务、账号与
+访问、用量六个区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
+真页面就是把那个模块文件里的 `stubRoute(...)` 换成完整的 `RouteModule`。
+
+**响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
+策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。
+
+**错误页**：浏览器导航（`GET`/`HEAD` 且 `Accept` 含 `text/html`）进到 404、405、500、
+501、503 时拿到的是 HTML 页面——已登录的在外壳里，未登录的在登录面板上；脚本和
+`/v0`、`/fragments` 仍然拿 JSON。
+
+**前端约定**（共享运行时 `assets/client.ts`，挂在 `window.qianmoConsole`）：
+
+| 标记 | 含义 |
+| --- | --- |
+| `data-write` | 写控件。只读凭据（view 令牌、viewer/member 角色）拿到的页面上一个都没有，顶栏改为一句「只读 · 写操作需要…」（`routes/shared.ts` 的 `canWrite`；`test/roles.test.ts` 扫全部页面与片段） |
+| `data-poll` / `data-swap` | 被轮询的区域与它要替换的子区域 id |
+| `data-key` | 行的稳定键。轮询替换前记下展开的 `<details>` 与焦点，替换后按键找回；区域的 `data-refreshed` 每刷新一次加一 |
+| `data-open-dialog` | 打开某个原生 `<dialog>`（`showModal`） |
+
+第一个 401 会停掉全部轮询与对话流，并弹出「会话已失效」对话框，链接回到当前页的登录门。
+Escape 可以关掉它（Chrome 只在刚有点击时允许页面拦 Escape，且不允许连拦两次）；关掉以后
+页面仍可阅读，此后任何要访问服务器的操作都不会发出，并重新弹出对话框。操作结果统一走右下角
+toast（`qc.toast`，文本经 `textContent` 写入）。
+
+**动作账本端口**（`deps.ts` 的 `ActionLedgerPort`，可选的 `ConsoleDeps.actions`）：每个写
+路由先 `admit()`，账本写不进去就 503 且什么都不做；做完再 `record()` 一条
+`ConsoleAction`（时间、请求 id、主体、动作、目标、结果、失败码）。动作名是
+`CONSOLE_ACTIONS` 那张表。生产实现归 P15.9；测试用 `test/memoryActions.ts`。
+
+**浏览器级测试**（`test/browser/`）：经 DevTools 协议驱动无头 Chrome，只用 Bun 自带的
+`WebSocket` 与 `Bun.spawn`。`QIANMO_CHROME` 指定浏览器；找不到 Chrome 时整组跳过并打印原因。
 
 ---
 
@@ -1290,11 +1352,15 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 
 | 文件 | 是什么 |
 | --- | --- |
-| `packages/console/src/deps.ts` | **六个端口的契约**。改端口形状从这里开始 |
+| `packages/console/src/deps.ts` | **端口契约**，含可选的动作账本 `ActionLedgerPort`（§5.2）。改端口形状从这里开始 |
 | `packages/console/src/auth.ts` | token 策略（生成 / 校验 / 角色判定 / 三个位置）与 **cookie 那套论证**的唯一出处（§4.1） |
 | `packages/console/src/throttle.ts` | 登录失败退避：免罚次数、翻倍、上限、遗忘窗口，以及「为什么反代的 `limit_req` 顶不了它」（§8.4） |
 | `packages/console/src/view/login.ts` | `/login` 那张卡片。包里唯一没有 `<script>` 的页面，理由在模块注释 |
-| `packages/console/src/http.ts` | 路由、鉴权门、三个保护等级的分派（§5.1）、JSON 与 HTML 片段 |
+| `packages/console/src/http.ts` | 鉴权门、三个保护等级的分派（§5.1）、登录与邀请两道门、HTML 错误页、把请求分给区域模块 |
+| `packages/console/src/routes/` | 每个区域一个模块：页面、`/v0` 与 `/fragments` 的 head；`index.ts` 是路由表与外壳拼装，`stub.ts` 是占位页（§5.2） |
+| `packages/console/src/view/shell.ts` | 外壳：侧栏、顶栏、面包屑、用户菜单、会话失效对话框、toast 区（§5.2） |
+| `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
+| `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
 | `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
