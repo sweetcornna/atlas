@@ -17,6 +17,7 @@ import {
   resolveDeepSeekTemperature,
 } from '../../../utils/model/deepseekTuning.js'
 import { usesMaxCompletionTokens } from '../../qianmo/modelCompat/outputTokenParam.js'
+import { omitsSamplingTemperature } from '../../qianmo/modelCompat/samplingParams.js'
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -217,7 +218,10 @@ export function buildOpenAIRequestBody(params: {
         ? deepseekTemperature !== undefined && {
             temperature: deepseekTemperature,
           }
-        : temperatureOverride !== undefined && {
+        : temperatureOverride !== undefined &&
+          // qianmo P18.5 (hermes #12): reasoning models and Kimi take no
+          // temperature — src/services/qianmo/modelCompat/samplingParams.ts.
+          !omitsSamplingTemperature(model, baseURL) && {
             temperature: temperatureOverride,
           })),
   }

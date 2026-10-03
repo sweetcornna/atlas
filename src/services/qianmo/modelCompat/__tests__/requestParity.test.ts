@@ -462,6 +462,79 @@ const ROWS: ParityRow[] = [
     source: 'design §5.6 row 3 is chat-only; baseline 1b477a37',
   },
 
+  // ── #12: side queries (temperatureOverride 0) to reasoning models / Kimi ──
+  ...(
+    [
+      [
+        'o3',
+        OFFICIAL,
+        false,
+        'design §5.6 row 12 (o-series); hermes-research §11.9-② row 1 flips',
+      ],
+      ['gpt-5.4', GATEWAY, false, 'design §5.6 row 12 (gpt-5)'],
+      ['gpt-6-luna', OFFICIAL, false, 'design §5.6 row 12 (gpt-6)'],
+      [
+        'kimi-k3',
+        'https://api.moonshot.cn/v1',
+        false,
+        'hermes auxiliary_client.py:604-616; §11.9-② row 3 flips',
+      ],
+      [
+        'moonshot-v1-8k',
+        'https://api.moonshot.ai/v1',
+        false,
+        'hermes kimi-coding/__init__.py:120 (host)',
+      ],
+      [
+        'glm-5.2',
+        'https://open.bigmodel.cn/api/paas/v4',
+        true,
+        'baseline 1b477a37 (not a reasoning name)',
+      ],
+      ['qwen3-coder', 'http://localhost:8000/v1', true, 'baseline 1b477a37'],
+    ] as const
+  ).map(
+    ([model, baseURL, sendsTemperature, source]): ParityRow => ({
+      id: `12-side-${model}-${new URL(baseURL).hostname}`,
+      vendor: 'chat lane side query',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'off',
+      sideQuery: true,
+      expect: sendsTemperature
+        ? { path: '/chat/completions', present: { temperature: 0 } }
+        : { path: '/chat/completions', absent: ['temperature'] },
+      source,
+    }),
+  ),
+  {
+    id: '12-side-deepseek-own-temperature',
+    vendor: 'DeepSeek (chat lane)',
+    model: 'deepseek-v4-pro',
+    baseURL: DEEPSEEK,
+    wire: undefined,
+    effort: {},
+    thinking: 'off',
+    sideQuery: true,
+    extraEnv: DEEPSEEK_CHAT_LANE,
+    expect: { path: '/chat/completions', present: { temperature: 0 } },
+    source: 'baseline 1b477a37 (DeepSeek coding temperature, #30 kept)',
+  },
+  {
+    id: '12-side-responses-unchanged',
+    vendor: 'OpenAI Responses',
+    model: 'gpt-6-luna',
+    baseURL: GATEWAY,
+    wire: 'responses',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: true,
+    expect: { path: '/responses', absent: ['temperature'] },
+    source: 'baseline 1b477a37 (Responses never sent it)',
+  },
+
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
   // Baseline captured from 1b477a37 through this same stub:
   // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt
