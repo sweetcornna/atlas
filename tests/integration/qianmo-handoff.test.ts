@@ -182,12 +182,24 @@ interface Ran {
 
 async function qm(
   args: readonly string[],
-  options: { cwd?: string; stdin?: string; env?: Record<string, string> } = {},
+  options: {
+    cwd?: string
+    /** Passed as a Blob: a socket on macOS, a memfd (a regular file) on Linux. */
+    stdin?: string
+    /** Passed as this file: a regular file on every system, like `< file`. */
+    stdinFile?: string
+    env?: Record<string, string>
+  } = {},
 ): Promise<Ran> {
   const proc = Bun.spawn([process.execPath, ...cliPrefix(), ...args], {
     cwd: options.cwd ?? repo,
     env: options.env ?? laptopEnv(),
-    stdin: options.stdin === undefined ? 'ignore' : new Blob([options.stdin]),
+    stdin:
+      options.stdinFile !== undefined
+        ? Bun.file(options.stdinFile)
+        : options.stdin === undefined
+          ? 'ignore'
+          : new Blob([options.stdin]),
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -639,12 +651,17 @@ describe('qm handoff end to end', () => {
         ccTranscript(CC_DONE),
         claudeCodeTranscript(CC_DONE, join(repo, 'docs'), 'complete'),
       )
+      // The hook input as a regular file. The CLI loads ink before it
+      // dispatches, and ink touches process.stdin at load; read through
+      // process.stdin, a file-backed stdin then came out empty — on Linux the
+      // Blob stdin below is a file too, which is how CI saw it first.
+      const doneInput = join(root, 'cc-done-hook-input.json')
+      writeFileSync(
+        doneInput,
+        claudeCodeHookInput(CC_DONE, ccTranscript(CC_DONE), join(repo, 'docs')),
+      )
       const done = await qm(['handoff', 'sync', '--hook', 'claude-code'], {
-        stdin: claudeCodeHookInput(
-          CC_DONE,
-          ccTranscript(CC_DONE),
-          join(repo, 'docs'),
-        ),
+        stdinFile: doneInput,
       })
       expect(done).toEqual({ code: 0, stdout: '', stderr: '' })
       const ref = `refs/qianmo/sessions/${DEVICE}/${CC_DONE}`

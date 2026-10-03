@@ -28,6 +28,7 @@
 
 import { basename, isAbsolute, resolve } from 'node:path'
 import { statSync } from 'node:fs'
+import { isatty } from 'node:tty'
 import { sessionRef, type HandoffTool } from '@qianmo/handoff'
 import { qmcodeHome } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
@@ -320,15 +321,21 @@ async function runInit(
 
 // ─── sync ────────────────────────────────────────────────────────────
 
+/**
+ * The hook's JSON on stdin, read through `Bun.stdin` rather than by iterating
+ * `process.stdin`. The CLI entry loads ink before it dispatches here (via
+ * `startupProfiler`), and ink's `StdinContext` touches `process.stdin` at
+ * module load. Under Bun 1.3.13 a `process.stdin` made over a regular file and
+ * not read in that same tick gives nothing afterwards: a `< file` redirect on
+ * any system, and on Linux every Blob stdin `Bun.spawn` passes (a memfd).
+ * Measured on macOS and in a Linux container; a pipe, which is what Claude
+ * Code hands its hooks, was not affected. `Bun.stdin` reads all three.
+ */
 async function readStdin(): Promise<string> {
-  if (process.stdin.isTTY) {
+  if (isatty(0)) {
     throw new HandoffUserError('--hook claude-code 要从标准输入读 hook 的 JSON')
   }
-  const chunks: Buffer[] = []
-  for await (const chunk of process.stdin) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
-  }
-  return Buffer.concat(chunks).toString('utf8')
+  return await Bun.stdin.text()
 }
 
 interface HookReport {
