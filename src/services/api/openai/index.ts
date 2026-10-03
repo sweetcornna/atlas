@@ -19,7 +19,10 @@ import type {
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
-import { adaptGuardedChatStream } from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
+import {
+  adaptGuardedChatStream,
+  chatStreamIdleTimeoutMs,
+} from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
 import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
 import {
   sendDroppingRejectedParameters,
@@ -556,7 +559,14 @@ export async function* queryModelOpenAI(
               }),
               openaiModel,
               { includeCacheWriteTokens: reportsCacheWrites },
-              { reasoningDetails },
+              {
+                reasoningDetails,
+                // qianmo P18.12 (hermes #18): chatStreamGuards.ts.
+                idleTimeout: {
+                  ms: chatStreamIdleTimeoutMs(),
+                  label: 'OpenAI Chat',
+                },
+              },
             ),
     })
 

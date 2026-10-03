@@ -120,6 +120,11 @@ export type CaptureParams = {
   outputs?: unknown[]
   /** options.fallbackModel — what query.ts armed the request with (P18.12). */
   fallbackModel?: string
+  /**
+   * Answer with this fetch instead of the recording one (P18.12: stalled
+   * streams). Nothing is captured then.
+   */
+  fetchOverride?: typeof fetch
 }
 
 /**
@@ -187,7 +192,7 @@ export async function captureOpenAIRequests(
       alwaysAskRules: {},
       isBypassPermissionsModeAvailable: false,
     }),
-    fetchOverride,
+    fetchOverride: params.fetchOverride ?? fetchOverride,
     effortValue: params.effortValue,
     temperatureOverride: params.temperatureOverride,
     maxOutputTokensOverride: params.maxOutputTokensOverride,

@@ -25,7 +25,6 @@ import {
   anthropicMessagesToOpenAI,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
-  adaptOpenAIStreamToAnthropic,
   resolveGrokModel,
 } from '@ant/model-provider'
 import {
@@ -53,6 +52,10 @@ import {
 import { isUserAbort } from '../userAbort.js'
 import { FallbackTriggeredError } from '../withRetry.js'
 import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
+import {
+  adaptGuardedChatStream,
+  chatStreamIdleTimeoutMs,
+} from '../../qianmo/modelCompat/chatStreamGuards.js'
 
 const GROK_MAX_TOKENS_ENV_HINT =
   'GROK_MAX_TOKENS or CLAUDE_CODE_MAX_OUTPUT_TOKENS'
@@ -159,11 +162,14 @@ export async function* queryModelGrok(
       fallback: { model: options.model, fallbackModel: options.fallbackModel },
       onRetry: () => clearGrokClientCache(),
       create: async () =>
-        adaptOpenAIStreamToAnthropic(
+        adaptGuardedChatStream(
           (await getClient().chat.completions.create(request, {
             signal,
           })) as AsyncIterable<ChatCompletionChunk>,
           grokModel,
+          undefined,
+          // qianmo P18.12 (hermes #18): chatStreamGuards.ts.
+          { idleTimeout: { ms: chatStreamIdleTimeoutMs(), label: 'Grok' } },
         ),
     })
 

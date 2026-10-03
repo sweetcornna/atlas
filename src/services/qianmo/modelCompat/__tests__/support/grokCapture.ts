@@ -44,8 +44,11 @@ export type GrokCaptureParams = {
   messages?: Message[]
   /** Answer the first N requests with this error instead of a stream. */
   failFirst?: { status: number; body: unknown }[]
-  /** SSE bodies for successive requests; the last one repeats. */
-  chatSSE?: string | string[]
+  /**
+   * SSE bodies for successive requests; the last one repeats. A
+   * `ReadableStream` is served once, as is (e.g. a stream that stalls).
+   */
+  chatSSE?: string | string[] | ReadableStream<Uint8Array>
   outputs?: unknown[]
   signal?: AbortSignal
   /** options.fallbackModel — what query.ts armed the request with. */
@@ -73,7 +76,9 @@ export async function captureGrokRequests(
   }
 
   const failures = [...(params.failFirst ?? [])]
-  const bodies = Array.isArray(params.chatSSE)
+  const bodies: (string | ReadableStream<Uint8Array>)[] = Array.isArray(
+    params.chatSSE,
+  )
     ? [...params.chatSSE]
     : [params.chatSSE ?? CHAT_SSE]
   const captured: { url: string; body: Record<string, unknown> }[] = []
