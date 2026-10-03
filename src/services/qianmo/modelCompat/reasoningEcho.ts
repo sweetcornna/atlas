@@ -56,7 +56,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { targetHostIs } from './targetMatch.js'
 import { replayThoughtSignatures } from './thoughtSignatureReplay.js'
 
-export type ReasoningEchoFamily = 'kimi' | 'deepseek' | 'mimo'
+type ReasoningEchoFamily = 'kimi' | 'deepseek' | 'mimo'
 
 type EchoRule = {
   family: ReasoningEchoFamily

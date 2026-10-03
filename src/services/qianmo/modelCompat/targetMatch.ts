@@ -22,9 +22,7 @@
 const SDK_DEFAULT_HOST = 'api.openai.com'
 
 /** Lower-cased hostname of `baseURL`; a missing scheme is tolerated. */
-export function targetHostname(
-  baseURL: string | undefined,
-): string | undefined {
+function targetHostname(baseURL: string | undefined): string | undefined {
   const trimmed = baseURL?.trim()
   if (!trimmed) return SDK_DEFAULT_HOST
   try {

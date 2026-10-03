@@ -33,7 +33,7 @@ import { modelSupportsEffort } from 'src/utils/model/effort.js'
 import { resolveChatVendorReasoning } from './effortVendors.js'
 
 /** A `reasoning_effort` value the chat lane can put on the wire. */
-export type ChatWireReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
+type ChatWireReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max'
 
 /**
  * The gate: does a chat request for `model` carry `reasoning_effort` at all.

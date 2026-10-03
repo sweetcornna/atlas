@@ -92,7 +92,7 @@ import { modelSupportsEffort } from 'src/utils/model/effort.js'
 import { isKimiModel } from './samplingParams.js'
 import { bareModelId, targetHostIs } from './targetMatch.js'
 
-export type ChatEffortVendor =
+type ChatEffortVendor =
   | 'kimi'
   | 'glm'
   | 'minimax'
@@ -102,7 +102,7 @@ export type ChatEffortVendor =
 type Level = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type Preference = 'on' | 'off' | undefined
 
-export type ChatVendorReasoningContext = {
+type ChatVendorReasoningContext = {
   /** Wire model id. */
   model: string
   /** The request's endpoint (`OPENAI_BASE_URL`). */
@@ -309,7 +309,7 @@ export function applyChatVendorReasoning<T extends object>(
 // ── Grok lane (P18.8, hermes #13; design §5.6 row 13, §5.10) ──────────────
 
 /** A `reasoning_effort` value the Grok lane sends. */
-export type GrokWireEffort = 'low' | 'medium' | 'high' | 'xhigh'
+type GrokWireEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
 type GrokEffortRow = {
   /** Prefix of the model id after any `vendor/` prefix. */
