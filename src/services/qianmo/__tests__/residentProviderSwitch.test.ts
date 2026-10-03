@@ -372,13 +372,17 @@ describe('resident provider hot switch (P18.3)', () => {
     async () => {
       const { config, socket } = setUpNode('two-recycles')
       // Two rapid *failures* would park this node. Two recycles must not.
-      const node = startResident(socket, { maxRapidFailures: 2 })
+      const node = startResident(socket, {
+        maxRapidFailures: 2,
+        mailboxPollMs: ONE_POLL_PER_GENERATION_MS,
+      })
       await waitUntil(() => node.ready() === 1)
       const firstSession = defaultSessionId(config)
       const firstChild = node.spawned[0]
 
       const reset = stage({ recycle: { sessions: 'reset' } })
-      node.resident.checkProviderConfig()
+      // The first check that finds the node idle commits and recycles.
+      await checkUntil(node, () => node.switches.length === 1)
       await waitUntil(() => node.ready() === 2)
       expect(node.switches).toEqual([
         {
@@ -397,7 +401,7 @@ describe('resident provider hot switch (P18.3)', () => {
         recycle: { sessions: 'keep' },
         profile: { revision: 4 },
       })
-      node.resident.checkProviderConfig()
+      await checkUntil(node, () => node.switches.length === 2)
       await waitUntil(() => node.ready() === 3)
       expect(node.switches.at(-1)).toEqual({
         requestId: keep,
