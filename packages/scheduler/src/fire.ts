@@ -78,6 +78,7 @@ export interface FireDispatch {
  */
 export type SchedulerDispatch = (
   input: FireDispatch,
+  // biome-ignore lint/suspicious/noConfusingVoidType: void keeps every existing `async () => {}` dispatch assignable; `undefined` would not
 ) => Promise<void | 'skipped'>
 
 export interface SchedulerJobStatus {

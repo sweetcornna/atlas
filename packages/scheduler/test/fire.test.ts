@@ -7,7 +7,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LIMITS } from '@qianmo/protocol'
 import type { BackoffOptions } from '../src/backoff.js'
-import { type FireDispatch, SchedulerRunner } from '../src/fire.js'
+import {
+  type FireDispatch,
+  type SchedulerDispatch,
+  SchedulerRunner,
+} from '../src/fire.js'
 import { dedupKeyOf } from '../src/job.js'
 import { SchedulerStore } from '../src/store.js'
 
@@ -64,7 +68,7 @@ function makeStore(): SchedulerStore {
 
 function runner(options: {
   readonly store?: SchedulerStore
-  readonly dispatch: (input: FireDispatch) => Promise<void | 'skipped'>
+  readonly dispatch: SchedulerDispatch
   readonly paused?: () => boolean
   readonly onError?: (error: unknown) => void
   readonly backoff?: BackoffOptions
