@@ -566,6 +566,8 @@ export async function* queryModelOpenAI(
                   ms: chatStreamIdleTimeoutMs(),
                   label: 'OpenAI Chat',
                 },
+                // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
+                errorChunks: { label: 'OpenAI Chat' },
               },
             ),
     })

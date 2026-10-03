@@ -37,10 +37,32 @@
  * retried. hermes also raises the bound for large contexts, reasoning models
  * and local endpoints (`:5023-5075`); not taken here. Only the default is
  * taken; the code is ours.
+ *
+ * #19 — an error sent inside the stream. Some OpenAI-compatible providers
+ * answer a bad request with a chunk that has no `choices` and the error in
+ * top-level `error_type` / `error_message` (DeepInfra). The SDK only throws
+ * for a top-level `error` object, and the adapter reads a chunk without
+ * `choices` as an empty delta — so the stream ended without a finish_reason
+ * and the ladder re-sent the same bad request, then reported "stream ended
+ * before finish_reason" (fixture `__tests__/fixtures/deepinfraErrorChunk.ts`,
+ * measured 1 + `CLAUDE_CODE_MAX_RETRIES` requests). Now such a chunk ends the
+ * attempt with a `NonRetryableError` carrying the vendor's words.
+ *
+ * 规则来源同上，`agent/chat_completion_helpers.py:4091-4122` (#65631): "Some
+ * OpenAI-compatible providers (DeepInfra, etc.) return validation errors as
+ * in-stream error chunks … Without this check the error is silently dropped
+ * … and pointless retries on the same bad request." Qianmo difference: hermes
+ * derives a status from the payload and lets its classifier decide; here the
+ * chunk is never retried (design §5.6 row 19), its category taken from the
+ * classifier.
  */
 import { adaptOpenAIStreamToAnthropic } from '@ant/model-provider'
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions/completions.mjs'
 import { OpenAIRequestError } from 'src/services/api/openai/retry.js'
+import {
+  classifyRetryableAPIError,
+  NonRetryableError,
+} from 'src/services/api/retryClassification.js'
 import {
   clearFreezeAwareTimeout,
   setFreezeAwareTimeout,
@@ -68,6 +90,8 @@ export type ChatStreamGuards = {
   reasoningDetails?: unknown[]
   /** Fail the attempt when no chunk arrives for this long (#18). */
   idleTimeout?: { ms: number; label: string }
+  /** End the attempt at an in-stream error chunk (#19). */
+  errorChunks?: { label: string }
 }
 
 /**
@@ -120,6 +144,49 @@ export async function* watchChatStreamIdle(
   }
 }
 
+/**
+ * The in-stream error a chunk carries (#19): `choices` missing or empty and
+ * a top-level `error_type` or `error_message`. `undefined` for every other
+ * chunk, including the usage-only final chunk.
+ */
+export function streamErrorChunk(
+  chunk: unknown,
+): { type?: string; message?: string } | undefined {
+  if (typeof chunk !== 'object' || chunk === null) return undefined
+  const record = chunk as Record<string, unknown>
+  const choices = record.choices
+  if (Array.isArray(choices) && choices.length > 0) return undefined
+  const type =
+    typeof record.error_type === 'string' && record.error_type
+      ? record.error_type
+      : undefined
+  const message =
+    typeof record.error_message === 'string' && record.error_message
+      ? record.error_message
+      : undefined
+  return type || message ? { type, message } : undefined
+}
+
+/** `stream`, ending the attempt at the first in-stream error chunk. */
+export async function* throwOnStreamErrorChunks(
+  stream: AsyncIterable<ChatCompletionChunk>,
+  label: string,
+): AsyncGenerator<ChatCompletionChunk> {
+  for await (const chunk of stream) {
+    const error = streamErrorChunk(chunk)
+    if (error) {
+      const detail = [error.type, error.message].filter(Boolean).join(': ')
+      throw new NonRetryableError(`${label} stream error: ${detail}`, {
+        category: classifyRetryableAPIError({
+          type: error.type,
+          message: error.message,
+        }).category,
+      })
+    }
+    yield chunk
+  }
+}
+
 /** `stream` with every guard in `guards` applied, in chunk order. */
 export function guardChatStream(
   stream: AsyncIterable<ChatCompletionChunk>,
@@ -128,6 +195,9 @@ export function guardChatStream(
   let guarded = stream
   if (guards.idleTimeout) {
     guarded = watchChatStreamIdle(guarded, guards.idleTimeout)
+  }
+  if (guards.errorChunks) {
+    guarded = throwOnStreamErrorChunks(guarded, guards.errorChunks.label)
   }
   if (guards.reasoningDetails) {
     guarded = tapReasoningDetails(guarded, guards.reasoningDetails)

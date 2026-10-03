@@ -169,7 +169,11 @@ export async function* queryModelGrok(
           grokModel,
           undefined,
           // qianmo P18.12 (hermes #18): chatStreamGuards.ts.
-          { idleTimeout: { ms: chatStreamIdleTimeoutMs(), label: 'Grok' } },
+          {
+            idleTimeout: { ms: chatStreamIdleTimeoutMs(), label: 'Grok' },
+            // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
+            errorChunks: { label: 'Grok' },
+          },
         ),
     })
 
