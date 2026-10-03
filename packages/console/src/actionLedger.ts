@@ -196,7 +196,7 @@ function hasControlCharacter(text: string): boolean {
 function withoutControlCharacters(text: string): string {
   let out = ''
   for (const char of text) {
-    out += hasControlCharacter(char) ? '�' : char
+    out += hasControlCharacter(char) ? '\uFFFD' : char
   }
   return out
 }

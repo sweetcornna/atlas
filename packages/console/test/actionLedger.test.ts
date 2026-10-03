@@ -206,7 +206,7 @@ describe('no secret reaches the file', () => {
     await ledger.record(action({ target: 'x'.repeat(2_000) }))
     await ledger.record(action({ target: '' }))
     const targets = store.lines().map(line => line.data['target'])
-    expect(targets[1]).toBe('a�b�c')
+    expect(targets[1]).toBe('a\uFFFDb\uFFFDc')
     expect(String(targets[2]).length).toBe(512)
     expect(String(targets[2]).endsWith('…')).toBe(true)
     expect(targets[3]).toBe('-')
