@@ -43,3 +43,20 @@ export {
   type QianmoRef,
   type ValidationResult,
 } from './manifest.js'
+
+export { HandoffGitError } from './git.js'
+
+export {
+  HANDOFF_GIT_IDENTITY,
+  MAX_CHANGED_FILE_BYTES,
+  OversizedFileError,
+  SECRET_PATH_PATTERNS,
+  SecretFoundError,
+  shadowCommit,
+  shadowTree,
+  type SecretFinding,
+  type ShadowCommit,
+  type ShadowCommitOptions,
+  type ShadowOptions,
+  type ShadowTree,
+} from './shadow.js'
