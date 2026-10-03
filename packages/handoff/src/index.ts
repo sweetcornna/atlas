@@ -60,3 +60,9 @@ export {
   type ShadowOptions,
   type ShadowTree,
 } from './shadow.js'
+
+export {
+  sessionCommit,
+  type SessionCommit,
+  type SessionCommitOptions,
+} from './session.js'
