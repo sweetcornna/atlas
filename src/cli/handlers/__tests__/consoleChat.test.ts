@@ -1061,3 +1061,123 @@ describe('chat capability signing', () => {
     expect(h.dialer.links).toHaveLength(0)
   })
 })
+
+describe('chat local commands (P18.20)', () => {
+  const signing = {
+    issueCapability: (binding: WakeCapabilityBinding) =>
+      `token-for-${binding.taskId}`,
+  }
+
+  test('a command goes out signed, marked, and with its text unchanged', async () => {
+    const h = harness(signing)
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '/autocompact 150k',
+      command: 'autocompact',
+    })
+
+    expect(sent.ok && sent.value).toMatchObject({
+      author: 'operator',
+      text: '/autocompact 150k',
+      command: 'autocompact',
+    })
+    const request = h.dialer.last.sent[0]
+    expect(request?.payload).toEqual({
+      prompt: '/autocompact 150k',
+      command: { name: 'autocompact' },
+    })
+    expect(request?.cap).toBe(`token-for-${request?.taskId}`)
+  })
+
+  test('a message carries no marker', async () => {
+    const h = harness(signing)
+    const { request } = await openAndSend(h, '/autocompact 150k')
+    expect(request.payload).toEqual({ prompt: '/autocompact 150k' })
+  })
+
+  test('without a signer a command is refused here, not sent to be read as text', async () => {
+    const h = harness()
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+
+    const sent = await h.hub.send({
+      sessionId: opened.value.id,
+      text: '/context',
+      command: 'context',
+    })
+
+    expect(sent.ok).toBe(false)
+    if (!sent.ok) {
+      expect(sent.failure.code).toBe('unsupported')
+      expect(sent.failure.message).toContain('--chat-sign')
+    }
+    expect(h.dialer.links).toHaveLength(0)
+    const transcript = await h.hub.transcript(opened.value.id)
+    expect(transcript.ok && transcript.value.turns).toEqual([])
+  })
+
+  test('the answer is recorded as command output, and survives a restart as one', async () => {
+    const storePath = join(directory, 'commands.ndjson')
+    const first = harness({ ...signing, storePath })
+    const opened = await first.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    await first.hub.send({
+      sessionId: opened.value.id,
+      text: '/context',
+      command: 'context',
+    })
+    const request = first.dialer.last.sent[0] as QianmoMessage
+    first.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'completed',
+        content: '## Context Usage',
+        completedAt: 2,
+      }),
+    )
+    await first.hub.close()
+
+    const second = harness({ ...signing, storePath, idPrefix: 'again' })
+    const transcript = await second.hub.transcript(opened.value.id)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(
+      transcript.value.turns.map(turn => [
+        turn.author,
+        turn.text,
+        turn.command,
+      ]),
+    ).toEqual([
+      ['operator', '/context', 'context'],
+      ['agent', '## Context Usage', 'context'],
+    ])
+  })
+
+  test('a failed command is a failure line, not command output', async () => {
+    const h = harness(signing)
+    const opened = await h.hub.open(TARGET)
+    if (!opened.ok) throw new Error(opened.failure.message)
+    await h.hub.send({
+      sessionId: opened.value.id,
+      text: '/compact',
+      command: 'compact',
+    })
+    const request = h.dialer.last.sent[0] as QianmoMessage
+    h.dialer.last.reply(
+      taskResult(request, {
+        outcome: 'failed',
+        code: 'E_TASK_TIMEOUT',
+        reason: 'no answer',
+      }),
+    )
+
+    const transcript = await h.hub.transcript(opened.value.id)
+    if (!transcript.ok) throw new Error('unreachable')
+    expect(transcript.value.turns.at(-1)).toMatchObject({
+      author: 'agent',
+      state: 'failed',
+    })
+    expect(transcript.value.turns.at(-1)?.command).toBeUndefined()
+  })
+})

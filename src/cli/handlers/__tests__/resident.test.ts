@@ -320,6 +320,50 @@ describe('--allow-workspace-edits', () => {
   })
 })
 
+describe('--local-commands-from (P18.20)', () => {
+  const KEY = 'A'.repeat(43)
+
+  test('absent by default: no network message runs a local command', () => {
+    const config = parseResidentArgs(
+      [...BASE, '--trust', `console=${KEY}`],
+      'qianmo',
+    )
+    expect(config.localCommandsFrom).toBeUndefined()
+  })
+
+  test('names a --trust entry, in either spelling, once', () => {
+    const config = parseResidentArgs(
+      [
+        ...BASE,
+        '--trust',
+        `console=${KEY}`,
+        '--local-commands-from',
+        'console',
+        '--local-commands-from=console',
+      ],
+      'qianmo',
+    )
+    expect(config.localCommandsFrom).toEqual(['console'])
+    // The console stays an ordinary trusted issuer as well.
+    expect([...residentTrustedIssuers(config)].sort()).toEqual([
+      'console',
+      'node-b',
+    ])
+  })
+
+  test('refuses a name this node holds no key for, its own included', () => {
+    for (const name of ['console', 'node-b']) {
+      expect(() =>
+        parseResidentArgs([...BASE, '--local-commands-from', name], 'qianmo'),
+      ).toThrow(`--local-commands-from ${name} must name a --trust entry`)
+    }
+  })
+
+  test('is in --help', () => {
+    expect(RESIDENT_HELP_TEXT).toContain('--local-commands-from <node>')
+  })
+})
+
 describe('capability flags (P4.3)', () => {
   const KEY = 'A'.repeat(43)
   const unsignedTask = createMessage({
