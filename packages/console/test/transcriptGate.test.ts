@@ -10,7 +10,13 @@
  * the JSON read, the thread fragment with `?open=1`, and the page with
  * `?session=` — ask `admit` before the transcript is read, and the proof is
  * the port: `ChatPort.transcript` is called zero times while the ledger is
- * closed. The poll (no `?open=1`) records nothing and is left alone.
+ * closed.
+ *
+ * The poll (no `?open=1`) is the fourth path, and the one a script could have
+ * used to read without a trace. It is covered by the reading before it: the
+ * same person's same conversation recorded in the last thirty minutes, and it
+ * goes ahead unrecorded; otherwise it is an opening like the others — asked
+ * first, written down once.
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -18,6 +24,7 @@ import { ActionLedger } from '../src/actionLedger.js'
 import {
   ADDRESS,
   accountsHarness,
+  asAdmin,
   asSession,
   person,
 } from './accountsHarness.js'
@@ -73,13 +80,14 @@ describe('a closed ledger: no transcript is opened', () => {
     expect(actions.entries.length).toBe(before)
   })
 
-  test('fragment: the poll (no ?open=1) is not an opening and is left alone', async () => {
+  test('fragment: a poll with no reading before it is an opening, so it is a 503 too', async () => {
     const { h, actions, id, before } = await closedAfterOpening()
     const response = await h.handle(
       call('GET', `/fragments/chat/thread/${id}`, ADMIN),
     )
-    expect(response.status).toBe(200)
-    expect(h.chat.transcripts).toBe(1)
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain(CLOSED_TEXT)
+    expect(h.chat.transcripts).toBe(0)
     expect(actions.entries.length).toBe(before)
   })
 
@@ -190,5 +198,126 @@ describe('with personal accounts and the hash-chained ledger', () => {
     )
     expect([open.status, closed.status]).toEqual([404, 404])
     expect(await closed.text()).toBe(await open.text())
+  })
+})
+
+// --- the poll: covered by the reading before it -------------------------------
+
+const MINUTE = 60 * 1000
+
+/** An admin-token console on a manual clock, one conversation, nothing read. */
+async function polling() {
+  const actions = new MemoryActionLedger()
+  const h = accountsHarness({ deps: { actions } })
+  const opened = await h.handle(
+    asAdmin('POST', '/v0/chat/sessions', { target: ADDRESS }),
+  )
+  const { id } = (await opened.json()) as { id: string }
+  const poll = () => h.handle(asAdmin('GET', `/fragments/chat/thread/${id}`))
+  const readings = () =>
+    actions.entries.filter(e => e.action === 'chat.transcript.open')
+  return { h, actions, id, poll, readings }
+}
+
+describe('polls: the first read in a window is a reading', () => {
+  test('never opened, polled a hundred times: the first poll is one line, the other 99 none', async () => {
+    const { h, actions, id, poll, readings } = await polling()
+    const asked = actions.admitCalls
+    for (let i = 0; i < 100; i++) {
+      expect((await poll()).status).toBe(200)
+    }
+    expect(readings().map(e => `${e.target} ${e.subject}`)).toEqual([
+      `${id} legacy:admin`,
+    ])
+    // Asked once, for the one that was recorded; the rest were covered.
+    expect(actions.admitCalls - asked).toBe(1)
+    expect(h.chat.transcripts).toBe(100)
+  })
+
+  test('the window runs out: the next poll is another line', async () => {
+    const { h, poll, readings } = await polling()
+    await poll()
+    h.clock.advance(29 * MINUTE)
+    await poll()
+    expect(readings()).toHaveLength(1)
+    // Polls do not stretch the window: thirty minutes after the line, not
+    // after the last poll.
+    h.clock.advance(2 * MINUTE)
+    await poll()
+    expect(readings()).toHaveLength(2)
+    await poll()
+    expect(readings()).toHaveLength(2)
+  })
+
+  test('an explicit opening restarts the window', async () => {
+    const { h, id, poll, readings } = await polling()
+    await poll()
+    h.clock.advance(20 * MINUTE)
+    await h.handle(asAdmin('GET', `/fragments/chat/thread/${id}?open=1`))
+    expect(readings()).toHaveLength(2)
+    h.clock.advance(20 * MINUTE)
+    await poll()
+    expect(readings()).toHaveLength(2)
+  })
+
+  test('each person has their own window', async () => {
+    const actions = new MemoryActionLedger()
+    const h = accountsHarness({ deps: { actions } })
+    const member = await person(h.handle, 'member')
+    const ops = await person(h.handle, 'ops')
+    const opened = await h.handle(
+      asSession('POST', '/v0/chat/sessions', member.sid, {
+        body: { target: ADDRESS },
+      }),
+    )
+    const { id } = (await opened.json()) as { id: string }
+    const path = `/fragments/chat/thread/${id}`
+    await h.handle(asSession('GET', `${path}?open=1`, member.sid))
+    // The owner's opening does not cover anybody else's first poll.
+    await h.handle(asSession('GET', path, ops.sid))
+    await h.handle(asSession('GET', path, ops.sid))
+    await h.handle(asSession('GET', path, member.sid))
+    const subjects = actions.entries
+      .filter(e => e.action === 'chat.transcript.open')
+      .map(e => e.subject)
+    expect(subjects).toHaveLength(2)
+    expect(new Set(subjects).size).toBe(2)
+  })
+
+  test('a closed ledger: an unrecorded poll is a 503 and reads nothing; one inside its window still reads', async () => {
+    const { h, actions, id, poll, readings } = await polling()
+    // Recorded once while the ledger was open: that reading covers the window.
+    await poll()
+    actions.admitResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: '链断了' },
+    }
+    h.chat.transcripts = 0
+    expect((await poll()).status).toBe(200)
+    expect(h.chat.transcripts).toBe(1)
+    // Past the window it is an opening again, and the ledger cannot take it.
+    h.clock.advance(31 * MINUTE)
+    const refused = await poll()
+    expect(refused.status).toBe(503)
+    expect(await refused.text()).toContain(CLOSED_TEXT)
+    expect(h.chat.transcripts).toBe(1)
+    expect(readings()).toHaveLength(1)
+    expect(id).not.toBe('')
+  })
+
+  test('a pair pushed out of the window by 4096 others is recorded again', async () => {
+    const { h, id, poll, readings } = await polling()
+    await poll()
+    const others: string[] = []
+    for (let i = 0; i < 4096; i++) {
+      const opened = await h.chat.open(ADDRESS)
+      if (opened.ok) others.push(opened.value.id)
+    }
+    for (const other of others) {
+      await h.handle(asAdmin('GET', `/fragments/chat/thread/${other}`))
+    }
+    expect(readings()).toHaveLength(4097)
+    await poll()
+    expect(readings().filter(e => e.target === id)).toHaveLength(2)
   })
 })
