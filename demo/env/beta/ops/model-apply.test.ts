@@ -33,7 +33,14 @@ const REPO = resolve(import.meta.dir, '../../../..')
 const SCRIPT = join(REPO, 'demo/env/beta/ops/model-apply.sh')
 const BASH = Bun.which('bash')
 if (BASH === null) throw new Error('这套用例要 bash')
-const HAS_FLOCK = Bun.which('flock') !== null
+/**
+ * The PATH the script runs under in these cases (`sshdEnv`): flock has to be
+ * on THAT path for the script to take the flock branch. Linux runners have
+ * `/usr/bin/flock` (util-linux); stock macOS has none, so there the flock
+ * cases are skipped — by name, so a CI log shows whether they ran.
+ */
+const SCRIPT_SYSTEM_PATH = '/usr/bin:/bin'
+const HAS_FLOCK = Bun.which('flock', { PATH: SCRIPT_SYSTEM_PATH }) !== null
 
 const FAKE_QM = String.raw`
 import { appendFileSync, existsSync, readFileSync } from 'node:fs'
@@ -145,7 +152,7 @@ function sshdEnv(
   extra: Record<string, string> = {},
 ): Record<string, string> {
   return {
-    PATH: `${resolve(process.execPath, '..')}:/usr/bin:/bin`,
+    PATH: `${resolve(process.execPath, '..')}:${SCRIPT_SYSTEM_PATH}`,
     HOME: t.home,
     SSH_ORIGINAL_COMMAND: 'qianmo-model-apply-v1',
     ...extra,
@@ -294,45 +301,86 @@ describe('model-apply.sh', () => {
     expect(t.calls()).toHaveLength(1)
   }, 30_000)
 
-  const modes: [string, Record<string, string>][] = [
-    ['mkdir lock', { QIANMO_MODEL_APPLY_LOCK: 'mkdir' }],
-    ...(HAS_FLOCK ? [['flock', {}] as [string, Record<string, string>]] : []),
+  /**
+   * Both lock implementations, each with proof of which one ran: flock leaves
+   * the `.lock` file behind (it is only ever opened), the mkdir lock holds a
+   * `.lock.d` directory while busy and removes it afterwards.
+   */
+  const modes: {
+    readonly name: string
+    readonly kind: 'mkdir' | 'flock'
+    readonly env: Record<string, string>
+    readonly skip: boolean
+  }[] = [
+    {
+      name: 'mkdir lock (forced with QIANMO_MODEL_APPLY_LOCK=mkdir; runs everywhere)',
+      kind: 'mkdir',
+      env: { QIANMO_MODEL_APPLY_LOCK: 'mkdir' },
+      skip: false,
+    },
+    {
+      name: `flock lock (runs only where ${SCRIPT_SYSTEM_PATH} has flock, e.g. Linux CI; skipped otherwise)`,
+      kind: 'flock',
+      env: {},
+      skip: !HAS_FLOCK,
+    },
   ]
-  for (const [mode, extra] of modes) {
-    test(`${mode}: two applies on one node run one after the other; two nodes overlap`, async () => {
-      const t = tree()
-      writeFileSync(join(t.records, 'delay-ms'), '1200')
-      const env = sshdEnv(t, extra)
-      await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-1'], env)])
-      const same = t.spans()
-      expect(same).toHaveLength(2)
-      const [a, b] = [...same].sort((x, y) => x.start - y.start)
-      expect((b?.start ?? 0) >= (a?.end ?? Infinity)).toBe(true)
+  for (const mode of modes) {
+    const lockFile = (t: Tree) => join(t.root, 'run', 'model-apply.beta-1.lock')
+    const lockDir = (t: Tree) => `${lockFile(t)}.d`
 
-      // Positive control: different nodes do overlap, so the check above can fail.
-      rmSync(join(t.records, 'spans.ndjson'))
-      await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-2'], env)])
-      const [c, d] = [...t.spans()].sort((x, y) => x.start - y.start)
-      expect((d?.start ?? Infinity) < (c?.end ?? 0)).toBe(true)
-    }, 30_000)
+    test.skipIf(mode.skip)(
+      `${mode.name}: two applies on one node run one after the other; two nodes overlap`,
+      async () => {
+        const t = tree()
+        writeFileSync(join(t.records, 'delay-ms'), '1200')
+        const env = sshdEnv(t, mode.env)
+        await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-1'], env)])
+        const same = t.spans()
+        expect(same).toHaveLength(2)
+        const [a, b] = [...same].sort((x, y) => x.start - y.start)
+        expect((b?.start ?? 0) >= (a?.end ?? Infinity)).toBe(true)
+        // Which implementation ran.
+        expect(existsSync(lockFile(t))).toBe(mode.kind === 'flock')
+        expect(existsSync(lockDir(t))).toBe(false)
 
-    test(`${mode}: waiting past the limit answers busy instead of hanging`, async () => {
-      const t = tree()
-      writeFileSync(join(t.records, 'delay-ms'), '2500')
-      const env = sshdEnv(t, { ...extra, QIANMO_MODEL_APPLY_LOCK_WAIT_S: '1' })
-      const first = run(t, ['beta-1'], env)
-      await new Promise(resolve => setTimeout(resolve, 400))
-      const second = await run(t, ['beta-1'], env)
-      expect(second.code).toBe(1)
-      expect(JSON.parse(second.stdout)).toMatchObject({
-        v: 1,
-        requestId: null,
-        ok: false,
-        code: 'busy',
-      })
-      expect((await first).code).toBe(0)
-      expect(t.calls()).toHaveLength(1)
-    }, 30_000)
+        // Positive control: different nodes do overlap, so the check above can fail.
+        rmSync(join(t.records, 'spans.ndjson'))
+        await Promise.all([run(t, ['beta-1'], env), run(t, ['beta-2'], env)])
+        const [c, d] = [...t.spans()].sort((x, y) => x.start - y.start)
+        expect((d?.start ?? Infinity) < (c?.end ?? 0)).toBe(true)
+      },
+      30_000,
+    )
+
+    test.skipIf(mode.skip)(
+      `${mode.name}: waiting past the limit answers busy instead of hanging`,
+      async () => {
+        const t = tree()
+        writeFileSync(join(t.records, 'delay-ms'), '2500')
+        const env = sshdEnv(t, {
+          ...mode.env,
+          QIANMO_MODEL_APPLY_LOCK_WAIT_S: '1',
+        })
+        const first = run(t, ['beta-1'], env)
+        await new Promise(resolve => setTimeout(resolve, 400))
+        const second = await run(t, ['beta-1'], env)
+        expect(second.code).toBe(1)
+        expect(JSON.parse(second.stdout)).toMatchObject({
+          v: 1,
+          requestId: null,
+          ok: false,
+          code: 'busy',
+        })
+        // While the first one still holds it: the lock of this implementation.
+        expect(
+          existsSync(mode.kind === 'flock' ? lockFile(t) : lockDir(t)),
+        ).toBe(true)
+        expect((await first).code).toBe(0)
+        expect(t.calls()).toHaveLength(1)
+      },
+      30_000,
+    )
   }
 
   test('mkdir lock: a lock left by a process that is gone is taken back', async () => {
