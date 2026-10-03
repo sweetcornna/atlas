@@ -19,7 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版在 P18.13 开工前再单独批准。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
+| **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
 
 ---
@@ -46,7 +46,7 @@
 | **D-4** | 第六类动作**不要求 provision token**，要求个人账号的 ops 角色，由动作账本记录操作者。确认 R-13 | §1.2 R-13、§1.3 O-3、§7.4 |
 | **D-5** | **真 key 只用舰队现有的 `gpt-6-luna` 凭据**；其他预设一律保持「未评估」 | §8.4、§13 |
 | **D-6** | **多 key 轮换（hermes #2）进 M1**，新增包 P18.18 | §9.2 P18.18、§13 |
-| **D-7** | **发版到 P18.13 开工前再单独请负责人批准**（版本号和发布都要批），现在不预先授权 | §9.2 P18.13、§13 |
+| **D-7** | **发版预先授权**：P18 核心包合入、干净 clone 的 `bun run verify` 全绿之后，主 agent 直接定版本号、打标签、发布，并部署到内测舰队；之后各包的开发、合并、发版、部署都不再逐项等负责人授权 | §9.2 P18.13、§13 |
 
 ### 0.2 已经执行的现场事实
 
@@ -963,7 +963,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 - 每轮包括：所有节点 `status` 无漂移；一次真 key 三态测连（`auth`）；一次真实切换并切回；一次 `call` 模式的真实调用；AC-P2 金丝雀扫描；一次「resident 有在途 turn 时下发」，验证要等空闲、在途 turn 不失败。
 - 真 key 只用舰队现有的 `gpt-6-luna` 凭据，`call` 模式会花少量费用（D-5，§13 第 2 点）。
 - 预设的 `evaluated` 只有在真 key 冒烟通过之后才能改，证据（日期、提交、结果摘要，不含 key）记进档案；没有冒烟的预设一直显示「未评估」，**不能在任何对外材料里写「已兼容 X」**（hermes §11.11 最后一条）。
-- 7 天长跑已于 2026-10-03T09:33:08Z 因负责人换模型提前结束（§0.2）；真机工作在它的收数完成之后进行；部署只用负责人批准的发行标签（§13 第 4 点）。
+- 7 天长跑已于 2026-10-03T09:33:08Z 因负责人换模型提前结束（§0.2）；真机工作在它的收数完成之后进行；部署只用发行标签，不部署 main；发版由主 agent 执行（D-7）。
 
 ---
 
@@ -1003,7 +1003,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.10** 账号与访问 · 操作记录页 | B3 | H3、H4 的页面 | `packages/console/src/routes/access.ts`；`packages/console/src/view/{access.ts,invite.ts}`（`access.ts` 新建）；`packages/console/src/{accountsHttp.ts,access.ts}`；`docs/dev/beta-env.md` §3.6（告知措辞需要改时） | P18.4、P15.9 | 否 | 成员、邀请、会话、操作记录四个页签各有 HTTP 用例；强制下线之后该主体的 SSE 连接数为零；member 只看得到与自己有关的操作记录；邀请页 `Referrer-Policy: no-referrer`（断言） | 48–72 |
 | **P18.11** 审计列表 · 生命周期 · 节点详情 | B3 | D5、J2 的页面、A3 | `packages/console/src/routes/{audit.ts,nodes.ts}`；`packages/console/src/view/{audit.ts,agents.ts,node.ts}`（`node.ts` 新建）；`packages/console/src/deps.ts`（`AuditPort` 游标）；`src/cli/handlers/consolePorts.ts`；`packages/audit` 的只读查询；`docs/dev/console.md`；`packages/console/README.md` | P18.4、P15.2 余下 | 否 | 10 万条审计下首屏响应时间有上界（基准用例记数）；游标分页无重复、无遗漏；生命周期四个动作都走二次确认并进动作账本；节点详情的「模型」页签显示 §2.4 的全部字段；`console.md` 路由表与实际路由一致（扫描断言） | 56–80 |
 | **P18.12** 调用层第三批 · 韧性 | B3 | hermes #1、#16–#21、#24、#25、#27、#33 | 新规则文件；`src/services/api/{streamAssembly.ts,retryClassification.ts}`；`src/services/api/openai/{retry.ts,index.ts}`；`packages/@ant/model-provider/src/shared/{openaiStreamAdapter.ts,openaiConvertMessages.ts,openaiConvertTools.ts}`；`src/services/api/{gemini,grok}/index.ts`（如需）；`src/query.ts`；`tests/preload.ts`；`tests/support/**`（新）；`docs/dev/base-modifications.md` | P18.8 | **是** | 第三方线路配了 `fallbackModels` 时，5xx 重试用尽会切到 fallback（以前从不发生），切换前回放已过滤；常驻会话的 `Retry-After` 上限 600 s、交互式 60 s，各一条用例；chat 流空闲超时会触发；DeepInfra 形状的错误块不重试；工具结果图片被拒之后降级并记住；思考耗尽时不续写；preload 之后，开发机带订阅登录态时 `codexPinnedSearch` 不再红；逐厂商对等表覆盖目录里的全部预设 | 88–112 |
-| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5；负责人批准的发行标签 | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据 | 16–32 |
+| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5、P18.18；主 agent 打的发行标签（D-7） | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据 | 16–32 |
 | **P18.14** 控制台 P1 收口 | B4 | §6.5 的 P1 两组 | `packages/console/src/**` 里路由文件以外的视图与 assets；`src/cli/handlers/consolePorts.ts` 的错误映射 | P18.4（建议排在 B3 之后，减少 golden 往返） | 否 | `console-audit.md` §4 各项的「改法」逐条有用例；I1 与 C5 在同一个提交里；亮色和暗色对比度都达 AA（K1 计算）；375 px 宽可以读状态、可以发对话（K1） | 144–216 |
 | **P18.15** 告警与值守作业页 | B5 | J5、J6 | `packages/console/src/routes/{alerts.ts,jobs.ts}`；`NotifyPort`、`SchedulerPort`（`deps.ts`、`consolePorts.ts`） | P18.4 | 否 | 告警有收件箱、未读角标、级别筛选；值守作业页显示上次和下次触发、ESTOP 状态，`lastTickAt` 缺席可见 | 48–64 |
 | **P18.16** 用量与审批页（条件） | B5 | J7、J8 | `packages/console/src/routes/{usage.ts,approvals.ts}`；`deps.ts` | P15.7、P14.5 | 否 | 用量按自然日、按人；审批页与 P14 协议的契约用例 | 48–80 |
@@ -1111,13 +1111,7 @@ v1.0 写成时这四点待定，负责人当天拍板，结果记为 §0.1 的 D
 | 1 | 第六类动作要不要 provision token。这碰到了 2026-08-18 定案 ③「装机类动作要单独一枚 provision token」的适用范围 | **不要**。要求个人账号的 ops 角色，由动作账本记录操作者（D-4） | 无。R-13、O-3 按原文执行 |
 | 2 | **真 key 与花费**：AC-P6 需要真 key；`call` 模式每次花一次最小调用；其他预设要评估，也需要对应厂商的 key | **只用舰队现有的 `gpt-6-luna` 凭据**（D-5） | AC-P6 用这份凭据。P18.13「至少一个预设评估通过」只能落在它对应的那条：OpenAI 兼容自定义网关，走 Responses（§4.4）。其他预设保持「未评估」，对外不写「已兼容」 |
 | 3 | **hermes #2 多 key 轮换**是否进入 M1 | **进 M1**（D-6） | 新增 P18.18（B4，24–40 人时）；§0.5、§5.6、§9、§10、§11 已同步。P18.2 的 schema 一开始就按多 key 定 |
-| 4 | **发版**：真机验收需要一个包含 P18 的发行标签。现行委托是「收口部署 v2.46.3 标签，不部署 main；常设合并授权不含发版」 | **不预先授权**。P18.13 开工前单独请负责人批准版本号与发布（D-7） | P18.13 和 AC-P6 仍然等这次批准 |
-
----|---|---|---|
-| 1 | 第六类动作**不要求 provision token**，改为要求个人账号的 ops 角色并由动作账本记录操作者（R-13、O-3）。这碰到了 2026-08-18 定案 ③「装机类动作要单独一枚 provision token」的适用范围 | 按本文执行 | 不卡开工；如果改判为「要 provision token」，P18.6 和 P18.9 要加第三枚 token 的入口（`node-provisioning.md` §8.3 的形态） |
-| 2 | **真 key 与花费**：AC-P6 需要真 key；`call` 模式每次花一次最小调用；其他预设要评估，也需要对应厂商的 key | 只用舰队现有的 `gpt-6-luna` 凭据做 AC-P6；其他预设保持「未评估」 | 卡 P18.13 的「至少一个预设评估通过」；卡任何预设去掉「未评估」 |
-| 3 | **hermes #2 多 key 轮换**是否进入 M1 | v1 不做，调用层留出动作位 | 不卡 |
-| 4 | **发版**：真机验收需要一个包含 P18 的发行标签。现行委托是「收口部署 v2.46.3 标签，不部署 main；常设合并授权不含发版」 | 不发版；P18.13 等批准 | 卡 P18.13 与 AC-P6 |
+| 4 | **发版**：真机验收需要一个包含 P18 的发行标签 | **预先授权**，由主 agent 发版并部署（D-7） | P18.13 不再等批准；仍然只部署发行标签，不部署 main |
 
 ---
 
