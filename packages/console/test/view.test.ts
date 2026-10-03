@@ -2655,3 +2655,33 @@ describe('selection (D7)', () => {
     expect(CONSOLE_CSS.match(/user-select:\s*none/g)).toHaveLength(1)
   })
 })
+
+describe('a refresh keeps what the reader was doing (D1)', () => {
+  test('every roster row carries the key it is reopened by', () => {
+    const html = renderRoster(
+      [agent(), agent({ address: 'qianmo://node-b/x' })],
+      null,
+      NOW,
+      TTL,
+    )
+    expect(html).toContain(
+      '<details class="row" data-key="qianmo://node-a/reviewer" data-address="qianmo://node-a/reviewer"',
+    )
+    expect(html.match(/<details class="row" data-key="/g)).toHaveLength(2)
+  })
+
+  test('the runtime notes open rows and focus before a swap and restores them after', () => {
+    const refresh = CONSOLE_CLIENT_JS.slice(
+      CONSOLE_CLIENT_JS.indexOf('function refreshRegion(mount)'),
+      CONSOLE_CLIENT_JS.indexOf('function refreshAll()'),
+    )
+    expect(refresh.indexOf('snapshot(mount)')).toBeGreaterThan(-1)
+    expect(refresh.indexOf('snapshot(mount)')).toBeLessThan(
+      refresh.indexOf('restore(mount, state)'),
+    )
+    expect(CONSOLE_CLIENT_JS).toContain(
+      "querySelectorAll('details[open][data-key]')",
+    )
+    expect(CONSOLE_CLIENT_JS).toContain('target.focus({ preventScroll: true })')
+  })
+})

@@ -290,9 +290,10 @@ function agentRow(
     : ''
 
   return (
-    `<details class="row" data-address="${address}" data-health="${attr(
-      health,
-    )}">` +
+    // `data-key` is what the runtime reopens this row by after the poller
+    // replaces the roster under it (`assets/client.ts`, D1).
+    `<details class="row" data-key="${address}" data-address="${address}" ` +
+    `data-health="${attr(health)}">` +
     `<summary>` +
     addressLine(agent.address) +
     statusCell(agent, health) +

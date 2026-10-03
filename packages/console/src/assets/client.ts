@@ -45,6 +45,18 @@
  * rendered — if the HTTP side ever answers one with JSON, the page says so
  * instead of pasting a JSON blob into the document.
  *
+ * ## A refresh keeps what the reader was doing (D1)
+ *
+ * Replacing a region throws away state the server never knew: which rows
+ * were expanded, which control had focus. Before every swap the runtime notes
+ * the `data-key` of every open `<details>` in the region and describes the
+ * focused element (its id, the `data-key` row it sits in, its tag and its
+ * identifying `data-*`); after the swap it reopens those rows and puts focus
+ * back on the element that matches. A page that wants its rows kept gives
+ * them a stable `data-key` — the roster keys each by its address. Each
+ * finished refresh bumps the region's `data-refreshed`, which is what a
+ * browser-level test waits on.
+ *
  * ## The token arrives two ways
  *
  * `#token=` and `?token=`. The fragment never reaches the server and is the one
@@ -364,13 +376,88 @@ function runtimeScript(guards: TokenGuards): string {
     return swapped;
   }
 
+  // The attributes that tell one control from its neighbours once its row
+  // has been found: which action, on what.
+  var IDENTITY = ['data-action', 'data-address', 'data-trace', 'data-session',
+    'data-server', 'name'];
+
+  function keyedIn(mount, key) {
+    var rows = mount.querySelectorAll('[data-key]');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute('data-key') === key) return rows[i];
+    }
+    return null;
+  }
+
+  function snapshot(mount) {
+    var open = {};
+    var rows = mount.querySelectorAll('details[open][data-key]');
+    for (var i = 0; i < rows.length; i++) open[rows[i].getAttribute('data-key')] = true;
+    var focus = null;
+    var active = document.activeElement;
+    if (active && active !== document.body && mount.contains(active)) {
+      var holder = active.closest('[data-key]');
+      focus = {
+        id: active.id || '',
+        key: holder && mount.contains(holder) ? holder.getAttribute('data-key') : null,
+        tag: active.tagName,
+        attrs: []
+      };
+      for (var j = 0; j < IDENTITY.length; j++) {
+        if (active.hasAttribute(IDENTITY[j])) {
+          focus.attrs.push([IDENTITY[j], active.getAttribute(IDENTITY[j])]);
+        }
+      }
+    }
+    return { open: open, focus: focus };
+  }
+
+  function locate(mount, focus) {
+    if (focus.id) {
+      var named = byId(focus.id);
+      if (named && mount.contains(named)) return named;
+    }
+    var scope = focus.key === null ? mount : keyedIn(mount, focus.key);
+    if (!scope) return null;
+    var candidates = scope.querySelectorAll(focus.tag);
+    for (var i = 0; i < candidates.length; i++) {
+      var match = true;
+      for (var j = 0; j < focus.attrs.length; j++) {
+        if (candidates[i].getAttribute(focus.attrs[j][0]) !== focus.attrs[j][1]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return candidates[i];
+    }
+    return null;
+  }
+
+  function restore(mount, state) {
+    var rows = mount.querySelectorAll('details[data-key]');
+    for (var i = 0; i < rows.length; i++) {
+      if (state.open[rows[i].getAttribute('data-key')] === true) rows[i].open = true;
+    }
+    if (state.focus) {
+      var target = locate(mount, state.focus);
+      if (target && typeof target.focus === 'function') {
+        target.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  var refreshes = 0;
+
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
     if (!url) return Promise.resolve();
     var ids = (mount.getAttribute('data-swap') || '').split(' ').filter(Boolean);
     return loadHtml(url).then(function (html) {
-      if (ids.length > 0 && swapRegions(html, ids) > 0) return;
-      mount.innerHTML = html;
+      var state = snapshot(mount);
+      if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
+      restore(mount, state);
+      refreshes += 1;
+      mount.setAttribute('data-refreshed', String(refreshes));
     });
   }
 
