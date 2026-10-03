@@ -41,6 +41,12 @@ import {
 } from '../../../bootstrap/state.js'
 import { clearSystemPromptSections } from '../../../constants/systemPromptSections.js'
 import { resetWorkspaceScopedContext } from '../../../context.js'
+import {
+  notePromptContextSession,
+  persistActivePromptContext,
+  restoreOnSwitch,
+  saveOnSwitch,
+} from '../../qianmo/promptCache/sessionPromptContext.js'
 import type { SessionId } from '../../../types/ids.js'
 import { getProjectDir } from '../../../utils/session/sessionStoragePortable.js'
 import {
@@ -69,13 +75,22 @@ export function projectDirForSessionCwd(cwd: string): string {
  * Idempotent, and cheap when the session is already active: the caches are
  * only dropped when the active session actually changes, so consecutive turns
  * in one session keep the prompt cache they have always had.
+ *
+ * Dropped from the process, not lost: the outgoing session's prompt context
+ * is kept and the incoming session's put back (P18.19 CH-1,
+ * `sessionPromptContext.ts`), so returning to a session sends the same
+ * prompt head it sent before — not one recomputed from whatever changed in
+ * between.
  */
 export function activateAcpSessionWorkspace(session: {
   sessionId: string
   cwd: string
   projectDir: string | null
 }): void {
-  const changed = getSessionId() !== session.sessionId
+  const outgoing = getSessionId()
+  const changed = outgoing !== session.sessionId
+  notePromptContextSession(session.sessionId)
+  if (changed) saveOnSwitch(outgoing)
 
   switchSession(session.sessionId as SessionId, session.projectDir)
   setOriginalCwd(session.cwd)
@@ -103,6 +118,9 @@ export function activateAcpSessionWorkspace(session: {
   // CLAUDE.md, git state and the directory listing: memoised with no key at
   // all, so they describe whichever workspace asked first.
   resetWorkspaceScopedContext()
+  // ...then the incoming session's own, if it has run before (in this process
+  // or, through its sidecar, in an earlier one).
+  restoreOnSwitch(session.sessionId, session.cwd)
 }
 
 // ── The lock that makes the above safe under a concurrent client ──
@@ -186,12 +204,17 @@ function startWorkspaceTurn<T>(work: () => Promise<T>): Promise<T> {
     releaseWorkspaceTurn()
     return Promise.reject(err)
   }
+  // The active session's prompt context goes to its sidecar before the lock
+  // is released (P18.19 CH-1): a child replaced right after this turn still
+  // resumes with the prompt head it sent. Best effort, never throws.
   return running.then(
-    value => {
+    async value => {
+      await persistActivePromptContext().catch(() => {})
       releaseWorkspaceTurn()
       return value
     },
-    err => {
+    async err => {
+      await persistActivePromptContext().catch(() => {})
       releaseWorkspaceTurn()
       throw err
     },
