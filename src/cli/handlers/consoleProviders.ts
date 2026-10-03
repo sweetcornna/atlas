@@ -59,12 +59,15 @@ import {
   type ProviderResult,
 } from '@qianmo/console'
 import {
+  type AutoCompactReport,
+  type AutocompactRequest,
   isEffortLevel,
   type KeyRef,
   type NodeCapabilities,
   PRESET_GROUPS,
   PRESETS,
   PROTOCOL_LIMITS,
+  PROTOCOL_VERSION,
   parseProviderProfile,
   parseProviderRequest,
   parseWireProfile,
@@ -75,10 +78,6 @@ import {
   resolveBaseUrl,
   type WireProfile,
 } from '@qianmo/providers'
-import {
-  AUTO_COMPACT_WINDOW_MAX_TOKENS,
-  AUTO_COMPACT_WINDOW_MIN_TOKENS,
-} from '../../services/compact/autoCompactWindowValue.js'
 import { compileProfile } from '../../services/qianmo/providers/compile.js'
 import { FileActionLedger } from './consoleActionLedger.js'
 import { ProviderBook } from './consoleProvidersBook.js'
@@ -101,10 +100,7 @@ import { ProviderSecretStore } from './consoleProvidersSecrets.js'
 
 const PERSONAL_SUBJECT = /^u:[0-9a-f]{16}$/
 /** §2.5 limits; `autocompact` is P18.7's and not in this build's table yet. */
-const TIMEOUTS = {
-  ...PROTOCOL_LIMITS.timeoutMs,
-  autocompact: 20_000,
-} as const
+const TIMEOUTS = PROTOCOL_LIMITS.timeoutMs
 /** Repeated refreshes of one node inside this window are answered from cache. */
 const REFRESH_THROTTLE_MS = 5_000
 /** §2.3 step 10: poll every 5 s for at most 2 min after an apply. */
@@ -201,6 +197,25 @@ function bareKeys(keys: readonly KeyRef[]): KeyRef[] {
 }
 
 /** A ledger target from untrusted input: the id when it is one, else `-`. */
+/** The flat `autocompact` reply as P18.7's `AutoCompactReport`, or `null`. */
+function autoCompactReportOf(reply: NodeReply): AutoCompactReport | null {
+  const { autoCompactWindow, configured, source, message } = reply
+  if (
+    typeof autoCompactWindow !== 'number' ||
+    typeof configured !== 'number' ||
+    (source !== 'env' && source !== 'settings' && source !== 'auto') ||
+    (message !== undefined && typeof message !== 'string')
+  ) {
+    return null
+  }
+  return {
+    autoCompactWindow,
+    configured,
+    source,
+    ...(message === undefined ? {} : { message }),
+  }
+}
+
 function targetOf(value: unknown): string {
   return typeof value === 'string' && /^[a-z0-9-]{1,48}$/.test(value)
     ? value
@@ -1811,68 +1826,54 @@ export class ConsoleProviders implements ProviderPort {
       return fail('not_found', '没有这个节点')
     }
     const value = input.value
-    if (
-      value !== undefined &&
-      value !== 'auto' &&
-      !(
-        Number.isSafeInteger(value) &&
-        value >= AUTO_COMPACT_WINDOW_MIN_TOKENS &&
-        value <= AUTO_COMPACT_WINDOW_MAX_TOKENS
-      )
-    ) {
-      return fail(
-        'invalid',
-        `自动压缩阈值只能是 auto 或 ${AUTO_COMPACT_WINDOW_MIN_TOKENS}–${AUTO_COMPACT_WINDOW_MAX_TOKENS} 之间的整数`,
-        { path: 'value' },
-      )
+    const request: AutocompactRequest = {
+      v: PROTOCOL_VERSION,
+      op: 'autocompact',
+      requestId: this.#requestId(),
+      node: input.node,
+      ...(value === undefined ? {} : { value }),
     }
-    // Not checked with `parseProviderRequest`: `autocompact` is P18.7's op
-    // (D-9) and this build's schema does not list it yet. The shape below is
-    // P18.7's request, and only the JSON travels.
-    const requestId = this.#requestId()
+    // The protocol's own rule (`AUTO_COMPACT_LIMITS`): a bad value is refused
+    // here, before anything is started on the node.
+    const checked = this.#check<ProviderAutocompactResult>(request, input.node)
+    if (checked !== null) return checked
     const result = await this.#executor.run(
       input.node,
-      {
-        v: 1,
-        op: 'autocompact',
-        requestId,
-        node: input.node,
-        ...(value === undefined ? {} : { value }),
-      },
+      request,
       TIMEOUTS.autocompact,
     )
     if (!result.ok) return fail('unreachable', result.message)
     const reply = result.reply
     if (!reply.ok) {
       const code = nodeCode(reply.code) ?? 'refused'
-      return fail(
-        code === 'write-failed' ? 'unreachable' : 'refused',
+      const message =
         code === 'unsupported-op'
           ? '节点的版本还不支持 autocompact'
-          : (nodeText(reply.message) ?? '节点拒绝了这次修改'),
+          : (nodeText(reply.message) ?? '节点拒绝了这次修改')
+      return fail(
+        code === 'write-failed'
+          ? 'unreachable'
+          : code === 'bad-value'
+            ? 'invalid'
+            : 'refused',
+        message,
         { nodeCode: code },
       )
     }
-    const window = reply.autoCompactWindow
-    const configured = reply.configured
-    const source = reply.source
-    if (
-      typeof window !== 'number' ||
-      typeof configured !== 'number' ||
-      (source !== 'env' && source !== 'settings' && source !== 'auto')
-    ) {
+    const report = autoCompactReportOf(reply)
+    if (report === null) {
       return fail('unreachable', '节点的回应不是 autocompact 的形状')
     }
     if (value !== undefined) {
       this.#changes += 1
       void this.#refresh(input.node)
     }
-    const message = nodeText(reply.message)
+    const message = nodeText(report.message)
     return done({
       node: input.node,
-      autoCompactWindow: window,
-      configured,
-      source,
+      autoCompactWindow: report.autoCompactWindow,
+      configured: report.configured,
+      source: report.source,
       ...(message === null ? {} : { message }),
     })
   }

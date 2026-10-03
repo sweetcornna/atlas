@@ -792,6 +792,51 @@ describe('the desired state against the node', () => {
   }, 30_000)
 })
 
+describe('D-9: autocompact goes through the protocol', () => {
+  test('a value outside AUTO_COMPACT_LIMITS is refused by the protocol parser before the node is asked', async () => {
+    const h = harness()
+    const ops = h.caller()
+    for (const bad of [99_999, 1_000_001, 150_000.5]) {
+      const result = await h.port.autocompact(
+        { node: 'beta-1', value: bad },
+        ops,
+      )
+      expect(
+        result.ok
+          ? 'ok'
+          : [result.failure.code, result.failure.nodeCode, result.failure.path],
+      ).toEqual(['invalid', 'bad-value', 'value'])
+    }
+    expect(h.nodes['beta-1'].requests()).toEqual([])
+    // The refusals are recorded, as refusals.
+    const records = (await entries(h)).filter(
+      record => record.action === 'provider.autocompact',
+    )
+    expect(records.map(record => [record.outcome, record.code])).toEqual([
+      ['refused', 'bad-value'],
+      ['refused', 'bad-value'],
+      ['refused', 'bad-value'],
+    ])
+    // Positive control: the bounds themselves pass and reach the node.
+    for (const good of [100_000, 1_000_000, 'auto'] as const) {
+      expect(
+        (await h.port.autocompact({ node: 'beta-1', value: good }, ops)).ok,
+      ).toBe(true)
+    }
+    // (A write is followed by a status refresh; only the autocompact lines here.)
+    expect(
+      h.nodes['beta-1']
+        .requests()
+        .filter(request => request.op === 'autocompact')
+        .map(request => [request.op, request.value]),
+    ).toEqual([
+      ['autocompact', 100_000],
+      ['autocompact', 1_000_000],
+      ['autocompact', 'auto'],
+    ])
+  }, 30_000)
+})
+
 describe('profiles', () => {
   test('If-Match: a stale revision is a conflict that names the changed fields', async () => {
     const h = harness()
