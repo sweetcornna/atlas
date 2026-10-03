@@ -38,7 +38,7 @@ import { overviewRoute } from './overview.js'
 import { providersRoute } from './providers.js'
 import { serversRoute } from './servers.js'
 import { settingsRoute } from './settings.js'
-import { DEFAULT_LABEL, guardChat } from './shared.js'
+import { DEFAULT_LABEL, guardChat, loginHref } from './shared.js'
 import type {
   AreaGroup,
   HeadRoute,
@@ -225,6 +225,7 @@ export async function areaDocument(
     ...(render.actions === undefined ? {} : { actions: render.actions }),
     body: render.body,
     health: healthOf(listed),
+    relogin: loginHref(ctx.url),
     ...(render.poll === true ? { poll: true } : {}),
     ...(module.page?.css === undefined ? {} : { pageCss: module.page.css }),
     ...(module.page?.script === undefined
@@ -253,5 +254,6 @@ export async function errorDocument(
       `<p><a class="jump" href="/" data-nav>回到总览</a></p>` +
       `</section>`,
     health: healthOf(listed),
+    relogin: loginHref(ctx.url),
   })
 }

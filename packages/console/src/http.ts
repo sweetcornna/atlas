@@ -240,7 +240,7 @@ import {
   pageOf,
   type PageMatch,
 } from './routes/index.js'
-import { DEFAULT_LABEL, guard, guardChat } from './routes/shared.js'
+import { DEFAULT_LABEL, guard, guardChat, loginHref } from './routes/shared.js'
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
@@ -304,11 +304,7 @@ function wantsHtml(request: Request): boolean {
  * browser's history and every access log between here and there.
  */
 function loginRedirect(url: URL): Response {
-  const back = new URL(url.toString())
-  back.searchParams.delete(TOKEN_QUERY_PARAM)
-  const target = `${back.pathname}${back.search}`
-  const query = target === '/' ? '' : `?redirect=${encodeURIComponent(target)}`
-  return seeOther(`${LOGIN_PATH}${query}`)
+  return seeOther(loginHref(url))
 }
 
 /** The login document, at whatever status the reason calls for. */

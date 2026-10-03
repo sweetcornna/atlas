@@ -65,6 +65,16 @@
  * The token box stays, and so does `localStorage`: a `Bearer` still overrides
  * the cookie, which is what makes "look at this console as the other role for a
  * minute" possible without logging out.
+ *
+ * ## A 401 ends the page's session, once (C1)
+ *
+ * The first 401 any request gets — a poll, a write, a page script's fetch —
+ * stops everything that would ask again: the refresh timer, and whatever a
+ * page script registered with `onExpire` (the chat page's stream and its
+ * fallback poller). Every later request fails without leaving the browser.
+ * Then the server-rendered `#session-expired` dialog opens, with the way back
+ * to this page through the login door. Before this, a lapsed cookie produced
+ * 刷新失败 · HTTP 401 in the sidebar every five seconds, forever.
  */
 
 import { PERSONAL_CREDENTIAL_PREFIX } from '../accounts.js'
@@ -112,6 +122,9 @@ function runtimeScript(guards: TokenGuards): string {
   var pending = null;
   var actions = {};
   var submits = {};
+  // Set by the first 401; nothing asks the server again after it.
+  var expired = false;
+  var expireHooks = [];
 
   function byId(id) { return document.getElementById(id); }
 
@@ -258,14 +271,47 @@ function runtimeScript(guards: TokenGuards): string {
     return headers;
   }
 
+  /* ---------------- session expiry ---------------- */
+
+  var EXPIRED = '会话已失效';
+
+  function expire() {
+    if (expired) return;
+    expired = true;
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    for (var i = 0; i < expireHooks.length; i++) {
+      try { expireHooks[i](); } catch (e) { /* one hook must not keep the rest running */ }
+    }
+    say(byId('refresh-state'), '已停止 · ' + EXPIRED, 'bad');
+    var link = byId('session-expired-login');
+    if (link) {
+      var here = window.location.pathname + window.location.search;
+      link.setAttribute('href', here === '/' ? '/login' :
+        '/login?redirect=' + encodeURIComponent(here));
+    }
+    closeDialogs();
+    openDialog('session-expired', null);
+  }
+
+  // The one place a response status is looked at before anything else.
+  function checked(res) {
+    if (res.status === 401) { expire(); throw new Error(EXPIRED); }
+    return res;
+  }
+
+  function refused() {
+    return Promise.reject(new Error(EXPIRED));
+  }
+
   /* ---------------- transport ---------------- */
 
   function loadHtml(url) {
+    if (expired) return refused();
     return fetch(url, {
       headers: authHeaders(),
       credentials: 'same-origin',
       cache: 'no-store'
-    }).then(function (res) {
+    }).then(checked).then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       var type = res.headers.get('content-type') || '';
       if (type.indexOf('text/html') === -1) {
@@ -276,13 +322,14 @@ function runtimeScript(guards: TokenGuards): string {
   }
 
   function sendJson(method, url, body) {
+    if (expired) return refused();
     var init = {
       method: method,
       credentials: 'same-origin',
       headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' })
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(url, init).then(function (res) {
+    return fetch(url, init).then(checked).then(function (res) {
       if (res.status === 204) return null;
       return res.text().then(function (raw) {
         var data = null;
@@ -339,13 +386,15 @@ function runtimeScript(guards: TokenGuards): string {
     return refreshAll().then(function () {
       say(state, '更新于 ' + stamp(new Date()), 'muted');
     }).catch(function (err) {
+      // An expiry has already said so, in the dialog and on this line.
+      if (expired) return;
       say(state, '刷新失败 · ' + message(err), 'bad');
     });
   }
 
   function schedule() {
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-    if (!document.querySelector('[data-poll]')) return;
+    if (expired || !document.querySelector('[data-poll]')) return;
     var toggle = byId('auto-refresh');
     var picker = byId('refresh-interval');
     var on = toggle ? toggle.checked : false;
@@ -408,6 +457,12 @@ function runtimeScript(guards: TokenGuards): string {
     if (box && box.tagName === 'DIALOG') forget(box);
   }, true);
 
+  // The expiry dialog is the one Escape does not dismiss: behind it is a page
+  // that can no longer ask the server anything.
+  document.addEventListener('cancel', function (event) {
+    if (event.target && event.target.id === 'session-expired') event.preventDefault();
+  }, true);
+
   document.addEventListener('submit', function (event) {
     var form = event.target;
     if (!form || !form.id) return;
@@ -447,7 +502,11 @@ function runtimeScript(guards: TokenGuards): string {
     closeDialogs: closeDialogs,
     refreshRegion: refreshRegion,
     onAction: function (name, run) { actions[name] = run; },
-    onSubmit: function (id, run) { submits[id] = run; }
+    onSubmit: function (id, run) { submits[id] = run; },
+    // A page script's own pollers and streams stop here, with the runtime's.
+    onExpire: function (run) { expireHooks.push(run); },
+    expire: expire,
+    isExpired: function () { return expired; }
   };
 
   if (document.readyState === 'loading') {

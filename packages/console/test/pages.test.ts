@@ -13,6 +13,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
+import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
 import { CSP, DOCUMENT_CSP, html } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import { STUB_LINE } from '../src/routes/stub.js'
@@ -597,5 +599,41 @@ describe('errors a browser navigates into are pages (C3)', () => {
         expect(visible.includes(banned)).toBe(false)
       }
     }
+  })
+})
+
+describe('a session that lapses under the page (C1)', () => {
+  test('every page carries the expiry dialog, closed, with the way back to itself', async () => {
+    for (const [path, back] of [
+      ['/', '/login'],
+      ['/nodes', '/login?redirect=%2Fnodes'],
+      ['/audit?window=24h', '/login?redirect=%2Faudit%3Fwindow%3D24h'],
+    ] as const) {
+      const html = await read(
+        `${path}${path.includes('?') ? '&' : '?'}token=${ADMIN}`,
+      )
+      expect(html).toContain('<dialog class="dialog" id="session-expired"')
+      expect(html).not.toContain('id="session-expired" open')
+      // The token the page was opened with never rides along.
+      expect(html).toContain(
+        `<a class="btn btn-primary" id="session-expired-login" href="${back.replaceAll('&', '&amp;')}">重新登录</a>`,
+      )
+    }
+  })
+
+  test('the runtime stops asking after the first 401, and opens the dialog', () => {
+    const runtime = CONSOLE_CLIENT_JS
+    expect(runtime).toContain(
+      'if (res.status === 401) { expire(); throw new Error(EXPIRED); }',
+    )
+    // Both transports refuse without leaving the browser once expired.
+    expect(runtime.match(/if \(expired\) return refused\(\);/g)).toHaveLength(2)
+    expect(runtime).toContain(
+      'clearInterval(refreshTimer); refreshTimer = null; }',
+    )
+    expect(runtime).toContain("openDialog('session-expired', null)")
+    // The chat page's stream and fallback poller stop with it.
+    expect(CONSOLE_CHAT_JS).toContain('qc.onExpire(function () {')
+    expect(CONSOLE_CHAT_JS).toContain('source.close()')
   })
 })

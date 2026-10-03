@@ -206,7 +206,7 @@ function chatScript(): string {
   /* ---------------- stream ---------------- */
 
   function startPolling(reason) {
-    if (pollTimer) return;
+    if (pollTimer || qc.isExpired()) return;
     say(byId('stream-state'), reason, 'muted');
     pollTimer = setInterval(function () {
       if (!document.hidden) refreshAll();
@@ -249,7 +249,9 @@ function chatScript(): string {
     });
     source.addEventListener('error', function () {
       // EventSource retries on its own; the poller covers the gap and is
-      // stopped again by the next 'open'.
+      // stopped again by the next 'open'. A 401 is not retried by the
+      // browser, and the poller's first fetch is what turns it into the
+      // expiry dialog.
       startPolling('轮询中 · 实时连接中断');
     });
   }
@@ -264,6 +266,14 @@ function chatScript(): string {
   }
 
   /* ---------------- wiring ---------------- */
+
+  // A 401 anywhere ends the stream and the fallback poller with the rest
+  // of the page (the runtime's C1 note).
+  qc.onExpire(function () {
+    if (source) { source.close(); source = null; }
+    stopPolling();
+    say(byId('stream-state'), '已断开', 'muted');
+  });
 
   qc.onAction('chat-open', function (el) { openSession(el.getAttribute('data-session') || ''); });
   qc.onAction('chat-new', function () { newSession(); });
@@ -283,7 +293,7 @@ function chatScript(): string {
   });
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) refreshAll();
+    if (!document.hidden && !qc.isExpired()) refreshAll();
   });
 
   function start() {

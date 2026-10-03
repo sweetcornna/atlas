@@ -162,6 +162,12 @@ export interface ShellModel {
   readonly poll?: boolean
   readonly pageCss?: string
   readonly pageScript?: string
+  /**
+   * The login door with the way back to this page (`routes/shared.ts`,
+   * `loginHref`): where the session-expired dialog sends the operator.
+   * Absent draws no such dialog.
+   */
+  readonly relogin?: string
 }
 
 const REFRESH_CHOICES: readonly (readonly [string, string])[] = [
@@ -350,6 +356,34 @@ function topBar(model: ShellModel): string {
   )
 }
 
+/**
+ * What a page says when its credential stops working under it (C1).
+ *
+ * Rendered closed on every page, outside every polled region. The runtime
+ * opens it on the first 401, after it has stopped every poller and stream —
+ * so a lapsed session reads as one sentence and one way back, not as a
+ * sidebar line saying 刷新失败 · HTTP 401 every five seconds forever. The
+ * link is the login door with this page as the way back; the runtime writes
+ * the address bar's current path into it when it opens, since a page that
+ * switches conversations in place has moved on from what the server drew.
+ */
+function sessionExpired(relogin: string): string {
+  return (
+    `<dialog class="dialog" id="session-expired" ` +
+    `aria-labelledby="session-expired-title">` +
+    `<div class="dlg-top"><span class="dlg-icon">` +
+    icon('log-out') +
+    `</span><div class="dialog-title" id="session-expired-title">` +
+    `会话已失效</div></div>` +
+    `<div class="dialog-body">` +
+    `<p>凭据已过期或已被吊销 · 重新登录后回到这一页</p></div>` +
+    `<div class="dialog-actions">` +
+    `<a class="btn btn-primary" id="session-expired-login" ` +
+    `href="${attr(relogin)}">重新登录</a>` +
+    `</div></dialog>`
+  )
+}
+
 /** A whole console document. Self-contained: nothing is fetched from anywhere. */
 export function renderShell(model: ShellModel): string {
   const runtime =
@@ -365,6 +399,7 @@ export function renderShell(model: ShellModel): string {
     `\n<main class="main" id="main" aria-labelledby="page-title">\n` +
     model.body +
     `\n</main>\n</div>\n</div>\n` +
+    (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
     `<script>${runtime}${model.pageScript ?? ''}</script>\n` +
     `</body>\n</html>\n`
   )

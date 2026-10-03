@@ -12,7 +12,12 @@
  * file. `test/legacyParity.test.ts` pins that the move changed no byte.
  */
 
-import { CONSOLE_HEADER, type ConsoleCredential } from '../auth.js'
+import {
+  CONSOLE_HEADER,
+  LOGIN_PATH,
+  TOKEN_QUERY_PARAM,
+  type ConsoleCredential,
+} from '../auth.js'
 import type { Access } from '../access.js'
 import type {
   ActionOutcome,
@@ -322,4 +327,21 @@ export function readOnlyLine(accountsOn: boolean): string {
 /** The top bar's read-only statement, in place of the actions it replaces. */
 export function readOnlyNote(accountsOn: boolean): string {
   return `<span class="note" id="read-only">${readOnlyLine(accountsOn)}</span>`
+}
+
+/**
+ * The login door, with the way back to `url`.
+ *
+ * The `token` parameter is stripped out of the return path before it is
+ * encoded: it is there because a stale bookmark carried it, it did not work,
+ * and preserving it would put a dead credential into the `Location` header,
+ * the browser's history and every access log between here and there.
+ */
+export function loginHref(url: URL): string {
+  const back = new URL(url.toString())
+  back.searchParams.delete(TOKEN_QUERY_PARAM)
+  const target = `${back.pathname}${back.search}`
+  return target === '/'
+    ? LOGIN_PATH
+    : `${LOGIN_PATH}?redirect=${encodeURIComponent(target)}`
 }
