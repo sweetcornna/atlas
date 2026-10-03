@@ -721,8 +721,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 87590,
-    "sha256": "2e857073dafb722ba44f4961f253f4cab734f2bada6184c5fde749a9b4de455d"
+    "length": 91041,
+    "sha256": "0d733e26593a9c66d29d952ea4c800097e44578f5d88b852b8139acb1f4bd9cc"
   },
   {
     "probe": "GET /chat?session=session-1 as admin-cookie",
@@ -738,8 +738,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 88242,
-    "sha256": "d58248c87a9e0fbd6963f449f5250ec5f361b60890976e3f5e81cfb066ef8767"
+    "length": 91717,
+    "sha256": "1299f7944bcb6025ee3c4a2e2a6d6b9583364cbf71108aba95ab82d5b489150e"
   },
   {
     "probe": "GET /v0/chat/targets as admin-bearer",
@@ -860,8 +860,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 1421,
-    "sha256": "0b7275bf0c41fc76bc9a9823571fe57904e8e5682dd8c9e803e8961355763c0d"
+    "length": 1445,
+    "sha256": "a18bfc5da12d8a7f1b0d7354de9858d69d30008e70196fa0dffc18738b51bb32"
   },
   {
     "probe": "GET /fragments/chat/sessions as view-bearer",
