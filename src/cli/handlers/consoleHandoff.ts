@@ -48,6 +48,7 @@ import {
   type HandoffManifest,
   HandoffLedger,
   HandoffLedgerError,
+  LockHeldError,
   runGit,
   validateManifest,
 } from '@qianmo/handoff'
@@ -179,6 +180,28 @@ function sameManifest(a: HandoffManifest, b: HandoffManifest): boolean {
   // Both went through `validateManifest`, which rebuilds the object in one
   // fixed key order, so the serialisations compare field for field.
   return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * The sentence for a console that could not take the ledger because another
+ * process holds it — the lock file and the holder's pid, which is what the
+ * operator acts on — or `null` for any other error.
+ */
+export function handoffLockRefusal(error: unknown): string | null {
+  if (
+    !(error instanceof HandoffLedgerError) ||
+    error.code !== 'locked' ||
+    !(error.cause instanceof LockHeldError)
+  ) {
+    return null
+  }
+  const { path, holder } = error.cause
+  return (
+    `控制台没有启动：接力台账正被另一个进程使用（锁文件 ${path}，` +
+    `${holder === null ? '持锁进程还没写下 pid' : `持锁进程 pid ${holder}`}）。` +
+    '同一个配置根上只能有一个控制台开着 --handoff-root：先停掉那个进程；' +
+    '确认它已经不在运行而锁文件还在时，删掉锁文件再启动。'
+  )
 }
 
 /**

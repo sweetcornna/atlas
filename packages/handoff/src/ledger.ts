@@ -196,8 +196,9 @@ export class HandoffLedgerError extends Error {
     code: HandoffLedgerErrorCode,
     message: string,
     line: number | null = null,
+    options?: { readonly cause?: unknown },
   ) {
-    super(line === null ? message : `ledger line ${line}: ${message}`)
+    super(line === null ? message : `ledger line ${line}: ${message}`, options)
     this.name = 'HandoffLedgerError'
     this.code = code
     this.line = line
@@ -564,9 +565,13 @@ export class HandoffLedger {
       lock = acquireExclusiveLock(`${path}.lock`)
     } catch (error) {
       if (error instanceof LockHeldError) {
+        // The LockHeldError rides along as `cause`: the lock file and the
+        // holder's pid are what a person needs to act on.
         throw new HandoffLedgerError(
           'locked',
           `ledger ${path} is in use: ${error.message}`,
+          null,
+          { cause: error },
         )
       }
       throw error

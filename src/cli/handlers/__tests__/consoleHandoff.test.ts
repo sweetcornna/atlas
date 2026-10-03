@@ -31,7 +31,11 @@ import {
   wipRef,
 } from '@qianmo/handoff'
 import { parseConsoleArgs } from '../consoleArgs.js'
-import { HANDOFF_AUDIT_KINDS, openConsoleHandoff } from '../consoleHandoff.js'
+import {
+  HANDOFF_AUDIT_KINDS,
+  handoffLockRefusal,
+  openConsoleHandoff,
+} from '../consoleHandoff.js'
 
 const roots: string[] = []
 
@@ -194,9 +198,19 @@ describe('openConsoleHandoff', () => {
     const { hubRoot } = await landed()
     const files = hubFiles()
     const hub = openConsoleHandoff({ root: hubRoot, ...files })
-    expect(() => openConsoleHandoff({ root: hubRoot, ...files })).toThrow(
-      'in use',
-    )
+    let refused: unknown
+    try {
+      openConsoleHandoff({ root: hubRoot, ...files })
+    } catch (error) {
+      refused = error
+    }
+    expect(String(refused)).toContain('in use')
+    // What the console prints instead of a stack: the lock file and the pid.
+    const sentence = handoffLockRefusal(refused)
+    expect(sentence).toContain(`锁文件 ${files.ledgerPath}.lock`)
+    expect(sentence).toContain(`持锁进程 pid ${process.pid}`)
+    expect(sentence).toContain('控制台没有启动')
+    expect(handoffLockRefusal(new Error('other'))).toBeNull()
     hub.close()
     openConsoleHandoff({ root: hubRoot, ...files }).close()
   })

@@ -70,7 +70,7 @@ import {
   openConsoleActionLedger,
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
-import { openConsoleHandoff } from './consoleHandoff.js'
+import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -392,6 +392,24 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     generate: newConsoleToken,
   })
 
+  // The handoff ledger (P17.4), first of the stores and before anything dials
+  // out: it is locked to one process, and a second console on this config
+  // root must stop here — having opened nothing else — rather than become a
+  // second writer. That refusal is one sentence, not a stack.
+  let handoff: ReturnType<typeof openConsoleHandoff> | undefined
+  try {
+    handoff =
+      config.handoffRoot === undefined
+        ? undefined
+        : openConsoleHandoff({ root: config.handoffRoot })
+  } catch (error) {
+    const refusal = handoffLockRefusal(error)
+    if (refusal === null) throw error
+    process.stderr.write(`${refusal}\n`)
+    process.exitCode = 1
+    return
+  }
+
   // Before anything dials out, for the same reason as the tokens above: a
   // console whose account ledger path is wrong should say so before it has
   // opened a single link.
@@ -417,14 +435,6 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           secrets: [tokens.view, tokens.admin],
         })
       : undefined
-
-  // The handoff ledger (P17.4), before anything dials out for the same reason:
-  // it is locked to one process, and a second console on this config root must
-  // fail here — having opened no link — rather than become a second writer.
-  const handoff =
-    config.handoffRoot === undefined
-      ? undefined
-      : openConsoleHandoff({ root: config.handoffRoot })
 
   // The registry write token (P15.8), read with the other credentials and for
   // the same reason: a file anyone on the machine can read is a startup
