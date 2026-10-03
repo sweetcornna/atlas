@@ -77,7 +77,10 @@ describe('Qianmo resident host boundary', () => {
     expect(assertAt).toBeLessThan(writeAt)
     expect(writeAt).toBeLessThan(turnAt)
     // 轮询不带 await：回执欠的是「已落盘」，不是「已排上队」。
-    expect(source).toContain('void runtime.deliver(message).catch(')
+    // P18.3 给这次轮询套了一层计数（热切换的空闲判定），仍然是 void、不 await。
+    expect(source).toContain(
+      'void this.#trackPoll(runtime.deliver(message)).catch(',
+    )
     expect(source).not.toContain('await runtime.deliver(')
     // 协议 ack 的发出点一行未动：仍然只挂在 onRead 上。
     expect(source).toContain(
