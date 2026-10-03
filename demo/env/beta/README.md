@@ -594,6 +594,52 @@ demo/env/beta/beta-up.sh --role host -- --anchors http://127.0.0.1:38640 --trust
   `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:38640/v0/anchor` 不带 token 要 401。
 - 跑在 H 自己身上的节点（没有坐标行）直接写 `http://127.0.0.1:38640`，不经隧道；形态②下它照样经那条 `-L` 落到 W。
 
+## 模型服务（P18.6）：中枢持钥，经第六类动作下发
+
+控制台的「模型服务」一面（`providers-console-m1.md`）：模型密钥由 H 上的控制台以信封加密保管、只写不读，
+下发时经**第六类动作**把一行请求 JSON 送到节点的 `qm provider serve-stdin`。和 `--wake-sign` 一样是尾参里的
+策略开关，而且要个人账号（写动作只认 ops 角色、每一次都记进动作账本）：
+
+```bash
+demo/env/beta/beta-up.sh --role host -- --accounts --providers
+```
+
+H 腿见到 `--providers` 才补拓扑那一半（`beta-up.sh` 的 `provider_console_args`）：
+
+- **主密钥** `--provider-key-file $QIANMO_BETA_ROOT/secrets/provider-master.key`。控制台在第一次保存模型密钥时
+  生成它（0600），脚本不生成、不读、不打印。它在 `secrets/` 下、控制台配置根之外：**`beta-reset.sh` 的任何参数
+  都不碰它**；`--archive-config` 只把密文随控制台配置根一起归档，归档搬回来用同一把就能解开。权限过宽、或者
+  密文还在而它不在时，模型服务这一面停用（横幅 `providers  UNAVAILABLE (…)`），**绝不重新生成**——要么把它找回来，
+  要么把密文库挪走留证、重新填密钥。它要和配置根分开备份：只备份了配置根，等于备份了一库打不开的密文。
+- **逐节点的执行器**，从 `peers.conf` 派生：
+  - 有 `node` 坐标行、且 `$QIANMO_BETA_MODEL_KEY_DIR/<node>` 在 → ssh，用这把**专用 key**；
+  - 没有坐标行、端点是回环（节点跑在 H 自己身上）→ 控制台直接起本仓库的 `ops/model-apply.sh <node>`，不经 ssh；
+  - 其余（直连的远端节点、缺 key）→ WARN 后跳过，页面上它显示为中枢够不着。
+- **中枢自有的 known_hosts** `--provider-known-hosts $QIANMO_BETA_MODEL_KEY_DIR/known_hosts`，
+  `StrictHostKeyChecking=yes`：没有条目的节点在起 ssh 之前就被拒绝。
+
+每个远端节点装一次（H 上生成 key，节点上加一行；**不是隧道那把**——`authorized_keys` 里同一把公钥只有第一行的
+选项生效，强制命令不同就必须是不同的 key）：
+
+```bash
+# ① H：每个节点一把专用 key，私钥不离开 H
+( umask 077; mkdir -p ~/.ssh/qianmo-model-apply )
+ssh-keygen -t ed25519 -N '' -C "qianmo-model-apply <node>" -f ~/.ssh/qianmo-model-apply/<node>
+# ② 节点机：authorized_keys 加一行（部署根是节点上那棵仓库树；restrict 关掉转发、pty、agent）
+#    command="<部署根>/demo/env/beta/ops/model-apply.sh <node>",restrict <上一步的 .pub 内容>
+# ③ H：登记节点的主机公钥。**核对指纹后**再追加——这一份就是中枢唯一认的主机钥
+ssh-keyscan -p <port> <host> > /tmp/<node>.hostkey && ssh-keygen -lf /tmp/<node>.hostkey   # 与节点上 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 比对
+cat /tmp/<node>.hostkey >> ~/.ssh/qianmo-model-apply/known_hosts && chmod 600 ~/.ssh/qianmo-model-apply/known_hosts
+# ④ H：重起控制台（单元从 ops/console.env 取尾参，--providers 活得过重启）
+systemctl --user restart qianmo-console.service
+```
+
+`model-apply.sh` 做的事只有一件：在该节点的配置根下跑 `qm provider serve-stdin --node <node>`，stdin、stdout 原样
+透传，自己不读 stdin（密钥在那一行里）。它**不读 `SSH_ORIGINAL_COMMAND`**：中枢发来的客户端命令是一个不存在的哨兵
+`qianmo-model-apply-v1`——`authorized_keys` 那一行丢了或被改写时，sshd 去执行哨兵、操作失败，而不是静默成功。
+节点名不合法、这台机器上没有这个节点的配置根时，它回一行 `bad-request`；同一节点上另一个操作没结束时等锁，超时回
+`busy`。**那一行仍是一道会静默失效的门**（§8.3）：被改写成别的命令之后哨兵帮不上忙，列进巡检项。
+
 ## 值守作业（`ops/watch-hub.sh`，`qm watch`）
 
 跑在 H 上的 `qm watch`（P13.6；起法与判据的真源是 console.md §10，这里只写内测的三条接线）：
@@ -662,6 +708,7 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
 | `QIANMO_BETA_TEAM` | `atlas` | `occ resident --team` |
 | `QIANMO_BETA_LABEL` | console.conf > `阡陌内测环境 · 多节点审计视图` | 页头标签。它是唯一一个 50 个人都会看到、且不需要账号体系的广播位（§7.4）。**这是设置它的唯一入口**：脚本没有 `--label`，尾参里的 `--label` 只对这一趟的进程生效（标签含空白，写不进 `ops/console.env` 的一行）。`--help` 里单独有一段（issue #60） |
 | `QIANMO_BETA_SSH_KEY` | `$HOME/.ssh/id_ed25519_qianmo` | 隧道与镜像共用的私钥（H 上的路径）。单条坐标行可用 `key=` 覆盖 |
+| `QIANMO_BETA_MODEL_KEY_DIR` | `$HOME/.ssh/qianmo-model-apply` | 模型服务第六类动作的专用 key（每个远端节点一把，文件名就是节点名）与中枢的 `known_hosts`。只在控制台尾参有 `--providers` 时用到，见「模型服务」 |
 | `QIANMO_BETA_MIRROR_INTERVAL_MIN` | `5` | 审计镜像拉取间隔。它同时决定每个镜像审计卡上的「滞后 ≤ N 分钟」标注 |
 | `QIANMO_BETA_BACKUP_URL` | 无 | 节点写快照的 https 地址（§2.7）。**不设就不开备份面**；给了就必须有写 token |
 | `QIANMO_BETA_BACKUP_INTERVAL_MS` | `3600000` | §5 的定案（从默认 15 min 调到 60 min，算过账：15 min 是 3.8 GB/天） |
@@ -679,6 +726,8 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
 | `secrets/backup-archive-token` | 只在 H | 只读归档 |
 | `secrets/model-env` | 每台节点机 | 该节点的模型凭据，一份 `KEY=VALUE` 的 shell 片段。节点腿在**起 resident 之前**注入它（ACP 子进程继承 resident 起来那一刻的环境，事后 export 到不了）。**H 上不需要也不该有**：控制台不跑 agent 轮次。没有这个文件节点照常起，但被唤醒后 agent 那一轮必然是 `Not logged in · Please run /login`——脚本与 resident 各会为此报一条 |
 | `~/.ssh/id_ed25519_qianmo`（可换，见变量表） | 只在 H | 隧道与镜像那把 key。**私钥不离开 H**；它在各节点的 `authorized_keys` 里带强制命令，除了转发那一个端口和 `cat` 自己那条链，什么都做不了 |
+| `secrets/provider-master.key` | 只在 H | 模型服务的主密钥（P18.6）。**由控制台生成**，不由脚本生成；`beta-reset.sh` 任何参数都不碰。见「模型服务」 |
+| `~/.ssh/qianmo-model-apply/<node>`（可换，见变量表） | 只在 H | 第六类动作的专用 key，每个远端节点一把。它在该节点的 `authorized_keys` 里带 `command="…/model-apply.sh <node>",restrict`，除了对这个节点跑模型服务的五个操作，什么都做不了 |
 
 非密钥、但同样 0600 且不进仓库的两份：
 
