@@ -1,0 +1,345 @@
+// Copyright 2026 Qianmo AgentNest Team
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Hook inputs, rollout lookup and turn completeness (P17.4 同步规则,
+ * handoff-probe-p17.md 第 7 项).
+ */
+
+import { afterAll, describe, expect, test } from 'bun:test'
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import {
+  claudeCodeTurnEnd,
+  findQmcodeRollout,
+  parseClaudeCodeHookInput,
+  parseQmcodeNotify,
+  qmcodeSnapshot,
+  qmcodeTurnEnd,
+  waitForTurnEnd,
+} from '../handoffTranscript.js'
+import {
+  claudeCodeHookInput,
+  claudeCodeTranscript,
+  qmcodeNotify,
+  qmcodeRollout,
+} from './support/handoffSamples.js'
+
+const roots: string[] = []
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'qianmo-handoff-transcript-'))
+  roots.push(dir)
+  return dir
+}
+
+afterAll(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true })
+})
+
+const THREAD = '0199a4c2-7c1e-7d32-9a5e-3b1f2c4d5e6f'
+const TURN_1 = '0199a4c2-8000-7000-8000-000000000001'
+const TURN_2 = '0199a4c2-8000-7000-8000-000000000002'
+const CC_SESSION = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
+
+describe('parseQmcodeNotify', () => {
+  test('reads the ids and cwd of a real-shaped payload and nothing else', () => {
+    const notify = parseQmcodeNotify(
+      qmcodeNotify(THREAD, TURN_1, '/work/atlas'),
+    )
+    expect(notify).toEqual({
+      threadId: THREAD,
+      turnId: TURN_1,
+      cwd: '/work/atlas',
+    })
+  })
+
+  test('another notification type is not a turn end', () => {
+    expect(
+      parseQmcodeNotify(JSON.stringify({ type: 'approval-requested' })),
+    ).toBeNull()
+  })
+
+  test('malformed or incomplete payloads are refused', () => {
+    expect(() => parseQmcodeNotify('not json')).toThrow('不是 JSON')
+    expect(() => parseQmcodeNotify('[1]')).toThrow('不是 JSON 对象')
+    expect(() =>
+      parseQmcodeNotify(
+        JSON.stringify({ type: 'agent-turn-complete', 'thread-id': THREAD }),
+      ),
+    ).toThrow('thread-id / turn-id / cwd')
+    expect(() =>
+      parseQmcodeNotify(qmcodeNotify(THREAD, TURN_1, 'relative/dir')),
+    ).toThrow('cwd 须是绝对路径')
+  })
+})
+
+describe('parseClaudeCodeHookInput', () => {
+  test('Stop and SessionEnd inputs give the session, transcript, cwd and event', () => {
+    expect(
+      parseClaudeCodeHookInput(
+        claudeCodeHookInput(
+          CC_SESSION,
+          '/h/.claude/projects/x/s.jsonl',
+          '/work/atlas',
+        ),
+      ),
+    ).toEqual({
+      sessionId: CC_SESSION,
+      transcriptPath: '/h/.claude/projects/x/s.jsonl',
+      cwd: '/work/atlas',
+      event: 'Stop',
+    })
+    expect(
+      parseClaudeCodeHookInput(
+        claudeCodeHookInput(CC_SESSION, '/t.jsonl', '/w', 'SessionEnd'),
+      ).event,
+    ).toBe('SessionEnd')
+  })
+
+  test('missing fields and relative paths are refused', () => {
+    expect(() => parseClaudeCodeHookInput('')).toThrow('不是 JSON')
+    expect(() =>
+      parseClaudeCodeHookInput(JSON.stringify({ session_id: CC_SESSION })),
+    ).toThrow('session_id / transcript_path / cwd')
+    expect(() =>
+      parseClaudeCodeHookInput(
+        claudeCodeHookInput(CC_SESSION, 't.jsonl', '/w'),
+      ),
+    ).toThrow('绝对路径')
+  })
+})
+
+describe('findQmcodeRollout', () => {
+  test('finds the plain and the reverted file name, newest day first', () => {
+    const home = tempDir()
+    const older = join(
+      home,
+      'sessions/2026/10/02',
+      `rollout-2026-10-02T23-59-00-${THREAD}.jsonl`,
+    )
+    const newer = join(
+      home,
+      'sessions/2026/10/03',
+      `rollout-2026-10-03T08-00-00-${THREAD}_0199a4c2-9999-7000-8000-00000000abcd.jsonl`,
+    )
+    for (const file of [older, newer]) {
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, '{}\n')
+    }
+    // Compressed archives are never a live session.
+    writeFileSync(
+      join(
+        home,
+        'sessions/2026/10/03',
+        `rollout-2026-10-03T07-00-00-${THREAD}.jsonl.zst`,
+      ),
+      'x',
+    )
+    expect(findQmcodeRollout(home, THREAD)).toBe(newer)
+    rmSync(newer)
+    expect(findQmcodeRollout(home, THREAD)).toBe(older)
+  })
+
+  test('two rollouts of one thread on one day: the most recently written wins', () => {
+    const home = tempDir()
+    const day = join(home, 'sessions/2026/10/03')
+    mkdirSync(day, { recursive: true })
+    const a = join(day, `rollout-2026-10-03T08-00-00-${THREAD}.jsonl`)
+    const b = join(
+      day,
+      `rollout-2026-10-03T09-00-00-${THREAD}_0199a4c2-9999-7000-8000-00000000abcd.jsonl`,
+    )
+    writeFileSync(a, '{}\n')
+    writeFileSync(b, '{}\n')
+    utimesSync(b, new Date(2026, 0, 1), new Date(2026, 0, 1))
+    expect(findQmcodeRollout(home, THREAD)).toBe(a)
+  })
+
+  test('a thread that never wrote a rollout (the TUI title thread) is null', () => {
+    const home = tempDir()
+    expect(findQmcodeRollout(home, THREAD)).toBeNull()
+    mkdirSync(join(home, 'sessions/2026/10/03'), { recursive: true })
+    expect(findQmcodeRollout(home, 'another-thread')).toBeNull()
+  })
+})
+
+describe('qmcodeTurnEnd', () => {
+  const cwd = '/work/atlas'
+
+  test("the cut is the end of the turn's task_complete line", () => {
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const content = Buffer.from(text)
+    expect(qmcodeTurnEnd(content, TURN_1)).toBe(content.length)
+  })
+
+  test("a later turn's bytes are not taken for an earlier turn", () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const both = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'open' },
+    ])
+    expect(qmcodeTurnEnd(Buffer.from(both), TURN_1)).toBe(
+      Buffer.byteLength(first),
+    )
+  })
+
+  test("an open turn, another turn's end, or a half-written end line is not complete", () => {
+    const open = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'open' },
+    ])
+    expect(qmcodeTurnEnd(Buffer.from(open), TURN_2)).toBeNull()
+    const whole = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    expect(qmcodeTurnEnd(Buffer.from(whole), TURN_2)).toBeNull()
+    const half = Buffer.from(whole.slice(0, whole.length - 1))
+    expect(qmcodeTurnEnd(half, TURN_1)).toBeNull()
+  })
+
+  test('an aborted turn is complete too', () => {
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1', ending: 'aborted' },
+    ])
+    expect(qmcodeTurnEnd(Buffer.from(text), TURN_1)).toBe(
+      Buffer.byteLength(text),
+    )
+  })
+})
+
+describe('qmcodeSnapshot (what `now` may take)', () => {
+  const cwd = '/work/atlas'
+
+  test('all turns closed: everything up to the last newline', () => {
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(`${text}{"partial`))).toEqual({
+      open: false,
+      end: Buffer.byteLength(text),
+    })
+  })
+
+  test('a model turn still running is open, with the complete part before it', () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: 'q2', assistant: 'a2', ending: 'open' },
+    ])
+    expect(qmcodeSnapshot(Buffer.from(text))).toEqual({
+      open: true,
+      turnId: TURN_2,
+      before: Buffer.byteLength(first),
+    })
+  })
+
+  test('the user-shell turn running `qm handoff now` itself is cut off, not refused', () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const shell = `${JSON.stringify({
+      timestamp: '2026-10-03T09:10:00.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_started',
+        turn_id: TURN_2,
+        model_context_window: 272000,
+      },
+    })}\n`
+    expect(qmcodeSnapshot(Buffer.from(first + shell))).toEqual({
+      open: false,
+      end: Buffer.byteLength(first),
+    })
+  })
+})
+
+describe('claudeCodeTurnEnd', () => {
+  const cwd = '/work/atlas'
+
+  test('Stop after a final end_turn answer: complete up to the last newline', () => {
+    const text = claudeCodeTranscript(CC_SESSION, cwd, 'complete')
+    expect(claudeCodeTurnEnd(Buffer.from(text), 'Stop')).toBe(
+      Buffer.byteLength(text),
+    )
+    expect(claudeCodeTurnEnd(Buffer.from(`${text}{"type":"assi`), 'Stop')).toBe(
+      Buffer.byteLength(text),
+    )
+  })
+
+  test('Stop with a pending tool_use, or before the answer is flushed: not complete', () => {
+    expect(
+      claudeCodeTurnEnd(
+        Buffer.from(claudeCodeTranscript(CC_SESSION, cwd, 'tool-use')),
+        'Stop',
+      ),
+    ).toBeNull()
+    // The sidechain record after the tool result says end_turn; it is not the
+    // main chain and does not count.
+    expect(
+      claudeCodeTurnEnd(
+        Buffer.from(claudeCodeTranscript(CC_SESSION, cwd, 'tool-result')),
+        'Stop',
+      ),
+    ).toBeNull()
+  })
+
+  test('SessionEnd is complete by definition; an empty file never is', () => {
+    const text = claudeCodeTranscript(CC_SESSION, cwd, 'tool-use')
+    expect(claudeCodeTurnEnd(Buffer.from(text), 'SessionEnd')).toBe(
+      Buffer.byteLength(text),
+    )
+    expect(claudeCodeTurnEnd(Buffer.alloc(0), 'SessionEnd')).toBeNull()
+  })
+})
+
+describe('waitForTurnEnd', () => {
+  test('re-reads until the end line lands, within the window', async () => {
+    const dir = tempDir()
+    const file = join(dir, 'rollout.jsonl')
+    const whole = qmcodeRollout(THREAD, '/w', [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const lines = whole.split('\n')
+    const last = `${lines.at(-2) ?? ''}\n`
+    writeFileSync(file, whole.slice(0, whole.length - last.length))
+    setTimeout(() => appendFileSync(file, last), 60)
+    const landed = await waitForTurnEnd(file, c => qmcodeTurnEnd(c, TURN_1), {
+      intervalMs: 10,
+      timeoutMs: 2_000,
+    })
+    expect(landed?.end).toBe(Buffer.byteLength(whole))
+  })
+
+  test('gives up after the window: the turn is reported incomplete', async () => {
+    const dir = tempDir()
+    const file = join(dir, 'rollout.jsonl')
+    writeFileSync(
+      file,
+      qmcodeRollout(THREAD, '/w', [
+        { turnId: TURN_1, user: 'q1', assistant: 'a1', ending: 'open' },
+      ]),
+    )
+    const started = Date.now()
+    const landed = await waitForTurnEnd(file, c => qmcodeTurnEnd(c, TURN_1), {
+      intervalMs: 10,
+      timeoutMs: 150,
+    })
+    expect(landed).toBeNull()
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140)
+  })
+})
