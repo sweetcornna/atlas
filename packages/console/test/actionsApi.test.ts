@@ -26,6 +26,10 @@ import {
   asAdmin,
   asBearer,
   asSession,
+  cookieFrom,
+  credentialOn,
+  formPost,
+  invite,
   type AccountsHarness,
   type Person,
   person,
@@ -186,6 +190,90 @@ describe('who read my transcript, and when (D6)', () => {
       await h.handle(asSession('GET', '/v0/actions', ops.sid))
     }
     expect(store.text).toBe(before)
+  })
+})
+
+/** {@link person}, with the label `ops` gives the account at invitation. */
+async function labelled(
+  h: AccountsHarness,
+  role: 'member' | 'ops',
+  label: string,
+): Promise<Person> {
+  const { token } = await invite(h.handle, role, { label })
+  const response = await h.handle(formPost('/invite', { invite: token }))
+  expect(response.status).toBe(200)
+  const credential = credentialOn(await response.text())
+  const sid = cookieFrom(response, 'qianmo_session') ?? ''
+  return { credential, sid }
+}
+
+type Named = ActionRecord & { readonly subjectName?: string }
+
+describe('readers have names (reads only)', () => {
+  async function namedScene() {
+    const { ledger } = ledgerOn()
+    const h = accountsHarness({ deps: { actions: ledger } })
+    const member = await labelled(h, 'member', '李四')
+    const ops = await labelled(h, 'ops', '运维 张三')
+    const quiet = await person(h.handle, 'ops')
+    const opened = await h.handle(
+      asSession('POST', '/v0/chat/sessions', member.sid, {
+        body: { target: ADDRESS },
+      }),
+    )
+    const { id } = (await opened.json()) as { id: string }
+    for (const reader of [ops, quiet]) {
+      const page = await h.handle(
+        asSession('GET', `/chat?session=${id}`, reader.sid, {
+          header: false,
+          accept: 'text/html',
+        }),
+      )
+      expect(page.status).toBe(200)
+    }
+    // And once more over the admin token, which is nobody's name.
+    await h.handle(asAdmin('GET', `/v0/chat/sessions/${id}`))
+    return { h, member, ops, quiet, id }
+  }
+
+  test("the member sees ops's display name beside the subject", async () => {
+    const { h, member, ops, quiet } = await namedScene()
+    const response = await h.handle(
+      asSession('GET', '/v0/actions/reads', member.sid),
+    )
+    expect(response.status).toBe(200)
+    const { entries } = (await response.json()) as { entries: Named[] }
+    expect(entries.map(e => [e.subject, e.subjectName])).toEqual([
+      ['legacy:admin', undefined],
+      [subjectOf(h, quiet), undefined],
+      [subjectOf(h, ops), '运维 张三'],
+    ])
+    // Absent, not empty, where there is no name.
+    expect('subjectName' in (entries[0] ?? {})).toBe(false)
+    expect('subjectName' in (entries[1] ?? {})).toBe(false)
+  })
+
+  test('/v0/actions stays ids only', async () => {
+    const { h, ops } = await namedScene()
+    const response = await h.handle(asSession('GET', '/v0/actions', ops.sid))
+    const { entries } = (await response.json()) as { entries: Named[] }
+    expect(entries.length).toBeGreaterThan(0)
+    expect(entries.some(e => 'subjectName' in e)).toBe(false)
+  })
+
+  test('a closed account book names nobody, and the reads still answer', async () => {
+    const { h, id } = await namedScene()
+    // A write the book cannot land closes it — what a full disk does.
+    h.ledger.failAppends = true
+    await h.handle(asAdmin('POST', '/v0/accounts/invites', { role: 'viewer' }))
+    expect(h.book.problem).not.toBeNull()
+    const response = await h.handle(
+      asBearer('GET', `/v0/actions/reads?session=${id}`, ADMIN),
+    )
+    expect(response.status).toBe(200)
+    const { entries } = (await response.json()) as { entries: Named[] }
+    expect(entries).toHaveLength(3)
+    expect(entries.some(e => 'subjectName' in e)).toBe(false)
   })
 })
 

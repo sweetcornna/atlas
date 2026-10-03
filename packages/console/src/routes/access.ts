@@ -26,7 +26,10 @@
  *   every opening of a conversation the caller owns, newest first, whoever
  *   opened it. `?session=<id>` narrows it to one conversation the caller may
  *   see; one they may not see answers exactly as one that does not exist — an
- *   empty page.
+ *   empty page. Each entry also carries `subjectName`, the reader's display
+ *   name from the account book, when there is one: a `u:…` id alone tells
+ *   the person nothing about who read their conversation, which is the whole
+ *   point of D6. Only here — `/v0/actions` stays ids.
  *
  * The shared view token is refused both (403): it is not a person, many
  * people hold it, and "what did `legacy:view` do" is not anybody's answer.
@@ -35,8 +38,9 @@
  * A closed ledger answers 503 rather than the lines that still parse.
  */
 
+import type { ConsoleAccounts } from '../access.js'
 import { chatScopeOf } from '../accountsHttp.js'
-import type { ActionQuery } from '../deps.js'
+import type { ActionPage, ActionQuery, ActionRecord } from '../deps.js'
 import { fail, json, methodNotAllowed, notFound } from '../respond.js'
 import { failureResponse, guard } from './shared.js'
 import { stubRoute } from './stub.js'
@@ -195,6 +199,39 @@ async function readsQuery(
   return { targets, actionPrefix: TRANSCRIPT_OPEN, ...paging(filters) }
 }
 
+/** A reading, with the reader's display name when the account book has one. */
+interface NamedActionRecord extends ActionRecord {
+  readonly subjectName?: string
+}
+
+/**
+ * Name the readers on a `reads` page. The name is the account's label (the one
+ * `ops` gave it at invitation); a subject with none — a legacy token, an
+ * account never labelled — and a book that cannot be read leave the entry as
+ * it was rather than inventing a name.
+ */
+function withReaderNames(
+  page: ActionPage,
+  accounts: ConsoleAccounts | undefined,
+): {
+  readonly entries: readonly NamedActionRecord[]
+  readonly nextBeforeSeq: number | null
+} {
+  const listed = accounts?.book.list()
+  if (listed === undefined || !listed.ok) return page
+  const names = new Map<string, string>()
+  for (const account of listed.value.accounts) {
+    if (account.label !== undefined) names.set(account.subject, account.label)
+  }
+  return {
+    ...page,
+    entries: page.entries.map(entry => {
+      const name = names.get(entry.subject)
+      return name === undefined ? entry : { ...entry, subjectName: name }
+    }),
+  }
+}
+
 async function handleActionsApi(
   ctx: RouteContext,
   rest: readonly string[],
@@ -225,7 +262,7 @@ async function handleActionsApi(
   // so here too.
   const page = await ledger.list(query ?? { targets: [] })
   if (!page.ok) return fail(503, 'unavailable', LEDGER_UNREADABLE)
-  return json(page.value)
+  return json(reads ? withReaderNames(page.value, ctx.accounts) : page.value)
 }
 
 export const accessRoute: RouteModule = {
