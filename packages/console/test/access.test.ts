@@ -335,6 +335,28 @@ describe('强制下线: POST /v0/accounts/<subject>/logout', () => {
     ).toBe(405)
   })
 
+  test('a ledger that cannot write stops it before anything is ended', async () => {
+    const { h, actions, a, ops } = await scene()
+    const sa = subjectOf(h, a)
+    await stream(h, asBearer('GET', '/v0/chat/stream', a.credential))
+    actions.admitResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: 'ledger closed' },
+    }
+    const appends = h.sessions.appends
+    const response = await h.handle(
+      asSession('POST', `/v0/accounts/${sa}/logout`, ops.sid),
+    )
+    expect(response.status).toBe(503)
+    // Nothing happened: the session, the stream and the session table are as they were.
+    expect(h.book.openStreams(sa)).toBe(1)
+    expect(h.sessions.appends).toBe(appends)
+    expect((await h.handle(asSession('GET', '/v0/limits', a.sid))).status).toBe(
+      200,
+    )
+    expect(accountLines(actions.entries)).toEqual([])
+  })
+
   test('an unknown or revoked account is 404 and recorded as refused', async () => {
     const { h, actions, a } = await scene()
     const sa = subjectOf(h, a)
