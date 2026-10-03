@@ -583,6 +583,13 @@ export function spawnResidentAcpChild(options: {
   readonly extraEnv?: Readonly<Record<string, string>>
   /** The memory root a host started with `memoryRoot` hands its child. */
   readonly memoryRoot?: string
+  /** Defaults to `chat`; the fleet runs `responses`. */
+  readonly wireApi?: 'chat' | 'responses'
+  /**
+   * The child's process cwd — the resident's own, which the child inherits.
+   * Defaults to the repository root.
+   */
+  readonly cwd?: string
 }): { readonly child: ChildProcess; readonly stream: Stream } {
   const defines = {
     ...getMacroDefines(),
@@ -597,7 +604,7 @@ export function spawnResidentAcpChild(options: {
   ]
   const stderr = Bun.file(options.stderrPath).writer()
   const child = spawn(process.execPath, args, {
-    cwd: PROJECT_ROOT,
+    cwd: options.cwd ?? PROJECT_ROOT,
     env: residentChildEnv(options),
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -619,6 +626,7 @@ function residentChildEnv(options: {
   readonly safeMode?: boolean
   readonly extraEnv?: Readonly<Record<string, string>>
   readonly memoryRoot?: string
+  readonly wireApi?: 'chat' | 'responses'
 }): NodeJS.ProcessEnv {
   const parent: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) {
@@ -636,7 +644,7 @@ function residentChildEnv(options: {
       OPENAI_API_KEY: 'sk-resident-permission-double',
       OPENAI_BASE_URL: options.modelBaseUrl,
       OPENAI_MODEL: options.model ?? 'resident-permission-double',
-      OPENAI_WIRE_API: 'chat',
+      OPENAI_WIRE_API: options.wireApi ?? 'chat',
       NO_COLOR: '1',
       DISABLE_TELEMETRY: '1',
       DISABLE_AUTOUPDATER: '1',

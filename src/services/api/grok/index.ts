@@ -20,6 +20,7 @@ import {
   getGrokClient,
   grokTargetBaseURL,
 } from './client.js'
+import { grokConversationHeaders } from '../../qianmo/promptCache/grokConversation.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
@@ -71,6 +72,9 @@ export async function* queryModelGrok(
   tools: Tools,
   signal: AbortSignal,
   options: Options,
+  // qianmo P18.19 (CH-7): the conversation id for sticky cache routing,
+  // passed in by the caller — src/services/qianmo/promptCache/grokConversation.ts.
+  sessionId?: string,
 ): AsyncGenerator<
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
@@ -165,6 +169,9 @@ export async function* queryModelGrok(
         adaptGuardedChatStream(
           (await getClient().chat.completions.create(request, {
             signal,
+            // qianmo P18.19 (CH-7): sticky cache routing per conversation —
+            // src/services/qianmo/promptCache/grokConversation.ts.
+            headers: grokConversationHeaders(sessionId),
           })) as AsyncIterable<ChatCompletionChunk>,
           grokModel,
           undefined,

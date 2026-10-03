@@ -73,4 +73,12 @@ export function registerQianmoCommands(program: CommanderCommand): void {
       const { runQianmoMemory } = await import('src/cli/handlers/memory.js');
       runQianmoMemory(process.argv.slice(3));
     });
+
+  program
+    .command('provider')
+    .description("Check, try out and apply this node's model service")
+    .action(async () => {
+      const { runProvider } = await import('src/cli/handlers/provider.js');
+      await runProvider(process.argv.slice(3));
+    });
 }
