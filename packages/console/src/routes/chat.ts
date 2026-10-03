@@ -86,6 +86,18 @@ const HIDDEN_SESSION: ConsoleFailure = {
 }
 
 /**
+ * What stands where a conversation would have opened while the action ledger
+ * cannot take the reading (P15.9). `rejected` because it is this side that
+ * will not let the transcript out — the far node was never asked. The
+ * remedy named is the one a refused write is told (`http.ts`,
+ * `LEDGER_CLOSED`).
+ */
+const LEDGER_CLOSED_FAILURE: ConsoleFailure = {
+  code: 'rejected',
+  message: '动作账本停用，暂时不能打开对话；恢复动作账本之后再试。',
+}
+
+/**
  * How often the stream writes a comment line when nothing has happened.
  *
  * Not decoration. An `EventSource` over an idle connection is indistinguishable
@@ -160,6 +172,22 @@ interface ChatThreadRender {
   readonly html: string
   /** True when a session really opened — what enables the composer. */
   readonly open: boolean
+}
+
+/**
+ * The thread in place of a conversation the ledger could not record the
+ * opening of. No transcript was read to draw it, and the composer stays off.
+ */
+function ledgerClosedThread(now: number): ChatThreadRender {
+  return {
+    html: renderChatThread({
+      transcript: null,
+      failure: LEDGER_CLOSED_FAILURE,
+      target: null,
+      now,
+    }),
+    open: false,
+  }
 }
 
 async function chatThreadFragment(
@@ -385,8 +413,12 @@ async function dispatchChatApi(
     if (rest.length === 2) {
       if (request.method !== 'GET') return methodNotAllowed(['GET'])
       if (!scope.visible(sessionId)) return failureResponse(HIDDEN_SESSION)
+      // A script reading a transcript is somebody reading it, and a reading
+      // the ledger cannot take is a reading that does not happen (D6): the
+      // same `admit` a write asks, before the transcript is touched.
+      const blocked = await ctx.admit()
+      if (blocked !== null) return blocked
       const result = await chat.transcript(sessionId)
-      // A script reading a transcript is somebody reading it.
       if (result.ok) await ctx.record('chat.transcript.open', sessionId, 'ok')
       return result.ok ? json(result.value) : failureResponse(result.failure)
     }
@@ -427,11 +459,20 @@ async function dispatchChatFragment(
   }
   if (rest[0] === 'thread' && rest.length === 2) {
     const sessionId = decodeURIComponent(rest[1] ?? '')
-    const thread = await chatThreadFragment(chat, sessionId, now, scope)
     // `?open=1` is the page switching to this conversation; without it the
     // fetch is the poller or a stream event refreshing what is already open,
-    // and a hundred refreshes are not a hundred readings (P15.9).
-    if (thread.open && url.searchParams.get('open') === '1') {
+    // and a hundred refreshes are not a hundred readings (P15.9). Only an
+    // opening asks the ledger first, and only for a conversation this caller
+    // could open at all: a hidden one is answered without a read either way.
+    const opening =
+      url.searchParams.get('open') === '1' &&
+      sessionId !== '' &&
+      scope.visible(sessionId)
+    if (opening && (await ctx.admit()) !== null) {
+      return html(ledgerClosedThread(now).html, 503)
+    }
+    const thread = await chatThreadFragment(chat, sessionId, now, scope)
+    if (thread.open && opening) {
       await ctx.record('chat.transcript.open', sessionId, 'ok')
     }
     return html(thread.html)
@@ -459,11 +500,20 @@ export const chatRoute: RouteModule = {
       if (chat === undefined) return notFound(`unknown path: ${url.pathname}`)
       const scope = chatScopeOf(ctx.access, ctx.accounts)
       const sessionId = textParam(url.searchParams, 'session') ?? null
+      // A page that opens with a conversation in it is one reading, and the
+      // ledger is asked before the transcript is read. Refused, the page is
+      // still the page — the list, the way to every other conversation — with
+      // the reason where the thread would be, and a 503 under it.
+      const closed =
+        sessionId !== null &&
+        scope.visible(sessionId) &&
+        (await ctx.admit()) !== null
       const [sessions, thread] = await Promise.all([
         chatSessionsFragment(chat, sessionId, now, scope),
-        chatThreadFragment(chat, sessionId, now, scope),
+        closed
+          ? ledgerClosedThread(now)
+          : chatThreadFragment(chat, sessionId, now, scope),
       ])
-      // The page opened with a conversation in it: one reading.
       if (thread.open && sessionId !== null) {
         await ctx.record('chat.transcript.open', sessionId, 'ok')
       }
@@ -474,6 +524,7 @@ export const chatRoute: RouteModule = {
           thread: thread.html,
           composerEnabled: thread.open,
         }),
+        ...(closed ? { status: 503 } : {}),
       }
     },
     css: CHAT_PAGE_CSS,
