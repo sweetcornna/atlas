@@ -46,6 +46,8 @@
  * number from either, so neither is re-sent (both were already not overflow).
  */
 
+import { errorMessageTexts } from './errorMessages.js'
+
 /** hermes `conversation_loop.py:5548`, `:5554`. */
 export const OUTPUT_CAP_SAFETY_MARGIN = 64
 
@@ -170,29 +172,6 @@ export function isOutputCapError(raw: string): boolean {
   )
 }
 
-/** Message strings of an SDK / adapter error and the envelopes it wraps. */
-function errorTexts(error: unknown): string[] {
-  const texts: string[] = []
-  const pending: unknown[] = [error]
-  const seen = new Set<object>()
-  while (pending.length > 0 && texts.length < 16) {
-    const current = pending.shift()
-    if (typeof current === 'string') {
-      texts.push(current)
-      continue
-    }
-    if (typeof current !== 'object' || current === null) continue
-    if (seen.has(current)) continue
-    seen.add(current)
-    const record = current as Record<string, unknown>
-    if (typeof record.message === 'string') texts.push(record.message)
-    for (const key of ['error', 'cause', 'response', 'data']) {
-      if (record[key] !== undefined) pending.push(record[key])
-    }
-  }
-  return texts
-}
-
 /**
  * The output cap to re-send with after `error`, or `undefined` when `error` is
  * not an output-cap rejection with a readable budget, or the smaller cap would
@@ -203,7 +182,7 @@ export function outputCapRetryTokens(
   error: unknown,
   currentCap: number | undefined,
 ): number | undefined {
-  for (const text of errorTexts(error)) {
+  for (const text of errorMessageTexts(error)) {
     const available = parseAvailableOutputTokens(text)
     if (available === undefined) continue
     const next = Math.max(1, available - OUTPUT_CAP_SAFETY_MARGIN)

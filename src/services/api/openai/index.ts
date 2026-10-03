@@ -19,6 +19,7 @@ import type {
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
+import { sendDroppingRejectedParameters } from 'src/services/qianmo/modelCompat/unsupportedParam.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -173,27 +174,29 @@ async function createChatStreamWithCacheKeyFallback(params: {
     fetchOverride: params.fetchOverride,
     source: params.querySource,
   })
-  const create = (cacheKey: string | undefined) =>
-    client.chat.completions.create(params.buildBody(cacheKey), {
-      signal: params.signal,
-    }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>
-
-  if (params.promptCacheKey === undefined) {
-    return create(undefined)
-  }
-
-  try {
-    return await create(params.promptCacheKey)
-  } catch (error) {
-    if (params.signal.aborted || !isPromptCacheKeyRejection(error)) {
-      throw error
-    }
-    markPromptCacheKeyRejected()
-    logForDebugging(
-      '[OpenAI] endpoint rejected prompt_cache_key; retrying once without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
-    )
-    return create(undefined)
-  }
+  // qianmo P18.5 (hermes #12): the drop-and-resend is the shared mechanism in
+  // src/services/qianmo/modelCompat/unsupportedParam.ts; prompt_cache_key keeps
+  // its own detector and latch.
+  return sendDroppingRejectedParameters({
+    body: params.buildBody(params.promptCacheKey),
+    send: body =>
+      client.chat.completions.create(body, {
+        signal: params.signal,
+      }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+    signal: params.signal,
+    droppable: [
+      {
+        key: 'prompt_cache_key',
+        isRejection: isPromptCacheKeyRejection,
+        onDropped: () => {
+          markPromptCacheKeyRejected()
+          logForDebugging(
+            '[OpenAI] endpoint rejected prompt_cache_key; retrying once without it and suppressing it for the rest of the session. Set OPENAI_PROMPT_CACHE_KEY=0 to skip this probe.',
+          )
+        },
+      },
+    ],
+  })
 }
 
 function isOpenAIConvertibleMessage(
