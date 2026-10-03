@@ -66,6 +66,7 @@ import {
 } from './consoleWakeIdentity.js'
 import { resolveConsoleTokenSource } from './consoleTokenSources.js'
 import { FileLedger } from './consoleAccountsStore.js'
+import { openConsoleHandoff } from './consoleHandoff.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -395,6 +396,14 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
 
+  // The handoff ledger (P17.4), before anything dials out for the same reason:
+  // it is locked to one process, and a second console on this config root must
+  // fail here — having opened no link — rather than become a second writer.
+  const handoff =
+    config.handoffRoot === undefined
+      ? undefined
+      : openConsoleHandoff({ root: config.handoffRoot })
+
   // The registry write token (P15.8), read with the other credentials and for
   // the same reason: a file anyone on the machine can read is a startup
   // error, not something to discover on the first renewal.
@@ -498,6 +507,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       ? {}
       : { nodeServers: config.nodeServers }),
     ...(serverNotes === undefined ? {} : { serverNotes }),
+    ...(handoff === undefined ? {} : { handoff: handoff.port }),
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
@@ -589,6 +599,13 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   if (serverNotes !== undefined) {
     banner += field('server-notes', config.serverNotesPath)
   }
+  banner += field(
+    'handoff',
+    handoff === undefined
+      ? 'disabled (no --handoff-root)'
+      : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
+          `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
+  )
   if (accounts !== undefined && config.accountsStorePath !== undefined) {
     const problem = accounts.book.problem
     banner += field(
@@ -640,6 +657,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // console that exits without it leaves a WebSocket the far node keeps a
     // channel record for until its own idle timeout.
     void chat.hub?.close()
+    // Gives the ledger lock back, so the next start does not have to wait for
+    // the stale-pid check to reclaim it.
+    handoff?.close()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)

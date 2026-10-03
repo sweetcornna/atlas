@@ -776,7 +776,7 @@ export interface HandoffSendView {
 /** 登记的结果：新任务，或同一份清单已经登记过的那个任务。 */
 export interface HandoffAcceptance {
   readonly task: HandoffTaskView
-  /** false = 同一份清单（项目、设备、影子提交、会话提交都相同）已在台账里且仍是 accepted。 */
+  /** false = 逐字段相同的清单已在台账里且仍是 accepted：同一次请求的重试，不另起任务。 */
   readonly created: boolean
 }
 
