@@ -71,14 +71,33 @@ describe('reasoningEchoFamily — hermes _REASONING_ECHO_RULES', () => {
     ['mimo-v2.6-pro', 'https://gateway.example/v1', 'mimo'],
     ['renamed', 'https://api.xiaomimimo.com/v1', 'mimo'],
     ['renamed', 'https://token-plan-cn.xiaomimimo.com/v1', 'mimo'],
+    // Unknown host (relay / gateway): the model family decides (ruling
+    // 2026-10-03).
+    ['kimi-k3', 'https://api.cornna.xyz/v1', 'kimi'],
+    ['moonshotai/kimi-k3', 'https://gateway.example/v1', 'kimi'],
+    ['Kimi-K2-Instruct', 'https://gateway.example/v1', 'kimi'],
+    ['deepseek-v4-pro', 'https://api.cornna.xyz/v1', 'deepseek'],
+    ['mimo-v2.6-pro', 'https://api.cornna.xyz/v1', 'mimo'],
+    // A family's own host decides, whatever the model is called.
+    ['deepseek-v4-pro', 'https://api.xiaomimimo.com/v1', 'mimo'],
   ] as const)('%s @ %s → %s', (model, baseURL, family) => {
     expect(reasoningEchoFamily(model, baseURL)).toBe(family)
   })
 
   test.each([
-    // Kimi is host-driven: an aggregator re-exporting the model is strict.
+    // A known strict vendor is strict whatever family the model is from
+    // (hermes would keep deepseek / mimo names here; ruling 2026-10-03).
     ['moonshotai/kimi-k3', 'https://openrouter.ai/api/v1'],
-    ['kimi-k3', 'https://gateway.example/v1'],
+    ['deepseek/deepseek-v4-pro', 'https://openrouter.ai/api/v1'],
+    ['xiaomi/mimo-v2.6-flash', 'https://openrouter.ai/api/v1'],
+    ['moonshotai/kimi-k2-instruct', 'https://api.groq.com/openai/v1'],
+    ['deepseek-r1-distill-llama-70b', 'https://api.groq.com/openai/v1'],
+    ['DeepSeek-V3.1', 'https://api.sambanova.ai/v1'],
+    ['kimi-k3', 'https://api.openai.com/v1'],
+    ['deepseek-v4-pro', undefined],
+    // Unknown host, no family name: strict.
+    ['vendor-model-x', 'https://api.cornna.xyz/v1'],
+    ['not-kimi-k3', 'https://gateway.example/v1'],
     ['mistral-large-latest', 'https://api.mistral.ai/v1'],
     ['llama-4-scout', 'https://api.cerebras.ai/v1'],
     ['llama-3.3-70b', 'https://api.groq.com/openai/v1'],
@@ -155,10 +174,20 @@ describe('§11.9-① F — a Kimi tool turn carries reasoning_content', () => {
     ])
   })
 
-  test('kimi-k3 behind an aggregator: no key (hermes: host-driven)', () => {
+  test('kimi-k3 behind a relay (api.cornna.xyz): single-space pad', () => {
     const [turn] = bodyFor({
       model: 'kimi-k3',
-      baseURL: 'https://gateway.example/v1',
+      baseURL: 'https://api.cornna.xyz/v1',
+      history,
+      enableThinking: false,
+    })
+    expect(turn?.reasoning_content).toBe(' ')
+  })
+
+  test('moonshotai/kimi-k3 on OpenRouter: no key (known strict vendor)', () => {
+    const [turn] = bodyFor({
+      model: 'moonshotai/kimi-k3',
+      baseURL: 'https://openrouter.ai/api/v1',
       history,
       enableThinking: false,
     })

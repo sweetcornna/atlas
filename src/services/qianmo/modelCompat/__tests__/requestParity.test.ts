@@ -726,6 +726,37 @@ const ROWS: ParityRow[] = [
         'hermes deepseek row; value kept at Qianmo "" (design §5.4, §5.10) — baseline 2799eac7',
     }),
   ),
+  // Relay / gateway hosts: the model family decides (P18.8 audit ruling,
+  // 2026-10-03). A non-family model there stays strict (4-strict-gateway).
+  {
+    id: '4-gateway-kimi',
+    vendor: 'relay (api.cornna.xyz), kimi model',
+    model: 'kimi-k3',
+    baseURL: 'https://api.cornna.xyz/v1',
+    wire: 'chat',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    history: replayHistory(),
+    expect: { path: '/chat/completions', assistants: PADDED_REPLAY },
+    source:
+      'audit ruling 2026-10-03 (kimi by name on unknown hosts) + hermes :788-798 pad',
+  },
+  {
+    id: '4-gateway-deepseek',
+    vendor: 'relay (api.cornna.xyz), deepseek model',
+    model: 'deepseek-v4-pro',
+    baseURL: 'https://api.cornna.xyz/v1',
+    wire: 'chat',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    extraEnv: DEEPSEEK_CHAT_LANE,
+    history: replayHistory(),
+    expect: { path: '/chat/completions', assistants: DEEPSEEK_REPLAY },
+    source:
+      'audit ruling 2026-10-03 + hermes deepseek row; value kept at Qianmo ""',
+  },
 
   // ── #10 (P18.8): Gemini tool-call signature, by target model ──
   // hermes transports/chat_completions.py:218-231, :280-282, :399-416.
