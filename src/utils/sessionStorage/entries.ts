@@ -17,6 +17,7 @@ import type {
 import { isEnvTruthy } from '../config/envUtils.js'
 import { extractTag } from '../messages.js'
 import { getUserType } from './paths.js'
+import { persistsPromptAttachments } from '../../services/qianmo/promptCache/persistAttachments.js'
 
 export type Transcript = (
   | UserMessage
@@ -213,6 +214,9 @@ export function removeExtraFields(
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
+  // qianmo P18.19 (CH-2): a node keeps its attachments so a resumed session
+  // replays the same request — src/services/qianmo/promptCache/persistAttachments.ts.
+  if (m.type === 'attachment' && persistsPromptAttachments()) return true
   // IMPORTANT: We deliberately filter out most attachments for non-ants because
   // they have sensitive info for training that we don't want exposed to the public.
   // When enabled, we allow hook_additional_context through since it contains
