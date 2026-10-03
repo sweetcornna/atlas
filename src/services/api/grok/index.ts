@@ -16,6 +16,7 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
 import { clearGrokClientCache, getGrokClient } from './client.js'
+import { grokConversationHeaders } from '../../qianmo/promptCache/grokConversation.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
@@ -152,6 +153,9 @@ export async function* queryModelGrok(
         adaptOpenAIStreamToAnthropic(
           (await getClient().chat.completions.create(request, {
             signal,
+            // qianmo P18.19 (CH-7): sticky cache routing per conversation —
+            // src/services/qianmo/promptCache/grokConversation.ts.
+            headers: grokConversationHeaders(),
           })) as AsyncIterable<ChatCompletionChunk>,
           grokModel,
         ),
