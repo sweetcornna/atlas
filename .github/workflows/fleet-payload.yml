@@ -150,7 +150,9 @@ jobs:
           pass="$(grep -c '^PASS ' "$v" || true)"
           fail="$(grep -c '^FAIL ' "$v" || true)"
           if [ "$pass" != 16 ] || [ "$fail" != 0 ]; then
-            echo "::error title=Verdict not 16/16::PASS=$pass FAIL=$fail，要求 PASS=16 FAIL=0。逐条见 verdict.txt。"
+            # 变量紧贴全角标点时必须加花括号：UTF-8 区域设置下 bash 可能把标点的首字节
+            # 读进变量名，set -u 报 unbound variable，这条注解就丢了（本机实测过）。
+            echo "::error title=Verdict not 16/16::PASS=${pass} FAIL=${fail}，要求 PASS=16 FAIL=0。逐条见 verdict.txt。"
             exit 1
           fi
 
