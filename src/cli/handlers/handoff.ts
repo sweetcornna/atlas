@@ -110,9 +110,12 @@ Commands:
       --token-file <abs path>
                            File holding your console credential (chmod 600):
                            a member/ops personal credential or the admin token.
+      --no-token-file      Forget the credential file registered before.
       --project <name>     Default: the repository directory's name.
       --device <name>      Default: this machine's short host name.
                            Both use A-Z a-z 0-9 . _ - only; "cloud" is reserved.
+                           Running init again keeps --project, --device,
+                           --key and --token-file from last time unless given.
 
   sync [--hook qmcode|claude-code]
                            Push a shadow commit of the work tree and the
@@ -191,7 +194,13 @@ function parseOptions(
       try {
         parsed = residentOptionValue(args, index, name)
       } catch (error) {
-        usage(error instanceof Error ? error.message : String(error))
+        usage(
+          `${error instanceof Error ? error.message : String(error)}${
+            name === '--token-file'
+              ? '（要清除已登记的凭据用 --no-token-file）'
+              : ''
+          }`,
+        )
       }
       if (values.has(name)) usage(`${name} 只能给一次`)
       values.set(name, parsed.value)
@@ -224,15 +233,16 @@ async function runInit(
   cwd: string,
   output: Output,
 ): Promise<number> {
-  const { values, positional } = parseOptions(args, [
-    '--hub',
-    '--console',
-    '--key',
-    '--token-file',
-    '--project',
-    '--device',
-  ])
+  const { values, flags, positional } = parseOptions(
+    args,
+    ['--hub', '--console', '--key', '--token-file', '--project', '--device'],
+    ['--no-token-file'],
+  )
   if (positional.length > 0) usage(`init 不接受参数 ${positional[0]}`)
+  const clearToken = flags.has('--no-token-file')
+  if (clearToken && values.has('--token-file')) {
+    usage('--token-file 与 --no-token-file 只能给一个')
+  }
   const hubRaw = values.get('--hub')
   const consoleRaw = values.get('--console')
   if (hubRaw === undefined || consoleRaw === undefined) {
@@ -242,13 +252,22 @@ async function runInit(
   if (root === null) throw new HandoffUserError(`${cwd} 不在 git 工作区里`)
   const hub = parseHub(hubRaw)
   const consoleUrl = parseConsoleUrl(consoleRaw)
-  const project = assertProjectName(values.get('--project') ?? basename(root))
+  // Running init again re-registers: what is not given again is kept, so
+  // fixing the console URL does not quietly drop the credential, rename the
+  // device or forget the gate key.
+  const existing = loadProject(root)
+  const project = assertProjectName(
+    values.get('--project') ?? existing?.project ?? basename(root),
+  )
   const device = assertDeviceName(
     values.get('--device') ??
+      existing?.device ??
       defaultDeviceName() ??
       usage('从主机名得不出可用的设备名：用 --device 指定'),
   )
-  const key = absoluteOption(values, '--key')
+  const key =
+    absoluteOption(values, '--key') ??
+    (hub.kind === 'ssh' ? existing?.key : undefined)
   if (hub.kind === 'ssh') {
     if (key === undefined) {
       usage(
@@ -261,7 +280,8 @@ async function runInit(
     } catch {}
     if (!isFile) throw new HandoffUserError(`--key ${key} 不是一个文件`)
   }
-  const tokenFile = absoluteOption(values, '--token-file')
+  const givenToken = absoluteOption(values, '--token-file')
+  const tokenFile = clearToken ? undefined : (givenToken ?? existing?.tokenFile)
   if (tokenFile !== undefined) readTokenFile(tokenFile)
 
   const repo = await initHubRepository(hub, project)
@@ -282,9 +302,15 @@ async function runInit(
       : `  中枢仓  ${hubRepoUrl(hub, project)}（中枢上的 ${repo}）`,
   )
   output.out(`  控制台  ${consoleUrl}`)
-  if (tokenFile === undefined) {
+  if (tokenFile !== undefined) {
     output.out(
-      '  注意    没给 --token-file：now / status 要用，补上再 init 一次',
+      `  凭据    ${tokenFile}${givenToken === undefined ? '（沿用已登记的）' : ''}`,
+    )
+  } else {
+    output.out(
+      clearToken && existing?.tokenFile !== undefined
+        ? '  凭据    已清除登记的凭据文件；now / status 要用，补上再 init 一次'
+        : '  注意    没给 --token-file：now / status 要用，补上再 init 一次',
     )
   }
   return 0
