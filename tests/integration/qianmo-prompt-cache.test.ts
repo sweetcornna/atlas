@@ -3,7 +3,8 @@
 
 /**
  * P18.19 — does a resident node send each session the same prompt head turn
- * after turn? (design `providers-console-m1.md` §5.11.7, T-1 T-2 T-3 T-8 T-9)
+ * after turn? (design `providers-console-m1.md` §5.11.7, T-1 T-2 T-3 T-8 T-9;
+ * the wire and transcript halves of T-6 and T-7)
  *
  * A provider can only reuse a cached prefix the client sends again byte for
  * byte. On 2026-10-03 the recording stub found three ways a node stopped
@@ -387,6 +388,16 @@ describe("P18.19: switching sessions keeps each session's prompt head", () => {
     expect(new Set(on.a.map(r => r.body.prompt_cache_key)).size).toBe(1)
   })
 
+  test('T-6 ①, T-7 ⑤: by default no request carries a retention or a comparison', () => {
+    for (const r of [...on.a, ...on.b1, ...on.a4]) {
+      expect({
+        seq: r.seq,
+        retention: 'prompt_cache_retention' in r.body,
+        options: 'prompt_cache_options' in r.body,
+      }).toEqual({ seq: r.seq, retention: false, options: false })
+    }
+  })
+
   test('T-2: back from another session after CLAUDE.md, the git status and files changed, A carries on byte for byte with the same key', () => {
     expect(prefixDivergence(body(on.a.at(-1)), body(on.a4[0]))).toBeNull()
     expect(on.a4[0]!.body.prompt_cache_key).toBe(on.a[0]!.body.prompt_cache_key)
@@ -449,5 +460,132 @@ describe('P18.19: a session resumed in a replaced ACP child sends the same promp
         .filter(e => e.type === 'attachment').length
     expect(kinds(on.transcript)).toBeGreaterThan(0)
     expect(kinds(noAttachments.transcript)).toBe(0)
+  })
+})
+
+type TranscriptAssistant = {
+  readonly responseId: unknown
+  readonly diagnostics: unknown
+}
+
+/** The OpenAI fields CH-6 keeps on each assistant entry of a transcript. */
+function assistantEntries(transcript: string): TranscriptAssistant[] {
+  return transcript
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as { type?: string; message?: unknown })
+    .filter(e => e.type === 'assistant')
+    .map(e => {
+      const m = (e.message ?? {}) as Record<string, unknown>
+      return {
+        responseId: m._openaiResponseId,
+        diagnostics: m._openaiPromptCacheDiagnostics,
+      }
+    })
+}
+
+describe('P18.19: response ids, diagnostics and retention on a real child (T-6, T-7)', () => {
+  const ON = {
+    OPENAI_PROMPT_CACHE_DIAGNOSTICS: '1',
+    OPENAI_PROMPT_CACHE_RETENTION: '24h',
+  }
+  let diag: RestartRun
+  let refused: RecordedRequest[]
+
+  beforeAll(async () => {
+    diag = await restartScenario('restart-diagnostics', ON)
+    const dirs = scenario('refused')
+    recorder.reject.add('prompt_cache_retention')
+    recorder.reject.add('prompt_cache_options')
+    const node = await Node.start(dirs, ON, 'refused')
+    try {
+      refused = await threeTurns(node, await node.newSession(dirs.ws))
+    } finally {
+      recorder.reject.clear()
+      await node.dispose()
+    }
+  }, TEST_MS * 2)
+
+  test('T-7 ②: each request names the response before it, across the child replacement too', () => {
+    const sent = [...diag.a, ...diag.a4]
+    expect(sent.length).toBe(5)
+    expect('prompt_cache_options' in sent[0]!.body).toBe(false)
+    for (let i = 1; i < sent.length; i++) {
+      expect({
+        seq: sent[i]!.seq,
+        options: sent[i]!.body.prompt_cache_options,
+      }).toEqual({
+        seq: sent[i]!.seq,
+        options: { comparison_response_id: `resp_${sent[i - 1]!.seq}` },
+      })
+    }
+  })
+
+  test('T-7 ① ③: the transcript keeps every response id, and the diagnostics each reply carried', () => {
+    const sent = [...diag.a, ...diag.a4]
+    const entries = assistantEntries(diag.transcript)
+    expect(entries.map(e => e.responseId)).toEqual(
+      sent.map(r => `resp_${r.seq}`),
+    )
+    entries.forEach((e, i) => {
+      expect({ i, diagnostics: e.diagnostics }).toEqual({
+        i,
+        diagnostics:
+          i === 0
+            ? undefined
+            : {
+                type: 'cache_miss',
+                reason: 'input_changed',
+                comparison_reusable_tokens: 1000,
+                cache_missed_tokens: sent[i]!.seq,
+              },
+      })
+    })
+  })
+
+  test('T-6 ②: every request carries the retention asked for, before and after the replacement', () => {
+    for (const r of [...diag.a, ...diag.a4]) {
+      expect({ seq: r.seq, v: r.body.prompt_cache_retention }).toEqual({
+        seq: r.seq,
+        v: '24h',
+      })
+    }
+  })
+
+  test('T-6 ④, T-7 ④: each refused field is dropped once, on the refused request, and not sent again', () => {
+    const turnsAnswered = refused.filter(r => r.status === 200).length
+    expect(turnsAnswered).toBe(4)
+    const rejected = refused.filter(r => r.status === 400)
+    expect(
+      rejected.map(r => ({
+        retention: 'prompt_cache_retention' in r.body,
+        options: 'prompt_cache_options' in r.body,
+      })),
+    ).toEqual([
+      { retention: true, options: false },
+      { retention: false, options: true },
+    ])
+    // Each refusal is followed straight away by the same request without it.
+    for (const r of rejected) {
+      const i = refused.indexOf(r)
+      const retry = refused[i + 1]!
+      expect(retry.status).toBe(200)
+      const field =
+        'prompt_cache_retention' in r.body
+          ? 'prompt_cache_retention'
+          : 'prompt_cache_options'
+      const { [field]: _dropped, ...rest } = r.body
+      expect(retry.body).toEqual(rest)
+    }
+    // Latched: nothing after a field's refusal carries it again.
+    const firstRefusal = (field: string) =>
+      refused.findIndex(r => r.status === 400 && field in r.body)
+    for (const field of ['prompt_cache_retention', 'prompt_cache_options']) {
+      const later = refused.slice(firstRefusal(field) + 1)
+      expect({ field, carried: later.some(r => field in r.body) }).toEqual({
+        field,
+        carried: false,
+      })
+    }
   })
 })

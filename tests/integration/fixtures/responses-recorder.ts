@@ -14,6 +14,16 @@
  * — or a message `ack <n>`. `n` counts requests over the recorder's lifetime,
  * so every answer, reasoning id and call id is distinct.
  *
+ * A request that names an earlier response in
+ * `prompt_cache_options.comparison_response_id` gets a
+ * `prompt_cache_diagnostics` object back on `response.completed`, the way
+ * OpenAI answers one; its `cache_missed_tokens` is the request's own `n`, so
+ * a test can tell which reply a stored object came from. The values mean
+ * nothing else.
+ *
+ * A top-level field named in {@link ResponsesRecorder.reject} is refused with
+ * OpenAI's 400 for an unsupported parameter.
+ *
  * It is not a model and says nothing about what a provider caches; it shows
  * what this side sends, which is the half of a cache hit the node controls.
  */
@@ -23,6 +33,8 @@ export type RecordedRequest = {
   readonly path: string
   readonly headers: Readonly<Record<string, string>>
   readonly body: Record<string, unknown>
+  /** The HTTP status it was answered with. */
+  readonly status: number
 }
 
 type Item = Record<string, unknown>
@@ -49,6 +61,8 @@ function sse(events: readonly unknown[]): Response {
 
 export class ResponsesRecorder {
   readonly requests: RecordedRequest[] = []
+  /** Top-level request fields to refuse with a 400 while set. */
+  readonly reject = new Set<string>()
   readonly #server: ReturnType<typeof Bun.serve>
 
   constructor() {
@@ -69,11 +83,30 @@ export class ResponsesRecorder {
           headers[key] = key === 'authorization' ? '<redacted>' : value
         })
         const seq = this.requests.length + 1
-        this.requests.push({ seq, path: url.pathname, headers, body })
-        if (!url.pathname.endsWith('/responses')) {
+        const refused = [...this.reject].find(field => field in body)
+        const status = !url.pathname.endsWith('/responses')
+          ? 404
+          : refused !== undefined
+            ? 400
+            : 200
+        this.requests.push({ seq, path: url.pathname, headers, body, status })
+        if (status === 404) {
           return Response.json(
             { error: { message: 'recorder: only /responses' } },
-            { status: 404 },
+            { status },
+          )
+        }
+        if (refused !== undefined) {
+          return Response.json(
+            {
+              error: {
+                message: `Unsupported parameter: '${refused}' is not supported with this model.`,
+                type: 'invalid_request_error',
+                param: refused,
+                code: 'unsupported_parameter',
+              },
+            },
+            { status },
           )
         }
         return this.#answer(seq, body)
@@ -180,11 +213,23 @@ export class ResponsesRecorder {
         },
       )
     }
+    const options = body.prompt_cache_options as
+      | Record<string, unknown>
+      | undefined
+    const compared = typeof options?.comparison_response_id === 'string'
     events.push({
       type: 'response.completed',
       response: {
         id: `resp_${n}`,
         status: 'completed',
+        ...(compared && {
+          prompt_cache_diagnostics: {
+            type: 'cache_miss',
+            reason: 'input_changed',
+            comparison_reusable_tokens: 1000,
+            cache_missed_tokens: n,
+          },
+        }),
         usage: {
           input_tokens: 1000,
           input_tokens_details: { cached_tokens: 0 },

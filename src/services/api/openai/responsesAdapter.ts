@@ -32,6 +32,7 @@ import {
   responsesIssuer,
 } from '../../qianmo/modelCompat/responsesIssuer.js'
 import { readResponsesReasoningTokens } from '../../qianmo/modelCompat/responsesUsage.js'
+import { dropRejectedPromptCacheExtra } from '../../qianmo/promptCache/requestExtras.js'
 import {
   getAPIErrorDiagnostics,
   isRetryableAPIError,
@@ -87,6 +88,9 @@ type ResponsesRequest = {
   max_output_tokens?: number
   /** Sticky cache routing key — stable for the occ session. */
   prompt_cache_key?: string
+  /** qianmo P18.19 (CH-5, CH-6) — src/services/qianmo/promptCache/requestExtras.ts. */
+  prompt_cache_retention?: string
+  prompt_cache_options?: Record<string, unknown>
 }
 
 function textFromContent(content: unknown): string {
@@ -288,6 +292,9 @@ export function buildResponsesRequest(params: {
   promptCacheKey?: string
   /** Generic `/responses` endpoints only — the ChatGPT backend rejects it. */
   maxOutputTokens?: number
+  /** qianmo P18.19 (CH-5, CH-6): generic `/responses` endpoints only. */
+  promptCacheRetention?: string
+  promptCacheOptions?: Record<string, unknown>
   /**
    * Reasoning-summary detail, or `'off'` to skip the opt-in. Defaults to the
    * user's `OPENAI_REASONING_SUMMARY` setting. Internal side queries pass
@@ -339,6 +346,12 @@ export function buildResponsesRequest(params: {
     // Must not hash the full message list (would change every turn).
     ...(params.promptCacheKey !== undefined
       ? { prompt_cache_key: params.promptCacheKey }
+      : {}),
+    ...(params.promptCacheRetention !== undefined
+      ? { prompt_cache_retention: params.promptCacheRetention }
+      : {}),
+    ...(params.promptCacheOptions !== undefined
+      ? { prompt_cache_options: params.promptCacheOptions }
       : {}),
   }
 }
@@ -809,6 +822,11 @@ export async function* adaptResponsesStreamToAnthropic(
      * replay the model's chain of thought.
      */
     onReasoningItem?: (item: OpenAIReasoningItem) => void
+    /**
+     * qianmo P18.19 (CH-6): called with each event's `response` object (id,
+     * `prompt_cache_diagnostics`) — src/services/qianmo/promptCache/responseRecord.ts.
+     */
+    onResponse?: (response: unknown) => void
   },
 ): AsyncGenerator<BetaRawMessageStreamEvent, void> {
   const messageId = `msg_${randomUUID().replace(/-/g, '').slice(0, 24)}`
@@ -958,6 +976,7 @@ export async function* adaptResponsesStreamToAnthropic(
     commitment = raiseCommitment(commitment, event)
     for await (const startedEvent of ensureStarted()) yield startedEvent
     const type = event.type
+    if (event.response !== undefined) options?.onResponse?.(event.response)
 
     // Refusal text is surfaced as ordinary text: the downstream pipeline has
     // no refusal block type, and hiding it would make the turn end silently.
@@ -1334,6 +1353,16 @@ async function fetchResponsesStream(params: {
         )
         request = withoutPromptCacheKey(request)
         return 'retry:prompt-cache-key'
+      }
+      // qianmo P18.19 (CH-5, CH-6): the same drop-and-latch for the optional
+      // cache fields — src/services/qianmo/promptCache/requestExtras.ts.
+      const withoutExtra = dropRejectedPromptCacheExtra(request, error)
+      if (withoutExtra !== undefined) {
+        logForDebugging(
+          `[OpenAI] ${params.label} rejected ${withoutExtra.transform}; retrying without it for the rest of the session.`,
+        )
+        request = withoutExtra.request
+        return withoutExtra.transform
       }
       return undefined
     },
