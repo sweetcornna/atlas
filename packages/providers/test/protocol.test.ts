@@ -34,11 +34,17 @@ function codeOf(result: ParsedRequest): ProviderErrorCode | 'ok' {
 }
 
 describe('schema v1 closure (§2.5)', () => {
-  test('operations are exactly status / probe / models / apply', () => {
-    expect([...PROVIDER_OPS]).toEqual(['status', 'probe', 'models', 'apply'])
+  test('operations are exactly status / probe / models / apply / autocompact', () => {
+    expect([...PROVIDER_OPS]).toEqual([
+      'status',
+      'probe',
+      'models',
+      'apply',
+      'autocompact',
+    ])
   })
 
-  test('error codes are the §2.5 set plus unsupported-multi-key', () => {
+  test('error codes are the §2.5 set plus unsupported-multi-key and env-override', () => {
     expect([...PROVIDER_ERROR_CODES].sort() as string[]).toEqual(
       [
         'bad-request',
@@ -55,6 +61,7 @@ describe('schema v1 closure (§2.5)', () => {
         'busy',
         'write-failed',
         'probe-failed',
+        'env-override',
       ].sort(),
     )
   })
@@ -160,6 +167,48 @@ describe('schema v1 closure (§2.5)', () => {
         parseProviderRequest({ ...probe, probe: { mode: 'shell' } }, NODE),
       ),
     ).toBe('bad-value')
+  })
+
+  test('autocompact: no value reads; auto or an exact token count in range sets; nothing else', () => {
+    const autocompact = {
+      v: 1,
+      op: 'autocompact',
+      requestId: '01JB0000000000000000000004',
+      node: 'beta-1',
+    } as const
+    const read = parseProviderRequest(autocompact, NODE)
+    expect(read.ok && read.request).toEqual(autocompact)
+    for (const value of ['auto', 100_000, 150_000, 1_000_000] as const) {
+      const parsed = parseProviderRequest({ ...autocompact, value }, NODE)
+      expect(parsed.ok && parsed.request).toEqual({ ...autocompact, value })
+    }
+    // The CLI's typed shorthands are not protocol values: `200` would mean
+    // 200k there, and `150k` is a string.
+    for (const value of [
+      99_999,
+      1_000_001,
+      200,
+      150_000.5,
+      '150k',
+      '150000',
+      null,
+      true,
+    ]) {
+      const parsed = parseProviderRequest({ ...autocompact, value }, NODE)
+      expect(codeOf(parsed)).toBe('bad-value')
+      if (!parsed.ok) expect(parsed.error.path).toBe('value')
+    }
+    expect(
+      codeOf(
+        parseProviderRequest(
+          { ...autocompact, profile: wireProfileJson() },
+          NODE,
+        ),
+      ),
+    ).toBe('bad-request')
+    expect(
+      codeOf(parseProviderRequest({ ...autocompact, node: 'beta-2' }, NODE)),
+    ).toBe('node-mismatch')
   })
 })
 

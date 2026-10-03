@@ -32,6 +32,11 @@ import {
   applyRequest,
   CANARY_KEY,
 } from '../../../services/qianmo/providers/__tests__/helpers.js'
+import { AUTO_COMPACT_LIMITS } from '@qianmo/providers'
+import {
+  AUTO_COMPACT_WINDOW_MAX_TOKENS,
+  AUTO_COMPACT_WINDOW_MIN_TOKENS,
+} from '../../../services/compact/autoCompactWindowValue.js'
 import { runQmProvider, type SourceRun } from './providerSource.js'
 
 const CLI_TIMEOUT_MS = 120_000
@@ -254,6 +259,108 @@ describe('qm provider autocompact', () => {
       for (const run of [applied, again]) {
         expect(run.stdout).not.toContain(CANARY_KEY)
       }
+    },
+    CLI_TIMEOUT_MS,
+  )
+})
+
+describe('the autocompact op through serve-stdin (what the hub sends over ssh)', () => {
+  let sequence = 0
+  function request(value?: unknown): string {
+    sequence += 1
+    return `${JSON.stringify({
+      v: 1,
+      op: 'autocompact',
+      requestId: `01JBAUTOCOMPACT${String(sequence).padStart(11, '0')}`,
+      node: 'beta-1',
+      ...(value === undefined ? {} : { value }),
+    })}\n`
+  }
+  const serve = (line: string, env: Record<string, string> = {}) =>
+    qmProvider(['serve-stdin', '--node', 'beta-1'], env, line)
+
+  test('the protocol’s bounds are the base’s', () => {
+    expect(AUTO_COMPACT_LIMITS.minTokens).toBe(AUTO_COMPACT_WINDOW_MIN_TOKENS)
+    expect(AUTO_COMPACT_LIMITS.maxTokens).toBe(AUTO_COMPACT_WINDOW_MAX_TOKENS)
+  })
+
+  test(
+    'write: 150000 lands in settings.json; the response and status report settings / 150000',
+    async () => {
+      const run = await serve(request(150_000))
+      expect(run.code).toBe(0)
+      expect(jsonOf(run)).toEqual({
+        v: 1,
+        requestId: expect.any(String),
+        ok: true,
+        autoCompactWindow: 150_000,
+        configured: 150_000,
+        source: 'settings',
+        message: 'Auto-compact window set to 150k tokens',
+      })
+      expect(settings().autoCompactWindow).toBe(150_000)
+      expect(settings().env).toEqual({ MY_TOOL_FLAG: 'on' })
+      const { effective } = await status()
+      expect(effective).toMatchObject({
+        autoCompactWindow: 150_000,
+        autoCompactSource: 'settings',
+      })
+
+      const reset = await serve(request('auto'))
+      expect(reset.code).toBe(0)
+      expect(jsonOf(reset)).toMatchObject({ ok: true, source: 'auto' })
+      expect('autoCompactWindow' in settings()).toBe(false)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'read only (no value): the window and its source, settings.json byte for byte unchanged',
+    async () => {
+      await qmProvider(['autocompact', '150k'])
+      const before = settingsText()
+      const run = await serve(request())
+      expect(run.code).toBe(0)
+      expect(jsonOf(run)).toEqual({
+        v: 1,
+        requestId: expect.any(String),
+        ok: true,
+        autoCompactWindow: 150_000,
+        configured: 150_000,
+        source: 'settings',
+      })
+      expect(settingsText()).toBe(before)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'CLAUDE_CODE_AUTO_COMPACT_WINDOW set: env-override, exit 1, nothing written',
+    async () => {
+      const before = settingsText()
+      const run = await serve(request(150_000), ENV_WINDOW)
+      expect(run.code).toBe(1)
+      expect(jsonOf(run)).toMatchObject({
+        ok: false,
+        code: 'env-override',
+        configured: 300_000,
+        source: 'env',
+      })
+      expect(settingsText()).toBe(before)
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'values the protocol does not take are refused before anything runs: 200 is not 200k here',
+    async () => {
+      const before = settingsText()
+      for (const value of [200, '150k', 2_000_000]) {
+        const run = await serve(request(value))
+        expect(run.code).toBe(1)
+        expect(jsonOf(run)).toMatchObject({ ok: false, code: 'bad-value' })
+      }
+      expect(settingsText()).toBe(before)
     },
     CLI_TIMEOUT_MS,
   )

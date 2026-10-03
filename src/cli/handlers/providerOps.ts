@@ -27,6 +27,11 @@
  *     `settings.json` under a live ACP child (R-5). Residents older than
  *     P18.3 write no pid file, hence the lifecycle stamp.
  *   - `probe`, `models`: `providerProbe.ts` and `providerCall.ts`.
+ *   - `autocompact` (D-9): `qm provider autocompact --json` in a child of its
+ *     own (`providerAutocompact.ts`, the base `/autocompact`), its line
+ *     wrapped in the envelope. A child because the window is capped by the
+ *     model the node's ACP child would run, and finding that out replays its
+ *     start-up onto `process.env`, as `effective` does.
  *
  * ## What a response never holds
  *
@@ -39,6 +44,9 @@
 import { readFileSync } from 'node:fs'
 import {
   type ApplyRequest,
+  type AutoCompactReport,
+  type AutoCompactSource,
+  type AutocompactRequest,
   errorResponse,
   type NodeCapabilities,
   type ProbeRequest,
@@ -56,6 +64,7 @@ import { getModelCompatCapabilities } from '../../services/qianmo/modelCompat/ca
 import {
   computeEffectiveInChild,
   type EffectiveOutcome,
+  runOwnCliChild,
 } from '../../services/qianmo/providers/effectiveProcess.js'
 import {
   commitPendingProviderConfig,
@@ -67,6 +76,7 @@ import {
   providerPaths,
 } from '../../services/qianmo/providers/store.js'
 import type { CliLaunchSpec } from '../../utils/process/cliLaunch.js'
+import type { AutocompactResult } from './providerAutocompact.js'
 import { probeCall } from './providerCall.js'
 import {
   appliedTarget,
@@ -77,9 +87,13 @@ import {
   profileTarget,
 } from './providerProbe.js'
 
-/** A protocol response, with the probe fields §5.5 adds. */
+/**
+ * A protocol response, with the probe fields §5.5 adds and, for
+ * `autocompact`, the window report (D-9).
+ */
 export type NodeProviderResponse = ProviderResponse &
-  Omit<Partial<ProbeOutcome>, 'ok'>
+  Omit<Partial<ProbeOutcome>, 'ok'> &
+  Partial<AutoCompactReport>
 
 export type ProviderContext = {
   /** The node name the forced command was installed with (`--node`). */
@@ -438,6 +452,92 @@ async function models(
   )
 }
 
+/** Time `autocompact` leaves its child out of the op's 20 s. */
+const AUTOCOMPACT_CHILD_TIMEOUT_MS =
+  PROTOCOL_LIMITS.timeoutMs.autocompact - 5_000
+
+type AutocompactRefusal = Extract<AutocompactResult, { ok: false }>['code']
+
+function isAutocompactRefusal(value: unknown): value is AutocompactRefusal {
+  return (
+    value === 'bad-value' ||
+    value === 'env-override' ||
+    value === 'write-failed'
+  )
+}
+
+function isAutoCompactSource(value: unknown): value is AutoCompactSource {
+  return value === 'env' || value === 'settings' || value === 'auto'
+}
+
+/** The child's `--json` line, if it is one. */
+function autocompactLine(stdout: string): AutocompactResult | null {
+  const line = stdout
+    .split('\n')
+    .reverse()
+    .find(text => text.startsWith('{'))
+  if (line === undefined) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (!isRecord(parsed)) return null
+  const { ok, code, autoCompactWindow, configured, source, message } = parsed
+  if (
+    typeof autoCompactWindow !== 'number' ||
+    typeof configured !== 'number' ||
+    !isAutoCompactSource(source)
+  ) {
+    return null
+  }
+  const report = { autoCompactWindow, configured, source }
+  if (ok === true) {
+    return typeof message === 'string'
+      ? { ok, ...report, message }
+      : { ok, ...report }
+  }
+  return ok === false &&
+    isAutocompactRefusal(code) &&
+    typeof message === 'string'
+    ? { ok, code, ...report, message }
+    : null
+}
+
+async function autocompact(
+  request: AutocompactRequest,
+  ctx: ProviderContext,
+): Promise<NodeProviderResponse> {
+  const run = await runOwnCliChild(
+    [
+      'provider',
+      'autocompact',
+      ...(request.value === undefined ? [] : [String(request.value)]),
+      '--json',
+    ],
+    {
+      timeoutMs: AUTOCOMPACT_CHILD_TIMEOUT_MS,
+      ...(ctx.launch === undefined ? {} : { launch: ctx.launch }),
+    },
+  )
+  const result = run.kind === 'exited' ? autocompactLine(run.stdout) : null
+  if (result === null) {
+    warnLine(
+      ctx,
+      `autocompact child: ${run.kind === 'exited' ? 'no-result' : run.kind}`,
+    )
+    return failure(
+      request.requestId,
+      'write-failed',
+      request.value === undefined
+        ? '节点没能读出自动压缩阈值'
+        : '节点没能执行自动压缩阈值的设置 · 是否已写入未知 · 先读一次再重试',
+    )
+  }
+  return { v: PROTOCOL_VERSION, requestId: request.requestId, ...result }
+}
+
 /**
  * One request line → one response. Never throws for anything a request can
  * cause; an exception out of here is a fault of the node (unreadable files,
@@ -465,5 +565,7 @@ export async function handleProviderLine(
       return probe(request, capabilities, ctx)
     case 'models':
       return models(request, capabilities)
+    case 'autocompact':
+      return autocompact(request, ctx)
   }
 }

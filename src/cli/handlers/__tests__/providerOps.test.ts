@@ -55,6 +55,7 @@ import {
   type NodeProviderResponse,
   type ProviderContext,
 } from '../providerOps.js'
+import { sourceLaunch } from './providerSource.js'
 import { RecordingStub, refusedOrigin } from './providerStub.js'
 
 const NOW = new Date('2026-10-03T08:00:00Z')
@@ -168,6 +169,27 @@ function probeRequest(
 
 function statusRequest(): Record<string, unknown> {
   return { v: 1, op: 'status', requestId: requestId(), node: 'beta-1' }
+}
+
+function autocompactRequest(): Record<string, unknown> {
+  return { v: 1, op: 'autocompact', requestId: requestId(), node: 'beta-1' }
+}
+
+/** Time for one CLI child started from source. */
+const CHILD_TIMEOUT_MS = 60_000
+
+/**
+ * `qm provider …` children from source, in this test's config root (the
+ * dispatcher hands on this process's env, `CLAUDE_CONFIG_DIR` included) and
+ * with a throwaway HOME.
+ */
+function sourceChild(cliArgs: string[], env: NodeJS.ProcessEnv) {
+  return sourceLaunch(cliArgs, {
+    ...env,
+    HOME: root,
+    NODE_ENV: 'production',
+    NO_COLOR: '1',
+  })
 }
 
 const settingsFile = () => join(config, 'settings.json')
@@ -377,8 +399,75 @@ describe('the closed error set: one case per code', () => {
     expect(response.reachable).toBe(false)
   })
 
+  test(
+    'env-override: autocompact while CLAUDE_CODE_AUTO_COMPACT_WINDOW is set; the window stays as it was',
+    async () => {
+      writeFileSync(settingsFile(), '{"autoCompactWindow":150000}\n', {
+        mode: 0o600,
+      })
+      const previous = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '300000'
+      let response: NodeProviderResponse
+      try {
+        response = await send(
+          { ...autocompactRequest(), value: 'auto' },
+          { launch: sourceChild },
+        )
+      } finally {
+        if (previous === undefined)
+          delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+        else process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = previous
+      }
+      expectCode(response, 'env-override')
+      expect(response).toMatchObject({ configured: 300_000, source: 'env' })
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(
+        '{"autoCompactWindow":150000}\n',
+      )
+    },
+    CHILD_TIMEOUT_MS,
+  )
+
   test('every code of the closed set has a case above', () => {
     expect([...seen].sort()).toEqual([...PROVIDER_ERROR_CODES].sort())
+  })
+})
+
+describe('autocompact through the dispatcher', () => {
+  test(
+    'read only: the node’s window and where it comes from, nothing written',
+    async () => {
+      writeFileSync(settingsFile(), '{"autoCompactWindow":150000}\n', {
+        mode: 0o600,
+      })
+      const response = await send(autocompactRequest(), { launch: sourceChild })
+      expect(response).toMatchObject({
+        ok: true,
+        autoCompactWindow: 150_000,
+        configured: 150_000,
+        source: 'settings',
+      })
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(
+        '{"autoCompactWindow":150000}\n',
+      )
+    },
+    CHILD_TIMEOUT_MS,
+  )
+
+  test('a child that does not answer: write-failed, saying the outcome is unknown', async () => {
+    const response = await send(
+      { ...autocompactRequest(), value: 200_000 },
+      {
+        launch: (_args, env) => ({
+          execPath: join(root, 'no-such-runtime'),
+          args: [],
+          env,
+          windowsHide: false,
+        }),
+      },
+    )
+    expect(codeOf(response)).toBe('write-failed')
+    expect(response.ok ? '' : response.message).toContain('是否已写入未知')
+    expect(warnings).toContain('[qm provider] autocompact child: spawn-failed')
   })
 })
 

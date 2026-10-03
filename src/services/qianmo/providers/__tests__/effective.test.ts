@@ -29,6 +29,7 @@ import {
   type WireProfile,
 } from '@qianmo/providers'
 import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
+import { wireEffortLevel } from '../effective.js'
 import {
   commitPendingProviderConfig,
   inheritedProviderKeyNames,
@@ -287,6 +288,19 @@ describe('effortOnWire is the runtime gate, not the profile', () => {
     const fast = effective('vendor-chat-flash')
     expect(fast.effortOnWire).toBe(true)
     expect(fast.effortLevel).toBe('high')
+  })
+
+  test('a vendor table’s `none` (reasoning switched off on the wire) is reported as `none`, not dropped', () => {
+    // Since P18.8 `resolveChatReasoningEffort` returns what the table sends,
+    // `none` included (Ollama with thinking off). The key is on the wire, so
+    // `effortOnWire` is true and the level has to say what it carries.
+    expect(wireEffortLevel('none')).toBe('none')
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      expect(wireEffortLevel(level)).toBe(level)
+    }
+    for (const other of ['minimal', 'disabled', '', undefined, 3]) {
+      expect(wireEffortLevel(other)).toBeNull()
+    }
   })
 
   test('chat lane without the effort capability: off the wire', () => {

@@ -23,6 +23,10 @@
  *
  * The child's stderr is read and dropped, never relayed: it is the runtime's
  * own diagnostics, and nothing here vouches that they hold no values.
+ *
+ * {@link runOwnCliChild} is the spawning part on its own; `qm provider`'s
+ * `autocompact` op (D-9) runs `provider autocompact --json` through it for
+ * the same reason (its computation replays the same start-up).
  */
 
 import type { EffectiveState } from '@qianmo/providers'
@@ -92,45 +96,56 @@ function parseOutput(stdout: string): EffectiveState | null {
   }
 }
 
+/** How a child of this CLI ended, as far as its parent can tell. */
+type OwnCliChildRun =
+  | { kind: 'exited'; stdout: string }
+  | { kind: 'timeout' }
+  | { kind: 'spawn-failed' }
+
 /**
- * Parent side: run the computation in a child and return what it printed.
- * Never throws; a child that cannot be started, fails or overruns `timeoutMs`
- * is an outcome, and the caller reports `effective` as missing.
+ * Run `qm <cliArgs>` as a child: the environment stripped of every provider
+ * key (see the module header), the node's private provider directory as cwd,
+ * stdout collected up to a cap, stderr drained and dropped, SIGKILL at
+ * `timeoutMs`. Never throws. Shared by `effective` and `autocompact` (D-9),
+ * whose computations both have to happen in a process of their own.
  */
-export function computeEffectiveInChild(options: {
-  readonly timeoutMs: number
-  /** The environment to strip and hand on; defaults to this process's. */
-  readonly env?: NodeJS.ProcessEnv
-  /** How to re-execute this CLI; tests run it from source. */
-  readonly launch?: Launch
-}): Promise<EffectiveOutcome> {
+export function runOwnCliChild(
+  cliArgs: readonly string[],
+  options: {
+    readonly timeoutMs: number
+    /** The environment to strip and hand on; defaults to this process's. */
+    readonly env?: NodeJS.ProcessEnv
+    /** How to re-execute this CLI; tests run it from source. */
+    readonly launch?: Launch
+  },
+): Promise<OwnCliChildRun> {
   const env = withoutProviderKeys(options.env ?? process.env)
   const launch: Launch =
     options.launch ??
-    ((cliArgs, childEnv) => buildCliLaunch(cliArgs, { env: childEnv }))
+    ((args, childEnv) => buildCliLaunch(args, { env: childEnv }))
   return new Promise(resolve => {
     let settled = false
-    const finish = (outcome: EffectiveOutcome) => {
+    const finish = (run: OwnCliChildRun) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve(outcome)
+      resolve(run)
     }
     let child: ReturnType<typeof spawnCli>
     try {
       const cwd = providerDir()
       ensurePrivateDir(cwd)
-      child = spawnCli(launch(['provider', EFFECTIVE_CHILD_SUBCOMMAND], env), {
+      child = spawnCli(launch([...cliArgs], env), {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch {
-      resolve({ ok: false, reason: 'spawn-failed' })
+      resolve({ kind: 'spawn-failed' })
       return
     }
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      finish({ ok: false, reason: 'timeout' })
+      finish({ kind: 'timeout' })
     }, options.timeoutMs)
     let stdout = ''
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -139,14 +154,30 @@ export function computeEffectiveInChild(options: {
     child.stderr?.on('data', () => {
       // Read so the pipe never fills; never relayed (see the module header).
     })
-    child.on('error', () => finish({ ok: false, reason: 'spawn-failed' }))
-    child.on('close', () => {
-      const effective = parseOutput(stdout)
-      finish(
-        effective === null
-          ? { ok: false, reason: 'no-result' }
-          : { ok: true, effective },
-      )
-    })
+    child.on('error', () => finish({ kind: 'spawn-failed' }))
+    child.on('close', () => finish({ kind: 'exited', stdout }))
   })
+}
+
+/**
+ * Parent side: run the computation in a child and return what it printed.
+ * Never throws; a child that cannot be started, fails or overruns `timeoutMs`
+ * is an outcome, and the caller reports `effective` as missing.
+ */
+export async function computeEffectiveInChild(options: {
+  readonly timeoutMs: number
+  /** The environment to strip and hand on; defaults to this process's. */
+  readonly env?: NodeJS.ProcessEnv
+  /** How to re-execute this CLI; tests run it from source. */
+  readonly launch?: Launch
+}): Promise<EffectiveOutcome> {
+  const run = await runOwnCliChild(
+    ['provider', EFFECTIVE_CHILD_SUBCOMMAND],
+    options,
+  )
+  if (run.kind !== 'exited') return { ok: false, reason: run.kind }
+  const effective = parseOutput(run.stdout)
+  return effective === null
+    ? { ok: false, reason: 'no-result' }
+    : { ok: true, effective }
 }

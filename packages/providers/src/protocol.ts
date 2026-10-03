@@ -30,7 +30,17 @@ export const PROTOCOL_VERSION = 1
 /** What the hub runs on the far side of ssh: a command that must NOT exist (§2.5). */
 export const SENTINEL_COMMAND = 'qianmo-model-apply-v1'
 
-export const PROVIDER_OPS = ['status', 'probe', 'models', 'apply'] as const
+/**
+ * `autocompact` (D-9) is the fifth: the node's own auto-compact window, read
+ * or set through the same `/autocompact` implementation the node CLI runs.
+ */
+export const PROVIDER_OPS = [
+  'status',
+  'probe',
+  'models',
+  'apply',
+  'autocompact',
+] as const
 export type ProviderOp = (typeof PROVIDER_OPS)[number]
 
 export const PROBE_MODES = ['auth', 'latency', 'call'] as const
@@ -52,7 +62,20 @@ export const PROTOCOL_LIMITS = {
     probeCall: 90_000,
     models: 30_000,
     apply: 30_000,
+    autocompact: 20_000,
   },
+} as const
+
+/**
+ * D-9: the window `autocompact` accepts, in tokens — the base's own bounds
+ * (`AUTO_COMPACT_WINDOW_MIN_TOKENS` / `_MAX_TOKENS` in
+ * `src/services/compact/autoCompactWindowValue.ts`; a node test pins the two
+ * equal). The protocol takes exact token counts only: the base's typed-input
+ * shorthands (`150k`, or `200` meaning 200k) stay on the command line.
+ */
+export const AUTO_COMPACT_LIMITS = {
+  minTokens: 100_000,
+  maxTokens: 1_000_000,
 } as const
 
 const REQUEST_ID = /^[0-9A-Za-z_-]{8,64}$/
@@ -86,11 +109,18 @@ export type ApplyRequest = RequestBase & {
   force: boolean
 }
 
+/** D-9. Without `value`, read only. */
+export type AutocompactRequest = RequestBase & {
+  op: 'autocompact'
+  value?: 'auto' | number
+}
+
 export type ProviderRequest =
   | StatusRequest
   | ProbeRequest
   | ModelsRequest
   | ApplyRequest
+  | AutocompactRequest
 
 export type ParsedRequest =
   | { ok: true; request: ProviderRequest; warnings: ProviderWarning[] }
@@ -129,6 +159,7 @@ const TOP_LEVEL: Record<ProviderOp, readonly string[]> = {
     'dryRun',
     'force',
   ],
+  autocompact: ['v', 'op', 'requestId', 'node', 'value'],
 }
 
 /**
@@ -207,6 +238,30 @@ export function parseProviderRequest(
 
   if (op === 'status') {
     return { ok: true, request: { ...base, op }, warnings: [] }
+  }
+
+  if (op === 'autocompact') {
+    const value = raw.value
+    if (value === undefined) {
+      return { ok: true, request: { ...base, op }, warnings: [] }
+    }
+    if (
+      value !== 'auto' &&
+      !(
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        value >= AUTO_COMPACT_LIMITS.minTokens &&
+        value <= AUTO_COMPACT_LIMITS.maxTokens
+      )
+    ) {
+      return fail(
+        'bad-value',
+        'value',
+        'value 必须是 auto 或 100000–1000000 之间的整数 token 数',
+        requestId,
+      )
+    }
+    return { ok: true, request: { ...base, op, value }, warnings: [] }
   }
 
   let profile: WireProfile | undefined
@@ -405,6 +460,32 @@ export type ProviderNodeState = {
   lastResult: LastCommitResult | null
 }
 
+/**
+ * An effort as it goes on the wire: the five levels, plus `none` — what a
+ * vendor table sends to switch reasoning off (P18.8, e.g. Ollama). Not an
+ * `EffortLevel`: a profile cannot ask for `none`, and the runtime's own effort
+ * setting has no such value.
+ */
+export type WireEffortLevel = EffortLevel | 'none'
+
+/** Where the auto-compact window comes from (D-9). */
+export type AutoCompactSource = 'env' | 'settings' | 'auto'
+
+/**
+ * `autocompact` (D-9): the node's window after the request — also the shape
+ * of `qm provider autocompact --json`. A refusal carries the same fields with
+ * `ok: false` and `code` (`bad-value`, `env-override`, `write-failed`).
+ */
+export type AutoCompactReport = {
+  /** In effect: `min(model window, configured)`. */
+  autoCompactWindow: number
+  /** What the winning source asked for, before the model cap. */
+  configured: number
+  source: AutoCompactSource
+  /** The base `/autocompact` reply, in its own words (English). */
+  message?: string
+}
+
 /** §2.4 `effective`: computed by the node's REAL gate functions. */
 export type EffectiveState = {
   /** `getAPIProvider()`. */
@@ -418,7 +499,8 @@ export type EffectiveState = {
   /** The `settings.modelSettings` slot that governs the main loop, or `null`. */
   modelSettingsSlot: string | null
   effortOnWire: boolean
-  effortLevel: EffortLevel | null
+  /** `none` when reasoning is switched off on the wire (`effortOnWire: true`). */
+  effortLevel: WireEffortLevel | null
   contextTokens: number
   /**
    * D-9: the auto-compact window in effect, `min(contextTokens, configured)`
@@ -430,7 +512,7 @@ export type EffectiveState = {
    * node's own `settings.autoCompactWindow`, or the model window (`auto`).
    * Node-owned (D-9): never part of a profile, never a managed key.
    */
-  autoCompactSource: 'env' | 'settings' | 'auto'
+  autoCompactSource: AutoCompactSource
 }
 
 export type ProviderResponse =

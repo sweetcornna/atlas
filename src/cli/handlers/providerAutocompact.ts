@@ -16,6 +16,11 @@
  * The value belongs to the node (D-9): it is not in any profile, not a managed
  * key, and an `apply` neither writes nor compares it.
  *
+ * The protocol's `autocompact` op (`serve-stdin`, so the hub can reach it
+ * through the sshd forced command) runs this same command as a child with
+ * `--json` and wraps the line it prints ({@link AutocompactResult}) in the
+ * response envelope — one implementation for both entries.
+ *
  * The model whose window caps the value is the one the node's ACP child would
  * run: this process drops every provider-shaped key from its own environment
  * and replays the child's settings start-up (`computeEffectiveProviderState`),
@@ -28,6 +33,7 @@ import {
   formatAutoCompactWindowStatus,
 } from '../../commands/autocompact/autocompact.js'
 import { isAutoCompactEnabled } from '../../services/compact/autoCompact.js'
+import type { AutoCompactReport } from '@qianmo/providers'
 import {
   type ResolvedAutoCompactWindow,
   resolveActiveAutoCompactWindow,
@@ -59,18 +65,19 @@ export function parseAutocompactArgs(args: readonly string[]): AutocompactArgs {
   return { value, json }
 }
 
-/** Why a value was not written (`--json` `code`). */
-type RefusalCode = 'bad-value' | 'env-override' | 'write-failed'
+/**
+ * The `--json` line, and the `autocompact` op's response without its
+ * envelope (`AutoCompactReport` plus `ok`, and `code` on a refusal).
+ */
+export type AutocompactResult =
+  | ({ ok: true } & AutoCompactReport)
+  | ({
+      ok: false
+      code: 'bad-value' | 'env-override' | 'write-failed'
+      message: string
+    } & AutoCompactReport)
 
-type Window = {
-  /** In effect: `min(model window, configured)`. */
-  autoCompactWindow: number
-  /** What the winning source asked for, before the model cap. */
-  configured: number
-  source: 'env' | 'settings' | 'auto'
-}
-
-function windowOf(resolved: ResolvedAutoCompactWindow): Window {
+function windowOf(resolved: ResolvedAutoCompactWindow): AutoCompactReport {
   return {
     autoCompactWindow: resolved.window,
     configured: resolved.configured,
@@ -100,10 +107,11 @@ export function runAutocompact({
   const before = resolveActiveAutoCompactWindow(contextTokens)
 
   if (value === undefined) {
+    const result: AutocompactResult = { ok: true, ...windowOf(before) }
     return {
       exitCode: 0,
       stdout: json
-        ? `${JSON.stringify({ ok: true, ...windowOf(before) })}\n`
+        ? `${JSON.stringify(result)}\n`
         : `${formatAutoCompactWindowStatus(before, isAutoCompactEnabled())}\n`,
       stderr: '',
     }
@@ -114,29 +122,30 @@ export function runAutocompact({
     written = true
   })
   const after = windowOf(resolveActiveAutoCompactWindow(contextTokens))
-  if (written) {
-    return {
-      exitCode: 0,
-      stdout: json
-        ? `${JSON.stringify({ ok: true, ...after, message })}\n`
-        : `${message}\n`,
-      stderr: '',
-    }
-  }
   // `applyAutoCompactWindow` reports a refusal as text only; which one it was
   // is read from the state it checked, and from its own wording for the one
   // failure that leaves no state behind.
-  const code: RefusalCode =
-    before.source === 'env'
-      ? 'env-override'
-      : message.startsWith("Couldn't save setting")
-        ? 'write-failed'
-        : 'bad-value'
-  return json
-    ? {
-        exitCode: 1,
-        stdout: `${JSON.stringify({ ok: false, code, message, ...after })}\n`,
-        stderr: '',
+  const result: AutocompactResult = written
+    ? { ok: true, ...after, message }
+    : {
+        ok: false,
+        code:
+          before.source === 'env'
+            ? 'env-override'
+            : message.startsWith("Couldn't save setting")
+              ? 'write-failed'
+              : 'bad-value',
+        ...after,
+        message,
       }
+  if (json) {
+    return {
+      exitCode: result.ok ? 0 : 1,
+      stdout: `${JSON.stringify(result)}\n`,
+      stderr: '',
+    }
+  }
+  return result.ok
+    ? { exitCode: 0, stdout: `${message}\n`, stderr: '' }
     : { exitCode: 1, stdout: '', stderr: `${message}\n` }
 }
