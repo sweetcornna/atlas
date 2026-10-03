@@ -16,14 +16,21 @@
  *     there would turn a preference into a 400 for every request in the session.
  *     Returning undefined for them is not a gap; it is the parameter not
  *     existing on that model.
+ *
+ * qianmo P18.8 (hermes #13): which models accept it, and the clamp, are now a
+ * table — src/services/qianmo/modelCompat/effortVendors.ts. grok-3-mini is
+ * unchanged; grok-4.20-multi-agent, grok-4.3, grok-4.5 and grok-4.6 are sent
+ * only on an explicit effort opt-in until checked against a real endpoint.
  */
+import {
+  grokAcceptsReasoningEffort,
+  resolveGrokEffort,
+} from '../../qianmo/modelCompat/effortVendors.js'
 
 /** Models that take `reasoning_effort`. */
 function acceptsReasoningEffort(model: string): boolean {
-  return model.toLowerCase().includes('grok-3-mini')
+  return grokAcceptsReasoningEffort(model)
 }
-
-type GrokReasoningEffort = 'low' | 'high'
 
 /**
  * The rung to send, or undefined to send nothing (no effort chosen, or a model
@@ -32,19 +39,9 @@ type GrokReasoningEffort = 'low' | 'high'
 export function resolveGrokReasoningEffort(
   model: string,
   effortValue: unknown,
-): GrokReasoningEffort | undefined {
+): ReturnType<typeof resolveGrokEffort> {
   if (!acceptsReasoningEffort(model)) return undefined
-  switch (effortValue) {
-    case 'low':
-      return 'low'
-    case 'medium':
-    case 'high':
-    case 'xhigh':
-    case 'max':
-      return 'high'
-    default:
-      // Unset, and the ant-only numeric efforts that have no rung here: leave
-      // the parameter off and inherit xAI's own default.
-      return undefined
-  }
+  // Unset, and the ant-only numeric efforts that have no rung here: leave
+  // the parameter off and inherit xAI's own default.
+  return resolveGrokEffort(model, effortValue)
 }

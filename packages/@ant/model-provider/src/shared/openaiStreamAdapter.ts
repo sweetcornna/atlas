@@ -10,6 +10,12 @@ import {
   type ToolCallStep,
   ToolCallDeltaAssembler,
 } from './qianmo/toolCallDeltas.js'
+import { normalizeReasoningChunks } from './qianmo/reasoningStream.js'
+import {
+  readAnthropicStyleCacheWriteTokens,
+  readReasoningTokens,
+} from './qianmo/usageFields.js'
+import { GEMINI_THOUGHT_SIGNATURE_FIELD } from '../providers/gemini/types.js'
 
 /**
  * Adapt an OpenAI streaming response into Anthropic BetaRawMessageStreamEvent.
@@ -115,6 +121,8 @@ export async function* adaptOpenAIStreamToAnthropic(
   let outputTokens = 0
   let rawCacheReadTokens = 0
   let rawCacheWriteTokens = 0
+  // qianmo P18.8 (hermes #26): shared/qianmo/usageFields.ts.
+  let rawReasoningTokens: number | undefined
   let usage = normalizeOpenAIUsage({ totalInputTokens: 0, outputTokens: 0 })
 
   // Track all open content block indices (for cleanup)
@@ -174,6 +182,10 @@ export async function* adaptOpenAIStreamToAnthropic(
             id: step.id,
             name: step.name,
             input: {},
+            // qianmo P18.8 (hermes #10): shared/qianmo/geminiToolSignature.ts.
+            ...(step.thoughtSignature !== undefined && {
+              [GEMINI_THOUGHT_SIGNATURE_FIELD]: step.thoughtSignature,
+            }),
           },
         } as BetaRawMessageStreamEvent
         continue
@@ -193,7 +205,10 @@ export async function* adaptOpenAIStreamToAnthropic(
     }
   }
 
-  for await (const chunk of stream) {
+  // qianmo P18.8 (hermes #7, #8): reasoning sent as `reasoning`, as
+  // `reasoning_details`, or inline in the text as `<think>…</think>` reaches
+  // the handlers below as `reasoning_content` — shared/qianmo/reasoningStream.ts.
+  for await (const chunk of normalizeReasoningChunks(stream)) {
     const choice = chunk.choices?.[0]
     const delta = choice?.delta
 
@@ -229,14 +244,18 @@ export async function* adaptOpenAIStreamToAnthropic(
         rawCacheWriteTokens =
           readOpenAICacheWriteTokens(chunk.usage) ?? rawCacheWriteTokens
       } else {
-        rawCacheWriteTokens = 0
+        rawCacheWriteTokens =
+          readAnthropicStyleCacheWriteTokens(chunk.usage) ?? rawCacheWriteTokens
       }
+      rawReasoningTokens =
+        readReasoningTokens(chunk.usage) ?? rawReasoningTokens
 
       usage = normalizeOpenAIUsage({
         totalInputTokens: rawInputTokens,
         outputTokens,
         cacheReadTokens: rawCacheReadTokens,
         cacheWriteTokens: rawCacheWriteTokens,
+        reasoningTokens: rawReasoningTokens,
       })
     }
 

@@ -10,19 +10,21 @@
  * 章程 §4 AC-5 要求「≥ 2 个不同模型供应商**适配器**」。本仓库基座只有一种
  * `ProviderKind`（`src/services/providerRegistry/types.ts` 的
  * `z.literal('openai-compat')`），所以这里给出的两条 provider 走**同一个
- * kind**，差别在 `compatRule` 选出的 `CompatProfile`，以及模型名触发的
- * DeepSeek 调优门（`isDeepSeekTuningActiveForModel`）。这两处在代码里走**不同
- * 分支**、产出**不同的线上请求体**，是本仓库现有代码能给出的最强「两家适配器」
- * 证据，但**不等于**判据字面要求的「两个不同供应商适配器」。缺口逐条写在
+ * kind**，差别在模型名触发的 DeepSeek 调优门（`isDeepSeekTuningActiveForModel`）
+ * 与发送边界按目标端点的推理回放（P18.8 起，`applyReasoningReplayPolicy`）。
+ * M0 时还有 `compatRule` 选出的 `CompatProfile`；它在生产路径零调用方（G-2），
+ * P18.8 按 R-14 删去，`compatRule` 字段只剩配置里的标签。这些分支产出**不同的
+ * 线上请求体**，是本仓库现有代码能给出的最强「两家适配器」证据，但**不等于**
+ * 判据字面要求的「两个不同供应商适配器」。缺口逐条写在
  * `docs/dev/p1.4-provider-verification.md`。
  *
  * ## 这里跑的是真代码还是仿真
  *
  * **全部是基座真代码 + 真网络**：`anthropicMessagesToOpenAI` /
  * `anthropicToolsToOpenAI`（消息与工具的 Anthropic→OpenAI 转换）、
- * `buildOpenAIRequestBody`（线上请求体构造，含 DeepSeek 调优门）、
- * `applyCompatRule`（provider 注册中心的兼容档案）、`getOpenAIClient`（真 SDK
- * 客户端）、`adaptOpenAIStreamToAnthropic`（OpenAI SSE → Anthropic 事件流）。
+ * `buildOpenAIRequestBody`（线上请求体构造，含 DeepSeek 调优门与发送边界的
+ * 推理回放策略）、`getOpenAIClient`（真 SDK 客户端）、
+ * `adaptOpenAIStreamToAnthropic`（OpenAI SSE → Anthropic 事件流）。
  * 没有任何 `mock.module`，没有录制回放。
  *
  * 唯一没有走到的是 `queryModelOpenAI` 的外层查询管线（工具权限、deferred tools、
@@ -60,7 +62,6 @@ import {
   buildOpenAIRequestBody,
   isOpenAIThinkingEnabled,
 } from '../../src/services/api/openai/requestBody.js'
-import { applyCompatRule } from '../../src/services/providerRegistry/providerCompatMatrix.js'
 import {
   ProvidersFileSchema,
   type ProviderConfig,
@@ -223,7 +224,7 @@ function assemble(events: BetaRawMessageStreamEvent[]): AssembledTurn {
   })
 
   // 回填用的助手轮。thinking 块必须保留：DeepSeek 的 reasoning_content 回声
-  // 契约就靠它，`applyCompatRule('deepseek')` 的 always-preserve 分支也靠它。
+  // 契约就靠它，发送边界的回放策略对 deepseek 原样保留的也是它。
   const content: Record<string, unknown>[] = []
   if (thinking.length > 0) {
     content.push({ type: 'thinking', thinking, signature: '' })
@@ -266,7 +267,7 @@ function assemble(events: BetaRawMessageStreamEvent[]): AssembledTurn {
 
 /**
  * 走一遍基座的 OpenAI 适配链：
- * 消息转换 → 工具转换 → 请求体构造（含 DeepSeek 调优门）→ compat 档案裁剪
+ * 消息转换 → 工具转换 → 请求体构造（含 DeepSeek 调优门与按目标端点的推理回放）
  * → 真 HTTP 流 → Anthropic 事件流适配。
  *
  * 返回装配结果与**实际发出的线上请求体**（后者是「两家走了不同分支」的物证）。
@@ -299,13 +300,9 @@ async function callProvider(params: {
     effortValue: 'low',
   })
 
-  // provider 注册中心声明的兼容档案。基座的线上请求路径目前**没有**调用它
-  // （见 docs/dev/p1.4-provider-verification.md 的缺口 G-2），这里显式调用，
-  // 把注册中心声明的适配行为一并纳入核验。
-  const wireBody = applyCompatRule(
-    body as unknown as Record<string, unknown>,
-    provider.compatRule,
-  )
+  // 发出去的就是生产路径构造的请求体。M0 时这里另调了一次 compat 档案裁剪
+  // （生产路径从不调用，缺口 G-2）；P18.8 按 R-14 删去，真调用与生产同一形状。
+  const wireBody = body as unknown as Record<string, unknown>
 
   const client = getOpenAIClient({
     apiKeyOverride: API_KEY,
@@ -439,8 +436,9 @@ function runConsistencySuite(provider: ProviderConfig): void {
         ).toContain('qianmo')
         expect(first.turn.stopReason).toBe('tool_use')
 
-        // 回灌工具结果 —— 这一步同时是 reasoning_content 回声契约的实测：
-        // DeepSeek 档案 always-preserve，strict-openai 档案一律剥除。
+        // 回灌工具结果 —— 这一步同时是 reasoning_content 回放的实测：按目标
+        // 端点判定（reasoningEcho.ts），deepseek 原样保留；kimi 经中转按
+        // 2026-10-03 裁定补回放。
         const second = await callProvider({
           provider,
           messages: [
@@ -485,7 +483,7 @@ describe('AC-5 provider 配置与适配分支（无需凭据）', () => {
     }
   })
 
-  test('同一段对话在两条 provider 下产出不同的线上请求体', () => {
+  test('M0 AC-5：同一段对话在两条 provider 下产出不同的线上请求体（真实请求路径）', () => {
     const providers = loadFixtureProviders()
     const bodies = providers.map(provider => {
       const enableThinking = isOpenAIThinkingEnabled(provider.defaultModel)
@@ -503,34 +501,37 @@ describe('AC-5 provider 配置与适配分支（无需凭据）', () => {
       })
       return {
         id: provider.id,
-        wire: applyCompatRule(
-          body as unknown as Record<string, unknown>,
-          provider.compatRule,
-        ),
+        wire: body as unknown as Record<string, unknown>,
       }
     })
 
     const deepseek = bodies.find(b => b.id === 'qianmo-deepseek')?.wire
-    const strictOpenai = bodies.find(b => b.id === 'qianmo-alt')?.wire
-    if (!deepseek || !strictOpenai) throw new Error('fixture ids changed')
+    const alt = bodies.find(b => b.id === 'qianmo-alt')?.wire
+    if (!deepseek || !alt) throw new Error('fixture ids changed')
 
-    // DeepSeek 分支：thinking 三件套 + reasoning_effort + 保留 stream_options
+    // DeepSeek 分支：thinking 三件套 + reasoning_effort + stream_options
     expect(deepseek['thinking']).toEqual({ type: 'enabled' })
     expect(deepseek['enable_thinking']).toBe(true)
     expect(deepseek['reasoning_effort']).toBe('low')
     expect(deepseek['stream_options']).toEqual({ include_usage: true })
 
-    // strict-openai 分支：一个 thinking 字段都不带，stream_options 被剥除
-    expect(strictOpenai['thinking']).toBeUndefined()
-    expect(strictOpenai['enable_thinking']).toBeUndefined()
-    expect(strictOpenai['chat_template_kwargs']).toBeUndefined()
-    expect(strictOpenai['reasoning_effort']).toBeUndefined()
-    expect(strictOpenai['stream_options']).toBeUndefined()
+    // 另一条（compatRule 标签 strict-openai）：一个 thinking 字段都不带
+    expect(alt['thinking']).toBeUndefined()
+    expect(alt['enable_thinking']).toBeUndefined()
+    expect(alt['chat_template_kwargs']).toBeUndefined()
+    expect(alt['reasoning_effort']).toBeUndefined()
+    // M0 这里断言 stream_options 被剥除，靠的是 compat 档案裁剪；生产路径从不
+    // 剥（G-2），R-14 删掉裁剪之后，真实请求体两条都带。
+    expect(alt['stream_options']).toEqual({ include_usage: true })
 
-    expect(JSON.stringify(deepseek)).not.toBe(JSON.stringify(strictOpenai))
+    expect(JSON.stringify(deepseek)).not.toBe(JSON.stringify(alt))
   })
 
-  test('reasoning_content 回声策略：deepseek 保留、strict-openai 剥除', () => {
+  /** 带一段推理的历史，经生产路径构造成发往 `baseURL` 的请求体。 */
+  function replayedBody(
+    model: string,
+    baseURL: string | undefined,
+  ): Record<string, unknown>[] {
     const assistantWithThinking: AssistantMessage = {
       type: 'assistant',
       uuid: randomUUID(),
@@ -542,26 +543,53 @@ describe('AC-5 provider 配置与适配分支（无需凭据）', () => {
         ] as unknown as AssistantMessage['message']['content'],
       },
     }
-    const converted = anthropicMessagesToOpenAI(
-      [userMessage('q'), assistantWithThinking, userMessage('follow up')],
-      SYSTEM,
-      { enableThinking: true },
+    const body = buildOpenAIRequestBody({
+      model,
+      messages: anthropicMessagesToOpenAI(
+        [userMessage('q'), assistantWithThinking, userMessage('follow up')],
+        SYSTEM,
+        { enableThinking: true },
+      ),
+      tools: [],
+      toolChoice: undefined,
+      enableThinking: true,
+      maxTokens: MAX_TOKENS,
+      baseURL,
+      effortValue: 'low',
+    })
+    return body.messages as unknown as Record<string, unknown>[]
+  }
+
+  test('M0 AC-5：严格 OpenAI 端点收不到 reasoning_content（真实请求路径，deepseek 保留）', () => {
+    const providers = loadFixtureProviders()
+    const deepseek = providers.find(p => p.id === 'qianmo-deepseek')
+    if (!deepseek) throw new Error('fixture ids changed')
+
+    // deepseek 照配置的端点发：回放原样保留。
+    const kept = replayedBody(deepseek.defaultModel, deepseek.baseUrl)
+    expect(kept.find(m => m.role === 'assistant')?.reasoning_content).toBe(
+      'chain of thought',
     )
-    const body: Record<string, unknown> = {
-      model: 'x',
-      messages: converted as unknown as Record<string, unknown>[],
+
+    // 严格 OpenAI 端点（官方地址与 SDK 默认的未设地址）：两条 provider 的
+    // 模型都收不到这个键，deepseek 也一样 —— 判定看目标端点，不看模型名。
+    for (const provider of providers) {
+      for (const baseURL of ['https://api.openai.com/v1', undefined]) {
+        const stripped = replayedBody(provider.defaultModel, baseURL)
+        expect(stripped.some(m => 'reasoning_content' in m)).toBe(false)
+      }
     }
+  })
 
-    const kept = applyCompatRule(body, 'deepseek')['messages'] as Record<
-      string,
-      unknown
-    >[]
-    const stripped = applyCompatRule(body, 'strict-openai')[
-      'messages'
-    ] as Record<string, unknown>[]
-
-    expect(kept.some(m => 'reasoning_content' in m)).toBe(true)
-    expect(stripped.some(m => 'reasoning_content' in m)).toBe(false)
+  test('M0 AC-5：另一条 provider（kimi-k3 经中转）按 2026-10-03 裁定保留回放', () => {
+    const alt = loadFixtureProviders().find(p => p.id === 'qianmo-alt')
+    if (!alt) throw new Error('fixture ids changed')
+    // M0 时 strict-openai 档案在这条上剥掉回放；现在真实请求路径按目标端点
+    // 判定：未知主机上的 kimi 家族模型保留（reasoningEcho.ts 文件头）。
+    const messages = replayedBody(alt.defaultModel, alt.baseUrl)
+    expect(messages.find(m => m.role === 'assistant')?.reasoning_content).toBe(
+      'chain of thought',
+    )
   })
 })
 

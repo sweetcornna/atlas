@@ -746,9 +746,9 @@ LICENSE.md 全文为「© Anthropic PBC. All rights reserved.」，属专有授�
 以其包内 LICENSE 为准。此处如实披露依赖构成，**不构成**与 Anthropic, PBC 的任何
 关联、授权或背书关系（见上文「四、Anthropic 商标与品牌注意事项」）。
 
-**依据第三方开源项目整理的兼容规则**：阡陌自有的模型调用兼容层（M1 P18.5）里有
-若干规则表——错误文案片段、错误码、主机名、模型名前缀、数值阈值，以及「何时去掉某个
-请求字段再发一次」这类判定规则——依据 NousResearch/hermes-agent
+**依据第三方开源项目整理的兼容规则**：阡陌自有的模型调用兼容层（M1 P18.5、P18.8）
+里有若干规则表——错误文案片段、错误码、主机名、模型名前缀、数值阈值，以及「何时去掉
+某个请求字段再发一次」这类判定规则——依据 NousResearch/hermes-agent
 （https://github.com/NousResearch/hermes-agent ，MIT 许可，Copyright (c) 2025 Nous
 Research）整理。只取规则事实，代码是阡陌自己写的；hermes-agent 不是本项目的依赖，
 它的源代码不在本仓库里，也不随产物分发。
@@ -759,8 +759,12 @@ Research）整理。只取规则事实，代码是阡陌自己写的；hermes-ag
   * **涉及的文件**（文件本身以 AGPL-3.0-or-later 发布，见各自文件头）：
       - `src/services/qianmo/modelCompat/` 下的 `wireHosts.ts`、`outputTokenParam.ts`、
         `outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、
-        `samplingParams.ts`、`unsupportedParam.ts`；
-      - `packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts`。
+        `samplingParams.ts`、`unsupportedParam.ts`（P18.5），`targetMatch.ts`、
+        `reasoningEcho.ts`、`responsesIssuer.ts`、`thoughtSignatureReplay.ts`、
+        `effortVendors.ts`、`responsesUsage.ts`（P18.8）；
+      - `packages/@ant/model-provider/src/shared/qianmo/` 下的 `toolCallDeltas.ts`
+        （P18.5），`reasoningStream.ts`、`thinkTags.ts`、`geminiToolSignature.ts`、
+        `usageFields.ts`（P18.8）。
   * **许可声明**：出于审慎，依 MIT 许可「在全部副本或实质部分中保留版权声明与许可
     声明」的条件，原样保留 hermes-agent 的版权声明与许可声明如下：
 
@@ -1829,10 +1833,10 @@ dependency tree as a matter of fact and does **not** constitute any affiliation
 with, license from, or endorsement by Anthropic, PBC (see section 4 above).
 
 **Compatibility rules compiled from a third-party open-source project**: the
-Qianmo-owned model-call compatibility layer (M1 P18.5) contains rule tables —
-error-message fragments, error codes, host names, model-name prefixes, numeric
-thresholds, and decision rules such as "drop this request field and send once
-more" — compiled from NousResearch/hermes-agent
+Qianmo-owned model-call compatibility layer (M1 P18.5, P18.8) contains rule
+tables — error-message fragments, error codes, host names, model-name
+prefixes, numeric thresholds, and decision rules such as "drop this request
+field and send once more" — compiled from NousResearch/hermes-agent
 (https://github.com/NousResearch/hermes-agent , MIT License, Copyright (c) 2025
 Nous Research). Only the rules were taken; the code is Qianmo's own.
 hermes-agent is not a dependency of this project, none of its source code is in
@@ -1845,8 +1849,13 @@ this repository, and none of it is distributed with this project's artifacts.
   * **Files** (each released under AGPL-3.0-or-later, see its header):
       - under `src/services/qianmo/modelCompat/`: `wireHosts.ts`,
         `outputTokenParam.ts`, `outputTokenDefault.ts`, `overflowText.ts`,
-        `outputCap.ts`, `errorText.ts`, `samplingParams.ts`, `unsupportedParam.ts`;
-      - `packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts`.
+        `outputCap.ts`, `errorText.ts`, `samplingParams.ts`, `unsupportedParam.ts`
+        (P18.5); `targetMatch.ts`, `reasoningEcho.ts`, `responsesIssuer.ts`,
+        `thoughtSignatureReplay.ts`, `effortVendors.ts`, `responsesUsage.ts`
+        (P18.8);
+      - under `packages/@ant/model-provider/src/shared/qianmo/`:
+        `toolCallDeltas.ts` (P18.5); `reasoningStream.ts`, `thinkTags.ts`,
+        `geminiToolSignature.ts`, `usageFields.ts` (P18.8).
   * **License notice**: as a matter of caution, and under the MIT condition
     that the copyright notice and permission notice be included in all copies
     or substantial portions, hermes-agent's notice is reproduced verbatim:

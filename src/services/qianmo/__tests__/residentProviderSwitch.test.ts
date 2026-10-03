@@ -152,6 +152,8 @@ function startResident(
     readonly clock?: ManualClock
     readonly pollIntervalMs?: number
     readonly maxRapidFailures?: number
+    /** Mailbox poll interval. Default 20 ms. */
+    readonly mailboxPollMs?: number
   } = {},
 ): Harness {
   const spawned: ChildProcess[] = []
@@ -165,7 +167,7 @@ function startResident(
     node: 'node-b',
     team: TEAM,
     agents: [{ agent: AGENT, cwd: join(root as string, 'workspace') }],
-    pollIntervalMs: 20,
+    pollIntervalMs: options.mailboxPollMs ?? 20,
     psk: PSK,
     listen: { unix: socket },
     memoryRoot,
@@ -530,10 +532,22 @@ describe('resident provider hot switch (P18.3)', () => {
     'a refused commit is reported once and leaves the child and the intent alone',
     async () => {
       const { config, socket } = setUpNode('refused')
-      const node = startResident(socket)
+      // A check that lands while a mailbox poll is running is deferred, by
+      // design: `#inFlightWork` counts polls, because one may admit a turn.
+      // At the default 20 ms a poll is nearly always running on a loaded
+      // machine (CI run 37137331132 recorded `polls: 1` and nothing else). An
+      // hour leaves exactly one poll — the one scheduled when the child is
+      // ready — so the node is idle for good once it has finished.
+      const node = startResident(socket, { mailboxPollMs: 60 * 60_000 })
       await waitUntil(() => node.ready() === 1)
       stage()
       chmodSync(config, 0o755)
+      // Check until one lands after that poll: that check is the refusal.
+      await waitUntil(() => {
+        node.resident.checkProviderConfig()
+        return node.alerts.length > 0
+      })
+      // Idle from here on, so these are refused too, and reported never.
       for (let i = 0; i < 3; i++) node.resident.checkProviderConfig()
 
       expect(node.alerts).toHaveLength(1)
