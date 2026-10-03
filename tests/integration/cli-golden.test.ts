@@ -288,6 +288,7 @@ const ROOT_COMMANDS = [
   'cert',
   'console',
   'doctor',
+  'handoff',
   'import',
   'mcp',
   'memory',

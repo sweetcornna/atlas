@@ -194,6 +194,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'handoff') {
+    profileCheckpoint('cli_qianmo_handoff_path');
+    const { runHandoff } = await import('../cli/handlers/handoff.js');
+    await runHandoff(args.slice(1));
+    return;
+  }
+
   // Fast-path for `--daemon-worker=<kind>` (internal — supervisor spawns this).
   // Must come before the daemon subcommand check: spawned per-worker, so
   // perf-sensitive. No enableConfigs(), no analytics sinks at this layer —
