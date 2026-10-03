@@ -15,6 +15,7 @@
  * | DELETE | `/v0/accounts/invites/<id>` | ops / admin | 204 |
  * | POST | `/v0/accounts/<subject>/revoke` | ops / admin | 204 |
  * | POST | `/v0/accounts/<subject>/reset` | ops / admin | `{ subject, inviteId, expiresAt, link }` |
+ * | POST | `/v0/accounts/<subject>/logout` | ops / admin | `{ subject, sessions, streams }` |
  *
  * None of these exist on a console started without accounts: `http.ts` only
  * routes here when it was handed an {@link AccountBook}, and otherwise the
@@ -495,7 +496,10 @@ export async function handleAccountsApi(
   }
   if (segments[2] !== 'invites') {
     const action = segments[3]
-    if (segments.length !== 4 || (action !== 'revoke' && action !== 'reset')) {
+    if (
+      segments.length !== 4 ||
+      (action !== 'revoke' && action !== 'reset' && action !== 'logout')
+    ) {
       return notFound(`unknown path: ${url.pathname}`)
     }
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
@@ -504,6 +508,14 @@ export async function handleAccountsApi(
       return answer(
         book.revoke(subject, actor),
         () => new Response(null, { status: 204 }),
+      )
+    }
+    if (action === 'logout') {
+      // 强制下线 (`/access`, 会话): every session and stream of the person
+      // ends, the credential stays. The ledger line is `http.ts`'s, like
+      // every write on this API.
+      return answer(book.endSessions(subject), ended =>
+        json({ subject, sessions: ended.sessions, streams: ended.streams }),
       )
     }
     const body = await readJsonObject(request)
