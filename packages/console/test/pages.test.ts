@@ -492,3 +492,110 @@ describe('framing (H1)', () => {
     expect(framingOf(html('<!DOCTYPE html>'))).toEqual([DOCUMENT_CSP, 'DENY'])
   })
 })
+
+describe('errors a browser navigates into are pages (C3)', () => {
+  function text(html: string): string {
+    return visibleText(html)
+  }
+
+  test('an unknown path, signed in: a 404 page in the shell, with the way back', async () => {
+    const { handle } = harness()
+    const response = await handle(browse('/nope', ADMIN))
+    expect(response.status).toBe(404)
+    expect(response.headers.get('content-type')).toBe(
+      'text/html; charset=utf-8',
+    )
+    expect(response.headers.get('x-frame-options')).toBe('DENY')
+    const html = await response.text()
+    expect(html).toContain(
+      '<h1 class="page-title" id="page-title">页面不存在</h1>',
+    )
+    expect(html).toContain('class="nav-item"')
+    expect(html).toContain('<a class="jump" href="/" data-nav>回到总览</a>')
+    // No area is marked current on a page that is no area's.
+    expect(
+      html.slice(html.indexOf('<body>'), html.indexOf('<script>')),
+    ).not.toContain('data-nav aria-current="page"')
+  })
+
+  test('an unknown path, signed out: the same page on the login panel, no sidebar', async () => {
+    const { handle } = harness()
+    const response = await handle(browse('/nope'))
+    expect(response.status).toBe(404)
+    const html = await response.text()
+    expect(html).toContain('页面不存在')
+    expect(html).toContain('href="/login">去登录</a>')
+    expect(html).not.toContain('class="nav-item"')
+    expect(html).not.toContain('<script')
+  })
+
+  test('a script keeps its JSON, on any path and on the data paths whatever it accepts', async () => {
+    const { handle } = harness()
+    const script = await handle(
+      new Request('http://console.test/nope', {
+        headers: { authorization: `Bearer ${ADMIN}` },
+      }),
+    )
+    expect(script.status).toBe(404)
+    expect(script.headers.get('content-type')).toBe(
+      'application/json; charset=utf-8',
+    )
+    for (const path of ['/v0/nope', '/fragments/nope', '/assets/nope.js']) {
+      const response = await handle(browse(path, ADMIN))
+      expect(`${path} ${response.headers.get('content-type')}`).toBe(
+        `${path} application/json; charset=utf-8`,
+      )
+    }
+  })
+
+  test('a page this console does not have, a node that is not there, a HEAD', async () => {
+    const noChat = pageHarness()
+    const chat = await noChat.handle(browse('/chat', ADMIN))
+    expect(chat.status).toBe(404)
+    expect(await chat.text()).toContain('页面不存在')
+
+    const { handle } = harness()
+    const node = await handle(browse('/nodes/nowhere', ADMIN))
+    expect(node.status).toBe(404)
+    expect(await node.text()).toContain('页面不存在')
+
+    const head = await handle(browse('/nodes', ADMIN, 'HEAD'))
+    expect(head.status).toBe(405)
+    expect(head.headers.get('allow')).toBe('GET')
+    expect(head.headers.get('content-type')).toBe('text/html; charset=utf-8')
+  })
+
+  test('a port that throws: a 500 page without the shell, the detail folded away', async () => {
+    const h = pageHarness()
+    h.registry.list = () => Promise.reject(new Error('registry exploded'))
+    const page = await h.handle(browse('/nodes', ADMIN))
+    expect(page.status).toBe(500)
+    const html = await page.text()
+    expect(html).toContain('控制台内部错误')
+    expect(html).toContain('<summary>')
+    expect(html).toContain('registry exploded')
+    expect(html).not.toContain('class="nav-item"')
+    // A script still gets the JSON it can parse.
+    const json = await h.handle(
+      new Request('http://console.test/v0/agents', {
+        headers: { authorization: `Bearer ${ADMIN}` },
+      }),
+    )
+    expect(json.status).toBe(500)
+    expect(await json.json()).toMatchObject({ error: { code: 'internal' } })
+  })
+
+  test('every error page keeps the copy rules', async () => {
+    const { handle } = harness()
+    for (const request of [
+      browse('/nope', ADMIN),
+      browse('/nope'),
+      browse('/nodes', ADMIN, 'HEAD'),
+    ]) {
+      const visible = text(await (await handle(request)).text())
+      for (const banned of ['。', '，', '、', '！']) {
+        expect(visible.includes(banned)).toBe(false)
+      }
+    }
+  })
+})

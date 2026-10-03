@@ -235,6 +235,7 @@ import { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
 import {
   ROUTES,
   areaDocument,
+  errorDocument,
   headIndex,
   pageOf,
   type PageMatch,
@@ -243,6 +244,7 @@ import { DEFAULT_LABEL, guard, guardChat } from './routes/shared.js'
 import type { ConsoleActionName, RouteContext } from './routes/types.js'
 import type { PageViewer } from './view/bits.js'
 import { renderLoginPage } from './view/login.js'
+import { renderStandalone } from './view/shell.js'
 import { LoginThrottle } from './throttle.js'
 
 /** Prefix of every JSON route in this API version. */
@@ -671,6 +673,87 @@ const ACCOUNT_WRITES: Readonly<Record<string, ConsoleActionName>> = {
   DELETE: 'accounts.delete',
 }
 
+// --- HTML error pages (C3) ------------------------------------------------
+
+/** First segments whose answers are data for a script, never a page. */
+const DATA_HEADS: readonly string[] = ['v0', 'fragments', 'assets']
+
+interface ErrorCopy {
+  readonly title: string
+  readonly line: string
+}
+
+/** The errors a navigating browser is shown as a page, and what it says. */
+const ERROR_PAGES: Readonly<Record<number, ErrorCopy>> = {
+  404: {
+    title: '页面不存在',
+    line: '这个地址在这台控制台上没有页面 · 从导航进入',
+  },
+  405: { title: '不支持这个请求', line: '这个地址只接受页面读取' },
+  500: {
+    title: '控制台内部错误',
+    line: '这次请求没有完成 · 刷新重试 · 反复出现请查看控制台日志',
+  },
+  501: { title: '此功能未接入', line: '这台控制台启动时没有配置这项功能' },
+  503: { title: '暂时不可用', line: '这次请求没有完成 · 稍后刷新重试' },
+}
+
+/**
+ * True when `response` is a JSON error that a person navigating — not a
+ * script calling — would otherwise be handed raw (C3).
+ *
+ * The judgement is the one `documentDenial` already makes (`wantsHtml`), on
+ * the paths that are pages: `/v0`, `/fragments` and `/assets` answer scripts
+ * and keep their JSON whatever the `Accept`, because a poller that gets a
+ * page instead of the error it can parse has been lied to.
+ */
+function pageWorthy(
+  request: Request,
+  segments: readonly string[],
+  response: Response,
+): boolean {
+  if (!wantsHtml(request)) return false
+  const head = segments[0]
+  if (head !== undefined && DATA_HEADS.includes(head)) return false
+  if (ERROR_PAGES[response.status] === undefined) return false
+  return (response.headers.get('content-type') ?? '').startsWith(
+    'application/json',
+  )
+}
+
+/**
+ * The page for a JSON error a browser navigated into, at the same status.
+ *
+ * Drawn in the shell for a signed-in caller, so the way on is the same
+ * sidebar as everywhere else; on the login panel for anybody else, so the
+ * sidebar is never drawn for a caller who has not shown a credential.
+ */
+async function errorPage(
+  response: Response,
+  deps: ConsoleDeps,
+  access: Access,
+  context: () => RouteContext,
+): Promise<Response> {
+  const copy = ERROR_PAGES[response.status] ?? ERROR_PAGES[404]
+  const title = copy?.title ?? ''
+  const line = copy?.line ?? ''
+  const signedIn = access.refusal === null && access.credential.role !== 'none'
+  const page = html(
+    signedIn
+      ? await errorDocument(context(), title, line)
+      : renderStandalone({
+          label: deps.label ?? DEFAULT_LABEL,
+          title,
+          line,
+          link: { href: LOGIN_PATH, label: '去登录' },
+        }),
+    response.status,
+  )
+  const allow = response.headers.get('allow')
+  if (allow !== null) page.headers.set('allow', allow)
+  return page
+}
+
 // --- dispatch ------------------------------------------------------------
 
 /** `/v0/<head>` heads, one module each; built once, refused if claimed twice. */
@@ -783,29 +866,18 @@ async function route(
   // Without accounts this is `credentialOf` and nothing else (`access.ts`).
   const access = resolveAccess(request, tokens, accounts)
   const ledger = requestLedger(deps, access, now)
-  if (!access.breakGlass || accounts === undefined) {
-    return await routeAs(
-      request,
-      deps,
-      tokens,
-      throttle,
-      clientKey,
-      now,
-      accounts,
-      access,
-      url,
-      segments,
-      ledger,
+  const breakGlass = access.breakGlass && accounts !== undefined
+  if (breakGlass) {
+    // Recorded before the route runs, so a request that fails still counts
+    // as a use; never refused for failing to record
+    // (`AccountBook.recordBreakGlass`).
+    accounts.book.recordBreakGlass(
+      adminFingerprint(tokens),
+      request.method,
+      url.pathname,
     )
   }
-  // Recorded before the route runs, so a request that fails still counts as a
-  // use; never refused for failing to record (`AccountBook.recordBreakGlass`).
-  accounts.book.recordBreakGlass(
-    adminFingerprint(tokens),
-    request.method,
-    url.pathname,
-  )
-  const response = await routeAs(
+  const answered = await routeAs(
     request,
     deps,
     tokens,
@@ -818,6 +890,23 @@ async function route(
     segments,
     ledger,
   )
+  const response = pageWorthy(request, segments, answered)
+    ? await errorPage(answered, deps, access, () =>
+        routeContext(
+          request,
+          url,
+          deps,
+          access,
+          accounts,
+          now(),
+          accounts === undefined
+            ? undefined
+            : pageViewer(access, accounts, tokens),
+          ledger,
+        ),
+      )
+    : answered
+  if (!breakGlass) return response
   // Every request, reads included, one entry each (P15.9): the account
   // book's own record above keeps reads to one per ten minutes, the action
   // ledger does not.
@@ -991,7 +1080,24 @@ export function createConsoleHandler(
       // loopback tool costs an hour; ports must therefore keep credentials out
       // of their error messages.
       const message = error instanceof Error ? error.message : String(error)
-      return fail(500, 'internal', `控制台内部错误：${message}`)
+      const failed = fail(500, 'internal', `控制台内部错误：${message}`)
+      const segments = new URL(request.url).pathname
+        .split('/')
+        .filter(s => s.length > 0)
+      if (!pageWorthy(request, segments, failed)) return failed
+      // Never the shell: drawing it reads the registry, which is a second
+      // chance for whatever just threw to throw again.
+      const copy = ERROR_PAGES[500]
+      return html(
+        renderStandalone({
+          label: deps.label ?? DEFAULT_LABEL,
+          title: copy?.title ?? '',
+          line: copy?.line ?? '',
+          detail: message,
+          link: { href: '/', label: '回到总览' },
+        }),
+        500,
+      )
     }
   }
 }

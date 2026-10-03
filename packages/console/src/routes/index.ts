@@ -20,6 +20,7 @@
 import type { ConsoleAgent, ConsoleResult } from '../deps.js'
 import { nodeCount } from '../view/agents.js'
 import type { Tone } from '../view/bits.js'
+import { escapeHtml } from '../view/escape.js'
 import {
   renderShell,
   type Crumb,
@@ -229,5 +230,28 @@ export async function areaDocument(
     ...(module.page?.script === undefined
       ? {}
       : { pageScript: module.page.script }),
+  })
+}
+
+/** One error, as the shell draws it: the nav, the title, one line, the way back. */
+export async function errorDocument(
+  ctx: RouteContext,
+  title: string,
+  line: string,
+): Promise<string> {
+  const listed = await ctx.roster()
+  return renderShell({
+    label: ctx.deps.label ?? DEFAULT_LABEL,
+    role: ctx.access.credential.role,
+    ...(ctx.viewer === undefined ? {} : { viewer: ctx.viewer }),
+    nav: navFor(ctx, listed),
+    crumbs: [{ label: title }],
+    title,
+    body:
+      `<section class="card elev-sm stub" aria-labelledby="page-title">` +
+      `<p class="note">${escapeHtml(line)}</p>` +
+      `<p><a class="jump" href="/" data-nav>回到总览</a></p>` +
+      `</section>`,
+    health: healthOf(listed),
   })
 }

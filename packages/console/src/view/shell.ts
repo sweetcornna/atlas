@@ -369,3 +369,42 @@ export function renderShell(model: ShellModel): string {
     `</body>\n</html>\n`
   )
 }
+
+/** What a page outside the shell says: an error with nowhere else to go. */
+export interface StandaloneModel {
+  readonly label: string
+  readonly title: string
+  readonly line: string
+  /** Developer detail, folded away; escaped like everything else. */
+  readonly detail?: string
+  /** The one way on: the login door, or the overview. */
+  readonly link: { readonly href: string; readonly label: string }
+}
+
+/**
+ * A document without the shell, on the login page's panel: for a caller the
+ * shell must not be drawn for — nobody signed in yet, or a console whose
+ * ports just threw (the shell reads the registry, and drawing it would be a
+ * second chance to fail). No script: there is nothing on it to run.
+ */
+export function renderStandalone(model: StandaloneModel): string {
+  const detail =
+    model.detail === undefined || model.detail === ''
+      ? ''
+      : `<details class="adv"><summary>${chevron()}详情</summary>` +
+        `<pre class="mono note">${escapeHtml(model.detail)}</pre></details>`
+  return (
+    documentHead(`${BRAND} · ${model.title} · ${model.label}`) +
+    `<body>\n<div class="stage">\n` +
+    `<main class="card elev-lg panel" aria-labelledby="page-title">` +
+    `<div class="brand"><div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
+    `<div class="brand-cn">${escapeHtml(WORDMARK_CN)}</div></div>` +
+    `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
+    `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
+    `<p class="note">${escapeHtml(model.line)}</p>` +
+    detail +
+    `<a class="btn btn-secondary" href="${attr(model.link.href)}">` +
+    `${escapeHtml(model.link.label)}</a>` +
+    `</main>\n</div>\n</body>\n</html>\n`
+  )
+}
