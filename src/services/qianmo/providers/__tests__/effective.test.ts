@@ -223,6 +223,31 @@ describe('§11 item 3: the slot that governs the main loop', () => {
   })
 })
 
+function chatLane(
+  capabilities: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    modelType: 'openai',
+    env: {
+      OPENAI_BASE_URL: 'https://api.vendor.example/v1',
+      OPENAI_API_KEY: CANARY_KEY,
+      OPENAI_WIRE_API: 'chat',
+      OPENAI_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_OPUS_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_SONNET_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_FABLE_MODEL: 'vendor-chat-pro',
+      OPENAI_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+      OPENAI_DEFAULT_HAIKU_MODEL: 'vendor-chat-flash',
+      OPENAI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: capabilities,
+    },
+    modelSettings: DISTINCT_SLOTS,
+    ...extra,
+  }
+}
+
 describe('effortOnWire is the runtime gate, not the profile', () => {
   test('anthropic lane without a capability list: the family default decides', () => {
     const settings = anthropicLane()
@@ -244,6 +269,30 @@ describe('effortOnWire is the runtime gate, not the profile', () => {
     }
     writeSettings(settings)
     const state = effective()
+    expect(state.effortOnWire).toBe(false)
+    expect(state.effortLevel).toBeNull()
+  })
+
+  // The chat lane asks `chatLaneSendsReasoningEffort` since P18.5
+  // (openai/index.ts); `effective` must report what that request carries —
+  // through `resolveChatReasoningEffort`, not a second copy of the gate.
+  test('chat lane, a non-Codex model with the effort capability: on the wire, in the chat mapping', () => {
+    writeSettings(chatLane(ALL_EFFORT_CAPS))
+    const state = effective()
+    expect(state.wire).toBe('chat')
+    expect(state.wireModel).toBe('vendor-chat-pro')
+    expect(state.effortOnWire).toBe(true)
+    expect(state.effortLevel).toBe('low')
+    // The haiku slot asks for `max`; the chat mapping sends `high`.
+    const fast = effective('vendor-chat-flash')
+    expect(fast.effortOnWire).toBe(true)
+    expect(fast.effortLevel).toBe('high')
+  })
+
+  test('chat lane without the effort capability: off the wire', () => {
+    writeSettings(chatLane('thinking'))
+    const state = effective()
+    expect(state.wire).toBe('chat')
     expect(state.effortOnWire).toBe(false)
     expect(state.effortLevel).toBeNull()
   })

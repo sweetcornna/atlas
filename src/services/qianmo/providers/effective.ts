@@ -24,7 +24,6 @@ import {
 import type { EffectiveState, EffortLevel } from '@qianmo/providers'
 import { enableConfigs } from '../../../utils/config/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../../utils/config/managedEnv.js'
-import { isChatGPTCodexReasoningModel } from '../../../utils/model/chatgptModels.js'
 import {
   isDeepSeekTuningActiveForModel,
   resolveDeepSeekReasoningEffort,
@@ -43,12 +42,10 @@ import { getAPIProvider } from '../../../utils/model/providers.js'
 import { getContextWindowForModel } from '../../../utils/session/context.js'
 import { resetSettingsCache } from '../../../utils/settings/settingsCache.js'
 import { resolveGrokReasoningEffort } from '../../api/grok/reasoning.js'
-import {
-  getChatReasoningEffort,
-  getResponsesReasoningEffort,
-} from '../../api/openai/reasoning.js'
+import { getResponsesReasoningEffort } from '../../api/openai/reasoning.js'
 import { isOpenAIThinkingEnabled } from '../../api/openai/requestBody.js'
 import { resolveOpenAIWireProtocol } from '../../api/openai/wireProtocol.js'
+import { resolveChatReasoningEffort } from '../modelCompat/chatEffort.js'
 
 /** A wire vocabulary value back on the five-level scale, when it is one. */
 function asLevel(value: unknown): EffortLevel | null {
@@ -92,8 +89,10 @@ function wireEffort(
         level: asLevel(level),
       }
     }
-    // requestBody.ts: DeepSeek's ladder when thinking is on, else the
-    // openai/index.ts chat gate `isChatGPTCodexReasoningModel(openaiModel)`.
+    // requestBody.ts: DeepSeek's ladder when thinking is on, else the value
+    // the chat lane puts on the wire — `resolveChatReasoningEffort`, the gate
+    // openai/index.ts asks (`chatLaneSendsReasoningEffort`, P18.5) and the
+    // value it sends, so this is not a second copy of either.
     const deepseek =
       isDeepSeekTuningActiveForModel(wireModel, process.env.OPENAI_BASE_URL) &&
       isOpenAIThinkingEnabled(wireModel)
@@ -101,9 +100,11 @@ function wireEffort(
         : undefined
     const level =
       deepseek ??
-      (isChatGPTCodexReasoningModel(wireModel)
-        ? getChatReasoningEffort(wireModel, applied)
-        : undefined)
+      resolveChatReasoningEffort(
+        wireModel,
+        applied,
+        process.env.OPENAI_BASE_URL,
+      )
     return {
       wire,
       wireModel,
