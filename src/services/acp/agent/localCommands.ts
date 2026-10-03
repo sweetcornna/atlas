@@ -82,7 +82,7 @@ export const ACP_LOCAL_COMMANDS: readonly string[] = Object.freeze([
 ])
 
 /** One `available_commands_update` entry, in the base's own shape. */
-export type AcpCommandEntry = {
+type AcpCommandEntry = {
   name: string
   description: string
   input: { hint: string } | undefined
