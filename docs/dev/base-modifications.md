@@ -162,6 +162,19 @@
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 11 个源文件（`capabilities.ts`、`chatEffort.ts`、`wireHosts.ts`、`outputTokenParam.ts`、`outputTokenDefault.ts`、`overflowText.ts`、`outputCap.ts`、`errorText.ts`、`errorMessages.ts`、`samplingParams.ts`、`unsupportedParam.ts`）与 13 个测试文件（含录制桩 `__tests__/support/requestCapture.ts` 与逐厂商请求体对等表 `__tests__/requestParity.test.ts`），`packages/@ant/model-provider/src/shared/qianmo/toolCallDeltas.ts` 及其测试。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
 
+### 2.12 M1 · P17.4 接力本地命令（3 个在册文件的后续改动 + 1 个新登记）
+
+（§2.11 由 P18.8 占用。）依据 `handoff-p17-plan.md` P17.4 卡与 `handoff-m1.md` v1.1。+/− 为本批相对基点 `fe73379d` 的增量；相对 `base-snapshot/v2.46.0` 的现值放在括号里。三个在册文件按 §6.3 第 1 条本该补进原行，本节先集中写，合并时由主 agent 决定是否并回原行（与 §2.11 等并行批次同改一行会冲突）。
+
+| 文件 | 提交 | +/− | 为什么不走扩展点 | 判定 |
+| --- | --- | --- | --- | --- |
+| `src/config/paths.ts`（§2.1 在册） | `ce2314bb` | +15/−0（现值 +122/−16） | **形态：纯插入**一个函数 `qmcodeHome()`：`$QMCODE_HOME`，否则 `~/.qmcode`，与 fork `codex-rs/utils/home-dir` 同一条规则。`qm handoff sync --hook qmcode` 要在 `<qmcode 状态根>/sessions/` 下按 thread id 找 rollout。理由同 §2.1 本行：家目录下的路径只能在这里派生（`CLAUDE.md` §1.1②，身份路径门禁），阡陌自有文件里写 `homedir()` 会被门禁拦下 | ✅ 书面 |
+| `src/entrypoints/cli.tsx`（§2 在册） | `0ed84275` | +7/−0（现值 +84/−16） | **形态：纯插入**一个 `args[0] === 'handoff'` 快速路径分支，与 `resident` / `console` / `memory` 同形（`profileCheckpoint` + 动态 import `cli/handlers/handoff.js`）。理由同本文件原行：Commander 注册表被排除在快速路径外，子命令只能在这里分派；`--help` 条目照 P11.5 的做法写在阡陌自有的 `src/cli/program/commands/qianmo.tsx` | ✅ 书面 |
+| `tests/integration/cli-golden.test.ts`（§2 在册） | `0ed84275` | +1/−0（现值 +29/−1） | **形态：纯插入** `ROOT_COMMANDS` 一项 `'handoff'`。golden 逐条比对 `occ --help` 的顶层命令，新子命令必须同步进表，否则它就失去守门作用 | ✅ 书面 |
+| `package.json`（§5.2 在册） | `97256e34` | +1/−0（现值 +58/−21） | **形态：纯插入**一条 `"@qianmo/handoff": "workspace:*"`（P17 裁定 1：根包直接依赖 workspace 包），`bun.lock` 随之多一行。与 §5.2 其余 `@qianmo/*` 依赖同类 | ✅ 书面 |
+
+**同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/cli/handlers/` 下 `handoff.ts`、`handoffStore.ts`、`handoffTranscript.ts`、`handoffHub.ts`、`handoffSync.ts`、`handoffNow.ts`、`consoleHandoff.ts`，各自的测试与 `__tests__/support/handoffSamples.ts`，`src/config/__tests__/qmcodeHome.test.ts`，`tests/integration/qianmo-handoff.test.ts`；`packages/console/src/routes/handoff.ts`。已在册的阡陌自有文件（`console.ts`、`consoleArgs.ts`、`qianmo.tsx`、`packages/*`）的改动不属本文范围。
+
 ---
 
 ## 3. 基座扩展点覆盖不到的三类改动
