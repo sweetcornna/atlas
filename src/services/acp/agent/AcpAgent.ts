@@ -65,6 +65,7 @@ import type { AcpSession } from './sessionTypes.js'
 import { RESIDENT_INACTIVITY_ABORT_REASON } from '../../../utils/messages.js'
 import { runInAcpWorkspaceTurn } from './sessionWorkspace.js'
 import { buildVersion } from '../../../constants/buildProvenance.js'
+import { acpLocalCommandEntries } from './localCommands.js'
 
 /**
  * The `AbortController` reason a `session/cancel` should carry, or `undefined`
@@ -514,6 +515,8 @@ export class AcpAgent implements Agent {
         description: cmd.description,
         input: cmd.argumentHint ? { hint: cmd.argumentHint } : undefined,
       }))
+    // P18.20: the local commands an ACP turn can run (see localCommands.ts).
+    availableCommands.push(...acpLocalCommandEntries(session.commands))
 
     await this.conn.sessionUpdate({
       sessionId,

@@ -20,6 +20,7 @@ export type {
   CertificateSnapshot,
   CertificateStatus,
   ChatAuthor,
+  ChatLocalCommand,
   ChatNoticeSeverity,
   ChatPort,
   ChatSendInput,
@@ -109,6 +110,7 @@ export {
   type ConsoleAccounts,
 } from './access.js'
 export type { LedgerPort } from './deps.js'
+export { CHAT_LOCAL_COMMANDS } from './deps.js'
 
 // The action ledger (P15.9): the port the routes call (`deps.ts`), and the
 // hash-chained store the host puts behind it.

@@ -101,6 +101,7 @@ import {
   assembleResidentPromptAsync,
 } from './residentPrompt.js'
 import { residentAcpEnvironment } from './residentAcpEnv.js'
+import { residentLocalCommand } from './residentLocalCommand.js'
 import { ACP_NOTIFY_METHOD, type QianmoNotifyVerdict } from './notifyWire.js'
 
 interface QianmoResidentAgentConfig {
@@ -269,6 +270,13 @@ interface QianmoResidentOptions {
    * token is fully checked, and rule S-1 refuses any remote `user-confirmed`.
    */
   readonly capability?: CapabilityGate
+  /**
+   * The console's signing names (`--local-commands-from`): a `task.request`
+   * one of them signed, marked as a local command, reaches the ACP child as
+   * the command itself instead of as a message (P18.20,
+   * `residentLocalCommand.ts`). Absent or empty, nothing arrives that way.
+   */
+  readonly localCommandIssuers?: readonly string[]
   /**
    * Durable audit trail (P7.2). Absent means the routing layer's refusals live
    * only in this process's ring — which is fine for a test and useless for the
@@ -565,6 +573,12 @@ interface ActiveResidentTask {
    * which this task belongs to no ACP generation yet. See `#failActiveTasks`.
    */
   delivering: boolean
+  /**
+   * The text this task's turn runs on verbatim, when the routing verdict made
+   * it a console's local command (`residentLocalCommand.ts`). Read by
+   * `#assemblePrompt`; absent for everything else.
+   */
+  localCommand?: string
 }
 
 /**
@@ -659,6 +673,8 @@ const RUNTIME_WAIT_MS = 3_000
 
 export class QianmoResident {
   readonly #options: QianmoResidentOptions
+  /** `options.localCommandIssuers`, as the set it is looked up in. */
+  readonly #localCommandIssuers: ReadonlySet<string>
   readonly #gate = new NodeTurnGate()
   readonly #mailbox = new BaseMailboxPort()
   readonly #deadlineClock = new ResidentDeadlineClock({ periodMs: 10_000 })
@@ -742,6 +758,7 @@ export class QianmoResident {
 
   constructor(options: QianmoResidentOptions) {
     this.#options = options
+    this.#localCommandIssuers = new Set(options.localCommandIssuers ?? [])
     this.#timings = new ResidentTimingRecorder(options.onTiming)
     this.#notifier = new ResidentNotifier({
       node: options.node,
@@ -1123,6 +1140,17 @@ export class QianmoResident {
       message.type === MessageType.TaskRequest
         ? this.#registerTask(message, context.channel)
         : undefined
+    // P18.20: whether this is a console's local command is decided here, on
+    // the verdict this channel produced, before the mailbox write the turn is
+    // later assembled from (`residentLocalCommand.ts`).
+    if (task !== undefined) {
+      const command = residentLocalCommand(
+        message,
+        routed,
+        this.#localCommandIssuers,
+      )
+      if (command !== undefined) task.localCommand = command
+    }
     try {
       // Both halves of the routing layer's finding travel together: who
       // signed, and what this node concluded that signature was worth
@@ -1228,6 +1256,15 @@ export class QianmoResident {
     messages: readonly ResidentMailboxMessage[],
     scope: ResidentPromptScope,
   ): string | Promise<ResidentAssembledPrompt> {
+    // A console's local command runs as itself: no teammate block, no memory
+    // sidecar. The mailbox entry only names the task; the text comes from the
+    // envelope the verdict was reached on (`residentLocalCommand.ts`).
+    const msgId = networkMessageId(messages)
+    const command =
+      msgId === undefined
+        ? undefined
+        : this.#tasksByMessage.get(msgId)?.localCommand
+    if (command !== undefined) return command
     if (this.#options.semanticRecall !== undefined) {
       return this.#assembleTwoStage(messages, scope)
     }
