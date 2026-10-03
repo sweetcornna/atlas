@@ -182,7 +182,17 @@
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/modelCompat/` 下 6 个源文件（`targetMatch.ts`、`reasoningEcho.ts`、`responsesIssuer.ts`、`thoughtSignatureReplay.ts`、`effortVendors.ts`、`responsesUsage.ts`）与 7 个测试文件；`packages/@ant/model-provider/src/shared/qianmo/` 下 4 个源文件（`reasoningStream.ts`、`thinkTags.ts`、`geminiToolSignature.ts`、`usageFields.ts`）与 4 个测试文件。P18.5 的自有文件 `capabilities.ts`、`chatEffort.ts`、`toolCallDeltas.ts`、`requestParity.test.ts`、`support/requestCapture.ts`、`chatEffort.test.ts` 有后续改动。依据 hermes-agent 整理规则的文件与许可声明见 `NOTICE` 五。
 
-### 2.12 M1 · P18.19 缓存命中（3 个修改，另有 3 个在册文件的后续改动补在原行）
+### 2.14 M1 · P18.20 ACP 会话里的本地命令（无新增行，2 个在册文件的后续改动补在原行）
+
+依据设计 `providers-console-m1.md` §0.1 D-9 与 §9.2 P18.20 行。本节不计入 §1 与 §2 标题里的「32 / 24」。
+
+- **改动前的实况**（真 `--acp` 子进程，2026-10-03 实测）：ACP 会话本来就执行斜杠命令。`QueryEngine.submitMessage` 的 `processUserInput` → `processSlashCommand` 对会话命令表（未过滤的 `getCommands(cwd)`）里的任何命令生效，`/autocompact 150k` 写入设置并回显，模型请求为 0。所以**没有新增执行路径**，只补两件：`available_commands_update` 通告白名单内的本地命令；每轮开始时按需重读设置并解除 `/autocompact` 对会话值的钉住，让任一途径改的 `autoCompactWindow` 在运行中的会话下一轮生效。
+- **在册文件的后续改动**（按 §6.3 第 1 条补进原行）：`src/services/acp/agent/AcpAgent.ts`、`src/services/acp/agent/promptFlow.ts`（§2.3），各一处纯插入。
+- **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/acp/agent/localCommands.ts`（白名单 `ACP_LOCAL_COMMANDS`、通告条目、`refreshAcpTurnSettings`），用例 `src/services/acp/agent/__tests__/localCommands.test.ts` 与 `tests/integration/qianmo-acp-local-commands.test.ts`。
+- **上游同步时**：上游若也把 local 命令放进通告，删掉 `AcpAgent.ts` 的那一行，否则重复通告；上游若在 ACP 里启动设置变更检测器，`refreshAcpTurnSettings` 里重置缓存的一半可以去掉，解除钉住的一半仍然需要。
+- **控制台对话页那一段不改基座**：对话页的消息经 resident 组装成 `<teammate-message>`（`src/services/qianmo/residentPrompt.ts`）再交给 ACP 子进程，不以 `/` 开头，走不到上面的路径。打通它的改动全在阡陌自有文件里：控制台按 `^/(autocompact|compact|context)(\s|$)` 认出命令、查角色、记账本，信封 payload 另带 `command: { name }`（`packages/console/src/routes/chat.ts`、`src/cli/handlers/consoleChat.ts`）；resident 只对「验签通过、签名名在 `--local-commands-from` 里、带标记、原文就是那条命令」的 `task.request` 把原文直接交给 ACP 子进程（`src/services/qianmo/residentLocalCommand.ts`、`resident.ts` 的 `#assemblePrompt`），其余照旧包装。
+
+### 2.15 M1 · P18.19 缓存命中（3 个修改，另有 3 个在册文件的后续改动补在原行）
 
 依据设计 `providers-console-m1.md` §5.11.4、§5.11.5。逻辑一律落在阡陌自有的新文件里（`src/services/qianmo/promptCache/`，见本节末），基座文件只留调用点。+/− 为 `git diff base-snapshot/v2.46.0 -- <file>` 的现值；P18.19 之前已有、本文此前未登记的改动，在括号里分开写，不归到 P18.19 名下。
 
@@ -197,16 +207,6 @@
 **阡陌自有文件的改动**（不是基座文件，列出来方便审）：`src/services/acp/agent/sessionWorkspace.ts`（CH-1：换会话时存、取快照，每轮结束写边车）；`tests/integration/fixtures/resident-acp-harness.ts`（`spawnResidentAcpChild` 加可选的 `wireApi`、`cwd`，不传时行为不变）；`src/services/qianmo/modelCompat/__tests__/support/requestCapture.ts`（清环境的键表加 `OPENAI_PROMPT_CACHE_RETENTION`、`OPENAI_PROMPT_CACHE_DIAGNOSTICS`）。
 
 **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/promptCache/` 下 6 个源文件（`sessionCacheKey.ts`、`sessionPromptContext.ts`、`persistAttachments.ts`、`requestExtras.ts`、`responseRecord.ts`、`grokConversation.ts`）与 5 个测试文件（`sessionCacheKey`、`sessionPromptContext`、`persistAttachments`、`requestExtras`、`stickyRouting`）；`tests/integration/qianmo-prompt-cache.test.ts` 与录制桩 `tests/integration/fixtures/responses-recorder.ts`。依据 hermes-agent 的做法（`x-grok-conv-id`、`api.meta.ai` 的 `24h` 默认）只取机制，没有复制代码。
-
-### 2.14 M1 · P18.20 ACP 会话里的本地命令（无新增行，2 个在册文件的后续改动补在原行）
-
-依据设计 `providers-console-m1.md` §0.1 D-9 与 §9.2 P18.20 行。本节不计入 §1 与 §2 标题里的「32 / 24」。
-
-- **改动前的实况**（真 `--acp` 子进程，2026-10-03 实测）：ACP 会话本来就执行斜杠命令。`QueryEngine.submitMessage` 的 `processUserInput` → `processSlashCommand` 对会话命令表（未过滤的 `getCommands(cwd)`）里的任何命令生效，`/autocompact 150k` 写入设置并回显，模型请求为 0。所以**没有新增执行路径**，只补两件：`available_commands_update` 通告白名单内的本地命令；每轮开始时按需重读设置并解除 `/autocompact` 对会话值的钉住，让任一途径改的 `autoCompactWindow` 在运行中的会话下一轮生效。
-- **在册文件的后续改动**（按 §6.3 第 1 条补进原行）：`src/services/acp/agent/AcpAgent.ts`、`src/services/acp/agent/promptFlow.ts`（§2.3），各一处纯插入。
-- **同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/acp/agent/localCommands.ts`（白名单 `ACP_LOCAL_COMMANDS`、通告条目、`refreshAcpTurnSettings`），用例 `src/services/acp/agent/__tests__/localCommands.test.ts` 与 `tests/integration/qianmo-acp-local-commands.test.ts`。
-- **上游同步时**：上游若也把 local 命令放进通告，删掉 `AcpAgent.ts` 的那一行，否则重复通告；上游若在 ACP 里启动设置变更检测器，`refreshAcpTurnSettings` 里重置缓存的一半可以去掉，解除钉住的一半仍然需要。
-- **控制台对话页那一段不改基座**：对话页的消息经 resident 组装成 `<teammate-message>`（`src/services/qianmo/residentPrompt.ts`）再交给 ACP 子进程，不以 `/` 开头，走不到上面的路径。打通它的改动全在阡陌自有文件里：控制台按 `^/(autocompact|compact|context)(\s|$)` 认出命令、查角色、记账本，信封 payload 另带 `command: { name }`（`packages/console/src/routes/chat.ts`、`src/cli/handlers/consoleChat.ts`）；resident 只对「验签通过、签名名在 `--local-commands-from` 里、带标记、原文就是那条命令」的 `task.request` 把原文直接交给 ACP 子进程（`src/services/qianmo/residentLocalCommand.ts`、`resident.ts` 的 `#assemblePrompt`），其余照旧包装。
 
 ---
 
