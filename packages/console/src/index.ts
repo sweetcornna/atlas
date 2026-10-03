@@ -123,6 +123,48 @@ export {
   type ActionLedgerVerdict,
 } from './actionLedger.js'
 
+// Model services (P18.6): the port the providers page is written against, and
+// the types its host implementation returns. A type stays unexported in
+// `deps.ts` until something outside the package names it.
+export type {
+  ProviderActionName,
+  ProviderActivity,
+  ProviderApplyResult,
+  ProviderAssignment,
+  ProviderAutocompactResult,
+  ProviderCaller,
+  ProviderCandidate,
+  ProviderCatalog,
+  ProviderCompilePreview,
+  ProviderDrift,
+  ProviderEffortLevel,
+  ProviderExport,
+  ProviderFailure,
+  ProviderImportInput,
+  ProviderImportPreview,
+  ProviderIssueView,
+  ProviderNodeActual,
+  ProviderNodeView,
+  ProviderOverview,
+  ProviderPort,
+  ProviderPresetView,
+  ProviderProbeResult,
+  ProviderProfileDraft,
+  ProviderProfileSummary,
+  ProviderProfileView,
+  ProviderResult,
+} from './deps.js'
+// The account book's line format, for the host's other hash-chained books
+// (`providers.ndjson`, P18.6 R-3): one chain construction, not two.
+export {
+  encodeLedgerEntry,
+  ledgerDigest,
+  nextPrevious,
+  readLedger,
+  type LedgerData,
+  type LedgerEntry,
+} from './ledger.js'
+
 export {
   API_PREFIX,
   CHAT_STREAM_HEARTBEAT_MS,
