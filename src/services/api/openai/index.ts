@@ -24,6 +24,7 @@ import {
   chatStreamIdleTimeoutMs,
 } from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
 import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
+import { applyChatSchemaRules } from 'src/services/qianmo/modelCompat/schemaRules.js'
 import {
   sendDegradingToolImages,
   toolResultImagesAccepted,
@@ -367,7 +368,12 @@ export async function* queryModelOpenAI(
           }),
       },
     )
-    const openaiTools = anthropicToolsToOpenAI(standardTools)
+    // qianmo P18.12 (hermes #21): lossless schema rules, chat wire only —
+    // src/services/qianmo/modelCompat/schemaRules.ts.
+    const openaiTools = applyChatSchemaRules(
+      anthropicToolsToOpenAI(standardTools),
+      wireProtocol,
+    )
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
     // options.model, NOT openaiModel: resolveAppliedEffort keys the per-tier
     // settings slot off the model the SESSION selected, and the claude/gemini/

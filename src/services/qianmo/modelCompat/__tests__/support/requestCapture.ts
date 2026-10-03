@@ -20,6 +20,7 @@
  */
 import { queryModelOpenAI } from 'src/services/api/openai/index.js'
 import type { Options } from 'src/services/api/claude.js'
+import type { Tools } from 'src/Tool.js'
 import type { Message } from 'src/types/message.js'
 import type { SystemPrompt } from 'src/utils/session/systemPromptType.js'
 
@@ -125,6 +126,8 @@ export type CaptureParams = {
    * streams). Nothing is captured then.
    */
   fetchOverride?: typeof fetch
+  /** Tools handed to the lane (P18.12: schema rules). Default: none. */
+  tools?: Tools
 }
 
 /**
@@ -204,7 +207,7 @@ export async function captureOpenAIRequests(
     for await (const output of queryModelOpenAI(
       params.messages ?? [],
       [] as unknown as SystemPrompt,
-      [],
+      params.tools ?? [],
       signal,
       options,
     )) {
