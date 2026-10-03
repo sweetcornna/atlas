@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { CSP, DOCUMENT_CSP, html } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import { STUB_LINE } from '../src/routes/stub.js'
 import {
@@ -443,5 +444,51 @@ describe('the shell around every page', () => {
     expect(asView).not.toContain('id="nav-chat"')
     const asAdmin = await (await h.handle(browse('/', ADMIN))).text()
     expect(asAdmin).toContain('id="nav-chat"')
+  })
+})
+
+describe('framing (H1)', () => {
+  function framingOf(response: Response): readonly [string, string] {
+    return [
+      response.headers.get('content-security-policy') ?? '',
+      response.headers.get('x-frame-options') ?? '',
+    ]
+  }
+
+  test('every page refuses to be framed, in both headers', async () => {
+    const { handle } = harness()
+    for (const row of PAGES) {
+      const response = await handle(browse(row.path, ADMIN))
+      const [policy, xfo] = framingOf(response)
+      expect(`${row.path} ${policy}`).toBe(`${row.path} ${DOCUMENT_CSP}`)
+      expect(`${row.path} ${xfo}`).toBe(`${row.path} DENY`)
+    }
+  })
+
+  test('the header policy is the <meta> policy plus frame-ancestors', async () => {
+    expect(DOCUMENT_CSP).toBe(`${CSP}; frame-ancestors 'none'`)
+    // The meta copy stays, without the directive a meta cannot carry.
+    const page = await read('/')
+    expect(page).toContain('<meta http-equiv="Content-Security-Policy"')
+    expect(page).not.toContain('frame-ancestors')
+  })
+
+  test('the login door and the in-place login card refuse it too', async () => {
+    const { handle } = harness()
+    for (const request of [
+      browse('/login'),
+      // A view token asking for the conversation: the login card, in place.
+      browse('/chat', VIEW),
+    ]) {
+      const response = await handle(request)
+      expect(response.headers.get('content-type')).toBe(
+        'text/html; charset=utf-8',
+      )
+      expect(framingOf(response)).toEqual([DOCUMENT_CSP, 'DENY'])
+    }
+  })
+
+  test('every document helper carries them, so the invitation pages do', () => {
+    expect(framingOf(html('<!DOCTYPE html>'))).toEqual([DOCUMENT_CSP, 'DENY'])
   })
 })
