@@ -21,7 +21,11 @@ import {
   isRetryableAPIError,
   NonRetryableError,
 } from './retryClassification.js'
-import { getOpenAIRetryDelay, resolveOpenAIMaxRetries } from './openai/retry.js'
+import {
+  getOpenAIRetryDelay,
+  resolveOpenAIMaxRetries,
+  resolveRetryWait,
+} from './openai/retry.js'
 import { reportEmptyModelResponse } from './upstreamStatus.js'
 import {
   thirdPartyFallback,
@@ -295,13 +299,25 @@ export async function* retryThirdPartyEventStream(params: {
           retrying: retry,
         })
       }
+      // qianmo P18.12 (hermes #16): before any output, the server's
+      // Retry-After is waited out up to the run mode's bound, and past it the
+      // ladder gives up — openai/retry.ts resolveRetryWait.
+      const retryWait =
+        retry && !emptyResponse && commitment === 'none'
+          ? resolveRetryWait(error, noOutputRetries)
+          : undefined
       // qianmo P18.12 (hermes #1): 5xx retries spent before any output —
       // switch to the fallback.
-      if (!retry && !emptyResponse && commitment === 'none') {
+      if (
+        (!retry || retryWait?.giveUp === true) &&
+        !emptyResponse &&
+        commitment === 'none'
+      ) {
         const fallback = thirdPartyFallback(error, params.fallback, 'exhausted')
         if (fallback) throw fallback
       }
       if (!retry) throw error
+      if (retryWait?.giveUp === true) throw error
       await params.onRetry?.(error)
       for (const event of finalizeInterruptedAttempt(
         commitment,
@@ -317,7 +333,12 @@ export async function* retryThirdPartyEventStream(params: {
           params.signal,
         )
       } else if (commitment === 'none') {
-        await delay(getOpenAIRetryDelay(noOutputRetries), params.signal)
+        await delay(
+          retryWait?.giveUp === false
+            ? retryWait.delayMs
+            : getOpenAIRetryDelay(noOutputRetries),
+          params.signal,
+        )
       } else {
         await delay(100 * thinkingRetries, params.signal)
       }

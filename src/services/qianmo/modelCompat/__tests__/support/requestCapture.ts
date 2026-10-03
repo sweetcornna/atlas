@@ -101,7 +101,12 @@ export type CaptureParams = {
    * Answer the first N requests with this error instead of a stream. Lets a
    * row exercise the request-level fallbacks without a network.
    */
-  failFirst?: { status: number; body: unknown }[]
+  failFirst?: {
+    status: number
+    body: unknown
+    /** Response headers, e.g. `retry-after` (P18.12). */
+    headers?: Record<string, string>
+  }[]
   /**
    * Conversation history handed to `queryModelOpenAI` (P18.8: replay rows).
    * Default: none.
@@ -158,7 +163,7 @@ export async function captureOpenAIRequests(
     if (failure) {
       return new Response(JSON.stringify(failure.body), {
         status: failure.status,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...failure.headers },
       })
     }
     const responsesSSE = params.responsesSSE ?? RESPONSES_SSE
