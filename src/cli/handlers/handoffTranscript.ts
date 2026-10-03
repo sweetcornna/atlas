@@ -38,10 +38,29 @@
  *
  * Only whole lines count: the cut is at the end of the completing line (or the
  * last newline), never in the middle of a write.
+ *
+ * ## A turn still running (handoff-p17-plan.md P17.4 会话同步规则)
+ *
+ * Three callers meet a transcript whose last turn has not ended:
+ *
+ * 1. `qm handoff now` from a terminal or another thread: refused
+ *    (「回合进行中」).
+ * 2. `/handoff` or `!` in the qmcode thread itself: its own shell turn is left
+ *    out ({@link qmcodeSnapshot}), what precedes it judged by rule 1.
+ * 3. The `qianmo_handoff` MCP tool, called by the model inside its turn: the
+ *    turn cannot end while the tool waits, so the transcript is cut before
+ *    it — qmcode at the open turn's `task_started`, Claude Code at
+ *    {@link claudeCodeCompleteEnd}.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
+import {
+  INACTIVITY_ABORT_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+} from '../../utils/messages/constants.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
 
 // ─── Hook inputs ─────────────────────────────────────────────────────
@@ -290,9 +309,74 @@ export function claudeCodeTurnEnd(
   return null
 }
 
+/**
+ * Where a Claude Code transcript is cut when the turn running now must be
+ * left out — the handoff tool called from inside a turn (P17.3 截断模式).
+ *
+ * The longest prefix whose last main-chain `user`/`assistant` record ends a
+ * turn: an assistant record with a `stop_reason` other than `tool_use` (the
+ * rule {@link claudeCodeTurnEnd} applies to `Stop`), or the marker the base
+ * writes when a turn is interrupted (`utils/messages/constants.ts`; a turn the
+ * user stopped is over, like qmcode's `turn_aborted`). Records after that end
+ * which are not main-chain `user`/`assistant` — `system`, sidechain,
+ * `summary` — stay in, so a transcript whose last turn has ended is cut at its
+ * last newline, exactly what the `Stop` hook pushed. Whatever follows the next
+ * main-chain record is the turn running now and is left out. 0 when no turn
+ * has ended yet.
+ */
+export function claudeCodeCompleteEnd(content: Buffer): number {
+  let cut = 0
+  let afterEnd = false
+  for (const line of completeLines(content)) {
+    const record = parsed(line)
+    const mainChain =
+      record !== null &&
+      record.isSidechain !== true &&
+      (record.type === 'user' || record.type === 'assistant')
+    if (!mainChain) {
+      if (afterEnd) cut = line.end
+      continue
+    }
+    afterEnd = endsClaudeCodeTurn(record)
+    if (afterEnd) cut = line.end
+  }
+  return cut
+}
+
+const INTERRUPT_MARKERS = new Set([
+  INTERRUPT_MESSAGE,
+  INTERRUPT_MESSAGE_FOR_TOOL_USE,
+  INACTIVITY_ABORT_MESSAGE,
+  INACTIVITY_ABORT_MESSAGE_FOR_TOOL_USE,
+])
+
+function endsClaudeCodeTurn(record: Record<string, unknown>): boolean {
+  const message = isRecord(record.message) ? record.message : undefined
+  if (record.type === 'assistant') {
+    const stop = message?.stop_reason
+    return typeof stop === 'string' && stop !== 'tool_use'
+  }
+  const blocks = message?.content
+  return (
+    Array.isArray(blocks) &&
+    blocks.some(
+      block =>
+        isRecord(block) &&
+        block.type === 'text' &&
+        typeof block.text === 'string' &&
+        INTERRUPT_MARKERS.has(block.text),
+    )
+  )
+}
+
 /** What `now` may hand over of a qmcode rollout. */
 type QmcodeSnapshot =
-  | { readonly open: false; readonly end: number }
+  | {
+      readonly open: false
+      readonly end: number
+      /** The caller's own shell turn, left out at the end (rule ②). */
+      readonly skipped?: string
+    }
   | {
       readonly open: true
       readonly turnId: string
@@ -359,6 +443,7 @@ export function qmcodeSnapshot(
   const records = lines.map(parsed)
   let end = lastNewlineEnd(content)
   let open = openTurn(records, lines.length)
+  let skipped: string | undefined
   const last = lines.at(-1)
   if (
     open !== null &&
@@ -368,9 +453,14 @@ export function qmcodeSnapshot(
     last.end === content.length
   ) {
     end = last.start
+    skipped = open.turnId
     open = openTurn(records, open.index)
   }
-  if (open === null) return { open: false, end }
+  if (open === null) {
+    return skipped === undefined
+      ? { open: false, end }
+      : { open: false, end, skipped }
+  }
   return {
     open: true,
     turnId: open.turnId,

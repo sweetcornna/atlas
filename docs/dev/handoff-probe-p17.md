@@ -315,6 +315,11 @@ A = `task_complete` 行写入时刻（文件 mtime）；B = 客户端收到 `tur
 3. **只同步到最后一个换行符。** 写入不是原子的，本次虽没见半行，规则上不依赖它。
 4. **去抖用尾沿。** notify 即发即忘，回合紧挨着时会连续触发；计划里 5 s 去抖必须保证最后一个回合会被同步。
 5. **`qm handoff now`**：回「可以关机」前，最近一个 `task_started` 必须已有同 `turn_id` 的 `task_complete` 或 `turn_aborted`，否则提示「回合进行中」。这是 AC-H1「会话记录已完整落地」在会话一侧的判据。
+   **2026-10-03 回写（P17.4 第二批 #174、P17.3 本仓库）**：调用方本身可能就在一个未完成的回合里，判据按调用方分三种情形，以 `handoffTranscript.ts` 的 `qmcodeSnapshot(content, fromThreadShell)` 为准：
+   - ① 终端里、或别的线程里运行：任何未完成的回合都报「回合进行中」（含只有一条 `task_started` 的、等 MCP 就绪的模型回合）。
+   - ② qmcode 的 `/handoff` 或 `!`：`thread/shellCommand` 先开一个 shell 回合，命令运行时文件末行就是它的 `task_started`。三条同时满足才认作调用方自己的 shell 回合：环境里的 `CODEX_THREAD_ID` 与本会话相同；那条未完成的 `task_started` 是文件最后一行；它后面没有任何字节。满足就截到它之前，前面部分按同一规则再判；否则按 ①。
+   - ③ MCP 工具 `qianmo_handoff`（模型回合内的工具调用）：文件末尾是这个回合的 `task_started`、`turn_context`、`response_item`，最后一条是调用本工具的 `function_call`。这个回合要等工具返回才能结束，所以不拒绝也不等，截到最近一个未完成回合的 `task_started` 之前；Claude Code 会话截到最后一个完整回合。返回里写明截到哪。
+   - 会话选择：环境里有 `CODEX_THREAD_ID` 且找得到它的 rollout 时用这个线程（②）；MCP 调用用 `tools/call` 的 `_meta.threadId`（③）；都没有再按工作目录查 `sessions.json`。
 6. **P17.5 节点桥**：收到 `turn/completed` 后用同一判据，再把会话提交到 `refs/qianmo/sessions/cloud/<threadId>`。
 
 ## 对设计与工作包的影响（待回写）

@@ -9,11 +9,17 @@
  * In this order, and any step that does not hold ends the command with a
  * reason on stderr, exit 1, and **without the sentence**:
  *
+ * 0. take the repository's handoff lock (`now.lock`), without waiting: a
+ *    second handoff while one runs — another terminal, another MCP server
+ *    instance — is told 「另一份转交正在进行」 and does nothing;
  * 1. find the session: the calling qmcode thread's (`CODEX_THREAD_ID`, set
- *    when `/handoff` or `!` runs this), else the one reported from this
- *    directory (`sessions.json`); for qmcode, refuse while a turn is still
- *    running (「回合进行中」) — the transcript would end mid-turn — except
- *    the shell turn running this very command, which is left out;
+ *    when `/handoff` or `!` runs this; `_meta.threadId` of an MCP tool call),
+ *    else the one reported from this directory (`sessions.json`); for
+ *    qmcode, refuse while a turn is still running (「回合进行中」) — the
+ *    transcript would end mid-turn — except the shell turn running this very
+ *    command, which is left out. Called from inside a turn (the MCP tool,
+ *    `whileRunning: 'cut'`), the turn running is left out instead, for
+ *    Claude Code too, and the output says where the cut is;
  * 2. take the repository's sync lock and sync now (shadow commit, session
  *    commit, atomic push), including whatever hooks left pending;
  * 3. `git ls-remote` the hub: both refs must point at exactly the commits
@@ -34,9 +40,12 @@
  * changes.
  */
 
+import { join } from 'node:path'
 import {
+  acquireExclusiveLock,
   type HandoffManifest,
   isIsoInstant,
+  LockHeldError,
   MANIFEST_KIND,
   sessionRef,
   shadowTree,
@@ -51,6 +60,7 @@ import {
   readTokenFile,
   sessionFor,
   sleep,
+  stateDir,
 } from './handoffStore.js'
 import {
   drainPending,
@@ -67,6 +77,7 @@ import {
   writeLastSync,
 } from './handoffSync.js'
 import {
+  claudeCodeCompleteEnd,
   findQmcodeRollout,
   lastNewlineEnd,
   qmcodeSnapshot,
@@ -172,14 +183,30 @@ interface NowOptions {
   readonly deadline?: string
 }
 
+/** Who asks for the handoff, as far as the session goes. */
+export interface HandoffCaller {
+  /** The qmcode thread the request comes from, when it is known. */
+  readonly thread: string | undefined
+  /**
+   * This process is a shell command of that thread (`/handoff`, `!`), so the
+   * thread's own shell turn is open at the end of its rollout and is left out
+   * (`qmcodeSnapshot`). Not so for an MCP tool call: that runs inside a model
+   * turn.
+   */
+  readonly inThreadShell: boolean
+}
+
 /**
- * The qmcode thread this process is a shell command of. qmcode sets
+ * A command run in a terminal or by qmcode's shell. qmcode sets
  * `CODEX_THREAD_ID` for `!` commands, `/handoff` and the model's shell tool —
  * not for `notify` or the MCP server (QIANMO.md 10.2, 10.3).
  */
-function callingThread(): string | undefined {
+function commandCaller(): HandoffCaller {
   const id = process.env.CODEX_THREAD_ID
-  return id === undefined || id === '' ? undefined : id
+  return {
+    thread: id === undefined || id === '' ? undefined : id,
+    inThreadShell: true,
+  }
 }
 
 /**
@@ -204,19 +231,42 @@ function sessionToHandOver(
   return sessionFor(cwd, root)
 }
 
+/** The turn running that a snapshot left out at its end. */
+interface OmittedTail {
+  /** The qmcode turn the cut is before; `null` for Claude Code. */
+  readonly turnId: string | null
+  /** Lines after the cut, a partly written last one counted. */
+  readonly lines: number
+}
+
+function omittedTail(
+  content: Buffer,
+  end: number,
+  turnId: string | null,
+): OmittedTail {
+  const rest = content.subarray(end)
+  let lines = 0
+  for (const byte of rest) if (byte === 0x0a) lines++
+  if (rest.length > 0 && rest[rest.length - 1] !== 0x0a) lines++
+  return { turnId, lines }
+}
+
 /**
  * The session to hand over, cut where it is complete. `now` refuses a
- * running turn — except the shell turn of the thread that is running it
- * (`qmcodeSnapshot`); a manual sync (`whileRunning: 'cut'`) takes everything
- * before the open turn.
+ * running qmcode turn — except the shell turn of the thread that is running
+ * it (`qmcodeSnapshot`) — and takes a Claude Code transcript to its last
+ * newline. `whileRunning: 'cut'` — a manual sync, and the handoff tool
+ * called from inside a turn — takes everything before the turn running
+ * instead: qmcode up to that turn's `task_started`, Claude Code up to the end
+ * of its last complete turn (`claudeCodeCompleteEnd`).
  */
 export function sessionSnapshot(
   cwd: string,
   root: string,
   whileRunning: 'refuse' | 'cut' = 'refuse',
-): SessionSnapshot {
-  const thread = callingThread()
-  const location = sessionToHandOver(cwd, root, thread)
+  caller: HandoffCaller = commandCaller(),
+): SessionSnapshot & { readonly omitted: OmittedTail | null } {
+  const location = sessionToHandOver(cwd, root, caller.thread)
   if (location === undefined) {
     throw new HandoffUserError(
       '找不到这个目录的会话记录：先在 qmcode 或 Claude Code 里跑完一个回合（hook 会记下会话）',
@@ -227,25 +277,39 @@ export function sessionSnapshot(
     throw new HandoffUserError(`会话文件不在了：${location.file}`)
   }
   let end: number
+  let omitted: OmittedTail | null = null
   if (location.tool === 'qmcode') {
-    const snapshot = qmcodeSnapshot(content, location.sessionId === thread)
+    const snapshot = qmcodeSnapshot(
+      content,
+      caller.inThreadShell && location.sessionId === caller.thread,
+    )
     if (snapshot.open && whileRunning === 'refuse') {
       throw new HandoffUserError(
         `回合进行中（${snapshot.turnId}）：等这一轮结束再转交`,
       )
     }
     end = snapshot.open ? snapshot.before : snapshot.end
+    const turnId = snapshot.open ? snapshot.turnId : snapshot.skipped
+    if (turnId !== undefined) omitted = omittedTail(content, end, turnId)
+  } else if (whileRunning === 'cut') {
+    end = claudeCodeCompleteEnd(content)
+    if (end < lastNewlineEnd(content)) omitted = omittedTail(content, end, null)
   } else {
     end = lastNewlineEnd(content)
   }
   if (end === 0) {
-    throw new HandoffUserError(`会话文件还没有完整的一行：${location.file}`)
+    throw new HandoffUserError(
+      whileRunning === 'cut'
+        ? `会话里还没有一个完整的回合：${location.file}`
+        : `会话文件还没有完整的一行：${location.file}`,
+    )
   }
   return {
     tool: location.tool,
     sessionId: location.sessionId,
     file: location.file,
     content: content.subarray(0, end),
+    omitted,
   }
 }
 
@@ -264,11 +328,24 @@ function deadlineOf(raw: string | undefined): string {
   return raw
 }
 
+/** How `now` was asked for, beyond the brief. */
+interface NowMode {
+  /** `'cut'`: called from inside a turn (the MCP tool); see {@link sessionSnapshot}. */
+  readonly whileRunning?: 'refuse' | 'cut'
+  readonly caller?: HandoffCaller
+}
+
+/** One handoff at a time per repository; held from the check to the answer. */
+function nowLockPath(root: string): string {
+  return join(stateDir(root), 'now.lock')
+}
+
 /** `qm handoff now`. Returns the exit code. */
 export async function runNow(
   cwd: string,
   options: NowOptions,
   output: Output = PROCESS_OUTPUT,
+  mode: NowMode = {},
 ): Promise<number> {
   const project = await projectAt(cwd)
   const deadline = deadlineOf(options.deadline)
@@ -280,7 +357,39 @@ export async function runNow(
     )
   }
   readTokenFile(project.tokenFile)
-  const snapshot = sessionSnapshot(cwd, project.root)
+  // Not the sync lock: a hook holds that for a moment after every turn, and
+  // waiting it out is right. Two handoffs at once are not — each would push
+  // its own shadow commit and register its own task.
+  let handoffLock: ReturnType<typeof acquireExclusiveLock>
+  try {
+    handoffLock = acquireExclusiveLock(nowLockPath(project.root))
+  } catch (error) {
+    if (!(error instanceof LockHeldError)) throw error
+    throw new HandoffUserError(
+      `另一份转交正在进行${error.holder === null ? '' : `（pid ${error.holder}）`}：等它结束再试`,
+    )
+  }
+  try {
+    return await handOver(project, cwd, options, deadline, output, mode)
+  } finally {
+    handoffLock.release()
+  }
+}
+
+async function handOver(
+  project: HandoffProject,
+  cwd: string,
+  options: NowOptions,
+  deadline: string,
+  output: Output,
+  mode: NowMode,
+): Promise<number> {
+  const snapshot = sessionSnapshot(
+    cwd,
+    project.root,
+    mode.whileRunning,
+    mode.caller,
+  )
   let thisSessionRef: string
   try {
     thisSessionRef = sessionRef(project.device, snapshot.sessionId)
@@ -373,6 +482,14 @@ export async function runNow(
     `  代码  ${manifest.wip}（refs/qianmo/wip/${manifest.device}/${manifest.branch}）`,
   )
   output.out(`  会话  ${manifest.sessionCommit}（${manifest.sessionRef}）`)
+  if (snapshot.omitted !== null) {
+    const { turnId, lines } = snapshot.omitted
+    output.out(
+      turnId === null
+        ? `  截至  最后一个完整回合；其后 ${lines} 行属于进行中的回合，未转交`
+        : `  截至  回合 ${turnId} 开始之前；这个回合还在进行，其后 ${lines} 行未转交`,
+    )
+  }
   if (answer.body.created === false) {
     output.out('  （同一份清单已登记过，沿用原任务）')
   }
@@ -423,6 +540,23 @@ function describeTask(task: TaskLine): string {
   return `  ${task.taskId}  ${task.state.padEnd(10)} ${new Date(task.acceptedAt).toISOString()}  ${task.goal.slice(0, 60)}`
 }
 
+/** This project's and this device's tasks on the hub, newest first. */
+async function projectTasks(project: HandoffProject): Promise<TaskLine[]> {
+  const listed = await consoleRequest(project, 'GET', '/v0/handoff')
+  if (listed.status !== 200 || !Array.isArray(listed.body.tasks)) {
+    throw new HandoffUserError(`查不了中枢台账：${consoleError(listed)}`)
+  }
+  return listed.body.tasks
+    .map(taskLine)
+    .filter(
+      (task): task is TaskLine =>
+        task !== null &&
+        task.project === project.project &&
+        task.device === project.device,
+    )
+    .sort((a, b) => b.acceptedAt - a.acceptedAt)
+}
+
 interface StatusOptions {
   readonly wait: boolean
   readonly taskId?: string
@@ -433,6 +567,7 @@ export async function runStatus(
   cwd: string,
   options: StatusOptions,
   output: Output = PROCESS_OUTPUT,
+  caller: HandoffCaller = commandCaller(),
 ): Promise<number> {
   const project = await projectAt(cwd)
   if (!options.wait) {
@@ -440,11 +575,14 @@ export async function runStatus(
     output.out(`项目    ${project.project}（设备 ${project.device}）`)
     output.out(`中枢    ${formatHub(project.hub)}`)
     output.out(`控制台  ${project.console}`)
-    const session = sessionToHandOver(cwd, project.root, callingThread())
+    const session = sessionToHandOver(cwd, project.root, caller.thread)
+    const own = caller.inThreadShell
+      ? '运行这条命令的 qmcode 线程'
+      : '调用这个工具的 qmcode 线程'
     output.out(
       session === undefined
         ? '会话    （还没有 hook 报过）'
-        : `会话    ${session.tool} ${session.sessionId}（${session.at === undefined ? '运行这条命令的 qmcode 线程' : new Date(session.at).toISOString()}）`,
+        : `会话    ${session.tool} ${session.sessionId}（${session.at === undefined ? own : new Date(session.at).toISOString()}）`,
     )
     const last = readLastSync(project.root)
     output.out(
@@ -456,19 +594,7 @@ export async function runStatus(
     if (pending > 0) output.out(`待同步  ${pending} 个会话`)
   }
 
-  const listed = await consoleRequest(project, 'GET', '/v0/handoff')
-  if (listed.status !== 200 || !Array.isArray(listed.body.tasks)) {
-    throw new HandoffUserError(`查不了中枢台账：${consoleError(listed)}`)
-  }
-  const mine = listed.body.tasks
-    .map(taskLine)
-    .filter(
-      (task): task is TaskLine =>
-        task !== null &&
-        task.project === project.project &&
-        task.device === project.device,
-    )
-    .sort((a, b) => b.acceptedAt - a.acceptedAt)
+  const mine = await projectTasks(project)
 
   if (!options.wait) {
     output.out(mine.length === 0 ? '任务    （没有）' : '任务')
@@ -512,4 +638,80 @@ export async function runStatus(
       return 0
     }
   }
+}
+
+// ─── one task ────────────────────────────────────────────────────────
+
+function field(value: unknown, key: string): unknown {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined
+}
+
+function textField(value: unknown, key: string): string | null {
+  const found = field(value, key)
+  return typeof found === 'string' ? found : null
+}
+
+function instant(value: unknown, key: string): string {
+  const found = field(value, key)
+  return typeof found === 'number' ? new Date(found).toISOString() : '?'
+}
+
+/**
+ * One task as the hub's ledger has it (`GET /v0/handoff/<id>`): state,
+ * brief, node and the cloud's result once there is one. Without a task id,
+ * this project's latest. The MCP tool `qianmo_task`. Returns the exit code.
+ */
+export async function runTask(
+  cwd: string,
+  options: { readonly taskId?: string },
+  output: Output = PROCESS_OUTPUT,
+): Promise<number> {
+  const project = await projectAt(cwd)
+  let taskId = options.taskId
+  if (taskId === undefined) {
+    const latest = (await projectTasks(project))[0]
+    if (latest === undefined) {
+      throw new HandoffUserError('这个项目在中枢上还没有接力任务')
+    }
+    taskId = latest.taskId
+  }
+  const answer = await consoleRequest(
+    project,
+    'GET',
+    `/v0/handoff/${encodeURIComponent(taskId)}`,
+  )
+  const task = answer.body.task
+  if (answer.status !== 200 || taskLine(task) === null) {
+    throw new HandoffUserError(`查不了任务 ${taskId}：${consoleError(answer)}`)
+  }
+  const manifest = field(task, 'manifest')
+  const brief = field(manifest, 'brief')
+  const result = field(task, 'result')
+  const orNone = (text: string | null): string =>
+    text === null || text === '' ? '（未写）' : text
+  output.out(`任务    ${textField(task, 'taskId') ?? taskId}`)
+  output.out(
+    `状态    ${textField(task, 'state') ?? '?'}（登记 ${instant(task, 'acceptedAt')}，更新 ${instant(task, 'updatedAt')}）`,
+  )
+  output.out(`节点    ${textField(task, 'node') ?? '（未派发）'}`)
+  output.out(`目标    ${orNone(textField(brief, 'goal'))}`)
+  output.out(`已完成  ${orNone(textField(brief, 'done'))}`)
+  output.out(`剩余    ${orNone(textField(brief, 'remaining'))}`)
+  output.out(`截止    ${textField(manifest, 'deadline') ?? '?'}`)
+  output.out(
+    `代码    ${textField(manifest, 'wip') ?? '?'}（${textField(manifest, 'branch') ?? '?'}）`,
+  )
+  if (typeof result === 'object' && result !== null) {
+    output.out(
+      `结果    ${textField(result, 'status') ?? '?'} · 分支 ${textField(result, 'branch') ?? '?'} · 提交 ${textField(result, 'head') ?? '?'}`,
+    )
+    output.out(`摘要    ${orNone(textField(result, 'summary'))}`)
+  } else {
+    output.out('结果    （还没有：云端回合结束后才有）')
+  }
+  const reason = textField(task, 'reason')
+  if (reason !== null) output.out(`原因    ${reason}`)
+  return 0
 }
