@@ -18,13 +18,13 @@ import {
   test,
 } from 'bun:test'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import { getIsInteractive, setIsInteractive } from 'src/bootstrap/state.js'
 import {
   OpenAIRequestError,
   retryAPIRequest,
 } from 'src/services/api/openai/retry.js'
 import { retryThirdPartyEventStream } from 'src/services/api/streamAssembly.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
+import { setupStateMock } from '../../../../../tests/mocks/state.js'
 import {
   retryAfterCapMs,
   UNATTENDED_RETRY_AFTER_CAP_MS,
@@ -32,10 +32,21 @@ import {
 import { captureOpenAIRequests } from './support/requestCapture.js'
 
 const settingsMock = setupSettingsMock()
-const initialInteractive = getIsInteractive()
+// The run mode is stated through the shared state mock, not the real
+// setter: suites that mock the `bootstrap/state` barrel pin
+// getIsNonInteractiveSession to false, and the pin reaches
+// `bootstrap/state/flags.ts`, which vendorBackoff.ts reads — so under the full
+// run `setIsInteractive(false)` silently left the mode interactive.
+const stateMock = setupStateMock()
+function setIsInteractive(interactive: boolean): void {
+  stateMock.set({ getIsNonInteractiveSession: () => !interactive })
+}
 beforeAll(() => settingsMock.set({ getInitialSettings: () => ({}) }))
-afterEach(() => setIsInteractive(initialInteractive))
-afterAll(() => settingsMock.reset())
+afterEach(() => stateMock.reset())
+afterAll(() => {
+  stateMock.reset()
+  settingsMock.reset()
+})
 
 function rateLimited(retryAfterSeconds: number): OpenAIRequestError {
   return new OpenAIRequestError('request failed (429)', {
