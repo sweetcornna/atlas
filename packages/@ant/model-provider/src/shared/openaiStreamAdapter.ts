@@ -11,6 +11,10 @@ import {
   ToolCallDeltaAssembler,
 } from './qianmo/toolCallDeltas.js'
 import { normalizeReasoningChunks } from './qianmo/reasoningStream.js'
+import {
+  readAnthropicStyleCacheWriteTokens,
+  readReasoningTokens,
+} from './qianmo/usageFields.js'
 import { GEMINI_THOUGHT_SIGNATURE_FIELD } from '../providers/gemini/types.js'
 
 /**
@@ -117,6 +121,8 @@ export async function* adaptOpenAIStreamToAnthropic(
   let outputTokens = 0
   let rawCacheReadTokens = 0
   let rawCacheWriteTokens = 0
+  // qianmo P18.8 (hermes #26): shared/qianmo/usageFields.ts.
+  let rawReasoningTokens: number | undefined
   let usage = normalizeOpenAIUsage({ totalInputTokens: 0, outputTokens: 0 })
 
   // Track all open content block indices (for cleanup)
@@ -238,14 +244,18 @@ export async function* adaptOpenAIStreamToAnthropic(
         rawCacheWriteTokens =
           readOpenAICacheWriteTokens(chunk.usage) ?? rawCacheWriteTokens
       } else {
-        rawCacheWriteTokens = 0
+        rawCacheWriteTokens =
+          readAnthropicStyleCacheWriteTokens(chunk.usage) ?? rawCacheWriteTokens
       }
+      rawReasoningTokens =
+        readReasoningTokens(chunk.usage) ?? rawReasoningTokens
 
       usage = normalizeOpenAIUsage({
         totalInputTokens: rawInputTokens,
         outputTokens,
         cacheReadTokens: rawCacheReadTokens,
         cacheWriteTokens: rawCacheWriteTokens,
+        reasoningTokens: rawReasoningTokens,
       })
     }
 

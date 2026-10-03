@@ -31,6 +31,7 @@ import {
   replayableReasoningItems,
   responsesIssuer,
 } from '../../qianmo/modelCompat/responsesIssuer.js'
+import { readResponsesReasoningTokens } from '../../qianmo/modelCompat/responsesUsage.js'
 import {
   getAPIErrorDiagnostics,
   isRetryableAPIError,
@@ -723,6 +724,8 @@ export function extractUsage(
     outputTokens,
     cacheReadTokens: cachedRaw,
     cacheWriteTokens: writeRaw,
+    // qianmo P18.8 (hermes #26): src/services/qianmo/modelCompat/responsesUsage.ts.
+    reasoningTokens: readResponsesReasoningTokens(usage),
   })
 }
 
