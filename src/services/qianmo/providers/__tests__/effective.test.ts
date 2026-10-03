@@ -303,6 +303,33 @@ describe('effortOnWire is the runtime gate, not the profile', () => {
     }
   })
 
+  test('end to end: Ollama Cloud with thinking off sends `reasoning_effort: "none"`, and that is what the node reports', () => {
+    // P18.8's vendor table (hermes #14, `effortVendors.ts`): on ollama.com
+    // "off" has to be said, as `none`; leaving the key out keeps thinking on.
+    writeSettings({
+      modelType: 'openai',
+      env: {
+        OPENAI_BASE_URL: 'https://ollama.com/v1',
+        OPENAI_API_KEY: CANARY_KEY,
+        OPENAI_WIRE_API: 'chat',
+        OPENAI_ENABLE_THINKING: '0',
+        OPENAI_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_OPUS_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+        OPENAI_DEFAULT_SONNET_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+        OPENAI_DEFAULT_HAIKU_MODEL: 'gpt-oss:120b',
+        OPENAI_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES: ALL_EFFORT_CAPS,
+      },
+    })
+    const state = effective()
+    expect({
+      wire: state.wire,
+      effortOnWire: state.effortOnWire,
+      effortLevel: state.effortLevel,
+    }).toEqual({ wire: 'chat', effortOnWire: true, effortLevel: 'none' })
+  })
+
   test('chat lane without the effort capability: off the wire', () => {
     writeSettings(chatLane('thinking'))
     const state = effective()
