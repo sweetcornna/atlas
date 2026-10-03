@@ -20,6 +20,16 @@ import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/ch
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
 import {
+  resolvePromptCacheOptions,
+  resolvePromptCacheRetention,
+} from 'src/services/qianmo/promptCache/requestExtras.js'
+import {
+  captureResponse,
+  type ResponseCapture,
+  withResponseMetadata,
+} from 'src/services/qianmo/promptCache/responseRecord.js'
+import { resolveSessionStablePromptCacheKey } from 'src/services/qianmo/promptCache/sessionCacheKey.js'
+import {
   sendDroppingRejectedParameters,
   TEMPERATURE_DROPPABLE,
 } from 'src/services/qianmo/modelCompat/unsupportedParam.js'
@@ -36,7 +46,6 @@ import {
   isOfficialOpenAIBaseURL,
   isPromptCacheKeyRejection,
   markPromptCacheKeyRejected,
-  resolveOpenAIPromptCacheKey,
   resolveOpenAIVerbosity,
   updateOpenAIUsage,
 } from './openaiShared.js'
@@ -421,11 +430,14 @@ export async function* queryModelOpenAI(
     // Measured 0% → 98.1% on the first turn of a fresh session; see
     // resolveOpenAIPromptCacheKey. `OPENAI_PROMPT_CACHE_KEY_SCOPE=session`
     // restores the old scheme.
+    //
+    // qianmo P18.19 (CH-3): the prefix key is fixed per (session, model) at
+    // its first request — src/services/qianmo/promptCache/sessionCacheKey.ts.
     const sessionId = getSessionId()
     const sessionPromptCacheKey = formatOpenAIPromptCacheKey(sessionId)
     const promptCacheKey = useChatGPTResponses
       ? sessionPromptCacheKey
-      : resolveOpenAIPromptCacheKey({
+      : resolveSessionStablePromptCacheKey({
           baseURL: process.env.OPENAI_BASE_URL,
           sessionId,
           wireProtocol,
@@ -452,6 +464,9 @@ export async function* queryModelOpenAI(
     // `store: false` means the server keeps no copy, and a request that omits
     // them no longer matches the cached prefix.
     const reasoningItems: OpenAIReasoningItem[] = []
+    // qianmo P18.19 (CH-6): the response id (and cache diagnostics) for the
+    // same message — src/services/qianmo/promptCache/responseRecord.ts.
+    const responseCapture: ResponseCapture = {}
 
     // 11. Call OpenAI API with streaming. The Responses wire protocol serves
     // two routes — ChatGPT subscription auth (Codex backend, ChatGPT headers,
@@ -501,6 +516,11 @@ export async function* queryModelOpenAI(
                       verbosity,
                       promptCacheKey,
                       maxOutputTokens: maxTokens,
+                      // qianmo P18.19 (CH-5, CH-6): optional, off by default.
+                      promptCacheRetention: resolvePromptCacheRetention(
+                        process.env.OPENAI_BASE_URL,
+                      ),
+                      promptCacheOptions: resolvePromptCacheOptions(messages),
                     }),
                     signal,
                     fetchOverride:
@@ -508,7 +528,11 @@ export async function* queryModelOpenAI(
                     maxRetries: 0,
                   }),
               openaiModel,
-              { onReasoningItem: item => reasoningItems.push(item) },
+              {
+                onReasoningItem: item => reasoningItems.push(item),
+                onResponse: response =>
+                  captureResponse(responseCapture, response),
+              },
             )
           : adaptOpenAIStreamToAnthropic(
               await createChatStreamWithCacheKeyFallback({
@@ -641,7 +665,10 @@ export async function* queryModelOpenAI(
               stopReason,
               maxTokens,
               maxTokensEnvHint: OPENAI_MAX_TOKENS_ENV_HINT,
-              providerMetadata: reasoningMetadata(reasoningItems),
+              providerMetadata: withResponseMetadata(
+                reasoningMetadata(reasoningItems),
+                responseCapture,
+              ),
             })) {
               if (output.type === 'assistant') {
                 collectedMessages.push(output)

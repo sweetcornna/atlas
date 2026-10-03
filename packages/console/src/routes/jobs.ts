@@ -24,6 +24,7 @@ import {
   renderJobs,
   renderJobsUnavailable,
 } from '../view/jobs.js'
+import { handoffApi } from './handoff.js'
 import { failureResponse, guard, underPath } from './shared.js'
 import type { RouteContext, RouteModule } from './types.js'
 
@@ -61,6 +62,9 @@ type HeadHandler = (
 /** `/v0/<head>` → handler, for every head this area answers. */
 const API: Readonly<Record<string, HeadHandler>> = {
   jobs: handleJobs,
+  // The local-to-cloud handoff (P17.4, `routes/handoff.ts`): a task the hub
+  // holds, so it is answered by the area of tasks.
+  handoff: (ctx, rest) => handoffApi.handle(ctx, 'handoff', rest),
 }
 
 export const jobsRoute: RouteModule = {
