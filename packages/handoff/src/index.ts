@@ -44,7 +44,14 @@ export {
   type ValidationResult,
 } from './manifest.js'
 
-export { HandoffGitError } from './git.js'
+export { HandoffGitError, runGit } from './git.js'
+
+export {
+  acquireExclusiveLock,
+  LockHeldError,
+  tryExclusiveLock,
+  type ExclusiveLock,
+} from './lock.js'
 
 export {
   HANDOFF_GIT_IDENTITY,
@@ -75,8 +82,10 @@ export {
   HandoffLedger,
   HandoffLedgerError,
   replayLedger,
+  SEND_TEXT_MAX_BYTES,
   type HandoffLedgerErrorCode,
   type HandoffLedgerOptions,
+  type HandoffSend,
   type HandoffState,
   type HandoffTask,
   type LedgerReplay,

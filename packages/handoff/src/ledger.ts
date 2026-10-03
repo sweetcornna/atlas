@@ -17,6 +17,12 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 import {
+  acquireExclusiveLock,
+  type ExclusiveLock,
+  LockHeldError,
+} from './lock.js'
+import {
+  FIELD_MAX_BYTES,
   type HandoffManifest,
   type HandoffResult,
   isTaskId,
@@ -61,6 +67,21 @@ import {
  * applied — the caller's next step may be telling a person "safe to shut
  * down", so the line is on disk before the method returns. The path comes
  * from the caller; this package never derives one.
+ *
+ * "One process" is enforced, not assumed (ruling 10, 2026-10-03):
+ * {@link HandoffLedger.open} takes `<path>.lock` (`O_EXCL`, the pid inside,
+ * see `lock.ts`) and {@link HandoffLedger.close} gives it back. A second hub
+ * started on the same ledger gets `locked` instead of a second writer whose
+ * appends would interleave with the first one's; a lock left by a crashed hub
+ * is reclaimed because its pid is gone.
+ *
+ * ## Messages for a running task
+ *
+ * Besides transitions, a line can carry one message somebody asked the hub to
+ * pass on to the cloud side (`POST /v0/handoff/<task>/send`). It does not move
+ * the task, it is numbered per task from 1, and it is only taken while the
+ * task can still hear it (`accepted`, `dispatched`, `running`). Delivering it
+ * is the node bridge's business (P17.5); the ledger only keeps it.
  */
 
 export const HANDOFF_STATES = [
@@ -91,8 +112,18 @@ const NODE_HOLDING_STATES: ReadonlySet<HandoffState> = new Set([
   'running',
 ])
 
+/** States in which a task still takes a message for the cloud side. */
+const SENDABLE_STATES: ReadonlySet<HandoffState> = new Set([
+  'accepted',
+  'dispatched',
+  'running',
+])
+
 /** Cap on a failure reason, in UTF-8 bytes. */
 export const FAILURE_REASON_MAX_BYTES = 2048
+
+/** Cap on one message for the cloud side: the same as one brief field. */
+export const SEND_TEXT_MAX_BYTES = FIELD_MAX_BYTES.brief
 
 const LEDGER_VERSION = 1
 const DIRECTORY_MODE = 0o700
@@ -114,7 +145,17 @@ export interface HandoffTask {
   readonly updatedAt: number
 }
 
-type LedgerRecord = {
+/** A message for the cloud side, as kept by the ledger. */
+export interface HandoffSend {
+  readonly taskId: string
+  /** Per task, from 1, without gaps. */
+  readonly seq: number
+  /** Epoch ms of the line. */
+  readonly at: number
+  readonly text: string
+}
+
+type TransitionRecord = {
   readonly v: typeof LEDGER_VERSION
   readonly at: number
   readonly taskId: string
@@ -127,6 +168,15 @@ type LedgerRecord = {
   | { readonly state: 'returned' }
 )
 
+interface SendRecord {
+  readonly v: typeof LEDGER_VERSION
+  readonly at: number
+  readonly taskId: string
+  readonly send: { readonly seq: number; readonly text: string }
+}
+
+type LedgerRecord = TransitionRecord | SendRecord
+
 export type HandoffLedgerErrorCode =
   | 'unknown_task'
   | 'duplicate_task'
@@ -134,6 +184,8 @@ export type HandoffLedgerErrorCode =
   | 'node_busy'
   | 'invalid_input'
   | 'corrupt'
+  /** Another live process holds the ledger's lock file. */
+  | 'locked'
 
 export class HandoffLedgerError extends Error {
   readonly code: HandoffLedgerErrorCode
@@ -162,6 +214,8 @@ export interface TornTail {
 export interface LedgerReplay {
   /** Every task, in acceptance order. */
   readonly tasks: ReadonlyMap<string, HandoffTask>
+  /** Messages for the cloud side, per task, in order. */
+  readonly sends: ReadonlyMap<string, readonly HandoffSend[]>
   readonly tornTail: TornTail | null
   /** Length of the prefix that holds complete lines. */
   readonly validBytes: number
@@ -203,6 +257,7 @@ function parseRecord(line: string): LedgerRecord | string {
     return 'not JSON'
   }
   if (!isPlainObject(value)) return 'not an object'
+  if (Object.hasOwn(value, 'send')) return parseSendRecord(value)
   const state = value.state
   if (!(HANDOFF_STATES as readonly unknown[]).includes(state)) {
     return 'unknown state'
@@ -256,6 +311,102 @@ function parseRecord(line: string): LedgerRecord | string {
   }
 }
 
+function checkSendText(text: unknown): string | null {
+  if (typeof text !== 'string' || text.trim() === '') {
+    return 'message must be a non-empty string'
+  }
+  if (text.includes('\0')) return 'message contains NUL'
+  if (Buffer.byteLength(text, 'utf8') > SEND_TEXT_MAX_BYTES) {
+    return `message longer than ${SEND_TEXT_MAX_BYTES} bytes`
+  }
+  return null
+}
+
+function parseSendRecord(value: Record<string, unknown>): SendRecord | string {
+  const keys = Object.keys(value)
+  if (
+    keys.length !== 4 ||
+    !['v', 'at', 'taskId', 'send'].every(key => keys.includes(key))
+  ) {
+    return 'unexpected field set'
+  }
+  if (value.v !== LEDGER_VERSION) return 'unsupported version'
+  if (
+    typeof value.at !== 'number' ||
+    !Number.isSafeInteger(value.at) ||
+    value.at < 0
+  ) {
+    return 'bad timestamp'
+  }
+  const taskId = value.taskId
+  if (!isTaskId(taskId)) return 'bad task id'
+  const send = value.send
+  if (!isPlainObject(send)) return 'bad message'
+  const sendKeys = Object.keys(send)
+  if (
+    sendKeys.length !== 2 ||
+    !sendKeys.includes('seq') ||
+    !sendKeys.includes('text')
+  ) {
+    return 'bad message'
+  }
+  if (
+    typeof send.seq !== 'number' ||
+    !Number.isSafeInteger(send.seq) ||
+    send.seq < 1
+  ) {
+    return 'bad message number'
+  }
+  const problem = checkSendText(send.text)
+  if (problem !== null || typeof send.text !== 'string') {
+    return problem ?? 'bad message'
+  }
+  return {
+    v: LEDGER_VERSION,
+    at: value.at,
+    taskId,
+    send: { seq: send.seq, text: send.text },
+  }
+}
+
+/**
+ * The message after `record`, given the tasks and the messages so far. Pure;
+ * throws {@link HandoffLedgerError} for an unknown task, a task that can no
+ * longer hear it, or a number out of sequence.
+ */
+function admitSend(
+  tasks: ReadonlyMap<string, HandoffTask>,
+  sends: ReadonlyMap<string, readonly HandoffSend[]>,
+  record: SendRecord,
+): HandoffSend {
+  const task = tasks.get(record.taskId)
+  if (task === undefined) {
+    throw new HandoffLedgerError(
+      'unknown_task',
+      `task ${record.taskId} was never accepted`,
+    )
+  }
+  if (!SENDABLE_STATES.has(task.state)) {
+    throw new HandoffLedgerError(
+      'illegal_transition',
+      `task ${record.taskId} is ${task.state} and takes no more messages`,
+    )
+  }
+  const expected = (sends.get(record.taskId)?.length ?? 0) + 1
+  if (record.send.seq !== expected) {
+    throw new HandoffLedgerError(
+      'illegal_transition',
+      `task ${record.taskId}: message ${record.send.seq} where ${expected} was next`,
+    )
+  }
+  return {
+    taskId: record.taskId,
+    seq: record.send.seq,
+    at: record.at,
+    text: record.send.text,
+  }
+}
+
 // ─── State machine ───────────────────────────────────────────────────
 
 /**
@@ -265,7 +416,7 @@ function parseRecord(line: string): LedgerRecord | string {
  */
 function advance(
   tasks: ReadonlyMap<string, HandoffTask>,
-  record: LedgerRecord,
+  record: TransitionRecord,
 ): HandoffTask {
   const current = tasks.get(record.taskId)
   if (record.state === 'accepted') {
@@ -338,6 +489,7 @@ export function replayLedger(content: Buffer | string): LedgerReplay {
       ? []
       : bytes.toString('utf8', 0, validBytes - 1).split('\n')
   const tasks = new Map<string, HandoffTask>()
+  const sends = new Map<string, HandoffSend[]>()
   for (const [index, line] of lines.entries()) {
     if (line.trim() === '') continue
     const record = parseRecord(line)
@@ -345,7 +497,12 @@ export function replayLedger(content: Buffer | string): LedgerReplay {
       throw new HandoffLedgerError('corrupt', record, index + 1)
     }
     try {
-      tasks.set(record.taskId, advance(tasks, record))
+      if ('send' in record) {
+        const send = admitSend(tasks, sends, record)
+        sends.set(record.taskId, [...(sends.get(record.taskId) ?? []), send])
+      } else {
+        tasks.set(record.taskId, advance(tasks, record))
+      }
     } catch (error) {
       if (!(error instanceof HandoffLedgerError)) throw error
       throw new HandoffLedgerError('corrupt', error.message, index + 1)
@@ -355,7 +512,7 @@ export function replayLedger(content: Buffer | string): LedgerReplay {
     validBytes < bytes.length
       ? { line: lines.length + 1, bytes: bytes.length - validBytes }
       : null
-  return { tasks, tornTail, validBytes }
+  return { tasks, sends, tornTail, validBytes }
 }
 
 // ─── File-backed ledger ──────────────────────────────────────────────
@@ -370,6 +527,8 @@ export class HandoffLedger {
   readonly tornTail: TornTail | null
   readonly #now: () => number
   readonly #tasks: Map<string, HandoffTask>
+  readonly #sends: Map<string, readonly HandoffSend[]>
+  readonly #lock: ExclusiveLock
   /** Bytes to keep before the first append; `null` once handled. */
   #truncateTo: number | null
   #fd: number | null = null
@@ -378,30 +537,53 @@ export class HandoffLedger {
     path: string,
     replay: LedgerReplay,
     options: HandoffLedgerOptions,
+    lock: ExclusiveLock,
   ) {
     this.path = path
     this.tornTail = replay.tornTail
     this.#now = options.now ?? Date.now
     this.#tasks = new Map(replay.tasks)
+    this.#sends = new Map(replay.sends)
+    this.#lock = lock
     this.#truncateTo = replay.tornTail === null ? null : replay.validBytes
   }
 
   /**
-   * Replay the ledger at `path` (a missing file is an empty ledger). Throws
-   * {@link HandoffLedgerError} `corrupt` rather than open a damaged one.
+   * Take the ledger's lock (`<path>.lock`) and replay the ledger at `path` (a
+   * missing file is an empty ledger). Throws {@link HandoffLedgerError}
+   * `locked` while another live process holds it, and `corrupt` rather than
+   * open a damaged one — releasing the lock again in that case. Call
+   * {@link close} to give the lock back.
    */
   static open(path: string, options: HandoffLedgerOptions = {}): HandoffLedger {
     if (path.trim() === '') {
       throw new HandoffLedgerError('invalid_input', 'ledger path is empty')
     }
-    let content: Buffer
+    let lock: ExclusiveLock
     try {
-      content = readFileSync(path)
+      lock = acquireExclusiveLock(`${path}.lock`)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      content = Buffer.alloc(0)
+      if (error instanceof LockHeldError) {
+        throw new HandoffLedgerError(
+          'locked',
+          `ledger ${path} is in use: ${error.message}`,
+        )
+      }
+      throw error
     }
-    return new HandoffLedger(path, replayLedger(content), options)
+    try {
+      let content: Buffer
+      try {
+        content = readFileSync(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        content = Buffer.alloc(0)
+      }
+      return new HandoffLedger(path, replayLedger(content), options, lock)
+    } catch (error) {
+      lock.release()
+      throw error
+    }
   }
 
   get(taskId: string): HandoffTask | undefined {
@@ -411,6 +593,11 @@ export class HandoffLedger {
   /** Every task, in acceptance order. */
   list(): readonly HandoffTask[] {
     return [...this.#tasks.values()]
+  }
+
+  /** Messages for the cloud side kept for `taskId`, in order. */
+  sends(taskId: string): readonly HandoffSend[] {
+    return this.#sends.get(taskId) ?? []
   }
 
   /** The task currently holding `node`, if any. */
@@ -504,16 +691,44 @@ export class HandoffLedger {
     })
   }
 
+  /**
+   * Keep one message for the cloud side. Only while the task can still hear
+   * it (`accepted`, `dispatched`, `running`); the state does not change.
+   */
+  queueSend(taskId: string, text: string): HandoffSend {
+    const problem = checkSendText(text)
+    if (problem !== null) throw new HandoffLedgerError('invalid_input', problem)
+    const record: SendRecord = {
+      v: LEDGER_VERSION,
+      at: this.#now(),
+      taskId,
+      send: { seq: this.sends(taskId).length + 1, text },
+    }
+    const send = admitSend(this.#tasks, this.#sends, record)
+    this.#append(record)
+    this.#sends.set(taskId, [...this.sends(taskId), send])
+    return send
+  }
+
+  /** Close the file and give the lock back. Idempotent. */
   close(): void {
     if (this.#fd !== null) {
       closeSync(this.#fd)
       this.#fd = null
     }
+    this.#lock.release()
   }
 
   /** Validate, append + fsync, then apply. */
-  #record(record: LedgerRecord): HandoffTask {
+  #record(record: TransitionRecord): HandoffTask {
     const next = advance(this.#tasks, record)
+    this.#append(record)
+    this.#tasks.set(record.taskId, next)
+    return next
+  }
+
+  /** Append one line and fsync it; a failed write is taken back. */
+  #append(record: LedgerRecord): void {
     const fd = this.#handle()
     const size = fstatSync(fd).size
     try {
@@ -528,8 +743,6 @@ export class HandoffLedger {
       } catch {}
       throw error
     }
-    this.#tasks.set(record.taskId, next)
-    return next
   }
 
   #handle(): number {
