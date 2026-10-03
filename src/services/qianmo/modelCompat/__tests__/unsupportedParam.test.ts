@@ -178,3 +178,59 @@ describe('chat lane: prompt_cache_key fallback behaves as before', () => {
     expect('prompt_cache_key' in requests[1]!.body).toBe(false)
   })
 })
+
+describe('chat lane: a refused temperature is dropped once (hermes #12c)', () => {
+  const refusal = {
+    status: 400,
+    body: {
+      error: {
+        message:
+          "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.",
+        type: 'invalid_request_error',
+        param: 'temperature',
+        code: 'unsupported_value',
+      },
+    },
+  }
+
+  test('side query to a model samplingParams.ts does not know', async () => {
+    const requests = await captureOpenAIRequests({
+      model: 'vendor-reasoner-x',
+      baseURL: 'https://gateway.example/v1',
+      env: { OPENAI_WIRE_API: 'chat' },
+      temperatureOverride: 0,
+      failFirst: [refusal],
+    })
+    expect(requests.map(r => r.body.temperature)).toEqual([0, undefined])
+    expect('temperature' in requests[1]!.body).toBe(false)
+  })
+
+  test('both optional fields refused in turn: two re-sends, then the answer', async () => {
+    const requests = await captureOpenAIRequests({
+      model: 'vendor-reasoner-x',
+      baseURL: 'https://gateway.example/v1',
+      env: { OPENAI_WIRE_API: 'chat' },
+      temperatureOverride: 0,
+      failFirst: [
+        {
+          status: 400,
+          body: { error: { message: 'Unknown parameter: prompt_cache_key' } },
+        },
+        refusal,
+      ],
+    })
+    expect(requests).toHaveLength(3)
+    expect('prompt_cache_key' in requests[2]!.body).toBe(false)
+    expect('temperature' in requests[2]!.body).toBe(false)
+  })
+
+  test('a request without temperature is not re-sent for that wording', async () => {
+    const requests = await captureOpenAIRequests({
+      model: 'vendor-reasoner-x',
+      baseURL: 'https://gateway.example/v1',
+      env: { OPENAI_WIRE_API: 'chat', OPENAI_PROMPT_CACHE_KEY: '0' },
+      failFirst: [refusal],
+    })
+    expect(requests).toHaveLength(1)
+  })
+})

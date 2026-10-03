@@ -113,3 +113,14 @@ export async function sendDroppingRejectedParameters<
     }
   }
 }
+
+/**
+ * `temperature` refused by an endpoint `samplingParams.ts` did not foresee
+ * (hermes `auxiliary_client.py:9459-9465`): dropped and re-sent once. Not
+ * latched — hermes does not remember it either, and the next request may be
+ * to a model that takes it.
+ */
+export const TEMPERATURE_DROPPABLE: DroppableParameter = {
+  key: 'temperature',
+  isRejection: error => isUnsupportedParameterError(error, 'temperature'),
+}

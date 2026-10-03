@@ -19,7 +19,10 @@ import type {
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
-import { sendDroppingRejectedParameters } from 'src/services/qianmo/modelCompat/unsupportedParam.js'
+import {
+  sendDroppingRejectedParameters,
+  TEMPERATURE_DROPPABLE,
+} from 'src/services/qianmo/modelCompat/unsupportedParam.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -195,6 +198,7 @@ async function createChatStreamWithCacheKeyFallback(params: {
           )
         },
       },
+      TEMPERATURE_DROPPABLE,
     ],
   })
 }
