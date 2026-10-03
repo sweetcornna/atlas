@@ -334,7 +334,31 @@ export interface ChatTurn {
    * `code`——那一格是失败时的协议错误码，而重发既不是失败也不是错误码。
    */
   readonly redelivered?: true
+  /**
+   * 这一轮是本地命令（P18.20）。操作者那一轮是命令原文；agent 那一轮是命令在
+   * 节点上的输出，**不是模型写的**，页面据此换一种画法。只有拿到 `completed`
+   * 的那一轮带它：超时、失败照旧是一条失败行。
+   */
+  readonly command?: ChatLocalCommand
 }
+
+/**
+ * 对话里能当本地命令发给节点的三条（P18.20，D-9）。
+ *
+ * 控制台按 `^/(autocompact|compact|context)(\s|$)` 认出它们，原文不改，信封
+ * 的 payload 另带 `command: { name }`。节点只在这条是控制台签的、且它被告知
+ * 这个签名名就是它的控制台（`qm resident --local-commands-from`）时把原文交给
+ * 会话当命令跑；其余情况照旧当一句话。节点那一侧的同一张表是
+ * `src/services/acp/agent/localCommands.ts` 的 `ACP_LOCAL_COMMANDS`，两边有
+ * 用例对着。
+ */
+export const CHAT_LOCAL_COMMANDS = [
+  'autocompact',
+  'compact',
+  'context',
+] as const
+
+export type ChatLocalCommand = (typeof CHAT_LOCAL_COMMANDS)[number]
 
 /** 一条会话的抬头。列表只需要这些，不需要把转录整篇读出来。 */
 export interface ChatSession {
@@ -358,6 +382,8 @@ export interface ChatTranscript {
 export interface ChatSendInput {
   readonly sessionId: string
   readonly text: string
+  /** 这句是哪条本地命令；路由层认出来、查过角色之后才给。 */
+  readonly command?: ChatLocalCommand
 }
 
 /**
@@ -633,6 +659,10 @@ export const CONSOLE_ACTIONS = [
   'server.note.set',
   'chat.session.open',
   'chat.message.send',
+  /** 本地命令（P18.20）：取代那一句的 `chat.message.send`，target 是会话 id。 */
+  'chat.command.autocompact',
+  'chat.command.compact',
+  'chat.command.context',
   /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
   'chat.transcript.open',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
