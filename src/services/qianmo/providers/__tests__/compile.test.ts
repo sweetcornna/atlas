@@ -450,7 +450,8 @@ describe('§3.4 effort table, cell by cell', () => {
     expect(out.opus).toEqual({ effort: 'high', contextTokens: 1_000_000 })
     expect(out.sonnet).toEqual({ effort: 'high', contextTokens: 1_000_000 })
     expect(out.fable).toEqual({ effort: 'high', contextTokens: 1_000_000 })
-    expect(out.haiku).toEqual({ effort: 'high', contextTokens: undefined })
+    // D-8: a model without contextTokens gets the 200 000 default.
+    expect(out.haiku).toEqual({ effort: 'high', contextTokens: 200_000 })
   })
 
   test('no lower level → refused, never raised', () => {
@@ -519,7 +520,7 @@ describe('§3.4 effort table, cell by cell', () => {
         ],
       }),
     ).patch.modelSettings
-    expect(out.default).toBeUndefined()
+    expect(out.default).toEqual({ contextTokens: 200_000 })
     expect(out.haiku?.effort).toBe('medium')
   })
 
@@ -605,11 +606,51 @@ describe('keys', () => {
   })
 })
 
+describe('D-8: the context window defaults to 200 000', () => {
+  test('a profile that names no contextTokens compiles 200 000 into every owned slot and default', () => {
+    const settings = compiled(
+      wireProfile({
+        models: [
+          model({ effort: { send: 'auto' }, capabilities: { mode: 'family' } }),
+          model({
+            id: 'vendor-model-flash',
+            role: 'fast',
+            tiers: ['haiku'],
+            effort: { send: 'auto' },
+            capabilities: { mode: 'family' },
+          }),
+        ],
+      }),
+    ).patch.modelSettings
+    for (const slot of ['default', 'opus', 'sonnet', 'fable', 'haiku']) {
+      expect(settings[slot as keyof typeof settings]).toEqual({
+        contextTokens: 200_000,
+      })
+    }
+  })
+
+  test('a model that names contextTokens keeps it (the hub puts the node override here)', () => {
+    const settings = compiled(
+      wireProfile({
+        models: [
+          model({ contextTokens: 400_000 }),
+          model({ id: 'vendor-model-flash', role: 'fast', tiers: ['haiku'] }),
+        ],
+      }),
+    ).patch.modelSettings
+    expect(settings.default?.contextTokens).toBe(400_000)
+    expect(settings.opus?.contextTokens).toBe(400_000)
+    // The fast model named nothing: the default, not the main model's value.
+    expect(settings.haiku?.contextTokens).toBe(200_000)
+  })
+})
+
 describe('single-key compile is locked (multi-key schema, P18.18)', () => {
-  // Exactly what a one-key profile compiled to before the key list existed.
-  // Deleted keys are absent from the JSON (undefined), and checked separately.
+  // Exactly what a one-key profile compiled to before the key list existed,
+  // plus D-8's default window in every owned slot (P18.6). Deleted keys are
+  // absent from the JSON (undefined), and checked separately.
   const GOLDEN =
-    '{"patch":{"modelType":"anthropic","env":{"ANTHROPIC_BASE_URL":"https://api.vendor.example/anthropic","ANTHROPIC_AUTH_TOKEN":"sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc","ANTHROPIC_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_HAIKU_MODEL":"vendor-model-flash","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_SONNET_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_OPUS_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_FABLE_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1","CLAUDE_CODE_ALWAYS_ENABLE_EFFORT":"1"},"modelSettings":{"default":{"effort":"max"},"haiku":{"effort":"max"},"sonnet":{"effort":"max"},"opus":{"effort":"max"},"fable":{"effort":"max"}}},"route":"direct","effectiveLane":"anthropic","keyId":"k1","secretEnvKey":"ANTHROPIC_AUTH_TOKEN","compat":{"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1","CLAUDE_CODE_ALWAYS_ENABLE_EFFORT":"1"}}'
+    '{"patch":{"modelType":"anthropic","env":{"ANTHROPIC_BASE_URL":"https://api.vendor.example/anthropic","ANTHROPIC_AUTH_TOKEN":"sk-test-canary-7Hq2Zp9LmV4xR8sT1wYc","ANTHROPIC_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_HAIKU_MODEL":"vendor-model-flash","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_SONNET_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_OPUS_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","ANTHROPIC_DEFAULT_FABLE_MODEL":"vendor-model-pro","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES":"effort,max_effort,thinking","CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1","CLAUDE_CODE_ALWAYS_ENABLE_EFFORT":"1"},"modelSettings":{"default":{"effort":"max","contextTokens":200000},"haiku":{"effort":"max","contextTokens":200000},"sonnet":{"effort":"max","contextTokens":200000},"opus":{"effort":"max","contextTokens":200000},"fable":{"effort":"max","contextTokens":200000}}},"route":"direct","effectiveLane":"anthropic","keyId":"k1","secretEnvKey":"ANTHROPIC_AUTH_TOKEN","compat":{"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"1","CLAUDE_CODE_ALWAYS_ENABLE_EFFORT":"1"}}'
 
   function deletedKeys(profile: WireProfile): string[] {
     return Object.entries(compiled(profile).patch.env)
