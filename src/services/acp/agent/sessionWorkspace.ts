@@ -78,8 +78,9 @@ export function projectDirForSessionCwd(cwd: string): string {
 }
 
 /**
- * `canonicalizePath`, synchronously: callers pin the project dir in the same
- * tick they activate the session (see `activateAcpSessionWorkspace`).
+ * `canonicalizePath`, synchronously, so `projectDirForSessionCwd` keeps its
+ * signature and the base call sites in `createSessionMethod.ts` and
+ * `sessionLifecycle.ts` stay as they are.
  */
 function canonicalSessionCwd(cwd: string): string {
   try {
@@ -95,9 +96,13 @@ function canonicalSessionCwd(cwd: string): string {
  * The canonical key first — where {@link projectDirForSessionCwd} writes, and
  * the base's own lookup, worktree fallback included. Then, only when the cwd
  * as given differs from its canonical form, under the cwd as given: that is
- * where builds before this fix wrote a session opened through a symlink, and
- * where its later turns kept being appended, so the whole conversation is
- * there.
+ * where builds before this fix wrote a session opened through a symlink.
+ *
+ * What such a file gives back is the conversation since its last resume, not
+ * all of it. Each resume under an older build found nothing, started empty,
+ * and appended its turns to the same file as a new chain (the first message
+ * of a turn with no history has no parent); loading follows the newest chain
+ * only. That is the context the last older process was working with.
  */
 export async function resolveAcpSessionFile(
   sessionId: string,
