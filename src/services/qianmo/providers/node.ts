@@ -47,7 +47,13 @@
  *      already names this `requestId`: drop the intent.
  * Anything else is a third party's edit → `conflict`.
  *
- * `readProviderState()` is §2.4 without `effective`.
+ * `readProviderState()` is §2.4 without `effective`;
+ * `computeEffectiveProviderState()` (re-exported from ./effective.js) MUTATES
+ * process.env and must run in its own short-lived process, spawned with the
+ * provider keys stripped from its env exactly as the ACP child's are
+ * (`inheritedProviderKeyNames`). `{ model }` evaluates a model the session
+ * switched to instead of the one a fresh session starts with. See
+ * `__tests__/fixtures/effective-state.runner.ts` for the spawn shape.
  */
 
 import {
@@ -101,6 +107,7 @@ import {
   SECRET_ENV_KEYS,
 } from './whitelist.js'
 
+export { computeEffectiveProviderState } from './effective.js'
 export { inheritedProviderKeyNames } from './whitelist.js'
 
 /** What this build can do. Flipped by the packages that add each ability. */
