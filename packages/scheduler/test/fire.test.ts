@@ -64,7 +64,7 @@ function makeStore(): SchedulerStore {
 
 function runner(options: {
   readonly store?: SchedulerStore
-  readonly dispatch: (input: FireDispatch) => Promise<void>
+  readonly dispatch: (input: FireDispatch) => Promise<void | 'skipped'>
   readonly paused?: () => boolean
   readonly onError?: (error: unknown) => void
   readonly backoff?: BackoffOptions
@@ -263,6 +263,46 @@ describe('failure backoff holds a failing job off the grid', () => {
     failing = false
     await tick(scheduler, ANCHOR + 16 * MINUTE)
     expect(dispatcher.seen.map(fire => fire.attempt)).toEqual([1, 2, 3])
+  })
+
+  test('a dispatch that answers skipped retires the instant without success or penalty', async () => {
+    let answer: 'skipped' | 'fail' | 'ok' = 'fail'
+    const seen: FireDispatch[] = []
+    const store = makeStore()
+    const scheduler = runner({
+      store,
+      dispatch: async input => {
+        seen.push(input)
+        if (answer === 'fail') throw new Error('down')
+        return answer === 'skipped' ? 'skipped' : undefined
+      },
+      backoff: SLOW_BACKOFF,
+      onError: () => undefined,
+    })
+    await tick(scheduler, ANCHOR + MINUTE)
+    expect(store.stateOf('watch-ci').consecutiveFailures).toBe(1)
+
+    // Penalty served; the host now declines the instant (the target is paused).
+    answer = 'skipped'
+    await tick(scheduler, ANCHOR + 6 * MINUTE)
+    expect(seen).toHaveLength(2)
+    const skipped = store.stateOf('watch-ci')
+    expect(skipped.lastOutcome).toBe('skipped')
+    expect(skipped.lastFiredAt).toBe(ANCHOR + 6 * MINUTE)
+    // Neither reset (it was not a success) nor advanced (it was not a failure).
+    expect(skipped.consecutiveFailures).toBe(1)
+
+    // The instant is not offered again, and the penalty the earlier failure
+    // earned still stands, measured from this outcome: the skip did not
+    // launder it into a clean slate.
+    await tick(scheduler, ANCHOR + 7 * MINUTE)
+    expect(seen).toHaveLength(2)
+    expect(scheduler.status().jobs[0]?.nextFireAt).toBe(ANCHOR + 11 * MINUTE)
+    answer = 'ok'
+    await tick(scheduler, ANCHOR + 11 * MINUTE)
+    expect(seen).toHaveLength(3)
+    expect(store.stateOf('watch-ci').lastOutcome).toBe('completed')
+    expect(store.stateOf('watch-ci').consecutiveFailures).toBe(0)
   })
 
   test('a dispatch that throws never escapes runDue', async () => {

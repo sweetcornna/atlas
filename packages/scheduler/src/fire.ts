@@ -68,8 +68,17 @@ export interface FireDispatch {
  * result object: a dispatch that fails in a way the port did not anticipate
  * throws anyway, and two ways to say "failed" is one way too many for the
  * branch that decides whether to keep retrying.
+ *
+ * The one other answer is `'skipped'`: the host looked and decided this
+ * instant must not go out at all — `qm watch` finds the target paused or
+ * retired (`tenancy-m1.md` §3.6). Not a success, so the instant is not shown
+ * as `completed`; not a failure, so no backoff piles up behind a deliberate
+ * pause. The instant is retired as `skipped` and the failure counter is left
+ * where it was.
  */
-export type SchedulerDispatch = (input: FireDispatch) => Promise<void>
+export type SchedulerDispatch = (
+  input: FireDispatch,
+) => Promise<void | 'skipped'>
 
 export interface SchedulerJobStatus {
   readonly jobId: string
@@ -324,12 +333,13 @@ export class SchedulerRunner {
     const attempt = state.consecutiveFailures + 1
     let outcome: FireOutcome = 'completed'
     try {
-      await this.#options.dispatch({
+      const answer = await this.#options.dispatch({
         job,
         fireAtMs: plan.fireAtMs,
         dedupKey: dedupKeyOf(job.id, plan.fireAtMs),
         attempt,
       })
+      if (answer === 'skipped') outcome = 'skipped'
     } catch (error) {
       outcome = 'failed'
       this.#options.onError?.(error)
