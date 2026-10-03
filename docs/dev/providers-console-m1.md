@@ -19,7 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12 |
+| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20 |
 | **v1.2** | **2026-10-03** | **D-8：每个 agent 的上下文窗口默认 200 000 token，控制台可改；D-9：自动压缩阈值可用 `/autocompact` 等方式设置。**档案里模型的 `contextTokens` 缺省按 200 000 编译；节点指派可单独覆盖；仍编译到同一个 `modelSettings.<slot>.contextTokens`，不新开上下文覆盖。P18.6、P18.9 各加 4 人时。**D-9：自动压缩阈值可用 `/autocompact` 等方式设置**，新增 P18.20（ACP 会话里的本地命令，16–24 人时），核心合计改为 680–1002，全部合计改为 1030–1512。同步改了 §0.1、§3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9、§9.4 |
 | **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
@@ -755,7 +755,7 @@ DeepSeek 的空推理回放到底该用 `""` 还是 `" "`，两边的注释说�
 
 - 9 次零命中里，按会话数算有 4 次是冷启动，另外 5 次发生在会话中途。
 - 以下是估算，按各节点的平均调用大小算：9 次零命中约占全部 656k 未命中 token 中的 593k，中途那 5 次约占 369k。如果这 5 次都正常续接（续接比例按 0.9 算），合计命中率约为 0.87。
-- 三个节点的 cache_read 合计都是 128 的倍数。逐次的值是不是 128 的倍数，没有查（未实测）。这一点决定 luna 按哪套语义计缓存，见 5.11.3。
+- 三个节点的 cache_read 逐次都是 128 的倍数，实际全是 512 的倍数（主 agent 2026-10-03T17:10Z 补采）。怎么解读见 5.11.3。
 - cache_write 全部为 0。Responses 线只读 `input_tokens_details.cache_write_tokens` 这一个字段（`responsesAdapter.ts:679-707`），端点没有报这个字段。
 
 #### 5.11.2 实测：在录制桩上逐字节比较
@@ -815,9 +815,30 @@ restart 场景有两处变化：
    - 其余几条 key 不变，分叉点之前的工具表加 `instructions` 还能命中。这部分约 98 KB，按 4 字节一个 token 估算约 25k token。
    - key 变化时，如果缓存按 key 路由，通常整段都不命中（见 5.11.3）。
 
-#### 5.11.3 那 5 次中途零命中能解释到哪一步
+#### 5.11.3 零命中的逐次归因
 
-**未实测。**手上没有逐次调用的时间、间隔和请求体，下表只是按机制排序。每一次的原因要用 5.11.8 的归因脚本逐次确认。
+主 agent 2026-10-03T17:10Z 按会话逐次补采（只读；原始数据在私有证据目录 `m1-work/p18-19/facts-2026-10-03.txt`）。窗口是切到 luna 之后到 17:10Z，比 5.11.1 的基线晚一个小时收口，所以零命中是 12 次，不是 9 次。
+
+| 归因 | 次数 | 说明 |
+|---|---|---|
+| 冷启动（会话在窗口内的第一次调用） | 4 | — |
+| 子进程替换后，续上的会话首轮 | 7 | 重启时刻：09:57Z 三个节点换 v2 env（开始发 effort）；beta-5 13:22:38Z、beta-1 13:26:24Z、beta-4 14:28:27Z（收口部署） |
+| 查不出原因 | 1 | beta-1 15:00:18Z：距上次调用 20 min，期间没有重启；下一次（15:20Z）又正常续上 |
+
+另外三个事实：
+
+- **保留期**：beta-4 每 60 min 调用一次，11:50Z、12:50Z、13:50Z 都几乎整段命中；beta-5、beta-1 隔 20–30 min 也全部命中。网关或上游对 `gpt-6-luna` 的保留至少 60 min，空闲过期不是现网问题。
+- **粒度**：cache_read 逐次都是 128 的倍数（实际是 512 的倍数）。按 5.11.9 的官网页，`cached_tokens` 按 128 取整是 GPT-5.6 之前的说法；但网关也可能自己取整，所以「luna 按 GPT-5.6 之前的语义计缓存」只是推断。
+- **cwd**：resident 和 ACP 子进程的进程 cwd 都是部署树，不是 git 仓库。会话 cwd 是 agent 工作区，由 `beta-up.sh` 的 `seed_workspace` 建成真 git 仓库（实现时查到的，见 CH-4）。
+
+**这 7 次「替换后首轮」全部整段为零，要单独看。**
+
+- 同一个节点上新建的会话，首轮就能命中 19 968 token（例如 beta-5 的 bdd3f765 在 10:11:16Z 的第一次调用）：这是工具表加 `instructions` 按前缀 key 跨会话共享的部分。录制桩上，同一构建的子进程替换只在 `input[0]` 分叉，key 和分叉点之前的工具表、`instructions` 都不变（5.11.2 的 restart、restart-wait）。所以同一构建的替换应当至少命中这 2 万 token 左右，而不是零。
+- 现网 7 次全是零，而且都落在换 env 或收口部署的重启上。最可能的解释是新构建改了工具表或系统提示的文字（工具表排在最前面，一个字节不同就整段对不上），09:57Z 那次还叠加了 effort 改动。**未实测**：没有对比部署前后的请求体。
+- 结论：**部署新构建、换 effort 之后的首轮整段重读是预期的，CH-1 ~ CH-4 都挡不住。**P18.19 挡的是同一构建、同一模型和 effort 下的替换和切换：P18.3 热切换回收子进程（X-4）、崩溃后重拉、值守重启，以及多会话子进程里的会话切换。5.11.8 的 G-2 据此只统计同构建的替换。
+- 所以上面这 7 次，如果都是新构建，代码能挽回的是 0 次；P18.19 的现网收益要在今后的同构建替换和会话切换上看。
+
+下面是设计阶段按机制排的候选原因，留作读归因结果时的对照：
 
 | 候选原因 | 机制 | 会不会整段为零 | 代码能不能修 |
 |---|---|---|---|
@@ -828,14 +849,7 @@ restart 场景有两处变化：
 | 子进程换代后续上（实测：restart） | `input[0]` 分叉，key 不变 | 不会，只丢分叉点之后的部分。但对一个长会话来说，分叉点之后几乎就是全部对话历史 | 能：CH-1、CH-2 |
 | 切换会话后 `CLAUDE.md`、`MEMORY.md` 或日期变了（实测：interleave-claudemd） | 同上 | 不会 | 能：CH-1 |
 
-下面四个事实要由主 agent 补上，都不需要真 key：
-
-1. 用 `cache-zero-classify.py` 按会话逐次归因。`--restart` 要填 09:57Z，以及这段时间里所有的重启时刻。
-2. 逐次看 cache_read 是不是 128 的倍数：
-   - 如果都是，说明 luna 按 GPT-5.6 之前的语义计缓存：key 决定路由，`prompt_cache_retention` 有意义。
-   - 如果不是，说明按 GPT-5.6 及以后的语义：路由由 OpenAI 自动处理，key 只影响计账和诊断。
-3. 查节点上 resident 和 ACP 子进程的 cwd（`readlink /proc/<pid>/cwd`）：是不是 git 仓库，`git status --short` 会不会变。
-4. 问负责人：`api.cornna.xyz` 给 `gpt-6-luna` 配了几个上游渠道，有没有会话粘性。
+设计阶段请主 agent 补的四个事实，前三个已经补齐（见本节开头）。第 4 个还没有答案：`api.cornna.xyz` 给 `gpt-6-luna` 配了几个上游渠道、有没有会话粘性，要问负责人。15:00:18Z 那一次查不出原因的零命中，可能就是它造成的。
 
 #### 5.11.4 机制对照表
 
@@ -845,8 +859,8 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 |---|---|---|---|---|---|---|
 | Anthropic `cache_control` 断点 | 「system_and_3」：系统提示 1 个断点，加上最后 3 条非系统消息上滚动的 3 个，共 4 个（`prompt_caching.py:434-479`）。TTL 默认 5m，可以配成 1h（`:115`、`agent_init.py:931-955`）。阿里系路由夹回 5m（`prompt_caching.py:123-167`）。webhook 和 cron 的稳定前缀登记后单独打断点（`prompt_cache_boundary.py`） | 基座原样：系统提示按动态边界分块打标（`claude.ts:3493`）；消息只在最后一条打 1 个（`skipCacheWrite` 时打在倒数第二条，`:3342`）；工具不打标。1h 只给订阅用户、ant 或设了 `CLAUDE_CODE_PROMPT_CACHING_1H=1` 的用户，还要过 allowlist（`:418`） | 断点个数不同，但阡陌用的是上游调过的方案。舰队不走这条线，没有测到差距 | 不改代码。走 Anthropic 线的常驻节点如果空闲间隔长，可以设 `CLAUDE_CODE_PROMPT_CACHING_1H=1`。写入单价是 2 倍，收益未实测 | — | — |
 | OpenAI `prompt_cache_key` | `pck_` + sha256(范围 + instructions + 排序后的工具)[:24]（`codex.py:143`）。范围是压缩谱系的根会话 id（`codex.py:19`、`prompt_cache_scope.py:1-36`）。chat 线只对 `api.openai.com` 或声明支持的端点发送（`chat_completions.py:44-83`） | 通用路由用前缀 key：`qm:p:` + sha256(模型 + 全部 system/developer 文本 + 工具名)[:16]，不含会话 id（`openaiShared.ts:119-140`、`:332-354`）。ChatGPT 路由用会话 key `qm:<sessionId>`（`openai/index.ts:425-435`）。默认对所有端点都发；被拒后去掉这个字段重发，并在进程内锁存（`openaiShared.ts:249-268`） | key 每个请求都按当前的 `instructions` 重新算，会话中途 `instructions` 一变 key 就变（实测）。hermes 的 key 也随内容变化，但它的 `instructions` 在整个会话里不变。另外，阡陌的前缀 key 能跨会话共享，这是 hermes 没有的长处：同前缀新会话的首轮实测命中 98%，用会话 key 时是 0%（`openai/index.ts:421`） | CH-3：key 按（会话，模型）在第一次算出后钉住；跨会话仍按前缀共享 | 新增 `src/services/qianmo/promptCache/sessionCacheKey.ts`；`src/services/api/openai/index.ts` 改一处调用 | 是（调用替换） |
-| `store` 与 `previous_response_id` | `store: false`，不用 `previous_response_id`，每次整段重放（`codex.py:517`、`codex_responses_adapter.py:1085`）。assistant 消息条目带原 id 和 phase 重放，注释写明是为了前缀命中（`:574-620`）。工具调用 id 用确定性算法生成（`:257-290`） | `store: false`，整段重放（`responsesAdapter.ts:292`）。推理条目带 `encrypted_content` 和 id 重放（`:157`）。工具 id 用服务端返回的 `call_id`。实测连续三轮的重放逐字节相同。不记录响应 id | 重放没有差距（实测）。不记录响应 id，就用不了官方的缓存诊断 | CH-6 记录响应 id；`previous_response_id` 不做 | `responsesAdapter.ts` | 是 |
-| 保留期 | 只对一张主机表默认发 `prompt_cache_retention: 24h`：`api.meta.ai` 和 Bedrock Mantle（`codex.py:114-124`）。其余不发 | 不发 | 对 Meta 少了一条默认值。luna 接不接受、网关会不会透传，未实测 | CH-5：设了 `OPENAI_PROMPT_CACHE_RETENTION` 才发；`api.meta.ai` 按 hermes 默认发 `24h`；被拒后去掉重发并锁存 | 新增 `promptCache/retention.ts`；`responsesAdapter.ts`；`openai/index.ts` | 是（纯插入） |
+| `store` 与 `previous_response_id` | `store: false`，不用 `previous_response_id`，每次整段重放（`codex.py:517`、`codex_responses_adapter.py:1085`）。assistant 消息条目带原 id 和 phase 重放，注释写明是为了前缀命中（`:574-620`）。工具调用 id 用确定性算法生成（`:257-290`） | `store: false`，整段重放（`responsesAdapter.ts:292`）。推理条目带 `encrypted_content` 和 id 重放（`:157`）。工具 id 用服务端返回的 `call_id`。实测连续三轮的重放逐字节相同。不记录响应 id | 重放没有差距（实测）。不记录响应 id，就用不了官方的缓存诊断 | CH-6 记录响应 id；`previous_response_id` 不做 | 新增 `promptCache/responseRecord.ts`；`responsesAdapter.ts`；`openai/index.ts` | 是 |
+| 保留期 | 只对一张主机表默认发 `prompt_cache_retention: 24h`：`api.meta.ai` 和 Bedrock Mantle（`codex.py:114-124`）。其余不发 | 不发 | 对 Meta 少了一条默认值。luna 接不接受、网关会不会透传，未实测 | CH-5：设了 `OPENAI_PROMPT_CACHE_RETENTION` 才发；`api.meta.ai` 按 hermes 默认发 `24h`；被拒后去掉重发并锁存 | 新增 `promptCache/requestExtras.ts`；`responsesAdapter.ts`；`openai/index.ts` | 是（纯插入） |
 | 粘性路由 | OpenRouter、Nous 在请求体顶层发 `session_id`（`plugins/model-providers/openrouter/__init__.py:115-139`、`nous/__init__.py:30-66`）。xAI 发 `x-grok-conv-id` 头（`codex.py:671`），经 OpenRouter 调 Grok 时也发（`openrouter/__init__.py:221-229`）。这些值都取会话谱系的根 id | 都没有。Grok 线的请求（`grok/index.ts:131`）不带这个头；ChatGPT 路由也不带 `session_id` 头 | xAI、OpenRouter、Nous 的预设没有粘性路由。舰队不用这几家，对现网没有影响 | CH-7：Grok 线加 `x-grok-conv-id: <sessionId>`。OpenRouter 和 Nous 本包不做 | `src/services/api/grok/index.ts` | 是（纯插入） |
 | 辅助调用带会话根 id | 辅助客户端从主运行时拿到 `cache_scope`（`auxiliary_client.py:3382-3425`）。辅助调用的 Responses key 在这个范围内按内容计算（`:1605-1656`）。粘性头取环境里的会话根 id，所以压缩、视觉、标题这些调用也会落在同一台后端 | 副查询在通用路由上用会话 key `qm:<sessionId>`（`sideQuery.ts:628-633`）。压缩默认走 fork，复用主对话的前缀（`tengu_compact_cache_prefix` 默认为 true，`compact.ts:459`），带的是同一个前缀 key。录制桩上的三轮会话没有出现副查询 | 无差距。会话 id 在压缩和续上之后都不变 | 只加回归用例（T-5） | — | — |
 | 系统提示与上下文的稳定 | 系统提示每个会话只建一次，分 stable、context、volatile 三层（`system_prompt.py:1-21`、`:338`）。日期只精确到天（「Conversation started」，`:840`）。建好后存进会话库，续上时原样复用（`conversation_loop.py:734`、`:862`），只有压缩时才重建（`system_prompt.py:894`）。记忆写入不改已经建好的提示（`prompt-assembly.md:251-253`）。用户消息里注入的内容存进 `api_content` 边车，按原样重放（`turn_context.py:54-134`） | 单进程、单会话时稳定（实测）。切换会话时清 memo 重算（`sessionWorkspace.ts:102`、`:105`）。续上时附件丢失，`getUserContext` 重算（`entries.ts:214`）。git 状态读的是进程 cwd（`context.ts:96-106`） | 实测有三处分叉，见 5.11.2 结论第 2–4 条 | CH-1：按会话做快照（内存加 0600 边车文件）。CH-2：节点身份下附件落盘。CH-4：git 状态改读会话 cwd，必须和 CH-1 一起上 | `src/services/acp/agent/sessionWorkspace.ts`；新增 `promptCache/sessionPromptContext.ts`、`promptCache/persistAttachments.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts` | `sessionWorkspace.ts` 是阡陌自有文件；`entries.ts`、`context.ts` 是基座（纯插入） |
@@ -856,13 +870,20 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | 缓存统计 | `normalize_usage` 统一各家的字段：OpenAI 的 `cached_tokens`、DeepSeek 的 `prompt_cache_hit_tokens`、Kimi 的顶层 `cached_tokens`、Anthropic 的两个字段（`usage_pricing.py:1271-1425`） | Responses 线读 `cached_tokens` 和 `cache_write_tokens`（`responsesAdapter.ts:679-707`）。chat 线也读 DeepSeek 的字段和 Kimi 的顶层字段（`packages/@ant/model-provider/src/shared/openaiUsage.ts`），P18.8 #26 会再补。没有逐次归因，现网基线靠脚本 | 字段已经齐了。缺逐次归因和官方诊断 | CH-6；归因脚本 `cache-zero-classify.py`，和基线脚本一起放在运维证据目录 | `responsesAdapter.ts`、`openai/index.ts` | 是 |
 | Qwen 的 list-of-parts | qwen-oauth 插件把字符串内容改成 list-of-parts，并在 system 上打 `cache_control`（`qwen-oauth/__init__.py:20-77`） | chat 线发字符串，不打标 | 百炼的显式缓存触发不了。舰队上没有 Qwen 节点 | 本包不做 | — | — |
 | MiniMax 的 +128 底数 | MiniMax-M3 走 Anthropic 线时，`cache_read_input_tokens` 总是多出 128，`cache_creation` 总是 0，所以不能拿来判断是否命中，要看相邻两次 `input_tokens` 有没有下降（`usage_pricing.py:1399-1415`，只打 debug 日志）。M3 不打 `cache_control`（`agent_runtime_helpers.py:2336`） | 照原数显示 | MiniMax-M3 节点的命中率会被这 128 抬高。舰队上没有 MiniMax 节点 | 本包不改代码。归因脚本遇到 MiniMax 节点时，把 cache_read ≤ 128 当零命中 | — | — |
-| Meta 强制走 Responses | `api.meta.ai` 强制走 Responses，并默认用 `24h` 保留期（`codex.py:124`） | P18.5 #22 已经把 `api.meta.ai` 列进必须走 Responses 的主机表 | 少了保留期这一半 | 并入 CH-5 | `promptCache/retention.ts` | 否 |
+| Meta 强制走 Responses | `api.meta.ai` 强制走 Responses，并默认用 `24h` 保留期（`codex.py:124`） | P18.5 #22 已经把 `api.meta.ai` 列进必须走 Responses 的主机表 | 少了保留期这一半 | 并入 CH-5 | `promptCache/requestExtras.ts` | 否 |
 
 （表里的 `promptCache/` 指 `src/services/qianmo/promptCache/`。hermes 的路径都相对于它的仓库根目录，插件在 `plugins/model-providers/` 下，文档在 `website/docs/` 下。）
 
 #### 5.11.5 改法
 
-按收益从高到低排列。所有新文件都放在 `src/services/qianmo/promptCache/`，带 AGPL 双行头。
+按编号排列。现网收益的排序按 5.11.3 的归因定为 **CH-2 > CH-1 > CH-3 > CH-4**（主 agent 2026-10-03 裁定）；CH-5、CH-6 默认关闭，CH-7 在现网没有收益。所有新文件都放在 `src/services/qianmo/promptCache/`，带 AGPL 双行头。
+
+| 开关 | 默认 | 作用 |
+|---|---|---|
+| `QIANMO_PROMPT_CONTEXT_SNAPSHOT=0` | 开 | 关掉 CH-1：切换和续上时照旧重算，也不写边车文件 |
+| `QIANMO_PERSIST_PROMPT_ATTACHMENTS=0` | 节点身份下开 | 关掉 CH-2：节点身份下也不把附件写进转录 |
+| `OPENAI_PROMPT_CACHE_RETENTION=in_memory\|24h` | 不发（`api.meta.ai` 除外） | CH-5；`0`、`off`、`false`、`no`、`none` 一律关，其他值不发 |
+| `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` | 关 | CH-6 的比较请求；响应 id 不论开关都记 |
 
 **CH-1 按会话保存提示上下文快照**（阡陌自有文件，不改基座）
 
@@ -874,8 +895,9 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
     - `lastEmittedDate`。
   - 然后照今天的做法清空。
   - 如果要进入的会话有快照，再把它的快照放回去。
-  - 每一轮结束时（`runInAcpWorkspaceTurn` 释放锁之前），把当前会话的快照同步写进 `<projectDir>/<sessionId>/prompt-context.json`（0600），同时写入 CH-3 钉住的 key。子进程换代后第一次激活这个会话时，从这个文件读回。
-  - 内存里最多保留 64 个会话的快照，按 LRU 淘汰，淘汰掉的会话回退到读文件。
+  - 每一轮结束时（`runInAcpWorkspaceTurn` 释放锁之前），把当前会话的快照写进 `<projectDir>/<sessionId>/prompt-context.json`（文件 0600、目录 0700，先写临时文件再改名），同时写入 CH-3 钉住的 key。正文和上次一样时不重写。子进程换代后第一次激活这个会话时，从这个文件读回。
+  - 写不写边车，沿用转录的同一套规则（`NODE_ENV=test` 未显式打开、`cleanupPeriodDays` 为 0、会话持久化被关、`CLAUDE_CODE_SKIP_PROMPT_HISTORY`）：不落转录的模式也不落边车。
+  - 内存里最多保留 64 个会话的快照，按 LRU 淘汰，淘汰掉的会话回退到读文件。内存快照和边车都带着建立时的 cwd（按 NFC 比较），同一个会话换了工作区就当作没有快照，重新计算。
 - **为什么**：这就是 hermes 的「每个会话只建一次、原样复用」。实测的 interleave-claudemd、interleave-proccwd、restart-tz 三处分叉，都是重算造成的。
 - **何时刷新**：只在压缩时刷新。基座的 `postCompactCleanup` 已经会清 memo，下一轮重算出的新值会进入快照。
 - **代价**
@@ -892,7 +914,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
   - 续上时，消息列表要和续上前逐字节一致。restart-ant 实测证明：附件落盘，加上转录落盘，就足够了。
   - 读回的路径基座里已经有：`isTranscriptMessage` 认 attachment（`entries.ts:54`），`dropMalformedAttachments` 会过滤坏条目（`conversationRecovery.ts:118`）。
 - **代价**：转录会变大。附件里有 deferred tools 清单、文件片段和记忆片段，权限和转录相同。
-- **依赖**：转录落盘的修复 `de34761a`（分支 `fix/acp-flush-and-cwd`）。没有这个修复，续上后会丢最后一轮，T-3 照样是红的。
+- **依赖**：转录落盘的修复 `de34761a`（分支 `fix/acp-flush-and-cwd`，已随 #170 合入 main，合并提交 `995fcd24`）。没有这个修复，续上后会丢最后一轮，T-3 照样是红的。
 
 **CH-3 key 按会话钉住**（基座改一处调用）
 
@@ -910,13 +932,15 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 - **做什么**：`context.ts:96`、`:102`、`:106` 三处选项对象各插入 `useCwd: true`。
 - **为什么**：今天分支名按会话 cwd 取，状态和最近提交却按进程 cwd 取，两者混在一起；resident 的进程 cwd 一有变化，key 就变。
 - **前提**：**必须和 CH-1 同时合入，或者在它之后合入。**如果只改 CH-4，git 状态会改为读取 agent 自己的工作区，而 agent 每轮都在写文件，这样每次切换会话都会改动 `instructions` 和 key，比今天更糟。
+- **现网会变**（实现时查到）：进程 cwd 是部署树，不是 git 仓库；会话 cwd 是 `seed_workspace` 建的 git 工作区。改之前，分支名取自工作区，状态、最近提交、`user.name` 三条命令在部署树里失败，输出被丢弃，所以 `instructions` 里恒为 `Status: (clean)`、最近提交为空；改之后是工作区的真实状态。会话内由 CH-1 冻结、替换后由边车读回，都不受影响。代价落在新会话之间：工作区状态一变，新会话的 `instructions` 和前缀 key 就和老会话不同，首轮的跨会话共享（现网约 2 万 token，见 5.11.3）会落空。现网新建会话的频度和这部分损失都未实测。主 agent 裁定按正确性修，裁定时依据的「现网不受影响」只核对了进程 cwd。
 
 **CH-5 保留期**（默认关闭；基座纯插入）
 
 - **做什么**
   - 设了 `OPENAI_PROMPT_CACHE_RETENTION`（取值 `in_memory` 或 `24h`）才在 Responses 请求体里发 `prompt_cache_retention`。
   - `api.meta.ai` 不设这个变量也发 `24h`，与 hermes 的默认一致。
-  - 端点回 400，并且错误指向这个字段时：去掉字段重发一次，然后在本进程内锁存。复用 P18.5 #12 的通用剥参数机制，重发发生在 commitment 屏障之前。
+  - 端点回 400，并且错误指向这个字段时：去掉字段重发一次，然后在本进程内锁存。重发发生在被拒的那次 HTTP 请求上，commitment 屏障之前。
+  - 实现与设计的差别：识别复用 P18.5 #12 的函数（`errorMessageTexts`、`isUnsupportedParameterText`，另加 `unsupported value`、`invalid value` 两个标记）；重发不套 `sendDroppingRejectedParameters`，而是走 Responses 线现成的 transform 阶梯，和 `reasoning.summary`、`prompt_cache_key` 的降级在同一处（`fetchResponsesStream` 的 `onError`）。原因：那个函数包在一次发送的外层，套进 Responses 线的 `retryOpenAIRequest` 会变成两层重试预算；transform 阶梯里每种降级各用一次，不占网络重试次数。
   - 只在 Responses 线做，hermes 也只在这条线发。
 - **为什么**：空闲间隔长的会话靠它续命。官网的规则：
   - GPT-5.6 之前的模型支持 `in_memory` 和 `24h`；在两者都支持的模型上，没开 ZDR 的组织默认就是 `24h`。
@@ -928,13 +952,16 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 
 - **做什么**
   1. 把 Responses 的响应 id（`response.created` / `response.completed` 里的 `id`）记在 assistant 消息上，做法和 `_openaiReasoningItems` 相同，随转录一起落盘。
-  2. 设了 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 时，下一次请求带上 `prompt_cache_options.comparison_response_id`，值是上一条 assistant 消息的响应 id。响应里的 `prompt_cache_diagnostics`（`status`、`reason`、`cache_missed_tokens`）记到消息上。端点拒收这个字段时，去掉字段并锁存。
+  2. 设了 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 时，下一次请求带上 `prompt_cache_options.comparison_response_id`，值是上一条 assistant 消息的响应 id。响应里的 `prompt_cache_diagnostics`（`type`、`reason`、`comparison_reusable_tokens`、`cache_missed_tokens`；流式时在 `response.completed` 的 `response` 上）原样记到消息上。端点拒收这个字段时，去掉字段并锁存。
+  3. 续上之后，第一次请求比较的是转录里最后一条 assistant 消息的响应 id，所以子进程替换前后也能比（集成用例实测，见 5.11.12）。
+  4. 据官网诊断页：`comparison_response_id` 只请求诊断，不加载之前的对话，也不改变缓存行为。响应 id 只记在消息上，不会进下一次请求的 `input`（单元用例逐字节核对）。
 - **为什么**：官方诊断能直接给出失配原因，例如 `model_changed`、`prompt_cache_key_changed`、`tools_changed`、`reasoning_effort_changed`、`input_changed`。但诊断只对 GPT-5.6 及以后的受支持模型有效（见官网诊断页），网关会不会透传，未实测。
 
 **CH-7 Grok 线的粘性头**（基座纯插入）
 
 - **做什么**：Grok 线的请求加上 `x-grok-conv-id: <sessionId>`。据 xAI 官网，同一个会话 id 的请求会路由到同一台服务器。
 - **收益**：舰队上没有 Grok 节点，现网收益为零。这一项是为产品功能补齐。
+- **代价**：`check:cycles` 的 total 从 2054 变成 2055（runtime 443 不变）。新模块读会话 id，madge 报出一条只经类型导入闭合的环：`claude.ts` → `grok/index.ts` → `grokConversation.ts` → `bootstrap/state.ts` → …（类型导入）… → `claude.ts`。任何在 Grok 线读会话 id 的实现都会多这一条。CH-7 单独一个提交，连预算一起撤掉就回到原样。
 
 **人时**
 
@@ -966,7 +993,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 **测试放在哪里**
 
 - 单元测试放在 `src/services/qianmo/promptCache/__tests__/`。
-- 真 ACP 子进程加录制桩的集成测试放在 `tests/integration/qianmo-prompt-cache.test.ts`，复用 `requestCapture.ts`，以及 P18.8 合入的 `responsesSSE`。
+- 真 ACP 子进程加录制桩的集成测试放在 `tests/integration/qianmo-prompt-cache.test.ts`，录制桩是 `tests/integration/fixtures/responses-recorder.ts`。T-6、T-7 的请求体半段复用 P18.5 的 `modelCompat/__tests__/support/requestCapture.ts`（真实的 `queryModelOpenAI`）和 P18.8 给它加的 `responsesSSE` 参数。每条用例对应哪个测试、改前改后的结果，见 5.11.12。
 
 **比较方法**：「逐字节前缀」的判法同 5.11.2：
 
@@ -978,13 +1005,13 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | # | 用例 | 今天的状态 | 正向对照 |
 |---|---|---|---|
 | T-1 | 同一 ACP 会话连续三轮（第二轮含一次工具往返）：相邻的主循环请求满足逐字节前缀 | 绿（作为回归守卫） | 往 `instructions` 里注入时间戳就变红 |
-| T-2 | A 三轮 → 改工作区的 `CLAUDE.md`、改记忆目录的 `MEMORY.md`、让进程 cwd 的 git 仓库多一个未跟踪文件、把时钟拨过零点 → B 一轮 → A 第四轮。A 第四轮以 A 第三轮为逐字节前缀，key 不变 | **红**（interleave-claudemd、interleave-proccwd 已实测分叉） | 去掉 CH-1 的恢复调用就变红 |
+| T-2 | A 三轮 → 改工作区的 `CLAUDE.md`、在工作区写一个新文件、让进程 cwd 的 git 仓库多一个未跟踪文件 → B 一轮 → A 第四轮（`MEMORY.md` 和 `CLAUDE.md` 走同一个 `getUserContext` memo，由这一步覆盖；跨日由 T-3 的 TZ 和单元用例覆盖）。A 第四轮以 A 第三轮为逐字节前缀，key 不变 | **红**（interleave-claudemd、interleave-proccwd 已实测分叉） | 去掉 CH-1 的恢复调用就变红 |
 | T-3 | A 三轮，等转录落盘 → 结束子进程 → 新子进程续上 A（TZ 跨日，期间改了 `CLAUDE.md`）→ A 第四轮。A 第四轮以第三轮为逐字节前缀，key 不变 | **红**（restart、restart-tz、restart-wait 已实测分叉） | 分别去掉 CH-1 的边车读回、去掉 CH-2 的判断，各自都会变红 |
-| T-4 | key 的稳定性：①同一会话内恒定，包括 T-2 的切换、T-3 的续上和一次手动压缩之后；②同一工作区、相同前缀的两个新会话，key 相同；③设了 `OPENAI_PROMPT_CACHE_KEY_SCOPE=session` 时，两个会话的 key 不同，且各自恒定；④会话中途 `instructions` 被改动时（用例里直接改分段缓存），key 不变；⑤换模型时 key 变一次，之后恒定 | ①④ 今天是红的 | 去掉 CH-3 的钉住，④就变红 |
+| T-4 | key 的稳定性：①同一会话内恒定，包括 T-2 的切换、T-3 的续上和一次压缩之后（压缩这一步用单元用例：ACP 会话里发 `/compact` 要等 P18.20）；②同一工作区、相同前缀的两个新会话，key 相同；③设了 `OPENAI_PROMPT_CACHE_KEY_SCOPE=session` 时，两个会话的 key 不同，且各自恒定；④会话中途 `instructions` 被改动时（用例里直接改分段缓存），key 不变；⑤换模型时 key 变一次，之后恒定 | ①④ 今天是红的 | 去掉 CH-3 的钉住，④就变红 |
 | T-5 | 通用路由上的副查询带 `qm:<sessionId>`，和主循环是同一个会话 id，续上后也不变。Grok 线的请求头 `x-grok-conv-id` 等于会话 id，同一会话内恒定，不同会话之间不同 | 副查询这一半今天是绿的；Grok 这一半是红的 | — |
 | T-6 | 保留期：①没设变量时，请求体和今天逐字节一致（对等表的一行）；②设成 `24h` 时，请求体带 `prompt_cache_retention: "24h"`；③base URL 是 `api.meta.ai` 时，不设变量也带；④录制桩对这个字段回 400 时，去掉字段重发一次，本进程之后的请求都不再带，而且重发发生在 commitment 屏障之前 | 红 | — |
 | T-7 | 诊断：①assistant 消息记下响应 id，并写进转录；②设了 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 时，第二个请求带 `prompt_cache_options.comparison_response_id`，值等于第一个响应的 id，首轮不带；③录制桩返回的 `prompt_cache_diagnostics` 被记到消息上；④录制桩拒收这个字段时，去掉字段并锁存；⑤不开时请求体和今天逐字节一致 | 红 | — |
-| T-8 | 转录：节点身份下 attachment 条目写进转录，续上时能读回。非节点身份用同一个脚本跑，转录和今天一致（去掉 uuid 和时间戳后逐字节相同） | 节点这一半是红的 | 去掉 CH-2 的判断就变红 |
+| T-8 | 转录：节点身份下 attachment 条目写进转录，续上时能读回。非节点身份下转录和今天一致（实现只加了一个按身份的判断，这一半用单元用例断言非节点身份下 `isLoggableMessage(attachment)` 仍为 false；没有跑「同一脚本、去掉 uuid 和时间戳逐字节比较」的版本） | 节点这一半是红的 | 去掉 CH-2 的判断就变红 |
 | T-9 | 进程 cwd 和会话 cwd 是两个不同的 git 仓库时，`instructions` 里的 Status 和 Recent commits 来自会话 cwd | 红（interleave-proccwd 已实测：今天读的是进程 cwd） | — |
 
 #### 5.11.8 现网成功标准与测法
@@ -994,14 +1021,15 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 1. 部署一个包含 P18.19 的发行标签（D-7）。记下每个节点的部署时刻和之后所有的重启时刻。测量窗口内不换模型，也不换 effort。
 2. 窗口至少 24 h，三个节点的主循环调用合计至少 100 次；不够就延长窗口。
 3. 每个节点跑一遍 `cache-baseline.py <OCC_CONFIG_DIR> <部署时刻>`。
-4. 每个节点跑 `cache-zero-classify.py <OCC_CONFIG_DIR> <部署时刻> --restart …`，`--ttl-min` 分别取 5 和 10，各跑一遍。
-5. 部署之前，先对基线窗口（09:57Z 之后）跑一遍第 4 步，作为同口径的「改之前」。
+4. 每个节点跑 `cache-zero-classify.py <OCC_CONFIG_DIR> <部署时刻> --deploy … --restart …`。`--deploy` 填换了构建、模型或 effort 的重启（部署、换 env），`--restart` 只填同一构建的替换（热切换、崩溃重拉、值守重启）。`--ttl-min` 用默认的 60（2026-10-03 实测网关保留至少 60 min）；某个节点换了模型或端点时，按节点另给。
+5. 部署之前，先对基线窗口（09:57Z 之后）跑一遍第 4 步，作为同口径的「改之前」。09:57Z 和三次收口部署都填 `--deploy`。
+6. 建议一个节点开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`：G-1 的「诊断结果」靠它，归因脚本会在零命中那一行打出 `diag=<type>/<reason>`。luna 支不支持诊断、网关透不透传，未实测；开了以后看转录里有没有 `_openaiPromptCacheDiagnostics`。
 
 **门槛**（达不到就不算完成）
 
 - **G-1**：UNEXPLAINED 类的零命中要逐次归因。归到阡陌请求体变化的，必须为 0；其余每一次都要有诊断结果（CH-6 打开时）或网关日志作为说明。
-- **G-2**：after-restart 类的零命中为 0。只统计续上前后模型和 effort 都没变的会话。
-- **G-3**：「续接充分」的比例至少 95%。统计范围是相邻的两次调用，要求同一会话、同一模型、间隔不超过 5 分钟、中间没有压缩。判据是：cache_read ≥ ⌊(P − max(0.1P, 4096)) / 128⌋ × 128，P 是前一次调用的 prompt token 数。这个余量覆盖两样东西：GPT-5.6 之前的模型按固定间隔放置隐式断点（GPT-5.5 是 2 048 token），最后一个断点之后的尾巴不会命中；以及 cached_tokens 按 128 向下取整。
+- **G-2**：after-restart 类的零命中为 0。只统计续上前后构建、模型和 effort 都没变的替换（`--restart`）；部署新构建后的首轮归入 after-deploy，不计入门槛（理由见 5.11.3）。窗口里没有同构建替换时，G-2 记为「无样本」，不算通过，要在验收时人为触发一次（例如 P18.3 的热切换）。
+- **G-3**：「续接充分」的比例至少 95%。统计范围是相邻的两次调用，要求同一会话、同一模型、间隔不超过 60 分钟（与 `--ttl-min` 相同）、中间没有压缩、也没有 `--deploy`。判据是：cache_read ≥ ⌊(P − max(0.1P, 4096)) / 128⌋ × 128，P 是前一次调用的 prompt token 数。这个余量覆盖两样东西：GPT-5.6 之前的模型按固定间隔放置隐式断点（GPT-5.5 是 2 048 token），最后一个断点之后的尾巴不会命中；以及 cached_tokens 按 128 向下取整。
 
 **目标**（报出来，但不作为门槛）
 
@@ -1033,13 +1061,48 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 
 #### 5.11.11 存疑与未实测
 
-1. 那 5 次中途零命中，每一次的原因都没有实测（5.11.3）。
-2. luna 按哪套语义计缓存还不确定：128 的倍数只核对了合计值。
+1. 替换后首轮的 7 次整段零命中，是不是都因为新构建改了工具表或系统提示，没有对比部署前后的请求体（5.11.3）。15:00:18Z 那一次仍查不出原因。
+2. luna 按哪套语义计缓存仍是推断：逐次都是 128（实际 512）的倍数，但取整也可能是网关做的。
 3. `prompt_cache_retention`、`prompt_cache_options` 在 `api.cornna.xyz` 上会不会透传、会不会被接受，未实测。
 4. 录制桩只能证明阡陌这一侧发了什么。「前缀相同就会命中」，取决于厂商的缓存行为。
 5. 「约 25k token」是按 4 字节一个 token 估算的。
 6. restart-ant 场景用的 `USER_TYPE=ant` 还改了别的行为（系统提示的长度不同），所以它只能说明「附件落盘后，续上前后一致」，不能代表节点身份下的提示内容。
 7. CH-2 让附件落盘后转录会变大多少，没有在真实会话上量过。
+8. CH-4 之后新会话的 `instructions` 带工作区的真实 git 状态，新会话之间的前缀 key 会随工作区变化；现网新建会话的频度和首轮的损失没有量过（5.11.5 CH-4）。
+9. 同构建替换在现网是否真的续上，要等 G-2 的样本；验收窗口里可能一次同构建替换都没有（5.11.8）。
+10. CH-5、CH-6 只在录制桩上验证过请求体和拒收路径。网关拒收时的错误文案如果不点名字段，识别不到，那一轮会照常报错；这种文案没有样本。
+
+#### 5.11.12 实现与验证（2026-10-03）
+
+实现在分支 `feat/p18-19-prompt-cache`，基点 `6d4440e8`，期间合过两次 main（#170 的 `995fcd24`；#169、#172）。提交清单和逐条输出在交付报告里，本节只记用例对照和与设计不同的地方。
+
+**用例对照**
+
+| # | 测试 | 改前 | 改后 |
+|---|---|---|---|
+| T-1 | 集成 `T-1: three turns of one session…` | 绿 | 绿 |
+| T-2 | 集成 `T-2…`，正向对照 `QIANMO_PROMPT_CONTEXT_SNAPSHOT=0` | 红 | 绿；正向对照在 `instructions` 的 Status 行分叉 |
+| T-3 | 集成 `T-3…`，两个正向对照 | 红 | 绿；关掉附件落盘时 `input[0]` 第 45 字符分叉，关掉快照时 `prompt_cache_key` 先变 |
+| T-4 | 单元 `sessionCacheKey.test.ts`（②–⑤）；集成 T-2、T-3 的 key 断言（①）；单元 `sessionPromptContext.test.ts` 的压缩用例 | 模块是新的，没有改前 | 绿 |
+| T-5 | 单元 `stickyRouting.test.ts`（真实 `sideQuery` 打本机回环端点；真实 `queryModelGrok`） | 副查询绿，Grok 红 | 绿 |
+| T-6 | 单元 `requestExtras.test.ts` ①–④；集成：默认不带、真子进程上替换前后都带、真子进程上被拒后锁存 | ① 绿，②③④ 红 | 绿 |
+| T-7 | 单元 `requestExtras.test.ts` ①–⑤；集成：逐个请求比较上一次响应（含替换后第一次）、转录里的响应 id 和诊断、被拒后锁存 | ⑤ 绿，①–④ 红 | 绿 |
+| T-8 | 集成 `T-8…`；单元 `persistAttachments.test.ts`（非节点身份） | 节点这一半红 | 绿 |
+| T-9 | 集成 `T-9…` | 红 | 绿 |
+
+- 集成用例的「改前」：当时的 8 条用例（T-1、T-2 及其对照、T-9、T-3 及其两个对照、T-8）在 `995fcd24`（含 #170、不含 P18.19 的 main）的临时检出上跑，3 过 5 红；T-6、T-7 的 5 条集成用例是后加的，它们的改前看单元用例。「改后」13 过 0 红。
+- T-5、T-6、T-7 单元用例的「改前」：把 `openai/index.ts`、`responsesAdapter.ts`、`grok/index.ts` 临时换回改动前的版本跑，5 过 9 红；「改后」14 过 0 红。
+- T-1 的「注入时间戳」和 T-4 的「去掉钉住」这两个正向对照没有写成用例；T-2、T-3、T-8 的正向对照用开关实现，和「去掉调用」等价。
+
+**与设计不同的地方**（细节在各条 CH 里）
+
+- 新文件名：CH-5、CH-6 的请求侧在 `requestExtras.ts`，响应侧在 `responseRecord.ts`；设计里写的 `retention.ts` 没有建。
+- CH-1：内存快照和边车都按 cwd 匹配；边车沿用转录的落盘规则，正文不变不重写。
+- CH-4：现网会话 cwd 是 git 仓库，改动在现网可见（见 CH-4 的「现网会变」）。
+- CH-5、CH-6：拒收后的重发走 Responses 线的 transform 阶梯，不套 `sendDroppingRejectedParameters`。
+- CH-6：诊断对象的字段按官网是 `type`，设计里写成了 `status`。
+- CH-7：`check:cycles` total +1。
+- 现网测法：保留期窗口 60 min；G-2 只统计同构建替换；归因脚本加了 `--deploy` 和 `diag=` 输出。
 
 ---
 
@@ -1294,7 +1357,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 |---|---|---|
 | **B0** 立即 | P18.0、P18.1 | P18.1 必须在 **2026-10-21 10:00（北京时间）**之前合入 |
 | **B1** | P18.2、P18.3、P18.4、P18.5；P15.9（指针） | 调用层**第一批（止血）**在这里。P18.3 与 P18.2 可以并行开发，合入顺序是 P18.2 先 |
-| **B2** | P18.6、P18.7、P18.8、P18.19；P15.2 余下（指针） | 调用层**第二批（推理一致性）**在这里。P18.19（缓存命中）在 P18.8 合入之后合入 |
+| **B2** | P18.6、P18.7、P18.8、P18.19、P18.20；P15.2 余下（指针） | 调用层**第二批（推理一致性）**在这里。P18.19（缓存命中）在 P18.8 合入之后合入 |
 | **B3** | P18.9、P18.10、P18.11、P18.12 | 调用层**第三批（韧性）**在这里；三个页面包同批 |
 | **B4** | P18.18、P18.13、P18.14 | 多 key 轮换、真机验收与控制台 P1 收口。P18.18 先于 P18.13 合入，真机验收的部署要包含它 |
 | **B5** | P18.15、P18.16（条件）、P18.17 | 批内串行（三包都要动 `deps.ts` 或共享样式），或者先拆成不相交的文件再并行 |
@@ -1317,7 +1380,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.6** 中枢存储与第六类动作 | B2 | 档案账本、密文库、主密钥、编译预览、执行器（local / ssh）、`ProviderPort` 的实现、节点脚本与内测接线；节点指派的上下文覆盖与编译缺省 200 000（D-8） | `src/cli/handlers/consoleProviders*.ts`（新）；`src/services/qianmo/providers/compile.ts`（缺省值）；`src/cli/handlers/{console.ts,consoleArgs.ts}`；`packages/console/src/deps.ts`（`ProviderPort`）；`demo/env/beta/ops/model-apply.sh`（新）及其测试；`demo/env/beta/{common.sh,beta-up.sh,beta-reset.sh,README.md}`；`docs/dev/beta-env.md`（§8.3 新增持密面的行） | P18.2、P18.4、P15.9 | 否 | 密文库 0600、目录 0700；主密钥权限过宽时拒绝启动模型服务这一面；轮换之后旧密文从文件里消失（字节扫描）；主密钥缺失而密文存在时 fail-closed，且不重新生成；`providers.ndjson` 有坏行时页面拒绝服务；ssh 命令行不含密钥（argv 断言）；客户端命令是哨兵，强制命令缺失时操作失败；`model-apply.sh` 忽略 `SSH_ORIGINAL_COMMAND`，节点名不合法时拒绝；同一节点的两次 apply 串行；`StrictHostKeyChecking=yes` 且 known_hosts 缺条目时拒绝；`beta-reset.sh` 任何参数都不动主密钥（用例）；未写 `contextTokens` 的档案编译出 200 000，节点覆盖优先于档案，清除覆盖后回到档案值（用例） | 44–68 |
 | **P18.7** 节点侧 `qm provider` | B2 | `serve-stdin` / `status` / `probe` / `models` / `apply` / `autocompact`（D-9：与 `/autocompact` 同一实现，`status` 的 `effective` 报回自动压缩生效值与来源）；ACP spawn env 剥离；子进程清理 | `src/cli/handlers/provider*.ts`（新）；`src/entrypoints/cli.tsx`；`src/cli/program/commands/qianmo.tsx`；`src/services/qianmo/residentAcpEnv.ts`；`src/utils/process/subprocessEnv.ts` | P18.2、P18.3 | **是**（`cli.tsx` 一处快速路径；`subprocessEnv.ts` 名单加五项；由 P18.8 统一登记） | stdin 超过 64 KiB 时拒绝；错误码闭合集合逐个有用例；响应里不出现任何值（扫描断言）；托管节点的 ACP 子进程 env 里没有 `ALL_PROFILE_ENV_KEYS` 和 `CLAUDE_CODE_USE_*`（真子进程断言），未托管节点的行为与今天逐字节一致；Bash 工具的子进程看不到 `OPENAI_API_KEY`（真 ACP 用例）；probe 三态各有用例（录制桩：200 好 key、200 加错误体、400 坏 key、连接被拒）；`/v1` 纠正有用例；`call` 模式的临时配置根用完即删 | 24–40 |
 | **P18.8** 调用层第二批 · 推理一致性 | B2 | hermes #4、#7、#8、#10、#13、#14、#23、#26；删除 `applyCompatRule` | 新规则文件；`packages/@ant/model-provider/src/shared/{openaiConvertMessages.ts,openaiStreamAdapter.ts,openaiUsage.ts}`；`src/services/api/openai/{requestBody.ts,responsesAdapter.ts}`；`src/services/api/grok/reasoning.ts`；`src/services/providerRegistry/providerCompatMatrix.ts` 及其测试；`docs/dev/base-modifications.md`（登记本批全部基座改动，含 P18.7 的两处） | P18.5 | **是** | hermes §11.9-① 的 A、B、E、F 翻转；回放家族表逐行有对等用例（严格端点不带 `reasoning_content`，kimi、deepseek、mimo 带）；内联标签被切在两个增量之间的用例；正文中夹空 `reasoning_content` 的既有用例仍绿（#31）；Kimi 不会同时发 `thinking` 和 `reasoning_effort`；换端点之后 `encrypted_content` 被丢弃；全仓 grep `applyCompatRule` 为空；节点 `capabilities.replayFilter` 为 true | 72–96 |
-| **P18.19** 缓存命中 | B2（在 P18.8 之后合入） | §5.11 的 CH-1 ~ CH-7：按会话的提示上下文快照、节点身份下附件落盘、key 按会话钉住、git 状态读会话 cwd、可选的保留期、响应 id 与缓存诊断、Grok 粘性头；现网测法用基线脚本加归因脚本 | `src/services/qianmo/promptCache/**`（新）；`src/services/acp/agent/sessionWorkspace.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts`；`src/services/api/openai/{index.ts,responsesAdapter.ts}`；`src/services/api/grok/index.ts`；`tests/integration/qianmo-prompt-cache.test.ts`（新）；`docs/dev/base-modifications.md` | P18.8（`responsesAdapter.ts` 的文件顺序；录制桩的 `responsesSSE`）；`fix/acp-flush-and-cwd`（`de34761a` 修转录落盘，T-3 依赖它；它也改 `sessionWorkspace.ts`，要先合入） | **是**（`entries.ts`、`context.ts`、`grok/index.ts`、`responsesAdapter.ts` 都是纯插入；`openai/index.ts` 改一处调用并插入传参；`sessionWorkspace.ts` 是阡陌自有文件） | §5.11.7 的 T-1 ~ T-9 全绿。其中 T-2、T-3 今天是红的（录制桩实测），修复后变绿；每条都有正向对照。非节点身份的转录和请求体与今天逐字节一致。CH-5、CH-6 不开时请求体与今天逐字节一致。现网的 G-1 ~ G-3 在 P18.13 部署之后按 §5.11.8 收数 | 44–70 |
+| **P18.19** 缓存命中 | B2（在 P18.8 之后合入） | §5.11 的 CH-1 ~ CH-7：按会话的提示上下文快照、节点身份下附件落盘、key 按会话钉住、git 状态读会话 cwd、可选的保留期、响应 id 与缓存诊断、Grok 粘性头；现网测法用基线脚本加归因脚本 | `src/services/qianmo/promptCache/**`（新）；`src/services/acp/agent/sessionWorkspace.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts`；`src/services/api/openai/{index.ts,responsesAdapter.ts}`；`src/services/api/grok/index.ts`；`tests/integration/qianmo-prompt-cache.test.ts`（新）；`tests/integration/fixtures/responses-recorder.ts`（新）、`resident-acp-harness.ts`（加两个可选参数）；`src/services/qianmo/modelCompat/__tests__/support/requestCapture.ts`（清环境的键表加两项）；`scripts/cycle-budget.json`（CH-7，total +1）；`docs/dev/base-modifications.md` | P18.8（`responsesAdapter.ts` 的文件顺序；录制桩的 `responsesSSE`）；`fix/acp-flush-and-cwd`（`de34761a` 修转录落盘，T-3 依赖它；它也改 `sessionWorkspace.ts`，要先合入；已随 #170 合入） | **是**（`entries.ts`、`context.ts`、`grok/index.ts`、`responsesAdapter.ts` 都是纯插入；`openai/index.ts` 改一处调用并插入传参；`sessionWorkspace.ts` 是阡陌自有文件） | §5.11.7 的 T-1 ~ T-9 全绿。其中 T-2、T-3 今天是红的（录制桩实测），修复后变绿；每条都有正向对照。非节点身份的转录和请求体与今天逐字节一致。CH-5、CH-6 不开时请求体与今天逐字节一致。现网的 G-1 ~ G-3 在 P18.13 部署之后按 §5.11.8 收数 | 44–70 |
 | P15.2 余下（指针） | B2 | 暂停、恢复、退役的后端 | 以 `tenancy-m1.md` §6 为准。本批不许动 `console.ts`、`consoleArgs.ts`、`deps.ts`（归 P18.6），确实要动时排到 P18.6 合入之后 | P15.1 | 否 | 见 `tenancy-m1.md` §6 | 8–16（计入 P15） |
 | **P18.9** 模型服务页 | B3 | §6.3 全部 | `packages/console/src/routes/providers.ts`；`packages/console/src/view/providers*.ts`（新）；路由模块自带的样式与脚本片段；`packages/console/src/view/chatPage.ts`（模型标签、分隔线） | P18.4、P18.6、P18.7 | 否 | AC-P1（端到端：录制桩 + 真 resident）；AC-P3；AC-P4 的界面一侧（显示值取自节点 `effective`，结构断言中枢不自己算）；无脚本时只读可用，写控件写明原因；viewer、member、break-glass、legacy 四种主体都看不到写控件和指纹（扫描断言）；所有可见文案过禁句读门禁；导出文件不含 key 和指纹；导入出现未知键时整份拒绝；档案编辑、节点矩阵、节点详情三处都能改上下文窗口，显示值取自节点 `effective`（D-8，用例） | 60–92 |
 | **P18.10** 账号与访问 · 操作记录页 | B3 | H3、H4 的页面 | `packages/console/src/routes/access.ts`；`packages/console/src/view/{access.ts,invite.ts}`（`access.ts` 新建）；`packages/console/src/{accountsHttp.ts,access.ts}`；`docs/dev/beta-env.md` §3.6（告知措辞需要改时） | P18.4、P15.9 | 否 | 成员、邀请、会话、操作记录四个页签各有 HTTP 用例；强制下线之后该主体的 SSE 连接数为零；member 只看得到与自己有关的操作记录；邀请页 `Referrer-Policy: no-referrer`（断言） | 48–72 |
@@ -1328,14 +1391,14 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.15** 告警与值守作业页 | B5 | J5、J6 | `packages/console/src/routes/{alerts.ts,jobs.ts}`；`NotifyPort`、`SchedulerPort`（`deps.ts`、`consolePorts.ts`） | P18.4 | 否 | 告警有收件箱、未读角标、级别筛选；值守作业页显示上次和下次触发、ESTOP 状态，`lastTickAt` 缺席可见 | 48–64 |
 | **P18.16** 用量与审批页（条件） | B5 | J7、J8 | `packages/console/src/routes/{usage.ts,approvals.ts}`；`deps.ts` | P15.7、P14.5 | 否 | 用量按自然日、按人；审批页与 P14 协议的契约用例 | 48–80 |
 | **P18.17** 控制台 P2 | B5 | §6.5 的 P2 | 视图与样式 | P18.14 | 否 | 各项「改法」逐条有用例 | 110–150 |
-| **P18.18** 多 key 轮换（D-6） | B4 | hermes #2：同一份档案挂 1..N 把 key，节点调用层按策略选取、按错误分类换 key 并冷却；中枢逐把加密保管；控制台逐把管理、显示每把的状态 | `packages/providers/**`（池字段；P18.2 已经按多 key 定好 schema）；`src/services/qianmo/providers/**`；`src/services/qianmo/modelCompat/credentialPool*.ts`（新）；`src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`；`src/cli/handlers/consoleProviders*.ts`；`src/cli/handlers/provider*.ts`；`packages/console/src/routes/providers.ts`、`packages/console/src/view/providers*.ts`；`docs/dev/base-modifications.md` | P18.6、P18.7、P18.9、P18.12 | **是**（三个调用层文件，纯插入） | 单 key 档案的编译、写入、请求行为与 P18.12 合入时逐字节一致（回归用例）；`fill_first`、`round_robin`、`least_used` 三种策略各有用例；hermes 行为表逐行有录制桩用例：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先；全部 key 都在冷却时报错，并给出最早的恢复时间；换 key 越过 commitment 屏障之后不再重放；冷却状态持久化在节点 0600 文件里，重启后仍然有效；节点 `status` 逐把报 `ok / cooling / dead`，只带 key id，不带值；轮换或删除单把 key 之后，旧密文从密文库消失（字节扫描）；AC-P2 的金丝雀扫描覆盖多 key 流程。真机只有一把真 key（D-5），轮换只用录制桩验证，P18.13 不要求真机轮换 | 24–40 |
+| **P18.18** 多 key 轮换（D-6） | B4 | hermes #2：同一份档案挂 1..N 把 key，节点调用层按策略选取、按错误分类换 key 并冷却；中枢逐把加密保管；控制台逐把管理、显示每把的状态 | `packages/providers/**`（池字段；P18.2 已经按多 key 定好 schema）；`src/services/qianmo/providers/**`；`src/services/qianmo/modelCompat/credentialPool*.ts`（新）；`src/services/api/openai/{retry.ts,index.ts}`、`src/services/api/retryClassification.ts`；`src/cli/handlers/consoleProviders*.ts`；`src/cli/handlers/provider*.ts`；`packages/console/src/routes/providers.ts`、`packages/console/src/view/providers*.ts`；`docs/dev/base-modifications.md` | P18.6、P18.7、P18.9、P18.12 | **是**（三个调用层文件，纯插入） | 单 key 档案的编译、写入、请求行为与 P18.12 合入时逐字节一致（回归用例）；X-1（§5.11.6）：录制桩上同一会话的 10 个请求，在没有错误时只用一把 key，`round_robin`、`least_used` 在会话的第一次请求时选定 key、不按请求轮换；`fill_first`、`round_robin`、`least_used` 三种策略各有用例；hermes 行为表逐行有录制桩用例：429 先同 key 重试一次再换，用量上限立即换，402 立即换并冷却 1 h，401 换并冷却 5 min，`Retry-After` / `reset_at` 优先；全部 key 都在冷却时报错，并给出最早的恢复时间；换 key 越过 commitment 屏障之后不再重放；冷却状态持久化在节点 0600 文件里，重启后仍然有效；节点 `status` 逐把报 `ok / cooling / dead`，只带 key id，不带值；轮换或删除单把 key 之后，旧密文从密文库消失（字节扫描）；AC-P2 的金丝雀扫描覆盖多 key 流程。真机只有一把真 key（D-5），轮换只用录制桩验证，P18.13 不要求真机轮换 | 24–40 |
 | **P18.20** ACP 会话里的本地命令（D-9） | B2 | ACP 会话执行白名单内的本地命令（首批 `/autocompact`、`/compact`、`/context`），在 `available_commands_update` 里通告，输出作为 agent 消息返回、不发给模型；同一节点上任一途径改了 `autoCompactWindow`，运行中的会话在下一轮按新值判断 | `src/services/acp/agent/*.ts`（基座，纯插入或调用替换）；`src/services/acp/agent/localCommands.ts`（新）；`docs/dev/base-modifications.md` | P18.3 | **是** | 控制台对话页（经 resident 的 ACP）发 `/autocompact 150k` 后，节点 `settings.json` 的 `autoCompactWindow` 为 150 000，回显与终端一致，模型桩收到的请求数为 0；`/autocompact` 不带参数时回显当前值与来源；白名单外的本地命令仍按原样处理；改值后同一会话下一轮的压缩判断用新值（用例） | 16–24 |
 
 ### 9.3 同批文件范围（互不相交）
 
 - **B1**：`bun.lock` 只归 P18.2；`NOTICE` 与 `base-modifications.md` 只归 P18.5；`packages/console/**` 只归 P18.4；`console.ts`、`consoleArgs.ts` 只归 P15.9；resident 四个文件只归 P18.3。P18.5 与 P18.2 不共享文件（编译器在 `src/services/qianmo/providers/`，规则表在 `src/services/qianmo/modelCompat/`）。
 - **B2**：`console.ts`、`consoleArgs.ts`、`deps.ts`、`demo/env/beta/**`、`beta-env.md` 归 P18.6；`cli.tsx`、`qianmo.tsx`、`residentAcpEnv.ts`、`subprocessEnv.ts` 归 P18.7；模型调用层文件与 `base-modifications.md` 归 P18.8；P15.2 余下避开前面这些文件。
-- **P18.19**（B2，在 P18.8 合入之后）：P18.8 合入以后，`responsesAdapter.ts` 和 `base-modifications.md` 才交给 P18.19。`sessionWorkspace.ts` 要等 `fix/acp-flush-and-cwd` 合入后再改。main 上 v1.2 新增的 P18.20 会改 `src/services/acp/agent/*.ts`：P18.19 在这个目录里只动 `sessionWorkspace.ts`，P18.20 不动它。`openai/index.ts` 和 P18.12、P18.18 有重叠，P18.19 先合入，后两个包再 rebase；`grok/index.ts` 和 P18.12（如需）也按这个顺序。
+- **P18.19**（B2，在 P18.8 合入之后）：P18.8 合入以后，`responsesAdapter.ts` 和 `base-modifications.md` 才交给 P18.19。`sessionWorkspace.ts` 要等 `fix/acp-flush-and-cwd` 合入后再改。v1.2 新增的 P18.20 会改 `src/services/acp/agent/*.ts`：P18.19 在这个目录里只动 `sessionWorkspace.ts`，P18.20 不动它。`openai/index.ts` 和 P18.12、P18.18 有重叠，P18.19 先合入，后两个包再 rebase；`grok/index.ts` 和 P18.12（如需）也按这个顺序。
 - **B3**：每个页面包只改自己的路由文件和视图文件（P18.4 已经建好桩）；`deps.ts`、`consolePorts.ts`、`console.md`、`README.md` 只归 P18.11；`chatPage.ts` 只归 P18.9；`beta-env.md` 只归 P18.10；调用层文件归 P18.12。
 - **B4**：`packages/console/src/routes/providers.ts`、`view/providers*.ts`、调用层三个文件和 `base-modifications.md` 归 P18.18，P18.14 避开这几个文件；P18.13 只动 `demo/env/beta/**` 和文档。
 - **不算冲突的生成物**：`legacyParity.golden.json` 由合入者在 rebase 之后按规程重生（§8.1）。
@@ -1410,7 +1473,7 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 11. **roadmap「M1 完成状态速查」的「注册发现产品化」行**仍写着 P15.3 / P15.5「未实现」，但 `21b2dd3f`（P15.3）、`fb2ca677`（P15.5）、`d74e0c9f`（P15.8）已经在 main 里。本文按任务约束不改那一行，只在 roadmap v2.80 的版本行里记下这个出入，由下一次状态回写处理。
 12. **估算**是读代码和调研件之后给的，误差可能在 ±50%。
 13. **多 key 轮换没有真机证据**：负责人只提供一把真 key（D-5），P18.18 的轮换行为只用录制桩验证。
-14. **那 5 次中途零命中的原因**没有逐次实测。§5.11.3 只是按机制排了序，要用归因脚本按调用逐次确认。
+14. **替换后首轮整段为零的原因**：主 agent 已逐次归因（§5.11.3），7 次都落在部署或换 env 的重启上；是不是都因为新构建改了前缀，没有对比请求体。另有 1 次查不出原因。
 15. **`gpt-6-luna` 按哪套语义计缓存**还不确定：cache_read 是不是 128 的倍数，只核对了三个节点的合计值。
 16. **`prompt_cache_retention`、`prompt_cache_options`、`comparison_response_id`** 在 `api.cornna.xyz` 上会不会透传、会不会被接受，都未实测。所以 CH-5、CH-6 默认关闭。
 17. **录制桩只能证明阡陌这一侧发了什么**。「前缀相同就会命中」，取决于厂商和网关的缓存行为。
@@ -1437,6 +1500,9 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 - **转录里多了附件内容**（CH-2）：包括文件片段和记忆片段，权限和转录相同，体积会变大。
 - **后续包可能把命中率打回去**：P18.18 如果按请求轮换 key，或者 P18.12 让 fallback 一直停留，都会让会话散到不同的缓存里。§5.11.6 的 X-1、X-2 是对这两个包的约束。
 - **CH-4 不能单独合入**：如果只修 git 状态读错 cwd 的问题而不上快照，命中率会比今天更差。
+- **部署新构建之后的首轮仍然整段重读**：P18.19 挡不住（§5.11.3）。发版越频繁，这部分损失越大。
+- **CH-4 会减少新会话之间的前缀共享**：工作区的 git 状态一变，新会话的前缀 key 就跟着变（§5.11.5 CH-4）。
+- **`check:cycles` 的 total 预算加了 1**（CH-7，只经类型导入闭合的一条环）。
 
 ---
 
