@@ -993,7 +993,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 
 **测试放在哪里**
 
-- 单元测试放在 `src/services/qianmo/promptCache/__tests__/`。
+- 单元测试放在 `src/services/qianmo/promptCache/__tests__/`。要真切换会话的两组（`sessionPromptContext`、`stickyRouting`）写成 `.runner.ts`，由 `sessionSwitching.isolated.test.ts` 各起一个进程跑：整仓 `bun test` 是一个进程，有几个基座用例装了钉死 `getSessionId` 的 state mock 且不复位（见 `tests/mocks/state.ts`），同进程里 `switchSession` 之后会话 id 不变。
 - 真 ACP 子进程加录制桩的集成测试放在 `tests/integration/qianmo-prompt-cache.test.ts`，录制桩是 `tests/integration/fixtures/responses-recorder.ts`。T-6、T-7 的请求体半段复用 P18.5 的 `modelCompat/__tests__/support/requestCapture.ts`（真实的 `queryModelOpenAI`）和 P18.8 给它加的 `responsesSSE` 参数。每条用例对应哪个测试、改前改后的结果，见 5.11.12。
 
 **比较方法**：「逐字节前缀」的判法同 5.11.2：
@@ -1084,8 +1084,8 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | T-1 | 集成 `T-1: three turns of one session…` | 绿 | 绿 |
 | T-2 | 集成 `T-2…`，正向对照 `QIANMO_PROMPT_CONTEXT_SNAPSHOT=0` | 红 | 绿；正向对照在 `instructions` 的 Status 行分叉 |
 | T-3 | 集成 `T-3…`，两个正向对照 | 红 | 绿；关掉附件落盘时 `input[0]` 第 45 字符分叉，关掉快照时 `prompt_cache_key` 先变 |
-| T-4 | 单元 `sessionCacheKey.test.ts`（②–⑤）；集成 T-2、T-3 的 key 断言（①）；单元 `sessionPromptContext.test.ts` 的压缩用例 | 模块是新的，没有改前 | 绿 |
-| T-5 | 单元 `stickyRouting.test.ts`（真实 `sideQuery` 打本机回环端点；Grok 一半从 `queryModelWithStreaming` 经 `claude.ts` 的真实分派走到 Grok 线，去掉 `claude.ts` 那一行实参就变红） | 副查询绿，Grok 红 | 绿 |
+| T-4 | 单元 `sessionCacheKey.test.ts`（②–⑤）；集成 T-2、T-3 的 key 断言（①）；单元 `sessionPromptContext.runner.ts` 的压缩用例 | 模块是新的，没有改前 | 绿 |
+| T-5 | 单元 `stickyRouting.runner.ts`（真实 `sideQuery` 打本机回环端点；Grok 一半从 `queryModelWithStreaming` 经 `claude.ts` 的真实分派走到 Grok 线，去掉 `claude.ts` 那一行实参就变红） | 副查询绿，Grok 红 | 绿 |
 | T-6 | 单元 `requestExtras.test.ts` ①–④；集成：默认不带、真子进程上替换前后都带、真子进程上被拒后锁存 | ① 绿，②③④ 红 | 绿 |
 | T-7 | 单元 `requestExtras.test.ts` ①–⑤；集成：逐个请求比较上一次响应（含替换后第一次）、转录里的响应 id 和诊断、被拒后锁存 | ⑤ 绿，①–④ 红 | 绿 |
 | T-8 | 集成 `T-8…`；单元 `persistAttachments.test.ts`（非节点身份） | 节点这一半红 | 绿 |

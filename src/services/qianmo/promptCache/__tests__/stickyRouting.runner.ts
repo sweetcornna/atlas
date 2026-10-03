@@ -14,6 +14,10 @@
  * Both run the real request path: `sideQuery` against a loopback endpoint;
  * the Grok lane from `queryModelWithStreaming` (claude.ts, which passes the
  * session id down) through `options.fetchOverride`. Canary keys, no network.
+ *
+ * Named `.runner.ts` so `bun test` does not pick it up in a shared process:
+ * `sessionSwitching.isolated.test.ts` runs it in its own, for the reason given
+ * there.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'

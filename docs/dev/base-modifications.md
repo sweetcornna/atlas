@@ -206,7 +206,7 @@
 
 **阡陌自有文件的改动**（不是基座文件，列出来方便审）：`src/services/acp/agent/sessionWorkspace.ts`（CH-1：换会话时存、取快照，每轮结束写边车）；`tests/integration/fixtures/resident-acp-harness.ts`（`spawnResidentAcpChild` 加可选的 `wireApi`、`cwd`，不传时行为不变）；`src/services/qianmo/modelCompat/__tests__/support/requestCapture.ts`（清环境的键表加 `OPENAI_PROMPT_CACHE_RETENTION`、`OPENAI_PROMPT_CACHE_DIAGNOSTICS`）。
 
-**同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/promptCache/` 下 6 个源文件（`sessionCacheKey.ts`、`sessionPromptContext.ts`、`persistAttachments.ts`、`requestExtras.ts`、`responseRecord.ts`、`grokConversation.ts`）与 5 个测试文件（`sessionCacheKey`、`sessionPromptContext`、`persistAttachments`、`requestExtras`、`stickyRouting`）；`tests/integration/qianmo-prompt-cache.test.ts` 与录制桩 `tests/integration/fixtures/responses-recorder.ts`。依据 hermes-agent 的做法（`x-grok-conv-id`、`api.meta.ai` 的 `24h` 默认）只取机制，没有复制代码。
+**同批新增的阡陌自有文件**（快照之外，带 AGPL 头）：`src/services/qianmo/promptCache/` 下 6 个源文件（`sessionCacheKey.ts`、`sessionPromptContext.ts`、`persistAttachments.ts`、`requestExtras.ts`、`responseRecord.ts`、`grokConversation.ts`）与测试：`sessionCacheKey`、`persistAttachments`、`requestExtras` 三个 `.test.ts`，以及要真切换会话的 `sessionPromptContext`、`stickyRouting` 两个 `.runner.ts`，由 `sessionSwitching.isolated.test.ts` 各起一个进程跑（同进程里有基座用例留下钉死 `getSessionId` 的 state mock）；`tests/integration/qianmo-prompt-cache.test.ts` 与录制桩 `tests/integration/fixtures/responses-recorder.ts`。依据 hermes-agent 的做法（`x-grok-conv-id`、`api.meta.ai` 的 `24h` 默认）只取机制，没有复制代码。
 
 ---
 

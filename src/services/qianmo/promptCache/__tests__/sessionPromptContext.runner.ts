@@ -12,6 +12,12 @@
  *
  * No mock.module: every module below loads on its own; isolation is a temp
  * config dir and `resetStateForTests`.
+ *
+ * Named `.runner.ts` so `bun test` does not pick it up in a shared process:
+ * `sessionSwitching.isolated.test.ts` runs it in its own. These cases switch
+ * sessions for real, and several base suites leave `src/bootstrap/state.ts`
+ * mocked with a pinned `getSessionId` for the rest of the process (see
+ * tests/mocks/state.ts).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
