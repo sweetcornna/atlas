@@ -19,7 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20 |
+| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20。审计后（同版）：CH-4 保留并写明取舍；CH-7 改由调用方传入会话 id，循环预算不动；P18.13 的完成标准加一次热切换给 G-2 补样本 |
 | **v1.2** | **2026-10-03** | **D-8：每个 agent 的上下文窗口默认 200 000 token，控制台可改；D-9：自动压缩阈值可用 `/autocompact` 等方式设置。**档案里模型的 `contextTokens` 缺省按 200 000 编译；节点指派可单独覆盖；仍编译到同一个 `modelSettings.<slot>.contextTokens`，不新开上下文覆盖。P18.6、P18.9 各加 4 人时。**D-9：自动压缩阈值可用 `/autocompact` 等方式设置**，新增 P18.20（ACP 会话里的本地命令，16–24 人时），核心合计改为 680–1002，全部合计改为 1030–1512。同步改了 §0.1、§3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9、§9.4 |
 | **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
@@ -861,7 +861,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | OpenAI `prompt_cache_key` | `pck_` + sha256(范围 + instructions + 排序后的工具)[:24]（`codex.py:143`）。范围是压缩谱系的根会话 id（`codex.py:19`、`prompt_cache_scope.py:1-36`）。chat 线只对 `api.openai.com` 或声明支持的端点发送（`chat_completions.py:44-83`） | 通用路由用前缀 key：`qm:p:` + sha256(模型 + 全部 system/developer 文本 + 工具名)[:16]，不含会话 id（`openaiShared.ts:119-140`、`:332-354`）。ChatGPT 路由用会话 key `qm:<sessionId>`（`openai/index.ts:425-435`）。默认对所有端点都发；被拒后去掉这个字段重发，并在进程内锁存（`openaiShared.ts:249-268`） | key 每个请求都按当前的 `instructions` 重新算，会话中途 `instructions` 一变 key 就变（实测）。hermes 的 key 也随内容变化，但它的 `instructions` 在整个会话里不变。另外，阡陌的前缀 key 能跨会话共享，这是 hermes 没有的长处：同前缀新会话的首轮实测命中 98%，用会话 key 时是 0%（`openai/index.ts:421`） | CH-3：key 按（会话，模型）在第一次算出后钉住；跨会话仍按前缀共享 | 新增 `src/services/qianmo/promptCache/sessionCacheKey.ts`；`src/services/api/openai/index.ts` 改一处调用 | 是（调用替换） |
 | `store` 与 `previous_response_id` | `store: false`，不用 `previous_response_id`，每次整段重放（`codex.py:517`、`codex_responses_adapter.py:1085`）。assistant 消息条目带原 id 和 phase 重放，注释写明是为了前缀命中（`:574-620`）。工具调用 id 用确定性算法生成（`:257-290`） | `store: false`，整段重放（`responsesAdapter.ts:292`）。推理条目带 `encrypted_content` 和 id 重放（`:157`）。工具 id 用服务端返回的 `call_id`。实测连续三轮的重放逐字节相同。不记录响应 id | 重放没有差距（实测）。不记录响应 id，就用不了官方的缓存诊断 | CH-6 记录响应 id；`previous_response_id` 不做 | 新增 `promptCache/responseRecord.ts`；`responsesAdapter.ts`；`openai/index.ts` | 是 |
 | 保留期 | 只对一张主机表默认发 `prompt_cache_retention: 24h`：`api.meta.ai` 和 Bedrock Mantle（`codex.py:114-124`）。其余不发 | 不发 | 对 Meta 少了一条默认值。luna 接不接受、网关会不会透传，未实测 | CH-5：设了 `OPENAI_PROMPT_CACHE_RETENTION` 才发；`api.meta.ai` 按 hermes 默认发 `24h`；被拒后去掉重发并锁存 | 新增 `promptCache/requestExtras.ts`；`responsesAdapter.ts`；`openai/index.ts` | 是（纯插入） |
-| 粘性路由 | OpenRouter、Nous 在请求体顶层发 `session_id`（`plugins/model-providers/openrouter/__init__.py:115-139`、`nous/__init__.py:30-66`）。xAI 发 `x-grok-conv-id` 头（`codex.py:671`），经 OpenRouter 调 Grok 时也发（`openrouter/__init__.py:221-229`）。这些值都取会话谱系的根 id | 都没有。Grok 线的请求（`grok/index.ts:131`）不带这个头；ChatGPT 路由也不带 `session_id` 头 | xAI、OpenRouter、Nous 的预设没有粘性路由。舰队不用这几家，对现网没有影响 | CH-7：Grok 线加 `x-grok-conv-id: <sessionId>`。OpenRouter 和 Nous 本包不做 | `src/services/api/grok/index.ts` | 是（纯插入） |
+| 粘性路由 | OpenRouter、Nous 在请求体顶层发 `session_id`（`plugins/model-providers/openrouter/__init__.py:115-139`、`nous/__init__.py:30-66`）。xAI 发 `x-grok-conv-id` 头（`codex.py:671`），经 OpenRouter 调 Grok 时也发（`openrouter/__init__.py:221-229`）。这些值都取会话谱系的根 id | 都没有。Grok 线的请求（`grok/index.ts:131`）不带这个头；ChatGPT 路由也不带 `session_id` 头 | xAI、OpenRouter、Nous 的预设没有粘性路由。舰队不用这几家，对现网没有影响 | CH-7：Grok 线加 `x-grok-conv-id: <sessionId>`。OpenRouter 和 Nous 本包不做 | `src/services/api/grok/index.ts`；`src/services/api/claude.ts`（传入会话 id）；新增 `promptCache/grokConversation.ts` | 是（纯插入） |
 | 辅助调用带会话根 id | 辅助客户端从主运行时拿到 `cache_scope`（`auxiliary_client.py:3382-3425`）。辅助调用的 Responses key 在这个范围内按内容计算（`:1605-1656`）。粘性头取环境里的会话根 id，所以压缩、视觉、标题这些调用也会落在同一台后端 | 副查询在通用路由上用会话 key `qm:<sessionId>`（`sideQuery.ts:628-633`）。压缩默认走 fork，复用主对话的前缀（`tengu_compact_cache_prefix` 默认为 true，`compact.ts:459`），带的是同一个前缀 key。录制桩上的三轮会话没有出现副查询 | 无差距。会话 id 在压缩和续上之后都不变 | 只加回归用例（T-5） | — | — |
 | 系统提示与上下文的稳定 | 系统提示每个会话只建一次，分 stable、context、volatile 三层（`system_prompt.py:1-21`、`:338`）。日期只精确到天（「Conversation started」，`:840`）。建好后存进会话库，续上时原样复用（`conversation_loop.py:734`、`:862`），只有压缩时才重建（`system_prompt.py:894`）。记忆写入不改已经建好的提示（`prompt-assembly.md:251-253`）。用户消息里注入的内容存进 `api_content` 边车，按原样重放（`turn_context.py:54-134`） | 单进程、单会话时稳定（实测）。切换会话时清 memo 重算（`sessionWorkspace.ts:102`、`:105`）。续上时附件丢失，`getUserContext` 重算（`entries.ts:214`）。git 状态读的是进程 cwd（`context.ts:96-106`） | 实测有三处分叉，见 5.11.2 结论第 2–4 条 | CH-1：按会话做快照（内存加 0600 边车文件）。CH-2：节点身份下附件落盘。CH-4：git 状态改读会话 cwd，必须和 CH-1 一起上 | `src/services/acp/agent/sessionWorkspace.ts`；新增 `promptCache/sessionPromptContext.ts`、`promptCache/persistAttachments.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts` | `sessionWorkspace.ts` 是阡陌自有文件；`entries.ts`、`context.ts` 是基座（纯插入） |
 | 工具表与 MCP 变化 | 晚连上的 MCP 工具在轮次之间刷新进工具表，会改前缀。后台复盘的 fork 钉住父会话的系统提示和 `tools[]`，并关掉这次刷新，保证命中同一个前缀（`background_review.py:1039-1045`）。切换审批模式不改系统提示和工具 schema（`hermes_cli/approval_mode.py:6`） | 工具 schema 有会话级缓存（基座）。deferred tools 走 ToolSearch，新工具以 `deferred_tools_delta` 附件追加在末尾，只追加、不改前缀。实测三轮里 20 个工具逐字节不变。resident 建会话时传 `mcpServers: []` | 没有测到差距 | 不改；由 T-1 覆盖 | — | — |
@@ -932,7 +932,8 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 - **做什么**：`context.ts:96`、`:102`、`:106` 三处选项对象各插入 `useCwd: true`。
 - **为什么**：今天分支名按会话 cwd 取，状态和最近提交却按进程 cwd 取，两者混在一起；resident 的进程 cwd 一有变化，key 就变。
 - **前提**：**必须和 CH-1 同时合入，或者在它之后合入。**如果只改 CH-4，git 状态会改为读取 agent 自己的工作区，而 agent 每轮都在写文件，这样每次切换会话都会改动 `instructions` 和 key，比今天更糟。
-- **现网会变**（实现时查到）：进程 cwd 是部署树，不是 git 仓库；会话 cwd 是 `seed_workspace` 建的 git 工作区。改之前，分支名取自工作区，状态、最近提交、`user.name` 三条命令在部署树里失败，输出被丢弃，所以 `instructions` 里恒为 `Status: (clean)`、最近提交为空；改之后是工作区的真实状态。会话内由 CH-1 冻结、替换后由边车读回，都不受影响。代价落在新会话之间：工作区状态一变，新会话的 `instructions` 和前缀 key 就和老会话不同，首轮的跨会话共享（现网约 2 万 token，见 5.11.3）会落空。现网新建会话的频度和这部分损失都未实测。主 agent 裁定按正确性修，裁定时依据的「现网不受影响」只核对了进程 cwd。
+- **现网会变**（实现时查到）：进程 cwd 是部署树，不是 git 仓库；会话 cwd 是 `seed_workspace` 建的 git 工作区。改之前，分支名取自工作区，状态、最近提交、`user.name` 三条命令在部署树里失败，输出被丢弃，所以 `instructions` 里恒为 `Status: (clean)`、最近提交为空；改之后是工作区的真实状态。会话内由 CH-1 冻结、替换后由边车读回，都不受影响。代价落在新会话之间：工作区状态一变，新会话的 `instructions` 和前缀 key 就和老会话不同，首轮的跨会话共享（现网约 2 万 token，见 5.11.3）会落空。现网新建会话的频度和这部分损失都未实测。
+- **取舍**（主 agent 2026-10-03 裁定：保留 CH-4）：现网 resident 的会话都是长会话，值守任务一直在同一个会话上续，新会话很少，跨会话前缀共享的这点损失可以忽略；让 agent 看到工作区真实的 git 状态是正确性问题。裁定之前依据的「现网不受影响」只核对了进程 cwd，会话 cwd 是 git 仓库这一点是实现时查到的。
 
 **CH-5 保留期**（默认关闭；基座纯插入）
 
@@ -961,7 +962,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 
 - **做什么**：Grok 线的请求加上 `x-grok-conv-id: <sessionId>`。据 xAI 官网，同一个会话 id 的请求会路由到同一台服务器。
 - **收益**：舰队上没有 Grok 节点，现网收益为零。这一项是为产品功能补齐。
-- **代价**：`check:cycles` 的 total 从 2054 变成 2055（runtime 443 不变）。新模块读会话 id，madge 报出一条只经类型导入闭合的环：`claude.ts` → `grok/index.ts` → `grokConversation.ts` → `bootstrap/state.ts` → …（类型导入）… → `claude.ts`。任何在 Grok 线读会话 id 的实现都会多这一条。CH-7 单独一个提交，连预算一起撤掉就回到原样。
+- **写法**：会话 id 由调用方传入。`claude.ts` 分派到 Grok 线时本来就持有会话 id，多传一个实参；`grok/index.ts` 加一个可选参数；`grokConversation.ts` 不导入任何模块。第一版让新模块自己导入 `bootstrap/state`，madge 多报一条只经类型导入闭合的 import 环；循环棘轮只能降、不能升，所以改成现在的写法，`check:cycles` 保持 443 / 2054。代价是多改一个基座文件（`claude.ts`，纯插入一行实参）。
 
 **人时**
 
@@ -1028,7 +1029,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 **门槛**（达不到就不算完成）
 
 - **G-1**：UNEXPLAINED 类的零命中要逐次归因。归到阡陌请求体变化的，必须为 0；其余每一次都要有诊断结果（CH-6 打开时）或网关日志作为说明。
-- **G-2**：after-restart 类的零命中为 0。只统计续上前后构建、模型和 effort 都没变的替换（`--restart`）；部署新构建后的首轮归入 after-deploy，不计入门槛（理由见 5.11.3）。窗口里没有同构建替换时，G-2 记为「无样本」，不算通过，要在验收时人为触发一次（例如 P18.3 的热切换）。
+- **G-2**：after-restart 类的零命中为 0。只统计续上前后构建、模型和 effort 都没变的替换（`--restart`）；部署新构建后的首轮归入 after-deploy，不计入门槛（理由见 5.11.3）。窗口里没有同构建替换时，G-2 记为「无样本」，不算通过。部署后由主 agent 人为触发一次 P18.3 热切换补样本，这一步写在 P18.13 的完成标准里。
 - **G-3**：「续接充分」的比例至少 95%。统计范围是相邻的两次调用，要求同一会话、同一模型、间隔不超过 60 分钟（与 `--ttl-min` 相同）、中间没有压缩、也没有 `--deploy`。判据是：cache_read ≥ ⌊(P − max(0.1P, 4096)) / 128⌋ × 128，P 是前一次调用的 prompt token 数。这个余量覆盖两样东西：GPT-5.6 之前的模型按固定间隔放置隐式断点（GPT-5.5 是 2 048 token），最后一个断点之后的尾巴不会命中；以及 cached_tokens 按 128 向下取整。
 
 **目标**（报出来，但不作为门槛）
@@ -1069,7 +1070,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 6. restart-ant 场景用的 `USER_TYPE=ant` 还改了别的行为（系统提示的长度不同），所以它只能说明「附件落盘后，续上前后一致」，不能代表节点身份下的提示内容。
 7. CH-2 让附件落盘后转录会变大多少，没有在真实会话上量过。
 8. CH-4 之后新会话的 `instructions` 带工作区的真实 git 状态，新会话之间的前缀 key 会随工作区变化；现网新建会话的频度和首轮的损失没有量过（5.11.5 CH-4）。
-9. 同构建替换在现网是否真的续上，要等 G-2 的样本；验收窗口里可能一次同构建替换都没有（5.11.8）。
+9. 同构建替换在现网是否真的续上，要等 G-2 的样本，由 P18.13 验收时人为触发的那次热切换提供（5.11.8）。
 10. CH-5、CH-6 只在录制桩上验证过请求体和拒收路径。网关拒收时的错误文案如果不点名字段，识别不到，那一轮会照常报错；这种文案没有样本。
 
 #### 5.11.12 实现与验证（2026-10-03）
@@ -1084,7 +1085,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 | T-2 | 集成 `T-2…`，正向对照 `QIANMO_PROMPT_CONTEXT_SNAPSHOT=0` | 红 | 绿；正向对照在 `instructions` 的 Status 行分叉 |
 | T-3 | 集成 `T-3…`，两个正向对照 | 红 | 绿；关掉附件落盘时 `input[0]` 第 45 字符分叉，关掉快照时 `prompt_cache_key` 先变 |
 | T-4 | 单元 `sessionCacheKey.test.ts`（②–⑤）；集成 T-2、T-3 的 key 断言（①）；单元 `sessionPromptContext.test.ts` 的压缩用例 | 模块是新的，没有改前 | 绿 |
-| T-5 | 单元 `stickyRouting.test.ts`（真实 `sideQuery` 打本机回环端点；真实 `queryModelGrok`） | 副查询绿，Grok 红 | 绿 |
+| T-5 | 单元 `stickyRouting.test.ts`（真实 `sideQuery` 打本机回环端点；Grok 一半从 `queryModelWithStreaming` 经 `claude.ts` 的真实分派走到 Grok 线，去掉 `claude.ts` 那一行实参就变红） | 副查询绿，Grok 红 | 绿 |
 | T-6 | 单元 `requestExtras.test.ts` ①–④；集成：默认不带、真子进程上替换前后都带、真子进程上被拒后锁存 | ① 绿，②③④ 红 | 绿 |
 | T-7 | 单元 `requestExtras.test.ts` ①–⑤；集成：逐个请求比较上一次响应（含替换后第一次）、转录里的响应 id 和诊断、被拒后锁存 | ⑤ 绿，①–④ 红 | 绿 |
 | T-8 | 集成 `T-8…`；单元 `persistAttachments.test.ts`（非节点身份） | 节点这一半红 | 绿 |
@@ -1101,7 +1102,7 @@ CH-n 是本包的改动编号，改法细节见 5.11.5；「不做」的理由�
 - CH-4：现网会话 cwd 是 git 仓库，改动在现网可见（见 CH-4 的「现网会变」）。
 - CH-5、CH-6：拒收后的重发走 Responses 线的 transform 阶梯，不套 `sendDroppingRejectedParameters`。
 - CH-6：诊断对象的字段按官网是 `type`，设计里写成了 `status`。
-- CH-7：`check:cycles` total +1。
+- CH-7：会话 id 由调用方 `claude.ts` 传入，比设计多改一个基座文件（纯插入一行实参），不新增 import 环。
 - 现网测法：保留期窗口 60 min；G-2 只统计同构建替换；归因脚本加了 `--deploy` 和 `diag=` 输出。
 
 ---
@@ -1380,13 +1381,13 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 | **P18.6** 中枢存储与第六类动作 | B2 | 档案账本、密文库、主密钥、编译预览、执行器（local / ssh）、`ProviderPort` 的实现、节点脚本与内测接线；节点指派的上下文覆盖与编译缺省 200 000（D-8） | `src/cli/handlers/consoleProviders*.ts`（新）；`src/services/qianmo/providers/compile.ts`（缺省值）；`src/cli/handlers/{console.ts,consoleArgs.ts}`；`packages/console/src/deps.ts`（`ProviderPort`）；`demo/env/beta/ops/model-apply.sh`（新）及其测试；`demo/env/beta/{common.sh,beta-up.sh,beta-reset.sh,README.md}`；`docs/dev/beta-env.md`（§8.3 新增持密面的行） | P18.2、P18.4、P15.9 | 否 | 密文库 0600、目录 0700；主密钥权限过宽时拒绝启动模型服务这一面；轮换之后旧密文从文件里消失（字节扫描）；主密钥缺失而密文存在时 fail-closed，且不重新生成；`providers.ndjson` 有坏行时页面拒绝服务；ssh 命令行不含密钥（argv 断言）；客户端命令是哨兵，强制命令缺失时操作失败；`model-apply.sh` 忽略 `SSH_ORIGINAL_COMMAND`，节点名不合法时拒绝；同一节点的两次 apply 串行；`StrictHostKeyChecking=yes` 且 known_hosts 缺条目时拒绝；`beta-reset.sh` 任何参数都不动主密钥（用例）；未写 `contextTokens` 的档案编译出 200 000，节点覆盖优先于档案，清除覆盖后回到档案值（用例） | 44–68 |
 | **P18.7** 节点侧 `qm provider` | B2 | `serve-stdin` / `status` / `probe` / `models` / `apply` / `autocompact`（D-9：与 `/autocompact` 同一实现，`status` 的 `effective` 报回自动压缩生效值与来源）；ACP spawn env 剥离；子进程清理 | `src/cli/handlers/provider*.ts`（新）；`src/entrypoints/cli.tsx`；`src/cli/program/commands/qianmo.tsx`；`src/services/qianmo/residentAcpEnv.ts`；`src/utils/process/subprocessEnv.ts` | P18.2、P18.3 | **是**（`cli.tsx` 一处快速路径；`subprocessEnv.ts` 名单加五项；由 P18.8 统一登记） | stdin 超过 64 KiB 时拒绝；错误码闭合集合逐个有用例；响应里不出现任何值（扫描断言）；托管节点的 ACP 子进程 env 里没有 `ALL_PROFILE_ENV_KEYS` 和 `CLAUDE_CODE_USE_*`（真子进程断言），未托管节点的行为与今天逐字节一致；Bash 工具的子进程看不到 `OPENAI_API_KEY`（真 ACP 用例）；probe 三态各有用例（录制桩：200 好 key、200 加错误体、400 坏 key、连接被拒）；`/v1` 纠正有用例；`call` 模式的临时配置根用完即删 | 24–40 |
 | **P18.8** 调用层第二批 · 推理一致性 | B2 | hermes #4、#7、#8、#10、#13、#14、#23、#26；删除 `applyCompatRule` | 新规则文件；`packages/@ant/model-provider/src/shared/{openaiConvertMessages.ts,openaiStreamAdapter.ts,openaiUsage.ts}`；`src/services/api/openai/{requestBody.ts,responsesAdapter.ts}`；`src/services/api/grok/reasoning.ts`；`src/services/providerRegistry/providerCompatMatrix.ts` 及其测试；`docs/dev/base-modifications.md`（登记本批全部基座改动，含 P18.7 的两处） | P18.5 | **是** | hermes §11.9-① 的 A、B、E、F 翻转；回放家族表逐行有对等用例（严格端点不带 `reasoning_content`，kimi、deepseek、mimo 带）；内联标签被切在两个增量之间的用例；正文中夹空 `reasoning_content` 的既有用例仍绿（#31）；Kimi 不会同时发 `thinking` 和 `reasoning_effort`；换端点之后 `encrypted_content` 被丢弃；全仓 grep `applyCompatRule` 为空；节点 `capabilities.replayFilter` 为 true | 72–96 |
-| **P18.19** 缓存命中 | B2（在 P18.8 之后合入） | §5.11 的 CH-1 ~ CH-7：按会话的提示上下文快照、节点身份下附件落盘、key 按会话钉住、git 状态读会话 cwd、可选的保留期、响应 id 与缓存诊断、Grok 粘性头；现网测法用基线脚本加归因脚本 | `src/services/qianmo/promptCache/**`（新）；`src/services/acp/agent/sessionWorkspace.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts`；`src/services/api/openai/{index.ts,responsesAdapter.ts}`；`src/services/api/grok/index.ts`；`tests/integration/qianmo-prompt-cache.test.ts`（新）；`tests/integration/fixtures/responses-recorder.ts`（新）、`resident-acp-harness.ts`（加两个可选参数）；`src/services/qianmo/modelCompat/__tests__/support/requestCapture.ts`（清环境的键表加两项）；`scripts/cycle-budget.json`（CH-7，total +1）；`docs/dev/base-modifications.md` | P18.8（`responsesAdapter.ts` 的文件顺序；录制桩的 `responsesSSE`）；`fix/acp-flush-and-cwd`（`de34761a` 修转录落盘，T-3 依赖它；它也改 `sessionWorkspace.ts`，要先合入；已随 #170 合入） | **是**（`entries.ts`、`context.ts`、`grok/index.ts`、`responsesAdapter.ts` 都是纯插入；`openai/index.ts` 改一处调用并插入传参；`sessionWorkspace.ts` 是阡陌自有文件） | §5.11.7 的 T-1 ~ T-9 全绿。其中 T-2、T-3 今天是红的（录制桩实测），修复后变绿；每条都有正向对照。非节点身份的转录和请求体与今天逐字节一致。CH-5、CH-6 不开时请求体与今天逐字节一致。现网的 G-1 ~ G-3 在 P18.13 部署之后按 §5.11.8 收数 | 44–70 |
+| **P18.19** 缓存命中 | B2（在 P18.8 之后合入） | §5.11 的 CH-1 ~ CH-7：按会话的提示上下文快照、节点身份下附件落盘、key 按会话钉住、git 状态读会话 cwd、可选的保留期、响应 id 与缓存诊断、Grok 粘性头；现网测法用基线脚本加归因脚本 | `src/services/qianmo/promptCache/**`（新）；`src/services/acp/agent/sessionWorkspace.ts`；`src/utils/sessionStorage/entries.ts`；`src/context.ts`；`src/services/api/openai/{index.ts,responsesAdapter.ts}`；`src/services/api/grok/index.ts`；`tests/integration/qianmo-prompt-cache.test.ts`（新）；`tests/integration/fixtures/responses-recorder.ts`（新）、`resident-acp-harness.ts`（加两个可选参数）；`src/services/qianmo/modelCompat/__tests__/support/requestCapture.ts`（清环境的键表加两项）；`src/services/api/claude.ts`（CH-7，Grok 分派处多传一个实参）；`docs/dev/base-modifications.md` | P18.8（`responsesAdapter.ts` 的文件顺序；录制桩的 `responsesSSE`）；`fix/acp-flush-and-cwd`（`de34761a` 修转录落盘，T-3 依赖它；它也改 `sessionWorkspace.ts`，要先合入；已随 #170 合入） | **是**（`entries.ts`、`context.ts`、`grok/index.ts`、`claude.ts`、`responsesAdapter.ts` 都是纯插入；`openai/index.ts` 改一处调用并插入传参；`sessionWorkspace.ts` 是阡陌自有文件） | §5.11.7 的 T-1 ~ T-9 全绿。其中 T-2、T-3 今天是红的（录制桩实测），修复后变绿；每条都有正向对照。非节点身份的转录和请求体与今天逐字节一致。CH-5、CH-6 不开时请求体与今天逐字节一致。现网的 G-1 ~ G-3 在 P18.13 部署之后按 §5.11.8 收数 | 44–70 |
 | P15.2 余下（指针） | B2 | 暂停、恢复、退役的后端 | 以 `tenancy-m1.md` §6 为准。本批不许动 `console.ts`、`consoleArgs.ts`、`deps.ts`（归 P18.6），确实要动时排到 P18.6 合入之后 | P15.1 | 否 | 见 `tenancy-m1.md` §6 | 8–16（计入 P15） |
 | **P18.9** 模型服务页 | B3 | §6.3 全部 | `packages/console/src/routes/providers.ts`；`packages/console/src/view/providers*.ts`（新）；路由模块自带的样式与脚本片段；`packages/console/src/view/chatPage.ts`（模型标签、分隔线） | P18.4、P18.6、P18.7 | 否 | AC-P1（端到端：录制桩 + 真 resident）；AC-P3；AC-P4 的界面一侧（显示值取自节点 `effective`，结构断言中枢不自己算）；无脚本时只读可用，写控件写明原因；viewer、member、break-glass、legacy 四种主体都看不到写控件和指纹（扫描断言）；所有可见文案过禁句读门禁；导出文件不含 key 和指纹；导入出现未知键时整份拒绝；档案编辑、节点矩阵、节点详情三处都能改上下文窗口，显示值取自节点 `effective`（D-8，用例） | 60–92 |
 | **P18.10** 账号与访问 · 操作记录页 | B3 | H3、H4 的页面 | `packages/console/src/routes/access.ts`；`packages/console/src/view/{access.ts,invite.ts}`（`access.ts` 新建）；`packages/console/src/{accountsHttp.ts,access.ts}`；`docs/dev/beta-env.md` §3.6（告知措辞需要改时） | P18.4、P15.9 | 否 | 成员、邀请、会话、操作记录四个页签各有 HTTP 用例；强制下线之后该主体的 SSE 连接数为零；member 只看得到与自己有关的操作记录；邀请页 `Referrer-Policy: no-referrer`（断言） | 48–72 |
 | **P18.11** 审计列表 · 生命周期 · 节点详情 | B3 | D5、J2 的页面、A3 | `packages/console/src/routes/{audit.ts,nodes.ts}`；`packages/console/src/view/{audit.ts,agents.ts,node.ts}`（`node.ts` 新建）；`packages/console/src/deps.ts`（`AuditPort` 游标）；`src/cli/handlers/consolePorts.ts`；`packages/audit` 的只读查询；`docs/dev/console.md`；`packages/console/README.md` | P18.4、P15.2 余下 | 否 | 10 万条审计下首屏响应时间有上界（基准用例记数）；游标分页无重复、无遗漏；生命周期四个动作都走二次确认并进动作账本；节点详情的「模型」页签显示 §2.4 的全部字段；`console.md` 路由表与实际路由一致（扫描断言） | 56–80 |
 | **P18.12** 调用层第三批 · 韧性 | B3 | hermes #1、#16–#21、#24、#25、#27、#33 | 新规则文件；`src/services/api/{streamAssembly.ts,retryClassification.ts}`；`src/services/api/openai/{retry.ts,index.ts}`；`packages/@ant/model-provider/src/shared/{openaiStreamAdapter.ts,openaiConvertMessages.ts,openaiConvertTools.ts}`；`src/services/api/{gemini,grok}/index.ts`（如需）；`src/query.ts`；`tests/preload.ts`；`tests/support/**`（新）；`docs/dev/base-modifications.md` | P18.8 | **是** | 第三方线路配了 `fallbackModels` 时，5xx 重试用尽会切到 fallback（以前从不发生），切换前回放已过滤；常驻会话的 `Retry-After` 上限 600 s、交互式 60 s，各一条用例；chat 流空闲超时会触发；DeepInfra 形状的错误块不重试；工具结果图片被拒之后降级并记住；思考耗尽时不续写；preload 之后，开发机带订阅登录态时 `codexPinnedSearch` 不再红；逐厂商对等表覆盖目录里的全部预设 | 88–112 |
-| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5、P18.18；主 agent 打的发行标签（D-7） | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据 | 16–32 |
+| **P18.13** 迁移与真机验收 | B4 | §2.9 迁移；AC-P6 | `demo/env/beta/**` 的 runbook 与验收脚本；`docs/dev/beta-env.md`；本文回写 v1.1 | P18.3、P18.6、P18.7、P18.9、P18.5、P18.18；主 agent 打的发行标签（D-7） | 否 | 同一份部署连续两轮零红并留档（§8.4）；至少一个预设的 `evaluated` 改为非 false，并附证据；部署后人为触发一次 P18.3 热切换（同构建、同模型、同 effort），给 P18.19 的 G-2 补样本，并按 §5.11.8 收 G-1 ~ G-3 | 16–32 |
 | **P18.14** 控制台 P1 收口 | B4 | §6.5 的 P1 两组 | `packages/console/src/**` 里路由文件以外的视图与 assets；`src/cli/handlers/consolePorts.ts` 的错误映射 | P18.4（建议排在 B3 之后，减少 golden 往返） | 否 | `console-audit.md` §4 各项的「改法」逐条有用例；I1 与 C5 在同一个提交里；亮色和暗色对比度都达 AA（K1 计算）；375 px 宽可以读状态、可以发对话（K1） | 144–216 |
 | **P18.15** 告警与值守作业页 | B5 | J5、J6 | `packages/console/src/routes/{alerts.ts,jobs.ts}`；`NotifyPort`、`SchedulerPort`（`deps.ts`、`consolePorts.ts`） | P18.4 | 否 | 告警有收件箱、未读角标、级别筛选；值守作业页显示上次和下次触发、ESTOP 状态，`lastTickAt` 缺席可见 | 48–64 |
 | **P18.16** 用量与审批页（条件） | B5 | J7、J8 | `packages/console/src/routes/{usage.ts,approvals.ts}`；`deps.ts` | P15.7、P14.5 | 否 | 用量按自然日、按人；审批页与 P14 协议的契约用例 | 48–80 |
@@ -1500,9 +1501,8 @@ P18.4 顺带做审计「第一批」里不依赖评审的几项：A5（侧栏计
 - **转录里多了附件内容**（CH-2）：包括文件片段和记忆片段，权限和转录相同，体积会变大。
 - **后续包可能把命中率打回去**：P18.18 如果按请求轮换 key，或者 P18.12 让 fallback 一直停留，都会让会话散到不同的缓存里。§5.11.6 的 X-1、X-2 是对这两个包的约束。
 - **CH-4 不能单独合入**：如果只修 git 状态读错 cwd 的问题而不上快照，命中率会比今天更差。
-- **部署新构建之后的首轮仍然整段重读**：P18.19 挡不住（§5.11.3）。发版越频繁，这部分损失越大。
+- **部署新构建之后的首轮仍然整段重读**：P18.19 挡不住（§5.11.3），不在本包解决。发版越频繁，这部分损失越大。
 - **CH-4 会减少新会话之间的前缀共享**：工作区的 git 状态一变，新会话的前缀 key 就跟着变（§5.11.5 CH-4）。
-- **`check:cycles` 的 total 预算加了 1**（CH-7，只经类型导入闭合的一条环）。
 
 ---
 
