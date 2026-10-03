@@ -75,7 +75,7 @@ describe('the pages', () => {
     ['approvals', '/approvals', 'run', true],
     ['providers', '/providers', 'config', true],
     ['servers', '/servers', 'config', false],
-    ['access', '/access', 'admin', true],
+    ['access', '/access', 'admin', false],
     ['usage', '/usage', 'admin', true],
     ['settings', '/settings', 'admin', false],
   ]

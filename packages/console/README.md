@@ -40,7 +40,8 @@ const handle = createConsoleHandler(deps, tokens)
 | GET | `/servers`、`/settings` | view | `text/html`，服务器、设置与关于 |
 | GET | `/chat` | **admin** | `text/html`，对话面；没接对话通道时 404 |
 | GET | `/alerts?level=&state=`、`/jobs` | view | `text/html`，告警收件箱与值守作业（`docs/dev/console.md` §10.4） |
-| GET | `/approvals`、`/providers`、`/access`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
+| GET | `/access`、`/access/{invites,sessions,actions}` | view | `text/html`，账号与访问 · 操作记录；`invites`、`sessions` 只给 admin 令牌与 `ops` 账号，其他人 403 页（`docs/dev/console.md` §5.3） |
+| GET | `/approvals`、`/providers`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
 | GET | `/assets/app.css` | 公开 | `text/css` |
 | GET | `/assets/app.js` | 公开 | `text/javascript` |
 | GET | `/v0/health` | 公开 | `{ status: 'ok' }` |
@@ -55,12 +56,21 @@ const handle = createConsoleHandler(deps, tokens)
 | GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }` |
 | POST | `/v0/alerts/<urlencoded id>/ack` | **admin** | `{ ack, unread }`；id 不在当前收件箱时 404，没有 `NotifyPort` 时 501 |
 | GET | `/v0/jobs` | view | `SchedulerSnapshot`；没有 `SchedulerPort` 时 501 |
+| GET | `/v0/accounts` | **ops / admin** | `{ accounts, invites }`；每个账号带 `lastLoginAt`、`lastSeenAt`（没有就是 `null`）与 `streams`（此刻的事件流数） |
+| POST | `/v0/accounts/invites` | **ops / admin** | `{ inviteId, role, expiresAt, link }` |
+| DELETE | `/v0/accounts/invites/<id>` | **ops / admin** | 204 |
+| POST | `/v0/accounts/<urlencoded subject>/revoke` | **ops / admin** | 204 |
+| POST | `/v0/accounts/<urlencoded subject>/reset` | **ops / admin** | `{ subject, inviteId, expiresAt, link }` |
+| POST | `/v0/accounts/<urlencoded subject>/logout` | **ops / admin** | `{ subject, sessions, streams }`，强制下线；`subject` 段解码失败时 400 `invalid` |
+| GET | `/v0/actions?subject=&action=&target=&before=&limit=`、`/v0/actions/reads?session=` | 个人账号、admin | `ActionPage`；`viewer`、`member` 只拿到自己的，view 令牌 403 |
 | GET | `/fragments/{roster,audit,limits}` | view | `text/html` 片段 |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | `text/html` 片段 |
+| GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | `text/html` 片段 |
 | GET | `/fragments/chain/<urlencoded traceId>` | view | `text/html` 片段，一条消息链 |
 
 约定：
 
+- `/v0/accounts` 那几条只在开了 `--accounts` 时存在，没开时是 404；`ops` 个人账号在这里与 admin 令牌同权（`docs/dev/console.md` §8.1.1）。
 - 整个 `qianmo://…` 地址放在**一个**百分号编码的 path segment 里（`qianmo%3A%2F%2Fnode-b%2Freviewer`），与注册中心 HTTP v0 一致。
 - 错误一律是 `{ "error": { "code": "…", "message": "…" } }`；浏览器导航（`GET`/`HEAD`、`Accept: text/html`）到页面路径时拿到的是 HTML 错误页。
 - 每个 HTML 文档都带 `Content-Security-Policy`（含 `frame-ancestors 'none'`）与 `X-Frame-Options: DENY` 两个响应头。
