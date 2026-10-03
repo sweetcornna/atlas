@@ -57,6 +57,10 @@ import {
   adaptGuardedChatStream,
   chatStreamIdleTimeoutMs,
 } from '../../qianmo/modelCompat/chatStreamGuards.js'
+import {
+  type ContentFilterSink,
+  contentFilterNotice,
+} from '../../qianmo/modelCompat/contentFilter.js'
 
 const GROK_MAX_TOKENS_ENV_HINT =
   'GROK_MAX_TOKENS or CLAUDE_CODE_MAX_OUTPUT_TOKENS'
@@ -160,6 +164,8 @@ export async function* queryModelGrok(
       ...(grokReasoningEffort && { reasoning_effort: grokReasoningEffort }),
     } as ChatCompletionCreateParamsStreaming
 
+    // qianmo P18.12 (hermes #27): src/services/qianmo/modelCompat/contentFilter.ts.
+    const contentFilter: ContentFilterSink = { seen: false }
     const adaptedStream = retryThirdPartyEventStream({
       signal,
       // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
@@ -180,6 +186,8 @@ export async function* queryModelGrok(
             idleTimeout: { ms: chatStreamIdleTimeoutMs(), label: 'Grok' },
             // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
             errorChunks: { label: 'Grok' },
+            // qianmo P18.12 (hermes #27): contentFilter.ts.
+            contentFilter,
           },
         ),
     })
@@ -283,6 +291,8 @@ export async function* queryModelGrok(
                 ? { maxTokens: grokMaxTokens }
                 : {}),
               maxTokensEnvHint: GROK_MAX_TOKENS_ENV_HINT,
+              // qianmo P18.12 (hermes #27): contentFilter.ts.
+              terminalError: contentFilterNotice(stopReason, contentFilter),
             })) {
               if (output.type === 'assistant') {
                 collectedMessages.push(output)

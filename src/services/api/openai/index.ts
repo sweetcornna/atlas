@@ -26,6 +26,10 @@ import {
 import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
 import { applyChatSchemaRules } from 'src/services/qianmo/modelCompat/schemaRules.js'
 import {
+  type ContentFilterSink,
+  contentFilterNotice,
+} from 'src/services/qianmo/modelCompat/contentFilter.js'
+import {
   sendDegradingToolImages,
   toolResultImagesAccepted,
 } from 'src/services/qianmo/modelCompat/toolResultImages.js'
@@ -498,6 +502,8 @@ export async function* queryModelOpenAI(
     // OpenRouter / MiniMax model that produced it —
     // src/services/qianmo/modelCompat/reasoningDetailsReplay.ts.
     const reasoningDetails: unknown[] = []
+    // qianmo P18.12 (hermes #27): src/services/qianmo/modelCompat/contentFilter.ts.
+    const contentFilter: ContentFilterSink = { seen: false }
     // qianmo P18.19 (CH-6): the response id (and cache diagnostics) for the
     // same message — src/services/qianmo/promptCache/responseRecord.ts.
     const responseCapture: ResponseCapture = {}
@@ -617,6 +623,8 @@ export async function* queryModelOpenAI(
                 },
                 // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
                 errorChunks: { label: 'OpenAI Chat' },
+                // qianmo P18.12 (hermes #27): contentFilter.ts.
+                contentFilter,
               },
             ),
     })
@@ -716,6 +724,8 @@ export async function* queryModelOpenAI(
               stopReason,
               maxTokens,
               maxTokensEnvHint: OPENAI_MAX_TOKENS_ENV_HINT,
+              // qianmo P18.12 (hermes #27): contentFilter.ts.
+              terminalError: contentFilterNotice(stopReason, contentFilter),
               providerMetadata: withResponseMetadata(
                 {
                   ...reasoningMetadata(reasoningItems),

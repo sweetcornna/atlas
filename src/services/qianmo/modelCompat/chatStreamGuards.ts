@@ -67,6 +67,7 @@ import {
   clearFreezeAwareTimeout,
   setFreezeAwareTimeout,
 } from 'src/utils/network/freezeAwareWatchdog.js'
+import type { ContentFilterSink } from './contentFilter.js'
 import { tapReasoningDetails } from './reasoningDetailsReplay.js'
 
 /** hermes `HERMES_STREAM_STALE_TIMEOUT` default. */
@@ -92,6 +93,14 @@ export type ChatStreamGuards = {
   idleTimeout?: { ms: number; label: string }
   /** End the attempt at an in-stream error chunk (#19). */
   errorChunks?: { label: string }
+  /**
+   * Set when a chunk ends with `finish_reason: "content_filter"`, which the
+   * adapter maps to `end_turn` (#27, `contentFilter.ts`); cleared when the
+   * attempt starts and when it fails. A failed attempt's close is the
+   * ladder's, not the provider's: an empty filtered answer is an empty
+   * response, re-sent, and its synthetic close must not carry the notice.
+   */
+  contentFilter?: ContentFilterSink
 }
 
 /**
@@ -187,6 +196,22 @@ export async function* throwOnStreamErrorChunks(
   }
 }
 
+/** `stream`, recording a `content_filter` finish in `sink` (#27). */
+export async function* noteContentFilter(
+  stream: AsyncIterable<ChatCompletionChunk>,
+  sink: ContentFilterSink,
+): AsyncGenerator<ChatCompletionChunk> {
+  sink.seen = false
+  for await (const chunk of stream) {
+    if (
+      chunk.choices?.some(choice => choice?.finish_reason === 'content_filter')
+    ) {
+      sink.seen = true
+    }
+    yield chunk
+  }
+}
+
 /** `stream` with every guard in `guards` applied, in chunk order. */
 export function guardChatStream(
   stream: AsyncIterable<ChatCompletionChunk>,
@@ -202,7 +227,23 @@ export function guardChatStream(
   if (guards.reasoningDetails) {
     guarded = tapReasoningDetails(guarded, guards.reasoningDetails)
   }
+  if (guards.contentFilter) {
+    guarded = noteContentFilter(guarded, guards.contentFilter)
+  }
   return guarded
+}
+
+/** `events`, clearing `sink` if the attempt fails (#27). */
+async function* forgetContentFilterOnFailure(
+  events: ReturnType<typeof adaptOpenAIStreamToAnthropic>,
+  sink: ContentFilterSink,
+): ReturnType<typeof adaptOpenAIStreamToAnthropic> {
+  try {
+    yield* events
+  } catch (error) {
+    sink.seen = false
+    throw error
+  }
 }
 
 /**
@@ -215,9 +256,12 @@ export function adaptGuardedChatStream(
   options: Parameters<typeof adaptOpenAIStreamToAnthropic>[2],
   guards: ChatStreamGuards,
 ): ReturnType<typeof adaptOpenAIStreamToAnthropic> {
-  return adaptOpenAIStreamToAnthropic(
+  const events = adaptOpenAIStreamToAnthropic(
     guardChatStream(stream, guards),
     model,
     options,
   )
+  return guards.contentFilter
+    ? forgetContentFilterOnFailure(events, guards.contentFilter)
+    : events
 }
