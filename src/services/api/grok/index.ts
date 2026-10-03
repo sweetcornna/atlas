@@ -15,7 +15,11 @@ import type {
   ChatCompletionChunk,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions/completions.mjs'
-import { clearGrokClientCache, getGrokClient } from './client.js'
+import {
+  clearGrokClientCache,
+  getGrokClient,
+  grokTargetBaseURL,
+} from './client.js'
 import { updateOpenAIUsage } from '../openai/openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
@@ -47,6 +51,7 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { applyReasoningReplayPolicy } from '../../qianmo/modelCompat/reasoningEcho.js'
 
 const GROK_MAX_TOKENS_ENV_HINT =
   'GROK_MAX_TOKENS or CLAUDE_CODE_MAX_OUTPUT_TOKENS'
@@ -90,9 +95,11 @@ export async function* queryModelGrok(
       },
     )
 
-    const openaiMessages = anthropicMessagesToOpenAI(
-      messagesForAPI,
-      systemPrompt,
+    // qianmo P18.12: reasoning in history is filtered by the endpoint this
+    // request goes to, as the OpenAI lane does in requestBody.ts (P18.8).
+    const openaiMessages = applyReasoningReplayPolicy(
+      anthropicMessagesToOpenAI(messagesForAPI, systemPrompt),
+      { model: grokModel, baseURL: grokTargetBaseURL() },
     )
     const openaiTools = anthropicToolsToOpenAI(standardTools)
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
