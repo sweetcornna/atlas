@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 控制台的登记簿与续租者：页面上的「注册」活过租约（P15.2 的最小内核）。
+ * 控制台的登记簿与续租者：页面上的「注册」活过租约（P15.2 的最小内核），以及
+ * 建在它上面的生命周期——发布、暂停、恢复、退役（P15.2，`tenancy-m1.md` §3.6）。
  *
  * ## 缺陷
  *
@@ -31,7 +32,7 @@
  *
  * ## 续租用 `POST /v0/agents`，不用心跳
  *
- * 每一轮把登记簿里的整条声明原样再注册一次：
+ * 每一轮把登记簿里每条 `active` 的整条声明原样再注册一次：
  *
  * - 同一端点 → 200，等于续租，同时把能力 / 状态重新声明一遍；
  * - 注册中心刚重启、表上没有 → 201，条目回来；
@@ -47,41 +48,79 @@
  * （`rosterLease`，C-1 那条「以注册中心为准」），没有回执时用 `DEFAULT_TTL_MS`。
  * 租约变短时下一轮提前，不会让新登记的一条在第一次续租之前就过期。
  *
- * ## 落盘
+ * ## 生命周期
+ *
+ * 每条带 `state`（active / paused / retired）与最近一次改它的主体与时刻。
+ * `paused` 与 `retired` 不续租，注册中心那条立即 `DELETE`；真正挡住流量的是三个
+ * 出口在拨号前的检查（{@link ConsoleRegistrations.exitRefusal}、`qm watch` 读同一
+ * 个文件）。给了托管清单（`--managed`）时，发布与恢复只认清单里的地址，端点从
+ * 清单取。退役的地址不再发布；暂停的地址要用恢复。
+ *
+ * ## 落盘，与读不出来时
  *
  * 路径由 `consoleArgs.ts` 从 `occConfigPath()` 派生；写入复用 `FileRegistryStore`
- * （同目录临时文件 `wx` 创建 + fsync + rename，P2.1）。文档形状：
- * `{ version: 1, registrations: [{ address, endpoint, capabilities?, publicKey?, status? }] }`。
- * 与注册中心的表不同，这是**意图**而不是软状态：读不动的文件不当空文件覆盖掉，
- * 改名挪开（`.unreadable-<ISO>`）留证，再从空登记簿起。写失败不让请求失败——内存里
- * 那份照样续租，只在控制台重启时丢——但一定出声。
+ * （同目录临时文件 `wx` 创建 + fsync + rename，P2.1）。文档形状见
+ * `consoleRegistrationLedger.ts`。
+ *
+ * 这是**意图**而不是软状态，所以读不出来时**不从空登记簿起**：那会把退役的地址
+ * 重新放出去。坏 JSON / 版本不对的文件照旧改名挪开（`.unreadable-<ISO>`）留证，
+ * 权限与 IO 错误原地不动；无论哪种，本进程从此不发布、不恢复、不写盘，三个出口
+ * 一律不拨，stderr 告警，之后有请求被拒时每分钟最多再报一次。重启后仍是这样，
+ * 直到运维放回修好的文件，或把挪开的那份移出目录。
+ *
+ * 写失败不让那一次请求失败——它在本进程里已经生效——但此后不再接受发布与恢复：
+ * 写不进去的暂停在重启后会丢，不能再叠更多放宽的变更上去。
  */
 
-import { existsSync, renameSync } from 'node:fs'
+import { renameSync } from 'node:fs'
 import {
   rosterLease,
   type ConsoleAgent,
   type ConsoleFailure,
   type ConsoleResult,
+  type LifecycleChange,
+  type LifecycleOutcome,
+  type LifecyclePort,
+  type LifecycleRefusal,
+  type LifecycleSnapshot,
+  type PublishInput,
   type RegisterAgentInput,
+  type RegistrationRecord,
+  type RegistrationState,
   type RegistryPort,
+  type WakePort,
 } from '@qianmo/console'
 import {
   DEFAULT_TTL_MS,
   FileRegistryStore,
   renewIntervalFor,
 } from '@qianmo/registry'
+import {
+  UNREADABLE_SUFFIX,
+  exitFailureOf,
+  exitRefusalOf,
+  ledgerDocument,
+  ledgerProblemOf,
+  readRegistrationLedger,
+  type LedgerEntry,
+} from './consoleRegistrationLedger.js'
 
-/** 登记簿文档的版本。别的版本整份当作读不动（挪开，不猜）。 */
-export const REGISTRATION_LEDGER_VERSION = 1
+export { REGISTRATION_LEDGER_VERSION } from './consoleRegistrationLedger.js'
 
 /** stderr 行的前缀，与 `console chat:` 同一个写法。 */
 const LOG_PREFIX = 'console registrations:'
 
+/** 读不出来之后，本进程不做的事。 */
+const CLOSED =
+  'publishing and resuming are refused, and chat, wake and qm watch reach no agent, until the ledger is repaired and this console restarts'
+
+/** 被拒的请求再提醒一次的最短间隔，与账号库同一个数（`AccountBook`）。 */
+const REMIND_EVERY_MS = 60_000
+
 /** 一轮续租里一条地址的结果。 */
 type RenewOutcome =
   | { readonly kind: 'renewed'; readonly address: string }
-  /** 这一轮在路上时它被注销了；续租那次 POST 可能把它建了回来，已补一次 DELETE。 */
+  /** 这一轮在路上时它被注销或暂停了；续租那次 POST 可能把它建了回来，已补一次 DELETE。 */
   | { readonly kind: 'withdrawn'; readonly address: string }
   | {
       readonly kind: 'failed'
@@ -95,16 +134,33 @@ export type RenewScheduler = (
   delayMs: number,
 ) => () => void
 
+/** 托管清单里的一条：`peers.conf` 的地址行。 */
+interface ManagedAddress {
+  readonly address: string
+  readonly endpoint: string
+}
+
 interface ConsoleRegistrationsOptions {
   /** 登记簿的绝对路径（`consoleRegistrationsPath()`）。 */
   readonly path: string
   /** 注册中心 HTTP v0 那个端口（`createRegistryPort`）。 */
   readonly registry: RegistryPort
+  /**
+   * 托管清单（`--managed`）。给了，发布与恢复只认清单里的地址、端点从清单取；
+   * 不给就不查（与 P15.8 的写 token 同一个先例：可选，`beta-up.sh` 总是给）。
+   */
+  readonly managed?: readonly ManagedAddress[]
   readonly schedule?: RenewScheduler
   /** 出声的地方；生产是 stderr。 */
   readonly log?: (line: string) => void
-  /** 只用来排「下一轮什么时候」和给挪开的文件起名。 */
+  /** 排「下一轮什么时候」、给挪开的文件起名、给状态变更记时刻。 */
   readonly now?: () => number
+}
+
+/** 登记簿为什么不能用：读不出来（谁都不拨），或写不进去（内存仍完整）。 */
+interface LedgerProblem {
+  readonly kind: 'unreadable' | 'unwritable'
+  readonly text: string
 }
 
 const defaultSchedule: RenewScheduler = (task, delayMs) => {
@@ -115,50 +171,6 @@ const defaultSchedule: RenewScheduler = (task, delayMs) => {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/**
- * 盘上一条 → 一条声明；形状不对返回 null。
- *
- * 只查类型，不查取值：地址、端点、能力条数的规矩住在注册中心，下一轮续租时它会
- * 如实拒绝，在这里再抄一份就是第二个会漂移的出处（`consolePorts.ts` 同一条）。
- */
-function toDeclaration(value: unknown): RegisterAgentInput | null {
-  if (!isRecord(value)) return null
-  const address = value['address']
-  const endpoint = value['endpoint']
-  const capabilities = value['capabilities']
-  const publicKey = value['publicKey']
-  const status = value['status']
-  if (typeof address !== 'string' || address === '') return null
-  if (typeof endpoint !== 'string' || endpoint === '') return null
-  if (
-    capabilities !== undefined &&
-    !(
-      Array.isArray(capabilities) &&
-      capabilities.every(item => typeof item === 'string')
-    )
-  ) {
-    return null
-  }
-  if (publicKey !== undefined && typeof publicKey !== 'string') return null
-  if (status !== undefined && typeof status !== 'string') return null
-  return declarationOf(
-    {
-      address,
-      endpoint,
-      ...(capabilities === undefined
-        ? {}
-        : { capabilities: capabilities as string[] }),
-      ...(publicKey === undefined ? {} : { publicKey }),
-      ...(status === undefined ? {} : { status }),
-    },
-    address,
-  )
 }
 
 /** 页面给的那份输入，地址换成注册中心回执里的规范写法。 */
@@ -177,41 +189,84 @@ function declarationOf(
   }
 }
 
-/** 整份文档 → 声明列表；版本或外形不对返回 null。 */
-function readLedger(document: unknown): {
-  readonly entries: readonly RegisterAgentInput[]
-  readonly dropped: number
-} | null {
-  if (!isRecord(document)) return null
-  if (document['version'] !== REGISTRATION_LEDGER_VERSION) return null
-  const list = document['registrations']
-  if (!Array.isArray(list)) return null
-  const entries: RegisterAgentInput[] = []
-  let dropped = 0
-  for (const item of list as readonly unknown[]) {
-    const declaration = toDeclaration(item)
-    if (declaration === null) dropped += 1
-    else entries.push(declaration)
+/** `ws://h:p` 与 `ws://h:p/` 是同一个端点；解析不了就按原文比。 */
+function sameEndpoint(a: string, b: string): boolean {
+  try {
+    return new URL(a).toString() === new URL(b).toString()
+  } catch {
+    return a.trim() === b.trim()
   }
-  return { entries, dropped }
+}
+
+function refuse(
+  code: LifecycleRefusal['code'],
+  message: string,
+): { readonly ok: false; readonly refusal: LifecycleRefusal } {
+  return { ok: false, refusal: { code, message } }
+}
+
+function unmanaged(address: string): LifecycleRefusal {
+  return {
+    code: 'unmanaged',
+    message: `${address} 不在托管清单里 · 托管清单来自中枢 peers.conf 的地址行`,
+  }
+}
+
+/** 本地拒绝换成端口失败的形状，给不认识生命周期的 `RegistryPort` 调用方。 */
+function failureOf(refusal: LifecycleRefusal): ConsoleFailure {
+  switch (refusal.code) {
+    case 'invalid':
+      return { code: 'invalid', message: refusal.message }
+    case 'not_found':
+      return { code: 'not_found', message: refusal.message }
+    default:
+      return { code: 'rejected', message: refusal.message }
+  }
+}
+
+const STATE_WORDS: Readonly<Record<RegistrationState, string>> = {
+  active: '已发布',
+  paused: '已暂停',
+  retired: '已退役',
+}
+
+/** 唤醒端口外面那一层：地址暂停、退役或登记簿读不出来时，一次都不发。 */
+export function gateWakePort(
+  port: WakePort,
+  gate: (address: string) => ConsoleFailure | null,
+): WakePort {
+  return {
+    send: async input => {
+      const refused = gate(input.to)
+      return refused === null
+        ? await port.send(input)
+        : { ok: false, failure: refused }
+    },
+  }
 }
 
 /**
- * 登记簿 + 续租者。`port` 交给 `ConsoleDeps.registry`，`start()` 之后开始续租。
+ * 登记簿 + 续租者 + 生命周期。`port` 交给 `ConsoleDeps.registry`，`lifecycle`
+ * 交给 `ConsoleDeps.lifecycle`，`start()` 之后开始续租。
  */
 export class ConsoleRegistrations {
   /** 包在注册中心端口外的那一层：注册成功入簿，注销先出簿，其余透传。 */
   readonly port: RegistryPort
+  /** 生命周期的四个动作与读面（`deps.ts` 的 `LifecyclePort`）。 */
+  readonly lifecycle: LifecyclePort
 
   readonly #path: string
   readonly #store: FileRegistryStore
   readonly #registry: RegistryPort
+  readonly #managed: ReadonlyMap<string, string> | null
   readonly #schedule: RenewScheduler
   readonly #log: (line: string) => void
   readonly #now: () => number
-  readonly #entries = new Map<string, RegisterAgentInput>()
+  readonly #entries = new Map<string, LedgerEntry>()
   /** 每条地址最近一次失败的原文，只为「状态变了才出声」。 */
   readonly #failing = new Map<string, string>()
+  #problem: LedgerProblem | null = null
+  #lastAlarmAt = Number.NEGATIVE_INFINITY
   #leaseMs = DEFAULT_TTL_MS
   #running = false
   #cancel: (() => void) | null = null
@@ -222,6 +277,10 @@ export class ConsoleRegistrations {
     this.#path = options.path
     this.#store = new FileRegistryStore(options.path)
     this.#registry = options.registry
+    this.#managed =
+      options.managed === undefined
+        ? null
+        : new Map(options.managed.map(item => [item.address, item.endpoint]))
     this.#schedule = options.schedule ?? defaultSchedule
     this.#log = options.log ?? (() => {})
     this.#now = options.now ?? Date.now
@@ -232,6 +291,14 @@ export class ConsoleRegistrations {
       deregister: async address => await this.#deregister(address),
       heartbeat: async address => await this.#heartbeat(address),
     }
+    this.lifecycle = {
+      read: async () => this.#snapshot(),
+      publish: async (input, by) => await this.#publish(input, by),
+      pause: async (address, by) => await this.#withdraw(address, 'paused', by),
+      resume: async (address, by) => await this.#resume(address, by),
+      retire: async (address, by) =>
+        await this.#withdraw(address, 'retired', by),
+    }
   }
 
   /** 登记簿文件。进 banner，不是秘密。 */
@@ -239,14 +306,54 @@ export class ConsoleRegistrations {
     return this.#path
   }
 
-  /** 登记簿里的地址，排好序。 */
+  /** 登记簿里在续租的（`active`）地址，排好序。 */
   get addresses(): readonly string[] {
-    return [...this.#entries.keys()].sort()
+    return [...this.#entries.values()]
+      .filter(entry => entry.state === 'active')
+      .map(entry => entry.declaration.address)
+      .sort()
   }
 
   /** 现在按哪个租约排续租。 */
   get leaseMs(): number {
     return this.#leaseMs
+  }
+
+  /** `null` 表示可用；否则是读不出来或写不进去的原因。 */
+  get problem(): string | null {
+    return this.#problem?.text ?? null
+  }
+
+  /** 启动横幅的那一行。 */
+  get summary(): string {
+    const count = (state: RegistrationState): number =>
+      [...this.#entries.values()].filter(entry => entry.state === state).length
+    const managed =
+      this.#managed === null
+        ? 'managed list off (no --managed)'
+        : `managed list ${String(this.#managed.size)} addresses`
+    return (
+      `${this.#path} (${String(count('active'))} renewed by this console, ` +
+      `${String(count('paused'))} paused, ${String(count('retired'))} retired; ${managed})` +
+      (this.#problem === null ? '' : ` UNAVAILABLE: ${this.#problem.text}`)
+    )
+  }
+
+  /**
+   * 出口检查：对话、唤醒在拨号之前问这一句。`null` 放行；否则是 `rejected`，
+   * 原因写在文案里。登记簿读不出来时谁都不放行。
+   */
+  exitRefusal(address: string): ConsoleFailure | null {
+    const unreadable =
+      this.#problem?.kind === 'unreadable' ? this.#problem.text : null
+    const refusal = exitRefusalOf(
+      unreadable,
+      this.#entries.get(address),
+      address,
+    )
+    if (refusal === null) return null
+    if (refusal.reason === 'unreadable') this.#remind()
+    return exitFailureOf(refusal)
   }
 
   /** 立刻续一轮，之后按周期续，直到 {@link stop}。重复调用无副作用。 */
@@ -264,9 +371,11 @@ export class ConsoleRegistrations {
     this.#dueAt = null
   }
 
-  /** 对登记簿里每一条各重新声明一次。续租者的一轮；测试直接调它。 */
+  /** 对登记簿里每条 `active` 各重新声明一次。续租者的一轮；测试直接调它。 */
   async renewNow(): Promise<readonly RenewOutcome[]> {
     const declarations = [...this.#entries.values()]
+      .filter(entry => entry.state === 'active')
+      .map(entry => entry.declaration)
     return await Promise.all(
       declarations.map(declaration => this.#renewOne(declaration)),
     )
@@ -304,9 +413,9 @@ export class ConsoleRegistrations {
       return { kind: 'failed', address, failure: result.failure }
     }
     this.#observeLease(result.value)
-    if (!this.#entries.has(address)) {
-      // 注销先出簿再发 DELETE，而这一轮的 POST 可能晚于那个 DELETE 到达注册中心，
-      // 把条目又建了回来。这里看得见这件事，就在这里收掉。
+    if (this.#entries.get(address)?.state !== 'active') {
+      // 注销、暂停、退役都是先改簿再发 DELETE，而这一轮的 POST 可能晚于那个
+      // DELETE 到达注册中心，把条目又建了回来。这里看得见这件事，就在这里收掉。
       await this.#registry.deregister(address)
       return { kind: 'withdrawn', address }
     }
@@ -316,29 +425,40 @@ export class ConsoleRegistrations {
     return { kind: 'renewed', address }
   }
 
+  // --- the registry port, as consumers without lifecycle see it ------------
+
   async #register(
     input: RegisterAgentInput,
   ): Promise<ConsoleResult<ConsoleAgent>> {
-    const result = await this.#registry.register(input)
-    // 只有注册中心收下的才入簿：被拒的、不可达的，页面上已经如实报错了。
-    if (!result.ok) return result
-    const address = result.value.address
-    this.#entries.set(address, declarationOf(input, address))
-    this.#failing.delete(address)
-    this.#persist()
-    this.#observeLease(result.value)
-    return result
+    const result = await this.#publish(input, undefined)
+    if (result.ok) {
+      const agent = result.value.agent
+      if (agent !== undefined) return { ok: true, value: agent }
+      return {
+        ok: false,
+        failure: { code: 'invalid', message: '注册中心没有给回执' },
+      }
+    }
+    return 'refusal' in result
+      ? { ok: false, failure: failureOf(result.refusal) }
+      : result
   }
 
   async #deregister(address: string): Promise<ConsoleResult<void>> {
+    const entry = this.#entries.get(address)
     // 先出簿：从这一刻起续租者不再碰它，哪怕下面的 DELETE 失败，租约也会自然到期。
-    const held = this.#entries.delete(address)
-    if (held) {
+    // 暂停与退役的条目留在簿里——注销不是恢复，状态不能借它抹掉。
+    if (entry?.state === 'active') {
+      this.#entries.delete(address)
       this.#failing.delete(address)
       this.#persist()
     }
     const result = await this.#registry.deregister(address)
-    if (!result.ok && held && result.failure.code === 'not_found') {
+    if (
+      !result.ok &&
+      entry !== undefined &&
+      result.failure.code === 'not_found'
+    ) {
       // 簿里有、表上没有（租约刚过期，或注册中心刚重启还没等到下一轮）：
       // 要做的事——不再续租——已经做成了，这不是「没找到」。
       return { ok: true, value: undefined }
@@ -347,9 +467,234 @@ export class ConsoleRegistrations {
   }
 
   async #heartbeat(address: string): Promise<ConsoleResult<ConsoleAgent>> {
+    if (this.#problem?.kind === 'unreadable') {
+      this.#remind()
+      return {
+        ok: false,
+        failure: {
+          code: 'rejected',
+          message: `登记簿读不出来，不替任何地址续租（${this.#problem.text}）`,
+        },
+      }
+    }
+    const state = this.#entries.get(address)?.state
+    if (state === 'paused' || state === 'retired') {
+      return {
+        ok: false,
+        failure: {
+          code: 'rejected',
+          message: `${address} ${STATE_WORDS[state]} · 不续租`,
+        },
+      }
+    }
     const result = await this.#registry.heartbeat(address)
     if (result.ok) this.#observeLease(result.value)
     return result
+  }
+
+  // --- lifecycle -----------------------------------------------------------
+
+  #snapshot(): LifecycleSnapshot {
+    return {
+      problem: this.#problem?.text ?? null,
+      managed: this.#managed === null ? null : [...this.#managed.keys()].sort(),
+      registrations: [...this.#entries.values()]
+        .map(entry => this.#recordOf(entry))
+        .sort((a, b) => (a.address < b.address ? -1 : 1)),
+    }
+  }
+
+  #recordOf(entry: LedgerEntry): RegistrationRecord {
+    const address = entry.declaration.address
+    return {
+      address,
+      state: entry.state,
+      ...(entry.by === undefined ? {} : { by: entry.by }),
+      ...(entry.at === undefined ? {} : { at: entry.at }),
+      ...(this.#managed === null
+        ? {}
+        : { managed: this.#managed.has(address) }),
+    }
+  }
+
+  /** 会放宽什么的写（发布、恢复）在登记簿有毛病时一律拒。 */
+  #closedForWidening(): LifecycleRefusal | null {
+    if (this.#problem === null) return null
+    this.#remind()
+    return {
+      code: 'unavailable',
+      message: `登记簿不可用（${this.#problem.text}）· 发布与恢复暂停`,
+    }
+  }
+
+  /** 有托管清单时：地址必须在里面，端点从清单取，给了别的就拒。 */
+  #endpointFor(
+    address: string,
+    given: string | undefined,
+  ): { readonly endpoint: string } | LifecycleRefusal {
+    if (this.#managed === null) {
+      if (given === undefined || given.trim() === '') {
+        return { code: 'invalid', message: '字段 endpoint 必须是非空字符串' }
+      }
+      return { endpoint: given }
+    }
+    const managed = this.#managed.get(address)
+    if (managed === undefined) return unmanaged(address)
+    if (given !== undefined && given.trim() !== '') {
+      if (!sameEndpoint(given, managed)) {
+        return {
+          code: 'invalid',
+          message: `端点由中枢配置决定：${address} 是 ${managed}，不是 ${given}`,
+        }
+      }
+    }
+    return { endpoint: managed }
+  }
+
+  #stamp(by: string | undefined): { by?: string; at?: number } {
+    return by === undefined ? {} : { by, at: this.#now() }
+  }
+
+  async #publish(
+    input: PublishInput,
+    by: string | undefined,
+  ): Promise<LifecycleOutcome<LifecycleChange>> {
+    const closed = this.#closedForWidening()
+    if (closed !== null) return { ok: false, refusal: closed }
+    const held = this.#entries.get(input.address)
+    if (held?.state === 'retired') {
+      return refuse('retired', `${input.address} 已退役 · 地址不再分配`)
+    }
+    if (held?.state === 'paused') {
+      return refuse('paused', `${input.address} 已暂停 · 要重新放行请用恢复`)
+    }
+    const endpoint = this.#endpointFor(input.address, input.endpoint)
+    if ('code' in endpoint) return { ok: false, refusal: endpoint }
+    const declaration: RegisterAgentInput = {
+      address: input.address,
+      endpoint: endpoint.endpoint,
+      ...(input.capabilities === undefined
+        ? {}
+        : { capabilities: input.capabilities }),
+      ...(input.publicKey === undefined ? {} : { publicKey: input.publicKey }),
+      ...(input.status === undefined ? {} : { status: input.status }),
+    }
+    const result = await this.#registry.register(declaration)
+    // 只有注册中心收下的才入簿：被拒的、不可达的，页面上已经如实报错了。
+    if (!result.ok) return { ok: false, failure: result.failure }
+    const address = result.value.address
+    const now = this.#entries.get(address)
+    if (now !== undefined && now !== held && now.state !== 'active') {
+      // 这次 POST 在路上时，别人把它暂停或退役了：那一个决定在后，收回这次发布。
+      await this.#registry.deregister(address)
+      return refuse(now.state, `${address} ${STATE_WORDS[now.state]}`)
+    }
+    const entry: LedgerEntry = {
+      declaration: declarationOf(declaration, address),
+      state: 'active',
+      ...this.#stamp(by),
+    }
+    this.#entries.set(address, entry)
+    this.#failing.delete(address)
+    this.#persist()
+    this.#observeLease(result.value)
+    return {
+      ok: true,
+      value: { registration: this.#recordOf(entry), agent: result.value },
+    }
+  }
+
+  async #resume(
+    address: string,
+    by: string,
+  ): Promise<LifecycleOutcome<LifecycleChange>> {
+    const closed = this.#closedForWidening()
+    if (closed !== null) return { ok: false, refusal: closed }
+    const held = this.#entries.get(address)
+    if (held === undefined) {
+      return refuse('not_found', `${address} 不在登记簿里 · 没有可恢复的`)
+    }
+    if (held.state === 'retired') {
+      return refuse('retired', `${address} 已退役 · 地址不再分配`)
+    }
+    // 没有托管清单时沿用簿里那份端点；有清单时以清单为准（peers.conf 可能改过）。
+    let declaration = held.declaration
+    if (this.#managed !== null) {
+      const managed = this.#managed.get(address)
+      if (managed === undefined) {
+        return { ok: false, refusal: unmanaged(address) }
+      }
+      declaration = { ...held.declaration, endpoint: managed }
+    }
+    const result = await this.#registry.register(declaration)
+    if (!result.ok) return { ok: false, failure: result.failure }
+    const now = this.#entries.get(address)
+    if (now !== held && now !== undefined && now.state !== 'active') {
+      await this.#registry.deregister(address)
+      return refuse(now.state, `${address} ${STATE_WORDS[now.state]}`)
+    }
+    const entry: LedgerEntry = {
+      declaration: declarationOf(declaration, address),
+      state: 'active',
+      ...this.#stamp(by),
+    }
+    this.#entries.set(address, entry)
+    this.#failing.delete(address)
+    this.#persist()
+    this.#observeLease(result.value)
+    return {
+      ok: true,
+      value: { registration: this.#recordOf(entry), agent: result.value },
+    }
+  }
+
+  /**
+   * 暂停与退役：先改簿（从这一刻起出口不拨、续租者不碰），再 `DELETE`。
+   * `DELETE` 失败只出声：租约会自然到期，出口已经关上了。
+   */
+  async #withdraw(
+    address: string,
+    state: 'paused' | 'retired',
+    by: string,
+  ): Promise<LifecycleOutcome<LifecycleChange>> {
+    if (this.#problem?.kind === 'unreadable') {
+      this.#remind()
+      // 读不出来时任何写盘都会盖掉那份证据；出口反正已经全关了。
+      return refuse(
+        'unavailable',
+        `登记簿读不出来（${this.#problem.text}）· 不改任何一条`,
+      )
+    }
+    const held = this.#entries.get(address)
+    if (held?.state === 'retired') {
+      if (state === 'retired') {
+        return { ok: true, value: { registration: this.#recordOf(held) } }
+      }
+      return refuse('retired', `${address} 已退役`)
+    }
+    if (held?.state === state) {
+      return { ok: true, value: { registration: this.#recordOf(held) } }
+    }
+    const managed = this.#managed?.get(address)
+    const declaration =
+      held?.declaration ??
+      (managed === undefined ? undefined : { address, endpoint: managed })
+    if (declaration === undefined) {
+      return refuse('not_found', `${address} 不在登记簿里，也不在托管清单里`)
+    }
+    const entry: LedgerEntry = { declaration, state, by, at: this.#now() }
+    this.#entries.set(address, entry)
+    this.#failing.delete(address)
+    this.#persist()
+    const removed = await this.#registry.deregister(address)
+    if (!removed.ok && removed.failure.code !== 'not_found') {
+      this.#log(
+        `${LOG_PREFIX} ${state === 'paused' ? 'pause' : 'retire'} ${address}: ` +
+          `registry DELETE failed (${removed.failure.code}: ${removed.failure.message}); ` +
+          'the lease runs out on its own, and the exits are already closed',
+      )
+    }
+    return { ok: true, value: { registration: this.#recordOf(entry) } }
   }
 
   /** 按注册中心实际给的租约调周期；变短了就把已排上的那一轮提前。 */
@@ -361,42 +706,73 @@ export class ConsoleRegistrations {
     }
   }
 
+  // --- the file ------------------------------------------------------------
+
+  #fail(kind: LedgerProblem['kind'], text: string, line: string): void {
+    if (this.#problem === null || kind === 'unreadable') {
+      this.#problem = { kind, text }
+    }
+    this.#lastAlarmAt = this.#now()
+    this.#log(line)
+  }
+
+  /** 被拒的请求再提醒一次，每分钟最多一次：首次告警那一行没人会往回翻。 */
+  #remind(): void {
+    if (this.#problem === null) return
+    const now = this.#now()
+    if (now - this.#lastAlarmAt < REMIND_EVERY_MS) return
+    this.#lastAlarmAt = now
+    this.#log(
+      `${LOG_PREFIX} ${this.#problem.text}; a request was refused because of it`,
+    )
+  }
+
   #load(): void {
-    if (!existsSync(this.#path)) return
-    const document = this.#store.read()
-    const parsed = document === null ? null : readLedger(document)
-    if (parsed === null) {
-      const stamp = new Date(this.#now()).toISOString().replace(/[:.]/g, '-')
-      const aside = `${this.#path}.unreadable-${stamp}`
-      try {
-        renameSync(this.#path, aside)
-        this.#log(
-          `${LOG_PREFIX} ${this.#path} is unreadable; moved to ${aside}, starting with an empty ledger`,
-        )
-      } catch (error) {
-        this.#log(
-          `${LOG_PREFIX} ${this.#path} is unreadable and could not be moved aside (${messageOf(error)}); starting with an empty ledger`,
-        )
+    const read = readRegistrationLedger(this.#path)
+    if (read.kind === 'ok' || read.kind === 'partial') {
+      for (const entry of read.entries) {
+        this.#entries.set(entry.declaration.address, entry)
       }
+    }
+    const problem = ledgerProblemOf(this.#path, read)
+    if (problem === null) return
+    if (read.kind !== 'malformed') {
+      this.#fail('unreadable', problem, `${LOG_PREFIX} ${problem}; ${CLOSED}`)
       return
     }
-    for (const entry of parsed.entries) this.#entries.set(entry.address, entry)
-    if (parsed.dropped > 0) {
-      this.#log(
-        `${LOG_PREFIX} skipped ${String(parsed.dropped)} malformed entries in ${this.#path}`,
+    // 文档本身坏了：不当空文件覆盖，挪开留证。挪开之后同目录的那份就是
+    // 「仍然读不出来」的记号，重启也不会从空登记簿起。
+    const stamp = new Date(this.#now()).toISOString().replace(/[:.]/g, '-')
+    const aside = `${this.#path}${UNREADABLE_SUFFIX}${stamp}`
+    try {
+      renameSync(this.#path, aside)
+      this.#fail(
+        'unreadable',
+        `${problem}; moved to ${aside}`,
+        `${LOG_PREFIX} ${problem}; moved to ${aside}; ${CLOSED}. ` +
+          `Put a repaired ledger back at ${this.#path}, or move ${aside} out of that directory to start from an empty ledger.`,
+      )
+    } catch (error) {
+      this.#fail(
+        'unreadable',
+        problem,
+        `${LOG_PREFIX} ${problem} and could not be moved aside (${messageOf(error)}); ${CLOSED}`,
       )
     }
   }
 
   #persist(): void {
+    // 读不出来的那份还在原处（或刚被挪开）：写一份新的就是拿内存里残缺的簿
+    // 覆盖证据，重启后它会被当成完整的读回来。
+    if (this.#problem?.kind === 'unreadable') return
     try {
-      this.#store.write({
-        version: REGISTRATION_LEDGER_VERSION,
-        registrations: [...this.#entries.values()],
-      })
+      this.#store.write(ledgerDocument(this.#entries.values()))
     } catch (error) {
-      this.#log(
-        `${LOG_PREFIX} could not write ${this.#path} (${messageOf(error)}); renewals continue from memory until this console restarts`,
+      const text = `could not write ${this.#path} (${messageOf(error)})`
+      this.#fail(
+        'unwritable',
+        text,
+        `${LOG_PREFIX} ${text}; this change holds until this console restarts, and publishing and resuming are refused until then`,
       )
     }
   }

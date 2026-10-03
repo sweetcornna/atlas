@@ -99,6 +99,11 @@ import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
 import { occConfigPath } from '../../config/paths.js'
 import { openAuditTrail } from '../../services/qianmo/auditTrail.js'
+import { consoleRegistrationsPath } from './consoleArgs.js'
+import {
+  readExitRefusal,
+  type ExitRefusal,
+} from './consoleRegistrationLedger.js'
 import {
   loadConsoleWakeIdentity,
   type ConsoleWakeIdentity,
@@ -585,6 +590,13 @@ function recordResult(
   }
 }
 
+/** 跳过的那一刻在审计链里的 `code`。 */
+const WATCH_SKIP_CODES: Readonly<Record<ExitRefusal['reason'], string>> = {
+  paused: 'agent_paused',
+  retired: 'agent_retired',
+  unreadable: 'registrations_unreadable',
+}
+
 /** {@link createWatchDispatch} 用到的那一小块：拨号与审计链各一个口子。 */
 interface WatchDispatchOptions {
   readonly from: string
@@ -598,6 +610,14 @@ interface WatchDispatchOptions {
   ) => Promise<Pick<TransportClient, 'sendAndWait'>>
   readonly trail: Pick<AuditTrail, 'append'>
   readonly issue?: WakeCapabilityIssuer
+  /**
+   * 出口检查（P15.2，`tenancy-m1.md` §3.6 D8）：拨号之前问一句目标能不能拨。
+   * 作业按 URL 直拨，不经注册中心，所以暂停只能在这里拦。生产上是每次现读一遍
+   * 控制台登记簿的只读副本（`readExitRefusal`）。
+   */
+  readonly gate?: (address: string) => ExitRefusal | null
+  /** 跳过时出声的地方；生产是 stderr。 */
+  readonly warn?: (line: string) => void
 }
 
 /**
@@ -609,9 +629,45 @@ interface WatchDispatchOptions {
 export function createWatchDispatch(
   options: WatchDispatchOptions,
 ): SchedulerDispatch {
+  /** 每个作业上一次被跳过的原因：只在原因变了、或恢复时出声，审计链每次都记。 */
+  const skipping = new Map<string, ExitRefusal['reason']>()
+  const warn =
+    options.warn ??
+    ((line: string) => {
+      process.stderr.write(`${line}\n`)
+    })
   return async fire => {
     const url = options.urls.get(fire.job.id)
     if (url === undefined) throw new Error(`job ${fire.job.id} has no url`)
+    const refusal = options.gate?.(fire.job.target) ?? null
+    if (refusal !== null) {
+      // 不拨号、不签令牌、不建信封。这一刻按 skipped 退休，不进退避：暂停是
+      // 有意的，恢复之后下一刻照常触发。
+      options.trail.append({
+        at: Date.now(),
+        source: AuditSource.Scheduler,
+        kind: 'watch_fire',
+        outcome: 'refused',
+        code: WATCH_SKIP_CODES[refusal.reason],
+        node: options.hubNode,
+        peer: fire.job.target,
+        detail: detailOf({
+          jobId: fire.job.id,
+          dedupKey: fire.dedupKey,
+          fireAtMs: fire.fireAtMs,
+          attempt: fire.attempt,
+          notifyPolicy: fire.job.notifyPolicy,
+        }),
+      })
+      if (skipping.get(fire.job.id) !== refusal.reason) {
+        skipping.set(fire.job.id, refusal.reason)
+        warn(`[watch] job ${fire.job.id} skipped: ${refusal.message}`)
+      }
+      return 'skipped'
+    }
+    if (skipping.delete(fire.job.id)) {
+      warn(`[watch] job ${fire.job.id} resumed: ${fire.job.target}`)
+    }
     const client = await options.linkTo(url)
     // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
     // 慢连接就会把 60 s 的有效期用掉一半。
@@ -679,6 +735,7 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
 
   const urls = new Map(entries.map(entry => [entry.job.id, entry.url]))
   const links = new Map<string, NodeLink>()
+  const registrationsPath = consoleRegistrationsPath()
 
   const linkTo = async (url: string): Promise<TransportClient> => {
     let link = links.get(url)
@@ -749,11 +806,17 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
       linkTo,
       trail,
       ...(identity === undefined ? {} : { issue: identity.issue }),
+      // 每次派发前现读一遍控制台的登记簿（同一个配置根，与作业页读状态目录
+      // 同一条约定，console.md §10.4）。
+      gate: address => readExitRefusal(registrationsPath, address),
     }),
   })
 
   process.stdout.write(
     `[watch] ${entries.length} job(s) from ${config.jobsPath}, state in ${config.stateDir}\n`,
+  )
+  process.stdout.write(
+    `[watch] paused and retired agents are skipped, as ${registrationsPath} says\n`,
   )
   const signing = watchSigningNotice(identity, config.from)
   if (signing.stdout !== undefined) process.stdout.write(`${signing.stdout}\n`)
