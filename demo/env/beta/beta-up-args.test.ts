@@ -396,6 +396,30 @@ describe('beta-up.sh forwards tail arguments to the underlying command', () => {
     expect(args.filter(one => one === '--node-server')).toHaveLength(2)
   })
 
+  test('host 腿把 peers.conf 的每条地址行作为托管清单传给控制台（P15.2）', () => {
+    const place = scratch()
+    writePeers(place, [
+      'qianmo://beta-1/planner ws://127.0.0.1:38625',
+      'qianmo://beta-1/reviewer ws://127.0.0.1:38625',
+      'qianmo://beta-2/planner ws://198.51.100.9:38625',
+    ])
+    const result = runBetaUp(place, ['--role', 'host', '--only', 'console'])
+    const args = recorded(place).get('console') ?? []
+    expect({ got: args.length > 0, stderr: result.stderr }).toEqual({
+      got: true,
+      stderr: result.stderr,
+    })
+    // 与注册中心的 --register 同一份：一条地址行一个 --managed，一字不改。
+    const managed = args.flatMap((one, index) =>
+      one === '--managed' ? [args[index + 1]] : [],
+    )
+    expect(managed).toEqual([
+      'qianmo://beta-1/planner=ws://127.0.0.1:38625',
+      'qianmo://beta-1/reviewer=ws://127.0.0.1:38625',
+      'qianmo://beta-2/planner=ws://198.51.100.9:38625',
+    ])
+  })
+
   test('server= 覆盖 host=，传出去的是那个短名', () => {
     const place = scratch()
     writePeers(place, [

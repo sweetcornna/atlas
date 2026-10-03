@@ -190,6 +190,7 @@
 import {
   adminFingerprint,
   resolveAccess,
+  subjectOf,
   type Access,
   type AccessRefusal,
   type ConsoleAccounts,
@@ -593,14 +594,6 @@ interface RequestLedger {
 /** What a write is told when the ledger cannot take its entry. */
 const LEDGER_CLOSED =
   '操作记录暂时写不进去，写操作已暂停；恢复动作账本之后再试。'
-
-/** Who the ledger names: the person, the legacy token, or nobody. */
-function subjectOf(access: Access): string {
-  if (access.principal !== null) return access.principal.subject
-  if (access.credential.role === 'admin') return 'legacy:admin'
-  if (access.credential.role === 'view') return 'legacy:view'
-  return 'anonymous'
-}
 
 /** A finished response as a ledger outcome, for routes that only have a status. */
 function outcomeOfStatus(status: number): readonly [ActionOutcome, string?] {
