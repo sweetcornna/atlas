@@ -15,6 +15,7 @@
  * | DELETE | `/v0/accounts/invites/<id>` | ops / admin | 204 |
  * | POST | `/v0/accounts/<subject>/revoke` | ops / admin | 204 |
  * | POST | `/v0/accounts/<subject>/reset` | ops / admin | `{ subject, inviteId, expiresAt, link }` |
+ * | POST | `/v0/accounts/<subject>/logout` | ops / admin | `{ subject, sessions, streams }` |
  *
  * None of these exist on a console started without accounts: `http.ts` only
  * routes here when it was handed an {@link AccountBook}, and otherwise the
@@ -74,6 +75,7 @@ import {
   readJsonObject,
   seeOther,
 } from './respond.js'
+import { safeDecode } from './routes/shared.js'
 import type { LoginThrottle } from './throttle.js'
 import type { PageViewer } from './view/bits.js'
 import { renderCredentialPage, renderInvitePage } from './view/invite.js'
@@ -471,6 +473,9 @@ function parseInviteRequest(body: Record<string, unknown>):
   }
 }
 
+const SUBJECT_UNDECODABLE = '路径里的账号不是合法的百分号编码'
+const INVITE_ID_UNDECODABLE = '路径里的邀请 id 不是合法的百分号编码'
+
 function answer<T>(
   outcome: AccountOutcome<T>,
   shape: (value: T) => Response,
@@ -495,15 +500,29 @@ export async function handleAccountsApi(
   }
   if (segments[2] !== 'invites') {
     const action = segments[3]
-    if (segments.length !== 4 || (action !== 'revoke' && action !== 'reset')) {
+    if (
+      segments.length !== 4 ||
+      (action !== 'revoke' && action !== 'reset' && action !== 'logout')
+    ) {
       return notFound(`unknown path: ${url.pathname}`)
     }
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
-    const subject = decodeURIComponent(segments[2] ?? '')
+    // A stray `%` is the caller's mistake, not this server's: 400, not the
+    // 500 an uncaught `URIError` would make of it.
+    const subject = safeDecode(segments[2] ?? '')
+    if (subject === null) return fail(400, 'invalid', SUBJECT_UNDECODABLE)
     if (action === 'revoke') {
       return answer(
         book.revoke(subject, actor),
         () => new Response(null, { status: 204 }),
+      )
+    }
+    if (action === 'logout') {
+      // 强制下线 (`/access`, 会话): every session and stream of the person
+      // ends, the credential stays. The ledger line is `http.ts`'s, like
+      // every write on this API.
+      return answer(book.endSessions(subject), ended =>
+        json({ subject, sessions: ended.sessions, streams: ended.streams }),
       )
     }
     const body = await readJsonObject(request)
@@ -546,8 +565,10 @@ export async function handleAccountsApi(
   }
   if (segments.length === 4) {
     if (request.method !== 'DELETE') return methodNotAllowed(['DELETE'])
+    const inviteId = safeDecode(segments[3] ?? '')
+    if (inviteId === null) return fail(400, 'invalid', INVITE_ID_UNDECODABLE)
     return answer(
-      book.withdrawInvite(decodeURIComponent(segments[3] ?? ''), actor),
+      book.withdrawInvite(inviteId, actor),
       () => new Response(null, { status: 204 }),
     )
   }
