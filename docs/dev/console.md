@@ -1324,8 +1324,9 @@ reach no agent, until the ledger is repaired and this console restarts`），横
 - **暂停与退役在注册中心那一层挡不住 `--register` 种子。**`p81-registry` 每 20 s 替
   `peers.conf` 的地址续租，暂停一个种子地址时控制台的 `DELETE` 会在下一轮被它建回来，名册里
   它仍然在。真正挡流量的是三个出口的检查，它们照样拒；但**名册不等于「可以拨」**，读名册
-  的人要看 `GET /v0/registrations` 的状态。要让种子从名册里也消失，今天只能从 `peers.conf`
-  删掉那一行并重启注册中心；装机面落地后由 `install` 决定（`tenancy-m1.md` §3.6）。
+  的人要看 `GET /v0/registrations` 的状态。要让种子从名册里也消失，今天只能先在页面上退役，
+  再从 `peers.conf` 删掉那一行并重起注册中心与控制台（步骤见 `tenancy-m1.md` §3.6「种子地址
+  怎么真正退役」）；装机面落地后由 `install` 决定。
 - **在页面上发布一个种子地址，声明会和 `p81-registry` 那一份打架。**注册中心的
   `register()` 缺省即清空，两边每 20 s 轮流写各自那一份，公钥、能力、状态在名册上来回变；
   `p81-registry` 的种子可以带 `--public-key`，页面发布不带就会把它抹掉一轮。种子本来就在

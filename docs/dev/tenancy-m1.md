@@ -235,7 +235,9 @@ function ownerOf(contextId: string): `u:${string}` | null // 控制台会话的�
 | 恢复 | 写 `active` | 同注册 | 同注册 | 不动 |
 | 退役 | 写 `retired`；地址不再分配 | `DELETE` | 从名册移除 | 不动；会话与记忆保留到节点退役 |
 
-- **`qm watch` 按作业 URL 直拨**（`src/cli/handlers/watch.ts:595`），不读注册中心也不读登记簿，暂停对值守作业无效。修法：每次发起前查一次登记簿只读副本（或注册中心），不是 `active` 就跳过并记审计。唤醒目标来自 `--wake-url`，同样查登记簿状态。
+- **`qm watch` 原先按作业 URL 直拨**（v1.0 核对时在 `src/cli/handlers/watch.ts:595`），不读注册中心也不读登记簿，暂停对值守作业无效。修法：每次发起前现读一遍登记簿只读副本，被拒的那一刻跳过并记审计（`watch_fire` / `refused`）。唤醒目标来自 `--wake-url`，对话目标来自 `--chat-url`，同样在拨号前查登记簿。
+- **出口判法（P15.2 实际采用，2026-10-03 改写；v1.0 原文是「不是 `active` 就跳过」）**：登记簿里**明确记为 `paused` / `retired`** 的地址拒发；**登记簿读不出来时全部拒发**；**没进过登记簿的地址照常发**。理由：今天的地址几乎全是 `peers.conf` 种子，由注册中心宿主续租、从没在页面上发布过，按「不是 `active` 就跳过」会让所有种子的对话、唤醒、值守作业在上线那一刻全部停掉。判法的唯一出处是 `consoleRegistrationLedger.ts` 的 `exitRefusalOf`，细节见 `console.md` §7.3.2。
+- **种子地址怎么真正退役**：页面上的暂停与退役会 `DELETE` 注册中心那一条，但 `p81-registry` 每 20 s 替 `--register` 种子续租，会把它续回名册；这时只靠出口检查挡流量，名册上仍看得见它。要真正退役一个种子：先在页面上退役（登记簿记下 `retired`，出口从此不拨），再从中枢 `peers.conf` 删掉那一行，`beta-down.sh registry console` 后 `beta-up.sh --role host` 重起——注册中心的 `--register` 与控制台的 `--managed` 都从这份 `peers.conf` 派生，不重起就还按旧名单续。装机面落地后改由 `install` 决定（见下文「接 `node-provisioning.md`」）。
 - **登记簿读失败 fail-closed**：今天读不动时「从空登记簿起」（`console.md` §7.3），对 `retired` 集合是 fail-open（退役地址会被重新发布）。加生命周期之后，读失败**拒绝一切注册与恢复**，并告警。
 - **`@qianmo/registry` 的 HTTP 路由表不因生命周期而改**；P15.8 的写 token 是唯一的注册中心改动。
 

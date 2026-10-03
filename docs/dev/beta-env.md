@@ -487,8 +487,11 @@ agent 却会拒绝执行（console.md §10.1.1）。起法四步，完整说明�
 内测环境要多做的那一步——节点的 `--trust hub=`：
 
 ```bash
+# 中枢机上 qm watch 一律跑在控制台的配置根上（common.sh 的 BETA_CONFIG_CONSOLE），理由见下
+CONSOLE_ROOT="${QIANMO_BETA_ROOT:-$HOME/qianmo-beta}/nodes/console/config"
+
 # ① 中枢机：取中枢的签名身份（只需要 --from，不读 PSK，不起调度器）
-qm watch --print-identity --from qianmo://hub/console      # → hub=<publicKey>
+OCC_CONFIG_DIR="$CONSOLE_ROOT" qm watch --print-identity --from qianmo://hub/console   # → hub=<publicKey>
 
 # ② 每台目标节点：信任这把公钥。节点腿的尾参以这一趟为准并重写记录（demo/env/beta/README.md
 #    「尾参透传」），所以已有的 --trust（比如控制台那一条）要一起带上，否则会被撤掉
@@ -496,9 +499,17 @@ qm watch --print-identity --from qianmo://hub/console      # → hub=<publicKey>
 ./demo/env/beta/beta-up.sh --role node --node <节点名> -- \
   --trust console=<控制台公钥> --trust hub=<publicKey>
 
-# ③ 中枢机：带 --sign 起调度器
-qm watch --jobs ./jobs.json --from qianmo://hub/console --sign
+# ③ 中枢机：带 --sign 起调度器，同一个配置根
+OCC_CONFIG_DIR="$CONSOLE_ROOT" qm watch --jobs ./jobs.json --from qianmo://hub/console --sign
 ```
+
+**`OCC_CONFIG_DIR` 必须是控制台的配置根，省掉就错。**`qm watch` 每次发起前读的登记簿是它
+**自己配置根下**的 `qianmo/console/registrations.json`（console.md §7.3.2）。不指向控制台那
+一份，它就读不到登记簿——页面上的暂停与退役对值守作业无效，作业照常拨向已暂停的智能体；
+启动行此时会写 `no registration ledger at <路径>`，看到这一行就是根配错了。同一个根还决定
+另外两件事：签名身份按配置根落盘，①与③必须是同一个根，否则①打出来的公钥不是③真正用来签名
+的那一把；控制台的作业页与急停读的是 `<控制台配置根>/qianmo/scheduler/`（console.md §10.4）。
+`demo/env/beta/ops/watch-hub.sh` 的 `print-identity` 与 `run` 已经替你这样设，手工起时照上面写。
 
 只读检查类作业（`df`、工作区内的 Read / Grep）在节点默认的 `dontAsk` 模式下就能执行，
 **不需要为它打开 `--allow-workspace-edits`**；工作区之外的读取在两种模式下都会被拒绝
