@@ -21,7 +21,9 @@ flowchart TD
   reserve["reserve.ts · planFire（纯函数）<br/>fire / skip / wait 三种计划<br/>补跑塌缩到最新槽位，collapsed 计数"]
   backoff["backoff.ts · backoffMs（纯函数）<br/>30 s 起步、翻倍、1 h 封顶<br/>默认无 jitter"]
   store["store.ts · SchedulerStore<br/>claim() = openSync(O_CREAT|O_EXCL) 跨进程 CAS<br/>state.json 临时文件 + rename；损坏 fail-open"]
-  fire["fire.ts · SchedulerRunner<br/>runDue(now) 显式驱动 · start/stop 单发定时器<br/>paused() → claim() → dispatch() → recordFire()"]
+  atomic["atomic.ts · writeFileAtomically<br/>临时文件 O_EXCL + fsync + rename，0600 / 0700"]
+  status["status.ts · status.json<br/>每一轮之后：lastTickAt、tickMs、各作业的下次触发"]
+  fire["fire.ts · SchedulerRunner<br/>runDue(now) 显式驱动 · start/stop 单发定时器<br/>paused() → claim() → dispatch() → recordFire() → onTick()"]
 
   host["宿主（qm console）<br/>持有 dispatch 端口：拼 task.request 信封"]
   node["节点（beta-N）<br/>只被叫醒，不持任何排程状态"]
@@ -31,6 +33,9 @@ flowchart TD
   fire --> backoff
   fire --> store
   store --> job
+  store --> atomic
+  status --> atomic
+  status --> fire
   reserve --> job
   fire -->|"{ job, fireAtMs, dedupKey, attempt }"| host
   host -->|"task.request（contextId=jobId、taskTtlMs 取自作业）"| node
@@ -48,7 +53,8 @@ flowchart TD
 - **`catchUpGraceMs` / `MIN_CATCH_UP_GRACE_MS` / `MAX_CATCH_UP_GRACE_MS`** —— 补跑宽限窗口 `clamp(everyMs / 2, 120 s, 7200 s)`。
 - **`backoffMs` / `BackoffOptions` / `DEFAULT_BACKOFF`** —— 失败退避（纯函数）。
 - **`SchedulerStore` / `SchedulerStoreOptions` / `JobState` / `FireOutcome`**、**`claimRetentionMs` / `MIN_CLAIM_RETENTION_MS` / `MAX_CLAIMS_PER_JOB`** —— 崩溃安全存储 + 认领 CAS + 认领文件的有界回收。
-- **`SchedulerRunner` / `SchedulerRunnerOptions` / `SchedulerDispatch` / `FireDispatch` / `SchedulerStatus` / `SchedulerJobStatus`** —— 运行器与它的注入端口、状态面。
+- **`SchedulerRunner` / `SchedulerRunnerOptions` / `SchedulerDispatch` / `FireDispatch` / `SchedulerStatus` / `SchedulerJobStatus`** —— 运行器与它的注入端口、状态面。`onTick` 在每一轮之后调一次，抛异常只报给 `onError`。
+- **`schedulerStatusOf` / `writeSchedulerStatus` / `readSchedulerStatus` / `SchedulerStatusFile` / `SchedulerStatusJob` / `SchedulerStatusRead` / `SCHEDULER_STATUS_FILE` / `SCHEDULER_STATUS_VERSION` / `describeSchedule`** —— `status.json`：`qm watch` 在 `onTick` 里整份原子替换，控制台读它（`docs/dev/console.md` §10.4）。读的结果只有 `absent` / `ok` / `invalid` 三种。
 
 **宿主要实现的只有一个端口**：
 
@@ -75,7 +81,7 @@ resolve = 本次 fire 成功（失败计数清零），throw = 失败（退避�
 另有两条与 hermes 的**刻意背离**，写在这里以免它们看起来像漏做：
 
 - **失败退避存在**（hermes cron 没有，§3.G 表第三行）。理由：值守作业有真实副作用——它在节点上开/恢复一条 ACP 会话、烧掉一个串行 turn、吃掉对端入站配额、可能写仓库。对着一个已经挂了的目标按原节奏重试，不叫「继续尝试」，叫让节点一分钟一次地忙于失败，而唯一会告诉人的那条通道按设计是静默的。代价也说清楚：目标在第八次失败后两分钟恢复的作业，仍要把那一小时的封顶罚站走完。
-- **没有节点内 ticker 兜底**（hermes A7 的降级路径是「回落节点内建 ticker」）。理由同不变式 7。补偿是**缺席必须刺眼**：`status()` 带 `lastTickAt`，控制台显示「调度器最后一次 tick：N 分钟前」（§4.1 ⑥）——这一格目前写「未接入」，原因见 §5 末条。一个只是没在跑的调度器，看起来和一个没事可做的调度器**一模一样**，只有那个时间戳能把两者分开。
+- **没有节点内 ticker 兜底**（hermes A7 的降级路径是「回落节点内建 ticker」）。理由同不变式 7。补偿是**缺席必须刺眼**：`status()` 带 `lastTickAt`，`qm watch` 每一轮之后把它写进状态目录的 `status.json`（`status.ts`），控制台的值守作业页读它，超过两个 `tickMs` 没有新的一轮就说可能已停止（§4.1 ⑥）。一个只是没在跑的调度器，看起来和一个没事可做的调度器**一模一样**，只有那个时间戳能把两者分开。
 
 ## 4. 三处容易误读
 
@@ -100,7 +106,7 @@ resolve = 本次 fire 成功（失败计数清零），throw = 失败（退避�
 - **`notifyPolicy` 本包不解读**，只做校验与透传。
 - **没有优先级轴**，作业之间按注册顺序遍历。与 `NodeTurnGate` 同一个理由（README of `@qianmo/resident` §3.2）：值守作业与人工请求谁更急是产品判断，M1 没有判据要求它。
 - **一个真实值守作业连续跑 ≥ 24 h 的留档**属 P13.6 DoD，产物不在包内。
-- **控制台的作业页只读磁盘。**P18.15 起控制台有「值守作业」与「告警」两页（`docs/dev/console.md` §10.4），读的是本包的状态目录（只读，从不 `claim` / `recordFire`）、ESTOP 文件与审计链的 `source=scheduler`。`status()` 的 `lastTickAt` 仍只在 `qm watch` 的内存里，作业页对它写「未接入」；把它落盘是遗留项。
+- **控制台的作业页只读磁盘。**P18.15 起控制台有「值守作业」与「告警」两页（`docs/dev/console.md` §10.4），读的是本包的状态目录（`status.json` 与 `state.json`，只读，从不 `claim` / `recordFire`）、ESTOP 文件与审计链的 `source=scheduler`。`status.json` 不在时心跳与作业定义写「未接入」。本包自己从不读回 `status.json`。
 
 ## 6. 怎么跑测试
 

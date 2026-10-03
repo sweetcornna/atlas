@@ -1562,6 +1562,7 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 | 通知有没有真到人眼前 | `kind=watch_notify_received`，只有 agent 自己发的通知才记这一条（§10.1.3）；节点那侧对应 `source=resident` 的 `notify_sent` / `notify_delivered`，过程行也在其中 |
 | 一轮里调用了哪些工具 | `kind=watch_step_received`（过程行，不打扰人） |
 | 有没有通知被压着没发出去 | 节点侧 `notify_held`（原因 `no_channel` 或 `budget`）与 `notify_abandoned` |
+| 调度器还在不在跑 | `<config>/qianmo/scheduler/status.json` 的 `lastTickAt`，或控制台的值守作业页（§10.4） |
 | 节点这条命是不是被杀过 | `<config>/resident/lifecycle.json`（P13.5 的终止取证哨兵） |
 | 停手 | `touch <config>/qianmo/scheduler/ESTOP`。**只挡新的 fire，在途一律不杀**——节点欠着别人一条 `task.result`，杀掉是把「慢答案」变成「丢答案」。删掉文件即恢复，没有需要重启的东西 |
 
@@ -1572,15 +1573,18 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 ### §10.3 已知边界
 
 - **控制台只看得到磁盘上的东西。**两个进程之间没有通道：作业页与告警页读的是审计链、
-  调度状态目录和 ESTOP 文件（§10.4）。`qm watch` 内存里的东西——`lastTickAt` 与作业文件
-  的路径——控制台看不到，页面上对应的格子写「未接入」。
+  调度状态目录（含 `qm watch` 每一轮写出的 `status.json`）和 ESTOP 文件（§10.4）。
+  `status.json` 不在——`qm watch` 没在这个配置根上跑过，或版本早于它——心跳与作业定义
+  的格子写「未接入」。
 - **`notifyPolicy` 只被记录与透传，没有任何一处读它做判断。**它是留给「always / silent」
   那两档策略的位置，本批次三档行为一致——打不打扰人完全由 agent 自己决定。
 - **中枢是定时的单点。**这是 A7 的刻意背离（节点侧 ticker 会让节点永不空闲、永不冻结，
   直接抵消 R-3 的休眠形态），代价就是中枢不在的时候没人发起。补偿是「缺席可见」：
-  `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的。它只在 `qm watch` 的内存里，
-  所以作业页明写「调度器心跳未接入」，下面给出状态文件里最近一次落账的时刻作为较弱的旁证。
-  让 `qm watch` 把它落盘、控制台读出来是遗留项。
+  `SchedulerRunner.status()` 的 `lastTickAt` 就是给这个用的。`qm watch` 每一轮之后把它连同
+  两轮之间的最长间隔（`tickMs`）写进 `status.json`，作业页超过两个间隔没看到新的一轮就说
+  调度器可能已停止。一轮里派发卡住（连不上节点最长 30 s、等回执 5 s，按作业依次）时，
+  这一轮写完之前文件里还是上一轮的时刻，所以卡得够久也会被说成可能已停止——它确实没在
+  按时发起。
 - **`--once` 看不到通知。**它在请求拿到回执后就关闭连接退出，而通知要沿同一条连接回来
   （节点从不主动拨号，H-2）。这一轮 agent 发的通知会压在节点的台账里，等下一次有连接时
   才送出。要看通知，就让进程常驻，等 `watch_result_received` 出现后再停。
@@ -1612,8 +1616,9 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 | 链路 | — | — | **未接入**：控制台没有节点连通探测的数据 |
 
 每条告警有一个稳定 id。通知用节点生成的消息 id（重发的那一条与原件合成一条）；状况类
-告警的 id 带上这一回的特征，例如节点失联带最后一次心跳的时刻、证书带状态与到期时刻，所以
-同一个节点恢复后再失联是新的一条，不会被上一次的确认盖住。
+告警的 id 带上这一回的特征，例如节点失联带最后一次心跳的时刻、证书带状态与到期时刻、锚点
+不符带第一处对不上的锚点序号与本地链在那里的摘要，所以同一个节点恢复后再失联、链修好后
+又被改写，都是新的一条，不会被上一次的确认盖住。
 
 **确认**：`POST /v0/alerts/<id>/ack`，admin 等级：旧 admin token，或账号模型里的运维。
 服务端先重算收件箱，**id 不在当前列表里就 404**，与服务器备注的白名单同一条纪律：写权限
@@ -1627,12 +1632,16 @@ id 不合法或不在列表而拒绝，都记一条动作账本 `alert.ack`；�
 
 | 格子 | 来源 | 缺席时 |
 | --- | --- | --- |
-| 作业 id、上次触发与结局、连续失败 | 调度状态目录 `<配置根>/qianmo/scheduler`（`SchedulerStore`，只读） | 没有作业记录 |
-| 目标 | 作业文件；没有作业文件时取审计链里该作业最近一次 `watch_fire` 的对端 | 未接入 |
+| 调度器心跳 | `status.json` 的 `lastTickAt`；超过两个 `tickMs` 没有新的一轮写「可能已停止」，否则「刚运行过」 | **未接入**：`status.json` 不在或读不出来，原因写在横幅里；旁边的「最近落账」是 `state.json` 里最近一次结局的时刻 |
+| 作业、标题、目标、周期、下次触发、连续失败 | `status.json`：正在跑的调度器里的作业，下次触发是调度器自己的值（`planFire`，退避中则是退避结束） | 周期与下次触发**未接入** |
+| 上次触发与结局 | `status.json` 的 `lastFireAt` / `lastResult`；「退避至」与落账时刻取自 `state.json` | 取 `state.json` 的 `lastFiredAt` / `lastOutcome` |
+| 已移出调度的作业 | `state.json` 里有、`status.json` 里没有；目标取审计链里它最近一次 `watch_fire` 的对端 | `status.json` 不在时，`state.json` 里的作业都这样列出，不标「已移出调度」 |
 | 最近结果 | 审计链里该作业最近一次 `watch_result_received` | — |
-| 周期、下次触发 | 作业文件，加调度器自己的 `planFire` / `backoffMs` | **未接入**：作业文件只在 `qm watch --jobs` 里，控制台今天没有读取它的入口 |
 | 急停 | `<配置根>/qianmo/scheduler/ESTOP` 是否存在，读不出来按未拉下处理并写明原因 | — |
-| 调度器心跳 | `lastTickAt` | **未接入**：只在 `qm watch` 的内存里（§10.3）；旁边的「最近落账」是状态文件里最近一次结局的时刻 |
+
+`status.json` 由 `qm watch` 每一轮之后整份替换：先写临时文件、fsync，再改名，权限 0600，
+目录 0700（`@qianmo/scheduler` 的 `status.ts` 与 `atomic.ts`）。读的一方看到的不是旧的
+一份就是新的一份，不会读到半个文件。写不进去时 `qm watch` 只在 stderr 报错，调度照常。
 
 急停在页面上只显示状态，不提供开关；拉下与松开仍然是建删那个文件（§10.2）。
 
