@@ -155,6 +155,13 @@ export async function* retryThirdPartyEventStream(params: {
   maxRetries?: number
   delay?: (delayMs: number, signal: AbortSignal) => Promise<void>
   onRetry?: (error: unknown) => void | Promise<void>
+  /**
+   * qianmo P18.5 (hermes #5): asked at most once, only for a failure before
+   * any output and only when the error is replayable. `true` means the caller
+   * lowered the request's output cap and the request is re-sent; see
+   * src/services/qianmo/modelCompat/outputCap.ts.
+   */
+  recoverOutputCap?: (error: unknown) => boolean
 }): AsyncGenerator<BetaRawMessageStreamEvent, void> {
   const maxRetries = params.maxRetries ?? resolveOpenAIMaxRetries()
   const delay =
@@ -164,6 +171,7 @@ export async function* retryThirdPartyEventStream(params: {
   let noOutputRetries = 0
   let thinkingRetries = 0
   let emptyResponseRetries = 0
+  let outputCapRecovered = false
 
   while (true) {
     if (params.signal.aborted) throw new APIUserAbortError()
@@ -208,6 +216,27 @@ export async function* retryThirdPartyEventStream(params: {
       if (!sawMessageStop) throw new Error('Stream ended before message_stop')
       return
     } catch (error) {
+      // qianmo P18.5 (hermes #5): an output-cap rejection is re-sent once with
+      // a smaller cap — behind the same barrier as every other replay: nothing
+      // shown yet, and the producer has not marked the error unreplayable.
+      if (
+        !outputCapRecovered &&
+        !params.signal.aborted &&
+        commitment === 'none' &&
+        isAPIErrorReplayable(error) &&
+        params.recoverOutputCap?.(error) === true
+      ) {
+        outputCapRecovered = true
+        for (const event of finalizeInterruptedAttempt(
+          commitment,
+          lastContentIndex,
+          hasToolUse,
+          sawMessageStart,
+        )) {
+          yield event
+        }
+        continue
+      }
       if (params.signal.aborted || !isRetryableAPIError(error)) {
         throw error
       }

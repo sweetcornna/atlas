@@ -25,6 +25,7 @@ import {
 import { getProxyFetchOptions } from 'src/utils/network/proxy.js'
 import { buildProviderResourceURL } from 'src/utils/network/providerUrl.js'
 import { logForDebugging } from 'src/utils/telemetry/debug.js'
+import { isUnsupportedParameterText } from '../../qianmo/modelCompat/unsupportedParam.js'
 import {
   getAPIErrorDiagnostics,
   isRetryableAPIError,
@@ -1175,16 +1176,17 @@ function isReasoningSummaryRejection(error: unknown): boolean {
     .filter((value): value is string => typeof value === 'string')
     .join(' ')
     .toLowerCase()
-  if (!message.includes('summary')) return false
-  return (
-    message.includes('unknown parameter') ||
-    message.includes('unsupported parameter') ||
-    message.includes('unsupported value') ||
-    message.includes('invalid_request') ||
-    message.includes('must be verified') ||
-    message.includes('organization must be verified') ||
-    message.includes('not supported')
-  )
+  // qianmo P18.5 (hermes #12): the shared detector, with this field's own list
+  // — src/services/qianmo/modelCompat/unsupportedParam.ts.
+  return isUnsupportedParameterText(message, 'summary', [
+    'unknown parameter',
+    'unsupported parameter',
+    'unsupported value',
+    'invalid_request',
+    'must be verified',
+    'organization must be verified',
+    'not supported',
+  ])
 }
 
 /** Strip `reasoning.summary`, leaving the rest of the request untouched. */

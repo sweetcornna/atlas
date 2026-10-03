@@ -49,6 +49,7 @@ import {
   getRateLimitErrorMessage,
   type OverageDisabledReason,
 } from '../claudeAiLimits.js'
+import { overflowTextVerdict } from '../qianmo/modelCompat/overflowText.js'
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
 import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
 
@@ -111,6 +112,10 @@ const CONTEXT_OVERFLOW_ERROR_PATTERN = new RegExp(
  * Provider-agnostic; see {@link CONTEXT_OVERFLOW_ERROR_PATTERN}.
  */
 export function isContextOverflowErrorText(raw: string): boolean {
+  // qianmo P18.5 (hermes #6): rate-limit wording first, then hermes's overflow
+  // table — see src/services/qianmo/modelCompat/overflowText.ts.
+  const verdict = overflowTextVerdict(raw)
+  if (verdict !== undefined) return verdict
   return CONTEXT_OVERFLOW_ERROR_PATTERN.test(raw)
 }
 
