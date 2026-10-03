@@ -1068,7 +1068,6 @@ describe('qm handoff end to end', () => {
     'the reserved subcommands answer 「尚未实现」 with exit 2',
     async () => {
       for (const [name, pkg] of [
-        ['mcp', 'P17.3'],
         ['pull', 'P17.6'],
         ['attach', 'P17.6'],
         ['node', 'P17.5'],
