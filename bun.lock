@@ -74,6 +74,7 @@
         "@qianmo/memory": "workspace:*",
         "@qianmo/negotiation": "workspace:*",
         "@qianmo/protocol": "workspace:*",
+        "@qianmo/providers": "workspace:*",
         "@qianmo/recall": "workspace:*",
         "@qianmo/registry": "workspace:*",
         "@qianmo/resident": "workspace:*",
@@ -298,6 +299,14 @@
       "name": "@qianmo/diagnosis",
       "version": "0.0.0",
     },
+    "packages/handoff": {
+      "name": "@qianmo/handoff",
+      "version": "0.0.0",
+      "dependencies": {
+        "@open-claude-code/tool-runtime": "workspace:*",
+        "@qianmo/protocol": "workspace:*",
+      },
+    },
     "packages/image-processor-napi": {
       "name": "image-processor-napi",
       "version": "1.0.0",
@@ -335,6 +344,10 @@
     },
     "packages/protocol": {
       "name": "@qianmo/protocol",
+      "version": "0.0.0",
+    },
+    "packages/providers": {
+      "name": "@qianmo/providers",
       "version": "0.0.0",
     },
     "packages/recall": {
@@ -1068,11 +1081,15 @@
 
     "@qianmo/diagnosis": ["@qianmo/diagnosis@workspace:packages/diagnosis"],
 
+    "@qianmo/handoff": ["@qianmo/handoff@workspace:packages/handoff"],
+
     "@qianmo/memory": ["@qianmo/memory@workspace:packages/memory"],
 
     "@qianmo/negotiation": ["@qianmo/negotiation@workspace:packages/negotiation"],
 
     "@qianmo/protocol": ["@qianmo/protocol@workspace:packages/protocol"],
+
+    "@qianmo/providers": ["@qianmo/providers@workspace:packages/providers"],
 
     "@qianmo/recall": ["@qianmo/recall@workspace:packages/recall"],
 
