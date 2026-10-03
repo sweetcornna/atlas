@@ -180,6 +180,7 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--chat-store <绝对路径>` | `occConfigPath('qianmo','console','chat.ndjson')` | 会话与转录的落盘位置（§6.5）。**必须是绝对路径**，理由同 `--audit` |
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
+| `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给了才有 `/v0/handoff`**。台账在 `occConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
 | `--accounts` | 关 | 个人账号（§8.1.1，`tenancy-m1.md` §3）。**不给就是今天的控制台，HTTP 面逐字节不变**（`packages/console/test/legacyParity.test.ts` 钉住）；给了以后两枚旧 token 照旧可用，另多出邀请开户与个人凭据 |
 | `--accounts-store <绝对路径>` | `occConfigPath('qianmo','console','accounts.ndjson')` | 账号库。只在 `--accounts` 下有效，单独给会报错 |
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
@@ -555,7 +556,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名，以及协议与运行时上限 |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
-| GET | `/approvals`、`/providers`、`/access`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
+| GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
+| GET | `/approvals`、`/providers`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
@@ -574,8 +576,20 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }`（§10.4） |
 | POST | `/v0/alerts/<告警 id>/ack` | **admin** | 确认一条。**id 必须在当前收件箱里**，否则 404；没接告警存储时 501 |
 | GET | `/v0/jobs` | view | 调度器快照（§10.4）。没接调度器端口时 501 |
+| GET | `/v0/accounts` | **ops / admin** | `{ accounts, invites }`，不含任何明文或哈希。每个账号带 `lastLoginAt`（最近一次让浏览器登录的时间，关没关都算；从没登录过是 `null`）、`lastSeenAt`（活会话上最近一次请求；没有活会话是 `null`）、`streams`（此刻挂着的事件流，会话上的与 Bearer 上的都算）（§5.3、§8.1.1） |
+| POST | `/v0/accounts/invites` | **ops / admin** | 签一份邀请：`{ inviteId, role, expiresAt, link }` |
+| DELETE | `/v0/accounts/invites/<邀请 id>` | **ops / admin** | 撤回一份未兑现的邀请，204 |
+| POST | `/v0/accounts/<subject>/revoke` | **ops / admin** | 吊销，204 |
+| POST | `/v0/accounts/<subject>/reset` | **ops / admin** | 重置凭据：`{ subject, inviteId, expiresAt, link }` |
+| POST | `/v0/accounts/<subject>/logout` | **ops / admin** | 强制下线：`{ subject, sessions, streams }`，关掉这个人的全部会话、断开全部事件流，账号与凭据不动（§5.3） |
+| GET | `/v0/actions?subject=&action=&target=&before=&limit=` | 个人账号、admin | 动作账本（§5.3）。`viewer`、`member` 只拿到自己做的；view 令牌 403 |
+| GET | `/v0/actions/reads?session=` | 个人账号、admin | 谁读过我的对话（§5.3）；view 令牌 403 |
+| POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
+| GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
+| POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话，只写进台账（202），转发由 P17.5 做 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
+| GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
 | GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
 | GET | `/v0/chat/targets` | **admin** | 能聊的对象，含可不可拨（§6.3） |
@@ -589,6 +603,14 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 对话那九行**一律 admin，只读的也是**——理由见 §4.5；这台控制台没接对话通道时它们的
 两种缺席答案（404 与 501）见 §6.7。
+
+`/v0/accounts` 那六行只在开了 `--accounts` 时存在，没开时仍是原来的 404
+（`test/legacyParity.test.ts`）；写请求先过动作账本的 `admit()`，做完记一条
+`accounts.<方法>`（§5.2）。
+
+接力那三行的「成员」：`member` / `ops` 个人账号，或 admin token；view token 与 `viewer`
+账号读得到、写不了（403）。转交与追加是开发者对自己任务的动作，不是运维动作，所以门槛
+与对话面同级而不是 admin（`packages/console/src/routes/handoff.ts`）。
 
 **地址与 traceId 都在单个 path segment 里百分号编码**：
 `qianmo://node-b/reviewer` → `qianmo%3A%2F%2Fnode-b%2Freviewer`。这和注册中心
@@ -645,7 +667,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
 **节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
 
-**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、模型服务、账号与访问、用量四个
+**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、模型服务、用量三个
 区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
 真页面就是把那个模块文件里的 `stubRoute(...)` 换成完整的 `RouteModule`。
 
@@ -677,6 +699,38 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 
 **浏览器级测试**（`test/browser/`）：经 DevTools 协议驱动无头 Chrome，只用 Bun 自带的
 `WebSocket` 与 `Bun.spawn`。`QIANMO_CHROME` 指定浏览器；找不到 Chrome 时整组跳过并打印原因。
+
+### 5.3 账号与访问 · 操作记录（`/access`）
+
+`routes/access.ts` 与 `view/access.ts`，设计依据是 `providers-console-m1.md` 的 H3、H4。
+一份文档、四个页签；「能管账号」就是 `canWrite`——admin 令牌或 `ops` 个人账号，和
+`http.ts` 挡在 `/v0/accounts` 前面的是同一个判断，所以页面不会给出一个 API 会拒绝的页签。
+
+| 路径 | 页签 | 谁 |
+| --- | --- | --- |
+| `/access` | 能管账号的人看「成员」，其他人看「操作记录」 | 任何凭据 |
+| `/access/invites` | 邀请：签发表单、未兑现的邀请、撤回 | 能管账号的人；其他人拿 403 页，写明要什么角色（没开 `--accounts` 时写明这台控制台没有个人账号） |
+| `/access/sessions` | 会话：每个账号的活会话数、最近登录、最近活动、实时连接，强制下线 | 同上 |
+| `/access/actions?subject=&action=&target=&before=&readsBefore=` | 操作记录；个人账号另有「谁读了我的对话」 | 任何凭据；view 令牌只看到一句「需要个人账号或管理令牌」 |
+
+- **写控件**（签发、撤回、吊销、重置、强制下线）要三件事同时成立才画：能管账号、账号库
+  可用、动作账本收得下写。缺一件就不画只会得到 503 的按钮，页签上写明原因。
+- **每个写都走账号 API**，`http.ts` 已经在前面 `admit()`、在后面记一条
+  `accounts.<方法>`（目标是 `/v0/accounts` 之后的路径）。页面自己不再记——同一件事记两条，
+  账本上的每个计数都会多一。
+- **强制下线**是 `POST /v0/accounts/<subject>/logout`：关掉这个人的全部会话、断开全部事件流
+  （会话上的与 Bearer 上的），账号与凭据不动，下次照常登录；要把人挡在外面用吊销或重置。
+  会话表里活的那几条记为 `logout`、已经过期没来得及关的记为 `expired`，**没有新增关闭原因**：
+  会话表严格重放，不认得的原因会让整本不可用，回滚到旧版本时所有个人账号都会被锁在外面。
+  谁下的手由动作账本那一行回答。`<subject>` 段解码失败答 400 `invalid`（吊销、重置同）。
+- **轮询**：成员、邀请、会话三个区域轮询 `/fragments/access/<members|invites|sessions>`。
+  操作记录不轮询：账本每次查询都要整本读一遍、验一遍，而且正读第 30 行时自己滚走的列表比
+  等人点的更糟。它带一个刷新链接，翻页用 `before`，筛选是 `GET` 表单，关掉脚本也都能用。
+- **签出的链接只出现一次**：签发与重置的响应里带着它，页面脚本把它填进轮询区域之外的一块
+  面板，刷新吃不掉它；服务端此后只存哈希。`/access` 的每个页签与 `/invite` 一样带
+  `Referrer-Policy: no-referrer`。
+- **操作记录的可见范围**与 `/v0/actions` 一致：`ops` 与 admin 令牌看全部，`viewer`、`member`
+  只看自己做的；页面与 API 走同一个查询，两边不会说法不一。
 
 ---
 
@@ -1251,7 +1305,8 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 - **会话在服务端。**浏览器只拿 `qianmo_session` cookie，里面只有会话 id（`HttpOnly;
   SameSite=Strict`，TLS 前置后加 `Secure`）；登录必换新 id 并关掉带进来的旧 id，`/logout`
   删服务端那一份；闲置 2 h、绝对 12 h 失效。上面「没有服务端吊销」那几条对个人账号不再成立：
-  吊销后下一个请求就是 401，这个人的 SSE 连接全部断开。
+  吊销后下一个请求就是 401，这个人的 SSE 连接全部断开。只想让人重新登录、不动账号时用强制
+  下线（`POST /v0/accounts/<subject>/logout`，`/access/sessions` 上的按钮，§5.3）。
 - **个人凭据只从登录表单或 `Authorization: Bearer` 进来。**放在 `?token=` 里一律 400；账号版
   页面脚本拒绝把它写进 `localStorage`。
 - **角色**：`viewer` = 今天的 view；`member` = viewer + 对话，只见自己开的会话（别人的会话与
@@ -1368,6 +1423,8 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
 | `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
 | `packages/console/src/view/` | 服务端渲染 |
+| `packages/console/src/routes/access.ts`、`view/access.ts` | 账号与访问 · 操作记录页：四个页签、谁看见哪个页签与哪些写控件、`/v0/actions` 的两条读（§5.3） |
+| `packages/console/src/accounts.ts`、`accountsHttp.ts` | 账号库与会话表（哈希链、严格重放、强制下线）与账号 API（§8.1.1） |
 | `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
 | `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |

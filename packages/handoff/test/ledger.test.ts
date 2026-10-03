@@ -296,3 +296,105 @@ describe('HandoffLedger', () => {
     expect(codeOf(() => HandoffLedger.open(' '))).toBe('invalid_input')
   })
 })
+
+describe('HandoffLedger lock (ruling 10)', () => {
+  test('a second open on the same ledger is refused until the first closes', () => {
+    const path = ledgerPath()
+    const first = HandoffLedger.open(path, { now: clock() })
+    first.accept('t', sampleManifest())
+    expect(readFileSync(`${path}.lock`, 'utf8')).toBe(`${process.pid}\n`)
+    expect(codeOf(() => HandoffLedger.open(path))).toBe('locked')
+
+    first.close()
+    expect(existsSync(`${path}.lock`)).toBe(false)
+    const second = HandoffLedger.open(path)
+    expect(second.get('t')?.state).toBe('accepted')
+    second.close()
+  })
+
+  test('a lock left by a process that is gone is taken over', () => {
+    const path = ledgerPath()
+    const ledger = HandoffLedger.open(path, { now: clock() })
+    ledger.accept('t', sampleManifest())
+    ledger.close()
+    const gone = Bun.spawnSync(['true']).pid
+    writeFileSync(`${path}.lock`, `${gone}\n`)
+    const reopened = HandoffLedger.open(path)
+    expect(reopened.get('t')?.state).toBe('accepted')
+    reopened.close()
+  })
+
+  test('a corrupt ledger gives the lock back', () => {
+    const path = ledgerPath()
+    const ledger = HandoffLedger.open(path, { now: clock() })
+    ledger.accept('t', sampleManifest())
+    ledger.close()
+    appendFileSync(path, '{oops\n')
+    expect(codeOf(() => HandoffLedger.open(path))).toBe('corrupt')
+    expect(existsSync(`${path}.lock`)).toBe(false)
+  })
+})
+
+describe('messages for the cloud side', () => {
+  test('numbered per task, kept across a restart, state untouched', () => {
+    const path = ledgerPath()
+    const ledger = HandoffLedger.open(path, { now: clock() })
+    ledger.accept('a', sampleManifest())
+    ledger.accept('b', sampleManifest())
+    const one = ledger.queueSend('a', '先跑测试')
+    const two = ledger.queueSend('a', '别改 README')
+    const other = ledger.queueSend('b', 'x')
+    expect([one.seq, two.seq, other.seq]).toEqual([1, 2, 1])
+    expect(ledger.get('a')?.state).toBe('accepted')
+    ledger.dispatch('a', 'beta-1')
+    ledger.start('a')
+    expect(ledger.queueSend('a', '第三句').seq).toBe(3)
+    ledger.close()
+
+    const reopened = HandoffLedger.open(path)
+    expect(reopened.sends('a').map(send => send.text)).toEqual([
+      '先跑测试',
+      '别改 README',
+      '第三句',
+    ])
+    expect(reopened.sends('b')).toHaveLength(1)
+    expect(reopened.sends('nope')).toEqual([])
+    expect(reopened.get('a')?.state).toBe('running')
+    reopened.close()
+  })
+
+  test('refused for an unknown task, a finished one, or an empty text', () => {
+    const path = ledgerPath()
+    const ledger = HandoffLedger.open(path, { now: clock() })
+    expect(codeOf(() => ledger.queueSend('nope', 'x'))).toBe('unknown_task')
+    ledger.accept('t', sampleManifest())
+    expect(codeOf(() => ledger.queueSend('t', ' '))).toBe('invalid_input')
+    expect(codeOf(() => ledger.queueSend('t', 'x'.repeat(4097)))).toBe(
+      'invalid_input',
+    )
+    ledger.fail('t', 'deadline passed before dispatch')
+    expect(codeOf(() => ledger.queueSend('t', 'late'))).toBe(
+      'illegal_transition',
+    )
+    expect(readFileSync(path, 'utf8').trimEnd().split('\n')).toHaveLength(2)
+    ledger.close()
+  })
+
+  test('a message out of sequence in the file is corruption', () => {
+    const path = ledgerPath()
+    const ledger = HandoffLedger.open(path, { now: clock() })
+    ledger.accept('t', sampleManifest())
+    ledger.queueSend('t', 'one')
+    ledger.close()
+    const line = readFileSync(path, 'utf8').trimEnd().split('\n').at(-1) ?? ''
+    appendFileSync(path, `${line}\n`)
+    let caught: unknown
+    try {
+      HandoffLedger.open(path)
+    } catch (error) {
+      caught = error
+    }
+    expect((caught as HandoffLedgerError).code).toBe('corrupt')
+    expect((caught as HandoffLedgerError).line).toBe(3)
+  })
+})
