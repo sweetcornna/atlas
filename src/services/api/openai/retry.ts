@@ -3,7 +3,11 @@ import {
   getAPIErrorDiagnostics,
 } from '../retryClassification.js'
 import { reportUpstreamFailure } from '../upstreamStatus.js'
-import { retryAfterCapMs } from '../../qianmo/modelCompat/vendorBackoff.js'
+import {
+  type BackoffTarget,
+  retryAfterCapMs,
+  zaiOverloadWait,
+} from '../../qianmo/modelCompat/vendorBackoff.js'
 
 /** Ten retries by default; the official CLI allows explicit values up to 15. */
 const DEFAULT_MAX_RETRIES = 10
@@ -236,18 +240,21 @@ export function getOpenAIRetryDelay(
 }
 
 /**
- * qianmo P18.12 (hermes #16): what the main loop's ladder
+ * qianmo P18.12 (hermes #16, #17): what the main loop's ladder
  * (`retryThirdPartyEventStream`) does before its `retry`-th re-send after a
  * failure with no output — wait out the server's `Retry-After` when it is
  * within the run mode's bound (`retryAfterCapMs`), never less than the
- * ladder's own backoff, or give up when it is past the bound. Same rule as
- * {@link retryAPIRequest}; that ladder keeps its own inline copy.
+ * ladder's own backoff (or the vendor's, `zaiOverloadWait`, when `target` is
+ * Z.AI's coding endpoint), or give up when it is past the bound. Same
+ * `Retry-After` rule as {@link retryAPIRequest}; that ladder keeps its own
+ * inline copy.
  */
 export function resolveRetryWait(
   error: unknown,
   retry: number,
-  random: () => number = Math.random,
+  options: { target?: BackoffTarget; random?: () => number } = {},
 ): { giveUp: true } | { giveUp: false; delayMs: number } {
+  const random = options.random ?? Math.random
   const retryAfterMs = retryAfterMsFromError(error)
   if (
     retryAfterMs !== undefined &&
@@ -255,7 +262,10 @@ export function resolveRetryWait(
   ) {
     return { giveUp: true }
   }
-  const backoffMs = getOpenAIRetryDelay(retry, random)
+  const ladderMs = getOpenAIRetryDelay(retry, random)
+  const vendor = zaiOverloadWait(error, retry, ladderMs, options.target, random)
+  if (vendor?.giveUp) return vendor
+  const backoffMs = vendor?.delayMs ?? ladderMs
   return {
     giveUp: false,
     delayMs:

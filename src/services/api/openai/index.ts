@@ -468,6 +468,11 @@ export async function* queryModelOpenAI(
       signal,
       // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
       fallback: { model: options.model, fallbackModel: options.fallbackModel },
+      // qianmo P18.12 (hermes #17): src/services/qianmo/modelCompat/vendorBackoff.ts.
+      backoffTarget: {
+        model: openaiModel,
+        baseURL: process.env.OPENAI_BASE_URL,
+      },
       onRetry: () => clearOpenAIClientCache(),
       // qianmo P18.5 (hermes #5): an output-cap rejection lowers the cap once
       // (src/services/qianmo/modelCompat/outputCap.ts). The ChatGPT route sends

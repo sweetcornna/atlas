@@ -31,6 +31,7 @@ import {
   thirdPartyFallback,
   type ThirdPartyFallbackTarget,
 } from '../qianmo/modelCompat/thirdPartyFallback.js'
+import type { BackoffTarget } from '../qianmo/modelCompat/vendorBackoff.js'
 
 /**
  * Retries for a response that ended properly and said nothing
@@ -177,6 +178,11 @@ export async function* retryThirdPartyEventStream(params: {
    * src/services/qianmo/modelCompat/thirdPartyFallback.ts.
    */
   fallback?: ThirdPartyFallbackTarget
+  /**
+   * qianmo P18.12 (hermes #17): the wire model and endpoint, for vendor
+   * backoff rules; see src/services/qianmo/modelCompat/vendorBackoff.ts.
+   */
+  backoffTarget?: BackoffTarget
 }): AsyncGenerator<BetaRawMessageStreamEvent, void> {
   const maxRetries = params.maxRetries ?? resolveOpenAIMaxRetries()
   const delay =
@@ -304,7 +310,9 @@ export async function* retryThirdPartyEventStream(params: {
       // ladder gives up — openai/retry.ts resolveRetryWait.
       const retryWait =
         retry && !emptyResponse && commitment === 'none'
-          ? resolveRetryWait(error, noOutputRetries)
+          ? resolveRetryWait(error, noOutputRetries, {
+              target: params.backoffTarget,
+            })
           : undefined
       // qianmo P18.12 (hermes #1): 5xx retries spent before any output —
       // switch to the fallback.
