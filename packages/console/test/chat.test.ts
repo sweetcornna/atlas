@@ -581,9 +581,11 @@ describe('chat page document', () => {
       thread: '',
       composerEnabled: false,
     })
-    // 顶层导航带不了 Authorization 头，凭据又刻意不放 cookie，所以这个 href
-    // 由客户端在渲染后补上 ?token=。服务端渲染的是没带 token 的那一版。
-    expect(html).toContain('id="to-console" href="/"')
+    // 顶层导航带不了 Authorization 头，凭据又刻意不放 cookie，所以这些 href
+    // 由客户端在渲染后补上 ?token=（标记是 data-nav）。服务端渲染的是没带
+    // token 的那一版。对话页回总览的那一条现在是外壳的品牌字。
+    expect(html).toContain('class="brand-cn" href="/" data-nav')
+    expect(html.slice(0, html.indexOf('<script>'))).not.toContain('token=')
   })
 })
 
@@ -621,20 +623,17 @@ describe('chat routes', () => {
     // A view token must not be able to tell a chat-enabled console apart
     // from one with no channel at all — a visible link that 403s on click
     // would leak exactly the fact the admin-only routes are built to hide.
-    // (The inlined client script references `byId('to-chat')` on every page
-    // regardless, so the assertion checks for the anchor markup itself, not
-    // the bare id string.)
     const viewerPage = await (await wired(get('/', VIEW))).text()
-    expect(viewerPage).not.toContain('id="to-chat"')
+    expect(viewerPage).not.toContain('id="nav-chat"')
     expect(viewerPage).not.toContain('>对话<')
 
     const adminPage = await (await wired(get('/', ADMIN))).text()
-    expect(adminPage).toContain('id="to-chat"')
+    expect(adminPage).toContain('id="nav-chat"')
 
     // Admin alone is not enough either: with no channel wired there is
     // nothing behind the link, so it stays hidden even for admin.
     const adminNoChat = await (await unwired(get('/', ADMIN))).text()
-    expect(adminNoChat).not.toContain('id="to-chat"')
+    expect(adminNoChat).not.toContain('id="nav-chat"')
   })
 
   test('hides the page and explains the API when there is no chat channel', async () => {

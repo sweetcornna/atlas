@@ -272,6 +272,8 @@ export function accountsHarness(
     readonly accounts?: Omit<ConsoleAccounts, 'book'>
     readonly clock?: ManualClock
     readonly tokens?: ConsoleTokens
+    /** Ports beyond the harness's own, e.g. an action ledger. */
+    readonly deps?: Partial<ConsoleDeps>
   } = {},
 ): AccountsHarness {
   const clock = options.clock ?? new ManualClock()
@@ -299,6 +301,7 @@ export function accountsHarness(
     label: 'accounts-test',
     chat,
     wake,
+    ...options.deps,
   }
   const handle = createConsoleHandler(deps, options.tokens ?? TOKENS, {
     ...options.accounts,

@@ -9,7 +9,6 @@ import {
   isEnvDefinedFalsy,
 } from '../../../utils/config/envUtils.js'
 import { logForDebugging } from '../../../utils/telemetry/debug.js'
-import { isCodexFamilyModel } from '../../../utils/model/chatgptModels.js'
 import {
   buildDeepSeekThinkingFields,
   capDeepSeekTools,
@@ -17,7 +16,8 @@ import {
   resolveDeepSeekReasoningEffort,
   resolveDeepSeekTemperature,
 } from '../../../utils/model/deepseekTuning.js'
-import { isOfficialOpenAIBaseURL } from './openaiShared.js'
+import { usesMaxCompletionTokens } from '../../qianmo/modelCompat/outputTokenParam.js'
+import { omitsSamplingTemperature } from '../../qianmo/modelCompat/samplingParams.js'
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -86,7 +86,11 @@ export function buildOpenAIRequestBody(params: {
   tools: any[]
   toolChoice: any
   enableThinking: boolean
-  maxTokens: number
+  /**
+   * Output cap. `undefined` sends none (qianmo P18.5, hermes #3 — see
+   * src/services/qianmo/modelCompat/outputTokenDefault.ts).
+   */
+  maxTokens: number | undefined
   baseURL?: string
   temperatureOverride?: number
   /** Session-scoped routing key for official OpenAI requests. */
@@ -129,8 +133,7 @@ export function buildOpenAIRequestBody(params: {
     reasoningEffort,
     effortValue,
   } = params
-  const useMaxCompletionTokens =
-    isOfficialOpenAIBaseURL(baseURL) && isCodexFamilyModel(model)
+  const useMaxCompletionTokens = usesMaxCompletionTokens(model, baseURL)
 
   // Everything DeepSeek-specific hangs off this one predicate; when it is
   // false the body below is byte-identical to what it has always been.
@@ -177,9 +180,11 @@ export function buildOpenAIRequestBody(params: {
   return {
     model,
     messages,
-    ...(useMaxCompletionTokens
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens }),
+    ...(maxTokens === undefined
+      ? {}
+      : useMaxCompletionTokens
+        ? { max_completion_tokens: maxTokens }
+        : { max_tokens: maxTokens }),
     ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
     ...(effectiveTools.length > 0 && {
       tools: effectiveTools,
@@ -213,7 +218,10 @@ export function buildOpenAIRequestBody(params: {
         ? deepseekTemperature !== undefined && {
             temperature: deepseekTemperature,
           }
-        : temperatureOverride !== undefined && {
+        : temperatureOverride !== undefined &&
+          // qianmo P18.5 (hermes #12): reasoning models and Kimi take no
+          // temperature — src/services/qianmo/modelCompat/samplingParams.ts.
+          !omitsSamplingTemperature(model, baseURL) && {
             temperature: temperatureOverride,
           })),
   }

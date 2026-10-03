@@ -149,6 +149,7 @@
     "@qianmo/memory": "workspace:*",
     "@qianmo/negotiation": "workspace:*",
     "@qianmo/protocol": "workspace:*",
+    "@qianmo/providers": "workspace:*",
     "@qianmo/recall": "workspace:*",
     "@qianmo/registry": "workspace:*",
     "@qianmo/resident": "workspace:*",
