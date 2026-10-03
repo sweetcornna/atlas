@@ -92,6 +92,7 @@ import {
   schedulerStatusOf,
   writeSchedulerStatus,
   type ScheduledJob,
+  type SchedulerDispatch,
 } from '@qianmo/scheduler'
 import { PSK_ENV_VAR, TransportClient, pskFromEnv } from '@qianmo/transport'
 import { invokedBinName } from '../../constants/brand.js'
@@ -584,6 +585,64 @@ function recordResult(
   }
 }
 
+/** {@link createWatchDispatch} 用到的那一小块：拨号与审计链各一个口子。 */
+interface WatchDispatchOptions {
+  readonly from: string
+  /** 中枢自己的 node 段，审计记录的 `node`。 */
+  readonly hubNode: string
+  /** 作业 id → 目标节点入站地址（作业文件里的 `url`）。 */
+  readonly urls: ReadonlyMap<string, string>
+  /** 拿到（必要时现拨）那条长连接。 */
+  readonly linkTo: (
+    url: string,
+  ) => Promise<Pick<TransportClient, 'sendAndWait'>>
+  readonly trail: Pick<AuditTrail, 'append'>
+  readonly issue?: WakeCapabilityIssuer
+}
+
+/**
+ * 调度器每到一刻调一次的派发函数：拨号、签名、记 `watch_fire`、等回执。
+ *
+ * 从 {@link runWatchJobs} 里拆出来，是为了让用例换上手写的连接与审计链，数得出
+ * 「拨了几次」。
+ */
+export function createWatchDispatch(
+  options: WatchDispatchOptions,
+): SchedulerDispatch {
+  return async fire => {
+    const url = options.urls.get(fire.job.id)
+    if (url === undefined) throw new Error(`job ${fire.job.id} has no url`)
+    const client = await options.linkTo(url)
+    // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
+    // 慢连接就会把 60 s 的有效期用掉一半。
+    const message = buildWatchRequest({
+      from: options.from,
+      job: fire.job,
+      ...(options.issue === undefined ? {} : { issue: options.issue }),
+    })
+    options.trail.append({
+      at: Date.now(),
+      source: AuditSource.Scheduler,
+      kind: 'watch_fire',
+      outcome: 'ok',
+      node: options.hubNode,
+      peer: fire.job.target,
+      taskId: message.taskId,
+      msgId: message.msgId,
+      traceId: message.traceId,
+      detail: detailOf({
+        jobId: fire.job.id,
+        dedupKey: fire.dedupKey,
+        fireAtMs: fire.fireAtMs,
+        attempt: fire.attempt,
+        notifyPolicy: fire.job.notifyPolicy,
+        signed: message.cap !== undefined,
+      }),
+    })
+    await client.sendAndWait(message, DISPATCH_RECEIPT_TIMEOUT_MS)
+  }
+}
+
 export async function runWatch(args: readonly string[]): Promise<void> {
   if (isWatchHelpRequest(args)) {
     process.stdout.write(`${WATCH_HELP_TEXT}\n`)
@@ -683,38 +742,14 @@ export async function runWatchJobs(config: WatchConfig): Promise<void> {
         schedulerStatusOf(runner, process.pid),
       )
     },
-    dispatch: async fire => {
-      const url = urls.get(fire.job.id)
-      if (url === undefined) throw new Error(`job ${fire.job.id} has no url`)
-      const client = await linkTo(url)
-      // 令牌在连接建立之后才签：`linkTo` 最长可能等 30 s，放在它之前签，
-      // 慢连接就会把 60 s 的有效期用掉一半。
-      const message = buildWatchRequest({
-        from: config.from,
-        job: fire.job,
-        ...(identity === undefined ? {} : { issue: identity.issue }),
-      })
-      trail.append({
-        at: Date.now(),
-        source: AuditSource.Scheduler,
-        kind: 'watch_fire',
-        outcome: 'ok',
-        node: hub.node,
-        peer: fire.job.target,
-        taskId: message.taskId,
-        msgId: message.msgId,
-        traceId: message.traceId,
-        detail: detailOf({
-          jobId: fire.job.id,
-          dedupKey: fire.dedupKey,
-          fireAtMs: fire.fireAtMs,
-          attempt: fire.attempt,
-          notifyPolicy: fire.job.notifyPolicy,
-          signed: message.cap !== undefined,
-        }),
-      })
-      await client.sendAndWait(message, DISPATCH_RECEIPT_TIMEOUT_MS)
-    },
+    dispatch: createWatchDispatch({
+      from: config.from,
+      hubNode: hub.node,
+      urls,
+      linkTo,
+      trail,
+      ...(identity === undefined ? {} : { issue: identity.issue }),
+    }),
   })
 
   process.stdout.write(
