@@ -16,9 +16,12 @@
  *   放行 = 哨兵收到的唯一参数是规范化路径。
  * - **authorized_keys 行的形状**，以及 sshd 直接 exec 它所需的可执行位。
  *
- * 脚本副本、包装与哨兵**整个文件只建一次**，并在模块作用域先空跑一次：macOS 第一次执行一个新写出
- * 的文件要付一笔没有上界的扫描代价（mirror-pull.test.ts 文件头有实测），不能让它落在 5 s 的单测
- * 预算里。
+ * 包装与哨兵**整个文件只建一次**，它们和仓库里那份闸门脚本都在模块作用域先空跑一次：macOS 第一次
+ * 执行一个新写出的文件要付一笔没有上界的扫描代价（mirror-pull.test.ts 文件头有实测），不能让它落在
+ * 5 s 的单测预算里。
+ *
+ * 这里的包装只模拟 sshd 的两件事。`restrict` 真拦得住什么、真 sshd 给 SSH_ORIGINAL_COMMAND 什么值，
+ * 是对着本机真 sshd 实测的，结论在脚本头注里。
  */
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
