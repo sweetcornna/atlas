@@ -19,6 +19,8 @@ import type {
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
+import { adaptGuardedChatStream } from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
+import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
 import {
   sendDroppingRejectedParameters,
   TEMPERATURE_DROPPABLE,
@@ -44,7 +46,6 @@ import { getGptBehaviorPromptSection } from './gptBehaviorPrompt.js'
 import {
   anthropicMessagesToOpenAI,
   resolveOpenAIModel,
-  adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
   OPENAI_REASONING_ITEMS_FIELD,
@@ -452,6 +453,10 @@ export async function* queryModelOpenAI(
     // `store: false` means the server keeps no copy, and a request that omits
     // them no longer matches the cached prefix.
     const reasoningItems: OpenAIReasoningItem[] = []
+    // qianmo P18.12: this turn's chat `reasoning_details`, replayed to the
+    // OpenRouter / MiniMax model that produced it —
+    // src/services/qianmo/modelCompat/reasoningDetailsReplay.ts.
+    const reasoningDetails: unknown[] = []
 
     // 11. Call OpenAI API with streaming. The Responses wire protocol serves
     // two routes — ChatGPT subscription auth (Codex backend, ChatGPT headers,
@@ -510,7 +515,7 @@ export async function* queryModelOpenAI(
               openaiModel,
               { onReasoningItem: item => reasoningItems.push(item) },
             )
-          : adaptOpenAIStreamToAnthropic(
+          : adaptGuardedChatStream(
               await createChatStreamWithCacheKeyFallback({
                 buildBody: cacheKey =>
                   buildOpenAIRequestBody({
@@ -543,6 +548,7 @@ export async function* queryModelOpenAI(
               }),
               openaiModel,
               { includeCacheWriteTokens: reportsCacheWrites },
+              { reasoningDetails },
             ),
     })
 
@@ -641,7 +647,13 @@ export async function* queryModelOpenAI(
               stopReason,
               maxTokens,
               maxTokensEnvHint: OPENAI_MAX_TOKENS_ENV_HINT,
-              providerMetadata: reasoningMetadata(reasoningItems),
+              providerMetadata: {
+                ...reasoningMetadata(reasoningItems),
+                ...reasoningDetailsMetadata(reasoningDetails, {
+                  model: openaiModel,
+                  baseURL: process.env.OPENAI_BASE_URL,
+                }),
+              },
             })) {
               if (output.type === 'assistant') {
                 collectedMessages.push(output)

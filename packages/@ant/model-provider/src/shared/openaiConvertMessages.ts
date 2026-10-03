@@ -12,6 +12,7 @@ import type {
 } from 'openai/resources/chat/completions/completions.mjs'
 import type { AssistantMessage, UserMessage } from '../types/message.js'
 import { carriedToolCallSignature } from './qianmo/geminiToolSignature.js'
+import { carriedReasoningDetails } from './qianmo/reasoningDetails.js'
 import type { SystemPrompt } from '../types/systemPrompt.js'
 
 export interface ConvertMessagesOptions {
@@ -331,6 +332,9 @@ function convertInternalAssistantMessage(
       reasoning_content: reasoningParts.join('\n'),
     }),
     ...(needsEmptyReasoning && { reasoning_content: '' }),
+    // qianmo P18.12: not serialised — the chat lane's send boundary decides;
+    // shared/qianmo/reasoningDetails.ts.
+    ...carriedReasoningDetails(msg.message),
   }
 
   return [withReasoning(result)]
