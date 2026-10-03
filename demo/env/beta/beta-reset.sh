@@ -32,6 +32,13 @@
 # 在节点机上本地重新生成一把，得到的是一个 H 永远拨不通的节点。换 PSK 是 §8.4 的七步
 # 流程（H 生成 → 停该节点 → 写进该机 → 起 → 更新 H 副本 → 从 H 真拨一次 → 若它是唤醒
 # 目标则控制台也要带新 PSK 重起），而且只能在升级窗口做——那不是一个脚本参数。
+#
+# ── 模型服务的主密钥：任何参数都不碰（P18.6）────────────────────────────────
+# 主密钥在 secrets/ 下（common.sh 的 BETA_PROVIDER_KEY_FILE），本脚本没有一个动作够得到
+# secrets/。密文库与档案账本在控制台的配置根里，`--archive-config` 会把它们随配置根一起
+# 改名归档；主密钥留在原处，归档搬回来就能解开。反过来，一个会顺手「重置」主密钥的
+# reset 会让每一份归档里的密文永远解不开——控制台见到「密文在、主密钥不在」时停用模型
+# 服务、绝不重新生成，正是为了不让这件事悄悄发生。
 
 set -euo pipefail
 
@@ -124,12 +131,23 @@ if [ "$ARCHIVE_CONFIG" = '1' ]; then
   beta_head '· 归档配置根'
   STAMP="$(beta_stamp)"
   ARCHIVED=0
+  SEALED=''
   # glob 没匹配到时 bash 会把模式原样留下，所以逐个 `[ -d ]` 复核。
   for dir in "$BETA_NODES_DIR"/*; do
     [ -d "$dir/config" ] || continue
+    if [ -f "$dir/config/qianmo/console/provider-secrets.json" ]; then
+      SEALED="$SEALED $(basename "$dir")"
+    fi
     archive_config "$dir/config" "$STAMP"
     ARCHIVED=1
   done
+  # providers-console-m1.md §3.8 写明的有意偏离：密文跟着配置根归档（仍在 H 上、同一个
+  # 信任域），主密钥不跟着走。说出来，免得有人以为归档里的东西能离开这把钥匙单独用，
+  # 或者以为主密钥也该一起挪走。
+  if [ -n "$SEALED" ]; then
+    beta_warn "模型服务的密文随配置根一起归档了（${SEALED# }，config.bad-$STAMP/qianmo/console/provider-secrets.json）；
+主密钥 ${BETA_PROVIDER_KEY_FILE} 留在原处没动——归档要搬回来，用的就是这同一把。"
+  fi
   if [ "$ARCHIVED" = '1' ]; then
     beta_warn "在运维单页写一行：「<node> 于 $STAMP 归档了配置根，那一段审计记录在 config.bad-$STAMP 里」。
 这是 §6 L2 最容易漏、后果最大的一步 —— 不留这一行，三天后查链的人会看到一段无法解释的
@@ -176,5 +194,5 @@ beta_head '③ 重铺目录骨架'
 beta_seed_root
 
 beta_head "重置完成，耗时 $(beta_elapsed "$STARTED_AT")"
-beta_say "密钥     : 一把没动 —— 换 PSK 是 §8.4 的七步流程，不是一个脚本参数（见本文件头）"
+beta_say "密钥     : 一把没动（含模型服务主密钥）—— 换 PSK 是 §8.4 的七步流程，不是一个脚本参数（见本文件头）"
 beta_say '下一步   : demo/env/beta/beta-up.sh --role host|node'

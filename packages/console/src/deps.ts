@@ -910,6 +910,26 @@ export const CONSOLE_ACTIONS = [
   'handoff.accept',
   /** 给接力任务追加一句话（P17.4 只记账），target 是任务 id。 */
   'handoff.send',
+  // 模型服务（P18.6，`ProviderPort` 自己记，见 {@link ProviderCaller}）。target 一律是
+  // 档案 id 或节点名，从不是密钥、地址或带凭据的 URL。
+  'provider.save',
+  'provider.delete',
+  'provider.secret.set',
+  'provider.secret.clear',
+  'provider.default.set',
+  'provider.assign',
+  'provider.context.set',
+  'provider.context.clear',
+  /** 一个节点一条，结果是节点回报的（ok / refused：conflict、busy… / failed：unreachable…）。 */
+  'provider.apply',
+  /** 带 `force` 的下发：ops 确认了「覆盖节点上的改动」。 */
+  'provider.apply.force',
+  'provider.probe.auth',
+  'provider.probe.latency',
+  /** 真实调用一次模型，会产生一次计费调用。 */
+  'provider.probe.call',
+  'provider.autocompact',
+  'provider.import',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -1071,6 +1091,600 @@ export interface HandoffPort {
   send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
 }
 
+// ---------------------------------------------------------------------------
+// ProviderPort —— 模型服务（P18.6 实现；P18.9 页面）
+// ---------------------------------------------------------------------------
+//
+// 设计：`docs/dev/providers-console-m1.md` v1.2 §2–§3、§6.3、§7。
+//
+// 下面的类型是 `@qianmo/providers` 那几个类型的**镜像**：控制台包只许依赖
+// `@qianmo/audit`（`test/dependencies.test.ts`），所以这里不 import 目录包。宿主实现
+// （`src/cli/handlers/consoleProviders.ts`）把目录包的值直接赋给这些类型，两边一旦
+// 漂移，tsc 在宿主那一侧报错。厂商清单仍然只有一份：页面要的预设经
+// {@link ProviderPort.catalog} 从目录包来，控制台不留自己的。
+//
+// **任何方法都不返回密钥的值或片段**：只有「已设置 / 未设置」、设置时间与指纹
+// （指纹只给 ops 看，由页面按角色决定画不画）。
+
+type ProviderLane =
+  | 'anthropic'
+  | 'openai-chat'
+  | 'openai-responses'
+  | 'gemini'
+  | 'grok'
+type ProviderPlan = 'paygo' | 'plan' | 'local' | 'custom'
+export type ProviderEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+type ProviderModelTier = 'opus' | 'sonnet' | 'haiku' | 'fable'
+
+/** §3.2 的一个模型。 */
+interface ProviderModelView {
+  readonly id: string
+  readonly role: 'main' | 'fast' | 'extra'
+  readonly tiers: readonly ProviderModelTier[]
+  readonly capabilities:
+    | { readonly mode: 'family' }
+    | {
+        readonly mode: 'explicit'
+        readonly thinking: boolean
+        readonly adaptive_thinking: boolean
+        readonly interleaved_thinking: boolean
+      }
+  readonly effort: {
+    readonly send: 'always' | 'never' | 'auto'
+    readonly level?: ProviderEffortLevel
+    readonly levels?: readonly ProviderEffortLevel[]
+  }
+  /** 缺省按 200 000 编译（D-8）；节点指派的覆盖优先。 */
+  readonly contextTokens?: number
+  readonly maxOutputTokens?: number
+  readonly retireAt?: string
+}
+
+/** 档案持有的一把密钥：只有标识与对账材料。`fingerprint` 在就是「已设置」。 */
+interface ProviderKeyView {
+  readonly id: string
+  readonly label?: string
+  readonly priority?: number
+  readonly fingerprint?: string
+  readonly setAt?: string
+}
+
+interface ProviderTerms {
+  readonly restricted: boolean
+  readonly note: string
+  readonly url: string
+}
+
+interface ProviderHttpProbe {
+  readonly method: 'GET' | 'POST'
+  readonly path: string
+  readonly body?: Readonly<Record<string, unknown>>
+  readonly free: boolean
+}
+
+type ProviderEvaluated =
+  | false
+  | { readonly at: string; readonly by: string; readonly evidence: string }
+
+/** §3.1 一份档案，中枢存的样子（不含任何密钥值）。 */
+export interface ProviderProfileView {
+  readonly id: string
+  readonly revision: number
+  readonly name: string
+  readonly presetId: string | null
+  readonly plan: ProviderPlan
+  readonly site: string | null
+  readonly lane: ProviderLane
+  readonly baseUrl: string
+  readonly templateValues?: Readonly<Record<string, string>>
+  readonly models: readonly ProviderModelView[]
+  readonly compat?: Readonly<Partial<Record<string, string>>>
+  readonly effortLock?: ProviderEffortLevel | null
+  readonly keySelection?: 'fill_first' | 'round_robin' | 'least_used'
+  readonly auth: { readonly scheme: 'bearer' | 'x-api-key' }
+  readonly keys: readonly ProviderKeyView[]
+  /** 预设带来的验 key 与拉模型请求说明（§5.5），节点用。 */
+  readonly probe?: {
+    readonly auth: ProviderHttpProbe | null
+    readonly models: ProviderHttpProbe | null
+  }
+  readonly terms?: ProviderTerms
+  readonly evaluated: ProviderEvaluated
+}
+
+/**
+ * 页面交上来的档案：形状同 {@link ProviderProfileView}，由宿主用目录包的校验器
+ * **严格**解析（不认识的字段一律拒收）。`revision` 与 `keys[].fingerprint/setAt`
+ * 由中枢维护，交上来的值被忽略。
+ */
+export type ProviderProfileDraft = Readonly<Record<string, unknown>>
+
+/** 目录里的一条预设（§4），去掉了只给节点用的探测说明。 */
+export interface ProviderPresetView {
+  readonly id: string
+  readonly vendor: string
+  readonly name: string
+  readonly group: 'cn-paygo' | 'intl' | 'plan' | 'local' | 'custom'
+  readonly plan: ProviderPlan
+  readonly lane: ProviderLane
+  readonly baseUrl: string
+  readonly sites: readonly {
+    readonly id: string
+    readonly label: string
+    readonly baseUrl: string
+  }[]
+  readonly templateVars: readonly {
+    readonly name: string
+    readonly label: string
+  }[]
+  readonly authScheme: 'bearer' | 'x-api-key'
+  readonly models: readonly ProviderModelView[]
+  readonly compat: Readonly<Partial<Record<string, string>>>
+  /** 只做软提示（§4.1 第 4 条），从不据此拒收。 */
+  readonly keyHint: {
+    readonly prefixes: readonly string[]
+    readonly pattern?: string
+    readonly display: string
+  } | null
+  readonly placeholderKey?: string
+  readonly terms: ProviderTerms | null
+  readonly source: { readonly url: string; readonly verifiedAt: string }
+  /** 一律 `false`：没有真 key 冒烟证据之前，页面写「未评估」。 */
+  readonly evaluated: false
+  readonly listed: boolean
+  readonly unverified: readonly string[]
+  readonly notes: readonly string[]
+}
+
+export interface ProviderCatalog {
+  /** 分组的显示顺序（§6.3.2）。 */
+  readonly groups: readonly ProviderPresetView['group'][]
+  readonly presets: readonly ProviderPresetView[]
+}
+
+/** 节点上一次 `status` 报回的实际状态（§2.4），中枢不推断。 */
+export interface ProviderNodeActual {
+  readonly managed: boolean
+  readonly applied: {
+    readonly profileId: string
+    readonly revision: number
+    readonly requestId: string
+    readonly at: string
+  } | null
+  readonly onDiskHash: string
+  readonly appliedHash: string | null
+  readonly loadedHash: string | null
+  readonly pending: {
+    readonly requestId: string
+    readonly since: string
+    readonly waitingTurns: number | null
+  } | null
+  readonly resident: {
+    readonly running: boolean
+    readonly generation: number | null
+    readonly inFlight: number | null
+  } | null
+  /** 只有键名。 */
+  readonly inheritedProviderKeys: readonly string[]
+  readonly capabilities: {
+    readonly protocol: number
+    readonly chatEffortHonorsOverride: boolean
+    readonly replayFilter: boolean
+    readonly multiKey: boolean
+  }
+  readonly lastResult: {
+    readonly requestId: string
+    readonly code: string
+    readonly at: string
+    readonly diffKeys: readonly string[]
+  } | null
+  /**
+   * 节点用真实门控函数算出来的生效值。页面上「线路 / 发不发 effort / 档位 / 上下文
+   * / 自动压缩」只取这里，中枢自己不算（§3.4「显示 = 线上」）。节点没算出来时缺席。
+   */
+  readonly effective?: {
+    readonly apiProvider: string
+    readonly wire: string
+    readonly model: string
+    readonly wireModel: string
+    readonly modelSettingsSlot: string | null
+    readonly effortOnWire: boolean
+    /** 五档之一，或 `none`（P18.8：线上显式关掉推理）。 */
+    readonly effortLevel: string | null
+    readonly contextTokens: number
+    /** D-9，P18.7 起节点报回；更早的节点缺席。 */
+    readonly autoCompactWindow?: number
+    readonly autoCompactSource?: 'env' | 'settings' | 'auto'
+  }
+}
+
+/** §2.4 的漂移类型，每类在页面上有说明与修复动作。 */
+type ProviderDriftKind =
+  | 'unmanaged'
+  | 'out-of-sync'
+  | 'pending'
+  | 'local-edit'
+  | 'not-loaded'
+  | 'env-residue'
+  | 'unreachable'
+  | 'retiring-model'
+
+export interface ProviderDrift {
+  readonly kind: ProviderDriftKind
+  /** 冷静的一句中文，不含任何值；`local-edit` 带被改动的键名在 {@link keys}。 */
+  readonly message: string
+  readonly keys?: readonly string[]
+}
+
+/** 一次下发或测连在中枢账本里的记录（§6.3.8「最近 10 次」）。 */
+export interface ProviderActivity {
+  readonly kind: 'apply' | 'probe'
+  readonly at: number
+  readonly requestId: string
+  readonly profileId: string
+  readonly outcome: ActionOutcome
+  /** 不是 `ok` 时节点的错误码，或 `unreachable`。 */
+  readonly code?: string
+  /** probe 的模式；apply 是否带了 force。 */
+  readonly mode?: 'auth' | 'latency' | 'call'
+  readonly force?: boolean
+}
+
+/** 节点 → 档案的指派（§2.4）：跟随全局默认、指定一份、或明确不托管。 */
+export type ProviderAssignment =
+  | { readonly mode: 'inherit' }
+  | { readonly mode: 'profile'; readonly profileId: string }
+  | { readonly mode: 'unmanaged' }
+
+export interface ProviderNodeView {
+  readonly node: string
+  /** 中枢怎么够到它：本机子进程，或 ssh 强制命令。 */
+  readonly executor: 'local' | 'ssh'
+  readonly assignment: ProviderAssignment
+  /** D-8 的节点覆盖；`null` 是没有覆盖（用档案值，档案也没写就是 200 000）。 */
+  readonly contextOverride: number | null
+  /** 期望；`null` 是不托管。 */
+  readonly expected: {
+    readonly profileId: string
+    readonly revision: number
+    readonly contextOverride: number | null
+  } | null
+  /** 最近一次**成功**的 `status`；失败时保留上一次的，并在 {@link lastStatus} 标明过期。 */
+  readonly actual: ProviderNodeActual | null
+  readonly lastStatus: {
+    readonly at: number
+    readonly ok: boolean
+    readonly message?: string
+  } | null
+  readonly drift: readonly ProviderDrift[]
+  /** 新的在前，最多 10 条。 */
+  readonly recent: readonly ProviderActivity[]
+}
+
+export interface ProviderProfileSummary {
+  readonly profile: ProviderProfileView
+  /** 每把密钥是否已设置；页面不显示任何片段。 */
+  readonly secrets: readonly {
+    readonly keyId: string
+    readonly set: boolean
+    readonly setAt?: string
+  }[]
+  /** 期望里用着它的节点（含跟随全局默认的）。 */
+  readonly nodes: readonly string[]
+  readonly isDefault: boolean
+}
+
+export interface ProviderOverview {
+  /** 任何状态变化都加一；页面拿它判断要不要换掉某一块。 */
+  readonly revision: number
+  readonly defaultProfileId: string | null
+  readonly profiles: readonly ProviderProfileSummary[]
+  readonly nodes: readonly ProviderNodeView[]
+}
+
+/** 中枢一侧的编译预览（§3.3）：将要写进节点 `settings.json` 的键，没有密钥值。 */
+export interface ProviderCompilePreview {
+  readonly modelType: string
+  /** `direct`，或 DeepSeek 经运行时镜像走官方 Anthropic 端点（§3.3）。 */
+  readonly route: 'direct' | 'deepseek-mirror'
+  readonly effectiveLane: ProviderLane
+  /** 要写的 env 键与值；装密钥的那个键值为 `null`，名字另列在 {@link secretKeys}。 */
+  readonly set: Readonly<Record<string, string | null>>
+  readonly secretKeys: readonly string[]
+  /** 先被置为删除的受管键（激活语义：全部受管键先删、再写）。 */
+  readonly deleted: readonly string[]
+  readonly modelSettings: Readonly<
+    Record<
+      string,
+      { readonly effort?: ProviderEffortLevel; readonly contextTokens?: number }
+    >
+  >
+  readonly warnings: readonly ProviderIssueView[]
+}
+
+/** 一条校验意见：`code` 给程序，`message` 是给人看的中文，`path` 指到字段。 */
+export interface ProviderIssueView {
+  readonly code: string
+  readonly message: string
+  readonly path: string
+}
+
+/** 一个节点上一次 `apply`（或 dry-run）的结果。 */
+export interface ProviderApplyResult {
+  readonly node: string
+  readonly requestId: string
+  readonly outcome: ActionOutcome
+  /** 不是 `ok` 时：节点的错误码（`conflict`、`busy`…），或 `unreachable` 等中枢侧的码。 */
+  readonly code?: string
+  readonly message: string
+  /** 节点只写了 pending，等 resident 在空闲时切换。 */
+  readonly pending?: boolean
+  /** 变化的受管键，只有键名（dry-run 与 `conflict` 时有）。 */
+  readonly diffKeys?: readonly string[]
+  readonly sessions?: 'keep' | 'reset'
+  readonly profileId?: string
+  readonly revision?: number
+}
+
+export interface ProviderProbeResult {
+  readonly node: string
+  readonly requestId: string
+  /** §5.5 三态：`ok`；连上了但被拒（`reachable && !ok`）；没连上。 */
+  readonly ok: boolean
+  readonly reachable: boolean
+  /** 节点写的中文原因，不转述厂商原文。 */
+  readonly message: string
+  readonly httpStatus?: number
+  readonly vendorCode?: string
+  /** `/v1` 纠正：页面直接改写表单里的地址并提示。 */
+  readonly suggestion?: { readonly baseUrl: string }
+  readonly latency?: {
+    readonly medianMs: number
+    readonly minMs: number
+    readonly samples: number
+  }
+}
+
+export interface ProviderAutocompactResult {
+  readonly node: string
+  /** 生效值：`min(上下文窗口, 设定值)`。 */
+  readonly autoCompactWindow: number
+  readonly configured: number
+  readonly source: 'env' | 'settings' | 'auto'
+  /** 节点 `/autocompact` 的回显（英文，基座原话）。 */
+  readonly message?: string
+}
+
+export interface ProviderExport {
+  readonly filename: string
+  /** `{v:1, kind:'qianmo-providers', secrets:'not-included', profiles:[…]}`，不含密钥也不含指纹。 */
+  readonly text: string
+  readonly count: number
+}
+
+export interface ProviderImportPreview {
+  readonly profiles: readonly ProviderProfileView[]
+  /** 与现有档案撞 id 的；导入时只能另存为新 id（{@link ProviderImportInput.renames}）。 */
+  readonly collisions: readonly string[]
+  readonly warnings: readonly ProviderIssueView[]
+}
+
+export interface ProviderImportInput {
+  readonly text: string
+  /** 撞 id 的档案改成什么新 id。缺一个就整份拒绝，不覆盖。 */
+  readonly renames?: Readonly<Record<string, string>>
+}
+
+/** 测连、测速、拉模型列表与 dry-run 用的档案：已存的一份，或表单上还没保存的一份。 */
+export type ProviderCandidate =
+  | { readonly profileId: string; readonly secret?: string }
+  | { readonly draft: ProviderProfileDraft; readonly secret?: string }
+
+type ProviderFailureCode =
+  /** 输入不合法（形状、闭合键集外的键、值）。带 `path`。→ 400 */
+  | 'invalid'
+  /** 档案或节点不存在。→ 404 */
+  | 'not_found'
+  /** `If-Match` 修订号不符；带 `fields`（被改动的字段名）。→ 409 */
+  | 'conflict'
+  /** 还有节点在用这份档案（期望或实际）；带 `nodes`。→ 409 */
+  | 'in_use'
+  /** 调用者不是个人账号的 ops（或是 break-glass）。不记账。→ 403 */
+  | 'rejected'
+  /** 模型服务这一面停用：账本坏行、主密钥缺失或权限过宽。→ 503 */
+  | 'unavailable'
+  /** 节点够不着：ssh 失败、无响应、超时、强制命令缺失。→ 502 */
+  | 'unreachable'
+  /** 节点收到了并拒绝；带 `nodeCode`。→ 422 */
+  | 'refused'
+
+export interface ProviderFailure {
+  readonly code: ProviderFailureCode
+  /** 冷静的一句中文，不含任何密钥。 */
+  readonly message: string
+  readonly path?: string
+  readonly fields?: readonly string[]
+  readonly nodes?: readonly string[]
+  readonly nodeCode?: string
+}
+
+export type ProviderResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: ProviderFailure }
+
+/** 端口会写进动作账本的动词（{@link CONSOLE_ACTIONS} 里 `provider.` 开头的那些）。 */
+export type ProviderActionName = Extract<
+  (typeof CONSOLE_ACTIONS)[number],
+  `provider.${string}`
+>
+
+/**
+ * 发起一次写的人，由路由从请求里取：
+ *
+ * ```ts
+ * const blocked = await ctx.admit(); if (blocked) return blocked
+ * const p = ctx.access.principal
+ * const caller = {
+ *   subject: p?.subject ?? 'anonymous',
+ *   role: p?.kind === 'user' ? p.role : null,
+ *   breakGlass: ctx.access.breakGlass,
+ *   record: ctx.record,
+ * }
+ * ```
+ *
+ * 端口再判一次：只有个人账号（`u:…`）、`role === 'ops'`、不是 break-glass 才放行，
+ * 否则 `rejected` 且**不记账**（与「角色门不记」同一条）。放行之后，端口在动作做完的
+ * 那一刻自己调 `record`：一次保存记一条，一次下发每个节点各记一条、记的是节点回报
+ * 的结果。所以路由不要再为同一次写调 `ctx.record`。
+ */
+export interface ProviderCaller {
+  readonly subject: string
+  readonly role: 'viewer' | 'member' | 'ops' | null
+  readonly breakGlass: boolean
+  readonly record: (
+    action: ProviderActionName,
+    target: string,
+    outcome: ActionOutcome,
+    code?: string,
+  ) => Promise<boolean>
+}
+
+/**
+ * 模型服务（`providers-console-m1.md` §2、§6.3）。宿主实现在
+ * `src/cli/handlers/consoleProviders.ts`；缺席（`ConsoleDeps.providers` 未接）时页面
+ * 说明「模型服务未开启」。
+ *
+ * - 读方法不收 {@link ProviderCaller}，按角色裁剪是页面的事（§7.3：viewer 不看指纹、
+ *   不看 Base URL 主机以外的部分）。例外是 `models` 和只读的 `autocompact`：它们会
+ *   连到节点（`models` 还可能带着候选密钥），所以收 caller、要 ops，但不记账。
+ *   `preview` 只在中枢编译、不连节点，密钥以占位符代替。
+ * - 写方法都收 caller、要 ops、自己记账（见 {@link ProviderCaller}）；写之前由路由
+ *   `ctx.admit()`。
+ * - 带 `ifMatch` 的方法：`null` 只用于新建；修订号不符返回 `conflict`（409）。
+ * - 返回值从不含密钥值或片段；节点的 stderr 与厂商原文都不转述。
+ */
+export interface ProviderPort {
+  // --- 读 ---------------------------------------------------------------
+  overview(): Promise<ProviderResult<ProviderOverview>>
+  profile(id: string): Promise<ProviderResult<ProviderProfileView>>
+  /** 预设目录，按组排好。这一面停用时也照常返回（它不读任何本地状态）。 */
+  catalog(): ProviderCatalog
+  /** 从预设起一份草稿（§6.3.2）：表单默认只剩密钥一个必填项。 */
+  draftFromPreset(input: {
+    readonly presetId: string
+    readonly site?: string
+  }): ProviderResult<ProviderProfileView>
+  /** 中枢一侧的编译预览；给了 `node` 就带上该节点的上下文覆盖与能力。 */
+  preview(input: {
+    readonly candidate: ProviderCandidate
+    readonly node?: string
+  }): Promise<ProviderResult<ProviderCompilePreview>>
+  node(node: string): Promise<ProviderResult<ProviderNodeView>>
+  /** 立刻向节点要一次 `status`（同一节点 5 s 内的重复请求直接回缓存）。 */
+  refreshNode(node: string): Promise<ProviderResult<ProviderNodeView>>
+  exportProfiles(
+    ids?: readonly string[],
+  ): Promise<ProviderResult<ProviderExport>>
+  importPreview(text: string): Promise<ProviderResult<ProviderImportPreview>>
+  /** 经节点拉模型列表（§5.5）。不给 candidate 就用节点当前已生效的配置。要 ops，不记账。 */
+  models(
+    input: { readonly node: string; readonly candidate?: ProviderCandidate },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<readonly { readonly id: string }[]>>
+
+  // --- 写：要 ops，端口自己记账 ---------------------------------------------
+  /**
+   * 新建或修改一份档案。`secrets` 是同一次保存里顺带填的密钥（keyId → 值），与档案、
+   * 账本事件在同一个同步段里落盘（§2.3 第 3 步），各记一条 `provider.secret.set`。
+   */
+  saveProfile(
+    input: {
+      readonly profile: ProviderProfileDraft
+      readonly ifMatch: number | null
+      readonly secrets?: Readonly<Record<string, string>>
+    },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderProfileView>>
+  /** 还有节点在用（期望或实际）时 `in_use`，先指定替代档案。 */
+  deleteProfile(
+    input: { readonly profileId: string; readonly ifMatch: number },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<void>>
+  /** 只写不读：设置或重新填写一把密钥。旧密文随即从密文库消失。 */
+  setSecret(
+    input: {
+      readonly profileId: string
+      readonly keyId: string
+      readonly value: string
+      readonly ifMatch: number
+    },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderProfileView>>
+  clearSecret(
+    input: {
+      readonly profileId: string
+      readonly keyId: string
+      readonly ifMatch: number
+    },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderProfileView>>
+  /** 全局默认；`null` 是取消。单独指派过的节点不受影响。 */
+  setDefault(
+    input: { readonly profileId: string | null },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<void>>
+  /** 节点 → 档案；`unmanaged` 是「停止托管」，只改中枢的期望、不动节点文件（§6.3.7）。 */
+  assign(
+    input: { readonly node: string; readonly assignment: ProviderAssignment },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderNodeView>>
+  /** D-8：`tokens` 为 `null` 是清除覆盖、回到档案值。随下一次下发生效。 */
+  setContextOverride(
+    input: { readonly node: string; readonly tokens: number | null },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderNodeView>>
+  /**
+   * 按节点逐个下发期望配置。`nodes` 缺省是全部受托管的节点。`dryRun` 只校验与比对、
+   * 返回将要变化的键名，不记账。`sessions` 缺省按 §2.7 算（同一线路同一主机 `keep`，
+   * 否则 `reset`）。`force` 覆盖节点上的本地改动，记为 `provider.apply.force`。
+   * 部分失败时整体仍是 `ok: true`，逐节点看 {@link ProviderApplyResult.outcome}。
+   * `profileId` 只用于 dry-run（「换成这份会变什么」）；真下发带它是 `invalid`，
+   * 换档案要先 {@link ProviderPort.assign}。
+   */
+  apply(
+    input: {
+      readonly nodes?: readonly string[]
+      readonly dryRun?: boolean
+      readonly force?: boolean
+      readonly sessions?: 'keep' | 'reset'
+      readonly profileId?: string
+    },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<readonly ProviderApplyResult[]>>
+  /** 测连 `auth`、测速 `latency`、真实调用 `call`（会计费），都在节点上跑。 */
+  probe(
+    input: {
+      readonly node: string
+      readonly mode: 'auth' | 'latency' | 'call'
+      readonly candidate: ProviderCandidate
+    },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderProbeResult>>
+  /**
+   * D-9：节点自己的自动压缩阈值，经节点的 `autocompact` 写入。`value` 缺省是只读
+   * （不记账）；`'auto'` 或 100 000–1 000 000 的整数是写。
+   */
+  autocompact(
+    input: { readonly node: string; readonly value?: 'auto' | number },
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<ProviderAutocompactResult>>
+  /** 导入：先 {@link importPreview}；导入的档案一律没有密钥、`evaluated: false`。 */
+  importProfiles(
+    input: ProviderImportInput,
+    caller: ProviderCaller,
+  ): Promise<ProviderResult<readonly ProviderProfileView[]>>
+}
+
 /** Protocol/runtime ceilings, read from the packages that own them. */
 export interface LimitsSnapshot {
   /** `@qianmo/protocol` LIMITS — the single source for protocol ceilings. */
@@ -1171,4 +1785,8 @@ export interface ConsoleDeps {
   readonly scheduler?: SchedulerPort
   /** 接力台账（P17.4）。缺席时 `/v0/handoff` 回 501。 */
   readonly handoff?: HandoffPort
+  /**
+   * 模型服务（P18.6）。只在 `--providers` 打开时接；缺席时页面说明未开启。
+   */
+  readonly providers?: ProviderPort
 }

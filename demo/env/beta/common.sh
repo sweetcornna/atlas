@@ -186,6 +186,24 @@ BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
 # H 腿**不注入**：控制台不跑 agent 轮次，给它模型凭据只是多一份可被读走的副本。
 BETA_MODEL_ENV_FILE="$BETA_SECRET_DIR/model-env"
 
+# ── 模型服务（P18.6，providers-console-m1.md §2.5、§3.8）────────────────────────
+# 下面几样只在 H 腿、且控制台尾参里有 `--providers` 时才用到（beta-up.sh 的
+# provider_console_args）。脚本**不生成、不读、不打印**其中任何一把钥匙。
+#
+# 中枢主密钥。在内测根的 secrets/ 下、控制台配置根之外：配置根会被
+# `beta-reset.sh --archive-config` 整个改名归档，主密钥不能跟着走——归档里的密文要能原样
+# 搬回来，同一把钥匙就得留在原处。beta-reset.sh 的任何参数都不碰 secrets/。
+# 由控制台在第一次保存模型密钥时生成（0600）；权限过宽、或密文还在而它不在时，模型服务
+# 这一面停用，绝不重新生成。
+BETA_PROVIDER_KEY_FILE="$BETA_SECRET_DIR/provider-master.key"
+# 第六类动作的专用 key：每个远端节点一把私钥 `<目录>/<节点名>`，外加中枢自有的
+# known_hosts。**在内测根之外**，与 QIANMO_BETA_SSH_KEY 同一种做法。不是隧道那把：
+# authorized_keys 里同一把公钥只有第一行的选项生效，强制命令不同就必须是不同的 key。
+BETA_MODEL_KEY_DIR="${QIANMO_BETA_MODEL_KEY_DIR:-$HOME/.ssh/qianmo-model-apply}"
+BETA_MODEL_KNOWN_HOSTS="$BETA_MODEL_KEY_DIR/known_hosts"
+# 节点 authorized_keys 里强制命令指向的脚本；跑在 H 自己身上的节点由控制台直接起它。
+BETA_MODEL_APPLY_SCRIPT="$QIANMO_BETA_ENV_DIR/ops/model-apply.sh"
+
 BETA_REGISTRY_URL="http://${BETA_HOST_BIND}:${BETA_REGISTRY_PORT}"
 
 # demo/lib 的入口解析（`demo_entry`）。实现与理由都在 demo/lib/entry.sh —— 那一份被
@@ -2139,6 +2157,31 @@ beta_passthrough_value() {
     prev="$arg"
   done
   printf '%s' "$value"
+}
+
+# beta_passthrough_has <开关> —— 尾参里有没有这个无值开关（逐个全等比较，所以
+# `--label=--providers` 这种把它当值的写法不算）。
+beta_passthrough_has() {
+  local flag="$1" arg
+  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    if [ "$arg" = "$flag" ]; then return 0; fi
+  done
+  return 1
+}
+
+# beta_endpoint_is_loopback <ws 端点> —— 端点的主机是不是回环。剥法与 beta_peer_server
+# 那一段相同：协议、路径、端口、IPv6 的方括号。
+beta_endpoint_is_loopback() {
+  local host="${1#*://}"
+  host="${host%%/*}"
+  case "$host" in
+    \[*\]*) host="${host#\[}"; host="${host%%\]*}" ;;
+    *) host="${host%%:*}" ;;
+  esac
+  case "$host" in
+    127.*|localhost|::1) return 0 ;;
+  esac
+  return 1
 }
 
 # beta_assert_token_url <URL> <开关> <读|写> —— 带 token 的请求只许走 https，或者走回环上的 http。

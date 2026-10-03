@@ -167,6 +167,17 @@ function slotEffort(model: ProviderModel): EffortLevel | undefined {
   return compiledEffortLevel(model.effort) ?? undefined
 }
 
+/**
+ * D-8: every agent's context window is 200 000 tokens unless the profile
+ * says otherwise. A model without `contextTokens` still gets this value in
+ * each slot it owns, so the window never falls back to the runtime's family
+ * default (1M for a third-party opus slot). The hub's per-node override
+ * arrives as the main model's `contextTokens`, so priority is node override
+ * > profile > this default. Where it exceeds what the model can take, the
+ * base caps it and the node reports the capped value in `effective`.
+ */
+const DEFAULT_CONTEXT_TOKENS = 200_000
+
 type CompileOptions = {
   /** The key value to write — already resolved from `value` or `keep`. */
   secret: string
@@ -255,12 +266,9 @@ export function compileProfile(
   const modelSettings: ProfileModelSettings = {}
   const putSlot = (slot: ModelSettingsSlot, model: ProviderModel) => {
     const effort = slotEffort(model)
-    if (effort === undefined && model.contextTokens === undefined) return
     modelSettings[slot] = {
       ...(effort !== undefined ? { effort } : {}),
-      ...(model.contextTokens !== undefined
-        ? { contextTokens: model.contextTokens }
-        : {}),
+      contextTokens: model.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
     }
   }
   for (const model of profile.models) {

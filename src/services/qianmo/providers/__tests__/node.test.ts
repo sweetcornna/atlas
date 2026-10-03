@@ -569,7 +569,8 @@ describe('no key material outside settings.json and pending.json', () => {
 describe('single-key delivery is locked byte for byte', () => {
   // The multi-key schema (P18.18) must not change what a one-key profile
   // writes. This is the exact settings.json a fixed single-key profile
-  // produces on an empty node; any drift is a behaviour change.
+  // produces on an empty node; any drift is a behaviour change. (D-8, P18.6:
+  // every owned slot now also carries the 200 000-token default window.)
   const GOLDEN = `{
   "modelType": "anthropic",
   "env": {
@@ -589,19 +590,24 @@ describe('single-key delivery is locked byte for byte', () => {
   },
   "modelSettings": {
     "default": {
-      "effort": "max"
+      "effort": "max",
+      "contextTokens": 200000
     },
     "haiku": {
-      "effort": "max"
+      "effort": "max",
+      "contextTokens": 200000
     },
     "sonnet": {
-      "effort": "max"
+      "effort": "max",
+      "contextTokens": 200000
     },
     "opus": {
-      "effort": "max"
+      "effort": "max",
+      "contextTokens": 200000
     },
     "fable": {
-      "effort": "max"
+      "effort": "max",
+      "contextTokens": 200000
     }
   }
 }

@@ -73,6 +73,7 @@ import {
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
+import { openConsoleProviders } from './consoleProviders.js'
 
 /**
  * 32 个 base64url 字符，远在 `MIN_TOKEN_LENGTH`（16）之上。
@@ -438,6 +439,21 @@ export async function runConsole(args: readonly string[]): Promise<void> {
         })
       : undefined
 
+  // 模型服务（`providers-console-m1.md`，P18.6）跟着动作账本走：写动作只有个人账号
+  // 的 ops 能做，一次一条记进那本账。账本有坏行、主密钥权限过宽或缺失：这一面停用
+  // 并告警（stderr），横幅照直写出原因，控制台其余照常——节点照用最后一次下发的
+  // 配置。这一步只读本地文件，不拨任何节点；后台刷新在端口绑定之后才开始。
+  const providers =
+    config.providers !== undefined && actions !== undefined
+      ? openConsoleProviders({
+          storePath: config.providers.storePath,
+          secretsPath: config.providers.secretsPath,
+          keyPath: config.providers.keyFile,
+          knownHostsFile: config.providers.knownHostsFile,
+          nodes: config.providers.nodes,
+        })
+      : undefined
+
   // The registry write token (P15.8), read with the other credentials and for
   // the same reason: a file anyone on the machine can read is a startup
   // error, not something to discover on the first renewal.
@@ -548,6 +564,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     ...(serverNotes === undefined ? {} : { serverNotes }),
     ...(actions === undefined ? {} : { actions }),
     ...(handoff === undefined ? {} : { handoff: handoff.port }),
+    ...(providers === undefined ? {} : { providers }),
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
@@ -561,6 +578,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   // After the port is bound: a console that failed to start must not have
   // re-announced anything on its way down.
   registrations.start()
+  // Same reason: no node is asked for its status by a console that never came up.
+  providers?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -664,6 +683,19 @@ export async function runConsole(args: readonly string[]): Promise<void> {
           : `UNAVAILABLE (${actions.problem})`,
       )
     }
+    if (providers !== undefined && config.providers !== undefined) {
+      const nodes = config.providers.nodes
+      banner += field(
+        'providers',
+        providers.problem === null
+          ? `enabled -> ${config.providers.storePath} (nodes: ${
+              nodes.length === 0
+                ? 'none'
+                : nodes.map(node => `${node.node}/${node.kind}`).join(', ')
+            })`
+          : `UNAVAILABLE (${providers.problem})`,
+      )
+    }
     banner += field(
       'legacy-view',
       accounts.legacyView === false ? 'off' : 'on (migration)',
@@ -701,6 +733,7 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // Leases already granted run out on their own; the ledger stays, so the
     // next start picks the same entries up again.
     registrations.stop()
+    providers?.stop()
     void handle.stop()
     // Closing the hub drops the outbound links and the pending-task timers. A
     // console that exits without it leaves a WebSocket the far node keeps a
