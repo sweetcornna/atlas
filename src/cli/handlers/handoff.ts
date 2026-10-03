@@ -62,6 +62,7 @@ import {
   pendingCount,
   syncFailureReason,
   syncOnce,
+  restorePending,
   takePending,
   waitForSyncLock,
   writeLastSync,
@@ -425,11 +426,13 @@ async function runManualSync(cwd: string, output: Output): Promise<number> {
   }
   const lock = await waitForSyncLock(project.root)
   try {
-    const sessions = mergeSnapshots(snapshot, takePending(project.root))
+    const taken = takePending(project.root)
+    const sessions = mergeSnapshots(snapshot, taken)
     let result: Awaited<ReturnType<typeof syncOnce>>
     try {
       result = await syncOnce(project, sessions)
     } catch (error) {
+      restorePending(project.root, taken)
       writeLastSync(project.root, {
         at: Date.now(),
         ok: false,

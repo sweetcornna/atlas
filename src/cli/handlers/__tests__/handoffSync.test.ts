@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -30,8 +31,10 @@ import {
   drainPending,
   pendingCount,
   readLastSync,
+  restorePending,
   syncFailureReason,
   syncOnce,
+  takePending,
   writeLastSync,
   writePending,
 } from '../handoffSync.js'
@@ -340,5 +343,93 @@ describe('drainPending (trailing-edge debounce)', () => {
     const log = readFileSync(syncLogPath(), 'utf8')
     expect(log).toContain('"ok":false')
     expect(log).not.toContain(FAKE_PAT)
+  })
+})
+
+describe('a failed hook sync keeps its entry', () => {
+  const TURN_2 = `${TURN}-2`
+
+  function twoTurns(root: string): string {
+    return qmcodeRollout(THREAD, root, [
+      { turnId: TURN, user: 'q', assistant: 'ok' },
+      { turnId: TURN_2, user: 'q2', assistant: 'ok2' },
+    ])
+  }
+
+  test('hub unreachable: the entry is put back; the next sync pushes the latest turn', async () => {
+    const { project, bare, transcript } = await fixture()
+    const away = `${bare}.away`
+    renameSync(bare, away)
+    writePending(project.root, {
+      tool: 'qmcode',
+      sessionId: THREAD,
+      file: transcript,
+      length: readFileSync(transcript).length,
+    })
+    await drainPending(project, { trigger: 'test', debounceMs: 10 })
+    expect(readLastSync(project.root)?.ok).toBe(false)
+    expect(pendingCount(project.root)).toBe(1)
+
+    // The hub is back and another turn has ended: its hook replaces the kept
+    // entry with the longer one, and that is what lands.
+    renameSync(away, bare)
+    const second = twoTurns(project.root)
+    writeFileSync(transcript, second)
+    writePending(project.root, {
+      tool: 'qmcode',
+      sessionId: THREAD,
+      file: transcript,
+      length: Buffer.byteLength(second),
+    })
+    await drainPending(project, { trigger: 'test', debounceMs: 10 })
+    expect(readLastSync(project.root)?.ok).toBe(true)
+    expect(pendingCount(project.root)).toBe(0)
+    const commit = hubRefs(bare).get(`refs/qianmo/sessions/laptop/${THREAD}`)
+    const stored = git(
+      bare,
+      'show',
+      `${commit}:${transcript.split('/').at(-1)}`,
+    )
+    expect(stored).toContain(TURN_2)
+  })
+
+  test('with no newer turn, the kept entry itself is what the next sync pushes', async () => {
+    const { project, bare, transcript } = await fixture()
+    const away = `${bare}.away`
+    renameSync(bare, away)
+    writePending(project.root, {
+      tool: 'qmcode',
+      sessionId: THREAD,
+      file: transcript,
+      length: readFileSync(transcript).length,
+    })
+    await drainPending(project, { trigger: 'test', debounceMs: 10 })
+    expect(pendingCount(project.root)).toBe(1)
+    renameSync(away, bare)
+    await drainPending(project, { trigger: 'test', debounceMs: 10 })
+    expect(pendingCount(project.root)).toBe(0)
+    const commit = hubRefs(bare).get(`refs/qianmo/sessions/laptop/${THREAD}`)
+    expect(commit).toBeDefined()
+    expect(
+      git(bare, 'show', `${commit}:${transcript.split('/').at(-1)}`),
+    ).toContain(TURN)
+  })
+
+  test('putting back never replaces a newer entry for the same session', async () => {
+    const { project, transcript } = await fixture()
+    const older = {
+      tool: 'qmcode' as const,
+      sessionId: THREAD,
+      file: transcript,
+      length: 100,
+    }
+    writePending(project.root, older)
+    const taken = takePending(project.root)
+    expect(taken).toEqual([older])
+    writePending(project.root, { ...older, length: 200 })
+    restorePending(project.root, taken)
+    expect(takePending(project.root)).toEqual([{ ...older, length: 200 }])
+    restorePending(project.root, taken)
+    expect(takePending(project.root)).toEqual([older])
   })
 })

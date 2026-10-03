@@ -38,16 +38,22 @@
  * last turn of a burst is always synced. Pending entries are per session, so a
  * burst of turns in one session collapses to its latest.
  *
+ * A sync that fails (hub unreachable, push refused) puts its entries back
+ * ({@link restorePending}) unless a newer one for the same session arrived
+ * meanwhile, and stops draining: the next hook, `sync` or `now` carries them.
+ *
  * `now` and a manual `sync` take the same lock (waiting for it), so they never
  * race a hook's push.
  */
 
 import {
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -311,6 +317,39 @@ export function takePending(root: string): PendingSync[] {
   return taken
 }
 
+/**
+ * Put back entries a failed sync had taken, so the next sync or `now` carries
+ * them. An entry is put back only where no entry for the same session exists
+ * now: one written meanwhile by a later hook is newer, and wins. The write
+ * cannot clobber it either — the entry goes to a temporary file that is then
+ * hard-linked into place, which fails if the name is already taken.
+ */
+export function restorePending(
+  root: string,
+  entries: readonly PendingSync[],
+): void {
+  if (entries.length === 0) return
+  const dir = pendingDir(root)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  for (const entry of entries) {
+    const path = join(dir, pendingName(entry))
+    const temp = `${path}.${process.pid}.restore`
+    try {
+      writeFileSync(temp, `${JSON.stringify(entry, null, 2)}\n`, {
+        mode: 0o600,
+      })
+      linkSync(temp, path)
+    } catch {
+      // EEXIST: a newer entry is there. Anything else: the entry is lost and
+      // the next hook for that session writes a fresh one.
+    } finally {
+      try {
+        unlinkSync(temp)
+      } catch {}
+    }
+  }
+}
+
 /** The checked prefix of a pending entry, or `null` when the file no longer has it. */
 function snapshotOf(entry: PendingSync): SessionSnapshot | null {
   let content: Buffer
@@ -420,10 +459,11 @@ export async function drainPending(
   for (;;) {
     const lock = tryExclusiveLock(syncLockPath(project.root))
     if (lock === null) return
+    let failed = false
     try {
       // Waits only while something is pending: a hook whose own entry was
       // just synced leaves at once instead of sitting out another 5 s.
-      while (pendingCount(project.root) > 0) {
+      while (!failed && pendingCount(project.root) > 0) {
         const last = readLastSync(project.root)
         const wait = last === undefined ? 0 : last.at + debounceMs - now()
         if (wait > 0) await sleep(Math.min(wait, debounceMs))
@@ -435,17 +475,22 @@ export async function drainPending(
           writeLastSync(project.root, { at: now(), ok: true, wip: result.wip })
           logSync(project, options.trigger, result)
         } catch (error) {
+          // Kept for the next sync or `now`, which carry whatever is pending.
+          restorePending(project.root, batch)
           writeLastSync(project.root, {
             at: now(),
             ok: false,
             reason: syncFailureReason(error),
           })
           logSync(project, options.trigger, { error })
+          failed = true
         }
       }
     } finally {
       lock.release()
     }
-    if (pendingCount(project.root) === 0) return
+    // After a failure the entries wait for the next hook, sync or `now`:
+    // retrying at once against a hub that just failed would only spin.
+    if (failed || pendingCount(project.root) === 0) return
   }
 }
