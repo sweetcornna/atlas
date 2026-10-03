@@ -8,16 +8,76 @@
  * `agent/model_metadata.py:582-632` and `agent/transports/codex.py:439-451`
  * at `f9b29c49b6`. The base suite `src/services/api/grok/__tests__/
  * reasoning.test.ts` pins the unchanged grok-3-mini ladder.
+ *
+ * Every input of the opt-in gate (`modelSupportsEffort`) is pinned to a Grok
+ * session: provider from env with settings mocked empty, no capability pins,
+ * no DeepSeek or OpenCode routing. Unpinned, the provider came from the
+ * developer's own settings (`modelType: openai` passed); on a runner with no
+ * settings it is `firstParty`, whose default for an unknown id is "supports
+ * effort", and the default-off rows failed (PR #169 CI, `src/services` shard).
  */
-import { afterEach, describe, expect, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test'
+import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
 import { resolveGrokReasoningEffort } from 'src/services/api/grok/reasoning.js'
+import { getAPIProvider } from 'src/utils/model/providers.js'
 import { modelSupportsEffort } from 'src/utils/model/effort.js'
 import { grokAcceptsReasoningEffort } from '../effortVendors.js'
 
-const saved = process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
-afterEach(() => {
-  if (saved === undefined) delete process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
-  else process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = saved
+const settingsMock = setupSettingsMock()
+
+const TIERS = ['OPUS', 'SONNET', 'HAIKU', 'FABLE'] as const
+/** Everything `modelSupportsEffort` reads from the environment. */
+const ENV_KEYS = [
+  'CLAUDE_CODE_USE_GROK',
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_GEMINI',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
+  'CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'ANTHROPIC_BASE_URL',
+  'OPENCODE_AUTH_MODE',
+  'OPENCODE_MODEL',
+  ...['GROK', 'ANTHROPIC'].flatMap(prefix =>
+    TIERS.flatMap(tier => [
+      `${prefix}_DEFAULT_${tier}_MODEL`,
+      `${prefix}_DEFAULT_${tier}_MODEL_SUPPORTED_CAPABILITIES`,
+    ]),
+  ),
+]
+const savedEnv = new Map(ENV_KEYS.map(key => [key, process.env[key]]))
+
+/** A Grok session with nothing else configured. */
+function pinGrokSession(): void {
+  for (const key of ENV_KEYS) delete process.env[key]
+  process.env.CLAUDE_CODE_USE_GROK = '1'
+}
+
+beforeAll(() => settingsMock.set({ getInitialSettings: () => ({}) }))
+beforeEach(pinGrokSession)
+afterEach(pinGrokSession)
+afterAll(() => {
+  settingsMock.reset()
+  for (const [key, value] of savedEnv) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+})
+
+test('the gate is evaluated for a Grok session', () => {
+  expect(getAPIProvider()).toBe('grok')
 })
 
 const NEW_ROWS = [
@@ -30,7 +90,6 @@ const NEW_ROWS = [
 
 describe('default: unchanged until a real-endpoint check (design §5.10)', () => {
   test('grok-3-mini keeps its two-rung ladder', () => {
-    delete process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
     expect(resolveGrokReasoningEffort('x-ai/grok-3-mini', 'medium')).toBe(
       'high',
     )
@@ -38,7 +97,6 @@ describe('default: unchanged until a real-endpoint check (design §5.10)', () =>
   })
 
   test.each([...NEW_ROWS])('%s sends nothing without an opt-in', model => {
-    delete process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
     expect(resolveGrokReasoningEffort(model, 'high')).toBeUndefined()
     // Display agrees with the wire: the control stays off too.
     expect(modelSupportsEffort(model)).toBe(false)
