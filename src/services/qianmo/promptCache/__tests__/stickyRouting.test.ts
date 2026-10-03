@@ -11,13 +11,16 @@
  * - The Grok lane sends `x-grok-conv-id: <sessionId>` (CH-7): the same on
  *   every request of a session, different between sessions.
  *
- * Both run the real request path: `sideQuery` against a loopback endpoint,
- * `queryModelGrok` through its `fetchOverride`. Canary keys, no network.
+ * Both run the real request path: `sideQuery` against a loopback endpoint;
+ * the Grok lane from `queryModelWithStreaming` (claude.ts, which passes the
+ * session id down) through `options.fetchOverride`. Canary keys, no network.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Options } from 'src/services/api/claude.js'
 import type { SessionId } from 'src/types/ids.js'
-import type { Message } from 'src/types/message.js'
 import type { SystemPrompt } from 'src/utils/session/systemPromptType.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
 import {
@@ -26,9 +29,17 @@ import {
   switchSession,
 } from '../../../../bootstrap/state.js'
 import { BIN_NAME } from 'src/constants/brand.js'
-import { queryModelGrok } from '../../../api/grok/index.js'
 import { sideQuery } from '../../../../utils/session/sideQuery.js'
 import { GROK_CONVERSATION_HEADER } from '../grokConversation.js'
+
+// MACRO is a build-time define; provide it for the bare test runtime (same
+// pattern as src/services/api/__tests__/streamFinalization.test.ts).
+if (typeof globalThis.MACRO === 'undefined') {
+  ;(globalThis as unknown as { MACRO: unknown }).MACRO = {
+    VERSION: '0.0.0-test',
+    BUILD_TIME: '0',
+  }
+}
 
 const settingsMock = setupSettingsMock()
 
@@ -50,6 +61,8 @@ const ENV_KEYS = [
   'XAI_API_KEY',
   'GROK_BASE_URL',
   'GROK_MAX_TOKENS',
+  'CLAUDE_CODE_TEST_FIXTURES_ROOT',
+  'VCR_RECORD',
 ] as const
 const savedEnv = new Map<string, string | undefined>()
 
@@ -131,10 +144,20 @@ describe('T-5: the Grok lane (CH-7)', () => {
     'data: {"id":"chatcmpl-p1819","object":"chat.completion.chunk","created":0,"model":"grok-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
     'data: [DONE]\n\n'
 
-  /** One Grok request; the value of the routing header it carried. */
+  /**
+   * One Grok main-loop request, dispatched by claude.ts the way production
+   * does it; the value of the routing header it carried.
+   */
   async function grokConversationHeader(): Promise<string | null> {
+    process.env.CLAUDE_CODE_USE_GROK = '1'
     process.env.GROK_API_KEY = 'xai-test-canary-p1819-not-a-real-key'
     process.env.GROK_BASE_URL = 'https://grok.example/v1'
+    // queryModelWithStreaming wraps the loop in the VCR cassette layer, armed
+    // by NODE_ENV=test: a throwaway root and record mode make every run miss
+    // and execute the real loop, writing nothing into the repo.
+    const fixtures = mkdtempSync(join(tmpdir(), 'qm-grok-routing-'))
+    process.env.CLAUDE_CODE_TEST_FIXTURES_ROOT = fixtures
+    process.env.VCR_RECORD = '1'
     const seen: Headers[] = []
     const fetchOverride = (async (
       input: Parameters<typeof fetch>[0],
@@ -152,27 +175,25 @@ describe('T-5: the Grok lane (CH-7)', () => {
     }) as unknown as typeof fetch
     const options = {
       model: 'grok-4',
-      querySource: 'main_loop',
+      querySource: 'sdk',
+      isNonInteractiveSession: true,
       agents: [],
-      allowedAgentTypes: [],
+      hasAppendSystemPrompt: false,
+      mcpTools: [],
       getToolPermissionContext: async () => ({ mode: 'default' }),
       fetchOverride,
     } as unknown as Options
     try {
+      const { queryModelWithStreaming } = await import('../../../api/claude.js')
       const outputs: unknown[] = []
-      for await (const output of queryModelGrok(
-        [
-          {
-            type: 'user',
-            uuid: 'u1',
-            message: { role: 'user', content: 'hi' },
-          } as unknown as Message,
-        ],
-        [] as unknown as SystemPrompt,
-        [],
-        new AbortController().signal,
+      for await (const output of queryModelWithStreaming({
+        messages: [],
+        systemPrompt: ['test'] as unknown as SystemPrompt,
+        thinkingConfig: { type: 'disabled' },
+        tools: [],
+        signal: new AbortController().signal,
         options,
-      )) {
+      })) {
         outputs.push(output)
       }
       expect(seen.length).toBe(1)
@@ -182,6 +203,7 @@ describe('T-5: the Grok lane (CH-7)', () => {
       return seen[0]!.get(GROK_CONVERSATION_HEADER)
     } finally {
       for (const key of ENV_KEYS) delete process.env[key]
+      rmSync(fixtures, { recursive: true, force: true })
     }
   }
 
