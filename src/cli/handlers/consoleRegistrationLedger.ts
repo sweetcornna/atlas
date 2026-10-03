@@ -63,7 +63,7 @@ export interface LedgerEntry {
 }
 
 /** 读一次登记簿的结果。 */
-export type LedgerRead =
+type LedgerRead =
   /** 没有文件，也没有被挪开的旧文件：空登记簿。 */
   | { readonly kind: 'absent' }
   | { readonly kind: 'ok'; readonly entries: readonly LedgerEntry[] }
