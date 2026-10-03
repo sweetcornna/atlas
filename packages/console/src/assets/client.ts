@@ -341,7 +341,13 @@ function runtimeScript(guards: TokenGuards): string {
     return res;
   }
 
+  // Escape closes the expiry dialog like any other: Chrome lets a page veto
+  // that only right after a click, and never twice in a row, so a dialog that
+  // tried to stay up would stay up some of the time. Closed, it leaves the
+  // page readable - a half-written message can still be copied out - and
+  // stopped: the next thing tried that would need the server brings it back.
   function refused() {
+    openDialog('session-expired', null);
     return Promise.reject(new Error(EXPIRED));
   }
 
@@ -572,12 +578,6 @@ function runtimeScript(guards: TokenGuards): string {
   document.addEventListener('close', function (event) {
     var box = event.target;
     if (box && box.tagName === 'DIALOG') forget(box);
-  }, true);
-
-  // The expiry dialog is the one Escape does not dismiss: behind it is a page
-  // that can no longer ask the server anything.
-  document.addEventListener('cancel', function (event) {
-    if (event.target && event.target.id === 'session-expired') event.preventDefault();
   }, true);
 
   document.addEventListener('submit', function (event) {
