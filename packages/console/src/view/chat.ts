@@ -295,8 +295,35 @@ function renderNotice(turn: ChatTurn): string {
   )
 }
 
+/**
+ * A local command's output (P18.20): what the node printed, not what a model
+ * wrote — so it says so in place of the agent's name, keeps no bubble, and
+ * keeps its own layout. `/context` is a table laid out in spaces, so the text
+ * goes into a monospace block untouched except for the blank lines `/compact`
+ * leads with.
+ */
+function renderCommandOutput(turn: ChatTurn, command: string): string {
+  const text = turn.text.replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd()
+  return (
+    `<article class="turn turn-agent turn-command">` +
+    `<span class="turn-av" aria-hidden="true">/</span>` +
+    `<div class="turn-body">` +
+    `<header class="turn-head">` +
+    `<span class="turn-who">命令输出</span>` +
+    `<code class="mono">/${escapeHtml(command)}</code>` +
+    `<time class="turn-when">${escapeHtml(formatClock(turn.at))}</time>` +
+    `</header>` +
+    `<pre class="turn-code command-output"><code>${escapeHtml(text)}</code></pre>` +
+    turnMarks(turn) +
+    `</div></article>`
+  )
+}
+
 function renderTurn(turn: ChatTurn, agent: string): string {
   if (turn.variant === 'notice') return renderNotice(turn)
+  if (turn.author === 'agent' && turn.command !== undefined) {
+    return renderCommandOutput(turn, turn.command)
+  }
   const who = turn.author === 'operator' ? '你' : agent
   const failed = turn.state === 'failed' ? ' turn-failed' : ''
   return (

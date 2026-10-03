@@ -30,6 +30,7 @@ import {
   readClientCapabilities,
   syncSessionConfigState,
 } from './internalAccessors.js'
+import { refreshAcpTurnSettings } from './localCommands.js'
 
 // ── prompt ───────────────────────────────────────────────────────
 
@@ -108,6 +109,9 @@ async function prompt(
         cwd: session.cwd,
         projectDir: session.projectDir,
       })
+      // P18.20: settings written since the last turn — by another session,
+      // another process or by hand — govern this one (see localCommands.ts).
+      refreshAcpTurnSettings(session)
 
       const sdkMessages = session.queryEngine.submitMessage(promptInput, {
         uuid: userMessageId,

@@ -285,6 +285,11 @@ export interface ResidentCliConfig {
   /** `<node>=<publicKey>` pairs this node will accept capabilities from. */
   readonly trusted: readonly (readonly [string, string])[]
   /**
+   * `--local-commands-from`: the `--trust` names that are this node's console,
+   * whose signed local commands run as commands (P18.20). Absent: none do.
+   */
+  readonly localCommandsFrom?: readonly string[]
+  /**
    * Path to the CA root certificate(s) (key-distribution.md §8.1's
    * `--trust-ca`, §8.2 phase ①). When given, peer keys are resolved through a
    * `CertificateDirectory` instead of only `StaticPublicKeyDirectory`;
@@ -394,6 +399,7 @@ export function parseResidentArgs(
   let witnessUrl: string | undefined
   let witnessIntervalMs: number | undefined
   const trusted: Array<readonly [string, string]> = []
+  const localCommandsFrom: string[] = []
   const agents: Array<{ agent: string; cwd: string }> = []
 
   for (let index = 0; index < args.length; index++) {
@@ -468,6 +474,13 @@ export function parseResidentArgs(
     } else if (arg === '--trust' || arg?.startsWith('--trust=')) {
       const parsed = residentOptionValue(args, index, '--trust')
       trusted.push(parseTrustedKey(parsed.value))
+      index = parsed.next
+    } else if (
+      arg === '--local-commands-from' ||
+      arg?.startsWith('--local-commands-from=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--local-commands-from')
+      localCommandsFrom.push(parsed.value)
       index = parsed.next
     } else if (arg === '--trust-ca' || arg?.startsWith('--trust-ca=')) {
       const parsed = residentOptionValue(args, index, '--trust-ca')
@@ -629,6 +642,18 @@ export function parseResidentArgs(
         ' key, so keep the right entry and drop the rest',
     )
   }
+  // A console is named by the key it signs with, so the name has to be one
+  // this node holds a key for. Anything else would never verify, and a local
+  // command that silently reaches the model as text is how a typo here shows.
+  for (const name of localCommandsFrom) {
+    if (!trustedKeysByNode.has(name)) {
+      throw new Error(
+        `--local-commands-from ${name} must name a --trust entry: it is the` +
+          ' name the console signs with, and this node verifies that' +
+          ' signature with the key --trust gives for it',
+      )
+    }
+  }
   if (port !== undefined && unix !== undefined) {
     throw new Error('resident takes either --port or --unix, not both')
   }
@@ -698,6 +723,9 @@ export function parseResidentArgs(
           memIntervalMs: memIntervalMs ?? DEFAULT_RESIDENT_MEM_INTERVAL_MS,
         }),
     trusted,
+    ...(localCommandsFrom.length === 0
+      ? {}
+      : { localCommandsFrom: [...new Set(localCommandsFrom)] }),
     ...(trustCa === undefined ? {} : { trustCa }),
     ...(cert === undefined ? {} : { cert }),
     ...(key === undefined ? {} : { key }),
@@ -849,6 +877,16 @@ Authorization:
                            deliberately not a second source for that: a CA
                            says who a subject is, not that this operator
                            authorized it to direct this node.
+  --local-commands-from <node>
+                           The --trust name this node's console signs with
+                           (the node segment of its --chat-from, \`console\`
+                           by default; the console must run --chat-sign). A
+                           task it signed and marked as /autocompact,
+                           /compact or /context runs as that command on the
+                           agent's session instead of reaching the model as
+                           a message. Must name a --trust entry. Repeatable.
+                           Without it no network message runs a local
+                           command, signed or not.
   --trust-ca <abs path>    PEM root certificate of the offline CA
                            (key-distribution.md §5.1, produced by
                            \`${invokedBinName()} ca init\`). Peer keys are then
@@ -2104,6 +2142,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
       requireSignedTasks: config.requireSignedTasks,
       auditSignedTasks: config.auditSignedTasks,
       trusts: config.trusted.map(([node]) => node),
+      // Whose signed local commands run as commands here (P18.20); `[]` is
+      // "none", the default.
+      localCommandsFrom: config.localCommandsFrom ?? [],
       // Which of the three layers this node actually has up (§7.3). Reported
       // as three fields rather than one "secure: true", for the reason §7.3
       // gives: collapsed into one, "TLS is on but nothing is signed" and
@@ -2206,6 +2247,9 @@ export async function runResident(args: readonly string[]): Promise<void> {
     psk,
     upstreamHealth,
     capability,
+    ...(config.localCommandsFrom === undefined
+      ? {}
+      : { localCommandIssuers: config.localCommandsFrom }),
     auditSink: routerTrailSink(trail, config.node),
     transportEvents: transportTrailSink(trail, config.node),
     // The one sink whose successes matter (P13.6): a watch job's whole output
