@@ -108,6 +108,10 @@ import {
   tokenCountWithEstimation,
 } from './utils/session/tokens.js'
 import { ESCALATED_MAX_TOKENS } from './utils/session/context.js'
+import {
+  THINKING_EXHAUSTED_TEXT,
+  thinkingExhaustion,
+} from './services/qianmo/modelCompat/thinkingExhaustion.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
 import { executeStopFailureHooks } from './utils/hooks.js'
@@ -1556,6 +1560,44 @@ async function* queryLoop(
       // was withheld from the stream above; only surface it if recovery
       // exhausts.
       if (isWithheldMaxOutputTokens(lastMessage)) {
+        // qianmo P18.12 (hermes #24): a response that never got past its
+        // reasoning is not continued — raised once, or ended with an error
+        // that says so. src/services/qianmo/modelCompat/thinkingExhaustion.ts.
+        const exhaustion = thinkingExhaustion({
+          assistantMessages,
+          maxOutputTokensOverride,
+          escalatedMaxTokens: ESCALATED_MAX_TOKENS,
+        })
+        if (exhaustion === 'raise') {
+          logEvent('tengu_max_tokens_escalate', {
+            escalatedTo: ESCALATED_MAX_TOKENS,
+          })
+          const next: State = {
+            messages: messagesForQuery,
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact,
+            maxOutputTokensOverride: ESCALATED_MAX_TOKENS,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            turnCount,
+            transition: { reason: 'max_output_tokens_escalate' },
+          }
+          state = next
+          continue
+        }
+        if (exhaustion === 'stop') {
+          const exhausted = createAssistantAPIErrorMessage({
+            content: THINKING_EXHAUSTED_TEXT,
+            apiError: 'max_output_tokens',
+            error: 'max_output_tokens',
+          })
+          yield exhausted
+          void executeStopFailureHooks(exhausted, toolUseContext)
+          return { reason: 'model_error', error: 'max_output_tokens' }
+        }
+
         // Escalating retry: if we used the capped 8k default and hit the
         // limit, retry the SAME request at 64k — no meta message, no
         // multi-turn dance. This fires once per turn (guarded by the
