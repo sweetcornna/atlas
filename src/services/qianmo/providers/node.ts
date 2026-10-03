@@ -16,10 +16,13 @@
  * and its ACP child are running — that is the point of it.
  *
  * Phase 2 — `commitPendingProviderConfig()`; callers:
- *   - the resident (P18.3), ONLY at an ACP generation boundary: the old child
- *     is stopped and the new one not yet spawned. Committing while a child is
- *     alive lets its next `createSession` pull the new env into a process
- *     whose other sessions are still mid-conversation (matrix §4.4);
+ *   - the resident (P18.3), ONLY at an ACP generation boundary. §2.7's order
+ *     is: wait until the child is idle (no in-flight task, no running turn),
+ *     commit, then `recycle()`. Between the commit and the old child's stop
+ *     no delivery may reach it — hold new deliveries for the next generation,
+ *     as §2.7 already says — because a `createSession` on the old child
+ *     re-reads settings and would pull the new env into a process whose other
+ *     sessions are still mid-conversation (matrix §4.4);
  *   - the resident at startup, BEFORE spawning the first child — this is the
  *     crash roll-forward (§2.6 step 5);
  *   - `qm provider` itself when no resident is running (pid file absent or
