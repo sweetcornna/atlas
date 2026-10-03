@@ -66,3 +66,18 @@ export {
   type SessionCommit,
   type SessionCommitOptions,
 } from './session.js'
+
+export {
+  FAILURE_REASON_MAX_BYTES,
+  HANDOFF_STATES,
+  HANDOFF_TRANSITIONS,
+  HandoffLedger,
+  HandoffLedgerError,
+  replayLedger,
+  type HandoffLedgerErrorCode,
+  type HandoffLedgerOptions,
+  type HandoffState,
+  type HandoffTask,
+  type LedgerReplay,
+  type TornTail,
+} from './ledger.js'

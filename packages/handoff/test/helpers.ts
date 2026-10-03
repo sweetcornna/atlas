@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
+import type { HandoffManifest, HandoffResult } from '../src/manifest.js'
 
 const temporaries: string[] = []
 
@@ -134,3 +135,34 @@ export function userState(repo: string): Record<string, unknown> {
 
 /** Shaped like a GitHub PAT, assembled at runtime; not a real secret. */
 export const FAKE_GITHUB_PAT = `ghp_${'a1B2'.repeat(9)}`
+
+/** A valid manifest for ledger fixtures. */
+export function sampleManifest(): HandoffManifest {
+  const session = '0199a3b2-7c1d-7e2f-9a3b-4c5d6e7f8a9b'
+  return {
+    kind: 'handoff',
+    project: 'atlas',
+    device: 'cornna-mbp',
+    branch: 'main',
+    wip: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    tool: 'claude-code',
+    sessionId: session,
+    sessionRef: `refs/qianmo/sessions/cornna-mbp/${session}`,
+    sessionCommit: 'c'.repeat(40),
+    cwd: '/Users/cornna/project/atlas',
+    brief: { goal: '续跑测试', done: '', remaining: '全部' },
+    deadline: '2026-11-20T02:00:00Z',
+  }
+}
+
+/** A valid `task.result` content object for `taskId`. */
+export function sampleResult(taskId: string): HandoffResult {
+  return {
+    status: 'completed',
+    branch: `qianmo/${taskId}`,
+    head: 'd'.repeat(40),
+    threadId: '0199a3b2-7c1d-7e2f-9a3b-4c5d6e7f8a9b',
+    summary: 'done',
+  }
+}
