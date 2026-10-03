@@ -429,13 +429,30 @@ describe('every kind of write is one line in the action ledger', () => {
         ok: false,
         code: 'conflict',
         message: '被改过',
-        diffKeys: ['OPENAI_BASE_URL', 'lower-case-dropped'],
+        // P18.7 names keys by their place in settings.json; bare env names
+        // are taken too.
+        diffKeys: [
+          'env.OPENAI_BASE_URL',
+          'modelType',
+          'modelSettings.default',
+          'OPENAI_MODEL',
+          'env.OPENAI_MODEL',
+          'lower-case-dropped',
+          'env.lower',
+          'modelSettings.BAD',
+          'other.OPENAI_API_KEY',
+        ],
       }),
     )
     results = value(await h.port.apply({ nodes: ['beta-4'] }, ops))
     expect(results[0]?.outcome).toBe('refused')
     expect(results[0]?.code).toBe('conflict')
-    expect(results[0]?.diffKeys).toEqual(['OPENAI_BASE_URL'])
+    expect(results[0]?.diffKeys).toEqual([
+      'OPENAI_BASE_URL',
+      'modelType',
+      'modelSettings.default',
+      'OPENAI_MODEL',
+    ])
     h.nodes['beta-4'].set('raw-apply', '2\n')
     results = value(await h.port.apply({ nodes: ['beta-4'] }, ops))
     expect(results[0]?.outcome).toBe('failed')

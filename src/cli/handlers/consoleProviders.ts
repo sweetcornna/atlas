@@ -89,8 +89,8 @@ import {
 } from './consoleProvidersExec.js'
 import {
   driftOf,
+  diffKeyNames,
   type Expected,
-  keyNames,
   nodeCode,
   nodeText,
   parseNodeState,
@@ -1652,7 +1652,7 @@ export class ConsoleProviders implements ProviderPort {
       }
     }
     const reply = result.reply
-    const diffKeys = keyNames(reply.diffKeys)
+    const diffKeys = diffKeyNames(reply.diffKeys)
     if (!reply.ok) {
       const code = nodeCode(reply.code) ?? 'refused'
       return {

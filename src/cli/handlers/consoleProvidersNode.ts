@@ -21,6 +21,7 @@ type Json = Readonly<Record<string, unknown>>
 
 const HASH = /^sha256:[0-9a-f]{64}$/
 const ENV_KEY = /^[A-Z][A-Z0-9_]{0,63}$/
+const SLOT_KEY = /^modelSettings\.[a-z][a-z0-9-]{0,31}$/
 const NODE_CODE = /^[a-z][a-z0-9-]{0,39}$/
 const MAX_TEXT = 300
 
@@ -60,12 +61,33 @@ export function nodeCode(value: unknown): string | null {
   return typeof value === 'string' && NODE_CODE.test(value) ? value : null
 }
 
-/** Env key names a node reported (`diffKeys`, `inheritedProviderKeys`); others dropped. */
-export function keyNames(value: unknown): string[] {
+/** Env key names a node reported (`inheritedProviderKeys`); others dropped. */
+function keyNames(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.filter(
     (item): item is string => typeof item === 'string' && ENV_KEY.test(item),
   )
+}
+
+/**
+ * Managed-key names a node reported as changed (`diffKeys` of a dry-run or a
+ * `conflict`, `lastResult.diffKeys`). P18.7 names them by their place in
+ * `settings.json` — `env.OPENAI_BASE_URL`, `modelType`,
+ * `modelSettings.default`; the hub shows env keys bare (§2.5's
+ * `["OPENAI_BASE_URL"]`) and the two non-env fields as they are. Anything
+ * else is dropped.
+ */
+export function diffKeyNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const names = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const name = item.startsWith('env.') ? item.slice(4) : item
+    if (ENV_KEY.test(name) || name === 'modelType' || SLOT_KEY.test(name)) {
+      names.add(name)
+    }
+  }
+  return [...names]
 }
 
 function hashOrNull(value: unknown): string | null | undefined {
@@ -185,7 +207,7 @@ export function parseNodeState(
     const code = nodeCode(raw.code)
     const at = isoText(raw.at)
     if (requestId !== null && code !== null && at !== null) {
-      lastResult = { requestId, code, at, diffKeys: keyNames(raw.diffKeys) }
+      lastResult = { requestId, code, at, diffKeys: diffKeyNames(raw.diffKeys) }
     }
   }
   const computed = parseEffective(effective)
@@ -328,7 +350,8 @@ export function driftOf(input: {
       drift.push({
         kind: 'not-loaded',
         message:
-          actual.resident?.running === false
+          // No pid file (`resident: null`) is a node with no resident either.
+          actual.resident?.running !== true
             ? '节点未运行 · 下次启动时加载'
             : '已写入 · 等待下一代子进程加载',
       })
