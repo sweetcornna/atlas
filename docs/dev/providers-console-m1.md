@@ -323,7 +323,7 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 - `baseUrl` 的主机和 `lane` 都没变（只换模型或 effort）：`keep`。
 - 其他情况默认 `reset`，直到节点 `capabilities.replayFilter == true`（P18.8 已合入并部署）。之后由 ops 在切换对话框里选，默认仍然是 `reset`。
 - 会话续上之后钉住的是哪个模型：P18.3 用真 `--acp` 子进程实测（`src/services/qianmo/__tests__/residentProviderSwitch.integration.test.ts`），钉住的是**新**配置的主模型，带新 key。子进程在 `session/resume` 时按当时的 settings 重新解析主循环模型（`createSession` 里的 `setModel(getMainLoopModel())`），会话记录里不存模型。resident 从不调 `session/set_model`，所以 `keep` 之后的下一轮一定跑在新档案的主模型上。就算某个宿主在会话里显式 `set_model` 过，这个选择也只存在于那一个子进程的内存里，换代 resume 之后回到默认模型（同一文件第二组；正对照：换代前的请求确实带着显式选的模型）。matrix §4.5「除非用户在会话里显式选过」这半句，对 resident 节点不成立。
-- `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程在 SIGTERM 之前得有时间把会话记录写盘。基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列。所以 resident 在切换触发的回收里先把旧代从投递面摘下，等 1 s 再发 SIGTERM。实测去掉这 1 s，丢的正是那一轮的回答。
+- `keep` 续上的历史要包含刚等完的那一轮的回答，旧子进程退出前得把会话记录写盘。P18.3 实测发现基座 ACP 的 SIGTERM 处理直接 `process.exit`，不排空 100 ms 一刷的写队列，当时用「回收前等 1 s」缓解。这个缺陷已在 ACP 侧修好（`src/services/acp/exitFlush.ts`：SIGTERM、SIGINT 和连接关闭都先刷写再退出，2 s 封顶），所以 resident 在切换触发的回收里把旧代从投递面摘下后直接发 SIGTERM，那 1 s 已删掉。
 
 ### 2.8 中枢同机节点
 
