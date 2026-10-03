@@ -341,6 +341,127 @@ const ROWS: ParityRow[] = [
     }),
   ),
 
+  // ── #3: whether the chat request carries an output cap at all ──
+  ...(
+    [
+      [
+        'glm-5.2',
+        'https://open.bigmodel.cn/api/paas/v4',
+        undefined,
+        'hermes chat_completions.py:733-763 (zai profile, no default)',
+      ],
+      ['o3', OFFICIAL, undefined, 'hermes (openai, no default)'],
+      [
+        'meta-llama/llama-4',
+        'https://openrouter.ai/api/v1',
+        undefined,
+        'hermes (openrouter, no default)',
+      ],
+      [
+        'kimi-k3',
+        'https://api.moonshot.cn/v1',
+        32_000,
+        'hermes kimi-coding/__init__.py:134-136',
+      ],
+      [
+        'anthropic/claude-opus-5',
+        'https://openrouter.ai/api/v1',
+        64_000,
+        'hermes chat_completion_helpers.py:1993-2013 (claude name)',
+      ],
+      [
+        'minimax/minimax-m3',
+        'https://openrouter.ai/api/v1',
+        64_000,
+        'hermes chat_completion_helpers.py:1993-2013 (minimax name)',
+      ],
+      [
+        'qwen3-coder',
+        'http://localhost:8000/v1',
+        64_000,
+        'hermes custom/__init__.py:96-100 + qwen3 name',
+      ],
+      [
+        'vendor-model-x',
+        GATEWAY,
+        64_000,
+        'hermes custom/__init__.py:96-100 (unrecognised host)',
+      ],
+      [
+        'ep-20261003-abcde',
+        'https://ark.cn-beijing.volces.com/api/v3',
+        64_000,
+        'vendors-research 方舟: 4k default when omitted',
+      ],
+    ] as const
+  ).map(
+    ([model, baseURL, cap, source]): ParityRow => ({
+      id: `3-${model.replace('/', '_')}-${new URL(baseURL).hostname}`,
+      vendor: 'chat lane output cap',
+      model,
+      baseURL,
+      wire: 'chat',
+      effort: {},
+      thinking: 'auto',
+      sideQuery: false,
+      // A name with a tier word (opus/sonnet/…) is a tier alias on this lane
+      // (modelMapping.ts) and would reach the wire as gpt-5.6-*; pin it.
+      extraEnv: model.includes('opus')
+        ? { OPENAI_DEFAULT_OPUS_MODEL: model }
+        : undefined,
+      expect:
+        cap === undefined
+          ? {
+              path: '/chat/completions',
+              absent: ['max_tokens', 'max_completion_tokens'],
+            }
+          : { path: '/chat/completions', present: { max_tokens: cap } },
+      source,
+    }),
+  ),
+  {
+    id: '3-deepseek-chat-lane-omitted',
+    vendor: 'DeepSeek (chat lane)',
+    model: 'deepseek-v4-pro',
+    baseURL: DEEPSEEK,
+    wire: undefined,
+    effort: {},
+    thinking: 'on',
+    sideQuery: false,
+    extraEnv: DEEPSEEK_CHAT_LANE,
+    expect: {
+      path: '/chat/completions',
+      absent: ['max_tokens', 'max_completion_tokens'],
+    },
+    source:
+      'hermes deepseek profile (no default); hermes-research §11.9-② row 6 flips',
+  },
+  {
+    id: '3-openai-max-tokens-env',
+    vendor: 'Zhipu (catalog maxOutputTokens → OPENAI_MAX_TOKENS)',
+    model: 'glm-5.2',
+    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    wire: 'chat',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    extraEnv: { OPENAI_MAX_TOKENS: '8192' },
+    expect: { path: '/chat/completions', present: { max_tokens: 8192 } },
+    source: 'design §3.2 maxOutputTokens / §5.6 row 3 (OPENAI_MAX_TOKENS kept)',
+  },
+  {
+    id: '3-responses-unchanged',
+    vendor: 'Zhipu (Responses)',
+    model: 'glm-5.2',
+    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    wire: 'responses',
+    effort: {},
+    thinking: 'auto',
+    sideQuery: false,
+    expect: { path: '/responses', present: { max_output_tokens: 64_000 } },
+    source: 'design §5.6 row 3 is chat-only; baseline 1b477a37',
+  },
+
   // ── Fleet lock (design §0.2): gpt-6-luna on Responses must not change ──
   // Baseline captured from 1b477a37 through this same stub:
   // ~/atlas-evidence/m1-work/p185/fleet-baseline-1b477a37.txt

@@ -85,7 +85,11 @@ export function buildOpenAIRequestBody(params: {
   tools: any[]
   toolChoice: any
   enableThinking: boolean
-  maxTokens: number
+  /**
+   * Output cap. `undefined` sends none (qianmo P18.5, hermes #3 — see
+   * src/services/qianmo/modelCompat/outputTokenDefault.ts).
+   */
+  maxTokens: number | undefined
   baseURL?: string
   temperatureOverride?: number
   /** Session-scoped routing key for official OpenAI requests. */
@@ -175,9 +179,11 @@ export function buildOpenAIRequestBody(params: {
   return {
     model,
     messages,
-    ...(useMaxCompletionTokens
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens }),
+    ...(maxTokens === undefined
+      ? {}
+      : useMaxCompletionTokens
+        ? { max_completion_tokens: maxTokens }
+        : { max_tokens: maxTokens }),
     ...(promptCacheKey && { prompt_cache_key: promptCacheKey }),
     ...(effectiveTools.length > 0 && {
       tools: effectiveTools,

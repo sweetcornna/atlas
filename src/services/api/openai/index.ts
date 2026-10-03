@@ -18,6 +18,7 @@ import type {
 } from 'openai/resources/chat/completions/completions.mjs'
 import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/chatEffort.js'
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
+import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
 import {
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -387,10 +388,18 @@ export async function* queryModelOpenAI(
     //        with small context windows, e.g. RTX 3060 12GB running 65536-token models)
     //     3. CLAUDE_CODE_MAX_OUTPUT_TOKENS env var (generic override)
     //     4. upperLimit default (64000)
+    //     qianmo P18.5 (hermes #3): on the chat lane an unknown model on a named
+    //     provider host gets no cap at all — src/services/qianmo/modelCompat/
+    //     outputTokenDefault.ts.
     const { upperLimit } = getModelMaxOutputTokens(openaiModel)
-    let maxTokens = resolveOpenAIMaxTokens(
+    let maxTokens = resolveOpenAIRequestMaxTokens(
       upperLimit,
       options.maxOutputTokensOverride,
+      {
+        wireProtocol,
+        model: openaiModel,
+        baseURL: process.env.OPENAI_BASE_URL,
+      },
     )
 
     // Two different keys on purpose.
