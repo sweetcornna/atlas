@@ -804,41 +804,44 @@ describe('qm handoff mcp end to end', () => {
   )
 
   test(
-    'criterion 7 · stdin closed: an idle server exits 0; one with a call in flight answers it first; no child is left',
+    'criterion 7 · stdin closed: an idle server exits 0; calls sent before EOF, or in flight, are answered first; no child is left',
     async () => {
       const idle = await started(repo)
       expect(await idle.toolNames()).toEqual(TOOLS)
       const idleExit = await idle.stop()
       expect(idleExit).toBe(0)
 
-      const busy = await started(repo)
-      const release = holdSyncLock(repo)
-      let answer: ToolAnswer | undefined
-      try {
-        const pending = busy.call(
-          'qianmo_handoff',
-          { goal: '关机前最后一次', done: '', remaining: '' },
-          { threadId: THREAD },
-        )
-        // The call is in, waiting behind the sync lock; the client goes away.
-        await Bun.sleep(1_000)
-        busy.closeStdin()
-        await Bun.sleep(300)
-        expect(busy.proc.exitCode).toBeNull()
-        release()
-        answer = await pending
-      } finally {
-        release()
+      // A handoff waiting behind the sync lock when the client goes away:
+      // once while it is already running, once written right before EOF.
+      for (const settle of [1_000, 0]) {
+        const busy = await started(repo)
+        const release = holdSyncLock(repo)
+        let answer: ToolAnswer | undefined
+        try {
+          const pending = busy.call(
+            'qianmo_handoff',
+            { goal: '关机前最后一次', done: '', remaining: '' },
+            { threadId: THREAD },
+          )
+          if (settle > 0) await Bun.sleep(settle)
+          busy.closeStdin()
+          await Bun.sleep(300)
+          expect(busy.proc.exitCode).toBeNull()
+          release()
+          answer = await pending
+        } finally {
+          release()
+        }
+        expect(answer?.isError).toBe(false)
+        expect(answer?.text.split('\n')[0]).toBe(SAFE)
+        expect(await busy.stop()).toBe(0)
+        await busy.stdoutDone
       }
-      expect(answer?.isError).toBe(false)
-      expect(answer?.text.split('\n')[0]).toBe(SAFE)
-      expect(await busy.stop()).toBe(0)
-      await busy.stdoutDone
 
       // Every git this suite's servers started ran in, or pushed to, a
       // directory under the suite's root; the hub console is the only process
       // still named after it.
-      const ps = Bun.spawnSync(['ps', '-axww', '-o', 'pid=,command=']).stdout
+      const ps = Bun.spawnSync(['ps', '-A', '-ww', '-o', 'pid=,args=']).stdout
       const left = ps
         .toString()
         .split('\n')

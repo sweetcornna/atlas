@@ -53,9 +53,9 @@
  *
  * ## Exit
  *
- * When stdin ends: wait for the calls in flight (up to
- * {@link DRAIN_TIMEOUT_MS}) so their answers and their `git` children finish,
- * then exit 0.
+ * When stdin ends: wait for the calls in flight, including any read just
+ * before EOF (up to {@link DRAIN_TIMEOUT_MS} in all), so their answers and
+ * their `git` children finish, then exit 0.
  */
 
 import type {
@@ -73,7 +73,7 @@ import {
   runStatus,
   runTask,
 } from './handoffNow.js'
-import { HandoffUserError } from './handoffStore.js'
+import { HandoffUserError, sleep } from './handoffStore.js'
 
 /** How long a call in flight may keep the process after stdin ends. */
 const DRAIN_TIMEOUT_MS = 30_000
@@ -312,16 +312,21 @@ export function runHandoffMcp(cwd: string = process.cwd()): void {
   const end = async (): Promise<void> => {
     if (ending) return
     ending = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    await Promise.race([
-      Promise.allSettled([...inFlight]),
-      new Promise(done => {
-        timer = setTimeout(done, DRAIN_TIMEOUT_MS)
-      }),
-    ])
-    clearTimeout(timer)
+    const deadline = Date.now() + DRAIN_TIMEOUT_MS
+    // A request read just before EOF may not have reached its handler yet.
+    await sleep(50)
+    while (inFlight.size > 0 && Date.now() < deadline) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([
+        Promise.allSettled([...inFlight]),
+        new Promise(done => {
+          timer = setTimeout(done, deadline - Date.now())
+        }),
+      ])
+      clearTimeout(timer)
+    }
     // The answers are written after the handlers settle; let them out.
-    await new Promise(done => setTimeout(done, 50))
+    await sleep(50)
     await handle.close().catch(() => {})
     process.stdout.write('', () => process.exit(0))
   }
