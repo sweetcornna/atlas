@@ -100,6 +100,16 @@ function truncate(text: string, limit: number): string {
   return flat.length <= limit ? flat : `${flat.slice(0, limit - 1)}…`
 }
 
+/**
+ * A session's last turn as the list shows it: one line, at most
+ * {@link PREVIEW_LENGTH} characters. The rail and `GET /v0/chat/sessions` both
+ * hand it out, so the list is a summary on either surface and the transcript
+ * — the thing the action ledger counts — stays behind its own route.
+ */
+export function chatPreview(text: string): string {
+  return truncate(text, PREVIEW_LENGTH)
+}
+
 /** A value pill: a task id, a trace segment. Monospaced, never toned. */
 function idTag(label: string, value: string, shown: string): string {
   return (
@@ -509,9 +519,7 @@ function sessionItem(
 ): string {
   const cls = active ? 'chat-item chat-item-active' : 'chat-item'
   const preview =
-    session.preview === ''
-      ? '还没有内容'
-      : truncate(session.preview, PREVIEW_LENGTH)
+    session.preview === '' ? '还没有内容' : chatPreview(session.preview)
   return (
     `<button type="button" class="${cls}" data-action="chat-open" ` +
     `data-session="${attr(session.id)}"${active ? ' aria-current="true"' : ''}>` +

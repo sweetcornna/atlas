@@ -235,6 +235,17 @@ export function consoleSessionsPath(): string {
   return occConfigPath('qianmo', 'console', 'sessions.ndjson')
 }
 
+/**
+ * 动作账本的默认位置（`tenancy-m1.md` §6，P15.9）：谁、在哪次请求里、对什么、
+ * 做了什么、结果如何，一本哈希链账。
+ *
+ * 同一个目录、同一条派生规矩（CLAUDE.md §1.1②）。跟着 `--accounts` 才会被创建：
+ * 它记的是「哪个人」，没有个人账号的控制台不该多出这本账。
+ */
+export function consoleActionsPath(): string {
+  return occConfigPath('qianmo', 'console', 'actions.ndjson')
+}
+
 /** `occ console` 的全部配置，解析完就不再变。 */
 export interface ConsoleCliConfig {
   readonly port: number
@@ -370,6 +381,17 @@ export interface ConsoleCliConfig {
    */
   readonly breakGlass?: boolean
   /**
+   * 动作账本的绝对路径（P15.9）。**跟着 {@link accounts} 走**：开了个人账号就有
+   * 这本账，而且没有单独关掉它的开关——「每次打开转录都记账、当事人查得到」是
+   * 对真人的承诺（D6），不是一个可选项。另在 {@link verifyActions} 下出现。
+   */
+  readonly actionsStorePath?: string
+  /**
+   * 只校验动作账本、打出判定就退出（退出码与 `qm audit --verify` 同义）。不起
+   * 服务器、不读 token、不拨任何端点。
+   */
+  readonly verifyActions?: boolean
+  /**
    * 接力裸仓的根目录（P17.4）。**给了才有 `/v0/handoff`**：仓是
    * `<根>/<项目>.git`，由本机 `qm handoff init` 经用户自己的 SSH 建好，经 SSH
    * 闸门（同一个根）推拉。台账与审计链在配置根下
@@ -429,6 +451,9 @@ export function parseConsoleArgs(
   let sessionsStorePath = consoleSessionsPath()
   let legacyViewToken = true
   let breakGlass = false
+  let actionsStorePath = consoleActionsPath()
+  let actionsStoreGiven = false
+  let verifyActions = false
   let handoffRoot: string | undefined
   // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
   const needsAccounts: string[] = []
@@ -738,6 +763,19 @@ export function parseConsoleArgs(
     } else if (arg === '--break-glass') {
       breakGlass = true
       needsAccounts.push('--break-glass')
+    } else if (
+      arg === '--actions-store' ||
+      arg?.startsWith('--actions-store=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--actions-store')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--actions-store must be an absolute path')
+      }
+      actionsStorePath = resolve(parsed.value)
+      actionsStoreGiven = true
+      index = parsed.next
+    } else if (arg === '--verify-actions') {
+      verifyActions = true
     } else if (arg === '--handoff-root' || arg?.startsWith('--handoff-root=')) {
       const parsed = residentOptionValue(args, index, '--handoff-root')
       if (!isAbsolute(parsed.value)) {
@@ -789,6 +827,10 @@ export function parseConsoleArgs(
   if (orphan !== undefined && !accounts) {
     throw new Error(`${orphan} needs --accounts`)
   }
+  // 账本路径只有两处用得上：开了账号的控制台，和只校验账本的那一次。
+  if (actionsStoreGiven && !accounts && !verifyActions) {
+    throw new Error('--actions-store needs --accounts or --verify-actions')
+  }
 
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
@@ -828,6 +870,8 @@ export function parseConsoleArgs(
           breakGlass,
         }
       : {}),
+    ...(accounts || verifyActions ? { actionsStorePath } : {}),
+    ...(verifyActions ? { verifyActions } : {}),
     ...(handoffRoot === undefined ? {} : { handoffRoot }),
   }
 }
@@ -995,6 +1039,21 @@ Options (each accepts both --name value and --name=value):
                            header only, a notice on every page, every use
                            recorded, never an approver. Rotate it after use.
                            Only with --accounts.
+  --actions-store <abs path>
+                           Where the action ledger lands, absolute path: who
+                           did what, to what, in which request, and how it
+                           ended -- never a payload, a token or a transcript.
+                           Default <config root>/qianmo/console/actions.ndjson.
+                           The ledger is on whenever --accounts is, with no
+                           switch to turn it off. Only with --accounts or
+                           --verify-actions.
+  --verify-actions         Check the action ledger's hash chain, print the
+                           verdict and exit: 1 when it is broken or cannot be
+                           read, 0 otherwise (absent and empty are not
+                           findings). Starts nothing and reads no token.
+                           ${invokedBinName()} audit --verify cannot read this
+                           file: its lines are the account book's, not the
+                           audit trail's.
   --handoff-root <abs path>
                            Turn on /v0/handoff, the hub side of the local-to-
                            cloud handoff. The directory holds one bare

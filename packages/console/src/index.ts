@@ -110,6 +110,26 @@ export {
 } from './access.js'
 export type { LedgerPort } from './deps.js'
 
+// The action ledger (P15.9): the port the routes call (`deps.ts`), and the
+// hash-chained store the host puts behind it.
+export {
+  CONSOLE_ACTIONS,
+  type ActionLedgerPort,
+  type ActionOutcome,
+  type ActionPage,
+  type ActionQuery,
+  type ActionRecord,
+  type ConsoleAction,
+} from './deps.js'
+export {
+  AUTHZ_DECISION_ACTION_PREFIX,
+  ActionLedger,
+  verifyActionLedger,
+  type ActionLedgerOptions,
+  type ActionLedgerStore,
+  type ActionLedgerVerdict,
+} from './actionLedger.js'
+
 export {
   API_PREFIX,
   CHAT_STREAM_HEARTBEAT_MS,
