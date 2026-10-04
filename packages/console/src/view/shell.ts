@@ -55,6 +55,7 @@ import {
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { zoneLabel } from './format.js'
 
 /**
  * The product mark. The instance name sits beside it, never merged into it.
@@ -331,6 +332,11 @@ function sidebar(model: ShellModel): string {
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
     `<div class="side-foot">` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
+    // Which zone the page's times are in: the server's as drawn, the
+    // reader's once the runtime has redrawn them (时区).
+    `<p class="note" id="tz-note">时间 · ${escapeHtml(
+      zoneLabel(Date.now()),
+    )} · 服务器时区</p>` +
     (model.poll === true
       ? `<div class="divider"></div>${refreshControl()}`
       : '') +

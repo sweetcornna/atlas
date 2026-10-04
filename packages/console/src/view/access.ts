@@ -52,9 +52,10 @@ import {
   state,
   tag,
   type Tone,
+  timeTag,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatDateTime, formatRelative } from './format.js'
+import { formatRelative } from './format.js'
 
 type Listing = Extract<ReturnType<AccountBook['list']>, { ok: true }>['value']
 
@@ -167,8 +168,7 @@ function whoCell(
 function whenCell(at: number | null, now: number, never = '从未'): string {
   if (at === null) return `<td class="when note">${escapeHtml(never)}</td>`
   return (
-    `<td class="when"><time datetime="${attr(new Date(at).toISOString())}">` +
-    `${escapeHtml(formatDateTime(at))}</time>` +
+    `<td class="when">${timeTag(at, 'datetime')}` +
     `<span class="note">${escapeHtml(formatRelative(at, now))}</span></td>`
   )
 }

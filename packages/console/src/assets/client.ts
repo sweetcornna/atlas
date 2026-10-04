@@ -266,6 +266,90 @@ function runtimeScript(guards: TokenGuards): string {
       pad(d.getSeconds());
   }
 
+  /* ---------------- the reader's zone (时区) ---------------- */
+
+  // The server draws every instant in its own zone, with the instant itself
+  // in datetime and its shape in data-fmt (view/bits.ts timeTag). Redrawn
+  // here in the browser's, so a console on a UTC machine reads in the
+  // operator's wall clock; #tz-note says which zone the page is in, with
+  // script or without. Regions swapped in later are redrawn as they land.
+  function day(d) {
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function zoneOf(d) {
+    var offset = -d.getTimezoneOffset();
+    if (!offset) return 'UTC';
+    var m = Math.abs(offset);
+    return 'UTC' + (offset > 0 ? '+' : '-') + Math.floor(m / 60) +
+      (m % 60 ? ':' + pad(m % 60) : '');
+  }
+
+  function localizeTimes(root) {
+    if (!root || root.nodeType !== 1) return;
+    var times = root.matches('time[data-fmt]') ? [root] :
+      root.querySelectorAll('time[data-fmt]');
+    for (var i = 0; i < times.length; i++) {
+      var d = new Date(times[i].getAttribute('datetime') || '');
+      if (isNaN(d.getTime())) continue;
+      var text = times[i].getAttribute('data-fmt') === 'clock' ? stamp(d) :
+        day(d) + ' ' + stamp(d);
+      if (times[i].textContent !== text) times[i].textContent = text;
+    }
+    var boxes = root.querySelectorAll('input[type="datetime-local"][data-at]:not([data-zoned])');
+    for (var j = 0; j < boxes.length; j++) {
+      var at = new Date(Number(boxes[j].getAttribute('data-at')));
+      boxes[j].setAttribute('data-zoned', '');
+      if (isNaN(at.getTime())) continue;
+      boxes[j].value = day(at) + 'T' + pad(at.getHours()) + ':' + pad(at.getMinutes());
+    }
+  }
+
+  // A datetime-local box holds a wall-clock time and no zone, which the
+  // server would read in its own. What is sent is the instant the reader
+  // meant: epoch ms in a hidden twin, the box itself left out of the query.
+  function sendInstants(form) {
+    var boxes = form.querySelectorAll('input[type="datetime-local"][name]');
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      if (box.disabled || !box.value) continue;
+      var at = new Date(box.value).getTime();
+      if (isNaN(at)) continue;
+      var twin = document.createElement('input');
+      twin.type = 'hidden';
+      twin.name = box.name;
+      twin.value = String(at);
+      twin.setAttribute('data-instant', '');
+      form.appendChild(twin);
+      box.disabled = true;
+      box.setAttribute('data-sent', '');
+    }
+  }
+
+  // Back to a page from the history cache: the boxes as the reader left them.
+  window.addEventListener('pageshow', function () {
+    var twins = document.querySelectorAll('input[data-instant]');
+    for (var i = 0; i < twins.length; i++) twins[i].remove();
+    var sent = document.querySelectorAll('input[data-sent]');
+    for (var k = 0; k < sent.length; k++) {
+      sent[k].disabled = false;
+      sent[k].removeAttribute('data-sent');
+    }
+  });
+
+  function startZone() {
+    localizeTimes(document.body);
+    var note = byId('tz-note');
+    if (note) note.textContent = '时间 · ' + zoneOf(new Date()) + ' · 本机时区';
+    if (!window.MutationObserver) return;
+    new MutationObserver(function (records) {
+      for (var r = 0; r < records.length; r++) {
+        var added = records[r].addedNodes;
+        for (var n = 0; n < added.length; n++) localizeTimes(added[n]);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   /* ---------------- toasts ---------------- */
 
   var TOAST_MS = 6000;
@@ -1102,7 +1186,11 @@ function runtimeScript(guards: TokenGuards): string {
 
   document.addEventListener('submit', function (event) {
     var form = event.target;
-    if (!form || !form.id) return;
+    if (!form) return;
+    // A native submission (no handler below takes it): the instants go as
+    // instants (时区).
+    if (!form.id || !submits[form.id]) sendInstants(form);
+    if (!form.id) return;
     // Not prevented: the native POST is what clears the cookie, and it works
     // with this script disabled. All that is added is dropping the
     // localStorage copy - leaving it behind would mean the next visit sends a
@@ -1153,6 +1241,7 @@ function runtimeScript(guards: TokenGuards): string {
   });
 
   function start() {
+    startZone();
     seedTokenFromUrl();
     paintToken();
     var toggle = byId('auto-refresh');

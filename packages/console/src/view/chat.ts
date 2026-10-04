@@ -62,6 +62,7 @@ import {
   state,
   tag,
   type Tone,
+  timeAttrs,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { renderRichText } from './richText.js'
@@ -325,7 +326,7 @@ function renderNotice(turn: ChatTurn): string {
     `<span class="notice-text">${escapeHtml(
       truncate(turn.text, NOTICE_LENGTH),
     )}</span>` +
-    `<time class="turn-when" data-at="${attr(String(turn.at))}">${escapeHtml(formatClock(turn.at))}</time>` +
+    `<time class="turn-when" data-at="${attr(String(turn.at))}"${timeAttrs(turn.at, 'clock')}>${escapeHtml(formatClock(turn.at))}</time>` +
     `</div>` +
     detail +
     `</div></article>`
@@ -348,7 +349,7 @@ function renderCommandOutput(turn: ChatTurn, command: string): string {
     `<header class="turn-head">` +
     `<span class="turn-who">命令输出</span>` +
     `<code class="mono">/${escapeHtml(command)}</code>` +
-    `<time class="turn-when" data-at="${attr(String(turn.at))}">${escapeHtml(formatClock(turn.at))}</time>` +
+    `<time class="turn-when" data-at="${attr(String(turn.at))}"${timeAttrs(turn.at, 'clock')}>${escapeHtml(formatClock(turn.at))}</time>` +
     `</header>` +
     `<pre class="turn-code command-output"><code>${escapeHtml(text)}</code></pre>` +
     turnMarks(turn) +
@@ -371,7 +372,7 @@ function renderTurn(turn: ChatTurn, agent: string): string {
     `<div class="turn-body">` +
     `<header class="turn-head">` +
     `<span class="turn-who">${escapeHtml(who)}</span>` +
-    `<time class="turn-when" data-at="${attr(String(turn.at))}">${escapeHtml(formatClock(turn.at))}</time>` +
+    `<time class="turn-when" data-at="${attr(String(turn.at))}"${timeAttrs(turn.at, 'clock')}>${escapeHtml(formatClock(turn.at))}</time>` +
     `</header>` +
     `<div class="bubble">${turnText(turn.text)}</div>` +
     turnMarks(turn) +

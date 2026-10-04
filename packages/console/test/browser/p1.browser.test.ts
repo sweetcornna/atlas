@@ -790,6 +790,74 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test("instants are redrawn in the browser's zone, after every refresh too, and a typed range goes back as an instant (时区)", async () => {
+      // The console runs in this process, which bun test keeps on UTC; the
+      // browser is in Shanghai.
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await tab.send('Emulation.setTimezoneOverride', {
+          timezoneId: 'Asia/Shanghai',
+        })
+        await openConsole(tab, served, '/audit')
+        const record = `document.querySelector('#audit time[data-fmt]')`
+        // 2023-11-14T22:13:15Z, served as 22:13:15, read in Shanghai.
+        await tab.waitFor(`${record}.textContent === '2023-11-15 06:13:15'`)
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('tz-note').textContent`,
+          ),
+        ).toBe('时间 · UTC+8 · 本机时区')
+        // A refresh swaps the region in as the server drew it; it is redrawn.
+        await fastPolling(tab)
+        const before = served.wrapper.seen.length
+        const deadline = Date.now() + 5_000
+        while (
+          served.wrapper.seen
+            .slice(before)
+            .filter(seen => seen.path.startsWith('/fragments/audit')).length <
+            2 &&
+          Date.now() < deadline
+        ) {
+          await pause(100)
+        }
+        await pause(150)
+        expect(
+          served.wrapper.seen
+            .slice(before)
+            .filter(seen => seen.path.startsWith('/fragments/audit')).length,
+        ).toBeGreaterThanOrEqual(2)
+        expect(await tab.evaluate<string>(`${record}.textContent`)).toBe(
+          '2023-11-15 06:13:15',
+        )
+
+        // A custom range typed in Shanghai time is sent as that instant.
+        await tab.evaluate(`(() => {
+          const form = document.getElementById('audit-filter');
+          document.getElementById('f-from').value = '2023-11-15T06:00';
+          form.requestSubmit();
+        })()`)
+        const meant = Date.UTC(2023, 10, 14, 22, 0)
+        await tab.waitFor(
+          `new URLSearchParams(location.search).get('from') === '${meant}'`,
+          10_000,
+        )
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        // And the box shows it back in the reader's zone.
+        await tab.waitFor(
+          `document.getElementById('f-from').value === '2023-11-15T06:00'`,
+        )
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('.chips time[data-fmt]').textContent`,
+          ),
+        ).toBe('2023-11-15 06:00:00')
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
     test('the first Tab reaches the skip link, on screen, and Enter puts the page next (F1)', async () => {
       const served = serveConsole()
       const tab = await browser.tab()

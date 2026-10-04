@@ -71,10 +71,11 @@ import {
   tag,
   toned,
   type Tone,
+  timeTag,
 } from './bits.js'
 import { certificateLine } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
-import { agentHealth, formatDateTime, type AgentHealth } from './format.js'
+import { agentHealth, type AgentHealth } from './format.js'
 
 // ---------------------------------------------------------------------------
 // The tabs
@@ -387,10 +388,7 @@ function changedCell(row: LifecycleRow, showWho: boolean): string {
   if (at === undefined && (by === undefined || !showWho)) return absent()
   const parts: string[] = []
   if (at !== undefined) {
-    parts.push(
-      `<time class="mono" datetime="${attr(new Date(at).toISOString())}">` +
-        `${escapeHtml(formatDateTime(at))}</time>`,
-    )
+    parts.push(timeTag(at, 'datetime', 'mono'))
   }
   if (showWho && by !== undefined) {
     parts.push(`<span class="mono who">${escapeHtml(by)}</span>`)

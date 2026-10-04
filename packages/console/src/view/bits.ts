@@ -30,6 +30,7 @@
 
 import { attr, escapeHtml } from './escape.js'
 import { humanizeError } from './errors.js'
+import { formatTime, type TimeFormat } from './format.js'
 import type { ConsoleFailure } from '../deps.js'
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'critical' | 'muted'
@@ -164,6 +165,52 @@ export function rawDetail(detail: string): string {
 }
 
 /**
+ * Markup already escaped, for the helpers below that otherwise take text: a
+ * sentence with an instant in it ({@link withTimes}).
+ */
+export interface Markup {
+  readonly html: string
+}
+
+function inner(text: string | Markup): string {
+  return typeof text === 'string' ? escapeHtml(text) : text.html
+}
+
+/** An instant inside a sentence, for {@link withTimes}. */
+export interface Instant {
+  readonly at: number
+  readonly fmt: TimeFormat
+}
+
+/**
+ * The attributes that make a `<time>` redrawable in the reader's zone (时区):
+ * the ISO instant and the shape. `assets/client.ts` rewrites the text.
+ */
+export function timeAttrs(at: number, fmt: TimeFormat): string {
+  if (!Number.isFinite(at) || at <= 0) return ''
+  return ` datetime="${attr(new Date(at).toISOString())}" data-fmt="${fmt}"`
+}
+
+/** One instant, drawn in this process's zone until the runtime redraws it. */
+export function timeTag(at: number, fmt: TimeFormat, cls = ''): string {
+  const klass = cls === '' ? '' : ` class="${attr(cls)}"`
+  return `<time${klass}${timeAttrs(at, fmt)}>${escapeHtml(formatTime(at, fmt))}</time>`
+}
+
+/** A sentence of text and instants, the text escaped and each instant a {@link timeTag}. */
+export function withTimes(...parts: readonly (string | Instant)[]): Markup {
+  return {
+    html: parts
+      .map(part =>
+        typeof part === 'string'
+          ? escapeHtml(part)
+          : timeTag(part.at, part.fmt),
+      )
+      .join(''),
+  }
+}
+
+/**
  * A one-line strip. Facts and a number, never a paragraph.
  *
  * `detail` is an original folded under 详情 ({@link rawDetail}); a strip that
@@ -171,14 +218,14 @@ export function rawDetail(detail: string): string {
  */
 export function bar(
   tone: Tone,
-  text: string,
+  text: string | Markup,
   extraClass = '',
   detail = '',
 ): string {
   const cls = `bar bar-${tone}${extraClass === '' ? '' : ` ${extraClass}`}`
-  if (detail === '') return `<p class="${cls}">${escapeHtml(text)}</p>`
+  if (detail === '') return `<p class="${cls}">${inner(text)}</p>`
   return (
-    `<div class="${cls}"><span>${escapeHtml(text)}</span>` +
+    `<div class="${cls}"><span>${inner(text)}</span>` +
     `${rawDetail(detail)}</div>`
   )
 }
@@ -242,10 +289,10 @@ export function failureBar(failure: ConsoleFailure, subject: string): string {
  * `dot dot-<tone>` into `className`. The stylesheet gives each of the four a
  * different shape as well as a different colour.
  */
-export function state(tone: Tone, text: string): string {
+export function state(tone: Tone, text: string | Markup): string {
   return (
     `<span class="state"><span class="dot dot-${tone}"></span>` +
-    `${escapeHtml(text)}</span>`
+    `${inner(text)}</span>`
   )
 }
 
@@ -255,14 +302,14 @@ export function state(tone: Tone, text: string): string {
  * For the dense count lines, where a row of dots would turn the line into
  * beadwork.
  */
-export function toned(tone: Tone, text: string): string {
-  return `<span class="tone-${tone}">${escapeHtml(text)}</span>`
+export function toned(tone: Tone, text: string | Markup): string {
+  return `<span class="tone-${tone}">${inner(text)}</span>`
 }
 
 /** A pill-shaped label: capability tags, active filters, id fragments. */
-export function chip(text: string, title?: string): string {
+export function chip(text: string | Markup, title?: string): string {
   const attrs = title === undefined ? '' : ` title="${attr(title)}"`
-  return `<span class="chip mono"${attrs}>${escapeHtml(text)}</span>`
+  return `<span class="chip mono"${attrs}>${inner(text)}</span>`
 }
 
 /**

@@ -81,6 +81,7 @@ import {
   tag,
   toned,
   type Tone,
+  timeTag,
 } from './bits.js'
 import {
   certificateIndex,
@@ -99,6 +100,7 @@ import {
   leaseView,
   publicKeyFingerprint,
   rosterLease,
+  zoneLabel,
   type AgentHealth,
 } from './format.js'
 import type {
@@ -198,7 +200,7 @@ function keyCell(publicKey: string | undefined): string {
 function heartbeatValue(at: number, now: number): string {
   if (!Number.isFinite(at) || at <= 0) return absent()
   return (
-    `<span class="mono">${escapeHtml(formatClock(at))}</span> ` +
+    `${timeTag(at, 'clock', 'mono')} ` +
     `<span class="absent">${escapeHtml(formatRelative(at, now))}</span>`
   )
 }
@@ -233,7 +235,8 @@ function leaseCell(
   const fill = view.tone === 'ink' ? '' : ` lease-${view.tone}`
   const expiry =
     Number.isFinite(agent.expiresAt) && agent.expiresAt > 0
-      ? ` title="到期 ${attr(formatClock(agent.expiresAt))}"`
+      ? // A tooltip is not redrawn in the reader's zone, so it names its own.
+        ` title="到期 ${attr(formatClock(agent.expiresAt))} ${attr(zoneLabel(agent.expiresAt))}"`
       : ''
   const dead = view.tone === 'dead'
   const left = dead ? ' gone' : ''

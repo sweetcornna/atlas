@@ -87,7 +87,11 @@ describe('each job, its last and its next fire', () => {
     const due = html.slice(html.indexOf('data-key="due"'))
     expect(due).toContain('已到期 · 2 分钟前')
     const held = html.slice(html.indexOf('data-key="held"'))
-    expect(held).toContain(`退避至 ${formatDateTime(NOW + 240_000)}`)
+    // An instant the runtime redraws in the reader's zone (时区).
+    expect(held).toContain(
+      `退避至 <time datetime="${new Date(NOW + 240_000).toISOString()}" ` +
+        `data-fmt="datetime">${formatDateTime(NOW + 240_000)}</time>`,
+    )
     expect(held).toContain('投递失败')
     expect(held).toContain('<span class="tone-bad">3</span>')
     const gone = html.slice(html.indexOf('data-key="gone"'))

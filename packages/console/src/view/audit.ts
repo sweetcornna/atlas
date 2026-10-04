@@ -61,9 +61,11 @@ import {
   tag,
   toned,
   type Tone,
+  timeTag,
+  withTimes,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatDateTime, formatDuration, toDatetimeLocal } from './format.js'
+import { formatDuration, toDatetimeLocal } from './format.js'
 import type { AuditFilter, AuditPage, ConsoleFailure } from '../deps.js'
 
 /** How many characters of an id are enough to tell two of them apart. */
@@ -202,7 +204,7 @@ function recordRow(
 ): string {
   return (
     `<tr data-outcome="${attr(record.outcome)}">` +
-    `<td class="when mono">${escapeHtml(formatDateTime(record.at))}</td>` +
+    `<td class="when mono">${timeTag(record.at, 'datetime')}</td>` +
     `<td class="src">${escapeHtml(sourceText(record.source))}</td>` +
     `<td class="kind"><span class="mono">${escapeHtml(record.kind)}</span>` +
     `${detailLine(record.detail)}</td>` +
@@ -390,10 +392,14 @@ function timeField(
   id: string,
 ) {
   const value = at === undefined ? '' : toDatetimeLocal(at)
+  // data-at: the runtime redraws the value in the reader's zone, and sends
+  // what is typed back as an instant rather than a wall-clock string the
+  // server would read in its own zone (时区, `assets/client.ts`).
+  const instant = at === undefined ? '' : ` data-at="${attr(String(at))}"`
   return (
     `<div class="field"><label for="${attr(id)}">${escapeHtml(label)}</label>` +
     `<input class="input" type="datetime-local" id="${attr(id)}" ` +
-    `name="${attr(name)}" value="${attr(value)}"></div>`
+    `name="${attr(name)}" value="${attr(value)}"${instant}></div>`
   )
 }
 
@@ -531,6 +537,9 @@ function activeChips(filter: AuditFilter): string {
   const push = (key: string, value: string | undefined) => {
     if (value !== undefined && value !== '') chips.push(chip(`${key} ${value}`))
   }
+  const pushTime = (key: string, at: number) => {
+    chips.push(chip(withTimes(`${key} `, { at, fmt: 'datetime' })))
+  }
   push('q', filter.q)
   push('source', filter.source)
   push('outcome', filter.outcome)
@@ -539,10 +548,10 @@ function activeChips(filter: AuditFilter): string {
   push('task', filter.taskId)
   push('node', filter.agent)
   if (filter.window === undefined && filter.from !== undefined) {
-    push('from', formatDateTime(filter.from))
+    pushTime('from', filter.from)
   }
   if (filter.window === undefined && filter.to !== undefined) {
-    push('to', formatDateTime(filter.to))
+    pushTime('to', filter.to)
   }
   if (chips.length === 0) return ''
   return `<p class="chips">${chips.join('')}</p>`

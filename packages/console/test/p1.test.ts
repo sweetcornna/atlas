@@ -20,6 +20,7 @@ import type {
 import { createConsoleHandler } from '../src/http.js'
 import { renderCredentialPage, renderInvitePage } from '../src/view/invite.js'
 import { renderLoginPage } from '../src/view/login.js'
+import { zoneLabelOf } from '../src/view/format.js'
 import { renderOverview } from '../src/view/page.js'
 import {
   ADMIN,
@@ -931,4 +932,89 @@ describe('H2 · scripts by hash, and the headers that were missing', () => {
     )
     expect(await direct.json()).toEqual({ status: 'ok' })
   })
+})
+
+describe("时区 · every instant names its zone, and can be redrawn in the reader's", () => {
+  /**
+   * A page rendered by a console process in `zone`. A child process, because
+   * `bun test` pins its own zone and a changed `TZ` does not reliably take
+   * inside it once any test has unset it.
+   */
+  async function pageIn(zone: string, path: string): Promise<string> {
+    const child = Bun.spawn(
+      [
+        'bun',
+        '-e',
+        `const { ADMIN, browse, pageHarness } = await import(${JSON.stringify(
+          `${import.meta.dir}/pageHarness.ts`,
+        )});` +
+          ' const h = pageHarness({ chat: true });' +
+          " await h.chat.open('qianmo://tokyo-1/planner');" +
+          ' const r = await h.handle(browse(process.env.QM_PATH, ADMIN));' +
+          ' process.stdout.write(await r.text());',
+      ],
+      {
+        env: { ...process.env, TZ: zone, QM_PATH: path },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const html = await new Response(child.stdout).text()
+    expect(await child.exited).toBe(0)
+    return html
+  }
+
+  // The harness's trail record, 2023-11-14T22:13:15Z.
+  const ISO = new Date(NOW - 5_000).toISOString()
+
+  test('the zone label: whole hours, half hours, three quarters, none', () => {
+    expect(zoneLabelOf(0)).toBe('UTC')
+    expect(zoneLabelOf(480)).toBe('UTC+8')
+    expect(zoneLabelOf(-210)).toBe('UTC-3:30')
+    expect(zoneLabelOf(345)).toBe('UTC+5:45')
+    expect(zoneLabelOf(-420)).toBe('UTC-7')
+  })
+
+  test("the trail's instant is a <time> with the instant in it, drawn in the server's zone, and the page says which", async () => {
+    const utc = await pageIn('UTC', '/audit')
+    expect(utc).toContain(
+      `<time datetime="${ISO}" data-fmt="datetime">2023-11-14 22:13:15</time>`,
+    )
+    expect(utc).toContain(
+      '<p class="note" id="tz-note">时间 · UTC · 服务器时区</p>',
+    )
+    const shanghai = await pageIn('Asia/Shanghai', '/audit')
+    expect(shanghai).toContain(
+      `<time datetime="${ISO}" data-fmt="datetime">2023-11-15 06:13:15</time>`,
+    )
+    expect(shanghai).toContain('时间 · UTC+8 · 服务器时区')
+  }, 30_000)
+
+  test('every page that shows an instant shows it as a redrawable <time>', async () => {
+    const h = pageHarness({ chat: true })
+    await h.chat.open('qianmo://tokyo-1/planner')
+    const pages: readonly (readonly [string, RegExp])[] = [
+      ['/audit', /<time datetime="[^"]+Z" data-fmt="datetime">/],
+      ['/nodes', /<time class="mono" datetime="[^"]+Z" data-fmt="clock">/],
+      ['/chat?session=session-1', /<p class="note" id="tz-note">/],
+    ]
+    for (const [path, shape] of pages) {
+      const page = await (await h.handle(browse(path, ADMIN))).text()
+      expect([path, shape.test(page)]).toEqual([path, true])
+    }
+  })
+
+  test('a custom range is an instant both ways: data-at out, epoch ms back in', async () => {
+    const from = Date.UTC(2023, 10, 14, 10, 0)
+    const page = await pageIn('UTC', `/audit?from=${from}`)
+    expect(page).toContain(
+      `name="from" value="2023-11-14T10:00" data-at="${from}">`,
+    )
+    // The chip that echoes it is a <time> too.
+    expect(page).toContain(
+      `<span class="chip mono">from <time datetime="${new Date(from).toISOString()}" data-fmt="datetime">`,
+    )
+    // And the poll carries the instant, not a wall-clock string.
+    expect(page).toContain(`from=${from}`)
+  }, 30_000)
 })

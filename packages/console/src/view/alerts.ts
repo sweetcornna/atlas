@@ -64,6 +64,7 @@ import {
   state,
   toned,
   type Tone,
+  timeTag,
 } from './bits.js'
 import { STATUS_WORD as CERTIFICATE_STATUS_WORD } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
@@ -73,6 +74,7 @@ import {
   formatDateTime,
   formatRelative,
   formatShortDuration,
+  zoneLabel,
 } from './format.js'
 
 /** Most recent notices one page reads. The total beyond it is still stated. */
@@ -256,7 +258,15 @@ function expiryDetail(notAfter: number | undefined, now: number): string {
   if (!usable(notAfter)) return ''
   return notAfter > now
     ? `剩余 ${formatShortDuration(notAfter - now)}`
-    : `到期于 ${formatDateTime(notAfter)}`
+    : `到期于 ${zoned(notAfter)}`
+}
+
+/**
+ * An instant inside a detail line. The line is also `/v0/alerts` data and is
+ * not redrawn in the reader's zone, so it names its own (时区).
+ */
+function zoned(at: number): string {
+  return `${formatDateTime(at)} ${zoneLabel(at)}`
 }
 
 function certificateAlerts(
@@ -294,7 +304,7 @@ function certificateAlerts(
       level: 'error',
       origin: 'certificate',
       title: '吊销清单已过期',
-      detail: `应于 ${formatDateTime(list.nextUpdate)} 更新`,
+      detail: `应于 ${zoned(list.nextUpdate)} 更新`,
       at: list.nextUpdate,
     })
   }
@@ -713,9 +723,7 @@ function unreadBadge(unread: number): string {
 function whenCell(at: number | undefined, now: number): string {
   if (at === undefined) return `<span class="alert-when note">进行中</span>`
   return (
-    `<span class="alert-when"><time datetime="${attr(
-      new Date(at).toISOString(),
-    )}">${escapeHtml(formatDateTime(at))}</time>` +
+    `<span class="alert-when">${timeTag(at, 'datetime')}` +
     `<span class="note">${escapeHtml(formatRelative(at, now))}</span></span>`
   )
 }
@@ -724,8 +732,7 @@ function ackCell(alert: ConsoleAlert, canAck: boolean): string {
   if (alert.ackedAt !== undefined) {
     return (
       `<span class="alert-ack note">已确认 ` +
-      `<time datetime="${attr(new Date(alert.ackedAt).toISOString())}">` +
-      `${escapeHtml(formatDateTime(alert.ackedAt))}</time></span>`
+      `${timeTag(alert.ackedAt, 'datetime')}</span>`
     )
   }
   if (!canAck) return `<span class="alert-ack"></span>`

@@ -50,9 +50,11 @@ import {
   tag,
   toned,
   type Tone,
+  timeTag,
+  withTimes,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatDateTime, formatDuration, formatRelative } from './format.js'
+import { formatDuration, formatRelative } from './format.js'
 
 /**
  * How many of the scheduler's own longest gaps (`SchedulerTick.everyMs`) may
@@ -100,8 +102,7 @@ function unwired(): string {
 
 function when(at: number, now: number): string {
   return (
-    `<time datetime="${attr(new Date(at).toISOString())}">` +
-    `${escapeHtml(formatDateTime(at))}</time>` +
+    timeTag(at, 'datetime') +
     `<span class="note">${escapeHtml(formatRelative(at, now))}</span>`
   )
 }
@@ -178,7 +179,7 @@ function estopSaid(estop: SchedulerEstop): Said {
           'critical',
           estop.since === undefined
             ? '已拉下'
-            : `已拉下 · 自 ${formatDateTime(estop.since)}`,
+            : withTimes('已拉下 · 自 ', { at: estop.since, fmt: 'datetime' }),
         ),
         strip: bar(
           'critical',
@@ -274,14 +275,15 @@ function nextCell(
   if (!job.listed) return `<td><span class="note">不再调度</span></td>`
   const next = job.next
   if (next === undefined) return `<td>${absent()}</td>`
-  const time =
-    `<time datetime="${attr(new Date(next).toISOString())}">` +
-    `${escapeHtml(formatDateTime(next))}</time>`
+  const time = timeTag(next, 'datetime')
   let note: string
   if (snapshot.estop.state === 'engaged') {
     note = toned('critical', '急停中 · 不会触发')
   } else if (job.holdUntil !== undefined && job.holdUntil > now) {
-    note = toned('warn', `退避至 ${formatDateTime(job.holdUntil)}`)
+    note = toned(
+      'warn',
+      withTimes('退避至 ', { at: job.holdUntil, fmt: 'datetime' }),
+    )
   } else if (next <= now) {
     note = toned('warn', `已到期 · ${formatRelative(next, now)}`)
   } else {
