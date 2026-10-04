@@ -2708,10 +2708,13 @@ describe('one place an action reports back (D2)', () => {
 
   test('a toast is text, and a failure interrupts', () => {
     const toast = CONSOLE_CLIENT_JS.slice(
-      CONSOLE_CLIENT_JS.indexOf('function toast(text, tone)'),
+      CONSOLE_CLIENT_JS.indexOf('function toast(text, tone, detail)'),
       CONSOLE_CLIENT_JS.indexOf('/* ---------------- dialogs'),
     )
-    expect(toast).toContain('line.textContent = text')
+    expect(toast.length).toBeGreaterThan(100)
+    expect(toast).toContain('words.textContent = text')
+    // The original under 详情 is text too (C5).
+    expect(toast).toContain('raw.textContent = detail')
     expect(toast).not.toContain('innerHTML')
     expect(toast).toContain(
       "if (tone === 'bad') line.setAttribute('role', 'alert')",

@@ -341,13 +341,20 @@ describe('the page', () => {
 
   test('keeps the page open when the witness endpoint is unreachable', async () => {
     const { handle, audit } = setup()
-    audit.readResult = failResult('unreachable', '见证端点不可达：连接被拒绝')
+    audit.readResult = failResult(
+      'unreachable',
+      '见证端点 · connect ECONNREFUSED 127.0.0.1:1',
+    )
     for (const path of ['/', '/audit']) {
       const response = await handle(get(path, VIEW))
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       if (path === '/audit') {
-        expect(await response.text()).toContain(
-          '审计日志不可达 · 见证端点不可达',
+        // The port's message keeps only which half failed; the strip says
+        // the line and folds the original (C5).
+        const html = await response.text()
+        expect(html).toContain('审计日志不可达 · 见证端点 · 无法连接')
+        expect(html).toContain(
+          '<pre class="raw" data-raw>见证端点 · connect ECONNREFUSED',
         )
       }
     }

@@ -57,6 +57,8 @@ import {
   failureBar,
   hint,
   railSep,
+  rawDetail,
+  reasonOf,
   sectionHead,
   splitAddress,
   state,
@@ -122,6 +124,11 @@ export interface ConsoleAlert {
   readonly title: string
   /** One more line of fact, when there is one. */
   readonly detail?: string
+  /**
+   * The original words behind `detail`, when a port's own text was turned
+   * into a short line (`view/errors.ts`, C5): folded under 详情.
+   */
+  readonly raw?: string
   /**
    * When it happened, when that is known: a notice's arrival, a lease's lapse,
    * an expiry. Absent for a condition with no instant of its own.
@@ -396,9 +403,14 @@ function registrationAlerts(snapshot: LifecycleSnapshot): ConsoleAlert[] {
       level: 'error',
       origin: 'registrations',
       title: closed ? '登记簿读不出来' : '登记簿写不进去',
+      // The ledger's problem is the file system's own words: the short line
+      // here, the original folded under it (`view/errors.ts`, C5).
       detail: closed
-        ? `${problem} · 修好并重启之前出口一律不拨`
-        : `${problem} · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢`,
+        ? `${reasonOf(problem).text} · 修好并重启之前出口一律不拨`
+        : `${reasonOf(problem).text} · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢`,
+      ...(reasonOf(problem).detail === ''
+        ? {}
+        : { raw: reasonOf(problem).detail }),
     },
   ]
 }
@@ -737,7 +749,9 @@ function alertRow(alert: ConsoleAlert, now: number, canAck: boolean): string {
     )}</span>` +
     `<div class="alert-main"><p class="alert-title">${escapeHtml(
       alert.title,
-    )}</p><p class="alert-meta note">${escapeHtml(meta.join(' · '))}</p></div>` +
+    )}</p><p class="alert-meta note">${escapeHtml(meta.join(' · '))}</p>` +
+    rawDetail(alert.raw ?? '') +
+    `</div>` +
     whenCell(alert.at, now) +
     ackCell(alert, canAck) +
     `</li>`

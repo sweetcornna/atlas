@@ -699,6 +699,16 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .bar-critical { background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical); }
 .bar-muted { background: var(--color-neutral-100); color: var(--color-neutral-700); }
 .bar-code { font-family: var(--font-mono); font-size: 11px; opacity: .75; }
+/* The original of a failure (C5): folded, selectable, never the sentence. */
+.raw-detail, .toast-detail { flex-basis: 100%; min-width: 0; font-size: 12px; }
+.raw-detail > summary, .toast-detail > summary { cursor: pointer; width: max-content; }
+.raw {
+  margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto;
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text); user-select: text;
+}
 .bar .n { font-variant-numeric: tabular-nums; }
 .hint { font-size: 13.5px; color: var(--color-muted); padding: var(--space-3) var(--space-2); }
 .status { font-size: 12px; min-height: 1.25em; color: var(--color-muted); }
@@ -812,6 +822,8 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   border-left: 3px solid var(--color-accent-2); font-size: 13px; overflow-wrap: anywhere;
 }
 .toast[data-tone='bad'] { border-left-color: var(--color-accent-700); }
+.toast-text { display: block; }
+.toast-detail { margin-top: var(--space-1); }
 .toast[data-tone='muted'] { border-left-color: var(--color-neutral-400); }
 
 /* ---- dialogs: native <dialog>, opened with showModal() ----

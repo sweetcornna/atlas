@@ -29,6 +29,7 @@
  */
 
 import { attr, escapeHtml } from './escape.js'
+import { humanizeError } from './errors.js'
 import type { ConsoleFailure } from '../deps.js'
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'critical' | 'muted'
@@ -147,10 +148,50 @@ export function field(
   )
 }
 
-/** A one-line strip. Facts and a number, never a paragraph. */
-export function bar(tone: Tone, text: string, extraClass = ''): string {
+/**
+ * The original of a failure, folded under 详情 (C5): there to select and paste
+ * into a ticket, never part of the sentence. `data-raw` marks it as the one
+ * kind of text on a page the copy rules do not apply to — it is the port's or
+ * the transport's own words, kept verbatim on purpose (`test/copyGate`).
+ */
+export function rawDetail(detail: string): string {
+  if (detail === '') return ''
+  return (
+    `<details class="raw-detail"><summary>详情</summary>` +
+    `<pre class="raw" data-raw>${escapeHtml(detail)}</pre></details>`
+  )
+}
+
+/**
+ * A one-line strip. Facts and a number, never a paragraph.
+ *
+ * `detail` is an original folded under 详情 ({@link rawDetail}); a strip that
+ * carries one is a `<div>`, since a `<details>` cannot sit inside a `<p>`.
+ */
+export function bar(
+  tone: Tone,
+  text: string,
+  extraClass = '',
+  detail = '',
+): string {
   const cls = `bar bar-${tone}${extraClass === '' ? '' : ` ${extraClass}`}`
-  return `<p class="${cls}">${escapeHtml(text)}</p>`
+  if (detail === '') return `<p class="${cls}">${escapeHtml(text)}</p>`
+  return (
+    `<div class="${cls}"><span>${escapeHtml(text)}</span>` +
+    `${rawDetail(detail)}</div>`
+  )
+}
+
+/**
+ * A reason a port handed up, as the page may say it: the short line, and the
+ * original for {@link rawDetail}. `code` picks the phrase when the reason is
+ * transport text with no known shape (`view/errors.ts`).
+ */
+export function reasonOf(
+  reason: string,
+  code = 'unavailable',
+): { readonly text: string; readonly detail: string } {
+  return humanizeError({ code, message: reason })
 }
 
 /**
@@ -179,11 +220,16 @@ const FAILURE_LEAD: Readonly<Record<ConsoleFailure['code'], string>> = {
 
 export function failureBar(failure: ConsoleFailure, subject: string): string {
   const lead = `${subject}${FAILURE_LEAD[failure.code] ?? '出错'}`
+  // The port's message is a developer's sentence, or the transport's own
+  // English; the strip says the short line and folds the original (C5).
+  const human = humanizeError({ code: failure.code, message: failure.message })
   return (
-    `<p class="bar bar-bad" role="alert">` +
+    `<div class="bar bar-bad" role="alert">` +
     icon('alert-triangle', { small: true }) +
-    `<span>${escapeHtml(lead)} · ${escapeHtml(failure.message)}</span>` +
-    `<code class="bar-code">${escapeHtml(failure.code)}</code></p>`
+    `<span>${escapeHtml(lead)} · ${escapeHtml(human.text)}</span>` +
+    `<code class="bar-code">${escapeHtml(failure.code)}</code>` +
+    rawDetail(human.detail) +
+    `</div>`
   )
 }
 

@@ -100,6 +100,7 @@
 
 import { PERSONAL_CREDENTIAL_PREFIX } from '../accounts.js'
 import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
+import { errorTableJson } from '../view/errors.js'
 
 /**
  * What is spliced into the two token functions of the runtime.
@@ -154,8 +155,88 @@ function runtimeScript(guards: TokenGuards): string {
     if (el) el.textContent = value;
   }
 
+  /* ---------------- what a failure says (C5) ---------------- */
+
+  // The same tables view/errors.ts renders failure strips with, serialised
+  // from there; the algorithm below is that module's humanizeError written
+  // out again, and test/copyGate.test.ts runs the two over one corpus. An API
+  // message is for whoever reads the JSON; the page shows the short line and
+  // keeps the original for 详情.
+  /* humanize:start */
+  var ERRORS = ${errorTableJson()};
+  var UNCLEAN = new RegExp(ERRORS.unclean);
+  var CJK = new RegExp(ERRORS.cjk);
+  var PROTOCOL = new RegExp(ERRORS.protocol);
+  var PATTERNS = ERRORS.patterns.map(function (p) { return [new RegExp(p[0], 'i'), p[1]]; });
+  // The last line message() produced and the original behind it, so the
+  // failure toast that quotes the line can fold the original under 详情.
+  var lastMapped = null;
+
+  function cleanLine(text) {
+    return text.length > 0 && text.length <= ERRORS.maxClean &&
+      CJK.test(text) && !UNCLEAN.test(text);
+  }
+
+  function ownPhrase(table, key) {
+    if (key === undefined || key === null || key === '') return undefined;
+    var name = String(key);
+    return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
+  }
+
+  function humanize(code, status, raw) {
+    raw = String(raw === undefined || raw === null ? '' : raw).trim();
+    var parts = raw.split(' · ');
+    var head = parts[0] || '';
+    var lead = parts.length > 1 && head.length <= ERRORS.maxLead &&
+      cleanLine(head) && !PROTOCOL.test(head) ? head : '';
+    var phrase = '';
+    for (var i = 0; i < PATTERNS.length; i++) {
+      if (PATTERNS[i][0].test(raw)) { phrase = PATTERNS[i][1]; break; }
+    }
+    if (phrase === '' && cleanLine(raw)) return { text: raw, detail: '' };
+    if (phrase === '') {
+      phrase = ownPhrase(ERRORS.codes, code);
+      if (phrase === undefined) phrase = ownPhrase(ERRORS.statuses, status);
+      if (phrase === undefined) phrase = ERRORS.fallback;
+    }
+    var text = lead === '' || lead === phrase ? phrase : lead + ' · ' + phrase;
+    var protocol = PROTOCOL.exec(raw);
+    if (protocol && text.indexOf(protocol[0]) === -1) text = text + ' · ' + protocol[0];
+    return { text: text, detail: raw === text ? '' : raw };
+  }
+  /* humanize:end */
+
+  // An Error whose message is already the page's line: code and status for
+  // a script that branches on them, the original in detail.
+  function failure(code, status, raw) {
+    var human = humanize(code, status, raw);
+    var err = new Error(human.text);
+    err.code = code || '';
+    err.status = status || 0;
+    err.detail = human.detail;
+    err.human = human.text;
+    return err;
+  }
+
+  // What reaches the page for any rejection: a failure from this runtime as
+  // it is, anything else (a page script's own throw, a TypeError) through
+  // the same mapping.
   function message(err) {
-    return err && err.message ? String(err.message) : String(err);
+    if (err && typeof err.human === 'string') {
+      lastMapped = { text: err.human, detail: err.detail || '' };
+      return err.human;
+    }
+    var raw = err && err.message ? String(err.message) : String(err);
+    var human = humanize(err && err.code, err && err.status, raw);
+    lastMapped = { text: human.text, detail: human.detail };
+    return human.text;
+  }
+
+  // A fetch that never got an answer: stopped on purpose, or no network.
+  function unanswered(e) {
+    if (e && e.human) return e;
+    if (e && e.name === 'AbortError') return failure('aborted', 0, '');
+    return failure('network', 0, e && e.message ? e.message : String(e));
   }
 
   function say(el, value, tone) {
@@ -177,19 +258,50 @@ function runtimeScript(guards: TokenGuards): string {
   var TOAST_BAD_MS = 10000;
   var TOAST_MAX = 4;
 
-  function toast(text, tone) {
+  // A failure that quotes the line message() just produced carries the
+  // original under 详情: selectable, and kept on screen while it is open.
+  function toast(text, tone, detail) {
     var region = byId('toasts');
     if (!region || !text) return;
+    if (detail === undefined && tone === 'bad' && lastMapped && lastMapped.detail &&
+        text.indexOf(lastMapped.text) !== -1) {
+      detail = lastMapped.detail;
+    }
+    if (tone === 'bad') lastMapped = null;
     var line = document.createElement('div');
     line.className = 'toast';
     line.setAttribute('data-tone', tone || 'muted');
     if (tone === 'bad') line.setAttribute('role', 'alert');
-    line.textContent = text;
+    var words = document.createElement('span');
+    words.className = 'toast-text';
+    words.textContent = text;
+    line.appendChild(words);
+    var more = null;
+    if (detail) {
+      more = document.createElement('details');
+      more.className = 'toast-detail';
+      var summary = document.createElement('summary');
+      summary.textContent = '详情';
+      var raw = document.createElement('pre');
+      raw.className = 'raw';
+      raw.setAttribute('data-raw', '');
+      raw.textContent = detail;
+      more.appendChild(summary);
+      more.appendChild(raw);
+      line.appendChild(more);
+    }
     region.appendChild(line);
     while (region.children.length > TOAST_MAX) region.removeChild(region.firstChild);
     var gone = function () { if (line.parentNode) line.parentNode.removeChild(line); };
-    line.addEventListener('click', gone);
-    setTimeout(gone, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
+    line.addEventListener('click', function (event) {
+      if (more && event.target && event.target.closest && event.target.closest('.toast-detail')) return;
+      gone();
+    });
+    var later = function () {
+      if (more && more.open) { setTimeout(later, TOAST_BAD_MS); return; }
+      gone();
+    };
+    setTimeout(later, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
   }
 
   /* ---------------- dialogs ---------------- */
@@ -337,7 +449,7 @@ function runtimeScript(guards: TokenGuards): string {
 
   // The one place a response status is looked at before anything else.
   function checked(res) {
-    if (res.status === 401) { expire(); throw new Error(EXPIRED); }
+    if (res.status === 401) { expire(); throw failure('unauthorized', 401, EXPIRED); }
     return res;
   }
 
@@ -348,7 +460,7 @@ function runtimeScript(guards: TokenGuards): string {
   // stopped: the next thing tried that would need the server brings it back.
   function refused() {
     openDialog('session-expired', null);
-    return Promise.reject(new Error(EXPIRED));
+    return Promise.reject(failure('unauthorized', 401, EXPIRED));
   }
 
   /* ---------------- transport ---------------- */
@@ -359,11 +471,11 @@ function runtimeScript(guards: TokenGuards): string {
       headers: authHeaders(),
       credentials: 'same-origin',
       cache: 'no-store'
-    }).then(checked).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+    }).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
+      if (!res.ok) throw failure('', res.status, 'HTTP ' + res.status);
       var type = res.headers.get('content-type') || '';
       if (type.indexOf('text/html') === -1) {
-        throw new Error('响应非 HTML · ' + type);
+        throw failure('format', res.status, '响应非 HTML · ' + type);
       }
       return res.text();
     });
@@ -377,7 +489,7 @@ function runtimeScript(guards: TokenGuards): string {
       headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' })
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(url, init).then(checked).then(function (res) {
+    return fetch(url, init).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
       if (res.status === 204) return null;
       return res.text().then(function (raw) {
         var data = null;
@@ -385,11 +497,13 @@ function runtimeScript(guards: TokenGuards): string {
         if (!res.ok) {
           // http.ts answers { error: { code, message } }. Reaching for
           // data.error directly puts "[object Object]" on the page, which is
-          // the one message an operator can do nothing with.
+          // the one message an operator can do nothing with. The message is
+          // the developer's; the page gets the line (C5).
           var err = data && data.error;
           var detail = (err && err.message) || (data && data.message) ||
             (typeof err === 'string' ? err : '');
-          throw new Error(detail ? String(detail) : 'HTTP ' + res.status);
+          var code = err && typeof err.code === 'string' ? err.code : '';
+          throw failure(code, res.status, detail ? String(detail) : 'HTTP ' + res.status);
         }
         return data;
       });
@@ -611,6 +725,7 @@ function runtimeScript(guards: TokenGuards): string {
     say: say,
     stamp: stamp,
     message: message,
+    humanize: humanize,
     readToken: readToken,
     toast: toast,
     loadHtml: loadHtml,

@@ -358,7 +358,9 @@ describe('without a notify port, and with one that fails', () => {
       failure: { code: 'unreachable', message: 'registry down' },
     }
     const html = await page(handle, '/alerts')
-    expect(html).toContain('注册中心不可达 · registry down')
+    // The port's own words are folded under 详情; the line is the mapped one (C5).
+    expect(html).toContain('注册中心不可达 · 无法连接')
+    expect(html).toContain('<pre class="raw" data-raw>registry down</pre>')
     expect(html).toContain(
       '<span class="k">注册中心</span><span class="tone-bad">不可达</span>',
     )
@@ -644,7 +646,9 @@ describe('the registration ledger as a source (P15.2, console.md §7.3.3)', () =
     expect(closed.alerts[0]).toMatchObject({
       id: 'registrations:unreadable:registrations.json: not JSON',
       origin: 'registrations',
-      detail: 'registrations.json: not JSON · 修好并重启之前出口一律不拨',
+      // The ledger's own English is folded; the line says what it means (C5).
+      detail: '暂时不可用 · 修好并重启之前出口一律不拨',
+      raw: 'registrations.json: not JSON',
     })
     expect(closed.sources.find(source => source.label === '登记簿')).toEqual({
       label: '登记簿',
@@ -668,8 +672,9 @@ describe('the registration ledger as a source (P15.2, console.md §7.3.3)', () =
     expect(summary(unsaved.alerts)).toEqual(['error 登记簿写不进去'])
     expect(unsaved.alerts[0]?.id).toBe('registrations:unwritable:ENOSPC')
     expect(unsaved.alerts[0]?.detail).toBe(
-      'ENOSPC · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢',
+      '磁盘已满 · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢',
     )
+    expect(unsaved.alerts[0]?.raw).toBe('ENOSPC')
   })
 
   test('an id stays short enough to be acknowledged, however long the reason', async () => {

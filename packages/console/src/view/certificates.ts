@@ -34,7 +34,7 @@
  * nodes suddenly cannot connect" and has no thread to pull.
  */
 
-import { bar, chip, tag, toned, type Tone } from './bits.js'
+import { bar, chip, reasonOf, tag, toned, type Tone } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
 import { formatClock, formatDateTime, formatShortDuration } from './format.js'
 import type {
@@ -170,7 +170,8 @@ export function renderRevocationBar(
   now: number,
 ): string {
   if (failure !== null) {
-    return bar('warn', `吊销清单未读到 · ${failure.message}`)
+    const reason = reasonOf(failure.message, failure.code)
+    return bar('warn', `吊销清单未读到 · ${reason.text}`, '', reason.detail)
   }
   if (revocationList === null) {
     return bar('warn', '吊销清单未发布 · 全网按 --trust 收敛')

@@ -641,7 +641,7 @@ describe('a session that lapses under the page (C1)', () => {
   test('the runtime stops asking after the first 401, and opens the dialog', () => {
     const runtime = CONSOLE_CLIENT_JS
     expect(runtime).toContain(
-      'if (res.status === 401) { expire(); throw new Error(EXPIRED); }',
+      "if (res.status === 401) { expire(); throw failure('unauthorized', 401, EXPIRED); }",
     )
     // Both transports refuse without leaving the browser once expired.
     expect(runtime.match(/if \(expired\) return refused\(\);/g)).toHaveLength(2)

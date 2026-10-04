@@ -43,6 +43,7 @@ import {
   failureBar,
   hint,
   railSep,
+  reasonOf,
   scroll,
   sectionHead,
   state,
@@ -141,12 +142,30 @@ function tickSaid(tick: SchedulerTick, now: number): Said {
     case 'unwired':
       return {
         value: state('warn', UNWIRED),
-        strip: bar(
+        strip: reasonBar(
           'warn',
-          `${TICK_UNWIRED_LEAD} · ${tick.reason} · 无法判断调度器是否在运行`,
+          TICK_UNWIRED_LEAD,
+          tick.reason,
+          '无法判断调度器是否在运行',
         ),
       }
   }
+}
+
+/**
+ * A strip around a reason the scheduler port handed up: the port's words are
+ * shown only when they keep the copy rules, and folded under 详情 otherwise
+ * (`view/errors.ts`, C5).
+ */
+function reasonBar(
+  tone: Tone,
+  lead: string,
+  reason: string,
+  tail: string,
+): string {
+  const said = reasonOf(reason)
+  const text = [lead, said.text, tail].filter(part => part !== '').join(' · ')
+  return bar(tone, text, '', said.detail)
 }
 
 function estopSaid(estop: SchedulerEstop): Said {
@@ -169,9 +188,11 @@ function estopSaid(estop: SchedulerEstop): Said {
     case 'unknown':
       return {
         value: state('warn', '读不出来'),
-        strip: bar(
+        strip: reasonBar(
           'warn',
-          `急停状态读不出来 · 调度器按未拉下处理 · ${estop.reason}`,
+          '急停状态读不出来 · 调度器按未拉下处理',
+          estop.reason,
+          '',
         ),
       }
   }
@@ -199,9 +220,11 @@ function schedulerCard(snapshot: SchedulerSnapshot, now: number): string {
     (tick.strip ?? '') +
     (estop.strip ?? '') +
     (snapshot.definitions.state === 'unwired'
-      ? bar(
+      ? reasonBar(
           'muted',
-          `作业定义未接入 · ${snapshot.definitions.reason} · 周期与下次触发无从计算`,
+          '作业定义未接入',
+          snapshot.definitions.reason,
+          '周期与下次触发无从计算',
         )
       : '')
   return (
