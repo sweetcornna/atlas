@@ -1245,7 +1245,8 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | `<标签>` | 主 agent 打的发行标签（D-7）。**只部署标签，不部署 main** |
 | `<H>`、`<H 部署根>` | 跑控制台的那台机器的 ssh 目标与部署树绝对路径 |
 | `<节点>`、`<节点 ssh>`、`<节点部署根>` | 每个远端节点的名字、ssh 目标与部署树绝对路径 |
-| `<诊断节点>` | 开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 的那**一个**节点（G-1 归因） |
+| `<保留期节点>` | 开 `OPENAI_PROMPT_CACHE_RETENTION=24h` 的那**一个**节点（CH-5 对照：一个节点开、其余不开，比较 idle>TTL 类零命中的占比，[`providers-console-m1.md`](./providers-console-m1.md) §5.11.8） |
+| `<诊断节点>` | 开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 的那**一个**节点（G-1 归因）。与 `<保留期节点>` 可以是同一个，也可以不同，这个取舍归 B 段定 |
 | `<证据目录>` | 运维本机上的私有目录（0700，不在仓库里），每轮一个 `round-<轮名>/` |
 | `<轮配置>` | 每轮验收的 JSON（形状见 `demo/env/beta/ops/provider-acceptance.ts` 头注），只有地址与路径 |
 | `<ops 凭据文件>` | 运维个人账号（ops 角色）的 token，一行，0600，在运维本机（§8.3 末行） |
@@ -1260,7 +1261,7 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | 1 | 按 §7.1 的顺序（注册中心 → 节点逐个 → 控制台）用 `beta-deploy.sh --only dist,demo` 装 `<标签>` 的产物，`beta-down.sh` / `beta-up.sh` 重起 | `beta-deploy.sh` 打出的 SOURCE_COMMIT = 标签的提交；每个进程的启动行 `sourceCommit` 相同 | §6 L3（换回 `dist.bak-<戳>`） |
 | 2 | 每个节点重起时带上 P18.20 的两条尾参：`--trust <控制台公钥那一行> --local-commands-from console`（原有的 `--trust` 一起带上） | `logs/<节点>.out` 首行 `trusts` 含 `console`、`localCommandsFrom` 是 `["console"]`；再做一次 `beta-down.sh <节点>` + 不带尾参的 `beta-up.sh`，两项仍在（issue #111 的记录） | 带 `--` 重给不含 `--local-commands-from` 的尾参 |
 | 3 | 控制台尾参加 `--chat-sign`（与 `--accounts --providers --wake-sign` 等一起；**先节点信任、后控制台签名**，§4.1.2 同理） | `logs/console.out` 的 `chat` 行是 `enabled as console (signed)`；`ops/console.env` 里有它，单元重启后仍在 | 不带 `--chat-sign` 重跑 H 腿（会 WARN 点名撤掉了它） |
-| 4 | 缓存调参：每个节点的 `secrets/model-env` 加 `OPENAI_PROMPT_CACHE_RETENTION=24h`（CH-5），`<诊断节点>` 再加 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`；重起这些节点 | `beta-up.sh` 节点腿横幅一行 `缓存调参 : …`，值与预期相同；只有 `<诊断节点>` 有 DIAGNOSTICS | 删掉这两行再重起 |
+| 4 | 缓存调参：`<保留期节点>` 的 `secrets/model-env` 加 `OPENAI_PROMPT_CACHE_RETENTION=24h`（CH-5 对照），`<诊断节点>` 的加 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`（两者同一个还是分开由 B 段定）；**其余节点都不加**；重起加了的节点 | 加了的节点，`beta-up.sh` 节点腿横幅一行 `缓存调参 : …`，值与预期相同；只有 `<保留期节点>` 有 RETENTION、只有 `<诊断节点>` 有 DIAGNOSTICS，其余节点横幅没有这一行 | 删掉加的那一行再重起 |
 | 5 | 每个远端节点登记第六类动作专用 key：先 `model-apply-enroll.sh enroll … --dry-run` 看清要写的那一行与 known_hosts 那一行，再去掉 `--dry-run` 跑 | 输出 `VERIFY ok`（中枢用执行器同一组 ssh 参数与哨兵拿到了 `status`）；节点 `authorized_keys` 里那一行的选项与 §8.3 表中所写相同（`command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict`），注释是 `qianmo-model-apply <节点>` | 删节点 `authorized_keys` 里注释为 `qianmo-model-apply <节点>` 的那一行（脚本写过的备份 `authorized_keys.bak-<戳>` 在旁边）；`ssh-keygen -R` 删中枢 known_hosts 那一条；删 H 上那把 key |
 | 6 | 重起控制台（`systemctl --user restart qianmo-console.service`），让它带上新登记的执行器 | `providers` 行 `enabled -> … (nodes: …)` 列出每个节点，远端是 `/ssh`、H 上的是 `/local` | 同第 3 步 |
 | 7 | 在控制台上（ops 个人账号）按节点当前的实际配置建档案并设为全局默认（`providers-console-m1.md` §2.9 第 3 步），**逐个节点首次下发** | 每个节点刷新后无漂移（除第 8 步要清的 `env-residue`）、`applied` 是这份档案、resident 在跑 | 节点 `settings.json` 的首次备份（§2.9）；控制台上把指派改回「不托管」 |

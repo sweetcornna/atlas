@@ -187,6 +187,23 @@ describe('迁移与真机验收 runbook 的引用', () => {
     expect(missing).toEqual([])
   })
 
+  test('CH-5 对照：24h 只开在 <保留期节点> 一个节点上，不是每个节点', () => {
+    for (const [name, body] of Object.entries(SECTIONS)) {
+      expect({ name, has: body.includes('<保留期节点>') }).toEqual({
+        name,
+        has: true,
+      })
+      const everyNode = body
+        .split('\n')
+        .filter(
+          line =>
+            line.includes('OPENAI_PROMPT_CACHE_RETENTION=24h') &&
+            /每个节点|每台节点|所有节点/.test(line),
+        )
+      expect({ name, everyNode }).toEqual({ name, everyNode: [] })
+    }
+  })
+
   test('README 的轮配置样例与 parseConfig 同形', () => {
     const readme = SECTIONS['README 迁移与验收'] ?? ''
     const sample = /```json\n([\s\S]*?)```/.exec(readme)?.[1]

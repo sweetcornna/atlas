@@ -668,8 +668,10 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 
 ### 缓存调参：按节点放进 `model-env`
 
-`OPENAI_PROMPT_CACHE_RETENTION=24h`（CH-5）与 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`（只开在一个节点上，G-1 归因）
-写进那台机器的 `secrets/model-env`，一行一个，重起该节点。它们不是模型凭据，节点迁到中枢托管之后也不会被
+`OPENAI_PROMPT_CACHE_RETENTION=24h` 只开在 `<保留期节点>` 一个节点上（CH-5 对照：一个开、其余不开，比较 idle>TTL
+类零命中的占比，`docs/dev/providers-console-m1.md` §5.11.8）；`OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 只开在 `<诊断节点>`
+一个节点上（G-1 归因）。两者可以是同一个节点，也可以不同，由 B 段定；**其余节点都不加**。写进那台机器的
+`secrets/model-env`，一行一个，重起该节点。它们不是模型凭据，节点迁到中枢托管之后也不会被
 ACP 子进程的 env 剥掉；起节点时横幅多一行 `缓存调参 : <名>=<值>`（值只回显认识的几种，其余写「未回显」）。
 节点迁到中枢托管之后（`nodes/<节点>/config/qianmo/provider/state.json` 记着一次已提交的下发），没有 `model-env`
 不再报 `Not logged in`；`model-env` 里还留着模型服务类的键时 WARN `env-residue`，只报个数。

@@ -12,7 +12,9 @@
  *   systemd 单元那条 ExecStart（`--only console -- $CONSOLE_EXTRA_ARGS`）起出来的
  *   控制台仍带着它；手工不带尾参重跑会**点名**说撤掉了它（不静默）；
  * ③ 按节点开缓存诊断 / 24h 保留：放进这台机器的 model-env，起 resident 那一刻在环境里，
- *   重启之后还在；横幅把它们报成「缓存调参」而不是 openai 凭据，不认识的值不回显；
+ *   重启之后还在；横幅把它们报成「缓存调参」而不是 openai 凭据，不认识的值不回显。
+ *   两把各管各的节点（CH-5 对照只开一个节点的 24h，诊断也只开一个节点），可以同在一个
+ *   节点，也可以分开；没写的节点两把都不在环境里；
  * ④ 节点迁到中枢托管之后（state.json 记着一次已提交的下发），没有 model-env 不再报
  *   「Not logged in」的假警；model-env 里残留模型服务类的键时 WARN（只报个数）；
  * ⑤ 没托管的节点照旧 WARN（正向对照：判据真的是 state.json，不是一律放过）。
@@ -331,26 +333,58 @@ for (const bash of BASHES) {
       expect(bare.out).toContain('会被撤掉')
     })
 
-    test('按节点开 24h 保留：在 resident 的环境里，横幅报成缓存调参而不是 openai', () => {
-      const place = scratch()
-      writeModelEnv(place, [
-        'export OPENAI_PROMPT_CACHE_RETENTION=24h',
-        'OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
-      ])
-      const result = run(bash.path, place, 'beta-up.sh', [
-        '--role',
-        'node',
-        '--node',
-        'beta-3',
-      ])
-      expect(envOf(lastBlock(place, 'beta-3'))).toEqual([
-        'ENV OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
-        'ENV OPENAI_PROMPT_CACHE_RETENTION=24h',
-      ])
-      expect(result.out).toContain('2 个环境键，涉及 缓存调参）')
-      expect(result.out).toContain(
-        '缓存调参 : OPENAI_PROMPT_CACHE_DIAGNOSTICS=1 OPENAI_PROMPT_CACHE_RETENTION=24h',
-      )
+    test('CH-5 对照：保留期节点只带 24h、诊断节点只带诊断、也可以同在一个节点；在 resident 的环境里，横幅报成缓存调参而不是 openai', () => {
+      const cases: {
+        lines: string[]
+        env: string[]
+        keys: number
+        banner: string
+      }[] = [
+        {
+          lines: ['export OPENAI_PROMPT_CACHE_RETENTION=24h'],
+          env: [
+            'ENV OPENAI_PROMPT_CACHE_DIAGNOSTICS=<unset>',
+            'ENV OPENAI_PROMPT_CACHE_RETENTION=24h',
+          ],
+          keys: 1,
+          banner: '缓存调参 : OPENAI_PROMPT_CACHE_RETENTION=24h',
+        },
+        {
+          lines: ['OPENAI_PROMPT_CACHE_DIAGNOSTICS=1'],
+          env: [
+            'ENV OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
+            'ENV OPENAI_PROMPT_CACHE_RETENTION=<unset>',
+          ],
+          keys: 1,
+          banner: '缓存调参 : OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
+        },
+        {
+          lines: [
+            'export OPENAI_PROMPT_CACHE_RETENTION=24h',
+            'OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
+          ],
+          env: [
+            'ENV OPENAI_PROMPT_CACHE_DIAGNOSTICS=1',
+            'ENV OPENAI_PROMPT_CACHE_RETENTION=24h',
+          ],
+          keys: 2,
+          banner:
+            '缓存调参 : OPENAI_PROMPT_CACHE_DIAGNOSTICS=1 OPENAI_PROMPT_CACHE_RETENTION=24h',
+        },
+      ]
+      for (const one of cases) {
+        const place = scratch()
+        writeModelEnv(place, one.lines)
+        const result = run(bash.path, place, 'beta-up.sh', [
+          '--role',
+          'node',
+          '--node',
+          'beta-3',
+        ])
+        expect(envOf(lastBlock(place, 'beta-3'))).toEqual(one.env)
+        expect(result.out).toContain(`${one.keys} 个环境键，涉及 缓存调参）`)
+        expect(result.out).toContain(one.banner)
+      }
     })
 
     test('不认识的保留期值不回显', () => {
@@ -393,6 +427,12 @@ for (const bash of BASHES) {
       })
       expect(result.out).toContain('模型服务由中枢托管')
       expect(result.out).not.toContain('Not logged in')
+      // 没写缓存调参的节点（CH-5 对照的「不开」那一侧）：两把都不在环境里，横幅也不提。
+      expect(envOf(lastBlock(place, 'beta-2'))).toEqual([
+        'ENV OPENAI_PROMPT_CACHE_DIAGNOSTICS=<unset>',
+        'ENV OPENAI_PROMPT_CACHE_RETENTION=<unset>',
+      ])
+      expect(result.out).not.toContain('缓存调参')
     })
 
     test('中枢托管的节点 model-env 里还有模型服务类的键：WARN env-residue，只报个数', () => {
