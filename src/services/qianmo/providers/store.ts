@@ -4,9 +4,10 @@
 /**
  * Node-side files of the provider write path (§3.7):
  * `occConfigPath('qianmo','provider', …)` — `apply.lock`, `pending.json`,
- * `state.json`, `generation.json`, `first-write/settings.json`. Directory 0700,
- * files 0600; `pending.json` carries a key, so it is held to the same bar as
- * `settings.json`.
+ * `state.json`, `generation.json`, `first-write/settings.json`, and for a
+ * multi-key profile (P18.18) `key-pool.json` and `key-pool-state.json`.
+ * Directory 0700, files 0600; `pending.json` and `key-pool.json` carry keys,
+ * so they are held to the same bar as `settings.json`.
  *
  * Every write is tmp + fsync + rename, with the tmp file CREATED 0600 (not
  * chmodded afterwards). The rename goes through the repo's fs seam
@@ -45,6 +46,11 @@ export const providerPaths = {
   generation: () => occConfigPath('qianmo', 'provider', 'generation.json'),
   firstWrite: () =>
     occConfigPath('qianmo', 'provider', 'first-write', 'settings.json'),
+  /** P18.18: every key of the committed profile, for the call layer. */
+  keyPool: () => occConfigPath('qianmo', 'provider', 'key-pool.json'),
+  /** P18.18: cooldowns and session bindings; ids and fingerprints only. */
+  keyPoolState: () =>
+    occConfigPath('qianmo', 'provider', 'key-pool-state.json'),
   /** Written by the resident (P18.3, §2.7): `{pid, startedAt, nonce}`. */
   residentPid: () => occConfigPath('resident', 'resident.pid'),
 }

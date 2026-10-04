@@ -150,6 +150,20 @@ export function parseRetryAfterFromErrorPayload(
   return unit === 'ms' || unit.startsWith('milli') ? value : value * 1000
 }
 
+// qianmo P18.18 (hermes #2): the first five are the original list; the reset
+// times are kept for the key pool's cooldown —
+// src/services/qianmo/modelCompat/credentialPool.ts.
+const RESPONSE_ERROR_FIELDS = [
+  'message',
+  'type',
+  'code',
+  'status',
+  'request_id',
+  'reset_at',
+  'resets_at',
+  'retry_after',
+]
+
 function parsedResponseError(
   body: string,
 ): Record<string, unknown> | undefined {
@@ -163,7 +177,7 @@ function parsedResponseError(
         ? (record.error as Record<string, unknown>)
         : record
     const result: Record<string, unknown> = {}
-    for (const key of ['message', 'type', 'code', 'status', 'request_id']) {
+    for (const key of RESPONSE_ERROR_FIELDS) {
       const value = nested[key] ?? record[key]
       if (typeof value === 'string' || typeof value === 'number') {
         result[key] = value
@@ -205,7 +219,9 @@ export async function createOpenAIResponseError(
   )
 }
 
-function retryAfterMsFromError(error: unknown): number | undefined {
+// qianmo P18.18 (hermes #2): exported so the key pool reads Retry-After the
+// same way — src/services/qianmo/modelCompat/credentialPool.ts.
+export function retryAfterMsFromError(error: unknown): number | undefined {
   // An OpenAIRequestError may carry the parsed value, the raw headers, or both:
   // `createOpenAIResponseError` only pre-parses `retry-after`, so a response
   // that used `retry-after-ms` alone still has to be read off the headers.
