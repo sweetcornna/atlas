@@ -28,7 +28,10 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type KeySelection, secretFingerprint } from '@qianmo/providers'
-import { createOpenAIResponseError } from 'src/services/api/openai/retry.js'
+import {
+  createOpenAIResponseError,
+  OpenAIRequestError,
+} from 'src/services/api/openai/retry.js'
 import { providerPaths } from '../../providers/store.js'
 import {
   activeCredentialPool,
@@ -280,6 +283,42 @@ describe('the hermes behaviour table', () => {
       })
       rmSync(providerPaths.keyPoolState())
     }
+  })
+
+  test('usage cap in a stream error frame (no status): out at once for an hour', () => {
+    const pool = install('fill_first')
+    const key = pool.keyFor('s1')
+    // What responsesAdapter's streamEventError builds from an `error` frame.
+    const frame = new OpenAIRequestError(
+      'Responses API stream failed: The usage limit has been reached',
+      {
+        retryable: false,
+        replayable: false,
+        type: 'usage_limit_reached',
+        code: 'usage_limit_reached',
+        cause: {
+          type: 'usage_limit_reached',
+          code: 'usage_limit_reached',
+          message: 'The usage limit has been reached',
+        },
+      },
+    )
+    expect(pool.failed('s1', key, frame)).toBe('rotated')
+    expect(readKeyPoolState().marks.k1).toMatchObject({
+      reason: 'usage-limit',
+      until: new Date(T0 + HOUR).toISOString(),
+    })
+    expect(readKeyPoolState().marks.k1?.status).toBeUndefined()
+  })
+
+  test('a stream error frame that is not the key: nothing', () => {
+    const pool = install('fill_first')
+    const frame = new OpenAIRequestError(
+      'Responses API stream failed: upstream reset',
+      { retryable: true, type: 'server_error', cause: { message: 'reset' } },
+    )
+    expect(pool.failed('s1', pool.keyFor('s1'), frame)).toBe('none')
+    expect(readKeyPoolState().marks).toEqual({})
   })
 
   test('402: out at once for an hour', async () => {

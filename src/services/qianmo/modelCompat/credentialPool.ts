@@ -274,11 +274,15 @@ export function poolDecision(
   if (status === 402 || category === 'billing_error') {
     return out('billing', COOLDOWN_DEFAULT_MS)
   }
+  // An error frame inside a stream has no status; its code is all there is
+  // to tell a usage cap (hermes reads the same code off `error_context`).
+  const usageCap = isUsageCap(codes, texts)
   const rateLimited =
-    status === 429 || (status === undefined && category === 'rate_limit')
+    status === 429 ||
+    (status === undefined && (category === 'rate_limit' || usageCap))
   if (!rateLimited) return { kind: 'none' }
   if (texts.some(isOverloadedErrorText)) return { kind: 'none' }
-  if (isUsageCap(codes, texts)) return out('usage-limit', COOLDOWN_DEFAULT_MS)
+  if (usageCap) return out('usage-limit', COOLDOWN_DEFAULT_MS)
   // "Retry once with the same key" happens on the lane's ladder; when the
   // ladder would not retry this error (past its Retry-After bound, or told
   // not to), it would not happen at all — rotate now instead.
