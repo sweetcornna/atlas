@@ -11,10 +11,8 @@
  *   qm handoff status [--wait] [--task <id>]
  *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
  *   qm handoff node …                    (the cloud end, `handoffNode.ts`, P17.5)
+ *   qm handoff attach [<task>] [options] (into a running task, `handoffAttach.ts`, P17.6)
  *   qm handoff pull [<task>]             (the result home, `handoffPull.ts`, P17.6)
- *
- * `attach` is reserved here and answers 「尚未实现」 with exit 2, so the
- * package that builds it (P17.6) replaces that branch.
  *
  * ## Exit codes
  *
@@ -81,11 +79,6 @@ import {
   waitForTurnEnd,
 } from './handoffTranscript.js'
 import { residentOptionValue } from './residentArgs.js'
-
-/** The subcommands later packages fill in, and which package each is. */
-const RESERVED: Readonly<Record<string, string>> = {
-  attach: 'P17.6',
-}
 
 const HANDOFF_HELP_TEXT = `Usage: ${invokedBinName()} handoff <command> [options]
 
@@ -175,6 +168,30 @@ Commands:
                            Refuses to start without a working bwrap. Started by
                            demo/env/beta/handoff-node.sh, not by hand.
 
+  attach [<task>] [--ssh <target>] [--node-token-file <path>]
+         [--app-server-port 38631] [--local-port <port>]
+         [--console <url> --token-file <file>]
+                           Join a task running in the cloud from this machine:
+                           the hub says which node and thread; the node's
+                           app-server token is read over your own SSH (never
+                           through the hub), a tunnel is opened with
+                           ssh -N -L, and qmcode resume --remote takes over the
+                           terminal. The tunnel is closed when qmcode exits.
+                           Without <task>: this project's one running task.
+      --ssh <target>       How you reach the node; default: the node's name
+                           (a Host entry in ~/.ssh/config).
+      --node-token-file <path>
+                           The app-server token on the node; relative paths are
+                           under the node's home. Default:
+                           qianmo-beta/secrets/handoff-app-server-token
+                           (demo/env/beta/handoff-node.sh).
+      --app-server-port <port>
+                           The app-server's loopback port on the node; 38631.
+      --local-port <port>  This end of the tunnel; default: a free one.
+      --console, --token-file
+                           Outside a registered repository (another machine):
+                           the hub console and your credential file.
+
   pull [<task>]            Bring a finished task home. Untouched since the
                            handoff (same branch, HEAD and work tree as the
                            handoff left them): the branch fast-forwards to the
@@ -184,8 +201,6 @@ Commands:
                            back into $QMCODE_HOME/sessions, so qmcode resume
                            <thread> continues it. The hub records "returned".
                            Without <task>: this project's latest finished one.
-
-  attach                   Reserved; not implemented yet (P17.6).
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -598,9 +613,9 @@ async function runStatusCommand(
   )
 }
 
-// ─── pull (P17.6) ────────────────────────────────────────────────────
+// ─── pull / attach (P17.6) ───────────────────────────────────────────
 
-/** The one optional `<task>` argument of `pull`. */
+/** The one optional `<task>` argument of `pull` and `attach`. */
 function taskArgument(
   command: string,
   positional: readonly string[],
@@ -634,6 +649,65 @@ async function runPullCommand(
   )
 }
 
+/** A TCP port number, or the usage error. */
+function portOption(
+  values: Map<string, string>,
+  name: string,
+): number | undefined {
+  const raw = values.get(name)
+  if (raw === undefined) return undefined
+  const port = Number(raw)
+  if (
+    !/^\d+$/.test(raw) ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
+    usage(`${name} 要 1–65535 的端口号`)
+  }
+  return port
+}
+
+async function runAttachCommand(
+  args: readonly string[],
+  cwd: string,
+  output: Output,
+): Promise<number> {
+  const { values, positional } = parseOptions(args, [
+    '--ssh',
+    '--node-token-file',
+    '--app-server-port',
+    '--local-port',
+    '--console',
+    '--token-file',
+  ])
+  const taskId = taskArgument('attach', positional)
+  const consoleRaw = values.get('--console')
+  const tokenFile = absoluteOption(values, '--token-file')
+  if ((consoleRaw === undefined) !== (tokenFile === undefined)) {
+    usage('--console 与 --token-file 要一起给')
+  }
+  const appServerPort = portOption(values, '--app-server-port')
+  const localPort = portOption(values, '--local-port')
+  const sshTarget = values.get('--ssh')
+  const nodeTokenFile = values.get('--node-token-file')
+  const { runAttach } = await import('./handoffAttach.js')
+  return await runAttach(
+    cwd,
+    {
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(sshTarget === undefined ? {} : { sshTarget }),
+      ...(nodeTokenFile === undefined ? {} : { nodeTokenFile }),
+      ...(appServerPort === undefined ? {} : { appServerPort }),
+      ...(localPort === undefined ? {} : { localPort }),
+      ...(consoleRaw === undefined || tokenFile === undefined
+        ? {}
+        : { console: parseConsoleUrl(consoleRaw), tokenFile }),
+    },
+    output,
+  )
+}
+
 // ─── entry ───────────────────────────────────────────────────────────
 
 /** Dispatch `qm handoff <command>`; returns the exit code. */
@@ -650,13 +724,6 @@ async function dispatchHandoff(
   if (isHelpRequest(args)) {
     output.out(HANDOFF_HELP_TEXT)
     return 0
-  }
-  const reserved = RESERVED[command]
-  if (reserved !== undefined) {
-    output.err(
-      `${invokedBinName()} handoff ${command}：尚未实现（${reserved}）`,
-    )
-    return 2
   }
   if (IDENTITY_MODE !== 'qianmo') {
     throw new HandoffUserError(
@@ -685,6 +752,8 @@ async function dispatchHandoff(
     }
     case 'pull':
       return await runPullCommand(rest, cwd, output)
+    case 'attach':
+      return await runAttachCommand(rest, cwd, output)
     default:
       return usage(`不认识的子命令 ${command}`)
   }
@@ -695,6 +764,8 @@ function refusalHead(command: string | undefined): string {
   switch (command) {
     case 'pull':
       return '接回没有完成'
+    case 'attach':
+      return '接入没有完成'
     default:
       return '转交没有完成'
   }
