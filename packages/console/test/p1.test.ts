@@ -7,6 +7,7 @@
  * half is `browser/p1.browser.test.ts`; the copy rules are `copyGate.test.ts`.
  */
 
+import { createHash } from 'node:crypto'
 import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
 import { CONSOLE_CSS } from '../src/assets/css.js'
@@ -813,5 +814,121 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
       new Request('http://console.test/assets/app.css'),
     )
     expect(css.headers.get('etag')).not.toBe(tag)
+  })
+})
+
+describe('H2 · scripts by hash, and the headers that were missing', () => {
+  function sha256(text: string): string {
+    return createHash('sha256').update(text, 'utf8').digest('base64')
+  }
+
+  function scriptSrc(policy: string): string {
+    return (
+      policy
+        .split('; ')
+        .find(directive => directive.startsWith('script-src ')) ?? ''
+    )
+  }
+
+  test('every page allows its own script by hash and nothing inline besides', async () => {
+    const h = pageHarness({ chat: true })
+    await h.chat.open('qianmo://tokyo-1/planner')
+    for (const path of [
+      '/',
+      '/nodes',
+      '/nodes/tokyo-1',
+      '/chat?session=session-1',
+      '/audit',
+      '/alerts',
+      '/jobs',
+      '/servers',
+      '/access',
+      '/settings',
+    ]) {
+      const response = await h.handle(browse(path, ADMIN))
+      const body = await response.text()
+      const scripts = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+        match => match[1] ?? '',
+      )
+      expect([path, scripts.length]).toEqual([path, 1])
+      const policy = response.headers.get('content-security-policy') ?? ''
+      expect([path, scriptSrc(policy)]).toEqual([
+        path,
+        `script-src 'sha256-${sha256(scripts[0] ?? '')}'`,
+      ])
+      expect(policy).not.toContain("script-src 'unsafe-inline'")
+      // Styles keep it: the one <style> and the style="" attributes.
+      expect(policy).toContain("style-src 'unsafe-inline'")
+    }
+  })
+
+  test('a document without a script allows none; the invitation allows its one', async () => {
+    const h = pageHarness()
+    const login = await h.handle(
+      new Request('http://console.test/login', {
+        headers: { accept: 'text/html' },
+      }),
+    )
+    expect(scriptSrc(login.headers.get('content-security-policy') ?? '')).toBe(
+      "script-src 'none'",
+    )
+    const invite = renderInvitePage({ label: 'node-a' })
+    const script = /<script>([\s\S]*?)<\/script>/.exec(invite)?.[1] ?? ''
+    expect(script.length).toBeGreaterThan(0)
+    expect(invite).toContain(`script-src &#39;sha256-${sha256(script)}&#39;`)
+  })
+
+  test('documents carry COOP, CORP and a Permissions-Policy; JSON and assets carry CORP', async () => {
+    const h = pageHarness()
+    const page = await h.handle(browse('/nodes', ADMIN))
+    expect(page.headers.get('cross-origin-opener-policy')).toBe('same-origin')
+    expect(page.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    const permissions = page.headers.get('permissions-policy') ?? ''
+    for (const feature of [
+      'camera=()',
+      'microphone=()',
+      'geolocation=()',
+      'usb=()',
+    ]) {
+      expect(permissions).toContain(feature)
+    }
+    expect(permissions).not.toContain('clipboard')
+    const api = await h.handle(
+      new Request('http://console.test/v0/agents', {
+        headers: { authorization: `Bearer ${ADMIN}` },
+      }),
+    )
+    expect(api.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    const asset = await h.handle(
+      new Request('http://console.test/assets/app.js'),
+    )
+    expect(asset.headers.get('cross-origin-resource-policy')).toBe(
+      'same-origin',
+    )
+  })
+
+  test('HSTS on TLS, direct or behind a proxy that says so, and never on plain HTTP', async () => {
+    const h = pageHarness()
+    const plain = await h.handle(browse('/nodes', ADMIN))
+    expect(plain.headers.get('strict-transport-security')).toBeNull()
+    const proxied = await h.handle(
+      new Request('http://console.test/nodes', {
+        headers: {
+          authorization: `Bearer ${ADMIN}`,
+          accept: 'text/html',
+          'x-forwarded-proto': 'https',
+        },
+      }),
+    )
+    expect(proxied.status).toBe(200)
+    expect(proxied.headers.get('strict-transport-security')).toBe(
+      'max-age=31536000',
+    )
+    expect(await proxied.text()).toContain('id="roster"')
+    const direct = await h.handle(new Request('https://console.test/v0/health'))
+    expect(direct.headers.get('strict-transport-security')).toBe(
+      'max-age=31536000',
+    )
+    expect(await direct.json()).toEqual({ status: 'ok' })
   })
 })

@@ -45,7 +45,7 @@ import {
 } from '../assets/client.js'
 import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
 import type { ConsoleRole } from '../auth.js'
-import { CSP } from '../respond.js'
+import { cspFor } from '../respond.js'
 import {
   chevron,
   icon,
@@ -104,14 +104,22 @@ function pageSheet(css: string): string {
   return stripped
 }
 
-export function documentHead(title: string, pageCss = ''): string {
+/**
+ * `scripts` are the inline scripts the document will carry, exactly: the
+ * policy allows those by hash and nothing else (`respond.ts`, H2).
+ */
+export function documentHead(
+  title: string,
+  pageCss = '',
+  scripts: readonly string[] = [],
+): string {
   return (
     `<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n` +
     `<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
     `<meta name="color-scheme" content="light dark">\n` +
     `<meta name="referrer" content="no-referrer">\n` +
-    `<meta http-equiv="Content-Security-Policy" content="${attr(CSP)}">\n` +
+    `<meta http-equiv="Content-Security-Policy" content="${attr(cspFor(scripts))}">\n` +
     `<link rel="icon" href="${attr(FAVICON)}">\n` +
     `<title>${escapeHtml(title)}</title>\n` +
     `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n` +
@@ -413,8 +421,11 @@ function sessionExpired(relogin: string): string {
 export function renderShell(model: ShellModel): string {
   const runtime =
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
+  const script = runtime + (model.pageScript ?? '')
   return (
-    documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss) +
+    documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss, [
+      script,
+    ]) +
     `<body>\n` +
     // The first stop for a keyboard: past the sidebar to the page (F1).
     `<a class="skip-link" href="#main">跳到正文</a>\n` +
@@ -434,7 +445,7 @@ export function renderShell(model: ShellModel): string {
     // every polled region, so a refresh never takes a message with it.
     `<div class="toasts" id="toasts" aria-live="polite" ` +
     `aria-relevant="additions"></div>\n` +
-    `<script>${runtime}${model.pageScript ?? ''}</script>\n` +
+    `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )
 }

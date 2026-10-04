@@ -224,9 +224,9 @@ import {
 } from './auth.js'
 import type { ActionOutcome, ConsoleAction, ConsoleDeps } from './deps.js'
 import {
-  DOCUMENT_HEADERS,
   asset,
   compressed,
+  documentHeaders,
   fail,
   html,
   json,
@@ -322,7 +322,7 @@ function loginPage(
     status: options.status ?? 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...DOCUMENT_HEADERS,
+      ...documentHeaders(body),
       ...(options.headers ?? {}),
     },
   })
@@ -1073,6 +1073,34 @@ function clientKeyOf(request: Request, source?: ClientAddressSource): string {
  * once per module: two consoles in one process (which is what the test suite
  * is) must not be able to lock each other out.
  */
+/**
+ * HSTS for a console reached over TLS (H2): directly, or through a proxy
+ * that says so in `X-Forwarded-Proto` — the same test the session cookie's
+ * `Secure` flag uses. A year, and not `includeSubDomains`: the console may
+ * share a host name with services it has no business pinning. A browser
+ * ignores the header over plain HTTP, so a forged forwarding header buys
+ * nothing.
+ */
+const HSTS = 'max-age=31536000'
+
+/** Every answer on its way out: HSTS when on TLS, then compression (G1). */
+async function finished(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (!isSecureRequest(request)) return compressed(request, response)
+  const headers = new Headers(response.headers)
+  headers.set('strict-transport-security', HSTS)
+  return compressed(
+    request,
+    new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+  )
+}
+
 export function createConsoleHandler(
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
@@ -1091,7 +1119,7 @@ export function createConsoleHandler(
     source?: ClientAddressSource,
   ): Promise<Response> => {
     try {
-      return await compressed(
+      return await finished(
         request,
         await route(
           request,

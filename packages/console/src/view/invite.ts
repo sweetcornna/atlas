@@ -80,7 +80,9 @@ interface InvitePageModel {
 /** `GET /invite`, and the card again after a refusal. */
 export function renderInvitePage(model: InvitePageModel): string {
   return (
-    documentHead(`${BRAND} · 开通账号 · ${model.label}`) +
+    documentHead(`${BRAND} · 开通账号 · ${model.label}`, '', [
+      FRAGMENT_SCRIPT,
+    ]) +
     `<body>\n<main class="stage" aria-labelledby="page-title">\n` +
     `<form class="card elev-lg panel" method="post" action="/invite">` +
     brand(model.label, '开通账号') +

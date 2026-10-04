@@ -18,15 +18,22 @@ const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
+  // No other origin loads an answer as a subresource (H2).
+  'cross-origin-resource-policy': 'same-origin',
 } as const
 
 /**
  * Content-Security-Policy, as strict as an inline-everything page can be.
  *
- * `'unsafe-inline'` is unavoidable for the one style and the one script — but
- * every *host* directive stays `'none'`, which is the half that matters: no
- * origin other than this one can contribute anything, and `connect-src 'self'`
- * keeps the token from being sent anywhere else.
+ * Scripts are allowed by hash, not by `'unsafe-inline'` (H2): every script a
+ * document carries is a compile-time constant (the runtime, the page's own
+ * script), so its SHA-256 is known before the response is written, and a
+ * script anyone manages to put into the page any other way does not run.
+ * A document with no script says `script-src 'none'`. `'unsafe-inline'`
+ * stays for styles only: the one `<style>` and the `style=""` attributes.
+ * Every *host* directive is `'none'`, which is the half that matters: no
+ * origin other than this one can contribute anything, and
+ * `connect-src 'self'` keeps the token from being sent anywhere else.
  *
  * `img-src data:` is the one loosening, and it buys exactly one thing: the
  * favicon, which is an inline SVG data URI in the document head. `data:` is not
@@ -36,25 +43,46 @@ const JSON_HEADERS = {
  *
  * Lives here rather than beside the document head because two places state
  * it: the `<meta>` in every document (`view/shell.ts`) and the response header
- * on every document ({@link DOCUMENT_CSP}). One constant, so the two cannot
- * drift.
+ * on every document ({@link documentHeaders}), both from {@link cspFor} over
+ * the same scripts, so the two cannot drift.
  */
-export const CSP = [
-  "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline'",
-  // `connect-src` also covers `EventSource`: the chat page's stream is a
-  // same-origin `GET /v0/chat/stream`, and without this directive the browser
-  // would refuse to open it while reporting nothing useful.
-  "connect-src 'self'",
-  "form-action 'self'",
-  "base-uri 'none'",
-  'img-src data:',
-  "font-src 'none'",
-].join('; ')
+export function cspFor(scripts: readonly string[]): string {
+  const hashes = [...new Set(scripts.map(scriptHash))]
+  return [
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    `script-src ${hashes.length === 0 ? "'none'" : hashes.join(' ')}`,
+    // `connect-src` also covers `EventSource`: the chat page's stream is a
+    // same-origin `GET /v0/chat/stream`, and without this directive the browser
+    // would refuse to open it while reporting nothing useful.
+    "connect-src 'self'",
+    "form-action 'self'",
+    "base-uri 'none'",
+    'img-src data:',
+    "font-src 'none'",
+  ].join('; ')
+}
+
+const scriptHashes = new Map<string, string>()
+
+/** `'sha256-…'` of one inline script's text, as the browser hashes it. */
+export function scriptHash(script: string): string {
+  let hash = scriptHashes.get(script)
+  if (hash === undefined) {
+    const digest = new Bun.CryptoHasher('sha256')
+      .update(script)
+      .digest('base64')
+    hash = `'sha256-${digest}'`
+    scriptHashes.set(script, hash)
+  }
+  return hash
+}
+
+/** The policy of a document without a script: the login door, an error page. */
+export const CSP = cspFor([])
 
 /**
- * The policy as a response header: {@link CSP} plus `frame-ancestors 'none'`.
+ * The policy as a response header: {@link cspFor} plus `frame-ancestors 'none'`.
  *
  * `frame-ancestors` is the one directive a `<meta>` policy cannot carry — the
  * browser ignores it there (`authorization-m1.md` TH-5) — and it is the one
@@ -64,10 +92,38 @@ export const CSP = [
  * site"). The `<meta>` copy stays as well: it is what a saved copy of the
  * page still enforces.
  */
-export const DOCUMENT_CSP = `${CSP}; frame-ancestors 'none'`
+export function documentCspFor(scripts: readonly string[]): string {
+  return `${cspFor(scripts)}; frame-ancestors 'none'`
+}
+
+/** {@link documentCspFor} of a document without a script. */
+export const DOCUMENT_CSP = documentCspFor([])
+
+/** The inline scripts of a document, in order, as the browser will hash them. */
+export function inlineScripts(body: string): string[] {
+  return [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    match => match[1] ?? '',
+  )
+}
 
 /**
- * Headers for anything a browser renders.
+ * Powerful features no console page uses, refused for the page and for
+ * anything it might frame (H2). The clipboard is not on the list: the copy
+ * buttons write to it.
+ */
+const PERMISSIONS_POLICY = [
+  'accelerometer=()',
+  'camera=()',
+  'geolocation=()',
+  'gyroscope=()',
+  'magnetometer=()',
+  'microphone=()',
+  'payment=()',
+  'usb=()',
+].join(', ')
+
+/**
+ * Headers for anything a browser renders, with the policy for this body.
  *
  * `no-referrer` matters here rather than being boilerplate: the page URL can
  * carry the token (`?token=…`), and a default `Referer` would hand it to
@@ -77,14 +133,24 @@ export const DOCUMENT_CSP = `${CSP}; frame-ancestors 'none'`
  * browser old enough to know only the older header. Every document carries
  * both — the login door and the invitation pages too, since a framed login
  * form is the other half of a clickjacking attack.
+ *
+ * H2 adds three: `Cross-Origin-Opener-Policy: same-origin`, so a page that
+ * opened the console in a window keeps no handle on it; a resource policy of
+ * `same-origin`, so no other origin can load the document as a subresource;
+ * and the {@link PERMISSIONS_POLICY}.
  */
-export const DOCUMENT_HEADERS = {
-  'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer',
-  'content-security-policy': DOCUMENT_CSP,
-  'x-frame-options': 'DENY',
-} as const
+export function documentHeaders(body: string): Record<string, string> {
+  return {
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': documentCspFor(inlineScripts(body)),
+    'x-frame-options': 'DENY',
+    'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'same-origin',
+    'permissions-policy': PERMISSIONS_POLICY,
+  }
+}
 
 /** Error vocabulary of this surface. `code` is for clients, not for users. */
 type ConsoleErrorCode =
@@ -121,7 +187,7 @@ export function html(body: string, status = 200): Response {
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...DOCUMENT_HEADERS,
+      ...documentHeaders(body),
     },
   })
 }
@@ -211,6 +277,7 @@ export function asset(
     etag: tag,
     vary: 'accept-encoding',
     'x-content-type-options': 'nosniff',
+    'cross-origin-resource-policy': 'same-origin',
   }
   const asked = request.headers.get('if-none-match')
   if (asked !== null && etagMatches(asked, tag)) {

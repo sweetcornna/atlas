@@ -15,7 +15,13 @@
 import { describe, expect, test } from 'bun:test'
 import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
-import { CSP, DOCUMENT_CSP, html } from '../src/respond.js'
+import {
+  CSP,
+  DOCUMENT_CSP,
+  documentCspFor,
+  html,
+  inlineScripts,
+} from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import { STUB_LINE } from '../src/routes/stub.js'
 import {
@@ -479,8 +485,19 @@ describe('framing (H1)', () => {
     for (const row of PAGES) {
       const response = await handle(browse(row.path, ADMIN))
       const [policy, xfo] = framingOf(response)
-      expect(`${row.path} ${policy}`).toBe(`${row.path} ${DOCUMENT_CSP}`)
+      const body = await response.text()
+      // The page's own scripts by hash, and frame-ancestors (H2, H1).
+      expect(`${row.path} ${policy}`).toBe(
+        `${row.path} ${documentCspFor(inlineScripts(body))}`,
+      )
+      expect(policy.endsWith("; frame-ancestors 'none'")).toBe(true)
       expect(`${row.path} ${xfo}`).toBe(`${row.path} DENY`)
+      // The <meta> says the same, less the directive a meta cannot carry.
+      const meta =
+        /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/
+          .exec(body)?.[1]
+          ?.replaceAll('&#39;', "'")
+      expect(`${meta}; frame-ancestors 'none'`).toBe(policy)
     }
   })
 

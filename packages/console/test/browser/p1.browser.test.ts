@@ -763,6 +763,33 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('the page runs its own script under the hash policy and refuses one put in later (H2)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        // The runtime ran: it is what defines qianmoConsole, and it painted.
+        expect(
+          await tab.evaluate<string>(`typeof window.qianmoConsole.sendJson`),
+        ).toBe('function')
+        const outcome = await tab.evaluate<{ ran: boolean; refused: string }>(`
+          new Promise(resolve => {
+            let refused = '';
+            document.addEventListener('securitypolicyviolation', event => {
+              refused = event.effectiveDirective;
+            });
+            const script = document.createElement('script');
+            script.textContent = 'window.__injected = true;';
+            document.body.appendChild(script);
+            setTimeout(() => resolve({ ran: window.__injected === true, refused }), 200);
+          })`)
+        expect(outcome).toEqual({ ran: false, refused: 'script-src-elem' })
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
     test('the first Tab reaches the skip link, on screen, and Enter puts the page next (F1)', async () => {
       const served = serveConsole()
       const tab = await browser.tab()
