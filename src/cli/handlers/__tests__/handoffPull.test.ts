@@ -330,6 +330,33 @@ describe('qm handoff pull', () => {
     }
   })
 
+  test('a Claude Code task: the code comes home, the session stays on the hub and nothing goes into QMCODE_HOME', async () => {
+    clearSessions()
+    const s = await scenario('t-cc')
+    const task = tasks.get('t-cc') ?? {}
+    task.manifest = {
+      ...(task.manifest as Record<string, unknown>),
+      tool: 'claude-code',
+    }
+    const out = collector()
+    expect(await runPull(s.repo, { taskId: 't-cc' }, out)).toBe(0)
+    expect(git(s.repo, 'rev-parse', 'HEAD')).toBe(s.head)
+    expect(out.lines.join('\n')).toContain(
+      `会话  Claude Code 会话在云端续成了 qmcode 线程 ${THREAD} · 留在中枢 ${sessionRef('cloud', THREAD)} · 没有放到本机`,
+    )
+    expect(existsSync(join(qmHome, 'sessions'))).toBe(false)
+    // Only the branch was fetched: no session ref, temporary or not.
+    expect(git(s.repo, 'for-each-ref', 'refs/qianmo/')).not.toContain(
+      'sessions/cloud',
+    )
+    expect(git(s.repo, 'for-each-ref', 'refs/qianmo/pull/')).toBe('')
+    expect(posts.at(-1)).toEqual({
+      path: '/v0/handoff/t-cc/return',
+      body: { device: 'laptop', mode: 'fast-forward' },
+    })
+    for (const line of out.lines) expect(line).not.toMatch(COPY_RULE)
+  })
+
   test('a local rollout of the thread that differs is kept beside, the cloud one takes its place', async () => {
     clearSessions()
     const s = await scenario('t-session')
