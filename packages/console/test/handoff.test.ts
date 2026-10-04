@@ -12,8 +12,12 @@ import { describe, expect, test } from 'bun:test'
 import type {
   ConsoleResult,
   HandoffAcceptance,
+  HandoffAttachRequest,
+  HandoffAttachView,
   HandoffManifestView,
   HandoffPort,
+  HandoffReturnRequest,
+  HandoffReturnView,
   HandoffSendView,
   HandoffTaskView,
 } from '../src/deps.js'
@@ -94,6 +98,63 @@ class FakeHandoff implements HandoffPort {
           }
         : { ok: true, value: task },
     )
+  }
+
+  readonly attached: [string, HandoffAttachRequest][] = []
+  readonly returned: [string, HandoffReturnRequest][] = []
+
+  attach(
+    taskId: string,
+    request: HandoffAttachRequest,
+  ): Promise<ConsoleResult<HandoffAttachView>> {
+    this.attached.push([taskId, request])
+    const task = this.tasks.get(taskId)
+    if (task === undefined) {
+      return Promise.resolve({
+        ok: false,
+        failure: { code: 'not_found', message: `没有任务 ${taskId}` },
+      })
+    }
+    if (task.state !== 'running') {
+      return Promise.resolve({
+        ok: false,
+        failure: {
+          code: 'rejected',
+          message: `任务 ${taskId} 是 ${task.state}，不在云端运行`,
+        },
+      })
+    }
+    return Promise.resolve({
+      ok: true,
+      value: {
+        taskId,
+        state: task.state,
+        node: task.node ?? '?',
+        threadId: task.manifest.sessionId,
+        project: task.manifest.project,
+        tool: task.manifest.tool,
+      },
+    })
+  }
+
+  markReturned(
+    taskId: string,
+    request: HandoffReturnRequest,
+  ): Promise<ConsoleResult<HandoffReturnView>> {
+    this.returned.push([taskId, request])
+    const task = this.tasks.get(taskId)
+    if (task === undefined) {
+      return Promise.resolve({
+        ok: false,
+        failure: { code: 'not_found', message: `没有任务 ${taskId}` },
+      })
+    }
+    const next: HandoffTaskView = { ...task, state: 'returned' }
+    this.tasks.set(taskId, next)
+    return Promise.resolve({
+      ok: true,
+      value: { task: next, changed: task.state !== 'returned' },
+    })
   }
 
   send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>> {
@@ -253,6 +314,136 @@ describe('/v0/handoff with the legacy tokens', () => {
   })
 })
 
+describe('/v0/handoff/<task>/attach and /return (P17.6)', () => {
+  function wired() {
+    const port = new FakeHandoff()
+    const actions = new MemoryActionLedger()
+    const deps = { ...pageHarness({ actions }).deps, handoff: port }
+    const handle = createConsoleHandler(deps, { view: VIEW, admin: ADMIN })
+    port.tasks.set('t-run', {
+      ...taskOf('t-run'),
+      state: 'running',
+      node: 'cloud-1',
+    })
+    port.tasks.set('t-done', { ...taskOf('t-done'), state: 'done' })
+    return { port, actions, handle }
+  }
+
+  test('attach answers where a running task is, and nothing secret', async () => {
+    const { port, actions, handle } = wired()
+    const answer = await handle(
+      call('POST', '/v0/handoff/t-run/attach', ADMIN, { device: 'phone-1' }),
+    )
+    expect(answer.status).toBe(200)
+    const body = await bodyOf(answer)
+    expect(body).toEqual({
+      attach: {
+        taskId: 't-run',
+        state: 'running',
+        node: 'cloud-1',
+        threadId: MANIFEST.sessionId,
+        project: 'atlas',
+        tool: 'qmcode',
+      },
+    })
+    expect(port.attached).toEqual([['t-run', { device: 'phone-1' }]])
+    // No body at all is a request without a device.
+    const bare = await handle(
+      new Request('http://console.test/v0/handoff/t-run/attach', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${ADMIN}` },
+        body: '{}',
+      }),
+    )
+    expect(bare.status).toBe(200)
+    expect(port.attached.at(-1)).toEqual(['t-run', { device: null }])
+
+    const notRunning = await handle(
+      call('POST', '/v0/handoff/t-done/attach', ADMIN, {}),
+    )
+    expect(notRunning.status).toBe(400)
+    expect(JSON.stringify(await bodyOf(notRunning))).toContain('不在云端运行')
+    const missing = await handle(
+      call('POST', '/v0/handoff/t-9/attach', ADMIN, {}),
+    )
+    expect(missing.status).toBe(404)
+    const badDevice = await handle(
+      call('POST', '/v0/handoff/t-run/attach', ADMIN, { device: '../x' }),
+    )
+    expect(badDevice.status).toBe(400)
+    expect(port.attached).toHaveLength(4)
+
+    expect(
+      actions.entries.map(entry => [
+        entry.action,
+        entry.target,
+        entry.outcome,
+        entry.code ?? null,
+      ]),
+    ).toEqual([
+      ['handoff.attach', 't-run', 'ok', null],
+      ['handoff.attach', 't-run', 'ok', null],
+      ['handoff.attach', 't-done', 'failed', 'rejected'],
+      ['handoff.attach', 't-9', 'failed', 'not_found'],
+      ['handoff.attach', 't-run', 'refused', 'invalid'],
+    ])
+  })
+
+  test('return marks the task, with how it came back', async () => {
+    const { port, actions, handle } = wired()
+    const first = await handle(
+      call('POST', '/v0/handoff/t-done/return', ADMIN, {
+        device: 'laptop',
+        mode: 'branch',
+      }),
+    )
+    expect(first.status).toBe(200)
+    const body = await bodyOf(first)
+    expect(body.changed).toBe(true)
+    expect((body.task as HandoffTaskView).state).toBe('returned')
+    expect(port.returned).toEqual([
+      ['t-done', { device: 'laptop', mode: 'branch' }],
+    ])
+    const again = await handle(
+      call('POST', '/v0/handoff/t-done/return', ADMIN, {}),
+    )
+    expect((await bodyOf(again)).changed).toBe(false)
+    expect(port.returned.at(-1)).toEqual([
+      't-done',
+      { device: null, mode: null },
+    ])
+    const badMode = await handle(
+      call('POST', '/v0/handoff/t-done/return', ADMIN, { mode: 'merge' }),
+    )
+    expect(badMode.status).toBe(400)
+    expect(port.returned).toHaveLength(2)
+    expect(actions.entries.map(entry => entry.outcome)).toEqual([
+      'ok',
+      'ok',
+      'refused',
+    ])
+  })
+
+  test('view may not, GET is 405, an unknown write is 404', async () => {
+    const { port, handle } = wired()
+    for (const tail of ['attach', 'return']) {
+      const byView = await handle(
+        call('POST', `/v0/handoff/t-run/${tail}`, VIEW, {}),
+      )
+      expect(byView.status).toBe(403)
+      expect(
+        (await handle(call('GET', `/v0/handoff/t-run/${tail}`, ADMIN))).status,
+      ).toBe(405)
+    }
+    expect(
+      (await handle(call('POST', '/v0/handoff/t-run/toString', ADMIN, {})))
+        .status,
+    ).toBe(404)
+    expect(port.attached).toEqual([])
+    expect(port.returned).toEqual([])
+  })
+})
+
 describe('/v0/handoff with personal accounts', () => {
   test('member and ops write, viewer reads only; a cookie needs the console header', async () => {
     const port = new FakeHandoff()
@@ -279,6 +470,27 @@ describe('/v0/handoff with personal accounts', () => {
       asBearer('GET', '/v0/handoff', viewer.credential),
     )
     expect(viewerReads.status).toBe(200)
+    port.tasks.set('t-1', {
+      ...taskOf('t-1'),
+      state: 'running',
+      node: 'cloud-1',
+    })
+    const attachByMember = await h.handle(
+      asBearer('POST', '/v0/handoff/t-1/attach', member.credential, {}),
+    )
+    expect(attachByMember.status).toBe(200)
+    const attachByViewer = await h.handle(
+      asBearer('POST', '/v0/handoff/t-1/attach', viewer.credential, {}),
+    )
+    expect(attachByViewer.status).toBe(403)
+    const returnByOps = await h.handle(
+      asBearer('POST', '/v0/handoff/t-1/return', ops.credential, {}),
+    )
+    expect(returnByOps.status).toBe(200)
+    const returnByViewer = await h.handle(
+      asBearer('POST', '/v0/handoff/t-1/return', viewer.credential, {}),
+    )
+    expect(returnByViewer.status).toBe(403)
 
     const noHeader = await h.handle(
       asSession('POST', '/v0/handoff', member.sid, {
