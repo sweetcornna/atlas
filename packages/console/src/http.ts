@@ -215,6 +215,7 @@ import {
   clearedSessionCookieHeader,
   isCrossOriginRequest,
   isSecureRequest,
+  presentedCredentialOf,
   roleOfToken,
   safeRedirect,
   sessionCookieHeader,
@@ -223,7 +224,9 @@ import {
 } from './auth.js'
 import type { ActionOutcome, ConsoleAction, ConsoleDeps } from './deps.js'
 import {
-  DOCUMENT_HEADERS,
+  asset,
+  compressed,
+  documentHeaders,
   fail,
   html,
   json,
@@ -254,17 +257,6 @@ export const API_PREFIX = '/v0'
 export { MAX_AUDIT_LIMIT, parseAuditFilter } from './routes/audit.js'
 export { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
 
-function asset(body: string, contentType: string): Response {
-  return new Response(body, {
-    status: 200,
-    headers: {
-      'content-type': contentType,
-      'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
-    },
-  })
-}
-
 /**
  * The same fact for the login card, in the page's own register.
  *
@@ -273,7 +265,7 @@ function asset(body: string, contentType: string): Response {
  * `test/view.test.ts`), while an error *body* is read by a developer and may
  * spend a sentence saying what to do.
  */
-const ADMIN_REQUIRED_LINE = '该页面需要 admin 令牌'
+const ADMIN_REQUIRED_LINE = '该页面需要管理令牌'
 
 /** What a failed login is told. Never which half of the pair was close. */
 const LOGIN_REFUSED = '令牌无效'
@@ -330,7 +322,7 @@ function loginPage(
     status: options.status ?? 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...DOCUMENT_HEADERS,
+      ...documentHeaders(body),
       ...(options.headers ?? {}),
     },
   })
@@ -546,6 +538,46 @@ async function servePage(
   return html(
     await areaDocument(ctx, match.module, rendered),
     rendered.status ?? 200,
+  )
+}
+
+/**
+ * A token that arrived in the address bar becomes a session, once (H5).
+ *
+ * The banner's link carries `?token=` because a URL is the one thing a
+ * terminal can hand a browser. Answering it with the page left the token in
+ * the address bar until the runtime scrubbed it, and on every in-console link
+ * the runtime then signed with it — so in every proxy log and history entry
+ * after it. Instead the navigation is answered the way `POST /login` answers:
+ * a 303 to the same address without the token, setting the session cookie.
+ * Every navigation after it rides the cookie; `?token=` keeps its two other
+ * jobs, a JSON route for a script and this first step.
+ *
+ * Only a token that is one of the pair is exchanged — never on the strength
+ * of a cookie beside a stale one — and only without accounts: there a
+ * personal credential in a link is refused outright, and the login door is
+ * the way in (`accountsHttp.ts`).
+ */
+function tokenInAddressBar(
+  request: Request,
+  url: URL,
+  tokens: ConsoleTokens,
+): Response | null {
+  if (request.method !== 'GET' || !wantsHtml(request)) return null
+  const presented = presentedCredentialOf(request)
+  if (presented.source !== 'query') return null
+  if (roleOfToken(presented.token, tokens) === 'none') return null
+  const rest = new URLSearchParams(url.searchParams)
+  rest.delete(TOKEN_QUERY_PARAM)
+  const query = rest.toString()
+  return seeOther(
+    safeRedirect(url.pathname + (query === '' ? '' : `?${query}`)),
+    {
+      'set-cookie': sessionCookieHeader(presented.token, {
+        secure: isSecureRequest(request),
+        maxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+      }),
+    },
   )
 }
 
@@ -844,8 +876,9 @@ async function route(
     }
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return segments[1] === 'app.css'
-      ? asset(CONSOLE_CSS, 'text/css; charset=utf-8')
+      ? asset(request, CONSOLE_CSS, 'text/css; charset=utf-8')
       : asset(
+          request,
           accounts === undefined
             ? CONSOLE_CLIENT_JS
             : CONSOLE_CLIENT_JS_ACCOUNTS,
@@ -975,6 +1008,9 @@ async function routeAs(
   // segments (`v0`, `fragments`, the doors above) never reach a page.
   const page = pageOf(ROUTES, segments)
   if (page !== undefined) {
+    const exchanged =
+      accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
+    if (exchanged !== null) return exchanged
     return await servePage(
       routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       page,
@@ -1037,6 +1073,34 @@ function clientKeyOf(request: Request, source?: ClientAddressSource): string {
  * once per module: two consoles in one process (which is what the test suite
  * is) must not be able to lock each other out.
  */
+/**
+ * HSTS for a console reached over TLS (H2): directly, or through a proxy
+ * that says so in `X-Forwarded-Proto` — the same test the session cookie's
+ * `Secure` flag uses. A year, and not `includeSubDomains`: the console may
+ * share a host name with services it has no business pinning. A browser
+ * ignores the header over plain HTTP, so a forged forwarding header buys
+ * nothing.
+ */
+const HSTS = 'max-age=31536000'
+
+/** Every answer on its way out: HSTS when on TLS, then compression (G1). */
+async function finished(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (!isSecureRequest(request)) return compressed(request, response)
+  const headers = new Headers(response.headers)
+  headers.set('strict-transport-security', HSTS)
+  return compressed(
+    request,
+    new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    }),
+  )
+}
+
 export function createConsoleHandler(
   deps: ConsoleDeps,
   tokens: ConsoleTokens,
@@ -1055,14 +1119,17 @@ export function createConsoleHandler(
     source?: ClientAddressSource,
   ): Promise<Response> => {
     try {
-      return await route(
+      return await finished(
         request,
-        deps,
-        tokens,
-        throttle,
-        clientKeyOf(request, source),
-        now,
-        accounts,
+        await route(
+          request,
+          deps,
+          tokens,
+          throttle,
+          clientKeyOf(request, source),
+          now,
+          accounts,
+        ),
       )
     } catch (error) {
       // Only reachable when a port breaks its contract and throws. The message

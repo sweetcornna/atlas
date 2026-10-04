@@ -29,6 +29,8 @@
  */
 
 import { attr, escapeHtml } from './escape.js'
+import { humanizeError } from './errors.js'
+import { formatTime, type TimeFormat } from './format.js'
 import type { ConsoleFailure } from '../deps.js'
 
 export type Tone = 'ok' | 'warn' | 'bad' | 'critical' | 'muted'
@@ -61,6 +63,7 @@ const ICON_PATHS: Readonly<Record<string, string>> = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
   'alert-triangle':
@@ -147,10 +150,96 @@ export function field(
   )
 }
 
-/** A one-line strip. Facts and a number, never a paragraph. */
-export function bar(tone: Tone, text: string, extraClass = ''): string {
+/**
+ * The original of a failure, folded under 详情 (C5): there to select and paste
+ * into a ticket, never part of the sentence. `data-raw` marks it as the one
+ * kind of text on a page the copy rules do not apply to — it is the port's or
+ * the transport's own words, kept verbatim on purpose (`test/copyGate`).
+ */
+export function rawDetail(detail: string): string {
+  if (detail === '') return ''
+  return (
+    `<details class="raw-detail"><summary>详情</summary>` +
+    `<pre class="raw" data-raw>${escapeHtml(detail)}</pre></details>`
+  )
+}
+
+/**
+ * Markup already escaped, for the helpers below that otherwise take text: a
+ * sentence with an instant in it ({@link withTimes}).
+ */
+interface Markup {
+  readonly html: string
+}
+
+function inner(text: string | Markup): string {
+  return typeof text === 'string' ? escapeHtml(text) : text.html
+}
+
+/** An instant inside a sentence, for {@link withTimes}. */
+interface Instant {
+  readonly at: number
+  readonly fmt: TimeFormat
+}
+
+/**
+ * The attributes that make a `<time>` redrawable in the reader's zone (时区):
+ * the ISO instant and the shape. `assets/client.ts` rewrites the text.
+ */
+export function timeAttrs(at: number, fmt: TimeFormat): string {
+  if (!Number.isFinite(at) || at <= 0) return ''
+  return ` datetime="${attr(new Date(at).toISOString())}" data-fmt="${fmt}"`
+}
+
+/** One instant, drawn in this process's zone until the runtime redraws it. */
+export function timeTag(at: number, fmt: TimeFormat, cls = ''): string {
+  const klass = cls === '' ? '' : ` class="${attr(cls)}"`
+  return `<time${klass}${timeAttrs(at, fmt)}>${escapeHtml(formatTime(at, fmt))}</time>`
+}
+
+/** A sentence of text and instants, the text escaped and each instant a {@link timeTag}. */
+export function withTimes(...parts: readonly (string | Instant)[]): Markup {
+  return {
+    html: parts
+      .map(part =>
+        typeof part === 'string'
+          ? escapeHtml(part)
+          : timeTag(part.at, part.fmt),
+      )
+      .join(''),
+  }
+}
+
+/**
+ * A one-line strip. Facts and a number, never a paragraph.
+ *
+ * `detail` is an original folded under 详情 ({@link rawDetail}); a strip that
+ * carries one is a `<div>`, since a `<details>` cannot sit inside a `<p>`.
+ */
+export function bar(
+  tone: Tone,
+  text: string | Markup,
+  extraClass = '',
+  detail = '',
+): string {
   const cls = `bar bar-${tone}${extraClass === '' ? '' : ` ${extraClass}`}`
-  return `<p class="${cls}">${escapeHtml(text)}</p>`
+  if (detail === '') return `<p class="${cls}">${inner(text)}</p>`
+  return (
+    `<div class="${cls}"><span>${inner(text)}</span>` +
+    `${rawDetail(detail)}</div>`
+  )
+}
+
+/**
+ * A reason a port handed up, as the page may say it: the short line, and the
+ * original for {@link rawDetail}. `code` picks the phrase when the reason is
+ * transport text with no known shape (`view/errors.ts`).
+ */
+export function reasonOf(
+  reason: string,
+  code = 'unavailable',
+): { readonly text: string; readonly detail: string } {
+  return humanizeError({ code, message: reason })
 }
 
 /**
@@ -179,11 +268,16 @@ const FAILURE_LEAD: Readonly<Record<ConsoleFailure['code'], string>> = {
 
 export function failureBar(failure: ConsoleFailure, subject: string): string {
   const lead = `${subject}${FAILURE_LEAD[failure.code] ?? '出错'}`
+  // The port's message is a developer's sentence, or the transport's own
+  // English; the strip says the short line and folds the original (C5).
+  const human = humanizeError({ code: failure.code, message: failure.message })
   return (
-    `<p class="bar bar-bad" role="alert">` +
+    `<div class="bar bar-bad" role="alert">` +
     icon('alert-triangle', { small: true }) +
-    `<span>${escapeHtml(lead)} · ${escapeHtml(failure.message)}</span>` +
-    `<code class="bar-code">${escapeHtml(failure.code)}</code></p>`
+    `<span>${escapeHtml(lead)} · ${escapeHtml(human.text)}</span>` +
+    `<code class="bar-code">${escapeHtml(failure.code)}</code>` +
+    rawDetail(human.detail) +
+    `</div>`
   )
 }
 
@@ -195,10 +289,10 @@ export function failureBar(failure: ConsoleFailure, subject: string): string {
  * `dot dot-<tone>` into `className`. The stylesheet gives each of the four a
  * different shape as well as a different colour.
  */
-export function state(tone: Tone, text: string): string {
+export function state(tone: Tone, text: string | Markup): string {
   return (
     `<span class="state"><span class="dot dot-${tone}"></span>` +
-    `${escapeHtml(text)}</span>`
+    `${inner(text)}</span>`
   )
 }
 
@@ -208,14 +302,14 @@ export function state(tone: Tone, text: string): string {
  * For the dense count lines, where a row of dots would turn the line into
  * beadwork.
  */
-export function toned(tone: Tone, text: string): string {
-  return `<span class="tone-${tone}">${escapeHtml(text)}</span>`
+export function toned(tone: Tone, text: string | Markup): string {
+  return `<span class="tone-${tone}">${inner(text)}</span>`
 }
 
 /** A pill-shaped label: capability tags, active filters, id fragments. */
-export function chip(text: string, title?: string): string {
+export function chip(text: string | Markup, title?: string): string {
   const attrs = title === undefined ? '' : ` title="${attr(title)}"`
-  return `<span class="chip mono"${attrs}>${escapeHtml(text)}</span>`
+  return `<span class="chip mono"${attrs}>${inner(text)}</span>`
 }
 
 /**

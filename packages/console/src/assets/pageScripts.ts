@@ -23,7 +23,6 @@ export const NODES_PAGE_JS = `
   if (!qc) return;
   var byId = qc.byId;
   var say = qc.say;
-  var message = qc.message;
   var setText = qc.setText;
 
   var ROUTES = { agents: '/v0/agents', wake: '/v0/wake' };
@@ -48,14 +47,60 @@ export const NODES_PAGE_JS = `
     return out;
   }
 
+  // The registry's own grammar (protocol address.ts, registry.ts
+  // isValidEndpoint), checked here first: a typo is caught on the field it is
+  // in, instead of coming back from the registry as a refusal in English (D3).
+  var SEGMENT = '[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?';
+  var ADDRESS = new RegExp('^qianmo://' + SEGMENT + '/' + SEGMENT + '$');
+  var SCHEMES = ['ws:', 'wss:', 'http:', 'https:', 'ws+unix:'];
+  var ADDRESS_FORMAT = '格式应为 qianmo://节点/智能体 · 小写字母 数字 - _';
+  var ENDPOINT_FORMAT = '格式应为 ws://主机:端口 或 qianmo:// 地址';
+
+  function addressWhy(value) {
+    if (!value) return '必填';
+    return ADDRESS.test(value) ? '' : ADDRESS_FORMAT;
+  }
+
+  function endpointWhy(value) {
+    if (!value) return '必填';
+    if (value.length > 512) return '过长 · 上限 512 字符';
+    if (ADDRESS.test(value)) return '';
+    try {
+      if (SCHEMES.indexOf(new URL(value).protocol) !== -1) return '';
+    } catch (e) { /* not a URL at all */ }
+    return ENDPOINT_FORMAT;
+  }
+
+  var REGISTER_RULES = { address: addressWhy, endpoint: endpointWhy };
+
+  // What a field the registry refused is told, when the refusal names it.
+  var REGISTER_REFUSED = {
+    address: ADDRESS_FORMAT,
+    endpoint: ENDPOINT_FORMAT,
+    publicKey: '应为 base64url 编码的 Ed25519 公钥',
+    capabilities: '能力不合法',
+    status: '状态不合法'
+  };
+
+  // A refusal that names a field is said on the field; the rest in the
+  // status line and the corner, as before.
+  function refusedOnField(form, err, table) {
+    var name = qc.fieldOf(err, Object.keys(table));
+    if (!name) return false;
+    var said = table[name];
+    var el = qc.markField(form, name, typeof said === 'function' ? said(form) : said);
+    if (el) el.focus();
+    return el !== null;
+  }
+
   function onRegister(form) {
     var status = byId('register-status');
-    var address = fieldValue(form, 'address');
-    var endpoint = fieldValue(form, 'endpoint');
-    if (!address || !endpoint) {
-      say(status, '地址与端点必填', 'bad');
+    if (!qc.checkFields(form, REGISTER_RULES)) {
+      say(status, '有字段需要修改', 'bad');
       return;
     }
+    var address = fieldValue(form, 'address');
+    var endpoint = fieldValue(form, 'endpoint');
     var body = {
       address: address,
       endpoint: endpoint,
@@ -67,6 +112,7 @@ export const NODES_PAGE_JS = `
     say(status, '注册中…', 'muted');
     qc.sendJson('POST', ROUTES.agents, body).then(function () {
       say(status, '', 'muted');
+      qc.clearFields(form);
       form.reset();
       qc.closeDialog(byId('register-dialog'));
       qc.toast('已注册 ' + address, 'ok');
@@ -74,16 +120,45 @@ export const NODES_PAGE_JS = `
     }).catch(function (err) {
       // Said where the form is, and in the corner: the dialog may be the
       // thing the operator is looking at, or the thing they just closed.
-      say(status, '注册失败 · ' + message(err), 'bad');
-      qc.toast('注册失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('注册', err), qc.failTone(err));
+      if (refusedOnField(form, err, REGISTER_REFUSED)) return;
+      qc.toast(qc.failLine('注册', err), qc.failTone(err));
     });
   }
+
+  var WAKE_REFUSED = {
+    afterMs: function (form) {
+      var box = form.elements['afterMs'];
+      return '应为 0 到 ' + (box ? box.getAttribute('max') : '') + ' 之间的整数毫秒';
+    },
+    prompt: '必填'
+  };
 
   // The 回调 field is gone from the form: the console can only ever wake the
   // one URL it was started with, so url is left out of the body entirely and
   // the server falls back to the pinned one.
+  function afterWhy(value, el) {
+    if (!value) return '';
+    var max = Number(el.getAttribute('max')) || 0;
+    var n = Number(value);
+    return Math.floor(n) === n && n >= 0 && (max === 0 || n <= max) ? '' :
+      '应为 0 到 ' + max + ' 之间的整数毫秒';
+  }
+
+  var WAKE_RULES = {
+    // A text box when there is no roster to choose from; a select is always
+    // one of the roster's own addresses.
+    to: function (value, el) { return el.tagName === 'SELECT' ? (value ? '' : '必选') : addressWhy(value); },
+    prompt: function (value) { return value ? '' : '必填'; },
+    afterMs: afterWhy
+  };
+
   function onWake(form) {
     var status = byId('wake-status');
+    if (!qc.checkFields(form, WAKE_RULES)) {
+      say(status, '有字段需要修改', 'bad');
+      return;
+    }
     var body = {
       from: fieldValue(form, 'from'),
       to: fieldValue(form, 'to'),
@@ -93,18 +168,19 @@ export const NODES_PAGE_JS = `
     if (node) body.node = node;
     var after = fieldValue(form, 'afterMs');
     if (after) body.afterMs = Number(after);
-    if (!body.from || !body.to || !body.prompt) {
-      say(status, '发起方 目标与提示词必填', 'bad');
+    if (!body.from) {
+      say(status, '发起方为空 · 在高级选项里填写', 'bad');
       return;
     }
+    say(status, '', 'muted');
     setText('confirm-wake-to', body.to);
     setText('confirm-wake-from', body.from);
     setText('confirm-wake-after', (body.afterMs || 0) + ' ms');
     setText('confirm-wake-prompt', body.prompt);
-    qc.openDialog('confirm-wake', function () { doWake(body); });
+    qc.openDialog('confirm-wake', function () { doWake(form, body); });
   }
 
-  function doWake(body) {
+  function doWake(form, body) {
     var status = byId('wake-status');
     say(status, '唤醒中…', 'muted');
     qc.sendJson('POST', ROUTES.wake, body).then(function (data) {
@@ -116,8 +192,9 @@ export const NODES_PAGE_JS = `
       say(status, line, 'ok');
       qc.toast(line, 'ok');
     }).catch(function (err) {
-      say(status, '唤醒失败 · ' + message(err), 'bad');
-      qc.toast('唤醒失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('唤醒', err), qc.failTone(err));
+      if (refusedOnField(form, err, WAKE_REFUSED)) return;
+      qc.toast(qc.failLine('唤醒', err), qc.failTone(err));
     });
   }
 
@@ -130,7 +207,7 @@ export const NODES_PAGE_JS = `
         qc.toast('已心跳 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { qc.toast('心跳失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast(qc.failLine('心跳', err), qc.failTone(err)); });
   }
 
   function onDeregister(el) {
@@ -145,8 +222,27 @@ export const NODES_PAGE_JS = `
         qc.toast('已注销 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { qc.toast('注销失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast(qc.failLine('注销', err), qc.failTone(err)); });
   }
+
+  // The roster filter is a native GET and stays one: it works with this
+  // script disabled. All that is added is dropping the empty boxes, so the
+  // resulting URL is the shortest thing that reproduces this view (D6).
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || form.id !== 'roster-filter') return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) {
+      if (controls[i].value === '') controls[i].disabled = true;
+    }
+  });
+  // Back to this page from the history cache: the boxes are usable again.
+  window.addEventListener('pageshow', function () {
+    var form = document.getElementById('roster-filter');
+    if (!form) return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) controls[i].disabled = false;
+  });
 
   qc.onAction('heartbeat', onHeartbeat);
   qc.onAction('deregister', onDeregister);
@@ -205,6 +301,13 @@ export const AUDIT_PAGE_JS = `
       if (controls[i].value === '') controls[i].disabled = true;
     }
   });
+  // Back to this page from the history cache: the boxes are usable again.
+  window.addEventListener('pageshow', function () {
+    var form = document.getElementById('roster-filter');
+    if (!form) return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) controls[i].disabled = false;
+  });
 })();
 `
 
@@ -234,8 +337,8 @@ export const SERVERS_PAGE_JS = `
         qc.toast('备注已保存 · ' + server, 'ok');
       })
       .catch(function (err) {
-        qc.say(status, '保存失败 · ' + qc.message(err), 'bad');
-        qc.toast('保存失败 · ' + qc.message(err), 'bad');
+        qc.say(status, qc.failLine('保存', err), qc.failTone(err));
+        qc.toast(qc.failLine('保存', err), qc.failTone(err));
       });
   }
 

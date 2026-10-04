@@ -51,7 +51,6 @@
 import { subjectOf } from '../access.js'
 import type {
   ConsoleAgent,
-  ConsoleDeps,
   LifecycleChange,
   LifecycleOutcome,
   LifecycleRefusal,
@@ -71,8 +70,15 @@ import { NODES_PAGE_JS } from '../assets/pageScripts.js'
 import {
   agentsOfNode,
   deregisterConfirm,
+  filterRoster,
+  isRosterFiltered,
+  parseRosterFilter,
   registerDialog,
   renderRoster,
+  rosterFilterForm,
+  rosterFilterQuery,
+  type RosterFilter,
+  wakeAvailable,
   wakeConfirm,
   wakeDialog,
   wakeTargetOptions,
@@ -369,7 +375,8 @@ interface RosterRender {
   /**
    * The agents themselves, so the page around the fragment can build its two
    * address pickers (the wake target and the trail's node filter) from the
-   * *same* read rather than asking the registry a second time.
+   * *same* read rather than asking the registry a second time. Every
+   * address, whatever the filter.
    */
   readonly agents: readonly ConsoleAgent[] | null
 }
@@ -385,6 +392,7 @@ interface RosterRender {
 async function rosterFragment(
   ctx: Pick<RouteContext, 'deps' | 'now' | 'roster' | 'access'>,
   node?: string,
+  filter: RosterFilter = {},
 ): Promise<RosterRender> {
   const { deps, now } = ctx
   // Two independent reads, overlapped: the certificate face lives behind the
@@ -397,11 +405,24 @@ async function rosterFragment(
     certificatePort?.read(),
   ])
   const listed = valueOf(result)
-  const agents =
+  const all =
     listed === null || node === undefined ? listed : agentsOfNode(listed, node)
+  // The filter narrows what is drawn (D6); the pickers built from `agents`
+  // below keep every address, which is why the unfiltered list is returned.
+  const filtered = isRosterFiltered(filter)
+  const shown =
+    all === null || !filtered
+      ? all
+      : filterRoster(
+          all,
+          filter,
+          now,
+          deps.limits.registryTtlMs,
+          deps.nodeServers,
+        )
   return {
     html: renderRoster(
-      agents,
+      shown,
       failureOf(result),
       now,
       deps.limits.registryTtlMs,
@@ -414,9 +435,12 @@ async function rosterFragment(
             binName: deps.binName ?? DEFAULT_BIN_NAME,
           },
       deps.nodeServers,
-      { canWrite: canWrite(ctx.access) },
+      {
+        canWrite: canWrite(ctx.access),
+        ...(filtered && all !== null ? { filteredFrom: all.length } : {}),
+      },
     ),
-    agents,
+    agents: all,
   }
 }
 
@@ -519,8 +543,7 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
     return fail(
       501,
       'unsupported',
-      '该控制台没有配置唤醒通道（缺少传输层 PSK），因此不能发起唤醒；' +
-        '请在启动 occ console 时提供 PSK 后重试。',
+      '这台控制台启动时没有配置唤醒目标 · 用 qm console --wake-url 启动后再试',
     )
   }
   const body = await readJsonObject(request)
@@ -574,14 +597,6 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
-/** True when this console can send a wake at all, to anyone. */
-function wakeEnabled(deps: ConsoleDeps): boolean {
-  return (
-    deps.wake !== undefined ||
-    deps.wakeTargets?.some(target => target.wake !== undefined) === true
-  )
-}
-
 /**
  * What the top bar offers to add an agent: the register form, or — with a
  * managed list — 发布 with the addresses still to publish (`null`: no list).
@@ -612,7 +627,7 @@ function nodeDialogs(
       : '') +
     (deps.lifecycle === undefined ? '' : lifecycleDialogs()) +
     wakeDialog({
-      enabled: wakeEnabled(deps),
+      enabled: wakeAvailable(deps),
       targetOptions: wakeTargetOptions(agents, now, deps.limits.registryTtlMs),
       ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
       ...(deps.wakeTargets === undefined
@@ -644,7 +659,7 @@ function nodeActions(ctx: RouteContext, add: AddAction): string {
         ? `<button type="button" class="btn btn-primary" ` +
           `data-open-dialog="register-dialog" data-write>` +
           icon('plus', { small: true }) +
-          `注册节点</button>`
+          `注册智能体</button>`
         : ''
   return (
     `<button type="button" class="btn btn-secondary" ` +
@@ -689,16 +704,22 @@ function addActionOf(
 }
 
 async function nodesPage(ctx: RouteContext): Promise<PageRender> {
+  const filter = parseRosterFilter(ctx.url.searchParams)
   const [roster, snapshot] = await Promise.all([
-    rosterFragment(ctx),
+    rosterFragment(ctx, undefined, filter),
     snapshotOf(ctx),
   ])
   const add = addActionOf(snapshot, roster.agents)
+  const query = rosterFilterQuery(filter)
   return {
     title: '节点',
     actions: nodeActions(ctx, add),
     body:
-      rosterRegion(roster.html, '/fragments/roster') +
+      rosterFilterForm(filter, ctx.deps.nodeServers) +
+      rosterRegion(
+        roster.html,
+        `/fragments/roster${query === '' ? '' : `?${query}`}`,
+      ) +
       renderLedgerOnly(snapshot, roster.agents) +
       nodeDialogs(ctx, roster.agents, add),
     poll: true,
@@ -948,8 +969,13 @@ export const nodesRoute: RouteModule = {
         return html(renderLifecycle(await lifecycleModelOf(ctx, node)))
       }
       return html(
-        (await rosterFragment(ctx, textParam(ctx.url.searchParams, 'node')))
-          .html,
+        (
+          await rosterFragment(
+            ctx,
+            textParam(ctx.url.searchParams, 'node'),
+            parseRosterFilter(ctx.url.searchParams),
+          )
+        ).html,
       )
     },
   },

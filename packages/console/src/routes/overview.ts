@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 总览 — the landing page: four cards, then one line per node.
+ * 总览 — the landing page: health cards, then one line per node.
  *
  * Owns `/` and nothing else. Every number here also exists on the page it
  * summarises, and the cards read it off the same view output that page
@@ -12,9 +12,12 @@
 
 import { renderNodeSummary, renderRoster } from '../view/agents.js'
 import { renderAudit, renderAuditSources } from '../view/audit.js'
-import { renderLimits } from '../view/limits.js'
-import { renderOverview } from '../view/page.js'
-import { pageLimits } from './settings.js'
+import {
+  RECENT_WINDOW_MS,
+  recentOutcomes,
+  renderOverview,
+} from '../view/page.js'
+import { MAX_AUDIT_LIMIT } from './audit.js'
 import {
   failureOf,
   readAuditSources,
@@ -50,11 +53,17 @@ export const overviewRoute: RouteModule = {
     async render(ctx) {
       const { deps, now } = ctx
       const ttl = deps.limits.registryTtlMs
-      // The overview's trail card counts the unfiltered tail: a filter is a
-      // property of the trail page, not of the console.
-      const [listed, trails] = await Promise.all([
+      // One read per trail serves two cards: its header numbers (the total,
+      // the integrity and the witness are facts about the whole file, not
+      // about the filter) and the last hour's refusals and drops (A2).
+      const [listed, trails, certificates, sessions] = await Promise.all([
         ctx.roster(),
-        readAuditSources(deps, {}),
+        readAuditSources(deps, {
+          from: now - RECENT_WINDOW_MS,
+          limit: MAX_AUDIT_LIMIT,
+        }),
+        deps.certificates?.read(),
+        deps.certificates === undefined ? deps.chat?.sessions() : undefined,
       ])
       const agents = valueOf(listed)
       const failure = failureOf(listed)
@@ -66,7 +75,20 @@ export const overviewRoute: RouteModule = {
         body: renderOverview({
           roster: renderRoster(agents, failure, now, ttl),
           audit,
-          limits: renderLimits(pageLimits(deps, agents)),
+          recent: recentOutcomes(
+            trails.map(trail => trail.page),
+            MAX_AUDIT_LIMIT,
+          ),
+          ...(certificates === undefined
+            ? {}
+            : {
+                certificates: {
+                  snapshot: valueOf(certificates),
+                  failure: failureOf(certificates),
+                },
+              }),
+          ...(sessions === undefined ? {} : { sessions: valueOf(sessions) }),
+          now,
           nodes: renderNodeSummary(agents, failure, now, ttl),
         }),
       }

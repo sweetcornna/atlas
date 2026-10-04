@@ -9,13 +9,18 @@
  * numbers instead of a browser. `now` is threaded in from the caller for the
  * same reason the rest of the packages take a clock port.
  *
- * ## Local time, deliberately
+ * ## Local time, and whose
  *
  * Clock strings are rendered in the machine's local zone. An operator reading
- * "12:03:41" wants their own wall clock, not UTC; the absolute instant is still
- * recoverable from the `datetime` attribute the page writes alongside. The cost
- * is that the exact digits depend on `TZ`, so the tests assert the *shape* of
- * the clock and the exact text of the relative part.
+ * "12:03:41" wants their own wall clock, not UTC — but the machine is the
+ * console's, and a console on a UTC VPS read from Shanghai was eight hours
+ * off with nothing on the page saying so (`console-audit.md` 时区). So every
+ * instant a page shows is a `<time>` with the ISO instant in `datetime` and
+ * its shape in `data-fmt` (`view/bits.ts` `timeTag`); the runtime rewrites
+ * the text in the browser's zone, and the page names the zone it is in
+ * ({@link zoneLabel}) for the reader whose script is off. The digits here
+ * still depend on `TZ`, so the tests assert the *shape* of the clock and the
+ * exact text of the relative part.
  */
 
 import { createHash } from 'node:crypto'
@@ -85,6 +90,39 @@ export function toDatetimeLocal(at: number): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(
     date.getDate(),
   )}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+}
+
+/**
+ * The shapes an instant is drawn in: `HH:MM:SS`, the date before it, or the
+ * date and the minute (the model service page's settings and cool-downs).
+ */
+export type TimeFormat = 'clock' | 'datetime' | 'minute'
+
+/** {@link formatClock}, {@link formatDateTime} or the minute, by shape. */
+export function formatTime(at: number, fmt: TimeFormat): string {
+  if (fmt === 'clock') return formatClock(at)
+  const full = formatDateTime(at)
+  return fmt === 'minute' && full !== NO_VALUE ? full.slice(0, 16) : full
+}
+
+/**
+ * The zone this process draws `at` in: `UTC+8`, `UTC-3:30`, `UTC`.
+ *
+ * Of an instant, not of the machine, because a zone with summer time has two
+ * offsets. The runtime writes the browser's in the same form.
+ */
+export function zoneLabel(at: number): string {
+  return zoneLabelOf(-new Date(at).getTimezoneOffset())
+}
+
+/** {@link zoneLabel} of an offset east of UTC, in minutes. */
+export function zoneLabelOf(offset: number): string {
+  if (!Number.isFinite(offset) || offset === 0) return 'UTC'
+  const sign = offset > 0 ? '+' : '-'
+  const magnitude = Math.abs(offset)
+  const hours = Math.floor(magnitude / 60)
+  const minutes = magnitude % 60
+  return `UTC${sign}${hours}${minutes === 0 ? '' : `:${pad2(minutes)}`}`
 }
 
 /** How long ago (or ahead) `at` is, in words. Coarse on purpose. */

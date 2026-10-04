@@ -53,7 +53,6 @@ function chatScript(): string {
   if (!qc) return;
   var byId = qc.byId;
   var say = qc.say;
-  var message = qc.message;
 
   var ROUTES = {
     sessions: '/fragments/chat/sessions',
@@ -150,6 +149,8 @@ function chatScript(): string {
   // whole document for the other is two behaviours to keep true; everything
   // after the first load goes through fetch.
   function openSession(id) {
+    // Chosen in the narrow drawer (E1): the conversation is what to see now.
+    qc.closeDrawer('chat-rail-list');
     if (!id || id === active) return;
     active = id;
     try {
@@ -173,8 +174,8 @@ function chatScript(): string {
       if (data && data.id) openSession(String(data.id));
       else say(status, '新建失败 · 服务端没有返回会话', 'bad');
     }).catch(function (err) {
-      say(status, '新建失败 · ' + message(err), 'bad');
-      qc.toast('新建失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('新建', err), qc.failTone(err));
+      qc.toast(qc.failLine('新建', err), qc.failTone(err));
     });
   }
 
@@ -196,8 +197,8 @@ function chatScript(): string {
       say(status, '', 'muted');
       return refreshAll(false);
     }).catch(function (err) {
-      say(status, '发送失败 · ' + message(err), 'bad');
-      qc.toast('发送失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('发送', err), qc.failTone(err));
+      qc.toast(qc.failLine('发送', err), qc.failTone(err));
     }).then(function () {
       busy = false;
       box.disabled = false;
@@ -227,11 +228,10 @@ function chatScript(): string {
       startPolling('轮询中');
       return;
     }
-    var token = qc.readToken();
-    // EventSource cannot carry a header; auth.ts accepts ?token= for exactly
-    // this reason. Same origin, and the URL never reaches the document.
-    var url = ROUTES.stream + (token ? '?token=' + encodeURIComponent(token) : '');
-    try { source = new EventSource(url); }
+    // EventSource cannot carry a header, and the token no longer rides in
+    // its URL (H5): it opens on the session cookie, which the runtime has
+    // already exchanged any token this page was handed for (afterSession).
+    try { source = new EventSource(ROUTES.stream); }
     catch (e) { startPolling('轮询中'); return; }
 
     source.addEventListener('open', function () {
@@ -310,7 +310,7 @@ function chatScript(): string {
     if (mount) mount.scrollTop = mount.scrollHeight;
     var box = byId('chat-text');
     if (box && !box.disabled) box.focus();
-    startStream();
+    qc.afterSession(startStream);
   }
 
   if (document.readyState === 'loading') {

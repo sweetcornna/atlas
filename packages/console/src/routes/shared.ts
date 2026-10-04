@@ -53,7 +53,7 @@ const DEFAULT_AUDIT_SOURCE_NODE = 'default'
 export type Protection = 'document' | 'stream' | 'guarded'
 
 /** What a JSON caller is told when a view token reached an admin route. */
-const ADMIN_REQUIRED = '该操作需要 admin token，当前凭据只有只读权限。'
+const ADMIN_REQUIRED = '该操作需要管理令牌，当前凭据只有只读权限。'
 
 /**
  * Enforce the role a route needs, and what the credential's *position* is

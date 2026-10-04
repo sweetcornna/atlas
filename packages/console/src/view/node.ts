@@ -63,16 +63,19 @@ import {
   hint,
   icon,
   railSep,
+  rawDetail,
+  reasonOf,
   sectionHead,
   splitAddress,
   state,
   tag,
   toned,
   type Tone,
+  timeTag,
 } from './bits.js'
 import { certificateLine } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
-import { agentHealth, formatDateTime, type AgentHealth } from './format.js'
+import { agentHealth, type AgentHealth } from './format.js'
 
 // ---------------------------------------------------------------------------
 // The tabs
@@ -385,10 +388,7 @@ function changedCell(row: LifecycleRow, showWho: boolean): string {
   if (at === undefined && (by === undefined || !showWho)) return absent()
   const parts: string[] = []
   if (at !== undefined) {
-    parts.push(
-      `<time class="mono" datetime="${attr(new Date(at).toISOString())}">` +
-        `${escapeHtml(formatDateTime(at))}</time>`,
-    )
+    parts.push(timeTag(at, 'datetime', 'mono'))
   }
   if (showWho && by !== undefined) {
     parts.push(`<span class="mono who">${escapeHtml(by)}</span>`)
@@ -469,11 +469,14 @@ export function renderLifecycle(model: LifecycleModel): string {
     const consequence = ledgerClosed(snapshot)
       ? '动作一律不收 · 出口一律不拨'
       : '写不进去 · 发布与恢复已停止 · 暂停与退役照收但重启后会丢'
+    // The ledger's problem is the file system's own words: the short line on
+    // the strip, the original under 详情 (C5).
+    const problem = reasonOf(snapshot.problem)
     strips.push(
-      `<p class="bar bar-bad" role="alert">` +
+      `<div class="bar bar-bad" role="alert">` +
         icon('alert-triangle', { small: true }) +
-        `<span>登记簿不可用 · ${escapeHtml(snapshot.problem)} · ` +
-        `${consequence}</span></p>`,
+        `<span>登记簿不可用 · ${escapeHtml(problem.text)} · ` +
+        `${consequence}</span>${rawDetail(problem.detail)}</div>`,
     )
   } else if (snapshot.managed === null) {
     strips.push(bar('muted', '未给托管清单 · 发布要带端点'))
@@ -916,7 +919,7 @@ export const NODE_PAGE_JS = `
         return refresh();
       })
       .catch(function (err) {
-        qc.toast(spec.word + '失败 · ' + qc.message(err), 'bad');
+        qc.toast(qc.failLine(spec.word, err), qc.failTone(err));
       });
   }
 
@@ -960,9 +963,9 @@ export const NODE_PAGE_JS = `
       models.setAttribute('data-state', 'loaded');
     }).catch(function (err) {
       if (qc.isExpired()) return;
-      var text = qc.message(err);
-      if (text === 'HTTP 404') line('模型服务暂无这台节点的信息 · 可在模型服务页查看', 'missing');
-      else line('模型信息读取失败 · ' + text, 'failed');
+      // The status, not the words: the words are the page's line (C5).
+      if (err && err.status === 404) line('模型服务暂无这台节点的信息 · 可在模型服务页查看', 'missing');
+      else line('模型信息读取失败 · ' + qc.message(err), 'failed');
     });
   }
 

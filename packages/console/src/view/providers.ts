@@ -53,6 +53,7 @@ import {
   sectionHead,
   state,
   tag,
+  timeTag,
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
@@ -162,16 +163,15 @@ export function tokens(n: number): string {
   return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 }
 
-/** An ISO instant as `YYYY-MM-DD HH:MM`, local zone; the text itself when it is not one. */
+/**
+ * An ISO instant as markup: a `<time>` drawn `YYYY-MM-DD HH:MM` in this
+ * process's zone and redrawn in the reader's (`timeTag`, 时区); the text
+ * itself, escaped, when it is not an instant.
+ */
 export function minuteOf(iso: string): string {
   const at = Date.parse(iso)
-  if (!Number.isFinite(at)) return iso
-  const date = new Date(at)
-  const pad = (value: number) => (value < 10 ? `0${value}` : String(value))
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}`
-  )
+  if (!Number.isFinite(at)) return escapeHtml(iso)
+  return timeTag(at, 'minute')
 }
 
 /** The 8 hex characters of a key fingerprint ops are shown (§6.3.3). */
@@ -508,7 +508,8 @@ export function driftList(
 // Cells shared by the board and the node page
 // ---------------------------------------------------------------------------
 
-function kv(label: string, value: string): string {
+/** A label and a value that is already markup. */
+export function kv(label: string, value: string): string {
   return (
     `<div class="kv"><span class="k">${escapeHtml(label)}</span>` +
     `<span class="v">${value}</span></div>`
@@ -989,9 +990,10 @@ export const KEY_SELECTION_WORD: Readonly<Record<string, string>> = {
 }
 
 /**
- * A key's state in words: never a fragment of it, the fingerprint for ops
- * only. Several keys (P18.18) are counted, with how one is picked; each key's
- * own line is on the profile's form.
+ * A key's state in words, as markup (the time it was set is a `<time>`):
+ * never a fragment of it, the fingerprint for ops only. Several keys
+ * (P18.18) are counted, with how one is picked; each key's own line is on
+ * the profile's form.
  */
 export function keyState(
   summary: Pick<ProviderProfileSummary, 'secrets' | 'profile'>,
@@ -1001,14 +1003,14 @@ export function keyState(
     const total = summary.secrets.length
     const set = summary.secrets.filter(secret => secret.set).length
     const selection = summary.profile.keySelection ?? 'fill_first'
-    return (
+    return escapeHtml(
       `${total} 把 · ` +
-      (set === total
-        ? '全部已设置'
-        : set === 0
-          ? '都未设置'
-          : `已设置 ${set} 把`) +
-      ` · ${KEY_SELECTION_WORD[selection] ?? selection}`
+        (set === total
+          ? '全部已设置'
+          : set === 0
+            ? '都未设置'
+            : `已设置 ${set} 把`) +
+        ` · ${KEY_SELECTION_WORD[selection] ?? selection}`,
     )
   }
   const secret = summary.secrets[0]
@@ -1018,7 +1020,7 @@ export function keyState(
   const key = summary.profile.keys.find(entry => entry.id === secret.keyId)
   const print =
     reader.writer && key?.fingerprint !== undefined
-      ? ` · 指纹 ${shortFingerprint(key.fingerprint)}`
+      ? escapeHtml(` · 指纹 ${shortFingerprint(key.fingerprint)}`)
       : ''
   return `密钥已设置${at}${print}`
 }
@@ -1091,7 +1093,7 @@ function profileCard(
     `<div class="prov-kvs">` +
     kvText('主模型', mainModel(profile)?.id ?? '—') +
     kvText('地址', baseUrlFor(profile, reader.writer)) +
-    kvText('密钥', keyState(summary, reader)) +
+    kv('密钥', keyState(summary, reader)) +
     kvText('在用', `${summary.nodes.length} 个节点`) +
     `</div>` +
     actions +

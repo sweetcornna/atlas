@@ -270,12 +270,13 @@ describe('public routes', () => {
     expect(await body(response)).toEqual({ status: 'ok' })
   })
 
-  test('the stylesheet is public and never cached', async () => {
+  test('the stylesheet is public and revalidated by its content hash (G1)', async () => {
     const { handle } = setup()
     const response = await handle(get('/assets/app.css'))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8')
-    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('cache-control')).toBe('no-cache')
+    expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]{32}"$/)
     expect((await response.text()).length).toBeGreaterThan(0)
   })
 
@@ -316,12 +317,12 @@ describe('the page', () => {
 
   test('the audit filter on the page URL reaches the port', async () => {
     // The trail moved to its own page (`/audit`); the filter moved with it.
-    // The overview reads the unfiltered tail for its card.
+    // The overview reads the last hour, whatever its own URL says (A2).
     const { handle, audit } = setup()
     await handle(get(`/audit?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[0]).toEqual({ source: 'router', limit: 7 })
     await handle(get(`/?token=${VIEW}&source=router&limit=7`))
-    expect(audit.filters[1]).toEqual({})
+    expect(audit.filters[1]).toEqual({ from: NOW - 3_600_000, limit: 500 })
   })
 
   test('still opens when the registry is unreachable', async () => {
@@ -341,13 +342,20 @@ describe('the page', () => {
 
   test('keeps the page open when the witness endpoint is unreachable', async () => {
     const { handle, audit } = setup()
-    audit.readResult = failResult('unreachable', '见证端点不可达：连接被拒绝')
+    audit.readResult = failResult(
+      'unreachable',
+      '见证端点 · connect ECONNREFUSED 127.0.0.1:1',
+    )
     for (const path of ['/', '/audit']) {
       const response = await handle(get(path, VIEW))
       expect(`${path} ${response.status}`).toBe(`${path} 200`)
       if (path === '/audit') {
-        expect(await response.text()).toContain(
-          '审计日志不可达 · 见证端点不可达',
+        // The port's message keeps only which half failed; the strip says
+        // the line and folds the original (C5).
+        const html = await response.text()
+        expect(html).toContain('审计链不可达 · 见证端点 · 无法连接')
+        expect(html).toContain(
+          '<pre class="raw" data-raw>见证端点 · connect ECONNREFUSED',
         )
       }
     }
@@ -749,13 +757,15 @@ describe('the registry lease on the page (C-1)', () => {
     registry.listResult = okResult([HOUR_AGENT])
     const nodes = await (await handle(get('/nodes', VIEW))).text()
     expect(nodes).toContain('data-health="live"')
-    expect(nodes).toContain('租约 1 小时')
+    expect(nodes).toContain('租约 1h')
     expect(registry.listCalls).toBe(1)
     const settings = await (await handle(get('/settings', VIEW))).text()
     expect(settings).toContain('data-ttl-ms="3600000"')
     expect(registry.listCalls).toBe(2)
     const overview = await (await handle(get('/', VIEW))).text()
-    expect(overview).toContain('<div class="stat-num">1 小时</div>')
+    // The lease is a constant: the overview no longer spends a card on it
+    // (A2); the roster and the settings page still state it.
+    expect(overview).not.toContain('注册租约')
     expect(registry.listCalls).toBe(3)
     for (const page of [nodes, settings, overview]) {
       expect(page).not.toContain('1 分 30 秒')
@@ -823,7 +833,11 @@ describe('wake', () => {
     expect(response.status).toBe(501)
     const error = await errorOf(response)
     expect(error['code']).toBe('unsupported')
-    expect(String(error['message'])).toContain('PSK')
+    // The cause it has: no wake target at all, so no key to go looking for
+    // (C6) - and the command is the product's (I2).
+    expect(String(error['message'])).toBe(
+      '这台控制台启动时没有配置唤醒目标 · 用 qm console --wake-url 启动后再试',
+    )
   })
 
   test('selects only a configured named wake target and discards a client URL', async () => {

@@ -54,7 +54,7 @@ function nodeServersOf(deps: ConsoleDeps): readonly NodeServer[] {
 
 const SERVERS_UNSUPPORTED =
   '该控制台没有配置服务器归属（启动时缺少 --node-server），因此没有可看的服务器；' +
-  '请在启动 occ console 时用 --node-server <node>=<server> 指定后重试。'
+  '请在启动 qm console 时用 --node-server <node>=<server> 指定后重试。'
 
 /** An empty string is a legitimate value: it is how an operator clears a note. */
 function parseServerNote(body: Record<string, unknown>): Parsed<string> {

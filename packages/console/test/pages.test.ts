@@ -15,7 +15,13 @@
 import { describe, expect, test } from 'bun:test'
 import { CONSOLE_CHAT_JS } from '../src/assets/chatClient.js'
 import { CONSOLE_CLIENT_JS } from '../src/assets/client.js'
-import { CSP, DOCUMENT_CSP, html } from '../src/respond.js'
+import {
+  CSP,
+  DOCUMENT_CSP,
+  documentCspFor,
+  html,
+  inlineScripts,
+} from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
 import { STUB_LINE } from '../src/routes/stub.js'
 import {
@@ -165,7 +171,7 @@ describe('every page', () => {
       const html = await response.text()
       expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
       expect(html).toContain(
-        `<title>阡陌 console · ${row.title} · ${LABEL}</title>`,
+        `<title>阡陌控制台 · ${row.title} · ${LABEL}</title>`,
       )
       expect(html).toContain(
         `<h1 class="page-title" id="page-title">${row.title}</h1>`,
@@ -479,8 +485,19 @@ describe('framing (H1)', () => {
     for (const row of PAGES) {
       const response = await handle(browse(row.path, ADMIN))
       const [policy, xfo] = framingOf(response)
-      expect(`${row.path} ${policy}`).toBe(`${row.path} ${DOCUMENT_CSP}`)
+      const body = await response.text()
+      // The page's own scripts by hash, and frame-ancestors (H2, H1).
+      expect(`${row.path} ${policy}`).toBe(
+        `${row.path} ${documentCspFor(inlineScripts(body))}`,
+      )
+      expect(policy.endsWith("; frame-ancestors 'none'")).toBe(true)
       expect(`${row.path} ${xfo}`).toBe(`${row.path} DENY`)
+      // The <meta> says the same, less the directive a meta cannot carry.
+      const meta =
+        /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/
+          .exec(body)?.[1]
+          ?.replaceAll('&#39;', "'")
+      expect(`${meta}; frame-ancestors 'none'`).toBe(policy)
     }
   })
 
@@ -641,12 +658,12 @@ describe('a session that lapses under the page (C1)', () => {
   test('the runtime stops asking after the first 401, and opens the dialog', () => {
     const runtime = CONSOLE_CLIENT_JS
     expect(runtime).toContain(
-      'if (res.status === 401) { expire(); throw new Error(EXPIRED); }',
+      "if (res.status === 401) { expire(); throw failure('unauthorized', 401, EXPIRED); }",
     )
     // Both transports refuse without leaving the browser once expired.
     expect(runtime.match(/if \(expired\) return refused\(\);/g)).toHaveLength(2)
     expect(runtime).toContain(
-      'clearInterval(refreshTimer); refreshTimer = null; }',
+      'clearTimeout(refreshTimer); refreshTimer = null; }',
     )
     expect(runtime).toContain("openDialog('session-expired', null)")
     // The chat page's stream and fallback poller stop with it.

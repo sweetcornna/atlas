@@ -43,9 +43,9 @@ import {
   CONSOLE_CLIENT_JS,
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
-import { CONSOLE_CSS } from '../assets/css.js'
+import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
 import type { ConsoleRole } from '../auth.js'
-import { CSP } from '../respond.js'
+import { cspFor } from '../respond.js'
 import {
   chevron,
   icon,
@@ -55,6 +55,7 @@ import {
   type Tone,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
+import { zoneLabel } from './format.js'
 
 /**
  * The product mark. The instance name sits beside it, never merged into it.
@@ -62,7 +63,7 @@ import { attr, escapeHtml } from './escape.js'
  * Every document puts it in its `<title>`, and one string spelled in several
  * places is several strings.
  */
-export const BRAND = '阡陌 console'
+export const BRAND = '阡陌控制台'
 
 const WORDMARK_CN = '阡陌'
 const WORDMARK_EN = 'AgentNest'
@@ -91,17 +92,38 @@ const FAVICON =
  * the shared sheet in the same `<style>` so a page carries what it needs and
  * nothing that another page needs.
  */
-export function documentHead(title: string, pageCss = ''): string {
+/** Each page's own sheet, stripped once (G1): there are a handful of them. */
+const strippedPageCss = new Map<string, string>()
+
+function pageSheet(css: string): string {
+  if (css === '') return ''
+  let stripped = strippedPageCss.get(css)
+  if (stripped === undefined) {
+    stripped = stripCssComments(css)
+    strippedPageCss.set(css, stripped)
+  }
+  return stripped
+}
+
+/**
+ * `scripts` are the inline scripts the document will carry, exactly: the
+ * policy allows those by hash and nothing else (`respond.ts`, H2).
+ */
+export function documentHead(
+  title: string,
+  pageCss = '',
+  scripts: readonly string[] = [],
+): string {
   return (
     `<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n` +
     `<meta charset="utf-8">\n` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">\n` +
     `<meta name="color-scheme" content="light dark">\n` +
     `<meta name="referrer" content="no-referrer">\n` +
-    `<meta http-equiv="Content-Security-Policy" content="${attr(CSP)}">\n` +
+    `<meta http-equiv="Content-Security-Policy" content="${attr(cspFor(scripts))}">\n` +
     `<link rel="icon" href="${attr(FAVICON)}">\n` +
     `<title>${escapeHtml(title)}</title>\n` +
-    `<style>${CONSOLE_CSS}${pageCss}</style>\n` +
+    `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n` +
     `</head>\n`
   )
 }
@@ -293,8 +315,16 @@ function sidebar(model: ShellModel): string {
         `</div>`,
     )
     .join('')
+  // Below 1000px the panel is a drawer (E1): a native popover the top bar's
+  // menu button opens, with no script — the UA gives it the top layer, Esc
+  // and a tap outside. Above it the attribute is inert and the panel is the
+  // left column it always was (`assets/css.ts`, drawers).
   return (
-    `<aside class="side">` +
+    `<aside class="side drawer" id="side" popover>` +
+    `<button type="button" class="btn btn-ghost btn-icon drawer-close" ` +
+    `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
+    icon('x') +
+    `</button>` +
     `<div class="brand">` +
     `<div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
     `<a class="brand-cn" href="/" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
@@ -302,6 +332,11 @@ function sidebar(model: ShellModel): string {
     `<nav class="nav" aria-label="导航">${groups}</nav>` +
     `<div class="side-foot">` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
+    // Which zone the page's times are in: the server's as drawn, the
+    // reader's once the runtime has redrawn them (时区).
+    `<p class="note" id="tz-note">时间 · ${escapeHtml(
+      zoneLabel(Date.now()),
+    )} · 服务器时区</p>` +
     (model.poll === true
       ? `<div class="divider"></div>${refreshControl()}`
       : '') +
@@ -343,6 +378,10 @@ function topBar(model: ShellModel): string {
   return (
     `<header class="top">` +
     `<div class="top-lead">` +
+    `<button type="button" class="btn btn-ghost btn-icon drawer-open" ` +
+    `popovertarget="side" aria-label="菜单">` +
+    icon('menu') +
+    `</button>` +
     breadcrumb(model.crumbs) +
     `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
     `</div>` +
@@ -388,15 +427,23 @@ function sessionExpired(relogin: string): string {
 export function renderShell(model: ShellModel): string {
   const runtime =
     model.viewer === undefined ? CONSOLE_CLIENT_JS : CONSOLE_CLIENT_JS_ACCOUNTS
+  const script = runtime + (model.pageScript ?? '')
   return (
-    documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss) +
+    documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss, [
+      script,
+    ]) +
     `<body>\n` +
+    // The first stop for a keyboard: past the sidebar to the page (F1).
+    `<a class="skip-link" href="#main">跳到正文</a>\n` +
     `<div class="shell">\n` +
     sidebar(model) +
     `\n<div class="frame">\n` +
     topBar(model) +
     viewerNotice(model.viewer) +
-    `\n<main class="main" id="main" aria-labelledby="page-title">\n` +
+    // Lit by the runtime when a refresh fails, with how old the page is (C2).
+    // Outside every polled region, so the failure it reports cannot take it.
+    `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
+    `\n<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">\n` +
     model.body +
     `\n</main>\n</div>\n</div>\n` +
     (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +
@@ -404,7 +451,7 @@ export function renderShell(model: ShellModel): string {
     // every polled region, so a refresh never takes a message with it.
     `<div class="toasts" id="toasts" aria-live="polite" ` +
     `aria-relevant="additions"></div>\n` +
-    `<script>${runtime}${model.pageScript ?? ''}</script>\n` +
+    `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )
 }

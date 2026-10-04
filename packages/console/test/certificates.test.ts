@@ -85,8 +85,12 @@ function caRoot(over: Partial<ConsoleCaRoot> = {}): ConsoleCaRoot {
 
 /** The root strips on a page: `[tone, visible text]`, in page order. */
 function rootStrips(html: string): (readonly [string, string])[] {
-  return [...html.matchAll(/<p class="bar bar-(\w+)">(CA 根 [^<]*)<\/p>/g)].map(
-    match => [match[1] ?? '', match[2] ?? ''] as const,
+  // The strip's text, with an instant's <time> (时区) read as its text.
+  return [
+    ...html.matchAll(/<p class="bar bar-(\w+)">(CA 根 [\s\S]*?)<\/p>/g),
+  ].map(
+    match =>
+      [match[1] ?? '', (match[2] ?? '').replace(/<[^>]*>/g, '')] as const,
   )
 }
 
@@ -304,6 +308,14 @@ describe('§6.2 expiry tiers for the CA root', () => {
       /^CA 根 CN=qianmo-ca · 已过期 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} · 所签证书一并失效$/,
     )
     expect(strip?.[1]).not.toContain('剩余')
+    // The instant is one the runtime redraws in the reader's zone (时区).
+    expect(
+      roster([certificate()], FRESH_RL, [
+        caRoot({ status: 'expired', notAfter: NOW - DAY }),
+      ]),
+    ).toContain(
+      `已过期 <time datetime="${new Date(NOW - DAY).toISOString()}" data-fmt="datetime">`,
+    )
   })
 
   test('two roots during an overlap: one strip each, in file order', () => {

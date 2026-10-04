@@ -57,13 +57,16 @@
  * finished refresh bumps the region's `data-refreshed`, which is what a
  * browser-level test waits on.
  *
- * ## The token arrives two ways
+ * ## The token arrives two ways, and becomes a session (H5)
  *
- * `#token=` and `?token=`. The fragment never reaches the server and is the one
- * to prefer, but `qm console` prints its banner link with the query form, so a
- * client that only reads the fragment leaves anybody who followed that link
- * unauthenticated from the first poll onward. Either way it is stored and
- * scrubbed out of the address bar immediately.
+ * `#token=` and `?token=`. `qm console` prints its banner link with the query
+ * form, and on a console without accounts the server answers that navigation
+ * with the session cookie and a redirect to the same address without the
+ * token, so this script never sees it. Whatever does reach it - the fragment,
+ * the query on a console with accounts, the token box - is stored, scrubbed
+ * out of the address bar, and posted to the login door, which sets the same
+ * cookie. No link and no stream URL is ever built with the token in it:
+ * navigation rides the cookie.
  *
  * There is a third way in that this script never sees: the login page sets an
  * `HttpOnly` cookie, which the browser attaches by itself and no script can
@@ -75,8 +78,9 @@
  * which is cheaper than a rule with an exception in it.
  *
  * The token box stays, and so does `localStorage`: a `Bearer` still overrides
- * the cookie, which is what makes "look at this console as the other role for a
- * minute" possible without logging out.
+ * the cookie on this page's fetches. Since H5 a token saved in the box is also
+ * exchanged for the cookie, so switching tokens switches the session too -
+ * the next page opens as the role just entered, not as the one before it.
  *
  * ## One place an action reports back (D2)
  *
@@ -100,6 +104,7 @@
 
 import { PERSONAL_CREDENTIAL_PREFIX } from '../accounts.js'
 import { CONSOLE_HEADER, CONSOLE_HEADER_VALUE } from '../auth.js'
+import { errorTableJson } from '../view/errors.js'
 
 /**
  * What is spliced into the two token functions of the runtime.
@@ -154,8 +159,98 @@ function runtimeScript(guards: TokenGuards): string {
     if (el) el.textContent = value;
   }
 
+  /* ---------------- what a failure says (C5) ---------------- */
+
+  // The same tables view/errors.ts renders failure strips with, serialised
+  // from there; the algorithm below is that module's humanizeError written
+  // out again, and test/copyGate.test.ts runs the two over one corpus. An API
+  // message is for whoever reads the JSON; the page shows the short line and
+  // keeps the original for 详情.
+  /* humanize:start */
+  var ERRORS = ${errorTableJson()};
+  var UNCLEAN = new RegExp(ERRORS.unclean);
+  var CJK = new RegExp(ERRORS.cjk);
+  var PROTOCOL = new RegExp(ERRORS.protocol);
+  var PATTERNS = ERRORS.patterns.map(function (p) { return [new RegExp(p[0], 'i'), p[1]]; });
+  // The last line message() produced and the original behind it, so the
+  // failure toast that quotes the line can fold the original under 详情.
+  var lastMapped = null;
+
+  function cleanLine(text) {
+    return text.length > 0 && text.length <= ERRORS.maxClean &&
+      CJK.test(text) && !UNCLEAN.test(text);
+  }
+
+  function ownPhrase(table, key) {
+    if (key === undefined || key === null || key === '') return undefined;
+    var name = String(key);
+    return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
+  }
+
+  function humanize(code, status, raw) {
+    raw = String(raw === undefined || raw === null ? '' : raw).trim();
+    var parts = raw.split(' · ');
+    var head = parts[0] || '';
+    var lead = parts.length > 1 && head.length <= ERRORS.maxLead &&
+      cleanLine(head) && !PROTOCOL.test(head) ? head : '';
+    var phrase = '';
+    for (var i = 0; i < PATTERNS.length; i++) {
+      if (PATTERNS[i][0].test(raw)) { phrase = PATTERNS[i][1]; break; }
+    }
+    if (phrase === '' && cleanLine(raw)) return { text: raw, detail: '' };
+    if (phrase === '') {
+      phrase = ownPhrase(ERRORS.codes, code);
+      if (phrase === undefined) phrase = ownPhrase(ERRORS.statuses, status);
+      if (phrase === undefined) phrase = ERRORS.fallback;
+    }
+    var text = lead === '' || lead === phrase ? phrase : lead + ' · ' + phrase;
+    var protocol = PROTOCOL.exec(raw);
+    if (protocol && text.indexOf(protocol[0]) === -1) text = text + ' · ' + protocol[0];
+    return { text: text, detail: raw === text ? '' : raw };
+  }
+  /* humanize:end */
+
+  // An Error whose message is already the page's line: code and status for
+  // a script that branches on them, the original in detail.
+  function failure(code, status, raw) {
+    var human = humanize(code, status, raw);
+    var err = new Error(human.text);
+    err.code = code || '';
+    err.status = status || 0;
+    err.detail = human.detail;
+    err.human = human.text;
+    return err;
+  }
+
+  // What reaches the page for any rejection: a failure from this runtime as
+  // it is, anything else (a page script's own throw, a TypeError) through
+  // the same mapping.
   function message(err) {
-    return err && err.message ? String(err.message) : String(err);
+    if (err && typeof err.human === 'string') {
+      lastMapped = { text: err.human, detail: err.detail || '', code: err.code || '' };
+      return err.human;
+    }
+    var raw = err && err.message ? String(err.message) : String(err);
+    var human = humanize(err && err.code, err && err.status, raw);
+    lastMapped = { text: human.text, detail: human.detail, code: (err && err.code) || '' };
+    return human.text;
+  }
+
+  // The line a page script reports a failed write with: 注册失败 · 无法连接.
+  // A write the operator stopped waiting for has not failed as far as anybody
+  // knows (C4), so it is not called one: 注册 · 已停止等待 · 服务端可能仍在处理.
+  function failLine(verb, err) {
+    var line = message(err);
+    return err && err.code === 'aborted' ? verb + ' · ' + line : verb + '失败 · ' + line;
+  }
+
+  function failTone(err) { return err && err.code === 'aborted' ? 'warn' : 'bad'; }
+
+  // A fetch that never got an answer: stopped on purpose, or no network.
+  function unanswered(e) {
+    if (e && e.human) return e;
+    if (e && e.name === 'AbortError') return failure('aborted', 0, '');
+    return failure('network', 0, e && e.message ? e.message : String(e));
   }
 
   function say(el, value, tone) {
@@ -171,25 +266,151 @@ function runtimeScript(guards: TokenGuards): string {
       pad(d.getSeconds());
   }
 
+  /* ---------------- the reader's zone (时区) ---------------- */
+
+  // The server draws every instant in its own zone, with the instant itself
+  // in datetime and its shape in data-fmt (view/bits.ts timeTag). Redrawn
+  // here in the browser's, so a console on a UTC machine reads in the
+  // operator's wall clock; #tz-note says which zone the page is in, with
+  // script or without. Regions swapped in later are redrawn as they land.
+  function day(d) {
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function zoneOf(d) {
+    var offset = -d.getTimezoneOffset();
+    if (!offset) return 'UTC';
+    var m = Math.abs(offset);
+    return 'UTC' + (offset > 0 ? '+' : '-') + Math.floor(m / 60) +
+      (m % 60 ? ':' + pad(m % 60) : '');
+  }
+
+  function localizeTimes(root) {
+    if (!root || root.nodeType !== 1) return;
+    var times = root.matches('time[data-fmt]') ? [root] :
+      root.querySelectorAll('time[data-fmt]');
+    for (var i = 0; i < times.length; i++) {
+      var d = new Date(times[i].getAttribute('datetime') || '');
+      if (isNaN(d.getTime())) continue;
+      var fmt = times[i].getAttribute('data-fmt');
+      var text = fmt === 'clock' ? stamp(d) :
+        fmt === 'minute' ? day(d) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) :
+        day(d) + ' ' + stamp(d);
+      if (times[i].textContent !== text) times[i].textContent = text;
+    }
+    var boxes = root.querySelectorAll('input[type="datetime-local"][data-at]:not([data-zoned])');
+    for (var j = 0; j < boxes.length; j++) {
+      var at = new Date(Number(boxes[j].getAttribute('data-at')));
+      boxes[j].setAttribute('data-zoned', '');
+      if (isNaN(at.getTime())) continue;
+      boxes[j].value = day(at) + 'T' + pad(at.getHours()) + ':' + pad(at.getMinutes());
+    }
+  }
+
+  // A datetime-local box holds a wall-clock time and no zone, which the
+  // server would read in its own. What is sent is the instant the reader
+  // meant: epoch ms in a hidden twin, the box itself left out of the query.
+  function sendInstants(form) {
+    var boxes = form.querySelectorAll('input[type="datetime-local"][name]');
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      if (box.disabled || !box.value) continue;
+      var at = new Date(box.value).getTime();
+      if (isNaN(at)) continue;
+      var twin = document.createElement('input');
+      twin.type = 'hidden';
+      twin.name = box.name;
+      twin.value = String(at);
+      twin.setAttribute('data-instant', '');
+      form.appendChild(twin);
+      box.disabled = true;
+      box.setAttribute('data-sent', '');
+    }
+  }
+
+  // Back to a page from the history cache: the boxes as the reader left them.
+  window.addEventListener('pageshow', function () {
+    var twins = document.querySelectorAll('input[data-instant]');
+    for (var i = 0; i < twins.length; i++) twins[i].remove();
+    var sent = document.querySelectorAll('input[data-sent]');
+    for (var k = 0; k < sent.length; k++) {
+      sent[k].disabled = false;
+      sent[k].removeAttribute('data-sent');
+    }
+  });
+
+  function startZone() {
+    localizeTimes(document.body);
+    var note = byId('tz-note');
+    if (note) note.textContent = '时间 · ' + zoneOf(new Date()) + ' · 本机时区';
+    if (!window.MutationObserver) return;
+    new MutationObserver(function (records) {
+      for (var r = 0; r < records.length; r++) {
+        var added = records[r].addedNodes;
+        for (var n = 0; n < added.length; n++) localizeTimes(added[n]);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   /* ---------------- toasts ---------------- */
 
   var TOAST_MS = 6000;
   var TOAST_BAD_MS = 10000;
   var TOAST_MAX = 4;
 
-  function toast(text, tone) {
+  // A failure that quotes the line message() just produced carries the
+  // original under 详情: selectable, and kept on screen while it is open.
+  function toast(text, tone, detail) {
     var region = byId('toasts');
     if (!region || !text) return;
+    var quoted = tone === 'bad' && lastMapped && text.indexOf(lastMapped.text) !== -1;
+    if (detail === undefined && quoted && lastMapped.detail) detail = lastMapped.detail;
+    // A page script that does not know about 停止等待 still says 失败 for
+    // it; the tone at least does not.
+    if (quoted && lastMapped.code === 'aborted') tone = 'warn';
+    if (tone === 'bad') lastMapped = null;
     var line = document.createElement('div');
     line.className = 'toast';
     line.setAttribute('data-tone', tone || 'muted');
     if (tone === 'bad') line.setAttribute('role', 'alert');
-    line.textContent = text;
+    var words = document.createElement('span');
+    words.className = 'toast-text';
+    words.textContent = text;
+    line.appendChild(words);
+    var more = null;
+    if (detail) {
+      more = document.createElement('details');
+      more.className = 'toast-detail';
+      var summary = document.createElement('summary');
+      summary.textContent = '详情';
+      var raw = document.createElement('pre');
+      raw.className = 'raw';
+      raw.setAttribute('data-raw', '');
+      raw.textContent = detail;
+      more.appendChild(summary);
+      more.appendChild(raw);
+      line.appendChild(more);
+    }
     region.appendChild(line);
-    while (region.children.length > TOAST_MAX) region.removeChild(region.firstChild);
+    evict(region);
     var gone = function () { if (line.parentNode) line.parentNode.removeChild(line); };
-    line.addEventListener('click', gone);
-    setTimeout(gone, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
+    line.addEventListener('click', function (event) {
+      if (more && event.target && event.target.closest && event.target.closest('.toast-detail')) return;
+      gone();
+    });
+    var later = function () {
+      if (more && more.open) { setTimeout(later, TOAST_BAD_MS); return; }
+      gone();
+    };
+    setTimeout(later, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
+  }
+
+  // The oldest result goes first; a line for work still in flight stays,
+  // because its 停止等待 is the only way to stop waiting.
+  function evict(region) {
+    var lines = region.querySelectorAll('.toast:not([data-progress])');
+    var extra = region.children.length - TOAST_MAX;
+    for (var i = 0; i < lines.length && extra > 0; i++, extra--) lines[i].remove();
   }
 
   /* ---------------- dialogs ---------------- */
@@ -219,9 +440,30 @@ function runtimeScript(guards: TokenGuards): string {
     if (box && box.id === pendingFor) { pending = null; pendingFor = ''; }
   }
 
+  // Who opened each dialog: the control being dispatched, or failing that
+  // whatever had focus. Its confirm runs as that control's work (C4), and it
+  // is where focus goes back to when the dialog closes (D4).
+  var openers = {};
+
+  function openerOf(id) {
+    var seen = openers[id];
+    if (!seen) return null;
+    if (seen.el.isConnected) return seen.el;
+    // Replaced by a refresh while the dialog was up: the same control in
+    // the new markup, found the way a refresh finds the focused one.
+    var found = seen.mount && seen.mount.isConnected ? locate(seen.mount, seen.desc) : null;
+    if (found) seen.el = found;
+    return found;
+  }
+
   function openDialog(id, run) {
     var box = byId(id);
     if (!box) { if (run) run(); return; }
+    var from = trigger || document.activeElement;
+    if (from && from !== document.body && !box.contains(from)) {
+      var mount = from.closest('[data-poll]');
+      openers[id] = { el: from, mount: mount, desc: describe(from, mount || document.body) };
+    }
     if (run) { pending = run; pendingFor = id; }
     if (box.open) return;
     if (typeof box.showModal === 'function') box.showModal();
@@ -242,6 +484,7 @@ function runtimeScript(guards: TokenGuards): string {
       else window.localStorage.removeItem(TOKEN_KEY);
     } catch (e) { /* private mode: the in-memory copy is all we get */ }
     paintToken();
+    if (value) exchange(value);
   }
 
   // Says nothing when there is no local token, because there may still be a
@@ -251,31 +494,45 @@ function runtimeScript(guards: TokenGuards): string {
   function paintToken() {
     var has = readToken() !== '';
     say(byId('token-state'), has ? '令牌已存' : '', has ? 'ok' : 'muted');
-    paintLinks();
   }
 
   // Every page is its own document, so moving between them is a top-level
-  // navigation - and a navigation carries no Authorization header. So every
-  // link the shell marks data-nav gets the token in its query string, the same
-  // position the CLI banner uses and the same one the destination scrubs out
-  // of the address bar on arrival. Left alone when there is no token, which is
-  // the ordinary case rather than a broken one: a cookie session has nothing
-  // to sign a link with and needs nothing, because the browser attaches the
-  // cookie to the navigation (auth.ts).
-  function paintLinks() {
-    var token = readToken();
-    var links = document.querySelectorAll('a[data-nav]');
-    for (var i = 0; i < links.length; i++) {
-      var link = links[i];
-      var base = link.getAttribute('data-href');
-      if (base === null) {
-        base = link.getAttribute('href') || '/';
-        link.setAttribute('data-href', base);
-      }
-      if (!token) { link.setAttribute('href', base); continue; }
-      link.setAttribute('href', base + (base.indexOf('?') === -1 ? '?' : '&') +
-        'token=' + encodeURIComponent(token));
-    }
+  // navigation - and a navigation carries no Authorization header. It used
+  // to carry the token in its query string instead, signed onto every link
+  // marked data-nav, which put the token in every proxy log and history
+  // entry from then on. Now a token this page is handed - in #token=, in the
+  // box, or in ?token= where the server did not already exchange it - is
+  // posted to the login door, which answers with the session cookie, and the
+  // links stay as the server rendered them (H5). The local copy stays as a
+  // Bearer on this page's fetches; it is switching tokens, so the session
+  // switches with it.
+  var exchanging = null;
+
+  function exchange(value) {
+    if (typeof URLSearchParams !== 'function') return;
+    var form = new URLSearchParams();
+    form.set('token', value);
+    form.set('redirect', window.location.pathname);
+    exchanging = fetch('/login', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      // Success is a 303 to the page; the cookie is set by the redirect
+      // response itself, and following it would fetch a whole page for
+      // nothing.
+      redirect: 'manual'
+    }).then(function (res) {
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) return true;
+      say(byId('token-state'), '令牌未换成会话 · 换页需要重新登录', 'warn');
+      return false;
+    }, function () { return false; });
+  }
+
+  // What waits for a session before asking for something a header cannot
+  // ride on: the conversation page's EventSource.
+  function afterSession(run) {
+    (exchanging || Promise.resolve(true)).then(run, run);
   }
 
   // A token handed over in the URL is stored and then wiped from the address
@@ -320,7 +577,7 @@ function runtimeScript(guards: TokenGuards): string {
   function expire() {
     if (expired) return;
     expired = true;
-    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     for (var i = 0; i < expireHooks.length; i++) {
       try { expireHooks[i](); } catch (e) { /* one hook must not keep the rest running */ }
     }
@@ -337,7 +594,7 @@ function runtimeScript(guards: TokenGuards): string {
 
   // The one place a response status is looked at before anything else.
   function checked(res) {
-    if (res.status === 401) { expire(); throw new Error(EXPIRED); }
+    if (res.status === 401) { expire(); throw failure('unauthorized', 401, EXPIRED); }
     return res;
   }
 
@@ -348,7 +605,241 @@ function runtimeScript(guards: TokenGuards): string {
   // stopped: the next thing tried that would need the server brings it back.
   function refused() {
     openDialog('session-expired', null);
-    return Promise.reject(new Error(EXPIRED));
+    return Promise.reject(failure('unauthorized', 401, EXPIRED));
+  }
+
+  /* ---------------- fields (D3) ---------------- */
+
+  // A field that is wrong says so where it is: aria-invalid on the control
+  // and one line under it, tied to it by aria-describedby so a screen reader
+  // reads the reason with the label. The line goes as soon as the field is
+  // edited. A page script supplies the rules; the runtime only marks.
+  function controlOf(form, name) {
+    var el = form.elements[name];
+    // A group of checkboxes sharing a name: the first stands for the group.
+    if (el && !el.tagName && el.length !== undefined) el = el[0];
+    return el || null;
+  }
+
+  function errorIdOf(el) {
+    return (el.id || 'f-' + (el.name || 'field')) + '-error';
+  }
+
+  function markField(form, name, text) {
+    var el = controlOf(form, name);
+    if (!el) return null;
+    var id = errorIdOf(el);
+    var line = byId(id);
+    if (!line) {
+      line = document.createElement('p');
+      line.className = 'field-error';
+      line.id = id;
+      (el.closest('.field') || el.parentNode).appendChild(line);
+    }
+    line.textContent = text;
+    el.setAttribute('aria-invalid', 'true');
+    var described = (el.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
+    if (described.indexOf(id) === -1) {
+      described.push(id);
+      el.setAttribute('aria-describedby', described.join(' '));
+    }
+    // A field folded away under 高级选项 would be marked out of sight.
+    var fold = el.closest('details');
+    if (fold && !fold.open) fold.open = true;
+    return el;
+  }
+
+  function unmarkField(el) {
+    if (!el || !el.getAttribute || el.getAttribute('aria-invalid') !== 'true') return;
+    var id = errorIdOf(el);
+    el.removeAttribute('aria-invalid');
+    var rest = (el.getAttribute('aria-describedby') || '').split(' ').filter(function (part) {
+      return part && part !== id;
+    });
+    if (rest.length > 0) el.setAttribute('aria-describedby', rest.join(' '));
+    else el.removeAttribute('aria-describedby');
+    var line = byId(id);
+    if (line) line.remove();
+  }
+
+  function clearFields(form) {
+    var marked = form.querySelectorAll('[aria-invalid="true"]');
+    for (var i = 0; i < marked.length; i++) unmarkField(marked[i]);
+  }
+
+  // rules: { name: function (trimmed value, control) -> '' or the reason }.
+  // Marks every field that fails, focuses the first, true when none did.
+  function checkFields(form, rules) {
+    clearFields(form);
+    var first = null;
+    for (var name in rules) {
+      if (!Object.prototype.hasOwnProperty.call(rules, name)) continue;
+      var el = controlOf(form, name);
+      if (!el || el.disabled) continue;
+      var why = rules[name](typeof el.value === 'string' ? el.value.trim() : '', el);
+      if (why && markField(form, name, why) && !first) first = el;
+    }
+    if (first) first.focus();
+    return first === null;
+  }
+
+  // A refusal that names one of the request body's own keys - the
+  // registry's 'invalid endpoint: x', the route's '字段 afterMs 必须是…' -
+  // goes back onto that field. Only for 'invalid', where the key names the
+  // field at fault rather than merely appearing in a sentence.
+  function fieldOf(err, names) {
+    if (!err || err.code !== 'invalid') return '';
+    var raw = String(err.detail || err.message || '');
+    for (var i = 0; i < names.length; i++) {
+      if (new RegExp('(^|[^A-Za-z])' + names[i] + '([^A-Za-z]|$)', 'i').test(raw)) return names[i];
+    }
+    return '';
+  }
+
+  /* ---------------- work in flight (C4) ---------------- */
+
+  // A write is somebody's: the button that was clicked, the form's submit
+  // button, or - for a confirmed action - the control that opened the
+  // confirm. Whatever sendJson a dispatch starts synchronously belongs to
+  // that control, so every page script gets the same behaviour without
+  // saying anything: the control is disabled and aria-busy until the answer
+  // is in, which is what stops a double click sending twice; after a second,
+  // a line says how long it has been and offers 停止等待, which aborts the
+  // request. Stopping waiting is not undoing - the server may still finish -
+  // and the line it leaves says exactly that (errors.ts, 'aborted').
+  var SLOW_MS = 1000;
+  var trigger = null;
+  var inflight = [];
+
+  function within(el, run) {
+    var outer = trigger;
+    trigger = el || null;
+    try { run(); } finally { trigger = outer; }
+  }
+
+  function labelOf(el) {
+    var named = el.getAttribute('data-busy-label') || el.getAttribute('aria-label') ||
+      el.textContent || '';
+    return named.replace(/s+/g, ' ').trim() || '操作';
+  }
+
+  function busyOn(el) {
+    el.setAttribute('aria-busy', 'true');
+    if ('disabled' in el) el.disabled = true;
+  }
+
+  function busyOff(el, wasDisabled) {
+    el.removeAttribute('aria-busy');
+    if ('disabled' in el) el.disabled = wasDisabled;
+  }
+
+  function track(el) {
+    if (!el || !el.isConnected) return null;
+    for (var i = 0; i < inflight.length; i++) {
+      if (inflight[i].el === el) { inflight[i].count += 1; return inflight[i]; }
+    }
+    var mount = el.closest('[data-poll]');
+    var job = {
+      el: el,
+      desc: describe(el, mount || document.body),
+      label: labelOf(el),
+      controller: typeof AbortController === 'function' ? new AbortController() : null,
+      started: Date.now(),
+      wasDisabled: !!el.disabled,
+      hadFocus: document.activeElement === el,
+      count: 1,
+      stopped: false,
+      line: null,
+      words: null,
+      timer: null,
+      ticker: null
+    };
+    busyOn(el);
+    job.timer = setTimeout(function () { showProgress(job); }, SLOW_MS);
+    inflight.push(job);
+    return job;
+  }
+
+  function paintProgress(job) {
+    var secs = Math.max(1, Math.round((Date.now() - job.started) / 1000));
+    job.words.textContent = job.label + ' · 进行中 · 已用 ' + secs + ' 秒';
+  }
+
+  function showProgress(job) {
+    if (inflight.indexOf(job) === -1) return;
+    var line = document.createElement('div');
+    line.setAttribute('data-progress', '');
+    var words = document.createElement('span');
+    words.className = 'toast-text';
+    line.appendChild(words);
+    job.line = line;
+    job.words = words;
+    paintProgress(job);
+    if (job.controller) {
+      var stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'btn btn-ghost btn-small';
+      stop.setAttribute('data-progress-stop', '');
+      stop.textContent = '停止等待';
+      stop.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        job.stopped = true;
+        job.controller.abort();
+      });
+      line.appendChild(stop);
+    }
+    // A modal dialog makes the rest of the page inert, so a stop button in
+    // the corner would be out of reach behind the dialog that asked. Inside
+    // that dialog, above its buttons, instead.
+    var box = job.el.isConnected ? job.el.closest('dialog[open]') : null;
+    if (box) {
+      line.className = 'progress';
+      var row = job.el.closest('.dialog-actions');
+      if (row && row.parentNode) row.parentNode.insertBefore(line, row);
+      else box.appendChild(line);
+    } else {
+      var region = byId('toasts');
+      if (!region) return;
+      line.className = 'toast progress';
+      line.setAttribute('data-tone', 'muted');
+      region.appendChild(line);
+    }
+    // Announced once, as it appears; not again every second.
+    line.setAttribute('aria-live', 'off');
+    job.ticker = setInterval(function () { paintProgress(job); }, 1000);
+  }
+
+  function settle(job) {
+    job.count -= 1;
+    if (job.count > 0) return;
+    clearTimeout(job.timer);
+    if (job.ticker) clearInterval(job.ticker);
+    var at = inflight.indexOf(job);
+    if (at !== -1) inflight.splice(at, 1);
+    var active = document.activeElement;
+    var lost = !active || active === document.body || (job.line && job.line.contains(active));
+    if (job.line && job.line.parentNode) job.line.parentNode.removeChild(job.line);
+    var el = job.el;
+    if (!el.isConnected) return;
+    busyOff(el, job.wasDisabled);
+    // A disabled control drops focus; give it back to whoever was on it, or
+    // to whoever just pressed 停止等待 (now gone with its line).
+    if (lost && (job.hadFocus || job.stopped) && !el.disabled) el.focus({ preventScroll: true });
+  }
+
+  // A control replaced by a refresh while its write is out: the replacement
+  // is the same control, so it is busy too.
+  function rebusy(mount) {
+    for (var i = 0; i < inflight.length; i++) {
+      var job = inflight[i];
+      if (job.el.isConnected) continue;
+      var found = locate(mount, job.desc);
+      if (!found) continue;
+      job.el = found;
+      job.wasDisabled = !!found.disabled;
+      busyOn(found);
+    }
   }
 
   /* ---------------- transport ---------------- */
@@ -359,11 +850,11 @@ function runtimeScript(guards: TokenGuards): string {
       headers: authHeaders(),
       credentials: 'same-origin',
       cache: 'no-store'
-    }).then(checked).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+    }).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
+      if (!res.ok) throw failure('', res.status, 'HTTP ' + res.status);
       var type = res.headers.get('content-type') || '';
       if (type.indexOf('text/html') === -1) {
-        throw new Error('响应非 HTML · ' + type);
+        throw failure('format', res.status, '响应非 HTML · ' + type);
       }
       return res.text();
     });
@@ -371,13 +862,15 @@ function runtimeScript(guards: TokenGuards): string {
 
   function sendJson(method, url, body) {
     if (expired) return refused();
+    var job = track(trigger);
     var init = {
       method: method,
       credentials: 'same-origin',
       headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' })
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(url, init).then(checked).then(function (res) {
+    if (job && job.controller) init.signal = job.controller.signal;
+    var sent = fetch(url, init).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
       if (res.status === 204) return null;
       return res.text().then(function (raw) {
         var data = null;
@@ -385,15 +878,22 @@ function runtimeScript(guards: TokenGuards): string {
         if (!res.ok) {
           // http.ts answers { error: { code, message } }. Reaching for
           // data.error directly puts "[object Object]" on the page, which is
-          // the one message an operator can do nothing with.
+          // the one message an operator can do nothing with. The message is
+          // the developer's; the page gets the line (C5).
           var err = data && data.error;
           var detail = (err && err.message) || (data && data.message) ||
             (typeof err === 'string' ? err : '');
-          throw new Error(detail ? String(detail) : 'HTTP ' + res.status);
+          var code = err && typeof err.code === 'string' ? err.code : '';
+          throw failure(code, res.status, detail ? String(detail) : 'HTTP ' + res.status);
         }
         return data;
       });
-    });
+    }).then(null, function (e) { throw unanswered(e); });
+    if (!job) return sent;
+    // Settled before the page script hears, so its own then sees the
+    // control enabled again.
+    return sent.then(function (data) { settle(job); return data; },
+      function (err) { settle(job); throw err; });
   }
 
   /* ---------------- polled regions ---------------- */
@@ -432,20 +932,25 @@ function runtimeScript(guards: TokenGuards): string {
     var focus = null;
     var active = document.activeElement;
     if (active && active !== document.body && mount.contains(active)) {
-      var holder = active.closest('[data-key]');
-      focus = {
-        id: active.id || '',
-        key: holder && mount.contains(holder) ? holder.getAttribute('data-key') : null,
-        tag: active.tagName,
-        attrs: []
-      };
-      for (var j = 0; j < IDENTITY.length; j++) {
-        if (active.hasAttribute(IDENTITY[j])) {
-          focus.attrs.push([IDENTITY[j], active.getAttribute(IDENTITY[j])]);
-        }
-      }
+      focus = describe(active, mount);
     }
     return { open: open, focus: focus };
+  }
+
+  // Enough to find the same control in a fresh copy of the region: its id,
+  // the keyed row it sits in, its tag and its identifying attributes.
+  function describe(el, mount) {
+    var holder = el.closest('[data-key]');
+    var desc = {
+      id: el.id || '',
+      key: holder && mount.contains(holder) ? holder.getAttribute('data-key') : null,
+      tag: el.tagName,
+      attrs: []
+    };
+    for (var j = 0; j < IDENTITY.length; j++) {
+      if (el.hasAttribute(IDENTITY[j])) desc.attrs.push([IDENTITY[j], el.getAttribute(IDENTITY[j])]);
+    }
+    return desc;
   }
 
   function locate(mount, focus) {
@@ -484,6 +989,51 @@ function runtimeScript(guards: TokenGuards): string {
 
   var refreshes = 0;
 
+  /* ---------------- connection state (C2) ---------------- */
+
+  // A refresh that fails leaves the old data on the page, which is right -
+  // a blank roster reads as "everyone left" - and wrong unless the page says
+  // how old it is. So a failure lights one line under the top bar (#conn,
+  // role=status) and stamps each polled region with the instant it was last
+  // good; the next success takes both away. Failures back off: each one
+  // doubles the wait, up to a minute, and a success puts it back.
+  var BACKOFF_MAX_MS = 60000;
+  var failures = 0;
+  var pollMs = 0;
+  // The page the server rendered is the first good read.
+  var lastGood = Date.now();
+
+  function asOf(at) { return '数据截至 ' + stamp(new Date(at)); }
+
+  function connSay(text, tone) {
+    var line = byId('conn');
+    if (!line) return;
+    if (!text) { line.hidden = true; line.textContent = ''; return; }
+    line.textContent = text;
+    line.setAttribute('data-tone', tone || 'bad');
+    line.hidden = false;
+  }
+
+  function staleMark(mount) {
+    var at = Number(mount.getAttribute('data-as-of')) || lastGood;
+    var mark = null;
+    for (var i = 0; i < mount.children.length; i++) {
+      if (mount.children[i].hasAttribute('data-asof')) { mark = mount.children[i]; break; }
+    }
+    if (!mark) {
+      mark = document.createElement('p');
+      mark.className = 'asof';
+      mark.setAttribute('data-asof', '');
+      mount.insertBefore(mark, mount.firstChild);
+    }
+    mark.textContent = asOf(at);
+  }
+
+  function clearStale(mount) {
+    var marks = mount.querySelectorAll('[data-asof]');
+    for (var i = 0; i < marks.length; i++) marks[i].remove();
+  }
+
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
     if (!url) return Promise.resolve();
@@ -492,8 +1042,14 @@ function runtimeScript(guards: TokenGuards): string {
       var state = snapshot(mount);
       if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
       restore(mount, state);
+      rebusy(mount);
+      clearStale(mount);
+      mount.setAttribute('data-as-of', String(Date.now()));
       refreshes += 1;
       mount.setAttribute('data-refreshed', String(refreshes));
+    }, function (err) {
+      if (!expired) staleMark(mount);
+      throw err;
     });
   }
 
@@ -504,33 +1060,68 @@ function runtimeScript(guards: TokenGuards): string {
     return Promise.all(jobs);
   }
 
+  function nextWait() {
+    return failures === 0 ? pollMs : Math.min(BACKOFF_MAX_MS, pollMs * Math.pow(2, failures));
+  }
+
+  function offlineLine() {
+    return '浏览器离线 · ' + asOf(lastGood);
+  }
+
   function tick() {
     var state = byId('refresh-state');
     return refreshAll().then(function () {
+      failures = 0;
+      lastGood = Date.now();
+      connSay('');
       say(state, '更新于 ' + stamp(new Date()), 'muted');
     }).catch(function (err) {
       // An expiry has already said so, in the dialog and on this line.
       if (expired) return;
+      failures += 1;
+      var wait = Math.round(nextWait() / 1000);
+      connSay(navigator.onLine === false ? offlineLine() :
+        '连接中断 · 正在重试 · ' + asOf(lastGood) + (wait > 0 ? ' · ' + wait + ' 秒后再试' : ''));
       say(state, '刷新失败 · ' + message(err), 'bad');
     });
   }
 
+  // A chain of timeouts rather than an interval, so a failure can stretch
+  // the next wait and a slow refresh never overlaps the next one.
+  function arm() {
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    if (expired || !(pollMs > 0)) return;
+    refreshTimer = setTimeout(function () {
+      refreshTimer = null;
+      // A background tab polling every five seconds is a background tab
+      // holding a socket open for nobody to look at.
+      if (document.hidden) { arm(); return; }
+      tick().then(arm);
+    }, nextWait());
+  }
+
   function schedule() {
-    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    pollMs = 0;
     if (expired || !document.querySelector('[data-poll]')) return;
     var toggle = byId('auto-refresh');
     var picker = byId('refresh-interval');
     var on = toggle ? toggle.checked : false;
     var ms = picker ? parseInt(picker.value, 10) : 5000;
     if (!on || !(ms > 0)) { say(byId('refresh-state'), '已暂停', 'muted'); return; }
-    refreshTimer = setInterval(function () {
-      // A background tab polling every five seconds is a background tab
-      // holding a socket open for nobody to look at.
-      if (!document.hidden) tick();
-    }, ms);
+    pollMs = ms;
+    arm();
     // The interval is already shown by the select beside this; repeating it
     // here would just be a second copy of the same number.
     say(byId('refresh-state'), '', 'muted');
+  }
+
+  // Back in view, or back online: ask now rather than at the end of a wait
+  // that may have grown to a minute.
+  function refreshNow() {
+    if (expired || !(pollMs > 0)) return;
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    tick().then(arm);
   }
 
   /* ---------------- wiring ---------------- */
@@ -541,7 +1132,7 @@ function runtimeScript(guards: TokenGuards): string {
     var opener = origin.closest('[data-open-dialog]');
     if (opener) {
       event.preventDefault();
-      openDialog(opener.getAttribute('data-open-dialog') || '', null);
+      within(opener, function () { openDialog(opener.getAttribute('data-open-dialog') || '', null); });
       return;
     }
     var el = origin.closest('[data-action]');
@@ -562,13 +1153,15 @@ function runtimeScript(guards: TokenGuards): string {
     } else if (action && action.indexOf('confirm-') === 0) {
       event.preventDefault();
       var run = pending;
+      var opener = openerOf(pendingFor);
       closeDialog(el.closest('dialog'));
       pending = null;
       pendingFor = '';
-      if (run) run();
+      if (run) within(opener, run);
     } else if (action && actions[action]) {
       event.preventDefault();
-      actions[action](el, event);
+      if (el.getAttribute('aria-busy') === 'true') return;
+      within(el, function () { actions[action](el, event); });
     }
   });
 
@@ -576,28 +1169,84 @@ function runtimeScript(guards: TokenGuards): string {
   // left is to drop the pending action of whichever dialog just closed.
   // 'close' does not bubble, so this listens in the capture phase. The event
   // is queued, not fired by close() itself: a dialog that is open again by
-  // the time it arrives was reopened since, and keeps its new pending action.
+  // the time it arrives was reopened since, and keeps its new pending action
+  // - and its focus, which stays in the reopened dialog.
+  //
+  // The browser also gives focus back to whatever had it before the dialog
+  // opened - unless a refresh replaced that control while the dialog was up,
+  // in which case there is nothing to give it back to: focus stays on a
+  // button in the closed dialog, then drops to the top of the page. The same
+  // control in the new markup takes it instead (D4).
   document.addEventListener('close', function (event) {
     var box = event.target;
-    if (box && box.tagName === 'DIALOG' && !box.open) forget(box);
+    if (!box || box.tagName !== 'DIALOG' || box.open) return;
+    forget(box);
+    var active = document.activeElement;
+    if (active && active !== document.body && !box.contains(active)) return;
+    var opener = openerOf(box.id);
+    if (opener && !opener.disabled && typeof opener.focus === 'function') {
+      opener.focus({ preventScroll: true });
+    }
   }, true);
 
   document.addEventListener('submit', function (event) {
     var form = event.target;
-    if (!form || !form.id) return;
+    if (!form) return;
+    // A native submission (no handler below takes it): the instants go as
+    // instants (时区).
+    if (!form.id || !submits[form.id]) sendInstants(form);
+    if (!form.id) return;
     // Not prevented: the native POST is what clears the cookie, and it works
     // with this script disabled. All that is added is dropping the
     // localStorage copy - leaving it behind would mean the next visit sends a
     // Bearer for a token the operator just walked away from.
     if (form.id === 'logout-form') { writeToken(''); return; }
-    if (submits[form.id]) { event.preventDefault(); submits[form.id](form, event); }
+    if (!submits[form.id]) return;
+    event.preventDefault();
+    var by = event.submitter || form.querySelector('[type="submit"]');
+    if (by && by.getAttribute('aria-busy') === 'true') return;
+    within(by, function () { submits[form.id](form, event); });
   });
 
+  // Editing a marked field takes its mark away; the next check decides again.
+  document.addEventListener('input', function (event) { unmarkField(event.target); }, true);
+  document.addEventListener('change', function (event) { unmarkField(event.target); }, true);
+
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && refreshTimer) tick();
+    if (!document.hidden) refreshNow();
+  });
+
+  window.addEventListener('offline', function () {
+    if (!expired) connSay(offlineLine());
+  });
+
+  // The drawers (E1) are popovers only below 1000px. A window widened with
+  // one open would leave it floating over the column that now shows the same
+  // thing, so it is closed. closeDrawer is also how a page closes one after
+  // acting on a choice made in it.
+  function closeDrawer(id) {
+    var drawer = byId(id);
+    try {
+      if (drawer && drawer.matches(':popover-open')) drawer.hidePopover();
+    } catch (e) { /* no popovers in this browser: nothing is open */ }
+  }
+  if (window.matchMedia) {
+    var narrow = window.matchMedia('(max-width: 1000px)');
+    var onWiden = function () {
+      if (narrow.matches) return;
+      var open = document.querySelectorAll('.drawer');
+      for (var d = 0; d < open.length; d++) closeDrawer(open[d].id);
+    };
+    if (narrow.addEventListener) narrow.addEventListener('change', onWiden);
+  }
+
+  window.addEventListener('online', function () {
+    failures = 0;
+    refreshNow();
   });
 
   function start() {
+    startZone();
     seedTokenFromUrl();
     paintToken();
     var toggle = byId('auto-refresh');
@@ -613,13 +1262,22 @@ function runtimeScript(guards: TokenGuards): string {
     say: say,
     stamp: stamp,
     message: message,
+    failLine: failLine,
+    failTone: failTone,
+    checkFields: checkFields,
+    markField: markField,
+    clearFields: clearFields,
+    fieldOf: fieldOf,
+    humanize: humanize,
     readToken: readToken,
+    afterSession: afterSession,
     toast: toast,
     loadHtml: loadHtml,
     sendJson: sendJson,
     openDialog: openDialog,
     closeDialog: closeDialog,
     closeDialogs: closeDialogs,
+    closeDrawer: closeDrawer,
     refreshRegion: refreshRegion,
     onAction: function (name, run) { actions[name] = run; },
     onSubmit: function (id, run) { submits[id] = run; },
@@ -639,10 +1297,27 @@ function runtimeScript(guards: TokenGuards): string {
 }
 
 /** The runtime as a console without accounts serves it. */
-export const CONSOLE_CLIENT_JS = runtimeScript(NO_GUARDS)
+/**
+ * The runtime without its line comments (G1): they are for whoever edits
+ * this file, and every document carried them. Whole lines only — a line
+ * whose first non-blank characters are `//` — so nothing inside a string or
+ * after code is touched; this script has no multi-line string literal for
+ * such a line to be part of. Block comments stay: the humanize markers are
+ * two of them, and `test/copyGate.test.ts` reads between them.
+ */
+function stripJsLineComments(script: string): string {
+  return script
+    .split('\n')
+    .filter(line => !/^\s*\/\//.test(line))
+    .join('\n')
+}
+
+export const CONSOLE_CLIENT_JS = stripJsLineComments(runtimeScript(NO_GUARDS))
 
 /**
  * The same runtime for a console with accounts: identical but for the two
  * guards that keep a personal credential out of `localStorage`.
  */
-export const CONSOLE_CLIENT_JS_ACCOUNTS = runtimeScript(PERSONAL_GUARDS)
+export const CONSOLE_CLIENT_JS_ACCOUNTS = stripJsLineComments(
+  runtimeScript(PERSONAL_GUARDS),
+)

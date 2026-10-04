@@ -442,8 +442,8 @@ describe('the registry lease is the scale (C-1)', () => {
     expect(html).toContain('data-health="live"')
     expect(html).not.toContain('滞后')
     expect(html).not.toContain('过期')
-    expect(html).toContain('租约 1 小时')
-    expect(html).not.toContain('租约 1 分 30 秒')
+    expect(html).toContain('租约 1h')
+    expect(html).not.toContain('租约 1m30s')
     // 58 of 60 minutes left, and the fill is that share, not 0%.
     expect(html).toContain('>剩余 58m<')
     expect(html).toContain('style="width:97%"')
@@ -460,8 +460,8 @@ describe('the registry lease is the scale (C-1)', () => {
       [newer, older],
     ]) {
       const html = renderRoster(agents, null, NOW, PACKAGE_DEFAULT)
-      expect(html).toContain('租约 1 小时')
-      expect(html).not.toContain('租约 5 小时')
+      expect(html).toContain('租约 1h')
+      expect(html).not.toContain('租约 5h')
     }
   })
 
@@ -472,7 +472,7 @@ describe('the registry lease is the scale (C-1)', () => {
       NOW,
       PACKAGE_DEFAULT,
     )
-    expect(html).toContain('租约 1 分 30 秒')
+    expect(html).toContain('租约 1m30s')
   })
 })
 
@@ -481,7 +481,7 @@ describe('the registry lease is the scale (C-1)', () => {
 describe('renderRoster', () => {
   test('an empty registry names the next action instead of going blank', () => {
     const html = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
-    expect(html).toContain('还没有节点 · ')
+    expect(html).toContain('还没有智能体 · ')
     // The register form moved into a dialog on the same page (`/nodes`), so
     // the next action opens it; the anchor is kept so the link still names
     // its target without script.
@@ -521,7 +521,7 @@ describe('renderRoster', () => {
     // into 过期 1 look like nothing changed.
     expect(html).not.toContain('滞后 0')
     expect(html).not.toContain('过期 0')
-    expect(html).toContain('租约 5 分')
+    expect(html).toContain('租约 5m')
   })
 
   test('a null roster with no failure says so rather than pretending to be empty', () => {
@@ -718,7 +718,7 @@ describe('renderRoster', () => {
       expect(html).toContain('上次心跳')
     }
     const empty = renderRoster([], null, NOW, TTL)
-    expect(empty).toContain('还没有节点 · 由运维注册')
+    expect(empty).toContain('还没有智能体 · 由运维注册')
     expect(empty).not.toContain('data-open-dialog')
   })
 })
@@ -1186,17 +1186,63 @@ describe('renderAudit', () => {
     expect(html).toContain('>4bf92f35…<')
   })
 
-  test('an empty result set names the next action, not the absence', () => {
+  test('an empty result set says so, with the filter that produced it', () => {
     const html = renderAudit(page({ records: [], total: 40 }), null, NO_FILTER)
     expect(html).toContain('这条链还没有记录')
-    expect(html).toContain('去唤醒一个智能体')
-    expect(html).toContain('href="#wake-section"')
+    // Where the next action lives, and when it is offered: the C6 case below.
+    expect(html).not.toContain('去节点页唤醒')
     expect(html).not.toContain('<table')
     expect(html).toContain('<span class="total">40</span>')
     expect(html).toContain('显示 0')
     // The legend repeats the filter that produced the emptiness: the
     // commonest cause of an empty trail is a filter somebody forgot.
     expect(html).toContain('当前筛选 · 结果 全部')
+  })
+
+  test('an empty trail claims only what an empty file shows, and invites a wake only where one can happen (C6)', () => {
+    const empty = page({ records: [], total: 0, chain: 'empty' })
+    const paged = { query: '', fresh: true }
+    // No connectivity claim, whoever is reading.
+    for (const html of [
+      renderAudit(empty, null, NO_FILTER),
+      renderAudit(empty, null, NO_FILTER, undefined, {
+        ...paged,
+        wake: '/nodes',
+      }),
+    ]) {
+      expect(html).toContain('还没有业务消息经过这条链')
+      expect(html).not.toContain('连通')
+      expect(html).not.toContain('wake-section')
+    }
+    // No wake on this console, or a reader who may not write: the route
+    // leaves `wake` out, and nothing is offered.
+    const none = renderAudit(empty, null, NO_FILTER, undefined, paged)
+    expect(none).not.toContain('去节点页唤醒')
+    expect(none).not.toContain('唤醒一个智能体后')
+    // A chain that fails its check, or whose witness disagrees, is not
+    // where more traffic is the next step.
+    for (const unsound of [
+      page({ records: [], total: 0, intact: false, issueCount: 2 }),
+      page({
+        records: [],
+        total: 0,
+        witness: { tampered: true, stale: false },
+      }),
+    ]) {
+      const html = renderAudit(unsound, null, NO_FILTER, undefined, {
+        ...paged,
+        wake: '/nodes',
+      })
+      expect(html).toContain('这条链还没有记录')
+      expect(html).not.toContain('去节点页唤醒')
+    }
+    // Sound, writable, wakeable: the one invitation, to the page that wakes.
+    const offered = renderAudit(empty, null, NO_FILTER, undefined, {
+      ...paged,
+      wake: '/nodes',
+    })
+    expect(offered).toContain('唤醒一个智能体后这里会出现第一条投递轨迹')
+    expect(offered).toContain('href="/nodes" data-nav data-write')
   })
 
   test('a chain that exists and is empty is intact, and says so', () => {
@@ -1230,7 +1276,7 @@ describe('renderAudit', () => {
     expect(html).not.toContain('审计链断裂')
     expect(html).not.toContain('断裂 0')
     // No invitation either: nothing this page offers makes a file appear.
-    expect(html).not.toContain('去唤醒一个智能体')
+    expect(html).not.toContain('去节点页唤醒')
     expect(html).not.toContain('这条链还没有记录')
   })
 
@@ -1269,7 +1315,7 @@ describe('renderAudit', () => {
 
   test('null page with no failure is a neutral state, not an error', () => {
     const html = renderAudit(null, null, NO_FILTER)
-    expect(html).toContain('未读取审计日志')
+    expect(html).toContain('未读取审计链')
     expect(html).not.toContain('bar-bad')
   })
 })
@@ -1685,7 +1731,7 @@ describe('the shell', () => {
 
   test('the sidebar carries the brand, the label and the refresh switch — and no clock', () => {
     const html = build()
-    expect(html).toContain('阡陌 console')
+    expect(html).toContain('阡陌控制台')
     expect(html).toContain('class="brand-en"')
     expect(html).toContain('class="brand-cn"')
     expect(html).toContain('node-a 本机')
@@ -1706,7 +1752,12 @@ describe('the shell', () => {
   test('the sidebar is every area in three groups, the current one marked', () => {
     const html = build()
     expect(html).toContain('class="shell"')
-    expect(html).toContain('class="side"')
+    // A column above 1000px, a drawer below it: a native popover the top
+    // bar's menu button opens without script (E1, `narrow.browser.test.ts`).
+    expect(html).toContain('<aside class="side drawer" id="side" popover>')
+    expect(html).toContain(
+      '<button type="button" class="btn btn-ghost btn-icon drawer-open" popovertarget="side" aria-label="菜单">',
+    )
     expect(html).toContain('class="main"')
     expect(html).not.toContain('class="topbar"')
     // Group names in order; a group with nothing in it is not drawn.
@@ -1752,16 +1803,15 @@ describe('the shell', () => {
     expect(html).toContain(
       '<h1 class="page-title" id="page-title">tokyo-1</h1>',
     )
-    expect(html).toContain(
-      '<title>阡陌 console · tokyo-1 · node-a 本机</title>',
-    )
+    expect(html).toContain('<title>阡陌控制台 · tokyo-1 · node-a 本机</title>')
     expect(html).toContain('<div class="top-actions"><button')
     expect(html).toContain(
       '<div class="health" role="group" aria-label="健康">',
     )
     expect(html).toContain('id="role">')
+    // Focusable, so the skip link's target is where the next Tab starts (F1).
     expect(html).toContain(
-      '<main class="main" id="main" aria-labelledby="page-title">',
+      '<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">',
     )
     expect(html).toContain('<p id="probe">名册在这里</p>')
   })
@@ -1806,17 +1856,19 @@ describe('the overview', () => {
     return renderOverview({
       roster: renderRoster([agent()], null, NOW, TTL),
       audit: renderAudit(page(), null, NO_FILTER),
-      limits: renderLimits(LIMITS),
+      recent: { refused: 0, dropped: 0, more: false },
+      now: NOW,
       nodes: renderNodeSummary([agent()], null, NOW, TTL),
       ...over,
     })
   }
 
-  test('leads with four stat cards, summarising numbers the other pages already show', () => {
+  test('leads with health cards, summarising numbers the other pages already show', () => {
     const html = build()
     expect(html).toContain('id="overview"')
-    expect(html).toContain('class="cards g4"')
-    expect(html.match(/class="card elev-sm stat"/g)).toHaveLength(4)
+    // Without a certificate source or chat, three: no constant fills a gap.
+    expect(html).toContain('class="cards g3"')
+    expect(html.match(/class="card elev-sm stat"/g)).toHaveLength(3)
     // The agent count on the card is the same total the roster header carries.
     expect(html).toContain('<div class="card-kicker">智能体</div>')
     expect(html).toContain('<div class="stat-num">1</div>')
@@ -2038,7 +2090,7 @@ describe('the nodes page dialogs', () => {
 
   test('a disabled wake face explains why and offers no button to press', () => {
     const html = wakeDialog({ enabled: false, targetOptions: '' })
-    expect(html).toContain('QIANMO_TRANSPORT_PSK')
+    expect(html).toContain('唤醒不可用 · 启动时没有配置唤醒目标')
     expect(html).toContain('<fieldset disabled')
     expect(html).not.toContain('id="wake-form"')
     expect(html).not.toContain('唤醒</button>')
@@ -2258,7 +2310,9 @@ describe('assets', () => {
     expect(CONSOLE_CSS).not.toContain('#D77757')
     expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-accent);')
     const primary = ruleOf('.btn-primary')
-    expect(primary).toContain('background: var(--color-accent)')
+    // The fill token: accent-700 in light, the accent in dark, so its light
+    // label keeps 4.5:1 (B1, contrast.browser.test.ts).
+    expect(primary).toContain('background: var(--color-accent-fill)')
   })
 
   test('the danger action is terracotta, never a pure red, and never a resting state', () => {
@@ -2331,7 +2385,8 @@ describe('assets', () => {
     const kicker = ruleOf('.kicker')
     expect(kicker).toContain('font-size: 10px')
     expect(kicker).toContain('text-transform: uppercase')
-    expect(kicker).toContain('color: var(--color-accent)')
+    // The 700 step: the accent itself is 3.0:1 on the light ground (B1).
+    expect(kicker).toContain('color: var(--color-accent-700)')
   })
 
   test('a closed dialog stays closed: display is only ever set on [open]', () => {
@@ -2476,7 +2531,8 @@ describe('copy discipline', () => {
       renderOverview({
         roster,
         audit,
-        limits,
+        recent: { refused: 0, dropped: 0, more: false },
+        now: NOW,
         nodes: renderNodeSummary([agent()], null, NOW, TTL),
       }) +
       roster +
@@ -2579,12 +2635,12 @@ describe('copy discipline', () => {
       { code: 'not_found', message: '文件不存在' },
       NO_FILTER,
     )
-    expect(trail).toContain('审计日志未找到 · 文件不存在')
+    expect(trail).toContain('审计链未找到 · 文件不存在')
   })
 
   test('the empty state is an invitation, not a status', () => {
     const empty = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
-    expect(empty).toContain('还没有节点 · ')
+    expect(empty).toContain('还没有智能体 · ')
     // The register form is a dialog on the same page now, not a section
     // further down, so the invitation opens it rather than pointing at it.
     expect(empty).toContain(
@@ -2622,11 +2678,26 @@ describe('copy discipline', () => {
     expect(html).not.toContain('<iframe')
   })
 
-  test('the disabled wake face keeps its one allowed line', () => {
-    const disabled = wakeDialog({ enabled: false, targetOptions: '' })
-    // What is unavailable, and the exact name of the thing to go and set.
-    expect(disabled).toContain('唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK')
-    expect(visibleText(disabled)).not.toContain('。')
+  test('the disabled wake face names the cause it actually has (C6)', () => {
+    // Started without --wake-url: nothing to wake, and no key to look for.
+    const unconfigured = wakeDialog({ enabled: false, targetOptions: '' })
+    expect(unconfigured).toContain('唤醒不可用 · 启动时没有配置唤醒目标')
+    expect(unconfigured).not.toContain('QIANMO_TRANSPORT_PSK')
+    expect(unconfigured).not.toContain('传输密钥')
+    // Targets given, none with a usable key: that is the key's fault.
+    const keyless = wakeDialog({
+      enabled: false,
+      targetOptions: '',
+      wakeTargets: [
+        { node: 'tokyo-1', url: 'ws://127.0.0.1:1', unavailableReason: 'x' },
+      ],
+    })
+    expect(keyless).toContain('唤醒不可用 · 唤醒目标的传输密钥不可用')
+    expect(keyless).toContain('tokyo-1 · PSK 不可用')
+    for (const html of [unconfigured, keyless]) {
+      expect(visibleText(html)).not.toContain('。')
+      expect(html).not.toContain('type="submit"')
+    }
   })
 })
 
@@ -2708,10 +2779,13 @@ describe('one place an action reports back (D2)', () => {
 
   test('a toast is text, and a failure interrupts', () => {
     const toast = CONSOLE_CLIENT_JS.slice(
-      CONSOLE_CLIENT_JS.indexOf('function toast(text, tone)'),
+      CONSOLE_CLIENT_JS.indexOf('function toast(text, tone, detail)'),
       CONSOLE_CLIENT_JS.indexOf('/* ---------------- dialogs'),
     )
-    expect(toast).toContain('line.textContent = text')
+    expect(toast.length).toBeGreaterThan(100)
+    expect(toast).toContain('words.textContent = text')
+    // The original under 详情 is text too (C5).
+    expect(toast).toContain('raw.textContent = detail')
     expect(toast).not.toContain('innerHTML')
     expect(toast).toContain(
       "if (tone === 'bad') line.setAttribute('role', 'alert')",
@@ -2721,7 +2795,7 @@ describe('one place an action reports back (D2)', () => {
   test('the row actions and the forms report through it', () => {
     for (const line of [
       "qc.toast('已心跳 ' + address, 'ok')",
-      "qc.toast('心跳失败 · ' + message(err), 'bad')",
+      "qc.toast(qc.failLine('心跳', err), qc.failTone(err))",
       "qc.toast('已注销 ' + address, 'ok')",
       "qc.toast('已注册 ' + address, 'ok')",
       "qc.toast(line, 'ok')",
@@ -2735,7 +2809,7 @@ describe('one place an action reports back (D2)', () => {
       "qc.toast('备注已保存 · ' + server, 'ok')",
     )
     expect(CONSOLE_CHAT_JS).toContain(
-      "qc.toast('发送失败 · ' + message(err), 'bad')",
+      "qc.toast(qc.failLine('发送', err), qc.failTone(err))",
     )
   })
 })

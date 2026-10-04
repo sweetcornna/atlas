@@ -34,9 +34,18 @@
  * nodes suddenly cannot connect" and has no thread to pull.
  */
 
-import { bar, chip, tag, toned, type Tone } from './bits.js'
+import {
+  bar,
+  chip,
+  reasonOf,
+  tag,
+  toned,
+  type Tone,
+  timeTag,
+  withTimes,
+} from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatClock, formatDateTime, formatShortDuration } from './format.js'
+import { formatShortDuration } from './format.js'
 import type {
   CertificateStatus,
   ConsoleCaRoot,
@@ -116,7 +125,7 @@ export function certificateLine(
     parts.push(
       remaining > 0
         ? `<span class="ct-left">剩余 ${escapeHtml(formatShortDuration(remaining))}</span>`
-        : `<span class="ct-left">到期 ${escapeHtml(formatClock(certificate.notAfter))}</span>`,
+        : `<span class="ct-left">到期 ${timeTag(certificate.notAfter, 'clock')}</span>`,
     )
   }
   if (certificate.fingerprint256 !== undefined) {
@@ -170,18 +179,24 @@ export function renderRevocationBar(
   now: number,
 ): string {
   if (failure !== null) {
-    return bar('warn', `吊销清单未读到 · ${failure.message}`)
+    const reason = reasonOf(failure.message, failure.code)
+    return bar('warn', `吊销清单未读到 · ${reason.text}`, '', reason.detail)
   }
   if (revocationList === null) {
     return bar('warn', '吊销清单未发布 · 全网按 --trust 收敛')
   }
   const stale = now >= revocationList.nextUpdate
-  const line =
-    `吊销清单 ${revocationList.revokedCount} 条` +
-    ` · 签发 ${formatClock(revocationList.issuedAt)}` +
-    (stale
-      ? ` · 已过期 ${formatClock(revocationList.nextUpdate)} · 全网按 --trust 收敛`
-      : ` · 剩余 ${formatShortDuration(revocationList.nextUpdate - now)}`)
+  const line = withTimes(
+    `吊销清单 ${revocationList.revokedCount} 条 · 签发 `,
+    { at: revocationList.issuedAt, fmt: 'clock' },
+    ...(stale
+      ? [
+          ' · 已过期 ',
+          { at: revocationList.nextUpdate, fmt: 'clock' } as const,
+          ' · 全网按 --trust 收敛',
+        ]
+      : [` · 剩余 ${formatShortDuration(revocationList.nextUpdate - now)}`]),
+  )
   return bar(stale ? 'bad' : 'muted', line)
 }
 
@@ -213,11 +228,15 @@ export function renderRootBars(
   return roots
     .map(root => {
       const head = `CA 根 ${root.subject} · ${STATUS_WORD[root.status]}`
-      const tail =
+      const line =
         root.status === 'expired'
-          ? ` ${formatDateTime(root.notAfter)} · 所签证书一并失效`
-          : ` · 剩余 ${formatShortDuration(root.notAfter - now)}`
-      return bar(ROOT_TONE[root.status], head + tail)
+          ? withTimes(
+              `${head} `,
+              { at: root.notAfter, fmt: 'datetime' },
+              ' · 所签证书一并失效',
+            )
+          : `${head} · 剩余 ${formatShortDuration(root.notAfter - now)}`
+      return bar(ROOT_TONE[root.status], line)
     })
     .join('')
 }

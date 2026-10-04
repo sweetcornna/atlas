@@ -74,7 +74,23 @@
  * URI, and both are ways for the sheet to stop being one self-contained string.
  */
 
-export const CONSOLE_CSS = `
+/**
+ * A stylesheet without its comments (G1).
+ *
+ * The notes in this file are for whoever edits it; every document used to
+ * carry them to every browser. No string in these sheets contains the
+ * comment opener, so a plain scan is exact; blank lines left behind are
+ * folded too. Whitespace inside a declaration is left as written.
+ */
+export function stripCssComments(css: string): string {
+  return css
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{2,}/g, '\n')
+}
+
+/** The sheet as written, comments and all; {@link CONSOLE_CSS} is what ships. */
+const SOURCE_CSS = `
 :root {
   color-scheme: light dark;
 
@@ -121,8 +137,17 @@ export const CONSOLE_CSS = `
      backdrop that flips with them stops being a backdrop. */
   --color-scrim: #2e2b25;
 
-  --color-muted: color-mix(in srgb, var(--color-text) 55%, transparent);
-  --color-quiet: color-mix(in srgb, var(--color-text) 70%, transparent);
+  /* Secondary text. 68% is the least that keeps 4.5:1 on every ground the
+     sheet paints, in both schemes - the tag pill over the surface is the
+     darkest (B1, test/browser/contrast.browser.test.ts). */
+  --color-muted: color-mix(in srgb, var(--color-text) 68%, transparent);
+  --color-quiet: color-mix(in srgb, var(--color-text) 74%, transparent);
+  /* A fill with --color-bg text on it: the primary button, the current nav
+     item, the checked segment. The brand accent itself is 3.0:1 under light
+     text, so the fill is its 700 step in light and the accent in dark. */
+  --color-accent-fill: var(--color-accent-700);
+  --color-accent-fill-hover: var(--color-accent-800);
+  --color-accent-fill-active: var(--color-accent-900);
 
   --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-heading: var(--font-body);
@@ -188,6 +213,10 @@ export const CONSOLE_CSS = `
 
     --color-scrim: #050403;
 
+    --color-accent-fill: var(--color-accent);
+    --color-accent-fill-hover: var(--color-accent-600);
+    --color-accent-fill-active: var(--color-accent-700);
+
     --shadow-sm: 0 0 0 1px color-mix(in srgb, #f5ead8 10%, transparent);
     --shadow-md: 0 0 0 1px color-mix(in srgb, #f5ead8 11%, transparent), 0 3px 12px color-mix(in srgb, #050403 45%, transparent);
     --shadow-lg: 0 0 0 1px color-mix(in srgb, #f5ead8 13%, transparent), 0 16px 40px color-mix(in srgb, #050403 55%, transparent);
@@ -229,6 +258,15 @@ p { margin: 0; }
 a { color: var(--color-accent); text-underline-offset: 3px; }
 ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 
+/* Off screen until a keyboard reaches it (F1). */
+.skip-link {
+  position: absolute; left: var(--space-4); top: -120px; z-index: 50;
+  padding: var(--space-2) var(--space-4); border-radius: 999px;
+  background: var(--color-accent-fill); color: var(--color-bg); text-decoration: none;
+}
+.skip-link:focus { top: var(--space-2); }
+/* The skip link's target: focusable so the next Tab starts there, not ringed. */
+.main:focus { outline: none; }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -238,11 +276,11 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .note { font-size: 12.5px; color: var(--color-muted); }
 .kicker {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--color-accent);
+  color: var(--color-accent-700);
 }
 .flabel {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+  color: var(--color-muted);
 }
 .stack { display: flex; flex-direction: column; gap: var(--space-3); }
 .rowx { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
@@ -279,9 +317,12 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
      nav two screens above the operator on a real ledger. Fixing the height to
      the viewport keeps the left column a full panel at every scroll position
      and keeps the nav where it can be reached. */
-  position: sticky; top: var(--space-4);
+  position: sticky; inset: auto; top: var(--space-4);
   height: calc(100vh - var(--space-8));
   overflow-y: auto;
+  /* It is a popover too (E1, drawers below): what the UA sheet gives one is
+     undone here, so above 1000px it is the column above and nothing else. */
+  margin: 0; border: 0; width: auto; color: inherit;
 }
 /* The right column: the top bar, the notice line when there is one, the page. */
 .frame { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
@@ -343,7 +384,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .nav-group-name {
   padding: 0 var(--space-3) var(--space-1);
   font-size: 11px; letter-spacing: .08em;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  color: var(--color-muted);
 }
 .nav-item {
   display: flex; align-items: center; gap: var(--space-2);
@@ -352,14 +393,15 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   transition: background-color 150ms ease, color 150ms ease;
 }
 .nav-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-.nav-item[aria-current="page"] { background: var(--color-accent); color: var(--color-bg); }
-.nav-item .cnt { margin-left: auto; font-size: 11px; opacity: .75; }
+.nav-item[aria-current="page"] { background: var(--color-accent-fill); color: var(--color-bg); }
+.nav-item .cnt { margin-left: auto; font-size: 11px; color: var(--color-muted); }
+.nav-item[aria-current="page"] .cnt { color: inherit; }
 .nav-tag {
   margin-left: auto; padding: 0 7px; border-radius: 999px; font-size: 10.5px;
   background: color-mix(in srgb, var(--color-text) 8%, transparent);
-  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+  color: var(--color-quiet);
 }
-.nav-item[aria-current="page"] .nav-tag { background: color-mix(in srgb, var(--color-bg) 22%, transparent); color: inherit; }
+.nav-item[aria-current="page"] .nav-tag { background: color-mix(in srgb, var(--color-text) 22%, transparent); color: inherit; }
 
 /* ---- a page that is not there yet, and a page that failed ---- */
 .stub {
@@ -372,7 +414,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-3); }
 /* Two short lines that wrap, not one line that ellipses: at 430px the instance
    label used to run off the panel and take the controls with it. */
-.inst { font-size: 11.5px; line-height: 1.45; color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+.inst { font-size: 11.5px; line-height: 1.45; color: var(--color-muted); }
 .inst b {
   display: block; font-weight: 700; font-size: 12px;
   color: color-mix(in srgb, var(--color-text) 84%, transparent);
@@ -410,6 +452,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .sec-head h2, .sec-head h3 { margin: 0; }
 .cards { display: grid; gap: var(--space-3); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* ---- cards ---- */
 .card {
@@ -418,8 +461,8 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   border-radius: calc(var(--radius-lg) * 1.15);
   min-width: 0;
 }
-.card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); }
-.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent-700); }
+.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-muted); }
 .elev-sm { box-shadow: var(--shadow-sm); }
 .elev-md { box-shadow: var(--shadow-md); }
 .elev-lg { box-shadow: var(--shadow-lg); }
@@ -461,7 +504,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .tone-muted { color: var(--color-muted); }
 .total { color: var(--color-text); font-weight: 600; }
 .ttl { color: var(--color-muted); }
-.sep { color: var(--color-neutral-500); }
+.sep { color: var(--color-muted); }
 
 /* ---- status: four states, four shapes ---- */
 .state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; max-width: 100%; }
@@ -480,7 +523,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 /* ---- the address, with its agent segment as a pill ---- */
 .addr {
   font-family: var(--font-mono); font-size: 12.5px;
-  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+  color: var(--color-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   min-width: 0; max-width: 100%;
 }
@@ -613,7 +656,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 
 .hintline {
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: 12px; color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  font-size: 12px; color: var(--color-muted);
   min-width: 0;
 }
 .hintline .mono { overflow: hidden; text-overflow: ellipsis; }
@@ -647,7 +690,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 }
 .seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
-.seg-opt:has(input:checked) { background: var(--color-accent); color: var(--color-bg); }
+.seg-opt:has(input:checked) { background: var(--color-accent-fill); color: var(--color-bg); }
 .seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
@@ -662,9 +705,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 .btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; }
-.btn-primary { background: var(--color-accent); color: var(--color-bg); }
-.btn-primary:hover { background: var(--color-accent-600); }
-.btn-primary:active { background: var(--color-accent-700); }
+.btn-primary { background: var(--color-accent-fill); color: var(--color-bg); }
+.btn-primary:hover { background: var(--color-accent-fill-hover); }
+.btn-primary:active { background: var(--color-accent-fill-active); }
 .btn-secondary { border-color: var(--color-divider); }
 .btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
@@ -699,11 +742,31 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .bar-critical { background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical); }
 .bar-muted { background: var(--color-neutral-100); color: var(--color-neutral-700); }
 .bar-code { font-family: var(--font-mono); font-size: 11px; opacity: .75; }
+/* The connection line and the stamp on a region whose refresh failed (C2). */
+.conn[hidden] { display: none; }
+.asof { margin: 0 0 var(--space-2); font-size: 12px; color: var(--color-muted); }
+/* The original of a failure (C5): folded, selectable, never the sentence. */
+.raw-detail, .toast-detail { flex-basis: 100%; min-width: 0; font-size: 12px; }
+.raw-detail > summary, .toast-detail > summary { cursor: pointer; width: max-content; }
+.raw {
+  margin: var(--space-1) 0 0; padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12em; overflow: auto;
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text); user-select: text;
+}
 .bar .n { font-variant-numeric: tabular-nums; }
 .hint { font-size: 13.5px; color: var(--color-muted); padding: var(--space-3) var(--space-2); }
 .status { font-size: 12px; min-height: 1.25em; color: var(--color-muted); }
 .status[data-tone='ok'] { color: var(--color-accent-2-800); }
 .status[data-tone='bad'] { color: var(--color-accent-800); }
+.status[data-tone='warn'] { color: var(--color-accent-800); }
+/* A field that is wrong, and why, under it (D3). */
+.field-error { margin: var(--space-1) 0 0; font-size: 12px; color: var(--color-accent-800); }
+/* The roster's filter (D6): a native GET form above the polled region. */
+.roster-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); margin: 0 0 var(--space-3); }
+.roster-filter .roster-search { flex: 1 1 220px; }
+.input[aria-invalid='true'] { border-color: var(--color-accent-700); }
 .jump { color: var(--color-accent-700); }
 
 /* ---- the trail table ---- */
@@ -711,7 +774,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .trail { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .trail th {
   text-align: left; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  color: var(--color-muted);
   padding: var(--space-2); border-bottom: 1px solid var(--color-divider);
   font-weight: 400; white-space: nowrap;
 }
@@ -733,7 +796,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 
 /* ---- limits ---- */
 .limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); }
-.col-name { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); margin: 0; }
+.col-name { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent-700); margin: 0; }
 .col-src { font-size: 12.5px; color: var(--color-muted); margin: 0 0 var(--space-3); font-family: var(--font-mono); }
 .dl { margin: 0; }
 .lim-row {
@@ -744,6 +807,8 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .lim-row:last-child { border-bottom: 0; }
 .lim-row dt { color: var(--color-quiet); }
 .lim-row dd { margin: 0; font-family: var(--font-mono); font-size: 13px; }
+.lim-row dd.plain { font-family: inherit; overflow-wrap: anywhere; }
+.about-health, .about-paths { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-divider); }
 .strip {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
   margin-top: var(--space-4); padding-top: var(--space-3);
@@ -795,7 +860,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   padding: calc(var(--space-8) * 1.1) var(--space-6) calc(var(--space-8) * 1.1) var(--space-4);
 }
 .empty-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 24px; line-height: 1.15; margin: 0; }
-.empty-note { font-size: 14px; color: color-mix(in srgb, var(--color-text) 62%, transparent); max-width: 46ch; margin: 0; }
+.empty-note { font-size: 14px; color: var(--color-quiet); max-width: 46ch; margin: 0; }
 .empty-art { justify-self: end; }
 .legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12.5px; color: var(--color-muted); }
 
@@ -812,7 +877,18 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   border-left: 3px solid var(--color-accent-2); font-size: 13px; overflow-wrap: anywhere;
 }
 .toast[data-tone='bad'] { border-left-color: var(--color-accent-700); }
+.toast-text { display: block; }
+.toast-detail { margin-top: var(--space-1); }
 .toast[data-tone='muted'] { border-left-color: var(--color-neutral-400); }
+.toast[data-tone='warn'] { border-left-color: var(--color-accent-400); }
+/* Work in flight (C4): how long it has been, and a way to stop waiting. */
+.progress {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-3);
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.progress > .toast-text { flex: 1 1 auto; }
+.toast.progress { cursor: default; }
+[aria-busy='true'] { cursor: progress; }
 
 /* ---- dialogs: native <dialog>, opened with showModal() ----
    The browser owns the hard parts: the top layer, the focus trap, Escape, and
@@ -866,7 +942,12 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 /* The session rail. It is the one part of the panel allowed to scroll: pinning
    the identity block to the bottom matters more than seeing every session, and
    without this the whole panel scrolls and 退出 leaves the screen. */
-.chat-rail-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.chat-rail-mount {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  /* A popover below 1000px (E1, drawers): the UA sheet's popover box undone. */
+  display: block; position: static; inset: auto; margin: 0; border: 0;
+  padding: 0; width: auto; height: auto; color: inherit; background: none;
+}
 .chat-new { display: flex; flex-direction: column; gap: var(--space-2); }
 .chat-groups { display: flex; flex-direction: column; gap: var(--space-4); }
 .chat-group { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -884,7 +965,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   font-size: 13px; line-height: 1.35; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.chat-item-meta { display: block; font-size: 11px; margin-top: 3px; color: color-mix(in srgb, var(--color-text) 52%, transparent); }
+.chat-item-meta { display: block; font-size: 11px; margin-top: 3px; color: var(--color-muted); }
 
 /* A turn: a round avatar in a 34px track, then the head, bubble and marks. */
 .turn { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: var(--space-3); max-width: 800px; }
@@ -896,7 +977,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .turn-operator .turn-av { background: var(--color-accent-200); color: var(--color-accent-800); }
 .turn-head { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
 .turn-who { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 14px; }
-.turn-when { font-size: 11.5px; font-family: var(--font-mono); color: color-mix(in srgb, var(--color-text) 48%, transparent); }
+.turn-when { font-size: 11.5px; font-family: var(--font-mono); color: var(--color-muted); }
 .bubble {
   background: var(--color-surface); border-radius: calc(var(--radius-lg) * 1.15);
   padding: var(--space-3) var(--space-4); font-size: 14.5px; line-height: 1.6;
@@ -931,7 +1012,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .turn-notice { align-items: start; }
 .turn-av-notice { background: none; width: 34px; height: 22px; }
 .notice-line { display: flex; align-items: baseline; gap: var(--space-2); min-height: 22px; }
-.notice-text { font-size: 13px; color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+.notice-text { font-size: 13px; color: var(--color-muted); }
 .notice-detail { margin-top: 2px; }
 .notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
 .notice-detail > summary::-webkit-details-marker { display: none; }
@@ -941,11 +1022,12 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
    而一个会呼吸的点是装饰，不是这条尾巴要说的那件事：说话的是「还在跑」四个字
    和旁边那个一直在涨的秒数。 */
 .tail-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-500); }
-.turn-tail .notice-text { color: color-mix(in srgb, var(--color-text) 52%, transparent); }
+.turn-tail .notice-text { color: var(--color-muted); }
 .notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
 
 /* The delivery chain: three facts and the links between them. */
-.chain { display: inline-flex; align-items: center; gap: 0; }
+/* It wraps: at 375px the third fact used to run off the right edge (E1). */
+.chain { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 0; max-width: 100%; }
 .chain .lnk { width: 14px; height: 3px; border-radius: 999px; background: var(--color-neutral-300); flex: none; }
 .chain .lnk.done { background: var(--color-accent-2-400); }
 
@@ -990,7 +1072,34 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 }
 .tokrow { display: flex; align-items: center; gap: var(--space-2); font-size: 12.5px; color: var(--color-quiet); }
 .tokrow .tag { flex: none; }
-.foot { font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.foot { font-size: 11.5px; color: var(--color-muted); }
+
+/* ---- drawers (E1) ----
+   Below 1000px the sidebar and the chat page's session list are native
+   popovers: opened by a button with popovertarget and no script, put in the
+   top layer by the browser, closed by Esc, a tap outside or their own close
+   button, and focus goes back to the button. A browser without popovers
+   keeps the stacked layout and never sees the buttons. */
+.drawer-open, .drawer-close { display: none; }
+@supports selector(:popover-open) {
+  @media (max-width: 1000px) {
+    .drawer:not(:popover-open) { display: none; }
+    .drawer:popover-open {
+      display: flex; flex-direction: column; gap: var(--space-4);
+      position: fixed; inset: 0 auto 0 0; z-index: auto;
+      width: min(300px, 86vw); height: 100dvh; max-height: none; margin: 0;
+      padding: var(--space-4); overflow-y: auto;
+      background: var(--color-surface); color: var(--color-text);
+      border-radius: 0 calc(var(--radius-lg) * 1.15) calc(var(--radius-lg) * 1.15) 0;
+      box-shadow: var(--shadow-lg);
+    }
+    .drawer::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2b25) 45%, transparent); }
+    .drawer-open { display: inline-flex; }
+    .drawer-close { display: inline-flex; align-self: flex-end; flex: none; }
+    .top-lead { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--space-2); align-items: center; }
+    .top-lead > .drawer-open { grid-row: 1 / span 2; }
+  }
+}
 
 /* ---- narrow ---- */
 @media (max-width: 1000px) {
@@ -998,7 +1107,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   .side { position: static; height: auto; gap: var(--space-4); }
   .nav-group { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
   .nav-group-name { width: 100%; }
-  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g4, .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .row > summary { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
   .row-panel, .form-grid, .limits, .adv-body { grid-template-columns: minmax(0, 1fr); }
   .empty { grid-template-columns: minmax(0, 1fr); }
@@ -1007,7 +1116,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 @media (max-width: 620px) {
   .shell { padding: var(--space-2); gap: var(--space-2); }
   .main { padding: var(--space-1); }
-  .g4 { grid-template-columns: minmax(0, 1fr); }
+  .g4, .g3 { grid-template-columns: minmax(0, 1fr); }
   .turn { grid-template-columns: minmax(0, 1fr); }
   .turn-av { display: none; }
   .empty { padding: var(--space-6) var(--space-2); }
@@ -1018,3 +1127,6 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
 `
+
+/** The shared sheet every document inlines, without the notes (G1). */
+export const CONSOLE_CSS = stripCssComments(SOURCE_CSS)

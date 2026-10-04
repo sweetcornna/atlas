@@ -298,14 +298,14 @@ const ACCOUNT_ROLE_TEXT: Readonly<Record<AccountRole, string>> = {
 
 /** Lit on every page the admin token opens in break-glass (§3.4 ②). */
 const BREAK_GLASS_NOTICE =
-  'break-glass 会话 · 每次使用都有记录 · 用完请轮换 admin 令牌'
+  'break-glass 会话 · 每次使用都有记录 · 用完请轮换管理令牌'
 
 /** Lit while the account book is closed, for whoever can still see a page. */
 const UNAVAILABLE_NOTICE =
   '账号库校验未通过 · 个人账号暂停服务 · 详见控制台错误输出'
 
 /** Lit for ops and the admin token once break-glass was used and not rotated. */
-const ROTATION_NOTICE = 'admin 令牌用作 break-glass 后还没有轮换'
+const ROTATION_NOTICE = '管理令牌用作 break-glass 后还没有轮换'
 
 /**
  * Who a page is rendered for, on a console with accounts. The chip names the

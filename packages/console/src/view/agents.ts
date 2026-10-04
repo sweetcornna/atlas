@@ -81,6 +81,7 @@ import {
   tag,
   toned,
   type Tone,
+  timeTag,
 } from './bits.js'
 import {
   certificateIndex,
@@ -94,12 +95,12 @@ import { attr, escapeHtml } from './escape.js'
 import {
   agentHealth,
   formatClock,
-  formatDuration,
   formatRelative,
   formatShortDuration,
   leaseView,
   publicKeyFingerprint,
   rosterLease,
+  zoneLabel,
   type AgentHealth,
 } from './format.js'
 import type {
@@ -107,6 +108,7 @@ import type {
   ConsoleAgent,
   ConsoleCaRoot,
   ConsoleCertificate,
+  ConsoleDeps,
   ConsoleFailure,
   NodeServer,
   WakeTarget,
@@ -198,7 +200,7 @@ function keyCell(publicKey: string | undefined): string {
 function heartbeatValue(at: number, now: number): string {
   if (!Number.isFinite(at) || at <= 0) return absent()
   return (
-    `<span class="mono">${escapeHtml(formatClock(at))}</span> ` +
+    `${timeTag(at, 'clock', 'mono')} ` +
     `<span class="absent">${escapeHtml(formatRelative(at, now))}</span>`
   )
 }
@@ -233,7 +235,8 @@ function leaseCell(
   const fill = view.tone === 'ink' ? '' : ` lease-${view.tone}`
   const expiry =
     Number.isFinite(agent.expiresAt) && agent.expiresAt > 0
-      ? ` title="到期 ${attr(formatClock(agent.expiresAt))}"`
+      ? // A tooltip is not redrawn in the reader's zone, so it names its own.
+        ` title="到期 ${attr(formatClock(agent.expiresAt))} ${attr(zoneLabel(agent.expiresAt))}"`
       : ''
   const dead = view.tone === 'dead'
   const left = dead ? ' gone' : ''
@@ -453,7 +456,7 @@ function headTail(
   if (counts.expired > 0) parts.push(toned('bad', `过期 ${counts.expired}`))
   if (Number.isFinite(leaseMs) && leaseMs > 0) {
     parts.push(
-      `<span class="ttl">租约 ${escapeHtml(formatDuration(leaseMs))}</span>`,
+      `<span class="ttl">租约 ${escapeHtml(formatShortDuration(leaseMs))}</span>`,
     )
   }
   const certificateCount = certificateTally(certificates)
@@ -496,7 +499,11 @@ export function renderRoster(
   ttlMs: number,
   certificates?: RosterCertificates,
   nodeServers?: readonly NodeServer[],
-  options: { readonly canWrite?: boolean } = {},
+  options: {
+    readonly canWrite?: boolean
+    /** A filter is narrowing `agents` (D6): how many there are without it. */
+    readonly filteredFrom?: number
+  } = {},
 ): string {
   const canWrite = options.canWrite === true
   const body: string[] = []
@@ -540,13 +547,17 @@ export function renderRoster(
   if (agents.length === 0) {
     // The empty state spends its one line on the next action rather than on
     // the news — for whoever may take it. A read-only credential is told who
-    // does instead of being offered a dialog that is not there.
+    // does instead of being offered a dialog that is not there. Under a
+    // filter the next action is the filter's, not registration.
     body.push(
-      canWrite
-        ? `<p class="hint">还没有节点 · ` +
+      options.filteredFrom !== undefined && options.filteredFrom > 0
+        ? `<p class="hint">没有符合筛选的智能体 · 共 ${options.filteredFrom} 个 · ` +
+            `<a class="jump" href="/nodes" data-nav>清除筛选</a></p>`
+        : canWrite
+          ? `<p class="hint">还没有智能体 · ` +
             `<a class="jump" href="#register-dialog" ` +
             `data-open-dialog="register-dialog" data-write>注册第一个</a></p>`
-        : `<p class="hint">还没有节点 · 由运维注册</p>`,
+          : `<p class="hint">还没有智能体 · 由运维注册</p>`,
     )
     return (
       rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
@@ -558,6 +569,12 @@ export function renderRoster(
     )
   }
 
+  // Inside the fragment, so each refresh recounts it.
+  if (options.filteredFrom !== undefined) {
+    body.push(
+      `<p class="note" id="roster-tally">筛选后 ${agents.length} · 共 ${options.filteredFrom}</p>`,
+    )
+  }
   body.push(
     `<div class="stack">` +
       groupByNode(agents)
@@ -770,7 +787,7 @@ export function registerDialog(): string {
   return (
     `<dialog class="dialog dialog-wide" id="register-dialog" ` +
     `aria-labelledby="register-title">` +
-    dialogTop('register-title', 'plus', '注册节点', true) +
+    dialogTop('register-title', 'plus', '注册智能体', true) +
     `<form id="register-form" class="stack" novalidate>` +
     `<div class="form-grid">` +
     field('address', '地址', 'qianmo://node-a/reviewer', { required: true }) +
@@ -819,13 +836,159 @@ export interface WakeFormModel {
   readonly identity?: string
 }
 
+// ---------------------------------------------------------------------------
+// The roster's filter (D6)
+// ---------------------------------------------------------------------------
+
+/** What the roster can be narrowed by: a search, a state, a server. */
+export interface RosterFilter {
+  /** Case-insensitive substring of the address or the endpoint. */
+  readonly q?: string
+  readonly state?: AgentHealth
+  readonly server?: string
+}
+
+const ROSTER_STATES: readonly (readonly [AgentHealth, string])[] = [
+  ['live', '在线'],
+  ['stale', '滞后'],
+  ['expired', '过期'],
+]
+
+/** The filter in a URL's query, unknown values dropped rather than refused. */
+export function parseRosterFilter(params: URLSearchParams): RosterFilter {
+  const q = (params.get('q') ?? '').trim().slice(0, 200)
+  const state = params.get('state') ?? ''
+  const server = (params.get('server') ?? '').trim()
+  return {
+    ...(q === '' ? {} : { q }),
+    ...(ROSTER_STATES.some(([value]) => value === state)
+      ? { state: state as AgentHealth }
+      : {}),
+    ...(server === '' ? {} : { server }),
+  }
+}
+
+/** The filter as a query string, without the `?`: what the poller replays. */
+export function rosterFilterQuery(filter: RosterFilter): string {
+  const params = new URLSearchParams()
+  if (filter.q !== undefined) params.set('q', filter.q)
+  if (filter.state !== undefined) params.set('state', filter.state)
+  if (filter.server !== undefined) params.set('server', filter.server)
+  return params.toString()
+}
+
+export function isRosterFiltered(filter: RosterFilter): boolean {
+  return (
+    filter.q !== undefined ||
+    filter.state !== undefined ||
+    filter.server !== undefined
+  )
+}
+
+/** The agents the filter keeps, judged by the same health the rows show. */
+export function filterRoster(
+  agents: readonly ConsoleAgent[],
+  filter: RosterFilter,
+  now: number,
+  ttlMs: number,
+  nodeServers: readonly NodeServer[] = [],
+): readonly ConsoleAgent[] {
+  const q = filter.q?.toLowerCase()
+  const serverOf = new Map(nodeServers.map(entry => [entry.node, entry.server]))
+  return agents.filter(one => {
+    if (
+      q !== undefined &&
+      !one.address.toLowerCase().includes(q) &&
+      !one.endpoint.toLowerCase().includes(q)
+    ) {
+      return false
+    }
+    if (
+      filter.state !== undefined &&
+      agentHealth(one, now, ttlMs) !== filter.state
+    ) {
+      return false
+    }
+    if (filter.server !== undefined) {
+      const node = bareNode(splitAddress(one.address).node)
+      if (serverOf.get(node) !== filter.server) return false
+    }
+    return true
+  })
+}
+
 /**
- * The one disabled-state sentence the wake face is allowed.
- *
- * Both halves are load-bearing: what is unavailable, and the exact name of the
- * thing to go and set. "唤醒不可用" on its own sends somebody to the docs.
+ * The filter form: a native GET, so it works with no script at all, and it
+ * sits outside the polled region so a refresh never eats what is being typed.
+ * The server select is drawn only when the console knows its servers.
  */
-const WAKE_DISABLED_REASON = '唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK'
+export function rosterFilterForm(
+  filter: RosterFilter,
+  nodeServers: readonly NodeServer[] = [],
+): string {
+  const servers = [...new Set(nodeServers.map(entry => entry.server))].sort()
+  const option = (value: string, label: string, selected: string | undefined) =>
+    `<option value="${attr(value)}"${selected === value ? ' selected' : ''}>` +
+    `${escapeHtml(label)}</option>`
+  const stateSelect =
+    `<div class="field"><label for="roster-state">状态</label>` +
+    `<span class="sel"><select class="input" id="roster-state" name="state">` +
+    option('', '全部', filter.state ?? '') +
+    ROSTER_STATES.map(([value, label]) =>
+      option(value, label, filter.state),
+    ).join('') +
+    `</select>${chevron()}</span></div>`
+  const serverSelect =
+    servers.length === 0
+      ? ''
+      : `<div class="field"><label for="roster-server">服务器</label>` +
+        `<span class="sel"><select class="input" id="roster-server" name="server">` +
+        option('', '全部', filter.server ?? '') +
+        servers.map(server => option(server, server, filter.server)).join('') +
+        `</select>${chevron()}</span></div>`
+  const clear = isRosterFiltered(filter)
+    ? `<a class="btn btn-ghost btn-small" href="/nodes" data-nav>清除筛选</a>`
+    : ''
+  return (
+    `<form id="roster-filter" class="roster-filter" method="get" action="/nodes" role="search">` +
+    `<div class="field roster-search"><label for="roster-q">搜索</label>` +
+    `<input class="input" type="search" id="roster-q" name="q" value="${attr(
+      filter.q ?? '',
+    )}" placeholder="地址或端点" autocomplete="off" spellcheck="false"></div>` +
+    stateSelect +
+    serverSelect +
+    `<button type="submit" class="btn btn-secondary">筛选</button>` +
+    clear +
+    `</form>`
+  )
+}
+
+/** True when this console can send a wake at all, to anyone. */
+export function wakeAvailable(
+  deps: Pick<ConsoleDeps, 'wake' | 'wakeTargets'>,
+): boolean {
+  return (
+    deps.wake !== undefined ||
+    deps.wakeTargets?.some(target => target.wake !== undefined) === true
+  )
+}
+
+/**
+ * Why the wake face is off, from what the console was started with (C6).
+ *
+ * Two different causes with two different fixes: no target was given at all
+ * (`--wake-url`), or targets were given and none of them has a usable
+ * transport key. The old sentence named the key in both cases, which sent
+ * whoever had simply not configured waking to look for a variable. The
+ * per-node list above the fields already says which node lacks its key.
+ */
+function wakeDisabledReason(
+  targets: readonly WakeTarget[] | undefined,
+): string {
+  return targets === undefined || targets.length === 0
+    ? '唤醒不可用 · 启动时没有配置唤醒目标'
+    : '唤醒不可用 · 唤醒目标的传输密钥不可用'
+}
 
 function wakeTargetField(options: string): string {
   if (options === '') {
@@ -876,10 +1039,10 @@ function wakeNodeTargets(targets: readonly WakeTarget[] | undefined): string {
 /**
  * The wake form, in its own dialog.
  *
- * With no PSK the fields render inside a disabled `<fieldset>` with the
- * reason, and **no submit button at all**. A greyed-out button still invites a
- * click; a missing one, next to the name of the variable, says what to go and
- * do. The form's 回调 box stays gone: it could only ever hold the one URL the
+ * With no way to wake the fields render inside a disabled `<fieldset>` with
+ * the reason ({@link wakeDisabledReason}), and **no submit button at all**. A
+ * greyed-out button still invites a click; a missing one, next to the reason,
+ * says what to go and do. The form's 回调 box stays gone: it could only ever hold the one URL the
  * console is pinned to, so it is a line of read-only small print.
  */
 export function wakeDialog(model: WakeFormModel): string {
@@ -918,7 +1081,9 @@ export function wakeDialog(model: WakeFormModel): string {
       `<button type="submit" class="btn btn-primary" data-write>` +
       icon('zap', { small: true }) +
       `唤醒</button></div></form>`
-    : `<p class="note" id="wake-why">${escapeHtml(WAKE_DISABLED_REASON)}</p>` +
+    : `<p class="note" id="wake-why">${escapeHtml(
+        wakeDisabledReason(model.wakeTargets),
+      )}</p>` +
       `<fieldset disabled aria-describedby="wake-why">${fields}</fieldset>` +
       `<div class="dialog-actions">${cancel}</div>`
   return (
@@ -947,7 +1112,7 @@ export function deregisterConfirm(): string {
     `<div class="recap"><div class="recap-row"><span class="k">地址</span>` +
     `<span class="addr mono" id="confirm-deregister-addr"></span></div></div>` +
     `<p>这个地址会立刻从名册摘除 · 在途消息按丢弃处理 · ` +
-    `节点重新注册之前不能再被唤醒</p>` +
+    `重新注册之前不能再被唤醒</p>` +
     `</div>` +
     `<div class="dialog-actions">` +
     `<button type="button" class="btn btn-secondary" ` +

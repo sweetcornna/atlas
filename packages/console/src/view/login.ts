@@ -101,7 +101,7 @@ function legend(accounts: boolean): string {
     `<div class="tokrow"><span class="tag tag-accent mono">个人</span>` +
     `个人凭据 · 按账号角色开放 · 浏览器只保留会话</div>` +
     `<div class="tokrow"><span class="tag tag-neutral mono">共享</span>` +
-    `view 与 admin 令牌 · 迁移期保留</div>` +
+    `只读令牌与管理令牌 · 迁移期保留</div>` +
     `</div>` +
     `<p class="foot">个人凭据由邀请开通 · 丢失找运维重置 · 退出即结束会话</p>`
   )
@@ -120,7 +120,8 @@ export function renderLoginPage(model: LoginPageModel): string {
 
   return (
     documentHead(title) +
-    `<body>\n<div class="stage">\n` +
+    // A main landmark and an h1, like every other document (F1).
+    `<body>\n<main class="stage" aria-labelledby="page-title">\n` +
     DECOR +
     `<form class="card elev-lg panel" method="post" action="/login">` +
     `<input type="hidden" name="redirect" value="${attr(model.redirect)}">` +
@@ -129,6 +130,7 @@ export function renderLoginPage(model: LoginPageModel): string {
     `<div class="brand-cn">阡陌</div>` +
     `</div>` +
     `<p class="inst"><b>${escapeHtml(model.label)}</b></p>` +
+    `<h1 class="page-title" id="page-title">登录</h1>` +
     error +
     `<div class="field"><label for="token">` +
     `${escapeHtml(accounts ? '凭据' : FIELD_LABEL)}</label>` +
@@ -142,6 +144,6 @@ export function renderLoginPage(model: LoginPageModel): string {
     icon('log-out', { small: true }) +
     `${escapeHtml(SUBMIT_LABEL)}</button>` +
     legend(accounts) +
-    `</form>\n</div>\n</body>\n</html>\n`
+    `</form>\n</main>\n</body>\n</html>\n`
   )
 }

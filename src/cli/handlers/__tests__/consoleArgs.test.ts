@@ -1182,7 +1182,9 @@ describe('console audit port', () => {
       failure: { code: 'unreachable' },
     })
     if (result.ok) throw new Error('expected witness endpoint failure')
-    expect(result.failure.message).toStartWith('见证端点不可达')
+    // The page supplies the subject (审计链); the port keeps only which half
+    // of the read failed, then the transport's own words (C5).
+    expect(result.failure.message).toStartWith('见证端点 · ')
   })
 
   test('returns the existing unavailable result when its remote witness reader times out', async () => {

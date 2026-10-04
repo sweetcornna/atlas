@@ -18,15 +18,22 @@ const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
+  // No other origin loads an answer as a subresource (H2).
+  'cross-origin-resource-policy': 'same-origin',
 } as const
 
 /**
  * Content-Security-Policy, as strict as an inline-everything page can be.
  *
- * `'unsafe-inline'` is unavoidable for the one style and the one script — but
- * every *host* directive stays `'none'`, which is the half that matters: no
- * origin other than this one can contribute anything, and `connect-src 'self'`
- * keeps the token from being sent anywhere else.
+ * Scripts are allowed by hash, not by `'unsafe-inline'` (H2): every script a
+ * document carries is a compile-time constant (the runtime, the page's own
+ * script), so its SHA-256 is known before the response is written, and a
+ * script anyone manages to put into the page any other way does not run.
+ * A document with no script says `script-src 'none'`. `'unsafe-inline'`
+ * stays for styles only: the one `<style>` and the `style=""` attributes.
+ * Every *host* directive is `'none'`, which is the half that matters: no
+ * origin other than this one can contribute anything, and
+ * `connect-src 'self'` keeps the token from being sent anywhere else.
  *
  * `img-src data:` is the one loosening, and it buys exactly one thing: the
  * favicon, which is an inline SVG data URI in the document head. `data:` is not
@@ -36,25 +43,46 @@ const JSON_HEADERS = {
  *
  * Lives here rather than beside the document head because two places state
  * it: the `<meta>` in every document (`view/shell.ts`) and the response header
- * on every document ({@link DOCUMENT_CSP}). One constant, so the two cannot
- * drift.
+ * on every document ({@link documentHeaders}), both from {@link cspFor} over
+ * the same scripts, so the two cannot drift.
  */
-export const CSP = [
-  "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline'",
-  // `connect-src` also covers `EventSource`: the chat page's stream is a
-  // same-origin `GET /v0/chat/stream`, and without this directive the browser
-  // would refuse to open it while reporting nothing useful.
-  "connect-src 'self'",
-  "form-action 'self'",
-  "base-uri 'none'",
-  'img-src data:',
-  "font-src 'none'",
-].join('; ')
+export function cspFor(scripts: readonly string[]): string {
+  const hashes = [...new Set(scripts.map(scriptHash))]
+  return [
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    `script-src ${hashes.length === 0 ? "'none'" : hashes.join(' ')}`,
+    // `connect-src` also covers `EventSource`: the chat page's stream is a
+    // same-origin `GET /v0/chat/stream`, and without this directive the browser
+    // would refuse to open it while reporting nothing useful.
+    "connect-src 'self'",
+    "form-action 'self'",
+    "base-uri 'none'",
+    'img-src data:',
+    "font-src 'none'",
+  ].join('; ')
+}
+
+const scriptHashes = new Map<string, string>()
+
+/** `'sha256-…'` of one inline script's text, as the browser hashes it. */
+function scriptHash(script: string): string {
+  let hash = scriptHashes.get(script)
+  if (hash === undefined) {
+    const digest = new Bun.CryptoHasher('sha256')
+      .update(script)
+      .digest('base64')
+    hash = `'sha256-${digest}'`
+    scriptHashes.set(script, hash)
+  }
+  return hash
+}
+
+/** The policy of a document without a script: the login door, an error page. */
+export const CSP = cspFor([])
 
 /**
- * The policy as a response header: {@link CSP} plus `frame-ancestors 'none'`.
+ * The policy as a response header: {@link cspFor} plus `frame-ancestors 'none'`.
  *
  * `frame-ancestors` is the one directive a `<meta>` policy cannot carry — the
  * browser ignores it there (`authorization-m1.md` TH-5) — and it is the one
@@ -64,10 +92,38 @@ export const CSP = [
  * site"). The `<meta>` copy stays as well: it is what a saved copy of the
  * page still enforces.
  */
-export const DOCUMENT_CSP = `${CSP}; frame-ancestors 'none'`
+export function documentCspFor(scripts: readonly string[]): string {
+  return `${cspFor(scripts)}; frame-ancestors 'none'`
+}
+
+/** {@link documentCspFor} of a document without a script. */
+export const DOCUMENT_CSP = documentCspFor([])
+
+/** The inline scripts of a document, in order, as the browser will hash them. */
+export function inlineScripts(body: string): string[] {
+  return [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+    match => match[1] ?? '',
+  )
+}
 
 /**
- * Headers for anything a browser renders.
+ * Powerful features no console page uses, refused for the page and for
+ * anything it might frame (H2). The clipboard is not on the list: the copy
+ * buttons write to it.
+ */
+const PERMISSIONS_POLICY = [
+  'accelerometer=()',
+  'camera=()',
+  'geolocation=()',
+  'gyroscope=()',
+  'magnetometer=()',
+  'microphone=()',
+  'payment=()',
+  'usb=()',
+].join(', ')
+
+/**
+ * Headers for anything a browser renders, with the policy for this body.
  *
  * `no-referrer` matters here rather than being boilerplate: the page URL can
  * carry the token (`?token=…`), and a default `Referer` would hand it to
@@ -77,14 +133,24 @@ export const DOCUMENT_CSP = `${CSP}; frame-ancestors 'none'`
  * browser old enough to know only the older header. Every document carries
  * both — the login door and the invitation pages too, since a framed login
  * form is the other half of a clickjacking attack.
+ *
+ * H2 adds three: `Cross-Origin-Opener-Policy: same-origin`, so a page that
+ * opened the console in a window keeps no handle on it; a resource policy of
+ * `same-origin`, so no other origin can load the document as a subresource;
+ * and the {@link PERMISSIONS_POLICY}.
  */
-export const DOCUMENT_HEADERS = {
-  'cache-control': 'no-store',
-  'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer',
-  'content-security-policy': DOCUMENT_CSP,
-  'x-frame-options': 'DENY',
-} as const
+export function documentHeaders(body: string): Record<string, string> {
+  return {
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': documentCspFor(inlineScripts(body)),
+    'x-frame-options': 'DENY',
+    'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'same-origin',
+    'permissions-policy': PERMISSIONS_POLICY,
+  }
+}
 
 /** Error vocabulary of this surface. `code` is for clients, not for users. */
 type ConsoleErrorCode =
@@ -121,9 +187,125 @@ export function html(body: string, status = 200): Response {
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      ...DOCUMENT_HEADERS,
+      ...documentHeaders(body),
     },
   })
+}
+
+/**
+ * Smallest body worth compressing. Under it the gzip framing is most of the
+ * answer and the CPU is spent for nothing.
+ */
+const COMPRESS_MIN_BYTES = 1024
+
+/** What is text and worth compressing. An event stream is not: it is never done. */
+const COMPRESSIBLE =
+  /^(?:text\/html|text\/css|text\/javascript|application\/json)(?:;|$)/
+
+/** True when the caller's `Accept-Encoding` takes gzip (a `q=0` refuses it). */
+function acceptsGzip(request: Request): boolean {
+  const header = request.headers.get('accept-encoding')
+  if (header === null) return false
+  let star = false
+  for (const part of header.split(',')) {
+    const [name = '', ...params] = part.trim().toLowerCase().split(';')
+    const q = params
+      .map(param => param.trim())
+      .find(param => param.startsWith('q='))
+    const refused = q !== undefined && Number(q.slice(2)) === 0
+    if (name === 'gzip') return !refused
+    if (name === '*') star = !refused
+  }
+  return star
+}
+
+/**
+ * The response, gzipped when the caller takes it (G1).
+ *
+ * Documents are `no-store` and inline their sheet and runtime, so every
+ * navigation sends the whole page again; compressed it is a fraction of the
+ * size. Only `GET` answers are compressed: the one response that carries a
+ * secret the caller just submitted (the credential page answering
+ * `POST /invite`) is never put next to its own compressed length, which is
+ * the condition a length side channel needs. Bodies are fully known strings
+ * here, so this reads and re-wraps them; streams are left alone.
+ */
+export async function compressed(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (request.method !== 'GET' || response.body === null) return response
+  if (response.headers.has('content-encoding')) return response
+  if (!COMPRESSIBLE.test(response.headers.get('content-type') ?? '')) {
+    return response
+  }
+  if (!acceptsGzip(request)) return response
+  const raw = new Uint8Array(await response.arrayBuffer())
+  const headers = new Headers(response.headers)
+  const init = { status: response.status, statusText: response.statusText }
+  if (raw.byteLength < COMPRESS_MIN_BYTES) {
+    return new Response(raw, { ...init, headers })
+  }
+  headers.set('content-encoding', 'gzip')
+  headers.delete('content-length')
+  const vary = headers.get('vary')
+  if (vary === null) headers.set('vary', 'accept-encoding')
+  else if (!/\baccept-encoding\b/i.test(vary)) {
+    headers.set('vary', `${vary}, accept-encoding`)
+  }
+  return new Response(Bun.gzipSync(raw), { ...init, headers })
+}
+
+/**
+ * A compiled-in asset, revalidated by its content hash (G1).
+ *
+ * `no-cache`, not `immutable`: the URL carries no version, so the next
+ * release serves different bytes at the same address and a browser told
+ * "never ask again" would keep the old ones. With the ETag the question costs
+ * a 304 and no body. Weak, because the gzipped and plain answers are the same
+ * content in two encodings.
+ */
+export function asset(
+  request: Request,
+  body: string,
+  contentType: string,
+): Response {
+  const tag = assetTag(body)
+  const headers = {
+    'content-type': contentType,
+    'cache-control': 'no-cache',
+    etag: tag,
+    vary: 'accept-encoding',
+    'x-content-type-options': 'nosniff',
+    'cross-origin-resource-policy': 'same-origin',
+  }
+  const asked = request.headers.get('if-none-match')
+  if (asked !== null && etagMatches(asked, tag)) {
+    return new Response(null, { status: 304, headers })
+  }
+  return new Response(body, { status: 200, headers })
+}
+
+const assetTags = new Map<string, string>()
+
+function assetTag(body: string): string {
+  let tag = assetTags.get(body)
+  if (tag === undefined) {
+    const digest = new Bun.CryptoHasher('sha256').update(body).digest('hex')
+    tag = `W/"${digest.slice(0, 32)}"`
+    assetTags.set(body, tag)
+  }
+  return tag
+}
+
+/** `If-None-Match` by weak comparison: `*`, or any listed tag, W/ or not. */
+function etagMatches(header: string, tag: string): boolean {
+  if (header.trim() === '*') return true
+  const bare = tag.replace(/^W\//, '')
+  return header
+    .split(',')
+    .map(one => one.trim().replace(/^W\//, ''))
+    .includes(bare)
 }
 
 export function notFound(message: string): Response {

@@ -46,14 +46,16 @@ import {
   hint,
   icon,
   railSep,
+  reasonOf,
   scroll,
   sectionHead,
   state,
   tag,
   type Tone,
+  timeTag,
 } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatDateTime, formatRelative } from './format.js'
+import { formatRelative } from './format.js'
 
 type Listing = Extract<ReturnType<AccountBook['list']>, { ok: true }>['value']
 
@@ -166,8 +168,7 @@ function whoCell(
 function whenCell(at: number | null, now: number, never = '从未'): string {
   if (at === null) return `<td class="when note">${escapeHtml(never)}</td>`
   return (
-    `<td class="when"><time datetime="${attr(new Date(at).toISOString())}">` +
-    `${escapeHtml(formatDateTime(at))}</time>` +
+    `<td class="when">${timeTag(at, 'datetime')}` +
     `<span class="note">${escapeHtml(formatRelative(at, now))}</span></td>`
   )
 }
@@ -931,8 +932,10 @@ function ledgerBody(
       return `<p class="bar bar-bad" role="alert">${escapeHtml(
         LEDGER_UNREADABLE_LINE,
       )}</p>`
-    case 'invalid':
-      return bar('warn', `筛选条件无效 · ${shown.message}`)
+    case 'invalid': {
+      const reason = reasonOf(shown.message, 'invalid')
+      return bar('warn', `筛选条件无效 · ${reason.text}`, '', reason.detail)
+    }
     case 'failed':
       return failureBar(shown.failure, '对话列表')
     case 'page':

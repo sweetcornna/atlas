@@ -41,9 +41,9 @@
  * line through `textContent` rather than re-fetching a fragment.
  */
 
-import { absent, bar, chip, failureBar, sectionHead } from './bits.js'
+import { absent, bar, chip, failureBar, sectionHead, timeTag } from './bits.js'
 import { attr, escapeHtml } from './escape.js'
-import { formatClock, formatRelative } from './format.js'
+import { formatRelative } from './format.js'
 import type { ConsoleFailure, NodeServer, ServerNote } from '../deps.js'
 
 /**
@@ -107,7 +107,7 @@ export function serverCards(
 function updatedLine(note: ServerNote | null, now: number): string {
   if (note === null) return `<span class="absent">未填写</span>`
   return (
-    `更新于 <span class="mono">${escapeHtml(formatClock(note.updatedAt))}</span> ` +
+    `更新于 ${timeTag(note.updatedAt, 'clock', 'mono')} ` +
     `<span class="absent">${escapeHtml(formatRelative(note.updatedAt, now))}</span>`
   )
 }

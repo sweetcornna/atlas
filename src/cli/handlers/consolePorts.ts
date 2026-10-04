@@ -237,10 +237,9 @@ export function createRegistryPort(options: RegistryPortOptions): RegistryPort {
         signal: AbortSignal.timeout(timeoutMs),
       })
     } catch (error) {
-      return fail(
-        'unreachable',
-        `注册中心不可达 ${baseUrl}：${messageOf(error)}`,
-      )
+      // No subject: the page says whose failure this is (C5). The message is
+      // the developer's half — where, and the transport's own words.
+      return fail('unreachable', `${baseUrl} · ${messageOf(error)}`)
     }
 
     if (response.status === 204) return { ok: true, value: null }
@@ -256,8 +255,7 @@ export function createRegistryPort(options: RegistryPortOptions): RegistryPort {
     if (!response.ok) {
       return fail(
         codeForStatus(response.status),
-        errorMessageOf(body) ??
-          `注册中心返回 HTTP ${response.status}（${baseUrl}${path}）`,
+        errorMessageOf(body) ?? `HTTP ${response.status} · ${baseUrl}${path}`,
       )
     }
     return { ok: true, value: body }
@@ -273,7 +271,7 @@ export function createRegistryPort(options: RegistryPortOptions): RegistryPort {
   function oneAgent(value: unknown): ConsoleResult<ConsoleAgent> {
     const agent = toConsoleAgent(value)
     return agent === null
-      ? fail('invalid', '注册中心返回的不是一条 agent 记录')
+      ? fail('invalid', '返回的不是一条 agent 记录')
       : { ok: true, value: agent }
   }
 
@@ -283,7 +281,7 @@ export function createRegistryPort(options: RegistryPortOptions): RegistryPort {
       if (!result.ok) return result
       const raw = isRecord(result.value) ? result.value['agents'] : undefined
       if (!Array.isArray(raw)) {
-        return fail('invalid', '注册中心返回的不是 agents 列表')
+        return fail('invalid', '返回的不是 agents 列表')
       }
       const agents: ConsoleAgent[] = []
       for (const entry of raw) {
@@ -459,10 +457,7 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
     try {
       return { ok: true, value: reader.read() }
     } catch (error) {
-      return fail(
-        'unreachable',
-        `审计链读不出来 ${options.path}：${messageOf(error)}`,
-      )
+      return fail('unreachable', `${options.path} · ${messageOf(error)}`)
     }
   }
 
@@ -550,7 +545,9 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
             }
           }
         } catch (error) {
-          return fail('unreachable', `见证端点不可达：${messageOf(error)}`)
+          // The one qualifier kept: the page's subject is the trail, and
+          // this half of the read is the witness endpoint (C5).
+          return fail('unreachable', `见证端点 · ${messageOf(error)}`)
         }
       }
 
@@ -762,14 +759,11 @@ export function createCertificatePort(
           get('/v0/revocation-list'),
         ])
       } catch (error) {
-        return fail(
-          'unreachable',
-          `注册中心不可达 ${baseUrl}：${messageOf(error)}`,
-        )
+        return fail('unreachable', `${baseUrl} · ${messageOf(error)}`)
       }
       const agents = isRecord(agentsBody) ? agentsBody['agents'] : undefined
       if (!Array.isArray(agents)) {
-        return fail('invalid', '注册中心返回的不是 agents 列表')
+        return fail('invalid', '返回的不是 agents 列表')
       }
 
       const at = now()
@@ -1036,7 +1030,7 @@ export function createServerNotesPort(
         // 上的文件写不进去。它落成 503，而 `rejected` 会落成 400 并让调用方
         // 以为是自己送错了东西（`http.ts` 的 `statusFor`）。
         return Promise.resolve(
-          fail('unreachable', `备注写入失败：${messageOf(error)}`),
+          fail('unreachable', `写入失败 · ${messageOf(error)}`),
         )
       }
       cache.set(server, record)
@@ -1170,7 +1164,7 @@ export function createNotifyPort(options: NotifyPortOptions): NotifyPort {
         options.acks.append(record)
       } catch (error) {
         return Promise.resolve(
-          fail('unreachable', `确认写入失败 · ${messageOf(error)}`),
+          fail('unreachable', `写入失败 · ${messageOf(error)}`),
         )
       }
       acks.set(id, record)
@@ -1385,7 +1379,7 @@ export function createSchedulerPort(
         return Promise.resolve(
           fail(
             'unreachable',
-            `调度状态读不出来 ${options.stateDir} · ${messageOf(storeErrors[0])}`,
+            `${options.stateDir} · ${messageOf(storeErrors[0])}`,
           ),
         )
       }

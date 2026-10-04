@@ -469,20 +469,29 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
         `var TOKEN_KEY = 'k'; var memoryToken = '';
          function byId() { return null; }
          function paintToken() {}
+         var exchanged = [];
+         function exchange(value) { exchanged.push(value); }
          ${guarded.slice(start, end)}
-         return { readToken: readToken, writeToken: writeToken };`,
+         return { readToken: readToken, writeToken: writeToken, exchanged: exchanged };`,
       ) as (
         w: typeof fakeWindow,
         say: (el: unknown, text: string) => void,
-      ) => { readToken(): string; writeToken(value: string): void }
+      ) => {
+        readToken(): string
+        writeToken(value: string): void
+        readonly exchanged: string[]
+      }
       const fns = make(fakeWindow, (_el, text) => {
         said.push(text)
       })
       fns.writeToken('qmu_abcdef')
       expect(store.size).toBe(0)
       expect(said).toContain('个人凭据请在登录页填写')
+      // Refused before anything else: not posted to the login door either.
+      expect(fns.exchanged).toEqual([])
       fns.writeToken(ADMIN)
       expect(store.get('k')).toBe(ADMIN)
+      expect(fns.exchanged).toEqual([ADMIN])
       store.set('k', 'qmu_left-over')
       expect(fns.readToken()).toBe('')
       expect(store.has('k')).toBe(false)
@@ -781,9 +790,7 @@ describe('break-glass (invariant 5)', () => {
     )
     expect(login.status).toBe(403)
     expect(login.headers.getSetCookie()).toEqual([])
-    expect((await login.text()).includes('admin 令牌只接受 Bearer 头')).toBe(
-      true,
-    )
+    expect((await login.text()).includes('管理令牌只接受 Bearer 头')).toBe(true)
   })
 
   test('every page it opens carries the lit notice', async () => {
@@ -795,7 +802,7 @@ describe('break-glass (invariant 5)', () => {
       expect(html.includes('id="account-notice"')).toBe(true)
       expect(
         html.includes(
-          'break-glass 会话 · 每次使用都有记录 · 用完请轮换 admin 令牌',
+          'break-glass 会话 · 每次使用都有记录 · 用完请轮换管理令牌',
         ),
       ).toBe(true)
       expect(html.includes('>break-glass</span>')).toBe(true)
@@ -848,7 +855,7 @@ describe('break-glass (invariant 5)', () => {
     const page = await (
       await h.handle(asSession('GET', '/', ops.sid, { header: false }))
     ).text()
-    expect(page.includes('admin 令牌用作 break-glass 后还没有轮换')).toBe(true)
+    expect(page.includes('管理令牌用作 break-glass 后还没有轮换')).toBe(true)
     expect(h.book.breakGlassStatus(tokenFingerprint(ADMIN)).rotationDue).toBe(
       true,
     )

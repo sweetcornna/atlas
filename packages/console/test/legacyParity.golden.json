@@ -5,6 +5,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 130,
@@ -39,15 +40,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 76676,
-    "sha256": "08283604000b1e178dd2f4547464d87ef1f8300e067e69609118384cb8fbee65"
+    "length": 92110,
+    "sha256": "a8b588ecee404e024ab86b023c7919fed066fe7a0d9c8941abada38ace850ca6"
   },
   {
     "probe": "GET / as admin-bearer",
@@ -56,15 +63,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 77062,
-    "sha256": "2f2566b58511231048c4d349e30cef87a4cbd5b3e455f106493e9ef0c45516f9"
+    "length": 92496,
+    "sha256": "50f1237fd7ab70985f86f7a0136172890e34a6c74bf70f80ce20d3f15d3fefbe"
   },
   {
     "probe": "GET / as view-query",
@@ -73,15 +86,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 76676,
-    "sha256": "08283604000b1e178dd2f4547464d87ef1f8300e067e69609118384cb8fbee65"
+    "length": 92110,
+    "sha256": "a8b588ecee404e024ab86b023c7919fed066fe7a0d9c8941abada38ace850ca6"
   },
   {
     "probe": "GET / as admin-query",
@@ -90,15 +109,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 77062,
-    "sha256": "2f2566b58511231048c4d349e30cef87a4cbd5b3e455f106493e9ef0c45516f9"
+    "length": 92496,
+    "sha256": "50f1237fd7ab70985f86f7a0136172890e34a6c74bf70f80ce20d3f15d3fefbe"
   },
   {
     "probe": "GET / as view-cookie",
@@ -107,15 +132,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 76676,
-    "sha256": "08283604000b1e178dd2f4547464d87ef1f8300e067e69609118384cb8fbee65"
+    "length": 92110,
+    "sha256": "a8b588ecee404e024ab86b023c7919fed066fe7a0d9c8941abada38ace850ca6"
   },
   {
     "probe": "GET / as admin-cookie",
@@ -124,15 +155,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 77062,
-    "sha256": "2f2566b58511231048c4d349e30cef87a4cbd5b3e455f106493e9ef0c45516f9"
+    "length": 92496,
+    "sha256": "50f1237fd7ab70985f86f7a0136172890e34a6c74bf70f80ce20d3f15d3fefbe"
   },
   {
     "probe": "GET / as wrong-bearer",
@@ -140,6 +177,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 130,
@@ -152,6 +190,7 @@
       ["allow", "GET"],
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 61,
@@ -164,15 +203,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 48823,
-    "sha256": "0bac49482a4e88e4e6177118e58bea6aea5ba3f2a039ab556d7ecb7fa4017a90"
+    "length": 47046,
+    "sha256": "b5f1d729cb6ec6d7df0f1b0134723b72cf4b49b45dea2bc910d4a091a9640c7c"
   },
   {
     "probe": "GET /login?redirect=%2Fchat as none",
@@ -181,15 +226,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 48827,
-    "sha256": "a0b6df46c7d1c11ffde774036ff7094c1d77a5bd17158ff99b437daf1fb3d5f3"
+    "length": 47050,
+    "sha256": "c5ba5d2eb50561f7416e96db0184f9a2b92f363949052eab7bd8b3067b212c2a"
   },
   {
     "probe": "GET /login as admin-cookie",
@@ -209,6 +260,7 @@
       ["allow", "GET, POST"],
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 67,
@@ -221,15 +273,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 49156,
-    "sha256": "d3d1fbaf826c72feb2ee483dc935670ab1b7a3fb6e4c071a4fdd9d38656969d7"
+    "length": 47379,
+    "sha256": "d4ad5eed8665ecf2959ddfdd6ecbcd2c62b3e2d2a9e3f8b1478c32cd8322ddb1"
   },
   {
     "probe": "POST /login as none form={\"token\":\"view-token-000000000001\"}",
@@ -267,6 +325,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 62,
@@ -282,7 +341,8 @@
       [
         "set-cookie",
         "qianmo_console=admin-token-00000000001; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200; Secure"
-      ]
+      ],
+      ["strict-transport-security", "max-age=31536000"]
     ],
     "length": 0,
     "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -293,6 +353,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 51,
@@ -335,6 +396,7 @@
       ["allow", "POST"],
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 62,
@@ -344,23 +406,29 @@
     "probe": "GET /assets/app.css as none",
     "status": 200,
     "headers": [
-      ["cache-control", "no-store"],
+      ["cache-control", "no-cache"],
       ["content-type", "text/css; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
+      ["etag", "W/\"d6626395010f11c0854020a255e13b61\""],
+      ["vary", "accept-encoding"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 46289,
-    "sha256": "cd9f9ed27bf941cecff84c5c72c4b76dda1a9078bcdd293317aaf998e15849c1"
+    "length": 44449,
+    "sha256": "d6626395010f11c0854020a255e13b617dfae4f54e9f5e7764d7788d164037d8"
   },
   {
     "probe": "GET /assets/app.js as none",
     "status": 200,
     "headers": [
-      ["cache-control", "no-store"],
+      ["cache-control", "no-cache"],
       ["content-type", "text/javascript; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
+      ["etag", "W/\"90122dbae70977489caa116282bfb1f0\""],
+      ["vary", "accept-encoding"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 18046,
-    "sha256": "16a895080d4446446097125e4ba171d2a979a94861ecd6e141bc3194bec241d7"
+    "length": 34211,
+    "sha256": "90122dbae70977489caa116282bfb1f04cb5028e8e2b07ea96339a995e88ea89"
   },
   {
     "probe": "GET /assets/nope.js as none",
@@ -368,6 +436,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 72,
@@ -379,6 +448,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 15,
@@ -390,6 +460,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 130,
@@ -401,6 +472,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 181,
@@ -412,6 +484,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 116,
@@ -423,6 +496,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 215,
@@ -434,6 +508,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 116,
@@ -445,6 +520,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 215,
@@ -456,10 +532,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "POST /v0/agents as admin-bearer",
@@ -467,6 +544,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 202,
@@ -485,10 +563,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "POST /v0/agents/qianmo%3A%2F%2Ftokyo-1%2Fplanner/heartbeat as admin-bearer",
@@ -496,6 +575,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 202,
@@ -507,6 +587,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 269,
@@ -518,6 +599,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 269,
@@ -529,6 +611,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 385,
@@ -540,6 +623,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 113,
@@ -551,6 +635,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 53,
@@ -562,6 +647,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 58,
@@ -573,6 +659,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 56,
@@ -584,10 +671,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "GET /fragments/roster as view-bearer",
@@ -596,15 +684,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 2037,
-    "sha256": "13b59cbddcf7ca80b7f7dd4aee68a6517f0d112d9e76e5dbde55f9d0c2dda0b5"
+    "length": 2091,
+    "sha256": "9e542913c2ff3a2cf8951b88a151648a15b692738c54ecda9763f3727ba5acbb"
   },
   {
     "probe": "GET /fragments/audit as view-bearer",
@@ -613,15 +707,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 5117,
-    "sha256": "fd6ac60a0718c43e7861bc3555afbc9abd9e6c0169595aa36ee2c554edb3c046"
+    "length": 5186,
+    "sha256": "88be513cdc4a128ce1e15e4afe62610fb7d375a17a87d701aebcafe1cdc68aa7"
   },
   {
     "probe": "GET /fragments/limits as view-bearer",
@@ -630,9 +730,15 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
@@ -647,9 +753,15 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
@@ -663,6 +775,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 72,
@@ -685,10 +798,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "GET /chat as view-cookie (html)",
@@ -697,15 +811,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 49170,
-    "sha256": "0c58f410a803370aae9e0b15c1f7868a4f48c6697b48f98e68d1577cbf636bb9"
+    "length": 47388,
+    "sha256": "935ff8f1413ae93e931b6e73990b3e1c49365689b37a5b430f5cc62696f8cc19"
   },
   {
     "probe": "GET /chat as admin-bearer",
@@ -714,15 +834,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-+7ypsbIA+Hy2s8odY07oZ2AqdZ+w6wIDzz1tjsVvMgY='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 91219,
-    "sha256": "c22e6f7b494f1cab6c346266816bf3ccefb505bb4b243efae6158eebc34be792"
+    "length": 108020,
+    "sha256": "67a78dd3e2169e72f2a3c1fac2ef11e5951ef7d385f2944be41eb09841316394"
   },
   {
     "probe": "GET /chat?session=session-1 as admin-cookie",
@@ -731,15 +857,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-+7ypsbIA+Hy2s8odY07oZ2AqdZ+w6wIDzz1tjsVvMgY='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 91895,
-    "sha256": "7f178a36182020b45a9269a921692755418cc67018aa9de1ee2ba68e98be9fb0"
+    "length": 108746,
+    "sha256": "aa66b2ca38d2c7c8cd163ec1d179fff4a946b03dc4c97357cb21350741079aae"
   },
   {
     "probe": "GET /v0/chat/targets as admin-bearer",
@@ -747,6 +879,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 156,
@@ -758,10 +891,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "GET /v0/chat/sessions as admin-bearer",
@@ -769,6 +903,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 188,
@@ -780,6 +915,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 130,
@@ -791,6 +927,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 173,
@@ -802,6 +939,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 304,
@@ -813,6 +951,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 108,
@@ -824,6 +963,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 116,
@@ -836,9 +976,15 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
@@ -853,15 +999,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 1445,
-    "sha256": "a18bfc5da12d8a7f1b0d7354de9858d69d30008e70196fa0dffc18738b51bb32"
+    "length": 1498,
+    "sha256": "74574c7fadaa77975988ffe9ae0f790b0feb93a3d6ef053ced6feb82fcc8a8cc"
   },
   {
     "probe": "GET /fragments/chat/sessions as view-bearer",
@@ -869,10 +1021,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "GET /v0/chat/stream as admin-bearer",
@@ -919,6 +1072,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 70,
@@ -930,10 +1084,11 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
-    "length": 72,
-    "sha256": "80620d97de200fd1e342c96670f65e83220303729142c8fc18e52cc41fca3ac9"
+    "length": 64,
+    "sha256": "f0d82f9b605475934cdd129ab6bc7a573565befcd288c41db76e94e8ad638ef4"
   },
   {
     "probe": "GET /invite as none",
@@ -941,6 +1096,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 64,
@@ -952,6 +1108,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 64,
@@ -963,6 +1120,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 69,
@@ -974,6 +1132,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 77,
@@ -985,6 +1144,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 63,
@@ -996,6 +1156,7 @@
     "headers": [
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 62,
@@ -1008,15 +1169,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-usALvunVtC9F4RTw9eBgb41Mbba2q7kSusk3EW68pz4='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 85871,
-    "sha256": "b6ab749caacd24ad2e92e323d453a7de9b9cb48960f98b86d73fd3a1de863c1c"
+    "length": 106167,
+    "sha256": "1c83b534a558faf4f9f91b8694d766f594f6a5ac73c2e3ca38f890655634a566"
   },
   {
     "probe": "GET /nodes as none (html)",
@@ -1036,6 +1203,7 @@
       ["allow", "GET"],
       ["cache-control", "no-store"],
       ["content-type", "application/json; charset=utf-8"],
+      ["cross-origin-resource-policy", "same-origin"],
       ["x-content-type-options", "nosniff"]
     ],
     "length": 61,
@@ -1048,15 +1216,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-usALvunVtC9F4RTw9eBgb41Mbba2q7kSusk3EW68pz4='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 85600,
-    "sha256": "33f8eaef9ecbdf907c8363aa6a6789d03095a1a0c1fe0f613ff011e7a5d0477e"
+    "length": 104667,
+    "sha256": "2bfa85fe5d6ad59b3c95a3d0ae3bb9604d034605dab95f1fa6862bb5ceafe52b"
   },
   {
     "probe": "GET /nodes/nowhere as admin-bearer (html)",
@@ -1065,15 +1239,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 74123,
-    "sha256": "614ec116666f7e6278ccddbb9b9f533322da32d8b165eea3591fc24637d5d20e"
+    "length": 89353,
+    "sha256": "c1b09e66827a426f30e41138f27736fca8970fcb367e24f72752b6cf6e75dca1"
   },
   {
     "probe": "GET /audit?window=24h as view-bearer",
@@ -1082,15 +1262,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-1Xzu0i4khjIMQvrG93yOsEYPOVKQluUkw+q6VuXRhnc='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 83124,
-    "sha256": "9c5dfde8f1548dc3695097261d770ee4083cd91f2879395f0a4c3f25e20fbbc3"
+    "length": 98795,
+    "sha256": "07c03ddf2798d9ebca591622086fb4680a6eda749e3d6daf252d16a3cd36df5f"
   },
   {
     "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
@@ -1099,15 +1285,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-1Xzu0i4khjIMQvrG93yOsEYPOVKQluUkw+q6VuXRhnc='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 77941,
-    "sha256": "0a6fad7bc3bd630f278fa14f80531ed73baaa35868b49eefab873a5341e12e0d"
+    "length": 93519,
+    "sha256": "ee5c50c530f0b366f1b392db889fe9ac8e431b45ce2a80584c2ce6227b925840"
   },
   {
     "probe": "GET /servers as admin-bearer",
@@ -1116,15 +1308,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-YaP3FgDajd9ENZTOXN4tITtkDPcWvP5gFfSIjfUhiaM='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 76188,
-    "sha256": "a55666dad01d40f6e52452568be65dc6743cb3d82234813649ed2abac7d3c105"
+    "length": 91483,
+    "sha256": "9e45efe666c8384f7fb63774dbcef855b77cbf3561380b5490a817a3f896506b"
   },
   {
     "probe": "GET /servers as view-bearer",
@@ -1133,15 +1331,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-YaP3FgDajd9ENZTOXN4tITtkDPcWvP5gFfSIjfUhiaM='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 75733,
-    "sha256": "cddb549b8ca745977f482f0baa69f9b08446c09d7c7c0d849f11c01025bd9e2f"
+    "length": 91028,
+    "sha256": "b81e403de0477beb0316a8693f71d5c4388ffb67611c610065cc08401433f631"
   },
   {
     "probe": "GET /settings as view-bearer",
@@ -1150,15 +1354,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 75349,
-    "sha256": "0f8f1f7272ca0581b0bf1f5ad3f08fb67b70c67c8427e2d428267e9db5571b0d"
+    "length": 90827,
+    "sha256": "c492d952c6993fb4599464a4f5f6456d85be97f5ebab1fb30d53f7098d0be5f4"
   },
   {
     "probe": "GET /providers as view-bearer",
@@ -1167,15 +1377,21 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-5V/Awm4/bthxeDCKbaznvx/WQnmG9j9uLQHPLCBNUpY='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 126680,
-    "sha256": "f17bf89bd202a1e33e27758187aeb99cd2b39a861d4756c72137278507803a35"
+    "length": 141827,
+    "sha256": "8c11d676750304b29f542d60630fb6aaab5449029a52c64fc7c4e401d8afecbe"
   },
   {
     "probe": "GET /nope as admin-bearer (html)",
@@ -1184,14 +1400,20 @@
       ["cache-control", "no-store"],
       [
         "content-security-policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-kBItuucJd0icqhFigr+x8Ey1Ao6OKwfqljOamV6I6ok='; connect-src 'self'; form-action 'self'; base-uri 'none'; img-src data:; font-src 'none'; frame-ancestors 'none'"
       ],
       ["content-type", "text/html; charset=utf-8"],
+      ["cross-origin-opener-policy", "same-origin"],
+      ["cross-origin-resource-policy", "same-origin"],
+      [
+        "permissions-policy",
+        "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      ],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 74112,
-    "sha256": "f9edaf893c60df48636e215908c074b3a416b09877ef518f97c58487f604bf9d"
+    "length": 89342,
+    "sha256": "53d1e4d31db6a5bae728a99eca0dd50a9e03a07d1a34de4563b31630bc21e1c4"
   }
 ]

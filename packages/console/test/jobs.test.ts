@@ -87,7 +87,11 @@ describe('each job, its last and its next fire', () => {
     const due = html.slice(html.indexOf('data-key="due"'))
     expect(due).toContain('已到期 · 2 分钟前')
     const held = html.slice(html.indexOf('data-key="held"'))
-    expect(held).toContain(`退避至 ${formatDateTime(NOW + 240_000)}`)
+    // An instant the runtime redraws in the reader's zone (时区).
+    expect(held).toContain(
+      `退避至 <time datetime="${new Date(NOW + 240_000).toISOString()}" ` +
+        `data-fmt="datetime">${formatDateTime(NOW + 240_000)}</time>`,
+    )
     expect(held).toContain('投递失败')
     expect(held).toContain('<span class="tone-bad">3</span>')
     const gone = html.slice(html.indexOf('data-key="gone"'))
@@ -139,7 +143,12 @@ describe('the emergency stop', () => {
       snapshotOf({ estop: { state: 'unknown', reason: 'EACCES' } }),
     )
     expect(cardRow(unknown, 'sched-estop')).toContain('读不出来')
-    expect(unknown).toContain('急停状态读不出来 · 调度器按未拉下处理 · EACCES')
+    // The port's reason is file-system text: mapped on the line, the
+    // original folded under 详情 (C5).
+    expect(unknown).toContain(
+      '急停状态读不出来 · 调度器按未拉下处理 · 没有读写权限',
+    )
+    expect(unknown).toContain('<pre class="raw" data-raw>EACCES</pre>')
   })
 })
 
@@ -228,7 +237,8 @@ describe('the scheduler heartbeat is never a blank', () => {
     } satisfies ConsoleResult<SchedulerSnapshot>
     const c = watchConsole({ scheduler })
     const html = await (await c.handle(browse('/jobs', ADMIN))).text()
-    expect(html).toContain('调度器状态不可达 · state unreadable')
+    expect(html).toContain('调度器状态不可达 · 无法连接')
+    expect(html).toContain('<pre class="raw" data-raw>state unreadable</pre>')
     expect(html).toContain(UNWIRED_TICK)
   })
 })
