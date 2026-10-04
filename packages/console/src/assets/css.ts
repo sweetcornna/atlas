@@ -292,9 +292,12 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible,
      nav two screens above the operator on a real ledger. Fixing the height to
      the viewport keeps the left column a full panel at every scroll position
      and keeps the nav where it can be reached. */
-  position: sticky; top: var(--space-4);
+  position: sticky; inset: auto; top: var(--space-4);
   height: calc(100vh - var(--space-8));
   overflow-y: auto;
+  /* It is a popover too (E1, drawers below): what the UA sheet gives one is
+     undone here, so above 1000px it is the column above and nothing else. */
+  margin: 0; border: 0; width: auto; color: inherit;
 }
 /* The right column: the top bar, the notice line when there is one, the page. */
 .frame { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
@@ -914,7 +917,12 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 /* The session rail. It is the one part of the panel allowed to scroll: pinning
    the identity block to the bottom matters more than seeing every session, and
    without this the whole panel scrolls and 退出 leaves the screen. */
-.chat-rail-mount { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.chat-rail-mount {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  /* A popover below 1000px (E1, drawers): the UA sheet's popover box undone. */
+  display: block; position: static; inset: auto; margin: 0; border: 0;
+  padding: 0; width: auto; height: auto; color: inherit; background: none;
+}
 .chat-new { display: flex; flex-direction: column; gap: var(--space-2); }
 .chat-groups { display: flex; flex-direction: column; gap: var(--space-4); }
 .chat-group { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -993,7 +1001,8 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
 
 /* The delivery chain: three facts and the links between them. */
-.chain { display: inline-flex; align-items: center; gap: 0; }
+/* It wraps: at 375px the third fact used to run off the right edge (E1). */
+.chain { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 0; max-width: 100%; }
 .chain .lnk { width: 14px; height: 3px; border-radius: 999px; background: var(--color-neutral-300); flex: none; }
 .chain .lnk.done { background: var(--color-accent-2-400); }
 
@@ -1039,6 +1048,33 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .tokrow { display: flex; align-items: center; gap: var(--space-2); font-size: 12.5px; color: var(--color-quiet); }
 .tokrow .tag { flex: none; }
 .foot { font-size: 11.5px; color: var(--color-muted); }
+
+/* ---- drawers (E1) ----
+   Below 1000px the sidebar and the chat page's session list are native
+   popovers: opened by a button with popovertarget and no script, put in the
+   top layer by the browser, closed by Esc, a tap outside or their own close
+   button, and focus goes back to the button. A browser without popovers
+   keeps the stacked layout and never sees the buttons. */
+.drawer-open, .drawer-close { display: none; }
+@supports selector(:popover-open) {
+  @media (max-width: 1000px) {
+    .drawer:not(:popover-open) { display: none; }
+    .drawer:popover-open {
+      display: flex; flex-direction: column; gap: var(--space-4);
+      position: fixed; inset: 0 auto 0 0; z-index: auto;
+      width: min(300px, 86vw); height: 100dvh; max-height: none; margin: 0;
+      padding: var(--space-4); overflow-y: auto;
+      background: var(--color-surface); color: var(--color-text);
+      border-radius: 0 calc(var(--radius-lg) * 1.15) calc(var(--radius-lg) * 1.15) 0;
+      box-shadow: var(--shadow-lg);
+    }
+    .drawer::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2b25) 45%, transparent); }
+    .drawer-open { display: inline-flex; }
+    .drawer-close { display: inline-flex; align-self: flex-end; flex: none; }
+    .top-lead { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--space-2); align-items: center; }
+    .top-lead > .drawer-open { grid-row: 1 / span 2; }
+  }
+}
 
 /* ---- narrow ---- */
 @media (max-width: 1000px) {

@@ -149,6 +149,8 @@ function chatScript(): string {
   // whole document for the other is two behaviours to keep true; everything
   // after the first load goes through fetch.
   function openSession(id) {
+    // Chosen in the narrow drawer (E1): the conversation is what to see now.
+    qc.closeDrawer('chat-rail-list');
     if (!id || id === active) return;
     active = id;
     try {

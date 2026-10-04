@@ -91,6 +91,24 @@ export const CHAT_PAGE_CSS = `
   .chat-rail { position: static; max-height: none; }
   .chat-pane { min-height: 0; }
 }
+/* Narrow (E1): the rail is one line over the conversation and its list a
+   drawer; the transcript and the composer share one dynamic viewport, the
+   transcript scrolling inside it, so the composer is on the first screen. */
+@supports selector(:popover-open) {
+  @media (max-width: 1000px) {
+    .shell { min-height: 0; }
+    .frame { height: calc(100dvh - var(--space-8)); }
+    .main { flex: 1 1 auto; min-height: 0; padding-bottom: 0; }
+    .chat-layout { flex: 1 1 auto; min-height: 0; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); align-items: stretch; }
+    .chat-rail { padding: var(--space-2) var(--space-3); }
+    .chat-rail .rail-label { display: none; }
+    .chat-pane { min-height: 0; gap: var(--space-3); }
+    .chat-pane .composer { flex: none; }
+  }
+  @media (max-width: 620px) {
+    .frame { height: calc(100dvh - var(--space-4)); }
+  }
+}
 `
 
 /**
@@ -241,10 +259,19 @@ export function chatPageBody(
   return (
     `<div class="chat-layout">` +
     `<aside class="chat-rail" aria-label="会话">` +
-    `<div class="chat-rail-head"><span class="flabel">会话</span>` +
+    `<div class="chat-rail-head"><span class="flabel rail-label">会话</span>` +
+    // Below 1000px the list is a drawer like the sidebar (E1); the head,
+    // with the connection state, stays on the page.
+    `<button type="button" class="btn btn-secondary btn-small drawer-open" ` +
+    `popovertarget="chat-rail-list">${icon('messages-square', { small: true })}会话列表</button>` +
     `<span class="fblock"><span class="flabel">连接</span>` +
     `<span id="stream-state"></span></span></div>` +
-    `<div class="chat-rail-mount">${model.sessions}</div>` +
+    `<div class="chat-rail-mount drawer" id="chat-rail-list" popover>` +
+    `<button type="button" class="btn btn-ghost btn-icon drawer-close" ` +
+    `popovertarget="chat-rail-list" popovertargetaction="hide" aria-label="关闭会话列表">` +
+    icon('x') +
+    `</button>` +
+    `${model.sessions}</div>` +
     `</aside>` +
     `<div class="chat-pane">` +
     `<div class="thread-mount" id="thread-mount">${model.thread}</div>` +

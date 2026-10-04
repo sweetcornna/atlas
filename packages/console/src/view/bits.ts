@@ -62,6 +62,7 @@ const ICON_PATHS: Readonly<Record<string, string>> = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
   'alert-triangle':

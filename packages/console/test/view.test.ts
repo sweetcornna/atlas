@@ -1752,7 +1752,12 @@ describe('the shell', () => {
   test('the sidebar is every area in three groups, the current one marked', () => {
     const html = build()
     expect(html).toContain('class="shell"')
-    expect(html).toContain('class="side"')
+    // A column above 1000px, a drawer below it: a native popover the top
+    // bar's menu button opens without script (E1, `narrow.browser.test.ts`).
+    expect(html).toContain('<aside class="side drawer" id="side" popover>')
+    expect(html).toContain(
+      '<button type="button" class="btn btn-ghost btn-icon drawer-open" popovertarget="side" aria-label="菜单">',
+    )
     expect(html).toContain('class="main"')
     expect(html).not.toContain('class="topbar"')
     // Group names in order; a group with nothing in it is not drawn.

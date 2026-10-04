@@ -293,8 +293,16 @@ function sidebar(model: ShellModel): string {
         `</div>`,
     )
     .join('')
+  // Below 1000px the panel is a drawer (E1): a native popover the top bar's
+  // menu button opens, with no script — the UA gives it the top layer, Esc
+  // and a tap outside. Above it the attribute is inert and the panel is the
+  // left column it always was (`assets/css.ts`, drawers).
   return (
-    `<aside class="side">` +
+    `<aside class="side drawer" id="side" popover>` +
+    `<button type="button" class="btn btn-ghost btn-icon drawer-close" ` +
+    `popovertarget="side" popovertargetaction="hide" aria-label="关闭菜单">` +
+    icon('x') +
+    `</button>` +
     `<div class="brand">` +
     `<div class="brand-en">${escapeHtml(WORDMARK_EN)}</div>` +
     `<a class="brand-cn" href="/" data-nav>${escapeHtml(WORDMARK_CN)}</a>` +
@@ -343,6 +351,10 @@ function topBar(model: ShellModel): string {
   return (
     `<header class="top">` +
     `<div class="top-lead">` +
+    `<button type="button" class="btn btn-ghost btn-icon drawer-open" ` +
+    `popovertarget="side" aria-label="菜单">` +
+    icon('menu') +
+    `</button>` +
     breadcrumb(model.crumbs) +
     `<h1 class="page-title" id="page-title">${escapeHtml(model.title)}</h1>` +
     `</div>` +

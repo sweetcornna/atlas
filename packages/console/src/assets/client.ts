@@ -1127,6 +1127,26 @@ function runtimeScript(guards: TokenGuards): string {
     if (!expired) connSay(offlineLine());
   });
 
+  // The drawers (E1) are popovers only below 1000px. A window widened with
+  // one open would leave it floating over the column that now shows the same
+  // thing, so it is closed. closeDrawer is also how a page closes one after
+  // acting on a choice made in it.
+  function closeDrawer(id) {
+    var drawer = byId(id);
+    try {
+      if (drawer && drawer.matches(':popover-open')) drawer.hidePopover();
+    } catch (e) { /* no popovers in this browser: nothing is open */ }
+  }
+  if (window.matchMedia) {
+    var narrow = window.matchMedia('(max-width: 1000px)');
+    var onWiden = function () {
+      if (narrow.matches) return;
+      var open = document.querySelectorAll('.drawer');
+      for (var d = 0; d < open.length; d++) closeDrawer(open[d].id);
+    };
+    if (narrow.addEventListener) narrow.addEventListener('change', onWiden);
+  }
+
   window.addEventListener('online', function () {
     failures = 0;
     refreshNow();
@@ -1163,6 +1183,7 @@ function runtimeScript(guards: TokenGuards): string {
     openDialog: openDialog,
     closeDialog: closeDialog,
     closeDialogs: closeDialogs,
+    closeDrawer: closeDrawer,
     refreshRegion: refreshRegion,
     onAction: function (name, run) { actions[name] = run; },
     onSubmit: function (id, run) { submits[id] = run; },
