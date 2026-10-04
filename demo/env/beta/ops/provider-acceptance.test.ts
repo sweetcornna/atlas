@@ -41,17 +41,21 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
+import { transportPskEnvVarForNode } from '../../../../src/cli/handlers/consoleArgs.js'
 import { occConfigPath } from '../../../../src/config/paths.js'
 import { keyPoolPaths } from '../../../../src/services/qianmo/modelCompat/credentialPoolStore.js'
 import { providerPaths } from '../../../../src/services/qianmo/providers/store.js'
 import { SECRET_ENV_KEYS as WHITELIST_SECRET_KEYS } from '../../../../src/services/qianmo/providers/whitelist.js'
 import { parseProviderProfile, presetById } from '@qianmo/providers'
+import { cliPrefix, waitFor } from '../../../lib/acceptance/local/spawn'
 import { testBashes } from '../testBashes'
 import {
   CANARY_PRESET,
   canaryProfileEdit,
+  chatWiringOf,
   compareRounds,
   ConfigError,
+  consoleWiringProblems,
   main,
   parseConfig,
   Redactor,
@@ -59,8 +63,11 @@ import {
   type Verdict,
 } from './provider-acceptance'
 import {
+  EXCLUDED_TOP,
+  LAYOUT,
   SECRET_ENV_KEYS,
   parseConsoleBanner,
+  parseNodeBanner,
   realKeyNeedles,
   scanFiles,
 } from './provider-acceptance-node'
@@ -130,6 +137,243 @@ function sleeper(): number {
 // 进程：每台机器上的控制台与节点各一个真活着的进程，整个文件共用。
 const PIDS = { console: sleeper(), 'beta-1': sleeper(), 'beta-2': sleeper() }
 
+// ── 真进程的输出（W1 / P0 的判据对着它们，夹具里不再手写一份）──────────────────
+//
+// 控制台横幅、resident 启动行、/v0/health 与写者守卫的状态码，都从源码起一个真 `qm`
+// 进程拿（`demo/lib/acceptance/local/spawn.ts` 的 cliPrefix：与 dev / build 同一份 defines
+// 与 feature 表）。代码一改，这里拿到的就跟着变，判据对不上当场红。环境只给下面这几项：
+// 开发者自己的凭据与模型端点一个都不继承（端点指到回环上没人听的口，万一有哪一步要拨）。
+
+interface QmProcess {
+  readonly stdout: () => string
+  readonly stderr: () => string
+  readonly alive: () => boolean
+  stop(): Promise<void>
+}
+
+function startQm(
+  argv: readonly string[],
+  configDir: string,
+  env: Record<string, string> = {},
+): QmProcess {
+  const proc = Bun.spawn([process.execPath, ...cliPrefix().slice(1), ...argv], {
+    cwd: REPOSITORY_ROOT,
+    env: {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      HOME: process.env.HOME ?? BASE,
+      TMPDIR: tmpdir(),
+      OCC_IDENTITY: 'qianmo',
+      OCC_CONFIG_DIR: configDir,
+      NO_COLOR: '1',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+      OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
+      ...env,
+    },
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  let out = ''
+  let err = ''
+  // 两条流一直抽着：长跑进程的管道写满了会卡在 write 上（spawn.ts 同一条理由）。
+  const drain = async (
+    stream: ReadableStream<Uint8Array>,
+    onText: (text: string) => void,
+  ) => {
+    const decoder = new TextDecoder()
+    for await (const chunk of stream) {
+      onText(decoder.decode(chunk, { stream: true }))
+    }
+  }
+  const drained = Promise.all([
+    drain(proc.stdout, text => {
+      out += text
+    }).catch(() => {}),
+    drain(proc.stderr, text => {
+      err += text
+    }).catch(() => {}),
+  ])
+  return {
+    stdout: () => out,
+    stderr: () => err,
+    alive: () => proc.exitCode === null && proc.signalCode === null,
+    async stop() {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill()
+      await proc.exited
+      await drained
+    },
+  }
+}
+
+/** 等 stdout 里出现 `marker`；进程先退了就收完它的输出再判。 */
+async function untilOut(p: QmProcess, marker: RegExp, what: string) {
+  await waitFor(() => marker.test(p.stdout()) || !p.alive(), {
+    timeoutMs: 60_000,
+    what,
+    diagnose: () => `stdout:\n${p.stdout()}\nstderr:\n${p.stderr()}`,
+  })
+  if (marker.test(p.stdout())) return
+  await p.stop()
+  if (!marker.test(p.stdout())) {
+    throw new Error(
+      `${what} 没有给出期望的输出：\n${p.stdout()}\n${p.stderr()}`,
+    )
+  }
+}
+
+interface RealOutputs {
+  /** `console=<公钥>`：beta-up.sh --print-wake-identity 那一行。 */
+  readonly identity: string
+  /** 带 --chat-sign 的控制台横幅（stdout 到 sourceCommit 为止）。 */
+  readonly consoleSigned: string
+  readonly consoleUnsigned: string
+  /** 横幅里自己生成的 view / admin token（白名单用例确认它们一个字都不被转述）。 */
+  readonly tokens: readonly string[]
+  /** resident 启动行（首行 JSON），带与不带 --local-commands-from console。 */
+  readonly nodeWith: string
+  readonly nodeWithout: string
+  readonly health: { readonly status: number; readonly json: unknown }
+  /** 写者守卫：没凭据、只拿 view token 时 `POST /v0/providers/preview` 的状态码。 */
+  readonly preview: { readonly anonymous: number; readonly view: number }
+}
+
+/** 控制台横幅的最后一行（console.ts：`field('sourceCommit', …)` 排在最后）。 */
+const BANNER_END = /^sourceCommit\s+\S+\n/m
+/** resident 的启动行：监听之前打的那一行 JSON。 */
+const START_LINE = /^\{.*"publicKey".*\}\n/
+
+async function realOutputs(): Promise<RealOutputs> {
+  const root = join(BASE, 'real')
+  const dir = (name: string) => {
+    const path = join(root, name)
+    mkdirSync(path, { recursive: true, mode: 0o700 })
+    return path
+  }
+  const signedRoot = dir('console-signed')
+  const unsignedRoot = dir('console-unsigned')
+  const ask = startQm(['console', '--print-wake-identity'], signedRoot)
+  await untilOut(ask, /^console=\S+\n/m, 'console --print-wake-identity')
+  await ask.stop()
+  const identity = ask.stdout().trim()
+  // 模型服务那几项照 beta-up.sh 的 provider_console_args：主密钥、中枢 known_hosts、逐节点执行器。
+  const keyFile = join(root, 'provider-master.key')
+  write(keyFile, `${'a1'.repeat(32)}\n`)
+  const knownHosts = join(root, 'known_hosts')
+  write(knownHosts, '')
+  const sshKey = join(root, 'beta-2.key')
+  write(sshKey, '占位：控制台起来时不读它\n')
+  const consoleArgs = (signed: boolean) => [
+    'console',
+    '--port',
+    '0',
+    '--hostname',
+    '127.0.0.1',
+    '--registry',
+    'http://127.0.0.1:9',
+    '--chat-url',
+    'beta-1=ws://127.0.0.1:38632',
+    '--chat-url',
+    'beta-2=ws://127.0.0.1:38633',
+    ...(signed ? ['--chat-sign'] : []),
+    '--accounts',
+    '--providers',
+    '--provider-key-file',
+    keyFile,
+    '--provider-known-hosts',
+    knownHosts,
+    '--provider-local',
+    `beta-1=${join(REPOSITORY_ROOT, 'demo/env/beta/ops/model-apply.sh')}`,
+    '--provider-ssh',
+    'beta-2=ops@node2.example:22',
+    '--provider-ssh-key',
+    `beta-2=${sshKey}`,
+  ]
+  const psk = {
+    [transportPskEnvVarForNode('beta-1')]: 'p'.repeat(32),
+    [transportPskEnvVarForNode('beta-2')]: 'q'.repeat(32),
+  }
+  const workspace = dir('workspace')
+  const residentArgs = (node: string, local: boolean) => [
+    'resident',
+    '--node',
+    node,
+    '--team',
+    'acceptance',
+    '--port',
+    '0',
+    '--hostname',
+    '127.0.0.1',
+    '--agent',
+    `planner=${workspace}`,
+    '--open-policy',
+    '--trust',
+    identity,
+    ...(local ? ['--local-commands-from', 'console'] : []),
+  ]
+  const nodePsk = { QIANMO_TRANSPORT_PSK: 'r'.repeat(32) }
+  const signed = startQm(consoleArgs(true), signedRoot, psk)
+  const unsigned = startQm(consoleArgs(false), unsignedRoot, psk)
+  const withLocal = startQm(
+    residentArgs('beta-1', true),
+    dir('node-with'),
+    nodePsk,
+  )
+  const withoutLocal = startQm(
+    residentArgs('beta-2', false),
+    dir('node-without'),
+    nodePsk,
+  )
+  try {
+    await Promise.all([
+      untilOut(signed, BANNER_END, '控制台（--chat-sign）'),
+      untilOut(unsigned, BANNER_END, '控制台（不签名）'),
+      untilOut(withLocal, START_LINE, 'resident（--local-commands-from）'),
+      untilOut(withoutLocal, START_LINE, 'resident'),
+    ])
+    const banner = signed.stdout()
+    const origin = /^console\s+(\S+)$/m.exec(banner)?.[1] ?? ''
+    const token = (name: string) =>
+      new RegExp(`^${name}\\s+(\\S+)$`, 'm').exec(banner)?.[1] ?? ''
+    const healthReply = await fetch(`${origin}/v0/health`)
+    const health = {
+      status: healthReply.status,
+      json: (await healthReply.json()) as unknown,
+    }
+    const preview = async (headers: Record<string, string>) => {
+      const reply = await fetch(`${origin}/v0/providers/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ profileId: 'luna' }),
+      })
+      await reply.text()
+      return reply.status
+    }
+    const firstLine = (p: QmProcess) => p.stdout().split('\n', 1)[0] ?? ''
+    return {
+      identity,
+      consoleSigned: banner,
+      consoleUnsigned: unsigned.stdout(),
+      tokens: [token('view-token'), token('admin-token')],
+      nodeWith: firstLine(withLocal),
+      nodeWithout: firstLine(withoutLocal),
+      health,
+      preview: {
+        anonymous: await preview({}),
+        view: await preview({ authorization: `Bearer ${token('view-token')}` }),
+      },
+    }
+  } finally {
+    await Promise.all([
+      signed.stop(),
+      unsigned.stop(),
+      withLocal.stop(),
+      withoutLocal.stop(),
+    ])
+  }
+}
+
+const REAL = await realOutputs()
+
 // ── 假舰队 ──────────────────────────────────────────────────────────────────
 
 interface Fleet {
@@ -143,7 +387,8 @@ interface Fleet {
 
 interface FleetOptions {
   readonly nodeCommit?: string
-  readonly localCommandsFrom?: readonly string[]
+  /** 节点没带 `--local-commands-from console`（启动行取自没带它的真 resident）。 */
+  readonly withoutLocalCommands?: boolean
   readonly realKeyLeak?: boolean
   readonly timing?: Record<string, unknown>
   readonly attempts?: number
@@ -157,39 +402,18 @@ function write(path: string, text: string, mode = 0o600): void {
   writeFileSync(path, text, { mode })
 }
 
+/** 真控制台的横幅；只把 sourceCommit 换成这个假舰队的提交（部署身份是夹具的，形状是真的）。 */
 function consoleBanner(): string {
-  const field = (name: string, value: string) => `${name.padEnd(13)}${value}\n`
-  return [
-    field('console', 'http://127.0.0.1:38621'),
-    field(
-      'open',
-      'http://127.0.0.1:38621/?token=view-token-should-never-be-read',
-    ),
-    field('view-token', 'from /secret/view'),
-    field('admin-token', 'admin-token-should-never-be-read'),
-    field('chat', 'enabled as console (signed)'),
-    field('accounts', 'enabled -> /x/accounts.json'),
-    field(
-      'providers',
-      'enabled -> /x/providers.ndjson (nodes: beta-1/local, beta-2/ssh)',
-    ),
-    field('label', 'beta'),
-    field('sourceCommit', SHA),
-  ].join('')
+  return REAL.consoleSigned.replace(/^(sourceCommit\s+)\S+$/m, `$1${SHA}`)
 }
 
-function nodeBanner(
-  node: string,
-  commit: string,
-  from: readonly string[],
-): string {
-  return `${JSON.stringify({
-    node,
-    sourceCommit: commit,
-    publicKey: 'pk',
-    trusts: ['console'],
-    localCommandsFrom: from,
-  })}\n其后是日志\n`
+/** 真 resident 的启动行；只把 node 与 sourceCommit 换成夹具的，其余字段原样。 */
+function nodeBanner(node: string, commit: string, local: boolean): string {
+  const real = JSON.parse(local ? REAL.nodeWith : REAL.nodeWithout) as Record<
+    string,
+    unknown
+  >
+  return `${JSON.stringify({ ...real, node, sourceCommit: commit })}\n其后是日志\n`
 }
 
 function makeFleet(options: FleetOptions = {}): Fleet {
@@ -210,12 +434,12 @@ function makeFleet(options: FleetOptions = {}): Fleet {
     // secrets/ 不扫：放一把真 key 进去，扫到了就是用例红。
     write(join(root(m), 'secrets/model-env'), `OPENAI_API_KEY=${REAL_KEY}\n`)
   }
-  const from = options.localCommandsFrom ?? ['console']
+  const local = options.withoutLocalCommands !== true
   // H：控制台 + beta-1（本机执行器）。
   write(join(root('h'), 'run/console.pid'), `${PIDS.console}\n`)
   write(join(root('h'), 'logs/console.out'), consoleBanner())
   write(join(root('h'), 'run/beta-1.pid'), `${PIDS['beta-1']}\n`)
-  write(join(root('h'), 'logs/beta-1.out'), nodeBanner('beta-1', SHA, from))
+  write(join(root('h'), 'logs/beta-1.out'), nodeBanner('beta-1', SHA, local))
   write(
     join(
       root('h'),
@@ -237,7 +461,7 @@ function makeFleet(options: FleetOptions = {}): Fleet {
   write(join(root('n2'), 'run/beta-2.pid'), `${PIDS['beta-2']}\n`)
   write(
     join(root('n2'), 'logs/beta-2.out'),
-    nodeBanner('beta-2', options.nodeCommit ?? SHA, from),
+    nodeBanner('beta-2', options.nodeCommit ?? SHA, local),
   )
   write(join(root('n2'), 'logs/beta-2.err'), 'resident 日志\n')
   write(
@@ -940,7 +1164,7 @@ function expectNoSecrets(run: RoundRun): void {
   expect(all).not.toContain(REAL_KEY)
   expect(all).not.toContain(REAL_KEY_2)
   expect(all).not.toMatch(/sk-qmcanary-[A-Za-z0-9]{40}/)
-  expect(all).not.toContain('should-never-be-read')
+  for (const token of REAL.tokens) expect(all).not.toContain(token)
 }
 
 /** 证据文件都是 0600、目录 0700。 */
@@ -1027,7 +1251,7 @@ describe('一轮', () => {
     ],
     [
       '节点没开 --local-commands-from console → W1 红',
-      { localCommandsFrom: [] },
+      { withoutLocalCommands: true },
       {},
       'W1',
       'wiring',
@@ -1327,6 +1551,35 @@ describe('配置与零件', () => {
     expect([...SECRET_ENV_KEYS]).toEqual([...WHITELIST_SECRET_KEYS])
   })
 
+  test('节点脚本的布局与 common.sh 一致（pid / 日志 / 节点与控制台配置根 / 不扫的目录 / 部署产物 / 缺省根）', () => {
+    const root = join(BASE, 'layout-root')
+    const home = join(BASE, 'layout-home')
+    const asked = Bun.spawnSync(
+      [
+        '/bin/bash',
+        '-c',
+        '. "$1"; printf "%s\\n" "$(beta_pidfile console)" "$(beta_logfile beta-2 out)" "$BETA_NODES_DIR/beta-2/config" "$BETA_CONFIG_CONSOLE" "$BETA_SECRET_DIR" "$BETA_BACKUP_STORE" "$BETA_WORKSPACE_DIR" "$BETA_OCC"; unset QIANMO_BETA_ROOT; . "$1"; printf "%s\\n" "$BETA_ROOT"',
+        'layout',
+        join(REPOSITORY_ROOT, 'demo/env/beta/common.sh'),
+      ],
+      {
+        env: { PATH: '/usr/bin:/bin', HOME: home, QIANMO_BETA_ROOT: root },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    expect(asked.stderr.toString()).toBe('')
+    expect(asked.stdout.toString().split('\n').slice(0, 9)).toEqual([
+      LAYOUT.pidFile(root, 'console'),
+      LAYOUT.outFile(root, 'beta-2'),
+      LAYOUT.nodeConfig(root, 'beta-2'),
+      LAYOUT.consoleConfig(root),
+      ...EXCLUDED_TOP.map(name => join(root, name)),
+      LAYOUT.cli(REPOSITORY_ROOT),
+      LAYOUT.defaultRoot({}, home),
+    ])
+  })
+
   test('持有点与源码派生的路径同名；首次托管副本只对本机真 key 算持有点', () => {
     // 节点脚本只用 node 内建模块（部署树里没有 src），路径是抄的：这里钉住与源码一致。
     const script = readFileSync(NODE_SCRIPT, 'utf8')
@@ -1397,15 +1650,133 @@ describe('配置与零件', () => {
     expect(parsed.ok ? 'ok' : parsed.error.message).toBe('ok')
   })
 
-  test('控制台横幅只取白名单字段：token 那几行从不转述', () => {
-    const fields = parseConsoleBanner(consoleBanner())
+  test('控制台横幅只取白名单字段：真控制台自己生成的 view / admin token 一个字都不转述', () => {
+    const fields = parseConsoleBanner(REAL.consoleSigned)
     expect(Object.keys(fields).sort()).toEqual([
       'accounts',
       'chat',
       'providers',
       'sourceCommit',
     ])
-    expect(JSON.stringify(fields)).not.toContain('should-never-be-read')
+    expect(REAL.tokens.every(token => token.length >= 16)).toBe(true)
+    for (const token of REAL.tokens) {
+      expect(REAL.consoleSigned).toContain(token)
+      expect(JSON.stringify(fields)).not.toContain(token)
+    }
+  })
+
+  test('W1 的控制台判据喂真控制台的横幅：带 --chat-sign 的过；不签名、签名名不对、少执行器各红', () => {
+    const cfg = {
+      hub: 'h',
+      nodes: {
+        'beta-1': { machine: 'h', profileId: 'luna' },
+        'beta-2': { machine: 'n2', profileId: 'luna' },
+      },
+      chatAs: 'console',
+    }
+    const signed = parseConsoleBanner(REAL.consoleSigned)
+    // 真横幅那一行的样子（console.ts wireConsoleChat）：地址 + (signed) + 端点列表。
+    expect(chatWiringOf(signed.chat)).toEqual({
+      from: 'qianmo://console/operator',
+      node: 'console',
+      signed: true,
+    })
+    expect(consoleWiringProblems(signed, cfg)).toEqual([])
+
+    const unsigned = parseConsoleBanner(REAL.consoleUnsigned)
+    expect(chatWiringOf(unsigned.chat)?.signed).toBe(false)
+    expect(consoleWiringProblems(unsigned, cfg).join('\n')).toContain(
+      '没有 (signed)',
+    )
+    expect(
+      consoleWiringProblems(signed, { ...cfg, chatAs: 'hub' }).join('\n'),
+    ).toContain('节点信任的签名名是 hub')
+    expect(
+      consoleWiringProblems(signed, {
+        ...cfg,
+        nodes: { ...cfg.nodes, 'beta-3': { machine: 'n2', profileId: 'luna' } },
+      }),
+    ).toEqual(['beta-3：控制台没有它的执行器'])
+    // beta-1 在 H 上（local），换成远端机器就该是 ssh。
+    expect(
+      consoleWiringProblems(signed, {
+        ...cfg,
+        nodes: { ...cfg.nodes, 'beta-1': { machine: 'n2', profileId: 'luna' } },
+      }),
+    ).toEqual(['beta-1：执行器是 local，按它所在的机器应是 ssh'])
+  })
+
+  test('真 resident 的启动行：trusts 里有 console；--local-commands-from 给了才有', () => {
+    const withLocal = parseNodeBanner(`${REAL.nodeWith}\n`)
+    const withoutLocal = parseNodeBanner(`${REAL.nodeWithout}\n`)
+    expect(withLocal?.node).toBe('beta-1')
+    expect(withLocal?.trusts).toContain('console')
+    expect(withLocal?.localCommandsFrom).toEqual(['console'])
+    expect(withoutLocal?.trusts).toContain('console')
+    expect(withoutLocal?.localCommandsFrom).toEqual([])
+    expect(REAL.identity.startsWith('console=')).toBe(true)
+  })
+
+  test('真控制台：/v0/health 是 P0 认的形状；没有个人账号的凭据在 preview 上是 401 / 403（P0 的 not-ops）', () => {
+    expect(REAL.health).toEqual({ status: 200, json: { status: 'ok' } })
+    expect([401, 403]).toContain(REAL.preview.anonymous)
+    expect([401, 403]).toContain(REAL.preview.view)
+  })
+
+  test('验收脚本拨的每个路由都在 console.md §5 的路由表里（那张表由 packages/console 的 routeDocs.test.ts 与路由器双向钉住）', () => {
+    const doc = readFileSync(
+      join(REPOSITORY_ROOT, 'docs/dev/console.md'),
+      'utf8',
+    )
+    const table = doc.slice(
+      doc.indexOf('\n## §5 路由表'),
+      doc.indexOf('\n### 5.1', doc.indexOf('\n## §5 路由表')),
+    )
+    const rows: { method: string; segments: string[] }[] = []
+    for (const line of table.split('\n')) {
+      const cells = line.split('|')
+      if (cells.length < 4) continue
+      const methods = (cells[1] ?? '').trim().split(/[、/\s]+/)
+      if (!methods.every(m => ['GET', 'POST', 'PUT', 'DELETE'].includes(m)))
+        continue
+      for (const [, text] of (cells[2] ?? '').matchAll(/`([^`]+)`/g)) {
+        if (text === undefined || !text.startsWith('/')) continue
+        const segments = (text.split('?')[0] ?? '').split('/').slice(1)
+        for (const method of methods) rows.push({ method, segments })
+      }
+    }
+    expect(rows.length).toBeGreaterThan(30)
+    const source = readFileSync(RUNNER, 'utf8')
+    const calls: [string, string][] = []
+    for (const match of source.matchAll(
+      /#api\(\s*'(GET|POST|PUT|DELETE)',\s*(?:'([^']*)'|`([^`]*)`)/g,
+    )) {
+      calls.push([match[1] ?? '', match[2] ?? match[3] ?? ''])
+    }
+    // 页面那几条是循环里的变量，路径写在数组字面量里。
+    for (const match of source.matchAll(
+      /^\s*(?:'(\/providers[^']*)'|`(\/providers[^`]*)`),$/gm,
+    )) {
+      calls.push(['GET', match[1] ?? match[2] ?? ''])
+    }
+    expect(calls.length).toBeGreaterThan(15)
+    const missing = calls.filter(([method, path]) => {
+      const segments = path
+        .replace(/\$\{[^}]*\}/g, 'x')
+        .split('/')
+        .slice(1)
+      return !rows.some(
+        row =>
+          row.method === method &&
+          row.segments.length === segments.length &&
+          row.segments.every(
+            (segment, index) =>
+              (segment.startsWith('<') && segment.endsWith('>')) ||
+              segment === segments[index],
+          ),
+      )
+    })
+    expect(missing).toEqual([])
   })
 
   test('配置错退 2：切换目标与原档案相同、在途目标不在节点表里、凭据路径相对', async () => {

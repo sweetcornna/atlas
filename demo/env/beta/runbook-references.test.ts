@@ -20,7 +20,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { parseConfig } from './ops/provider-acceptance'
+import { chatWiringOf, parseConfig } from './ops/provider-acceptance'
 
 const REPO = resolve(import.meta.dir, '..', '..', '..')
 const read = (rel: string): string => readFileSync(join(REPO, rel), 'utf8')
@@ -202,6 +202,18 @@ describe('迁移与真机验收 runbook 的引用', () => {
         )
       expect({ name, everyNode }).toEqual({ name, everyNode: [] })
     }
+  })
+
+  test('写到的控制台 chat 行，W1 的判据认得出是签了名的（判据本身对着真控制台的横幅钉住）', () => {
+    const quoted = [...ALL.matchAll(/`(enabled as [^`]+)`/g)].map(
+      match => match[1] ?? '',
+    )
+    expect(quoted.length).toBeGreaterThanOrEqual(2)
+    const misread = quoted.filter(line => {
+      const chat = chatWiringOf(line)
+      return chat === null || !chat.signed || chat.node !== 'console'
+    })
+    expect(misread).toEqual([])
   })
 
   test('README 的轮配置样例与 parseConfig 同形', () => {

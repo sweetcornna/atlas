@@ -664,7 +664,8 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 
 节点腿的尾参落在 `<根>/state/<节点>.passthrough`，之后不带 `--` 的重起沿用它；控制台不带尾参重跑会 WARN
 点名撤掉了哪些。判据：`logs/<节点>.out` 首行 `trusts` 含 `console`、`localCommandsFrom` 是 `["console"]`；
-`logs/console.out` 的 `chat` 行是 `enabled as console (signed)`。
+`logs/console.out` 的 `chat` 行以 `enabled as qianmo://console/operator (signed) -> ` 开头（`--chat-from` 的缺省地址；
+地址里的节点名 `console` 要与节点 `--trust console=<公钥>` 的名字相同）。
 
 ### 缓存调参：按节点放进 `model-env`
 

@@ -55,7 +55,7 @@ import {
   statSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 
 /** `src/services/qianmo/providers/whitelist.ts` 的 SECRET_ENV_KEYS（用例钉住两边一致）。 */
 export const SECRET_ENV_KEYS: readonly string[] = [
@@ -71,8 +71,25 @@ export const SECRET_ENV_KEYS: readonly string[] = [
 /** 控制台横幅里允许转述的字段。其余（尤其 token 那几行）一律不碰。 */
 const CONSOLE_BANNER_FIELDS = ['chat', 'providers', 'accounts', 'sourceCommit']
 
-/** 内测根下不扫的顶层目录。 */
+/** 内测根下不扫的顶层目录（common.sh 的 BETA_SECRET_DIR、BETA_BACKUP_STORE、BETA_WORKSPACE_DIR）。 */
 export const EXCLUDED_TOP = ['secrets', 'backups', 'workspaces'] as const
+
+/**
+ * 内测根与部署树的布局，照 `demo/env/beta/common.sh`（`beta_pidfile`、`beta_logfile`、
+ * `BETA_NODES_DIR`、`BETA_CONFIG_CONSOLE`、`BETA_OCC`）。部署树里有 common.sh，但这个脚本
+ * 不起 bash 去问它：用例 source 一次 common.sh，逐项钉住两边一致。
+ */
+export const LAYOUT = {
+  pidFile: (root: string, name: string) => join(root, 'run', `${name}.pid`),
+  outFile: (root: string, name: string) => join(root, 'logs', `${name}.out`),
+  nodeConfig: (root: string, node: string) =>
+    join(root, 'nodes', node, 'config'),
+  consoleConfig: (root: string) => join(root, 'nodes', 'console', 'config'),
+  cli: (tree: string) => join(tree, 'dist', 'cli-node.js'),
+  /** `BETA_ROOT="${QIANMO_BETA_ROOT:-$HOME/qianmo-beta}"`。 */
+  defaultRoot: (env: NodeJS.ProcessEnv, home: string) =>
+    env.QIANMO_BETA_ROOT || join(home, 'qianmo-beta'),
+} as const
 
 /** 节点配置根里的明文持有点（相对配置根）。 */
 const NODE_HOLDERS = [
@@ -246,7 +263,7 @@ function startedAt(pid: number): string | null {
 }
 
 function processFacts(root: string, name: string): ProcessFacts {
-  const raw = readText(join(root, 'run', `${name}.pid`))?.trim() ?? ''
+  const raw = readText(LAYOUT.pidFile(root, name))?.trim() ?? ''
   const pid = /^[0-9]+$/.test(raw) ? Number(raw) : null
   if (pid === null) return { pid: null, alive: false, startedAt: null }
   const up = alive(pid)
@@ -268,7 +285,7 @@ export function collectFacts(options: {
   readonly console: boolean
 }): MachineFacts {
   const { root, tree } = options
-  const cli = join(tree, 'dist', 'cli-node.js')
+  const cli = LAYOUT.cli(tree)
   let cliCtime: string | null = null
   try {
     cliCtime = new Date(statSync(cli).ctimeMs).toISOString()
@@ -277,7 +294,7 @@ export function collectFacts(options: {
   }
   const nodes: MachineFacts['nodes'] = {}
   for (const node of options.nodes) {
-    const banner = readText(join(root, 'logs', `${node}.out`))
+    const banner = readText(LAYOUT.outFile(root, node))
     nodes[node] = {
       ...processFacts(root, node),
       banner: banner === null ? null : parseNodeBanner(banner),
@@ -285,7 +302,7 @@ export function collectFacts(options: {
   }
   let consoleFacts: MachineFacts['console'] = null
   if (options.console) {
-    const banner = readText(join(root, 'logs', 'console.out'))
+    const banner = readText(LAYOUT.outFile(root, 'console'))
     consoleFacts = {
       ...processFacts(root, 'console'),
       banner: banner === null ? null : parseConsoleBanner(banner),
@@ -310,7 +327,7 @@ export function realKeyNeedles(
   const seen = new Set<string>()
   const out: Needle[] = []
   for (const node of nodes) {
-    const config = join(root, 'nodes', node, 'config')
+    const config = LAYOUT.nodeConfig(root, node)
     const values: string[] = []
     const settings = readJson(join(config, 'settings.json'))
     if (isRecord(settings) && isRecord(settings.env)) {
@@ -380,22 +397,25 @@ export function countFile(
 }
 
 function holderRule(
+  root: string,
   rel: string,
   nodes: readonly string[],
   withConsole: boolean,
   forRealKey: boolean,
 ): boolean {
+  const under = (dir: string, holder: string) =>
+    rel === relative(root, join(dir, holder))
   const nodeHolders = forRealKey
     ? [...NODE_HOLDERS, ...NODE_REAL_KEY_HOLDERS]
     : NODE_HOLDERS
   for (const node of nodes) {
     for (const holder of nodeHolders) {
-      if (rel === `nodes/${node}/config/${holder}`) return true
+      if (under(LAYOUT.nodeConfig(root, node), holder)) return true
     }
   }
   if (withConsole) {
     for (const holder of CONSOLE_HOLDERS) {
-      if (rel === `nodes/console/config/${holder}`) return true
+      if (under(LAYOUT.consoleConfig(root), holder)) return true
     }
   }
   return false
@@ -451,6 +471,7 @@ export function scanFiles(options: {
       bytes += st.size
       for (const [label, count] of counts) {
         const into = holderRule(
+          options.root,
           childRel,
           options.nodes,
           options.console,
@@ -596,7 +617,7 @@ interface Args {
 
 function parseArgs(argv: readonly string[]): Args {
   const [command = '', ...rest] = argv
-  let root = process.env.QIANMO_BETA_ROOT || join(homedir(), 'qianmo-beta')
+  let root = LAYOUT.defaultRoot(process.env, homedir())
   let tree: string | null = null
   let nodes: string[] = []
   let withConsole = false

@@ -15,7 +15,7 @@
  * | --- | --- |
  * | P0 | 配置合法、凭据文件 0600、`/v0/health` 200、凭据是运维个人账号（`POST /v0/providers/preview` 不是 401 / 403） |
  * | D0 | 每台机器的 facts 取得到；控制台与每个节点进程活着；所有 `sourceCommit` 相同、是 40 位 hex、等于期望（给了的话） |
- * | W1 | 节点横幅 `trusts`、`localCommandsFrom` 含 chatAs；控制台 `chat … (signed)`、accounts / providers enabled、执行器覆盖每个节点且种类对 |
+ * | W1 | 节点横幅 `trusts`、`localCommandsFrom` 含 chatAs；控制台 chat 行 `enabled as qianmo://<chatAs>/<agent> (signed) -> …`、accounts / providers enabled、执行器覆盖每个节点且种类对 |
  * | A1 | 每个节点 refresh：status ok、无漂移、托管、applied = 期望、无 pending、三个哈希一致、resident 在跑、没有 dead 的 key |
  * | A2 | 每个节点真 key `probe auth`：`ok && reachable`（三态写进细节） |
  * | A4 | `call` 节点 `probe call`：`ok && reachable` |
@@ -745,6 +745,83 @@ function canonical(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/**
+ * 控制台横幅的 chat 行。形状照 `src/cli/handlers/console.ts` 的 `wireConsoleChat`：
+ * `enabled as <--chat-from 地址>[ (signed)] -> <节点 -> 端点>, …`；`--chat-from` 缺省是
+ * `qianmo://console/operator`，地址里的节点名就是各节点 `--trust <名>=<公钥>` 里的那个名。
+ * 不是 enabled（`disabled (…)`）或形状不对时是 null。
+ */
+export function chatWiringOf(chat: string | undefined): {
+  readonly from: string
+  readonly node: string
+  readonly signed: boolean
+} | null {
+  const match =
+    /^enabled as (qianmo:\/\/([^/\s]+)\/\S+?)( \(signed\))?(?: -> |$)/.exec(
+      chat ?? '',
+    )
+  if (match === null) return null
+  return {
+    from: match[1] ?? '',
+    node: match[2] ?? '',
+    signed: match[3] !== undefined,
+  }
+}
+
+/**
+ * W1 的控制台一半：chat 以 `qianmo://<chatAs>/…` 签名，个人账号开着，模型服务 enabled 且
+ * 执行器覆盖配置里每个节点、种类与它所在的机器相符。字面量的出处：`console.ts` 里
+ * `field('chat' | 'accounts' | 'providers', …)` 那几行（用例拿真起的控制台的横幅喂它）。
+ */
+export function consoleWiringProblems(
+  banner: Readonly<Record<string, string>> | null,
+  cfg: Pick<RoundConfig, 'hub' | 'nodes'> & { readonly chatAs: string },
+): string[] {
+  if (banner === null) return ['读不到控制台横幅']
+  const problems: string[] = []
+  const chatAs = cfg.chatAs
+  const chat = chatWiringOf(banner.chat)
+  if (chat === null) {
+    problems.push(
+      `控制台 chat 行是「${banner.chat ?? '（缺）'}」，不是 enabled as qianmo://${chatAs}/<agent> (signed) -> …`,
+    )
+  } else {
+    if (chat.node !== chatAs)
+      problems.push(
+        `控制台以 ${chat.from} 发对话，节点信任的签名名是 ${chatAs}（--chat-from 的节点名要与 --trust ${chatAs}=<公钥> 一致）`,
+      )
+    if (!chat.signed)
+      problems.push(
+        `控制台 chat 行没有 (signed)：没开 --chat-sign（${chat.from}）`,
+      )
+  }
+  if (!(banner.accounts ?? '').startsWith('enabled -> '))
+    problems.push(
+      `控制台没开个人账号（--accounts）：「${banner.accounts ?? '（缺）'}」`,
+    )
+  const providers = banner.providers ?? ''
+  if (!providers.startsWith('enabled -> ')) {
+    problems.push(`控制台模型服务不是 enabled：「${providers}」`)
+    return problems
+  }
+  const listed = /\(nodes: ([^)]*)\)\s*$/.exec(providers)?.[1] ?? ''
+  const executors = new Map(
+    listed
+      .split(',')
+      .map(entry => entry.trim().split('/'))
+      .filter((pair): pair is [string, string] => pair.length === 2)
+      .map(([node, kind]) => [node, kind] as const),
+  )
+  for (const [node, { machine }] of Object.entries(cfg.nodes)) {
+    const kind = executors.get(node)
+    const want = machine === cfg.hub ? 'local' : 'ssh'
+    if (kind === undefined) problems.push(`${node}：控制台没有它的执行器`)
+    else if (kind !== want)
+      problems.push(`${node}：执行器是 ${kind}，按它所在的机器应是 ${want}`)
+  }
+  return problems
+}
+
 export function deploymentOf(
   cfg: RoundConfig,
   facts: Readonly<Record<string, MachineFacts | null>>,
@@ -1272,42 +1349,13 @@ class Round {
 
   async #w1(): Promise<Omit<Item, 'id' | 'title'>> {
     const chatAs = this.#cfg.console.chatAs
-    const problems: string[] = []
-    const hub = this.#facts0[this.#cfg.hub]
-    const banner = hub?.console?.banner ?? null
-    if (banner === null) {
-      problems.push('读不到控制台横幅')
-    } else {
-      if (banner.chat !== `enabled as ${chatAs} (signed)`) {
-        problems.push(
-          `控制台 chat 行是「${banner.chat ?? '（缺）'}」，要 enabled as ${chatAs} (signed)（--chat-sign）`,
-        )
-      }
-      if (!(banner.accounts ?? '').startsWith('enabled'))
-        problems.push('控制台没开个人账号（--accounts）')
-      const providers = banner.providers ?? ''
-      if (!providers.startsWith('enabled ->')) {
-        problems.push(`控制台模型服务不是 enabled：「${providers}」`)
-      } else {
-        const listed = /\(nodes: ([^)]*)\)\s*$/.exec(providers)?.[1] ?? ''
-        const executors = new Map(
-          listed
-            .split(',')
-            .map(entry => entry.trim().split('/'))
-            .filter((pair): pair is [string, string] => pair.length === 2)
-            .map(([node, kind]) => [node, kind] as const),
-        )
-        for (const [node, { machine }] of Object.entries(this.#cfg.nodes)) {
-          const kind = executors.get(node)
-          const want = machine === this.#cfg.hub ? 'local' : 'ssh'
-          if (kind === undefined) problems.push(`${node}：控制台没有它的执行器`)
-          else if (kind !== want)
-            problems.push(
-              `${node}：执行器是 ${kind}，按它所在的机器应是 ${want}`,
-            )
-        }
-      }
-    }
+    const banner = this.#facts0[this.#cfg.hub]?.console?.banner ?? null
+    const problems = consoleWiringProblems(banner, {
+      hub: this.#cfg.hub,
+      nodes: this.#cfg.nodes,
+      chatAs,
+    }).map(problem => this.#redactor.free(problem))
+    const chatFrom = chatWiringOf(banner?.chat)?.from ?? `qianmo://${chatAs}/…`
     for (const [node, { machine }] of Object.entries(this.#cfg.nodes)) {
       const nb = this.#facts0[machine]?.nodes[node]?.banner
       if (nb == null) {
@@ -1329,7 +1377,7 @@ class Round {
       : {
           status: 'PASS',
           detail: [
-            `chat signed as ${chatAs}；每个节点 trusts / localCommandsFrom 含 ${chatAs}；执行器齐`,
+            `chat 以 ${chatFrom} 签名；每个节点 trusts / localCommandsFrom 含 ${chatAs}；执行器齐`,
           ],
         }
   }
