@@ -562,7 +562,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
-| GET | `/approvals`、`/providers`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
+| GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
+| GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
+| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
+| GET | `/approvals`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
@@ -596,10 +599,27 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
 | GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话，只写进台账（202），转发由 P17.5 做 |
+| GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录。没开 `--providers` 时 501 |
+| GET | `/v0/providers/catalog` | view | 预设目录 |
+| POST | `/v0/providers/profiles` | **ops 个人账号** | 新建：`{ presetId, site?, profile, secrets? }`，`profile` 只带表单编辑的字段，预设、套餐、评估状态由中枢定 |
+| PUT、DELETE | `/v0/providers/profiles/<档案 id>` | **ops 个人账号** | 保存、删除。带修订号 `ifMatch`（或 `If-Match` 头，两者都给时必须相等），不符 409 |
+| PUT、DELETE | `/v0/providers/profiles/<档案 id>/keys/<key id>` | **ops 个人账号** | 重新填写、清除密钥；任何接口都不回明文 |
+| POST | `/v0/providers/profiles/<档案 id>/skip-probe` | **ops 个人账号** | 保存并切换时勾了跳过测连：记一条 `provider.probe.skip`；记不进去 503，页面不再切换 |
+| PUT | `/v0/providers/default` | **ops 个人账号** | `{ profileId }` 设全局默认，`null` 清除 |
+| PUT | `/v0/providers/nodes/<节点>/assignment`、`…/context` | **ops 个人账号** | 指派（继承 / 单独指定 / 不托管）；上下文窗口覆盖（D-8，随下一次下发生效） |
+| POST | `/v0/providers/nodes/<节点>/refresh` | **ops 个人账号** | 向节点要一次状态（中枢 5 秒内不重复问） |
+| GET、PUT | `/v0/providers/nodes/<节点>/autocompact` | **ops 个人账号** | 读、改自动压缩阈值（D-9，立即写到节点；节点环境变量钉住时 422） |
+| POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账 |
+| POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
+| GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
+| POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
 | GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
+| GET | `/fragments/providers/board?node=`、`/fragments/providers/profiles/<档案 id>/nodes` | view | HTML 片段，模型服务的节点矩阵与档案页的在用节点 |
+| GET | `/fragments/providers/node/<节点>` | view | HTML 片段，节点「模型」页签的正文；节点详情页的「模型」页签加载它 |
+| GET | `/fragments/providers/chat?target=<地址>` | view | HTML 片段，对话页线程头的模型标签与切换分隔线；没开模型服务或这个节点不托管时为空 |
 | GET | `/chat?session=<会话 id>` | **admin** | 对话页整页（§6） |
 | GET | `/v0/chat/targets` | **admin** | 能聊的对象，含可不可拨（§6.3） |
 | GET | `/v0/chat/sessions` | **admin** | 会话列表 |
@@ -676,7 +696,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
 **节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
 
-**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、模型服务、用量三个
+**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、用量两个
 区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
 真页面就是把那个模块文件里的 `stubRoute(...)` 换成完整的 `RouteModule`。
 
@@ -740,6 +760,37 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   `Referrer-Policy: no-referrer`。
 - **操作记录的可见范围**与 `/v0/actions` 一致：`ops` 与 admin 令牌看全部，`viewer`、`member`
   只看自己做的；页面与 API 走同一个查询，两边不会说法不一。
+
+### 5.4 模型服务（`/providers`）
+
+`routes/providers.ts` 与 `view/providers*.ts`，设计依据是 `providers-console-m1.md` §6.3、§7.3。
+数据全部经中枢的 `ProviderPort`（`deps.ts`，P18.6）；控制台不直接读写节点。没给
+`--providers`（它要求 `--accounts`）时页面是一行「模型服务未开启」，API 501。
+
+| 路径 | 是什么 |
+| --- | --- |
+| `/providers` | 全局默认卡、节点矩阵（期望 · 实际 · 状态 · 线路 · 模型 · effort · 上下文 · 最近测连）、档案卡片。矩阵被轮询；带输入框的操作都在对话框里 |
+| `/providers/new` | 预设卡片五组（国内按量 / 国际 / 套餐 / 本地 / 自定义），`?q=` 是 GET 搜索；`?preset=` 进表单，默认只露密钥，其余在「高级」里 |
+| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除 |
+| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
+| `/providers/import` | 粘贴或选文件，整份预览后导入 |
+
+- **谁能写**：只有 `ops` 个人账号，且不在 break-glass（`routes/providers.ts` 的 `providerWriter`）。
+  这条比 `canWrite` 严：admin 令牌、view 令牌、`viewer`、`member` 与 break-glass 在这里都只读，
+  页面上没有写控件，也看不到密钥指纹、完整 Base URL（只显示主机）、漂移的键名和最近记录
+  （`test/providersPage.test.ts` 逐页扫描）。中枢端口按同一条再判一次。
+- **账本**：写路由先 `admit()`，再交端口，`provider.*` 由端口自己记，路由不重复记。唯一的
+  例外是 `provider.probe.skip`：「保存并切换」要求本页测连可用，或勾选「跳过测连」；勾选的
+  这一次在切换执行前由路由记一行，记不进去就不切换。读、轮询与 dry-run 不 admit、不记，
+  也不连节点；「刷新」是写者的显式按钮。
+- **显示值取自节点**：线路、模型、effort、上下文、自动压缩只经 `view/providers.ts` 的
+  `effectiveCells` 读节点报的 `effective`；中枢的期望只用来写「来源」（节点覆盖 / 档案 /
+  默认 200 000）。OpenAI Chat 线的「总是发送」与切换时的「保留会话」按节点自报的能力位
+  （`chatEffortHonorsOverride`、`replayFilter`）放开。
+- **给别的页的片段**：`/fragments/providers/node/<节点>` 是节点「模型」页签的正文，节点详情页
+  加载它；`/fragments/providers/chat?target=<地址>` 给对话页，页面脚本在每次线程替换后把
+  「模型 · <模型>」放进线程头，并在节点最近一次切换处画分隔线。对话存储不读也不改。
+- **导出与导入**：导出不含密钥与指纹；导入时有目录不认识的键，预览与导入都整份拒绝。
 
 ---
 
