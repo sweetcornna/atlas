@@ -595,7 +595,11 @@ describe('restart and deadlines', () => {
     async () => {
       const base = tempDir()
       const target = await node(base, { node: 'cloud-a' })
-      const soon = new Date(Date.now() + 2_000)
+      // The first task must be dispatched before this passes, after two laptops
+      // and the hub repository are built with real git and the deadline is cut
+      // to the second. 2 s was not enough on a loaded machine (the task failed
+      // as never taken before the hub's first push landed).
+      const soon = new Date(Date.now() + 6_000)
         .toISOString()
         .replace(/\.\d+Z$/, 'Z')
       const from = await laptop(base, { deadline: soon })
