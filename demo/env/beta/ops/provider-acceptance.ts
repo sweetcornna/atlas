@@ -1167,14 +1167,16 @@ class Round {
         ],
       }
     }
-    if (role.status !== 200) {
+    // 写者检查在解析请求体之前：除了 401 / 403，任何一个端口给的答复（200，或档案层面的
+    // 400 / 404 / 422）都说明已经过了「ops 个人账号」这一关。501 是模型服务没接上。
+    if (role.status === 0 || role.status === 501 || role.status >= 500) {
       return {
         status: 'FAIL',
         class: 'console',
         detail: [...detail, `preview：${errorOf(role, this.#redactor)}`],
       }
     }
-    detail.push('运维个人账号（preview 200）')
+    detail.push(`运维个人账号（preview ${role.status}）`)
     const overview = await this.#api('GET', '/v0/providers')
     if (
       overview.status !== 200 ||
@@ -1715,6 +1717,7 @@ class Round {
       }
     }
     moment.requestId = result.requestId
+    moment.sessions = result.sessions ?? null
     const done = await this.#until(
       this.#cfg.timing.switchTimeoutMs,
       async () => {
@@ -1754,7 +1757,12 @@ class Round {
     if (a?.resident?.running !== true) problems.push('resident 没在跑')
     return problems.length > 0
       ? { ok: false, detail: problems }
-      : { ok: true, detail: [`已切到 ${profileId}（${model ?? '模型未核'}）`] }
+      : {
+          ok: true,
+          detail: [
+            `已切到 ${profileId}（${model ?? '模型未核'}）${result.sessions === 'reset' ? '；这次切换重置了该节点的会话（换了线路或主机）' : ''}`,
+          ],
+        }
   }
 
   async #a3(): Promise<Omit<Item, 'id' | 'title'>> {
@@ -1854,12 +1862,11 @@ class Round {
         isRecord(dry.json) && Array.isArray(dry.json.results)
           ? (dry.json.results[0] as ProviderApplyResult | undefined)
           : undefined
-      if (
-        dryResult === undefined ||
-        (dryResult.outcome === 'failed' && dryResult.code === 'unreachable')
-      ) {
+      // 要 ok：中枢在发出之前就拒绝（缺密钥、会话策略、校验）时，金丝雀根本没有走到节点，
+      // 这一轮的 AC-P2 就少扫了最要紧的那一段。
+      if (dryResult === undefined || dryResult.outcome !== 'ok') {
         problems.push(
-          `dry-run 下发没有到节点：${dryResult === undefined ? errorOf(dry, this.#redactor) : this.#redactor.free(dryResult.message)}`,
+          `dry-run 下发没有走通，金丝雀没有到节点的编译路径：${dryResult === undefined ? errorOf(dry, this.#redactor) : this.#redactor.free(`${dryResult.outcome} ${dryResult.code ?? ''} ${dryResult.message}`)}`,
         )
       } else {
         notes.push(

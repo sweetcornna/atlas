@@ -331,6 +331,8 @@ interface Scenario {
   instantReply?: boolean
   /** 有缺陷的节点：不等在途 turn 就切。 */
   noWait?: boolean
+  /** dry-run 下发被中枢拒绝（金丝雀没走到节点）。 */
+  dryRunRefused?: boolean
   /** 轮中途（第一次改指派时）这个 pid 文件换成另一个进程：resident 重启过。 */
   restart?: { readonly file: string; readonly pid: number }
   pageLeak?: boolean
@@ -633,6 +635,16 @@ function fakeConsole(scenario: Scenario) {
           if (n === undefined) return fail(404, 'not_found', '没有这些节点')
           const rid = `req-${++seq}`
           if (body.dryRun === true) {
+            if (scenario.dryRunRefused === true) {
+              results.push({
+                node: name,
+                requestId: rid,
+                outcome: 'refused',
+                code: 'invalid',
+                message: '换厂商或换线路时只能重置会话',
+              })
+              continue
+            }
             const profile = profiles.get(
               String(body.profileId ?? expectedOf(n)),
             )
@@ -1030,6 +1042,13 @@ describe('一轮', () => {
       { noWait: true },
       'A6',
       'no-wait',
+    ],
+    [
+      'dry-run 下发被中枢拒绝、金丝雀没走到节点 → A5 红',
+      {},
+      { dryRunRefused: true },
+      'A5',
+      'canary-flow',
     ],
     [
       '金丝雀出现在 JSON 响应里 → A5 红',
