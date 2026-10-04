@@ -259,8 +259,11 @@ OCC_IDENTITY=qianmo bun run dev console \
 token 可以走**三个位置**，按这个顺序逐个试：
 
 1. `Authorization: Bearer <token>` —— 页面自己的 `fetch` 和 `curl` 用这个；
-2. `?token=<token>` —— **浏览器导航**用这个，因为地址栏里敲进去的 URL 没法带 header。
-   CLI 打印那条带 token 的 URL，就是为了这个；
+2. `?token=<token>` —— **首次引导与脚本**用这个，因为地址栏里敲进去的 URL 没法带 header。
+   CLI 打印那条带 token 的 URL，就是为了这个。**浏览器导航带着它进来时（未开 `--accounts`），
+   服务端先答 303：下发 cookie，`Location` 是去掉 `token` 的同一地址**（H5，`http.ts` 的
+   `tokenInAddressBar`），所以令牌只在第一跳的请求行里出现一次，不留在地址栏、历史记录、
+   跨页链接和对话流的 URL 里（§6.8）；
 3. `qianmo_console` **cookie** —— `POST /login` 之后浏览器自己带上的那一份。有了它，
    打开控制台是「在一个框里填一次 token」，不是「手工往 URL 上拼一段」。
 
@@ -566,12 +569,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/` | view | 总览：节点、审计近况、上限 |
-| GET | `/nodes` | view | 节点名册。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
+| GET | `/` | view | 总览：会变的卡（智能体总数与在线、滞后、过期；消息链记录数与完整性；近 1 小时拒绝与丢弃；第四张是证书，没接证书源而接了对话时是近 1 小时会话，两样都没有就只有三张）与每个节点一行（A2）。原先的两项协议常量卡移到设置页 |
+| GET | `/nodes?q=&state=&server=` | view | 节点名册。`q` 按地址或端点搜（不分大小写），`state` 是 `live` / `stale` / `expired`（与行上的判法同一个函数），`server` 按 `--node-server` 归属；原生 GET 表单，轮询的 `/fragments/roster` 带同样的查询串，计数「筛选后 n · 共 m」在片段里随刷新重算（D6）。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
 | GET | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
 | GET | `/audit?…`、`/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/servers` | view | 服务器归属与备注（§11） |
-| GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名，以及协议与运行时上限 |
+| GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名；启动横幅里的构建（`sourceCommit`）、注册中心、审计链来源、唤醒与对话及其签名状态；各端口此刻是否可达；数据路径只给能写的人；以及协议与运行时上限（A4） |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
 | GET | `/jobs` | view | 值守作业：上次与下次触发、急停、调度器心跳（§10.4） |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
@@ -583,7 +586,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
 | GET、POST | `/invite` | 公开 | 邀请门（§8.1.1）：`GET` 只渲染确认页，`POST` 兑现、铸出个人凭据并登录。只在开了 `--accounts` 时存在，没开时 404 |
-| GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量 |
+| GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量。`no-cache` 加内容哈希弱 ETag，`If-None-Match` 命中答 304（G1） |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
 | GET | `/v0/agents` | view | 名册 |
@@ -723,6 +726,24 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 
 **响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
 策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。
+**脚本按哈希放行**（H2）：每份文档内联的脚本都是编译期常量，`cspFor` 对文档实际携带的
+那段脚本算 SHA-256，写成 `script-src 'sha256-…'`，没有脚本的文档写 `script-src 'none'`；
+`'unsafe-inline'` 只留给样式（那一个 `<style>` 和 `style=""` 属性）。头与 `<meta>` 由
+同一个函数、同一组脚本算出，不会漂移（`test/pages.test.ts` 逐页核对）。文档另带
+`Cross-Origin-Opener-Policy: same-origin`、`Cross-Origin-Resource-Policy: same-origin`
+和关掉摄像头、麦克风、定位等能力的 `Permissions-Policy`（剪贴板不在其中，复制按钮要用）；
+JSON 与两个资产带 `Cross-Origin-Resource-Policy: same-origin`。请求经 TLS 到达（直连，或
+反代在 `X-Forwarded-Proto` 里说明，和 cookie 的 `Secure` 同一判据）时，每个响应带
+`Strict-Transport-Security: max-age=31536000`，不带 `includeSubDomains`。
+
+**体积与缓存**（G1）：`GET` 的 HTML、CSS、JS、JSON 响应在 `Accept-Encoding` 接受 gzip
+时用 Bun 自带的 gzip 压缩（小于 1 KB 的不压，`q=0` 视为不接受，事件流不压）；`POST` 的
+响应不压，免得提交的秘密和它自己的压缩长度出现在同一个响应里（邀请页回的个人凭据就是
+`POST` 的答复）。样式表与运行时在模块加载时去掉注释（运行时只去整行 `//`，两个 humanize
+标记是块注释，保留）。`/assets/app.css`、`/assets/app.js` 是 `no-cache` 加内容哈希的弱
+ETag，`If-None-Match` 命中答 304；不用 `immutable`，因为地址里没有版本号，下一版会在同一
+地址给出不同内容。文档仍是 `no-store`，样式与脚本仍然内联（§6.1 与 §7.1 的取舍不变）。
+实测 `/` 从 77.8 KB 未压缩变为线上 22.1 KB（`~/atlas-evidence/m1-work/p18-14/size-*.json`）。
 
 **错误页**：浏览器导航（`GET`/`HEAD` 且 `Accept` 含 `text/html`）进到 404、405、500、
 501、503 时拿到的是 HTML 页面——已登录的在外壳里，未登录的在登录面板上；脚本和
@@ -736,6 +757,17 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 | `data-poll` / `data-swap` | 被轮询的区域与它要替换的子区域 id |
 | `data-key` | 行的稳定键。轮询替换前记下展开的 `<details>` 与焦点，替换后按键找回；区域的 `data-refreshed` 每刷新一次加一 |
 | `data-open-dialog` | 打开某个原生 `<dialog>`（`showModal`） |
+| `<time datetime data-fmt>` | 一个瞬时。服务端按自己的时区写出文本，`datetime` 是 ISO 瞬时，`data-fmt` 是 `clock`（`HH:MM:SS`）或 `datetime`（日期加时刻）；运行时按浏览器时区重写文本，轮询换进来的区域也会重写（`view/bits.ts` 的 `timeTag`，时区） |
+| `input[type=datetime-local][data-at]` | 自定义时间段。运行时把值换成浏览器时区；原生提交时把它换成同名的毫秒时间戳隐藏字段，服务端不再按自己的时区去读一个墙钟字符串 |
+| `.drawer[popover]` | 窄屏（≤ 1000px）的抽屉：侧栏与对话页的会话列表。原生 popover，`popovertarget` 按钮打开，不靠脚本；Esc、点外面或关闭按钮关掉，焦点回到按钮；宽屏时就是原来那一栏（E1） |
+
+**页面结构**（F1）：每份文档一个 `h1`（外壳里是页标题，对话页里会话名是 `h2`），一个
+`main`；外壳第一个可聚焦元素是「跳到正文」，指向 `tabindex="-1"` 的 `#main`。登录、开通
+与个人凭据三扇门也有 `main` 与 `h1`。
+
+**时区**：侧栏底部 `#tz-note` 写明页面上的时间是哪个时区——服务端渲染时是「服务器时区
+UTC+n」，运行时重写之后是「本机时区 UTC+n」。告警的 `detail` 也是 `/v0/alerts` 的数据，
+不重写，所以里面的时间自带时区标注；名册租约条的悬停提示同样自带标注。
 
 第一个 401 会停掉全部轮询与对话流，并弹出「会话已失效」对话框，链接回到当前页的登录门。
 Escape 可以关掉它（Chrome 只在刚有点击时允许页面拦 Escape，且不允许连拦两次）；关掉以后
@@ -1287,31 +1319,27 @@ chat  enabled as qianmo://console/operator -> beta-4 -> ws://127.0.0.1:38625/
 chat  enabled as qianmo://console/operator (signed) -> beta-4 -> ws://127.0.0.1:38625/
 ```
 
-### 6.8 Bearer 会话的跨页链接把 token 放在查询串里
+### 6.8 令牌不进地址栏（H5）
 
-顶层导航带不了 `Authorization` 头，所以两个方向的侧栏链接都由客户端在渲染之后把 token
-补进 href 的查询串（`assets/client.ts` 与 `assets/chatClient.ts` 里的
-`paintCrossPageLink`）——和 CLI banner 打印的那条 `?token=` 是同一个位置、同一份暴露面。
-服务端渲染出去的是不带 token 的那一版。
+原先的做法是：顶层导航带不了 `Authorization` 头，所以 Bearer 会话的侧栏链接由客户端在渲染
+之后把 token 补进 href 的查询串（`assets/client.ts` 的 `paintLinks`），对话页的 `EventSource` 也把 token
+放进 URL——和 CLI banner 打印的那条 `?token=` 是同一个位置、同一份暴露面，会留在代理日志与
+浏览器历史里。
 
-**这件事现在只对 Bearer 会话成立。**cookie 会话的 `localStorage` 里什么都没有，也不需要
-有：浏览器会自己把 cookie 附到那次导航上（`document` 等级，§5.1）。所以**没有 token 时
-链接原样留着，如今是常态而不是坏掉**——它要么被 cookie 认证，要么诚实地把人送到登录页。
+现在只有一条路：**页面导航与对话流都只靠 cookie 会话。**
 
-到站后页面第一件事仍是把 token 从地址栏洗掉（读进 localStorage 后 `history.replaceState`
-重写 URL）。**切换会话仍然不是一次导航，但理由变了**：cookie 会话下 `/chat?session=…` 的
-顶层导航是活得下来的——浏览器会带上 cookie。留着 `fetch` 交换，是因为**两种凭据只应该有
-一种行为**：一种凭据下换两个片段、另一种凭据下整篇重载文档，那是两条都要维持为真的路径
-（`assets/chatClient.ts` 的 `openSession` 注释）。Bearer 会话那边的老理由也还在：token 一
-洗掉，导航就当场 401。
+- 带 `?token=` 的浏览器导航（未开 `--accounts`）由服务端换成会话：303，下发 cookie，
+  `Location` 是去掉 `token` 的同一地址（§4.1）。
+- 页面里的「换令牌」（以及 `#token=`）把令牌 `POST /login` 换成会话（`redirect: 'manual'`），
+  不再写进链接：此页的请求继续拿它作 Bearer，此后的导航走换来的 cookie。换不成时令牌框下
+  写「令牌未换成会话 · 换页需要重新登录」。
+- `paintLinks` 已删除，侧栏与面包屑链接原样留着；对话流是不带查询串的
+  `new EventSource('/v0/chat/stream')`，在会话建立之后才打开（`qc.afterSession`）。
+- `?token=` 与 `Bearer` 对脚本照旧有效；开了 `--accounts` 时个人凭据放在 `?token=` 里一律
+  400，不在这条交换的范围内。
 
-同一条约束的另一个出口是流：`EventSource` 也带不了头，所以 `/v0/chat/stream` 的 token 同样
-走查询串，或者干脆靠 cookie——`auth.ts` 接受后两个位置，正是为了这一类调用（§4.1），而
-它单独付的代价写在 §5.1。
-
----
-
-## §7 它读什么，不读什么
+`test/p1.test.ts` 的 H5 组与 `test/browser/p1.browser.test.ts` 的 H5 用例钉住：303 之后的地址、
+cookie 属性、此后每一次导航与对话流请求的查询串里都没有 `token`。
 
 ### 7.1 读
 
@@ -1343,7 +1371,7 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 链文件建出来（`AuditTrail.ensure()`），不等第一条记录。否则一个健康的新节点与一条断掉的
 镜像在页面上还是同一个样子。
 
-权限之类的 IO 错误仍走失败值（红色的「审计日志不可达」），不并进 `absent`。
+权限之类的 IO 错误仍走失败值（红色的「审计链不可达」），不并进 `absent`。
 
 三个上限的数字**一律 import，不抄**。协议速率与运行时速率在页面上是**两列**，不是
 一个数：章程 AC-3 要求两者独立验证且不得混为一谈（`packages/router/src/rate.ts` 的
@@ -1354,7 +1382,7 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 （注册、心跳、从落盘表恢复三处同一口径）。所以名册的「在线 / 滞后 / 过期」、租约条和
 「剩余」都按**这条记录自己的** `expiresAt − lastHeartbeatAt` 判：过半为滞后（既有的
 `STALE_FRACTION`，`packages/console/src/view/format.ts`），到期为过期，`expiresAt` 已过则无论心跳多新都是过期。名册抬头、
-上限区与总览卡的「注册租约」取最近一次续租那条记录的租约，三处同源。`DEFAULT_TTL_MS`
+名册抬头与设置页上限区的「注册租约」取最近一次续租那条记录的租约，两处同源。`DEFAULT_TTL_MS`
 只在两种情况下出场：记录缺 `expiresAt` 或 `lastHeartbeatAt`，以及名册为空、没有可读的
 租约。`GET /v0/limits` 的 `registryTtlMs` 仍原样报这个包默认值，不是注册中心此刻的 TTL。
 控制台不另设租约参数——多一个出处正是 C-1 的来源。
@@ -1723,7 +1751,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/accounts.ts`、`accountsHttp.ts` | 账号库与会话表（哈希链、严格重放、强制下线）与账号 API（§8.1.1） |
 | `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
-| `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询、跨页链接签 token（§6.6、§6.8） |
+| `packages/console/src/assets/chatClient.ts` | 对话页的客户端常量：片段替换、SSE 与降级轮询，对话流在会话建立之后才打开（§6.6、§6.8） |
 | `src/cli/handlers/consoleArgs.ts` | 参数解析（纯函数）与 `--help` 全文，**不 import 控制台包** |
 | `scripts/entrypoints.ts` | 三个 `bin` 入口的生成处，含 `qm` 为什么把身份写死在文件里、以及那里的 `await import` 与 `??=` 各自在挡什么（§2.1） |
 | `src/cli/handlers/consoleTokenSources.ts` | 两枚 token 的三个入口与优先级、token 文件的权限检查（§3.1） |
