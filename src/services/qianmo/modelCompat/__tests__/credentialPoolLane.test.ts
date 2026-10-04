@@ -537,7 +537,7 @@ describe('no key value anywhere but the request', () => {
     expect(notes.length).toBeGreaterThan(0)
     for (const value of VALUES) {
       for (const haystack of haystacks) expect(haystack).not.toContain(value)
-      // Not even a prefix long enough to identify it.
+      // Not even its last twelve characters.
       for (const haystack of haystacks) {
         expect(haystack).not.toContain(value.slice(-12))
       }
