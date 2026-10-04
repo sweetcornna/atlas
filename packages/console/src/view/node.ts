@@ -921,7 +921,7 @@ export const NODE_PAGE_JS = `
         return refresh();
       })
       .catch(function (err) {
-        qc.toast(spec.word + '失败 · ' + qc.message(err), 'bad');
+        qc.toast(qc.failLine(spec.word, err), qc.failTone(err));
       });
   }
 

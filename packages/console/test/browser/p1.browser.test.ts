@@ -197,5 +197,152 @@ describe.skipIf(SKIP !== null)(
         served.stop()
       }
     }, 30_000)
+
+    test('a slow row action holds its button, counts the seconds, survives a refresh, and sends once (C4)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await fastPolling(tab)
+        served.wrapper.delay = { path: '/v0/agents/', ms: 3_000 }
+        const address = 'qianmo://tokyo-1/planner'
+        const button = `document.querySelector('#roster button[data-action="heartbeat"][data-address="${address}"]')`
+        const state = await tab.evaluate<{
+          disabled: boolean
+          busy: string | null
+          progress: number
+        }>(`(() => {
+          const b = ${button};
+          window.__beat = b;
+          b.click();
+          b.click();
+          return {
+            disabled: b.disabled,
+            busy: b.getAttribute('aria-busy'),
+            progress: document.querySelectorAll('[data-progress]').length,
+          };
+        })()`)
+        // Busy from the first click, so the second one never left the page;
+        // nothing shown yet for work that may be over in a moment.
+        expect(state).toEqual({ disabled: true, busy: 'true', progress: 0 })
+
+        await tab.waitFor(
+          `(document.querySelector('#toasts [data-progress] .toast-text') || {}).textContent === '心跳 · 进行中 · 已用 2 秒'`,
+          5_000,
+        )
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('#toasts [data-progress] [data-progress-stop]').textContent`,
+          ),
+        ).toBe('停止等待')
+        // The roster refreshed under it: the old button is gone, and the one
+        // that replaced it is busy too.
+        expect(
+          await tab.evaluate<boolean[]>(`(() => {
+            const b = ${button};
+            return [window.__beat.isConnected, b === window.__beat, b.disabled, b.getAttribute('aria-busy') === 'true'];
+          })()`),
+        ).toEqual([false, false, true, true])
+
+        await tab.waitFor(
+          `[...document.querySelectorAll('#toasts .toast-text')].some(t => t.textContent === '已心跳 ${address}')`,
+          5_000,
+        )
+        expect(
+          await tab.evaluate<[boolean, string | null, number]>(`(() => {
+            const b = ${button};
+            return [b.disabled, b.getAttribute('aria-busy'), document.querySelectorAll('[data-progress]').length];
+          })()`),
+        ).toEqual([false, null, 0])
+        expect(
+          served.wrapper.seen.filter(seen => seen.path.endsWith('/heartbeat'))
+            .length,
+        ).toBe(1)
+        expect(served.harness.registry.beats).toEqual([address])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('a confirmed wake runs as the dialog button, can be stopped from inside the dialog, and says what stopping means (C4)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        served.wrapper.delay = { path: '/v0/wake', ms: 20_000 }
+        await tab.evaluate(
+          `document.querySelector('[data-open-dialog="wake-dialog"]').click()`,
+        )
+        await tab.waitFor(`document.getElementById('wake-dialog').open`)
+        await tab.evaluate(`(() => {
+          const form = document.getElementById('wake-form');
+          form.elements['to'].value = 'qianmo://osaka-1/writer';
+          form.elements['prompt'].value = '整理今天的告警';
+          const go = form.querySelector('[type="submit"]');
+          go.focus();
+          go.click();
+        })()`)
+        await tab.waitFor(`document.getElementById('confirm-wake').open`)
+        await tab.evaluate(
+          `document.querySelector('#confirm-wake [data-action="confirm-wake"]').click()`,
+        )
+        const submit = `document.querySelector('#wake-form [type="submit"]')`
+        expect(
+          await tab.evaluate<[boolean, string | null]>(
+            `[${submit}.disabled, ${submit}.getAttribute('aria-busy')]`,
+          ),
+        ).toEqual([true, 'true'])
+
+        // In the dialog, because the page behind a modal dialog is inert and
+        // a stop button in the corner could not be pressed.
+        await tab.waitFor(
+          `/^唤醒 · 进行中 · 已用 \\d+ 秒$/.test((document.querySelector('#wake-dialog [data-progress] .toast-text') || {}).textContent || '')`,
+          5_000,
+        )
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('#toasts [data-progress]').length`,
+          ),
+        ).toBe(0)
+        await tab.evaluate(
+          `document.querySelector('#wake-dialog [data-progress-stop]').click()`,
+        )
+        await tab.waitFor(
+          `document.getElementById('wake-status').textContent === '唤醒 · 已停止等待 · 服务端可能仍在处理'`,
+          5_000,
+        )
+        expect(
+          await tab.evaluate<
+            [
+              string | null,
+              boolean,
+              string | null,
+              boolean,
+              number,
+              string | null,
+            ]
+          >(`(() => {
+            const b = ${submit};
+            const toast = [...document.querySelectorAll('#toasts .toast')].find(
+              t => t.textContent === '唤醒 · 已停止等待 · 服务端可能仍在处理');
+            return [
+              document.getElementById('wake-status').getAttribute('data-tone'),
+              b.disabled,
+              b.getAttribute('aria-busy'),
+              document.activeElement === b,
+              document.querySelectorAll('[data-progress]').length,
+              toast ? toast.getAttribute('data-tone') : 'missing',
+            ];
+          })()`),
+        ).toEqual(['warn', false, null, true, 0, 'warn'])
+        expect(
+          served.wrapper.seen.filter(seen => seen.path === '/v0/wake').length,
+        ).toBe(1)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 40_000)
   },
 )

@@ -223,14 +223,24 @@ function runtimeScript(guards: TokenGuards): string {
   // the same mapping.
   function message(err) {
     if (err && typeof err.human === 'string') {
-      lastMapped = { text: err.human, detail: err.detail || '' };
+      lastMapped = { text: err.human, detail: err.detail || '', code: err.code || '' };
       return err.human;
     }
     var raw = err && err.message ? String(err.message) : String(err);
     var human = humanize(err && err.code, err && err.status, raw);
-    lastMapped = { text: human.text, detail: human.detail };
+    lastMapped = { text: human.text, detail: human.detail, code: (err && err.code) || '' };
     return human.text;
   }
+
+  // The line a page script reports a failed write with: 注册失败 · 无法连接.
+  // A write the operator stopped waiting for has not failed as far as anybody
+  // knows (C4), so it is not called one: 注册 · 已停止等待 · 服务端可能仍在处理.
+  function failLine(verb, err) {
+    var line = message(err);
+    return err && err.code === 'aborted' ? verb + ' · ' + line : verb + '失败 · ' + line;
+  }
+
+  function failTone(err) { return err && err.code === 'aborted' ? 'warn' : 'bad'; }
 
   // A fetch that never got an answer: stopped on purpose, or no network.
   function unanswered(e) {
@@ -263,10 +273,11 @@ function runtimeScript(guards: TokenGuards): string {
   function toast(text, tone, detail) {
     var region = byId('toasts');
     if (!region || !text) return;
-    if (detail === undefined && tone === 'bad' && lastMapped && lastMapped.detail &&
-        text.indexOf(lastMapped.text) !== -1) {
-      detail = lastMapped.detail;
-    }
+    var quoted = tone === 'bad' && lastMapped && text.indexOf(lastMapped.text) !== -1;
+    if (detail === undefined && quoted && lastMapped.detail) detail = lastMapped.detail;
+    // A page script that does not know about 停止等待 still says 失败 for
+    // it; the tone at least does not.
+    if (quoted && lastMapped.code === 'aborted') tone = 'warn';
     if (tone === 'bad') lastMapped = null;
     var line = document.createElement('div');
     line.className = 'toast';
@@ -291,7 +302,7 @@ function runtimeScript(guards: TokenGuards): string {
       line.appendChild(more);
     }
     region.appendChild(line);
-    while (region.children.length > TOAST_MAX) region.removeChild(region.firstChild);
+    evict(region);
     var gone = function () { if (line.parentNode) line.parentNode.removeChild(line); };
     line.addEventListener('click', function (event) {
       if (more && event.target && event.target.closest && event.target.closest('.toast-detail')) return;
@@ -302,6 +313,14 @@ function runtimeScript(guards: TokenGuards): string {
       gone();
     };
     setTimeout(later, tone === 'bad' ? TOAST_BAD_MS : TOAST_MS);
+  }
+
+  // The oldest result goes first; a line for work still in flight stays,
+  // because its 停止等待 is the only way to stop waiting.
+  function evict(region) {
+    var lines = region.querySelectorAll('.toast:not([data-progress])');
+    var extra = region.children.length - TOAST_MAX;
+    for (var i = 0; i < lines.length && extra > 0; i++, extra--) lines[i].remove();
   }
 
   /* ---------------- dialogs ---------------- */
@@ -331,9 +350,30 @@ function runtimeScript(guards: TokenGuards): string {
     if (box && box.id === pendingFor) { pending = null; pendingFor = ''; }
   }
 
+  // Who opened each dialog: the control being dispatched, or failing that
+  // whatever had focus. Its confirm runs as that control's work (C4), and it
+  // is where focus goes back to when the dialog closes (D4).
+  var openers = {};
+
+  function openerOf(id) {
+    var seen = openers[id];
+    if (!seen) return null;
+    if (seen.el.isConnected) return seen.el;
+    // Replaced by a refresh while the dialog was up: the same control in
+    // the new markup, found the way a refresh finds the focused one.
+    var found = seen.mount && seen.mount.isConnected ? locate(seen.mount, seen.desc) : null;
+    if (found) seen.el = found;
+    return found;
+  }
+
   function openDialog(id, run) {
     var box = byId(id);
     if (!box) { if (run) run(); return; }
+    var from = trigger || document.activeElement;
+    if (from && from !== document.body && !box.contains(from)) {
+      var mount = from.closest('[data-poll]');
+      openers[id] = { el: from, mount: mount, desc: describe(from, mount || document.body) };
+    }
     if (run) { pending = run; pendingFor = id; }
     if (box.open) return;
     if (typeof box.showModal === 'function') box.showModal();
@@ -463,6 +503,152 @@ function runtimeScript(guards: TokenGuards): string {
     return Promise.reject(failure('unauthorized', 401, EXPIRED));
   }
 
+  /* ---------------- work in flight (C4) ---------------- */
+
+  // A write is somebody's: the button that was clicked, the form's submit
+  // button, or - for a confirmed action - the control that opened the
+  // confirm. Whatever sendJson a dispatch starts synchronously belongs to
+  // that control, so every page script gets the same behaviour without
+  // saying anything: the control is disabled and aria-busy until the answer
+  // is in, which is what stops a double click sending twice; after a second,
+  // a line says how long it has been and offers 停止等待, which aborts the
+  // request. Stopping waiting is not undoing - the server may still finish -
+  // and the line it leaves says exactly that (errors.ts, 'aborted').
+  var SLOW_MS = 1000;
+  var trigger = null;
+  var inflight = [];
+
+  function within(el, run) {
+    var outer = trigger;
+    trigger = el || null;
+    try { run(); } finally { trigger = outer; }
+  }
+
+  function labelOf(el) {
+    var named = el.getAttribute('data-busy-label') || el.getAttribute('aria-label') ||
+      el.textContent || '';
+    return named.replace(/s+/g, ' ').trim() || '操作';
+  }
+
+  function busyOn(el) {
+    el.setAttribute('aria-busy', 'true');
+    if ('disabled' in el) el.disabled = true;
+  }
+
+  function busyOff(el, wasDisabled) {
+    el.removeAttribute('aria-busy');
+    if ('disabled' in el) el.disabled = wasDisabled;
+  }
+
+  function track(el) {
+    if (!el || !el.isConnected) return null;
+    for (var i = 0; i < inflight.length; i++) {
+      if (inflight[i].el === el) { inflight[i].count += 1; return inflight[i]; }
+    }
+    var mount = el.closest('[data-poll]');
+    var job = {
+      el: el,
+      desc: describe(el, mount || document.body),
+      label: labelOf(el),
+      controller: typeof AbortController === 'function' ? new AbortController() : null,
+      started: Date.now(),
+      wasDisabled: !!el.disabled,
+      hadFocus: document.activeElement === el,
+      count: 1,
+      stopped: false,
+      line: null,
+      words: null,
+      timer: null,
+      ticker: null
+    };
+    busyOn(el);
+    job.timer = setTimeout(function () { showProgress(job); }, SLOW_MS);
+    inflight.push(job);
+    return job;
+  }
+
+  function paintProgress(job) {
+    var secs = Math.max(1, Math.round((Date.now() - job.started) / 1000));
+    job.words.textContent = job.label + ' · 进行中 · 已用 ' + secs + ' 秒';
+  }
+
+  function showProgress(job) {
+    if (inflight.indexOf(job) === -1) return;
+    var line = document.createElement('div');
+    line.setAttribute('data-progress', '');
+    var words = document.createElement('span');
+    words.className = 'toast-text';
+    line.appendChild(words);
+    job.line = line;
+    job.words = words;
+    paintProgress(job);
+    if (job.controller) {
+      var stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'btn btn-ghost btn-small';
+      stop.setAttribute('data-progress-stop', '');
+      stop.textContent = '停止等待';
+      stop.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        job.stopped = true;
+        job.controller.abort();
+      });
+      line.appendChild(stop);
+    }
+    // A modal dialog makes the rest of the page inert, so a stop button in
+    // the corner would be out of reach behind the dialog that asked. Inside
+    // that dialog, above its buttons, instead.
+    var box = job.el.isConnected ? job.el.closest('dialog[open]') : null;
+    if (box) {
+      line.className = 'progress';
+      var row = job.el.closest('.dialog-actions');
+      if (row && row.parentNode) row.parentNode.insertBefore(line, row);
+      else box.appendChild(line);
+    } else {
+      var region = byId('toasts');
+      if (!region) return;
+      line.className = 'toast progress';
+      line.setAttribute('data-tone', 'muted');
+      region.appendChild(line);
+    }
+    // Announced once, as it appears; not again every second.
+    line.setAttribute('aria-live', 'off');
+    job.ticker = setInterval(function () { paintProgress(job); }, 1000);
+  }
+
+  function settle(job) {
+    job.count -= 1;
+    if (job.count > 0) return;
+    clearTimeout(job.timer);
+    if (job.ticker) clearInterval(job.ticker);
+    var at = inflight.indexOf(job);
+    if (at !== -1) inflight.splice(at, 1);
+    var active = document.activeElement;
+    var lost = !active || active === document.body || (job.line && job.line.contains(active));
+    if (job.line && job.line.parentNode) job.line.parentNode.removeChild(job.line);
+    var el = job.el;
+    if (!el.isConnected) return;
+    busyOff(el, job.wasDisabled);
+    // A disabled control drops focus; give it back to whoever was on it, or
+    // to whoever just pressed 停止等待 (now gone with its line).
+    if (lost && (job.hadFocus || job.stopped) && !el.disabled) el.focus({ preventScroll: true });
+  }
+
+  // A control replaced by a refresh while its write is out: the replacement
+  // is the same control, so it is busy too.
+  function rebusy(mount) {
+    for (var i = 0; i < inflight.length; i++) {
+      var job = inflight[i];
+      if (job.el.isConnected) continue;
+      var found = locate(mount, job.desc);
+      if (!found) continue;
+      job.el = found;
+      job.wasDisabled = !!found.disabled;
+      busyOn(found);
+    }
+  }
+
   /* ---------------- transport ---------------- */
 
   function loadHtml(url) {
@@ -483,13 +669,15 @@ function runtimeScript(guards: TokenGuards): string {
 
   function sendJson(method, url, body) {
     if (expired) return refused();
+    var job = track(trigger);
     var init = {
       method: method,
       credentials: 'same-origin',
       headers: authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' })
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(url, init).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
+    if (job && job.controller) init.signal = job.controller.signal;
+    var sent = fetch(url, init).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
       if (res.status === 204) return null;
       return res.text().then(function (raw) {
         var data = null;
@@ -507,7 +695,12 @@ function runtimeScript(guards: TokenGuards): string {
         }
         return data;
       });
-    });
+    }).then(null, function (e) { throw unanswered(e); });
+    if (!job) return sent;
+    // Settled before the page script hears, so its own then sees the
+    // control enabled again.
+    return sent.then(function (data) { settle(job); return data; },
+      function (err) { settle(job); throw err; });
   }
 
   /* ---------------- polled regions ---------------- */
@@ -546,20 +739,25 @@ function runtimeScript(guards: TokenGuards): string {
     var focus = null;
     var active = document.activeElement;
     if (active && active !== document.body && mount.contains(active)) {
-      var holder = active.closest('[data-key]');
-      focus = {
-        id: active.id || '',
-        key: holder && mount.contains(holder) ? holder.getAttribute('data-key') : null,
-        tag: active.tagName,
-        attrs: []
-      };
-      for (var j = 0; j < IDENTITY.length; j++) {
-        if (active.hasAttribute(IDENTITY[j])) {
-          focus.attrs.push([IDENTITY[j], active.getAttribute(IDENTITY[j])]);
-        }
-      }
+      focus = describe(active, mount);
     }
     return { open: open, focus: focus };
+  }
+
+  // Enough to find the same control in a fresh copy of the region: its id,
+  // the keyed row it sits in, its tag and its identifying attributes.
+  function describe(el, mount) {
+    var holder = el.closest('[data-key]');
+    var desc = {
+      id: el.id || '',
+      key: holder && mount.contains(holder) ? holder.getAttribute('data-key') : null,
+      tag: el.tagName,
+      attrs: []
+    };
+    for (var j = 0; j < IDENTITY.length; j++) {
+      if (el.hasAttribute(IDENTITY[j])) desc.attrs.push([IDENTITY[j], el.getAttribute(IDENTITY[j])]);
+    }
+    return desc;
   }
 
   function locate(mount, focus) {
@@ -651,6 +849,7 @@ function runtimeScript(guards: TokenGuards): string {
       var state = snapshot(mount);
       if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
       restore(mount, state);
+      rebusy(mount);
       clearStale(mount);
       mount.setAttribute('data-as-of', String(Date.now()));
       refreshes += 1;
@@ -740,7 +939,7 @@ function runtimeScript(guards: TokenGuards): string {
     var opener = origin.closest('[data-open-dialog]');
     if (opener) {
       event.preventDefault();
-      openDialog(opener.getAttribute('data-open-dialog') || '', null);
+      within(opener, function () { openDialog(opener.getAttribute('data-open-dialog') || '', null); });
       return;
     }
     var el = origin.closest('[data-action]');
@@ -761,13 +960,15 @@ function runtimeScript(guards: TokenGuards): string {
     } else if (action && action.indexOf('confirm-') === 0) {
       event.preventDefault();
       var run = pending;
+      var opener = openerOf(pendingFor);
       closeDialog(el.closest('dialog'));
       pending = null;
       pendingFor = '';
-      if (run) run();
+      if (run) within(opener, run);
     } else if (action && actions[action]) {
       event.preventDefault();
-      actions[action](el, event);
+      if (el.getAttribute('aria-busy') === 'true') return;
+      within(el, function () { actions[action](el, event); });
     }
   });
 
@@ -787,7 +988,11 @@ function runtimeScript(guards: TokenGuards): string {
     // localStorage copy - leaving it behind would mean the next visit sends a
     // Bearer for a token the operator just walked away from.
     if (form.id === 'logout-form') { writeToken(''); return; }
-    if (submits[form.id]) { event.preventDefault(); submits[form.id](form, event); }
+    if (!submits[form.id]) return;
+    event.preventDefault();
+    var by = event.submitter || form.querySelector('[type="submit"]');
+    if (by && by.getAttribute('aria-busy') === 'true') return;
+    within(by, function () { submits[form.id](form, event); });
   });
 
   document.addEventListener('visibilitychange', function () {
@@ -819,6 +1024,8 @@ function runtimeScript(guards: TokenGuards): string {
     say: say,
     stamp: stamp,
     message: message,
+    failLine: failLine,
+    failTone: failTone,
     humanize: humanize,
     readToken: readToken,
     toast: toast,

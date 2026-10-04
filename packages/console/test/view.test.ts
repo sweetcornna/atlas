@@ -2724,7 +2724,7 @@ describe('one place an action reports back (D2)', () => {
   test('the row actions and the forms report through it', () => {
     for (const line of [
       "qc.toast('已心跳 ' + address, 'ok')",
-      "qc.toast('心跳失败 · ' + message(err), 'bad')",
+      "qc.toast(qc.failLine('心跳', err), qc.failTone(err))",
       "qc.toast('已注销 ' + address, 'ok')",
       "qc.toast('已注册 ' + address, 'ok')",
       "qc.toast(line, 'ok')",
@@ -2738,7 +2738,7 @@ describe('one place an action reports back (D2)', () => {
       "qc.toast('备注已保存 · ' + server, 'ok')",
     )
     expect(CONSOLE_CHAT_JS).toContain(
-      "qc.toast('发送失败 · ' + message(err), 'bad')",
+      "qc.toast(qc.failLine('发送', err), qc.failTone(err))",
     )
   })
 })

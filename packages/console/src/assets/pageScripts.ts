@@ -23,7 +23,6 @@ export const NODES_PAGE_JS = `
   if (!qc) return;
   var byId = qc.byId;
   var say = qc.say;
-  var message = qc.message;
   var setText = qc.setText;
 
   var ROUTES = { agents: '/v0/agents', wake: '/v0/wake' };
@@ -74,8 +73,8 @@ export const NODES_PAGE_JS = `
     }).catch(function (err) {
       // Said where the form is, and in the corner: the dialog may be the
       // thing the operator is looking at, or the thing they just closed.
-      say(status, '注册失败 · ' + message(err), 'bad');
-      qc.toast('注册失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('注册', err), qc.failTone(err));
+      qc.toast(qc.failLine('注册', err), qc.failTone(err));
     });
   }
 
@@ -116,8 +115,8 @@ export const NODES_PAGE_JS = `
       say(status, line, 'ok');
       qc.toast(line, 'ok');
     }).catch(function (err) {
-      say(status, '唤醒失败 · ' + message(err), 'bad');
-      qc.toast('唤醒失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('唤醒', err), qc.failTone(err));
+      qc.toast(qc.failLine('唤醒', err), qc.failTone(err));
     });
   }
 
@@ -130,7 +129,7 @@ export const NODES_PAGE_JS = `
         qc.toast('已心跳 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { qc.toast('心跳失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast(qc.failLine('心跳', err), qc.failTone(err)); });
   }
 
   function onDeregister(el) {
@@ -145,7 +144,7 @@ export const NODES_PAGE_JS = `
         qc.toast('已注销 ' + address, 'ok');
         return refreshRoster();
       })
-      .catch(function (err) { qc.toast('注销失败 · ' + message(err), 'bad'); });
+      .catch(function (err) { qc.toast(qc.failLine('注销', err), qc.failTone(err)); });
   }
 
   qc.onAction('heartbeat', onHeartbeat);
@@ -234,8 +233,8 @@ export const SERVERS_PAGE_JS = `
         qc.toast('备注已保存 · ' + server, 'ok');
       })
       .catch(function (err) {
-        qc.say(status, '保存失败 · ' + qc.message(err), 'bad');
-        qc.toast('保存失败 · ' + qc.message(err), 'bad');
+        qc.say(status, qc.failLine('保存', err), qc.failTone(err));
+        qc.toast(qc.failLine('保存', err), qc.failTone(err));
       });
   }
 

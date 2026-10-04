@@ -53,7 +53,6 @@ function chatScript(): string {
   if (!qc) return;
   var byId = qc.byId;
   var say = qc.say;
-  var message = qc.message;
 
   var ROUTES = {
     sessions: '/fragments/chat/sessions',
@@ -173,8 +172,8 @@ function chatScript(): string {
       if (data && data.id) openSession(String(data.id));
       else say(status, '新建失败 · 服务端没有返回会话', 'bad');
     }).catch(function (err) {
-      say(status, '新建失败 · ' + message(err), 'bad');
-      qc.toast('新建失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('新建', err), qc.failTone(err));
+      qc.toast(qc.failLine('新建', err), qc.failTone(err));
     });
   }
 
@@ -196,8 +195,8 @@ function chatScript(): string {
       say(status, '', 'muted');
       return refreshAll(false);
     }).catch(function (err) {
-      say(status, '发送失败 · ' + message(err), 'bad');
-      qc.toast('发送失败 · ' + message(err), 'bad');
+      say(status, qc.failLine('发送', err), qc.failTone(err));
+      qc.toast(qc.failLine('发送', err), qc.failTone(err));
     }).then(function () {
       busy = false;
       box.disabled = false;

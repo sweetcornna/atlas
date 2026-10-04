@@ -717,6 +717,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .status { font-size: 12px; min-height: 1.25em; color: var(--color-muted); }
 .status[data-tone='ok'] { color: var(--color-accent-2-800); }
 .status[data-tone='bad'] { color: var(--color-accent-800); }
+.status[data-tone='warn'] { color: var(--color-accent-800); }
 .jump { color: var(--color-accent-700); }
 
 /* ---- the trail table ---- */
@@ -828,6 +829,15 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .toast-text { display: block; }
 .toast-detail { margin-top: var(--space-1); }
 .toast[data-tone='muted'] { border-left-color: var(--color-neutral-400); }
+.toast[data-tone='warn'] { border-left-color: var(--color-accent-400); }
+/* Work in flight (C4): how long it has been, and a way to stop waiting. */
+.progress {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-3);
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
+.progress > .toast-text { flex: 1 1 auto; }
+.toast.progress { cursor: default; }
+[aria-busy='true'] { cursor: progress; }
 
 /* ---- dialogs: native <dialog>, opened with showModal() ----
    The browser owns the hard parts: the top layer, the focus trap, Escape, and
