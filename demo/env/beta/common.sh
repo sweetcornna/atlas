@@ -1602,6 +1602,50 @@ beta_require_occ() {
   [ -f "$BETA_OCC" ] || beta_die "缺 $BETA_OCC —— 先跑 demo/env/bootstrap.sh"
 }
 
+# ── qmcode 产物（P17.5 节点桥旁边那个 app-server）────────────────────────────
+#
+# 部署树顶层 `qmcode/` 里放 fork 的一份构建产物（qianmo-codex 的 QIANMO.md §7：
+# `<名字>`、`codex-code-mode-host`、两份 `.debug`、`<名字>.sha256` …），外加一条
+# `qmcode -> <名字>` 的软链。起法脚本（handoff-node.sh）与部署脚本（beta-deploy.sh）
+# 认的是同一套判据，所以写在这里。
+
+# beta_real_file <路径> —— 顺着软链走到真实文件并打印；断链或绕圈返回 1。
+#
+# 不用 `readlink -f`：老 macOS 与 busybox 上没有它。qmcode 找 `codex-code-mode-host`
+# 用的是 `current_exe()` 的父目录（Linux 上已解析软链），所以「真实文件在哪」是唯一要紧的。
+beta_real_file() {
+  local path="$1" target hops=0
+  while [ -L "$path" ]; do
+    [ "$hops" -lt 32 ] || return 1
+    target="$(readlink "$path")" || return 1
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  [ -e "$path" ] || return 1
+  printf '%s\n' "$path"
+}
+
+# beta_qmcode_check <qmcode 路径> —— 能不能拿它起 app-server；能就打印真实文件路径。
+#
+# 两件事各自会让节点在**第一次工具调用**时才失败，所以起之前就查：
+#   · 程序本身可执行。Actions artifact 解压出来是没有执行位的（QIANMO.md §6）。
+#   · 真实文件旁边有可执行的 `codex-code-mode-host`。gpt-6-luna 这类 code_mode_only 模型的
+#     每次工具调用都经它执行，找不到时工具调用直接失败、不回退；没有环境变量能另指路径。
+beta_qmcode_check() {
+  local bin="$1" real host
+  [ -e "$bin" ] || [ -L "$bin" ] || beta_die "没有 qmcode：${bin} —— 先用 beta-deploy.sh --only qmcode 装一份（或用 QIANMO_QMCODE_BIN 指过去）"
+  real="$(beta_real_file "$bin")" || beta_die "${bin} 是一条断掉（或绕圈）的软链"
+  { [ -f "$real" ] && [ -x "$real" ]; } \
+    || beta_die "${real} 不是可执行文件 —— artifact 解压出来没有执行位：先核对 .sha256，再 chmod +x"
+  host="$(dirname "$real")/codex-code-mode-host"
+  { [ -f "$host" ] && [ -x "$host" ]; } \
+    || beta_die "${real} 旁边没有可执行的 codex-code-mode-host（${host}）—— code mode 的每次工具调用都要它，qmcode 只在自己真实文件所在目录找"
+  printf '%s\n' "$real"
+}
+
 # ── 链路：systemd --user 的隧道与镜像单元 ───────────────────────────────────
 #
 # 全部生成物都是**从仓库 demo/env/beta/ops/ 派生**的，装好的那几份是副本。

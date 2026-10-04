@@ -73,6 +73,7 @@ import {
   runActionLedgerVerify,
 } from './consoleActionLedger.js'
 import { handoffLockRefusal, openConsoleHandoff } from './consoleHandoff.js'
+import { wireHandoffDispatch } from './consoleHandoffDispatch.js'
 import { openConsoleProviders } from './consoleProviders.js'
 
 /**
@@ -404,7 +405,12 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     handoff =
       config.handoffRoot === undefined
         ? undefined
-        : openConsoleHandoff({ root: config.handoffRoot })
+        : openConsoleHandoff({
+            root: config.handoffRoot,
+            // P17.5: node bridges and the signing identity, when
+            // `--handoff-node` is given. Dispatch starts after the port binds.
+            dispatch: wireHandoffDispatch(config),
+          })
   } catch (error) {
     const refusal = handoffLockRefusal(error)
     if (refusal === null) throw error
@@ -592,6 +598,8 @@ export async function runConsole(args: readonly string[]): Promise<void> {
   registrations.start()
   // Same reason: no node is asked for its status by a console that never came up.
   providers?.start()
+  // And no task goes to a node from a console that never came up (P17.5).
+  handoff?.start()
 
   const origin = httpOrigin(config.hostname, handle.port)
   // token 是自己生成的才回显：显式提供的那一个已经在操作者手里，把它再打进
@@ -675,6 +683,9 @@ export async function runConsole(args: readonly string[]): Promise<void> {
       : `enabled -> ${handoff.root} (ledger ${handoff.ledgerPath}, ` +
           `${String(handoff.replayed)} tasks; audit ${handoff.auditPath})`,
   )
+  if (handoff !== undefined) {
+    banner += field('handoff-node', handoff.dispatchStatus)
+  }
   if (accounts !== undefined && config.accountsStorePath !== undefined) {
     const problem = accounts.book.problem
     banner += field(

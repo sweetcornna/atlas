@@ -183,6 +183,10 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--node-server <node>=<server>` | 无 | 这个节点跑在哪台机器上，**可重复**，一个节点一条，同一个节点不许给两次。**给了才有归属面**（§11）；也是备注的白名单。server 的形状：非空、≤64 字符、只收 `A-Za-z0-9 . _ : -`（主机名、IPv4、IPv6 的冒号、短名都在内） |
 | `--server-notes <绝对路径>` | `occConfigPath('qianmo','console','server-notes.ndjson')` | 服务器备注的落盘位置（§11）。**必须是绝对路径**，理由同 `--audit` |
 | `--handoff-root <绝对路径>` | 无 | 接力裸仓所在的目录（P17.4），`<目录>/<项目>.git` 由笔记本侧 `qm handoff init` 建。**给了才有 `/v0/handoff`**。台账在 `occConfigPath('qianmo','handoff','ledger.ndjson')`，带独占锁：同一配置根上第二个控制台在这一步就起不来；接力的审计是单独一条链 `…/handoff/audit.ndjson` |
+| `--handoff-node <node>=<ws(s)://…>` | 无 | 节点桥（`qm handoff node`，P17.5）的入站端点，**可重复**，按给出的顺序挑空闲节点，一个节点同时只跑一个任务。要 `--handoff-root`，且同一节点要有一条 `--handoff-node-git`；PSK 与 `--chat-url` 同一个按节点派生的变量。节点桥地址固定为 `qianmo://<node>/handoff`。派发的 `task.request` **总是**用控制台的签名身份签（与 `--print-wake-identity` 同一把），节点桥要 `--trust` 它。用法见 `handoff-usage.md` §6 |
+| `--handoff-node-git <node>=<ssh 目标>:<根> \| <绝对路径>` | 无 | 那个节点的裸仓根（节点桥 `<root>/repos`），经节点上的 SSH 闸门推影子提交与会话提交、取回 `qianmo/<任务>` 与云端会话；给绝对路径就是本机上的节点 |
+| `--handoff-node-key <绝对路径>` | 无 | 中枢在节点闸门上的专用钥匙（`IdentitiesOnly`）。有 SSH 形式的 `--handoff-node-git` 时必给，没有时给了报错 |
+| `--handoff-notify-url <url>` | 无 | 任务 done / failed 时 POST 一次（JSON：`title`、`body`、`msgtype`/`text` 与 `qianmo` 字段）。https，或回环上的 http；横幅只打 origin |
 | `--accounts` | 关 | 个人账号（§8.1.1，`tenancy-m1.md` §3）。**不给就是今天的控制台，HTTP 面逐字节不变**（`packages/console/test/legacyParity.test.ts` 钉住）；给了以后两枚旧 token 照旧可用，另多出邀请开户与个人凭据 |
 | `--accounts-store <绝对路径>` | `occConfigPath('qianmo','console','accounts.ndjson')` | 账号库。只在 `--accounts` 下有效，单独给会报错 |
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
@@ -606,7 +610,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/v0/actions/reads?session=` | 个人账号、admin | 谁读过我的对话（§5.3）；view 令牌 403 |
 | POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
 | GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
-| POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话，只写进台账（202），转发由 P17.5 做 |
+| POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
 | GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |
 | POST | `/v0/providers/profiles` | **ops 个人账号** | 新建：`{ presetId, site?, profile, secrets? }`，`profile` 只带表单编辑的字段，预设、套餐、评估状态由中枢定 |

@@ -10,10 +10,10 @@
  *   qm handoff now [--goal …] [--done …] [--remaining …] [--deadline …]
  *   qm handoff status [--wait] [--task <id>]
  *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
+ *   qm handoff node …                    (the cloud end, `handoffNode.ts`, P17.5)
  *
- * `pull`, `attach` and `node` are reserved here and answer 「尚未实现」 with
- * exit 2, so the packages that build them (P17.6, P17.5) replace one branch
- * each.
+ * `pull` and `attach` are reserved here and answer 「尚未实现」 with exit 2,
+ * so the package that builds them (P17.6) replaces one branch each.
  *
  * ## Exit codes
  *
@@ -83,7 +83,6 @@ import { residentOptionValue } from './residentArgs.js'
 
 /** The subcommands later packages fill in, and which package each is. */
 const RESERVED: Readonly<Record<string, string>> = {
-  node: 'P17.5',
   pull: 'P17.6',
   attach: 'P17.6',
 }
@@ -163,7 +162,20 @@ Commands:
                            qianmo_task. Built into qmcode; for Claude Code:
                              claude mcp add qianmo -- ${invokedBinName()} handoff mcp
 
-  pull | attach | node     Reserved; not implemented yet (P17.6 / P17.5).
+  node --node <name> --root <abs> --trust <node>=<publicKey>
+       --app-server ws://127.0.0.1:<port> --app-server-token-file <abs>
+       --app-server-home <abs> [--project <name>]... [--qmcode-home <abs>]
+       [--port 38630] [--bind 127.0.0.1] [--app-server-pid-file <abs>]
+                           The cloud end, on a node: listens on
+                           qianmo://<name>/handoff for the hub's signed
+                           task.request (issuer named by --trust; transport key
+                           in QIANMO_TRANSPORT_PSK), continues the session on
+                           the qmcode app-server next to it, commits the result
+                           onto qianmo/<task> in <root>/repos/<project>.git.
+                           Refuses to start without a working bwrap. Started by
+                           demo/env/beta/handoff-node.sh, not by hand.
+
+  pull | attach            Reserved; not implemented yet (P17.6).
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -620,6 +632,10 @@ async function dispatchHandoff(
       const { runHandoffMcp } = await import('./handoffMcp.js')
       runHandoffMcp(cwd)
       return 0
+    }
+    case 'node': {
+      const { runHandoffNode } = await import('./handoffNode.js')
+      return await runHandoffNode(rest)
     }
     default:
       return usage(`不认识的子命令 ${command}`)
