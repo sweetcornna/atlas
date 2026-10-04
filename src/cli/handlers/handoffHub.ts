@@ -185,7 +185,14 @@ interface HubConnection {
   readonly env: Readonly<Record<string, string>>
 }
 
-export function hubConnection(project: HandoffProject): HubConnection {
+/**
+ * Only where the repository is and which key opens the gate: the laptop
+ * passes its registered project, the hub (P17.5) a node's repository root
+ * and the hub's own gate key on that node.
+ */
+export function hubConnection(
+  project: Pick<HandoffProject, 'hub' | 'project' | 'key'>,
+): HubConnection {
   const url = hubRepoUrl(project.hub, project.project)
   if (project.hub.kind === 'local') return { url, env: {} }
   if (project.key === undefined) {
