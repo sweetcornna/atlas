@@ -79,7 +79,13 @@ const TURN_CALLING = '0199a4c2-8000-7000-8000-0000000000c1'
 const CC_SESSION = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
 /** In the environment of every server; must end up nowhere. */
 const CANARY = `sk-test-canary-${randomBytes(12).toString('hex')}`
-const TOOLS = ['qianmo_status', 'qianmo_handoff', 'qianmo_task', 'qianmo_send']
+const TOOLS = [
+  'qianmo_status',
+  'qianmo_handoff',
+  'qianmo_task',
+  'qianmo_send',
+  'qianmo_pull',
+]
 
 const BOOT_TIMEOUT_MS = 90_000
 const STEP_TIMEOUT_MS = 120_000
@@ -515,6 +521,15 @@ describe('qm handoff mcp end to end', () => {
       expect(String(send.description)).toContain('有副作用')
       expect(send.annotations).toMatchObject({ readOnlyHint: false })
       expect(send.inputSchema).toMatchObject({ required: ['taskId', 'text'] })
+      // P17.6: bringing a result home moves a branch and writes a session.
+      const pull = byName.get('qianmo_pull') ?? {}
+      expect(String(pull.description)).toContain('有副作用')
+      expect(String(pull.description)).toContain('本机文件一个都不改')
+      expect(pull.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: false,
+      })
+      expect(pull.inputSchema).not.toHaveProperty('required')
     },
     STEP_TIMEOUT_MS,
   )
@@ -772,6 +787,38 @@ describe('qm handoff mcp end to end', () => {
       expect(empty).toEqual({
         isError: true,
         text: '话没有送出：参数 text 不能为空',
+      })
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
+    'qianmo_pull (P17.6): a task still in the cloud is refused with what to do instead · nothing moves',
+    async () => {
+      const server = await started(repo)
+      const first = (await hubTasks())[0] as { taskId: string; state: string }
+      expect(first.state).toBe('accepted')
+      const headBefore = git(repo, 'rev-parse', 'HEAD')
+      const refsBefore = git(repo, 'for-each-ref')
+      const refused = await server.call(
+        'qianmo_pull',
+        { taskId: first.taskId },
+        { threadId: THREAD, sessionId: THREAD },
+      )
+      expect(refused.isError).toBe(true)
+      expect(refused.text).toContain(
+        `接回没有完成：任务 ${first.taskId} 还在云端（accepted）`,
+      )
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(headBefore)
+      expect(git(repo, 'for-each-ref')).toBe(refsBefore)
+      // No finished task of this project: nothing to bring home.
+      const none = await server.call('qianmo_pull')
+      expect(none.isError).toBe(true)
+      expect(none.text).toStartWith('接回没有完成：')
+      const bad = await server.call('qianmo_pull', { taskId: '../x' })
+      expect(bad).toEqual({
+        isError: true,
+        text: '接回没有完成：参数 taskId 不是任务号',
       })
     },
     STEP_TIMEOUT_MS,
