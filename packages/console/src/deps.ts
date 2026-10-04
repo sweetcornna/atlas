@@ -136,6 +136,13 @@ export interface LifecycleSnapshot {
    * 读不出来时三个出口也一律不发。
    */
   readonly problem: string | null
+  /**
+   * `problem` 是哪一种（`console.md` §7.3.1）。`unreadable`：读不出来，四个写动作
+   * 全拒、三个出口谁都不拨；`unwritable`：写不进去，暂停与退役照收、出口按内存里
+   * 那份判，只是发布与恢复被拒。`problem` 为 `null` 时缺席；有 `problem` 却缺席时
+   * 读的人按 `unreadable` 处理——拿不准就往关着的那边说。
+   */
+  readonly problemKind?: 'unreadable' | 'unwritable'
   /** 托管清单里的地址；控制台起的时候没给清单就是 `null`。 */
   readonly managed: readonly string[] | null
   readonly registrations: readonly RegistrationRecord[]

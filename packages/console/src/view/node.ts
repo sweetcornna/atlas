@@ -28,14 +28,17 @@
  * "will a message to it go out?". So every row carries that answer and its
  * reason, in the order the hub's exits decide it (`console.md` §7.3.2): a
  * ledger that cannot be read stops everything; then retired, then paused;
- * then the registry — not on the roster, or its lease run out. A paused seed
+ * then the registry — not on the roster, or its lease run out. A ledger that
+ * only cannot be saved stops nothing: the exits judge the copy in memory,
+ * which is what the snapshot shows, so its rows read as usual. A paused seed
  * the registry host keeps renewing is still on the roster, and the row says
  * that too, because "it is on the roster" is the misreading §7.3.3 warns of.
  *
  * ## Only the actions that will succeed
  *
  * The rules are `console.md` §7.3.1's, applied before anything is drawn: no
- * action at all while the ledger has a problem; publish only for a managed
+ * action at all while the ledger cannot be read, no publish or resume while
+ * it cannot be saved; publish only for a managed
  * address that is in neither the ledger nor the roster; pause and retire for
  * what the ledger or the managed list knows; resume only for a paused one
  * still on the list. Every button opens its confirmation; nothing here writes
@@ -190,6 +193,19 @@ const STATE_TONE: Readonly<Record<LifecycleRow['state'], Tone>> = {
 }
 
 /**
+ * Whether the ledger is closed: unreadable, every write refused and no exit
+ * dialled. A problem without a kind is read as that — the side that is
+ * wrong-but-safe (`deps.ts`, `LifecycleSnapshot.problemKind`).
+ */
+export function ledgerClosed(snapshot: LifecycleSnapshot | null): boolean {
+  return (
+    snapshot !== null &&
+    snapshot.problem !== null &&
+    snapshot.problemKind !== 'unwritable'
+  )
+}
+
+/**
  * The exits' question, asked the exits' way (`consoleRegistrationLedger.ts`,
  * `exitRefusalOf`), then the registry's: a ledger that cannot be read stops
  * every exit, a paused or retired address is never dialled, and an address
@@ -209,7 +225,7 @@ function reachOf(
     word: '不可拨',
     reason,
   })
-  if (snapshot !== null && snapshot.problem !== null) {
+  if (ledgerClosed(snapshot)) {
     return no('登记簿不可用 · 修好之前出口一律不拨')
   }
   if (state === 'retired') return no('已退役 · 不再拨')
@@ -286,16 +302,16 @@ export function lifecycleRows(model: LifecycleModel): readonly LifecycleRow[] {
 }
 
 /**
- * The verbs that will succeed on a row (`console.md` §7.3.1), and none while
- * the ledger has a problem: the snapshot does not say whether it is
- * unreadable (every write refused) or only failed to save (pause and retire
- * still taken), and a button whose answer is a 503 is a button not to draw.
+ * The verbs that will succeed on a row (`console.md` §7.3.1): none while the
+ * ledger cannot be read; only the narrowing two (pause, retire) while it
+ * cannot be saved. A button whose answer is a 503 is a button not to draw.
  */
 export function verbsFor(
   row: LifecycleRow,
   snapshot: LifecycleSnapshot | null,
 ): readonly LifecycleVerb[] {
-  if (snapshot === null || snapshot.problem !== null) return []
+  if (snapshot === null || ledgerClosed(snapshot)) return []
+  const widening = snapshot.problem === null
   const known = row.state !== 'none' || row.managed === true
   return LIFECYCLE_VERBS.filter(verb => {
     switch (verb) {
@@ -304,6 +320,7 @@ export function verbsFor(
       // every twenty seconds (§7.3.3).
       case 'publish':
         return (
+          widening &&
           row.state === 'none' &&
           row.managed === true &&
           row.agent === undefined
@@ -311,7 +328,7 @@ export function verbsFor(
       case 'pause':
         return known && row.state !== 'paused' && row.state !== 'retired'
       case 'resume':
-        return row.state === 'paused' && row.managed !== false
+        return widening && row.state === 'paused' && row.managed !== false
       case 'retire':
         return known && row.state !== 'retired'
     }
@@ -446,11 +463,17 @@ export function renderLifecycle(model: LifecycleModel): string {
   if (snapshot === null) {
     strips.push(bar('muted', '该控制台没有接入登记簿 · 生命周期不可用'))
   } else if (snapshot.problem !== null) {
+    // Closed: nothing is taken and nothing goes out. Unsaved: the narrowing
+    // two are still taken and the exits still judge the copy in memory, but
+    // a change made now does not survive a restart (§7.3.1, 写失败).
+    const consequence = ledgerClosed(snapshot)
+      ? '动作一律不收 · 出口一律不拨'
+      : '写不进去 · 发布与恢复已停止 · 暂停与退役照收但重启后会丢'
     strips.push(
       `<p class="bar bar-bad" role="alert">` +
         icon('alert-triangle', { small: true }) +
         `<span>登记簿不可用 · ${escapeHtml(snapshot.problem)} · ` +
-        `发布与恢复已停止 · 出口一律不拨</span></p>`,
+        `${consequence}</span></p>`,
     )
   } else if (snapshot.managed === null) {
     strips.push(bar('muted', '未给托管清单 · 发布要带端点'))
@@ -646,15 +669,17 @@ function agentsFact(model: NodeOverviewModel): string {
 function lifecycleFact(model: NodeOverviewModel): string {
   const lifecycle = model.lifecycle
   if (lifecycle === null) return toned('muted', '未接入')
-  if (lifecycle.snapshot?.problem != null) {
+  if (ledgerClosed(lifecycle.snapshot)) {
     return toned('bad', '登记簿不可用 · 出口一律不拨')
   }
+  const unsaved = lifecycle.snapshot?.problem != null
   const rows = lifecycleRows(lifecycle)
   const count = (value: LifecycleRow['state']) =>
     rows.filter(row => row.state === value).length
   const blocked = rows.filter(row => row.reach.word === '不可拨').length
   return (
     [
+      ...(unsaved ? [toned('bad', '登记簿写不进去')] : []),
       `已发布 ${count('active')}`,
       `已暂停 ${count('paused')}`,
       `已退役 ${count('retired')}`,

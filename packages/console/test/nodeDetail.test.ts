@@ -228,17 +228,51 @@ describe('the lifecycle tab (J2)', () => {
     expect(verbsOn(after, REVIEWER)).toEqual([])
   })
 
-  test('a ledger with a problem: no action at all, and the reason on every row', async () => {
+  test('a ledger that cannot be read: no action at all, and the reason on every row', async () => {
     const { h, lifecycle } = scene()
     lifecycle.problem = 'registrations.json 读不出来'
     const html = await page(h, '/nodes/tokyo-1/lifecycle')
-    expect(html).toContain('登记簿不可用 · registrations.json 读不出来')
+    expect(html).toContain(
+      '登记簿不可用 · registrations.json 读不出来 · 动作一律不收 · 出口一律不拨',
+    )
     expect(html).not.toContain('data-action="lifecycle"')
-    for (const address of [PLANNER, REVIEWER, SCOUT]) {
+    for (const address of [PLANNER, REVIEWER, SCOUT, SLEEPER, OLD]) {
       expect(visibleText(rowOf(html, address))).toContain(
         '登记簿不可用 · 修好之前出口一律不拨',
       )
     }
+    const overview = visibleText(await page(h, '/nodes/tokyo-1'))
+    expect(overview).toContain('登记簿不可用 · 出口一律不拨')
+  })
+
+  test('a ledger that only cannot be saved: the exits still judge each row, and only pause and retire are drawn', async () => {
+    const { h, lifecycle } = scene()
+    lifecycle.problem = 'could not write registrations.json'
+    lifecycle.problemKind = 'unwritable'
+    const html = await page(h, '/nodes/tokyo-1/lifecycle')
+    expect(html).toContain(
+      '写不进去 · 发布与恢复已停止 · 暂停与退役照收但重启后会丢',
+    )
+    expect(html).not.toContain('出口一律不拨')
+    // What the exits do with the copy in memory, row by row.
+    expect(visibleText(rowOf(html, PLANNER))).toContain('在名册上')
+    expect(visibleText(rowOf(html, SLEEPER))).toContain('已暂停 · 恢复之前不拨')
+    // Widening is refused (503), narrowing is still taken.
+    expect(verbsOn(html, PLANNER)).toEqual(['pause', 'retire'])
+    expect(verbsOn(html, SCOUT)).toEqual(['pause', 'retire'])
+    expect(verbsOn(html, SLEEPER)).toEqual(['retire'])
+    const overview = visibleText(await page(h, '/nodes/tokyo-1'))
+    expect(overview).toContain('登记簿写不进去')
+    expect(overview).not.toContain('出口一律不拨')
+    // And the drawn buttons do succeed.
+    const paused = await h.handle(
+      asBearer(
+        'POST',
+        `/v0/agents/${encodeURIComponent(PLANNER)}/pause`,
+        ADMIN,
+      ),
+    )
+    expect(paused.status).toBe(200)
   })
 
   test('a console without a lifecycle says so and draws no action', async () => {
@@ -446,9 +480,15 @@ describe('without script, and the copy', () => {
   })
 
   test('no 。，、 no exclamation, no emoji, on any tab, for a reader or a writer, in any ledger state', async () => {
-    for (const problem of [null, 'registrations.json 读不出来']) {
+    const states = [
+      [null, 'unreadable'],
+      ['registrations.json 读不出来', 'unreadable'],
+      ['could not write registrations.json', 'unwritable'],
+    ] as const
+    for (const [problem, kind] of states) {
       const { h, lifecycle, registry } = scene()
       lifecycle.problem = problem
+      lifecycle.problemKind = kind
       registry.listResult = {
         ok: true,
         value: [

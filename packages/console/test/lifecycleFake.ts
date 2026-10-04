@@ -6,7 +6,9 @@
  * (`src/cli/handlers/consoleRegistrations.ts`, `console.md` §7.3.1) closely
  * enough for the node pages to be driven through it: publish and resume only
  * for what the managed list holds, retired is for good, pause and retire take
- * what the ledger or the list knows. It changes state, so a page read after a
+ * what the ledger or the list knows, a ledger that cannot be read takes
+ * nothing and one that cannot be saved still takes pause and retire. It
+ * changes state, so a page read after a
  * write shows the write — which is what the browser suite waits for.
  *
  * And the scene the node-page suites share: tokyo-1 with five addresses in
@@ -35,6 +37,8 @@ export class StatefulLifecycle implements LifecyclePort {
   readonly calls: string[] = []
   reads = 0
   problem: string | null = null
+  /** Which kind `problem` is; the real one says, `deps.ts` explains both. */
+  problemKind: 'unreadable' | 'unwritable' = 'unreadable'
   managed: string[] | null = [PLANNER, REVIEWER, SCOUT, SLEEPER]
   readonly records = new Map<string, RegistrationRecord>([
     [PLANNER, { address: PLANNER, state: 'active', by: OPS_SUBJECT, at: 1 }],
@@ -49,6 +53,7 @@ export class StatefulLifecycle implements LifecyclePort {
     const managed = this.managed
     return Promise.resolve({
       problem: this.problem,
+      ...(this.problem === null ? {} : { problemKind: this.problemKind }),
       managed: managed === null ? null : [...managed].sort(),
       registrations: [...this.records.values()]
         .map(record =>
@@ -123,7 +128,10 @@ export class StatefulLifecycle implements LifecyclePort {
     state: 'paused' | 'retired',
     by: string,
   ): Promise<LifecycleOutcome<LifecycleChange>> {
-    if (this.problem !== null) return this.#refuse('unavailable', this.problem)
+    // Narrowing is still taken while the ledger only cannot be saved.
+    if (this.problem !== null && this.problemKind === 'unreadable') {
+      return this.#refuse('unavailable', this.problem)
+    }
     const held = this.records.get(address)
     if (held?.state === 'retired' && state === 'paused') {
       return this.#refuse('retired', '已退役')
