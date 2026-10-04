@@ -12,7 +12,7 @@
 #
 #   ① H     hub-key        没有就生成这个节点的专用 ed25519 key（私钥不离开 H），打印公钥
 #   ② H     hub-coordinate 从 peers.conf 的 node 坐标行取 user / host / port（中枢拨的就是它）
-#   ③ 节点  node-install   往 ~/.ssh/authorized_keys 幂等地加那一行（见下）
+#   ③ 节点  node-install   往 ~/.ssh/authorized_keys 幂等地加那一行（见下）；登录用户必须就是坐标行的 user
 #   ④ 节点  node-hostkey   读节点自己的 ed25519 主机公钥
 #   ⑤ H     hub-known-host 从 H 上 ssh-keyscan 一次，与 ④ 逐字比对，相同才写进中枢的 known_hosts
 #   ⑥ H     hub-verify     用中枢执行器同一组 ssh 参数、同一个哨兵命令发一次 status，要 ok:true
@@ -220,15 +220,24 @@ known_name() {
 # 节点上。stdin 第一行：`PUBKEY <类型> <公钥>`（或 dry-run 时的 `PUBKEY-ABSENT`）。
 # stdout 一行：`INSTALLED|PRESENT|WOULD-ADD <那一行>`。
 cmd_node_install() {
-  local node='' dry=0 input line ak dir config default_root stale bak tmp
+  local node='' dry=0 want_user='' me input line ak dir config default_root stale bak tmp
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
+      --user) want_user="${2:-}"; shift 2 ;;
       --dry-run) dry=1; shift ;;
       *) usage_die "node-install 不认识的参数：$1" ;;
     esac
   done
   assert_node "$node"
+  # 装进的是**当前登录用户**的 authorized_keys；中枢拨的是坐标行里的 user。两者不同，
+  # 那一行就装在了一个中枢永远不会登录的账号下（--node-ssh 用了运维自己的账号时最容易出）。
+  if [ -n "$want_user" ]; then
+    me="$(id -un)"
+    [ "$me" = "$want_user" ] \
+      || refuse "这个 ssh 会话登录的是 ${me}，而中枢按 peers.conf 拨的是 ${want_user}：那一行要装在 ${want_user} 的 ~/.ssh 下。
+换一个以 ${want_user} 登录的 --node-ssh 再跑。"
+  fi
   assert_safe_abs '部署根下的 model-apply.sh 路径' "$MODEL_APPLY"
   [ -f "$MODEL_APPLY" ] && [ -x "$MODEL_APPLY" ] \
     || refuse "强制命令要指向的 ${MODEL_APPLY} 不在或不可执行 —— --node-tree 给的是这台机器上的部署根吗？"
@@ -433,7 +442,7 @@ remote() {
 }
 
 cmd_enroll() {
-  local node='' hub='' hub_tree='' node_ssh='' node_tree='' dry=0 dry_flag='' out pubkey hostkey line
+  local node='' hub='' hub_tree='' node_ssh='' node_tree='' dry=0 dry_flag='' out pubkey hostkey line coord coord_user
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
@@ -467,10 +476,19 @@ cmd_enroll() {
   beta_say '② H：peers.conf 里的坐标'
   out="$(remote "$hub" "$hub_tree" "hub-coordinate --node ${node}" </dev/null)" \
     || beta_die '② 失败：H 上没有这个节点的 node 坐标行'
-  beta_ok "中枢拨的是 $(printf '%s' "$out" | sed -n 's/^COORD \([^ ]*\) \([^ ]*\) \([^ ]*\)$/\1@\2:\3/p')"
+  coord="$(printf '%s\n' "$out" | grep -E '^COORD ' | head -n 1 || true)"
+  # shellcheck disable=SC2086
+  set -- $coord
+  [ "$#" -eq 4 ] || beta_die '② H 没有回坐标行'
+  coord_user="$2"
+  case "$coord_user" in
+    '' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+      beta_die "② 坐标行里的 user 含意外字符：${coord_user}" ;;
+  esac
+  beta_ok "中枢拨的是 ${2}@${3}:${4}"
 
   beta_say '③ 节点：authorized_keys 那一行'
-  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node}${dry_flag}")" \
+  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user}${dry_flag}")" \
     || beta_die '③ 失败（节点上 node-install），authorized_keys 没有改'
   line="$(printf '%s\n' "$out" | grep -E '^(INSTALLED|PRESENT|WOULD-ADD) ' | head -n 1 || true)"
   [ -n "$line" ] || beta_die '③ 节点没有回结果行'

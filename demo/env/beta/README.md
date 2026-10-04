@@ -689,7 +689,7 @@ systemctl --user restart qianmo-console.service      # 在 H 上：控制台起�
 |---|---|---|
 | ① `hub-key` | H | `$QIANMO_BETA_MODEL_KEY_DIR/<节点>` 不在就生成（ed25519，私钥不离开 H）；在就不重生成 |
 | ② `hub-coordinate` | H | 从 `peers.conf` 的 `node` 坐标行取 `user` / `host` / `port`——中枢执行器拨的就是它；没有坐标行就拒绝 |
-| ③ `node-install` | 节点 | `~/.ssh/authorized_keys` 幂等加一行 `command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict <公钥> qianmo-model-apply <节点>`；同一把公钥带着别的选项 → 拒绝；同节点旧 key 的行 → WARN、不删；写之前备份 `authorized_keys.bak-<戳>` |
+| ③ `node-install` | 节点 | `--node-ssh` 登录的用户必须就是坐标行的 `user`（中枢拨的就是它），否则拒绝；`~/.ssh/authorized_keys` 幂等加一行 `command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict <公钥> qianmo-model-apply <节点>`；同一把公钥带着别的选项 → 拒绝；同节点旧 key 的行 → WARN、不删；写之前备份 `authorized_keys.bak-<戳>` |
 | ④ `node-hostkey` | 节点 | 经这条已认证的 ssh 读节点自己的 ed25519 主机公钥 |
 | ⑤ `hub-known-host` | H | 从 H 上 `ssh-keyscan` 一次，与 ④ 逐字相同才写进中枢 `known_hosts`（22 口写 `host`，否则 `[host]:port`）；不同 → 拒绝；同名已登记另一把 → 拒绝 |
 | ⑥ `hub-verify` | H | 用控制台执行器同一组 ssh 参数与哨兵 `qianmo-model-apply-v1` 发一次 `status`，要 `ok:true` |

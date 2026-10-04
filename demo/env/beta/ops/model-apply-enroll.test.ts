@@ -35,7 +35,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { join, resolve } from 'node:path'
 import { type TestBash, testBashes } from '../testBashes'
 
@@ -43,6 +43,11 @@ const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
 const SCRIPT = join(REPOSITORY_ROOT, 'demo/env/beta/ops/model-apply-enroll.sh')
 const BASHES = testBashes()
 const NODE = 'beta-2'
+/**
+ * 节点「机器」的登录用户。node-install 拿 `id -un` 与坐标行的 user 比，桩里换不了 uid，
+ * 所以坐标行与假 sshd 都用跑用例的这个用户名。
+ */
+const LOCAL_USER = userInfo().username
 const SENTINEL = 'qianmo-model-apply-v1'
 /** 每条用例要起几十个进程；macOS 上第一次 exec 新文件还会被扫一遍。 */
 const SLOW = 60_000
@@ -214,6 +219,8 @@ interface WorldOptions {
   readonly configRoot?: boolean
   /** 从 H 扫到的主机钥换成别的（中间人 / 坐标指错了机器）。 */
   readonly mitm?: boolean
+  /** 坐标行里的 user（缺省 = 跑用例的用户）。 */
+  readonly user?: string
 }
 
 let worldCount = 0
@@ -252,7 +259,7 @@ function makeWorld(options: WorldOptions = {}): World {
   const port = options.port ?? 2222
   const coordinate =
     options.coordinate === undefined
-      ? `node ${NODE} user=qm host=${host} port=${port} local-port=38632`
+      ? `node ${NODE} user=${options.user ?? LOCAL_USER} host=${host} port=${port} local-port=38632`
       : options.coordinate
   writeFileSync(
     join(hubHome, 'qianmo-beta/peers.conf'),
@@ -270,7 +277,7 @@ function makeWorld(options: WorldOptions = {}): World {
   writeFileSync(join(net, 'targets/hub-h'), machineFile(hubHome, 'ops'))
   const node = machineFile(
     nodeHome,
-    'qm',
+    LOCAL_USER,
     options.mitm === true ? { M_SCAN_KEY: `${OTHER_HOSTKEY}.pub` } : {},
   )
   writeFileSync(join(net, 'targets/node-2'), node)
@@ -405,7 +412,7 @@ for (const bash of BASHES) {
         expect(log).toContain(
           `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${hubKnownHosts(w)} -o GlobalKnownHostsFile=/dev/null`,
         )
-        expect(log).toContain(`-p 2222 qm@node2.example ${SENTINEL}`)
+        expect(log).toContain(`-p 2222 ${LOCAL_USER}@node2.example ${SENTINEL}`)
         const calls = readFileSync(
           join(w.nodeHome, 'serve-stdin.calls'),
           'utf8',
@@ -603,6 +610,20 @@ for (const bash of BASHES) {
     )
 
     test(
+      '经 --node-ssh 登录的不是中枢要拨的那个用户 → ③ 拒绝，什么都没装',
+      () => {
+        const w = makeWorld({ user: 'someone-else' })
+        const r = enroll(bash, w)
+        expect(r.code).toBe(1)
+        expect(r.stderr).toContain(
+          `登录的是 ${LOCAL_USER}，而中枢按 peers.conf 拨的是 someone-else`,
+        )
+        expect(existsSync(authorizedKeys(w))).toBe(false)
+      },
+      SLOW,
+    )
+
+    test(
       '没有 node 坐标行（跑在 H 上 / 直连）→ ② 拒绝，节点上什么都没写',
       () => {
         const w = makeWorld({ coordinate: null })
@@ -654,7 +675,7 @@ for (const bash of BASHES) {
         const w = makeWorld({ host: '2001:db8::7', port: 22 })
         writeFileSync(
           join(w.hubHome, 'qianmo-beta/peers.conf'),
-          `qianmo://${NODE}/planner ws://127.0.0.1:38632\nnode ${NODE} user=qm host=2001:db8::7 local-port=38632\n`,
+          `qianmo://${NODE}/planner ws://127.0.0.1:38632\nnode ${NODE} user=${LOCAL_USER} host=2001:db8::7 local-port=38632\n`,
         )
         const r = enroll(bash, w, [], NODE_TREE_LINK)
         // 远端的过程话走 stderr、原样到运维终端；这里只要求其中没有 FAIL / WARN。
@@ -668,7 +689,7 @@ for (const bash of BASHES) {
           `${expectedLine(NODE_TREE_LINK, pub)}\n`,
         )
         expect(readFileSync(join(w.net, 'ssh.log'), 'utf8')).toContain(
-          `-p 22 qm@2001:db8::7 ${SENTINEL}`,
+          `-p 22 ${LOCAL_USER}@2001:db8::7 ${SENTINEL}`,
         )
       },
       SLOW,
