@@ -215,10 +215,25 @@ async function markReturned(
   return json(result.value)
 }
 
-/** The writes under `/v0/handoff/<taskId>/…`, by their last segment. */
-const TASK_WRITES: Readonly<
-  Record<string, (ctx: RouteContext, taskId: string) => Promise<Response>>
-> = { send, attach, return: markReturned }
+type TaskWrite = (ctx: RouteContext, taskId: string) => Promise<Response>
+
+/**
+ * The write under `/v0/handoff/<taskId>/<action>`. Literal `case`s on purpose:
+ * `routeDocs.test.ts` reads the segments a module compares against to find
+ * routes the table in `console.md` does not list.
+ */
+function taskWrite(action: string): TaskWrite | undefined {
+  switch (action) {
+    case 'send':
+      return send
+    case 'attach':
+      return attach
+    case 'return':
+      return markReturned
+    default:
+      return undefined
+  }
+}
 
 async function handleHandoffApi(
   ctx: RouteContext,
@@ -246,10 +261,7 @@ async function handleHandoffApi(
 
   const taskId = safeDecode(rest[0] ?? '')
   const tail = rest.slice(1)
-  const write =
-    tail.length === 1 && Object.hasOwn(TASK_WRITES, tail[0] ?? '')
-      ? TASK_WRITES[tail[0] ?? '']
-      : undefined
+  const write = tail.length === 1 ? taskWrite(tail[0] ?? '') : undefined
   if (
     taskId === null ||
     !TASK_ID.test(taskId) ||
