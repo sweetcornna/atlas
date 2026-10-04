@@ -725,6 +725,8 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'alert.ack': '确认告警',
   'handoff.accept': '登记接力',
   'handoff.send': '追加接力消息',
+  'handoff.attach': '接入云端会话',
+  'handoff.return': '接回本机',
   'provider.save': '保存模型服务',
   'provider.delete': '删除模型服务',
   'provider.secret.set': '设置密钥',

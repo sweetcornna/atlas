@@ -16,6 +16,8 @@
  * | GET | `/v0/handoff` | viewer and up | `{ tasks }` |
  * | GET | `/v0/handoff/<taskId>` | viewer and up | `{ task }` |
  * | POST | `/v0/handoff/<taskId>/send` | member, ops, admin token | 202 `{ send }` — kept in the ledger; with `--handoff-node` the hub forwards it to the node running the task (P17.5, `consoleHandoffDispatch.ts`) |
+ * | POST | `/v0/handoff/<taskId>/attach` | member, ops, admin token | 200 `{ attach }` — where a running task is: node and thread, never the node's token (P17.6, `qm handoff attach`) |
+ * | POST | `/v0/handoff/<taskId>/return` | member, ops, admin token | 200 `{ task, changed }` — the task came back to a laptop: `returned` (P17.6, `qm handoff pull`) |
  *
  * "member and up" is the chat face's rule (`guardChat` in `shared.ts`) with
  * this face's own sentence: a person needs a `member` or `ops` account, and
@@ -23,7 +25,7 @@
  * borrowed so a viewer is not told about conversations on a handoff route.
  *
  * Order, as everywhere on this console: role, then path, then method, then
- * whether the port exists. Both writes go through the action ledger
+ * whether the port exists. Every write goes through the action ledger
  * (`admit` before, `record` after); the manifest itself is never recorded,
  * only the task id or the project name.
  *
@@ -39,7 +41,7 @@ import { failureResponse, guard, outcomeOf, safeDecode } from './shared.js'
 import type { HeadRoute, RouteContext } from './types.js'
 
 const MEMBER_REQUIRED =
-  '转交与追加需要成员或运维账号；只读账号只能查看接力任务。'
+  '转交 · 追加 · 接入 · 接回需要成员或运维账号 · 只读账号只能查看接力任务'
 const HANDOFF_UNWIRED =
   '这台控制台没有接接力台账：启动时给 --handoff-root 才有。'
 
@@ -143,6 +145,96 @@ async function send(ctx: RouteContext, taskId: string): Promise<Response> {
   return json({ send: result.value }, 202)
 }
 
+/** A device name as `qm handoff` makes one (`handoffStore.ts`). */
+const DEVICE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const RETURN_MODES: ReadonlySet<unknown> = new Set(['fast-forward', 'branch'])
+
+/** `device` from a body: absent is null, anything but a device name is refused. */
+function deviceOf(body: Record<string, unknown>): string | null | undefined {
+  const device = body.device
+  if (device === undefined || device === null) return null
+  return typeof device === 'string' && DEVICE.test(device) ? device : undefined
+}
+
+/**
+ * Where a running task is, for `qm handoff attach` (P17.6): node and thread.
+ * The node's app-server token is not the hub's to give — the laptop reads it
+ * over the user's own SSH (plan D-6) — so nothing secret is in the answer.
+ */
+async function attach(ctx: RouteContext, taskId: string): Promise<Response> {
+  const port = ctx.deps.handoff
+  if (port === undefined) return fail(501, 'unsupported', HANDOFF_UNWIRED)
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
+  const body = await readBody(ctx.request)
+  const device = body.ok ? deviceOf(body.value) : undefined
+  if (!body.ok || device === undefined) {
+    await ctx.record('handoff.attach', taskId, 'refused', 'invalid')
+    return body.ok
+      ? fail(400, 'invalid', '字段 device 不是设备名')
+      : body.response
+  }
+  const result = await port.attach(taskId, { device })
+  await ctx.record('handoff.attach', taskId, ...outcomeOf(result))
+  if (!result.ok) return failureResponse(result.failure)
+  return json({ attach: result.value })
+}
+
+/** The task came back to a laptop (`qm handoff pull`, P17.6): `returned`. */
+async function markReturned(
+  ctx: RouteContext,
+  taskId: string,
+): Promise<Response> {
+  const port = ctx.deps.handoff
+  if (port === undefined) return fail(501, 'unsupported', HANDOFF_UNWIRED)
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
+  const body = await readBody(ctx.request)
+  const device = body.ok ? deviceOf(body.value) : undefined
+  const mode = body.ok ? (body.value.mode ?? null) : null
+  if (
+    !body.ok ||
+    device === undefined ||
+    (mode !== null && !RETURN_MODES.has(mode))
+  ) {
+    await ctx.record('handoff.return', taskId, 'refused', 'invalid')
+    return body.ok
+      ? fail(
+          400,
+          'invalid',
+          '字段 device 要是设备名 · mode 只认 fast-forward 或 branch',
+        )
+      : body.response
+  }
+  const result = await port.markReturned(taskId, {
+    device,
+    mode: mode === 'fast-forward' || mode === 'branch' ? mode : null,
+  })
+  await ctx.record('handoff.return', taskId, ...outcomeOf(result))
+  if (!result.ok) return failureResponse(result.failure)
+  return json(result.value)
+}
+
+type TaskWrite = (ctx: RouteContext, taskId: string) => Promise<Response>
+
+/**
+ * The write under `/v0/handoff/<taskId>/<action>`. Literal `case`s on purpose:
+ * `routeDocs.test.ts` reads the segments a module compares against to find
+ * routes the table in `console.md` does not list.
+ */
+function taskWrite(action: string): TaskWrite | undefined {
+  switch (action) {
+    case 'send':
+      return send
+    case 'attach':
+      return attach
+    case 'return':
+      return markReturned
+    default:
+      return undefined
+  }
+}
+
 async function handleHandoffApi(
   ctx: RouteContext,
   rest: readonly string[],
@@ -169,19 +261,20 @@ async function handleHandoffApi(
 
   const taskId = safeDecode(rest[0] ?? '')
   const tail = rest.slice(1)
+  const write = tail.length === 1 ? taskWrite(tail[0] ?? '') : undefined
   if (
     taskId === null ||
     !TASK_ID.test(taskId) ||
     tail.length > 1 ||
-    (tail.length === 1 && tail[0] !== 'send')
+    (tail.length === 1 && write === undefined)
   ) {
     return notFound(`unknown path: ${url.pathname}`)
   }
-  if (tail.length === 1) {
+  if (write !== undefined) {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
     const refused = guardMember(access)
     if (refused !== null) return refused
-    return await send(ctx, taskId)
+    return await write(ctx, taskId)
   }
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
   if (deps.handoff === undefined) {

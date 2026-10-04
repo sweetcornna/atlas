@@ -11,8 +11,10 @@
  * answer; the context window changed from a matrix row through its dialog;
  * a link from the node tab (`?do=`) opening the dialog it names; and the chat
  * page drawing the target's model and its switch into a transcript the chat
- * script keeps replacing. The hub is the hand-written port; the real one is
- * in `tests/integration/qianmo-providers-page.test.ts`.
+ * script keeps replacing; a key added to and one removed from a profile with
+ * several (P18.18). The hub is the hand-written port; the real one is in
+ * `tests/integration/qianmo-providers-page.test.ts` and
+ * `tests/integration/qianmo-providers-keypool.test.ts`.
  *
  * `QIANMO_SCREENSHOT_DIR`, when set, receives a screenshot of the board and
  * of the form. Skipped, with the reason, where no Chrome is installed.
@@ -69,9 +71,9 @@ class TurnsChat extends CountingChat {
   }
 }
 
-async function serve() {
+async function serve(options: { readonly pool?: boolean } = {}) {
   const actions = new MemoryActionLedger()
-  const providers = new FakeProviders()
+  const providers = new FakeProviders({ pool: options.pool === true })
   const chat = new TurnsChat()
   const clock = new ManualClock(NOW)
   const h = accountsHarness({ clock, deps: { actions, providers, chat } })
@@ -320,17 +322,19 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         )
         .map(write => write.method)
       expect(done).toEqual(['saveProfile', 'assign', 'apply'])
-      // The skip is on record after the save and before anything it allowed.
+      // The skip is on record after the save (and its key, which the port
+      // records as its own line) and before anything it allowed.
       const lines = served.actions.entries.filter(entry =>
         entry.action.startsWith('provider.'),
       )
       expect(lines.map(entry => entry.action)).toEqual([
         'provider.save',
+        'provider.secret.set',
         'provider.probe.skip',
         'provider.assign',
         'provider.apply',
       ])
-      expect(lines[1]?.target).toBe('deepseek-2')
+      expect(lines[2]?.target).toBe('deepseek-2')
 
       // Again, with a ledger that admits but will not take the line: the
       // switch stops at it, before the default or any node is touched.
@@ -456,6 +460,109 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         method: 'autocompact',
         input: { node: 'node-a', value: 150_000 },
       })
+    } finally {
+      await tab.close()
+      served.stop()
+    }
+  }, 60_000)
+
+  test('several keys: one added through its dialog, one removed through its dialog, the page reloaded from the hub each time', async () => {
+    const served = await serve({ pool: true })
+    const tab = await browser.tab()
+    const CANARY = 'sk-test-canary-browser-pool-0004'
+    try {
+      await signIn(tab, served.base, served.ops)
+      await tab.goto(`${served.base}/providers/profiles/pool`)
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      const rows = `Array.prototype.map.call(document.querySelectorAll('#prov-pool [data-pool-key]'), function (li) { return li.getAttribute('data-pool-key'); }).join(' ')`
+      expect(await tab.evaluate<string>(rows)).toBe('k1 k2 k3')
+
+      // 加一把密钥: the next free id, a name and the key.
+      await tab.evaluate(click('[data-action="prov-key-add"]'))
+      await tab.waitFor(`document.getElementById('prov-key-add-dialog').open`)
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('prov-key-add-id').textContent`,
+        ),
+      ).toBe('k4')
+      await tab.evaluate(
+        `(function () {
+          document.getElementById('prov-key-add-label').value = '新账号';
+          document.getElementById('prov-key-add-value').value = '${CANARY}';
+        })()`,
+      )
+      const added = tab.next('Page.loadEventFired')
+      await tab.evaluate(click('[data-action="confirm-prov-key-add-dialog"]'))
+      await added
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      expect(await tab.evaluate<string>(rows)).toBe('k1 k2 k3 k4')
+      expect(await tab.evaluate<string>(`location.pathname`)).toBe(
+        '/providers/profiles/pool',
+      )
+      const add = served.providers.writes.at(-1)
+      expect(add?.method).toBe('saveProfile')
+      expect(add?.input).toMatchObject({
+        ifMatch: 2,
+        secrets: { k4: CANARY },
+        profile: {
+          id: 'pool',
+          lane: 'openai-responses',
+          keys: [
+            { id: 'k1', label: '主账号' },
+            { id: 'k2', label: '备用账号' },
+            { id: 'k3' },
+            { id: 'k4', label: '新账号' },
+          ],
+        },
+      })
+      // The page sent the list it was given: no fingerprint rode along.
+      const sent = (add?.input as { profile: { keys: object[] } }).profile.keys
+      expect(sent.some(key => 'fingerprint' in key)).toBe(false)
+
+      // 删除 k2: the list without it, and nothing else.
+      await tab.evaluate(
+        click('[data-action="prov-key-remove"][data-key="k2"]'),
+      )
+      await tab.waitFor(
+        `document.getElementById('prov-key-remove-dialog').open`,
+      )
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('prov-key-remove-id').textContent`,
+        ),
+      ).toBe('k2')
+      const removed = tab.next('Page.loadEventFired')
+      await tab.evaluate(
+        click('[data-action="confirm-prov-key-remove-dialog"]'),
+      )
+      await removed
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      expect(await tab.evaluate<string>(rows)).toBe('k1 k3 k4')
+      const remove = served.providers.writes.at(-1)
+      expect(remove?.input).toMatchObject({
+        ifMatch: 3,
+        profile: {
+          keys: [
+            { id: 'k1', label: '主账号' },
+            { id: 'k3' },
+            { id: 'k4', label: '新账号' },
+          ],
+        },
+      })
+      expect('secrets' in (remove?.input as object)).toBe(false)
+
+      expect(
+        served.actions.entries
+          .map(entry => entry.action)
+          .filter(action => action.startsWith('provider.')),
+      ).toEqual(['provider.save', 'provider.secret.set', 'provider.save'])
+      expect(
+        await tab.evaluate<number>(
+          `document.documentElement.outerHTML.split('sk-test-canary').length - 1`,
+        ),
+      ).toBe(0)
+      expect(JSON.stringify(served.actions.entries)).not.toContain(CANARY)
+      await shoot(tab, 'p18-18-keys.png')
     } finally {
       await tab.close()
       served.stop()

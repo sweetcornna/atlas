@@ -1080,6 +1080,10 @@ export const CONSOLE_ACTIONS = [
   'handoff.accept',
   /** 给接力任务追加一句话（P17.4 只记账），target 是任务 id。 */
   'handoff.send',
+  /** 要一个运行中任务的接入定位（P17.6，`qm handoff attach`），target 是任务 id。 */
+  'handoff.attach',
+  /** 记下任务已接回本机（P17.6，`qm handoff pull`），target 是任务 id。 */
+  'handoff.return',
   // 模型服务（P18.6，`ProviderPort` 自己记，见 {@link ProviderCaller}）。target 一律是
   // 档案 id 或节点名，从不是密钥、地址或带凭据的 URL。
   'provider.save',
@@ -1232,6 +1236,44 @@ export interface HandoffSendView {
   readonly text: string
 }
 
+/**
+ * 接入一个运行中任务的定位（P17.6）：在哪个节点、哪个线程。**只有定位**——
+ * 节点 app-server 的令牌由用户本人经 SSH 从节点读，从不经过中枢（计划 D-6）。
+ */
+export interface HandoffAttachView {
+  readonly taskId: string
+  readonly state: HandoffTaskState
+  readonly node: string
+  /**
+   * 云端线程号。qmcode 会话就是清单里的 `sessionId`（节点按它续接）；Claude Code
+   * 会话在节点上导入成新线程，结果回来之前中枢不知道，这时为 null，由本机经隧道
+   * 向节点 app-server 查。
+   */
+  readonly threadId: string | null
+  readonly project: string
+  readonly tool: HandoffManifestView['tool']
+}
+
+/** 谁在要定位：只进审计。 */
+export interface HandoffAttachRequest {
+  /** 发起机器的设备名；没给为 null。 */
+  readonly device: string | null
+}
+
+/** 接回本机的方式：快进当前分支，或另开 `qianmo/<任务>-return`。 */
+export type HandoffReturnMode = 'fast-forward' | 'branch'
+
+export interface HandoffReturnRequest {
+  readonly device: string | null
+  readonly mode: HandoffReturnMode | null
+}
+
+export interface HandoffReturnView {
+  readonly task: HandoffTaskView
+  /** false = 任务本来就是 returned（重跑接回），台账没有多写一行。 */
+  readonly changed: boolean
+}
+
 /** 登记的结果：新任务，或同一份清单已经登记过的那个任务。 */
 export interface HandoffAcceptance {
   readonly task: HandoffTaskView
@@ -1264,6 +1306,22 @@ export interface HandoffPort {
    * 节点（P17.5）。任务已结束（done / failed / returned）时 `rejected`。
    */
   send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
+  /**
+   * 运行中任务的接入定位（P17.6），并记审计 `handoff.attach-requested`。只给
+   * running 的任务；其余状态 `rejected`，文案说现在是什么状态、该用什么命令。
+   */
+  attach(
+    taskId: string,
+    request: HandoffAttachRequest,
+  ): Promise<ConsoleResult<HandoffAttachView>>
+  /**
+   * 任务已接回本机（P17.6）：done / failed → returned，记审计 `handoff.returned`。
+   * 已是 returned 时成功、`changed: false`（重跑接回）；其余状态 `rejected`。
+   */
+  markReturned(
+    taskId: string,
+    request: HandoffReturnRequest,
+  ): Promise<ConsoleResult<HandoffReturnView>>
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,6 +1475,23 @@ export interface ProviderCatalog {
   readonly presets: readonly ProviderPresetView[]
 }
 
+/**
+ * 多 key 池里的一把（P18.18，镜像目录包的 `KeyStatus`）。`cooling` 到 `until`
+ * 自己恢复；`dead`（凭据被吊销）要中枢给这个 id 下发新值才恢复。
+ */
+export interface ProviderNodeKey {
+  readonly id: string
+  readonly state: 'ok' | 'cooling' | 'dead'
+  /** 只有 `cooling` 带：再试的时间（ISO）。 */
+  readonly until?: string
+  readonly reason?:
+    | 'rate-limit'
+    | 'usage-limit'
+    | 'billing'
+    | 'auth'
+    | 'revoked'
+}
+
 /** 节点上一次 `status` 报回的实际状态（§2.4），中枢不推断。 */
 export interface ProviderNodeActual {
   readonly managed: boolean
@@ -1453,6 +1528,11 @@ export interface ProviderNodeActual {
     readonly at: string
     readonly diffKeys: readonly string[]
   } | null
+  /**
+   * P18.18：节点在跑多 key 池时逐把报的状态，按节点的选取顺序。只有 key id，
+   * 没有值也没有指纹；单 key 节点不报这一项。
+   */
+  readonly keys?: readonly ProviderNodeKey[]
   /**
    * 节点用真实门控函数算出来的生效值。页面上「线路 / 发不发 effort / 档位 / 上下文
    * / 自动压缩」只取这里，中枢自己不算（§3.4「显示 = 线上」）。节点没算出来时缺席。

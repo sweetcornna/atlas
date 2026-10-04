@@ -970,15 +970,20 @@ describe('qm handoff end to end', () => {
   )
 
   test(
-    'the reserved subcommands answer 「尚未实现」 with exit 2',
+    'pull and attach (P17.6): a malformed command line is a usage error, exit 2',
     async () => {
-      for (const [name, pkg] of [
-        ['pull', 'P17.6'],
-        ['attach', 'P17.6'],
+      for (const [args, said] of [
+        [['pull', 'a-1', 'b-2'], '只接受一个任务号'],
+        [['attach', '../x'], '不是任务号'],
+        [['attach', '--console', 'https://hub.invalid'], '要一起给'],
+        [['attach', '--local-port', '70000'], '端口号'],
       ] as const) {
-        const ran = await qm(['handoff', name])
+        const ran = await qm(['handoff', ...args])
         expect(ran.code).toBe(2)
-        expect(ran.stderr).toContain(`尚未实现（${pkg}）`)
+        expect(ran.stderr).toContain(said)
+        expect(ran.stderr).toStartWith(
+          args[0] === 'pull' ? '接回没有完成：' : '接入没有完成：',
+        )
       }
     },
     STEP_TIMEOUT_MS,

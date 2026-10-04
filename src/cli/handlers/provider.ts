@@ -54,7 +54,9 @@ Commands:
                              is what the sshd forced command runs; --node is
                              the name the request must carry.
   status                     Report this node's model-service state, including
-                             what its runtime will actually send (no stdin).
+                             what its runtime will actually send and, for a
+                             service with several keys, each key's state
+                             (ok, cooling or dead; key ids only). No stdin.
   probe                      Answer a probe request from stdin (auth, latency
                              or call; call makes one real model call).
   models                     List the vendor's models for a request on stdin.

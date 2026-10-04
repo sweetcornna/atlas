@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v0.3**（2026-10-04）。v0.1 只有本机实测的第 1、6、7 项；v0.2（2026-10-03）补上节点 p4 实测的第 2–5 项和第 7 项的 Linux 补测，第 1 项改写为补上辅助程序后的重跑结果；v0.3 收第 2 项的 24 h 采样（2026-10-03 13:27:20 至 10-04 13:27:00 UTC），内存口径改引计划 v1.1 的裁定 |
+| 文档版本 | **v0.4**（2026-10-04）。v0.1 只有本机实测的第 1、6、7 项；v0.2（2026-10-03）补上节点 p4 实测的第 2–5 项和第 7 项的 Linux 补测，第 1 项改写为补上辅助程序后的重跑结果；v0.3 收第 2 项的 24 h 采样（2026-10-03 13:27:20 至 10-04 13:27:00 UTC），内存口径改引计划 v1.1 的裁定；v0.4（同日）回写第 5 项留下的两条，由 P17.6 用真 qmcode 在本机测得：界面与节点的审批 / 沙箱不一致时以节点线程为准，「要按两次回车」是输入框的粘贴突发判定（8 ms / 120 ms） |
 | 上位 | [`handoff-p17-plan.md`](./handoff-p17-plan.md) §2 P17.2 卡；设计 [`handoff-m1.md`](./handoff-m1.md) v1.1 |
 | 被测二进制 | `qmcode 0.158.0`。本机：fork 分支 `qianmo/p17.1-identity` 在 `348bd27f76` 时的 macOS aarch64 release 构建（`codex-rs/target/release/qmcode`，sha256 `4bec959f…ad4f7b`），旁边放同一源码本机编的 `codex-code-mode-host`（sha256 `81e79b19…08a5bd`）。节点：fork 提交 `90e00225c6` 的 Linux 产物 `qmcode-rust-v0.158.0-90e00225c6-x86_64`（fork 的 `qianmo-build-linux` workflow 构建，run `37123317219`），`qmcode` sha256 `f642651f…b10b81e`、`codex-code-mode-host` sha256 `d5047fcf…daca6b38`，都已剥离 |
 | 模型网关 | `https://api.cornna.xyz/v1`，模型 `gpt-6-luna`，`wire_api = "responses"`。key 只经环境变量传入，配置里只写 `env_key = "OPENAI_API_KEY"`；到节点时经 ssh 的标准输入传过去，在远端子 shell 里 `read` 进环境变量，不进命令行参数、文件和日志 |
@@ -221,8 +221,8 @@ A′ 结束后没有残留的 `codex-code-mode-host` 进程。
 ### 结论：通过
 
 - 两个连接同时接在同一线程上，各自都收到对方回合的事件；界面输入在节点上执行。AC-H4 的前提成立。
-- 读代码（`tui/src/app_server_session.rs` 的 `thread_resume_params_from_config`）：远程模式下 resume 不带审批和沙箱，沿用节点上线程已保存的设置；`cwd` 只在给了 `--cd` 时才带。`turn/start` 的参数里有 `cwd`、审批和权限，由界面会话里的当前值填，来源未逐一核对。本次本机配置与节点线程一致，实测区分不出两者；不一致的情形未测。
-- 「要按两次回车」原因未查。疑与界面把一次性写入的整段文字当作粘贴处理有关；手工输入时是否也这样未测。P17.6 的用例要覆盖。
+- 读代码（`tui/src/app_server_session.rs` 的 `thread_resume_params_from_config`）：远程模式下 resume 不带审批和沙箱，沿用节点上线程已保存的设置；`cwd` 只在给了 `--cd` 时才带。`turn/start` 的参数里有 `cwd`、审批和权限，由界面会话里的当前值填。本次本机配置与节点线程一致，实测区分不出两者。v0.4：不一致的情形已由 P17.6 实测，**以节点线程的设置为准**（见「未验证与存疑」第 5 项）；界面那几个值从哪里来，代码路径仍未逐行核对。
+- 「要按两次回车」：v0.4 已查明，是输入框的粘贴突发判定，与远程直连无关；逐键输入时一次回车就提交（见「未验证与存疑」第 5 项）。
 
 ## 第 6 项：fork 内置配置
 
@@ -345,7 +345,10 @@ A = `task_complete` 行写入时刻（文件 mtime）；B = 客户端收到 `tur
   - 按 `VmRSS` 读，测试实例在第 7 项后到线、第 5 项后超限，没有在超限时立即停（口径已定为匿名内存，见第 2 项结论）。
 - 第 3 项：两台机器时区相同，rollout 文件名和日期目录都按本地时间，跨时区时的情形没有测。远程界面直接接「拷来的 rollout」线程没有单独测（第 5 项接的是导入的线程）。
 - 第 4 项：默认阈值下的真实长会话压缩没有测，只测了把阈值调低的情形。续接后第一个回合首个输出等了 103 s，原因未查。
-- 第 5 项：第 1 次实跑因本机睡眠和回车未提交作废；「两次回车」原因未查；回合期间出现的临时线程是什么没有核实。界面与节点的审批 / 沙箱设置不一致时的行为未测。
+- 第 5 项：第 1 次实跑因本机睡眠和回车未提交作废；回合期间出现的临时线程是什么没有核实。下面两条原先写「原因未查」「未测」，v0.4 改为 P17.6 的实测结论（2026-10-04，本机 macOS；二进制就是上面「被测二进制」那份本机 release 构建 `qmcode 0.158.0`，sha256 `4bec959f…ad4f7b`；真 `qmcode app-server` 加真 `qmcode resume --remote` 界面，界面由 `qm handoff attach` 在 160×48 的伪终端里拉起，两个进程都用 `sandbox-exec` 只放回环，模型是本地 Responses 替身，ssh 是测试替身；用例 `tests/integration/qianmo-handoff-attach-qmcode.test.ts`，设 `QIANMO_TEST_QMCODE_BIN` 才跑，连跑 5 轮结论一致）：
+  - 审批 / 沙箱不一致：节点线程按节点桥的设置建（`approvalPolicy: never`、`sandbox: workspace-write`）。本机 `config.toml` 比节点严（`on-request`、`read-only`）或比节点松（`never`、`danger-full-access`）两种情形下，界面里敲的每个回合在节点 rollout 的 `turn_context` 里都是 `never` / `workspace-write`，工作目录也是节点的。**以节点为准**，本机配置不起作用。
+  - 两次回车：文字和回车在同一次写入里到达时（自动化驱动，或终端不支持括号粘贴时的粘贴），输入框把整段当作粘贴突发，那次回车成了粘贴内容里的换行，第二次回车才提交。逐键输入（间隔 40 ms）、回车前停 300 ms、括号粘贴，都是一次回车就提交。出处是 fork `codex-rs/tui/src/bottom_pane/paste_burst.rs`：连续 3 个以上字符、间隔小于 8 ms（`PASTE_BURST_CHAR_INTERVAL`）算粘贴突发，其后 120 ms 内（`PASTE_ENTER_SUPPRESS_WINDOW`）的回车按换行处理。v0.2 第 2 次实跑由 expect 驱动，现象与这种情形一致；那次 expect 是不是把整句和回车一次写入，没有回查原始脚本。
+  - 仍未测：两台真机之间、真终端模拟器上的这两条（留给 P17.7 演练）。
 - 第 6 项：没有重编二进制把两项真正写进 `defaults.toml`；MCP 与 notify 用的是替身低层，内置层本身的合并语义用它现有的 `[history]` 和 `project_root_markers` 证实。TUI 首次启动、`qmcode mcp remove qianmo` 对内置项的表现、`notify = []` 关闭，只读了代码。
 - 第 7 项：本机 4 个回合、p4 1 个回合，gVisor 下的时序未测；中断回合（`turn_aborted`）、自动压缩后的写入未测。本机 4 个回合里只有 1 个调了工具，p4 那个回合也没有调工具，都是模型自己的选择，不影响回合末时序的测量。
 - 本机副作用（v0.1）：第 7 项第一次空跑时脚本有错（变量紧跟全角冒号），`config.toml` 写成了空文件，app-server 退回内置的 `openai` 提供方，向 `wss://api.openai.com/v1/responses` 发起约 10 次连接，均因无凭据返回 401；那次没有载入 key。每个新的 `QMCODE_HOME` 都克隆了一份 `openai/plugins`，证据目录因此约 682 MB。

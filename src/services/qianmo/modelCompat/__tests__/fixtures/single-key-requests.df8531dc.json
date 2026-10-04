@@ -1,0 +1,118 @@
+{
+  "generatedOn": "df8531dc",
+  "scenarios": {
+    "fleet-responses": {
+      "requests": [
+        {
+          "url": "https://gateway.example/v1/responses",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "text/event-stream"
+          },
+          "headerNames": ["accept", "authorization", "content-type"],
+          "body": "{\"model\":\"gpt-6-luna\",\"stream\":true,\"store\":false,\"input\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"instructions\":\"# GPT execution discipline\\n\\nIn this session the following execution rules take precedence over any earlier guidance that conflicts with them.\\n\\n## Finish the work\\n\\n- Persist until the task is fully handled end-to-end within the current turn. Do not hand back a half-solved problem.\\n- Do not stop at analysis or a partial fix. It is bad to output a proposed solution as a message when you were supposed to implement it — if the user asked for a change, make the change.\\n- Resolve blockers yourself whenever feasible: create the missing directory, correct your own wrong assumption, read the config you need. Return to the user only for decisions or access you genuinely cannot obtain.\\n\\n## Plan sparingly\\n\\n- Skip planning for straightforward tasks — roughly the easiest 25% of requests. Start working instead.\\n- Never make a single-step plan. If the work is one step, do the step.\\n- Do NOT call EnterPlanMode unless the task has genuine architectural ambiguity with multiple materially different approaches, or the user explicitly asks for a plan.\\n- When in doubt, start working. A first edit that needs correcting costs less than a planning round-trip.\\n\\n## Do not review your own work\\n\\n- Do not spawn subagents to review, audit, or verify your own work unless the user explicitly asks for a review.\\n- Verify once, proportionate to risk. A single test or build run is enough; trivial edits need none.\\n- Do not re-read files after editing them. The edit tool fails loudly — if it reported success, the change is in the file.\\n- Do not re-verify things you already checked in this turn.\\n- Do not fix unrelated bugs, failing tests, or pre-existing lint errors. Mention them in your final message instead.\\n\\n## Final message\\n\\n- For small changes (roughly 10 lines or fewer), the final message is 2-5 sentences of plain prose with no headings.\\n- Never include before/after code pairs or large code blocks in the final message. The user can read the diff.\\n- The final message must be self-contained: say what changed and where without requiring the user to scroll back through tool output.\\n\\n## Parallelize\\n\\n- Send independent read-only tool calls — file reads, searches, globs — together in a single message instead of one at a time.\",\"reasoning\":{\"effort\":\"max\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"parallel_tool_calls\":true,\"max_output_tokens\":64000,\"prompt_cache_key\":\"occ:p:4c6ff979c54f5888\"}"
+        }
+      ],
+      "visible": ["ok"]
+    },
+    "chat": {
+      "requests": [
+        {
+          "url": "https://gateway.example/v1/chat/completions",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "application/json"
+          },
+          "headerNames": [
+            "accept",
+            "authorization",
+            "content-type",
+            "user-agent",
+            "x-stainless-arch",
+            "x-stainless-lang",
+            "x-stainless-os",
+            "x-stainless-package-version",
+            "x-stainless-retry-count",
+            "x-stainless-runtime",
+            "x-stainless-runtime-version"
+          ],
+          "body": "{\"model\":\"vendor-chat-model\",\"messages\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"max_tokens\":64000,\"prompt_cache_key\":\"occ:<session>\",\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+        }
+      ],
+      "visible": ["ok"]
+    },
+    "responses-429-then-ok": {
+      "requests": [
+        {
+          "url": "https://gateway.example/v1/responses",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "text/event-stream"
+          },
+          "headerNames": ["accept", "authorization", "content-type"],
+          "body": "{\"model\":\"gpt-6-luna\",\"stream\":true,\"store\":false,\"input\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"instructions\":\"# GPT execution discipline\\n\\nIn this session the following execution rules take precedence over any earlier guidance that conflicts with them.\\n\\n## Finish the work\\n\\n- Persist until the task is fully handled end-to-end within the current turn. Do not hand back a half-solved problem.\\n- Do not stop at analysis or a partial fix. It is bad to output a proposed solution as a message when you were supposed to implement it — if the user asked for a change, make the change.\\n- Resolve blockers yourself whenever feasible: create the missing directory, correct your own wrong assumption, read the config you need. Return to the user only for decisions or access you genuinely cannot obtain.\\n\\n## Plan sparingly\\n\\n- Skip planning for straightforward tasks — roughly the easiest 25% of requests. Start working instead.\\n- Never make a single-step plan. If the work is one step, do the step.\\n- Do NOT call EnterPlanMode unless the task has genuine architectural ambiguity with multiple materially different approaches, or the user explicitly asks for a plan.\\n- When in doubt, start working. A first edit that needs correcting costs less than a planning round-trip.\\n\\n## Do not review your own work\\n\\n- Do not spawn subagents to review, audit, or verify your own work unless the user explicitly asks for a review.\\n- Verify once, proportionate to risk. A single test or build run is enough; trivial edits need none.\\n- Do not re-read files after editing them. The edit tool fails loudly — if it reported success, the change is in the file.\\n- Do not re-verify things you already checked in this turn.\\n- Do not fix unrelated bugs, failing tests, or pre-existing lint errors. Mention them in your final message instead.\\n\\n## Final message\\n\\n- For small changes (roughly 10 lines or fewer), the final message is 2-5 sentences of plain prose with no headings.\\n- Never include before/after code pairs or large code blocks in the final message. The user can read the diff.\\n- The final message must be self-contained: say what changed and where without requiring the user to scroll back through tool output.\\n\\n## Parallelize\\n\\n- Send independent read-only tool calls — file reads, searches, globs — together in a single message instead of one at a time.\",\"reasoning\":{\"effort\":\"max\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"parallel_tool_calls\":true,\"max_output_tokens\":64000,\"prompt_cache_key\":\"occ:p:4c6ff979c54f5888\"}"
+        },
+        {
+          "url": "https://gateway.example/v1/responses",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "text/event-stream"
+          },
+          "headerNames": ["accept", "authorization", "content-type"],
+          "body": "{\"model\":\"gpt-6-luna\",\"stream\":true,\"store\":false,\"input\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"instructions\":\"# GPT execution discipline\\n\\nIn this session the following execution rules take precedence over any earlier guidance that conflicts with them.\\n\\n## Finish the work\\n\\n- Persist until the task is fully handled end-to-end within the current turn. Do not hand back a half-solved problem.\\n- Do not stop at analysis or a partial fix. It is bad to output a proposed solution as a message when you were supposed to implement it — if the user asked for a change, make the change.\\n- Resolve blockers yourself whenever feasible: create the missing directory, correct your own wrong assumption, read the config you need. Return to the user only for decisions or access you genuinely cannot obtain.\\n\\n## Plan sparingly\\n\\n- Skip planning for straightforward tasks — roughly the easiest 25% of requests. Start working instead.\\n- Never make a single-step plan. If the work is one step, do the step.\\n- Do NOT call EnterPlanMode unless the task has genuine architectural ambiguity with multiple materially different approaches, or the user explicitly asks for a plan.\\n- When in doubt, start working. A first edit that needs correcting costs less than a planning round-trip.\\n\\n## Do not review your own work\\n\\n- Do not spawn subagents to review, audit, or verify your own work unless the user explicitly asks for a review.\\n- Verify once, proportionate to risk. A single test or build run is enough; trivial edits need none.\\n- Do not re-read files after editing them. The edit tool fails loudly — if it reported success, the change is in the file.\\n- Do not re-verify things you already checked in this turn.\\n- Do not fix unrelated bugs, failing tests, or pre-existing lint errors. Mention them in your final message instead.\\n\\n## Final message\\n\\n- For small changes (roughly 10 lines or fewer), the final message is 2-5 sentences of plain prose with no headings.\\n- Never include before/after code pairs or large code blocks in the final message. The user can read the diff.\\n- The final message must be self-contained: say what changed and where without requiring the user to scroll back through tool output.\\n\\n## Parallelize\\n\\n- Send independent read-only tool calls — file reads, searches, globs — together in a single message instead of one at a time.\",\"reasoning\":{\"effort\":\"max\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"parallel_tool_calls\":true,\"max_output_tokens\":64000,\"prompt_cache_key\":\"occ:p:4c6ff979c54f5888\"}"
+        }
+      ],
+      "visible": ["ok"]
+    },
+    "chat-402": {
+      "requests": [
+        {
+          "url": "https://gateway.example/v1/chat/completions",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "application/json"
+          },
+          "headerNames": [
+            "accept",
+            "authorization",
+            "content-type",
+            "user-agent",
+            "x-stainless-arch",
+            "x-stainless-lang",
+            "x-stainless-os",
+            "x-stainless-package-version",
+            "x-stainless-retry-count",
+            "x-stainless-runtime",
+            "x-stainless-runtime-version"
+          ],
+          "body": "{\"model\":\"vendor-chat-model\",\"messages\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"max_tokens\":64000,\"prompt_cache_key\":\"occ:<session>\",\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+        }
+      ],
+      "visible": [
+        "API Error [OpenAI]: Payment required · status=402 · type=payment_required · category=billing_error · retryable=no"
+      ]
+    },
+    "responses-401": {
+      "requests": [
+        {
+          "url": "https://gateway.example/v1/responses",
+          "headers": {
+            "authorization": "Bearer sk-test-canary-p185-not-a-real-key",
+            "content-type": "application/json",
+            "accept": "text/event-stream"
+          },
+          "headerNames": ["accept", "authorization", "content-type"],
+          "body": "{\"model\":\"gpt-6-luna\",\"stream\":true,\"store\":false,\"input\":[{\"role\":\"user\",\"content\":\"say ok\"}],\"instructions\":\"# GPT execution discipline\\n\\nIn this session the following execution rules take precedence over any earlier guidance that conflicts with them.\\n\\n## Finish the work\\n\\n- Persist until the task is fully handled end-to-end within the current turn. Do not hand back a half-solved problem.\\n- Do not stop at analysis or a partial fix. It is bad to output a proposed solution as a message when you were supposed to implement it — if the user asked for a change, make the change.\\n- Resolve blockers yourself whenever feasible: create the missing directory, correct your own wrong assumption, read the config you need. Return to the user only for decisions or access you genuinely cannot obtain.\\n\\n## Plan sparingly\\n\\n- Skip planning for straightforward tasks — roughly the easiest 25% of requests. Start working instead.\\n- Never make a single-step plan. If the work is one step, do the step.\\n- Do NOT call EnterPlanMode unless the task has genuine architectural ambiguity with multiple materially different approaches, or the user explicitly asks for a plan.\\n- When in doubt, start working. A first edit that needs correcting costs less than a planning round-trip.\\n\\n## Do not review your own work\\n\\n- Do not spawn subagents to review, audit, or verify your own work unless the user explicitly asks for a review.\\n- Verify once, proportionate to risk. A single test or build run is enough; trivial edits need none.\\n- Do not re-read files after editing them. The edit tool fails loudly — if it reported success, the change is in the file.\\n- Do not re-verify things you already checked in this turn.\\n- Do not fix unrelated bugs, failing tests, or pre-existing lint errors. Mention them in your final message instead.\\n\\n## Final message\\n\\n- For small changes (roughly 10 lines or fewer), the final message is 2-5 sentences of plain prose with no headings.\\n- Never include before/after code pairs or large code blocks in the final message. The user can read the diff.\\n- The final message must be self-contained: say what changed and where without requiring the user to scroll back through tool output.\\n\\n## Parallelize\\n\\n- Send independent read-only tool calls — file reads, searches, globs — together in a single message instead of one at a time.\",\"reasoning\":{\"effort\":\"max\",\"summary\":\"auto\"},\"include\":[\"reasoning.encrypted_content\"],\"parallel_tool_calls\":true,\"max_output_tokens\":64000,\"prompt_cache_key\":\"occ:p:4c6ff979c54f5888\"}"
+        }
+      ],
+      "visible": [
+        "API Error [OpenAI]: Incorrect API key provided · status=401 · code=invalid_api_key · type=invalid_request_error · name=OpenAIRequestError · category=authentication_failed · retryable=no"
+      ]
+    }
+  }
+}

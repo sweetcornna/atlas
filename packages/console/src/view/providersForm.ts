@@ -66,6 +66,13 @@ import {
   writeButton,
   type ProvidersReader,
 } from './providers.js'
+import {
+  addKeyButton,
+  keyDialogs,
+  keyList,
+  keysAttr,
+  nodeKeysLine,
+} from './providersKeys.js'
 
 type ProviderModel = ProviderProfileView['models'][number]
 
@@ -433,6 +440,8 @@ function probeNodes(
 
 function keySection(model: EditorModel): string {
   const { profile, preset, summary, mode } = model
+  // P18.18: several keys are a list, each with its own controls.
+  if (mode === 'edit' && profile.keys.length > 1) return keyList(profile)
   const keyId = profile.keys[0]?.id ?? 'k1'
   const placeholder = preset?.placeholderKey
   const keyHint = preset?.keyHint ?? null
@@ -454,6 +463,7 @@ function keySection(model: EditorModel): string {
               { danger: true },
             )
           : '') +
+        addKeyButton(profile) +
         `</div>`
       : ''
   return (
@@ -716,6 +726,7 @@ export function renderEditor(model: EditorModel): string {
       String(profile.revision),
     )}" data-preset="${attr(profile.presetId ?? '')}" ` +
     `data-key-id="${attr(profile.keys[0]?.id ?? 'k1')}" ` +
+    `data-keys="${attr(keysAttr(profile))}" ` +
     `data-placeholder-key="${attr(preset?.placeholderKey ?? '')}" ` +
     `data-key-prefixes="${attr(JSON.stringify(keyHint?.prefixes ?? []))}" ` +
     `data-key-pattern="${attr(keyHint?.pattern ?? '')}" ` +
@@ -741,7 +752,8 @@ export function renderEditor(model: EditorModel): string {
     checks(model) +
     actions +
     `</section>` +
-    editorDialogs()
+    editorDialogs() +
+    (mode === 'edit' ? keyDialogs() : '')
   )
 }
 
@@ -823,6 +835,10 @@ export function renderProfileNodes(
     node =>
       node.expected?.profileId === id || node.actual?.applied?.profileId === id,
   )
+  // P18.18: several keys reach a node only if it said it rotates them.
+  const several =
+    (overview.profiles.find(entry => entry.profile.id === id)?.profile.keys
+      .length ?? 0) > 1
   const body =
     nodes.length === 0
       ? hint('还没有节点用这份模型服务 · 切换到此服务或在节点上指派')
@@ -841,6 +857,12 @@ export function renderProfileNodes(
               `<span class="mono">${escapeHtml(cells.model)}</span>` +
               `<span>effort ${escapeHtml(cells.effort)}</span>` +
               `<span data-cell="context">上下文 ${escapeHtml(cells.context)}</span>` +
+              (node.actual?.applied?.profileId === id
+                ? nodeKeysLine(node.actual)
+                : '') +
+              (several && node.actual?.capabilities.multiKey === false
+                ? `<span class="note">这台节点不支持多把密钥 · 下发会被拒</span>`
+                : '') +
               (node.expected?.profileId === id
                 ? ''
                 : `<span class="note">已不再指派 · 仍在运行</span>`) +

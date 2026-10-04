@@ -30,6 +30,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -52,6 +53,7 @@ import {
 import { childEnv, sourceLaunch } from './providerSource.js'
 
 const CANARY = 'sk-test-canary-serve-stdin-Qw81Zt4LmB0x'
+const CANARY_2 = 'sk-test-canary-serve-stdin-two-Hc05Vy'
 const OPS = 'u:0fedcba987654321'
 const NODE = 'beta-1'
 /** Each step starts this CLI from source (status twice: it computes `effective` in a child). */
@@ -69,6 +71,8 @@ let root: string
 let config: string
 let port: ConsoleProviders
 let ledger: ActionLedger
+let ledgerStore: MemoryActionStore
+const ledgerText = () => ledgerStore.text ?? ''
 
 /** The executable the local executor runs as `<command> <node>`. */
 function writeNodeCommand(): string {
@@ -196,7 +200,8 @@ beforeAll(async () => {
     now: () => Date.now() + skew,
     scheduler: STILL,
   })
-  ledger = new ActionLedger({ store: new MemoryActionStore() })
+  ledgerStore = new MemoryActionStore()
+  ledger = new ActionLedger({ store: ledgerStore })
   value(
     await port.saveProfile(
       { profile: DRAFT, ifMatch: null, secrets: { k1: CANARY } },
@@ -381,6 +386,66 @@ describe('the hub against the real qm provider serve-stdin (local executor)', ()
         ['provider.autocompact', 'ok', undefined],
         ['provider.autocompact', 'refused', 'env-override'],
       ])
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
+    'P18.18: a second key — the node reports multiKey, takes both, keeps the second in key-pool.json (0600) and nowhere else',
+    async () => {
+      const current = value(await port.profile('luna'))
+      value(
+        await port.saveProfile(
+          {
+            profile: {
+              ...DRAFT,
+              keys: [{ id: 'k1' }, { id: 'k2' }],
+              keySelection: 'least_used',
+            },
+            ifMatch: current.revision,
+            secrets: { k2: CANARY_2 },
+          },
+          caller(),
+        ),
+      )
+      later()
+      const before = value(await port.refreshNode(NODE))
+      expect(before.actual?.capabilities.multiKey).toBe(true)
+
+      const [applied] = value(
+        await port.apply({ nodes: [NODE], force: true }, caller()),
+      )
+      expect(applied?.outcome).toBe('ok')
+      // settings.json: the primary only.
+      expect(settings().env?.OPENAI_API_KEY).toBe(CANARY)
+      const poolPath = join(config, 'qianmo', 'provider', 'key-pool.json')
+      expect(statSync(poolPath).mode & 0o777).toBe(0o600)
+      const pool = JSON.parse(readFileSync(poolPath, 'utf8')) as {
+        selection: string
+        keys: { id: string; value: string }[]
+      }
+      expect(pool.selection).toBe('least_used')
+      expect(pool.keys).toEqual([
+        { id: 'k1', value: CANARY },
+        { id: 'k2', value: CANARY_2 },
+      ])
+
+      // The second key: in key-pool.json and on no other surface — the hub's
+      // book, sealed store and ledger, the node's state files, the replies.
+      const holders: string[] = []
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name)
+          if (entry.isDirectory()) walk(path)
+          else if (readFileSync(path).includes(Buffer.from(CANARY_2))) {
+            holders.push(path.slice(root.length + 1))
+          }
+        }
+      }
+      walk(root)
+      expect(holders).toEqual(['config/qianmo/provider/key-pool.json'])
+      expect(ledgerText()).not.toContain(CANARY_2)
+      expect(JSON.stringify([before, applied])).not.toContain(CANARY_2)
     },
     STEP_TIMEOUT_MS,
   )

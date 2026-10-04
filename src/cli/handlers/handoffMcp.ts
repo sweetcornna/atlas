@@ -12,8 +12,8 @@
  * ## Tools
  *
  * Only tools whose back end is in this repository today; a tool that can
- * only fail wastes a model turn. The plan card's table grows with the
- * packages: `qianmo_pull` with P17.6.
+ * only fail wastes a model turn. The plan card's table grew with the
+ * packages: `qianmo_send` with P17.5, `qianmo_pull` with P17.6.
  *
  * | Tool | Does | Back end |
  * | --- | --- | --- |
@@ -21,6 +21,7 @@
  * | `qianmo_handoff` | pushes the work tree and session, registers the task | `runNow`, cut mode |
  * | `qianmo_task` | read-only: one task's state, brief and result | `runTask` |
  * | `qianmo_send` | one sentence for a task in the cloud, via the hub (P17.5) | `runSend` |
+ * | `qianmo_pull` | brings a finished task home without overwriting anything (P17.6) | `runPull` |
  *
  * ## The call comes from inside a turn
  *
@@ -74,6 +75,7 @@ import {
   runStatus,
   runTask,
 } from './handoffNow.js'
+import { runPull } from './handoffPull.js'
 import { HandoffUserError, sleep } from './handoffStore.js'
 
 /** How long a call in flight may keep the process after stdin ends. */
@@ -187,6 +189,28 @@ const TOOLS: Tool[] = [
       openWorldHint: true,
     },
   },
+  {
+    name: 'qianmo_pull',
+    title: '接回本机',
+    description:
+      '把云端已经完成的接力任务接回本机。有副作用：从中枢取回结果；转交以来本机没动过时当前分支快进到云端结果，动过时结果放到新分支 qianmo/<taskId>-return 并列出差异，本机文件一个都不改；qmcode 会话放回本机会话目录；中枢记为已接回。' +
+      '不给 taskId 时接本项目最近一个完成的任务。任务还在云端或失败时返回原因。只在用户要把云端结果拿回来时调用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: '任务号，qianmo_handoff 或 qianmo_status 给出的那个',
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
 ]
 
 function answer(lines: readonly string[], isError = false): CallToolResult {
@@ -273,7 +297,9 @@ async function callTool(
       ? '转交没有完成'
       : name === 'qianmo_send'
         ? '话没有送出'
-        : '查询没有完成'
+        : name === 'qianmo_pull'
+          ? '接回没有完成'
+          : '查询没有完成'
   try {
     switch (name) {
       case 'qianmo_status':
@@ -306,6 +332,23 @@ async function callTool(
         const text = briefText(args, 'text', true)
         await runSend(cwd, { taskId, text }, output)
         return answer(lines)
+      }
+      case 'qianmo_pull': {
+        const taskId = args.taskId
+        if (taskId !== undefined && !isTaskId(taskId)) {
+          throw new HandoffUserError('参数 taskId 不是任务号')
+        }
+        const code = await runPull(
+          cwd,
+          {
+            ...(taskId === undefined ? {} : { taskId }),
+            ...(caller.thread === undefined
+              ? {}
+              : { callerThread: caller.thread }),
+          },
+          output,
+        )
+        return answer(lines, code !== 0)
       }
       default:
         return answer([`没有工具 ${name}`], true)

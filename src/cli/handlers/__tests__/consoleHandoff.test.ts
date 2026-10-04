@@ -25,9 +25,11 @@ import { join } from 'node:path'
 import { AuditSource, readTrail } from '@qianmo/audit'
 import {
   type HandoffManifest,
+  HandoffLedger,
   sessionCommit,
   sessionRef,
   shadowCommit,
+  taskBranch,
   wipRef,
 } from '@qianmo/handoff'
 import { parseConsoleArgs } from '../consoleArgs.js'
@@ -264,6 +266,172 @@ describe('openConsoleHandoff', () => {
     const empty = await hub.port.send('t-1', ' ')
     expect(!empty.ok && empty.failure.code).toBe('invalid')
     hub.close()
+  })
+
+  test('attach (P17.6): a locator for a running task only, and the audit line', async () => {
+    const { hubRoot, manifest } = await landed()
+    const files = hubFiles()
+    const CLOUD_THREAD = '0199f1a2-0000-7000-8000-000000000042'
+    const seed = HandoffLedger.open(files.ledgerPath)
+    seed.accept('t-run', manifest)
+    seed.dispatch('t-run', 'node-a')
+    seed.start('t-run')
+    seed.accept('t-cc', {
+      ...manifest,
+      tool: 'claude-code',
+      brief: { ...manifest.brief, goal: 'cc' },
+    })
+    seed.dispatch('t-cc', 'node-b')
+    seed.start('t-cc')
+    seed.accept('t-acc', {
+      ...manifest,
+      brief: { ...manifest.brief, goal: 'a' },
+    })
+    seed.accept('t-done', {
+      ...manifest,
+      brief: { ...manifest.brief, goal: 'd' },
+    })
+    seed.dispatch('t-done', 'node-c')
+    seed.start('t-done')
+    seed.complete('t-done', {
+      status: 'completed',
+      branch: taskBranch('t-done'),
+      head: 'e'.repeat(40),
+      threadId: CLOUD_THREAD,
+      summary: '',
+    })
+    seed.close()
+
+    const hub = openConsoleHandoff({ root: hubRoot, ...files, now: () => 7 })
+    const running = await hub.port.attach('t-run', { device: 'phone-1' })
+    expect(running).toEqual({
+      ok: true,
+      value: {
+        taskId: 't-run',
+        state: 'running',
+        node: 'node-a',
+        threadId: SESSION,
+        project: 'atlas',
+        tool: 'qmcode',
+      },
+    })
+    // A Claude Code session becomes a new thread on the node; the hub does
+    // not know which until the result.
+    const cc = await hub.port.attach('t-cc', { device: null })
+    expect(cc.ok && cc.value).toMatchObject({ node: 'node-b', threadId: null })
+
+    const accepted = await hub.port.attach('t-acc', { device: null })
+    expect(!accepted.ok && accepted.failure.code).toBe('rejected')
+    expect(!accepted.ok && accepted.failure.message).toContain('还没有派给节点')
+    const done = await hub.port.attach('t-done', { device: null })
+    expect(!done.ok && done.failure.message).toContain('qm handoff pull')
+    const missing = await hub.port.attach('t-9', { device: null })
+    expect(!missing.ok && missing.failure.code).toBe('not_found')
+    // The refusals a person reads keep the copy rule: no 。，、 no exclamation.
+    for (const refusal of [accepted, done, missing]) {
+      expect(!refusal.ok && refusal.failure.message).not.toMatch(
+        /[。，、！!]|\p{Extended_Pictographic}/u,
+      )
+    }
+
+    const trail = readTrail(files.auditPath)
+    expect(trail.intact).toBe(true)
+    expect(
+      trail.records.map(record => [
+        record.kind,
+        record.taskId,
+        record.peer,
+        record.detail,
+      ]),
+    ).toEqual([
+      [
+        'handoff.attach-requested',
+        't-run',
+        'phone-1',
+        { node: 'node-a', threadId: SESSION, device: 'phone-1' },
+      ],
+      ['handoff.attach-requested', 't-cc', 'cornna-mbp', { node: 'node-b' }],
+    ])
+    hub.close()
+  })
+
+  test('markReturned (P17.6): done and failed become returned once; a repeat is not an error', async () => {
+    const { hubRoot, manifest } = await landed()
+    const files = hubFiles()
+    const seed = HandoffLedger.open(files.ledgerPath)
+    seed.accept('t-done', manifest)
+    seed.dispatch('t-done', 'node-a')
+    seed.start('t-done')
+    seed.complete('t-done', {
+      status: 'interrupted',
+      branch: taskBranch('t-done'),
+      head: 'e'.repeat(40),
+      threadId: SESSION,
+      summary: '',
+    })
+    seed.accept('t-fail', {
+      ...manifest,
+      brief: { ...manifest.brief, goal: 'f' },
+    })
+    seed.fail('t-fail', 'no node took it')
+    seed.accept('t-run', {
+      ...manifest,
+      brief: { ...manifest.brief, goal: 'r' },
+    })
+    seed.dispatch('t-run', 'node-b')
+    seed.start('t-run')
+    seed.close()
+
+    const hub = openConsoleHandoff({ root: hubRoot, ...files })
+    const first = await hub.port.markReturned('t-done', {
+      device: 'laptop',
+      mode: 'fast-forward',
+    })
+    expect(first.ok && first.value.changed).toBe(true)
+    expect(first.ok && first.value.task.state).toBe('returned')
+    const again = await hub.port.markReturned('t-done', {
+      device: 'laptop',
+      mode: null,
+    })
+    expect(again.ok && again.value.changed).toBe(false)
+    const failed = await hub.port.markReturned('t-fail', {
+      device: null,
+      mode: null,
+    })
+    expect(failed.ok && failed.value.task.state).toBe('returned')
+    const running = await hub.port.markReturned('t-run', {
+      device: null,
+      mode: null,
+    })
+    expect(!running.ok && running.failure.code).toBe('rejected')
+    expect(!running.ok && running.failure.message).toContain('还在 running')
+    expect(!running.ok && running.failure.message).not.toMatch(/[。，、！!]/u)
+    const missing = await hub.port.markReturned('t-9', {
+      device: null,
+      mode: null,
+    })
+    expect(!missing.ok && missing.failure.code).toBe('not_found')
+
+    expect(
+      readTrail(files.auditPath).records.map(record => [
+        record.kind,
+        record.taskId,
+        record.detail,
+      ]),
+    ).toEqual([
+      [
+        'handoff.returned',
+        't-done',
+        { from: 'done', mode: 'fast-forward', device: 'laptop' },
+      ],
+      ['handoff.returned', 't-fail', { from: 'failed' }],
+    ])
+    hub.close()
+
+    const restarted = openConsoleHandoff({ root: hubRoot, ...files })
+    const after = await restarted.port.get('t-done')
+    expect(after.ok && after.value.state).toBe('returned')
+    restarted.close()
   })
 
   test('the audit kinds are the plan card six, prefixed handoff.', () => {

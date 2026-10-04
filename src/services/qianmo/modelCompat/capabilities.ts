@@ -6,10 +6,12 @@
  * `status.capabilities` (design `providers-console-m1.md` §2.4).
  *
  * One function, one object, so P18.7's `qm provider status` reads every flag
- * from here instead of hard-coding them; P18.8 added `replayFilter`. Each flag is backed by the module that implements it; the
+ * from here instead of hard-coding them; P18.8 added `replayFilter`, P18.18
+ * `multiKey`. Each flag is backed by the module that implements it; the
  * constant there is pinned by a behavioural test.
  */
 import { CHAT_EFFORT_HONORS_OVERRIDE } from './chatEffort.js'
+import { MULTI_KEY } from './credentialPool.js'
 import { REPLAY_FILTER } from './reasoningEcho.js'
 
 export type ModelCompatCapabilities = {
@@ -32,11 +34,19 @@ export type ModelCompatCapabilities = {
    * `REPLAY_FILTER`.
    */
   replayFilter: boolean
+  /**
+   * The OpenAI lane rotates the keys of a multi-key profile, one per session,
+   * by the hermes behaviour table (P18.18, `credentialPool.ts`). The compiler
+   * refuses several keys on a node that does not report this, and on any lane
+   * but OpenAI's even when it does.
+   */
+  multiKey: boolean
 }
 
 export function getModelCompatCapabilities(): ModelCompatCapabilities {
   return {
     chatEffortHonorsOverride: CHAT_EFFORT_HONORS_OVERRIDE,
     replayFilter: REPLAY_FILTER,
+    multiKey: MULTI_KEY,
   }
 }
