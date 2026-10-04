@@ -93,8 +93,12 @@ function quoted(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
 
-/** The hub root as a remote shell expression: `~/…` and relative go under `$HOME`. */
-function remoteRoot(root: string): string {
+/**
+ * A path on the far machine as a remote shell expression: `~/…` and relative
+ * go under `$HOME`. For the hub root, and for the node's app-server token
+ * (`qm handoff attach`, P17.6).
+ */
+export function remoteRoot(root: string): string {
   if (root.startsWith('/')) return quoted(root)
   const rest = root.startsWith('~/') ? root.slice(2) : root
   return `"$HOME"/${quoted(rest)}`

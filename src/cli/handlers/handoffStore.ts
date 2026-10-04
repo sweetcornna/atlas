@@ -128,6 +128,26 @@ const HUB_PATH = /^[A-Za-z0-9._~/-]+$/
 /** `[user@]host`, an ssh config alias included; no option can start it. */
 const SSH_TARGET = /^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+/** `[user@]host` or an alias from `~/.ssh/config`, never an ssh option. */
+export function isSshTarget(value: string): boolean {
+  return SSH_TARGET.test(value)
+}
+
+/**
+ * A path on another machine as the gate takes one: its alphabet, not starting
+ * with `-`, no `..` segment, `~` only as a leading `~/`. Relative paths are
+ * under that machine's home.
+ */
+export function isRemotePath(path: string): boolean {
+  return (
+    path !== '' &&
+    HUB_PATH.test(path) &&
+    !path.startsWith('-') &&
+    !`/${path}/`.includes('/../') &&
+    (!path.includes('~') || /^~\/[^~]*$/.test(path))
+  )
+}
+
 /**
  * `<ssh target>:<path>` or an absolute local path. The path is the directory
  * the bare repositories live in — the hub's `--handoff-root`, and the root the
@@ -144,16 +164,10 @@ export function parseHub(raw: string): HubLocation {
   if (colon <= 0) throw new HandoffUserError(usage, 2)
   const target = raw.slice(0, colon)
   const path = raw.slice(colon + 1).replace(/\/+$/, '')
-  if (!SSH_TARGET.test(target)) {
+  if (!isSshTarget(target)) {
     throw new HandoffUserError(`${usage}；ssh 目标 ${target} 不合规`, 2)
   }
-  if (
-    path === '' ||
-    !HUB_PATH.test(path) ||
-    path.startsWith('-') ||
-    `/${path}/`.includes('/../') ||
-    (path.includes('~') && !/^~\/[^~]*$/.test(path))
-  ) {
+  if (!isRemotePath(path)) {
     throw new HandoffUserError(
       `${usage}；路径只许 A-Z a-z 0-9 . _ ~ / -，不以 - 开头，没有 .. 段，~ 只能作开头的 ~/（与 SSH 闸门同一套规则）`,
       2,
