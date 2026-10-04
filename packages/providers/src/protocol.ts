@@ -559,7 +559,12 @@ export type ProviderResponse =
       ok: true
       state?: ProviderNodeState
       effective?: EffectiveState
-      /** `dryRun`: env keys that would change, by name only. */
+      /**
+       * `dryRun`: the managed keys that would change, named by their place in
+       * `settings.json` — `env.<KEY>`, `modelType`, `modelSettings.<slot>`
+       * (`src/services/qianmo/providers/managedView.ts`, `keyHashesOf`).
+       * Names only, never values.
+       */
       diffKeys?: string[]
       warnings?: ProviderWarning[]
     }
@@ -569,6 +574,7 @@ export type ProviderResponse =
       ok: false
       code: ProviderErrorCode
       message: string
+      /** `conflict`: the managed keys changed on disk, named as above. */
       diffKeys?: string[]
       state?: ProviderNodeState
     }
