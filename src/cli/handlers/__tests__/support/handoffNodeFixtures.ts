@@ -38,7 +38,7 @@ import {
 
 export const QMCODE_SESSION = '0199e7c2-4a51-7d30-9a1e-5b0c2f7d8e14'
 export const CLAUDE_SESSION = '7f3c2a10-5b6d-4e8f-9a01-23456789abcd'
-export const APP_SERVER_TOKEN = 'fake-app-server-capability-token-0123456789'
+const APP_SERVER_TOKEN = 'fake-app-server-capability-token-0123456789'
 /** The canary shape the handoff redaction knows (`handoff-sk-key`). */
 export const MODEL_KEY_CANARY = 'sk-test-canary-p175-0123456789abcdefABCDEF'
 

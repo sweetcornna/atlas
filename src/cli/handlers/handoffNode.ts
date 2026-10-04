@@ -395,7 +395,7 @@ export function parseHandoffNodeArgs(
 
 // ─── bwrap ───────────────────────────────────────────────────────────
 
-export type BwrapCheck =
+type BwrapCheck =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly reason: string }
 
@@ -443,7 +443,7 @@ export async function checkBwrap(
 
 // ─── Memory ──────────────────────────────────────────────────────────
 
-export interface AppServerMemory {
+interface AppServerMemory {
   /** The app-server and every descendant found. */
   readonly pids: readonly number[]
   /** `VmRSS`, summed, kB. Logged only. */
