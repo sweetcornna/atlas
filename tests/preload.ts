@@ -13,5 +13,11 @@
  * the OpenAI adapter or assert on a resolved model id assume it is unset.
  */
 
+import { isolateCredentialEnv } from './support/credentialEnv.js'
+
 delete process.env.OCC_CONFIG_DIR
 delete process.env.OPENAI_MODEL
+
+// qianmo P18.12 (hermes #33): credentials and the subscription login from
+// the developer's shell and home — tests/support/credentialEnv.ts.
+isolateCredentialEnv()

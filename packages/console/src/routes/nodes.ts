@@ -2,11 +2,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * 节点 — the roster, and the four things the console does to it: register,
- * deregister, heartbeat, wake.
+ * 节点 — the roster, and the things the console does to it: register,
+ * deregister, heartbeat, wake, and the lifecycle — pause, resume, retire
+ * (P15.2, `tenancy-m1.md` §3.6).
  *
- * Owns the `/nodes` and `/nodes/<node>` pages, `/v0/agents/…`, `/v0/wake`
- * and `/fragments/roster`.
+ * Owns the `/nodes` and `/nodes/<node>` pages, `/v0/agents/…`,
+ * `/v0/registrations`, `/v0/wake` and `/fragments/roster`.
+ *
+ * ## The lifecycle writes are ops writes
+ *
+ * Publish, pause, resume and retire take the admin guard — the admin token or
+ * a personal `ops` account — and each asks the action ledger first and writes
+ * exactly one line after: `ok`, `refused` with the rule that stopped it here
+ * (`unavailable`, `unmanaged`, `retired`, …), or `failed` with the registry's
+ * code. Who did it is written into the registration ledger as well, as the
+ * same subject the action ledger names (`access.ts`, `subjectOf`).
  *
  * ## Register and wake are this page's actions
  *
@@ -24,9 +34,14 @@
  * the page (`console.md` §4.4).
  */
 
+import { subjectOf } from '../access.js'
 import type {
   ConsoleAgent,
   ConsoleDeps,
+  LifecycleChange,
+  LifecycleOutcome,
+  LifecycleRefusal,
+  PublishInput,
   RegisterAgentInput,
   WakeInput,
 } from '../deps.js'
@@ -66,15 +81,17 @@ import {
   valueOf,
   type Parsed,
 } from './shared.js'
-import type { PageRender, RouteContext, RouteModule } from './types.js'
+import type {
+  ConsoleActionName,
+  PageRender,
+  RouteContext,
+  RouteModule,
+} from './types.js'
 
-function parseRegisterInput(
+/** What a registration says besides where: the same three optional fields either way. */
+function parseDeclarationTail(
   body: Record<string, unknown>,
-): Parsed<RegisterAgentInput> {
-  const address = requiredString(body, 'address')
-  if (!address.ok) return address
-  const endpoint = requiredString(body, 'endpoint')
-  if (!endpoint.ok) return endpoint
+): Parsed<Omit<RegisterAgentInput, 'address' | 'endpoint'>> {
   const publicKey = optionalString(body, 'publicKey')
   if (!publicKey.ok) return publicKey
   const status = optionalString(body, 'status')
@@ -95,13 +112,177 @@ function parseRegisterInput(
   return {
     ok: true,
     value: {
-      address: address.value,
-      endpoint: endpoint.value,
       ...(capabilities === undefined ? {} : { capabilities }),
       ...(publicKey.value === undefined ? {} : { publicKey: publicKey.value }),
       ...(status.value === undefined ? {} : { status: status.value }),
     },
   }
+}
+
+function parseRegisterInput(
+  body: Record<string, unknown>,
+): Parsed<RegisterAgentInput> {
+  const address = requiredString(body, 'address')
+  if (!address.ok) return address
+  const endpoint = requiredString(body, 'endpoint')
+  if (!endpoint.ok) return endpoint
+  const tail = parseDeclarationTail(body)
+  if (!tail.ok) return tail
+  return {
+    ok: true,
+    value: { address: address.value, endpoint: endpoint.value, ...tail.value },
+  }
+}
+
+/**
+ * The publish body. The endpoint may be left out: with a managed list it comes
+ * from the hub's configuration (`tenancy-m1.md` §3.6), and the ledger says so
+ * when one that was given does not match.
+ */
+function parsePublishInput(
+  body: Record<string, unknown>,
+): Parsed<PublishInput> {
+  const address = requiredString(body, 'address')
+  if (!address.ok) return address
+  const endpoint = optionalString(body, 'endpoint')
+  if (!endpoint.ok) return endpoint
+  const tail = parseDeclarationTail(body)
+  if (!tail.ok) return tail
+  return {
+    ok: true,
+    value: {
+      address: address.value,
+      ...(endpoint.value === undefined || endpoint.value.trim() === ''
+        ? {}
+        : { endpoint: endpoint.value }),
+      ...tail.value,
+    },
+  }
+}
+
+// --- the lifecycle (P15.2) -------------------------------------------------
+
+const LIFECYCLE_UNSUPPORTED =
+  '该控制台没有接入登记簿的生命周期 · 不能暂停、恢复或退役'
+
+/** The three lifecycle sub-routes and the verb each is written down under. */
+const LIFECYCLE_ACTIONS = {
+  pause: 'agent.pause',
+  resume: 'agent.resume',
+  retire: 'agent.retire',
+} as const satisfies Record<string, ConsoleActionName>
+
+type LifecycleAction = keyof typeof LIFECYCLE_ACTIONS
+
+function isLifecycleAction(name: string | undefined): name is LifecycleAction {
+  return name !== undefined && Object.hasOwn(LIFECYCLE_ACTIONS, name)
+}
+
+/**
+ * The answer to a refusal the ledger made before anything left: the status,
+ * and the body's code from the console's one vocabulary (`respond.ts`). The
+ * rule itself — `unmanaged`, `retired`, `paused` — is what the action ledger
+ * records and what the message says.
+ */
+function refusalResponse(refusal: LifecycleRefusal): Response {
+  switch (refusal.code) {
+    case 'unavailable':
+      return fail(503, 'unavailable', refusal.message)
+    // Not on the list the hub was started with: the same answer a wake aimed
+    // outside its allowlist gets.
+    case 'unmanaged':
+      return fail(403, 'rejected', refusal.message)
+    // The state forbids it, and there is no doubt about which state: the
+    // address is retired for good, or paused and waiting for resume.
+    case 'retired':
+    case 'paused':
+      return fail(409, 'rejected', refusal.message)
+    case 'not_found':
+      return fail(404, 'not_found', refusal.message)
+    case 'invalid':
+      return fail(400, 'invalid', refusal.message)
+  }
+}
+
+/**
+ * Write one lifecycle outcome down and answer it: `ok`; `refused` with the
+ * rule that stopped it on this side; `failed` with the registry's code.
+ */
+async function answerLifecycle(
+  ctx: RouteContext,
+  verb: ConsoleActionName,
+  address: string,
+  outcome: LifecycleOutcome<LifecycleChange>,
+  success: (change: LifecycleChange) => Response,
+): Promise<Response> {
+  if (outcome.ok) {
+    await ctx.record(verb, address, 'ok')
+    return success(outcome.value)
+  }
+  if ('refusal' in outcome) {
+    await ctx.record(verb, address, 'refused', outcome.refusal.code)
+    return refusalResponse(outcome.refusal)
+  }
+  await ctx.record(verb, address, 'failed', outcome.failure.code)
+  return failureResponse(outcome.failure)
+}
+
+async function handleLifecycle(
+  ctx: RouteContext,
+  address: string,
+  action: LifecycleAction,
+): Promise<Response> {
+  const denied = guard(ctx.access.credential, 'admin', 'guarded')
+  if (denied !== null) return denied
+  if (ctx.request.method !== 'POST') return methodNotAllowed(['POST'])
+  const lifecycle = ctx.deps.lifecycle
+  if (lifecycle === undefined) {
+    return fail(501, 'unsupported', LIFECYCLE_UNSUPPORTED)
+  }
+  const blocked = await ctx.admit()
+  if (blocked !== null) return blocked
+  const by = subjectOf(ctx.access)
+  const outcome =
+    action === 'pause'
+      ? await lifecycle.pause(address, by)
+      : action === 'resume'
+        ? await lifecycle.resume(address, by)
+        : await lifecycle.retire(address, by)
+  return await answerLifecycle(
+    ctx,
+    LIFECYCLE_ACTIONS[action],
+    address,
+    outcome,
+    change => json(change),
+  )
+}
+
+/**
+ * `GET /v0/registrations`: the ledger as it stands — each address's state,
+ * the managed list, and what is wrong with the ledger if anything is.
+ *
+ * Who changed an entry is shown only to a caller who may write: the same rule
+ * the alert acknowledgements keep (`deps.ts`, `AlertAck.by`) — who did what
+ * belongs to the operations record, not to every reader.
+ */
+async function handleRegistrations(
+  ctx: RouteContext,
+  rest: readonly string[],
+): Promise<Response> {
+  if (rest.length !== 0) return notFound(`unknown path: ${ctx.url.pathname}`)
+  const denied = guard(ctx.access.credential, 'view', 'guarded')
+  if (denied !== null) return denied
+  if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
+  const lifecycle = ctx.deps.lifecycle
+  if (lifecycle === undefined) {
+    return fail(501, 'unsupported', LIFECYCLE_UNSUPPORTED)
+  }
+  const snapshot = await lifecycle.read()
+  if (canWrite(ctx.access)) return json(snapshot)
+  return json({
+    ...snapshot,
+    registrations: snapshot.registrations.map(({ by: _by, ...rest }) => rest),
+  })
 }
 
 function parseWakeInput(body: Record<string, unknown>): Parsed<WakeInput> {
@@ -221,6 +402,30 @@ async function handleAgentsCollection(ctx: RouteContext): Promise<Response> {
     if (denied !== null) return denied
     const body = await readJsonObject(request)
     if (body === null) return fail(400, 'invalid', '请求体必须是 JSON 对象')
+    const lifecycle = deps.lifecycle
+    if (lifecycle !== undefined) {
+      // With a lifecycle, registering is publishing (§3.6): the ledger checks
+      // the managed list and the address's state, and writes down who.
+      const publish = parsePublishInput(body)
+      if (!publish.ok) return fail(400, 'invalid', publish.message)
+      const blocked = await ctx.admit()
+      if (blocked !== null) return blocked
+      const outcome = await lifecycle.publish(
+        publish.value,
+        subjectOf(ctx.access),
+      )
+      // The body stays the registry's record, as it was before the ledger.
+      return await answerLifecycle(
+        ctx,
+        'agent.register',
+        publish.value.address,
+        outcome,
+        change =>
+          change.agent === undefined
+            ? json(change.registration)
+            : json(change.agent),
+      )
+    }
     const input = parseRegisterInput(body)
     if (!input.ok) return fail(400, 'invalid', input.message)
     const blocked = await ctx.admit()
@@ -468,17 +673,24 @@ export const nodesRoute: RouteModule = {
     script: NODES_PAGE_JS,
   },
   api: {
-    heads: ['agents', 'wake'],
+    heads: ['agents', 'wake', 'registrations'],
     async handle(ctx, head, rest) {
       if (head === 'wake') {
         if (rest.length === 0) return await handleWake(ctx)
         return notFound(`unknown path: ${ctx.url.pathname}`)
+      }
+      if (head === 'registrations') {
+        return await handleRegistrations(ctx, rest)
       }
       if (rest.length === 0) return await handleAgentsCollection(ctx)
       const address = decodeURIComponent(rest[0] ?? '')
       if (rest.length === 1) return await handleAgentItem(ctx, address)
       if (rest.length === 2 && rest[1] === 'heartbeat') {
         return await handleHeartbeat(ctx, address)
+      }
+      const action = rest[1]
+      if (rest.length === 2 && isLifecycleAction(action)) {
+        return await handleLifecycle(ctx, address, action)
       }
       return notFound(`unknown path: ${ctx.url.pathname}`)
     },

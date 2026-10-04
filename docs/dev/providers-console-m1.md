@@ -19,7 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20。审计后（同版）：CH-4 保留并写明取舍；CH-7 改由调用方传入会话 id，循环预算不动；P18.13 的完成标准加一次热切换给 G-2 补样本 |
+| **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20。审计后（同版）：CH-4 保留并写明取舍；CH-7 改由调用方传入会话 id，循环预算不动；P18.13 的完成标准加一次热切换给 G-2 补样本。P18.12 实现回写（同版）：§1.2 R-7、§2.4 `capabilities`、§3.4 `always` 一行里「节点自报」的两项改为已生效 |
 | **v1.2** | **2026-10-03** | **D-8：每个 agent 的上下文窗口默认 200 000 token，控制台可改；D-9：自动压缩阈值可用 `/autocompact` 等方式设置。**档案里模型的 `contextTokens` 缺省按 200 000 编译；节点指派可单独覆盖；仍编译到同一个 `modelSettings.<slot>.contextTokens`，不新开上下文覆盖。P18.6、P18.9 各加 4 人时。**D-9：自动压缩阈值可用 `/autocompact` 等方式设置**，新增 P18.20（ACP 会话里的本地命令，16–24 人时），核心合计改为 680–1002，全部合计改为 1030–1512。同步改了 §0.1、§3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9、§9.4 |
 | **v1.1** | **2026-10-03** | **回写负责人对 v1.0 §13 四点的拍板（D-4 ~ D-7）。**第六类动作不要 provision token，用个人账号的 ops 角色；真 key 只用现有 `gpt-6-luna` 凭据；多 key 轮换进 M1，新增 P18.18（B4，24–40 人时），核心合计改为 656–970 人时，全部合计改为 1006–1480 人时；发版预先授权，由主 agent 执行。同步改了 §0.1、§0.5、§1.2 R-13、§1.3 O-3、§5.6 第 2 行、§7.4、§8.4、§9、§10、§11、§13 |
 | **v1.0** | **2026-10-03** | **定案。**负责人三项决定（前端技术形态不变、中枢持有加密密钥并新增第六类动作、套餐 key 支持并标注条款）；改写两处旧定案（`beta-env.md` §8.3「H 上没有这一份」、`node-provisioning.md`「动作集钉死五类」）；hermes §11 的 33 项全部落到包里，没有「待补」项；包表分 B0–B5 六批 |
@@ -109,7 +109,7 @@
 | **R-4** | **第六类动作 = 专用 SSH key + `authorized_keys` 强制命令 + stdin 传 JSON + 节点侧 `qm provider` 白名单**。密钥只走 stdin，不进 argv、URL、日志、审计 | 闭合由目标机的 sshd 强制，这一点在 H 失陷后仍然有效（`node-provisioning.md` §4.4 第 4 条）。客户端发的是一个不存在的哨兵命令，强制命令那一行丢了时会失败，不会静默成功（§2.5） |
 | **R-5** | **写入与切换分两阶段**：`apply` 只校验并写一份 pending 意图；真正改写 `settings.json`，由 resident 在 ACP 子进程**代际边界**上完成 | 如果在旧一代子进程活着的时候改 `settings.json`，下一次 `createSession` 就会把新 env 写进整个进程，同一子进程里正在跑的会话会被换线（matrix §4.4 问题 1、2） |
 | **R-6** | **热切换等空闲**：没有在途 turn 时才回收 ACP 子进程；最多等 30 min，到上限只告警、不强杀 | 回收时在途任务会被判失败（matrix §4.5 第 2 行）；值守作业的长 turn 不能被换配置打断 |
-| **R-7** | **换厂商或换线路时，会话默认重置**；只换同一端点上的模型时保留会话。等 P18.8（hermes #4 回放过滤、#23 密文跨端点）合入、节点自报 `replayFilter` 之后，才允许跨厂商保留会话 | 历史里别家的 thinking 签名、`encrypted_content`、`reasoning_content` 发给新端点会 400 |
+| **R-7** | **换厂商或换线路时，会话默认重置**；只换同一端点上的模型时保留会话。等 P18.8（hermes #4 回放过滤、#23 密文跨端点）合入、节点自报 `replayFilter` 之后，才允许跨厂商保留会话（已生效：P18.8 已合入，节点报 `replayFilter: true`） | 历史里别家的 thinking 签名、`encrypted_content`、`reasoning_content` 发给新端点会 400 |
 | **R-8** | **effort 是每个模型的显式字段**：`send` 取 `always / never / auto` 三态，加上档位和可选档位集合；档位只往低夹。chat 线的 `always` 在 P18.5 改掉门控之前**拒收** | §0.2 的教训。chat 线今天只对 ChatGPT codex 推理模型发 `reasoning_effort`（`openai/index.ts:499`），显式覆盖到不了线上，会出现「显示开、线上不发」 |
 | **R-9** | **测连、测速、拉模型列表都在节点上执行**，返回三态 `{ok, reachable, message}` | hermes B7。中枢不碰厂商 API |
 | **R-10** | **预设以国产厂商的 Anthropic 兼容线优先**；OpenAI、xAI 走 Responses；Gemini 走原生线；Mistral 走 Chat。按量和套餐分成两组。所有预设在真 key 冒烟之前一律标「未评估」 | `vendors-research.md` §6.1；CLAUDE.md「未评估」声明必须保留 |
@@ -219,7 +219,7 @@
 | `resident` | `{running, generation, inFlight}` |
 | `effective` | 节点在**单独的进程**里，把 `settings.json` 应用到自己的 `process.env`（和 `createSession` 同一序列）之后，用真实函数算出的：`apiProvider`（`getAPIProvider()`）、`wire`（`resolveOpenAIWireProtocol()` 或线路固定值）、`model`、`effortOnWire`（`modelSupportsEffort()`，chat 线另按当时代码里的门控判断）、`effortLevel`、`contextTokens` |
 | `inheritedProviderKeys` | resident 自身环境里出现的 provider 类键名（不含值），由 resident 启动时写入 |
-| `capabilities` | 节点代码支持的特性：`chatEffortHonorsOverride`（P18.5 之后为 true）、`replayFilter`（P18.8 之后为 true）、`protocol: 1` |
+| `capabilities` | 节点代码支持的特性：`chatEffortHonorsOverride`（P18.5 已合入，已生效，为 true）、`replayFilter`（P18.8 已合入，已生效，为 true）、`protocol: 1`。前两项取自调用层的 `getModelCompatCapabilities()`，不写死：`qm provider` 自 P18.7 起就把它们合并进上报与校验，P18.12 又去掉了 `node.ts` 里两项都为 `false` 的残留默认值（直接调 `stageProviderApply` / `readProviderState` 时用的就是它） |
 
 **漂移类型**（页面上每类都有中文说明和修复动作）：
 
@@ -399,7 +399,7 @@ export function computeEffectiveProviderState(): EffectiveState              // 
 
 | `send` | anthropic、openai-responses | openai-chat | gemini、grok |
 |---|---|---|---|
-| `always` | 模型的能力切到 `explicit`，`effort: true`；`xhigh_effort` / `max_effort` 按 `levels` 是否包含对应档位来定。模型钉进它占的档位，覆盖才能命中（基座只在「模型名等于某个档位钉住的值」时读这一档的能力） | **P18.5 合入、节点自报 `chatEffortHonorsOverride` 之前拒收**，返回 `effort-unsendable`。之后规则同左 | v1 只允许 `auto`。P18.5 让能力覆盖也读 `GEMINI_` / `GROK_` 前缀之后再放开 |
+| `always` | 模型的能力切到 `explicit`，`effort: true`；`xhigh_effort` / `max_effort` 按 `levels` 是否包含对应档位来定。模型钉进它占的档位，覆盖才能命中（基座只在「模型名等于某个档位钉住的值」时读这一档的能力） | **P18.5 合入、节点自报 `chatEffortHonorsOverride` 之前拒收**，返回 `effort-unsendable`。之后规则同左（已生效：P18.5 已合入，节点报 true，chat 线的 `always` 不再被拒） | v1 只允许 `auto`。P18.5 让能力覆盖也读 `GEMINI_` / `GROK_` 前缀之后再放开 |
 | `never` | 能力 `explicit`，`effort: false` | 同左（不发本来就是今天的行为） | 同上 |
 | `auto` | 能力 `family`，不写覆盖；节点算出来是什么就显示什么 | 同左 | 同左 |
 

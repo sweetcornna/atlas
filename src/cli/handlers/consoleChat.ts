@@ -201,6 +201,12 @@ interface ConsoleChatOptions {
    * wake 是历史，不是范围。
    */
   readonly issueCapability?: WakeCapabilityIssuer
+  /**
+   * 出口检查（P15.2，`tenancy-m1.md` §3.6 D8）：拨号之前问一句这个地址能不能拨。
+   * 回 `null` 放行；回一个失败就原样交给页面，链路一条都不建。生产上是登记簿的
+   * `exitRefusal`——地址已暂停、已退役，或登记簿读不出来。不给就不查。
+   */
+  readonly exitGate?: (address: string) => ConsoleFailure | null
   readonly now?: () => number
   readonly newId?: () => string
   readonly onError?: (error: unknown) => void
@@ -826,7 +832,9 @@ export function createConsoleChatPort(
           endpoint: agent.endpoint,
           status: agent.status,
           dialable:
-            normalized !== null && allowedFor(parsed, normalized) !== null,
+            normalized !== null &&
+            allowedFor(parsed, normalized) !== null &&
+            (options.exitGate?.(agent.address) ?? null) === null,
         })
       }
       return { ok: true, value: out }
@@ -898,6 +906,10 @@ export function createConsoleChatPort(
           `/${input.command} 要控制台签名才会在节点上执行 · 请用 --chat-sign 重启控制台`,
         )
       }
+
+      // 出口检查排在查名册之前：一个暂停了的地址，连「它的端点在哪」都不必问。
+      const gated = options.exitGate?.(stored.target) ?? null
+      if (gated !== null) return { ok: false, failure: gated }
 
       const endpoint = await endpointFor(stored.target)
       if (!endpoint.ok) return endpoint

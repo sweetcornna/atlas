@@ -20,6 +20,20 @@ import { chatLaneSendsReasoningEffort } from 'src/services/qianmo/modelCompat/ch
 import { outputCapRetryTokens } from 'src/services/qianmo/modelCompat/outputCap.js'
 import { resolveOpenAIRequestMaxTokens } from 'src/services/qianmo/modelCompat/outputTokenDefault.js'
 import {
+  adaptGuardedChatStream,
+  chatStreamIdleTimeoutMs,
+} from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
+import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
+import { applyChatSchemaRules } from 'src/services/qianmo/modelCompat/schemaRules.js'
+import {
+  type ContentFilterSink,
+  contentFilterNotice,
+} from 'src/services/qianmo/modelCompat/contentFilter.js'
+import {
+  sendDegradingToolImages,
+  toolResultImagesAccepted,
+} from 'src/services/qianmo/modelCompat/toolResultImages.js'
+import {
   resolvePromptCacheOptions,
   resolvePromptCacheRetention,
 } from 'src/services/qianmo/promptCache/requestExtras.js'
@@ -53,7 +67,6 @@ import { getGptBehaviorPromptSection } from './gptBehaviorPrompt.js'
 import {
   anthropicMessagesToOpenAI,
   resolveOpenAIModel,
-  adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
   OPENAI_REASONING_ITEMS_FIELD,
@@ -102,6 +115,7 @@ import {
   retryThirdPartyEventStream,
 } from '../streamAssembly.js'
 import { isUserAbort } from '../userAbort.js'
+import { FallbackTriggeredError } from '../withRetry.js'
 import { getModelMaxOutputTokens } from '../../../utils/session/context.js'
 import type { Options } from '../claude.js'
 import {
@@ -191,10 +205,17 @@ async function createChatStreamWithCacheKeyFallback(params: {
   // its own detector and latch.
   return sendDroppingRejectedParameters({
     body: params.buildBody(params.promptCacheKey),
+    // qianmo P18.12 (hermes #20): a refused tool image is dropped and the
+    // body re-sent — src/services/qianmo/modelCompat/toolResultImages.ts.
     send: body =>
-      client.chat.completions.create(body, {
-        signal: params.signal,
-      }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+      sendDegradingToolImages(
+        body,
+        degraded =>
+          client.chat.completions.create(degraded, {
+            signal: params.signal,
+          }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>,
+        { model: body.model, baseURL: process.env.OPENAI_BASE_URL },
+      ),
     signal: params.signal,
     droppable: [
       {
@@ -350,9 +371,22 @@ export async function* queryModelOpenAI(
       {
         enableThinking,
         preserveReasoningItems: wireProtocol === 'responses',
+        // qianmo P18.12 (hermes #20): chat wire only —
+        // src/services/qianmo/modelCompat/toolResultImages.ts.
+        toolResultImages:
+          wireProtocol !== 'responses' &&
+          toolResultImagesAccepted({
+            model: openaiModel,
+            baseURL: process.env.OPENAI_BASE_URL,
+          }),
       },
     )
-    const openaiTools = anthropicToolsToOpenAI(standardTools)
+    // qianmo P18.12 (hermes #21): lossless schema rules, chat wire only —
+    // src/services/qianmo/modelCompat/schemaRules.ts.
+    const openaiTools = applyChatSchemaRules(
+      anthropicToolsToOpenAI(standardTools),
+      wireProtocol,
+    )
     const openaiToolChoice = anthropicToolChoiceToOpenAI(options.toolChoice)
     // options.model, NOT openaiModel: resolveAppliedEffort keys the per-tier
     // settings slot off the model the SESSION selected, and the claude/gemini/
@@ -464,6 +498,12 @@ export async function* queryModelOpenAI(
     // `store: false` means the server keeps no copy, and a request that omits
     // them no longer matches the cached prefix.
     const reasoningItems: OpenAIReasoningItem[] = []
+    // qianmo P18.12: this turn's chat `reasoning_details`, replayed to the
+    // OpenRouter / MiniMax model that produced it —
+    // src/services/qianmo/modelCompat/reasoningDetailsReplay.ts.
+    const reasoningDetails: unknown[] = []
+    // qianmo P18.12 (hermes #27): src/services/qianmo/modelCompat/contentFilter.ts.
+    const contentFilter: ContentFilterSink = { seen: false }
     // qianmo P18.19 (CH-6): the response id (and cache diagnostics) for the
     // same message — src/services/qianmo/promptCache/responseRecord.ts.
     const responseCapture: ResponseCapture = {}
@@ -475,6 +515,13 @@ export async function* queryModelOpenAI(
     // the Chat Completions adapter.
     const adaptedStream = retryThirdPartyEventStream({
       signal,
+      // qianmo P18.12 (hermes #1): src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+      fallback: { model: options.model, fallbackModel: options.fallbackModel },
+      // qianmo P18.12 (hermes #17): src/services/qianmo/modelCompat/vendorBackoff.ts.
+      backoffTarget: {
+        model: openaiModel,
+        baseURL: process.env.OPENAI_BASE_URL,
+      },
       onRetry: () => clearOpenAIClientCache(),
       // qianmo P18.5 (hermes #5): an output-cap rejection lowers the cap once
       // (src/services/qianmo/modelCompat/outputCap.ts). The ChatGPT route sends
@@ -534,7 +581,7 @@ export async function* queryModelOpenAI(
                   captureResponse(responseCapture, response),
               },
             )
-          : adaptOpenAIStreamToAnthropic(
+          : adaptGuardedChatStream(
               await createChatStreamWithCacheKeyFallback({
                 buildBody: cacheKey =>
                   buildOpenAIRequestBody({
@@ -567,6 +614,18 @@ export async function* queryModelOpenAI(
               }),
               openaiModel,
               { includeCacheWriteTokens: reportsCacheWrites },
+              {
+                reasoningDetails,
+                // qianmo P18.12 (hermes #18): chatStreamGuards.ts.
+                idleTimeout: {
+                  ms: chatStreamIdleTimeoutMs(),
+                  label: 'OpenAI Chat',
+                },
+                // qianmo P18.12 (hermes #19): chatStreamGuards.ts.
+                errorChunks: { label: 'OpenAI Chat' },
+                // qianmo P18.12 (hermes #27): contentFilter.ts.
+                contentFilter,
+              },
             ),
     })
 
@@ -665,8 +724,16 @@ export async function* queryModelOpenAI(
               stopReason,
               maxTokens,
               maxTokensEnvHint: OPENAI_MAX_TOKENS_ENV_HINT,
+              // qianmo P18.12 (hermes #27): contentFilter.ts.
+              terminalError: contentFilterNotice(stopReason, contentFilter),
               providerMetadata: withResponseMetadata(
-                reasoningMetadata(reasoningItems),
+                {
+                  ...reasoningMetadata(reasoningItems),
+                  ...reasoningDetailsMetadata(reasoningDetails, {
+                    model: openaiModel,
+                    baseURL: process.env.OPENAI_BASE_URL,
+                  }),
+                },
                 responseCapture,
               ),
             })) {
@@ -735,6 +802,9 @@ export async function* queryModelOpenAI(
       logForDebugging('[OpenAI] Request aborted by user')
       return
     }
+    // qianmo P18.12 (hermes #1): the ladder's model fallback is for query.ts
+    // to act on, not an error to report.
+    if (error instanceof FallbackTriggeredError) throw error
     logForDebugging('[OpenAI] API request failed', { level: 'error' })
     // One failure on this lane needs occ's own words. OpenCode's Console plane
     // answers 403 `managed_inference_model_disabled` for a model the

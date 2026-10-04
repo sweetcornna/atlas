@@ -29,7 +29,6 @@ import {
   resolveDeepSeekReasoningEffort,
 } from '../../../utils/model/deepseekTuning.js'
 import {
-  convertEffortValueToLevel,
   type EffortValue,
   modelSupportsEffort,
   resolveAppliedEffort,
@@ -37,6 +36,7 @@ import {
 import {
   getMainLoopModel,
   getMainLoopModelSettingsSlot,
+  normalizeModelStringForAPI,
 } from '../../../utils/model/model.js'
 import { getAPIProvider } from '../../../utils/model/providers.js'
 import { getContextWindowForModel } from '../../../utils/session/context.js'
@@ -133,38 +133,41 @@ function wireEffort(
     }
   }
   if (provider === 'gemini') {
-    // gemini/index.ts scales the thinking budget by the applied effort; the
-    // knob exists whenever an effort resolves for this model.
-    const wireModel = resolveGeminiModel(model)
-    const onWire = modelSupportsEffort(model) && applied !== undefined
+    // gemini/index.ts scales `thinkingBudget` by the applied effort, and sends
+    // a budget only for `enabled` thinking. An ACP session is never given
+    // that: QueryEngine starts it `adaptive` (or `disabled`), so the request
+    // carries `includeThoughts` and no budget, whatever the effort. Found by
+    // the per-preset parity table (P18.12, presetParity.test.ts): this used
+    // to report the effort on the wire.
     return {
       wire: 'gemini',
-      wireModel,
-      onWire,
-      level:
-        onWire && applied !== undefined
-          ? convertEffortValueToLevel(applied)
-          : null,
+      wireModel: resolveGeminiModel(model),
+      onWire: false,
+      level: null,
     }
   }
   // claude.ts configureEffortParams: nothing unless modelSupportsEffort(model);
   // DeepSeek's endpoint always gets a rung; otherwise only a string level is
   // put into output_config.effort.
+  // claude.ts sends `normalizeModelStringForAPI(options.model)`: a `[1m]`
+  // suffix is a context selection, not part of the id on the wire (found by
+  // the per-preset parity table, P18.12).
+  const wireModel = normalizeModelStringForAPI(model)
   if (!modelSupportsEffort(model)) {
-    return { wire: 'anthropic', wireModel: model, onWire: false, level: null }
+    return { wire: 'anthropic', wireModel, onWire: false, level: null }
   }
   if (isDeepSeekTuningActiveForModel(model, process.env.ANTHROPIC_BASE_URL)) {
     const level = resolveDeepSeekReasoningEffort(applied)
     return {
       wire: 'anthropic',
-      wireModel: model,
+      wireModel,
       onWire: true,
       level: wireEffortLevel(level),
     }
   }
   return {
     wire: 'anthropic',
-    wireModel: model,
+    wireModel,
     onWire: typeof applied === 'string',
     level: wireEffortLevel(applied),
   }
