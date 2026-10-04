@@ -1892,6 +1892,36 @@ export interface LimitsSnapshot {
   readonly registryTtlMs: number
 }
 
+/**
+ * The instance's own facts, as the startup banner prints them (A4).
+ *
+ * Before this the build, the registry, the trails, the signing state and the
+ * files a console writes were only in its stdout: a page could not say which
+ * build it was, so a report about it started with "which one is that". Every
+ * value here is already in that banner and none is a secret — no token, no
+ * PSK, no private key. The one key that appears is the public signing
+ * identity the banner prints for `--trust`.
+ */
+export interface ConsoleAbout {
+  /** `sourceCommit()`: a full SHA, `<sha>-dirty`, or `unknown` (issue #70). */
+  readonly sourceCommit: string
+  /** The registry this console reads and writes. */
+  readonly registryUrl: string
+  /** One line per audit source: `node=path`. */
+  readonly auditTrails: readonly string[]
+  /** The banner's wake line, as printed. */
+  readonly wake: string
+  /** `node=publicKey` when wakes are signed (`--wake-sign`). */
+  readonly wakeSigning?: string
+  /** The banner's chat line, as printed; `(signed)` in it is `--chat-sign`. */
+  readonly chat: string
+  /**
+   * The files this console writes, labelled. Paths are not secrets, but they
+   * describe the host: the page shows them only to a reader who may write.
+   */
+  readonly paths: readonly (readonly [label: string, path: string])[]
+}
+
 /** Everything a console instance needs. `wake` and `chat` are optional. */
 export interface ConsoleDeps {
   readonly registry: RegistryPort
@@ -1936,6 +1966,12 @@ export interface ConsoleDeps {
    * line under. Read from the host's identity roster, never spelled here.
    */
   readonly binName?: string
+  /**
+   * What the startup banner says about this instance, for 设置与关于 (A4).
+   * Absent from a host that does not say; the page then shows what the
+   * package itself knows.
+   */
+  readonly about?: ConsoleAbout
   /** Injected for deterministic tests; defaults to `Date.now` at the edges. */
   readonly now?: () => number
   /** Shown in the page header so two consoles are never confused. */

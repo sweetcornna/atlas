@@ -7,16 +7,24 @@
  * Owns `/v0/limits` and `/fragments/limits`.
  */
 
-import type { ConsoleAgent, ConsoleDeps, LimitsSnapshot } from '../deps.js'
+import type {
+  ConsoleAgent,
+  ConsoleDeps,
+  ConsoleResult,
+  LimitsSnapshot,
+} from '../deps.js'
 import { html, json, methodNotAllowed, notFound } from '../respond.js'
+import { renderAbout } from '../view/about.js'
 import { sectionHead } from '../view/bits.js'
-import { escapeHtml } from '../view/escape.js'
 import { rosterLease } from '../view/format.js'
 import { renderLimits } from '../view/limits.js'
 import {
   DEFAULT_BIN_NAME,
   DEFAULT_LABEL,
+  canWrite,
+  failureOf,
   guard,
+  readAuditSources,
   underPath,
   valueOf,
 } from './shared.js'
@@ -43,27 +51,29 @@ export function pageLimits(
 }
 
 /**
- * The instance's own facts, as a definition list: the things an operator
- * reads off this page before reporting a problem with it.
+ * The instance's own facts and whether its wires answer: the things an
+ * operator reads off this page before reporting a problem with it (A4).
  */
-function instanceFacts(ctx: RouteContext): string {
+async function instanceFacts(
+  ctx: RouteContext,
+  registry: ConsoleResult<unknown>,
+): Promise<string> {
   const { deps } = ctx
-  const rows: (readonly [string, string])[] = [
-    ['实例', deps.label ?? DEFAULT_LABEL],
-    ['控制台身份', deps.identity ?? '未设置'],
-    ['命令名', deps.binName ?? DEFAULT_BIN_NAME],
-  ]
-  return (
-    `<dl class="dl">` +
-    rows
-      .map(
-        ([key, value]) =>
-          `<div class="lim-row"><dt>${escapeHtml(key)}</dt>` +
-          `<dd class="mono">${escapeHtml(value)}</dd></div>`,
-      )
-      .join('') +
-    `</dl>`
-  )
+  const trails = await readAuditSources(deps, { limit: 1 })
+  return renderAbout({
+    label: deps.label ?? DEFAULT_LABEL,
+    identity: deps.identity ?? '未设置',
+    binName: deps.binName ?? DEFAULT_BIN_NAME,
+    ...(deps.about === undefined ? {} : { about: deps.about }),
+    ports: [
+      { name: '注册中心', failure: failureOf(registry) },
+      ...trails.map(trail => ({
+        name: `审计链 · ${trail.node}`,
+        failure: trail.failure,
+      })),
+    ],
+    canWrite: canWrite(ctx.access),
+  })
 }
 
 export const settingsRoute: RouteModule = {
@@ -84,7 +94,10 @@ export const settingsRoute: RouteModule = {
         body:
           `<section class="sec" id="instance-section">` +
           sectionHead('Instance', '实例', { headingId: 'h-instance' }) +
-          `<div class="card elev-sm">${instanceFacts(ctx)}</div></section>` +
+          `<div class="card elev-sm">${await instanceFacts(
+            ctx,
+            listed,
+          )}</div></section>` +
           `<section class="sec" id="limits-section">` +
           sectionHead('Limits', '限额', {
             headingId: 'h-limits',

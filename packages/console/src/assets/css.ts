@@ -762,6 +762,8 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .lim-row:last-child { border-bottom: 0; }
 .lim-row dt { color: var(--color-quiet); }
 .lim-row dd { margin: 0; font-family: var(--font-mono); font-size: 13px; }
+.lim-row dd.plain { font-family: inherit; overflow-wrap: anywhere; }
+.about-health, .about-paths { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-divider); }
 .strip {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
   margin-top: var(--space-4); padding-top: var(--space-3);

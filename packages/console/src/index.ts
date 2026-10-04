@@ -31,6 +31,7 @@ export type {
   ChatTurnState,
   ChatTurnVariant,
   ChatUpdate,
+  ConsoleAbout,
   ConsoleAgent,
   ConsoleAuditSource,
   ConsoleCaRoot,

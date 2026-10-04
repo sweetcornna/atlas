@@ -586,6 +586,45 @@ export async function runConsole(args: readonly string[]): Promise<void> {
     // Spelled once, in the identity roster — never as a literal here
     // (CLAUDE.md §2.3).
     binName: invokedBinName(),
+    // 横幅里那几条身份与接线事实，原样交给「设置与关于」（A4）：页面答得出
+    // 自己是哪一版、连着哪个注册中心、签不签名。只放横幅已经打出来的东西，没有
+    // 任何秘密；路径只给能写的人看（`view/about.ts`）。
+    about: {
+      sourceCommit: sourceCommit(),
+      registryUrl: config.registryUrl,
+      auditTrails: config.auditTargets.map(
+        target => `${target.node}=${target.path}`,
+      ),
+      wake: wake.status,
+      ...(wake.identity === undefined
+        ? {}
+        : {
+            wakeSigning: `${wake.identity.node}=${wake.identity.publicKey}`,
+          }),
+      chat: chat.status,
+      paths: [
+        ...(chat.hub === undefined
+          ? []
+          : [['对话记录', config.chatStorePath] as const]),
+        ...(serverNotes === undefined
+          ? []
+          : [['服务器备注', config.serverNotesPath] as const]),
+        ['告警确认', consoleAlertAcksPath()] as const,
+        ...(handoff === undefined
+          ? []
+          : [['转交账本', handoff.ledgerPath] as const]),
+        ...(accounts === undefined || config.accountsStorePath === undefined
+          ? []
+          : [
+              ['账号库', config.accountsStorePath] as const,
+              ['会话库', config.sessionsStorePath ?? ''] as const,
+            ]),
+        ...(actions === undefined ? [] : [['动作账本', actions.path] as const]),
+        ...(providers === undefined || config.providers === undefined
+          ? []
+          : [['模型服务配置', config.providers.storePath] as const]),
+      ],
+    },
   }
 
   const handle = startConsoleServer(deps, config.port, {

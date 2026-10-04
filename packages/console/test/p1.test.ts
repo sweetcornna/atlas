@@ -9,11 +9,17 @@
 
 import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
-import type { AuditPage, ConsoleCertificate } from '../src/deps.js'
+import type {
+  AuditPage,
+  ConsoleAbout,
+  ConsoleCertificate,
+} from '../src/deps.js'
+import { createConsoleHandler } from '../src/http.js'
 import { renderOverview } from '../src/view/page.js'
 import {
   ADMIN,
   NOW,
+  TOKENS,
   TRACE,
   VIEW,
   agentAt,
@@ -318,3 +324,74 @@ describe('A2 · the certificate card', () => {
 })
 
 const HOUR_MS = 3_600_000
+
+describe('A4 · the settings page says which console this is', () => {
+  const ABOUT: ConsoleAbout = {
+    sourceCommit: '0123456789abcdef0123456789abcdef01234567',
+    registryUrl: 'http://127.0.0.1:38610',
+    auditTrails: ['tokyo-1=/srv/qm/tokyo-1/audit.ndjson'],
+    wake: 'disabled (no --wake-url)',
+    chat: 'enabled as qianmo://console/operator (signed) -> tokyo-1 -> ws://127.0.0.1:38611/',
+    paths: [['对话记录', '/srv/qm/console/chat.ndjson']],
+  }
+
+  async function settings(token: string, about?: ConsoleAbout) {
+    const h = pageHarness()
+    const deps = about === undefined ? h.deps : { ...h.deps, about }
+    const handle = createConsoleHandler(deps, TOKENS)
+    return await (await handle(browse('/settings', token))).text()
+  }
+
+  test('the build, the registry, the trails and both signing states, from the host', async () => {
+    const html = await settings(ADMIN, ABOUT)
+    for (const fact of [
+      '>构建<',
+      ABOUT.sourceCommit,
+      '>注册中心<',
+      'http://127.0.0.1:38610',
+      'tokyo-1=/srv/qm/tokyo-1/audit.ndjson',
+      'disabled (no --wake-url)',
+    ]) {
+      expect(html).toContain(fact)
+    }
+    const signing = html.slice(html.indexOf('>唤醒签名<'))
+    expect(signing).toContain('未开启')
+    const chat = html.slice(html.indexOf('>对话签名<'))
+    expect(chat.slice(0, 200)).toContain('已开启')
+  })
+
+  test('whether the wires answer: the registry and each trail, read just now', async () => {
+    const h = pageHarness()
+    h.registry.listResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: 'x' },
+    }
+    const html = await (await h.handle(browse('/settings', ADMIN))).text()
+    const health = html.slice(html.indexOf('about-health'))
+    expect(health).toMatch(
+      /注册中心<\/dt><dd class="plain"><span class="tag[^"]*">不可达/,
+    )
+    expect(health).toMatch(
+      /审计链 · [^<]+<\/dt><dd class="plain"><span class="tag[^"]*">可达/,
+    )
+  })
+
+  test('the files it writes are shown to a writer only, and no secret is on the page', async () => {
+    const admin = await settings(ADMIN, ABOUT)
+    expect(admin).toContain('/srv/qm/console/chat.ndjson')
+    const view = await settings(VIEW, ABOUT)
+    expect(view).not.toContain('/srv/qm/console/chat.ndjson')
+    expect(view).toContain('数据路径仅对运维可见')
+    for (const html of [admin, view]) {
+      const text = visibleText(html)
+      expect(text).not.toContain(ADMIN)
+      expect(text).not.toContain(VIEW)
+    }
+  })
+
+  test('without a host that says, the page keeps what the package knows', async () => {
+    const html = await settings(ADMIN)
+    expect(html).toContain('>实例<')
+    expect(html).not.toContain('>构建<')
+  })
+})
