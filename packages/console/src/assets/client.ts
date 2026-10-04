@@ -1063,9 +1063,22 @@ function runtimeScript(guards: TokenGuards): string {
   // Escape is the browser's: a modal <dialog> closes on it by itself. What is
   // left is to drop the pending action of whichever dialog just closed.
   // 'close' does not bubble, so this listens in the capture phase.
+  //
+  // The browser also gives focus back to whatever had it before the dialog
+  // opened - unless a refresh replaced that control while the dialog was up,
+  // in which case there is nothing to give it back to: focus stays on a
+  // button in the closed dialog, then drops to the top of the page. The same
+  // control in the new markup takes it instead (D4).
   document.addEventListener('close', function (event) {
     var box = event.target;
-    if (box && box.tagName === 'DIALOG') forget(box);
+    if (!box || box.tagName !== 'DIALOG') return;
+    forget(box);
+    var active = document.activeElement;
+    if (active && active !== document.body && !box.contains(active)) return;
+    var opener = openerOf(box.id);
+    if (opener && !opener.disabled && typeof opener.focus === 'function') {
+      opener.focus({ preventScroll: true });
+    }
   }, true);
 
   document.addEventListener('submit', function (event) {

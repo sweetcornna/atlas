@@ -81,6 +81,18 @@ async function openConsole(tab: Tab, served: Served, path: string) {
   await tab.waitFor('window.qianmoConsole !== undefined')
 }
 
+/** One key, pressed and released, as the keyboard sends it. */
+async function key(tab: Tab, name: string, code: number): Promise<void> {
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await tab.send('Input.dispatchKeyEvent', {
+      type,
+      key: name,
+      code: name,
+      windowsVirtualKeyCode: code,
+    })
+  }
+}
+
 /** Poll every 400 ms instead of the select's shortest 2 s. */
 async function fastPolling(tab: Tab): Promise<void> {
   await tab.evaluate(`(() => {
@@ -482,6 +494,69 @@ describe.skipIf(SKIP !== null)(
           ),
         ).toBe('必填')
         expect(served.harness.wake.sent).toEqual([])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('a confirm keeps Tab inside it, and Escape gives focus to its opener even after a refresh replaced it (D4)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        const address = 'qianmo://tokyo-1/planner'
+        const opener = `document.querySelector('#roster button[data-action="deregister"][data-address="${address}"]')`
+        await tab.evaluate(`(() => {
+          document.querySelector('#roster details[data-key="${address}"]').open = true;
+          const b = ${opener};
+          window.__opener = b;
+          b.focus();
+          b.click();
+        })()`)
+        await tab.waitFor(`document.getElementById('confirm-deregister').open`)
+
+        // Tab cycles through the dialog's own controls. The one stop outside
+        // it is the browser's own chrome (seen from the page as no element
+        // focused, which is how a modal dialog lets you reach the address
+        // bar); no control of the page behind is ever reached: it is inert.
+        const stops: string[] = []
+        for (let i = 0; i < 6; i += 1) {
+          await key(tab, 'Tab', 9)
+          stops.push(
+            await tab.evaluate<string>(`(() => {
+              const at = document.activeElement;
+              if (at === null || at === document.body) return 'chrome';
+              return document.getElementById('confirm-deregister').contains(at)
+                ? at.textContent.trim()
+                : 'page ' + at.tagName + ' ' + at.textContent.trim();
+            })()`),
+          )
+        }
+        expect(stops.filter(stop => stop.startsWith('page'))).toEqual([])
+        expect(new Set(stops)).toEqual(new Set(['取消', '注销', 'chrome']))
+
+        // A refresh replaces the roster, and the button that opened the
+        // confirm with it.
+        await fastPolling(tab)
+        await tab.waitFor(
+          `!window.__opener.isConnected && ${opener} !== null`,
+          5_000,
+        )
+
+        await key(tab, 'Escape', 27)
+        await tab.waitFor(`!document.getElementById('confirm-deregister').open`)
+        // The browser's own restoration has nothing to restore to; the
+        // runtime's, on the dialog's close event, does.
+        await tab.waitFor(`document.activeElement === ${opener}`, 2_000)
+        expect(
+          await tab.evaluate<[boolean, string | null, string | null]>(`[
+            document.activeElement === ${opener},
+            document.activeElement.getAttribute('data-action'),
+            document.activeElement.getAttribute('data-address'),
+          ]`),
+        ).toEqual([true, 'deregister', address])
+        expect(served.harness.registry.deregistered).toEqual([])
       } finally {
         await tab.close()
         served.stop()
