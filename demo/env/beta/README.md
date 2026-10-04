@@ -621,7 +621,8 @@ H 腿见到 `--providers` 才补拓扑那一半（`beta-up.sh` 的 `provider_con
   `StrictHostKeyChecking=yes`：没有条目的节点在起 ssh 之前就被拒绝。
 
 每个远端节点装一次（H 上生成 key，节点上加一行；**不是隧道那把**——`authorized_keys` 里同一把公钥只有第一行的
-选项生效，强制命令不同就必须是不同的 key）：
+选项生效，强制命令不同就必须是不同的 key）。`ops/model-apply-enroll.sh` 一条命令做完下面 ①–③ 并验一次
+（见「模型服务迁移与真机验收」）；手工做法照旧留在这里：
 
 ```bash
 # ① H：每个节点一把专用 key，私钥不离开 H
@@ -641,6 +642,94 @@ systemctl --user restart qianmo-console.service
 `qianmo-model-apply-v1`——`authorized_keys` 那一行丢了或被改写时，sshd 去执行哨兵、操作失败，而不是静默成功。
 节点名不合法、这台机器上没有这个节点的配置根时，它回一行 `bad-request`；同一节点上另一个操作没结束时等锁，超时回
 `busy`。**那一行仍是一道会静默失效的门**（§8.3）：被改写成别的命令之后哨兵帮不上忙，列进巡检项。
+
+## 模型服务迁移与真机验收（P18.13）
+
+顺序、每一步的判据与回滚在 `docs/dev/beta-env.md` §13；这里只放命令。尖括号里全是变量，真实值只写在
+私有证据目录里。
+
+### 节点信任控制台的签名、控制台签对话（P18.20）
+
+```bash
+# ① H：控制台的签名身份（一行 console=<公钥>），与「签名唤醒」是同一把
+IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
+# ② 每台节点机：信任它，并让它签的 /autocompact、/compact、/context 当本地命令跑。原有的 --trust 一起带上
+./demo/env/beta/beta-down.sh <节点> && ./demo/env/beta/beta-up.sh --role node --node <节点> -- \
+  --trust "$IDENTITY" --local-commands-from console
+# ③ H：控制台签对话（尾参落进 ops/console.env，单元重启后仍在）
+./demo/env/beta/beta-down.sh console && ./demo/env/beta/beta-up.sh --role host -- \
+  --accounts --providers --wake-sign --chat-sign
+```
+
+节点腿的尾参落在 `<根>/state/<节点>.passthrough`，之后不带 `--` 的重起沿用它；控制台不带尾参重跑会 WARN
+点名撤掉了哪些。判据：`logs/<节点>.out` 首行 `trusts` 含 `console`、`localCommandsFrom` 是 `["console"]`；
+`logs/console.out` 的 `chat` 行是 `enabled as console (signed)`。
+
+### 缓存调参：按节点放进 `model-env`
+
+`OPENAI_PROMPT_CACHE_RETENTION=24h`（CH-5）与 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`（只开在一个节点上，G-1 归因）
+写进那台机器的 `secrets/model-env`，一行一个，重起该节点。它们不是模型凭据，节点迁到中枢托管之后也不会被
+ACP 子进程的 env 剥掉；起节点时横幅多一行 `缓存调参 : <名>=<值>`（值只回显认识的几种，其余写「未回显」）。
+节点迁到中枢托管之后（`nodes/<节点>/config/qianmo/provider/state.json` 记着一次已提交的下发），没有 `model-env`
+不再报 `Not logged in`；`model-env` 里还留着模型服务类的键时 WARN `env-residue`，只报个数。
+
+### 第六类动作专用 key：`ops/model-apply-enroll.sh`
+
+在**运维本机**跑，经 ssh 调中枢与节点部署树里的同一个脚本：
+
+```bash
+demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --dry-run
+demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根>
+systemctl --user restart qianmo-console.service      # 在 H 上：控制台起来时才看专用 key 在不在
+```
+
+| 步 | 在哪 | 做什么 |
+|---|---|---|
+| ① `hub-key` | H | `$QIANMO_BETA_MODEL_KEY_DIR/<节点>` 不在就生成（ed25519，私钥不离开 H）；在就不重生成 |
+| ② `hub-coordinate` | H | 从 `peers.conf` 的 `node` 坐标行取 `user` / `host` / `port`——中枢执行器拨的就是它；没有坐标行就拒绝 |
+| ③ `node-install` | 节点 | `~/.ssh/authorized_keys` 幂等加一行 `command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict <公钥> qianmo-model-apply <节点>`；同一把公钥带着别的选项 → 拒绝；同节点旧 key 的行 → WARN、不删；写之前备份 `authorized_keys.bak-<戳>` |
+| ④ `node-hostkey` | 节点 | 经这条已认证的 ssh 读节点自己的 ed25519 主机公钥 |
+| ⑤ `hub-known-host` | H | 从 H 上 `ssh-keyscan` 一次，与 ④ 逐字相同才写进中枢 `known_hosts`（22 口写 `host`，否则 `[host]:port`）；不同 → 拒绝；同名已登记另一把 → 拒绝 |
+| ⑥ `hub-verify` | H | 用控制台执行器同一组 ssh 参数与哨兵 `qianmo-model-apply-v1` 发一次 `status`，要 `ok:true` |
+
+`--dry-run` 每一步只读，打印「将要」写的那一行与 known_hosts 那一行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
+2 用法错。前提：节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
+（sshd 强制命令下没有 `QIANMO_BETA_ROOT`，所以节点必须用默认内测根）。跑在 H 自己身上的节点走 local，不需要登记。
+
+### 每轮验收：`ops/provider-acceptance.sh`
+
+```bash
+demo/env/beta/ops/provider-acceptance.sh round --config <轮配置> --out <证据目录> --label <轮名>
+demo/env/beta/ops/provider-acceptance.sh compare <证据目录>/round-<甲> <证据目录>/round-<乙> --min-gap-minutes 30
+touch <证据目录>/HOLD     # 叫停：开跑前与每一项开始前都查它，退出码 42
+```
+
+轮配置（只有地址与路径；控制台凭据是 `<ops 凭据文件>`，0600，一行 token）：
+
+```json
+{
+  "v": 1,
+  "console": { "url": "<控制台 URL>", "credentialFile": "<ops 凭据文件>", "chatAs": "console" },
+  "machines": {
+    "<机器甲>": { "ssh": "<ssh 目标>", "tree": "<部署根>" },
+    "<机器乙>": { "ssh": "<ssh 目标>", "tree": "<部署根>", "root": "<内测根，可省>" }
+  },
+  "hub": "<机器甲>",
+  "nodes": { "<节点>": { "machine": "<机器乙>", "profileId": "<期望的档案>" } },
+  "expect": { "sourceCommit": "<标签的 40 位提交>" },
+  "switch": { "node": "<节点>", "profileId": "<换过去的档案>" },
+  "call": { "node": "<节点>" },
+  "inflight": { "target": "qianmo://<节点>/<agent>" },
+  "canary": { "node": "<节点>", "baseUrl": "http://127.0.0.1:9/v1", "realApply": false }
+}
+```
+
+`timing` 可省（轮询、超时、重试间隔、`ps` 采样间隔都有缺省）；`inflight.prompt` 可省（缺省是一段要写几十秒的
+短文）。远端动作经 `ssh` 起部署树里的 `demo/env/beta/ops/provider-acceptance-node.ts`（只用 node 内建模块，
+部署树只有 `dist/` 与 `demo/` 也能跑）；`QIANMO_ACCEPTANCE_SSH_BIN` 可换 ssh 程序。退出码：0 零红（compare：
+两轮通过）；1 有红；2 用法或配置错；42 HOLD。每一项的判据见 `docs/dev/beta-env.md` §13.3。
 
 ## 值守作业（`ops/watch-hub.sh`，`qm watch`）
 

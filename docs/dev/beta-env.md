@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.5**（2026-10-03：P18.6 落地，§8.3 的表补上模型服务的四个持密面——主密钥、密文库、第六类动作专用 key 与它在节点 `authorized_keys` 里那一行；其余各节一字未动）。**v1.4**（2026-10-03：随章程 v2.22 回写。§8.3 持密面表「每台节点机 `secrets/model-env`」一行加补注：负责人 2026-10-03 决定改由 H 持有加密的模型密钥，经 SSH 控制面第六类动作下发；§8.3.1 爆炸半径表后加一条补注。依据 [`providers-console-m1.md`](./providers-console-m1.md) v1.0 §1.3 O-1、§7.7。**现行形态在 P18.13 迁移完成之前不变**；新增的持密面由 P18.6 落地时补进 §8.3 的表；其余各节一字未动）。**v1.3**（2026-09-26：随章程 v2.19 回写。N-2 已按 A′ 部分解禁，§0 #4、§3.1 与 §10 包④各加一条补注，**现行形态在 P15.5 上线前不变**；新增 §3.6「内测用户告知」（v1，负责人可改措辞）；§5 增账号库与控制台动作账本两行。依据 [`tenancy-m1.md`](./tenancy-m1.md) v1.0，其余各节一字未动）。**v1.2 及以前**：v1.0 于 2026-08-17 经负责人评审通过；v1.1 是**现场回写**——形态定案一条未改，改的是「38625 直连」这个前提：三台节点的 38625 被云厂商安全组挡死，数据面改走 H → 节点回环的 SSH 正向隧道，受影响的是 §2.4 / §2.6 / §4.3 / §6 / §8 / §9 / §10，另新增 §12。**v1.2 同样是回写、同样零形态改动**：现场手搓的隧道与审计镜像已收进落地包 ①，由 `peers.conf` 的 `node` 坐标行统一派生；随之改的是 §2.3 / §2.6 / §4.1 / §4.3 / §5 / §6 L0 / §6.5 / §7.4 / §9.1 / §9.8 / §10 / §11——**全部是「原来靠人记得的事现在由脚本代劳」或「原来只在环境变量里的东西现在落了盘」，没有一条定案被改**） |
+| 文档版本 | **v1.6**（2026-10-04：P18.13 新增 §13「模型服务迁移与真机验收」——迁移顺序、每步判据与回滚、每轮验收的判据与证据；§8.3 的表补运维本机上的 ops 凭据文件一行，§11 补两行指针；其余各节一字未动）。**v1.5**（2026-10-03：P18.6 落地，§8.3 的表补上模型服务的四个持密面——主密钥、密文库、第六类动作专用 key 与它在节点 `authorized_keys` 里那一行；其余各节一字未动）。**v1.4**（2026-10-03：随章程 v2.22 回写。§8.3 持密面表「每台节点机 `secrets/model-env`」一行加补注：负责人 2026-10-03 决定改由 H 持有加密的模型密钥，经 SSH 控制面第六类动作下发；§8.3.1 爆炸半径表后加一条补注。依据 [`providers-console-m1.md`](./providers-console-m1.md) v1.0 §1.3 O-1、§7.7。**现行形态在 P18.13 迁移完成之前不变**；新增的持密面由 P18.6 落地时补进 §8.3 的表；其余各节一字未动）。**v1.3**（2026-09-26：随章程 v2.19 回写。N-2 已按 A′ 部分解禁，§0 #4、§3.1 与 §10 包④各加一条补注，**现行形态在 P15.5 上线前不变**；新增 §3.6「内测用户告知」（v1，负责人可改措辞）；§5 增账号库与控制台动作账本两行。依据 [`tenancy-m1.md`](./tenancy-m1.md) v1.0，其余各节一字未动）。**v1.2 及以前**：v1.0 于 2026-08-17 经负责人评审通过；v1.1 是**现场回写**——形态定案一条未改，改的是「38625 直连」这个前提：三台节点的 38625 被云厂商安全组挡死，数据面改走 H → 节点回环的 SSH 正向隧道，受影响的是 §2.4 / §2.6 / §4.3 / §6 / §8 / §9 / §10，另新增 §12。**v1.2 同样是回写、同样零形态改动**：现场手搓的隧道与审计镜像已收进落地包 ①，由 `peers.conf` 的 `node` 坐标行统一派生；随之改的是 §2.3 / §2.6 / §4.1 / §4.3 / §5 / §6 L0 / §6.5 / §7.4 / §9.1 / §9.8 / §10 / §11——**全部是「原来靠人记得的事现在由脚本代劳」或「原来只在环境变量里的东西现在落了盘」，没有一条定案被改**） |
 | 日期 | 2026-08-17 |
 | 任务包 | `retro-m0.md` §7.3 **P11.1 内测环境形态设计与最小落地**（M1 第 2 迭代；依赖 P10.1 已闭、P10.4 已基本清账） |
 | 本文范围 | **只有形态设计**。真机腿脚本已于 2026-08-16 首验通过（`demo-env.md` §7.1），不在本次范围；一键起拓扑的脚本落地是后续包（§10） |
@@ -941,6 +941,7 @@ v1.0 这里只管 PSK。现场又多了两类持密面（控制台两枚 token �
 | **H 控制台配置根 `qianmo/console/provider-secrets.json`**（v1.5） | 全部模型密钥的**密文**：每把一个数据密钥（AES-256-GCM），数据密钥由主密钥包裹。同目录的 `providers.ndjson` 只有档案 id、指纹与哈希 | 0600，目录 0700 | 控制台，只写不读：密钥只在下发与测连那一刻解开，经第六类动作的 stdin 送到节点。`--archive-config` 把它随配置根一起改名归档；主密钥留在原处 |
 | **H 上每个远端节点一把第六类动作专用 SSH 私钥**，位置由 `QIANMO_BETA_MODEL_KEY_DIR` 定（默认在内测根之外，见 README 变量表），同目录一份中枢自有的 `known_hosts`（v1.5） | **H → 节点的模型服务 key**；节点主机公钥 | **0600，目录 0700** | 控制台的 ssh 执行器：`-i <key>`、`StrictHostKeyChecking=yes`、只认这一份 `known_hosts`，缺条目时在起 ssh 之前就拒绝。**不是隧道那把**：`authorized_keys` 里同一把公钥只有第一行的选项生效 |
 | **远端节点的 `~/.ssh/authorized_keys`**（v1.5） | 上面那把的**公钥**，带 `command="<部署根>/demo/env/beta/ops/model-apply.sh <node>",restrict` | 0600 | 节点的 sshd。客户端命令是一个不存在的哨兵：这一行**丢了**时操作失败、不会静默成功；被**改写成别的命令**时哨兵帮不上忙——与上面那一行同属要定期巡检的门。`model-apply.sh` 不读 `SSH_ORIGINAL_COMMAND` |
+| **运维本机** `<ops 凭据文件>`（v1.6，P18.13） | 运维个人账号（ops 角色）的 token，一行 | 0600，不在仓库里 | 每轮验收脚本，读进内存后只放进 `Authorization` 头，不进命令行、不进证据（§13）。舰队机器上没有它 |
 | 其他任何地方 | 无 | — | — |
 
 > **2026-09-26 现场补记（审计见证，P11.4）**：H 自己也跑着一个节点，所以见证端点不能放在 H 上
@@ -1195,6 +1196,8 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | `packages/backup/src/service.ts` | `DESTRUCTIVE_WORDS` 与入站面白名单——§5 归属原则的门禁 |
 | `packages/audit/src/trail.ts` | 审计链三句承诺的原文。§4.2 与 §9.4 都指向它 |
 | `src/config/paths.ts` | 一切路径的唯一真源。§4.1 的命名约定只到配置根为止，再往下都由它派生 |
+| `demo/env/beta/ops/model-apply-enroll.sh` | 第六类动作专用 key 的登记助手（§13 第 5 步）：生成、装那一行、登记主机指纹、用执行器同款参数验一次 |
+| `demo/env/beta/ops/provider-acceptance.ts` | 每轮真机验收（§13.3）与两轮比对；同目录 `provider-acceptance.sh` 是入口，`provider-acceptance-node.ts` 是经 ssh 在中枢与节点上跑的那一半 |
 
 ---
 
@@ -1225,3 +1228,74 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
    要一起记，不能只记好的那一件。**
 
 一句话：**这是一笔可以如实记的收获，不是一个可以据此推迟 mTLS 的理由。**
+
+---
+
+## §13 模型服务迁移与真机验收（v1.6，P18.13）
+
+本节是把内测舰队迁到「中枢托管模型服务」（[`providers-console-m1.md`](./providers-console-m1.md) §2.9）并按
+§8.4 / AC-P6 验收的**执行顺序、每一步的判据与回滚**。命令与参数的细节在 `demo/env/beta/README.md`
+「模型服务迁移与真机验收」，本节只写顺序与判据（§11 的分工）。**全部用变量**：真实的机器、地址、
+路径只写在私有证据目录里，不进仓库。
+
+### 13.1 变量
+
+| 变量 | 是什么 |
+|---|---|
+| `<标签>` | 主 agent 打的发行标签（D-7）。**只部署标签，不部署 main** |
+| `<H>`、`<H 部署根>` | 跑控制台的那台机器的 ssh 目标与部署树绝对路径 |
+| `<节点>`、`<节点 ssh>`、`<节点部署根>` | 每个远端节点的名字、ssh 目标与部署树绝对路径 |
+| `<诊断节点>` | 开 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 的那**一个**节点（G-1 归因） |
+| `<证据目录>` | 运维本机上的私有目录（0700，不在仓库里），每轮一个 `round-<轮名>/` |
+| `<轮配置>` | 每轮验收的 JSON（形状见 `demo/env/beta/ops/provider-acceptance.ts` 头注），只有地址与路径 |
+| `<ops 凭据文件>` | 运维个人账号（ops 角色）的 token，一行，0600，在运维本机（§8.3 末行） |
+
+### 13.2 顺序与判据（B 段）
+
+每一步开始前查 `<证据目录>/HOLD`：在就停。一步的判据没过，按该步的回滚处置后停，不往下走。
+
+| # | 做什么 | 判据（机器可查） | 回滚 |
+|---|---|---|---|
+| 0 | 前置：7 天长跑收数已完成（`providers-console-m1.md` §8.4 末条）；`<标签>` 已打 | 标签存在、指向的提交即将部署的 `sourceCommit` | — |
+| 1 | 按 §7.1 的顺序（注册中心 → 节点逐个 → 控制台）用 `beta-deploy.sh --only dist,demo` 装 `<标签>` 的产物，`beta-down.sh` / `beta-up.sh` 重起 | `beta-deploy.sh` 打出的 SOURCE_COMMIT = 标签的提交；每个进程的启动行 `sourceCommit` 相同 | §6 L3（换回 `dist.bak-<戳>`） |
+| 2 | 每个节点重起时带上 P18.20 的两条尾参：`--trust <控制台公钥那一行> --local-commands-from console`（原有的 `--trust` 一起带上） | `logs/<节点>.out` 首行 `trusts` 含 `console`、`localCommandsFrom` 是 `["console"]`；再做一次 `beta-down.sh <节点>` + 不带尾参的 `beta-up.sh`，两项仍在（issue #111 的记录） | 带 `--` 重给不含 `--local-commands-from` 的尾参 |
+| 3 | 控制台尾参加 `--chat-sign`（与 `--accounts --providers --wake-sign` 等一起；**先节点信任、后控制台签名**，§4.1.2 同理） | `logs/console.out` 的 `chat` 行是 `enabled as console (signed)`；`ops/console.env` 里有它，单元重启后仍在 | 不带 `--chat-sign` 重跑 H 腿（会 WARN 点名撤掉了它） |
+| 4 | 缓存调参：每个节点的 `secrets/model-env` 加 `OPENAI_PROMPT_CACHE_RETENTION=24h`（CH-5），`<诊断节点>` 再加 `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1`；重起这些节点 | `beta-up.sh` 节点腿横幅一行 `缓存调参 : …`，值与预期相同；只有 `<诊断节点>` 有 DIAGNOSTICS | 删掉这两行再重起 |
+| 5 | 每个远端节点登记第六类动作专用 key：先 `model-apply-enroll.sh enroll … --dry-run` 看清要写的那一行与 known_hosts 那一行，再去掉 `--dry-run` 跑 | 输出 `VERIFY ok`（中枢用执行器同一组 ssh 参数与哨兵拿到了 `status`）；节点 `authorized_keys` 里那一行的选项与 §8.3 表中所写相同（`command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict`），注释是 `qianmo-model-apply <节点>` | 删节点 `authorized_keys` 里注释为 `qianmo-model-apply <节点>` 的那一行（脚本写过的备份 `authorized_keys.bak-<戳>` 在旁边）；`ssh-keygen -R` 删中枢 known_hosts 那一条；删 H 上那把 key |
+| 6 | 重起控制台（`systemctl --user restart qianmo-console.service`），让它带上新登记的执行器 | `providers` 行 `enabled -> … (nodes: …)` 列出每个节点，远端是 `/ssh`、H 上的是 `/local` | 同第 3 步 |
+| 7 | 在控制台上（ops 个人账号）按节点当前的实际配置建档案并设为全局默认（`providers-console-m1.md` §2.9 第 3 步），**逐个节点首次下发** | 每个节点刷新后无漂移（除第 8 步要清的 `env-residue`）、`applied` 是这份档案、resident 在跑 | 节点 `settings.json` 的首次备份（§2.9）；控制台上把指派改回「不托管」 |
+| 8 | 下一个维护窗口：从各节点 `secrets/model-env` 删掉 provider 类键（**接力节点上的 `OPENAI_API_KEY` 先确认 `handoff-node.sh` 不再需要它**），重起 resident | 节点腿横幅「模型服务由中枢托管」，不再有 `env-residue` WARN；控制台上该节点无漂移 | 把删掉的键放回 `model-env`、重起 |
+| 9 | 每轮验收：`provider-acceptance.sh round --config <轮配置> --out <证据目录>` | 退出码 0、`round-<轮名>/verdict.json` 的 `green` 为 `true`（逐项判据见 13.3） | 这一步会下发与切换，收尾时回到原指派、删掉金丝雀档案；脚本被打断时到控制台上把 `switch.node` 的指派改回原样、删 `qm-canary-*` 档案 |
+| 10 | 同一份部署再跑一轮，然后 `provider-acceptance.sh compare <证据目录>/round-<甲> <证据目录>/round-<乙>` | 退出码 0：两轮都零红、部署指纹相同、乙在甲之后开始、中间没有别的轮 | 有红：修了之后**重新从两轮数起**（一轮绿不算数） |
+
+第 9 步里 A6 那一次「在途时下发」就是 P18.19 G-2 要的同构建热切换样本，时刻记在 `verdict.json` 的
+`moments`。G-1 ~ G-3 的收数按 [`providers-console-m1.md`](./providers-console-m1.md) §5.11.8（窗口 ≥ 24 h、
+≥ 100 次调用；归因脚本在运维证据目录，不在仓库）。**验收轮会动收数窗口**：A6 的换代是同构建热切换，按
+§5.11.8 第 4 步填 `--restart`；A3（以及 `canary.realApply` 时的金丝雀真下发）在 `switch.node` / `canary.node`
+上换了模型，填 `--deploy`——时刻都在 `moments` 里。不想动某个节点的窗口，就别把它选成这两个节点。
+
+### 13.3 每轮验收的判据（AC-P6）
+
+| 项 | PASS |
+|---|---|
+| P0 | 凭据文件 0600、`/v0/health` 200、凭据是 ops 个人账号、控制台认得配置里的每个节点 |
+| D0 / D1 | 每台机器 `dist/cli-node.js` 在；控制台与每个 resident 活着；`sourceCommit` 全部相同、是 40 位提交、等于期望；结束时部署指纹与每个进程的 pid / 启动时刻都同开始时 |
+| W1 | 第 2、3、6 步的三条横幅事实 |
+| A1 / A1b | 每个节点刷新：status ok、无漂移、托管、`applied` = 期望、无 pending、onDisk / applied / loaded 三个哈希一致、resident 在跑、没有 `dead` 的 key（`cooling` 只记不判） |
+| A2 | 每个节点真 key `probe auth`：`ok && reachable`，三态写进细节 |
+| A4 | 一次 `probe call`：`ok && reachable` |
+| A6 | 对方受理一轮之后下发同一份档案：观察到 `pending.waitingTurns ≥ 1`、那一轮回复 `done`、切换完成且 generation 前进。观察不到「在等」就重试，三次都观察不到判红（`inconclusive`；每次都是先切后回复时判 `no-wait`） |
+| A3 | 改指派 → 下发 → `applied` 与 `effective` 的模型都是新档案 → 原指派 → 同样核 |
+| A5 | 金丝雀档案（两把 key）走存储 → 页面 / JSON → 测连 → dry-run 下发 →（`realApply` 时真下发并切回）→ 导出 → 轮换 → 删除；运维本机看到的每个响应、每台机器内测根下的文件（不读 `secrets/`，排除明文持有点 `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`、`qianmo/console/provider-secrets.json`）、流程中每 100 ms 的 `ps -eo args` 采样里**零命中**；本机真 key 只出现在持有点里，且每把都在持有点里命中（正向对照） |
+
+金丝雀默认**不真下发**：真下发会把一个节点切到一把假 key，那个窗口里的真实对话会失败；真写入路径由
+本机真 key 扫描覆盖。要按 §8.3 的全流程跑，在轮配置里把 `canary.realApply` 设为 `true` 并选一个空闲节点。
+
+**过程失败按规则重试，结果不重试**：fetch 抛错、200 但空体或非 JSON、ssh 退出码 255、远端退出 0 却没输出，
+按 1 s、3 s 再试两次，每次记进 `retries.ndjson`；其余一律当结果判。
+
+### 13.4 证据
+
+`round-<轮名>/`：`verdict.json`（逐项 PASS / FAIL / SKIPPED、红项种类、部署指纹、时刻）、`verdict.md`、
+`deployment.json`、`raw/*.json`、`retries.ndjson`；比对结果 `pair-<甲>-<乙>.json` 在证据目录下。**只存投影**
+（id、状态、哈希、计数、时刻），不存响应体与对话正文；输出里没有金丝雀、真 key 或 ops 凭据的原文（用例钉住）。
