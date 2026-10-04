@@ -718,6 +718,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .status[data-tone='ok'] { color: var(--color-accent-2-800); }
 .status[data-tone='bad'] { color: var(--color-accent-800); }
 .status[data-tone='warn'] { color: var(--color-accent-800); }
+/* A field that is wrong, and why, under it (D3). */
+.field-error { margin: var(--space-1) 0 0; font-size: 12px; color: var(--color-accent-800); }
+.input[aria-invalid='true'] { border-color: var(--color-accent-700); }
 .jump { color: var(--color-accent-700); }
 
 /* ---- the trail table ---- */

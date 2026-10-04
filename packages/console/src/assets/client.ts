@@ -503,6 +503,94 @@ function runtimeScript(guards: TokenGuards): string {
     return Promise.reject(failure('unauthorized', 401, EXPIRED));
   }
 
+  /* ---------------- fields (D3) ---------------- */
+
+  // A field that is wrong says so where it is: aria-invalid on the control
+  // and one line under it, tied to it by aria-describedby so a screen reader
+  // reads the reason with the label. The line goes as soon as the field is
+  // edited. A page script supplies the rules; the runtime only marks.
+  function controlOf(form, name) {
+    var el = form.elements[name];
+    // A group of checkboxes sharing a name: the first stands for the group.
+    if (el && !el.tagName && el.length !== undefined) el = el[0];
+    return el || null;
+  }
+
+  function errorIdOf(el) {
+    return (el.id || 'f-' + (el.name || 'field')) + '-error';
+  }
+
+  function markField(form, name, text) {
+    var el = controlOf(form, name);
+    if (!el) return null;
+    var id = errorIdOf(el);
+    var line = byId(id);
+    if (!line) {
+      line = document.createElement('p');
+      line.className = 'field-error';
+      line.id = id;
+      (el.closest('.field') || el.parentNode).appendChild(line);
+    }
+    line.textContent = text;
+    el.setAttribute('aria-invalid', 'true');
+    var described = (el.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
+    if (described.indexOf(id) === -1) {
+      described.push(id);
+      el.setAttribute('aria-describedby', described.join(' '));
+    }
+    // A field folded away under 高级选项 would be marked out of sight.
+    var fold = el.closest('details');
+    if (fold && !fold.open) fold.open = true;
+    return el;
+  }
+
+  function unmarkField(el) {
+    if (!el || !el.getAttribute || el.getAttribute('aria-invalid') !== 'true') return;
+    var id = errorIdOf(el);
+    el.removeAttribute('aria-invalid');
+    var rest = (el.getAttribute('aria-describedby') || '').split(' ').filter(function (part) {
+      return part && part !== id;
+    });
+    if (rest.length > 0) el.setAttribute('aria-describedby', rest.join(' '));
+    else el.removeAttribute('aria-describedby');
+    var line = byId(id);
+    if (line) line.remove();
+  }
+
+  function clearFields(form) {
+    var marked = form.querySelectorAll('[aria-invalid="true"]');
+    for (var i = 0; i < marked.length; i++) unmarkField(marked[i]);
+  }
+
+  // rules: { name: function (trimmed value, control) -> '' or the reason }.
+  // Marks every field that fails, focuses the first, true when none did.
+  function checkFields(form, rules) {
+    clearFields(form);
+    var first = null;
+    for (var name in rules) {
+      if (!Object.prototype.hasOwnProperty.call(rules, name)) continue;
+      var el = controlOf(form, name);
+      if (!el || el.disabled) continue;
+      var why = rules[name](typeof el.value === 'string' ? el.value.trim() : '', el);
+      if (why && markField(form, name, why) && !first) first = el;
+    }
+    if (first) first.focus();
+    return first === null;
+  }
+
+  // A refusal that names one of the request body's own keys - the
+  // registry's 'invalid endpoint: x', the route's '字段 afterMs 必须是…' -
+  // goes back onto that field. Only for 'invalid', where the key names the
+  // field at fault rather than merely appearing in a sentence.
+  function fieldOf(err, names) {
+    if (!err || err.code !== 'invalid') return '';
+    var raw = String(err.detail || err.message || '');
+    for (var i = 0; i < names.length; i++) {
+      if (new RegExp('(^|[^A-Za-z])' + names[i] + '([^A-Za-z]|$)', 'i').test(raw)) return names[i];
+    }
+    return '';
+  }
+
   /* ---------------- work in flight (C4) ---------------- */
 
   // A write is somebody's: the button that was clicked, the form's submit
@@ -995,6 +1083,10 @@ function runtimeScript(guards: TokenGuards): string {
     within(by, function () { submits[form.id](form, event); });
   });
 
+  // Editing a marked field takes its mark away; the next check decides again.
+  document.addEventListener('input', function (event) { unmarkField(event.target); }, true);
+  document.addEventListener('change', function (event) { unmarkField(event.target); }, true);
+
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) refreshNow();
   });
@@ -1026,6 +1118,10 @@ function runtimeScript(guards: TokenGuards): string {
     message: message,
     failLine: failLine,
     failTone: failTone,
+    checkFields: checkFields,
+    markField: markField,
+    clearFields: clearFields,
+    fieldOf: fieldOf,
     humanize: humanize,
     readToken: readToken,
     toast: toast,

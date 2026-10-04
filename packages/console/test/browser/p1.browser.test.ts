@@ -344,5 +344,148 @@ describe.skipIf(SKIP !== null)(
         served.stop()
       }
     }, 40_000)
+
+    test('a wrong field is marked where it is, before anything is sent, and a refusal that names a field lands on it (D3)', async () => {
+      const served = serveConsole()
+      // The registry refuses the key, in its own words.
+      served.harness.registry.register = input => {
+        served.harness.registry.registered.push(input)
+        return Promise.resolve({
+          ok: false,
+          failure: {
+            code: 'invalid',
+            message: 'publicKey must be a base64url Ed25519 key',
+          },
+        })
+      }
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await tab.evaluate(
+          `document.querySelector('[data-open-dialog="register-dialog"]').click()`,
+        )
+        await tab.waitFor(`document.getElementById('register-dialog').open`)
+        const marked = await tab.evaluate<{
+          address: [string | null, string | null, string]
+          endpoint: [string | null, string | null, string]
+          focus: string
+          status: string
+        }>(`(() => {
+          const form = document.getElementById('register-form');
+          form.elements['address'].value = 'Qianmo://Tokyo/planner';
+          form.elements['endpoint'].value = '127.0.0.1:38611';
+          form.querySelector('[type="submit"]').click();
+          const of = name => {
+            const el = form.elements[name];
+            const id = el.getAttribute('aria-describedby');
+            return [el.getAttribute('aria-invalid'), id, id ? document.getElementById(id).textContent : ''];
+          };
+          return {
+            address: of('address'),
+            endpoint: of('endpoint'),
+            focus: document.activeElement.name,
+            status: document.getElementById('register-status').textContent,
+          };
+        })()`)
+        expect(marked).toEqual({
+          address: [
+            'true',
+            'f-address-error',
+            '格式应为 qianmo://节点/智能体 · 小写字母 数字 - _',
+          ],
+          endpoint: [
+            'true',
+            'f-endpoint-error',
+            '格式应为 ws://主机:端口 或 qianmo:// 地址',
+          ],
+          focus: 'address',
+          status: '有字段需要修改',
+        })
+        expect(served.harness.registry.registered).toEqual([])
+
+        // Editing a marked field takes its mark away.
+        expect(
+          await tab.evaluate<[string | null, boolean]>(`(() => {
+            const box = document.getElementById('f-address');
+            box.value = 'qianmo://tokyo-1/scout';
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+            return [box.getAttribute('aria-invalid'), document.getElementById('f-address-error') === null];
+          })()`),
+        ).toEqual([null, true])
+
+        // Right format, refused by the registry for the key: the key's field,
+        // opened out of 高级选项, says so, and has focus.
+        await tab.evaluate(`(() => {
+          const form = document.getElementById('register-form');
+          form.elements['endpoint'].value = 'ws://127.0.0.1:38611';
+          form.elements['publicKey'].value = 'not-a-key';
+          form.querySelector('[type="submit"]').click();
+        })()`)
+        await tab.waitFor(
+          `document.getElementById('f-publicKey').getAttribute('aria-invalid') === 'true'`,
+          5_000,
+        )
+        expect(
+          await tab.evaluate<[string, boolean, boolean, string, number]>(`[
+            document.getElementById('f-publicKey-error').textContent,
+            document.getElementById('f-publicKey').closest('details').open,
+            document.activeElement === document.getElementById('f-publicKey'),
+            document.getElementById('register-status').textContent,
+            document.querySelectorAll('#toasts .toast').length,
+          ]`),
+        ).toEqual([
+          '应为 base64url 编码的 Ed25519 公钥',
+          true,
+          true,
+          '注册失败 · 请求内容不合法',
+          0,
+        ])
+        expect(served.harness.registry.registered.length).toBe(1)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('the wake form checks its delay against the field own limit (D3)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await tab.evaluate(
+          `document.querySelector('[data-open-dialog="wake-dialog"]').click()`,
+        )
+        await tab.waitFor(`document.getElementById('wake-dialog').open`)
+        const result = await tab.evaluate<
+          [string | null, string, boolean, boolean]
+        >(`(() => {
+          const form = document.getElementById('wake-form');
+          form.elements['prompt'].value = '';
+          form.elements['afterMs'].value = '70000';
+          form.querySelector('[type="submit"]').click();
+          return [
+            form.elements['afterMs'].getAttribute('aria-invalid'),
+            document.getElementById('wake-after-error').textContent,
+            form.elements['afterMs'].closest('details').open,
+            document.getElementById('confirm-wake').open,
+          ];
+        })()`)
+        expect(result).toEqual([
+          'true',
+          '应为 0 到 60000 之间的整数毫秒',
+          true,
+          false,
+        ])
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('wake-prompt-error').textContent`,
+          ),
+        ).toBe('必填')
+        expect(served.harness.wake.sent).toEqual([])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
   },
 )
