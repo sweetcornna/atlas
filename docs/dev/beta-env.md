@@ -1285,11 +1285,12 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | A2 | 每个节点真 key `probe auth`：`ok && reachable`，三态写进细节 |
 | A4 | 一次 `probe call`：`ok && reachable` |
 | A6 | 对方受理一轮之后下发同一份档案：观察到 `pending.waitingTurns ≥ 1`、那一轮回复 `done`、切换完成且 generation 前进。观察不到「在等」就重试，三次都观察不到判红（`inconclusive`；每次都是先切后回复时判 `no-wait`） |
-| A3 | 改指派 → 下发 → `applied` 与 `effective` 的模型都是新档案 → 原指派 → 同样核 |
+| A3 | 改指派 → 下发 → `applied` 与 `effective` 的模型都是新档案 → 原指派 → 同样核。`switch.profileId` 选与原档案**同线路、同主机**的一份（例如同一网关上的另一个模型）：中枢据此保留会话；换线路或换主机会把该节点的会话重置，来回两次 |
 | A5 | 金丝雀档案（两把 key）走存储 → 页面 / JSON → 测连 → dry-run 下发 →（`realApply` 时真下发并切回）→ 导出 → 轮换 → 删除；运维本机看到的每个响应、每台机器内测根下的文件（不读 `secrets/`，排除明文持有点 `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`、`qianmo/console/provider-secrets.json`）、流程中每 100 ms 的 `ps -eo args` 采样里**零命中**；本机真 key 只出现在持有点里，且每把都在持有点里命中（正向对照） |
 
-金丝雀默认**不真下发**：真下发会把一个节点切到一把假 key，那个窗口里的真实对话会失败；真写入路径由
-本机真 key 扫描覆盖。要按 §8.3 的全流程跑，在轮配置里把 `canary.realApply` 设为 `true` 并选一个空闲节点。
+金丝雀默认**不真下发**：真下发会把一个节点切到一把假 key，那个窗口里的真实对话会失败；金丝雀档案的
+线路与主机都和现网档案不同，切过去、切回来还会把该节点的会话各重置一次。真写入路径由本机真 key 扫描覆盖。
+要按 §8.3 的全流程跑，在轮配置里把 `canary.realApply` 设为 `true` 并选一个空闲节点。
 
 **过程失败按规则重试，结果不重试**：fetch 抛错、200 但空体或非 JSON、ssh 退出码 255、远端退出 0 却没输出，
 按 1 s、3 s 再试两次，每次记进 `retries.ndjson`；其余一律当结果判。

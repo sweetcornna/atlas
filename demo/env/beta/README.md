@@ -726,7 +726,7 @@ touch <证据目录>/HOLD     # 叫停：开跑前与每一项开始前都查它
 }
 ```
 
-`timing` 可省（轮询、超时、重试间隔、`ps` 采样间隔都有缺省）；`inflight.prompt` 可省（缺省是一段要写几十秒的
+`switch.profileId` 选与该节点原档案同线路、同主机的一份（中枢据此保留会话，换线路或主机会重置会话）；`canary.realApply` 缺省 `false`（理由见 `docs/dev/beta-env.md` §13.3）。`timing` 可省（轮询、超时、重试间隔、`ps` 采样间隔都有缺省）；`inflight.prompt` 可省（缺省是一段要写几十秒的
 短文）。远端动作经 `ssh` 起部署树里的 `demo/env/beta/ops/provider-acceptance-node.ts`（只用 node 内建模块，
 部署树只有 `dist/` 与 `demo/` 也能跑）；`QIANMO_ACCEPTANCE_SSH_BIN` 可换 ssh 程序。退出码：0 零红（compare：
 两轮通过）；1 有红；2 用法或配置错；42 HOLD。每一项的判据见 `docs/dev/beta-env.md` §13.3。
