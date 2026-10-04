@@ -1086,7 +1086,8 @@ describe('renderAudit', () => {
     }
     // The label states the default and the ceiling rather than leaving an
     // empty box to guess at, and the ceiling is the one the server enforces.
-    expect(html).toContain('条数 · 默认 200 · 上限 500')
+    // The default is the page's own, one screen (D5); the API keeps 200.
+    expect(html).toContain('条数 · 默认 50 · 上限 500')
     expect(html).toContain('max="500"')
   })
 

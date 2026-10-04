@@ -69,8 +69,14 @@ import type { AuditFilter, AuditPage, ConsoleFailure } from '../deps.js'
 /** How many characters of an id are enough to tell two of them apart. */
 const ID_PREFIX = 8
 
-/** Default and ceiling for the tail size, stated in the label beside the box. */
-const LIMIT_DEFAULT = 200
+/**
+ * Default and ceiling for the page's tail, stated in the label beside the box.
+ *
+ * Fifty, not the API's 200 (D5): one screen, newest first, with 加载更早 for
+ * the rest. Two hundred rows were fifteen thousand pixels with the newest at
+ * the bottom; an operator who wants more asks for it.
+ */
+export const AUDIT_PAGE_LIMIT = 50
 const LIMIT_MAX = 500
 
 const OUTCOME_LABEL: Readonly<Record<string, string | undefined>> = {
@@ -193,17 +199,124 @@ function recordRow(record: AuditRecord, auditNode?: string): string {
 
 const RECORD_HEADERS = ['时间', '来源', 'kind', '结果', 'trace', '节点', 'code']
 
+/**
+ * How the trail page lays one trail out for paging (D5).
+ *
+ * Absent for a caller that only wants the fragment's numbers (the overview)
+ * or an old test double that does not page: the table is then what it was,
+ * newest first.
+ */
+export interface TrailPaging {
+  /**
+   * The `/audit` query that reproduces this view with no cursor in it, and no
+   * leading `?`: what 加载更早 adds `before` to and 重新载入 goes back to.
+   */
+  readonly query: string
+  /**
+   * Draw the empty `<tbody>` the poller swaps newly arrived rows into. Only
+   * on the newest page: what arrived since does not belong above an older one.
+   */
+  readonly fresh: boolean
+}
+
+/** Where one trail's table sits: its paging, its place among several, its cursor. */
+interface TrailPlace {
+  readonly paging: TrailPaging
+  /** Position among the configured trails; absent for the single legacy one. */
+  readonly slot?: number
+  /** `AuditPage.earlier`: a number, `null` at the oldest, absent if the port does not page. */
+  readonly earlier?: number | null
+}
+
+/**
+ * An element id for one trail's part. The slot is a number, not the node
+ * name: a node name is configuration, and `#name` in a selector would break
+ * on the first one with a dot in it.
+ */
+function slotId(base: string, slot: number | undefined): string {
+  return slot === undefined ? base : `${base}-${slot}`
+}
+
+function headerRow(): string {
+  return RECORD_HEADERS.map(h => `<th scope="col">${escapeHtml(h)}</th>`).join(
+    '',
+  )
+}
+
+/** Newest first (D5): the line somebody came to the page for is the last one written. */
+function rowsOf(records: readonly AuditRecord[], auditNode?: string): string {
+  return [...records]
+    .reverse()
+    .map(record => recordRow(record, auditNode))
+    .join('')
+}
+
+/** The empty `<tbody>` new rows are swapped into, when this is the newest page. */
+function freshBody(place: TrailPlace | undefined): string {
+  if (place === undefined || !place.paging.fresh) return ''
+  return `<tbody class="trail-fresh" id="${attr(
+    slotId('audit-fresh', place.slot),
+  )}"></tbody>`
+}
+
+/**
+ * Under the table: 加载更早, or the fact that there is nothing older.
+ *
+ * A plain link first — it works with script off and reads `before` from the
+ * URL like any other filter — and the page script's action second, which
+ * fetches the same view as a fragment and appends its rows here instead of
+ * leaving the page.
+ */
+function moreLink(place: TrailPlace, auditNode: string | undefined): string {
+  const id = slotId('audit-more', place.slot)
+  if (place.earlier === undefined) return ''
+  if (place.earlier === null) {
+    return `<p class="note trail-end" id="${attr(id)}">已是最早的记录</p>`
+  }
+  const params = new URLSearchParams(place.paging.query)
+  params.set('before', String(place.earlier))
+  if (auditNode !== undefined) params.set('node', auditNode)
+  const query = params.toString()
+  return (
+    `<p class="trail-more" id="${attr(id)}">` +
+    `<a class="btn btn-secondary" href="/audit?${attr(query)}" data-nav ` +
+    `data-action="audit-earlier" data-fragment="/fragments/audit?${attr(
+      query,
+    )}"${place.slot === undefined ? '' : ` data-slot="${attr(String(place.slot))}"`}>` +
+    `加载更早</a></p>`
+  )
+}
+
 function recordTable(
   records: readonly AuditRecord[],
   auditNode?: string,
+  place?: TrailPlace,
 ): string {
-  const head = RECORD_HEADERS.map(
-    h => `<th scope="col">${escapeHtml(h)}</th>`,
-  ).join('')
-  const body = records.map(record => recordRow(record, auditNode)).join('')
-  return scroll(
+  const rows =
+    place === undefined
+      ? `<tbody>${rowsOf(records, auditNode)}</tbody>`
+      : `<tbody id="${attr(slotId('audit-rows', place.slot))}">` +
+        `${rowsOf(records, auditNode)}</tbody>`
+  return (
+    scroll(
+      `<table class="trail"><caption class="sr-only">审计记录</caption>` +
+        `<thead><tr>${headerRow()}</tr></thead>${freshBody(place)}${rows}</table>`,
+    ) + (place === undefined ? '' : moreLink(place, auditNode))
+  )
+}
+
+/**
+ * The table an empty trail keeps for what arrives: just the header and the
+ * fresh body, hidden by the page's own sheet while that body is empty. When
+ * the poller swaps rows in, the table shows and the empty state under it
+ * steps aside — no script of its own, only `:has()`.
+ */
+function pendingTable(place: TrailPlace | undefined): string {
+  if (place === undefined || !place.paging.fresh) return ''
+  return (
+    `<div class="scroll fresh-only">` +
     `<table class="trail"><caption class="sr-only">审计记录</caption>` +
-      `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
+    `<thead><tr>${headerRow()}</tr></thead>${freshBody(place)}</table></div>`
   )
 }
 
@@ -300,9 +413,16 @@ function filterForm(
     ['refused', '拒绝'],
     ['dropped', '丢弃'],
   ]
+  // The empty value is no window at all. It used to be labelled 自定义 even
+  // when nothing was set, which read as "some custom range is on" over a
+  // trail that was in fact unbounded (D5); it says 自定义 only when the
+  // advanced panel's from/to is what is in force.
+  const custom =
+    filter.window === undefined &&
+    (filter.from !== undefined || filter.to !== undefined)
   const windows: readonly (readonly [string, string])[] = [
     ...AUDIT_WINDOWS.map(([value, label]) => [value, label] as const),
-    ['', '自定义'],
+    ['', custom ? '自定义' : '全部'],
   ]
 
   const nodeField =
@@ -331,10 +451,10 @@ function filterForm(
       'f-source',
     ) +
     nodeField +
-    `<div class="field"><label for="f-limit">条数 · 默认 ${LIMIT_DEFAULT} · 上限 ${LIMIT_MAX}</label>` +
+    `<div class="field"><label for="f-limit">条数 · 默认 ${AUDIT_PAGE_LIMIT} · 上限 ${LIMIT_MAX}</label>` +
     `<input class="input" type="number" id="f-limit" name="limit" min="1" ` +
     `max="${LIMIT_MAX}" value="${attr(
-      String(filter.limit ?? LIMIT_DEFAULT),
+      String(filter.limit ?? AUDIT_PAGE_LIMIT),
     )}"></div>` +
     textField(
       'traceId',
@@ -352,6 +472,14 @@ function filterForm(
   return (
     `<form id="audit-filter" method="get">` +
     `<div class="rowx" style="gap:var(--space-6);align-items:flex-end">` +
+    // One box for the fragment of an id somebody pasted from a ticket: the
+    // server looks for it in the kind, every id, the code, the node and the
+    // detail (`@qianmo/audit`, `TrailQuery.text`).
+    `<div class="field audit-search"><label for="f-q">搜索</label>` +
+    `<input class="input" type="search" id="f-q" name="q" value="${attr(
+      filter.q ?? '',
+    )}" placeholder="trace task kind code 节点" autocomplete="off" ` +
+    `spellcheck="false"></div>` +
     `<div class="field"><span>结果</span>` +
     segment('outcome', outcomes, filter.outcome ?? '') +
     `</div>` +
@@ -374,6 +502,7 @@ function activeChips(filter: AuditFilter): string {
   const push = (key: string, value: string | undefined) => {
     if (value !== undefined && value !== '') chips.push(chip(`${key} ${value}`))
   }
+  push('q', filter.q)
   push('source', filter.source)
   push('outcome', filter.outcome)
   push('window', filter.window)
@@ -534,7 +663,7 @@ function emptyState(filter: AuditFilter): string {
     `<span>当前筛选 · 结果 ${escapeHtml(outcomeLabel)}</span>` +
     `<span>时间 · ${escapeHtml(windowLabel)}</span>` +
     `<span class="mono">limit ${escapeHtml(
-      String(filter.limit ?? LIMIT_DEFAULT),
+      String(filter.limit ?? AUDIT_PAGE_LIMIT),
     )}</span></div>` +
     `</div>` +
     `<svg class="empty-art" width="220" height="220" viewBox="0 0 200 200" ` +
@@ -560,13 +689,16 @@ const TRAIL_HEADING_ID = 'h-trail'
  * `512 · 显示 512` every time trains the eye to skip the line that is supposed
  * to be carrying `断裂 2`.
  */
-function trailHead(page: AuditPage | null): string {
+function trailHead(page: AuditPage | null, paged = false): string {
   const common = { id: 'audit-rail', headingId: TRAIL_HEADING_ID }
   if (page === null) return sectionHead('Trail', '消息链', common)
 
   const parts = [`<span class="total">${escapeHtml(String(page.total))}</span>`]
   const shown = page.records.length
-  if (shown !== page.total) parts.push(`显示 ${shown}`)
+  // Not on a paged view: there the rows on screen are the page's business —
+  // 加载更早 adds to them and the poller puts new ones on top — and a count
+  // the rail cannot keep true would be wrong five seconds after it loaded.
+  if (!paged && shown !== page.total) parts.push(`显示 ${shown}`)
   const issues = Number.isFinite(page.issueCount) ? page.issueCount : 0
   parts.push(integrityStatus(page))
   return sectionHead('Trail', '消息链', {
@@ -595,12 +727,19 @@ function trailHead(page: AuditPage | null): string {
   })
 }
 
-/** Render the audit fragment: the header, then the form and the results. */
+/**
+ * Render the audit fragment: the header, then the form and the results.
+ *
+ * `paging` lays the table out for the trail page (D5): the newest page gets
+ * the body new rows are swapped into, and every page ends in 加载更早 or the
+ * statement that nothing is older. Without it the table is the plain one.
+ */
 export function renderAudit(
   page: AuditPage | null,
   failure: ConsoleFailure | null,
   filter: AuditFilter,
   agentOptions?: string,
+  paging?: TrailPaging,
 ): string {
   const results: string[] = []
   if (failure !== null) results.push(failureBar(failure, '审计日志'))
@@ -608,19 +747,26 @@ export function renderAudit(
   if (page === null) {
     if (failure === null) results.push(hint('未读取审计日志'))
   } else {
+    const place: TrailPlace | undefined =
+      paging === undefined
+        ? undefined
+        : {
+            paging,
+            ...(page.earlier === undefined ? {} : { earlier: page.earlier }),
+          }
     results.push(integrityAlert(page))
     results.push(activeChips(filter))
     results.push(
       page.chain === 'absent'
         ? absentState()
         : page.records.length === 0
-          ? emptyState(filter)
-          : recordTable(page.records),
+          ? pendingTable(place) + emptyState(filter)
+          : recordTable(page.records, undefined, place),
     )
   }
 
   return (
-    trailHead(page) +
+    trailHead(page, paging !== undefined) +
     `<div class="pane">` +
     `<div class="card elev-sm">` +
     filterForm(filter, agentOptions) +
@@ -636,6 +782,12 @@ export interface AuditSourceRender {
   readonly maxLagMinutes?: number
   readonly page: AuditPage | null
   readonly failure: ConsoleFailure | null
+  /**
+   * Position among the console's configured trails, which names this trail's
+   * table parts on a paged view. Kept when the view narrows to one trail, so
+   * the ids a page already holds still find their table.
+   */
+  readonly slot?: number
 }
 
 type AggregateAuditState =
@@ -727,7 +879,11 @@ function sourceMode(source: AuditSourceRender): string {
   )
 }
 
-function sourceBody(source: AuditSourceRender, filter: AuditFilter): string {
+function sourceBody(
+  source: AuditSourceRender,
+  filter: AuditFilter,
+  paging: TrailPaging | undefined,
+): string {
   const page = source.page
   const results: string[] = []
   if (source.failure !== null)
@@ -735,13 +891,21 @@ function sourceBody(source: AuditSourceRender, filter: AuditFilter): string {
   if (page === null) {
     if (source.failure === null) results.push(hint('未读取审计日志'))
   } else {
+    const place: TrailPlace | undefined =
+      paging === undefined
+        ? undefined
+        : {
+            paging,
+            ...(source.slot === undefined ? {} : { slot: source.slot }),
+            ...(page.earlier === undefined ? {} : { earlier: page.earlier }),
+          }
     results.push(integrityAlert(page, 'audit-integrity-' + source.node))
     results.push(
       page.chain === 'absent'
         ? absentState()
         : page.records.length === 0
-          ? emptyState(filter)
-          : recordTable(page.records, source.node),
+          ? pendingTable(place) + emptyState(filter)
+          : recordTable(page.records, source.node, place),
     )
   }
 
@@ -781,7 +945,20 @@ export function renderAuditSources(
   sources: readonly AuditSourceRender[],
   filter: AuditFilter,
   agentOptions?: string,
+  paging?: TrailPaging,
 ): string {
+  return (
+    sourcesHead(sources) +
+    '<div class="pane"><div class="card elev-sm">' +
+    filterForm(filter, agentOptions) +
+    '</div><div id="audit-results" class="stack" style="gap:var(--space-3)">' +
+    sources.map(source => sourceBody(source, filter, paging)).join('') +
+    '</div></div>'
+  )
+}
+
+/** The several-trail header: the sum, how many trails, the worst state among them. */
+function sourcesHead(sources: readonly AuditSourceRender[]): string {
   const readable = sources.filter(
     (source): source is AuditSourceRender & { readonly page: AuditPage } =>
       source.page !== null,
@@ -802,7 +979,7 @@ export function renderAuditSources(
     railSep() +
     aggregateAuditLabel(state, issues) +
     '</div>'
-  const head = sectionHead('Trail', '消息链', {
+  return sectionHead('Trail', '消息链', {
     id: 'audit-rail',
     headingId: TRAIL_HEADING_ID,
     tail,
@@ -815,14 +992,82 @@ export function renderAuditSources(
       'audit-state': state,
     },
   })
+}
+
+// ---------------------------------------------------------------------------
+// What arrived since the page was drawn (G2)
+// ---------------------------------------------------------------------------
+
+/** One trail read with `since`: what the poller swaps into its fresh body. */
+export interface TrailArrival {
+  /** Position among the configured trails; absent for the single legacy one. */
+  readonly slot?: number
+  /** The trail's node, on a several-trail view; the chain buttons need it. */
+  readonly node?: string
+  /** The page read with `since`; `null` when the read failed. */
+  readonly page: AuditPage | null
+  /** The head the page was drawn at. */
+  readonly since: number
+}
+
+const FRESH_COLUMNS = RECORD_HEADERS.length
+
+function freshNote(text: string, reload: string): string {
   return (
-    head +
-    '<div class="pane"><div class="card elev-sm">' +
-    filterForm(filter, agentOptions) +
-    '</div><div id="audit-results" class="stack" style="gap:var(--space-3)">' +
-    sources.map(source => sourceBody(source, filter)).join('') +
-    '</div></div>'
+    `<tr class="fresh-note"><td colspan="${FRESH_COLUMNS}">` +
+    `${escapeHtml(text)} · <a href="${attr(reload)}" data-nav>重新载入</a>` +
+    `</td></tr>`
   )
+}
+
+/**
+ * The increment a trail page polls for (G2): the header, and for each trail
+ * the rows that arrived since the page was drawn, newest first, in a
+ * `<tbody>` with the id of the empty one the page holds. The runtime swaps
+ * both in by id (`data-swap`) and nothing else on the page is touched: the
+ * filter, the rows already there, the pages 加载更早 appended.
+ *
+ * The rows are everything since the page was drawn, not since the last poll:
+ * the cursor in the page's poll URL never moves, so no script keeps one. The
+ * cost is bounded by one page — past that, and when the trail is shorter than
+ * when it was drawn (rewritten, replaced, gone), the body says so and offers
+ * the reload instead of rows that would be a guess.
+ *
+ * A trail whose read failed is left out: its body on the page keeps what it
+ * had, and the header says the read failed.
+ */
+export function renderAuditFresh(
+  arrivals: readonly TrailArrival[],
+  reload: string,
+): string {
+  const bodies = arrivals.map(arrival => {
+    const page = arrival.page
+    if (page === null) return ''
+    const id = attr(slotId('audit-fresh', arrival.slot))
+    let rows: string
+    if (page.head !== undefined && page.head < arrival.since) {
+      rows = freshNote('链比载入时短 · 可能被改写或换了文件', reload)
+    } else {
+      rows = rowsOf(page.records, arrival.node)
+      if (page.earlier !== null && page.earlier !== undefined) {
+        rows += freshNote('新记录超过一页', reload)
+      }
+    }
+    return `<tbody class="trail-fresh" id="${id}">${rows}</tbody>`
+  })
+  return `<table class="trail" hidden>${bodies.join('')}</table>`
+}
+
+/** The single trail's header alone, as the increment carries it. */
+export function renderAuditRail(page: AuditPage | null): string {
+  return trailHead(page, true)
+}
+
+/** The several-trail header alone, as the increment carries it. */
+export function renderAuditSourcesRail(
+  sources: readonly AuditSourceRender[],
+): string {
+  return sourcesHead(sources)
 }
 
 function idChips(label: string, values: readonly string[]): string {

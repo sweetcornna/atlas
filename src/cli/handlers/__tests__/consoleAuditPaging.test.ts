@@ -27,8 +27,12 @@ import {
   type AuditRecord,
   type TrailQuery,
 } from '@qianmo/audit'
-import type { AuditFilter, AuditPage } from '@qianmo/console'
-import { createAuditPort } from '../consolePorts.js'
+import {
+  createConsoleHandler,
+  type AuditFilter,
+  type AuditPage,
+} from '@qianmo/console'
+import { consoleLimits, createAuditPort } from '../consolePorts.js'
 
 const roots: string[] = []
 
@@ -231,4 +235,134 @@ describe('the audit port pages by cursor (D5)', () => {
     expect(reader.stats.linesChecked).toBe(500)
     expect(reader.stats.fullReads).toBe(1)
   })
+})
+
+// ---------------------------------------------------------------------------
+// 100 000 records: the first screen has an upper bound (D5 / G2)
+// ---------------------------------------------------------------------------
+
+const BIG = 100_000
+
+/** A console over one real trail file, reading it through `reader`. */
+function consoleOver(path: string, reader: TrailReader) {
+  const audit = createAuditPort({ path, reader })
+  const handle = createConsoleHandler(
+    {
+      registry: {
+        list: () => Promise.resolve({ ok: true, value: [] }),
+        register: () => Promise.reject(new Error('not in this test')),
+        deregister: () => Promise.reject(new Error('not in this test')),
+        heartbeat: () => Promise.reject(new Error('not in this test')),
+      },
+      audit,
+      limits: consoleLimits(),
+      now: () => 1_800_000_000_000,
+    },
+    { view: VIEW_TOKEN, admin: ADMIN_TOKEN },
+  )
+  return async (path_: string) => {
+    const started = performance.now()
+    const response = await handle(
+      new Request(`http://console.test${path_}`, {
+        headers: { authorization: `Bearer ${VIEW_TOKEN}` },
+      }),
+    )
+    const body = await response.text()
+    return { status: response.status, body, ms: performance.now() - started }
+  }
+}
+
+const VIEW_TOKEN = 'view-token-0000000000001'
+const ADMIN_TOKEN = 'admin-token-000000000001'
+
+/** Rows drawn in the page's main table. */
+function rowCount(html: string, id: string): number {
+  const start = html.indexOf(`id="${id}"`)
+  if (start === -1) return 0
+  const body = html.slice(start, html.indexOf('</tbody>', start))
+  return body.split('<tr ').length - 1
+}
+
+describe('100 000 records: the first screen is bounded (D5, G2)', () => {
+  test('cold once, then every first screen and every poll touches only what is new', async () => {
+    const path = trailPath()
+    const generated = performance.now()
+    let end = writeChain(path, BIG)
+    const generateMs = performance.now() - generated
+    const reader = new TrailReader(path)
+    const get = consoleOver(path, reader)
+
+    // Cold: the one full read and check this console does for this file.
+    const cold = await get('/audit')
+    expect(cold.status).toBe(200)
+    expect(rowCount(cold.body, 'audit-rows')).toBe(50)
+    const afterCold = reader.stats
+    expect(afterCold.fullReads).toBe(1)
+    expect(afterCold.linesChecked).toBe(BIG)
+
+    // Warm: a second tab's first screen. Nothing was written, so nothing is
+    // read: the count is the bound, the clock only says so in milliseconds.
+    const warm = await get('/audit')
+    expect(rowCount(warm.body, 'audit-rows')).toBe(50)
+    expect(reader.stats.linesChecked - afterCold.linesChecked).toBe(0)
+    expect(reader.stats.bytesRead - afterCold.bytesRead).toBe(0)
+    expect(warm.body.length).toBeLessThan(160_000)
+
+    // The poll the page set up: since the head it was drawn at.
+    const poll = /data-poll="([^"]+)"/
+      .exec(warm.body)?.[1]
+      ?.replaceAll('&amp;', '&')
+    expect(poll).toBe(`/fragments/audit?since=${BIG}`)
+    const quiet = await get(poll ?? '')
+    expect(quiet.body.length).toBeLessThan(4_000)
+
+    end = writeChain(path, 10, end)
+    const beforePoll = reader.stats
+    const news = await get(poll ?? '')
+    expect(rowCount(news.body, 'audit-fresh')).toBe(10)
+    // Ten new lines checked, and the bytes read are theirs plus the one line
+    // spot-checked before them — not the 30-odd MB behind it.
+    expect(reader.stats.linesChecked - beforePoll.linesChecked).toBe(10)
+    expect(reader.stats.bytesRead - beforePoll.bytesRead).toBeLessThan(8_000)
+    expect(news.body.length).toBeLessThan(16_000)
+
+    // A deep page: a cursor far back is found by seq, not by a walk.
+    const deep = await get('/audit?before=1234')
+    expect(rowCount(deep.body, 'audit-rows')).toBe(50)
+
+    // The bounds, in milliseconds, on whatever machine runs this. The count
+    // assertions above are what the bound rests on; these are generous
+    // enough for a loaded CI box and still an order below a full read.
+    const warmAgain = await get('/audit')
+    console.log(
+      `[audit 100k] generate ${generateMs.toFixed(0)} ms · cold first screen ` +
+        `${cold.ms.toFixed(0)} ms · warm first screen ${warm.ms.toFixed(1)} ms / ` +
+        `${warmAgain.ms.toFixed(1)} ms · quiet poll ${quiet.ms.toFixed(1)} ms · ` +
+        `poll with 10 new ${news.ms.toFixed(1)} ms · page before=1234 ` +
+        `${deep.ms.toFixed(1)} ms · first screen ${warm.body.length} chars · ` +
+        `quiet poll ${quiet.body.length} chars · poll with 10 new ${news.body.length} chars`,
+    )
+    expect(cold.ms).toBeLessThan(15_000)
+    expect(Math.min(warm.ms, warmAgain.ms)).toBeLessThan(250)
+    expect(news.ms).toBeLessThan(250)
+    expect(deep.ms).toBeLessThan(250)
+  }, 60_000)
+
+  test('the control: a reader that trusts nothing reads all 100 000 lines on every first screen', async () => {
+    // What the bound above would be without the cache: the same request,
+    // through a reader whose checked prefix expires at once. If the bound's
+    // count assertion were measuring nothing, this one could not differ.
+    const path = trailPath()
+    writeChain(path, BIG)
+    const reader = new TrailReader(path, { recheckMs: 0 })
+    const get = consoleOver(path, reader)
+    await get('/audit')
+    const before = reader.stats
+    const again = await get('/audit')
+    expect(rowCount(again.body, 'audit-rows')).toBe(50)
+    expect(reader.stats.linesChecked - before.linesChecked).toBe(BIG)
+    console.log(
+      `[audit 100k] control · first screen with no cache ${again.ms.toFixed(0)} ms`,
+    )
+  }, 60_000)
 })
