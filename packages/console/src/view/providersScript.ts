@@ -425,17 +425,23 @@ export const PROVIDERS_PAGE_JS = `
     var target = switching;
     var sessions = valueOf('prov-switch-sessions');
     var nodes = switchNodes();
+    if (scope() !== 'default' && nodes.length === 0) { qc.toast('没有选节点', 'warn'); return; }
+    // 跳过测连 goes on record before anything changes; unrecorded, nothing does.
+    var start = target.skipped
+      ? qc.sendJson('POST', '/v0/providers/profiles/' + enc(target.profile) + '/skip-probe', {})
+      : Promise.resolve();
     var first;
     if (scope() === 'default') {
-      first = qc.sendJson('PUT', '/v0/providers/default', { profileId: target.profile });
+      first = start.then(function () {
+        return qc.sendJson('PUT', '/v0/providers/default', { profileId: target.profile });
+      });
     } else {
-      if (nodes.length === 0) { qc.toast('没有选节点', 'warn'); return; }
       first = nodes.reduce(function (chain, node) {
         return chain.then(function () {
           return qc.sendJson('PUT', '/v0/providers/nodes/' + enc(node) + '/assignment',
             { mode: 'profile', profileId: target.profile });
         });
-      }, Promise.resolve());
+      }, start);
     }
     first.then(function () {
       if (nodes.length === 0) {
@@ -447,8 +453,9 @@ export const PROVIDERS_PAGE_JS = `
     }).catch(function (err) { qc.toast('切换失败 · ' + qc.message(err), 'bad'); });
   }
 
-  function openSwitch(profile, name) {
-    switching = { profile: profile, name: name };
+  // skipped: reached through 保存并切换 on the 跳过测连 box, not a probe.
+  function openSwitch(profile, name, skipped) {
+    switching = { profile: profile, name: name, skipped: skipped === true };
     qc.setText('prov-switch-name', name);
     var def = one('input[name="prov-switch-scope"][value="default"]');
     if (def) def.checked = true;
@@ -942,13 +949,14 @@ export const PROVIDERS_PAGE_JS = `
 
     qc.onAction('prov-save-switch', function () {
       var skip = qc.byId('prov-skip-probe');
-      if (probedAs !== signature() && !(skip && skip.checked)) {
+      var skipped = probedAs !== signature();
+      if (skipped && !(skip && skip.checked)) {
         result('prov-result', '保存并切换要求本页测连可用 · 先测连或勾选跳过测连', 'warn');
         return;
       }
       save().then(function (profile) {
         becomeStored(profile);
-        openSwitch(profile.id, profile.name);
+        openSwitch(profile.id, profile.name, skipped);
       }).catch(function () { /* said on the result line */ });
     });
 

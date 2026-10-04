@@ -737,6 +737,7 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'provider.probe.auth': '测连',
   'provider.probe.latency': '测速',
   'provider.probe.call': '真实调用',
+  'provider.probe.skip': '跳过测连',
   'provider.autocompact': '设自动压缩阈值',
   'provider.import': '导入模型服务',
 }

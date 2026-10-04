@@ -257,6 +257,91 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
           'provider.apply',
         ]),
       )
+      // Probed on this page: nothing was skipped, nothing says so.
+      expect(recorded).not.toContain('provider.probe.skip')
+    } finally {
+      await tab.close()
+      served.stop()
+    }
+  }, 60_000)
+
+  test('跳过测连: on record before the switch, and a skip the ledger will not take switches nothing', async () => {
+    const served = await serve()
+    const tab = await browser.tab()
+    try {
+      await signIn(tab, served.base, served.ops)
+      await tab.goto(`${served.base}/providers/new?preset=deepseek`)
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      await tab.evaluate(
+        `document.getElementById('prov-key').value = 'sk-test-canary-browser-0002'`,
+      )
+      await tab.evaluate(`document.getElementById('prov-skip-probe').click()`)
+      await tab.evaluate(click('[data-action="prov-save-switch"]'))
+      await tab.waitFor(`document.getElementById('prov-switch-dialog').open`)
+      await tab.evaluate(
+        `(function () {
+          document.querySelector('input[name="prov-switch-scope"][value="nodes"]').click();
+          document.querySelector('input[name="prov-switch-node"][value="node-a"]').click();
+        })()`,
+      )
+      await tab.evaluate(click('[data-action="confirm-prov-switch-dialog"]'))
+      await tab.waitFor(
+        `document.querySelector('#prov-progress-list li[data-node="node-a"][data-tone="warn"]') !== null`,
+      )
+      const done = served.providers.writes
+        .filter(
+          write =>
+            !(
+              write.method === 'apply' &&
+              (write.input as { dryRun?: boolean }).dryRun === true
+            ),
+        )
+        .map(write => write.method)
+      expect(done).toEqual(['saveProfile', 'assign', 'apply'])
+      // The skip is on record after the save and before anything it allowed.
+      const lines = served.actions.entries.filter(entry =>
+        entry.action.startsWith('provider.'),
+      )
+      expect(lines.map(entry => entry.action)).toEqual([
+        'provider.save',
+        'provider.probe.skip',
+        'provider.assign',
+        'provider.apply',
+      ])
+      expect(lines[1]?.target).toBe('deepseek-2')
+
+      // Again, with a ledger that admits but will not take the line: the
+      // switch stops at it, before the default or any node is touched.
+      served.actions.recordResult = {
+        ok: false,
+        failure: { code: 'unreachable', message: 'disk full' },
+      }
+      const writes = served.providers.writes.length
+      await tab.evaluate(click('[data-action="prov-save-switch"]'))
+      await tab.waitFor(`document.getElementById('prov-switch-dialog').open`)
+      await tab.evaluate(click('[data-action="confirm-prov-switch-dialog"]'))
+      await tab.waitFor(
+        `document.getElementById('toasts').textContent.indexOf('切换失败') !== -1`,
+      )
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('toasts').textContent`,
+        ),
+      ).toContain('切换没有执行')
+      const after = served.providers.writes
+        .slice(writes)
+        .map(write => write.method)
+      expect(after).not.toContain('setDefault')
+      expect(after).not.toContain('assign')
+      expect(
+        served.providers.writes
+          .slice(writes)
+          .filter(
+            write =>
+              write.method === 'apply' &&
+              (write.input as { dryRun?: boolean }).dryRun !== true,
+          ),
+      ).toEqual([])
     } finally {
       await tab.close()
       served.stop()

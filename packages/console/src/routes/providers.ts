@@ -182,6 +182,8 @@ const WRITER_REQUIRED =
   '模型服务的写操作需要运维角色的个人账号 · 共用令牌与 break-glass 只能查看'
 const PROVIDERS_UNWIRED =
   '模型服务未开启 · 启动控制台时加 --providers 与 --accounts'
+const SKIP_UNRECORDED =
+  '跳过测连没有记进动作账本 · 切换没有执行 · 先测连或稍后再试'
 const BODY_REQUIRED = '请求体必须是 JSON 对象'
 const BODY_TOO_LARGE = '请求体过大'
 
@@ -667,6 +669,14 @@ function endpointsOf(
       },
     }
   }
+  if (
+    rest.length === 3 &&
+    first === 'profiles' &&
+    second !== undefined &&
+    third === 'skip-probe'
+  ) {
+    return { POST: skipProbeEndpoint(second) }
+  }
   if (rest.length === 1 && first === 'default') {
     return {
       PUT: {
@@ -879,6 +889,29 @@ function saveEndpoint(id: string | null): Endpoint {
         callerOf(ctx),
       )
       return answer(result, profile => ({ profile }))
+    },
+  }
+}
+
+/**
+ * `POST /v0/providers/profiles/<id>/skip-probe`: ops switched to a profile
+ * without a probe on this page (§6.3.2 step 7, 「跳过测连」). The page calls it
+ * when the switch is confirmed, before anything is assigned or applied, so the
+ * line is there for exactly the switches that happened. This is the one
+ * `provider.*` line the route writes itself: the port has no such step.
+ * Unwritten, the switch does not go ahead — the choice must be on record.
+ */
+function skipProbeEndpoint(id: string): Endpoint {
+  return {
+    writer: true,
+    admit: true,
+    async run(ctx, port) {
+      const found = await port.profile(id)
+      if (!found.ok) return providerFailureResponse(found.failure)
+      if (!(await ctx.record('provider.probe.skip', id, 'ok'))) {
+        return fail(503, 'unavailable', SKIP_UNRECORDED)
+      }
+      return json({ recorded: true, profileId: id })
     },
   }
 }

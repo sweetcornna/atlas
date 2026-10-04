@@ -1061,6 +1061,11 @@ export const CONSOLE_ACTIONS = [
   'provider.probe.latency',
   /** 真实调用一次模型，会产生一次计费调用。 */
   'provider.probe.call',
+  /**
+   * 「保存并切换」时 ops 勾了「跳过测连」（§6.3.2 第 7 条），target 是档案 id。端口没有
+   * 这一步，由模型服务页的路由在切换执行前记，记不进去就不切换。
+   */
+  'provider.probe.skip',
   'provider.autocompact',
   'provider.import',
 ] as const

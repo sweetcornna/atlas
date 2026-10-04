@@ -486,6 +486,7 @@ describe('who sees what', () => {
         { ifMatch: 3, value: 'sk-test-canary-0001' },
       ],
       ['DELETE', '/v0/providers/profiles/deepseek/keys/k1', { ifMatch: 3 }],
+      ['POST', '/v0/providers/profiles/deepseek/skip-probe', {}],
       ['PUT', '/v0/providers/default', { profileId: null }],
       ['PUT', '/v0/providers/nodes/node-a/assignment', { mode: 'unmanaged' }],
       ['PUT', '/v0/providers/nodes/node-a/context', { tokens: '300k' }],
@@ -994,6 +995,57 @@ describe('writes', () => {
     expect(s.actions.admitCalls).toBe(s.base.admits)
     // And no read asked a node for anything.
     expect(s.providers.calls).not.toContain('refreshNode')
+  })
+
+  test('跳过测连 is one line the route writes, and unrecorded it stops the switch', async () => {
+    const s = await setup()
+    const path = '/v0/providers/profiles/deepseek/skip-probe'
+    const response = await s.handle(call('POST', path, s.ops, {}))
+    expect(response.status).toBe(200)
+    expect(await jsonOf(response)).toEqual({
+      recorded: true,
+      profileId: 'deepseek',
+    })
+    expect(s.actions.admitCalls - s.base.admits).toBe(1)
+    const lines = s.actions.entries.slice(s.base.entries)
+    expect(
+      lines.map(line => [line.action, line.target, line.outcome, line.code]),
+    ).toEqual([['provider.probe.skip', 'deepseek', 'ok', undefined]])
+    expect(lines[0]?.subject).toMatch(/^u:/)
+    // The port was read, not written: nothing about the profile changed.
+    expect(s.providers.writes).toEqual([])
+
+    // A profile that is not there: 404, no line.
+    const gone = await s.handle(
+      call('POST', '/v0/providers/profiles/nope/skip-probe', s.ops, {}),
+    )
+    expect(gone.status).toBe(404)
+    expect(s.actions.entries.length - s.base.entries).toBe(1)
+
+    // The ledger takes the admit but not the line: 503, and the page script
+    // does not go on to assign or apply (providers.browser.test.ts).
+    s.actions.recordResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: 'disk full' },
+    }
+    const unrecorded = await s.handle(call('POST', path, s.ops, {}))
+    expect(unrecorded.status).toBe(503)
+    const body = (await jsonOf(unrecorded)) as {
+      error: { code: string; message: string }
+    }
+    expect(body.error.code).toBe('unavailable')
+    expect(body.error.message).toContain('切换没有执行')
+    expect(s.actions.entries.length - s.base.entries).toBe(1)
+
+    // A closed ledger answers before the profile is even read.
+    s.actions.admitResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: 'closed' },
+    }
+    const reads = s.providers.calls.length
+    const closed = await s.handle(call('POST', path, s.ops, {}))
+    expect(closed.status).toBe(503)
+    expect(s.providers.calls.length).toBe(reads)
   })
 
   test('a closed ledger stops a write before the port', async () => {
