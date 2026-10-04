@@ -34,6 +34,9 @@
  * `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`，控制台
  * 配置根的 `qianmo/console/provider-secrets.json`（那是密文，排除是 §8.3 的原话）。持有点照样
  * 读，但命中记进 `holders` 而不是 `hits`：真 key 必须在持有点里命中，这是「针是对的」的正向对照。
+ * 首次托管时原样复制的 `qianmo/provider/first-write/settings.json`（§2.6 第 2 步）只对**本机真 key**
+ * 算持有点：迁移前 key 写在 `settings.json` 里的节点，这份副本里就有它；金丝雀永远进不了这份
+ * 从不覆盖的副本，在那里出现照样算命中。
  * 不跟软链。
  *
  * **输出里永远没有针的值**：只有标签（`canary-1`、`real-<节点>-<序号>`）、路径与次数。
@@ -78,6 +81,8 @@ const NODE_HOLDERS = [
   'qianmo/provider/key-pool.json',
 ]
 const CONSOLE_HOLDERS = ['qianmo/console/provider-secrets.json']
+/** 只对本机真 key 算持有点（相对节点配置根）：首次托管时的 `settings.json` 原样副本。 */
+const NODE_REAL_KEY_HOLDERS = ['qianmo/provider/first-write/settings.json']
 
 /** 单个文件超过它就跳过并计数（日志轮转之前不会到这个量级）。 */
 const MAX_FILE_BYTES = 512 * 1024 * 1024
@@ -378,9 +383,13 @@ function holderRule(
   rel: string,
   nodes: readonly string[],
   withConsole: boolean,
+  forRealKey: boolean,
 ): boolean {
+  const nodeHolders = forRealKey
+    ? [...NODE_HOLDERS, ...NODE_REAL_KEY_HOLDERS]
+    : NODE_HOLDERS
   for (const node of nodes) {
-    for (const holder of NODE_HOLDERS) {
+    for (const holder of nodeHolders) {
       if (rel === `nodes/${node}/config/${holder}`) return true
     }
   }
@@ -440,10 +449,15 @@ export function scanFiles(options: {
       }
       scanned += 1
       bytes += st.size
-      const into = holderRule(childRel, options.nodes, options.console)
-        ? holders
-        : hits
       for (const [label, count] of counts) {
+        const into = holderRule(
+          childRel,
+          options.nodes,
+          options.console,
+          label.startsWith('real-'),
+        )
+          ? holders
+          : hits
         into.push({ path: childRel, label, count })
       }
     }

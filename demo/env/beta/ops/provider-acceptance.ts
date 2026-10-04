@@ -13,7 +13,7 @@
  *
  * | id | 判据 |
  * | --- | --- |
- * | P0 | 配置合法、凭据文件 0600、`/v0/health` 200、凭据是运维个人账号（`POST /v0/providers/preview` 不 403） |
+ * | P0 | 配置合法、凭据文件 0600、`/v0/health` 200、凭据是运维个人账号（`POST /v0/providers/preview` 不是 401 / 403） |
  * | D0 | 每台机器的 facts 取得到；控制台与每个节点进程活着；所有 `sourceCommit` 相同、是 40 位 hex、等于期望（给了的话） |
  * | W1 | 节点横幅 `trusts`、`localCommandsFrom` 含 chatAs；控制台 `chat … (signed)`、accounts / providers enabled、执行器覆盖每个节点且种类对 |
  * | A1 | 每个节点 refresh：status ok、无漂移、托管、applied = 期望、无 pending、三个哈希一致、resident 在跑、没有 dead 的 key |

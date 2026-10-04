@@ -40,7 +40,10 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
+import { occConfigPath } from '../../../../src/config/paths.js'
+import { keyPoolPaths } from '../../../../src/services/qianmo/modelCompat/credentialPoolStore.js'
+import { providerPaths } from '../../../../src/services/qianmo/providers/store.js'
 import { SECRET_ENV_KEYS as WHITELIST_SECRET_KEYS } from '../../../../src/services/qianmo/providers/whitelist.js'
 import { parseProviderProfile, presetById } from '@qianmo/providers'
 import { testBashes } from '../testBashes'
@@ -55,7 +58,12 @@ import {
   replyOf,
   type Verdict,
 } from './provider-acceptance'
-import { SECRET_ENV_KEYS, parseConsoleBanner } from './provider-acceptance-node'
+import {
+  SECRET_ENV_KEYS,
+  parseConsoleBanner,
+  realKeyNeedles,
+  scanFiles,
+} from './provider-acceptance-node'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
 const WRAPPER = join(
@@ -1317,6 +1325,46 @@ describe('包装脚本', () => {
 describe('配置与零件', () => {
   test('节点脚本里抄的 SECRET_ENV_KEYS 与 whitelist.ts 逐项一致', () => {
     expect([...SECRET_ENV_KEYS]).toEqual([...WHITELIST_SECRET_KEYS])
+  })
+
+  test('持有点与源码派生的路径同名；首次托管副本只对本机真 key 算持有点', () => {
+    // 节点脚本只用 node 内建模块（部署树里没有 src），路径是抄的：这里钉住与源码一致。
+    const script = readFileSync(NODE_SCRIPT, 'utf8')
+    for (const path of [
+      providerPaths.pending(),
+      keyPoolPaths.pool(),
+      providerPaths.firstWrite(),
+    ]) {
+      expect(script).toContain(`'${relative(occConfigPath(), path)}'`)
+    }
+    const canary = 'sk-test-canary-holders-0123456789abcdef'
+    const root = mkdtempSync(join(BASE, 'holders-'))
+    const config = join(root, 'nodes/beta-2/config')
+    write(
+      join(config, 'settings.json'),
+      JSON.stringify({ env: { OPENAI_API_KEY: REAL_KEY } }),
+    )
+    // 迁移前 key 写在 settings.json 里的节点：首次托管的副本里有它，那是持有点。
+    write(
+      join(config, 'qianmo/provider/first-write/settings.json'),
+      JSON.stringify({ env: { OPENAI_API_KEY: REAL_KEY }, canary }),
+    )
+    const real = realKeyNeedles(root, ['beta-2'])
+    expect(real.map(needle => needle.label)).toEqual(['real-beta-2-1'])
+    const scan = scanFiles({
+      root,
+      nodes: ['beta-2'],
+      console: false,
+      needles: [...real, { label: 'canary-1', bytes: Buffer.from(canary) }],
+    })
+    expect(scan.holders.map(hit => `${hit.path} ${hit.label}`).sort()).toEqual([
+      'nodes/beta-2/config/qianmo/provider/first-write/settings.json real-beta-2-1',
+      'nodes/beta-2/config/settings.json real-beta-2-1',
+    ])
+    // 金丝雀从不该进那份从不覆盖的副本：在那里出现照样是命中。
+    expect(scan.hits.map(hit => `${hit.path} ${hit.label}`)).toEqual([
+      'nodes/beta-2/config/qianmo/provider/first-write/settings.json canary-1',
+    ])
   })
 
   test('金丝雀档案叠在预设草稿上（路由的 mergeEdit 那样）过得了真校验器', () => {

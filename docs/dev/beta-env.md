@@ -1264,7 +1264,7 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | 5 | 每个远端节点登记第六类动作专用 key：先 `model-apply-enroll.sh enroll … --dry-run` 看清要写的那一行与 known_hosts 那一行，再去掉 `--dry-run` 跑 | 输出 `VERIFY ok`（中枢用执行器同一组 ssh 参数与哨兵拿到了 `status`）；节点 `authorized_keys` 里那一行的选项与 §8.3 表中所写相同（`command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict`），注释是 `qianmo-model-apply <节点>` | 删节点 `authorized_keys` 里注释为 `qianmo-model-apply <节点>` 的那一行（脚本写过的备份 `authorized_keys.bak-<戳>` 在旁边）；`ssh-keygen -R` 删中枢 known_hosts 那一条；删 H 上那把 key |
 | 6 | 重起控制台（`systemctl --user restart qianmo-console.service`），让它带上新登记的执行器 | `providers` 行 `enabled -> … (nodes: …)` 列出每个节点，远端是 `/ssh`、H 上的是 `/local` | 同第 3 步 |
 | 7 | 在控制台上（ops 个人账号）按节点当前的实际配置建档案并设为全局默认（`providers-console-m1.md` §2.9 第 3 步），**逐个节点首次下发** | 每个节点刷新后无漂移（除第 8 步要清的 `env-residue`）、`applied` 是这份档案、resident 在跑 | 节点 `settings.json` 的首次备份（§2.9）；控制台上把指派改回「不托管」 |
-| 8 | 下一个维护窗口：从各节点 `secrets/model-env` 删掉 provider 类键（**接力节点上的 `OPENAI_API_KEY` 先确认 `handoff-node.sh` 不再需要它**），重起 resident | 节点腿横幅「模型服务由中枢托管」，不再有 `env-residue` WARN；控制台上该节点无漂移 | 把删掉的键放回 `model-env`、重起 |
+| 8 | 下一个维护窗口：从各节点 `secrets/model-env` 删掉 provider 类键（**接力节点上的 `OPENAI_API_KEY` 先确认 `handoff-node.sh` 不再需要它**），重起 resident。**做完才进第 9 步**：验收的 A1 把 `env-residue` 当漂移判红 | 节点腿横幅「模型服务由中枢托管」，不再有 `env-residue` WARN；控制台上该节点无漂移 | 把删掉的键放回 `model-env`、重起 |
 | 9 | 每轮验收：`provider-acceptance.sh round --config <轮配置> --out <证据目录>` | 退出码 0、`round-<轮名>/verdict.json` 的 `green` 为 `true`（逐项判据见 13.3） | 这一步会下发与切换，收尾时回到原指派、删掉金丝雀档案；脚本被打断时到控制台上把 `switch.node` 的指派改回原样、删 `qm-canary-*` 档案 |
 | 10 | 同一份部署再跑一轮，然后 `provider-acceptance.sh compare <证据目录>/round-<甲> <证据目录>/round-<乙>` | 退出码 0：两轮都零红、部署指纹相同、乙在甲之后开始、中间没有别的轮 | 有红：修了之后**重新从两轮数起**（一轮绿不算数） |
 
@@ -1286,7 +1286,7 @@ probe 做的正是「解析 + 真拨」，它是对的；**不要**为了「快�
 | A4 | 一次 `probe call`：`ok && reachable` |
 | A6 | 对方受理一轮之后下发同一份档案：观察到 `pending.waitingTurns ≥ 1`、那一轮回复 `done`、切换完成且 generation 前进。观察不到「在等」就重试，三次都观察不到判红（`inconclusive`；每次都是先切后回复时判 `no-wait`） |
 | A3 | 改指派 → 下发 → `applied` 与 `effective` 的模型都是新档案 → 原指派 → 同样核。`switch.profileId` 选与原档案**同线路、同主机**的一份（例如同一网关上的另一个模型）：中枢据此保留会话；换线路或换主机会把该节点的会话重置，来回两次 |
-| A5 | 金丝雀档案（两把 key）走存储 → 页面 / JSON → 测连 → dry-run 下发 →（`realApply` 时真下发并切回）→ 导出 → 轮换 → 删除；运维本机看到的每个响应、每台机器内测根下的文件（不读 `secrets/`，排除明文持有点 `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`、`qianmo/console/provider-secrets.json`）、流程中每 100 ms 的 `ps -eo args` 采样里**零命中**；本机真 key 只出现在持有点里，且每把都在持有点里命中（正向对照） |
+| A5 | 金丝雀档案（两把 key）走存储 → 页面 / JSON → 测连 → dry-run 下发 →（`realApply` 时真下发并切回）→ 导出 → 轮换 → 删除；运维本机看到的每个响应、每台机器内测根下的文件（不读 `secrets/`，排除明文持有点 `settings.json`、`qianmo/provider/pending.json`、`qianmo/provider/key-pool.json`、`qianmo/console/provider-secrets.json`；首次托管副本 `qianmo/provider/first-write/settings.json` 只对本机真 key 算持有点）、流程中每 100 ms 的 `ps -eo args` 采样里**零命中**；本机真 key 只出现在持有点里，且每把都在持有点里命中（正向对照） |
 
 金丝雀默认**不真下发**：真下发会把一个节点切到一把假 key，那个窗口里的真实对话会失败；金丝雀档案的
 线路与主机都和现网档案不同，切过去、切回来还会把该节点的会话各重置一次。真写入路径由本机真 key 扫描覆盖。
