@@ -121,8 +121,11 @@ interface ConsoleAnswer {
   readonly body: Record<string, unknown>
 }
 
-async function consoleRequest(
-  project: HandoffProject,
+/** Where the hub's console is and the credential file for it. */
+export type ConsoleAccess = Pick<HandoffProject, 'console' | 'tokenFile'>
+
+export async function consoleRequest(
+  project: ConsoleAccess,
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
@@ -165,7 +168,7 @@ async function consoleRequest(
   }
 }
 
-function consoleError(answer: ConsoleAnswer): string {
+export function consoleError(answer: ConsoleAnswer): string {
   const error = answer.body.error
   const message =
     typeof error === 'object' &&
@@ -335,8 +338,11 @@ interface NowMode {
   readonly caller?: HandoffCaller
 }
 
-/** One handoff at a time per repository; held from the check to the answer. */
-function nowLockPath(root: string): string {
+/**
+ * One handoff operation at a time per repository — `now`, and `pull` (P17.6)
+ * — held from the check to the answer.
+ */
+export function nowLockPath(root: string): string {
   return join(stateDir(root), 'now.lock')
 }
 
@@ -540,21 +546,25 @@ function describeTask(task: TaskLine): string {
   return `  ${task.taskId}  ${task.state.padEnd(10)} ${new Date(task.acceptedAt).toISOString()}  ${task.goal.slice(0, 60)}`
 }
 
-/** This project's and this device's tasks on the hub, newest first. */
-async function projectTasks(project: HandoffProject): Promise<TaskLine[]> {
-  const listed = await consoleRequest(project, 'GET', '/v0/handoff')
+/** Every task on the hub this credential can see, newest first. */
+export async function hubTasks(where: ConsoleAccess): Promise<TaskLine[]> {
+  const listed = await consoleRequest(where, 'GET', '/v0/handoff')
   if (listed.status !== 200 || !Array.isArray(listed.body.tasks)) {
     throw new HandoffUserError(`查不了中枢台账：${consoleError(listed)}`)
   }
   return listed.body.tasks
     .map(taskLine)
-    .filter(
-      (task): task is TaskLine =>
-        task !== null &&
-        task.project === project.project &&
-        task.device === project.device,
-    )
+    .filter((task): task is TaskLine => task !== null)
     .sort((a, b) => b.acceptedAt - a.acceptedAt)
+}
+
+/** This project's and this device's tasks on the hub, newest first. */
+export async function projectTasks(
+  project: HandoffProject,
+): Promise<TaskLine[]> {
+  return (await hubTasks(project)).filter(
+    task => task.project === project.project && task.device === project.device,
+  )
 }
 
 interface StatusOptions {

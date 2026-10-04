@@ -31,17 +31,34 @@
  * With `--handoff-node`, a fourth: accepted tasks go to node bridges and
  * come back (P17.5, `consoleHandoffDispatch.ts`), which writes
  * `handoff.dispatched`, `handoff.completed` and `handoff.failed` into the same
- * chain. `returned` and `attach-requested` are P17.6's.
+ * chain.
+ *
+ * P17.6 adds the two ends a person drives from a laptop:
+ *
+ * - `attach` gives `qm handoff attach` the node and thread of a **running**
+ *   task and writes `handoff.attach-requested`. It is a locator and nothing
+ *   more: the node's app-server token is read from the node over the user's
+ *   own SSH and never passes through here (plan D-6). The thread is the
+ *   manifest's `sessionId` for a qmcode session — the node resumes that very
+ *   thread — and unknown (`null`) for a Claude Code session until the result
+ *   names it, because the node imports it as a new thread and nothing on the
+ *   protocol carries that id back before `task.result`;
+ * - `markReturned` records `qm handoff pull` having brought the result home:
+ *   `done` / `failed` → `returned` and `handoff.returned`. Asked again for a
+ *   task already `returned` it answers success with `changed: false`, so a
+ *   pull that is run again after the hub was unreachable is not an error.
  */
 
 import { randomBytes } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
-import { AuditSource, AuditTrail } from '@qianmo/audit'
+import { type AuditInput, AuditSource, AuditTrail } from '@qianmo/audit'
 import type {
   ConsoleResult,
   HandoffAcceptance,
+  HandoffAttachView,
   HandoffPort,
+  HandoffReturnView,
   HandoffSendView,
   HandoffTaskView,
 } from '@qianmo/console'
@@ -188,6 +205,29 @@ async function landingProblem(
   return null
 }
 
+/** Why a task that is not running cannot be attached to, and what to do instead. */
+function notRunning(task: HandoffTaskView): string {
+  switch (task.state) {
+    case 'accepted':
+      return `任务 ${task.taskId} 还没有派给节点（accepted）· 没有会话可接 · 等它开始跑：qm handoff status --wait --task ${task.taskId}`
+    case 'dispatched':
+      return `任务 ${task.taskId} 已派给节点 ${task.node ?? '?'}（dispatched）· 节点还没接手 · 稍后再试`
+    case 'done':
+      return `任务 ${task.taskId} 在云端已经结束（done）· 用 qm handoff pull ${task.taskId} 接回本机`
+    case 'failed':
+      return `任务 ${task.taskId} 失败了（failed）· 节点上没有在跑的会话 · 原因：${task.reason ?? '没有写'}`
+    case 'returned':
+      return `任务 ${task.taskId} 已经接回本机（returned）· 节点上没有在跑的会话`
+    default:
+      return `任务 ${task.taskId} 是 ${task.state} · 不在云端运行`
+  }
+}
+
+/** Why a task cannot be marked returned yet. */
+function notFinished(task: HandoffTaskView): string {
+  return `任务 ${task.taskId} 还在 ${task.state} · 云端没有结束 · 不能记为已接回`
+}
+
 function sameManifest(a: HandoffManifest, b: HandoffManifest): boolean {
   // Both went through `validateManifest`, which rebuilds the object in one
   // fixed key order, so the serialisations compare field for field.
@@ -245,6 +285,21 @@ export function openConsoleHandoff(
     for (;;) {
       const id = options.newTaskId?.() ?? defaultTaskId(now())
       if (ledger.get(id) === undefined) return id
+    }
+  }
+  /**
+   * One line in the chain. A failed write is reported, not turned into a
+   * refusal: the ledger line it records is already on disk.
+   */
+  const appendAudit = (record: AuditInput): void => {
+    try {
+      trail.append(record)
+    } catch (error) {
+      onError(
+        `console handoff: audit append failed for ${record.taskId ?? '?'}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
     }
   }
   const dispatchConfig = options.dispatch?.config
@@ -376,6 +431,84 @@ export function openConsoleHandoff(
             )
         }
       }
+    },
+
+    attach(taskId, request): Promise<ConsoleResult<HandoffAttachView>> {
+      const task = ledger.get(taskId)
+      if (task === undefined) {
+        return Promise.resolve(failure('not_found', `台账里没有任务 ${taskId}`))
+      }
+      if (task.state !== 'running' || task.node === null) {
+        return Promise.resolve(failure('rejected', notRunning(task)))
+      }
+      const threadId =
+        task.result?.threadId ??
+        (task.manifest.tool === 'qmcode' ? task.manifest.sessionId : null)
+      appendAudit({
+        at: now(),
+        source: AuditSource.Handoff,
+        kind: 'handoff.attach-requested',
+        taskId,
+        peer: request.device ?? task.manifest.device,
+        outcome: 'ok',
+        detail: {
+          node: task.node,
+          ...(threadId === null ? {} : { threadId }),
+          ...(request.device === null ? {} : { device: request.device }),
+        },
+      })
+      return Promise.resolve({
+        ok: true,
+        value: {
+          taskId,
+          state: task.state,
+          node: task.node,
+          threadId,
+          project: task.manifest.project,
+          tool: task.manifest.tool,
+        },
+      })
+    },
+
+    markReturned(taskId, request): Promise<ConsoleResult<HandoffReturnView>> {
+      const task = ledger.get(taskId)
+      if (task === undefined) {
+        return Promise.resolve(failure('not_found', `台账里没有任务 ${taskId}`))
+      }
+      if (task.state === 'returned') {
+        return Promise.resolve({ ok: true, value: { task, changed: false } })
+      }
+      if (task.state !== 'done' && task.state !== 'failed') {
+        return Promise.resolve(failure('rejected', notFinished(task)))
+      }
+      let returned: HandoffTaskView
+      try {
+        returned = ledger.markReturned(taskId)
+      } catch (error) {
+        return Promise.resolve(
+          failure(
+            'unreachable',
+            `台账写不进去：${error instanceof Error ? error.message : String(error)}`,
+          ),
+        )
+      }
+      appendAudit({
+        at: now(),
+        source: AuditSource.Handoff,
+        kind: 'handoff.returned',
+        taskId,
+        peer: request.device ?? task.manifest.device,
+        outcome: 'ok',
+        detail: {
+          from: task.state,
+          ...(request.mode === null ? {} : { mode: request.mode }),
+          ...(request.device === null ? {} : { device: request.device }),
+        },
+      })
+      return Promise.resolve({
+        ok: true,
+        value: { task: returned, changed: true },
+      })
     },
   }
 

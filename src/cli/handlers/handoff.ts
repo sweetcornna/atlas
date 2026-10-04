@@ -11,9 +11,8 @@
  *   qm handoff status [--wait] [--task <id>]
  *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
  *   qm handoff node …                    (the cloud end, `handoffNode.ts`, P17.5)
- *
- * `pull` and `attach` are reserved here and answer 「尚未实现」 with exit 2,
- * so the package that builds them (P17.6) replaces one branch each.
+ *   qm handoff attach [<task>] [options] (into a running task, `handoffAttach.ts`, P17.6)
+ *   qm handoff pull [<task>]             (the result home, `handoffPull.ts`, P17.6)
  *
  * ## Exit codes
  *
@@ -30,7 +29,7 @@
 import { basename, isAbsolute, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { isatty } from 'node:tty'
-import { sessionRef, type HandoffTool } from '@qianmo/handoff'
+import { isTaskId, sessionRef, type HandoffTool } from '@qianmo/handoff'
 import { qmcodeHome } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
@@ -80,12 +79,6 @@ import {
   waitForTurnEnd,
 } from './handoffTranscript.js'
 import { residentOptionValue } from './residentArgs.js'
-
-/** The subcommands later packages fill in, and which package each is. */
-const RESERVED: Readonly<Record<string, string>> = {
-  pull: 'P17.6',
-  attach: 'P17.6',
-}
 
 const HANDOFF_HELP_TEXT = `Usage: ${invokedBinName()} handoff <command> [options]
 
@@ -175,7 +168,39 @@ Commands:
                            Refuses to start without a working bwrap. Started by
                            demo/env/beta/handoff-node.sh, not by hand.
 
-  pull | attach            Reserved; not implemented yet (P17.6).
+  attach [<task>] [--ssh <target>] [--node-token-file <path>]
+         [--app-server-port 38631] [--local-port <port>]
+         [--console <url> --token-file <file>]
+                           Join a task running in the cloud from this machine:
+                           the hub says which node and thread; the node's
+                           app-server token is read over your own SSH (never
+                           through the hub), a tunnel is opened with
+                           ssh -N -L, and qmcode resume --remote takes over the
+                           terminal. The tunnel is closed when qmcode exits.
+                           Without <task>: this project's one running task.
+      --ssh <target>       How you reach the node; default: the node's name
+                           (a Host entry in ~/.ssh/config).
+      --node-token-file <path>
+                           The app-server token on the node; relative paths are
+                           under the node's home. Default:
+                           qianmo-beta/secrets/handoff-app-server-token
+                           (demo/env/beta/handoff-node.sh).
+      --app-server-port <port>
+                           The app-server's loopback port on the node; 38631.
+      --local-port <port>  This end of the tunnel; default: a free one.
+      --console, --token-file
+                           Outside a registered repository (another machine):
+                           the hub console and your credential file.
+
+  pull [<task>]            Bring a finished task home. Untouched since the
+                           handoff (same branch, HEAD and work tree as the
+                           handoff left them): the branch fast-forwards to the
+                           cloud's result. Otherwise nothing here moves: the
+                           result goes to a new branch qianmo/<task>-return and
+                           the differences are listed. A qmcode session goes
+                           back into $QMCODE_HOME/sessions, so qmcode resume
+                           <thread> continues it. The hub records "returned".
+                           Without <task>: this project's latest finished one.
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -588,6 +613,101 @@ async function runStatusCommand(
   )
 }
 
+// ─── pull / attach (P17.6) ───────────────────────────────────────────
+
+/** The one optional `<task>` argument of `pull` and `attach`. */
+function taskArgument(
+  command: string,
+  positional: readonly string[],
+): string | undefined {
+  if (positional.length > 1) usage(`${command} 只接受一个任务号`)
+  const taskId = positional[0]
+  if (taskId !== undefined && !isTaskId(taskId)) {
+    usage(`${taskId} 不是任务号`)
+  }
+  return taskId
+}
+
+async function runPullCommand(
+  args: readonly string[],
+  cwd: string,
+  output: Output,
+): Promise<number> {
+  const { positional } = parseOptions(args, [])
+  const taskId = taskArgument('pull', positional)
+  const thread = process.env.CODEX_THREAD_ID
+  const { runPull } = await import('./handoffPull.js')
+  return await runPull(
+    cwd,
+    {
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(thread === undefined || thread === ''
+        ? {}
+        : { callerThread: thread }),
+    },
+    output,
+  )
+}
+
+/** A TCP port number, or the usage error. */
+function portOption(
+  values: Map<string, string>,
+  name: string,
+): number | undefined {
+  const raw = values.get(name)
+  if (raw === undefined) return undefined
+  const port = Number(raw)
+  if (
+    !/^\d+$/.test(raw) ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535
+  ) {
+    usage(`${name} 要 1–65535 的端口号`)
+  }
+  return port
+}
+
+async function runAttachCommand(
+  args: readonly string[],
+  cwd: string,
+  output: Output,
+): Promise<number> {
+  const { values, positional } = parseOptions(args, [
+    '--ssh',
+    '--node-token-file',
+    '--app-server-port',
+    '--local-port',
+    '--console',
+    '--token-file',
+  ])
+  const taskId = taskArgument('attach', positional)
+  const consoleRaw = values.get('--console')
+  const tokenFile = absoluteOption(values, '--token-file')
+  if ((consoleRaw === undefined) !== (tokenFile === undefined)) {
+    usage('--console 与 --token-file 要一起给')
+  }
+  const appServerPort = portOption(values, '--app-server-port')
+  const localPort = portOption(values, '--local-port')
+  const sshTarget = values.get('--ssh')
+  const nodeTokenFile = values.get('--node-token-file')
+  const { runAttach } = await import('./handoffAttach.js')
+  return await runAttach(
+    cwd,
+    {
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(sshTarget === undefined ? {} : { sshTarget }),
+      ...(nodeTokenFile === undefined ? {} : { nodeTokenFile }),
+      ...(appServerPort === undefined ? {} : { appServerPort }),
+      ...(localPort === undefined ? {} : { localPort }),
+      ...(consoleRaw === undefined || tokenFile === undefined
+        ? {}
+        : { console: parseConsoleUrl(consoleRaw), tokenFile }),
+    },
+    output,
+  )
+}
+
 // ─── entry ───────────────────────────────────────────────────────────
 
 /** Dispatch `qm handoff <command>`; returns the exit code. */
@@ -604,13 +724,6 @@ async function dispatchHandoff(
   if (isHelpRequest(args)) {
     output.out(HANDOFF_HELP_TEXT)
     return 0
-  }
-  const reserved = RESERVED[command]
-  if (reserved !== undefined) {
-    output.err(
-      `${invokedBinName()} handoff ${command}：尚未实现（${reserved}）`,
-    )
-    return 2
   }
   if (IDENTITY_MODE !== 'qianmo') {
     throw new HandoffUserError(
@@ -637,23 +750,40 @@ async function dispatchHandoff(
       const { runHandoffNode } = await import('./handoffNode.js')
       return await runHandoffNode(rest)
     }
+    case 'pull':
+      return await runPullCommand(rest, cwd, output)
+    case 'attach':
+      return await runAttachCommand(rest, cwd, output)
     default:
       return usage(`不认识的子命令 ${command}`)
   }
 }
 
+/** What did not happen, by subcommand: the first words of a refusal. */
+function refusalHead(command: string | undefined): string {
+  switch (command) {
+    case 'pull':
+      return '接回没有完成'
+    case 'attach':
+      return '接入没有完成'
+    default:
+      return '转交没有完成'
+  }
+}
+
 /** The fast-path entry (`cli.tsx`): runs, prints a refusal, sets the exit code. */
 export async function runHandoff(args: readonly string[]): Promise<void> {
+  const head = refusalHead(args[0])
   try {
     process.exitCode = await dispatchHandoff(args)
   } catch (error) {
     if (error instanceof HandoffUserError) {
-      process.stderr.write(`转交没有完成：${error.message}\n`)
+      process.stderr.write(`${head}：${error.message}\n`)
       process.exitCode = error.exitCode
       return
     }
     process.stderr.write(
-      `转交没有完成：${error instanceof Error ? error.message : String(error)}\n`,
+      `${head}：${error instanceof Error ? error.message : String(error)}\n`,
     )
     process.exitCode = 1
   }

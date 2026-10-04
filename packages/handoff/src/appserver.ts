@@ -29,9 +29,14 @@
  * serde `camelCase` forms. Methods used: `initialize`, `thread/resume`,
  * `thread/start`, `turn/start`, `turn/interrupt`, `externalAgentConfig/import`;
  * notifications read: `turn/completed`, `item/completed`,
- * `externalAgentConfig/import/completed`. Anything else the server sends is
- * ignored; a server-to-client request (an approval, say — the bridge runs with
- * `approvalPolicy: "never"`, so none is expected) is answered `-32601`.
+ * `externalAgentConfig/import/completed`. `qm handoff attach` (P17.6) reads
+ * two more, through the user's own tunnel to a node: `thread/loaded/list` and
+ * `thread/read` without turns, to find the thread a task runs in by its
+ * working directory (seen on the fork's 0.158.0 release build, 2026-10-04:
+ * `{data: [<thread id>], nextCursor: null}` and `thread.cwd`). Anything else
+ * the server sends is ignored; a server-to-client request (an approval, say —
+ * the bridge runs with `approvalPolicy: "never"`, so none is expected) is
+ * answered `-32601`.
  */
 
 /** How a turn ended, or that it has not (`turn.status`). */
@@ -113,6 +118,8 @@ interface Waiter {
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_IMPORT_TIMEOUT_MS = 120_000
+/** Pages of `thread/loaded/list` read at most; a node holds a handful. */
+const MAX_LIST_PAGES = 20
 /** Notifications kept for late waiters; the oldest go first. */
 const RETAINED_NOTIFICATIONS = 512
 
@@ -351,6 +358,34 @@ export class AppServerClient {
       `turn/completed ${turnId}`,
     )
     return turnOf('turn/completed', field(frame.params, 'turn'))
+  }
+
+  /**
+   * `thread/loaded/list`: the ids of every thread the server holds in memory,
+   * all pages.
+   */
+  async loadedThreadIds(): Promise<string[]> {
+    const ids: string[] = []
+    let cursor: string | null = null
+    for (let page = 0; page < MAX_LIST_PAGES; page++) {
+      const result = await this.#request(
+        'thread/loaded/list',
+        cursor === null ? {} : { cursor },
+      )
+      const data = field(result, 'data')
+      if (Array.isArray(data)) {
+        for (const id of data) if (typeof id === 'string') ids.push(id)
+      }
+      cursor = stringField(result, 'nextCursor')
+      if (cursor === null) break
+    }
+    return ids
+  }
+
+  /** `thread/read` without turns: the thread's working directory, if it says. */
+  async threadCwd(threadId: string): Promise<string | null> {
+    const result = await this.#request('thread/read', { threadId })
+    return stringField(field(result, 'thread'), 'cwd')
   }
 
   /** Text of the last `agentMessage` item completed in `turnId`, if any. */

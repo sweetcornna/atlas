@@ -24,7 +24,7 @@
 | `src/ledger.ts` | 追加式 NDJSON 台账、状态机、重放、同节点互斥、独占锁、给云端的话（send） |
 | `src/lock.ts` | O_EXCL + pid 的独占锁文件，陈旧锁按 pid 不存在回收；台账与 `qm handoff` 的同步锁共用 |
 | `src/git.ts` | 跑 `git` 的唯一入口（参数向量、不经 shell、剥掉重定向用的环境变量）；`runGit` 也导出给 `qm handoff` 推拉用 |
-| `src/appserver.ts` | 节点桥（P17.5）连本机 `qmcode app-server` 的 WebSocket JSON-RPC 客户端：帧不带 `jsonrpc`、握手只带 `Authorization: Bearer`；手写用到的几个方法与通知的类型（不拷上游生成的绑定） |
+| `src/appserver.ts` | 节点桥（P17.5）连本机 `qmcode app-server` 的 WebSocket JSON-RPC 客户端：帧不带 `jsonrpc`、握手只带 `Authorization: Bearer`；手写用到的几个方法与通知的类型（不拷上游生成的绑定）。`qm handoff attach`（P17.6）经用户自己的 SSH 隧道用它的两个只读方法找任务所在的线程 |
 
 ## 2. 对外 API
 
@@ -74,6 +74,7 @@ client.threadStart(settings) / turnStart(threadId, text) → turnId / turnInterr
 client.importClaudeCodeSession({ path, cwd, description }) → 线程 id   // 失败抛 AppServerImportError
 client.waitTurnCompleted(threadId, turnId, timeoutMs?) → { id, status }
 client.lastAgentMessage(turnId) / close() / closed
+client.loadedThreadIds() → 线程 id[] / threadCwd(threadId) → cwd | null  // qm handoff attach（P17.6）经隧道找任务的线程
 ```
 
 `git` 子进程失败抛 `HandoffGitError`（`args`、`exitCode`、`stderr`）；台账错误抛 `HandoffLedgerError`，`code` 为 `unknown_task` / `duplicate_task` / `illegal_transition` / `node_busy` / `invalid_input` / `corrupt`（`corrupt` 带 `line`）/ `locked`（另一个活进程持有 `<台账>.lock`）。

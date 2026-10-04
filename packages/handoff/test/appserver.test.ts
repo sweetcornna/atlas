@@ -337,6 +337,44 @@ describe('AppServerClient', () => {
     client.close()
   })
 
+  test('thread/loaded/list (every page) and thread/read: the threads and their cwd (P17.6)', async () => {
+    const fake = startFake((method, params) => {
+      const p = (params ?? {}) as Record<string, unknown>
+      switch (method) {
+        case 'thread/loaded/list':
+          return p.cursor === undefined
+            ? { result: { data: ['t-1', 't-2'], nextCursor: 'page-2' } }
+            : { result: { data: ['t-3', 7], nextCursor: null } }
+        case 'thread/read':
+          return p.threadId === 't-2'
+            ? { result: { thread: { id: 't-2', cwd: '/srv/node/work/x-1' } } }
+            : { result: { thread: { id: p.threadId } } }
+        default:
+          return standard(method, params)
+      }
+    })
+    const client = await AppServerClient.connect({
+      url: fake.url,
+      token: TOKEN,
+      clientName: 'qianmo_handoff_attach',
+    })
+    expect(await client.loadedThreadIds()).toEqual(['t-1', 't-2', 't-3'])
+    expect(await client.threadCwd('t-2')).toBe('/srv/node/work/x-1')
+    expect(await client.threadCwd('t-1')).toBeNull()
+    const sent = fake.frames.filter(frame => frame.id !== undefined)
+    expect(sent[0]).toMatchObject({
+      method: 'initialize',
+      params: { clientInfo: { name: 'qianmo_handoff_attach' } },
+    })
+    expect(sent.slice(1).map(frame => [frame.method, frame.params])).toEqual([
+      ['thread/loaded/list', {}],
+      ['thread/loaded/list', { cursor: 'page-2' }],
+      ['thread/read', { threadId: 't-2' }],
+      ['thread/read', { threadId: 't-1' }],
+    ])
+    client.close()
+  })
+
   test('a dropped connection rejects what is in flight and what is awaited', async () => {
     const fake = startFake((method, params) =>
       method === 'turn/start' ? null : standard(method, params),
