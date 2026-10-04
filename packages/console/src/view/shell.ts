@@ -403,6 +403,8 @@ export function renderShell(model: ShellModel): string {
   return (
     documentHead(`${BRAND} · ${model.title} · ${model.label}`, model.pageCss) +
     `<body>\n` +
+    // The first stop for a keyboard: past the sidebar to the page (F1).
+    `<a class="skip-link" href="#main">跳到正文</a>\n` +
     `<div class="shell">\n` +
     sidebar(model) +
     `\n<div class="frame">\n` +
@@ -411,7 +413,7 @@ export function renderShell(model: ShellModel): string {
     // Lit by the runtime when a refresh fails, with how old the page is (C2).
     // Outside every polled region, so the failure it reports cannot take it.
     `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
-    `\n<main class="main" id="main" aria-labelledby="page-title">\n` +
+    `\n<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">\n` +
     model.body +
     `\n</main>\n</div>\n</div>\n` +
     (model.relogin === undefined ? '' : sessionExpired(model.relogin)) +

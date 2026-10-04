@@ -516,7 +516,8 @@ export function renderChatThread(model: ChatThreadModel): string {
     `data-state="${attr(status.text)}" data-tone="${attr(status.tone)}" ` +
     `data-session="${attr(session.id)}">` +
     `<header class="chat-head">` +
-    `<h1 class="chat-name">${escapeHtml(session.agent)}</h1>` +
+    // h2: the page's one h1 is the shell's 对话 (F1).
+    `<h2 class="chat-name">${escapeHtml(session.agent)}</h2>` +
     address(session.target) +
     `<div class="chat-tail">` +
     state(status.tone, status.text) +

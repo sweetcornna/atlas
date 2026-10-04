@@ -742,6 +742,42 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('the first Tab reaches the skip link, on screen, and Enter puts the page next (F1)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await tab.evaluate(
+          `document.activeElement && document.activeElement.blur()`,
+        )
+        await key(tab, 'Tab', 9)
+        const link = await tab.evaluate<{
+          cls: string
+          top: number
+          bottom: number
+        }>(`(() => {
+          const a = document.activeElement;
+          const r = a.getBoundingClientRect();
+          return { cls: a.className, top: r.top, bottom: r.bottom };
+        })()`)
+        expect(link.cls).toBe('skip-link')
+        expect(link.top).toBeGreaterThanOrEqual(0)
+        expect(link.bottom).toBeLessThanOrEqual(900)
+        await key(tab, 'Enter', 13)
+        await tab.waitFor(`document.activeElement.id === 'main'`)
+        // The next Tab is inside the page, not back in the sidebar.
+        await key(tab, 'Tab', 9)
+        expect(
+          await tab.evaluate<boolean>(
+            `document.getElementById('main').contains(document.activeElement)`,
+          ),
+        ).toBe(true)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
     test('the roster filter submits as a plain GET and leaves only what was asked in the URL (D6)', async () => {
       const served = serveConsole()
       const tab = await browser.tab()

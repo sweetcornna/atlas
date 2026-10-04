@@ -1809,8 +1809,9 @@ describe('the shell', () => {
       '<div class="health" role="group" aria-label="健康">',
     )
     expect(html).toContain('id="role">')
+    // Focusable, so the skip link's target is where the next Tab starts (F1).
     expect(html).toContain(
-      '<main class="main" id="main" aria-labelledby="page-title">',
+      '<main class="main" id="main" tabindex="-1" aria-labelledby="page-title">',
     )
     expect(html).toContain('<p id="probe">名册在这里</p>')
   })

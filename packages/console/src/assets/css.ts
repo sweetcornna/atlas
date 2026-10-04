@@ -242,6 +242,15 @@ p { margin: 0; }
 a { color: var(--color-accent); text-underline-offset: 3px; }
 ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 
+/* Off screen until a keyboard reaches it (F1). */
+.skip-link {
+  position: absolute; left: var(--space-4); top: -120px; z-index: 50;
+  padding: var(--space-2) var(--space-4); border-radius: 999px;
+  background: var(--color-accent-fill); color: var(--color-bg); text-decoration: none;
+}
+.skip-link:focus { top: var(--space-2); }
+/* The skip link's target: focusable so the next Tab starts there, not ringed. */
+.main:focus { outline: none; }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

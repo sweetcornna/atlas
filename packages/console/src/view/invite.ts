@@ -59,13 +59,15 @@ function errorLine(error: string | undefined): string {
       })}${escapeHtml(error)}</p>`
 }
 
-function brand(label: string): string {
+/** The panel's head: the mark, the instance, and the page's one h1 (F1). */
+function brand(label: string, title: string): string {
   return (
     `<div class="brand">` +
     `<div class="brand-en">AgentNest</div>` +
     `<div class="brand-cn">阡陌</div>` +
     `</div>` +
-    `<p class="inst"><b>${escapeHtml(label)}</b></p>`
+    `<p class="inst"><b>${escapeHtml(label)}</b></p>` +
+    `<h1 class="page-title" id="page-title">${escapeHtml(title)}</h1>`
   )
 }
 
@@ -79,9 +81,9 @@ interface InvitePageModel {
 export function renderInvitePage(model: InvitePageModel): string {
   return (
     documentHead(`${BRAND} · 开通账号 · ${model.label}`) +
-    `<body>\n<div class="stage">\n` +
+    `<body>\n<main class="stage" aria-labelledby="page-title">\n` +
     `<form class="card elev-lg panel" method="post" action="/invite">` +
-    brand(model.label) +
+    brand(model.label, '开通账号') +
     errorLine(model.error) +
     `<div class="field"><label for="invite">邀请码</label>` +
     `<input class="input" type="password" id="invite" name="invite" ` +
@@ -95,7 +97,7 @@ export function renderInvitePage(model: InvitePageModel): string {
     `<div class="tokrow">邀请只能用一次 · 过期作废</div>` +
     `</div>` +
     `<p class="foot">没有收到邀请请联系环境负责人</p>` +
-    `</form>\n</div>\n` +
+    `</form>\n</main>\n` +
     `<script>${FRAGMENT_SCRIPT}</script>\n` +
     `</body>\n</html>\n`
   )
@@ -117,9 +119,9 @@ export function renderCredentialPage(model: CredentialPageModel): string {
     : `<a class="btn btn-primary btn-block" href="/login">去登录</a>`
   return (
     documentHead(`${BRAND} · 个人凭据 · ${model.label}`) +
-    `<body>\n<div class="stage">\n` +
+    `<body>\n<main class="stage" aria-labelledby="page-title">\n` +
     `<div class="card elev-lg panel">` +
-    brand(model.label) +
+    brand(model.label, '个人凭据') +
     `<p class="bar bar-warn" role="status">` +
     icon('shield', { small: true }) +
     `个人凭据只显示这一次 · 现在保存</p>` +
@@ -133,7 +135,7 @@ export function renderCredentialPage(model: CredentialPageModel): string {
     `<div class="tokrow">登录时填在凭据框里 · 脚本用 Authorization Bearer</div>` +
     `<div class="tokrow">不要放进链接或书签 · 丢失后找运维重置</div>` +
     `</div>` +
-    `</div>\n</div>\n` +
+    `</div>\n</main>\n` +
     `</body>\n</html>\n`
   )
 }

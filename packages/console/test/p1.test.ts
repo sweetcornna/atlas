@@ -16,6 +16,8 @@ import type {
   ConsoleCertificate,
 } from '../src/deps.js'
 import { createConsoleHandler } from '../src/http.js'
+import { renderCredentialPage, renderInvitePage } from '../src/view/invite.js'
+import { renderLoginPage } from '../src/view/login.js'
 import { renderOverview } from '../src/view/page.js'
 import {
   ADMIN,
@@ -592,5 +594,89 @@ describe('D6 · the roster can be searched and filtered, without a script', () =
     expect(odd).toContain('data-poll="/fragments/roster"')
     // No server select on a console that does not know its servers.
     expect(odd).not.toContain('id="roster-server"')
+  })
+})
+
+describe('F1 · every document has one h1, a main, and a way past the sidebar', () => {
+  /** The markup between <body> and the first <script>: no stylesheet text. */
+  function markup(html: string): string {
+    const start = html.indexOf('<body>')
+    const end = html.indexOf('<script>', start)
+    return html.slice(start, end < 0 ? undefined : end)
+  }
+
+  const AREAS: readonly (readonly [string, string])[] = [
+    ['/', 'overview'],
+    ['/nodes', 'nodes'],
+    ['/nodes/tokyo-1', 'nodes'],
+    ['/chat', 'chat'],
+    ['/chat?session=session-1', 'chat'],
+    ['/audit', 'audit'],
+    ['/alerts', 'alerts'],
+    ['/jobs', 'jobs'],
+    ['/approvals', 'approvals'],
+    ['/servers', 'servers'],
+    ['/access', 'access'],
+    ['/usage', 'usage'],
+    ['/settings', 'settings'],
+  ]
+
+  test('each area: one h1, the skip link first, its target there, and the sidebar marks this area alone', async () => {
+    const h = pageHarness({ chat: true })
+    await h.chat.open('qianmo://tokyo-1/planner')
+    for (const [path, area] of AREAS) {
+      const body = markup(await (await h.handle(browse(path, ADMIN))).text())
+      expect([path, body.match(/<h1[\s>]/g)?.length]).toEqual([path, 1])
+      expect([
+        path,
+        body.startsWith(
+          '<body>\n<a class="skip-link" href="#main">跳到正文</a>',
+        ),
+      ]).toEqual([path, true])
+      expect(body).toContain('<main class="main" id="main" tabindex="-1"')
+      const current = [
+        ...body.matchAll(
+          /id="nav-([a-z]+)" href="[^"]*" data-nav aria-current="page"/g,
+        ),
+      ].map(match => match[1])
+      expect([path, current]).toEqual([path, [area]])
+    }
+  })
+
+  test('the conversation name is a section heading under the page title', async () => {
+    const h = pageHarness({ chat: true })
+    await h.chat.open('qianmo://tokyo-1/planner')
+    const body = markup(
+      await (await h.handle(browse('/chat?session=session-1', ADMIN))).text(),
+    )
+    expect(body).toContain('<h1 class="page-title" id="page-title">对话</h1>')
+    expect(body).toContain('<h2 class="chat-name">planner</h2>')
+  })
+
+  test('the doors outside the shell: login, invite, credential', () => {
+    const pages = [
+      ['登录', renderLoginPage({ label: 'node-a', redirect: '/' })],
+      ['开通账号', renderInvitePage({ label: 'node-a' })],
+      [
+        '个人凭据',
+        renderCredentialPage({
+          label: 'node-a',
+          role: 'member',
+          credential: 'qmc_test',
+          signedIn: true,
+        }),
+      ],
+    ] as const
+    for (const [title, html] of pages) {
+      const body = markup(html)
+      expect(body.match(/<h1[\s>]/g)?.length).toBe(1)
+      expect(body).toContain(
+        `<h1 class="page-title" id="page-title">${title}</h1>`,
+      )
+      expect(body.match(/<main /g)?.length).toBe(1)
+      expect(body).toContain(
+        '<main class="stage" aria-labelledby="page-title">',
+      )
+    }
   })
 })
