@@ -692,6 +692,33 @@ systemctl --user start qianmo-probe-minute.timer qianmo-probe-handshake.timer qi
   压垮它的那一个进程。单元带 `OOMScoreAdjust=900`。
 - install **只 enable 不 start**：开始计时是一个有意的动作，要和「这一份部署」对上号。
 
+## 接力节点（P17.5，`handoff-node.sh`）
+
+关机转交之后在云端续跑的那一端：节点桥 `qm handoff node` 收中枢签名的 `task.request`，在本机裸仓上开工作树，
+交给旁边的 `qmcode app-server` 续会话，回合结束把改动提交到 `qianmo/<任务>`、回 `task.result`。中枢那一侧的
+参数与状态见 [`docs/dev/handoff-usage.md`](../../../docs/dev/handoff-usage.md)。
+
+```bash
+# ① 装 qmcode：部署树新的顶层 qmcode/（fork 产物目录 + 一条 qmcode -> <产物名> 软链）。
+#    装完核对两个程序同目录、可执行、.sha256 逐行对得上、qmcode --version 跑得起来。
+demo/env/beta/beta-deploy.sh --tree <部署树> --from <构建树> --only qmcode
+# ② 起（先节点桥、后 app-server；节点机上要有 bwrap，没有就拒绝启动并说原因）
+QIANMO_HANDOFF_BASE_URL=<网关 /v1 地址> demo/env/beta/handoff-node.sh start \
+  --node <节点名> --trust <中枢控制台 --print-wake-identity 打的那一行> --project <项目>
+# ③ 停（只停进程，裸仓、工作树、结果一个不删）
+demo/env/beta/handoff-node.sh stop
+```
+
+- **key 只进 app-server**：从 `secrets/model-env` 读，变量名由 `QIANMO_HANDOFF_KEY_ENV` 定（默认 `OPENAI_API_KEY`）。
+  节点桥起在载入它之前，命令前还用 `env -u` 去掉 model-env 里的每个键名；app-server 那边去掉传输 PSK。
+- **配置每次 start 重写**：`<根>/handoff/qmcode-home/config.toml`，模型走 `[model_providers.qianmo]`（`responses`），
+  `[features] plugins = false`、工具 shell 只继承核心环境变量、内置的阡陌 MCP 写完整表并关掉。app-server 命令行另带
+  `-c mcp_servers.qianmo.enabled=false -c 'notify=[]'`：qmcode 内置的那两样在节点上会反过来调接力命令。
+- app-server 只听本机回环（默认 38631），令牌 `secrets/handoff-app-server-token` 本机生成、0600；节点桥入站默认
+  38630，绑定地址与常驻节点同一个默认（`QIANMO_BETA_NODE_BIND`），PSK 用本机 `secrets/transport-psk`。
+- 不用 `app-server daemon`（它自带更新与生命周期管理）。`beta-down.sh` 不给名字时也会停这两个进程。
+- 换 `dist` 或 `qmcode` 之前先 `handoff-node.sh stop`：两个进程都跑在部署树里，`beta-deploy.sh` 会拒绝。
+
 ## 变量表
 
 一律用环境变量覆盖，脚本里没有任何具体名字、机器名、IP、域名、密钥（beta-env.md 文首）。

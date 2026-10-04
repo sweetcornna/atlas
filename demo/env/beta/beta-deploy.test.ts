@@ -31,6 +31,7 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   readFileSync,
@@ -38,6 +39,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -591,4 +593,126 @@ describe('ripgrep 必须是这台机的架构（旧 node-deploy.sh 唯一比我�
     expect(r.code).toBe(0)
     expect(r.out).toContain('没有 dist/vendor/ripgrep')
   })
+})
+
+describe('--only qmcode：节点上 app-server 那份产物（P17.5）', () => {
+  /** qianmo-codex QIANMO.md §7 的产物名。 */
+  const NAME = 'qmcode-rust-v0.158.0-0123456789-x86_64'
+  const HOST = 'codex-code-mode-host'
+
+  /**
+   * 构建树里放一份 qmcode 产物：两个程序、两份 .debug、.sha256（4 行）、
+   * `qmcode -> <名字>` 软链。`omit` 去掉某些文件，`version` 换 `--version` 的输出。
+   */
+  function qmcodeBuild(
+    build: string,
+    opts: {
+      readonly version?: string
+      readonly omit?: readonly string[]
+      readonly mode?: number
+      readonly sumsFor?: readonly string[]
+      readonly tamper?: string
+    } = {},
+  ): void {
+    const dir = join(build, 'qmcode')
+    mkdirSync(dir, { recursive: true })
+    const files: Record<string, string> = {
+      [NAME]: `#!/bin/sh\nprintf '%s\\n' 'warming up' '${opts.version ?? 'qmcode 0.158.0'}'\n`,
+      [`${NAME}.debug`]: 'debug symbols\n',
+      [HOST]: '#!/bin/sh\nexit 0\n',
+      [`${HOST}.debug`]: 'debug symbols\n',
+    }
+    const lines: string[] = []
+    for (const [file, body] of Object.entries(files)) {
+      const listed = opts.sumsFor === undefined || opts.sumsFor.includes(file)
+      if (listed) {
+        lines.push(
+          `${createHash('sha256').update(body).digest('hex')}  ${file}`,
+        )
+      }
+      if (opts.omit?.includes(file)) continue
+      const isProgram = file === NAME || file === HOST
+      writeFileSync(
+        join(dir, file),
+        file === opts.tamper ? `${body}# tampered\n` : body,
+        { mode: isProgram ? (opts.mode ?? 0o755) : 0o644 },
+      )
+    }
+    writeFileSync(join(dir, `${NAME}.sha256`), `${lines.join('\n')}\n`)
+    symlinkSync(NAME, join(dir, 'qmcode'))
+  }
+
+  /** 先整棵装一棵不带 qmcode 的树，再往构建树里放 qmcode，单换它。 */
+  function deployQmcode(opts: Parameters<typeof qmcodeBuild>[1] = {}): {
+    readonly code: number
+    readonly out: string
+    readonly tree: string
+  } {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).toBe(0)
+    qmcodeBuild(build, opts)
+    return {
+      ...deploy(home, ['--tree', tree, '--from', build, '--only', 'qmcode']),
+      tree,
+    }
+  }
+
+  test('两个程序在、对得上 .sha256、--version 末行是 qmcode <版本> 就放行', () => {
+    const r = deployQmcode()
+    expect(r.out).toContain('qmcode 逐文件核对过（1 份 .sha256）')
+    expect(r.out).toContain(`qmcode 跑得起来：qmcode 0.158.0（${NAME}）`)
+    expect(r.code).toBe(0)
+    expect(existsSync(join(r.tree, 'qmcode', HOST))).toBe(true)
+    expect(existsSync(join(r.tree, 'dist', 'cli-node.js'))).toBe(true)
+  }, 20_000)
+
+  test('artifact 解压出来没有执行位：红，并说怎么办', () => {
+    const r = deployQmcode({ mode: 0o644 })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain('没有执行位')
+    expect(r.out).toContain('*.bak-')
+  }, 20_000)
+
+  test('真实文件旁边没有 codex-code-mode-host：红', () => {
+    const r = deployQmcode({ omit: [HOST, `${HOST}.debug`], sumsFor: [NAME] })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain(`旁边没有可执行的 ${HOST}`)
+  }, 20_000)
+
+  test('哈希对不上：红', () => {
+    const r = deployQmcode({ tamper: HOST })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain(`${HOST} 的 sha256 对不上`)
+  }, 20_000)
+
+  test('.debug 不随部署带：只记一句，照样放行', () => {
+    const r = deployQmcode({ omit: [`${NAME}.debug`, `${HOST}.debug`] })
+    expect(r.code).toBe(0)
+    expect(r.out).toContain(`${NAME}.debug 不在树里`)
+  }, 20_000)
+
+  test('.sha256 不覆盖要跑的程序：红 —— 有校验文件却没校验到它', () => {
+    const r = deployQmcode({ sumsFor: [NAME, `${NAME}.debug`] })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain(`没有列到 ${HOST}`)
+  }, 20_000)
+
+  test('--version 不是 qmcode 打的（官方 codex-cli 或架构不对）：红', () => {
+    const r = deployQmcode({ version: 'codex-cli 0.158.0' })
+    expect(r.code).not.toBe(0)
+    expect(r.out).toContain("没打出 'qmcode <版本>'")
+  }, 20_000)
+
+  test('--only dist 不查树里那份 qmcode —— 不因为别的条目把产物部署拦下', () => {
+    const { home, build } = sandbox()
+    const tree = join(home, 'tree')
+    qmcodeBuild(build, { version: 'codex-cli 0.158.0' })
+    // 整棵装会查（这次装了 qmcode/），所以先证明它红……
+    expect(deploy(home, ['--tree', tree, '--from', build]).code).not.toBe(0)
+    // ……而只换 dist 时不查它。
+    const r = deploy(home, ['--tree', tree, '--from', build, '--only', 'dist'])
+    expect(r.code).toBe(0)
+    expect(r.out).not.toContain('qmcode')
+  }, 20_000)
 })
