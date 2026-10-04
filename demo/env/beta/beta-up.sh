@@ -117,6 +117,10 @@ usage() {
   beta_say '  ② 每台节点：beta-up.sh --role node --node <名字> -- --trust <节点>=<公钥>'
   beta_say '  ③ H 上   ：beta-up.sh --role host -- --wake-sign'
   beta_say ''
+  beta_say '控制台对话页的本地命令（/autocompact 等，P18.20）在同一条链上再加两个开关：'
+  beta_say '  ② 每台节点：-- --trust <节点>=<公钥> --local-commands-from <节点>   （<节点> 就是 ① 那一行等号前的名字）'
+  beta_say '  ③ H 上   ：-- --chat-sign（与 --wake-sign、--accounts --providers 等写在同一串尾参里）'
+  beta_say ''
   # 页头标签在这里单独占一段，而不是留给「变量与完整说明见 README」那一句：**本脚本
   # 没有 --label**，而这是每次起 H 腿都会碰到的东西（issue #60）。三条路只有一条通：
   #   · `--label` —— 不存在；
@@ -279,8 +283,10 @@ if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
   beta_say '' >&2
   beta_say '下一步 : 每台节点机上' >&2
   beta_say '           demo/env/beta/beta-up.sh --role node --node <名字> -- --trust <上面那一行>' >&2
+  beta_say '           （要控制台对话页的本地命令，再加 --local-commands-from <上面那一行等号前的名字>）' >&2
   beta_say '         回到 H 上' >&2
   beta_say '           demo/env/beta/beta-down.sh console && demo/env/beta/beta-up.sh --role host -- --wake-sign' >&2
+  beta_say '           （本地命令要控制台签名：尾参里再加 --chat-sign）' >&2
   exit 0
 fi
 
@@ -1245,21 +1251,37 @@ run_node() {
   # 的环境（`defaultSpawnAcp` 传 `{...process.env}`），事后在别的 shell 里 export 到不了
   # 它。这一步缺失就是 issue #13——链路整条走通、回执 accepted、审计链新增，而 agent
   # 那一轮是 `Not logged in · Please run /login`。
-  local model_env_running=0
+  local model_env_running=0 provider_managed=0 cache_tuning
   if beta_running "$BETA_NODE"; then model_env_running=1; fi
+  # 中枢托管之后（P18.13 迁移，`providers-console-m1.md` §2.9）模型服务住在这个节点的
+  # settings.json 里，由第六类动作写入；model-env 不再是它的来源。下面两句话据此分叉，
+  # 免得迁移完的节点每次起机都报一遍「Not logged in」的假警。
+  if beta_node_provider_managed "$BETA_NODE"; then provider_managed=1; fi
   beta_load_model_env
   if [ "$BETA_MODEL_ENV_STATUS" = 'loaded' ]; then
     beta_ok "模型凭据$(beta_model_env_line)"
+    if [ "$provider_managed" = '1' ] && [ "$BETA_MODEL_ENV_PROVIDER_COUNT" -gt 0 ]; then
+      beta_warn "${BETA_NODE} 的模型服务已由中枢托管，而 model-env 里还有 ${BETA_MODEL_ENV_PROVIDER_COUNT} 个模型服务类的键（键名不回显）。
+它们只会留在 resident 自己的环境里：ACP 子进程会把它们剥掉，控制台显示 env-residue。
+下一个维护窗口把它们从 ${BETA_MODEL_ENV_FILE} 删掉（缓存调参那两把可以留），再重起本节点（§2.9 第 4 步）。"
+    fi
     if [ "$model_env_running" = '1' ]; then
       beta_warn "$BETA_NODE 在本次执行之前就已经在跑 —— 本脚本是幂等的，不会重起它，
 所以**刚注入的这份模型凭据没有进到那个进程里**。环境变量只在进程起来的那一刻传递一次。
 要让它生效：demo/env/beta/beta-down.sh $BETA_NODE 之后再跑本脚本。"
     fi
+  elif [ "$provider_managed" = '1' ]; then
+    beta_ok "模型服务由中枢托管（${config_dir}/settings.json，经第六类动作写入），不需要 model-env"
   else
     beta_warn "模型凭据$(beta_model_env_line) —— 本节点被唤醒后，agent 那一轮会以
 \`Not logged in · Please run /login\`（authentication_failed，usage 全 0）收场，而投递、
 回执与审计链**全部照常成功**（issue #13 就是这个形状）。链路自检不需要凭据，要跑真轮次
 就放一份 0600 的 KEY=VALUE 文件到上面那个路径再重起本节点。"
+  fi
+  # 缓存调参（§5.11.8 第 6 条、CH-5）：按节点开，放进这台机器的 model-env 即可。
+  cache_tuning="$(beta_cache_tuning_line)"
+  if [ -n "$cache_tuning" ]; then
+    beta_ok "缓存调参 : ${cache_tuning}"
   fi
 
   local args
@@ -1405,6 +1427,12 @@ ${node_pid}
   beta_say "模型凭据 : $(beta_model_env_line)"
   beta_say "           ↑ 这一行只说**文件**注进来没有。够不够用由节点自己说：无凭据时"
   beta_say "             resident 会在 $(beta_logfile "$BETA_NODE" err) 写一条 [resident] 告警。"
+  if [ "$provider_managed" = '1' ]; then
+    beta_say "模型服务 : 中枢托管（${config_dir}/settings.json；实际生效值看控制台节点页的「模型」）"
+  fi
+  if [ -n "$cache_tuning" ]; then
+    beta_say "缓存调参 : ${cache_tuning}"
+  fi
   beta_say "配置根   : $config_dir"
   beta_say "审计链   : $(beta_node_trail "$BETA_NODE")   ← **权威副本，H 上那份是只读镜像**"
   beta_say "入站端点 : ws://<本机对外地址>:$BETA_NODE_PORT   ← 把它填进 H 的 peers.conf"

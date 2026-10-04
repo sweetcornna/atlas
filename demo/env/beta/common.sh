@@ -985,6 +985,21 @@ beta_load_psk() {
 BETA_MODEL_ENV_STATUS='unknown'
 BETA_MODEL_ENV_COUNT=0
 BETA_MODEL_ENV_CLASSES=''
+# 文件里**模型服务类**的键有几个：归进某一类 provider 的（不含下面的缓存调参与「其他」）。
+# 节点由中枢托管之后（P18.13 迁移），这些键在 resident 环境里只剩残留——ACP 子进程会把
+# 它们剥掉（`residentAcpEnv.ts` 的 withoutProviderKeys），控制台报 env-residue。
+BETA_MODEL_ENV_PROVIDER_COUNT=0
+
+# ── 缓存调参（P18.19 CH-5 / CH-6，`providers-console-m1.md` §5.11.8）──────────────
+#
+# 两个开关按节点开，载体就是上面那份 model-env：它本来就是「起 resident 之前注入、ACP
+# 子进程继承」的那条 env 透传，一机一份 = 一节点一份，文件在就活得过任何一次重启。
+# 这两个名字不在中枢托管的键集合里（`ALL_PROFILE_ENV_KEYS ∪ COMPAT_KEYS`），所以节点
+# 迁到中枢托管之后，ACP 子进程照样收得到它们。
+#
+# 名字是固定的两个字面量，**可以回显**（与上面「键名永不打印」不冲突：那条防的是贴错
+# 位置的密钥长在键名上，固定白名单里的名字不可能是密钥）。值只回显认识的那几种。
+BETA_CACHE_TUNING_KEYS='OPENAI_PROMPT_CACHE_DIAGNOSTICS OPENAI_PROMPT_CACHE_RETENTION'
 
 # beta_model_env_names <文件> —— 文件里出现的**键名**，一行一个。
 #
@@ -1005,10 +1020,12 @@ beta_model_env_names() {
 # openai，怎么报的是 anthropic」，又不足以泄漏任何一把密钥。
 beta_model_env_classes() {
   local name anthropic=0 openai=0 deepseek=0 opencode=0 gemini=0 grok=0 \
-    bedrock=0 vertex=0 other=0 out=''
+    bedrock=0 vertex=0 cache=0 other=0 out=''
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     case "$name" in
+      # 排在 OPENAI_* 之前：它们是调参，不是 openai 的凭据。
+      OPENAI_PROMPT_CACHE_DIAGNOSTICS|OPENAI_PROMPT_CACHE_RETENTION) cache=1 ;;
       ANTHROPIC_*|CLAUDE_CODE_OAUTH_TOKEN) anthropic=1 ;;
       DEEPSEEK_*) deepseek=1 ;;
       OPENCODE_*) opencode=1 ;;
@@ -1028,8 +1045,56 @@ beta_model_env_classes() {
   [ "$grok" = '0' ] || out="$out grok"
   [ "$bedrock" = '0' ] || out="$out bedrock"
   [ "$vertex" = '0' ] || out="$out vertex"
+  [ "$cache" = '0' ] || out="$out 缓存调参"
   [ "$other" = '0' ] || out="$out 其他"
   printf '%s' "${out# }"
+}
+
+# beta_model_env_provider_count <键名清单> —— 其中模型服务类的键有几个：落进上面某一类
+# provider 的，加上任何 `CLAUDE_CODE_USE_*`；缓存调参与「其他」不算。只给个数。
+# 这是横幅上的粗算：ACP 子进程到底剥掉了哪些，以节点 `status` 报的 inheritedProviderKeys
+# （控制台上的 env-residue）为准。
+beta_model_env_provider_count() {
+  local name count=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      OPENAI_PROMPT_CACHE_DIAGNOSTICS|OPENAI_PROMPT_CACHE_RETENTION) ;;
+      ANTHROPIC_*|CLAUDE_CODE_OAUTH_TOKEN|DEEPSEEK_*|OPENCODE_*|OPENAI_*|GEMINI_*|GROK_*|XAI_*|AWS_*) count=$((count + 1)) ;;
+      GOOGLE_APPLICATION_CREDENTIALS|CLOUDSDK_*|CLAUDE_CODE_USE_*) count=$((count + 1)) ;;
+    esac
+  done
+  printf '%s' "$count"
+}
+
+# beta_cache_tuning_line —— 这一刻**导出**在环境里的缓存调参，形如
+# `OPENAI_PROMPT_CACHE_DIAGNOSTICS=1 OPENAI_PROMPT_CACHE_RETENTION=24h`；都没有就打印空串。
+#
+# 读的是环境而不是文件：resident 继承的就是环境，model-env 之外（运维手工 export）给的
+# 也照实报。值只回显认识的那几种（`requestExtras.ts` 认的开关值与保留期），其余写
+# 「值不认识，未回显」——它不该出现在一个横幅里，也不会被节点当成开着。
+beta_cache_tuning_line() {
+  local name value lower out=''
+  for name in $BETA_CACHE_TUNING_KEYS; do
+    value="$(printenv "$name" 2>/dev/null || true)"
+    [ -n "$value" ] || continue
+    lower="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      1|0|true|false|on|off|yes|no|none|24h|in_memory) out="${out} ${name}=${value}" ;;
+      *) out="${out} ${name}=（值不认识，未回显）" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
+# beta_node_provider_managed <节点> —— 这个节点的模型服务是不是已经由中枢托管
+# （`providers-console-m1.md` §2.4 `managed`：配置根下 `qianmo/provider/state.json` 记着
+# 一次已提交的下发）。判据与节点自己的 `readProviderState().managed` 同一条：`applied`
+# 不是 null。文件由 `JSON.stringify(…, null, 2)` 写，所以认 `"applied": {` 这个形状。
+beta_node_provider_managed() {
+  local state="$BETA_NODES_DIR/$1/config/qianmo/provider/state.json"
+  [ -f "$state" ] || return 1
+  grep -Eq '"applied"[[:space:]]*:[[:space:]]*\{' "$state"
 }
 
 # 把 secrets/model-env 注入当前环境。**四种形状分开处理，不许合并成「有 / 没有」两种。**
@@ -1047,6 +1112,7 @@ beta_load_model_env() {
   BETA_MODEL_ENV_STATUS='absent'
   BETA_MODEL_ENV_COUNT=0
   BETA_MODEL_ENV_CLASSES=''
+  BETA_MODEL_ENV_PROVIDER_COUNT=0
 
   if [ -L "$file" ] && [ ! -e "$file" ]; then
     beta_die "$file 是一条断掉的软链 —— 有人给过模型凭据，现在指空了。
@@ -1067,6 +1133,7 @@ beta_load_model_env() {
 这与「没有这个文件」不是一件事：文件在说明有人配过。要么把凭据补上，要么把文件删掉。"
   fi
   BETA_MODEL_ENV_CLASSES="$(printf '%s\n' "$names" | beta_model_env_classes)"
+  BETA_MODEL_ENV_PROVIDER_COUNT="$(printf '%s\n' "$names" | beta_model_env_provider_count)"
 
   # `set -a` 的作用域是**整个 shell**，不是本函数：先记下调用方进来时是开是关，注入完
   # 原样还回去。少了这一步，本函数之后每一个普通局部变量都会被导出给子进程——那正是
