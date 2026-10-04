@@ -32,7 +32,10 @@ import {
   FINGERPRINT,
   FakeProviders,
   NOW,
+  POOL_COOLING_UNTIL,
   POOL_FINGERPRINTS,
+  POOL_SHORT_FINGERPRINTS,
+  POOL_URL,
   SHORT_FINGERPRINT,
 } from './providersFake.js'
 
@@ -1316,6 +1319,8 @@ describe('the chat label', () => {
 // ---------------------------------------------------------------------------
 
 describe('several keys', () => {
+  /** The visible text with runs of white space as one space. */
+  const words = (html: string) => visibleText(html).replace(/\s+/g, ' ')
   const POOL_KEYS = [
     { id: 'k1', label: '主账号' },
     { id: 'k2', label: '备用账号' },
@@ -1410,5 +1415,286 @@ describe('several keys', () => {
     // No value in the ledger, and nothing the route wrote itself.
     expect(JSON.stringify(s.actions.entries)).not.toContain('sk-test-canary')
     expect(s.actions.entries.length - s.base.entries).toBe(6)
+  })
+
+  const POOL_PAGES = [
+    '/providers',
+    '/providers/profiles/pool',
+    '/providers/nodes/node-d',
+  ]
+  const POOL_FRAGMENTS = [
+    '/fragments/providers/board',
+    '/fragments/providers/node/node-d',
+    '/fragments/providers/profiles/pool/nodes',
+  ]
+  const POOL_JSON = [
+    '/v0/providers',
+    '/v0/providers/profiles/pool',
+    '/v0/providers/nodes/node-d',
+  ]
+
+  /** What only ops may read of the pool: its fingerprints and its full URL. */
+  function poolWriterOnly(body: string): readonly string[] {
+    return [
+      ...writerOnly(body),
+      ...POOL_SHORT_FINGERPRINTS,
+      '/v1/pool-path',
+    ].filter(
+      (needle, index, all) =>
+        body.includes(needle) && all.indexOf(needle) === index,
+    )
+  }
+
+  test('viewer, member, both legacy tokens and break-glass see each key’s state and no write control and no fingerprint', async () => {
+    const s = await setup({ pool: true })
+    const glass = await setup({ pool: true, breakGlass: true })
+    const readers: readonly [
+      string,
+      Setup,
+      (path: string, fragment: boolean) => Request,
+    ][] = [
+      [
+        'viewer',
+        s,
+        (path, fragment) =>
+          fragment ? call('GET', path, s.viewer) : page(path, s.viewer),
+      ],
+      [
+        'member',
+        s,
+        (path, fragment) =>
+          fragment ? call('GET', path, s.member) : page(path, s.member),
+      ],
+      ['legacy view', s, path => asBearer('GET', path, VIEW)],
+      ['legacy admin', s, path => asBearer('GET', path, ADMIN)],
+      ['break-glass', glass, path => asBearer('GET', path, ADMIN)],
+    ]
+    let scanned = 0
+    for (const [who, setupOf, request] of readers) {
+      for (const path of [...POOL_PAGES, ...POOL_FRAGMENTS]) {
+        const fragment = path.startsWith('/fragments/')
+        const body = await text(setupOf.handle, request(path, fragment))
+        expect(`${who} ${path} ${writeMarks(body).join(',')}`).toBe(
+          `${who} ${path} `,
+        )
+        expect(`${who} ${path} ${poolWriterOnly(body).join(',')}`).toBe(
+          `${who} ${path} `,
+        )
+        scanned += 1
+      }
+      // Each key's state is not a writer's: every reader sees it.
+      const tab = await text(
+        setupOf.handle,
+        request('/fragments/providers/node/node-d', true),
+      )
+      expect(words(tab)).toContain('k2 冷却中')
+      expect(words(tab)).toContain('k3 已停用 凭据已吊销')
+      for (const path of POOL_JSON) {
+        const body = await text(setupOf.handle, request(path, true))
+        expect(`${who} ${path} ${poolWriterOnly(body).join(',')}`).toBe(
+          `${who} ${path} `,
+        )
+        scanned += 1
+      }
+      const node = (await jsonOf(
+        await setupOf.handle(request('/v0/providers/nodes/node-d', true)),
+      )) as { actual: { keys: unknown } }
+      expect(node.actual.keys).toEqual([
+        { id: 'k1', state: 'ok' },
+        {
+          id: 'k2',
+          state: 'cooling',
+          until: POOL_COOLING_UNTIL,
+          reason: 'rate-limit',
+        },
+        { id: 'k3', state: 'dead', reason: 'revoked' },
+      ])
+    }
+    expect(scanned).toBe(
+      readers.length *
+        (POOL_PAGES.length + POOL_FRAGMENTS.length + POOL_JSON.length),
+    )
+
+    // The control: the same scan finds them on the ops page.
+    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    expect(writeMarks(form)).toEqual(
+      expect.arrayContaining([
+        'data-action="prov-key-add"',
+        'data-action="prov-key-rotate"',
+        'data-action="prov-key-clear"',
+        'data-action="prov-key-remove"',
+        'data-action="confirm-prov-key-add-dialog"',
+        'data-action="confirm-prov-key-rotate-dialog"',
+        'data-action="confirm-prov-key-remove-dialog"',
+      ]),
+    )
+    expect(poolWriterOnly(form)).toEqual(
+      expect.arrayContaining([...POOL_SHORT_FINGERPRINTS, '/v1/pool-path']),
+    )
+    const api = await text(s.handle, call('GET', '/v0/providers', s.ops))
+    for (const fp of Object.values(POOL_FINGERPRINTS)) {
+      expect(api).toContain(fp)
+    }
+    expect(api).toContain(POOL_URL)
+  })
+
+  test('the copy gate on every page and fragment with several keys, for ops and for a viewer', async () => {
+    const s = await setup({ pool: true })
+    let checked = 0
+    for (const who of [s.ops, s.viewer]) {
+      for (const path of [...POOL_PAGES, ...POOL_FRAGMENTS]) {
+        const fragment = path.startsWith('/fragments/')
+        const html = await text(
+          s.handle,
+          fragment ? call('GET', path, who) : page(path, who),
+        )
+        assertCopy(path, html)
+        checked += 1
+      }
+    }
+    expect(checked).toBe(2 * (POOL_PAGES.length + POOL_FRAGMENTS.length))
+  })
+
+  test('export with several keys: ids only, no key, no fingerprint, no time it was set', async () => {
+    const s = await setup({ pool: true })
+    const response = await s.handle(
+      asSession('GET', '/v0/providers/export', s.ops.sid, { header: false }),
+    )
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    const pool = (
+      JSON.parse(body) as { profiles: { id: string; keys: unknown }[] }
+    ).profiles.find(profile => profile.id === 'pool')
+    expect(pool?.keys).toEqual([{ id: 'k1' }, { id: 'k2' }, { id: 'k3' }])
+    for (const needle of [
+      'fp1:',
+      'fingerprint',
+      'setAt',
+      ...POOL_SHORT_FINGERPRINTS,
+    ]) {
+      expect(`${needle} ${body.includes(needle)}`).toBe(`${needle} false`)
+    }
+    expect(s.actions.admitCalls).toBe(s.base.admits)
+  })
+
+  test('the form: one line per key in the order the node takes them, the primary first; the list it sends back has no fingerprint', async () => {
+    const s = await setup({ pool: true })
+    const pool = s.providers.profiles.get('pool')
+    if (pool === undefined) throw new Error('fixture')
+    // k3 outranks the others: the node takes it first, so the page does.
+    s.providers.profiles.set('pool', {
+      ...pool,
+      keys: [
+        pool.keys[0],
+        pool.keys[1],
+        { ...pool.keys[2], priority: 5 },
+      ].filter((key): key is NonNullable<typeof key> => key !== undefined),
+    })
+    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    const order = [...form.matchAll(/data-pool-key="(k\d)"/g)].map(
+      match => match[1],
+    )
+    expect(order.slice(0, 3)).toEqual(['k3', 'k1', 'k2'])
+    const first =
+      /<li class="prov-pool-row" data-pool-key="k3">[\s\S]*?<\/li>/.exec(
+        form,
+      )?.[0]
+    expect(words(first ?? '')).toContain('k3 主密钥 已设置')
+    expect(words(first ?? '')).toContain('指纹 c4b9d0e1')
+    // The single-key input is not on a several-key form.
+    expect(form).not.toContain('id="prov-key"')
+    expect(form).toContain('id="prov-key-selection"')
+    expect(form).toContain('<option value="round_robin" selected>')
+    const keys = /data-keys="([^"]*)"/.exec(form)?.[1] ?? ''
+    expect(JSON.parse(keys.replaceAll('&quot;', '"'))).toEqual([
+      { id: 'k1', label: '主账号' },
+      { id: 'k2', label: '备用账号' },
+      { id: 'k3', priority: 5 },
+    ])
+
+    // A key not filled in has no 清除, and the count says so.
+    s.providers.profiles.set('pool', {
+      ...pool,
+      keys: [...pool.keys.slice(0, 2), { id: 'k3' }],
+    })
+    const cleared = await text(
+      s.handle,
+      page('/providers/profiles/pool', s.ops),
+    )
+    expect(cleared).not.toContain('data-action="prov-key-clear" data-key="k3"')
+    expect(cleared).toContain('data-action="prov-key-remove" data-key="k3"')
+    const board = await text(s.handle, page('/providers', s.viewer))
+    expect(words(board)).toContain('密钥 3 把 · 已设置 2 把 · 轮流')
+  })
+
+  test('加一把密钥 only where a pool rotates: the OpenAI lines, up to eight keys', async () => {
+    const s = await setup({ pool: true })
+    // One key on the OpenAI Chat line: offered, with P18.9's controls as they were.
+    const chat = await text(
+      s.handle,
+      page('/providers/profiles/chat-svc', s.ops),
+    )
+    expect(chat).toContain('data-action="prov-key-add"')
+    expect(chat).toContain('id="prov-key"')
+    expect(chat).toContain('data-action="prov-key-refill"')
+    // One key on the Anthropic line: not offered.
+    const deepseek = await text(
+      s.handle,
+      page('/providers/profiles/deepseek', s.ops),
+    )
+    expect(deepseek).not.toContain('data-action="prov-key-add"')
+    expect(words(deepseek)).toContain(
+      '密钥已设置 · 设置于 2026-10-03 06:20 · 指纹 3f9a1c2e',
+    )
+
+    // Several keys on a line that takes one: said, and no way to add more.
+    const pool = s.providers.profiles.get('pool')
+    if (pool === undefined) throw new Error('fixture')
+    s.providers.profiles.set('pool', { ...pool, lane: 'anthropic' })
+    const wrong = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    expect(wrong).not.toContain('data-action="prov-key-add"')
+    expect(words(wrong)).toContain('这条线路一次只接受一把密钥 · 节点会拒收')
+
+    // Eight keys: full.
+    s.providers.profiles.set('pool', {
+      ...pool,
+      keys: Array.from({ length: 8 }, (_, i) => ({ id: `k${i + 1}` })),
+    })
+    const full = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    expect(full).not.toContain('data-action="prov-key-add"')
+    expect(words(full)).toContain('最多 8 把')
+  })
+
+  test('each node’s keys: on the profile’s node list, and a node that cannot rotate is named', async () => {
+    const s = await setup({ pool: true })
+    const nodes = await text(
+      s.handle,
+      call('GET', '/fragments/providers/profiles/pool/nodes', s.viewer),
+    )
+    expect(words(nodes)).toContain('k1 可用 · k2 冷却中 · k3 已停用')
+    expect(nodes).not.toContain('不支持多把密钥')
+
+    // node-b, sent to the pool, reports no key rotation.
+    const b = s.providers.nodes.get('node-b')
+    if (b === undefined) throw new Error('fixture')
+    s.providers.nodes.set('node-b', {
+      ...b,
+      expected: { profileId: 'pool', revision: 2, contextOverride: null },
+    })
+    const named = await text(
+      s.handle,
+      call('GET', '/fragments/providers/profiles/pool/nodes', s.viewer),
+    )
+    const row = /<li data-node="node-b">[\s\S]*?<\/li>/.exec(named)?.[0] ?? ''
+    expect(words(row)).toContain('这台节点不支持多把密钥 · 下发会被拒')
+    // It runs another profile: its keys are not this profile's to show.
+    expect(row).not.toContain('data-cell="keys"')
+
+    // A node with one key reports none, and its tab has no key section.
+    const tab = await text(
+      s.handle,
+      call('GET', '/fragments/providers/node/node-a', s.viewer),
+    )
+    expect(tab).not.toContain('密钥轮换')
   })
 })
