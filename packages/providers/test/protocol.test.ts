@@ -5,6 +5,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   errorResponse,
   isSecretFingerprint,
+  KEY_HEALTHS,
+  KEY_OUT_REASONS,
   parseProviderRequest,
   parseSecretSlotKey,
   PROTOCOL_LIMITS,
@@ -41,6 +43,17 @@ describe('schema v1 closure (§2.5)', () => {
       'models',
       'apply',
       'autocompact',
+    ])
+  })
+
+  test('per-key status (P18.18) is a closed vocabulary: three states, five reasons', () => {
+    expect([...KEY_HEALTHS]).toEqual(['ok', 'cooling', 'dead'])
+    expect([...KEY_OUT_REASONS]).toEqual([
+      'rate-limit',
+      'usage-limit',
+      'billing',
+      'auth',
+      'revoked',
     ])
   })
 

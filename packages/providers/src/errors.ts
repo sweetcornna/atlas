@@ -8,10 +8,12 @@
  *
  * `unsupported-multi-key` is the one addition to the §2.5 list: a profile may
  * hold up to {@link MAX_KEYS_PER_PROFILE} keys (P18.18 schema, decided
- * 2026-10-03), but a v1 node delivers exactly one. A request carrying more is
- * refused by name instead of having the extras silently dropped — silently
- * using one key would let the hub believe rotation is in effect when it is
- * not. Nodes advertise `capabilities.multiKey: false` until P18.18.
+ * 2026-10-03), but a node without `capabilities.multiKey` delivers exactly
+ * one, and a P18.18 node rotates keys only where its call layer can (the
+ * OpenAI lanes; `compile.ts`). A request carrying more keys than the node can
+ * use is refused by name instead of having the extras silently dropped —
+ * silently using one key would let the hub believe rotation is in effect when
+ * it is not.
  *
  * `env-override` is the second (D-9): `autocompact` refuses to write while
  * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set, because the environment wins over

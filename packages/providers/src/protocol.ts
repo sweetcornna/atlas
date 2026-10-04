@@ -446,6 +446,37 @@ export type LastCommitResult = {
   diffKeys: string[]
 }
 
+/**
+ * P18.18: how one key of a node's key pool stands. `cooling` keys come back
+ * on their own at `until`; `dead` keys (a revoked credential) only when the
+ * hub delivers a new value for that key id.
+ */
+export const KEY_HEALTHS = ['ok', 'cooling', 'dead'] as const
+export type KeyHealth = (typeof KEY_HEALTHS)[number]
+
+/**
+ * P18.18: why a key was taken out of rotation — the rows of the hermes
+ * behaviour table (`credentialPool.ts`): a second 429, a usage cap, a 402 or
+ * other billing refusal, a 401, a 401 naming a revoked credential.
+ */
+export const KEY_OUT_REASONS = [
+  'rate-limit',
+  'usage-limit',
+  'billing',
+  'auth',
+  'revoked',
+] as const
+export type KeyOutReason = (typeof KEY_OUT_REASONS)[number]
+
+/** One key of the pool in `status`: its id and state, never its value. */
+export type KeyStatus = {
+  id: string
+  state: KeyHealth
+  /** `cooling` only: when the key is tried again (ISO time). */
+  until?: string
+  reason?: KeyOutReason
+}
+
 /** §2.4, minus `effective` (that one needs its own process). */
 export type ProviderNodeState = {
   managed: boolean
@@ -458,6 +489,12 @@ export type ProviderNodeState = {
   inheritedProviderKeys: string[]
   capabilities: NodeCapabilities
   lastResult: LastCommitResult | null
+  /**
+   * P18.18: present only while the node runs a key pool (a profile with more
+   * than one key was committed), one entry per key in selection order. A
+   * single-key node reports nothing here: its one key is not tracked.
+   */
+  keys?: KeyStatus[]
 }
 
 /**
