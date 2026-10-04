@@ -432,7 +432,7 @@ function runtimeScript(guards: TokenGuards): string {
   function expire() {
     if (expired) return;
     expired = true;
-    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     for (var i = 0; i < expireHooks.length; i++) {
       try { expireHooks[i](); } catch (e) { /* one hook must not keep the rest running */ }
     }
@@ -598,6 +598,51 @@ function runtimeScript(guards: TokenGuards): string {
 
   var refreshes = 0;
 
+  /* ---------------- connection state (C2) ---------------- */
+
+  // A refresh that fails leaves the old data on the page, which is right -
+  // a blank roster reads as "everyone left" - and wrong unless the page says
+  // how old it is. So a failure lights one line under the top bar (#conn,
+  // role=status) and stamps each polled region with the instant it was last
+  // good; the next success takes both away. Failures back off: each one
+  // doubles the wait, up to a minute, and a success puts it back.
+  var BACKOFF_MAX_MS = 60000;
+  var failures = 0;
+  var pollMs = 0;
+  // The page the server rendered is the first good read.
+  var lastGood = Date.now();
+
+  function asOf(at) { return '数据截至 ' + stamp(new Date(at)); }
+
+  function connSay(text, tone) {
+    var line = byId('conn');
+    if (!line) return;
+    if (!text) { line.hidden = true; line.textContent = ''; return; }
+    line.textContent = text;
+    line.setAttribute('data-tone', tone || 'bad');
+    line.hidden = false;
+  }
+
+  function staleMark(mount) {
+    var at = Number(mount.getAttribute('data-as-of')) || lastGood;
+    var mark = null;
+    for (var i = 0; i < mount.children.length; i++) {
+      if (mount.children[i].hasAttribute('data-asof')) { mark = mount.children[i]; break; }
+    }
+    if (!mark) {
+      mark = document.createElement('p');
+      mark.className = 'asof';
+      mark.setAttribute('data-asof', '');
+      mount.insertBefore(mark, mount.firstChild);
+    }
+    mark.textContent = asOf(at);
+  }
+
+  function clearStale(mount) {
+    var marks = mount.querySelectorAll('[data-asof]');
+    for (var i = 0; i < marks.length; i++) marks[i].remove();
+  }
+
   function refreshRegion(mount) {
     var url = mount.getAttribute('data-poll');
     if (!url) return Promise.resolve();
@@ -606,8 +651,13 @@ function runtimeScript(guards: TokenGuards): string {
       var state = snapshot(mount);
       if (!(ids.length > 0 && swapRegions(html, ids) > 0)) mount.innerHTML = html;
       restore(mount, state);
+      clearStale(mount);
+      mount.setAttribute('data-as-of', String(Date.now()));
       refreshes += 1;
       mount.setAttribute('data-refreshed', String(refreshes));
+    }, function (err) {
+      if (!expired) staleMark(mount);
+      throw err;
     });
   }
 
@@ -618,33 +668,68 @@ function runtimeScript(guards: TokenGuards): string {
     return Promise.all(jobs);
   }
 
+  function nextWait() {
+    return failures === 0 ? pollMs : Math.min(BACKOFF_MAX_MS, pollMs * Math.pow(2, failures));
+  }
+
+  function offlineLine() {
+    return '浏览器离线 · ' + asOf(lastGood);
+  }
+
   function tick() {
     var state = byId('refresh-state');
     return refreshAll().then(function () {
+      failures = 0;
+      lastGood = Date.now();
+      connSay('');
       say(state, '更新于 ' + stamp(new Date()), 'muted');
     }).catch(function (err) {
       // An expiry has already said so, in the dialog and on this line.
       if (expired) return;
+      failures += 1;
+      var wait = Math.round(nextWait() / 1000);
+      connSay(navigator.onLine === false ? offlineLine() :
+        '连接中断 · 正在重试 · ' + asOf(lastGood) + (wait > 0 ? ' · ' + wait + ' 秒后再试' : ''));
       say(state, '刷新失败 · ' + message(err), 'bad');
     });
   }
 
+  // A chain of timeouts rather than an interval, so a failure can stretch
+  // the next wait and a slow refresh never overlaps the next one.
+  function arm() {
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    if (expired || !(pollMs > 0)) return;
+    refreshTimer = setTimeout(function () {
+      refreshTimer = null;
+      // A background tab polling every five seconds is a background tab
+      // holding a socket open for nobody to look at.
+      if (document.hidden) { arm(); return; }
+      tick().then(arm);
+    }, nextWait());
+  }
+
   function schedule() {
-    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    pollMs = 0;
     if (expired || !document.querySelector('[data-poll]')) return;
     var toggle = byId('auto-refresh');
     var picker = byId('refresh-interval');
     var on = toggle ? toggle.checked : false;
     var ms = picker ? parseInt(picker.value, 10) : 5000;
     if (!on || !(ms > 0)) { say(byId('refresh-state'), '已暂停', 'muted'); return; }
-    refreshTimer = setInterval(function () {
-      // A background tab polling every five seconds is a background tab
-      // holding a socket open for nobody to look at.
-      if (!document.hidden) tick();
-    }, ms);
+    pollMs = ms;
+    arm();
     // The interval is already shown by the select beside this; repeating it
     // here would just be a second copy of the same number.
     say(byId('refresh-state'), '', 'muted');
+  }
+
+  // Back in view, or back online: ask now rather than at the end of a wait
+  // that may have grown to a minute.
+  function refreshNow() {
+    if (expired || !(pollMs > 0)) return;
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+    tick().then(arm);
   }
 
   /* ---------------- wiring ---------------- */
@@ -706,7 +791,16 @@ function runtimeScript(guards: TokenGuards): string {
   });
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && refreshTimer) tick();
+    if (!document.hidden) refreshNow();
+  });
+
+  window.addEventListener('offline', function () {
+    if (!expired) connSay(offlineLine());
+  });
+
+  window.addEventListener('online', function () {
+    failures = 0;
+    refreshNow();
   });
 
   function start() {

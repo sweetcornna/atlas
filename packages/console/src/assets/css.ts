@@ -699,6 +699,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .bar-critical { background: color-mix(in srgb, var(--color-critical) 14%, var(--color-bg)); color: var(--color-critical); }
 .bar-muted { background: var(--color-neutral-100); color: var(--color-neutral-700); }
 .bar-code { font-family: var(--font-mono); font-size: 11px; opacity: .75; }
+/* The connection line and the stamp on a region whose refresh failed (C2). */
+.conn[hidden] { display: none; }
+.asof { margin: 0 0 var(--space-2); font-size: 12px; color: var(--color-muted); }
 /* The original of a failure (C5): folded, selectable, never the sentence. */
 .raw-detail, .toast-detail { flex-basis: 100%; min-width: 0; font-size: 12px; }
 .raw-detail > summary, .toast-detail > summary { cursor: pointer; width: max-content; }

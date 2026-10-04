@@ -646,7 +646,7 @@ describe('a session that lapses under the page (C1)', () => {
     // Both transports refuse without leaving the browser once expired.
     expect(runtime.match(/if \(expired\) return refused\(\);/g)).toHaveLength(2)
     expect(runtime).toContain(
-      'clearInterval(refreshTimer); refreshTimer = null; }',
+      'clearTimeout(refreshTimer); refreshTimer = null; }',
     )
     expect(runtime).toContain("openDialog('session-expired', null)")
     // The chat page's stream and fallback poller stop with it.

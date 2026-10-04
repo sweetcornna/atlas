@@ -396,6 +396,9 @@ export function renderShell(model: ShellModel): string {
     `\n<div class="frame">\n` +
     topBar(model) +
     viewerNotice(model.viewer) +
+    // Lit by the runtime when a refresh fails, with how old the page is (C2).
+    // Outside every polled region, so the failure it reports cannot take it.
+    `<p class="bar bar-warn conn" id="conn" role="status" hidden></p>` +
     `\n<main class="main" id="main" aria-labelledby="page-title">\n` +
     model.body +
     `\n</main>\n</div>\n</div>\n` +
