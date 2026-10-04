@@ -577,7 +577,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
-| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
+| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
 | GET | `/approvals`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
@@ -613,10 +613,10 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
 | GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
-| GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录。没开 `--providers` 时 501 |
+| GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录；节点报的逐把密钥状态（`actual.keys`，只有编号、状态、恢复时间与原因，P18.18）照给。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |
 | POST | `/v0/providers/profiles` | **ops 个人账号** | 新建：`{ presetId, site?, profile, secrets? }`，`profile` 只带表单编辑的字段，预设、套餐、评估状态由中枢定 |
-| PUT、DELETE | `/v0/providers/profiles/<档案 id>` | **ops 个人账号** | 保存、删除。带修订号 `ifMatch`（或 `If-Match` 头，两者都给时必须相等），不符 409 |
+| PUT、DELETE | `/v0/providers/profiles/<档案 id>` | **ops 个人账号** | 保存、删除。带修订号 `ifMatch`（或 `If-Match` 头，两者都给时必须相等），不符 409。加一把、删一把密钥与选取策略也是保存（`profile.keys`、`profile.keySelection`，新那把的值在 `secrets`，P18.18）：列表里的 key 按编号保留密文，不在列表里的密文随即删除 |
 | PUT、DELETE | `/v0/providers/profiles/<档案 id>/keys/<key id>` | **ops 个人账号** | 重新填写、清除密钥；任何接口都不回明文 |
 | POST | `/v0/providers/profiles/<档案 id>/skip-probe` | **ops 个人账号** | 保存并切换时勾了跳过测连：记一条 `provider.probe.skip`；记不进去 503，页面不再切换 |
 | PUT | `/v0/providers/default` | **ops 个人账号** | `{ profileId }` 设全局默认，`null` 清除 |
@@ -792,8 +792,8 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 | --- | --- |
 | `/providers` | 全局默认卡、节点矩阵（期望 · 实际 · 状态 · 线路 · 模型 · effort · 上下文 · 最近测连）、档案卡片。矩阵被轮询；带输入框的操作都在对话框里 |
 | `/providers/new` | 预设卡片五组（国内按量 / 国际 / 套餐 / 本地 / 自定义），`?q=` 是 GET 搜索；`?preset=` 进表单，默认只露密钥，其余在「高级」里 |
-| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除 |
-| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
+| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除。两把以上密钥时是逐把列表（重新填写 / 清除 / 删除、主密钥标记）、选取策略与「加一把密钥」；在用节点每台一行带节点报的逐把状态（P18.18） |
+| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、多 key 池逐把状态（可用 / 冷却中 / 已停用，P18.18）、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
 | `/providers/import` | 粘贴或选文件，整份预览后导入 |
 
 - **谁能写**：只有 `ops` 个人账号，且不在 break-glass（`routes/providers.ts` 的 `providerWriter`）。
