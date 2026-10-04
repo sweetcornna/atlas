@@ -114,7 +114,7 @@ const SYSTEM_COMMANDS: AttachCommands = {
 }
 
 /** Knobs for tests. */
-export interface AttachTiming {
+interface AttachTiming {
   readonly readyTimeoutMs?: number
 }
 

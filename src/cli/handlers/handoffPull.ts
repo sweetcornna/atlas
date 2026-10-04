@@ -92,7 +92,7 @@ import { findQmcodeRollout } from './handoffTranscript.js'
 /** How the result came home. */
 type ReturnMode = 'fast-forward' | 'branch'
 
-export interface PullOptions {
+interface PullOptions {
   readonly taskId?: string
   /**
    * The qmcode thread this runs in (`CODEX_THREAD_ID` for `/pull`, the MCP

@@ -509,7 +509,7 @@ async function handOver(
 
 // ─── status ──────────────────────────────────────────────────────────
 
-export interface TaskLine {
+interface TaskLine {
   readonly taskId: string
   readonly state: string
   readonly acceptedAt: number
