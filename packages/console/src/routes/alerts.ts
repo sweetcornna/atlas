@@ -82,14 +82,16 @@ async function inboxOf(ctx: RouteContext): Promise<Inbox> {
   const { deps, now } = ctx
   const notify = deps.notify
   const certificates = deps.certificates
-  const [roster, snapshot, audits, notices, acks] = await Promise.all([
-    ctx.roster(),
-    certificates?.read(),
-    // Only the verdicts are wanted; the port still reads the whole trail.
-    readAuditSources(deps, { limit: 1 }),
-    notify?.notices(NOTICE_LIMIT),
-    notify?.acks(),
-  ])
+  const [roster, snapshot, audits, notices, acks, registrations] =
+    await Promise.all([
+      ctx.roster(),
+      certificates?.read(),
+      // Only the verdicts are wanted; the port still reads the whole trail.
+      readAuditSources(deps, { limit: 1 }),
+      notify?.notices(NOTICE_LIMIT),
+      notify?.acks(),
+      deps.lifecycle?.read(),
+    ])
   const board = alertBoard({
     now,
     ttlMs: deps.limits.registryTtlMs,
@@ -98,6 +100,7 @@ async function inboxOf(ctx: RouteContext): Promise<Inbox> {
       ? {}
       : { certificates: { snapshot, roots: certificates.roots() } }),
     audits,
+    ...(registrations === undefined ? {} : { registrations }),
     ...(notices === undefined ? {} : { notices }),
     ...(acks === undefined ? {} : { acks }),
   })
