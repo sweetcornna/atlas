@@ -382,8 +382,11 @@ describe('every kind of write is one line in the action ledger', () => {
     for (const record of records) {
       counts.set(record.action, (counts.get(record.action) ?? 0) + 1)
     }
-    const verbs = CONSOLE_ACTIONS.filter(action =>
-      action.startsWith('provider.'),
+    // `provider.probe.skip` is the console route's own line (跳过测连,
+    // `packages/console/src/routes/providers.ts`); the port has no such step.
+    const verbs = CONSOLE_ACTIONS.filter(
+      action =>
+        action.startsWith('provider.') && action !== 'provider.probe.skip',
     )
     // Two saves (luna, spare); one key filled in with the luna save plus one
     // set on its own; every other verb once.
