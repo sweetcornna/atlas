@@ -188,6 +188,14 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
 | `--legacy-view-token on\|off` | `on` | 迁移期 view token 还认不认（M-2b）。`off` 以后 view token 在三个入口一律失效，横幅的 `open` 行改为登录页。只在 `--accounts` 下有效 |
 | `--break-glass` | 关 | admin token 转为 break-glass（M-3）：只收 `Authorization: Bearer`、页面常亮提示、每次使用记账、永远不能当审批人。只在 `--accounts` 下有效 |
+| `--providers` | 关 | 模型服务（P18.6，§5.4）：档案存在这台控制台，密钥用主密钥封存，经第六类动作下发到节点。**要 `--accounts`**：只有 `ops` 个人账号能改，每一次改动记进动作账本。不给时 `/providers` 是一行「模型服务未开启」，`/v0/providers` 答 501。下面七个 `--provider*` 选项单独给（没有 `--providers`）会报错 |
+| `--providers-store <绝对路径>` | `occConfigPath('qianmo','console','providers.ndjson')` | 档案账本。有一行读不通，模型服务整体停用，直到把文件挪开 |
+| `--provider-secrets <绝对路径>` | `occConfigPath('qianmo','console','provider-secrets.json')` | 封存后的密钥（0600） |
+| `--provider-key-file <绝对路径>` | `occConfigPath('qianmo','console-keys','provider-master.key')` | 封存用的主密钥，第一次存密钥时创建。文件或所在目录对 group/other 可读，或者已有封存密钥而主密钥不在，模型服务都会停用，**主密钥从不重新生成**。放到配置根之外 |
+| `--provider-local <node>=<绝对路径>` | 无 | 本机上的节点：执行 `<绝对路径> <node>`，stdin 给一行 JSON。**可重复**，一个节点一条；同一个节点不能既是 local 又是 ssh |
+| `--provider-ssh <node>=<user>@<host>[:<port>]` | 无 | 经 ssh 到达的节点：用它自己的密钥，对端是 forced command；客户端那条命令只是个哨兵，对端那一行不在就失败。IPv6 主机写在方括号里。**可重复** |
+| `--provider-ssh-key <node>=<绝对路径>` | 无 | 那个节点专用的私钥，**不是**隧道那把：sshd 只看 authorized_keys 里一把密钥的第一行，forced command 就写在那里。与 `--provider-ssh` 一一对应，缺一边当场报错 |
+| `--provider-known-hosts <绝对路径>` | `occConfigPath('qianmo','console-keys','provider_known_hosts')` | 这台控制台接受哪些 `--provider-ssh` 节点的主机密钥（`StrictHostKeyChecking=yes`），没有条目的节点在 ssh 启动前就被拒。路径里不能有空白或 `%` |
 | `--label <text>` | `hostname:port` | 页头标签，≤120 字符。两个控制台开在两个标签页时，靠它区分 |
 | `--view-token-file <绝对路径>` | 无 | 从文件读只读凭据。**必须是绝对路径**；**权限必须 0600 或更严**（group/other 任一位不为零就拒绝启动），尾部换行会被去掉 |
 | `--admin-token-file <绝对路径>` | 无 | 同上，读写凭据 |
