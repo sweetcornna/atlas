@@ -25,10 +25,11 @@ export type ModelCompatCapabilities = {
    * Reasoning carried in history is filtered by the TARGET endpoint before it
    * is sent on the OpenAI lane (P18.8): chat `reasoning_content` by the
    * hermes family table (#4, `reasoningEcho.ts`), Responses
-   * `encrypted_content` by issuer (#23, `responsesIssuer.ts`). The console
-   * keeps a session across a vendor switch only on nodes reporting this
-   * (design R-7). It does not cover the Grok lane or Anthropic-lane thinking
-   * signatures — see `REPLAY_FILTER`.
+   * `encrypted_content` by issuer (#23, `responsesIssuer.ts`), and the Grok
+   * lane's chat history by the same table (P18.12). The console keeps a
+   * session across a vendor switch only on nodes reporting this (design
+   * R-7). It does not cover Anthropic-lane thinking signatures — see
+   * `REPLAY_FILTER`.
    */
   replayFilter: boolean
 }

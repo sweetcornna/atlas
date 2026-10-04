@@ -21,8 +21,18 @@ import {
   isRetryableAPIError,
   NonRetryableError,
 } from './retryClassification.js'
-import { getOpenAIRetryDelay, resolveOpenAIMaxRetries } from './openai/retry.js'
+import {
+  getOpenAIRetryDelay,
+  resolveOpenAIMaxRetries,
+  resolveRetryWait,
+} from './openai/retry.js'
 import { reportEmptyModelResponse } from './upstreamStatus.js'
+import {
+  thirdPartyFallback,
+  type ThirdPartyFallbackTarget,
+} from '../qianmo/modelCompat/thirdPartyFallback.js'
+import type { BackoffTarget } from '../qianmo/modelCompat/vendorBackoff.js'
+import { isDeterministicEmpty } from '../qianmo/modelCompat/emptyResponse.js'
 
 /**
  * Retries for a response that ended properly and said nothing
@@ -162,6 +172,18 @@ export async function* retryThirdPartyEventStream(params: {
    * src/services/qianmo/modelCompat/outputCap.ts.
    */
   recoverOutputCap?: (error: unknown) => boolean
+  /**
+   * qianmo P18.12 (hermes #1): the model and its armed fallback. When the
+   * ladder gives up before any output, a fallback reason throws
+   * `FallbackTriggeredError` for query.ts; see
+   * src/services/qianmo/modelCompat/thirdPartyFallback.ts.
+   */
+  fallback?: ThirdPartyFallbackTarget
+  /**
+   * qianmo P18.12 (hermes #17): the wire model and endpoint, for vendor
+   * backoff rules; see src/services/qianmo/modelCompat/vendorBackoff.ts.
+   */
+  backoffTarget?: BackoffTarget
 }): AsyncGenerator<BetaRawMessageStreamEvent, void> {
   const maxRetries = params.maxRetries ?? resolveOpenAIMaxRetries()
   const delay =
@@ -171,6 +193,9 @@ export async function* retryThirdPartyEventStream(params: {
   let noOutputRetries = 0
   let thinkingRetries = 0
   let emptyResponseRetries = 0
+  // qianmo P18.12 (hermes #25): the previous failure, when it was an empty
+  // response — src/services/qianmo/modelCompat/emptyResponse.ts.
+  let previousEmpty: EmptyModelResponseError | undefined
   let outputCapRecovered = false
 
   while (true) {
@@ -238,6 +263,15 @@ export async function* retryThirdPartyEventStream(params: {
         continue
       }
       if (params.signal.aborted || !isRetryableAPIError(error)) {
+        // qianmo P18.12 (hermes #1): a model that does not exist or may not
+        // be used — switch to the fallback, if nothing was shown yet.
+        const fallback =
+          !params.signal.aborted &&
+          commitment === 'none' &&
+          isAPIErrorReplayable(error)
+            ? thirdPartyFallback(error, params.fallback, 'refused')
+            : undefined
+        if (fallback) throw fallback
         throw error
       }
       if (commitment === 'visible') {
@@ -260,6 +294,24 @@ export async function* retryThirdPartyEventStream(params: {
       if (!isAPIErrorReplayable(error)) {
         throw error
       }
+      // qianmo P18.12 (hermes #25): the same empty twice in a row, input
+      // counted and nothing generated, is the endpoint's answer — the last
+      // retry is skipped.
+      const deterministicEmpty =
+        error instanceof EmptyModelResponseError &&
+        isDeterministicEmpty(previousEmpty, error)
+      previousEmpty =
+        error instanceof EmptyModelResponseError ? error : undefined
+      if (deterministicEmpty) {
+        reportEmptyModelResponse({
+          finishReason: error.finishReason,
+          inputTokens: error.inputTokens,
+          outputTokens: error.outputTokens,
+          occurrence: ++emptyResponseRetries,
+          retrying: false,
+        })
+        throw error
+      }
       const emptyResponse = error instanceof EmptyModelResponseError
       const retry = emptyResponse
         ? ++emptyResponseRetries <= EMPTY_RESPONSE_MAX_RETRIES
@@ -275,7 +327,27 @@ export async function* retryThirdPartyEventStream(params: {
           retrying: retry,
         })
       }
+      // qianmo P18.12 (hermes #16): before any output, the server's
+      // Retry-After is waited out up to the run mode's bound, and past it the
+      // ladder gives up — openai/retry.ts resolveRetryWait.
+      const retryWait =
+        retry && !emptyResponse && commitment === 'none'
+          ? resolveRetryWait(error, noOutputRetries, {
+              target: params.backoffTarget,
+            })
+          : undefined
+      // qianmo P18.12 (hermes #1): 5xx retries spent before any output —
+      // switch to the fallback.
+      if (
+        (!retry || retryWait?.giveUp === true) &&
+        !emptyResponse &&
+        commitment === 'none'
+      ) {
+        const fallback = thirdPartyFallback(error, params.fallback, 'exhausted')
+        if (fallback) throw fallback
+      }
       if (!retry) throw error
+      if (retryWait?.giveUp === true) throw error
       await params.onRetry?.(error)
       for (const event of finalizeInterruptedAttempt(
         commitment,
@@ -291,7 +363,12 @@ export async function* retryThirdPartyEventStream(params: {
           params.signal,
         )
       } else if (commitment === 'none') {
-        await delay(getOpenAIRetryDelay(noOutputRetries), params.signal)
+        await delay(
+          retryWait?.giveUp === false
+            ? retryWait.delayMs
+            : getOpenAIRetryDelay(noOutputRetries),
+          params.signal,
+        )
       } else {
         await delay(100 * thinkingRetries, params.signal)
       }

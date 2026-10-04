@@ -384,12 +384,14 @@ export function updateOpenAIUsage(
     output_tokens: number
     cache_creation_input_tokens: number
     cache_read_input_tokens: number
+    reasoning_tokens?: number
   },
   delta: {
     input_tokens?: number
     output_tokens?: number
     cache_creation_input_tokens?: number
     cache_read_input_tokens?: number
+    reasoning_tokens?: number
   },
 ): typeof current {
   return {
@@ -405,5 +407,11 @@ export function updateOpenAIUsage(
       delta.cache_read_input_tokens > 0
         ? delta.cache_read_input_tokens
         : current.cache_read_input_tokens,
+    // qianmo P18.12: the adapters' normalised usage carries it since P18.8
+    // (hermes #26); dropping it here kept it off every persisted message,
+    // which per-user metering (P15.7) reads.
+    ...((delta.reasoning_tokens ?? current.reasoning_tokens) !== undefined && {
+      reasoning_tokens: delta.reasoning_tokens ?? current.reasoning_tokens,
+    }),
   }
 }

@@ -20,6 +20,7 @@
  */
 import { queryModelOpenAI } from 'src/services/api/openai/index.js'
 import type { Options } from 'src/services/api/claude.js'
+import type { Tools } from 'src/Tool.js'
 import type { Message } from 'src/types/message.js'
 import type { SystemPrompt } from 'src/utils/session/systemPromptType.js'
 
@@ -104,7 +105,12 @@ export type CaptureParams = {
    * Answer the first N requests with this error instead of a stream. Lets a
    * row exercise the request-level fallbacks without a network.
    */
-  failFirst?: { status: number; body: unknown }[]
+  failFirst?: {
+    status: number
+    body: unknown
+    /** Response headers, e.g. `retry-after` (P18.12). */
+    headers?: Record<string, string>
+  }[]
   /**
    * Conversation history handed to `queryModelOpenAI` (P18.8: replay rows).
    * Default: none.
@@ -116,6 +122,15 @@ export type CaptureParams = {
   chatSSE?: string
   /** Receives everything `queryModelOpenAI` yields (P18.8). */
   outputs?: unknown[]
+  /** options.fallbackModel — what query.ts armed the request with (P18.12). */
+  fallbackModel?: string
+  /**
+   * Answer with this fetch instead of the recording one (P18.12: stalled
+   * streams). Nothing is captured then.
+   */
+  fetchOverride?: typeof fetch
+  /** Tools handed to the lane (P18.12: schema rules). Default: none. */
+  tools?: Tools
 }
 
 /**
@@ -159,7 +174,7 @@ export async function captureOpenAIRequests(
     if (failure) {
       return new Response(JSON.stringify(failure.body), {
         status: failure.status,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...failure.headers },
       })
     }
     const responsesSSE = params.responsesSSE ?? RESPONSES_SSE
@@ -183,10 +198,11 @@ export async function captureOpenAIRequests(
       alwaysAskRules: {},
       isBypassPermissionsModeAvailable: false,
     }),
-    fetchOverride,
+    fetchOverride: params.fetchOverride ?? fetchOverride,
     effortValue: params.effortValue,
     temperatureOverride: params.temperatureOverride,
     maxOutputTokensOverride: params.maxOutputTokensOverride,
+    fallbackModel: params.fallbackModel,
   } as unknown as Options
 
   try {
@@ -194,7 +210,7 @@ export async function captureOpenAIRequests(
     for await (const output of queryModelOpenAI(
       params.messages ?? [],
       [] as unknown as SystemPrompt,
-      [],
+      params.tools ?? [],
       signal,
       options,
     )) {

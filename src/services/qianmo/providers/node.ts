@@ -83,6 +83,7 @@ import {
   getSettingsFilePathForSource,
   updateSettingsForSource,
 } from '../../../utils/settings/settings.js'
+import { getModelCompatCapabilities } from '../modelCompat/capabilities.js'
 import { compileProfile } from './compile.js'
 import {
   applyPatchToView,
@@ -118,11 +119,18 @@ import {
 export { computeEffectiveProviderState } from './effective.js'
 export { inheritedProviderKeyNames } from './whitelist.js'
 
-/** What this build can do. Flipped by the packages that add each ability. */
+/**
+ * What this build can do. The call layer's two flags come from the modules
+ * that implement them (`modelCompat/capabilities.ts`), not a copy here. The
+ * copy said `false` for both after P18.5 and P18.8 had made them true; `qm
+ * provider` merged the real values over it, but a stage without explicit
+ * capabilities still refused `always` on the chat lane, and
+ * `readProviderState()` reported both off (P18.12). `multiKey` is flipped by
+ * P18.18.
+ */
 const NODE_PROVIDER_CAPABILITIES: NodeCapabilities = {
   protocol: 1,
-  chatEffortHonorsOverride: false,
-  replayFilter: false,
+  ...getModelCompatCapabilities(),
   multiKey: false,
 }
 
