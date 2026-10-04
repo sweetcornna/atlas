@@ -14,7 +14,7 @@
  * ③ 登记助手表里写的子命令都是它认的子命令；
  * ④ 写到的环境变量名在源码里出现过；
  * ⑤ README 的轮配置样例，占位符换成合法值之后过得了 `parseConfig`（样例与代码同形）；
- * ⑥ 两处都没有写进真实拓扑（IP、舰队机器名）。
+ * ⑥ 两处都没有写进真实拓扑：除回环与通配之外的 IPv4，公网后缀的域名（占位用 `.example`）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -218,6 +218,11 @@ describe('迁移与真机验收 runbook 的引用', () => {
       .map(match => match[1] ?? '')
       .filter(ip => ip !== '127.0.0.1' && ip !== '0.0.0.0')
     expect(ips).toEqual([])
-    expect(ALL).not.toMatch(/cornna-p\d|workbench-iap|sweetcornna/)
+    const domains = [
+      ...ALL.matchAll(
+        /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|cn|io|dev|cloud|app|ai|me|top|xyz|site)\b/gi,
+      ),
+    ].map(match => match[0])
+    expect(domains).toEqual([])
   })
 })

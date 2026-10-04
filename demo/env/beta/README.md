@@ -656,7 +656,8 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 # ② 每台节点机：信任它，并让它签的 /autocompact、/compact、/context 当本地命令跑。原有的 --trust 一起带上
 ./demo/env/beta/beta-down.sh <节点> && ./demo/env/beta/beta-up.sh --role node --node <节点> -- \
   --trust "$IDENTITY" --local-commands-from console
-# ③ H：控制台签对话（尾参落进 ops/console.env，单元重启后仍在）
+# ③ H：控制台签对话（尾参落进 ops/console.env，单元重启后仍在）。不带的尾参等于撤掉：
+#    先看 ops/console.env 的 CONSOLE_EXTRA_ARGS，原有的尾参一起带上，下面只是示例
 ./demo/env/beta/beta-down.sh console && ./demo/env/beta/beta-up.sh --role host -- \
   --accounts --providers --wake-sign --chat-sign
 ```
