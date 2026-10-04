@@ -155,9 +155,24 @@ function detailLine(
 }
 
 /** Clickable. Full segment in `data-trace`, eight characters on screen. */
-function traceCell(traceId: string | undefined, auditNode?: string): string {
+function traceCell(
+  traceId: string | undefined,
+  auditNode?: string,
+  asLink = false,
+): string {
   const segment = traceIdSegment(traceId)
   if (segment === null || segment === '') return absent()
+  // Off the trail page there is no inline chain panel to open: the trace is
+  // a link to its own page instead (`/audit/trace/<traceId>`).
+  if (asLink) {
+    const href =
+      `/audit/trace/${encodeURIComponent(segment)}` +
+      (auditNode === undefined ? '' : `?node=${encodeURIComponent(auditNode)}`)
+    return (
+      `<a class="linkish mono" href="${attr(href)}" data-nav ` +
+      `title="${attr(segment)}">${escapeHtml(shortId(segment))}</a>`
+    )
+  }
   const node =
     auditNode === undefined ? '' : ` data-audit-node="${attr(auditNode)}"`
   return (
@@ -180,7 +195,11 @@ function partiesCell(record: AuditRecord): string {
   )
 }
 
-function recordRow(record: AuditRecord, auditNode?: string): string {
+function recordRow(
+  record: AuditRecord,
+  auditNode?: string,
+  linkTraces = false,
+): string {
   return (
     `<tr data-outcome="${attr(record.outcome)}">` +
     `<td class="when mono">${escapeHtml(formatDateTime(record.at))}</td>` +
@@ -188,7 +207,7 @@ function recordRow(record: AuditRecord, auditNode?: string): string {
     `<td class="kind"><span class="mono">${escapeHtml(record.kind)}</span>` +
     `${detailLine(record.detail)}</td>` +
     `<td class="result">${outcomeCell(record.outcome)}</td>` +
-    `<td>${traceCell(record.traceId, auditNode)}</td>` +
+    `<td>${traceCell(record.traceId, auditNode, linkTraces)}</td>` +
     `<td class="parties">${partiesCell(record)}</td>` +
     `<td class="mono">${
       record.code === undefined ? absent() : escapeHtml(record.code)
@@ -244,10 +263,14 @@ function headerRow(): string {
 }
 
 /** Newest first (D5): the line somebody came to the page for is the last one written. */
-function rowsOf(records: readonly AuditRecord[], auditNode?: string): string {
+function rowsOf(
+  records: readonly AuditRecord[],
+  auditNode?: string,
+  linkTraces = false,
+): string {
   return [...records]
     .reverse()
-    .map(record => recordRow(record, auditNode))
+    .map(record => recordRow(record, auditNode, linkTraces))
     .join('')
 }
 
@@ -997,6 +1020,30 @@ function sourcesHead(sources: readonly AuditSourceRender[]): string {
 // ---------------------------------------------------------------------------
 // What arrived since the page was drawn (G2)
 // ---------------------------------------------------------------------------
+
+/**
+ * The latest lines of a trail on a page that is not the trail page — a
+ * node's overview (`view/node.ts`). The trail's own table, newest first, with
+ * each trace a link to its own page; no filter, no paging, no poll.
+ */
+export function renderAuditExcerpt(
+  page: AuditPage | null,
+  failure: ConsoleFailure | null,
+  auditNode?: string,
+): string {
+  if (failure !== null) return failureBar(failure, '审计日志')
+  if (page === null) return hint('未读取审计日志')
+  if (page.chain === 'absent') return hint('这个来源还没有链文件')
+  if (page.records.length === 0) return hint('还没有相关记录')
+  const head = RECORD_HEADERS.map(
+    h => `<th scope="col">${escapeHtml(h)}</th>`,
+  ).join('')
+  return scroll(
+    `<table class="trail"><caption class="sr-only">最近的审计记录</caption>` +
+      `<thead><tr>${head}</tr></thead>` +
+      `<tbody>${rowsOf(page.records, auditNode, true)}</tbody></table>`,
+  )
+}
 
 /** One trail read with `since`: what the poller swaps into its fresh body. */
 export interface TrailArrival {

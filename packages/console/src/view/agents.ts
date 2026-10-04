@@ -411,10 +411,15 @@ function nodeCard(
       : `<span class="note">服务器 <span class="mono">${escapeHtml(
           server,
         )}</span></span>`
+  // The name is the way to the node's own page (A3): its overview, its
+  // lifecycle and its model, one click from the card that lists its agents.
+  const shown = name === '' ? group.node : name
   return (
     `<div class="card elev-sm grp">` +
     `<div class="grp-head">` +
-    `<span class="grp-name">${escapeHtml(name === '' ? group.node : name)}</span>` +
+    `<span class="grp-name"><a href="/nodes/${attr(
+      encodeURIComponent(shown),
+    )}" data-nav>${escapeHtml(shown)}</a></span>` +
     `<span class="addr">${escapeHtml(group.node)}</span>` +
     `<div class="grp-tail">${host}${endpoint}${groupBadge(counts)}</div>` +
     `</div>` +

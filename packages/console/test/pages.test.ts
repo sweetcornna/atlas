@@ -336,12 +336,22 @@ describe('the doors in front of the pages', () => {
 
 describe('one node, one trace', () => {
   test('a node page shows that node alone and polls that node alone', async () => {
-    const html = await read('/nodes/tokyo-1')
+    // 概览 is the node's own address (A3); its agents are the 智能体 tab.
+    const overview = await read('/nodes/tokyo-1')
+    expect(overview).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
+    expect(overview).toContain('<li aria-current="page">tokyo-1</li>')
+    expect(overview).toContain('2 个')
+    expect(overview).not.toContain('qianmo://osaka-1/')
+
+    const html = await read('/nodes/tokyo-1/agents')
     expect(html).toContain('qianmo://tokyo-1/')
     expect(html).not.toContain('qianmo://osaka-1/')
     expect(html).toContain('data-poll="/fragments/roster?node=tokyo-1"')
     expect(html).toContain('<li><a href="/nodes" data-nav>节点</a></li>')
-    expect(html).toContain('<li aria-current="page">tokyo-1</li>')
+    expect(html).toContain(
+      '<li><a href="/nodes/tokyo-1" data-nav>tokyo-1</a></li>',
+    )
+    expect(html).toContain('<li aria-current="page">智能体</li>')
 
     const { handle } = harness()
     const fragment = await (

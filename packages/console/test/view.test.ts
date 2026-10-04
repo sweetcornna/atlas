@@ -610,7 +610,10 @@ describe('renderRoster', () => {
     expect(html.match(/<details class="row"/g)).toHaveLength(3)
     // The agent segment of every address is a pill — the signature element.
     expect(html).toContain('qianmo://node-a/<b>one</b>')
-    expect(html).toContain('<span class="grp-name">node-a</span>')
+    // The name is the way to the node's own page (A3).
+    expect(html).toContain(
+      '<span class="grp-name"><a href="/nodes/node-a" data-nav>node-a</a></span>',
+    )
     // Native disclosure, so a row opens with the script disabled.
     expect(html).toContain('<summary>')
     expect(html).not.toContain('<table')
