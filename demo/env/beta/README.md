@@ -621,7 +621,8 @@ H 腿见到 `--providers` 才补拓扑那一半（`beta-up.sh` 的 `provider_con
   `StrictHostKeyChecking=yes`：没有条目的节点在起 ssh 之前就被拒绝。
 
 每个远端节点装一次（H 上生成 key，节点上加一行；**不是隧道那把**——`authorized_keys` 里同一把公钥只有第一行的
-选项生效，强制命令不同就必须是不同的 key）：
+选项生效，强制命令不同就必须是不同的 key）。`ops/model-apply-enroll.sh` 一条命令做完下面 ①–③ 并验一次
+（见「模型服务迁移与真机验收」）；手工做法照旧留在这里：
 
 ```bash
 # ① H：每个节点一把专用 key，私钥不离开 H
@@ -632,7 +633,8 @@ ssh-keygen -t ed25519 -N '' -C "qianmo-model-apply <node>" -f ~/.ssh/qianmo-mode
 # ③ H：登记节点的主机公钥。**核对指纹后**再追加——这一份就是中枢唯一认的主机钥
 ssh-keyscan -p <port> <host> > /tmp/<node>.hostkey && ssh-keygen -lf /tmp/<node>.hostkey   # 与节点上 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 比对
 cat /tmp/<node>.hostkey >> ~/.ssh/qianmo-model-apply/known_hosts && chmod 600 ~/.ssh/qianmo-model-apply/known_hosts
-# ④ H：重起控制台（单元从 ops/console.env 取尾参，--providers 活得过重启）
+# ④ H：重起控制台（单元从 ops/console.env 取尾参，--providers 活得过重启）。两种起法的重起不一样，
+#    见「模型服务迁移与真机验收」那一节
 systemctl --user restart qianmo-console.service
 ```
 
@@ -641,6 +643,132 @@ systemctl --user restart qianmo-console.service
 `qianmo-model-apply-v1`——`authorized_keys` 那一行丢了或被改写时，sshd 去执行哨兵、操作失败，而不是静默成功。
 节点名不合法、这台机器上没有这个节点的配置根时，它回一行 `bad-request`；同一节点上另一个操作没结束时等锁，超时回
 `busy`。**那一行仍是一道会静默失效的门**（§8.3）：被改写成别的命令之后哨兵帮不上忙，列进巡检项。
+
+## 模型服务迁移与真机验收（P18.13）
+
+顺序、每一步的判据与回滚在 `docs/dev/beta-env.md` §13；这里只放命令。尖括号里全是变量，真实值只写在
+私有证据目录里。
+
+### 节点信任控制台的签名、控制台签对话（P18.20）
+
+```bash
+# ① H：控制台的签名身份（一行 console=<公钥>），与「签名唤醒」是同一把
+IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
+# ② 每台节点机：信任它，并让它签的 /autocompact、/compact、/context 当本地命令跑。原有的 --trust 一起带上
+./demo/env/beta/beta-down.sh <节点> && ./demo/env/beta/beta-up.sh --role node --node <节点> -- \
+  --trust "$IDENTITY" --local-commands-from console
+# ③ H：控制台签对话（尾参落进 ops/console.env，单元重启后仍在）。不带的尾参等于撤掉：
+#    先看 ops/console.env 的 CONSOLE_EXTRA_ARGS，原有的尾参一起带上，下面只是示例
+./demo/env/beta/beta-down.sh console && ./demo/env/beta/beta-up.sh --role host -- \
+  --accounts --providers --wake-sign --chat-sign
+```
+
+节点腿的尾参落在 `<根>/state/<节点>.passthrough`，之后不带 `--` 的重起沿用它；控制台不带尾参重跑会 WARN
+点名撤掉了哪些。判据：`logs/<节点>.out` 首行 `trusts` 含 `console`、`localCommandsFrom` 是 `["console"]`；
+`logs/console.out` 的 `chat` 行以 `enabled as qianmo://console/operator (signed) -> ` 开头（`--chat-from` 的缺省地址；
+地址里的节点名 `console` 要与节点 `--trust console=<公钥>` 的名字相同）。
+
+### 缓存调参：按节点放进 `model-env`
+
+`OPENAI_PROMPT_CACHE_RETENTION=24h` 只开在 `<保留期节点>` 一个节点上（CH-5 对照：一个开、其余不开，比较 idle>TTL
+类零命中的占比，`docs/dev/providers-console-m1.md` §5.11.8）；`OPENAI_PROMPT_CACHE_DIAGNOSTICS=1` 只开在 `<诊断节点>`
+一个节点上（G-1 归因）。两者可以是同一个节点，也可以不同，由 B 段定；**其余节点都不加**。写进那台机器的
+`secrets/model-env`，一行一个，重起该节点。它们不是模型凭据，节点迁到中枢托管之后也不会被
+ACP 子进程的 env 剥掉；起节点时横幅多一行 `缓存调参 : <名>=<值>`（值只回显认识的几种，其余写「未回显」）。
+节点迁到中枢托管之后（`nodes/<节点>/config/qianmo/provider/state.json` 记着一次已提交的下发），没有 `model-env`
+不再报 `Not logged in`；`model-env` 里还留着模型服务类的键时 WARN `env-residue`，只报个数。
+
+### 第六类动作专用 key：`ops/model-apply-enroll.sh`
+
+在**运维本机**跑，经 ssh 调中枢与节点部署树里的同一个脚本：
+
+```bash
+demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --dry-run
+demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
+  --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根>
+# 在 H 上重起控制台：它起来时才看专用 key 在不在。先看是哪种起法
+systemctl --user is-active qianmo-console.service
+#   active：单元起的 → 原样重起（ExecStop 是 beta-down.sh console，ExecStart 从 ops/console.env 取尾参）
+systemctl --user restart qianmo-console.service
+#   inactive（或宿主没有 systemd --user）：手工 beta-up.sh --role host 起的 → 停掉，带全原来的尾参重跑同一条 host 腿。
+#   尾参就是 ops/console.env 里 CONSOLE_EXTRA_ARGS 的每一个，少带一个就等于撤掉它
+./demo/env/beta/beta-down.sh console && ./demo/env/beta/beta-up.sh --role host --only console -- <CONSOLE_EXTRA_ARGS 的全部尾参>
+```
+
+单元 `inactive` 时**不要**用 `systemctl --user restart`：它只会 start 单元，ExecStart 的 `beta-up.sh` 见控制台在跑就不重起
+（幂等），跑着的还是旧进程，`providers` 行不会多出新登记的节点。判据：`run/console.pid` 的 pid 变了，`providers` 行列出
+这个节点、是 `/ssh`。
+
+| 步 | 在哪 | 做什么 |
+|---|---|---|
+| ① `hub-key` | H | `$QIANMO_BETA_MODEL_KEY_DIR/<节点>` 不在就生成（ed25519，私钥不离开 H）；在就不重生成 |
+| ② `hub-coordinate` | H | 从 `peers.conf` 的 `node` 坐标行取 `user` / `host` / `port`——中枢执行器拨的就是它；没有坐标行就拒绝 |
+| ③ `node-install` | 节点 | `--node-ssh` 登录的用户必须就是坐标行的 `user`（中枢拨的就是它），否则拒绝；`~/.ssh/authorized_keys` 幂等加一行 `command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict <公钥> qianmo-model-apply <节点>`；同一把公钥带着别的选项 → 拒绝；同节点旧 key 的行 → WARN、不删；写之前备份 `authorized_keys.bak-<戳>` |
+| ④ `node-hostkey` | 节点 | 经这条已认证的 ssh 读节点 sshd 自己的主机公钥：`/etc/ssh/ssh_host_{ed25519,ecdsa,rsa}_key.pub` 有几把读几把，一把都没有 → 拒绝 |
+| ⑤ `hub-known-host` | H | 从 H 上 `ssh-keyscan` 一次：扫到的每一把都要与 ④ 同类型那一把逐字相同，有一把不同 → 拒绝；两边都有的类型（`ssh-ed25519`、`ecdsa-sha2-*`、`ssh-rsa`）才写进中枢 `known_hosts`（22 口写 `host`，否则 `[host]:port`）；同名同类型已登记另一把 → 拒绝 |
+| ⑥ `hub-verify` | H | 用控制台执行器同一组 ssh 参数与哨兵 `qianmo-model-apply-v1` 发一次 `status`，要 `ok:true` |
+| 撤回 `hub-key-discard` | H | 只给 `enroll` 用：写的阶段后面一步失败时，删掉这一次刚生成的那一对 key（公钥逐字相同才删） |
+| 撤回 `node-uninstall` | 节点 | 只给 `enroll` 用：authorized_keys 与「备份 + 那一行」逐字节相同时把备份换回原位；不同就拒绝、手工处理 |
+
+**顺序：先全部检查，再写。**`enroll` 先只读地走一遍 ② ① ③ ④ ⑤（坐标、key、节点前置与 authorized_keys 冲突、
+主机钥比对、中枢 known_hosts 冲突），任何一项会拒绝都在第一次写入之前拒绝，三台机器零改动；全过之后才按
+① ③ ⑤ 写，最后 ⑥。写的中途某一步失败（连接断了、盘满了），用上面两个撤回子命令把这一次写下的东西撤掉；
+撤不回就打印手工回滚的那几条。⑥ 失败时三处都已写好、彼此一致，不自动撤回（原因与回滚见输出）。
+`--dry-run` 只走检查那一遍，打印「将要」写的那一行与 known_hosts 那几行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
+2 用法错。前提：节点 sshd 至少有一把 ed25519 / ecdsa / rsa 主机钥（`/etc/ssh/ssh_host_*_key.pub`）、节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
+（sshd 强制命令下没有 `QIANMO_BETA_ROOT`，所以节点必须用默认内测根）。跑在 H 自己身上的节点走 local，不需要登记。
+
+### 首次下发与清 `model-env`
+
+首次下发（`beta-env.md` §13.2 第 7 步）逐个节点做，**会话选「保留」**：
+
+```bash
+# 页面：模型服务 → 节点那一行「下发」→「会话」选「保留」。等价的 API（ops 个人账号的 token）：
+#   POST /v0/providers/apply   {"nodes":["<节点>"],"sessions":"keep"}
+```
+
+缺省的「按线路与主机判断」只在中枢记着这个节点上一次已提交的下发、且线路与主机都相同时才保留；首次下发没有
+可比的记录，**一定是重置**——节点清掉全部会话映射，每个上下文（值守作业也一样）都开新会话。「保留」要节点报告
+`replayFilter`，刷新后选不了就停下来查，不要退回缺省。
+
+清 `model-env`（第 8 步）时，`<接力节点>` 先别删：`handoff-node.sh start` 给 app-server 的模型 key 从同一份
+`secrets/model-env` 读（`QIANMO_HANDOFF_KEY_ENV`，缺省 `OPENAI_API_KEY`），删掉之后下一次 `handoff-node.sh start`
+直接退出。接力节点要先有另一个 key 来源（由 B 段定）；换个名字留在 `model-env` 里不行：resident 照样载入它，ACP
+子进程只按名单剥键，不认的名字不剥。不删则该节点的 A1 判红（`env-residue`）。
+
+### 每轮验收：`ops/provider-acceptance.sh`
+
+```bash
+demo/env/beta/ops/provider-acceptance.sh round --config <轮配置> --out <证据目录> --label <轮名>
+demo/env/beta/ops/provider-acceptance.sh compare <证据目录>/round-<甲> <证据目录>/round-<乙> --min-gap-minutes 30
+touch <证据目录>/HOLD     # 叫停：开跑前与每一项开始前都查它，退出码 42
+```
+
+轮配置（只有地址与路径；控制台凭据是 `<ops 凭据文件>`，0600，一行 token）：
+
+```json
+{
+  "v": 1,
+  "console": { "url": "<控制台 URL>", "credentialFile": "<ops 凭据文件>", "chatAs": "console" },
+  "machines": {
+    "<机器甲>": { "ssh": "<ssh 目标>", "tree": "<部署根>" },
+    "<机器乙>": { "ssh": "<ssh 目标>", "tree": "<部署根>", "root": "<内测根，可省>" }
+  },
+  "hub": "<机器甲>",
+  "nodes": { "<节点>": { "machine": "<机器乙>", "profileId": "<期望的档案>" } },
+  "expect": { "sourceCommit": "<标签的 40 位提交>" },
+  "switch": { "node": "<节点>", "profileId": "<换过去的档案>" },
+  "call": { "node": "<节点>" },
+  "inflight": { "target": "qianmo://<节点>/<agent>" },
+  "canary": { "node": "<节点>", "baseUrl": "http://127.0.0.1:9/v1", "realApply": false }
+}
+```
+
+`switch.profileId` 选与该节点原档案同线路、同主机的一份（中枢据此保留会话，换线路或主机会重置会话）；`canary.realApply` 缺省 `false`（理由见 `docs/dev/beta-env.md` §13.3）。`timing` 可省（轮询、超时、重试间隔、`ps` 采样间隔都有缺省）；`inflight.prompt` 可省（缺省是一段要写几十秒的
+短文）。远端动作经 `ssh` 起部署树里的 `demo/env/beta/ops/provider-acceptance-node.ts`（只用 node 内建模块，
+部署树只有 `dist/` 与 `demo/` 也能跑）；`QIANMO_ACCEPTANCE_SSH_BIN` 可换 ssh 程序。退出码：0 零红（compare：
+两轮通过）；1 有红；2 用法或配置错；42 HOLD。每一项的判据见 `docs/dev/beta-env.md` §13.3。
 
 ## 值守作业（`ops/watch-hub.sh`，`qm watch`）
 
