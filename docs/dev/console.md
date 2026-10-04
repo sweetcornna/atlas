@@ -613,6 +613,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/handoff` | **成员** | 登记一次本地转交（P17.4，`qm handoff now` 调它）：请求体是转交清单 JSON。控制台在 `--handoff-root` 下的裸仓里自己用 `git cat-file` 核对代码提交、树与会话提交，核对通过才写台账：201 新建，200 同一份清单已登记过。没给 `--handoff-root` 时 501 |
 | GET | `/v0/handoff`、`/v0/handoff/<任务 id>` | view | 接力任务列表与单条（含清单与状态） |
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
+| POST | `/v0/handoff/<任务 id>/attach` | **成员** | `qm handoff attach` 要接入的位置（P17.6）：`{ device? }` → `{ attach: { taskId, state, node, threadId, project, tool } }`，只给 `running` 的任务，其余状态 400 并说该用什么命令；记审计 `handoff.attach-requested`。只给位置：节点上 app-server 的令牌由使用者自己的 SSH 去读，不经控制台。Claude Code 会话在 `running` 时 `threadId` 为 `null` |
+| POST | `/v0/handoff/<任务 id>/return` | **成员** | `qm handoff pull` 接回后记 `returned`（P17.6）：`{ device?, mode? }`，`mode` 为 `fast-forward` 或 `branch`；只从 `done`、`failed` 转入，已是 `returned` 时 200 且 `changed: false`；记审计 `handoff.returned` |
 | GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录；节点报的逐把密钥状态（`actual.keys`，只有编号、状态、恢复时间与原因，P18.18）照给。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |
 | POST | `/v0/providers/profiles` | **ops 个人账号** | 新建：`{ presetId, site?, profile, secrets? }`，`profile` 只带表单编辑的字段，预设、套餐、评估状态由中枢定 |

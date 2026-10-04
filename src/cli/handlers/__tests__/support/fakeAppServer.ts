@@ -15,6 +15,11 @@
  * `turn/start` on a thread with a running turn is steered into that turn
  * (same turn id), as `turn/start` does on the real server.
  *
+ * For `qm handoff attach` (P17.6) it also answers `GET /readyz` without a
+ * token, `thread/loaded/list` and `thread/read`, and a `thread/resume` without
+ * `cwd` keeps the thread's own — what the fork's server does for a remote
+ * terminal resumed without `--cd` (probe 第 5 项).
+ *
  * Nothing here is a recording of a real session.
  */
 
@@ -77,6 +82,18 @@ interface ThreadState {
 }
 
 const SESSION_DAY = ['2026', '10', '03'] as const
+
+/** The `cwd` of a rollout's `session_meta`, as the server reads it on resume. */
+function sessionCwd(path: string): string {
+  try {
+    const first = readFileSync(path, 'utf8').split('\n')[0] ?? ''
+    const cwd = (JSON.parse(first) as { payload?: { cwd?: unknown } }).payload
+      ?.cwd
+    return typeof cwd === 'string' ? cwd : ''
+  } catch {
+    return ''
+  }
+}
 
 function line(type: string, payload: unknown): string {
   return `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`
@@ -214,8 +231,11 @@ export function startFakeAppServer(
         if (path === null || path === undefined) {
           return fail(`no rollout found for thread id ${id}`)
         }
-        const cwd = String(params.cwd)
         const known = threads.get(id)
+        const cwd =
+          typeof params.cwd === 'string'
+            ? params.cwd
+            : (known?.cwd ?? sessionCwd(path))
         if (known === undefined) threads.set(id, { path, cwd, active: null })
         else known.cwd = cwd
         return { result: { thread: { id, path }, cwd } }
@@ -272,6 +292,16 @@ export function startFakeAppServer(
           result: {
             turn: { id: turnId, items: [], status: 'inProgress', error: null },
           },
+        }
+      }
+      case 'thread/loaded/list':
+        return { result: { data: [...threads.keys()], nextCursor: null } }
+      case 'thread/read': {
+        const id = String(params.threadId)
+        const thread = threads.get(id)
+        if (thread === undefined) return fail(`thread not loaded: ${id}`)
+        return {
+          result: { thread: { id, cwd: thread.cwd, path: thread.path } },
         }
       }
       case 'turn/interrupt': {
@@ -342,6 +372,9 @@ export function startFakeAppServer(
     port: 0,
     hostname: '127.0.0.1',
     fetch(request, srv) {
+      if (new URL(request.url).pathname === '/readyz') {
+        return new Response('', { status: 200 })
+      }
       upgrades.push({
         authorization: request.headers.get('authorization'),
         origin: request.headers.get('origin'),
