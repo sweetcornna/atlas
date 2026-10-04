@@ -226,11 +226,10 @@ function chatScript(): string {
       startPolling('轮询中');
       return;
     }
-    var token = qc.readToken();
-    // EventSource cannot carry a header; auth.ts accepts ?token= for exactly
-    // this reason. Same origin, and the URL never reaches the document.
-    var url = ROUTES.stream + (token ? '?token=' + encodeURIComponent(token) : '');
-    try { source = new EventSource(url); }
+    // EventSource cannot carry a header, and the token no longer rides in
+    // its URL (H5): it opens on the session cookie, which the runtime has
+    // already exchanged any token this page was handed for (afterSession).
+    try { source = new EventSource(ROUTES.stream); }
     catch (e) { startPolling('轮询中'); return; }
 
     source.addEventListener('open', function () {
@@ -309,7 +308,7 @@ function chatScript(): string {
     if (mount) mount.scrollTop = mount.scrollHeight;
     var box = byId('chat-text');
     if (box && !box.disabled) box.focus();
-    startStream();
+    qc.afterSession(startStream);
   }
 
   if (document.readyState === 'loading') {

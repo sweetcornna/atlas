@@ -57,13 +57,16 @@
  * finished refresh bumps the region's `data-refreshed`, which is what a
  * browser-level test waits on.
  *
- * ## The token arrives two ways
+ * ## The token arrives two ways, and becomes a session (H5)
  *
- * `#token=` and `?token=`. The fragment never reaches the server and is the one
- * to prefer, but `qm console` prints its banner link with the query form, so a
- * client that only reads the fragment leaves anybody who followed that link
- * unauthenticated from the first poll onward. Either way it is stored and
- * scrubbed out of the address bar immediately.
+ * `#token=` and `?token=`. `qm console` prints its banner link with the query
+ * form, and on a console without accounts the server answers that navigation
+ * with the session cookie and a redirect to the same address without the
+ * token, so this script never sees it. Whatever does reach it - the fragment,
+ * the query on a console with accounts, the token box - is stored, scrubbed
+ * out of the address bar, and posted to the login door, which sets the same
+ * cookie. No link and no stream URL is ever built with the token in it:
+ * navigation rides the cookie.
  *
  * There is a third way in that this script never sees: the login page sets an
  * `HttpOnly` cookie, which the browser attaches by itself and no script can
@@ -75,8 +78,9 @@
  * which is cheaper than a rule with an exception in it.
  *
  * The token box stays, and so does `localStorage`: a `Bearer` still overrides
- * the cookie, which is what makes "look at this console as the other role for a
- * minute" possible without logging out.
+ * the cookie on this page's fetches. Since H5 a token saved in the box is also
+ * exchanged for the cookie, so switching tokens switches the session too -
+ * the next page opens as the role just entered, not as the one before it.
  *
  * ## One place an action reports back (D2)
  *
@@ -394,6 +398,7 @@ function runtimeScript(guards: TokenGuards): string {
       else window.localStorage.removeItem(TOKEN_KEY);
     } catch (e) { /* private mode: the in-memory copy is all we get */ }
     paintToken();
+    if (value) exchange(value);
   }
 
   // Says nothing when there is no local token, because there may still be a
@@ -403,31 +408,45 @@ function runtimeScript(guards: TokenGuards): string {
   function paintToken() {
     var has = readToken() !== '';
     say(byId('token-state'), has ? '令牌已存' : '', has ? 'ok' : 'muted');
-    paintLinks();
   }
 
   // Every page is its own document, so moving between them is a top-level
-  // navigation - and a navigation carries no Authorization header. So every
-  // link the shell marks data-nav gets the token in its query string, the same
-  // position the CLI banner uses and the same one the destination scrubs out
-  // of the address bar on arrival. Left alone when there is no token, which is
-  // the ordinary case rather than a broken one: a cookie session has nothing
-  // to sign a link with and needs nothing, because the browser attaches the
-  // cookie to the navigation (auth.ts).
-  function paintLinks() {
-    var token = readToken();
-    var links = document.querySelectorAll('a[data-nav]');
-    for (var i = 0; i < links.length; i++) {
-      var link = links[i];
-      var base = link.getAttribute('data-href');
-      if (base === null) {
-        base = link.getAttribute('href') || '/';
-        link.setAttribute('data-href', base);
-      }
-      if (!token) { link.setAttribute('href', base); continue; }
-      link.setAttribute('href', base + (base.indexOf('?') === -1 ? '?' : '&') +
-        'token=' + encodeURIComponent(token));
-    }
+  // navigation - and a navigation carries no Authorization header. It used
+  // to carry the token in its query string instead, signed onto every link
+  // marked data-nav, which put the token in every proxy log and history
+  // entry from then on. Now a token this page is handed - in #token=, in the
+  // box, or in ?token= where the server did not already exchange it - is
+  // posted to the login door, which answers with the session cookie, and the
+  // links stay as the server rendered them (H5). The local copy stays as a
+  // Bearer on this page's fetches; it is switching tokens, so the session
+  // switches with it.
+  var exchanging = null;
+
+  function exchange(value) {
+    if (typeof URLSearchParams !== 'function') return;
+    var form = new URLSearchParams();
+    form.set('token', value);
+    form.set('redirect', window.location.pathname);
+    exchanging = fetch('/login', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      // Success is a 303 to the page; the cookie is set by the redirect
+      // response itself, and following it would fetch a whole page for
+      // nothing.
+      redirect: 'manual'
+    }).then(function (res) {
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) return true;
+      say(byId('token-state'), '令牌未换成会话 · 换页需要重新登录', 'warn');
+      return false;
+    }, function () { return false; });
+  }
+
+  // What waits for a session before asking for something a header cannot
+  // ride on: the conversation page's EventSource.
+  function afterSession(run) {
+    (exchanging || Promise.resolve(true)).then(run, run);
   }
 
   // A token handed over in the URL is stored and then wiped from the address
@@ -1137,6 +1156,7 @@ function runtimeScript(guards: TokenGuards): string {
     fieldOf: fieldOf,
     humanize: humanize,
     readToken: readToken,
+    afterSession: afterSession,
     toast: toast,
     loadHtml: loadHtml,
     sendJson: sendJson,

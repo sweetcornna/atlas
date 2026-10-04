@@ -469,20 +469,29 @@ describe('a personal credential never rides in a query string (invariant 4)', ()
         `var TOKEN_KEY = 'k'; var memoryToken = '';
          function byId() { return null; }
          function paintToken() {}
+         var exchanged = [];
+         function exchange(value) { exchanged.push(value); }
          ${guarded.slice(start, end)}
-         return { readToken: readToken, writeToken: writeToken };`,
+         return { readToken: readToken, writeToken: writeToken, exchanged: exchanged };`,
       ) as (
         w: typeof fakeWindow,
         say: (el: unknown, text: string) => void,
-      ) => { readToken(): string; writeToken(value: string): void }
+      ) => {
+        readToken(): string
+        writeToken(value: string): void
+        readonly exchanged: string[]
+      }
       const fns = make(fakeWindow, (_el, text) => {
         said.push(text)
       })
       fns.writeToken('qmu_abcdef')
       expect(store.size).toBe(0)
       expect(said).toContain('个人凭据请在登录页填写')
+      // Refused before anything else: not posted to the login door either.
+      expect(fns.exchanged).toEqual([])
       fns.writeToken(ADMIN)
       expect(store.get('k')).toBe(ADMIN)
+      expect(fns.exchanged).toEqual([ADMIN])
       store.set('k', 'qmu_left-over')
       expect(fns.readToken()).toBe('')
       expect(store.has('k')).toBe(false)

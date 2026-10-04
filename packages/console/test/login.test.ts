@@ -718,12 +718,20 @@ describe('the older credentials are untouched', () => {
     ).toBe(204)
   })
 
-  test('the banner`s ?token= URL still opens the page', async () => {
+  test('the banner`s ?token= URL still opens the page, through a session (H5)', async () => {
     const { handle } = setup()
     const response = await handle(
       new Request(`${BASE}/?token=${VIEW}`, { headers: HTML_ACCEPT }),
     )
-    expect(response.status).toBe(200)
+    // Exchanged for the cookie the login door would set; the page is one
+    // redirect away, at an address with no token in it.
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/')
+    const cookie = response.headers.get('set-cookie') ?? ''
+    expect(cookie).toContain(`qianmo_console=${VIEW}`)
+    expect(cookie).toContain('HttpOnly')
+    const page = await handle(withCookie('/', VIEW, { headers: HTML_ACCEPT }))
+    expect(page.status).toBe(200)
   })
 
   test('?token= still authenticates a JSON route with no header', async () => {

@@ -14,7 +14,13 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createConsoleHandler } from '../../src/http.js'
-import { ADMIN, TOKENS, pageHarness, type PageHarness } from '../pageHarness.js'
+import {
+  ADMIN,
+  TOKENS,
+  VIEW,
+  pageHarness,
+  type PageHarness,
+} from '../pageHarness.js'
 import { Browser, skipReason, type Tab } from './cdp.js'
 
 const SKIP = skipReason()
@@ -26,8 +32,13 @@ interface Wrapper {
   down: boolean
   /** Hold every matching request this long before answering. */
   delay: { readonly path: string; readonly ms: number } | null
-  /** Requests seen: path and instant. */
-  readonly seen: { readonly path: string; readonly at: number }[]
+  /** Requests seen: method, path, query and instant. */
+  readonly seen: {
+    readonly method: string
+    readonly path: string
+    readonly search: string
+    readonly at: number
+  }[]
 }
 
 interface Served {
@@ -50,7 +61,12 @@ function serveConsole(options: Parameters<typeof pageHarness>[0] = {}): Served {
     hostname: '127.0.0.1',
     async fetch(request) {
       const url = new URL(request.url)
-      wrapper.seen.push({ path: url.pathname, at: Date.now() })
+      wrapper.seen.push({
+        method: request.method,
+        path: url.pathname,
+        search: url.search,
+        at: Date.now(),
+      })
       if (wrapper.down && url.pathname.startsWith('/fragments/')) {
         return new Response('{"error":{"code":"unavailable","message":"x"}}', {
           status: 503,
@@ -204,6 +220,64 @@ describe.skipIf(SKIP !== null)(
           uploadThroughput: -1,
         })
         await tab.waitFor(`document.getElementById('conn').hidden`, 10_000)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('a failure toast says the short line and folds the original under 详情, which a click opens without dismissing (C5)', async () => {
+      const served = serveConsole()
+      served.harness.registry.heartbeat = () =>
+        Promise.resolve({
+          ok: false,
+          failure: {
+            code: 'unreachable',
+            message:
+              'http://127.0.0.1:38610 · Unable to connect. Is the computer able to access the url?',
+          },
+        })
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await tab.evaluate(
+          `document.querySelector('#roster button[data-action="heartbeat"]').click()`,
+        )
+        await tab.waitFor(
+          `document.querySelector('#toasts .toast[data-tone="bad"]') !== null`,
+          5_000,
+        )
+        const shown = await tab.evaluate<{
+          text: string
+          role: string | null
+          summary: string
+          raw: string
+        }>(`(() => {
+          const toast = document.querySelector('#toasts .toast[data-tone="bad"]');
+          return {
+            text: toast.querySelector('.toast-text').textContent,
+            role: toast.getAttribute('role'),
+            summary: toast.querySelector('.toast-detail > summary').textContent,
+            raw: toast.querySelector('pre[data-raw]').textContent,
+          };
+        })()`)
+        expect(shown).toEqual({
+          text: '心跳失败 · 无法连接',
+          role: 'alert',
+          summary: '详情',
+          raw: 'http://127.0.0.1:38610 · Unable to connect. Is the computer able to access the url?',
+        })
+        // Opening the fold is a click inside the toast, and the toast stays.
+        await tab.evaluate(
+          `document.querySelector('#toasts .toast-detail > summary').click()`,
+        )
+        await pause(200)
+        expect(
+          await tab.evaluate<[boolean, boolean]>(`[
+            document.querySelector('#toasts .toast[data-tone="bad"]') !== null,
+            document.querySelector('#toasts .toast-detail').open,
+          ]`),
+        ).toEqual([true, true])
       } finally {
         await tab.close()
         served.stop()
@@ -557,6 +631,111 @@ describe.skipIf(SKIP !== null)(
           ]`),
         ).toEqual([true, 'deregister', address])
         expect(served.harness.registry.deregistered).toEqual([])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('the banner link becomes a session: the address, the links and every later request carry no token (H5)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        const first = served.wrapper.seen.length
+        expect(
+          await tab.evaluate<[string, string, string[]]>(`[
+            location.pathname,
+            location.search,
+            [...document.querySelectorAll('a[data-nav]')]
+              .map(a => a.getAttribute('href'))
+              .filter(href => href.includes('token=')),
+          ]`),
+        ).toEqual(['/nodes', '', []])
+        // The page itself never held it: the server answered the link with
+        // the cookie before anything rendered.
+        expect(
+          await tab.evaluate<string | null>(
+            `localStorage.getItem('qianmo.console.token')`,
+          ),
+        ).toBeNull()
+
+        await tab.evaluate(
+          `document.querySelector('a[data-nav][href="/audit"]').click()`,
+        )
+        await tab.waitFor(
+          `location.pathname === '/audit' && window.qianmoConsole !== undefined`,
+          10_000,
+        )
+        expect(
+          await tab.evaluate<string>(
+            `document.querySelector('h1').textContent`,
+          ),
+        ).toContain('消息链')
+        const later = served.wrapper.seen.slice(first)
+        expect(later.length).toBeGreaterThan(0)
+        expect(later.filter(seen => seen.search.includes('token='))).toEqual([])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('a token typed into the box is exchanged at the login door, and the session switches with it (H5)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await tab.goto(`${served.base}/nodes?token=${VIEW}`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('[data-write]').length`,
+          ),
+        ).toBe(0)
+        await tab.evaluate(`(() => {
+          document.getElementById('token').value = '${ADMIN}';
+          document.querySelector('[data-action="token-save"]').click();
+        })()`)
+        const posted = async () =>
+          served.wrapper.seen.some(
+            seen => seen.method === 'POST' && seen.path === '/login',
+          )
+        for (let i = 0; i < 50 && !(await posted()); i += 1) await pause(100)
+        expect(await posted()).toBe(true)
+        await pause(300)
+        // A plain navigation now opens as the admin, on the cookie alone.
+        await tab.goto(`${served.base}/nodes`)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('[data-write]').length`,
+          ),
+        ).toBeGreaterThan(0)
+        expect(
+          served.wrapper.seen.filter(
+            seen => seen.path !== '/nodes' && seen.search.includes('token='),
+          ),
+        ).toEqual([])
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
+    test('the conversation stream opens on the cookie, with nothing in its URL (H5)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/chat')
+        await tab.waitFor(
+          `(document.getElementById('stream-state') || {}).textContent === '实时'`,
+          10_000,
+        )
+        const streams = served.wrapper.seen.filter(
+          seen => seen.path === '/v0/chat/stream',
+        )
+        expect(streams.length).toBeGreaterThan(0)
+        expect(streams.map(seen => seen.search)).toEqual(streams.map(() => ''))
       } finally {
         await tab.close()
         served.stop()

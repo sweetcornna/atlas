@@ -215,6 +215,7 @@ import {
   clearedSessionCookieHeader,
   isCrossOriginRequest,
   isSecureRequest,
+  presentedCredentialOf,
   roleOfToken,
   safeRedirect,
   sessionCookieHeader,
@@ -546,6 +547,46 @@ async function servePage(
   return html(
     await areaDocument(ctx, match.module, rendered),
     rendered.status ?? 200,
+  )
+}
+
+/**
+ * A token that arrived in the address bar becomes a session, once (H5).
+ *
+ * The banner's link carries `?token=` because a URL is the one thing a
+ * terminal can hand a browser. Answering it with the page left the token in
+ * the address bar until the runtime scrubbed it, and on every in-console link
+ * the runtime then signed with it — so in every proxy log and history entry
+ * after it. Instead the navigation is answered the way `POST /login` answers:
+ * a 303 to the same address without the token, setting the session cookie.
+ * Every navigation after it rides the cookie; `?token=` keeps its two other
+ * jobs, a JSON route for a script and this first step.
+ *
+ * Only a token that is one of the pair is exchanged — never on the strength
+ * of a cookie beside a stale one — and only without accounts: there a
+ * personal credential in a link is refused outright, and the login door is
+ * the way in (`accountsHttp.ts`).
+ */
+function tokenInAddressBar(
+  request: Request,
+  url: URL,
+  tokens: ConsoleTokens,
+): Response | null {
+  if (request.method !== 'GET' || !wantsHtml(request)) return null
+  const presented = presentedCredentialOf(request)
+  if (presented.source !== 'query') return null
+  if (roleOfToken(presented.token, tokens) === 'none') return null
+  const rest = new URLSearchParams(url.searchParams)
+  rest.delete(TOKEN_QUERY_PARAM)
+  const query = rest.toString()
+  return seeOther(
+    safeRedirect(url.pathname + (query === '' ? '' : `?${query}`)),
+    {
+      'set-cookie': sessionCookieHeader(presented.token, {
+        secure: isSecureRequest(request),
+        maxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+      }),
+    },
   )
 }
 
@@ -975,6 +1016,9 @@ async function routeAs(
   // segments (`v0`, `fragments`, the doors above) never reach a page.
   const page = pageOf(ROUTES, segments)
   if (page !== undefined) {
+    const exchanged =
+      accounts === undefined ? tokenInAddressBar(request, url, tokens) : null
+    if (exchanged !== null) return exchanged
     return await servePage(
       routeContext(request, url, deps, access, accounts, now(), viewer, ledger),
       page,

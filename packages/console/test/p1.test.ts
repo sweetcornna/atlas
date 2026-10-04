@@ -53,3 +53,69 @@ describe('C6 · an empty trail offers a wake only where one can happen', () => {
     expect(html).not.toContain('QIANMO_TRANSPORT_PSK')
   })
 })
+
+describe('H5 · a token in the address bar becomes a session, once', () => {
+  const HTML = { accept: 'text/html,application/xhtml+xml' }
+
+  function navigate(path: string, cookie?: string): Request {
+    const headers: Record<string, string> = { ...HTML }
+    if (cookie !== undefined) headers['cookie'] = `qianmo_console=${cookie}`
+    return new Request(`http://console.test${path}`, { headers })
+  }
+
+  test('a navigation with ?token= is answered with the cookie and the same address without it', async () => {
+    const h = pageHarness()
+    const response = await h.handle(
+      navigate(`/audit?source=router&token=${ADMIN}&limit=7`),
+    )
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe(
+      '/audit?source=router&limit=7',
+    )
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+    const cookie = response.headers.get('set-cookie') ?? ''
+    expect(cookie).toMatch(
+      new RegExp(`^qianmo_console=${ADMIN}; Path=/; HttpOnly; SameSite=Strict`),
+    )
+    // Nothing rendered, nothing read: the page comes on the next request.
+    expect(h.registry.listCalls).toBe(0)
+    const page = await h.handle(navigate('/audit?source=router&limit=7', ADMIN))
+    expect(page.status).toBe(200)
+  })
+
+  test('a token that is not one of the pair is not exchanged, and a stale one beside a cookie changes nothing', async () => {
+    const h = pageHarness()
+    const wrong = await h.handle(navigate('/nodes?token=not-a-token-at-all'))
+    expect(wrong.status).not.toBe(200)
+    expect(wrong.headers.get('set-cookie')).toBeNull()
+    const stale = await h.handle(
+      navigate('/nodes?token=not-a-token-at-all', VIEW),
+    )
+    expect(stale.status).toBe(200)
+    expect(stale.headers.get('set-cookie')).toBeNull()
+  })
+
+  test('a script still uses ?token= on a JSON route, unexchanged', async () => {
+    const h = pageHarness()
+    const response = await h.handle(
+      new Request(`http://console.test/v0/agents?token=${VIEW}`),
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('set-cookie')).toBeNull()
+  })
+
+  test('the runtime signs no link, and the stream URL carries no token', async () => {
+    const h = pageHarness({ chat: true })
+    for (const path of ['/nodes', '/chat']) {
+      const html = await (await h.handle(navigate(path, ADMIN))).text()
+      const script = html.slice(html.indexOf('<script>'))
+      // No URL is built with the token in it, anywhere in what the page runs.
+      expect(script).not.toMatch(/'\??token=' \+/)
+      expect(script).not.toContain('paintLinks')
+      if (path === '/chat') {
+        expect(script).toContain('new EventSource(ROUTES.stream)')
+      }
+    }
+  })
+})

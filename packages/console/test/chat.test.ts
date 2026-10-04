@@ -642,7 +642,7 @@ describe('chat page document', () => {
     expect(html).not.toContain('<fieldset disabled')
   })
 
-  test('leaves the two cross-page links for the client to sign', () => {
+  test('renders the cross-page links without a token in them', () => {
     const html = renderChatPage({
       label: '测试台',
       now: NOW,
@@ -651,9 +651,9 @@ describe('chat page document', () => {
       thread: '',
       composerEnabled: false,
     })
-    // 顶层导航带不了 Authorization 头，凭据又刻意不放 cookie，所以这些 href
-    // 由客户端在渲染后补上 ?token=（标记是 data-nav）。服务端渲染的是没带
-    // token 的那一版。对话页回总览的那一条现在是外壳的品牌字。
+    // 顶层导航带不了 Authorization 头，靠的是会话 cookie（H5）：链接里从来
+    // 不带 token，客户端也不再往 href 里补。对话页回总览的那一条现在是外壳
+    // 的品牌字。
     expect(html).toContain('class="brand-cn" href="/" data-nav')
     expect(html.slice(0, html.indexOf('<script>'))).not.toContain('token=')
   })

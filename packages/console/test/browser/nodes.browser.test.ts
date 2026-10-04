@@ -235,7 +235,8 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
           `document.getElementById('node-models').hasAttribute('data-poll')`,
         ),
       ).toBe(false)
-      // The runtime carries a `?token=` session along on every in-console link.
+      // In-console links are left as rendered: navigation rides the session
+      // cookie (H5), so the link is the page's own address.
       const link = new URL(
         await tab.evaluate<string>(
           `document.getElementById('node-models-link').getAttribute('href')`,
