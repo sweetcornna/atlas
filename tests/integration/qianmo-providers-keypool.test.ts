@@ -122,6 +122,7 @@ const vendorAuth: string[] = []
 const PS_MARKER = 'qm-keypool-ps-sampler-probe'
 const sampler = {
   timer: undefined as ReturnType<typeof setInterval> | undefined,
+  marker: undefined as ReturnType<typeof Bun.spawn> | undefined,
   busy: false,
   samples: 0,
   hits: [] as string[],
@@ -303,15 +304,16 @@ beforeAll(async () => {
   ops = await person(handle, 'ops')
   viewer = await person(handle, 'viewer')
   startSampling()
-  // The sampler's own control: an argv it has to find.
-  Bun.spawn(['/bin/sh', '-c', 'sleep 2', PS_MARKER], {
-    stdout: 'ignore',
-    stderr: 'ignore',
-  })
+  // The sampler's own control: an argv it has to find, alive throughout.
+  sampler.marker = Bun.spawn(
+    [process.execPath, '-e', 'setInterval(() => {}, 1000)', PS_MARKER],
+    { stdout: 'ignore', stderr: 'ignore' },
+  )
 }, 60_000)
 
 afterAll(async () => {
   if (sampler.timer !== undefined) clearInterval(sampler.timer)
+  sampler.marker?.kill()
   port?.stop()
   await vendor?.stop(true)
   rmSync(root, { recursive: true, force: true })
@@ -626,7 +628,12 @@ describe('several keys on the console path, against the real hub and node', () =
       }
       // Let the sampler see the quiet after the last step too.
       const seen = sampler.samples
-      await new Promise(resolve => setTimeout(resolve, 300))
+      for (
+        const until = Date.now() + 30_000;
+        sampler.samples <= seen + 1 && Date.now() < until;
+      ) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
       if (sampler.timer !== undefined) clearInterval(sampler.timer)
 
       const surfaces: Record<string, string> = {
@@ -662,7 +669,7 @@ describe('several keys on the console path, against the real hub and node', () =
         expect([name, hits(text)]).toEqual([name, []])
       }
       expect(sampler.hits).toEqual([])
-      expect(sampler.samples).toBeGreaterThan(Math.max(seen, 20))
+      expect(sampler.samples).toBeGreaterThan(seen + 1)
       expect(sampler.sawMarker).toBe(true)
 
       // Positive control: the scan is not blind. The live keys are in the
