@@ -47,7 +47,7 @@ const handle = createConsoleHandler(deps, tokens)
 
 ## 鉴权模型
 
-> 本节是 M0 时的形态，原文保留。登录页与会话 cookie（`docs/dev/console.md` §4.1、§5.1）、个人账号（§8.1.1）以后的现行模型以该文为准；下文「刻意不用 cookie」一条已不成立：浏览器登录后持有会话 cookie，挡 CSRF 的改为 `X-Qianmo-Console` 头——除页面文档与事件流以外，每条要凭据的路由单凭 cookie 都不够（§5.1）。
+> 本节是 M0 时的形态，原文保留。登录页与会话 cookie（`docs/dev/console.md` §4.1、§5.1）、个人账号（§8.1.1）以后的现行模型以该文为准；下文关于 cookie 的一条已按 P18.14（H5）的实况改写：浏览器登录后持有会话 cookie，挡 CSRF 的是 `X-Qianmo-Console` 头——除页面文档与事件流以外，每条要凭据的路由单凭 cookie 都不够（§5.1）。
 
 **两个 token，不是一个带 scope 字段的 token。**
 
@@ -57,7 +57,7 @@ const handle = createConsoleHandler(deps, tokens)
 | admin | view 的全部，外加注册 / 注销 / 心跳 / 唤醒 |
 
 - 凭据可以放在 `Authorization: Bearer <token>` 头里，也可以放在 URL 的 `?token=<token>` 上——后者是浏览器直接打开页面时唯一可行的方式（地址栏发不出自定义头），也正是 CLI 打印带 token 的 URL 的原因。
-- **刻意不用 cookie。**cookie 是环境凭据，浏览器会把它带给任何本地页面发往这个端口的跨源 POST，那会让每条 admin 路由变成 CSRF 目标。"必须出示一个外部源读不到的 token" 就是这里的 CSRF 防线。
+- **浏览器靠会话 cookie，令牌不留在地址栏。**带 `?token=` 的页面导航（未开 `--accounts` 时）由服务端答 303、下发 `HttpOnly; SameSite=Strict` 的会话 cookie 并去掉地址里的 `token`，此后的导航、跨页链接与对话流都只靠这枚 cookie；cookie 之外的 CSRF 防线是 `X-Qianmo-Console` 头（`docs/dev/console.md` §4.1、§5.1、§6.8）。
 - 比较是常数时间的（`timingSafeEqual`），长度不同直接不匹配，空 token 永不匹配。
 - 401（没给或给错）/ 403（拿 view token 敲 admin 路由）**都不回显收到的 token**。
 - 角色在方法之前判定：匿名调用者不该从 405 里学到某条路由接受哪些动词。
