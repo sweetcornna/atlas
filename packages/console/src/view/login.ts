@@ -101,7 +101,7 @@ function legend(accounts: boolean): string {
     `<div class="tokrow"><span class="tag tag-accent mono">个人</span>` +
     `个人凭据 · 按账号角色开放 · 浏览器只保留会话</div>` +
     `<div class="tokrow"><span class="tag tag-neutral mono">共享</span>` +
-    `view 与 admin 令牌 · 迁移期保留</div>` +
+    `只读令牌与管理令牌 · 迁移期保留</div>` +
     `</div>` +
     `<p class="foot">个人凭据由邀请开通 · 丢失找运维重置 · 退出即结束会话</p>`
   )

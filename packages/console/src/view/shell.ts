@@ -62,7 +62,7 @@ import { attr, escapeHtml } from './escape.js'
  * Every document puts it in its `<title>`, and one string spelled in several
  * places is several strings.
  */
-export const BRAND = '阡陌 console'
+export const BRAND = '阡陌控制台'
 
 const WORDMARK_CN = '阡陌'
 const WORDMARK_EN = 'AgentNest'

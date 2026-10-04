@@ -94,7 +94,6 @@ import { attr, escapeHtml } from './escape.js'
 import {
   agentHealth,
   formatClock,
-  formatDuration,
   formatRelative,
   formatShortDuration,
   leaseView,
@@ -454,7 +453,7 @@ function headTail(
   if (counts.expired > 0) parts.push(toned('bad', `过期 ${counts.expired}`))
   if (Number.isFinite(leaseMs) && leaseMs > 0) {
     parts.push(
-      `<span class="ttl">租约 ${escapeHtml(formatDuration(leaseMs))}</span>`,
+      `<span class="ttl">租约 ${escapeHtml(formatShortDuration(leaseMs))}</span>`,
     )
   }
   const certificateCount = certificateTally(certificates)
@@ -544,10 +543,10 @@ export function renderRoster(
     // does instead of being offered a dialog that is not there.
     body.push(
       canWrite
-        ? `<p class="hint">还没有节点 · ` +
+        ? `<p class="hint">还没有智能体 · ` +
             `<a class="jump" href="#register-dialog" ` +
             `data-open-dialog="register-dialog" data-write>注册第一个</a></p>`
-        : `<p class="hint">还没有节点 · 由运维注册</p>`,
+        : `<p class="hint">还没有智能体 · 由运维注册</p>`,
     )
     return (
       rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
@@ -771,7 +770,7 @@ export function registerDialog(): string {
   return (
     `<dialog class="dialog dialog-wide" id="register-dialog" ` +
     `aria-labelledby="register-title">` +
-    dialogTop('register-title', 'plus', '注册节点', true) +
+    dialogTop('register-title', 'plus', '注册智能体', true) +
     `<form id="register-form" class="stack" novalidate>` +
     `<div class="form-grid">` +
     field('address', '地址', 'qianmo://node-a/reviewer', { required: true }) +
@@ -969,7 +968,7 @@ export function deregisterConfirm(): string {
     `<div class="recap"><div class="recap-row"><span class="k">地址</span>` +
     `<span class="addr mono" id="confirm-deregister-addr"></span></div></div>` +
     `<p>这个地址会立刻从名册摘除 · 在途消息按丢弃处理 · ` +
-    `节点重新注册之前不能再被唤醒</p>` +
+    `重新注册之前不能再被唤醒</p>` +
     `</div>` +
     `<div class="dialog-actions">` +
     `<button type="button" class="btn btn-secondary" ` +

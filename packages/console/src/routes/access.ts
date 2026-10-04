@@ -106,7 +106,7 @@ const MAX_FILTER_LENGTH = 512
 const MAX_TARGETS = 200
 
 const PERSON_REQUIRED =
-  '操作记录需要个人账号或 admin 令牌；共用的只读令牌看不到操作记录。'
+  '操作记录需要个人账号或管理令牌；共用的只读令牌看不到操作记录。'
 const LEDGER_UNWIRED =
   '这台控制台没有接动作账本：开个人账号（--accounts）才有。'
 const LEDGER_UNREADABLE =
@@ -351,7 +351,7 @@ const FRAGMENT_TABS: Readonly<Record<string, AdminTab>> = {
 }
 
 /** What a script is told on a fragment it may not read. */
-const ADMIN_ONLY = '成员、邀请与会话需要运维角色的个人账号或 admin 令牌。'
+const ADMIN_ONLY = '成员、邀请与会话需要运维角色的个人账号或管理令牌。'
 
 /** 操作记录, to a credential the ledger has no answer for. */
 const PERSON_REQUIRED_LINE =

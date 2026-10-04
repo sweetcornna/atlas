@@ -412,7 +412,7 @@ const NOTHING_OPEN =
   `<div class="empty">` +
   `<div class="stack" style="gap:var(--space-4)">` +
   `<h4 class="empty-title">选择一个智能体开始对话</h4>` +
-  `<p class="empty-note">还没有打开会话 · 在左边选一个智能体开始 · ` +
+  `<p class="empty-note">还没有打开会话 · 在会话列表里选一个智能体开始 · ` +
   `或者开一条新会话把任务交给别的节点</p>` +
   `</div>` +
   `<svg class="empty-art" width="200" height="200" viewBox="0 0 200 200" ` +

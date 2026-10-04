@@ -131,7 +131,7 @@ function chatUnsupported(): Response {
   return fail(
     501,
     'unsupported',
-    '该控制台没有配置聊天通道；请在启动 occ console 时给 --chat-url 与传输层 PSK 后重试。',
+    '该控制台没有配置聊天通道；请在启动 qm console 时给 --chat-url 与传输层 PSK 后重试。',
   )
 }
 

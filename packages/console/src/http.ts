@@ -273,7 +273,7 @@ function asset(body: string, contentType: string): Response {
  * `test/view.test.ts`), while an error *body* is read by a developer and may
  * spend a sentence saying what to do.
  */
-const ADMIN_REQUIRED_LINE = '该页面需要 admin 令牌'
+const ADMIN_REQUIRED_LINE = '该页面需要管理令牌'
 
 /** What a failed login is told. Never which half of the pair was close. */
 const LOGIN_REFUSED = '令牌无效'

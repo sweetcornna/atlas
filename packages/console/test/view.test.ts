@@ -442,8 +442,8 @@ describe('the registry lease is the scale (C-1)', () => {
     expect(html).toContain('data-health="live"')
     expect(html).not.toContain('滞后')
     expect(html).not.toContain('过期')
-    expect(html).toContain('租约 1 小时')
-    expect(html).not.toContain('租约 1 分 30 秒')
+    expect(html).toContain('租约 1h')
+    expect(html).not.toContain('租约 1m30s')
     // 58 of 60 minutes left, and the fill is that share, not 0%.
     expect(html).toContain('>剩余 58m<')
     expect(html).toContain('style="width:97%"')
@@ -460,8 +460,8 @@ describe('the registry lease is the scale (C-1)', () => {
       [newer, older],
     ]) {
       const html = renderRoster(agents, null, NOW, PACKAGE_DEFAULT)
-      expect(html).toContain('租约 1 小时')
-      expect(html).not.toContain('租约 5 小时')
+      expect(html).toContain('租约 1h')
+      expect(html).not.toContain('租约 5h')
     }
   })
 
@@ -472,7 +472,7 @@ describe('the registry lease is the scale (C-1)', () => {
       NOW,
       PACKAGE_DEFAULT,
     )
-    expect(html).toContain('租约 1 分 30 秒')
+    expect(html).toContain('租约 1m30s')
   })
 })
 
@@ -481,7 +481,7 @@ describe('the registry lease is the scale (C-1)', () => {
 describe('renderRoster', () => {
   test('an empty registry names the next action instead of going blank', () => {
     const html = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
-    expect(html).toContain('还没有节点 · ')
+    expect(html).toContain('还没有智能体 · ')
     // The register form moved into a dialog on the same page (`/nodes`), so
     // the next action opens it; the anchor is kept so the link still names
     // its target without script.
@@ -521,7 +521,7 @@ describe('renderRoster', () => {
     // into 过期 1 look like nothing changed.
     expect(html).not.toContain('滞后 0')
     expect(html).not.toContain('过期 0')
-    expect(html).toContain('租约 5 分')
+    expect(html).toContain('租约 5m')
   })
 
   test('a null roster with no failure says so rather than pretending to be empty', () => {
@@ -718,7 +718,7 @@ describe('renderRoster', () => {
       expect(html).toContain('上次心跳')
     }
     const empty = renderRoster([], null, NOW, TTL)
-    expect(empty).toContain('还没有节点 · 由运维注册')
+    expect(empty).toContain('还没有智能体 · 由运维注册')
     expect(empty).not.toContain('data-open-dialog')
   })
 })
@@ -1315,7 +1315,7 @@ describe('renderAudit', () => {
 
   test('null page with no failure is a neutral state, not an error', () => {
     const html = renderAudit(null, null, NO_FILTER)
-    expect(html).toContain('未读取审计日志')
+    expect(html).toContain('未读取审计链')
     expect(html).not.toContain('bar-bad')
   })
 })
@@ -1731,7 +1731,7 @@ describe('the shell', () => {
 
   test('the sidebar carries the brand, the label and the refresh switch — and no clock', () => {
     const html = build()
-    expect(html).toContain('阡陌 console')
+    expect(html).toContain('阡陌控制台')
     expect(html).toContain('class="brand-en"')
     expect(html).toContain('class="brand-cn"')
     expect(html).toContain('node-a 本机')
@@ -1798,9 +1798,7 @@ describe('the shell', () => {
     expect(html).toContain(
       '<h1 class="page-title" id="page-title">tokyo-1</h1>',
     )
-    expect(html).toContain(
-      '<title>阡陌 console · tokyo-1 · node-a 本机</title>',
-    )
+    expect(html).toContain('<title>阡陌控制台 · tokyo-1 · node-a 本机</title>')
     expect(html).toContain('<div class="top-actions"><button')
     expect(html).toContain(
       '<div class="health" role="group" aria-label="健康">',
@@ -2625,12 +2623,12 @@ describe('copy discipline', () => {
       { code: 'not_found', message: '文件不存在' },
       NO_FILTER,
     )
-    expect(trail).toContain('审计日志未找到 · 文件不存在')
+    expect(trail).toContain('审计链未找到 · 文件不存在')
   })
 
   test('the empty state is an invitation, not a status', () => {
     const empty = renderRoster([], null, NOW, TTL, undefined, undefined, WRITER)
-    expect(empty).toContain('还没有节点 · ')
+    expect(empty).toContain('还没有智能体 · ')
     // The register form is a dialog on the same page now, not a section
     // further down, so the invitation opens it rather than pointing at it.
     expect(empty).toContain(

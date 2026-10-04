@@ -635,7 +635,7 @@ function nodeActions(ctx: RouteContext, add: AddAction): string {
         ? `<button type="button" class="btn btn-primary" ` +
           `data-open-dialog="register-dialog" data-write>` +
           icon('plus', { small: true }) +
-          `注册节点</button>`
+          `注册智能体</button>`
         : ''
   return (
     `<button type="button" class="btn btn-secondary" ` +

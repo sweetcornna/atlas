@@ -835,7 +835,7 @@ describe('unauthenticated', () => {
     )
     expect(response.status).toBe(403)
     const html = await response.text()
-    expect(html).toContain('该页面需要 admin 令牌')
+    expect(html).toContain('该页面需要管理令牌')
     expect(html).toContain(`value="${'/chat'}"`)
   })
 

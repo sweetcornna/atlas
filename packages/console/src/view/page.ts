@@ -171,7 +171,7 @@ export function renderOverview(model: OverviewModel): string {
     statCard({
       kicker: '速率预算',
       value: rate ?? '—',
-      unit: '/ 分',
+      unit: '/ 分钟',
       hint: '节点 × 节点',
       glyph: 'zap',
     }),

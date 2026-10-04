@@ -118,12 +118,12 @@ const PERSONAL_IN_QUERY =
 const PERSONAL_IN_QUERY_LINE = '个人凭据不能放进链接 · 请找运维重置'
 
 const ADMIN_BEARER_ONLY =
-  'admin 令牌已转为 break-glass，只接受 Authorization: Bearer；' +
+  '管理令牌已转为 break-glass，只接受 Authorization: Bearer；' +
   '日常请用个人 ops 账号登录。'
 
 /** Also what the login form says to the admin token in break-glass. */
 export const ADMIN_BEARER_ONLY_LINE =
-  'admin 令牌只接受 Bearer 头 · 日常请用个人运维账号'
+  '管理令牌只接受 Bearer 头 · 日常请用个人运维账号'
 
 /** What the login card says while the account book is closed. */
 export const ACCOUNTS_UNAVAILABLE_LINE = '个人账号暂停服务 · 请联系运维'

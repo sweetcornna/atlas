@@ -313,7 +313,7 @@ async function trailRegion(
     return {
       html: failureBar(
         { code: 'not_found', message: '未配置该审计节点' },
-        '读取审计日志失败',
+        '读取审计链失败',
       ),
       poll: '',
       swap: '',

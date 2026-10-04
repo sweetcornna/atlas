@@ -266,6 +266,180 @@ describe('every string a page script writes keeps the copy rules (I1)', () => {
   })
 })
 
+// --- the terms (I2) --------------------------------------------------------
+
+/** One "不用" entry of the glossary in `docs/dev/console.md` §5.2.1. */
+interface BannedTerm {
+  readonly term: string
+  readonly found: (text: string) => boolean
+}
+
+/**
+ * The glossary's banned spellings, read off the document itself so the table
+ * and the gate cannot disagree: every code span in the second column, a
+ * `/…/` one as a regular expression.
+ */
+function bannedTerms(): BannedTerm[] {
+  const doc = readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'docs', 'dev', 'console.md'),
+    'utf8',
+  )
+  const block =
+    /<!-- glossary:start -->([\s\S]*?)<!-- glossary:end -->/.exec(doc)?.[1] ??
+    ''
+  const out: BannedTerm[] = []
+  for (const row of block.split('\n')) {
+    if (
+      !row.startsWith('|') ||
+      row.startsWith('| ---') ||
+      row.startsWith('| 用 ')
+    )
+      continue
+    const banned = row.split(' | ')[1] ?? ''
+    for (const match of banned.matchAll(/`([^`]+)`/g)) {
+      const term = match[1] ?? ''
+      if (term.length > 2 && term.startsWith('/') && term.endsWith('/')) {
+        const pattern = new RegExp(term.slice(1, -1))
+        out.push({ term, found: text => pattern.test(text) })
+      } else {
+        out.push({ term, found: text => text.includes(term) })
+      }
+    }
+  }
+  return out
+}
+
+/** Every place a term could reach a person, as (where, text) pairs. */
+async function everythingShown(): Promise<[string, string][]> {
+  const out: [string, string][] = []
+  const add = (where: string, html: string): void => {
+    out.push([where, readable(html)])
+    for (const value of attributeCopy(html))
+      out.push([`${where} [attr]`, value])
+    for (const literal of cjkLiterals(scriptOf(html))) {
+      out.push([`${where} [script]`, literal])
+    }
+  }
+  for (const token of [ADMIN, VIEW]) {
+    const h = pageHarness({
+      chat: true,
+      wake: false,
+      nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
+    })
+    for (const module of ROUTES) {
+      const response = await h.handle(browse(module.area.href, token))
+      add(
+        `${module.area.href} as ${token === ADMIN ? 'admin' : 'view'}`,
+        await response.text(),
+      )
+    }
+    h.registry.listResult = { ok: true, value: [] }
+    add('/nodes empty', await (await h.handle(browse('/nodes', token))).text())
+  }
+  const h = pageHarness({ chat: true })
+  for (const path of ['/login', '/nope']) {
+    add(path, await (await h.handle(browse(path))).text())
+  }
+  add('403 card', await (await h.handle(browse('/chat', VIEW))).text())
+  const a = accountsHarness({ accounts: { breakGlass: true } })
+  const ops = await person(a.handle, 'ops')
+  add(
+    'break-glass',
+    await (await a.handle(asBearer('GET', '/', ACCOUNTS_ADMIN))).text(),
+  )
+  add(
+    'access as ops',
+    await (
+      await a.handle(asSession('GET', '/access', ops.sid, { header: false }))
+    ).text(),
+  )
+  // What the console's own code can say: every CJK literal in its source.
+  for (const literal of messageCorpus(
+    sourceFiles().filter(isConsoleSource),
+    withoutPinnedBlock,
+  )) {
+    out.push(['source', literal])
+  }
+  return out
+}
+
+/**
+ * `resolveTokens` is pinned byte for byte to its pre-accounts text
+ * (`invites.test.ts`, tenancy-m1.md §3.4), and its one message is a startup
+ * error on the command line, never a page. It keeps its words.
+ */
+function withoutPinnedBlock(file: string, text: string): string {
+  if (!file.endsWith(`${join('src', 'auth.ts')}`)) return text
+  const start = text.indexOf('export function resolveTokens(')
+  const end = text.indexOf('\n}\n', start)
+  return start < 0 || end < 0
+    ? text
+    : text.slice(0, start) + text.slice(end + 2)
+}
+
+describe('one name for each thing (I2)', () => {
+  test('the glossary is there to be read', () => {
+    const terms = bannedTerms().map(banned => banned.term)
+    expect(terms.length).toBeGreaterThanOrEqual(10)
+    expect(terms).toContain('阡陌 console')
+    expect(terms).toContain('审计日志')
+  })
+
+  test('no banned spelling reaches a page, a script or a message', async () => {
+    const terms = bannedTerms()
+    const shown = await everythingShown()
+    expect(shown.length).toBeGreaterThan(500)
+    const found: string[] = []
+    for (const [where, text] of shown) {
+      for (const banned of terms) {
+        if (banned.found(text))
+          found.push(`${where}: ${banned.term} in ${text.trim().slice(0, 60)}`)
+      }
+    }
+    expect(found).toEqual([])
+  })
+
+  test('positive control: the spellings this commit retired would be caught', () => {
+    const terms = bannedTerms()
+    for (const old of [
+      '<title>阡陌 console · 总览 · tokyo-hub</title>',
+      '该页面需要 admin 令牌',
+      '审计日志不可达 · 见证端点 · 无法连接',
+      '速率预算 600 / 分',
+      '还没有节点 · 注册第一个',
+      '还没有打开会话 · 在左边选一个智能体开始',
+      '请在启动 occ console 时用 --node-server 指定',
+    ]) {
+      expect(terms.filter(banned => banned.found(old)).length).toBeGreaterThan(
+        0,
+      )
+    }
+    // …and the current spellings pass.
+    for (const now of [
+      '阡陌控制台 · 总览',
+      '速率预算 600 / 分钟',
+      '还没有节点',
+    ]) {
+      expect(terms.filter(banned => banned.found(now))).toEqual([])
+    }
+  })
+
+  test('a row never mixes the two duration spellings', async () => {
+    const h = pageHarness()
+    const html = await (await h.handle(browse('/nodes', ADMIN))).text()
+    const roster = readable(
+      html.slice(
+        html.indexOf('id="roster"'),
+        html.indexOf('</section>', html.indexOf('id="roster"')),
+      ),
+    )
+    expect(roster).toMatch(/租约 \d+[smhd]/)
+    expect(roster).toMatch(/剩余 \d+[smhd]/)
+    // 1 秒前 is a relative time, not a duration.
+    expect(roster).not.toMatch(/\d+ (秒|分|小时|天)(?![前后])/)
+  })
+})
+
 // --- the mapping (C5) ------------------------------------------------------
 
 /** The console's own source and its host ports: where every message is written. */
@@ -296,15 +470,23 @@ function sourceFiles(): string[] {
   return out
 }
 
+/** A file of this package, rather than of its host. */
+function isConsoleSource(file: string): boolean {
+  return file.startsWith(SOURCES[0] as string)
+}
+
 /**
  * Every string literal with CJK in it, outside comments, with each template
  * hole filled by a sample value. Over-inclusive on purpose: a page label is
  * not a message, but it is held to the same rule and costs nothing to check.
  */
-function messageCorpus(): string[] {
+function messageCorpus(
+  files: readonly string[] = sourceFiles(),
+  prune: (file: string, text: string) => string = (_file, text) => text,
+): string[] {
   const out = new Set<string>()
-  for (const file of sourceFiles()) {
-    const text = readFileSync(file, 'utf8')
+  for (const file of files) {
+    const text = prune(file, readFileSync(file, 'utf8'))
       .split('\n')
       .filter(line => !/^\s*(\*|\/\/|\/\*)/.test(line))
       .join('\n')
@@ -437,7 +619,7 @@ describe('the error mapping (C5)', () => {
       humanizeError({
         code: 'forbidden',
         status: 403,
-        message: '该操作需要 admin token，当前凭据只有只读权限。',
+        message: '该操作需要管理令牌，当前凭据只有只读权限。',
       }).text,
     ).toBe('权限不足')
     // A code from Object.prototype is not a phrase.

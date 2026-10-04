@@ -165,7 +165,7 @@ describe('every page', () => {
       const html = await response.text()
       expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
       expect(html).toContain(
-        `<title>阡陌 console · ${row.title} · ${LABEL}</title>`,
+        `<title>阡陌控制台 · ${row.title} · ${LABEL}</title>`,
       )
       expect(html).toContain(
         `<h1 class="page-title" id="page-title">${row.title}</h1>`,

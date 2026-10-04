@@ -788,10 +788,10 @@ export function renderAudit(
   paging?: TrailPaging,
 ): string {
   const results: string[] = []
-  if (failure !== null) results.push(failureBar(failure, '审计日志'))
+  if (failure !== null) results.push(failureBar(failure, '审计链'))
 
   if (page === null) {
-    if (failure === null) results.push(hint('未读取审计日志'))
+    if (failure === null) results.push(hint('未读取审计链'))
   } else {
     const place: TrailPlace | undefined =
       paging === undefined
@@ -934,9 +934,9 @@ function sourceBody(
   const page = source.page
   const results: string[] = []
   if (source.failure !== null)
-    results.push(failureBar(source.failure, '审计日志'))
+    results.push(failureBar(source.failure, '审计链'))
   if (page === null) {
-    if (source.failure === null) results.push(hint('未读取审计日志'))
+    if (source.failure === null) results.push(hint('未读取审计链'))
   } else {
     const place: TrailPlace | undefined =
       paging === undefined
@@ -1056,8 +1056,8 @@ export function renderAuditExcerpt(
   failure: ConsoleFailure | null,
   auditNode?: string,
 ): string {
-  if (failure !== null) return failureBar(failure, '审计日志')
-  if (page === null) return hint('未读取审计日志')
+  if (failure !== null) return failureBar(failure, '审计链')
+  if (page === null) return hint('未读取审计链')
   if (page.chain === 'absent') return hint('这个来源还没有链文件')
   if (page.records.length === 0) return hint('还没有相关记录')
   const head = RECORD_HEADERS.map(

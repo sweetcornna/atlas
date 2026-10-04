@@ -352,7 +352,7 @@ describe('the page', () => {
         // The port's message keeps only which half failed; the strip says
         // the line and folds the original (C5).
         const html = await response.text()
-        expect(html).toContain('审计日志不可达 · 见证端点 · 无法连接')
+        expect(html).toContain('审计链不可达 · 见证端点 · 无法连接')
         expect(html).toContain(
           '<pre class="raw" data-raw>见证端点 · connect ECONNREFUSED',
         )
@@ -756,7 +756,7 @@ describe('the registry lease on the page (C-1)', () => {
     registry.listResult = okResult([HOUR_AGENT])
     const nodes = await (await handle(get('/nodes', VIEW))).text()
     expect(nodes).toContain('data-health="live"')
-    expect(nodes).toContain('租约 1 小时')
+    expect(nodes).toContain('租约 1h')
     expect(registry.listCalls).toBe(1)
     const settings = await (await handle(get('/settings', VIEW))).text()
     expect(settings).toContain('data-ttl-ms="3600000"')
