@@ -27,7 +27,7 @@
  *   · 本机真 key：这台机器上每个节点 `settings.json` 里 SECRET_ENV_KEYS 的值，加
  *     `qianmo/provider/key-pool.json` 的 `keys[].value`（P18.18）。**不跨机器传。**
  * 先自检（每根针在合成缓冲里恰好命中一次），打一行 `{"ready":true,…}`；然后每 `psIntervalMs`
- * 采样一次 `ps -eo args`，直到 stdin 来一行 `stop`（或关掉）；最后扫文件，打一行结果。
+ * 采样一次 `ps -ww -eo args`（不截断），直到 stdin 来一行 `stop`（或关掉）；最后扫文件，打一行结果。
  *
  * 扫的是内测根下的一切，除了：`secrets/`（本来就是密钥的家，整个不读）、`backups/`（归档）、
  * `workspaces/`（agent 的工作区，AC-P2 的清单里没有它），以及明文**持有点**——节点配置根的
@@ -476,7 +476,8 @@ export function selfTest(needles: readonly Needle[]): boolean {
 function psSample(needles: readonly Needle[], into: Map<string, number>): void {
   let text: string
   try {
-    text = execFileSync('ps', ['-eo', 'args'], {
+    // -ww：不截断。procps 在输出不是终端时可能按 80 列截，密钥恰好落在截掉的那一段就漏了。
+    text = execFileSync('ps', ['-ww', '-eo', 'args'], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
