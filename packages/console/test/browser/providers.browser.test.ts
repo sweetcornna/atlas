@@ -148,15 +148,31 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
       await tab.evaluate(
         `document.getElementById('prov-key').value = 'sk-test-canary-browser-0001'`,
       )
+      // The rule is said once, before and after the press: the press turns
+      // that same line into the warning instead of adding a second one.
+      const ruleCount = `document.querySelector('main').innerText.split('保存并切换要求本页测连可用').length - 1`
+      expect(await tab.evaluate<number>(ruleCount)).toBe(1)
       await tab.evaluate(click('[data-action="prov-save-switch"]'))
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('prov-switch-rule').textContent`,
+        ),
+      ).toBe('保存并切换要求本页测连可用 · 先测连或勾选跳过测连')
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('prov-switch-rule').getAttribute('data-tone')`,
+        ),
+      ).toBe('warn')
       expect(
         await tab.evaluate<string>(
           `document.getElementById('prov-result').textContent`,
         ),
-      ).toContain('保存并切换要求本页测连可用')
+      ).toBe('')
+      expect(await tab.evaluate<number>(ruleCount)).toBe(1)
       expect(served.providers.writes).toEqual([])
 
-      // 测连 on the default node.
+      // 测连 on the default node: the line names the check, the node, the
+      // answer and the time; the rule goes back to saying the rule.
       await tab.evaluate(click('[data-action="prov-check"][data-mode="auth"]'))
       await tab.waitFor(
         `document.getElementById('prov-probe-result').getAttribute('data-tone') === 'ok'`,
@@ -165,7 +181,13 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         await tab.evaluate<string>(
           `document.getElementById('prov-probe-result').textContent`,
         ),
-      ).toBe('可用')
+      ).toMatch(/^测连 · node-a · 可用 · \d{2}:\d{2}:\d{2}$/)
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('prov-switch-rule').getAttribute('data-tone')`,
+        ),
+      ).toBe('muted')
+      expect(await tab.evaluate<number>(ruleCount)).toBe(1)
       const probe = served.providers.writes.at(-1)
       expect(probe?.method).toBe('probe')
       const probed = probe?.input as {

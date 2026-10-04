@@ -88,6 +88,9 @@ export const PROVIDERS_PAGE_JS = `
 
   var SOURCE_WORD = { env: '环境变量', settings: '节点设置', auto: '自动' };
   var PROBE_DOING = { auth: '测连中', latency: '测速中', call: '真实调用中' };
+  var CHECK_WORD = { auth: '测连', latency: '测速', call: '真实调用' };
+  var SWITCH_RULE = '保存并切换要求本页测连可用 · 或勾选跳过测连';
+  var SWITCH_REFUSED = '保存并切换要求本页测连可用 · 先测连或勾选跳过测连';
 
   function probeLine(result) {
     if (result.ok) {
@@ -669,6 +672,12 @@ export const PROVIDERS_PAGE_JS = `
     if (el) qc.say(el, text, tone);
   }
 
+  // The 保存并切换 rule is one line on the page: refused, it says what to do
+  // in the warning tone; probed or skipped, it goes back to the rule.
+  function switchRule(refused) {
+    result('prov-switch-rule', refused ? SWITCH_REFUSED : SWITCH_RULE, refused ? 'warn' : 'muted');
+  }
+
   function checkedValues(block, field) {
     return all('input[data-f="' + field + '"]:checked', block).map(function (box) { return box.value; });
   }
@@ -771,7 +780,8 @@ export const PROVIDERS_PAGE_JS = `
     result('prov-probe-result', PROBE_DOING[mode] + ' · ' + node, 'muted');
     qc.sendJson('POST', '/v0/providers/probe', body).then(function (r) {
       var line = probeLine(r);
-      var text = line.text;
+      // Which check, on which node, at what time: the line outlives the click.
+      var text = CHECK_WORD[mode] + ' · ' + node + ' · ' + line.text + ' · ' + qc.stamp(new Date());
       if (r.suggestion && r.suggestion.baseUrl) {
         var base = qc.byId('prov-base');
         if (base) base.value = r.suggestion.baseUrl;
@@ -782,7 +792,10 @@ export const PROVIDERS_PAGE_JS = `
       }
       result('prov-probe-result', text, line.tone);
       if (mode === 'auth') probedAs = r.ok ? sig : null;
-    }).catch(function (err) { result('prov-probe-result', '没有测成 · ' + qc.message(err), 'bad'); });
+      if (mode === 'auth' && r.ok) switchRule(false);
+    }).catch(function (err) {
+      result('prov-probe-result', CHECK_WORD[mode] + ' · ' + node + ' · 没有测成 · ' + qc.message(err), 'bad');
+    });
   }
 
   function fetchModels() {
@@ -804,10 +817,13 @@ export const PROVIDERS_PAGE_JS = `
         opt.value = id;
         if (list) list.appendChild(opt);
       });
-      result('prov-probe-result', '拉到 ' + fetched.length + ' 个模型 · 在模型 id 的下拉里选', 'ok');
+      result('prov-probe-result', '拉取模型列表 · ' + node + ' · 拉到 ' + fetched.length +
+        ' 个 · 在模型 id 的下拉里选 · ' + qc.stamp(new Date()), 'ok');
       var adv = qc.byId('prov-adv');
       if (adv) adv.open = true;
-    }).catch(function (err) { result('prov-probe-result', '没有拉到 · ' + qc.message(err), 'bad'); });
+    }).catch(function (err) {
+      result('prov-probe-result', '拉取模型列表 · ' + node + ' · 没有拉到 · ' + qc.message(err), 'bad');
+    });
   }
 
   function save() {
@@ -924,6 +940,7 @@ export const PROVIDERS_PAGE_JS = `
       var t = event.target;
       if (!t) return;
       if (t.id === 'prov-lane') paintLane();
+      if (t.id === 'prov-skip-probe' && t.checked) switchRule(false);
       if (t.id === 'prov-site') {
         var picked = t.options[t.selectedIndex];
         var base = qc.byId('prov-base');
@@ -951,7 +968,7 @@ export const PROVIDERS_PAGE_JS = `
       var skip = qc.byId('prov-skip-probe');
       var skipped = probedAs !== signature();
       if (skipped && !(skip && skip.checked)) {
-        result('prov-result', '保存并切换要求本页测连可用 · 先测连或勾选跳过测连', 'warn');
+        switchRule(true);
         return;
       }
       save().then(function (profile) {

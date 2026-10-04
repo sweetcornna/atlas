@@ -286,6 +286,17 @@ describe('the pages, for ops', () => {
     expect(html).toContain('验证地址和密钥 · 不产生费用')
     expect(html).toContain('网络往返 · 不含推理')
     expect(html).toContain('会产生一次计费调用')
+    // The 保存并切换 rule is said once, on the line the script turns into the
+    // warning; the result line under the buttons starts empty.
+    expect(
+      visibleText(main).split('保存并切换要求本页测连可用').length - 1,
+    ).toBe(1)
+    expect(main).toContain(
+      '<p class="note prov-rule" id="prov-switch-rule" role="status" data-tone="muted">保存并切换要求本页测连可用 · 或勾选跳过测连</p>',
+    )
+    expect(main).toContain(
+      '<p class="prov-result" id="prov-result" role="status" data-tone="muted"></p>',
+    )
     // A pay-as-you-go preset knows the plan prefixes of its vendor.
     const kimi = await text(s.handle, page('/providers/new?preset=kimi', s.ops))
     expect(kimi).toContain('data-plan-prefixes="[&quot;sk-kimi-&quot;]"')

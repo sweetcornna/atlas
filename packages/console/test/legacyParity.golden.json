@@ -1174,8 +1174,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 121746,
-    "sha256": "4ef85a90de954a8ff2616c1d12b085cd887f6cb0e3800c28c080b6dfb1530cd8"
+    "length": 122628,
+    "sha256": "939dabb17a04669a0a82385c39734647d3c7ff32248ffd9728432c6b59abe64c"
   },
   {
     "probe": "GET /nope as admin-bearer (html)",

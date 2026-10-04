@@ -98,6 +98,9 @@ const SEND_WORD = {
 } as const
 
 /** The three checks, each with what it costs (§6.3.5). */
+/** The 保存并切换 rule, as the page says it before anything is pressed. */
+const SWITCH_RULE_LINE = '保存并切换要求本页测连可用 · 或勾选跳过测连'
+
 const CHECKS = [
   ['auth', '测连', '验证地址和密钥 · 不产生费用'],
   ['latency', '测速', '网络往返 · 不含推理'],
@@ -701,7 +704,11 @@ export function renderEditor(model: EditorModel): string {
         )
       : '') +
     `</div>` +
-    `<p class="note">保存并切换要求本页测连可用 · 或勾选跳过测连</p>` +
+    // One sentence for the rule: the script turns this line itself into the
+    // warning when 保存并切换 is pressed without a probe, never a second one.
+    `<p class="note prov-rule" id="prov-switch-rule" role="status" data-tone="muted">${escapeHtml(
+      SWITCH_RULE_LINE,
+    )}</p>` +
     `<p class="prov-result" id="prov-result" role="status" data-tone="muted"></p>`
   return (
     `<section class="prov-editor" id="prov-editor" data-mode="${mode}" ` +

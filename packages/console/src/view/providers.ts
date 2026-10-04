@@ -1461,6 +1461,7 @@ export const PROVIDERS_PAGE_CSS = `
 .prov-result { font-size: 13px; min-height: 1.25em; }
 .prov-result[data-tone='ok'] { color: var(--color-accent-2-800); }
 .prov-result[data-tone='warn'], .prov-result[data-tone='bad'] { color: var(--color-accent-800); }
+.prov-rule[data-tone='warn'] { color: var(--color-accent-800); }
 /* A class that sets display outranks the hidden attribute; these are the
    ones the page script shows and hides. */
 .prov-hint[hidden], .prov-progress[hidden], .prov-switch-nodes[hidden],
