@@ -1016,7 +1016,8 @@ export function createConsoleChatPort(
         return { ok: true, value: patched ?? turn }
       } catch (error) {
         settle(task)
-        patchTurn(turn.id, { state: 'failed' })
+        // 原因落进这一轮：刷新之后页面仍能说出「未投递」，而不是只剩「失败」。
+        patchTurn(turn.id, { state: 'failed', code: 'E_UNDELIVERABLE' })
         return fail('unreachable', messageOf(error))
       }
     },

@@ -152,14 +152,19 @@ function deliveryChain(turn: ChatTurn): string {
   const read = turn.readMs !== undefined
   const receiptMs =
     turn.receiptMs === undefined ? '' : ` · ${formatLatency(turn.receiptMs)}`
+  // A turn that failed before any receipt never reached the other side, and
+  // the middle cell says so. It used to read 已投递 · 回执 — in grey, which is
+  // a claim of delivery with a dash where the proof should be (C8).
+  const delivery = receipted
+    ? `已投递 · 回执 ${turn.receipt ?? ''}${receiptMs}`
+    : turn.state === 'pending'
+      ? '待投递'
+      : turn.state === 'failed'
+        ? '未投递'
+        : '已投递 · 回执 —'
   const steps: readonly (readonly [string, boolean])[] = [
     ['已发出', true],
-    [
-      turn.state === 'pending' && !receipted
-        ? '待投递'
-        : `已投递 · 回执 ${turn.receipt ?? '—'}${receiptMs}`,
-      receipted,
-    ],
+    [delivery, receipted],
     [read ? `已读 · ${formatLatency(turn.readMs ?? 0)}` : '已读', read],
   ]
   const cells = steps.map(([text, done], index) => {
@@ -176,6 +181,42 @@ function deliveryChain(turn: ChatTurn): string {
 }
 
 /**
+ * What each protocol failure code means, in the page's words. The code stays
+ * on the line after the phrase: it is what the runbooks are written against.
+ */
+const FAILURE_WORDS: Readonly<Record<string, string>> = {
+  E_UNDELIVERABLE: '未投递',
+  E_TASK_TIMEOUT: '等待回复超时',
+  E_TASK_FAILED: '对端执行出错',
+  E_UNKNOWN_AGENT: '对端没有这个智能体',
+  E_BUSY: '对端忙',
+  E_RATE_LIMITED: '对端限流',
+  E_EVICTED: '被对端队列挤出',
+  E_TTL_EXPIRED: '消息已过期',
+  E_TOO_LARGE: '消息过大',
+  E_TOO_MANY_HOPS: '转发次数超限',
+  E_LOOP: '转发成环',
+  E_CAP_INVALID: '能力凭证无效',
+  E_CAP_INSUFFICIENT: '能力不足',
+  E_BUDGET_EXHAUSTED: '预算已用完',
+  E_RESOURCE_REFUSED: '资源请求被拒',
+  E_PAYLOAD_UNAVAILABLE: '载荷不可取',
+  E_BAD_ENVELOPE: '消息格式不合法',
+  E_BAD_VERSION: '协议版本不受支持',
+  E_BAD_ADDRESS: '地址不合法',
+  E_BAD_TYPE: '消息类型不合法',
+}
+
+/** 失败, then why, then the code: `失败 · 未投递 · E_UNDELIVERABLE`. */
+function failureWords(code: string | undefined): string {
+  if (code === undefined) return '失败'
+  const words = Object.hasOwn(FAILURE_WORDS, code)
+    ? FAILURE_WORDS[code]
+    : undefined
+  return words === undefined ? `失败 · ${code}` : `失败 · ${words} · ${code}`
+}
+
+/**
  * The marks under one turn, in the order the events happened.
  *
  * Every one of them is a fact the transport or the agent reported; none of
@@ -189,11 +230,7 @@ function turnMarks(turn: ChatTurn): string {
   } else if (turn.elapsedMs !== undefined) {
     marks.push(tag(`用时 ${formatLatency(turn.elapsedMs)}`))
   }
-  if (turn.state === 'failed') {
-    marks.push(
-      tag(turn.code === undefined ? '失败' : `失败 · ${turn.code}`, 'bad'),
-    )
-  }
+  if (turn.state === 'failed') marks.push(tag(failureWords(turn.code), 'bad'))
   if (turn.taskId !== undefined) {
     marks.push(idTag('task', turn.taskId, turn.taskId.slice(0, 8)))
   }

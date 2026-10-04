@@ -28,6 +28,7 @@ import type {
   RegistryPort,
   AuditPort,
 } from '../src/deps.js'
+import { readFileSync } from 'node:fs'
 import { createConsoleHandler } from '../src/http.js'
 import {
   MAX_CHAT_TEXT_LENGTH,
@@ -318,6 +319,75 @@ describe('chat transcript view', () => {
       now: NOW,
     })
     expect(failed).not.toContain('turn-tail')
+  })
+
+  test('a turn that failed before any receipt says 未投递, and why, after a reload (C8)', () => {
+    const { receipt: _r, receiptMs: _ms, readMs: _read, ...unsent } = ASK
+    const html = renderChatThread({
+      transcript: {
+        session: SESSION,
+        // What the host stores when the dial or the send fails
+        // (consoleChat.ts): failed, no receipt, E_UNDELIVERABLE.
+        turns: [{ ...unsent, state: 'failed', code: 'E_UNDELIVERABLE' }],
+      },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(html).toContain('<span class="tag tag-neutral">未投递</span>')
+    expect(html).not.toContain('已投递')
+    expect(html).toContain('失败 · 未投递 · E_UNDELIVERABLE')
+
+    // A turn that was receipted and then timed out was delivered: the chain
+    // keeps the receipt, the failure names the timeout.
+    const late = renderChatThread({
+      transcript: {
+        session: SESSION,
+        turns: [{ ...ASK, state: 'failed', code: 'E_TASK_TIMEOUT' }],
+      },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(late).toContain('已投递 · 回执 accepted')
+    expect(late).toContain('失败 · 等待回复超时 · E_TASK_TIMEOUT')
+  })
+
+  test('every protocol failure code has words on the failed turn (C8)', () => {
+    // Read off the protocol's own enum, as text: this package does not
+    // depend on @qianmo/protocol (dependencies.test.ts).
+    const codes = [
+      ...readFileSync(
+        new URL('../../protocol/src/errors.ts', import.meta.url),
+        'utf8',
+      ).matchAll(/^\s+(E_[A-Z_]+) = '\1',$/gm),
+    ].map(match => match[1] ?? '')
+    expect(codes.length).toBeGreaterThanOrEqual(20)
+    expect(codes).toContain('E_UNDELIVERABLE')
+    for (const code of codes) {
+      const html = renderChatThread({
+        transcript: {
+          session: SESSION,
+          turns: [{ ...ASK, state: 'failed', code }],
+        },
+        failure: null,
+        target: TARGETS[0] ?? null,
+        now: NOW,
+      })
+      expect(html).not.toContain(`>失败 · ${code}<`)
+      expect(html).toMatch(new RegExp(`>失败 · [^<·]+ · ${code}<`))
+    }
+    // A code from a newer peer still shows, as itself.
+    const unknown = renderChatThread({
+      transcript: {
+        session: SESSION,
+        turns: [{ ...ASK, state: 'failed', code: 'E_FROM_THE_FUTURE' }],
+      },
+      failure: null,
+      target: TARGETS[0] ?? null,
+      now: NOW,
+    })
+    expect(unknown).toContain('>失败 · E_FROM_THE_FUTURE<')
   })
 
   test('severity picks a colour and nothing else — no notice is filtered out', () => {

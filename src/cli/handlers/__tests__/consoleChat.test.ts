@@ -478,6 +478,9 @@ describe('chat send', () => {
     const transcript = await h.hub.transcript(opened.value.id)
     if (!transcript.ok) throw new Error('unreachable')
     expect(transcript.value.turns[0]?.state).toBe('failed')
+    // The reason is in the turn, so a reload still says why (C8).
+    expect(transcript.value.turns[0]?.code).toBe('E_UNDELIVERABLE')
+    expect(transcript.value.turns[0]?.receipt).toBeUndefined()
   })
 
   test('reuses one link for a second message to the same endpoint', async () => {
