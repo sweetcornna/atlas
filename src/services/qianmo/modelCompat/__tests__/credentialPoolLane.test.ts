@@ -54,7 +54,6 @@ import { resetPromptCacheExtrasForTesting } from 'src/services/qianmo/promptCach
 import { resetPinnedPromptCacheKeysForTesting } from 'src/services/qianmo/promptCache/sessionCacheKey.js'
 import type { Message } from 'src/types/message.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
-import { providerPaths } from '../../providers/store.js'
 import { getModelCompatCapabilities } from '../capabilities.js'
 import {
   keyPoolStatus,
@@ -63,6 +62,7 @@ import {
 } from '../credentialPool.js'
 import {
   type KeyPoolFile,
+  keyPoolPaths,
   readKeyPoolState,
   updateKeyPoolState,
   writeKeyPool,
@@ -525,9 +525,9 @@ describe('no key value anywhere but the request', () => {
     await turn(byKey({ k1: PAYMENT }))
     await turn(byKey({ k2: REVOKED }))
     await turn(byKey({ k3: RATE_LIMIT }))
-    const statePath = providerPaths.keyPoolState()
+    const statePath = keyPoolPaths.state()
     expect(statSync(statePath).mode & 0o777).toBe(0o600)
-    expect(statSync(providerPaths.keyPool()).mode & 0o777).toBe(0o600)
+    expect(statSync(keyPoolPaths.pool()).mode & 0o777).toBe(0o600)
     const haystacks = [
       notes.join('\n'),
       JSON.stringify(yielded),

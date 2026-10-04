@@ -31,7 +31,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { secretFingerprint } from '@qianmo/providers'
 import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
-import { updateKeyPoolState } from '../../modelCompat/credentialPoolStore.js'
+import {
+  keyPoolPaths,
+  updateKeyPoolState,
+} from '../../modelCompat/credentialPoolStore.js'
 import {
   commitPendingProviderConfig,
   readProviderState,
@@ -143,9 +146,9 @@ describe('commit: settings get the primary, the pool gets every key', () => {
     expect(JSON.stringify(readJson(settingsFile()))).not.toContain(KA)
     expect(JSON.stringify(readJson(settingsFile()))).not.toContain(KC)
 
-    expect(mode(providerPaths.keyPool())).toBe(0o600)
+    expect(mode(keyPoolPaths.pool())).toBe(0o600)
     expect(mode(join(config, 'qianmo', 'provider'))).toBe(0o700)
-    const pool = readJson(providerPaths.keyPool())
+    const pool = readJson(keyPoolPaths.pool())
     expect(pool).toMatchObject({
       v: 1,
       selection: 'round_robin',
@@ -210,7 +213,7 @@ describe('commit: settings get the primary, the pool gets every key', () => {
       mode: 0o600,
     })
     expect(commitPendingProviderConfig().status).toBe('bad-pending')
-    expect(existsSync(providerPaths.keyPool())).toBe(false)
+    expect(existsSync(keyPoolPaths.pool())).toBe(false)
   })
 })
 
@@ -224,7 +227,7 @@ describe('keep', () => {
       { id: 'ka', keep: secretFingerprint(KA) },
       { id: 'kb', keep: secretFingerprint(KB) },
     ])
-    expect(readJson(providerPaths.keyPool()).keys).toEqual([
+    expect(readJson(keyPoolPaths.pool()).keys).toEqual([
       { id: 'ka', value: KA },
       { id: 'kb', value: KB },
     ])
@@ -311,8 +314,8 @@ describe('rotating or removing one key leaves no trace of the old value', () => 
       state.cursor = 1
     })
     apply([{ id: 'ka', keep: secretFingerprint(KA) }])
-    expect(existsSync(providerPaths.keyPool())).toBe(false)
-    expect(existsSync(providerPaths.keyPoolState())).toBe(false)
+    expect(existsSync(keyPoolPaths.pool())).toBe(false)
+    expect(existsSync(keyPoolPaths.state())).toBe(false)
     expect(filesHolding(KB)).toEqual([])
     expect('keys' in readProviderState()).toBe(false)
   })

@@ -3,9 +3,14 @@
 
 /**
  * The two node files behind the key pool (P18.18, hermes #2; design
- * `providers-console-m1.md` §9.2 P18.18, §5.11.6 X-1). Paths come from
- * `providerPaths` (`occConfigPath('qianmo','provider', …)`): directory 0700,
- * files 0600, every write tmp + fsync + rename with the tmp created 0600.
+ * `providers-console-m1.md` §9.2 P18.18, §5.11.6 X-1), beside the provider
+ * write path's own files: `occConfigPath('qianmo','provider', …)`, directory
+ * 0700, files 0600, every write tmp + fsync + rename with the tmp created
+ * 0600 (`writePrivateFileAtomicSync`).
+ *
+ * Deliberately not built on `providers/store.ts`: that module renames through
+ * the repo's fs seam, whose import chain leads back to `openai/index.ts`, and
+ * the lane imports this module — one more import cycle (check:cycles).
  *
  * - `key-pool.json` — every key of the committed profile, primary first. The
  *   node's commit writes it (`node.ts`), the call layer reads it. It carries
@@ -28,7 +33,14 @@
  * which costs at most one more failed request on that key.
  */
 
-import { statSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs'
+import { dirname } from 'node:path'
 import {
   isKeyId,
   isSecretFingerprint,
@@ -37,12 +49,48 @@ import {
   type KeyOutReason,
   type KeySelection,
 } from '@qianmo/providers'
-import {
-  providerPaths,
-  readTextIfExists,
-  removeIfExists,
-  writePrivateJson,
-} from '../providers/store.js'
+import { occConfigPath } from '../../../config/paths.js'
+import { writePrivateFileAtomicSync } from '../../../utils/secureStorage/atomicWrite.js'
+
+/** Where the pool lives on this node. */
+export const keyPoolPaths = {
+  /** Every key of the committed profile, for the call layer. */
+  pool: () => occConfigPath('qianmo', 'provider', 'key-pool.json'),
+  /** Cooldowns, counts and session bindings; ids and fingerprints only. */
+  state: () => occConfigPath('qianmo', 'provider', 'key-pool-state.json'),
+}
+
+function writePrivateJson(path: string, value: unknown): void {
+  const dir = dirname(path)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  writePrivateFileAtomicSync(path, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  )
+}
+
+function readTextIfExists(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (error) {
+    if (isMissing(error)) return undefined
+    throw error
+  }
+}
+
+function removeIfExists(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch (error) {
+    if (!isMissing(error)) throw error
+  }
+}
 
 /** `key-pool.json`. `keys[0]` is the primary key — the one in `settings.json`. */
 export type KeyPoolFile = {
@@ -159,7 +207,7 @@ let poolCache: Cached<KeyPoolFile | null> | undefined
 
 /** The committed pool, or `null` (no file, or a file that does not parse). */
 export function readKeyPool(): KeyPoolFile | null {
-  const path = providerPaths.keyPool()
+  const path = keyPoolPaths.pool()
   const stamp = stampOf(path)
   if (stamp === null) return null
   if (poolCache?.stamp === stamp) return poolCache.value
@@ -177,7 +225,7 @@ export function writeKeyPool(
   file: KeyPoolFile,
   fingerprints: Readonly<Record<string, string>>,
 ): void {
-  writePrivateJson(providerPaths.keyPool(), file)
+  writePrivateJson(keyPoolPaths.pool(), file)
   updateKeyPoolState(state => {
     const current = (id: string, fp: string) => fingerprints[id] === fp
     for (const [id, mark] of Object.entries(state.marks)) {
@@ -195,8 +243,8 @@ export function writeKeyPool(
 
 /** A single-key profile was committed: no pool, and nothing to remember. */
 export function removeKeyPool(): void {
-  removeIfExists(providerPaths.keyPool())
-  removeIfExists(providerPaths.keyPoolState())
+  removeIfExists(keyPoolPaths.pool())
+  removeIfExists(keyPoolPaths.state())
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +346,7 @@ function cloneState(state: KeyPoolState): KeyPoolState {
 
 /** What the call layer knows right now (a copy; edit through the updater). */
 export function readKeyPoolState(): KeyPoolState {
-  const path = providerPaths.keyPoolState()
+  const path = keyPoolPaths.state()
   const stamp = stampOf(path)
   if (stamp === null) return emptyState()
   if (stateCache?.stamp !== stamp) {
@@ -334,7 +382,7 @@ export function updateKeyPoolState(
   const state = readKeyPoolState()
   change(state)
   pruneSessions(state)
-  writePrivateJson(providerPaths.keyPoolState(), state)
+  writePrivateJson(keyPoolPaths.state(), state)
   stateCache = undefined
   return state
 }

@@ -32,7 +32,6 @@ import {
   createOpenAIResponseError,
   OpenAIRequestError,
 } from 'src/services/api/openai/retry.js'
-import { providerPaths } from '../../providers/store.js'
 import {
   activeCredentialPool,
   CredentialPool,
@@ -44,6 +43,7 @@ import {
 } from '../credentialPool.js'
 import {
   type KeyPoolFile,
+  keyPoolPaths,
   readKeyPool,
   readKeyPoolState,
   writeKeyPool,
@@ -132,7 +132,7 @@ const RATE_LIMIT = {
 }
 
 function stateText(): string {
-  return readFileSync(providerPaths.keyPoolState(), 'utf8')
+  return readFileSync(keyPoolPaths.state(), 'utf8')
 }
 
 // ─── strategies (X-1: chosen once per session) ───────────────────────────────
@@ -281,7 +281,7 @@ describe('the hermes behaviour table', () => {
         reason: 'usage-limit',
         until: new Date(T0 + HOUR).toISOString(),
       })
-      rmSync(providerPaths.keyPoolState())
+      rmSync(keyPoolPaths.state())
     }
   })
 
@@ -625,8 +625,8 @@ describe('the state on disk', () => {
     pool.keyFor('s1')
     pool.failed('s1', pool.keyFor('s1'), await httpError(402, {}))
     const mode = (path: string) => statSync(path).mode & 0o777
-    expect(mode(providerPaths.keyPool())).toBe(0o600)
-    expect(mode(providerPaths.keyPoolState())).toBe(0o600)
+    expect(mode(keyPoolPaths.pool())).toBe(0o600)
+    expect(mode(keyPoolPaths.state())).toBe(0o600)
     expect(mode(join(config, 'qianmo', 'provider'))).toBe(0o700)
     const text = stateText()
     for (const value of VALUES) {
@@ -634,7 +634,7 @@ describe('the state on disk', () => {
       expect(text).not.toContain(value.slice(-8))
     }
     // Positive control: the pool file does hold them.
-    expect(readFileSync(providerPaths.keyPool(), 'utf8')).toContain(K1)
+    expect(readFileSync(keyPoolPaths.pool(), 'utf8')).toContain(K1)
   })
 
   test('a cooldown and a binding hold in a fresh process (restart)', async () => {
@@ -681,7 +681,7 @@ describe('the state on disk', () => {
       ['k3', 'ok'],
     ])
     // Positive control: the same fresh process with the cooldown gone picks k1.
-    rmSync(providerPaths.keyPoolState())
+    rmSync(keyPoolPaths.state())
     expect(run('newer-session').key).toBe('k1')
   }, 30_000)
 
