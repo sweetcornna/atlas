@@ -90,8 +90,11 @@ import {
   CLOUD_DEVICE,
   encodeResultContent,
   FIELD_MAX_BYTES,
+  HANDOFF_AGENT,
+  HANDOFF_SEND_KIND,
   type HandoffManifest,
   type HandoffResult,
+  handoffNodeAddress,
   isTaskId,
   OversizedFileError,
   redactHandoffText,
@@ -111,7 +114,6 @@ import {
   createTaskResult,
   errorCodeForPeer,
   errorReply,
-  formatAddress,
   isTaskResultPayload,
   MessageType,
   NOTICE_TRUST_VERIFIED_CAPABILITY,
@@ -143,9 +145,6 @@ import {
 } from './handoffTranscript.js'
 import { residentOptionValue } from './residentArgs.js'
 
-/** The agent segment of the bridge's address: `qianmo://<node>/handoff`. */
-export const HANDOFF_AGENT = 'handoff'
-
 const DEFAULT_PORT = 38_630
 const DEFAULT_BIND = '127.0.0.1'
 /** 150 MiB of anonymous memory, in the kB `/proc/<pid>/status` counts in. */
@@ -165,11 +164,6 @@ const RECENT_ROUNDS_MAX_BYTES = 96 * 1024
 /** Directory under the app-server's `$HOME/.claude/projects/`. */
 const IMPORT_PROJECT = 'qianmo-import'
 const BWRAP_PROBE_TIMEOUT_MS = 10_000
-
-/** `qianmo://<node>/handoff`. */
-export function handoffNodeAddress(node: string): string {
-  return formatAddress({ node, agent: HANDOFF_AGENT })
-}
 
 // ─── Arguments ───────────────────────────────────────────────────────
 
@@ -819,8 +813,6 @@ interface StoredResult {
   readonly reply: TaskResultInput
 }
 
-const SEND_KIND = 'handoff.send'
-
 const PROTOCOL_ERROR_CODES: ReadonlySet<unknown> = new Set(
   Object.values(ProtocolErrorCode),
 )
@@ -1242,7 +1234,7 @@ export async function startHandoffNode(
             createTaskResult(queued.message, address, {
               outcome: 'completed',
               content: JSON.stringify({
-                kind: SEND_KIND,
+                kind: HANDOFF_SEND_KIND,
                 task: task.taskId,
                 seq: queued.seq,
                 turnId,
@@ -1703,7 +1695,7 @@ export async function startHandoffNode(
         createTaskResult(message, address, {
           outcome: 'completed',
           content: JSON.stringify({
-            kind: SEND_KIND,
+            kind: HANDOFF_SEND_KIND,
             task: taskId,
             seq,
             turnId: seen,
@@ -1757,7 +1749,7 @@ export async function startHandoffNode(
     const kind = isRecord(message.payload) ? message.payload.kind : undefined
     if (kind === 'handoff') {
       await onHandoff(message, context)
-    } else if (kind === SEND_KIND) {
+    } else if (kind === HANDOFF_SEND_KIND) {
       onSend(message, context)
     } else {
       refuse(

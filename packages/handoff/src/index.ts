@@ -15,6 +15,8 @@
 export {
   CLOUD_DEVICE,
   FIELD_MAX_BYTES,
+  HANDOFF_AGENT,
+  HANDOFF_SEND_KIND,
   HANDOFF_TOOLS,
   HandoffValidationError,
   MANIFEST_KIND,
@@ -23,6 +25,7 @@ export {
   RESULT_STATUSES,
   decodeResultContent,
   encodeResultContent,
+  handoffNodeAddress,
   isIsoInstant,
   isSha,
   isTaskId,

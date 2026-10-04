@@ -17,7 +17,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/manifest.ts` | 接力清单类型与校验；`refs/qianmo/...` 三类引用的构造与解析；`task.result.content` 的 JSON 编解码 |
+| `src/manifest.ts` | 接力清单类型与校验；`refs/qianmo/...` 三类引用的构造与解析；`task.result.content` 的 JSON 编解码；节点桥地址与 send 的 payload 标记（中枢与节点共用） |
 | `src/shadow.ts` | 影子提交 `shadowCommit`，以及只算树不提交的 `shadowTree`（AC-H1 核对用） |
 | `src/session.ts` | 会话文件 → 单文件树 → 提交（父为上一次的会话提交） |
 | `src/redact.ts` | 会话文件的接力专用脱敏层：在 `redactSecrets` 之后再跑一遍，通用 `sk-` / `sk_` key、控制台令牌 `qmu_` / `qmi_` / `qms_`、`Authorization: Bearer`、`"api_key"` 字段，命中换成 `***` |
@@ -38,6 +38,7 @@ validateResult(value: unknown): ValidationResult<HandoffResult>
 encodeResultContent(result: HandoffResult): string                    // 不合法则抛 HandoffValidationError
 decodeResultContent(content: string): ValidationResult<HandoffResult>
 wipRef(device, branch) / sessionRef(device, sessionId) / taskBranch(taskId) / taskRef(taskId)
+handoffNodeAddress(node)    // qianmo://<node>/handoff：节点桥只在这个地址上听，中枢往这里发；send 的 payload kind 是 HANDOFF_SEND_KIND
 parseQianmoRef(ref: unknown): QianmoRef | null                        // 只认 wip / session / task 三类
 
 // 影子提交

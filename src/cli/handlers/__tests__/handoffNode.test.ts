@@ -27,6 +27,7 @@ import { generateNodeKeyPair } from '@qianmo/capability'
 import {
   decodeResultContent,
   type HandoffManifest,
+  handoffNodeAddress,
   sessionRef,
   taskBranch,
 } from '@qianmo/handoff'
@@ -46,7 +47,6 @@ import {
   checkBwrap,
   HandoffNodeRefusal,
   handoffBrief,
-  handoffNodeAddress,
   importableClaudeCodeTranscript,
   NODE_REFERENCE_HOOK,
   parseHandoffNodeArgs,
