@@ -121,8 +121,17 @@ export const CONSOLE_CSS = `
      backdrop that flips with them stops being a backdrop. */
   --color-scrim: #2e2b25;
 
-  --color-muted: color-mix(in srgb, var(--color-text) 55%, transparent);
-  --color-quiet: color-mix(in srgb, var(--color-text) 70%, transparent);
+  /* Secondary text. 68% is the least that keeps 4.5:1 on every ground the
+     sheet paints, in both schemes - the tag pill over the surface is the
+     darkest (B1, test/browser/contrast.browser.test.ts). */
+  --color-muted: color-mix(in srgb, var(--color-text) 68%, transparent);
+  --color-quiet: color-mix(in srgb, var(--color-text) 74%, transparent);
+  /* A fill with --color-bg text on it: the primary button, the current nav
+     item, the checked segment. The brand accent itself is 3.0:1 under light
+     text, so the fill is its 700 step in light and the accent in dark. */
+  --color-accent-fill: var(--color-accent-700);
+  --color-accent-fill-hover: var(--color-accent-800);
+  --color-accent-fill-active: var(--color-accent-900);
 
   --font-body: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-heading: var(--font-body);
@@ -188,6 +197,10 @@ export const CONSOLE_CSS = `
 
     --color-scrim: #050403;
 
+    --color-accent-fill: var(--color-accent);
+    --color-accent-fill-hover: var(--color-accent-600);
+    --color-accent-fill-active: var(--color-accent-700);
+
     --shadow-sm: 0 0 0 1px color-mix(in srgb, #f5ead8 10%, transparent);
     --shadow-md: 0 0 0 1px color-mix(in srgb, #f5ead8 11%, transparent), 0 3px 12px color-mix(in srgb, #050403 45%, transparent);
     --shadow-lg: 0 0 0 1px color-mix(in srgb, #f5ead8 13%, transparent), 0 16px 40px color-mix(in srgb, #050403 55%, transparent);
@@ -238,11 +251,11 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
 .note { font-size: 12.5px; color: var(--color-muted); }
 .kicker {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--color-accent);
+  color: var(--color-accent-700);
 }
 .flabel {
   font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+  color: var(--color-muted);
 }
 .stack { display: flex; flex-direction: column; gap: var(--space-3); }
 .rowx { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
@@ -343,7 +356,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .nav-group-name {
   padding: 0 var(--space-3) var(--space-1);
   font-size: 11px; letter-spacing: .08em;
-  color: color-mix(in srgb, var(--color-text) 55%, transparent);
+  color: var(--color-muted);
 }
 .nav-item {
   display: flex; align-items: center; gap: var(--space-2);
@@ -352,14 +365,15 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   transition: background-color 150ms ease, color 150ms ease;
 }
 .nav-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
-.nav-item[aria-current="page"] { background: var(--color-accent); color: var(--color-bg); }
-.nav-item .cnt { margin-left: auto; font-size: 11px; opacity: .75; }
+.nav-item[aria-current="page"] { background: var(--color-accent-fill); color: var(--color-bg); }
+.nav-item .cnt { margin-left: auto; font-size: 11px; color: var(--color-muted); }
+.nav-item[aria-current="page"] .cnt { color: inherit; }
 .nav-tag {
   margin-left: auto; padding: 0 7px; border-radius: 999px; font-size: 10.5px;
   background: color-mix(in srgb, var(--color-text) 8%, transparent);
-  color: color-mix(in srgb, var(--color-text) 62%, transparent);
+  color: var(--color-quiet);
 }
-.nav-item[aria-current="page"] .nav-tag { background: color-mix(in srgb, var(--color-bg) 22%, transparent); color: inherit; }
+.nav-item[aria-current="page"] .nav-tag { background: color-mix(in srgb, var(--color-text) 22%, transparent); color: inherit; }
 
 /* ---- a page that is not there yet, and a page that failed ---- */
 .stub {
@@ -372,7 +386,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-3); }
 /* Two short lines that wrap, not one line that ellipses: at 430px the instance
    label used to run off the panel and take the controls with it. */
-.inst { font-size: 11.5px; line-height: 1.45; color: color-mix(in srgb, var(--color-text) 60%, transparent); }
+.inst { font-size: 11.5px; line-height: 1.45; color: var(--color-muted); }
 .inst b {
   display: block; font-weight: 700; font-size: 12px;
   color: color-mix(in srgb, var(--color-text) 84%, transparent);
@@ -419,8 +433,8 @@ a.brand-cn:hover { color: var(--color-accent-700); }
   border-radius: calc(var(--radius-lg) * 1.15);
   min-width: 0;
 }
-.card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); }
-.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.card-kicker { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent-700); }
+.card-meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-muted); }
 .elev-sm { box-shadow: var(--shadow-sm); }
 .elev-md { box-shadow: var(--shadow-md); }
 .elev-lg { box-shadow: var(--shadow-lg); }
@@ -462,7 +476,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .tone-muted { color: var(--color-muted); }
 .total { color: var(--color-text); font-weight: 600; }
 .ttl { color: var(--color-muted); }
-.sep { color: var(--color-neutral-500); }
+.sep { color: var(--color-muted); }
 
 /* ---- status: four states, four shapes ---- */
 .state { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; max-width: 100%; }
@@ -481,7 +495,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 /* ---- the address, with its agent segment as a pill ---- */
 .addr {
   font-family: var(--font-mono); font-size: 12.5px;
-  color: color-mix(in srgb, var(--color-text) 52%, transparent);
+  color: var(--color-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   min-width: 0; max-width: 100%;
 }
@@ -614,7 +628,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 
 .hintline {
   display: inline-flex; align-items: center; gap: 7px;
-  font-size: 12px; color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  font-size: 12px; color: var(--color-muted);
   min-width: 0;
 }
 .hintline .mono { overflow: hidden; text-overflow: ellipsis; }
@@ -648,7 +662,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 }
 .seg-opt input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .seg-opt + .seg-opt { border-left: 1px solid var(--color-divider); }
-.seg-opt:has(input:checked) { background: var(--color-accent); color: var(--color-bg); }
+.seg-opt:has(input:checked) { background: var(--color-accent-fill); color: var(--color-bg); }
 .seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .seg-opt:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 
@@ -663,9 +677,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 .btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; }
-.btn-primary { background: var(--color-accent); color: var(--color-bg); }
-.btn-primary:hover { background: var(--color-accent-600); }
-.btn-primary:active { background: var(--color-accent-700); }
+.btn-primary { background: var(--color-accent-fill); color: var(--color-bg); }
+.btn-primary:hover { background: var(--color-accent-fill-hover); }
+.btn-primary:active { background: var(--color-accent-fill-active); }
 .btn-secondary { border-color: var(--color-divider); }
 .btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .btn-secondary:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
@@ -729,7 +743,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .trail { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .trail th {
   text-align: left; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
-  color: color-mix(in srgb, var(--color-text) 58%, transparent);
+  color: var(--color-muted);
   padding: var(--space-2); border-bottom: 1px solid var(--color-divider);
   font-weight: 400; white-space: nowrap;
 }
@@ -751,7 +765,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 
 /* ---- limits ---- */
 .limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); }
-.col-name { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent); margin: 0; }
+.col-name { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-accent-700); margin: 0; }
 .col-src { font-size: 12.5px; color: var(--color-muted); margin: 0 0 var(--space-3); font-family: var(--font-mono); }
 .dl { margin: 0; }
 .lim-row {
@@ -815,7 +829,7 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
   padding: calc(var(--space-8) * 1.1) var(--space-6) calc(var(--space-8) * 1.1) var(--space-4);
 }
 .empty-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 24px; line-height: 1.15; margin: 0; }
-.empty-note { font-size: 14px; color: color-mix(in srgb, var(--color-text) 62%, transparent); max-width: 46ch; margin: 0; }
+.empty-note { font-size: 14px; color: var(--color-quiet); max-width: 46ch; margin: 0; }
 .empty-art { justify-self: end; }
 .legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12.5px; color: var(--color-muted); }
 
@@ -915,7 +929,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   font-size: 13px; line-height: 1.35; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
-.chat-item-meta { display: block; font-size: 11px; margin-top: 3px; color: color-mix(in srgb, var(--color-text) 52%, transparent); }
+.chat-item-meta { display: block; font-size: 11px; margin-top: 3px; color: var(--color-muted); }
 
 /* A turn: a round avatar in a 34px track, then the head, bubble and marks. */
 .turn { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: var(--space-3); max-width: 800px; }
@@ -927,7 +941,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .turn-operator .turn-av { background: var(--color-accent-200); color: var(--color-accent-800); }
 .turn-head { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
 .turn-who { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 14px; }
-.turn-when { font-size: 11.5px; font-family: var(--font-mono); color: color-mix(in srgb, var(--color-text) 48%, transparent); }
+.turn-when { font-size: 11.5px; font-family: var(--font-mono); color: var(--color-muted); }
 .bubble {
   background: var(--color-surface); border-radius: calc(var(--radius-lg) * 1.15);
   padding: var(--space-3) var(--space-4); font-size: 14.5px; line-height: 1.6;
@@ -962,7 +976,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 .turn-notice { align-items: start; }
 .turn-av-notice { background: none; width: 34px; height: 22px; }
 .notice-line { display: flex; align-items: baseline; gap: var(--space-2); min-height: 22px; }
-.notice-text { font-size: 13px; color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+.notice-text { font-size: 13px; color: var(--color-muted); }
 .notice-detail { margin-top: 2px; }
 .notice-detail > summary { font-size: 12px; color: var(--color-muted); cursor: pointer; list-style: none; display: flex; align-items: center; gap: 4px; }
 .notice-detail > summary::-webkit-details-marker { display: none; }
@@ -972,7 +986,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
    而一个会呼吸的点是装饰，不是这条尾巴要说的那件事：说话的是「还在跑」四个字
    和旁边那个一直在涨的秒数。 */
 .tail-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-500); }
-.turn-tail .notice-text { color: color-mix(in srgb, var(--color-text) 52%, transparent); }
+.turn-tail .notice-text { color: var(--color-muted); }
 .notice-detail-body { margin: var(--space-2) 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: color-mix(in srgb, var(--color-text) 72%, transparent); }
 
 /* The delivery chain: three facts and the links between them. */
@@ -1021,7 +1035,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 }
 .tokrow { display: flex; align-items: center; gap: var(--space-2); font-size: 12.5px; color: var(--color-quiet); }
 .tokrow .tag { flex: none; }
-.foot { font-size: 11.5px; color: color-mix(in srgb, var(--color-text) 50%, transparent); }
+.foot { font-size: 11.5px; color: var(--color-muted); }
 
 /* ---- narrow ---- */
 @media (max-width: 1000px) {

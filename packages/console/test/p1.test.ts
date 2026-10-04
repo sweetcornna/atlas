@@ -9,6 +9,7 @@
 
 import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
+import { CONSOLE_CSS } from '../src/assets/css.js'
 import type {
   AuditPage,
   ConsoleAbout,
@@ -393,5 +394,124 @@ describe('A4 · the settings page says which console this is', () => {
     const html = await settings(ADMIN)
     expect(html).toContain('>实例<')
     expect(html).not.toContain('>构建<')
+  })
+})
+
+describe('B1 · the token pairs keep 4.5:1, in both schemes, without a browser', () => {
+  // The browser test (`browser/contrast.browser.test.ts`) measures every text
+  // on every page; this holds the token table itself where Chrome is absent.
+  type Rgb = readonly [number, number, number]
+
+  function tokens(block: string): Map<string, string> {
+    const out = new Map<string, string>()
+    for (const match of block.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)) {
+      out.set(match[1] ?? '', (match[2] ?? '').trim())
+    }
+    return out
+  }
+
+  const light = tokens(CONSOLE_CSS.slice(0, CONSOLE_CSS.indexOf('@media')))
+  const darkBlock = CONSOLE_CSS.slice(
+    CONSOLE_CSS.indexOf('@media (prefers-color-scheme: dark)'),
+  )
+  const dark = new Map([
+    ...light,
+    ...tokens(darkBlock.slice(0, darkBlock.indexOf('\n}\n'))),
+  ])
+
+  function hex(value: string): Rgb {
+    const h = value.replace('#', '')
+    return [0, 2, 4].map(i =>
+      Number.parseInt(h.slice(i, i + 2), 16),
+    ) as unknown as Rgb
+  }
+
+  /** A token's colour, with `var()` followed and `color-mix(… transparent)` laid over `ground`. */
+  function colour(table: Map<string, string>, name: string, ground: Rgb): Rgb {
+    const value = table.get(name) ?? ''
+    const ref = /^var\(--([a-z0-9-]+)\)$/.exec(value)
+    if (ref) return colour(table, ref[1] ?? '', ground)
+    const mix =
+      /^color-mix\(in srgb, var\(--([a-z0-9-]+)\) (\d+)%, transparent\)$/.exec(
+        value,
+      )
+    if (mix) {
+      const ink = colour(table, mix[1] ?? '', ground)
+      const a = Number(mix[2]) / 100
+      return ink.map(
+        (v, i) => v * a + (ground[i] ?? 0) * (1 - a),
+      ) as unknown as Rgb
+    }
+    return hex(value)
+  }
+
+  function ratio(a: Rgb, b: Rgb): number {
+    const lum = (c: Rgb) =>
+      c
+        .map(v => {
+          const s = v / 255
+          return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+        })
+        .reduce((sum, v, i) => sum + v * ([0.2126, 0.7152, 0.0722][i] ?? 0), 0)
+    const [l1, l2] = [lum(a), lum(b)]
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+  }
+
+  /** [text token, ground token] pairs the sheet actually paints. */
+  const PAIRS: readonly (readonly [string, string])[] = [
+    ['color-text', 'color-bg'],
+    ['color-text', 'color-surface'],
+    ...[
+      'color-bg',
+      'color-surface',
+      'color-neutral-100',
+      'color-neutral-200',
+      'color-neutral-300',
+    ].flatMap(
+      ground =>
+        [
+          ['color-muted', ground],
+          ['color-quiet', ground],
+        ] as const,
+    ),
+    ['color-accent-700', 'color-bg'],
+    ['color-accent-700', 'color-surface'],
+    ['color-bg', 'color-accent-fill'],
+    ['color-bg', 'color-accent-fill-hover'],
+    ['color-bg', 'color-accent-fill-active'],
+    ['color-accent-800', 'color-accent-100'],
+    ['color-accent-2-800', 'color-bg'],
+    ['color-accent-2-800', 'color-accent-2-200'],
+    ['color-critical', 'color-bg'],
+  ]
+
+  for (const [scheme, table] of [
+    ['light', light],
+    ['dark', dark],
+  ] as const) {
+    test(scheme, () => {
+      const short: string[] = []
+      for (const [ink, ground] of PAIRS) {
+        const under = colour(table, ground, [0, 0, 0])
+        const value = ratio(colour(table, ink, under), under)
+        if (value < 4.5) short.push(`${ink} on ${ground}: ${value.toFixed(2)}`)
+      }
+      expect(short).toEqual([])
+    })
+  }
+
+  test('positive control: the old values would fail', () => {
+    const old = new Map(light)
+    old.set(
+      'color-muted',
+      'color-mix(in srgb, var(--color-text) 55%, transparent)',
+    )
+    old.set('color-accent-fill', 'var(--color-accent)')
+    const surface = colour(old, 'color-surface', [0, 0, 0])
+    expect(ratio(colour(old, 'color-muted', surface), surface)).toBeLessThan(
+      4.5,
+    )
+    const fill = colour(old, 'color-accent-fill', [0, 0, 0])
+    expect(ratio(colour(old, 'color-bg', fill), fill)).toBeLessThan(4.5)
   })
 })

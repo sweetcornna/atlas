@@ -2304,7 +2304,9 @@ describe('assets', () => {
     expect(CONSOLE_CSS).not.toContain('#D77757')
     expect(CONSOLE_CSS).toContain('outline: 2px solid var(--color-accent);')
     const primary = ruleOf('.btn-primary')
-    expect(primary).toContain('background: var(--color-accent)')
+    // The fill token: accent-700 in light, the accent in dark, so its light
+    // label keeps 4.5:1 (B1, contrast.browser.test.ts).
+    expect(primary).toContain('background: var(--color-accent-fill)')
   })
 
   test('the danger action is terracotta, never a pure red, and never a resting state', () => {
@@ -2377,7 +2379,8 @@ describe('assets', () => {
     const kicker = ruleOf('.kicker')
     expect(kicker).toContain('font-size: 10px')
     expect(kicker).toContain('text-transform: uppercase')
-    expect(kicker).toContain('color: var(--color-accent)')
+    // The 700 step: the accent itself is 3.0:1 on the light ground (B1).
+    expect(kicker).toContain('color: var(--color-accent-700)')
   })
 
   test('a closed dialog stays closed: display is only ever set on [open]', () => {
