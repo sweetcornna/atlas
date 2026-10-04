@@ -5,8 +5,8 @@
 
 阡陌控制面板：一个跑在本机环回地址上的控制台，用来**看**这张网络、并对它做**少数几件事**。
 
-- **看**：在线节点名册（能力、心跳、租约到期）、审计轨迹（可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、协议与运行时的各项上限。
-- **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒。页面上注册成功的条目由 host 侧的 `occ console` 记进登记簿并持续续租，直到在页面上注销（`docs/dev/console.md` §7.3）；本包只看到一个 `RegistryPort`。
+- **看**：在线节点名册（能力、心跳、租约到期）与每台节点的详情页（概览、智能体、生命周期、模型四个页签）、审计轨迹（最新的在上、游标翻页、一个搜索框、可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、告警、值守作业、协议与运行时的各项上限。
+- **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒，以及生命周期的发布、暂停、恢复、退役（每个都先过确认框）。页面上注册成功的条目由 host 侧的 `occ console` 记进登记簿并持续续租，直到在页面上注销或暂停（`docs/dev/console.md` §7.3）；本包只看到 `RegistryPort` 与 `LifecyclePort`。
 
 页面是服务端渲染的 HTML，每个区域一页、套同一个外壳，外加几个可局部刷新的片段；没有构建步骤、没有第三方依赖、不打包任何外部资源（`test/dependencies.test.ts` 钉住）。
 
@@ -32,46 +32,7 @@ const handle = createConsoleHandler(deps, tokens)
 
 ## 路由表
 
-| 方法 | 路径 | 角色 | 返回 |
-| --- | --- | --- | --- |
-| GET | `/` | view | `text/html`，总览 |
-| GET | `/nodes`、`/nodes/<节点>` | view | `text/html`，节点名册 |
-| GET | `/audit`、`/audit/trace/<traceId>` | view | `text/html`，审计轨迹与单条消息链 |
-| GET | `/servers`、`/settings` | view | `text/html`，服务器、设置与关于 |
-| GET | `/chat` | **admin** | `text/html`，对话面；没接对话通道时 404 |
-| GET | `/alerts?level=&state=`、`/jobs` | view | `text/html`，告警收件箱与值守作业（`docs/dev/console.md` §10.4） |
-| GET | `/access`、`/access/{invites,sessions,actions}` | view | `text/html`，账号与访问 · 操作记录；`invites`、`sessions` 只给 admin 令牌与 `ops` 账号，其他人 403 页（`docs/dev/console.md` §5.3） |
-| GET | `/providers`、`/providers/{new,import}`、`/providers/profiles/<id>`、`/providers/nodes/<节点>` | view | `text/html`，模型服务（`docs/dev/console.md` §5.4）；没开 `--providers` 时一行「模型服务未开启」 |
-| GET | `/approvals`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
-| GET | `/assets/app.css` | 公开 | `text/css` |
-| GET | `/assets/app.js` | 公开 | `text/javascript` |
-| GET | `/v0/health` | 公开 | `{ status: 'ok' }` |
-| GET | `/v0/agents` | view | `{ agents }` |
-| POST | `/v0/agents` | **admin** | 注册，返回 `ConsoleAgent` |
-| DELETE | `/v0/agents/<urlencoded address>` | **admin** | 204 |
-| POST | `/v0/agents/<urlencoded address>/heartbeat` | **admin** | `ConsoleAgent` |
-| GET | `/v0/audit?source=&outcome=&traceId=&taskId=&agent=&from=&to=&limit=` | view | `AuditPage` |
-| GET | `/v0/audit/chain/<urlencoded traceId>` | view | `{ chain }`（可为 `null`） |
-| GET | `/v0/limits` | view | `LimitsSnapshot` |
-| POST | `/v0/wake` | **admin** | `WakeOutcome`；没有唤醒通道时 501 |
-| GET | `/v0/alerts?level=&state=` | view | `{ unread, total, alerts, sources }` |
-| POST | `/v0/alerts/<urlencoded id>/ack` | **admin** | `{ ack, unread }`；id 不在当前收件箱时 404，没有 `NotifyPort` 时 501 |
-| GET | `/v0/jobs` | view | `SchedulerSnapshot`；没有 `SchedulerPort` 时 501 |
-| GET | `/v0/accounts` | **ops / admin** | `{ accounts, invites }`；每个账号带 `lastLoginAt`、`lastSeenAt`（没有就是 `null`）与 `streams`（此刻的事件流数） |
-| POST | `/v0/accounts/invites` | **ops / admin** | `{ inviteId, role, expiresAt, link }` |
-| DELETE | `/v0/accounts/invites/<id>` | **ops / admin** | 204 |
-| POST | `/v0/accounts/<urlencoded subject>/revoke` | **ops / admin** | 204 |
-| POST | `/v0/accounts/<urlencoded subject>/reset` | **ops / admin** | `{ subject, inviteId, expiresAt, link }` |
-| POST | `/v0/accounts/<urlencoded subject>/logout` | **ops / admin** | `{ subject, sessions, streams }`，强制下线；`subject` 段解码失败时 400 `invalid` |
-| GET | `/v0/actions?subject=&action=&target=&before=&limit=`、`/v0/actions/reads?session=` | 个人账号、admin | `ActionPage`；`viewer`、`member` 只拿到自己的，view 令牌 403 |
-| GET | `/v0/providers`、`/v0/providers/catalog`、`/v0/providers/profiles/<id>`、`/v0/providers/nodes/<节点>` | view | `ProviderOverview`、`ProviderCatalog`、`ProviderProfileView`、`ProviderNodeView`；不是写者时去掉指纹、完整 Base URL 与漂移键名；没有 `ProviderPort` 时 501 |
-| POST、PUT、DELETE | `/v0/providers/…`：档案、密钥、`skip-probe`、默认、指派、上下文、刷新、自动压缩、下发、测连、模型列表、预览、导入 | **`ops` 个人账号** | 逐条见 `docs/dev/console.md` §5；失败码 `invalid` 400、`not_found` 404、`conflict` / `in_use` 409、`rejected` 403、`refused` 422、`unreachable` 502、`unavailable` 503 |
-| GET | `/v0/providers/export?id=` | **`ops` 个人账号** | 附件，不含密钥与指纹 |
-| GET | `/fragments/{roster,audit,limits}` | view | `text/html` 片段 |
-| GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | `text/html` 片段 |
-| GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | `text/html` 片段 |
-| GET | `/fragments/chain/<urlencoded traceId>` | view | `text/html` 片段，一条消息链 |
-| GET | `/fragments/providers/{board,chat?target=}`、`/fragments/providers/node/<节点>`、`/fragments/providers/profiles/<id>/nodes` | view | `text/html` 片段；`node/<节点>` 是节点「模型」页签的正文 |
+完整的路由表只在一处：[`docs/dev/console.md`](../../docs/dev/console.md) §5（`test/routeDocs.test.ts` 双向扫描它与实际路由，多一条少一条都会红）。这里不再复制一份。模型服务的页面、`/v0/providers…` 与 `/fragments/providers/…` 见该文 §5 的表与 §5.4，节点详情与生命周期页见 §5.5，消息链的翻页与增量轮询见 §5.6。
 
 约定：
 
@@ -85,6 +46,8 @@ const handle = createConsoleHandler(deps, tokens)
 - 两个 assets 路由公开：浏览器不会给页面里的 `<link>` / `<script>` 带上凭据，锁上它们只会得到一张没有样式的页面；这两个文件是编译进来的常量，不含任何实例数据。
 
 ## 鉴权模型
+
+> 本节是 M0 时的形态，原文保留。登录页与会话 cookie（`docs/dev/console.md` §4.1、§5.1）、个人账号（§8.1.1）以后的现行模型以该文为准；下文「刻意不用 cookie」一条已不成立：浏览器登录后持有会话 cookie，挡 CSRF 的改为 `X-Qianmo-Console` 头——除页面文档与事件流以外，每条要凭据的路由单凭 cookie 都不够（§5.1）。
 
 **两个 token，不是一个带 scope 字段的 token。**
 

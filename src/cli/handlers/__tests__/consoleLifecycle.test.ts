@@ -449,6 +449,10 @@ describe('the managed list (DoD ⑤)', () => {
  */
 async function expectClosed(h: ReturnType<typeof harness>): Promise<void> {
   expect(h.ledger.problem).not.toBeNull()
+  // 页面靠这一项分辨「出口全关」与「只是写不进去」。
+  const seen = await h.ledger.lifecycle.read()
+  expect(seen.problem).toBe(h.ledger.problem)
+  expect(seen.problemKind).toBe('unreadable')
   expect(h.lines).toHaveLength(1)
   expect(h.lines[0]).toContain('console registrations:')
   expect(h.lines[0]).toContain('publishing and resuming are refused')
@@ -614,6 +618,10 @@ describe('a ledger that cannot be read is fail-closed (DoD ④)', () => {
       )
       // 内存里的簿是完整的：没被暂停的地址照常放行。
       expect(h.ledger.exitRefusal(REVIEWER)).toBeNull()
+      // 读面说的是「写不进去」，页面据此不把出口说成全关。
+      const seen = await h.ledger.lifecycle.read()
+      expect(seen.problem).not.toBeNull()
+      expect(seen.problemKind).toBe('unwritable')
     } finally {
       chmodSync(dirname(h.path), 0o700)
     }

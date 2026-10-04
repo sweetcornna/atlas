@@ -6,8 +6,13 @@
  * deregister, heartbeat, wake, and the lifecycle — pause, resume, retire
  * (P15.2, `tenancy-m1.md` §3.6).
  *
- * Owns the `/nodes` and `/nodes/<node>` pages, `/v0/agents/…`,
- * `/v0/registrations`, `/v0/wake` and `/fragments/roster`.
+ * Owns the `/nodes` page and one node's four tabs — `/nodes/<node>` (概览),
+ * `/nodes/<node>/agents`, `/nodes/<node>/lifecycle` and
+ * `/nodes/<node>/models` (A3, J2; `view/node.ts`) — `/v0/agents/…`,
+ * `/v0/registrations`, `/v0/wake`, `/fragments/roster` and
+ * `/fragments/lifecycle/<node>`. The 「模型」 tab's content is the providers
+ * area's (`/fragments/providers/node/<node>`); this module only gives it a
+ * place.
  *
  * ## The lifecycle writes are ops writes
  *
@@ -21,9 +26,18 @@
  * ## Register and wake are this page's actions
  *
  * They used to be two forms at the bottom of the one long page, five screens
- * under the roster they act on. They are now the top bar's two buttons here,
- * each opening its form in a `<dialog>` over the roster (§6.4), and the
- * deregister and wake confirmations are dialogs on the same page.
+ * under the roster they act on. They are now the top bar's buttons here and
+ * on every node's page, each opening its form in a `<dialog>` (§6.4), and the
+ * deregister and wake confirmations are dialogs on the same page. With a
+ * managed list 注册节点 becomes 发布: the address is picked from the list and
+ * the endpoint is the hub's (`tenancy-m1.md` §3.6).
+ *
+ * ## The lifecycle page reads the ledger, and writes only through the routes
+ *
+ * `/nodes/<node>/lifecycle` is drawn from `GET /v0/registrations`'s source,
+ * the lifecycle port's snapshot, and the roster. Its four actions each open a
+ * confirmation and then call the routes below, which ask the action ledger
+ * and record exactly once; the page itself records nothing.
  *
  * ## A wake target is chosen from the startup list, never supplied
  *
@@ -63,8 +77,29 @@ import {
   wakeDialog,
   wakeTargetOptions,
 } from '../view/agents.js'
+import { renderAuditExcerpt } from '../view/audit.js'
 import { icon } from '../view/bits.js'
-import { attr } from '../view/escape.js'
+import { certificateIndex } from '../view/certificates.js'
+import { attr, escapeHtml } from '../view/escape.js'
+import {
+  LIFECYCLE_NO_SCRIPT,
+  NODE_PAGE_CSS,
+  NODE_PAGE_JS,
+  lifecycleDialogs,
+  nodeOf,
+  nodeTabLabel,
+  nodeTabPath,
+  publishDialog,
+  publishable,
+  renderLedgerOnly,
+  renderLifecycle,
+  renderModelsTab,
+  renderNodeOverview,
+  renderNodeTabs,
+  type LifecycleModel,
+  type NodeOverviewModel,
+  type NodeTab,
+} from '../view/node.js'
 import {
   DEFAULT_BIN_NAME,
   canWrite,
@@ -77,7 +112,6 @@ import {
   requiredString,
   safeDecode,
   textParam,
-  underPath,
   valueOf,
   type Parsed,
 } from './shared.js'
@@ -549,20 +583,34 @@ function wakeEnabled(deps: ConsoleDeps): boolean {
 }
 
 /**
- * The two dialogs and two confirmations, rendered once, outside the polled
- * roster: a dialog inside a region the poller replaces would be replaced out
- * from under whoever is filling it in.
+ * What the top bar offers to add an agent: the register form, or — with a
+ * managed list — 发布 with the addresses still to publish (`null`: no list).
+ */
+interface AddAction {
+  readonly register: boolean
+  readonly publish: readonly string[] | null
+}
+
+/**
+ * The dialogs and confirmations, rendered once, outside the polled regions: a
+ * dialog inside a region the poller replaces would be replaced out from under
+ * whoever is filling it in.
  */
 function nodeDialogs(
   ctx: RouteContext,
   agents: readonly ConsoleAgent[] | null,
-  withRegister: boolean,
+  add: AddAction,
 ): string {
   const { deps, now } = ctx
   // Nothing to open for a caller with nothing they may submit.
   if (!canWrite(ctx.access)) return ''
+  const withRegister = add.register && add.publish === null
   return (
     (withRegister ? registerDialog() : '') +
+    (add.publish !== null && add.publish.length > 0
+      ? publishDialog(add.publish)
+      : '') +
+    (deps.lifecycle === undefined ? '' : lifecycleDialogs()) +
     wakeDialog({
       enabled: wakeEnabled(deps),
       targetOptions: wakeTargetOptions(agents, now, deps.limits.registryTtlMs),
@@ -578,22 +626,32 @@ function nodeDialogs(
 }
 
 /**
- * The top bar's actions: 唤醒 and 注册节点 for a caller who may use them, the
- * read-only line for one who may not (C7).
+ * The top bar's actions: 唤醒, and 注册节点 or 发布, for a caller who may use
+ * them; the read-only line for one who may not (C7). 发布 is drawn only when
+ * there is a managed address left to publish.
  */
-function nodeActions(ctx: RouteContext, withRegister: boolean): string {
+function nodeActions(ctx: RouteContext, add: AddAction): string {
   if (!canWrite(ctx.access)) return readOnlyNote(ctx.accounts !== undefined)
+  const addButton =
+    add.publish !== null
+      ? add.publish.length === 0
+        ? ''
+        : `<button type="button" class="btn btn-primary" ` +
+          `data-open-dialog="publish-dialog" data-write>` +
+          icon('arrow-up', { small: true }) +
+          `发布</button>`
+      : add.register
+        ? `<button type="button" class="btn btn-primary" ` +
+          `data-open-dialog="register-dialog" data-write>` +
+          icon('plus', { small: true }) +
+          `注册节点</button>`
+        : ''
   return (
     `<button type="button" class="btn btn-secondary" ` +
     `data-open-dialog="wake-dialog" data-write>` +
     icon('zap', { small: true }) +
     `唤醒</button>` +
-    (withRegister
-      ? `<button type="button" class="btn btn-primary" ` +
-        `data-open-dialog="register-dialog" data-write>` +
-        icon('plus', { small: true }) +
-        `注册节点</button>`
-      : '')
+    addButton
   )
 }
 
@@ -610,45 +668,215 @@ function rosterRegion(fragment: string, poll: string): string {
   )
 }
 
+/** The ledger, when this console has one. */
+async function snapshotOf(ctx: RouteContext) {
+  return (await ctx.deps.lifecycle?.read()) ?? null
+}
+
+/** What the top bar may add, given the ledger and the agents the roster lists. */
+function addActionOf(
+  snapshot: Awaited<ReturnType<typeof snapshotOf>>,
+  agents: readonly ConsoleAgent[] | null,
+  node?: string,
+): AddAction {
+  return {
+    register: true,
+    publish:
+      snapshot === null || snapshot.managed === null
+        ? null
+        : publishable(snapshot, agents, node),
+  }
+}
+
 async function nodesPage(ctx: RouteContext): Promise<PageRender> {
-  const roster = await rosterFragment(ctx)
+  const [roster, snapshot] = await Promise.all([
+    rosterFragment(ctx),
+    snapshotOf(ctx),
+  ])
+  const add = addActionOf(snapshot, roster.agents)
   return {
     title: '节点',
-    actions: nodeActions(ctx, true),
+    actions: nodeActions(ctx, add),
     body:
       rosterRegion(roster.html, '/fragments/roster') +
-      nodeDialogs(ctx, roster.agents, true),
+      renderLedgerOnly(snapshot, roster.agents) +
+      nodeDialogs(ctx, roster.agents, add),
     poll: true,
   }
 }
 
+/** One node's lifecycle, as the tab and its fragment draw it. */
+async function lifecycleModelOf(
+  ctx: RouteContext,
+  node: string,
+  snapshot?: Awaited<ReturnType<typeof snapshotOf>>,
+): Promise<LifecycleModel> {
+  const [listed, ledger] = await Promise.all([
+    ctx.roster(),
+    snapshot === undefined ? snapshotOf(ctx) : Promise.resolve(snapshot),
+  ])
+  const all = valueOf(listed)
+  return {
+    node,
+    snapshot: ledger,
+    agents: all === null ? null : agentsOfNode(all, node),
+    rosterFailure: failureOf(listed),
+    now: ctx.now,
+    ttlMs: ctx.deps.limits.registryTtlMs,
+    canWrite: canWrite(ctx.access),
+  }
+}
+
 /**
- * One node's page: its card alone, polled on its own.
+ * Whether the console knows this node at all: the roster lists it, the
+ * ledger or the managed list holds an address on it, or the startup flags
+ * name it. A node whose every address is paused is off the roster and still
+ * a page — the one that resumes it.
+ */
+function knownNode(ctx: RouteContext, model: LifecycleModel): boolean {
+  const { node, agents, snapshot } = model
+  if (agents === null || agents.length > 0) return true
+  if (snapshot?.registrations.some(record => nodeOf(record.address) === node)) {
+    return true
+  }
+  if (snapshot?.managed?.some(address => nodeOf(address) === node)) {
+    return true
+  }
+  const { deps } = ctx
+  return (
+    deps.nodeServers?.some(entry => entry.node === node) === true ||
+    deps.wakeTargets?.some(target => target.node === node) === true ||
+    deps.audits?.some(source => source.node === node) === true
+  )
+}
+
+/**
+ * The latest lines of the trail about this node: its own trail when the
+ * console reads one per node, else the console's one trail searched for the
+ * node's name. Absent on a console of several trails with none for it.
+ */
+async function trailExcerpt(
+  ctx: RouteContext,
+  node: string,
+): Promise<NodeOverviewModel['trail']> {
+  const { deps } = ctx
+  const enc = encodeURIComponent(node)
+  if (deps.audits !== undefined) {
+    const source = deps.audits.find(entry => entry.node === node)
+    if (source === undefined) return undefined
+    const result = await source.audit.read({ limit: 10 })
+    return {
+      page: valueOf(result),
+      failure: failureOf(result),
+      html: renderAuditExcerpt(valueOf(result), failureOf(result), node),
+      href: `/audit?node=${enc}`,
+    }
+  }
+  const result = await deps.audit.read({ q: node, limit: 10 })
+  return {
+    page: valueOf(result),
+    failure: failureOf(result),
+    html: renderAuditExcerpt(valueOf(result), failureOf(result)),
+    href: `/audit?q=${enc}`,
+  }
+}
+
+async function overviewOf(
+  ctx: RouteContext,
+  model: LifecycleModel,
+): Promise<string> {
+  const { deps, now } = ctx
+  const node = model.node
+  const [certificates, trail] = await Promise.all([
+    deps.certificates?.read(),
+    trailExcerpt(ctx, node),
+  ])
+  const server = deps.nodeServers?.find(entry => entry.node === node)?.server
+  const certificate =
+    certificates === undefined || !certificates.ok
+      ? undefined
+      : certificateIndex(certificates.value.certificates).get(node)
+  return renderNodeOverview({
+    node,
+    agents: model.agents,
+    rosterFailure: model.rosterFailure,
+    now,
+    ttlMs: deps.limits.registryTtlMs,
+    ...(server === undefined ? {} : { server }),
+    ...(certificate === undefined ? {} : { certificate }),
+    lifecycle: deps.lifecycle === undefined ? null : model,
+    ...(trail === undefined ? {} : { trail }),
+  })
+}
+
+/** The lifecycle tab's polled region. */
+function lifecycleRegion(model: LifecycleModel): string {
+  const noScript =
+    model.canWrite && model.snapshot !== null
+      ? `<noscript><p class="note">${escapeHtml(LIFECYCLE_NO_SCRIPT)}</p></noscript>`
+      : ''
+  return (
+    `<section class="sec" id="lifecycle-section">${noScript}` +
+    `<div id="lifecycle" data-poll="${attr(
+      `/fragments/lifecycle/${encodeURIComponent(model.node)}`,
+    )}">${renderLifecycle(model)}</div></section>`
+  )
+}
+
+/**
+ * One node's page, on one of its four tabs (A3).
  *
- * A node the registry does not list is a 404, not an empty card: the URL
+ * A node the console knows nothing about is a 404, not an empty page: the URL
  * names something, and "nothing is registered under that name" is the
- * answer. A registry that cannot be read is the roster's own failure strip,
- * at 200 — the node may well exist.
+ * answer. A registry that cannot be read is the failure strip at 200 — the
+ * node may well exist.
  */
 async function nodePage(
   ctx: RouteContext,
   node: string,
+  tab: NodeTab,
 ): Promise<PageRender | Response> {
-  const roster = await rosterFragment(ctx, node)
-  if (roster.agents !== null && roster.agents.length === 0) {
-    return notFound(`unknown node: ${node}`)
+  const snapshot = await snapshotOf(ctx)
+  const model = await lifecycleModelOf(ctx, node, snapshot)
+  if (!knownNode(ctx, model)) return notFound(`unknown node: ${node}`)
+  const add = addActionOf(snapshot, model.agents, node)
+  let content: string
+  if (tab === 'agents') {
+    const roster = await rosterFragment(ctx, node)
+    content = rosterRegion(
+      roster.html,
+      `/fragments/roster?node=${encodeURIComponent(node)}`,
+    )
+  } else if (tab === 'lifecycle') {
+    content = lifecycleRegion(model)
+  } else if (tab === 'models') {
+    content = renderModelsTab(node)
+  } else {
+    content = await overviewOf(ctx, model)
   }
   return {
     title: node,
-    crumbs: [{ label: node }],
-    actions: nodeActions(ctx, false),
+    crumbs:
+      tab === 'overview'
+        ? [{ label: node }]
+        : [
+            { label: node, href: nodeTabPath(node, 'overview') },
+            { label: nodeTabLabel(tab) },
+          ],
+    actions: nodeActions(ctx, add),
     body:
-      rosterRegion(
-        roster.html,
-        `/fragments/roster?node=${encodeURIComponent(node)}`,
-      ) + nodeDialogs(ctx, roster.agents, false),
-    poll: true,
+      renderNodeTabs(node, tab) + content + nodeDialogs(ctx, model.agents, add),
+    ...(tab === 'overview' ? {} : { poll: true }),
   }
+}
+
+/** The tab a node page's second segment names; `null` for anything else. */
+function tabOf(segment: string | undefined): NodeTab | null {
+  if (segment === undefined) return 'overview'
+  if (segment === 'agents') return 'agents'
+  if (segment === 'lifecycle') return 'lifecycle'
+  if (segment === 'models') return 'models'
+  return null
 }
 
 export const nodesRoute: RouteModule = {
@@ -660,17 +888,26 @@ export const nodesRoute: RouteModule = {
     icon: 'server',
   },
   page: {
-    match: underPath('nodes', 1),
+    // `/nodes`, `/nodes/<node>`, and `/nodes/<node>/<tab>` for the three
+    // named tabs; anything else under `/nodes` is nobody's page.
+    match(segments) {
+      if (segments[0] !== 'nodes' || segments.length > 3) return null
+      if (segments.length === 3 && tabOf(segments[2]) === null) return null
+      return segments.slice(1)
+    },
     guard: 'view',
     async render(ctx, rest) {
       const node = rest[0]
       if (node === undefined) return await nodesPage(ctx)
+      const tab = tabOf(rest[1])
+      if (tab === null) return notFound(`unknown path: ${ctx.url.pathname}`)
       const name = safeDecode(node)
       return name === null
         ? notFound(`unknown node: ${node}`)
-        : await nodePage(ctx, name)
+        : await nodePage(ctx, name, tab)
     },
-    script: NODES_PAGE_JS,
+    css: NODE_PAGE_CSS,
+    script: NODES_PAGE_JS + NODE_PAGE_JS,
   },
   api: {
     heads: ['agents', 'wake', 'registrations'],
@@ -696,14 +933,20 @@ export const nodesRoute: RouteModule = {
     },
   },
   fragments: {
-    heads: ['roster'],
-    async handle(ctx, _head, rest) {
-      if (rest.length !== 0) {
+    heads: ['roster', 'lifecycle'],
+    async handle(ctx, head, rest) {
+      const lifecycle = head === 'lifecycle' && rest.length === 1
+      if (!lifecycle && !(head === 'roster' && rest.length === 0)) {
         return notFound(`unknown path: ${ctx.url.pathname}`)
       }
       const denied = guard(ctx.access.credential, 'view', 'guarded')
       if (denied !== null) return denied
       if (ctx.request.method !== 'GET') return methodNotAllowed(['GET'])
+      if (lifecycle) {
+        const node = safeDecode(rest[0] ?? '')
+        if (node === null) return notFound(`unknown path: ${ctx.url.pathname}`)
+        return html(renderLifecycle(await lifecycleModelOf(ctx, node)))
+      }
       return html(
         (await rosterFragment(ctx, textParam(ctx.url.searchParams, 'node')))
           .html,

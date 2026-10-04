@@ -610,7 +610,10 @@ describe('renderRoster', () => {
     expect(html.match(/<details class="row"/g)).toHaveLength(3)
     // The agent segment of every address is a pill — the signature element.
     expect(html).toContain('qianmo://node-a/<b>one</b>')
-    expect(html).toContain('<span class="grp-name">node-a</span>')
+    // The name is the way to the node's own page (A3).
+    expect(html).toContain(
+      '<span class="grp-name"><a href="/nodes/node-a" data-nav>node-a</a></span>',
+    )
     // Native disclosure, so a row opens with the script disabled.
     expect(html).toContain('<summary>')
     expect(html).not.toContain('<table')
@@ -1086,7 +1089,8 @@ describe('renderAudit', () => {
     }
     // The label states the default and the ceiling rather than leaving an
     // empty box to guess at, and the ceiling is the one the server enforces.
-    expect(html).toContain('条数 · 默认 200 · 上限 500')
+    // The default is the page's own, one screen (D5); the API keeps 200.
+    expect(html).toContain('条数 · 默认 50 · 上限 500')
     expect(html).toContain('max="500"')
   })
 

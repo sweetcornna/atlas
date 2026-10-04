@@ -25,6 +25,7 @@ import {
   call,
 } from './pageHarness.js'
 import { LOST_OSAKA, MemoryNotify, notice, watchConsole } from './watchFakes.js'
+import { StatefulLifecycle } from './lifecycleFake.js'
 
 function ok<T>(value: T): ConsoleResult<T> {
   return { ok: true, value }
@@ -402,6 +403,7 @@ describe('conditions', () => {
     ).toEqual([
       '通知 未接入 · 控制台没有读取值守进程的通知',
       '注册中心 已接入',
+      '登记簿 未接入',
       '证书 未配置',
       '审计链 已接入 · 1 条',
       '链路 未接入 · 控制台没有节点连通探测的数据',
@@ -610,5 +612,96 @@ describe('conditions', () => {
     })
     expect(twice.alerts).toHaveLength(1)
     expect(twice.alerts[0]?.detail).toContain('重发')
+  })
+})
+
+describe('the registration ledger as a source (P15.2, console.md §7.3.3)', () => {
+  function ledger(
+    problem: string | null,
+    kind: 'unreadable' | 'unwritable' = 'unreadable',
+  ) {
+    const lifecycle = new StatefulLifecycle()
+    lifecycle.problem = problem
+    lifecycle.problemKind = kind
+    return lifecycle
+  }
+
+  test('a readable ledger raises nothing and counts what is paused and retired', async () => {
+    const quiet = board({ registrations: await ledger(null).read() })
+    expect(quiet.alerts).toEqual([])
+    expect(quiet.sources.find(source => source.label === '登记簿')).toEqual({
+      label: '登记簿',
+      tone: 'ok',
+      text: '已接入 · 暂停 2 · 退役 1',
+    })
+  })
+
+  test('one that cannot be read is an error, and its id carries the reason', async () => {
+    const closed = board({
+      registrations: await ledger('registrations.json: not JSON').read(),
+    })
+    expect(summary(closed.alerts)).toEqual(['error 登记簿读不出来'])
+    expect(closed.alerts[0]).toMatchObject({
+      id: 'registrations:unreadable:registrations.json: not JSON',
+      origin: 'registrations',
+      detail: 'registrations.json: not JSON · 修好并重启之前出口一律不拨',
+    })
+    expect(closed.sources.find(source => source.label === '登记簿')).toEqual({
+      label: '登记簿',
+      tone: 'bad',
+      text: '不可用 · 读不出来',
+    })
+    // Another reason, another episode.
+    const other = board({
+      registrations: await ledger('EACCES registrations.json').read(),
+      acks: ok([
+        { id: closed.alerts[0]?.id ?? '', at: NOW, by: 'legacy:admin' },
+      ]),
+    })
+    expect(other.unread).toBe(1)
+  })
+
+  test('one that only cannot be saved says the pauses since will not survive a restart', async () => {
+    const unsaved = board({
+      registrations: await ledger('ENOSPC', 'unwritable').read(),
+    })
+    expect(summary(unsaved.alerts)).toEqual(['error 登记簿写不进去'])
+    expect(unsaved.alerts[0]?.id).toBe('registrations:unwritable:ENOSPC')
+    expect(unsaved.alerts[0]?.detail).toBe(
+      'ENOSPC · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢',
+    )
+  })
+
+  test('an id stays short enough to be acknowledged, however long the reason', async () => {
+    const long = board({ registrations: await ledger('x'.repeat(5000)).read() })
+    expect(long.alerts[0]?.id.length).toBeLessThan(256)
+  })
+
+  test('through the router: on the page, in the source strip, and acknowledgeable', async () => {
+    const notify = new MemoryNotify([])
+    const actions = new MemoryActionLedger()
+    const c = watchConsole({
+      notify,
+      actions,
+      lifecycle: ledger('registrations.json: not JSON'),
+    })
+    const html = await page(c.handle, '/alerts')
+    expect(rowsOf(html)).toEqual([
+      'registrations:unreadable:registrations.json: not JSON',
+    ])
+    expect(html).toContain('<span class="k">登记簿</span>')
+    expect(html).toContain('不可用 · 读不出来')
+    const id = encodeURIComponent(
+      'registrations:unreadable:registrations.json: not JSON',
+    )
+    const acked = await c.handle(call('POST', `/v0/alerts/${id}/ack`, ADMIN))
+    expect(acked.status).toBe(200)
+    expect(actions.lines()).toEqual([
+      'alert.ack registrations:unreadable:registrations.json: not JSON ok',
+    ])
+    const list = (await (
+      await c.handle(call('GET', '/v0/alerts?state=all', VIEW))
+    ).json()) as { sources: { label: string; text: string }[] }
+    expect(list.sources.map(source => source.label)).toContain('登记簿')
   })
 })
