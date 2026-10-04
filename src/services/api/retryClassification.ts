@@ -1,6 +1,9 @@
 import { APIConnectionError, APIUserAbortError } from '@anthropic-ai/sdk'
 import type { SDKAssistantMessageError } from 'src/entrypoints/agentSdkTypes.js'
-import { isQuotaExhaustedError } from '../qianmo/modelCompat/errorText.js'
+import {
+  isQuotaExhaustedError,
+  isRejectedCredential,
+} from '../qianmo/modelCompat/errorText.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const API_ERROR_SOURCE = Symbol.for('occ.api.sourceError')
@@ -493,6 +496,11 @@ export function classifyRetryableAPIError(
   // — see src/services/qianmo/modelCompat/errorText.ts.
   if (isQuotaExhaustedError({ status: explicitStatus, records, messages })) {
     return neverRetry('billing_error')
+  }
+  // qianmo P18.12: a 401 whose body only says `invalid_request_error` is a
+  // refused key — see src/services/qianmo/modelCompat/errorText.ts.
+  if (isRejectedCredential({ status: explicitStatus, records })) {
+    return neverRetry('authentication_failed')
   }
 
   const retryDirective = retryDirectiveFromRecords(records)

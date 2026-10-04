@@ -18,8 +18,10 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  claudeCodeCompleteEnd,
   claudeCodeTurnEnd,
   findQmcodeRollout,
+  lastNewlineEnd,
   parseClaudeCodeHookInput,
   parseQmcodeNotify,
   qmcodeSnapshot,
@@ -28,6 +30,7 @@ import {
 } from '../handoffTranscript.js'
 import {
   claudeCodeHookInput,
+  claudeCodeMidTurnTranscript,
   claudeCodeTranscript,
   qmcodeNotify,
   qmcodeRollout,
@@ -289,6 +292,7 @@ describe('qmcodeSnapshot (what `now` may take)', () => {
     expect(qmcodeSnapshot(Buffer.from(text), true)).toEqual({
       open: false,
       end: Buffer.byteLength(first),
+      skipped: SHELL_TURN,
     })
   })
 
@@ -372,6 +376,7 @@ describe('qmcodeSnapshot (what `now` may take)', () => {
     expect(qmcodeSnapshot(Buffer.from(text), true)).toEqual({
       open: false,
       end: Buffer.byteLength(done),
+      skipped: SHELL_TURN,
     })
     // A turn left open before it (qmcode killed mid-turn) is still open.
     const first = qmcodeRollout(THREAD, cwd, [
@@ -387,6 +392,109 @@ describe('qmcodeSnapshot (what `now` may take)', () => {
       turnId: TURN_2,
       before: Buffer.byteLength(first),
     })
+  })
+})
+
+describe('the handoff tool called inside a turn (P17.3 截断模式)', () => {
+  const cwd = '/work/atlas'
+
+  test('qmcode: the model turn that called the tool is open; the cut is its task_started', () => {
+    const first = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+    ])
+    const text = qmcodeRollout(THREAD, cwd, [
+      { turnId: TURN_1, user: 'q1', assistant: 'a1' },
+      { turnId: TURN_2, user: '交给云端', assistant: '', ending: 'calling' },
+    ])
+    // The real shape: turn_context, the prompt, then the tool call, last.
+    const tail = text
+      .slice(first.length)
+      .trimEnd()
+      .split('\n')
+      .map(
+        line => JSON.parse(line) as { type: string; payload: { type: string } },
+      )
+    expect(tail.map(record => record.type)).toEqual([
+      'event_msg',
+      'turn_context',
+      'response_item',
+      'event_msg',
+      'response_item',
+    ])
+    expect(tail.at(-1)?.payload.type).toBe('function_call')
+    // Whoever calls, and from wherever: open, with the complete part before it.
+    for (const fromThreadShell of [false, true]) {
+      expect(qmcodeSnapshot(Buffer.from(text), fromThreadShell)).toEqual({
+        open: true,
+        turnId: TURN_2,
+        before: Buffer.byteLength(first),
+      })
+    }
+  })
+
+  test('Claude Code: cut after the last complete turn; the running one is left out', () => {
+    const { text, complete, running } = claudeCodeMidTurnTranscript(
+      CC_SESSION,
+      cwd,
+    )
+    const bytes = Buffer.from(text)
+    const end = claudeCodeCompleteEnd(bytes)
+    expect(end).toBe(Buffer.byteLength(complete))
+    const taken = bytes.subarray(0, end).toString('utf8')
+    expect(taken).not.toContain(running)
+    // The system record after the answer belongs to the complete turn.
+    expect(taken.trimEnd().split('\n').at(-1)).toContain('stop_hook_summary')
+    // Without the cut — the last newline — the running turn would go along.
+    expect(bytes.subarray(0, lastNewlineEnd(bytes)).toString('utf8')).toContain(
+      running,
+    )
+  })
+
+  test('Claude Code: a turn the user interrupted is over; it is kept', () => {
+    const { text, complete, running } = claudeCodeMidTurnTranscript(
+      CC_SESSION,
+      cwd,
+      { interrupted: true },
+    )
+    expect(complete).toContain('[Request interrupted by user for tool use]')
+    const bytes = Buffer.from(text)
+    const end = claudeCodeCompleteEnd(bytes)
+    expect(end).toBe(Buffer.byteLength(complete))
+    expect(bytes.subarray(0, end).toString('utf8')).not.toContain(running)
+  })
+
+  test('Claude Code: an idle transcript is cut where the Stop hook cut it', () => {
+    const text = claudeCodeTranscript(CC_SESSION, cwd, 'complete')
+    expect(claudeCodeCompleteEnd(Buffer.from(`${text}{"type":"us`))).toBe(
+      Buffer.byteLength(text),
+    )
+    expect(claudeCodeCompleteEnd(Buffer.from(text))).toBe(
+      claudeCodeTurnEnd(Buffer.from(text), 'Stop') ?? -1,
+    )
+  })
+
+  test('Claude Code: no turn has ended yet — nothing to take', () => {
+    for (const ending of ['tool-use', 'tool-result'] as const) {
+      expect(
+        claudeCodeCompleteEnd(
+          Buffer.from(claudeCodeTranscript(CC_SESSION, cwd, ending)),
+        ),
+      ).toBe(0)
+    }
+    expect(claudeCodeCompleteEnd(Buffer.alloc(0))).toBe(0)
+  })
+
+  test('Claude Code: a tool_use not yet given its stop_reason is not an end either', () => {
+    const { text, complete } = claudeCodeMidTurnTranscript(CC_SESSION, cwd)
+    const nulled = text.replaceAll(
+      '"stop_reason":"tool_use"',
+      '"stop_reason":null',
+    )
+    expect(claudeCodeCompleteEnd(Buffer.from(nulled))).toBe(
+      Buffer.byteLength(
+        complete.replaceAll('"stop_reason":"tool_use"', '"stop_reason":null'),
+      ),
+    )
   })
 })
 

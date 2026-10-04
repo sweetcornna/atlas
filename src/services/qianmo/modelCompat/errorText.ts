@@ -164,3 +164,28 @@ export function isQuotaExhaustedError(params: {
     params.messages.some(isRateLimitErrorText)
   return !rateLimited
 }
+
+/**
+ * A key the endpoint refused (P18.12, follow-up from the P18.7 audit).
+ *
+ * OpenAI answers a bad key with HTTP 401 and the GENERIC body type
+ * `invalid_request_error` (`code: invalid_api_key`). The classifier reads
+ * permanent structured signals before the status, so that type made the
+ * failure `invalid_request` — and a resident watching for
+ * `authentication_failed` never saw a dead key. The status is the specific
+ * signal here; the body type is OpenAI's catch-all.
+ *
+ * Narrow on purpose: a 401 whose body names a model keeps its own verdict —
+ * OpenCode's `ModelError` ("Model <id> is not supported") and
+ * `managed_inference_model_disabled` are about the model, not the key
+ * (`retryClassification.ts` `signalCategory`).
+ */
+export function isRejectedCredential(params: {
+  status: number | undefined
+  records: readonly Record<string, unknown>[]
+}): boolean {
+  if (params.status !== 401) return false
+  const codes = structuredCodes(params.records)
+  if (codes.some(code => code.includes('model'))) return false
+  return codes.includes('invalid_request_error')
+}

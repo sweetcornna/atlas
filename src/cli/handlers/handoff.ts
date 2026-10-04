@@ -9,10 +9,11 @@
  *   qm handoff sync [--hook qmcode|claude-code]
  *   qm handoff now [--goal …] [--done …] [--remaining …] [--deadline …]
  *   qm handoff status [--wait] [--task <id>]
+ *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
  *
- * `mcp`, `pull`, `attach` and `node` are reserved here and answer 「尚未实现」
- * with exit 2, so the packages that build them (P17.3, P17.6, P17.5) replace
- * one branch each.
+ * `pull`, `attach` and `node` are reserved here and answer 「尚未实现」 with
+ * exit 2, so the packages that build them (P17.6, P17.5) replace one branch
+ * each.
  *
  * ## Exit codes
  *
@@ -82,7 +83,6 @@ import { residentOptionValue } from './residentArgs.js'
 
 /** The subcommands later packages fill in, and which package each is. */
 const RESERVED: Readonly<Record<string, string>> = {
-  mcp: 'P17.3',
   node: 'P17.5',
   pull: 'P17.6',
   attach: 'P17.6',
@@ -156,8 +156,14 @@ Commands:
                            tasks for it. --wait blocks until the latest task
                            (or --task) changes state.
 
-  mcp | pull | attach | node
-                           Reserved; not implemented yet (P17.3 / P17.6 / P17.5).
+  mcp                      Serve the handoff tools to a model over stdio MCP:
+                           qianmo_status, qianmo_handoff (pushes the work tree
+                           and session and registers the task, like now; the
+                           turn that calls it is left out of the session) and
+                           qianmo_task. Built into qmcode; for Claude Code:
+                             claude mcp add qianmo -- ${invokedBinName()} handoff mcp
+
+  pull | attach | node     Reserved; not implemented yet (P17.6 / P17.5).
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -609,6 +615,12 @@ async function dispatchHandoff(
       return await runNowCommand(rest, cwd, output)
     case 'status':
       return await runStatusCommand(rest, cwd, output)
+    case 'mcp': {
+      if (rest.length > 0) usage(`mcp 不接受参数 ${rest[0]}`)
+      const { runHandoffMcp } = await import('./handoffMcp.js')
+      runHandoffMcp(cwd)
+      return 0
+    }
     default:
       return usage(`不认识的子命令 ${command}`)
   }

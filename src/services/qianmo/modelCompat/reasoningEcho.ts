@@ -69,6 +69,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions/completions.mjs'
 import { isKimiModel } from './samplingParams.js'
 import { targetHostIs } from './targetMatch.js'
+import { replayReasoningDetails } from './reasoningDetailsReplay.js'
 import { replayThoughtSignatures } from './thoughtSignatureReplay.js'
 
 type ReasoningEchoFamily = 'kimi' | 'deepseek' | 'mimo'
@@ -168,8 +169,10 @@ function replayAssistant(
 
 /**
  * Reconcile the converted messages with the endpoint the request goes to:
- * `reasoning_content` by echo family (#4), and Gemini's tool-call signature
- * for Gemini-family targets (#10, `thoughtSignatureReplay.ts`).
+ * `reasoning_content` by echo family (#4), Gemini's tool-call signature
+ * for Gemini-family targets (#10, `thoughtSignatureReplay.ts`), and
+ * `reasoning_details` for the OpenRouter / MiniMax model that produced it
+ * (P18.12, `reasoningDetailsReplay.ts`).
  * Pure: returns a new array, and new objects only for the messages it
  * changed; `model` is the wire model id, `baseURL` the request's endpoint.
  */
@@ -180,7 +183,13 @@ export function applyReasoningReplayPolicy(
   const family = reasoningEchoFamily(target.model, target.baseURL)
   return messages.map(message =>
     message.role === 'assistant'
-      ? replayThoughtSignatures(replayAssistant(message, family), target.model)
+      ? replayReasoningDetails(
+          replayThoughtSignatures(
+            replayAssistant(message, family),
+            target.model,
+          ),
+          target,
+        )
       : message,
   )
 }
@@ -190,12 +199,12 @@ export function applyReasoningReplayPolicy(
  * lane, reasoning in history is filtered by the target endpoint before it is
  * sent — chat `reasoning_content` here (#4), Gemini tool-call signatures only
  * to Gemini-family targets (#10), Responses `encrypted_content` by issuer
- * (#23, `responsesIssuer.ts`). Pinned by behavioural tests
- * (`capabilities.test.ts`), not only by this constant.
+ * (#23, `responsesIssuer.ts`). Since P18.12 the Grok lane, which builds its
+ * own body, applies the same policy to its target (`GROK_BASE_URL`, default
+ * `api.x.ai`) in `grok/index.ts`. Pinned by behavioural tests
+ * (`capabilities.test.ts`, `grokReplay.test.ts`), not only by this constant.
  *
- * Not covered, and so not claimed: the Grok lane builds its own body from
- * `anthropicMessagesToOpenAI` and does not pass through `requestBody.ts`
- * (P18.12 owns `grok/index.ts`); thinking-block signatures on the
+ * Not covered, and so not claimed: thinking-block signatures on the
  * Anthropic-compatible lane are untouched.
  */
 export const REPLAY_FILTER = true

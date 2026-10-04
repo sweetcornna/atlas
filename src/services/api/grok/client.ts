@@ -15,6 +15,14 @@ import { clampOpenAIMaxRetries } from '../openai/retry.js'
 
 const DEFAULT_BASE_URL = 'https://api.x.ai/v1'
 
+/**
+ * qianmo P18.12: the endpoint Grok requests go to, for the send-boundary
+ * replay policy (`src/services/qianmo/modelCompat/reasoningEcho.ts`).
+ */
+export function grokTargetBaseURL(): string {
+  return process.env.GROK_BASE_URL || DEFAULT_BASE_URL
+}
+
 let cachedClient:
   | {
       apiKey: string

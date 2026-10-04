@@ -32,9 +32,11 @@ interface QmcodeModelTurn {
    * `complete` (default) ends with `task_complete`; `aborted` with
    * `turn_aborted`; `open` stops mid-turn, after the first tool call;
    * `starting` stops after `task_started` (the wait for MCP servers before the
-   * first `turn_context`, `codex-rs/core/src/session/turn.rs`).
+   * first `turn_context`, `codex-rs/core/src/session/turn.rs`); `calling`
+   * stops on the model's call of the handoff MCP tool, unanswered — what the
+   * rollout holds while `qianmo_handoff` runs.
    */
-  readonly ending?: 'complete' | 'aborted' | 'open' | 'starting'
+  readonly ending?: 'complete' | 'aborted' | 'open' | 'starting' | 'calling'
 }
 
 /**
@@ -123,6 +125,15 @@ export function qmcodeRollout(
       message: turn.user,
       images: [],
     })
+    if (turn.ending === 'calling') {
+      out += line(ts(), 'response_item', {
+        type: 'function_call',
+        name: 'mcp__qianmo__qianmo_handoff',
+        arguments: JSON.stringify({ goal: turn.user, done: '', remaining: '' }),
+        call_id: `call_${turn.turnId.slice(-6)}`,
+      })
+      continue
+    }
     out += line(ts(), 'response_item', {
       type: 'function_call',
       name: 'exec_command',
@@ -216,15 +227,15 @@ type ClaudeCodeEnding =
   /** Last record is the tool's result; the model's answer is not on disk yet. */
   | 'tool-result'
 
-/** A Claude Code transcript: one prompt, one tool round trip, then `ending`. */
-export function claudeCodeTranscript(
-  sessionId: string,
-  cwd: string,
-  ending: ClaudeCodeEnding,
-): string {
+/**
+ * Appends records to one transcript the way the base chains them:
+ * `parentUuid` is the previous main-chain record, timestamps move forward.
+ */
+function claudeCodeWriter(sessionId: string, cwd: string) {
   let at = Date.UTC(2026, 9, 3, 9, 30, 0)
   let previous: string | null = null
   let counter = 0
+  let sides = 0
   const records: unknown[] = []
   const push = (fields: Record<string, unknown>) => {
     counter++
@@ -246,7 +257,7 @@ export function claudeCodeTranscript(
   const assistant = (
     id: string,
     content: unknown[],
-    stop: string,
+    stop: string | null,
   ): Record<string, unknown> => ({
     type: 'assistant',
     requestId: `req_${id}`,
@@ -261,11 +272,42 @@ export function claudeCodeTranscript(
       usage: { input_tokens: 812, output_tokens: 44 },
     },
   })
-  records.push({
-    type: 'summary',
-    summary: 'Read a.txt',
-    leafUuid: 'none',
-  })
+  return {
+    push,
+    assistant,
+    /** A record outside the main chain (`summary`, a sidechain record). */
+    raw(record: Record<string, unknown>) {
+      records.push(record)
+    },
+    sidechain(text: string) {
+      records.push({
+        parentUuid: null,
+        isSidechain: true,
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text }],
+          stop_reason: 'end_turn',
+        },
+        uuid: `side-${String(++sides).padStart(4, '0')}`,
+        timestamp: new Date((at += 5)).toISOString(),
+      })
+    },
+    text(): string {
+      return records.map(r => `${JSON.stringify(r)}\n`).join('')
+    },
+  }
+}
+
+type ClaudeCodeWriter = ReturnType<typeof claudeCodeWriter>
+
+/** One prompt, one tool round trip, then `ending`. */
+function claudeCodeTurn(
+  writer: ClaudeCodeWriter,
+  cwd: string,
+  ending: ClaudeCodeEnding,
+): void {
+  const { push, assistant } = writer
   push({
     type: 'user',
     message: { role: 'user', content: '把 a.txt 读出来' },
@@ -295,9 +337,7 @@ export function claudeCodeTranscript(
       'tool_use',
     ),
   )
-  if (ending === 'tool-use') {
-    return records.map(r => `${JSON.stringify(r)}\n`).join('')
-  }
+  if (ending === 'tool-use') return
   push({
     type: 'user',
     message: {
@@ -309,21 +349,8 @@ export function claudeCodeTranscript(
     toolUseResult: { type: 'text', file: { filePath: `${cwd}/a.txt` } },
   })
   // A subagent's record in the main file: not the main chain, never the verdict.
-  records.push({
-    parentUuid: null,
-    isSidechain: true,
-    type: 'assistant',
-    message: {
-      role: 'assistant',
-      content: [{ type: 'text', text: 'side' }],
-      stop_reason: 'end_turn',
-    },
-    uuid: 'side-0001',
-    timestamp: new Date((at += 5)).toISOString(),
-  })
-  if (ending === 'tool-result') {
-    return records.map(r => `${JSON.stringify(r)}\n`).join('')
-  }
+  writer.sidechain('side')
+  if (ending === 'tool-result') return
   push(
     assistant('01B', [{ type: 'text', text: 'a.txt 里是 one。' }], 'end_turn'),
   )
@@ -333,7 +360,121 @@ export function claudeCodeTranscript(
     hookCount: 1,
     level: 'suggestion',
   })
-  return records.map(r => `${JSON.stringify(r)}\n`).join('')
+}
+
+/** A Claude Code transcript: one prompt, one tool round trip, then `ending`. */
+export function claudeCodeTranscript(
+  sessionId: string,
+  cwd: string,
+  ending: ClaudeCodeEnding,
+): string {
+  const writer = claudeCodeWriter(sessionId, cwd)
+  writer.raw({ type: 'summary', summary: 'Read a.txt', leafUuid: 'none' })
+  claudeCodeTurn(writer, cwd, ending)
+  return writer.text()
+}
+
+/**
+ * A Claude Code transcript as the handoff tool sees it when the model calls
+ * it: a complete turn ({@link claudeCodeTranscript} `complete`), with
+ * `interrupted` a turn the user stopped during a tool call (the tool result
+ * and the base's `[Request interrupted by user for tool use]` marker,
+ * `utils/messages/constructors.ts`), then the turn running now — the prompt,
+ * a subagent's record, thinking and the unanswered `tool_use` of
+ * `mcp__qianmo__qianmo_handoff`. `complete` is the part a handoff may take;
+ * every line of the running turn carries `running` in its text.
+ */
+export function claudeCodeMidTurnTranscript(
+  sessionId: string,
+  cwd: string,
+  options: { readonly interrupted?: boolean } = {},
+): {
+  readonly text: string
+  readonly complete: string
+  readonly running: string
+} {
+  const writer = claudeCodeWriter(sessionId, cwd)
+  const { push, assistant } = writer
+  writer.raw({ type: 'summary', summary: 'Read a.txt', leafUuid: 'none' })
+  claudeCodeTurn(writer, cwd, 'complete')
+  if (options.interrupted === true) {
+    push({
+      type: 'user',
+      message: { role: 'user', content: '把 b.txt 也改了' },
+    })
+    push(
+      assistant(
+        '02A',
+        [
+          {
+            type: 'tool_use',
+            id: 'toolu_02',
+            name: 'Edit',
+            input: { file_path: `${cwd}/b.txt` },
+          },
+        ],
+        'tool_use',
+      ),
+    )
+    push({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_02',
+            content: "The user doesn't want to proceed with this tool use.",
+            is_error: true,
+          },
+        ],
+      },
+    })
+    push({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[Request interrupted by user for tool use]' },
+        ],
+      },
+    })
+  }
+  const complete = writer.text()
+  const running = 'running-turn-交给云端'
+  push({
+    type: 'user',
+    message: { role: 'user', content: `${running}：剩下的交给云端` },
+  })
+  writer.sidechain(`${running} side`)
+  push(
+    assistant(
+      '03A',
+      [
+        {
+          type: 'thinking',
+          thinking: `${running} hand over`,
+          signature: 'c2ln',
+        },
+      ],
+      'tool_use',
+    ),
+  )
+  push(
+    assistant(
+      '03A',
+      [
+        {
+          type: 'tool_use',
+          id: 'toolu_03',
+          name: 'mcp__qianmo__qianmo_handoff',
+          input: { goal: running, done: '', remaining: '' },
+        },
+      ],
+      'tool_use',
+    ),
+  )
+  return { text: writer.text(), complete, running }
 }
 
 /** The stdin of a Claude Code `Stop` or `SessionEnd` command hook. */

@@ -26,6 +26,7 @@ import {
   commitAll,
   git,
   initRepo,
+  tempDir,
   treePaths,
   userState,
   write,
@@ -62,10 +63,32 @@ function busyRepo(): string {
   return repo
 }
 
-function scratchDirs(): string[] {
-  return readdirSync(tmpdir()).filter(name =>
-    name.startsWith('qianmo-handoff-'),
-  )
+/** The variables `os.tmpdir()` reads, on every call: POSIX, then Windows. */
+const TEMP_VARS = ['TMPDIR', 'TEMP', 'TMP'] as const
+
+/**
+ * Run `use` with the temp directory pointed at an empty root of its own and
+ * return what is left in it. The shared temp directory is no use for that:
+ * any other process doing a handoff meanwhile has its own `qianmo-handoff-*`
+ * directories there.
+ */
+async function leftInPrivateTmp(
+  use: () => Promise<unknown>,
+): Promise<string[]> {
+  const root = tempDir('qm-handoff-test-tmp-')
+  const saved = TEMP_VARS.map(name => process.env[name])
+  for (const name of TEMP_VARS) process.env[name] = root
+  try {
+    expect(tmpdir()).toBe(root)
+    await use()
+    return readdirSync(root)
+  } finally {
+    TEMP_VARS.forEach((name, i) => {
+      const value = saved[i]
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    })
+  }
 }
 
 describe('shadowCommit', () => {
@@ -109,12 +132,13 @@ describe('shadowCommit', () => {
   test("leaves the user's index, HEAD, refs, stash and files byte-for-byte unchanged", async () => {
     const repo = busyRepo()
     const before = userState(repo)
-    const scratchBefore = scratchDirs()
-    await shadowCommit({ cwd: repo })
-    await shadowTree({ cwd: repo })
+    const left = await leftInPrivateTmp(async () => {
+      await shadowCommit({ cwd: repo })
+      await shadowTree({ cwd: repo })
+    })
     expect(userState(repo)).toEqual(before)
     // The private index directory is gone again.
-    expect(scratchDirs()).toEqual(scratchBefore)
+    expect(left).toEqual([])
   })
 
   test('uses the fixed identity, no parent-less surprises, no signing', async () => {

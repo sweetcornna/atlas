@@ -332,6 +332,18 @@ export function ownerOf(
   return accounts.book.ownerOf(contextId)
 }
 
+/**
+ * Who the ledgers name: the person, the legacy token, or nobody. The action
+ * ledger's spelling (`deps.ts`, `ConsoleAction.subject`), and the one the
+ * registration ledger writes as `by`.
+ */
+export function subjectOf(access: Access): string {
+  if (access.principal !== null) return access.principal.subject
+  if (access.credential.role === 'admin') return 'legacy:admin'
+  if (access.credential.role === 'view') return 'legacy:view'
+  return 'anonymous'
+}
+
 /** The fingerprint the break-glass records are kept under. */
 export function adminFingerprint(tokens: ConsoleTokens): string {
   return tokenFingerprint(tokens.admin)
