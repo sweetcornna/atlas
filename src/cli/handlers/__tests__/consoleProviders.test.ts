@@ -822,6 +822,68 @@ describe('P18.18: several keys', () => {
     ])
   }, 30_000)
 
+  test('status keys: the id, state, return time and reason of each key reach the page; nothing else does', async () => {
+    const h = harness()
+    const EMPTY = `sha256:${'0'.repeat(64)}`
+    const until = '2026-10-04T10:30:00.000Z'
+    h.nodes['beta-1'].set(
+      'reply-status.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: true,
+        state: {
+          managed: false,
+          applied: null,
+          onDiskHash: EMPTY,
+          appliedHash: null,
+          loadedHash: null,
+          pending: null,
+          resident: null,
+          inheritedProviderKeys: [],
+          capabilities: { protocol: 1, multiKey: true },
+          lastResult: null,
+          keys: [
+            { id: 'k1', state: 'ok' },
+            // A value or a fingerprint a node should never send: dropped.
+            {
+              id: 'k2',
+              state: 'cooling',
+              until,
+              reason: 'rate-limit',
+              value: CANARY,
+              fingerprint: 'fp1:0123456789abcdef0123456789abcdef',
+            },
+            { id: 'k3', state: 'dead', reason: 'revoked', until },
+            // Not shaped like a key: dropped whole.
+            { id: 'K 4', state: 'ok' },
+            { id: 'k5', state: 'resting' },
+            'k6',
+            // An `ok` key has no reason to be out.
+            { id: 'k7', state: 'ok', reason: 'auth' },
+            { id: 'k8', state: 'cooling', until: 'soon', reason: 'sideways' },
+          ],
+        },
+      }),
+    )
+    const view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.keys).toEqual([
+      { id: 'k1', state: 'ok' },
+      { id: 'k2', state: 'cooling', until, reason: 'rate-limit' },
+      { id: 'k3', state: 'dead', reason: 'revoked' },
+      { id: 'k7', state: 'ok' },
+      { id: 'k8', state: 'cooling' },
+    ])
+    expect(JSON.stringify(view)).not.toContain(CANARY)
+    expect(JSON.stringify(view)).not.toContain('fp1:')
+
+    // A single-key node reports none, and the view has no `keys` at all.
+    h.nodes['beta-4'].set('multi-key', '1')
+    const single = value(await h.port.refreshNode('beta-4'))
+    expect(single.actual).not.toBeNull()
+    expect(single.actual !== null && 'keys' in single.actual).toBe(false)
+  }, 30_000)
+
   test('a key that is not filled in: secret-missing, naming it, nothing sent', async () => {
     const h = harness()
     const ops = h.caller()

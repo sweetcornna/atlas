@@ -14,7 +14,13 @@ import type {
   ProviderNodeActual,
   ProviderProbeResult,
 } from '@qianmo/console'
-import { modelRetirementStatus, type ProviderProfile } from '@qianmo/providers'
+import {
+  isKeyId,
+  KEY_HEALTHS,
+  KEY_OUT_REASONS,
+  modelRetirementStatus,
+  type ProviderProfile,
+} from '@qianmo/providers'
 import type { SentRecord } from './consoleProvidersBook.js'
 
 type Json = Readonly<Record<string, unknown>>
@@ -142,6 +148,30 @@ function parseEffective(raw: unknown): ProviderNodeActual['effective'] {
 }
 
 /**
+ * P18.18: a node's key pool, key by key — ids, states, when a cooling key
+ * comes back and why it went out. An entry that is not shaped like one is
+ * dropped; a node that reports none (a single key) gives `undefined`.
+ */
+function parseKeys(raw: unknown): ProviderNodeActual['keys'] {
+  if (!Array.isArray(raw)) return undefined
+  const keys: NonNullable<ProviderNodeActual['keys']>[number][] = []
+  for (const entry of raw) {
+    if (!isRecord(entry) || !isKeyId(entry.id)) continue
+    const state = KEY_HEALTHS.find(health => health === entry.state)
+    if (state === undefined) continue
+    const until = state === 'cooling' ? isoText(entry.until) : null
+    const reason = KEY_OUT_REASONS.find(word => word === entry.reason)
+    keys.push({
+      id: entry.id,
+      state,
+      ...(until === null ? {} : { until }),
+      ...(reason === undefined || state === 'ok' ? {} : { reason }),
+    })
+  }
+  return keys.length === 0 ? undefined : keys
+}
+
+/**
  * §2.4 state (plus `effective` when the response carries it), or `null` when
  * the node's answer is not shaped like one.
  */
@@ -211,6 +241,7 @@ export function parseNodeState(
     }
   }
   const computed = parseEffective(effective)
+  const keys = parseKeys(state.keys)
   return {
     managed: state.managed,
     applied,
@@ -227,6 +258,7 @@ export function parseNodeState(
       multiKey: caps.multiKey === true,
     },
     lastResult,
+    ...(keys === undefined ? {} : { keys }),
     ...(computed === undefined ? {} : { effective: computed }),
   }
 }
