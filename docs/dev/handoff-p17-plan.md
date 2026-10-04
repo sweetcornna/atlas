@@ -5,11 +5,11 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.3**（2026-10-04，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写；v1.2 同日随 P17.3 本仓库部分回写：MCP 工具表随各包合入逐个增加，`now` 遇到未完成回合的三种情形，会话同步「等待」一格按实现改为超时不推送；v1.3 记 P17.2 第 2 项 24 h 采样已收 |
+| 文档版本 | **v1.4**（2026-10-04，主 agent 按负责人委托维护）。v1.0 于 2026-09-29 编写；v1.1 于 2026-10-03 按 P17.2 探针结论回写；v1.2 同日随 P17.3 本仓库部分回写：MCP 工具表随各包合入逐个增加，`now` 遇到未完成回合的三种情形，会话同步「等待」一格按实现改为超时不推送；v1.3 记 P17.2 第 2 项 24 h 采样已收；v1.4 随 P17.6 回写：pull 快进前先 `reset --mixed` 到影子提交，Claude Code 任务的线程由 attach 经隧道向 app-server 查，attach 的 SSH 目标 / 令牌文件 / 端口默认值，完成标准里探针留下的两条已有结论（探针 v0.4） |
 | 上位设计 | [`handoff-m1.md`](./handoff-m1.md) v1.2（范围、场景、AC-H1~H5 以设计为准，本文只讲怎么做） |
 | 核对基点 | 本仓库 `c0c52924`（main，#153 合并提交）；fork 仓库 `sweetcornna/qianmo-codex` 钉上游标签 `rust-v0.158.0`（提交 `064c6b8c`） |
 | 用法 | 每个工作包一张卡：仓库、要改的文件、接口、步骤、完成标准、依赖、估算、计划时间。按卡开工；卡里没写的不做 |
-| 口径 | P17.1、P17.2 已有实测，结论见 [`handoff-probe-p17.md`](./handoff-probe-p17.md) v0.3（gVisor 未测）；P17.3 起各卡仍是计划，**尚无运行数据**。真机工作排在 7 天长跑窗口之后（窗口已于 2026-10-03T09:33:08Z 提前结束） |
+| 口径 | P17.1、P17.2 已有实测，结论见 [`handoff-probe-p17.md`](./handoff-probe-p17.md) v0.4（gVisor 未测）；P17.3 起各卡仍是计划，**尚无运行数据**。真机工作排在 7 天长跑窗口之后（窗口已于 2026-10-03T09:33:08Z 提前结束） |
 
 **原则**：M1 只服务单个用户（负责人本人）；能用上游已有能力就不改上游；能放阡陌侧 TS 就不放 Rust fork；不预先做多用户、通知中心、网页终端。
 
@@ -204,10 +204,10 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 
 | 命令 | 行为 |
 |---|---|
-| `qm handoff attach [taskId]` | 向中枢取任务的节点与 threadId（记审计 `handoff.attach-requested`）→ 用用户自己的 SSH 配置读节点令牌文件 → 后台开 `ssh -N -L <本地端口>:127.0.0.1:<app-server 端口>` → 以环境变量传令牌，执行 `qmcode resume --remote ws://127.0.0.1:<本地端口> --remote-auth-token-env <变量> <threadId>`（不传 `--cd` 就不改线程的 `cwd`）→ 退出时关隧道。令牌不经中枢 |
-| `qm handoff pull [taskId]` | `git fetch <hub> refs/heads/qianmo/<taskId>`；判「本地没动过」= 当前 HEAD 等于影子提交的父提交，且工作区树哈希等于影子提交的树 → 当前分支 `merge --ff-only`；否则建 `qianmo/<taskId>-return`，打印差异统计，工作区文件不动。qmcode 入口另把云端会话放回本机 `$QMCODE_HOME/sessions/`，本地可 `qmcode resume <threadId>` 接着聊。台账记 `returned` |
+| `qm handoff attach [taskId]` | 向中枢取任务的节点与 threadId（记审计 `handoff.attach-requested`）→ 用用户自己的 SSH 配置读节点令牌文件 → 后台开 `ssh -N -L <本地端口>:127.0.0.1:<app-server 端口>` → 以环境变量传令牌，执行 `qmcode resume --remote ws://127.0.0.1:<本地端口> --remote-auth-token-env <变量> <threadId>`（不传 `--cd` 就不改线程的 `cwd`）→ 退出时关隧道。令牌不经中枢。中枢在 `running` 时只知道 qmcode 会话的线程号（清单的 `sessionId`）；Claude Code 会话在节点导入时才有新线程号，结果回来前中枢回 `threadId: null`，attach 打通隧道后用 `thread/loaded/list` 加 `thread/read` 找工作目录为 `…/work/<taskId>` 的那条线程。SSH 目标、令牌文件、app-server 端口中枢都不知道，默认按 `demo/env/beta/handoff-node.sh` 的布局取：节点名、节点家目录下的 `qianmo-beta/secrets/handoff-app-server-token`、`38631`，可用 `--ssh`、`--node-token-file`、`--app-server-port` 改 |
+| `qm handoff pull [taskId]` | `git fetch <hub> refs/heads/qianmo/<taskId>`；判「本地没动过」= 当前在转交时的同一分支上，HEAD 等于影子提交的父提交，且工作区树哈希等于影子提交的树 → 先 `git reset --mixed <影子提交>`（分支指到影子提交、index 对到它的树；工作区此刻就是这棵树，文件不动），再把当前分支 `merge --ff-only` 到云端结果。转交带着未提交或未跟踪文件时（常态）直接 `merge --ff-only` 会被 git 拒绝，所以要先对到影子提交；影子提交因此进入用户分支的历史，这是快进到云端分支的必然结果。任一步失败就还原分支与 index，改走下一条。否则建 `qianmo/<taskId>-return`，打印差异统计，工作区文件不动。qmcode 入口另把云端会话放回本机 `$QMCODE_HOME/sessions/`，本地可 `qmcode resume <threadId>` 接着聊。台账记 `returned` |
 
-- 完成标准：AC-H4 从另一台机器接入并输入被执行；另两条用例：本机审批 / 沙箱配置与节点不一致时的行为（探针未测）；自动化驱动时界面要按两次回车才提交（探针第 5 项观察到，原因未查）；AC-H5 两条路径各一条用例（本地未改 → 快进；本地已改 → 另开分支，用 `shasum` 比对全部工作区文件前后一致）。
+- 完成标准：AC-H4 从另一台机器接入并输入被执行；另两条用例：本机审批 / 沙箱配置与节点不一致时的行为（已有结论：以节点线程的设置为准）；自动化驱动时界面要按两次回车才提交（已有结论：输入框的粘贴突发判定，字符间隔小于 8 ms 算粘贴、其后 120 ms 内的回车当换行；两条都见探针 v0.4 第 5 项）；AC-H5 两条路径各一条用例（本地未改 → 快进；本地已改 → 另开分支，用 `shasum` 比对全部工作区文件前后一致）。
 - 估算 16–32 人时；依赖 P17.5；计划 **2026-11-30 至 12-13**。
 
 ### P17.7 端到端关机演练
