@@ -25,6 +25,7 @@ import {
 } from 'src/services/qianmo/modelCompat/chatStreamGuards.js'
 import { reasoningDetailsMetadata } from 'src/services/qianmo/modelCompat/reasoningDetailsReplay.js'
 import { applyChatSchemaRules } from 'src/services/qianmo/modelCompat/schemaRules.js'
+import { withCredentialPool } from 'src/services/qianmo/modelCompat/credentialPoolLane.js'
 import {
   type ContentFilterSink,
   contentFilterNotice,
@@ -189,6 +190,8 @@ async function createChatStreamWithCacheKeyFallback(params: {
   fetchOverride: typeof fetch | undefined
   querySource: Options['querySource']
   signal: AbortSignal
+  /** qianmo P18.18: the key pool's key for this session; absent ⇒ the env. */
+  apiKey?: string
   // The SDK's overload resolution widens to `ChatCompletion | Stream<...>`
   // once the body is passed through a callback. `stream: true` is fixed by
   // buildOpenAIRequestBody, so narrow to what the adapter consumes.
@@ -199,6 +202,7 @@ async function createChatStreamWithCacheKeyFallback(params: {
     maxRetries: 0,
     fetchOverride: params.fetchOverride,
     source: params.querySource,
+    ...(params.apiKey === undefined ? {} : { apiKeyOverride: params.apiKey }),
   })
   // qianmo P18.5 (hermes #12): the drop-and-resend is the shared mechanism in
   // src/services/qianmo/modelCompat/unsupportedParam.ts; prompt_cache_key keeps
@@ -507,6 +511,11 @@ export async function* queryModelOpenAI(
     // qianmo P18.19 (CH-6): the response id (and cache diagnostics) for the
     // same message — src/services/qianmo/promptCache/responseRecord.ts.
     const responseCapture: ResponseCapture = {}
+    // qianmo P18.18 (hermes #2): with a key pool on the node, each attempt
+    // runs with this session's key — src/services/qianmo/modelCompat/
+    // credentialPoolLane.ts. Without one `apiKey` is undefined and every
+    // request is the env's, as before. The ChatGPT route has no API key.
+    const poolTarget = { sessionId, signal, enabled: !useChatGPTResponses }
 
     // 11. Call OpenAI API with streaming. The Responses wire protocol serves
     // two routes — ChatGPT subscription auth (Codex backend, ChatGPT headers,
@@ -534,7 +543,7 @@ export async function* queryModelOpenAI(
             maxTokens = next
             return true
           },
-      create: async () =>
+      create: withCredentialPool(poolTarget, async apiKey =>
         wireProtocol === 'responses'
           ? adaptResponsesStreamToAnthropic(
               useChatGPTResponses
@@ -573,6 +582,14 @@ export async function* queryModelOpenAI(
                     fetchOverride:
                       options.fetchOverride as unknown as typeof fetch,
                     maxRetries: 0,
+                    ...(apiKey === undefined
+                      ? {}
+                      : {
+                          credential: {
+                            apiKey,
+                            baseURL: process.env.OPENAI_BASE_URL,
+                          },
+                        }),
                   }),
               openaiModel,
               {
@@ -611,6 +628,7 @@ export async function* queryModelOpenAI(
                 fetchOverride: options.fetchOverride as unknown as typeof fetch,
                 querySource: options.querySource,
                 signal,
+                ...(apiKey === undefined ? {} : { apiKey }),
               }),
               openaiModel,
               { includeCacheWriteTokens: reportsCacheWrites },
@@ -627,6 +645,7 @@ export async function* queryModelOpenAI(
                 contentFilter,
               },
             ),
+      ),
     })
 
     // 12. Convert OpenAI stream to Anthropic events, then process into
