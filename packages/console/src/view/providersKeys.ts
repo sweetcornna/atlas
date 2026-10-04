@@ -105,12 +105,13 @@ export function keysAttr(profile: ProviderProfileView): string {
   )
 }
 
+/** One key's line, as markup: the time it was set is a `<time>` (时区). */
 function keyLine(key: KeyView): string {
   if (key.fingerprint === undefined) return '未设置'
   return (
     '已设置' +
     (key.setAt === undefined ? '' : ` · 设置于 ${minuteOf(key.setAt)}`) +
-    ` · 指纹 ${shortFingerprint(key.fingerprint)}`
+    escapeHtml(` · 指纹 ${shortFingerprint(key.fingerprint)}`)
   )
 }
 
@@ -144,7 +145,7 @@ export function keyList(profile: ProviderProfileView): string {
           ? ''
           : `<span>${escapeHtml(key.label)}</span>`) +
         (key.id === primary ? tag('主密钥') : '') +
-        `<span class="note">${escapeHtml(keyLine(key))}</span>` +
+        `<span class="note">${keyLine(key)}</span>` +
         `<span class="prov-actions">` +
         writeButton('prov-key-rotate', '重新填写', { key: key.id }) +
         (key.fingerprint === undefined
@@ -227,8 +228,10 @@ export function keyDialogs(): string {
   )
 }
 
+/** Why a key is not in use, as markup: a cool-down's end is a `<time>` (时区). */
 function healthDetail(key: ProviderNodeKey): string {
-  const reason = key.reason === undefined ? '' : REASON_WORD[key.reason]
+  const reason =
+    key.reason === undefined ? '' : escapeHtml(REASON_WORD[key.reason])
   if (key.state === 'cooling') {
     return [key.until === undefined ? '' : `到 ${minuteOf(key.until)}`, reason]
       .filter(part => part !== '')
@@ -270,9 +273,7 @@ export function nodeKeysSection(actual: ProviderNodeActual | null): string {
             key.id,
           )}</span>` +
           state(HEALTH[key.state].tone, HEALTH[key.state].word) +
-          (detail === ''
-            ? ''
-            : `<span class="note">${escapeHtml(detail)}</span>`) +
+          (detail === '' ? '' : `<span class="note">${detail}</span>`) +
           `</li>`
         )
       })

@@ -292,7 +292,9 @@ function runtimeScript(guards: TokenGuards): string {
     for (var i = 0; i < times.length; i++) {
       var d = new Date(times[i].getAttribute('datetime') || '');
       if (isNaN(d.getTime())) continue;
-      var text = times[i].getAttribute('data-fmt') === 'clock' ? stamp(d) :
+      var fmt = times[i].getAttribute('data-fmt');
+      var text = fmt === 'clock' ? stamp(d) :
+        fmt === 'minute' ? day(d) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) :
         day(d) + ' ' + stamp(d);
       if (times[i].textContent !== text) times[i].textContent = text;
     }

@@ -43,12 +43,11 @@ export const PROVIDERS_PAGE_JS = `
   function valueOf(id) { var el = qc.byId(id); return el ? String(el.value || '').trim() : ''; }
   function data(el, name) { return el ? el.getAttribute('data-' + name) || '' : ''; }
 
-  // A navigation, signed the way the runtime signs data-nav links.
+  // A navigation rides on the session cookie, like every link on the page:
+  // a token in the URL would sit in the proxy log and the history (H5). The
+  // runtime has already exchanged any token it was handed for a session.
   function go(path) {
-    var token = qc.readToken();
-    window.location.href = token
-      ? path + (path.indexOf('?') === -1 ? '?' : '&') + 'token=' + enc(token)
-      : path;
+    window.location.href = path;
   }
 
   function refreshAll() {

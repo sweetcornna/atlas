@@ -24,7 +24,7 @@ import type {
 import { createConsoleHandler } from '../src/http.js'
 import { renderCredentialPage, renderInvitePage } from '../src/view/invite.js'
 import { renderLoginPage } from '../src/view/login.js'
-import { zoneLabelOf } from '../src/view/format.js'
+import { formatDateTime, formatTime, zoneLabelOf } from '../src/view/format.js'
 import { renderOverview } from '../src/view/page.js'
 import {
   ADMIN,
@@ -989,6 +989,14 @@ describe("时区 · every instant names its zone, and can be redrawn in the read
     expect(zoneLabelOf(-210)).toBe('UTC-3:30')
     expect(zoneLabelOf(345)).toBe('UTC+5:45')
     expect(zoneLabelOf(-420)).toBe('UTC-7')
+  })
+
+  test('the three shapes: clock, date and time, date and minute', () => {
+    const at = NOW - 5_000
+    expect(formatTime(at, 'datetime')).toBe(formatDateTime(at))
+    expect(formatTime(at, 'clock')).toBe(formatDateTime(at).slice(11))
+    expect(formatTime(at, 'minute')).toBe(formatDateTime(at).slice(0, 16))
+    expect(formatTime(0, 'minute')).toBe('—')
   })
 
   test("the trail's instant is a <time> with the instant in it, drawn in the server's zone, and the page says which", async () => {

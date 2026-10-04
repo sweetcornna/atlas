@@ -13,6 +13,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { CONSOLE_CLIENT_JS_ACCOUNTS } from '../src/assets/client.js'
 import type { ProviderNodeActual } from '../src/deps.js'
 import { effectiveCells } from '../src/view/providers.js'
 import {
@@ -1696,5 +1697,73 @@ describe('several keys', () => {
       call('GET', '/fragments/providers/node/node-a', s.viewer),
     )
     expect(tab).not.toContain('密钥轮换')
+  })
+})
+
+describe('the model service pages after P18.14 (时区, H5)', () => {
+  /** Every `YYYY-MM-DD HH:MM` in the visible text that is not inside a `<time>`. */
+  function bareMinutes(html: string): string[] {
+    const outside = withoutScripts(html).replace(
+      /<time\b[^>]*>[^<]*<\/time>/g,
+      '',
+    )
+    return visibleText(outside).match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/g) ?? []
+  }
+
+  test("every instant on them is a <time> with its ISO instant, redrawn in the reader's zone", async () => {
+    const s = await setup({ pool: true })
+    let times = 0
+    for (const path of [
+      ...PAGES,
+      '/providers/profiles/pool',
+      '/providers/nodes/node-d',
+    ]) {
+      const html = await text(s.handle, page(path, s.ops))
+      expect([path, bareMinutes(html)]).toEqual([path, []])
+      times += (html.match(/<time datetime="[^"]+Z" data-fmt="minute">/g) ?? [])
+        .length
+    }
+    for (const path of [...FRAGMENTS, '/fragments/providers/node/node-d']) {
+      const html = await text(s.handle, call('GET', path, s.ops))
+      expect([path, bareMinutes(html)]).toEqual([path, []])
+    }
+    // The three the pages draw: a key's set time, each pool key's, and a
+    // cool-down's end.
+    expect(times).toBeGreaterThan(0)
+    const form = await text(s.handle, page('/providers/profiles/pool', s.ops))
+    expect(form).toContain(
+      '设置于 <time datetime="2026-10-03T06:30:00.000Z" data-fmt="minute">2026-10-03 06:30</time>',
+    )
+    const node = await text(s.handle, page('/providers/nodes/node-d', s.ops))
+    expect(node).toContain(
+      `到 <time datetime="${POOL_COOLING_UNTIL}" data-fmt="minute">`,
+    )
+  })
+
+  test('no script on them builds a URL with the token in it', async () => {
+    const s = await setup({ pool: true })
+    for (const path of [
+      ...PAGES,
+      '/providers/profiles/pool',
+      '/providers/nodes/node-d',
+    ]) {
+      const html = await text(s.handle, page(path, s.ops))
+      const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+        .map(match => match[1] ?? '')
+        .join('\n')
+      expect(scripts.length).toBeGreaterThan(0)
+      // A navigation rides on the session cookie: nothing reads the stored
+      // token to put it in a URL, and no URL is built with token= in it.
+      expect([path, /token=' \+|[?&]token=/.test(scripts)]).toEqual([
+        path,
+        false,
+      ])
+      // The page's own scripts, the shared runtime taken out: none of them
+      // reads the stored token at all.
+      expect(scripts).toContain(CONSOLE_CLIENT_JS_ACCOUNTS)
+      const own = scripts.replace(CONSOLE_CLIENT_JS_ACCOUNTS, '')
+      expect(own.length).toBeGreaterThan(0)
+      expect([path, own.includes('readToken')]).toEqual([path, false])
+    }
   })
 })

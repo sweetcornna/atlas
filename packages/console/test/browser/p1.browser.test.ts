@@ -808,6 +808,18 @@ describe.skipIf(SKIP !== null)(
             `document.getElementById('tz-note').textContent`,
           ),
         ).toBe('时间 · UTC+8 · 本机时区')
+        // The minute shape the model service page uses, arriving later.
+        await tab.evaluate(`(() => {
+          const t = document.createElement('time');
+          t.id = 'late-minute';
+          t.setAttribute('datetime', '2023-11-14T22:13:15.000Z');
+          t.setAttribute('data-fmt', 'minute');
+          t.textContent = '2023-11-14 22:13';
+          document.getElementById('main').appendChild(t);
+        })()`)
+        await tab.waitFor(
+          `document.getElementById('late-minute').textContent === '2023-11-15 06:13'`,
+        )
         // A refresh swaps the region in as the server drew it; it is redrawn.
         await fastPolling(tab)
         const before = served.wrapper.seen.length

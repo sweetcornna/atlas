@@ -56,6 +56,7 @@ import {
   effectiveCells,
   familyGoverned,
   keyState,
+  kv,
   kvText,
   laneWord,
   mainModel,
@@ -447,9 +448,10 @@ function keySection(model: EditorModel): string {
   const keyHint = preset?.keyHint ?? null
   const status =
     mode === 'edit' && summary !== undefined
-      ? `<p class="prov-key-state" id="prov-key-state">${escapeHtml(
-          keyState(summary, { writer: true, accountsOn: true }),
-        )}</p>`
+      ? `<p class="prov-key-state" id="prov-key-state">${keyState(summary, {
+          writer: true,
+          accountsOn: true,
+        })}</p>`
       : ''
   const actions =
     mode === 'edit'
@@ -809,7 +811,7 @@ export function renderProfileReadOnly(model: {
         .map(entry => entry.id)
         .join(' ') || '—',
     ) +
-    kvText('密钥', summary === undefined ? '—' : keyState(summary, reader)) +
+    kv('密钥', summary === undefined ? '—' : keyState(summary, reader)) +
     kvText('修订', String(profile.revision)) +
     `</div>` +
     `</section>`

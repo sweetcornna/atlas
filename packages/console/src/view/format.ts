@@ -92,12 +92,17 @@ export function toDatetimeLocal(at: number): string {
   )}T${pad2(date.getHours())}:${pad2(date.getMinutes())}`
 }
 
-/** The two shapes an instant is drawn in: `HH:MM:SS`, or the date before it. */
-export type TimeFormat = 'clock' | 'datetime'
+/**
+ * The shapes an instant is drawn in: `HH:MM:SS`, the date before it, or the
+ * date and the minute (the model service page's settings and cool-downs).
+ */
+export type TimeFormat = 'clock' | 'datetime' | 'minute'
 
-/** {@link formatClock} or {@link formatDateTime}, by shape. */
+/** {@link formatClock}, {@link formatDateTime} or the minute, by shape. */
 export function formatTime(at: number, fmt: TimeFormat): string {
-  return fmt === 'clock' ? formatClock(at) : formatDateTime(at)
+  if (fmt === 'clock') return formatClock(at)
+  const full = formatDateTime(at)
+  return fmt === 'minute' && full !== NO_VALUE ? full.slice(0, 16) : full
 }
 
 /**
