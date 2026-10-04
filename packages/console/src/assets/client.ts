@@ -1292,10 +1292,27 @@ function runtimeScript(guards: TokenGuards): string {
 }
 
 /** The runtime as a console without accounts serves it. */
-export const CONSOLE_CLIENT_JS = runtimeScript(NO_GUARDS)
+/**
+ * The runtime without its line comments (G1): they are for whoever edits
+ * this file, and every document carried them. Whole lines only — a line
+ * whose first non-blank characters are `//` — so nothing inside a string or
+ * after code is touched; this script has no multi-line string literal for
+ * such a line to be part of. Block comments stay: the humanize markers are
+ * two of them, and `test/copyGate.test.ts` reads between them.
+ */
+export function stripJsLineComments(script: string): string {
+  return script
+    .split('\n')
+    .filter(line => !/^\s*\/\//.test(line))
+    .join('\n')
+}
+
+export const CONSOLE_CLIENT_JS = stripJsLineComments(runtimeScript(NO_GUARDS))
 
 /**
  * The same runtime for a console with accounts: identical but for the two
  * guards that keep a personal credential out of `localStorage`.
  */
-export const CONSOLE_CLIENT_JS_ACCOUNTS = runtimeScript(PERSONAL_GUARDS)
+export const CONSOLE_CLIENT_JS_ACCOUNTS = stripJsLineComments(
+  runtimeScript(PERSONAL_GUARDS),
+)

@@ -10,6 +10,10 @@
 import { createHash } from 'node:crypto'
 import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
+import {
+  CONSOLE_CLIENT_JS,
+  CONSOLE_CLIENT_JS_ACCOUNTS,
+} from '../src/assets/client.js'
 import { CONSOLE_CSS } from '../src/assets/css.js'
 import { CHAT_PAGE_CSS } from '../src/view/chatPage.js'
 import type {
@@ -781,6 +785,18 @@ describe('G1 · documents travel compressed, sheets without notes, assets revali
       await h.handle(withHeaders('/assets/app.css', {}))
     ).text()
     expect(asset).toBe(CONSOLE_CSS)
+  })
+
+  test('the runtime ships without its line comments and still parses, markers kept', () => {
+    for (const runtime of [CONSOLE_CLIENT_JS, CONSOLE_CLIENT_JS_ACCOUNTS]) {
+      expect(runtime.split('\n').filter(line => /^\s*\/\//.test(line))).toEqual(
+        [],
+      )
+      expect(() => new Function(runtime)).not.toThrow()
+      expect(runtime).toContain('/* humanize:start */')
+      expect(runtime).toContain('/* humanize:end */')
+      expect(runtime.length).toBeLessThan(40_000)
+    }
   })
 
   test('an asset answers 304 to its own tag, and the two runtimes have two tags', async () => {
