@@ -1218,8 +1218,8 @@ export interface HandoffPort {
   list(): Promise<ConsoleResult<readonly HandoffTaskView[]>>
   get(taskId: string): Promise<ConsoleResult<HandoffTaskView>>
   /**
-   * 记下一句给云端的话。P17.4 只记账，派发与投递是节点桥（P17.5）的事；
-   * 任务已结束（done / failed / returned）时 `rejected`。
+   * 记下一句给云端的话；配了 `--handoff-node` 的中枢在任务 running 后把它转给
+   * 节点（P17.5）。任务已结束（done / failed / returned）时 `rejected`。
    */
   send(taskId: string, text: string): Promise<ConsoleResult<HandoffSendView>>
 }
