@@ -901,6 +901,35 @@ export class ConsoleProviders implements ProviderPort {
     return this.#secrets.reveal({ profileId: profile.id, keyId: key.id })
   }
 
+  /**
+   * P18.18: what an apply delivers — the primary key's value and every other
+   * key's, by id — or the ids of the keys that are not sealed and current.
+   * Delivering only some of them would let the hub believe a rotation is in
+   * force that is not.
+   */
+  #keysOf(
+    profile: ProviderProfile,
+  ):
+    | { ok: true; secret: string; others: Record<string, string> }
+    | { ok: false; missing: string[] } {
+    const primary = primaryKey(profile.keys)
+    const missing: string[] = []
+    const others: Record<string, string> = {}
+    let secret: string | null = null
+    for (const key of profile.keys) {
+      const value =
+        this.#sealedAt(profile, key) === null
+          ? null
+          : this.#secrets.reveal({ profileId: profile.id, keyId: key.id })
+      if (value === null) missing.push(key.id)
+      else if (key === primary) secret = value
+      else others[key.id] = value
+    }
+    return secret === null || missing.length > 0
+      ? { ok: false, missing }
+      : { ok: true, secret, others }
+  }
+
   /** Check every new key value with the catalog's own rule for one. */
   #checkSecrets(
     profile: ProviderProfile,
@@ -1386,11 +1415,17 @@ export class ConsoleProviders implements ProviderPort {
     }
   }
 
-  /** The wire form of a profile for one node: the D-8 override on the main model. */
+  /**
+   * The wire form of a profile for one node: the D-8 override on the main
+   * model. `secret` goes with the primary key; `others` (P18.18, an apply's
+   * other keys by id) with theirs, in the profile's order. Without `others`
+   * only the primary travels, as it always did.
+   */
   #wire(
     profile: ProviderProfile,
     secret: string,
     contextOverride: number | null,
+    others: Readonly<Record<string, string>> = {},
   ): WireProfile {
     const key = primaryKey(profile.keys)
     return {
@@ -1418,13 +1453,20 @@ export class ConsoleProviders implements ProviderPort {
         : { keySelection: profile.keySelection }),
       auth: {
         scheme: profile.auth.scheme,
-        keys: [
-          {
-            id: key.id,
-            value: secret,
-            ...(key.priority === undefined ? {} : { priority: key.priority }),
-          },
-        ],
+        keys: profile.keys.flatMap(each => {
+          const value = each === key ? secret : others[each.id]
+          return value === undefined
+            ? []
+            : [
+                {
+                  id: each.id,
+                  value,
+                  ...(each.priority === undefined
+                    ? {}
+                    : { priority: each.priority }),
+                },
+              ]
+        }),
       },
     }
   }
@@ -1579,14 +1621,20 @@ export class ConsoleProviders implements ProviderPort {
     }
     const profile = this.#book.profile(profileId)
     if (profile === undefined) return refuse('not-found', '没有这份档案')
-    const secret = this.#secretOf(profile)
-    if (secret === null) {
-      return refuse('secret-missing', '这份档案还没有密钥 · 先填写')
+    const sealed = this.#keysOf(profile)
+    if (!sealed.ok) {
+      return refuse(
+        'secret-missing',
+        profile.keys.length === 1
+          ? '这份档案还没有密钥 · 先填写'
+          : `密钥 ${sealed.missing.join('、')} 还没有填写 · 先填写`,
+      )
     }
+    const { secret, others } = sealed
     const sessions = this.#sessions(node, profile, options.sessions)
     if (!sessions.ok) return refuse('invalid', sessions.failure.message)
     const override = this.#book.contextOverride(node)
-    const wire = this.#wire(profile, secret, override)
+    const wire = this.#wire(profile, secret, override, others)
     const request = {
       v: 1,
       op: 'apply',
@@ -1606,7 +1654,10 @@ export class ConsoleProviders implements ProviderPort {
       )
     }
     const result = await this.#executor.run(node, request, TIMEOUTS.apply)
-    const applied = this.#applyResult(node, requestId, result, [secret])
+    const applied = this.#applyResult(node, requestId, result, [
+      secret,
+      ...Object.values(others),
+    ])
     const base = {
       ...applied,
       sessions: sessions.value,
