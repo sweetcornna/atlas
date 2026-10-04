@@ -10,9 +10,10 @@
  * confirmation and sends nothing; 取消 sends nothing either; the
  * confirmation's button sends once, the ledger gets its one line, and the
  * region comes back with the new state — then the same for 恢复. And the
- * 「模型」 tab: a fragment that is there is loaded and kept polled; one that
- * is not (404, the state of this console before P18.9) leaves one calm line,
- * stops polling, and the next refresh of the page does not report a failure.
+ * 「模型」 tab against P18.9's real fragment: a node the model service knows
+ * is loaded and kept polled; one it does not (404) leaves one calm line,
+ * stops polling, and the next refresh of the page does not report a failure;
+ * without `--providers` the fragment is that area's own one line.
  * Skipped, with the reason, where no Chrome is installed (`cdp.ts`).
  */
 
@@ -21,15 +22,26 @@ import { ADMIN, accountsHarness } from '../accountsHarness.js'
 import { PLANNER, REVIEWER, StatefulLifecycle } from '../lifecycleFake.js'
 import { MemoryActionLedger } from '../memoryActions.js'
 import { PageAudit, PageRegistry } from '../pageHarness.js'
+import { FakeProviders } from '../providersFake.js'
 import { Browser, type Tab, skipReason } from './cdp.js'
 
 const SKIP = skipReason()
 if (SKIP !== null) console.warn(`[nodes browser tests] skipped: ${SKIP}`)
 
-/** What a P18.9 fragment would answer, for the tab that finds one. */
-const MODELS_FRAGMENT = '<p id="fake-models">gpt-6-luna · responses</p>'
+/** A model service that knows tokyo-1: node-a's state under that name. */
+function providersKnowingTokyo(): FakeProviders {
+  const providers = new FakeProviders()
+  const template = providers.nodes.get('node-a')
+  if (template === undefined) throw new Error('the fake lost node-a')
+  providers.nodes.set('tokyo-1', { ...template, node: 'tokyo-1' })
+  return providers
+}
 
-function serve(options: { readonly models?: boolean } = {}) {
+/**
+ * The console over a real socket. The 「模型」 fragment is P18.9's own route,
+ * answered by the console; the wrapper only counts how often it is asked.
+ */
+function serve(options: { readonly providers?: FakeProviders } = {}) {
   const actions = new MemoryActionLedger()
   const lifecycle = new StatefulLifecycle()
   const h = accountsHarness({
@@ -38,6 +50,9 @@ function serve(options: { readonly models?: boolean } = {}) {
       audit: new PageAudit(),
       lifecycle,
       actions,
+      ...(options.providers === undefined
+        ? {}
+        : { providers: options.providers }),
     },
   })
   const modelsAsked: string[] = []
@@ -46,14 +61,7 @@ function serve(options: { readonly models?: boolean } = {}) {
     hostname: '127.0.0.1',
     fetch: request => {
       const path = new URL(request.url).pathname
-      if (path.startsWith('/fragments/providers/node/')) {
-        modelsAsked.push(path)
-        if (options.models === true) {
-          return new Response(MODELS_FRAGMENT, {
-            headers: { 'content-type': 'text/html; charset=utf-8' },
-          })
-        }
-      }
+      if (path.startsWith('/fragments/providers/node/')) modelsAsked.push(path)
       return h.handle(request)
     },
   })
@@ -207,8 +215,9 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     }
   }, 30_000)
 
-  test('「模型」 with no fragment on this console: one calm line, no polling, no refresh failure', async () => {
-    const served = serve()
+  test('「模型」 for a node the model service does not know (404): one calm line, no polling, no refresh failure', async () => {
+    // node-a, node-b and node-c only.
+    const served = serve({ providers: new FakeProviders() })
     const tab = await browser.tab()
     try {
       await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
@@ -260,8 +269,48 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
     }
   }, 30_000)
 
-  test('「模型」 with the fragment there: loaded into the tab and kept polled', async () => {
-    const served = serve({ models: true })
+  test("「模型」 loads P18.9's real fragment for a node it knows, and keeps it polled", async () => {
+    const served = serve({ providers: providersKnowingTokyo() })
+    const tab = await browser.tab()
+    try {
+      await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
+      await tab.waitFor(
+        `document.getElementById('node-models').getAttribute('data-state') === 'loaded'`,
+      )
+      // The model service's own panel, for this node, inside the tab.
+      expect(
+        await tab.evaluate<boolean>(
+          `document.querySelector('#node-models .prov-node-in[data-node="tokyo-1"]') !== null`,
+        ),
+      ).toBe(true)
+      expect(
+        await tab.evaluate<boolean>(
+          `document.getElementById('node-models').hasAttribute('data-poll')`,
+        ),
+      ).toBe(true)
+      await pollFast(tab)
+      await tab.waitFor(
+        `document.getElementById('node-models').getAttribute('data-refreshed') !== null`,
+      )
+      expect(served.modelsAsked.length).toBeGreaterThan(1)
+      expect(
+        await tab.evaluate<boolean>(
+          `document.querySelector('#node-models .prov-node-in[data-node="tokyo-1"]') !== null`,
+        ),
+      ).toBe(true)
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('refresh-state').textContent`,
+        ),
+      ).not.toContain('刷新失败')
+    } finally {
+      await tab.close()
+      served.stop()
+    }
+  }, 30_000)
+
+  test("「模型」 without --providers: the model service's own one line, loaded like any fragment", async () => {
+    const served = serve()
     const tab = await browser.tab()
     try {
       await tab.goto(`${served.base}/nodes/tokyo-1/models?token=${ADMIN}`)
@@ -270,19 +319,9 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       )
       expect(
         await tab.evaluate<string>(
-          `document.getElementById('fake-models').textContent`,
+          `document.getElementById('node-models').textContent`,
         ),
-      ).toBe('gpt-6-luna · responses')
-      await pollFast(tab)
-      await tab.waitFor(
-        `document.getElementById('node-models').getAttribute('data-refreshed') !== null`,
-      )
-      expect(served.modelsAsked.length).toBeGreaterThan(1)
-      expect(
-        await tab.evaluate<boolean>(
-          `document.getElementById('fake-models') !== null`,
-        ),
-      ).toBe(true)
+      ).toContain('模型服务未开启')
     } finally {
       await tab.close()
       served.stop()

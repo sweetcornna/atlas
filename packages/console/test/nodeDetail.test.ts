@@ -46,6 +46,7 @@ import {
   visibleText,
   withoutScripts,
 } from './pageHarness.js'
+import { FakeProviders } from './providersFake.js'
 
 const TABS = [
   '/nodes/tokyo-1',
@@ -341,12 +342,23 @@ describe('the node page (A3)', () => {
     expect(odd).toContain(
       `href="/providers?node=${encodeURIComponent('odd node/名')}"`,
     )
-    // On this console the fragment is not there yet: the tab's script is
-    // what turns that 404 into one line (browser suite), not the page.
-    const missing = await h.handle(
+    // The fragment is P18.9's. Without `--providers` it is that area's one
+    // line, at 200; with a port that does not know the node it is a 404 —
+    // which the tab's script turns into one calm line (browser suite).
+    const off = await h.handle(
+      asBearer('GET', '/fragments/providers/node/tokyo-1', VIEW),
+    )
+    expect(off.status).toBe(200)
+    expect(visibleText(await off.text())).toContain('模型服务未开启')
+    const { h: wired } = scene({ providers: new FakeProviders() })
+    const missing = await wired.handle(
       asBearer('GET', '/fragments/providers/node/tokyo-1', VIEW),
     )
     expect(missing.status).toBe(404)
+    const known = await wired.handle(
+      asBearer('GET', '/fragments/providers/node/node-a', VIEW),
+    )
+    expect(known.status).toBe(200)
   })
 
   test('a node only the ledger knows is a page; a node nobody knows is a 404', async () => {

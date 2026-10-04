@@ -937,10 +937,15 @@ export const NODE_PAGE_JS = `
     confirm('publish', address);
   });
 
-  // The 「模型」 tab: load once now; keep it polled only if it was there.
-  var models = qc.byId('node-models');
-  if (models) {
+  // The 「模型」 tab: load once; keep it polled only if it was there. Not
+  // before the runtime has started: it takes a \`?token=\` out of the URL
+  // on DOMContentLoaded, and a load sent ahead of that carries no
+  // credential, is answered 401, and expires the page.
+  function loadModels() {
+    var models = qc.byId('node-models');
+    if (!models) return;
     var url = models.getAttribute('data-fragment') || '';
+    if (!url) return;
     var line = function (text, state) {
       models.removeAttribute('data-poll');
       models.setAttribute('data-state', state);
@@ -950,17 +955,22 @@ export const NODE_PAGE_JS = `
       p.textContent = text;
       models.appendChild(p);
     };
-    if (url) {
-      qc.loadHtml(url).then(function (html) {
-        models.innerHTML = html;
-        models.setAttribute('data-state', 'loaded');
-      }).catch(function (err) {
-        if (qc.isExpired()) return;
-        var text = qc.message(err);
-        if (text === 'HTTP 404') line('模型服务暂无这台节点的信息 · 可在模型服务页查看', 'missing');
-        else line('模型信息读取失败 · ' + text, 'failed');
-      });
-    }
+    qc.loadHtml(url).then(function (html) {
+      models.innerHTML = html;
+      models.setAttribute('data-state', 'loaded');
+    }).catch(function (err) {
+      if (qc.isExpired()) return;
+      var text = qc.message(err);
+      if (text === 'HTTP 404') line('模型服务暂无这台节点的信息 · 可在模型服务页查看', 'missing');
+      else line('模型信息读取失败 · ' + text, 'failed');
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    // Registered after the runtime's own listener, so it runs after it.
+    document.addEventListener('DOMContentLoaded', loadModels);
+  } else {
+    loadModels();
   }
 })();
 `
