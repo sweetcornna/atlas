@@ -172,6 +172,7 @@ describe('迁移与真机验收 runbook 的引用', () => {
       'demo/env/beta/ops/model-apply-enroll.sh',
       'demo/env/beta/ops/provider-acceptance.ts',
       'demo/env/beta/ops/provider-acceptance-node.ts',
+      'demo/env/beta/handoff-node.sh',
     ]
       .map(read)
       .join('\n')
@@ -214,6 +215,58 @@ describe('迁移与真机验收 runbook 的引用', () => {
       return chat === null || !chat.signed || chat.node !== 'console'
     })
     expect(misread).toEqual([])
+  })
+
+  test('重起控制台写了两种起法，各自的命令与单元模板、beta-up 的幂等一致', () => {
+    const unit = read('demo/env/beta/ops/qianmo-console.service.in')
+    expect(unit).toContain(
+      'ExecStart=@REPO_DIR@/demo/env/beta/beta-up.sh --role host --only console -- $CONSOLE_EXTRA_ARGS',
+    )
+    expect(unit).toContain(
+      'ExecStop=@REPO_DIR@/demo/env/beta/beta-down.sh console',
+    )
+    // 单元 inactive 时 restart 只是 start，ExecStart 的 beta-up 见进程在跑就不重起。
+    expect(read('demo/env/beta/common.sh')).toMatch(
+      /beta_start_process\(\) \{\n(?:[^\n]*\n){2} {2}if beta_running "\$name"; then\n[^\n]*不重起/,
+    )
+    for (const [name, body] of Object.entries(SECTIONS)) {
+      const has = [
+        'systemctl --user is-active qianmo-console.service',
+        'systemctl --user restart qianmo-console.service',
+        'beta-down.sh console',
+        'beta-up.sh --role host --only console --',
+        'CONSOLE_EXTRA_ARGS',
+      ].filter(needle => !body.includes(needle))
+      expect({ name, missing: has }).toEqual({ name, missing: [] })
+    }
+  })
+
+  test('首次下发写明「保留会话」，且中枢认 keep、首次缺省是重置', () => {
+    const route = read('packages/console/src/routes/providers.ts')
+    expect(route).toContain("body.sessions === 'keep'")
+    const hub = read('src/cli/handlers/consoleProviders.ts')
+    expect(hub).toContain(
+      "if (requested === undefined) return done(same ? 'keep' : 'reset')",
+    )
+    expect(hub).toContain('committed === null ? undefined')
+    for (const [name, body] of Object.entries(SECTIONS)) {
+      expect({ name, keep: body.includes('"sessions":"keep"') }).toEqual({
+        name,
+        keep: true,
+      })
+    }
+  })
+
+  test('清 model-env 时提醒接力节点：handoff-node.sh 的 key 就从 model-env 读', () => {
+    const handoff = read('demo/env/beta/handoff-node.sh')
+    expect(handoff).toContain('${QIANMO_HANDOFF_KEY_ENV:-OPENAI_API_KEY}')
+    expect(handoff).toContain('beta_load_model_env')
+    for (const [name, body] of Object.entries(SECTIONS)) {
+      const missing = ['<接力节点>', 'QIANMO_HANDOFF_KEY_ENV'].filter(
+        needle => !body.includes(needle),
+      )
+      expect({ name, missing }).toEqual({ name, missing: [] })
+    }
   })
 
   test('README 的轮配置样例与 parseConfig 同形', () => {

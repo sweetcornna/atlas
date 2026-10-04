@@ -633,7 +633,8 @@ ssh-keygen -t ed25519 -N '' -C "qianmo-model-apply <node>" -f ~/.ssh/qianmo-mode
 # ③ H：登记节点的主机公钥。**核对指纹后**再追加——这一份就是中枢唯一认的主机钥
 ssh-keyscan -p <port> <host> > /tmp/<node>.hostkey && ssh-keygen -lf /tmp/<node>.hostkey   # 与节点上 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 比对
 cat /tmp/<node>.hostkey >> ~/.ssh/qianmo-model-apply/known_hosts && chmod 600 ~/.ssh/qianmo-model-apply/known_hosts
-# ④ H：重起控制台（单元从 ops/console.env 取尾参，--providers 活得过重启）
+# ④ H：重起控制台（单元从 ops/console.env 取尾参，--providers 活得过重启）。两种起法的重起不一样，
+#    见「模型服务迁移与真机验收」那一节
 systemctl --user restart qianmo-console.service
 ```
 
@@ -686,8 +687,18 @@ demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
   --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根> --dry-run
 demo/env/beta/ops/model-apply-enroll.sh enroll --node <节点> \
   --hub <H> --hub-tree <H 部署根> --node-ssh <节点 ssh> --node-tree <节点部署根>
-systemctl --user restart qianmo-console.service      # 在 H 上：控制台起来时才看专用 key 在不在
+# 在 H 上重起控制台：它起来时才看专用 key 在不在。先看是哪种起法
+systemctl --user is-active qianmo-console.service
+#   active：单元起的 → 原样重起（ExecStop 是 beta-down.sh console，ExecStart 从 ops/console.env 取尾参）
+systemctl --user restart qianmo-console.service
+#   inactive（或宿主没有 systemd --user）：手工 beta-up.sh --role host 起的 → 停掉，带全原来的尾参重跑同一条 host 腿。
+#   尾参就是 ops/console.env 里 CONSOLE_EXTRA_ARGS 的每一个，少带一个就等于撤掉它
+./demo/env/beta/beta-down.sh console && ./demo/env/beta/beta-up.sh --role host --only console -- <CONSOLE_EXTRA_ARGS 的全部尾参>
 ```
+
+单元 `inactive` 时**不要**用 `systemctl --user restart`：它只会 start 单元，ExecStart 的 `beta-up.sh` 见控制台在跑就不重起
+（幂等），跑着的还是旧进程，`providers` 行不会多出新登记的节点。判据：`run/console.pid` 的 pid 变了，`providers` 行列出
+这个节点、是 `/ssh`。
 
 | 步 | 在哪 | 做什么 |
 |---|---|---|
@@ -707,6 +718,24 @@ systemctl --user restart qianmo-console.service      # 在 H 上：控制台起�
 `--dry-run` 只走检查那一遍，打印「将要」写的那一行与 known_hosts 那几行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
 2 用法错。前提：节点 sshd 至少有一把 ed25519 / ecdsa / rsa 主机钥（`/etc/ssh/ssh_host_*_key.pub`）、节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
 （sshd 强制命令下没有 `QIANMO_BETA_ROOT`，所以节点必须用默认内测根）。跑在 H 自己身上的节点走 local，不需要登记。
+
+### 首次下发与清 `model-env`
+
+首次下发（`beta-env.md` §13.2 第 7 步）逐个节点做，**会话选「保留」**：
+
+```bash
+# 页面：模型服务 → 节点那一行「下发」→「会话」选「保留」。等价的 API（ops 个人账号的 token）：
+#   POST /v0/providers/apply   {"nodes":["<节点>"],"sessions":"keep"}
+```
+
+缺省的「按线路与主机判断」只在中枢记着这个节点上一次已提交的下发、且线路与主机都相同时才保留；首次下发没有
+可比的记录，**一定是重置**——节点清掉全部会话映射，每个上下文（值守作业也一样）都开新会话。「保留」要节点报告
+`replayFilter`，刷新后选不了就停下来查，不要退回缺省。
+
+清 `model-env`（第 8 步）时，`<接力节点>` 先别删：`handoff-node.sh start` 给 app-server 的模型 key 从同一份
+`secrets/model-env` 读（`QIANMO_HANDOFF_KEY_ENV`，缺省 `OPENAI_API_KEY`），删掉之后下一次 `handoff-node.sh start`
+直接退出。接力节点要先有另一个 key 来源（由 B 段定）；换个名字留在 `model-env` 里不行：resident 照样载入它，ACP
+子进程只按名单剥键，不认的名字不剥。不删则该节点的 A1 判红（`env-residue`）。
 
 ### 每轮验收：`ops/provider-acceptance.sh`
 
