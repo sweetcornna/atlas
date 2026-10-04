@@ -38,7 +38,8 @@
  * ## What the probe and this package measured about the terminal
  *
  * With the fork's 0.158.0 release build against a local app-server (2026-10-04,
- * evidence `p17-6/exp-attach-*.log`): a turn started from the attached
+ * the opt-in `tests/integration/qianmo-handoff-attach-qmcode.test.ts`, which
+ * runs this command with the real terminal): a turn started from the attached
  * terminal ran with the **node thread's** approval policy and sandbox even
  * when this machine's `config.toml` said otherwise, in both directions
  * (stricter and `danger-full-access`); and text that arrives as one burst

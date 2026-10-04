@@ -5,9 +5,9 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.2（2026-10-04，补 P17.5 云端续跑；v0.1 2026-10-03 随 P17.3） |
-| 适用 | `qm handoff`（P17.4）、`qm handoff mcp`（P17.3）、`qm handoff node` 与中枢派发（P17.5，§6）；工作包与判据见 [`handoff-p17-plan.md`](./handoff-p17-plan.md) |
-| 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写。qmcode 一侧 2026-10-03 用本机 debug 构建（fork `34e0d210ed`）加假 Responses 服务实测过 `qianmo_handoff` 回合内调用与审批；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，**未在官方 Claude Code 上实测** |
+| 版本 | v0.3（2026-10-04，补 P17.6 接入与接回；v0.2 同日补 P17.5 云端续跑；v0.1 2026-10-03 随 P17.3） |
+| 适用 | `qm handoff`（P17.4）、`qm handoff mcp`（P17.3）、`qm handoff node` 与中枢派发（P17.5，§6）、`qm handoff attach` 与 `pull`（P17.6，§7）；工作包与判据见 [`handoff-p17-plan.md`](./handoff-p17-plan.md) |
+| 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写。qmcode 一侧 2026-10-03 用本机 debug 构建（fork `34e0d210ed`）加假 Responses 服务实测过 `qianmo_handoff` 回合内调用与审批；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，**未在官方 Claude Code 上实测**。§7 的接入 2026-10-04 用 fork 0.158.0 本机 release 构建的真 `qmcode` 终端对本机真 app-server 实测（只放回环）；ssh 是测试替身，**两台真机之间未实测**（P17.7 演练） |
 
 ## 1. 先登记仓库
 
@@ -105,7 +105,7 @@ claude mcp add qianmo -- qm handoff mcp
 | `qianmo_handoff {goal, done, remaining, deadline?}` | P17.3 | **有副作用**：推送工作区的影子提交与会话记录到中枢，登记接力任务；中枢确认后返回「已落地，可以关机」和任务号，否则返回原因 |
 | `qianmo_task {taskId?}` | P17.3 | 只读：一个任务的状态、简报、派发节点、云端结果摘要 |
 | `qianmo_send {taskId, text}` | P17.5 | **有副作用**：给转交出去、还没结束的任务追加一句话。中枢记账后返回第几句；节点接手后按顺序送进正在跑的回合（§6.4） |
-| `qianmo_pull {taskId?}` | P17.6 | 接回 |
+| `qianmo_pull {taskId?}` | P17.6 | **有副作用**：把云端完成的任务接回本机，与 `qm handoff pull` 同一条路径（§7.2）；不给 `taskId` 时接本项目最近一个完成的任务 |
 
 模型是在回合**中间**调用 `qianmo_handoff` 的，这个回合要等工具返回才会结束。所以转交的会话截到最后一个完整回合，调用它的这一轮不在其中（qmcode 截到这一轮的 `task_started` 之前；Claude Code 截到上一轮结束），返回里写明截到哪。这一轮里交代的事要写进 `goal`、`done`、`remaining`。
 
@@ -117,7 +117,7 @@ Claude Code 把自己的完整环境（含模型 key）交给 MCP 服务和 hook
 
 ## 6. 云端续跑（P17.5）
 
-转交登记之后，中枢把任务派给一台节点：节点桥 `qm handoff node` 在节点上的裸仓里开一棵工作树，交给同机的 `qmcode app-server` 续上转交的会话，回合结束后把改动提交到 `qianmo/<任务>`，回 `task.result`；中枢把分支和云端会话取回自己的裸仓。接回本机是 P17.6 的事。
+转交登记之后，中枢把任务派给一台节点：节点桥 `qm handoff node` 在节点上的裸仓里开一棵工作树，交给同机的 `qmcode app-server` 续上转交的会话，回合结束后把改动提交到 `qianmo/<任务>`，回 `task.result`；中枢把分支和云端会话取回自己的裸仓。接入正在跑的任务与接回本机见 §7。
 
 ### 6.1 中枢
 
@@ -171,3 +171,54 @@ QIANMO_HANDOFF_BASE_URL=<网关 /v1 地址> demo/env/beta/handoff-node.sh start 
 `qianmo_send {taskId, text}`（或 `POST /v0/handoff/<任务>/send`）先写进中枢台账，返回这是第几句；台账只在任务处于 `accepted`、`dispatched`、`running` 时收。节点接手后，中枢按顺序把这些话转给节点桥，节点桥在同一个线程上 `turn/start`，回合还在跑时就并进这个回合。
 
 节点已经在收尾（回合结束、正在提交）时，这句话不再送进线程，节点回一个失败结果。这个结果目前只写进中枢的日志，`qianmo_task` 里看不到。
+
+## 7. 接入与接回（P17.6）
+
+### 7.1 接入云端正在跑的任务
+
+```sh
+qm handoff attach [<任务>]
+```
+
+在任何一台能 SSH 到节点的机器上，把本机终端接到节点上正在跑的那个 qmcode 线程：看得到完整历史，敲的话进同一个线程，在节点上执行。
+
+1. 向中枢问任务在哪（`POST /v0/handoff/<任务>/attach`）。中枢只回节点名和线程号，记一条审计 `handoff.attach-requested`；只接 `running` 的任务，还没开跑或已经结束时说明原因（结束了就用 `pull`）。
+2. 用**你自己的** SSH 读节点上 app-server 的令牌文件（`ssh <节点> cat -- <文件>`，`~/.ssh/config`、密钥、口令提示都照常）。令牌只放进 `qmcode` 子进程的环境变量 `QIANMO_ATTACH_TOKEN`，不进命令行参数、文件、日志，也不经过中枢。
+3. 后台开隧道 `ssh -N -L 127.0.0.1:<本地端口>:127.0.0.1:<app-server 端口> -o ExitOnForwardFailure=yes`，经隧道等 app-server 的 `/readyz` 回 200。
+4. 执行 `qmcode resume --remote ws://127.0.0.1:<本地端口> --remote-auth-token-env QIANMO_ATTACH_TOKEN <线程>`。不带 `--cd`，线程沿用节点上的工作目录。
+5. qmcode 退出后关隧道。出错、`SIGTERM`、`SIGHUP` 时也关（信号先转给 qmcode）；`qm` 自己被 `SIGKILL` 时，由一个读管道的小 `sh` 看门进程关。qmcode 运行期间 Ctrl-C 归 qmcode。
+
+默认值按 `demo/env/beta/handoff-node.sh` 的布局，不对时用选项改：
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `--ssh <目标>` | 节点名 | 在 `~/.ssh/config` 里写一个 `Host <节点名>` 就不用给 |
+| `--node-token-file <路径>` | `qianmo-beta/secrets/handoff-app-server-token` | 节点上的路径；相对路径从节点上的家目录算 |
+| `--app-server-port <端口>` | `38631` | app-server 在节点回环上的端口 |
+| `--local-port <端口>` | 空闲端口 | 隧道本机这一端；给了而被占用时直接报错 |
+| `--console <地址> --token-file <凭据文件>` | 登记值 | 不在登记过的仓库里（另一台机器）时要给，两个一起给 |
+
+- **不给任务号**：在登记过的仓库里取本项目**恰好一个**运行中的任务，在仓库外取中枢上恰好一个；没有或不止一个时列出来，要你指定。接错线程等于在别人的任务里打字，所以不猜最新的。
+- **Claude Code 转交的任务**：节点导入时会话变成新线程，中枢在任务结束前不知道线程号。接入时经隧道向 app-server 查：已载入的线程里工作目录是 `…/work/<任务>` 的那个。
+- **失败时**：中枢不可达、台账里没有这个任务、任务不在运行、SSH 失败、读到的不像令牌、本地端口被占、隧道开了但 app-server 不回应、找不到 `qmcode`，都给出原因并以非零退出码结束，隧道不留。
+
+**审批与沙箱**：接入的终端里敲的每个回合，都按**节点线程**的设置执行（节点桥建线程时的 `approval_policy = never`、`workspace-write`，以及节点上的工作目录），与本机 `config.toml` 无关。本机配置比节点严（`on-request`、`read-only`）或比节点松（`never`、`danger-full-access`）两种都实测过（`tests/integration/qianmo-handoff-attach-qmcode.test.ts`，看节点 rollout 的 `turn_context`）。远程模式的 `resume` 不发审批和沙箱，界面随后用续上的线程报回的设置。
+
+**回车**：文字和回车在**同一次写入**里到达时（脚本驱动终端，或终端不支持括号粘贴时的粘贴），界面把整段当作粘贴，那次回车变成粘贴内容的一部分，要再按一次回车才提交。逐键输入、回车前停一下（实测 300 ms）、括号粘贴，都是一次回车就提交。这是输入框的粘贴识别（fork `tui/src/bottom_pane/paste_burst.rs`：3 个以上字符间隔不到 8 ms 算粘贴，其后 120 ms 内的回车当换行），与接入、远程模式无关。探针第 5 项看到的「要按两次回车」就是这个。
+
+### 7.2 接回本机
+
+```sh
+qm handoff pull [<任务>]
+```
+
+在登记过的仓库里执行；qmcode 里 `/pull` 执行的就是它，MCP 是 `qianmo_pull`。不给任务号时取本项目、本设备最近一个 `done` 的任务。
+
+1. 从中枢取结果分支 `qianmo/<任务>`（qmcode 会话还取云端会话 ref）到临时引用，核对它就是台账里的结果、并且是从这次转交的影子提交长出来的；用完删掉临时引用。不跑你的 git 钩子，不触发自动 gc。
+2. **转交以来本地没动过**——当前在分支上、和转交时同一个分支、`HEAD` 是影子提交的父提交、工作区（含未跟踪且未被忽略的文件）的树等于影子提交的树——就把当前分支**快进**到云端结果。转交时带着未提交改动（常态）时，先把分支和暂存区对到影子提交（工作区文件此刻与它一致，一个都不动），再 `git merge --ff-only`；任何一步不成就把分支和暂存区还原，改走下一条。
+3. **动过**：结果放到新分支 `qianmo/<任务>-return`，列出云端相对转交时改了什么、本地转交后改了什么；`HEAD`、暂存区和工作区**一个字节都不动**，合不合并由你决定（`git merge qianmo/<任务>-return`）。只是在同一棵树上多做了一次提交、换了分支，也算动过。
+4. **会话**（qmcode 转交的任务）：云端会话写回 `$QMCODE_HOME/sessions/<日期>/`，文件名与本机原来那份相同，`qmcode resume <线程>` 接着聊。本机那份内容不同时（几乎总是：`/handoff` 本身也是一个回合）先改名为 `<原名>.before-pull-<任务>` 留着。在这个线程里 `/pull` 时，要退出 qmcode 再 `resume` 才看得到云端的回合。Claude Code 转交的任务在云端续成了 qmcode 线程，会话留在中枢，不放到本机。
+5. 最后向中枢记 `returned`（`POST /v0/handoff/<任务>/return`）。本地已经接回而中枢没记上时退出码 1，再跑一次 `pull` 补记。
+
+重跑是安全的：已经在云端结果上、或 `-return` 分支已指向它时什么都不动。`-return` 分支已存在却指向别处时拒绝，请先改名或删掉。任务还在云端（`accepted`、`dispatched`、`running`）、`failed`、或不是这个项目的，都拒绝并说明。和 `qm handoff now` 用同一把仓库锁，二者不会交错。
+
