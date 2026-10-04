@@ -19,7 +19,14 @@ import {
   MANAGED_ENV_KEYS,
   SECRET_ENV_KEYS,
 } from '../whitelist.js'
-import { CANARY_KEY, model, presetProfile, V1, wireProfile } from './helpers.js'
+import {
+  CANARY_KEY,
+  CANARY_KEY_2,
+  model,
+  presetProfile,
+  V1,
+  wireProfile,
+} from './helpers.js'
 
 const UNIVERSE = new Set([...ALL_PROFILE_ENV_KEYS, ...COMPAT_KEYS])
 
@@ -603,6 +610,87 @@ describe('keys', () => {
 
   test('the delivered key id is the primary key', () => {
     expect(compiled(wireProfile()).keyId).toBe('k1')
+  })
+
+  // P18.18: a node that rotates keys takes several on the OpenAI lane's two
+  // API-key routes, and only there.
+  const TWO_KEYS = {
+    scheme: 'bearer',
+    keys: [
+      { id: 'k1', value: CANARY_KEY },
+      { id: 'k2', value: CANARY_KEY_2, priority: 5 },
+    ],
+  }
+  const MULTI: NodeCapabilities = { ...V1, multiKey: true }
+  const FAMILY = [
+    model({ capabilities: { mode: 'family' }, effort: { send: 'auto' } }),
+  ]
+
+  test('a multi-key node takes several keys on openai-chat and openai-responses; settings get the primary only', () => {
+    for (const lane of ['openai-chat', 'openai-responses'] as const) {
+      const profile = wireProfile({
+        lane,
+        baseUrl: LANE_URL[lane],
+        compat: {},
+        auth: TWO_KEYS,
+        models: FAMILY,
+      })
+      const result = compileProfile(profile, {
+        secret: CANARY_KEY_2,
+        capabilities: MULTI,
+      })
+      if (!result.ok) throw new Error(JSON.stringify(result.error))
+      // The primary is the highest priority, not the first listed.
+      expect(result.compiled.keyId).toBe('k2')
+      expect(result.compiled.secretEnvKey).toBe('OPENAI_API_KEY')
+      expect(result.compiled.patch.env.OPENAI_API_KEY).toBe(CANARY_KEY_2)
+      expect(JSON.stringify(result.compiled.patch)).not.toContain(CANARY_KEY)
+    }
+  })
+
+  test('…and DeepSeek with the mirror switched off, which runs on chat', () => {
+    const profile = wireProfile({
+      baseUrl: 'https://api.deepseek.com',
+      compat: { CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE: '0' },
+      auth: TWO_KEYS,
+      models: FAMILY,
+    })
+    const result = compileProfile(profile, {
+      secret: CANARY_KEY_2,
+      capabilities: MULTI,
+    })
+    if (!result.ok) throw new Error(JSON.stringify(result.error))
+    expect(result.compiled.effectiveLane).toBe('openai-chat')
+  })
+
+  test('every other lane refuses several keys, even on a multi-key node', () => {
+    const profiles = [
+      ...(['anthropic', 'gemini', 'grok'] as const).map(lane =>
+        wireProfile({
+          lane,
+          baseUrl: LANE_URL[lane],
+          compat: {},
+          auth: TWO_KEYS,
+          models: FAMILY,
+        }),
+      ),
+      // The mirror moves it onto the Anthropic endpoint.
+      wireProfile({
+        baseUrl: 'https://api.deepseek.com',
+        auth: TWO_KEYS,
+        models: FAMILY,
+      }),
+    ]
+    for (const profile of profiles) {
+      expect(
+        refused(
+          compileProfile(profile, {
+            secret: CANARY_KEY_2,
+            capabilities: MULTI,
+          }),
+        ),
+      ).toBe('unsupported-multi-key')
+    }
   })
 })
 

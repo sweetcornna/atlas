@@ -731,6 +731,7 @@ export const PROVIDERS_PAGE_JS = `
     };
     if (data(editor, 'mode') === 'create') edit.id = valueOf('prov-id');
     if (qc.byId('prov-site')) edit.site = valueOf('prov-site');
+    if (qc.byId('prov-key-selection')) edit.keySelection = valueOf('prov-key-selection');
     var vars = all('[data-template]', editor);
     for (var i = 0; i < vars.length; i++) {
       edit.templateValues[vars[i].getAttribute('data-template')] = String(vars[i].value || '').trim();
@@ -1017,6 +1018,79 @@ export const PROVIDERS_PAGE_JS = `
         qc.sendJson('DELETE', url, { ifMatch: Number(data(editor, 'revision')) }).then(function () {
           go(window.location.pathname);
         }).catch(function (err) { result('prov-result', '没有清除 · ' + qc.message(err), 'bad'); });
+      });
+    });
+
+    // P18.18: several keys. Adding or removing one is a save of the stored
+    // list (data-keys, never a fingerprint) with the form's other fields left
+    // as stored; filling one in again is that key's own write. The page is
+    // reloaded after each, so what it shows is the hub's answer.
+    var storedKeys = function () {
+      try { return JSON.parse(data(editor, 'keys') || '[]'); } catch (e) { return []; }
+    };
+    var saveKeys = function (keys, secrets) {
+      var body = { profile: { keys: keys }, ifMatch: Number(data(editor, 'revision')) };
+      if (secrets) body.secrets = secrets;
+      return qc.sendJson('PUT', '/v0/providers/profiles/' + enc(data(editor, 'profile')), body);
+    };
+    var clearInput = function (id) {
+      var input = qc.byId(id);
+      if (input) input.value = '';
+      return input;
+    };
+
+    qc.onAction('prov-key-add', function () {
+      var keys = storedKeys();
+      var taken = {};
+      keys.forEach(function (key) { taken[key.id] = true; });
+      var id = '';
+      for (var n = 1; n <= 8 && !id; n++) if (!taken['k' + n]) id = 'k' + n;
+      if (!id) { result('prov-result', '最多 8 把密钥', 'warn'); return; }
+      qc.setText('prov-key-add-id', id);
+      clearInput('prov-key-add-label');
+      var input = clearInput('prov-key-add-value');
+      qc.openDialog('prov-key-add-dialog', function () {
+        var typed = valueOf('prov-key-add-value');
+        var label = valueOf('prov-key-add-label');
+        clearInput('prov-key-add-value');
+        if (!typed) { result('prov-result', '没有加入 · 密钥不能为空', 'bad'); return; }
+        var entry = { id: id };
+        if (label) entry.label = label;
+        var secrets = {};
+        secrets[id] = typed;
+        result('prov-result', '正在加入 ' + id, 'muted');
+        saveKeys(keys.concat([entry]), secrets).then(function () {
+          go(window.location.pathname);
+        }).catch(function (err) { result('prov-result', '没有加入 · ' + qc.message(err), 'bad'); });
+      });
+      if (input) input.focus();
+    });
+
+    qc.onAction('prov-key-rotate', function (el) {
+      var id = data(el, 'key');
+      qc.setText('prov-key-rotate-id', id);
+      var input = clearInput('prov-key-rotate-value');
+      qc.openDialog('prov-key-rotate-dialog', function () {
+        var typed = valueOf('prov-key-rotate-value');
+        clearInput('prov-key-rotate-value');
+        if (!typed) { result('prov-result', '没有保存 · 密钥不能为空', 'bad'); return; }
+        var url = '/v0/providers/profiles/' + enc(data(editor, 'profile')) + '/keys/' + enc(id);
+        qc.sendJson('PUT', url, { value: typed, ifMatch: Number(data(editor, 'revision')) }).then(function () {
+          go(window.location.pathname);
+        }).catch(function (err) { result('prov-result', '没有保存 · ' + qc.message(err), 'bad'); });
+      });
+      if (input) input.focus();
+    });
+
+    qc.onAction('prov-key-remove', function (el) {
+      var id = data(el, 'key');
+      qc.setText('prov-key-remove-id', id);
+      qc.openDialog('prov-key-remove-dialog', function () {
+        var keys = storedKeys().filter(function (key) { return key.id !== id; });
+        if (keys.length === 0) { result('prov-result', '至少要留一把密钥', 'warn'); return; }
+        saveKeys(keys, null).then(function () {
+          go(window.location.pathname);
+        }).catch(function (err) { result('prov-result', '没有删除 · ' + qc.message(err), 'bad'); });
       });
     });
 

@@ -83,9 +83,13 @@ const RESPONSES_SSE =
   'data: {"type":"response.output_text.delta","delta":"ok"}\n\n' +
   'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
 
-type CapturedRequest = {
+export type CapturedRequest = {
   url: string
   body: Record<string, unknown>
+  /** P18.18: the body exactly as sent. */
+  bodyText: string
+  /** P18.18: request headers, names lower-cased (which key went out). */
+  headers: Record<string, string>
 }
 
 export type CaptureParams = {
@@ -131,6 +135,14 @@ export type CaptureParams = {
   fetchOverride?: typeof fetch
   /** Tools handed to the lane (P18.12: schema rules). Default: none. */
   tools?: Tools
+  /**
+   * P18.18: answer one request yourself — e.g. per key. Called after the
+   * request is recorded; `undefined` falls through to `failFirst` and the
+   * default stream.
+   */
+  respond?: (request: CapturedRequest, index: number) => Response | undefined
+  /** P18.18: the abort signal handed to the lane. Default: never aborted. */
+  signal?: AbortSignal
 }
 
 /**
@@ -169,7 +181,21 @@ export async function captureOpenAIRequests(
         : input instanceof URL
           ? input.toString()
           : input.url
-    captured.push({ url, body: JSON.parse(String(init?.body ?? '{}')) })
+    const bodyText = String(init?.body ?? '{}')
+    const request: CapturedRequest = {
+      url,
+      body: JSON.parse(bodyText),
+      bodyText,
+      headers: Object.fromEntries(
+        [...new Headers(init?.headers).entries()].map(([name, value]) => [
+          name.toLowerCase(),
+          value,
+        ]),
+      ),
+    }
+    captured.push(request)
+    const answered = params.respond?.(request, captured.length - 1)
+    if (answered !== undefined) return answered
     const failure = failures.shift()
     if (failure) {
       return new Response(JSON.stringify(failure.body), {
@@ -206,7 +232,7 @@ export async function captureOpenAIRequests(
   } as unknown as Options
 
   try {
-    const signal = new AbortController().signal
+    const signal = params.signal ?? new AbortController().signal
     for await (const output of queryModelOpenAI(
       params.messages ?? [],
       [] as unknown as SystemPrompt,

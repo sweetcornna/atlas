@@ -28,9 +28,12 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { secretFingerprint } from '@qianmo/providers'
 import {
   applyRequest,
   CANARY_KEY,
+  CANARY_KEY_2,
+  model,
 } from '../../../services/qianmo/providers/__tests__/helpers.js'
 import { readRequestLine } from '../provider.js'
 import { runQmProvider, type SourceRun } from './providerSource.js'
@@ -209,6 +212,86 @@ describe('qm provider from source', () => {
       for (const text of [status.stdout, status.stderr]) {
         expect(text).not.toContain(CANARY_KEY)
         expect(text).not.toContain(PROCESS_KEY)
+      }
+    },
+    CLI_TIMEOUT_MS,
+  )
+
+  test(
+    'P18.18: a multi-key apply, then `status` reports each key by id and state — no key value on stdout or stderr',
+    async () => {
+      const request = applyRequest({
+        profile: {
+          lane: 'openai-responses',
+          baseUrl: 'https://api.vendor.example/v1',
+          compat: {},
+          models: [
+            model({
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            }),
+          ],
+          auth: {
+            scheme: 'bearer',
+            keys: [
+              { id: 'k1', value: CANARY_KEY },
+              { id: 'k2', value: CANARY_KEY_2 },
+            ],
+          },
+          keySelection: 'round_robin',
+        },
+      })
+      const applied = await qmProvider(
+        ['serve-stdin', '--node', 'beta-1'],
+        `${JSON.stringify(request)}\n`,
+      )
+      expect(applied.code).toBe(0)
+      // A cooldown the call layer recorded, as it would after a 402.
+      writeFileSync(
+        join(config, 'qianmo', 'provider', 'key-pool-state.json'),
+        JSON.stringify({
+          v: 1,
+          marks: {
+            k2: {
+              fp: secretFingerprint(CANARY_KEY_2),
+              state: 'cooling',
+              until: '2099-01-01T00:00:00.000Z',
+              reason: 'billing',
+              status: 402,
+              at: '2026-10-04T08:00:00.000Z',
+            },
+          },
+          selections: {},
+          cursor: 0,
+          sessions: {},
+        }),
+        { mode: 0o600 },
+      )
+      const status = await qmProvider(['status', '--node', 'beta-1'], null)
+      expect(status.code).toBe(0)
+      expect(responseOf(status)).toMatchObject({
+        ok: true,
+        state: {
+          capabilities: { multiKey: true },
+          keys: [
+            { id: 'k1', state: 'ok' },
+            {
+              id: 'k2',
+              state: 'cooling',
+              until: '2099-01-01T00:00:00.000Z',
+              reason: 'billing',
+            },
+          ],
+        },
+      })
+      for (const text of [
+        applied.stdout,
+        applied.stderr,
+        status.stdout,
+        status.stderr,
+      ]) {
+        expect(text).not.toContain(CANARY_KEY)
+        expect(text).not.toContain(CANARY_KEY_2)
       }
     },
     CLI_TIMEOUT_MS,

@@ -1417,6 +1417,23 @@ export interface ProviderCatalog {
   readonly presets: readonly ProviderPresetView[]
 }
 
+/**
+ * 多 key 池里的一把（P18.18，镜像目录包的 `KeyStatus`）。`cooling` 到 `until`
+ * 自己恢复；`dead`（凭据被吊销）要中枢给这个 id 下发新值才恢复。
+ */
+export interface ProviderNodeKey {
+  readonly id: string
+  readonly state: 'ok' | 'cooling' | 'dead'
+  /** 只有 `cooling` 带：再试的时间（ISO）。 */
+  readonly until?: string
+  readonly reason?:
+    | 'rate-limit'
+    | 'usage-limit'
+    | 'billing'
+    | 'auth'
+    | 'revoked'
+}
+
 /** 节点上一次 `status` 报回的实际状态（§2.4），中枢不推断。 */
 export interface ProviderNodeActual {
   readonly managed: boolean
@@ -1453,6 +1470,11 @@ export interface ProviderNodeActual {
     readonly at: string
     readonly diffKeys: readonly string[]
   } | null
+  /**
+   * P18.18：节点在跑多 key 池时逐把报的状态，按节点的选取顺序。只有 key id，
+   * 没有值也没有指纹；单 key 节点不报这一项。
+   */
+  readonly keys?: readonly ProviderNodeKey[]
   /**
    * 节点用真实门控函数算出来的生效值。页面上「线路 / 发不发 effort / 档位 / 上下文
    * / 自动压缩」只取这里，中枢自己不算（§3.4「显示 = 线上」）。节点没算出来时缺席。
