@@ -81,7 +81,7 @@ import { agentHealth, formatDateTime, type AgentHealth } from './format.js'
 export type NodeTab = 'overview' | 'agents' | 'lifecycle' | 'models'
 
 /** In the order the tab bar draws them. */
-export const NODE_TABS: readonly NodeTab[] = [
+const NODE_TABS: readonly NodeTab[] = [
   'overview',
   'agents',
   'lifecycle',
@@ -110,12 +110,12 @@ export function nodeTabPath(node: string, tab: NodeTab): string {
  * The 「模型」 tab's content: `GET /fragments/providers/node/<node>`, owned by
  * the providers area (P18.9). This page only loads it.
  */
-export function nodeModelsFragment(node: string): string {
+function nodeModelsFragment(node: string): string {
   return `/fragments/providers/node/${segment(node)}`
 }
 
 /** Where the 「模型」 tab sends a reader with no script: the node's row in the matrix. */
-export function nodeModelsLink(node: string): string {
+function nodeModelsLink(node: string): string {
   return `/providers?node=${segment(node)}`
 }
 
@@ -148,7 +148,7 @@ export function nodeOf(address: string): string {
 }
 
 /** Whether a message to the address goes out, and if not, why. */
-export interface Reachability {
+interface Reachability {
   readonly tone: Tone
   /** `可拨`, `不可拨`, or `未知` when the registry could not be read. */
   readonly word: string
@@ -156,7 +156,7 @@ export interface Reachability {
 }
 
 /** One address on the lifecycle tab. */
-export interface LifecycleRow {
+interface LifecycleRow {
   readonly address: string
   /** `none`: neither the ledger nor any page action has written it. */
   readonly state: RegistrationState | 'none'
@@ -168,10 +168,10 @@ export interface LifecycleRow {
   readonly reach: Reachability
 }
 
-export type LifecycleVerb = 'publish' | 'pause' | 'resume' | 'retire'
+type LifecycleVerb = 'publish' | 'pause' | 'resume' | 'retire'
 
 /** The four verbs in the order a row draws them. */
-export const LIFECYCLE_VERBS: readonly LifecycleVerb[] = [
+const LIFECYCLE_VERBS: readonly LifecycleVerb[] = [
   'publish',
   'pause',
   'resume',
@@ -271,7 +271,7 @@ export interface LifecycleModel {
  * Every address of the node: the roster's, the ledger's and the managed
  * list's, once each, sorted by address so a refresh never moves a row.
  */
-export function lifecycleRows(model: LifecycleModel): readonly LifecycleRow[] {
+function lifecycleRows(model: LifecycleModel): readonly LifecycleRow[] {
   const { node, snapshot, agents } = model
   const addresses = new Set<string>()
   for (const agent of agents ?? []) addresses.add(agent.address)
@@ -306,7 +306,7 @@ export function lifecycleRows(model: LifecycleModel): readonly LifecycleRow[] {
  * ledger cannot be read; only the narrowing two (pause, retire) while it
  * cannot be saved. A button whose answer is a 503 is a button not to draw.
  */
-export function verbsFor(
+function verbsFor(
   row: LifecycleRow,
   snapshot: LifecycleSnapshot | null,
 ): readonly LifecycleVerb[] {
