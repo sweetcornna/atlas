@@ -113,7 +113,7 @@ const TERMINAL_AUTH_REASONS = new Set([
 const USAGE_CAP_CODES = ['usage_limit_reached', 'gousagelimit']
 const USAGE_CAP_TEXT = ['usage limit reached', 'usage limit has been reached']
 
-export type PoolDecision =
+type PoolDecision =
   | { kind: 'none' }
   | { kind: 'retry-same' }
   | {

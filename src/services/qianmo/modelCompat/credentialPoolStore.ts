@@ -128,7 +128,7 @@ export type KeyPoolState = {
 }
 
 /** Sessions remembered at once, as for the P18.19 cache-key pins. */
-export const MAX_BOUND_SESSIONS = 256
+const MAX_BOUND_SESSIONS = 256
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

@@ -38,7 +38,7 @@ import {
   type PoolKey,
 } from './credentialPool.js'
 
-export type CredentialPoolTarget = {
+type CredentialPoolTarget = {
   sessionId: string
   signal: AbortSignal
   /** `false` on routes that do not authenticate with the env key. */
