@@ -327,6 +327,12 @@ describe('openConsoleHandoff', () => {
     expect(!done.ok && done.failure.message).toContain('qm handoff pull')
     const missing = await hub.port.attach('t-9', { device: null })
     expect(!missing.ok && missing.failure.code).toBe('not_found')
+    // The refusals a person reads keep the copy rule: no 。，、 no exclamation.
+    for (const refusal of [accepted, done, missing]) {
+      expect(!refusal.ok && refusal.failure.message).not.toMatch(
+        /[。，、！!]|\p{Extended_Pictographic}/u,
+      )
+    }
 
     const trail = readTrail(files.auditPath)
     expect(trail.intact).toBe(true)
@@ -399,6 +405,7 @@ describe('openConsoleHandoff', () => {
     })
     expect(!running.ok && running.failure.code).toBe('rejected')
     expect(!running.ok && running.failure.message).toContain('还在 running')
+    expect(!running.ok && running.failure.message).not.toMatch(/[。，、！!]/u)
     const missing = await hub.port.markReturned('t-9', {
       device: null,
       mode: null,

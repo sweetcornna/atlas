@@ -120,7 +120,7 @@ class FakeHandoff implements HandoffPort {
         ok: false,
         failure: {
           code: 'rejected',
-          message: `任务 ${taskId} 是 ${task.state}，不在云端运行`,
+          message: `任务 ${taskId} 是 ${task.state} · 不在云端运行`,
         },
       })
     }

@@ -41,7 +41,7 @@ import { failureResponse, guard, outcomeOf, safeDecode } from './shared.js'
 import type { HeadRoute, RouteContext } from './types.js'
 
 const MEMBER_REQUIRED =
-  '转交、追加、接入与接回需要成员或运维账号；只读账号只能查看接力任务。'
+  '转交 · 追加 · 接入 · 接回需要成员或运维账号 · 只读账号只能查看接力任务'
 const HANDOFF_UNWIRED =
   '这台控制台没有接接力台账：启动时给 --handoff-root 才有。'
 
@@ -202,7 +202,7 @@ async function markReturned(
       ? fail(
           400,
           'invalid',
-          '字段 device 要是设备名，mode 只认 fast-forward 或 branch',
+          '字段 device 要是设备名 · mode 只认 fast-forward 或 branch',
         )
       : body.response
   }

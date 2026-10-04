@@ -209,23 +209,23 @@ async function landingProblem(
 function notRunning(task: HandoffTaskView): string {
   switch (task.state) {
     case 'accepted':
-      return `任务 ${task.taskId} 还没有派给节点（accepted），没有会话可接：等它开始跑（qm handoff status --wait）`
+      return `任务 ${task.taskId} 还没有派给节点（accepted）· 没有会话可接 · 等它开始跑：qm handoff status --wait --task ${task.taskId}`
     case 'dispatched':
-      return `任务 ${task.taskId} 已派给节点 ${task.node ?? '?'}，节点还没接手（dispatched）：稍后再试`
+      return `任务 ${task.taskId} 已派给节点 ${task.node ?? '?'}（dispatched）· 节点还没接手 · 稍后再试`
     case 'done':
-      return `任务 ${task.taskId} 在云端已经结束（done）：用 qm handoff pull 接回本机`
+      return `任务 ${task.taskId} 在云端已经结束（done）· 用 qm handoff pull ${task.taskId} 接回本机`
     case 'failed':
-      return `任务 ${task.taskId} 失败了（failed），节点上没有在跑的会话：${task.reason ?? '没有原因'}`
+      return `任务 ${task.taskId} 失败了（failed）· 节点上没有在跑的会话 · 原因：${task.reason ?? '没有写'}`
     case 'returned':
-      return `任务 ${task.taskId} 已经接回本机（returned），节点上没有在跑的会话`
+      return `任务 ${task.taskId} 已经接回本机（returned）· 节点上没有在跑的会话`
     default:
-      return `任务 ${task.taskId} 是 ${task.state}，不在云端运行`
+      return `任务 ${task.taskId} 是 ${task.state} · 不在云端运行`
   }
 }
 
 /** Why a task cannot be marked returned yet. */
 function notFinished(task: HandoffTaskView): string {
-  return `任务 ${task.taskId} 还在 ${task.state}，云端没有结束，不能记为已接回：等它结束（qm handoff status --wait）`
+  return `任务 ${task.taskId} 还在 ${task.state} · 云端没有结束 · 不能记为已接回`
 }
 
 function sameManifest(a: HandoffManifest, b: HandoffManifest): boolean {
