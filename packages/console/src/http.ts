@@ -225,6 +225,8 @@ import {
 import type { ActionOutcome, ConsoleAction, ConsoleDeps } from './deps.js'
 import {
   DOCUMENT_HEADERS,
+  asset,
+  compressed,
   fail,
   html,
   json,
@@ -254,17 +256,6 @@ export const API_PREFIX = '/v0'
 
 export { MAX_AUDIT_LIMIT, parseAuditFilter } from './routes/audit.js'
 export { CHAT_STREAM_HEARTBEAT_MS } from './routes/chat.js'
-
-function asset(body: string, contentType: string): Response {
-  return new Response(body, {
-    status: 200,
-    headers: {
-      'content-type': contentType,
-      'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
-    },
-  })
-}
 
 /**
  * The same fact for the login card, in the page's own register.
@@ -885,8 +876,9 @@ async function route(
     }
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return segments[1] === 'app.css'
-      ? asset(CONSOLE_CSS, 'text/css; charset=utf-8')
+      ? asset(request, CONSOLE_CSS, 'text/css; charset=utf-8')
       : asset(
+          request,
           accounts === undefined
             ? CONSOLE_CLIENT_JS
             : CONSOLE_CLIENT_JS_ACCOUNTS,
@@ -1099,14 +1091,17 @@ export function createConsoleHandler(
     source?: ClientAddressSource,
   ): Promise<Response> => {
     try {
-      return await route(
+      return await compressed(
         request,
-        deps,
-        tokens,
-        throttle,
-        clientKeyOf(request, source),
-        now,
-        accounts,
+        await route(
+          request,
+          deps,
+          tokens,
+          throttle,
+          clientKeyOf(request, source),
+          now,
+          accounts,
+        ),
       )
     } catch (error) {
       // Only reachable when a port breaks its contract and throws. The message

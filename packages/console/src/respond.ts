@@ -126,6 +126,121 @@ export function html(body: string, status = 200): Response {
   })
 }
 
+/**
+ * Smallest body worth compressing. Under it the gzip framing is most of the
+ * answer and the CPU is spent for nothing.
+ */
+const COMPRESS_MIN_BYTES = 1024
+
+/** What is text and worth compressing. An event stream is not: it is never done. */
+const COMPRESSIBLE =
+  /^(?:text\/html|text\/css|text\/javascript|application\/json)(?:;|$)/
+
+/** True when the caller's `Accept-Encoding` takes gzip (a `q=0` refuses it). */
+export function acceptsGzip(request: Request): boolean {
+  const header = request.headers.get('accept-encoding')
+  if (header === null) return false
+  let star = false
+  for (const part of header.split(',')) {
+    const [name = '', ...params] = part.trim().toLowerCase().split(';')
+    const q = params
+      .map(param => param.trim())
+      .find(param => param.startsWith('q='))
+    const refused = q !== undefined && Number(q.slice(2)) === 0
+    if (name === 'gzip') return !refused
+    if (name === '*') star = !refused
+  }
+  return star
+}
+
+/**
+ * The response, gzipped when the caller takes it (G1).
+ *
+ * Documents are `no-store` and inline their sheet and runtime, so every
+ * navigation sends the whole page again; compressed it is a fraction of the
+ * size. Only `GET` answers are compressed: the one response that carries a
+ * secret the caller just submitted (the credential page answering
+ * `POST /invite`) is never put next to its own compressed length, which is
+ * the condition a length side channel needs. Bodies are fully known strings
+ * here, so this reads and re-wraps them; streams are left alone.
+ */
+export async function compressed(
+  request: Request,
+  response: Response,
+): Promise<Response> {
+  if (request.method !== 'GET' || response.body === null) return response
+  if (response.headers.has('content-encoding')) return response
+  if (!COMPRESSIBLE.test(response.headers.get('content-type') ?? '')) {
+    return response
+  }
+  if (!acceptsGzip(request)) return response
+  const raw = new Uint8Array(await response.arrayBuffer())
+  const headers = new Headers(response.headers)
+  const init = { status: response.status, statusText: response.statusText }
+  if (raw.byteLength < COMPRESS_MIN_BYTES) {
+    return new Response(raw, { ...init, headers })
+  }
+  headers.set('content-encoding', 'gzip')
+  headers.delete('content-length')
+  const vary = headers.get('vary')
+  if (vary === null) headers.set('vary', 'accept-encoding')
+  else if (!/\baccept-encoding\b/i.test(vary)) {
+    headers.set('vary', `${vary}, accept-encoding`)
+  }
+  return new Response(Bun.gzipSync(raw), { ...init, headers })
+}
+
+/**
+ * A compiled-in asset, revalidated by its content hash (G1).
+ *
+ * `no-cache`, not `immutable`: the URL carries no version, so the next
+ * release serves different bytes at the same address and a browser told
+ * "never ask again" would keep the old ones. With the ETag the question costs
+ * a 304 and no body. Weak, because the gzipped and plain answers are the same
+ * content in two encodings.
+ */
+export function asset(
+  request: Request,
+  body: string,
+  contentType: string,
+): Response {
+  const tag = assetTag(body)
+  const headers = {
+    'content-type': contentType,
+    'cache-control': 'no-cache',
+    etag: tag,
+    vary: 'accept-encoding',
+    'x-content-type-options': 'nosniff',
+  }
+  const asked = request.headers.get('if-none-match')
+  if (asked !== null && etagMatches(asked, tag)) {
+    return new Response(null, { status: 304, headers })
+  }
+  return new Response(body, { status: 200, headers })
+}
+
+const assetTags = new Map<string, string>()
+
+function assetTag(body: string): string {
+  let tag = assetTags.get(body)
+  if (tag === undefined) {
+    const digest = new Bun.CryptoHasher('sha256').update(body).digest('hex')
+    tag = `W/"${digest.slice(0, 32)}"`
+    assetTags.set(body, tag)
+  }
+  return tag
+}
+
+/** `If-None-Match` by weak comparison: `*`, or any listed tag, W/ or not. */
+function etagMatches(header: string, tag: string): boolean {
+  if (header.trim() === '*') return true
+  const bare = tag.replace(/^W\//, '')
+  return header
+    .split(',')
+    .map(one => one.trim().replace(/^W\//, ''))
+    .includes(bare)
+}
+
 export function notFound(message: string): Response {
   return fail(404, 'not_found', message)
 }

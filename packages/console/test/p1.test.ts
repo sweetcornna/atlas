@@ -10,6 +10,7 @@
 import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
 import { CONSOLE_CSS } from '../src/assets/css.js'
+import { CHAT_PAGE_CSS } from '../src/view/chatPage.js'
 import type {
   AuditPage,
   ConsoleAbout,
@@ -678,5 +679,139 @@ describe('F1 · every document has one h1, a main, and a way past the sidebar', 
         '<main class="stage" aria-labelledby="page-title">',
       )
     }
+  })
+})
+
+describe('G1 · documents travel compressed, sheets without notes, assets revalidated', () => {
+  const GZIP = { 'accept-encoding': 'gzip, deflate, br' }
+
+  function withHeaders(
+    path: string,
+    headers: Record<string, string>,
+    token = ADMIN,
+  ): Request {
+    return new Request(`http://console.test${path}`, {
+      headers: { authorization: `Bearer ${token}`, ...headers },
+    })
+  }
+
+  test('a document asked for with gzip comes gzipped, and unpacks to the same page', async () => {
+    const h = pageHarness()
+    const plain = await (await h.handle(withHeaders('/nodes', {}))).text()
+    const response = await h.handle(withHeaders('/nodes', GZIP))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-encoding')).toBe('gzip')
+    expect(response.headers.get('vary')).toBe('accept-encoding')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('content-security-policy')).not.toBeNull()
+    const packed = new Uint8Array(await response.arrayBuffer())
+    const unpacked = new TextDecoder().decode(Bun.gunzipSync(packed))
+    expect(unpacked).toBe(plain)
+    // The audit measured 248 KB → 28 KB on the overview; hold it under a third.
+    expect(packed.byteLength).toBeLessThan(
+      new TextEncoder().encode(plain).byteLength / 3,
+    )
+  })
+
+  test('JSON reads too; a small answer, q=0, a POST and the event stream are left as they are', async () => {
+    const h = pageHarness({ chat: true })
+    h.registry.listResult = {
+      ok: true,
+      value: Array.from({ length: 12 }, (_, i) =>
+        agentAt(`qianmo://tokyo-${i}/planner`),
+      ),
+    }
+    const agents = await h.handle(withHeaders('/v0/agents', GZIP))
+    expect(agents.headers.get('content-encoding')).toBe('gzip')
+    expect(
+      JSON.parse(
+        new TextDecoder().decode(
+          Bun.gunzipSync(new Uint8Array(await agents.arrayBuffer())),
+        ),
+      ).agents,
+    ).toHaveLength(12)
+    const health = await h.handle(withHeaders('/v0/health', GZIP))
+    expect(health.headers.get('content-encoding')).toBeNull()
+    expect(await health.json()).toEqual({ status: 'ok' })
+    const refused = await h.handle(
+      withHeaders('/nodes', { 'accept-encoding': 'gzip;q=0, identity' }),
+    )
+    expect(refused.headers.get('content-encoding')).toBeNull()
+    const starred = await h.handle(
+      withHeaders('/nodes', { 'accept-encoding': '*' }),
+    )
+    expect(starred.headers.get('content-encoding')).toBe('gzip')
+    // A POST that answers with a page: the refused login, a whole document.
+    const login = await h.handle(
+      new Request('http://console.test/login', {
+        method: 'POST',
+        headers: {
+          ...GZIP,
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'text/html',
+        },
+        body: 'token=wrong-token-0000000000000000&redirect=%2F',
+      }),
+    )
+    expect(login.headers.get('content-type')).toContain('text/html')
+    expect(login.headers.get('content-encoding')).toBeNull()
+    const stream = await h.handle(withHeaders('/v0/chat/stream', GZIP))
+    expect(stream.headers.get('content-type')).toContain('text/event-stream')
+    expect(stream.headers.get('content-encoding')).toBeNull()
+    await stream.body?.cancel()
+  })
+
+  test('the sheets carry no comments, in the documents and the asset alike', async () => {
+    expect(CONSOLE_CSS).not.toContain('/*')
+    const h = pageHarness({ chat: true })
+    for (const path of ['/', '/chat']) {
+      const page = await (await h.handle(withHeaders(path, {}))).text()
+      const style = page.slice(
+        page.indexOf('<style>'),
+        page.indexOf('</style>'),
+      )
+      expect(style.length).toBeGreaterThan(30_000)
+      expect(style).not.toContain('/*')
+    }
+    // The chat page's own sheet had notes too, and arrives without them.
+    expect(CHAT_PAGE_CSS).toContain('/*')
+    const asset = await (
+      await h.handle(withHeaders('/assets/app.css', {}))
+    ).text()
+    expect(asset).toBe(CONSOLE_CSS)
+  })
+
+  test('an asset answers 304 to its own tag, and the two runtimes have two tags', async () => {
+    const plain = pageHarness()
+    const first = await plain.handle(
+      new Request('http://console.test/assets/app.js'),
+    )
+    const tag = first.headers.get('etag') ?? ''
+    expect(tag).toMatch(/^W\/"[0-9a-f]{32}"$/)
+    expect(first.headers.get('cache-control')).toBe('no-cache')
+    const again = await plain.handle(
+      new Request('http://console.test/assets/app.js', {
+        headers: { 'if-none-match': tag },
+      }),
+    )
+    expect(again.status).toBe(304)
+    expect(await again.text()).toBe('')
+    expect(again.headers.get('etag')).toBe(tag)
+    const strong = await plain.handle(
+      new Request('http://console.test/assets/app.js', {
+        headers: { 'if-none-match': tag.replace('W/', '') },
+      }),
+    )
+    expect(strong.status).toBe(304)
+    const stale = await plain.handle(
+      new Request('http://console.test/assets/app.js', {
+        headers: { 'if-none-match': 'W/"0000"' },
+      }),
+    )
+    expect(stale.status).toBe(200)
+    const css = await plain.handle(
+      new Request('http://console.test/assets/app.css'),
+    )
+    expect(css.headers.get('etag')).not.toBe(tag)
   })
 })

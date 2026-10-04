@@ -742,6 +742,27 @@ describe.skipIf(SKIP !== null)(
       }
     }, 30_000)
 
+    test('the browser gets the document gzipped and draws it whole (G1)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        const sizes = await tab.evaluate<{ encoded: number; decoded: number }>(
+          `(() => { const n = performance.getEntriesByType('navigation')[0]; return { encoded: n.encodedBodySize, decoded: n.decodedBodySize }; })()`,
+        )
+        expect(sizes.decoded).toBeGreaterThan(50_000)
+        expect(sizes.encoded).toBeLessThan(sizes.decoded / 3)
+        expect(
+          await tab.evaluate<number>(
+            `document.querySelectorAll('#roster details.row').length`,
+          ),
+        ).toBe(3)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
+
     test('the first Tab reaches the skip link, on screen, and Enter puts the page next (F1)', async () => {
       const served = serveConsole()
       const tab = await browser.tab()

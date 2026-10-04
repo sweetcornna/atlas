@@ -270,12 +270,13 @@ describe('public routes', () => {
     expect(await body(response)).toEqual({ status: 'ok' })
   })
 
-  test('the stylesheet is public and never cached', async () => {
+  test('the stylesheet is public and revalidated by its content hash (G1)', async () => {
     const { handle } = setup()
     const response = await handle(get('/assets/app.css'))
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8')
-    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('cache-control')).toBe('no-cache')
+    expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]{32}"$/)
     expect((await response.text()).length).toBeGreaterThan(0)
   })
 

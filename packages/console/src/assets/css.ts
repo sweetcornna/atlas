@@ -74,7 +74,23 @@
  * URI, and both are ways for the sheet to stop being one self-contained string.
  */
 
-export const CONSOLE_CSS = `
+/**
+ * A stylesheet without its comments (G1).
+ *
+ * The notes in this file are for whoever edits it; every document used to
+ * carry them to every browser. No string in these sheets contains the
+ * comment opener, so a plain scan is exact; blank lines left behind are
+ * folded too. Whitespace inside a declaration is left as written.
+ */
+export function stripCssComments(css: string): string {
+  return css
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{2,}/g, '\n')
+}
+
+/** The sheet as written, comments and all; {@link CONSOLE_CSS} is what ships. */
+const SOURCE_CSS = `
 :root {
   color-scheme: light dark;
 
@@ -1111,3 +1127,6 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
 `
+
+/** The shared sheet every document inlines, without the notes (G1). */
+export const CONSOLE_CSS = stripCssComments(SOURCE_CSS)

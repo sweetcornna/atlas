@@ -43,7 +43,7 @@ import {
   CONSOLE_CLIENT_JS,
   CONSOLE_CLIENT_JS_ACCOUNTS,
 } from '../assets/client.js'
-import { CONSOLE_CSS } from '../assets/css.js'
+import { CONSOLE_CSS, stripCssComments } from '../assets/css.js'
 import type { ConsoleRole } from '../auth.js'
 import { CSP } from '../respond.js'
 import {
@@ -91,6 +91,19 @@ const FAVICON =
  * the shared sheet in the same `<style>` so a page carries what it needs and
  * nothing that another page needs.
  */
+/** Each page's own sheet, stripped once (G1): there are a handful of them. */
+const strippedPageCss = new Map<string, string>()
+
+function pageSheet(css: string): string {
+  if (css === '') return ''
+  let stripped = strippedPageCss.get(css)
+  if (stripped === undefined) {
+    stripped = stripCssComments(css)
+    strippedPageCss.set(css, stripped)
+  }
+  return stripped
+}
+
 export function documentHead(title: string, pageCss = ''): string {
   return (
     `<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n` +
@@ -101,7 +114,7 @@ export function documentHead(title: string, pageCss = ''): string {
     `<meta http-equiv="Content-Security-Policy" content="${attr(CSP)}">\n` +
     `<link rel="icon" href="${attr(FAVICON)}">\n` +
     `<title>${escapeHtml(title)}</title>\n` +
-    `<style>${CONSOLE_CSS}${pageCss}</style>\n` +
+    `<style>${CONSOLE_CSS}${pageSheet(pageCss)}</style>\n` +
     `</head>\n`
   )
 }
