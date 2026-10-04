@@ -320,17 +320,19 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
         )
         .map(write => write.method)
       expect(done).toEqual(['saveProfile', 'assign', 'apply'])
-      // The skip is on record after the save and before anything it allowed.
+      // The skip is on record after the save (and its key, which the port
+      // records as its own line) and before anything it allowed.
       const lines = served.actions.entries.filter(entry =>
         entry.action.startsWith('provider.'),
       )
       expect(lines.map(entry => entry.action)).toEqual([
         'provider.save',
+        'provider.secret.set',
         'provider.probe.skip',
         'provider.assign',
         'provider.apply',
       ])
-      expect(lines[1]?.target).toBe('deepseek-2')
+      expect(lines[2]?.target).toBe('deepseek-2')
 
       // Again, with a ledger that admits but will not take the line: the
       // switch stops at it, before the default or any node is touched.

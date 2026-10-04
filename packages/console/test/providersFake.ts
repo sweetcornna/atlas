@@ -4,13 +4,17 @@
 /**
  * A hand-written {@link ProviderPort} for the model-service page suites: an
  * in-memory hub with three nodes, two profiles and a small catalog, that
- * counts what is asked of it.
+ * counts what is asked of it. `new FakeProviders({ pool: true })` adds a
+ * third profile with three keys and a fourth node running it, reporting each
+ * key's state (P18.18).
  *
  * It keeps the port's contract where the pages lean on it — writes need a
  * personal `ops` caller outside break-glass and are refused unrecorded
  * otherwise; an allowed write records itself once (one line per node for an
- * apply, none for a dry run); fingerprints and full URLs are in what it
- * returns, so the page's trimming is what is under test. It does not compile,
+ * apply, none for a dry run; a save adds one `provider.secret.set` per key
+ * filled in with it, as the real port does); a save keeps a listed key's
+ * fingerprint by id and drops an unlisted key; fingerprints and full URLs are
+ * in what it returns, so the page's trimming is what is under test. It does not compile,
  * validate or reach a node: the real port does that, and
  * `tests/integration/qianmo-providers-page.test.ts` runs it.
  */
@@ -44,6 +48,16 @@ export const FINGERPRINT = 'fp1:3f9a1c2e5b6d7e8f90a1b2c3d4e5f607'
 export const SHORT_FINGERPRINT = '3f9a1c2e'
 export const DEEPSEEK_URL = 'https://api.deepseek.com/anthropic'
 export const CHAT_URL = 'https://chat.example.com/v1/secret-path'
+export const POOL_URL = 'https://gateway.example.com/v1/pool-path'
+/** The three keys of the `pool` profile (P18.18), and what ops are shown of each. */
+export const POOL_FINGERPRINTS = {
+  k1: 'fp1:5d2e8a417c3b9f60d1e2a3b4c5d6e7f8',
+  k2: 'fp1:a7c1e94b20f35d68e9a0b1c2d3e4f5a6',
+  k3: 'fp1:c4b9d0e1f2a3b4c5d6e7f8091a2b3c4d',
+} as const
+export const POOL_SHORT_FINGERPRINTS = ['5d2e8a41', 'a7c1e94b', 'c4b9d0e1']
+/** When node-d's cooling key is tried again. */
+export const POOL_COOLING_UNTIL = new Date(NOW + 40 * 60_000).toISOString()
 
 function ok<T>(value: T): ProviderResult<T> {
   return { ok: true, value }
@@ -308,15 +322,61 @@ function chatProfile(revision: number): ProviderProfileView {
   }
 }
 
+/** P18.18: one profile, three keys, taken in turn by session. */
+function poolProfile(revision: number): ProviderProfileView {
+  return {
+    id: 'pool',
+    revision,
+    name: 'Luna 网关',
+    presetId: 'custom-openai',
+    plan: 'custom',
+    site: null,
+    lane: 'openai-responses',
+    baseUrl: POOL_URL,
+    models: [
+      {
+        id: 'gpt-6-luna',
+        role: 'main',
+        tiers: ['opus', 'sonnet', 'haiku'],
+        capabilities: { mode: 'family' },
+        effort: { send: 'auto' },
+      },
+    ],
+    keySelection: 'round_robin',
+    auth: { scheme: 'bearer' },
+    keys: [
+      {
+        id: 'k1',
+        label: '主账号',
+        fingerprint: POOL_FINGERPRINTS.k1,
+        setAt: '2026-10-03T06:30:00.000Z',
+      },
+      {
+        id: 'k2',
+        label: '备用账号',
+        fingerprint: POOL_FINGERPRINTS.k2,
+        setAt: '2026-10-03T06:31:00.000Z',
+      },
+      {
+        id: 'k3',
+        fingerprint: POOL_FINGERPRINTS.k3,
+        setAt: '2026-10-03T06:32:00.000Z',
+      },
+    ],
+    evaluated: false,
+  }
+}
+
 function capabilities(
   chat: boolean,
   replay: boolean,
+  multiKey = false,
 ): ProviderNodeActual['capabilities'] {
   return {
     protocol: 1,
     chatEffortHonorsOverride: chat,
     replayFilter: replay,
-    multiKey: false,
+    multiKey,
   }
 }
 
@@ -468,6 +528,59 @@ function nodeC(): ProviderNodeView {
   }
 }
 
+/** P18.18: a node on the pool profile, one key cooling and one revoked. */
+function nodeD(): ProviderNodeView {
+  return {
+    node: 'node-d',
+    executor: 'ssh',
+    assignment: { mode: 'profile', profileId: 'pool' },
+    contextOverride: null,
+    expected: { profileId: 'pool', revision: 2, contextOverride: null },
+    actual: {
+      managed: true,
+      applied: {
+        profileId: 'pool',
+        revision: 2,
+        requestId: 'req-apply-d',
+        at: new Date(NOW - 7_200_000).toISOString(),
+      },
+      onDiskHash: 'hash-applied-d',
+      appliedHash: 'hash-applied-d',
+      loadedHash: 'hash-applied-d',
+      pending: null,
+      resident: { running: true, generation: 1, inFlight: 0 },
+      inheritedProviderKeys: [],
+      capabilities: capabilities(true, true, true),
+      lastResult: null,
+      keys: [
+        { id: 'k1', state: 'ok' },
+        {
+          id: 'k2',
+          state: 'cooling',
+          until: POOL_COOLING_UNTIL,
+          reason: 'rate-limit',
+        },
+        { id: 'k3', state: 'dead', reason: 'revoked' },
+      ],
+      effective: {
+        apiProvider: 'openai',
+        wire: 'responses',
+        model: 'gpt-6-luna',
+        wireModel: 'gpt-6-luna',
+        modelSettingsSlot: 'default',
+        effortOnWire: false,
+        effortLevel: null,
+        contextTokens: 200_000,
+        autoCompactWindow: 180_000,
+        autoCompactSource: 'auto',
+      },
+    },
+    lastStatus: { at: NOW - 30_000, ok: true },
+    drift: [],
+    recent: [],
+  }
+}
+
 /** One write the fake saw, after the role check let it through. */
 export interface FakeWrite {
   readonly method: string
@@ -497,6 +610,13 @@ export class FakeProviders implements ProviderPort {
   down: ProviderFailure | null = null
   /** What the next write answers instead of doing it. */
   nextFailure: ProviderFailure | null = null
+
+  constructor(options: { readonly pool?: boolean } = {}) {
+    if (options.pool === true) {
+      this.profiles.set('pool', poolProfile(2))
+      this.nodes.set('node-d', nodeD())
+    }
+  }
 
   // --- reads --------------------------------------------------------------
 
@@ -693,7 +813,7 @@ export class FakeProviders implements ProviderPort {
     return result
   }
 
-  saveProfile(
+  async saveProfile(
     input: {
       readonly profile: ProviderProfileDraft
       readonly ifMatch: number | null
@@ -702,7 +822,7 @@ export class FakeProviders implements ProviderPort {
     caller: ProviderCaller,
   ): Promise<ProviderResult<ProviderProfileView>> {
     const id = typeof input.profile.id === 'string' ? input.profile.id : ''
-    return this.#write(
+    const result = await this.#write<ProviderProfileView>(
       'saveProfile',
       input,
       caller,
@@ -720,23 +840,60 @@ export class FakeProviders implements ProviderPort {
             fields: ['models'],
           })
         }
+        const draft = input.profile as unknown as ProviderProfileView
         const saved = {
-          ...(input.profile as unknown as ProviderProfileView),
+          ...draft,
           revision: (existing?.revision ?? 0) + 1,
-          keys: [
-            input.secrets === undefined
-              ? (existing?.keys[0] ?? { id: 'k1' })
-              : {
-                  id: 'k1',
-                  fingerprint: FINGERPRINT,
-                  setAt: '2026-10-03T07:00:00.000Z',
-                },
-          ],
+          keys: this.#keysOf(draft.keys, existing, input.secrets ?? {}),
         }
         this.profiles.set(id, saved)
         return ok(saved)
       },
     )
+    // One line per key filled in with the save, like the real port (§2.3).
+    if (result.ok) {
+      for (const _keyId of Object.keys(input.secrets ?? {})) {
+        await caller.record('provider.secret.set', id, 'ok')
+      }
+    }
+    return result
+  }
+
+  /**
+   * The keys a save keeps: the listed ones, each with its stored fingerprint
+   * when it had one and was not filled in again; whatever fingerprint or time
+   * the draft carries is ignored, as the real port ignores it.
+   */
+  #keysOf(
+    listed: ProviderProfileView['keys'] | undefined,
+    existing: ProviderProfileView | undefined,
+    secrets: Readonly<Record<string, string>>,
+  ): ProviderProfileView['keys'][number][] {
+    return (listed ?? [{ id: 'k1' }]).map(entry => {
+      const { fingerprint: _f, setAt: _s, ...bare } = entry
+      if (secrets[bare.id] !== undefined) {
+        return { ...bare, ...this.#sealed(bare.id) }
+      }
+      const old = existing?.keys.find(key => key.id === bare.id)
+      return old?.fingerprint === undefined
+        ? bare
+        : {
+            ...bare,
+            fingerprint: old.fingerprint,
+            ...(old.setAt === undefined ? {} : { setAt: old.setAt }),
+          }
+    })
+  }
+
+  /** A key filled in now: k1 gets the suite's fingerprint, the others their own. */
+  #sealed(keyId: string): { fingerprint: string; setAt: string } {
+    return {
+      fingerprint:
+        keyId === 'k1'
+          ? FINGERPRINT
+          : `fp1:${Buffer.from(keyId.padEnd(16, '0')).toString('hex').slice(0, 32)}`,
+      setAt: '2026-10-03T07:00:00.000Z',
+    }
   }
 
   deleteProfile(
@@ -779,12 +936,40 @@ export class FakeProviders implements ProviderPort {
       caller,
       'provider.secret.set',
       input.profileId,
-      () => {
-        const existing = this.profiles.get(input.profileId)
-        if (existing === undefined) return failed('not_found', '没有这份档案')
-        return ok(existing)
-      },
+      () => this.#rekey(input, true),
     )
+  }
+
+  /** One key filled in again or cleared: a new revision, the other keys as they were. */
+  #rekey(
+    input: {
+      readonly profileId: string
+      readonly keyId: string
+      readonly ifMatch: number
+    },
+    set: boolean,
+  ): ProviderResult<ProviderProfileView> {
+    const existing = this.profiles.get(input.profileId)
+    if (existing === undefined) return failed('not_found', '没有这份档案')
+    if (existing.revision !== input.ifMatch) {
+      return failed('conflict', '此服务已被他人修改，刷新后再试', {
+        fields: [],
+      })
+    }
+    if (!existing.keys.some(key => key.id === input.keyId)) {
+      return failed('not_found', '档案里没有这把密钥')
+    }
+    const next: ProviderProfileView = {
+      ...existing,
+      revision: existing.revision + 1,
+      keys: existing.keys.map(key => {
+        if (key.id !== input.keyId) return key
+        const { fingerprint: _f, setAt: _s, ...bare } = key
+        return set ? { ...bare, ...this.#sealed(key.id) } : bare
+      }),
+    }
+    this.profiles.set(input.profileId, next)
+    return ok(next)
   }
 
   clearSecret(
@@ -801,11 +986,7 @@ export class FakeProviders implements ProviderPort {
       caller,
       'provider.secret.clear',
       input.profileId,
-      () => {
-        const existing = this.profiles.get(input.profileId)
-        if (existing === undefined) return failed('not_found', '没有这份档案')
-        return ok(existing)
-      },
+      () => this.#rekey(input, false),
     )
   }
 

@@ -32,6 +32,7 @@ import {
   FINGERPRINT,
   FakeProviders,
   NOW,
+  POOL_FINGERPRINTS,
   SHORT_FINGERPRINT,
 } from './providersFake.js'
 
@@ -51,10 +52,15 @@ interface Setup {
 }
 
 async function setup(
-  options: { readonly breakGlass?: boolean; readonly wired?: boolean } = {},
+  options: {
+    readonly breakGlass?: boolean
+    readonly wired?: boolean
+    /** P18.18: add the three-key profile `pool` and `node-d`, which runs it. */
+    readonly pool?: boolean
+  } = {},
 ): Promise<Setup> {
   const actions = new MemoryActionLedger()
-  const providers = new FakeProviders()
+  const providers = new FakeProviders({ pool: options.pool === true })
   const clock = new ManualClock(NOW)
   const h = accountsHarness({
     clock,
@@ -1302,5 +1308,107 @@ describe('the chat label', () => {
       ),
     )
     expect(unknown).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P18.18: several keys on one profile
+// ---------------------------------------------------------------------------
+
+describe('several keys', () => {
+  const POOL_KEYS = [
+    { id: 'k1', label: '主账号' },
+    { id: 'k2', label: '备用账号' },
+    { id: 'k3' },
+  ]
+
+  test('add, fill in again, clear, remove, strategy: each admitted once and recorded by the port alone', async () => {
+    const s = await setup({ pool: true })
+    const steps: readonly [string, string, unknown, readonly string[]][] = [
+      // Add k4: a save with the list grown and the new key's value. The
+      // fingerprint a crafted request puts on k1 is not the hub's to take.
+      [
+        'PUT',
+        '/v0/providers/profiles/pool',
+        {
+          ifMatch: 2,
+          profile: {
+            keys: [
+              { ...POOL_KEYS[0], fingerprint: `fp1:${'f'.repeat(32)}` },
+              POOL_KEYS[1],
+              POOL_KEYS[2],
+              { id: 'k4', label: '新账号' },
+            ],
+          },
+          secrets: { k4: 'sk-test-canary-pool-0004' },
+        },
+        ['provider.save', 'provider.secret.set'],
+      ],
+      [
+        'PUT',
+        '/v0/providers/profiles/pool/keys/k2',
+        { ifMatch: 3, value: 'sk-test-canary-pool-0002' },
+        ['provider.secret.set'],
+      ],
+      [
+        'DELETE',
+        '/v0/providers/profiles/pool/keys/k3',
+        { ifMatch: 4 },
+        ['provider.secret.clear'],
+      ],
+      // Remove k3: a save with the list shrunk.
+      [
+        'PUT',
+        '/v0/providers/profiles/pool',
+        {
+          ifMatch: 5,
+          profile: {
+            keys: [POOL_KEYS[0], POOL_KEYS[1], { id: 'k4', label: '新账号' }],
+          },
+        },
+        ['provider.save'],
+      ],
+      [
+        'PUT',
+        '/v0/providers/profiles/pool',
+        { ifMatch: 6, profile: { keySelection: 'least_used' } },
+        ['provider.save'],
+      ],
+    ]
+    for (const [method, path, body, lines] of steps) {
+      const entries = s.actions.entries.length
+      const admits = s.actions.admitCalls
+      const response = await s.handle(call(method, path, s.ops, body))
+      expect(`${method} ${path} ${response.status}`).toBe(
+        `${method} ${path} 200`,
+      )
+      expect(`${path} admits ${s.actions.admitCalls - admits}`).toBe(
+        `${path} admits 1`,
+      )
+      expect(
+        s.actions.entries.slice(entries).map(entry => entry.action),
+      ).toEqual([...lines])
+    }
+    const pool = s.providers.profiles.get('pool')
+    expect(pool?.revision).toBe(7)
+    expect(pool?.keySelection).toBe('least_used')
+    expect(pool?.keys.map(key => key.id)).toEqual(['k1', 'k2', 'k4'])
+    expect(pool?.keys[0]?.fingerprint).toBe(POOL_FINGERPRINTS.k1)
+    expect(pool?.keys[1]?.fingerprint).not.toBe(POOL_FINGERPRINTS.k2)
+    expect(pool?.keys[2]?.fingerprint).toMatch(/^fp1:/)
+    // The route laid the list over the stored profile and kept the rest.
+    const saves = s.providers.writes.filter(w => w.method === 'saveProfile')
+    const first = saves[0]?.input as {
+      profile: Record<string, unknown>
+      secrets?: Record<string, string>
+    }
+    expect(first.profile.lane).toBe('openai-responses')
+    expect(first.profile.keySelection).toBe('round_robin')
+    expect(first.secrets).toEqual({ k4: 'sk-test-canary-pool-0004' })
+    const last = saves.at(-1)?.input as { profile: Record<string, unknown> }
+    expect(last.profile.keys).toEqual(pool?.keys)
+    // No value in the ledger, and nothing the route wrote itself.
+    expect(JSON.stringify(s.actions.entries)).not.toContain('sk-test-canary')
+    expect(s.actions.entries.length - s.base.entries).toBe(6)
   })
 })
