@@ -107,6 +107,7 @@ import type {
   ConsoleAgent,
   ConsoleCaRoot,
   ConsoleCertificate,
+  ConsoleDeps,
   ConsoleFailure,
   NodeServer,
   WakeTarget,
@@ -819,13 +820,32 @@ export interface WakeFormModel {
   readonly identity?: string
 }
 
+/** True when this console can send a wake at all, to anyone. */
+export function wakeAvailable(
+  deps: Pick<ConsoleDeps, 'wake' | 'wakeTargets'>,
+): boolean {
+  return (
+    deps.wake !== undefined ||
+    deps.wakeTargets?.some(target => target.wake !== undefined) === true
+  )
+}
+
 /**
- * The one disabled-state sentence the wake face is allowed.
+ * Why the wake face is off, from what the console was started with (C6).
  *
- * Both halves are load-bearing: what is unavailable, and the exact name of the
- * thing to go and set. "唤醒不可用" on its own sends somebody to the docs.
+ * Two different causes with two different fixes: no target was given at all
+ * (`--wake-url`), or targets were given and none of them has a usable
+ * transport key. The old sentence named the key in both cases, which sent
+ * whoever had simply not configured waking to look for a variable. The
+ * per-node list above the fields already says which node lacks its key.
  */
-const WAKE_DISABLED_REASON = '唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK'
+export function wakeDisabledReason(
+  targets: readonly WakeTarget[] | undefined,
+): string {
+  return targets === undefined || targets.length === 0
+    ? '唤醒不可用 · 启动时没有配置唤醒目标'
+    : '唤醒不可用 · 唤醒目标的传输密钥不可用'
+}
 
 function wakeTargetField(options: string): string {
   if (options === '') {
@@ -876,10 +896,10 @@ function wakeNodeTargets(targets: readonly WakeTarget[] | undefined): string {
 /**
  * The wake form, in its own dialog.
  *
- * With no PSK the fields render inside a disabled `<fieldset>` with the
- * reason, and **no submit button at all**. A greyed-out button still invites a
- * click; a missing one, next to the name of the variable, says what to go and
- * do. The form's 回调 box stays gone: it could only ever hold the one URL the
+ * With no way to wake the fields render inside a disabled `<fieldset>` with
+ * the reason ({@link wakeDisabledReason}), and **no submit button at all**. A
+ * greyed-out button still invites a click; a missing one, next to the reason,
+ * says what to go and do. The form's 回调 box stays gone: it could only ever hold the one URL the
  * console is pinned to, so it is a line of read-only small print.
  */
 export function wakeDialog(model: WakeFormModel): string {
@@ -918,7 +938,9 @@ export function wakeDialog(model: WakeFormModel): string {
       `<button type="submit" class="btn btn-primary" data-write>` +
       icon('zap', { small: true }) +
       `唤醒</button></div></form>`
-    : `<p class="note" id="wake-why">${escapeHtml(WAKE_DISABLED_REASON)}</p>` +
+    : `<p class="note" id="wake-why">${escapeHtml(
+        wakeDisabledReason(model.wakeTargets),
+      )}</p>` +
       `<fieldset disabled aria-describedby="wake-why">${fields}</fieldset>` +
       `<div class="dialog-actions">${cancel}</div>`
   return (

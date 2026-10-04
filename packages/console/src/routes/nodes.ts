@@ -51,7 +51,6 @@
 import { subjectOf } from '../access.js'
 import type {
   ConsoleAgent,
-  ConsoleDeps,
   LifecycleChange,
   LifecycleOutcome,
   LifecycleRefusal,
@@ -73,6 +72,7 @@ import {
   deregisterConfirm,
   registerDialog,
   renderRoster,
+  wakeAvailable,
   wakeConfirm,
   wakeDialog,
   wakeTargetOptions,
@@ -519,8 +519,7 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
     return fail(
       501,
       'unsupported',
-      '该控制台没有配置唤醒通道（缺少传输层 PSK），因此不能发起唤醒；' +
-        '请在启动 occ console 时提供 PSK 后重试。',
+      '这台控制台启动时没有配置唤醒目标 · 用 qm console --wake-url 启动后再试',
     )
   }
   const body = await readJsonObject(request)
@@ -574,14 +573,6 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }
 
-/** True when this console can send a wake at all, to anyone. */
-function wakeEnabled(deps: ConsoleDeps): boolean {
-  return (
-    deps.wake !== undefined ||
-    deps.wakeTargets?.some(target => target.wake !== undefined) === true
-  )
-}
-
 /**
  * What the top bar offers to add an agent: the register form, or — with a
  * managed list — 发布 with the addresses still to publish (`null`: no list).
@@ -612,7 +603,7 @@ function nodeDialogs(
       : '') +
     (deps.lifecycle === undefined ? '' : lifecycleDialogs()) +
     wakeDialog({
-      enabled: wakeEnabled(deps),
+      enabled: wakeAvailable(deps),
       targetOptions: wakeTargetOptions(agents, now, deps.limits.registryTtlMs),
       ...(deps.wakeUrl === undefined ? {} : { wakeUrl: deps.wakeUrl }),
       ...(deps.wakeTargets === undefined

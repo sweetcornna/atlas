@@ -830,7 +830,11 @@ describe('wake', () => {
     expect(response.status).toBe(501)
     const error = await errorOf(response)
     expect(error['code']).toBe('unsupported')
-    expect(String(error['message'])).toContain('PSK')
+    // The cause it has: no wake target at all, so no key to go looking for
+    // (C6) - and the command is the product's (I2).
+    expect(String(error['message'])).toBe(
+      '这台控制台启动时没有配置唤醒目标 · 用 qm console --wake-url 启动后再试',
+    )
   })
 
   test('selects only a configured named wake target and discards a client URL', async () => {

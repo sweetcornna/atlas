@@ -1186,17 +1186,63 @@ describe('renderAudit', () => {
     expect(html).toContain('>4bf92f35…<')
   })
 
-  test('an empty result set names the next action, not the absence', () => {
+  test('an empty result set says so, with the filter that produced it', () => {
     const html = renderAudit(page({ records: [], total: 40 }), null, NO_FILTER)
     expect(html).toContain('这条链还没有记录')
-    expect(html).toContain('去唤醒一个智能体')
-    expect(html).toContain('href="#wake-section"')
+    // Where the next action lives, and when it is offered: the C6 case below.
+    expect(html).not.toContain('去节点页唤醒')
     expect(html).not.toContain('<table')
     expect(html).toContain('<span class="total">40</span>')
     expect(html).toContain('显示 0')
     // The legend repeats the filter that produced the emptiness: the
     // commonest cause of an empty trail is a filter somebody forgot.
     expect(html).toContain('当前筛选 · 结果 全部')
+  })
+
+  test('an empty trail claims only what an empty file shows, and invites a wake only where one can happen (C6)', () => {
+    const empty = page({ records: [], total: 0, chain: 'empty' })
+    const paged = { query: '', fresh: true }
+    // No connectivity claim, whoever is reading.
+    for (const html of [
+      renderAudit(empty, null, NO_FILTER),
+      renderAudit(empty, null, NO_FILTER, undefined, {
+        ...paged,
+        wake: '/nodes',
+      }),
+    ]) {
+      expect(html).toContain('还没有业务消息经过这条链')
+      expect(html).not.toContain('连通')
+      expect(html).not.toContain('wake-section')
+    }
+    // No wake on this console, or a reader who may not write: the route
+    // leaves `wake` out, and nothing is offered.
+    const none = renderAudit(empty, null, NO_FILTER, undefined, paged)
+    expect(none).not.toContain('去节点页唤醒')
+    expect(none).not.toContain('唤醒一个智能体后')
+    // A chain that fails its check, or whose witness disagrees, is not
+    // where more traffic is the next step.
+    for (const unsound of [
+      page({ records: [], total: 0, intact: false, issueCount: 2 }),
+      page({
+        records: [],
+        total: 0,
+        witness: { tampered: true, stale: false },
+      }),
+    ]) {
+      const html = renderAudit(unsound, null, NO_FILTER, undefined, {
+        ...paged,
+        wake: '/nodes',
+      })
+      expect(html).toContain('这条链还没有记录')
+      expect(html).not.toContain('去节点页唤醒')
+    }
+    // Sound, writable, wakeable: the one invitation, to the page that wakes.
+    const offered = renderAudit(empty, null, NO_FILTER, undefined, {
+      ...paged,
+      wake: '/nodes',
+    })
+    expect(offered).toContain('唤醒一个智能体后这里会出现第一条投递轨迹')
+    expect(offered).toContain('href="/nodes" data-nav data-write')
   })
 
   test('a chain that exists and is empty is intact, and says so', () => {
@@ -1230,7 +1276,7 @@ describe('renderAudit', () => {
     expect(html).not.toContain('审计链断裂')
     expect(html).not.toContain('断裂 0')
     // No invitation either: nothing this page offers makes a file appear.
-    expect(html).not.toContain('去唤醒一个智能体')
+    expect(html).not.toContain('去节点页唤醒')
     expect(html).not.toContain('这条链还没有记录')
   })
 
@@ -2038,7 +2084,7 @@ describe('the nodes page dialogs', () => {
 
   test('a disabled wake face explains why and offers no button to press', () => {
     const html = wakeDialog({ enabled: false, targetOptions: '' })
-    expect(html).toContain('QIANMO_TRANSPORT_PSK')
+    expect(html).toContain('唤醒不可用 · 启动时没有配置唤醒目标')
     expect(html).toContain('<fieldset disabled')
     expect(html).not.toContain('id="wake-form"')
     expect(html).not.toContain('唤醒</button>')
@@ -2622,11 +2668,26 @@ describe('copy discipline', () => {
     expect(html).not.toContain('<iframe')
   })
 
-  test('the disabled wake face keeps its one allowed line', () => {
-    const disabled = wakeDialog({ enabled: false, targetOptions: '' })
-    // What is unavailable, and the exact name of the thing to go and set.
-    expect(disabled).toContain('唤醒不可用 · 未设置 QIANMO_TRANSPORT_PSK')
-    expect(visibleText(disabled)).not.toContain('。')
+  test('the disabled wake face names the cause it actually has (C6)', () => {
+    // Started without --wake-url: nothing to wake, and no key to look for.
+    const unconfigured = wakeDialog({ enabled: false, targetOptions: '' })
+    expect(unconfigured).toContain('唤醒不可用 · 启动时没有配置唤醒目标')
+    expect(unconfigured).not.toContain('QIANMO_TRANSPORT_PSK')
+    expect(unconfigured).not.toContain('传输密钥')
+    // Targets given, none with a usable key: that is the key's fault.
+    const keyless = wakeDialog({
+      enabled: false,
+      targetOptions: '',
+      wakeTargets: [
+        { node: 'tokyo-1', url: 'ws://127.0.0.1:1', unavailableReason: 'x' },
+      ],
+    })
+    expect(keyless).toContain('唤醒不可用 · 唤醒目标的传输密钥不可用')
+    expect(keyless).toContain('tokyo-1 · PSK 不可用')
+    for (const html of [unconfigured, keyless]) {
+      expect(visibleText(html)).not.toContain('。')
+      expect(html).not.toContain('type="submit"')
+    }
   })
 })
 

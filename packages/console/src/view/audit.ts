@@ -236,6 +236,12 @@ export interface TrailPaging {
    * on the newest page: what arrived since does not belong above an older one.
    */
   readonly fresh: boolean
+  /**
+   * Where the empty state may send somebody to wake an agent: present only
+   * when this console can wake at all and the reader may write (C6). Absent,
+   * the empty state states the fact and offers nothing it cannot keep.
+   */
+  readonly wake?: string
 }
 
 /** Where one trail's table sits: its paging, its place among several, its cursor. */
@@ -644,7 +650,7 @@ function absentState(): string {
 }
 
 /**
- * The empty state: what is true, and the two things worth doing about it.
+ * The empty state: what is true, and the things worth doing about it.
  *
  * Not `无匹配记录`. An operator looking at a blank trail is either at the start
  * of a network's life — nothing has been sent yet — or one segment too narrow,
@@ -655,8 +661,19 @@ function absentState(): string {
  * It is reached only when the chain file **exists**: a missing one is
  * {@link absentState}, and the whole point of separating them is that this
  * body's invitation is a lie in that case.
+ *
+ * It says only what an empty file shows: nothing has passed through yet. It
+ * used to add that the network was connected, which an empty file does not
+ * show. The invitation to wake an agent is there only when `wake` is — this
+ * console can wake and the reader may — and the chain is intact: more traffic
+ * onto a chain that fails its check is not the next step (C6).
  */
-function emptyState(filter: AuditFilter): string {
+/** The chain passed its own check and its witness agrees. */
+function sound(page: AuditPage): boolean {
+  return page.intact && page.witness?.tampered !== true
+}
+
+function emptyState(filter: AuditFilter, wake?: string): string {
   const current = filter.window ?? ''
   const index = AUDIT_WINDOWS.findIndex(([value]) => value === current)
   const wider = index >= 0 ? AUDIT_WINDOWS[index + 1] : undefined
@@ -676,12 +693,18 @@ function emptyState(filter: AuditFilter): string {
     `<div class="empty">` +
     `<div class="stack" style="gap:var(--space-4)">` +
     `<h4 class="empty-title">这条链还没有记录</h4>` +
-    `<p class="empty-note">网络已经连通 · 只是还没有业务消息流过 · ` +
-    `唤醒一个智能体就会在这里看到第一条投递轨迹</p>` +
-    `<div class="rowx">` +
-    `<a class="btn btn-primary" href="#wake-section">` +
-    icon('zap', { small: true }) +
-    `去唤醒一个智能体</a>${widen}</div>` +
+    `<p class="empty-note">还没有业务消息经过这条链` +
+    (wake === undefined ? '' : ` · 唤醒一个智能体后这里会出现第一条投递轨迹`) +
+    `</p>` +
+    (wake === undefined && widen === ''
+      ? ''
+      : `<div class="rowx">` +
+        (wake === undefined
+          ? ''
+          : `<a class="btn btn-primary" href="${attr(wake)}" data-nav data-write>` +
+            icon('zap', { small: true }) +
+            `去节点页唤醒</a>`) +
+        `${widen}</div>`) +
     `<div class="legend">` +
     `<span>当前筛选 · 结果 ${escapeHtml(outcomeLabel)}</span>` +
     `<span>时间 · ${escapeHtml(windowLabel)}</span>` +
@@ -783,7 +806,8 @@ export function renderAudit(
       page.chain === 'absent'
         ? absentState()
         : page.records.length === 0
-          ? pendingTable(place) + emptyState(filter)
+          ? pendingTable(place) +
+            emptyState(filter, sound(page) ? paging?.wake : undefined)
           : recordTable(page.records, undefined, place),
     )
   }
@@ -927,7 +951,8 @@ function sourceBody(
       page.chain === 'absent'
         ? absentState()
         : page.records.length === 0
-          ? pendingTable(place) + emptyState(filter)
+          ? pendingTable(place) +
+            emptyState(filter, sound(page) ? paging?.wake : undefined)
           : recordTable(page.records, source.node, place),
     )
   }

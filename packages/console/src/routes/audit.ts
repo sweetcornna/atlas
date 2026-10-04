@@ -38,7 +38,7 @@ import type {
   ConsoleDeps,
 } from '../deps.js'
 import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
-import { agentFilterOptions } from '../view/agents.js'
+import { agentFilterOptions, wakeAvailable } from '../view/agents.js'
 import {
   AUDIT_PAGE_LIMIT,
   AUDIT_WINDOWS,
@@ -56,6 +56,7 @@ import { failureBar } from '../view/bits.js'
 import { attr } from '../view/escape.js'
 import {
   auditSourceOf,
+  canWrite,
   failureResponse,
   guard,
   readAuditSources,
@@ -302,6 +303,7 @@ async function trailRegion(
   url: URL,
   now: number,
   agentOptions?: string,
+  wake?: string,
 ): Promise<TrailRegion> {
   const view = viewOf(url, now)
   const legacy = singleLegacyAudit(deps)
@@ -325,7 +327,11 @@ async function trailRegion(
   const reads = await Promise.all(
     trails.map(trail => readTrailFor(trail, filter)),
   )
-  const paging: TrailPaging = { query, fresh: filter.before === undefined }
+  const paging: TrailPaging = {
+    query,
+    fresh: filter.before === undefined,
+    ...(wake === undefined ? {} : { wake }),
+  }
   const body = legacy
     ? renderAudit(
         reads[0]?.page ?? null,
@@ -510,6 +516,11 @@ function auditQuery(filter: AuditFilter, node?: string): string {
   return params.toString()
 }
 
+/** Where an empty trail may send this reader to wake an agent, if anywhere (C6). */
+function wakeEntry(ctx: RouteContext): string | undefined {
+  return canWrite(ctx.access) && wakeAvailable(ctx.deps) ? '/nodes' : undefined
+}
+
 /**
  * The trail page. Only the header and the fresh rows are polled
  * (`data-swap`): the filter form must survive a refresh with whatever the
@@ -522,7 +533,7 @@ async function auditPage(ctx: RouteContext): Promise<PageRender> {
   const filter = parseAuditFilter(url, now)
   const roster = await ctx.roster()
   const options = agentFilterOptions(valueOf(roster), filter.agent)
-  const region = await trailRegion(ctx.deps, url, now, options)
+  const region = await trailRegion(ctx.deps, url, now, options, wakeEntry(ctx))
   return {
     title: '消息链',
     body:
@@ -700,7 +711,13 @@ export const auditRoute: RouteModule = {
       if (ctx.url.searchParams.has('since')) {
         return html(await trailIncrement(ctx.deps, ctx.url, ctx.now))
       }
-      const region = await trailRegion(ctx.deps, ctx.url, ctx.now)
+      const region = await trailRegion(
+        ctx.deps,
+        ctx.url,
+        ctx.now,
+        undefined,
+        wakeEntry(ctx),
+      )
       return html(region.html, region.status ?? 200)
     },
   },
