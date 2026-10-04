@@ -574,10 +574,12 @@ function runtimeScript(guards: TokenGuards): string {
 
   // Escape is the browser's: a modal <dialog> closes on it by itself. What is
   // left is to drop the pending action of whichever dialog just closed.
-  // 'close' does not bubble, so this listens in the capture phase.
+  // 'close' does not bubble, so this listens in the capture phase. The event
+  // is queued, not fired by close() itself: a dialog that is open again by
+  // the time it arrives was reopened since, and keeps its new pending action.
   document.addEventListener('close', function (event) {
     var box = event.target;
-    if (box && box.tagName === 'DIALOG') forget(box);
+    if (box && box.tagName === 'DIALOG' && !box.open) forget(box);
   }, true);
 
   document.addEventListener('submit', function (event) {
