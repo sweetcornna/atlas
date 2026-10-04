@@ -515,3 +515,82 @@ describe('B1 · the token pairs keep 4.5:1, in both schemes, without a browser',
     expect(ratio(colour(old, 'color-bg', fill), fill)).toBeLessThan(4.5)
   })
 })
+
+describe('D6 · the roster can be searched and filtered, without a script', () => {
+  function rows(html: string): string[] {
+    const at = html.indexOf('id="roster"')
+    const roster = at < 0 ? html : html.slice(at)
+    return [...roster.matchAll(/<details class="row" data-key="([^"]+)"/g)].map(
+      match => match[1] ?? '',
+    )
+  }
+
+  const servers = [
+    { node: 'tokyo-1', server: 'p11' },
+    { node: 'osaka-1', server: 'p12' },
+  ]
+
+  test('a search keeps the matching rows, counts what it hid, and the poll replays it', async () => {
+    const h = pageHarness({ nodeServers: servers })
+    const html = await (await h.handle(browse('/nodes?q=OSAKA', ADMIN))).text()
+    expect(rows(html)).toEqual(['qianmo://osaka-1/writer'])
+    expect(html).toContain('筛选后 1 · 共 3')
+    expect(html).toContain('data-poll="/fragments/roster?q=OSAKA"')
+    expect(html).toContain(
+      '<form id="roster-filter" class="roster-filter" method="get" action="/nodes" role="search">',
+    )
+    expect(html).toContain('value="OSAKA"')
+    // The wake picker still offers every address: the filter is a view.
+    const picker = html.slice(html.indexOf('id="wake-to"'))
+    expect(picker).toContain('qianmo://tokyo-1/planner')
+    const fragment = await (
+      await h.handle(browse('/fragments/roster?q=OSAKA', ADMIN))
+    ).text()
+    expect(rows(fragment)).toEqual(['qianmo://osaka-1/writer'])
+    // The count is inside the polled fragment, so a refresh recounts it.
+    expect(fragment).toContain('筛选后 1 · 共 3')
+  })
+
+  test('by state, judged as the rows judge it, and by server', async () => {
+    const h = pageHarness({ nodeServers: servers })
+    h.registry.listResult = {
+      ok: true,
+      value: [
+        agentAt('qianmo://tokyo-1/planner'),
+        agentAt('qianmo://tokyo-1/gone', {
+          lastHeartbeatAt: NOW - 900_000,
+          expiresAt: NOW - 810_000,
+        }),
+        agentAt('qianmo://osaka-1/writer'),
+      ],
+    }
+    const expired = await (
+      await h.handle(browse('/nodes?state=expired', ADMIN))
+    ).text()
+    expect(rows(expired)).toEqual(['qianmo://tokyo-1/gone'])
+    expect(expired).toContain('<option value="expired" selected>过期</option>')
+    const p12 = await (
+      await h.handle(browse('/nodes?server=p12', ADMIN))
+    ).text()
+    expect(rows(p12)).toEqual(['qianmo://osaka-1/writer'])
+    expect(p12).toContain('<option value="p12" selected>p12</option>')
+  })
+
+  test('nothing matching says so and offers the way back; nonsense is ignored', async () => {
+    const h = pageHarness()
+    const none = await (
+      await h.handle(browse('/nodes?q=nowhere', ADMIN))
+    ).text()
+    expect(rows(none)).toEqual([])
+    expect(none).toContain('没有符合筛选的智能体 · 共 3 个')
+    expect(none).toContain('href="/nodes" data-nav>清除筛选')
+    expect(none).not.toContain('注册第一个')
+    const odd = await (
+      await h.handle(browse('/nodes?state=sideways', ADMIN))
+    ).text()
+    expect(rows(odd)).toHaveLength(3)
+    expect(odd).toContain('data-poll="/fragments/roster"')
+    // No server select on a console that does not know its servers.
+    expect(odd).not.toContain('id="roster-server"')
+  })
+})

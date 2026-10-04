@@ -70,8 +70,14 @@ import { NODES_PAGE_JS } from '../assets/pageScripts.js'
 import {
   agentsOfNode,
   deregisterConfirm,
+  filterRoster,
+  isRosterFiltered,
+  parseRosterFilter,
   registerDialog,
   renderRoster,
+  rosterFilterForm,
+  rosterFilterQuery,
+  type RosterFilter,
   wakeAvailable,
   wakeConfirm,
   wakeDialog,
@@ -369,7 +375,8 @@ interface RosterRender {
   /**
    * The agents themselves, so the page around the fragment can build its two
    * address pickers (the wake target and the trail's node filter) from the
-   * *same* read rather than asking the registry a second time.
+   * *same* read rather than asking the registry a second time. Every
+   * address, whatever the filter.
    */
   readonly agents: readonly ConsoleAgent[] | null
 }
@@ -385,6 +392,7 @@ interface RosterRender {
 async function rosterFragment(
   ctx: Pick<RouteContext, 'deps' | 'now' | 'roster' | 'access'>,
   node?: string,
+  filter: RosterFilter = {},
 ): Promise<RosterRender> {
   const { deps, now } = ctx
   // Two independent reads, overlapped: the certificate face lives behind the
@@ -397,11 +405,24 @@ async function rosterFragment(
     certificatePort?.read(),
   ])
   const listed = valueOf(result)
-  const agents =
+  const all =
     listed === null || node === undefined ? listed : agentsOfNode(listed, node)
+  // The filter narrows what is drawn (D6); the pickers built from `agents`
+  // below keep every address, which is why the unfiltered list is returned.
+  const filtered = isRosterFiltered(filter)
+  const shown =
+    all === null || !filtered
+      ? all
+      : filterRoster(
+          all,
+          filter,
+          now,
+          deps.limits.registryTtlMs,
+          deps.nodeServers,
+        )
   return {
     html: renderRoster(
-      agents,
+      shown,
       failureOf(result),
       now,
       deps.limits.registryTtlMs,
@@ -414,9 +435,12 @@ async function rosterFragment(
             binName: deps.binName ?? DEFAULT_BIN_NAME,
           },
       deps.nodeServers,
-      { canWrite: canWrite(ctx.access) },
+      {
+        canWrite: canWrite(ctx.access),
+        ...(filtered && all !== null ? { filteredFrom: all.length } : {}),
+      },
     ),
-    agents,
+    agents: all,
   }
 }
 
@@ -680,16 +704,22 @@ function addActionOf(
 }
 
 async function nodesPage(ctx: RouteContext): Promise<PageRender> {
+  const filter = parseRosterFilter(ctx.url.searchParams)
   const [roster, snapshot] = await Promise.all([
-    rosterFragment(ctx),
+    rosterFragment(ctx, undefined, filter),
     snapshotOf(ctx),
   ])
   const add = addActionOf(snapshot, roster.agents)
+  const query = rosterFilterQuery(filter)
   return {
     title: '节点',
     actions: nodeActions(ctx, add),
     body:
-      rosterRegion(roster.html, '/fragments/roster') +
+      rosterFilterForm(filter, ctx.deps.nodeServers) +
+      rosterRegion(
+        roster.html,
+        `/fragments/roster${query === '' ? '' : `?${query}`}`,
+      ) +
       renderLedgerOnly(snapshot, roster.agents) +
       nodeDialogs(ctx, roster.agents, add),
     poll: true,
@@ -939,8 +969,13 @@ export const nodesRoute: RouteModule = {
         return html(renderLifecycle(await lifecycleModelOf(ctx, node)))
       }
       return html(
-        (await rosterFragment(ctx, textParam(ctx.url.searchParams, 'node')))
-          .html,
+        (
+          await rosterFragment(
+            ctx,
+            textParam(ctx.url.searchParams, 'node'),
+            parseRosterFilter(ctx.url.searchParams),
+          )
+        ).html,
       )
     },
   },

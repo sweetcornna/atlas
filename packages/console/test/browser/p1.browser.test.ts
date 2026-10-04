@@ -741,5 +741,38 @@ describe.skipIf(SKIP !== null)(
         served.stop()
       }
     }, 30_000)
+
+    test('the roster filter submits as a plain GET and leaves only what was asked in the URL (D6)', async () => {
+      const served = serveConsole()
+      const tab = await browser.tab()
+      try {
+        await openConsole(tab, served, '/nodes')
+        await tab.evaluate(`(() => {
+          const form = document.getElementById('roster-filter');
+          form.querySelector('input[name="q"]').value = 'osaka';
+          form.requestSubmit();
+        })()`)
+        await tab.waitFor(`location.search === '?q=osaka'`, 10_000)
+        await tab.waitFor('window.qianmoConsole !== undefined')
+        const shown = await tab.evaluate<string[]>(
+          `[...document.querySelectorAll('#roster details.row')].map(row => row.dataset.key)`,
+        )
+        expect(shown).toEqual(['qianmo://osaka-1/writer'])
+        expect(
+          await tab.evaluate<string>(
+            `document.getElementById('roster-tally').textContent`,
+          ),
+        ).toContain('筛选后 1 · 共 3')
+        // The search box still holds what was searched, and still works.
+        expect(
+          await tab.evaluate<boolean>(
+            `document.querySelector('#roster-filter input[name="q"]').disabled`,
+          ),
+        ).toBe(false)
+      } finally {
+        await tab.close()
+        served.stop()
+      }
+    }, 30_000)
   },
 )

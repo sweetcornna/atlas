@@ -225,6 +225,25 @@ export const NODES_PAGE_JS = `
       .catch(function (err) { qc.toast(qc.failLine('注销', err), qc.failTone(err)); });
   }
 
+  // The roster filter is a native GET and stays one: it works with this
+  // script disabled. All that is added is dropping the empty boxes, so the
+  // resulting URL is the shortest thing that reproduces this view (D6).
+  document.addEventListener('submit', function (event) {
+    var form = event.target;
+    if (!form || form.id !== 'roster-filter') return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) {
+      if (controls[i].value === '') controls[i].disabled = true;
+    }
+  });
+  // Back to this page from the history cache: the boxes are usable again.
+  window.addEventListener('pageshow', function () {
+    var form = document.getElementById('roster-filter');
+    if (!form) return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) controls[i].disabled = false;
+  });
+
   qc.onAction('heartbeat', onHeartbeat);
   qc.onAction('deregister', onDeregister);
   qc.onSubmit('register-form', onRegister);
@@ -281,6 +300,13 @@ export const AUDIT_PAGE_JS = `
     for (var i = 0; i < controls.length; i++) {
       if (controls[i].value === '') controls[i].disabled = true;
     }
+  });
+  // Back to this page from the history cache: the boxes are usable again.
+  window.addEventListener('pageshow', function () {
+    var form = document.getElementById('roster-filter');
+    if (!form) return;
+    var controls = form.querySelectorAll('input, select');
+    for (var i = 0; i < controls.length; i++) controls[i].disabled = false;
   });
 })();
 `

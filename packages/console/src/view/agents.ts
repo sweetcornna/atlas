@@ -496,7 +496,11 @@ export function renderRoster(
   ttlMs: number,
   certificates?: RosterCertificates,
   nodeServers?: readonly NodeServer[],
-  options: { readonly canWrite?: boolean } = {},
+  options: {
+    readonly canWrite?: boolean
+    /** A filter is narrowing `agents` (D6): how many there are without it. */
+    readonly filteredFrom?: number
+  } = {},
 ): string {
   const canWrite = options.canWrite === true
   const body: string[] = []
@@ -540,13 +544,17 @@ export function renderRoster(
   if (agents.length === 0) {
     // The empty state spends its one line on the next action rather than on
     // the news — for whoever may take it. A read-only credential is told who
-    // does instead of being offered a dialog that is not there.
+    // does instead of being offered a dialog that is not there. Under a
+    // filter the next action is the filter's, not registration.
     body.push(
-      canWrite
-        ? `<p class="hint">还没有智能体 · ` +
+      options.filteredFrom !== undefined && options.filteredFrom > 0
+        ? `<p class="hint">没有符合筛选的智能体 · 共 ${options.filteredFrom} 个 · ` +
+            `<a class="jump" href="/nodes" data-nav>清除筛选</a></p>`
+        : canWrite
+          ? `<p class="hint">还没有智能体 · ` +
             `<a class="jump" href="#register-dialog" ` +
             `data-open-dialog="register-dialog" data-write>注册第一个</a></p>`
-        : `<p class="hint">还没有智能体 · 由运维注册</p>`,
+          : `<p class="hint">还没有智能体 · 由运维注册</p>`,
     )
     return (
       rosterHead(`<div class="rowx note"><span class="total">0</span></div>`, {
@@ -558,6 +566,12 @@ export function renderRoster(
     )
   }
 
+  // Inside the fragment, so each refresh recounts it.
+  if (options.filteredFrom !== undefined) {
+    body.push(
+      `<p class="note" id="roster-tally">筛选后 ${agents.length} · 共 ${options.filteredFrom}</p>`,
+    )
+  }
   body.push(
     `<div class="stack">` +
       groupByNode(agents)
@@ -817,6 +831,133 @@ export interface WakeFormModel {
   readonly wakeTargets?: readonly WakeTarget[]
   /** The address this console speaks as, prefilled into 发起方. */
   readonly identity?: string
+}
+
+// ---------------------------------------------------------------------------
+// The roster's filter (D6)
+// ---------------------------------------------------------------------------
+
+/** What the roster can be narrowed by: a search, a state, a server. */
+export interface RosterFilter {
+  /** Case-insensitive substring of the address or the endpoint. */
+  readonly q?: string
+  readonly state?: AgentHealth
+  readonly server?: string
+}
+
+const ROSTER_STATES: readonly (readonly [AgentHealth, string])[] = [
+  ['live', '在线'],
+  ['stale', '滞后'],
+  ['expired', '过期'],
+]
+
+/** The filter in a URL's query, unknown values dropped rather than refused. */
+export function parseRosterFilter(params: URLSearchParams): RosterFilter {
+  const q = (params.get('q') ?? '').trim().slice(0, 200)
+  const state = params.get('state') ?? ''
+  const server = (params.get('server') ?? '').trim()
+  return {
+    ...(q === '' ? {} : { q }),
+    ...(ROSTER_STATES.some(([value]) => value === state)
+      ? { state: state as AgentHealth }
+      : {}),
+    ...(server === '' ? {} : { server }),
+  }
+}
+
+/** The filter as a query string, without the `?`: what the poller replays. */
+export function rosterFilterQuery(filter: RosterFilter): string {
+  const params = new URLSearchParams()
+  if (filter.q !== undefined) params.set('q', filter.q)
+  if (filter.state !== undefined) params.set('state', filter.state)
+  if (filter.server !== undefined) params.set('server', filter.server)
+  return params.toString()
+}
+
+export function isRosterFiltered(filter: RosterFilter): boolean {
+  return (
+    filter.q !== undefined ||
+    filter.state !== undefined ||
+    filter.server !== undefined
+  )
+}
+
+/** The agents the filter keeps, judged by the same health the rows show. */
+export function filterRoster(
+  agents: readonly ConsoleAgent[],
+  filter: RosterFilter,
+  now: number,
+  ttlMs: number,
+  nodeServers: readonly NodeServer[] = [],
+): readonly ConsoleAgent[] {
+  const q = filter.q?.toLowerCase()
+  const serverOf = new Map(nodeServers.map(entry => [entry.node, entry.server]))
+  return agents.filter(one => {
+    if (
+      q !== undefined &&
+      !one.address.toLowerCase().includes(q) &&
+      !one.endpoint.toLowerCase().includes(q)
+    ) {
+      return false
+    }
+    if (
+      filter.state !== undefined &&
+      agentHealth(one, now, ttlMs) !== filter.state
+    ) {
+      return false
+    }
+    if (filter.server !== undefined) {
+      const node = bareNode(splitAddress(one.address).node)
+      if (serverOf.get(node) !== filter.server) return false
+    }
+    return true
+  })
+}
+
+/**
+ * The filter form: a native GET, so it works with no script at all, and it
+ * sits outside the polled region so a refresh never eats what is being typed.
+ * The server select is drawn only when the console knows its servers.
+ */
+export function rosterFilterForm(
+  filter: RosterFilter,
+  nodeServers: readonly NodeServer[] = [],
+): string {
+  const servers = [...new Set(nodeServers.map(entry => entry.server))].sort()
+  const option = (value: string, label: string, selected: string | undefined) =>
+    `<option value="${attr(value)}"${selected === value ? ' selected' : ''}>` +
+    `${escapeHtml(label)}</option>`
+  const stateSelect =
+    `<div class="field"><label for="roster-state">状态</label>` +
+    `<span class="sel"><select class="input" id="roster-state" name="state">` +
+    option('', '全部', filter.state ?? '') +
+    ROSTER_STATES.map(([value, label]) =>
+      option(value, label, filter.state),
+    ).join('') +
+    `</select>${chevron()}</span></div>`
+  const serverSelect =
+    servers.length === 0
+      ? ''
+      : `<div class="field"><label for="roster-server">服务器</label>` +
+        `<span class="sel"><select class="input" id="roster-server" name="server">` +
+        option('', '全部', filter.server ?? '') +
+        servers.map(server => option(server, server, filter.server)).join('') +
+        `</select>${chevron()}</span></div>`
+  const clear = isRosterFiltered(filter)
+    ? `<a class="btn btn-ghost btn-small" href="/nodes" data-nav>清除筛选</a>`
+    : ''
+  return (
+    `<form id="roster-filter" class="roster-filter" method="get" action="/nodes" role="search">` +
+    `<div class="field roster-search"><label for="roster-q">搜索</label>` +
+    `<input class="input" type="search" id="roster-q" name="q" value="${attr(
+      filter.q ?? '',
+    )}" placeholder="地址或端点" autocomplete="off" spellcheck="false"></div>` +
+    stateSelect +
+    serverSelect +
+    `<button type="submit" class="btn btn-secondary">筛选</button>` +
+    clear +
+    `</form>`
+  )
 }
 
 /** True when this console can send a wake at all, to anyone. */

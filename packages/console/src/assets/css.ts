@@ -735,6 +735,9 @@ textarea.input { border-radius: var(--radius-lg); padding: 10px 14px; line-heigh
 .status[data-tone='warn'] { color: var(--color-accent-800); }
 /* A field that is wrong, and why, under it (D3). */
 .field-error { margin: var(--space-1) 0 0; font-size: 12px; color: var(--color-accent-800); }
+/* The roster's filter (D6): a native GET form above the polled region. */
+.roster-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); margin: 0 0 var(--space-3); }
+.roster-filter .roster-search { flex: 1 1 220px; }
 .input[aria-invalid='true'] { border-color: var(--color-accent-700); }
 .jump { color: var(--color-accent-700); }
 
