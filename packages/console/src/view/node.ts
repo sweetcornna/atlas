@@ -858,8 +858,11 @@ export const NODE_PAGE_CSS = `
 .node-tab:hover { color: var(--color-text); }
 .node-tab[aria-current="page"] { color: var(--color-text); border-bottom-color: var(--color-accent); }
 .node-facts { padding: var(--space-4); display: grid; gap: var(--space-2); }
-.node-facts .kv { display: flex; gap: var(--space-4); align-items: baseline; flex-wrap: wrap; }
-.node-facts .k { color: var(--color-muted); min-width: 5rem; }
+.node-facts .kv { display: flex; flex-direction: row; gap: var(--space-4); align-items: baseline; flex-wrap: wrap; }
+.node-facts .k { color: var(--color-muted); min-width: 5rem; font-size: 12px; }
+.node-facts .v { font-size: 14px; }
+.node-facts .sep { margin: 0 var(--space-2); }
+.node-facts .v .jump:not(:first-child) { margin-left: var(--space-3); }
 .node-life td { vertical-align: top; }
 .node-life td.reach .note { display: block; }
 .node-life td.when time, .node-life td.when .who { display: block; font-size: 12px; }
