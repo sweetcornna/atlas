@@ -81,6 +81,7 @@ export {
 } from './shadow.js'
 
 export {
+  redactHandoffText,
   sessionCommit,
   type SessionCommit,
   type SessionCommitOptions,
