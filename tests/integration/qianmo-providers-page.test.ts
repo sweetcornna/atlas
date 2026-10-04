@@ -232,7 +232,11 @@ class ModelDouble {
 let root: string
 let config: string
 let workspace: string
-let previousConfig: string | undefined
+/** The two config-root variables as the suite found them, put back after. */
+let previousConfig: {
+  readonly CLAUDE_CONFIG_DIR: string | undefined
+  readonly OCC_CONFIG_DIR: string | undefined
+}
 let processModel: ModelDouble
 let modelB: ModelDouble
 let port: ConsoleProviders
@@ -393,10 +397,18 @@ beforeAll(async () => {
   chmodSync(config, 0o700)
   mkdirSync(workspace)
   mkdirSync(join(root, 'home'))
-  previousConfig = process.env.CLAUDE_CONFIG_DIR
+  previousConfig = {
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    OCC_CONFIG_DIR: process.env.OCC_CONFIG_DIR,
+  }
   // The in-process resident reads and writes this root, as `qm resident`
-  // would on the node.
+  // would on the node. `OCC_CONFIG_DIR` outranks `CLAUDE_CONFIG_DIR`
+  // (`src/config/paths.ts`), and a file run earlier in the same `bun test`
+  // process may have left it set: the resident would then write its
+  // lifecycle file elsewhere, `qm provider` (pointed here) would see no
+  // resident, and an apply would write at once instead of staging.
   process.env.CLAUDE_CONFIG_DIR = config
+  delete process.env.OCC_CONFIG_DIR
   resetSettingsCache()
 
   processModel = new ModelDouble('process-env')
@@ -472,8 +484,10 @@ afterAll(async () => {
   }
   port?.stop()
   await Promise.all([processModel?.stop(), modelB?.stop()])
-  if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfig
+  for (const [key, value] of Object.entries(previousConfig ?? {})) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   resetSettingsCache()
   rmSync(root, { recursive: true, force: true })
 }, 60_000)
@@ -542,23 +556,31 @@ describe('模型服务页 against the real hub, node and resident', () => {
       const applied = await ok<{
         results: {
           node: string
+          requestId: string
           outcome: string
           pending?: boolean
           code?: string
         }[]
       }>(call('POST', '/v0/providers/apply', { nodes: [NODE] }))
-      expect(applied.results.map(r => [r.node, r.outcome, r.pending])).toEqual([
-        [NODE, 'ok', true],
+      const [result] = applied.results
+      expect(applied.results.map(r => [r.node, r.outcome])).toEqual([
+        [NODE, 'ok'],
       ])
-
-      // The resident commits at idle and starts a new child on it.
+      // The node staged it because a resident is running. `pending` in the
+      // reply is the node's state when the reply was built, after it signalled
+      // the resident; the resident commits at its next idle poll (100 ms
+      // here), so on a quick machine the reply can already say done. What
+      // must hold is below: this request, committed by the resident at an
+      // idle boundary, and a new child on it. A node that saw no resident
+      // writes the file itself and no switch event ever names the request.
       await waitUntil(
         () => switches.length === 1 && ready() === 2,
         'the switch and the second generation',
         BOOT_MS,
-        diagnose,
+        () => `apply=${JSON.stringify(applied.results)}\n${diagnose()}`,
       )
       expect(switches[0]?.via).toBe('switch')
+      expect(switches[0]?.requestId).toBe(result?.requestId)
       expect(providerNode.hasPendingProviderConfig()).toBe(false)
 
       const request = createMessage({
