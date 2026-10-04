@@ -196,6 +196,7 @@ export class AppServerClient {
     options: AppServerClientOptions,
   ): Promise<AppServerClient> {
     const socket = new WebSocket(options.url, {
+      // @ts-expect-error — Bun extension; not in lib.dom WebSocket types
       headers: { Authorization: `Bearer ${options.token}` },
     })
     await new Promise<void>((resolve, reject) => {
