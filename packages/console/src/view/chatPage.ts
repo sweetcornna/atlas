@@ -78,6 +78,14 @@ export const CHAT_PAGE_CSS = `
   display: flex; flex-direction: column; gap: var(--space-4); min-width: 0;
   min-height: calc(100vh - 180px);
 }
+#prov-chat-label { flex: none; }
+.prov-chat-divider {
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: 12px; color: var(--color-muted); margin: var(--space-2) 0;
+}
+.prov-chat-divider::before, .prov-chat-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--color-divider);
+}
 @media (max-width: 1000px) {
   .chat-layout { grid-template-columns: minmax(0, 1fr); }
   .chat-rail { position: static; max-height: none; }
@@ -85,8 +93,108 @@ export const CHAT_PAGE_CSS = `
 }
 `
 
+/**
+ * The target's model (§6.3.8, P18.9): a read-only label in the thread head,
+ * and a divider in the transcript where the node last switched.
+ *
+ * Both come from `/fragments/providers/chat?target=<address>`, the model
+ * service area's answer built from what the node reported (`effective`,
+ * `applied.at`), never from the conversation store, which is not touched.
+ * The thread is replaced on every poll and stream event, so this repaints
+ * after each replacement from the last answer, and asks again at most every
+ * 30 s or when the target changes. An empty answer — no model service on
+ * this console, or a node it does not manage — draws nothing.
+ *
+ * The divider goes before the first turn whose `data-at` is after the switch;
+ * a switch older than the first turn on the page draws no divider, because
+ * there is no "here" for it in what is shown.
+ */
+const CHAT_MODEL_JS = `
+(function () {
+  'use strict';
+  var qc = window.qianmoConsole;
+  var mount = document.getElementById('thread-mount');
+  if (!qc || !mount) return;
+  var REUSE_MS = 30000;
+  var known = { target: '', html: '', at: 0 };
+  var asking = false;
+  var painting = false;
+
+  function paint() {
+    var thread = document.getElementById('chat-thread');
+    var old = document.querySelectorAll('[data-prov-chat]');
+    for (var i = 0; i < old.length; i++) old[i].remove();
+    if (!thread || known.html === '' ||
+        thread.getAttribute('data-target') !== known.target) return;
+    var tpl = document.createElement('template');
+    tpl.innerHTML = known.html;
+    var label = tpl.content.querySelector('#prov-chat-label');
+    var tail = thread.querySelector('.chat-tail');
+    if (label && tail) {
+      label.setAttribute('data-prov-chat', '');
+      tail.insertBefore(label, tail.firstChild);
+    }
+    var divider = tpl.content.querySelector('#prov-chat-divider');
+    var transcript = thread.querySelector('.transcript');
+    if (!divider || !transcript) return;
+    var at = Number(divider.getAttribute('data-at'));
+    var turns = transcript.querySelectorAll('article.turn');
+    var first = turns.length > 0 ? turns[0].querySelector('time[data-at]') : null;
+    if (!first || !(Number(first.getAttribute('data-at')) < at)) return;
+    for (var j = 0; j < turns.length; j++) {
+      var when = turns[j].querySelector('time[data-at]');
+      if (when && Number(when.getAttribute('data-at')) >= at) {
+        divider.setAttribute('data-prov-chat', '');
+        transcript.insertBefore(divider, turns[j]);
+        return;
+      }
+    }
+  }
+
+  function ask() {
+    var thread = document.getElementById('chat-thread');
+    var target = thread ? thread.getAttribute('data-target') || '' : '';
+    if (target === '') { known = { target: '', html: '', at: 0 }; return; }
+    if (asking || (target === known.target && Date.now() - known.at < REUSE_MS)) return;
+    asking = true;
+    qc.loadHtml('/fragments/providers/chat?target=' + encodeURIComponent(target))
+      .then(function (html) { known = { target: target, html: html.trim(), at: Date.now() }; })
+      .catch(function () { known = { target: target, html: '', at: Date.now() }; })
+      .then(function () { asking = false; repaint(); });
+  }
+
+  function repaint() {
+    if (painting) return;
+    painting = true;
+    try { paint(); } finally { painting = false; }
+  }
+
+  // Only a change this script did not make: its own label and divider going
+  // in and out would otherwise be a loop.
+  function foreign(records) {
+    for (var i = 0; i < records.length; i++) {
+      var lists = [records[i].addedNodes, records[i].removedNodes];
+      for (var k = 0; k < lists.length; k++) {
+        for (var n = 0; n < lists[k].length; n++) {
+          var node = lists[k][n];
+          if (!(node.nodeType === 1 && node.hasAttribute('data-prov-chat'))) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  new MutationObserver(function (records) {
+    if (!foreign(records)) return;
+    repaint();
+    ask();
+  }).observe(mount, { childList: true, subtree: true });
+  ask();
+})();
+`
+
 /** The page's script. Runs after the shared runtime (`assets/client.ts`). */
-export const CHAT_PAGE_SCRIPT = CONSOLE_CHAT_JS
+export const CHAT_PAGE_SCRIPT = CONSOLE_CHAT_JS + CHAT_MODEL_JS
 
 /**
  * The composer.

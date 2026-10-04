@@ -41,7 +41,8 @@ const handle = createConsoleHandler(deps, tokens)
 | GET | `/chat` | **admin** | `text/html`，对话面；没接对话通道时 404 |
 | GET | `/alerts?level=&state=`、`/jobs` | view | `text/html`，告警收件箱与值守作业（`docs/dev/console.md` §10.4） |
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | `text/html`，账号与访问 · 操作记录；`invites`、`sessions` 只给 admin 令牌与 `ops` 账号，其他人 403 页（`docs/dev/console.md` §5.3） |
-| GET | `/approvals`、`/providers`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
+| GET | `/providers`、`/providers/{new,import}`、`/providers/profiles/<id>`、`/providers/nodes/<节点>` | view | `text/html`，模型服务（`docs/dev/console.md` §5.4）；没开 `--providers` 时一行「模型服务未开启」 |
+| GET | `/approvals`、`/usage` | view | `text/html`，占位页「此页尚未提供」 |
 | GET | `/assets/app.css` | 公开 | `text/css` |
 | GET | `/assets/app.js` | 公开 | `text/javascript` |
 | GET | `/v0/health` | 公开 | `{ status: 'ok' }` |
@@ -63,10 +64,14 @@ const handle = createConsoleHandler(deps, tokens)
 | POST | `/v0/accounts/<urlencoded subject>/reset` | **ops / admin** | `{ subject, inviteId, expiresAt, link }` |
 | POST | `/v0/accounts/<urlencoded subject>/logout` | **ops / admin** | `{ subject, sessions, streams }`，强制下线；`subject` 段解码失败时 400 `invalid` |
 | GET | `/v0/actions?subject=&action=&target=&before=&limit=`、`/v0/actions/reads?session=` | 个人账号、admin | `ActionPage`；`viewer`、`member` 只拿到自己的，view 令牌 403 |
+| GET | `/v0/providers`、`/v0/providers/catalog`、`/v0/providers/profiles/<id>`、`/v0/providers/nodes/<节点>` | view | `ProviderOverview`、`ProviderCatalog`、`ProviderProfileView`、`ProviderNodeView`；不是写者时去掉指纹、完整 Base URL 与漂移键名；没有 `ProviderPort` 时 501 |
+| POST、PUT、DELETE | `/v0/providers/…`：档案、密钥、`skip-probe`、默认、指派、上下文、刷新、自动压缩、下发、测连、模型列表、预览、导入 | **`ops` 个人账号** | 逐条见 `docs/dev/console.md` §5；失败码 `invalid` 400、`not_found` 404、`conflict` / `in_use` 409、`rejected` 403、`refused` 422、`unreachable` 502、`unavailable` 503 |
+| GET | `/v0/providers/export?id=` | **`ops` 个人账号** | 附件，不含密钥与指纹 |
 | GET | `/fragments/{roster,audit,limits}` | view | `text/html` 片段 |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | `text/html` 片段 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | `text/html` 片段 |
 | GET | `/fragments/chain/<urlencoded traceId>` | view | `text/html` 片段，一条消息链 |
+| GET | `/fragments/providers/{board,chat?target=}`、`/fragments/providers/node/<节点>`、`/fragments/providers/profiles/<id>/nodes` | view | `text/html` 片段；`node/<节点>` 是节点「模型」页签的正文 |
 
 约定：
 
