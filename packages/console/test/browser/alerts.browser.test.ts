@@ -74,8 +74,11 @@ describe.skipIf(SKIP !== null)('the alert inbox in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-alert="n:disk"]').click()`,
       )
+      // The answer's toast and the row gone, not `data-refreshed`: the inbox
+      // is polled, so a tick can bump that before the ack is stored.
       await tab.waitFor(
-        `document.getElementById('alerts').getAttribute('data-refreshed') !== null`,
+        `document.getElementById('toasts').textContent.indexOf('已确认') !== -1 && ` +
+          `document.querySelector('[data-key="n:disk"]') === null`,
       )
       expect(
         await tab.evaluate<string>(

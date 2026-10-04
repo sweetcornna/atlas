@@ -6,6 +6,7 @@
  * and side-effect free.
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { setSystemTime } from 'bun:test'
 
 import { logMock } from '../../../../tests/mocks/log.js'
 mock.module('src/utils/telemetry/log.ts', logMock)
@@ -112,11 +113,18 @@ describe('pause / resume — preserves active elapsed time', () => {
     expect(resumeGoal(SESSION)).toBeNull()
   })
 
-  test('getActiveElapsedMs while active includes ongoing interval', async () => {
-    setGoal('x', { sessionId: SESSION })
-    await Bun.sleep(10)
-    const g = getGoal(SESSION)!
-    expect(getActiveElapsedMs(g)).toBeGreaterThanOrEqual(10)
+  test('getActiveElapsedMs while active includes ongoing interval', () => {
+    // A held clock, not a sleep: a 10 ms timer can wake before Date.now()
+    // has moved 10 ms, and this reads only Date.now().
+    setSystemTime(1_000_000)
+    try {
+      setGoal('x', { sessionId: SESSION })
+      setSystemTime(1_000_010)
+      const g = getGoal(SESSION)!
+      expect(getActiveElapsedMs(g)).toBe(10)
+    } finally {
+      setSystemTime()
+    }
   })
 
   test('getActiveElapsedMs while paused freezes at accumulated total', async () => {

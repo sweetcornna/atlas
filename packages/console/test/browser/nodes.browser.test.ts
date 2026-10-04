@@ -84,6 +84,21 @@ function button(verb: string, address: string): string {
   return `document.querySelector('#lifecycle [data-action="lifecycle"][data-verb="${verb}"][data-address="${address}"]')`
 }
 
+/**
+ * A confirmed verb has come back: the answer's toast is up and the row is
+ * drawn in its new state. The toast is raised only once the route has
+ * answered, and the route answers only after its ledger line is written.
+ * Not `data-refreshed`: the runtime's own poll (every 5 s by default) bumps
+ * it too, so a run that crosses one tick stops waiting before the write.
+ */
+function landed(address: string, state: string, toast: string): string {
+  return (
+    `${row(address)} !== null && ` +
+    `${row(address)}.getAttribute('data-state') === ${JSON.stringify(state)} && ` +
+    `document.getElementById('toasts').textContent.indexOf(${JSON.stringify(toast)}) !== -1`
+  )
+}
+
 /** Make the runtime poll every 200 ms, so a test can watch one tick land. */
 async function pollFast(tab: Tab): Promise<void> {
   await tab.evaluate(
@@ -153,9 +168,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-action="confirm-pause"]').click()`,
       )
-      await tab.waitFor(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed') !== null`,
-      )
+      await tab.waitFor(landed(PLANNER, 'paused', `已暂停 ${PLANNER}`))
       expect(served.actions.lines()).toEqual([`agent.pause ${PLANNER} ok`])
       expect(served.lifecycle.calls).toEqual([`pause ${PLANNER} legacy:admin`])
       expect(
@@ -171,9 +184,6 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
           `document.getElementById('toasts').textContent`,
         ),
       ).toContain(`已暂停 ${PLANNER}`)
-      const refreshed = await tab.evaluate<string>(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed')`,
-      )
 
       // 恢复: the same two steps, on the button the refresh drew.
       expect(
@@ -192,11 +202,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-action="confirm-resume"]').click()`,
       )
-      await tab.waitFor(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed') !== ${JSON.stringify(
-          refreshed,
-        )}`,
-      )
+      await tab.waitFor(landed(PLANNER, 'active', `已恢复 ${PLANNER}`))
       expect(served.actions.lines()).toEqual([
         `agent.pause ${PLANNER} ok`,
         `agent.resume ${PLANNER} ok`,
@@ -209,6 +215,53 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       expect(
         await tab.evaluate<boolean>(`${button('pause', PLANNER)} !== null`),
       ).toBe(true)
+    } finally {
+      await tab.close()
+      served.stop()
+    }
+  }, 30_000)
+
+  test('取消 then the same confirmation reopened before its close event arrives: 确认 still sends', async () => {
+    const served = serve()
+    const tab = await browser.tab()
+    try {
+      await tab.goto(`${served.base}/nodes/tokyo-1/lifecycle?token=${ADMIN}`)
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      await tab.evaluate(`${button('pause', REVIEWER)}.click()`)
+      await tab.waitFor(
+        `document.getElementById('confirm-pause').open === true`,
+      )
+      // 取消 and the next row's 暂停 in one task: close() queues the
+      // dialog's close event, so it cannot arrive before the reopen.
+      await tab.evaluate(
+        `(function () {
+          var box = document.getElementById('confirm-pause');
+          window.lateClose = false;
+          box.addEventListener('close', function () { window.lateClose = true; }, { once: true });
+          box.querySelector('[data-action="confirm-cancel"]').click();
+          ${button('pause', PLANNER)}.click();
+        })()`,
+      )
+      // Now it has: the runtime's capture listener ran before this one.
+      await tab.waitFor('window.lateClose === true')
+      expect(
+        await tab.evaluate<boolean>(
+          `document.getElementById('confirm-pause').open`,
+        ),
+      ).toBe(true)
+      expect(
+        await tab.evaluate<string>(
+          `document.getElementById('confirm-pause-addr').textContent`,
+        ),
+      ).toBe(PLANNER)
+      expect(served.actions.lines()).toEqual([])
+
+      await tab.evaluate(
+        `document.querySelector('[data-action="confirm-pause"]').click()`,
+      )
+      await tab.waitFor(landed(PLANNER, 'paused', `已暂停 ${PLANNER}`))
+      expect(served.actions.lines()).toEqual([`agent.pause ${PLANNER} ok`])
+      expect(served.lifecycle.calls).toEqual([`pause ${PLANNER} legacy:admin`])
     } finally {
       await tab.close()
       served.stop()
