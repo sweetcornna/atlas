@@ -1650,10 +1650,13 @@ export type ProviderResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: ProviderFailure }
 
-/** 端口会写进动作账本的动词（{@link CONSOLE_ACTIONS} 里 `provider.` 开头的那些）。 */
-export type ProviderActionName = Extract<
-  (typeof CONSOLE_ACTIONS)[number],
-  `provider.${string}`
+/**
+ * 端口会写进动作账本的动词：{@link CONSOLE_ACTIONS} 里 `provider.` 开头的那些，去掉
+ * `provider.probe.skip`——那一行由模型服务页的路由在切换前自己记，端口没有这一步。
+ */
+export type ProviderActionName = Exclude<
+  Extract<(typeof CONSOLE_ACTIONS)[number], `provider.${string}`>,
+  'provider.probe.skip'
 >
 
 /**

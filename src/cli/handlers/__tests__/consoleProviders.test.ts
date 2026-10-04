@@ -33,6 +33,7 @@ import {
   ActionLedger,
   type ActionRecord,
   CONSOLE_ACTIONS,
+  type ProviderActionName,
   type ProviderCaller,
   type ProviderProfileDraft,
 } from '@qianmo/console'
@@ -383,7 +384,11 @@ describe('every kind of write is one line in the action ledger', () => {
       counts.set(record.action, (counts.get(record.action) ?? 0) + 1)
     }
     // `provider.probe.skip` is the console route's own line (跳过测连,
-    // `packages/console/src/routes/providers.ts`); the port has no such step.
+    // `packages/console/src/routes/providers.ts`); the port has no such step,
+    // and its verb type says so: `typecheck` fails if this line compiles.
+    // @ts-expect-error — not a verb the port may write
+    const routeOnly: ProviderActionName = 'provider.probe.skip'
+    void routeOnly
     const verbs = CONSOLE_ACTIONS.filter(
       action =>
         action.startsWith('provider.') && action !== 'provider.probe.skip',
