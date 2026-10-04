@@ -13,14 +13,14 @@
  *
  * Only tools whose back end is in this repository today; a tool that can
  * only fail wastes a model turn. The plan card's table grows with the
- * packages: `qianmo_pull` with P17.6, `qianmo_send` once P17.5 delivers what
- * the hub records.
+ * packages: `qianmo_pull` with P17.6.
  *
  * | Tool | Does | Back end |
  * | --- | --- | --- |
  * | `qianmo_status` | read-only: settings, session, last sync, the hub's tasks | `runStatus` |
  * | `qianmo_handoff` | pushes the work tree and session, registers the task | `runNow`, cut mode |
  * | `qianmo_task` | read-only: one task's state, brief and result | `runTask` |
+ * | `qianmo_send` | one sentence for a task in the cloud, via the hub (P17.5) | `runSend` |
  *
  * ## The call comes from inside a turn
  *
@@ -70,6 +70,7 @@ import {
   type HandoffCaller,
   type Output,
   runNow,
+  runSend,
   runStatus,
   runTask,
 } from './handoffNow.js'
@@ -157,6 +158,35 @@ const TOOLS: Tool[] = [
       openWorldHint: false,
     },
   },
+  {
+    name: 'qianmo_send',
+    title: '给云端的话',
+    description:
+      '给已经转交到云端、还没结束的接力任务追加一句话。有副作用：中枢记下这句话，节点接手任务后转过去，进入云端正在跑的回合（没有回合在跑时开一个新回合）。' +
+      '任务已结束时返回失败原因。只在用户要给云端补充说明或改主意时调用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: '任务号，qianmo_handoff 或 qianmo_status 给出的那个',
+        },
+        text: {
+          type: 'string',
+          description: '要转给云端的话',
+          minLength: 1,
+          maxLength: BRIEF_MAX,
+        },
+      },
+      required: ['taskId', 'text'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
 ]
 
 function answer(lines: readonly string[], isError = false): CallToolResult {
@@ -238,7 +268,12 @@ async function callTool(
     err: line => lines.push(line),
   }
   const caller = callerOf(meta)
-  const failed = name === 'qianmo_handoff' ? '转交没有完成' : '查询没有完成'
+  const failed =
+    name === 'qianmo_handoff'
+      ? '转交没有完成'
+      : name === 'qianmo_send'
+        ? '话没有送出'
+        : '查询没有完成'
   try {
     switch (name) {
       case 'qianmo_status':
@@ -261,6 +296,15 @@ async function callTool(
           throw new HandoffUserError('参数 taskId 不是任务号')
         }
         await runTask(cwd, taskId === undefined ? {} : { taskId }, output)
+        return answer(lines)
+      }
+      case 'qianmo_send': {
+        const taskId = args.taskId
+        if (!isTaskId(taskId)) {
+          throw new HandoffUserError('参数 taskId 不是任务号')
+        }
+        const text = briefText(args, 'text', true)
+        await runSend(cwd, { taskId, text }, output)
         return answer(lines)
       }
       default:

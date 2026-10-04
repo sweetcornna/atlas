@@ -5,15 +5,18 @@
  * `@qianmo/handoff` — the pure-logic core of the local-to-cloud handoff
  * (P17.4, handoff-p17-plan.md §2).
  *
- * No occ runtime, no network, no home-directory paths: every path is handed
- * in by the caller, and the only process this package starts is `git`. The
- * CLI (`qm handoff`), the hub API and the node bridge are built on top of it
- * elsewhere.
+ * No occ runtime, no home-directory paths: every path is handed in by the
+ * caller, and the only process this package starts is `git`. The one piece of
+ * network code is `appserver.ts`, the node bridge's client for the qmcode
+ * app-server on its own loopback. The CLI (`qm handoff`), the hub API and the
+ * node bridge are built on top of it elsewhere.
  */
 
 export {
   CLOUD_DEVICE,
   FIELD_MAX_BYTES,
+  HANDOFF_AGENT,
+  HANDOFF_SEND_KIND,
   HANDOFF_TOOLS,
   HandoffValidationError,
   MANIFEST_KIND,
@@ -22,6 +25,7 @@ export {
   RESULT_STATUSES,
   decodeResultContent,
   encodeResultContent,
+  handoffNodeAddress,
   isIsoInstant,
   isSha,
   isTaskId,
@@ -47,6 +51,17 @@ export {
 export { HandoffGitError, runGit } from './git.js'
 
 export {
+  AppServerClient,
+  AppServerError,
+  AppServerImportError,
+  type AppServerClientOptions,
+  type AppServerThread,
+  type AppServerThreadSettings,
+  type AppServerTurn,
+  type AppServerTurnStatus,
+} from './appserver.js'
+
+export {
   acquireExclusiveLock,
   LockHeldError,
   tryExclusiveLock,
@@ -69,6 +84,7 @@ export {
 } from './shadow.js'
 
 export {
+  redactHandoffText,
   sessionCommit,
   type SessionCommit,
   type SessionCommitOptions,

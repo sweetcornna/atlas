@@ -3,7 +3,7 @@
 
 # @qianmo/handoff —— 本地—云端接力的纯逻辑核心
 
-**一句话定位**：接力清单的校验、影子提交（不动用户的 HEAD / index / stash / 工作区文件）、会话文件的单文件提交、中枢的追加式接力台账。**纯逻辑**：不依赖 occ 运行时，不联网，不拼任何家目录路径，唯一会启动的子进程是 `git`。
+**一句话定位**：接力清单的校验、影子提交（不动用户的 HEAD / index / stash / 工作区文件）、会话文件的单文件提交、中枢的追加式接力台账，以及节点桥连本机 app-server 的客户端。**纯逻辑为主**：不依赖 occ 运行时，不拼任何家目录路径，唯一会启动的子进程是 `git`；唯一的网络代码是 `appserver.ts`，只连节点本机回环上的 `qmcode app-server`。
 
 | 项 | 指针 |
 | --- | --- |
@@ -11,19 +11,20 @@
 | 上位设计 | `docs/dev/handoff-m1.md` **§5**（同步）、**§8**（安全） |
 | 协议真源 | 清单与结果的整体上限取自 `@qianmo/protocol` 的 `LIMITS.maxMessageBytes`（各取 1/16），本包不另写协议数值；节点名用 `isValidSegment` 校验 |
 | 依赖 | `@qianmo/protocol`；`@open-claude-code/tool-runtime` **只用 `secretScanner.js` 这一个子路径**（它只依赖同包的 `stringUtils`，不会带进运行时） |
-| 不在本包 | `qm handoff` 各子命令、MCP 服务、中枢 API 与派发、节点桥、SSH 闸门、审计事件——都在别处，基于本包实现 |
+| 不在本包 | `qm handoff` 各子命令、MCP 服务、中枢 API 与派发、节点桥本身（`src/cli/handlers/handoffNode.ts`）、SSH 闸门、审计事件——都在别处，基于本包实现 |
 
 ## 1. 模块
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/manifest.ts` | 接力清单类型与校验；`refs/qianmo/...` 三类引用的构造与解析；`task.result.content` 的 JSON 编解码 |
+| `src/manifest.ts` | 接力清单类型与校验；`refs/qianmo/...` 三类引用的构造与解析；`task.result.content` 的 JSON 编解码；节点桥地址与 send 的 payload 标记（中枢与节点共用） |
 | `src/shadow.ts` | 影子提交 `shadowCommit`，以及只算树不提交的 `shadowTree`（AC-H1 核对用） |
 | `src/session.ts` | 会话文件 → 单文件树 → 提交（父为上一次的会话提交） |
 | `src/redact.ts` | 会话文件的接力专用脱敏层：在 `redactSecrets` 之后再跑一遍，通用 `sk-` / `sk_` key、控制台令牌 `qmu_` / `qmi_` / `qms_`、`Authorization: Bearer`、`"api_key"` 字段，命中换成 `***` |
 | `src/ledger.ts` | 追加式 NDJSON 台账、状态机、重放、同节点互斥、独占锁、给云端的话（send） |
 | `src/lock.ts` | O_EXCL + pid 的独占锁文件，陈旧锁按 pid 不存在回收；台账与 `qm handoff` 的同步锁共用 |
 | `src/git.ts` | 跑 `git` 的唯一入口（参数向量、不经 shell、剥掉重定向用的环境变量）；`runGit` 也导出给 `qm handoff` 推拉用 |
+| `src/appserver.ts` | 节点桥（P17.5）连本机 `qmcode app-server` 的 WebSocket JSON-RPC 客户端：帧不带 `jsonrpc`、握手只带 `Authorization: Bearer`；手写用到的几个方法与通知的类型（不拷上游生成的绑定） |
 
 ## 2. 对外 API
 
@@ -37,6 +38,7 @@ validateResult(value: unknown): ValidationResult<HandoffResult>
 encodeResultContent(result: HandoffResult): string                    // 不合法则抛 HandoffValidationError
 decodeResultContent(content: string): ValidationResult<HandoffResult>
 wipRef(device, branch) / sessionRef(device, sessionId) / taskBranch(taskId) / taskRef(taskId)
+handoffNodeAddress(node)    // qianmo://<node>/handoff：节点桥只在这个地址上听，中枢往这里发；send 的 payload kind 是 HANDOFF_SEND_KIND
 parseQianmoRef(ref: unknown): QianmoRef | null                        // 只认 wip / session / task 三类
 
 // 影子提交
@@ -64,6 +66,14 @@ replayLedger(content: Buffer | string): LedgerReplay                  // 纯函�
 // 锁与 git
 acquireExclusiveLock(path) / tryExclusiveLock(path)                   // 被活进程持有：抛 LockHeldError / 返回 null
 runGit(args, { cwd, env?, input?, okExitCodes? })
+
+// app-server（节点桥用）
+AppServerClient.connect({ url, token, clientName?, clientVersion?, requestTimeoutMs? })  // 连上即 initialize + initialized
+client.threadResume(threadId, { cwd, approvalPolicy: 'never', sandbox: 'workspace-write' })
+client.threadStart(settings) / turnStart(threadId, text) → turnId / turnInterrupt(threadId, turnId)
+client.importClaudeCodeSession({ path, cwd, description }) → 线程 id   // 失败抛 AppServerImportError
+client.waitTurnCompleted(threadId, turnId, timeoutMs?) → { id, status }
+client.lastAgentMessage(turnId) / close() / closed
 ```
 
 `git` 子进程失败抛 `HandoffGitError`（`args`、`exitCode`、`stderr`）；台账错误抛 `HandoffLedgerError`，`code` 为 `unknown_task` / `duplicate_task` / `illegal_transition` / `node_busy` / `invalid_input` / `corrupt`（`corrupt` 带 `line`）/ `locked`（另一个活进程持有 `<台账>.lock`）。

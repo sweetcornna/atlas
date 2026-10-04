@@ -603,8 +603,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 1999,
-    "sha256": "a7aaf9187eb85504b49b84ea9783108f416d927806d6500d319a50fe26d26696"
+    "length": 2037,
+    "sha256": "13b59cbddcf7ca80b7f7dd4aee68a6517f0d112d9e76e5dbde55f9d0c2dda0b5"
   },
   {
     "probe": "GET /fragments/audit as view-bearer",
@@ -620,8 +620,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 4849,
-    "sha256": "844c481d88eacb4eefec9bcc4e04f885e08a3b9d086181b8dbbbe92e57af4203"
+    "length": 5117,
+    "sha256": "fd6ac60a0718c43e7861bc3555afbc9abd9e6c0169595aa36ee2c554edb3c046"
   },
   {
     "probe": "GET /fragments/limits as view-bearer",
@@ -1015,8 +1015,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 81036,
-    "sha256": "131dded872af8cb1bd24470541fdbba680baefb1895e9fd88f0be0ab70b2b622"
+    "length": 85693,
+    "sha256": "86cf76c6ac5e655523e8b3f11e93e2d77b7b728547aa736753feb172640c4f6d"
   },
   {
     "probe": "GET /nodes as none (html)",
@@ -1055,8 +1055,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 81115,
-    "sha256": "4c48601c3297996e17c5360748631883065940b7bf19e965a29d410bb8ae5835"
+    "length": 85422,
+    "sha256": "1b163ac7e743b108b0f007dcea933be5c2d4be856e82ade0bc75e0f0aa77e1cd"
   },
   {
     "probe": "GET /nodes/nowhere as admin-bearer (html)",
@@ -1089,8 +1089,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 81056,
-    "sha256": "58c06fbcd9b1a91f57bdec909b236262388dfe74cffe1001ce996e953069178d"
+    "length": 82946,
+    "sha256": "1c6d195bf15903f7155626e1454e9c73429de2f05d87fb1f23cdbdb3492416b1"
   },
   {
     "probe": "GET /audit/trace/4bf92f3577b34da6a3ce929d0e0e4736 as view-bearer",
@@ -1106,8 +1106,8 @@
       ["x-content-type-options", "nosniff"],
       ["x-frame-options", "DENY"]
     ],
-    "length": 76141,
-    "sha256": "42ea39d60dc389c2378e1505e64b75d8079c07c541e181e4c4ef7a6cd26d8912"
+    "length": 77763,
+    "sha256": "3ff31d29f56c93227f918e95b7b41bf3cdf3f03f73f5b164d52bfb19695eb4a4"
   },
   {
     "probe": "GET /servers as admin-bearer",

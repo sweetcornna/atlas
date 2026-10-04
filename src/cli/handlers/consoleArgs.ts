@@ -40,6 +40,7 @@ import {
   ADMIN_TOKEN_ENV_VAR,
   VIEW_TOKEN_ENV_VAR,
 } from './consoleTokenSources.js'
+import { type HubLocation, parseHub } from './handoffStore.js'
 import { residentOptionValue } from './residentArgs.js'
 
 /**
@@ -100,6 +101,15 @@ export interface ConsoleAuditMirror {
 interface ConsoleManagedAddress {
   readonly address: string
   readonly endpoint: string
+}
+
+/** A node bridge the hub hands tasks to (P17.5, `--handoff-node`). */
+export interface ConsoleHandoffNode {
+  readonly node: string
+  /** `ws(s)://` endpoint of `qm handoff node` on that node. */
+  readonly url: string
+  /** Its repository root as git reaches it (`--handoff-node-git`). */
+  readonly git: HubLocation
 }
 
 /** One node and the machine it runs on, as `--node-server` pinned it. */
@@ -533,6 +543,16 @@ export interface ConsoleCliConfig {
    * （`consoleHandoff.ts`），这里只有根目录这一个选择。
    */
   readonly handoffRoot?: string
+  /**
+   * 接力任务派给哪些节点桥（P17.5）。**给了才派发**，要 `--handoff-root`；每个
+   * 节点同时要 `--handoff-node`（transport 端点）与 `--handoff-node-git`（裸仓根）。
+   * PSK 按节点取，与 `--chat-url` 同一个变量；请求总是带控制台签名。
+   */
+  readonly handoffNodes?: readonly ConsoleHandoffNode[]
+  /** 中枢在节点 SSH 闸门上的专用钥匙；有 SSH 形式的 `--handoff-node-git` 时必给。 */
+  readonly handoffNodeKey?: string
+  /** D-7：任务结束（done / failed）时 POST 一次的 webhook。 */
+  readonly handoffNotifyUrl?: string
 }
 
 /** 去掉尾斜杠，让后面拼 `/v0/agents` 时不会出现 `//`。 */
@@ -601,6 +621,10 @@ export function parseConsoleArgs(
   // 只认 `--providers` 才有意义的几项，同 `needsAccounts`。
   const needsProviders: string[] = []
   let handoffRoot: string | undefined
+  const handoffNodeUrls = new Map<string, string>()
+  const handoffNodeGits = new Map<string, HubLocation>()
+  let handoffNodeKey: string | undefined
+  let handoffNotifyUrl: string | undefined
   // 只认账号开关才有意义的几项，记下谁给过，循环结束后统一判「没开 --accounts」。
   const needsAccounts: string[] = []
 
@@ -1027,6 +1051,74 @@ export function parseConsoleArgs(
       }
       handoffRoot = resolve(parsed.value)
       index = parsed.next
+    } else if (arg === '--handoff-node' || arg?.startsWith('--handoff-node=')) {
+      const parsed = residentOptionValue(args, index, '--handoff-node')
+      const named = parseNamedValue(parsed.value, '--handoff-node')
+      const url = legacyUrlValue(named.value)
+      if (
+        url === undefined ||
+        (url.protocol !== 'ws:' && url.protocol !== 'wss:')
+      ) {
+        throw new Error('--handoff-node must be <node>=<ws or wss url>')
+      }
+      if (handoffNodeUrls.has(named.node)) {
+        throw new Error(`--handoff-node repeats node ${named.node}`)
+      }
+      handoffNodeUrls.set(named.node, url.toString())
+      index = parsed.next
+    } else if (
+      arg === '--handoff-node-git' ||
+      arg?.startsWith('--handoff-node-git=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--handoff-node-git')
+      const named = parseNamedValue(parsed.value, '--handoff-node-git')
+      if (handoffNodeGits.has(named.node)) {
+        throw new Error(`--handoff-node-git repeats node ${named.node}`)
+      }
+      let git: HubLocation
+      try {
+        git = parseHub(named.value)
+      } catch {
+        // `parseHub` words its refusal for `qm handoff init --hub`.
+        throw new Error(
+          '--handoff-node-git must be <node>=<ssh target>:<repository root> or ' +
+            '<node>=<absolute path>; the root takes A-Z a-z 0-9 . _ ~ / - only, ' +
+            'no .. segment, ~ only as a leading ~/ (the SSH gate rules)',
+        )
+      }
+      handoffNodeGits.set(named.node, git)
+      index = parsed.next
+    } else if (
+      arg === '--handoff-node-key' ||
+      arg?.startsWith('--handoff-node-key=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--handoff-node-key')
+      if (!isAbsolute(parsed.value)) {
+        throw new Error('--handoff-node-key must be an absolute path')
+      }
+      handoffNodeKey = resolve(parsed.value)
+      index = parsed.next
+    } else if (
+      arg === '--handoff-notify-url' ||
+      arg?.startsWith('--handoff-notify-url=')
+    ) {
+      const parsed = residentOptionValue(args, index, '--handoff-notify-url')
+      const url = legacyUrlValue(parsed.value)
+      const loopback =
+        url !== undefined &&
+        ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      if (
+        url === undefined ||
+        !(url.protocol === 'https:' || (url.protocol === 'http:' && loopback))
+      ) {
+        // The webhook carries task ids and branch names off the hub; plain
+        // HTTP would hand them, and a Bark/ntfy key in the path, to the network.
+        throw new Error(
+          '--handoff-notify-url must be https (http only on loopback)',
+        )
+      }
+      handoffNotifyUrl = url.toString()
+      index = parsed.next
     } else {
       // 指一下帮助：走到这一支的人多半是拼错了选项名，而在 `--help` 存在之前
       // 他没有任何地方可以去查那张表。
@@ -1115,6 +1207,52 @@ export function parseConsoleArgs(
     })),
   ].sort((a, b) => (a.node < b.node ? -1 : 1))
 
+  // 派发（P17.5）只在中枢上有意义：没有 `--handoff-root` 就没有台账可派。端点与
+  // 裸仓根按节点成对给，缺一半的节点要么拨不通、要么推不进，起来只会一直失败。
+  const handoffGiven = [
+    ...(handoffNodeUrls.size > 0 ? ['--handoff-node'] : []),
+    ...(handoffNodeGits.size > 0 ? ['--handoff-node-git'] : []),
+    ...(handoffNodeKey === undefined ? [] : ['--handoff-node-key']),
+    ...(handoffNotifyUrl === undefined ? [] : ['--handoff-notify-url']),
+  ]
+  if (handoffGiven[0] !== undefined && handoffRoot === undefined) {
+    throw new Error(`${handoffGiven[0]} needs --handoff-root`)
+  }
+  for (const node of handoffNodeUrls.keys()) {
+    if (!handoffNodeGits.has(node)) {
+      throw new Error(
+        `--handoff-node ${node} needs --handoff-node-git ${node}=<ssh target>:<root>`,
+      )
+    }
+  }
+  for (const node of handoffNodeGits.keys()) {
+    if (!handoffNodeUrls.has(node)) {
+      throw new Error(
+        `--handoff-node-git names ${node}, which has no --handoff-node`,
+      )
+    }
+  }
+  const handoffSsh = [...handoffNodeGits.values()].some(
+    git => git.kind === 'ssh',
+  )
+  // 闸门钥匙专用（闸门裁定 3）：不给就只能拿 ssh 配置里随便哪把去连。
+  if (handoffSsh && handoffNodeKey === undefined) {
+    throw new Error(
+      '--handoff-node-git over ssh needs --handoff-node-key <abs path>, the ' +
+        "hub's own key on the nodes' git gate",
+    )
+  }
+  if (!handoffSsh && handoffNodeKey !== undefined) {
+    throw new Error('--handoff-node-key needs an ssh --handoff-node-git')
+  }
+  const handoffNodes: ConsoleHandoffNode[] = [...handoffNodeUrls].map(
+    ([node, url]) => ({
+      node,
+      url,
+      git: handoffNodeGits.get(node) as HubLocation,
+    }),
+  )
+
   // token 的长度与「两个必须不同」由 `resolveTokens` 判——那条策略连同「非环回
   // 必须显式给」一起住在 `packages/console/src/auth.ts`，这里再抄一份就等于给
   // 同一条规则开了第二个可以漂移的出处。
@@ -1160,6 +1298,9 @@ export function parseConsoleArgs(
       ? { providers: { ...providerPaths, nodes: providerNodes } }
       : {}),
     ...(handoffRoot === undefined ? {} : { handoffRoot }),
+    ...(handoffNodes.length === 0 ? {} : { handoffNodes }),
+    ...(handoffNodeKey === undefined ? {} : { handoffNodeKey }),
+    ...(handoffNotifyUrl === undefined ? {} : { handoffNotifyUrl }),
   }
 }
 
@@ -1405,6 +1546,30 @@ Options (each accepts both --name value and --name=value):
                            under <config root>/qianmo/handoff/; the ledger is
                            locked while this console runs, so a second console
                            on the same config root refuses to start.
+  --handoff-node <node>=<ws url>
+                           A node bridge (\`${invokedBinName()} handoff node\`) to hand
+                           accepted tasks to: one task per node at a time,
+                           nodes tried in the order given. Repeatable. Needs
+                           --handoff-root and a --handoff-node-git for the same
+                           node; the PSK is the node's derived variable, the
+                           one --chat-url reads. Requests are always signed
+                           with this console's identity (--print-wake-identity);
+                           the bridge must --trust it.
+  --handoff-node-git <node>=<ssh target>:<root>
+                           Where that node's bare repositories are
+                           (<bridge root>/repos), reached through its SSH gate.
+                           The hub pushes the task's two commits there and
+                           fetches qianmo/<task> and the cloud session back.
+                           An absolute path instead of ssh is a node on this
+                           machine.
+  --handoff-node-key <abs path>
+                           The hub's own key on the nodes' git gate, used with
+                           IdentitiesOnly. Required with an ssh
+                           --handoff-node-git.
+  --handoff-notify-url <url>
+                           POST once when a task is done or failed (JSON with
+                           title/body and msgtype/text). https, or http on
+                           loopback. Only the origin is printed.
   --label <text>           Header label, at most ${MAX_CONSOLE_LABEL_LENGTH} characters.
                            Default <hostname>:<port>.
   -h, --help               Print this and exit.

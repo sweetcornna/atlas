@@ -3,8 +3,9 @@
 
 /**
  * Processes for the `qm handoff` end-to-end suites (`qianmo-handoff.test.ts`,
- * `qianmo-handoff-mcp.test.ts`): `qm` from source with the shipped defines and
- * feature list, and the hub — `qm console --handoff-root` — on loopback.
+ * `qianmo-handoff-mcp.test.ts`, `qianmo-handoff-node.test.ts`): `qm` from
+ * source with the shipped defines and feature list, and the hub —
+ * `qm console --handoff-root` — on loopback.
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
@@ -68,6 +69,8 @@ interface ConsoleOptions {
   readonly viewTokenFile: string
   readonly cwd: string
   readonly env: Record<string, string>
+  /** More `qm console` flags after `--handoff-root` (the P17.5 dispatch ones). */
+  readonly extraArgs?: readonly string[]
 }
 
 /** `qm console --handoff-root …` on `127.0.0.1:<port>`. */
@@ -85,6 +88,7 @@ export function startHandoffConsole(options: ConsoleOptions): RunningConsole {
       options.viewTokenFile,
       '--handoff-root',
       options.handoffRoot,
+      ...(options.extraArgs ?? []),
     ],
     { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] },
   )

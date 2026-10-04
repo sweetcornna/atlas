@@ -891,6 +891,9 @@ describe('console audit port', () => {
         intact: false,
         issueCount: 0,
         total: 0,
+        // 游标（P18.11）：没有记录时链头是 0，也没有更早的一页。
+        head: 0,
+        earlier: null,
       },
     })
   })
@@ -908,6 +911,8 @@ describe('console audit port', () => {
         intact: true,
         issueCount: 0,
         total: 0,
+        head: 0,
+        earlier: null,
       },
     })
   })

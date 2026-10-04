@@ -13,8 +13,9 @@
  *   each one stays in the inbox until it scrolls out of the window.
  * - **Conditions** are read off what this console already watches: a node
  *   whose every lease has lapsed, a certificate about to expire, a trail that
- *   does not verify. They are the present: one disappears when the thing it
- *   describes stops being true.
+ *   does not verify, a registration ledger that cannot be read or saved. They
+ *   are the present: one disappears when the thing it describes stops being
+ *   true.
  *
  * Both are sorted by one rule (level first, then the newest) and filtered by
  * one ruler — the three levels of the protocol's `notify.severity`. An inbox
@@ -48,6 +49,7 @@ import type {
   ConsoleCaRoot,
   ConsoleFailure,
   ConsoleResult,
+  LifecycleSnapshot,
   NoticeFeed,
 } from '../deps.js'
 import { bareNode } from './agents.js'
@@ -63,6 +65,7 @@ import {
 } from './bits.js'
 import { STATUS_WORD as CERTIFICATE_STATUS_WORD } from './certificates.js'
 import { attr, escapeHtml } from './escape.js'
+import { ledgerClosed } from './node.js'
 import {
   agentHealth,
   formatDateTime,
@@ -95,13 +98,19 @@ const LEVEL_RANK: Readonly<Record<AlertLevel, number>> = {
 }
 
 /** Where an entry came from. Also the label the row carries. */
-export type AlertOrigin = 'notice' | 'node' | 'certificate' | 'audit'
+export type AlertOrigin =
+  | 'notice'
+  | 'node'
+  | 'certificate'
+  | 'audit'
+  | 'registrations'
 
 const ORIGIN_WORD: Readonly<Record<AlertOrigin, string>> = {
   notice: '通知',
   node: '注册中心',
   certificate: '证书',
   audit: '审计链',
+  registrations: '登记簿',
 }
 
 /** One entry of the inbox, as the page and `/v0/alerts` show it. */
@@ -141,6 +150,8 @@ interface AlertInputs {
     readonly roots: readonly ConsoleCaRoot[]
   }
   readonly audits: readonly AlertAuditRead[]
+  /** The registration ledger; absent when `deps.lifecycle` is not wired. */
+  readonly registrations?: LifecycleSnapshot
   /** Absent when `deps.notify` is not wired. */
   readonly notices?: ConsoleResult<NoticeFeed>
   /** Absent when `deps.notify` is not wired. */
@@ -362,6 +373,36 @@ function auditAlerts(audits: readonly AlertAuditRead[]): ConsoleAlert[] {
   return out
 }
 
+/** Most of a ledger problem an alert id carries; ids stay well under 256. */
+const PROBLEM_IN_ID = 160
+
+/**
+ * 登记簿: a registration ledger with a problem (`console.md` §7.3.2). One
+ * alert, `error` either way: unreadable means no exit dials anybody;
+ * unwritable means the pauses and retirements made since will not survive a
+ * restart. The id is the kind and the reason, so a ledger repaired and broken
+ * again in another way is a new alert.
+ */
+function registrationAlerts(snapshot: LifecycleSnapshot): ConsoleAlert[] {
+  const problem = snapshot.problem
+  if (problem === null) return []
+  const closed = ledgerClosed(snapshot)
+  return [
+    {
+      id: `registrations:${closed ? 'unreadable' : 'unwritable'}:${problem.slice(
+        0,
+        PROBLEM_IN_ID,
+      )}`,
+      level: 'error',
+      origin: 'registrations',
+      title: closed ? '登记簿读不出来' : '登记簿写不进去',
+      detail: closed
+        ? `${problem} · 修好并重启之前出口一律不拨`
+        : `${problem} · 发布与恢复已停止 · 这期间的暂停与退役重启后会丢`,
+    },
+  ]
+}
+
 function noticeAlerts(feed: NoticeFeed): ConsoleAlert[] {
   return feed.notices.map(notice => {
     const parts: string[] = []
@@ -439,6 +480,28 @@ function auditSource(audits: readonly AlertAuditRead[]): AlertSource {
       }
 }
 
+function registrationSource(
+  snapshot: LifecycleSnapshot | undefined,
+): AlertSource {
+  if (snapshot === undefined) {
+    return { label: '登记簿', tone: 'muted', text: '未接入' }
+  }
+  if (snapshot.problem !== null) {
+    return {
+      label: '登记簿',
+      tone: 'bad',
+      text: ledgerClosed(snapshot) ? '不可用 · 读不出来' : '不可用 · 写不进去',
+    }
+  }
+  const count = (state: 'paused' | 'retired') =>
+    snapshot.registrations.filter(record => record.state === state).length
+  return {
+    label: '登记簿',
+    tone: 'ok',
+    text: `已接入 · 暂停 ${count('paused')} · 退役 ${count('retired')}`,
+  }
+}
+
 /** The inbox, composed from every source this console has, unfiltered. */
 export function alertBoard(inputs: AlertInputs): AlertBoard {
   const { now } = inputs
@@ -461,6 +524,9 @@ export function alertBoard(inputs: AlertInputs): AlertBoard {
     alerts.push(...rootAlerts(inputs.certificates.roots, now))
   }
   alerts.push(...auditAlerts(inputs.audits))
+  if (inputs.registrations !== undefined) {
+    alerts.push(...registrationAlerts(inputs.registrations))
+  }
 
   // Two sources can describe one episode in the same words (a redelivered
   // notice is the same message id); the first one wins.
@@ -492,6 +558,7 @@ export function alertBoard(inputs: AlertInputs): AlertBoard {
     inputs.roster.ok
       ? { label: '注册中心', tone: 'ok', text: '已接入' }
       : { label: '注册中心', tone: 'bad', text: '不可达' },
+    registrationSource(inputs.registrations),
     certificates === undefined
       ? { label: '证书', tone: 'muted', text: '未配置' }
       : certificates.snapshot.ok
