@@ -83,8 +83,11 @@ describe.skipIf(SKIP !== null)('账号与访问 in a browser', () => {
           document.querySelector('#invite-form button[type="submit"]').click();
         })()`,
       )
+      // The answer's toast and the new row, not `data-refreshed`: the region
+      // is polled, so a tick can bump that before the invitation is minted.
       await tab.waitFor(
-        `document.getElementById('access-invites').getAttribute('data-refreshed') !== null`,
+        `document.getElementById('toasts').textContent.indexOf('已签发') !== -1 && ` +
+          `document.querySelector('#access-invites tr[data-key]') !== null`,
       )
       const link = await tab.evaluate<string>(
         `document.getElementById('invite-link-value').value`,
@@ -174,8 +177,11 @@ describe.skipIf(SKIP !== null)('账号与访问 in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-action="confirm-account-logout"]').click()`,
       )
+      // The answer's toast and the row gone, not `data-refreshed`: the region
+      // is polled, so a tick can bump that before the sessions are ended.
       await tab.waitFor(
-        `document.getElementById('access-sessions').getAttribute('data-refreshed') !== null`,
+        `document.getElementById('toasts').textContent.indexOf('已强制下线') !== -1 && ` +
+          `document.querySelector('#access-sessions tr[data-key="${subject}"]') === null`,
       )
       expect(h.book.openStreams(subject)).toBe(0)
       expect(
