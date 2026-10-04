@@ -539,11 +539,19 @@ export function activeCredentialPool(
 
 /**
  * `status.keys`: every key of the committed pool, in pool order — ids and
- * states only. `null` when the node has no pool.
+ * states only. `null` when the node has no pool, or — given the env the node
+ * runs on (`settings.json`'s) — when that env is not bound to it, as for
+ * {@link activeCredentialPool}.
  */
-export function keyPoolStatus(nowMs: number = Date.now()): KeyStatus[] | null {
+export function keyPoolStatus(
+  nowMs: number = Date.now(),
+  env?: Readonly<Record<string, string | undefined>>,
+): KeyStatus[] | null {
   const file = readKeyPool()
   if (file === null) return null
+  if (env !== undefined && env[file.envKey] !== file.keys[0]?.value) {
+    return null
+  }
   const state = readKeyPoolState()
   return file.keys.map(({ id, value }): KeyStatus => {
     const mark = markOf(state, { id, value, fp: secretFingerprint(value) })

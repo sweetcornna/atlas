@@ -55,6 +55,7 @@ import { resetPinnedPromptCacheKeysForTesting } from 'src/services/qianmo/prompt
 import type { Message } from 'src/types/message.js'
 import { setupSettingsMock } from '../../../../../tests/mocks/settings.js'
 import { providerPaths } from '../../providers/store.js'
+import { getModelCompatCapabilities } from '../capabilities.js'
 import {
   keyPoolStatus,
   resetCredentialPoolMemoryForTesting,
@@ -503,6 +504,16 @@ describe('without a pool the env key goes out', () => {
     })
     expect(result.keys).toEqual(['env'])
     expect(readKeyPoolState().sessions).toEqual({})
+  })
+})
+
+// ─── the capability flag ─────────────────────────────────────────────────────
+
+describe('capabilities.multiKey', () => {
+  test('reported because the lane rotates', async () => {
+    expect(getModelCompatCapabilities().multiKey).toBe(true)
+    install()
+    expect((await turn(byKey({ k1: PAYMENT }))).keys).toEqual(['k1', 'k2'])
   })
 })
 

@@ -5,7 +5,8 @@
  * The node's model-call capability report (design §2.4) — the whole object,
  * and `replayFilter` (P18.8) pinned to the behaviour behind it, so the flag
  * cannot stay `true` after either filter is unwired. The Q-1 flag has its own
- * behavioural pin in `chatEffort.test.ts`.
+ * behavioural pin in `chatEffort.test.ts`; `multiKey` (P18.18) in
+ * `credentialPoolLane.test.ts`.
  *
  * Constructed fixtures, not recorded; no vendor is called.
  */
@@ -33,6 +34,7 @@ describe('getModelCompatCapabilities', () => {
     expect(getModelCompatCapabilities()).toEqual({
       chatEffortHonorsOverride: true,
       replayFilter: true,
+      multiKey: true,
     })
   })
 })

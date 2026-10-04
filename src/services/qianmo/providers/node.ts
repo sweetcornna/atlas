@@ -55,6 +55,18 @@
  *      already names this `requestId`: drop the intent.
  * Anything else is a third party's edit → `conflict`.
  *
+ * ## Several keys (P18.18)
+ *
+ * `settings.json` still gets ONE key, the primary (`primaryKey`). For a
+ * multi-key profile the intent also carries every key, primary first
+ * (`pending.pool`), and the commit writes them to `key-pool.json` (0600) just
+ * before `state.json`, for the call layer's key pool
+ * (`modelCompat/credentialPool.ts`); a single-key commit removes the pool and
+ * its state. The call layer uses the pool only while the env's key is its
+ * primary, so in every crash window above it is either the old pool (bound to
+ * the old key, or ignored) or the new one. `keep` finds values in the pool
+ * too. `readProviderState().keys` is the pool's per-key health.
+ *
  * `readProviderState()` is §2.4 without `effective`;
  * `computeEffectiveProviderState()` (re-exported from ./effective.js) MUTATES
  * process.env and must run in its own short-lived process, spawned with the
@@ -67,11 +79,13 @@
 import {
   type AppliedRecord,
   type ApplyRequest,
+  type KeySelection,
   type LastCommitResult,
   type NodeCapabilities,
   type ProviderErrorCode,
   type ProviderNodeState,
   type ProviderWarning,
+  KEY_SELECTIONS,
   parseProviderRequest,
   primaryKey,
   type SessionPolicy,
@@ -84,6 +98,12 @@ import {
   updateSettingsForSource,
 } from '../../../utils/settings/settings.js'
 import { getModelCompatCapabilities } from '../modelCompat/capabilities.js'
+import { keyPoolStatus } from '../modelCompat/credentialPool.js'
+import {
+  readKeyPool,
+  removeKeyPool,
+  writeKeyPool,
+} from '../modelCompat/credentialPoolStore.js'
 import { compileProfile } from './compile.js'
 import {
   applyPatchToView,
@@ -120,18 +140,17 @@ export { computeEffectiveProviderState } from './effective.js'
 export { inheritedProviderKeyNames } from './whitelist.js'
 
 /**
- * What this build can do. The call layer's two flags come from the modules
- * that implement them (`modelCompat/capabilities.ts`), not a copy here. The
- * copy said `false` for both after P18.5 and P18.8 had made them true; `qm
+ * What this build can do. The call layer's flags come from the modules that
+ * implement them (`modelCompat/capabilities.ts`), not a copy here. The copy
+ * said `false` for both after P18.5 and P18.8 had made them true; `qm
  * provider` merged the real values over it, but a stage without explicit
  * capabilities still refused `always` on the chat lane, and
- * `readProviderState()` reported both off (P18.12). `multiKey` is flipped by
- * P18.18.
+ * `readProviderState()` reported both off (P18.12). `multiKey` (P18.18) comes
+ * from the same place: the key pool lives in the call layer.
  */
 const NODE_PROVIDER_CAPABILITIES: NodeCapabilities = {
   protocol: 1,
   ...getModelCompatCapabilities(),
-  multiKey: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +205,18 @@ type PendingFile = {
   sessions: SessionPolicy
   force: boolean
   stagedAt: string
+  /**
+   * P18.18: every key of a multi-key profile, primary first, for the call
+   * layer's `key-pool.json`. Absent for one key — a single-key intent is the
+   * same file, byte for byte, as before.
+   */
+  pool?: PendingPool
+}
+
+type PendingPool = {
+  selection: KeySelection
+  envKey: string
+  keys: { id: string; value: string }[]
 }
 
 type StateFile = {
@@ -277,7 +308,29 @@ function loadPending(
   const patch = loadPatch(file.patch)
   if (patch === null || checkEnvAgainstWhitelist(patch.env) !== null)
     return null
+  if (file.pool !== undefined && !isPendingPool(file.pool, patch)) return null
   return { file: file as PendingFile, patch }
+}
+
+/** Two or more keys, the first being the one the patch writes. */
+function isPendingPool(value: unknown, patch: SettingsPatch): boolean {
+  if (!isRecord(value) || !Array.isArray(value.keys)) return false
+  const { selection, envKey, keys } = value
+  return (
+    typeof selection === 'string' &&
+    (KEY_SELECTIONS as readonly string[]).includes(selection) &&
+    typeof envKey === 'string' &&
+    keys.length > 1 &&
+    keys.every(
+      key =>
+        isRecord(key) &&
+        typeof key.id === 'string' &&
+        typeof key.value === 'string' &&
+        key.value.length > 0,
+    ) &&
+    new Set(keys.map(key => (key as { id: string }).id)).size === keys.length &&
+    patch.env[envKey] === (keys[0] as { value: string }).value
+  )
 }
 
 function readState(): StateFile | null {
@@ -355,7 +408,11 @@ function failure(
   }
 }
 
-/** Find the current value a `keep` fingerprint refers to, among credential keys. */
+/**
+ * Find the current value a `keep` fingerprint refers to, among credential
+ * keys — and, for the keys of a multi-key profile that never reach
+ * `settings.json`, in the committed key pool (P18.18).
+ */
 function resolveKept(
   view: ManagedView,
   fingerprint: string,
@@ -365,7 +422,24 @@ function resolveKept(
     if (value !== undefined && secretFingerprint(value) === fingerprint)
       return value
   }
+  for (const key of readKeyPool()?.keys ?? []) {
+    if (secretFingerprint(key.value) === fingerprint) return key.value
+  }
   return undefined
+}
+
+/**
+ * P18.18: the order the pool tries keys in — highest priority first, ties in
+ * the order the hub sent them. The first is {@link primaryKey}'s choice.
+ */
+function poolOrder<T extends { priority?: number }>(keys: readonly T[]): T[] {
+  return keys
+    .map((key, index) => ({ key, index }))
+    .sort(
+      (a, b) =>
+        (b.key.priority ?? 0) - (a.key.priority ?? 0) || a.index - b.index,
+    )
+    .map(({ key }) => key)
 }
 
 /**
@@ -410,6 +484,28 @@ export function stageProviderApply(
     if (!compiled.ok) {
       return failure(requestId, compiled.error.code, compiled.error.message)
     }
+    // P18.18: the other keys of a multi-key profile, for the call layer.
+    let pool: PendingPool | undefined
+    if (profile.auth.keys.length > 1) {
+      const keys: PendingPool['keys'] = []
+      for (const each of poolOrder(profile.auth.keys)) {
+        const value =
+          'value' in each ? each.value : resolveKept(view, each.keep)
+        if (value === undefined) {
+          return failure(
+            requestId,
+            'secret-mismatch',
+            `节点上没有指纹相符的密钥 ${each.id} · 需要重新填写`,
+          )
+        }
+        keys.push({ id: each.id, value })
+      }
+      pool = {
+        selection: profile.keySelection ?? 'fill_first',
+        envKey: compiled.compiled.secretEnvKey,
+        keys,
+      }
+    }
     const patch = compiled.compiled.patch
     // Compat keys are not in ALL_PROFILE_ENV_KEYS, so activation does not
     // clear them. Drop the ones WE wrote last time if they still hold the
@@ -422,7 +518,7 @@ export function stageProviderApply(
       }
     }
     const target = applyPatchToView(view, patch)
-    return { compiled: compiled.compiled, patch, target }
+    return { compiled: compiled.compiled, patch, target, pool }
   }
 
   if (request.dryRun) {
@@ -525,6 +621,7 @@ export function stageProviderApply(
       sessions: request.recycle.sessions,
       force: request.force,
       stagedAt: now.toISOString(),
+      ...(planned.pool === undefined ? {} : { pool: planned.pool }),
     }
     writePrivateJson(providerPaths.pending(), pending)
     return {
@@ -617,6 +714,26 @@ function finish(
     revision: pending.profile.revision,
     requestId: pending.requestId,
     at: at.toISOString(),
+  }
+  // P18.18: before state.json, so a commit state.json records has its pool.
+  // Until the pool's primary is the env's key the call layer ignores it
+  // (`activeCredentialPool`), so the order against settings.json is free.
+  if (pending.pool === undefined) {
+    removeKeyPool()
+  } else {
+    writeKeyPool(
+      {
+        v: 1,
+        profile: pending.profile,
+        requestId: pending.requestId,
+        selection: pending.pool.selection,
+        envKey: pending.pool.envKey,
+        keys: pending.pool.keys,
+      },
+      Object.fromEntries(
+        pending.pool.keys.map(key => [key.id, secretFingerprint(key.value)]),
+      ),
+    )
   }
   writeState({
     v: 1,
@@ -773,6 +890,9 @@ export function readProviderState(): ProviderNodeState {
   const generation = readGeneration()
   const pendingText = readTextIfExists(providerPaths.pending())
   const pending = pendingText === undefined ? null : loadPending(pendingText)
+  // P18.18: per key, ids only — and only while the pool is the one
+  // settings.json runs on (a local edit of the key turns it off).
+  const keys = keyPoolStatus(Date.now(), readSettingsView().env)
   return {
     managed: state?.applied !== null && state?.applied !== undefined,
     applied: state?.applied ?? null,
@@ -791,6 +911,7 @@ export function readProviderState(): ProviderNodeState {
     inheritedProviderKeys: generation?.inheritedProviderKeys ?? [],
     capabilities: NODE_PROVIDER_CAPABILITIES,
     lastResult: state?.lastResult ?? null,
+    ...(keys === null ? {} : { keys }),
   }
 }
 
