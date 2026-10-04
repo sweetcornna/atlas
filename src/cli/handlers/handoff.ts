@@ -11,9 +11,10 @@
  *   qm handoff status [--wait] [--task <id>]
  *   qm handoff mcp                       (stdio MCP server, `handoffMcp.ts`)
  *   qm handoff node …                    (the cloud end, `handoffNode.ts`, P17.5)
+ *   qm handoff pull [<task>]             (the result home, `handoffPull.ts`, P17.6)
  *
- * `pull` and `attach` are reserved here and answer 「尚未实现」 with exit 2,
- * so the package that builds them (P17.6) replaces one branch each.
+ * `attach` is reserved here and answers 「尚未实现」 with exit 2, so the
+ * package that builds it (P17.6) replaces that branch.
  *
  * ## Exit codes
  *
@@ -30,7 +31,7 @@
 import { basename, isAbsolute, resolve } from 'node:path'
 import { statSync } from 'node:fs'
 import { isatty } from 'node:tty'
-import { sessionRef, type HandoffTool } from '@qianmo/handoff'
+import { isTaskId, sessionRef, type HandoffTool } from '@qianmo/handoff'
 import { qmcodeHome } from '../../config/paths.js'
 import { invokedBinName } from '../../constants/brand.js'
 import { IDENTITY_MODE } from '../../constants/identity.js'
@@ -83,7 +84,6 @@ import { residentOptionValue } from './residentArgs.js'
 
 /** The subcommands later packages fill in, and which package each is. */
 const RESERVED: Readonly<Record<string, string>> = {
-  pull: 'P17.6',
   attach: 'P17.6',
 }
 
@@ -175,7 +175,17 @@ Commands:
                            Refuses to start without a working bwrap. Started by
                            demo/env/beta/handoff-node.sh, not by hand.
 
-  pull | attach            Reserved; not implemented yet (P17.6).
+  pull [<task>]            Bring a finished task home. Untouched since the
+                           handoff (same branch, HEAD and work tree as the
+                           handoff left them): the branch fast-forwards to the
+                           cloud's result. Otherwise nothing here moves: the
+                           result goes to a new branch qianmo/<task>-return and
+                           the differences are listed. A qmcode session goes
+                           back into $QMCODE_HOME/sessions, so qmcode resume
+                           <thread> continues it. The hub records "returned".
+                           Without <task>: this project's latest finished one.
+
+  attach                   Reserved; not implemented yet (P17.6).
 
 Files: <config root>/qianmo/handoff/{projects.json,sessions.json,sync.log,state/}.
 qmcode sessions are looked up under $QMCODE_HOME/sessions (default ~/.qmcode).
@@ -588,6 +598,42 @@ async function runStatusCommand(
   )
 }
 
+// ─── pull (P17.6) ────────────────────────────────────────────────────
+
+/** The one optional `<task>` argument of `pull`. */
+function taskArgument(
+  command: string,
+  positional: readonly string[],
+): string | undefined {
+  if (positional.length > 1) usage(`${command} 只接受一个任务号`)
+  const taskId = positional[0]
+  if (taskId !== undefined && !isTaskId(taskId)) {
+    usage(`${taskId} 不是任务号`)
+  }
+  return taskId
+}
+
+async function runPullCommand(
+  args: readonly string[],
+  cwd: string,
+  output: Output,
+): Promise<number> {
+  const { positional } = parseOptions(args, [])
+  const taskId = taskArgument('pull', positional)
+  const thread = process.env.CODEX_THREAD_ID
+  const { runPull } = await import('./handoffPull.js')
+  return await runPull(
+    cwd,
+    {
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(thread === undefined || thread === ''
+        ? {}
+        : { callerThread: thread }),
+    },
+    output,
+  )
+}
+
 // ─── entry ───────────────────────────────────────────────────────────
 
 /** Dispatch `qm handoff <command>`; returns the exit code. */
@@ -637,23 +683,36 @@ async function dispatchHandoff(
       const { runHandoffNode } = await import('./handoffNode.js')
       return await runHandoffNode(rest)
     }
+    case 'pull':
+      return await runPullCommand(rest, cwd, output)
     default:
       return usage(`不认识的子命令 ${command}`)
   }
 }
 
+/** What did not happen, by subcommand: the first words of a refusal. */
+function refusalHead(command: string | undefined): string {
+  switch (command) {
+    case 'pull':
+      return '接回没有完成'
+    default:
+      return '转交没有完成'
+  }
+}
+
 /** The fast-path entry (`cli.tsx`): runs, prints a refusal, sets the exit code. */
 export async function runHandoff(args: readonly string[]): Promise<void> {
+  const head = refusalHead(args[0])
   try {
     process.exitCode = await dispatchHandoff(args)
   } catch (error) {
     if (error instanceof HandoffUserError) {
-      process.stderr.write(`转交没有完成：${error.message}\n`)
+      process.stderr.write(`${head}：${error.message}\n`)
       process.exitCode = error.exitCode
       return
     }
     process.stderr.write(
-      `转交没有完成：${error instanceof Error ? error.message : String(error)}\n`,
+      `${head}：${error instanceof Error ? error.message : String(error)}\n`,
     )
     process.exitCode = 1
   }

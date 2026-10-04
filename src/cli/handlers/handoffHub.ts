@@ -38,6 +38,13 @@
  * push more than the named refs (`push.followTags`, submodule recursion)
  * pinned off, so `pre-push` never sees a handoff and nothing but these refs
  * leaves the machine.
+ *
+ * ## Fetching (P17.6)
+ *
+ * `qm handoff pull` fetches the cloud's branch and session from the hub with
+ * the same gate key, the same switched-off hooks (a fetch updates refs, and
+ * `reference-transaction` would run), no tags, no submodules, no FETCH_HEAD,
+ * and no automatic gc or maintenance afterwards: only the named refs change.
  */
 
 import {
@@ -317,6 +324,39 @@ export async function pushToHub(
         '--no-verify',
         conn.url,
         ...updates.map(update => `+${update.sha}:${update.ref}`),
+      ],
+      { cwd, env: conn.env },
+    )
+  })
+}
+
+/**
+ * Fetch `refspecs` (`+<hub ref>:<local ref>`) from the hub into the
+ * repository at `cwd`, and nothing else.
+ */
+export async function fetchFromHub(
+  conn: HubConnection,
+  cwd: string,
+  refspecs: readonly string[],
+): Promise<void> {
+  await withoutHooks(async hooksPath => {
+    await runGit(
+      [
+        '-c',
+        `core.hooksPath=${hooksPath}`,
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        'gc.auto=0',
+        '-c',
+        'maintenance.auto=false',
+        'fetch',
+        '--quiet',
+        '--no-tags',
+        '--no-recurse-submodules',
+        '--no-write-fetch-head',
+        conn.url,
+        ...refspecs,
       ],
       { cwd, env: conn.env },
     )

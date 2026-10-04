@@ -970,16 +970,20 @@ describe('qm handoff end to end', () => {
   )
 
   test(
-    'the reserved subcommands answer 「尚未实现」 with exit 2',
+    'pull (P17.6) answers a malformed command line with exit 2 · attach is still reserved',
     async () => {
-      for (const [name, pkg] of [
-        ['pull', 'P17.6'],
-        ['attach', 'P17.6'],
+      for (const [args, said] of [
+        [['pull', 'a-1', 'b-2'], '只接受一个任务号'],
+        [['pull', '../x'], '不是任务号'],
       ] as const) {
-        const ran = await qm(['handoff', name])
+        const ran = await qm(['handoff', ...args])
         expect(ran.code).toBe(2)
-        expect(ran.stderr).toContain(`尚未实现（${pkg}）`)
+        expect(ran.stderr).toContain(said)
+        expect(ran.stderr).toStartWith('接回没有完成：')
       }
+      const attach = await qm(['handoff', 'attach'])
+      expect(attach.code).toBe(2)
+      expect(attach.stderr).toContain('尚未实现（P17.6）')
     },
     STEP_TIMEOUT_MS,
   )
