@@ -168,7 +168,7 @@ export function rawDetail(detail: string): string {
  * Markup already escaped, for the helpers below that otherwise take text: a
  * sentence with an instant in it ({@link withTimes}).
  */
-export interface Markup {
+interface Markup {
   readonly html: string
 }
 
@@ -177,7 +177,7 @@ function inner(text: string | Markup): string {
 }
 
 /** An instant inside a sentence, for {@link withTimes}. */
-export interface Instant {
+interface Instant {
   readonly at: number
   readonly fmt: TimeFormat
 }

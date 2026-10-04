@@ -982,7 +982,7 @@ export function wakeAvailable(
  * whoever had simply not configured waking to look for a variable. The
  * per-node list above the fields already says which node lacks its key.
  */
-export function wakeDisabledReason(
+function wakeDisabledReason(
   targets: readonly WakeTarget[] | undefined,
 ): string {
   return targets === undefined || targets.length === 0

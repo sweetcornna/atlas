@@ -17,13 +17,13 @@ import { tag } from './bits.js'
 import { escapeHtml } from './escape.js'
 
 /** One port the page just asked, and what came back. */
-export interface PortHealth {
+interface PortHealth {
   readonly name: string
   /** `null` when it answered. */
   readonly failure: ConsoleFailure | null
 }
 
-export interface AboutModel {
+interface AboutModel {
   readonly label: string
   readonly identity: string
   readonly binName: string

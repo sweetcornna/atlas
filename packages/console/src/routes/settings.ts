@@ -40,7 +40,7 @@ import type { RouteContext, RouteModule } from './types.js'
  * carries the package default and stays what `/v0/limits` reports; it is the
  * number shown only when the roster offers nothing to read a lease from.
  */
-export function pageLimits(
+function pageLimits(
   deps: ConsoleDeps,
   agents: readonly ConsoleAgent[] | null,
 ): LimitsSnapshot {

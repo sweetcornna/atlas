@@ -47,7 +47,7 @@
  */
 
 /** What went wrong, as the API or a port reported it. */
-export interface ErrorInput {
+interface ErrorInput {
   readonly code?: string
   readonly status?: number
   readonly message?: string
@@ -124,13 +124,13 @@ export const ERROR_FALLBACK = '操作没有完成'
  * The punctuation and marks no visible string may carry. The same set the
  * copy gates test for, plus the ones a developer sentence brings with it.
  */
-export const UNCLEAN_SOURCE = '[。，、；：！!;`"\\n\\r\\t]|https?://'
+const UNCLEAN_SOURCE = '[。，、；：！!;`"\\n\\r\\t]|https?://'
 
 /** A run of CJK, which every sentence written for this page contains. */
 const CJK_SOURCE = '[\\u3400-\\u9fff]'
 
 /** Longest message shown as it came; anything longer is a paragraph. */
-export const MAX_CLEAN_LENGTH = 48
+const MAX_CLEAN_LENGTH = 48
 
 /** Longest leading noun kept in front of a phrase. */
 const MAX_LEAD_LENGTH = 12

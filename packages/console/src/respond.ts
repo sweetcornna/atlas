@@ -66,7 +66,7 @@ export function cspFor(scripts: readonly string[]): string {
 const scriptHashes = new Map<string, string>()
 
 /** `'sha256-…'` of one inline script's text, as the browser hashes it. */
-export function scriptHash(script: string): string {
+function scriptHash(script: string): string {
   let hash = scriptHashes.get(script)
   if (hash === undefined) {
     const digest = new Bun.CryptoHasher('sha256')
@@ -203,7 +203,7 @@ const COMPRESSIBLE =
   /^(?:text\/html|text\/css|text\/javascript|application\/json)(?:;|$)/
 
 /** True when the caller's `Accept-Encoding` takes gzip (a `q=0` refuses it). */
-export function acceptsGzip(request: Request): boolean {
+function acceptsGzip(request: Request): boolean {
   const header = request.headers.get('accept-encoding')
   if (header === null) return false
   let star = false

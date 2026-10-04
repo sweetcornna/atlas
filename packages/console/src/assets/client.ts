@@ -1300,7 +1300,7 @@ function runtimeScript(guards: TokenGuards): string {
  * such a line to be part of. Block comments stay: the humanize markers are
  * two of them, and `test/copyGate.test.ts` reads between them.
  */
-export function stripJsLineComments(script: string): string {
+function stripJsLineComments(script: string): string {
   return script
     .split('\n')
     .filter(line => !/^\s*\/\//.test(line))
