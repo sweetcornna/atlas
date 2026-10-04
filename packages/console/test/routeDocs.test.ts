@@ -28,10 +28,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { ROUTES } from '../src/routes/index.js'
 import type { RouteModule } from '../src/routes/types.js'
-import { ADMIN, CONSOLE_HEADER, accountsHarness } from './accountsHarness.js'
+import { CONSOLE_HEADER, accountsHarness, person } from './accountsHarness.js'
 import { PLANNER, StatefulLifecycle } from './lifecycleFake.js'
 import { MemoryActionLedger } from './memoryActions.js'
 import { PageAudit, PageRegistry, TRACE } from './pageHarness.js'
+import { FakeProviders } from './providersFake.js'
 import { MemoryNotify } from './watchFakes.js'
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const
@@ -124,7 +125,16 @@ function matches(row: Row, method: Method, path: readonly string[]): boolean {
 // The console, with every port the table speaks of
 // ---------------------------------------------------------------------------
 
-function wired() {
+/**
+ * Every port wired, and the one caller every gate lets through: a personal
+ * `ops` account, on a Bearer. A gate that refuses before the path is
+ * resolved (the model-service writes refuse the admin token with a 403
+ * whatever follows) would otherwise make every path under it look routed.
+ */
+async function wired(): Promise<{
+  readonly handle: (request: Request) => Promise<Response>
+  readonly bearer: string
+}> {
   const h = accountsHarness({
     deps: {
       registry: new PageRegistry(),
@@ -132,24 +142,26 @@ function wired() {
       lifecycle: new StatefulLifecycle(),
       actions: new MemoryActionLedger(),
       notify: new MemoryNotify([]),
+      providers: new FakeProviders(),
       nodeServers: [{ node: 'tokyo-1', server: 'p11' }],
     },
   })
-  return h
+  const ops = await person(h.handle, 'ops')
+  return { handle: h.handle, bearer: ops.credential }
 }
 
 type Verdict = 'routed' | 'unrouted' | 'method'
 
 async function verdict(
-  handle: (request: Request) => Promise<Response>,
+  wiredConsole: Awaited<ReturnType<typeof wired>>,
   method: Method,
   path: string,
 ): Promise<Verdict> {
-  const response = await handle(
+  const response = await wiredConsole.handle(
     new Request(`http://console.test${path}`, {
       method,
       headers: {
-        authorization: `Bearer ${ADMIN}`,
+        authorization: `Bearer ${wiredConsole.bearer}`,
         accept: 'application/json',
         [CONSOLE_HEADER]: '1',
         ...(method === 'GET' ? {} : { 'content-type': 'application/json' }),
@@ -271,6 +283,19 @@ function roots(rows: readonly Row[]): readonly Root[] {
   return out
 }
 
+/** Whether some row goes deeper than `path` and agrees with it so far. */
+function underARow(rows: readonly Row[], path: readonly string[]): boolean {
+  return rows.some(
+    row =>
+      row.segments.length > path.length &&
+      path.every((word, index) => {
+        const segment = row.segments[index]
+        if (segment === undefined) return false
+        return 'any' in segment || segment.one.includes(word)
+      }),
+  )
+}
+
 /** How deep the table goes under a prefix. */
 function depthUnder(rows: readonly Row[], prefix: readonly string[]): number {
   let deepest = prefix.length
@@ -294,25 +319,25 @@ describe('console.md §5 is the route table (P18.11)', () => {
   })
 
   test('every documented row is routed', async () => {
-    const h = wired()
+    const h = await wired()
     const missing: string[] = []
     for (const row of rows) {
       const path = concrete(row)
-      const seen = await verdict(h.handle, row.method, path)
+      const seen = await verdict(h, row.method, path)
       if (seen !== 'routed') missing.push(`${row.method} ${path} → ${seen}`)
     }
     expect(missing).toEqual([])
   })
 
   test('every routed path is documented', async () => {
-    const h = wired()
+    const h = await wired()
     const extra = new Set<string>()
     let probes = 0
     const probe = async (path: readonly string[]): Promise<boolean> => {
       let routed = false
       for (const method of METHODS) {
         probes += 1
-        const seen = await verdict(h.handle, method, `/${path.join('/')}`)
+        const seen = await verdict(h, method, `/${path.join('/')}`)
         if (seen !== 'routed') continue
         routed = true
         if (!rows.some(row => matches(row, method, path))) {
@@ -337,24 +362,25 @@ describe('console.md §5 is the route table (P18.11)', () => {
     }
 
     for (const root of roots(rows)) {
-      // Two levels under every head even where the table has none, so a
-      // head documented by nothing still shows what it answers.
-      const limit = Math.max(
-        depthUnder(rows, root.prefix),
-        root.prefix.length + 2,
-      )
+      // Two levels under every head are walked whole, even where the table
+      // has nothing, so a head documented by nothing still shows what it
+      // answers. Deeper, a path is walked on only if it is routed or a row
+      // goes on below it, and never more than one level past the deepest
+      // row: an undocumented route under an unrouted, undocumented
+      // intermediate path that deep is the scan's blind spot.
+      const whole = root.prefix.length + 2
+      const limit = Math.max(depthUnder(rows, root.prefix), whole)
       let frontier: string[][] = [[...root.prefix]]
-      for (let depth = root.prefix.length; ; depth += 1) {
+      for (let depth = root.prefix.length; depth <= limit + 1; depth += 1) {
         const next: string[][] = []
         for (const path of frontier) {
           const routed = await probe(path)
-          // Within the documented depth every branch is walked; one level
-          // further, only below what is routed.
-          if (depth < limit || (depth === limit && routed)) {
+          const onward = depth < whole || routed || underARow(rows, path)
+          if (onward && depth <= limit) {
             for (const word of root.vocabulary) next.push([...path, word])
           }
         }
-        if (next.length === 0 || depth > limit) break
+        if (next.length === 0) break
         frontier = next
       }
     }
