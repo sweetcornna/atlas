@@ -32,7 +32,7 @@ const handle = createConsoleHandler(deps, tokens)
 
 ## 路由表
 
-完整的路由表只在一处：[`docs/dev/console.md`](../../docs/dev/console.md) §5（`test/routeDocs.test.ts` 双向扫描它与实际路由，多一条少一条都会红）。这里不再复制一份。节点详情与生命周期页见该文 §5.4，消息链的翻页与增量轮询见 §5.5。
+完整的路由表只在一处：[`docs/dev/console.md`](../../docs/dev/console.md) §5（`test/routeDocs.test.ts` 双向扫描它与实际路由，多一条少一条都会红）。这里不再复制一份。模型服务的页面、`/v0/providers…` 与 `/fragments/providers/…` 见该文 §5 的表与 §5.4，节点详情与生命周期页见 §5.5，消息链的翻页与增量轮询见 §5.6。
 
 约定：
 
