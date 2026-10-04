@@ -108,7 +108,7 @@ const CHECKS = [
 // Follow-up 4: may the OpenAI Chat lane ask for 总是发送
 // ---------------------------------------------------------------------------
 
-export interface ChatGate {
+interface ChatGate {
   readonly open: boolean
   /** Why not, when it is closed. */
   readonly reason: string
@@ -123,7 +123,7 @@ export interface ChatGate {
  * yes — one that cannot send it would refuse the apply (`effort-unsendable`).
  * No report at all is a closed gate with the reason, not a guess.
  */
-export function chatAlwaysGate(
+function chatAlwaysGate(
   overview: ProviderOverview | null,
   profileId: string | null,
 ): ChatGate {

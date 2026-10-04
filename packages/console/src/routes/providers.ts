@@ -150,7 +150,7 @@ import type { PageRender, RouteContext, RouteModule } from './types.js'
  * May this caller change model services: a personal `ops` account, not in
  * break-glass (§7.3). Everything a page draws for writing hangs off this.
  */
-export function providerWriter(ctx: RouteContext): boolean {
+function providerWriter(ctx: RouteContext): boolean {
   const principal = ctx.access.principal
   return (
     principal?.kind === 'user' &&
@@ -205,7 +205,7 @@ const STATUS_OF: Readonly<Record<ProviderFailure['code'], number>> = {
  * A port failure as the JSON answer. The detail the hub attached is kept as
  * fields and, because the shared client only shows `message`, also said in it.
  */
-export function providerFailureResponse(failure: ProviderFailure): Response {
+function providerFailureResponse(failure: ProviderFailure): Response {
   let message = calm(failure.message)
   if (failure.code === 'conflict' && (failure.fields?.length ?? 0) > 0) {
     message += ` · 被改动的字段 ${(failure.fields ?? []).join(' ')}`
@@ -422,7 +422,7 @@ const EDITABLE = [
  * The profile to save or probe: `base` with the form's fields laid over it.
  * An empty `templateValues` or `compat` is left out rather than sent empty.
  */
-export function mergeEdit(
+function mergeEdit(
   base: ProviderProfileView,
   edit: Readonly<Record<string, unknown>>,
   id: string,
@@ -525,7 +525,7 @@ function assignmentOf(
 }
 
 /** `200000`, `200k`, `1M`, `1m`; `null` for empty (clear); `undefined` for nonsense. */
-export function tokensOf(raw: unknown): number | null | undefined {
+function tokensOf(raw: unknown): number | null | undefined {
   if (raw === null) return null
   if (typeof raw === 'number')
     return Number.isSafeInteger(raw) ? raw : undefined

@@ -48,7 +48,7 @@ import {
   type ProvidersReader,
 } from './providers.js'
 
-export interface NodePanelModel {
+interface NodePanelModel {
   readonly node: ProviderNodeView
   readonly overview: ProviderOverview | null
   readonly reader: ProvidersReader
@@ -264,7 +264,7 @@ export function renderNodePanel(model: NodePanelModel): string {
  * one percent-encoded path segment. The interface P18.11's `/nodes/<node>`
  * loads; this area's own node page polls the same URL.
  */
-export function nodeTabFragment(node: string): string {
+function nodeTabFragment(node: string): string {
   return `/fragments/providers/node/${encodeURIComponent(node)}`
 }
 

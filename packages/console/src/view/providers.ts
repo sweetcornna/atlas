@@ -71,14 +71,14 @@ export interface ProvidersReader {
 }
 
 /** What a reader who may not write is told, once, in the top bar. */
-export const READ_ONLY_LINE = '只读 · 模型服务的写操作需要运维角色的个人账号'
+const READ_ONLY_LINE = '只读 · 模型服务的写操作需要运维角色的个人账号'
 
 export function readOnlyBadge(): string {
   return `<span class="note" id="read-only">${escapeHtml(READ_ONLY_LINE)}</span>`
 }
 
 /** Said where the write controls are, to a writer with script off (§6.7). */
-export const NO_SCRIPT_LINE =
+const NO_SCRIPT_LINE =
   '保存 · 切换 · 测连 · 删除与导入需要启用脚本 · 阅读不受影响'
 
 export function noScriptNote(): string {
@@ -88,7 +88,7 @@ export function noScriptNote(): string {
 }
 
 /** No port behind the page: the console was started without `--providers`. */
-export const PROVIDERS_OFF_LINE =
+const PROVIDERS_OFF_LINE =
   '模型服务未开启 · 启动控制台时加 --providers 与 --accounts'
 
 // ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ export function tokens(n: number): string {
 }
 
 /** An ISO instant as `YYYY-MM-DD HH:MM`, local zone; the text itself when it is not one. */
-export function minuteOf(iso: string): string {
+function minuteOf(iso: string): string {
   const at = Date.parse(iso)
   if (!Number.isFinite(at)) return iso
   const date = new Date(at)
@@ -175,7 +175,7 @@ export function minuteOf(iso: string): string {
 }
 
 /** The 8 hex characters of a key fingerprint ops are shown (§6.3.3). */
-export function shortFingerprint(fingerprint: string): string {
+function shortFingerprint(fingerprint: string): string {
   const bare = fingerprint.startsWith('fp1:')
     ? fingerprint.slice(4)
     : fingerprint
@@ -222,7 +222,7 @@ export function vendorOf(
   return preset?.vendor ?? '自定义'
 }
 
-export function presetOf(
+function presetOf(
   catalog: ProviderCatalog,
   id: string | null,
 ): ProviderPresetView | undefined {
@@ -261,7 +261,7 @@ export const FAMILY_GOVERNED_LINE =
 // ---------------------------------------------------------------------------
 
 /** What a node reported it is running, in words; every cell from `effective`. */
-export interface EffectiveCells {
+interface EffectiveCells {
   /** False when the node has not reported `effective` at all. */
   readonly reported: boolean
   readonly lane: string
@@ -1243,14 +1243,14 @@ function switchDialog(nodes: readonly ProviderNodeView[]): string {
 }
 
 /** §6.6 切换确认. */
-export const SWITCH_LINE =
+const SWITCH_LINE =
   '节点在空闲时切换 · 进行中的对话不受影响 · 更换厂商会开始新的会话'
 
 /** X-3 (§5.11.6): what a switch of model, line, effort or key costs the next turn. */
 export const CACHE_LINE = '下一轮会整段重读 · 不命中缓存'
 
 /** §2.7: keeping sessions across a line or host change waits on the node's replay filter. */
-export const KEEP_GATE_LINE =
+const KEEP_GATE_LINE =
   '保留会话要所有受影响的节点报告支持回放过滤 · 现在只能重置或按线路与主机判断'
 
 /** Applying one node's expected profile (§6.3.1 行操作「下发」). */
