@@ -78,6 +78,12 @@
  * `If-Match` rides in the body as `ifMatch` (the shared `sendJson` cannot set
  * a header) or in the header; when both are there they must agree.
  *
+ * One key of several (P18.18) is added or removed with
+ * `PUT /v0/providers/profiles/<id>` — the list in `profile.keys`, the new
+ * key's value in `secrets` — and filled in again or cleared with
+ * `…/keys/<keyId>`. Either way the port writes the ledger lines (an added
+ * key is `provider.save` and its `provider.secret.set`); the route none.
+ *
  * ### The form sends only what it edits
  *
  * A profile the form saves is the stored one (or the preset's draft) with the
@@ -355,6 +361,8 @@ function trimActual(
           },
     resident: actual.resident,
     capabilities: actual.capabilities,
+    // Key ids and states only (P18.18): nothing in them is a writer's.
+    ...(actual.keys === undefined ? {} : { keys: actual.keys }),
     ...(actual.effective === undefined ? {} : { effective: actual.effective }),
   }
 }
@@ -405,7 +413,13 @@ function calmApply(result: ProviderApplyResult): ProviderApplyResult {
 // The form's profile (J-20)
 // ---------------------------------------------------------------------------
 
-/** The fields the form edits. Everything else comes from the stored profile or the preset. */
+/**
+ * The fields the form edits. Everything else comes from the stored profile or
+ * the preset. `keys` and `keySelection` are the key list's (P18.18): adding
+ * or removing one key is a save with the list changed, and the hub keeps a
+ * listed key's sealed value by its id, drops an unlisted one's, and ignores
+ * any fingerprint or time sent with it.
+ */
 const EDITABLE = [
   'name',
   'site',
@@ -416,6 +430,8 @@ const EDITABLE = [
   'compat',
   'effortLock',
   'auth',
+  'keys',
+  'keySelection',
 ] as const
 
 /**

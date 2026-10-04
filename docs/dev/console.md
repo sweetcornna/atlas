@@ -567,8 +567,9 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/` | view | 总览：节点、审计近况、上限 |
-| GET | `/nodes`、`/nodes/<节点>` | view | 节点名册；带节点名时只列那一个节点，注册中心没有它就是 404 页 |
-| GET | `/audit?…`、`/audit/trace/<traceId>` | view | 审计轨迹（查询参数同 `/v0/audit`）；单条消息链一页，轨迹里没有就是 404 页 |
+| GET | `/nodes` | view | 节点名册。接了登记簿时名册下另列「名册上没有的节点」：登记簿或托管清单里有、名册上没有的节点，链到它的生命周期页签（§5.5） |
+| GET | `/nodes/<节点>`、`/nodes/<节点>/{agents,lifecycle,models}` | view | 节点详情四个页签：概览、智能体、生命周期、模型（§5.5）。名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源都没提到这个节点就是 404 页；不认识的页签名同样 404 |
+| GET | `/audit?…`、`/audit/trace/<traceId>` | view | 消息链：最新 50 条、新的在上，表尾「加载更早」；查询参数同 `/v0/audit`，另有 `node=`（多链时收窄到一条，翻页要它）（§5.6）。单条消息链一页，轨迹里没有就是 404 页 |
 | GET | `/servers` | view | 服务器归属与备注（§11） |
 | GET | `/settings` | view | 设置与关于：实例标签、控制台身份、命令名，以及协议与运行时上限 |
 | GET | `/alerts?level=&state=` | view | 告警收件箱：未确认计数、级别与状态筛选（§10.4） |
@@ -576,11 +577,12 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/access`、`/access/{invites,sessions,actions}` | view | 账号与访问 · 操作记录（§5.3）。`/access` 对能管账号的人是「成员」页签，对其他人是「操作记录」；`invites`、`sessions` 只给能管账号的人，其他人拿 403 页 |
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
-| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
+| GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
 | GET | `/approvals`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
+| GET、POST | `/invite` | 公开 | 邀请门（§8.1.1）：`GET` 只渲染确认页，`POST` 兑现、铸出个人凭据并登录。只在开了 `--accounts` 时存在，没开时 404 |
 | GET | `/assets/app.css`、`/assets/app.js` | 公开 | 两个静态常量 |
 | GET | `/v0/health` | 公开 | `{ "status": "ok" }` |
 | GET | `/v0/limits` | view | 协议与运行时上限（§7.1） |
@@ -591,8 +593,8 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/agents/<地址>/pause` | **admin** | 暂停（§7.3.1）：簿里写 `paused`，停止续租，删注册中心那条；对话、唤醒、`qm watch` 不再拨它。无请求体，响应 `{ registration, agent? }`。没接生命周期时 501 |
 | POST | `/v0/agents/<地址>/resume` | **admin** | 恢复：簿里写回 `active`，同发布那样重新注册并续租。同上 |
 | POST | `/v0/agents/<地址>/retire` | **admin** | 退役：簿里写 `retired`，删注册中心那条；这个地址从此不再发布、不再恢复。同上 |
-| GET | `/v0/registrations` | view | 登记簿：`{ problem, managed, registrations: [{ address, state, at?, by?, managed? }] }`。`by`（谁改的）只给能写的人，与告警确认同一条规矩。没接生命周期时 501 |
-| GET | `/v0/audit?…` | view | 审计记录（过滤见下） |
+| GET | `/v0/registrations` | view | 登记簿：`{ problem, problemKind?, managed, registrations: [{ address, state, at?, by?, managed? }] }`。`problemKind` 在有 `problem` 时给出，`unreadable` 或 `unwritable`（§7.3.1）。`by`（谁改的）只给能写的人，与告警确认同一条规矩。没接生命周期时 501 |
+| GET | `/v0/audit?…` | view | 审计记录（过滤与游标见下）：`AuditPage`，另带 `head`、`earlier` |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
 | POST | `/v0/wake` | **admin** | 唤醒 |
 | GET | `/v0/servers` | view | 每台服务器、它承载的节点、以及备注（§11）。没配 `--node-server` 时 501 |
@@ -613,21 +615,22 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/handoff/<任务 id>/send` | **成员** | 给云端那一侧追加一句话：写进台账（202），配了 `--handoff-node` 时按顺序转给正在跑这个任务的节点（P17.5），节点送进正在跑的回合 |
 | POST | `/v0/handoff/<任务 id>/attach` | **成员** | `qm handoff attach` 要接入的位置（P17.6）：`{ device? }` → `{ attach: { taskId, state, node, threadId, project, tool } }`，只给 `running` 的任务，其余状态 400 并说该用什么命令；记审计 `handoff.attach-requested`。只给位置：节点上 app-server 的令牌由使用者自己的 SSH 去读，不经控制台。Claude Code 会话在 `running` 时 `threadId` 为 `null` |
 | POST | `/v0/handoff/<任务 id>/return` | **成员** | `qm handoff pull` 接回后记 `returned`（P17.6）：`{ device?, mode? }`，`mode` 为 `fast-forward` 或 `branch`；只从 `done`、`failed` 转入，已是 `returned` 时 200 且 `changed: false`；记审计 `handoff.returned` |
-| GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录。没开 `--providers` 时 501 |
+| GET | `/v0/providers`、`/v0/providers/profiles/<档案 id>`、`/v0/providers/nodes/<节点>` | view | 模型服务总览、一份档案、一个节点（§5.4）。不是写者时去掉密钥指纹、完整 Base URL、漂移键名与最近记录；节点报的逐把密钥状态（`actual.keys`，只有编号、状态、恢复时间与原因，P18.18）照给。没开 `--providers` 时 501 |
 | GET | `/v0/providers/catalog` | view | 预设目录 |
 | POST | `/v0/providers/profiles` | **ops 个人账号** | 新建：`{ presetId, site?, profile, secrets? }`，`profile` 只带表单编辑的字段，预设、套餐、评估状态由中枢定 |
-| PUT、DELETE | `/v0/providers/profiles/<档案 id>` | **ops 个人账号** | 保存、删除。带修订号 `ifMatch`（或 `If-Match` 头，两者都给时必须相等），不符 409 |
+| PUT、DELETE | `/v0/providers/profiles/<档案 id>` | **ops 个人账号** | 保存、删除。带修订号 `ifMatch`（或 `If-Match` 头，两者都给时必须相等），不符 409。加一把、删一把密钥与选取策略也是保存（`profile.keys`、`profile.keySelection`，新那把的值在 `secrets`，P18.18）：列表里的 key 按编号保留密文，不在列表里的密文随即删除 |
 | PUT、DELETE | `/v0/providers/profiles/<档案 id>/keys/<key id>` | **ops 个人账号** | 重新填写、清除密钥；任何接口都不回明文 |
 | POST | `/v0/providers/profiles/<档案 id>/skip-probe` | **ops 个人账号** | 保存并切换时勾了跳过测连：记一条 `provider.probe.skip`；记不进去 503，页面不再切换 |
 | PUT | `/v0/providers/default` | **ops 个人账号** | `{ profileId }` 设全局默认，`null` 清除 |
-| PUT | `/v0/providers/nodes/<节点>/assignment`、`…/context` | **ops 个人账号** | 指派（继承 / 单独指定 / 不托管）；上下文窗口覆盖（D-8，随下一次下发生效） |
+| PUT | `/v0/providers/nodes/<节点>/assignment`、`/v0/providers/nodes/<节点>/context` | **ops 个人账号** | 指派（继承 / 单独指定 / 不托管）；上下文窗口覆盖（D-8，随下一次下发生效） |
 | POST | `/v0/providers/nodes/<节点>/refresh` | **ops 个人账号** | 向节点要一次状态（中枢 5 秒内不重复问） |
 | GET、PUT | `/v0/providers/nodes/<节点>/autocompact` | **ops 个人账号** | 读、改自动压缩阈值（D-9，立即写到节点；节点环境变量钉住时 422） |
 | POST | `/v0/providers/apply` | **ops 个人账号** | `{ nodes?, dryRun?, force?, sessions?, profileId? }`，每个节点一条结果，部分失败也是 200；dry-run 不记账 |
 | POST | `/v0/providers/probe`、`/v0/providers/models`、`/v0/providers/preview` | **ops 个人账号** | 测连 / 测速 / 真实调用；拉模型列表；编译预览。可以带表单上未保存的档案与密钥，密钥不落盘 |
 | GET | `/v0/providers/export?id=<档案 id>…` | **ops 个人账号** | 导出文件（附件，`document` 级，链接可下），不含密钥与指纹 |
 | POST | `/v0/providers/import/preview`、`/v0/providers/import` | **ops 个人账号** | 导入预览、导入（撞 id 的用 `renames` 另存）；有目录不认识的键整份拒绝 |
-| GET | `/fragments/{roster,audit,limits}` | view | HTML 片段 |
+| GET | `/fragments/{roster,audit,limits}` | view | HTML 片段。`/fragments/audit` 带 `since` 时只回表头与自载入以来的新行（§5.6） |
+| GET | `/fragments/lifecycle/<节点>` | view | HTML 片段：生命周期页签被轮询的那一块（§5.5） |
 | GET | `/fragments/alerts?level=&state=`、`/fragments/jobs` | view | HTML 片段 |
 | GET | `/fragments/access/<members\|invites\|sessions>` | **ops / admin** | HTML 片段，`/access` 三个被轮询的页签 |
 | GET | `/fragments/chain/<traceId>` | view | HTML 片段 |
@@ -664,8 +667,14 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 `to`（ISO 时间或 epoch 毫秒）、`window`（`1h` / `24h` / `7d`，服务端按 `now - 跨度`
 换算成 `from`；只要显式给了 `from` 或 `to`，`window` 就被忽略——显式区间赢相对窗口，
 两个控件不该互相打架。不认得的 `window` 值原样丢弃而不是 400：查询串可能是手改的
-书签，一个筛选器不该为此报错）、`limit`。全部是 AND；`limit` 取的是**尾部** N 条，和
-`occ audit --limit` 同一语义。
+书签，一个筛选器不该为此报错）、`limit`、`q`（一个搜索框：大小写不敏感的子串，查 kind、
+各 id、code、节点、来源与 detail 里的字符串）、`before`（只要 `seq` 小于它的：往更早翻的
+游标）、`since`（只要 `seq` 大于它的：自某一刻以来新来的）。全部是 AND；`limit` 取的是
+匹配里**最新的** N 条，`records` 仍按链上顺序（旧的在前），不带游标时与 `occ audit --limit`
+同一语义。响应另带 `head`（链上最新一条的 `seq`，没有记录是 0）与 `earlier`（再往前一页
+用的 `before`，已到最早是 `null`）；顺着 `earlier` 翻，每条匹配恰好出现一次，翻页途中追加的
+行不会挪动后面的页。两个游标不是非负整数时原样丢弃，与 `window` 同理。多链的控制台用
+`node=<节点>` 选一条链；不给 `node` 时回 `{ audits }`，每条链一份。
 
 ### 5.1 三个保护等级：一枚 cookie 能单独打开哪些路由
 
@@ -785,8 +794,8 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
 | --- | --- |
 | `/providers` | 全局默认卡、节点矩阵（期望 · 实际 · 状态 · 线路 · 模型 · effort · 上下文 · 最近测连）、档案卡片。矩阵被轮询；带输入框的操作都在对话框里 |
 | `/providers/new` | 预设卡片五组（国内按量 / 国际 / 套餐 / 本地 / 自定义），`?q=` 是 GET 搜索；`?preset=` 进表单，默认只露密钥，其余在「高级」里 |
-| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除 |
-| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
+| `/providers/profiles/<档案 id>` | 同一个编辑器，密钥三态（未设置 / 设置于 / 指纹）、在用节点、保存并切换、设为全局默认、删除。两把以上密钥时是逐把列表（重新填写 / 清除 / 删除、主密钥标记）、选取策略与「加一把密钥」；在用节点每台一行带节点报的逐把状态（P18.18） |
+| `/providers/nodes/<节点>` | 节点「模型」页签：期望、实际、漂移、节点报的生效值、多 key 池逐把状态（可用 / 冷却中 / 已停用，P18.18）、上下文窗口（D-8）与自动压缩阈值（D-9），最近 10 次下发与测连 |
 | `/providers/import` | 粘贴或选文件，整份预览后导入 |
 
 - **谁能写**：只有 `ops` 个人账号，且不在 break-glass（`routes/providers.ts` 的 `providerWriter`）。
@@ -805,6 +814,72 @@ toast（`qc.toast`，文本经 `textContent` 写入）。
   加载它；`/fragments/providers/chat?target=<地址>` 给对话页，页面脚本在每次线程替换后把
   「模型 · <模型>」放进线程头，并在节点最近一次切换处画分隔线。对话存储不读也不改。
 - **导出与导入**：导出不含密钥与指纹；导入时有目录不认识的键，预览与导入都整份拒绝。
+
+### 5.5 节点详情与生命周期（`/nodes/<节点>`）
+
+`routes/nodes.ts` 与 `view/node.ts`，设计依据是 `providers-console-m1.md` 的 A3、J2（P18.11）。
+四个页签各有自己的 URL，互为普通链接，关掉脚本也能读、能收藏：
+
+| 路径 | 页签 | 内容 |
+| --- | --- | --- |
+| `/nodes/<节点>` | 概览 | 智能体数与健康、服务器（§11）、端点、证书（配了 `--trust-ca` 才有）、生命周期计数、最近 10 条消息链与「在消息链里查看全部」 |
+| `/nodes/<节点>/agents` | 智能体 | 原来的名册卡片，轮询 `/fragments/roster?node=<节点>`，心跳与注销照旧 |
+| `/nodes/<节点>/lifecycle` | 生命周期 | 这台节点在名册、登记簿、托管清单里出现过的每个地址：状态、能否拨号与原因、是否托管、最近一次改动、动作；轮询 `/fragments/lifecycle/<节点>` |
+| `/nodes/<节点>/models` | 模型 | 只装模型服务区（P18.9）的 `GET /fragments/providers/node/<节点>`；无脚本时是到 `/providers?node=<节点>` 的链接 |
+
+- **节点在不在**：名册、登记簿、托管清单、`--node-server`、唤醒目标、审计源任一处提到它就在；
+  注册中心读不出来时不判 404。只在登记簿里的节点（全部暂停或退役后被摘牌的）也能打开，否则就
+  没地方恢复它；`/nodes` 名册下另列一段「名册上没有的节点」链过来。名册卡片的节点名链到
+  `/nodes/<节点>`。
+- **能否拨号，按出口的判法**（§7.3.2）：登记簿读不出来 → 退役 → 暂停 → 不在名册上 → 租约过期 →
+  可拨（租约过半标滞后）；注册中心读不出来时写「未知」。暂停的种子地址被注册中心宿主续回名册
+  时，那一行补一句「名册上仍在是因为注册中心宿主替种子续租」（§7.3.3）。登记簿只是写不进去时，
+  出口按内存里那份判，各行照常判，横幅写明「发布与恢复已停止 · 暂停与退役照收但重启后会丢」；
+  两种毛病靠 `problemKind` 分辨，没给 `problemKind` 的按读不出来说。
+- **只画会成功的动作**（§7.3.1）：读不出来时一个也不画；写不进去时只画暂停与退役；发布只给托管、
+  未登记、不在名册上的地址（名册上已有的种子不必发布，发布了会和 `p81-registry` 来回改写，
+  §7.3.3）；恢复只给仍在托管清单里的暂停地址；退役以后什么都不画。有托管清单时 `/nodes` 的
+  「注册节点」换成「发布」，只列可发布的地址，端点取自清单。
+- **每个动作都是两步**：行上的按钮只打开确认框，确认框里的按钮才发请求。四个动作走 §7.3.1 的
+  写路由，由路由各记一条动作账本（`agent.register` / `agent.pause` / `agent.resume` /
+  `agent.retire`），页面自己不记。四个确认框渲染在轮询区之外，刷新换不掉正在读的那个。关掉
+  脚本时，能写的人在表格上方看到「生命周期动作需要启用脚本 · 阅读不受影响」。
+- **按角色**：按钮与「谁改的」只给能写的人（admin 令牌、`ops`），与 `GET /v0/registrations`
+  的 `by` 同一条规矩；viewer、member、view 令牌看得到状态与原因，看不到按钮与主体
+  （`test/nodeDetail.test.ts` 逐页签扫描，真浏览器里的暂停与恢复在
+  `test/browser/nodes.browser.test.ts`）。
+- **「模型」页签的内容归模型服务区（§5.4）。**本页载入时取一次那个片段，取到了就交给共享运行时
+  照常轮询；没开 `--providers` 时片段本身就是一行「模型服务未开启」。片段答 404（模型服务不认识
+  这台节点）时留一行「模型服务暂无这台节点的信息 · 可在模型服务页查看」并停止轮询，其他失败写
+  「模型信息读取失败 · …」，页面都不进错误态。页签里的字段由模型服务区自己的用例断言，本页只
+  断言页签指向那个片段、能把它装进来。
+- **没有「会话」「操作历史」页签**：`providers-console-m1.md` §6.1 列了证书、服务器、审计、会话、
+  操作历史。前三个并进概览；会话与操作历史各有自己的可见规矩（对话按会话属主，操作记录按主体，
+  §5.3、§6），放进节点页就得重述或打破那些规矩，所以不设。
+
+### 5.6 消息链：倒序、翻页、搜索与增量轮询（`/audit`）
+
+`routes/audit.ts` 与 `view/audit.ts`；读侧是 `@qianmo/audit` 的 `TrailReader` 与 `pageTrail`
+（P18.11，D5、G2）。
+
+- **最新 50 条，新的在上。**表尾「加载更早」是带 `before=<seq>` 的普通链接，无脚本可用；有脚本时
+  取同一视图的片段，把行接到表后。到底时写「已是最早的记录」。多链的控制台先用 `node=<节点>`
+  收窄到一条链再翻页：一个 `seq` 只属于一条链。
+- **一个搜索框 `q`**，与其余筛选是 AND。时间段控件没选窗口时显示「全部」，只有给了起止时间才
+  显示「自定义」。
+- **轮询只带新来的。**页面载入时记下链头，轮询 `since=<head>`（多链时每条链一个
+  `since=<节点>:<head>`），回的是表头与「自载入以来的新行」，由共享运行时换进表头那个空
+  `tbody`。游标不随轮询移动，页面不需要脚本维护它。新行超过一页，或链比载入时短（被改写、换了
+  文件），给一个「重新载入」链接。端口不给 `head` 时（旧的测试替身）照旧整块轮询。在更早的页上
+  轮询只换表头。
+- **读一次就够。**生产端口常驻一个 `TrailReader`：文件只追加时只读新增的字节、只接着校验新增的
+  行；变短、被换、同长度就地改写、末行对不上时整读重验；距上次整读满 60 s 也整读一次，所以
+  「就地改写之后又追加」最多晚一分钟被发现。10 万条的链上，首屏与闲置轮询都是零行校验、零字节
+  读取，来 10 条新行只校验这 10 行（`src/cli/handlers/__tests__/consoleAuditPaging.test.ts`，
+  毫秒数写进日志，断言是宽上界）。
+- **已知边界**：带 `--anchors` 的见证核对仍由 `verifyAuditWitness` 每次整读，不在这个缓存里；
+  增量视图不会把滑出时间窗口的旧行拿掉，以重新载入为准；整读那一次（冷启动与每 60 s）的耗时
+  随链长线性增长。
 
 ---
 
@@ -1388,8 +1463,10 @@ mirror 单元每 5 分钟失败一次、控制台却显示「链完整」的那�
 `message` 里与动作账本里。
 
 `GET /v0/registrations`（view）给页面读登记簿此刻的样子：`problem`（`null` 或原因）、
-`managed`（清单里的地址，没给清单是 `null`）、每条的 `address`、`state`、`at`、`managed`，
-以及 `by`——**只给能写的人**，与告警确认的 `by` 同一条规矩。页面本身是 P18.11 的事。
+`problemKind`（有 `problem` 时给出：`unreadable` 是读不出来，四个写动作全拒、三个出口谁都
+不拨；`unwritable` 是写不进去，见上面「写失败」）、`managed`（清单里的地址，没给清单是
+`null`）、每条的 `address`、`state`、`at`、`managed`，以及 `by`——**只给能写的人**，与告警
+确认的 `by` 同一条规矩。页面见 §5.5。
 
 ### 7.3.2 出口检查与 fail-closed
 
@@ -1435,16 +1512,18 @@ reach no agent, until the ledger is repaired and this console restarts`），横
 - **暂停与退役在注册中心那一层挡不住 `--register` 种子。**`p81-registry` 每 20 s 替
   `peers.conf` 的地址续租，暂停一个种子地址时控制台的 `DELETE` 会在下一轮被它建回来，名册里
   它仍然在。真正挡流量的是三个出口的检查，它们照样拒；但**名册不等于「可以拨」**，读名册
-  的人要看 `GET /v0/registrations` 的状态。要让种子从名册里也消失，今天只能先在页面上退役，
+  的人要看 `GET /v0/registrations` 的状态，或那台节点的生命周期页签（§5.5）。要让种子从名册里也消失，今天只能先在页面上退役，
   再从 `peers.conf` 删掉那一行并重起注册中心与控制台（步骤见 `tenancy-m1.md` §3.6「种子地址
   怎么真正退役」）；装机面落地后由 `install` 决定。
 - **在页面上发布一个种子地址，声明会和 `p81-registry` 那一份打架。**注册中心的
   `register()` 缺省即清空，两边每 20 s 轮流写各自那一份，公钥、能力、状态在名册上来回变；
   `p81-registry` 的种子可以带 `--public-key`，页面发布不带就会把它抹掉一轮。种子本来就在
   名册上，不必发布；要暂停或退役它，直接用那两个动作（簿里没有也可以）。
-- **告警只进 stderr。**告警页（§10.4）今天没有「登记簿」这一类来源；运维看横幅、stderr 与
-  `GET /v0/registrations`。
-- **对话面的目标清单只说「不可拨」，不说为什么**；原因在发一句话时的那条拒绝里。
+- **登记簿出毛病时的告警**：stderr 一行之外，告警页（§10.4）有「登记簿」来源（P18.11）：读不
+  出来或写不进去各出一条严重告警，来源条写明已接入、不可用或未接入。（P15.2 时这里写的是
+  「告警只进 stderr · 告警页没有这一类来源」，P18.11 起不再成立。）
+- **对话面的目标清单只说「不可拨」，不说为什么**；原因在发一句话时的那条拒绝里。节点详情的
+  生命周期页签逐个地址写明原因（§5.5）。
 - **出口只认地址，不认作业 URL 背后是谁。**`qm watch` 按作业的 `target` 判，`url` 指向的
   节点上实际是不是那个 agent，它不知道（§10.1）。
 
@@ -1453,6 +1532,12 @@ reach no agent, until the ledger is repaired and this console restarts`），横
 按「会咬人的程度」排。
 
 ### 8.1 没有账号体系
+
+> **2026-10-04 改写注**（P18.11 补上 P15.1 留下的这一条）：本节写于 M0，原文保留。章程 v2.19
+> 已按 A′ 部分解禁 N-2：控制台个人账号由 P15.3 / P15.5 做成，开了 `--accounts` 的控制台见
+> §8.1.1；租户隔离仍不解禁，挪到 M2。下文说的是**不开 `--accounts`** 的控制台，它仍是缺省
+> 形态：两个共享 token 仍是它全部的身份概念。「这是章程 N-2 的直接后果」一句按 v2.19 读作
+> 「这是不开账号时的形态」；动作账本（P15.9）开不开账号都记主体，两枚旧令牌记作 `legacy:admin`、`legacy:view`。
 
 两个共享 token 就是全部的身份概念。**谁拿到 admin token，谁就是同一个人**——面板上
 没有「是谁注销了这个 agent」，审计链上也不会因为动作来自控制台而多出一个操作者字段。
@@ -1607,6 +1692,10 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
 | `packages/console/src/view/` | 服务端渲染 |
 | `packages/console/src/routes/access.ts`、`view/access.ts` | 账号与访问 · 操作记录页：四个页签、谁看见哪个页签与哪些写控件、`/v0/actions` 的两条读（§5.3） |
+| `packages/console/src/routes/nodes.ts`、`view/node.ts` | 节点详情四个页签、生命周期页签：能否拨号的判法、只画会成功的动作、四个确认框、「模型」页签的装载与 404 降级（§5.5） |
+| `packages/console/src/routes/audit.ts`、`view/audit.ts` | 消息链：倒序翻页、搜索、增量轮询（§5.6） |
+| `packages/audit/src/reader.ts`、`query.ts` | `TrailReader` 增量读取与 `pageTrail` 游标分页（§5.6） |
+| `packages/console/test/routeDocs.test.ts` | 本文 §5 路由表与实际路由的双向扫描：表里每行都有路由，路由出来的每个路径都在表里 |
 | `packages/console/src/accounts.ts`、`accountsHttp.ts` | 账号库与会话表（哈希链、严格重放、强制下线）与账号 API（§8.1.1） |
 | `packages/console/src/view/alerts.ts`、`jobs.ts` | 告警收件箱由哪些来源合成、各自的 id 与级别，作业页每一格的口径（§10.4） |
 | `packages/console/src/view/chat.ts`、`chatPage.ts` | 对话面的渲染：转录与会话轨道、`/chat` 那份文档（§6.1） |
@@ -1857,11 +1946,12 @@ ACP 会话只认 `_meta.permissionMode` 这一个开关（v2.61），settings �
 | 节点失联 | 一个节点的全部智能体都过了租约 | 严重 | 注册中心名册（与侧栏同一次读取） |
 | 证书 | 节点证书不是「有效」；吊销清单未发布或已过期；CA 根将到期或已到期 | 按状态，见 `view/alerts.ts` | 证书端口（配了 `--trust-ca` 才有） |
 | 审计链 | 链断裂、未建立、锚点不符 | 断裂与锚点不符为严重，未建立为警告 | 审计端口（控制台配置的每一条审计源） |
+| 登记簿 | 登记簿读不出来，或写不进去（§7.3.1、§7.3.2） | 严重 | 生命周期端口（接了登记簿才有）；来源条另写暂停与退役各几个 |
 | 链路 | — | — | **未接入**：控制台没有节点连通探测的数据 |
 
 每条告警有一个稳定 id。通知用节点生成的消息 id（重发的那一条与原件合成一条）；状况类
 告警的 id 带上这一回的特征，例如节点失联带最后一次心跳的时刻、证书带状态与到期时刻、锚点
-不符带第一处对不上的锚点序号与本地链在那里的摘要，所以同一个节点恢复后再失联、链修好后
+不符带第一处对不上的锚点序号与本地链在那里的摘要、登记簿带毛病的种类与原因，所以同一个节点恢复后再失联、链修好后
 又被改写，都是新的一条，不会被上一次的确认盖住。
 
 **确认**：`POST /v0/alerts/<id>/ack`，admin 等级：旧 admin token，或账号模型里的运维。

@@ -163,7 +163,7 @@ export function tokens(n: number): string {
 }
 
 /** An ISO instant as `YYYY-MM-DD HH:MM`, local zone; the text itself when it is not one. */
-function minuteOf(iso: string): string {
+export function minuteOf(iso: string): string {
   const at = Date.parse(iso)
   if (!Number.isFinite(at)) return iso
   const date = new Date(at)
@@ -175,7 +175,7 @@ function minuteOf(iso: string): string {
 }
 
 /** The 8 hex characters of a key fingerprint ops are shown (§6.3.3). */
-function shortFingerprint(fingerprint: string): string {
+export function shortFingerprint(fingerprint: string): string {
   const bare = fingerprint.startsWith('fp1:')
     ? fingerprint.slice(4)
     : fingerprint
@@ -981,11 +981,36 @@ function defaultCard(
   )
 }
 
-/** A key's state in words: never a fragment of it, the fingerprint for ops only. */
+/** How a profile with several keys picks one for a new session (P18.18). */
+export const KEY_SELECTION_WORD: Readonly<Record<string, string>> = {
+  fill_first: '按顺序',
+  round_robin: '轮流',
+  least_used: '用得最少',
+}
+
+/**
+ * A key's state in words: never a fragment of it, the fingerprint for ops
+ * only. Several keys (P18.18) are counted, with how one is picked; each key's
+ * own line is on the profile's form.
+ */
 export function keyState(
   summary: Pick<ProviderProfileSummary, 'secrets' | 'profile'>,
   reader: ProvidersReader,
 ): string {
+  if (summary.secrets.length > 1) {
+    const total = summary.secrets.length
+    const set = summary.secrets.filter(secret => secret.set).length
+    const selection = summary.profile.keySelection ?? 'fill_first'
+    return (
+      `${total} 把 · ` +
+      (set === total
+        ? '全部已设置'
+        : set === 0
+          ? '都未设置'
+          : `已设置 ${set} 把`) +
+      ` · ${KEY_SELECTION_WORD[selection] ?? selection}`
+    )
+  }
   const secret = summary.secrets[0]
   if (secret === undefined || !secret.set) return '密钥未设置'
   const at =
@@ -1158,7 +1183,7 @@ export function boardActions(): string {
 // Dialogs — outside every polled region (J-7)
 // ---------------------------------------------------------------------------
 
-function dialog(options: {
+export function dialog(options: {
   readonly id: string
   readonly glyph: string
   readonly title: string
@@ -1194,7 +1219,7 @@ function dialog(options: {
   )
 }
 
-function recap(label: string, id: string): string {
+export function recap(label: string, id: string): string {
   return `<div class="recap"><div class="recap-row"><span class="k">${escapeHtml(
     label,
   )}</span><span class="mono" id="${attr(id)}"></span></div></div>`
@@ -1466,6 +1491,9 @@ export const PROVIDERS_PAGE_CSS = `
    ones the page script shows and hides. */
 .prov-hint[hidden], .prov-progress[hidden], .prov-switch-nodes[hidden],
 .prov-editor .field[hidden], .prov-editor .chk[hidden] { display: none; }
+.prov-pool-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.prov-pool-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); background: var(--color-neutral-100); }
+.prov-pool-row .prov-actions { margin-left: auto; }
 .prov-import-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .prov-import-list li { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); align-items: center; }
 textarea.prov-import-text { min-height: 220px; font-family: var(--font-mono); font-size: 12.5px; }

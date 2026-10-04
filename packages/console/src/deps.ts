@@ -136,6 +136,13 @@ export interface LifecycleSnapshot {
    * 读不出来时三个出口也一律不发。
    */
   readonly problem: string | null
+  /**
+   * `problem` 是哪一种（`console.md` §7.3.1）。`unreadable`：读不出来，四个写动作
+   * 全拒、三个出口谁都不拨；`unwritable`：写不进去，暂停与退役照收、出口按内存里
+   * 那份判，只是发布与恢复被拒。`problem` 为 `null` 时缺席；有 `problem` 却缺席时
+   * 读的人按 `unreadable` 处理——拿不准就往关着的那边说。
+   */
+  readonly problemKind?: 'unreadable' | 'unwritable'
   /** 托管清单里的地址；控制台起的时候没给清单就是 `null`。 */
   readonly managed: readonly string[] | null
   readonly registrations: readonly RegistrationRecord[]
@@ -278,6 +285,18 @@ export interface AuditPage {
       readonly actual: string | null
     }
   }
+  /**
+   * The highest `seq` on the trail, 0 when it holds no records: what an
+   * incremental poll passes back as {@link AuditFilter.since}. Absent from a
+   * port that does not page (a hand-written test double).
+   */
+  readonly head?: number
+  /**
+   * The {@link AuditFilter.before} that reads the next older page, or `null`
+   * when this page already reaches the oldest record the filter matches.
+   * Absent from a port that does not page.
+   */
+  readonly earlier?: number | null
 }
 
 /** Filter accepted by the audit view; every field is optional and ANDed. */
@@ -304,6 +323,24 @@ export interface AuditFilter {
   readonly window?: string
   /** Tail size. The port clamps it; the view never asks for the whole file. */
   readonly limit?: number
+  /**
+   * One search box: a case-insensitive substring of the kind, the trace,
+   * task and message ids, the code, node, peer, source or a detail string
+   * (`@qianmo/audit`, `TrailQuery.text`). ANDed with everything else.
+   */
+  readonly q?: string
+  /**
+   * The cursor: only records whose `seq` is below this — the page older
+   * than one already shown, as {@link AuditPage.earlier} handed it out.
+   * Records appended meanwhile never land on a page asked for this way.
+   */
+  readonly before?: number
+  /**
+   * The increment: only records whose `seq` is above this — what arrived
+   * after a poller last saw {@link AuditPage.head}. When more arrived than
+   * one page holds, the page says so with a non-null `earlier`.
+   */
+  readonly since?: number
 }
 
 export interface AuditPort {
@@ -1438,6 +1475,23 @@ export interface ProviderCatalog {
   readonly presets: readonly ProviderPresetView[]
 }
 
+/**
+ * 多 key 池里的一把（P18.18，镜像目录包的 `KeyStatus`）。`cooling` 到 `until`
+ * 自己恢复；`dead`（凭据被吊销）要中枢给这个 id 下发新值才恢复。
+ */
+export interface ProviderNodeKey {
+  readonly id: string
+  readonly state: 'ok' | 'cooling' | 'dead'
+  /** 只有 `cooling` 带：再试的时间（ISO）。 */
+  readonly until?: string
+  readonly reason?:
+    | 'rate-limit'
+    | 'usage-limit'
+    | 'billing'
+    | 'auth'
+    | 'revoked'
+}
+
 /** 节点上一次 `status` 报回的实际状态（§2.4），中枢不推断。 */
 export interface ProviderNodeActual {
   readonly managed: boolean
@@ -1474,6 +1528,11 @@ export interface ProviderNodeActual {
     readonly at: string
     readonly diffKeys: readonly string[]
   } | null
+  /**
+   * P18.18：节点在跑多 key 池时逐把报的状态，按节点的选取顺序。只有 key id，
+   * 没有值也没有指纹；单 key 节点不报这一项。
+   */
+  readonly keys?: readonly ProviderNodeKey[]
   /**
    * 节点用真实门控函数算出来的生效值。页面上「线路 / 发不发 effort / 档位 / 上下文
    * / 自动压缩」只取这里，中枢自己不算（§3.4「显示 = 线上」）。节点没算出来时缺席。

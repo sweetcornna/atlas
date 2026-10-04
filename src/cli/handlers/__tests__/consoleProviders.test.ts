@@ -746,6 +746,354 @@ describe('the canary never leaks', () => {
   }, 30_000)
 })
 
+// ─── P18.18: several keys ────────────────────────────────────────────────────
+
+const CANARY_3 = 'sk-test-canary-port-third-Wm62RbY4nS'
+const CANARY_ROTATED = 'sk-test-canary-port-rotated-Jt17FeC9q'
+
+function multiKeyDraft(extra: Record<string, unknown> = {}) {
+  return draft({
+    keys: [{ id: 'k1' }, { id: 'k2' }, { id: 'k3', priority: 1 }],
+    keySelection: 'round_robin',
+    ...extra,
+  })
+}
+
+/** The sealed entry of one key, as pieces that would show in the file's bytes. */
+function sealedPieces(h: Harness, keyId: string): string[] {
+  const entry = (
+    JSON.parse(readFileSync(h.paths.secrets, 'utf8')) as {
+      entries: Record<string, Record<string, string>>
+    }
+  ).entries[`luna:${keyId}`]
+  return entry === undefined
+    ? []
+    : [entry.ct, entry.iv, entry.tag, entry.wrappedKey].filter(
+        (piece): piece is string => typeof piece === 'string',
+      )
+}
+
+describe('P18.18: several keys', () => {
+  test('an apply delivers every key, primary by priority; only to a node that rotates keys', async () => {
+    const h = harness()
+    const ops = h.caller()
+    value(
+      await h.port.saveProfile(
+        {
+          profile: multiKeyDraft(),
+          ifMatch: null,
+          secrets: { k1: CANARY, k2: CANARY_2, k3: CANARY_3 },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    const node = h.nodes['beta-1']
+
+    // A node that has not said it rotates keys: refused here, nothing sent.
+    const refused = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(refused[0]).toMatchObject({
+      outcome: 'refused',
+      code: 'unsupported-multi-key',
+    })
+    expect(node.requests().filter(r => r.op === 'apply')).toHaveLength(0)
+
+    node.set('multi-key', '1')
+    await h.port.refreshNode('beta-1')
+    const applied = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(applied[0]?.outcome).toBe('ok')
+    const wire = received(node, 'apply').at(-1)
+    expect(wire?.keySelection).toBe('round_robin')
+    expect(wire?.auth.keys).toEqual([
+      { id: 'k1', value: CANARY },
+      { id: 'k2', value: CANARY_2 },
+      { id: 'k3', value: CANARY_3, priority: 1 },
+    ])
+
+    // A probe or a model list still carries the primary only.
+    value(
+      await h.port.probe(
+        { node: 'beta-1', mode: 'auth', candidate: { profileId: 'luna' } },
+        ops,
+      ),
+    )
+    expect(received(node, 'probe').at(-1)?.auth.keys).toEqual([
+      { id: 'k3', value: CANARY_3, priority: 1 },
+    ])
+  }, 30_000)
+
+  test('status keys: the id, state, return time and reason of each key reach the page; nothing else does', async () => {
+    const h = harness()
+    const EMPTY = `sha256:${'0'.repeat(64)}`
+    const until = '2026-10-04T10:30:00.000Z'
+    h.nodes['beta-1'].set(
+      'reply-status.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: true,
+        state: {
+          managed: false,
+          applied: null,
+          onDiskHash: EMPTY,
+          appliedHash: null,
+          loadedHash: null,
+          pending: null,
+          resident: null,
+          inheritedProviderKeys: [],
+          capabilities: { protocol: 1, multiKey: true },
+          lastResult: null,
+          keys: [
+            { id: 'k1', state: 'ok' },
+            // A value or a fingerprint a node should never send: dropped.
+            {
+              id: 'k2',
+              state: 'cooling',
+              until,
+              reason: 'rate-limit',
+              value: CANARY,
+              fingerprint: 'fp1:0123456789abcdef0123456789abcdef',
+            },
+            { id: 'k3', state: 'dead', reason: 'revoked', until },
+            // Not shaped like a key: dropped whole.
+            { id: 'K 4', state: 'ok' },
+            { id: 'k5', state: 'resting' },
+            'k6',
+            // An `ok` key has no reason to be out.
+            { id: 'k7', state: 'ok', reason: 'auth' },
+            { id: 'k8', state: 'cooling', until: 'soon', reason: 'sideways' },
+          ],
+        },
+      }),
+    )
+    const view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.keys).toEqual([
+      { id: 'k1', state: 'ok' },
+      { id: 'k2', state: 'cooling', until, reason: 'rate-limit' },
+      { id: 'k3', state: 'dead', reason: 'revoked' },
+      { id: 'k7', state: 'ok' },
+      { id: 'k8', state: 'cooling' },
+    ])
+    expect(JSON.stringify(view)).not.toContain(CANARY)
+    expect(JSON.stringify(view)).not.toContain('fp1:')
+
+    // A single-key node reports none, and the view has no `keys` at all.
+    h.nodes['beta-4'].set('multi-key', '1')
+    const single = value(await h.port.refreshNode('beta-4'))
+    expect(single.actual).not.toBeNull()
+    expect(single.actual !== null && 'keys' in single.actual).toBe(false)
+  }, 30_000)
+
+  test('a key that is not filled in: secret-missing, naming it, nothing sent', async () => {
+    const h = harness()
+    const ops = h.caller()
+    value(
+      await h.port.saveProfile(
+        {
+          profile: multiKeyDraft(),
+          ifMatch: null,
+          secrets: { k1: CANARY, k3: CANARY_3 },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    h.nodes['beta-1'].set('multi-key', '1')
+    await h.port.refreshNode('beta-1')
+    const result = value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(result[0]).toMatchObject({
+      outcome: 'refused',
+      code: 'secret-missing',
+      message: '密钥 k2 还没有填写 · 先填写',
+    })
+    expect(
+      h.nodes['beta-1'].requests().filter(r => r.op === 'apply'),
+    ).toHaveLength(0)
+  }, 30_000)
+
+  test('rotating one key, then removing one: the old ciphertext is gone byte for byte, and the next apply carries the new set', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const saved = value(
+      await h.port.saveProfile(
+        {
+          profile: multiKeyDraft(),
+          ifMatch: null,
+          secrets: { k1: CANARY, k2: CANARY_2, k3: CANARY_3 },
+        },
+        ops,
+      ),
+    )
+    value(await h.port.setDefault({ profileId: 'luna' }, ops))
+    const oldK2 = sealedPieces(h, 'k2')
+    const oldK3 = sealedPieces(h, 'k3')
+    expect(oldK2).toHaveLength(4)
+    expect(oldK3).toHaveLength(4)
+    const holds = (piece: string) =>
+      readFileSync(h.paths.secrets).includes(Buffer.from(piece))
+    for (const piece of [...oldK2, ...oldK3]) expect(holds(piece)).toBe(true)
+
+    const rotated = value(
+      await h.port.setSecret(
+        {
+          profileId: 'luna',
+          keyId: 'k2',
+          value: CANARY_ROTATED,
+          ifMatch: saved.revision,
+        },
+        ops,
+      ),
+    )
+    for (const piece of oldK2) expect(holds(piece)).toBe(false)
+
+    const removedK3 = sealedPieces(h, 'k3')
+    value(
+      await h.port.saveProfile(
+        {
+          profile: multiKeyDraft({
+            keys: rotated.keys.filter(key => key.id !== 'k3'),
+          }),
+          ifMatch: rotated.revision,
+        },
+        ops,
+      ),
+    )
+    for (const piece of [...oldK3, ...removedK3]) {
+      expect(holds(piece)).toBe(false)
+    }
+    expect(sealedPieces(h, 'k3')).toEqual([])
+    const bytes = readFileSync(h.paths.secrets)
+    for (const key of [CANARY, CANARY_2, CANARY_3, CANARY_ROTATED]) {
+      expect(bytes.includes(Buffer.from(key))).toBe(false)
+    }
+
+    h.nodes['beta-1'].set('multi-key', '1')
+    await h.port.refreshNode('beta-1')
+    value(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    expect(received(h.nodes['beta-1'], 'apply').at(-1)?.auth.keys).toEqual([
+      { id: 'k1', value: CANARY },
+      { id: 'k2', value: CANARY_ROTATED },
+    ])
+  }, 30_000)
+
+  test('AC-P2 canary, several keys: no return value, ledger, book, secrets file, export, alarm or argv carries any of them', async () => {
+    const h = harness()
+    const ops = h.caller()
+    const outputs: unknown[] = []
+    const keep = <T>(result: T): T => {
+      outputs.push(result)
+      return result
+    }
+    const saved = value(
+      keep(
+        await h.port.saveProfile(
+          {
+            profile: multiKeyDraft(),
+            ifMatch: null,
+            secrets: { k1: CANARY, k2: CANARY_2, k3: CANARY_3 },
+          },
+          ops,
+        ),
+      ),
+    )
+    keep(await h.port.setDefault({ profileId: 'luna' }, ops))
+    for (const name of ['beta-1', 'beta-4'] as const) {
+      h.nodes[name].set('multi-key', '1')
+      keep(await h.port.refreshNode(name))
+    }
+    keep(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    keep(await h.port.apply({ nodes: ['beta-1'], dryRun: true }, ops))
+    // A node that echoes every key back: the hub redacts all of them.
+    h.nodes['beta-4'].set(
+      'reply-apply.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: false,
+        code: 'bad-value',
+        message: `rejected ${CANARY} ${CANARY_2} ${CANARY_3}`,
+      }),
+    )
+    keep(await h.port.apply({ nodes: ['beta-4'] }, ops))
+    keep(
+      await h.port.preview({
+        candidate: { profileId: 'luna' },
+        node: 'beta-1',
+      }),
+    )
+    keep(
+      await h.port.probe(
+        { node: 'beta-1', mode: 'auth', candidate: { profileId: 'luna' } },
+        ops,
+      ),
+    )
+    keep(await h.port.overview())
+    keep(await h.port.profile('luna'))
+    keep(await h.port.node('beta-1'))
+    const rotated = value(
+      keep(
+        await h.port.setSecret(
+          {
+            profileId: 'luna',
+            keyId: 'k2',
+            value: CANARY_ROTATED,
+            ifMatch: saved.revision,
+          },
+          ops,
+        ),
+      ),
+    )
+    keep(
+      await h.port.saveProfile(
+        {
+          profile: multiKeyDraft({
+            keys: rotated.keys.filter(key => key.id !== 'k3'),
+          }),
+          ifMatch: rotated.revision,
+        },
+        ops,
+      ),
+    )
+    keep(await h.port.apply({ nodes: ['beta-1'] }, ops))
+    const exported = value(keep(await h.port.exportProfiles()))
+
+    const pieces = [CANARY, CANARY_2, CANARY_3, CANARY_ROTATED].flatMap(key => [
+      key,
+      key.slice(-8),
+      key.slice(15, 27),
+    ])
+    const surfaces: Record<string, string> = {
+      outputs: JSON.stringify(outputs),
+      ledger: h.ledgerStore.text ?? '',
+      book: readFileSync(h.paths.store, 'utf8'),
+      secretsFile: readFileSync(h.paths.secrets, 'utf8'),
+      export: exported.text,
+      alarms: h.alarms.join('\n'),
+      argv: JSON.stringify([
+        ...h.nodes['beta-1'].argv(),
+        ...h.nodes['beta-4'].argv(),
+      ]),
+    }
+    for (const [name, text] of Object.entries(surfaces)) {
+      for (const piece of pieces) {
+        expect([name, piece, text.includes(piece)]).toEqual([
+          name,
+          piece,
+          false,
+        ])
+      }
+    }
+    // Positive control: every key did go out, on the nodes' stdin.
+    const stdin = JSON.stringify([
+      ...h.nodes['beta-1'].requests(),
+      ...h.nodes['beta-4'].requests(),
+    ])
+    for (const key of [CANARY, CANARY_2, CANARY_3, CANARY_ROTATED]) {
+      expect(stdin).toContain(key)
+    }
+  }, 30_000)
+})
+
 describe('the desired state against the node', () => {
   test('expect.ownedHash is the hash the node reported for OUR last commit, never a fresh read', async () => {
     const h = harness()

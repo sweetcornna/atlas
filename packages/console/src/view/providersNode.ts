@@ -3,9 +3,9 @@
 
 /**
  * One node's 「模型」 tab (§6.3.8): expected, actual, drift, every field of
- * `effective`, the last ten applies and probes, and the two settings a node
- * page may change — the context window (D-8) and the auto-compact window
- * (D-9).
+ * `effective`, each key of a key pool as the node reports it (P18.18), the
+ * last ten applies and probes, and the two settings a node page may change —
+ * the context window (D-8) and the auto-compact window (D-9).
  *
  * It lives at `/providers/nodes/<node>` with its polled region at
  * `/fragments/providers/nodes/<node>`. `/nodes/<node>` is P18.11's page; the
@@ -47,6 +47,7 @@ import {
   writeLink,
   type ProvidersReader,
 } from './providers.js'
+import { nodeKeysSection } from './providersKeys.js'
 
 interface NodePanelModel {
   readonly node: ProviderNodeView
@@ -241,6 +242,7 @@ export function renderNodePanel(model: NodePanelModel): string {
     }) +
     effectiveFields(node.actual) +
     `</section>` +
+    nodeKeysSection(node.actual) +
     `<section class="sec" aria-labelledby="h-prov-settings">` +
     sectionHead('Settings', '设置', { headingId: 'h-prov-settings' }) +
     `<div class="prov-cards">` +

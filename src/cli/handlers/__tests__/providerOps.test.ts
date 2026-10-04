@@ -339,7 +339,7 @@ describe('the closed error set: one case per code', () => {
     )
   })
 
-  test('unsupported-multi-key: two keys on a v1 node', async () => {
+  test('unsupported-multi-key: two keys off the OpenAI lane (P18.18)', async () => {
     expectCode(
       await send(
         applyRequest({
@@ -642,6 +642,51 @@ describe('status', () => {
     const response = await send(statusRequest())
     expect(response.ok && response.state?.resident?.inFlight).toBeNull()
     expect(response.ok && response.state?.pending?.waitingTurns).toBeNull()
+  })
+
+  test('P18.18: a multi-key apply commits; status reports each key by id, never a value', async () => {
+    const applied = await send(
+      applyRequest({
+        profile: {
+          lane: 'openai-responses',
+          baseUrl: 'https://api.vendor.example/v1',
+          compat: {},
+          models: [
+            model({
+              capabilities: { mode: 'family' },
+              effort: { send: 'auto' },
+            }),
+          ],
+          auth: {
+            scheme: 'bearer',
+            keys: [
+              { id: 'k1', value: CANARY_KEY },
+              { id: 'k2', value: CANARY_KEY_2 },
+            ],
+          },
+          keySelection: 'least_used',
+        },
+      }),
+    )
+    expect(applied.ok && applied.state?.keys).toEqual([
+      { id: 'k1', state: 'ok' },
+      { id: 'k2', state: 'ok' },
+    ])
+    expect(readEnv().OPENAI_API_KEY).toBe(CANARY_KEY)
+    const response = await send(statusRequest())
+    expect(response.ok && response.state?.capabilities.multiKey).toBe(true)
+    expect(response.ok && response.state?.keys).toEqual([
+      { id: 'k1', state: 'ok' },
+      { id: 'k2', state: 'ok' },
+    ])
+    // The afterAll scan covers these responses too.
+    expect(JSON.stringify(response)).not.toContain(CANARY_KEY_2)
+  })
+
+  test('a single-key node reports no keys', async () => {
+    await send(applyRequest())
+    const response = await send(statusRequest())
+    expect(response.ok && 'keys' in (response.state ?? {})).toBe(false)
   })
 
   test('a resident that is not running any more: known, not running', async () => {

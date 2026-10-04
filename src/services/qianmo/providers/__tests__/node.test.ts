@@ -35,7 +35,7 @@ import {
   stageProviderApply,
 } from '../node.js'
 import { providerPaths } from '../store.js'
-import { applyRequest, CANARY_KEY, CANARY_KEY_2, model } from './helpers.js'
+import { applyRequest, CANARY_KEY, CANARY_KEY_2, model, V1 } from './helpers.js'
 
 let root: string
 let config: string
@@ -177,6 +177,27 @@ describe('stage: validates and writes an intent, never settings.json', () => {
     const result = stageProviderApply(
       applyRequest({
         profile: {
+          lane: 'openai-responses',
+          baseUrl: 'https://api.vendor.example/v1',
+          compat: {},
+          auth: {
+            scheme: 'bearer',
+            keys: [
+              { id: 'k1', value: CANARY_KEY },
+              { id: 'k2', value: CANARY_KEY_2 },
+            ],
+          },
+        },
+      }),
+      { node: 'beta-1', capabilities: V1 },
+    )
+    expect(result.ok ? 'ok' : result.code).toBe('unsupported-multi-key')
+  })
+
+  test('more than one key off the OpenAI lane: unsupported-multi-key (P18.18)', () => {
+    const result = stageProviderApply(
+      applyRequest({
+        profile: {
           auth: {
             scheme: 'bearer',
             keys: [
@@ -189,6 +210,7 @@ describe('stage: validates and writes an intent, never settings.json', () => {
       { node: 'beta-1' },
     )
     expect(result.ok ? 'ok' : result.code).toBe('unsupported-multi-key')
+    expect(existsSync(providerPaths.pending())).toBe(false)
   })
 
   test('a held lock is busy', () => {
@@ -550,8 +572,9 @@ describe("capabilities: the call layer's own flags (P18.12)", () => {
     expect(readProviderState().capabilities).toEqual({
       protocol: 1,
       ...getModelCompatCapabilities(),
-      multiKey: false,
     })
+    // P18.18: the key pool is in the call layer, so is the flag.
+    expect(readProviderState().capabilities.multiKey).toBe(true)
   })
 
   test('a stage without explicit capabilities takes `always` on the chat lane', () => {

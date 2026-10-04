@@ -26,11 +26,13 @@
 
 import {
   AuditSource,
-  queryTrail,
+  TrailReader,
+  pageTrail,
   readTrail,
   reconstructChain,
   type TrailQuery,
   type TrailReadResult,
+  type TrailSnapshot,
 } from '@qianmo/audit'
 import {
   verifyAuditWitness,
@@ -385,6 +387,11 @@ interface AuditPortOptions {
   readonly witnessReadToken?: string
   /** Direct callers may provide the reader; production uses the parsed source. */
   readonly witnessReader?: AuditWitnessReader
+  /**
+   * 读链用的增量读取器。缺省按 `path` 新建一个；测试传进来读它的计数
+   * （`TrailReader.stats`），据此区分「整读」与「只读了新增的那几行」。
+   */
+  readonly reader?: TrailReader
 }
 
 function clampLimit(raw: number | undefined): number {
@@ -399,7 +406,7 @@ function clampLimit(raw: number | undefined): number {
  * 记录」。倒过来问会让**没有文件**这一态被空记录吃掉——而那正是内测环境里
  * 每 5 分钟失败一次的镜像链路在控制台上显示成「链完整」的那条路径。
  */
-function chainStateOf(read: TrailReadResult): AuditChainState {
+function chainStateOf(read: TrailSnapshot): AuditChainState {
   if (!read.present) return 'absent'
   if (!read.intact) return 'broken'
   return read.records.length === 0 ? 'empty' : 'intact'
@@ -438,11 +445,19 @@ function firstMismatchOf(
  *
  * **只读**：这个端口没有任何写审计链的路径。审计链的写入口只有节点进程自己
  * （append-only fd），控制台连一个能追加的方法都不该有。
+ *
+ * **每个字节只校验一次**（D5、G2）：读链走一个常驻的 `TrailReader`，没写过的
+ * 文件直接给上次的答案，只追加的文件只读新增的几行；变短、换文件、就地改写
+ * 就整读重验，满一分钟也整读一次（取舍写在 `@qianmo/audit` 的 `reader.ts`）。
+ * 翻页用 `pageTrail`：首屏只看最新的 `limit + 1` 条，与链长无关。见证那一路
+ * （`--anchors`）仍由 `verifyAuditWitness` 按路径整读，不在这个缓存里。
  */
 export function createAuditPort(options: AuditPortOptions): AuditPort {
-  function load(): ConsoleResult<TrailReadResult> {
+  const reader = options.reader ?? new TrailReader(options.path)
+
+  function load(): ConsoleResult<TrailSnapshot> {
     try {
-      return { ok: true, value: readTrail(options.path) }
+      return { ok: true, value: reader.read() }
     } catch (error) {
       return fail(
         'unreachable',
@@ -473,6 +488,19 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
       ] as const) {
         if (value !== undefined && !Number.isFinite(value)) {
           return fail('invalid', `${name} 必须是 epoch 毫秒`)
+        }
+      }
+      // 游标是链上的序号：一个不是非负整数的游标不会对上任何一页，说出来
+      // 比静默给一页空的好。
+      for (const [name, value] of [
+        ['before', filter.before],
+        ['since', filter.since],
+      ] as const) {
+        if (
+          value !== undefined &&
+          !(Number.isSafeInteger(value) && value >= 0)
+        ) {
+          return fail('invalid', `${name} 必须是非负整数（审计序号）`)
         }
       }
 
@@ -544,23 +572,32 @@ export function createAuditPort(options: AuditPortOptions): AuditPort {
           : { agent: filter.agent }),
         ...(filter.from === undefined ? {} : { from: filter.from }),
         ...(filter.to === undefined ? {} : { to: filter.to }),
+        ...(filter.q === undefined || filter.q === ''
+          ? {}
+          : { text: filter.q }),
       }
 
       // 取**尾部** limit 条，和 `occ audit --limit` 同一语义
       // （`qianmoAudit.ts` 第 198 行）：一条链上最近发生的事才是被找的那些。
-      const matched = queryTrail(records, query).slice(
-        -clampLimit(filter.limit),
-      )
+      // `before` 往更早翻，`since` 只要之后来的；`earlier` 是下一页的游标。
+      const page = pageTrail(records, query, {
+        limit: clampLimit(filter.limit),
+        ...(filter.before === undefined ? {} : { before: filter.before }),
+        ...(filter.since === undefined ? {} : { after: filter.since }),
+        ordered: loaded.value.ordered,
+      })
       return {
         ok: true,
         value: {
-          records: matched,
+          records: page.records,
           chain,
           // 只有「有链且没毛病」才算完整——空链算，缺文件不算。
           intact: chain === 'intact' || chain === 'empty',
           issueCount: issues.length,
           // 过滤前的总数，页面据此说「共 M 条中的 N 条」。
           total: records.length,
+          head: records.at(-1)?.seq ?? 0,
+          earlier: page.earlier,
           ...(witness === undefined ? {} : { witness }),
         },
       }

@@ -10,19 +10,47 @@
  * `/fragments/chain/<traceId>`. The filter parser lives here rather than in
  * `http.ts` because the trail is the one area whose query string is a real
  * interface: the page's own form, the poller and a hand-edited bookmark all
- * write it, and the next change to it (a cursor, `providers-console-m1.md`
- * §6.4 D5) belongs to this area alone.
+ * write it.
+ *
+ * ## Newest first, a page at a time, and a poll that carries only news (D5, G2)
+ *
+ * The page shows the newest {@link AUDIT_PAGE_LIMIT} matches, newest on top.
+ * 加载更早 is a link with `before=<seq>` — the cursor `AuditPort` hands out
+ * as `earlier` — so older pages work without script and never repeat or skip
+ * a line, however much is appended meanwhile. `node=` narrows a page of
+ * several trails to one, which is what a cursor needs: a `seq` belongs to
+ * one chain.
+ *
+ * The poll asks for what arrived since the page was drawn — `since=<head>`,
+ * or `since=<node>:<head>` once per trail — and gets the header and those
+ * rows (`renderAuditFresh`), never the page again. The cursor in the poll URL
+ * does not move, so the page needs no script to keep one; a burst of more
+ * than a page, or a trail that got shorter, turns into a reload link. A port
+ * that does not page (no `head`; a test double) gets the old whole-fragment
+ * poll.
  */
 
 import { AUDIT_PAGE_JS } from '../assets/pageScripts.js'
-import type { AuditFilter, ConsoleDeps } from '../deps.js'
+import type {
+  AuditFilter,
+  AuditPort,
+  ConsoleAuditSource,
+  ConsoleDeps,
+} from '../deps.js'
 import { fail, html, json, methodNotAllowed, notFound } from '../respond.js'
 import { agentFilterOptions } from '../view/agents.js'
 import {
+  AUDIT_PAGE_LIMIT,
   AUDIT_WINDOWS,
   renderAudit,
+  renderAuditFresh,
+  renderAuditRail,
   renderAuditSources,
+  renderAuditSourcesRail,
   renderChain,
+  type AuditSourceRender,
+  type TrailArrival,
+  type TrailPaging,
 } from '../view/audit.js'
 import { failureBar } from '../view/bits.js'
 import { attr } from '../view/escape.js'
@@ -84,6 +112,19 @@ function parseLimit(raw: string | null): number | undefined {
 }
 
 /**
+ * A cursor: an audit `seq`, digits only. Anything else reads as "not given",
+ * for the same reason a half-typed date does — and the port refuses the
+ * negative and fractional values a script might send.
+ */
+function parseSeq(raw: string | null): number | undefined {
+  if (raw === null) return undefined
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const value = Number(trimmed)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
+/**
  * The relative windows the trail filter's segmented control can submit.
  *
  * Resolved here rather than in the browser because the filter form is a plain
@@ -123,6 +164,9 @@ export function parseAuditFilter(
     to?: number
     window?: string
     limit?: number
+    q?: string
+    before?: number
+    since?: number
   } = {}
 
   const source = textParam(params, 'source')
@@ -160,23 +204,211 @@ export function parseAuditFilter(
   const limit = parseLimit(params.get('limit'))
   if (limit !== undefined) filter.limit = limit
 
+  const q = textParam(params, 'q')
+  if (q !== undefined) filter.q = q
+  // The cursors (D5). `since` here is the bare form, one trail's; the
+  // several-trail page writes `since=<node>:<seq>`, read by `sinceByNode`.
+  const before = parseSeq(params.get('before'))
+  if (before !== undefined) filter.before = before
+  const since = parseSeq(params.get('since'))
+  if (since !== undefined) filter.since = since
+
   return filter
 }
 
-/** The trail fragment for a filter: one source the legacy way, or several. */
-async function auditFragment(
-  deps: ConsoleDeps,
-  filter: AuditFilter,
-  agentOptions?: string,
-): Promise<string> {
-  if (singleLegacyAudit(deps)) {
-    const result = await deps.audit.read(filter)
-    return renderAudit(valueOf(result), failureOf(result), filter, agentOptions)
+/** `since=<node>:<seq>`, once per trail of a several-trail page. */
+function sinceByNode(params: URLSearchParams): ReadonlyMap<string, number> {
+  const out = new Map<string, number>()
+  for (const raw of params.getAll('since')) {
+    const cut = raw.lastIndexOf(':')
+    if (cut <= 0) continue
+    const seq = parseSeq(raw.slice(cut + 1))
+    if (seq !== undefined) out.set(raw.slice(0, cut), seq)
   }
-  return renderAuditSources(
-    await readAuditSources(deps, filter),
-    filter,
-    agentOptions,
+  return out
+}
+
+/** One trail the page can show, with its position among the configured ones. */
+interface Trail {
+  readonly source: ConsoleAuditSource
+  /** Absent for the single legacy trail (`deps.audit` alone). */
+  readonly slot?: number
+}
+
+/**
+ * The trails a view shows: the single legacy one, every configured one, or
+ * the one `node=` names. `null` when `node=` names none of them.
+ */
+function trailsOf(deps: ConsoleDeps, node: string | undefined): Trail[] | null {
+  if (singleLegacyAudit(deps)) {
+    return [{ source: { node: '', audit: deps.audit, kind: 'authoritative' } }]
+  }
+  const all = (deps.audits ?? []).map((source, slot) => ({ source, slot }))
+  if (node === undefined) return all
+  const one = all.filter(trail => trail.source.node === node)
+  return one.length === 0 ? null : one
+}
+
+/** One trail read for a view: the page's tail, unless the filter names one. */
+async function readTrailFor(
+  trail: Trail,
+  filter: AuditFilter,
+): Promise<AuditSourceRender> {
+  const { source } = trail
+  const audit: AuditPort = source.audit
+  const result = await audit.read({
+    ...filter,
+    limit: filter.limit ?? AUDIT_PAGE_LIMIT,
+  })
+  return {
+    node: source.node,
+    kind: source.kind,
+    ...(source.maxLagMinutes === undefined
+      ? {}
+      : { maxLagMinutes: source.maxLagMinutes }),
+    ...(trail.slot === undefined ? {} : { slot: trail.slot }),
+    page: valueOf(result),
+    failure: failureOf(result),
+  }
+}
+
+/** What a paged view of the trail renders into, and how it is kept fresh. */
+interface TrailRegion {
+  readonly html: string
+  /** The fragment URL the page polls. */
+  readonly poll: string
+  /** The ids the poll swaps (`data-swap`). */
+  readonly swap: string
+  readonly status?: number
+}
+
+/** The parameters of a view that are not the filter: which trail, which page. */
+function viewOf(url: URL, now: number) {
+  const filter = parseAuditFilter(url, now)
+  const node = textParam(url.searchParams, 'node')
+  const { since: _since, ...rest } = filter
+  return { filter: rest, node }
+}
+
+/**
+ * The trail as a page shows it, and the poll that keeps it current.
+ *
+ * `before` pages back. On a view of several trails it needs `node=`, because
+ * a `seq` belongs to one chain; without it the newest page of every trail is
+ * shown and the cursor is ignored.
+ */
+async function trailRegion(
+  deps: ConsoleDeps,
+  url: URL,
+  now: number,
+  agentOptions?: string,
+): Promise<TrailRegion> {
+  const view = viewOf(url, now)
+  const legacy = singleLegacyAudit(deps)
+  const trails = trailsOf(deps, view.node)
+  const query = auditQuery(view.filter, legacy ? undefined : view.node)
+  if (trails === null) {
+    return {
+      html: failureBar(
+        { code: 'not_found', message: '未配置该审计节点' },
+        '读取审计日志失败',
+      ),
+      poll: '',
+      swap: '',
+      status: 404,
+    }
+  }
+  const { before, ...newest } = view.filter
+  const narrowed = legacy || view.node !== undefined
+  const filter: AuditFilter =
+    narrowed && before !== undefined ? { ...newest, before } : newest
+  const reads = await Promise.all(
+    trails.map(trail => readTrailFor(trail, filter)),
+  )
+  const paging: TrailPaging = { query, fresh: filter.before === undefined }
+  const body = legacy
+    ? renderAudit(
+        reads[0]?.page ?? null,
+        reads[0]?.failure ?? null,
+        view.filter,
+        agentOptions,
+        paging,
+      )
+    : renderAuditSources(reads, view.filter, agentOptions, paging)
+
+  // The increment needs every trail's head; a port that does not page gets
+  // the whole fragment polled, as before.
+  const heads = reads.map(read => read.page?.head)
+  const paged = reads.every(
+    read => read.page === null || read.page.head !== undefined,
+  )
+  if (!paged) {
+    return {
+      html: body,
+      poll: `/fragments/audit${query === '' ? '' : `?${query}`}`,
+      swap: 'audit-rail audit-results',
+    }
+  }
+  const params = new URLSearchParams(query)
+  for (const [index, read] of reads.entries()) {
+    const head = heads[index]
+    if (head === undefined) continue
+    params.append('since', legacy ? String(head) : `${read.node}:${head}`)
+  }
+  const fresh = paging.fresh
+    ? reads
+        .filter(read => read.page !== null)
+        .map(read =>
+          read.slot === undefined ? 'audit-fresh' : `audit-fresh-${read.slot}`,
+        )
+    : []
+  return {
+    html: body,
+    poll: `/fragments/audit?${params.toString()}`,
+    swap: ['audit-rail', ...fresh].join(' '),
+  }
+}
+
+/** The poll's answer: the header, and what arrived on each trail since `since`. */
+async function trailIncrement(
+  deps: ConsoleDeps,
+  url: URL,
+  now: number,
+): Promise<string> {
+  const view = viewOf(url, now)
+  const legacy = singleLegacyAudit(deps)
+  const trails = trailsOf(deps, view.node) ?? []
+  const bare = parseAuditFilter(url, now).since
+  const byNode = sinceByNode(url.searchParams)
+  const { before: _before, ...filter } = view.filter
+  const reads = await Promise.all(
+    trails.map(async trail => {
+      const since = legacy ? bare : byNode.get(trail.source.node)
+      // A trail the page holds no head for is read for its header only.
+      const read = await readTrailFor(
+        trail,
+        since === undefined ? { ...filter, limit: 1 } : { ...filter, since },
+      )
+      return { read, since }
+    }),
+  )
+  const arrivals: TrailArrival[] = []
+  for (const { read, since } of reads) {
+    if (since === undefined) continue
+    arrivals.push({
+      ...(read.slot === undefined ? {} : { slot: read.slot }),
+      ...(legacy ? {} : { node: read.node }),
+      page: read.page,
+      since,
+    })
+  }
+  const query = auditQuery(view.filter, legacy ? undefined : view.node)
+  const rail = legacy
+    ? renderAuditRail(reads[0]?.read.page ?? null)
+    : renderAuditSourcesRail(reads.map(({ read }) => read))
+  return (
+    rail +
+    renderAuditFresh(arrivals, `/audit${query === '' ? '' : `?${query}`}`)
   )
 }
 
@@ -254,7 +486,7 @@ async function handleChain(
  * The *window* is replayed rather than the instant it resolved to, so "the
  * last hour" keeps meaning the last hour five minutes later.
  */
-function auditQuery(filter: AuditFilter): string {
+function auditQuery(filter: AuditFilter, node?: string): string {
   const params = new URLSearchParams()
   const put = (key: string, value: string | number | undefined) => {
     if (value === undefined) return
@@ -273,42 +505,37 @@ function auditQuery(filter: AuditFilter): string {
     put('window', filter.window)
   }
   put('limit', filter.limit)
+  put('q', filter.q)
+  put('node', node)
   return params.toString()
 }
 
 /**
- * The trail page. Only the header digits and the results are polled
- * (`data-swap`): the filter form between them must survive a refresh with
- * whatever the operator was halfway through typing. The node filter offers
- * the addresses that exist, from the same registry read as the sidebar.
+ * The trail page. Only the header and the fresh rows are polled
+ * (`data-swap`): the filter form must survive a refresh with whatever the
+ * operator was halfway through typing, and the rows already on the page —
+ * 加载更早 included — are not fetched again. The node filter offers the
+ * addresses that exist, from the same registry read as the sidebar.
  */
 async function auditPage(ctx: RouteContext): Promise<PageRender> {
-  const { deps, url, now } = ctx
+  const { url, now } = ctx
   const filter = parseAuditFilter(url, now)
-  const [roster, trails] = await Promise.all([
-    ctx.roster(),
-    readAuditSources(deps, filter),
-  ])
+  const roster = await ctx.roster()
   const options = agentFilterOptions(valueOf(roster), filter.agent)
-  const trail = singleLegacyAudit(deps)
-    ? renderAudit(
-        trails[0]?.page ?? null,
-        trails[0]?.failure ?? null,
-        filter,
-        options,
-      )
-    : renderAuditSources(trails, filter, options)
-  const query = auditQuery(filter)
+  const region = await trailRegion(ctx.deps, url, now, options)
   return {
     title: '消息链',
     body:
       `<section class="sec" id="trail-section">` +
-      `<div id="audit" data-poll="${attr(
-        `/fragments/audit${query === '' ? '' : `?${query}`}`,
-      )}" data-swap="audit-rail audit-results">${trail}</div>` +
+      (region.poll === ''
+        ? `<div id="audit">${region.html}</div>`
+        : `<div id="audit" data-poll="${attr(region.poll)}" data-swap="${attr(
+            region.swap,
+          )}">${region.html}</div>`) +
       `<div class="chain-panel" id="chain" hidden></div>` +
       `</section>`,
-    poll: true,
+    poll: region.poll !== '',
+    ...(region.status === undefined ? {} : { status: region.status }),
   }
 }
 
@@ -352,9 +579,62 @@ async function tracePage(
 /**
  * The chain view carries a 关闭 for the inline panel on the trail page; on
  * the trace's own page there is nothing to close it into, so it is not shown.
+ *
+ * The rest is paging (D5): the rows that arrived since the page was drawn
+ * carry a rule on their left edge, 加载更早 sits centred under its table, and
+ * an empty trail's waiting table stays out of sight until a row lands in it.
  */
 const AUDIT_PAGE_CSS = `
 .trace-page [data-action="chain-close"] { display: none; }
+.audit-search { min-width: 14rem; flex: 1 1 14rem; }
+.trail-fresh tr td:first-child { box-shadow: inset 2px 0 0 var(--color-accent-2-400); }
+.trail-fresh .fresh-note td { color: var(--color-muted); text-align: center; }
+.trail-more, .trail-end { display: flex; justify-content: center; margin: var(--space-3) 0 0; }
+.trail-more[aria-busy="true"] { opacity: .6; }
+.fresh-only:has(tbody.trail-fresh:empty) { display: none; }
+.fresh-only:not(:has(tbody.trail-fresh:empty)) + .empty { display: none; }
+`
+
+/**
+ * 加载更早 with script on: the link's own view, fetched as a fragment, and
+ * its rows and its new 加载更早 put under the ones already on the page —
+ * parsed in a detached `<template>` (inert) and moved, never re-serialised,
+ * the same way the runtime swaps a polled region. With script off the link
+ * is a link, and the older page is a page.
+ */
+const AUDIT_PAGING_JS = `
+(function () {
+  'use strict';
+
+  var qc = window.qianmoConsole;
+  if (!qc) return;
+
+  function earlier(el) {
+    var url = el.getAttribute('data-fragment') || '';
+    var slot = el.getAttribute('data-slot');
+    var suffix = slot === null ? '' : '-' + slot;
+    var more = el.closest('.trail-more');
+    if (!url || !more) return;
+    if (more.getAttribute('aria-busy') === 'true') return;
+    more.setAttribute('aria-busy', 'true');
+    qc.loadHtml(url).then(function (html) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      var rows = tpl.content.querySelector('#audit-rows' + suffix);
+      var next = tpl.content.querySelector('#audit-more' + suffix);
+      var target = qc.byId('audit-rows' + suffix);
+      if (!rows || !target) throw new Error('没有找到这一页的记录');
+      while (rows.firstChild) target.appendChild(rows.firstChild);
+      if (next) more.replaceWith(next);
+      else more.remove();
+    }).catch(function (err) {
+      more.removeAttribute('aria-busy');
+      qc.toast('加载更早失败 · ' + qc.message(err), 'bad');
+    });
+  }
+
+  qc.onAction('audit-earlier', earlier);
+})();
 `
 
 export const auditRoute: RouteModule = {
@@ -382,7 +662,7 @@ export const auditRoute: RouteModule = {
         : await tracePage(ctx, traceId)
     },
     css: AUDIT_PAGE_CSS,
-    script: AUDIT_PAGE_JS,
+    script: AUDIT_PAGE_JS + AUDIT_PAGING_JS,
   },
   api: {
     heads: ['audit'],
@@ -417,9 +697,11 @@ export const auditRoute: RouteModule = {
           ),
         )
       }
-      return html(
-        await auditFragment(ctx.deps, parseAuditFilter(ctx.url, ctx.now)),
-      )
+      if (ctx.url.searchParams.has('since')) {
+        return html(await trailIncrement(ctx.deps, ctx.url, ctx.now))
+      }
+      const region = await trailRegion(ctx.deps, ctx.url, ctx.now)
+      return html(region.html, region.status ?? 200)
     },
   },
 }

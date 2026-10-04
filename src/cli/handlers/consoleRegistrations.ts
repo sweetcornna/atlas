@@ -497,6 +497,7 @@ export class ConsoleRegistrations {
   #snapshot(): LifecycleSnapshot {
     return {
       problem: this.#problem?.text ?? null,
+      ...(this.#problem === null ? {} : { problemKind: this.#problem.kind }),
       managed: this.#managed === null ? null : [...this.#managed.keys()].sort(),
       registrations: [...this.#entries.values()]
         .map(entry => this.#recordOf(entry))

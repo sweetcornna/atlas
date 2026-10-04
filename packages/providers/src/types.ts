@@ -44,9 +44,9 @@ export const EFFORT_SENDS = ['always', 'never', 'auto'] as const
 export type EffortSend = (typeof EFFORT_SENDS)[number]
 
 /**
- * How a multi-key profile picks its key (P18.18). v1 validates the value and
- * otherwise behaves as `fill_first` with one key: the primary key is the only
- * one compiled and delivered.
+ * How a multi-key profile picks its key (P18.18): once per session, at its
+ * first request (design §5.11.6 X-1), never per request. `random` is not
+ * offered (§0.5). A node without `capabilities.multiKey` takes one key only.
  */
 export const KEY_SELECTIONS = [
   'fill_first',
@@ -176,7 +176,7 @@ export type ProviderProfile = ProfileCore & {
 /**
  * A key on the wire: the value (only in `apply`/`probe`), or keep-by-
  * fingerprint. `priority` travels with it so a P18.18 node sees the same
- * order the hub does; a v1 node receives exactly one key.
+ * order the hub does; a node without `multiKey` receives exactly one key.
  */
 export type WireKey =
   | { id: string; value: string; priority?: number }
@@ -198,6 +198,9 @@ export type NodeCapabilities = {
   chatEffortHonorsOverride: boolean
   /** P18.8: replay filtered by target endpoint; cross-vendor `keep` allowed. */
   replayFilter: boolean
-  /** P18.18: more than one key per delivered profile. */
+  /**
+   * P18.18: more than one key per delivered profile, rotated by the call
+   * layer (OpenAI lanes; a multi-key profile on another lane is refused).
+   */
   multiKey: boolean
 }

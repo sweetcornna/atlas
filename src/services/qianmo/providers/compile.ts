@@ -239,6 +239,19 @@ export function compileProfile(
     compatIn.CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE === '0'
       ? 'openai-chat'
       : profile.lane
+  // P18.18: the key pool rotates on the OpenAI lane's two API-key routes
+  // only (`openai/index.ts`); the other lanes' send paths take one key.
+  if (
+    profile.auth.keys.length > 1 &&
+    effectiveLane !== 'openai-chat' &&
+    effectiveLane !== 'openai-responses'
+  ) {
+    return issue(
+      'unsupported-multi-key',
+      'profile.auth.keys',
+      '多密钥轮换只在 OpenAI 兼容线上生效 · 这条线一次只接受一把密钥',
+    )
+  }
   for (const [index, model] of profile.models.entries()) {
     const problem = checkModelEffort(
       model,
