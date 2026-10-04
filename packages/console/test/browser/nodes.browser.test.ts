@@ -168,9 +168,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-action="confirm-pause"]').click()`,
       )
-      await tab.waitFor(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed') !== null`,
-      )
+      await tab.waitFor(landed(PLANNER, 'paused', `已暂停 ${PLANNER}`))
       expect(served.actions.lines()).toEqual([`agent.pause ${PLANNER} ok`])
       expect(served.lifecycle.calls).toEqual([`pause ${PLANNER} legacy:admin`])
       expect(
@@ -186,9 +184,6 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
           `document.getElementById('toasts').textContent`,
         ),
       ).toContain(`已暂停 ${PLANNER}`)
-      const refreshed = await tab.evaluate<string>(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed')`,
-      )
 
       // 恢复: the same two steps, on the button the refresh drew.
       expect(
@@ -207,11 +202,7 @@ describe.skipIf(SKIP !== null)('one node in a browser', () => {
       await tab.evaluate(
         `document.querySelector('[data-action="confirm-resume"]').click()`,
       )
-      await tab.waitFor(
-        `document.getElementById('lifecycle').getAttribute('data-refreshed') !== ${JSON.stringify(
-          refreshed,
-        )}`,
-      )
+      await tab.waitFor(landed(PLANNER, 'active', `已恢复 ${PLANNER}`))
       expect(served.actions.lines()).toEqual([
         `agent.pause ${PLANNER} ok`,
         `agent.resume ${PLANNER} ok`,
