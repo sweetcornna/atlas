@@ -316,12 +316,12 @@ describe('the page', () => {
 
   test('the audit filter on the page URL reaches the port', async () => {
     // The trail moved to its own page (`/audit`); the filter moved with it.
-    // The overview reads the unfiltered tail for its card.
+    // The overview reads the last hour, whatever its own URL says (A2).
     const { handle, audit } = setup()
     await handle(get(`/audit?token=${VIEW}&source=router&limit=7`))
     expect(audit.filters[0]).toEqual({ source: 'router', limit: 7 })
     await handle(get(`/?token=${VIEW}&source=router&limit=7`))
-    expect(audit.filters[1]).toEqual({})
+    expect(audit.filters[1]).toEqual({ from: NOW - 3_600_000, limit: 500 })
   })
 
   test('still opens when the registry is unreachable', async () => {
@@ -762,7 +762,9 @@ describe('the registry lease on the page (C-1)', () => {
     expect(settings).toContain('data-ttl-ms="3600000"')
     expect(registry.listCalls).toBe(2)
     const overview = await (await handle(get('/', VIEW))).text()
-    expect(overview).toContain('<div class="stat-num">1 小时</div>')
+    // The lease is a constant: the overview no longer spends a card on it
+    // (A2); the roster and the settings page still state it.
+    expect(overview).not.toContain('注册租约')
     expect(registry.listCalls).toBe(3)
     for (const page of [nodes, settings, overview]) {
       expect(page).not.toContain('1 分 30 秒')

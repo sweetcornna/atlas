@@ -7,8 +7,21 @@
  * half is `browser/p1.browser.test.ts`; the copy rules are `copyGate.test.ts`.
  */
 
+import { AuditSource, type AuditRecord } from '@qianmo/audit'
 import { describe, expect, test } from 'bun:test'
-import { ADMIN, VIEW, browse, pageHarness, visibleText } from './pageHarness.js'
+import type { AuditPage, ConsoleCertificate } from '../src/deps.js'
+import { renderOverview } from '../src/view/page.js'
+import {
+  ADMIN,
+  NOW,
+  TRACE,
+  VIEW,
+  agentAt,
+  browse,
+  pageHarness,
+  visibleText,
+  type PageHarness,
+} from './pageHarness.js'
 
 describe('C6 · an empty trail offers a wake only where one can happen', () => {
   async function emptyTrail(token: string, wake: boolean): Promise<string> {
@@ -119,3 +132,189 @@ describe('H5 · a token in the address bar becomes a session, once', () => {
     }
   })
 })
+
+describe('A2 · every overview card is something that changes', () => {
+  const HOUR = 3_600_000
+
+  function record(seq: number, outcome: string): AuditRecord {
+    return {
+      seq,
+      at: NOW - 60_000,
+      source: AuditSource.Router,
+      kind: outcome === 'ok' ? 'forwarded' : outcome,
+      traceId: TRACE,
+      outcome,
+      prev: '0'.repeat(64),
+    } as AuditRecord
+  }
+
+  async function overview(
+    h: PageHarness,
+    page: Partial<AuditPage> = {},
+  ): Promise<string> {
+    h.audit.readResult = {
+      ok: true,
+      value: {
+        records: [],
+        chain: 'intact',
+        intact: true,
+        issueCount: 0,
+        total: 40,
+        ...page,
+      },
+    }
+    return await (await h.handle(browse('/', ADMIN))).text()
+  }
+
+  test('the two protocol constants are gone, and the last hour is read instead', async () => {
+    const h = pageHarness()
+    const html = await overview(h)
+    expect(html).not.toContain('注册租约')
+    expect(html).not.toContain('速率预算')
+    expect(h.audit.filters.at(-1)).toEqual({ from: NOW - HOUR, limit: 500 })
+  })
+
+  test('refusals and drops in the window are counted, with the way to the records', async () => {
+    const h = pageHarness()
+    const html = await overview(h, {
+      records: [
+        record(1, 'refused'),
+        record(2, 'refused'),
+        record(3, 'dropped'),
+        record(4, 'ok'),
+      ],
+      earlier: null,
+    })
+    const card = html.slice(html.indexOf('近 1 小时拒绝'))
+    expect(card).toContain('<div class="stat-num">2</div>')
+    expect(card).toContain('<span class="tone-warn">丢弃 1</span>')
+    expect(card).toContain(
+      'href="/audit?window=1h&amp;outcome=refused" data-nav>查看',
+    )
+  })
+
+  test('a window fuller than one read says the count is a floor', async () => {
+    const h = pageHarness()
+    const html = await overview(h, {
+      records: [record(9, 'refused')],
+      earlier: 8,
+    })
+    expect(html).toContain('<div class="stat-num">1+</div>')
+    expect(html).toContain('丢弃 0+')
+  })
+
+  test('an unreadable trail is said, not counted as zero', async () => {
+    const h = pageHarness()
+    h.audit.readResult = {
+      ok: false,
+      failure: { code: 'unreachable', message: 'x' },
+    }
+    const html = await (await h.handle(browse('/', ADMIN))).text()
+    const card = html.slice(html.indexOf('近 1 小时拒绝'))
+    expect(card).toContain('<div class="stat-num">—</div>')
+    expect(card).toContain('读不到审计链')
+  })
+
+  test('stale and expired agents are named on the agent card, and only when there are any', async () => {
+    const h = pageHarness()
+    h.registry.listResult = {
+      ok: true,
+      value: [
+        agentAt('qianmo://tokyo-1/planner'),
+        agentAt('qianmo://tokyo-1/late', {
+          lastHeartbeatAt: NOW - 200_000,
+          expiresAt: NOW - 110_000,
+        }),
+      ],
+    }
+    const html = await overview(h)
+    const card = html.slice(
+      html.indexOf('card-kicker">智能体'),
+      html.indexOf('card-kicker">消息链'),
+    )
+    expect(card).toContain('在线 1')
+    expect(card).toMatch(/(滞后|过期) 1/)
+    const calm = await overview(pageHarness())
+    const calmCard = calm.slice(
+      calm.indexOf('card-kicker">智能体'),
+      calm.indexOf('card-kicker">消息链'),
+    )
+    expect(calmCard).not.toContain('滞后')
+    expect(calmCard).not.toContain('过期')
+  })
+
+  test('with chat and no certificate source, the fourth card is the conversations', async () => {
+    const h = pageHarness({ chat: true })
+    const html = await overview(h)
+    expect(html).toContain('class="cards g4"')
+    expect(html).toContain('近 1 小时会话')
+  })
+})
+
+describe('A2 · the certificate card', () => {
+  test('counts, the ones that need a look, and the revocation list', () => {
+    const base = {
+      roster: '',
+      audit: '',
+      recent: { refused: 0, dropped: 0, more: false },
+      now: NOW,
+      nodes: '',
+    }
+    const valid = { node: 'tokyo-1', status: 'valid' } as ConsoleCertificate
+    const expiring = {
+      node: 'osaka-1',
+      status: 'expiring',
+    } as ConsoleCertificate
+    const healthy = renderOverview({
+      ...base,
+      certificates: {
+        snapshot: {
+          certificates: [valid, valid],
+          revocationList: {
+            issuedAt: NOW - 1,
+            nextUpdate: NOW + HOUR_MS,
+            revokedCount: 3,
+          },
+        },
+        failure: null,
+      },
+    })
+    expect(healthy).toContain('class="cards g4"')
+    expect(healthy).toContain('2 张证书有效')
+    expect(healthy).toContain('已吊销 3')
+    const attention = renderOverview({
+      ...base,
+      certificates: {
+        snapshot: {
+          certificates: [valid, expiring],
+          revocationList: {
+            issuedAt: NOW - 2,
+            nextUpdate: NOW - 1,
+            revokedCount: 0,
+          },
+        },
+        failure: null,
+      },
+    })
+    expect(attention).toContain('1 张证书需注意')
+    expect(attention).toContain('吊销清单已过期')
+    const never = renderOverview({
+      ...base,
+      certificates: {
+        snapshot: { certificates: [valid], revocationList: null },
+        failure: null,
+      },
+    })
+    expect(never).toContain('吊销清单未发布')
+    const down = renderOverview({
+      ...base,
+      certificates: {
+        snapshot: null,
+        failure: { code: 'unreachable', message: 'x' },
+      },
+    })
+    expect(down).toContain('读不到证书目录')
+  })
+})
+
+const HOUR_MS = 3_600_000

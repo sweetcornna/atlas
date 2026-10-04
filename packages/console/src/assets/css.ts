@@ -410,6 +410,7 @@ a.brand-cn:hover { color: var(--color-accent-700); }
 .sec-head h2, .sec-head h3 { margin: 0; }
 .cards { display: grid; gap: var(--space-3); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 /* ---- cards ---- */
 .card {
@@ -1026,7 +1027,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
   .side { position: static; height: auto; gap: var(--space-4); }
   .nav-group { flex-direction: row; flex-wrap: wrap; gap: var(--space-1); }
   .nav-group-name { width: 100%; }
-  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .g4, .g3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .row > summary { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--space-2); }
   .row-panel, .form-grid, .limits, .adv-body { grid-template-columns: minmax(0, 1fr); }
   .empty { grid-template-columns: minmax(0, 1fr); }
@@ -1035,7 +1036,7 @@ dialog.dialog::backdrop { background: color-mix(in srgb, var(--color-scrim, #2e2
 @media (max-width: 620px) {
   .shell { padding: var(--space-2); gap: var(--space-2); }
   .main { padding: var(--space-1); }
-  .g4 { grid-template-columns: minmax(0, 1fr); }
+  .g4, .g3 { grid-template-columns: minmax(0, 1fr); }
   .turn { grid-template-columns: minmax(0, 1fr); }
   .turn-av { display: none; }
   .empty { padding: var(--space-6) var(--space-2); }

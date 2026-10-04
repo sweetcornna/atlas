@@ -14,17 +14,32 @@
  * ## The overview cards read the fragments, not a second copy of the data
  *
  * `renderRoster` and `renderAudit` already compute the counts their headers
- * print; `renderLimits` already computes the rate and the lease TTL. Rather
- * than give the overview a second, raw shape of the same numbers, the header
- * markup carries them out as `data-*` attributes (see the `stats` option on
- * `sectionHead`) and {@link renderOverview} reads those back off the
- * already-rendered fragment strings. One source of truth for each number, even
- * though it crosses a module boundary as a string rather than as a value.
+ * print. Rather than give the overview a second, raw shape of the same
+ * numbers, the header markup carries them out as `data-*` attributes (see the
+ * `stats` option on `sectionHead`) and {@link renderOverview} reads those back
+ * off the already-rendered fragment strings. One source of truth for each
+ * number, even though it crosses a module boundary as a string rather than as
+ * a value.
+ *
+ * ## Every card is something that changes (A2)
+ *
+ * Two of the four cards used to be protocol constants - the registry lease
+ * and the rate budget - the same on every visit. They live on 设置与关于,
+ * where constants belong; the overview now spends its four places on the
+ * network's health: who answers, whether the chain holds, what was refused
+ * or dropped in the last hour, and the certificates (or, on a console
+ * without a certificate source, the conversations).
  */
 
-import { icon, sectionHead } from './bits.js'
-import { escapeHtml } from './escape.js'
-import { formatDuration } from './format.js'
+import type {
+  AuditPage,
+  CertificateSnapshot,
+  ChatSession,
+  ConsoleFailure,
+} from '../deps.js'
+import { icon, sectionHead, tag } from './bits.js'
+import { certificateTally } from './certificates.js'
+import { attr, escapeHtml } from './escape.js'
 import { renderShell, type ShellModel } from './shell.js'
 
 export { CSP } from '../respond.js'
@@ -46,10 +61,63 @@ export interface OverviewModel {
   readonly roster: string
   /** Output of `renderAudit` / `renderAuditSources`; header numbers only. */
   readonly audit: string
-  /** Output of `renderLimits`; `data-ttl-ms` and `data-rate` only. */
-  readonly limits: string
+  /** Refusals and drops in the last hour; `null` when no trail could be read. */
+  readonly recent: RecentOutcomes | null
+  /** The certificate directory; absent on a console without one. */
+  readonly certificates?: {
+    readonly snapshot: CertificateSnapshot | null
+    readonly failure: ConsoleFailure | null
+  }
+  /**
+   * The conversations, for a console with chat and no certificate source;
+   * `null` when the list could not be read, absent when not asked for.
+   */
+  readonly sessions?: readonly ChatSession[] | null
+  readonly now: number
   /** Output of `renderNodeSummary`: one line per node, linking to it. */
   readonly nodes: string
+}
+
+/** How far back the overview's refusal card looks. */
+export const RECENT_WINDOW_MS = 3_600_000
+
+/** Refusals and drops in the window, over every trail read. */
+export interface RecentOutcomes {
+  readonly refused: number
+  readonly dropped: number
+  /** A trail held more in the window than one read returns: the counts are a floor. */
+  readonly more: boolean
+}
+
+/**
+ * Count the window's refusals and drops off one windowed read per trail.
+ * `limit` is what was asked for, for a port that does not say whether there
+ * is more (no `earlier`): a full page is taken to mean there may be.
+ */
+export function recentOutcomes(
+  pages: readonly (AuditPage | null)[],
+  limit: number,
+): RecentOutcomes | null {
+  let read = 0
+  let refused = 0
+  let dropped = 0
+  let more = false
+  for (const page of pages) {
+    if (page === null) continue
+    read += 1
+    for (const record of page.records) {
+      if (record.outcome === 'refused') refused += 1
+      else if (record.outcome === 'dropped') dropped += 1
+    }
+    if (
+      page.earlier === undefined
+        ? page.records.length >= limit
+        : page.earlier !== null
+    ) {
+      more = true
+    }
+  }
+  return read === 0 ? null : { refused, dropped, more }
 }
 
 function statCard(card: {
@@ -130,6 +198,91 @@ function trailTag(audit: string): string {
 
 const OVERVIEW_HEADING_ID = 'h-overview'
 
+/** 在线, and 滞后 and 过期 only when there are any: a standing 0 is noise. */
+function agentsHint(roster: string): string {
+  const online = fragmentStat(roster, 'online')
+  if (online === null) return '—'
+  const parts = [`<span class="tone-ok">在线 ${escapeHtml(online)}</span>`]
+  const stale = Number(fragmentStat(roster, 'stale') ?? 0)
+  const expired = Number(fragmentStat(roster, 'expired') ?? 0)
+  if (stale > 0) parts.push(`<span class="tone-warn">滞后 ${stale}</span>`)
+  if (expired > 0) parts.push(`<span class="tone-bad">过期 ${expired}</span>`)
+  return parts.join('<span class="sep">·</span>')
+}
+
+/** What was refused and dropped in the last hour, and the way to the records. */
+function recentCard(recent: RecentOutcomes | null): string {
+  const floor = recent?.more === true ? '+' : ''
+  const look =
+    `<a class="jump" href="${attr('/audit?window=1h&outcome=refused')}" ` +
+    `data-nav>查看</a>`
+  return statCard({
+    kicker: '近 1 小时拒绝',
+    value: recent === null ? '—' : `${recent.refused}${floor}`,
+    hint:
+      recent === null
+        ? '读不到审计链'
+        : `<span class="${recent.dropped > 0 ? 'tone-warn' : 'tone-muted'}">` +
+          `丢弃 ${recent.dropped}${floor}</span>` +
+          `<span class="sep">·</span>${look}`,
+    glyph: 'alert-triangle',
+    blob: 'blob-n',
+  })
+}
+
+/** How many certificates, how many need a look, and the revocation list. */
+function certificateCard(
+  read: NonNullable<OverviewModel['certificates']>,
+  now: number,
+): string {
+  const snapshot = read.snapshot
+  if (snapshot === null) {
+    return statCard({
+      kicker: '证书',
+      value: '—',
+      hint: read.failure === null ? '—' : tag('读不到证书目录', 'bad'),
+      glyph: 'shield',
+    })
+  }
+  const parts: string[] = []
+  const tally = certificateTally(snapshot.certificates)
+  if (tally !== '') parts.push(tally)
+  const list = snapshot.revocationList
+  if (list === null) parts.push(tag('吊销清单未发布', 'warn'))
+  else if (list.nextUpdate <= now) parts.push(tag('吊销清单已过期', 'bad'))
+  else parts.push(tag(`已吊销 ${list.revokedCount}`, 'muted'))
+  return statCard({
+    kicker: '证书',
+    value: String(snapshot.certificates.length),
+    hint: parts.join(' '),
+    glyph: 'shield',
+  })
+}
+
+/** Conversations touched in the last hour, out of all of them. */
+function sessionsCard(
+  sessions: readonly ChatSession[] | null,
+  now: number,
+): string {
+  if (sessions === null) {
+    return statCard({
+      kicker: '近 1 小时会话',
+      value: '—',
+      hint: tag('读不到会话', 'bad'),
+      glyph: 'messages-square',
+    })
+  }
+  const active = sessions.filter(
+    one => now - one.updatedAt <= RECENT_WINDOW_MS,
+  ).length
+  return statCard({
+    kicker: '近 1 小时会话',
+    value: String(active),
+    hint: `共 ${sessions.length} 条 <span class="sep">·</span><a class="jump" href="/chat" data-nav>打开</a>`,
+    glyph: 'messages-square',
+  })
+}
+
 /**
  * The overview page body: four cards, then one line per node.
  *
@@ -138,20 +291,13 @@ const OVERVIEW_HEADING_ID = 'h-overview'
  * rendered fragments rather than being handed raw data.
  */
 export function renderOverview(model: OverviewModel): string {
-  const agentsTotal = fragmentStat(model.roster, 'total')
-  const agentsOnline = fragmentStat(model.roster, 'online')
   const trailTotal = fragmentStat(model.audit, 'total')
-  const ttlMs = fragmentStat(model.limits, 'ttl-ms')
-  const rate = fragmentStat(model.limits, 'rate')
 
   const cards = [
     statCard({
       kicker: '智能体',
-      value: agentsTotal ?? '—',
-      hint:
-        agentsOnline === null
-          ? '—'
-          : `<span class="tone-ok">在线 ${escapeHtml(agentsOnline)}</span>`,
+      value: fragmentStat(model.roster, 'total') ?? '—',
+      hint: agentsHint(model.roster),
       glyph: 'server',
     }),
     statCard({
@@ -161,26 +307,18 @@ export function renderOverview(model: OverviewModel): string {
       glyph: 'activity',
       blob: 'blob-2',
     }),
-    statCard({
-      kicker: '注册租约',
-      value: ttlMs === null ? '—' : formatDuration(Number(ttlMs)),
-      hint: 'TTL · 到期即摘牌',
-      glyph: 'clock',
-      blob: 'blob-n',
-    }),
-    statCard({
-      kicker: '速率预算',
-      value: rate ?? '—',
-      unit: '/ 分钟',
-      hint: '节点 × 节点',
-      glyph: 'zap',
-    }),
-  ].join('')
+    recentCard(model.recent),
+  ]
+  if (model.certificates !== undefined) {
+    cards.push(certificateCard(model.certificates, model.now))
+  } else if (model.sessions !== undefined) {
+    cards.push(sessionsCard(model.sessions, model.now))
+  }
 
   return (
     `<section class="sec" id="overview" aria-labelledby="${OVERVIEW_HEADING_ID}">` +
     sectionHead('Overview', '运行概况', { headingId: OVERVIEW_HEADING_ID }) +
-    `<div class="cards g4">${cards}</div></section>\n` +
+    `<div class="cards g${cards.length}">${cards.join('')}</div></section>\n` +
     `<section class="sec" id="overview-nodes">${model.nodes}</section>`
   )
 }

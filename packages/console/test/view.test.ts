@@ -1850,17 +1850,19 @@ describe('the overview', () => {
     return renderOverview({
       roster: renderRoster([agent()], null, NOW, TTL),
       audit: renderAudit(page(), null, NO_FILTER),
-      limits: renderLimits(LIMITS),
+      recent: { refused: 0, dropped: 0, more: false },
+      now: NOW,
       nodes: renderNodeSummary([agent()], null, NOW, TTL),
       ...over,
     })
   }
 
-  test('leads with four stat cards, summarising numbers the other pages already show', () => {
+  test('leads with health cards, summarising numbers the other pages already show', () => {
     const html = build()
     expect(html).toContain('id="overview"')
-    expect(html).toContain('class="cards g4"')
-    expect(html.match(/class="card elev-sm stat"/g)).toHaveLength(4)
+    // Without a certificate source or chat, three: no constant fills a gap.
+    expect(html).toContain('class="cards g3"')
+    expect(html.match(/class="card elev-sm stat"/g)).toHaveLength(3)
     // The agent count on the card is the same total the roster header carries.
     expect(html).toContain('<div class="card-kicker">智能体</div>')
     expect(html).toContain('<div class="stat-num">1</div>')
@@ -2520,7 +2522,8 @@ describe('copy discipline', () => {
       renderOverview({
         roster,
         audit,
-        limits,
+        recent: { refused: 0, dropped: 0, more: false },
+        now: NOW,
         nodes: renderNodeSummary([agent()], null, NOW, TTL),
       }) +
       roster +
