@@ -694,12 +694,18 @@ systemctl --user restart qianmo-console.service      # 在 H 上：控制台起�
 | ① `hub-key` | H | `$QIANMO_BETA_MODEL_KEY_DIR/<节点>` 不在就生成（ed25519，私钥不离开 H）；在就不重生成 |
 | ② `hub-coordinate` | H | 从 `peers.conf` 的 `node` 坐标行取 `user` / `host` / `port`——中枢执行器拨的就是它；没有坐标行就拒绝 |
 | ③ `node-install` | 节点 | `--node-ssh` 登录的用户必须就是坐标行的 `user`（中枢拨的就是它），否则拒绝；`~/.ssh/authorized_keys` 幂等加一行 `command="<节点部署根>/demo/env/beta/ops/model-apply.sh <节点>",restrict <公钥> qianmo-model-apply <节点>`；同一把公钥带着别的选项 → 拒绝；同节点旧 key 的行 → WARN、不删；写之前备份 `authorized_keys.bak-<戳>` |
-| ④ `node-hostkey` | 节点 | 经这条已认证的 ssh 读节点自己的 ed25519 主机公钥 |
-| ⑤ `hub-known-host` | H | 从 H 上 `ssh-keyscan` 一次，与 ④ 逐字相同才写进中枢 `known_hosts`（22 口写 `host`，否则 `[host]:port`）；不同 → 拒绝；同名已登记另一把 → 拒绝 |
+| ④ `node-hostkey` | 节点 | 经这条已认证的 ssh 读节点 sshd 自己的主机公钥：`/etc/ssh/ssh_host_{ed25519,ecdsa,rsa}_key.pub` 有几把读几把，一把都没有 → 拒绝 |
+| ⑤ `hub-known-host` | H | 从 H 上 `ssh-keyscan` 一次：扫到的每一把都要与 ④ 同类型那一把逐字相同，有一把不同 → 拒绝；两边都有的类型（`ssh-ed25519`、`ecdsa-sha2-*`、`ssh-rsa`）才写进中枢 `known_hosts`（22 口写 `host`，否则 `[host]:port`）；同名同类型已登记另一把 → 拒绝 |
 | ⑥ `hub-verify` | H | 用控制台执行器同一组 ssh 参数与哨兵 `qianmo-model-apply-v1` 发一次 `status`，要 `ok:true` |
+| 撤回 `hub-key-discard` | H | 只给 `enroll` 用：写的阶段后面一步失败时，删掉这一次刚生成的那一对 key（公钥逐字相同才删） |
+| 撤回 `node-uninstall` | 节点 | 只给 `enroll` 用：authorized_keys 与「备份 + 那一行」逐字节相同时把备份换回原位；不同就拒绝、手工处理 |
 
-`--dry-run` 每一步只读，打印「将要」写的那一行与 known_hosts 那一行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
-2 用法错。前提：节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
+**顺序：先全部检查，再写。**`enroll` 先只读地走一遍 ② ① ③ ④ ⑤（坐标、key、节点前置与 authorized_keys 冲突、
+主机钥比对、中枢 known_hosts 冲突），任何一项会拒绝都在第一次写入之前拒绝，三台机器零改动；全过之后才按
+① ③ ⑤ 写，最后 ⑥。写的中途某一步失败（连接断了、盘满了），用上面两个撤回子命令把这一次写下的东西撤掉；
+撤不回就打印手工回滚的那几条。⑥ 失败时三处都已写好、彼此一致，不自动撤回（原因与回滚见输出）。
+`--dry-run` 只走检查那一遍，打印「将要」写的那一行与 known_hosts 那几行，不跑 ⑥。退出码：0 做完；1 拒绝或某步失败；
+2 用法错。前提：节点 sshd 至少有一把 ed25519 / ecdsa / rsa 主机钥（`/etc/ssh/ssh_host_*_key.pub`）、节点上部署根下 `demo/env/beta/ops/model-apply.sh` 可执行、`~/qianmo-beta/nodes/<节点>/config` 在
 （sshd 强制命令下没有 `QIANMO_BETA_ROOT`，所以节点必须用默认内测根）。跑在 H 自己身上的节点走 local，不需要登记。
 
 ### 每轮验收：`ops/provider-acceptance.sh`

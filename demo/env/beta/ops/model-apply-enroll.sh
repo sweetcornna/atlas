@@ -13,9 +13,17 @@
 #   ① H     hub-key        没有就生成这个节点的专用 ed25519 key（私钥不离开 H），打印公钥
 #   ② H     hub-coordinate 从 peers.conf 的 node 坐标行取 user / host / port（中枢拨的就是它）
 #   ③ 节点  node-install   往 ~/.ssh/authorized_keys 幂等地加那一行（见下）；登录用户必须就是坐标行的 user
-#   ④ 节点  node-hostkey   读节点自己的 ed25519 主机公钥
-#   ⑤ H     hub-known-host 从 H 上 ssh-keyscan 一次，与 ④ 逐字比对，相同才写进中枢的 known_hosts
+#   ④ 节点  node-hostkey   读节点 sshd 自己的主机公钥（ed25519、ecdsa、rsa，有几把读几把）
+#   ⑤ H     hub-known-host 从 H 上 ssh-keyscan 一次，与 ④ 逐把、逐字比对，相同的才写进中枢的 known_hosts
 #   ⑥ H     hub-verify     用中枢执行器同一组 ssh 参数、同一个哨兵命令发一次 status，要 ok:true
+#
+# ── 顺序：先全部检查，再写 ──────────────────────────────────────────────────────
+# enroll 先把 ②①③④⑤ 都以只读方式走一遍（坐标、key、节点上的前置与 authorized_keys 冲突、
+# 主机钥比对、中枢 known_hosts 冲突）。**任何一项会拒绝，都在第一次写入之前拒绝**，三台
+# 机器一个字节都不动。全过之后才按 ① ③ ⑤ 的顺序写，最后 ⑥。写的中途某一步失败（连接断了、
+# 盘满了），enroll 用 hub-key-discard / node-uninstall 撤回这一次已经写下的东西；撤不回（比如
+# 连不上那台机器）就逐条打印手工回滚的命令。⑥ 失败时三处都已写好、彼此一致，不撤，原因与
+# 回滚见输出（beta-env.md §13.2 第 5 步）。
 #
 # 每个子命令也能单独跑（手工补某一步、或排查时），用法见下面各函数的头注。
 #
@@ -34,12 +42,15 @@
 #   · authorized_keys：那一行原样在就不动；**同一把公钥带着别的选项**在 → 拒绝、不改（sshd 只认
 #     第一条匹配的行，改哪一行要人看过）；同一节点还有别的 model-apply 行（换过 key）→ WARN 点名，不删；
 #     要写时先备份 `authorized_keys.bak-<UTC>`（0600），再 tmp + mv，原有内容一个字节不动；
-#   · known_hosts：同名同钥就不动；同名不同钥 → 拒绝。
+#   · known_hosts：同名同类型同钥就不动；同名同类型不同钥 → 拒绝。
 #
 # ── 主机指纹从哪来（不 TOFU）─────────────────────────────────────────────────────
 # 信任锚是运维本机到节点那条**已经认证过**的 ssh（它自己的 known_hosts 早就钉着这台机器）：经它读回
-# 节点自报的主机公钥；H 上 ssh-keyscan 到的必须与它逐字相同。不同就是中间人或坐标写错，拒绝。
-# 写进中枢 known_hosts 的名字与执行器认的一致：端口 22 写 `host`，否则 `[host]:port`。
+# 节点自报的主机公钥；H 上 ssh-keyscan 到的每一把，都必须与节点自报的同类型那一把逐字相同。有一把
+# 不同就是中间人或坐标写错，拒绝。类型认 ssh-ed25519、ecdsa-sha2-nistp256/384/521 与 ssh-rsa（RSA
+# 主机钥在 known_hosts 里就写 ssh-rsa；签名走 rsa-sha2-256/512 由 ssh 自己协商）。两边都有的类型才
+# 登记，一把都对不上就拒绝。写进中枢 known_hosts 的名字与执行器认的一致：端口 22 写 `host`，否则
+# `[host]:port`。
 #
 # ── --dry-run ───────────────────────────────────────────────────────────────────
 # 每一步只读：不生成 key、不写 authorized_keys、不写 known_hosts、不跑 ⑥。打印「将要」的那一行。
@@ -123,6 +134,19 @@ parse_pubkey() {
   return 0
 }
 
+# 能当 sshd 主机钥登记的类型（sk-* 是用户 key 的类型，不是主机钥）。
+host_key_type() {
+  case "$1" in
+    ssh-ed25519 | ecdsa-sha2-nistp256 | ecdsa-sha2-nistp384 | ecdsa-sha2-nistp521 | ssh-rsa) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 文件最后一个字节是不是换行（空文件算是）：往后追加之前要不要先补一个。
+ends_with_newline() {
+  [ ! -s "$1" ] || [ "$(tail -c 1 "$1" | od -An -c | tr -d ' ')" = '\n' ]
+}
+
 # authorized_line <节点> —— 那一行（PUB_TYPE / PUB_BLOB 已解析好）。
 authorized_line() {
   printf 'command="%s %s",restrict %s %s %s %s\n' \
@@ -156,7 +180,7 @@ cmd_authorized_key() {
 # ── hub-key --node <节点> [--dry-run] ───────────────────────────────────────────
 # H 上。stdout 一行：`PUBKEY <类型> <公钥>`；dry-run 且还没生成时 `PUBKEY-ABSENT`。
 cmd_hub_key() {
-  local node='' dry=0 key pub line
+  local node='' dry=0 key pub line new='' top
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
@@ -181,7 +205,17 @@ cmd_hub_key() {
     printf 'PUBKEY-ABSENT\n'
     return 0
   else
-    mkdir -p "$BETA_MODEL_KEY_DIR"
+    new='key'
+    if [ ! -d "$BETA_MODEL_KEY_DIR" ]; then
+      # 记下这一次建出来的最上一层目录（常见的是 ~/.ssh 本身），撤回时连它一起删。
+      top="$BETA_MODEL_KEY_DIR"
+      while [ ! -d "$(dirname "$top")" ]; do top="$(dirname "$top")"; done
+      mkdir -p "$BETA_MODEL_KEY_DIR"
+      case "$top" in
+        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) ;;
+        *) new="key+dir ${top}" ;;
+      esac
+    fi
     chmod 700 "$BETA_MODEL_KEY_DIR"
     ssh-keygen -q -t ed25519 -N '' -C "${KEY_COMMENT_PREFIX} ${node}" -f "$key" </dev/null >/dev/null
     chmod 600 "$key"
@@ -190,6 +224,53 @@ cmd_hub_key() {
     note "OK   : 已生成 ${node} 的专用 key（${key}，私钥不离开这台机器）"
   fi
   printf 'PUBKEY %s %s\n' "$PUB_TYPE" "$PUB_BLOB"
+  # 这一次新生成的（enroll 后面一步失败时据此撤回）：`NEW key`，或 `NEW key+dir <建出来的最上一层目录>`。
+  [ -z "$new" ] || printf 'NEW %s\n' "$new"
+}
+
+# ── hub-key-discard --node <节点> [--with-dir <目录>] ───────────────────────────
+# H 上。撤回 enroll 这一次刚生成的那把 key（后面一步失败时由 enroll 调）。stdin 第一行：
+# `PUBKEY <类型> <公钥>`；只删公钥与它逐字相同的那一对。--with-dir 给的是 hub-key 报的「这一次
+# 建出来的最上一层目录」：从专用 key 目录往上逐层删到它为止，每层只在空了时删。
+# stdout 一行：`DISCARDED <私钥路径>`。
+cmd_hub_key_discard() {
+  local node='' top='' input key pub line want d
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --node) node="${2:-}"; shift 2 ;;
+      --with-dir) top="${2:-}"; shift 2 ;;
+      *) usage_die "hub-key-discard 不认识的参数：$1" ;;
+    esac
+  done
+  assert_node "$node"
+  if [ -n "$top" ]; then
+    case "${BETA_MODEL_KEY_DIR}/" in
+      "${top%/}/"*) ;;
+      *) refuse "--with-dir ${top} 不是专用 key 目录 ${BETA_MODEL_KEY_DIR} 或它的上级" ;;
+    esac
+  fi
+  IFS= read -r input || true
+  case "$input" in
+    'PUBKEY '*) parse_pubkey "${input#PUBKEY }" || refuse '收到的公钥读不出来' ;;
+    *) refuse 'stdin 第一行应是 PUBKEY <类型> <公钥>' ;;
+  esac
+  want="${PUB_TYPE} ${PUB_BLOB}"
+  key="${BETA_MODEL_KEY_DIR}/${node}"
+  pub="${key}.pub"
+  [ -f "$pub" ] || refuse "${pub} 不在：没有可撤回的 key"
+  IFS= read -r line <"$pub" || true
+  parse_pubkey "$line" || refuse "${pub} 读不出来，不删"
+  [ "${PUB_TYPE} ${PUB_BLOB}" = "$want" ] || refuse "${pub} 不是这一次生成的那把，不删"
+  rm -f "$key" "$pub"
+  if [ -n "$top" ]; then
+    d="$BETA_MODEL_KEY_DIR"
+    while rmdir "$d" 2>/dev/null; do
+      [ "$d" != "${top%/}" ] || break
+      d="$(dirname "$d")"
+    done
+  fi
+  note "OK   : 已撤回 ${node} 刚生成的专用 key（${key}）"
+  printf 'DISCARDED %s\n' "$key"
 }
 
 # ── hub-coordinate --node <节点> ────────────────────────────────────────────────
@@ -220,7 +301,7 @@ known_name() {
 # 节点上。stdin 第一行：`PUBKEY <类型> <公钥>`（或 dry-run 时的 `PUBKEY-ABSENT`）。
 # stdout 一行：`INSTALLED|PRESENT|WOULD-ADD <那一行>`。
 cmd_node_install() {
-  local node='' dry=0 want_user='' me input line ak dir config default_root stale bak tmp
+  local node='' dry=0 want_user='' me input line ak dir config default_root stale bak tmp dir_new
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
@@ -291,18 +372,19 @@ cmd_node_install() {
     printf 'WOULD-ADD %s\n' "$line"
     return 0
   fi
+  dir_new=0
+  [ -d "$dir" ] || dir_new=1
   mkdir -p "$dir"
   chmod 700 "$dir"
   tmp="${dir}/.authorized_keys.qianmo.$$"
+  bak='-'
   if [ -f "$ak" ]; then
     bak="${ak}.bak-$(beta_stamp)"
     cp -p "$ak" "$bak"
     chmod 600 "$bak"
     cat "$ak" >"$tmp"
     # 原文件最后一行没有换行时补一个，免得新行粘在别人那一行后面。
-    if [ -s "$ak" ] && [ "$(tail -c 1 "$ak" | od -An -c | tr -d ' ')" != '\n' ]; then
-      printf '\n' >>"$tmp"
-    fi
+    ends_with_newline "$ak" || printf '\n' >>"$tmp"
     note "OK   : 原文件已备份：${bak}"
   else
     : >"$tmp"
@@ -312,25 +394,97 @@ cmd_node_install() {
   mv "$tmp" "$ak"
   note "OK   : 已追加到 ${ak}"
   printf 'INSTALLED %s\n' "$line"
+  # 撤回要的东西（enroll 后面一步失败时用）：备份路径（没有原文件是 -）、~/.ssh 是不是这次建的。
+  printf 'UNDO %s %s\n' "$bak" "$dir_new"
+}
+
+# ── node-uninstall --node <节点> --backup <备份|-> [--with-dir] ─────────────────
+# 节点上。撤回 enroll 这一次刚装的那一行（后面一步失败时由 enroll 调）。stdin 第一行：
+# `PUBKEY <类型> <公钥>`。只在 authorized_keys 与「备份 + 那一行」逐字节相同时动：备份换回原位
+# （没有原文件时删掉 authorized_keys，--with-dir 时 ~/.ssh 空了一起删）；不同就是之后又有人改过，
+# 拒绝、手工处理。stdout 一行：`UNINSTALLED`。
+cmd_node_uninstall() {
+  local node='' backup='' with_dir=0 input line dir ak expect stamp
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --node) node="${2:-}"; shift 2 ;;
+      --backup) backup="${2:-}"; shift 2 ;;
+      --with-dir) with_dir=1; shift ;;
+      *) usage_die "node-uninstall 不认识的参数：$1" ;;
+    esac
+  done
+  assert_node "$node"
+  [ -n "$backup" ] || usage_die 'node-uninstall 要 --backup <备份|->'
+  assert_safe_abs '部署根下的 model-apply.sh 路径' "$MODEL_APPLY"
+  dir="${HOME}/.ssh"
+  ak="${dir}/authorized_keys"
+  IFS= read -r input || true
+  case "$input" in
+    'PUBKEY '*) parse_pubkey "${input#PUBKEY }" || refuse '收到的公钥读不出来' ;;
+    *) refuse 'stdin 第一行应是 PUBKEY <类型> <公钥>' ;;
+  esac
+  line="$(authorized_line "$node")"
+  [ -f "$ak" ] && [ ! -L "$ak" ] || refuse "${ak} 不在（或是软链）：没有可撤回的"
+  if [ "$backup" != '-' ]; then
+    stamp="${backup#"${ak}.bak-"}"
+    case "$stamp" in
+      "$backup" | '' | *[!0123456789TZ]*) refuse "备份路径不是 node-install 写的那种：${backup}" ;;
+    esac
+    [ -f "$backup" ] && [ ! -L "$backup" ] || refuse "备份 ${backup} 不在（或是软链）"
+  fi
+  expect="${dir}/.authorized_keys.qianmo-undo.$$"
+  if [ "$backup" = '-' ]; then
+    : >"$expect"
+  else
+    cat "$backup" >"$expect"
+    ends_with_newline "$backup" || printf '\n' >>"$expect"
+  fi
+  printf '%s\n' "$line" >>"$expect"
+  if ! cmp -s "$expect" "$ak"; then
+    rm -f "$expect"
+    refuse "${ak} 在装上那一行之后又被改过：不自动撤回。核对后手工删掉注释为「${KEY_COMMENT_PREFIX} ${node}」的那一行。"
+  fi
+  rm -f "$expect"
+  if [ "$backup" = '-' ]; then
+    rm -f "$ak"
+    if [ "$with_dir" = '1' ]; then rmdir "$dir" 2>/dev/null || true; fi
+  else
+    mv "$backup" "$ak"
+  fi
+  note "OK   : 已撤回 ${ak} 里刚装的那一行"
+  printf 'UNINSTALLED\n'
 }
 
 # ── node-hostkey ─────────────────────────────────────────────────────────────────
-# 节点上。stdout 一行：`HOSTKEY ssh-ed25519 <公钥>`。来源默认 sshd 的主机公钥文件。
+# 节点上。stdout 每把一行：`HOSTKEY <类型> <公钥>`。来源是 sshd 的主机公钥文件
+# `<目录>/ssh_host_{ed25519,ecdsa,rsa}_key.pub`（目录缺省 /etc/ssh，QIANMO_SSHD_HOST_KEY_DIR 可换）；
+# 有几把读几把，一把都读不到才拒绝。
 cmd_node_hostkey() {
   [ "$#" -eq 0 ] || usage_die "node-hostkey 不收参数：$*"
-  local file="${QIANMO_SSHD_HOST_KEY:-/etc/ssh/ssh_host_ed25519_key.pub}" line
-  [ -r "$file" ] || refuse "读不到 ${file}（节点的 sshd 没有 ed25519 主机钥？）"
-  IFS= read -r line <"$file" || true
-  parse_pubkey "$line" || refuse "${file} 不像一把公钥"
-  [ "$PUB_TYPE" = 'ssh-ed25519' ] || refuse "${file} 不是 ed25519"
-  printf 'HOSTKEY %s %s\n' "$PUB_TYPE" "$PUB_BLOB"
+  local dir="${QIANMO_SSHD_HOST_KEY_DIR:-/etc/ssh}" kind file line count=0
+  for kind in ed25519 ecdsa rsa; do
+    file="${dir}/ssh_host_${kind}_key.pub"
+    [ -r "$file" ] || continue
+    IFS= read -r line <"$file" || true
+    if parse_pubkey "$line" && host_key_type "$PUB_TYPE"; then
+      printf 'HOSTKEY %s %s\n' "$PUB_TYPE" "$PUB_BLOB"
+      count=$((count + 1))
+    else
+      note "WARN : ${file} 不像一把 sshd 主机公钥，跳过"
+    fi
+  done
+  [ "$count" -gt 0 ] \
+    || refuse "${dir} 下读不到 sshd 的任何主机公钥（ssh_host_ed25519_key.pub / ssh_host_ecdsa_key.pub / ssh_host_rsa_key.pub）"
 }
 
 # ── hub-known-host --node <节点> [--dry-run] ───────────────────────────────────
-# H 上。stdin 第一行：`HOSTKEY ssh-ed25519 <公钥>`（节点经已认证通道自报的）。
-# stdout 一行：`REGISTERED|PRESENT|WOULD-ADD <known_hosts 那一行>`。
+# H 上。stdin 每行：`HOSTKEY <类型> <公钥>`（节点经已认证通道自报的，node-hostkey 的输出）。
+# 从 H 上 ssh-keyscan 一次：扫到的每一把都要与节点自报的同类型那一把逐字相同（有一把不同就拒绝），
+# 两边都有的类型才登记；中枢 known_hosts 里同名同类型已登记另一把 → 拒绝。先全部核完再写，
+# 写是 tmp + mv。stdout 每把一行：`REGISTERED|PRESENT|WOULD-ADD <known_hosts 那一行>`。
 cmd_hub_known_host() {
-  local node='' dry=0 input coord user host port name want scanned got entry found fp
+  local node='' dry=0 input reported='' coord user host port name scanned entries='' add='' found
+  local _name type blob _rest want have entry tmp fp
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
@@ -339,54 +493,91 @@ cmd_hub_known_host() {
     esac
   done
   assert_node "$node"
-  IFS= read -r input || true
-  case "$input" in
-    'HOSTKEY '*) parse_pubkey "${input#HOSTKEY }" || refuse '收到的主机公钥读不出来' ;;
-    *) refuse 'stdin 第一行应是 HOSTKEY ssh-ed25519 <公钥>' ;;
-  esac
-  [ "$PUB_TYPE" = 'ssh-ed25519' ] || refuse '只登记 ed25519 主机钥'
-  want="$PUB_BLOB"
+  while IFS= read -r input; do
+    case "$input" in
+      '') ;;
+      'HOSTKEY '*)
+        { parse_pubkey "${input#HOSTKEY }" && host_key_type "$PUB_TYPE"; } || refuse '收到的主机公钥读不出来'
+        reported="${reported}${PUB_TYPE} ${PUB_BLOB}
+"
+        ;;
+      *) refuse 'stdin 每一行应是 HOSTKEY <类型> <公钥>' ;;
+    esac
+  done
+  [ -n "$reported" ] || refuse '没有收到节点自报的主机公钥'
   coord="$(cmd_hub_coordinate --node "$node")"
   # shellcheck disable=SC2086
   set -- $coord
   user="$2" host="$3" port="$4"
   name="$(known_name "$host" "$port")"
-  entry="${name} ssh-ed25519 ${want}"
 
   # 从 H 这一侧看到的主机钥：中枢执行器拨的正是这条路。
-  scanned="$(ssh-keyscan -T 10 -t ed25519 -p "$port" "$host" 2>/dev/null | grep -v '^#' || true)"
-  got=''
-  if [ -n "$scanned" ]; then
-    got="$(printf '%s\n' "$scanned" | awk '$2 == "ssh-ed25519" { print $3; exit }')"
-  fi
-  [ -n "$got" ] || refuse "从这台机器 ssh-keyscan ${name} 没拿到 ed25519 主机钥（${user}@${host}:${port} 拨不通？）"
-  [ "$got" = "$want" ] || refuse "从这台机器扫到的 ${name} 主机钥与节点自报的不一样 —— 中间人，或者 peers.conf 的坐标指错了机器。不登记。"
+  scanned="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa -p "$port" "$host" 2>/dev/null | grep -v '^#' || true)"
+  while read -r _name type blob _rest; do
+    [ -n "${type:-}" ] || continue
+    host_key_type "$type" || continue
+    want="$(printf '%s' "$reported" | awk -v t="$type" '$1 == t { print $2; exit }')"
+    if [ -z "$want" ]; then
+      note "NOTE : H 扫到 ${name} 的 ${type} 主机钥，节点没有自报这一类（不登记）"
+      continue
+    fi
+    [ "$want" = "$blob" ] \
+      || refuse "从这台机器扫到的 ${name} ${type} 主机钥与节点自报的不一样 —— 中间人，或者 peers.conf 的坐标指错了机器。不登记。"
+    entries="${entries}${name} ${type} ${blob}
+"
+  done <<SCANNED
+${scanned}
+SCANNED
+  [ -n "$entries" ] \
+    || refuse "从这台机器 ssh-keyscan ${name} 没拿到与节点自报同类型的主机钥（${user}@${host}:${port} 拨不通？）"
 
-  fp="$(printf '%s\n' "$entry" | ssh-keygen -lf - 2>/dev/null | awk '{ print $2 }' || true)"
-  if [ -f "$BETA_MODEL_KNOWN_HOSTS" ] && found="$(ssh-keygen -F "$name" -f "$BETA_MODEL_KNOWN_HOSTS" 2>/dev/null | grep -v '^#')"; then
-    if printf '%s\n' "$found" | awk -v b="$want" '$2 == "ssh-ed25519" && $3 == b { ok = 1 } END { exit ok ? 0 : 1 }'; then
-      note "OK   : 中枢 known_hosts 里已有 ${name}（${fp}），不动"
+  found=''
+  if [ -f "$BETA_MODEL_KNOWN_HOSTS" ]; then
+    found="$(ssh-keygen -F "$name" -f "$BETA_MODEL_KNOWN_HOSTS" 2>/dev/null | grep -v '^#' || true)"
+  fi
+  while read -r _name type blob; do
+    [ -n "${type:-}" ] || continue
+    have="$(printf '%s\n' "$found" | awk -v t="$type" '$2 == t { print $3 }')"
+    if [ -z "$have" ]; then
+      add="${add}${_name} ${type} ${blob}
+"
+    elif ! printf '%s\n' "$have" | grep -Fxq -- "$blob"; then
+      refuse "中枢 known_hosts 里 ${name} 已经登记了另一把 ${type} 主机钥。节点重装过？核对后手工删掉旧行（ssh-keygen -R '${name}' -f ${BETA_MODEL_KNOWN_HOSTS}）再跑。"
+    fi
+  done <<ENTRIES
+${entries}
+ENTRIES
+
+  if [ -n "$add" ] && [ "$dry" != '1' ]; then
+    mkdir -p "$BETA_MODEL_KEY_DIR"
+    chmod 700 "$BETA_MODEL_KEY_DIR"
+    tmp="${BETA_MODEL_KNOWN_HOSTS}.qianmo.$$"
+    if [ -f "$BETA_MODEL_KNOWN_HOSTS" ]; then
+      cat "$BETA_MODEL_KNOWN_HOSTS" >"$tmp"
+      ends_with_newline "$BETA_MODEL_KNOWN_HOSTS" || printf '\n' >>"$tmp"
+    else
+      : >"$tmp"
+    fi
+    printf '%s' "$add" >>"$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$BETA_MODEL_KNOWN_HOSTS"
+  fi
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    fp="$(printf '%s\n' "$entry" | ssh-keygen -lf - 2>/dev/null | awk '{ print $2 }' || true)"
+    if ! printf '%s' "$add" | grep -Fxq -- "$entry"; then
+      note "OK   : 中枢 known_hosts 里已有 ${entry%% *} 的 ${fp}，不动"
       printf 'PRESENT %s\n' "$entry"
-      return 0
+    elif [ "$dry" = '1' ]; then
+      note "DRY  : 将登记 ${entry%% *}（${fp}）到 ${BETA_MODEL_KNOWN_HOSTS}"
+      printf 'WOULD-ADD %s\n' "$entry"
+    else
+      note "OK   : 已登记 ${entry%% *}（${fp}）到 ${BETA_MODEL_KNOWN_HOSTS}"
+      printf 'REGISTERED %s\n' "$entry"
     fi
-    if printf '%s\n' "$found" | awk '$2 == "ssh-ed25519" { bad = 1 } END { exit bad ? 0 : 1 }'; then
-      refuse "中枢 known_hosts 里 ${name} 已经登记了另一把 ed25519 主机钥。节点重装过？核对后手工删掉旧行（ssh-keygen -R '${name}' -f ${BETA_MODEL_KNOWN_HOSTS}）再跑。"
-    fi
-  fi
-  if [ "$dry" = '1' ]; then
-    note "DRY  : 将登记 ${name}（${fp}）到 ${BETA_MODEL_KNOWN_HOSTS}"
-    printf 'WOULD-ADD %s\n' "$entry"
-    return 0
-  fi
-  mkdir -p "$BETA_MODEL_KEY_DIR"
-  chmod 700 "$BETA_MODEL_KEY_DIR"
-  if [ -s "$BETA_MODEL_KNOWN_HOSTS" ] && [ "$(tail -c 1 "$BETA_MODEL_KNOWN_HOSTS" | od -An -c | tr -d ' ')" != '\n' ]; then
-    printf '\n' >>"$BETA_MODEL_KNOWN_HOSTS"
-  fi
-  printf '%s\n' "$entry" >>"$BETA_MODEL_KNOWN_HOSTS"
-  chmod 600 "$BETA_MODEL_KNOWN_HOSTS"
-  note "OK   : 已登记 ${name}（${fp}）到 ${BETA_MODEL_KNOWN_HOSTS}"
-  printf 'REGISTERED %s\n' "$entry"
+  done <<ENTRIES
+${entries}
+ENTRIES
 }
 
 # ── hub-verify --node <节点> ──────────────────────────────────────────────────────
@@ -441,8 +632,40 @@ remote() {
     "bash '${tree}/demo/env/beta/ops/model-apply-enroll.sh' $*"
 }
 
+# 写的阶段里已经做下、失败时要撤回的东西（cmd_enroll 设，enroll_undo 读）。
+ENROLL_HUB='' ENROLL_HUB_TREE='' ENROLL_NODE_SSH='' ENROLL_NODE_TREE='' ENROLL_NODE=''
+ENROLL_PUBKEY='' ENROLL_NEW_KEY='' ENROLL_INSTALLED=0 ENROLL_BACKUP='-' ENROLL_SSH_DIR_NEW=0
+
+# enroll_undo —— 按与写入相反的顺序撤回这一次写下的东西；撤不回的逐条说怎么手工回滚。
+enroll_undo() {
+  local key_dir_flag='' ssh_dir_flag='' ok=1
+  if [ "$ENROLL_INSTALLED" = '1' ]; then
+    [ "$ENROLL_SSH_DIR_NEW" = '1' ] && ssh_dir_flag=' --with-dir'
+    if printf '%s\n' "$ENROLL_PUBKEY" \
+      | remote "$ENROLL_NODE_SSH" "$ENROLL_NODE_TREE" \
+        "node-uninstall --node ${ENROLL_NODE} --backup ${ENROLL_BACKUP}${ssh_dir_flag}" >/dev/null; then
+      beta_ok "撤回：节点 authorized_keys 已复原"
+    else
+      ok=0
+      beta_warn "撤回失败：节点 authorized_keys 里还有注释为「${KEY_COMMENT_PREFIX} ${ENROLL_NODE}」的那一行，手工删掉（备份：${ENROLL_BACKUP}）"
+    fi
+  fi
+  if [ -n "$ENROLL_NEW_KEY" ]; then
+    case "$ENROLL_NEW_KEY" in 'key+dir '*) key_dir_flag=" --with-dir ${ENROLL_NEW_KEY#key+dir }" ;; esac
+    if printf '%s\n' "$ENROLL_PUBKEY" \
+      | remote "$ENROLL_HUB" "$ENROLL_HUB_TREE" \
+        "hub-key-discard --node ${ENROLL_NODE}${key_dir_flag}" >/dev/null; then
+      beta_ok "撤回：H 上刚生成的专用 key 已删"
+    else
+      ok=0
+      beta_warn "撤回失败：H 上专用 key 目录（缺省 ~/.ssh/qianmo-model-apply）里 ${ENROLL_NODE} 那一对是这一次生成的，手工删掉"
+    fi
+  fi
+  [ "$ok" = '1' ]
+}
+
 cmd_enroll() {
-  local node='' hub='' hub_tree='' node_ssh='' node_tree='' dry=0 dry_flag='' out pubkey hostkey line coord coord_user
+  local node='' hub='' hub_tree='' node_ssh='' node_tree='' dry=0 out pubkey hostkeys line coord coord_user
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --node) node="${2:-}"; shift 2 ;;
@@ -450,7 +673,7 @@ cmd_enroll() {
       --hub-tree) hub_tree="${2:-}"; shift 2 ;;
       --node-ssh) node_ssh="${2:-}"; shift 2 ;;
       --node-tree) node_tree="${2:-}"; shift 2 ;;
-      --dry-run) dry=1; dry_flag=' --dry-run'; shift ;;
+      --dry-run) dry=1; shift ;;
       -h | --help) usage_die '' ;;
       *) usage_die "enroll 不认识的参数：$1" ;;
     esac
@@ -460,64 +683,111 @@ cmd_enroll() {
   assert_ssh_target '--node-ssh' "$node_ssh"
   assert_safe_abs '--hub-tree' "$hub_tree"
   assert_safe_abs '--node-tree' "$node_tree"
+  ENROLL_HUB="$hub" ENROLL_HUB_TREE="$hub_tree" ENROLL_NODE_SSH="$node_ssh" ENROLL_NODE_TREE="$node_tree" ENROLL_NODE="$node"
 
   if [ "$dry" = '1' ]; then
     beta_head "登记 ${node} 的第六类动作专用 key（dry-run：只读，不改任何东西）"
   else
     beta_head "登记 ${node} 的第六类动作专用 key"
   fi
-
-  beta_say '① H：专用 key'
-  out="$(remote "$hub" "$hub_tree" "hub-key --node ${node}${dry_flag}" </dev/null)" \
-    || beta_die "① 失败（H 上 hub-key），后面的步骤没有做"
-  pubkey="$(printf '%s\n' "$out" | grep -E '^PUBKEY(-ABSENT| )' | head -n 1 || true)"
-  [ -n "$pubkey" ] || beta_die '① H 没有回公钥行'
+  beta_say '先只读地检查一遍：任何一项不过就停，三台机器都不动'
 
   beta_say '② H：peers.conf 里的坐标'
   out="$(remote "$hub" "$hub_tree" "hub-coordinate --node ${node}" </dev/null)" \
-    || beta_die '② 失败：H 上没有这个节点的 node 坐标行'
+    || beta_die '② 失败：H 上没有这个节点的 node 坐标行（什么都没改）'
   coord="$(printf '%s\n' "$out" | grep -E '^COORD ' | head -n 1 || true)"
   # shellcheck disable=SC2086
   set -- $coord
-  [ "$#" -eq 4 ] || beta_die '② H 没有回坐标行'
+  [ "$#" -eq 4 ] || beta_die '② H 没有回坐标行（什么都没改）'
   coord_user="$2"
   case "$coord_user" in
     '' | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
-      beta_die "② 坐标行里的 user 含意外字符：${coord_user}" ;;
+      beta_die "② 坐标行里的 user 含意外字符：${coord_user}（什么都没改）" ;;
   esac
   beta_ok "中枢拨的是 ${2}@${3}:${4}"
 
-  beta_say '③ 节点：authorized_keys 那一行'
-  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user}${dry_flag}")" \
-    || beta_die '③ 失败（节点上 node-install），authorized_keys 没有改'
-  line="$(printf '%s\n' "$out" | grep -E '^(INSTALLED|PRESENT|WOULD-ADD) ' | head -n 1 || true)"
-  [ -n "$line" ] || beta_die '③ 节点没有回结果行'
+  beta_say '① H：专用 key（只看）'
+  out="$(remote "$hub" "$hub_tree" "hub-key --node ${node} --dry-run" </dev/null)" \
+    || beta_die '① 失败（H 上 hub-key），什么都没改'
+  pubkey="$(printf '%s\n' "$out" | grep -E '^PUBKEY(-ABSENT| )' | head -n 1 || true)"
+  [ -n "$pubkey" ] || beta_die '① H 没有回公钥行（什么都没改）'
+
+  beta_say '③ 节点：前置与 authorized_keys 冲突（只看）'
+  out="$(printf '%s\n' "$pubkey" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user} --dry-run")" \
+    || beta_die '③ 失败（节点上 node-install），什么都没改'
+  line="$(printf '%s\n' "$out" | grep -E '^(PRESENT|WOULD-ADD) ' | head -n 1 || true)"
+  [ -n "$line" ] || beta_die '③ 节点没有回结果行（什么都没改）'
   beta_ok "${line%% *}：${line#* }"
 
-  beta_say '④ 节点：主机公钥（经这条已认证的 ssh 读）'
-  hostkey="$(remote "$node_ssh" "$node_tree" 'node-hostkey' </dev/null | grep -E '^HOSTKEY ' | head -n 1 || true)"
-  [ -n "$hostkey" ] || beta_die '④ 读不到节点的 ed25519 主机公钥'
+  beta_say '④ 节点：sshd 的主机公钥（经这条已认证的 ssh 读）'
+  hostkeys="$(remote "$node_ssh" "$node_tree" 'node-hostkey' </dev/null | grep -E '^HOSTKEY ' || true)"
+  [ -n "$hostkeys" ] || beta_die '④ 读不到节点 sshd 的任何主机公钥（什么都没改）'
 
-  beta_say '⑤ H：比对 ssh-keyscan 并登记中枢的 known_hosts'
-  out="$(printf '%s\n' "$hostkey" | remote "$hub" "$hub_tree" "hub-known-host --node ${node}${dry_flag}")" \
-    || beta_die '⑤ 失败：主机钥没有登记'
-  line="$(printf '%s\n' "$out" | grep -E '^(REGISTERED|PRESENT|WOULD-ADD) ' | head -n 1 || true)"
-  [ -n "$line" ] || beta_die '⑤ H 没有回结果行'
-  beta_ok "${line%% *}：${line#* }"
+  beta_say '⑤ H：ssh-keyscan 逐把比对、中枢 known_hosts 冲突（只看）'
+  out="$(printf '%s\n' "$hostkeys" | remote "$hub" "$hub_tree" "hub-known-host --node ${node} --dry-run")" \
+    || beta_die '⑤ 失败：主机钥对不上或与中枢 known_hosts 冲突（什么都没改）'
+  printf '%s\n' "$out" | grep -E '^(PRESENT|WOULD-ADD) ' | while IFS= read -r line; do
+    beta_ok "${line%% *}：${line#* }"
+  done
 
   if [ "$dry" = '1' ]; then
     beta_say '⑥ 验证：dry-run 不跑（它要真的连一次节点）'
     beta_head 'dry-run 结束：上面每一步都只读，没有改任何机器'
     return 0
   fi
+
+  beta_say '检查全过，开始写（中途失败就撤回这一次写下的东西）'
+  beta_say '① H：专用 key'
+  out="$(remote "$hub" "$hub_tree" "hub-key --node ${node}" </dev/null)" \
+    || beta_die '① 失败（H 上生成 key），后面的步骤没有做'
+  ENROLL_PUBKEY="$(printf '%s\n' "$out" | grep -E '^PUBKEY ' | head -n 1 || true)"
+  ENROLL_NEW_KEY="$(printf '%s\n' "$out" | sed -n 's/^NEW \(key.*\)$/\1/p' | head -n 1)"
+  if [ -z "$ENROLL_PUBKEY" ]; then
+    enroll_undo || true
+    beta_die '① H 没有回公钥行'
+  fi
+
+  beta_say '③ 节点：authorized_keys 那一行'
+  if ! out="$(printf '%s\n' "$ENROLL_PUBKEY" | remote "$node_ssh" "$node_tree" "node-install --node ${node} --user ${coord_user}")"; then
+    enroll_undo || true
+    beta_die '③ 失败（节点上 node-install），已撤回 ①'
+  fi
+  line="$(printf '%s\n' "$out" | grep -E '^(INSTALLED|PRESENT) ' | head -n 1 || true)"
+  case "$line" in
+    'INSTALLED '*)
+      ENROLL_INSTALLED=1
+      # shellcheck disable=SC2046
+      set -- $(printf '%s\n' "$out" | grep -E '^UNDO ' | head -n 1)
+      ENROLL_BACKUP="${2:--}" ENROLL_SSH_DIR_NEW="${3:-0}"
+      ;;
+    'PRESENT '*) ;;
+    *)
+      enroll_undo || true
+      beta_die '③ 节点没有回结果行，已撤回 ①'
+      ;;
+  esac
+  beta_ok "${line%% *}：${line#* }"
+
+  beta_say '⑤ H：登记中枢的 known_hosts'
+  if ! out="$(printf '%s\n' "$hostkeys" | remote "$hub" "$hub_tree" "hub-known-host --node ${node}")"; then
+    enroll_undo || true
+    beta_die '⑤ 失败：主机钥没有登记，已撤回 ① ③'
+  fi
+  printf '%s\n' "$out" | grep -E '^(REGISTERED|PRESENT) ' | while IFS= read -r line; do
+    beta_ok "${line%% *}：${line#* }"
+  done
+
   beta_say '⑥ H：用中枢执行器的 ssh 参数发一次 status'
   out="$(remote "$hub" "$hub_tree" "hub-verify --node ${node}" </dev/null)" \
-    || beta_die '⑥ 失败：中枢还够不着这个节点（原因见上面 H 的输出）'
+    || beta_die "⑥ 失败：中枢还够不着这个节点（原因见上面 H 的输出）。① ③ ⑤ 都已写好、彼此一致，不自动撤回；
+要撤：节点 authorized_keys 删注释为「${KEY_COMMENT_PREFIX} ${node}」的那一行，H 上 ssh-keygen -R 删中枢 known_hosts 里这台机器的条目、删 ${node} 那一对专用 key"
   beta_ok "$(printf '%s\n' "$out" | grep -E '^VERIFY ' | head -n 1)"
   beta_head "${node} 已登记"
-  beta_say '下一步 : 在 H 上重起控制台，让它带上这个节点的 ssh 执行器（beta-up.sh 起控制台时才看专用 key 在不在）'
-  beta_say '           systemctl --user restart qianmo-console.service'
-  beta_say '         （没有 systemd --user 的宿主：beta-down.sh console，再带上原来的尾参跑 beta-up.sh --role host）'
+  beta_say '下一步 : 在 H 上重起控制台，让它带上这个节点的 ssh 执行器（控制台起来时才看专用 key 在不在）：'
+  beta_say '           控制台由 systemd 单元起（systemctl --user is-active qianmo-console.service 答 active）：'
+  beta_say '             systemctl --user restart qianmo-console.service'
+  beta_say '           控制台是手工 beta-up.sh --role host 起的（单元 inactive，或宿主没有 systemd --user）：'
+  beta_say '             beta-down.sh console，再带全原来的尾参（ops/console.env 的 CONSOLE_EXTRA_ARGS）跑 beta-up.sh --role host --only console -- <尾参>'
 }
 
 sub="${1:-}"
@@ -525,12 +795,14 @@ sub="${1:-}"
 case "$sub" in
   enroll) cmd_enroll "$@" ;;
   hub-key) cmd_hub_key "$@" ;;
+  hub-key-discard) cmd_hub_key_discard "$@" ;;
   hub-coordinate) cmd_hub_coordinate "$@" ;;
   authorized-key) cmd_authorized_key "$@" ;;
   node-install) cmd_node_install "$@" ;;
+  node-uninstall) cmd_node_uninstall "$@" ;;
   node-hostkey) cmd_node_hostkey "$@" ;;
   hub-known-host) cmd_hub_known_host "$@" ;;
   hub-verify) cmd_hub_verify "$@" ;;
-  -h | --help | '') sed -n '5,30p' "$SELF" | sed 's/^# \{0,1\}//'; [ -n "$sub" ] || exit 2 ;;
+  -h | --help | '') sed -n '5,28p' "$SELF" | sed 's/^# \{0,1\}//'; [ -n "$sub" ] || exit 2 ;;
   *) usage_die "不认识的子命令：${sub}" ;;
 esac

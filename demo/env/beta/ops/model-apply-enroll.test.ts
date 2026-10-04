@@ -13,8 +13,11 @@
  *     有 `command="…"` 就跑它（`SSH_ORIGINAL_COMMAND` = 客户端发来的哨兵），没有就跑哨兵本身。
  *
  * 强制命令跑的是**仓库里真的 `model-apply.sh`**（部署树里软链过去），它再起 PATH 上的
- * `bun` 桩演 `provider serve-stdin`。于是「装上去的那一行真能用」是端到端核过的，
- * 而不只是字符串长得对。主机钥、专用 key 都是真 `ssh-keygen` 生成的。
+ * `bun` 桩；桩把请求原样交给**从源码跑的真 `qm provider serve-stdin`**（cliPrefix，与 dev /
+ * build 同一份 defines 与 feature 表）。于是「装上去的那一行真能用」、hub-verify 认的响应形状，
+ * 都是对着真代码核过的，而不只是字符串长得对。登记完再用**控制台真的执行器**
+ * （`ProviderExecutor`）拨一次，核它的 ssh 参数与 hub-verify 的逐字相同、并且拨得通。
+ * 主机钥（ed25519 / ecdsa / rsa）、专用 key 都是真 `ssh-keygen` 生成的。
  *
  * 每个 bash 各跑一遍（`testBashes.ts`）：远端的 `bash` 也换成同一个（桩目录里的软链）。
  */
@@ -37,6 +40,9 @@ import {
 } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join, resolve } from 'node:path'
+import { parseProviderRequest, SENTINEL_COMMAND } from '@qianmo/providers'
+import { ProviderExecutor } from '../../../../src/cli/handlers/consoleProvidersExec.js'
+import { cliPrefix } from '../../../lib/acceptance/local/spawn'
 import { type TestBash, testBashes } from '../testBashes'
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..', '..')
@@ -48,7 +54,7 @@ const NODE = 'beta-2'
  * 所以坐标行与假 sshd 都用跑用例的这个用户名。
  */
 const LOCAL_USER = userInfo().username
-const SENTINEL = 'qianmo-model-apply-v1'
+const SENTINEL = SENTINEL_COMMAND
 /** 每条用例要起几十个进程；macOS 上第一次 exec 新文件还会被扫一遍。 */
 const SLOW = 60_000
 
@@ -84,7 +90,14 @@ if [ -z "$key" ]; then
   m="$net/targets/$target"
   [ -f "$m" ] || { printf 'ssh: Could not resolve hostname %s\\n' "$target" >&2; exit 255; }
   . "$m"
-  exec env -i PATH="$PATH" HOME="$M_HOME" LC_ALL=C FAKE_NET="$net" QIANMO_SSHD_HOST_KEY="$M_HOSTKEY" bash -c "$cmd"
+  # 演写的阶段里某一步连接断了（FAKE_FAIL=<子命令>，dry-run 的那一次照常）。
+  if [ -n "\${FAKE_FAIL:-}" ]; then
+    case "$cmd" in
+      *--dry-run*) ;;
+      *"model-apply-enroll.sh' \${FAKE_FAIL} "*) printf 'Connection to %s closed by remote host.\\n' "$target" >&2; exit 255 ;;
+    esac
+  fi
+  exec env -i PATH="$PATH" HOME="$M_HOME" LC_ALL=C FAKE_NET="$net" QIANMO_SSHD_HOST_KEY_DIR="$M_HOSTKEY_DIR" bash -c "$cmd"
 fi
 user="\${target%%@*}"
 host="\${target#*@}"
@@ -93,12 +106,19 @@ m="$net/addrs/\${host}_\${port}"
 . "$m"
 name="$host"
 [ "$port" = 22 ] || name="[$host]:$port"
-want="$(awk '{ print $2 }' "$M_HOSTKEY")"
-if [ -z "$kh" ] || [ ! -f "$kh" ] \\
-  || ! ssh-keygen -F "$name" -f "$kh" 2>/dev/null | awk -v b="$want" '$3 == b { ok = 1 } END { exit ok ? 0 : 1 }'; then
-  printf 'Host key verification failed.\\n' >&2
-  exit 255
+# sshd 出示它的主机钥之一；客户端只要 known_hosts 里有其中一把（同类型同钥）就认。
+known=1
+if [ -n "$kh" ] && [ -f "$kh" ]; then
+  for pub in "$M_HOSTKEY_DIR"/ssh_host_*_key.pub; do
+    [ -f "$pub" ] || continue
+    t="$(awk '{ print $1 }' "$pub")"
+    b="$(awk '{ print $2 }' "$pub")"
+    if ssh-keygen -F "$name" -f "$kh" 2>/dev/null | awk -v t="$t" -v b="$b" '$2 == t && $3 == b { ok = 1 } END { exit ok ? 0 : 1 }'; then
+      known=0
+    fi
+  done
 fi
+[ "$known" = 0 ] || { printf 'Host key verification failed.\\n' >&2; exit 255; }
 [ "$user" = "$M_USER" ] || { printf '%s: Permission denied (publickey).\\n' "$target" >&2; exit 255; }
 blob="$(ssh-keygen -y -f "$key" | awk '{ print $2 }')"
 line="$(grep -F " $blob" "$M_HOME/.ssh/authorized_keys" 2>/dev/null | head -n 1)"
@@ -112,26 +132,39 @@ exec env -i PATH="$PATH" HOME="$M_HOME" LC_ALL=C FAKE_NET="$net" bash -c "$cmd"
 
 const FAKE_KEYSCAN = `#!/bin/bash
 net="\${FAKE_NET:?}"
-port=22 host=''
+port=22 host='' types='rsa,ecdsa,ed25519'
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -T | -t) shift 2 ;;
+    -T) shift 2 ;;
+    -t) types="$2"; shift 2 ;;
     -p) port="$2"; shift 2 ;;
     -*) shift ;;
     *) host="$1"; shift ;;
   esac
 done
-printf 'keyscan %s %s\\n' "$host" "$port" >>"$net/ssh.log"
+printf 'keyscan %s %s %s\\n' "$host" "$port" "$types" >>"$net/ssh.log"
 m="$net/addrs/\${host}_\${port}"
 [ -f "$m" ] || exit 1
 . "$m"
 name="$host"
 [ "$port" = 22 ] || name="[$host]:$port"
 printf '# %s:%s SSH-2.0-OpenSSH_9.6\\n' "$host" "$port" >&2
-printf '%s %s\\n' "$name" "$(awk '{ print $1 " " $2 }' "\${M_SCAN_KEY:-$M_HOSTKEY}")"
+for pub in "\${M_SCAN_DIR:-$M_HOSTKEY_DIR}"/ssh_host_*_key.pub; do
+  [ -f "$pub" ] || continue
+  t="$(awk '{ print $1 }' "$pub")"
+  case "$t" in ssh-ed25519) fam=ed25519 ;; ssh-rsa) fam=rsa ;; ecdsa-sha2-*) fam=ecdsa ;; *) continue ;; esac
+  case ",$types," in *",$fam,"*) ;; *) continue ;; esac
+  printf '%s %s\\n' "$name" "$(awk '{ print $1 " " $2 }' "$pub")"
+done
 `
 
-/** 演 `bun <occ> provider serve-stdin --node <n>`：记下怎么被起的，回一行 status。 */
+/** 单引号里放任意字符串（bash）。 */
+const shQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
+
+/**
+ * 演 `bun <部署树>/dist/cli-node.js provider serve-stdin --node <n>`：记下怎么被起的、收到的请求，
+ * 再把请求交给从源码跑的真 `qm`（部署树里的 dist 是占位，换成同一个 CLI 的源码入口）。
+ */
 const FAKE_BUN = `#!/bin/bash
 {
   printf 'ARGV %s\\n' "$*"
@@ -139,8 +172,10 @@ const FAKE_BUN = `#!/bin/bash
   printf 'SSH_ORIGINAL_COMMAND=%s\\n' "\${SSH_ORIGINAL_COMMAND-<unset>}"
 } >>"$HOME/serve-stdin.calls"
 IFS= read -r req
-rid="$(printf '%s' "$req" | sed -n 's/.*"requestId":"\\([^"]*\\)".*/\\1/p')"
-printf '{"v":1,"requestId":"%s","ok":true,"state":{"managed":false,"applied":null}}\\n' "$rid"
+printf 'REQ %s\\n' "$req" >>"$HOME/serve-stdin.calls"
+shift
+export OCC_IDENTITY="\${OCC_IDENTITY:-qianmo}"
+exec ${[process.execPath, ...cliPrefix().slice(1)].map(shQuote).join(' ')} "$@" <<<"$req"
 `
 
 function writeExec(path: string, body: string): void {
@@ -183,9 +218,29 @@ const BARE_TREE = deployTree('bare', false)
 const NODE_TREE_LINK = join(BASE, 'trees', 'node-current')
 symlinkSync(NODE_TREE, NODE_TREE_LINK)
 
-function keygen(path: string, comment: string): string {
+type HostKeyKind = 'ed25519' | 'ecdsa' | 'rsa'
+
+function keygen(
+  path: string,
+  comment: string,
+  kind: HostKeyKind = 'ed25519',
+): string {
+  const bits =
+    kind === 'rsa' ? ['-b', '2048'] : kind === 'ecdsa' ? ['-b', '256'] : []
   const child = Bun.spawnSync(
-    ['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', comment, '-f', path],
+    [
+      'ssh-keygen',
+      '-q',
+      '-t',
+      kind,
+      ...bits,
+      '-N',
+      '',
+      '-C',
+      comment,
+      '-f',
+      path,
+    ],
     { stdout: 'pipe', stderr: 'pipe' },
   )
   if (child.exitCode !== 0) throw new Error(child.stderr.toString())
@@ -193,11 +248,45 @@ function keygen(path: string, comment: string): string {
 }
 
 mkdirSync(join(BASE, 'keys'), { recursive: true })
-const NODE_HOSTKEY = join(BASE, 'keys/node-host')
-const OTHER_HOSTKEY = join(BASE, 'keys/other-host')
-const NODE_HOSTKEY_PUB = keygen(NODE_HOSTKEY, 'root@node')
-const OTHER_HOSTKEY_PUB = keygen(OTHER_HOSTKEY, 'root@mallory')
+/** 节点 sshd 的主机钥，每种一把；`OTHER_*` 是中间人手里的另一把。 */
+const HOST = {
+  ed25519: keygen(join(BASE, 'keys/host-ed25519'), 'root@node'),
+  ecdsa: keygen(join(BASE, 'keys/host-ecdsa'), 'root@node', 'ecdsa'),
+  rsa: keygen(join(BASE, 'keys/host-rsa'), 'root@node', 'rsa'),
+}
+const OTHER = {
+  ed25519: keygen(join(BASE, 'keys/other-ed25519'), 'root@mallory'),
+  rsa: keygen(join(BASE, 'keys/other-rsa'), 'root@mallory', 'rsa'),
+}
+const NODE_HOSTKEY_PUB = HOST.ed25519
+const OTHER_HOSTKEY_PUB = OTHER.ed25519
 const blobOf = (pub: string) => pub.split(' ')[1] ?? ''
+const typeOf = (pub: string) => pub.split(' ')[0] ?? ''
+
+/** 一个演 /etc/ssh 的目录：`ssh_host_<种类>_key.pub`，每种至多一把。 */
+function hostKeyDir(
+  name: string,
+  keys: Partial<Record<HostKeyKind, string>>,
+): string {
+  const dir = join(BASE, 'keys', `sshd-${name}`)
+  mkdirSync(dir, { recursive: true })
+  for (const [kind, pub] of Object.entries(keys)) {
+    writeFileSync(join(dir, `ssh_host_${kind}_key.pub`), `${pub}\n`)
+  }
+  return dir
+}
+
+const SSHD = {
+  ed25519: hostKeyDir('ed25519', { ed25519: HOST.ed25519 }),
+  ecdsa: hostKeyDir('ecdsa', { ecdsa: HOST.ecdsa }),
+  rsa: hostKeyDir('rsa', { rsa: HOST.rsa }),
+  mixed: hostKeyDir('mixed', { ed25519: HOST.ed25519, rsa: HOST.rsa }),
+  none: hostKeyDir('none', {}),
+  /** 中间人：同类型、不同钥。 */
+  mitm: hostKeyDir('mitm', { ed25519: OTHER.ed25519 }),
+  /** 中间人只换了其中一把：ed25519 对得上、rsa 对不上。 */
+  mitmHalf: hostKeyDir('mitm-half', { ed25519: HOST.ed25519, rsa: OTHER.rsa }),
+}
 
 // ── 一个世界 ────────────────────────────────────────────────────────────────
 
@@ -219,6 +308,10 @@ interface WorldOptions {
   readonly configRoot?: boolean
   /** 从 H 扫到的主机钥换成别的（中间人 / 坐标指错了机器）。 */
   readonly mitm?: boolean
+  /** 节点 sshd 的主机钥目录（缺省只有 ed25519）。 */
+  readonly sshd?: string
+  /** H 上 ssh-keyscan 看到的（缺省 = 节点 sshd 的；mitm 时是中间人的）。 */
+  readonly scanned?: string
   /** 坐标行里的 user（缺省 = 跑用例的用户）。 */
   readonly user?: string
 }
@@ -233,7 +326,7 @@ function machineFile(
   const lines = [
     `M_HOME='${home}'`,
     `M_USER='${user}'`,
-    `M_HOSTKEY='${NODE_HOSTKEY}.pub'`,
+    `M_HOSTKEY_DIR='${SSHD.ed25519}'`,
   ]
   for (const [k, v] of Object.entries(extra)) lines.push(`${k}='${v}'`)
   return `${lines.join('\n')}\n`
@@ -275,11 +368,11 @@ function makeWorld(options: WorldOptions = {}): World {
     })
   }
   writeFileSync(join(net, 'targets/hub-h'), machineFile(hubHome, 'ops'))
-  const node = machineFile(
-    nodeHome,
-    LOCAL_USER,
-    options.mitm === true ? { M_SCAN_KEY: `${OTHER_HOSTKEY}.pub` } : {},
-  )
+  const scanned = options.mitm === true ? SSHD.mitm : options.scanned
+  const node = machineFile(nodeHome, LOCAL_USER, {
+    ...(options.sshd === undefined ? {} : { M_HOSTKEY_DIR: options.sshd }),
+    ...(scanned === undefined ? {} : { M_SCAN_DIR: scanned }),
+  })
   writeFileSync(join(net, 'targets/node-2'), node)
   writeFileSync(join(net, 'addrs', `${host}_${port}`), node)
   writeFileSync(join(net, 'ssh.log'), '')
@@ -304,7 +397,7 @@ function run(
       HOME: options.home ?? world.opsHome,
       FAKE_NET: world.net,
       LC_ALL: 'C',
-      QIANMO_SSHD_HOST_KEY: `${NODE_HOSTKEY}.pub`,
+      QIANMO_SSHD_HOST_KEY_DIR: SSHD.ed25519,
       ...options.env,
     },
     stdin: options.stdin === undefined ? 'ignore' : Buffer.from(options.stdin),
@@ -318,13 +411,11 @@ function run(
   }
 }
 
-function enroll(
-  bash: TestBash,
-  world: World,
+function enrollArgs(
   extra: readonly string[] = [],
   nodeTree: string = NODE_TREE,
-): Run {
-  return run(bash, world, [
+): string[] {
+  return [
     'enroll',
     '--node',
     NODE,
@@ -337,7 +428,16 @@ function enroll(
     '--node-tree',
     nodeTree,
     ...extra,
-  ])
+  ]
+}
+
+function enroll(
+  bash: TestBash,
+  world: World,
+  extra: readonly string[] = [],
+  nodeTree: string = NODE_TREE,
+): Run {
+  return run(bash, world, enrollArgs(extra, nodeTree))
 }
 
 const hubKey = (w: World) => join(w.hubHome, '.ssh/qianmo-model-apply', NODE)
@@ -376,11 +476,56 @@ function snapshot(root: string): Record<string, string> {
 
 const mode = (path: string) => (statSync(path).mode & 0o777).toString(8)
 
+/** 三台机器的家目录快照：「零改动」就是前后两份相等。 */
+const machines = (w: World) => ({
+  ops: snapshot(w.opsHome),
+  hub: snapshot(w.hubHome),
+  node: snapshot(w.nodeHome),
+})
+
+/** 控制台真的执行器拨一次 status（ssh 程序换成同一个桩，FAKE_NET 包在外面一层）。 */
+async function consoleExecutorStatus(
+  bash: TestBash,
+  w: World,
+  target: { host: string; port: number },
+) {
+  const wrapper = join(w.dir, 'ssh-for-console')
+  writeExec(
+    wrapper,
+    `#!/bin/bash\nexec env FAKE_NET=${shQuote(w.net)} ${shQuote(join(binFor(bash), 'ssh'))} "$@"\n`,
+  )
+  const executor = new ProviderExecutor(
+    [
+      {
+        node: NODE,
+        kind: 'ssh',
+        user: LOCAL_USER,
+        host: target.host,
+        port: target.port,
+        keyFile: hubKey(w),
+      },
+    ],
+    {
+      knownHostsFile: hubKnownHosts(w),
+      sshBinary: wrapper,
+      env: {
+        PATH: `${binFor(bash)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        HOME: w.hubHome,
+      },
+    },
+  )
+  return await executor.run(
+    NODE,
+    { v: 1, op: 'status', requestId: 'console-executor-1', node: NODE },
+    SLOW,
+  )
+}
+
 for (const bash of BASHES) {
   describe(`model-apply-enroll.sh（bash ${bash.version}）`, () => {
     test(
-      '一次登记：H 生成专用 key，节点装上逐字那一行，中枢 known_hosts 写 [host]:port，⑥ 经真 model-apply.sh 回 ok',
-      () => {
+      '一次登记：H 生成专用 key，节点装上逐字那一行，中枢 known_hosts 写 [host]:port，⑥ 经真 model-apply.sh 与真 serve-stdin 回 ok；控制台真的执行器同一组参数拨得通',
+      async () => {
         const w = makeWorld()
         const r = enroll(bash, w)
         // 远端的过程话走 stderr、原样到运维终端；这里只要求其中没有 FAIL / WARN。
@@ -422,14 +567,33 @@ for (const bash of BASHES) {
           `OCC_CONFIG_DIR=${join(w.nodeHome, 'qianmo-beta/nodes', NODE, 'config')}`,
         )
         expect(calls).toContain('SSH_ORIGINAL_COMMAND=<unset>')
+        // hub-verify 发的请求过得了协议的真解析器；回的 managed=false 是真 serve-stdin 答的。
+        const requests = calls
+          .split('\n')
+          .filter(l => l.startsWith('REQ '))
+          .map(l => JSON.parse(l.slice(4)) as unknown)
+        expect(requests).toHaveLength(1)
+        expect(parseProviderRequest(requests[0]).ok).toBe(true)
         expect(r.stdout).toContain('VERIFY ok managed=false')
         expect(r.stdout).toContain(
           'systemctl --user restart qianmo-console.service',
         )
 
+        // 控制台真的执行器（consoleProvidersExec.ts）：拨得通，且 ssh 参数与 hub-verify 逐字相同。
+        const viaConsole = await consoleExecutorStatus(bash, w, {
+          host: 'node2.example',
+          port: 2222,
+        })
+        expect(viaConsole.ok).toBe(true)
+        const dials = readFileSync(join(w.net, 'ssh.log'), 'utf8')
+          .split('\n')
+          .filter(l => l.endsWith(` ${SENTINEL}`))
+        expect(dials).toHaveLength(2)
+        expect(dials[1]).toBe(dials[0])
+
         // 私钥一个字节都没离开 H。
         const privateKey = readFileSync(hubKey(w), 'utf8')
-        const everything = `${r.stdout}${r.stderr}${log}${readFileSync(authorizedKeys(w), 'utf8')}`
+        const everything = `${r.stdout}${r.stderr}${readFileSync(join(w.net, 'ssh.log'), 'utf8')}${readFileSync(authorizedKeys(w), 'utf8')}`
         expect(everything).not.toContain('PRIVATE KEY')
         expect(everything).not.toContain(privateKey.split('\n')[1] ?? '∅')
       },
@@ -477,11 +641,7 @@ for (const bash of BASHES) {
       'dry-run：新世界与「key 已在、还没装」两种情形下，三台机器一个文件都不变，也不连节点做 ⑥',
       () => {
         const w = makeWorld()
-        const all = () => ({
-          ops: snapshot(w.opsHome),
-          hub: snapshot(w.hubHome),
-          node: snapshot(w.nodeHome),
-        })
+        const all = () => machines(w)
         const before = all()
         const r = enroll(bash, w, ['--dry-run'])
         expect(r.code).toBe(0)
@@ -517,38 +677,47 @@ for (const bash of BASHES) {
     )
 
     test(
-      '中间人：H 扫到的主机钥与节点经已认证通道自报的不同 → 拒绝，known_hosts 不写',
+      '中间人：H 扫到的主机钥与节点经已认证通道自报的不同 → 在写任何东西之前拒绝，三台机器零改动',
       () => {
-        const w = makeWorld({ mitm: true })
-        const r = enroll(bash, w)
-        expect(r.code).toBe(1)
-        expect(r.stderr).toContain('中间人')
-        expect(existsSync(hubKnownHosts(w))).toBe(false)
-        expect(readFileSync(join(w.net, 'ssh.log'), 'utf8')).not.toContain(
-          SENTINEL,
-        )
+        for (const options of [
+          { mitm: true },
+          // 只换了其中一把：ed25519 对得上、rsa 对不上，照样整份拒绝。
+          { sshd: SSHD.mixed, scanned: SSHD.mitmHalf },
+        ]) {
+          const w = makeWorld(options)
+          const before = machines(w)
+          const r = enroll(bash, w)
+          expect({ options, code: r.code }).toEqual({ options, code: 1 })
+          expect(r.stderr).toContain('中间人')
+          expect(r.stderr).toContain('什么都没改')
+          expect(machines(w)).toEqual(before)
+          expect(readFileSync(join(w.net, 'ssh.log'), 'utf8')).not.toContain(
+            SENTINEL,
+          )
+        }
       },
       SLOW,
     )
 
     test(
-      '中枢 known_hosts 里同名已登记另一把主机钥 → 拒绝、原文件不动',
+      '中枢 known_hosts 里同名已登记另一把主机钥 → 写之前拒绝，三台机器零改动（H 上不生成 key、节点上不装那一行）',
       () => {
         const w = makeWorld()
         const dir = join(w.hubHome, '.ssh/qianmo-model-apply')
         mkdirSync(dir, { recursive: true, mode: 0o700 })
         const stale = `[node2.example]:2222 ${OTHER_HOSTKEY_PUB.split(' ').slice(0, 2).join(' ')}\n`
         writeFileSync(hubKnownHosts(w), stale, { mode: 0o600 })
+        const before = machines(w)
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
-        expect(r.stderr).toContain('另一把 ed25519 主机钥')
-        expect(readFileSync(hubKnownHosts(w), 'utf8')).toBe(stale)
+        expect(r.stderr).toContain('另一把 ssh-ed25519 主机钥')
+        expect(machines(w)).toEqual(before)
       },
       SLOW,
     )
 
     test(
-      '同一把公钥已在 authorized_keys 但选项不同 → 拒绝、文件不动（sshd 只认第一条）',
+      '同一把公钥已在 authorized_keys 但选项不同 → 拒绝，三台机器零改动（sshd 只认第一条）',
       () => {
         const w = makeWorld()
         expect(
@@ -558,15 +727,11 @@ for (const bash of BASHES) {
         mkdirSync(join(w.nodeHome, '.ssh'), { recursive: true, mode: 0o700 })
         const conflicting = `restrict,port-forwarding ${pub}\n`
         writeFileSync(authorizedKeys(w), conflicting, { mode: 0o600 })
+        const before = machines(w)
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
         expect(r.stderr).toContain('已经有这把公钥')
-        expect(readFileSync(authorizedKeys(w), 'utf8')).toBe(conflicting)
-        expect(
-          readdirSync(join(w.nodeHome, '.ssh')).filter(n =>
-            n.includes('.bak-'),
-          ),
-        ).toEqual([])
+        expect(machines(w)).toEqual(before)
       },
       SLOW,
     )
@@ -610,45 +775,49 @@ for (const bash of BASHES) {
     )
 
     test(
-      '经 --node-ssh 登录的不是中枢要拨的那个用户 → ③ 拒绝，什么都没装',
+      '经 --node-ssh 登录的不是中枢要拨的那个用户 → ③ 拒绝，三台机器零改动',
       () => {
         const w = makeWorld({ user: 'someone-else' })
+        const before = machines(w)
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
         expect(r.stderr).toContain(
           `登录的是 ${LOCAL_USER}，而中枢按 peers.conf 拨的是 someone-else`,
         )
-        expect(existsSync(authorizedKeys(w))).toBe(false)
+        expect(machines(w)).toEqual(before)
       },
       SLOW,
     )
 
     test(
-      '没有 node 坐标行（跑在 H 上 / 直连）→ ② 拒绝，节点上什么都没写',
+      '没有 node 坐标行（跑在 H 上 / 直连）→ ② 拒绝，三台机器零改动（H 上也不生成 key）',
       () => {
         const w = makeWorld({ coordinate: null })
+        const before = machines(w)
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
         expect(r.stderr).toContain('没有 node 坐标行')
-        expect(existsSync(join(w.nodeHome, '.ssh'))).toBe(false)
+        expect(machines(w)).toEqual(before)
       },
       SLOW,
     )
 
     test(
-      '节点上没有这个节点的配置根 / 部署树里没有 model-apply.sh → ③ 拒绝，authorized_keys 不建',
+      '节点上没有这个节点的配置根 / 部署树里没有 model-apply.sh → ③ 拒绝，三台机器零改动',
       () => {
         const noRoot = makeWorld({ configRoot: false })
+        const before1 = machines(noRoot)
         const r1 = enroll(bash, noRoot)
         expect(r1.code).toBe(1)
         expect(r1.stderr).toContain('配置根')
-        expect(existsSync(authorizedKeys(noRoot))).toBe(false)
+        expect(machines(noRoot)).toEqual(before1)
 
         const bare = makeWorld()
+        const before2 = machines(bare)
         const r2 = enroll(bash, bare, [], BARE_TREE)
         expect(r2.code).toBe(1)
         expect(r2.stderr).toContain('不在或不可执行')
-        expect(existsSync(authorizedKeys(bare))).toBe(false)
+        expect(machines(bare)).toEqual(before2)
       },
       SLOW,
     )
@@ -665,6 +834,120 @@ for (const bash of BASHES) {
         expect(r.code).toBe(1)
         expect(r.stderr).toContain('只看')
         expect(existsSync(authorizedKeys(w))).toBe(false)
+      },
+      SLOW,
+    )
+
+    test(
+      '节点 sshd 只有 RSA / 只有 ECDSA 主机钥：照样逐字比对、登记那一类，⑥ 与控制台执行器都拨得通',
+      async () => {
+        for (const [sshd, pub] of [
+          [SSHD.rsa, HOST.rsa],
+          [SSHD.ecdsa, HOST.ecdsa],
+        ] as const) {
+          const w = makeWorld({ sshd })
+          const r = enroll(bash, w)
+          expect(r.stderr).not.toMatch(/^(FAIL|WARN)/m)
+          expect({ type: typeOf(pub), code: r.code }).toEqual({
+            type: typeOf(pub),
+            code: 0,
+          })
+          expect(readFileSync(hubKnownHosts(w), 'utf8')).toBe(
+            `[node2.example]:2222 ${typeOf(pub)} ${blobOf(pub)}\n`,
+          )
+          expect(r.stdout).toContain('VERIFY ok')
+          const viaConsole = await consoleExecutorStatus(bash, w, {
+            host: 'node2.example',
+            port: 2222,
+          })
+          expect(viaConsole.ok).toBe(true)
+        }
+      },
+      SLOW,
+    )
+
+    test(
+      '节点 sshd 有 ed25519 与 RSA 两把：两把都比对、都登记；H 只扫得到其中一把时只登记那一把',
+      () => {
+        const both = makeWorld({ sshd: SSHD.mixed })
+        const r = enroll(bash, both)
+        expect(r.code).toBe(0)
+        expect(readFileSync(hubKnownHosts(both), 'utf8')).toBe(
+          `[node2.example]:2222 ssh-ed25519 ${blobOf(HOST.ed25519)}\n` +
+            `[node2.example]:2222 ssh-rsa ${blobOf(HOST.rsa)}\n`,
+        )
+        // 再跑一次：两把都已在，不动。
+        const kh = readFileSync(hubKnownHosts(both), 'utf8')
+        const again = enroll(bash, both)
+        expect(again.code).toBe(0)
+        for (const pub of [HOST.ed25519, HOST.rsa]) {
+          expect(again.stdout).toContain(
+            `PRESENT：[node2.example]:2222 ${typeOf(pub)} ${blobOf(pub)}`,
+          )
+        }
+        expect(readFileSync(hubKnownHosts(both), 'utf8')).toBe(kh)
+
+        const partial = makeWorld({ sshd: SSHD.mixed, scanned: SSHD.rsa })
+        const p = enroll(bash, partial)
+        expect(p.code).toBe(0)
+        expect(readFileSync(hubKnownHosts(partial), 'utf8')).toBe(
+          `[node2.example]:2222 ssh-rsa ${blobOf(HOST.rsa)}\n`,
+        )
+      },
+      SLOW,
+    )
+
+    test(
+      '节点 sshd 一把主机公钥都读不到 → ④ 拒绝，三台机器零改动',
+      () => {
+        const w = makeWorld({ sshd: SSHD.none })
+        const before = machines(w)
+        const r = enroll(bash, w)
+        expect(r.code).toBe(1)
+        expect(r.stderr).toContain('读不到节点 sshd 的任何主机公钥')
+        expect(machines(w)).toEqual(before)
+      },
+      SLOW,
+    )
+
+    test(
+      '写的中途连接断了：撤回这一次写下的东西，三台机器回到原样（原有 authorized_keys 一个字节不差、不留备份）',
+      () => {
+        // ③ 断：H 上刚生成的 key 撤回。
+        const a = makeWorld()
+        const beforeA = machines(a)
+        const ra = run(bash, a, enrollArgs(), {
+          env: { FAKE_FAIL: 'node-install' },
+        })
+        expect(ra.code).toBe(1)
+        expect(ra.stderr).toContain('已撤回 ①')
+        expect(machines(a)).toEqual(beforeA)
+
+        // ⑤ 断：节点上那一行与 H 上的 key 都撤回；节点原有两行、最后一行没有换行。
+        const b = makeWorld()
+        mkdirSync(join(b.nodeHome, '.ssh'), { recursive: true, mode: 0o700 })
+        writeFileSync(
+          authorizedKeys(b),
+          'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingExistingExistingExistingExist1 alice',
+          { mode: 0o600 },
+        )
+        const beforeB = machines(b)
+        const rb = run(bash, b, enrollArgs(), {
+          env: { FAKE_FAIL: 'hub-known-host' },
+        })
+        expect(rb.code).toBe(1)
+        expect(rb.stderr).toContain('已撤回 ① ③')
+        expect(`${rb.stdout}${rb.stderr}`).not.toContain('撤回失败')
+        expect(machines(b)).toEqual(beforeB)
+
+        // ⑤ 断、节点上本来连 ~/.ssh 都没有：撤回到没有 ~/.ssh。
+        const c = makeWorld()
+        const beforeC = machines(c)
+        const rc = run(bash, c, enrollArgs(), {
+          env: { FAKE_FAIL: 'hub-known-host' },
+        })
+        expect(rc.code).toBe(1)
+        expect(machines(c)).toEqual(beforeC)
       },
       SLOW,
     )
@@ -765,7 +1048,7 @@ for (const bash of BASHES) {
           '--node',
           NODE,
           '--pubkey-file',
-          NODE_HOSTKEY,
+          join(BASE, 'keys/host-ed25519'),
         ])
         expect(priv.code).toBe(1)
         expect(priv.stdout).toBe('')
@@ -777,4 +1060,10 @@ for (const bash of BASHES) {
 
 test('这台机器上至少找到一个 bash', () => {
   expect(BASHES.length).toBeGreaterThan(0)
+})
+
+test('脚本里的哨兵就是协议的 SENTINEL_COMMAND', () => {
+  expect(readFileSync(SCRIPT, 'utf8')).toContain(
+    `\nSENTINEL='${SENTINEL_COMMAND}'\n`,
+  )
 })
