@@ -15,7 +15,7 @@
  * | POST | `/v0/handoff` | member, ops, admin token | 201 `{ task, created: true }`; 200 with `created: false` when the same manifest is already accepted |
  * | GET | `/v0/handoff` | viewer and up | `{ tasks }` |
  * | GET | `/v0/handoff/<taskId>` | viewer and up | `{ task }` |
- * | POST | `/v0/handoff/<taskId>/send` | member, ops, admin token | 202 `{ send }` — kept in the ledger; delivery is P17.5 |
+ * | POST | `/v0/handoff/<taskId>/send` | member, ops, admin token | 202 `{ send }` — kept in the ledger; with `--handoff-node` the hub forwards it to the node running the task (P17.5, `consoleHandoffDispatch.ts`) |
  *
  * "member and up" is the chat face's rule (`guardChat` in `shared.ts`) with
  * this face's own sentence: a person needs a `member` or `ops` account, and

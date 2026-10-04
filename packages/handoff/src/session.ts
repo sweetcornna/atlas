@@ -152,6 +152,26 @@ function redacted(bytes: Uint8Array): {
   }
 }
 
+/**
+ * `text` through the same two passes a transcript gets ({@link redacted}):
+ * the gitleaks subset, then the handoff rules. For short texts that leave a
+ * machine next to a transcript — the node's turn summary.
+ */
+export function redactHandoffText(text: string): {
+  readonly text: string
+  readonly redactions: SessionRedactions
+} {
+  const bytes = Buffer.from(text, 'utf8')
+  const result = redacted(bytes)
+  return {
+    text:
+      result.bytes === bytes
+        ? text
+        : Buffer.from(result.bytes).toString('utf8'),
+    redactions: result.redactions,
+  }
+}
+
 /** Write `file` as a single-file tree and commit it. Returns the commit. */
 export async function sessionCommit(
   options: SessionCommitOptions,

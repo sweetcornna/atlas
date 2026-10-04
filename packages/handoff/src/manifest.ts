@@ -1,7 +1,7 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { LIMITS } from '@qianmo/protocol'
+import { formatAddress, LIMITS } from '@qianmo/protocol'
 
 /**
  * The handoff manifest, the git ref names it points at, and the JSON that
@@ -27,6 +27,25 @@ import { LIMITS } from '@qianmo/protocol'
 
 /** Payload shape marker. `task.request` payloads are not checked by the protocol. */
 export const MANIFEST_KIND = 'handoff'
+
+/**
+ * Payload kind of a sentence for a running task (`POST /v0/handoff/<id>/send`):
+ * the hub forwards it to the node as one more `task.request` with
+ * `{kind, task, seq, text}`, and the node starts a turn with it on the task's
+ * thread.
+ */
+export const HANDOFF_SEND_KIND = 'handoff.send'
+
+/**
+ * Agent segment of a node bridge (`qm handoff node`). The bridge listens as
+ * `qianmo://<node>/handoff` and nothing else; the hub addresses it there.
+ */
+export const HANDOFF_AGENT = 'handoff'
+
+/** `qianmo://<node>/handoff`; throws when `node` is not a protocol segment. */
+export function handoffNodeAddress(node: string): string {
+  return formatAddress({ node, agent: HANDOFF_AGENT })
+}
 
 /** The two tools a handoff can start from. */
 export const HANDOFF_TOOLS = ['qmcode', 'claude-code'] as const

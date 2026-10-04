@@ -715,3 +715,37 @@ export async function runTask(
   if (reason !== null) output.out(`原因    ${reason}`)
   return 0
 }
+
+// ─── a sentence for the cloud ────────────────────────────────────────
+
+/**
+ * One sentence for a task in the cloud (`POST /v0/handoff/<id>/send`). The
+ * hub keeps it in the ledger and, once the node has taken the task, passes it
+ * on; the node starts a turn with it on the task's thread, which goes into the
+ * turn already running (P17.5). Refused once the task is over. The MCP tool
+ * `qianmo_send`. Returns the exit code.
+ */
+export async function runSend(
+  cwd: string,
+  options: { readonly taskId: string; readonly text: string },
+  output: Output = PROCESS_OUTPUT,
+): Promise<number> {
+  const project = await projectAt(cwd)
+  const answer = await consoleRequest(
+    project,
+    'POST',
+    `/v0/handoff/${encodeURIComponent(options.taskId)}/send`,
+    { text: options.text },
+  )
+  const seq = field(answer.body.send, 'seq')
+  if (answer.status !== 202 || typeof seq !== 'number') {
+    throw new HandoffUserError(
+      `给任务 ${options.taskId} 的话没有记下：${consoleError(answer)}`,
+    )
+  }
+  output.out(`任务    ${options.taskId}`)
+  output.out(
+    `已记下  第 ${seq} 句：节点接手任务后由中枢转过去，进入正在跑的回合；用 qianmo_task 看结果`,
+  )
+  return 0
+}

@@ -79,7 +79,7 @@ const TURN_CALLING = '0199a4c2-8000-7000-8000-0000000000c1'
 const CC_SESSION = '7d8c2a10-3c55-4b2e-9a51-0f6c1d2e3a4b'
 /** In the environment of every server; must end up nowhere. */
 const CANARY = `sk-test-canary-${randomBytes(12).toString('hex')}`
-const TOOLS = ['qianmo_status', 'qianmo_handoff', 'qianmo_task']
+const TOOLS = ['qianmo_status', 'qianmo_handoff', 'qianmo_task', 'qianmo_send']
 
 const BOOT_TIMEOUT_MS = 90_000
 const STEP_TIMEOUT_MS = 120_000
@@ -510,6 +510,11 @@ describe('qm handoff mcp end to end', () => {
           readOnlyHint: true,
         })
       }
+      // P17.5: a sentence for the cloud has a side effect too.
+      const send = byName.get('qianmo_send') ?? {}
+      expect(String(send.description)).toContain('有副作用')
+      expect(send.annotations).toMatchObject({ readOnlyHint: false })
+      expect(send.inputSchema).toMatchObject({ required: ['taskId', 'text'] })
     },
     STEP_TIMEOUT_MS,
   )
@@ -729,6 +734,44 @@ describe('qm handoff mcp end to end', () => {
       expect(bad).toEqual({
         isError: true,
         text: '查询没有完成：参数 taskId 不是任务号',
+      })
+    },
+    STEP_TIMEOUT_MS,
+  )
+
+  test(
+    'qianmo_send: kept in the hub ledger for the task, numbered; refused for a task that is not there',
+    async () => {
+      const server = await started(repo)
+      const first = (await hubTasks())[0] as { taskId: string }
+      const sent = await server.call('qianmo_send', {
+        taskId: first.taskId,
+        text: '顺便把 c.txt 也写了',
+      })
+      expect(sent.isError).toBe(false)
+      expect(sent.text).toContain(`任务    ${first.taskId}`)
+      expect(sent.text).toMatch(/已记下 {2}第 \d+ 句/)
+      const missing = await server.call('qianmo_send', {
+        taskId: 'nope-1',
+        text: '你好',
+      })
+      expect(missing.isError).toBe(true)
+      expect(missing.text).toContain('话没有送出：给任务 nope-1 的话没有记下')
+      const bad = await server.call('qianmo_send', {
+        taskId: '../x',
+        text: 'x',
+      })
+      expect(bad).toEqual({
+        isError: true,
+        text: '话没有送出：参数 taskId 不是任务号',
+      })
+      const empty = await server.call('qianmo_send', {
+        taskId: first.taskId,
+        text: '  ',
+      })
+      expect(empty).toEqual({
+        isError: true,
+        text: '话没有送出：参数 text 不能为空',
       })
     },
     STEP_TIMEOUT_MS,

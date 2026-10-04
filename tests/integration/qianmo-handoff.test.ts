@@ -975,7 +975,6 @@ describe('qm handoff end to end', () => {
       for (const [name, pkg] of [
         ['pull', 'P17.6'],
         ['attach', 'P17.6'],
-        ['node', 'P17.5'],
       ] as const) {
         const ran = await qm(['handoff', name])
         expect(ran.code).toBe(2)

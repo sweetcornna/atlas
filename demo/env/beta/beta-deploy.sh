@@ -52,6 +52,8 @@
 # 装完检查 `dist/cli-node.js` 与 `demo/env/beta/beta-up.sh` 在不在，并把产物里编译
 # 进去的 SOURCE_COMMIT 打出来（issue #70：那是产物里唯一能自证来源的东西，`grep`
 # 得到，不必把它跑起来）。装了一棵半截树却报成功，是这个脚本最该挡住的事。
+# 这次装了顶层 `qmcode/`（P17.5 节点上的 app-server，`--only qmcode`）时另查三件：
+# 两个程序可执行且同目录、`.sha256` 逐行对得上、`qmcode --version` 真跑得起来。
 
 set -euo pipefail
 
@@ -74,6 +76,7 @@ usage() {
   beta_say '  --only a,b        只换这几个顶层条目（如 dist,demo），树里其余东西一律不动。'
   beta_say '                    备份落在树内（<名字>.bak-<戳>）。部署树里还装着别的东西'
   beta_say '                    （源码检出、node_modules）时**必须**用它 —— 整棵换会把它们换掉。'
+  beta_say '                    接力节点的 qmcode 用 --only qmcode，装完核对两个程序、.sha256 与 --version。'
   beta_say ''
   beta_say '先清后装：空间在开始拷贝之前腾出来，不够就一个字节都不动。'
 }
@@ -421,6 +424,85 @@ if [ -n "$missing" ]; then
   beta_die "装完少了：$missing —— 这棵树不能用，旧树还在 $BACKUP_NAME"
 fi
 beta_ok '关键文件都在'
+
+# ── qmcode（P17.5：`--only qmcode`，或整棵树里带着它）──────────────────────
+#
+# 顶层 `qmcode/` 是 fork 的一份构建产物加一条 `qmcode -> <名字>` 软链（qianmo-codex
+# QIANMO.md §7）。三件事各自会让节点在**接到第一个任务时**才失败，所以装完就查：
+#   · 程序可执行、真实文件旁边有可执行的 `codex-code-mode-host`（common.sh 的
+#     beta_qmcode_check；artifact 解压出来没有执行位）；
+#   · `.sha256` 里列着的文件逐行核对。`.debug` 不在树里只记一句（部署可以不带调试
+#     符号）；程序本身不在、或哈希对不上就红。两个程序**必须**被某一份 `.sha256` 列到——
+#     有校验文件却不覆盖要跑的那两个，等于没校验；
+#   · `qmcode --version` 真跑一次，末行是 `qmcode <版本>`：架构不对时文件照样「在」。
+qmcode_bad() {
+  if [ -n "$ONLY" ]; then
+    beta_die "qmcode 装上了但不能用：$1 —— 旧的那几个条目还在树里的 *.bak-$STAMP"
+  fi
+  beta_die "qmcode 装上了但不能用：$1 —— 旧树还在 $BACKUP_NAME"
+}
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+# 只查**这次装的**：`--only dist,demo` 不该因为树里那份 qmcode 的状况被拦下。
+QM_DEPLOYED=0
+if [ -n "$ONLY" ]; then
+  if printf '%s\n' "$ONLY_LIST" | grep -Fxq qmcode; then QM_DEPLOYED=1; fi
+elif [ -e "$TREE/qmcode" ]; then
+  QM_DEPLOYED=1
+fi
+if [ "$QM_DEPLOYED" = '1' ]; then
+  QM_DIR="$TREE/qmcode"
+  QM_REAL="$( (beta_qmcode_check "$QM_DIR/qmcode") 2>&1)" || qmcode_bad "${QM_REAL#FAIL : }"
+  QM_NAME="$(basename "$QM_REAL")"
+  [ "$(dirname "$QM_REAL")" = "$QM_DIR" ] \
+    || qmcode_bad "qmcode/qmcode 指到了 qmcode/ 之外（${QM_REAL}）—— 一个版本一个目录，程序与 codex-code-mode-host 都放在 qmcode/ 里"
+  covered=''
+  sums=0
+  for sumfile in "$QM_DIR"/*.sha256; do
+    [ -f "$sumfile" ] || continue
+    sums=$((sums + 1))
+    sumname="$(basename "$sumfile")"
+    while read -r want file; do
+      [ -n "$want" ] || continue
+      file="${file#\*}"
+      case "$file" in
+        ''|*/*|.|..) qmcode_bad "${sumname} 里有一行不是本目录的文件名：$file" ;;
+      esac
+      if [ ! -f "$QM_DIR/$file" ]; then
+        case "$file" in
+          *.debug) beta_say "  ${file} 不在树里（调试符号，部署可不带）"; continue ;;
+        esac
+        qmcode_bad "${sumname} 列着 ${file}，树里没有"
+      fi
+      got="$(sha256_of "$QM_DIR/$file")" || qmcode_bad '这台机上既没有 sha256sum 也没有 shasum，核对不了'
+      [ "$got" = "$want" ] || qmcode_bad "${file} 的 sha256 对不上（${sumname} 写的是 ${want}，算出来是 ${got}）"
+      covered="$covered $file "
+    done <"$sumfile"
+  done
+  if [ "$sums" -eq 0 ]; then
+    beta_warn 'qmcode/ 里没有 .sha256 —— 程序没有逐文件核对过'
+  else
+    for need in "$QM_NAME" codex-code-mode-host; do
+      case "$covered" in
+        *" $need "*) ;;
+        *) qmcode_bad "qmcode/*.sha256 没有列到 ${need} —— 有校验文件却不覆盖要跑的程序，等于没校验" ;;
+      esac
+    done
+    beta_ok "qmcode 逐文件核对过（${sums} 份 .sha256）"
+  fi
+  QM_VERSION="$("$QM_DIR/qmcode" --version 2>/dev/null | tail -1 || true)"
+  case "$QM_VERSION" in
+    'qmcode '?*) beta_ok "qmcode 跑得起来：${QM_VERSION}（${QM_NAME}）" ;;
+    *) qmcode_bad "qmcode --version 没打出 'qmcode <版本>'（拿到的是：${QM_VERSION:-空}）—— 架构不对或缺依赖" ;;
+  esac
+fi
 
 # ── ripgrep 是不是这台机的架构 ────────────────────────────────────────────
 #

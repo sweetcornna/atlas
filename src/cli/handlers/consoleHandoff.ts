@@ -28,9 +28,10 @@
  *    holding the ledger lock, so the chain has one writer too. Add it to the
  *    console as `--audit hub-handoff=<that path>` to see it on the audit page.
  *
- * Dispatch to a node, results and the rest of the audit kinds are P17.5/P17.6;
- * their kinds are registered in {@link HANDOFF_AUDIT_KINDS} now so the names
- * are settled before anything writes them.
+ * With `--handoff-node`, a fourth: accepted tasks go to node bridges and
+ * come back (P17.5, `consoleHandoffDispatch.ts`), which writes
+ * `handoff.dispatched`, `handoff.completed` and `handoff.failed` into the same
+ * chain. `returned` and `attach-requested` are P17.6's.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -53,6 +54,11 @@ import {
   validateManifest,
 } from '@qianmo/handoff'
 import { occConfigPath } from '../../config/paths.js'
+import {
+  createHandoffDispatcher,
+  type HandoffDispatcher,
+  type HandoffDispatchWiring,
+} from './consoleHandoffDispatch.js'
 
 /**
  * Every audit kind the hub writes under `AuditSource.Handoff`
@@ -88,6 +94,8 @@ interface ConsoleHandoffOptions {
   readonly newTaskId?: () => string
   /** Where a failed audit write is reported; defaults to stderr. */
   readonly onError?: (line: string) => void
+  /** `--handoff-node …` resolved (P17.5); no config, no dispatch. */
+  readonly dispatch?: HandoffDispatchWiring
 }
 
 interface ConsoleHandoff {
@@ -97,6 +105,10 @@ interface ConsoleHandoff {
   readonly auditPath: string
   /** Tasks in the ledger when it was opened. */
   readonly replayed: number
+  /** The banner's `handoff-node` line: where tasks go, or why nowhere. */
+  readonly dispatchStatus: string
+  /** Start dispatching; called once the console's port is bound. */
+  start(): void
   /** Close the ledger (releasing its lock) and the audit chain. */
   close(): void
 }
@@ -235,6 +247,18 @@ export function openConsoleHandoff(
       if (ledger.get(id) === undefined) return id
     }
   }
+  const dispatchConfig = options.dispatch?.config
+  const dispatcher: HandoffDispatcher | undefined =
+    dispatchConfig === undefined
+      ? undefined
+      : createHandoffDispatcher({
+          ...dispatchConfig,
+          root: options.root,
+          ledger,
+          trail,
+          now,
+          log: onError,
+        })
 
   const port: HandoffPort = {
     async accept(body): Promise<ConsoleResult<HandoffAcceptance>> {
@@ -303,6 +327,7 @@ export function openConsoleHandoff(
           }`,
         )
       }
+      dispatcher?.kick()
       return { ok: true, value: { task, created: true } }
     },
 
@@ -321,10 +346,11 @@ export function openConsoleHandoff(
 
     send(taskId, text): Promise<ConsoleResult<HandoffSendView>> {
       try {
-        return Promise.resolve({
-          ok: true,
-          value: ledger.queueSend(taskId, text),
-        })
+        const queued = ledger.queueSend(taskId, text)
+        // Kept first, then forwarded: a running task hears it now, one that
+        // is not running yet hears it once the node has taken the task.
+        dispatcher?.forwardSends(taskId)
+        return Promise.resolve({ ok: true, value: queued })
       } catch (error) {
         if (!(error instanceof HandoffLedgerError)) {
           return Promise.resolve(
@@ -359,7 +385,14 @@ export function openConsoleHandoff(
     ledgerPath,
     auditPath,
     replayed: ledger.list().length,
+    dispatchStatus: options.dispatch?.status ?? 'disabled (no --handoff-node)',
+    start() {
+      dispatcher?.start()
+    },
     close() {
+      // Stops the clock at once; links close on their own time, and anything
+      // still in flight checks for a closed dispatcher before it writes.
+      void dispatcher?.close()
       trail.close()
       ledger.close()
     },
