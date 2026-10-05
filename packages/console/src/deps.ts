@@ -1553,6 +1553,19 @@ export interface ProviderNodeActual {
   }
 }
 
+/**
+ * 节点没有被托管，而它的 resident 启动时环境里带着模型变量（§2.4
+ * `inheritedProviderKeys`）。这种节点的 ACP 子进程按那份环境跑模型；`effective`
+ * 却是剥掉这些变量、只按 `settings.json` 算的——两边不是同一份输入，算出来的线路、
+ * 模型、effort 不是子进程实际用的。所以中枢不收这一块（节点的 `status` 也不再算它），
+ * 页面只说模型由启动环境决定。托管之后子进程同样剥掉这些变量，`effective` 又对了。
+ */
+export function modelFromStartupEnv(
+  actual: Pick<ProviderNodeActual, 'managed' | 'inheritedProviderKeys'>,
+): boolean {
+  return !actual.managed && actual.inheritedProviderKeys.length > 0
+}
+
 /** §2.4 的漂移类型，每类在页面上有说明与修复动作。 */
 type ProviderDriftKind =
   | 'unmanaged'

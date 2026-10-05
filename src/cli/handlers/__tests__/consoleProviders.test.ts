@@ -76,7 +76,7 @@ interface Harness {
   reopen(): ConsoleProviders
 }
 
-function harness(): Harness {
+function harness(options: { readonly now?: () => number } = {}): Harness {
   const root = mkdtempSync(join(tmpdir(), 'qianmo-providers-port-'))
   roots.push(root)
   const nodes = {
@@ -101,6 +101,7 @@ function harness(): Harness {
       ],
       onAlarm: line => alarms.push(line),
       scheduler: STILL,
+      ...(options.now === undefined ? {} : { now: options.now }),
     })
   const ledgerStore = new MemoryActionStore()
   const ledger = new ActionLedger({ store: ledgerStore })
@@ -1145,6 +1146,83 @@ describe('the desired state against the node', () => {
     view = value(await h.port.node('beta-1'))
     expect(view.drift.map(item => item.kind)).toEqual(['out-of-sync'])
     expect(view.recent[0]?.kind).toBe('apply')
+  }, 30_000)
+
+  test('a node whose model comes from its start-up environment shows no effective — neither an old one nor a new one', async () => {
+    // Each refresh past the 5 s throttle.
+    let clock = Date.now()
+    const h = harness({ now: () => (clock += 6_000) })
+    const EMPTY = `sha256:${'0'.repeat(64)}`
+    const node = h.nodes['beta-1']
+    let view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.effective?.model).toBe('vendor-model-pro')
+    const fromEnv = {
+      managed: false,
+      applied: null,
+      onDiskHash: EMPTY,
+      appliedHash: null,
+      loadedHash: null,
+      pending: null,
+      resident: { running: true, generation: 1, inFlight: 0 },
+      inheritedProviderKeys: ['CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL'],
+      capabilities: { protocol: 1 },
+      lastResult: null,
+    }
+    // A node that leaves it out: the one cached from before does not come back.
+    node.set(
+      'reply-status.json',
+      JSON.stringify({ v: 1, requestId: 'x', ok: true, state: fromEnv }),
+    )
+    view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.inheritedProviderKeys).toEqual([
+      'CLAUDE_CODE_USE_OPENAI',
+      'OPENAI_BASE_URL',
+    ])
+    expect(view.actual?.effective).toBeUndefined()
+    // An older node still computes one from settings.json alone: not taken.
+    node.set(
+      'reply-status.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: true,
+        state: fromEnv,
+        effective: {
+          apiProvider: 'firstParty',
+          wire: 'anthropic',
+          model: 'claude-sonnet-5',
+          wireModel: 'claude-sonnet-5',
+          modelSettingsSlot: null,
+          effortOnWire: true,
+          effortLevel: 'xhigh',
+          contextTokens: 200_000,
+        },
+      }),
+    )
+    view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.effective).toBeUndefined()
+    // Nothing inherited: what the node computed is what its child runs.
+    node.set(
+      'reply-status.json',
+      JSON.stringify({
+        v: 1,
+        requestId: 'x',
+        ok: true,
+        state: { ...fromEnv, inheritedProviderKeys: [] },
+        effective: {
+          apiProvider: 'firstParty',
+          wire: 'anthropic',
+          model: 'claude-sonnet-5',
+          wireModel: 'claude-sonnet-5',
+          modelSettingsSlot: null,
+          effortOnWire: true,
+          effortLevel: 'xhigh',
+          contextTokens: 200_000,
+        },
+      }),
+    )
+    view = value(await h.port.refreshNode('beta-1'))
+    expect(view.actual?.effective?.model).toBe('claude-sonnet-5')
   }, 30_000)
 
   test('assign unmanaged stops managing only on the hub side', async () => {

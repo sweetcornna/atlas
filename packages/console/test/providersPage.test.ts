@@ -15,7 +15,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { CONSOLE_CLIENT_JS_ACCOUNTS } from '../src/assets/client.js'
 import type { ProviderNodeActual } from '../src/deps.js'
-import { effectiveCells } from '../src/view/providers.js'
+import { effectiveCells, effectiveFields } from '../src/view/providers.js'
 import {
   ADMIN,
   ManualClock,
@@ -678,6 +678,31 @@ describe('display = the node', () => {
     expect(cells.context).toBe('128k')
     expect(cells.autoCompact).toBe('100k · 自动')
     expect(effectiveCells(null).model).toBe('未报告')
+  })
+
+  test('a node whose model comes from its start-up environment says so, not "refresh"', () => {
+    const base = {
+      managed: false,
+      inheritedProviderKeys: ['CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL'],
+    } as unknown as ProviderNodeActual
+    const fromEnv = effectiveFields(base)
+    expect(fromEnv).toContain('data-startup-env')
+    expect(visibleText(fromEnv).trim()).toBe(
+      '未托管 · 模型由 resident 的启动环境决定 · 节点算不出生效值 · 托管后显示',
+    )
+    // Key names are not part of it: the panel is read by every role.
+    expect(fromEnv).not.toContain('OPENAI_BASE_URL')
+    for (const actual of [
+      { ...base, inheritedProviderKeys: [] },
+      { ...base, managed: true },
+    ] as ProviderNodeActual[]) {
+      expect(visibleText(effectiveFields(actual)).trim()).toBe(
+        '节点没有报告生效值 · 刷新后再看',
+      )
+    }
+    expect(visibleText(effectiveFields(null)).trim()).toBe(
+      '节点没有报告生效值 · 刷新后再看',
+    )
   })
 
   test('no view of the area reads effective except through effectiveCells', () => {
