@@ -1462,8 +1462,8 @@ export interface ProviderPresetView {
   readonly placeholderKey?: string
   readonly terms: ProviderTerms | null
   readonly source: { readonly url: string; readonly verifiedAt: string }
-  /** 一律 `false`：没有真 key 冒烟证据之前，页面写「未评估」。 */
-  readonly evaluated: false
+  /** 没有真 key 验收证据之前是 `false`，页面写「未评估」；有证据时是那一条（何时、谁、证据）。 */
+  readonly evaluated: ProviderEvaluated
   readonly listed: boolean
   readonly unverified: readonly string[]
   readonly notes: readonly string[]

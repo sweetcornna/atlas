@@ -99,8 +99,20 @@ describe('catalog structure (§4)', () => {
     }
   })
 
-  test('nothing is evaluated before a real-key smoke test (§8.4)', () => {
-    for (const entry of PRESETS) expect(entry.evaluated).toBe(false)
+  test('only custom-openai carries evaluation evidence, and all three fields are filled (§8.4, P18.13)', () => {
+    const evaluated = PRESETS.filter(entry => entry.evaluated !== false)
+    expect(evaluated.map(entry => entry.id)).toEqual(['custom-openai'])
+    const [entry] = evaluated
+    if (entry === undefined || entry.evaluated === false)
+      throw new Error('unreachable')
+    expect(entry.evaluated.at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/,
+    )
+    expect(entry.evaluated.by.length).toBeGreaterThan(0)
+    // 证据只说测过的那一条线路，不写成对哪家厂商的兼容声明（DECISIONS #7d）
+    expect(entry.evaluated.evidence).toContain('openai-responses')
+    expect(entry.evaluated.evidence).toContain('gpt-6-luna')
+    expect(entry.evaluated.evidence).not.toMatch(/__[A-Z0-9_]+__/)
   })
 
   test('display order: group order, then id order inside each group', () => {
