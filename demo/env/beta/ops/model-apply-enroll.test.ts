@@ -373,7 +373,7 @@ function makeWorld(options: WorldOptions = {}): World {
   }
   writeFileSync(join(net, 'targets/hub-h'), machineFile(hubHome, 'ops'))
   const scanned = options.mitm === true ? SSHD.mitm : options.scanned
-  const served =
+  const served: Record<string, string> =
     options.sshd === undefined ? {} : { M_HOSTKEY_DIR: options.sshd }
   const node = machineFile(nodeHome, LOCAL_USER, {
     ...served,
