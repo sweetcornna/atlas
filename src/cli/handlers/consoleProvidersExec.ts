@@ -254,7 +254,7 @@ interface ProviderExecutorOptions {
   readonly dialsPerWindow?: number
 }
 
-export interface RunOptions {
+interface RunOptions {
   /**
    * Best effort (status refreshes): when the window has no dial left, start
    * nothing and answer `deferred` instead of waiting; never redial.
