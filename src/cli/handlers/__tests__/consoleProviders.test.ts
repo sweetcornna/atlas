@@ -45,7 +45,7 @@ import {
   openConsoleProviders,
   type ProviderScheduler,
 } from '../consoleProviders.js'
-import { type FakeNode, fakeNode } from './consoleProvidersFakeNode.js'
+import { type FakeNode, fakeNode, fakeSsh } from './consoleProvidersFakeNode.js'
 
 const CANARY = 'sk-test-canary-port-Xv93KdQ1mB7zR4nW'
 const CANARY_2 = 'sk-test-canary-port-second-Lp05TzE8jH'
@@ -1311,4 +1311,55 @@ describe('profiles', () => {
       false,
     )
   })
+})
+
+describe('status refreshes respect the dial pacing (v2.47.2)', () => {
+  test('past the window a refresh dials nothing and the last good status stands', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'qianmo-providers-pace-'))
+    roots.push(root)
+    const node = fakeNode(join(root, 'node-1'))
+    const ssh = fakeSsh(join(root, 'ssh'))
+    ssh.forcedCommand(`${node.command} beta-1`)
+    const knownHosts = join(root, 'known_hosts')
+    writeFileSync(
+      knownHosts,
+      'node-1.example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n',
+    )
+    let clock = Date.now()
+    const port = openConsoleProviders({
+      storePath: join(root, 'config', 'providers.ndjson'),
+      secretsPath: join(root, 'config', 'provider-secrets.json'),
+      keyPath: join(root, 'secrets', 'provider-master.key'),
+      knownHostsFile: knownHosts,
+      sshBinary: ssh.binary,
+      nodes: [
+        {
+          node: 'beta-1',
+          kind: 'ssh',
+          user: 'qianmo',
+          host: 'node-1.example.test',
+          port: 22,
+          keyFile: join(root, 'keys', 'beta-1'),
+        },
+      ],
+      onAlarm: () => {},
+      scheduler: STILL,
+      // The refresh throttle reads this clock; the executor's window reads
+      // the real one, so all four refreshes land inside one real window.
+      now: () => clock,
+    })
+    const ats: number[] = []
+    for (let i = 0; i < 3; i++) {
+      clock += 6_000
+      const view = value(await port.refreshNode('beta-1'))
+      expect(view.lastStatus).toMatchObject({ ok: true, at: clock })
+      ats.push(clock)
+    }
+    expect(ssh.invocations()).toHaveLength(3)
+    clock += 6_000
+    const view = value(await port.refreshNode('beta-1'))
+    expect(ssh.invocations()).toHaveLength(3)
+    expect(view.lastStatus).toEqual({ ok: true, at: ats[2] })
+    expect(view.drift.map(d => d.kind)).not.toContain('unreachable')
+  }, 30_000)
 })

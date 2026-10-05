@@ -688,7 +688,11 @@ export interface Deployment {
   readonly sourceCommit: string | null
   readonly machines: Record<
     string,
-    { readonly cliSha256: string | null; readonly cliCtime: string | null }
+    {
+      readonly cliSha256: string | null
+      readonly cliInode: number | null
+      readonly cliMtime: string | null
+    }
   >
   readonly processes: Record<
     string,
@@ -829,7 +833,11 @@ export function deploymentOf(
   const commits = new Set<string>()
   const machines: Record<
     string,
-    { cliSha256: string | null; cliCtime: string | null }
+    {
+      cliSha256: string | null
+      cliInode: number | null
+      cliMtime: string | null
+    }
   > = {}
   const processes: Record<
     string,
@@ -841,7 +849,11 @@ export function deploymentOf(
       complete = false
       continue
     }
-    machines[name] = { cliSha256: f.tree.cliSha256, cliCtime: f.tree.cliCtime }
+    machines[name] = {
+      cliSha256: f.tree.cliSha256,
+      cliInode: f.tree.cliInode,
+      cliMtime: f.tree.cliMtime,
+    }
     if (f.tree.cliSha256 === null) complete = false
   }
   const hubFacts = facts[cfg.hub] ?? null

@@ -143,6 +143,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf 'keyscan %s %s %s\\n' "$host" "$port" "$types" >>"$net/ssh.log"
+# 节点对新连接限速：前 N 次一把都扫不到（ssh-keyscan 连不上时什么也不打、退出码 0）。
+if [ -s "$net/keyscan-refuse" ]; then
+  left="$(cat "$net/keyscan-refuse")"
+  if [ "$left" -gt 0 ]; then
+    printf '%s\\n' "$((left - 1))" >"$net/keyscan-refuse"
+    exit 0
+  fi
+fi
 m="$net/addrs/\${host}_\${port}"
 [ -f "$m" ] || exit 1
 . "$m"
@@ -156,6 +164,13 @@ for pub in "\${M_SCAN_DIR:-$M_HOSTKEY_DIR}"/ssh_host_*_key.pub; do
   case ",$types," in *",$fam,"*) ;; *) continue ;; esac
   printf '%s %s\\n' "$name" "$(awk '{ print $1 " " $2 }' "$pub")"
 done
+`
+
+/** ⑤ 再扫之前的那次等待：记下来、不真等（其余的 sleep 照常）。 */
+const FAKE_SLEEP = `#!/bin/bash
+[ -z "\${FAKE_NET:-}" ] || printf 'sleep %s\\n' "$*" >>"$FAKE_NET/ssh.log"
+[ "$*" = 31 ] && exit 0
+exec /bin/sleep "$@"
 `
 
 /** 单引号里放任意字符串（bash）。 */
@@ -192,6 +207,7 @@ function binFor(bash: TestBash): string {
   mkdirSync(dir, { recursive: true })
   writeExec(join(dir, 'ssh'), FAKE_SSH)
   writeExec(join(dir, 'ssh-keyscan'), FAKE_KEYSCAN)
+  writeExec(join(dir, 'sleep'), FAKE_SLEEP)
   writeExec(join(dir, 'bun'), FAKE_BUN)
   symlinkSync(bash.path, join(dir, 'bash'))
   return dir
@@ -318,6 +334,8 @@ interface WorldOptions {
   readonly pubFiles?: string
   /** 节点本机回环 127.0.0.1:22 上有 sshd（出示的就是 sshd 那几把）。 */
   readonly loopback?: boolean
+  /** 前几次 ssh-keyscan 一把都扫不到（节点对 ssh 新连接限速）。 */
+  readonly keyscanRefusals?: number
 }
 
 let worldCount = 0
@@ -390,6 +408,9 @@ function makeWorld(options: WorldOptions = {}): World {
       join(net, 'addrs', '127.0.0.1_22'),
       machineFile(nodeHome, LOCAL_USER, served),
     )
+  }
+  if (options.keyscanRefusals !== undefined) {
+    writeFileSync(join(net, 'keyscan-refuse'), `${options.keyscanRefusals}\n`)
   }
   writeFileSync(join(net, 'ssh.log'), '')
   return { dir, net, opsHome, hubHome, nodeHome }
@@ -964,6 +985,40 @@ for (const bash of BASHES) {
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
         expect(r.stderr).toContain('与节点自报的不一样')
+        expect(machines(w)).toEqual(before)
+      },
+      SLOW,
+    )
+
+    test(
+      '⑤ 第一次一把都扫不到（节点对 ssh 新连接限速）：等过 30 s 窗口再扫一次，登记照常完成',
+      () => {
+        const w = makeWorld({ keyscanRefusals: 1 })
+        const r = enroll(bash, w)
+        expect(r.stderr).not.toMatch(/^(FAIL|WARN)/m)
+        expect(r.code).toBe(0)
+        expect(r.stderr).toContain('一把都没扫到，31 s 后再扫一次')
+        const log = readFileSync(join(w.net, 'ssh.log'), 'utf8')
+        expect(log.match(/^sleep 31$/gm)).toHaveLength(1)
+        expect(readFileSync(hubKnownHosts(w), 'utf8')).toContain(
+          `[node2.example]:2222 ssh-ed25519 ${blobOf(HOST.ed25519)}`,
+        )
+        expect(r.stdout).toContain('VERIFY ok managed=false')
+      },
+      SLOW,
+    )
+
+    test(
+      '⑤ 再扫一次还是空：拒绝，只再扫这一次，三台机器零改动',
+      () => {
+        const w = makeWorld({ keyscanRefusals: 2 })
+        const before = machines(w)
+        const r = enroll(bash, w)
+        expect(r.code).toBe(1)
+        expect(r.stderr).toContain('没拿到与节点自报同类型的主机钥')
+        const log = readFileSync(join(w.net, 'ssh.log'), 'utf8')
+        expect(log.match(/^sleep 31$/gm)).toHaveLength(1)
+        expect(log.match(/^keyscan node2\.example 2222 /gm)).toHaveLength(2)
         expect(machines(w)).toEqual(before)
       },
       SLOW,

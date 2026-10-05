@@ -30,6 +30,7 @@ import type {
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -1388,6 +1389,14 @@ describe('两轮比对', () => {
     async () => {
       const fleet = makeFleet()
       const r1 = await round(fleet, {}, 'r1')
+      // CLI 起来时把 dist/cli-node.js 硬链进运行时目录、再撤掉：链接数变了，ctime 跟着变，
+      // 产物没换。部署指纹不能因此变（P18.13 B 段 R1 的 D1 假红）。
+      const cli = join(fleet.tree('n2'), 'dist/cli-node.js')
+      const ctimeBefore = statSync(cli).ctimeMs
+      await Bun.sleep(20)
+      linkSync(cli, `${cli}.runtime-link`)
+      rmSync(`${cli}.runtime-link`)
+      expect(statSync(cli).ctimeMs).toBeGreaterThan(ctimeBefore)
       const r2 = await round(fleet, {}, 'r2')
       expect([r1.code, r2.code]).toEqual([0, 0])
       const ok = Bun.spawnSync(
@@ -1422,8 +1431,16 @@ describe('两轮比对', () => {
       // r1 与 r3 之间夹着 r2。
       const skipped = compareRounds(r1.dir, r3.dir)
       expect(skipped.checks.consecutive).toBe(false)
+
+      // 同样的字节重新装一遍（解包是先删后建）：sha256 不变，inode 变了，照样算换过产物。
+      const bytes = readFileSync(cli)
+      rmSync(cli)
+      writeFileSync(cli, bytes)
+      const r4 = await round(fleet, {}, 'r4')
+      expect(r4.code).toBe(0)
+      expect(compareRounds(r3.dir, r4.dir).checks.sameDeployment).toBe(false)
     },
-    SLOW * 2,
+    SLOW * 3,
   )
 
   test('一轮红 → 两轮不通过', () => {

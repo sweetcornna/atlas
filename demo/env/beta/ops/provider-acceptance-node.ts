@@ -14,7 +14,7 @@
  *
  * ## facts
  *
- * 一行 JSON：部署树里 `dist/cli-node.js` 的 sha256 与 ctime（装进去的时刻）、控制台与各节点
+ * 一行 JSON：部署树里 `dist/cli-node.js` 的 sha256、inode 与 mtime（换过产物的痕迹）、控制台与各节点
  * 进程的 pid / 活着没有 / 启动时刻、启动横幅里**白名单**内的几项。控制台横幅的 `open`、
  * `view-token`、`admin-token` 行可能带 token 值，所以从不整段转述：只取 `chat`、`providers`、
  * `accounts`、`sourceCommit`。节点横幅（`logs/<节点>.out` 首行 JSON）只取 `node`、
@@ -127,7 +127,13 @@ export interface MachineFacts {
   readonly tree: {
     readonly path: string
     readonly cliSha256: string | null
-    readonly cliCtime: string | null
+    /**
+     * inode 与 mtime，不用 ctime：CLI 起来时把 `dist/cli-node.js` 硬链进运行时目录，
+     * 链接数一变 ctime 就变（P18.13 B 段 R1 的 D1 假红）；换产物（解包、rsync、cp）
+     * 换的是 inode 或 mtime。
+     */
+    readonly cliInode: number | null
+    readonly cliMtime: string | null
   }
   readonly console:
     | (ProcessFacts & { readonly banner: Record<string, string> | null })
@@ -286,11 +292,15 @@ export function collectFacts(options: {
 }): MachineFacts {
   const { root, tree } = options
   const cli = LAYOUT.cli(tree)
-  let cliCtime: string | null = null
+  let cliInode: number | null = null
+  let cliMtime: string | null = null
   try {
-    cliCtime = new Date(statSync(cli).ctimeMs).toISOString()
+    const st = statSync(cli)
+    cliInode = st.ino
+    cliMtime = new Date(st.mtimeMs).toISOString()
   } catch {
-    cliCtime = null
+    cliInode = null
+    cliMtime = null
   }
   const nodes: MachineFacts['nodes'] = {}
   for (const node of options.nodes) {
@@ -311,7 +321,7 @@ export function collectFacts(options: {
   return {
     v: 1,
     root,
-    tree: { path: tree, cliSha256: fileSha256(cli), cliCtime },
+    tree: { path: tree, cliSha256: fileSha256(cli), cliInode, cliMtime },
     console: consoleFacts,
     nodes,
   }

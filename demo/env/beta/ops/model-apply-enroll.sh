@@ -71,6 +71,8 @@ SELF="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
 # 强制命令指向的脚本：本脚本所在那棵部署树里的 model-apply.sh。
 MODEL_APPLY="${SELF_DIR}/model-apply.sh"
 SENTINEL='qianmo-model-apply-v1'
+# ⑤ 扫空后再扫之前等多久：ufw `limit` 的窗口是 30 s。
+ENROLL_RESCAN_WAIT_S=31
 KEY_COMMENT_PREFIX='qianmo-model-apply'
 
 # shellcheck source=demo/env/beta/common.sh
@@ -530,8 +532,15 @@ cmd_hub_known_host() {
   user="$2" host="$3" port="$4"
   name="$(known_name "$host" "$port")"
 
-  # 从 H 这一侧看到的主机钥：中枢执行器拨的正是这条路。
+  # 从 H 这一侧看到的主机钥：中枢执行器拨的正是这条路。ssh-keyscan 每种类型各拨一条连接，
+  # 节点开着 ufw 的 `limit 22/tcp`（同一来源 30 s 内第 4 条新连接 REJECT）时，前面几步刚拨过
+  # 就可能一把都扫不到；那就等过这个窗口（ENROLL_RESCAN_WAIT_S）再扫一次，只再扫这一次。
   scanned="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa -p "$port" "$host" 2>/dev/null | grep -v '^#' || true)"
+  if [ -z "$(printf '%s\n' "$scanned" | awk 'NF >= 3' | head -n 1)" ]; then
+    note "NOTE : 从这台机器 ssh-keyscan ${name} 一把都没扫到，${ENROLL_RESCAN_WAIT_S} s 后再扫一次（节点可能对 ssh 新连接限速）"
+    sleep "$ENROLL_RESCAN_WAIT_S"
+    scanned="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa -p "$port" "$host" 2>/dev/null | grep -v '^#' || true)"
+  fi
   while read -r _name type blob _rest; do
     [ -n "${type:-}" ] || continue
     host_key_type "$type" || continue
