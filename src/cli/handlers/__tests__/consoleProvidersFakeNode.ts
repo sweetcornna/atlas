@@ -182,6 +182,14 @@ dir="$FAKE_SSH_DIR_PLACEHOLDER"
 stamp="$$-$RANDOM"
 printf '%s\\0' "$@" > "$dir/ssh-argv-$stamp"
 last="\${@: -1}"
+if [ -s "$dir/refuse" ]; then
+  left="$(cat "$dir/refuse")"
+  if [ "$left" -gt 0 ]; then
+    printf '%s\\n' "$((left - 1))" > "$dir/refuse"
+    cat "$dir/refuse-message" >&2
+    exit 255
+  fi
+fi
 if [ -f "$dir/forced-command" ]; then
   export SSH_ORIGINAL_COMMAND="$last"
   # shellcheck disable=SC2046
@@ -255,6 +263,8 @@ interface FakeSsh {
   invocations(): string[][]
   /** Make it play sshd with this forced command (`null`: the line is gone). */
   forcedCommand(command: string | null): void
+  /** Fail the next `times` dials: `message` on stderr, exit 255. */
+  refuse(times: number, message: string): void
 }
 
 export function fakeSsh(dir: string): FakeSsh {
@@ -282,6 +292,10 @@ export function fakeSsh(dir: string): FakeSsh {
         return
       }
       writeFileSync(path, command)
+    },
+    refuse: (times, message) => {
+      writeFileSync(join(dir, 'refuse-message'), `${message}\n`)
+      writeFileSync(join(dir, 'refuse'), `${times}\n`)
     },
   }
 }

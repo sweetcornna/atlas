@@ -13,11 +13,19 @@
 
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHmac, randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SENTINEL_COMMAND } from '@qianmo/providers'
 import {
+  DIAL_WINDOW_MS,
+  DIALS_PER_WINDOW,
   isProtocolNodeName,
   knownHostsHasEntry,
   ProviderExecutor,
@@ -346,5 +354,142 @@ describe('one operation per node at a time', () => {
     // after beta-1's second operation ended).
     const [other] = two.spans()
     expect(other?.start ?? Infinity).toBeLessThan(second?.end ?? 0)
+  }, 30_000)
+})
+
+describe('dial pacing (v2.47.2: nodes rate-limit new ssh connections)', () => {
+  const WINDOW = 1_500
+  const MARGIN = 1_000
+  const REFUSED =
+    'ssh: connect to host node-1.example.test port 22: Connection refused'
+
+  function setup(dialsPerWindow = 2) {
+    const root = tempRoot()
+    const ssh = fakeSsh(join(root, 'ssh'))
+    const node = fakeNode(join(root, 'node'))
+    const knownHosts = join(root, 'known_hosts')
+    writeFileSync(knownHosts, `node-1.example.test ${HOST_KEY}\n`)
+    ssh.forcedCommand(`${node.command} beta-1`)
+    const executor = new ProviderExecutor([sshTarget(root)], {
+      knownHostsFile: knownHosts,
+      sshBinary: ssh.binary,
+      dialWindowMs: WINDOW,
+      dialsPerWindow,
+    })
+    /** When each dial started (the fake ssh writes its argv first thing). */
+    const dialTimes = () =>
+      readdirSync(ssh.dir)
+        .filter(name => name.startsWith('ssh-argv-'))
+        .map(name => statSync(join(ssh.dir, name)).mtimeMs)
+        .sort((a, b) => a - b)
+    return { ssh, node, executor, dialTimes }
+  }
+
+  test('the defaults are what ufw limit allows: 3 new connections per 30 s', () => {
+    expect(DIAL_WINDOW_MS).toBe(30_000)
+    expect(DIALS_PER_WINDOW).toBe(3)
+  })
+
+  test('a dial past the window waits for the oldest to age out; the ones inside do not', async () => {
+    const { executor, dialTimes } = setup()
+    // Lower bounds are taken from before the first run: the fake ssh writes
+    // its argv a variable few hundred ms after the executor booked the dial.
+    const started = Date.now()
+    for (const id of ['req-pace-00001', 'req-pace-00002', 'req-pace-00003']) {
+      const result = await executor.run(
+        'beta-1',
+        applyRequest('beta-1', id),
+        10_000,
+      )
+      expect(result.ok).toBe(true)
+    }
+    const [, second, third] = dialTimes()
+    // Positive control: the first two went straight out.
+    expect((second ?? Infinity) - started).toBeLessThan(WINDOW)
+    // The third waited until the first had left the window (plus the margin).
+    expect((third ?? 0) - started).toBeGreaterThanOrEqual(WINDOW + MARGIN - 20)
+  }, 30_000)
+
+  test('a background run with the window full dials nothing and answers deferred', async () => {
+    const { ssh, executor } = setup(1)
+    expect(
+      (await executor.run('beta-1', applyRequest('beta-1'), 10_000)).ok,
+    ).toBe(true)
+    const status = {
+      v: 1,
+      op: 'status',
+      requestId: 'req-bg-000001',
+      node: 'beta-1',
+    }
+    const deferred = await executor.run('beta-1', status, 10_000, {
+      background: true,
+    })
+    expect(deferred.ok ? 'ok' : deferred.reason).toBe('deferred')
+    expect(ssh.invocations()).toHaveLength(1)
+    // Positive control: once the window has room, the same run dials.
+    await new Promise(resolve => setTimeout(resolve, WINDOW + MARGIN + 100))
+    const later = await executor.run('beta-1', status, 10_000, {
+      background: true,
+    })
+    expect(later.ok).toBe(true)
+    expect(ssh.invocations()).toHaveLength(2)
+  }, 30_000)
+
+  test('refused before the handshake: one redial after the window, and it lands', async () => {
+    const { ssh, node, executor, dialTimes } = setup()
+    ssh.refuse(1, REFUSED)
+    const started = Date.now()
+    const result = await executor.run('beta-1', applyRequest('beta-1'), 10_000)
+    expect(result.ok).toBe(true)
+    const [, redial] = dialTimes()
+    expect(dialTimes()).toHaveLength(2)
+    expect((redial ?? 0) - started).toBeGreaterThanOrEqual(WINDOW + MARGIN - 20)
+    expect(node.requests()).toHaveLength(1)
+  }, 30_000)
+
+  test('banner-exchange refusals count as before the handshake too; a second refusal is reported', async () => {
+    const { ssh, node, executor } = setup()
+    ssh.refuse(
+      2,
+      'kex_exchange_identification: Connection closed by remote host',
+    )
+    const result = await executor.run('beta-1', applyRequest('beta-1'), 10_000)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('ssh')
+      expect(result.preHandshake).toBe(true)
+      expect(result.message).toContain('握手前就被拒')
+    }
+    expect(ssh.invocations()).toHaveLength(2)
+    expect(node.requests()).toEqual([])
+  }, 30_000)
+
+  test('a connection dropped after the handshake is not redialed (the request may have landed)', async () => {
+    const { ssh, executor } = setup()
+    ssh.refuse(1, 'Connection to node-1.example.test closed by remote host.')
+    const result = await executor.run('beta-1', applyRequest('beta-1'), 10_000)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('ssh')
+      expect(result.preHandshake).toBeUndefined()
+      expect(result.message).toBe('ssh 失败：连不上节点')
+    }
+    expect(ssh.invocations()).toHaveLength(1)
+  }, 30_000)
+
+  test('a background run is never redialed', async () => {
+    const { ssh, executor } = setup()
+    ssh.refuse(1, REFUSED)
+    const status = {
+      v: 1,
+      op: 'status',
+      requestId: 'req-bg-000002',
+      node: 'beta-1',
+    }
+    const result = await executor.run('beta-1', status, 10_000, {
+      background: true,
+    })
+    expect(result.ok ? 'ok' : result.reason).toBe('ssh')
+    expect(ssh.invocations()).toHaveLength(1)
   }, 30_000)
 })

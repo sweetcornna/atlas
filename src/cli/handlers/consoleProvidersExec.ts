@@ -29,6 +29,22 @@
  *
  * 同一个节点同一时刻只有一个操作在途（§2.5「中枢对同一个节点同时只发一个操作」），
  * 后来的排在它后面；节点上的 `model-apply.sh` 锁与 `apply.lock` 是第二、第三道。
+ *
+ * ## 拨号节奏（v2.47.2）
+ *
+ * 每个操作都是一条新的 ssh 连接，而节点上常见的加固会给 ssh 新连接限速：ufw 的
+ * `limit 22/tcp` 是「同一来源 30 s 内第 4 条新连接直接 REJECT」，sshd 的
+ * `PerSourcePenalties`、fail2ban 的封禁也是按来源算。中枢对一台机器拨得比这快，
+ * 后面的下发就在 TCP 那一步被拒（P18.13 B 段 R1：状态刷新每 5 s 一次，三次下发
+ * 一秒内全部 `ssh 失败`）。所以对同一个 `主机:端口`，30 s 内最多起 3 条连接
+ * （{@link DIALS_PER_WINDOW}，被拒的那次也算）：
+ *
+ * - 下发、探测这类**有人在等**的操作，等到有名额再拨（最多一个窗口）；
+ * - 状态刷新（`background`）是尽力而为，没名额就不拨，回 `deferred`，页面继续用
+ *   上一次的状态，下一次刷新再试；
+ * - 有人在等的操作若在**握手之前**就被拒（`ssh: connect to host …`、
+ *   `kex_exchange_identification`、`banner exchange`——请求一个字节都没送到节点），
+ *   等过一个窗口再拨一次，只重拨这一次。握手之后断的不重拨：那时请求可能已经送到。
  */
 
 import { spawn } from 'node:child_process'
@@ -84,6 +100,15 @@ const LOCAL_ONLY_ENV = ['QIANMO_BETA_ROOT'] as const
 
 /** Room for the ssh handshake on top of an operation's own budget. */
 const SSH_GRACE_MS = 15_000
+/**
+ * ufw's `limit` rule: `--seconds 30 --hitcount 6`, two hits per new connection,
+ * so the 4th connection from one source inside 30 s is rejected. A refused
+ * dial counts too.
+ */
+export const DIAL_WINDOW_MS = 30_000
+export const DIALS_PER_WINDOW = 3
+/** Slack past the window edge (the kernel counts in jiffies, we in ms). */
+const DIAL_MARGIN_MS = 1_000
 /** A response is one line; anything this large is not one. */
 const MAX_STDOUT_BYTES = 1024 * 1024
 const MAX_STDERR_BYTES = 8 * 1024
@@ -207,6 +232,13 @@ export type ExecResult =
         | 'forced-command'
         | 'ssh'
         | 'no-response'
+        /** A `background` run that found no dial left in the window: nothing was started. */
+        | 'deferred'
+      /**
+       * `ssh` only: refused before the handshake (TCP connect, banner
+       * exchange), so the request never reached the node.
+       */
+      readonly preHandshake?: boolean
     }
 
 interface ProviderExecutorOptions {
@@ -216,6 +248,34 @@ interface ProviderExecutorOptions {
   readonly sshBinary?: string
   /** Where {@link MINIMAL_ENV} is copied from. Defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>
+  /** Dial pacing; tests shrink the window. Defaults to {@link DIAL_WINDOW_MS}. */
+  readonly dialWindowMs?: number
+  /** Defaults to {@link DIALS_PER_WINDOW}. */
+  readonly dialsPerWindow?: number
+}
+
+interface RunOptions {
+  /**
+   * Best effort (status refreshes): when the window has no dial left, start
+   * nothing and answer `deferred` instead of waiting; never redial.
+   */
+  readonly background?: boolean
+}
+
+/**
+ * ssh's own words for a dial that ended before the handshake: the TCP connect
+ * failed, or the server closed during the banner exchange (`ufw limit`'s
+ * REJECT, sshd's `PerSourcePenalties`, `MaxStartups`). Nothing was sent.
+ * `Connection closed by <host> port <n>` is left out on purpose: ssh says that
+ * after authentication too.
+ */
+const PRE_HANDSHAKE =
+  /^(?:ssh: connect to host \S+ port \d+: |kex_exchange_identification: |banner exchange: |Connection timed out during banner exchange)/m
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0
+    ? new Promise(resolve => setTimeout(resolve, ms))
+    : Promise.resolve()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -283,12 +343,20 @@ function failureOf(
     }
   }
   if (target.kind === 'ssh' && exitCode === 255) {
+    const preHandshake = PRE_HANDSHAKE.test(stderr)
     const reason = /host key verification failed/i.test(stderr)
       ? '主机指纹与中枢 known_hosts 不符'
       : /permission denied/i.test(stderr)
         ? '节点不认这把专用 key'
-        : '连不上节点'
-    return { ok: false, reason: 'ssh', message: `ssh 失败：${reason}` }
+        : preHandshake
+          ? '连不上节点（握手前就被拒：节点防火墙或 sshd 对新连接限速、封禁，或 sshd 没在听）'
+          : '连不上节点'
+    return {
+      ok: false,
+      reason: 'ssh',
+      message: `ssh 失败：${reason}`,
+      ...(preHandshake ? { preHandshake } : {}),
+    }
   }
   return {
     ok: false,
@@ -302,6 +370,10 @@ export class ProviderExecutor {
   readonly #options: ProviderExecutorOptions
   /** The tail of each node's queue: the next operation waits for it. */
   readonly #queues = new Map<string, Promise<unknown>>()
+  /** `host:port` → start times of dials (past and booked), for the window. */
+  readonly #dials = new Map<string, number[]>()
+  readonly #dialWindowMs: number
+  readonly #dialsPerWindow: number
 
   constructor(
     targets: readonly ProviderNodeTarget[],
@@ -309,6 +381,8 @@ export class ProviderExecutor {
   ) {
     this.#targets = new Map(targets.map(target => [target.node, target]))
     this.#options = options
+    this.#dialWindowMs = options.dialWindowMs ?? DIAL_WINDOW_MS
+    this.#dialsPerWindow = options.dialsPerWindow ?? DIALS_PER_WINDOW
   }
 
   /** Node names in the order they were configured. */
@@ -328,11 +402,12 @@ export class ProviderExecutor {
     node: string,
     request: Readonly<Record<string, unknown>> & { readonly requestId: string },
     timeoutMs: number,
+    options: RunOptions = {},
   ): Promise<ExecResult> {
     const previous = this.#queues.get(node) ?? Promise.resolve()
     const next = previous.then(
-      () => this.#runNow(node, request, timeoutMs),
-      () => this.#runNow(node, request, timeoutMs),
+      () => this.#runNow(node, request, timeoutMs, options),
+      () => this.#runNow(node, request, timeoutMs, options),
     )
     this.#queues.set(node, next)
     void next.finally(() => {
@@ -345,6 +420,7 @@ export class ProviderExecutor {
     node: string,
     request: Readonly<Record<string, unknown>> & { readonly requestId: string },
     timeoutMs: number,
+    options: RunOptions,
   ): Promise<ExecResult> {
     const target = this.#targets.get(node)
     if (target === undefined) {
@@ -355,35 +431,87 @@ export class ProviderExecutor {
       }
     }
     const source = this.#options.env ?? process.env
-    let argv: string[]
-    let env: Record<string, string>
-    let budget = timeoutMs
     if (target.kind === 'local') {
-      argv = [target.command, target.node]
-      env = pickEnv(source, [...MINIMAL_ENV, ...LOCAL_ONLY_ENV])
-    } else {
-      let knownHosts: string
-      try {
-        knownHosts = readFileSync(this.#options.knownHostsFile, 'utf8')
-      } catch {
-        knownHosts = ''
+      return this.#spawn(
+        target,
+        [target.command, target.node],
+        pickEnv(source, [...MINIMAL_ENV, ...LOCAL_ONLY_ENV]),
+        request,
+        timeoutMs,
+      )
+    }
+    let knownHosts: string
+    try {
+      knownHosts = readFileSync(this.#options.knownHostsFile, 'utf8')
+    } catch {
+      knownHosts = ''
+    }
+    if (!knownHostsHasEntry(knownHosts, target.host, target.port)) {
+      return {
+        ok: false,
+        reason: 'known-hosts',
+        message: `中枢的 known_hosts 里没有 ${target.host} 的主机指纹，拒绝连接（StrictHostKeyChecking=yes）`,
       }
-      if (!knownHostsHasEntry(knownHosts, target.host, target.port)) {
+    }
+    const argv = providerSshArgv(
+      this.#options.sshBinary ?? 'ssh',
+      target,
+      this.#options.knownHostsFile,
+    )
+    const env = pickEnv(source, MINIMAL_ENV)
+    const dial = () =>
+      this.#spawn(target, argv, env, request, timeoutMs + SSH_GRACE_MS)
+    const key = `${target.host}:${target.port}`
+    if (options.background === true) {
+      if (this.#slot(key) > Date.now()) {
         return {
           ok: false,
-          reason: 'known-hosts',
-          message: `中枢的 known_hosts 里没有 ${target.host} 的主机指纹，拒绝连接（StrictHostKeyChecking=yes）`,
+          reason: 'deferred',
+          message: `${this.#dialWindowMs / 1000} s 内对这台机器的 ssh 连接已满 ${this.#dialsPerWindow} 条，这次刷新没拨`,
         }
       }
-      argv = providerSshArgv(
-        this.#options.sshBinary ?? 'ssh',
-        target,
-        this.#options.knownHostsFile,
-      )
-      env = pickEnv(source, MINIMAL_ENV)
-      budget += SSH_GRACE_MS
+      this.#book(key)
+      return dial()
     }
-    return this.#spawn(target, argv, env, request, budget)
+    await sleep(this.#book(key))
+    const first = await dial()
+    if (first.ok || first.preHandshake !== true) return first
+    // Refused before the handshake: whatever filled the node's window (us or
+    // another tool on this machine) has to age out first. One redial only.
+    await sleep(this.#dialWindowMs + DIAL_MARGIN_MS)
+    await sleep(this.#book(key))
+    return dial()
+  }
+
+  /**
+   * The earliest time a dial to `key` may start. Conservative: a dial at `t`
+   * fits when fewer than {@link DIALS_PER_WINDOW} others start inside
+   * `(t - window, t + window)`, so no window that holds `t` — nor a later
+   * booked dial — goes over.
+   */
+  #slot(key: string): number {
+    const now = Date.now()
+    const window = this.#dialWindowMs
+    const dials = (this.#dials.get(key) ?? []).filter(at => at > now - window)
+    this.#dials.set(key, dials)
+    const fits = (t: number) =>
+      dials.filter(at => at > t - window && at < t + window).length <
+      this.#dialsPerWindow
+    if (fits(now)) return now
+    let latest = now
+    for (const at of [...dials].sort((a, b) => a - b)) {
+      const t = at + window + DIAL_MARGIN_MS
+      if (t > now && fits(t)) return t
+      latest = Math.max(latest, t)
+    }
+    return latest
+  }
+
+  /** Book the next free dial to `key`; how long to wait for it, in ms. */
+  #book(key: string): number {
+    const at = this.#slot(key)
+    this.#dials.get(key)?.push(at)
+    return Math.max(0, at - Date.now())
   }
 
   #spawn(

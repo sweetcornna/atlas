@@ -1769,7 +1769,12 @@ export class ConsoleProviders implements ProviderPort {
       node,
       { v: 1, op: 'status', requestId, node },
       TIMEOUTS.status,
+      { background: true },
     )
+    // No dial left in the node's window (the executor's pacing): nothing was
+    // asked, so nothing is learned — the last status stands, the next refresh
+    // tries again.
+    if (!result.ok && result.reason === 'deferred') return
     const at = this.#now()
     const previous = this.#cache.get(node) ?? { actual: null, lastStatus: null }
     if (result.ok && result.reply.ok) {
