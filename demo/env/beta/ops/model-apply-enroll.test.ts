@@ -97,7 +97,7 @@ if [ -z "$key" ]; then
       *"model-apply-enroll.sh' \${FAKE_FAIL} "*) printf 'Connection to %s closed by remote host.\\n' "$target" >&2; exit 255 ;;
     esac
   fi
-  exec env -i PATH="$PATH" HOME="$M_HOME" LC_ALL=C FAKE_NET="$net" QIANMO_SSHD_HOST_KEY_DIR="$M_HOSTKEY_DIR" bash -c "$cmd"
+  exec env -i PATH="$PATH" HOME="$M_HOME" LC_ALL=C FAKE_NET="$net" QIANMO_SSHD_HOST_KEY_DIR="\${M_PUBFILE_DIR:-$M_HOSTKEY_DIR}" bash -c "$cmd"
 fi
 user="\${target%%@*}"
 host="\${target#*@}"
@@ -314,6 +314,10 @@ interface WorldOptions {
   readonly scanned?: string
   /** 坐标行里的 user（缺省 = 跑用例的用户）。 */
   readonly user?: string
+  /** 节点磁盘上的 .pub 文件目录（缺省 = sshd 出示的那几把；p1 那种只有私钥的机器给 SSHD.none）。 */
+  readonly pubFiles?: string
+  /** 节点本机回环 127.0.0.1:22 上有 sshd（出示的就是 sshd 那几把）。 */
+  readonly loopback?: boolean
 }
 
 let worldCount = 0
@@ -369,12 +373,24 @@ function makeWorld(options: WorldOptions = {}): World {
   }
   writeFileSync(join(net, 'targets/hub-h'), machineFile(hubHome, 'ops'))
   const scanned = options.mitm === true ? SSHD.mitm : options.scanned
+  const served =
+    options.sshd === undefined ? {} : { M_HOSTKEY_DIR: options.sshd }
   const node = machineFile(nodeHome, LOCAL_USER, {
-    ...(options.sshd === undefined ? {} : { M_HOSTKEY_DIR: options.sshd }),
+    ...served,
     ...(scanned === undefined ? {} : { M_SCAN_DIR: scanned }),
+    ...(options.pubFiles === undefined
+      ? {}
+      : { M_PUBFILE_DIR: options.pubFiles }),
   })
   writeFileSync(join(net, 'targets/node-2'), node)
   writeFileSync(join(net, 'addrs', `${host}_${port}`), node)
+  if (options.loopback === true) {
+    // 节点自己从回环问到的：sshd 真正出示的那几把，中间人插不进本机回环。
+    writeFileSync(
+      join(net, 'addrs', '127.0.0.1_22'),
+      machineFile(nodeHome, LOCAL_USER, served),
+    )
+  }
   writeFileSync(join(net, 'ssh.log'), '')
   return { dir, net, opsHome, hubHome, nodeHome }
 }
@@ -905,6 +921,49 @@ for (const bash of BASHES) {
         const r = enroll(bash, w)
         expect(r.code).toBe(1)
         expect(r.stderr).toContain('读不到节点 sshd 的任何主机公钥')
+        expect(r.stderr).toContain('从本机回环 127.0.0.1:22 也没问到')
+        expect(machines(w)).toEqual(before)
+      },
+      SLOW,
+    )
+
+    test(
+      '节点只有 RSA 私钥、没有任何 .pub（p1 的形状）：④ 改问本机回环，登记照常完成',
+      () => {
+        const w = makeWorld({
+          sshd: SSHD.rsa,
+          pubFiles: SSHD.none,
+          loopback: true,
+        })
+        const r = enroll(bash, w)
+        expect(r.stderr).not.toMatch(/^(FAIL|WARN)/m)
+        expect(r.code).toBe(0)
+        expect(r.stderr).toContain(
+          `NOTE : ${SSHD.none} 下没有主机公钥文件，改用本机回环 127.0.0.1:22 上 sshd 出示的 1 把`,
+        )
+        expect(readFileSync(join(w.net, 'ssh.log'), 'utf8')).toContain(
+          'keyscan 127.0.0.1 22 ed25519,ecdsa,rsa',
+        )
+        expect(readFileSync(hubKnownHosts(w), 'utf8')).toBe(
+          `[node2.example]:2222 ssh-rsa ${blobOf(HOST.rsa)}\n`,
+        )
+        expect(r.stdout).toContain('VERIFY ok managed=false')
+      },
+      SLOW,
+    )
+
+    test(
+      '回环问到的与 H 扫到的不一样（中间人在 H 与节点之间）：⑤ 照样拒绝，三台机器零改动',
+      () => {
+        const w = makeWorld({
+          pubFiles: SSHD.none,
+          loopback: true,
+          mitm: true,
+        })
+        const before = machines(w)
+        const r = enroll(bash, w)
+        expect(r.code).toBe(1)
+        expect(r.stderr).toContain('与节点自报的不一样')
         expect(machines(w)).toEqual(before)
       },
       SLOW,
