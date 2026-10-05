@@ -7,11 +7,12 @@
  *
  * Provenance. Every entry records the official page it was taken from and the
  * date that page was read (`source`). All of them were read on 2026-10-03 via
- * the vendors research file, which quotes the vendors' own docs; none was
- * exercised with a real key, so every entry is `evaluated: false` (§8.4) and
- * must stay so until a real-key smoke test records evidence. Anything the
- * research could not confirm is listed in `unverified` instead of being filled
- * in.
+ * the vendors research file, which quotes the vendors' own docs. An entry is
+ * `evaluated: false` (§8.4) until a real-key acceptance run records evidence;
+ * the one exception so far is `custom-openai`, from P18.13's two zero-red
+ * AC-P6 rounds (see {@link CUSTOM_OPENAI_EVALUATED} for exactly what that
+ * covers). Anything the research could not confirm is listed in `unverified`
+ * instead of being filled in.
  *
  * Capability bits. A model with `send: always | never` needs the explicit,
  * all-six capability list (§3.2). The three thinking bits are prefilled with
@@ -27,6 +28,7 @@ import type {
   AuthScheme,
   CompatEnv,
   EffortLevel,
+  Evaluated,
   Lane,
   ModelCapabilities,
   ModelEffort,
@@ -83,8 +85,8 @@ export type Preset = {
   placeholderKey?: string
   terms: Terms | null
   source: { url: string; verifiedAt: string }
-  /** Literal `false`: flipping it needs evidence and a type change (§8.4). */
-  evaluated: false
+  /** `false` until a real-key acceptance run records evidence (§8.4). */
+  evaluated: Evaluated
   /** `false` keeps it out of the preset grid (reachable only via custom). */
   listed: boolean
   unverified: readonly string[]
@@ -167,7 +169,10 @@ type PresetInput = Omit<
   'evaluated' | 'listed' | 'sites' | 'templateVars' | 'unverified' | 'notes'
 > &
   Partial<
-    Pick<Preset, 'listed' | 'sites' | 'templateVars' | 'unverified' | 'notes'>
+    Pick<
+      Preset,
+      'evaluated' | 'listed' | 'sites' | 'templateVars' | 'unverified' | 'notes'
+    >
   >
 
 function preset(input: PresetInput): Preset {
@@ -178,8 +183,20 @@ function preset(input: PresetInput): Preset {
     notes: [],
     listed: true,
     ...input,
-    evaluated: false,
+    evaluated: input.evaluated ?? false,
   }
+}
+
+/**
+ * P18.13 B 段两轮 AC-P6 零红（DECISIONS #7d）。它说的只是：经一个 OpenAI 兼容网关、走
+ * `openai-responses` 线、用 `gpt-6-luna`，下发、热切换、真实调用与金丝雀扫描在内测舰队上
+ * 两轮零红。**不是**对任何厂商的兼容声明，也不覆盖 `openai-chat` 线。
+ */
+const CUSTOM_OPENAI_EVALUATED: Evaluated = {
+  at: '2026-10-05T15:01:18.706Z',
+  by: 'P18.13 B 段（主 agent）',
+  evidence:
+    'AC-P6 r1+r2 零红（v2.47.2 168d41c6）；OpenAI 兼容网关 · openai-responses 线 · gpt-6-luna；A2 probe auth、A4 probe call 通过；verdict.json sha256 d143c51f380fd471/0ab2471d49806412',
 }
 
 const source = (url: string) => ({ url, verifiedAt: VERIFIED_AT })
@@ -1270,6 +1287,7 @@ const CUSTOM: readonly Preset[] = [
   }),
   preset({
     id: 'custom-openai',
+    evaluated: CUSTOM_OPENAI_EVALUATED,
     vendor: '自定义',
     name: '自定义 OpenAI 兼容',
     group: 'custom',

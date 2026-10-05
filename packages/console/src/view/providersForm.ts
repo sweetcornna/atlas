@@ -176,6 +176,16 @@ function matches(preset: ProviderPresetView, query: string): boolean {
   )
 }
 
+/** 「已评估」带上何时、谁、证据（title）；没有证据就是「未评估」。 */
+function evaluatedTag(evaluated: ProviderPresetView['evaluated']): string {
+  if (evaluated === false) return tag('未评估', 'warn')
+  return tag(
+    '已评估',
+    'ok',
+    `${evaluated.at} · ${evaluated.by} · ${evaluated.evidence}`,
+  )
+}
+
 function presetCard(preset: ProviderPresetView): string {
   const main = preset.models.find(model => model.role === 'main')
   return (
@@ -186,9 +196,8 @@ function presetCard(preset: ProviderPresetView): string {
     `<span class="card-meta">${escapeHtml(preset.vendor)} · ${escapeHtml(
       laneWord(preset.lane),
     )}</span>` +
-    `<span class="tags">${tag(PLAN_WORD[preset.plan] ?? preset.plan)}${tag(
-      '未评估',
-      'warn',
+    `<span class="tags">${tag(PLAN_WORD[preset.plan] ?? preset.plan)}${evaluatedTag(
+      preset.evaluated,
     )}${preset.terms?.restricted === true ? tag('条款限制', 'warn') : ''}</span>` +
     `<span class="note mono">${escapeHtml(main?.id ?? '模型自填')}</span>` +
     `</a>`
