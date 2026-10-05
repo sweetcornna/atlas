@@ -13,7 +13,8 @@
 #   ① H     hub-key        没有就生成这个节点的专用 ed25519 key（私钥不离开 H），打印公钥
 #   ② H     hub-coordinate 从 peers.conf 的 node 坐标行取 user / host / port（中枢拨的就是它）
 #   ③ 节点  node-install   往 ~/.ssh/authorized_keys 幂等地加那一行（见下）；登录用户必须就是坐标行的 user
-#   ④ 节点  node-hostkey   读节点 sshd 自己的主机公钥（ed25519、ecdsa、rsa，有几把读几把）
+#   ④ 节点  node-hostkey   读节点 sshd 自己的主机公钥（ed25519、ecdsa、rsa，有几把读几把；没有 .pub 文件时
+#                          问本机回环上的 sshd）
 #   ⑤ H     hub-known-host 从 H 上 ssh-keyscan 一次，与 ④ 逐把、逐字比对，相同的才写进中枢的 known_hosts
 #   ⑥ H     hub-verify     用中枢执行器同一组 ssh 参数、同一个哨兵命令发一次 status，要 ok:true
 #
@@ -458,7 +459,8 @@ cmd_node_uninstall() {
 # ── node-hostkey ─────────────────────────────────────────────────────────────────
 # 节点上。stdout 每把一行：`HOSTKEY <类型> <公钥>`。来源是 sshd 的主机公钥文件
 # `<目录>/ssh_host_{ed25519,ecdsa,rsa}_key.pub`（目录缺省 /etc/ssh，QIANMO_SSHD_HOST_KEY_DIR 可换）；
-# 有几把读几把，一把都读不到才拒绝。
+# 有几把读几把。一把都读不到时，退到本机回环 `ssh-keyscan 127.0.0.1:22`（见函数内注释）；
+# 回环也问不到才拒绝。
 cmd_node_hostkey() {
   [ "$#" -eq 0 ] || usage_die "node-hostkey 不收参数：$*"
   local dir="${QIANMO_SSHD_HOST_KEY_DIR:-/etc/ssh}" kind file line count=0
@@ -473,8 +475,25 @@ cmd_node_hostkey() {
       note "WARN : ${file} 不像一把 sshd 主机公钥，跳过"
     fi
   done
+  [ "$count" -eq 0 ] || return 0
+
+  # 回退：一个 .pub 都读不到（有的镜像只留私钥，sshd 本身不需要 .pub）。改从**本机回环**问一次
+  # sshd 正在出示的主机公钥。本函数是经运维那条已认证的 ssh 在节点上跑的，本机 22 端口只有 root
+  # 起的 sshd 绑得上，所以问到的就是这台 sshd 自己用的钥——信任锚与读 .pub 相同（⑤ 照样逐把比对）。
+  local scanned _host type blob _rest
+  scanned="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa -p 22 127.0.0.1 2>/dev/null | grep -v '^#' || true)"
+  while read -r _host type blob _rest; do
+    [ -n "${type:-}" ] || continue
+    if parse_pubkey "${type} ${blob}" && host_key_type "$PUB_TYPE"; then
+      printf 'HOSTKEY %s %s\n' "$PUB_TYPE" "$PUB_BLOB"
+      count=$((count + 1))
+    fi
+  done <<SCANNED
+${scanned}
+SCANNED
   [ "$count" -gt 0 ] \
-    || refuse "${dir} 下读不到 sshd 的任何主机公钥（ssh_host_ed25519_key.pub / ssh_host_ecdsa_key.pub / ssh_host_rsa_key.pub）"
+    || refuse "${dir} 下读不到 sshd 的任何主机公钥（ssh_host_ed25519_key.pub / ssh_host_ecdsa_key.pub / ssh_host_rsa_key.pub），从本机回环 127.0.0.1:22 也没问到"
+  note "NOTE : ${dir} 下没有主机公钥文件，改用本机回环 127.0.0.1:22 上 sshd 出示的 ${count} 把"
 }
 
 # ── hub-known-host --node <节点> [--dry-run] ───────────────────────────────────
