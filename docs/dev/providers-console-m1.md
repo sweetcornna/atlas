@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | **v1.4（生效）**。v1.4 只补 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
+| 文档版本 | **v1.5（生效）**。v1.5 只补 §2.4 `effective` 一行：未托管且 resident 带着模型变量启动的节点不报生效值。v1.4 补了 §2.3 第 10 步与 §2.5 的拨号节奏（随 v2.47.2 实现）。负责人决定来自 2026-10-03 对话记录（§0.1 的 D-1 ~ D-9），其余裁定由主 agent 按 M1 委托作出（§1.2）。v1.0 的四个待决点负责人已于同日拍板，见 §13。§5.11（缓存命中，P18.19）是 v1.3 新增的，其中的行号在 `6d4440e8` 上核过 |
 | 日期 | 2026-10-03 |
 | 核对基点 | origin/main `33dc81bf`（PR #154 的合入提交）。**本文自己引用的行号**都在这个提交上核过，清单见附 B。**从 hermes 调研 §11 转引的阡陌行号**按该调研的基线 `e123b2ec` 记，本文没有逐条在 `33dc81bf` 上复核 |
 | 本文范围 | **只有设计，不改代码。**范围回写与本版同批完成，记为 P18.0：章程 v2.22、roadmap v2.80、`beta-env.md` v1.4 补注、`node-provisioning.md` 补注、`tenancy-m1.md` §6.1 补注 |
@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| **v1.5** | **2026-10-05** | **实现回写：未托管节点的生效值。**P18.13 B 段 F 段发现：节点还没被托管、resident 又是带着 `secrets/model-env` 启动的时候，`status` 报的 `effective` 是 SSH 强制命令起的进程剥掉模型变量、只按 `settings.json` 算的，于是一台实际跑 gpt-6-luna / responses / max 的节点被报成 firstParty / claude-sonnet-5 / xhigh。§2.4 `effective` 一行补上：这种节点的节点侧不算，中枢不收旧节点照常发来的那一块，也不沿用缓存里的旧值；页面写「模型由 resident 的启动环境决定 · 托管后显示」 |
 | **v1.4** | **2026-10-05** | **实现回写：拨号节奏（v2.47.2）。**P18.13 B 段 R1 在节点 `ufw limit 22/tcp`（同一来源 30 s 内第 4 条新 ssh 连接直接 REJECT）下撞红：中枢的状态刷新每 5 s 一次就占满窗口，三次下发一秒内都 `ssh 失败`。§2.5 补「拨号节奏」：对同一个 `主机:端口` 30 s 内最多 3 条连接；有人在等的操作等名额，状态刷新没名额就不拨；握手前被拒的等过窗口重拨一次。§2.3 第 10 步注明刷新是尽力而为 |
 | **v1.3** | **2026-10-03** | **新增 §5.11 缓存命中（P18.19）。**对照 hermes 的缓存做法，在录制桩上用真实 ACP 子进程实测出三类前缀分叉：切换会话、进程 cwd 的 git 状态、换子进程后续上。据此给出 CH-1 ~ CH-7、可机检的完成标准和现网测法。新增 P18.19（B2，排在 P18.8 之后，44–70 人时，计入核心），核心合计改为 724–1072，全部合计改为 1074–1582；P18.18 的完成标准加上 X-1（同一会话固定用一把 key）。同步改了 §9.1、§9.2、§9.3、§9.4、§10、§11、§12。**实现阶段同版回写**（分支 `feat/p18-19-prompt-cache`）：§5.11.3 换成逐次归因的实测结果；§5.11.5 补上现网收益排序、开关和实现与设计不同的地方；§5.11.8 的保留期窗口改为 60 min，G-2 只统计同构建的替换；新增 §5.11.12 实现与验证；§9.1 的 B2 补上 v1.2 漏写的 P18.20。审计后（同版）：CH-4 保留并写明取舍；CH-7 改由调用方传入会话 id，循环预算不动；P18.13 的完成标准加一次热切换给 G-2 补样本。P18.12 实现回写（同版）：§1.2 R-7、§2.4 `capabilities`、§3.4 `always` 一行里「节点自报」的两项改为已生效 |
 | **v1.2** | **2026-10-03** | **D-8：每个 agent 的上下文窗口默认 200 000 token，控制台可改；D-9：自动压缩阈值可用 `/autocompact` 等方式设置。**档案里模型的 `contextTokens` 缺省按 200 000 编译；节点指派可单独覆盖；仍编译到同一个 `modelSettings.<slot>.contextTokens`，不新开上下文覆盖。P18.6、P18.9 各加 4 人时。**D-9：自动压缩阈值可用 `/autocompact` 等方式设置**，新增 P18.20（ACP 会话里的本地命令，16–24 人时），核心合计改为 680–1002，全部合计改为 1030–1512。同步改了 §0.1、§3.2、§6.3.1、§6.3.8、§9.2 P18.6 / P18.9、§9.4 |
@@ -218,7 +219,7 @@
 | `loadedHash` | 当前这一代 ACP 子进程加载的受管键哈希（来自 `generation.json`） |
 | `pending` | `{requestId, since, waitingTurns}` 或 `null` |
 | `resident` | `{running, generation, inFlight}` |
-| `effective` | 节点在**单独的进程**里，把 `settings.json` 应用到自己的 `process.env`（和 `createSession` 同一序列）之后，用真实函数算出的：`apiProvider`（`getAPIProvider()`）、`wire`（`resolveOpenAIWireProtocol()` 或线路固定值）、`model`、`effortOnWire`（`modelSupportsEffort()`，chat 线另按当时代码里的门控判断）、`effortLevel`、`contextTokens` |
+| `effective` | 节点在**单独的进程**里，把 `settings.json` 应用到自己的 `process.env`（和 `createSession` 同一序列）之后，用真实函数算出的：`apiProvider`（`getAPIProvider()`）、`wire`（`resolveOpenAIWireProtocol()` 或线路固定值）、`model`、`effortOnWire`（`modelSupportsEffort()`，chat 线另按当时代码里的门控判断）、`effortLevel`、`contextTokens`。**未托管（`managed == false`）且 `inheritedProviderKeys` 非空的节点不报这一项（v1.5）**：它的 ACP 子进程按 resident 的启动环境跑模型，这里却是剥掉那些变量算的，两边输入不同。节点侧不起这个进程，`status` 带一行警告说明原因；中枢对旧节点发来的这一块也不收，缓存里的旧值不沿用；页面写「模型由 resident 的启动环境决定 · 托管后显示」。托管之后子进程同样剥掉这些变量，`effective` 恢复（判据只有一处：`@qianmo/console` 的 `modelFromStartupEnv`） |
 | `inheritedProviderKeys` | resident 自身环境里出现的 provider 类键名（不含值），由 resident 启动时写入 |
 | `capabilities` | 节点代码支持的特性：`chatEffortHonorsOverride`（P18.5 已合入，已生效，为 true）、`replayFilter`（P18.8 已合入，已生效，为 true）、`protocol: 1`。前两项取自调用层的 `getModelCompatCapabilities()`，不写死：`qm provider` 自 P18.7 起就把它们合并进上报与校验，P18.12 又去掉了 `node.ts` 里两项都为 `false` 的残留默认值（直接调 `stageProviderApply` / `readProviderState` 时用的就是它） |
 

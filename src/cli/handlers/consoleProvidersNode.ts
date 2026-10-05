@@ -9,10 +9,11 @@
  * 读出来的东西；中枢自己算的只有一样——拿期望与节点回报比出来的漂移类型。
  */
 
-import type {
-  ProviderDrift,
-  ProviderNodeActual,
-  ProviderProbeResult,
+import {
+  modelFromStartupEnv,
+  type ProviderDrift,
+  type ProviderNodeActual,
+  type ProviderProbeResult,
 } from '@qianmo/console'
 import {
   isKeyId,
@@ -173,7 +174,10 @@ function parseKeys(raw: unknown): ProviderNodeActual['keys'] {
 
 /**
  * §2.4 state (plus `effective` when the response carries it), or `null` when
- * the node's answer is not shaped like one.
+ * the node's answer is not shaped like one. `effective` is dropped for a node
+ * whose model comes from its resident's start-up environment
+ * ({@link modelFromStartupEnv}): an older node still sends one, computed from
+ * the wrong inputs.
  */
 export function parseNodeState(
   state: unknown,
@@ -240,7 +244,13 @@ export function parseNodeState(
       lastResult = { requestId, code, at, diffKeys: diffKeyNames(raw.diffKeys) }
     }
   }
-  const computed = parseEffective(effective)
+  const inheritedProviderKeys = keyNames(state.inheritedProviderKeys)
+  const computed = modelFromStartupEnv({
+    managed: state.managed,
+    inheritedProviderKeys,
+  })
+    ? undefined
+    : parseEffective(effective)
   const keys = parseKeys(state.keys)
   return {
     managed: state.managed,
@@ -250,7 +260,7 @@ export function parseNodeState(
     loadedHash,
     pending,
     resident,
-    inheritedProviderKeys: keyNames(state.inheritedProviderKeys),
+    inheritedProviderKeys,
     capabilities: {
       protocol: isInteger(caps.protocol) ? caps.protocol : 1,
       chatEffortHonorsOverride: caps.chatEffortHonorsOverride === true,

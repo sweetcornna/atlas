@@ -578,6 +578,51 @@ describe('status', () => {
     expect(warnings).toContain('[qm provider] effective not computed: timeout')
   })
 
+  test('not managed, resident started with provider keys: effective left out, not computed, saying why', async () => {
+    recordProviderGeneration({
+      generation: 1,
+      env: {
+        CLAUDE_CODE_USE_OPENAI: '1',
+        OPENAI_BASE_URL: 'https://gw.test/v1',
+      },
+    })
+    let computed = 0
+    const response = await send(statusRequest(), {
+      effective: async () => {
+        computed += 1
+        return { ok: true, effective: EFFECTIVE }
+      },
+    })
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(response.state?.managed).toBe(false)
+    expect(response.state?.inheritedProviderKeys).toEqual([
+      'CLAUDE_CODE_USE_OPENAI',
+      'OPENAI_BASE_URL',
+    ])
+    expect('effective' in response).toBe(false)
+    expect(computed).toBe(0)
+    expect(warnings).toContain(
+      '[qm provider] effective not computed: not managed, the resident started with CLAUDE_CODE_USE_OPENAI, OPENAI_BASE_URL in its environment',
+    )
+  })
+
+  test('managed, resident started with provider keys: effective still attached (the child strips them)', async () => {
+    await send(applyRequest())
+    recordProviderGeneration({
+      generation: 2,
+      env: { CLAUDE_CODE_USE_OPENAI: '1' },
+    })
+    const response = await send(statusRequest())
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(response.state?.managed).toBe(true)
+    expect(response.state?.inheritedProviderKeys).toEqual([
+      'CLAUDE_CODE_USE_OPENAI',
+    ])
+    expect(response.effective).toEqual(EFFECTIVE)
+  })
+
   test('a resident waiting on a pending intent: generation, in-flight work and waiting turns', async () => {
     residentWithPidFile()
     recordProviderGeneration({ generation: 4, env: {} })

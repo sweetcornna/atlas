@@ -33,17 +33,18 @@
  * kind rather than by the hub's sentence for it.
  */
 
-import type {
-  ProviderActivity,
-  ProviderCatalog,
-  ProviderDrift,
-  ProviderFailure,
-  ProviderNodeActual,
-  ProviderNodeView,
-  ProviderOverview,
-  ProviderPresetView,
-  ProviderProfileSummary,
-  ProviderProfileView,
+import {
+  modelFromStartupEnv,
+  type ProviderActivity,
+  type ProviderCatalog,
+  type ProviderDrift,
+  type ProviderFailure,
+  type ProviderNodeActual,
+  type ProviderNodeView,
+  type ProviderOverview,
+  type ProviderPresetView,
+  type ProviderProfileSummary,
+  type ProviderProfileView,
 } from '../deps.js'
 import {
   bar,
@@ -602,11 +603,17 @@ export function recentList(
   )
 }
 
-/** Every field of `effective` (§6.3.8 「effective 的全部字段」). */
+/**
+ * Every field of `effective` (§6.3.8 「effective 的全部字段」). A node whose
+ * model comes from its resident's start-up environment has none to show, and
+ * says so rather than "refresh" — refreshing will not change it.
+ */
 export function effectiveFields(actual: ProviderNodeActual | null): string {
   const cells = effectiveCells(actual)
   if (!cells.reported) {
-    return `<p class="note">节点没有报告生效值 · 刷新后再看</p>`
+    return actual !== null && modelFromStartupEnv(actual)
+      ? `<p class="note" data-startup-env>未托管 · 模型由 resident 的启动环境决定 · 节点算不出生效值 · 托管后显示</p>`
+      : `<p class="note">节点没有报告生效值 · 刷新后再看</p>`
   }
   return (
     `<div class="prov-kvs" data-effective>` +

@@ -181,6 +181,7 @@ export type {
   ProviderProfileView,
   ProviderResult,
 } from './deps.js'
+export { modelFromStartupEnv } from './deps.js'
 // The account book's line format, for the host's other hash-chained books
 // (`providers.ndjson`, P18.6 R-3): one chain construction, not two.
 export {

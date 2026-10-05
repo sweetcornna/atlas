@@ -17,6 +17,11 @@
  *     files (`resident/resident.pid`, `resident/lifecycle.json`,
  *     `resident/provider-switch.json`) and the node's capabilities, plus
  *     `effective` computed in a process of its own (`effectiveProcess.ts`).
+ *     Not for a node the hub does not manage whose resident started with
+ *     provider keys in its environment (`inheritedProviderKeys`): its ACP
+ *     child runs on that environment, while `effective` strips it and reads
+ *     `settings.json` alone, so the block would describe a model the child
+ *     does not run. It is left out, with a warning line saying why.
  *   - `apply`: `stageProviderApply()`; then, if a resident is running, a
  *     SIGHUP through P18.3's `signalResidentProviderCheck()` (it switches at
  *     the next idle boundary, or at its 5 s poll if the signal is not sent);
@@ -272,6 +277,13 @@ async function status(
   ctx: ProviderContext,
 ): Promise<NodeProviderResponse> {
   const state = currentProviderState()
+  if (!state.managed && state.inheritedProviderKeys.length > 0) {
+    warnLine(
+      ctx,
+      `effective not computed: not managed, the resident started with ${state.inheritedProviderKeys.join(', ')} in its environment`,
+    )
+    return { v: PROTOCOL_VERSION, requestId, ok: true, state }
+  }
   const outcome = await (
     ctx.effective ??
     (timeoutMs =>

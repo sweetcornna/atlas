@@ -33,6 +33,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   type ActionOutcome,
+  modelFromStartupEnv,
   type ProviderActionName,
   type ProviderApplyResult,
   type ProviderAssignment,
@@ -1742,9 +1743,12 @@ export class ConsoleProviders implements ProviderPort {
     if (actual === null) return
     const previous = this.#cache.get(node)
     this.#cache.set(node, {
+      // A reply without `effective` keeps the last one, unless the node's
+      // model now comes from its start-up environment: then there is none.
       actual:
         reply.effective === undefined &&
-        previous?.actual?.effective !== undefined
+        previous?.actual?.effective !== undefined &&
+        !modelFromStartupEnv(actual)
           ? { ...actual, effective: previous.actual.effective }
           : actual,
       lastStatus: previous?.lastStatus ?? null,
