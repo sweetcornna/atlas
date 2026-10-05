@@ -186,6 +186,12 @@ BETA_BACKUP_ARCHIVE_FILE="$BETA_SECRET_DIR/backup-archive-token"
 # H 腿**不注入**：控制台不跑 agent 轮次，给它模型凭据只是多一份可被读走的副本。
 BETA_MODEL_ENV_FILE="$BETA_SECRET_DIR/model-env"
 
+# 接力节点（handoff-node.sh）的 app-server 用的模型 key，一份**单独**的 KEY=VALUE 文件（0600）。
+# 不与上面那份共用：节点迁到中枢托管（P18.13）之后，model-env 里的模型服务类键会被清掉，
+# 接力节点若还从那里取 key 就起不来。常驻节点**不读**它（beta_load_model_env 只读 model-env），
+# 它也只给 app-server 一个进程。
+BETA_HANDOFF_MODEL_ENV_FILE="$BETA_SECRET_DIR/handoff-model-env"
+
 # ── 模型服务（P18.6，providers-console-m1.md §2.5、§3.8）────────────────────────
 # 下面几样只在 H 腿、且控制台尾参里有 `--providers` 时才用到（beta-up.sh 的
 # provider_console_args）。脚本**不生成、不读、不打印**其中任何一把钥匙。
