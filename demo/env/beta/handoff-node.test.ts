@@ -45,6 +45,8 @@ const MODEL_KEY = 'sk-test-canary-handoff-node-model-env'
 const OUTER_KEY = 'sk-test-canary-handoff-node-outer-shell'
 /** model-env 里另一类 provider 的键：同样不进节点桥。 */
 const OTHER_KEY = 'sk-test-canary-handoff-node-other'
+/** secrets/handoff-model-env 里的那把（P17.7 前置）：只该出现在 app-server 的环境里。 */
+const HANDOFF_KEY = 'sk-test-canary-handoff-node-own-file'
 const PSK = 'psk-for-handoff-node-test'
 const BASE_URL = 'https://gateway.example.test/v1'
 
@@ -120,7 +122,14 @@ interface Scratch {
   readonly logs: string
 }
 
-function scratch(options: { readonly modelEnv?: string | null } = {}): Scratch {
+function scratch(
+  options: {
+    readonly modelEnv?: string | null
+    /** secrets/handoff-model-env 的内容；缺省不写这份文件（走旧做法）。 */
+    readonly handoffEnv?: string
+    readonly handoffMode?: number
+  } = {},
+): Scratch {
   const base = mkdtempSync(join(tmpdir(), 'qianmo-handoff-node-sh-'))
   scratches.push(base)
   const repo = join(base, 'repo')
@@ -149,6 +158,11 @@ function scratch(options: { readonly modelEnv?: string | null } = {}): Scratch {
   if (modelEnv !== null) {
     writeFileSync(join(root, 'secrets', 'model-env'), modelEnv)
     chmodSync(join(root, 'secrets', 'model-env'), 0o600)
+  }
+  if (options.handoffEnv !== undefined) {
+    const file = join(root, 'secrets', 'handoff-model-env')
+    writeFileSync(file, options.handoffEnv)
+    chmodSync(file, options.handoffMode ?? 0o600)
   }
   const logs = join(base, 'logs')
   mkdirSync(logs, { recursive: true })
@@ -386,17 +400,30 @@ describe('handoff-node.sh start 拒绝的情形', () => {
     expect(existsSync(join(place.root, 'handoff'))).toBe(false)
   })
 
-  test('key 那个环境变量是空的：节点桥停回去，不留半个节点', () => {
-    // model-env 里只有别家的键，运维 shell 里也没有 OPENAI_API_KEY。
+  test('两份文件里都没有 KEY_ENV：起之前就拒，报出新文件的路径与权限', () => {
+    // model-env 里只有别家的键；运维 shell 里那把不算数（节点桥本来就要剥掉它）。
     const place = scratch({ modelEnv: `ANTHROPIC_API_KEY=${OTHER_KEY}\n` })
-    const r = run(place, START, { OPENAI_API_KEY: '' })
+    const r = run(place, START)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.output).toContain(
+      `把 OPENAI_API_KEY=… 写进 ${join(place.root, 'secrets', 'handoff-model-env')}（chmod 600`,
+    )
+    expect(existsSync(join(place.logs, 'order'))).toBe(false)
+    for (const key of [OTHER_KEY, OUTER_KEY]) {
+      expect(r.output).not.toContain(key)
+    }
+  })
+
+  test('key 那一行没有值：节点桥停回去，不留半个节点', () => {
+    const place = scratch({ handoffEnv: 'OPENAI_API_KEY=\n' })
+    const r = run(place, START)
     expect(r.exitCode).not.toBe(0)
     expect(r.output).toContain('环境变量 OPENAI_API_KEY 是空的')
+    expect(r.output).toContain('handoff-model-env 里那一行没有值')
     expect(readFileSync(join(place.logs, 'order'), 'utf8')).toBe(
       'handoff-node\n',
     )
     expect(existsSync(join(place.root, 'run', 'handoff-node.pid'))).toBe(false)
-    expect(r.output).not.toContain(OTHER_KEY)
   })
 
   test('app-server 没起来：节点桥停回去', () => {
@@ -418,6 +445,144 @@ describe('handoff-node.sh start 拒绝的情形', () => {
     expect(r.exitCode).not.toBe(0)
     expect(r.output).toContain('旁边没有可执行的 codex-code-mode-host')
     expect(existsSync(join(place.logs, 'order'))).toBe(false)
+  })
+})
+
+describe('handoff-node.sh 的 key 文件（secrets/handoff-model-env）', () => {
+  test('有这份文件就用它：app-server 只拿到它，model-env 不载入、也不告警', () => {
+    const place = scratch({ handoffEnv: `OPENAI_API_KEY=${HANDOFF_KEY}\n` })
+    const r = run(place, START)
+    expect(r.exitCode).toBe(0)
+    expect(r.output).not.toContain('WARN')
+    expect(r.output).toContain(
+      `模型凭据   : 已加载（${join(place.root, 'secrets', 'handoff-model-env')}，1 个环境键，只给 app-server）`,
+    )
+
+    const app = appServerEnv(place)
+    expect(app.get('OPENAI_API_KEY')).toBe(HANDOFF_KEY)
+    // model-env 是常驻的：它里面别家的键不进 app-server。
+    expect(app.has('ANTHROPIC_API_KEY')).toBe(false)
+
+    // 节点桥：两份文件里的键名与运维 shell 里那把都去掉了。
+    const node = bridge(place)
+    expect(node.env.OPENAI_API_KEY).toBeUndefined()
+    expect(node.env.ANTHROPIC_API_KEY).toBeUndefined()
+    const bridgeText = JSON.stringify(node)
+    const argv = readFileSync(join(place.logs, 'app-server.argv'), 'utf8')
+    const written = everythingWritten(place)
+    for (const key of [HANDOFF_KEY, MODEL_KEY, OUTER_KEY, OTHER_KEY]) {
+      expect(bridgeText).not.toContain(key)
+      expect(argv).not.toContain(key)
+      expect(written).not.toContain(key)
+      expect(r.output).not.toContain(key)
+    }
+  }, 20_000)
+
+  test('自定 KEY_ENV 的键名也从节点桥剥掉', () => {
+    const place = scratch({
+      modelEnv: null,
+      handoffEnv: `QIANMO_GATEWAY_KEY=${HANDOFF_KEY}\n`,
+    })
+    const r = run(place, START, {
+      QIANMO_HANDOFF_KEY_ENV: 'QIANMO_GATEWAY_KEY',
+      QIANMO_GATEWAY_KEY: OUTER_KEY,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(bridge(place).env.QIANMO_GATEWAY_KEY).toBeUndefined()
+    expect(appServerEnv(place).get('QIANMO_GATEWAY_KEY')).toBe(HANDOFF_KEY)
+  }, 20_000)
+
+  test('没有这份文件时退回 model-env，并告警叫人挪过去', () => {
+    const place = scratch()
+    const r = run(place, START)
+    expect(r.exitCode).toBe(0)
+    expect(r.output).toContain(
+      `WARN : 没有 ${join(place.root, 'secrets', 'handoff-model-env')}：app-server 的 key 这次取自`,
+    )
+    expect(r.output).toContain('（旧做法：取自 model-env）')
+    expect(appServerEnv(place).get('OPENAI_API_KEY')).toBe(MODEL_KEY)
+    for (const key of [MODEL_KEY, OUTER_KEY, OTHER_KEY]) {
+      expect(r.output).not.toContain(key)
+    }
+  }, 20_000)
+
+  test('文件在但没有 KEY_ENV：拒绝，不退回 model-env', () => {
+    const place = scratch({ handoffEnv: `ANTHROPIC_API_KEY=${OTHER_KEY}\n` })
+    const r = run(place, START)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.output).toContain('handoff-model-env 里没有 OPENAI_API_KEY=…')
+    expect(existsSync(join(place.logs, 'order'))).toBe(false)
+    expect(r.output).not.toContain(OTHER_KEY)
+  })
+
+  test('权限不是 0600：拒绝，一个进程都不起', () => {
+    const place = scratch({
+      handoffEnv: `OPENAI_API_KEY=${HANDOFF_KEY}\n`,
+      handoffMode: 0o644,
+    })
+    const r = run(place, START)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.output).toContain('的权限是 -rw-r--r--，要 0600')
+    expect(existsSync(join(place.logs, 'order'))).toBe(false)
+    expect(r.output).not.toContain(HANDOFF_KEY)
+  })
+
+  test('是软链（哪怕指向一份 0600 的好文件）：拒绝', () => {
+    const place = scratch()
+    const real = join(place.root, 'secrets', 'elsewhere-env')
+    writeFileSync(real, `OPENAI_API_KEY=${HANDOFF_KEY}\n`)
+    chmodSync(real, 0o600)
+    symlinkSync(real, join(place.root, 'secrets', 'handoff-model-env'))
+    const r = run(place, START)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.output).toContain('是一条软链')
+    expect(existsSync(join(place.logs, 'order'))).toBe(false)
+  })
+
+  test('常驻节点不读它：beta_load_model_env 之后环境里没有这份文件的键', () => {
+    const place = scratch({
+      modelEnv: `OPENAI_BASE_URL=${BASE_URL}\n`,
+      handoffEnv: `QIANMO_HANDOFF_ONLY_KEY=${HANDOFF_KEY}\n`,
+    })
+    const child = Bun.spawnSync(
+      [
+        '/bin/bash',
+        '-c',
+        [
+          'set -euo pipefail',
+          '. "$1"',
+          'beta_load_model_env',
+          'printf "base=%s\\nonly=%s\\n" "${OPENAI_BASE_URL:-}" "${QIANMO_HANDOFF_ONLY_KEY:-ABSENT}"',
+        ].join('\n'),
+        'handoff-key-file-test',
+        join(place.repo, 'demo/env/beta/common.sh'),
+      ],
+      {
+        env: {
+          PATH: '/usr/bin:/bin',
+          HOME: place.root.replace(/\/beta-root$/, ''),
+          QIANMO_BETA_ROOT: place.root,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    expect(child.exitCode).toBe(0)
+    expect(child.stdout.toString()).toBe(`base=${BASE_URL}\nonly=ABSENT\n`)
+  })
+
+  test('除了 common.sh 的定义与本脚本，没有别的起法脚本碰这份文件', () => {
+    const users = readdirSync(BETA_DIR)
+      .filter(name => name.endsWith('.sh'))
+      .filter(name => {
+        const text = readFileSync(join(BETA_DIR, name), 'utf8')
+        return (
+          text.includes('handoff-model-env') ||
+          text.includes('BETA_HANDOFF_MODEL_ENV_FILE')
+        )
+      })
+      .sort()
+    expect(users).toEqual(['common.sh', 'handoff-node.sh'])
   })
 })
 

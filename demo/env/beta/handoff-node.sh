@@ -12,7 +12,9 @@
 #   QIANMO_HANDOFF_BASE_URL   必填。模型网关的 `/v1` 地址（不进仓库）。
 #   QIANMO_HANDOFF_MODEL      默认 gpt-6-luna。
 #   QIANMO_HANDOFF_KEY_ENV    默认 OPENAI_API_KEY：app-server 从哪个环境变量取 key。
-#                             值来自 secrets/model-env（与常驻同一份文件）。
+#                             值来自 secrets/handoff-model-env（KEY=VALUE，0600，属当前用户；
+#                             常驻不读它）。这份文件不在时退回 secrets/model-env 并告警
+#                             （P17.5 的旧做法；节点迁到中枢托管后那里的模型服务类键会被清掉）。
 #   QIANMO_QMCODE_BIN         默认 <部署树>/qmcode/qmcode（beta-deploy.sh --only qmcode 装的那份）。
 #
 # ── 两个进程 ─────────────────────────────────────────────────────────────────
@@ -29,9 +31,11 @@
 # ── key 只进 app-server 一个进程（设计 M 条）────────────────────────────────
 #
 # 两个进程都由本脚本这一个 shell 起，所以「谁看得见 key」只能靠起的时候怎么给环境：
-#   · 节点桥起在 secrets/model-env 载入**之前**，命令前再用 `env -u` 把 model-env 里
-#     出现的每个键名和 KEY_ENV 都去掉——运维自己的 shell 里可能早就 export 着一把。
-#   · app-server 起在 model-env 载入之后，命令前 `env -u QIANMO_TRANSPORT_PSK`：
+#   · key 从哪份文件来，在起任何进程之前定下（只看文件形状与键名，不读值）：
+#     handoff-model-env 优先；不在时退回 model-env（告警）；两边都没有 KEY_ENV 就拒绝。
+#   · 节点桥起在载入**之前**，命令前再用 `env -u` 把两份文件里出现的每个键名和 KEY_ENV
+#     都去掉——运维自己的 shell 里可能早就 export 着一把。
+#   · app-server 起在载入之后（只载入定下的那一份），命令前 `env -u QIANMO_TRANSPORT_PSK`：
 #     传输 PSK 是节点桥的，app-server 用不着。
 #   · key 的**值**不进 argv、不进 config.toml（那里只写 `env_key` 的名字）、不进任何一行
 #     输出；`[shell_environment_policy] inherit = "core"` 不让它进模型起的工具 shell。
@@ -71,7 +75,80 @@ usage() {
   beta_say "  --bind <地址>             节点桥绑定地址，默认 ${BETA_NODE_BIND}（与常驻同一个默认）。"
   beta_say ''
   beta_say '环境：QIANMO_HANDOFF_BASE_URL（必填）、QIANMO_HANDOFF_MODEL、QIANMO_HANDOFF_KEY_ENV、QIANMO_QMCODE_BIN。'
-  beta_say 'key 从 secrets/model-env 读，只给 app-server。'
+  beta_say "key 从 ${BETA_HANDOFF_MODEL_ENV_FILE} 读（0600），只给 app-server；它不在时退回 secrets/model-env 并告警。"
+}
+
+# 文件里有没有这个键名（判据同 beta_model_env_names：行首、可带 export 的 KEY=）。不读值。
+handoff_env_has() {
+  local file="$1" name="$2" names
+  names="$(beta_model_env_names "$file")"
+  case "
+${names}
+" in
+    *"
+${name}
+"*) return 0 ;;
+  esac
+  return 1
+}
+
+# handoff_pick_key_source <KEY_ENV> —— 定 app-server 的 key 从哪份文件来，写进
+# HANDOFF_KEY_SOURCE（handoff | model-env）。在起任何进程之前跑；只看文件形状与键名。
+#
+# handoff-model-env 只给一个进程，所以比 model-env 收得更紧：不跟软链、必须是属当前
+# 用户的 0600 普通文件。
+HANDOFF_KEY_SOURCE=''
+handoff_pick_key_source() {
+  local key_env="$1" file="$BETA_HANDOFF_MODEL_ENV_FILE" listing mode owner
+  if [ -L "$file" ]; then
+    beta_die "$file 是一条软链 —— 接力节点的模型 key 要一份普通文件（0600，属当前用户），不跟软链。"
+  fi
+  if [ -e "$file" ]; then
+    [ -f "$file" ] || beta_die "$file 存在但不是普通文件 —— 要的是一份 KEY=VALUE 的 shell 片段。"
+    [ -r "$file" ] || beta_die "$file 存在但读不掉 —— 该是 0600 且属当前用户。"
+    listing="$(LC_ALL=C ls -ln "$file")"
+    mode="$(printf '%s' "$listing" | cut -c1-10)"
+    owner="$(printf '%s' "$listing" | awk '{print $3}')"
+    [ "$mode" = '-rw-------' ] || beta_die "$file 的权限是 ${mode}，要 0600：chmod 600 $file"
+    [ "$owner" = "$(id -u)" ] || beta_die "$file 不属当前用户（属 uid ${owner}）。"
+    handoff_env_has "$file" "$key_env" \
+      || beta_die "$file 里没有 ${key_env}=… —— app-server 从这个环境变量取 key（QIANMO_HANDOFF_KEY_ENV）。"
+    HANDOFF_KEY_SOURCE='handoff'
+    return 0
+  fi
+  if [ -f "$BETA_MODEL_ENV_FILE" ] && [ -r "$BETA_MODEL_ENV_FILE" ] \
+    && handoff_env_has "$BETA_MODEL_ENV_FILE" "$key_env"; then
+    beta_warn "没有 ${file}：app-server 的 key 这次取自 ${BETA_MODEL_ENV_FILE}（旧做法）。节点迁到中枢托管后那里的模型服务类键会被清掉，接力节点就起不来 —— 把 ${key_env}=… 那一行挪进 ${file}（0600）。"
+    HANDOFF_KEY_SOURCE='model-env'
+    return 0
+  fi
+  beta_die "没有 app-server 的模型 key：把 ${key_env}=… 写进 ${file}（chmod 600，属当前用户）。常驻节点不读这份文件。"
+}
+
+# 把 handoff-model-env 载入当前 shell（只在起 app-server 之前调）。set -a 的作用域是整个
+# shell：进来时是开是关，载入完原样还回去（beta_load_model_env 同一条）。
+HANDOFF_KEY_FILE_COUNT=0
+handoff_load_key_file() {
+  local file="$BETA_HANDOFF_MODEL_ENV_FILE" restore
+  HANDOFF_KEY_FILE_COUNT="$(beta_model_env_names "$file" | grep -c '.' || true)"
+  case "$-" in
+    *a*) restore='set -a' ;;
+    *) restore='set +a' ;;
+  esac
+  set -a
+  # shellcheck disable=SC1090
+  #   ↑ 路径是运行期算出来的；这份文件本来就不在仓库里。
+  . "$file"
+  eval "$restore"
+}
+
+# 横幅上那一行：只说来源、几个键，不说键名与值。
+handoff_key_line() {
+  case "$HANDOFF_KEY_SOURCE" in
+    handoff) printf '已加载（%s，%s 个环境键，只给 app-server）' "$BETA_HANDOFF_MODEL_ENV_FILE" "$HANDOFF_KEY_FILE_COUNT" ;;
+    model-env) printf '%s（旧做法：取自 model-env）' "$(beta_model_env_line)" ;;
+    *) printf '未加载' ;;
+  esac
 }
 
 # TOML 基本字符串里不能有的东西一律拒收，而不是去转义：这几个值都是运维给的短串，
@@ -170,6 +247,7 @@ do_start() {
   beta_require_occ
   local qmcode_real
   qmcode_real="$(beta_qmcode_check "$qmcode")"
+  handoff_pick_key_source "$key_env"
 
   mkdir -p "$BETA_RUN_DIR" "$BETA_LOG_DIR" "$HANDOFF_DIR" "$HANDOFF_NODE_ROOT" "$HANDOFF_APP_HOME"
   chmod 700 "$HANDOFF_DIR" "$HANDOFF_NODE_ROOT" "$HANDOFF_APP_HOME"
@@ -188,20 +266,21 @@ do_start() {
   write_qmcode_config "$model" "$base_url" "$key_env"
   beta_ok "qmcode 配置已写：$HANDOFF_QMCODE_HOME/config.toml（模型 ${model}，key 取自环境变量 ${key_env}）"
 
-  # ── 节点桥：载入 model-env 之前起，且把可能残留的 key 名逐个去掉 ──
+  # ── 节点桥：载入 key 之前起，且把两份文件里可能残留的 key 名逐个去掉 ──
   beta_head '起节点桥'
   beta_load_psk "$BETA_PSK_FILE" '传输 PSK（中枢拨入节点桥用的那把）'
   export OCC_IDENTITY=qianmo
-  local name
+  local name env_file
   local strip=(-u "$key_env")
-  if [ -f "$BETA_MODEL_ENV_FILE" ] && [ -r "$BETA_MODEL_ENV_FILE" ]; then
+  for env_file in "$BETA_HANDOFF_MODEL_ENV_FILE" "$BETA_MODEL_ENV_FILE"; do
+    [ -f "$env_file" ] && [ -r "$env_file" ] || continue
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       strip+=(-u "$name")
     done <<EOF
-$(beta_model_env_names "$BETA_MODEL_ENV_FILE")
+$(beta_model_env_names "$env_file")
 EOF
-  fi
+  done
   for item in ${trusts[@]+"${trusts[@]}"}; do pass+=(--trust "$item"); done
   for item in ${projects[@]+"${projects[@]}"}; do pass+=(--project "$item"); done
   beta_start_process "$HANDOFF_NODE_PROC" "$HANDOFF_CONFIG_DIR" \
@@ -217,12 +296,18 @@ EOF
     --app-server-pid-file "$(beta_pidfile "$HANDOFF_APP_PROC")" \
     ${pass[@]+"${pass[@]}"}
 
-  # ── app-server：这时才载入 model-env ──
+  # ── app-server：这时才载入 key（只载入定下的那一份）──
   beta_head '起 app-server'
-  beta_load_model_env
+  local key_file="$BETA_HANDOFF_MODEL_ENV_FILE"
+  if [ "$HANDOFF_KEY_SOURCE" = 'handoff' ]; then
+    handoff_load_key_file
+  else
+    key_file="$BETA_MODEL_ENV_FILE"
+    beta_load_model_env
+  fi
   if [ -z "${!key_env:-}" ]; then
     beta_stop_one "$HANDOFF_NODE_PROC"
-    beta_die "环境变量 ${key_env} 是空的 —— 把它写进 ${BETA_MODEL_ENV_FILE}（0600）。节点桥已停回去。"
+    beta_die "环境变量 ${key_env} 是空的 —— ${key_file} 里那一行没有值。节点桥已停回去。"
   fi
   if ! (beta_start_process "$HANDOFF_APP_PROC" "$HANDOFF_APP_HOME" \
     env -u QIANMO_TRANSPORT_PSK \
@@ -241,7 +326,7 @@ EOF
   beta_head '已起'
   beta_say "节点桥     : qianmo://${node}/handoff，监听 ${bind}:${port}"
   beta_say "app-server : ws://127.0.0.1:${app_port}（${qmcode_real}）"
-  beta_say "模型凭据   : $(beta_model_env_line)"
+  beta_say "模型凭据   : $(handoff_key_line)"
   beta_say "日志       : $(beta_logfile "$HANDOFF_NODE_PROC" out)、$(beta_logfile "$HANDOFF_APP_PROC" err)"
   beta_say '中枢那边   : qm console --handoff-node <本节点>=ws://<本机>:<端口> --handoff-node-git <本节点>=<ssh 目标>:<本节点 node 根>'
 }
