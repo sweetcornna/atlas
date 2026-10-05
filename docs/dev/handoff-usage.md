@@ -5,7 +5,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 版本 | v0.3（2026-10-04，补 P17.6 接入与接回；v0.2 同日补 P17.5 云端续跑；v0.1 2026-10-03 随 P17.3） |
+| 版本 | v0.4（2026-10-04，接力节点的 key 改读 `secrets/handoff-model-env`）；v0.3（2026-10-04，补 P17.6 接入与接回；v0.2 同日补 P17.5 云端续跑；v0.1 2026-10-03 随 P17.3） |
 | 适用 | `qm handoff`（P17.4）、`qm handoff mcp`（P17.3）、`qm handoff node` 与中枢派发（P17.5，§6）、`qm handoff attach` 与 `pull`（P17.6，§7）；工作包与判据见 [`handoff-p17-plan.md`](./handoff-p17-plan.md) |
 | 口径 | 接法按本仓库代码与 fork 的 `codex-rs/config/defaults.toml` 写。qmcode 一侧 2026-10-03 用本机 debug 构建（fork `34e0d210ed`）加假 Responses 服务实测过 `qianmo_handoff` 回合内调用与审批；Claude Code 一侧照基座的 hook 与 MCP 配置格式写，**未在官方 Claude Code 上实测**。§7 的接入 2026-10-04 用 fork 0.158.0 本机 release 构建的真 `qmcode` 终端对本机真 app-server 实测（只放回环）；ssh 是测试替身，**两台真机之间未实测**（P17.7 演练） |
 
@@ -144,7 +144,7 @@ QIANMO_HANDOFF_BASE_URL=<网关 /v1 地址> demo/env/beta/handoff-node.sh start 
 ```
 
 - 节点机上要有能建 user namespace 的 `bwrap`。没有时节点桥拒绝启动并写明原因，不退到 `danger-full-access`。
-- 模型 key 只给 app-server，节点桥、日志、台账和结果里都没有它。key 从 `secrets/model-env` 读，变量名由 `QIANMO_HANDOFF_KEY_ENV` 指定，默认 `OPENAI_API_KEY`。
+- 模型 key 只给 app-server，节点桥、日志、台账和结果里都没有它。key 从 `secrets/handoff-model-env` 读（一行 `<变量名>=<key>`，0600、属当前用户、不是软链），变量名由 `QIANMO_HANDOFF_KEY_ENV` 指定，默认 `OPENAI_API_KEY`。常驻节点不读这份文件，所以节点的模型服务迁到中枢托管、清掉 `model-env` 之后接力节点照常起。这份文件不在时退回 `secrets/model-env` 并告警。
 - app-server 启动时带 `-c mcp_servers.qianmo.enabled=false -c 'notify=[]'`。qmcode 内置的阡陌 MCP 和回合结束回调在节点上会反过来调用接力命令。
 - 节点仓由节点桥按 `--project` 建好：只有 `qianmo/` 分支，没有 remote，装的是和中枢同一份 pre-receive 钩子。
 - app-server 进程及其子进程的 `RssAnon` 合计超过 150 MiB 时，节点桥不接新任务（回 `E_BUSY`，中枢稍后重派），正在跑的回合不受影响；`VmRSS` 只写进日志。没有 `/proc` 的系统上不做这项判断。

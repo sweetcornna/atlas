@@ -732,9 +732,10 @@ systemctl --user restart qianmo-console.service
 可比的记录，**一定是重置**——节点清掉全部会话映射，每个上下文（值守作业也一样）都开新会话。「保留」要节点报告
 `replayFilter`，刷新后选不了就停下来查，不要退回缺省。
 
-清 `model-env`（第 8 步）时，`<接力节点>` 先别删：`handoff-node.sh start` 给 app-server 的模型 key 从同一份
-`secrets/model-env` 读（`QIANMO_HANDOFF_KEY_ENV`，缺省 `OPENAI_API_KEY`），删掉之后下一次 `handoff-node.sh start`
-直接退出。接力节点要先有另一个 key 来源（由 B 段定）；换个名字留在 `model-env` 里不行：resident 照样载入它，ACP
+清 `model-env`（第 8 步）时，`<接力节点>` 先把 key 挪走再删：`handoff-node.sh start` 给 app-server 的模型 key 读
+`secrets/handoff-model-env`（`QIANMO_HANDOFF_KEY_ENV`，缺省 `OPENAI_API_KEY`），这份文件不在时才退回 `model-env` 并告警。
+先把那一行写进 `secrets/handoff-model-env`（`chmod 600`），确认下一次 start 不再告警，再删 `model-env`；顺序反了，
+下一次 `handoff-node.sh start` 直接退出。换个名字留在 `model-env` 里不行：resident 照样载入它，ACP
 子进程只按名单剥键，不认的名字不剥。不删则该节点的 A1 判红（`env-residue`）。
 
 ### 每轮验收：`ops/provider-acceptance.sh`
@@ -837,8 +838,16 @@ QIANMO_HANDOFF_BASE_URL=<网关 /v1 地址> demo/env/beta/handoff-node.sh start 
 demo/env/beta/handoff-node.sh stop
 ```
 
-- **key 只进 app-server**：从 `secrets/model-env` 读，变量名由 `QIANMO_HANDOFF_KEY_ENV` 定（默认 `OPENAI_API_KEY`）。
-  节点桥起在载入它之前，命令前还用 `env -u` 去掉 model-env 里的每个键名；app-server 那边去掉传输 PSK。
+- **key 只进 app-server**：从 `secrets/handoff-model-env` 读（`KEY=VALUE`，0600、属当前用户、不是软链，不合就拒绝启动），
+  变量名由 `QIANMO_HANDOFF_KEY_ENV` 定（默认 `OPENAI_API_KEY`）。常驻节点不读它。这份文件不在时退回 `secrets/model-env`
+  并告警（P17.5 的旧做法；节点迁到中枢托管后那里的模型服务类键会被清掉）。两份文件里都没有这个变量名就拒绝启动。
+  节点桥起在载入之前，命令前还用 `env -u` 去掉两份文件里的每个键名；app-server 那边去掉传输 PSK。从旧做法迁过来：
+
+  ```bash
+  (umask 077 && grep '^OPENAI_API_KEY=' <内测根>/secrets/model-env > <内测根>/secrets/handoff-model-env)
+  demo/env/beta/handoff-node.sh stop
+  QIANMO_HANDOFF_BASE_URL=<网关 /v1 地址> demo/env/beta/handoff-node.sh start …   # 不再报「旧做法」
+  ```
 - **配置每次 start 重写**：`<根>/handoff/qmcode-home/config.toml`，模型走 `[model_providers.qianmo]`（`responses`），
   `[features] plugins = false`、工具 shell 只继承核心环境变量、内置的阡陌 MCP 写完整表并关掉。app-server 命令行另带
   `-c mcp_servers.qianmo.enabled=false -c 'notify=[]'`：qmcode 内置的那两样在节点上会反过来调接力命令。
