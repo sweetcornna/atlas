@@ -56,6 +56,8 @@ const OPENAI_LANE_ENV_KEYS = [
   // P18.19 (CH-5, CH-6)
   'OPENAI_PROMPT_CACHE_RETENTION',
   'OPENAI_PROMPT_CACHE_DIAGNOSTICS',
+  // P18.21 (CH-8)
+  'OPENAI_PROMPT_CACHE_SELFCHECK',
   'OPENAI_DEFAULT_OPUS_MODEL',
   'OPENAI_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES',
   'OPENAI_DEFAULT_SONNET_MODEL',
@@ -143,6 +145,12 @@ export type CaptureParams = {
   respond?: (request: CapturedRequest, index: number) => Response | undefined
   /** P18.18: the abort signal handed to the lane. Default: never aborted. */
   signal?: AbortSignal
+  /** P18.21: options.querySource. Default: `main_loop`. */
+  querySource?: string
+  /** P18.21: options.agentId (set only for subagents). Default: none. */
+  agentId?: string
+  /** P18.21: the system prompt handed to the lane. Default: none. */
+  systemPrompt?: string[]
 }
 
 /**
@@ -213,7 +221,8 @@ export async function captureOpenAIRequests(
 
   const options = {
     model: params.model,
-    querySource: 'main_loop',
+    querySource: params.querySource ?? 'main_loop',
+    ...(params.agentId !== undefined && { agentId: params.agentId }),
     agents: [],
     allowedAgentTypes: [],
     getToolPermissionContext: async () => ({
@@ -235,7 +244,7 @@ export async function captureOpenAIRequests(
     const signal = params.signal ?? new AbortController().signal
     for await (const output of queryModelOpenAI(
       params.messages ?? [],
-      [] as unknown as SystemPrompt,
+      (params.systemPrompt ?? []) as unknown as SystemPrompt,
       params.tools ?? [],
       signal,
       options,
