@@ -589,3 +589,64 @@ describe('P18.19: response ids, diagnostics and retention on a real child (T-6, 
     }
   })
 })
+
+/** The CH-8 record on each assistant entry of a transcript (P18.21). */
+function selfChecks(transcript: string): Record<string, unknown>[] {
+  return transcript
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as { type?: string; message?: unknown })
+    .filter(e => e.type === 'assistant')
+    .map(
+      e =>
+        ((e.message ?? {}) as Record<string, unknown>)
+          ._qmPromptCacheSelfCheck as Record<string, unknown>,
+    )
+}
+
+describe('P18.21: the client self-check on a real child, across a replacement (CH-8)', () => {
+  const ON = { OPENAI_PROMPT_CACHE_SELFCHECK: '1' }
+  let on: RestartRun
+  let noAttachments: RestartRun
+
+  beforeAll(async () => {
+    on = await restartScenario('restart-selfcheck', ON)
+    noAttachments = await restartScenario('restart-selfcheck-no-attachments', {
+      ...ON,
+      QIANMO_PERSIST_PROMPT_ATTACHMENTS: '0',
+    })
+  }, TEST_MS * 2)
+
+  test('every request is checked; none changed, and the resumed one was compared with the sidecar', () => {
+    const records = selfChecks(on.transcript)
+    const sent = [...on.a, ...on.a4]
+    expect(records.length).toBe(sent.length)
+    // Three turns (the second with a tool round trip), then the resumed one.
+    expect(records.map(r => [r.prev, r.changed])).toEqual(
+      sent.map((_, i) => [
+        i === 0 ? 'none' : i === sent.length - 1 ? 'sidecar' : 'memory',
+        [],
+      ]),
+    )
+    // The record agrees with what the recorder saw on the wire.
+    records.forEach((r, i) => {
+      expect({ i, n: r.inputNow }).toEqual({
+        i,
+        n: (sent[i]!.body.input as unknown[]).length,
+      })
+    })
+    expect(prefixDivergence(body(on.a.at(-1)), body(on.a4[0]))).toBeNull()
+  })
+
+  test('negative control: the head rewritten across the replacement is reported where it happened', () => {
+    expect(
+      prefixDivergence(body(noAttachments.a.at(-1)), body(noAttachments.a4[0])),
+    ).toStartWith('input[0]')
+    const resumed = selfChecks(noAttachments.transcript).at(-1)
+    expect(resumed).toMatchObject({
+      prev: 'sidecar',
+      changed: ['input_changed'],
+      divergedAt: 0,
+    })
+  })
+})

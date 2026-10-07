@@ -1262,6 +1262,8 @@ async function fetchResponsesStream(params: {
   allowPromptCacheKeyFallback?: boolean
   /** See {@link closesRetryWindow}. */
   discardsPartialOutput?: boolean
+  /** qianmo P18.21 (CH-8): sees each attempt's body as sent; never changes it. */
+  onRequestBody?: (body: string) => void
 }): Promise<AsyncIterable<Record<string, unknown>>> {
   const discardsPartialOutput = params.discardsPartialOutput === true
   const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
@@ -1274,6 +1276,7 @@ async function fetchResponsesStream(params: {
 
   const attempt = async () => {
     const body = JSON.stringify(request)
+    params.onRequestBody?.(body)
     const controller = new AbortController()
     const forwardAbort = () => controller.abort(params.signal.reason)
     if (params.signal.aborted) forwardAbort()
@@ -1491,6 +1494,8 @@ export async function createOpenAIResponsesStream(params: {
   discardsPartialOutput?: boolean
   /** See {@link ResponsesCredential}. Omitted ⇒ the OPENAI_* environment. */
   credential?: ResponsesCredential
+  /** qianmo P18.21 (CH-8): src/services/qianmo/promptCache/selfCheck.ts. */
+  onRequestBody?: (body: string) => void
 }): Promise<AsyncIterable<Record<string, unknown>>> {
   const apiKey = params.credential?.apiKey ?? process.env.OPENAI_API_KEY
   if (!apiKey) {
@@ -1515,5 +1520,6 @@ export async function createOpenAIResponsesStream(params: {
     label: 'Responses API',
     allowPromptCacheKeyFallback: canAutoDisableOpenAIPromptCacheKey(baseURL),
     discardsPartialOutput: params.discardsPartialOutput,
+    onRequestBody: params.onRequestBody,
   })
 }

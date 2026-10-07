@@ -4,7 +4,7 @@
 /**
  * Thin spawner for the P18.19 suites that switch sessions for real
  * (`sessionPromptContext.runner.ts`: CH-1, T-4's compaction case;
- * `stickyRouting.runner.ts`: T-5).
+ * `stickyRouting.runner.ts`: T-5; `selfCheck.runner.ts`: P18.21 CH-8).
  *
  * Several base suites install `mock.module('src/bootstrap/state.ts',
  * stateMockWith({ getSessionId: … }))` and never reset it (the landmine note
@@ -20,7 +20,12 @@ import { describe, expect, test } from 'bun:test'
 import { resolve } from 'node:path'
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..', '..', '..')
-const RUNNERS = ['sessionPromptContext.runner.ts', 'stickyRouting.runner.ts']
+const RUNNERS = [
+  'sessionPromptContext.runner.ts',
+  'stickyRouting.runner.ts',
+  // P18.21 CH-8: the self-check's sidecar.
+  'selfCheck.runner.ts',
+]
 
 describe('P18.19 session-switching suites (isolated)', () => {
   for (const runner of RUNNERS) {

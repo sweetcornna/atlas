@@ -43,6 +43,7 @@ import {
   type ResponseCapture,
   withResponseMetadata,
 } from 'src/services/qianmo/promptCache/responseRecord.js'
+import { beginPromptCacheSelfCheck } from 'src/services/qianmo/promptCache/selfCheck.js'
 import { resolveSessionStablePromptCacheKey } from 'src/services/qianmo/promptCache/sessionCacheKey.js'
 import {
   sendDroppingRejectedParameters,
@@ -511,6 +512,18 @@ export async function* queryModelOpenAI(
     // qianmo P18.19 (CH-6): the response id (and cache diagnostics) for the
     // same message — src/services/qianmo/promptCache/responseRecord.ts.
     const responseCapture: ResponseCapture = {}
+    // qianmo P18.21 (CH-8): off unless OPENAI_PROMPT_CACHE_SELFCHECK=1; reads
+    // the generic /responses body as sent, never changes it —
+    // src/services/qianmo/promptCache/selfCheck.ts.
+    const selfCheck =
+      wireProtocol === 'responses' && !useChatGPTResponses
+        ? beginPromptCacheSelfCheck({
+            sessionId,
+            querySource: options.querySource,
+            agentId: options.agentId,
+            messages,
+          })
+        : undefined
     // qianmo P18.18 (hermes #2): with a key pool on the node, each attempt
     // runs with this session's key — src/services/qianmo/modelCompat/
     // credentialPoolLane.ts. Without one `apiKey` is undefined and every
@@ -582,6 +595,9 @@ export async function* queryModelOpenAI(
                     fetchOverride:
                       options.fetchOverride as unknown as typeof fetch,
                     maxRetries: 0,
+                    ...(selfCheck && {
+                      onRequestBody: selfCheck.onRequestBody,
+                    }),
                     ...(apiKey === undefined
                       ? {}
                       : {
@@ -752,6 +768,7 @@ export async function* queryModelOpenAI(
                     model: openaiModel,
                     baseURL: process.env.OPENAI_BASE_URL,
                   }),
+                  ...selfCheck?.settle(),
                 },
                 responseCapture,
               ),

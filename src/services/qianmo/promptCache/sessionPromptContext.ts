@@ -125,7 +125,7 @@ function memoValue(memo: {
  * (`transcriptWriter.ts` `shouldSkipPersistence`): a sidecar is part of the
  * session's on-disk record and follows the same rule.
  */
-function persistenceDisabled(): boolean {
+export function persistenceDisabled(): boolean {
   return (
     (getNodeEnv() === 'test' &&
       !isEnvTruthy(process.env.TEST_ENABLE_SESSION_PERSISTENCE)) ||
@@ -135,12 +135,16 @@ function persistenceDisabled(): boolean {
   )
 }
 
+/**
+ * `<projectDir>/<sessionId>/<name>`: where a session's sidecars live, next to
+ * its transcript. Shared with the CH-8 self-check (`selfCheck.ts`).
+ */
+export function sessionSidecarPath(sessionId: string, name: string): string {
+  return join(dirname(getTranscriptPath()), sessionId, name)
+}
+
 function sidecarPath(sessionId: string): string {
-  return join(
-    dirname(getTranscriptPath()),
-    sessionId,
-    PROMPT_CONTEXT_SIDECAR_NAME,
-  )
+  return sessionSidecarPath(sessionId, PROMPT_CONTEXT_SIDECAR_NAME)
 }
 
 function sameCwd(a: string, b: string): boolean {

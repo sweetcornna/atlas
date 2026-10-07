@@ -220,3 +220,36 @@ describe('CH-8 off: requests and messages byte-identical to cf57a8da', () => {
     }, 30_000)
   }
 })
+
+describe('CH-8 on: requests unchanged, messages gain only the self-check field', () => {
+  if (WRITE) return
+  const FIELD = '_qmPromptCacheSelfCheck'
+  /** The base shape, minus the one field CH-8 adds — and a note of whether it was there. */
+  const seen: Record<string, boolean[]> = {}
+  function shapeWithout(name: string) {
+    return (output: unknown): Record<string, unknown> => {
+      const shaped = messageShape(output)
+      const inner = shaped.message as Record<string, unknown> | undefined
+      ;(seen[name] ??= []).push(inner !== undefined && FIELD in inner)
+      if (inner !== undefined) delete inner[FIELD]
+      return shaped
+    }
+  }
+
+  for (const scenario of SCENARIOS) {
+    test(scenario.name, async () => {
+      const expected = readGolden().scenarios[scenario.name]
+      expect(expected).toBeDefined()
+      const now = await runScenario(
+        scenario,
+        { OPENAI_PROMPT_CACHE_SELFCHECK: '1' },
+        shapeWithout(scenario.name),
+      )
+      expect(now).toEqual(expected as Run)
+      // Recorded on every message of a tracked /responses lane, never on chat.
+      const marks = seen[scenario.name] ?? []
+      expect(marks.length).toBeGreaterThan(0)
+      expect(marks.every(m => m === (scenario.name !== 'chat-lane'))).toBe(true)
+    }, 30_000)
+  }
+})
