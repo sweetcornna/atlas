@@ -1,6 +1,8 @@
 MIT License
 
-Copyright (c) 2026 open-claude-code contributors
+Copyright (c) 2025 Mario Zechner
+Copyright (c) 2025-2026 Can Bölük
+Copyright (c) 2026 Stencil Labs, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,11 +21,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Note: This repository is an independent community edition of the Claude Code
-CLI — a reverse-engineered restoration with community optimizations. This
-license covers the restoration and original work in this repository. "Claude",
-"Claude Code" and "Anthropic" are trademarks of Anthropic, PBC; this project
-is not affiliated with or endorsed by Anthropic.

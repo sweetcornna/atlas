@@ -1,0 +1,5 @@
+{
+  "extends": "./atlas/tsconfig.base.json",
+  "include": ["atlas/**/*.ts", "atlas/**/*.tsx", "demo/**/*.ts"],
+  "exclude": ["node_modules", "**/node_modules"]
+}

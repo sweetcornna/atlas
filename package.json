@@ -3,11 +3,15 @@
 	"private": true,
 	"homepage": "https://omp.sh",
 	"license": "MIT",
-	"author": { "name": "Stencil Labs, Inc.", "url": "https://stencil.so" },
+	"author": {
+		"name": "Stencil Labs, Inc.",
+		"url": "https://stencil.so"
+	},
 	"workspaces": {
 		"packages": [
 			"packages/*",
-			"python/robomp/web"
+			"python/robomp/web",
+			"atlas/packages/*"
 		],
 		"catalog": {
 			"@babel/generator": "^7.29.7",
@@ -163,7 +167,23 @@
 		"gen:bundle": "bun --cwd=packages/coding-agent run gen:bundle",
 		"gen:rpc": "bun --cwd=packages/coding-agent run gen:rpc",
 		"gen:glyphs": "bun --cwd=packages/tui run gen:glyphs",
-		"check-spoofed-versions": "bun scripts/check-spoofed-versions.ts"
+		"check-spoofed-versions": "bun scripts/check-spoofed-versions.ts",
+		"atlas:typecheck": "tsgo -p tsconfig.atlas.json --noEmit",
+		"atlas:lint": "biome check atlas demo",
+		"atlas:lint:fix": "biome check --fix atlas demo",
+		"atlas:lint:ci": "biome ci atlas demo",
+		"atlas:test": "bash atlas/scripts/test-shards.sh",
+		"atlas:check:license-headers": "bun atlas/scripts/check-license-headers.ts",
+		"atlas:check:identity-paths": "bun atlas/scripts/check-identity-paths.ts",
+		"atlas:check:unused": "bun atlas/scripts/check-unused.ts",
+		"atlas:check:cycles": "bun atlas/scripts/check-cycles.ts",
+		"atlas:sbom": "bun atlas/scripts/sbom.ts",
+		"atlas:build:qm": "bun atlas/scripts/build-qm.ts",
+		"atlas:check:qm-smoke": "bun atlas/scripts/check-qm-smoke.ts",
+		"qm": "bun atlas/packages/node/src/cli.ts",
+		"qianmo:acceptance": "bun atlas/scripts/qianmo-acceptance.ts",
+		"precheck": "bun run atlas:typecheck && bun run atlas:lint:fix && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:test",
+		"verify": "bun run atlas:lint:ci && bun run atlas:typecheck && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:check:cycles && bun run atlas:check:unused && bun run atlas:sbom -- --check && bun run check:ts && bun run atlas:test && bun run atlas:build:qm && bun run atlas:check:qm-smoke"
 	},
 	"dependencies": {
 		"sherpa-onnx": "1.13.2",
@@ -171,9 +191,13 @@
 		"sherpa-onnx-node": "1.13.2"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.4.12",
 		"@types/bun": "catalog:",
 		"@typescript/native-preview": "catalog:",
+		"husky": "9.1.7",
+		"knip": "6.4.1",
 		"lint-staged": "catalog:",
+		"madge": "8.0.0",
 		"oxfmt": "catalog:",
 		"oxlint": "catalog:",
 		"prettier": "catalog:",
@@ -199,6 +223,12 @@
 		"scripts/**/*.ts": [
 			"oxlint --fix",
 			"oxfmt"
+		],
+		"atlas/**/*.{ts,tsx,js,json}": [
+			"biome check --fix --no-errors-on-unmatched"
+		],
+		"demo/**/*.{ts,js,json}": [
+			"biome check --fix --no-errors-on-unmatched"
 		]
 	},
 	"packageManager": "bun@>=1.4",

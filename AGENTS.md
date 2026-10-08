@@ -1,3 +1,11 @@
+# AGENTS.md
+
+Read [CLAUDE.md](CLAUDE.md) for this repository's standing constraints and task-specific routes into [CLAUDE.full.md](CLAUDE.full.md). Contribution workflow, checks and review requirements are in [CONTRIBUTING.md](CONTRIBUTING.md). Atlas code lives under `atlas/`, `demo/` and `docs/dev/`.
+
+The rules below the marker are the oh-my-pi base's own `AGENTS.md`, kept verbatim. They govern changes to omp files (`packages/`, `crates/`, root `scripts/`); atlas files follow CLAUDE.md.
+
+<!-- base: oh-my-pi v18.8.4 AGENTS.md, verbatim below -->
+
 # Development Rules
 
 ## Default Context

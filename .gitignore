@@ -94,3 +94,13 @@ packages/coding-agent/bench/boot-baseline.json
 /.bazelrc.user
 
 .parity/
+
+# ---- 阡陌（atlas/）追加 ----
+# Playwright MCP 浏览器测试的临时输出。
+.playwright-mcp/
+# 阡陌演示环境（demo/env/）的运行态：密钥、节点配置根、日志、工作区；由 demo/env/seed.sh 生成。
+.demo-env/
+# atlas/scripts/test-shards.sh 每个分片的 JUnit XML；留档靠 CI artifact。
+/test-reports/
+# qm 构建时生成的源提交常量。
+/.source-commit

@@ -1,0 +1,24 @@
+{
+  "name": "@qianmo/node",
+  "version": "3.0.0-dev",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "qm: the Qianmo node CLI — resident host, console hub, CA, model service and handoff, running the oh-my-pi agent as its child.",
+  "bin": {
+    "qm": "src/cli.ts"
+  },
+  "exports": {
+    "./*": "./src/*"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "workspace:*",
+    "@qianmo/paths": "workspace:*"
+  }
+}
