@@ -66,13 +66,10 @@ import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../src/services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../src/services/qianmo/ca/openssl.js'
-import { popMessage } from '../src/services/qianmo/ca/pop.js'
-import { CertificateDirectory } from '../src/services/qianmo/certificateDirectory.js'
+} from '@qianmo/node/ca/operations.ts'
+import { opensslVersion, runOpenssl } from '@qianmo/node/ca/openssl.ts'
+import { popMessage } from '@qianmo/node/ca/pop.ts'
+import { CertificateDirectory } from '@qianmo/node/host/certificateDirectory.ts'
 
 const DEFAULT_SELF_TEST_NODE_COUNT = 5
 

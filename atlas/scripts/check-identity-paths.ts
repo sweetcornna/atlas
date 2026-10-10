@@ -2,72 +2,68 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Identity-path bypass ratchet (M1 P10.1).
+ * Identity-path bypass gate (base-switch-omp.md §6).
  *
- * The whole three-way isolation story (official Claude Code `.claude` / occ
- * `.occ` / Qianmo node `.qianmo`) rests on one invariant from CLAUDE.md §1.1②:
- * every identity-bearing path is derived in `src/config/paths.ts` (plus the
- * identity/brand constants it builds on). A single hard-coded literal anywhere
- * else silently ignores `OCC_IDENTITY` / `OCC_CONFIG_DIR` and is therefore the
- * ONLY way the isolation can fail. Twelve such call sites existed before the
- * derivation module; two of them caused real incidents.
+ * Node isolation rests on one invariant: every config-root path is derived in
+ * `@qianmo/paths` (`qianmoConfigDir()`, `ompConfigRoot()`, `caDir()`, …), and
+ * omp children get their state root only through `ompChildEnv()`. A single
+ * hard-coded `.qianmo` / `.omp` / `.claude` / `.occ` directory literal anywhere
+ * else silently ignores `QIANMO_CONFIG_DIR` and is the one way that isolation
+ * fails — a test or node writing into a developer's real `~/.omp` or
+ * `~/.claude`.
  *
- * This script is the machine check for "zero bypasses": it scans production
- * sources (src/ plus every package's src/) for the forbidden literals below,
- * with comments stripped so documentation may keep mentioning them. Test files are
- * out of scope on purpose — tests assert against the literals deliberately
- * (identityIsolation.test.ts pins `.occ`/`.qianmo`/`.claude` by design).
+ * Scope: atlas-owned production code only — tracked or new files (git index
+ * plus untracked, not ignored) that do not exist in the base snapshot
+ * `base-snapshot/omp-v18.8.4`, with a `.ts` / `.tsx` extension, under `atlas/`
+ * or `demo/`, excluding tests. omp's own files are never scanned: they keep
+ * their `.omp` literals by design and `ompChildEnv()` redirects them.
+ * Comments are stripped, so prose may mention the literals; tests are out of
+ * scope because they assert against the literals on purpose.
  *
- * Forbidden in production code outside the allowlist:
- *   - '.claude' / '.occ' / '.qianmo' (and their '.json' global-file forms)
- *   - the exact string literal 'claude-cli' (the pre-isolation env-paths
- *     cache namespace)
- *   - join(homedir(), '.claude' | '.occ' | '.qianmo')
+ * Forbidden outside the allowlist:
+ *   - '.qianmo' / '.omp' / '.claude' / '.occ' (and their '.json' forms)
+ *   - join(homedir(), '.qianmo' | '.omp' | '.claude' | '.occ')
  *
- * Deliberately OUT of scope (verified legitimate on first sweep):
- *   - third-party dot-directories (`.bun`, `.codex`, `.config`, `.ccr`, …) —
- *     they belong to other tools, not to the three-identity namespace;
- *   - `claude-cli/<version>` inside the User-Agent template and the
- *     `claude-cli-internal` repo name — protocol-bearing strings on the
- *     CLAUDE.md §1.1③ "明确不改" list, plus the `claude-cli-native-` legacy
- *     artifact prefix that old-install cleanup must keep recognising.
+ * Zero tolerance; there is no budget file because the correct number is zero.
  *
- * Allowlist (the derivation modules themselves):
- *   - src/config/paths.ts
- *   - src/constants/identity.ts
- *   - src/constants/brand.ts
- *
- * Zero tolerance in both directions; there is no budget file because the
- * correct number is exactly zero.
+ * Usage: bun atlas/scripts/check-identity-paths.ts
  */
 
-import { Glob } from 'bun'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
-const ALLOWLIST = new Set([
-  'src/config/paths.ts',
-  'src/constants/identity.ts',
-  'src/constants/brand.ts',
-  // 这一条不是「派生模块」，是**故意的反向例外**。
-  //
-  // `guard.ts` 里那张 `IDENTITY_DIRS` 必须是字面量表，且必须同时列出全部三个
-  // 身份目录（`.occ` / `.qianmo` / `.claude`）—— 它是准入判定的安全硬线：
-  // 从 `paths.ts` 派生就会变成「只保护当前身份」，因为那边要读 `OCC_IDENTITY`
-  // / `OCC_CONFIG_DIR`。守卫只挡住自己这一个身份，恰好废掉它自己。
-  // 文件头注把这条讲得更细（"A hardline list that a session could edit would be
-  // protecting the file that edits it"）。
-  //
-  // 换句话说：这三行**正确**，改成派生才是缺陷。
-  'packages/resident/src/guard.ts',
-])
+const REPO_ROOT = join(import.meta.dir, '..', '..')
+const SNAPSHOT_TAG = 'base-snapshot/omp-v18.8.4'
 
+const ALLOWLIST: Record<string, true> = {
+  // The derivation module itself.
+  'atlas/packages/paths/src/index.ts': true,
+  // A deliberate inverse exception: the resident hardline table must list the
+  // protected roots as literals. Deriving it from the current config root
+  // would protect only the current identity, which is exactly the hole the
+  // guard exists to close.
+  'atlas/packages/resident/src/guard.ts': true,
+  // The omp extension enforces that same hardline inside every agent child,
+  // where `ompChildEnv()` has already rewritten the omp root; it names the
+  // user-level roots literally for the same reason as the guard.
+  'atlas/packages/extension/src/index.ts': true,
+  // The policy table names protected per-workspace configuration directories.
+  'atlas/packages/extension/src/policy.ts': true,
+  // qmcode's app-server imports sessions from `$HOME/.claude/projects/…`: a
+  // third-party tool's fixed location, kept in one exported constant there.
+  'atlas/packages/node/src/commands/handoffNode.ts': true,
+}
+
+const IDENTITY_DIR = '(?:qianmo|omp|claude|occ)'
 const FORBIDDEN: readonly { pattern: RegExp; label: string }[] = [
   {
-    pattern: /['"]\.(?:claude|occ|qianmo)(?:\.json)?['"]/,
+    pattern: new RegExp(`['"\`]\\.${IDENTITY_DIR}(?:\\.json)?['"\`]`),
     label: 'identity dir/global-file literal',
   },
-  { pattern: /['"]claude-cli['"]/, label: 'pre-isolation cache namespace' },
   {
-    pattern: /join\(\s*homedir\(\)\s*,\s*['"]\.(?:claude|occ|qianmo)['"]/,
+    pattern: new RegExp(
+      `join\\(\\s*(?:os\\.)?homedir\\(\\)\\s*,\\s*['"\`]\\.${IDENTITY_DIR}['"\`]`,
+    ),
     label: 'homedir()-joined identity path',
   },
 ]
@@ -77,7 +73,7 @@ const FORBIDDEN: readonly { pattern: RegExp; label: string }[] = [
  * recognised when `//` is not preceded by `:` (keeps `https://…` intact);
  * block comments are tracked across lines.
  */
-function stripComments(lines: string[]): string[] {
+export function stripComments(lines: readonly string[]): string[] {
   const out: string[] = []
   let inBlock = false
   for (const raw of lines) {
@@ -113,45 +109,86 @@ function stripComments(lines: string[]): string[] {
   return out
 }
 
-const GLOBS = ['src/**/*.{ts,tsx}', 'packages/*/src/**/*.{ts,tsx}']
-const files: string[] = []
-for (const g of GLOBS) {
-  for await (const file of new Glob(g).scan({ cwd: process.cwd() })) {
-    files.push(file)
-  }
+/** Whether `path` is atlas production source this gate judges. */
+export function isScannedPath(path: string): boolean {
+  if (!/^(?:atlas|demo)\//.test(path)) return false
+  if (!/\.tsx?$/.test(path) || path.endsWith('.d.ts')) return false
+  if (path.startsWith('atlas/tests/')) return false
+  if (/(?:^|\/)(?:__tests__|test|tests)\//.test(path)) return false
+  if (/\.test\.tsx?$/.test(path)) return false
+  return !ALLOWLIST[path]
 }
 
-const violations: string[] = []
-let scanned = 0
-
-for (const file of files.sort()) {
-  if (ALLOWLIST.has(file)) continue
-  if (
-    file.includes('__tests__/') ||
-    file.includes('.test.') ||
-    file.endsWith('.d.ts')
-  ) {
-    continue
-  }
-  scanned++
-  const text = await Bun.file(file).text()
-  const stripped = stripComments(text.split('\n'))
-  stripped.forEach((line, i) => {
+/** Violations in one file's text, as `path:line [label] code`. */
+export function findBypasses(path: string, text: string): string[] {
+  const violations: string[] = []
+  stripComments(text.split('\n')).forEach((line, i) => {
     for (const { pattern, label } of FORBIDDEN) {
       if (pattern.test(line)) {
-        violations.push(`${file}:${i + 1} [${label}] ${line.trim()}`)
+        violations.push(`${path}:${i + 1} [${label}] ${line.trim()}`)
       }
     }
   })
+  return violations
 }
 
-if (violations.length > 0) {
-  console.error(
-    `identity-path bypasses found (${violations.length}) — derive these from src/config/paths.ts instead:`,
-  )
-  for (const v of violations) console.error(`  ${v}`)
-  process.exit(1)
+/** Run a `-z` git listing; returns the NUL-separated paths, untrimmed. */
+function gitPaths(args: string[]): string[] {
+  const proc = Bun.spawnSync(['git', ...args], {
+    cwd: REPO_ROOT,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (proc.exitCode !== 0) {
+    console.error(`[identity-paths] git ${args.join(' ')} failed:`)
+    console.error(proc.stderr.toString().trim())
+    process.exit(1)
+  }
+  return proc.stdout
+    .toString()
+    .split('\0')
+    .filter(path => path !== '')
 }
-console.log(
-  `check:identity-paths OK — ${scanned} production files scanned, 0 bypasses`,
-)
+
+function main(): void {
+  const snapshot = new Set(
+    gitPaths(['ls-tree', '-r', '-z', '--name-only', SNAPSHOT_TAG]),
+  )
+  const candidates = gitPaths([
+    'ls-files',
+    '-z',
+    '--cached',
+    '--others',
+    '--exclude-standard',
+    '--',
+    'atlas',
+    'demo',
+  ])
+  const files = candidates
+    .filter(path => !snapshot.has(path) && isScannedPath(path))
+    .filter(path => existsSync(join(REPO_ROOT, path)))
+    .sort()
+  if (files.length === 0) {
+    console.error('[identity-paths] FAIL: no atlas files to scan')
+    process.exit(1)
+  }
+
+  const violations: string[] = []
+  for (const path of files) {
+    const text = readFileSync(join(REPO_ROOT, path), 'utf8')
+    violations.push(...findBypasses(path, text))
+  }
+
+  if (violations.length > 0) {
+    console.error(
+      `[identity-paths] FAIL: ${violations.length} identity-path bypass(es) — derive these from @qianmo/paths instead:`,
+    )
+    for (const v of violations) console.error(`  ${v}`)
+    process.exit(1)
+  }
+  console.log(
+    `[identity-paths] OK — ${files.length} atlas production files scanned, 0 bypasses`,
+  )
+}
+
+if (import.meta.main) main()

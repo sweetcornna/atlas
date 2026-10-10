@@ -70,25 +70,25 @@ import {
   ndjsonSummaryLine,
   renderSummary,
   testedCommitStamp,
-} from '../demo/lib/acceptance/report-core.js'
-import { ALL_SCENARIOS } from '../demo/lib/acceptance/registry.js'
+} from '../../demo/lib/acceptance/report-core.js'
+import { ALL_SCENARIOS } from '../../demo/lib/acceptance/registry.js'
 import {
   checkScenarioTable,
   DEFAULT_SCENARIO_TIMEOUT_MS,
   FLEET_TIMEOUT_SCALE,
   runSuite,
   selectScenarios,
-} from '../demo/lib/acceptance/runner.js'
-import { LocalDriver } from '../demo/lib/acceptance/local/driver.js'
+} from '../../demo/lib/acceptance/runner.js'
+import { LocalDriver } from '../../demo/lib/acceptance/local/driver.js'
 import {
   FleetDriver,
   fleetConfigFromEnv,
-} from '../demo/lib/acceptance/fleet/driver.js'
+} from '../../demo/lib/acceptance/fleet/driver.js'
 import type {
   AcceptanceDriver,
   ScenarioResult,
   TestedProvenance,
-} from '../demo/lib/acceptance/types.js'
+} from '../../demo/lib/acceptance/types.js'
 
 const USAGE = `阡陌端到端验收套件
 

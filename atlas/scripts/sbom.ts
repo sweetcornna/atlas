@@ -7,24 +7,31 @@
  *
  * Scope is deliberately the entire dependency tree — the base's dependencies
  * included, not just `@qianmo/*`. Roadmap P8.4 says so in as many words, and
- * the reason is that the fork ships the base: `vite.config.ts` sets
- * `ssr.noExternal: true`, so every library the CLI touches is bundled into
- * `dist/` regardless of which package.json field declared it.
+ * the reason is that the product ships the base: `dist/qm-<target>` is one
+ * compiled binary holding qm, the oh-my-pi CLI and every library either
+ * touches, regardless of which package.json field declared it. The Rust half
+ * of the base (the `pi_natives` addon, embedded in that binary) is covered by
+ * omp's own `about.toml` / `THIRD-PARTY-NOTICES.txt`, which this report points
+ * at rather than re-deriving.
  *
  * ── Sources of truth ──────────────────────────────────────────────────────
  *
  *   bun.lock       the component set and the dependency graph. It is JSONC
- *                  (trailing commas), so `JSON.parse` cannot read it; we use
- *                  jsonc-parser, already a repository dependency — no new
- *                  third-party code enters the tree for this script.
- *   node_modules   the `license` field only. Bun's isolated linker puts the
- *                  real directories under `node_modules/.bun/<key>/node_modules/`
- *                  and leaves symlinks at the top level, so the scan walks
- *                  both layouts and indexes by `name@version`.
+ *                  (trailing commas), so `JSON.parse` cannot read it; Bun's
+ *                  built-in `Bun.JSONC.parse` does — no third-party parser.
+ *   package.json   `workspaces.catalog` — workspace manifests declare many
+ *                  dependencies as `catalog:`; the report shows the concrete
+ *                  range the catalog resolves to, not the indirection.
+ *   node_modules   the `license` field only. The repository installs with
+ *                  `linker = "hoisted"` (bunfig.toml): one flat `node_modules`
+ *                  plus nested copies where versions clash, indexed by
+ *                  `name@version`. The walk also understands the isolated
+ *                  `.bun/` store layout, so a local `--linker isolated`
+ *                  install does not silently shrink the report.
  *
  * ── Determinism ───────────────────────────────────────────────────────────
  *
- * The outputs carry NO timestamp. `bun run sbom` on an unchanged tree must
+ * The outputs carry NO timestamp. `bun run atlas:sbom` on an unchanged tree must
  * rewrite the same bytes, otherwise the "regenerate and diff" review workflow
  * is useless. The lockfile's SHA-256 is recorded instead, which pins the input
  * without dating the output.
@@ -40,26 +47,30 @@
  *                           provenance, and the workspace package roster
  *
  * Usage:
- *   bun run sbom            regenerate both files
- *   bun run sbom --check    regenerate, then exit 1 if any strong/network
+ *   bun run atlas:sbom      regenerate both files
+ *   bun run atlas:sbom -- --check
+ *                           regenerate, then exit 1 if any strong/network
  *                           copyleft or field-of-use-restricted component is
  *                           present (the machine-judgeable half of the DoD)
  */
 
 import { createHash } from 'node:crypto'
+import ompPin from '../upstream/omp.json'
 import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
-import { parse as parseJsonc } from 'jsonc-parser/lib/esm/main.js'
 
-const REPO_ROOT = resolve(import.meta.dir, '..')
+const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 const LOCKFILE = join(REPO_ROOT, 'bun.lock')
 const NODE_MODULES = join(REPO_ROOT, 'node_modules')
 const JSON_OUT = join(REPO_ROOT, 'docs', 'dev', 'sbom-m0.json')
 const MD_OUT = join(REPO_ROOT, 'docs', 'dev', 'sbom-m0.md')
 
-/** Base pin, restated from BASE.md for the BOM metadata. Do not edit BASE.md. */
-const BASE_PIN = '848ad8c2c8daca9f5aa2410da555553e07700f5d'
-const BASE_TAG = 'v2.38.3'
+/**
+ * Base pin, restated from BASE.md for the BOM metadata. Do not edit BASE.md.
+ * Base is oh-my-pi v18.8.4 (`base-snapshot/omp-v18.8.4`).
+ */
+const BASE_PIN = ompPin.commit
+const BASE_TAG = `v${ompPin.version}`
 
 // ───────────────────────────── license classification ─────────────────────
 
@@ -612,10 +623,65 @@ type Lockfile = {
   sha256: string
 }
 
+/**
+ * `workspaces.catalog` / `workspaces.catalogs` from the root package.json.
+ * Workspace manifests write `"react": "catalog:"` (default catalog) or
+ * `"x": "catalog:name"`; bun.lock keeps those strings verbatim, so without
+ * resolving them the report would name the indirection, not the range.
+ */
+type Catalogs = {
+  default: Record<string, string>
+  named: Map<string, Record<string, string>>
+}
+
+async function readCatalogs(): Promise<Catalogs> {
+  const manifest = await readJson(join(REPO_ROOT, 'package.json'))
+  const workspaces = isRecord(manifest) ? manifest['workspaces'] : undefined
+  const named = new Map<string, Record<string, string>>()
+  if (isRecord(workspaces) && isRecord(workspaces['catalogs'])) {
+    for (const [name, entries] of Object.entries(workspaces['catalogs'])) {
+      named.set(name, stringMap(entries))
+    }
+  }
+  return {
+    default: isRecord(workspaces) ? stringMap(workspaces['catalog']) : {},
+    named,
+  }
+}
+
+/** Replace every `catalog:` / `catalog:<name>` range with the catalog's entry; an unresolvable reference throws. */
+export function resolveCatalogRanges(
+  deps: Record<string, string>,
+  catalogs: Catalogs,
+  owner: string,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [name, range] of Object.entries(deps)) {
+    if (!range.startsWith('catalog:')) {
+      out[name] = range
+      continue
+    }
+    const catalogName = range.slice('catalog:'.length)
+    const table =
+      catalogName === '' || catalogName === 'default'
+        ? catalogs.default
+        : catalogs.named.get(catalogName)
+    const resolved = table?.[name]
+    if (resolved === undefined) {
+      throw new Error(
+        `${owner}: ${name} uses "${range}" but the root catalog has no entry for it`,
+      )
+    }
+    out[name] = resolved
+  }
+  return out
+}
+
 async function readLockfile(): Promise<Lockfile> {
+  const catalogs = await readCatalogs()
   const text = await readFile(LOCKFILE, 'utf8')
   const sha256 = createHash('sha256').update(text).digest('hex')
-  const parsed: unknown = parseJsonc(text)
+  const parsed: unknown = Bun.JSONC.parse(text)
   if (!isRecord(parsed)) throw new Error('bun.lock did not parse to an object')
 
   const rawWorkspaces = parsed['workspaces']
@@ -625,13 +691,26 @@ async function readLockfile(): Promise<Lockfile> {
       if (!isRecord(entry)) continue
       const name = entry['name']
       const version = entry['version']
+      const owner = typeof name === 'string' ? name : '(root)'
       workspaces.push({
         path,
-        name: typeof name === 'string' ? name : '(root)',
+        name: owner,
         version: typeof version === 'string' ? version : '0.0.0',
-        dependencies: stringMap(entry['dependencies']),
-        devDependencies: stringMap(entry['devDependencies']),
-        optionalDependencies: stringMap(entry['optionalDependencies']),
+        dependencies: resolveCatalogRanges(
+          stringMap(entry['dependencies']),
+          catalogs,
+          owner,
+        ),
+        devDependencies: resolveCatalogRanges(
+          stringMap(entry['devDependencies']),
+          catalogs,
+          owner,
+        ),
+        optionalDependencies: resolveCatalogRanges(
+          stringMap(entry['optionalDependencies']),
+          catalogs,
+          owner,
+        ),
       })
     }
   }
@@ -889,241 +968,81 @@ type BinaryAudit = {
   provenance: string
 }
 
+/**
+ * The native side of the product is the oh-my-pi Rust workspace: the
+ * `pi_natives` N-API addon (built by `bun run build:native`, embedded into
+ * `dist/qm-<target>` by `atlas/scripts/build-qm.ts`) and the vendored crates
+ * beside it. Their third-party license inventory is omp's own, produced with
+ * cargo-about from `about.toml` into `THIRD-PARTY-NOTICES.txt`; this audit
+ * records where those files are and what they cover, and does not re-derive
+ * a Rust dependency list that `Cargo.lock` plus those two files already pin.
+ */
 async function auditPrebuiltBinaries(): Promise<BinaryAudit[]> {
   const rows: BinaryAudit[] = []
 
-  const vendorRoot = join(REPO_ROOT, 'vendor', 'audio-capture')
-  const triples = (await isDirectory(vendorRoot))
+  const nativeDir = join(REPO_ROOT, 'packages', 'natives', 'native')
+  const addons = (await isDirectory(nativeDir))
+    ? (await readdir(nativeDir)).filter(f => f.endsWith('.node')).sort()
+    : []
+  const cargoPackages = await countCargoLockPackages()
+  const noticesPresent = await isFile(
+    join(REPO_ROOT, 'THIRD-PARTY-NOTICES.txt'),
+  )
+  const aboutPresent = await isFile(join(REPO_ROOT, 'about.toml'))
+  rows.push({
+    location: 'packages/natives/native/',
+    what:
+      addons.length > 0
+        ? `${addons.length} 个本机构建的 \`pi_natives\` N-API 插件（${addons.join('、')}）`
+        : '`pi_natives` N-API 插件（本机尚未构建；`bun run build:native`）',
+    tracked: '不入库（构建产物）；编译时嵌入 `dist/qm-<target>`',
+    licenseFile: 'THIRD-PARTY-NOTICES.txt、about.toml、deny.toml（仓库根）',
+    provenance: `由 Cargo workspace（\`Cargo.lock\` ${cargoPackages} 个 package）构建；Rust 第三方依赖的许可清单取 omp 的 ${
+      noticesPresent
+        ? '`THIRD-PARTY-NOTICES.txt`'
+        : '（缺失）`THIRD-PARTY-NOTICES.txt`'
+    }，接受的许可表在 ${aboutPresent ? '`about.toml`' : '（缺失）`about.toml`'}，由 cargo-deny 的 \`deny.toml\` 兜底`,
+  })
+
+  const vendorRoot = join(REPO_ROOT, 'crates', 'vendor')
+  const vendored = (await isDirectory(vendorRoot))
     ? (await readdir(vendorRoot)).sort()
     : []
-  rows.push({
-    location: 'vendor/audio-capture/',
-    what: `${triples.length} 个平台三元组的 audio-capture.node 预编译 N-API 插件`,
-    tracked: '入库（git 跟踪）',
-    licenseFile: (await findLicenseFile(join(REPO_ROOT, 'vendor'))) ?? '无',
-    provenance: await audioCaptureProvenance(),
-  })
-
-  const ripgrepRoot = join(REPO_ROOT, 'src', 'utils', 'vendor', 'ripgrep')
-  rows.push({
-    location: 'src/utils/vendor/ripgrep/',
-    what: 'ripgrep 可执行文件（rg）',
-    tracked: '不入库（.gitignore 第 12 行），由 postinstall 下载',
-    licenseFile:
-      (await findLicenseFile(join(REPO_ROOT, 'src', 'utils', 'vendor'))) ??
-      '无',
-    provenance: (await isDirectory(ripgrepRoot))
-      ? 'scripts/postinstall.cjs：microsoft/ripgrep-prebuilt v15.0.1，逐档案 SHA-256 硬编码校验'
-      : 'scripts/postinstall.cjs（本机尚未下载）',
-  })
-
-  for (const dir of (await readdir(join(REPO_ROOT, 'packages'))).sort()) {
-    if (!dir.endsWith('-napi')) continue
-    const pkgDir = join(REPO_ROOT, 'packages', dir)
-    const pkg = await readJson(join(pkgDir, 'package.json'))
-    const license = readLicenseField(pkg)
-    const files = await listFiles(pkgDir)
-    const natives = files.filter(
-      f => f.endsWith('.node') || f.endsWith('.dylib'),
-    )
-    const crateLicense = await readCargoLicense(
-      join(pkgDir, 'native', 'Cargo.toml'),
-    )
-    rows.push({
-      location: `packages/${dir}/`,
-      what:
-        natives.length > 0
-          ? `${natives.length} 个原生产物 + TS 装载层`
-          : crateLicense !== ''
-            ? 'TS 装载层 + 原生 Rust 源码 crate（native/），包内无预编译产物'
-            : '纯 TypeScript 装载层，包内无原生产物',
-      tracked: '入库',
-      licenseFile: (await findLicenseFile(pkgDir)) ?? '无',
-      provenance: await napiPackageProvenance(pkgDir, license, crateLicense),
-    })
+  const withLicense: string[] = []
+  for (const name of vendored) {
+    if ((await findLicenseFile(join(vendorRoot, name))) !== null)
+      withLicense.push(name)
   }
+  rows.push({
+    location: 'crates/vendor/',
+    what: `${vendored.length} 个就地打补丁的第三方 Rust crate${vendored.length > 0 ? `（${vendored.join('、')}）` : ''}`,
+    tracked: '入库（git 跟踪）',
+    licenseFile: `${withLicense.length}/${vendored.length} 个目录带 LICENSE/COPYING/NOTICE`,
+    provenance:
+      '经 `[patch.crates-io]` 接入 Cargo workspace；各自许可正文收录在 THIRD-PARTY-NOTICES.txt 的「TRACKED VENDORED CODE」一节',
+  })
+
+  rows.push({
+    location: 'dist/qm-<target>',
+    what: 'qm 与 oh-my-pi CLI 编成的单个可执行文件（Bun --compile），内嵌上面的 `pi_natives` 插件',
+    tracked: '不入库（`atlas/scripts/build-qm.ts` 产物）',
+    licenseFile:
+      '随产物分发时附 LICENSE、LICENSE.base、NOTICE 与 THIRD-PARTY-NOTICES.txt',
+    provenance:
+      '源码为本仓库（阡陌层 AGPL-3.0-or-later，基座层 MIT）；JS 依赖由上面的 bun.lock 清单覆盖，Rust 依赖由 omp 的 THIRD-PARTY-NOTICES.txt 覆盖',
+  })
 
   return rows
 }
 
-/**
- * 装载层归哪一边——**判据是基座快照比对，不是 SPDX 文件头**。
- *
- * `NOTICE` 一、许可的现行口径是：两层的权威判据是文件在不在基座快照里，不是文件头；
- * 「带头 ⇒ 属于 AGPL 层」成立，反向不成立。无头文件既可能是基座文件，也可能是不在
- * 基座快照里的阡陌文件；另有一批带着阡陌改动的基座文件有意不加头，这是独立限制、
- * 不是反例。具体个数与拆分现跑现算，命令与口径见 `NOTICE` 一、许可。
- * 第三类「形态上带得了却漏加的」当天由一批补头提交清零，其中就有
- * `src/constants/identity.ts`（CLAUDE.md §2.3 点名的身份 roster 唯一真源）
- * ——**并且从此有一道覆盖全仓的门禁盯着这件事**：
- * `scripts/check-license-headers.ts`（`bun run check:license-headers`，接在
- * precheck / verify / CI 三处），三向硬零：正向查阡陌自有文件漏加头，反向查
- * AGPL 头被误贴到基座快照树里的文件上，第三向查那几个「有意不加头」的具名豁免
- * 文件（`LICENSE.base` 等）有没有反过来被盖上章。章程 §5.5 原先那句「不为此新增 CI
- * 断言，漏加由 PR 评审兜」已由章程 v2.18 反转——那条决定作出时判据覆盖 15 个
- * 文件，反转时覆盖 647 个，而「PR 评审兜」这一道在 2026-08-30 一次漏了 66 个。
- *
- * 那道门禁与 `packages/activator/test/surface-invariant.test.ts` 的
- * `test('every source file carries the two-line copyright header', …)`
- * **分工不同、故意不统一**：后者是包内更强的不变式（恰好第 1–2 行、恰好 `//`
- * 形式、只扫 `packages/activator/src` 下非递归的 `.ts`，随建包提交 `6f30c45c`
- * 一起加入），前者是全仓地板（前 5 行、任意注释语法、路径判据 + 豁免表）。
- * **盘点门禁时别只数 `package.json` 的 `check:*`**，单测本身也是门禁的一部分。
- *
- * 需要核对个数与拆分时跑 `bun run check:license-headers --report`：它报出带头
- * 文件数、阡陌自有总数、无头数（按豁免扩展名与具名路径拆开）、快照树文件数与
- * 所用标签名。这里**不再复写**那条手写的 shell 管道——本仓库「指针不复制」，
- * 而且那条管道取的是「哪些扩展名必须带头」的**白名单**形态，漏掉了 `.rs` /
- * `.in` / `.toml` / `.yml` / `.service` 共 20 个；门禁取的是**豁免名单**形态，
- * 明天新增一个不带头的 `.rs` 会红而不是被静默跳过。豁免的逐条理由写在那个脚本
- * 的 `EXEMPT_EXTENSIONS` / `EXEMPT_PATHS` 与 `NOTICE` 一、许可里，两边同步改。
- *
- * 门禁在这里并不改变结论：把「没头 ⇒ 基座 MIT」写进生成器，等于让
- * 它可复现地给未来任何一个漏加头的阡陌新包盖上「随 LICENSE.base（MIT）」——
- * 那正是本轮要修掉的失效模式（原先硬编码的「随仓库 MIT」），只是从写死结论
- * 变成了动态推导出同一句假话。无头文件依旧既可能是基座件，也可能是豁免表里的
- * 阡陌件，这条推断本身不成立，与有没有门禁无关。
- *
- * 所以归属由 `baseSnapshotVerdict()` 用成果边界标签（CLAUDE.md §2.5 的
- * `base-snapshot/*`）判定；文件头这里只作为**观察到的事实**报出来，不参与
- * 定性。快照标签取不到时（浅克隆、未拉 tag）明说「归属未核实」，不退回推断。
- */
-async function napiPackageProvenance(
-  pkgDir: string,
-  license: string,
-  crateLicense: string,
-): Promise<string> {
-  const parts: string[] = []
-  parts.push(
-    license === ''
-      ? 'package.json 无 license 字段（private:true）'
-      : `package.json license = ${license}`,
-  )
-  const { ok, total } = await countAgplHeaders(pkgDir)
-  if (total > 0) {
-    parts.push(`TS 装载层 ${total} 个 .ts，带阡陌版权头 ${ok} 个（观察值）`)
-    parts.push(await baseSnapshotVerdict(pkgDir, ok, total))
-  }
-  if (crateLicense !== '') {
-    parts.push(
-      `native/ 为阡陌自研 Rust crate（Cargo.toml license = ${crateLicense}，源文件带 SPDX 头）`,
-    )
-  }
-  return parts.join('；')
-}
-
-/**
- * 用成果边界标签断归属：`base-snapshot/*` 是无父提交的基座零改动快照，
- * 「这个文件在不在那棵树里」是本仓库里唯一权威的「基座 / 阡陌」判据
- * （CLAUDE.md §2.5、BASE.md 上游同步记录）。
- *
- * 取不到标签就**只报事实、不下结论**——浅克隆和没拉 tag 的检出上这条查询
- * 必然失败，那时退回文件头推断就等于在最可能出错的环境里给出最不可靠的结论。
- */
-async function baseSnapshotVerdict(
-  pkgDir: string,
-  headered: number,
-  total: number,
-): Promise<string> {
-  const tag = latestBaseSnapshotTag()
-  if (tag === '') {
-    return '归属未核实（本地没有 base-snapshot/* 标签，无法比对基座快照；文件头不是判据——没有文件头既可能是基座文件，也可能是带不了或不该带注释头、或有意不加头的阡陌自有文件）'
-  }
-  const pkgRel = toPosixRelative(pkgDir)
-  const snapshot = gitLsTree(tag, pkgRel)
-  if (snapshot === null) {
-    return `归属未核实（git ls-tree ${tag} 查询失败，无法比对基座快照）`
-  }
-  const tsFiles = (await listFiles(pkgDir))
-    .filter(f => f.endsWith('.ts'))
-    .map(toPosixRelative)
-  const inSnapshot = tsFiles.filter(f => snapshot.has(f)).length
-  if (inSnapshot === tsFiles.length) {
-    return `TS 装载层 ${inSnapshot}/${tsFiles.length} 见于基座快照 ${tag} = 基座导入层，随 LICENSE.base（MIT）`
-  }
-  if (inSnapshot === 0) {
-    const gap =
-      headered < total
-        ? `；其中 ${total - headered} 个缺章程 §5.5 要求的版权头，需补`
-        : ''
-    return `TS 装载层 0/${tsFiles.length} 见于基座快照 ${tag}（即快照之后新增）= 阡陌自有，随 LICENSE（AGPL-3.0-or-later）${gap}`
-  }
-  return `TS 装载层 ${inSnapshot}/${tsFiles.length} 见于基座快照 ${tag}，基座与阡陌混杂，需人工复核`
-}
-
-/** 仓库最新的成果边界快照标签；没有（或没装 git）时返回空串。 */
-let baseSnapshotTagCache: string | null = null
-function latestBaseSnapshotTag(): string {
-  if (baseSnapshotTagCache !== null) return baseSnapshotTagCache
-  const out = runGit(['tag', '--list', 'base-snapshot/*', '--sort=-v:refname'])
-  baseSnapshotTagCache = out === null ? '' : (out.split('\n')[0]?.trim() ?? '')
-  return baseSnapshotTagCache
-}
-
-/** `<tag>` 那棵树下 `pathRel` 里的全部文件路径；查询失败返回 null。 */
-function gitLsTree(tag: string, pathRel: string): Set<string> | null {
-  const out = runGit(['ls-tree', '-r', '--name-only', tag, '--', pathRel])
-  if (out === null) return null
-  return new Set(
-    out
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line !== ''),
-  )
-}
-
-/** 跑一条 git，非零退出或 git 不可用时返回 null（调用方据此降级）。 */
-function runGit(args: string[]): string | null {
+/** Number of `[[package]]` entries in the root `Cargo.lock`; 0 when absent. */
+async function countCargoLockPackages(): Promise<number> {
   try {
-    const proc = Bun.spawnSync(['git', ...args], {
-      cwd: REPO_ROOT,
-      stdout: 'pipe',
-      stderr: 'ignore',
-    })
-    if (proc.exitCode !== 0) return null
-    return proc.stdout.toString()
+    const text = await readFile(join(REPO_ROOT, 'Cargo.lock'), 'utf8')
+    return (text.match(/^\[\[package\]\]$/gm) ?? []).length
   } catch {
-    return null
+    return 0
   }
-}
-
-function toPosixRelative(absPath: string): string {
-  return relative(REPO_ROOT, absPath).split(sep).join('/')
-}
-
-/**
- * `vendor/audio-capture/` 的 Corresponding Source 现状——三项全部现读现算：
- * D-9 收口前这里硬编码的「仓库内无构建脚本、无源码、无 LICENSE」在源码入库
- * 当天就整条变假，而 NOTICE 恰恰把本文件立成「可随时复现核对」的证据。
- */
-async function audioCaptureProvenance(): Promise<string> {
-  const crateRel = 'packages/audio-capture-napi/native/'
-  const crateLicense = await readCargoLicense(
-    join(REPO_ROOT, 'packages', 'audio-capture-napi', 'native', 'Cargo.toml'),
-  )
-  const buildScriptRel = 'scripts/build-audio-capture.sh'
-  const hasBuildScript = await isFile(join(REPO_ROOT, buildScriptRel))
-  const parts: string[] = []
-  parts.push(
-    crateLicense !== ''
-      ? `源码 ${crateRel}（Rust crate，Cargo.toml license = ${crateLicense}）`
-      : '仓库内无源码',
-  )
-  parts.push(hasBuildScript ? `构建脚本 ${buildScriptRel}` : '仓库内无构建脚本')
-  parts.push('由 build.ts / post-build.ts 复制进 dist/vendor/')
-  return parts.join('；')
-}
-
-/** Cargo.toml 的 `license = "..."`（顶层 [package] 段），读不到返回空串。 */
-async function readCargoLicense(path: string): Promise<string> {
-  let text: string
-  try {
-    text = await readFile(path, 'utf8')
-  } catch {
-    return ''
-  }
-  const hit = /^\s*license\s*=\s*"([^"]*)"/m.exec(text)
-  return hit?.[1] ?? ''
 }
 
 async function findLicenseFile(dir: string): Promise<string | null> {
@@ -1388,7 +1307,7 @@ function buildBom(lock: Lockfile, rows: Row[]): unknown {
         type: 'application',
         'bom-ref': 'qianmo-agentnest',
         name: 'qianmo-agentnest',
-        version: 'M0',
+        version: '3.0.0-dev',
         licenses: [{ license: { id: 'MIT' } }],
         properties: [
           { name: 'qianmo:basePin', value: BASE_PIN },
@@ -1402,16 +1321,20 @@ function buildBom(lock: Lockfile, rows: Row[]): unknown {
       tools: [
         {
           vendor: 'Qianmo AgentNest Team',
-          name: 'scripts/sbom.ts',
+          name: 'atlas/scripts/sbom.ts',
           version: '1',
         },
       ],
       properties: [
-        { name: 'qianmo:source', value: 'bun.lock + node_modules' },
+        {
+          name: 'qianmo:source',
+          value:
+            'bun.lock + root package.json catalog + node_modules; Rust: THIRD-PARTY-NOTICES.txt',
+        },
         { name: 'qianmo:lockfileSha256', value: lock.sha256 },
         {
           name: 'qianmo:deterministic',
-          value: 'no timestamp by design; regenerate with `bun run sbom`',
+          value: 'no timestamp by design; regenerate with `bun run atlas:sbom`',
         },
       ],
     },
@@ -1475,10 +1398,10 @@ function buildMarkdown(
   out.push('<!-- Copyright 2026 Qianmo AgentNest Team -->')
   out.push('<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->')
   out.push('')
-  out.push('# M0 第三方依赖 SBOM 与许可证清单')
+  out.push('# 第三方依赖 SBOM 与许可证清单（oh-my-pi 基座）')
   out.push('')
   out.push(
-    '> **本文件由 `bun run sbom` 生成，不要手改。**改判据请改 `scripts/sbom.ts`。',
+    '> **本文件由 `bun run atlas:sbom` 生成，不要手改。**改判据请改 `atlas/scripts/sbom.ts`。',
   )
   out.push('>')
   out.push(
@@ -1493,7 +1416,7 @@ function buildMarkdown(
   out.push('## 0. 三条读表须知')
   out.push('')
   out.push(
-    '**① `dev` 不等于「不分发」。**`vite.config.ts` 设 `ssr.noExternal: true`（仅 `doubaoime-asr` / `opus-encdec` 例外），构建把依赖整体打进 `dist/`；而基座把绝大多数运行时库放在 `devDependencies` 里——根 `package.json` 的 `dependencies` 只有 5 项。**因此本表的 runtime/dev 划分反映的是 package.json 字段归属，不是产物边界。传染性许可的处置不得以「它是 dev 依赖」为由放行。**',
+    '**① `dev` 不等于「不分发」。**`atlas/scripts/build-qm.ts` 用 Bun `--compile` 把 qm 与 omp CLI 连同它们触达的库整体编进 `dist/qm-<target>`；而基座把绝大多数运行时库放在各包的 `devDependencies` 或按 catalog 引用，字段归属与是否进入产物没有对应关系。**因此本表的 runtime/dev 划分反映的是 package.json 字段归属，不是产物边界。传染性许可的处置不得以「它是 dev 依赖」为由放行。**',
   )
   out.push('')
   out.push(
@@ -1665,7 +1588,7 @@ function buildMarkdown(
     out.push('')
   }
 
-  out.push('## 6. 预编译原生二进制的许可来源核对')
+  out.push('## 6. 原生二进制（Rust 插件与编译产物）的许可来源核对')
   out.push('')
   out.push('| 位置 | 内容 | 入库状态 | 目录内 LICENSE | 溯源 |')
   out.push('|---|---|---|---|---|')
@@ -1727,13 +1650,73 @@ function dedupe(rows: Row[]): Row[] {
   return out
 }
 
+/**
+ * Contagious components that are present in the lockfile but do not ship.
+ *
+ * An entry is a claim, so it is re-verified on every run: the package must
+ * have no import in any production source file (`packages/<pkg>/src`,
+ * `atlas/packages/<pkg>/src`, test files excluded). The moment a source file
+ * imports it, the exception stops holding and `--check` blocks again.
+ */
+export const RECORDED_EXCEPTIONS: Readonly<Record<string, string>> = {
+  'kitty-vt-wasm@0.2.0':
+    '仅被 `@oh-my-pi/pi-tui` 与 `pi-coding-agent` 的测试夹具引用（`packages/tui/test/virtual-terminal.ts` 等），生产源码无 import，不进 `dist/qm-<target>`；如生产源码开始引用，本例外自动失效',
+}
+
+const SOURCE_GLOBS = [
+  'packages/*/src/**/*.{ts,tsx,js}',
+  'atlas/packages/*/src/**/*.{ts,tsx,js}',
+]
+
+/** Production source files that import `name` (bare or subpath); empty when none do. */
+async function importersOf(name: string): Promise<string[]> {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(
+    `(?:from\\s*|import\\s*\\(?\\s*|require\\s*\\(\\s*)['"]${escaped}(?:/[^'"]*)?['"]`,
+  )
+  const hits: string[] = []
+  for (const glob of SOURCE_GLOBS) {
+    for await (const file of new Bun.Glob(glob).scan({ cwd: REPO_ROOT })) {
+      if (file.includes('node_modules')) continue
+      if (pattern.test(await readFile(join(REPO_ROOT, file), 'utf8'))) {
+        hits.push(file)
+      }
+    }
+  }
+  return hits.sort()
+}
+
+type ExceptionStatus = { reason: string; holds: boolean; importers: string[] }
+
+/** Recorded exception for `name@version`, with whether it still holds. */
+async function exceptionFor(
+  name: string,
+  version: string,
+): Promise<ExceptionStatus | null> {
+  const reason = RECORDED_EXCEPTIONS[`${name}@${version}`]
+  if (reason === undefined) return null
+  const importers = await importersOf(name)
+  return { reason, holds: importers.length === 0, importers }
+}
+
+/** Filled by `main` before the report is rendered (the render step is synchronous). */
+const exceptionStatus = new Map<string, ExceptionStatus>()
+
 function disposition(row: Row): string {
+  const exception = exceptionStatus.get(
+    `${row.component.name}@${row.component.version}`,
+  )
+  if (exception !== undefined) {
+    return exception.holds
+      ? `已记录例外（不阻断）：${exception.reason}`
+      : `**阻断**：记录的例外已失效，生产源码现已引用它：${exception.importers.join('、')}`
+  }
   const isLgpl = row.verdict.ids.some(id => /^LGPL/i.test(id))
   switch (row.verdict.tier) {
     case 'network-copyleft':
       return '**阻断**：常驻节点对外提供服务即触发义务，须替换或彻底隔离为独立进程并记录'
     case 'strong-copyleft':
-      return '**阻断**：`ssr.noExternal` 会把它打进 `dist/`，须替换、或改为运行时外部依赖并单独分发'
+      return '**阻断**：编译时会随 import 打进 `dist/qm-<target>`，须替换、或改为运行时外部依赖并单独分发；若它不随产物分发，需在 `RECORDED_EXCEPTIONS` 记录并由脚本复核'
     case 'weak-copyleft':
       return isLgpl
         ? '可留用（预编译共享库，非 JS，不进 `dist/` 的 JS bundle，随 `node_modules` 以独立文件形式存在）：未修改其源码即不传染到本仓库代码；分发时须随附其许可与版权声明，并保留使用者替换该库的可能（LGPL §4）'
@@ -1760,19 +1743,33 @@ async function main(): Promise<void> {
   )
   const rows = buildRows(lock, reachability, installed, workspaceLicenses)
   await annotateLicenseFiles(rows)
+  for (const row of rows) {
+    const status = await exceptionFor(row.component.name, row.component.version)
+    if (status !== null) {
+      exceptionStatus.set(
+        `${row.component.name}@${row.component.version}`,
+        status,
+      )
+    }
+  }
 
   const bom = buildBom(lock, rows)
   await Bun.write(JSON_OUT, `${JSON.stringify(bom, null, 2)}\n`)
   await Bun.write(MD_OUT, buildMarkdown(lock, rows, binaries, workspaces))
 
   const external = rows.filter(r => r.component.origin !== 'workspace')
-  const blocking = dedupe(
+  const contagious = dedupe(
     external.filter(
       r =>
         TIER_RANK[r.verdict.tier] >= TIER_RANK['strong-copyleft'] &&
         r.verdict.tier !== 'unknown',
     ),
   )
+  const isExcepted = (r: Row): boolean =>
+    exceptionStatus.get(`${r.component.name}@${r.component.version}`)?.holds ===
+    true
+  const blocking = contagious.filter(r => !isExcepted(r))
+  const excepted = contagious.filter(isExcepted)
   const weak = dedupe(external.filter(r => r.verdict.tier === 'weak-copyleft'))
   const unknown = dedupe(
     external.filter(r => r.verdict.tier === 'unknown' && r.installed),
@@ -1783,6 +1780,11 @@ async function main(): Promise<void> {
   console.log(
     `  强/网络传染 ${blocking.length} · 弱传染 ${weak.length} · 未判定（已安装）${unknown.length}`,
   )
+  for (const row of excepted) {
+    console.log(
+      `  ~ ${row.component.name}@${row.component.version}  ${row.verdict.raw}  (recorded exception: not shipped)`,
+    )
+  }
   for (const row of blocking) {
     console.log(
       `  ✗ ${row.component.name}@${row.component.version}  ${row.verdict.raw}`,

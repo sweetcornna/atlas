@@ -2,84 +2,148 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The live transport of the answer-layer executor: the AC-4 leg's request,
- * through the base's own adapter chain.
+ * The live transport of the answer-layer executor: one OpenAI-compatible
+ * Chat Completions request per round, built here and sent as built.
  *
- * `buildWireBody` is `askWithMemory` of `tests/integration/qianmo-memory-
- * recall.test.ts` step for step — `anthropicMessagesToOpenAI`,
- * `anthropicToolsToOpenAI`, `buildOpenAIRequestBody` (max_tokens 8192, effort
- * `low`, no sampling parameter of its own; since P18.8 it also filters
- * replayed reasoning by the target endpoint) — so a number measured here is a
- * number about the request AC-4 sends (§4 「请求构造与
- * AC-4 腿的 askWithMemory 相同」). The one addition is the second round: the
- * model's own turn, thinking included, and the rejection as the tool result,
- * the way the AC-5 leg feeds a tool result back.
+ * `buildWireBody` is the whole request: the system block as one system
+ * message, the memory tool as the one function, `max_tokens` 8192, no
+ * sampling parameter of its own. A thinking-capable target (a model id
+ * containing `deepseek` or `mimo`) also gets reasoning effort `low` and the
+ * three thinking switches the AC-4 leg sent under the previous base, and its
+ * reasoning is replayed as `reasoning_content` on the next round (backfilled
+ * empty on a tool-calling turn that had none, because DeepSeek's thinking mode
+ * rejects the turn without it). Because the body measured and the body sent
+ * are the same object, a number measured here is a number about the request
+ * that goes out. The second round carries the model's own turn, thinking
+ * included, and the rejection as the tool result, the way the AC-5 leg feeds a
+ * tool result back.
  *
- * Providers are the two of the AC-5 fixture (id, default model). Their
- * `compatRule` no longer shapes the body: the compat profile it selected
- * (`providerCompatMatrix.ts`) was never on the production path and was
- * deleted in P18.8 (R-14).
- * The endpoint and the key come from `OPENAI_BASE_URL` / `OPENAI_API_KEY`
- * only; nothing here writes either anywhere, and the call log records the
- * provider id, never a host.
+ * Providers are the two of the AC-5 fixture (id, default model); their
+ * `compatRule` does not shape the body. The endpoint and the key come from
+ * `OPENAI_BASE_URL` / `OPENAI_API_KEY` only; nothing here writes either
+ * anywhere, and neither errors nor the call log carry a host — only the
+ * provider id.
  */
 
-import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import type {
-  BetaRawMessageStreamEvent,
-  BetaToolUnion,
-} from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type {
-  ChatCompletionChunk,
-  ChatCompletionCreateParamsStreaming,
-} from 'openai/resources/chat/completions/completions.mjs'
-
-import {
-  adaptOpenAIStreamToAnthropic,
-  anthropicMessagesToOpenAI,
-  anthropicToolsToOpenAI,
-  type AssistantMessage,
-  asSystemPrompt,
-  type UserMessage,
-} from '@ant/model-provider'
+import { readSseJson } from '@oh-my-pi/pi-utils/stream'
+import { MEMORY_ANSWER_TOOL, MEMORY_EVIDENCE_TOOL } from '@qianmo/recall'
 import type {
   AnswerRequest,
   AnswerResponse,
   AnswerTransport,
-  ToolCall,
   TokenUsage,
+  ToolCall,
   Turn,
 } from '../packages/recall/eval/answer/types.js'
-import { MEMORY_ANSWER_TOOL } from '../packages/recall/src/tool.js'
-import { getOpenAIClient } from '../src/services/api/openai/client.js'
-import {
-  buildOpenAIRequestBody,
-  isOpenAIThinkingEnabled,
-} from '../src/services/api/openai/requestBody.js'
-import {
-  type ProviderConfig,
-  ProvidersFileSchema,
-} from '../src/services/providerRegistry/types.js'
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const ATLAS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** The AC-5 fixture: the one definition of "the two providers". */
 const PROVIDERS_FIXTURE = join(
-  REPO_ROOT,
+  ATLAS_ROOT,
   'tests/integration/fixtures/qianmo-providers.json',
 )
 
 /** As `askWithMemory`. */
 export const MAX_TOKENS = 8192
 
-export function loadProviders(): ProviderConfig[] {
-  return ProvidersFileSchema.parse(
-    JSON.parse(readFileSync(PROVIDERS_FIXTURE, 'utf8')),
+/**
+ * The OpenAI SDK's default request timeout, which bounded every call while
+ * the transport went through it.
+ */
+const REQUEST_TIMEOUT_MS = 600_000
+
+/** One entry of the AC-5 provider fixture. */
+export type AnswerProvider = {
+  readonly reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
+  readonly id: string
+  readonly kind: 'openai-compat'
+  readonly baseUrl: string
+  readonly apiKeyEnv: string
+  readonly defaultModel: string
+  readonly compatRule?: string
+}
+
+function parseProvider(raw: unknown, index: number): AnswerProvider {
+  const entry = (raw ?? {}) as Record<string, unknown>
+  const text = (field: string): string => {
+    const value = entry[field]
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(
+        `${PROVIDERS_FIXTURE}[${index}].${field} must be a non-empty string`,
+      )
+    }
+    return value
+  }
+  if (entry['kind'] !== 'openai-compat') {
+    throw new Error(`${PROVIDERS_FIXTURE}[${index}].kind must be openai-compat`)
+  }
+  const compatRule = entry['compatRule']
+  if (compatRule !== undefined && typeof compatRule !== 'string') {
+    throw new Error(
+      `${PROVIDERS_FIXTURE}[${index}].compatRule must be a string`,
+    )
+  }
+  return {
+    id: text('id'),
+    kind: 'openai-compat',
+    baseUrl: text('baseUrl'),
+    apiKeyEnv: text('apiKeyEnv'),
+    defaultModel: text('defaultModel'),
+    ...(entry['reasoningEffort'] === undefined
+      ? {}
+      : { reasoningEffort: parseEffort(entry['reasoningEffort']) }),
+    ...(compatRule === undefined ? {} : { compatRule }),
+  }
+}
+
+function parseEffort(
+  value: unknown,
+): NonNullable<AnswerProvider['reasoningEffort']> {
+  if (
+    value !== 'low' &&
+    value !== 'medium' &&
+    value !== 'high' &&
+    value !== 'max'
   )
+    throw new Error('invalid answer model reasoning effort')
+  return value
+}
+
+/** Explicit participant replacement; never changes frozen quality thresholds. */
+export function answerModelProfile(): {
+  providers: AnswerProvider[]
+  authorization: string
+} | null {
+  const path = process.env.QIANMO_RECALL_EVAL_PROFILE
+  if (!path) return null
+  const profile = JSON.parse(readFileSync(path, 'utf8'))
+  if (
+    !Array.isArray(profile.providers) ||
+    profile.providers.length < 1 ||
+    typeof profile.authorization !== 'string' ||
+    !profile.authorization
+  )
+    throw new Error(
+      'evaluation model replacement needs participants and authorization',
+    )
+  return {
+    providers: profile.providers.map(parseProvider),
+    authorization: profile.authorization,
+  }
+}
+
+export function loadProviders(): AnswerProvider[] {
+  const profile = answerModelProfile()
+  if (profile !== null) return profile.providers
+  const raw: unknown = JSON.parse(readFileSync(PROVIDERS_FIXTURE, 'utf8'))
+  if (!Array.isArray(raw)) {
+    throw new Error(`${PROVIDERS_FIXTURE} must hold an array of providers`)
+  }
+  return raw.map(parseProvider)
 }
 
 type Credentials = { readonly apiKey: string; readonly baseURL: string }
@@ -98,104 +162,112 @@ export function liveCredentials(
   return { apiKey, baseURL }
 }
 
-const MEMORY_TOOL: BetaToolUnion = {
-  name: MEMORY_ANSWER_TOOL.name,
-  description: MEMORY_ANSWER_TOOL.description,
-  input_schema: MEMORY_ANSWER_TOOL.inputSchema,
-} as unknown as BetaToolUnion
+const MEMORY_TOOL = {
+  type: 'function',
+  function: {
+    name: MEMORY_ANSWER_TOOL.name,
+    description: MEMORY_ANSWER_TOOL.description,
+    parameters: MEMORY_ANSWER_TOOL.inputSchema,
+  },
+} as const
+const MEMORY_EVIDENCE_WIRE_TOOL = {
+  type: 'function',
+  function: {
+    name: MEMORY_EVIDENCE_TOOL.name,
+    description: MEMORY_EVIDENCE_TOOL.description,
+    parameters: MEMORY_EVIDENCE_TOOL.inputSchema,
+  },
+} as const
 
-function userText(text: string): UserMessage {
-  return {
-    type: 'user',
-    uuid: randomUUID(),
-    message: { role: 'user', content: text },
-  }
-}
+type WireMessage = Record<string, unknown>
 
-/** Executor turns → base messages; consecutive tool results share one turn. */
-function toBaseMessages(
+/** Executor turns → Chat Completions messages, the system block first. */
+function toWireMessages(
+  system: readonly string[],
   turns: readonly Turn[],
-): (UserMessage | AssistantMessage)[] {
-  const messages: (UserMessage | AssistantMessage)[] = []
-  let results: Record<string, unknown>[] | null = null
-  const flush = () => {
-    if (results === null) return
-    messages.push({
-      type: 'user',
-      uuid: randomUUID(),
-      message: {
-        role: 'user',
-        content: results as unknown as UserMessage['message']['content'],
-      },
-    })
-    results = null
+  thinking: boolean,
+): WireMessage[] {
+  const messages: WireMessage[] = []
+  const systemText = system.filter(part => part.length > 0).join('\n\n')
+  if (systemText.length > 0) {
+    messages.push({ role: 'system', content: systemText })
   }
   for (const turn of turns) {
+    if (turn.role === 'user') {
+      messages.push({ role: 'user', content: turn.text })
+      continue
+    }
     if (turn.role === 'tool') {
-      results ??= []
-      results.push({
-        type: 'tool_result',
-        tool_use_id: turn.toolCallId,
+      messages.push({
+        role: 'tool',
+        tool_call_id: turn.toolCallId,
         content: turn.content,
       })
       continue
     }
-    flush()
-    if (turn.role === 'user') {
-      messages.push(userText(turn.text))
-      continue
+    const message: WireMessage = {
+      role: 'assistant',
+      content: turn.text.length > 0 ? turn.text : null,
     }
-    // As the AC-5 leg: the thinking block is kept, because a reasoning
-    // model's echo contract depends on it.
-    const content: Record<string, unknown>[] = []
+    // As the AC-5 leg: the reasoning is kept, because a reasoning model's
+    // echo contract depends on it.
     if (turn.thinking.length > 0) {
-      content.push({ type: 'thinking', thinking: turn.thinking, signature: '' })
+      message['reasoning_content'] = turn.thinking
+    } else if (thinking && turn.toolCalls.length > 0) {
+      message['reasoning_content'] = ''
     }
-    if (turn.text.length > 0) content.push({ type: 'text', text: turn.text })
-    for (const call of turn.toolCalls) {
-      content.push({
-        type: 'tool_use',
+    if (turn.toolCalls.length > 0) {
+      message['tool_calls'] = turn.toolCalls.map(call => ({
         id: call.id,
-        name: call.name,
-        input: call.input,
-      })
+        type: 'function',
+        function: {
+          name: call.name,
+          // An unparseable argument string is replayed as the model sent it.
+          arguments:
+            typeof call.input === 'string'
+              ? call.input
+              : JSON.stringify(call.input),
+        },
+      }))
     }
-    messages.push({
-      type: 'assistant',
-      uuid: randomUUID(),
-      message: {
-        role: 'assistant',
-        content: content as unknown as AssistantMessage['message']['content'],
-      },
-    })
+    messages.push(message)
   }
-  flush()
   return messages
 }
 
-/** The request body as it goes on the wire, built exactly as AC-4 builds it. */
+/**
+ * The request body as it goes on the wire. `baseURL` is accepted so every
+ * caller states the endpoint the body is for; the body itself names none.
+ */
 export function buildWireBody(
-  provider: ProviderConfig,
-  request: Pick<AnswerRequest, 'system' | 'turns'>,
-  baseURL: string,
+  provider: AnswerProvider,
+  request: Pick<AnswerRequest, 'system' | 'turns' | 'protocol'>,
+  _baseURL: string,
 ): Record<string, unknown> {
   const model = provider.defaultModel
-  const enableThinking = isOpenAIThinkingEnabled(model)
-  const body = buildOpenAIRequestBody({
+  // DeepSeek and MiMo models answer in thinking mode; nothing else does here.
+  const thinking = /deepseek|mimo/i.test(model)
+  return {
     model,
-    messages: anthropicMessagesToOpenAI(
-      toBaseMessages(request.turns),
-      asSystemPrompt([...request.system]),
-      { enableThinking },
-    ),
-    tools: anthropicToolsToOpenAI([MEMORY_TOOL]),
-    toolChoice: undefined,
-    enableThinking,
-    maxTokens: MAX_TOKENS,
-    baseURL,
-    effortValue: 'low',
-  })
-  return body as unknown as Record<string, unknown>
+    messages: toWireMessages(request.system, request.turns, thinking),
+    max_tokens: MAX_TOKENS,
+    tools: [
+      request.protocol === 'memory-evidence-v2'
+        ? MEMORY_EVIDENCE_WIRE_TOOL
+        : MEMORY_TOOL,
+    ],
+    stream: true,
+    stream_options: { include_usage: true },
+    ...(thinking && {
+      reasoning_effort: 'low',
+      thinking: { type: 'enabled' },
+      enable_thinking: true,
+      chat_template_kwargs: { thinking: true, enable_thinking: true },
+    }),
+    ...(provider.reasoningEffort === undefined
+      ? {}
+      : { reasoning_effort: provider.reasoningEffort }),
+  }
 }
 
 /**
@@ -215,113 +287,164 @@ export function wireByteLength(wire: Record<string, unknown>): number {
   return Buffer.byteLength(JSON.stringify(wire), 'utf8')
 }
 
-type Observed = { model: string | null; usage: TokenUsage | null }
-
-/** Pass the raw stream through, noting the model id and usage it reports. */
-async function* observe(
-  stream: AsyncIterable<ChatCompletionChunk>,
-  seen: Observed,
-): AsyncGenerator<ChatCompletionChunk> {
-  for await (const chunk of stream) {
-    if (typeof chunk.model === 'string' && chunk.model.length > 0) {
-      seen.model = chunk.model
+/** The parts of a Chat Completions stream chunk this transport reads. */
+type Chunk = {
+  readonly model?: unknown
+  readonly usage?: {
+    readonly prompt_tokens?: unknown
+    readonly completion_tokens?: unknown
+  } | null
+  readonly choices?: readonly {
+    readonly delta?: {
+      readonly content?: unknown
+      readonly reasoning_content?: unknown
+      readonly reasoning?: unknown
+      readonly tool_calls?: readonly {
+        readonly index?: unknown
+        readonly id?: unknown
+        readonly function?: {
+          readonly name?: unknown
+          readonly arguments?: unknown
+        }
+      }[]
     }
-    const usage = chunk.usage
-    if (usage) {
-      const input = usage.prompt_tokens
-      const output = usage.completion_tokens
-      seen.usage =
-        Number.isInteger(input) && Number.isInteger(output)
-          ? { input, output }
-          : null
-    }
-    yield chunk
-  }
+    readonly finish_reason?: unknown
+  }[]
 }
 
-/** Text, thinking and tool calls out of the adapted event stream. */
-function assemble(
-  events: readonly BetaRawMessageStreamEvent[],
-): Pick<AnswerResponse, 'text' | 'thinking' | 'toolCalls' | 'stopReason'> {
+/** OpenAI `finish_reason` → the stop reason the report has always recorded. */
+function stopReasonOf(finishReason: string, hasToolCalls: boolean): string {
+  if (finishReason === 'length') return 'max_tokens'
+  if (hasToolCalls || finishReason === 'tool_calls') return 'tool_use'
+  return 'end_turn'
+}
+
+/** Text, thinking, tool calls, model id and usage out of the raw stream. */
+export async function assembleStream(
+  chunks: AsyncIterable<Chunk>,
+  providerId: string,
+): Promise<AnswerResponse> {
+  let model: string | null = null
+  let usage: TokenUsage | null = null
+  let sawUsage = false
   let text = ''
   let thinking = ''
-  let stopReason: string | null = null
+  let finishReason: string | null = null
   const buffers = new Map<number, { id: string; name: string; args: string }>()
-  const order: number[] = []
-  for (const event of events) {
-    if (event.type === 'content_block_start') {
-      const block = event.content_block as unknown as Record<string, unknown>
-      if (block['type'] === 'tool_use') {
-        buffers.set(event.index, {
-          id: String(block['id'] ?? ''),
-          name: String(block['name'] ?? ''),
-          args: '',
-        })
-        order.push(event.index)
+  for await (const chunk of chunks) {
+    if (typeof chunk.model === 'string' && chunk.model.length > 0) {
+      model = chunk.model
+    }
+    if (chunk.usage) {
+      sawUsage = true
+      const input = chunk.usage.prompt_tokens
+      const output = chunk.usage.completion_tokens
+      usage =
+        Number.isInteger(input) && Number.isInteger(output)
+          ? { input: input as number, output: output as number }
+          : null
+    }
+    const choice = chunk.choices?.[0]
+    if (choice === undefined) continue
+    const delta = choice.delta
+    if (typeof delta?.content === 'string') text += delta.content
+    if (typeof delta?.reasoning_content === 'string') {
+      thinking += delta.reasoning_content
+    } else if (typeof delta?.reasoning === 'string') {
+      thinking += delta.reasoning
+    }
+    for (const call of delta?.tool_calls ?? []) {
+      const index = typeof call.index === 'number' ? call.index : 0
+      const buffer = buffers.get(index) ?? { id: '', name: '', args: '' }
+      if (typeof call.id === 'string' && call.id.length > 0) buffer.id = call.id
+      if (typeof call.function?.name === 'string') {
+        buffer.name += call.function.name
       }
-    } else if (event.type === 'content_block_delta') {
-      const delta = event.delta as unknown as Record<string, unknown>
-      if (delta['type'] === 'text_delta') {
-        text += String(delta['text'] ?? '')
-      } else if (delta['type'] === 'thinking_delta') {
-        thinking += String(delta['thinking'] ?? '')
-      } else if (delta['type'] === 'input_json_delta') {
-        const buffer = buffers.get(event.index)
-        if (buffer) buffer.args += String(delta['partial_json'] ?? '')
+      if (typeof call.function?.arguments === 'string') {
+        buffer.args += call.function.arguments
       }
-    } else if (event.type === 'message_delta') {
-      const delta = event.delta as unknown as Record<string, unknown>
-      if (typeof delta['stop_reason'] === 'string') {
-        stopReason = delta['stop_reason']
-      }
+      buffers.set(index, buffer)
+    }
+    if (typeof choice.finish_reason === 'string') {
+      finishReason = choice.finish_reason
     }
   }
-  const toolCalls = order.flatMap((index): ToolCall[] => {
-    const buffer = buffers.get(index)
-    if (buffer === undefined) return []
-    let input: unknown = {}
-    if (buffer.args.trim().length > 0) {
-      try {
-        input = JSON.parse(buffer.args)
-      } catch {
-        // Unparseable arguments are the model's answer, not a transport
-        // failure: `parseMemoryAnswerArgs` rejects them as bad arguments.
-        input = buffer.args
-      }
+  const sawOutput = text.length > 0 || thinking.length > 0 || buffers.size > 0
+  if (finishReason === null) {
+    // Gateways that end on a usage chunk instead of a finish_reason.
+    if (!(sawOutput && sawUsage)) {
+      throw new Error(`${providerId}: stream ended before finish_reason`)
     }
-    return [{ id: buffer.id, name: buffer.name, input }]
-  })
-  return { text, thinking, toolCalls, stopReason }
+    finishReason = 'stop'
+  }
+  // A zero-output `length` is a max_tokens outcome, not an empty answer.
+  if (!sawOutput && finishReason !== 'length') {
+    const reason =
+      finishReason.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || 'unknown'
+    throw new Error(
+      `${providerId}: model returned an empty response (finish_reason=${reason})`,
+    )
+  }
+  const toolCalls = [...buffers.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, buffer]): ToolCall => {
+      let input: unknown = {}
+      if (buffer.args.trim().length > 0) {
+        try {
+          input = JSON.parse(buffer.args)
+        } catch {
+          // Unparseable arguments are the model's answer, not a transport
+          // failure: `parseMemoryAnswerArgs` rejects them as bad arguments.
+          input = buffer.args
+        }
+      }
+      return { id: buffer.id, name: buffer.name, input }
+    })
+  return {
+    model,
+    text,
+    thinking,
+    toolCalls,
+    stopReason: stopReasonOf(finishReason, toolCalls.length > 0),
+    usage,
+  }
 }
 
 export function createLiveTransport(
-  provider: ProviderConfig,
+  provider: AnswerProvider,
   credentials: Credentials,
+  options: { readonly fetch?: typeof fetch } = {},
 ): AnswerTransport {
-  const wireOf = (request: AnswerRequest) =>
-    buildWireBody(provider, request, credentials.baseURL)
+  const send = options.fetch ?? fetch
+  const url = `${credentials.baseURL.replace(/\/+$/, '')}/chat/completions`
+  const wireOf = (request: AnswerRequest) => {
+    if (request.protocol !== 'memory-evidence-v2')
+      throw new Error(
+        'live answer transport requires the current memory-evidence-v2 protocol; legacy v1 is replay-only',
+      )
+    return buildWireBody(provider, request, credentials.baseURL)
+  }
   return {
     providerId: provider.id,
     requestedModel: provider.defaultModel,
     maxOutputTokens: MAX_TOKENS,
     inputUpperBound: request => wireByteLength(wireOf(request)),
     send: async request => {
-      const client = getOpenAIClient({
-        apiKeyOverride: credentials.apiKey,
-        baseURLOverride: credentials.baseURL,
+      const response = await send(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+          authorization: `Bearer ${credentials.apiKey}`,
+        },
+        body: JSON.stringify(wireOf(request)),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
-      const stream = await client.chat.completions.create(
-        wireOf(request) as unknown as ChatCompletionCreateParamsStreaming,
-      )
-      const seen: Observed = { model: null, usage: null }
-      const events: BetaRawMessageStreamEvent[] = []
-      for await (const event of adaptOpenAIStreamToAnthropic(
-        observe(stream, seen),
-        provider.defaultModel,
-      )) {
-        events.push(event)
+      if (!response.ok || response.body === null) {
+        await response.body?.cancel()
+        throw new Error(`${provider.id}: HTTP ${response.status}`)
       }
-      return { ...assemble(events), model: seen.model, usage: seen.usage }
+      return assembleStream(readSseJson<Chunk>(response.body), provider.id)
     },
   }
 }

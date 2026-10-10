@@ -24,10 +24,9 @@ import {
  *
  * Written out literally they would be indistinguishable from this file's own
  * header. The gate only reads the first 5 lines, so a fixture further down is
- * harmless *today* — but the point of the idiom (same one as
- * checkMacroGuards.test.ts) is that it stays harmless no matter where the
- * fixture ends up, and that a repo-wide grep for the header never has to
- * decide whether a hit is a claim or a test case.
+ * harmless *today* — but the point of the idiom is that it stays harmless no
+ * matter where the fixture ends up, and that a repo-wide grep for the header
+ * never has to decide whether a hit is a claim or a test case.
  */
 const COPY = `Copyright 2026 Qianmo Agent${'Nest'} Team`
 const SPDX = `SPDX-License-${'Identifier'}: AGPL-3.0-or-later`
@@ -153,20 +152,17 @@ describe('exemption predicates', () => {
     }
   })
 
-  test('the five named paths are exempt and nothing near them is', () => {
+  test('the named paths are exempt and nothing near them is', () => {
     expect(isExemptByPath('BASE.md')).toBe(true)
     expect(isExemptByPath('LICENSE.base')).toBe(true)
     expect(isExemptByPath('NOTICE')).toBe(true)
-    expect(
-      isExemptByPath('packages/audio-capture-napi/native/Cargo.lock'),
-    ).toBe(true)
-    expect(
-      isExemptByPath('packages/audio-capture-napi/native/.gitignore'),
-    ).toBe(true)
+    expect(isExemptByPath('.tool-versions')).toBe(true)
 
     expect(isExemptByPath('docs/BASE.md')).toBe(false)
     expect(isExemptByPath('LICENSE')).toBe(false)
     expect(isExemptByPath('.gitignore')).toBe(false)
+    expect(isExemptByPath('atlas/.tool-versions')).toBe(false)
+    expect(isExemptByPath('constructor')).toBe(false)
   })
 })
 
@@ -175,14 +171,16 @@ describe('analyzeLicenseHeaders — forward direction (missing header)', () => {
     const result: LicenseHeaderResult = analyzeLicenseHeaders(
       inputs(
         {
-          'src/tools.ts': '// upstream file\n',
-          'packages/protocol/src/limits.ts': 'export const LIMITS = {}\n',
+          'packages/coding-agent/src/cli.ts': '// upstream file\n',
+          'atlas/packages/protocol/src/limits.ts': 'export const LIMITS = {}\n',
         },
-        ['src/tools.ts'],
+        ['packages/coding-agent/src/cli.ts'],
       ),
     )
 
-    expect(result.missingHeader).toEqual(['packages/protocol/src/limits.ts'])
+    expect(result.missingHeader).toEqual([
+      'atlas/packages/protocol/src/limits.ts',
+    ])
     expect(result.misappliedHeader).toEqual([])
     expect(result.ownedCount).toBe(1)
   })
@@ -192,14 +190,14 @@ describe('analyzeLicenseHeaders — forward direction (missing header)', () => {
     // `.ts|.tsx|.md|.sh|Makefile`, so an unheadered one would be skipped.
     const result = analyzeLicenseHeaders(
       inputs({
-        'packages/audio-capture-napi/native/src/lib.rs': 'fn main() {}\n',
+        'atlas/packages/sandbox/native/src/lib.rs': 'fn main() {}\n',
         'demo/env/beta/ops/qianmo-console.service.in': '[Unit]\n',
         'ci.yml': 'name: CI\n',
       }),
     )
 
     expect(result.missingHeader).toEqual([
-      'packages/audio-capture-napi/native/src/lib.rs',
+      'atlas/packages/sandbox/native/src/lib.rs',
       'demo/env/beta/ops/qianmo-console.service.in',
       'ci.yml',
     ])
@@ -209,10 +207,10 @@ describe('analyzeLicenseHeaders — forward direction (missing header)', () => {
   test('the same files pass once they carry the header', () => {
     const result = analyzeLicenseHeaders(
       inputs({
-        'packages/audio-capture-napi/native/src/lib.rs': SLASH_HEAD,
+        'atlas/packages/sandbox/native/src/lib.rs': SLASH_HEAD,
         'demo/env/beta/ops/qianmo-console.service.in': HASH_HEAD,
         'docs/dev/charter.md': HTML_HEAD,
-        'scripts/build.sh': SHEBANG_HEAD,
+        'atlas/scripts/test-shards.sh': SHEBANG_HEAD,
       }),
     )
 
@@ -228,14 +226,19 @@ describe('analyzeLicenseHeaders — reverse direction (misapplied)', () => {
     const result = analyzeLicenseHeaders(
       inputs(
         {
-          'src/tools.ts': SLASH_HEAD,
-          'src/query.ts': '// upstream, untouched\n',
+          'packages/coding-agent/src/cli.ts': SLASH_HEAD,
+          'packages/coding-agent/src/main.ts': '// upstream, untouched\n',
         },
-        ['src/tools.ts', 'src/query.ts'],
+        [
+          'packages/coding-agent/src/cli.ts',
+          'packages/coding-agent/src/main.ts',
+        ],
       ),
     )
 
-    expect(result.misappliedHeader).toEqual(['src/tools.ts'])
+    expect(result.misappliedHeader).toEqual([
+      'packages/coding-agent/src/cli.ts',
+    ])
     expect(result.missingHeader).toEqual([])
     expect(result.ownedCount).toBe(0)
   })
@@ -243,7 +246,9 @@ describe('analyzeLicenseHeaders — reverse direction (misapplied)', () => {
   test('an SPDX line below the window is not a misapplied header', () => {
     const body = `1\n2\n3\n4\n5\n// ${SPDX}\n`
     const result = analyzeLicenseHeaders(
-      inputs({ 'src/tools.ts': body }, ['src/tools.ts']),
+      inputs({ 'packages/ai/src/index.ts': body }, [
+        'packages/ai/src/index.ts',
+      ]),
     )
 
     expect(result.misappliedHeader).toEqual([])
@@ -318,8 +323,7 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
         'BASE.md': '# BASE\n',
         'LICENSE.base': 'MIT License\n',
         NOTICE: 'NOTICE\n',
-        'packages/audio-capture-napi/native/Cargo.lock': '# auto-generated\n',
-        'packages/audio-capture-napi/native/.gitignore': 'target\n',
+        '.tool-versions': 'bun 1.4.2\n',
       }),
     )
 
@@ -335,10 +339,9 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
       'BASE.md',
       'LICENSE.base',
       'NOTICE',
-      'packages/audio-capture-napi/native/Cargo.lock',
-      'packages/audio-capture-napi/native/.gitignore',
+      '.tool-versions',
     ])
-    expect(result.ownedWithoutHeader).toHaveLength(9)
+    expect(result.ownedWithoutHeader).toHaveLength(8)
   })
 
   test('a file gone from the working tree is reported, not judged', () => {
@@ -346,11 +349,11 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
     // mid-flight: precheck runs in exactly those moments, and a file that
     // does not exist cannot be missing a header.
     const result = analyzeLicenseHeaders(
-      inputs({ 'packages/protocol/src/gone.ts': null }),
+      inputs({ 'atlas/packages/protocol/src/gone.ts': null }),
     )
 
     expect(result.missingFromWorktree).toEqual([
-      'packages/protocol/src/gone.ts',
+      'atlas/packages/protocol/src/gone.ts',
     ])
     expect(result.missingHeader).toEqual([])
     expect(result.ownedCount).toBe(1)
@@ -361,7 +364,11 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
     // on top of it sends whoever reads the output looking for a file that is
     // sitting right where it always was.
     const result = analyzeLicenseHeaders(
-      inputs({ 'src/locked.ts': null }, [], ['src/locked.ts']),
+      inputs(
+        { 'atlas/packages/node/src/locked.ts': null },
+        [],
+        ['atlas/packages/node/src/locked.ts'],
+      ),
     )
 
     expect(result.missingFromWorktree).toEqual([])
@@ -372,12 +379,12 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
     const result = analyzeLicenseHeaders(
       inputs(
         {
-          'src/tools.ts': '// upstream\n',
-          'src/query.ts': SLASH_HEAD,
-          'packages/protocol/src/limits.ts': SLASH_HEAD,
+          'packages/ai/src/index.ts': '// upstream\n',
+          'packages/ai/src/types.ts': SLASH_HEAD,
+          'atlas/packages/protocol/src/limits.ts': SLASH_HEAD,
           'package.json': '{}\n',
         },
-        ['src/tools.ts', 'src/query.ts'],
+        ['packages/ai/src/index.ts', 'packages/ai/src/types.ts'],
       ),
     )
 
@@ -387,7 +394,7 @@ describe('analyzeLicenseHeaders — exemptions and bookkeeping', () => {
     // headeredCount is an observation over the whole tree, misapplied ones
     // included — that is what NOTICE quotes as "带头文件数".
     expect(result.headeredCount).toBe(2)
-    expect(result.misappliedHeader).toEqual(['src/query.ts'])
+    expect(result.misappliedHeader).toEqual(['packages/ai/src/types.ts'])
   })
 })
 
@@ -402,12 +409,12 @@ describe('checkEnumerationSanity — refusing to scan nothing', () => {
   })
 
   test('either side collapsing on its own is still a failure', () => {
-    expect(checkEnumerationSanity(4770, 0)).toHaveLength(1)
-    expect(checkEnumerationSanity(0, 4171)).toHaveLength(1)
+    expect(checkEnumerationSanity(9909, 0)).toHaveLength(1)
+    expect(checkEnumerationSanity(0, 8798)).toHaveLength(1)
   })
 
   test("today's real counts pass", () => {
-    expect(checkEnumerationSanity(4770, 4171)).toEqual([])
+    expect(checkEnumerationSanity(9909, 8798)).toEqual([])
   })
 })
 

@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+bunx lint-staged

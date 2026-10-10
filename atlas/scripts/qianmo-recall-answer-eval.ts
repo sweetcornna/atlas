@@ -14,27 +14,29 @@
  *   --replay    re-score a recorded run from a fixture; no network. Uses its
  *               own ledger inside the output directory, never the real one.
  *               The M1 arm replays the fixture's recorded embedding vectors.
- *   --live      real calls through the AC-4 request chain. Needs
- *               OPENAI_API_KEY and OPENAI_BASE_URL; without them it prints why
- *               and exits 0 without touching anything. M0 only until the
- *               embedding adapter (P16.7) exists.
+ *   --live      real calls through the live transport (one OpenAI-compatible
+ *               Chat Completions request per round). Needs OPENAI_API_KEY and
+ *               OPENAI_BASE_URL; without them it prints why and exits 0
+ *               without touching anything. M1 additionally requires an
+ *               explicit real QIANMO_RECALL_EMBEDDING_CONFIG; it never uses
+ *               the dry-run stand-in vectors for live calls.
  *
  * Usage:
- *   bun run scripts/qianmo-recall-answer-eval.ts --dry-run [plan flags] [--json <path>]
- *   bun run scripts/qianmo-recall-answer-eval.ts --live --phase trial|comparison \
+ *   bun run atlas/scripts/qianmo-recall-answer-eval.ts --dry-run [plan flags] [--json <path>]
+ *   bun run atlas/scripts/qianmo-recall-answer-eval.ts --live --phase trial|comparison \
  *       --run-id <id> --out <dir> --cap-input <tokens> --cap-output <tokens> \
  *       [--record <fixture.json>] [--concurrency <n>] [plan flags]
- *   bun run scripts/qianmo-recall-answer-eval.ts --replay <fixture.json> \
+ *   bun run atlas/scripts/qianmo-recall-answer-eval.ts --replay <fixture.json> \
  *       --run-id <id> --out <dir> [--phase …] [plan flags]
  *
- * Plans come from packages/recall/eval/prereg.toml: the comparison is `[plan]`
+ * Plans come from atlas/packages/recall/eval/prereg.toml: the comparison is `[plan]`
  * and takes no plan flag at all; the trial defaults to `[trial]` and may be
  * narrowed with --corpus <id,…>  --tiers <n,…>  --reps <n>  --arms m0|m0,m1
  * (its numbers never enter a verdict).
  *
- * The token ledger lives at occConfigPath('qianmo', 'recall-eval',
+ * The token ledger lives at qianmoConfigPath('qianmo', 'recall-eval',
  * 'token-ledger.json'); there is no flag to move it. There is no flag for any
- * preregistered value either: those come from packages/recall/eval/prereg.toml.
+ * preregistered value either: those come from atlas/packages/recall/eval/prereg.toml.
  *
  * Exit codes: 0 complete (or skipped), 3 stopped at the token cap (the
  * completed part is written), 4 invalid round (`unreadable`), 1 aborted,
@@ -90,18 +92,31 @@ import {
   loadPreregistration,
   PREREGISTRATION_PATH,
   type Preregistration,
+  parsePreregistration,
   required,
 } from '../packages/recall/eval/prereg.js'
-import { occConfigPath } from '../src/config/paths.js'
-import type { ProviderConfig } from '../src/services/providerRegistry/types.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 import {
+  type AnswerProvider,
   buildWireBody,
   createLiveTransport,
   liveCredentials,
   loadProviders,
+  answerModelProfile,
   MAX_TOKENS,
   modelVisibleText,
 } from './qianmo-recall-answer-live.js'
+import {
+  createMemoryEmbedder,
+  parseEmbeddingConfig,
+  recordingEmbedder,
+} from '../packages/node/src/host/memoryEmbedding.js'
+import type { RecordedVectors } from '../packages/recall/eval/answer/semantic.js'
+import {
+  EVIDENCE_ANSWER_PROTOCOL,
+  MEMORY_EVIDENCE_PROTOCOL_HASH,
+  type AnswerProtocol,
+} from '../packages/recall/src/evidence-answer.js'
 
 type Mode = 'dry-run' | 'live' | 'replay'
 
@@ -126,7 +141,7 @@ class UsageError extends Error {}
 
 /** Where the persistent ledger lives. Derived, never configurable. */
 export function ledgerPath(): string {
-  return occConfigPath('qianmo', 'recall-eval', 'token-ledger.json')
+  return qianmoConfigPath('qianmo', 'recall-eval', 'token-ledger.json')
 }
 
 function positiveInteger(flag: string, raw: string): number {
@@ -315,7 +330,7 @@ export function planOf(
 }
 
 /** The fixture's providers named by the plan, in the plan's order. */
-function providersOf(plan: AnswerPlan): ProviderConfig[] {
+function providersOf(plan: AnswerPlan): AnswerProvider[] {
   const all = loadProviders()
   return plan.providers.map(id => {
     const provider = all.find(p => p.id === id)
@@ -385,7 +400,7 @@ function renderEstimate(
 
 async function dryRun(cli: Cli): Promise<void> {
   const providers = loadProviders()
-  const prereg = loadPreregistration()
+  const prereg = preregistration().values
   // Only the body's shape depends on the base URL; nothing is sent.
   const measure = (
     request: Parameters<typeof buildWireBody>[1],
@@ -414,7 +429,11 @@ async function dryRun(cli: Cli): Promise<void> {
       runId: 'dry-run',
       concurrency: 1,
     })
-    const estimate = await estimateAnswerPlan(plan, measure)
+    const estimate = await estimateAnswerPlan(
+      plan,
+      measure,
+      EVIDENCE_ANSWER_PROTOCOL,
+    )
     results.push({ title, phase, estimate })
     console.log(renderEstimate(title, estimate, phase))
     console.log('')
@@ -425,10 +444,54 @@ async function dryRun(cli: Cli): Promise<void> {
 }
 
 function preregistration() {
-  const text = readFileSync(PREREGISTRATION_PATH, 'utf8')
+  const override = process.env.QIANMO_RECALL_EVAL_PREREG
+  const text = readFileSync(override ?? PREREGISTRATION_PATH, 'utf8')
+  const original = parsePreregistration(text)
+  if (override !== undefined) {
+    const expected = process.env.QIANMO_RECALL_EVAL_PREREG_SHA256
+    if (
+      !expected ||
+      createHash('sha256').update(text).digest('hex') !== expected
+    )
+      throw new UsageError(
+        'new preregistration requires its frozen QIANMO_RECALL_EVAL_PREREG_SHA256',
+      )
+    if (
+      JSON.stringify(original.answer) !==
+      JSON.stringify(loadPreregistration().answer)
+    )
+      throw new UsageError(
+        'new preregistration must preserve the original answer-layer thresholds and inference rules',
+      )
+  }
+  const profile = answerModelProfile()
+  const values =
+    profile === null
+      ? original
+      : {
+          ...original,
+          ...(original.plan === null
+            ? {}
+            : {
+                plan: {
+                  ...original.plan,
+                  providers: profile.providers.map(provider => provider.id),
+                },
+              }),
+          ...(original.trial === null
+            ? {}
+            : {
+                trial: {
+                  ...original.trial,
+                  providers: profile.providers.map(provider => provider.id),
+                },
+              }),
+        }
   return {
-    values: loadPreregistration(),
-    sha256: createHash('sha256').update(text).digest('hex'),
+    values,
+    sha256: createHash('sha256')
+      .update(text + (profile === null ? '' : JSON.stringify(profile)))
+      .digest('hex'),
   }
 }
 
@@ -474,17 +537,14 @@ async function execute(
   } catch (error) {
     throw new UsageError(error instanceof Error ? error.message : String(error))
   }
-  if (cli.mode === 'live' && plan.arms.includes('m1')) {
-    throw new UsageError(
-      'the M1 arm runs with --replay or --dry-run only until the embedding adapter (P16.7) lands; run --arms m0',
-    )
-  }
   const providers = providersOf(plan)
   const retrievers: Partial<Record<Arm, ArmRetriever>> = { m0: m0Retriever }
   let transports: AnswerTransport[]
   let ledgerFile: string
   let cap: { input: number; output: number }
   const sink: Record<string, Exchange> = {}
+  let embeddings: RecordedVectors | undefined
+  let protocol: AnswerProtocol = EVIDENCE_ANSWER_PROTOCOL
   if (cli.mode === 'live') {
     const credentials = liveCredentials()
     if ('skip' in credentials) {
@@ -492,6 +552,31 @@ async function execute(
         `[answer-eval] 真调用已跳过：${credentials.skip}。未读写 token 账本。`,
       )
       return 0
+    }
+    if (plan.arms.includes('m1')) {
+      const path = process.env.QIANMO_RECALL_EMBEDDING_CONFIG
+      if (!path)
+        throw new UsageError(
+          'live M1 requires QIANMO_RECALL_EMBEDDING_CONFIG with a real embedding service',
+        )
+      const config = parseEmbeddingConfig(
+        JSON.parse(readFileSync(path, 'utf8')),
+        credentials.baseURL,
+      )
+      if (config === null)
+        throw new UsageError('live M1 cannot use embedding off')
+      const inner = createMemoryEmbedder(config)
+      const vectors: Record<string, readonly number[]> = {}
+      const embedder = recordingEmbedder(inner, vectors)
+      embeddings = {
+        embedder: {
+          id: inner.id,
+          model: inner.model,
+          dimensions: inner.dimensions,
+        },
+        vectors,
+      }
+      retrievers.m1 = m1Arm(embedder).retrieve
     }
     transports = providers.map(provider => {
       const live = createLiveTransport(provider, credentials)
@@ -501,6 +586,14 @@ async function execute(
     cap = { input: cli.capInput ?? 0, output: cli.capOutput ?? 0 }
   } else {
     const fixture = readFixture(cli.fixture ?? '')
+    protocol = fixture.answerProtocol ?? 'legacy-v1'
+    if (
+      protocol === 'memory-evidence-v2' &&
+      fixture.protocolSha256 !== MEMORY_EVIDENCE_PROTOCOL_HASH
+    )
+      throw new UsageError(
+        'recorded v2 answer protocol differs from the current protocol',
+      )
     if (plan.arms.includes('m1')) {
       if (fixture.embeddings === undefined) {
         throw new UsageError(
@@ -527,6 +620,7 @@ async function execute(
   })
   try {
     const report = await runAnswerEval(plan, {
+      protocol,
       transports,
       retrievers,
       ledger,
@@ -547,7 +641,15 @@ async function execute(
   } finally {
     ledger.close()
     if (cli.record !== null) {
-      writeFixture(cli.record, { schema: FIXTURE_SCHEMA, exchanges: sink })
+      writeFixture(cli.record, {
+        answerProtocol: protocol,
+        ...(protocol === 'memory-evidence-v2'
+          ? { protocolSha256: MEMORY_EVIDENCE_PROTOCOL_HASH }
+          : {}),
+        schema: FIXTURE_SCHEMA,
+        exchanges: sink,
+        ...(embeddings === undefined ? {} : { embeddings }),
+      })
     }
   }
 }

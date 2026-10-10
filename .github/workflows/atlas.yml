@@ -1,15 +1,18 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 阡陌的 CI。基座是 oh-my-pi（根目录），阡陌代码在 atlas/ 与 demo/ 下；
+# omp 自带的 ci.yml / bun-cache-warm.yml / nix.yml 依赖它的自托管 runner，已在本仓库删除。
+# 静态与阡陌门禁和 `bun run verify` 相同；触及基座路径时追加 omp 测试。
+# 逐条列成步骤，让红灯指到具体一道门禁。
 name: CI
 
 on:
   push:
     branches: [main, "feature/*", "feat/*"]
-  # No branch filter on purpose: every PR runs CI, whatever its base.
-  # The filter here used to be [main, "feat/*"] while the real flow was
-  # codex/* and s4/* into an integration branch, so PRs #2-#4 reported no
-  # checks at all and a false-green test rode along unnoticed. Enumerating
-  # base branches has to be redone every time the integration branch changes
-  # -- it has already been missed once. "Every PR" cannot go stale.
-  # `push` keeps its filter so a branch push and its PR do not both run.
+  # 不加分支过滤：每个 PR 都跑，不管基点是哪条分支。枚举基点分支每次换集成分支都要
+  # 重改，漏过一次（PR #2-#4 没有任何检查），"每个 PR" 不会过期。
+  # `push` 保留过滤，免得一次分支推送和它的 PR 各跑一遍。
   pull_request:
   workflow_dispatch:
 
@@ -19,19 +22,16 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # Base-changing PRs add the complete upstream TS suite after native build.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         with:
-          # `check:license-headers` 的归属判据是「文件在不在 base-snapshot/*
-          # 那棵基座零改动快照树里」，没有那个标签就没有判据 —— 而这个 action
-          # 默认 fetch-depth: 1 并且传 --no-tags，一个标签都不会到 runner 上
-          # （已实测）。不加这一行，那道门禁在 CI 上必红，而且红的原因与被检查
-          # 的代码毫无关系。它按设计**不降级放行**：浅克隆恰恰是最容易漏头的
-          # 环境，在那里静默通过等于在最不可靠的地方给出最乐观的结论。
-          #
-          # 只加在这个 job 上：另外两个 job（acceptance-local / windows）都不跑
-          # 这道门禁，给它们拉标签是白付一次网络往返。
+          # license-headers 的归属判据是「文件在不在 base-snapshot/omp-v18.8.4
+          # 快照树里」，没有这个标签就没有判据；action 默认 fetch-depth: 1 且不带
+          # 标签。门禁按设计不降级放行：浅克隆恰恰是最容易漏头的环境。
+          fetch-depth: 0
           fetch-tags: true
         env:
           GIT_CONFIG_COUNT: 2
@@ -42,188 +42,93 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
         with:
-          # Read the pinned version from .tool-versions instead of `latest`, so
-          # CI cannot silently track an upstream Bun release and drift from the
-          # pin (threatens P8.1 "30-min fresh-machine reproduce"). setup-bun v2
-          # (0c5077e) supports bun-version-file with .tool-versions.
+          # 版本取自 .tool-versions（>= 1.4），不跟 latest，免得 CI 悄悄漂离钉死的版本。
           bun-version-file: .tool-versions
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Dev checkouts have no vendored rg (bun skips lifecycle scripts, so
-      # postinstall never downloads it) — the runtime then falls back to the
-      # system binary, which dev machines have but a bare runner doesn't. The
-      # mcp serve round-trip executes the real Glob tool and needs it.
-      - name: Install ripgrep (system fallback for dev checkouts)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
+      # 取自 rust-toolchain.toml。
+      - name: Build the omp native addon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          bun run build:native
 
       - name: Lint and format check
-        run: bunx biome ci .
+        run: bun run atlas:lint:ci
 
       - name: Type check
-        # tsc on this tree peaks at ~2.7 GB RSS (measured 2026-08-17, and the
-        # number is identical one commit earlier — grown over batches, not a
-        # single regression). Node's default ~2 GB old-space cap OOM'd this
-        # step on both runners; the machines have RAM to spare, the default
-        # heap cap is the only bottleneck.
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: bun run typecheck
+        run: bun run atlas:typecheck
 
-      # Two-sided ratchet: fails if cycles were added, and also if cycles were
-      # removed without committing the lower baseline. Kept out of `precheck`
-      # because a full run walks 2300+ modules and takes minutes.
+      - name: Verify shared registry with real PostgreSQL
+        run: bun run atlas:test:registry-ha
+
+      # 双向棘轮：新增环依赖会红，消除了环而没提交更低基线也会红。
       - name: Check circular dependencies
-        timeout-minutes: 20
-        run: bun run check:cycles
+        run: bun run atlas:check:cycles
 
-      # Same two-sided ratchet, but on tool prompt/constants leaves. Pure
-      # import scanning, so it also runs inside `precheck` (~0.3s).
-      - name: Check prompt purity
-        run: bun run check:prompt-purity
-
-      # Guards the failure mode behind all 55 red runs between v2.11.0 and
-      # v2.30.0: a mock.module surface (or an unreset override) leaks to every
-      # later file in the shard, and Bun's test-file order comes from the
-      # filesystem — so it only ever reproduced here, never locally. Also a
-      # ratchet, also inside precheck.
-      - name: Check mock hygiene
-        run: bun run check:mock-hygiene
-
-      # Issue #75: `typeof MACRO` compiles into a test on a bare identifier the
-      # bundler never substitutes, so the define it guards is silently lost in
-      # every artifact — and unit tests cannot see it, because under `bun test`
-      # the fallback branch really is the correct one. Hard zero, milliseconds,
-      # also inside precheck.
-      - name: Check MACRO guards
-        run: bun run check:macro-guards
-
-      # 三方身份隔离（官方 .claude / occ .occ / 阡陌 .qianmo）全靠「每条身份路径
-      # 都从 src/config/paths.ts 派生」这一条不变式；绕过它的硬编码字面量是这套
-      # 隔离**唯一**的失效方式，改造前有 12 处，其中两处出过真实事故。
-      #
-      # 这道检查此前定义在 package.json 里却**一处都没接**（precheck / verify / CI
-      # 全无），而且在干净树上就 exit 1 —— 一道看着在、其实从不运行的门禁。
-      # 2026-08-26 补上 guard.ts 的反向例外后接活，毫秒级。
+      # 三方身份隔离全靠「每条身份路径都从 @qianmo/paths 派生」这一条不变式。
       - name: Check identity-path bypasses
-        run: bun run check:identity-paths
+        run: bun run atlas:check:identity-paths
 
-      # 双许可仓库的地板。阡陌自有代码 AGPL-3.0-or-later、基座导入代码 MIT，
-      # 归属的权威判据是路径（在不在 base-snapshot/* 那棵快照树里），文件头只是
-      # 这条判据的**标记**。章程 §5.5 原先明写「不为此新增 CI 断言，漏加由 PR
-      # 评审兜」——那条决定作出时判据覆盖 15 个文件，今天覆盖 647 个，而 PR 评审
-      # 这一道在 2026-08-30 一次漏了 66 个。章程 v2.18 反转了它，这一步就是反转。
-      #
-      # 为什么必须在这一层、而不是只留在 precheck：它要跑 git ls-tree 比对快照
-      # 标签，而「本地有标签、CI 上没有」正是这道门禁唯一会环境性失效的地方
-      # （见上面 checkout 的 fetch-tags）。只在开发机上跑，等于永远不验那半边。
-      #
-      # 三向硬零、无预算文件：漏加（阡陌自有文件缺头）、误贴（基座 MIT 文件被
-      # 盖上 AGPL 头）、以及具名豁免文件反过来被盖章（`LICENSE.base` 那几个是
-      # 「有意不加头」，加了就是虚假陈述），都判红。第二向是 NOTICE 一、许可里
-      # 「带头 ⇒ 阡陌自有」那条断言的唯一机器自检。毫秒级，也在 precheck / verify 里。
+      # 双许可仓库的地板：阡陌自有代码 AGPL-3.0-or-later，omp 基座 MIT；
+      # 归属判据是路径（在不在快照树里），文件头只是标记。
       - name: Check license headers
-        run: bun run check:license-headers
+        run: bun run atlas:check:license-headers
 
-      # 同样是此前的孤儿门禁。Mintlify 对「导航声明了但文件不存在」的页面不会跳过，
-      # 而是发布成一个 404，所以这条必须在合并前跑。它没接门禁的直接后果是
-      # sync-docs-i18n.ts 与 check-docs-i18n.ts 曾对同一条约定分叉而无人发现。
-      - name: Check docs navigation
-        run: bun run check:docs-i18n
+      - name: Check pinned omp provenance
+        run: bun run atlas:check:omp-pin
 
-      # The loop lives in scripts/test-shards.sh — see that file for why
-      # sharding is what fixed the 55 red runs, and why an unsharded `bun test`
-      # is not a stricter substitute.
-      - name: Test with Coverage (sharded per directory)
-        run: ./scripts/test-shards.sh --coverage
+      - name: Check unused code
+        run: bun run atlas:check:unused
 
-      # 分片测试是普通 `bun test`，它把所有 `feature()` 编译成 false；出货构建则
-      # 编进 scripts/defines.ts 的默认开关。于是默认开启的分支在门禁里是死代码，
-      # 在产物里是活的：beta-5 的空应答崩溃（2026-09-27）就藏在 REACTIVE_COMPACT
-      # 后面，针对它的用例在上一步一直是绿的。这一步用构建同源的开关集合重跑
-      # query 与 compact 的用例，范围与理由见 scripts/test-shipped-features.ts。
-      # 报告落进 test-reports/，排在上传步骤之前。
-      - name: Test query/compact with shipped features
-        run: bun run test:shipped-features
+      - name: Check SBOM is current
+        run: bun run atlas:sbom -- --check
 
-      # 每个分片一份 JUnit XML：用例名 + 逐条耗时。`always()` —— 红的那次才最
-      # 需要它，而这恰恰是上一步非零退出、后续步骤全被跳过的那一次。issue #56
-      # 偶发红了 24 次，用例名一次都没留下来；普通 stdout 里每条用例的耗时根本
-      # 不打，而「中位数 459 ms 的用例跑了 6034 ms」正是那条线索的起点。
-      #
-      # 产物里只有用例名、文件路径、耗时和失败断言的文本，没有凭据。
+      # 证明阡陌没有碰坏基座：omp 自己的类型检查。
+      - name: Check the omp base
+        run: bun run check:ts
+
+      # Compare both sides of a rename and both snapshot versions during sync.
+      # A missing ref/tag fails the check; manual/new-branch runs test everything.
+      - name: Detect changes to omp snapshot paths
+        id: omp-change
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_REF" ] && [ "$BASE_REF" != "0000000000000000000000000000000000000000" ]; then
+            bun atlas/scripts/check-omp-base-change.ts "$BASE_REF"
+          else
+            bun atlas/scripts/check-omp-base-change.ts --all
+          fi
+
+      - name: Test changed omp base
+        if: steps.omp-change.outputs.required == 'true'
+        run: bun run test:ts
+
+      # 每个阡陌包一个分片，分片之间互不泄漏 mock.module；任一分片失败即失败。
+      - name: Test (sharded per package)
+        run: bun run atlas:test
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, 2026-04-10
         with:
-          # 与 acceptance-local 同一形态：artifact 名在 v4+ 是唯一键，重跑同一个
-          # run 时只用 run_id 会撞上上一次的产物并让上传失败 —— 而重跑正是红了
-          # 之后最常做的动作，也正是要拿两次现场做对照的时候。
           name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-reports
+          path: test-reports/
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Check coverage artifact
-        run: |
-          test -s coverage/lcov.info
-          grep -q '^SF:' coverage/lcov.info
+      - name: Build qm
+        run: bun run atlas:build:qm
 
-      # codecov 坏了，老是失败，先注释掉
-      # - name: Upload coverage to Codecov
-      #   if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-      #   uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5, 2026-04-25
-      #   with:
-      #     fail_ci_if_error: true
-      #     files: ./coverage/lcov.info
-      #     disable_search: true
-      #     token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Smoke the compiled qm
+        run: bun run atlas:check:qm-smoke
 
-      - name: Build
-        run: bun run build:vite
-
-      - name: Check bundle integrity
-        run: bun run check:bundle
-
-      # Now gating. `check:unused` is a ratchet over knip rather than raw knip:
-      # seven categories (unused files/deps/binaries, unlisted, unresolved …)
-      # were cleaned to zero and are held there, while the ~1900 unused
-      # exports/types are a two-sided budget. Raw output: `check:unused:raw`.
-      - name: Check unused exports
-        run: bun run check:unused
-
-  # 端到端验收套件的**本地腿**（`demo/lib/acceptance/`，LocalDriver）。
-  #
-  # 为什么是一个兄弟 job，而不是 `ci` 里的一步、也不是 `scripts/test-shards.sh`
-  # 的一格：`scripts/qianmo-acceptance.ts` 顶部那三条理由（要起真进程、要抢真
-  # TCP 端口、它的红是产品结论而不是构建结论）反对的是**混进单元测试分片**，
-  # 不是「不接线」。作为并行的兄弟 job，它既不给合并门禁添一分钟串行时间，也
-  # 不会把一个抢端口的成员塞进那批靠目录隔离 mock 状态的纯内存分片里 —— 后者
-  # 正是这仓库花了 55 次连红才治好的病。先例就在下面：`windows` 也是兄弟 job。
-  #
-  # 接线本身才是重点。PR #63 给套件加了一道防假绿的自保护：一轮里如果没有任何
-  # 场景真的调用过驱动，即便 fail=0 error=0 也判 FAIL 并 exit 1（issue #61 —— 真机
-  # 腿曾经报 `pass=11 fail=0 skip=104` + exit 0，而驱动被调用了 0 次）。但在此
-  # 之前套件**完全没接线**，那道自保护只在有人手动跑时才响 —— 而它挡的恰恰是
-  # 「没人看的时候悄悄变成假绿」。一道只在有人看着时才响的警报不挡这个。
-  #
-  # 真机腿（FleetDriver）**不接 GitHub CI，而且不是「以后再补」**：
-  #
-  # ① 凭据。它要四台 VPS 的 SSH 私钥 + 生产传输 PSK + 控制台机器 H 的 IAP
-  #    隧道凭据。把这套放进仓库 secrets，是拿一条验收腿去换一个长期泄密面。
-  # ② 自托管 runner 能绕开①（凭据本来就在 H 上），但**现在没有注册**，而
-  #    `runs-on: self-hosted` 在没有 runner 时不会失败、只会**永远排队**。
-  #    一个长期 pending 的检查与「还在跑」长得一模一样，它教会人忽略检查栏 ——
-  #    比没有这个 job 更糟。要接就得先真的注册 runner，那是另一件事。
-  #
-  # 别把这条读成「真机腿是多余的」。它**唯一覆盖**本地腿造不出的两条
-  # （`handshake/channel-conflict-signing-key`、`audit/mirror-pull-not-constructible`），
-  # 而且它验的是真部署面。两条腿跑同一张场景表（`demo/lib/acceptance/registry.ts`），
-  # 本地腿 113/115、真机腿 96/115 —— 各有各的盲区，谁也不替代谁。
-  # 真机腿仍然手动跑（`--target fleet`），它那两条「不碰生产」的纪律另有分片
-  # 护栏（`demo/lib/acceptance/__tests__/fleetGuards.test.ts`），那条护栏零网络、
-  # 进得了分片，所以「改坏了要等下一次真跑才发现」的那部分已经被挡住了。
   acceptance-local:
     runs-on: ubuntu-latest
     # **只手动跑。**托管 runner 上没有模型凭据。
@@ -232,8 +137,7 @@ jobs:
     # 拒 → supervisor 连试五次后 park → 退出 → 监听口再没绑上，连不需要模型的
     # 纯传输场景也一起陪葬）——**已经不成立**：常驻现在降级而不退出，监听口在
     # ACP 之前绑好并活过每一次重启与 park，起不来的只是 agent 能力，进来的
-    # `task.request` 拿到一份带原因的拒绝回执。见 `src/services/qianmo/
-    # resident.ts` 的 `#startTransport` 与 `#runtimeForDelivery`。
+    # `task.request` 拿到一份带原因的拒绝回执。见 `atlas/packages/resident` 的 `#startTransport` 与 `#runtimeForDelivery`。
     #
     # 留在手动上的是**另一条**理由，它没有被上面那个修复动到：
     #
@@ -273,10 +177,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # 同 `ci` job：dev 检出没有 vendored rg，运行时回退到系统二进制，而裸
-      # runner 没有。这条腿起的是真的 `qm resident`，它会执行真的 Glob 工具。
-      - name: Install ripgrep (system fallback for dev checkouts)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      # The local leg starts the resident host from source, and the host spawns
+      # omp children (`omp --mode rpc`), which load the native addon.
+      - name: Build the omp native addon
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          bun run build:native
 
       # 这一步**故意**制造 issue #61 那个形状，然后要求套件因此变红。
       #
@@ -287,7 +194,7 @@ jobs:
       #
       # 为什么值得单独占一步：`demo/lib/acceptance/__tests__/report-core.test.ts`
       # 里那三条断言证明的是 `summarize()` **算得对**，证明不了两件下游的事：
-      #   ① `scripts/qianmo-acceptance.ts` 真的把 `run.pass` 变成了进程退出码；
+      #   ① `atlas/scripts/qianmo-acceptance.ts` 真的把 `run.pass` 变成了进程退出码；
       #   ② 这个 workflow 的 `run:` 步骤真的会因为那个退出码变红。
       # 而接线出错的经典形态全在这两处 —— `|| true`、吞掉退出码的管道、或者
       # `EXIT=$?` 跟在管道后面（那拿到的是管道**最后一个**命令的退出码）。
@@ -299,7 +206,7 @@ jobs:
           log="${RUNNER_TEMP}/acceptance-guard.log"
 
           # 没有管道：要的就是这条命令自己的退出码。
-          if bun run scripts/qianmo-acceptance.ts \
+          if bun atlas/scripts/qianmo-acceptance.ts \
                --target local \
                --only trust/notice-trust-has-two-values \
                --out "$out" > "$log" 2>&1; then
@@ -367,7 +274,7 @@ jobs:
       # 定的，压平会让本该快的那些在挂死时也拖满。
       - name: Acceptance suite (local leg)
         run: |
-          bun run scripts/qianmo-acceptance.ts \
+          bun atlas/scripts/qianmo-acceptance.ts \
             --target local \
             --timeout-scale 3 \
             --out "${RUNNER_TEMP}/acceptance-local"
@@ -412,51 +319,3 @@ jobs:
           path: ${{ runner.temp }}/acceptance-local
           if-no-files-found: warn
           retention-days: 14
-
-  # Deliberately a separate job rather than a matrix leg of `ci`: it runs a
-  # different, much narrower set of steps. The full suite is slow and flaky on
-  # Windows, so we only run the suites that encode Windows-specific behaviour
-  # (path validation / sandbox escape, ripgrep binary resolution, mailbox and
-  # legacy-console handling) plus a type check.
-  windows:
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
-        env:
-          GIT_CONFIG_COUNT: 2
-          GIT_CONFIG_KEY_0: init.defaultBranch
-          GIT_CONFIG_VALUE_0: main
-          GIT_CONFIG_KEY_1: advice.defaultBranchName
-          GIT_CONFIG_VALUE_1: "false"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
-        with:
-          # Read the pinned version from .tool-versions instead of `latest`, so
-          # CI cannot silently track an upstream Bun release and drift from the
-          # pin (threatens P8.1 "30-min fresh-machine reproduce"). setup-bun v2
-          # (0c5077e) supports bun-version-file with .tool-versions.
-          bun-version-file: .tool-versions
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Type check
-        # Same ~2.7 GB tsc peak as the linux job; same default-heap OOM on the
-        # first run of this branch. See the linux Type check step.
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: bun run typecheck
-
-      # Paths are single-quoted: the default shell here is pwsh, and quoting
-      # keeps the '@' in packages/@ant/... from being read as a splat/array
-      # operator. These are literal file paths, not globs — no shell expansion
-      # is expected or relied upon.
-      - name: Test Windows-sensitive suites
-        run: >
-          bun test
-          'src/utils/permissions/__tests__/pathValidation.test.ts'
-          'src/utils/__tests__/ideIsolation.test.ts'
-          'src/utils/__tests__/ripgrepConfig.test.ts'
-          'src/utils/__tests__/teammateMailbox.test.ts'
-          'packages/@ant/ink/src/core/__tests__/legacyConsole.test.ts'

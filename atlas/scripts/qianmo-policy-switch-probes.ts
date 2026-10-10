@@ -68,14 +68,11 @@ import {
   initCa,
   issueCertificate,
   refreshRevocationList,
-} from '../src/services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../src/services/qianmo/ca/openssl.js'
-import { popMessage } from '../src/services/qianmo/ca/pop.js'
-import { verifyRevocationList } from '../src/services/qianmo/ca/revocationList.js'
-import { CertificateDirectory } from '../src/services/qianmo/certificateDirectory.js'
+} from '@qianmo/node/ca/operations.ts'
+import { opensslVersion, runOpenssl } from '@qianmo/node/ca/openssl.ts'
+import { popMessage } from '@qianmo/node/ca/pop.ts'
+import { verifyRevocationList } from '@qianmo/node/ca/revocationList.ts'
+import { CertificateDirectory } from '@qianmo/node/host/certificateDirectory.ts'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 

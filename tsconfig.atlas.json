@@ -1,5 +1,27 @@
 {
   "extends": "./atlas/tsconfig.base.json",
-  "include": ["atlas/**/*.ts", "atlas/**/*.tsx", "demo/**/*.ts"],
-  "exclude": ["node_modules", "**/node_modules"]
+  "include": [
+    "atlas/**/*.ts",
+    "atlas/**/*.tsx",
+    "demo/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/node_modules"
+  ],
+  "compilerOptions": {
+    "types": [
+      "bun",
+      "assets"
+    ],
+    "typeRoots": [
+      "./types",
+      "./node_modules/@types"
+    ],
+    "lib": [
+      "ESNext",
+      "DOM.AsyncIterable"
+    ],
+    "allowArbitraryExtensions": true
+  }
 }

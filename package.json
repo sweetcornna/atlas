@@ -173,17 +173,21 @@
 		"atlas:lint:fix": "biome check --fix atlas demo",
 		"atlas:lint:ci": "biome ci atlas demo",
 		"atlas:test": "bash atlas/scripts/test-shards.sh",
+		"atlas:test:registry-ha": "bun atlas/scripts/test-registry-ha.ts",
 		"atlas:check:license-headers": "bun atlas/scripts/check-license-headers.ts",
 		"atlas:check:identity-paths": "bun atlas/scripts/check-identity-paths.ts",
 		"atlas:check:unused": "bun atlas/scripts/check-unused.ts",
 		"atlas:check:cycles": "bun atlas/scripts/check-cycles.ts",
+		"atlas:check:omp-pin": "bun atlas/scripts/sync-omp.ts check",
+		"atlas:sync:omp": "bun atlas/scripts/sync-omp.ts",
 		"atlas:sbom": "bun atlas/scripts/sbom.ts",
+		"atlas:report:beta": "bun atlas/scripts/beta-report.ts",
 		"atlas:build:qm": "bun atlas/scripts/build-qm.ts",
 		"atlas:check:qm-smoke": "bun atlas/scripts/check-qm-smoke.ts",
 		"qm": "bun atlas/packages/node/src/cli.ts",
 		"qianmo:acceptance": "bun atlas/scripts/qianmo-acceptance.ts",
 		"precheck": "bun run atlas:typecheck && bun run atlas:lint:fix && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:test",
-		"verify": "bun run atlas:lint:ci && bun run atlas:typecheck && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:check:cycles && bun run atlas:check:unused && bun run atlas:sbom -- --check && bun run check:ts && bun run atlas:test && bun run atlas:build:qm && bun run atlas:check:qm-smoke"
+		"verify": "bun run atlas:lint:ci && bun run atlas:typecheck && bun run atlas:check:identity-paths && bun run atlas:check:license-headers && bun run atlas:check:omp-pin && bun run atlas:check:cycles && bun run atlas:check:unused && bun run atlas:sbom -- --check && bun run check:ts && bun run atlas:test && bun run atlas:test:registry-ha && bun run atlas:build:qm && bun run atlas:check:qm-smoke"
 	},
 	"dependencies": {
 		"sherpa-onnx": "1.13.2",

@@ -23,7 +23,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { DEMO_ENTRYPOINTS, DEMO_ENTRYPOINTS_EXCLUDED } from '../demoBundles.ts'
 
-const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..')
+const REPOSITORY_ROOT = resolve(import.meta.dir, '..', '..', '..')
 
 /**
  * `demo/` 下所有 shell 脚本。

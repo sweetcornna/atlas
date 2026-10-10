@@ -1,0 +1,97 @@
+# Copyright 2026 Qianmo AgentNest Team
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Discovery and candidate checks are automatic. Merge and deployment remain reviewed actions.
+name: Sync omp candidate
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sync-omp-candidate
+  cancel-in-progress: false
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      status: ${{ steps.prepare.outputs.status }}
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .tool-versions
+      - name: Discover latest stable release and prepare isolated candidate
+        id: prepare
+        run: bun atlas/scripts/sync-omp.ts prepare "$RUNNER_TEMP/omp-sync"
+      - name: Install native build tools
+        if: steps.prepare.outputs.status == 'prepared'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
+          rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$RUNNER_TEMP/omp-sync/candidate/rust-toolchain.toml")"
+      - name: Check compatibility and record evidence
+        if: steps.prepare.outputs.status == 'prepared'
+        run: bun atlas/scripts/sync-omp.ts verify "$RUNNER_TEMP/omp-sync"
+      - name: Bundle verified candidate and parentless snapshot
+        if: steps.prepare.outputs.status == 'prepared'
+        run: bun atlas/scripts/sync-omp.ts bundle "$RUNNER_TEMP/omp-sync"
+      - name: Retain candidate evidence, including conflicts and failed checks
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: omp-candidate-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/omp-sync/*.json
+            ${{ runner.temp }}/omp-sync/*.log
+            ${{ runner.temp }}/omp-sync/*.txt
+            ${{ runner.temp }}/omp-sync/*.md
+            ${{ runner.temp }}/omp-sync/*.patch
+            ${{ runner.temp }}/omp-sync/*.bundle
+            ${{ runner.temp }}/omp-sync/verified-head
+          if-no-files-found: error
+          retention-days: 30
+  draft:
+    needs: candidate
+    if: needs.candidate.outputs.status == 'prepared'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # No candidate code executes in this job. Only verified Git objects publish.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: omp-candidate-${{ github.run_id }}
+          path: candidate-evidence
+      - name: Publish new refs and open a draft for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.candidate.outputs.version }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          branch="codex/sync-omp-$VERSION"
+          snapshot="base-snapshot/omp-v$VERSION"
+          if [ -n "$(git ls-remote --heads origin "refs/heads/$branch")" ]; then
+            echo "Candidate $branch already exists; it remains pending review."
+            exit 0
+          fi
+          git bundle verify candidate-evidence/candidate.bundle
+          git fetch candidate-evidence/candidate.bundle "refs/heads/$branch:refs/heads/$branch" "refs/tags/$snapshot:refs/tags/$snapshot"
+          test "$(git rev-parse "$branch")" = "$(cat candidate-evidence/verified-head)"
+          test "$(git rev-list --parents -n 1 "$snapshot" | wc -w | tr -d ' ')" = 1
+          # No force: an existing snapshot/branch is never overwritten. Atomic avoids half-publication.
+          git push --atomic origin "refs/heads/$branch" "refs/tags/$snapshot"
+          gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
+            --title "chore(base): sync omp v$VERSION" --body-file candidate-evidence/review.md

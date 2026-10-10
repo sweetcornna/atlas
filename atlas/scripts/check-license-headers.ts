@@ -6,12 +6,13 @@
  * Repo-wide floor for the two-line Qianmo copyright header.
  *
  * This repository is dual-licensed: Qianmo's own code is AGPL-3.0-or-later
- * (root LICENSE), the code imported from the open-claude-code base is MIT
+ * (root LICENSE), the code imported from the oh-my-pi (omp) base is MIT
  * (root LICENSE.base). The authoritative test for which layer a file belongs
  * to is its *path* — whether it exists in the zero-modification base snapshot
- * tree `base-snapshot/*` (CLAUDE.md §2.5, NOTICE 一、许可). The header is a
- * *marker* of that verdict, never the verdict itself: "carries the header ⇒
- * Qianmo-owned" holds, the converse does not, and 87 files prove it.
+ * tree `base-snapshot/omp-v18.8.4` (CLAUDE.md, NOTICE 一、许可,
+ * docs/dev/base-switch-omp.md §6). The header is a *marker* of that verdict,
+ * never the verdict itself: base files modified in place (recorded in
+ * docs/dev/base-modifications.md) stay MIT and never carry the AGPL line.
  *
  * Charter §5.5 originally decided NOT to add a CI assertion for the header
  * ("漏加由 PR 评审兜"). That decision was taken when the rule covered 15
@@ -39,10 +40,10 @@
  *      EXEMPT_EXTENSIONS is deliberately NOT covered by this: .json / .jpg
  *      are "cannot carry", not "must not carry".
  *
- * A ratchet would be the wrong instrument, same as in check-macro-guards.ts:
- * there is no legitimate instance to grandfather. A file either belongs to
- * the AGPL layer and says so, or it is on the exempt list with a written
- * reason. A budget number would only record how far behind we are.
+ * A ratchet would be the wrong instrument: there is no legitimate instance to
+ * grandfather. A file either belongs to the AGPL layer and says so, or it is
+ * on the exempt list with a written reason. A budget number would only record
+ * how far behind we are.
  *
  * Fail-closed by construction: exemptions are a DENY list of extensions and
  * paths, never an ALLOW list of "extensions that must carry a header". The
@@ -52,70 +53,16 @@
  * those 20 happen to be headered; under that shape tomorrow's unheadered .rs
  * is skipped in silence, under this one it goes red.
  *
- * The enumeration is `git ls-files` — the index, not the working tree. That
- * is the NOTICE 一、许可 criterion verbatim, and it is also the right domain:
- * an untracked file has not entered the repository yet, while pulling in
- * `--others --exclude-standard` would turn every scratch file a developer
- * leaves lying around into a red precheck — exactly the pressure that
- * corrupts an exemption table. `git add` is early enough; staged files are in
- * `ls-files`, so a new file is seen by precheck, by the pre-commit hook path
- * and by CI, all before it can be pushed. (The residual local blind spot for
- * never-staged files is documented in CONTRIBUTING, not patched here: two
- * enumeration modes would be two criteria, and local and CI would disagree
- * by design — the exact shape this repo keeps getting burned by.)
- *
- * Paths come back NUL-separated (`-z`) and are never trimmed. `-z` supersedes
- * `core.quotePath=false`: it also survives a path containing a newline, and —
- * the reason it matters here — trimming would silently rewrite a path with a
- * leading or trailing space into one that does not exist, and a path that
- * cannot be opened is a path that cannot be judged.
- *
- * The window is the first 5 lines, not lines 1–2: 45 of the 647 headers sit
- * on lines 2–3 behind a shebang. Matching is a plain substring, so all three
- * comment syntaxes in the tree work with no per-extension table — `//` (543
- * files), `#` (49), `<!-- -->` (55). Keeping it a substring is deliberate on
- * two counts: a syntax table turns three forms (and the fourth someone adds
- * later) into a list that must be maintained, and — more importantly — the
- * criterion written into NOTICE 一、许可 IS the plain substring
- * (`head -5 | grep -qa …`). A gate stricter than the document it enforces
- * would eventually disagree with it about the counts, and "the same fact in
- * two places" is what this repo has repeatedly paid for. The one addition is
- * that the two marks must land on DIFFERENT lines, which costs nothing (all
- * 647 already satisfy it) and rules out smuggling both into one string
- * literal. Measured: of the 4171 files in the snapshot tree, 0 mention the
- * SPDX string in their first 5 lines, so the false-positive surface of the
- * substring rule is presently empty.
- *
- * Division of labour with packages/activator/test/surface-invariant.test.ts —
- * DELIBERATE, not drift; do not "unify" them:
- *   · that test asserts a STRONGER per-package invariant — exactly lines 1–2,
- *     exactly the `//` form, only the non-recursive .ts under activator/src;
- *   · this script is the repo-wide FLOOR — first 5 lines, any comment syntax,
- *     path verdict plus an exemption list.
- * Collapsing the floor onto the stricter rule would reject the 104 headered
- * files that legitimately use `#` or `<!-- -->`; collapsing the stricter rule
- * onto the floor would give up the invariant activator's packaging relies on.
- *
- * The snapshot tag is REQUIRED and PINNED. sbom.ts's baseSnapshotVerdict()
- * degrades to "归属未核实" when the tag is missing, which is right for a
- * generator and wrong for a gate: a shallow or --no-tags checkout is
- * precisely where the answer is least reliable, so passing there is the worst
- * available default. No tag ⇒ exit 1 with the fetch command.
- *
- * Same file also borrows a habit from surface-invariant.test.ts's
- * `test('the scan has files to scan')`: an enumeration that comes back empty
- * (or implausibly small) is refused rather than reported as zero violations.
- * A gate that examines nothing passes everything.
- *
- * Usage:
- *   bun run scripts/check-license-headers.ts
- *   bun run scripts/check-license-headers.ts --report
+ * The enumeration includes tracked and untracked, nonignored source files so
+ * precheck cannot miss new code before staging. Generated/ignored files remain
+ * outside the ownership gate. Snapshot paths still define the base boundary.
  */
 
 import { closeSync, openSync, readSync } from 'node:fs'
+import ompPin from '../upstream/omp.json'
 import { extname, join } from 'node:path'
 
-const PROJECT_ROOT = join(import.meta.dir, '..')
+const PROJECT_ROOT = join(import.meta.dir, '..', '..')
 
 const COPYRIGHT_LINE = 'Copyright 2026 Qianmo AgentNest Team'
 const SPDX_LINE = 'SPDX-License-Identifier: AGPL-3.0-or-later'
@@ -136,12 +83,10 @@ const SAMPLE_SIZE = 20
  * 钉死之后，忘记更新这个常量的后果是**响亮且正确的失败**：门禁拿旧快照比对，
  * 把上游新文件判成阡陌自有而变红。那是一次要人来看的红，比两边静默分歧好。
  *
- * 它因此是同步回写清单上的一项。真源是 `BASE.md`「上游同步记录」里的 pin；
- * 清单本身见 `docs/dev/upstream-sync-drill.md` §7.1 第 5 条（那条列的三处
- * 「不在任何门禁视野里」的 pin 陈述——`NOTICE` 中英两块与 `README.md`——
- * 这个常量是第四处，区别是它**在**门禁视野里，改漏了会红）。
+ * 它因此是同步回写清单上的一项。真源是 `BASE.md` 里的基座 pin 与
+ * docs/dev/base-switch-omp.md 的「新度量基线」一行。
  */
-const EXPECTED_SNAPSHOT_TAG = 'base-snapshot/v2.46.0'
+const EXPECTED_SNAPSHOT_TAG = ompPin.snapshot
 
 /**
  * 枚举下限。今天是 4770 / 4171；这两个数只需要「远低于今天、远高于零」。
@@ -174,7 +119,15 @@ const READ_CHUNK_BYTES = 4096
  * 这张表**不**参与「盖章」那一向的判定：它说的是「带不了」，不是「不该带」。
  * 一个 `.json` 里出现那两行是语法错误，不是许可上的虚假陈述，不归这道门禁管。
  */
-const EXEMPT_EXTENSIONS = new Set(['.jpg', '.png', '.pdf', '.docx', '.json'])
+const EXEMPT_EXTENSIONS: Record<string, true> = {
+  '.jpg': true,
+  '.png': true,
+  '.gif': true,
+  '.svg': true,
+  '.pdf': true,
+  '.docx': true,
+  '.json': true,
+}
 
 /**
  * 具名豁免文件里，哪些标识**出现即判红**。
@@ -185,17 +138,17 @@ const EXEMPT_EXTENSIONS = new Set(['.jpg', '.png', '.pdf', '.docx', '.json'])
 type ForbiddenMarks = 'both' | 'spdx'
 
 /**
- * 具名豁免：形态上带得了头，但**加了才是错的**——所以这五条是**双向**的，
+ * 具名豁免：形态上带得了头，但**加了才是错的**——所以这几条是**双向**的，
  * 既不要求它们带头，也禁止它们带头。逐条讲清「为什么这是对的」，不是「为什么
  * 放它一马」；每一条都要在 `NOTICE` 一、许可里有对应说明。
  */
-const EXEMPT_PATHS = new Map<string, ForbiddenMarks>([
+const EXEMPT_PATHS: Record<string, ForbiddenMarks> = {
   // 基座溯源的唯一真源。仓库规矩（CLAUDE.md §2.4 / §0）是只有「导入」与
   // 「上游同步」两类事件才许改它，功能性提交一律不得触碰——补头恰恰是一次
   // 功能性提交里的顺手改动，正是那条规矩点名要挡的形态。
   // 换句话说：让门禁去逼人改 BASE.md，等于让两条约定互相打架；而反过来，
   // 谁在功能 PR 里给它加了那两行，也照样是碰了它。
-  ['BASE.md', 'both'],
+  'BASE.md': 'both',
 
   // 上游 MIT 许可正文的**逐字保留件**。给它加许可头会构成虚假陈述：文件正文
   // 说的是「MIT，版权归上游」，加上去的行会说「AGPL，版权归阡陌」——两行都不
@@ -203,7 +156,7 @@ const EXEMPT_PATHS = new Map<string, ForbiddenMarks>([
   // 它按路径判据落在快照之外（快照里没有这个文件名），但它承载的是基座那一层
   // 的许可——这是「快照外 ≠ 可以盖 AGPL 头」的唯一一个真实例子，也正是这条
   // 双向豁免要挡住的那个盲区。
-  ['LICENSE.base', 'both'],
+  'LICENSE.base': 'both',
 
   // 许可声明文件本体。**只禁 SPDX 行**：它第 2 行就是
   // `Copyright 2026 Qianmo AgentNest Team`，那是这份 NOTICE 自己的版权声明、
@@ -211,18 +164,17 @@ const EXEMPT_PATHS = new Map<string, ForbiddenMarks>([
   // **被引用的字符串**讲解（第 20 行讲判据时），「前 5 行」这个窗口限定正是
   // 为它而设：换成全文匹配，NOTICE 会把自己认成一个带头文件，而它是那条规则
   // 的**说明书**、不是它的实例。
-  ['NOTICE', 'spdx'],
+  NOTICE: 'spdx',
 
-  // 生成件。它头两行就是 Cargo 自己写的注释，第二行明写
-  // "It is not intended for manual editing" —— 人工加的行会在下一次
-  // `cargo build` 重写这个文件时被抹掉，于是门禁会周期性地红，而每次的
-  // 「修法」都是把同一行再加一遍。要求一个生成器去声明许可是没有对手的要求。
-  ['packages/audio-capture-napi/native/Cargo.lock', 'both'],
+  // 工具版本钉（asdf / mise 读取），与 `tsconfig.json`、`.gitignore` 同一条理由：
+  // 它是一张「工具 → 版本」表而不是作品，给它声明许可没有可主张的对象。
+  '.tool-versions': 'both',
 
-  // 工具配置文件而非源文件，与 `tsconfig.json` 同一条理由：`.gitignore` 是
-  // 一张路径匹配表，它不是作品，给它声明许可没有可主张的对象。
-  ['packages/audio-capture-napi/native/.gitignore', 'both'],
-])
+  // GitHub issue templates must start with YAML front matter on line 1; a
+  // comment line before it breaks the template, so the header cannot go in.
+  '.github/ISSUE_TEMPLATE/bug_report.md': 'both',
+  '.github/ISSUE_TEMPLATE/feature_request.md': 'both',
+}
 
 export interface LicenseHeaderInputs {
   /** `git ls-files -z` 的仓库相对 POSIX 路径。 */
@@ -315,11 +267,11 @@ export function forbiddenMarksIn(
 }
 
 export function isExemptByExtension(path: string): boolean {
-  return EXEMPT_EXTENSIONS.has(extname(path).toLowerCase())
+  return EXEMPT_EXTENSIONS[extname(path).toLowerCase()] === true
 }
 
 export function isExemptByPath(path: string): boolean {
-  return EXEMPT_PATHS.has(path)
+  return Object.hasOwn(EXEMPT_PATHS, path)
 }
 
 /**
@@ -375,7 +327,9 @@ export function analyzeLicenseHeaders(
     if (headered) headeredCount++
 
     // 第三向先判：具名豁免是双向的，这些文件既不必带头、也不许带。
-    const forbidden = EXEMPT_PATHS.get(path)
+    const forbidden = Object.hasOwn(EXEMPT_PATHS, path)
+      ? EXEMPT_PATHS[path]
+      : undefined
     if (forbidden !== undefined) {
       const marks = forbiddenMarksIn(prefix, forbidden)
       if (marks.length > 0) stampedExemptions.push({ path, marks })
@@ -454,14 +408,17 @@ export function resolveSnapshotTree(
 export function resolveTrackedFiles(
   repoRoot: string = PROJECT_ROOT,
 ): string[] | null {
-  const out = runGit(['ls-files', '-z'], repoRoot)
+  const out = runGit(
+    ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+    repoRoot,
+  )
   return out === null ? null : splitNul(out)
 }
 
 /** 本地存在的、排在钉死标签之后的快照标签（仅用于诊断，不参与判定）。 */
 function newerSnapshotTags(repoRoot: string): string[] {
   const out = runGit(
-    ['tag', '--list', 'base-snapshot/*', '--sort=-v:refname'],
+    ['tag', '--list', 'base-snapshot/omp-*', '--sort=-v:refname'],
     repoRoot,
   )
   if (out === null) return []
@@ -608,7 +565,7 @@ function failNoTag(): never {
     '[license-headers] 若是上游同步后标签换了名：这个常量钉在本脚本的',
   )
   console.error(
-    '[license-headers] EXPECTED_SNAPSHOT_TAG，属于同步回写清单的一项',
+    '[license-headers] atlas/upstream/omp.json，属于同步回写清单的一项',
   )
   console.error('[license-headers] （docs/dev/upstream-sync-drill.md §7.1）。')
   process.exit(1)
@@ -668,7 +625,7 @@ function main(): void {
   if (stale.length > 0) {
     console.log(
       `[license-headers] 注：本地还有更新的快照标签 ${stale.join(' / ')}，` +
-        '而判据钉在 EXPECTED_SNAPSHOT_TAG；上游同步后请一并回写这个常量。',
+        '而判据钉在 atlas/upstream/omp.json；候选尚未合并时保持旧边界。',
     )
   }
 
@@ -682,7 +639,7 @@ function main(): void {
 
   console.log(
     `[license-headers] 判据标签 ${EXPECTED_SNAPSHOT_TAG}；快照树 ${result.snapshotCount} 个文件，` +
-      `跟踪 ${result.trackedCount} 个，阡陌自有 ${result.ownedCount} 个`,
+      `跟踪及未忽略新增 ${result.trackedCount} 个，阡陌自有 ${result.ownedCount} 个`,
   )
 
   let failed = false

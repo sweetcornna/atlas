@@ -9,7 +9,14 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
@@ -37,7 +44,10 @@ import type {
   AnswerResponse,
   AnswerTransport,
 } from '../../packages/recall/eval/answer/types.js'
-import { loadPreregistration } from '../../packages/recall/eval/prereg.js'
+import {
+  loadPreregistration,
+  PREREGISTRATION_PATH,
+} from '../../packages/recall/eval/prereg.js'
 import {
   contentHash,
   type EmbeddingProvider,
@@ -51,8 +61,8 @@ import {
   wireByteLength,
 } from '../qianmo-recall-answer-live.js'
 
-const REPO_ROOT = resolve(import.meta.dir, '..', '..')
-const CLI = join(REPO_ROOT, 'scripts/qianmo-recall-answer-eval.ts')
+const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+const CLI = join(REPO_ROOT, 'atlas/scripts/qianmo-recall-answer-eval.ts')
 
 const directories: string[] = []
 
@@ -90,6 +100,25 @@ function runCli(
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
   }
+}
+
+/** Leave the test's loopback canary responsive while the real CLI runs. */
+async function runCliAsync(
+  args: readonly string[],
+  env: Record<string, string | undefined>,
+) {
+  const child = Bun.spawn([process.execPath, 'run', CLI, ...args], {
+    cwd: REPO_ROOT,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  return { exitCode, stdout, stderr }
 }
 
 describe('the live request is the AC-4 request', () => {
@@ -198,7 +227,7 @@ describe('command line', () => {
       ],
       {
         ...envWithout('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CLAUDE_CONFIG_DIR'),
-        OCC_CONFIG_DIR: config,
+        QIANMO_CONFIG_DIR: config,
       },
     )
     expect(result.exitCode).toBe(0)
@@ -282,7 +311,7 @@ describe('command line', () => {
   })
 })
 
-describe('the M1 arm (P16.6): replay and dry run only', () => {
+describe('the M1 arm: offline estimates, recorded vectors and guarded live calls', () => {
   /** A scripted model that cites the last entry of whatever block it gets. */
   function citeLast(providerId: string): AnswerTransport {
     const respond = (request: AnswerRequest): AnswerResponse => {
@@ -404,34 +433,157 @@ describe('the M1 arm (P16.6): replay and dry run only', () => {
     expect(replayed.summary).toEqual(recorded.summary)
   }, 120_000)
 
-  test('refused with --live, and with a fixture that has no vectors', () => {
+  test('live M1 validates credentials, embedding and replacement authorization before any request or ledger', async () => {
     const directory = scratch()
-    const live = runCli(
-      [
-        '--live',
-        '--phase',
-        'trial',
-        '--run-id',
-        't1',
-        '--out',
-        join(directory, 'live'),
-        '--cap-input',
-        '1000',
-        '--cap-output',
-        '1000',
-        '--arms',
-        'm0,m1',
-      ],
-      {
-        ...envWithout('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CLAUDE_CONFIG_DIR'),
-        OCC_CONFIG_DIR: directory,
+    const requests: string[] = []
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        requests.push(new URL(request.url).pathname)
+        return Response.json({ error: 'loopback canary: never a model' })
       },
-    )
-    expect(live.exitCode).toBe(2)
-    expect(live.stderr).toContain('--replay or --dry-run only')
-    expect(existsSync(join(directory, 'live'))).toBe(false)
-    expect(existsSync(join(directory, 'qianmo'))).toBe(false)
+    })
+    try {
+      // Prove the observer is reachable, so zero model requests is meaningful.
+      await fetch(new URL('/health', server.url))
+      expect(requests).toEqual(['/health'])
+      const embedding = join(directory, 'embedding.json')
+      const off = join(directory, 'off.json')
+      const profile = join(directory, 'unauthorized-profile.json')
+      const unpinnedPlan = join(directory, 'unpinned-plan.toml')
+      const weakenedPlan = join(directory, 'weakened-plan.toml')
+      const frozenPlan = readFileSync(PREREGISTRATION_PATH, 'utf8')
+      const weakened = frozenPlan.replace(
+        'noninferiority_delta = 0.05',
+        'noninferiority_delta = 0.5',
+      )
+      expect(weakened).not.toBe(frozenPlan)
+      writeFileSync(unpinnedPlan, frozenPlan)
+      writeFileSync(weakenedPlan, weakened)
+      writeFileSync(
+        embedding,
+        JSON.stringify({
+          kind: 'ollama',
+          endpoint: server.url.toString(),
+          model: 'local-test-only',
+          dimensions: 2,
+        }),
+      )
+      writeFileSync(off, JSON.stringify({ kind: 'off' }))
+      writeFileSync(
+        profile,
+        JSON.stringify({ providers: loadProviders(), authorization: '' }),
+      )
+      const base = {
+        ...envWithout(
+          'OPENAI_API_KEY',
+          'OPENAI_BASE_URL',
+          'QIANMO_PROVIDER_LIVE',
+          'QIANMO_RECALL_EVAL_PROFILE',
+          'QIANMO_RECALL_EMBEDDING_CONFIG',
+          'QIANMO_RECALL_EVAL_PREREG',
+          'QIANMO_RECALL_EVAL_PREREG_SHA256',
+        ),
+        OPENAI_API_KEY: 'local-canary-not-a-real-key',
+        OPENAI_BASE_URL: new URL('/v1', server.url).toString(),
+        QIANMO_RECALL_EMBEDDING_CONFIG: embedding,
+      }
+      const cases = [
+        {
+          name: 'unpinned-new-plan',
+          env: { QIANMO_RECALL_EVAL_PREREG: unpinnedPlan },
+          exitCode: 2,
+          reason: 'requires its frozen QIANMO_RECALL_EVAL_PREREG_SHA256',
+        },
+        {
+          name: 'weakened-new-plan',
+          env: {
+            QIANMO_RECALL_EVAL_PREREG: weakenedPlan,
+            QIANMO_RECALL_EVAL_PREREG_SHA256: createHash('sha256')
+              .update(weakened)
+              .digest('hex'),
+          },
+          exitCode: 2,
+          reason: 'must preserve the original answer-layer thresholds',
+        },
+        {
+          name: 'missing-key',
+          env: { OPENAI_API_KEY: undefined },
+          exitCode: 0,
+          reason: 'OPENAI_API_KEY 未设置',
+        },
+        {
+          name: 'missing-base',
+          env: { OPENAI_BASE_URL: undefined },
+          exitCode: 0,
+          reason: 'OPENAI_BASE_URL 未设置',
+        },
+        {
+          name: 'disabled',
+          env: { QIANMO_PROVIDER_LIVE: '0' },
+          exitCode: 0,
+          reason: 'QIANMO_PROVIDER_LIVE=0',
+        },
+        {
+          name: 'missing-embedding',
+          env: { QIANMO_RECALL_EMBEDDING_CONFIG: undefined },
+          exitCode: 2,
+          reason: 'live M1 requires QIANMO_RECALL_EMBEDDING_CONFIG',
+        },
+        {
+          name: 'off-embedding',
+          env: { QIANMO_RECALL_EMBEDDING_CONFIG: off },
+          exitCode: 2,
+          reason: 'live M1 cannot use embedding off',
+        },
+        {
+          name: 'unauthorized-replacement',
+          env: { QIANMO_RECALL_EVAL_PROFILE: profile },
+          exitCode: 1,
+          reason:
+            'evaluation model replacement needs participants and authorization',
+        },
+      ]
+      for (const entry of cases) {
+        const out = join(directory, entry.name, 'output')
+        const config = join(directory, entry.name, 'config')
+        const result = await runCliAsync(
+          [
+            '--live',
+            '--phase',
+            'trial',
+            '--run-id',
+            entry.name,
+            '--out',
+            out,
+            '--cap-input',
+            '1000',
+            '--cap-output',
+            '1000',
+            '--arms',
+            'm0,m1',
+          ],
+          { ...base, ...entry.env, QIANMO_CONFIG_DIR: config },
+        )
+        expect(result.exitCode).toBe(entry.exitCode)
+        expect(result.stderr).toContain(entry.reason)
+        if (entry.exitCode === 0) {
+          expect(result.stderr).toContain('真调用已跳过')
+          expect(result.stderr).toContain('未读写 token 账本')
+        }
+        expect(result.stdout).toBe('')
+        expect(existsSync(out)).toBe(false)
+        expect(existsSync(config)).toBe(false)
+        expect(requests).toEqual(['/health'])
+      }
+    } finally {
+      await server.stop(true)
+    }
+  }, 60_000)
 
+  test('M1 replay refuses a fixture that has no recorded vectors', () => {
+    const directory = scratch()
     const fixture = join(directory, 'm0-only.json')
     writeFixture(fixture, { schema: FIXTURE_SCHEMA, exchanges: {} })
     const replay = runCli(

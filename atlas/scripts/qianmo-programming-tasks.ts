@@ -2,9 +2,12 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { completedBunTests, runIsolatedCheck } from './taskValidation.js'
+import { verifyTaskOracle } from './taskOracle.js'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,9 +15,9 @@ import {
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { macroDefineArgs } from './defines.ts'
+import { ompChildEnv } from '@qianmo/paths'
 
-const REPO_ROOT = resolve(import.meta.dir, '..')
+const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 const RESULT_SCHEMA = 'qianmo.p32.task-result.v1'
 const PROXY_CREDENTIAL = ['p32', 'proxy', 'credential'].join('-')
 const PROVIDER_ENV_NAMES = [
@@ -79,6 +82,8 @@ interface TaskResult {
   readonly agentExitCode: number | null
   readonly testExitCode: number | null
   readonly sandboxEnforced: boolean
+  readonly enforcementMode?: 'omp-tool-allowlist'
+  readonly validationIsolation?: 'seatbelt' | 'bubblewrap'
   readonly checks: readonly CommandResult[]
   readonly passed: boolean
   readonly artifacts: {
@@ -184,8 +189,8 @@ export type SuccessfulReceiptFrame = Omit<ReceiptFrame, 'status' | 'code' | 'rea
 }
 
 function removeAgentOf(repo: string): void {
-  const address = join(repo, 'packages/protocol/src/address.ts')
-  const index = join(repo, 'packages/protocol/src/index.ts')
+  const address = join(repo, 'atlas/packages/protocol/src/address.ts')
+  const index = join(repo, 'atlas/packages/protocol/src/index.ts')
   removeIfPresent(
     address,
     `
@@ -235,24 +240,30 @@ const TASKS: readonly TaskSpec[] = [
     id: 'protocol-agent-of',
     kind: 'add-function',
     allowedFiles: [
-      'packages/protocol/src/address.ts',
-      'packages/protocol/src/index.ts',
+      'atlas/packages/protocol/src/address.ts',
+      'atlas/packages/protocol/src/index.ts',
     ],
-    protectedFiles: ['packages/protocol/test/address.test.ts'],
+    protectedFiles: ['atlas/packages/protocol/test/address.test.ts'],
     checks: [
-      ['bun', 'test', 'packages/protocol/test/address.test.ts'],
-      ['bunx', 'tsc', '-p', 'packages/protocol/tsconfig.json', '--noEmit'],
+      ['bun', 'test', 'atlas/packages/protocol/test/address.test.ts'],
+      [
+        'bunx',
+        'tsgo',
+        '-p',
+        'atlas/packages/protocol/tsconfig.json',
+        '--noEmit',
+      ],
     ],
     prompt: [
       'Implement the missing `agentOf(raw)` address helper in this Atlas repository.',
       'It must return the agent segment for a valid qianmo address and null for malformed input, matching `nodeOf` semantics.',
       'Export it from the @qianmo/protocol package entry point.',
-      'Modify only packages/protocol/src/address.ts and packages/protocol/src/index.ts.',
-      'Do not modify tests. Run the focused test and package TypeScript check until both pass.',
+      'Modify only atlas/packages/protocol/src/address.ts and atlas/packages/protocol/src/index.ts.',
+      'Do not modify tests. The host will run the protected tests and TypeScript check after you finish. Use only the allowed file tools.',
     ].join('\n'),
     prepare(repo) {
       removeAgentOf(repo)
-      const test = join(repo, 'packages/protocol/test/address.test.ts')
+      const test = join(repo, 'atlas/packages/protocol/test/address.test.ts')
       replaceOnce(test, '  addressEquals,\n', '  addressEquals,\n  agentOf,\n')
       insertBeforeLast(
         test,
@@ -264,22 +275,28 @@ const TASKS: readonly TaskSpec[] = [
   {
     id: 'transport-jitter-freeze',
     kind: 'fix-bug',
-    allowedFiles: ['packages/transport/src/backoff.ts'],
-    protectedFiles: ['packages/transport/test/backoff.test.ts'],
+    allowedFiles: ['atlas/packages/transport/src/backoff.ts'],
+    protectedFiles: ['atlas/packages/transport/test/backoff.test.ts'],
     checks: [
-      ['bun', 'test', 'packages/transport/test/backoff.test.ts'],
-      ['bunx', 'tsc', '-p', 'packages/transport/tsconfig.json', '--noEmit'],
+      ['bun', 'test', 'atlas/packages/transport/test/backoff.test.ts'],
+      [
+        'bunx',
+        'tsgo',
+        '-p',
+        'atlas/packages/transport/tsconfig.json',
+        '--noEmit',
+      ],
     ],
     prompt: [
       'Fix the reconnect time-jump bug exposed by the new regression test.',
       'With timeJumpFactor 1.1, a retry that fires exactly at its jittered scheduled delay must not be mistaken for a freeze, including the maximum legal +25% jitter at the 30 second ceiling.',
       'A genuinely late 34.7 second E4 thaw still must be detected.',
-      'Modify only packages/transport/src/backoff.ts. Do not modify tests.',
-      'Run the focused test and package TypeScript check until both pass.',
+      'Modify only atlas/packages/transport/src/backoff.ts. Do not modify tests.',
+      'The host will run the protected tests and TypeScript check after you finish. Use only the allowed file tools.',
     ].join('\n'),
     prepare(repo) {
-      restoreJitterBug(join(repo, 'packages/transport/src/backoff.ts'))
-      const test = join(repo, 'packages/transport/test/backoff.test.ts')
+      restoreJitterBug(join(repo, 'atlas/packages/transport/src/backoff.ts'))
+      const test = join(repo, 'atlas/packages/transport/test/backoff.test.ts')
       insertBeforeLast(
         test,
         '\n})\n',
@@ -319,35 +336,43 @@ const TASKS: readonly TaskSpec[] = [
     id: 'transport-success-receipt-type',
     kind: 'add-type',
     allowedFiles: [
-      'packages/transport/src/frames.ts',
-      'packages/transport/src/index.ts',
+      'atlas/packages/transport/src/frames.ts',
+      'atlas/packages/transport/src/index.ts',
     ],
     protectedFiles: [
-      'packages/transport/test/successful-receipt-status.test.ts',
+      'atlas/packages/transport/test/successful-receipt-status.test.ts',
     ],
     checks: [
       [
         'bun',
         'test',
-        'packages/transport/test/successful-receipt-status.test.ts',
+        'atlas/packages/transport/test/successful-receipt-status.test.ts',
       ],
-      ['bunx', 'tsc', '-p', 'packages/transport/tsconfig.json', '--noEmit'],
+      [
+        'bunx',
+        'tsgo',
+        '-p',
+        'atlas/packages/transport/tsconfig.json',
+        '--noEmit',
+      ],
     ],
     prompt: [
       'Add and export a `SuccessfulReceiptFrame` type for transport receipts.',
       'It must be a receipt frame whose status is exactly ReceiptStatus.Accepted | ReceiptStatus.Duplicate; rejected receipts must not be assignable, and successful frames must not expose code or reason fields.',
       'Export it from the @qianmo/transport package entry point.',
-      'Modify only packages/transport/src/frames.ts and packages/transport/src/index.ts.',
-      'Do not modify tests. Run the focused test and package TypeScript check until both pass.',
+      'Modify only atlas/packages/transport/src/frames.ts and atlas/packages/transport/src/index.ts.',
+      'Do not modify tests. The host will run the protected tests and TypeScript check after you finish. Use only the allowed file tools.',
     ].join('\n'),
     prepare(repo) {
       removeSuccessfulReceiptType(
-        join(repo, 'packages/transport/src/frames.ts'),
+        join(repo, 'atlas/packages/transport/src/frames.ts'),
       )
-      removeSuccessfulReceiptType(join(repo, 'packages/transport/src/index.ts'))
+      removeSuccessfulReceiptType(
+        join(repo, 'atlas/packages/transport/src/index.ts'),
+      )
       const path = join(
         repo,
-        'packages/transport/test/successful-receipt-status.test.ts',
+        'atlas/packages/transport/test/successful-receipt-status.test.ts',
       )
       writeFileSync(
         path,
@@ -523,6 +548,8 @@ async function runAsync(
 function runChecks(
   commands: readonly (readonly string[])[],
   cwd: string,
+  requiredTests: number,
+  taskId: string,
 ): {
   readonly results: readonly CommandResult[]
   readonly exitCode: number
@@ -533,7 +560,21 @@ function runChecks(
   let exitCode = 0
   for (const command of commands) {
     const started = Date.now()
-    const result = run(command, cwd)
+    const validationCommand =
+      command[0] === 'bunx' && command[1] === 'tsgo'
+        ? [
+            'bun',
+            join(cwd, 'node_modules/@typescript/native-preview/bin/tsgo'),
+            ...command.slice(2),
+          ]
+        : command
+    const isolated = runIsolatedCheck(validationCommand, cwd)
+    const testsComplete =
+      command[1] !== 'test' || completedBunTests(isolated, requiredTests)
+    const result = {
+      ...isolated,
+      exitCode: isolated.code === 0 && !testsComplete ? 1 : isolated.code,
+    }
     const durationMs = Date.now() - started
     results.push({ command, exitCode: result.exitCode, durationMs })
     output.push(
@@ -541,6 +582,25 @@ function runChecks(
     )
     if (result.exitCode !== 0) exitCode = result.exitCode
   }
+  if (
+    taskId === 'protocol-agent-of' ||
+    taskId === 'transport-jitter-freeze' ||
+    taskId === 'transport-success-receipt-type'
+  ) {
+    const started = Date.now()
+    const oracle = verifyTaskOracle(taskId, cwd)
+    const oracleCode = oracle.passed ? 0 : 1
+    results.push({
+      command: ['host-oracle', taskId],
+      exitCode: oracleCode,
+      durationMs: Date.now() - started,
+    })
+    output.push(oracle.output)
+    if (!oracle.passed) exitCode = 1
+  }
+  // The add-type task is checked by the protected tsgo executable above. It
+  // reads source without executing generated modules; an in-module exit or
+  // forged Bun summary cannot forge the compiler's status/type diagnostics.
   return { results, exitCode, output: `${output.join('\n\n')}\n` }
 }
 
@@ -706,7 +766,12 @@ async function runTask(
       { changedFiles: fixtureChanged },
     )
   }
-  const baseline = runChecks(spec.checks, repo)
+  const baseline = runChecks(
+    spec.checks,
+    repo,
+    spec.id === 'transport-success-receipt-type' ? 1 : 11,
+    spec.id,
+  )
   writeFileSync(
     join(directory, 'baseline-tests.log'),
     redact(baseline.output, proxy.secrets),
@@ -730,64 +795,65 @@ async function runTask(
   mkdirSync(configDir, { recursive: true, mode: 0o700 })
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
   mkdirSync(tempDir, { recursive: true, mode: 0o700 })
+  const model = proxy.model ?? 'claude-sonnet-4-5'
+  const agentDir = join(configDir, 'omp', 'agent')
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 })
   writeFileSync(
-    join(configDir, 'settings.json'),
-    `${JSON.stringify(
-      {
-        permissions: {
-          allow: [
-            `Read(//${repo.replace(/^\//, '')}/**)`,
-            ...spec.allowedFiles.map(
-              path => `Edit(//${join(repo, path).replace(/^\//, '')})`,
-            ),
-            'Bash(bun test:*)',
-            'Bash(bunx tsc:*)',
-            'Bash(bunx biome:*)',
-            'Bash(git diff:*)',
-            'Bash(git status:*)',
+    join(agentDir, 'models.yml'),
+    JSON.stringify({
+      providers: {
+        'qm-task': {
+          baseUrl: proxy.baseUrl,
+          api: 'anthropic-messages',
+          apiKey: PROXY_CREDENTIAL,
+          models: [
+            {
+              id: model,
+              name: model,
+              reasoning: false,
+              contextWindow: 200000,
+              maxTokens: 16384,
+            },
           ],
-          deny: [
-            `Read(//${homedir().replace(/^\//, '')}/**)`,
-            `Edit(//${homedir().replace(/^\//, '')}/**)`,
-            `Read(//${REPO_ROOT.replace(/^\//, '')}/**)`,
-            `Edit(//${REPO_ROOT.replace(/^\//, '')}/**)`,
-          ],
-        },
-        sandbox: {
-          enabled: true,
-          failIfUnavailable: true,
-          allowUnsandboxedCommands: false,
-          credentials: true,
-          network: {
-            allowedDomains: [],
-            strictAllowlist: true,
-            allowLocalBinding: false,
-          },
-          filesystem: {
-            denyRead: [REPO_ROOT, configDir],
-            allowRead: [process.execPath],
-          },
         },
       },
-      null,
-      2,
-    )}\n`,
+    }),
     { mode: 0o600 },
   )
-  const childEnv: Record<string, string> = {
-    PATH: process.env['PATH'] ?? '',
+  writeFileSync(
+    join(agentDir, 'config.yml'),
+    JSON.stringify({
+      modelRoles: { default: `qm-task/${model}` },
+      defaultThinkingLevel: 'off',
+      providers: { cacheWarming: 'off' },
+      retry: { fallbackChains: {} },
+    }),
+    { mode: 0o600 },
+  )
+  const guardReady = join(configDir, 'guard-ready')
+  const guardNonce = crypto.randomUUID()
+  const guardConfig = join(configDir, 'task-guard.json')
+  writeFileSync(
+    guardConfig,
+    JSON.stringify({
+      workspace: repo,
+      allowedFiles: spec.allowedFiles,
+      readyFile: guardReady,
+      nonce: guardNonce,
+    }),
+    { mode: 0o600 },
+  )
+  const childEnv = ompChildEnv({
+    PATH: process.env.PATH ?? '',
     HOME: homeDir,
     TMPDIR: tempDir,
-    SHELL: process.env['SHELL'] ?? '/bin/sh',
-    LANG: process.env['LANG'] ?? 'C.UTF-8',
+    SHELL: process.env.SHELL ?? '/bin/sh',
+    LANG: process.env.LANG ?? 'C.UTF-8',
     NO_COLOR: '1',
     CI: '1',
-    OCC_DISABLE_RUNTIME_FARM: '1',
-    OCC_CONFIG_DIR: configDir,
-    CLAUDE_CONFIG_DIR: configDir,
-    ANTHROPIC_API_KEY: PROXY_CREDENTIAL,
-    ANTHROPIC_BASE_URL: proxy.baseUrl,
-  }
+    QIANMO_CONFIG_DIR: configDir,
+    QIANMO_TASK_GUARD_CONFIG: guardConfig,
+  })
 
   const prompt = [
     spec.prompt,
@@ -796,25 +862,24 @@ async function runTask(
     `Allowed production files: ${spec.allowedFiles.join(', ')}`,
     `Protected regression files: ${spec.protectedFiles.join(', ')}`,
   ].join('\n')
-  // `-d MACRO.*`: the entrypoint is source, and `MACRO.*` only exists after a
-  // transpile-time substitution. Without the flags the first read throws
-  // (issue #81).
   const agent = await runAsync(
     [
-      'bun',
-      'run',
-      ...macroDefineArgs(),
-      join(REPO_ROOT, 'src/entrypoints/cli.tsx'),
-      '-p',
-      prompt,
-      '--tools',
-      'Read,Edit,Bash',
-      '--permission-mode',
-      'acceptEdits',
-      '--output-format',
+      process.execPath,
+      join(REPO_ROOT, 'atlas/packages/node/src/cli.ts'),
+      'agent',
+      '--print',
+      '--mode',
       'json',
-      '--max-turns',
-      '30',
+      '--no-extensions',
+      '--extension',
+      join(REPO_ROOT, 'atlas/scripts/programmingTaskGuard.ts'),
+      '--model',
+      `qm-task/${model}`,
+      '--approval-mode',
+      'write',
+      '--tools',
+      '',
+      prompt,
     ],
     repo,
     childEnv,
@@ -823,10 +888,9 @@ async function runTask(
   const agentStderr = redact(agent.stderr, proxy.secrets)
   writeFileSync(join(directory, 'agent-output.json'), agentStdout)
   writeFileSync(join(directory, 'agent-stderr.log'), agentStderr)
+  // Retained report field means application tool enforcement; no OS sandbox claim.
   const sandboxEnforced =
-    !agentStderr.includes('Sandbox disabled') &&
-    !agentStderr.includes('sandbox required but unavailable') &&
-    !agentStderr.includes('Sandbox Error')
+    existsSync(guardReady) && readFileSync(guardReady, 'utf8') === guardNonce
 
   const changed = changedFiles(repo)
   const patch = run(['git', 'diff', '--binary'], repo)
@@ -834,7 +898,12 @@ async function runTask(
     join(directory, 'model.patch'),
     redact(patch.stdout, proxy.secrets),
   )
-  const checks = runChecks(spec.checks, repo)
+  const checks = runChecks(
+    spec.checks,
+    repo,
+    spec.id === 'transport-success-receipt-type' ? 1 : 11,
+    spec.id,
+  )
   writeFileSync(
     join(directory, 'task-tests.log'),
     redact(checks.output, proxy.secrets),
@@ -849,7 +918,7 @@ async function runTask(
     detail = failure(
       'agent',
       'SANDBOX_NOT_ENFORCED',
-      'headless sandbox reported unavailable or failed to initialize',
+      'omp tool guard did not confirm initialization',
     )
   } else if (agent.exitCode !== 0) {
     detail = failure(
@@ -884,6 +953,9 @@ async function runTask(
     agentExitCode: agent.exitCode,
     testExitCode: checks.exitCode,
     sandboxEnforced,
+    enforcementMode: 'omp-tool-allowlist',
+    validationIsolation:
+      process.platform === 'darwin' ? 'seatbelt' : 'bubblewrap',
     checks: checks.results,
     passed: detail === null,
     artifacts: {

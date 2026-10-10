@@ -50,6 +50,7 @@ import { join } from 'node:path'
 /** 被 shell 直接调起的入口。加一条前先确认它真的被某个 .sh 调用。 */
 export const DEMO_ENTRYPOINTS = [
   'ac1-project-dir',
+  'ac1-resume',
   'ac2-activator',
   'ac2-report',
   'ac2-send',
@@ -77,7 +78,7 @@ export const DEMO_ENTRYPOINTS = [
  * **故意不打包的入口，以及为什么** —— 这份名单是结论，不是遗漏。
  *
  * `p61-scenario` 与 `p73-throughput`（连同只被前者 spawn 的 `p61-worker`）都
- * `import '../../src/services/qianmo/auditTrail.js'`。那个模块是把每一种审计 sink 的
+ * `import '@qianmo/node/host/auditTrail'`。那个模块是把每一种审计 sink 的
  * 类型汇到一处的枢纽，其中 `@qianmo/resident` 一路通向整个 CLI —— 打出来的两个产物
  * 各 **5.4 MB**（其余九个全在 261 KB 以下），并且里面含一句 `gaxios` 的
  * `await import("node-fetch")`。

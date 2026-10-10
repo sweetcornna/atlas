@@ -18,7 +18,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { classifyLicense, type LicenseTier, readLicenseField } from '../sbom.ts'
+import {
+  classifyLicense,
+  type LicenseTier,
+  RECORDED_EXCEPTIONS,
+  readLicenseField,
+  resolveCatalogRanges,
+} from '../sbom.ts'
 
 const COPYLEFT_CASES: Array<[string, LicenseTier]> = [
   ['GPL-3.0-only', 'strong-copyleft'],
@@ -183,5 +189,37 @@ describe('readLicenseField', () => {
   test('returns empty string when there is no license field at all', () => {
     expect(readLicenseField({ name: 'x' })).toBe('')
     expect(readLicenseField(null)).toBe('')
+  })
+})
+
+describe('resolveCatalogRanges', () => {
+  const catalogs = {
+    default: { react: '19.2.7', typescript: '^7.0.2' },
+    named: new Map([['tools', { biome: '2.4.12' }]]),
+  }
+
+  test('replaces catalog: and catalog:<name> with the catalog range', () => {
+    expect(
+      resolveCatalogRanges(
+        { react: 'catalog:', biome: 'catalog:tools', zod: '4.3.6' },
+        catalogs,
+        'pkg',
+      ),
+    ).toEqual({ react: '19.2.7', biome: '2.4.12', zod: '4.3.6' })
+  })
+
+  test('an entry missing from the catalog is an error, not a silent pass-through', () => {
+    expect(() =>
+      resolveCatalogRanges({ left: 'catalog:' }, catalogs, 'pkg'),
+    ).toThrow(/pkg: left uses "catalog:"/)
+  })
+})
+
+describe('RECORDED_EXCEPTIONS', () => {
+  test('every entry names an exact name@version and gives a reason', () => {
+    for (const [id, reason] of Object.entries(RECORDED_EXCEPTIONS)) {
+      expect(id).toMatch(/^(@[^/]+\/)?[^@/]+@\d+\.\d+\.\d+/)
+      expect(reason.length).toBeGreaterThan(20)
+    }
   })
 })

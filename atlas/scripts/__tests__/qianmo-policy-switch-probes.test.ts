@@ -6,8 +6,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-const REPO_ROOT = resolve(import.meta.dir, '..', '..')
-const PROBE = join(REPO_ROOT, 'scripts/qianmo-policy-switch-probes.ts')
+const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+const PROBE = join(REPO_ROOT, 'atlas/scripts/qianmo-policy-switch-probes.ts')
 const BETA_SMOKE = join(REPO_ROOT, 'demo/env/beta/beta-smoke.sh')
 const S3_SCRIPTS = [
   'demo/env/smoke.sh',
