@@ -1,3 +1,39 @@
+# 阡陌 AgentNest
+
+阡陌基于开源项目 oh-my-pi（MIT 许可）构建，在其上实现常驻化改造与智能体通信网络。
+
+当前基座固定为 **omp v18.8.4**。迁移及 M1 / M2 本地开发候选已构建，逐项实现、验证和现场边界见 [交付清单](docs/dev/m1-m2-completion.md)；旧基座上的 M0 / M1 验收记录保留为历史证据。当前候选尚未部署，语义记忆增强因质量硬闸未过保持默认关闭。切换的接口和状态布局见 [设计契约](docs/dev/base-switch-omp.md)，部署配置与回退见 [审核清单](docs/dev/m1-m2-deployment-review.md)。
+
+- `atlas/`：阡陌的 `@qianmo/*` 包、脚本与测试；`demo/`：节点演示与验收；`docs/dev/`：章程、设计与证据。
+- 根 `packages/`、`crates/`、`scripts/` 等保留 omp 基座布局。编程智能体与多模型适配属于基座能力。
+- 节点入口是 `qm`，常驻宿主通过 omp RPC 与扩展运行智能体。`QIANMO_CONFIG_DIR` 指定节点根，omp 状态位于其下的 `omp/`。
+
+## 开发入口
+
+使用 `.tool-versions` 固定的 Bun 版本，并准备 omp 原生插件构建所需的 Rust 工具链：
+
+```sh
+bun install
+bun run build:native
+bun run qm --help
+bun run precheck
+bun run verify
+```
+
+贡献与检查见 [CONTRIBUTING.md](CONTRIBUTING.md)，范围与验收见 [章程](docs/dev/charter.md)，路径隔离见 [CLAUDE.full.md §2.3](CLAUDE.full.md#23-路径身份与-omp-子进程隔离)。本仓库不执行基座的发布流程。
+
+## 控制台
+
+`qm console` 提供节点、对话、消息链、个人审批与用量页面。界面支持明暗及跟随系统主题、键盘搜索与导航、名册和审计版本更新通知、带权限复核的片段缓存与审计导出，并提供窄屏抽屉、可见焦点和辅助阅读提示。账号、租户范围及审批配置见 [控制台说明](docs/dev/console.md) 与 [M2 租户契约](docs/dev/tenancy-m2.md)；运行时行为与验收以对应测试和现场配置为准。
+
+## 来源与许可
+
+阡陌自有层适用 [AGPL-3.0-or-later](LICENSE)，omp 基座适用 [MIT](LICENSE.base)，文件归属和非代码资产规则见 [NOTICE](NOTICE)。溯源唯一出处是 [BASE.md](BASE.md)，基座改动登记在 [base-modifications.md](docs/dev/base-modifications.md)。2026-08-11 至 2026-10-07 基于 open-claude-code 的阶段保留在历史记录中。
+
+下面保留 omp 上游 README 原文，其中安装、产品链接与发布命令描述的是 omp 上游。
+
+<!-- base: oh-my-pi v18.8.4 README.md, verbatim below -->
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

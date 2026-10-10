@@ -11,6 +11,8 @@
 | 用法 | 每个工作包一张卡：仓库、要改的文件、接口、步骤、完成标准、依赖、估算、计划时间。按卡开工；卡里没写的不做 |
 | 口径 | P17.1、P17.2 已有实测，结论见 [`handoff-probe-p17.md`](./handoff-probe-p17.md) v0.4（gVisor 未测）；P17.3 ~ P17.6 的本仓库部分已合入（#174、#180、#185、#188），只有单测、集成测试与单机实测，**尚无真机运行数据**；真机续跑、远程接入与 P17.7 关机演练排在 v2.47.0 部署之后 |
 
+> **2026-10-08 开发核对**：当前 Atlas 代码已在 `atlas/packages/handoff`、`atlas/packages/node/src/commands/handoff*.ts`；下文旧 `src/cli/handlers` 等是历史工作包定位，不作为现检出的路径。P17.3–6 实现已存在，本轮补了真实 qmcode attach 回归、P17.3 缓存构建的内置 MCP / notify / shellCommand 与真实 qm 联调，以及预载 opt-in 失效修复。P17.7 跨机/关机现场验收仍未执行；范围、fork refs、证据与完整演练步骤见 [`handoff-drill-p17.md`](./handoff-drill-p17.md)，不得把回环测试当作真机完成。
+
 **原则**：M1 只服务单个用户（负责人本人）；能用上游已有能力就不改上游；能放阡陌侧 TS 就不放 Rust fork；不预先做多用户、通知中心、网页终端。
 
 ---
@@ -112,7 +114,7 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 
 ### P17.3 两个入口（仓库：本仓库 + fork）
 
-**进度**：fork 部分已在 `qianmo/main`（`34e0d210ed`）；本仓库的 `qm handoff mcp` 在分支 `feat/p17-3-handoff-mcp`（基点 `b95eaff1`），待审计合入。接法见 [`handoff-usage.md`](./handoff-usage.md)。
+**进度（2026-10-08 核对）**：fork 本地缓存 `origin/qianmo/main` 为 `34e0d210ed`（本地 `qianmo/main` 仍为 `90e00225c6`，未替用户移动引用）；本仓库 `qm handoff mcp` 已合入并迁到 `atlas/packages/node/src/commands/handoffMcp.ts`。接法见 [`handoff-usage.md`](./handoff-usage.md)。
 
 **本仓库**
 
@@ -137,7 +139,7 @@ qm handoff attach ═══ 用户本人 SSH -L 隧道 ════════�
 
 ### P17.4 同步、中枢存储与台账（仓库：本仓库）
 
-**进度**：第一批（`@qianmo/handoff` 包与 SSH 闸门）已由 PR #155 合入；第二批（本地命令、中枢 API、审计来源）在做。
+**进度（2026-10-08 核对）**：第一批和第二批实现均已存在；本地命令、中枢 API、审计来源均迁到 `atlas/`。本地证据与尚欠现场验收见 `handoff-drill-p17.md`。
 
 **新包 `@qianmo/handoff`**（`packages/handoff/`，纯逻辑，不依赖 occ 运行时；按 §2.2 包规范登记 workspace 依赖）
 

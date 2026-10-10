@@ -20,11 +20,11 @@ N/A
 ## 提交前自查
 
 - [ ] `bun run precheck` 零错误（typecheck + lint fix + 全量测试，快速反馈）
-- [ ] 推送/发 PR 前已跑 `bun run verify`（近 CI 门禁的只读式全量检查，含 cycles/unused/bundle）——`precheck` 过不等于 CI 过，差集见 [`CLAUDE.md`](../CLAUDE.md) §3
+- [ ] 推送/发 PR 前已跑 `bun run verify`（近 CI 门禁的只读式全量检查，含 cycles/unused/SBOM、omp 检查、qm 编译与冒烟）——`precheck` 过不等于 CI 过，差集见 [`CLAUDE.full.md`](../CLAUDE.full.md) §3
 - [ ] 一件事一个提交；重构与行为改动分开提交，提交信息符合 Conventional Commits
 - [ ] 走 PR + 评审，未直推 `main`
 - [ ] 改动有测试覆盖；修 bug 的先写出会红的测试，再让它变绿
-- [ ] 碰了路径 / 配置目录 / 安装卸载逻辑的，复查过 [`CLAUDE.md`](../CLAUDE.md) 的「路径与隔离不变式」——所有路径都从 `src/config/paths.ts` 派生，没有新增 `homedir() + '.claude'` 这类字面量拼接
+- [ ] 碰了路径 / 配置目录 / 安装卸载逻辑的，复查过 [`CLAUDE.full.md`](../CLAUDE.full.md) §2.3——所有路径都从 `@qianmo/paths` 派生，没有新增 `homedir() + '.claude'` 这类字面量拼接
 
 ## 验证方式
 

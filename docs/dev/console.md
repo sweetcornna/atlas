@@ -192,6 +192,12 @@ OCC_IDENTITY=qianmo bun run dev console \
 | `--sessions-store <绝对路径>` | `occConfigPath('qianmo','console','sessions.ndjson')` | 会话表。同上 |
 | `--legacy-view-token on\|off` | `on` | 迁移期 view token 还认不认（M-2b）。`off` 以后 view token 在三个入口一律失效，横幅的 `open` 行改为登录页。只在 `--accounts` 下有效 |
 | `--break-glass` | 关 | admin token 转为 break-glass（M-3）：只收 `Authorization: Bearer`、页面常亮提示、每次使用记账、永远不能当审批人。只在 `--accounts` 下有效 |
+| `--approvals` | 关 | 启用个人审批；需要 accounts、chat-sign、命名 chat-url 和每节点固定 trust 公钥。节点需 require-signed-handshake 和独立 approver 公钥 |
+| `--print-approver-identity` | 关 | 打印独立审批公钥并退出；不监听、不拨号。公钥用于节点 approver，不能与命令 trust 密钥共用 |
+| `--tenancy <绝对路径>` | 关 | 启用 M2 tenant JSON；必须同时启用 accounts。读坏或缺失即关闭数据访问，不回退 M1；契约见 tenancy-m2.md |
+| `--open-registration` | 关 | 开放 /signup；必须同时给 --tenancy 和 --registration-max-accounts |
+| `--registration-max-accounts <n>` | 无 | 必填注册容量，1–100000，包含已吊销账号；成功注册也消耗每来源每小时 5 次注册额度 |
+| `--usage-policy <绝对路径>` | 默认 shadow | 配额 JSON mode/person/job/global/tenants；accounts 打开时默认记录用量，未配置数值限制不强制拒绝 |
 | `--providers` | 关 | 模型服务（P18.6，§5.4）：档案存在这台控制台，密钥用主密钥封存，经第六类动作下发到节点。**要 `--accounts`**：只有 `ops` 个人账号能改，每一次改动记进动作账本。不给时 `/providers` 是一行「模型服务未开启」，`/v0/providers` 答 501。下面七个 `--provider*` 选项单独给（没有 `--providers`）会报错 |
 | `--providers-store <绝对路径>` | `occConfigPath('qianmo','console','providers.ndjson')` | 档案账本。有一行读不通，模型服务整体停用，直到把文件挪开 |
 | `--provider-secrets <绝对路径>` | `occConfigPath('qianmo','console','provider-secrets.json')` | 封存后的密钥（0600） |
@@ -586,7 +592,17 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | GET | `/providers`、`/providers?node=<节点>` | view | 模型服务（§5.4）：全局默认、节点矩阵、档案卡片；`?node=` 只看一行。没开 `--providers` 时一行「模型服务未开启」 |
 | GET | `/providers/new?q=`、`/providers/new?preset=<预设>&site=<站点>` | view | 预设卡片（`q` 是 GET 搜索）；带 `preset` 时是从这份预设新建的表单 |
 | GET | `/providers/profiles/<档案 id>`、`/providers/nodes/<节点>?do=`、`/providers/import` | view | 一份档案（编辑、密钥三态或多把密钥逐把列表、在用节点）；节点「模型」页签（`do` 直接打开对应对话框）；导入 |
-| GET | `/approvals`、`/usage` | view | 占位页：一行「此页尚未提供」，不轮询任何东西（§5.2） |
+| GET | `/approvals` | view | 审批队列；未接审批端口时明确显示未接入。个人成员仅看自己会话，运维仍受租户 scope 限制；批准前须验证当前账号个人凭据 |
+| GET | `/usage` | view | 东八区自然日用量；输入、输出、缓存写入、缓存读取四列，charged 排除 cacheRead；显示配额模式、在途、会话与可观测下界 |
+| GET | `/v0/usage` | view | 用量快照；普通个人账号只读自己，运维只能读取 tenant scope 内主体；未接入 501 |
+| GET | `/v0/approvals/report` | view | 最近每节点 500 条已验审计记录；附完整性与截断状态。viewer 仅聚合，member 仅本人会话，ops 沿当前租户范围 |
+| GET | `/v0/approvals` | member / ops | 可见审批列表 |
+| POST | `/v0/approvals/auth` | member / ops | 同账号个人凭据再验证，签发独立 HttpOnly 审批 cookie，30 分钟绝对期；普通登录 cookie 本身不能审批 |
+| POST | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 决定 allow-once / allow-window / deny，绑定 digest，窗口最多 60 分钟；宿主再次核对归属、时效与摘要 |
+| POST | `/v0/approvals/<requestId>/continue` | 本人 + 审批凭据 | 节点已确认原任务终态且会话空闲后，原子计入个人/租户/全局配额，记录持久一次性意图，批准并发送新的签名入站任务；本地超时、重复提交与重启重发均拒绝 |
+| DELETE | `/v0/approvals/<requestId>` | 本人 / ops + 审批凭据 | 撤销授权窗口 |
+| GET | `/fragments/usage`、`/fragments/approvals` | view | 对应页面的当前服务端片段 |
+| GET、POST | `/signup` | 公开，显式开启 | M2 开放注册；GET不开户，POST同源、socket来源限速、全局账号容量内创建随机新 member，凭据只显示一次且不落明文；未映射租户零节点可见性 |
 | GET | `/login` | 公开 | 登录页：一个框、一个按钮，**没有 `<script>`** |
 | POST | `/login` | 公开 | 对上就 303 + `Set-Cookie`，对不上就再给一次那张卡片 |
 | POST | `/logout` | 公开 | 303 + 一枚清空的 cookie |
@@ -603,6 +619,7 @@ HTTP 403  {"error":{"code":"refused","message":"节点拒绝了这条唤醒 · E
 | POST | `/v0/agents/<地址>/retire` | **admin** | 退役：簿里写 `retired`，删注册中心那条；这个地址从此不再发布、不再恢复。同上 |
 | GET | `/v0/registrations` | view | 登记簿：`{ problem, problemKind?, managed, registrations: [{ address, state, at?, by?, managed? }] }`。`problemKind` 在有 `problem` 时给出，`unreadable` 或 `unwritable`（§7.3.1）。`by`（谁改的）只给能写的人，与告警确认同一条规矩。没接生命周期时 501 |
 | GET | `/v0/audit?…` | view | 审计记录（过滤与游标见下）：`AuditPage`，另带 `head`、`earlier` |
+| GET | `/v0/events` | view | 当前租户的名册与审计版本通知（SSE），仅传 kind / revision；撤权或租户配置变更即断流 |
 | GET | `/v0/audit/chain/<traceId>` | view | 消息链还原 |
 | POST | `/v0/wake` | **admin** | 唤醒 |
 | GET | `/v0/servers` | view | 每台服务器、它承载的节点、以及备注（§11）。没配 `--node-server` 时 501 |
@@ -727,9 +744,7 @@ HTTP v0 自己的约定一致（`packages/registry/src/http.ts`），编错了�
 用户菜单（令牌框与退出），以及每页都带的会话失效对话框和 toast 区。侧栏「节点」旁的数字是
 **节点数**（按地址里的节点段归组，与名册的节点卡片同一口径），不是智能体数。
 
-**占位页**（`routes/stub.ts` 的 `stubRoute`）：审批、用量两个
-区域目前是占位，正文一行「此页尚未提供」加一句计划，侧栏标出，不轮询。把占位换成
-真页面就是把那个模块文件里的 `stubRoute(...)` 换成完整的 `RouteModule`。
+**审批与用量**已提供真实页面：审批展示当前身份可见的请求、完整参数、摘要与状态，支持个人凭据再验证、批准、撤销和符合终态条件的「批准并继续」；用量展示东八区自然日的四列 token、消息及在途配额。没有接入相应宿主端口时明确显示未接入，不伪造可操作数据。
 
 **响应头**（`respond.ts`）：每个 HTML 文档都带 `Content-Security-Policy`（`<meta>` 那份
 策略加 `frame-ancestors 'none'`）和 `X-Frame-Options: DENY`；`<meta>` 里那份保留不动。
@@ -751,6 +766,10 @@ JSON 与两个资产带 `Cross-Origin-Resource-Policy: same-origin`。请求经 
 ETag，`If-None-Match` 命中答 304；不用 `immutable`，因为地址里没有版本号，下一版会在同一
 地址给出不同内容。文档仍是 `no-store`，样式与脚本仍然内联（§6.1 与 §7.1 的取舍不变）。
 实测 `/` 从 77.8 KB 未压缩变为线上 22.1 KB（`~/atlas-evidence/m1-work/p18-14/size-*.json`）。
+
+**界面与增量更新**（P18.17）：外观可选浅色、深色或跟随系统，主题 cookie 只保存显示偏好，服务端首屏也使用该值。非输入状态下，`/` 聚焦当前搜索框、`g n` 进入节点、`g a` 进入消息链、`?` 打开快捷键帮助；输入、组合键与对话框期间不会抢占这些键。名册和审计通过 `/v0/events` 接收仅含 `kind/revision` 的 SSE，再获取当前权限内的片段；流不可用时保留轮询。片段使用私有弱 ETag 与条件请求，304 仍经过当前账号和租户权限复核，不复用撤权前的内容。
+
+消息链导出按当前筛选和授权范围下载 JSON/NDJSON 附件，凭据只随请求发送，不写进下载链接；导出等待期间撤权也会拒绝结果。可见键盘焦点、「跳到正文」、对话框焦点返回、窄屏抽屉、减少动态效果偏好以及独立的 `aria-live` 回复提示用于辅助操作。这些是已实现的交互行为，不代表完成外部无障碍认证。
 
 **错误页**：浏览器导航（`GET`/`HEAD` 且 `Accept` 含 `text/html`）进到 404、405、500、
 501、503 时拿到的是 HTML 页面——已登录的在外壳里，未登录的在登录面板上；脚本和
@@ -1745,7 +1764,7 @@ P11.4 的机外见证已接入审计页：链内断裂显示「断裂」，链�
 | `packages/console/src/throttle.ts` | 登录失败退避：免罚次数、翻倍、上限、遗忘窗口，以及「为什么反代的 `limit_req` 顶不了它」（§8.4） |
 | `packages/console/src/view/login.ts` | `/login` 那张卡片。包里唯一没有 `<script>` 的页面，理由在模块注释 |
 | `packages/console/src/http.ts` | 鉴权门、三个保护等级的分派（§5.1）、登录与邀请两道门、HTML 错误页、把请求分给区域模块 |
-| `packages/console/src/routes/` | 每个区域一个模块：页面、`/v0` 与 `/fragments` 的 head；`index.ts` 是路由表与外壳拼装，`stub.ts` 是占位页（§5.2） |
+| `packages/console/src/routes/` | 每个区域一个模块：页面、`/v0` 与 `/fragments` 的 head；`index.ts` 是路由表与外壳拼装；`approvals.ts` 与 `usage.ts` 接真实审批和用量端口（§5.2） |
 | `packages/console/src/view/shell.ts` | 外壳：侧栏、顶栏、面包屑、用户菜单、会话失效对话框、toast 区（§5.2） |
 | `packages/console/src/assets/client.ts`、`pageScripts.ts` | 共享运行时 `window.qianmoConsole`（轮询保态、对话框、toast、401 处理）与各区域的页面脚本 |
 | `packages/console/test/browser/` | 浏览器级测试与它的 DevTools 协议驱动（§5.2） |
