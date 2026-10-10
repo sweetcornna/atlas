@@ -24,7 +24,7 @@
 
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { checkResidentCompiled } from './check-resident-compiled.js'
 
 const REPO_ROOT = join(import.meta.dir, '..', '..')
@@ -44,9 +44,13 @@ const PROBES: Probe[] = [
 ]
 
 async function main(): Promise<number> {
-  const binary =
+  // Absolute before anything runs: the probes run with the sandbox as cwd, so a
+  // relative argument (the fleet recipe passes `dist/qm-linux-x64`) would not
+  // resolve there.
+  const binary = resolve(
     process.argv[2] ??
-    join(REPO_ROOT, 'dist', `qm-${process.platform}-${process.arch}`)
+      join(REPO_ROOT, 'dist', `qm-${process.platform}-${process.arch}`),
+  )
   if (!existsSync(binary)) {
     console.error(
       `[qm-smoke] FAIL: ${binary} does not exist (run atlas:build:qm)`,
