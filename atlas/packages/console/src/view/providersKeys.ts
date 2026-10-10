@@ -17,9 +17,8 @@
  *   key id, with when a cooling key comes back and why it went out. Nothing
  *   here infers it; a node that reports no keys (one key) shows nothing.
  *
- * A key pool rotates on the two OpenAI-compatible lines only (the node's
- * compile refuses several keys on any other); the form offers 加一把密钥 on
- * those lines and says so on the others.
+ * omp owns selection and cooldown. Custom Anthropic x-api-key endpoints
+ * cannot bind their selected native key to a dynamic header.
  */
 
 import type {
@@ -42,10 +41,15 @@ import {
 /** `MAX_KEYS_PER_PROFILE` of the providers catalog. */
 const MAX_KEYS = 8
 
-const ROTATING_LANES: ReadonlySet<string> = new Set([
-  'openai-chat',
-  'openai-responses',
-])
+function supportsKeyPool(profile: ProviderProfileView): boolean {
+  if (profile.lane !== 'anthropic' || profile.auth.scheme !== 'x-api-key')
+    return true
+  try {
+    return new URL(profile.baseUrl).hostname === 'api.anthropic.com'
+  } catch {
+    return false
+  }
+}
 
 const SELECTION_LINE: Readonly<Record<string, string>> = {
   fill_first: '总用排在前面的可用密钥',
@@ -86,7 +90,7 @@ function poolOrder(keys: readonly KeyView[]): KeyView[] {
 
 /** 加一把密钥, where a pool can rotate and there is room for one more. */
 export function addKeyButton(profile: ProviderProfileView): string {
-  return ROTATING_LANES.has(profile.lane) && profile.keys.length < MAX_KEYS
+  return supportsKeyPool(profile) && profile.keys.length < MAX_KEYS
     ? writeButton('prov-key-add', '加一把密钥', {})
     : ''
 }
@@ -126,7 +130,7 @@ function selectionField(profile: ProviderProfileView): string {
     )
     .join('')
   return (
-    `<label class="field"><span>选取策略</span>` +
+    `<label class="field"><span>原档案策略</span>` +
     `<span class="sel"><select class="input" id="prov-key-selection" data-write>${options}</select>${chevron()}</span>` +
     `</label>`
   )
@@ -165,16 +169,16 @@ export function keyList(profile: ProviderProfileView): string {
         `</span></li>`,
     )
     .join('')
-  const rotates = ROTATING_LANES.has(profile.lane)
+  const rotates = supportsKeyPool(profile)
   return (
     `<div class="field field-wide prov-pool" id="prov-pool">` +
     `<span>密钥 · ${profile.keys.length} 把</span>` +
     `<ul class="prov-pool-list">${rows}</ul>` +
     (rotates
       ? ''
-      : `<p class="note prov-rule" data-tone="warn">这条线路一次只接受一把密钥 · 节点会拒收 · 删到一把或改用 OpenAI 兼容线路</p>`) +
+      : `<p class="note prov-rule" data-tone="warn">自定义 Anthropic 网关的 x-api-key 仅支持单钥 · 保留一把或使用网关支持的 Bearer 鉴权</p>`) +
     selectionField(profile) +
-    `<p class="note">按会话选定 · 同一会话一直用同一把 · 遇到限流 用量上限 欠费或鉴权失败才换下一把并冷却 · 排第一的是主密钥 · 测连只用它</p>` +
+    `<p class="note">omp 按会话固定选钥 · 额度耗尽后轮换 · 瞬时限流只退避 · 原档案策略保留但不决定新节点选钥 · 测连使用主密钥</p>` +
     `<p class="note">${escapeHtml(`增删和重新填写都要下发才生效 · 换到另一把时${CACHE_LINE}`)}</p>` +
     `<div class="prov-actions">` +
     addKeyButton(profile) +

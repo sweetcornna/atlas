@@ -301,7 +301,6 @@ function agentRow(
     addressLine(agent.address) +
     statusCell(agent, health) +
     leaseCell(agent, now, ttlMs, health) +
-    heartbeat +
     chevron() +
     `</summary>` +
     `<div class="row-panel">` +
@@ -310,6 +309,7 @@ function agentRow(
     kv('公钥', keyCell(agent.publicKey)) +
     kv('上次心跳', heartbeatValue(agent.lastHeartbeatAt, now)) +
     `<div class="row-acts">` +
+    heartbeat +
     deregister +
     `<span class="note">${escapeHtml(rowNote(health))}</span>` +
     `</div></div></details>`
@@ -799,7 +799,7 @@ export function registerDialog(): string {
     }) +
     `</div>` +
     `<div class="field"><span>能力</span>` +
-    `<div class="rowx" style="gap:var(--space-2)">${capabilityChecks()}</div>` +
+    `<div class="rowx gap-2">${capabilityChecks()}</div>` +
     `</div>` +
     `<details class="adv"><summary>${chevron()}高级选项 · 状态与公钥</summary>` +
     `<div class="adv-body">` +
@@ -1004,7 +1004,7 @@ function wakeTargetField(options: string): string {
 function wakeReceipt(url: string | undefined): string {
   if (url === undefined || url === '') return ''
   return (
-    `<div class="hintline" style="margin-top:var(--space-2)">` +
+    `<div class="hintline mt-2">` +
     icon('info', { small: true }) +
     `唤醒回执 · <span class="mono">${escapeHtml(url)}</span></div>`
   )

@@ -865,15 +865,12 @@ export const PROVIDERS_PAGE_JS = `
   function paintFamily(block) {
     var note = one('[data-family-note]', block);
     if (!note) return;
-    var lane = valueOf('prov-lane');
-    var id = field(block, 'id').toLowerCase();
-    var host = '';
-    try { host = new URL(valueOf('prov-base')).hostname; } catch (e) { host = ''; }
-    note.hidden = !(lane === 'anthropic' && (id.indexOf('claude') !== -1 || host === 'api.anthropic.com'));
+    note.hidden = field(block, 'send') !== 'auto';
   }
 
   function paintSend(block, fresh) {
     var send = field(block, 'send');
+    paintFamily(block);
     var explicit = send === 'always' || send === 'never';
     all('[data-when="explicit"]', block).forEach(function (el) { el.hidden = !explicit; });
     if (explicit && fresh && checkedValues(block, 'bit').length === 0 && valueOf('prov-lane') === 'anthropic') {
@@ -886,11 +883,11 @@ export const PROVIDERS_PAGE_JS = `
   function paintLane() {
     var lane = valueOf('prov-lane');
     var chatOpen = data(editor, 'chat-always') === '1';
-    var autoOnly = lane === 'gemini' || lane === 'grok';
+    var noAlways = lane === 'gemini' || lane === 'grok';
     all('#prov-models [data-model], #prov-model-template').forEach(function (holder) {
       var root = holder.content || holder;
       all('option[data-explicit]', root).forEach(function (opt) {
-        var off = autoOnly || (opt.hasAttribute('data-chat-gate') && lane === 'openai-chat' && !chatOpen);
+        var off = opt.value === 'always' && (noAlways || (lane === 'openai-chat' && !chatOpen));
         if (off) opt.setAttribute('disabled', '');
         else opt.removeAttribute('disabled');
       });

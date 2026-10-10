@@ -66,6 +66,7 @@ export interface LoginPageModel {
    * byte for byte what it was.
    */
   readonly accounts?: boolean
+  readonly signupEnabled?: boolean
 }
 
 /** The field label and the button, kept next to each other on purpose. */
@@ -89,7 +90,7 @@ function legend(accounts: boolean): string {
     return (
       `<div class="tokline">` +
       `<div class="tokrow"><span class="tag tag-neutral mono">view</span>` +
-      `只读参观 · 看名册与消息链 · 不能唤醒与注销</div>` +
+      `只读访问 · 看名册与消息链 · 不能唤醒与注销</div>` +
       `<div class="tokrow"><span class="tag tag-accent mono">admin</span>` +
       `可操作 · 注册 唤醒 注销 全部开放</div>` +
       `</div>` +
@@ -144,6 +145,9 @@ export function renderLoginPage(model: LoginPageModel): string {
     icon('log-out', { small: true }) +
     `${escapeHtml(SUBMIT_LABEL)}</button>` +
     legend(accounts) +
+    (model.signupEnabled === true
+      ? `<p class="foot"><a href="/signup">注册成员账号</a></p>`
+      : '') +
     `</form>\n</main>\n</body>\n</html>\n`
   )
 }

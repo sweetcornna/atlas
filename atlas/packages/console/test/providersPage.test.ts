@@ -650,8 +650,8 @@ describe('display = the node', () => {
   test('effectiveCells reads effective and nothing else', () => {
     const touched = new Set<string>()
     const effective = {
-      apiProvider: 'firstParty',
-      wire: 'chat',
+      apiProvider: 'openai-completions',
+      wire: 'openai-completions',
       model: 'glm-5.3',
       wireModel: 'glm-5.3',
       modelSettingsSlot: 'opus',
@@ -1255,20 +1255,62 @@ describe('writes', () => {
 // ---------------------------------------------------------------------------
 
 describe('what a line allows', () => {
-  test('a Claude model on the Anthropic line says the setting does not reach the wire', async () => {
+  test('only automatic family mode displays the native catalog hint, including Claude explicit controls', async () => {
     const s = await setup()
     const html = await text(
       s.handle,
       page('/providers/new?preset=anthropic', s.ops),
     )
     expect(html).toContain(
-      '<p class="note prov-hint field-wide" data-family-note>Claude 系模型在 Anthropic 线上按内置模型族判断 · 该线路不受此设置控制</p>',
+      '<p class="note prov-hint field-wide" data-family-note>自动模式按 omp 原生模型目录推断能力 · 实际 effort 以节点报告为准</p>',
     )
     const other = await text(
       s.handle,
       page('/providers/new?preset=deepseek', s.ops),
     )
     expect(other).toContain('data-family-note hidden>')
+    const profile = s.providers.profiles.get('deepseek')!
+    s.providers.profiles.set('deepseek', {
+      ...profile,
+      baseUrl: 'https://api.anthropic.com',
+      models: profile.models.map(model => ({
+        ...model,
+        id: 'claude-opus-5-5',
+      })),
+    })
+    const explicit = await text(
+      s.handle,
+      page('/providers/profiles/deepseek', s.ops),
+    )
+    expect(explicit).toContain('data-family-note hidden>')
+    expect(explicit).not.toContain('不受此设置控制')
+    expect(explicit).toContain(
+      'value="always" selected data-chat-gate data-explicit>',
+    )
+    expect(explicit).toContain('value="never" data-explicit>')
+  })
+
+  test('Gemini and Grok offer explicit off while rejecting unsupported always', async () => {
+    const s = await setup()
+    const profile = s.providers.profiles.get('deepseek')!
+    for (const lane of ['gemini', 'grok'] as const) {
+      s.providers.profiles.set('deepseek', {
+        ...profile,
+        lane,
+        models: profile.models.map(model => ({
+          ...model,
+          effort: { send: 'never' as const },
+        })),
+      })
+      const html = await text(
+        s.handle,
+        page('/providers/profiles/deepseek', s.ops),
+      )
+      expect(html).toContain(
+        'value="always" data-chat-gate data-explicit disabled>',
+      )
+      expect(html).toContain('value="never" selected data-explicit>')
+    }
   })
 
   test('总是发送 on the OpenAI Chat line follows what the nodes reported', async () => {
@@ -1650,10 +1692,12 @@ describe('several keys', () => {
     expect(cleared).not.toContain('data-action="prov-key-clear" data-key="k3"')
     expect(cleared).toContain('data-action="prov-key-remove" data-key="k3"')
     const board = await text(s.handle, page('/providers', s.viewer))
-    expect(words(board)).toContain('密钥 3 把 · 已设置 2 把 · 轮流')
+    expect(words(board)).toContain(
+      '密钥 3 把 · 已设置 2 把 · 原策略：轮流 · omp 按会话选钥',
+    )
   })
 
-  test('加一把密钥 only where a pool rotates: the OpenAI lines, up to eight keys', async () => {
+  test('加一把密钥 follows native pool support, custom header limits and eight-key cap', async () => {
     const s = await setup({ pool: true })
     // One key on the OpenAI Chat line: offered, with P18.9's controls as they were.
     const chat = await text(
@@ -1663,12 +1707,12 @@ describe('several keys', () => {
     expect(chat).toContain('data-action="prov-key-add"')
     expect(chat).toContain('id="prov-key"')
     expect(chat).toContain('data-action="prov-key-refill"')
-    // One key on the Anthropic line: not offered.
+    // Bearer Anthropic accepts a native pool.
     const deepseek = await text(
       s.handle,
       page('/providers/profiles/deepseek', s.ops),
     )
-    expect(deepseek).not.toContain('data-action="prov-key-add"')
+    expect(deepseek).toContain('data-action="prov-key-add"')
     expect(words(deepseek)).toContain(
       '密钥已设置 · 设置于 2026-10-03 06:20 · 指纹 3f9a1c2e',
     )
@@ -1676,10 +1720,38 @@ describe('several keys', () => {
     // Several keys on a line that takes one: said, and no way to add more.
     const pool = s.providers.profiles.get('pool')
     if (pool === undefined) throw new Error('fixture')
-    s.providers.profiles.set('pool', { ...pool, lane: 'anthropic' })
+    s.providers.profiles.set('pool', {
+      ...pool,
+      lane: 'anthropic',
+      auth: { scheme: 'x-api-key' },
+      baseUrl: 'https://gateway.example/v1',
+    })
     const wrong = await text(s.handle, page('/providers/profiles/pool', s.ops))
     expect(wrong).not.toContain('data-action="prov-key-add"')
-    expect(words(wrong)).toContain('这条线路一次只接受一把密钥 · 节点会拒收')
+    expect(words(wrong)).toContain(
+      '自定义 Anthropic 网关的 x-api-key 仅支持单钥',
+    )
+
+    // Native pools also serve bearer Anthropic and Gemini, plus official x-api-key.
+    for (const profile of [
+      {
+        ...pool,
+        lane: 'anthropic' as const,
+        auth: { scheme: 'bearer' as const },
+      },
+      { ...pool, lane: 'gemini' as const },
+      {
+        ...pool,
+        lane: 'anthropic' as const,
+        baseUrl: 'https://api.anthropic.com',
+        auth: { scheme: 'x-api-key' as const },
+      },
+    ]) {
+      s.providers.profiles.set('pool', profile)
+      const html = await text(s.handle, page('/providers/profiles/pool', s.ops))
+      expect(html).toContain('data-action="prov-key-add"')
+      expect(words(html)).toContain('omp 按会话固定选钥')
+    }
 
     // Eight keys: full.
     s.providers.profiles.set('pool', {

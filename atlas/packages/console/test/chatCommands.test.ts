@@ -147,6 +147,20 @@ describe('local commands on the chat page (P18.20)', () => {
     ])
   })
 
+  test('session model and thinking commands are tagged and audited for members', async () => {
+    const { h, ledger, member } = await setup()
+    const sid = await openAs(h, member)
+    for (const [command, text] of [
+      ['model', '/model qm-test/main'],
+      ['thinking', '/thinking high'],
+      ['effort', '/effort low'],
+    ] as const) {
+      expect((await h.handle(say(member, sid, text))).status).toBe(200)
+      expect(h.chat.sent.at(-1)).toEqual({ sessionId: sid, text, command })
+      expect(chatLines(ledger).at(-1)).toBe(`chat.command.${command} ${sid} ok`)
+    }
+  })
+
   test('only the head counts: look-alikes and other commands are messages', async () => {
     const { h, ledger, member } = await setup()
     const sid = await openAs(h, member)

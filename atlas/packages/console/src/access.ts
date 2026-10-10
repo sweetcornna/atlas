@@ -74,6 +74,10 @@ export const ACCOUNT_SESSION_COOKIE = 'qianmo_session'
 /** Personal accounts, as the HTTP layer receives them (`tenancy-m1.md` §3). */
 export interface ConsoleAccounts {
   readonly book: AccountBook
+  readonly signup?: {
+    readonly maxAccounts: number
+    readonly attemptsPerHour?: number
+  }
   /**
    * The view token, during migration (§1.5). `false` is M-2b: the view token
    * stops working in every position. Default `true`.
@@ -109,6 +113,8 @@ export interface Access {
   readonly refusal: AccessRefusal | null
   /** True when this is the admin token in break-glass mode. */
   readonly breakGlass: boolean
+  /** Revalidate the exact presented credential without extending its session. */
+  readonly current?: () => boolean
 }
 
 const PERSONAL_IN_QUERY =
@@ -161,7 +167,7 @@ function unavailable(message: string): AccessRefusal {
  * `touch` is false only for the stream's periodic re-check: see
  * `AccountBook.sessionPrincipal`.
  */
-export function resolveAccess(
+function resolveAccessOnce(
   request: Request,
   tokens: ConsoleTokens,
   accounts: ConsoleAccounts | undefined,
@@ -305,6 +311,32 @@ export function resolveAccess(
     if (found !== null) return found
   }
   return none
+}
+
+/** Snapshot authentication, retaining a non-touching check for asynchronous replies. */
+export function resolveAccess(
+  request: Request,
+  tokens: ConsoleTokens,
+  accounts: ConsoleAccounts | undefined,
+  touch = true,
+): Access {
+  const access = resolveAccessOnce(request, tokens, accounts, touch)
+  const principal = access.principal
+  if (principal?.kind !== 'user') return access
+  return {
+    ...access,
+    current: () => {
+      const fresh = resolveAccessOnce(request, tokens, accounts, false)
+      return (
+        fresh.refusal === null &&
+        fresh.principal?.kind === 'user' &&
+        fresh.principal.subject === principal.subject &&
+        fresh.principal.role === principal.role &&
+        fresh.principal.credential === principal.credential &&
+        fresh.sid === access.sid
+      )
+    },
+  }
 }
 
 /**

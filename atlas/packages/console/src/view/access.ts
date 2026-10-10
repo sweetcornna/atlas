@@ -720,6 +720,9 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'chat.command.autocompact': '设置自动压缩',
   'chat.command.compact': '压缩对话',
   'chat.command.context': '查看上下文',
+  'chat.command.model': '切换会话模型',
+  'chat.command.thinking': '设置会话推理档位',
+  'chat.command.effort': '设置会话推理强度',
   'chat.transcript.open': '打开转录',
   'breakglass.request': 'break-glass 请求',
   'alert.ack': '确认告警',
@@ -743,6 +746,10 @@ const ACTION_WORD: Readonly<Partial<Record<string, string>>> = {
   'provider.probe.skip': '跳过测连',
   'provider.autocompact': '设自动压缩阈值',
   'provider.import': '导入模型服务',
+  'approval.auth': '验证审批凭据',
+  'approval.decide': '提交审批决定',
+  'approval.revoke': '撤销审批授权',
+  'approval.continue': '批准并继续会话',
 }
 
 /** The account API's writes are one verb per method; the path says which. */
@@ -773,6 +780,7 @@ const FAMILY_WORD: Readonly<Partial<Record<string, string>>> = {
   alert: '告警',
   handoff: '接力',
   provider: '模型服务',
+  approval: '审批',
 }
 
 function families(): readonly (readonly [string, string])[] {

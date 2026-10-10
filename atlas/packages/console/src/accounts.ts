@@ -55,6 +55,12 @@
  * one response each.
  */
 
+import type {
+  AccountRole,
+  AccountSubject,
+  ConsolePrincipal,
+} from './contracts.js'
+
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto'
 import { SESSION_MAX_AGE_SECONDS } from './auth.js'
 import type { LedgerPort } from './deps.js'
@@ -156,39 +162,11 @@ const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   'to',
 ])
 
-/** What an account may do. `tenancy-m1.md` §3.2 has the table. */
-export type AccountRole = 'viewer' | 'member' | 'ops'
-
-/** A person, as the console names them: `u:` and 16 lowercase hex digits. */
-export type AccountSubject = `u:${string}`
-
-/**
- * Who is asking (`tenancy-m1.md` §1.1). A discriminated union rather than a
- * string sentinel, so "is this a person" is a type check and not a prefix
- * test somebody forgets.
- *
- * `credential` says how the person got here: a browser session, a personal
- * credential presented as `Authorization: Bearer`, or — reserved for P14 — an
- * approval session. `authenticatedAt` is when that credential was last proven:
- * the login for a session, the request itself for a bearer. P14 reads both to
- * decide what may approve (`authorization-m1.md` §3.3).
- *
- * The legacy tokens are principals too, so that code downstream asks one
- * question; they are never people, never own a session and never approve.
- */
-export type ConsolePrincipal =
-  | {
-      readonly kind: 'user'
-      readonly subject: AccountSubject
-      readonly role: AccountRole
-      readonly authenticatedAt: number
-      readonly credential: 'session' | 'approval-session' | 'bearer'
-    }
-  | {
-      readonly kind: 'legacy'
-      readonly subject: 'legacy:view' | 'legacy:admin'
-      readonly credential: 'session' | 'bearer'
-    }
+export type {
+  AccountRole,
+  AccountSubject,
+  ConsolePrincipal,
+} from './contracts.js'
 
 const ROLES: ReadonlySet<string> = new Set(['viewer', 'member', 'ops'])
 const SUBJECT = /^u:[0-9a-f]{16}$/
@@ -694,6 +672,31 @@ export class AccountBook {
         invite.state = 'withdrawn'
         return null
       }
+      case 'account.registered': {
+        const subject = data['subject']
+        const credentialHash = str(data, 'credentialHash')
+        const label = str(data, 'label')
+        if (!isSubject(subject) || this.#accountsBySubject.has(subject))
+          return '注册账号标识无效或重复'
+        if (data['role'] !== 'member') return '开放注册只能创建成员'
+        if (
+          credentialHash === undefined ||
+          !DIGEST.test(credentialHash) ||
+          this.#subjectByCredential.has(credentialHash)
+        )
+          return '注册凭据无效或重复'
+        if (labelProblem(label) !== null) return 'label 不对'
+        this.#accountsBySubject.set(subject, {
+          subject,
+          role: 'member',
+          createdAt: entry.at,
+          ...(label === undefined ? {} : { label }),
+          credentialHash,
+          revoked: false,
+        })
+        this.#subjectByCredential.set(credentialHash, subject)
+        return null
+      }
       case 'account.created': {
         const invite = this.#invites.get(str(data, 'inviteId') ?? '')
         const subject = data['subject']
@@ -1097,6 +1100,43 @@ export class AccountBook {
     })
     this.#subjectByCredential.set(credentialHash, subject)
     return { ok: true, value: { subject, role: invite.role, credential } }
+  }
+
+  /** Operator-enabled signup. No caller-supplied subject, role, invite or reset path. */
+  registerMember(
+    maxAccounts: number,
+    label?: string,
+  ): AccountOutcome<AcceptedInvite> {
+    if (this.#problem !== null) return this.#unavailable()
+    if (!Number.isSafeInteger(maxAccounts) || maxAccounts < 1)
+      return refuse('invalid', '注册容量无效')
+    const problem = labelProblem(label)
+    if (problem !== null) return refuse('invalid', problem)
+    // Count every historical account, including revoked: revoke/register cannot evade the cap.
+    if (this.#accountsBySubject.size >= maxAccounts)
+      return refuse('limit', '账号容量已满，请联系环境负责人')
+    const subject = this.#newSubject()
+    const credential = this.#secret(PERSONAL_CREDENTIAL_PREFIX)
+    const credentialHash = hashSecret(credential)
+    if (
+      !this.#append(this.#accounts, 'account.registered', {
+        subject,
+        role: 'member',
+        credentialHash,
+        ...(label === undefined ? {} : { label }),
+      })
+    )
+      return this.#unavailable()
+    this.#accountsBySubject.set(subject, {
+      subject,
+      role: 'member',
+      createdAt: this.#now(),
+      ...(label === undefined ? {} : { label }),
+      credentialHash,
+      revoked: false,
+    })
+    this.#subjectByCredential.set(credentialHash, subject)
+    return { ok: true, value: { subject, role: 'member', credential } }
   }
 
   // --- credentials and sessions ------------------------------------------

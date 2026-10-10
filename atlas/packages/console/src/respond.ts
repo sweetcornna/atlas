@@ -299,7 +299,7 @@ function assetTag(body: string): string {
 }
 
 /** `If-None-Match` by weak comparison: `*`, or any listed tag, W/ or not. */
-function etagMatches(header: string, tag: string): boolean {
+export function etagMatches(header: string, tag: string): boolean {
   if (header.trim() === '*') return true
   const bare = tag.replace(/^W\//, '')
   return header

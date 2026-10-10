@@ -5,7 +5,7 @@
  * `/v0/handoff` as the route sees it (P17.4): who may do what, the order of
  * the answers, and what reaches the port and the action ledger. The port is a
  * hand-written fake; the real one (bare repository checks, the locked ledger)
- * is tested next to it in `src/cli/handlers/__tests__/consoleHandoff.test.ts`.
+ * is tested next to it in `packages/node/test/commands/consoleHandoff.test.ts`.
  */
 
 import { describe, expect, test } from 'bun:test'

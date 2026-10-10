@@ -413,7 +413,10 @@ export function sectionHead(
   const tail = options.tail === undefined ? '' : options.tail
   return (
     `<div class="sec-head"${id}${statsAttrs}>` +
-    `<div><div class="kicker">${escapeHtml(kicker)}</div>` +
+    `<div>` +
+    (/^[A-Za-z\s-]+$/.test(kicker)
+      ? ''
+      : `<div class="kicker">${escapeHtml(kicker)}</div>`) +
     `<${level}${headingId}>${escapeHtml(name)}</${level}></div>` +
     tail +
     `</div>`

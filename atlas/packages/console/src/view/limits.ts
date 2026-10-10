@@ -83,13 +83,12 @@ export function renderLimits(limits: LimitsSnapshot): string {
     `<div class="limits">` +
     `<section class="col" id="limits-protocol">` +
     `<h3 class="col-name">协议</h3>` +
-    `<p class="col-src"><code class="mono">@qianmo/protocol</code> LIMITS</p>` +
+    `<p class="col-src">所有节点共同遵守的消息边界</p>` +
     protocol +
     `</section>` +
     `<section class="col" id="limits-runtime">` +
     `<h3 class="col-name">运行时</h3>` +
-    `<p class="col-src"><code class="mono">@qianmo/router</code> RUNTIME_RATE` +
-    `</p>` +
+    `<p class="col-src">当前节点的请求处理上限</p>` +
     runtime +
     `</section>` +
     `</div>` +

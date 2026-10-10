@@ -59,7 +59,10 @@ function specifiers(path: string): string[] {
 
 describe('dependencies', () => {
   test('the manifest names only @qianmo workspaces, and no dev dependency', () => {
-    expect(Object.keys(MANIFEST.dependencies ?? {})).toEqual(['@qianmo/audit'])
+    expect(Object.keys(MANIFEST.dependencies ?? {})).toEqual([
+      '@qianmo/audit',
+      '@qianmo/protocol',
+    ])
     for (const [name, range] of Object.entries(MANIFEST.dependencies ?? {})) {
       expect(`${name} ${range}`).toMatch(/^@qianmo\/\S+ workspace:/)
     }

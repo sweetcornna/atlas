@@ -12,7 +12,7 @@
  * makes come back as the statuses the design names, with the rule recorded.
  *
  * The lifecycle port is hand-written and counts its calls — the real one lives
- * in the host (`src/cli/handlers/consoleRegistrations.ts`, with its own
+ * in the host (`packages/node/src/commands/consoleRegistrations.ts`, with its own
  * suite). The action ledger is the real hash-chained one over memory.
  */
 

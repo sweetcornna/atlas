@@ -6,10 +6,10 @@
  *
  * The console package is a leaf: it never imports the host's `src/`, never
  * opens the audit file itself and never talks to a socket on its own. The CLI
- * handler that starts it (`occ console`) is the only place that knows where the
+ * handler that starts it (`qm console`) is the only place that knows where the
  * registry lives, which trail file to read and how to send a wake — it injects
  * those here. That keeps this package testable with plain objects and keeps the
- * host's dependency direction pointing inward, the same rule the tool-runtime
+ * host's dependency direction pointing inward, the same rule the host
  * facades follow (root CLAUDE.md, "Host facade 模式").
  *
  * Every port returns data or a typed failure. None of them throw for an
@@ -17,7 +17,11 @@
  * worse than one that renders "注册中心不可达" next to the rest of the page.
  */
 
+import type { ConsoleFailure, ConsoleResult } from './contracts.js'
+
 import type { AuditRecord, MessageChain } from '@qianmo/audit'
+import type { UsagePort, ApprovalPort } from './governance.js'
+import type { TenantPort } from './tenancy.js'
 
 /** One agent as the registry reports it (registry HTTP v0 `AgentBody`). */
 export interface ConsoleAgent {
@@ -32,34 +36,7 @@ export interface ConsoleAgent {
   readonly expiresAt: number
 }
 
-/**
- * Uniform failure shape for every port. `code` is for tests, not for users.
- *
- * `unreachable` and `refused` are the pair worth being careful with, because
- * collapsing them is a bug that costs an operator an afternoon: `unreachable`
- * means the far side was never reached, and it points at tunnels, ports and
- * routes; `refused` means it was reached, understood the request and declined
- * it, and it points at that node's policy and its audit trail. A node that
- * refuses a wake for want of a capability token is `refused` — reporting it as
- * `unreachable` sent people to check a network that was working (issue #29).
- *
- * `rejected` is the third of the family and it is about **this** side: a rule
- * here would not let the request leave.
- */
-export interface ConsoleFailure {
-  readonly code:
-    | 'unreachable'
-    | 'refused'
-    | 'rejected'
-    | 'not_found'
-    | 'unsupported'
-    | 'invalid'
-  readonly message: string
-}
-
-export type ConsoleResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly failure: ConsoleFailure }
+export type { ConsoleFailure, ConsoleResult } from './contracts.js'
 
 /** Registration input accepted from the page — the reason the console exists. */
 export interface RegisterAgentInput {
@@ -108,7 +85,7 @@ export interface RegistryPort {
  * 一律 `unavailable`，三个出口一律不发——「从空登记簿起」会把退役的地址重新
  * 发布出去。
  *
- * 这一段只放形状。实现在宿主（`src/cli/handlers/consoleRegistrations.ts`），
+ * 这一段只放形状。实现在宿主（`packages/node/src/commands/consoleRegistrations.ts`），
  * 与其余端口同一条边界：这个包不碰文件系统。
  */
 
@@ -361,6 +338,10 @@ export interface ConsoleAuditSource {
 
 /** A wake request as the page can express it. */
 export interface WakeInput {
+  /** Host-only synchronous authorization check, repeated at actual dispatch. */
+  readonly beforeDispatch?: () => void
+  /** Host-only callback, never accepted from request JSON; bind before dialing. */
+  readonly onTaskCreated?: (taskId: string, node: string) => void
   /** Named wake allowlist selector. Required only for multi-target consoles. */
   readonly node?: string
   readonly from: string
@@ -405,7 +386,7 @@ export interface WakeTarget {
  * 这个包**不知道回程是怎么回来的**：它不知道有传输层、不知道有 PSK、不知道一条
  * 回复是 `task.result` 还是别的什么。它只知道四件事——有哪些能聊的对象、有哪些
  * 会话、一条会话里有哪些轮次、以及「有新东西了」这个通知。host 侧
- * (`src/cli/handlers/consoleChat.ts`) 负责把它接到真的网络上。
+ * (`packages/node/src/commands/consoleChat.ts`) 负责把它接到真的网络上。
  *
  * 这条边界不是形式主义：回程的实现（同一条已认证连接上的 ack + task.result）
  * 是协议层的决定，将来换成别的形状时，这个包一行都不用改，而它的用例也不需要
@@ -477,6 +458,10 @@ export type ChatTurnState = 'pending' | 'delivered' | 'read' | 'done' | 'failed'
  * 文案纪律搬到 host 侧，而那边没有视图层的用例看着它。
  */
 export interface ChatTurn {
+  /** An attempted metered task or continuation with an unknown receipt; remains pending. */
+  readonly deliveryUnknown?: true
+  /** A validated task.result received from the pinned node, never a local timeout. */
+  readonly remoteTerminal?: true
   readonly id: string
   readonly sessionId: string
   readonly author: ChatAuthor
@@ -517,6 +502,8 @@ export interface ChatTurn {
    * 的那一轮带它：超时、失败照旧是一条失败行。
    */
   readonly command?: ChatLocalCommand
+  /** Host-owned reservation, released on task terminal state, not HTTP completion. */
+  readonly usageReservation?: string
 }
 
 /**
@@ -533,6 +520,9 @@ export const CHAT_LOCAL_COMMANDS = [
   'autocompact',
   'compact',
   'context',
+  'model',
+  'thinking',
+  'effort',
 ] as const
 
 export type ChatLocalCommand = (typeof CHAT_LOCAL_COMMANDS)[number]
@@ -557,10 +547,17 @@ export interface ChatTranscript {
 }
 
 export interface ChatSendInput {
+  /** Host-only conditional send; rechecked after endpoint resolution, never read from HTTP JSON. */
+  readonly continuation?: {
+    readonly afterTaskId: string
+    readonly authorized: () => boolean
+  }
   readonly sessionId: string
   readonly text: string
   /** 这句是哪条本地命令；路由层认出来、查过角色之后才给。 */
   readonly command?: ChatLocalCommand
+  /** Host-owned reservation, released on task terminal state, not HTTP completion. */
+  readonly usageReservation?: string
 }
 
 /**
@@ -736,8 +733,8 @@ export interface ServerNote {
 /**
  * 备注的落盘面。**这个包不碰文件系统**，所以它只是一对方法。
  *
- * host 侧（`src/cli/handlers/consoleServerNotes.ts`）把它接到一个
- * append-only NDJSON 文件上，位置从 `occConfigPath()` 派生。这条边界和
+ * host 侧（`packages/node/src/commands/consoleServerNotes.ts`）把它接到一个
+ * append-only NDJSON 文件上，位置从 `qianmoConfigPath()` 派生。这条边界和
  * {@link ChatPort} 是同一条：这里不知道有磁盘，用例因此是一个普通对象。
  *
  * 可选：缺了备注框渲染成只读并说明原因，而不是给一个按下去必定失败的按钮——
@@ -786,6 +783,8 @@ export interface ConsoleNotice {
   readonly kind: string
   /** 发出它的节点地址（审计记录的 `peer`）。 */
   readonly from?: string
+  /** Authenticated connection target, never the envelope sender label. */
+  readonly node?: string
   /** 值守作业 id：通知的 `contextId`，值守作业里就是作业 id（§4.1③）。 */
   readonly job?: string
   readonly summary: string
@@ -981,8 +980,8 @@ export interface SchedulerPort {
  *
  * **只搬字节，不判内容**：解析、验链、语义校验全在包内（`ledger.ts`、
  * `accounts.ts`），那样 fail-closed 的每一条规矩都能用一个普通对象测到。host
- * 侧（`src/cli/handlers/consoleAccountsStore.ts`）只负责 0600、O_APPEND、
- * 每行 fsync，路径从 `occConfigPath()` 派生。
+ * 侧（`packages/node/src/commands/consoleAccountsStore.ts`）只负责 0600、O_APPEND、
+ * 每行 fsync，路径从 `qianmoConfigPath()` 派生。
  *
  * 与其余端口不同，这两个方法**允许抛**：它们失败只可能是 I/O 坏了，而账本对
  * 任何一次抛出的处置都是同一个——整本转为不可用并告警（`AccountBook`）。
@@ -1065,6 +1064,9 @@ export const CONSOLE_ACTIONS = [
   'chat.command.autocompact',
   'chat.command.compact',
   'chat.command.context',
+  'chat.command.model',
+  'chat.command.thinking',
+  'chat.command.effort',
   /** 明确打开一份转录：整页带 `?session=`、JSON 读转录、片段带 `?open=1`。轮询与 SSE 不算。 */
   'chat.transcript.open',
   /** 账号 API 的写请求，`accounts.<方法>`，target 是 `/v0/accounts` 之后的路径。 */
@@ -1109,6 +1111,10 @@ export const CONSOLE_ACTIONS = [
   'provider.probe.skip',
   'provider.autocompact',
   'provider.import',
+  'approval.auth',
+  'approval.decide',
+  'approval.revoke',
+  'approval.continue',
 ] as const
 
 /** 账本里的一条，带上账本给它的序号（递增，从 1 开始）。 */
@@ -1172,7 +1178,7 @@ export interface ActionLedgerPort {
  *
  * 这里按形状重新声明而不是 import：控制台是只依赖 `@qianmo/audit` 的叶子包
  * （`test/dependencies.test.ts` 钉着），而 `@qianmo/handoff` 会带进
- * tool-runtime 的扫描器。宿主（`src/cli/handlers/consoleHandoff.ts`）把那个包
+ * 它自带的扫描器。宿主（`packages/node/src/commands/consoleHandoff.ts`）把那个包
  * 的 `HandoffTask` 原样交过来，结构一致即可赋值，类型检查就是两边对得上的证据。
  */
 export type HandoffTaskState =
@@ -1332,7 +1338,7 @@ export interface HandoffPort {
 //
 // 下面的类型是 `@qianmo/providers` 那几个类型的**镜像**：控制台包只许依赖
 // `@qianmo/audit`（`test/dependencies.test.ts`），所以这里不 import 目录包。宿主实现
-// （`src/cli/handlers/consoleProviders.ts`）把目录包的值直接赋给这些类型，两边一旦
+// （`packages/node/src/commands/consoleProviders.ts`）把目录包的值直接赋给这些类型，两边一旦
 // 漂移，tsc 在宿主那一侧报错。厂商清单仍然只有一份：页面要的预设经
 // {@link ProviderPort.catalog} 从目录包来，控制台不留自己的。
 //
@@ -1822,7 +1828,7 @@ export interface ProviderCaller {
 
 /**
  * 模型服务（`providers-console-m1.md` §2、§6.3）。宿主实现在
- * `src/cli/handlers/consoleProviders.ts`；缺席（`ConsoleDeps.providers` 未接）时页面
+ * `packages/node/src/commands/consoleProviders.ts`；缺席（`ConsoleDeps.providers` 未接）时页面
  * 说明「模型服务未开启」。
  *
  * - 读方法不收 {@link ProviderCaller}，按角色裁剪是页面的事（§7.3：viewer 不看指纹、
@@ -2017,6 +2023,9 @@ export interface ConsoleAbout {
 
 /** Everything a console instance needs. `wake` and `chat` are optional. */
 export interface ConsoleDeps {
+  readonly tenancy?: TenantPort
+  readonly usage?: UsagePort
+  readonly approvals?: ApprovalPort
   readonly registry: RegistryPort
   /**
    * 生命周期（P15.2，见上面 {@link LifecyclePort} 那一段）。缺席时生命周期

@@ -73,6 +73,9 @@ function serveConsole(options: Parameters<typeof pageHarness>[0] = {}): Served {
           headers: { 'content-type': 'application/json' },
         })
       }
+      // This suite verifies polling fallback; SSE has its own P2 browser suite.
+      if (url.pathname === '/v0/events')
+        return new Response(null, { status: 503 })
       const delay = wrapper.delay
       if (delay !== null && url.pathname.startsWith(delay.path)) {
         await pause(delay.ms)

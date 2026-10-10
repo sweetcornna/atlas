@@ -13,6 +13,7 @@
  * the reason, where no Chrome is installed (`cdp.ts`).
  */
 
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { resolveAccess } from '../../src/access.js'
 import {

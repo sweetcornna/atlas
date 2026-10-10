@@ -403,16 +403,32 @@ export function streamScopeOf(
   const book = accounts.book
   const sid = access.sid
   const scope = chatScopeOf(access, accounts)
+  const alive = () => {
+    if (access.current !== undefined) return access.current()
+    const account = book.list()
+    return (
+      account.ok &&
+      account.value.accounts.some(
+        row =>
+          row.subject === principal.subject &&
+          row.state === 'active' &&
+          row.role === principal.role,
+      ) &&
+      (sid === null || book.sessionPrincipal(sid, false).ok)
+    )
+  }
   return {
-    visible: scope.visible,
-    attach: close => book.attachStream(principal.subject, sid, close),
-    // A session can expire with nobody pushing anything; a bearer has no
-    // session to expire, and its revocation or reset is pushed by the book.
-    // The re-check does not count as use (`AccountBook.sessionPrincipal`).
-    alive: () =>
-      sid === null
-        ? book.problem === null
-        : book.sessionPrincipal(sid, false).ok,
+    visible: id => alive() && scope.visible(id),
+    attach: close => {
+      const detach = book.attachStream(principal.subject, sid, close)
+      // Register first, then recheck: revocation may precede subscription.
+      if (!alive()) {
+        detach()
+        close()
+      }
+      return detach
+    },
+    alive,
   }
 }
 

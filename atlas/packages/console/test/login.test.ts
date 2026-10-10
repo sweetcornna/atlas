@@ -1019,7 +1019,7 @@ describe('the login document', () => {
     // operator pasting the view token and then finding no wake button
     // concludes the console is broken. Two lines here beat that round trip.
     expect(html).toContain('>view</span>')
-    expect(html).toContain('只读参观 · 看名册与消息链 · 不能唤醒与注销')
+    expect(html).toContain('只读访问 · 看名册与消息链 · 不能唤醒与注销')
     expect(html).toContain('>admin</span>')
     expect(html).toContain('可操作 · 注册 唤醒 注销 全部开放')
   })

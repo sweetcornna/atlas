@@ -12,6 +12,7 @@
  * after it.
  */
 
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { resolveAccess } from '../src/access.js'
 import type { ConsoleAction } from '../src/deps.js'

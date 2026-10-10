@@ -20,6 +20,8 @@ export {
   COMPAT_KEYS,
   type CompatKey,
   isCompatKey,
+  isOmpCompatField,
+  migrateLegacyCompat,
   isForbiddenEnvKey,
   PROFILE_SETTABLE_COMPAT_KEYS,
 } from './compatKeys.js'

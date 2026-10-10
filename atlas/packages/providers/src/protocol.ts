@@ -525,15 +525,15 @@ export type AutoCompactReport = {
 
 /** §2.4 `effective`: computed by the node's REAL gate functions. */
 export type EffectiveState = {
-  /** `getAPIProvider()`. */
+  /** Native omp model API. */
   apiProvider: string
-  /** `anthropic` for the Messages wire, else `chat` / `responses` / `gemini` / `grok`. */
+  /** Native wire API: anthropic-messages, openai-completions, openai-responses, or google-generative-ai. */
   wire: string
-  /** The main-loop model the session selects (`getMainLoopModel()`). */
+  /** Literal model ID selected by config.yml modelRoles.default. */
   model: string
   /** The id the lane actually puts on the wire after its own mapping. */
   wireModel: string
-  /** The `settings.modelSettings` slot that governs the main loop, or `null`. */
+  /** The config.yml model role (default), or null for an explicit selection. */
   modelSettingsSlot: string | null
   effortOnWire: boolean
   /** `none` when reasoning is switched off on the wire (`effortOnWire: true`). */
@@ -541,12 +541,12 @@ export type EffectiveState = {
   contextTokens: number
   /**
    * D-9: the auto-compact window in effect, `min(contextTokens, configured)`
-   * as the runtime resolves it (`resolveActiveAutoCompactWindow`).
+   * as omp resolves it through cfgCompaction / resolveThresholdTokens.
    */
   autoCompactWindow: number
   /**
-   * Where that window comes from: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, the
-   * node's own `settings.autoCompactWindow`, or the model window (`auto`).
+   * Where that window comes from: native compaction settings, or the reserve-based
+   * automatic threshold. `env` is reserved for older nodes.
    * Node-owned (D-9): never part of a profile, never a managed key.
    */
   autoCompactSource: AutoCompactSource

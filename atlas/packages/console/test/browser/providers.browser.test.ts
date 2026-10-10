@@ -130,6 +130,51 @@ describe.skipIf(SKIP !== null)('模型服务 in a browser', () => {
     await browser?.close()
   }, 30_000)
 
+  test('effort hints and supported choices follow edits to effort and lane', async () => {
+    const served = await serve()
+    const tab = await browser.tab()
+    try {
+      await signIn(tab, served.base, served.ops)
+      await tab.goto(`${served.base}/providers/new?preset=anthropic`)
+      await tab.waitFor('window.qianmoConsole !== undefined')
+      const model = `document.querySelector('#prov-models [data-model]')`
+      expect(
+        await tab.evaluate<boolean>(
+          `${model}.querySelector('[data-family-note]').hidden`,
+        ),
+      ).toBe(false)
+      for (const send of ['always', 'never', 'auto']) {
+        await tab.evaluate(
+          `var select = ${model}.querySelector('[data-f="send"]'); select.value = '${send}'; select.dispatchEvent(new Event('change', { bubbles: true }));`,
+        )
+        expect(
+          await tab.evaluate<boolean>(
+            `${model}.querySelector('[data-family-note]').hidden`,
+          ),
+        ).toBe(send !== 'auto')
+      }
+      for (const lane of ['gemini', 'grok', 'anthropic']) {
+        await tab.evaluate(
+          `var select = document.getElementById('prov-lane'); select.value = '${lane}'; select.dispatchEvent(new Event('change', { bubbles: true }));`,
+        )
+        expect(
+          await tab.evaluate<boolean>(
+            `${model}.querySelector('option[value="never"]').disabled`,
+          ),
+        ).toBe(false)
+        expect(
+          await tab.evaluate<boolean>(
+            `${model}.querySelector('option[value="always"]').disabled`,
+          ),
+        ).toBe(lane !== 'anthropic')
+      }
+      expect(served.providers.writes).toEqual([])
+    } finally {
+      await tab.close()
+      served.stop()
+    }
+  }, 30000)
+
   test('a preset, a key, 测连, 保存并切换: the node is switched and the page says so', async () => {
     const served = await serve()
     const tab = await browser.tab()

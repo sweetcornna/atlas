@@ -281,7 +281,7 @@ interface BannedTerm {
  */
 function bannedTerms(): BannedTerm[] {
   const doc = readFileSync(
-    join(import.meta.dir, '..', '..', '..', 'docs', 'dev', 'console.md'),
+    join(import.meta.dir, '..', '..', '..', '..', 'docs', 'dev', 'console.md'),
     'utf8',
   )
   const block =
@@ -445,7 +445,7 @@ describe('one name for each thing (I2)', () => {
 /** The console's own source and its host ports: where every message is written. */
 const SOURCES = [
   join(import.meta.dir, '..', 'src'),
-  join(import.meta.dir, '..', '..', '..', 'src', 'cli', 'handlers'),
+  join(import.meta.dir, '..', '..', 'node', 'src', 'commands'),
 ]
 
 function sourceFiles(): string[] {

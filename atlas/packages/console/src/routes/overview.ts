@@ -18,6 +18,8 @@ import {
   renderOverview,
 } from '../view/page.js'
 import { MAX_AUDIT_LIMIT } from './audit.js'
+import { consoleEvents } from './events.js'
+import { notFound } from '../respond.js'
 import {
   failureOf,
   readAuditSources,
@@ -40,6 +42,14 @@ const OVERVIEW_CSS = `
 `
 
 export const overviewRoute: RouteModule = {
+  api: {
+    heads: ['events'],
+    async handle(ctx, _head, rest) {
+      if (rest.length !== 0)
+        return notFound(`unknown path: ${ctx.url.pathname}`)
+      return consoleEvents(ctx)
+    },
+  },
   area: {
     id: 'overview',
     label: '总览',

@@ -119,8 +119,12 @@ export const LANE_WORD: Readonly<Record<string, string>> = {
   grok: 'Grok',
 }
 
-/** `effective.wire` as the node reports it (`chat`, `responses`, …). */
+/** omp API names plus legacy reports from nodes awaiting migration. */
 const WIRE_WORD: Readonly<Record<string, string>> = {
+  'anthropic-messages': 'Anthropic Messages',
+  'openai-completions': 'OpenAI Chat',
+  'openai-responses': 'OpenAI Responses',
+  'google-generative-ai': 'Gemini 原生',
   anthropic: 'Anthropic Messages',
   chat: 'OpenAI Chat',
   responses: 'OpenAI Responses',
@@ -232,30 +236,18 @@ function presetOf(
     : catalog.presets.find(entry => entry.id === id)
 }
 
-/**
- * §4.1 rule 1 and the P18.12 parity table: a Claude model id on the
- * Anthropic lane (or the official host) is Anthropic's own catalog, whose
- * capability list the runtime does not read — the model family decides, so
- * an explicit `always` or `never` there is not what reaches the wire. The
- * console says so beside the control rather than letting the choice look
- * honoured (P18.9 follow-up 3).
- */
+/** Automatic family capabilities are resolved by omp's native catalog. */
 export function familyGoverned(
-  lane: string,
-  modelId: string,
-  baseUrl: string,
+  model: ProviderProfileView['models'][number] | null,
 ): boolean {
-  if (lane !== 'anthropic') return false
-  if (modelId.toLowerCase().includes('claude')) return true
-  try {
-    return new URL(baseUrl).hostname === 'api.anthropic.com'
-  } catch {
-    return false
-  }
+  return (
+    model === null ||
+    (model.capabilities.mode === 'family' && model.effort.send === 'auto')
+  )
 }
 
 export const FAMILY_GOVERNED_LINE =
-  'Claude 系模型在 Anthropic 线上按内置模型族判断 · 该线路不受此设置控制'
+  '自动模式按 omp 原生模型目录推断能力 · 实际 effort 以节点报告为准'
 
 // ---------------------------------------------------------------------------
 // The node's own answer (§2.4 effective)
@@ -710,8 +702,7 @@ export function writeLink(
 
 /**
  * The effort a profile asks of its main model against what the node computed,
- * when they disagree: the line is family-governed (follow-up 3) or the node's
- * code does not honour it. Only for a node that is running this revision.
+ * when they disagree. Only for a node that is running this revision.
  */
 function effortMismatch(
   node: ProviderNodeView,
@@ -829,7 +820,7 @@ function nodeRow(
     driftList(node, reader, now) +
     (mismatch
       ? `<p class="note" data-family-governed>${escapeHtml(
-          `节点算出的 effort 与档案的设置相反 · ${FAMILY_GOVERNED_LINE}`,
+          '节点算出的 effort 与档案的设置相反 · 请核对模型能力与节点版本',
         )}</p>`
       : '') +
     effectiveFields(node.actual) +
@@ -1017,7 +1008,7 @@ export function keyState(
           : set === 0
             ? '都未设置'
             : `已设置 ${set} 把`) +
-        ` · ${KEY_SELECTION_WORD[selection] ?? selection}`,
+        ` · 原策略：${KEY_SELECTION_WORD[selection] ?? selection} · omp 按会话选钥`,
     )
   }
   const secret = summary.secrets[0]

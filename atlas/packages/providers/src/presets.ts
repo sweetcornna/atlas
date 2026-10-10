@@ -8,20 +8,17 @@
  * Provenance. Every entry records the official page it was taken from and the
  * date that page was read (`source`). All of them were read on 2026-10-03 via
  * the vendors research file, which quotes the vendors' own docs. An entry is
- * `evaluated: false` (§8.4) until a real-key acceptance run records evidence;
- * the one exception so far is `custom-openai`, from P18.13's two zero-red
- * AC-P6 rounds (see {@link CUSTOM_OPENAI_EVALUATED} for exactly what that
- * covers). Anything the research could not confirm is listed in `unverified`
- * instead of being filled in.
+ * `evaluated: false` (§8.4) until a real-key acceptance run on omp records
+ * evidence. Earlier OCC acceptance, including custom-openai's AC-P6 rounds,
+ * does not certify the new runtime. Unconfirmed research stays in `unverified`.
  *
  * Capability bits. A model with `send: always | never` needs the explicit,
- * all-six capability list (§3.2). The three thinking bits are prefilled with
- * the value the base computes TODAY for a non-Claude third-party model on that
- * lane (read from `thinking.ts` / `betas.ts` at 33dc81bf): Anthropic lane
+ * capability list (§3.2). The three thinking bits retain the catalog's
+ * conservative defaults from the original vendor research: Anthropic lane
  * `thinking = true`, `adaptive_thinking = false`, `interleaved_thinking =
- * false`; OpenAI lanes all three `false`. That keeps a preset from changing
- * thinking behaviour on the strength of a document nobody has tested. Where a
- * vendor's docs suggest otherwise it is noted in `unverified`.
+ * false`; OpenAI lanes all three `false`. The omp compiler translates the
+ * explicit send policy and these bits into native reasoning/thinking fields.
+ * Vendor claims that still need live verification remain in `unverified`.
  */
 
 import type {
@@ -150,7 +147,7 @@ const NO_PROBE: ProbeSpec = { auth: null, models: null }
 
 /** Non-Anthropic host on the Anthropic lane: no Claude-only beta fields (§3.6). */
 const THIRD_PARTY_ANTHROPIC: CompatEnv = {
-  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+  disableStrictTools: 'true',
 }
 
 const PLAN_TERMS_NOTE =
@@ -187,17 +184,8 @@ function preset(input: PresetInput): Preset {
   }
 }
 
-/**
- * P18.13 B 段两轮 AC-P6 零红（DECISIONS #7d）。它说的只是：经一个 OpenAI 兼容网关、走
- * `openai-responses` 线、用 `gpt-6-luna`，下发、热切换、真实调用与金丝雀扫描在内测舰队上
- * 两轮零红。**不是**对任何厂商的兼容声明，也不覆盖 `openai-chat` 线。
- */
-const CUSTOM_OPENAI_EVALUATED: Evaluated = {
-  at: '2026-10-05T15:01:18.706Z',
-  by: 'P18.13 B 段（主 agent）',
-  evidence:
-    'AC-P6 r1+r2 零红（v2.47.2 168d41c6）；OpenAI 兼容网关 · openai-responses 线 · gpt-6-luna；A2 probe auth、A4 probe call 通过；verdict.json sha256 d143c51f380fd471/0ab2471d49806412',
-}
+// The previous assessment was on occ v2.47.2; see base-switch-omp.md §5.
+const CUSTOM_OPENAI_EVALUATED: Evaluated = false
 
 const source = (url: string) => ({ url, verifiedAt: VERIFIED_AT })
 
@@ -651,7 +639,7 @@ const INTL: readonly Preset[] = [
     ),
     notes: [
       '官方模型在基座能力表里 · effort 用 auto',
-      '多 workspace 的密钥要带 anthropic-workspace-id · 填进 ANTHROPIC_CUSTOM_HEADERS',
+      '多 workspace 的密钥要带 anthropic-workspace-id · 填进 headers.anthropic-workspace-id',
     ],
   }),
   preset({

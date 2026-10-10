@@ -10,6 +10,7 @@
  * same bytes whether the session belongs to somebody else or does not exist.
  */
 
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { ownerOf, resolveAccess } from '../src/access.js'
 import { streamScopeOf } from '../src/accountsHttp.js'

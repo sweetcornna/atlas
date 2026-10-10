@@ -293,7 +293,7 @@ describe('chat transcript view', () => {
       now: NOW,
     })
     expect(html).toContain('turn-tail')
-    expect(html).toContain('还在跑')
+    expect(html).toContain('执行中')
     // 过程行不算「答了」：一轮正在产出过程时，是它最像在跑的时候。
     expect(html.indexOf('turn-tail')).toBeGreaterThan(
       html.indexOf('turn-notice'),

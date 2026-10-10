@@ -23,7 +23,6 @@ import {
   inlineScripts,
 } from '../src/respond.js'
 import { ROUTES } from '../src/routes/index.js'
-import { STUB_LINE } from '../src/routes/stub.js'
 import {
   ADMIN,
   LABEL,
@@ -105,7 +104,7 @@ const PAGES: readonly PageRow[] = [
     path: '/approvals',
     title: '审批',
     active: 'approvals',
-    reads: [STUB_LINE],
+    reads: ['审批未接入'],
   },
   {
     path: '/providers',
@@ -129,7 +128,7 @@ const PAGES: readonly PageRow[] = [
       '这台控制台没有开启个人账号',
     ],
   },
-  { path: '/usage', title: '用量', active: 'usage', reads: [STUB_LINE] },
+  { path: '/usage', title: '用量', active: 'usage', reads: ['用量未接入'] },
   {
     path: '/settings',
     title: '设置与关于',
@@ -245,49 +244,31 @@ describe('every page', () => {
   })
 
   test('every section is a stacked header over its own body', async () => {
-    for (const [path, kickers] of [
-      ['/', ['Overview', 'Nodes']],
-      ['/nodes', ['Roster']],
-      ['/audit', ['Trail']],
-      ['/settings', ['Instance', 'Limits']],
+    for (const [path, headings] of [
+      ['/', ['运行概况', '节点']],
+      ['/nodes', ['名册']],
+      ['/audit', ['消息链']],
+      ['/settings', ['实例', '限额']],
     ] as const) {
       const html = await read(path)
       const body = html.slice(html.indexOf('<main'))
       expect(body).not.toContain('class="rail"')
-      for (const kicker of kickers) {
+      for (const heading of headings) {
         expect(
-          `${path} ${body.includes(`<div class="kicker">${kicker}</div>`)}`,
+          `${path} ${new RegExp(`<h2[^>]*>${heading}</h2>`).test(body)}`,
         ).toBe(`${path} true`)
       }
     }
   })
 })
 
-describe('placeholders', () => {
-  const STUBS = ROUTES.filter(module => module.area.pending === true)
-
-  test('there are two, and each says so in one line and polls nothing', async () => {
-    expect(STUBS.map(module => module.area.id)).toEqual(['approvals', 'usage'])
-    for (const module of STUBS) {
-      const html = await read(module.area.href)
-      const main = html.slice(html.indexOf('<main'), html.indexOf('</main>'))
-      expect(main).toContain(STUB_LINE)
-      expect(main).not.toContain('<form')
-      expect(html).not.toContain('data-poll=')
-      expect(html).not.toContain('id="auto-refresh"')
-    }
-  })
-
-  test('the sidebar marks every placeholder, on every page', async () => {
+describe('completed governance routes', () => {
+  test('usage and approvals no longer carry placeholder badges', async () => {
+    expect(ROUTES.filter(module => module.area.pending === true)).toEqual([])
     const html = await read('/')
-    for (const module of STUBS) {
-      expect(html).toContain(
-        `<span class="nav-label">${module.area.label}</span><span class="nav-tag">未提供</span>`,
-      )
-    }
+    expect(html).not.toContain('class="nav-tag">未提供</span>')
   })
-
-  test('nothing under a placeholder is a page', async () => {
+  test('unknown child pages remain 404', async () => {
     const { handle } = harness()
     expect((await handle(browse('/approvals/x', ADMIN))).status).toBe(404)
   })

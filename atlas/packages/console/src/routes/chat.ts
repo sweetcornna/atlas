@@ -1,6 +1,9 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { reserveUsage, usageScopeOf } from '../quota.js'
+import type { TenantPort } from '../tenancy.js'
+
 /**
  * 对话 — the conversation face.
  *
@@ -363,19 +366,28 @@ async function chatThreadFragment(
  * controller is already closed. A leaked subscription on a long-lived console
  * is a listener list that only grows.
  */
-function chatStream(chat: ChatPort, scope?: StreamScope): Response {
+function chatStream(
+  chat: ChatPort,
+  scope?: StreamScope,
+  tenancy?: TenantPort,
+): Response {
   const encoder = new TextEncoder()
   let unsubscribe: (() => void) | null = null
   let heartbeat: ReturnType<typeof setInterval> | null = null
   let detach: (() => void) | null = null
+  let detachTenant: (() => void) | null = null
+  let closed = false
 
   const release = (): void => {
+    closed = true
     unsubscribe?.()
     unsubscribe = null
     if (heartbeat !== null) clearInterval(heartbeat)
     heartbeat = null
     detach?.()
     detach = null
+    detachTenant?.()
+    detachTenant = null
   }
 
   const body = new ReadableStream<Uint8Array>({
@@ -418,6 +430,12 @@ function chatStream(chat: ChatPort, scope?: StreamScope): Response {
       }, CHAT_STREAM_HEARTBEAT_MS)
       heartbeat.unref?.()
       if (scope !== undefined) detach = scope.attach(end)
+      if (closed) {
+        detach?.()
+        return
+      }
+      if (tenancy !== undefined) detachTenant = tenancy.subscribe(end)
+      if (closed) detachTenant?.()
     },
     cancel() {
       release()
@@ -452,12 +470,15 @@ const CHAT_COMMAND_HEAD = new RegExp(
 /**
  * Which commands need the write role. `/autocompact` changes a setting of the
  * whole node, every session on it included; `/compact` and `/context` act on
- * this conversation's own session, so whoever may talk in it may run them.
+ * this conversation's own session. Model and thinking commands also stay in that session, so whoever may talk in it may run them.
  */
 const COMMAND_NEEDS_WRITE: Readonly<Record<ChatLocalCommand, boolean>> = {
   autocompact: true,
   compact: false,
   context: false,
+  model: false,
+  thinking: false,
+  effort: false,
 }
 
 /** What a member is told instead, the page's status line included. */
@@ -499,7 +520,27 @@ async function handleChatSessions(
     if (!target.ok) return fail(400, 'invalid', target.message)
     const blocked = await ctx.admit()
     if (blocked !== null) return blocked
-    const result = await chat.open(target.value)
+    const temporarySession = `pending:${ctx.requestId}`
+    const reservation = reserveUsage(ctx, {
+      sessionId: temporarySession,
+      newSession: true,
+      operation: 'session',
+    })
+    if (reservation instanceof Response) return reservation
+    let result: Awaited<ReturnType<ChatPort['open']>>
+    try {
+      result = await chat.open(target.value)
+      if (typeof reservation === 'string' && result.ok)
+        ctx.deps.usage?.adoptSession(reservation, result.value.id)
+    } catch (error) {
+      if (typeof reservation === 'string')
+        ctx.deps.usage?.closeSession(usageScopeOf(ctx), temporarySession)
+      throw error
+    } finally {
+      if (typeof reservation === 'string') ctx.deps.usage?.finish(reservation)
+    }
+    if (!result.ok && typeof reservation === 'string')
+      ctx.deps.usage?.closeSession(usageScopeOf(ctx), temporarySession)
     await ctx.record('chat.session.open', target.value, ...outcomeOf(result))
     if (!result.ok) return failureResponse(result.failure)
     if (scope.opener !== null && accounts !== undefined) {
@@ -550,7 +591,7 @@ async function dispatchChatApi(
 
   if (name === 'stream' && rest.length === 1) {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
-    return chatStream(chat, streamScopeOf(access, accounts))
+    return chatStream(chat, streamScopeOf(access, accounts), deps.tenancy)
   }
 
   if (name === 'sessions') {
@@ -589,11 +630,28 @@ async function dispatchChatApi(
       }
       const blocked = await ctx.admit()
       if (blocked !== null) return blocked
-      const result = await chat.send({
-        sessionId,
-        text: text.value,
-        ...(command === null ? {} : { command }),
-      })
+      const reservation = reserveUsage(ctx, { sessionId, operation: 'message' })
+      if (reservation instanceof Response) return reservation
+      let result: Awaited<ReturnType<ChatPort['send']>>
+      try {
+        result = await chat.send({
+          sessionId,
+          text: text.value,
+          ...(command === null ? {} : { command }),
+          ...(typeof reservation === 'string'
+            ? { usageReservation: reservation }
+            : {}),
+        })
+      } catch (error) {
+        if (typeof reservation === 'string') deps.usage?.finish(reservation)
+        throw error
+      }
+      if (
+        !result.ok &&
+        !result.failure.deliveryUnknown &&
+        typeof reservation === 'string'
+      )
+        deps.usage?.finish(reservation)
       await ctx.record(
         command === null ? 'chat.message.send' : `chat.command.${command}`,
         sessionId,

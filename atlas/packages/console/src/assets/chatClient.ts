@@ -95,7 +95,14 @@ function chatScript(): string {
     var stick = keepScroll === false ? true : atBottom(mount);
     var url = ROUTES.thread + encodeURIComponent(active) + (opening ? '?open=1' : '');
     return qc.loadHtml(url).then(function (html) {
+      var previous = mount.querySelectorAll('.turn-agent').length;
       mount.innerHTML = html;
+      var replies = mount.querySelectorAll('.turn-agent');
+      if (!opening && replies.length > previous) {
+        var announcement = byId('reply-announcement');
+        var reply = replies[replies.length - 1].querySelector('.bubble, .command-output');
+        if (announcement) announcement.textContent = '收到新回复 · ' + (reply ? reply.textContent.slice(0, 240) : '请查看对话');
+      }
       paintComposer();
       if (stick) mount.scrollTop = mount.scrollHeight;
     });

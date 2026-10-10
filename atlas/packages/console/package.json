@@ -15,9 +15,10 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@qianmo/audit": "workspace:*"
+    "@qianmo/audit": "workspace:*",
+    "@qianmo/protocol": "workspace:*"
   }
 }

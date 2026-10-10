@@ -17,6 +17,7 @@
 
 import {
   checkCompatValue,
+  ANTHROPIC_ONLY_COMPAT_KEYS,
   isCompatKey,
   isForbiddenEnvKey,
   PROFILE_SETTABLE_COMPAT_KEYS,
@@ -66,9 +67,9 @@ import {
 export type ProviderWarning = {
   code:
     | 'retiring-model'
-    | 'tier-unpinned'
     | 'override-on-claude-catalog'
     | 'key-hint-mismatch'
+    | 'native-key-selection'
   message: string
   path: string
 }
@@ -423,11 +424,11 @@ export function checkModelEffort(
         'effort 为 always 或 never 时能力必须显式给出 · 基座把缺项读成 false · 只能全有或全无',
     }
   }
-  if (send !== 'auto' && (lane === 'gemini' || lane === 'grok')) {
+  if (send === 'always' && (lane === 'gemini' || lane === 'grok')) {
     return {
       code: 'effort-unsendable',
       path: `${path}.effort.send`,
-      message: `${lane} 线 v1 只允许 effort auto · 能力覆盖还不读这条线路自己的前缀`,
+      message: `${lane} 线暂不接收 always effort · 使用 auto 或 never`,
     }
   }
   if (
@@ -448,17 +449,6 @@ export function checkModelEffort(
       code: 'bad-value',
       path: `${path}.effort.levels`,
       message: 'effort 为 always 时必须给出可选档位',
-    }
-  }
-  if (
-    send !== 'auto' &&
-    !model.tiers.some(tier => CAPABILITY_TIERS.includes(tier))
-  ) {
-    return {
-      code: 'bad-value',
-      path: `${path}.tiers`,
-      message:
-        '显式能力要挂在 opus / sonnet / haiku 档上才会被读到 · fable 档在 P18.5 之前没人读',
     }
   }
   if (levels !== undefined && compiledEffortLevel(model.effort) === null) {
@@ -484,14 +474,7 @@ function parseCompat(value: unknown, path: string, lane: Lane): CompatEnv {
     if (isForbiddenEnvKey(key) || !isCompatKey(key)) {
       refuse('unknown-key', at, `${key} 不在闭合兼容键集里`)
     }
-    if (!PROFILE_SETTABLE_COMPAT_KEYS.includes(key)) {
-      refuse(
-        'bad-value',
-        at,
-        `${key} 由编译器从 effortLock 和各模型的 effort 推导 · 不能直接设`,
-      )
-    }
-    if (key === 'ANTHROPIC_CUSTOM_HEADERS' && lane !== 'anthropic') {
+    if (ANTHROPIC_ONLY_COMPAT_KEYS.includes(key) && lane !== 'anthropic') {
       refuse('bad-value', at, '只用于 Anthropic 线')
     }
     const valueText = text(entry, at, { max: 256 })
@@ -614,21 +597,6 @@ function parseCore(
       })
     }
   })
-  // Anthropic's own host resolves an unpinned alias to a real Claude model;
-  // every other endpoint answers it with "model not found".
-  const officialAnthropic =
-    lane === 'anthropic' &&
-    new URL(resolved.url).hostname === 'api.anthropic.com'
-  for (const tier of MODEL_TIERS) {
-    if (!owner.has(tier) && !officialAnthropic) {
-      warnings.push({
-        code: 'tier-unpinned',
-        path: at('models'),
-        message: `档位 ${tier} 没有模型 · 用到这一档时会落到基座的族默认模型`,
-      })
-    }
-  }
-
   const compat =
     raw.compat === undefined ? {} : parseCompat(raw.compat, at('compat'), lane)
 

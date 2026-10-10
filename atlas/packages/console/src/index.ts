@@ -8,7 +8,7 @@
  *
  * A leaf package with no third-party dependencies and no knowledge of where
  * anything lives: everything it reads or acts on arrives as a port
- * (`deps.ts`), injected by the `occ console` handler.
+ * (`deps.ts`), injected by the `qm console` handler.
  */
 
 export type {
@@ -262,3 +262,8 @@ export type {
   WatchFireOutcome,
   WatchJobStatus,
 } from './deps.js'
+
+export * from './governance.js'
+export * from './tenancy.js'
+
+export { FileUsageStore, usageDelta } from './usage.js'

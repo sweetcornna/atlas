@@ -13,7 +13,7 @@
  * ## Every area is in the sidebar, including the ones that are not built
  *
  * A placeholder area is a real URL that renders one line saying the page is
- * not there yet (`routes/stub.ts`), and its sidebar item carries a small
+ * not there yet, and its sidebar item carries a small
  * 未提供 tag. Leaving it out would make the console's shape change every time
  * a page lands; drawing it as if it worked would make an operator click into
  * an empty page and wonder what failed.
@@ -209,7 +209,7 @@ function refreshControl(): string {
       }>${escapeHtml(label)}</option>`,
   ).join('')
   return (
-    `<div class="stack" style="gap:var(--space-2)">` +
+    `<div class="stack gap-2">` +
     `<div class="flabel">刷新</div>` +
     `<div class="fblock">` +
     `<label class="sw"><input type="checkbox" id="auto-refresh" checked>` +
@@ -232,11 +232,11 @@ function refreshControl(): string {
 function tokenControl(): string {
   return (
     `<details class="adv"><summary>${chevron()}换令牌</summary>` +
-    `<div class="adv-body" style="grid-template-columns:minmax(0,1fr)">` +
+    `<div class="adv-body single-column">` +
     `<div class="field"><label for="token">令牌</label>` +
     `<input class="input" type="password" id="token" autocomplete="off" ` +
     `spellcheck="false" placeholder="粘贴新令牌"></div>` +
-    `<div class="rowx" style="gap:var(--space-2)">` +
+    `<div class="rowx gap-2">` +
     `<button type="button" class="btn btn-primary btn-small" ` +
     `data-action="token-save">保存</button>` +
     `<button type="button" class="btn btn-secondary btn-small" ` +
@@ -390,6 +390,8 @@ function topBar(model: ShellModel): string {
       ? ''
       : `<div class="top-actions">${model.actions}</div>`) +
     healthStrip(model.health) +
+    `<label class="sw">外观 <select id="theme-choice" aria-label="外观">` +
+    `<option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>` +
     userMenu(model.role, model.viewer) +
     `</div></header>`
   )
@@ -451,6 +453,10 @@ export function renderShell(model: ShellModel): string {
     // every polled region, so a refresh never takes a message with it.
     `<div class="toasts" id="toasts" aria-live="polite" ` +
     `aria-relevant="additions"></div>\n` +
+    `<p id="reply-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>` +
+    `<dialog class="dialog" id="keyboard-help" aria-labelledby="keyboard-help-title">` +
+    `<h2 id="keyboard-help-title">快捷键</h2><p>/ 搜索 · g n 节点 · g a 消息链 · ? 帮助</p>` +
+    `<button class="btn" type="button" data-action="confirm-cancel">关闭</button></dialog>` +
     `<script>${script}</script>\n` +
     `</body>\n</html>\n`
   )

@@ -142,7 +142,7 @@ function noteEditor(
     `<label for="${attr(id)}">备注</label>` +
     `<textarea class="input" id="${attr(id)}" name="note" rows="3" ` +
     `maxlength="${attr(String(MAX_SERVER_NOTE_LENGTH))}" ` +
-    `placeholder="这台机器是做什么的" spellcheck="false"${mode}>${value}</textarea>` +
+    `placeholder="填写服务器用途" spellcheck="false"${mode}>${value}</textarea>` +
     `</div>`
 
   // The reason, where the button would have been. An operator who cannot find
@@ -198,9 +198,7 @@ export function renderServers(model: ServersModel): string {
     body.push(bar('muted', '以下服务器仍取自启动参数'))
   }
   if (model.cards.length === 0) {
-    body.push(
-      `<p class="hint">未配置服务器归属 · 启动时用 --node-server 指定</p>`,
-    )
+    body.push(`<p class="hint">未配置服务器归属 · 请联系运维设置</p>`)
     return (
       sectionHead('Servers', '服务器', { headingId: SERVERS_HEADING_ID }) +
       `<div class="pane">${body.join('')}</div>`

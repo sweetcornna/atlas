@@ -43,16 +43,12 @@ function accepted(input: Record<string, unknown>, options = OPTIONS) {
 }
 
 describe('closed key set (§3.6) and process-level keys', () => {
-  test('the compat set is exactly the §3.6 table', () => {
-    expect([...COMPAT_KEYS]).toEqual([
-      'CLAUDE_CODE_EFFORT_LEVEL',
-      'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
-      'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
-      'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
-      'API_TIMEOUT_MS',
-      'ANTHROPIC_CUSTOM_HEADERS',
-      'CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE',
-    ])
+  test('compat exposes native scalar keys only', () => {
+    expect(COMPAT_KEYS).toContain('supportsReasoningEffort')
+    expect(COMPAT_KEYS).toContain('maxTokens')
+    expect(COMPAT_KEYS).not.toContain('extraBody')
+    expect(COMPAT_KEYS).not.toContain('statefulResponses')
+    expect(COMPAT_KEYS.some(key => key.startsWith('CLAUDE_CODE_'))).toBe(false)
   })
 
   for (const key of [
@@ -73,26 +69,14 @@ describe('closed key set (§3.6) and process-level keys', () => {
     })
   }
 
-  test('the two effort keys are derived, never set by hand', () => {
-    for (const key of [
-      'CLAUDE_CODE_EFFORT_LEVEL',
-      'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
-    ]) {
-      expect(refusal(wireProfileJson({ compat: { [key]: '1' } })).code).toBe(
-        'bad-value',
-      )
-    }
-  })
-
-  test('compat values are range-checked', () => {
-    const bad: Record<string, string> = {
-      CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 'true',
-      API_TIMEOUT_MS: '1000',
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '-5',
-      ANTHROPIC_CUSTOM_HEADERS: 'x-api-key: stolen',
-      CLAUDE_CODE_DEEPSEEK_ANTHROPIC_WIRE: '1',
-    }
-    for (const [key, value] of Object.entries(bad)) {
+  test('compat values are typed and bounded', () => {
+    for (const [key, value] of Object.entries({
+      disableStrictTools: '1',
+      streamIdleTimeoutMs: '-5',
+      maxTokens: '0',
+      'headers.anthropic-workspace-id': 'x-api-key: stolen',
+      cacheRetention: 'forever',
+    })) {
       expect(refusal(wireProfileJson({ compat: { [key]: value } })).code).toBe(
         'bad-value',
       )
@@ -100,8 +84,8 @@ describe('closed key set (§3.6) and process-level keys', () => {
     accepted(
       wireProfileJson({
         compat: {
-          API_TIMEOUT_MS: '600000',
-          ANTHROPIC_CUSTOM_HEADERS: 'anthropic-workspace-id: wrkspc_01',
+          streamIdleTimeoutMs: '600000',
+          'headers.anthropic-workspace-id': 'wrkspc_01',
         },
       }),
     )
@@ -285,12 +269,12 @@ describe('§3.4 effort rules, cell by cell', () => {
     })
   })
 
-  test('always / never on gemini and grok: effort-unsendable in v1', () => {
+  test('gemini and grok: never disables thinking; always remains explicitly unsupported', () => {
     for (const lane of ['gemini', 'grok'] as const) {
       expect(refusal(profileWith(lane, 'always')).code).toBe(
         'effort-unsendable',
       )
-      expect(refusal(profileWith(lane, 'never')).code).toBe('effort-unsendable')
+      accepted(profileWith(lane, 'never'))
     }
   })
 
@@ -324,9 +308,9 @@ describe('§3.4 effort rules, cell by cell', () => {
     expect(refusal(wireProfileJson({ models })).code).toBe('bad-value')
   })
 
-  test('explicit capabilities on a fable-only model are refused (FABLE is unread before P18.5)', () => {
+  test('explicit capabilities are per-model in omp, including a fable-only model', () => {
     const models = [anthropicModel({ tiers: ['fable'] })]
-    expect(refusal(wireProfileJson({ models })).code).toBe('bad-value')
+    expect(accepted(wireProfileJson({ models })).ok).toBe(true)
   })
 
   test('a level with nothing at or below it in the set is refused, never raised', () => {

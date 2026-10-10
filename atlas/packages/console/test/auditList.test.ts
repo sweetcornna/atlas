@@ -10,7 +10,7 @@
  * `pageTrail` over records in memory — so the page is exercised against the
  * cursor semantics it will meet, and the trail can grow between requests.
  * The host's own port is tested on a real file in
- * `src/cli/handlers/__tests__/consoleAuditPaging.test.ts`.
+ * `packages/node/test/commands/consoleAuditPaging.test.ts`.
  */
 
 import { describe, expect, test } from 'bun:test'

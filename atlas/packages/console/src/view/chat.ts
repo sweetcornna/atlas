@@ -411,7 +411,7 @@ function targetState(
  */
 const NOTHING_OPEN =
   `<div class="empty">` +
-  `<div class="stack" style="gap:var(--space-4)">` +
+  `<div class="stack gap-4">` +
   `<h4 class="empty-title">选择一个智能体开始对话</h4>` +
   `<p class="empty-note">还没有打开会话 · 在会话列表里选一个智能体开始 · ` +
   `或者开一条新会话把任务交给别的节点</p>` +
@@ -461,7 +461,7 @@ function runningTail(turns: readonly ChatTurn[], now: number): string {
     `<span class="turn-av turn-av-notice" aria-hidden="true">` +
     `<span class="tail-dot"></span></span>` +
     `<div class="turn-body"><div class="notice-line">` +
-    `<span class="notice-text">还在跑</span>` +
+    `<span class="notice-text">执行中</span>` +
     `<span class="turn-when">${escapeHtml(formatLatency(elapsed))}</span>` +
     `</div></div></div>`
   )

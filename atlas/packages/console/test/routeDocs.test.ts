@@ -85,7 +85,7 @@ function expand(path: string): readonly (readonly Segment[])[] {
 const ESCAPED_PIPE = '\uE000'
 
 function documentedRows(): readonly Row[] {
-  const doc = source('../../../docs/dev/console.md')
+  const doc = source('../../../../docs/dev/console.md')
   const start = doc.indexOf('\n## §5 路由表')
   const end = doc.indexOf('\n### 5.1', start)
   if (start === -1 || end === -1) throw new Error('console.md §5 not found')

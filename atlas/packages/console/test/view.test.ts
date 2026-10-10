@@ -639,7 +639,8 @@ describe('renderRoster', () => {
     expect(panel).toContain('btn-ghost btn-danger')
     const summary = html.slice(0, html.indexOf('</summary>'))
     expect(summary).not.toContain('deregister')
-    expect(summary).toContain('data-action="heartbeat"')
+    expect(summary).not.toContain('data-action="heartbeat"')
+    expect(panel).toContain('data-action="heartbeat"')
   })
 
   test('the three health states each get their own tone', () => {
@@ -885,7 +886,8 @@ describe('renderServers', () => {
 
   test('names the missing flag rather than showing an empty section', () => {
     const html = renderServers(model({ cards: [] }))
-    expect(html).toContain('--node-server')
+    expect(html).toContain('请联系运维设置')
+    expect(html).not.toContain('--node-server')
   })
 })
 
@@ -1049,12 +1051,12 @@ describe('renderAudit', () => {
     expect(filtered).toContain('显示 1')
   })
 
-  test('the filter form offers all fourteen sources plus 全部', () => {
+  test('the filter form offers all declared sources plus 全部', () => {
     const html = renderAudit(page(), null, NO_FILTER)
     for (const source of Object.values(AuditSource)) {
       expect(html).toContain(`value="${source}"`)
     }
-    expect(Object.values(AuditSource)).toHaveLength(14)
+    expect(html).toContain('value="a2a"')
     expect(html).toContain('全部')
   })
 
@@ -1293,14 +1295,14 @@ describe('renderAudit', () => {
     const html = renderAudit(page({ records: [], total: 9 }), null, {
       window: '1h',
     })
-    expect(html).toContain('把时间放宽一档')
+    expect(html).toContain('扩大时间范围')
     expect(html).toContain('href="?window=24h"')
 
     // Nothing to widen to at the far end, so no button that does nothing.
     const widest = renderAudit(page({ records: [], total: 9 }), null, {
       window: '7d',
     })
-    expect(widest).not.toContain('把时间放宽一档')
+    expect(widest).not.toContain('扩大时间范围')
   })
 
   test('a failure renders a bar and does not throw', () => {
@@ -1556,10 +1558,10 @@ describe('renderLimits', () => {
   }
 
   test('both ceilings are rendered from their own package', () => {
-    expect(html).toContain('@qianmo/protocol')
-    expect(html).toContain('LIMITS')
-    expect(html).toContain('@qianmo/router')
-    expect(html).toContain('RUNTIME_RATE')
+    expect(html).toContain('所有节点共同遵守的消息边界')
+    expect(html).not.toContain('LIMITS')
+    expect(html).toContain('当前节点的请求处理上限')
+    expect(html).not.toContain('RUNTIME_RATE')
   })
 
   test('the two rate limits live in two columns and never merge', () => {
@@ -1570,12 +1572,12 @@ describe('renderLimits', () => {
     // mentions the other's. `packages/router/src/rate.ts`: the two limits are
     // structurally distinct and must not be mixed — a dashboard is a document.
     expect(protocol).toContain('600 / 分钟')
-    expect(protocol).toContain('@qianmo/protocol')
+    expect(protocol).toContain('所有节点共同遵守的消息边界')
     expect(protocol).not.toContain('RUNTIME_RATE')
-    expect(protocol).not.toContain('@qianmo/router')
+    expect(protocol).not.toContain('当前节点的请求处理上限')
 
     expect(runtime).toContain('20 / 1 分')
-    expect(runtime).toContain('@qianmo/router')
+    expect(runtime).toContain('当前节点的请求处理上限')
     expect(runtime).not.toContain('LIMITS')
     expect(runtime).not.toContain('600')
   })
@@ -2347,7 +2349,7 @@ describe('assets', () => {
     // three as a hairline plus ambient darkness. A literal offset/blur here is
     // a shadow that would be invisible on the dark ground.
     for (const shadow of CONSOLE_CSS.match(/box-shadow:[^;}]*/g) ?? []) {
-      expect(shadow).toMatch(/box-shadow: var\(--shadow-(sm|md|lg)\)/)
+      expect(shadow).toMatch(/box-shadow: (var\(--shadow-(sm|md|lg)\)|none)/)
     }
     expect(CONSOLE_CSS).not.toContain('text-shadow')
     expect(CONSOLE_CSS).not.toContain('gradient')
@@ -2375,15 +2377,15 @@ describe('assets', () => {
     // The previous sheet ran 11–13px and the roster was unreadable at arm's
     // length. Everything that carries a value is now 12.5px or more; 10–11px
     // survives only on uppercase kickers and micro-labels.
-    expect(ruleOf('body')).toContain('font-size: 14px')
-    expect(ruleOf('.input')).toContain('font-size: 14px')
-    expect(ruleOf('.btn')).toContain('font-size: 14px')
-    expect(ruleOf('.trail')).toContain('font-size: 13.5px')
+    expect(ruleOf('body')).toContain('font-size: var(--text-14)')
+    expect(ruleOf('.input')).toContain('font-size: var(--text-14)')
+    expect(ruleOf('.btn')).toContain('font-size: var(--text-14)')
+    expect(ruleOf('.trail')).toContain('font-size: var(--text-13-5)')
   })
 
   test('a section kicker is a small uppercase accent label, not a headline', () => {
     const kicker = ruleOf('.kicker')
-    expect(kicker).toContain('font-size: 10px')
+    expect(kicker).toContain('font-size: var(--text-10)')
     expect(kicker).toContain('text-transform: uppercase')
     // The 700 step: the accent itself is 3.0:1 on the light ground (B1).
     expect(kicker).toContain('color: var(--color-accent-700)')

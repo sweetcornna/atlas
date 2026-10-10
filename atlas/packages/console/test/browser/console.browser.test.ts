@@ -66,6 +66,9 @@ function serveConsole(): Served {
     async fetch(request) {
       const url = new URL(request.url)
       wrapper.seen.push(url.pathname)
+      // Polling fallback revocation; P2 covers event delivery separately.
+      if (url.pathname === '/v0/events')
+        return new Response(null, { status: 503 })
       let forwarded = request
       if (wrapper.revoked) {
         url.searchParams.delete('token')

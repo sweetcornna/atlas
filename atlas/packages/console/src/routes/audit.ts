@@ -31,6 +31,7 @@
  */
 
 import { AUDIT_PAGE_JS } from '../assets/pageScripts.js'
+import type { AuditRecord } from '@qianmo/audit'
 import type {
   AuditFilter,
   AuditPort,
@@ -449,17 +450,96 @@ async function handleAudit(ctx: RouteContext): Promise<Response> {
   const denied = guard(ctx.access.credential, 'view', 'guarded')
   if (denied !== null) return denied
   if (request.method !== 'GET') return methodNotAllowed(['GET'])
+  const format = url.searchParams.get('format')
+  if (format !== null && format !== 'csv' && format !== 'ndjson')
+    return fail(400, 'invalid', '导出格式必须是 csv 或 ndjson')
   const requestedNode = textParam(url.searchParams, 'node')
   const source = auditSourceOf(deps, requestedNode)
   if (source !== undefined) {
     const result = await source.audit.read(parseAuditFilter(url, now))
-    return result.ok ? json(result.value) : failureResponse(result.failure)
+    return result.ok
+      ? format === null
+        ? json(result.value)
+        : auditExport(
+            format,
+            result.value.records.map(record => ({
+              auditNode: source.node,
+              ...record,
+            })),
+          )
+      : failureResponse(result.failure)
   }
   if (requestedNode !== undefined) {
     return fail(404, 'not_found', '未配置该审计节点')
   }
   const sources = await readAuditSources(deps, parseAuditFilter(url, now))
+  if (format !== null) {
+    const failed = sources.find(source => source.failure !== null)
+    if (failed?.failure) return failureResponse(failed.failure)
+    return auditExport(
+      format,
+      sources.flatMap(source =>
+        (source.page?.records ?? []).map(record => ({
+          auditNode: source.node,
+          ...record,
+        })),
+      ),
+    )
+  }
   return json({ audits: sources })
+}
+
+/** A bounded filtered snapshot. Prefix formula-like spreadsheet cells. */
+function auditExport(
+  format: string,
+  records: readonly (AuditRecord & { auditNode: string })[],
+): Response {
+  const columns = [
+    'auditNode',
+    'seq',
+    'at',
+    'source',
+    'kind',
+    'traceId',
+    'taskId',
+    'msgId',
+    'node',
+    'peer',
+    'outcome',
+    'code',
+    'detail',
+    'prev',
+  ] as const
+  const cell = (value: unknown) => {
+    let text =
+      value === undefined
+        ? ''
+        : typeof value === 'string'
+          ? value
+          : JSON.stringify(value)
+    if (/^[\s]*[=+@-]/.test(text) || /^[\t\r\n]/.test(text)) text = `'${text}`
+    return `"${text.replaceAll('"', '""')}"`
+  }
+  const body =
+    format === 'ndjson'
+      ? records.map(record => JSON.stringify(record)).join('\n') +
+        (records.length ? '\n' : '')
+      : [
+          columns.join(','),
+          ...records.map(record =>
+            columns.map(column => cell(record[column])).join(','),
+          ),
+        ].join('\r\n') + '\r\n'
+  return new Response(body, {
+    headers: {
+      'content-type':
+        format === 'ndjson'
+          ? 'application/x-ndjson; charset=utf-8'
+          : 'text/csv; charset=utf-8',
+      'content-disposition': `attachment; filename="qianmo-audit.${format}"`,
+      'cache-control': 'no-store',
+    },
+  })
 }
 
 async function handleChain(
@@ -538,6 +618,17 @@ async function auditPage(ctx: RouteContext): Promise<PageRender> {
     title: '消息链',
     body:
       `<section class="sec" id="trail-section">` +
+      `<div class="rowx gap-2"><span class="muted">导出当前筛选（每条链最多 500 条）</span>` +
+      ['ndjson', 'csv']
+        .map(format => {
+          const params = new URLSearchParams(ctx.url.searchParams)
+          params.delete('token')
+          params.set('format', format)
+          params.set('limit', '500')
+          return `<button type="button" class="btn" data-action="audit-export" data-export="${attr(`/v0/audit?${params}`)}">${format.toUpperCase()}</button>`
+        })
+        .join('') +
+      `</div>` +
       (region.poll === ''
         ? `<div id="audit">${region.html}</div>`
         : `<div id="audit" data-poll="${attr(region.poll)}" data-swap="${attr(

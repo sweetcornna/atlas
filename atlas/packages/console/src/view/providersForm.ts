@@ -26,9 +26,8 @@
  *
  * ## Two answers the form gives that the validator does not
  *
- * - A Claude model on the Anthropic lane is decided by the runtime's model
- *   family, whatever the profile says ({@link familyGoverned}); the form says
- *   so beside the effort control (P18.9 follow-up 3).
+ * - Automatic family capabilities come from omp's model catalog; explicit
+ *   always/never settings compile into the native model configuration.
  * - Whether 总是发送 is on offer for the OpenAI Chat lane is the nodes' own
  *   answer ({@link chatAlwaysGate}), read from the capabilities they reported,
  *   never a constant here (follow-up 4).
@@ -308,7 +307,6 @@ function check(attrs: string, label: string, checked: boolean): string {
 function modelBlock(
   model: ProviderModel | null,
   lane: string,
-  baseUrl: string,
   gate: ChatGate,
 ): string {
   const send = model?.effort.send ?? 'auto'
@@ -316,13 +314,12 @@ function modelBlock(
   const explicit = caps?.mode === 'explicit' ? caps : undefined
   const levels = new Set(model?.effort.levels ?? [])
   const tiers = new Set(model?.tiers ?? ['opus', 'sonnet', 'haiku'])
-  const governed = familyGoverned(lane, model?.id ?? '', baseUrl)
+  const governed = familyGoverned(model)
   const chatClosed = lane === 'openai-chat' && !gate.open
-  const autoOnly = lane === 'gemini' || lane === 'grok'
+  const noAlways = lane === 'gemini' || lane === 'grok'
   const sends = (['auto', 'always', 'never'] as const)
     .map(value => {
-      const off =
-        (value === 'always' && chatClosed) || (value !== 'auto' && autoOnly)
+      const off = value === 'always' && (chatClosed || noAlways)
       return (
         `<option value="${value}"${send === value ? ' selected' : ''}` +
         `${value === 'always' ? ' data-chat-gate' : ''}` +
@@ -604,13 +601,12 @@ function advanced(model: EditorModel, gate: ChatGate): string {
     `<p class="note">上下文窗口留空按 200000 · 节点指派的覆盖优先 · 节点上的实际值看下方在用节点</p>` +
     `<div class="prov-models" id="prov-models">` +
     profile.models
-      .map(entry => modelBlock(entry, profile.lane, profile.baseUrl, gate))
+      .map(entry => modelBlock(entry, profile.lane, gate))
       .join('') +
     `</div>` +
     `<template id="prov-model-template">${modelBlock(
       null,
       profile.lane,
-      profile.baseUrl,
       gate,
     )}</template>` +
     `<datalist id="prov-model-list"></datalist>` +

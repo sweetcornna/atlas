@@ -12,6 +12,7 @@
  * whose same scan finds them; the 403 tab against the 200 one.
  */
 
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { resolveAccess } from '../src/access.js'
 import { ActionLedger } from '../src/actionLedger.js'

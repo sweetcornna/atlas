@@ -50,7 +50,7 @@ export function wireProfileJson(
         tiers: ['haiku'],
       }),
     ],
-    compat: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' },
+    compat: { disableStrictTools: 'true' },
     ...overrides,
   }
 }

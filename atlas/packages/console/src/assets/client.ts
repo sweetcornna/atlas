@@ -844,19 +844,29 @@ function runtimeScript(guards: TokenGuards): string {
 
   /* ---------------- transport ---------------- */
 
+  var htmlCache = new Map();
   function loadHtml(url) {
     if (expired) return refused();
+    var prior = htmlCache.get(url);
     return fetch(url, {
-      headers: authHeaders(),
+      headers: authHeaders(prior ? { 'If-None-Match': prior.etag } : {}),
       credentials: 'same-origin',
       cache: 'no-store'
     }).then(checked, function (e) { throw unanswered(e); }).then(function (res) {
+      if (res.status === 304 && prior) return prior.html;
       if (!res.ok) throw failure('', res.status, 'HTTP ' + res.status);
       var type = res.headers.get('content-type') || '';
       if (type.indexOf('text/html') === -1) {
         throw failure('format', res.status, '响应非 HTML · ' + type);
       }
-      return res.text();
+      return res.text().then(function (html) {
+        var etag = res.headers.get('etag');
+        if (etag) {
+          if (htmlCache.size > 40) htmlCache.clear();
+          htmlCache.set(url, { etag: etag, html: html });
+        }
+        return html;
+      });
     });
   }
 
@@ -897,6 +907,23 @@ function runtimeScript(guards: TokenGuards): string {
   }
 
   /* ---------------- polled regions ---------------- */
+
+  actions['audit-export'] = function (button) {
+    var url = button.getAttribute('data-export');
+    if (!url) return;
+    button.disabled = true;
+    fetch(url, { credentials: 'same-origin', headers: authHeaders({}) }).then(checked).then(function (response) {
+      if (!response.ok) throw new Error('导出失败 · 请稍后重试');
+      return response.blob();
+    }).then(function (blob) {
+      var objectUrl = URL.createObjectURL(blob);
+      var anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = 'qianmo-audit.' + (new URL(url, location.origin).searchParams.get('format') || 'ndjson');
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+    }).catch(function (err) { toast(message(err), 'bad'); }).then(function () { button.disabled = false; });
+  };
 
   // The fetched HTML is parsed in a detached template: inert, no script
   // execution, nothing touches the live document until a node is adopted.
@@ -1053,10 +1080,18 @@ function runtimeScript(guards: TokenGuards): string {
     });
   }
 
-  function refreshAll() {
+  var revisionStream = null;
+  var revisionsLive = false;
+  function revisionMount(mount) {
+    var path = (mount.getAttribute('data-poll') || '').split('?')[0];
+    return path === '/fragments/roster' || path === '/fragments/audit';
+  }
+  function refreshAll(force) {
     var mounts = document.querySelectorAll('[data-poll]');
     var jobs = [];
-    for (var i = 0; i < mounts.length; i++) jobs.push(refreshRegion(mounts[i]));
+    for (var i = 0; i < mounts.length; i++) {
+      if (force || !revisionsLive || !revisionMount(mounts[i])) jobs.push(refreshRegion(mounts[i]));
+    }
     return Promise.all(jobs);
   }
 
@@ -1068,9 +1103,9 @@ function runtimeScript(guards: TokenGuards): string {
     return '浏览器离线 · ' + asOf(lastGood);
   }
 
-  function tick() {
+  function tick(force) {
     var state = byId('refresh-state');
-    return refreshAll().then(function () {
+    return refreshAll(force).then(function () {
       failures = 0;
       lastGood = Date.now();
       connSay('');
@@ -1121,7 +1156,7 @@ function runtimeScript(guards: TokenGuards): string {
   function refreshNow() {
     if (expired || !(pollMs > 0)) return;
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
-    tick().then(arm);
+    tick(true).then(arm);
   }
 
   /* ---------------- wiring ---------------- */
@@ -1251,10 +1286,52 @@ function runtimeScript(guards: TokenGuards): string {
     paintToken();
     var toggle = byId('auto-refresh');
     var picker = byId('refresh-interval');
-    if (toggle) toggle.addEventListener('change', schedule);
+    if (toggle) toggle.addEventListener('change', function () { schedule(); refreshNow(); });
     if (picker) picker.addEventListener('change', schedule);
     schedule();
+    var theme = byId('theme-choice');
+    if (theme) {
+      theme.value = document.documentElement.getAttribute('data-theme') || 'system';
+      theme.addEventListener('change', function () {
+        var value = theme.value;
+        if (['system', 'light', 'dark'].indexOf(value) < 0) return;
+        document.documentElement.setAttribute('data-theme', value);
+        document.cookie = 'qianmo_theme=' + value + '; Path=/; Max-Age=31536000; SameSite=Strict' + (location.protocol === 'https:' ? '; Secure' : '');
+      });
+    }
+    if (document.querySelector('[data-poll]') && typeof EventSource === 'function') afterSession(function () {
+      revisionStream = new EventSource('/v0/events');
+      revisionStream.addEventListener('open', function () { revisionsLive = true; refreshNow(); });
+      revisionStream.addEventListener('error', function () { revisionsLive = false; });
+      revisionStream.addEventListener('revision', function (event) {
+        if (expired || document.hidden || (byId('auto-refresh') && !byId('auto-refresh').checked)) return;
+        var update;
+        try { update = JSON.parse(event.data); } catch (e) { return; }
+        var mounts = document.querySelectorAll('[data-poll]');
+        for (var i = 0; i < mounts.length; i++) {
+          var path = mounts[i].getAttribute('data-poll') || '';
+          if (path.indexOf('/fragments/' + update.kind) === 0) refreshRegion(mounts[i]).then(function () { lastGood = Date.now(); connSay(''); }, function (err) { revisionsLive = false; connSay('连接中断 · 正在重试 · ' + asOf(lastGood)); });
+        }
+      });
+      expireHooks.push(function () { revisionStream.close(); revisionsLive = false; htmlCache.clear(); });
+    });
   }
+
+  var goAt = 0;
+  document.addEventListener('keydown', function (event) {
+    var el = event.target;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing ||
+        (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) ||
+        document.querySelector('dialog[open]')) return;
+    if (event.key === '/') {
+      var search = document.querySelector('input[type="search"], input[name="q"], input[name="search"]');
+      if (search) { event.preventDefault(); search.focus(); }
+    } else if (event.key === '?') { event.preventDefault(); openDialog('keyboard-help', el); }
+    else if (event.key === 'g') goAt = Date.now();
+    else if (Date.now() - goAt < 1000 && (event.key === 'n' || event.key === 'a')) {
+      event.preventDefault(); location.href = event.key === 'n' ? '/nodes' : '/audit'; goAt = 0;
+    } else goAt = 0;
+  });
 
   window.qianmoConsole = {
     byId: byId,

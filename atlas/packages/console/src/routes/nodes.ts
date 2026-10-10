@@ -1,6 +1,9 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { assertAddress } from '@qianmo/protocol'
+import { reserveUsage } from '../quota.js'
+
 /**
  * 节点 — the roster, and the things the console does to it: register,
  * deregister, heartbeat, wake, and the lifecycle — pause, resume, retire
@@ -580,10 +583,31 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
     if (blocked !== null) return blocked
     // The URL is selected only from the startup allowlist. A client-supplied
     // URL is intentionally discarded before it reaches the pinned wake port.
+    const reservation = reserveUsage(ctx, { operation: 'wake' })
+    if (reservation instanceof Response) return reservation
+    // A throwing adapter cannot prove that no bytes were sent; retain quota.
     const result = await target.wake.send({
       ...input.value,
       url: target.url,
+      beforeDispatch: () => {
+        if (ctx.access.current?.() === false)
+          throw new Error('E_AUTH_REVOKED: 当前凭据已失效')
+      },
+      onTaskCreated: (taskId, node) => {
+        if (node !== target.node) throw new Error('wake task target mismatch')
+        if (typeof reservation === 'string')
+          deps.usage?.bindTask(reservation, taskId, node)
+      },
     })
+    if (typeof reservation === 'string') {
+      if (result.ok)
+        deps.usage?.bindTask(
+          reservation,
+          result.value.taskId,
+          assertAddress(input.value.to).node,
+        )
+      else if (!result.failure.deliveryUnknown) deps.usage?.finish(reservation)
+    }
     await ctx.record('wake.send', input.value.to, ...outcomeOf(result))
     return result.ok ? json(result.value) : failureResponse(result.failure)
   }
@@ -592,7 +616,31 @@ async function handleWake(ctx: RouteContext): Promise<Response> {
   }
   const blocked = await ctx.admit()
   if (blocked !== null) return blocked
-  const result = await wake.send(input.value)
+  const reservation = reserveUsage(ctx, { operation: 'wake' })
+  if (reservation instanceof Response) return reservation
+  // A throwing adapter cannot prove that no bytes were sent; retain quota.
+  const result = await wake.send({
+    ...input.value,
+    beforeDispatch: () => {
+      if (ctx.access.current?.() === false)
+        throw new Error('E_AUTH_REVOKED: 当前凭据已失效')
+    },
+    onTaskCreated: (taskId, node) => {
+      if (node !== assertAddress(input.value.to).node)
+        throw new Error('wake task target mismatch')
+      if (typeof reservation === 'string')
+        deps.usage?.bindTask(reservation, taskId, node)
+    },
+  })
+  if (typeof reservation === 'string') {
+    if (result.ok)
+      deps.usage?.bindTask(
+        reservation,
+        result.value.taskId,
+        assertAddress(input.value.to).node,
+      )
+    else if (!result.failure.deliveryUnknown) deps.usage?.finish(reservation)
+  }
   await ctx.record('wake.send', input.value.to, ...outcomeOf(result))
   return result.ok ? json(result.value) : failureResponse(result.failure)
 }

@@ -97,7 +97,7 @@ const OUTCOME_TONE: Readonly<Record<string, Tone | undefined>> = {
  * The three windows the segmented control offers, widest last.
  *
  * The order is load-bearing twice over: the segment renders in it, and the
- * empty state's 把时间放宽一档 button steps one place along it.
+ * empty state's 扩大时间范围 button steps one place along it.
  */
 export const AUDIT_WINDOWS: readonly (readonly [string, string, number])[] = [
   ['1h', '最近 1h', 3_600_000],
@@ -172,14 +172,14 @@ function traceCell(
       (auditNode === undefined ? '' : `?node=${encodeURIComponent(auditNode)}`)
     return (
       `<a class="linkish mono" href="${attr(href)}" data-nav ` +
-      `title="${attr(segment)}">${escapeHtml(shortId(segment))}</a>`
+      `aria-label="查看消息链 ${attr(segment)}">${escapeHtml(shortId(segment))}</a>`
     )
   }
   const node =
     auditNode === undefined ? '' : ` data-audit-node="${attr(auditNode)}"`
   return (
     `<button type="button" class="linkish" data-action="chain" ` +
-    `data-trace="${attr(segment)}"${node} title="${attr(segment)}">` +
+    `data-trace="${attr(segment)}"${node} aria-label="查看消息链 ${attr(segment)}">` +
     `${escapeHtml(shortId(segment))}</button>`
   )
 }
@@ -506,7 +506,7 @@ function filterForm(
 
   return (
     `<form id="audit-filter" method="get">` +
-    `<div class="rowx" style="gap:var(--space-6);align-items:flex-end">` +
+    `<div class="rowx audit-filter-row">` +
     // One box for the fragment of an id somebody pasted from a ticket: the
     // server looks for it in the kind, every id, the code, the node and the
     // detail (`@qianmo/audit`, `TrailQuery.text`).
@@ -521,7 +521,7 @@ function filterForm(
     `<div class="field"><span>时间</span>` +
     segment('window', windows, filter.window ?? '') +
     `</div>` +
-    `<button type="submit" class="btn btn-primary" style="margin-left:auto">` +
+    `<button type="submit" class="btn btn-primary push-right">` +
     icon('refresh-cw', { small: true }) +
     `刷新</button>` +
     `</div>` +
@@ -650,7 +650,7 @@ function integrityStatus(page: AuditPage): string {
 function absentState(): string {
   return (
     `<div class="empty">` +
-    `<div class="stack" style="gap:var(--space-4)">` +
+    `<div class="stack gap-4">` +
     `<h4 class="empty-title">${escapeHtml(ABSENT_LEAD)}</h4>` +
     `<p class="empty-note">这个来源还没有链文件 · ` +
     `节点尚未写入或镜像尚未送达</p>` +
@@ -689,7 +689,7 @@ function emptyState(filter: AuditFilter, wake?: string): string {
   const widen =
     wider === undefined
       ? ''
-      : `<a class="btn btn-ghost" href="?window=${attr(wider[0])}">把时间放宽一档</a>`
+      : `<a class="btn btn-ghost" href="?window=${attr(wider[0])}">扩大时间范围</a>`
 
   const windowLabel =
     AUDIT_WINDOWS.find(([value]) => value === current)?.[1] ?? '自定义'
@@ -700,7 +700,7 @@ function emptyState(filter: AuditFilter, wake?: string): string {
 
   return (
     `<div class="empty">` +
-    `<div class="stack" style="gap:var(--space-4)">` +
+    `<div class="stack gap-4">` +
     `<h4 class="empty-title">这条链还没有记录</h4>` +
     `<p class="empty-note">还没有业务消息经过这条链` +
     (wake === undefined ? '' : ` · 唤醒一个智能体后这里会出现第一条投递轨迹`) +
@@ -1008,7 +1008,7 @@ export function renderAuditSources(
     sourcesHead(sources) +
     '<div class="pane"><div class="card elev-sm">' +
     filterForm(filter, agentOptions) +
-    '</div><div id="audit-results" class="stack" style="gap:var(--space-3)">' +
+    '</div><div id="audit-results" class="stack gap-3">' +
     sources.map(source => sourceBody(source, filter, paging)).join('') +
     '</div></div>'
   )

@@ -5,19 +5,19 @@
 
 阡陌控制面板：一个跑在本机环回地址上的控制台，用来**看**这张网络、并对它做**少数几件事**。
 
-- **看**：在线节点名册（能力、心跳、租约到期）与每台节点的详情页（概览、智能体、生命周期、模型四个页签）、审计轨迹（最新的在上、游标翻页、一个搜索框、可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、告警、值守作业、协议与运行时的各项上限。
-- **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒，以及生命周期的发布、暂停、恢复、退役（每个都先过确认框）。页面上注册成功的条目由 host 侧的 `occ console` 记进登记簿并持续续租，直到在页面上注销或暂停（`docs/dev/console.md` §7.3）；本包只看到 `RegistryPort` 与 `LifecyclePort`。
+- **看**：在线节点名册（能力、心跳、租约到期）与每台节点的详情页（概览、智能体、生命周期、模型四个页签）、审计轨迹（最新的在上、游标翻页、一个搜索框、可按 trace / task / agent / 时间窗过滤，可按 `traceId` 还原完整消息链）、告警、值守作业、审批申请、用量与配额、协议与运行时的各项上限。
+- **做**：注册 / 注销一个节点、补一次心跳、发起一次唤醒，以及生命周期的发布、暂停、恢复、退役（每个都先过确认框）。页面上注册成功的条目由 host 侧的 `qm console` 记进登记簿并持续续租，直到在页面上注销或暂停（`docs/dev/console.md` §7.3）；本包只看到 `RegistryPort` 与 `LifecyclePort`。
 
 页面是服务端渲染的 HTML，每个区域一页、套同一个外壳，外加几个可局部刷新的片段；没有构建步骤、没有第三方依赖、不打包任何外部资源（`test/dependencies.test.ts` 钉住）。
 
 ## 怎么起
 
 ```bash
-occ console                      # 绑 127.0.0.1，端口随机，token 自动生成
-occ console --port 8787          # 指定端口
+qm console                      # 绑 127.0.0.1，端口随机，token 自动生成
+qm console --port 8787          # 指定端口
 ```
 
-启动后 CLI 会把**带 token 的 URL** 打到 stdout，直接点开即可。CLI 接线（参数、把三个端口接到真实的注册中心 / 审计文件 / 传输层）在 host 侧的 `occ console` 命令里，不在本包内——本包只认 `ConsoleDeps`（见 `src/deps.ts`），任何一个端口都可以用一个普通对象替换，这也是它的测试方式。
+启动后 CLI 会把**带 token 的 URL** 打到 stdout，直接点开即可。CLI 接线（参数、把三个端口接到真实的注册中心 / 审计文件 / 传输层）在 host 侧的 `qm console` 命令里，不在本包内——本包只认 `ConsoleDeps`（见 `src/deps.ts`），任何一个端口都可以用一个普通对象替换，这也是它的测试方式。
 
 以库的形式用：
 
@@ -32,7 +32,7 @@ const handle = createConsoleHandler(deps, tokens)
 
 ## 路由表
 
-完整的路由表只在一处：[`docs/dev/console.md`](../../docs/dev/console.md) §5（`test/routeDocs.test.ts` 双向扫描它与实际路由，多一条少一条都会红）。这里不再复制一份。模型服务的页面、`/v0/providers…` 与 `/fragments/providers/…` 见该文 §5 的表与 §5.4，节点详情与生命周期页见 §5.5，消息链的翻页与增量轮询见 §5.6。
+完整的路由表只在一处：[`docs/dev/console.md`](../../../../docs/dev/console.md) §5（`test/routeDocs.test.ts` 双向扫描它与实际路由，多一条少一条都会红）。这里不再复制一份。模型服务的页面、`/v0/providers…` 与 `/fragments/providers/…` 见该文 §5 的表与 §5.4，节点详情与生命周期页见 §5.5，消息链的翻页与增量轮询见 §5.6。
 
 约定：
 
@@ -75,10 +75,10 @@ M0 内没有 TLS（章程 N-3），所以第 2 种用法的前提是外面已经
 控制台是一个**观察面加少量动作**的东西，边界写死在 `src/deps.ts` 的端口里：
 
 - **不碰任何私钥。**名册里的 `publicKey` 是节点自己公布的公钥，控制台只显示；私钥既不读也不经过这里。
-- **不读会话内容。**它看不到任何一次对话、任何一条 prompt、任何一份工作区文件。唤醒请求里的 prompt 是**操作者当场输入**的那一句，不是从别处读出来的。
+- **对话按权限读取。**个人会话由 ChatPort 提供，租户过滤先于列表、详情和流；会话内容可在对话页呈现。不能把本控制台描述为“不读会话内容”。
 - **审计只读。**审计端口只有 `read` 和 `chain` 两个方法，没有写、没有删、没有截断。审计文件的完整性判定（`chain` / `intact` / `issueCount`）原样透出，不做美化——链断了就显示链断了，链**不在**就显示未建立（`AuditChainState` 四态，见 `docs/dev/console.md` §7.1）。
 - **不自己开 socket、不自己找文件。**注册中心在哪、审计文件是哪个、唤醒怎么发，全部由 CLI 注入；本包是叶子，不 import host 的 `src/`。
-- **不落盘。**没有任何状态写在本地：token 只在内存里，页面每次都是现渲染的。
+- **持久化通过 host 端口完成。**账号、租户、操作账本、审批、用量及服务配置由注入端口管理；本包渲染页面与执行路由，不自行选择文件路径。
 
 ## 布局
 
@@ -94,6 +94,6 @@ test/browser/   浏览器级测试：经 DevTools 协议驱动无头 Chrome，�
 ```
 
 ```bash
-bun test packages/console/
-QIANMO_CHROME=/path/to/chrome bun test packages/console/test/browser   # 指定浏览器
+bun test --preload ./atlas/tests/preload.ts ./atlas/packages/console/
+QIANMO_CHROME=/path/to/chrome bun test --preload ./atlas/tests/preload.ts ./atlas/packages/console/test/browser   # 指定浏览器
 ```

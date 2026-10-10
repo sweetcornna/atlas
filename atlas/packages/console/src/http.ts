@@ -1,6 +1,10 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { decorateConsoleResponse } from './preferences.js'
+import { RegistrationThrottle, handleSignup } from './signup.js'
+import { scopedConsoleDeps, tenantRequestDenial } from './tenantScope.js'
+
 /**
  * The console's HTTP face: one page, a handful of JSON routes and three HTML
  * fragments, over `Bun.serve`.
@@ -310,6 +314,7 @@ function loginPage(
     readonly headers?: Record<string, string>
     /** A console with accounts: the field takes a personal credential too. */
     readonly accounts?: boolean
+    readonly signupEnabled?: boolean
   },
 ): Response {
   const body = renderLoginPage({
@@ -317,6 +322,7 @@ function loginPage(
     redirect: options.redirect,
     ...(options.error === undefined ? {} : { error: options.error }),
     ...(options.accounts === true ? { accounts: true } : {}),
+    ...(options.signupEnabled === true ? { signupEnabled: true } : {}),
   })
   return new Response(body, {
     status: options.status ?? 200,
@@ -425,6 +431,7 @@ async function handleLogin(
     return loginPage(deps, {
       redirect: asked,
       ...(accountsOn ? { accounts: true } : {}),
+      ...(accounts?.signup && deps.tenancy ? { signupEnabled: true } : {}),
     })
   }
   if (request.method !== 'POST') return methodNotAllowed(['GET', 'POST'])
@@ -447,6 +454,7 @@ async function handleLogin(
       error: `尝试过多 · 请等 ${wait} 秒`,
       headers: { 'retry-after': String(wait) },
       ...(accountsOn ? { accounts: true } : {}),
+      ...(accounts?.signup && deps.tenancy ? { signupEnabled: true } : {}),
     })
   }
 
@@ -864,6 +872,7 @@ async function route(
   clientKey: string,
   now: () => number,
   accounts: ConsoleAccounts | undefined,
+  setAuthorizationCheck: (check: () => Response | null) => void,
 ): Promise<Response> {
   const url = new URL(request.url)
   const segments = url.pathname.split('/').filter(s => s.length > 0)
@@ -888,6 +897,43 @@ async function route(
 
   // Without accounts this is `credentialOf` and nothing else (`access.ts`).
   const access = resolveAccess(request, tokens, accounts)
+  const tenancy = deps.tenancy
+  let revision: string | undefined
+  // Login/logout intentionally replace their own credential. Data responses must
+  // still prove the exact original credential after every asynchronous adapter.
+  const authenticationDoor = ['login', 'logout', 'invite', 'signup'].includes(
+    segments[0] ?? '',
+  )
+  setAuthorizationCheck(() => {
+    if (!authenticationDoor && access.current?.() === false)
+      return fail(403, 'forbidden', '账号权限已变化，请重新登录')
+    if (revision !== undefined) {
+      try {
+        if (tenancy!.read().revision !== revision)
+          return fail(403, 'forbidden', '租户权限已变化，请重新加载')
+      } catch {
+        return fail(503, 'unavailable', '租户配置不可用，访问已暂停')
+      }
+    }
+    return null
+  })
+  if (tenancy !== undefined && access.credential.role !== 'none') {
+    let scoped: ReturnType<typeof scopedConsoleDeps>
+    try {
+      scoped = scopedConsoleDeps(deps, access)
+    } catch {
+      return fail(503, 'unavailable', '租户配置不可用，访问已暂停')
+    }
+    revision = scoped.scope?.revision
+    const tenantDenied = await tenantRequestDenial(
+      request,
+      url,
+      scoped.deps,
+      scoped.scope,
+    )
+    if (tenantDenied !== null) return tenantDenied
+    deps = scoped.deps
+  }
   const ledger = requestLedger(deps, access, now)
   const breakGlass = access.breakGlass && accounts !== undefined
   if (breakGlass) {
@@ -971,6 +1017,29 @@ async function routeAs(
       clientKey,
       now(),
       accounts,
+    )
+  }
+
+  if (
+    accounts !== undefined &&
+    segments[0] === 'signup' &&
+    segments.length === 1
+  ) {
+    if (request.method !== 'GET' && request.method !== 'POST')
+      return methodNotAllowed(['GET', 'POST'])
+    if (deps.tenancy === undefined) return notFound('注册需要租户隔离')
+    try {
+      deps.tenancy.read()
+    } catch {
+      return fail(503, 'unavailable', '租户配置不可用，注册已暂停')
+    }
+    return handleSignup(
+      request,
+      accounts,
+      deps.label ?? DEFAULT_LABEL,
+      signupThrottles.get(throttle)!,
+      clientKey,
+      now(),
     )
   }
 
@@ -1081,6 +1150,8 @@ function clientKeyOf(request: Request, source?: ClientAddressSource): string {
  * ignores the header over plain HTTP, so a forged forwarding header buys
  * nothing.
  */
+const signupThrottles = new WeakMap<LoginThrottle, RegistrationThrottle>()
+
 const HSTS = 'max-age=31536000'
 
 /** Every answer on its way out: HSTS when on TLS, then compression (G1). */
@@ -1088,6 +1159,7 @@ async function finished(
   request: Request,
   response: Response,
 ): Promise<Response> {
+  response = await decorateConsoleResponse(request, response)
   if (!isSecureRequest(request)) return compressed(request, response)
   const headers = new Headers(response.headers)
   headers.set('strict-transport-security', HSTS)
@@ -1114,12 +1186,14 @@ export function createConsoleHandler(
   }
   const now = deps.now ?? Date.now
   const throttle = new LoginThrottle()
+  signupThrottles.set(throttle, new RegistrationThrottle())
   return async (
     request: Request,
     source?: ClientAddressSource,
   ): Promise<Response> => {
+    let authorizationCheck: () => Response | null = () => null
     try {
-      return await finished(
+      const response = await finished(
         request,
         await route(
           request,
@@ -1129,13 +1203,24 @@ export function createConsoleHandler(
           clientKeyOf(request, source),
           now,
           accounts,
+          check => {
+            authorizationCheck = check
+          },
         ),
       )
+      const denied = authorizationCheck()
+      if (denied !== null) {
+        void response.body?.cancel().catch(() => {})
+        return denied
+      }
+      return response
     } catch (error) {
       // Only reachable when a port breaks its contract and throws. The message
       // is included because the ports are ours and a silent 500 on a
       // loopback tool costs an hour; ports must therefore keep credentials out
       // of their error messages.
+      const denied = authorizationCheck()
+      if (denied !== null) return denied
       const message = error instanceof Error ? error.message : String(error)
       const failed = fail(500, 'internal', `控制台内部错误：${message}`)
       const segments = new URL(request.url).pathname

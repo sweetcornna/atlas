@@ -3,7 +3,7 @@
 
 /**
  * A registration ledger in memory that keeps the rules of the real one
- * (`src/cli/handlers/consoleRegistrations.ts`, `console.md` §7.3.1) closely
+ * (`packages/node/src/commands/consoleRegistrations.ts`, `console.md` §7.3.1) closely
  * enough for the node pages to be driven through it: publish and resume only
  * for what the managed list holds, retired is for good, pause and retire take
  * what the ledger or the list knows, a ledger that cannot be read takes
