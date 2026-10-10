@@ -13,6 +13,8 @@ const defaultNativeDir = path.join(import.meta.dir, "../native");
 export interface NativeEmbedTarget {
 	readonly platform: string;
 	readonly arch: string;
+	/** Embed only the portable x64 addon, avoiding extraction of an unused modern copy. */
+	readonly x64BaselineOnly?: boolean;
 }
 
 /** Inputs for {@link embeddedAddonFiles}. */
@@ -38,17 +40,22 @@ export interface EmbedOptions extends NativeEmbedTarget {
 export async function embeddedAddonFiles({
 	platform,
 	arch,
+	x64BaselineOnly = false,
 	nativeDir = defaultNativeDir,
 	version = packageJson.version,
 }: EmbedOptions): Promise<Record<string, string | Uint8Array>> {
 	const platformTag = `${platform}-${arch}`;
-	const candidates =
+	if (x64BaselineOnly && arch !== "x64") {
+		throw new Error("Baseline-only native embedding requires x64");
+	}
+	const candidates = (
 		arch === "x64"
 			? [
 					{ variant: "modern", filename: `pi_natives.${platformTag}-modern.node` },
 					{ variant: "baseline", filename: `pi_natives.${platformTag}-baseline.node` },
 				]
-			: [{ variant: "default", filename: `pi_natives.${platformTag}.node` }];
+			: [{ variant: "default", filename: `pi_natives.${platformTag}.node` }]
+	).filter(candidate => !x64BaselineOnly || candidate.variant === "baseline");
 
 	// Override keys must equal the bundler's symlink-resolved module paths.
 	const dir = await fs.realpath(nativeDir);

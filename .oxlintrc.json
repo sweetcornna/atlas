@@ -29,6 +29,8 @@
 		"eslint/no-unused-expressions": "off"
 	},
 	"ignorePatterns": [
+		"atlas/**",
+		"demo/**",
 		"**/vendor/**",
 		"**/node_modules/**",
 		"**/test-sessions.ts",

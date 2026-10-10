@@ -14,7 +14,7 @@ it("prints the embedded OMP license and aggregate notices on the exact top-level
 		proc.exited,
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
-		Bun.file(path.join(repoRoot, "LICENSE")).text(),
+		Bun.file(path.join(repoRoot, "LICENSE.base")).text(),
 		Bun.file(path.join(repoRoot, "THIRD-PARTY-NOTICES.txt")).text(),
 	]);
 
