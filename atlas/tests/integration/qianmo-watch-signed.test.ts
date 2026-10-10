@@ -47,8 +47,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { type ChildProcess, spawn } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
   statfsSync,
@@ -226,6 +228,23 @@ async function accepts(port: number): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Whether the node's `--timings` file records an agent runtime that came up. */
+function runtimeReady(timingsPath: string): boolean {
+  if (!existsSync(timingsPath)) return false
+  return readFileSync(timingsPath, 'utf8')
+    .split('\n')
+    .some(line => {
+      if (line.trim() === '') return false
+      try {
+        return (
+          (JSON.parse(line) as { stage?: unknown }).stage === 'runtime_ready'
+        )
+      } catch {
+        return false
+      }
+    })
 }
 
 function trail(configDir: string): readonly AuditRecord[] {
@@ -464,6 +483,7 @@ beforeAll(async () => {
   // Step 2: the node trusts that key. Default session mode (no
   // --allow-workspace-edits): a read-only check must not need write access.
   port = await freePort()
+  const timingsPath = join(root, 'node-timings.ndjson')
   node = start(
     [
       'resident',
@@ -481,12 +501,26 @@ beforeAll(async () => {
       '--audit-signed-tasks',
       '--trust',
       `hub=${hubPublicKey}`,
+      '--timings',
+      timingsPath,
     ],
     childEnv(nodeConfig),
   )
   await waitFor(
     () => accepts(port),
     'the node to listen',
+    BOOT_TIMEOUT_MS,
+    () =>
+      `--- node stdout\n${node.stdout()}\n--- node stderr\n${node.stderr()}`,
+  )
+  // The listener opens before the omp RPC child is up, and a delivery waits
+  // only 3 s for the agent (RUNTIME_WAIT_MS) before answering "restarting,
+  // retry this task". A cold CI runner can take longer than that, which turned
+  // the first job into a refused delivery instead of a turn. These tests are
+  // about a node whose agent is ready.
+  await waitFor(
+    () => runtimeReady(timingsPath),
+    'the node agent runtime to be ready',
     BOOT_TIMEOUT_MS,
     () =>
       `--- node stdout\n${node.stdout()}\n--- node stderr\n${node.stderr()}`,
