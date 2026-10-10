@@ -259,6 +259,8 @@ interface JobRun {
   /** The prompt text the model received for this job's turn. */
   readonly prompts: readonly string[]
   readonly steps: ReturnType<ModelDouble['steps']>
+  /** Watch output, node stderr tail and the model's steps, for failure messages. */
+  readonly diagnostics: string
 }
 
 /**
@@ -350,6 +352,9 @@ async function runJob(input: {
     diagnose,
   )
   await hub.stop()
+  const diagnostics =
+    `--- results\n${JSON.stringify(forJob(trail(hubConfig), 'watch_result_received', input.id).map(r => r.detail))}\n` +
+    diagnose()
   const prompts = model
     .requests()
     .slice(requestsBefore)
@@ -362,6 +367,7 @@ async function runJob(input: {
     nodeTrail: trail(nodeConfig),
     prompts,
     steps: model.steps().slice(stepsBefore),
+    diagnostics,
   }
 }
 
@@ -513,7 +519,10 @@ describe('qm watch --sign against a real qm resident', () => {
       expect(shadowRefusals(run.nodeTrail)).toHaveLength(0)
 
       // Trusted: what the model received is the verified notice.
-      expect(run.prompts.length).toBeGreaterThan(0)
+      if (run.prompts.length === 0)
+        throw new Error(
+          `the model received no prompt for disk-quiet\n${run.diagnostics}`,
+        )
       expect(run.prompts.join('\n')).toContain(VERIFIED_DIRECTIVE)
       expect(run.prompts.join('\n')).toContain(
         '\\"trust\\":\\"verified-capability\\"',

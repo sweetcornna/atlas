@@ -56,6 +56,17 @@ jobs:
           rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
           bun run build:native
 
+      # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
+      # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:
+      # Operation not permitted"). The generated-code isolation tests need the
+      # same bwrap a fleet host runs; Debian hosts allow it by default.
+      - name: Allow unprivileged user namespaces for bubblewrap
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --die-with-parent --ro-bind / / true
+
       - name: Lint and format check
         run: bun run atlas:lint:ci
 
