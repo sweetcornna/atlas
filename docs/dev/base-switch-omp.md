@@ -184,7 +184,7 @@ Fleet 载荷不带 `node_modules`，因此 `atlas:build:qm` 用 omp 的二进制
 
 1. 只读 job 查询固定上游 `can1357/oh-my-pi` 的最新稳定版。[`sync-omp.ts`](../../atlas/scripts/sync-omp.ts) 在独立 checkout 中创建不含上游历史的无父快照，三方应用新旧树差异。旧标签不移动，阡陌命名空间与本地新增路径碰撞、合并冲突均停止并留存证据。
 2. 候选依次执行冻结依赖安装、native 构建、阡陌静态/类型/身份/许可/依赖门禁、SBOM、omp 检查及测试、阡陌全量分片、独立的真实 PostgreSQL 共享注册中心检查、qm 编译与独立环境 smoke、AC-1 崩溃恢复。数据库检查缺工具或失败均阻断候选，不能沿用常规分片的跳过结果。每次重新验证先撤销旧的成功记录，失败后不能凭上次的 `verified-head` 打包。任何失败都不会发布候选；不会自动抬高质量预算。
-3. 验证通过后，单独有写权限的 job 只导入已验证 Git bundle，不执行候选代码。它以无 force 的原子 push 创建 `codex/sync-omp-<版本>` 分支和新快照，再建立 draft PR；已有同名分支保留供审核。PR、检查日志和溯源变更一起接受评审。
+3. 验证通过后，单独有写权限的 job 只导入已验证 Git bundle，不执行候选代码。它以无 force 的原子 push 创建 `codex/sync-omp-<版本>` 分支和新快照，再建立 draft PR。仓库设置须允许 Actions 建 PR（`can_approve_pull_request_reviews`，2026-10-10 已打开）；该设置被关闭时，改开一个同名 issue，附对比链接与审查说明，由审核人从链接建 PR。已有同名分支保留供审核；若它还没有 PR 或 issue，下一次运行补上。PR、检查日志和溯源变更一起接受评审。
 4. 合并和节点部署保持人工审核。此流程没有部署命令，不升级运行中的节点。工作流须合入默认分支，且仓库允许 Actions 创建 PR，定时运行才会生效。
 
 本轮离线 fixture 验证覆盖无更新、新版本、上游删除、三方冲突、本地新增碰撞、快照无父及历史隔离；真实 GitHub 权限与 PR 发布链尚未执行。测试日志、补丁、候选 metadata 和失败原因保留为 workflow artifact（30 天）。

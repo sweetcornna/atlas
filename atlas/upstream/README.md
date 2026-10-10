@@ -11,7 +11,7 @@
 2. 在独立 clone 中导入原始树，校验 tree SHA，创建无父 `base-snapshot/omp-v<版本>`。旧快照绝不移动；上游祖先提交不进入候选仓库。
 3. 三方应用旧、新快照的二进制补丁。阡陌新增路径碰撞、Atlas 命名空间侵入、修改冲突均失败并保存补丁及冲突记录。自动化不替人选冲突的一边。
 4. 分开提交上游补丁与新的来源记录。检查依赖安装、native 构建、阡陌静态门禁、SBOM、omp 类型与测试、完整阡陌分片、qm 编译/worker 冒烟和 AC-1 本地恢复。不会自动放宽预算。
-5. 仅全部通过的候选生成 Git bundle。在独立、持写权限的 job 中发布新候选分支和新快照标签，创建 draft PR。验证 job 不持持久写凭据；发布 job 不执行候选代码。已有候选不覆盖。
+5. 仅全部通过的候选生成 Git bundle。在独立、持写权限的 job 中发布新候选分支和新快照标签，创建 draft PR；仓库不允许 Actions 建 PR 时改开同名 issue 交接。验证 job 不持持久写凭据；发布 job 不执行候选代码。已有候选不覆盖。
 
 需要仓库允许 GitHub Actions 创建 PR，并允许新 `codex/sync-omp-*` 分支与新快照标签。若规则拒绝，工作流报失败，证据 artifact 仍保留 30 天。合并和节点部署仍要审核，没有自动 merge、release、fleet rollout 或原生 `omp update` 步骤。
 

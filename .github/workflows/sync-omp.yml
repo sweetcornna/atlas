@@ -64,6 +64,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     steps:
       # No candidate code executes in this job. Only verified Git objects publish.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -83,8 +84,35 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           branch="codex/sync-omp-$VERSION"
           snapshot="base-snapshot/omp-v$VERSION"
+          title="chore(base): sync omp v$VERSION"
+          # Hand the candidate to review. A draft PR when the repository lets Actions open
+          # one; otherwise an issue that links the pushed branch, so a published candidate
+          # is never left without a review entry point.
+          handoff() {
+            if [ -n "$(gh pr list --head "$branch" --state all --json number --jq '.[].number')" ]; then
+              echo "Candidate $branch already has a pull request; it remains pending review."
+              return 0
+            fi
+            if gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
+              --title "$title" --body-file candidate-evidence/review.md; then
+              return 0
+            fi
+            echo "::warning::Actions may not open pull requests in this repository; opening a review issue instead."
+            if [ -n "$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
+              echo "A review issue for $branch is already open."
+              return 0
+            fi
+            {
+              printf 'Candidate branch `%s` and snapshot `%s` are published and verified.\n\n' "$branch" "$snapshot"
+              printf 'Open the draft pull request: %s/compare/%s...%s?expand=1\n\n' \
+                "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$BASE_BRANCH" "$branch"
+              cat candidate-evidence/review.md
+            } > handoff.md
+            gh issue create --title "$title" --body-file handoff.md
+          }
           if [ -n "$(git ls-remote --heads origin "refs/heads/$branch")" ]; then
-            echo "Candidate $branch already exists; it remains pending review."
+            echo "Candidate $branch already exists."
+            handoff
             exit 0
           fi
           git bundle verify candidate-evidence/candidate.bundle
@@ -93,5 +121,4 @@ jobs:
           test "$(git rev-list --parents -n 1 "$snapshot" | wc -w | tr -d ' ')" = 1
           # No force: an existing snapshot/branch is never overwritten. Atomic avoids half-publication.
           git push --atomic origin "refs/heads/$branch" "refs/tags/$snapshot"
-          gh pr create --draft --base "$BASE_BRANCH" --head "$branch" \
-            --title "chore(base): sync omp v$VERSION" --body-file candidate-evidence/review.md
+          handoff
