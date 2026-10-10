@@ -284,6 +284,49 @@ describe('isolated omp candidate sync', () => {
       readFileSync(join(result.candidate!, 'packages/local-only.ts'), 'utf8'),
     ).toBe('local addition\n')
   })
+  test('upstream edits to a base file Atlas deleted stay out and go to review', () => {
+    const f = fixture()
+    git(f.source, ['rm', '--quiet', 'packages/deleted.ts'])
+    commit(f.source, 'atlas deletes a base file')
+    write(f.upstream, 'packages/deleted.ts', 'upstream keeps editing\n')
+    write(f.upstream, 'packages/example.ts', 'const original = 2\n')
+    next(f.upstream)
+    const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
+    expect(result.status).toBe('prepared')
+    expect(result.removedLocally).toEqual(['packages/deleted.ts'])
+    expect(existsSync(join(result.candidate!, 'packages/deleted.ts'))).toBe(
+      false,
+    )
+    expect(
+      readFileSync(join(result.candidate!, 'packages/example.ts'), 'utf8'),
+    ).toContain('= 2')
+    expect(readFileSync(join(f.out, 'upstream.patch'), 'utf8')).not.toContain(
+      'packages/deleted.ts',
+    )
+    expect(
+      readFileSync(join(f.out, 'upstream-removed-locally.patch'), 'utf8'),
+    ).toContain('+upstream keeps editing')
+    expect(readFileSync(join(f.out, 'review.md'), 'utf8')).toContain(
+      '- `packages/deleted.ts`',
+    )
+    expect(git(result.candidate!, ['status', '--porcelain'])).toBe('')
+  })
+  test('an upstream deletion of a base file Atlas already deleted is a no-op', () => {
+    const f = fixture()
+    git(f.source, ['rm', '--quiet', 'packages/deleted.ts'])
+    commit(f.source, 'atlas deletes a base file')
+    git(f.upstream, ['rm', '--quiet', 'packages/deleted.ts'])
+    next(f.upstream)
+    const result = prepareCandidate(f.source, f.upstream, 'v1.1.0', f.out)
+    expect(result.removedLocally).toEqual(['packages/deleted.ts'])
+    expect(
+      git(result.candidate!, [
+        'rev-list',
+        '--count',
+        `${result.baseHead}..HEAD`,
+      ]),
+    ).toBe('2')
+  })
   test('conflicting local modifications fail and retain evidence; source and old tag stay intact', () => {
     const f = fixture()
     write(f.source, 'packages/example.ts', 'const original = "local"\n')

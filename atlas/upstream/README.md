@@ -9,7 +9,7 @@
 
 1. 只从 `can1357/oh-my-pi` 的 GitHub latest release 接受非 draft、非 prerelease 的 `vX.Y.Z` 版本。当前版本或更旧时明确 no-op。
 2. 在独立 clone 中导入原始树，校验 tree SHA，创建无父 `base-snapshot/omp-v<版本>`。旧快照绝不移动；上游祖先提交不进入候选仓库。
-3. 三方应用旧、新快照的二进制补丁。阡陌新增路径碰撞、Atlas 命名空间侵入、修改冲突均失败并保存补丁及冲突记录。自动化不替人选冲突的一边。
+3. 三方应用旧、新快照的二进制补丁。阡陌新增路径碰撞、Atlas 命名空间侵入、修改冲突均失败并保存补丁及冲突记录。自动化不替人选冲突的一边。上游改动了阡陌已删除的基座文件（登记在 `docs/dev/base-modifications.md` §2.2，例如上游的 `.github/workflows/ci.yml`）时，删除保持不变：这些路径不进应用的补丁，上游差异另存 `upstream-removed-locally.patch`，路径列进草稿 PR 正文，由评审决定是否手工移植。
 4. 分开提交上游补丁与新的来源记录。检查依赖安装、native 构建、阡陌静态门禁、SBOM、omp 类型与测试、完整阡陌分片、qm 编译/worker 冒烟和 AC-1 本地恢复。不会自动放宽预算。
 5. 仅全部通过的候选生成 Git bundle。在独立、持写权限的 job 中发布新候选分支和新快照标签，创建 draft PR；仓库不允许 Actions 建 PR 时改开同名 issue 交接。验证 job 不持持久写凭据；发布 job 不执行候选代码。已有候选不覆盖。
 
