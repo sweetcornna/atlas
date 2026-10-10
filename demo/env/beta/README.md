@@ -128,7 +128,7 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 
 `beta_start_process` 内建两道校验，**不再要求调用方自己跟一句存活检查**：
 
-- 起**之前**问这条命令在不在（`command -v`）。`beta_require_occ` 同时校验产物与解释器 ——
+- 起**之前**问这条命令在不在（`command -v`）。`beta_require_qm` 同时校验产物与解释器 ——
   这道 `command -v bun` 的守卫此前只在 `bootstrap.sh`、`beta-retain.sh`、
   `remote/prepare-sandbox.sh` 三处有，唯独这条主部署路径漏了。
 - 起**之后**等 1 s 再问它还在不在；死了就把 `stderr` / `stdout` 末尾摊开、删掉那个 pid 文件、
@@ -146,7 +146,7 @@ IDENTITY="$(./demo/env/beta/beta-up.sh --print-wake-identity)"
 EADDRINUSE 的新进程，就绪探测又被旧进程的应答骗成了绿。现在：
 
 - **`beta-down.sh <节点>`** 在 pid 文件之后再按命令行认一遍：argv 里有 `resident`、`--node <节点>`，
-  且绑在本内测根上（`--agent` 指向本根的工作区，或 Linux 上它的 `OCC_CONFIG_DIR` 就是本根的
+  且绑在本内测根上（`--agent` 指向本根的工作区，或 Linux 上它的 `QIANMO_CONFIG_DIR` 就是本根的
   配置根）。认出来的按同一套 TERM → 10 s → KILL 停掉并 WARN。pid 文件在却陈旧、命令行又认不出
   任何一个、而 `QIANMO_BETA_NODE_PORT`（默认 38625）被占着时，列出占用者的 pid 与命令行，
   **一个都不动**，以非零退出。端口上是本内测根的另一个节点（H 上的 beta-4）不算不一致。
@@ -958,7 +958,7 @@ QIANMO_BETA_ROOT=<被测路径> ./demo/env/beta/beta-down.sh
 | 2 | 仓库根 | `beta_guard_root`：不能是仓库根本身 |
 | 3 | `~/.occ/beta` | `beta_guard_root`：落在真实配置根里 |
 | 4 | `~/.claude/x` | 同上 |
-| 5 | `$OCC_CONFIG_DIR/sub`（外层设了 `OCC_CONFIG_DIR`） | `beta_guard_root`：按调用方环境再拦一次 |
+| 5 | `$QIANMO_CONFIG_DIR/sub`（外层设了 `QIANMO_CONFIG_DIR`） | `beta_guard_root`：按调用方环境再拦一次 |
 | 6 | 目录存在但没有标记文件 | `beta_require_marker`：不去猜「这大概是我上次建的」 |
 | **7** | 目录里有 `.qianmo-demo-env` | 内测特有：那是**演示**环境根。H 上两套拓扑并存（§2.6），传错一个就是内测的 reset 去动演示的数据 |
 | **8** | 标记文件首行被改成别的字符串 | `beta_require_marker`：伪造的标记不算数 |

@@ -20,7 +20,7 @@
  * ③ 两条失败路径都**不留下陈旧 pid 文件**；
  * ④ 正向对照：进程真活着时照旧报成功。少了它，一个「永远报失败」的实现也能全绿。
  *
- * 外加连带那半：`beta_require_occ` 的 `command -v bun` 守卫（仓库里已有三处，
+ * 外加连带那半：`beta_require_qm` 的 `command -v bun` 守卫（仓库里已有三处，
  * 唯独这条主部署路径漏了）。
  */
 
@@ -179,13 +179,13 @@ describe('beta_start_process verifies the process is actually alive', () => {
   })
 })
 
-describe('beta_require_occ also guards the interpreter', () => {
+describe('beta_require_qm also guards the interpreter', () => {
   test('missing bun fails even when the build artifact is there', () => {
     const value = root()
     // 产物在不在、和跑得动它的解释器在不在，是两件事。这个用例把前者钉成「在」。
     const result = runShell(value, [
-      '[ -f "$BETA_OCC" ] || { printf "artifact missing, skipping\\n"; exit 0; }',
-      'beta_require_occ',
+      '[ -f "$BETA_QM_BIN" ] || { printf "artifact missing, skipping\\n"; exit 0; }',
+      'beta_require_qm',
     ])
     if (result.stdout.includes('artifact missing')) {
       // dist/ 没构建时这条判据不成立——跳过而不是假装验过（见 beta-model-env 的 0000 用例）。

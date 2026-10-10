@@ -242,7 +242,7 @@ fi
 bootstrap() {
   beta_seed_root
   beta_require_marker
-  beta_require_occ
+  beta_require_qm
   beta_export_common
 }
 
@@ -278,7 +278,7 @@ if [ "$PRINT_WAKE_IDENTITY" = '1' ]; then
   chmod 700 "$BETA_CONFIG_CONSOLE"
   beta_say '控制台唤醒签名身份（整行原样放进每个节点的 --trust）：' >&2
   # 尾参一并带上：身份由 --chat-from 决定，这一路与起控制台那一路必须问同一个身份。
-  OCC_CONFIG_DIR="$BETA_CONFIG_CONSOLE" bun "$BETA_OCC" console --print-wake-identity \
+  QIANMO_CONFIG_DIR="$BETA_CONFIG_CONSOLE" "${BETA_QM[@]}" console --print-wake-identity \
     ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}
   beta_say '' >&2
   beta_say '下一步 : 每台节点机上' >&2
@@ -500,7 +500,7 @@ run_host() {
 
   local console_args
   console_args=(
-    bun "$BETA_OCC" console
+    "${BETA_QM[@]}" console
     --port "$BETA_CONSOLE_PORT"
     --hostname "$BETA_HOST_BIND"
     --registry "$BETA_REGISTRY_URL"
@@ -1220,6 +1220,73 @@ resolve_node_passthrough() {
   rm -f "${gen}"
 }
 
+# P14.9: evaluate the resolved (including persisted) argv before any resident starts.
+# M1 colocation needs a separate UID and protection of the entire hub state + SSH
+# directory. M2 never places residents on the hub. These are operator settings,
+# not a claim that a user-controlled peers.conf is a security authority.
+assert_node_hub_isolation() {
+  local stage="${QIANMO_BETA_STAGE:-M1}" approver=0 tenancy=0 arg server roots root
+  case "$stage" in M1|M2) ;; *) beta_die 'QIANMO_BETA_STAGE must be M1 or M2' ;; esac
+  for arg in ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}; do
+    case "$arg" in
+      --approver|--approver=*) approver=1 ;;
+      --tenancy|--tenancy=*) tenancy=1; stage=M2 ;;
+      --node|--node=*) beta_die 'P14.9: pass the node identity before --; an override would invalidate topology checks' ;;
+    esac
+  done
+  beta_load_peers
+  server="$(beta_peer_server "$BETA_NODE" || true)"
+  if [ "$approver" = 1 ] || [ "$tenancy" = 1 ] || [ "$stage" = M2 ]; then
+    [ -n "$BETA_LOCAL_SERVER" ] && [ -n "$server" ] \
+      || beta_die 'P14.9: approval/M2 startup requires local-server and the node server in peers.conf'
+  fi
+  [ -n "$BETA_LOCAL_SERVER" ] && [ "$server" = "$BETA_LOCAL_SERVER" ] || return 0
+  [ "$stage" != M2 ] || beta_die 'P14.9: M2 forbids resident/user nodes on the hub; move this node to a separate server'
+  [ "$approver" = 1 ] || return 0
+  [ -n "${QIANMO_BETA_HUB_ROOT:-}" ] && [ -n "${QIANMO_BETA_HUB_SSH_DIR:-}" ] \
+    || beta_die 'P14.9: colocated approval requires QIANMO_BETA_HUB_ROOT and QIANMO_BETA_HUB_SSH_DIR (all hub state and SSH secrets)'
+  # Use the actual process UID and filesystem metadata/access checks. No declared
+  # UID or boolean "hardline enabled" can substitute for the OS observations.
+  roots="$(bun -e '
+    const fs = require("node:fs"), path = require("node:path");
+    const fail = message => { console.error("P14.9: " + message); process.exit(1); };
+    const uid = process.geteuid?.();
+    if (uid === undefined || uid === 0) fail("node must run as a non-privileged POSIX uid");
+    const writable = p => { try { fs.accessSync(p, fs.constants.W_OK); return true; } catch { return false; } };
+    try {
+      const roots = process.argv.slice(1).map(p => {
+        if (!path.isAbsolute(p) || /[\r\n]/.test(p)) fail("secret roots must be absolute paths without newlines");
+        const real = fs.realpathSync(p), st = fs.statSync(real);
+        if (!st.isDirectory() || real === path.parse(real).root) fail("secret root must be a dedicated directory");
+        if (st.uid === uid) fail("hub and node must use independent uids");
+        if ((st.mode & 0o022) || writable(real)) fail("node can write a hub secret root");
+        // Verify both the spelling and the target: a node-owned symlink to an
+        // immutable target must not make a mutable deployment path look safe.
+        for (const spelling of new Set([path.resolve(p), real])) {
+          const leaf = fs.lstatSync(spelling);
+          if (leaf.isSymbolicLink() && leaf.uid === uid) fail("node owns the hub secret symlink");
+          let child = spelling, parent = path.dirname(child);
+          while (parent !== child) {
+            const ps = fs.statSync(parent), cs = fs.lstatSync(child);
+            // A sticky directory protects a child owned by the hub from this UID.
+            if (writable(parent) && !((ps.mode & 0o1000) && ps.uid !== uid && cs.uid !== uid)) fail("node can replace a hub secret root through its parent");
+            child = parent; parent = path.dirname(parent);
+          }
+        }
+        return real;
+      });
+      if (fs.statSync(roots[0]).uid !== fs.statSync(roots[1]).uid) fail("hub state and SSH roots must have the same owner");
+      for (const root of new Set(roots)) console.log(root);
+    } catch (error) { fail("cannot verify hub secret roots: " + error.message); }
+  ' "$QIANMO_BETA_HUB_ROOT" "$QIANMO_BETA_HUB_SSH_DIR")" \
+    || beta_die 'P14.9: hub isolation verification failed; resident was not started'
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    PASS_THROUGH+=(--protected-root "$root")
+  done <<<"$roots"
+  beta_ok 'P14.9: separate non-root UID and immutable hub state/SSH roots verified; roots added to resident hardline'
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # node 腿：该机那一个常驻节点
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1236,6 +1303,7 @@ run_node() {
   # 从记录里读回来的那一份**再过一次那道门**：命令行给的那一份在解析期已经过了，
   # 而这一份是刚刚才进来的。
   assert_no_token_values_in_passthrough
+  assert_node_hub_isolation
 
   local config_dir="$BETA_NODES_DIR/$BETA_NODE/config"
   local ws_root="$BETA_WORKSPACE_DIR/$BETA_NODE"
@@ -1297,7 +1365,7 @@ run_node() {
   # 才出现。**滚新产物之前，先确认在跑的进程是本脚本这一版起的。**
   # `demo/env/resident-task-policy.test.ts` 钉住这两行不会被悄悄删掉。
   args=(
-    bun "$BETA_OCC" resident
+    "${BETA_QM[@]}" resident
     --node "$BETA_NODE"
     --team "$BETA_TEAM"
     --port "$BETA_NODE_PORT"

@@ -75,8 +75,8 @@ cmd_print_identity() {
   mkdir -p "$BETA_CONFIG_CONSOLE"
   chmod 700 "$BETA_CONFIG_CONSOLE"
   beta_say "值守作业的签名身份（配置根 ${BETA_CONFIG_CONSOLE}；整行原样放进每个目标节点的 --trust）：" >&2
-  OCC_IDENTITY=qianmo OCC_CONFIG_DIR="$BETA_CONFIG_CONSOLE" \
-    bun "$BETA_OCC" watch --print-identity --from "$from"
+  QIANMO_CONFIG_DIR="$BETA_CONFIG_CONSOLE" \
+    "${BETA_QM[@]}" watch --print-identity --from "$from"
 }
 
 cmd_install() {
@@ -146,9 +146,8 @@ cmd_run() {
   beta_load_psk "$(beta_peer_psk_file "$WATCH_NODE")" "${WATCH_NODE} 的传输层 PSK"
   local args=(watch --jobs "$WATCH_JOBS_FILE" --from "$WATCH_FROM")
   [ "$WATCH_SIGN" = '1' ] && args+=(--sign)
-  export OCC_IDENTITY=qianmo
-  export OCC_CONFIG_DIR="$BETA_CONFIG_CONSOLE"
-  exec bun "$BETA_OCC" "${args[@]}"
+  export QIANMO_CONFIG_DIR="$BETA_CONFIG_CONSOLE"
+  exec "${BETA_QM[@]}" "${args[@]}"
 }
 
 case "${1:-}" in

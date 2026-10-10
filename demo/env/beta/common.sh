@@ -6,7 +6,7 @@
 #
 # 这里定死四件事，其余脚本一律从这里取，不各写一份：
 #   ① 内测根目录 BETA_ROOT 与它下面的目录布局（beta-env.md §4.1）；
-#   ② 配置隔离——每个常驻进程一个 OCC_CONFIG_DIR，全都在 BETA_ROOT 里，
+#   ② 配置隔离——每个常驻进程一个 QIANMO_CONFIG_DIR，全都在 BETA_ROOT 里，
 #      **绝不碰用户真实的 ~/.occ / ~/.qianmo / ~/.claude**；
 #   ③ 端口、节点名、智能体名的默认值与环境变量覆盖口（beta-env.md §2.6）；
 #   ④ 删除动作的三重守卫（guard_root + 标记文件首行 + 逐路径复核）。
@@ -282,8 +282,29 @@ BETA_CONFIG_CONSOLE="$BETA_NODES_DIR/console/config"
 beta_node_trail()   { printf '%s/%s/config/qianmo/audit/trail.ndjson' "$BETA_NODES_DIR" "$1"; }
 beta_mirror_trail() { printf '%s/%s/trail.ndjson' "$BETA_MIRROR_DIR" "$1"; }
 
-# occ 的构建产物。与演示环境同一条：`bun run build` 产出，`demo/env/bootstrap.sh` 造。
-BETA_OCC="$REPO_DIR/dist/cli-node.js"
+# qm 的两种形态（base-switch-omp.md §4.4）：
+#   · 部署树（舰队载荷，没有 node_modules）：`dist/qm-<平台>-<架构>`，qm 与 omp CLI 编成的单个
+#     可执行文件，由 atlas/scripts/build-qm.ts 产出，直接执行；
+#   · 源码树（开发机、沙箱）：`bun atlas/packages/node/src/cli.ts`，依赖由 bootstrap.sh 装好。
+# 两者都在时取二进制：部署树上它是载荷里唯一的真身。
+# 用 `"${BETA_QM[@]}" <命令> …` 调用，不要自己拼 `bun`。
+beta_host_target() {
+  local os arch
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) arch="$(uname -m)" ;;
+  esac
+  printf '%s-%s' "$os" "$arch"
+}
+BETA_QM_BIN="${QIANMO_QM_BINARY:-$REPO_DIR/dist/qm-$(beta_host_target)}"
+BETA_QM_SRC="$REPO_DIR/atlas/packages/node/src/cli.ts"
+if [ -f "$BETA_QM_BIN" ]; then
+  BETA_QM=("$BETA_QM_BIN")
+else
+  BETA_QM=(bun "$BETA_QM_SRC")
+fi
 
 # 进程名：pid 与日志文件都用它。节点腿那个是节点名本身（一机一节点，不会撞）。
 BETA_REGISTRY_PROC='registry'
@@ -332,15 +353,15 @@ beta_guard_root() {
   if [ "$root" = "$HOME" ]; then beta_die 'QIANMO_BETA_ROOT 不能是家目录'; fi
   if [ "$root" = "$REPO_DIR" ]; then beta_die 'QIANMO_BETA_ROOT 不能是仓库根本身'; fi
   case "$root" in
-    "$HOME"/.occ|"$HOME"/.occ/*|"$HOME"/.qianmo|"$HOME"/.qianmo/*|"$HOME"/.claude|"$HOME"/.claude/*)
+    "$HOME"/.occ|"$HOME"/.occ/*|"$HOME"/.qianmo|"$HOME"/.qianmo/*|"$HOME"/.omp|"$HOME"/.omp/*|"$HOME"/.claude|"$HOME"/.claude/*)
       beta_die "QIANMO_BETA_ROOT 落在真实配置根里：$root"
       ;;
   esac
-  # 用户若用 OCC_CONFIG_DIR / CLAUDE_CONFIG_DIR 把真实配置根挪到了别处，上面那三个
+  # 用户若用 QIANMO_CONFIG_DIR / CLAUDE_CONFIG_DIR 把真实配置根挪到了别处，上面那三个
   # 字面量就拦不住——这里按调用方进入本脚本时的环境再拦一次（内测自己的按节点
-  # OCC_CONFIG_DIR 是之后由各腿逐个设的，不会走到这里）。
+  # QIANMO_CONFIG_DIR 是之后由各腿逐个设的，不会走到这里）。
   local outer
-  for outer in "${OCC_CONFIG_DIR:-}" "${CLAUDE_CONFIG_DIR:-}"; do
+  for outer in "${QIANMO_CONFIG_DIR:-}" "${CLAUDE_CONFIG_DIR:-}"; do
     [ -n "$outer" ] || continue
     case "$root" in
       "$outer"|"$outer"/*)
@@ -947,12 +968,10 @@ beta_resolve_node_key() {
 
 # ── 隔离环境 ─────────────────────────────────────────────────────────────────
 #
-# 身份变量三件套里的前一个在这里设，另两个按腿分别设（beta-env.md §4.1 的表）：
-#   OCC_IDENTITY=qianmo      —— 缺了就落到 ~/.occ，与机器上的 occ 抢配置根；
-#   OCC_CONFIG_DIR=<按进程>  —— 由各腿在起进程时逐个给；
+# 身份变量两件套按腿分别设（beta-env.md §4.1 的表）：
+#   QIANMO_CONFIG_DIR=<按进程>  —— 由各腿在起进程时逐个给；
 #   QIANMO_TRANSPORT_PSK     —— 由 beta_load_psk 从文件取，缺了进程起不来。
 beta_export_common() {
-  export OCC_IDENTITY=qianmo
   if [ -z "${QIANMO_BACKUP_WRITE_TOKEN:-}" ] && [ -f "$BETA_BACKUP_WRITE_FILE" ]; then
     QIANMO_BACKUP_WRITE_TOKEN="$(cat "$BETA_BACKUP_WRITE_FILE")"
     export QIANMO_BACKUP_WRITE_TOKEN
@@ -1268,7 +1287,7 @@ beta_stop_one() {
 #   ② argv 里有 `--node <名字>`（或 `--node=<名字>`）；
 #   ③ 它和**本内测根**绑在一起：某个参数形如 `<agent>=<本根>/workspaces/<名字>/…`（beta-up 给
 #      每个 agent 的工作区，自第一版起每一版都有），或者（Linux）它的环境里
-#      `OCC_CONFIG_DIR=<本根>/nodes/<名字>/config`——就是它的配置根。
+#      `QIANMO_CONFIG_DIR=<本根>/nodes/<名字>/config`——就是它的配置根。
 # 同名节点跑在**另一个**内测根下（同机的演示 / 另一套内测）过不了③，不会被误停。
 #
 # **端口只用来报不一致，从不用来挑人杀。**H 上 38625 是跑在 H 自己身上的那个节点在用，
@@ -1309,7 +1328,7 @@ beta_proc_node() {
 ${env_text}
 " in
         *"
-OCC_CONFIG_DIR=${root}/nodes/${node}/config
+QIANMO_CONFIG_DIR=${root}/nodes/${node}/config
 "*)
           printf '%s\n' "$node"
           return 0
@@ -1538,7 +1557,7 @@ bun 装在 ~/.bun/bin 而那个目录不在非登录 shell 的 PATH 里；显式
   mkdir -p "$config_dir"
   chmod 700 "$config_dir"
   # 每个进程一个配置根：审计链、节点身份、会话表都按配置根分家（见文件头）。
-  OCC_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
+  QIANMO_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
   local pid=$!
   printf '%s\n' "$pid" >"$(beta_pidfile "$name")"
   sleep "$BETA_START_GRACE_S"
@@ -1651,12 +1670,12 @@ beta_http_body() {
   fi
 }
 
-# ── occ 产物 ────────────────────────────────────────────────────────────────
+# ── qm 产物 ────────────────────────────────────────────────────────────────
 
 # 没有构建产物就明确报错，不去猜。造它的是 demo/env/bootstrap.sh（内测沿用同一条）。
 #
 # **产物在不在、和跑得动它的解释器在不在，是两件事**（issue #40）。这里原先只查前者，
-# 而整套脚本硬依赖 `bun "$BETA_OCC"`（resident 与 console 两条腿都强制 Bun）。缺 bun 时
+# 而源码形态的整套脚本硬依赖 `bun "$BETA_QM_SRC"`（resident 与 console 两条腿都强制 Bun；编译产物形态不需要 bun 来跑 qm，但演示小工具 dist/demo/*.js 仍要）。缺 bun 时
 # 唯一的痕迹在 logs/<名字>.err 里的 `nohup: failed to run command 'bun'`，起法脚本当时
 # 一个字都不说。2026-08-24 的舰队部署实际形状：bun 装在 ~/.bun/bin，非交互 SSH（乃至
 # `bash -lc`）解析不到，四台里三台静默死亡，唯独 root 那台因为 /root/.bun/bin 在 PATH 里
@@ -1664,7 +1683,7 @@ beta_http_body() {
 #
 # 同一道守卫仓库里另有三处（demo/env/bootstrap.sh、beta-retain.sh、
 # remote/prepare-sandbox.sh），写法照它们对齐，这里只是补上漏掉的这一处。
-beta_require_occ() {
+beta_require_qm() {
   # shellcheck disable=SC2016
   #   ↑ 提示里的 $HOME / $PATH 是**给人照抄的字面量**，不是要在这里展开的。
   command -v bun >/dev/null 2>&1 || beta_die 'bun 不在 PATH 上 —— resident 与 console 两条腿都强制 Bun。
@@ -1672,7 +1691,8 @@ beta_require_occ() {
 （`ssh <机器> demo/env/beta/beta-up.sh ...` 解析不到它，`bash -lc` 也未必）。
 装法见 docs/dev/demo-env.md §2；已装就在命令前显式补上，例如
   PATH="$HOME/.bun/bin:$PATH" demo/env/beta/beta-up.sh ...'
-  [ -f "$BETA_OCC" ] || beta_die "缺 $BETA_OCC —— 先跑 demo/env/bootstrap.sh"
+  [ -f "$BETA_QM_BIN" ] || [ -f "$BETA_QM_SRC" ] \
+    || beta_die "缺 qm：既没有 $BETA_QM_BIN 也没有 $BETA_QM_SRC —— 先跑 demo/env/bootstrap.sh（源码形态）或投递载荷（部署形态）"
 }
 
 # ── qmcode 产物（P17.5 节点桥旁边那个 app-server）────────────────────────────

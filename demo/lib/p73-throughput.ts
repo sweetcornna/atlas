@@ -71,7 +71,7 @@ import {
 import {
   routerTrailSink,
   transportTrailSink,
-} from '../../src/services/qianmo/auditTrail.js'
+} from '@qianmo/node/host/auditTrail.js'
 import { arg, emit, intArg } from './cli-args.js'
 import {
   buildP73Report,

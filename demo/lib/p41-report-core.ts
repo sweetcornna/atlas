@@ -26,6 +26,7 @@ export interface P41Round {
   readonly taskId: string
   readonly verdict: 'complete' | 'no-ack' | 'no-result' | string
   readonly receipt?: string | null
+  readonly signedChannel?: boolean
   readonly sendError?: string
   readonly sentAt: number
   readonly receiptAt?: number
@@ -60,6 +61,10 @@ export interface P41Report {
   readonly checks: {
     readonly rounds: boolean
     readonly successRate: boolean
+    readonly uniqueRounds: boolean
+    readonly validTiming: boolean
+    readonly receipts: boolean
+    readonly ackMax: boolean
     readonly ackP95: boolean
     readonly resultMax: boolean
     readonly frozenBefore: boolean
@@ -98,7 +103,49 @@ export function buildP41Report(
 
   const checks = {
     rounds: rounds.length === options.expectedRounds,
-    successRate: complete.length === options.expectedRounds,
+    successRate:
+      complete.length === options.expectedRounds &&
+      rounds.every(entry => (entry.contentChars ?? 0) > 0),
+    uniqueRounds:
+      Number.isSafeInteger(options.expectedRounds) &&
+      options.expectedRounds > 0 &&
+      new Set(rounds.map(entry => entry.round)).size ===
+        options.expectedRounds &&
+      new Set(rounds.map(entry => entry.taskId)).size ===
+        options.expectedRounds &&
+      new Set(rounds.map(entry => entry.msgId)).size ===
+        options.expectedRounds &&
+      rounds.every(
+        entry =>
+          Number.isSafeInteger(entry.round) &&
+          entry.round >= 1 &&
+          entry.round <= options.expectedRounds &&
+          entry.taskId.length > 0 &&
+          entry.msgId.length > 0,
+      ),
+    validTiming:
+      rounds.length > 0 &&
+      rounds.every(
+        entry =>
+          Number.isFinite(entry.sentAt) &&
+          entry.sentAt > 0 &&
+          Number.isFinite(entry.sendToAckMs) &&
+          (entry.sendToAckMs ?? -1) >= 0 &&
+          Number.isFinite(entry.sendToResultMs) &&
+          (entry.sendToResultMs ?? -1) >= 0 &&
+          entry.ackAt === entry.sentAt + (entry.sendToAckMs ?? 0) &&
+          entry.resultAt === entry.sentAt + (entry.sendToResultMs ?? 0),
+      ),
+    receipts:
+      rounds.length > 0 &&
+      rounds.every(
+        entry =>
+          ['accepted', 'duplicate'].includes(entry.receipt ?? '') &&
+          !entry.sendError,
+      ),
+    ackMax:
+      sendToAck.count === options.expectedRounds &&
+      sendToAck.maxMs <= options.ackLimitMs,
     ackP95:
       sendToAck.count === options.expectedRounds &&
       sendToAck.p95Ms <= options.ackLimitMs,

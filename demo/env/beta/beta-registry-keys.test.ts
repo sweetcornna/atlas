@@ -146,7 +146,10 @@ function place(): Place {
   )
   mkdirSync(join(repo, 'dist/demo'), { recursive: true })
   writeFileSync(join(repo, 'dist/demo/p81-registry.js'), '// stub\n')
-  writeFileSync(join(repo, 'dist/cli-node.js'), '// stub\n')
+  writeFileSync(
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
+    '// stub\n',
+  )
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets'), { recursive: true })
   return { repo, root, argvLog: join(base, 'argv.log') }

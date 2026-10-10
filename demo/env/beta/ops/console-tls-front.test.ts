@@ -320,7 +320,7 @@ function streamingPost(
     method: 'POST',
     headers,
     body,
-    // @ts-expect-error Bun supports duplex for streaming request bodies
+    // Bun accepts duplex; older DOM type libraries did not. Bun supports duplex for streaming request bodies
     duplex: 'half',
   })
 }
@@ -511,7 +511,7 @@ describe('startFront：真 TLS', () => {
   )
 
   test.skipIf(openssl === null)(
-    'chunked 超限：maxRequestBodySize 挡不住，由 handler 边读边数回 413',
+    'chunked 超限：前置回 413，请求不进上游',
     async () => {
       const lines: string[] = []
       const front = startFront(
@@ -532,10 +532,11 @@ describe('startFront：真 TLS', () => {
           (16 * MAX_BODY_BYTES) / CHUNK_BYTES,
         )
         expect(status).toContain(' 413 ')
-        // Bun 1.3.13 实测：maxRequestBodySize 只挡声明了长度的请求，chunked 照样进
-        // handler，所以日志里有这一行。哪天 Bun 在套接字层挡住 chunked，这条会红，
-        // 届时回头改 startFront 里的注释。
-        expect(lines.some(line => line.includes(' POST /sink 413 '))).toBe(true)
+        // Bun 1.4 may reject chunked bodies before the handler. Both native
+        // rejection and the handler's capped reader must keep the upstream untouched.
+        expect(lines.every(line => line.includes(' POST /sink 413 '))).toBe(
+          true,
+        )
         expect(sinkHits).toBe(hitsBefore)
       } finally {
         await front.stop()

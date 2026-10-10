@@ -247,7 +247,7 @@ function driver(sshBin: string): FleetDriver {
           tunnelPort: 38_631,
           endpoint: 'ws://127.0.0.1:38631',
           configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
-          occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+          qmPath: '/home/fake/atlas-beta/dist/qm-linux-x64',
         },
       ],
       spawnMachines: [
@@ -656,7 +656,7 @@ function driverWithConsole(sshBin: string): FleetDriver {
           tunnelPort: 38_631,
           endpoint: 'ws://127.0.0.1:38631',
           configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
-          occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+          qmPath: '/home/fake/atlas-beta/dist/qm-linux-x64',
         },
       ],
       spawnMachines: [
@@ -706,7 +706,7 @@ function disposableHandle(
     name: DISPOSABLE_SPEC.name,
     spec: DISPOSABLE_SPEC,
     ssh: 'fake-host',
-    occPath: `${FAKE_HOME}/atlas-beta/dist/cli-node.js`,
+    qmPath: `${FAKE_HOME}/atlas-beta/dist/qm-linux-x64`,
     endpoint,
     hostEndpoint: 'ws://127.0.0.1:41999',
     configRoot: `${FAKE_ROOT}/config`,
@@ -715,7 +715,7 @@ function disposableHandle(
       root: FAKE_ROOT,
       configRoot: `${FAKE_ROOT}/config`,
       remotePort: 41_999,
-      occPath: `${FAKE_HOME}/atlas-beta/dist/cli-node.js`,
+      qmPath: `${FAKE_HOME}/atlas-beta/dist/qm-linux-x64`,
       tunnel: {
         localPort: 45_998,
         // 手搭的这个不重建，所以「死了」与「重建预算用完了」是同一件事。
@@ -1039,7 +1039,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
   it('execNode（第 14 条）：255 不再被读成「这条命令失败了」，且只发一次', async () => {
     const counter = newCounter()
     const d = driver(
-      fakeSsh([linkDown('cli-node.js', counter), BASE].join('\n')),
+      fakeSsh([linkDown('qm-linux-x64', counter), BASE].join('\n')),
     )
     const node = await d.startNode(bareCtx(), ATTACH_SPEC)
     await transportThrow(async () => await d.execNode(node, ['peers', 'list']))
@@ -1049,7 +1049,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
   it('execHost.exec / run（第 15、16 条）：同上，各只发一次', async () => {
     const counter = newCounter()
     const d = driver(
-      fakeSsh([linkDown('cli-node.js', counter), BASE].join('\n')),
+      fakeSsh([linkDown('qm-linux-x64', counter), BASE].join('\n')),
     )
     const host = await d.execHost(bareCtx())
     await transportThrow(async () => await host.exec(['ca', 'init']))
@@ -1130,7 +1130,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     // ② 启动那一趟：255 不再变成一句「节点没有起来」。
     const counter = newCounter()
     const start = driver(
-      fakeSsh([linkDown('setsid bun', counter), BASE].join('\n')),
+      fakeSsh([linkDown('setsid ', counter), BASE].join('\n')),
     )
     await transportThrow(
       async () => await start.restartNode(bareCtx(), disposableHandle()),
@@ -1141,7 +1141,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     const banner = driver(
       fakeSsh(
         [
-          `if [[ "$cmd" == *"setsid bun"* ]]; then printf 'node-pid=4242\\n'; exit 0; fi`,
+          `if [[ "$cmd" == *"setsid "* ]]; then printf 'node-pid=4242\\n'; exit 0; fi`,
           linkDown('out.log'),
           BASE,
         ].join('\n'),
@@ -1156,7 +1156,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     const diag = driver(
       fakeSsh(
         [
-          `if [[ "$cmd" == *"setsid bun"* ]]; then printf 'node-pid=4242\\n'; exit 0; fi`,
+          `if [[ "$cmd" == *"setsid "* ]]; then printf 'node-pid=4242\\n'; exit 0; fi`,
           `if [[ "$cmd" == *"out.log"* ]]; then printf '起不来\\n'; exit 0; fi`,
           linkDown('err.log'),
           BASE,
@@ -1177,9 +1177,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
   it('#startConsole 的启动与 banner（第 20、21、22 条），以及 #killByPidFile（第 23 条）', async () => {
     const counter = newCounter()
     const bin = fakeSsh(
-      [linkDown('setsid bun', counter), linkDown('console.pid'), BASE].join(
-        '\n',
-      ),
+      [linkDown('setsid ', counter), linkDown('console.pid'), BASE].join('\n'),
     )
     const spawnConsole: Scenario = {
       id: 'console/fake-start',
@@ -1198,7 +1196,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     const result = await runOnce(bin, spawnConsole)
     expect(result.outcome).toBe('error')
     expect(result.errorKind).toBe('transport')
-    // 启动那一趟只发一次（`setsid bun` 不幂等）。
+    // 启动那一趟只发一次（`setsid ` 不幂等）。
     expect(countOf(counter)).toBe(1)
     // 清理**先登记再启动**，所以那个控制台的 pid 文件照样被去停 —— 停不成时
     // 报告里要看得见，而不是让它静默活在机器上。
@@ -1208,7 +1206,7 @@ describe('非幂等的只判返回码，一次都不重发', () => {
     // banner 读不到时同样不许说成「控制台没有起来」。
     const bannerDown = fakeSsh(
       [
-        `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+        `if [[ "$cmd" == *"setsid "* ]]; then exit 0; fi`,
         `if [[ "$cmd" == *"console.pid"* ]]; then exit 0; fi`,
         linkDown('console.out.log'),
         BASE,
@@ -1361,7 +1359,7 @@ describe('反向隧道的就绪探测（第 29 条）', () => {
 /** 抄下假 ssh 收到的那条启动命令原文（多行，原样落盘）。 */
 function launchRecorder(file: string): string {
   return [
-    `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+    `if [[ "$cmd" == *"setsid "* ]]; then`,
     `  printf '%s\\n' "$cmd" >> '${file}'`,
     `  exit 0`,
     `fi`,
@@ -1411,7 +1409,7 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
     const READY_AT_TICK = 200
     const slowNode = (marker: string): string =>
       [
-        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `if [[ "$cmd" == *"setsid "* ]]; then`,
         `  n=$(printf '%s' "$cmd" | sed -n 's/.*seq 1 \\([0-9]*\\).*/\\1/p' | head -1)`,
         `  if [ "\${n:-0}" -ge ${String(READY_AT_TICK)} ]; then`,
         `    printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
@@ -1468,7 +1466,7 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
     // 这条脚本**不看** `seq` 拍数，所以两次跑唯一的差别就是 `#ssh` 的超时。
     const slowSsh = (marker: string): string =>
       [
-        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `if [[ "$cmd" == *"setsid "* ]]; then`,
         `  sleep 3`,
         `  printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
         `  exit 0`,
@@ -1510,7 +1508,7 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
   it('转发隧道自己死了：说的是链路失败，且不拨满预算（issue #105）', async () => {
     const landed = (marker: string): string =>
       [
-        `if [[ "$cmd" == *"setsid bun"* ]]; then`,
+        `if [[ "$cmd" == *"setsid "* ]]; then`,
         `  printf '{"publicKey":"fake-key"}\\n' > '${marker}'`,
         `  exit 0`,
         `fi`,
@@ -1538,7 +1536,7 @@ describe('远端就绪预算吃 --timeout-scale（issue #91 ②）', () => {
 
   it('隧道活着的时候不抢话 —— 拨不通仍然按「节点起来了但拨不通」报', async () => {
     const landed = [
-      `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+      `if [[ "$cmd" == *"setsid "* ]]; then exit 0; fi`,
       `if [[ "$cmd" == *"out.log"* ]]; then printf '{"publicKey":"k"}\\n'; exit 0; fi`,
       BASE,
     ].join('\n')
@@ -1624,7 +1622,7 @@ describe('一次性句柄的三个闭包（第 5、6、7 条）', () => {
     const d = driver(
       fakeSsh(
         [
-          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"setsid "* ]]; then exit 0; fi`,
           // `alive` 那条：链路好的时候如实答 alive，点火之后 255。
           armable('echo alive', armFile, 'alive'),
           armable('err.log', armFile, 'some stderr'),
@@ -1666,7 +1664,7 @@ describe('一次性句柄的三个闭包（第 5、6、7 条）', () => {
     const d = driver(
       fakeSsh(
         [
-          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"setsid "* ]]; then exit 0; fi`,
           `if [[ "$cmd" == *"out.log"* ]]; then printf '{"publicKey":"k"}\\n'; exit 0; fi`,
           // 日志文件真的不存在：远端 `cat … || true` 回 0 且什么都没有。
           `if [[ "$cmd" == *"err.log"* ]]; then exit 0; fi`,
@@ -1711,7 +1709,7 @@ describe('一次性控制台句柄的两个闭包（第 21、22 条）', () => {
     const d = driverWithConsole(
       fakeSsh(
         [
-          `if [[ "$cmd" == *"setsid bun"* ]]; then exit 0; fi`,
+          `if [[ "$cmd" == *"setsid "* ]]; then exit 0; fi`,
           armable('console.err.log', armFile, 'console stderr'),
           armable(
             'console.out.log',

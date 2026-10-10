@@ -66,13 +66,13 @@ describe('P3.1 benchmark report', () => {
     const factor = checkP31Factors(
       [
         {
-          stage: 'acp_ready',
+          stage: 'runtime_ready',
           at: 1,
           sessionId: SESSION,
           activityReconnectFactor: 2,
         },
         {
-          stage: 'acp_ready',
+          stage: 'runtime_ready',
           at: 2,
           sessionId: SESSION,
           activityReconnectFactor: 1.1,

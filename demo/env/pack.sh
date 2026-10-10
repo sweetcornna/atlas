@@ -7,20 +7,23 @@
 #   demo/env/pack.sh [--output <tarball>]
 #
 # 它是 `demo/env/bootstrap.sh` 的**源端对半**：pack 在开发机上打包，bootstrap 在
-# 机器上装依赖、构建。两条命令之间隔着一次 scp，而**源 commit 只在这一侧知道**。
+# 机器上装依赖（`bun install --frozen-lockfile`）、构建 omp 原生插件（`bun run build:native`，
+# 已有预编译插件时可跳过），要求 Bun ≥ 1.4。两条命令之间隔着一次 scp，而**源 commit 只在
+# 这一侧知道**。
 #
 # ── 为什么需要它（issue #70）────────────────────────────────────────────────
-# 产物里的 `MACRO.SOURCE_COMMIT` 是 `scripts/defines.ts` 问 git 拿的，而部署树
-# `~/atlas-beta/` 上没有 git 可问——送代码那一步排除了 `.git`（仓库根下还压着
-# `.claude` 与含凭据的 `.occ`，裸同步是事故，见 docs/dev/demo-env.md §7.1）。
-# 于是每台节点构建出来的产物都报 `sourceCommit=unknown`：一台机器上跑着的常驻节点
-# 答不出自己是哪一版，验收报告里那一行也就没有意义。
+# qm 源码直跑时报出的源 commit 是问 git 拿的（atlas/packages/node/src/provenance.ts），
+# 而部署树 `~/atlas-beta/` 上没有 git 可问——送代码那一步排除了 `.git`（仓库根下还可能
+# 压着 `.claude` 与含凭据的配置根，裸同步是事故，见 docs/dev/demo-env.md §7.1）。
+# 于是每台节点都报 `sourceCommit=unknown`：一台机器上跑着的常驻节点答不出自己是哪一版，
+# 验收报告里那一行也就没有意义。
 #
-# 这里在包里放一个 `.source-commit`，bootstrap 构建前读回来交给 defines.ts。
+# 这里在包里放一个 `.source-commit`，机器上起 qm 前由 common.sh 读回来、经
+# `QIANMO_SOURCE_COMMIT` 交给 qm。
 #
 # ── 为什么用 `git archive` 而不是 `tar --exclude=…` ─────────────────────────
-# ① 排除表是「记得写」才生效的，漏一条就可能把 `.occ` 里的凭据发出去；`git archive`
-#    只出**跟踪文件**，`node_modules` / `dist` / `.claude` / `.occ` 天然不在其中。
+# ① 排除表是「记得写」才生效的，漏一条就可能把配置根里的凭据发出去；`git archive`
+#    只出**跟踪文件**，`node_modules` / `dist` / `.claude` / `.qianmo` 天然不在其中。
 # ② 它出的字节由 commit 决定：同一个 commit 打两次一样。排除表做不到这一点。
 # ③ macOS 的 bsdtar 会给每个文件配一份 `._*` AppleDouble 分叉——线上那棵 `~/atlas-beta`
 #    里积了 5588 个。`git archive` 不写扩展属性，包里干净。
@@ -76,8 +79,8 @@ demo_say "输出 : ${OUTPUT}"
 # `--add-virtual-file` 把戳直接写进归档，不落地到工作树——落地的话，下一次
 # `git status` 就多一个未跟踪文件，而上面那道脏树守卫会因为自己刚造的垃圾而拒绝下一次打包。
 #
-# 戳文件的形状（40 位小写十六进制）与 `demo_source_commit` 的校验、
-# `scripts/defines.ts` 注进产物的值三处一致。
+# 戳文件的形状（40 位小写十六进制，可带 `-dirty`）与 `demo_source_commit` 的校验、
+# qm 报出的值一致。
 git archive --format=tar "--add-virtual-file=.source-commit:${HEAD_SHA}" HEAD \
   | gzip -n > "$OUTPUT"
 

@@ -32,6 +32,11 @@ import {
   startResidentActivityServer,
 } from '@qianmo/activator'
 import { arg, intArg } from './cli-args.js'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
+import {
+  loadOrCreateNodeKeys,
+  parseTrustedKey,
+} from '../../atlas/packages/node/src/host/nodeIdentity.js'
 import {
   daemonToken,
   daemonUrl,
@@ -41,6 +46,29 @@ import {
   targetUrl,
 } from './ac2-env.js'
 
+const hostNode = `${targetNode()}-host`
+if (process.argv.includes('--print-identity')) {
+  process.stdout.write(
+    `${hostNode}=${loadOrCreateNodeKeys(hostNode).publicKey}\n`,
+  )
+  process.exit(0)
+}
+const signed = process.argv.includes('--sign')
+const trusted: (readonly [string, string])[] = []
+for (let i = 0; i < process.argv.length; i++)
+  if (process.argv[i] === '--trust')
+    trusted.push(parseTrustedKey(process.argv[++i] ?? ''))
+if (!signed && (trusted.length || arg('target-key')))
+  throw new Error('--trust and --target-key require --sign')
+if (signed && (!trusted.length || !arg('target-key')))
+  throw new Error('--sign requires explicit --trust callers and --target-key')
+const keys = signed ? loadOrCreateNodeKeys(hostNode) : undefined
+const peerDirectory = new StaticPublicKeyDirectory(trusted)
+const targetDirectory = signed
+  ? new StaticPublicKeyDirectory([
+      parseTrustedKey(`${targetNode()}=${arg('target-key')}`),
+    ])
+  : undefined
 const readyFile = arg('ready')
 const timingsFile = arg('timings')
 const auditFile = arg('audit')
@@ -90,7 +118,18 @@ if (
 const node = await startActivatorNode({
   // 宿主自己的段名。它不是被唤醒的那个节点——两跳的两端不能同名，否则审计里
   // 分不清「谁把消息交给了谁」。
-  node: `${targetNode()}-host`,
+  node: hostNode,
+  ...(keys && targetDirectory
+    ? {
+        signing: {
+          node: hostNode,
+          keys,
+          directory: peerDirectory,
+          required: true,
+        },
+        linkSigning: { keys, directory: targetDirectory, required: true },
+      }
+    : {}),
   psk: psk(),
   listen: {
     port: intArg('port', 0),

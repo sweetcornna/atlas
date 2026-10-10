@@ -41,7 +41,7 @@ import {
 import { tmpdir, userInfo } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseProviderRequest, SENTINEL_COMMAND } from '@qianmo/providers'
-import { ProviderExecutor } from '../../../../src/cli/handlers/consoleProvidersExec.js'
+import { ProviderExecutor } from '@qianmo/node/commands/consoleProvidersExec.js'
 import { cliPrefix } from '../../../lib/acceptance/local/spawn'
 import { type TestBash, testBashes } from '../testBashes'
 
@@ -183,13 +183,11 @@ const shQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 const FAKE_BUN = `#!/bin/bash
 {
   printf 'ARGV %s\\n' "$*"
-  printf 'OCC_CONFIG_DIR=%s\\n' "\${OCC_CONFIG_DIR-<unset>}"
+  printf 'QIANMO_CONFIG_DIR=%s\\n' "\${QIANMO_CONFIG_DIR-<unset>}"
   printf 'SSH_ORIGINAL_COMMAND=%s\\n' "\${SSH_ORIGINAL_COMMAND-<unset>}"
 } >>"$HOME/serve-stdin.calls"
 IFS= read -r req
 printf 'REQ %s\\n' "$req" >>"$HOME/serve-stdin.calls"
-shift
-export OCC_IDENTITY="\${OCC_IDENTITY:-qianmo}"
 exec ${[process.execPath, ...cliPrefix().slice(1)].map(shQuote).join(' ')} "$@" <<<"$req"
 `
 
@@ -219,7 +217,7 @@ function deployTree(name: string, withModelApply: boolean): string {
   const ops = join(tree, 'demo/env/beta/ops')
   mkdirSync(ops, { recursive: true })
   mkdirSync(join(tree, 'dist'), { recursive: true })
-  writeFileSync(join(tree, 'dist/cli-node.js'), '// 构建产物占位\n')
+  writeExec(join(tree, `dist/qm-${process.platform}-${process.arch}`), FAKE_BUN)
   const link = (rel: string) =>
     symlinkSync(join(REPOSITORY_ROOT, rel), join(tree, rel))
   link('demo/env/beta/common.sh')
@@ -601,7 +599,7 @@ for (const bash of BASHES) {
         )
         expect(calls).toContain(`provider serve-stdin --node ${NODE}`)
         expect(calls).toContain(
-          `OCC_CONFIG_DIR=${join(w.nodeHome, 'qianmo-beta/nodes', NODE, 'config')}`,
+          `QIANMO_CONFIG_DIR=${join(w.nodeHome, 'qianmo-beta/nodes', NODE, 'config')}`,
         )
         expect(calls).toContain('SSH_ORIGINAL_COMMAND=<unset>')
         // hub-verify 发的请求过得了协议的真解析器；回的 managed=false 是真 serve-stdin 答的。

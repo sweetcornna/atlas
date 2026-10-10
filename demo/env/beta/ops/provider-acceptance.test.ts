@@ -8,7 +8,7 @@
  *   下发（pending → resident 等在途 → 换代）、指派、档案存取、导出、页面、对话。类型从真包里
  *   import，真接口改了字段这里就编不过。
  * - **假舰队**：两台「机器」是两个临时家目录，各有内测根（pid 文件指着真活着的 `sleep`、
- *   启动横幅、节点配置根里的 `settings.json` / `key-pool.json`）与部署树（`dist/cli-node.js`、
+ *   启动横幅、节点配置根里的 `models.yml` / `agent.db`）与部署树（`dist/qm-<target>`、
  *   软链回仓库的 `provider-acceptance-node.ts`）。`QIANMO_ACCEPTANCE_SSH_BIN` 指向一个
  *   ssh 桩：按目标找到那台机器的家目录、`bash -c` 跑远端命令。于是 facts 与扫描器是**真的**
  *   在跑：真读文件、真每 50 ms 采样本机 `ps -eo args`。
@@ -19,6 +19,8 @@
  * 包装脚本在每个找得到的 bash 上各跑一遍。
  */
 
+import { Database } from 'bun:sqlite'
+import { SqliteAuthCredentialStore } from '@oh-my-pi/pi-ai/auth-storage'
 import { afterAll, describe, expect, test } from 'bun:test'
 import type {
   ChatTurn,
@@ -42,11 +44,9 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
-import { transportPskEnvVarForNode } from '../../../../src/cli/handlers/consoleArgs.js'
-import { occConfigPath } from '../../../../src/config/paths.js'
-import { keyPoolPaths } from '../../../../src/services/qianmo/modelCompat/credentialPoolStore.js'
-import { providerPaths } from '../../../../src/services/qianmo/providers/store.js'
-import { SECRET_ENV_KEYS as WHITELIST_SECRET_KEYS } from '../../../../src/services/qianmo/providers/whitelist.js'
+import { transportPskEnvVarForNode } from '@qianmo/node/commands/consoleArgs.js'
+import { qianmoConfigPath } from '@qianmo/paths'
+import { providerPaths } from '@qianmo/node/providers/store.js'
 import { parseProviderProfile, presetById } from '@qianmo/providers'
 import { cliPrefix, waitFor } from '../../../lib/acceptance/local/spawn'
 import { testBashes } from '../testBashes'
@@ -66,7 +66,6 @@ import {
 import {
   EXCLUDED_TOP,
   LAYOUT,
-  SECRET_ENV_KEYS,
   parseConsoleBanner,
   parseNodeBanner,
   realKeyNeedles,
@@ -163,8 +162,7 @@ function startQm(
       PATH: process.env.PATH ?? '/usr/bin:/bin',
       HOME: process.env.HOME ?? BASE,
       TMPDIR: tmpdir(),
-      OCC_IDENTITY: 'qianmo',
-      OCC_CONFIG_DIR: configDir,
+      QIANMO_CONFIG_DIR: configDir,
       NO_COLOR: '1',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
       OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
@@ -424,7 +422,10 @@ function makeFleet(options: FleetOptions = {}): Fleet {
   const root = (m: 'h' | 'n2') => join(machineDir(m), 'home', 'qianmo-beta')
   const tree = (m: 'h' | 'n2') => join(machineDir(m), 'tree')
   for (const m of ['h', 'n2'] as const) {
-    write(join(tree(m), 'dist/cli-node.js'), `// build ${SHA}\n`)
+    write(
+      join(tree(m), `dist/qm-${process.platform}-${process.arch}`),
+      `// build ${SHA}\n`,
+    )
     mkdirSync(join(tree(m), 'demo/env/beta/ops'), { recursive: true })
     symlinkSync(
       NODE_SCRIPT,
@@ -453,9 +454,9 @@ function makeFleet(options: FleetOptions = {}): Fleet {
     '{"action":"provider.save"}\n',
   )
   write(
-    join(root('h'), 'nodes/beta-1/config/settings.json'),
+    join(root('h'), 'nodes/beta-1/config/omp/agent/models.yml'),
     JSON.stringify({
-      env: { OPENAI_API_KEY: REAL_KEY, OPENAI_MODEL: 'gpt-6-luna' },
+      providers: { 'qm-fixture': { apiKey: REAL_KEY } },
     }),
   )
   // n2：beta-2（ssh 执行器），多 key 池（P18.18）。
@@ -466,19 +467,18 @@ function makeFleet(options: FleetOptions = {}): Fleet {
   )
   write(join(root('n2'), 'logs/beta-2.err'), 'resident 日志\n')
   write(
-    join(root('n2'), 'nodes/beta-2/config/settings.json'),
-    JSON.stringify({ env: { OPENAI_API_KEY: REAL_KEY } }),
+    join(root('n2'), 'nodes/beta-2/config/omp/agent/models.yml'),
+    JSON.stringify({ providers: { 'qm-fixture': { apiKey: REAL_KEY } } }),
   )
-  write(
-    join(root('n2'), 'nodes/beta-2/config/qianmo/provider/key-pool.json'),
-    JSON.stringify({
-      v: 1,
-      keys: [
-        { id: 'k1', value: REAL_KEY },
-        { id: 'k2', value: REAL_KEY_2 },
-      ],
-    }),
-  )
+  const dbPath = join(root('n2'), 'nodes/beta-2/config/omp/agent/agent.db')
+  const db = new Database(dbPath)
+  db.exec('CREATE TABLE auth_credentials (credential_type TEXT, data TEXT)')
+  for (const key of [REAL_KEY, REAL_KEY_2])
+    db.query('INSERT INTO auth_credentials VALUES (?, ?)').run(
+      'api_key',
+      JSON.stringify({ key }),
+    )
+  db.close()
   write(
     join(root('n2'), 'nodes/beta-2/config/qianmo/audit/trail.ndjson'),
     '{"seq":1}\n',
@@ -719,7 +719,7 @@ function fakeConsole(scenario: Scenario) {
           : {}),
         effective: {
           apiProvider: 'openai',
-          wire: 'responses',
+          wire: 'openai-responses',
           model: n.model,
           wireModel: n.model,
           modelSettingsSlot: null,
@@ -1203,7 +1203,7 @@ describe('一轮', () => {
       const a6 = run.verdict?.moments.find(m => m.item === 'A6')
       expect(a6?.waitingTurns).toBe(1)
       expect(Number(a6?.generationAfter)).toBe(Number(a6?.generationBefore) + 1)
-      // A5：两台机器都扫了，真 key 的针在持有点里命中（正向对照），key-pool 的第二把也在。
+      // A5：两台机器都扫了，真 key 的针在持有点里命中（正向对照），native凭据池的第二把也在。
       const a5 = itemOf(run, 'A5')
       expect(a5?.detail.join('\n')).toContain('h：针 金丝雀 3 / 本机真 key 1')
       expect(a5?.detail.join('\n')).toContain('n2：针 金丝雀 3 / 本机真 key 2')
@@ -1389,9 +1389,12 @@ describe('两轮比对', () => {
     async () => {
       const fleet = makeFleet()
       const r1 = await round(fleet, {}, 'r1')
-      // CLI 起来时把 dist/cli-node.js 硬链进运行时目录、再撤掉：链接数变了，ctime 跟着变，
+      // CLI 起来时把 dist/qm-<target> 硬链进运行时目录、再撤掉：链接数变了，ctime 跟着变，
       // 产物没换。部署指纹不能因此变（P18.13 B 段 R1 的 D1 假红）。
-      const cli = join(fleet.tree('n2'), 'dist/cli-node.js')
+      const cli = join(
+        fleet.tree('n2'),
+        `dist/qm-${process.platform}-${process.arch}`,
+      )
       const ctimeBefore = statSync(cli).ctimeMs
       await Bun.sleep(20)
       linkSync(cli, `${cli}.runtime-link`)
@@ -1419,7 +1422,7 @@ describe('两轮比对', () => {
 
       // 节点上换过一次产物（内容不同 → sha256 不同）。
       write(
-        join(fleet.tree('n2'), 'dist/cli-node.js'),
+        join(fleet.tree('n2'), `dist/qm-${process.platform}-${process.arch}`),
         `// build ${SHA} rebuilt\n`,
       )
       const r3 = await round(fleet, {}, 'r3')
@@ -1564,8 +1567,43 @@ describe('包装脚本', () => {
 })
 
 describe('配置与零件', () => {
-  test('节点脚本里抄的 SECRET_ENV_KEYS 与 whitelist.ts 逐项一致', () => {
-    expect([...SECRET_ENV_KEYS]).toEqual([...WHITELIST_SECRET_KEYS])
+  test('scanner includes inline and custom Anthropic header credentials', () => {
+    const root = mkdtempSync(join(BASE, 'model-credentials-'))
+    write(
+      join(LAYOUT.nodeConfig(root, 'beta-2'), 'omp/agent/models.yml'),
+      Bun.YAML.stringify({
+        providers: {
+          'qm-inline': { apiKey: REAL_KEY },
+          'qm-anthropic': {
+            auth: 'none',
+            headers: { 'X-Api-Key': REAL_KEY_2, Authorization: '' },
+          },
+        },
+      }),
+    )
+    expect(
+      realKeyNeedles(root, ['beta-2']).map(needle => needle.bytes.toString()),
+    ).toEqual([REAL_KEY, REAL_KEY_2])
+  })
+  test('scanner reads the real omp credential schema including disabled keys without mutating it', async () => {
+    const root = mkdtempSync(join(BASE, 'native-credentials-'))
+    const config = LAYOUT.nodeConfig(root, 'beta-2')
+    const path = join(config, 'omp/agent/agent.db')
+    mkdirSync(dirname(path), { recursive: true })
+    const db = new Database(path)
+    const store = new SqliteAuthCredentialStore(db)
+    const rows = await store.upsertAuthCredential('qm-fixture', {
+      type: 'api_key',
+      key: REAL_KEY,
+    })
+    await store.deleteAuthCredential(rows[0]!.id, 'test-disabled')
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    db.close()
+    const before = readFileSync(path)
+    expect(
+      realKeyNeedles(root, ['beta-2']).map(needle => needle.bytes.toString()),
+    ).toEqual([REAL_KEY])
+    expect(readFileSync(path)).toEqual(before)
   })
 
   test('节点脚本的布局与 common.sh 一致（pid / 日志 / 节点与控制台配置根 / 不扫的目录 / 部署产物 / 缺省根）', () => {
@@ -1575,7 +1613,7 @@ describe('配置与零件', () => {
       [
         '/bin/bash',
         '-c',
-        '. "$1"; printf "%s\\n" "$(beta_pidfile console)" "$(beta_logfile beta-2 out)" "$BETA_NODES_DIR/beta-2/config" "$BETA_CONFIG_CONSOLE" "$BETA_SECRET_DIR" "$BETA_BACKUP_STORE" "$BETA_WORKSPACE_DIR" "$BETA_OCC"; unset QIANMO_BETA_ROOT; . "$1"; printf "%s\\n" "$BETA_ROOT"',
+        '. "$1"; printf "%s\\n" "$(beta_pidfile console)" "$(beta_logfile beta-2 out)" "$BETA_NODES_DIR/beta-2/config" "$BETA_CONFIG_CONSOLE" "$BETA_SECRET_DIR" "$BETA_BACKUP_STORE" "$BETA_WORKSPACE_DIR" "$BETA_QM_BIN"; unset QIANMO_BETA_ROOT; . "$1"; printf "%s\\n" "$BETA_ROOT"',
         'layout',
         join(REPOSITORY_ROOT, 'demo/env/beta/common.sh'),
       ],
@@ -1602,21 +1640,22 @@ describe('配置与零件', () => {
     const script = readFileSync(NODE_SCRIPT, 'utf8')
     for (const path of [
       providerPaths.pending(),
-      keyPoolPaths.pool(),
+      providerPaths.models(),
+      providerPaths.auth(),
       providerPaths.firstWrite(),
     ]) {
-      expect(script).toContain(`'${relative(occConfigPath(), path)}'`)
+      expect(script).toContain(`'${relative(qianmoConfigPath(), path)}'`)
     }
     const canary = 'sk-test-canary-holders-0123456789abcdef'
     const root = mkdtempSync(join(BASE, 'holders-'))
     const config = join(root, 'nodes/beta-2/config')
     write(
-      join(config, 'settings.json'),
-      JSON.stringify({ env: { OPENAI_API_KEY: REAL_KEY } }),
+      join(config, 'omp/agent/models.yml'),
+      JSON.stringify({ providers: { 'qm-fixture': { apiKey: REAL_KEY } } }),
     )
-    // 迁移前 key 写在 settings.json 里的节点：首次托管的副本里有它，那是持有点。
+    // 托管前 key 已在节点模型配置里的节点：首次托管的副本里有它，那是持有点。
     write(
-      join(config, 'qianmo/provider/first-write/settings.json'),
+      join(config, 'qianmo/provider/first-write/config.json'),
       JSON.stringify({ env: { OPENAI_API_KEY: REAL_KEY }, canary }),
     )
     const real = realKeyNeedles(root, ['beta-2'])
@@ -1628,12 +1667,12 @@ describe('配置与零件', () => {
       needles: [...real, { label: 'canary-1', bytes: Buffer.from(canary) }],
     })
     expect(scan.holders.map(hit => `${hit.path} ${hit.label}`).sort()).toEqual([
-      'nodes/beta-2/config/qianmo/provider/first-write/settings.json real-beta-2-1',
-      'nodes/beta-2/config/settings.json real-beta-2-1',
+      'nodes/beta-2/config/omp/agent/models.yml real-beta-2-1',
+      'nodes/beta-2/config/qianmo/provider/first-write/config.json real-beta-2-1',
     ])
     // 金丝雀从不该进那份从不覆盖的副本：在那里出现照样是命中。
     expect(scan.hits.map(hit => `${hit.path} ${hit.label}`)).toEqual([
-      'nodes/beta-2/config/qianmo/provider/first-write/settings.json canary-1',
+      'nodes/beta-2/config/qianmo/provider/first-write/config.json canary-1',
     ])
   })
 

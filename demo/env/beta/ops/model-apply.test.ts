@@ -26,8 +26,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { ProviderExecutor } from '../../../../src/cli/handlers/consoleProvidersExec.js'
-import { fakeSsh } from '../../../../src/cli/handlers/__tests__/consoleProvidersFakeNode.js'
+import { ProviderExecutor } from '@qianmo/node/commands/consoleProvidersExec.js'
+import { fakeSsh } from '../../../../atlas/packages/node/test/commands/consoleProvidersFakeNode.js'
 
 const REPO = resolve(import.meta.dir, '../../../..')
 const SCRIPT = join(REPO, 'demo/env/beta/ops/model-apply.sh')
@@ -58,8 +58,7 @@ appendFileSync(
     argv,
     line,
     env: {
-      OCC_CONFIG_DIR: process.env.OCC_CONFIG_DIR ?? null,
-      OCC_IDENTITY: process.env.OCC_IDENTITY ?? null,
+      QIANMO_CONFIG_DIR: process.env.QIANMO_CONFIG_DIR ?? null,
       SSH_ORIGINAL_COMMAND: process.env.SSH_ORIGINAL_COMMAND ?? null,
     },
   }) + '\n',
@@ -117,7 +116,11 @@ function tree(nodes: readonly string[] = ['beta-1', 'beta-2']): Tree {
   symlinkSync(join(REPO, 'demo/env/beta/common.sh'), join(beta, 'common.sh'))
   symlinkSync(SCRIPT, join(beta, 'ops/model-apply.sh'))
   mkdirSync(join(dir, 'repo/dist'), { recursive: true })
-  writeFileSync(join(dir, 'repo/dist/cli-node.js'), FAKE_QM)
+  writeFileSync(
+    join(dir, `repo/dist/qm-${process.platform}-${process.arch}`),
+    `#!${process.execPath}\n${FAKE_QM.replace(/^#![^\n]*\n/, '')}`,
+    { mode: 0o755 },
+  )
   const records = join(dir, 'repo/records')
   mkdirSync(records)
   const home = join(dir, 'home')
@@ -198,8 +201,7 @@ describe('model-apply.sh', () => {
     expect(call?.argv).toEqual(['provider', 'serve-stdin', '--node', 'beta-1'])
     expect(call?.line).toBe(REQUEST.trimEnd())
     expect(call?.env).toEqual({
-      OCC_CONFIG_DIR: join(t.root, 'nodes/beta-1/config'),
-      OCC_IDENTITY: 'qianmo',
+      QIANMO_CONFIG_DIR: join(t.root, 'nodes/beta-1/config'),
       SSH_ORIGINAL_COMMAND: null,
     })
   }, 30_000)
@@ -237,7 +239,9 @@ describe('model-apply.sh', () => {
     for (const call of t.calls()) {
       expect(call.argv).toEqual(['provider', 'serve-stdin', '--node', 'beta-1'])
       expect(call.env.SSH_ORIGINAL_COMMAND).toBeNull()
-      expect(call.env.OCC_CONFIG_DIR).toBe(join(t.root, 'nodes/beta-1/config'))
+      expect(call.env.QIANMO_CONFIG_DIR).toBe(
+        join(t.root, 'nodes/beta-1/config'),
+      )
     }
     expect(t.calls()).toHaveLength(5)
   }, 30_000)

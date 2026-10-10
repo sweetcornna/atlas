@@ -13,6 +13,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -25,6 +26,7 @@ import { dirname, join, resolve } from 'node:path'
 
 const SCRIPT = resolve(import.meta.dir, 'fleet-probe.sh')
 const ADMIN = 'a'.repeat(48)
+const SESSION = 'b'.repeat(48)
 const dirs: string[] = []
 const servers: ReturnType<typeof Bun.serve>[] = []
 let nodePort = 0
@@ -32,6 +34,7 @@ let deadPort = 0
 let registryPort = 0
 let consolePort = 0
 let wakeAuth: string[] = []
+let wakeStatus = 200
 
 beforeAll(async () => {
   const node = Bun.serve({
@@ -52,6 +55,8 @@ beforeAll(async () => {
       if (url.pathname === '/v0/health') return Response.json({ status: 'ok' })
       if (url.pathname === '/v0/wake' && request.method === 'POST') {
         wakeAuth.push(request.headers.get('authorization') ?? '')
+        if (wakeStatus !== 200)
+          return new Response('denied', { status: wakeStatus })
         const body = (await request.json()) as { to: string; node: string }
         if (!body.to.startsWith(`qianmo://${body.node}/`)) {
           return new Response('bad', { status: 400 })
@@ -97,6 +102,9 @@ function fixture(options: { memAvailableKb?: number } = {}) {
   writeFileSync(join(root, 'secrets', 'console-admin-token'), `${ADMIN}\n`, {
     mode: 0o600,
   })
+  writeFileSync(join(root, 'secrets', 'probe-credential'), `${SESSION}\n`, {
+    mode: 0o600,
+  })
   const meminfo = join(home, 'meminfo')
   writeFileSync(
     meminfo,
@@ -120,7 +128,17 @@ function fixture(options: { memAvailableKb?: number } = {}) {
  * 事件循环卡住，子进程拨过来时没人应答。
  */
 async function probe(env: Record<string, string>, ...args: string[]) {
-  const child = Bun.spawn(['bash', SCRIPT, ...args], {
+  const configured =
+    args[0] === 'install' &&
+    !args.includes('--auth-mode') &&
+    !args.includes('--credential-file')
+      ? [
+          ...args,
+          '--credential-file',
+          join(env.QIANMO_BETA_ROOT!, 'secrets', 'probe-credential'),
+        ]
+      : args
+  const child = Bun.spawn(['bash', SCRIPT, ...configured], {
     env,
     stdout: 'pipe',
     stderr: 'pipe',
@@ -175,6 +193,19 @@ describe('minute', () => {
 })
 
 describe('handshake', () => {
+  test('a PSK without a fixed target public key is recorded as failure before dialing', async () => {
+    const f = fixture()
+    writeFileSync(
+      join(f.root, 'secrets', 'peers', 'beta-1.psk'),
+      'fixture-psk',
+      { mode: 0o600 },
+    )
+    expect((await probe(f.env, 'handshake')).code).toBe(0)
+    expect(samples(f.root, 'handshake-beta-1.ndjson')[0]).toMatchObject({
+      ok: false,
+      detail: 'missing-fixed-target-public-key',
+    })
+  })
   test('缺该节点的 PSK 文件：记一条 false，不拿空 PSK 去拨', async () => {
     const f = fixture()
     expect((await probe(f.env, 'handshake')).code).toBe(0)
@@ -185,7 +216,26 @@ describe('handshake', () => {
 })
 
 describe('wake', () => {
-  test('经控制台 POST /v0/wake，带 admin token；token 不落进样本', async () => {
+  test('account mode never falls back to admin on expired or unreadable personal credentials', async () => {
+    const f = fixture()
+    expect((await probe(f.env, 'install', '--rotation', 'beta-1')).code).toBe(0)
+    wakeAuth = []
+    wakeStatus = 401
+    try {
+      expect((await probe(f.env, 'wake')).code).toBe(0)
+      expect(wakeAuth).toEqual([`Bearer ${SESSION}`])
+      expect(samples(f.root, 'wake-beta-1.ndjson')[0]).toMatchObject({
+        ok: false,
+        detail: 'http=401',
+      })
+      chmodSync(join(f.root, 'secrets', 'probe-credential'), 0o644)
+      expect((await probe(f.env, 'wake')).code).not.toBe(0)
+      expect(wakeAuth).toHaveLength(1)
+    } finally {
+      wakeStatus = 200
+    }
+  })
+  test('经控制台 POST /v0/wake，带账号 personal credential；token 不落进样本', async () => {
     const f = fixture()
     wakeAuth = []
     const installed = await probe(
@@ -200,7 +250,7 @@ describe('wake', () => {
     const result = await probe(f.env, 'wake')
     expect(result.stderr).toBe('')
     expect(result.code).toBe(0)
-    expect(wakeAuth).toEqual([`Bearer ${ADMIN}`])
+    expect(wakeAuth).toEqual([`Bearer ${SESSION}`])
     const rows = samples(f.root, 'wake-beta-1.ndjson')
     expect(rows[0]?.ok).toBe(true)
     expect(rows[0]?.detail).toBe('msgId=m-1')
@@ -208,8 +258,8 @@ describe('wake', () => {
       join(f.root, 'state', 'fleet-probe', 'wake-beta-1.ndjson'),
       'utf8',
     )
-    expect(all).not.toContain(ADMIN)
-    expect(result.stdout + result.stderr).not.toContain(ADMIN)
+    expect(all).not.toContain(SESSION)
+    expect(result.stdout + result.stderr).not.toContain(SESSION)
   })
 
   test('轮转表的 - 格：这一轮不唤醒', async () => {
@@ -222,6 +272,26 @@ describe('wake', () => {
 })
 
 describe('install', () => {
+  test('account is the default and requires explicit session material; unsafe rotation cannot enter sourced config', async () => {
+    const f = fixture()
+    expect(
+      (
+        await probe(
+          f.env,
+          'install',
+          '--rotation',
+          '-',
+          '--auth-mode',
+          'account',
+        )
+      ).code,
+    ).not.toBe(0)
+    expect(existsSync(join(f.root, 'ops', 'fleet-probe.env'))).toBe(false)
+    expect(
+      (await probe(f.env, 'install', '--rotation', 'beta-1;touch')).code,
+    ).not.toBe(0)
+    expect(existsSync(join(f.root, 'ops', 'fleet-probe.env'))).toBe(false)
+  })
   test('一个模板服务 + 三个 timer，不留占位符', async () => {
     const f = fixture()
     expect((await probe(f.env, 'install', '--rotation', 'beta-1 -')).code).toBe(

@@ -127,7 +127,10 @@ function scratch(): Scratch {
   for (const entry of ['p81-registry', 'p81-probe']) {
     writeFileSync(join(repo, `dist/demo/${entry}.js`), `// stub for ${entry}\n`)
   }
-  writeFileSync(join(repo, 'dist/cli-node.js'), '// stub; never run\n')
+  writeFileSync(
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
+    '// stub; never run\n',
+  )
   const root = join(base, 'beta-root')
   mkdirSync(join(root, 'secrets', 'peers'), { recursive: true, mode: 0o700 })
   writeFileSync(join(root, 'secrets', 'transport-psk'), 'psk-for-test\n', {

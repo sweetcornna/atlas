@@ -146,3 +146,17 @@ describe('P4.1 report', () => {
     expect(stray.pass).toBe(false)
   })
 })
+
+test('duplicate rounds/tasks, invented timing and receipt-only delivery cannot pass AC2 protocol evidence', () => {
+  for (const records of [
+    [round(1), round(1), round(1)],
+    [round(1), round(2, { taskId: 'task-1' }), round(3)],
+    [round(1), round(2), round(3, { sendToAckMs: -1 })],
+    [round(1), round(2), round(3, { ackAt: 3500 })],
+    [round(1), round(2), round(3, { receipt: null })],
+    [round(1), round(2), round(3, { sendError: 'receipt timeout' })],
+    [round(1), round(2), round(3, { contentChars: 0 })],
+  ])
+    expect(buildP41Report(records, OPTIONS).pass).toBe(false)
+  expect(buildP41Report([], { ...OPTIONS, expectedRounds: 0 }).pass).toBe(false)
+})

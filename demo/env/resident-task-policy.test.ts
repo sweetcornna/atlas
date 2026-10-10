@@ -63,7 +63,7 @@ function shellScripts(dir: string): string[] {
 /**
  * 一行是不是真的在**起** resident，而不是在别处提到这个词。
  *
- * 三种形状：`bun "$OCC" resident \`（反斜杠续行）、`args=( … bun "$OCC" resident
+ * 三种形状：`bun "$DEMO_QM" resident \`（反斜杠续行）、`args=( … "$BETA_QM" resident
  * … )`（数组）、`set -- resident \`（把参数攒进 `$@`）。判据是 `resident` 这个
  * 词后面跟着行尾、续行符或第一个 `--` 选项——子命令后面只可能是这三样。
  *

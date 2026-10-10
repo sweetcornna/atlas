@@ -68,7 +68,7 @@ function fixture() {
       '#!/bin/bash',
       'printf "%s\\n" "$@" >"$STUB_OUT/argv"',
       // biome-ignore lint/suspicious/noTemplateCurlyInString: bash 的变量引用，不是 JS 模板占位
-      'printf "psk=%s\\ncfg=%s\\nid=%s\\n" "${QIANMO_TRANSPORT_PSK:-}" "${OCC_CONFIG_DIR:-}" "${OCC_IDENTITY:-}" >"$STUB_OUT/env"',
+      'printf "psk=%s\\ncfg=%s\\nid=%s\\n" "${QIANMO_TRANSPORT_PSK:-}" "${QIANMO_CONFIG_DIR:-}" "${OCC_IDENTITY:-}" >"$STUB_OUT/env"',
       'echo "hub=PUBKEY"',
       '',
     ].join('\n'),
@@ -83,6 +83,7 @@ function fixture() {
     XDG_CONFIG_HOME: join(home, '.config'),
     QIANMO_WATCH_NO_SYSTEMCTL: '1',
     STUB_OUT: out,
+    QIANMO_QM_BINARY: join(stub, 'bun'),
   }
   return { home, root, env, out, jobFile }
 }
@@ -173,7 +174,6 @@ describe('run', () => {
     expect(result.code).toBe(0)
     const argv = readFileSync(join(f.out, 'argv'), 'utf8').trim().split('\n')
     expect(argv).toEqual([
-      join(REPO, 'dist', 'cli-node.js'),
       'watch',
       '--jobs',
       join(f.root, 'watch', 'jobs.json'),
@@ -185,7 +185,7 @@ describe('run', () => {
     const env = readFileSync(join(f.out, 'env'), 'utf8')
     expect(env).toContain(`psk=${PSK}\n`)
     expect(env).toContain(`cfg=${join(f.root, 'nodes', 'console', 'config')}\n`)
-    expect(env).toContain('id=qianmo\n')
+    expect(env).toContain('id=\n')
     expect(result.stdout + result.stderr).not.toContain(PSK)
   })
 
@@ -210,7 +210,7 @@ describe('print-identity', () => {
     expect(result.code).toBe(0)
     expect(result.stdout.trim()).toBe('hub=PUBKEY')
     const argv = readFileSync(join(f.out, 'argv'), 'utf8').trim().split('\n')
-    expect(argv.slice(1)).toEqual([
+    expect(argv).toEqual([
       'watch',
       '--print-identity',
       '--from',

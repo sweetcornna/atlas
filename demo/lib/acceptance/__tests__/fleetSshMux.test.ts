@@ -150,7 +150,7 @@ function driver(sshBin: string, sshMultiplex: boolean): FleetDriver {
         tunnelPort: 38_631,
         endpoint: 'ws://127.0.0.1:38631',
         configRoot: '/home/fake/qianmo-beta/nodes/beta-1/config',
-        occPath: '/home/fake/atlas-beta/dist/cli-node.js',
+        qmPath: '/home/fake/atlas-beta/dist/qm-linux-x64',
       },
     ],
     spawnMachines: [{ ssh: 'fake-host', label: 'fake', repoRel: 'atlas-beta' }],

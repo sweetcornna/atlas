@@ -75,7 +75,7 @@ if [ ! -d "$config_dir" ] || [ -L "$BETA_NODES_DIR/$node" ] || [ -L "$config_dir
 fi
 
 # 非交互 sshd 的 PATH 里通常没有 ~/.bun/bin（2026-08-24 舰队部署踩过，common.sh 的
-# beta_require_occ 头注）。先 PATH，再家目录下的默认安装位置。
+# beta_require_qm 头注）。先 PATH，再家目录下的默认安装位置。
 bun_bin="$(command -v bun 2>/dev/null || true)"
 if [ -z "$bun_bin" ] && [ -x "$HOME/.bun/bin/bun" ]; then
   bun_bin="$HOME/.bun/bin/bun"
@@ -84,10 +84,13 @@ if [ -z "$bun_bin" ]; then
   printf 'model-apply.sh：找不到 bun（PATH 与 ~/.bun/bin 都没有）\n' >&2
   exit 2
 fi
-if [ ! -f "$BETA_OCC" ]; then
-  printf 'model-apply.sh：缺构建产物 %s\n' "$BETA_OCC" >&2
+if [ ! -f "$BETA_QM_BIN" ] && [ ! -f "$BETA_QM_SRC" ]; then
+  printf 'model-apply.sh：缺 qm：既没有 %s 也没有 %s\n' "$BETA_QM_BIN" "$BETA_QM_SRC" >&2
   exit 2
 fi
+# 源码形态下用上面找到的 bun 绝对路径（PATH 里可能没有）；编译产物直接执行。
+qm_cmd=("${BETA_QM[@]}")
+if [ "${qm_cmd[0]}" = bun ]; then qm_cmd[0]="$bun_bin"; fi
 
 # 等锁的上限。中枢一侧最短的超时是 status 的 20 s，等锁要比它短，这样中枢收到的是一句
 # busy 而不是一次超时。
@@ -145,6 +148,6 @@ else
 fi
 
 status=0
-OCC_IDENTITY=qianmo OCC_CONFIG_DIR="$config_dir" \
-  "$bun_bin" "$BETA_OCC" provider serve-stdin --node "$node" 9>&- || status=$?
+QIANMO_CONFIG_DIR="$config_dir" \
+  "${qm_cmd[@]}" provider serve-stdin --node "$node" 9>&- || status=$?
 exit "$status"

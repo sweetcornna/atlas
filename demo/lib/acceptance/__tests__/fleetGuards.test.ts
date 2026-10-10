@@ -48,7 +48,7 @@ function driverWith(spawnable: boolean): FleetDriver {
         tunnelPort: 38_631,
         endpoint: 'ws://127.0.0.1:38631',
         configRoot: '/home/nobody/qianmo-beta/nodes/beta-1/config',
-        occPath: '/home/nobody/atlas-beta/dist/cli-node.js',
+        qmPath: '/home/nobody/atlas-beta/dist/qm-linux-x64',
       },
     ],
     spawnMachines: spawnable
@@ -320,6 +320,6 @@ describe('fleetConfigFromEnv 的 SSH 目标覆盖', () => {
     )
     const four = config.hosts.find(h => h.node === 'beta-4')
     expect(four?.configRoot).toBe('/root/qianmo-beta/nodes/beta-4/config')
-    expect(four?.occPath).toBe('/root/atlas-beta/dist/cli-node.js')
+    expect(four?.qmPath).toBe('/root/atlas-beta/dist/qm-linux-x64')
   })
 })

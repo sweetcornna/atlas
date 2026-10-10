@@ -5,7 +5,7 @@
 # 阡陌内测 · H 上的可用性与唤醒探针（M1「可用性 ≥ 99%、唤醒 P95 < 30 s」的量具）。
 #
 #   fleet-probe.sh minute      # 每分钟：每个节点端点真读一次应答（426）+ 注册中心 / 控制台 health
-#   fleet-probe.sh handshake   # 每 5 分钟：每个节点按名解析 + 真 PSK 握手（p81-probe，不发任务）
+#   fleet-probe.sh handshake   # 每 5 分钟：按名解析 + 固定公钥双签握手（不发任务）
 #   fleet-probe.sh wake        # 每 10 分钟：按轮转表唤醒一个节点（控制台 POST /v0/wake）
 #   fleet-probe.sh install     # 渲染并 enable 三个 timer（**不 start**：开始计时是一个有意的动作）
 #
@@ -126,6 +126,8 @@ cmd_handshake() {
   guard_memory handshake
   beta_load_peers
   local node addr psk_file t0 ok out
+  local probe_node="${PROBE_IDENTITY_NODE:-fleet-probe}" config="$BETA_ROOT/nodes/fleet-probe/config"
+  beta_assert_node_name "$probe_node" 'probe identity'
   for node in $(beta_peer_nodes); do
     addr="$(first_address_of "$node")"
     psk_file="$(beta_peer_psk_file "$node")"
@@ -134,9 +136,15 @@ cmd_handshake() {
       record "handshake-$node.ndjson" "$node" handshake false 0 "no-psk-file"
       continue
     fi
+    if ! beta_resolve_node_key "$node"; then
+      record "handshake-$node.ndjson" "$node" handshake false 0 "missing-fixed-target-public-key"
+      continue
+    fi
     ok=false
-    if out="$(QIANMO_TRANSPORT_PSK="$(cat "$psk_file")" bun run "$(demo_entry p81-probe)" \
-      --registry "$BETA_REGISTRY_URL" --expect "$addr" 2>&1)"; then
+    beta_export_secret_file QIANMO_TRANSPORT_PSK "$psk_file" 'missing peer PSK'
+    if out="$(QIANMO_CONFIG_DIR="$config" bun run "$(demo_entry p81-probe)" \
+      --registry "$BETA_REGISTRY_URL" --expect "$addr" --from-node "$probe_node" \
+      --sign --trust "$node=$BETA_NODE_KEY" 2>&1)"; then
       ok=true
     fi
     record "handshake-$node.ndjson" "$node" handshake "$ok" $(($(now_ms) - t0)) \
@@ -169,11 +177,19 @@ cmd_wake() {
   local minutes node t0 body code response msg_id
   minutes=$((10#$(date -u +%H) * 60 + 10#$(date -u +%M)))
   node="$(wake_slot_node "$PROBE_WAKE_ROTATION" "$minutes")" || return 0
-  [ -s "$BETA_ADMIN_TOKEN_FILE" ] || beta_die "缺控制台 admin token：$BETA_ADMIN_TOKEN_FILE"
+  local credential_file
+  case "${PROBE_AUTH_MODE:-}" in
+    account) credential_file="${PROBE_CREDENTIAL_FILE:?account probe requires a personal account credential file}" ;;
+    legacy-m1) credential_file="$BETA_ADMIN_TOKEN_FILE" ;;
+    *) beta_die 'probe auth mode missing: reinstall with account personal credential, or explicit legacy-m1 for M1 only' ;;
+  esac
+  beta_assert_token_url "$CONSOLE_URL" 'probe console URL' 'session'
+  beta_export_secret_file QIANMO_PROBE_CREDENTIAL "$credential_file" 'probe personal credential missing'
+  case "$QIANMO_PROBE_CREDENTIAL" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-]*) beta_die 'invalid personal credential encoding' ;; esac
   body="$(printf '{"node":"%s","from":"%s","to":"qianmo://%s/%s","prompt":"wake-probe %s：这是可用性探针，只回复 OK，不要调用任何工具。"}' \
     "$node" "$PROBE_WAKE_FROM" "$node" "$PROBE_WAKE_AGENT" "$(iso_now)")"
   t0="$(now_ms)"
-  response="$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$BETA_ADMIN_TOKEN_FILE")" \
+  response="$(printf 'header = "Authorization: Bearer %s"\n' "$QIANMO_PROBE_CREDENTIAL" \
     | curl -s -m 120 -K - -H 'content-type: application/json' -X POST \
       --data "$body" -w '\n%{http_code}' "$CONSOLE_URL/v0/wake" 2>/dev/null || true)"
   code="${response##*$'\n'}"
@@ -186,22 +202,35 @@ cmd_wake() {
 }
 
 cmd_install() {
-  local rotation='' agent='reviewer' from='qianmo://hub/console'
+  local rotation='' agent='reviewer' from='qianmo://hub/console' auth_mode='account' credential_file=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --rotation) rotation="${2:?}"; shift 2 ;;
       --agent) agent="${2:?}"; shift 2 ;;
       --from) from="${2:?}"; shift 2 ;;
+      --auth-mode) auth_mode="${2:?}"; shift 2 ;;
+      --credential-file) credential_file="${2:?}"; shift 2 ;;
       *) beta_die "install 不认识的参数：$1" ;;
     esac
   done
   [ -n "$rotation" ] || beta_die 'install 要 --rotation "<节点> <节点> … -"（一格 10 分钟，- 表示空格）'
+  case "$auth_mode" in
+    account) case "$credential_file" in /*) ;; *) beta_die 'account mode requires absolute --credential-file from personal account credential' ;; esac ;;
+    legacy-m1) [ -z "$credential_file" ] || beta_die 'legacy-m1 does not accept credential-file' ;;
+    *) beta_die '--auth-mode must be account or explicit legacy-m1' ;;
+  esac
+  local name
+  for name in $rotation; do [ "$name" = '-' ] || beta_assert_node_name "$name" 'rotation'; done
+  beta_assert_node_name "$agent" 'probe agent'
+  case "$from" in qianmo://*) ;; *) beta_die 'invalid probe from address' ;; esac
   beta_require_marker
   {
     printf '# 阡陌内测 · 探针参数。由 fleet-probe.sh install 写。\n'
     printf 'PROBE_WAKE_ROTATION="%s"\n' "$rotation"
     printf 'PROBE_WAKE_AGENT=%s\n' "$agent"
-    printf 'PROBE_WAKE_FROM=%s\n' "$from"
+    printf 'PROBE_WAKE_FROM=%q\n' "$from"
+    printf 'PROBE_AUTH_MODE=%q\n' "$auth_mode"
+    printf 'PROBE_CREDENTIAL_FILE=%q\n' "$credential_file"
   } >"$PROBE_CONF"
   chmod 600 "$PROBE_CONF"
   local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" src dst bun_dir

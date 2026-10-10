@@ -32,8 +32,16 @@ import {
   isAckPayload,
   isTaskResultPayload,
   type QianmoMessage,
+  assertAddress,
+  newId,
 } from '@qianmo/protocol'
 import { TransportClient, pskFromEnv } from '@qianmo/transport'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
+import {
+  loadOrCreateNodeKeys,
+  parseTrustedKey,
+} from '../../atlas/packages/node/src/host/nodeIdentity.js'
+import { createConsoleWakeIssuer } from '../../atlas/packages/node/src/commands/consoleWakeIdentity.js'
 import { arg, emit, intArg } from './cli-args.js'
 
 /** 收集重复出现的 `--expect <address>`。理由同 `p81-registry.ts`。 */
@@ -68,6 +76,32 @@ if (expected.length === 0) throw new Error('至少要有一条 --expect <address
 
 const connectTimeoutMs = intArg('connect-timeout-ms', 10_000)
 const psk = pskFromEnv()
+const fromNode = arg('from-node') ?? 'node-a'
+const fromAgent = arg('from-agent') ?? 'planner'
+assertAddress(`qianmo://${fromNode}/${fromAgent}`)
+const signed = process.argv.includes('--sign')
+const trusted = new Map<string, string>()
+for (let i = 0; i < process.argv.length; i++) {
+  if (process.argv[i] !== '--trust') continue
+  const [node, key] = parseTrustedKey(process.argv[++i] ?? '')
+  if (trusted.has(node)) throw new Error('duplicate --trust node')
+  trusted.set(node, key)
+}
+if (trusted.size && !signed) throw new Error('--trust requires --sign')
+for (const target of [...expected, ...(arg('task') ? [arg('task')!] : [])]) {
+  if (signed && !trusted.has(assertAddress(target).node))
+    throw new Error('--sign requires fixed --trust for every target')
+}
+const signing = signed
+  ? {
+      keys: loadOrCreateNodeKeys(fromNode),
+      directory: new StaticPublicKeyDirectory(trusted),
+      required: true,
+    }
+  : undefined
+const issue = signing
+  ? createConsoleWakeIssuer(fromNode, signing.keys)
+  : undefined
 
 function summary(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -137,11 +171,14 @@ async function resolve(address: string): Promise<{
 async function dial(
   endpoint: string,
   node: string,
+  peerNode: string,
 ): Promise<{ ms: number } | { error: string }> {
   const startedAt = Date.now()
   const client = new TransportClient({
     endpoint: { url: endpoint },
     node,
+    peerNode,
+    ...(signing ? { signing } : {}),
     psk,
     keepAliveIntervalMs: 0,
   })
@@ -154,9 +191,6 @@ async function dial(
     await client.close()
   }
 }
-
-const fromNode = arg('from-node') ?? 'node-a'
-const fromAgent = arg('from-agent') ?? 'planner'
 
 const results: ProbeResult[] = []
 for (const address of expected) {
@@ -171,7 +205,11 @@ for (const address of expected) {
     })
     continue
   }
-  const dialResult = await dial(resolved.endpoint, fromNode)
+  const dialResult = await dial(
+    resolved.endpoint,
+    fromNode,
+    assertAddress(address).node,
+  )
   results.push({
     address,
     resolved: true,
@@ -195,7 +233,19 @@ async function taskAck(target: string): Promise<Record<string, unknown>> {
     }
   }
   const ackTimeoutMs = intArg('ack-timeout-ms', 60_000)
+  const taskId = newId()
+  const createdAt = Date.now()
+  const cap = issue?.({
+    aud: assertAddress(target).node,
+    sub: target,
+    taskId,
+    createdAt,
+  })
   const message = createMessage({
+    taskId,
+    createdAt,
+    hops: [fromNode],
+    ...(cap ? { cap } : {}),
     from: `qianmo://${fromNode}/${fromAgent}`,
     to: target,
     type: MessageType.TaskRequest,
@@ -215,9 +265,23 @@ async function taskAck(target: string): Promise<Record<string, unknown>> {
   const client = new TransportClient({
     endpoint: { url: entry.endpoint },
     node: fromNode,
+    peerNode: assertAddress(target).node,
+    ...(signing ? { signing } : {}),
     psk,
     keepAliveIntervalMs: 0,
-    onMessage: reply => {
+    onMessage: (reply, context) => {
+      if (
+        signed &&
+        context.channel.authenticatedPeerNode !== assertAddress(target).node
+      )
+        return
+      if (
+        reply.from !== target ||
+        reply.to !== message.from ||
+        reply.traceId !== message.traceId ||
+        reply.contextId !== message.contextId
+      )
+        return
       if (reply.taskId !== message.taskId) return
       if (reply.type === MessageType.TaskResult) resultBox.value = reply
       if (reply.type === MessageType.Ack || reply.type === MessageType.Error) {

@@ -7,17 +7,18 @@
  * 这条区分原先没有，代价很具体。2026-08-25 实查：内测舰队四台节点机上一台都没有
  * node（只有 `~/.bun/bin/bun`），而 ① 里那句 `command -v node || demo_die` 是无条件的。
  * 于是这份「装机 runbook」在真实部署机上从第一步就跑不起来，历次上机只能绕开它手工
- * `bun run build`——而绕开的同时也绕过了 ③ 里那段源 commit 注入（issue #70），四台节点
- * 的产物因此报 `sourceCommit=unknown`。
+ * 构建——而绕开的同时也绕过了 ③ 里那段源 commit 注入（issue #70），四台节点
+ * 因此报 `sourceCommit=unknown`。
  *
- * 所以这里钉三件事：
+ * 所以这里钉四件事：
  *
  * ① 缺 node 且要跑 ④ 时，**仍然**死在 ①。放宽不等于取消：自检真的会 spawn node。
  * ② 缺 node 且显式 `--skip-selftest` 时，②③ 照跑。这是舰队那条路径。
  * ③ 缺 node **不会**让 ④ 自动跳过——静默降级会让「自检过了」和「自检压根没跑」在
  *    输出里长得一模一样，那比直接失败更难发现。
+ * ④ bun 低于 omp 基座的硬下限 1.4 时死在 ①，并说出下限；高于 pin 的版本只 WARN。
  *
- * 手法：造一棵只有 `demo/env/` 与 `.tool-versions` 的一次性树，PATH 上只放桩
+ * 手法：造一棵只有 `demo/env/`、qm 入口占位与 `.tool-versions` 的一次性树，PATH 上只放桩
  * `bun` / `git`（以及需要时的 `node`）。桩让用例停在「前置检查怎么判」这一层，
  * 不去真跑 `bun install`——那既慢，也会把两件事的失败混在一个断言里。
  */
@@ -128,6 +129,7 @@ function hashBody(body: string): string {
  */
 async function scaffold(
   withNode: boolean,
+  bunVersion: string | undefined = BUN_PIN,
 ): Promise<{ root: string; bin: string }> {
   const root = mkdtempSync(join(tmpdir(), 'qianmo-bootstrap-'))
   roots.push(root)
@@ -136,16 +138,19 @@ async function scaffold(
   // common.sh source 它（demo_entry 的实现）。缺了它 common.sh 在 source 阶段就死在
   // `set -e` 上，用例只看得到一个空输出 —— 与真正的前置检查失败无法区分。
   await place(root, 'demo/lib/entry.sh', ENTRY_SOURCE)
+  // qm 入口只查「在不在」（demo_require_qm），占位即可；有了它，正常路径才能以 0 退出。
+  mkdirSync(join(root, 'atlas/packages/node/src'), { recursive: true })
+  writeFileSync(join(root, 'atlas/packages/node/src/cli.ts'), '// stub\n')
   writeFileSync(join(root, '.tool-versions'), `bun ${BUN_PIN}\n`)
 
   const bin = join(root, 'stub-bin')
   mkdirSync(bin, { recursive: true })
-  // `bun --version` 要报出 pin；其余子命令（install / run build / test）一律成功返回，
-  // 用例关心的是「走没走到那一步」，不是那几步自己对不对。
+  // `bun --version` 要报出给定版本（缺省是 pin）；其余子命令（install / run build:native /
+  // test）一律成功返回，用例关心的是「走没走到那一步」，不是那几步自己对不对。
   stub(
     bin,
     'bun',
-    `[ "$1" = "--version" ] && { echo "${BUN_PIN}"; exit 0; }\nexit 0`,
+    `[ "$1" = "--version" ] && { echo "${bunVersion}"; exit 0; }\nexit 0`,
   )
   // git 只答 --version；`rev-parse` 失败正是「这棵树不是仓库」那一支，与部署机一致。
   stub(
@@ -205,7 +210,7 @@ describe('bootstrap.sh 的 node 前置', () => {
     expect(result.stdout).toContain('已按 --skip-selftest 跳过')
     expect(result.stdout).toContain('② bun install --frozen-lockfile')
     // 走到了 ③，也就走到了那里的源 commit 注入 —— 这正是舰队那条路径要拿到的东西。
-    expect(result.stdout).toContain('③ bun run build')
+    expect(result.stdout).toContain('③ bun run build:native')
   })
 
   test('缺 node 不会让 ④ 自动跳过 —— 不给 --skip-selftest 就是失败，不是静默降级', async () => {
@@ -221,8 +226,47 @@ describe('bootstrap.sh 的 node 前置', () => {
     const { root, bin } = await scaffold(true)
 
     const result = runBootstrap(root, bin, ['--skip-build', '--skip-selftest'])
+    expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('node v22.0.0')
     expect(result.stdout).not.toContain('node 不在 PATH 上')
+    expect(result.stdout).toContain('qm 入口就位')
+  })
+})
+
+describe('bootstrap.sh 的 bun 版本下限', () => {
+  test.each([
+    ['1.3.13'],
+    ['1.3.99-canary.1'],
+    ['0.9.0'],
+  ])('bun %s 低于 1.4：死在 ①，并说出下限', async version => {
+    const { root, bin } = await scaffold(true, version)
+
+    const result = runBootstrap(root, bin, ['--skip-build', '--skip-selftest'])
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain(`bun ${version} 太旧`)
+    expect(result.stderr).toContain('1.4.0')
+    expect(result.stdout).not.toContain('bun install')
+  })
+
+  test.each([
+    ['1.4.0'],
+    ['1.10.0'],
+    ['2.0.0'],
+  ])('bun %s 不低于 1.4：放行（与 pin 不同只 WARN）', async version => {
+    const { root, bin } = await scaffold(true, version)
+
+    const result = runBootstrap(root, bin, ['--skip-build', '--skip-selftest'])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('② bun install --frozen-lockfile')
+    if (version !== BUN_PIN) expect(result.stdout).toContain('WARN')
+  })
+
+  test('bun --version 什么都不报：按不满足处理', async () => {
+    const { root, bin } = await scaffold(true, '')
+
+    const result = runBootstrap(root, bin, ['--skip-build', '--skip-selftest'])
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr).toContain('太旧')
   })
 })
 

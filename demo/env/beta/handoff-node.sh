@@ -244,7 +244,7 @@ do_start() {
   [ "$key_env" != 'QIANMO_TRANSPORT_PSK' ] || beta_die 'QIANMO_HANDOFF_KEY_ENV 不能是传输 PSK 的名字'
 
   beta_require_marker
-  beta_require_occ
+  beta_require_qm
   local qmcode_real
   qmcode_real="$(beta_qmcode_check "$qmcode")"
   handoff_pick_key_source "$key_env"
@@ -269,7 +269,6 @@ do_start() {
   # ── 节点桥：载入 key 之前起，且把两份文件里可能残留的 key 名逐个去掉 ──
   beta_head '起节点桥'
   beta_load_psk "$BETA_PSK_FILE" '传输 PSK（中枢拨入节点桥用的那把）'
-  export OCC_IDENTITY=qianmo
   local name env_file
   local strip=(-u "$key_env")
   for env_file in "$BETA_HANDOFF_MODEL_ENV_FILE" "$BETA_MODEL_ENV_FILE"; do
@@ -284,7 +283,7 @@ EOF
   for item in ${trusts[@]+"${trusts[@]}"}; do pass+=(--trust "$item"); done
   for item in ${projects[@]+"${projects[@]}"}; do pass+=(--project "$item"); done
   beta_start_process "$HANDOFF_NODE_PROC" "$HANDOFF_CONFIG_DIR" \
-    env "${strip[@]}" bun "$BETA_OCC" handoff node \
+    env "${strip[@]}" "${BETA_QM[@]}" handoff node \
     --node "$node" \
     --root "$HANDOFF_NODE_ROOT" \
     --port "$port" \

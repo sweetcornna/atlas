@@ -23,8 +23,16 @@ import {
   isAckPayload,
   isTaskResultPayload,
   type QianmoMessage,
+  assertAddress,
+  newId,
 } from '@qianmo/protocol'
 import { TransportClient } from '@qianmo/transport'
+import { StaticPublicKeyDirectory } from '@qianmo/capability'
+import {
+  loadOrCreateNodeKeys,
+  parseTrustedKey,
+} from '../../atlas/packages/node/src/host/nodeIdentity.js'
+import { createConsoleWakeIssuer } from '../../atlas/packages/node/src/commands/consoleWakeIdentity.js'
 import { arg, emit, intArg } from './cli-args.js'
 import { activatorUrl, psk, targetAddress } from './ac2-env.js'
 
@@ -39,6 +47,27 @@ const from = formatAddress({
 })
 const to = targetAddress()
 const prompt = arg('prompt') ?? `P4.1 task round ${round}. Reply with OK.`
+if (process.argv.includes('--print-identity')) {
+  process.stdout.write(
+    `${fromNode}=${loadOrCreateNodeKeys(fromNode).publicKey}\n`,
+  )
+  process.exit(0)
+}
+const signed = process.argv.includes('--sign')
+const hostNode = `${assertAddress(to).node}-host`
+const hostKey = arg('host-key')
+if (signed && !hostKey) throw new Error('--sign requires fixed --host-key')
+if (!signed && hostKey) throw new Error('--host-key requires --sign')
+const keys = signed ? loadOrCreateNodeKeys(fromNode) : undefined
+const signing = keys
+  ? {
+      keys,
+      directory: new StaticPublicKeyDirectory([
+        parseTrustedKey(`${hostNode}=${hostKey}`),
+      ]),
+      required: true,
+    }
+  : undefined
 
 function digest(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 16)
@@ -116,7 +145,20 @@ const ack = awaited()
 const result = awaited()
 const unexpected: string[] = []
 
+const taskId = newId(),
+  createdAt = Date.now()
+const cap = keys
+  ? createConsoleWakeIssuer(
+      fromNode,
+      keys,
+      Math.max(60000, forwardTimeoutMs + 30000),
+    )({ aud: assertAddress(to).node, sub: to, taskId, createdAt })
+  : undefined
 const message = createMessage({
+  taskId,
+  createdAt,
+  hops: [fromNode],
+  ...(cap ? { cap } : {}),
   from,
   to,
   type: MessageType.TaskRequest,
@@ -128,11 +170,23 @@ const message = createMessage({
 const client = new TransportClient({
   endpoint: { url: dialUrl },
   node: fromNode,
+  peerNode: hostNode,
+  ...(signing ? { signing } : {}),
   psk: psk(),
   keepAliveIntervalMs: 0,
-  onMessage: reply => {
+  onMessage: (reply, context) => {
+    if (signed && context.channel.authenticatedPeerNode !== hostNode) {
+      unexpected.push('unauthenticated-host')
+      return
+    }
     // Correlation is the envelope's taskId (rule C-1) — never a payload copy.
-    if (reply.taskId !== message.taskId) {
+    if (
+      reply.taskId !== message.taskId ||
+      reply.traceId !== message.traceId ||
+      reply.contextId !== message.contextId ||
+      reply.from !== to ||
+      reply.to !== from
+    ) {
       unexpected.push(`${reply.type}:${reply.taskId}`)
       return
     }
@@ -150,7 +204,7 @@ let sendError: string | null = null
 let acked: { at: number; message: QianmoMessage } | null = null
 let resulted: { at: number; message: QianmoMessage } | null = null
 try {
-  await client.connect(30_000)
+  await client.connect(intArg('connect-timeout-ms', 30_000))
   try {
     receipt = await client.sendAndWait(message, forwardTimeoutMs)
     receiptAt = Date.now()
@@ -158,7 +212,11 @@ try {
     sendError = error instanceof Error ? error.message : String(error)
   }
 
-  acked = await within(ack.promise, ackTimeoutMs, 'ack')
+  acked = await within(
+    ack.promise,
+    Math.max(1, ackTimeoutMs - (Date.now() - startedAt)),
+    'ack',
+  )
   resulted = await within(
     result.promise,
     Math.max(1, resultTimeoutMs - (Date.now() - startedAt)),
@@ -174,7 +232,17 @@ try {
   const content =
     closedResult?.outcome === 'completed' ? closedResult.content : ''
   const verdict =
-    acked !== null && closedResult?.outcome === 'completed'
+    receipt !== null &&
+    sendError === null &&
+    unexpected.length === 0 &&
+    acked !== null &&
+    isAckPayload(acked.message.payload) &&
+    acked.message.payload.handler === to &&
+    acked.at - startedAt <= ackTimeoutMs &&
+    resulted !== null &&
+    resulted.at - startedAt <= resultTimeoutMs &&
+    closedResult?.outcome === 'completed' &&
+    content.trim().length > 0
       ? 'complete'
       : acked === null
         ? 'no-ack'
@@ -186,6 +254,7 @@ try {
     taskId: message.taskId,
     verdict,
     receipt,
+    signedChannel: signed,
     resolvedByRegistry: resolved !== null,
     ...(resolved === null
       ? {}

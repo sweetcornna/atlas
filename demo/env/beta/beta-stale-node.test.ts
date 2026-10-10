@@ -348,7 +348,11 @@ function nodeRepo(base: string): string {
     join(repo, 'demo/lib/entry.sh'),
   )
   mkdirSync(join(repo, 'dist'), { recursive: true })
-  copyFileSync(RESIDENT_SCRIPT, join(repo, 'dist/cli-node.js'))
+  writeFileSync(
+    join(repo, `dist/qm-${process.platform}-${process.arch}`),
+    `#!/usr/bin/env bun\n${FAKE_RESIDENT.replace(/^#![^\n]*\n/, '')}`,
+    { mode: 0o755 },
+  )
   return repo
 }
 

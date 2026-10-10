@@ -7,14 +7,14 @@
 #   demo/env/up.sh
 #
 #   注册中心 :  http://127.0.0.1:38610          （@qianmo/registry，HTTP v0）
-#   节点 A   :  ws://127.0.0.1:38611            （occ resident，qianmo://node-a/planner）
-#   节点 B   :  ws://127.0.0.1:38612            （occ resident，qianmo://node-b/reviewer）
+#   节点 A   :  ws://127.0.0.1:38611            （qm resident，qianmo://node-a/planner）
+#   节点 B   :  ws://127.0.0.1:38612            （qm resident，qianmo://node-b/reviewer）
 #
 # 「两个逻辑节点」是**两个真进程、两个配置根、两条审计链、两把节点身份**，只是共用
 # 一台机器。要摊到两台机器上，改 common.sh 里的 DEMO_HOST / 端口，把对端的 endpoint
 # 换成对端地址即可——脚本没有任何「同机」假设，除了默认值绑在回环上。
 #
-# 全部状态在 DEMO_ROOT 下（默认 <repo>/.demo-env）。**不碰用户真实的 ~/.occ / ~/.qianmo。**
+# 全部状态在 DEMO_ROOT 下（默认 <repo>/.demo-env）。**不碰用户真实的 ~/.qianmo / ~/.omp。**
 # 停机用 down.sh，回到种子态用 reset.sh。
 
 set -euo pipefail
@@ -26,8 +26,12 @@ READY_TIMEOUT_S="${QIANMO_DEMO_READY_TIMEOUT_S:-60}"
 
 STARTED_AT="$(demo_now)"
 demo_require_marker
-demo_require_occ
+demo_require_bun
+demo_require_qm
 demo_export_common
+# qm 源码直跑，源 commit 在运行时读（QIANMO_SOURCE_COMMIT > git）：起节点前把这棵树的
+# 结论定下来，没有 .git 的部署树靠 pack.sh 封进来的戳（见 common.sh）。
+demo_export_source_commit
 [ -n "${QIANMO_TRANSPORT_PSK:-}" ] || demo_die "缺 QIANMO_TRANSPORT_PSK，且 $DEMO_PSK_FILE 不存在 —— 先跑 demo/env/seed.sh"
 
 cd "$REPO_DIR"
@@ -48,7 +52,7 @@ start_process() {
   out="$(demo_logfile "$name" out)"
   err="$(demo_logfile "$name" err)"
   # 每个进程一个配置根：审计链、节点身份、会话表都按配置根分家（见 common.sh 头注）。
-  OCC_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
+  QIANMO_CONFIG_DIR="$config_dir" nohup "$@" >"$out" 2>"$err" &
   local pid=$!
   printf '%s\n' "$pid" >"$(demo_pidfile "$name")"
   demo_ok "$name 已启动（pid ${pid}，日志 ${out}）"
@@ -89,7 +93,7 @@ demo_head '② 两个常驻节点'
 start_resident() {
   local name="$1" node="$2" agent="$3" port="$4" config_dir="$5"
   start_process "$name" "$config_dir" \
-    bun "$DEMO_OCC" resident \
+    bun "$DEMO_QM" resident \
     --node "$node" \
     --team "$DEMO_TEAM" \
     --agent "${agent}=${DEMO_WORKSPACE_DIR}/${node}" \

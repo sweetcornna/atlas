@@ -10,16 +10,16 @@
 #   docs/dev/session-persistence-review.md
 #
 # 本脚本做什么
-#   1. `kill -9` 三个崩溃点（写事件中 / 快照中 / 工具执行中）后的一致性
+#   1. `kill -9` 三个崩溃点（消息追加后 / 自定义检查点后 / 工具调用后）后的一致性
 #   2. 半写行（字节级截断）在读取侧的容错
-#   3. `session_id` 在 `--resume <id>` 与 `--continue` 两个入口下的一致性
+#   3. `session_id` 在显式 session 文件与 continueRecent 两个入口下的一致性
 #   4. 「从进程启动到可接收新消息 ≤ 10 s」—— 两个历史规模点位 × 两个入口，
-#      用来证明成本不随历史线性劣化（这正是把恢复入口钉死在 `--resume` 的理由）
-#   5. 「不重放历史即可续答」—— **需要真实模型 API 凭据，无凭据时明确跳过**
+#      两个入口均守住启动预算，增长率另作诊断
+#   5. 本地脚本模型验证持久化上下文续答；真实模型质量另行明确跳过
 #
 # 隔离与安全
-#   全程用 mktemp 出来的临时配置根（`OCC_CONFIG_DIR`），不读写用户真实的
-#   `~/.occ` / `~/.qianmo`，不读取任何凭据，不发起任何模型 API 调用。
+#   全程用 mktemp 出来的临时配置根（`QIANMO_CONFIG_DIR`），不读写用户真实的
+#   `~/.omp` / `~/.qianmo`，不读取任何凭据；模型请求只到本地回环服务。
 #
 set -uo pipefail
 
@@ -58,13 +58,13 @@ jget() {
 command -v bun >/dev/null 2>&1 || { say 'bun 不在 PATH 上，先装 bun'; exit 2; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ac1-restart.XXXXXX")"
-export OCC_CONFIG_DIR="$WORK/config"
+export QIANMO_CONFIG_DIR="$WORK/config"
 PROJECT="$WORK/project"
-mkdir -p "$OCC_CONFIG_DIR" "$PROJECT"
+mkdir -p "$QIANMO_CONFIG_DIR" "$PROJECT"
 cd "$PROJECT" || exit 2
 
 say "工作目录 : $WORK"
-say "配置根   : $OCC_CONFIG_DIR   (临时，绝不碰用户真实配置根)"
+say "配置根   : $QIANMO_CONFIG_DIR   (临时，绝不碰用户真实配置根)"
 say "bun      : $(bun --version)"
 say "平台     : $(uname -srm)"
 
@@ -86,8 +86,7 @@ run_crash_point() {
     wait "$child" 2>/dev/null
     rc=137
   else
-    # 写事件中 / 快照中：崩溃点在「已入队、未 drain」的 100 ms 窗口内，
-    # 由被测进程在同一 tick 内自投 SIGKILL（语义等同外部 kill -9）
+    # 消息 / 自定义检查点已持久化后，在同一 tick 内自投 SIGKILL。
     # 套一层 bash -c：SIGKILL 的 "Killed: 9" 通知由**内层** shell 打印，
     # 一并被下面的重定向吃掉，输出干净；退出码照样是 137。
     # 末尾的 `; exit $?` 是必要的：只有一条简单命令时 bash -c 会直接 exec 掉
@@ -101,11 +100,12 @@ run_crash_point() {
   bun run "$(demo_entry ac1-verify)" --session "$session" >"$out" 2>/dev/null
   say "  $(cat "$out")"
   got_sid="$(jget "$out" sessionId)"
+  expected_sid="$(jget "$note" sessionId)"
   malformed="$(jget "$out" malformedLines)"
   dangling="$(jget "$out" danglingToolUse)"
   count="$(jget "$out" messageCount)"
   [ "$rc" = '137' ] || bad "${point}: 进程不是被 SIGKILL 杀掉的（退出码 ${rc}）"
-  [ "$got_sid" = "$session" ] && ok "${point}: session_id 一致（${got_sid}）" \
+  [ "$got_sid" = "$expected_sid" ] && ok "${point}: session_id 一致（${got_sid}）" \
     || bad "${point}: session_id 不一致（期望 ${session}，实得 ${got_sid}）"
   [ "$malformed" = '0' ] && ok "${point}: 磁盘上无损坏行" \
     || bad "${point}: 出现 ${malformed} 条损坏行"
@@ -123,9 +123,10 @@ run_crash_point tool     'aa000000-0000-4000-8000-000000000003'
 head1 '2. 半写行容错（字节级截断）'
 # kill -9 本身不一定能撕开一行（append 由内核整体完成），但断电 / 满盘 / NFS
 # 都会。这里人为把最后一行截半，验证读取侧的容错确实在
-# （src/utils/text/json.ts:129-175「skip malformed lines」）。
+# （omp 的会话 JSONL 读取实现）。
 TRUNC_SESSION='aa000000-0000-4000-8000-000000000001'
-TRUNC_FILE="$(bun run "$(demo_entry ac1-project-dir)")/$TRUNC_SESSION.jsonl"
+TRUNC_FILE="$(cat "$(bun run "$(demo_entry ac1-project-dir)")/$TRUNC_SESSION.path")"
+TRUNC_ID="$(jget "$WORK/write.json" sessionId)"
 if [ -f "$TRUNC_FILE" ]; then
   before_bytes=$(wc -c <"$TRUNC_FILE" | tr -d ' ')
   cut_to=$((before_bytes - 200))
@@ -137,7 +138,7 @@ if [ -f "$TRUNC_FILE" ]; then
   s="$(jget "$WORK/trunc.verify.json" sessionId)"
   [ "$m" -ge 1 ] && ok "截断确实造出了半写行（${m} 条）" || bad "没造出半写行，本用例无效"
   [ "$c" -ge 1 ] && ok "半写行不影响其余消息读回（${c} 条）" || bad "半写行导致整个会话读不出来"
-  [ "$s" = "$TRUNC_SESSION" ] && ok "半写行下 session_id 仍一致" || bad "半写行下 session_id 丢失"
+  [ "$s" = "$TRUNC_ID" ] && ok "半写行下 session_id 仍一致" || bad "半写行下 session_id 丢失"
 else
   bad "找不到用于截断的会话文件：$TRUNC_FILE"
 fi
@@ -162,12 +163,13 @@ measure() { # $1=entry $2=label；--session 由 session_arg 提供
 
 scale_point() { # $1=label $2=sessions $3=target-msgs
   label="$1"
-  rm -rf "${OCC_CONFIG_DIR:?}/projects"
+  rm -rf "${QIANMO_CONFIG_DIR:?}/acceptance/ac1"
   say "  生成历史：会话文件 $2 个（各 $MSGS_PER_SESSION 条）+ 目标会话 $3 条"
   bun run "$(demo_entry ac1-gen-history)" --sessions "$2" --msgs "$MSGS_PER_SESSION" \
     --target "$TARGET" --target-msgs "$3" >"$WORK/gen-$label.json" 2>/dev/null
   say "  $(cat "$WORK/gen-$label.json")"
 
+  target_id="$(jget "$WORK/gen-$label.json" target)"
   session_arg="--session $TARGET"
   measure resume "$label"
   r_wall="$MEASURED_WALL"; r_load="$MEASURED_LOAD"
@@ -177,9 +179,9 @@ scale_point() { # $1=label $2=sessions $3=target-msgs
 
   r_sid="$(jget "$WORK/m-$label-resume.json" sessionId)"
   c_sid="$(jget "$WORK/m-$label-continue.json" sessionId)"
-  [ "$r_sid" = "$TARGET" ] && ok "[$label] --resume 保持 session_id（${r_sid}）" \
+  [ "$r_sid" = "$target_id" ] && ok "[$label] --resume 保持 session_id（${r_sid}）" \
     || bad "[$label] --resume 的 session_id 变了（${r_sid}）"
-  [ "$c_sid" = "$TARGET" ] && ok "[$label] --continue 保持 session_id（${c_sid}）" \
+  [ "$c_sid" = "$target_id" ] && ok "[$label] --continue 保持 session_id（${c_sid}）" \
     || bad "[$label] --continue 的 session_id 变了（${c_sid}）"
 
   budget_ok=$(bun -e "process.stdout.write(String(Number(process.argv[1]) <= Number(process.argv[2])))" "$r_wall" "$BUDGET_S")
@@ -210,24 +212,16 @@ process.stdout.write(JSON.stringify({
   continueGrowsFaster: (cl - cs) > (rl - rs),
 }))' "$LOAD_R_small" "$LOAD_R_large" "$LOAD_C_small" "$LOAD_C_large")
 say "  $verdict"
-case "$verdict" in
-  *'"continueGrowsFaster":true'*) ok '历史放大后 --continue 的加载成本涨得比 --resume 快（与钉死 --resume 的理由一致）' ;;
-  *) bad '历史放大后 --continue 没有涨得更快 —— 与钉死 --resume 的理由不符，需复核' ;;
-esac
+say '  两条入口的增长率只作诊断；omp 不继承 occ 的复杂度差异判据。'
 
 # ---------------------------------------------------------------------------
-head1 '4c. 已知缺口：时间戳并列时 --resume 会丢掉尾部消息'
-# `insertMessageChain` 在展开之后无条件覆盖时间戳（transcriptWriter.ts:866-879），
-# 同一片写出的条目共用一个毫秒；`--resume` 的锚点用 `>` 比较取最大时间戳、
-# 并列时保留**先出现**的那条（logAssembly.ts:27-42 + :487），于是尾部并列的
-# 那几条被甩在锚点之后、进不了会话链。`--continue` 的锚点限定在链尾
-# （logAssembly.ts:384-388 的 leafUuids 过滤），不受影响。
+head1 '4c. 两个恢复入口的消息完整性'
 tie_report() { # $1=label
   rc="$(jget "$WORK/m-$1-resume.json" messageCount)"
   cc="$(jget "$WORK/m-$1-continue.json" messageCount)"
   say "  [$1] --resume 读回 ${rc} 条，--continue 读回 ${cc} 条"
-  if [ "$rc" -lt "$cc" ]; then
-    warn "[$1] --resume 比 --continue 少 $((cc - rc)) 条（时间戳并列丢尾部；见 review 文档「后续动作」第 1 条）"
+  if [ "$rc" -ne "$cc" ]; then
+    bad "[$1] 两个入口读回的消息条数不同"
   else
     ok "[$1] 两个入口读回的消息条数一致"
   fi
@@ -237,10 +231,14 @@ tie_report large
 
 # ---------------------------------------------------------------------------
 head1 '5. 不重放历史即可续答（AC-1 第二条判据）'
-skip "needs model credentials —— 该判据要求重启后直接追问「继续刚才那步」，"
-say  '        并检查回答里引用了只有重启前上下文才知道的项目细节。这必须真调模型 API。'
-say  '        需要什么：一个可用的模型供应商凭据（`occ` 已登录，或供应商 API key），'
-say  '        以及一次真实的多轮任务现场。本脚本刻意不读取任何凭据、不发起任何模型调用。'
+if bun "$(demo_entry ac1-resume)" >"$WORK/resume-local.json" 2>"$WORK/resume-local.stderr"; then
+  ok '本地脚本模型：崩溃后追问从真实 omp session 恢复此前的 nonce'
+  cat "$WORK/resume-local.json"
+else
+  bad '本地脚本模型上下文恢复失败'
+  cat "$WORK/resume-local.stderr"
+fi
+skip '真实模型质量尚未评估：本地脚本模型只验证协议与持久化上下文恢复'
 
 # ---------------------------------------------------------------------------
 head1 '结果'

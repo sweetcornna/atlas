@@ -24,8 +24,9 @@
  *
  * ① **`QIANMO_BETA_ROOT` 一律指向一次性根。** 脚本写出来的 `run/*.pid`、
  *    `logs/*`、`peers.conf` 全落在那儿，碰不到 `~/qianmo-beta`。
- * ② **PATH 里只有假 `bun`**（`<假 bun 目录>:/usr/bin:/bin`），真 `bun` 在
- *    `~/.bun/bin`，不在这条 PATH 上。所以即使某一步没被截住，也只会以
+ * ② **`QIANMO_QM_BINARY` 一律指向假 `qm`，PATH 里只有假 `bun`**
+ *    （`<假二进制目录>:/usr/bin:/bin`）。部署好的 `dist/qm-linux-<arch>` 与真
+ *    `bun`（`~/.bun/bin`）都不在这条路上。所以即使某一步没被截住，也只会以
  *    「命令不可执行」收场，**不会真的起一个节点** —— 那台机器上 38625 正被
  *    内测节点占着，而 Bun 允许两个服务器绑同一个口且都不报错。
  * ③ 场景结束时按 pid 文件把假进程收干净。
@@ -66,21 +67,22 @@ async function runShell(
 }
 
 /**
- * 造一个假 `bun`：把自己被怎么调起来的记下来，返回它所在的目录。
+ * 造一个假 `qm`（同一份脚本也落成假 `bun`，注册中心那一步还走 `bun`）：把自己
+ * 被怎么调起来的记下来。返回要并进启动环境的 `PATH` 与 `QIANMO_QM_BINARY`（见文件头 ②）。
  *
  * `linger` 决定它记完之后是否挂住。**默认挂住**，因为 `beta_start_process`
  * 的成功判据正是「宽限期之后进程还活着」—— 记完就退等于让每条启动场景都撞上
  * 那道存活校验（PR #48 加的那道），观察点会前移到「起不来」而不是「怎么起的」。
  */
-async function stubBunDir(
+async function stubLaunchEnv(
   host: LauncherHost,
   argvLog: string,
   options: { readonly linger?: boolean } = {},
-): Promise<string> {
+): Promise<{ readonly PATH: string; readonly QIANMO_QM_BINARY: string }> {
   // `--ready <路径>`：注册中心用一个 ready 文件宣告自己起来了，而 beta-up.sh
-  // 会卡在那儿等 30 s 再 die。假 bun 替它写一下，控制台那一步才够得着。
+  // 会卡在那儿等 30 s 再 die。假二进制替它写一下，控制台那一步才够得着。
   const script = `#!/bin/bash
-printf '%s\\n' "OCC_CONFIG_DIR=\${OCC_CONFIG_DIR:-}" >>"${argvLog}"
+printf '%s\\n' "QIANMO_CONFIG_DIR=\${QIANMO_CONFIG_DIR:-}" >>"${argvLog}"
 printf '%s\\n' "ARGV: $*" >>"${argvLog}"
 prev=''
 for arg in "$@"; do
@@ -89,8 +91,12 @@ for arg in "$@"; do
 done
 ${options.linger === false ? 'exit 0' : 'sleep 30'}
 `
-  const path = await host.writeFile('stub-bin/bun', script, { mode: '755' })
-  return path.slice(0, path.lastIndexOf('/'))
+  const qm = await host.writeFile('stub-bin/qm', script, { mode: '755' })
+  await host.writeFile('stub-bin/bun', script, { mode: '755' })
+  return {
+    PATH: `${qm.slice(0, qm.lastIndexOf('/'))}:/usr/bin:/bin`,
+    QIANMO_QM_BINARY: qm,
+  }
 }
 
 /** 场景结束时按 pid 文件把假进程收干净，别把 `sleep` 留在机器上。 */
@@ -200,7 +206,7 @@ export const launcherScenarios: readonly Scenario[] = [
     async run(ctx) {
       const host = await ctx.driver.launcherHost(ctx)
       const argvLog = `${host.workdir}/argv-node.log`
-      const bin = await stubBunDir(host, argvLog)
+      const launchEnv = await stubLaunchEnv(host, argvLog)
       killStubsOnCleanup(ctx, host)
 
       const child = await host.run(
@@ -218,7 +224,7 @@ export const launcherScenarios: readonly Scenario[] = [
         {
           env: {
             // 只有假 bun：真 bun 在 ~/.bun/bin，不在这条 PATH 上（见文件头 ②）。
-            PATH: `${bin}:/usr/bin:/bin`,
+            ...launchEnv,
             QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
@@ -260,7 +266,7 @@ export const launcherScenarios: readonly Scenario[] = [
     async run(ctx) {
       const host = await ctx.driver.launcherHost(ctx)
       const argvLog = `${host.workdir}/argv-host.log`
-      const bin = await stubBunDir(host, argvLog)
+      const launchEnv = await stubLaunchEnv(host, argvLog)
       killStubsOnCleanup(ctx, host)
       // 控制台腿要求地址表里至少有一条 —— 那是脚本的前置（运维单页第一步），
       // 不是本场景要断言的东西，所以在这里补齐而不是让它 die 在前面。
@@ -286,7 +292,7 @@ export const launcherScenarios: readonly Scenario[] = [
         ],
         {
           env: {
-            PATH: `${bin}:/usr/bin:/bin`,
+            ...launchEnv,
             QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_BETA_START_GRACE_S: '0',
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
@@ -326,7 +332,7 @@ export const launcherScenarios: readonly Scenario[] = [
       const argvLog = `${host.workdir}/argv-identity.log`
       // 这条的 stub 不能 `sleep`：`--print-wake-identity` 是**同步**取一行，
       // 挂住会让整条场景耗到超时，而超时记的是 `error` 而不是它要证明的事。
-      const bin = await stubBunDir(host, argvLog, { linger: false })
+      const launchEnv = await stubLaunchEnv(host, argvLog, { linger: false })
       killStubsOnCleanup(ctx, host)
 
       const child = await host.run(
@@ -337,7 +343,7 @@ export const launcherScenarios: readonly Scenario[] = [
         ],
         {
           env: {
-            PATH: `${bin}:/usr/bin:/bin`,
+            ...launchEnv,
             QIANMO_BETA_ROOT: host.betaRoot,
             QIANMO_TRANSPORT_PSK: 'qianmo-acceptance-psk-0000000000',
           },

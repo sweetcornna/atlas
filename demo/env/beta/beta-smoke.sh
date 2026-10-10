@@ -83,7 +83,7 @@ esac
 
 STARTED_AT="$(beta_now)"
 beta_require_marker
-beta_require_occ
+beta_require_qm
 beta_export_common
 cd "$REPO_DIR"
 
@@ -109,7 +109,7 @@ SMOKE_FROM_AGENT="${QIANMO_BETA_SMOKE_FROM_AGENT:-operator}"
 verify_trail() {
   local node="$1" path="$2" kind="$3"
   beta_say "--- ${node}（${kind}：${path}）---"
-  if bun "$BETA_OCC" audit --path "$path" --verify; then
+  if "${BETA_QM[@]}" audit --path "$path" --verify; then
     beta_ok "$node 审计链 intact"
     TRAIL_INTACT=$((TRAIL_INTACT + 1))
   else

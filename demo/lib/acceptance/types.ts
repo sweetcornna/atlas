@@ -391,7 +391,7 @@ export interface ExecResult {
  * 有 7 条场景做的是同一件事：**拿一组故意写坏的参数起一次 `qm`，看它在解析期
  * 或启动期拒不拒**。它们声明了 `exec-node-cli`，然后调 runner 本地的
  * `runCli()` —— 于是在真机腿上照样在开发机上 spawn，`requires` 纯属装饰。
- * 而 {@link AcceptanceDriver.execNode} 又用不了：它把 `OCC_CONFIG_DIR` 钉在
+ * 而 {@link AcceptanceDriver.execNode} 又用不了：它把 `QIANMO_CONFIG_DIR` 钉在
  * 那条节点的**生产配置根**上。
  *
  * ## 与 {@link AcceptanceDriver.execNode} 的分工是硬的，不要合并
@@ -409,20 +409,20 @@ export interface ExecResult {
  *   ② 生产根下的审计链是**成果边界证据**，任何一次计划外写入都会在链上留下
  *      一条没人解释得清的记录；
  *   ③ 用一次性根**不削弱**这条腿的价值 —— 这些场景断言的是「部署在真机上的
- *      那个 `dist/cli-node.js`、在真机的架构与内核上、对这组参数怎么反应」，
+ *      那个 `dist/qm-<target>`、在真机的架构与内核上、对这组参数怎么反应」，
  *      被测对象是那个二进制和那台机器，不是配置根里装了什么。
  */
 export interface ExecHost {
   /** 人可读的位置标识（`runner (local)` / `cornna-p12 (beta-4)`），进证据用。 */
   readonly describe: string
-  /** 一次性配置根在**目标机上**的绝对路径（喂 `OCC_CONFIG_DIR`）。 */
+  /** 一次性配置根在**目标机上**的绝对路径（喂 `QIANMO_CONFIG_DIR`）。 */
   readonly configDir: string
   /** 一次性工作目录在**目标机上**的绝对路径（放输入文件、agent 工作区）。 */
   readonly workdir: string
   /**
    * 跑一条**会结束**的 `qm` 子命令。
    *
-   * `opts.configDir` 换掉这一条命令的 `OCC_CONFIG_DIR`（缺省是
+   * `opts.configDir` 换掉这一条命令的 `QIANMO_CONFIG_DIR`（缺省是
    * {@link ExecHost.configDir}）。一条离线 CA 的签发链要同时用到**三个**根：
    * 跑 `qm ca` 的工具根、对端的身份根、将来那个节点自己的根 —— 一个执行位
    * 一个固定根的话，这三件事得开三个执行位（真机上就是三层一次性目录 + 三次
@@ -490,7 +490,7 @@ export interface ExecHost {
  * 选前者的三条理由：
  *
  * ① **与这条腿其余部分一致。** 真机腿从头到尾验的是**部署产物**（那个
- *    `dist/cli-node.js`、那台机器的内核与架构），启动器换成分支版本，同一份
+ *    `dist/qm-<target>`、那台机器的内核与架构），启动器换成分支版本，同一份
  *    报告里就会有两种「被测对象」，而读的人分不出哪条是哪种。
  * ② **这一维要抓的差异正好在部署侧。** 它来自 issue #38/#40：`bun` 装在
  *    `~/.bun/bin`、非交互 SSH 解析不到 —— 那是一条**部署环境**的事实，
@@ -510,8 +510,8 @@ export interface LauncherHost {
   /**
    * 启动器脚本所在的仓库根**在目标机上**的绝对路径。
    *
-   * 保证 `demo/env/beta/*.sh` 是**真脚本**，且 `dist/cli-node.js` 存在
-   * （`beta_require_occ` 过得去）—— 本地腿靠一棵软链镜像树满足后半条，
+   * 保证 `demo/env/beta/*.sh` 是**真脚本**，且 `dist/qm-<target>` 存在
+   * （`beta_require_qm` 过得去）—— 本地腿靠一棵软链镜像树满足后半条，
    * 真机腿本来就满足。
    */
   readonly repoDir: string
