@@ -12,7 +12,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 仓库性质 | **oh-my-pi（`omp`）v18.8.4 的下游 fork**：omp 树原样在仓库根，阡陌代码在 `atlas/`、`demo/`、`docs/dev/` |
+| 仓库性质 | **oh-my-pi（`omp`）v18.8.8 的下游 fork**：omp 树原样在仓库根，阡陌代码在 `atlas/`、`demo/`、`docs/dev/` |
 | 基座 | 上游 `can1357/oh-my-pi` 提交 `40e9368ef0458fd9073329cdff4174895f91bc6b`，MIT。零改动快照标签 `base-snapshot/omp-v18.8.8`（无父提交，树 `c7d2ecac…`），导入提交 `c9a87c8c`。现行机器 pin 见 `atlas/upstream/omp.json`，事件记录见 [BASE.md](BASE.md) |
 | 许可 | 双许可：阡陌自有代码 AGPL-3.0-or-later（根 `LICENSE`），基座 MIT（根 `LICENSE.base`）。判据是路径：`git cat-file -e <当前 snapshot>:<路径>` 成功即基座文件；当前 snapshot 取 `atlas/upstream/omp.json`。文件头只是标记，范围与豁免见 [NOTICE](NOTICE) 一、许可 |
 | 成果边界 | 工作面 `git diff <当前 snapshot>..HEAD`；基座边界 `git show --stat <当前 snapshot>`；工作记录 `git log 3380c88..HEAD`，其中 `d04a79dd`（occ 同步）与 `c9a87c8c`（基座切换导入）两笔是纯上游内容，举证时单独声明 |
@@ -26,7 +26,7 @@
 
 ## 1. 基座规则
 
-- **omp 文件归 omp 的规则管。**凡路径在 `atlas/upstream/omp.json` 的现行 snapshot 里的文件（`packages/`、`crates/`、根 `scripts/`、`python/`、`sdk/`、`docs/*.md`、根配置），开发规则见根 [AGENTS.md](AGENTS.md) 分界标记 `<!-- base: oh-my-pi v18.8.4 AGENTS.md, verbatim below -->` 以下的 omp 原文。本文不复述它。
+- **omp 文件归 omp 的规则管。**凡路径在 `atlas/upstream/omp.json` 的现行 snapshot 里的文件（`packages/`、`crates/`、根 `scripts/`、`python/`、`sdk/`、`docs/*.md`、根配置），开发规则见根 [AGENTS.md](AGENTS.md) 分界标记 `<!-- base: oh-my-pi v18.8.8 AGENTS.md, verbatim below -->` 以下的 omp 原文。本文不复述它。
 - **先用扩展点，不改 omp 文件。**可用的扩展点：`omp --mode rpc`、扩展 API（`tool_call` 等事件、`registerTool`）、`set_host_tools`、`--config` 覆盖层、`models.yml` / `config.yml`。确实不够用才改 omp 文件，并在同一个 PR 里登记到 [docs/dev/base-modifications.md](docs/dev/base-modifications.md)，写明为什么扩展点不够。能做成纯插入或纯追加的不要就地改写上游的行。
 - **omp 文件不加 SPDX 头**，改过也不加。
 - **工具链分开。**omp 路径用 omp 自己的 oxlint、oxfmt 与各包 tsgo；阡陌路径用 biome 与 `tsgo -p tsconfig.atlas.json`。不要用 biome 重排 omp 文件，也不要用 omp 的 `fmt` 处理阡陌文件。改了 omp 文件的 PR 要跑 omp 的 `bun run test:ts`。

@@ -29,9 +29,9 @@ git diff --name-status --no-renames base-snapshot/omp-v18.8.8 HEAD | awk '$1!="A
 | `packages/coding-agent/scripts/compile-binary.ts` | 显式 Bun runtime 模板与交叉编译 target 同时传递，防止 ARM 构建机常量被烘入 x64 产物 | 上游 helper 把两选项写成互斥分支；Atlas 调用方已提供二者，仍会在 helper 内丢失 target，无法通过现有参数修复。真实 x64 部署复现 native loader 错选 linux-arm64；回归固定这一组合 |
 | `packages/natives/scripts/embed-native.ts` | 增加显式 `x64BaselineOnly` 打包选项，Atlas 的便携 x64 构建只嵌基线插件；缺少基线或目标架构不符时拒绝，默认 omp 双插件行为不变 | 原 helper 无筛选入口，冷启动同步解压 modern 与 baseline 两套约 190 MB 插件，引发现场内存压力；通过构建参数减少归档体积，复用既有 loader 的 baseline 回退，不放宽资源/就绪闸门 |
 | `bun.lock` | 随根工作区追加阡陌包与其依赖而重新生成 | 生成文件，跟随 `package.json` |
-| `AGENTS.md` | 文件顶部插入一段阡陌指针（指向 `CLAUDE.md`、`CLAUDE.full.md`、`CONTRIBUTING.md`）和标记 `<!-- base: oh-my-pi v18.8.4 AGENTS.md, verbatim below -->`，标记以下是 omp 原文，逐字未改 | 跨工具约定只认这个文件名；纯插入在同步时不与上游 hunk 冲突 |
-| `README.md` | 文件顶部插入阡陌部分（项目简介、基座说明、仓库布局、快速开始、成果边界、许可）和标记 `<!-- base: oh-my-pi v18.8.4 README.md, verbatim below -->`，标记以下是 omp 原文 | GitHub 首页只渲染根 `README.md`；纯插入 |
-| `CONTRIBUTING.md` | 同上，顶部插入阡陌贡献指南和标记 `<!-- base: oh-my-pi v18.8.4 CONTRIBUTING.md, verbatim below -->`，标记以下是 omp 原文 | 贡献入口只有这一个文件名；纯插入 |
+| `AGENTS.md` | 文件顶部插入一段阡陌指针（指向 `CLAUDE.md`、`CLAUDE.full.md`、`CONTRIBUTING.md`）和标记 `<!-- base: oh-my-pi v18.8.8 AGENTS.md, verbatim below -->`，标记以下是 omp 原文，逐字未改 | 跨工具约定只认这个文件名；纯插入在同步时不与上游 hunk 冲突 |
+| `README.md` | 文件顶部插入阡陌部分（项目简介、基座说明、仓库布局、快速开始、成果边界、许可）和标记 `<!-- base: oh-my-pi v18.8.8 README.md, verbatim below -->`，标记以下是 omp 原文 | GitHub 首页只渲染根 `README.md`；纯插入 |
+| `CONTRIBUTING.md` | 同上，顶部插入阡陌贡献指南和标记 `<!-- base: oh-my-pi v18.8.8 CONTRIBUTING.md, verbatim below -->`，标记以下是 omp 原文 | 贡献入口只有这一个文件名；纯插入 |
 | `LICENSE` | 内容整体换成 AGPL-3.0 正文；omp 的 MIT 原文逐字移到新路径 `LICENSE.base` | 章程 v2.16：阡陌自有层以 AGPL 发布，根 `LICENSE` 是该层的许可文件 |
 | `.gitignore` | 末尾追加「阡陌（atlas/）追加」一段：`.playwright-mcp/`、`.demo-env/`、`/test-reports/`、`/.source-commit` | 只有一个根忽略文件；纯追加 |
 | `.github/ISSUE_TEMPLATE/config.yml` | 换成阡陌的联系链接（私密安全报告、项目文档、基座问题上报入口），关闭空白 issue；基座入口改指 omp 上游 | issue 模板配置是仓库级的，没有扩展点 |

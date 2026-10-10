@@ -4,7 +4,7 @@ Read [CLAUDE.md](CLAUDE.md) for this repository's standing constraints and task-
 
 The rules below the marker are the oh-my-pi base's own `AGENTS.md`, kept verbatim. They govern changes to omp files (`packages/`, `crates/`, root `scripts/`); atlas files follow CLAUDE.md.
 
-<!-- base: oh-my-pi v18.8.4 AGENTS.md, verbatim below -->
+<!-- base: oh-my-pi v18.8.8 AGENTS.md, verbatim below -->
 
 # Development Rules
 
