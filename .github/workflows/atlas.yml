@@ -28,8 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         with:
-          # license-headers 的归属判据是「文件在不在 base-snapshot/omp-v18.8.4
-          # 快照树里」，没有这个标签就没有判据；action 默认 fetch-depth: 1 且不带
+          # license-headers 的归属判据是「文件在不在 atlas/upstream/omp.json 钉住的
+          # 基座快照树里」，没有这个标签就没有判据；action 默认 fetch-depth: 1 且不带
           # 标签。门禁按设计不降级放行：浅克隆恰恰是最容易漏头的环境。
           fetch-depth: 0
           fetch-tags: true

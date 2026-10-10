@@ -67,7 +67,7 @@ const MD_OUT = join(REPO_ROOT, 'docs', 'dev', 'sbom-m0.md')
 
 /**
  * Base pin, restated from BASE.md for the BOM metadata. Do not edit BASE.md.
- * Base is oh-my-pi v18.8.4 (`base-snapshot/omp-v18.8.4`).
+ * Version and snapshot tag come from the same pin (`atlas/upstream/omp.json`).
  */
 const BASE_PIN = ompPin.commit
 const BASE_TAG = `v${ompPin.version}`
