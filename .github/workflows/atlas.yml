@@ -49,12 +49,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       # omp 的原生插件（Rust）。omp 子进程和 qm 编译都要加载它；toolchain 版本
-      # 取自 rust-toolchain.toml。
+      # 取自 rust-toolchain.toml。x64 上出 build-qm 内嵌的 baseline 版（与舰队配方同一脚本）。
       - name: Build the omp native addon
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build cmake bubblewrap postgresql
           rustup toolchain install --profile minimal "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
-          bun run build:native
+          bash atlas/scripts/build-native-portable.sh
 
       # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so
       # bubblewrap cannot configure the sandbox's loopback ("Failed RTM_NEWADDR:

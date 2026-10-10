@@ -133,20 +133,8 @@ curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolch
   echo "clean_before_install=$(git status --porcelain | wc -l)"
 } > $OUT/env.txt
 bun install --frozen-lockfile > $OUT/install.log 2>&1; rc INSTALL_RC $?
-if [ "$(uname -m)" = x86_64 ]; then
-  # build-qm embeds only the portable baseline addon on x64 (the loader falls back to it on
-  # AVX2 hosts). omp's local napi build names its output after the build host's AVX2, so a
-  # modern runner would emit only -modern. Pin the baseline ISA floor build-bindings uses for
-  # baseline (x86-64-v2) and give the addon its baseline name.
-  RUSTFLAGS='-C target-cpu=x86-64-v2' bun run build:native > $OUT/build-native.log 2>&1; rc NATIVE_RC $?
-  N=packages/natives/native
-  if [ ! -e $N/pi_natives.linux-x64-baseline.node ] && [ -e $N/pi_natives.linux-x64-modern.node ]; then
-    mv $N/pi_natives.linux-x64-modern.node $N/pi_natives.linux-x64-baseline.node
-    echo "renamed x86-64-v2 build: pi_natives.linux-x64-modern.node -> pi_natives.linux-x64-baseline.node" >> $OUT/build-native.log
-  fi
-else
-  bun run build:native > $OUT/build-native.log 2>&1; rc NATIVE_RC $?
-fi
+# x64: the baseline addon build-qm embeds (see the script's header).
+bash atlas/scripts/build-native-portable.sh > $OUT/build-native.log 2>&1; rc NATIVE_RC $?
 git status --porcelain > $OUT/porcelain-before-build.txt
 bun atlas/scripts/build-qm.ts > $OUT/build-qm.log 2>&1; rc BUILD_RC $?
 BIN=$(ls dist/qm-linux-* 2>/dev/null | head -n1)
