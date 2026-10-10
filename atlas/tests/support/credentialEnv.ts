@@ -92,6 +92,6 @@ export function isolateCredentialEnv(
 ): string[] {
   const cleared = Object.keys(env).filter(isCredentialEnvName)
   for (const name of cleared) delete env[name]
-  env.CODEX_HOME = join(tmpdir(), `occ-test-no-codex-home-${process.pid}`)
+  env.CODEX_HOME = join(tmpdir(), `qianmo-test-no-codex-home-${process.pid}`)
   return cleared
 }

@@ -11,7 +11,7 @@
  * ```
  * sender → registry.resolve → transport client → [unix socket] → transport
  *   server → activator (catch, wake a frozen node, wait for ready, forward)
- *   → adapter → base mailbox → the agent reads → ack back over a return hop
+ *   → adapter → @qianmo/mailbox → the agent reads → ack back over a return hop
  * ```
  *
  * The reason to build it is that the seams are where the acceptance run breaks:
@@ -24,8 +24,8 @@
  * **Real**: a real `TransportClient` and `startTransportServer` over a real unix
  * domain socket with a real PSK handshake; a real `InMemoryRegistry`; a real
  * `Activator` with its real journal, audit log and stage timings; a real
- * `InboundAdapter` writing through the base's own `writeToMailbox`; the base's
- * real `readMailbox` / `markMessagesAsRead`; real `deliverAndAck`, which is the
+ * `InboundAdapter` writing through `@qianmo/mailbox`'s `writeToMailbox`; the
+ * mailbox's real `readMailbox` / `markMessagesAsRead`; real `deliverAndAck`, which is the
  * only thing in the tree that may mint an ack. No `mock.module` anywhere, and
  * no stand-in for any of our own code.
  *
@@ -97,10 +97,7 @@ import {
   startTransportServer,
   type TransportServerHandle,
 } from '@qianmo/transport'
-import {
-  markMessagesAsRead,
-  readMailbox,
-} from 'src/utils/agents/teammateMailbox.js'
+import { markMessagesAsRead, readMailbox } from '@qianmo/mailbox'
 
 import {
   STUB_TOKEN,
@@ -122,7 +119,7 @@ const AGENT = 'reviewer'
  * `reviewer` inboxes are two files on two disks. Collapsed into one process
  * they would share `$CONFIG/teams/<team>/inboxes/reviewer.json`, which would
  * make "no cross-talk" untestable for the wrong reason. The team name is what
- * keys that path in the base (`teammateMailbox.ts:285-295`), so giving each
+ * keys that path in `@qianmo/mailbox` (`getInboxPath`), so giving each
  * node its own is the smallest faithful stand-in for two config roots.
  */
 const TEAM_OF: Readonly<Record<string, string>> = {
@@ -218,16 +215,16 @@ let previousConfigDir: string | undefined
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-e2e-'))
-  // `CLAUDE_CONFIG_DIR`, not `OCC_CONFIG_DIR`: tests/preload.ts deletes the
-  // latter, and `occConfigDir()` memoizes on the pair of them.
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  // `qianmoConfigDir()` reads `QIANMO_CONFIG_DIR` on every call, so pointing
+  // it at a fresh root per test is enough.
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
 })
 
 afterEach(async () => {
   for (const stop of teardown.splice(0).reverse()) await stop()
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -423,10 +420,10 @@ async function startReceivingNode(
 /**
  * A live agent's poll loop: read the inbox, take everything in.
  *
- * This is the *only* thing that can produce an ack, because the base flips
- * `read` exactly where an agent takes a message into its input
- * (`inProcessRunner.ts:854-865`). Tests that want to prove no ack appears
- * simply do not start one.
+ * This is the *only* thing that can produce an ack, because the resident flips
+ * `read` exactly where it hands a message to the agent as input
+ * (`markMessagesAsReadBySnapshot` in `@qianmo/node`'s `host/resident.ts`).
+ * Tests that want to prove no ack appears simply do not start one.
  */
 function startAgentReadLoop(agent: string, team: string): () => Promise<void> {
   let running = true

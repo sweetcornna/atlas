@@ -11,13 +11,11 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
-import {
-  getMacroDefines,
-  resolveBuildFeatures,
-} from '../../../scripts/defines.js'
 
-const PROJECT_ROOT = resolve(import.meta.dir, '../../..')
-const CLI_ENTRYPOINT = join(PROJECT_ROOT, 'src/entrypoints/cli.tsx')
+const CLI_ENTRYPOINT = join(
+  resolve(import.meta.dir, '..', '..', '..', '..'),
+  'atlas/packages/node/src/cli.ts',
+)
 
 /** The same list the other end-to-end tests drop. */
 export const INHERITED_KEYS_TO_DROP = [
@@ -25,11 +23,10 @@ export const INHERITED_KEYS_TO_DROP = [
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_USE_OPENAI',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'OPENAI_MODEL',
-  'OCC_CONFIG_DIR',
+  'QIANMO_CONFIG_DIR',
   'CLAUDE_CONFIG_DIR',
   'QMCODE_HOME',
   'GIT_DIR',
@@ -37,21 +34,9 @@ export const INHERITED_KEYS_TO_DROP = [
   'GIT_INDEX_FILE',
 ]
 
-/** `bun run -d… --feature… src/entrypoints/cli.tsx`, as `scripts/dev.ts` does. */
+/** `bun run <qm cli.ts>`: the arguments that put `qm` after `process.execPath`. */
 export function cliPrefix(): readonly string[] {
-  const defines = {
-    ...getMacroDefines(),
-    'process.env.NODE_ENV': JSON.stringify('production'),
-  }
-  return [
-    'run',
-    ...Object.entries(defines).flatMap(([key, value]) => [
-      '-d',
-      `${key}:${String(value)}`,
-    ]),
-    ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-    CLI_ENTRYPOINT,
-  ]
+  return ['run', CLI_ENTRYPOINT]
 }
 
 export interface RunningConsole {

@@ -18,21 +18,21 @@
  *    were printed like notifications, although a watch job must stay silent
  *    unless the agent itself calls `qianmo_notify` (§4.1⑤).
  *
- * The unit tests in `src/cli/handlers/__tests__/watch.test.ts` cover each
- * piece. This file checks that the shipped entrypoints wire them together.
+ * The unit tests in `atlas/packages/node/test/commands/watch.test.ts` cover
+ * each piece. This file checks that the shipped entrypoints wire them together.
  *
  * ## What is real, and the one thing that is not
  *
  * **Real**: `qm watch` and `qm resident`, each its own process from source
- * with the shipped defines and feature list, and each with its own throwaway
- * config root. They talk over a loopback port. The node runs its real ACP child
- * in its default `dontAsk` mode, with the real permission pipeline, the real
- * `Bash` tool running `df -P /`, the real `qianmo_notify` tool, and both audit
- * trails. No `mock.module`.
+ * (`atlas/packages/node/src/cli.ts`), and each with its own throwaway
+ * config root. They talk over a loopback port. The node runs a real omp RPC
+ * child with its read-only extension policy, real read/grep tools reading a
+ * host-captured filesystem metric, real qianmo_notify and both audit trails.
+ * No `mock.module`; no agent shell permission is granted.
  *
  * **Not real**: the model. `fixtures/watch-model-double.ts` stands in for it
  * and is deterministic. It reads the notice tier from its prompt, the way the
- * ACP fixture next to the resident tests does, and declines on the untrusted
+ * omp fixture next to the resident tests does, and declines on the untrusted
  * one. So "the node told the agent it was verified" is asserted from what the
  * model actually received.
  *
@@ -46,14 +46,20 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { type ChildProcess, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  statfsSync,
+} from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { type AuditRecord, readTrail } from '@qianmo/audit'
-import { getMacroDefines, resolveBuildFeatures } from '../../scripts/defines.js'
 import {
   EMPTY_JOB_MARKER,
+  DISK_USAGE_FILE,
   type ModelDouble,
   RUNBOOK_FILE,
   RUNBOOK_MARKER,
@@ -62,8 +68,10 @@ import {
   startWatchModelDouble,
 } from './fixtures/watch-model-double.js'
 
-const PROJECT_ROOT = resolve(import.meta.dir, '../..')
-const CLI_ENTRYPOINT = join(PROJECT_ROOT, 'src/entrypoints/cli.tsx')
+const CLI_ENTRYPOINT = resolve(
+  import.meta.dir,
+  '../../packages/node/src/cli.ts',
+)
 const PSK = 'qianmo-watch-signed-e2e-psk-0000000000'
 const NODE = 'beta-1'
 const AGENT = 'reviewer'
@@ -97,26 +105,12 @@ const INHERITED_KEYS_TO_DROP = [
   'OPENAI_MODEL',
   'OPENAI_WIRE_API',
   'XAI_API_KEY',
-  'OCC_CONFIG_DIR',
-  'CLAUDE_CONFIG_DIR',
+  'QIANMO_CONFIG_DIR',
 ]
 
-/** `bun run -d… --feature… src/entrypoints/cli.tsx`, as `scripts/dev.ts` does. */
+/** `bun run <qm cli.ts>`: the arguments that put `qm` after `process.execPath`. */
 function cliPrefix(): readonly string[] {
-  const defines = {
-    ...getMacroDefines(),
-    // What the shipped bundle substitutes in; `bun test` would export `test`.
-    'process.env.NODE_ENV': JSON.stringify('production'),
-  }
-  return [
-    'run',
-    ...Object.entries(defines).flatMap(([key, value]) => [
-      '-d',
-      `${key}:${String(value)}`,
-    ]),
-    ...[...resolveBuildFeatures()].flatMap(name => ['--feature', name]),
-    CLI_ENTRYPOINT,
-  ]
+  return ['run', CLI_ENTRYPOINT]
 }
 
 function childEnv(
@@ -131,8 +125,7 @@ function childEnv(
   return {
     ...env,
     NODE_ENV: 'production',
-    OCC_IDENTITY: 'qianmo',
-    OCC_CONFIG_DIR: configDir,
+    QIANMO_CONFIG_DIR: configDir,
     QIANMO_TRANSPORT_PSK: PSK,
     NO_COLOR: '1',
     ...extra,
@@ -294,7 +287,7 @@ async function runJob(input: {
         url: `ws://127.0.0.1:${port}`,
         prompt:
           input.prompt ??
-          `WATCH-DF threshold=${input.threshold}. Run \`df -P /\`. If the ` +
+          `WATCH-DF threshold=${input.threshold}. Read ${DISK_USAGE_FILE}. If the ` +
             'root filesystem is at or above the threshold percentage, call ' +
             'qianmo_notify with kind=watch, severity=warn, dedupKey "/". ' +
             'Otherwise do nothing and just finish.',
@@ -325,8 +318,16 @@ async function runJob(input: {
     `\n--- node stderr (tail)\n${node.stderr().slice(-4000)}` +
     `\n--- model steps\n${JSON.stringify(model.steps().slice(stepsBefore))}`
   await waitFor(
-    () =>
-      forJob(trail(hubConfig), 'watch_result_received', input.id).length > 0,
+    () => {
+      if (hub.child.exitCode !== null || hub.child.signalCode !== null) {
+        throw new Error(
+          `watch exited before ${input.id}: ${hub.child.exitCode ?? hub.child.signalCode}\n${diagnose()}`,
+        )
+      }
+      return (
+        forJob(trail(hubConfig), 'watch_result_received', input.id).length > 0
+      )
+    },
     `the result of ${input.id}`,
     JOB_TIMEOUT_MS,
     diagnose,
@@ -395,7 +396,54 @@ beforeAll(async () => {
     join(workspace, RUNBOOK_FILE),
     `# disk watch\n${RUNBOOK_MARKER}: page only above the threshold\n`,
   )
+  const volume = statfsSync(workspace)
+  const usage = Math.min(
+    100,
+    Math.max(
+      0,
+      Math.ceil((100 * (volume.blocks - volume.bavail)) / volume.blocks),
+    ),
+  )
+  writeFileSync(
+    join(workspace, DISK_USAGE_FILE),
+    `root_usage_percent=${usage}\n`,
+  )
   model = startWatchModelDouble()
+
+  const agentDir = join(nodeConfig, 'omp', 'agent')
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 })
+  writeFileSync(
+    join(agentDir, 'models.yml'),
+    JSON.stringify({
+      providers: {
+        watch: {
+          baseUrl: model.baseUrl,
+          api: 'openai-completions',
+          apiKey: 'sk-watch-model-double',
+          models: [
+            {
+              id: 'watch-model-double',
+              name: 'Watch fixture',
+              reasoning: false,
+              contextWindow: 65536,
+              maxTokens: 4096,
+            },
+          ],
+        },
+      },
+    }),
+    { mode: 0o600 },
+  )
+  writeFileSync(
+    join(agentDir, 'config.yml'),
+    JSON.stringify({
+      modelRoles: { default: 'watch/watch-model-double' },
+      defaultThinkingLevel: 'off',
+      providers: { cacheWarming: 'off' },
+      retry: { enabled: false, fallbackChains: {} },
+    }),
+    { mode: 0o600 },
+  )
 
   // Step 1 of the rollout order: read the hub's key without starting anything.
   const printed = await runToEnd(
@@ -428,13 +476,7 @@ beforeAll(async () => {
       '--trust',
       `hub=${hubPublicKey}`,
     ],
-    childEnv(nodeConfig, {
-      CLAUDE_CODE_USE_OPENAI: '1',
-      OPENAI_API_KEY: 'sk-watch-model-double',
-      OPENAI_BASE_URL: model.baseUrl,
-      OPENAI_MODEL: 'watch-model-double',
-      OPENAI_WIRE_API: 'chat',
-    }),
+    childEnv(nodeConfig),
   )
   await waitFor(
     () => accepts(port),
@@ -478,16 +520,29 @@ describe('qm watch --sign against a real qm resident', () => {
       )
       expect(run.prompts.join('\n')).not.toContain(UNTRUSTED_DIRECTIVE)
 
-      // Executed, in the default dontAsk session mode, which gives no write
-      // access. Read and Grep inside the workspace and `df -P /` all ran, and
+      // Executed with the read-only extension. The runbook read/grep and the
+      // host-captured filesystem metric read all ran, and
       // their output came back to the model. A refused tool would show up here
       // as `ok: false` with the refusal text.
       expect(toolResults(run)).toEqual([
-        { tool: 'Read', ok: true },
-        { tool: 'Grep', ok: true },
-        { tool: 'Bash', ok: true },
+        { tool: 'read', ok: true },
+        { tool: 'grep', ok: true },
+        { tool: 'read', ok: true },
       ])
       expect(run.steps.map(step => step.kind)).toContain('quiet')
+      const tools = model
+        .requests()
+        .flatMap(body =>
+          Array.isArray(body.tools)
+            ? body.tools.map(
+                tool => (tool as { function: { name: string } }).function.name,
+              )
+            : [],
+        )
+      expect(tools).toContain('read')
+      expect(tools).toContain('grep')
+      expect(tools).toContain('qianmo_notify')
+      expect(tools).not.toContain('bash')
 
       // Silent: nothing for a person. The three tool steps did reach the hub,
       // so the zero does not come from an empty channel.
@@ -544,17 +599,19 @@ describe('qm watch --sign against a real qm resident', () => {
         id: 'disk-empty',
         threshold: 0,
         sign: true,
-        prompt: `${EMPTY_JOB_MARKER}: run \`df -P /\` and report the usage.`,
+        prompt: `${EMPTY_JOB_MARKER}: read ${DISK_USAGE_FILE} and report the usage.`,
       })
 
-      // One request and two retries, all empty.
-      expect(run.steps.filter(step => step.kind === 'empty')).toHaveLength(3)
+      // Native omp has two bounded recovery layers: three wire attempts per
+      // empty stop and three session retries after the initial empty stop.
+      // The host still owes one failed result, never a new task submission.
+      expect(run.steps.filter(step => step.kind === 'empty')).toHaveLength(12)
       const results = forJob(run.hub, 'watch_result_received', 'disk-empty')
       expect(results.map(record => record.detail?.result)).toEqual(['failed'])
       expect(results[0]?.code).toBe('E_TASK_FAILED')
       expect(results[0]?.detail?.failure).toBe('model_empty_response')
       expect(String(results[0]?.detail?.reason)).toMatch(
-        /^Model returned only empty responses; retries exhausted: .*finish_reason=stop/,
+        /^Model returned only empty responses/,
       )
       expect(notifyLines(run.stdout)).toEqual([])
     },

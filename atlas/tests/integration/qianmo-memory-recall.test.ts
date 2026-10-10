@@ -1,72 +1,18 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * AC-4 —— 项目记忆可跨会话检索唤醒（roadmap P3.3 的 DoD，逐条对应）。
- *
- * 判据三条，本文件逐条落成用例：
- *
- *   ① 写入 5 条历史决策 → **新开无任何对话历史的会话**提问 → 命中 5/5，
- *      且输出中标注**来源 ID 与写入时间**。
- *   ② 对 3 条**从未写入**的伪造决策不产生幻觉引用。
- *   ③ （v2.2）来源标注在**两家供应商下均生效，切换供应商不改代码**。
- *
- * ## 「无历史会话」在这里是什么意思
- *
- * 每个问题都**独立构造一个只含一条用户消息的 messages 数组**：没有前一轮、
- * 没有 resume、没有跨问题共享的助手轮。模型能看到的项目知识只有系统提示词里
- * 那段 `<qianmo-memory>` 块，而它是当场从磁盘上的记忆库渲染出来的。所以「命中」
- * 只可能来自记忆注入，不可能来自对话上下文。
- *
- * ## 这里跑的是真代码还是仿真
- *
- * **全部真代码 + 真网络**：真的 `FileMemoryStore`（写在临时目录里的真文件）、
- * 真的 `@qianmo/recall` 检索与注入、基座真的适配链（`anthropicMessagesToOpenAI`
- * / `anthropicToolsToOpenAI` / `buildOpenAIRequestBody` / `getOpenAIClient` /
- * `adaptOpenAIStreamToAnthropic`）。没有任何 `mock.module`，
- * 没有录制回放。
- *
- * ## 为什么不用某家的原生引用块（D-6）
- *
- * 原生 `search_result` 引用块与结构化输出互斥、且只此一家有，照它实现会让 AC-4
- * 与 AC-5（模型中立）在 S1 之后互相打架。本文件用的是**工具层强制引用**：
- * 同一个 `qianmo_memory_answer` 工具定义（纯 JSON Schema，不含任何供应商名）
- * 送进两条 provider，回来的 `citations` 逐个到记忆库里解析——**解析不到的 ID
- * 无法被引用**。伪造决策不产生幻觉引用因此是一次查表，不是一句祈使。
- *
- * ## 凭据缺失时
- *
- * 无 `OPENAI_API_KEY` + `OPENAI_BASE_URL` 时真调用整组自动 skip 并打印原因，
- * 留下不需要凭据的确定性检查。凭据只从环境变量读，仓库内不存放任何密钥。
- *
- * 与 `provider-adapter-consistency.test.ts`（P1.4/AC-5）的关系：那份是 AC-5 的
- * 存档证据，本文件不去改它，因此这里另起了一份更小的调用壳（只装配文本与
- * tool_use，不需要 thinking 回填）。provider 配置仍共用同一个 fixture 文件，
- * 保证「两家」的定义只有一个出处。
+/** AC-4: memory injection and citation validation through the public omp adapter.
+ * Default loopback tests exercise real HTTP serialization/deserialization with
+ * scripted replies; they prove the citation contract, not model recall quality.
+ * Opt in with QIANMO_PROVIDER_LIVE=1, OPENAI_API_KEY and OPENAI_BASE_URL to run the
+ * same five decisions and three negative cases against both configured models.
  */
-
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-
-import type {
-  BetaRawMessageStreamEvent,
-  BetaToolUnion,
-} from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type {
-  ChatCompletionCreateParamsStreaming,
-  ChatCompletionTool,
-} from 'openai/resources/chat/completions/completions.mjs'
-
-import {
-  adaptOpenAIStreamToAnthropic,
-  anthropicMessagesToOpenAI,
-  anthropicToolsToOpenAI,
-  asSystemPrompt,
-  type UserMessage,
-} from '@ant/model-provider'
+import { complete, type Tool } from '@oh-my-pi/pi-ai'
+import { buildModel } from '@oh-my-pi/pi-catalog/build'
 import { FileMemoryStore, type MemoryEntry } from '@qianmo/memory'
 import {
   buildRecallSystemPrompt,
@@ -75,57 +21,6 @@ import {
   MEMORY_ANSWER_TOOL_NAME,
   recall,
 } from '@qianmo/recall'
-import { getOpenAIClient } from '../../src/services/api/openai/client.js'
-import {
-  buildOpenAIRequestBody,
-  isOpenAIThinkingEnabled,
-} from '../../src/services/api/openai/requestBody.js'
-import {
-  ProvidersFileSchema,
-  type ProviderConfig,
-} from '../../src/services/providerRegistry/types.js'
-
-// ── provider 配置：与 AC-5 共用同一个 fixture ───────────────────────────────
-
-const QIANMO_PROVIDERS_FIXTURE = join(
-  import.meta.dir,
-  'fixtures',
-  'qianmo-providers.json',
-)
-
-function loadFixtureProviders(): ProviderConfig[] {
-  return ProvidersFileSchema.parse(
-    JSON.parse(readFileSync(QIANMO_PROVIDERS_FIXTURE, 'utf-8')),
-  )
-}
-
-// ── 凭据门禁 ────────────────────────────────────────────────────────────────
-
-const API_KEY = process.env.OPENAI_API_KEY
-const BASE_URL_OVERRIDE = process.env.OPENAI_BASE_URL
-const LIVE_OPT_OUT = process.env.QIANMO_PROVIDER_LIVE === '0'
-
-const skipReason = LIVE_OPT_OUT
-  ? 'QIANMO_PROVIDER_LIVE=0 —— 显式关闭了真调用'
-  : !API_KEY
-    ? 'OPENAI_API_KEY 未设置'
-    : !BASE_URL_OVERRIDE
-      ? 'OPENAI_BASE_URL 未设置'
-      : undefined
-
-const LIVE = skipReason === undefined
-
-if (!LIVE) {
-  console.error(
-    `[AC-4] 记忆检索唤醒真调用已跳过：${skipReason}。` +
-      `设置 OPENAI_API_KEY 与 OPENAI_BASE_URL 后重跑即可。`,
-  )
-}
-
-const LIVE_TIMEOUT_MS = 240_000
-const MAX_TOKENS = 8192
-
-// ── 五条历史决策与提问 ──────────────────────────────────────────────────────
 
 type Decision = {
   readonly key: string
@@ -160,9 +55,9 @@ const DECISIONS: readonly Decision[] = [
   },
   {
     key: 'sandbox',
-    title: '沙箱定为 Dormice + gVisor，occ 跑在沙箱内',
+    title: '沙箱定为 Dormice + gVisor，omp 跑在沙箱内',
     summary: '隔离环境选 Dormice 搭配 gVisor，编程智能体进程运行在沙箱内部',
-    body: '架构上钉死「occ 跑在沙箱内」，不是沙箱跑在 occ 里。',
+    body: '架构上钉死「omp 跑在沙箱内」，不是沙箱跑在 omp 里。',
     tags: ['sandbox'],
     question: '智能体的隔离环境最后是怎么定的？',
     mustMention: ['dormice'],
@@ -211,134 +106,6 @@ const FABRICATED: readonly { key: string; question: string }[] = [
 
 const PROJECT_KEY = 'atlas'
 
-// ── 一次真调用：基座适配链 + 我们的工具定义 ─────────────────────────────────
-
-const MEMORY_TOOL: BetaToolUnion = {
-  // 中立定义 → Anthropic 工具形状的唯一一处改名（`inputSchema` 是 MCP 的写法）。
-  // 它对两条 provider **逐字相同**，所以它不是「换供应商要改的代码」。
-  name: MEMORY_ANSWER_TOOL.name,
-  description: MEMORY_ANSWER_TOOL.description,
-  input_schema: MEMORY_ANSWER_TOOL.inputSchema,
-} as unknown as BetaToolUnion
-
-type ModelTurn = {
-  readonly text: string
-  readonly toolCalls: readonly { name: string; input: unknown }[]
-  readonly stopReason: string | null
-}
-
-function userMessage(text: string): UserMessage {
-  return {
-    type: 'user',
-    uuid: randomUUID(),
-    message: { role: 'user', content: text },
-  }
-}
-
-/** 只装配本用例需要的两样：正文文本与 tool_use 参数。 */
-function assemble(events: readonly BetaRawMessageStreamEvent[]): ModelTurn {
-  let text = ''
-  let stopReason: string | null = null
-  const buffers = new Map<number, { name: string; args: string }>()
-  const order: number[] = []
-
-  for (const event of events) {
-    if (event.type === 'content_block_start') {
-      const block = event.content_block as unknown as Record<string, unknown>
-      if (block['type'] === 'tool_use') {
-        buffers.set(event.index, {
-          name: String(block['name'] ?? ''),
-          args: '',
-        })
-        order.push(event.index)
-      }
-    } else if (event.type === 'content_block_delta') {
-      const delta = event.delta as unknown as Record<string, unknown>
-      if (delta['type'] === 'text_delta') {
-        text += String(delta['text'] ?? '')
-      } else if (delta['type'] === 'input_json_delta') {
-        const buffer = buffers.get(event.index)
-        if (buffer) buffer.args += String(delta['partial_json'] ?? '')
-      }
-    } else if (event.type === 'message_delta') {
-      const delta = event.delta as unknown as Record<string, unknown>
-      if (typeof delta['stop_reason'] === 'string') {
-        stopReason = delta['stop_reason']
-      }
-    }
-  }
-
-  const toolCalls = order.map(index => {
-    const buffer = buffers.get(index)
-    if (!buffer) throw new Error(`assemble: missing tool buffer at ${index}`)
-    return {
-      name: buffer.name,
-      input:
-        buffer.args.trim().length === 0
-          ? {}
-          : (JSON.parse(buffer.args) as unknown),
-    }
-  })
-
-  return { text, toolCalls, stopReason }
-}
-
-/**
- * 问一个问题。
- *
- * `messages` 每次都是**新建的单条用户消息**——这就是判据里的「新开无任何对话
- * 历史的会话」。系统提示词由 `@qianmo/recall` 当场从记忆库渲染。
- */
-async function askWithMemory(params: {
-  provider: ProviderConfig
-  system: string[]
-  question: string
-}): Promise<{ turn: ModelTurn; wireBody: Record<string, unknown> }> {
-  const { provider, system, question } = params
-  const model = provider.defaultModel
-  const baseURL = BASE_URL_OVERRIDE ?? provider.baseUrl
-  const enableThinking = isOpenAIThinkingEnabled(model)
-
-  const openaiMessages = anthropicMessagesToOpenAI(
-    [userMessage(question)],
-    asSystemPrompt([...system]),
-    { enableThinking },
-  )
-  const openaiTools: ChatCompletionTool[] = anthropicToolsToOpenAI([
-    MEMORY_TOOL,
-  ])
-
-  const body = buildOpenAIRequestBody({
-    model,
-    messages: openaiMessages,
-    tools: openaiTools,
-    toolChoice: undefined,
-    enableThinking,
-    maxTokens: MAX_TOKENS,
-    baseURL,
-    effortValue: 'low',
-  })
-  // 发出去的就是生产路径构造的请求体（M0 时另有一次 compat 档案裁剪，生产
-  // 路径从不调用，P18.8 按 R-14 删去）。
-  const wireBody = body as unknown as Record<string, unknown>
-
-  const client = getOpenAIClient({
-    apiKeyOverride: API_KEY,
-    baseURLOverride: baseURL,
-  })
-  const stream = await client.chat.completions.create(
-    wireBody as unknown as ChatCompletionCreateParamsStreaming,
-  )
-
-  const events: BetaRawMessageStreamEvent[] = []
-  for await (const event of adaptOpenAIStreamToAnthropic(stream, model)) {
-    events.push(event)
-  }
-  return { turn: assemble(events), wireBody }
-}
-
-// ── 记忆库夹具 ──────────────────────────────────────────────────────────────
-
 type MemoryFixture = {
   readonly store: FileMemoryStore
   readonly byKey: ReadonlyMap<string, MemoryEntry>
@@ -375,215 +142,248 @@ function writeFiveDecisions(): MemoryFixture {
   }
 }
 
-// ── 不需要凭据的确定性检查 ──────────────────────────────────────────────────
+type Provider = { id: string; defaultModel: string; baseUrl: string }
+const providers: Provider[] = JSON.parse(
+  readFileSync(join(import.meta.dir, 'fixtures/qianmo-providers.json'), 'utf8'),
+)
+const memoryTool: Tool = {
+  name: MEMORY_ANSWER_TOOL.name,
+  description: MEMORY_ANSWER_TOOL.description,
+  parameters: {
+    ...MEMORY_ANSWER_TOOL.inputSchema,
+    properties: { ...MEMORY_ANSWER_TOOL.inputSchema.properties },
+    required: [...MEMORY_ANSWER_TOOL.inputSchema.required],
+  },
+}
+async function ask(
+  provider: Provider,
+  system: readonly string[],
+  question: string,
+  baseUrl: string,
+  apiKey: string,
+) {
+  const model = buildModel({
+    id: provider.defaultModel,
+    name: provider.id,
+    provider: provider.id,
+    api: 'openai-completions',
+    baseUrl,
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 65536,
+    maxTokens: 4096,
+  })
+  const response = await complete(
+    model,
+    {
+      systemPrompt: [...system],
+      messages: [{ role: 'user', content: question, timestamp: Date.now() }],
+      tools: [memoryTool],
+    },
+    {
+      apiKey,
+      maxTokens: 4096,
+      toolChoice: { type: 'function', name: MEMORY_ANSWER_TOOL_NAME },
+      signal: AbortSignal.timeout(120_000),
+    },
+  )
+  const call = response.content.find(
+    block =>
+      block.type === 'toolCall' && block.name === MEMORY_ANSWER_TOOL_NAME,
+  )
+  if (!call || call.type !== 'toolCall')
+    throw new Error(
+      `missing memory answer: ${response.stopReason} ${response.errorMessage ?? ''}`,
+    )
+  return call.arguments
+}
 
-describe('AC-4 来源标注机制与供应商无关（无需凭据）', () => {
-  test('同一个工具定义在两条 provider 下转换出逐字相同的函数声明', () => {
-    const declarations = loadFixtureProviders().map(provider => {
-      const enableThinking = isOpenAIThinkingEnabled(provider.defaultModel)
-      const body = buildOpenAIRequestBody({
-        model: provider.defaultModel,
-        messages: anthropicMessagesToOpenAI(
-          [userMessage('q')],
-          asSystemPrompt(['s']),
-          { enableThinking },
-        ),
-        tools: anthropicToolsToOpenAI([MEMORY_TOOL]),
-        toolChoice: undefined,
-        enableThinking,
-        maxTokens: MAX_TOKENS,
-        baseURL: provider.baseUrl,
-        effortValue: 'low',
+function suite(live: boolean) {
+  let fixture: MemoryFixture
+  let server: ReturnType<typeof Bun.serve>
+  let reply: { answer: string; citations: string[] }
+  const requests: Record<string, unknown>[] = []
+  beforeAll(() => {
+    fixture = writeFiveDecisions()
+    if (!live)
+      server = Bun.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch: async request => {
+          requests.push((await request.json()) as Record<string, unknown>)
+          const common = {
+            id: 'ac4',
+            object: 'chat.completion.chunk',
+            created: 0,
+            model: 'fixture',
+          }
+          const chunks = [
+            {
+              ...common,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: 'assistant',
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'answer',
+                        type: 'function',
+                        function: {
+                          name: MEMORY_ANSWER_TOOL_NAME,
+                          arguments: JSON.stringify(reply),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            },
+            {
+              ...common,
+              choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+            },
+          ]
+          return new Response(
+            chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') +
+              'data: [DONE]\n\n',
+            { headers: { 'content-type': 'text/event-stream' } },
+          )
+        },
       })
-      return { id: provider.id, tools: body.tools }
+  })
+  afterAll(async () => {
+    await server?.stop(true)
+    fixture.dispose()
+  })
+  for (const provider of providers) {
+    for (const decision of DECISIONS)
+      test(`${provider.id}: new session cites ${decision.key} ID and timestamp`, async () => {
+        const expected = fixture.byKey.get(decision.key)!
+        const recalled = recall(fixture.store, {
+          question: decision.question,
+          scope: { layers: ['project'], projectKey: PROJECT_KEY },
+        })
+        expect(recalled.mode).toBe('full')
+        expect(recalled.degraded).toBe(false)
+        reply = {
+          answer: `${decision.summary} ${decision.body}`,
+          citations: [expected.id],
+        }
+        const args = await ask(
+          provider,
+          buildRecallSystemPrompt(recalled),
+          decision.question,
+          live
+            ? process.env.OPENAI_BASE_URL!
+            : `http://127.0.0.1:${server.port}/v1`,
+          live ? process.env.OPENAI_API_KEY! : 'local-no-secret',
+        )
+        const answered = handleMemoryAnswer(fixture.store, recalled, args, {
+          requireCitation: true,
+        })
+        expect(answered.ok).toBe(true)
+        expect(answered.report.problems).toEqual([])
+        expect(answered.report.accepted.map(entry => entry.id)).toContain(
+          expected.id,
+        )
+        expect(answered.answer).toContain(expected.id)
+        expect(answered.answer).toContain(expected.createdAt)
+        for (const needle of decision.mustMention)
+          expect(answered.args.answer.toLowerCase()).toContain(
+            needle.toLowerCase(),
+          )
+        if (!live) {
+          const wire = requests.at(-1)!
+          const messages = wire.messages as { role: string; content: string }[]
+          expect(
+            messages.filter(message => message.role === 'user'),
+          ).toHaveLength(1)
+          expect(messages.some(message => message.role === 'assistant')).toBe(
+            false,
+          )
+          const system = messages
+            .filter(message => message.role !== 'user')
+            .map(message => message.content)
+            .join('\n')
+          for (const entry of fixture.byKey.values()) {
+            expect(system).toContain(entry.id)
+            expect(system).toContain(entry.createdAt)
+          }
+        }
+      }, 130_000)
+    for (const fake of FABRICATED)
+      test(`${provider.id}: rejects fabricated ${fake.key} citation`, async () => {
+        const recalled = recall(fixture.store, {
+          question: fake.question,
+          scope: { layers: ['project'], projectKey: PROJECT_KEY },
+        })
+        reply = {
+          answer: 'This source does not exist.',
+          citations: [`fabricated-${fake.key}`],
+        }
+        const args = await ask(
+          provider,
+          buildRecallSystemPrompt(recalled),
+          fake.question,
+          live
+            ? process.env.OPENAI_BASE_URL!
+            : `http://127.0.0.1:${server.port}/v1`,
+          live ? process.env.OPENAI_API_KEY! : 'local-no-secret',
+        )
+        const answered = handleMemoryAnswer(fixture.store, recalled, args)
+        expect(answered.report.accepted).toEqual([])
+        expect(answered.answer).not.toContain('来源 / sources')
+        if (!live) {
+          expect(answered.ok).toBe(false)
+          expect(answered.report.problems.length).toBeGreaterThan(0)
+        }
+      }, 130_000)
+  }
+  if (!live)
+    test('both configurations emit the same provider-neutral citation tool schema', () => {
+      expect(providers).toHaveLength(2)
+      expect(requests).toHaveLength(16)
+      expect(requests[0]?.tools).toEqual(requests[8]?.tools)
+      for (const wire of requests) {
+        expect(JSON.stringify(wire.tools)).toContain(MEMORY_ANSWER_TOOL_NAME)
+        expect(JSON.stringify(wire)).not.toMatch(
+          /search_result|citations_enabled/,
+        )
+        expect(wire.citations).toBeUndefined()
+        expect(wire.response_format).toBeUndefined()
+      }
     })
-
-    expect(declarations.length).toBe(2)
-    const [first, second] = declarations
-    // 请求体的其余部分两家不同（AC-5 已实测），但**工具声明这一段完全一致**：
-    // 引用机制不随供应商变化，这正是「切换供应商不改代码」的结构性证据。
-    expect(JSON.stringify(first?.tools)).toBe(JSON.stringify(second?.tools))
-    expect(JSON.stringify(first?.tools)).toContain(MEMORY_ANSWER_TOOL_NAME)
-  })
-
-  test('线上请求体里不含任何供应商原生引用特性', () => {
-    const provider = loadFixtureProviders()[0]
-    if (!provider) throw new Error('fixture ids changed')
-    const enableThinking = isOpenAIThinkingEnabled(provider.defaultModel)
-    const wire = buildOpenAIRequestBody({
-      model: provider.defaultModel,
-      messages: anthropicMessagesToOpenAI(
-        [userMessage('q')],
-        asSystemPrompt(['s']),
-        { enableThinking },
-      ),
-      tools: anthropicToolsToOpenAI([MEMORY_TOOL]),
-      toolChoice: undefined,
-      enableThinking,
-      maxTokens: MAX_TOKENS,
-      baseURL: provider.baseUrl,
-      effortValue: 'low',
-    }) as unknown as Record<string, unknown>
-    const serialized = JSON.stringify(wire)
-    // D-6：原生引用块与结构化输出互斥且只此一家有。它一旦出现在线上请求里，
-    // AC-4 就又被绑回单一供应商，与 AC-5 重新冲突。
-    // （`citations` 这个词在请求体里是有的 —— 那是我们自己工具的入参名，
-    // 不是供应商特性开关，所以这里查的是特性键本身。）
-    expect(serialized).not.toContain('search_result')
-    expect(serialized).not.toContain('citations_enabled')
-    expect(wire['citations']).toBeUndefined()
-    expect(wire['response_format']).toBeUndefined()
-  })
-
-  test('注入块带着来源 ID 与写入时间，且只含 live 条目', () => {
-    const fixture = writeFiveDecisions()
-    try {
-      const result = recall(fixture.store, {
-        question: DECISIONS[0]?.question,
-        scope: { layers: ['project'], projectKey: PROJECT_KEY },
-      })
-      expect(result.mode).toBe('full')
-      expect(result.entries.length).toBe(DECISIONS.length)
-
-      const block = buildRecallSystemPrompt(result).join('\n')
-      for (const entry of fixture.byKey.values()) {
+}
+describe('AC-4 local omp adapter and citation contract (scripted model)', () =>
+  suite(false))
+const live =
+  process.env.QIANMO_PROVIDER_LIVE === '1' &&
+  !!process.env.OPENAI_API_KEY &&
+  !!process.env.OPENAI_BASE_URL
+describe.skipIf(!live)('AC-4 two live models: recall quality', () =>
+  suite(true),
+)
+test('revoked entries are absent from fresh recall injection', () => {
+  const fixture = writeFiveDecisions()
+  try {
+    const revoked = fixture.byKey.get('runtime')!
+    fixture.store.revoke(revoked.id, { reason: 'test', by: 'ac4' })
+    const recalled = recall(fixture.store, {
+      scope: { layers: ['project'], projectKey: PROJECT_KEY },
+    })
+    const block = buildRecallSystemPrompt(recalled).join('\n')
+    expect(recalled.entries).toHaveLength(4)
+    expect(block).not.toContain(revoked.id)
+    for (const entry of fixture.byKey.values())
+      if (entry.id !== revoked.id) {
         expect(block).toContain(entry.id)
         expect(block).toContain(entry.createdAt)
       }
-
-      // 废止一条后重投：撤下的条目不得再出现在提示词里。
-      const revoked = fixture.byKey.get('runtime')
-      if (!revoked) throw new Error('fixture keys changed')
-      fixture.store.revoke(revoked.id, { reason: '用于用例', by: 'ac4-test' })
-      const after = recall(fixture.store, {
-        scope: { layers: ['project'], projectKey: PROJECT_KEY },
-      })
-      expect(buildRecallSystemPrompt(after).join('\n')).not.toContain(
-        revoked.id,
-      )
-    } finally {
-      fixture.dispose()
-    }
-  })
-})
-
-// ── 真调用：同一套断言，对两条 provider 各跑一遍 ────────────────────────────
-
-function runRecallSuite(provider: ProviderConfig): void {
-  describe(`provider ${provider.id} (${provider.defaultModel}, compat=${provider.compatRule})`, () => {
-    let fixture: MemoryFixture
-
-    beforeAll(() => {
-      fixture = writeFiveDecisions()
-    })
-
-    afterAll(() => {
-      fixture.dispose()
-    })
-
-    for (const decision of DECISIONS) {
-      test(
-        `命中「${decision.key}」并标注来源 ID 与写入时间`,
-        async () => {
-          const expected = fixture.byKey.get(decision.key)
-          if (!expected) throw new Error('fixture keys changed')
-
-          // 检索 → 注入。整个上下文只有这一段记忆，没有任何对话历史。
-          const result = recall(fixture.store, {
-            question: decision.question,
-            scope: { layers: ['project'], projectKey: PROJECT_KEY },
-          })
-          expect(result.mode).toBe('full')
-          expect(result.degraded).toBe(false)
-
-          const { turn } = await askWithMemory({
-            provider,
-            system: buildRecallSystemPrompt(result),
-            question: decision.question,
-          })
-
-          const call = turn.toolCalls.find(
-            c => c.name === MEMORY_ANSWER_TOOL_NAME,
-          )
-          if (!call) {
-            throw new Error(
-              `模型没有调用 ${MEMORY_ANSWER_TOOL_NAME}；stop=${turn.stopReason} text=${turn.text.slice(0, 200)}`,
-            )
-          }
-
-          const answered = handleMemoryAnswer(
-            fixture.store,
-            result,
-            call.input,
-            { requireCitation: true },
-          )
-
-          expect(answered.report.problems).toEqual([])
-          expect(answered.ok).toBe(true)
-          expect(answered.report.accepted.map(e => e.id)).toContain(expected.id)
-          // 判据字面：输出中标注**来源 ID 与写入时间**。
-          expect(answered.answer).toContain(expected.id)
-          expect(answered.answer).toContain(expected.createdAt)
-          const lower = answered.args.answer.toLowerCase()
-          for (const needle of decision.mustMention) {
-            expect(lower).toContain(needle.toLowerCase())
-          }
-
-          console.error(
-            `[AC-4][${provider.id}][${decision.key}] 引用=${answered.report.accepted
-              .map(e => e.id)
-              .join(',')} 答复="${answered.args.answer.trim().slice(0, 80)}"`,
-          )
-        },
-        LIVE_TIMEOUT_MS,
-      )
-    }
-
-    for (const fake of FABRICATED) {
-      test(
-        `伪造决策「${fake.key}」不产生幻觉引用`,
-        async () => {
-          const result = recall(fixture.store, {
-            question: fake.question,
-            scope: { layers: ['project'], projectKey: PROJECT_KEY },
-          })
-
-          const { turn } = await askWithMemory({
-            provider,
-            system: buildRecallSystemPrompt(result),
-            question: fake.question,
-          })
-          const call = turn.toolCalls.find(
-            c => c.name === MEMORY_ANSWER_TOOL_NAME,
-          )
-          if (!call) {
-            throw new Error(
-              `模型没有调用 ${MEMORY_ANSWER_TOOL_NAME}；stop=${turn.stopReason} text=${turn.text.slice(0, 200)}`,
-            )
-          }
-
-          const answered = handleMemoryAnswer(fixture.store, result, call.input)
-
-          // 结构性判据：没有任何一条引用能通过校验。模型若凭空造 ID，
-          // `getEntry` 解析不到，它就进不了 accepted——这不靠提示词。
-          expect(answered.report.accepted).toEqual([])
-          expect(answered.answer).not.toContain('来源 / sources')
-
-          console.error(
-            `[AC-4][${provider.id}][伪造:${fake.key}] ` +
-              `模型给出的引用=${JSON.stringify(answered.args.citations)} ` +
-              `判定=${answered.report.checks.map(c => `${c.id}:${c.status}`).join(',') || '（无引用）'} ` +
-              `答复="${answered.args.answer.trim().slice(0, 80)}"`,
-          )
-        },
-        LIVE_TIMEOUT_MS,
-      )
-    }
-  })
-}
-
-describe.skipIf(!LIVE)('AC-4 记忆检索唤醒（真网络）', () => {
-  for (const provider of loadFixtureProviders()) {
-    runRecallSuite(provider)
+  } finally {
+    fixture.dispose()
   }
 })

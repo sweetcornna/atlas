@@ -14,8 +14,8 @@
  * Transport is deliberately absent: it is P2.2 and does not exist yet. What is
  * under test is everything on either side of it, wired directly.
  *
- * Nothing is mocked — a real temp config root, the base's real mailbox, real
- * envelopes.
+ * Nothing is mocked — a real temp config root, the real `@qianmo/mailbox`,
+ * real envelopes.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -24,12 +24,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { InboundAdapter, deliverAndAck } from '@qianmo/adapter'
+import { markMessagesAsRead, readMailbox } from '@qianmo/mailbox'
 import { MessageType, createMessage } from '@qianmo/protocol'
 import { InMemoryRegistry, ManualClock } from '@qianmo/registry'
-import {
-  markMessagesAsRead,
-  readMailbox,
-} from 'src/utils/agents/teammateMailbox.js'
 
 const NODE_A = 'node-a'
 const NODE_B = 'node-b'
@@ -47,15 +44,15 @@ let previousConfigDir: string | undefined
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'qianmo-chain-'))
-  // `CLAUDE_CONFIG_DIR`, not `OCC_CONFIG_DIR`: tests/preload.ts deletes the
-  // latter, and occConfigDir() memoizes on both.
-  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  // `qianmoConfigDir()` reads `QIANMO_CONFIG_DIR` on every call, so pointing
+  // it at a fresh root per test is enough.
+  previousConfigDir = process.env.QIANMO_CONFIG_DIR
+  process.env.QIANMO_CONFIG_DIR = join(root, 'config')
 })
 
 afterEach(() => {
-  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.QIANMO_CONFIG_DIR
+  else process.env.QIANMO_CONFIG_DIR = previousConfigDir
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -118,7 +115,7 @@ describe('registry → adapter: the AC-2 chain minus transport', () => {
     expect(registry.size).toBe(2)
 
     // Node B's adapter accepts its own agent and refuses node A's namesake,
-    // even though the two share the bare name the base mailbox keys on.
+    // even though the two share the bare name the mailbox keys on.
     const adapter = new InboundAdapter({
       node: NODE_B,
       team: TEAM,

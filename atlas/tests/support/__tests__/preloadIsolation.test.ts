@@ -2,124 +2,115 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The preload against a developer machine that holds a ChatGPT subscription
- * login (design `providers-console-m1.md` §9.2 P18.12: "preload 之后，开发机带
- * 订阅登录态时 codexPinnedSearch 不再红").
+ * `atlas/tests/preload.ts` against a developer shell that carries credentials
+ * and state-root overrides.
  *
- * The machine is constructed, not real: a temporary HOME whose
- * `.codex/auth.json` carries JWT-shaped placeholder tokens, plus the shell
- * variables such a machine exports. Each run is a separate `bun test`
- * process, because the preload acts once per process before any test file
- * loads.
+ * The shell is constructed: a child `bun test` gets an env with an API key, a
+ * subscription switch, a real-looking `QIANMO_CONFIG_DIR`, omp profile/agent
+ * dir overrides and an XDG home. The probe test asserts what the preload must
+ * leave behind. Each run is a separate process, because the preload acts once
+ * per process before any test file loads.
  *
- * Positive control: the same probe under a bunfig without the preload goes
- * red — so the green above it is the preload's doing, not the probe's.
+ * Positive control: the same probe without `--preload` goes red, so the green
+ * is the preload's doing, not the probe's.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-const REPO_ROOT = resolve(import.meta.dir, '../../..')
-const PROBE = 'tests/support/__tests__/codexLoginIsolation.test.ts'
-const CODEX_PINNED_SEARCH =
-  'packages/builtin-tools/src/tools/WebSearchTool/__tests__/codexPinnedSearch.test.ts'
-const SPAWN_TIMEOUT_MS = 120_000
+const REPO_ROOT = resolve(import.meta.dir, '../../../..')
+const PRELOAD = './atlas/tests/preload.ts'
+const SPAWN_TIMEOUT_MS = 60_000
 
-function jwtSegment(value: unknown): string {
-  return Buffer.from(JSON.stringify(value)).toString('base64url')
-}
+const PROBE = `
+import { expect, test } from 'bun:test'
+import { tmpdir } from 'node:os'
+
+test('preload isolated the shell', () => {
+  for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_AUTH_MODE', 'PI_CODING_AGENT_DIR', 'PI_CONFIG_DIR', 'OMP_PROFILE', 'PI_PROFILE', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'QIANMO_MEMORY_DIR', 'QIANMO_OMP_ENTRY']) {
+    expect({ name, value: process.env[name] }).toEqual({ name, value: undefined })
+  }
+  expect(process.env.QIANMO_TEST_QMCODE_BIN).toBe('/test/bin/qmcode')
+  expect(process.env.QIANMO_TEST_COMPILED_QM).toBe('/test/bin/qm')
+  expect(process.env.PI_TEST_RUNTIME).toBe('1')
+  const root = process.env.QIANMO_CONFIG_DIR ?? ''
+  expect(root.startsWith(tmpdir())).toBe(true)
+  expect(root).toContain('qianmo-test-' + process.pid)
+  expect((process.env.QIANMO_CA_DIR ?? '').startsWith(tmpdir())).toBe(true)
+})
+`
 
 let root: string
-let subscriptionHome: string
-let bunfigWithoutPreload: string
+let probe: string
+let realHome: string
 
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), 'occ-preload-isolation-'))
-  subscriptionHome = join(root, 'home')
-  mkdirSync(join(subscriptionHome, '.codex'), { recursive: true })
-  const token = `${jwtSegment({ alg: 'none' })}.${jwtSegment({
-    exp: 4_102_444_800,
-    'https://api.openai.com/auth': { chatgpt_account_id: 'acct-test' },
-  })}.sig`
-  writeFileSync(
-    join(subscriptionHome, '.codex', 'auth.json'),
-    JSON.stringify({
-      tokens: {
-        id_token: token,
-        access_token: token,
-        refresh_token: 'rt-test-canary-not-real',
-        account_id: 'acct-test',
-      },
-      last_refresh: '2026-10-03T00:00:00Z',
-    }),
-  )
-  bunfigWithoutPreload = join(root, 'bunfig.toml')
-  writeFileSync(
-    bunfigWithoutPreload,
-    `[test]\nroot = ${JSON.stringify(REPO_ROOT)}\ntimeout = 10000\n`,
-  )
+  root = mkdtempSync(join(tmpdir(), 'qianmo-preload-'))
+  realHome = join(root, 'home')
+  probe = join(root, 'probe.test.ts')
+  writeFileSync(probe, PROBE)
 })
 
 afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-async function runTests(
-  files: string[],
-  options: { preload: boolean },
+async function runProbe(
+  preload: boolean,
 ): Promise<{ exitCode: number; output: string }> {
-  const proc = Bun.spawn(
-    [
-      process.execPath,
-      ...(options.preload ? [] : [`--config=${bunfigWithoutPreload}`]),
-      'test',
-      ...files,
-    ],
-    {
-      cwd: REPO_ROOT,
-      env: {
-        PATH: process.env.PATH ?? '',
-        TMPDIR: tmpdir(),
-        HOME: subscriptionHome,
-        // What a shell set up for the subscription carries.
-        OPENAI_AUTH_MODE: 'chatgpt',
-        OPENAI_API_KEY: 'sk-test-canary-developer-shell',
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    },
-  )
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  Object.assign(env, {
+    QIANMO_TEST_QMCODE_BIN: '/test/bin/qmcode',
+    QIANMO_TEST_COMPILED_QM: '/test/bin/qm',
+    OPENAI_API_KEY: 'sk-placeholder-not-a-key',
+    ANTHROPIC_API_KEY: 'sk-ant-placeholder',
+    OPENAI_AUTH_MODE: 'chatgpt',
+    QIANMO_CONFIG_DIR: join(realHome, '.qianmo'),
+    QIANMO_MEMORY_DIR: join(realHome, '.qianmo'),
+    QIANMO_OMP_ENTRY: 'self',
+    PI_CODING_AGENT_DIR: join(realHome, '.omp', 'agent'),
+    PI_CONFIG_DIR: '.omp',
+    OMP_PROFILE: 'dev',
+    PI_PROFILE: 'dev',
+    XDG_CONFIG_HOME: join(realHome, '.config'),
+    CLAUDE_CONFIG_DIR: join(realHome, '.claude'),
+  })
+  delete env.PI_TEST_RUNTIME
+  const args = preload ? ['test', '--preload', PRELOAD, probe] : ['test', probe]
+  const proc = Bun.spawn([process.execPath, ...args], {
+    cwd: REPO_ROOT,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ])
-  return { exitCode, output: `${stdout}\n${stderr}` }
+  return { exitCode, output: stdout + stderr }
 }
 
-describe('test preload on a machine with a ChatGPT subscription login', () => {
+describe('atlas test preload', () => {
   test(
-    'codexPinnedSearch and the pre-266ad4b8 assertion are green',
+    'clears credentials and state roots, sets a temp config root',
     async () => {
-      const run = await runTests([CODEX_PINNED_SEARCH, PROBE], {
-        preload: true,
-      })
-      expect({
-        exitCode: run.exitCode,
-        failed: /\(fail\)/.test(run.output),
-      }).toEqual({ exitCode: 0, failed: false })
-      expect(run.output).toMatch(/\b8 pass\b/)
+      const result = await runProbe(true)
+      expect(result.output).toContain('1 pass')
+      expect(result.exitCode).toBe(0)
     },
     SPAWN_TIMEOUT_MS,
   )
 
   test(
-    'control: without the preload the same probe takes the ChatGPT route',
+    'positive control: without the preload the probe fails',
     async () => {
-      const run = await runTests([PROBE], { preload: false })
-      expect(run.exitCode).not.toBe(0)
-      expect(run.output).toContain('chatgpt.com/backend-api/codex/responses')
+      const result = await runProbe(false)
+      expect(result.exitCode).not.toBe(0)
     },
     SPAWN_TIMEOUT_MS,
   )

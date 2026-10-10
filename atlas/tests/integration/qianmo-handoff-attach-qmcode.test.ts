@@ -67,7 +67,7 @@ import {
   alive,
   readShimLog,
   writeAttachShims,
-} from '../../src/cli/handlers/__tests__/support/attachShims.js'
+} from '../../packages/node/test/commands/support/attachShims.js'
 import {
   cliPrefix,
   freePort,
@@ -337,8 +337,7 @@ async function startAttach(
         env: {
           ...baseEnv(),
           NODE_ENV: 'production',
-          OCC_IDENTITY: 'qianmo',
-          OCC_CONFIG_DIR: join(root, `${name}-config`),
+          QIANMO_CONFIG_DIR: join(root, `${name}-config`),
           HOME: laptopHome,
           QMCODE_HOME: laptopQm,
           PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`,

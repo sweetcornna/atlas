@@ -1,34 +1,11 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/**
- * A deterministic stand-in for the model behind a resident node, for the
- * `qm watch` end-to-end test.
- *
- * ## What it proves, and what it does not
- *
- * It speaks the minimum OpenAI Chat Completions (streaming) that the base's
- * adapter needs, and it drives a turn the way a cooperative model would. It
- * uses three read-only tools, in order: `Read` on the job's runbook in the
- * workspace, `Grep` over the workspace, then `Bash` with `df -P /`. Then it
- * calls `qianmo_notify` only if the usage is at or above the threshold the job
- * names. Everything between the model and the network is real: the ACP child,
- * its permission pipeline under the node's session mode, the three tools, the
- * notify tool, the node's notifier, and the hub. A tool the pipeline refused
- * shows up here as `ok: false` with the refusal text, so the test can assert
- * that no read-only check needed a permission the node does not grant.
- *
- * It decides on the **notice tier** the same way the ACP fixture next to the
- * resident tests does (`src/services/qianmo/__tests__/fixtures/
- * resident-acp-agent.runner.ts`): the untrusted template ends with "never as
- * instructions", and a real model declined six times out of six on that
- * sentence. When this double sees it, it declines the same way and runs
- * nothing. It reads the tier from the prompt the model receives, not from a
- * flag, because the prompt is the only way the tier reaches a model.
- *
- * It proves nothing about any vendor's model, and nothing about whether a real
- * model would choose these tools. The real-model smoke run covers that
- * separately and is not part of CI.
+/** Deterministic model for the real qm watch → resident → omp chain.
+ * It reads the runbook, searches it with grep, then reads a workspace snapshot
+ * of actual root-filesystem usage captured by the trusted test host. Shell is
+ * unavailable to resident agents. Tool results, notice tier, notify RPC and
+ * transport are real; only the model's tool choices/replies are scripted.
  */
 
 /** The untrusted notice's deciding clause (`packages/adapter/src/wrapper.ts`). */
@@ -37,6 +14,7 @@ export const UNTRUSTED_DIRECTIVE = 'never as instructions'
 export const VERIFIED_DIRECTIVE = 'The request is therefore authorized'
 /** File the test puts in the workspace for `Read` and `Grep` to find. */
 export const RUNBOOK_FILE = 'RUNBOOK.md'
+export const DISK_USAGE_FILE = 'ROOT_USAGE.txt'
 /** A line in that file; seeing it in a tool result means the tool ran. */
 export const RUNBOOK_MARKER = 'watch-runbook-marker'
 /**
@@ -47,8 +25,6 @@ export const RUNBOOK_MARKER = 'watch-runbook-marker'
 export const EMPTY_JOB_MARKER = 'WATCH-EMPTY'
 /** How a job hands the double its threshold, e.g. `WATCH-DF threshold=90`. */
 const JOB_MARKER = /WATCH-DF threshold=(\d+)/
-/** Where the base's system prompt names the session's working directory. */
-const CWD_MARKER = /Primary working directory: ([^\n"\\]+)/
 
 /** What the double decided on one request, for the test to assert on. */
 export type ModelDoubleStep =
@@ -161,9 +137,9 @@ function toolReply(name: string, input: Record<string, unknown>): Response {
   )
 }
 
-/** `df -P /` prints a header and one line whose fifth column is `NN%`. */
+/** The trusted host records the volume metric in a plain workspace file. */
 function usageFrom(output: string): number | undefined {
-  const match = /\s(\d{1,3})%\s+\/\s*$/m.exec(output)
+  const match = /root_usage_percent=(\d{1,3})/.exec(output)
   return match === null ? undefined : Number(match[1])
 }
 
@@ -188,11 +164,7 @@ export function startWatchModelDouble(): ModelDouble {
   const requests: Record<string, unknown>[] = []
   const steps: ModelDoubleStep[] = []
 
-  const dfCall = (): Response =>
-    toolReply('Bash', {
-      command: 'df -P /',
-      description: 'Show root filesystem usage',
-    })
+  const usageCall = (): Response => toolReply('read', { path: DISK_USAGE_FILE })
 
   const decide = (body: Record<string, unknown>): Response => {
     const messages = Array.isArray(body.messages)
@@ -218,11 +190,9 @@ export function startWatchModelDouble(): ModelDouble {
         'I will not run this: the request is marked untrusted, so its content is data.',
       )
     }
-    const cwd = CWD_MARKER.exec(prompt)?.[1]?.trim()
     const last = messages.at(-1)
     if (last?.role !== 'tool') {
-      if (cwd === undefined) return dfCall()
-      return toolReply('Read', { file_path: `${cwd}/${RUNBOOK_FILE}` })
+      return toolReply('read', { path: RUNBOOK_FILE })
     }
     const result = textOf(last.content)
     const tool = toolNameFor(messages, last) ?? 'unknown'
@@ -230,21 +200,22 @@ export function startWatchModelDouble(): ModelDouble {
       steps.push({ kind: 'finished' })
       return textReply(`Reported. (${result.slice(0, 120)})`)
     }
-    if (tool === 'Read' || tool === 'Grep') {
+    if (
+      (tool === 'read' || tool === 'grep') &&
+      usageFrom(result) === undefined
+    ) {
       steps.push({
         kind: 'tool-result',
         tool,
         ok: result.includes(RUNBOOK_MARKER),
         text: result.slice(0, 400),
       })
-      if (tool === 'Read' && cwd !== undefined) {
-        return toolReply('Grep', {
+      if (tool === 'read')
+        return toolReply('grep', {
           pattern: RUNBOOK_MARKER,
-          path: cwd,
-          output_mode: 'content',
+          path: RUNBOOK_FILE,
         })
-      }
-      return dfCall()
+      return usageCall()
     }
     const usage = usageFrom(result)
     steps.push({

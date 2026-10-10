@@ -7,8 +7,8 @@
  *
  * ## What is real
  *
- * Every command is its own `qm` process from source, with the shipped defines
- * and feature list: `handoff init / sync --hook … / now / status` on the
+ * Every command is its own `qm` process from source
+ * (`atlas/packages/node/src/cli.ts`): `handoff init / sync --hook … / now / status` on the
  * laptop side, and `qm console --handoff-root` as the hub, each with its own
  * throwaway config root. The hub's bare repository is a local path (the SSH
  * hop is the one thing left out; `init` over SSH runs the same script that
@@ -65,7 +65,7 @@ import {
   qmcodeRollout,
   qmcodeRolloutPath,
   type QmcodeTurn,
-} from '../../src/cli/handlers/__tests__/support/handoffSamples.js'
+} from '../../packages/node/test/commands/support/handoffSamples.js'
 import {
   cliPrefix,
   freePort,
@@ -120,7 +120,6 @@ function baseEnv(): Record<string, string> {
   return {
     ...env,
     NODE_ENV: 'production',
-    OCC_IDENTITY: 'qianmo',
     NO_COLOR: '1',
     // The developer's ~/.gitconfig (signing, hooks, templates) stays out.
     GIT_CONFIG_GLOBAL: gitConfig,
@@ -132,7 +131,7 @@ function baseEnv(): Record<string, string> {
 function laptopEnv(): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: laptopConfig,
+    QIANMO_CONFIG_DIR: laptopConfig,
     QMCODE_HOME: qmHome,
     OPENAI_API_KEY: CANARY,
     QIANMO_E2E_CANARY: CANARY,
@@ -140,7 +139,7 @@ function laptopEnv(): Record<string, string> {
 }
 
 function hubEnv(): Record<string, string> {
-  return { ...baseEnv(), OCC_CONFIG_DIR: hubConfig }
+  return { ...baseEnv(), QIANMO_CONFIG_DIR: hubConfig }
 }
 
 interface Ran {

@@ -6,18 +6,18 @@
  *
  * **This is a test fixture, not one of the two third-party MCP servers the
  * task package delivers.** Those are `@modelcontextprotocol/server-filesystem`
- * and `@modelcontextprotocol/server-memory`, pinned in the root
- * `package.json`. This file exists only because no well-behaved server can be
- * made to fail on demand: the degradation cases (D3 "killed mid-call" and the
- * per-server `request_timeout_ms` case) need a peer that dies or stalls at a
- * moment the test chooses. Everything it does is a fault; nothing about it is
- * evidence that occ can talk to real MCP servers.
+ * and `@modelcontextprotocol/server-memory`, pinned in the `devDependencies`
+ * of `@qianmo/node`. This file exists only because no well-behaved server can
+ * be made to fail on demand: the degradation cases (D3 "killed mid-call" and
+ * the per-server `timeout` case) need a peer that dies or stalls at a moment
+ * the test chooses. Everything it does is a fault; nothing about it is
+ * evidence that omp can talk to real MCP servers.
  *
  * Tools:
  *  - `ping` — replies `pong`. The liveness probe both before and after a crash.
  *  - `die`  — exits the process without answering, so the caller's in-flight
  *             request must surface as a connection-closed error rather than
- *             hanging until the tool timeout.
+ *             hanging until the request timeout.
  *  - `hang` — never resolves. Only the caller's timeout can end it.
  *
  * Spawned as `<bun> <this file>` by the suite; Bun runs TypeScript directly,

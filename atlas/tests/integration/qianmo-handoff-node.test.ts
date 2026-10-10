@@ -8,8 +8,8 @@
  *
  * ## What is real
  *
- * Three kinds of `qm` process from source, with the shipped defines and
- * feature list, each with its own config root: the laptop (`handoff init`,
+ * Three kinds of `qm` process from source (`atlas/packages/node/src/cli.ts`),
+ * each with its own config root: the laptop (`handoff init`,
  * `handoff now`), the hub (`qm console --handoff-root … --handoff-node …`) and
  * the node bridge (`qm handoff node`). The hub reaches the bridge over the
  * real transport (PSK, signed `task.request`) and its repositories with real
@@ -62,16 +62,16 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { readTrail } from '@qianmo/audit'
 import { sessionRef, taskBranch } from '@qianmo/handoff'
-import { transportPskEnvVarForNode } from '../../src/cli/handlers/consoleArgs.js'
+import { transportPskEnvVarForNode } from '@qianmo/node/commands/consoleArgs.js'
 import {
   type FakeAppServer,
   startFakeAppServer,
-} from '../../src/cli/handlers/__tests__/support/fakeAppServer.js'
+} from '../../packages/node/test/commands/support/fakeAppServer.js'
 import {
   qmcodeRollout,
   qmcodeRolloutPath,
-} from '../../src/cli/handlers/__tests__/support/handoffSamples.js'
-import { bwrapStub } from '../../src/cli/handlers/__tests__/support/handoffNodeFixtures.js'
+} from '../../packages/node/test/commands/support/handoffSamples.js'
+import { bwrapStub } from '../../packages/node/test/commands/support/handoffNodeFixtures.js'
 import {
   cliPrefix,
   freePort,
@@ -131,7 +131,6 @@ function baseEnv(): Record<string, string> {
   return {
     ...env,
     NODE_ENV: 'production',
-    OCC_IDENTITY: 'qianmo',
     NO_COLOR: '1',
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: '1',
@@ -141,7 +140,7 @@ function baseEnv(): Record<string, string> {
 function laptopEnv(): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: laptopConfig,
+    QIANMO_CONFIG_DIR: laptopConfig,
     QMCODE_HOME: laptopQm,
     CODEX_THREAD_ID: THREAD,
   }
@@ -150,7 +149,7 @@ function laptopEnv(): Record<string, string> {
 function hubEnv(): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: hubConfig,
+    QIANMO_CONFIG_DIR: hubConfig,
     [transportPskEnvVarForNode(NODE, 'test')]: PSK,
   }
 }
@@ -159,7 +158,7 @@ function hubEnv(): Record<string, string> {
 function nodeEnv(path: string): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: nodeConfig,
+    QIANMO_CONFIG_DIR: nodeConfig,
     QIANMO_TRANSPORT_PSK: PSK,
     OPENAI_API_KEY: CANARY,
     PATH: path,

@@ -40,7 +40,7 @@ import {
 import {
   routerTrailSink,
   transportTrailSink,
-} from 'src/services/qianmo/auditTrail.js'
+} from '@qianmo/node/host/auditTrail.ts'
 
 const PSK = 'audit-chain-psk-not-a-real-secret'
 const PLANNER = 'qianmo://node-a/planner'

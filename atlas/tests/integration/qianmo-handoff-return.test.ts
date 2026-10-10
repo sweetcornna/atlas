@@ -8,7 +8,7 @@
  * ## What is real
  *
  * The same three kinds of `qm` process as `qianmo-handoff-node.test.ts`, from
- * source with the shipped defines and feature list: the laptop
+ * source (`atlas/packages/node/src/cli.ts`): the laptop
  * (`handoff init`, `now`, `attach`, `pull`), the hub (`qm console
  * --handoff-root … --handoff-node …`) and the node bridge (`qm handoff
  * node`). The tunnel `attach` opens is a real TCP forward, the WebSocket and
@@ -63,24 +63,24 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { readTrail } from '@qianmo/audit'
 import { sessionRef, taskBranch } from '@qianmo/handoff'
-import { transportPskEnvVarForNode } from '../../src/cli/handlers/consoleArgs.js'
-import { ATTACH_TOKEN_ENV } from '../../src/cli/handlers/handoffAttach.js'
+import { transportPskEnvVarForNode } from '@qianmo/node/commands/consoleArgs.js'
+import { ATTACH_TOKEN_ENV } from '@qianmo/node/commands/handoffAttach.js'
 import {
   type AttachShims,
   alive,
   readShimLog,
   type ShimEvent,
   writeAttachShims,
-} from '../../src/cli/handlers/__tests__/support/attachShims.js'
+} from '../../packages/node/test/commands/support/attachShims.js'
 import {
   type FakeAppServer,
   startFakeAppServer,
-} from '../../src/cli/handlers/__tests__/support/fakeAppServer.js'
+} from '../../packages/node/test/commands/support/fakeAppServer.js'
 import {
   qmcodeRollout,
   qmcodeRolloutPath,
-} from '../../src/cli/handlers/__tests__/support/handoffSamples.js'
-import { bwrapStub } from '../../src/cli/handlers/__tests__/support/handoffNodeFixtures.js'
+} from '../../packages/node/test/commands/support/handoffSamples.js'
+import { bwrapStub } from '../../packages/node/test/commands/support/handoffNodeFixtures.js'
 import {
   cliPrefix,
   freePort,
@@ -148,7 +148,6 @@ function baseEnv(): Record<string, string> {
   return {
     ...env,
     NODE_ENV: 'production',
-    OCC_IDENTITY: 'qianmo',
     NO_COLOR: '1',
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: '1',
@@ -159,7 +158,7 @@ function baseEnv(): Record<string, string> {
 function laptopEnv(thread: string): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: laptopConfig,
+    QIANMO_CONFIG_DIR: laptopConfig,
     QMCODE_HOME: laptopQm,
     CODEX_THREAD_ID: thread,
   }
@@ -180,7 +179,7 @@ function attachEnv(extra: Record<string, string> = {}): Record<string, string> {
 function hubEnv(): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: hubConfig,
+    QIANMO_CONFIG_DIR: hubConfig,
     [transportPskEnvVarForNode(NODE, 'test')]: PSK,
   }
 }
@@ -188,7 +187,7 @@ function hubEnv(): Record<string, string> {
 function nodeEnv(path: string): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: nodeConfig,
+    QIANMO_CONFIG_DIR: nodeConfig,
     QIANMO_TRANSPORT_PSK: PSK,
     PATH: path,
   }

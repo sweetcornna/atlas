@@ -7,8 +7,8 @@
  *
  * ## What is real
  *
- * Every MCP server is its own `qm handoff mcp` process from source (shipped
- * defines and features), spoken to in newline-delimited JSON-RPC on its
+ * Every MCP server is its own `qm handoff mcp` process from source
+ * (`atlas/packages/node/src/cli.ts`), spoken to in newline-delimited JSON-RPC on its
  * stdin and stdout, the way qmcode and Claude Code start it. The hub is
  * `qm console --handoff-root` with a local bare repository; the hooks that
  * record sessions are `qm handoff sync --hook …` processes; git is real git.
@@ -30,7 +30,7 @@
  *    is not handed over — a qmcode rollout and a Claude Code transcript.
  * 4. A key in the server's environment is in no answer, no stderr, not in
  *    `sessions.json`, not in the hub's manifests, in no file and no object.
- * 5. Without `OCC_IDENTITY=qianmo`, refused like every `qm handoff` command.
+ * 5. (retired with the identity gate: `qm` no longer needs an identity switch.)
  * 6. From a subdirectory, the repository's latest session; with none
  *    recorded, a reason and the server still serving.
  * 7. stdin closed: the process exits — after finishing a call in flight —
@@ -58,7 +58,7 @@ import {
   qmcodeRollout,
   qmcodeRolloutPath,
   type QmcodeTurn,
-} from '../../src/cli/handlers/__tests__/support/handoffSamples.js'
+} from '../../packages/node/test/commands/support/handoffSamples.js'
 import {
   cliPrefix,
   freePort,
@@ -117,7 +117,6 @@ function baseEnv(): Record<string, string> {
   return {
     ...env,
     NODE_ENV: 'production',
-    OCC_IDENTITY: 'qianmo',
     NO_COLOR: '1',
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: '1',
@@ -131,7 +130,7 @@ function baseEnv(): Record<string, string> {
 function laptopEnv(): Record<string, string> {
   return {
     ...baseEnv(),
-    OCC_CONFIG_DIR: laptopConfig,
+    QIANMO_CONFIG_DIR: laptopConfig,
     QMCODE_HOME: qmHome,
     OPENAI_API_KEY: CANARY,
     QIANMO_E2E_CANARY: CANARY,
@@ -432,7 +431,7 @@ beforeAll(async () => {
     adminTokenFile,
     viewTokenFile,
     cwd: root,
-    env: { ...baseEnv(), OCC_CONFIG_DIR: hubConfig },
+    env: { ...baseEnv(), QIANMO_CONFIG_DIR: hubConfig },
   })
   await waitForConsole(hub, port, BOOT_TIMEOUT_MS)
 
@@ -679,7 +678,8 @@ describe('qm handoff mcp end to end', () => {
         expect(refused.isError).toBe(true)
         expect(refused.text).toMatch(
           new RegExp(
-            `^转交没有完成：${IN_PROGRESS}（pid \\d+）：等它结束再试$`,
+            // O_EXCL may be observed before its owner writes the PID.
+            `^转交没有完成：${IN_PROGRESS}(?:（pid \\d+）)?：等它结束再试$`,
           ),
         )
         // Nothing moved while the second was refused.
@@ -858,37 +858,6 @@ describe('qm handoff mcp end to end', () => {
       expect(badDeadline.text).toContain('参数 deadline 要写成 UTC 时间')
       expect(await server.toolNames()).toEqual(TOOLS)
       expect(server.proc.exitCode).toBeNull()
-    },
-    STEP_TIMEOUT_MS,
-  )
-
-  test(
-    'criterion 5 · without OCC_IDENTITY=qianmo: refused with output and a non-zero exit, like the other subcommands',
-    async () => {
-      const env = laptopEnv()
-      delete env.OCC_IDENTITY
-      const refusal = 'handoff 需要 OCC_IDENTITY=qianmo（或用 qm 运行）'
-      // stdin left open, the way a client starts a server: it must not wait.
-      const proc = Bun.spawn(
-        [process.execPath, ...cliPrefix(), 'handoff', 'mcp'],
-        { cwd: repo, env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
-      )
-      const killer = setTimeout(() => proc.kill('SIGKILL'), 60_000)
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ])
-      clearTimeout(killer)
-      proc.stdin.end()
-      wire.push(stdout, stderr)
-      expect(proc.signalCode).toBeNull()
-      expect(stdout).toBe('')
-      expect(stderr).toBe(`转交没有完成：${refusal}\n`)
-      const status = await qm(['handoff', 'status'], { env })
-      expect(status.code).toBe(code)
-      expect(code).not.toBe(0)
-      expect(status.stderr).toBe(stderr)
     },
     STEP_TIMEOUT_MS,
   )

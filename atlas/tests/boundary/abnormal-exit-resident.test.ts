@@ -25,19 +25,12 @@ import {
   type QianmoMessage,
 } from '@qianmo/protocol'
 import { TransportClient } from '@qianmo/transport'
-import { QianmoResident } from '../../src/services/qianmo/resident.js'
+import { QianmoResident } from '../../packages/node/src/host/resident.js'
 
 const PSK = 'boundary-resident-psk-not-a-real-secret'
 const ACP_FIXTURE = join(
   import.meta.dir,
-  '..',
-  '..',
-  'src',
-  'services',
-  'qianmo',
-  '__tests__',
-  'fixtures',
-  'resident-acp-agent.runner.ts',
+  '../../packages/node/test/host/fixtures/resident-omp-agent.runner.ts',
 )
 
 const children: ChildProcess[] = []
@@ -58,9 +51,9 @@ afterEach(async () => {
       child.kill('SIGKILL')
   }
   if (previousConfigDir === undefined) {
-    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.QIANMO_CONFIG_DIR
   } else {
-    process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+    process.env.QIANMO_CONFIG_DIR = previousConfigDir
   }
   if (root !== undefined) rmSync(root, { recursive: true, force: true })
   root = undefined
@@ -87,8 +80,8 @@ describe('⑤ 异常退出 —— 接收方在回复上线、回执未归时停�
     // 断言，靠对端答得快慢掷硬币：CI 慢机上偶发红，本机 20 轮打不红。这里把回执
     // 扣在对端手里，让那个窗口必然出现。
     root = mkdtempSync(join(tmpdir(), 'qianmo-boundary-resident-'))
-    previousConfigDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    previousConfigDir = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = join(root, 'config')
     const socket = join(root, 'resident.sock')
     const ready: string[] = []
     const errors: unknown[] = []
@@ -99,7 +92,7 @@ describe('⑤ 异常退出 —— 接收方在回复上线、回执未归时停�
       pollIntervalMs: 20,
       psk: PSK,
       listen: { unix: socket },
-      spawnAcp: () => {
+      spawnOmp: () => {
         const child = spawn(process.execPath, [ACP_FIXTURE], {
           stdio: ['pipe', 'pipe', 'inherit'],
         })
