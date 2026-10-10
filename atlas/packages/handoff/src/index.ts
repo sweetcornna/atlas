@@ -5,7 +5,7 @@
  * `@qianmo/handoff` — the pure-logic core of the local-to-cloud handoff
  * (P17.4, handoff-p17-plan.md §2).
  *
- * No occ runtime, no home-directory paths: every path is handed in by the
+ * No agent runtime, no home-directory paths: every path is handed in by the
  * caller, and the only process this package starts is `git`. The one piece of
  * network code is `appserver.ts`, the node bridge's client for the qmcode
  * app-server on its own loopback. The CLI (`qm handoff`), the hub API and the

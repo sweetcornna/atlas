@@ -3,15 +3,15 @@
 
 # @qianmo/handoff —— 本地—云端接力的纯逻辑核心
 
-**一句话定位**：接力清单的校验、影子提交（不动用户的 HEAD / index / stash / 工作区文件）、会话文件的单文件提交、中枢的追加式接力台账，以及节点桥连本机 app-server 的客户端。**纯逻辑为主**：不依赖 occ 运行时，不拼任何家目录路径，唯一会启动的子进程是 `git`；唯一的网络代码是 `appserver.ts`，只连节点本机回环上的 `qmcode app-server`。
+**一句话定位**：接力清单的校验、影子提交（不动用户的 HEAD / index / stash / 工作区文件）、会话文件的单文件提交、中枢的追加式接力台账，以及节点桥连本机 app-server 的客户端。**纯逻辑为主**：不依赖智能体运行时，不拼任何家目录路径，唯一会启动的子进程是 `git`；唯一的网络代码是 `appserver.ts`，只连节点本机回环上的 `qmcode app-server`。
 
 | 项 | 指针 |
 | --- | --- |
 | 任务包 | `docs/dev/handoff-p17-plan.md` **§2 P17.4**「新包」表；清单、引用约定、台账状态见同文 **§1** |
 | 上位设计 | `docs/dev/handoff-m1.md` **§5**（同步）、**§8**（安全） |
 | 协议真源 | 清单与结果的整体上限取自 `@qianmo/protocol` 的 `LIMITS.maxMessageBytes`（各取 1/16），本包不另写协议数值；节点名用 `isValidSegment` 校验 |
-| 依赖 | `@qianmo/protocol`；`@open-claude-code/tool-runtime` **只用 `secretScanner.js` 这一个子路径**（它只依赖同包的 `stringUtils`，不会带进运行时） |
-| 不在本包 | `qm handoff` 各子命令、MCP 服务、中枢 API 与派发、节点桥本身（`src/cli/handlers/handoffNode.ts`）、SSH 闸门、审计事件——都在别处，基于本包实现 |
+| 依赖 | `@qianmo/protocol`；密钥扫描器是本包自带的 `src/secrets.ts`（gitleaks 规则子集），不依赖基座或其他包 |
+| 不在本包 | `qm handoff` 各子命令、MCP 服务、中枢 API 与派发、节点桥本身（`packages/node/src/commands/handoffNode.ts`）、SSH 闸门、审计事件——都在别处，基于本包实现 |
 
 ## 1. 模块
 

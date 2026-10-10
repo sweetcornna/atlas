@@ -3,7 +3,7 @@
 
 /**
  * The handoff's own redaction layer, run on a session transcript **after**
- * `redactSecrets` (tool-runtime's gitleaks subset).
+ * `redactSecrets` (the gitleaks subset in `secrets.ts`).
  *
  * That subset is built for precision: it knows a key by its vendor's exact
  * shape, so a gateway key such as `sk-` plus forty arbitrary characters, a

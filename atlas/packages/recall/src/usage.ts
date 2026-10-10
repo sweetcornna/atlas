@@ -24,7 +24,9 @@
  * `tenancy-m1.md` §3.8 point 4). The window is the UTC calendar day.
  */
 
+import { Database } from 'bun:sqlite'
 import {
+  fstatSync,
   chmodSync,
   closeSync,
   constants,
@@ -37,17 +39,17 @@ import {
   writeSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
-import { occConfigPath } from '../../../src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /**
  * Where the counter lives by default.
  *
- * Via {@link occConfigPath}: the config root is identity-scoped and
+ * Via {@link qianmoConfigPath}: the config root is identity-scoped and
  * overridable, and a hand-built path would resolve to one fixed directory
  * whatever identity the node runs as.
  */
 export function defaultEmbeddingUsagePath(): string {
-  return occConfigPath('qianmo', 'embedding', 'usage.json')
+  return qianmoConfigPath('qianmo', 'embedding', 'usage.json')
 }
 
 export type EmbeddingUsageMeter = {
@@ -57,7 +59,11 @@ export type EmbeddingUsageMeter = {
    * Durably add `tokens` to the current window. Negative values reconcile an
    * earlier reservation; the total never drops below zero.
    */
-  charge(tokens: number): void
+  charge(tokens: number, reservationDay?: string): void
+  /** Window identity used to avoid refunding an old call into a new day. */
+  day?(): string
+  /** Atomic admission before I/O; absent only in in-memory test meters. */
+  reserve?(tokens: number): boolean
 }
 
 type UsageRecord = {
@@ -132,16 +138,72 @@ export class FileEmbeddingUsageMeter implements EmbeddingUsageMeter {
     return Math.max(0, this.#limit - this.used())
   }
 
-  charge(tokens: number): void {
+  day(): string {
+    return this.#window().day
+  }
+
+  charge(tokens: number, reservationDay?: string): void {
     if (!Number.isFinite(tokens)) {
       throw new Error(`cannot charge ${String(tokens)} embedding tokens`)
     }
-    const window = this.#window()
-    this.#write({
-      version: 1,
-      day: window.day,
-      tokens: Math.max(0, window.tokens + Math.ceil(tokens)),
+    this.#locked(() => {
+      const window = this.#window()
+      if (
+        tokens < 0 &&
+        reservationDay !== undefined &&
+        reservationDay !== window.day
+      )
+        return
+      this.#write({
+        version: 1,
+        day: window.day,
+        tokens: Math.max(0, window.tokens + Math.ceil(tokens)),
+      })
     })
+  }
+
+  reserve(tokens: number): boolean {
+    if (!Number.isSafeInteger(tokens) || tokens < 0)
+      throw new Error('invalid embedding reservation')
+    return this.#locked(() => {
+      const window = this.#window()
+      if (tokens > this.#limit - window.tokens) return false
+      this.#write({
+        version: 1,
+        day: window.day,
+        tokens: window.tokens + tokens,
+      })
+      return true
+    })
+  }
+
+  #locked<T>(work: () => T): T {
+    mkdirSync(dirname(this.#path), { recursive: true, mode: DIRECTORY_MODE })
+    const lock = `${this.#path}.lock.sqlite`
+    const fd = openSync(
+      lock,
+      constants.O_RDWR | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0),
+      FILE_MODE,
+    )
+    try {
+      const stat = fstatSync(fd)
+      if (
+        !stat.isFile() ||
+        (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)
+      )
+        throw new Error('embedding meter lock must be private')
+    } finally {
+      closeSync(fd)
+    }
+    const db = new Database(lock, { create: true })
+    try {
+      db.exec('PRAGMA busy_timeout=5000; BEGIN IMMEDIATE')
+      const result = work()
+      db.exec('COMMIT')
+      return result
+    } finally {
+      db.close()
+    }
   }
 
   /**

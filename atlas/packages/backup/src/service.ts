@@ -324,9 +324,7 @@ export function startBackupService(
           headers: { 'content-type': 'application/json' },
         })
       }
-      // `Uint8Array` is a legal response body at runtime; the DOM lib's
-      // `BodyInit` predates typed arrays being one.
-      return new Response(bytes as unknown as BodyInit, {
+      return new Response(bytes, {
         status: 200,
         headers: { 'content-type': 'application/gzip' },
       })
@@ -394,9 +392,7 @@ export function remoteSnapshotWriter(
           authorization: `Bearer ${options.token}`,
           'content-type': 'application/gzip',
         },
-        // `Uint8Array` is a legal fetch body at runtime; the DOM typing wants a
-        // `BufferSource`, and this is one.
-        body: request.archive as unknown as BodyInit,
+        body: request.archive,
         ...(options.unix === undefined ? {} : { unix: options.unix }),
       } as RequestInit)
       if (!response.ok) {

@@ -61,9 +61,10 @@ export enum AuditSource {
    * neither a timed job nor a node turn — it is a person handing their work
    * over, and "who handed what over, and did it land" is read on its own.
    * The kinds are `handoff.<event>`, listed in the hub's
-   * `src/cli/handlers/consoleHandoff.ts`.
+   * `packages/node/src/commands/consoleHandoff.ts`.
    */
   Handoff = 'handoff',
+  A2a = 'a2a',
 }
 
 /** The chain value of the first record: sha-256 of the empty string is not it. */

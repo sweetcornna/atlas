@@ -181,6 +181,19 @@ function bodyText(body: string): string {
   )
 }
 
+/** Exactly the source text visible in the injection, retaining whole qualifications. */
+export function renderEvidenceSources(entry: MemoryEntry): readonly string[] {
+  const summary = inline(entry.summary)
+  const body = bodyText(entry.body.trimEnd())
+  return [
+    ...new Set(
+      [summary, body, ...body.split(/\n\s*\n/)].filter(
+        text => text.trim().length > 0,
+      ),
+    ),
+  ]
+}
+
 /** One entry as it appears in the block. */
 export function renderEntry(entry: MemoryEntry): string {
   const tags = entry.tags.length === 0 ? '(none)' : entry.tags.join(', ')

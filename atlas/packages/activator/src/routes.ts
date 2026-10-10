@@ -180,6 +180,11 @@ export class TaskRouteRegistry {
       throw this.#reject(reply, 'reply addresses do not reverse the request')
     }
     if (
+      reply.traceId !== route.request.traceId ||
+      reply.contextId !== route.request.contextId
+    )
+      throw this.#reject(reply, 'reply trace/context differs from the request')
+    if (
       reply.type !== MessageType.Ack &&
       reply.type !== MessageType.TaskResult &&
       reply.type !== MessageType.Error

@@ -104,3 +104,17 @@ export {
   type RecallToolDefinition,
   type ToolInputSchema,
 } from './tool.js'
+export { contentHash, isUsableVector, entryEmbeddingText } from './embedding.js'
+
+export { FileVectorIndex } from './file-vector-index.js'
+export { backfillVectors } from './backfill.js'
+export {
+  EVIDENCE_ANSWER_PROTOCOL,
+  handleMemoryEvidenceAnswer,
+  INSUFFICIENT_MEMORY_ANSWER,
+  MEMORY_EVIDENCE_INSTRUCTIONS,
+  MEMORY_EVIDENCE_PROTOCOL_HASH,
+  MEMORY_EVIDENCE_TOOL,
+  memoryEvidenceContext,
+  type AnswerProtocol,
+} from './evidence-answer.js'

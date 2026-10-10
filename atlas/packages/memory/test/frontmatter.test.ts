@@ -2,16 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * The file format claim from `mapping.ts` §2: Qianmo entries are base memory
- * files. That is asserted here against the base's own parser and its own
- * directory scanner — not against a second implementation of the same idea,
- * which would only prove this package agrees with itself.
+ * The file format from `mapping.ts` §2: one Markdown file per entry, the three
+ * `name` / `description` / `type` keys first, then the `qm_*` keys.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { parseMemoryType } from '../../../src/memdir/memoryTypes.js'
-import { scanMemoryFiles } from '../../../src/memdir/memoryScan.js'
-import { parseFrontmatter } from '../../../src/utils/text/frontmatterParser.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -72,8 +67,8 @@ describe('serialize / parse', () => {
   })
 })
 
-describe('the base can read these files unmodified', () => {
-  test("base parseFrontmatter sees the base's own three keys", () => {
+describe('on-disk frontmatter layout', () => {
+  test('starts with name / description / type, then the qm_* keys', () => {
     const entry = sandbox.store.write({
       scope: { layer: 'project', projectKey: 'atlas' },
       title: AWKWARD_TITLE,
@@ -82,18 +77,19 @@ describe('the base can read these files unmodified', () => {
       source: { kind: 'session', id: 'sess-1' },
     })
     const path = join(sandbox.root, 'project', 'atlas', `${entry.id}.md`)
-    const parsed = parseFrontmatter(readFileSync(path, 'utf8'), path)
+    const lines = readFileSync(path, 'utf8').split('\n')
 
-    expect(parsed.frontmatter.name).toBe(AWKWARD_TITLE)
-    expect(parsed.frontmatter.description).toBe(
-      'This project standardises on Bun.',
-    )
     expect(BASE_MEMORY_TYPE_BY_LAYER.project).toBe('project')
-    expect(parseMemoryType(parsed.frontmatter.type)).toBe('project')
-    expect(parsed.content).toBe(AWKWARD_BODY)
+    expect(lines.slice(0, 5)).toEqual([
+      '---',
+      `name: ${JSON.stringify(AWKWARD_TITLE)}`,
+      'description: "This project standardises on Bun."',
+      'type: "project"',
+      `qm_id: ${JSON.stringify(entry.id)}`,
+    ])
   })
 
-  test('layers with no base counterpart omit `type:` and degrade gracefully', () => {
+  test('layers with no type counterpart omit `type:`', () => {
     const entry = sandbox.store.write({
       scope: { layer: 'baseline', period: '2026-09' },
       title: 'September baseline',
@@ -102,27 +98,8 @@ describe('the base can read these files unmodified', () => {
       source: { kind: 'import', id: 'usage-export' },
     })
     const path = join(sandbox.root, 'baseline', '2026-09', `${entry.id}.md`)
-    const parsed = parseFrontmatter(readFileSync(path, 'utf8'), path)
     expect(BASE_MEMORY_TYPE_BY_LAYER.baseline).toBeNull()
-    expect(parsed.frontmatter.type).toBeUndefined()
-    expect(parseMemoryType(parsed.frontmatter.type)).toBeUndefined()
-  })
-
-  test('base scanMemoryFiles builds a usable manifest over a Qianmo layer dir', async () => {
-    const entry = sandbox.store.write({
-      scope: { layer: 'project', projectKey: 'atlas' },
-      title: 'Runtime decision',
-      summary: 'This project standardises on Bun.',
-      body: 'why',
-      source: { kind: 'session', id: 'sess-1' },
-    })
-    const headers = await scanMemoryFiles(
-      join(sandbox.root, 'project', 'atlas'),
-      new AbortController().signal,
-    )
-    expect(headers).toHaveLength(1)
-    expect(headers[0]?.filename).toBe(`${entry.id}.md`)
-    expect(headers[0]?.description).toBe('This project standardises on Bun.')
-    expect(headers[0]?.type).toBe('project')
+    expect(BASE_MEMORY_TYPE_BY_LAYER.working).toBeNull()
+    expect(readFileSync(path, 'utf8')).not.toMatch(/^type:/m)
   })
 })

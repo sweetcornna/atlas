@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import {
   closeSync,
   fsyncSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -23,6 +24,7 @@ import {
   type MemoryEntry,
   type MemoryLayer,
   type MemoryRetirement,
+  type MemoryScope,
   type MemoryWriteInput,
 } from './entry.js'
 import {
@@ -32,7 +34,9 @@ import {
   type MemoryEventSink,
 } from './events.js'
 import { parseEntry, serializeEntry } from './frontmatter.js'
-import { defaultMemoryRoot, entryPath, scopeDir } from './paths.js'
+import { sameMemoryScope, validateReplacement } from './governance.js'
+import { withMemoryMutation } from './mutation.js'
+import { defaultMemoryRoot, entryPath } from './paths.js'
 
 /** Owner-only, matching the rest of the config root. */
 const DIR_MODE = 0o700
@@ -85,6 +89,8 @@ export type MemoryStoreOptions = {
    */
   readonly onEvent?: MemoryEventSink
   readonly eventCapacity?: number
+  /** Read-only reports never create locks or repair pending replacements. */
+  readonly readOnly?: boolean
 }
 
 function defaultNewId(): string {
@@ -112,6 +118,14 @@ function writeFileAtomic(path: string, contents: string): void {
       closeSync(handle)
     }
     renameSync(temporary, path)
+    if (process.platform !== 'win32') {
+      const directory = openSync(dirname(path), 'r')
+      try {
+        fsyncSync(directory)
+      } finally {
+        closeSync(directory)
+      }
+    }
   } catch (error) {
     rmSync(temporary, { force: true })
     throw error
@@ -342,6 +356,8 @@ export class FileMemoryStore {
   readonly #root: string
   readonly #now: () => Date
   readonly #newId: () => string
+  readonly #readOnly: boolean
+  readonly #unresolved = new Set<string>()
 
   /**
    * Where a scan writes down what it could not read. Always present — see the
@@ -354,10 +370,31 @@ export class FileMemoryStore {
     this.#root = options.root ?? defaultMemoryRoot()
     this.#now = options.now ?? (() => new Date())
     this.#newId = options.newId ?? defaultNewId
+    this.#readOnly = options.readOnly ?? false
     this.events = new MemoryEventRecorder(
       options.eventCapacity,
       options.onEvent,
     )
+    if (!this.#readOnly && this.#hasReplacement()) {
+      withMemoryMutation(this.#root, () => {
+        if (!existsSync(join(this.#root, '.supersedes')))
+          writeFileAtomic(join(this.#root, '.supersedes'), '1\n')
+        this.#repairSupersedes()
+      })
+    }
+  }
+
+  #hasReplacement(): boolean {
+    for (const dir of searchRoots(this.#root, {})) {
+      for (const file of listMarkdownFiles(dir)) {
+        try {
+          if (readEntryFile(file).supersedes?.length) return true
+        } catch {
+          /* The query reports unrelated unreadable records. */
+        }
+      }
+    }
+    return false
   }
 
   get root(): string {
@@ -365,17 +402,158 @@ export class FileMemoryStore {
   }
 
   /** Persist a new entry. Returns the record exactly as it was written. */
-  write(input: MemoryWriteInput): MemoryEntry {
-    const id = this.#newId()
-    assertKeySegment('id', id)
-    const entry = buildEntry(input, id, this.#now())
-    const path = entryPath(this.#root, entry.scope, entry.id)
-    mkdirSync(scopeDir(this.#root, entry.scope), {
-      recursive: true,
-      mode: DIR_MODE,
+  write(
+    input: MemoryWriteInput,
+    writer: 'peer' | 'operator' = 'peer',
+  ): MemoryEntry {
+    return this.#change(() => {
+      const id = this.#newId()
+      assertKeySegment('id', id)
+      let entry = buildEntry(input, id, this.#now())
+      const ids = [...new Set(input.supersedes ?? [])].sort()
+      if (ids.length > 64)
+        throw new MemoryStoreError('at most 64 supersedes links per entry')
+      if (ids.length) {
+        if (writer !== 'peer' && writer !== 'operator')
+          throw new MemoryStoreError('invalid memory writer authority')
+        entry = { ...entry, supersedes: ids, supersedesWriter: writer }
+        for (const oldId of ids) {
+          assertKeySegment('superseded id', oldId)
+          if (this.#unresolved.has(oldId))
+            throw new MemoryStoreError(
+              'unresolved supersedes target requires operator review',
+            )
+          const old = this.#locate(oldId)?.entry
+          if (!old)
+            throw new MemoryStoreError(`no memory entry with id ${oldId}`)
+          validateReplacement(entry, old)
+          if (
+            old.invalidAt !== null ||
+            old.expiredAt !== null ||
+            old.supersededBy !== undefined
+          )
+            throw new MemoryStoreError(
+              'supersedes requires a live, not already invalidated target',
+            )
+        }
+      }
+      const path = entryPath(this.#root, entry.scope, entry.id)
+      if (existsSync(path))
+        throw new MemoryStoreError('memory id already exists')
+      if (ids.length) writeFileAtomic(join(this.#root, '.supersedes'), '1\n')
+      writeFileAtomic(path, serializeEntry(entry))
+      if (ids.length)
+        this.events.record({
+          type: MemoryEventType.SupersessionWritten,
+          at: this.#now().getTime(),
+          detail: { id: entry.id, targets: ids.length },
+        })
+      // The new entry is the durable intent. A crash before or during these
+      // target writes is repaired on the next writable open/mutation.
+      this.#applyReplacement(entry)
+      return entry
     })
-    writeFileAtomic(path, serializeEntry(entry))
-    return entry
+  }
+
+  /** Cancel a replacement as a local operator. The audit is persisted before
+   * restoration; startup resumes it, and never clears a later owner's mark.
+   * This does not undo an independent retirement or delete either entry.
+   */
+  undoSupersedes(
+    id: string,
+    input: {
+      scope: MemoryScope
+      writer: 'operator'
+      by: string
+      reason: string
+    },
+  ): MemoryEntry {
+    return this.#change(() => {
+      const path = this.#requirePath(id)
+      const entry = readEntryFile(path)
+      if (
+        input.writer !== 'operator' ||
+        !sameMemoryScope(entry.scope, input.scope)
+      )
+        throw new MemoryStoreError('undo requires the operator and exact scope')
+      if (!input.by.trim() || !input.reason.trim())
+        throw new MemoryStoreError('undo requires by and reason for the audit')
+      if (!entry.supersedes?.length)
+        throw new MemoryStoreError('entry has no supersedes links')
+      if (entry.supersedesUndo) return entry
+      const updated = {
+        ...entry,
+        supersedesUndo: {
+          at: this.#now().toISOString(),
+          by: input.by.trim(),
+          reason: input.reason.trim(),
+        },
+      }
+      writeFileAtomic(path, serializeEntry(updated))
+      this.events.record({
+        type: MemoryEventType.SupersessionUndone,
+        at: this.#now().getTime(),
+        detail: { id: updated.id },
+      })
+      this.#applyReplacement(updated)
+      return updated
+    })
+  }
+
+  #change<T>(change: () => T): T {
+    if (this.#readOnly) throw new MemoryStoreError('memory store is read-only')
+    return withMemoryMutation(this.#root, () => {
+      if (existsSync(join(this.#root, '.supersedes'))) this.#repairSupersedes()
+      return change()
+    })
+  }
+
+  #repairSupersedes(): void {
+    this.#unresolved.clear()
+    for (const entry of this.query({ includeRetired: true })) {
+      if (!entry.supersedes?.length) continue
+      try {
+        this.#applyReplacement(entry)
+      } catch (error) {
+        this.#unresolved.add(entry.id)
+        for (const id of entry.supersedes) this.#unresolved.add(id)
+        this.#report(MemoryEventType.SupersessionUnresolved, this.#root, error)
+      }
+    }
+  }
+
+  #applyReplacement(entry: MemoryEntry): void {
+    for (const id of entry.supersedes ?? []) {
+      const path = this.#requirePath(id)
+      const old = readEntryFile(path)
+      validateReplacement(entry, old)
+      if (entry.supersedesUndo) {
+        if (old.supersededBy !== entry.id) continue
+        if (old.invalidAt !== entry.validAt)
+          throw new MemoryStoreError(
+            'supersedes target time was changed; operator review required',
+          )
+        const { supersededBy: _owner, ...restored } = old
+        writeFileAtomic(path, serializeEntry({ ...restored, invalidAt: null }))
+      } else if (
+        old.supersededBy === entry.id &&
+        old.invalidAt === entry.validAt
+      ) {
+      } else {
+        if (old.invalidAt !== null || old.supersededBy !== undefined)
+          throw new MemoryStoreError(
+            'conflicting supersedes target; operator review required',
+          )
+        writeFileAtomic(
+          path,
+          serializeEntry({
+            ...old,
+            invalidAt: entry.validAt,
+            supersededBy: entry.id,
+          }),
+        )
+      }
+    }
   }
 
   /**
@@ -394,6 +572,10 @@ export class FileMemoryStore {
    * fabricated.
    */
   getEntry(id: string): MemoryEntry | null {
+    if (this.#unresolved.has(id))
+      throw new MemoryStoreError(
+        'unresolved memory supersession requires operator review',
+      )
     return this.#locate(id)?.entry ?? null
   }
 
@@ -433,7 +615,10 @@ export class FileMemoryStore {
           this.#report(MemoryEventType.EntryUnreadable, file, error)
           continue
         }
-        if (query.includeRetired !== true && !isRecallable(entry, asOf)) {
+        if (
+          query.includeRetired !== true &&
+          (this.#unresolved.has(entry.id) || !isRecallable(entry, asOf))
+        ) {
           continue
         }
         if (!matchesFilters(entry, query)) {
@@ -468,6 +653,10 @@ export class FileMemoryStore {
    * retired", never two successes with the first reason silently overwritten.
    */
   retire(id: string, retirement: MemoryRetirement): MemoryEntry {
+    return this.#change(() => this.#retire(id, retirement))
+  }
+
+  #retire(id: string, retirement: MemoryRetirement): MemoryEntry {
     const path = this.#requirePath(id)
     return withEntryLock(path, id, () => {
       const current = readEntryFile(path)
@@ -496,6 +685,10 @@ export class FileMemoryStore {
    * how a memory system starts contradicting its own history.
    */
   invalidate(id: string, at?: Date): MemoryEntry {
+    return this.#change(() => this.#invalidate(id, at))
+  }
+
+  #invalidate(id: string, at?: Date): MemoryEntry {
     const path = this.#requirePath(id)
     return withEntryLock(path, id, () => {
       const current = readEntryFile(path)

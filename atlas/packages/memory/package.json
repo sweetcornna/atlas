@@ -15,9 +15,12 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "@qianmo/paths": "workspace:*"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-utils": "workspace:*"
   }
 }

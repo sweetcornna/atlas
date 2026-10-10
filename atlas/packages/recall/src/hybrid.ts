@@ -345,7 +345,17 @@ async function fuse(
 
   // 3. The call. Paid for before it is made: a process that dies waiting has
   //    still spent the tokens.
-  meter.charge(reserved)
+  const reservationDay = meter.day?.()
+  if (meter.reserve !== undefined) {
+    if (!meter.reserve(reserved)) {
+      events.push({
+        type: 'budget-exhausted',
+        remaining: meter.remaining(),
+        needed: reserved,
+      })
+      return undefined
+    }
+  } else meter.charge(reserved)
   const answer = await embedWithin(embedder, texts, config.timeoutMs)
   if ('event' in answer) {
     events.push(answer.event)
@@ -373,7 +383,7 @@ async function fuse(
   const answered = received as readonly (readonly number[])[]
   const billed = answer.batch.usage?.tokens
   if (typeof billed === 'number' && Number.isFinite(billed) && billed >= 0) {
-    meter.charge(billed - reserved)
+    meter.charge(billed - reserved, reservationDay)
   }
   const offset = withQuery ? 1 : 0
   for (const [position, candidate] of topUp.entries()) {

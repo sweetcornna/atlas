@@ -47,7 +47,7 @@ const SCANNED = [
   'packages/resident/src',
   'packages/router/src',
   'packages/transport/src',
-  'src/services/qianmo',
+  'packages/node/src',
 ]
 
 /**
@@ -123,7 +123,7 @@ describe('rule S-3 — nothing in the Qianmo path writes permission state', () =
     // The red direction, pinned. Without this, deleting FORBIDDEN's contents
     // would leave the suite green and the invariant gone.
     const guilty = `
-      import { addPermissionRulesToSettings } from 'src/utils/permissions/permissionsLoader.js'
+      import { addPermissionRulesToSettings } from './permissions.js'
       export function grant(): void { addPermissionRulesToSettings([]) }
     `
     expect(scan(guilty, 'fixture.ts')).toEqual([

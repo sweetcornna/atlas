@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { occConfigPath } from '../../../src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 import { estimateEmbeddingTokens } from '../src/embedding.js'
 import {
   defaultEmbeddingUsagePath,
@@ -32,19 +32,19 @@ function meter(dailyTokenLimit: number): FileEmbeddingUsageMeter {
 }
 
 describe('embedding usage meter', () => {
-  test('the default file is derived from the identity config root', () => {
-    const saved = process.env.OCC_CONFIG_DIR
-    process.env.OCC_CONFIG_DIR = directory
+  test('the default file is derived from the config root', () => {
+    const saved = process.env.QIANMO_CONFIG_DIR
+    process.env.QIANMO_CONFIG_DIR = directory
     try {
       expect(defaultEmbeddingUsagePath()).toBe(
-        occConfigPath('qianmo', 'embedding', 'usage.json'),
+        qianmoConfigPath('qianmo', 'embedding', 'usage.json'),
       )
       expect(defaultEmbeddingUsagePath()).toBe(
         join(directory, 'qianmo', 'embedding', 'usage.json'),
       )
     } finally {
-      if (saved === undefined) delete process.env.OCC_CONFIG_DIR
-      else process.env.OCC_CONFIG_DIR = saved
+      if (saved === undefined) delete process.env.QIANMO_CONFIG_DIR
+      else process.env.QIANMO_CONFIG_DIR = saved
     }
   })
 
@@ -107,4 +107,39 @@ describe('token estimate', () => {
     expect(estimateEmbeddingTokens('abcde')).toBe(2)
     expect(estimateEmbeddingTokens('用 Bun')).toBe(1 + 2)
   })
+})
+
+test('parallel processes cannot reserve the same remaining token budget', async () => {
+  const module = new URL('../src/usage.ts', import.meta.url).pathname
+  const source = `import {FileEmbeddingUsageMeter} from ${JSON.stringify(module)}; const meter = new FileEmbeddingUsageMeter({path:process.env.TEST_METER_PATH,dailyTokenLimit:100}); process.stdout.write(meter.reserve(60)?'accepted':'refused')`
+  const children = Array.from({ length: 6 }, () =>
+    Bun.spawn([process.execPath, '--eval', source], {
+      env: { ...process.env, TEST_METER_PATH: path },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }),
+  )
+  const outputs = await Promise.all(
+    children.map(async child => {
+      const output = await new Response(child.stdout).text()
+      const errors = await new Response(child.stderr).text()
+      expect(await child.exited, errors).toBe(0)
+      return output
+    }),
+  )
+  expect(outputs.filter(value => value === 'accepted')).toHaveLength(1)
+  expect(
+    new FileEmbeddingUsageMeter({ path, dailyTokenLimit: 100 }).used(),
+  ).toBe(60)
+})
+
+test('a completed old-window call cannot refund the new day budget', () => {
+  const usage = meter(100)
+  const day = usage.day()
+  expect(usage.reserve(80)).toBe(true)
+  clock.advance(DAY_MS)
+  expect(usage.reserve(90)).toBe(true)
+  usage.charge(-70, day)
+  expect(usage.used()).toBe(90)
+  expect(usage.reserve(11)).toBe(false)
 })

@@ -289,6 +289,10 @@ class ServerTransportChannel implements TransportChannel {
     return this.#outbox.pending
   }
 
+  get authenticatedPeerNode(): string | null {
+    return this.#authentication === 'psk' ? null : this.peerNode
+  }
+
   /** What the dialer declared on the auth frame of the current connection. */
   get peerSupportedTypes(): readonly string[] | undefined {
     return this.#peerTypes

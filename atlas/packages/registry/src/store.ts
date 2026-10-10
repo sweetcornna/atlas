@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { occConfigPath } from '../../../src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 
 /**
  * Durable home for one JSON document.
@@ -35,14 +35,13 @@ export interface RegistryStore {
 /**
  * Where the registry keeps its table by default.
  *
- * Derived from {@link occConfigPath} rather than assembled by hand, because the
- * config root is identity-scoped (`~/.occ` vs `~/.qianmo`, and either one
- * overridable by `OCC_CONFIG_DIR`). A hand-rolled `join(homedir(), '.occ')`
- * would resolve to one fixed directory and punch straight through that
- * isolation — see the header of `src/config/paths.ts`.
+ * Derived from {@link qianmoConfigPath} rather than assembled by hand, because
+ * the config root is overridable (`QIANMO_CONFIG_DIR`). A hand-rolled
+ * `join(homedir(), '.qianmo')` would resolve to one fixed directory and punch
+ * straight through that isolation — see `@qianmo/paths`.
  */
 export function defaultRegistryStatePath(): string {
-  return occConfigPath('registry', 'agents.json')
+  return qianmoConfigPath('registry', 'agents.json')
 }
 
 /** Owner-only, matching the rest of the config root. */

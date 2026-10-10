@@ -216,8 +216,9 @@ const REASONS: Readonly<Record<CitationStatus, string>> = {
   ok: 'accepted',
   unknown: 'no memory entry has this id — it was not written by this store',
   malformed: 'not a well-formed memory entry id',
-  retired: 'this entry was retired and may no longer be cited',
-  'not-injected': 'this entry was not in the memory block you were given',
+  retired: 'no memory entry has this id — it was not written by this store',
+  'not-injected':
+    'no memory entry has this id — it was not written by this store',
   unreadable: 'this entry exists but could not be read',
 }
 

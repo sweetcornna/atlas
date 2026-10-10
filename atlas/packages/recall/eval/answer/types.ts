@@ -13,6 +13,7 @@
  */
 
 import type { FileMemoryStore } from '@qianmo/memory'
+import type { AnswerProtocol } from '../../src/evidence-answer.js'
 import type { RecallRequest, RecallResult } from '../../src/recall.js'
 
 /** M0 = the deterministic `recall()`; M1 = the hybrid retriever of P16.6. */
@@ -47,6 +48,8 @@ export type Turn =
     }
 
 export type AnswerRequest = {
+  /** Absent only for historical v1 recordings. New live calls set this explicitly. */
+  readonly protocol?: AnswerProtocol
   /** Unique per call and round; the replay fixture is keyed by it. */
   readonly callKey: string
   /** The system prompt blocks: `buildRecallSystemPrompt(result)`. */

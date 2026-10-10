@@ -15,11 +15,14 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "@qianmo/capability": "workspace:*",
     "@qianmo/paths": "workspace:*",
     "@qianmo/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@qianmo/node": "workspace:*"
   }
 }

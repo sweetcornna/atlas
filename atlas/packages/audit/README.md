@@ -30,7 +30,7 @@ flowchart TB
     l8["…（AuditSource 共 12 值）"]
   end
 
-  wiring["src/services/qianmo/auditTrail.ts（接线层，在基座侧）<br/>auditTrailPath() · openAuditTrail()<br/>routerTrailSink / transportTrailSink / activatorTrailSink<br/>negotiationTrailSink / tunnelTrailSink / capacityTrailSink / backupTrailSink"]
+  wiring["packages/node/src/host/auditTrail.ts（接线层，在基座侧）<br/>auditTrailPath() · openAuditTrail()<br/>routerTrailSink / transportTrailSink / activatorTrailSink<br/>negotiationTrailSink / tunnelTrailSink / capacityTrailSink / backupTrailSink"]
 
   subgraph pkg["@qianmo/audit（对各层一无所知）"]
     index["index.ts"]
@@ -39,8 +39,8 @@ flowchart TB
     query["query.ts<br/>queryTrail(records, TrailQuery)<br/>reconstructChain(records, traceId)<br/>formatChain(chain)"]
   end
 
-  file[("occConfigPath('qianmo','audit','trail.ndjson')<br/>目录 0700 / 文件 0600<br/>每行一条 JSON")]
-  cli["src/cli/handlers/qianmoAudit.ts<br/>occ audit --trace / --agent /<br/>--task / --from / --to / --verify"]
+  file[("qianmoConfigPath('qianmo','audit','trail.ndjson')<br/>目录 0700 / 文件 0600<br/>每行一条 JSON")]
+  cli["packages/node/src/commands/qianmoAudit.ts<br/>qm audit --trace / --agent /<br/>--task / --from / --to / --verify"]
 
   l1 & l2 & l3 & l4 & l5 & l6 & l7 & l8 -->|"各自的事件对象"| wiring
   wiring -->|"kind 原样透传，<br/>只把 outcome 归一为 ok/refused/dropped"| trail
@@ -84,15 +84,15 @@ flowchart TB
 | 2 | **重启续链**：新进程从盘上最后一条接着写 `seq` 与 `prev` | 每次重启都留下一个「长得跟篡改一模一样」的断点，而一个天天喊狼来了的完整性检查没人会读 | `test/trail.test.ts`：`a restart continues the chain instead of starting a new one` / `a crash mid-write is a torn tail, not tampering` |
 | 3 | **还原链按 `seq` 排序，不按时间戳；且从不按 `outcome` 过滤** | 两个节点的钟不一致，按时间排会把 ack 排到它回应的消息前面；只显示成功的链，等于用「能跑通的那部分」回答「发生了什么」 | `test/trail.test.ts`：`ordered by seq, not by timestamp` / `includes the dropped and the refused, not just what worked` / `outcome filters exist but the chain reconstruction never uses them` |
 | 4 | **按 trace-id 段匹配，不是整条 traceparent** | parent-id 每跳都变（这是设计），拿整条 header 去匹配只会返回链上的**一跳**，而且看起来像成功了 | `test/trail.test.ts`：`matches on the trace-id segment, not the whole traceparent` |
-| 5 | **`canonicalize` 的字段顺序定死在一处**；`kind` 原样透传、只归一 `outcome` | 两个写入方以不同键序产出同一条记录会得到不同哈希，链会「毫无缘由地」校验失败；把 `kind` 也归一，运维手里的层内日志行就对不上审计里的名字了 | `test/trail.test.ts`（`claim 2` 两条依赖 canonical 形式）；接线层口径见 `src/services/qianmo/auditTrail.ts` 顶部注释 |
+| 5 | **`canonicalize` 的字段顺序定死在一处**；`kind` 原样透传、只归一 `outcome` | 两个写入方以不同键序产出同一条记录会得到不同哈希，链会「毫无缘由地」校验失败；把 `kind` 也归一，运维手里的层内日志行就对不上审计里的名字了 | `test/trail.test.ts`（`claim 2` 两条依赖 canonical 形式）；接线层口径见 `packages/node/src/host/auditTrail.ts` 顶部注释 |
 
 ---
 
 ## 4. 与基座的关系
 
 - **定性**：charter §3.3 C-6 判「部分」——基座的会话 JSONL 本身就是 append-only 的完整留痕，但 trace_id 贯穿跨节点链路、被丢弃 / 被限流 / 被去重消息的留痕、查询 CLI **都是新建**。依据见 `docs/dev/base-adoption.md` §3.2「审计与全链路追踪」行。
-- **本包自身不改基座核心、不导入基座模块**（`dependencies` 为空）。基座侧有两处改造承接它：接线层 `src/services/qianmo/auditTrail.ts` 与 CLI 子命令 `src/cli/handlers/qianmoAudit.ts`。**这两处及其理由见 `docs/dev/base-modifications.md`。**
-- 落盘路径由 `auditTrailPath()` = `occConfigPath('qianmo', 'audit', 'trail.ndjson')` 从基座 `src/config/paths.ts` 的 helper 派生（`CLAUDE.md` §1.1②）——**每个常驻节点必须有自己的 `OCC_CONFIG_DIR`**，两个常驻共用一个配置根会把两条审计链落进同一个文件（P8.1 的实测结论，见 `docs/dev/demo-env.md`）。
+- **本包自身不改基座核心、不导入基座模块**（`dependencies` 为空）。基座侧有两处改造承接它：接线层 `packages/node/src/host/auditTrail.ts` 与 CLI 子命令 `packages/node/src/commands/qianmoAudit.ts`。**这两处及其理由见 `docs/dev/base-modifications.md`。**
+- 落盘路径由 `auditTrailPath()` = `qianmoConfigPath('qianmo', 'audit', 'trail.ndjson')` 从`@qianmo/paths` 的 helper 派生（`CLAUDE.md` §1.1②）——**每个常驻节点必须有自己的 `OCC_CONFIG_DIR`**，两个常驻共用一个配置根会把两条审计链落进同一个文件（P8.1 的实测结论，见 `docs/dev/demo-env.md`）。
 
 ---
 
@@ -101,8 +101,8 @@ flowchart TB
 | 事项 | 一行摘要 | 指针 |
 | --- | --- | --- |
 | 无法阻止有写权限者整篇重写 | 无法阻止，但已锚定前缀的改写一定被检测到；锚定窗口内除外。边界只见 [`audit-witness.md`](../../docs/dev/audit-witness.md) §7 | `src/trail.ts` 顶部注释「3.」 |
-| 不带消息体 | 记录只有 id / 错误码 / 计数；`formatChain` 也不加——support 工程师把链粘进工单前不该先做一次脱敏 | `src/cli/handlers/qianmoAudit.ts` 顶部「What it never prints」 |
-| `occ audit` 不带条件不给查 | 这份文件永远增长，默认全量打印是它能做的最没用的事 | `src/cli/handlers/qianmoAudit.ts` 参数校验 |
+| 不带消息体 | 记录只有 id / 错误码 / 计数；`formatChain` 也不加——support 工程师把链粘进工单前不该先做一次脱敏 | `packages/node/src/commands/qianmoAudit.ts` 顶部「What it never prints」 |
+| `qm audit` 不带条件不给查 | 这份文件永远增长，默认全量打印是它能做的最没用的事 | `packages/node/src/commands/qianmoAudit.ts` 参数校验 |
 | 无轮转、无归档、无外部日志系统对接 | M0 只有一份不断增长的本地文件 | roadmap P7.2 交付物 |
 | 各层环形缓冲不合并 | 那是给运行中进程看的，与本文件分工不同，刻意不统一 | `src/record.ts` 顶部注释 |
 
@@ -113,7 +113,7 @@ flowchart TB
 ```bash
 bun test packages/audit/test                            # 包内：17 用例 / 1 文件（实跑 2026-08-15）
 bun test tests/integration/qianmo-audit-chain.test.ts   # 真链路还原（四条消息四种命运）
-bun test src/cli/handlers/__tests__/qianmoAudit.test.ts # CLI 三种查法
+bun test packages/node/test/commands/qianmoAudit.test.ts # CLI 三种查法
 ```
 
 包内 **17 pass / 0 fail / 42 expect**，三组：`the chain a trace_id rebuilds` 5 / `querying by agent and by time window` 3 / `what "cannot be changed" means here` 9。

@@ -1123,3 +1123,48 @@ describe('report schema', () => {
     expect(log).not.toContain('http')
   }, 60_000)
 })
+
+test('mixed ranked tiers retain cross-context full-scope negatives while all-full tiers remain A0 only', async () => {
+  const contextId = CORPUS.build(500, SEED).queries.find(
+    query => query.kind === 'negative-cross-context',
+  )!.id
+  const report = await run(
+    {
+      ...PLAN,
+      runId: 'mixed-tier',
+      repetitions: 1,
+      providers: ['prov-a'],
+      queryIds: ['lex-wake', contextId],
+    },
+    [scripted('prov-a')],
+    {
+      out: join(directory, 'mixed'),
+      ledger: join(directory, 'mixed-ledger.json'),
+    },
+  )
+  expect(report.corpora[0]?.tiers).toEqual([
+    { tier: 30, mode: 'full' },
+    { tier: 500, mode: 'mixed' },
+  ])
+  expect(report.gates.A0.tests.map(value => value.questions)).toEqual([1, 2])
+  expect(report.gates.E1.questions).toBe(1)
+  expect(report.gates.E2.questions).toBe(2)
+  const full = await run(
+    {
+      ...PLAN,
+      runId: 'all-full-tier',
+      repetitions: 1,
+      providers: ['prov-a'],
+      queryIds: ['lex-wake', contextId],
+      corpora: [{ id: 'synthetic-v1', tiers: [30] }],
+    },
+    [scripted('prov-a')],
+    {
+      out: join(directory, 'full'),
+      ledger: join(directory, 'full-ledger.json'),
+    },
+  )
+  expect(full.gates.A0.tests).toHaveLength(2)
+  expect(full.gates.E1.questions).toBe(0)
+  expect(full.gates.E2.questions).toBe(0)
+})

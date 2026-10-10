@@ -151,13 +151,13 @@ describe('the service', () => {
     const missing = await fetch(`${base}/snapshot?reason=manual`, {
       method: 'POST',
       headers: { authorization: `Bearer ${WRITE_TOKEN}` },
-      body: new Uint8Array([1]) as unknown as BodyInit,
+      body: new Uint8Array([1]),
     })
     expect(missing.status).toBe(400)
     const nonsense = await fetch(`${base}/snapshot?workspace=/w&reason=maybe`, {
       method: 'POST',
       headers: { authorization: `Bearer ${WRITE_TOKEN}` },
-      body: new Uint8Array([1]) as unknown as BodyInit,
+      body: new Uint8Array([1]),
     })
     expect(nonsense.status).toBe(400)
   })

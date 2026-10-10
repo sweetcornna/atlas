@@ -14,7 +14,7 @@
  *
  * No file system. A key that knows where it lives would make every consumer of
  * this package inherit a path convention, and the one place that must own paths
- * is `src/config/paths.ts` in the base (CLAUDE.md §1.1②). Persistence lives in
+ * is `@qianmo/paths` in the base (CLAUDE.md §1.1②). Persistence lives in
  * the wiring layer, which passes the strings in and out.
  *
  * No key rotation, no certificate chain, no trust hierarchy: charter N-3 keeps

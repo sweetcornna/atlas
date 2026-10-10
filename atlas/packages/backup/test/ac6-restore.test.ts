@@ -177,7 +177,7 @@ describe('AC-6(c) — the agent cannot remove its backups', () => {
     const created = await fetch(`${base}/snapshot?workspace=/w&reason=manual`, {
       method: 'POST',
       headers: { authorization: `Bearer ${WRITE_TOKEN}` },
-      body: new Uint8Array([1, 2, 3]) as unknown as BodyInit,
+      body: new Uint8Array([1, 2, 3]),
     })
     expect(created.status).toBe(201)
     const meta = (await created.json()) as { id: string }
@@ -247,7 +247,7 @@ describe('AC-6(c) — the agent cannot remove its backups', () => {
     const refused = await fetch(`${base}/snapshot?workspace=/w&reason=manual`, {
       method: 'POST',
       headers: { authorization: `Bearer ${ARCHIVE_TOKEN}` },
-      body: new Uint8Array([1]) as unknown as BodyInit,
+      body: new Uint8Array([1]),
     })
     expect(refused.status).toBe(403)
     const listed = await fetch(`${base}/snapshots`, {

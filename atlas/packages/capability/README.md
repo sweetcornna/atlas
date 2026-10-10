@@ -29,7 +29,7 @@ flowchart TD
   end
 
   protocol["@qianmo/protocol · capability.ts<br/>CapabilityLevel · encodeClaims / parseCapabilityToken<br/>PUBLIC_KEY_PATTERN（编码只此一处）"]
-  identity["src/services/qianmo/nodeIdentity.ts<br/>occConfigPath 派生 · 0700/0600 · wx 独占 · 永不覆盖"]
+  identity["packages/node/src/host/nodeIdentity.ts<br/>qianmoConfigPath 派生 · 0700/0600 · wx 独占 · 永不覆盖"]
   registry["@qianmo/registry · AgentRecord.publicKey<br/>按节点核对，先登记者胜"]
 
   router --> port
@@ -58,7 +58,7 @@ flowchart TD
 - **`NodeCapabilities` / `NodeCapabilitiesOptions`** —— 节点的授权面，实现 `@qianmo/router` 的 `CapabilityGate`。`check()` 回答「这条消息带着什么等级、够不够」；`issue()` 铸令牌（**没有私钥就只能验不能签**，且这是一条显式的抛错而不是静默降级）。
 - **`issueCapability` / `verifyCapability` / `IssueInput` / `VerifyContext` / `VerifyResult`** —— 令牌的签发与校验本体。
 - **`PublicKeyDirectory` / `StaticPublicKeyDirectory`** —— 公钥来源端口。**同步**接口：入站门跑在消息处理器里，一个可能阻塞的查表会把「这个处理器要跑多久」交给未认证的对端决定；注册中心背书的实现应当缓存并自行刷新。
-- **`generateNodeKeyPair` / `isNodeKeyPair` / `signBytes` / `verifyBytes` / `NodeKeyPair`** —— 密钥面。**不碰文件系统**：知道自己住哪儿的密钥会让每个使用方都继承一套路径约定，而路径的唯一出处是基座 `src/config/paths.ts`（CLAUDE.md §1.1②）。
+- **`generateNodeKeyPair` / `isNodeKeyPair` / `signBytes` / `verifyBytes` / `NodeKeyPair`** —— 密钥面。**不碰文件系统**：知道自己住哪儿的密钥会让每个使用方都继承一套路径约定，而路径的唯一出处是`@qianmo/paths`（CLAUDE.md §1.1②）。
 - **`NonceStore` / `NonceStoreOptions` / `DEFAULT_NONCE_CAPACITY`** —— 重放表，按签发者分域，记到令牌 `exp` 为止（与 `protocol.md` §7.2 去重表同一 TTL 口径）。
 - **`CapabilityPolicy` / `capabilityPolicy` / `satisfies` / `OPEN_POLICY` / `SIGNED_TASK_POLICY`** —— 每种消息类型需要什么等级。未列出的类型一律落到 `read`。
 - **`AuthzRequest` / `AuthzDecision` / `AuthzOrigin` / `AuthzDecisionKind` / `SignedAuthz` / `signAuthzRequest` / `verifyAuthzRequest` / `signAuthzDecision` / `parseAuthzDecision` / `verifyAuthzDecisionSignature` / `isAuthzRequest` / `AUTHZ_REQUEST_DOMAIN` / `AUTHZ_DECISION_DOMAIN` / `MAX_AUTHZ_WINDOW_MS`** —— 用户授权流的两个签名对象（P14.3，`authorization-m1.md` §3.4）。字段封闭，签名覆盖原样送达的负载段，请求与决定各用一个签名域（`qianmo-authz-request-v1` / `qianmo-authz-decision-v1`），与令牌（无前缀）、握手（`qianmo-handshake-v1`）互不通用。**不是 capability 令牌**：审批来自控制台这个远端签发者，装进 `user-confirmed` 会被 S-1 拒掉。本包只答「结构对不对、谁签的」；决定是否生效（命中挂起行、时钟、审批者集、一次性）在 `@qianmo/resident` 的 `FileGrantStore`。
@@ -84,7 +84,7 @@ flowchart TD
 - **定性：部分**（charter §3.3 C-5）——基座有工具权限模式与审批链路，可复用作**本地执行侧**；**跨节点身份与「授权不可跨越」的协议级强制是自研**。
 - 与 **N-3 的界线**写在 charter §3.3 C-5 里：N-3 禁的是 PKI（CA、签发链、证书轮换与托管），**节点级密钥对自签 capability 不属于该禁止范围**。
 - [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.2「权限分级 / 消息不能替用户授权」行判定为**部分**，缺口是跨节点身份认证、能力清单与协议级强制。
-- 代码层面：本包对基座 `src/` **零 import**，只用 `node:crypto`。**节点身份的落盘不在本包**——在 `src/services/qianmo/nodeIdentity.ts`（`occConfigPath` 派生、目录 0700 文件 0600、`wx` 独占创建**永不覆盖**、文件损坏是报错而不是重新生成；密钥就是身份，悄悄换一把等于这个节点悄悄变成另一个节点）。
+- 代码层面：本包对基座与其他包的 `src/` **零 import**，只用 `node:crypto`。**节点身份的落盘不在本包**——在 `packages/node/src/host/nodeIdentity.ts`（`qianmoConfigPath` 派生、目录 0700 文件 0600、`wx` 独占创建**永不覆盖**、文件损坏是报错而不是重新生成；密钥就是身份，悄悄换一把等于这个节点悄悄变成另一个节点）。
 - `protocol.md` §10.1 原先记的「已知缺口」（同节点两个 agent 可登记不同公钥）由 **`@qianmo/registry`** 闭合：按节点段核对、在租先登记者胜、不建第二张索引表。
 
 ## 5. 边界与已知未做

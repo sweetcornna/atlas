@@ -53,6 +53,30 @@ function clientFor(path: string): TransportClient {
 }
 
 describe('closing a client that never finished dialling', () => {
+  test('close cancels every concurrent connect waiter immediately and forbids redial', async () => {
+    const socket = unusedSocketPath()
+    const client = clientFor(socket.path)
+    const settled: string[] = []
+    const first = client.connect(60_000).catch(error => {
+      settled.push(String(error))
+    })
+    const second = client.connect(60_000).catch(error => {
+      settled.push(String(error))
+    })
+    try {
+      await client.close()
+      await Promise.resolve()
+      expect(settled).toHaveLength(2)
+      expect(
+        settled.every(error => error.includes('closed before ready')),
+      ).toBe(true)
+      await Promise.all([first, second])
+      await expect(client.connect()).rejects.toThrow('closed')
+    } finally {
+      await client.close()
+      socket.cleanup()
+    }
+  })
   test('close() during an in-flight dial does not raise an unhandled error', async () => {
     const socket = unusedSocketPath()
     try {

@@ -939,6 +939,7 @@ describe('the cost cap (§5.5): tokens, persisted', () => {
     const input = request(asOf)
     const usage = meter()
     usage.charge(1)
+    const filesBeforeFailure = readdirSync(dirname(usagePath))
     writeFileSync(usagePath, 'not json')
     const embedder = scenarioEmbedder()
 
@@ -952,7 +953,7 @@ describe('the cost cap (§5.5): tokens, persisted', () => {
     expect(hybrid.retrievalEvents[0]?.type).toBe('semantic-error')
     expect(readFileSync(usagePath, 'utf8')).toBe('not json')
     expect(embedder.calls).toEqual([])
-    expect(readdirSync(dirname(usagePath))).toEqual(['usage.json'])
+    expect(readdirSync(dirname(usagePath))).toEqual(filesBeforeFailure)
   })
 })
 

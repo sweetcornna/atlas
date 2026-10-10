@@ -213,6 +213,7 @@ describe.skipIf(!hasOpenssl())('a reconnect picks up a rotated root', () => {
     // across the rotation — the listener could not tell if it changed
     // (F-8), so rotating it here would prove nothing.
     const dialerLeaf = oldGen.leaf('node-a')
+    const newDialerLeaf = newGen.leaf('node-a')
 
     // The dialer whose materials come off disk on every dial — the shape a
     // resident node uses, and the whole of rule 4.
@@ -225,11 +226,11 @@ describe.skipIf(!hasOpenssl())('a reconnect picks up a rotated root', () => {
       backoff: FAST_BACKOFF,
       tls: (): ClientTlsOptions => {
         reads += 1
-        return {
-          ca: readFileSync(caPath, 'utf8'),
-          cert: dialerLeaf.cert,
-          key: dialerLeaf.key,
-        }
+        const ca = readFileSync(caPath, 'utf8')
+        // Bun 1.4 checks the dialer's chain against the listener's root, so
+        // after the rotation the dialer presents a leaf from the new root.
+        const leaf = ca === newGen.ca ? newDialerLeaf : dialerLeaf
+        return { ca, cert: leaf.cert, key: leaf.key }
       },
     })
     clients.push(reloading)
@@ -256,7 +257,7 @@ describe.skipIf(!hasOpenssl())('a reconnect picks up a rotated root', () => {
     writeFileSync(caPath, newGen.ca)
     listen(newGen.leaf('node-b'), port)
 
-    await waitUntil(() => reloading.isReady(), 8_000)
+    await waitUntil(() => reads > 1 && reloading.isReady(), 8_000)
     expect(reads).toBeGreaterThan(1)
     // Read off the file, not off the closure: the last resolution really was
     // the rotated root.

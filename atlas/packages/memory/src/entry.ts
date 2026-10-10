@@ -129,6 +129,17 @@ export type MemoryEntry = {
   readonly retirement: MemoryRetirement | null
   /** Ids of the entries this one was distilled from (sedimentation provenance). */
   readonly derivedFrom: readonly string[]
+  /** Explicit replacement links; absent in pre-governance records. */
+  readonly supersedes?: readonly string[]
+  readonly supersedesWriter?: 'peer' | 'operator'
+  /** Identifies the only replacement allowed to undo this invalidation. */
+  readonly supersededBy?: string
+  /** Durable, immutable audit of cancellation; the original links remain. */
+  readonly supersedesUndo?: {
+    readonly at: string
+    readonly by: string
+    readonly reason: string
+  }
 }
 
 export type MemoryWriteInput = {
@@ -141,6 +152,7 @@ export type MemoryWriteInput = {
   readonly validAt?: Date
   readonly invalidAt?: Date | null
   readonly derivedFrom?: readonly string[]
+  readonly supersedes?: readonly string[]
 }
 
 /** Thrown when a write would put an inadmissible record on disk. */

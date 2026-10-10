@@ -203,7 +203,7 @@ export class AppServerClient {
     options: AppServerClientOptions,
   ): Promise<AppServerClient> {
     const socket = new WebSocket(options.url, {
-      // @ts-expect-error — Bun extension; not in lib.dom WebSocket types
+      // Bun supports headers on the WebSocket handshake.
       headers: { Authorization: `Bearer ${options.token}` },
     })
     await new Promise<void>((resolve, reject) => {

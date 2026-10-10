@@ -281,7 +281,7 @@ export class TransportClient implements TransportChannel {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private lastInboundAt = 0
-  private readyWaiters: Array<() => void> = []
+  private readyWaiters: Array<{ ready(): void; fail(error: Error): void }> = []
   private declaredPeerTypes: readonly string[] | undefined
   /** Proof that admitted the current socket; `null` while disconnected. */
   private peerAuthentication: HandshakeAuthentication | null = null
@@ -386,6 +386,13 @@ export class TransportClient implements TransportChannel {
     return this.peerAuthentication
   }
 
+  get authenticatedPeerNode(): string | null {
+    return this.peerAuthentication === 'signature' ||
+      this.peerAuthentication === 'credential_signature'
+      ? this.peerNode
+      : null
+  }
+
   /** Effective credential metadata adopted locally for the current peer. */
   get authenticatedCredential(): AuthenticatedCredential | null {
     return this.peerCredential
@@ -435,6 +442,8 @@ export class TransportClient implements TransportChannel {
    */
   connect(timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS): Promise<void> {
     if (this.state === 'ready') return Promise.resolve()
+    if (this.state === 'closed')
+      return Promise.reject(new Error('transport client closed'))
     return new Promise<void>((resolve, reject) => {
       // Bounded because retrying is unbounded by design: a peer that is merely
       // down keeps the backoff loop running for ten minutes, and a caller
@@ -447,19 +456,25 @@ export class TransportClient implements TransportChannel {
           new Error(`transport did not become ready within ${timeoutMs}ms`),
         )
       }, timeoutMs)
-      const waiter = (): void => {
+      const cleanup = (): void => {
         clearTimeout(timer)
-        resolve()
+        this.readyWaiters = this.readyWaiters.filter(w => w !== waiter)
+      }
+      const waiter = {
+        ready: (): void => {
+          cleanup()
+          resolve()
+        },
+        fail: (error: Error): void => {
+          cleanup()
+          reject(error)
+        },
       }
       this.readyWaiters.push(waiter)
-      const fail = (error: Error): void => {
-        clearTimeout(timer)
-        reject(error)
-      }
       // A dial already in flight (or a retry already scheduled) will settle
       // these waiters; opening a second socket would leave one orphaned.
       if (this.socket === null && this.reconnectTimer === null) {
-        this.openSocket(fail)
+        this.openSocket(waiter.fail)
       }
     })
   }
@@ -510,7 +525,8 @@ export class TransportClient implements TransportChannel {
       // only way to be sure the handle is gone when this promise resolves.
       socket.terminate()
     }
-    this.readyWaiters = []
+    for (const waiter of [...this.readyWaiters])
+      waiter.fail(new Error('transport client closed before ready'))
     this.outbox.close(new Error('transport client closed before receipt'))
     await Promise.resolve()
   }
@@ -739,7 +755,7 @@ export class TransportClient implements TransportChannel {
     this.outbox.replay()
     const waiters = this.readyWaiters
     this.readyWaiters = []
-    for (const resolve of waiters) resolve()
+    for (const waiter of waiters) waiter.ready()
     try {
       this.options.onReady?.()
     } catch (error) {
@@ -909,7 +925,7 @@ export class TransportClient implements TransportChannel {
   private die(error: Error, onFatal?: (error: Error) => void): void {
     this.state = 'closed'
     this.clearTimers()
-    this.readyWaiters = []
+    for (const waiter of [...this.readyWaiters]) waiter.fail(error)
     this.outbox.close(error)
     onFatal?.(error)
   }

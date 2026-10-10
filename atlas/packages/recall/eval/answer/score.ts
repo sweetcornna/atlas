@@ -23,6 +23,11 @@
  */
 
 import { handleMemoryAnswer, type CitationStatus } from '../../src/citation.js'
+import {
+  handleMemoryEvidenceAnswer,
+  type AnswerProtocol,
+} from '../../src/evidence-answer.js'
+import { injectedIds } from '../../src/recall.js'
 import type { RecallResult } from '../../src/recall.js'
 import { MEMORY_ANSWER_TOOL_NAME, RecallToolError } from '../../src/tool.js'
 import type { FileMemoryStore } from '@qianmo/memory'
@@ -116,6 +121,7 @@ export function answerHead(answer: string): string {
  * @param keyOf maps a store id to its corpus key.
  */
 export function judgeRound(params: {
+  readonly protocol?: AnswerProtocol
   readonly store: FileMemoryStore
   readonly result: RecallResult
   readonly response: AnswerResponse
@@ -135,11 +141,20 @@ export function judgeRound(params: {
       toolCall: null,
     }
   }
-  let handled: ReturnType<typeof handleMemoryAnswer>
+  let handled: ReturnType<typeof handleMemoryEvidenceAnswer>
   try {
     // `requireCitation` stays off, as on every production path: whether a
     // question has an answer in memory is exactly what is being measured.
-    handled = handleMemoryAnswer(store, result, call.input)
+    if (params.protocol === 'memory-evidence-v2') {
+      handled = handleMemoryEvidenceAnswer(
+        store,
+        injectedIds(result),
+        call.input,
+      )
+    } else {
+      const legacy = handleMemoryAnswer(store, result, call.input)
+      handled = { ...legacy, content: legacy.args.answer }
+    }
   } catch (error) {
     if (!(error instanceof RecallToolError)) throw error
     return {
@@ -172,7 +187,7 @@ export function judgeRound(params: {
     acceptedKeys: handled.ok
       ? handled.report.accepted.map(entry => keyOf(entry.id))
       : [],
-    answer: handled.args.answer,
+    answer: handled.content,
     rejection: handled.rejection,
     toolCall: call,
   }

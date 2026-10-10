@@ -16,8 +16,8 @@
 
 ```mermaid
 flowchart TD
-  outCaller["出站调用方<br/>src/cli/handlers/residentWake.ts<br/>demo/lib/ac3-loop-rate.ts"]
-  inCaller["入站调用方<br/>packages/activator/src/node.ts（唤醒与路由登记之前）<br/>src/services/qianmo/resident.ts #receive（写信箱之前，规则 L-1）"]
+  outCaller["出站调用方<br/>packages/node/src/commands/residentWake.ts<br/>demo/lib/ac3-loop-rate.ts"]
+  inCaller["入站调用方<br/>packages/activator/src/node.ts（唤醒与路由登记之前）<br/>packages/node/src/host/resident.ts #receive（写信箱之前，规则 L-1）"]
 
   subgraph pkg["packages/router/src"]
     router["router.ts · NodeRouter<br/>outbound() / inbound() / release()"]
@@ -79,7 +79,7 @@ flowchart TD
 
 - **定性：自研**（charter §3.3 C-4「基座信箱有配额但无跳数与循环概念」）。
 - [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.2「防循环」「限流 / 配额」两行判定为**部分（形态不同）**：基座有的是**结构性禁止团队嵌套**与**信箱存储配额 / 客户端重试预算**，不是跳数计数、回环检测或「单发送方对单目标的令牌桶」。
-- 代码层面：本包对基座 `src/` **零 import**，只依赖 `@qianmo/protocol`。
+- 代码层面：本包对对基座与其他包的 `src/` **零 import**，只依赖 `@qianmo/protocol`。
 - **去重表不在本包**：`@qianmo/transport` 的 `DedupTable` 本就以投递时限为表项 TTL，与本包判环表同一口径。再造一张只会让网络有两张表、一份契约（`src/index.ts` 头注释写明）。
 - P4.2 顺带给 `@qianmo/protocol` 补了两个函数：`isReplyType`（哪些类型是回答属线上契约）与 `advanceTraceparent`（§7.1 早就要求逐跳换 `parent-id`，此前无人实现）。
 

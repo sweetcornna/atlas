@@ -2,35 +2,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { join } from 'node:path'
-import { getMemoryBaseDir } from '../../../src/memdir/paths.js'
+import { memoryBaseDir } from '@qianmo/paths'
 import { type MemoryScope, validateScope } from './entry.js'
 
-/** Sub-directory of the base memory root that this package owns. */
+/** Sub-directory of the memory base directory that this package owns. */
 export const QIANMO_MEMORY_DIRNAME = 'memory'
 
 /**
  * Where the three tables live by default.
  *
- * Derived from the base's own memory-root helper, never assembled by hand. Two
+ * Derived from `@qianmo/paths`' `memoryBaseDir()`, never assembled by hand. Two
  * things follow from that, and both are the reason the rule exists
  * (`CLAUDE.md` §1.1②):
  *
- *   - The config root is identity-scoped: `~/.occ` normally, `~/.qianmo` under
- *     `OCC_IDENTITY=qianmo`, and either overridable via `OCC_CONFIG_DIR` /
- *     `CLAUDE_CONFIG_DIR`. A literal `join(homedir(), '.occ')` would resolve to
- *     one fixed directory and punch straight through the isolation a Qianmo
- *     node depends on.
- *   - `getMemoryBaseDir()` additionally honours `CLAUDE_CODE_REMOTE_MEMORY_DIR`,
- *     which is how a remote/sandboxed deployment redirects memory onto a
- *     persistent mount. For a resident node whose sandbox can be reset that is
- *     not a nicety: memory that ignored it would not survive a wake.
- *
- * The result is a sibling of the base's own `projects/<slug>/memory/` tree, not
- * a location inside it — see `mapping.ts` §2 for why that separation is load
- * bearing.
+ *   - The config root is overridable via `QIANMO_CONFIG_DIR`. A literal
+ *     `join(homedir(), '.qianmo')` would resolve to one fixed directory and
+ *     punch straight through the isolation a Qianmo node depends on.
+ *   - `memoryBaseDir()` additionally honours `QIANMO_MEMORY_DIR`, which is how
+ *     a remote/sandboxed deployment redirects memory onto a persistent mount.
+ *     For a resident node whose sandbox can be reset that is not a nicety:
+ *     memory that ignored it would not survive a wake.
  */
 export function defaultMemoryRoot(): string {
-  return join(getMemoryBaseDir(), QIANMO_MEMORY_DIRNAME)
+  return join(memoryBaseDir(), QIANMO_MEMORY_DIRNAME)
 }
 
 /**

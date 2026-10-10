@@ -8,7 +8,7 @@ import { join } from 'node:path'
 
 const PACKAGE_ROOT = join(import.meta.dir, '..')
 const SOURCE_ROOT = join(PACKAGE_ROOT, 'src')
-const REPOSITORY_ROOT = join(PACKAGE_ROOT, '..', '..')
+const REPOSITORY_ROOT = join(PACKAGE_ROOT, '..', '..', '..')
 const ACCEPTANCE_SCRIPT = join(REPOSITORY_ROOT, 'demo', 'ac6a-sandbox.sh')
 
 function source(): string {

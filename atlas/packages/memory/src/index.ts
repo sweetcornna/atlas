@@ -56,3 +56,5 @@ export {
   type MemoryQuery,
   type MemoryStoreOptions,
 } from './store.js'
+
+export { buildMemoryReview, type MemoryReviewOptions } from './review.js'

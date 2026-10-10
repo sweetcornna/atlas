@@ -28,7 +28,11 @@
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildRecallSystemPrompt } from '../../src/inject.js'
+import {
+  MEMORY_EVIDENCE_PROTOCOL_HASH,
+  type AnswerProtocol,
+} from '../../src/evidence-answer.js'
+import { answerPrompt } from './protocol.js'
 import { recall, type RecallResult } from '../../src/recall.js'
 import {
   CORPORA,
@@ -118,7 +122,9 @@ export function answerPlanOf(
   return {
     ...run,
     corpora: (Object.keys(CORPORA) as CorpusId[]).flatMap(id =>
-      plan.tiers[id].length === 0 ? [] : [{ id, tiers: [...plan.tiers[id]] }],
+      (plan.tiers[id] ?? []).length === 0
+        ? []
+        : [{ id, tiers: [...(plan.tiers[id] ?? [])] }],
     ),
     repetitions: plan.repetitions,
     arms: [...plan.arms],
@@ -140,6 +146,8 @@ const protocolOf = (plan: AnswerPlan) =>
   })
 
 type AnswerRunDeps = {
+  /** Default exists for historical library/replay callers. CLI live sets v2. */
+  readonly protocol?: AnswerProtocol
   readonly transports: readonly AnswerTransport[]
   readonly retrievers: Readonly<Partial<Record<Arm, ArmRetriever>>>
   readonly ledger: TokenLedger
@@ -227,6 +235,15 @@ export function checkPlan(plan: AnswerPlan, prereg: Preregistration): void {
   }
   for (const { id, tiers } of plan.corpora) {
     const corpus = CORPORA[id]
+    if (
+      (id === 'memory-quality-v2' &&
+        corpus.digest() !== prereg.corpus.memoryQualityV2Sha256) ||
+      (id === 'memory-quality-docs-v2' &&
+        corpus.digest() !== prereg.corpus.memoryQualityDocsV2Sha256)
+    )
+      throw new Error(
+        'sealed quality corpus must match the separately frozen preregistration hash',
+      )
     for (const tier of tiers) {
       if (!corpus.tiers.includes(tier)) {
         throw new Error(`answer eval: ${id} has no tier ${tier}`)
@@ -378,6 +395,7 @@ export async function runAnswerEval(
   plan: AnswerPlan,
   deps: AnswerRunDeps,
 ): Promise<AnswerReport> {
+  const protocol = deps.protocol ?? 'legacy-v1'
   checkPlan(plan, deps.prereg.values)
   if (plan.arms.includes('m1') && deps.retrievers.m1 === undefined) {
     throw new Error(
@@ -431,6 +449,10 @@ export async function runAnswerEval(
 
     const done = new Map<string, CallRecord>()
     for (const record of readCallLog(callsPath)) {
+      if ((record.answerProtocol ?? 'legacy-v1') !== protocol)
+        throw new Error(
+          'answer eval: cannot resume calls from another answer protocol',
+        )
       if (!planned.has(record.key)) {
         throw new Error(
           `answer eval: ${callsPath} holds ${record.key}, which this plan does not; use another output directory`,
@@ -483,9 +505,11 @@ export async function runAnswerEval(
       if (transport === undefined) {
         throw new Error(`answer eval: no transport ${unit.provider}`)
       }
-      const system = buildRecallSystemPrompt(result)
+      const prompt = answerPrompt(protocol, result, prep.query.question)
+      const system = prompt.system
       const judge = (response: AnswerResponse, key: string) =>
         judgeRound({
+          protocol,
           store: tier.materialised.store,
           result,
           response,
@@ -504,9 +528,9 @@ export async function runAnswerEval(
           usage: response.usage,
         })
 
-      const firstTurns: Turn[] = [{ role: 'user', text: prep.query.question }]
+      const firstTurns: readonly Turn[] = prompt.turns
       const firstKey = callKey(unit, arm, 1)
-      const firstRequest = { callKey: firstKey, system, turns: firstTurns }
+      const firstRequest = { ...prompt, callKey: firstKey }
       // Hold room for a second round before the first goes out; a call that
       // could not finish is not started (TokenCapReached from here).
       const hold = deps.ledger.hold(
@@ -533,6 +557,9 @@ export async function runAnswerEval(
           deps.ledger.release(hold)
           holding = false
           const secondResponse = await exchange(transport, {
+            ...(prompt.protocol === undefined
+              ? {}
+              : { protocol: prompt.protocol }),
             callKey: secondKey,
             system,
             turns: [
@@ -561,6 +588,7 @@ export async function runAnswerEval(
           keep(final, secondResponse)
         }
         return {
+          ...(protocol === 'legacy-v1' ? {} : { answerProtocol: protocol }),
           key: recordKey(unit, arm),
           unit,
           arm,
@@ -651,7 +679,11 @@ export async function runAnswerEval(
       const preregistered =
         id === 'synthetic-v1'
           ? deps.prereg.values.corpus.syntheticV1Sha256
-          : deps.prereg.values.corpus.docsDevV1Sha256
+          : id === 'memory-quality-v2'
+            ? (deps.prereg.values.corpus.memoryQualityV2Sha256 ?? null)
+            : id === 'memory-quality-docs-v2'
+              ? (deps.prereg.values.corpus.memoryQualityDocsV2Sha256 ?? null)
+              : deps.prereg.values.corpus.docsDevV1Sha256
       return {
         id,
         sha256: CORPORA[id].digest(),
@@ -665,7 +697,11 @@ export async function runAnswerEval(
     })
     const tiersWith = (corpus: string, mode: string) =>
       prepared
-        .filter(p => p.corpus === corpus && p.mode === mode)
+        .filter(
+          p =>
+            p.corpus === corpus &&
+            (p.mode === mode || (mode === 'ranked' && p.mode === 'mixed')),
+        )
         .map(p => p.tier)
     const gates = evaluateGates(counted, {
       arms: plan.arms,
@@ -699,10 +735,14 @@ export async function runAnswerEval(
       phase: plan.phase,
       finishedAt: now().toISOString(),
       protocol: {
+        version: protocol,
+        ...(protocol === 'legacy-v1'
+          ? {}
+          : { sha256: MEMORY_EVIDENCE_PROTOCOL_HASH }),
         arms: plan.arms,
         repetitions: plan.repetitions,
         concurrency: plan.concurrency,
-        placement: 'system-prompt',
+        placement: protocol === 'legacy-v1' ? 'system-prompt' : 'user-message',
         requireCitation: false,
         secondRoundAfterRejection: true,
         seedControl: 'uncontrolled',

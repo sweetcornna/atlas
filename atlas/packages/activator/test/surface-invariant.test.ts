@@ -23,7 +23,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC_DIR = join(import.meta.dir, '..', 'src')
-const REPO_ROOT = join(import.meta.dir, '..', '..', '..')
+const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..')
 
 function sourceFiles(): string[] {
   return readdirSync(SRC_DIR)
@@ -189,7 +189,7 @@ describe('nothing key-shaped is committed', () => {
     'demo/lib/p31-send.ts',
     'demo/ac6a-sandbox.sh',
     'demo/lib/ac6a-sandbox.ts',
-    'scripts/qianmo-programming-tasks.ts',
+    'atlas/scripts/qianmo-programming-tasks.ts',
   ]
 
   test('the sandbox daemon demo artefacts all exist to be scanned', () => {

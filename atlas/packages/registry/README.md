@@ -27,7 +27,7 @@ flowchart TD
   end
 
   protocol["@qianmo/protocol<br/>assertAddress · formatAddress<br/>isNodePublicKey · TimeJumpGate"]
-  paths["基座 src/config/paths.ts<br/>occConfigPath()"]
+  paths["@qianmo/paths<br/>qianmoConfigPath()"]
 
   caller -->|HTTP| http
   caller -->|进程内| registry
@@ -80,7 +80,7 @@ flowchart TD
 - **定性：部分**（charter §3.3 C-2）——基座的 Agent Teams 有单机 roster 与按名信箱寻址；**v2.5 勘误**：跨主机确实不支持，但同主机跨进程 / 跨会话是支持的。跨节点这一层是我方新建。
 - 逐项缺口见 [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.2「注册与发现」「按名寻址」两行：**跨节点注册中心、心跳租约、状态持久化全无**。
 - 整体关系定性为**上层封装**（P0.5 结论，charter §5.5）。
-- 代码层面：本包只从基座取一样东西——`store.ts` 用 `src/config/paths.ts` 的 `occConfigPath()` 派生状态文件路径。这是 CLAUDE.md §1.1② 的硬规则，不得改成手拼 `~/.occ`。
+- 代码层面：本包只从 `@qianmo/paths` 取一样东西——`store.ts` 用 `@qianmo/paths` 的 `qianmoConfigPath()` 派生状态文件路径。这是 CLAUDE.md §1.1② 的硬规则，不得改成手拼 `~/.qianmo`。
 - 历史：本包是旧洁净室三包之一，按负责人 2026-08-11 决议**原样复活**（charter §5.5），P2.1 在其上补齐复合键、`publicKey`、状态标记与持久化。
 
 ## 5. 边界与已知未做

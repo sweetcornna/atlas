@@ -213,9 +213,9 @@ export interface TransportLinksOptions {
    * Applied **only to a target the directory can name** — `nodeOf` has to
    * answer before there is anything to check a listener's signature against,
    * and `TransportClient` refuses the pair at construction rather than
-   * signing into the void. A directory entry with no node segment therefore
-   * dials on the pre-shared key exactly as before, which is also §8.2 phase
-   * ①'s coexistence rule seen from the dialling side.
+   * signing into the void. In legacy optional mode a directory entry with no node segment can still
+   * use the pre-shared key. With required=true, a missing node or fixed public
+   * key is rejected before dialing; there is no unsigned fallback.
    *
    * The dialling side is the half that matters here: §11 T-B′'s second
    * defence is a *dialer* checking that the endpoint it reached can sign as
@@ -417,6 +417,12 @@ export class TransportLinks implements ReadyProbe, ForwardTarget {
     const { node, psk, tls, signing, keepAliveIntervalMs, backoff, onReply } =
       this.#options
     const peerNode = this.#directory.nodeOf(sandboxName)
+    if (
+      signing?.required &&
+      (peerNode === undefined ||
+        signing.directory.publicKeyOf(peerNode) === null)
+    )
+      throw new Error('strict activator target has no fixed public key')
     return {
       endpoint,
       node,

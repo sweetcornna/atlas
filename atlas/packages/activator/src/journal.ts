@@ -38,7 +38,7 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 import type { QianmoMessage } from '@qianmo/protocol'
-import { occConfigPath } from '../../../src/config/paths.js'
+import { qianmoConfigPath } from '@qianmo/paths'
 import { ActivatorEventType, type AuditLog } from './audit.js'
 
 /** A request was taken in and is now this component's responsibility. */
@@ -76,12 +76,12 @@ export interface RequestJournal {
 /**
  * Where the journal lives by default.
  *
- * Via {@link occConfigPath}, never `join(homedir(), ...)`: the config root is
+ * Via {@link qianmoConfigPath}, never `join(homedir(), ...)`: the config root is
  * identity-scoped and overridable, and a hand-built path resolves to one fixed
  * directory, punching through the isolation the whole node identity rests on.
  */
 export function defaultJournalPath(): string {
-  return occConfigPath('activator', 'inflight.ndjson')
+  return qianmoConfigPath('activator', 'inflight.ndjson')
 }
 
 const DIR_MODE = 0o700

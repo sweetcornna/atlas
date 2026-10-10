@@ -97,7 +97,7 @@ flowchart LR
 
 - **定性**：**完全自研**。`docs/dev/base-adoption.md` §3.1「备份与不可删除保护」行的判定就是「无」，基座提供的一栏是空的。
 - **不采用沙箱平台自带归档**：那是**移动而非备份**（restore 后即删源，全程单副本、无时间点），对 AC-6(b) 零覆盖——判定见 charter §3.2 R-4 的 v2.2 补注与 `docs/dev/selection-m0.md` §4。
-- **本包不改基座核心**；接线点在 `src/services/qianmo/resident.ts`（常驻宿主按 agent 建 `BackupScheduler`）。基座改造点全量清单见 `docs/dev/base-modifications.md`。
+- **本包不改基座核心**；接线点在 `packages/node/src/host/resident.ts`（常驻宿主按 agent 建 `BackupScheduler`）。基座改造点全量清单见 `docs/dev/base-modifications.md`。
 
 ---
 
@@ -105,7 +105,7 @@ flowchart LR
 
 | 事项 | 一行摘要 | 指针 |
 | --- | --- | --- |
-| 常驻节点里的任务前快照**不等待** | `await` 它就是把一次 `tar` 挡在 ack 前面，而 AC-2 的 ack 线是已量过的预算；因此语义是「任务开始前后」而非「开始的那一瞬」。要更强保证得由自己掌握任务生命周期的调用方去 `await beforeTask` | `src/services/qianmo/resident.ts` `#snapshotBeforeTask` 注释 |
+| 常驻节点里的任务前快照**不等待** | `await` 它就是把一次 `tar` 挡在 ack 前面，而 AC-2 的 ack 线是已量过的预算；因此语义是「任务开始前后」而非「开始的那一瞬」。要更强保证得由自己掌握任务生命周期的调用方去 `await beforeTask` | `packages/node/src/host/resident.ts` `#snapshotBeforeTask` 注释 |
 | 沙箱边界本机测不到 | 本机测试两侧同进程，测的是**凭据与动词面**，不是挂载；真机部署仍须把 store 放在沙箱够不到的位置 | roadmap P4.4 行的「边界」栏 |
 | M0 不做保留策略与轮转 | 将来要做也归**宿主侧工具**，不归这条入站路径上的任何方法 | 章程 N-12；`src/store.ts` 顶部注释 |
 | 依赖外部 `tar` | 用 tar 而不是自己走目录，是为了可执行位 / 符号链接 / `.git` 里的空目录这三件 `git status` 会报的事；代价是一个真依赖，故有 `tarAvailable()` | `src/archive.ts` 顶部注释 |

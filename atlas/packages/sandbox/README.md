@@ -16,7 +16,7 @@
 ```mermaid
 flowchart TD
   driver["demo/lib/ac6a-sandbox.ts（真机驱动，不在本包）<br/>docker inspect · cgroup 计数器 · 沙箱内 execCommand"]
-  path["src/services/qianmo/sandboxAudit.ts<br/>defaultSandboxAuditPath() ← occConfigPath()"]
+  path["packages/node/src/host/sandboxAudit.ts<br/>defaultSandboxAuditPath() ← qianmoConfigPath()"]
 
   subgraph pkg["packages/sandbox/src（4 个文件）"]
     contracts["contracts.ts（纯类型）<br/>REQUIRED_RUNTIME = runsc · WORKSPACE_MOUNT<br/>SandboxBirthObservation · 13 个 BirthContractFailure<br/>SandboxAuditInput 的 7 支联合"]
@@ -46,7 +46,7 @@ flowchart TD
 - **`REQUIRED_RUNTIME` / `WORKSPACE_MOUNT`** —— 两个契约常量。
 - **类型**：`SandboxBirthObservation` / `SandboxMountObservation` / `BirthContractFailure` / `BirthContractResult` / `SandboxAuditInput` / `SandboxAuditEvent` / `SandboxAuditIntegrityIssue` / `SandboxAuditQueryResult` / `SandboxWriteTarget`。
 
-审计文件的**默认路径不在本包**——由调用方注入，默认值在基座侧的 `src/services/qianmo/sandboxAudit.ts`（`occConfigPath('sandbox', 'audit.ndjson')`）。这样本包连路径约定都不继承。
+审计文件的**默认路径不在本包**——由调用方注入，默认值在基座侧的 `packages/node/src/host/sandboxAudit.ts`（`qianmoConfigPath('sandbox', 'audit.ndjson')`）。这样本包连路径约定都不继承。
 
 ## 3. 最容易被改坏的五条不变式
 
@@ -64,7 +64,7 @@ flowchart TD
 
 - **定性：部分**（charter §3.1 A-1）——基座有工具权限模型与 hooks 可作第一道，**容器化与路径白名单仍需自研**。
 - [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.1「工具权限与审批」行：基座**无容器化沙箱、无路径白名单、无宿主只读挂载、无 CPU/内存上限**，AC-6(a) 仍需自研。
-- 代码层面：本包对基座 `src/` **零 import**，只用 `node:fs` / `node:path` / `node:crypto`。连审计文件的默认路径都由调用方注入。
+- 代码层面：本包对对基座与其他包的 `src/` **零 import**，只用 `node:fs` / `node:path` / `node:crypto`。连审计文件的默认路径都由调用方注入。
 - 沙箱平台本身（Dormice + gVisor）是**外部系统**，不是基座；宿主侧的绑定加固与前向守卫归 P0.7 的 `scripts/ops/`。
 
 ## 5. 边界与已知未做

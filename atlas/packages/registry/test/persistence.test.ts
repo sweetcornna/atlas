@@ -64,17 +64,17 @@ function readState(): Record<string, unknown> {
 }
 
 describe('state file location', () => {
-  test('default path is derived from the occ config root, not hand-assembled', () => {
-    const previous = process.env['OCC_CONFIG_DIR']
-    process.env['OCC_CONFIG_DIR'] = directory
+  test('default path is derived from the config root, not hand-assembled', () => {
+    const previous = process.env['QIANMO_CONFIG_DIR']
+    process.env['QIANMO_CONFIG_DIR'] = directory
     try {
-      // Proves the path follows `occConfigPath`: overriding the config root
-      // moves the state file with it. A `join(homedir(), '.occ')` literal
+      // Proves the path follows `qianmoConfigPath`: overriding the config root
+      // moves the state file with it. A `join(homedir(), '.qianmo')` literal
       // would ignore the override and keep pointing at the real home.
       expect(defaultRegistryStatePath()).toBe(statePath)
     } finally {
-      if (previous === undefined) delete process.env['OCC_CONFIG_DIR']
-      else process.env['OCC_CONFIG_DIR'] = previous
+      if (previous === undefined) delete process.env['QIANMO_CONFIG_DIR']
+      else process.env['QIANMO_CONFIG_DIR'] = previous
     }
   })
 

@@ -1,15 +1,12 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {
-  redactSecrets,
-  scanForSecrets,
-} from '@open-claude-code/tool-runtime/secretScanner.js'
 import { readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { runGit } from './git.js'
 import { isSha } from './manifest.js'
 import { redactHandoffSecrets } from './redact.js'
+import { REDACTED, redactSecrets, scanForSecrets } from './secrets.js'
 import { handoffIdentityEnv } from './shadow.js'
 
 /**
@@ -31,7 +28,7 @@ import { handoffIdentityEnv } from './shadow.js'
  * A transcript routinely contains a key the model read somewhere. Refusing
  * such a session would make most real sessions impossible to hand off, so
  * with {@link SessionCommitOptions.redact} the bytes go through the same
- * gitleaks rule subset as the shadow commit's scan (`scanForSecrets`), and
+ * gitleaks rule subset as the shadow commit's scan (`secrets.ts`), and
  * every hit is replaced with `[REDACTED]` (`redactSecrets`); then the
  * handoff's own broader rules run (`redact.ts`: generic `sk-` keys, console
  * tokens, `Authorization: Bearer`, `"api_key"` fields → `***`), all before
@@ -109,8 +106,6 @@ function assertEntryName(name: string): void {
     throw new TypeError(`unusable session entry name: ${JSON.stringify(name)}`)
   }
 }
-
-const REDACTED = '[REDACTED]'
 
 function occurrences(text: string, needle: string): number {
   let count = 0

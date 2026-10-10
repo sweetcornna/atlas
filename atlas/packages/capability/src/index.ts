@@ -32,6 +32,11 @@
 
 export {
   AUTHZ_DECISION_DOMAIN,
+  AUTHZ_REVOKE_DOMAIN,
+  signAuthzRevoke,
+  parseAuthzRevoke,
+  verifyAuthzRevokeSignature,
+  type AuthzRevoke,
   AUTHZ_REQUEST_DOMAIN,
   MAX_AUTHZ_WINDOW_MS,
   authzDigest,

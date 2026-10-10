@@ -18,7 +18,7 @@
 ```mermaid
 flowchart TB
   subgraph base["基座（只读依赖，不改核心）"]
-    baseDir["src/memdir/paths.ts<br/>getMemoryBaseDir()"]
+    baseDir["src/memdir/paths.ts<br/>memoryBaseDir()"]
     baseType["src/memdir/memoryTypes.ts<br/>MemoryType"]
     baseScan["src/memdir/frontmatter + scanMemoryFiles<br/>（互操作断言对象）"]
   end
@@ -82,7 +82,7 @@ flowchart TB
 | `MemoryValidationError` | 写入前的规约失败：空标题 / 非法标签 / 非法 scope 段 / 时间轴倒置 |
 | `serializeEntry` / `parseEntry` / `MemoryParseError` | 落盘格式的两端；值一律 JSON 编码，兼作合法 YAML 标量 |
 | `MemoryEventRecorder` / `MemoryEventType` / `MemoryEvent` / `MemoryEventDetail` / `MemoryEventSink` / `DEFAULT_EVENT_CAPACITY` | 扫描失败的显式通道（有界环形，默认 256 条） |
-| `defaultMemoryRoot()` / `scopeDir()` / `QIANMO_MEMORY_DIRNAME` | 路径派生；根目录来自基座 `getMemoryBaseDir()`，不手工拼 |
+| `defaultMemoryRoot()` / `scopeDir()` / `QIANMO_MEMORY_DIRNAME` | 路径派生；根目录来自 `@qianmo/paths` 的 `memoryBaseDir()`，不手工拼 |
 | `BASE_MEMORY_TYPE_BY_LAYER` | 层 → 基座四类型的声明表（`project` 有对应，`working` / `baseline` 为 `null`） |
 
 ---
@@ -94,7 +94,7 @@ flowchart TB
 | 1 | **`revoke` 与 `invalidate` 是两个独立操作**：前者动摄取轴（撤下记录，任何 `asOf` 都不再召回），后者动事件轴（事实失效但记录仍 live，问过去仍命中） | 合并成一个「废止」，记忆系统开始与自己的历史矛盾——要么问过去也召不回，要么撤下的记录还在答题 | `test/revocation.test.ts`：`a revoked entry stops being recalled — from a fresh store, at any asOf` / `an invalidated fact leaves recall for now but still answers about the past` |
 | 2 | **单文件损坏只损失一条记录，不拖垮整次 `query`**；同一个坏文件被 `getEntry(id)` 点名时**必须抛错**而不是返回 `null` | 前者一改回抛错，唤醒路径上「节点每次醒来一条记忆都召回不到」（P2.3 评审实测打回的正是这处）；后者一改成 `null`，AC-4 的引用核验会把真条目判成伪造 | `test/resilience.test.ts`：`the healthy records are still recalled, and query does not throw` / `the named record being corrupt is an error, not a null` |
 | 3 | **废止是标记不是删除**：`expiredAt` + `retirement` 写回原文件，文件永不 unlink；审计用 `includeRetired: true` 取回，连同「谁、为什么」 | 改成真删，章程 §1.5「可人工废止」从可审计变成破坏性，且审计最该抓的那类事件（记录悄悄不见了）恰好抓不到 | `test/revocation.test.ts`：`the revoked entry is still there for an audit, with who and why` / `revoking twice is refused rather than rewriting the first reason` |
-| 4 | **根目录只从基座 `getMemoryBaseDir()` 派生，scope 段走白名单正则**（首字符不得为点，故 `.`/`..` 及一切遍历被排除） | 手拼 `join(homedir(), '.occ')` 会击穿身份隔离与 `CLAUDE_CODE_REMOTE_MEMORY_DIR` 持久化挂载（醒来即无记忆）；放宽正则则把跨节点消息里的 `projectKey` 变成路径遍历面（T-7） | `test/paths.test.ts`（三条）+ `test/schema.test.ts`：`scope keys become path segments, so they are whitelisted` / `rejects a traversal arriving through a query filter too` |
+| 4 | **根目录只从 `@qianmo/paths` 的 `memoryBaseDir()` 派生，scope 段走白名单正则**（首字符不得为点，故 `.`/`..` 及一切遍历被排除） | 手拼 `join(homedir(), '.qianmo')` 会击穿 `QIANMO_CONFIG_DIR` 隔离与 `QIANMO_MEMORY_DIR` 持久化挂载（醒来即无记忆）；放宽正则则把跨节点消息里的 `projectKey` 变成路径遍历面（T-7） | `test/paths.test.ts`（三条）+ `test/schema.test.ts`：`scope keys become path segments, so they are whitelisted` / `rejects a traversal arriving through a query filter too` |
 | 5 | **落盘格式对基座保持可读**：`name` / `description` / `type` 三键与基座逐字一致，阡陌自有字段一律 `qm_*` 命名空间；排序确定（`createdAt` 倒序，同秒按 id），不依赖目录读取顺序 | 改键名 / 加非命名空间字段，基座解析器与 manifest 立刻读不动；排序改成依赖目录顺序，评审复现出的引用会指向与 agent 所见不同的记录 | `test/frontmatter.test.ts`：`base parseFrontmatter sees the base's own three keys` / `base scanMemoryFiles builds a usable manifest over a Qianmo layer dir`；`test/schema.test.ts`：`ordering is newest ingest first, ties broken by id — not by directory order` |
 
 ---
@@ -102,9 +102,9 @@ flowchart TB
 ## 4. 与基座的关系
 
 - **定性**：**上层封装 + 共用文件格式**（不是替换，也不是第二套并行存储）。判定与三条否决依据见 roadmap P2.3 行与 `src/mapping.ts` 顶部注释 §2；基座起点为「部分」的依据见 `docs/dev/base-adoption.md` §3.1「分层记忆」行。
-- **复用了什么**：基座记忆文件格式与前言契约、`getMemoryBaseDir()` 路径派生（含 `OCC_IDENTITY` / `OCC_CONFIG_DIR` / `CLAUDE_CODE_REMOTE_MEMORY_DIR`）、`MemoryType` 类型对齐。
+- **复用了什么**：基座记忆文件格式与前言契约、`memoryBaseDir()` 路径派生（`@qianmo/paths`：`QIANMO_MEMORY_DIR` > `QIANMO_CONFIG_DIR`）、`MemoryType` 类型对齐。
 - **没有复用什么**：基座召回路径 `findRelevantMemories()` 是模型调用，与章程 N-8「M0 只做确定性检索」冲突，本包的 `query` 不含任何模型。
-- **改了基座吗**：没有——本包只 `import type` / `import` 基座既有导出，未改基座核心文件。基座改造点的全量清单见 `docs/dev/base-modifications.md`。
+- **改了基座吗**：没有——本包不 import 基座模块：`MemoryType` 联合在 `mapping.ts` 内联，路径来自 `@qianmo/paths`。基座改造点的全量清单见 `docs/dev/base-modifications.md`。
 
 ---
 
@@ -144,4 +144,12 @@ bun test tests/integration/qianmo-memory-recall.test.ts   # 与 recall 的集成
 
 1. `revoke` 和 `invalidate` 各自动哪一根时间轴？给一条 `validAt=T1`、`invalidAt=T2` 的记录，分别用 `asOf<T1`、`T1<asOf<T2`、`asOf>T2` 查，各能不能召回？如果这条记录被 `revoke` 了呢？为什么这两个操作**不能**合并成一个「废止」？
 2. 一次 `query` 扫到一个被手改坏的 `.md` 文件会发生什么？同一个文件被 `getEntry(id)` 点名要，又会发生什么？这两者为什么必须相反——各自不这么做的话，分别撞上哪条验收标准？（提示：一条是 P2.3 评审打回项，一条关系到 AC-4 的引用核验）
-3. 为什么阡陌的三层不直接写进基座的记忆目录、映射成基座四类型？说出三条否决依据中的至少两条，并指出各自在基座代码里的位置。另外：`defaultMemoryRoot()` 为什么必须走 `getMemoryBaseDir()` 而不能自己拼路径——列出两个会因此坏掉的部署场景。
+3. 为什么阡陌的三层不直接写进基座的记忆目录、映射成基座四类型？说出三条否决依据中的至少两条，并指出各自在基座代码里的位置。另外：`defaultMemoryRoot()` 为什么必须走 `memoryBaseDir()` 而不能自己拼路径——列出两个会因此坏掉的部署场景。
+
+## 显式替代与只读复查（P16.9 / P16.10）
+
+`write({ ...input, supersedes: [oldId] }, 'operator')` 在新条目 `validAt` 结束同 scope 旧条目的有效期，保留过去的 asOf 召回。默认 writer 为 `peer`，只能取代 `session` / `agent` 来源，不能借 `source.kind` 伪造 operator 权限；`user` / `archive` / `import` 受到高信任保护。调用端只把可信本机操作者映射为 operator。
+
+`undoSupersedes(newId, { scope, writer: 'operator', by, reason })` 保存 `qm_supersedes_undo` 审计后恢复旧有效期，不清除 revoke 或其他替代者的标记。替代与撤销的持久意图都放在 Markdown；根下 `.mutation.sqlite` 只用作跨进程自动释放的 OS 锁。启动和每次修改前幂等恢复中断操作，未解决关系记录事件并将相关条目从常规召回排除。文件不删除。
+
+`new FileMemoryStore({ root, readOnly: true })` 禁止一切修改及自动恢复，适合报告。纯 `buildMemoryReview(entries, { asOf, staleDays })` 产生稳定的陈旧与潜在冲突候选：默认 90 天按入库时间计龄，近似文本仅提示人审，`semanticPairs` 可传入已经计算的语义相似度。报告本身不发模型请求、不变更索引或条目。对应 CLI 为 `qm memory review`、`qm memory add --supersedes` 与 `qm memory undo-supersedes`（均要求显式 agent/context）。

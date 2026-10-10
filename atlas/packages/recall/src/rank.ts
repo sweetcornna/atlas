@@ -9,9 +9,11 @@
  *   1. **No model in the path.** Charter N-8 trades recall quality for
  *      explainability in M0. Every number below can be recomputed by hand from
  *      the entry and the question.
- *   2. **Relevance dominates recency.** Decay is a *multiplier* on relevance,
- *      never an addend, so a fresh entry that matches nothing can never
- *      outrank a stale entry that matches. An additive freshness bonus would
+ *   2. **A miss never outranks a hit merely by freshness.** Decay multiplies
+ *      relevance, never adds to it. Among non-zero matches, however, age can
+ *      reverse relevance order: a 30-day-old score of 4 ties a fresh score of
+ *      2. P16.13 keeps this policy frozen for the M0/M1 comparison; it does
+ *      not claim relevance always dominates recency. An additive bonus would
  *      make the top of the list drift as wall-clock time passes, which for a
  *      resident node that wakes weeks later is a silent recall regression.
  *   3. **Total order, no ties left to chance.** Score, then ingest time, then

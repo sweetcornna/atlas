@@ -23,6 +23,10 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { RecordedVectors } from './semantic.js'
+import {
+  MEMORY_EVIDENCE_PROTOCOL_HASH,
+  type AnswerProtocol,
+} from '../../src/evidence-answer.js'
 import type { AnswerRequest, AnswerResponse, AnswerTransport } from './types.js'
 
 export const FIXTURE_SCHEMA = 'qianmo-recall-answer-fixture/v1'
@@ -34,6 +38,8 @@ export type Exchange = {
 }
 
 type ReplayFixture = {
+  readonly answerProtocol?: AnswerProtocol
+  readonly protocolSha256?: string
   readonly schema: typeof FIXTURE_SCHEMA
   readonly exchanges: Readonly<Record<string, Exchange>>
   /** The M1 arm's vectors; absent in a fixture of an M0-only run. */
@@ -67,7 +73,15 @@ class ReplayMismatch extends Error {
 
 function requestDigest(request: AnswerRequest): string {
   return createHash('sha256')
-    .update(JSON.stringify({ system: request.system, turns: request.turns }))
+    .update(
+      JSON.stringify({
+        ...(request.protocol === undefined
+          ? {}
+          : { protocol: request.protocol }),
+        system: request.system,
+        turns: request.turns,
+      }),
+    )
     .digest('hex')
 }
 
@@ -75,6 +89,9 @@ export function readFixture(path: string): ReplayFixture {
   const fixture = JSON.parse(readFileSync(path, 'utf8')) as ReplayFixture
   if (
     fixture.schema !== FIXTURE_SCHEMA ||
+    (fixture.answerProtocol !== undefined &&
+      fixture.answerProtocol !== 'legacy-v1' &&
+      fixture.answerProtocol !== 'memory-evidence-v2') ||
     typeof fixture.exchanges !== 'object' ||
     (fixture.embeddings !== undefined && !isRecordedVectors(fixture.embeddings))
   ) {
@@ -99,7 +116,20 @@ export function replayTransport(
     readonly maxOutputTokens: number
   },
 ): AnswerTransport {
+  const recordedProtocol = fixture.answerProtocol ?? 'legacy-v1'
+  if (
+    recordedProtocol === 'memory-evidence-v2' &&
+    fixture.protocolSha256 !== MEMORY_EVIDENCE_PROTOCOL_HASH
+  )
+    throw new Error(
+      'replay: recorded answer protocol hash differs from the current protocol',
+    )
   const lookup = (request: AnswerRequest): Exchange => {
+    if ((request.protocol ?? 'legacy-v1') !== recordedProtocol)
+      throw new ReplayMismatch(
+        request.callKey,
+        'answer protocol differs from the recorded one',
+      )
     const exchange = fixture.exchanges[request.callKey]
     if (exchange === undefined) {
       throw new ReplayMismatch(request.callKey, 'not in the fixture')

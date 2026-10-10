@@ -54,3 +54,9 @@ export {
   type TrailReaderStats,
   type TrailSnapshot,
 } from './reader.js'
+
+export {
+  buildAuthorizationReport,
+  type AuthorizationAction,
+  type AuthorizationRow,
+} from './authorizationReport.js'

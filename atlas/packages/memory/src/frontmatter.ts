@@ -83,6 +83,16 @@ export function serializeEntry(entry: MemoryEntry): string {
     `qm_retired_by: ${scalar(entry.retirement?.by ?? null)}`,
     `qm_derived_from: ${sequence(entry.derivedFrom)}`,
   )
+  if (entry.supersedes !== undefined) {
+    lines.push(`qm_supersedes: ${sequence(entry.supersedes)}`)
+    lines.push(
+      `qm_supersedes_writer: ${scalar(entry.supersedesWriter ?? 'peer')}`,
+    )
+  }
+  if (entry.supersededBy !== undefined)
+    lines.push(`qm_superseded_by: ${scalar(entry.supersededBy)}`)
+  if (entry.supersedesUndo !== undefined)
+    lines.push(`qm_supersedes_undo: ${JSON.stringify(entry.supersedesUndo)}`)
   return `${FENCE}${lines.join('\n')}${CLOSING}${entry.body}`
 }
 
@@ -225,6 +235,48 @@ function readRetirement(
   }
 }
 
+function readGovernance(
+  fields: Fields,
+): Pick<
+  MemoryEntry,
+  'supersedes' | 'supersedesWriter' | 'supersededBy' | 'supersedesUndo'
+> {
+  const result: {
+    supersedes?: readonly string[]
+    supersedesWriter?: 'peer' | 'operator'
+    supersededBy?: string
+    supersedesUndo?: { at: string; by: string; reason: string }
+  } = {}
+  if (fields.has('qm_supersedes')) {
+    result.supersedes = requireStringList(fields, 'qm_supersedes')
+    result.supersedesWriter = requireMember(fields, 'qm_supersedes_writer', [
+      'peer',
+      'operator',
+    ] as const)
+  }
+  const owner = optionalString(fields, 'qm_superseded_by')
+  if (owner !== null) result.supersededBy = owner
+  if (fields.has('qm_supersedes_undo')) {
+    const undo = fields.get('qm_supersedes_undo')
+    if (
+      typeof undo !== 'object' ||
+      undo === null ||
+      !('at' in undo) ||
+      !('by' in undo) ||
+      !('reason' in undo) ||
+      typeof undo.at !== 'string' ||
+      typeof undo.by !== 'string' ||
+      typeof undo.reason !== 'string' ||
+      !Number.isFinite(Date.parse(undo.at)) ||
+      !undo.by.trim() ||
+      !undo.reason.trim()
+    )
+      throw new MemoryParseError('invalid qm_supersedes_undo audit')
+    result.supersedesUndo = { at: undo.at, by: undo.by, reason: undo.reason }
+  }
+  return result
+}
+
 export function parseEntry(text: string): MemoryEntry {
   const { fields, body } = splitDocument(text)
   const expiredAt = optionalString(fields, 'qm_expired_at')
@@ -247,5 +299,6 @@ export function parseEntry(text: string): MemoryEntry {
     invalidAt: optionalString(fields, 'qm_invalid_at'),
     retirement: readRetirement(fields, expiredAt),
     derivedFrom: requireStringList(fields, 'qm_derived_from'),
+    ...readGovernance(fields),
   }
 }

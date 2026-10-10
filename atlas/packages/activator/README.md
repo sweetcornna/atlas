@@ -91,7 +91,7 @@ flowchart TD
 
 - **自研，无先例可抄。** roadmap 现状基线把它列为「此前完全不在计划里」的必需组件：内核 accept queue 的缓冲只在同机有效，沙箱 daemon 只听本机、不提供这一层（已实测确认）。
 - [`base-adoption.md`](../../docs/dev/base-adoption.md) §3.1「休眠与唤醒」判定为**无**（可复用的只有 supervisor 骨架），§3.2「跨节点传输通道」判定为**无**。
-- 代码层面：本包只从基座取一样东西——`journal.ts` 用 `src/config/paths.ts` 的 `occConfigPath()` 派生日志路径。Dormice daemon 是**外部系统**，不是基座。
+- 代码层面：本包只从 `@qianmo/paths` 取一样东西——`journal.ts` 用 `@qianmo/paths` 的 `qianmoConfigPath()` 派生日志路径。Dormice daemon 是**外部系统**，不是基座。
 - 上游包：`@qianmo/protocol`、`@qianmo/transport`、`@qianmo/router`、`@qianmo/resident`（只取 `/activity` 子入口的消息判定）。
 
 ## 5. 边界与已知未做

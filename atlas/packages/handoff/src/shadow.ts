@@ -1,14 +1,11 @@
 // Copyright 2026 Qianmo AgentNest Team
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {
-  type SecretMatch,
-  scanForSecrets,
-} from '@open-claude-code/tool-runtime/secretScanner.js'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HandoffGitError, gitLine, runGit, splitNul } from './git.js'
+import { type SecretMatch, scanForSecrets } from './secrets.js'
 
 /**
  * Shadow commits: the user's work tree as a commit, taken without touching

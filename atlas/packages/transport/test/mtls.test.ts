@@ -219,22 +219,12 @@ describe.skipIf(!hasOpenssl())('L0 admission over wss', () => {
     expect(server.connections).toBe(0)
   })
 
-  test('a certificate from another CA gets in — Bun does not check the chain', async () => {
-    // **This test asserts a limitation, deliberately.** Measured on Bun
-    // 1.3.13 (key-distribution.md §2, 2026-08-19 addendum): a listener with
-    // `ca` + `requestCert` + `rejectUnauthorized` enforces that a certificate
-    // was *presented*, not that it chains to `ca`. A leaf from an unrelated
-    // root gets in; so does a self-signed one.
-    //
-    // Written as an assertion rather than a comment so that the day Bun
-    // tightens this, the change announces itself here instead of being
-    // discovered by someone re-deriving the whole question. **When it goes
-    // red, that is good news**: flip it to `rejects` and delete this note.
-    //
-    // It is safe to be wrong about this in the meantime only because nothing
-    // downstream trusts L0 for identity — the dialer below still has to
-    // produce a signature over its own node key one frame later, and does not
-    // have one. That is §7.1.1's whole reason for existing.
+  test('a certificate from another CA is refused at the handshake', async () => {
+    // Bun 1.3.x only enforced that a certificate was *presented*, and this
+    // test used to pin that gap (key-distribution.md §2, 2026-08-19). On Bun
+    // 1.4.2 a listener with `ca` + `requestCert` + `rejectUnauthorized` also
+    // checks the chain, so a leaf from an unrelated root no longer gets in.
+    // The signature one frame later (§7.1.1) stays as the identity proof.
     const ours = miniCa()
     const theirs = miniCa()
     cleanups.push(ours.cleanup, theirs.cleanup)
@@ -260,7 +250,7 @@ describe.skipIf(!hasOpenssl())('L0 admission over wss', () => {
     })
     clients.push(client)
 
-    await client.connect(5_000)
-    expect(client.isReady()).toBe(true)
+    await expect(client.connect(1_500)).rejects.toThrow(/did not become ready/)
+    expect(client.isReady()).toBe(false)
   })
 })

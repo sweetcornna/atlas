@@ -3,7 +3,7 @@
 
 /**
  * `CLAUDE.md` §1.1② in test form. These assertions only pass if the root is
- * derived from the base helper; a hand-assembled `join(homedir(), '.occ')`
+ * derived from `@qianmo/paths`; a hand-assembled `join(homedir(), '.qianmo')`
  * would ignore every override below and keep pointing at the developer's real
  * home directory.
  *
@@ -45,17 +45,17 @@ function withEnv(name: string, value: string, run: () => void): void {
 }
 
 describe('default root derivation', () => {
-  test('follows the identity-scoped config root', () => {
-    withEnv('OCC_CONFIG_DIR', directory, () => {
+  test('follows the config root', () => {
+    withEnv('QIANMO_CONFIG_DIR', directory, () => {
       expect(defaultMemoryRoot()).toBe(join(directory, QIANMO_MEMORY_DIRNAME))
     })
   })
 
   test('follows the remote memory mount when one is configured', () => {
-    // A resident node's sandbox can be reset; `getMemoryBaseDir()` is what
+    // A resident node's sandbox can be reset; `memoryBaseDir()` is what
     // redirects memory onto the persistent mount, and inheriting that is the
-    // reason this package calls it rather than `occConfigPath` directly.
-    withEnv('CLAUDE_CODE_REMOTE_MEMORY_DIR', directory, () => {
+    // reason this package calls it rather than `qianmoConfigPath` directly.
+    withEnv('QIANMO_MEMORY_DIR', directory, () => {
       expect(defaultMemoryRoot()).toBe(join(directory, QIANMO_MEMORY_DIRNAME))
     })
   })

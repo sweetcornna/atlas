@@ -31,6 +31,9 @@
  */
 
 export enum MemoryEventType {
+  SupersessionWritten = 'supersession_written',
+  SupersessionUndone = 'supersession_undone',
+  SupersessionUnresolved = 'supersession_unresolved',
   /**
    * A file under a layer directory could not be read or parsed during a scan.
    * Carries the path and the failure, because "something is corrupt" that does

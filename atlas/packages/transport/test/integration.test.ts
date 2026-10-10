@@ -451,6 +451,21 @@ describe('bidirectional authenticated channels', () => {
     await client.sendAndWait(request)
     await waitUntil(() => replies.length === 1 && serverChannel?.pending === 0)
 
+    const accepted = server.events
+      .all()
+      .find(
+        event =>
+          event.type === TransportEventType.MessageAccepted &&
+          event.detail.msgId === request.msgId &&
+          event.detail.taskId === request.taskId,
+      )
+    expect(accepted?.detail).toMatchObject({
+      messageType: request.type,
+      from: request.from,
+      to: request.to,
+    })
+    expect(accepted?.detail).not.toHaveProperty('payload')
+
     expect(server.connections).toBe(1)
     expect(server.channels).toBe(1)
     expect(serverChannel?.id).toBe(client.id)

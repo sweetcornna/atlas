@@ -209,3 +209,26 @@ describe('renderCitedAnswer', () => {
     expect(renderCitedAnswer('  没有记录。  ', report)).toBe('没有记录。')
   })
 })
+
+test('unknown, retired and unshown citations have indistinguishable model rejections but distinct internal statuses', () => {
+  const retired = box.write({ title: 'Retired secret' })
+  const unseen = box.write({ title: 'Unshown secret' })
+  box.store.revoke(retired.id, { reason: 'test', by: 'operator' })
+  const result = { ...recallNow(), entries: [] }
+  const values = [retired.id, unseen.id, 'qm-mem-deadbeef00000000'].map(id => {
+    const answer = handleMemoryAnswer(box.store, result, {
+      answer: 'answer',
+      citations: [id],
+    })
+    return {
+      status: answer.report.checks[0]?.status,
+      text: answer.rejection?.replaceAll(id, '<supplied-id>'),
+    }
+  })
+  expect(values.map(value => value.status)).toEqual([
+    'retired',
+    'not-injected',
+    'unknown',
+  ])
+  expect(new Set(values.map(value => value.text)).size).toBe(1)
+})

@@ -28,7 +28,8 @@
  * they are not model-call tokens and do not count against D-7.
  */
 
-import { buildRecallSystemPrompt } from '../../src/inject.js'
+import type { AnswerProtocol } from '../../src/evidence-answer.js'
+import { answerPrompt } from './protocol.js'
 import type { CorpusId } from '../corpora.js'
 import { ANSWER_TOKEN_CEILING } from './ledger.js'
 import { type AnswerPlan, m0Retriever, prepareTier } from './runner.js'
@@ -135,6 +136,7 @@ export async function estimateAnswerPlan(
     'corpora' | 'repetitions' | 'arms' | 'providers' | 'seed' | 'queryIds'
   >,
   measure: (request: AnswerRequest, provider: string) => string,
+  protocol: AnswerProtocol = 'legacy-v1',
 ): Promise<AnswerEstimate> {
   const rows = new Map<string, EstimateRow>()
   const perQuestion = plan.repetitions * plan.arms.length
@@ -159,7 +161,7 @@ export async function estimateAnswerPlan(
             if (result === undefined) {
               throw new Error(`estimate: no ${arm} result`)
             }
-            return buildRecallSystemPrompt(result)
+            return answerPrompt(protocol, result, query.question)
           })
           const key = JSON.stringify([id, tier, query.kind])
           const row = rows.get(key) ?? {
@@ -172,7 +174,7 @@ export async function estimateAnswerPlan(
             output: { low: 0, high: 0 },
           }
           let input: TokenRange = { low: 0, high: 0 }
-          for (const [index, system] of systems.entries()) {
+          for (const [index, prompt] of systems.entries()) {
             const arm = plan.arms[index] ?? ''
             for (const provider of plan.providers) {
               const tokens = inputTokens(
@@ -180,8 +182,7 @@ export async function estimateAnswerPlan(
                   measure(
                     {
                       callKey: `estimate/${id}/${tier}/${query.id}/${provider}/${arm}`,
-                      system,
-                      turns: [{ role: 'user', text: query.question }],
+                      ...prompt,
                     },
                     provider,
                   ),

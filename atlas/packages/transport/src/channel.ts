@@ -21,6 +21,8 @@ export interface TransportChannel {
   readonly id: string
   /** Authenticated audit label when known; not an authorization identity. */
   readonly peerNode: string | null
+  /** Name proven by a node-specific signing key; PSK claims are never identities. */
+  readonly authenticatedPeerNode?: string | null
   /** Envelopes retained until their transport receipt arrives. */
   readonly pending: number
   /**

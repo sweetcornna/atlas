@@ -10,6 +10,12 @@
  * file it persists. Keeping the statement next to the value it governs is the
  * "指针不复制" rule applied to a mapping.
  *
+ * Scope note (2026-10, base switch to oh-my-pi): "the base" below is the
+ * original open-claude-code base this format was designed against. That base
+ * is gone; the file format, the layer → type table and the root layout are
+ * kept unchanged so existing nodes' memory stays readable. The current base
+ * has no reader of these files.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * 1. WHAT THE BASE ACTUALLY HAS  (verified against the code, not the docs)
  *
@@ -63,13 +69,11 @@
  *
  *       · Format reuse: every entry is a Markdown file with YAML frontmatter
  *         whose `name` / `description` / `type` keys are exactly the base's
- *         (`frontmatter.ts`), so `parseFrontmatter` + `scanMemoryFiles` +
- *         `formatMemoryManifest` read our files unmodified. A test asserts this
- *         against the base parser rather than asserting it in a comment.
- *       · Path reuse: the root is derived from `getMemoryBaseDir()`
- *         (`paths.ts`), so an identity switch (`OCC_IDENTITY`), a config-dir
- *         override, or a CCR persistent memory mount moves Qianmo memory to the
- *         same place it moves base memory.
+ *         (`frontmatter.ts`), so the base's frontmatter reader and memory
+ *         scanner read our files unmodified.
+ *       · Path reuse: the root is derived from `memoryBaseDir()`
+ *         (`@qianmo/paths`), so a config-dir override or a persistent memory
+ *         mount (`QIANMO_MEMORY_DIR`) moves Qianmo memory with it.
  *       · Root ownership: `<memoryBase>/memory/{working,project,baseline}/…`,
  *         a sibling of the base's `projects/` tree — outside the directory the
  *         base's extraction agent is told it may prune.
@@ -109,15 +113,16 @@
  * documented behaviour for legacy files.
  */
 
-import type { MemoryType } from '../../../src/memdir/memoryTypes.js'
 import type { MemoryLayer } from './entry.js'
+
+/** The base's closed four-type memory taxonomy. */
+type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
 
 /**
  * The declared base counterpart of each Qianmo layer.
  *
- * Typed against the base's own `MemoryType` union on purpose: if the base ever
- * adds or renames a type, this table stops compiling instead of silently
- * writing a `type:` value the base no longer recognises.
+ * Typed against the base's `MemoryType` union on purpose: a value outside the
+ * four types it recognised stops compiling instead of being written.
  */
 export const BASE_MEMORY_TYPE_BY_LAYER: Readonly<
   Record<MemoryLayer, MemoryType | null>

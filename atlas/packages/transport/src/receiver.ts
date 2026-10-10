@@ -127,6 +127,10 @@ export async function receiveEnvelope(
     msgId: message.msgId,
     traceId: message.traceId,
     taskId: message.taskId,
+    // Metadata for deduplicated fleet reporting; never record payloads or keys.
+    messageType: message.type,
+    from: message.from,
+    to: message.to,
   })
   return receipt(message.msgId, ReceiptStatus.Accepted)
 }

@@ -44,6 +44,8 @@ export {
 
 export { readRegistryWriteTokenFile } from './token.js'
 
+export { PostgresRegistry, type PostgresRegistryOptions } from './postgres.js'
+
 export {
   API_PREFIX,
   createRegistryHandler,

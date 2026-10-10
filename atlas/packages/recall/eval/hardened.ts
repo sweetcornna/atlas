@@ -196,10 +196,10 @@ function pick<T>(items: readonly T[], random: () => number): T {
 
 /**
  * One mailbox batch, rendered the way `formatTeammateMessages`
- * (`src/utils/agents/teammateMailbox.ts`) renders it for the resident: one
+ * (`@qianmo/mailbox`) renders it for the resident: one
  * `<teammate-message>` element per message, joined by a blank line. The
  * resident passes that whole string to recall as the ranking question
- * (`src/services/qianmo/resident.ts`, `#assemblePrompt`).
+ * (`packages/node/src/host/resident.ts`, `#assemblePrompt`).
  */
 export function renderTeammateBatch(messages: readonly string[]): string {
   return messages

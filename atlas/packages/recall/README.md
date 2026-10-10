@@ -84,7 +84,7 @@ flowchart TB
 | `RETRIEVAL_MODES` / `RetrievalMode` | `deterministic` / `hybrid` / `hybrid-degraded`；块头只在 `hybrid` 时多一个 `retrieval="hybrid"`，语义填充进来的条目前加一行 `via: semantic` |
 | `EmbeddingProvider` / `EmbeddingBatch` | 模型中立的 embedding 接口（`id` / `model` / `dimensions` / `embed(texts, { signal })`），不含供应商名；真实适配是 P16.7 |
 | `VectorIndex` / `VectorKey` / `InMemoryVectorIndex` | 向量索引只是排序缓存，键为 `(entryId, contentHash, providerId, model, dimensions)`，只按本轮候选查询；持久化是 P16.8 |
-| `EmbeddingUsageMeter` / `FileEmbeddingUsageMeter` / `defaultEmbeddingUsagePath` | 成本上限：按 token、按节点、按 UTC 自然日，计数器持久化在 `occConfigPath('qianmo', 'embedding', 'usage.json')`；调用前预留、调用后按供应商 usage 对账；文件坏了按「已用尽」处理，不清零 |
+| `EmbeddingUsageMeter` / `FileEmbeddingUsageMeter` / `defaultEmbeddingUsagePath` | 成本上限：按 token、按节点、按 UTC 自然日，计数器持久化在 `qianmoConfigPath('qianmo', 'embedding', 'usage.json')`；调用前预留、调用后按供应商 usage 对账；文件坏了按「已用尽」处理，不清零 |
 
 ---
 
@@ -97,7 +97,7 @@ flowchart TB
 | 3 | **只投 live 条目，每次从盘上重建，不缓存**——废止后下一次召回即消失，且已废止条目不可被引用 | 加缓存或放开 `includeRetired`，「废止后必须重投」从自动性质退回成一条要人记得执行的流程 | `test/recall.test.ts`：`a revoked entry is gone from the very next recall` / `an invalidated fact leaves the present but keeps answering the past`；`test/citation.test.ts`：`a revoked entry may not be cited` |
 | 4 | **工具声明是纯数据：无 SDK、无供应商名、不使用任何原生引用块** | 改回原生 `search_result` 引用块，AC-4 与 AC-5 从此永久打架——该路径与结构化输出互斥、且只在一家的线上存在 | `test/tool.test.ts`：`is plain data: no vendor, no SDK, no native citation feature` / `declares both fields as required` |
 | 5 | **存储的降级事件必须抬到结果上**（`RecallResult.events` + `degraded`），上层不得重新盖回静默；排序里衰减是**乘子不是加项** | 前者一盖回，`@qianmo/memory` 为「一个坏文件不拖垮召回」所做的修复就白做了——节点醒来记忆变少而无人知晓；后者一改成加项，常驻节点每隔数周醒来一次，榜首会随墙钟静默漂移 | `test/recall.test.ts`：`recall returns the healthy entries and carries the failure out` / `only the events of this recall are reported`；`test/rank.test.ts`：`relevance dominates recency: a stale hit outranks a fresh miss` |
-| 6 | **条目内容只是数据，不能成为块的框架**——`renderEntry` 对所有字段转义 `<` `>`，单行字段折掉一切换行，正文里读起来像分隔行、`entry_id:` / `citation:` 行或 fence 的行首字符实体化；不含这些片段的条目逐字节不变 | 正文一句 `</qianmo-memory>` 就让常驻组装扫描失败、整轮远端文本被扣，full 模式下每轮都扣；正文还能伪造一条带他处真 id 的条目 | `test/inject.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the assembled-prompt scan stays clean`；`src/services/qianmo/__tests__/residentPrompt.test.ts`：`the turn keeps its remote text` |
+| 6 | **条目内容只是数据，不能成为块的框架**——`renderEntry` 对所有字段转义 `<` `>`，单行字段折掉一切换行，正文里读起来像分隔行、`entry_id:` / `citation:` 行或 fence 的行首字符实体化；不含这些片段的条目逐字节不变 | 正文一句 `</qianmo-memory>` 就让常驻组装扫描失败、整轮远端文本被扣，full 模式下每轮都扣；正文还能伪造一条带他处真 id 的条目 | `test/inject.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the assembled-prompt scan stays clean`；`packages/node/test/host/residentPrompt.test.ts`：`the turn keeps its remote text` |
 | 7 | **语义层只叠加、不替换**——候选集仍只按 scope 取，索引只按候选查询；ranked 模式保底部分 ⊆ 注入集（每次结果都校验，违反即退化）；full 模式与语义层故障时结果与 `recall()` 逐字节相同 | 语义层一旦能过滤或替换候选，D-6 的「0 结果」失败面与 I-1 一起回来；保底一失守，被改写的索引就能把确定性前列挤出块 | `test/hybrid.test.ts`（全部用例）；`packages/resident/test/memory-sidecar.test.ts`：`the semantic overlay (P16.6)` |
 
 ---
@@ -140,7 +140,7 @@ bun test tests/integration/qianmo-memory-recall.test.ts    # AC-4 集成腿：23
 | M0 检索基线（M1 语料） | `bun run qianmo:recall-baseline --corpus synthetic-v1`（或 `docs-dev-v1`；`--digest` 只出语料哈希） | 加固合成语料与 `docs/dev` 第二语料，种子与档位按预注册，不接受 `--seed` / `--tiers` |
 | 重生成第二语料 | `bun run scripts/qianmo-recall-docs-corpus.ts [--check]` | 只读钉住提交上的文件；人名、账号只以哈希入库 |
 | 回答层 token 预估 | `bun run scripts/qianmo-recall-answer-eval.ts --dry-run` | 离线；默认给出 P16.4 试跑（`prereg.toml` `[trial]`）与 P16.12 对比（`[plan]`）两份。M1 臂的注入块由 `recallHybrid` 在替身向量（非语义）上选出，另报 embedding token 预估 |
-| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `occConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零。M1 臂回放时读 fixture 里落档的向量（`embeddings`），缺向量或退化即中止；P16.7 之前 `--live` 拒绝 M1 臂 |
+| 回答层回放 / 真调用 | 同一脚本 `--replay <fixture>` / `--live`（`--live` 必须带 `--cap-input` / `--cap-output`） | 缺凭据自动跳过；token 账本在 `qianmoConfigPath('qianmo','recall-eval')` 下，持久化、重启不清零。M1 臂回放时读 fixture 里落档的向量（`embeddings`），缺向量或退化即中止；P16.7 之前 `--live` 拒绝 M1 臂 |
 | 留出集零词面校验 | `bun run scripts/qianmo-recall-heldout-check.ts <file>` | 用语料自己的分词逐题核对与 gold 条目零重叠，末行给出 `heldout_ids_sha256`；0 干净 / 1 有问题 / 2 文件或用法错 |
 | 冻结预注册值 | `bun run scripts/qianmo-recall-freeze.ts [--check]` | 重算语料哈希、M0 基线哈希与留出集哈希，只填空着的键；已有值只核不改，不一致退出 1 |
 

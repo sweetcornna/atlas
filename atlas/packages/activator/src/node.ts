@@ -69,6 +69,7 @@ import {
   type QianmoMessage,
   destinationNode,
   errorReply,
+  parseAddress,
 } from '@qianmo/protocol'
 import { NodeRouter } from '@qianmo/router'
 import {
@@ -128,6 +129,8 @@ export interface ActivatorNodeOptions {
   /** Pre-shared key for both hops. Injected — never a literal. */
   readonly psk: string
   readonly listen: ActivatorListenOptions
+  /** Listener proof. required=true makes both transport legs mandatory signed. */
+  readonly signing?: TransportServerOptions['signing']
   /**
    * The sandbox supervisor port. Injected rather than built from a URL here so
    * that the loopback assertion and the credential getter stay in `daemon.ts`,
@@ -265,6 +268,10 @@ class BoundedFailures implements FailureSink {
 export async function startActivatorNode(
   options: ActivatorNodeOptions,
 ): Promise<ActivatorNodeHandle> {
+  if (options.signing && options.signing.node !== options.node)
+    throw new Error('activator listener signing identity must match its node')
+  if (options.signing?.required && !options.linkSigning?.required)
+    throw new Error('strict activator requires mandatory signed target links')
   const audit = options.audit ?? new AuditLog()
   const clock = options.clock ?? systemClock
   const journal = options.journal ?? new FileRequestJournal(undefined, audit)
@@ -293,7 +300,15 @@ export async function startActivatorNode(
     directory: options.directory,
     audit,
     clock,
-    onReply: (message, sandboxName) => {
+    onReply: (message, sandboxName, context) => {
+      if (
+        options.linkSigning?.required &&
+        context.channel.authenticatedPeerNode !==
+          options.directory.nodeOf(sandboxName)
+      )
+        throw new Error(
+          'activator target reply lacks the fixed signed identity',
+        )
       routes.forward(message, sandboxName)
       // A terminal reply ends the task here, so its loop keys can go now
       // rather than at the delivery deadline (protocol.md §8.2 rows 19–20).
@@ -344,6 +359,7 @@ export async function startActivatorNode(
   try {
     server = startTransportServer({
       psk: options.psk,
+      ...(options.signing === undefined ? {} : { signing: options.signing }),
       ...(options.listen.port === undefined
         ? {}
         : { port: options.listen.port }),
@@ -361,10 +377,33 @@ export async function startActivatorNode(
         message: QianmoMessage,
         context: InboundContext,
       ): Promise<void> => {
+        if (
+          options.signing?.required &&
+          (context.channel.authenticatedPeerNode === null ||
+            context.channel.authenticatedPeerNode === undefined ||
+            parseAddress(message.from)?.node !==
+              context.channel.authenticatedPeerNode)
+        ) {
+          audit.record(ActivatorEventType.RequestRefused, clock.now(), {
+            msgId: message.msgId,
+            taskId: message.taskId,
+            code: ProtocolErrorCode.E_UNKNOWN_AGENT,
+            reason: 'requester unavailable',
+          })
+          throw new ActivationRejected(
+            ProtocolErrorCode.E_UNKNOWN_AGENT,
+            'requester unavailable',
+          )
+        }
         const node = destinationNode(message)
         const sandboxName =
           node === null ? undefined : options.directory.sandboxOf(node)
-        if (sandboxName === undefined) {
+        if (
+          sandboxName === undefined ||
+          (options.linkSigning?.required &&
+            (node === null ||
+              options.linkSigning.directory.publicKeyOf(node) === null))
+        ) {
           const at = clock.now()
           const reason = `no sandbox is mapped for node ${JSON.stringify(node ?? message.to)}`
           audit.record(ActivatorEventType.RequestRefused, at, {

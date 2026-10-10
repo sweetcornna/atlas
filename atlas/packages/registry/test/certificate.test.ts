@@ -4,13 +4,13 @@
 /**
  * §5.2's "certificate vs publicKey" bulletin-board rule, end to end.
  *
- * Zero mocks: a real offline CA (`src/services/qianmo/ca/operations.ts`,
+ * Zero mocks: a real offline CA (`packages/node/src/ca/operations.ts`,
  * P12.1) issues real certificates with real openssl, and this file registers
- * them against a real {@link InMemoryRegistry}. Reaching into host `src/` from
+ * them against a real {@link InMemoryRegistry}. Reaching into `@qianmo/node` from
  * a *test* file is not the isolation `caScan.test.ts` polices — that scan
  * explicitly exempts test files (its own header says so) precisely so setup
  * code can build the real artefacts the production code is not allowed to
- * reach for. `store.ts` already reaches `src/config/paths.js` from production
+ * reach for. `store.ts` already reaches `@qianmo/paths` from production
  * code in this same package, so a test doing the analogous thing for `ca/`
  * is the lesser reach, not a new one.
  */
@@ -24,15 +24,9 @@ import {
   signBytes,
   type NodeKeyPair,
 } from '@qianmo/capability'
-import {
-  initCa,
-  issueCertificate,
-} from '../../../src/services/qianmo/ca/operations.js'
-import {
-  opensslVersion,
-  runOpenssl,
-} from '../../../src/services/qianmo/ca/openssl.js'
-import { popMessage } from '../../../src/services/qianmo/ca/pop.js'
+import { initCa, issueCertificate } from '@qianmo/node/ca/operations.ts'
+import { opensslVersion, runOpenssl } from '@qianmo/node/ca/openssl.ts'
+import { popMessage } from '@qianmo/node/ca/pop.ts'
 import {
   InMemoryRegistry,
   ManualClock,

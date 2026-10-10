@@ -31,8 +31,13 @@ import {
   hardenedSourceId,
 } from './hardened.js'
 import type { BaselineDataset, BaselineEntry } from './run.js'
+import { qualityCorpus } from './quality-corpus.js'
 
-export type CorpusId = typeof HARDENED_CORPUS_ID | typeof DOCS_CORPUS_ID
+export type CorpusId =
+  | typeof HARDENED_CORPUS_ID
+  | typeof DOCS_CORPUS_ID
+  | 'memory-quality-v2'
+  | 'memory-quality-docs-v2'
 
 /** A query of any M1 corpus: the retrieval fields plus the answer labels. */
 export type CorpusQuery = Omit<HardenedQuery, 'kind'> & {
@@ -59,6 +64,15 @@ type CorpusDescriptor = {
 }
 
 export const CORPORA: Readonly<Record<CorpusId, CorpusDescriptor>> = {
+  'memory-quality-v2': Object.assign(qualityCorpus('memory-quality-v2'), {
+    sourceIdOf: hardenedSourceId,
+  }),
+  'memory-quality-docs-v2': Object.assign(
+    qualityCorpus('memory-quality-docs-v2'),
+    {
+      sourceIdOf: hardenedSourceId,
+    },
+  ),
   [HARDENED_CORPUS_ID]: {
     id: HARDENED_CORPUS_ID,
     seeds: HARDENED_SEEDS,

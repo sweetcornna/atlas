@@ -43,10 +43,13 @@ export type RunPlan = {
   readonly seed: number
   /** Tiers per corpus; a corpus with no tiers is not in the plan. */
   readonly tiers: Readonly<
-    Record<'synthetic-v1' | 'docs-dev-v1', readonly number[]>
+    Record<'synthetic-v1' | 'docs-dev-v1', readonly number[]> & {
+      'memory-quality-v2'?: readonly number[]
+      'memory-quality-docs-v2'?: readonly number[]
+    }
   >
   /** The corpus E1, E2, A0 and A4 are judged on. */
-  readonly primaryCorpus: 'synthetic-v1' | 'docs-dev-v1'
+  readonly primaryCorpus: 'synthetic-v1' | 'docs-dev-v1' | 'memory-quality-v2'
 }
 
 export type Preregistration = {
@@ -64,6 +67,8 @@ export type Preregistration = {
     readonly e1Inference: E1Inference | null
   }
   readonly corpus: {
+    readonly memoryQualityV2Sha256?: string | null
+    readonly memoryQualityDocsV2Sha256?: string | null
     readonly syntheticV1Sha256: string | null
     readonly docsDevV1Sha256: string | null
     readonly heldoutIdsSha256: string | null
@@ -102,6 +107,8 @@ const PLAN_KEYS = [
   'seed',
   'synthetic_v1_tiers',
   'docs_dev_v1_tiers',
+  'memory_quality_v2_tiers',
+  'memory_quality_docs_v2_tiers',
   'primary_corpus',
 ] as const
 
@@ -118,6 +125,8 @@ const SECTIONS: Readonly<Record<string, readonly string[]>> = {
   corpus: [
     'synthetic_v1_sha256',
     'docs_dev_v1_sha256',
+    'memory_quality_v2_sha256',
+    'memory_quality_docs_v2_sha256',
     'heldout_ids_sha256',
     'shuffle_seed',
     'm0_baseline_sha256',
@@ -197,6 +206,12 @@ function integerList(table: Table, section: string, key: string): number[] {
 function planOf(table: Table, section: string): RunPlan | null {
   if (Object.keys(table).length === 0) return null
   for (const key of PLAN_KEYS) {
+    if (key === 'memory_quality_docs_v2_tiers') continue
+    if (
+      key === 'memory_quality_v2_tiers' &&
+      table.primary_corpus !== 'memory-quality-v2'
+    )
+      continue
     if (table[key] === undefined) {
       throw new Error(`preregistration: [${section}] is missing ${key}`)
     }
@@ -225,9 +240,13 @@ function planOf(table: Table, section: string): RunPlan | null {
     )
   }
   const primary = table['primary_corpus']
-  if (primary !== 'synthetic-v1' && primary !== 'docs-dev-v1') {
+  if (
+    primary !== 'synthetic-v1' &&
+    primary !== 'docs-dev-v1' &&
+    primary !== 'memory-quality-v2'
+  ) {
     throw new Error(
-      `preregistration: ${section}.primary_corpus must be "synthetic-v1" or "docs-dev-v1"`,
+      `preregistration: ${section}.primary_corpus must be "synthetic-v1", "docs-dev-v1" or "memory-quality-v2"`,
     )
   }
   return {
@@ -238,6 +257,24 @@ function planOf(table: Table, section: string): RunPlan | null {
     tiers: {
       'synthetic-v1': integerList(table, section, 'synthetic_v1_tiers'),
       'docs-dev-v1': integerList(table, section, 'docs_dev_v1_tiers'),
+      ...(table['memory_quality_v2_tiers'] === undefined
+        ? {}
+        : {
+            'memory-quality-v2': integerList(
+              table,
+              section,
+              'memory_quality_v2_tiers',
+            ),
+          }),
+      ...(table['memory_quality_docs_v2_tiers'] === undefined
+        ? {}
+        : {
+            'memory-quality-docs-v2': integerList(
+              table,
+              section,
+              'memory_quality_docs_v2_tiers',
+            ),
+          }),
     },
     primaryCorpus: primary,
   }
@@ -282,6 +319,24 @@ export function parsePreregistration(text: string): Preregistration {
       e1Inference: inference ?? null,
     },
     corpus: {
+      ...(corpus['memory_quality_docs_v2_sha256'] === undefined
+        ? {}
+        : {
+            memoryQualityDocsV2Sha256: sha256(
+              corpus,
+              'corpus',
+              'memory_quality_docs_v2_sha256',
+            ),
+          }),
+      ...(corpus['memory_quality_v2_sha256'] === undefined
+        ? {}
+        : {
+            memoryQualityV2Sha256: sha256(
+              corpus,
+              'corpus',
+              'memory_quality_v2_sha256',
+            ),
+          }),
       syntheticV1Sha256: sha256(corpus, 'corpus', 'synthetic_v1_sha256'),
       docsDevV1Sha256: sha256(corpus, 'corpus', 'docs_dev_v1_sha256'),
       heldoutIdsSha256: sha256(corpus, 'corpus', 'heldout_ids_sha256'),

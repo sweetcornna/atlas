@@ -41,7 +41,7 @@ flowchart TB
     synthetic["synthetic.ts（测试用）<br/>makeSeries() · contestFactor()"]
   end
 
-  sink["src/services/qianmo/auditTrail.ts<br/>capacityTrailSink（三 kind 原样透传）"]
+  sink["packages/node/src/host/auditTrail.ts<br/>capacityTrailSink（三 kind 原样透传）"]
 
   trail -->|"at / kind / taskId 三个字段"| usage
   usage -->|"UsageSample（按序推入）"| planner
@@ -101,7 +101,7 @@ flowchart TB
 
 - **定性**：**完全自研**（charter §3.4 S-4；`docs/dev/base-adoption.md` §3.2「资源协商 / 加密隧道 / 预测性扩容」行判「无」）。
 - 本包**零依赖**（`package.json` 的 `dependencies` 为空），既不导入基座模块也不导入其他 `@qianmo/*` 包——连读 P7.2 审计记录都是走**结构子集** `UsageRecordLike` 而不是 `import type { AuditRecord }`。
-- 基座侧唯一的接线点是 `src/services/qianmo/auditTrail.ts` 的 `capacityTrailSink`；改造点全量清单见 `docs/dev/base-modifications.md`。
+- 基座侧唯一的接线点是 `packages/node/src/host/auditTrail.ts` 的 `capacityTrailSink`；改造点全量清单见 `docs/dev/base-modifications.md`。
 
 ---
 

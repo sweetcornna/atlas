@@ -29,6 +29,8 @@ export interface TrailQuery {
   /** Matches `node`, `peer`, or an address inside the detail. */
   readonly agent?: string
   readonly source?: AuditSource
+  /** Prefix match on the event kind. */
+  readonly kind?: string
   /** Inclusive lower bound, epoch ms. */
   readonly from?: number
   /** Inclusive upper bound, epoch ms. */
@@ -96,6 +98,8 @@ function matcherOf(query: TrailQuery): (record: AuditRecord) => boolean {
     if (query.source !== undefined && record.source !== query.source) {
       return false
     }
+    if (query.kind !== undefined && !record.kind.startsWith(query.kind))
+      return false
     if (query.outcome !== undefined && record.outcome !== query.outcome) {
       return false
     }

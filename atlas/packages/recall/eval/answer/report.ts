@@ -20,6 +20,7 @@
  */
 
 import type { InjectionMode } from '../../src/inject.js'
+import type { AnswerProtocol } from '../../src/evidence-answer.js'
 import type { Preregistration } from '../prereg.js'
 import type { LedgerSnapshot, Phase } from './ledger.js'
 import { scheduleSeed, type Unit, unitKey } from './schedule.js'
@@ -55,6 +56,7 @@ export type RoundRecord = {
  * Written only once the call — and its second round, if any — is complete.
  */
 export type CallRecord = {
+  readonly answerProtocol?: AnswerProtocol
   readonly key: string
   readonly unit: Unit
   readonly arm: Arm
@@ -169,10 +171,12 @@ export type AnswerReport = {
   readonly phase: Phase
   readonly finishedAt: string
   readonly protocol: {
+    readonly version?: AnswerProtocol
+    readonly sha256?: string
     readonly arms: readonly Arm[]
     readonly repetitions: number
     readonly concurrency: number
-    readonly placement: 'system-prompt'
+    readonly placement: 'system-prompt' | 'user-message'
     readonly requireCitation: false
     readonly secondRoundAfterRejection: true
     readonly seedControl: 'uncontrolled'

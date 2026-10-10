@@ -55,6 +55,70 @@ export const AUTHZ_REQUEST_DOMAIN = 'qianmo-authz-request-v1'
 
 /** Domain of an approval key's signature over an {@link AuthzDecision}. */
 export const AUTHZ_DECISION_DOMAIN = 'qianmo-authz-decision-v1'
+export const AUTHZ_REVOKE_DOMAIN = 'qianmo-authz-revoke-v1'
+
+export interface AuthzRevoke {
+  readonly v: 1
+  readonly requestId: string
+  readonly aud: string
+  readonly approver: string
+  readonly nbf: number
+  readonly exp: number
+  readonly nonce: string
+}
+const REVOKE_KEYS = [
+  'v',
+  'requestId',
+  'aud',
+  'approver',
+  'nbf',
+  'exp',
+  'nonce',
+] as const
+
+function isAuthzRevoke(value: unknown): value is AuthzRevoke {
+  if (!plainObject(value) || !exactKeys(value, REVOKE_KEYS)) return false
+  return (
+    value.v === 1 &&
+    typeof value.requestId === 'string' &&
+    REQUEST_ID.test(value.requestId) &&
+    isValidSegment(value.aud) &&
+    typeof value.approver === 'string' &&
+    parseApprover(value.approver).ok &&
+    isEpochMs(value.nbf) &&
+    isEpochMs(value.exp) &&
+    value.exp > value.nbf &&
+    value.exp - value.nbf <= MAX_AUTHZ_WINDOW_MS &&
+    typeof value.nonce === 'string' &&
+    NONCE.test(value.nonce)
+  )
+}
+
+export function signAuthzRevoke(
+  keys: NodeKeyPair,
+  revoke: AuthzRevoke,
+): string {
+  if (!isAuthzRevoke(revoke))
+    throw new Error('refusing to sign malformed authz revoke')
+  const signed = encode(REVOKE_KEYS, revoke)
+  return `${signed}.${signBytes(keys, signingInput(AUTHZ_REVOKE_DOMAIN, signed))}`
+}
+
+export function parseAuthzRevoke(
+  wire: unknown,
+): SignedAuthz<AuthzRevoke> | null {
+  return parseWire(wire, isAuthzRevoke)
+}
+export function verifyAuthzRevokeSignature(
+  parts: SignedAuthz<AuthzRevoke>,
+  publicKey: string,
+): boolean {
+  return verifyBytes(
+    publicKey,
+    signingInput(AUTHZ_REVOKE_DOMAIN, parts.signed),
+    parts.signature,
+  )
+}
 
 /** Longest `allow-window` a decision may ask for (design D-5). */
 export const MAX_AUTHZ_WINDOW_MS = 60 * 60 * 1000
