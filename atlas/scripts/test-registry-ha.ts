@@ -61,17 +61,22 @@ try {
       'qm_registry_test',
       '--no-locale',
     ])
-    await command([
-      pgCtl,
-      '-D',
-      data,
-      '-l',
-      join(root, 'postgres.log'),
-      '-o',
-      `-h 127.0.0.1 -p ${port} -k ${socket}`,
-      '-w',
-      'start',
-    ])
+    // macOS postmaster refuses to start without a valid locale in the
+    // environment ("postmaster became multithreaded during startup").
+    await command(
+      [
+        pgCtl,
+        '-D',
+        data,
+        '-l',
+        join(root, 'postgres.log'),
+        '-o',
+        `-h 127.0.0.1 -p ${port} -k ${socket}`,
+        '-w',
+        'start',
+      ],
+      { ...process.env, LC_ALL: 'C' },
+    )
     url = `postgres://qm_registry_test@127.0.0.1:${port}/postgres`
   }
   await command(
