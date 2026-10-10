@@ -238,7 +238,9 @@ export class Browser {
     )
     // Chrome writes the port it picked, and the browser endpoint's path, here.
     const portFile = join(profile, 'DevToolsActivePort')
-    const deadline = Date.now() + 15_000
+    // A cold Chrome on a loaded CI runner has needed more than 15 s. Every
+    // caller's beforeAll allows 30 s, so stay under that.
+    const deadline = Date.now() + 25_000
     let endpoint = ''
     while (endpoint === '') {
       if (existsSync(portFile)) {
@@ -250,7 +252,7 @@ export class Browser {
       }
       if (Date.now() > deadline) {
         process_.kill()
-        throw new Error('Chrome did not open its DevTools port in 15 s')
+        throw new Error('Chrome did not open its DevTools port in 25 s')
       }
       await pause(25)
     }
